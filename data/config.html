@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Paramètres</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background-color: #f5f5f5;
+        color: #333;
+        text-align: center;
+        padding: 0;
+        margin: 0;
+      }
+      .page-title {
+        color: #007aff;
+        font-size: 2rem;
+        font-weight: 700;
+        margin: 0 0 24px;
+        letter-spacing: 0.01em;
+        text-align: center;
+      }
+      .card {
+        background: white;
+        display: block;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        max-width: 360px;
+        margin: 40px auto 0 auto; /* Center form and add top spacing */
+      }
+      .top-link {
+        text-align: left;
+        margin-bottom: 12px;
+      }
+      .top-link a {
+        color: #007aff;
+        text-decoration: underline;
+        font-size: 14px;
+      }
+      .tabs {
+        display: flex;
+        margin-bottom: 15px;
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid #d1d1d6;
+      }
+      .tab-button {
+        flex: 1;
+        padding: 10px;
+        border: none;
+        background-color: #f0f0f5;
+        color: #333;
+        font-size: 15px;
+        cursor: pointer;
+        transition: background-color 0.2s, color 0.2s;
+      }
+      .tab-button + .tab-button {
+        border-left: 1px solid #d1d1d6;
+      }
+      .tab-button.active {
+        background-color: #007aff;
+        color: white;
+      }
+      .tab-panel {
+        display: none;
+        text-align: left;
+      }
+      .tab-panel.active {
+        display: block;
+      }
+      .switch-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 15px;
+      }
+      .switch-row label {
+        margin: 0;
+      }
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: 50px;
+        height: 24px;
+      }
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: #ccc;
+        transition: 0.2s;
+        border-radius: 24px;
+      }
+      .slider:before {
+        position: absolute;
+        content: "";
+        height: 18px;
+        width: 18px;
+        left: 3px;
+        bottom: 3px;
+        background-color: white;
+        transition: 0.2s;
+        border-radius: 50%;
+      }
+      input:checked + .slider {
+        background-color: #007aff;
+      }
+      input:checked + .slider:before {
+        transform: translateX(26px);
+      }
+      input {
+        display: block;
+        width: 100%;
+        margin: 10px 0;
+        padding: 10px;
+        font-size: 16px;
+        box-sizing: border-box;
+      }
+      select {
+        display: block;
+        width: 100%;
+        margin: 10px 0;
+        padding: 10px;
+        font-size: 16px;
+        box-sizing: border-box;
+      }
+      label {
+        text-align: left;
+        display: block;
+        margin-top: 10px;
+        margin-bottom: 2px;
+      }
+      .info-block {
+        margin: 10px 0;
+        text-align: left;
+        background-color: #f0f4ff;
+        padding: 10px;
+        border-radius: 6px;
+        font-size: 14px;
+      }
+      .info-label {
+        font-weight: bold;
+        display: inline-block;
+        min-width: 90px;
+      }
+      .actions {
+        margin-top: 15px;
+        text-align: right;
+      }
+      button {
+        background-color: #007aff;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        font-size: 16px;
+        cursor: pointer;
+        border-radius: 5px;
+      }
+      button:hover {
+        background-color: #005bb5;
+      }
+      @media (max-width: 480px) {
+        .card {
+          margin-top: 20px;
+          padding: 20px;
+        }
+        .page-title {
+          font-size: 1.6rem;
+        }
+      }
+  </style>
+</head>
+<body>
+    <form id="config-form" class="card">
+      <div class="top-link">
+        <a href="/">&#8592; Retour au tableau de bord</a>
+      </div>
+      <h1 class="page-title">Paramètres</h1>
+      <div class="tabs">
+        <button type="button" class="tab-button active" data-tab="filtration">Filtration</button>
+        <button type="button" class="tab-button" data-tab="ph">pH</button>
+        <button type="button" class="tab-button" data-tab="orp">ORP</button>
+        <button type="button" class="tab-button" data-tab="mqtt">MQTT</button>
+        <button type="button" class="tab-button" data-tab="wifi">Wi-Fi</button>
+        <button type="button" class="tab-button" data-tab="time">Horloge</button>
+      </div>
+
+      <div class="tab-panel active" data-tab="filtration">
+        <label>Mode de filtration :</label>
+        <select id="filtration_mode">
+          <option value="auto">Auto</option>
+          <option value="manual">Manuel</option>
+          <option value="off">Désactivé</option>
+        </select>
+
+        <label>Début filtration :</label>
+        <input type="time" id="filtration_start" value="08:00">
+
+        <label>Fin filtration :</label>
+        <input type="time" id="filtration_end" value="20:00">
+
+        <p style="font-size: 0.85rem; color: #666; margin-top: 12px; text-align: left;">
+          En mode Auto, la filtration démarre à 08h au premier cycle. Après 10 min de fonctionnement,
+          la température maximale mesurée durant la filtration est utilisée pour recalculer la durée (température ÷ 2, autour de 13h).
+          La nouvelle plage peut provoquer l'arrêt immédiat de la filtration si l'heure recalculée n'est pas encore atteinte.
+        </p>
+      </div>
+
+      <div class="tab-panel" data-tab="ph">
+        <div class="switch-row">
+          <span>Activer la régulation pH</span>
+          <label class="switch">
+            <input type="checkbox" id="ph_enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <label>pH cible :</label>
+        <input type="number" id="ph_target" min="0" max="14" step="0.1" placeholder="ex: 7.2">
+
+        <label>Pompe utilisée :</label>
+        <select id="ph_pump">
+          <option value="1">Pompe 1</option>
+          <option value="2">Pompe 2</option>
+        </select>
+
+        <label>Durée max d'injection par heure (s) :</label>
+        <input type="number" id="ph_limit" min="0" step="1" value="60">
+      </div>
+
+      <div class="tab-panel" data-tab="orp">
+        <div class="switch-row">
+          <span>Activer la régulation ORP</span>
+          <label class="switch">
+            <input type="checkbox" id="orp_enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <label>ORP cible (mV) :</label>
+        <input type="number" id="orp_target" min="0" max="1000" step="1" placeholder="ex: 650">
+
+        <label>Pompe utilisée :</label>
+        <select id="orp_pump">
+          <option value="1">Pompe 1</option>
+          <option value="2">Pompe 2</option>
+        </select>
+
+        <label>Durée max d'injection par heure (s) :</label>
+        <input type="number" id="orp_limit" min="0" step="1" value="60">
+      </div>
+
+      <div class="tab-panel" data-tab="mqtt">
+        <div class="switch-row">
+          <span>Activer la publication MQTT</span>
+          <label class="switch">
+            <input type="checkbox" id="mqtt_enabled">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <label>Serveur MQTT :</label>
+        <input type="text" id="mqtt_server" placeholder="ex: 192.168.1.10">
+
+        <label>Port :</label>
+        <input type="number" id="mqtt_port" placeholder="1883" value="1883">
+
+        <label>Topic :</label>
+        <input type="text" id="mqtt_topic" placeholder="ex: home/pool/data">
+
+        <label>Login :</label>
+        <input type="text" id="mqtt_username" placeholder="ex: utilisateur">
+
+        <label>Mot de passe :</label>
+        <input type="password" id="mqtt_password" placeholder="ex: ********">
+      </div>
+
+      <div class="tab-panel" data-tab="wifi">
+        <div class="info-block">
+          <div><span class="info-label">Réseau : </span><span id="wifi_ssid">?</span></div>
+          <div><span class="info-label">Adresse IP : </span><span id="wifi_ip">?</span></div>
+          <div><span class="info-label">Mode : </span><span id="wifi_mode">?</span></div>
+          <div><span class="info-label">Adresse mDNS :</span><span id="wifi_mdns">poolcontroller.local</span></div>
+        </div>
+        <button type="button" id="restart-ap-btn" style="width:100%;">Redémarrer en mode AP</button>
+      </div>
+
+      <div class="tab-panel" data-tab="time">
+        <div class="switch-row">
+          <span>Synchroniser via NTP</span>
+          <label class="switch">
+            <input type="checkbox" id="time_use_ntp">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div id="timezone_row" style="display:none;">
+          <label>Fuseau horaire :</label>
+          <select id="time_timezone">
+            <option value="europe_paris">Europe/Paris (UTC+1/UTC+2)</option>
+            <option value="utc">UTC</option>
+            <option value="america_new_york">America/New_York (UTC-5/UTC-4)</option>
+            <option value="america_los_angeles">America/Los_Angeles (UTC-8/UTC-7)</option>
+            <option value="asia_tokyo">Asia/Tokyo (UTC+9)</option>
+            <option value="australia_sydney">Australia/Sydney (UTC+10/UTC+11)</option>
+          </select>
+        </div>
+
+        <label>Serveur NTP :</label>
+        <input type="text" id="time_ntp_server" placeholder="pool.ntp.org">
+
+        <label>Heure :</label>
+        <input type="datetime-local" id="time_manual">
+
+        <div class="info-block" id="time_info" style="display:none;">
+          <div><span class="info-label">Heure actuelle :</span><span id="time_current">—</span></div>
+        </div>
+      </div>
+
+      <div class="actions" id="save-actions">
+        <button type="submit" id="save-btn">Enregistrer</button>
+      </div>
+    </form>
+
+    <script>
+      // Charger la config actuelle
+      const toggle = document.getElementById('mqtt_enabled');
+      const tabButtons = document.querySelectorAll('.tab-button');
+      const panels = document.querySelectorAll('.tab-panel');
+      const phInput = document.getElementById('ph_target');
+      const orpInput = document.getElementById('orp_target');
+      const phToggle = document.getElementById('ph_enabled');
+      const orpToggle = document.getElementById('orp_enabled');
+      const phPumpSelect = document.getElementById('ph_pump');
+      const orpPumpSelect = document.getElementById('orp_pump');
+      const phLimitInput = document.getElementById('ph_limit');
+      const orpLimitInput = document.getElementById('orp_limit');
+      const filtrationMode = document.getElementById('filtration_mode');
+      const filtrationStart = document.getElementById('filtration_start');
+      const filtrationEnd = document.getElementById('filtration_end');
+      const wifiSsidEl = document.getElementById('wifi_ssid');
+      const wifiIpEl = document.getElementById('wifi_ip');
+      const wifiModeEl = document.getElementById('wifi_mode');
+      const wifiMdnsEl = document.getElementById('wifi_mdns');
+      const restartApBtn = document.getElementById('restart-ap-btn');
+      const saveBtn = document.getElementById('save-btn');
+      const saveActions = document.getElementById('save-actions');
+      const timeUseNtp = document.getElementById('time_use_ntp');
+      const timeNtpServer = document.getElementById('time_ntp_server');
+      const timeManualInput = document.getElementById('time_manual');
+      const timeInfo = document.getElementById('time_info');
+      const timeCurrentLabel = document.getElementById('time_current');
+      const timezoneRow = document.getElementById('timezone_row');
+      const timeTimezone = document.getElementById('time_timezone');
+      let cachedManualTime = '';
+      let timeRefreshTimer = null;
+      let cachedManualStart = filtrationStart.value;
+      let cachedManualEnd = filtrationEnd.value;
+
+      function updateSaveVisibility(activeTab) {
+        const show = activeTab !== 'wifi';
+        saveActions.style.display = show ? 'block' : 'none';
+      }
+
+      function updateFiltrationControls(applyCache = false) {
+        const mode = filtrationMode.value;
+        const isManual = mode === 'manual';
+        const disabled = !isManual;
+        filtrationStart.disabled = disabled;
+        filtrationEnd.disabled = disabled;
+        filtrationStart.readOnly = disabled;
+        filtrationEnd.readOnly = disabled;
+        if (isManual && applyCache) {
+          filtrationStart.value = cachedManualStart;
+          filtrationEnd.value = cachedManualEnd;
+        }
+      }
+
+      function refreshTimeNow() {
+        fetch('/time-now')
+          .then(res => res.json())
+          .then(data => {
+            if (data.time) {
+              timeCurrentLabel.textContent = data.time.replace('T', ' ');
+              if (timeUseNtp.checked) {
+                timeManualInput.value = data.time;
+              }
+            }
+          })
+          .catch(() => {});
+      }
+
+      function startTimeRefresh() {
+        if (timeRefreshTimer) {
+          clearInterval(timeRefreshTimer);
+          timeRefreshTimer = null;
+        }
+        if (timeUseNtp.checked) {
+          refreshTimeNow();
+          timeRefreshTimer = setInterval(refreshTimeNow, 60000);
+        } else {
+          const value = timeManualInput.value;
+          timeCurrentLabel.textContent = value ? value.replace('T', ' ') : '—';
+        }
+      }
+
+      function updateTimeControls(currentTimeValue) {
+        const useNtp = timeUseNtp.checked;
+        timezoneRow.style.display = useNtp ? 'block' : 'none';
+        timeTimezone.disabled = !useNtp;
+        timeManualInput.disabled = useNtp;
+        timeManualInput.readOnly = useNtp;
+        timeInfo.style.display = useNtp ? 'block' : 'none';
+        if (useNtp) {
+          if (!cachedManualTime) {
+            cachedManualTime = timeManualInput.value;
+          }
+          if (currentTimeValue) {
+            timeManualInput.value = currentTimeValue;
+            timeCurrentLabel.textContent = currentTimeValue.replace('T', ' ');
+          } else if (timeManualInput.value) {
+            timeCurrentLabel.textContent = timeManualInput.value.replace('T', ' ');
+          } else {
+            timeCurrentLabel.textContent = '—';
+          }
+        } else {
+          if (cachedManualTime) {
+            timeManualInput.value = cachedManualTime;
+          }
+          const value = timeManualInput.value;
+          timeCurrentLabel.textContent = value ? value.replace('T', ' ') : '—';
+        }
+        startTimeRefresh();
+      }
+
+      tabButtons.forEach(button => {
+        button.addEventListener('click', () => {
+          const target = button.dataset.tab;
+          tabButtons.forEach(btn => btn.classList.toggle('active', btn === button));
+          panels.forEach(panel => panel.classList.toggle('active', panel.dataset.tab === target));
+          updateSaveVisibility(target);
+        });
+      });
+
+      function collectConfig() {
+        const portValue = parseInt(document.getElementById('mqtt_port').value, 10);
+        const phValue = parseFloat(phInput.value);
+        const orpValue = parseFloat(orpInput.value);
+        const phPumpValue = parseInt(phPumpSelect.value, 10);
+        const orpPumpValue = parseInt(orpPumpSelect.value, 10);
+        const phLimitValue = parseInt(phLimitInput.value, 10);
+        const orpLimitValue = parseInt(orpLimitInput.value, 10);
+        const manualTimeValue = timeManualInput.value;
+        const modeValue = filtrationMode.value;
+        let startValue = filtrationStart.value;
+        let endValue = filtrationEnd.value;
+        if (modeValue !== 'manual') {
+          startValue = filtrationStart.value;
+          endValue = filtrationEnd.value;
+        }
+        return {
+          enabled: toggle.checked,
+          server: document.getElementById('mqtt_server').value,
+          port: isNaN(portValue) ? 1883 : portValue,
+          topic: document.getElementById('mqtt_topic').value,
+          username: document.getElementById('mqtt_username').value,
+          password: document.getElementById('mqtt_password').value,
+          ph_target: isNaN(phValue) ? 7.2 : phValue,
+          orp_target: isNaN(orpValue) ? 650 : orpValue,
+          ph_enabled: phToggle.checked,
+          ph_pump: isNaN(phPumpValue) ? 1 : phPumpValue,
+          orp_enabled: orpToggle.checked,
+          orp_pump: isNaN(orpPumpValue) ? 2 : orpPumpValue,
+          ph_limit_seconds: isNaN(phLimitValue) ? 60 : phLimitValue,
+          orp_limit_seconds: isNaN(orpLimitValue) ? 60 : orpLimitValue,
+          time_use_ntp: timeUseNtp.checked,
+          ntp_server: timeNtpServer.value || 'pool.ntp.org',
+          manual_time: manualTimeValue,
+          timezone_id: timeTimezone.value || 'europe_paris',
+          filtration_mode: modeValue,
+          filtration_start: startValue,
+          filtration_end: endValue
+        };
+      }
+
+      function sendConfig(data, showAlert = true) {
+        fetch('/save-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data)
+        }).then(() => {
+          if (showAlert) {
+            alert('Configuration enregistrée !');
+          }
+        });
+      }
+
+      fetch('/get-config')
+        .then(res => res.json())
+        .then(cfg => {
+          document.getElementById('mqtt_server').value = cfg.server || '';
+          document.getElementById('mqtt_port').value = cfg.port || 1883;
+          document.getElementById('mqtt_topic').value = cfg.topic || '';
+          document.getElementById('mqtt_username').value = cfg.username || '';
+          document.getElementById('mqtt_password').value = cfg.password || '';
+          toggle.checked = cfg.enabled !== false;
+          phInput.value = (typeof cfg.ph_target === 'number') ? cfg.ph_target : 7.2;
+          orpInput.value = (typeof cfg.orp_target === 'number') ? cfg.orp_target : 650;
+          phToggle.checked = cfg.ph_enabled === true;
+          phPumpSelect.value = (cfg.ph_pump === 2 ? '2' : '1');
+          orpToggle.checked = cfg.orp_enabled === true;
+          orpPumpSelect.value = (cfg.orp_pump === 1 ? '1' : '2');
+          phLimitInput.value = (typeof cfg.ph_limit_seconds === 'number') ? cfg.ph_limit_seconds : 60;
+          orpLimitInput.value = (typeof cfg.orp_limit_seconds === 'number') ? cfg.orp_limit_seconds : 60;
+          timeUseNtp.checked = cfg.time_use_ntp !== false;
+          timeNtpServer.value = cfg.ntp_server || 'pool.ntp.org';
+          const manualValue = cfg.manual_time || '';
+          cachedManualTime = manualValue;
+          timeManualInput.value = manualValue;
+          const tzValue = cfg.timezone_id || 'europe_paris';
+          if (timeTimezone.querySelector(`option[value="${tzValue}"]`)) {
+            timeTimezone.value = tzValue;
+          } else {
+            timeTimezone.value = 'europe_paris';
+          }
+          const currentTimeValue = cfg.time_current || manualValue || '';
+          timeCurrentLabel.textContent = currentTimeValue ? currentTimeValue.replace('T', ' ') : '—';
+          updateTimeControls(currentTimeValue || manualValue);
+          if (cfg.filtration_mode) filtrationMode.value = cfg.filtration_mode;
+          if (cfg.filtration_start) filtrationStart.value = cfg.filtration_start;
+          if (cfg.filtration_end) filtrationEnd.value = cfg.filtration_end;
+          if (filtrationMode.value === 'manual') {
+            cachedManualStart = filtrationStart.value;
+            cachedManualEnd = filtrationEnd.value;
+          }
+          updateFiltrationControls();
+          wifiSsidEl.textContent = cfg.wifi_ssid || '—';
+          wifiIpEl.textContent = cfg.wifi_ip || '—';
+          wifiModeEl.textContent = cfg.wifi_mode || '—';
+          wifiMdnsEl.textContent = cfg.mdns_host || 'poolcontroller.local';
+          updateSaveVisibility(document.querySelector('.tab-button.active').dataset.tab);
+        });
+
+      toggle.addEventListener('change', () => {
+        sendConfig(collectConfig(), false);
+      });
+
+      phToggle.addEventListener('change', () => {
+        sendConfig(collectConfig(), false);
+      });
+
+      orpToggle.addEventListener('change', () => {
+        sendConfig(collectConfig(), false);
+      });
+
+      phPumpSelect.addEventListener('change', () => {
+        sendConfig(collectConfig(), false);
+      });
+
+      orpPumpSelect.addEventListener('change', () => {
+        sendConfig(collectConfig(), false);
+      });
+
+      filtrationMode.addEventListener('change', () => {
+        updateFiltrationControls(true);
+        sendConfig(collectConfig(), false);
+      });
+
+      filtrationStart.addEventListener('change', () => {
+        cachedManualStart = filtrationStart.value;
+        if (filtrationMode.value === 'manual') {
+          sendConfig(collectConfig(), false);
+        }
+      });
+
+      filtrationEnd.addEventListener('change', () => {
+        cachedManualEnd = filtrationEnd.value;
+        if (filtrationMode.value === 'manual') {
+          sendConfig(collectConfig(), false);
+        }
+      });
+
+      timeUseNtp.addEventListener('change', () => {
+        updateTimeControls(timeManualInput.value);
+        sendConfig(collectConfig(), false);
+      });
+
+      timeNtpServer.addEventListener('change', () => {
+        if (timeUseNtp.checked) {
+          sendConfig(collectConfig(), false);
+        }
+      });
+
+      timeTimezone.addEventListener('change', () => {
+        cachedManualTime = timeManualInput.value;
+        updateTimeControls(timeManualInput.value);
+        sendConfig(collectConfig(), false);
+      });
+
+      timeManualInput.addEventListener('input', () => {
+        cachedManualTime = timeManualInput.value;
+        if (!timeUseNtp.checked) {
+          timeCurrentLabel.textContent = cachedManualTime ? cachedManualTime.replace('T', ' ') : '—';
+        }
+      });
+
+      restartApBtn.addEventListener('click', () => {
+        if (!confirm('Redémarrer en mode point d\'accès ?')) return;
+        fetch('/reboot-ap', { method: 'POST' })
+          .then(() => alert('Redémarrage en mode AP en cours...'))
+          .catch(() => alert('Impossible de redémarrer. Vérifiez la connexion.'));
+      });
+
+      // Envoi de la config mise à jour
+      document.getElementById('config-form').addEventListener('submit', e => {
+        e.preventDefault();
+        sendConfig(collectConfig());
+      });
+
+      updateTimeControls();
+      updateFiltrationControls();
+    </script>
+  </body>
+</html>

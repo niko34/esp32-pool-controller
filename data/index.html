@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ESP32 ORP & pH Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        background: #f5f5f5;
+        margin: 0;
+        min-height: 100vh;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      .card {
+        background: #fff;
+        border-radius: 10px;
+        box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        padding: 20px;
+        margin: 40px auto 0 auto;
+        width: 100%;
+        max-width: 360px;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .top-link {
+        text-align: left;
+        margin-bottom: 12px;
+      }
+      .config-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        text-decoration: none;
+        font-size: 0.95rem;
+        font-weight: 500;
+        color: #007aff;
+        transition: color 0.2s, transform 0.2s;
+        padding: 6px 10px;
+        border-radius: 12px;
+        background: rgba(0, 122, 255, 0.08);
+      }
+      .config-link:hover {
+        color: #005bb5;
+        transform: translateY(-1px);
+      }
+      .config-link img {
+        width: 18px;
+        height: 18px;
+        display: inline-block;
+      }
+      .page-title {
+        color: #007aff;
+        font-size: 2rem;
+        font-weight: 700;
+        margin: 0 0 24px;
+        letter-spacing: 0.01em;
+        text-align: center;
+      }
+      .chart-block {
+        margin-bottom: 24px;
+      }
+      .chart-block:last-of-type {
+        margin-bottom: 0;
+      }
+      .chart-title {
+        font-size: 1rem;
+        font-weight: 600;
+        margin: 0 0 8px;
+        color: #555;
+        text-align: center;
+      }
+      canvas {
+        width: 100% !important;
+        max-width: 100%;
+        height: 180px !important;
+        background: #fff;
+        border-radius: 12px;
+        border: 1px solid #ececec;
+      }
+      @media (max-width: 480px) {
+        .card {
+          padding: 20px;
+          margin-top: 20px;
+        }
+        .page-title {
+          font-size: 1.6rem;
+        }
+        .config-link {
+          font-size: 0.85rem;
+        }
+        .config-link img {
+          width: 16px;
+          height: 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="top-link">
+        <a class="config-link" href="/config" title="Paramètres">
+          <img src="setting.png" alt="" />
+          <span>Paramètres</span>
+        </a>
+      </div>
+      <h1 class="page-title">PoolController</h1>
+      <div class="chart-block">
+        <p class="chart-title">Température (°C)</p>
+        <canvas id="tempChart"></canvas>
+      </div>
+      <div class="chart-block">
+        <p class="chart-title">ORP (mV)</p>
+        <canvas id="orpChart"></canvas>
+      </div>
+      <div class="chart-block">
+        <p class="chart-title">pH</p>
+        <canvas id="phChart"></canvas>
+      </div>
+    </div>
+
+    <script>
+      function createLineChart(ctx, color, label) {
+        return new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels: [],
+            datasets: [{
+              label,
+              data: [],
+              borderColor: color,
+              backgroundColor: 'rgba(0,0,0,0)',
+              tension: 0.2
+            }]
+          },
+          options: {
+            animation: false,
+            scales: {
+              x: {
+                ticks: { maxRotation: 0, minRotation: 0 }
+              },
+              y: {
+                beginAtZero: false
+              }
+            },
+            plugins: {
+              legend: { display: false }
+            }
+          }
+        });
+      }
+
+      const tempChart = createLineChart(document.getElementById('tempChart'), '#ff5e57', 'Température');
+      const orpChart = createLineChart(document.getElementById('orpChart'), '#ffa502', 'ORP');
+      const phChart = createLineChart(document.getElementById('phChart'), '#1e90ff', 'pH');
+
+      function pushPoint(chart, value, label) {
+        chart.data.labels.push(label);
+        chart.data.datasets[0].data.push(value);
+        if (chart.data.labels.length > 30) {
+          chart.data.labels.shift();
+          chart.data.datasets[0].data.shift();
+        }
+        chart.update('none');
+      }
+
+      async function updateData() {
+        try {
+          const res = await fetch('/data');
+          if (!res.ok) return;
+          const json = await res.json();
+          const timestamp = json.timestamp ? new Date(json.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+
+          if (json.temperature !== null && typeof json.temperature !== 'undefined' && !isNaN(json.temperature)) {
+            pushPoint(tempChart, json.temperature, timestamp);
+          }
+          if (typeof json.orp !== 'undefined' && !isNaN(json.orp)) {
+            pushPoint(orpChart, json.orp, timestamp);
+          }
+          if (typeof json.ph !== 'undefined' && !isNaN(json.ph)) {
+            pushPoint(phChart, json.ph, timestamp);
+          }
+        } catch (err) {
+          console.error('updateData error', err);
+        }
+      }
+
+      setInterval(updateData, 2000);
+      updateData();
+    </script>
+  </body>
+</html>

@@ -1,0 +1,1382 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+#include <AsyncTCP.h>
+#include <DNSServer.h>
+#include <ESPAsyncWiFiManager.h>
+#include <LittleFS.h>
+#include <ArduinoJson.h>
+#include <PubSubClient.h>
+#include <math.h>
+#include <time.h>
+#include <sys/time.h>
+#include <stdlib.h>
+#include <ESPmDNS.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+// ==== Broches analogiques ====
+#define ORP_PIN 34
+#define PH_PIN 35
+#define PUMP1_PWM_PIN 25
+#define PUMP1_IN1_PIN 32
+#define PUMP1_IN2_PIN 33
+#define PUMP2_PWM_PIN 26
+#define PUMP2_IN1_PIN 18
+#define PUMP2_IN2_PIN 19
+#define PUMP1_CHANNEL 0
+#define PUMP2_CHANNEL 1
+#define PUMP_PWM_FREQ 1000
+#define PUMP_PWM_RES_BITS 8
+#define TEMP_SENSOR_PIN 4
+#define FILTRATION_RELAY_PIN 27
+
+struct MqttConfig {
+  String server = "192.168.1.10";
+  int port = 1883;
+  String topic = "pool/sensors";
+  String username = "";
+  String password = "";
+  bool enabled = false;
+  float phTarget = 7.2f;
+  float orpTarget = 650.0f;
+  bool phEnabled = false;
+  bool orpEnabled = false;
+  int phPump = 1;
+  int orpPump = 2;
+  int phInjectionLimitSeconds = 60;
+  int orpInjectionLimitSeconds = 60;
+  bool timeUseNtp = true;
+  String ntpServer = "pool.ntp.org";
+  String manualTimeIso = "";
+  String timezoneId = "europe_paris";
+} mqttCfg;
+
+struct FiltrationConfig {
+  String mode = "auto"; // auto, manual, off
+  String start = "08:00";
+  String end = "20:00";
+  bool hasAutoReference = false;
+  float autoReferenceTemp = 24.0f;
+} filtrationCfg;
+
+struct SimulationConfig {
+  bool enabled = true;
+  float poolVolumeM3 = 50.0f;
+  float phMinusVolumePerDeltaMl = 300.0f;
+  float phMinusDelta = 0.1f;
+  float phMinusReferenceVolumeM3 = 10.0f;
+  float phPumpRateMlPerMin = 30.0f;
+  float filtrationFlowM3PerHour = 16.0f;
+  float initialPh = 8.5f;
+  float initialOrp = 650.0f;
+  float initialTemp = 24.0f;
+  float timeAcceleration = 360.0f; // 360.0f pour 1h -> 1 min
+  float phReversionFactor = 0.01f;
+  float orpPumpRateMlPerMin = 30.0f;
+  float orpEffectMvPerMl = 0.005f;
+  float orpReversionFactor = 0.01f;
+  bool overrideClock = true;
+} simulationCfg;
+
+WiFiClient wifiClient;
+PubSubClient mqtt(wifiClient);
+bool mqttReconnectRequested = false;
+uint8_t pumpDuty[2] = {0, 0};
+bool sensorsInitialized = false;
+float orpValue = 0.0;
+float phValue = 0.0;
+float tempValue = NAN;
+unsigned long lastUpdate = 0;
+bool restartApRequested = false;
+bool filtrationRelayState = false;
+bool phDoseActive = false;
+unsigned long lastSimulationUpdateMs = 0;
+bool orpDoseActive = false;
+float phCurrentFlowMlPerMin = 0.0f;
+float orpCurrentFlowMlPerMin = 0.0f;
+int64_t simulatedTimeOffsetMs = 0;
+bool simulationClockInitialized = false;
+double simulationClockMs = 0.0;
+
+struct PumpDriver {
+  int pwmPin;
+  int in1Pin;
+  int in2Pin;
+  int channel;
+};
+
+PumpDriver pumps[2] = {
+  {PUMP1_PWM_PIN, PUMP1_IN1_PIN, PUMP1_IN2_PIN, PUMP1_CHANNEL},
+  {PUMP2_PWM_PIN, PUMP2_IN1_PIN, PUMP2_IN2_PIN, PUMP2_CHANNEL}
+};
+
+OneWire oneWire(TEMP_SENSOR_PIN);
+DallasTemperature tempSensor(&oneWire);
+
+constexpr float PH_DEADBAND = 0.05f;
+constexpr float ORP_DEADBAND = 5.0f;
+constexpr uint8_t MAX_PWM_DUTY = (1 << PUMP_PWM_RES_BITS) - 1;
+constexpr uint8_t MIN_ACTIVE_DUTY = 20;
+constexpr float SIM_MAX_STEP_MINUTES = 0.25f;
+
+struct PumpControlParams {
+  float minFlowMlPerMin;
+  float maxFlowMlPerMin;
+  float maxError;
+};
+
+PumpControlParams phPumpControl = {5.2f, 90.0f, 1.0f};
+PumpControlParams orpPumpControl = {5.2f, 90.0f, 200.0f};
+
+wifi_mode_t currentWifiMode = WIFI_MODE_NULL;
+
+struct DosingState {
+  unsigned long windowStart = 0;
+  unsigned long usedMs = 0;
+  unsigned long lastTimestamp = 0;
+  bool active = false;
+};
+
+DosingState phDosingState;
+DosingState orpDosingState;
+
+struct FiltrationRuntime {
+  bool running = false;
+  bool scheduleComputedThisCycle = false;
+  unsigned long startedAtMs = 0;
+  float cycleMaxTemp = -INFINITY;
+};
+
+FiltrationRuntime filtrationState;
+
+void saveMqttConfig();
+struct MqttTopics {
+  String base;
+  String temperatureState;
+  String phState;
+  String orpState;
+  String filtrationState;
+  String filtrationModeState;
+  String filtrationModeCommand;
+};
+
+MqttTopics mqttTopics;
+bool mqttDiscoveryPublished = false;
+const char* HA_DEVICE_ID = "poolcontroller";
+const char* HA_DEVICE_NAME = "Pool Controller";
+const char* HA_DISCOVERY_PREFIX = "homeassistant";
+
+struct TimezoneInfo {
+  const char* id;
+  const char* label;
+  const char* posix;
+};
+
+static const TimezoneInfo TIMEZONES[] = {
+  {"europe_paris", "Europe/Paris (UTC+1/UTC+2)", "CET-1CEST,M3.5.0/02:00:00,M10.5.0/03:00:00"},
+  {"utc", "UTC", "UTC0"},
+  {"america_new_york", "America/New_York (UTC-5/UTC-4)", "EST+5EDT,M3.2.0/02:00:00,M11.1.0/02:00:00"},
+  {"america_los_angeles", "America/Los_Angeles (UTC-8/UTC-7)", "PST+8PDT,M3.2.0/02:00:00,M11.1.0/02:00:00"},
+  {"asia_tokyo", "Asia/Tokyo (UTC+9)", "JST-9"},
+  {"australia_sydney", "Australia/Sydney (UTC+10/UTC+11)", "AEST-10AEDT,M10.1.0/02:00:00,M4.1.0/03:00:00"}
+};
+
+const TimezoneInfo* findTimezoneById(const String& id) {
+  for (const auto& tz : TIMEZONES) {
+    if (id.equalsIgnoreCase(tz.id)) {
+      return &tz;
+    }
+  }
+  return nullptr;
+}
+
+const TimezoneInfo* defaultTimezone() {
+  return &TIMEZONES[0];
+}
+
+void ensureTimezoneValid() {
+  if (!findTimezoneById(mqttCfg.timezoneId)) {
+    mqttCfg.timezoneId = defaultTimezone()->id;
+  }
+}
+
+const TimezoneInfo* currentTimezone() {
+  ensureTimezoneValid();
+  const TimezoneInfo* tz = findTimezoneById(mqttCfg.timezoneId);
+  return tz ? tz : defaultTimezone();
+}
+
+void applyTimezoneEnv() {
+  const TimezoneInfo* tz = currentTimezone();
+  setenv("TZ", tz->posix, 1);
+  tzset();
+}
+
+float computeFlowFromError(float error, float deadband, const PumpControlParams& params) {
+  float delta = error - deadband;
+  if (delta <= 0.0f) return 0.0f;
+  float normalized = delta / params.maxError;
+  if (normalized < 0.0f) normalized = 0.0f;
+  if (normalized > 1.0f) normalized = 1.0f;
+  return params.minFlowMlPerMin + normalized * (params.maxFlowMlPerMin - params.minFlowMlPerMin);
+}
+
+uint8_t flowToDuty(const PumpControlParams& params, float flowMlPerMin) {
+  if (flowMlPerMin <= 0.0f) return 0;
+  if (flowMlPerMin < params.minFlowMlPerMin) flowMlPerMin = params.minFlowMlPerMin;
+  if (flowMlPerMin > params.maxFlowMlPerMin) flowMlPerMin = params.maxFlowMlPerMin;
+  float normalized = (flowMlPerMin - params.minFlowMlPerMin) / (params.maxFlowMlPerMin - params.minFlowMlPerMin);
+  if (normalized < 0.0f) normalized = 0.0f;
+  if (normalized > 1.0f) normalized = 1.0f;
+  uint8_t duty = MIN_ACTIVE_DUTY + static_cast<uint8_t>(roundf(normalized * (MAX_PWM_DUTY - MIN_ACTIVE_DUTY)));
+  if (duty > MAX_PWM_DUTY) duty = MAX_PWM_DUTY;
+  return duty;
+}
+
+void ensureFiltrationTimesValid() {
+  String modeLower = filtrationCfg.mode;
+  modeLower.toLowerCase();
+  if (modeLower != "auto" && modeLower != "manual" && modeLower != "off") {
+    filtrationCfg.mode = "auto";
+    modeLower = "auto";
+  }
+  filtrationCfg.mode = modeLower;
+
+  auto normalize = [](String value, const char* fallback) {
+    if (value.length() < 5) return String(fallback);
+    if (value.charAt(2) != ':') return String(fallback);
+    int hh = value.substring(0, 2).toInt();
+    int mm = value.substring(3, 5).toInt();
+    if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return String(fallback);
+    char buffer[6];
+    snprintf(buffer, sizeof(buffer), "%02d:%02d", hh, mm);
+    return String(buffer);
+  };
+
+  filtrationCfg.start = normalize(filtrationCfg.start, "08:00");
+  filtrationCfg.end = normalize(filtrationCfg.end, "20:00");
+}
+
+void computeAutoFiltrationSchedule() {
+  if (!filtrationCfg.mode.equalsIgnoreCase("auto")) return;
+
+  float referenceTemp = filtrationCfg.hasAutoReference ? filtrationCfg.autoReferenceTemp : tempValue;
+  if (isnan(referenceTemp)) {
+    if (!filtrationCfg.hasAutoReference) {
+      filtrationCfg.start = "08:00";
+      filtrationCfg.end = "20:00";
+      return;
+    }
+    referenceTemp = filtrationCfg.autoReferenceTemp;
+  }
+  if (referenceTemp < 0) referenceTemp = 0;
+  float durationHours = referenceTemp / 2.0f;
+  if (durationHours < 1.0f) durationHours = 1.0f;
+  if (durationHours > 24.0f) durationHours = 24.0f;
+
+  const float pivotHour = 13.0f;
+  float startHour = pivotHour - (durationHours / 2.0f);
+  float endHour = startHour + durationHours;
+
+  auto wrap = [](float hour) {
+    while (hour < 0) hour += 24.0f;
+    while (hour >= 24.0f) hour -= 24.0f;
+    return hour;
+  };
+
+  startHour = wrap(startHour);
+  endHour = wrap(endHour);
+
+  auto toTimeString = [](float hour) {
+    int h = static_cast<int>(hour);
+    int m = static_cast<int>(round((hour - h) * 60.0f));
+    if (m >= 60) { m -= 60; h = (h + 1) % 24; }
+    char buffer[6];
+    snprintf(buffer, sizeof(buffer), "%02d:%02d", h, m);
+    return String(buffer);
+  };
+
+  filtrationCfg.start = toTimeString(startHour);
+  filtrationCfg.end = toTimeString(endHour);
+  ensureFiltrationTimesValid();
+}
+
+void refreshMqttTopics() {
+  String base = mqttCfg.topic;
+  base.trim();
+  if (base.length() == 0) base = "pool/sensors";
+  while (base.endsWith("/")) base.remove(base.length() - 1);
+  if (base.length() == 0) base = "pool/sensors";
+
+  mqttTopics.base = base;
+  mqttTopics.temperatureState = base + "/temperature";
+  mqttTopics.phState = base + "/ph";
+  mqttTopics.orpState = base + "/orp";
+  mqttTopics.filtrationState = base + "/filtration_state";
+  mqttTopics.filtrationModeState = base + "/filtration_mode";
+  mqttTopics.filtrationModeCommand = base + "/filtration_mode/set";
+}
+
+void publishSensorState(const String& topic, const String& payload, bool retain = true) {
+  if (!mqtt.connected() || topic.length() == 0) return;
+  if (!mqtt.publish(topic.c_str(), payload.c_str(), retain)) {
+    Serial.print("[MQTT] publish failed on ");
+    Serial.println(topic);
+  }
+}
+
+void publishFiltrationState();
+
+void publishAllStates() {
+  if (!mqtt.connected()) return;
+  if (!isnan(tempValue)) {
+    publishSensorState(mqttTopics.temperatureState, String(tempValue, 1));
+  }
+  if (!isnan(phValue)) {
+    publishSensorState(mqttTopics.phState, String(phValue, 2));
+  }
+  if (!isnan(orpValue)) {
+    publishSensorState(mqttTopics.orpState, String(orpValue, 1));
+  }
+  publishFiltrationState();
+}
+
+void publishFiltrationState() {
+  if (!mqtt.connected()) return;
+  publishSensorState(mqttTopics.filtrationModeState, filtrationCfg.mode);
+  publishSensorState(mqttTopics.filtrationState, filtrationState.running ? "ON" : "OFF");
+}
+
+void updateSimulation(unsigned long now) {
+  if (!simulationCfg.enabled) {
+    lastSimulationUpdateMs = now;
+    return;
+  }
+  if (lastSimulationUpdateMs == 0) {
+    lastSimulationUpdateMs = now;
+    return;
+  }
+  unsigned long deltaMs = now - lastSimulationUpdateMs;
+  if (deltaMs < 1000) return;
+  lastSimulationUpdateMs = now;
+  if (simulationCfg.overrideClock) {
+    float accel = simulationCfg.timeAcceleration;
+    if (accel < 0.1f) accel = 0.1f;
+    simulatedTimeOffsetMs += static_cast<int64_t>(deltaMs * (accel - 1.0f));
+    int64_t offsetSec = simulatedTimeOffsetMs / 1000;
+    if (offsetSec != 0) {
+      struct timeval tv;
+      gettimeofday(&tv, nullptr);
+      tv.tv_sec += offsetSec;
+      tv.tv_usec += (simulatedTimeOffsetMs % 1000) * 1000;
+      if (tv.tv_usec >= 1000000) {
+        tv.tv_sec += 1;
+        tv.tv_usec -= 1000000;
+      }
+      settimeofday(&tv, nullptr);
+      simulatedTimeOffsetMs %= 1000;
+    }
+    simulationClockMs += static_cast<double>(deltaMs) * accel;
+  }
+
+  float minutesReal = deltaMs / 60000.0f;
+  float accel = simulationCfg.timeAcceleration;
+  if (accel < 0.1f) accel = 0.1f;
+  float minutes = minutesReal * accel;
+  if (minutes <= 0.0f) return;
+
+  bool phChanged = false;
+  bool orpChanged = false;
+  float remainingMinutes = minutes;
+  float requiredPhMl = 0.0f;
+  if (phDoseActive) {
+    requiredPhMl = simulationCfg.phMinusVolumePerDeltaMl * (simulationCfg.poolVolumeM3 / simulationCfg.phMinusReferenceVolumeM3);
+    if (requiredPhMl < 1.0f) {
+      requiredPhMl = 1.0f;
+    }
+  }
+
+  auto applyDrift = [](float& value, float target, float drift, float minChange) -> bool {
+    if (fabsf(drift) <= minChange) {
+      return false;
+    }
+    float currentDiff = value - target;
+    float newValue = value + drift;
+    float newDiff = newValue - target;
+    if ((currentDiff * newDiff) > 0.0f && fabsf(newDiff) > fabsf(currentDiff)) {
+      return false; // moving further away from target
+    }
+    if ((currentDiff > 0.0f && newDiff < 0.0f) || (currentDiff < 0.0f && newDiff > 0.0f)) {
+      newValue = target;
+    }
+    if (fabsf(newValue - value) <= minChange) {
+      return false;
+    }
+    value = newValue;
+    return true;
+  };
+
+  while (remainingMinutes > 1e-6f) {
+    float stepMinutes = remainingMinutes;
+    if (stepMinutes > SIM_MAX_STEP_MINUTES) {
+      stepMinutes = SIM_MAX_STEP_MINUTES;
+    }
+    remainingMinutes -= stepMinutes;
+
+    if (phDoseActive && requiredPhMl > 0.0f) {
+      float flow = phCurrentFlowMlPerMin > 0.0f ? phCurrentFlowMlPerMin : simulationCfg.phPumpRateMlPerMin;
+      if (simulationCfg.phPumpRateMlPerMin > 0.0f && flow > simulationCfg.phPumpRateMlPerMin) {
+        flow = simulationCfg.phPumpRateMlPerMin;
+      }
+      float delivered = flow * stepMinutes;
+      float deltaPh = -(delivered / requiredPhMl) * simulationCfg.phMinusDelta;
+      float newPh = phValue + deltaPh;
+      if (newPh < mqttCfg.phTarget && phValue >= mqttCfg.phTarget) {
+        newPh = mqttCfg.phTarget;
+      }
+      if (newPh < 0.0f) newPh = 0.0f;
+      if (newPh > 14.0f) newPh = 14.0f;
+      if (fabsf(newPh - phValue) > 1e-4f) {
+        phValue = newPh;
+        phChanged = true;
+      }
+    } else if (!phDoseActive) {
+      float drift = (simulationCfg.initialPh - phValue) * simulationCfg.phReversionFactor * stepMinutes;
+      if (applyDrift(phValue, mqttCfg.phTarget, drift, 1e-4f)) {
+        if (phValue < 0.0f) phValue = 0.0f;
+        if (phValue > 14.0f) phValue = 14.0f;
+        phChanged = true;
+      }
+    }
+
+    if (orpDoseActive) {
+      float flow = orpCurrentFlowMlPerMin > 0.0f ? orpCurrentFlowMlPerMin : simulationCfg.orpPumpRateMlPerMin;
+      if (simulationCfg.orpPumpRateMlPerMin > 0.0f && flow > simulationCfg.orpPumpRateMlPerMin) {
+        flow = simulationCfg.orpPumpRateMlPerMin;
+      }
+      float delivered = flow * stepMinutes;
+      float deltaOrp = delivered * simulationCfg.orpEffectMvPerMl;
+      float maxDelta = orpValue - mqttCfg.orpTarget;
+      if (maxDelta < 0.0f) maxDelta = 0.0f;
+      if (deltaOrp > maxDelta) {
+        deltaOrp = maxDelta;
+      }
+      if (deltaOrp > 0.0f) {
+        orpValue -= deltaOrp;
+        orpChanged = true;
+      }
+    } else {
+      float drift = (simulationCfg.initialOrp - orpValue) * simulationCfg.orpReversionFactor * stepMinutes;
+      if (applyDrift(orpValue, mqttCfg.orpTarget, drift, 1e-3f)) {
+        orpChanged = true;
+      }
+    }
+  }
+
+  if (phValue < 0.0f) phValue = 0.0f;
+  if (phValue > 14.0f) phValue = 14.0f;
+
+  if (phChanged) {
+    publishSensorState(mqttTopics.phState, String(phValue, 2));
+  }
+
+  if (orpChanged) {
+    publishSensorState(mqttTopics.orpState, String(orpValue, 1));
+  }
+}
+
+void publishDiscovery() {
+  if (!mqtt.connected()) return;
+  if (mqttDiscoveryPublished) return;
+
+  StaticJsonDocument<512> doc;
+  String topic;
+  String payload;
+
+  auto makeDevice = [&](JsonObject device) {
+    device["name"] = HA_DEVICE_NAME;
+    device["manufacturer"] = "ESP32";
+    device["model"] = "Pool Controller";
+    JsonArray ids = device.createNestedArray("identifiers");
+    ids.add(HA_DEVICE_ID);
+  };
+
+  auto publishConfig = [&](const String& configTopic) {
+    payload.clear();
+    serializeJson(doc, payload);
+    bool ok = mqtt.publish(configTopic.c_str(), payload.c_str(), true);
+    Serial.print("[MQTT] discovery ");
+    Serial.print(configTopic);
+    Serial.println(ok ? " OK" : " FAILED");
+    doc.clear();
+  };
+
+  const String discoveryBase = String(HA_DISCOVERY_PREFIX) + "/";
+  
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_temperature/config";
+  doc["name"] = "Piscine Température";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_temperature";
+  doc["state_topic"] = mqttTopics.temperatureState;
+  doc["device_class"] = "temperature";
+  doc["unit_of_measurement"] = "°C";
+  doc["state_class"] = "measurement";
+  makeDevice(doc.createNestedObject("device"));
+  publishConfig(topic);
+
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph/config";
+  doc["name"] = "Piscine pH";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph";
+  doc["state_topic"] = mqttTopics.phState;
+  doc["unit_of_measurement"] = "pH";
+  doc["icon"] = "mdi:water";
+  doc["state_class"] = "measurement";
+  makeDevice(doc.createNestedObject("device"));
+  publishConfig(topic);
+
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_orp/config";
+  doc["name"] = "Piscine ORP";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp";
+  doc["state_topic"] = mqttTopics.orpState;
+  doc["unit_of_measurement"] = "mV";
+  doc["icon"] = "mdi:flash";
+  doc["state_class"] = "measurement";
+  makeDevice(doc.createNestedObject("device"));
+  publishConfig(topic);
+
+  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_filtration/config";
+  doc["name"] = "Filtration Active";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_filtration";
+  doc["state_topic"] = mqttTopics.filtrationState;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["device_class"] = "running";
+  doc["icon"] = "mdi:water-pump";
+  makeDevice(doc.createNestedObject("device"));
+  publishConfig(topic);
+
+  topic = discoveryBase + "select/" + HA_DEVICE_ID + "_filtration_mode/config";
+  doc["name"] = "Mode Filtration";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_filtration_mode";
+  doc["state_topic"] = mqttTopics.filtrationModeState;
+  doc["command_topic"] = mqttTopics.filtrationModeCommand;
+  doc["icon"] = "mdi:water-pump";
+  JsonArray options = doc.createNestedArray("options");
+  options.add("auto");
+  options.add("manual");
+  options.add("off");
+  makeDevice(doc.createNestedObject("device"));
+  publishConfig(topic);
+
+  mqttDiscoveryPublished = true;
+}
+
+void mqttMessageCallback(char* topic, byte* payload, unsigned int length) {
+  String topicStr(topic);
+  if (topicStr == mqttTopics.filtrationModeCommand) {
+    String cmd;
+    for (unsigned int i = 0; i < length; ++i) {
+      cmd += static_cast<char>(payload[i]);
+    }
+    cmd.trim();
+    cmd.toLowerCase();
+    if (cmd == "auto" || cmd == "manual" || cmd == "off") {
+      if (filtrationCfg.mode != cmd) {
+        filtrationCfg.mode = cmd;
+        ensureFiltrationTimesValid();
+        if (filtrationCfg.mode == "auto") {
+          if (filtrationCfg.hasAutoReference) {
+            computeAutoFiltrationSchedule();
+          }
+        }
+        saveMqttConfig();
+      }
+      publishFiltrationState();
+    }
+  }
+}
+
+bool getCurrentMinutesOfDay(int& minutes) {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo, 0)) return false;
+  minutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+  return true;
+}
+
+int timeStringToMinutes(const String& value) {
+  if (value.length() < 5 || value.charAt(2) != ':') return -1;
+  int hh = value.substring(0, 2).toInt();
+  int mm = value.substring(3, 5).toInt();
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return -1;
+  return hh * 60 + mm;
+}
+
+bool isMinutesInRange(int now, int start, int end) {
+  if (start == -1 || end == -1) return false;
+  if (start == end) return true; // full day
+  if (start < end) {
+    return now >= start && now < end;
+  }
+  return now >= start || now < end;
+}
+
+void updateFiltrationControl() {
+  ensureFiltrationTimesValid();
+  int nowMinutes = 0;
+  bool haveTime = getCurrentMinutesOfDay(nowMinutes);
+  String mode = filtrationCfg.mode;
+  mode.toLowerCase();
+
+  bool runTarget = false;
+  int startMin = timeStringToMinutes(filtrationCfg.start);
+  int endMin = timeStringToMinutes(filtrationCfg.end);
+
+  if (mode == "manual") {
+    if (haveTime) runTarget = isMinutesInRange(nowMinutes, startMin, endMin);
+  } else if (mode == "auto") {
+    if (haveTime) runTarget = isMinutesInRange(nowMinutes, startMin, endMin);
+  } else {
+    runTarget = false;
+  }
+
+  bool wasRunning = filtrationState.running;
+  if (!wasRunning && runTarget) {
+    filtrationState.running = true;
+    filtrationState.startedAtMs = millis();
+    filtrationState.cycleMaxTemp = -INFINITY;
+    filtrationState.scheduleComputedThisCycle = false;
+  }
+
+  bool runNow = filtrationState.running;
+  unsigned long elapsed = runNow ? millis() - filtrationState.startedAtMs : 0;
+
+  if (runNow) {
+    if (elapsed >= 600000UL && !isnan(tempValue)) {
+      filtrationState.cycleMaxTemp = (filtrationState.cycleMaxTemp == -INFINITY)
+        ? tempValue
+        : max(filtrationState.cycleMaxTemp, tempValue);
+    }
+
+    if (mode == "auto" && elapsed >= 600000UL && filtrationState.cycleMaxTemp > -INFINITY && !filtrationState.scheduleComputedThisCycle) {
+      filtrationCfg.autoReferenceTemp = filtrationState.cycleMaxTemp;
+      filtrationCfg.hasAutoReference = true;
+      computeAutoFiltrationSchedule();
+      ensureFiltrationTimesValid();
+      saveMqttConfig();
+      Serial.printf("[FILTRATION] Référence %.1f°C -> %s - %s\n", filtrationCfg.autoReferenceTemp, filtrationCfg.start.c_str(), filtrationCfg.end.c_str());
+      filtrationState.scheduleComputedThisCycle = true;
+      if (haveTime) {
+        startMin = timeStringToMinutes(filtrationCfg.start);
+        endMin = timeStringToMinutes(filtrationCfg.end);
+        if (!isMinutesInRange(nowMinutes, startMin, endMin)) {
+          runTarget = false;
+        }
+      }
+      publishFiltrationState();
+    }
+  }
+
+  if (runNow && !runTarget) {
+    if (mode == "auto" && elapsed >= 600000UL && filtrationState.cycleMaxTemp > -INFINITY && !filtrationState.scheduleComputedThisCycle) {
+      filtrationCfg.autoReferenceTemp = filtrationState.cycleMaxTemp;
+      filtrationCfg.hasAutoReference = true;
+      computeAutoFiltrationSchedule();
+      ensureFiltrationTimesValid();
+      saveMqttConfig();
+      Serial.printf("[FILTRATION] Référence %.1f°C -> %s - %s\n", filtrationCfg.autoReferenceTemp, filtrationCfg.start.c_str(), filtrationCfg.end.c_str());
+    }
+    filtrationState.running = false;
+    filtrationState.cycleMaxTemp = -INFINITY;
+    filtrationState.scheduleComputedThisCycle = false;
+    filtrationState.startedAtMs = 0;
+  } else {
+    filtrationState.running = runTarget;
+  }
+
+  bool relayShouldBeOn = filtrationState.running && (filtrationCfg.mode != "off");
+  if (relayShouldBeOn != filtrationRelayState) {
+    digitalWrite(FILTRATION_RELAY_PIN, relayShouldBeOn ? HIGH : LOW);
+    filtrationRelayState = relayShouldBeOn;
+    publishFiltrationState();
+  }
+}
+
+const char* wifiModeToString(wifi_mode_t mode) {
+  switch (mode) {
+    case WIFI_MODE_STA: return "STA";
+    case WIFI_MODE_AP: return "AP";
+    case WIFI_MODE_APSTA: return "AP+STA";
+    default: return "OFF";
+  }
+}
+
+int pumpIndexFromNumber(int pumpNumber) {
+  return (pumpNumber == 2) ? 1 : 0;
+}
+
+int sanitizePumpNumber(int pumpNumber, int defaultValue) {
+  return (pumpNumber == 1 || pumpNumber == 2) ? pumpNumber : defaultValue;
+}
+
+void sanitizePumpSelection() {
+  mqttCfg.phPump = sanitizePumpNumber(mqttCfg.phPump, 1);
+  mqttCfg.orpPump = sanitizePumpNumber(mqttCfg.orpPump, 2);
+}
+
+void setupPumps() {
+  for (int i = 0; i < 2; ++i) {
+    pinMode(pumps[i].in1Pin, OUTPUT);
+    pinMode(pumps[i].in2Pin, OUTPUT);
+    digitalWrite(pumps[i].in1Pin, LOW);
+    digitalWrite(pumps[i].in2Pin, LOW);
+    ledcSetup(pumps[i].channel, PUMP_PWM_FREQ, PUMP_PWM_RES_BITS);
+    ledcAttachPin(pumps[i].pwmPin, pumps[i].channel);
+    ledcWrite(pumps[i].channel, 0);
+  }
+}
+
+void applyPumpDuty(int index, uint8_t duty) {
+  duty = duty > MAX_PWM_DUTY ? MAX_PWM_DUTY : duty;
+  if (pumpDuty[index] == duty) return;
+
+  pumpDuty[index] = duty;
+  if (duty == 0) {
+    ledcWrite(pumps[index].channel, 0);
+    digitalWrite(pumps[index].in1Pin, LOW);
+    digitalWrite(pumps[index].in2Pin, LOW);
+  } else {
+    digitalWrite(pumps[index].in1Pin, HIGH); // sens direct
+    digitalWrite(pumps[index].in2Pin, LOW);
+    ledcWrite(pumps[index].channel, duty);
+  }
+}
+
+String getCurrentTimeIso() {
+  ensureTimezoneValid();
+  applyTimezoneEnv();
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 0)) {
+    char buffer[25];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M", &timeinfo);
+    return String(buffer);
+  }
+  return mqttCfg.manualTimeIso;
+}
+
+bool setManualTimeFromIso(const String& iso) {
+  if (iso.length() < 16) return false;
+  ensureTimezoneValid();
+  applyTimezoneEnv();
+  struct tm tmInfo;
+  memset(&tmInfo, 0, sizeof(tmInfo));
+
+  tmInfo.tm_year = iso.substring(0, 4).toInt() - 1900;
+  tmInfo.tm_mon = iso.substring(5, 7).toInt() - 1;
+  tmInfo.tm_mday = iso.substring(8, 10).toInt();
+  tmInfo.tm_hour = iso.substring(11, 13).toInt();
+  tmInfo.tm_min = iso.substring(14, 16).toInt();
+  tmInfo.tm_sec = (iso.length() >= 19) ? iso.substring(17, 19).toInt() : 0;
+
+  time_t t = mktime(&tmInfo);
+  if (t < 0) return false;
+
+  struct timeval tv;
+  tv.tv_sec = t;
+  tv.tv_usec = 0;
+  settimeofday(&tv, nullptr);
+  mqttCfg.manualTimeIso = iso;
+  return true;
+}
+
+void applyTimeConfig() {
+  ensureTimezoneValid();
+  applyTimezoneEnv();
+
+  if (simulationCfg.enabled && simulationCfg.overrideClock) {
+    return;
+  }
+
+  if (mqttCfg.timeUseNtp) {
+    if (WiFi.isConnected()) {
+      const TimezoneInfo* tz = currentTimezone();
+      if (mqttCfg.ntpServer.length() == 0) {
+        mqttCfg.ntpServer = "pool.ntp.org";
+      }
+      configTzTime(tz->posix, mqttCfg.ntpServer.c_str(), "time.nist.gov", "pool.ntp.org");
+      Serial.println("[TIME] Synchronisation NTP demandée.");
+    } else {
+      Serial.println("[TIME] NTP activé mais WiFi indisponible.");
+    }
+  } else if (mqttCfg.manualTimeIso.length() >= 16) {
+    if (setManualTimeFromIso(mqttCfg.manualTimeIso)) {
+      Serial.println("[TIME] Heure manuelle appliquée.");
+    }
+  }
+}
+
+void refreshDosingState(DosingState& state, unsigned long now) {
+  if (state.windowStart == 0) {
+    state.windowStart = now;
+    state.lastTimestamp = now;
+  }
+
+  if (now - state.windowStart >= 3600000UL) {
+    state.windowStart = now;
+    state.usedMs = 0;
+  }
+
+  if (state.active) {
+    unsigned long delta = now - state.lastTimestamp;
+    state.usedMs += delta;
+    if (state.usedMs > 3600000UL) state.usedMs = 3600000UL;
+  }
+
+  state.lastTimestamp = now;
+}
+
+void updatePumpControl() {
+  unsigned long now = millis();
+  refreshDosingState(phDosingState, now);
+  refreshDosingState(orpDosingState, now);
+
+  if (!sensorsInitialized) {
+    phDosingState.active = false;
+    orpDosingState.active = false;
+    applyPumpDuty(0, 0);
+    applyPumpDuty(1, 0);
+    return;
+  }
+
+  uint8_t desiredDuty[2] = {0, 0};
+  bool phActive = false;
+  bool orpActive = false;
+  phDoseActive = false;
+  orpDoseActive = false;
+  phCurrentFlowMlPerMin = 0.0f;
+  orpCurrentFlowMlPerMin = 0.0f;
+
+  int phLimitSec = mqttCfg.phInjectionLimitSeconds;
+  if (phLimitSec < 0) phLimitSec = 0;
+  unsigned long phLimitMs = static_cast<unsigned long>(phLimitSec) * 1000UL;
+  if (simulationCfg.enabled && phLimitMs > 0) {
+    float accel = simulationCfg.timeAcceleration;
+    if (accel < 1.0f) accel = 1.0f;
+    double scaled = static_cast<double>(phLimitMs) * accel;
+    if (scaled > static_cast<double>(UINT32_MAX)) {
+      phLimitMs = UINT32_MAX;
+    } else {
+      phLimitMs = static_cast<unsigned long>(scaled);
+    }
+  }
+
+  int orpLimitSec = mqttCfg.orpInjectionLimitSeconds;
+  if (orpLimitSec < 0) orpLimitSec = 0;
+  unsigned long orpLimitMs = static_cast<unsigned long>(orpLimitSec) * 1000UL;
+  if (simulationCfg.enabled && orpLimitMs > 0) {
+    float accel = simulationCfg.timeAcceleration;
+    if (accel < 1.0f) accel = 1.0f;
+    double scaled = static_cast<double>(orpLimitMs) * accel;
+    if (scaled > static_cast<double>(UINT32_MAX)) {
+      orpLimitMs = UINT32_MAX;
+    } else {
+      orpLimitMs = static_cast<unsigned long>(scaled);
+    }
+  }
+
+  bool phLimitOk = (phLimitMs == 0) || (phDosingState.usedMs < phLimitMs);
+  bool orpLimitOk = (orpLimitMs == 0) || (orpDosingState.usedMs < orpLimitMs);
+
+  if (mqttCfg.phEnabled && phLimitOk) {
+    float diff = phValue - mqttCfg.phTarget; // inject pH- quand le pH mesuré est supérieur à la consigne
+    float flow = computeFlowFromError(diff, PH_DEADBAND, phPumpControl);
+    if (flow > 0.0f) {
+      int index = pumpIndexFromNumber(mqttCfg.phPump);
+      uint8_t duty = flowToDuty(phPumpControl, flow);
+      if (duty > desiredDuty[index]) desiredDuty[index] = duty;
+      if (duty > 0) {
+        phActive = true;
+        phCurrentFlowMlPerMin = flow;
+      }
+    }
+  }
+
+  if (mqttCfg.orpEnabled && orpLimitOk) {
+    float diff = orpValue - mqttCfg.orpTarget; // on injecte pour diminuer l'ORP si au-dessus de la consigne
+    float flow = computeFlowFromError(diff, ORP_DEADBAND, orpPumpControl);
+    if (flow > 0.0f) {
+      int index = pumpIndexFromNumber(mqttCfg.orpPump);
+      uint8_t duty = flowToDuty(orpPumpControl, flow);
+      if (duty > desiredDuty[index]) desiredDuty[index] = duty;
+      if (duty > 0) {
+        orpActive = true;
+        orpCurrentFlowMlPerMin = flow;
+      }
+    }
+  }
+
+  for (int i = 0; i < 2; ++i) {
+    applyPumpDuty(i, desiredDuty[i]);
+  }
+
+  phDosingState.active = phActive;
+  orpDosingState.active = orpActive;
+  phDoseActive = phActive && phCurrentFlowMlPerMin > 0.0f;
+  orpDoseActive = orpActive && orpCurrentFlowMlPerMin > 0.0f;
+}
+
+void applyMqttConfig() {
+  mqtt.setServer(mqttCfg.server.c_str(), mqttCfg.port);
+  if (!mqttCfg.enabled && mqtt.connected()) {
+    mqtt.disconnect();
+    Serial.println("[MQTT] Publication désactivée, déconnexion.");
+  }
+}
+
+void saveMqttConfig() {
+  ensureFiltrationTimesValid();
+  File f = LittleFS.open("/mqtt.json", "w");
+  if (!f) { Serial.println("[MQTT] Échec ouverture fichier !"); return; }
+  StaticJsonDocument<512> doc;
+  doc["server"] = mqttCfg.server;
+  doc["port"] = mqttCfg.port;
+  doc["topic"] = mqttCfg.topic;
+  doc["username"] = mqttCfg.username;
+  doc["password"] = mqttCfg.password;
+  doc["enabled"] = mqttCfg.enabled;
+  doc["ph_target"] = mqttCfg.phTarget;
+  doc["orp_target"] = mqttCfg.orpTarget;
+  doc["ph_enabled"] = mqttCfg.phEnabled;
+  doc["ph_pump"] = mqttCfg.phPump;
+  doc["orp_enabled"] = mqttCfg.orpEnabled;
+  doc["orp_pump"] = mqttCfg.orpPump;
+  doc["ph_limit_seconds"] = mqttCfg.phInjectionLimitSeconds;
+  doc["orp_limit_seconds"] = mqttCfg.orpInjectionLimitSeconds;
+  doc["time_use_ntp"] = mqttCfg.timeUseNtp;
+  doc["ntp_server"] = mqttCfg.ntpServer;
+  doc["manual_time"] = mqttCfg.manualTimeIso;
+  doc["timezone_id"] = mqttCfg.timezoneId;
+  doc["filtration_mode"] = filtrationCfg.mode;
+  doc["filtration_start"] = filtrationCfg.start;
+  doc["filtration_end"] = filtrationCfg.end;
+  doc["filtration_has_reference"] = filtrationCfg.hasAutoReference;
+  doc["filtration_reference_temp"] = filtrationCfg.autoReferenceTemp;
+  serializeJsonPretty(doc, f);
+  f.close();
+  Serial.println("[MQTT] Configuration sauvegardée !");
+}
+
+void loadMqttConfig() {
+  if (!LittleFS.exists("/mqtt.json")) {
+    saveMqttConfig();
+    return;
+  }
+  File f = LittleFS.open("/mqtt.json", "r");
+  if (!f) { Serial.println("[MQTT] Impossible d'ouvrir mqtt.json"); return; }
+  StaticJsonDocument<512> doc;
+  if (deserializeJson(doc, f) == DeserializationError::Ok) {
+    mqttCfg.server = doc["server"] | mqttCfg.server;
+    mqttCfg.port = doc["port"] | mqttCfg.port;
+    mqttCfg.topic = doc["topic"] | mqttCfg.topic;
+    mqttCfg.username = doc["username"] | "";
+    mqttCfg.password = doc["password"] | "";
+    mqttCfg.enabled = doc["enabled"] | mqttCfg.enabled;
+    mqttCfg.phTarget = doc["ph_target"] | mqttCfg.phTarget;
+    mqttCfg.orpTarget = doc["orp_target"] | mqttCfg.orpTarget;
+    mqttCfg.phEnabled = doc["ph_enabled"] | mqttCfg.phEnabled;
+    mqttCfg.phPump = doc["ph_pump"] | mqttCfg.phPump;
+    mqttCfg.orpEnabled = doc["orp_enabled"] | mqttCfg.orpEnabled;
+    mqttCfg.orpPump = doc["orp_pump"] | mqttCfg.orpPump;
+    mqttCfg.phInjectionLimitSeconds = doc["ph_limit_seconds"] | mqttCfg.phInjectionLimitSeconds;
+    mqttCfg.orpInjectionLimitSeconds = doc["orp_limit_seconds"] | mqttCfg.orpInjectionLimitSeconds;
+    mqttCfg.timeUseNtp = doc["time_use_ntp"] | mqttCfg.timeUseNtp;
+    mqttCfg.ntpServer = doc["ntp_server"] | mqttCfg.ntpServer;
+    mqttCfg.manualTimeIso = doc["manual_time"] | mqttCfg.manualTimeIso;
+    mqttCfg.timezoneId = doc["timezone_id"] | mqttCfg.timezoneId;
+    filtrationCfg.mode = doc["filtration_mode"] | filtrationCfg.mode;
+    filtrationCfg.start = doc["filtration_start"] | filtrationCfg.start;
+    filtrationCfg.end = doc["filtration_end"] | filtrationCfg.end;
+    filtrationCfg.hasAutoReference = doc["filtration_has_reference"] | filtrationCfg.hasAutoReference;
+    filtrationCfg.autoReferenceTemp = doc["filtration_reference_temp"] | filtrationCfg.autoReferenceTemp;
+    Serial.println("[MQTT] Configuration chargée !");
+  } else {
+    Serial.println("[MQTT] Erreur de parsing JSON !");
+  }
+  f.close();
+  sanitizePumpSelection();
+  if (!mqttCfg.timeUseNtp && mqttCfg.manualTimeIso.length() >= 16) {
+    setManualTimeFromIso(mqttCfg.manualTimeIso);
+  }
+  ensureTimezoneValid();
+  applyTimezoneEnv();
+  ensureFiltrationTimesValid();
+  if (filtrationCfg.mode.equalsIgnoreCase("auto")) {
+    computeAutoFiltrationSchedule();
+  }
+  filtrationState.running = false;
+  filtrationState.cycleMaxTemp = -INFINITY;
+  filtrationState.scheduleComputedThisCycle = false;
+  filtrationState.startedAtMs = 0;
+}
+
+unsigned long lastMqttAttempt = 0;
+
+void connectMQTT() {
+  if (!mqttCfg.enabled) {
+    if (mqtt.connected()) {
+      mqtt.disconnect();
+      Serial.println("[MQTT] Déconnexion car publication désactivée.");
+    }
+    return;
+  }
+
+  if (mqttCfg.server.length() == 0) {
+    Serial.println("[MQTT] Serveur MQTT non défini, connexion annulée.");
+    return;
+  }
+
+  if (!WiFi.isConnected()) {
+    Serial.println("[MQTT] WiFi non disponible, connexion MQTT annulée.");
+    return;
+  }
+
+  if (mqtt.connected()) return;
+
+  unsigned long now = millis();
+  if (now - lastMqttAttempt < 5000) return;  // tenter toutes les 5s max
+  lastMqttAttempt = now;
+
+  Serial.print("[MQTT] Tentative de connexion au serveur MQTT... ");
+  bool connected = false;
+  if (mqttCfg.username.length() > 0) {
+    connected = mqtt.connect("ESP32PoolController", mqttCfg.username.c_str(), mqttCfg.password.c_str());
+  } else {
+    connected = mqtt.connect("ESP32PoolController");
+  }
+  if (connected) {
+    Serial.println("connecté !");
+    StaticJsonDocument<128> doc;
+    doc["status"] = "connected";
+    String msg;
+    serializeJson(doc, msg);
+    mqtt.publish(mqttCfg.topic.c_str(), msg.c_str());
+    refreshMqttTopics();
+    mqtt.subscribe(mqttTopics.filtrationModeCommand.c_str());
+    mqttDiscoveryPublished = false;
+    publishDiscovery();
+    publishAllStates();
+  } else {
+    Serial.print("échec, code=");
+    Serial.println(mqtt.state());
+  }
+}
+
+// ==== Variables globales ====
+AsyncWebServer server(80);
+DNSServer dns;
+
+// ==== Simulation simple (ou lecture réelle) ====
+void readSensors() {
+  if (simulationCfg.enabled) {
+    if (!sensorsInitialized) {
+      phValue = simulationCfg.initialPh;
+      orpValue = simulationCfg.initialOrp;
+      tempValue = simulationCfg.initialTemp;
+      sensorsInitialized = true;
+      if (simulationCfg.overrideClock) {
+        struct tm tmInfo;
+        memset(&tmInfo, 0, sizeof(tmInfo));
+        tmInfo.tm_year = 124; // 2024
+        tmInfo.tm_mon = 0;
+        tmInfo.tm_mday = 1;
+        tmInfo.tm_hour = 8;
+        tmInfo.tm_min = 0;
+        time_t base = mktime(&tmInfo);
+        if (base > 0) {
+          struct timeval tv{.tv_sec = base, .tv_usec = 0};
+          settimeofday(&tv, nullptr);
+          simulatedTimeOffsetMs = 0;
+        }
+      }
+    }
+    return;
+  }
+  int rawOrp = analogRead(ORP_PIN);
+  int rawPh = analogRead(PH_PIN);
+  // Conversion basique, à ajuster selon le capteur
+  orpValue = (rawOrp / 4095.0f) * 1000.0f; // 0–1000 mV
+  phValue = (rawPh / 4095.0f) * 14.0f;     // 0–14 pH
+  tempSensor.requestTemperatures();
+  float measuredTemp = tempSensor.getTempCByIndex(0);
+  if (measuredTemp > -55.0f && measuredTemp < 125.0f) {
+    tempValue = measuredTemp;
+  } else {
+    tempValue = NAN;
+  }
+  if (filtrationCfg.mode.equalsIgnoreCase("auto")) {
+    computeAutoFiltrationSchedule();
+  }
+  sensorsInitialized = true;
+  publishAllStates();
+}
+
+// ==== Serveur Web ====
+void setupWebServer() {
+  // Endpoint pour fournir les données capteurs
+  server.on("/data", HTTP_GET, [](AsyncWebServerRequest *request) {
+  StaticJsonDocument<200> doc;
+  doc["orp"] = orpValue;
+  doc["ph"] = phValue;
+  if (!isnan(tempValue)) {
+    doc["temperature"] = tempValue;
+  } else {
+    doc["temperature"] = nullptr;
+  }
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 0)) {
+    char buffer[25];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
+  }
+  String json;
+    serializeJson(doc, json);
+    request->send(200, "application/json", json);
+  });
+
+  // Serve the configuration page
+  server.on("/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(LittleFS, "/config.html", "text/html");
+  });
+
+  server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+
+  // POST endpoint to save MQTT settings (assuming it exists)
+  server.on("/save-config", HTTP_POST, [](AsyncWebServerRequest *request) {
+    request->send(200, "text/plain", "OK");
+  }, nullptr, [](AsyncWebServerRequest *request, uint8_t* data, size_t len, size_t, size_t) {
+    StaticJsonDocument<512> doc;
+    if (deserializeJson(doc, data, len) == DeserializationError::Ok) {
+      if (doc.containsKey("server")) mqttCfg.server = (const char*)doc["server"];
+      if (doc.containsKey("port")) mqttCfg.port = doc["port"];
+      if (doc.containsKey("topic")) mqttCfg.topic = (const char*)doc["topic"];
+      if (doc.containsKey("username")) mqttCfg.username = (const char*)doc["username"];
+      if (doc.containsKey("password")) mqttCfg.password = (const char*)doc["password"];
+      if (doc.containsKey("enabled")) mqttCfg.enabled = doc["enabled"];
+      if (doc.containsKey("ph_target")) mqttCfg.phTarget = doc["ph_target"];
+      if (doc.containsKey("orp_target")) mqttCfg.orpTarget = doc["orp_target"];
+      if (doc.containsKey("ph_enabled")) mqttCfg.phEnabled = doc["ph_enabled"];
+      if (doc.containsKey("ph_pump")) mqttCfg.phPump = doc["ph_pump"];
+      if (doc.containsKey("orp_enabled")) mqttCfg.orpEnabled = doc["orp_enabled"];
+      if (doc.containsKey("orp_pump")) mqttCfg.orpPump = doc["orp_pump"];
+      if (doc.containsKey("ph_limit_seconds")) mqttCfg.phInjectionLimitSeconds = doc["ph_limit_seconds"];
+      if (doc.containsKey("orp_limit_seconds")) mqttCfg.orpInjectionLimitSeconds = doc["orp_limit_seconds"];
+      if (doc.containsKey("time_use_ntp")) mqttCfg.timeUseNtp = doc["time_use_ntp"];
+      if (doc.containsKey("ntp_server")) mqttCfg.ntpServer = (const char*)doc["ntp_server"];
+      if (doc.containsKey("manual_time")) mqttCfg.manualTimeIso = (const char*)doc["manual_time"];
+      if (doc.containsKey("timezone_id")) mqttCfg.timezoneId = (const char*)doc["timezone_id"];
+      if (doc.containsKey("filtration_mode")) filtrationCfg.mode = ((const char*)doc["filtration_mode"]);
+      if (doc.containsKey("filtration_start")) filtrationCfg.start = (const char*)doc["filtration_start"];
+      if (doc.containsKey("filtration_end")) filtrationCfg.end = (const char*)doc["filtration_end"];
+      if (!mqttCfg.timeUseNtp && mqttCfg.manualTimeIso.length() >= 16) {
+        setManualTimeFromIso(mqttCfg.manualTimeIso);
+      }
+      sanitizePumpSelection();
+      ensureFiltrationTimesValid();
+      phDosingState = {};
+      orpDosingState = {};
+      ensureTimezoneValid();
+      applyTimezoneEnv();
+      if (filtrationCfg.mode.equalsIgnoreCase("auto")) {
+        computeAutoFiltrationSchedule();
+      }
+      refreshMqttTopics();
+      mqttDiscoveryPublished = false;
+      saveMqttConfig();
+      applyMqttConfig();
+      applyTimeConfig();
+      if (mqtt.connected()) {
+        publishDiscovery();
+        publishAllStates();
+      } else {
+        mqttReconnectRequested = true;
+      }
+    }
+  });
+
+  server.on("/get-config", HTTP_GET, [](AsyncWebServerRequest *req) {
+    StaticJsonDocument<512> doc;
+    doc["server"] = mqttCfg.server;
+    doc["port"] = mqttCfg.port;
+    doc["topic"] = mqttCfg.topic;
+    doc["username"] = mqttCfg.username;
+    doc["password"] = mqttCfg.password;
+    doc["enabled"] = mqttCfg.enabled;
+    doc["ph_target"] = mqttCfg.phTarget;
+    doc["orp_target"] = mqttCfg.orpTarget;
+    doc["ph_enabled"] = mqttCfg.phEnabled;
+    doc["ph_pump"] = mqttCfg.phPump;
+    doc["orp_enabled"] = mqttCfg.orpEnabled;
+    doc["orp_pump"] = mqttCfg.orpPump;
+    doc["ph_limit_seconds"] = mqttCfg.phInjectionLimitSeconds;
+    doc["orp_limit_seconds"] = mqttCfg.orpInjectionLimitSeconds;
+  doc["time_use_ntp"] = mqttCfg.timeUseNtp;
+  doc["ntp_server"] = mqttCfg.ntpServer;
+    doc["manual_time"] = mqttCfg.manualTimeIso;
+    doc["timezone_id"] = mqttCfg.timezoneId;
+    doc["time_current"] = getCurrentTimeIso();
+    doc["mdns_host"] = "poolcontroller.local";
+    doc["filtration_mode"] = filtrationCfg.mode;
+    doc["filtration_start"] = filtrationCfg.start;
+    doc["filtration_end"] = filtrationCfg.end;
+    doc["filtration_has_reference"] = filtrationCfg.hasAutoReference;
+    doc["filtration_reference_temp"] = filtrationCfg.autoReferenceTemp;
+    doc["filtration_running"] = filtrationState.running;
+    doc["wifi_ssid"] = WiFi.SSID();
+    doc["wifi_ip"] = WiFi.localIP().toString();
+    doc["wifi_mode"] = wifiModeToString(currentWifiMode);
+    String json;
+    serializeJson(doc, json);
+    req->send(200, "application/json", json);
+  });
+
+  server.on("/time-now", HTTP_GET, [](AsyncWebServerRequest *req) {
+    StaticJsonDocument<128> doc;
+    doc["time"] = getCurrentTimeIso();
+    doc["time_use_ntp"] = mqttCfg.timeUseNtp;
+    doc["timezone_id"] = mqttCfg.timezoneId;
+    String json;
+    serializeJson(doc, json);
+    req->send(200, "application/json", json);
+  });
+
+  server.on("/reboot-ap", HTTP_POST, [](AsyncWebServerRequest *request) {
+    restartApRequested = true;
+    request->send(200, "text/plain", "Restart scheduled");
+  });
+
+  server.begin();
+  Serial.println("[HTTP] Serveur Web démarré !");
+}
+
+// ==== WiFi ====
+bool setupWiFi() {
+  WiFi.mode(WIFI_STA);
+  currentWifiMode = WiFi.getMode();
+  AsyncWiFiManager wm(&server, &dns);
+
+  Serial.println("[WiFi] Tentative de connexion au réseau sauvegardé...");
+
+  if (!wm.autoConnect("PoolControllerAP", "12345678")) {
+    Serial.println("[WiFi] Échec de connexion Wi-Fi.");
+    currentWifiMode = WiFi.getMode();
+    return false;
+  } else {
+    Serial.print("[WiFi] Connecté à ");
+    Serial.println(WiFi.SSID());
+    Serial.print("[WiFi] IP : ");
+    Serial.println(WiFi.localIP());
+    currentWifiMode = WiFi.getMode();
+    if (!MDNS.begin("poolcontroller")) {
+      Serial.println("[mDNS] Échec de démarrage mDNS.");
+    } else {
+      MDNS.addService("http", "tcp", 80);
+      Serial.println("[mDNS] poolcontroller.local disponible.");
+    }
+    return true;
+  }
+}
+
+// ==== Setup principal ====
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("\n=== Démarrage ESP32 ORP/pH Demo ===");
+
+  if (!LittleFS.begin(true)) {
+    Serial.println("[FS] Erreur de montage LittleFS !");
+  } else {
+    Serial.println("[FS] LittleFS monté avec succès.");
+  }
+
+  loadMqttConfig();
+  ensureFiltrationTimesValid();
+  if (filtrationCfg.mode.equalsIgnoreCase("auto")) {
+    computeAutoFiltrationSchedule();
+  }
+  refreshMqttTopics();
+  mqttDiscoveryPublished = false;
+  simulationClockInitialized = false;
+  simulationClockMs = 0.0;
+
+  pinMode(ORP_PIN, INPUT);
+  pinMode(PH_PIN, INPUT);
+
+  setupPumps();
+  pinMode(FILTRATION_RELAY_PIN, OUTPUT);
+  digitalWrite(FILTRATION_RELAY_PIN, LOW);
+  tempSensor.begin();
+
+  wifiClient.setTimeout(2000);   // limiter les blocages des connexions
+  mqtt.setSocketTimeout(2);      // réduire les blocages lors des tentatives de connexion
+  mqtt.setKeepAlive(30);
+  mqtt.setBufferSize(768);
+  mqtt.setCallback(mqttMessageCallback);
+  if (simulationCfg.enabled && simulationCfg.overrideClock) {
+    simulatedTimeOffsetMs = 0;
+  }
+
+  if (setupWiFi()) {
+    applyMqttConfig();
+    applyTimeConfig();
+    mqttReconnectRequested = true;
+    setupWebServer();
+  }
+}
+
+// ==== Boucle principale ====
+void loop() {
+  unsigned long now = millis();
+  currentWifiMode = WiFi.getMode();
+
+  if (restartApRequested) {
+    restartApRequested = false;
+    Serial.println("[WiFi] Redémarrage en mode Point d'accès demandé.");
+    AsyncWiFiManager wm(&server, &dns);
+    wm.resetSettings();
+    delay(200);
+    ESP.restart();
+  }
+  if (mqttReconnectRequested) {
+    mqttReconnectRequested = false;
+    if (mqttCfg.enabled) {
+      connectMQTT();
+    } else if (mqtt.connected()) {
+      mqtt.disconnect();
+    }
+  }
+  if (mqtt.connected()) {
+    mqtt.loop();
+  }
+  if (now - lastUpdate > 10000) {  // mise à jour toutes les 10 secondes
+    readSensors();
+    //Serial.printf("[SENSOR] ORP=%.1f mV | pH=%.2f\n", orpValue, phValue);
+    if (mqttCfg.enabled) {
+      connectMQTT();
+    } else if (mqtt.connected()) {
+      mqtt.disconnect();
+    }
+    if (mqtt.connected()) {
+      StaticJsonDocument<200> doc;
+      doc["orp"] = orpValue;
+      doc["ph"] = phValue;
+      if (!isnan(tempValue)) {
+        doc["temperature"] = tempValue;
+      }
+      String msg;
+      serializeJson(doc, msg);
+      mqtt.publish(mqttCfg.topic.c_str(), msg.c_str());
+    }
+    lastUpdate = now;
+  }
+  updateFiltrationControl();
+  updatePumpControl();
+  updateSimulation(now);
+}
