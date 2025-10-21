@@ -5,6 +5,7 @@
 #include "filtration.h"
 #include "pump_controller.h"
 #include "mqtt_manager.h"
+#include "history.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <ESPAsyncWiFiManager.h>
@@ -45,6 +46,7 @@ void WebServerManager::setupRoutes() {
   server.on("/get-logs", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetLogs(req); });
   server.on("/time-now", HTTP_GET, [this](AsyncWebServerRequest *req) { handleTimeNow(req); });
   server.on("/reboot-ap", HTTP_POST, [this](AsyncWebServerRequest *req) { handleRebootAp(req); });
+  server.on("/export-csv", HTTP_GET, [this](AsyncWebServerRequest *req) { handleExportCsv(req); });
 
   server.on("/save-config", HTTP_POST,
     [](AsyncWebServerRequest *req) { req->send(200, "text/plain", "OK"); },
@@ -261,6 +263,27 @@ void WebServerManager::handleRebootAp(AsyncWebServerRequest* request) {
   restartApRequested = true;
   request->send(200, "text/plain", "Restart scheduled");
   systemLogger.warning("Redémarrage en mode AP demandé");
+}
+
+void WebServerManager::handleExportCsv(AsyncWebServerRequest* request) {
+  String csv;
+  history.exportCSV(csv);
+
+  // Générer un nom de fichier avec timestamp
+  struct tm timeinfo;
+  char filename[64];
+  if (getLocalTime(&timeinfo, 0)) {
+    strftime(filename, sizeof(filename), "pool_history_%Y%m%d_%H%M%S.csv", &timeinfo);
+  } else {
+    snprintf(filename, sizeof(filename), "pool_history.csv");
+  }
+
+  // Envoyer avec headers pour téléchargement
+  AsyncWebServerResponse* response = request->beginResponse(200, "text/csv", csv);
+  response->addHeader("Content-Disposition", "attachment; filename=\"" + String(filename) + "\"");
+  request->send(response);
+
+  systemLogger.info("Export CSV généré: " + String(filename));
 }
 
 void WebServerManager::update() {

@@ -18,6 +18,7 @@ private:
   void handleGetLogs(AsyncWebServerRequest* request);
   void handleTimeNow(AsyncWebServerRequest* request);
   void handleRebootAp(AsyncWebServerRequest* request);
+  void handleExportCsv(AsyncWebServerRequest* request);
 
   // Validation des entrées
   bool validatePhValue(float value);
