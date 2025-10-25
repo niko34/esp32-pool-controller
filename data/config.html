@@ -346,10 +346,6 @@
           <div><span class="info-label">Heure actuelle :</span><span id="time_current">—</span></div>
         </div>
       </div>
-
-      <div class="actions" id="save-actions">
-        <button type="submit" id="save-btn">Enregistrer</button>
-      </div>
     </form>
 
     <script>
@@ -373,8 +369,6 @@
       const wifiModeEl = document.getElementById('wifi_mode');
       const wifiMdnsEl = document.getElementById('wifi_mdns');
       const restartApBtn = document.getElementById('restart-ap-btn');
-      const saveBtn = document.getElementById('save-btn');
-      const saveActions = document.getElementById('save-actions');
       const timeUseNtp = document.getElementById('time_use_ntp');
       const timeNtpServer = document.getElementById('time_ntp_server');
       const timeManualInput = document.getElementById('time_manual');
@@ -388,11 +382,6 @@
       let timeRefreshTimer = null;
       let cachedManualStart = filtrationStart.value;
       let cachedManualEnd = filtrationEnd.value;
-
-      function updateSaveVisibility(activeTab) {
-        const show = activeTab !== 'wifi';
-        saveActions.style.display = show ? 'block' : 'none';
-      }
 
       function updateFiltrationControls(applyCache = false) {
         const mode = filtrationMode.value;
@@ -512,7 +501,6 @@
           const target = button.dataset.tab;
           tabButtons.forEach(btn => btn.classList.toggle('active', btn === button));
           panels.forEach(panel => panel.classList.toggle('active', panel.dataset.tab === target));
-          updateSaveVisibility(target);
         });
       });
 
@@ -559,15 +547,11 @@
         };
       }
 
-      function sendConfig(data, showAlert = true) {
+      function sendConfig(data) {
         fetch('/save-config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(data)
-        }).then(() => {
-          if (showAlert) {
-            alert('Configuration enregistrée !');
-          }
         });
       }
 
@@ -618,73 +602,109 @@
           wifiIpEl.textContent = cfg.wifi_ip || '—';
           wifiModeEl.textContent = cfg.wifi_mode || '—';
           wifiMdnsEl.textContent = cfg.mdns_host || 'poolcontroller.local';
-          updateSaveVisibility(document.querySelector('.tab-button.active').dataset.tab);
         });
 
       toggle.addEventListener('change', () => {
-        sendConfig(collectConfig(), false);
+        sendConfig(collectConfig());
       });
 
       phToggle.addEventListener('change', () => {
-        sendConfig(collectConfig(), false);
+        sendConfig(collectConfig());
       });
 
       orpToggle.addEventListener('change', () => {
-        sendConfig(collectConfig(), false);
+        sendConfig(collectConfig());
+      });
+
+      // Auto-save pour les champs de valeurs
+      phInput.addEventListener('change', () => {
+        sendConfig(collectConfig());
+      });
+
+      orpInput.addEventListener('change', () => {
+        sendConfig(collectConfig());
+      });
+
+      phLimitInput.addEventListener('change', () => {
+        sendConfig(collectConfig());
+      });
+
+      orpLimitInput.addEventListener('change', () => {
+        sendConfig(collectConfig());
+      });
+
+      document.getElementById('mqtt_server').addEventListener('change', () => {
+        sendConfig(collectConfig());
+      });
+
+      document.getElementById('mqtt_port').addEventListener('change', () => {
+        sendConfig(collectConfig());
+      });
+
+      document.getElementById('mqtt_topic').addEventListener('change', () => {
+        sendConfig(collectConfig());
+      });
+
+      document.getElementById('mqtt_username').addEventListener('change', () => {
+        sendConfig(collectConfig());
+      });
+
+      document.getElementById('mqtt_password').addEventListener('change', () => {
+        sendConfig(collectConfig());
       });
 
       phPumpSelect.addEventListener('change', () => {
-        sendConfig(collectConfig(), false);
+        sendConfig(collectConfig());
       });
 
       orpPumpSelect.addEventListener('change', () => {
-        sendConfig(collectConfig(), false);
+        sendConfig(collectConfig());
       });
 
       phSensorPin.addEventListener('change', () => {
         updatePhControls();
-        sendConfig(collectConfig(), false);
+        sendConfig(collectConfig());
       });
 
       orpSensorPin.addEventListener('change', () => {
         updateOrpControls();
-        sendConfig(collectConfig(), false);
+        sendConfig(collectConfig());
       });
 
       filtrationMode.addEventListener('change', () => {
         updateFiltrationControls(true);
-        sendConfig(collectConfig(), false);
+        sendConfig(collectConfig());
       });
 
       filtrationStart.addEventListener('change', () => {
         cachedManualStart = filtrationStart.value;
         if (filtrationMode.value === 'manual') {
-          sendConfig(collectConfig(), false);
+          sendConfig(collectConfig());
         }
       });
 
       filtrationEnd.addEventListener('change', () => {
         cachedManualEnd = filtrationEnd.value;
         if (filtrationMode.value === 'manual') {
-          sendConfig(collectConfig(), false);
+          sendConfig(collectConfig());
         }
       });
 
       timeUseNtp.addEventListener('change', () => {
         updateTimeControls(timeManualInput.value);
-        sendConfig(collectConfig(), false);
+        sendConfig(collectConfig());
       });
 
       timeNtpServer.addEventListener('change', () => {
         if (timeUseNtp.checked) {
-          sendConfig(collectConfig(), false);
+          sendConfig(collectConfig());
         }
       });
 
       timeTimezone.addEventListener('change', () => {
         cachedManualTime = timeManualInput.value;
         updateTimeControls(timeManualInput.value);
-        sendConfig(collectConfig(), false);
+        sendConfig(collectConfig());
       });
 
       timeManualInput.addEventListener('input', () => {
@@ -699,12 +719,6 @@
         fetch('/reboot-ap', { method: 'POST' })
           .then(() => alert('Redémarrage en mode AP en cours...'))
           .catch(() => alert('Impossible de redémarrer. Vérifiez la connexion.'));
-      });
-
-      // Envoi de la config mise à jour
-      document.getElementById('config-form').addEventListener('submit', e => {
-        e.preventDefault();
-        sendConfig(collectConfig());
       });
 
       updateTimeControls();
