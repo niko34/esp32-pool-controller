@@ -62,7 +62,7 @@ void WebServerManager::setupRoutes() {
 void WebServerManager::handleGetData(AsyncWebServerRequest* request) {
   DynamicJsonDocument doc(384);
   doc["orp"] = sensors.getOrp();
-  doc["ph"] = sensors.getPh();
+  doc["ph"] = round(sensors.getPh() * 10.0f) / 10.0f;
   if (!isnan(sensors.getTemperature())) {
     doc["temperature"] = sensors.getTemperature();
   } else {
@@ -113,6 +113,8 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
   doc["max_chlorine_ml_per_day"] = safetyLimits.maxChlorineMlPerDay;
   doc["ph_sensor_pin"] = mqttCfg.phSensorPin;
   doc["orp_sensor_pin"] = mqttCfg.orpSensorPin;
+  doc["ph_calibration_offset"] = mqttCfg.phCalibrationOffset;
+  doc["orp_calibration_offset"] = mqttCfg.orpCalibrationOffset;
 
   String json;
   serializeJson(doc, json);
@@ -215,6 +217,14 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
   }
   if (doc.containsKey("orp_sensor_pin")) {
     mqttCfg.orpSensorPin = doc["orp_sensor_pin"];
+  }
+
+  // Offsets de calibration
+  if (doc.containsKey("ph_calibration_offset")) {
+    mqttCfg.phCalibrationOffset = doc["ph_calibration_offset"];
+  }
+  if (doc.containsKey("orp_calibration_offset")) {
+    mqttCfg.orpCalibrationOffset = doc["orp_calibration_offset"];
   }
 
   sanitizePumpSelection();

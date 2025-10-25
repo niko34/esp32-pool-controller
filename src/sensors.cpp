@@ -81,7 +81,9 @@ void SensorManager::readRealSensors() {
   if (mqttCfg.orpSensorPin >= 0) {
     int rawOrp = analogRead(mqttCfg.orpSensorPin);
     // Conversion basique (à calibrer selon vos capteurs)
-    orpValue = (rawOrp / 4095.0f) * 1000.0f;
+    float rawOrpValue = (rawOrp / 4095.0f) * 1000.0f;
+    // Appliquer l'offset de calibration
+    orpValue = rawOrpValue + mqttCfg.orpCalibrationOffset;
   } else {
     orpValue = NAN;  // Pas de capteur configuré
   }
@@ -89,7 +91,9 @@ void SensorManager::readRealSensors() {
   if (mqttCfg.phSensorPin >= 0) {
     int rawPh = analogRead(mqttCfg.phSensorPin);
     // Conversion basique (à calibrer selon vos capteurs)
-    phValue = (rawPh / 4095.0f) * 14.0f;
+    float rawPhValue = (rawPh / 4095.0f) * 14.0f;
+    // Appliquer l'offset de calibration
+    phValue = rawPhValue + mqttCfg.phCalibrationOffset;
   } else {
     phValue = NAN;  // Pas de capteur configuré
   }

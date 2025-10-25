@@ -217,67 +217,103 @@
       </div>
 
       <div class="tab-panel" data-tab="ph">
-        <label>Capteur pH (GPIO ADC1) :</label>
-        <select id="ph_sensor_pin">
-          <option value="-1">Pas de capteur</option>
-          <option value="32">GPIO 32 (ADC1_CH4)</option>
-          <option value="33">GPIO 33 (ADC1_CH5)</option>
-          <option value="34">GPIO 34 (ADC1_CH6)</option>
-          <option value="35">GPIO 35 (ADC1_CH7)</option>
-          <option value="36">GPIO 36 (ADC1_CH0)</option>
-          <option value="39">GPIO 39 (ADC1_CH3)</option>
-        </select>
-
-        <div class="switch-row" id="ph_enable_row">
-          <span>Activer la régulation pH</span>
-          <label class="switch">
-            <input type="checkbox" id="ph_enabled">
-            <span class="slider"></span>
-          </label>
+        <div style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
+          <h3 style="margin: 0 0 15px 0; font-size: 1rem; color: #495057;">Capteur pH</h3>
+          <label>GPIO ADC1 :</label>
+          <select id="ph_sensor_pin">
+            <option value="-1">Pas de capteur</option>
+            <option value="32">GPIO 32 (ADC1_CH4)</option>
+            <option value="33">GPIO 33 (ADC1_CH5)</option>
+            <option value="34">GPIO 34 (ADC1_CH6)</option>
+            <option value="35">GPIO 35 (ADC1_CH7)</option>
+            <option value="36">GPIO 36 (ADC1_CH0)</option>
+            <option value="39">GPIO 39 (ADC1_CH3)</option>
+          </select>
         </div>
-        <label id="ph_target_label">pH cible :</label>
-        <input type="number" id="ph_target" min="0" max="14" step="0.1" placeholder="ex: 7.2">
 
-        <label id="ph_pump_label">Pompe utilisée :</label>
-        <select id="ph_pump">
-          <option value="1">Pompe 1</option>
-          <option value="2">Pompe 2</option>
-        </select>
+        <div id="ph_calibration_section" style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
+          <h3 style="margin: 0 0 15px 0; font-size: 1rem; color: #495057;">Calibration pH</h3>
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <label style="flex: 0 0 auto; margin: 0;">Valeur de référence :</label>
+            <input type="number" id="ph_reference_value" min="0" max="14" step="0.01" placeholder="ex: 7.00" style="flex: 1; min-width: 0;">
+            <button id="ph_calibrate_btn" style="flex: 0 0 auto; padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Calibrer</button>
+          </div>
+          <p style="margin: 0; font-size: 0.85rem; color: #6c757d;">
+            Plongez la sonde dans une solution de référence, entrez sa valeur pH connue, puis cliquez sur Calibrer.
+          </p>
+        </div>
 
-        <label id="ph_limit_label">Durée max d'injection par heure (s) :</label>
-        <input type="number" id="ph_limit" min="0" step="1" value="60">
+        <div style="padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
+          <h3 style="margin: 0 0 15px 0; font-size: 1rem; color: #495057;">Régulation pH</h3>
+          <div class="switch-row" id="ph_enable_row">
+            <span>Activer la régulation pH</span>
+            <label class="switch">
+              <input type="checkbox" id="ph_enabled">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <label id="ph_target_label">pH cible :</label>
+          <input type="number" id="ph_target" min="0" max="14" step="0.1" placeholder="ex: 7.2">
+
+          <label id="ph_pump_label">Pompe utilisée :</label>
+          <select id="ph_pump">
+            <option value="1">Pompe 1</option>
+            <option value="2">Pompe 2</option>
+          </select>
+
+          <label id="ph_limit_label">Durée max d'injection par heure (s) :</label>
+          <input type="number" id="ph_limit" min="0" step="1" value="60">
+        </div>
       </div>
 
       <div class="tab-panel" data-tab="orp">
-        <label>Capteur ORP (GPIO ADC1) :</label>
-        <select id="orp_sensor_pin">
-          <option value="-1">Pas de capteur</option>
-          <option value="32">GPIO 32 (ADC1_CH4)</option>
-          <option value="33">GPIO 33 (ADC1_CH5)</option>
-          <option value="34">GPIO 34 (ADC1_CH6)</option>
-          <option value="35">GPIO 35 (ADC1_CH7)</option>
-          <option value="36">GPIO 36 (ADC1_CH0)</option>
-          <option value="39">GPIO 39 (ADC1_CH3)</option>
-        </select>
-
-        <div class="switch-row" id="orp_enable_row">
-          <span>Activer la régulation ORP</span>
-          <label class="switch">
-            <input type="checkbox" id="orp_enabled">
-            <span class="slider"></span>
-          </label>
+        <div style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
+          <h3 style="margin: 0 0 15px 0; font-size: 1rem; color: #495057;">Capteur ORP</h3>
+          <label>GPIO ADC1 :</label>
+          <select id="orp_sensor_pin">
+            <option value="-1">Pas de capteur</option>
+            <option value="32">GPIO 32 (ADC1_CH4)</option>
+            <option value="33">GPIO 33 (ADC1_CH5)</option>
+            <option value="34">GPIO 34 (ADC1_CH6)</option>
+            <option value="35">GPIO 35 (ADC1_CH7)</option>
+            <option value="36">GPIO 36 (ADC1_CH0)</option>
+            <option value="39">GPIO 39 (ADC1_CH3)</option>
+          </select>
         </div>
-        <label id="orp_target_label">ORP cible (mV) :</label>
-        <input type="number" id="orp_target" min="0" max="1000" step="1" placeholder="ex: 650">
 
-        <label id="orp_pump_label">Pompe utilisée :</label>
-        <select id="orp_pump">
-          <option value="1">Pompe 1</option>
-          <option value="2">Pompe 2</option>
-        </select>
+        <div id="orp_calibration_section" style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
+          <h3 style="margin: 0 0 15px 0; font-size: 1rem; color: #495057;">Calibration ORP</h3>
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <label style="flex: 0 0 auto; margin: 0;">Valeur de référence (mV) :</label>
+            <input type="number" id="orp_reference_value" min="0" max="1000" step="1" placeholder="ex: 650" style="flex: 1; min-width: 0;">
+            <button id="orp_calibrate_btn" style="flex: 0 0 auto; padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Calibrer</button>
+          </div>
+          <p style="margin: 0; font-size: 0.85rem; color: #6c757d;">
+            Plongez la sonde dans une solution de référence, entrez sa valeur ORP connue en mV, puis cliquez sur Calibrer.
+          </p>
+        </div>
 
-        <label id="orp_limit_label">Durée max d'injection par heure (s) :</label>
-        <input type="number" id="orp_limit" min="0" step="1" value="60">
+        <div style="padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
+          <h3 style="margin: 0 0 15px 0; font-size: 1rem; color: #495057;">Régulation ORP</h3>
+          <div class="switch-row" id="orp_enable_row">
+            <span>Activer la régulation ORP</span>
+            <label class="switch">
+              <input type="checkbox" id="orp_enabled">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <label id="orp_target_label">ORP cible (mV) :</label>
+          <input type="number" id="orp_target" min="0" max="1000" step="1" placeholder="ex: 650">
+
+          <label id="orp_pump_label">Pompe utilisée :</label>
+          <select id="orp_pump">
+            <option value="1">Pompe 1</option>
+            <option value="2">Pompe 2</option>
+          </select>
+
+          <label id="orp_limit_label">Durée max d'injection par heure (s) :</label>
+          <input type="number" id="orp_limit" min="0" step="1" value="60">
+        </div>
       </div>
 
       <div class="tab-panel" data-tab="mqtt">
@@ -378,6 +414,12 @@
       const timeTimezone = document.getElementById('time_timezone');
       const phSensorPin = document.getElementById('ph_sensor_pin');
       const orpSensorPin = document.getElementById('orp_sensor_pin');
+      const phReferenceValue = document.getElementById('ph_reference_value');
+      const orpReferenceValue = document.getElementById('orp_reference_value');
+      const phCalibrateBtn = document.getElementById('ph_calibrate_btn');
+      const orpCalibrateBtn = document.getElementById('orp_calibrate_btn');
+      const phCalibrationSection = document.getElementById('ph_calibration_section');
+      const orpCalibrationSection = document.getElementById('orp_calibration_section');
       let cachedManualTime = '';
       let timeRefreshTimer = null;
       let cachedManualStart = filtrationStart.value;
@@ -407,6 +449,8 @@
         phInput.disabled = disabled;
         phPumpSelect.disabled = disabled;
         phLimitInput.disabled = disabled;
+        // Calibration section visibility
+        phCalibrationSection.style.display = noSensor ? 'none' : 'block';
         // Grisage visuel
         const enableRowOpacity = noSensor ? '0.5' : '1';
         const fieldsOpacity = disabled ? '0.5' : '1';
@@ -429,6 +473,8 @@
         orpInput.disabled = disabled;
         orpPumpSelect.disabled = disabled;
         orpLimitInput.disabled = disabled;
+        // Calibration section visibility
+        orpCalibrationSection.style.display = noSensor ? 'none' : 'block';
         // Grisage visuel
         const enableRowOpacity = noSensor ? '0.5' : '1';
         const fieldsOpacity = disabled ? '0.5' : '1';
@@ -673,6 +719,75 @@
       orpSensorPin.addEventListener('change', () => {
         updateOrpControls();
         sendConfig(collectConfig());
+      });
+
+      // Calibration button handlers
+      phCalibrateBtn.addEventListener('click', () => {
+        const referenceValue = parseFloat(phReferenceValue.value);
+        if (isNaN(referenceValue) || referenceValue < 0 || referenceValue > 14) {
+          alert('Veuillez entrer une valeur de référence pH valide (0-14)');
+          return;
+        }
+
+        // Fetch current pH reading
+        fetch('/data')
+          .then(res => res.json())
+          .then(data => {
+            const currentPh = data.ph;
+            if (isNaN(currentPh)) {
+              alert('Impossible de lire la valeur pH actuelle');
+              return;
+            }
+
+            // Calculate offset: reference - current
+            const offset = referenceValue - currentPh;
+
+            // Save configuration with new offset
+            const config = collectConfig();
+            config.ph_calibration_offset = offset;
+            sendConfig(config);
+
+            alert(`Calibration pH effectuée\\nValeur actuelle : ${currentPh.toFixed(1)}\\nRéférence : ${referenceValue.toFixed(1)}\\nOffset appliqué : ${offset.toFixed(2)}`);
+            phReferenceValue.value = '';
+          })
+          .catch(err => {
+            alert('Erreur lors de la calibration pH');
+            console.error(err);
+          });
+      });
+
+      orpCalibrateBtn.addEventListener('click', () => {
+        const referenceValue = parseFloat(orpReferenceValue.value);
+        if (isNaN(referenceValue) || referenceValue < 0 || referenceValue > 1000) {
+          alert('Veuillez entrer une valeur de référence ORP valide (0-1000 mV)');
+          return;
+        }
+
+        // Fetch current ORP reading
+        fetch('/data')
+          .then(res => res.json())
+          .then(data => {
+            const currentOrp = data.orp;
+            if (isNaN(currentOrp)) {
+              alert('Impossible de lire la valeur ORP actuelle');
+              return;
+            }
+
+            // Calculate offset: reference - current
+            const offset = referenceValue - currentOrp;
+
+            // Save configuration with new offset
+            const config = collectConfig();
+            config.orp_calibration_offset = offset;
+            sendConfig(config);
+
+            alert(`Calibration ORP effectuée\\nValeur actuelle : ${currentOrp.toFixed(0)} mV\\nRéférence : ${referenceValue.toFixed(0)} mV\\nOffset appliqué : ${offset.toFixed(1)} mV`);
+            orpReferenceValue.value = '';
+          })
+          .catch(err => {
+            alert('Erreur lors de la calibration ORP');
+            console.error(err);
+          });
       });
 
       filtrationMode.addEventListener('change', () => {

@@ -53,6 +53,10 @@ struct MqttConfig {
   String timezoneId = "europe_paris";
   int phSensorPin = 35;               // GPIO pour capteur pH (-1 = pas de capteur)
   int orpSensorPin = 34;              // GPIO pour capteur ORP (-1 = pas de capteur)
+
+  // Calibration
+  float phCalibrationOffset = 0.0f;   // Offset de calibration pH
+  float orpCalibrationOffset = 0.0f;  // Offset de calibration ORP (mV)
 };
 
 struct FiltrationConfig {

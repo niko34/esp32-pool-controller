@@ -96,6 +96,10 @@ void saveMqttConfig() {
   doc["ph_sensor_pin"] = mqttCfg.phSensorPin;
   doc["orp_sensor_pin"] = mqttCfg.orpSensorPin;
 
+  // Sauvegarder les offsets de calibration
+  doc["ph_calibration_offset"] = mqttCfg.phCalibrationOffset;
+  doc["orp_calibration_offset"] = mqttCfg.orpCalibrationOffset;
+
   if (serializeJsonPretty(doc, f) == 0) {
     systemLogger.error("Échec sérialisation JSON config");
   } else {
@@ -156,6 +160,9 @@ void loadMqttConfig() {
 
   mqttCfg.phSensorPin = doc["ph_sensor_pin"] | mqttCfg.phSensorPin;
   mqttCfg.orpSensorPin = doc["orp_sensor_pin"] | mqttCfg.orpSensorPin;
+
+  mqttCfg.phCalibrationOffset = doc["ph_calibration_offset"] | mqttCfg.phCalibrationOffset;
+  mqttCfg.orpCalibrationOffset = doc["orp_calibration_offset"] | mqttCfg.orpCalibrationOffset;
 
   sanitizePumpSelection();
   ensureTimezoneValid();

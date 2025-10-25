@@ -181,7 +181,7 @@
             pushPoint(orpChart, json.orp, timestamp);
           }
           if (typeof json.ph !== 'undefined' && !isNaN(json.ph)) {
-            pushPoint(phChart, json.ph, timestamp);
+            pushPoint(phChart, Math.round(json.ph * 10) / 10, timestamp);
           }
         } catch (err) {
           console.error('updateData error', err);

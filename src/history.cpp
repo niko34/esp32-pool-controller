@@ -141,7 +141,7 @@ void HistoryManager::exportCSV(String& output) {
 
   for (const auto& point : memoryBuffer) {
     output += String(point.timestamp) + ",";
-    output += String(point.ph, 2) + ",";
+    output += String(point.ph, 1) + ",";
     output += String(point.orp, 1) + ",";
     output += isnan(point.temperature) ? "N/A" : String(point.temperature, 1);
     output += ",";

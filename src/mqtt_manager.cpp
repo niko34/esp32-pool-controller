@@ -129,7 +129,7 @@ void MqttManager::publishAllStates() {
     publishSensorState(topics.temperatureState, String(sensors.getTemperature(), 1));
   }
   if (!isnan(sensors.getPh())) {
-    publishSensorState(topics.phState, String(sensors.getPh(), 2));
+    publishSensorState(topics.phState, String(sensors.getPh(), 1));
   }
   if (!isnan(sensors.getOrp())) {
     publishSensorState(topics.orpState, String(sensors.getOrp(), 1));
@@ -307,7 +307,7 @@ void MqttManager::publishDiagnostic() {
 
   // Capteurs
   doc["sensors_initialized"] = sensors.isInitialized();
-  doc["ph_value"] = sensors.getPh();
+  doc["ph_value"] = round(sensors.getPh() * 10.0f) / 10.0f;
   doc["orp_value"] = sensors.getOrp();
   doc["temperature"] = sensors.getTemperature();
 
