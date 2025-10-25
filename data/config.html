@@ -408,14 +408,15 @@
         phPumpSelect.disabled = disabled;
         phLimitInput.disabled = disabled;
         // Grisage visuel
-        const opacity = noSensor ? '0.5' : '1';
-        document.getElementById('ph_enable_row').style.opacity = noSensor ? '0.5' : '1';
-        document.getElementById('ph_target_label').style.opacity = opacity;
-        phInput.style.opacity = opacity;
-        document.getElementById('ph_pump_label').style.opacity = opacity;
-        phPumpSelect.style.opacity = opacity;
-        document.getElementById('ph_limit_label').style.opacity = opacity;
-        phLimitInput.style.opacity = opacity;
+        const enableRowOpacity = noSensor ? '0.5' : '1';
+        const fieldsOpacity = disabled ? '0.5' : '1';
+        document.getElementById('ph_enable_row').style.opacity = enableRowOpacity;
+        document.getElementById('ph_target_label').style.opacity = fieldsOpacity;
+        phInput.style.opacity = fieldsOpacity;
+        document.getElementById('ph_pump_label').style.opacity = fieldsOpacity;
+        phPumpSelect.style.opacity = fieldsOpacity;
+        document.getElementById('ph_limit_label').style.opacity = fieldsOpacity;
+        phLimitInput.style.opacity = fieldsOpacity;
       }
 
       function updateOrpControls() {
@@ -429,14 +430,15 @@
         orpPumpSelect.disabled = disabled;
         orpLimitInput.disabled = disabled;
         // Grisage visuel
-        const opacity = noSensor ? '0.5' : '1';
-        document.getElementById('orp_enable_row').style.opacity = noSensor ? '0.5' : '1';
-        document.getElementById('orp_target_label').style.opacity = opacity;
-        orpInput.style.opacity = opacity;
-        document.getElementById('orp_pump_label').style.opacity = opacity;
-        orpPumpSelect.style.opacity = opacity;
-        document.getElementById('orp_limit_label').style.opacity = opacity;
-        orpLimitInput.style.opacity = opacity;
+        const enableRowOpacity = noSensor ? '0.5' : '1';
+        const fieldsOpacity = disabled ? '0.5' : '1';
+        document.getElementById('orp_enable_row').style.opacity = enableRowOpacity;
+        document.getElementById('orp_target_label').style.opacity = fieldsOpacity;
+        orpInput.style.opacity = fieldsOpacity;
+        document.getElementById('orp_pump_label').style.opacity = fieldsOpacity;
+        orpPumpSelect.style.opacity = fieldsOpacity;
+        document.getElementById('orp_limit_label').style.opacity = fieldsOpacity;
+        orpLimitInput.style.opacity = fieldsOpacity;
       }
 
       function refreshTimeNow() {
@@ -609,10 +611,12 @@
       });
 
       phToggle.addEventListener('change', () => {
+        updatePhControls();
         sendConfig(collectConfig());
       });
 
       orpToggle.addEventListener('change', () => {
+        updateOrpControls();
         sendConfig(collectConfig());
       });
 
