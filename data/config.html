@@ -217,44 +217,66 @@
       </div>
 
       <div class="tab-panel" data-tab="ph">
-        <div class="switch-row">
+        <label>Capteur pH (GPIO ADC1) :</label>
+        <select id="ph_sensor_pin">
+          <option value="-1">Pas de capteur</option>
+          <option value="32">GPIO 32 (ADC1_CH4)</option>
+          <option value="33">GPIO 33 (ADC1_CH5)</option>
+          <option value="34">GPIO 34 (ADC1_CH6)</option>
+          <option value="35">GPIO 35 (ADC1_CH7)</option>
+          <option value="36">GPIO 36 (ADC1_CH0)</option>
+          <option value="39">GPIO 39 (ADC1_CH3)</option>
+        </select>
+
+        <div class="switch-row" id="ph_enable_row">
           <span>Activer la régulation pH</span>
           <label class="switch">
             <input type="checkbox" id="ph_enabled">
             <span class="slider"></span>
           </label>
         </div>
-        <label>pH cible :</label>
+        <label id="ph_target_label">pH cible :</label>
         <input type="number" id="ph_target" min="0" max="14" step="0.1" placeholder="ex: 7.2">
 
-        <label>Pompe utilisée :</label>
+        <label id="ph_pump_label">Pompe utilisée :</label>
         <select id="ph_pump">
           <option value="1">Pompe 1</option>
           <option value="2">Pompe 2</option>
         </select>
 
-        <label>Durée max d'injection par heure (s) :</label>
+        <label id="ph_limit_label">Durée max d'injection par heure (s) :</label>
         <input type="number" id="ph_limit" min="0" step="1" value="60">
       </div>
 
       <div class="tab-panel" data-tab="orp">
-        <div class="switch-row">
+        <label>Capteur ORP (GPIO ADC1) :</label>
+        <select id="orp_sensor_pin">
+          <option value="-1">Pas de capteur</option>
+          <option value="32">GPIO 32 (ADC1_CH4)</option>
+          <option value="33">GPIO 33 (ADC1_CH5)</option>
+          <option value="34">GPIO 34 (ADC1_CH6)</option>
+          <option value="35">GPIO 35 (ADC1_CH7)</option>
+          <option value="36">GPIO 36 (ADC1_CH0)</option>
+          <option value="39">GPIO 39 (ADC1_CH3)</option>
+        </select>
+
+        <div class="switch-row" id="orp_enable_row">
           <span>Activer la régulation ORP</span>
           <label class="switch">
             <input type="checkbox" id="orp_enabled">
             <span class="slider"></span>
           </label>
         </div>
-        <label>ORP cible (mV) :</label>
+        <label id="orp_target_label">ORP cible (mV) :</label>
         <input type="number" id="orp_target" min="0" max="1000" step="1" placeholder="ex: 650">
 
-        <label>Pompe utilisée :</label>
+        <label id="orp_pump_label">Pompe utilisée :</label>
         <select id="orp_pump">
           <option value="1">Pompe 1</option>
           <option value="2">Pompe 2</option>
         </select>
 
-        <label>Durée max d'injection par heure (s) :</label>
+        <label id="orp_limit_label">Durée max d'injection par heure (s) :</label>
         <input type="number" id="orp_limit" min="0" step="1" value="60">
       </div>
 
@@ -360,6 +382,8 @@
       const timeCurrentLabel = document.getElementById('time_current');
       const timezoneRow = document.getElementById('timezone_row');
       const timeTimezone = document.getElementById('time_timezone');
+      const phSensorPin = document.getElementById('ph_sensor_pin');
+      const orpSensorPin = document.getElementById('orp_sensor_pin');
       let cachedManualTime = '';
       let timeRefreshTimer = null;
       let cachedManualStart = filtrationStart.value;
@@ -382,6 +406,48 @@
           filtrationStart.value = cachedManualStart;
           filtrationEnd.value = cachedManualEnd;
         }
+      }
+
+      function updatePhControls() {
+        const noSensor = phSensorPin.value === '-1';
+        phToggle.disabled = noSensor;
+        if (noSensor) {
+          phToggle.checked = false;
+        }
+        const disabled = noSensor || !phToggle.checked;
+        phInput.disabled = disabled;
+        phPumpSelect.disabled = disabled;
+        phLimitInput.disabled = disabled;
+        // Grisage visuel
+        const opacity = noSensor ? '0.5' : '1';
+        document.getElementById('ph_enable_row').style.opacity = noSensor ? '0.5' : '1';
+        document.getElementById('ph_target_label').style.opacity = opacity;
+        phInput.style.opacity = opacity;
+        document.getElementById('ph_pump_label').style.opacity = opacity;
+        phPumpSelect.style.opacity = opacity;
+        document.getElementById('ph_limit_label').style.opacity = opacity;
+        phLimitInput.style.opacity = opacity;
+      }
+
+      function updateOrpControls() {
+        const noSensor = orpSensorPin.value === '-1';
+        orpToggle.disabled = noSensor;
+        if (noSensor) {
+          orpToggle.checked = false;
+        }
+        const disabled = noSensor || !orpToggle.checked;
+        orpInput.disabled = disabled;
+        orpPumpSelect.disabled = disabled;
+        orpLimitInput.disabled = disabled;
+        // Grisage visuel
+        const opacity = noSensor ? '0.5' : '1';
+        document.getElementById('orp_enable_row').style.opacity = noSensor ? '0.5' : '1';
+        document.getElementById('orp_target_label').style.opacity = opacity;
+        orpInput.style.opacity = opacity;
+        document.getElementById('orp_pump_label').style.opacity = opacity;
+        orpPumpSelect.style.opacity = opacity;
+        document.getElementById('orp_limit_label').style.opacity = opacity;
+        orpLimitInput.style.opacity = opacity;
       }
 
       function refreshTimeNow() {
@@ -481,6 +547,8 @@
           orp_pump: isNaN(orpPumpValue) ? 2 : orpPumpValue,
           ph_limit_seconds: isNaN(phLimitValue) ? 60 : phLimitValue,
           orp_limit_seconds: isNaN(orpLimitValue) ? 60 : orpLimitValue,
+          ph_sensor_pin: parseInt(phSensorPin.value, 10),
+          orp_sensor_pin: parseInt(orpSensorPin.value, 10),
           time_use_ntp: timeUseNtp.checked,
           ntp_server: timeNtpServer.value || 'pool.ntp.org',
           manual_time: manualTimeValue,
@@ -520,6 +588,10 @@
           orpPumpSelect.value = (cfg.orp_pump === 1 ? '1' : '2');
           phLimitInput.value = (typeof cfg.ph_limit_seconds === 'number') ? cfg.ph_limit_seconds : 60;
           orpLimitInput.value = (typeof cfg.orp_limit_seconds === 'number') ? cfg.orp_limit_seconds : 60;
+          phSensorPin.value = (typeof cfg.ph_sensor_pin === 'number') ? cfg.ph_sensor_pin.toString() : '35';
+          orpSensorPin.value = (typeof cfg.orp_sensor_pin === 'number') ? cfg.orp_sensor_pin.toString() : '34';
+          updatePhControls();
+          updateOrpControls();
           timeUseNtp.checked = cfg.time_use_ntp !== false;
           timeNtpServer.value = cfg.ntp_server || 'pool.ntp.org';
           const manualValue = cfg.manual_time || '';
@@ -566,6 +638,16 @@
       });
 
       orpPumpSelect.addEventListener('change', () => {
+        sendConfig(collectConfig(), false);
+      });
+
+      phSensorPin.addEventListener('change', () => {
+        updatePhControls();
+        sendConfig(collectConfig(), false);
+      });
+
+      orpSensorPin.addEventListener('change', () => {
+        updateOrpControls();
         sendConfig(collectConfig(), false);
       });
 

@@ -111,6 +111,8 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
   doc["wifi_ip"] = WiFi.localIP().toString();
   doc["max_ph_ml_per_day"] = safetyLimits.maxPhMinusMlPerDay;
   doc["max_chlorine_ml_per_day"] = safetyLimits.maxChlorineMlPerDay;
+  doc["ph_sensor_pin"] = mqttCfg.phSensorPin;
+  doc["orp_sensor_pin"] = mqttCfg.orpSensorPin;
 
   String json;
   serializeJson(doc, json);
@@ -205,6 +207,14 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
   }
   if (doc.containsKey("max_chlorine_ml_per_day")) {
     safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"];
+  }
+
+  // Pins des capteurs
+  if (doc.containsKey("ph_sensor_pin")) {
+    mqttCfg.phSensorPin = doc["ph_sensor_pin"];
+  }
+  if (doc.containsKey("orp_sensor_pin")) {
+    mqttCfg.orpSensorPin = doc["orp_sensor_pin"];
   }
 
   sanitizePumpSelection();

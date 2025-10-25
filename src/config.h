@@ -7,7 +7,7 @@
 #define ORP_PIN 34
 #define PH_PIN 35
 #define PUMP1_PWM_PIN 25
-#define PUMP1_IN1_PIN 32
+#define PUMP1_IN1_PIN 34
 #define PUMP1_IN2_PIN 33
 #define PUMP2_PWM_PIN 26
 #define PUMP2_IN1_PIN 18
@@ -51,6 +51,8 @@ struct MqttConfig {
   String ntpServer = "pool.ntp.org";
   String manualTimeIso = "";
   String timezoneId = "europe_paris";
+  int phSensorPin = 35;               // GPIO pour capteur pH (-1 = pas de capteur)
+  int orpSensorPin = 34;              // GPIO pour capteur ORP (-1 = pas de capteur)
 };
 
 struct FiltrationConfig {
@@ -62,7 +64,7 @@ struct FiltrationConfig {
 };
 
 struct SimulationConfig {
-  bool enabled = true;
+  bool enabled = false;
 
   // Paramètres physiques de la piscine
   float poolVolumeM3 = 50.0f;                    // Volume de la piscine en m³
@@ -82,7 +84,7 @@ struct SimulationConfig {
   // Le système dérive vers un point d'équilibre naturel
   float phNaturalEquilibrium = 8.0f;             // pH d'équilibre naturel (sans traitement, eau calcaire)
   float phDriftSpeed = 0.02f;                    // Vitesse de dérive (0-1, 0.02 = lent)
-  float orpNaturalEquilibrium = 500.0f;          // ORP d'équilibre naturel (sans chlore, baisse naturelle)
+  float orpNaturalEquilibrium = 650.0f;          // ORP d'équilibre naturel (sans chlore, baisse naturelle)
   float orpDriftSpeed = 0.03f;                   // Vitesse de dérive vers équilibre
 
   // Valeurs initiales

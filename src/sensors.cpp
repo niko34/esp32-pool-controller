@@ -77,13 +77,22 @@ void SensorManager::readRealSensors() {
     tempRequestPending = false;
   }
 
-  // Lecture analogique ORP et pH
-  int rawOrp = analogRead(ORP_PIN);
-  int rawPh = analogRead(PH_PIN);
+  // Lecture analogique ORP et pH (seulement si les capteurs sont configurés)
+  if (mqttCfg.orpSensorPin >= 0) {
+    int rawOrp = analogRead(mqttCfg.orpSensorPin);
+    // Conversion basique (à calibrer selon vos capteurs)
+    orpValue = (rawOrp / 4095.0f) * 1000.0f;
+  } else {
+    orpValue = NAN;  // Pas de capteur configuré
+  }
 
-  // Conversion basique (à calibrer selon vos capteurs)
-  orpValue = (rawOrp / 4095.0f) * 1000.0f;
-  phValue = (rawPh / 4095.0f) * 14.0f;
+  if (mqttCfg.phSensorPin >= 0) {
+    int rawPh = analogRead(mqttCfg.phSensorPin);
+    // Conversion basique (à calibrer selon vos capteurs)
+    phValue = (rawPh / 4095.0f) * 14.0f;
+  } else {
+    phValue = NAN;  // Pas de capteur configuré
+  }
 
   sensorsInitialized = true;
 }

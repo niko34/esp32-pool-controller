@@ -92,6 +92,10 @@ void saveMqttConfig() {
   doc["max_ph_ml_per_day"] = safetyLimits.maxPhMinusMlPerDay;
   doc["max_chlorine_ml_per_day"] = safetyLimits.maxChlorineMlPerDay;
 
+  // Sauvegarder les pins des capteurs
+  doc["ph_sensor_pin"] = mqttCfg.phSensorPin;
+  doc["orp_sensor_pin"] = mqttCfg.orpSensorPin;
+
   if (serializeJsonPretty(doc, f) == 0) {
     systemLogger.error("Échec sérialisation JSON config");
   } else {
@@ -149,6 +153,9 @@ void loadMqttConfig() {
 
   safetyLimits.maxPhMinusMlPerDay = doc["max_ph_ml_per_day"] | safetyLimits.maxPhMinusMlPerDay;
   safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"] | safetyLimits.maxChlorineMlPerDay;
+
+  mqttCfg.phSensorPin = doc["ph_sensor_pin"] | mqttCfg.phSensorPin;
+  mqttCfg.orpSensorPin = doc["orp_sensor_pin"] | mqttCfg.orpSensorPin;
 
   sanitizePumpSelection();
   ensureTimezoneValid();
