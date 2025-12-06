@@ -59,6 +59,10 @@ public:
   float getTemperature() const { return tempValue; }
   bool isInitialized() const { return sensorsInitialized; }
 
+  // Getters pour valeurs brutes (sans offset de calibration)
+  float getRawOrp() const;
+  float getRawPh() const;
+
   // Getters pour simulation - effets en attente
   float getPhPendingEffect() const { return phPendingEffect; }
   float getOrpPendingEffect() const { return orpPendingEffect; }

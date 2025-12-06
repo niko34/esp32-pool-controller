@@ -32,12 +32,27 @@ bool WebServerManager::validatePumpNumber(int pump) {
 
 void WebServerManager::begin(DNSServer* dnsServer) {
   dns = dnsServer;
+
+  // Ajouter les en-têtes CORS pour toutes les requêtes
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
+
   setupRoutes();
   server.begin();
   systemLogger.info("Serveur Web démarré sur port 80");
 }
 
 void WebServerManager::setupRoutes() {
+  // Handler CORS OPTIONS pour toutes les routes
+  server.onNotFound([](AsyncWebServerRequest *req) {
+    if (req->method() == HTTP_OPTIONS) {
+      req->send(200);
+    } else {
+      req->send(404, "text/plain", "Not found");
+    }
+  });
+
   server.on("/data", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetData(req); });
   server.on("/config", HTTP_GET, [](AsyncWebServerRequest *req) {
     req->send(LittleFS, "/config.html", "text/html");
@@ -60,9 +75,11 @@ void WebServerManager::setupRoutes() {
 }
 
 void WebServerManager::handleGetData(AsyncWebServerRequest* request) {
-  DynamicJsonDocument doc(384);
+  DynamicJsonDocument doc(512);
   doc["orp"] = sensors.getOrp();
   doc["ph"] = round(sensors.getPh() * 10.0f) / 10.0f;
+  doc["orp_raw"] = sensors.getRawOrp();
+  doc["ph_raw"] = round(sensors.getRawPh() * 10.0f) / 10.0f;
   if (!isnan(sensors.getTemperature())) {
     doc["temperature"] = sensors.getTemperature();
   } else {

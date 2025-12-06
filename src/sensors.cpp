@@ -18,6 +18,15 @@ void SensorManager::begin() {
   tempSensor = new DallasTemperature(oneWire);
   tempSensor->begin();
 
+  // Configuration de l'atténuation de l'ADC pour une meilleure précision
+  // ADC_11db = 0-3.3V (par défaut mais explicite)
+  if (mqttCfg.orpSensorPin >= 0) {
+    analogSetPinAttenuation(mqttCfg.orpSensorPin, ADC_11db);
+  }
+  if (mqttCfg.phSensorPin >= 0) {
+    analogSetPinAttenuation(mqttCfg.phSensorPin, ADC_11db);
+  }
+
   if (simulationCfg.enabled) {
     initializeSimulation();
   }
@@ -51,6 +60,17 @@ void SensorManager::initializeSimulation() {
 }
 
 void SensorManager::update() {
+  static unsigned long lastModeLog = 0;
+  unsigned long now = millis();
+
+  // Log du mode toutes les 10 secondes
+  if (now - lastModeLog >= 10000) {
+    Serial.printf("[SENSOR MODE] %s | ORP Pin: %d | pH Pin: %d\n",
+                  simulationCfg.enabled ? "SIMULATION" : "REAL",
+                  mqttCfg.orpSensorPin, mqttCfg.phSensorPin);
+    lastModeLog = now;
+  }
+
   if (simulationCfg.enabled) {
     updateSimulation(millis());
   } else {
@@ -60,6 +80,7 @@ void SensorManager::update() {
 
 void SensorManager::readRealSensors() {
   unsigned long now = millis();
+  static unsigned long lastOrpDebugLog = 0;
 
   // Lecture non-bloquante de la température
   if (!tempRequestPending) {
@@ -79,17 +100,71 @@ void SensorManager::readRealSensors() {
 
   // Lecture analogique ORP et pH (seulement si les capteurs sont configurés)
   if (mqttCfg.orpSensorPin >= 0) {
-    int rawOrp = analogRead(mqttCfg.orpSensorPin);
-    // Conversion basique (à calibrer selon vos capteurs)
-    float rawOrpValue = (rawOrp / 4095.0f) * 1000.0f;
+    // Filtrage multi-échantillons pour réduire le bruit WiFi de l'ADC ESP32
+    const int numSamples = 20;  // Plus d'échantillons pour mieux filtrer
+    int samples[numSamples];
+    int sum = 0;
+    int minVal = 4095;
+    int maxVal = 0;
+
+    // Collecte des échantillons
+    for (int i = 0; i < numSamples; i++) {
+      int reading = analogRead(mqttCfg.orpSensorPin);
+      samples[i] = reading;
+      sum += reading;
+      if (reading < minVal) minVal = reading;
+      if (reading > maxVal) maxVal = reading;
+      delayMicroseconds(200); // Pause pour éviter les lectures consécutives
+    }
+
+    // Tri des échantillons pour filtre médian
+    for (int i = 0; i < numSamples - 1; i++) {
+      for (int j = i + 1; j < numSamples; j++) {
+        if (samples[i] > samples[j]) {
+          int temp = samples[i];
+          samples[i] = samples[j];
+          samples[j] = temp;
+        }
+      }
+    }
+
+    // Utiliser la médiane (plus robuste que la moyenne contre valeurs aberrantes)
+    int rawOrp = samples[numSamples / 2];
+
+    // Conversion pour module ORP 0-3.3V = 0-2000mV
+    // Tension mesurée: (rawOrp / 4095) * 3.3V
+    // ORP en mV: (Tension / 3.3V) * 2000mV = (rawOrp / 4095) * 2000
+    float rawOrpValue = (rawOrp / 4095.0f) * 2000.0f;
     // Appliquer l'offset de calibration
     orpValue = rawOrpValue + mqttCfg.orpCalibrationOffset;
+
+    // Debug: afficher les valeurs ORP toutes les 2 secondes
+    if (now - lastOrpDebugLog >= 2000) {
+      float voltage = (rawOrp / 4095.0f) * 3.3f;
+      float voltageMin = (minVal / 4095.0f) * 3.3f;
+      float voltageMax = (maxVal / 4095.0f) * 3.3f;
+      float voltageAvg = (sum / (float)numSamples / 4095.0f) * 3.3f;
+      Serial.printf("[ORP DEBUG] GPIO=%d | Median ADC=%d | Avg ADC=%d | Min=%d Max=%d | V=%.3f (avg=%.3f min=%.3f max=%.3f) | ORP=%.1f mV\n",
+                    mqttCfg.orpSensorPin, rawOrp, sum/numSamples, minVal, maxVal,
+                    voltage, voltageAvg, voltageMin, voltageMax, orpValue);
+      lastOrpDebugLog = now;
+    }
   } else {
     orpValue = NAN;  // Pas de capteur configuré
   }
 
   if (mqttCfg.phSensorPin >= 0) {
-    int rawPh = analogRead(mqttCfg.phSensorPin);
+    // Moyennage sur plusieurs lectures pour réduire le bruit de l'ADC ESP32
+    const int numSamples = 10;
+    int sum = 0;
+
+    for (int i = 0; i < numSamples; i++) {
+      sum += analogRead(mqttCfg.phSensorPin);
+      delayMicroseconds(100);
+    }
+
+    int rawPh = sum / numSamples;
+
     // Conversion basique (à calibrer selon vos capteurs)
     float rawPhValue = (rawPh / 4095.0f) * 14.0f;
     // Appliquer l'offset de calibration
@@ -276,6 +351,14 @@ void SensorManager::setPhDoseActive(bool active, float flowMlPerMin) {
 void SensorManager::setOrpDoseActive(bool active, float flowMlPerMin) {
   orpDoseActive = active;
   orpCurrentFlowMlPerMin = flowMlPerMin;
+}
+
+float SensorManager::getRawOrp() const {
+  return orpValue - mqttCfg.orpCalibrationOffset;
+}
+
+float SensorManager::getRawPh() const {
+  return phValue - mqttCfg.phCalibrationOffset;
 }
 
 void SensorManager::publishValues() {

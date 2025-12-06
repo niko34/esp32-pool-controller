@@ -233,17 +233,21 @@
 
         <div id="ph_calibration_section" style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
           <h3 style="margin: 0 0 15px 0; font-size: 1rem; color: #495057;">Calibration pH</h3>
+          <div style="margin-bottom: 15px; padding: 10px; background: #e7f3ff; border-left: 4px solid #007bff; border-radius: 4px;">
+            <div style="font-size: 0.85rem; color: #495057; margin-bottom: 5px;">Offset de calibration actuel :</div>
+            <div id="ph_current_offset" style="font-size: 1.1rem; font-weight: 600; color: #007bff;">Non défini</div>
+          </div>
           <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
             <label style="flex: 0 0 auto; margin: 0;">Valeur de référence :</label>
             <input type="number" id="ph_reference_value" min="0" max="14" step="0.01" placeholder="ex: 7.00" style="flex: 1; min-width: 0;">
-            <button id="ph_calibrate_btn" style="flex: 0 0 auto; padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Calibrer</button>
           </div>
+          <button type="button" id="ph_calibrate_btn" style="width: 100%; padding: 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; margin-bottom: 10px;">Calibrer</button>
           <p style="margin: 0; font-size: 0.85rem; color: #6c757d;">
             Plongez la sonde dans une solution de référence, entrez sa valeur pH connue, puis cliquez sur Calibrer.
           </p>
         </div>
 
-        <div style="padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
+        <div id="ph_regulation_section" style="padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
           <h3 style="margin: 0 0 15px 0; font-size: 1rem; color: #495057;">Régulation pH</h3>
           <div class="switch-row" id="ph_enable_row">
             <span>Activer la régulation pH</span>
@@ -283,17 +287,21 @@
 
         <div id="orp_calibration_section" style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
           <h3 style="margin: 0 0 15px 0; font-size: 1rem; color: #495057;">Calibration ORP</h3>
+          <div style="margin-bottom: 15px; padding: 10px; background: #e7f3ff; border-left: 4px solid #007bff; border-radius: 4px;">
+            <div style="font-size: 0.85rem; color: #495057; margin-bottom: 5px;">Offset de calibration actuel :</div>
+            <div id="orp_current_offset" style="font-size: 1.1rem; font-weight: 600; color: #007bff;">Non défini</div>
+          </div>
           <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
             <label style="flex: 0 0 auto; margin: 0;">Valeur de référence (mV) :</label>
             <input type="number" id="orp_reference_value" min="0" max="1000" step="1" placeholder="ex: 650" style="flex: 1; min-width: 0;">
-            <button id="orp_calibrate_btn" style="flex: 0 0 auto; padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Calibrer</button>
           </div>
+          <button type="button" id="orp_calibrate_btn" style="width: 100%; padding: 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; margin-bottom: 10px;">Calibrer</button>
           <p style="margin: 0; font-size: 0.85rem; color: #6c757d;">
             Plongez la sonde dans une solution de référence, entrez sa valeur ORP connue en mV, puis cliquez sur Calibrer.
           </p>
         </div>
 
-        <div style="padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
+        <div id="orp_regulation_section" style="padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
           <h3 style="margin: 0 0 15px 0; font-size: 1rem; color: #495057;">Régulation ORP</h3>
           <div class="switch-row" id="orp_enable_row">
             <span>Activer la régulation ORP</span>
@@ -420,6 +428,8 @@
       const orpCalibrateBtn = document.getElementById('orp_calibrate_btn');
       const phCalibrationSection = document.getElementById('ph_calibration_section');
       const orpCalibrationSection = document.getElementById('orp_calibration_section');
+      const phRegulationSection = document.getElementById('ph_regulation_section');
+      const orpRegulationSection = document.getElementById('orp_regulation_section');
       let cachedManualTime = '';
       let timeRefreshTimer = null;
       let cachedManualStart = filtrationStart.value;
@@ -449,8 +459,9 @@
         phInput.disabled = disabled;
         phPumpSelect.disabled = disabled;
         phLimitInput.disabled = disabled;
-        // Calibration section visibility
+        // Calibration and Regulation section visibility
         phCalibrationSection.style.display = noSensor ? 'none' : 'block';
+        phRegulationSection.style.display = noSensor ? 'none' : 'block';
         // Grisage visuel
         const enableRowOpacity = noSensor ? '0.5' : '1';
         const fieldsOpacity = disabled ? '0.5' : '1';
@@ -473,8 +484,9 @@
         orpInput.disabled = disabled;
         orpPumpSelect.disabled = disabled;
         orpLimitInput.disabled = disabled;
-        // Calibration section visibility
+        // Calibration and Regulation section visibility
         orpCalibrationSection.style.display = noSensor ? 'none' : 'block';
+        orpRegulationSection.style.display = noSensor ? 'none' : 'block';
         // Grisage visuel
         const enableRowOpacity = noSensor ? '0.5' : '1';
         const fieldsOpacity = disabled ? '0.5' : '1';
@@ -544,11 +556,22 @@
         startTimeRefresh();
       }
 
+      // Fonction pour obtenir l'onglet actif actuel
+      function getCurrentActiveTab() {
+        const activeButton = document.querySelector('.tab-button.active');
+        return activeButton ? activeButton.dataset.tab : 'filtration';
+      }
+
+      // Fonction pour activer un onglet spécifique
+      function setActiveTab(tabName) {
+        tabButtons.forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tabName));
+        panels.forEach(panel => panel.classList.toggle('active', panel.dataset.tab === tabName));
+      }
+
       tabButtons.forEach(button => {
         button.addEventListener('click', () => {
           const target = button.dataset.tab;
-          tabButtons.forEach(btn => btn.classList.toggle('active', btn === button));
-          panels.forEach(panel => panel.classList.toggle('active', panel.dataset.tab === target));
+          setActiveTab(target);
         });
       });
 
@@ -603,6 +626,28 @@
         });
       }
 
+      // Variable globale pour stocker les données actuelles des capteurs
+      let latestSensorData = null;
+
+      // Fonction pour charger les données des capteurs
+      function loadSensorData() {
+        fetch('/data')
+          .then(res => res.json())
+          .then(data => {
+            latestSensorData = data;
+            console.log('[SENSOR DATA] Loaded:', data);
+          })
+          .catch(err => {
+            console.error('[SENSOR DATA] Error loading:', err);
+          });
+      }
+
+      // Charger les données au démarrage
+      loadSensorData();
+
+      // Rafraîchir les données toutes les 5 secondes
+      setInterval(loadSensorData, 5000);
+
       fetch('/get-config')
         .then(res => res.json())
         .then(cfg => {
@@ -622,6 +667,33 @@
           orpLimitInput.value = (typeof cfg.orp_limit_seconds === 'number') ? cfg.orp_limit_seconds : 60;
           phSensorPin.value = (typeof cfg.ph_sensor_pin === 'number') ? cfg.ph_sensor_pin.toString() : '35';
           orpSensorPin.value = (typeof cfg.orp_sensor_pin === 'number') ? cfg.orp_sensor_pin.toString() : '34';
+
+          // Afficher les offsets de calibration
+          const phOffsetEl = document.getElementById('ph_current_offset');
+          const orpOffsetEl = document.getElementById('orp_current_offset');
+
+          if (phOffsetEl) {
+            const phOffset = cfg.ph_calibration_offset || 0;
+            if (phOffset === 0) {
+              phOffsetEl.textContent = 'Aucun (0.00)';
+              phOffsetEl.style.color = '#6c757d';
+            } else {
+              phOffsetEl.textContent = `${phOffset >= 0 ? '+' : ''}${phOffset.toFixed(2)} pH`;
+              phOffsetEl.style.color = '#007bff';
+            }
+          }
+
+          if (orpOffsetEl) {
+            const orpOffset = cfg.orp_calibration_offset || 0;
+            if (orpOffset === 0) {
+              orpOffsetEl.textContent = 'Aucun (0.0 mV)';
+              orpOffsetEl.style.color = '#6c757d';
+            } else {
+              orpOffsetEl.textContent = `${orpOffset >= 0 ? '+' : ''}${orpOffset.toFixed(1)} mV`;
+              orpOffsetEl.style.color = '#007bff';
+            }
+          }
+
           updatePhControls();
           updateOrpControls();
           timeUseNtp.checked = cfg.time_use_ntp !== false;
@@ -747,7 +819,7 @@
             config.ph_calibration_offset = offset;
             sendConfig(config);
 
-            alert(`Calibration pH effectuée\\nValeur actuelle : ${currentPh.toFixed(1)}\\nRéférence : ${referenceValue.toFixed(1)}\\nOffset appliqué : ${offset.toFixed(2)}`);
+            alert(`Calibration pH effectuée\nValeur actuelle : ${currentPh.toFixed(1)}\nRéférence : ${referenceValue.toFixed(1)}\nOffset appliqué : ${offset.toFixed(2)}`);
             phReferenceValue.value = '';
           })
           .catch(err => {
@@ -758,36 +830,58 @@
 
       orpCalibrateBtn.addEventListener('click', () => {
         const referenceValue = parseFloat(orpReferenceValue.value);
+
         if (isNaN(referenceValue) || referenceValue < 0 || referenceValue > 1000) {
           alert('Veuillez entrer une valeur de référence ORP valide (0-1000 mV)');
           return;
         }
 
-        // Fetch current ORP reading
-        fetch('/data')
-          .then(res => res.json())
-          .then(data => {
-            const currentOrp = data.orp;
-            if (isNaN(currentOrp)) {
-              alert('Impossible de lire la valeur ORP actuelle');
-              return;
-            }
+        if (!latestSensorData) {
+          alert('Aucune donnée capteur disponible.\nVeuillez patienter quelques secondes et réessayer.');
+          return;
+        }
 
-            // Calculate offset: reference - current
-            const offset = referenceValue - currentOrp;
+        const data = latestSensorData;
 
-            // Save configuration with new offset
-            const config = collectConfig();
-            config.orp_calibration_offset = offset;
-            sendConfig(config);
+        if (!data || typeof data !== 'object') {
+          alert('Données invalides');
+          return;
+        }
 
-            alert(`Calibration ORP effectuée\\nValeur actuelle : ${currentOrp.toFixed(0)} mV\\nRéférence : ${referenceValue.toFixed(0)} mV\\nOffset appliqué : ${offset.toFixed(1)} mV`);
-            orpReferenceValue.value = '';
-          })
-          .catch(err => {
-            alert('Erreur lors de la calibration ORP');
-            console.error(err);
-          });
+        // Utiliser la valeur brute (sans offset) pour le calcul
+        const currentOrpRaw = data.orp_raw;
+        const currentOrpCalibrated = data.orp;
+
+        if (isNaN(currentOrpRaw) || currentOrpRaw === null || currentOrpRaw === undefined) {
+          alert('Impossible de lire la valeur ORP actuelle\nValeur reçue: ' + currentOrpRaw);
+          return;
+        }
+
+        // Calculate offset: reference - raw value (NOT calibrated value!)
+        const offset = referenceValue - currentOrpRaw;
+
+        // Show confirmation dialog with calculated values
+        const confirmMsg = `Calibration ORP\n\nValeur brute mesurée: ${currentOrpRaw.toFixed(1)} mV\nValeur de référence: ${referenceValue.toFixed(0)} mV\nOffset calculé: ${offset.toFixed(1)} mV\n\nVoulez-vous appliquer cette calibration ?`;
+
+        if (!confirm(confirmMsg)) {
+          return;
+        }
+
+        // Save configuration with new offset
+        const config = collectConfig();
+        config.orp_calibration_offset = offset;
+
+        sendConfig(config);
+
+        // Mettre à jour l'affichage de l'offset
+        const orpOffsetEl = document.getElementById('orp_current_offset');
+        if (orpOffsetEl) {
+          orpOffsetEl.textContent = `${offset >= 0 ? '+' : ''}${offset.toFixed(1)} mV`;
+          orpOffsetEl.style.color = '#007bff';
+        }
+
+        alert(`Calibration ORP effectuée\nOffset appliqué : ${offset.toFixed(1)} mV`);
+        orpReferenceValue.value = '';
       });
 
       filtrationMode.addEventListener('change', () => {
