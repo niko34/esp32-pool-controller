@@ -1,7 +1,6 @@
 #include "config.h"
 #include "logger.h"
-#include <LittleFS.h>
-#include <ArduinoJson.h>
+#include <Preferences.h>
 
 // Définition des variables globales
 MqttConfig mqttCfg;
@@ -57,118 +56,131 @@ void sanitizePumpSelection() {
 }
 
 void saveMqttConfig() {
-  File f = LittleFS.open("/mqtt.json", "w");
-  if (!f) {
-    systemLogger.error("Échec ouverture fichier mqtt.json pour sauvegarde");
+  Preferences prefs;
+  if (!prefs.begin("poolctrl", false)) {
+    systemLogger.error("Échec ouverture NVS pour sauvegarde");
     return;
   }
 
-  DynamicJsonDocument doc(1024);
-  doc["server"] = mqttCfg.server;
-  doc["port"] = mqttCfg.port;
-  doc["topic"] = mqttCfg.topic;
-  doc["username"] = mqttCfg.username;
-  doc["password"] = mqttCfg.password;
-  doc["enabled"] = mqttCfg.enabled;
-  doc["ph_target"] = mqttCfg.phTarget;
-  doc["orp_target"] = mqttCfg.orpTarget;
-  doc["ph_enabled"] = mqttCfg.phEnabled;
-  doc["ph_pump"] = mqttCfg.phPump;
-  doc["orp_enabled"] = mqttCfg.orpEnabled;
-  doc["orp_pump"] = mqttCfg.orpPump;
-  doc["ph_limit_seconds"] = mqttCfg.phInjectionLimitSeconds;
-  doc["orp_limit_seconds"] = mqttCfg.orpInjectionLimitSeconds;
-  doc["time_use_ntp"] = mqttCfg.timeUseNtp;
-  doc["ntp_server"] = mqttCfg.ntpServer;
-  doc["manual_time"] = mqttCfg.manualTimeIso;
-  doc["timezone_id"] = mqttCfg.timezoneId;
-  doc["filtration_mode"] = filtrationCfg.mode;
-  doc["filtration_start"] = filtrationCfg.start;
-  doc["filtration_end"] = filtrationCfg.end;
-  doc["filtration_has_reference"] = filtrationCfg.hasAutoReference;
-  doc["filtration_reference_temp"] = filtrationCfg.autoReferenceTemp;
+  // MQTT
+  prefs.putString("mqtt_server", mqttCfg.server);
+  prefs.putInt("mqtt_port", mqttCfg.port);
+  prefs.putString("mqtt_topic", mqttCfg.topic);
+  prefs.putString("mqtt_user", mqttCfg.username);
+  prefs.putString("mqtt_pass", mqttCfg.password);
+  prefs.putBool("mqtt_enabled", mqttCfg.enabled);
 
-  // Sauvegarder les limites de sécurité
-  doc["max_ph_ml_per_day"] = safetyLimits.maxPhMinusMlPerDay;
-  doc["max_chlorine_ml_per_day"] = safetyLimits.maxChlorineMlPerDay;
+  // Régulation pH
+  prefs.putFloat("ph_target", mqttCfg.phTarget);
+  prefs.putBool("ph_enabled", mqttCfg.phEnabled);
+  prefs.putInt("ph_pump", mqttCfg.phPump);
+  prefs.putInt("ph_limit_sec", mqttCfg.phInjectionLimitSeconds);
+  prefs.putInt("ph_pin", mqttCfg.phSensorPin);
 
-  // Sauvegarder les pins des capteurs
-  doc["ph_sensor_pin"] = mqttCfg.phSensorPin;
-  doc["orp_sensor_pin"] = mqttCfg.orpSensorPin;
-
-  // Sauvegarder les offsets de calibration
-  doc["ph_calibration_offset"] = mqttCfg.phCalibrationOffset;
-  doc["orp_calibration_offset"] = mqttCfg.orpCalibrationOffset;
-
-  if (serializeJsonPretty(doc, f) == 0) {
-    systemLogger.error("Échec sérialisation JSON config");
-  } else {
-    systemLogger.info("Configuration sauvegardée avec succès");
+  // Calibration pH
+  prefs.putFloat("ph_cal_off", mqttCfg.phCalibrationOffset);
+  prefs.putString("ph_cal_date", mqttCfg.phCalibrationDate);
+  if (!isnan(mqttCfg.phCalibrationTemp)) {
+    prefs.putFloat("ph_cal_temp", mqttCfg.phCalibrationTemp);
   }
 
-  f.close();
+  // Régulation ORP
+  prefs.putFloat("orp_target", mqttCfg.orpTarget);
+  prefs.putBool("orp_enabled", mqttCfg.orpEnabled);
+  prefs.putInt("orp_pump", mqttCfg.orpPump);
+  prefs.putInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
+  prefs.putInt("orp_pin", mqttCfg.orpSensorPin);
+
+  // Calibration ORP
+  prefs.putFloat("orp_cal_off", mqttCfg.orpCalibrationOffset);
+  prefs.putString("orp_cal_date", mqttCfg.orpCalibrationDate);
+  prefs.putFloat("orp_cal_ref", mqttCfg.orpCalibrationReference);
+
+  // Temps
+  prefs.putBool("time_use_ntp", mqttCfg.timeUseNtp);
+  prefs.putString("ntp_server", mqttCfg.ntpServer);
+  prefs.putString("manual_time", mqttCfg.manualTimeIso);
+  prefs.putString("timezone_id", mqttCfg.timezoneId);
+
+  // Filtration
+  prefs.putString("filt_mode", filtrationCfg.mode);
+  prefs.putString("filt_start", filtrationCfg.start);
+  prefs.putString("filt_end", filtrationCfg.end);
+  prefs.putBool("filt_has_ref", filtrationCfg.hasAutoReference);
+  prefs.putFloat("filt_ref_temp", filtrationCfg.autoReferenceTemp);
+
+  // Limites de sécurité
+  prefs.putFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
+  prefs.putFloat("max_cl_ml", safetyLimits.maxChlorineMlPerDay);
+
+  prefs.end();
+  systemLogger.info("Configuration sauvegardée dans NVS");
 }
 
 void loadMqttConfig() {
-  if (!LittleFS.exists("/mqtt.json")) {
-    systemLogger.warning("Fichier mqtt.json inexistant, création avec valeurs par défaut");
+  Preferences prefs;
+  if (!prefs.begin("poolctrl", true)) {  // true = read-only
+    systemLogger.warning("NVS vide, création avec valeurs par défaut");
     saveMqttConfig();
     return;
   }
 
-  File f = LittleFS.open("/mqtt.json", "r");
-  if (!f) {
-    systemLogger.error("Impossible d'ouvrir mqtt.json");
-    return;
-  }
+  // MQTT
+  mqttCfg.server = prefs.getString("mqtt_server", mqttCfg.server);
+  mqttCfg.port = prefs.getInt("mqtt_port", mqttCfg.port);
+  mqttCfg.topic = prefs.getString("mqtt_topic", mqttCfg.topic);
+  mqttCfg.username = prefs.getString("mqtt_user", "");
+  mqttCfg.password = prefs.getString("mqtt_pass", "");
+  mqttCfg.enabled = prefs.getBool("mqtt_enabled", mqttCfg.enabled);
 
-  DynamicJsonDocument doc(1024);
-  DeserializationError error = deserializeJson(doc, f);
-  f.close();
+  // Régulation pH
+  mqttCfg.phTarget = prefs.getFloat("ph_target", mqttCfg.phTarget);
+  mqttCfg.phEnabled = prefs.getBool("ph_enabled", mqttCfg.phEnabled);
+  mqttCfg.phPump = prefs.getInt("ph_pump", mqttCfg.phPump);
+  mqttCfg.phInjectionLimitSeconds = prefs.getInt("ph_limit_sec", mqttCfg.phInjectionLimitSeconds);
+  mqttCfg.phSensorPin = prefs.getInt("ph_pin", mqttCfg.phSensorPin);
 
-  if (error) {
-    systemLogger.error("Erreur parsing JSON: " + String(error.c_str()));
-    return;
-  }
+  // Calibration pH
+  mqttCfg.phCalibrationOffset = prefs.getFloat("ph_cal_off", mqttCfg.phCalibrationOffset);
+  mqttCfg.phCalibrationDate = prefs.getString("ph_cal_date", "");
+  mqttCfg.phCalibrationTemp = prefs.getFloat("ph_cal_temp", NAN);
 
-  mqttCfg.server = doc["server"] | mqttCfg.server;
-  mqttCfg.port = doc["port"] | mqttCfg.port;
-  mqttCfg.topic = doc["topic"] | mqttCfg.topic;
-  mqttCfg.username = doc["username"] | "";
-  mqttCfg.password = doc["password"] | "";
-  mqttCfg.enabled = doc["enabled"] | mqttCfg.enabled;
-  mqttCfg.phTarget = doc["ph_target"] | mqttCfg.phTarget;
-  mqttCfg.orpTarget = doc["orp_target"] | mqttCfg.orpTarget;
-  mqttCfg.phEnabled = doc["ph_enabled"] | mqttCfg.phEnabled;
-  mqttCfg.phPump = doc["ph_pump"] | mqttCfg.phPump;
-  mqttCfg.orpEnabled = doc["orp_enabled"] | mqttCfg.orpEnabled;
-  mqttCfg.orpPump = doc["orp_pump"] | mqttCfg.orpPump;
-  mqttCfg.phInjectionLimitSeconds = doc["ph_limit_seconds"] | mqttCfg.phInjectionLimitSeconds;
-  mqttCfg.orpInjectionLimitSeconds = doc["orp_limit_seconds"] | mqttCfg.orpInjectionLimitSeconds;
-  mqttCfg.timeUseNtp = doc["time_use_ntp"] | mqttCfg.timeUseNtp;
-  mqttCfg.ntpServer = doc["ntp_server"] | mqttCfg.ntpServer;
-  mqttCfg.manualTimeIso = doc["manual_time"] | mqttCfg.manualTimeIso;
-  mqttCfg.timezoneId = doc["timezone_id"] | mqttCfg.timezoneId;
-  filtrationCfg.mode = doc["filtration_mode"] | filtrationCfg.mode;
-  filtrationCfg.start = doc["filtration_start"] | filtrationCfg.start;
-  filtrationCfg.end = doc["filtration_end"] | filtrationCfg.end;
-  filtrationCfg.hasAutoReference = doc["filtration_has_reference"] | filtrationCfg.hasAutoReference;
-  filtrationCfg.autoReferenceTemp = doc["filtration_reference_temp"] | filtrationCfg.autoReferenceTemp;
+  // Régulation ORP
+  mqttCfg.orpTarget = prefs.getFloat("orp_target", mqttCfg.orpTarget);
+  mqttCfg.orpEnabled = prefs.getBool("orp_enabled", mqttCfg.orpEnabled);
+  mqttCfg.orpPump = prefs.getInt("orp_pump", mqttCfg.orpPump);
+  mqttCfg.orpInjectionLimitSeconds = prefs.getInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
+  mqttCfg.orpSensorPin = prefs.getInt("orp_pin", mqttCfg.orpSensorPin);
 
-  safetyLimits.maxPhMinusMlPerDay = doc["max_ph_ml_per_day"] | safetyLimits.maxPhMinusMlPerDay;
-  safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"] | safetyLimits.maxChlorineMlPerDay;
+  // Calibration ORP
+  mqttCfg.orpCalibrationOffset = prefs.getFloat("orp_cal_off", mqttCfg.orpCalibrationOffset);
+  mqttCfg.orpCalibrationDate = prefs.getString("orp_cal_date", "");
+  mqttCfg.orpCalibrationReference = prefs.getFloat("orp_cal_ref", 0.0f);
 
-  mqttCfg.phSensorPin = doc["ph_sensor_pin"] | mqttCfg.phSensorPin;
-  mqttCfg.orpSensorPin = doc["orp_sensor_pin"] | mqttCfg.orpSensorPin;
+  // Temps
+  mqttCfg.timeUseNtp = prefs.getBool("time_use_ntp", mqttCfg.timeUseNtp);
+  mqttCfg.ntpServer = prefs.getString("ntp_server", mqttCfg.ntpServer);
+  mqttCfg.manualTimeIso = prefs.getString("manual_time", mqttCfg.manualTimeIso);
+  mqttCfg.timezoneId = prefs.getString("timezone_id", mqttCfg.timezoneId);
 
-  mqttCfg.phCalibrationOffset = doc["ph_calibration_offset"] | mqttCfg.phCalibrationOffset;
-  mqttCfg.orpCalibrationOffset = doc["orp_calibration_offset"] | mqttCfg.orpCalibrationOffset;
+  // Filtration
+  filtrationCfg.mode = prefs.getString("filt_mode", filtrationCfg.mode);
+  filtrationCfg.start = prefs.getString("filt_start", filtrationCfg.start);
+  filtrationCfg.end = prefs.getString("filt_end", filtrationCfg.end);
+  filtrationCfg.hasAutoReference = prefs.getBool("filt_has_ref", filtrationCfg.hasAutoReference);
+  filtrationCfg.autoReferenceTemp = prefs.getFloat("filt_ref_temp", filtrationCfg.autoReferenceTemp);
+
+  // Limites de sécurité
+  safetyLimits.maxPhMinusMlPerDay = prefs.getFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
+  safetyLimits.maxChlorineMlPerDay = prefs.getFloat("max_cl_ml", safetyLimits.maxChlorineMlPerDay);
+
+  prefs.end();
 
   sanitizePumpSelection();
   ensureTimezoneValid();
   applyTimezoneEnv();
 
-  systemLogger.info("Configuration chargée avec succès");
+  systemLogger.info("Configuration chargée depuis NVS");
 }
 
 void applyMqttConfig() {

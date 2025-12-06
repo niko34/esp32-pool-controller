@@ -287,9 +287,13 @@
 
         <div id="orp_calibration_section" style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
           <h3 style="margin: 0 0 15px 0; font-size: 1rem; color: #495057;">Calibration ORP</h3>
-          <div style="margin-bottom: 15px; padding: 10px; background: #e7f3ff; border-left: 4px solid #007bff; border-radius: 4px;">
-            <div style="font-size: 0.85rem; color: #495057; margin-bottom: 5px;">Offset de calibration actuel :</div>
-            <div id="orp_current_offset" style="font-size: 1.1rem; font-weight: 600; color: #007bff;">Non défini</div>
+          <div id="orp_calibration_info" style="margin-bottom: 15px; padding: 12px; background: #e7f3ff; border-left: 4px solid #007bff; border-radius: 4px;">
+            <div style="font-size: 0.85rem; color: #495057; margin-bottom: 8px; font-weight: 600;">Informations de calibration :</div>
+            <div style="font-size: 0.85rem; line-height: 1.6;">
+              <div><strong>Offset :</strong> <span id="orp_current_offset">Non défini</span></div>
+              <div><strong>Référence :</strong> <span id="orp_calibration_reference">—</span></div>
+              <div><strong>Date :</strong> <span id="orp_calibration_date">—</span></div>
+            </div>
           </div>
           <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
             <label style="flex: 0 0 auto; margin: 0;">Valeur de référence (mV) :</label>
@@ -672,25 +676,73 @@
           const phOffsetEl = document.getElementById('ph_current_offset');
           const orpOffsetEl = document.getElementById('orp_current_offset');
 
+          // Vérifier si pH a été calibré
+          const phCalibrated = cfg.ph_calibration_date && cfg.ph_calibration_date !== '';
+
           if (phOffsetEl) {
             const phOffset = cfg.ph_calibration_offset || 0;
-            if (phOffset === 0) {
+            if (!phCalibrated) {
+              phOffsetEl.textContent = 'Non calibré';
+              phOffsetEl.style.color = '#dc3545';
+              phOffsetEl.style.fontWeight = '500';
+            } else if (phOffset === 0) {
               phOffsetEl.textContent = 'Aucun (0.00)';
               phOffsetEl.style.color = '#6c757d';
+              phOffsetEl.style.fontWeight = '600';
             } else {
               phOffsetEl.textContent = `${phOffset >= 0 ? '+' : ''}${phOffset.toFixed(2)} pH`;
               phOffsetEl.style.color = '#007bff';
+              phOffsetEl.style.fontWeight = '600';
             }
           }
 
+          // Afficher les informations complètes de calibration ORP
+          const orpCalibrated = cfg.orp_calibration_date && cfg.orp_calibration_date !== '';
+
           if (orpOffsetEl) {
             const orpOffset = cfg.orp_calibration_offset || 0;
-            if (orpOffset === 0) {
+            if (!orpCalibrated) {
+              orpOffsetEl.textContent = 'Non calibré';
+              orpOffsetEl.style.color = '#dc3545';
+              orpOffsetEl.style.fontWeight = '500';
+            } else if (orpOffset === 0) {
               orpOffsetEl.textContent = 'Aucun (0.0 mV)';
               orpOffsetEl.style.color = '#6c757d';
+              orpOffsetEl.style.fontWeight = 'normal';
             } else {
               orpOffsetEl.textContent = `${orpOffset >= 0 ? '+' : ''}${orpOffset.toFixed(1)} mV`;
               orpOffsetEl.style.color = '#007bff';
+              orpOffsetEl.style.fontWeight = 'normal';
+            }
+          }
+
+          const orpRefEl = document.getElementById('orp_calibration_reference');
+          if (orpRefEl) {
+            if (!orpCalibrated) {
+              orpRefEl.textContent = 'Non calibré';
+              orpRefEl.style.color = '#dc3545';
+              orpRefEl.style.fontWeight = '500';
+            } else {
+              const ref = cfg.orp_calibration_reference;
+              orpRefEl.textContent = (ref && ref > 0) ? `${ref.toFixed(0)} mV` : '—';
+              orpRefEl.style.color = '';
+              orpRefEl.style.fontWeight = 'normal';
+            }
+          }
+
+          const orpDateEl = document.getElementById('orp_calibration_date');
+          if (orpDateEl) {
+            if (!orpCalibrated) {
+              orpDateEl.textContent = 'Non calibré';
+              orpDateEl.style.color = '#dc3545';
+              orpDateEl.style.fontWeight = '500';
+            } else {
+              const dateStr = cfg.orp_calibration_date;
+              const date = new Date(dateStr);
+              const options = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' };
+              orpDateEl.textContent = date.toLocaleDateString('fr-FR', options);
+              orpDateEl.style.color = '';
+              orpDateEl.style.fontWeight = 'normal';
             }
           }
 
@@ -860,24 +912,45 @@
         // Calculate offset: reference - raw value (NOT calibrated value!)
         const offset = referenceValue - currentOrpRaw;
 
-        // Show confirmation dialog with calculated values
-        const confirmMsg = `Calibration ORP\n\nValeur brute mesurée: ${currentOrpRaw.toFixed(1)} mV\nValeur de référence: ${referenceValue.toFixed(0)} mV\nOffset calculé: ${offset.toFixed(1)} mV\n\nVoulez-vous appliquer cette calibration ?`;
+        // Get current time
+        const now = new Date();
+        const calibrationDate = now.toISOString();
+
+        // Build confirmation message
+        let confirmMsg = `Calibration ORP\n\n`;
+        confirmMsg += `Valeur brute mesurée: ${currentOrpRaw.toFixed(1)} mV\n`;
+        confirmMsg += `Valeur de référence: ${referenceValue.toFixed(0)} mV\n`;
+        confirmMsg += `Offset calculé: ${offset.toFixed(1)} mV\n`;
+        confirmMsg += `\nVoulez-vous appliquer cette calibration ?`;
 
         if (!confirm(confirmMsg)) {
           return;
         }
 
-        // Save configuration with new offset
+        // Save configuration with all calibration data
         const config = collectConfig();
         config.orp_calibration_offset = offset;
+        config.orp_calibration_date = calibrationDate;
+        config.orp_calibration_reference = referenceValue;
 
         sendConfig(config);
 
-        // Mettre à jour l'affichage de l'offset
+        // Mettre à jour l'affichage de toutes les informations de calibration
         const orpOffsetEl = document.getElementById('orp_current_offset');
         if (orpOffsetEl) {
           orpOffsetEl.textContent = `${offset >= 0 ? '+' : ''}${offset.toFixed(1)} mV`;
           orpOffsetEl.style.color = '#007bff';
+        }
+
+        const orpRefEl = document.getElementById('orp_calibration_reference');
+        if (orpRefEl) {
+          orpRefEl.textContent = `${referenceValue.toFixed(0)} mV`;
+        }
+
+        const orpDateEl = document.getElementById('orp_calibration_date');
+        if (orpDateEl) {
+          const options = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' };
+          orpDateEl.textContent = now.toLocaleDateString('fr-FR', options);
         }
 
         alert(`Calibration ORP effectuée\nOffset appliqué : ${offset.toFixed(1)} mV`);

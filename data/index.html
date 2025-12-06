@@ -113,7 +113,10 @@
         <canvas id="tempChart"></canvas>
       </div>
       <div class="chart-block">
-        <p class="chart-title">ORP (mV)</p>
+        <p class="chart-title">
+          ORP (mV)
+          <span id="orp-calibration-badge" style="display: none; margin-left: 8px; font-size: 0.75rem; font-weight: 600; color: #dc3545;">Calibration nécessaire</span>
+        </p>
         <canvas id="orpChart"></canvas>
       </div>
       <div class="chart-block">
@@ -167,6 +170,40 @@
         chart.update('none');
       }
 
+      async function checkCalibrationDate() {
+        try {
+          const res = await fetch('/get-config');
+          if (!res.ok) return;
+          const config = await res.json();
+
+          const badgeEl = document.getElementById('orp-calibration-badge');
+          if (!badgeEl) return;
+
+          const calibrationDate = config.orp_calibration_date;
+          if (!calibrationDate) {
+            // Pas de date de calibration, afficher le badge
+            badgeEl.style.display = 'inline';
+            return;
+          }
+
+          const calibDate = new Date(calibrationDate);
+          const now = new Date();
+          const diffMs = now - calibDate;
+          const diffDays = diffMs / (1000 * 60 * 60 * 24);
+          const threeMonthsInDays = 90;
+
+          if (diffDays > threeMonthsInDays) {
+            // Calibration obsolète, afficher le badge
+            badgeEl.style.display = 'inline';
+          } else {
+            // Calibration OK, cacher le badge
+            badgeEl.style.display = 'none';
+          }
+        } catch (err) {
+          console.error('checkCalibrationDate error', err);
+        }
+      }
+
       async function updateData() {
         try {
           const res = await fetch('/data');
@@ -187,6 +224,10 @@
           console.error('updateData error', err);
         }
       }
+
+      // Vérifier la date de calibration au chargement et toutes les 5 minutes
+      checkCalibrationDate();
+      setInterval(checkCalibrationDate, 300000); // 5 minutes
 
       setInterval(updateData, 2000);
       updateData();

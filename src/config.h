@@ -49,9 +49,15 @@ struct MqttConfig {
   int phSensorPin = 35;               // GPIO pour capteur pH (-1 = pas de capteur)
   int orpSensorPin = 34;              // GPIO pour capteur ORP (-1 = pas de capteur)
 
-  // Calibration
+  // Calibration pH
   float phCalibrationOffset = 0.0f;   // Offset de calibration pH
+  String phCalibrationDate = "";      // Date de calibration pH (ISO 8601)
+  float phCalibrationTemp = NAN;      // Température lors de la calibration pH (°C)
+
+  // Calibration ORP
   float orpCalibrationOffset = 0.0f;  // Offset de calibration ORP (mV)
+  String orpCalibrationDate = "";     // Date de calibration ORP (ISO 8601)
+  float orpCalibrationReference = 0.0f; // Valeur de référence utilisée (mV)
 };
 
 struct FiltrationConfig {
