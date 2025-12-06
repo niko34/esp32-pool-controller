@@ -5,10 +5,8 @@
 #include "config.h"
 
 struct PumpDriver {
-  int pwmPin;
-  int in1Pin;
-  int in2Pin;
-  int channel;
+  int pwmPin;    // Pin PWM Gate MOSFET (IRLZ44N)
+  int channel;   // Canal LEDC pour PWM
 };
 
 struct DosingState {

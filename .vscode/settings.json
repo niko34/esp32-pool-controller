@@ -1,4 +1,4 @@
 {
     "idf.pythonInstallPath": "/opt/homebrew/opt/python@3.11/Frameworks/Python.framework/Versions/3.11/bin/python3",
-    "idf.port": "/dev/tty.usbserial-0001"
+    "idf.port": "/dev/tty.usbserial-10"
 }

@@ -3,3 +3,11 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# macOS
+.DS_Store
+
+# Backup files
+*.bak
+*_old.*
+*_backup.*

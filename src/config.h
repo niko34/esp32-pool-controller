@@ -4,18 +4,13 @@
 #include <Arduino.h>
 
 // ==== Configuration des broches ====
-#define ORP_PIN 34
-#define PH_PIN 35
-#define PUMP1_PWM_PIN 25
-#define PUMP1_IN1_PIN 34
-#define PUMP1_IN2_PIN 33
-#define PUMP2_PWM_PIN 26
-#define PUMP2_IN1_PIN 18
-#define PUMP2_IN2_PIN 19
+// MOSFET IRLZ44N - 1 pin PWM par pompe (Gate control)
+#define PUMP1_PWM_PIN 25     // PWM Gate pompe 1 (via MOSFET IRLZ44N)
+#define PUMP2_PWM_PIN 26     // PWM Gate pompe 2 (via MOSFET IRLZ44N)
 #define PUMP1_CHANNEL 0
 #define PUMP2_CHANNEL 1
-#define PUMP_PWM_FREQ 1000
-#define PUMP_PWM_RES_BITS 8
+#define PUMP_PWM_FREQ 1000   // 1kHz PWM
+#define PUMP_PWM_RES_BITS 8  // 8-bit resolution (0-255)
 #define TEMP_SENSOR_PIN 4
 #define FILTRATION_RELAY_PIN 27
 

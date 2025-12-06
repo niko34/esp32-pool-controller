@@ -38,25 +38,32 @@ echo "1. Vérification de la structure des fichiers"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 required_files=(
-    "src/config.h"
     "src/config.cpp"
-    "src/logger.h"
-    "src/logger.cpp"
-    "src/sensors.h"
-    "src/sensors.cpp"
-    "src/pump_controller.h"
-    "src/pump_controller.cpp"
-    "src/filtration.h"
+    "src/config.h"
     "src/filtration.cpp"
-    "src/mqtt_manager.h"
+    "src/filtration.h"
+    "src/history.cpp"
+    "src/history.h"
+    "src/logger.cpp"
+    "src/logger.h"
+    "src/main.cpp"
     "src/mqtt_manager.cpp"
-    "src/web_server.h"
+    "src/mqtt_manager.h"
+    "src/pump_controller.cpp"
+    "src/pump_controller.h"
+    "src/sensors.cpp"
+    "src/sensors.h"
     "src/web_server.cpp"
-    "src/main_new.cpp"
+    "src/web_server.h"
+    "data/config.html"
+    "data/index.html"
+    "data/setting.png"
     "platformio.ini"
-    "README.md"
     "CALIBRATION_GUIDE.md"
     "MIGRATION_GUIDE.md"
+    "QUICK_START.md"
+    "README.md"
+    "SIMULATION_GUIDE.md"
     "WIRING_DIAGRAM.md"
 )
 
@@ -74,9 +81,9 @@ echo "2. Vérification de la configuration de sécurité"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Check simulation mode is disabled
-if grep -q "bool enabled = false" src/config.h; then
+if grep -A 1 "struct SimulationConfig" src/config.h | grep -q "bool enabled = false"; then
     check_pass "Mode simulation DÉSACTIVÉ (production ready)"
-elif grep -q "bool enabled = true" src/config.h; then
+elif grep -A 1 "struct SimulationConfig" src/config.h | grep -q "bool enabled = true"; then
     check_fail "CRITIQUE: Mode simulation ACTIVÉ - DOIT être false pour production!"
 else
     check_warning "Impossible de vérifier le mode simulation dans config.h"
@@ -90,10 +97,10 @@ else
 fi
 
 # Check watchdog is enabled
-if grep -q "esp_task_wdt_init" src/main_new.cpp; then
+if grep -q "esp_task_wdt_init" src/main.cpp; then
     check_pass "Watchdog configuré"
 else
-    check_fail "Watchdog manquant dans main_new.cpp"
+    check_fail "Watchdog manquant dans main.cpp"
 fi
 
 # Check password masking

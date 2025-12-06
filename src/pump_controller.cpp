@@ -7,21 +7,19 @@
 PumpControllerClass PumpController;
 
 PumpControllerClass::PumpControllerClass() {
-  pumps[0] = {PUMP1_PWM_PIN, PUMP1_IN1_PIN, PUMP1_IN2_PIN, PUMP1_CHANNEL};
-  pumps[1] = {PUMP2_PWM_PIN, PUMP2_IN1_PIN, PUMP2_IN2_PIN, PUMP2_CHANNEL};
+  pumps[0] = {PUMP1_PWM_PIN, PUMP1_CHANNEL};
+  pumps[1] = {PUMP2_PWM_PIN, PUMP2_CHANNEL};
 }
 
 void PumpControllerClass::begin() {
   for (int i = 0; i < 2; ++i) {
-    pinMode(pumps[i].in1Pin, OUTPUT);
-    pinMode(pumps[i].in2Pin, OUTPUT);
-    digitalWrite(pumps[i].in1Pin, LOW);
-    digitalWrite(pumps[i].in2Pin, LOW);
+    // MOSFET IRLZ44N: Configuration PWM sur Gate
+    // Logic-level MOSFET compatible 3.3V ESP32
     ledcSetup(pumps[i].channel, PUMP_PWM_FREQ, PUMP_PWM_RES_BITS);
     ledcAttachPin(pumps[i].pwmPin, pumps[i].channel);
-    ledcWrite(pumps[i].channel, 0);
+    ledcWrite(pumps[i].channel, 0);  // Pompe arrêtée au démarrage
   }
-  systemLogger.info("Contrôleur de pompes initialisé");
+  systemLogger.info("Contrôleur de pompes MOSFET IRLZ44N initialisé");
 }
 
 void PumpControllerClass::applyPumpDuty(int index, uint8_t duty) {
@@ -29,15 +27,11 @@ void PumpControllerClass::applyPumpDuty(int index, uint8_t duty) {
   if (pumpDuty[index] == duty) return;
 
   pumpDuty[index] = duty;
-  if (duty == 0) {
-    ledcWrite(pumps[index].channel, 0);
-    digitalWrite(pumps[index].in1Pin, LOW);
-    digitalWrite(pumps[index].in2Pin, LOW);
-  } else {
-    digitalWrite(pumps[index].in1Pin, HIGH);
-    digitalWrite(pumps[index].in2Pin, LOW);
-    ledcWrite(pumps[index].channel, duty);
-  }
+
+  // MOSFET IRLZ44N: Contrôle simple via PWM sur Gate
+  // duty=0 → MOSFET OFF (pompe arrêtée)
+  // duty>0 → MOSFET ON proportionnel (pompe tourne)
+  ledcWrite(pumps[index].channel, duty);
 }
 
 void PumpControllerClass::refreshDosingState(DosingState& state, unsigned long now) {

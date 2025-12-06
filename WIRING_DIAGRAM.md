@@ -7,8 +7,8 @@
 │                      ALIMENTATION                               │
 ├────────────────────────────────────────────────────────────────┤
 │                                                                 │
-│  230V AC ──┬──► Transfo 12V DC (2A) ──┬──► Pompe 1 (via L298N)│
-│            │                           └──► Pompe 2 (via L298N)│
+│  230V AC ──┬──► Transfo 12V DC (2A) ──┬──► Pompe 1 (IRLZ44N)  │
+│            │                           └──► Pompe 2 (IRLZ44N)  │
 │            │                                                    │
 │            ├──► Transfo 5V DC (2A) ─────► ESP32 (VIN + GND)   │
 │            │                                                    │
@@ -38,12 +38,8 @@
 |------|----------|-------------|------|
 | 4 | OneWire | DS18B20 Température | Input avec pull-up 4.7kΩ |
 | 27 | Output | Relais Filtration | Output 3.3V → 5V relay module |
-| 25 | PWM (CH0) | Pompe 1 - Vitesse | LEDC 1kHz, 8-bit |
-| 32 | Output | Pompe 1 - IN1 (Direction) | Output 3.3V |
-| 33 | Output | Pompe 1 - IN2 (Direction) | Output 3.3V |
-| 26 | PWM (CH1) | Pompe 2 - Vitesse | LEDC 1kHz, 8-bit |
-| 18 | Output | Pompe 2 - IN1 (Direction) | Output 3.3V |
-| 19 | Output | Pompe 2 - IN2 (Direction) | Output 3.3V |
+| 25 | PWM (CH0) | Pompe 1 - Gate MOSFET | LEDC 1kHz, 8-bit → IRLZ44N |
+| 26 | PWM (CH1) | Pompe 2 - Gate MOSFET | LEDC 1kHz, 8-bit → IRLZ44N |
 
 ### Broches Réservées (Ne Pas Utiliser)
 
@@ -194,43 +190,52 @@ ESP32                   Module Relais               Pompe Filtration
 - Si relais ne commute pas: Ajouter transistor NPN (2N2222) entre GPIO et IN
 - **DANGER 230V**: Travail sur installation électrique = électricien qualifié !
 
-### 5. Pompes Doseuses + Drivers L298N
+### 5. Pompes Doseuses + MOSFETs IRLZ44N
 
-**Configuration pour 2 pompes:**
+**Configuration ultra-simple avec MOSFET logic-level:**
 
 ```
-              ESP32                   L298N Driver #1              Pompe pH- 12V
-         ┌─────────┐                ┌──────────────┐             ┌──────────┐
-         │         │                │              │             │          │
-         │ GPIO 25 ├────────────────┤ ENA (PWM)    │             │          │
-         │ GPIO 32 ├────────────────┤ IN1      OUT1├─────────────┤ +        │
-         │ GPIO 33 ├────────────────┤ IN2      OUT2├─────────────┤ -        │
-         │         │                │              │             │          │
-         │   GND   ├────┬───────────┤ GND          │             └──────────┘
-         │         │    │           │              │
-         └─────────┘    │           │ 12V      (VCC├──────► 12V Alim
-                        │           └──────────────┘
-                        │
-                        │           ┌──────────────┐             ┌──────────┐
-                        │           │              │             │          │
-         ┌─────────┐    │           │              │             │          │
-         │         │    │           │ ENA (PWM)    │             │          │
-         │ GPIO 26 ├────┼───────────┤ IN1      OUT1├─────────────┤ +        │
-         │ GPIO 18 ├────┼───────────┤ IN2      OUT2├─────────────┤ -        │
-         │ GPIO 19 ├────┼───────────┤              │             │          │
-         │         │    │           │ GND          │             └──────────┘
-         │   GND   ├────┴───────────┤              │          Pompe Chlore 12V
-         │         │                │ 12V      (VCC├──────► 12V Alim
-         └─────────┘                └──────────────┘
-                                     L298N Driver #2
+              ESP32                MOSFET IRLZ44N #1             Pompe pH- 12V
+         ┌─────────┐                                             ┌──────────┐
+         │         │                    ┌─ 12V+ ─────────────────┤ +        │
+         │         │                    │                        │          │
+         │ GPIO 25 ├─────┐              │                        │ Moteur   │
+         │  (PWM)  │     │          ┌───┴───┐                    │ 12V DC   │
+         │         │     └─ 10kΩ ───┤ Gate  │                    │          │
+         │   GND   ├────────────────┤Source │                    │          │
+         │         │                │       │                    │          │
+         └─────────┘                │ Drain ├────────────────────┤ -        │
+                                    └───┬───┘                    └──────────┘
+                                        │
+                                       GND
+
+              ESP32                MOSFET IRLZ44N #2             Pompe Cl 12V
+         ┌─────────┐                                             ┌──────────┐
+         │         │                    ┌─ 12V+ ─────────────────┤ +        │
+         │         │                    │                        │          │
+         │ GPIO 26 ├─────┐              │                        │ Moteur   │
+         │  (PWM)  │     │          ┌───┴───┐                    │ 12V DC   │
+         │         │     └─ 10kΩ ───┤ Gate  │                    │          │
+         │   GND   ├────────────────┤Source │                    │          │
+         │         │                │       │                    │          │
+         └─────────┘                │ Drain ├────────────────────┤ -        │
+                                    └───┬───┘                    └──────────┘
+                                        │
+                                       GND
 ```
 
-**Réglage vitesse mini (jumper ENA):**
-1. Retirer jumper ENA si présent
-2. PWM ESP32 contrôle vitesse via ENA
-3. IN1=HIGH, IN2=LOW → Rotation sens horaire
-4. IN1=LOW, IN2=HIGH → Rotation anti-horaire
-5. IN1=IN2 → Stop (frein)
+**Avantages du MOSFET IRLZ44N:**
+- ✅ **Ultra-simple** : 1 seule pin GPIO par pompe
+- ✅ **Logic-level** : Compatible 3.3V ESP32 (Vgs(th) = 1-2V)
+- ✅ **Très efficace** : RDS(on) = 0.022Ω (presque pas de perte)
+- ✅ **Robuste** : 47A max, 55V max (largement surdimensionné)
+- ✅ **Moins cher** : ~0.50€ pièce (vs 2-3€ pour H-bridge)
+- ✅ **Pas de driver** : Connexion directe ESP32 → MOSFET → Pompe
+
+**Contrôle MOSFET:**
+1. PWM 0 (0V) → MOSFET OFF → Pompe arrêtée
+2. PWM 0-255 → MOSFET ON proportionnel → Vitesse variable
+3. Résistance pull-down 10kΩ recommandée (Gate → GND)
 
 **Pompes péristaltiques recommandées:**
 - Tension: 12V DC
@@ -258,8 +263,8 @@ ESP32                   Module Relais               Pompe Filtration
          ┌──────────┴────────┐           │
          │                   │           │
      ┌───▼────┐         ┌───▼────┐      │
-     │ L298N  │         │ L298N  │      │
-     │ Driver1│         │ Driver2│      │
+     │IRLZ44N │         │IRLZ44N │      │
+     │MOSFET#1│         │MOSFET#2│      │
      └───┬────┘         └───┬────┘      │
          │                   │           │
     ┌────▼─────┐        ┌───▼─────┐    │
@@ -291,7 +296,8 @@ ESP32                   Module Relais               Pompe Filtration
 | Capteur ORP | 1 | E-201-ORP ou compatible | 30€ |
 | Sonde DS18B20 | 1 | DS18B20 étanche | 5€ |
 | Module Relais 5V | 1 | 1 canal optocouplé | 3€ |
-| Driver moteur L298N | 2 | L298N dual H-bridge | 3€×2 |
+| MOSFET IRLZ44N | 2 | N-channel logic-level | 0.50€×2 |
+| Résistances 10kΩ (pull-down) | 2 | 1/4W ±5% Gate protection | 0.10€×2 |
 | Pompe péristaltique | 2 | 12V 0-100ml/min | 15€×2 |
 | Résistances 10kΩ | 4 | 1/4W ±5% | 0.10€×4 |
 | Résistance 4.7kΩ | 1 | 1/4W ±5% | 0.10€ |
@@ -300,7 +306,7 @@ ESP32                   Module Relais               Pompe Filtration
 | Transfo 230V→5V DC | 1 | 2A (ou USB) | 8€ |
 | Câbles, boîtier, visserie | - | - | 20€ |
 
-**Total estimé: ~150-200€**
+**Total estimé: ~140-190€** (économie avec MOSFETs)
 
 ### Consommables
 
@@ -358,9 +364,12 @@ ESP32                   Module Relais               Pompe Filtration
 - Vérifier GND commun (masse unique)
 
 **Pompes ne tournent pas ?**
-- Vérifier 12V arrive bien aux L298N
-- Tester pompe en direct 12V (bypass driver)
-- Vérifier câblage IN1/IN2 (inversé?)
+- Vérifier 12V arrive bien à la pompe (+ et -)
+- Tester pompe en direct 12V (bypass MOSFET)
+- Vérifier MOSFET Drain connecté au - de la pompe
+- Mesurer tension Gate : doit être 0V (off) ou 3.3V (on)
+- Vérifier résistance pull-down 10kΩ Gate → GND
+- Tester MOSFET avec multimètre (mode diode)
 
 **Relais ne commute pas ?**
 - Mesurer tension GPIO (doit être 3.3V)
