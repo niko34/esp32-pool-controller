@@ -71,15 +71,105 @@ void WebServerManager::setupRoutes() {
     }
   );
 
+  // Routes de calibration pH (DFRobot SEN0161-V2)
+  server.on("/calibrate_ph_neutral", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    sensors.calibratePhNeutral();
+
+    // Obtenir la date/heure actuelle au format ISO 8601
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 0)) {
+      char buffer[25];
+      strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
+      mqttCfg.phCalibrationDate = String(buffer);
+    } else {
+      // Fallback: utiliser un timestamp si l'heure n'est pas disponible
+      mqttCfg.phCalibrationDate = String(millis());
+    }
+
+    mqttCfg.phCalibrationTemp = sensors.getTemperature();
+    saveMqttConfig();
+
+    DynamicJsonDocument doc(128);
+    doc["success"] = true;
+    doc["temperature"] = mqttCfg.phCalibrationTemp;
+    String response;
+    serializeJson(doc, response);
+    req->send(200, "application/json", response);
+  });
+
+  server.on("/calibrate_ph_acid", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    sensors.calibratePhAcid();
+
+    // Obtenir la date/heure actuelle au format ISO 8601
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo, 0)) {
+      char buffer[25];
+      strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
+      mqttCfg.phCalibrationDate = String(buffer);
+    } else {
+      // Fallback: utiliser un timestamp si l'heure n'est pas disponible
+      mqttCfg.phCalibrationDate = String(millis());
+    }
+
+    mqttCfg.phCalibrationTemp = sensors.getTemperature();
+    saveMqttConfig();
+
+    DynamicJsonDocument doc(128);
+    doc["success"] = true;
+    doc["temperature"] = mqttCfg.phCalibrationTemp;
+    String response;
+    serializeJson(doc, response);
+    req->send(200, "application/json", response);
+  });
+
+  server.on("/clear_ph_calibration", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    sensors.clearPhCalibration();
+    mqttCfg.phCalibrationDate = "";
+    mqttCfg.phCalibrationTemp = NAN;
+    saveMqttConfig();
+
+    DynamicJsonDocument doc(64);
+    doc["success"] = true;
+    String response;
+    serializeJson(doc, response);
+    req->send(200, "application/json", response);
+  });
+
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
 }
 
 void WebServerManager::handleGetData(AsyncWebServerRequest* request) {
   DynamicJsonDocument doc(512);
-  doc["orp"] = sensors.getOrp();
-  doc["ph"] = round(sensors.getPh() * 10.0f) / 10.0f;
-  doc["orp_raw"] = sensors.getRawOrp();
-  doc["ph_raw"] = round(sensors.getRawPh() * 10.0f) / 10.0f;
+
+  // ORP
+  if (!isnan(sensors.getOrp())) {
+    doc["orp"] = sensors.getOrp();
+  } else {
+    doc["orp"] = nullptr;
+  }
+
+  // pH
+  if (!isnan(sensors.getPh())) {
+    doc["ph"] = round(sensors.getPh() * 10.0f) / 10.0f;
+  } else {
+    doc["ph"] = nullptr;
+  }
+
+  // ORP raw
+  if (!isnan(sensors.getRawOrp())) {
+    doc["orp_raw"] = sensors.getRawOrp();
+  } else {
+    doc["orp_raw"] = nullptr;
+  }
+
+  // pH raw
+  if (!isnan(sensors.getRawPh())) {
+    doc["ph_raw"] = round(sensors.getRawPh() * 10.0f) / 10.0f;
+  } else {
+    doc["ph_raw"] = nullptr;
+  }
+
+  // Température
   if (!isnan(sensors.getTemperature())) {
     doc["temperature"] = sensors.getTemperature();
   } else {
@@ -131,17 +221,20 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
   doc["ph_sensor_pin"] = mqttCfg.phSensorPin;
   doc["orp_sensor_pin"] = mqttCfg.orpSensorPin;
 
-  // Données de calibration pH
-  doc["ph_calibration_offset"] = mqttCfg.phCalibrationOffset;
+  // Données de calibration pH (DFRobot_PH)
   doc["ph_calibration_date"] = mqttCfg.phCalibrationDate;
   if (!isnan(mqttCfg.phCalibrationTemp)) {
     doc["ph_calibration_temp"] = mqttCfg.phCalibrationTemp;
   }
+  doc["ph_cal_valid"] = !mqttCfg.phCalibrationDate.isEmpty();
 
-  // Données de calibration ORP
+  // Données de calibration ORP (1 point)
   doc["orp_calibration_offset"] = mqttCfg.orpCalibrationOffset;
   doc["orp_calibration_date"] = mqttCfg.orpCalibrationDate;
   doc["orp_calibration_reference"] = mqttCfg.orpCalibrationReference;
+  if (!isnan(mqttCfg.orpCalibrationTemp)) {
+    doc["orp_calibration_temp"] = mqttCfg.orpCalibrationTemp;
+  }
 
   String json;
   serializeJson(doc, json);
@@ -246,10 +339,7 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
     mqttCfg.orpSensorPin = doc["orp_sensor_pin"];
   }
 
-  // Données de calibration pH
-  if (doc.containsKey("ph_calibration_offset")) {
-    mqttCfg.phCalibrationOffset = doc["ph_calibration_offset"];
-  }
+  // Données de calibration pH (DFRobot_PH gère en EEPROM)
   if (doc.containsKey("ph_calibration_date")) {
     mqttCfg.phCalibrationDate = doc["ph_calibration_date"].as<String>();
   }
@@ -257,7 +347,7 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
     mqttCfg.phCalibrationTemp = doc["ph_calibration_temp"];
   }
 
-  // Données de calibration ORP
+  // Données de calibration ORP (1 point)
   if (doc.containsKey("orp_calibration_offset")) {
     mqttCfg.orpCalibrationOffset = doc["orp_calibration_offset"];
   }
@@ -266,6 +356,9 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
   }
   if (doc.containsKey("orp_calibration_reference")) {
     mqttCfg.orpCalibrationReference = doc["orp_calibration_reference"];
+  }
+  if (doc.containsKey("orp_calibration_temp")) {
+    mqttCfg.orpCalibrationTemp = doc["orp_calibration_temp"];
   }
 
   sanitizePumpSelection();

@@ -232,19 +232,52 @@
         </div>
 
         <div id="ph_calibration_section" style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
-          <h3 style="margin: 0 0 15px 0; font-size: 1rem; color: #495057;">Calibration pH</h3>
-          <div style="margin-bottom: 15px; padding: 10px; background: #e7f3ff; border-left: 4px solid #007bff; border-radius: 4px;">
-            <div style="font-size: 0.85rem; color: #495057; margin-bottom: 5px;">Offset de calibration actuel :</div>
-            <div id="ph_current_offset" style="font-size: 1.1rem; font-weight: 600; color: #007bff;">Non défini</div>
+          <h3 style="margin: 0 0 15px 0; font-size: 1rem; color: #495057;">Calibration pH (DFRobot SEN0161-V2)</h3>
+
+          <!-- Affichage des informations de calibration -->
+          <div style="margin-bottom: 15px; padding: 12px; background: #e7f3ff; border-left: 4px solid #007bff; border-radius: 4px;">
+            <div style="font-size: 0.85rem; color: #495057; margin-bottom: 8px; font-weight: 600;">État de la calibration :</div>
+            <div style="font-size: 0.85rem; line-height: 1.6;">
+              <div><strong>Statut :</strong> <span id="ph_cal_status">Non calibré</span></div>
+              <div id="ph_cal_date" style="margin-top: 4px; font-size: 0.8rem; color: #6c757d;"></div>
+            </div>
           </div>
-          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-            <label style="flex: 0 0 auto; margin: 0;">Valeur de référence :</label>
-            <input type="number" id="ph_reference_value" min="0" max="14" step="0.01" placeholder="ex: 7.00" style="flex: 1; min-width: 0;">
+
+          <!-- Affichage de la valeur pH en temps réel -->
+          <div style="margin-bottom: 15px; padding: 15px; background: #fff; border: 2px solid #6c757d; border-radius: 6px; text-align: center;">
+            <div style="font-size: 0.85rem; color: #6c757d; margin-bottom: 8px; font-weight: 600;">Valeur pH actuelle :</div>
+            <div id="ph_current_value" style="font-size: 2rem; font-weight: bold; color: #007bff; font-family: 'Courier New', monospace;">--</div>
+            <div style="font-size: 0.75rem; color: #6c757d; margin-top: 4px;">Mise à jour automatique toutes les 2 secondes</div>
           </div>
-          <button type="button" id="ph_calibrate_btn" style="width: 100%; padding: 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; margin-bottom: 10px;">Calibrer</button>
-          <p style="margin: 0; font-size: 0.85rem; color: #6c757d;">
-            Plongez la sonde dans une solution de référence, entrez sa valeur pH connue, puis cliquez sur Calibrer.
-          </p>
+
+          <!-- Point de calibration pH 7.0 (neutre) -->
+          <div style="margin-bottom: 15px; padding: 12px; background: #fff; border: 2px solid #007bff; border-radius: 6px;">
+            <h4 style="margin: 0 0 10px 0; font-size: 0.9rem; color: #007bff;">📘 Calibration pH 7.0 (neutre)</h4>
+            <p style="margin: 0 0 10px 0; font-size: 0.8rem; color: #6c757d;">Plongez la sonde dans la solution tampon pH 7.0</p>
+            <button type="button" id="ph_cal_neutral_btn" style="width: 100%; padding: 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; font-size: 0.9rem;">Calibrer pH 7.0</button>
+            <div id="ph_cal_neutral_status" style="margin-top: 8px; font-size: 0.8rem; color: #6c757d; text-align: center;">—</div>
+          </div>
+
+          <!-- Point de calibration pH 4.0 (acide) -->
+          <div style="margin-bottom: 15px; padding: 12px; background: #fff; border: 2px solid #28a745; border-radius: 6px;">
+            <h4 style="margin: 0 0 10px 0; font-size: 0.9rem; color: #28a745;">🧪 Calibration pH 4.0 (acide)</h4>
+            <p style="margin: 0 0 10px 0; font-size: 0.8rem; color: #6c757d;">Rincez la sonde et plongez-la dans la solution tampon pH 4.0</p>
+            <button type="button" id="ph_cal_acid_btn" style="width: 100%; padding: 10px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; font-size: 0.9rem;">Calibrer pH 4.0</button>
+            <div id="ph_cal_acid_status" style="margin-top: 8px; font-size: 0.8rem; color: #6c757d; text-align: center;">—</div>
+          </div>
+
+          <button type="button" id="ph_cal_reset_btn" style="width: 100%; padding: 10px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; margin-bottom: 10px; font-size: 0.9rem;">🔄 Réinitialiser la calibration</button>
+
+          <div style="margin: 0; padding: 12px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
+            <div style="font-size: 0.85rem; color: #856404; line-height: 1.6;">
+              <strong>⚠️ Instructions importantes:</strong><br>
+              1. <strong>Commencez toujours par pH 7.0</strong> (point neutre)<br>
+              2. Rincez bien la sonde entre les deux calibrations<br>
+              3. Attendez que la lecture se stabilise avant de calibrer<br>
+              4. La température est automatiquement compensée<br>
+              5. Les valeurs sont sauvegardées en mémoire non-volatile
+            </div>
+          </div>
         </div>
 
         <div id="ph_regulation_section" style="padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
@@ -295,6 +328,14 @@
               <div><strong>Date :</strong> <span id="orp_calibration_date">—</span></div>
             </div>
           </div>
+
+          <!-- Affichage de la valeur ORP en temps réel -->
+          <div style="margin-bottom: 15px; padding: 15px; background: #fff; border: 2px solid #6c757d; border-radius: 6px; text-align: center;">
+            <div style="font-size: 0.85rem; color: #6c757d; margin-bottom: 8px; font-weight: 600;">Valeur ORP actuelle :</div>
+            <div id="orp_current_value" style="font-size: 2rem; font-weight: bold; color: #007bff; font-family: 'Courier New', monospace;">--</div>
+            <div style="font-size: 0.75rem; color: #6c757d; margin-top: 4px;">Mise à jour automatique toutes les 2 secondes</div>
+          </div>
+
           <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
             <label style="flex: 0 0 auto; margin: 0;">Valeur de référence (mV) :</label>
             <input type="number" id="orp_reference_value" min="0" max="1000" step="1" placeholder="ex: 650" style="flex: 1; min-width: 0;">
@@ -426,10 +467,23 @@
       const timeTimezone = document.getElementById('time_timezone');
       const phSensorPin = document.getElementById('ph_sensor_pin');
       const orpSensorPin = document.getElementById('orp_sensor_pin');
-      const phReferenceValue = document.getElementById('ph_reference_value');
+
+      // Éléments calibration pH
+      // Calibration pH (DFRobot SEN0161-V2)
+      const phCalNeutralBtn = document.getElementById('ph_cal_neutral_btn');
+      const phCalNeutralStatus = document.getElementById('ph_cal_neutral_status');
+      const phCalAcidBtn = document.getElementById('ph_cal_acid_btn');
+      const phCalAcidStatus = document.getElementById('ph_cal_acid_status');
+      const phCalResetBtn = document.getElementById('ph_cal_reset_btn');
+      const phCalStatus = document.getElementById('ph_cal_status');
+      const phCalDate = document.getElementById('ph_cal_date');
+      const phCurrentValue = document.getElementById('ph_current_value');
+
+      // Éléments calibration ORP
       const orpReferenceValue = document.getElementById('orp_reference_value');
-      const phCalibrateBtn = document.getElementById('ph_calibrate_btn');
       const orpCalibrateBtn = document.getElementById('orp_calibrate_btn');
+      const orpCurrentValue = document.getElementById('orp_current_value');
+
       const phCalibrationSection = document.getElementById('ph_calibration_section');
       const orpCalibrationSection = document.getElementById('orp_calibration_section');
       const phRegulationSection = document.getElementById('ph_regulation_section');
@@ -438,6 +492,8 @@
       let timeRefreshTimer = null;
       let cachedManualStart = filtrationStart.value;
       let cachedManualEnd = filtrationEnd.value;
+
+      // DFRobot_PH gère la calibration automatiquement - plus besoin de mode
 
       function updateFiltrationControls(applyCache = false) {
         const mode = filtrationMode.value;
@@ -640,19 +696,65 @@
           .then(data => {
             latestSensorData = data;
             console.log('[SENSOR DATA] Loaded:', data);
+
+            // Mettre à jour l'affichage de la valeur pH actuelle
+            if (phCurrentValue) {
+              if (data.ph !== null && data.ph !== undefined && typeof data.ph === 'number' && !isNaN(data.ph)) {
+                phCurrentValue.textContent = data.ph.toFixed(2);
+                // Changer la couleur selon la valeur pH
+                if (data.ph < 6.8) {
+                  phCurrentValue.style.color = '#dc3545'; // Rouge (acide)
+                } else if (data.ph > 7.8) {
+                  phCurrentValue.style.color = '#ffc107'; // Orange (basique)
+                } else {
+                  phCurrentValue.style.color = '#28a745'; // Vert (optimal)
+                }
+              } else {
+                phCurrentValue.textContent = '--';
+                phCurrentValue.style.color = '#6c757d';
+              }
+            }
+
+            // Mettre à jour l'affichage de la valeur ORP actuelle
+            if (orpCurrentValue) {
+              if (data.orp !== null && data.orp !== undefined && typeof data.orp === 'number' && !isNaN(data.orp)) {
+                orpCurrentValue.textContent = Math.round(data.orp) + ' mV';
+                // Changer la couleur selon la valeur ORP
+                if (data.orp < 650) {
+                  orpCurrentValue.style.color = '#dc3545'; // Rouge (trop bas)
+                } else if (data.orp > 750) {
+                  orpCurrentValue.style.color = '#ffc107'; // Orange (trop haut)
+                } else {
+                  orpCurrentValue.style.color = '#28a745'; // Vert (optimal)
+                }
+              } else {
+                orpCurrentValue.textContent = '--';
+                orpCurrentValue.style.color = '#6c757d';
+              }
+            }
           })
           .catch(err => {
             console.error('[SENSOR DATA] Error loading:', err);
+            if (phCurrentValue) {
+              phCurrentValue.textContent = 'Erreur';
+              phCurrentValue.style.color = '#dc3545';
+            }
+            if (orpCurrentValue) {
+              orpCurrentValue.textContent = 'Erreur';
+              orpCurrentValue.style.color = '#dc3545';
+            }
           });
       }
 
       // Charger les données au démarrage
       loadSensorData();
 
-      // Rafraîchir les données toutes les 5 secondes
-      setInterval(loadSensorData, 5000);
+      // Rafraîchir les données toutes les 2 secondes (utile pour la calibration)
+      setInterval(loadSensorData, 2000);
 
-      fetch('/get-config')
+      // Fonction pour charger la configuration
+      function loadConfig() {
+        return fetch('/get-config')
         .then(res => res.json())
         .then(cfg => {
           document.getElementById('mqtt_server').value = cfg.server || '';
@@ -672,29 +774,40 @@
           phSensorPin.value = (typeof cfg.ph_sensor_pin === 'number') ? cfg.ph_sensor_pin.toString() : '35';
           orpSensorPin.value = (typeof cfg.orp_sensor_pin === 'number') ? cfg.orp_sensor_pin.toString() : '34';
 
-          // Afficher les offsets de calibration
-          const phOffsetEl = document.getElementById('ph_current_offset');
-          const orpOffsetEl = document.getElementById('orp_current_offset');
+          // Afficher les informations de calibration pH (DFRobot SEN0161-V2)
+          const phCalValid = cfg.ph_cal_valid === true;
+          const phCalibrationDate = cfg.ph_calibration_date || '';
+          const phCalibrationTemp = cfg.ph_calibration_temp;
 
-          // Vérifier si pH a été calibré
-          const phCalibrated = cfg.ph_calibration_date && cfg.ph_calibration_date !== '';
-
-          if (phOffsetEl) {
-            const phOffset = cfg.ph_calibration_offset || 0;
-            if (!phCalibrated) {
-              phOffsetEl.textContent = 'Non calibré';
-              phOffsetEl.style.color = '#dc3545';
-              phOffsetEl.style.fontWeight = '500';
-            } else if (phOffset === 0) {
-              phOffsetEl.textContent = 'Aucun (0.00)';
-              phOffsetEl.style.color = '#6c757d';
-              phOffsetEl.style.fontWeight = '600';
+          if (phCalStatus) {
+            if (phCalValid) {
+              phCalStatus.textContent = 'Calibré ✓';
+              phCalStatus.style.color = '#28a745';
+              phCalStatus.style.fontWeight = '600';
             } else {
-              phOffsetEl.textContent = `${phOffset >= 0 ? '+' : ''}${phOffset.toFixed(2)} pH`;
-              phOffsetEl.style.color = '#007bff';
-              phOffsetEl.style.fontWeight = '600';
+              phCalStatus.textContent = 'Non calibré';
+              phCalStatus.style.color = '#dc3545';
+              phCalStatus.style.fontWeight = '500';
             }
           }
+
+          if (phCalDate && phCalibrationDate) {
+            const date = new Date(phCalibrationDate);
+            let dateInfo = 'Dernière calibration : ' + date.toLocaleDateString('fr-FR', {
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit'
+            });
+            if (phCalibrationTemp && !isNaN(phCalibrationTemp)) {
+              dateInfo += ` (${phCalibrationTemp.toFixed(1)}°C)`;
+            }
+            phCalDate.textContent = dateInfo;
+          }
+
+          // Calibration ORP
+          const orpOffsetEl = document.getElementById('orp_current_offset');
 
           // Afficher les informations complètes de calibration ORP
           const orpCalibrated = cfg.orp_calibration_date && cfg.orp_calibration_date !== '';
@@ -775,7 +888,12 @@
           wifiModeEl.textContent = cfg.wifi_mode || '—';
           wifiMdnsEl.textContent = cfg.mdns_host || 'poolcontroller.local';
         });
+      }
 
+      // Charger la configuration au démarrage
+      loadConfig();
+
+      // Event listeners
       toggle.addEventListener('change', () => {
         sendConfig(collectConfig());
       });
@@ -845,38 +963,115 @@
         sendConfig(collectConfig());
       });
 
-      // Calibration button handlers
-      phCalibrateBtn.addEventListener('click', () => {
-        const referenceValue = parseFloat(phReferenceValue.value);
-        if (isNaN(referenceValue) || referenceValue < 0 || referenceValue > 14) {
-          alert('Veuillez entrer une valeur de référence pH valide (0-14)');
+      // Calibration pH - Point neutre (pH 7.0) - DFRobot SEN0161-V2
+      phCalNeutralBtn.addEventListener('click', () => {
+        if (!confirm('Assurez-vous que la sonde est plongée dans la solution tampon pH 7.0 et que la lecture est stable.\n\nContinuer la calibration ?')) {
           return;
         }
 
-        // Fetch current pH reading
-        fetch('/data')
+        phCalNeutralBtn.disabled = true;
+        phCalNeutralStatus.textContent = '⏳ Calibration en cours...';
+        phCalNeutralStatus.style.color = '#ffc107';
+
+        // Appeler l'API de calibration (à implémenter côté serveur)
+        fetch('/calibrate_ph_neutral', { method: 'POST' })
           .then(res => res.json())
           .then(data => {
-            const currentPh = data.ph;
-            if (isNaN(currentPh)) {
-              alert('Impossible de lire la valeur pH actuelle');
-              return;
+            if (data.success) {
+              phCalNeutralStatus.textContent = '✓ Calibré avec succès';
+              phCalNeutralStatus.style.color = '#28a745';
+
+              // Mettre à jour la date de calibration
+              const config = collectConfig();
+              config.ph_calibration_date = new Date().toISOString();
+              config.ph_calibration_temp = data.temperature || null;
+              sendConfig(config);
+
+              alert('Calibration pH 7.0 réussie!\n\nVous pouvez maintenant calibrer le point pH 4.0 pour une calibration 2 points.');
+              setTimeout(() => loadConfig(), 500);
+            } else {
+              throw new Error(data.error || 'Calibration échouée');
             }
-
-            // Calculate offset: reference - current
-            const offset = referenceValue - currentPh;
-
-            // Save configuration with new offset
-            const config = collectConfig();
-            config.ph_calibration_offset = offset;
-            sendConfig(config);
-
-            alert(`Calibration pH effectuée\nValeur actuelle : ${currentPh.toFixed(1)}\nRéférence : ${referenceValue.toFixed(1)}\nOffset appliqué : ${offset.toFixed(2)}`);
-            phReferenceValue.value = '';
           })
           .catch(err => {
-            alert('Erreur lors de la calibration pH');
-            console.error(err);
+            phCalNeutralStatus.textContent = '❌ Erreur';
+            phCalNeutralStatus.style.color = '#dc3545';
+            alert('Erreur lors de la calibration pH 7.0:\n' + err.message);
+          })
+          .finally(() => {
+            phCalNeutralBtn.disabled = false;
+          });
+      });
+
+      // Calibration pH - Point acide (pH 4.0) - DFRobot SEN0161-V2
+      phCalAcidBtn.addEventListener('click', () => {
+        if (!confirm('Assurez-vous que la sonde est plongée dans la solution tampon pH 4.0 et que la lecture est stable.\n\nATTENTION: Calibrez d\'abord le pH 7.0 si ce n\'est pas déjà fait!\n\nContinuer la calibration ?')) {
+          return;
+        }
+
+        phCalAcidBtn.disabled = true;
+        phCalAcidStatus.textContent = '⏳ Calibration en cours...';
+        phCalAcidStatus.style.color = '#ffc107';
+
+        // Appeler l'API de calibration (à implémenter côté serveur)
+        fetch('/calibrate_ph_acid', { method: 'POST' })
+          .then(res => res.json())
+          .then(data => {
+            if (data.success) {
+              phCalAcidStatus.textContent = '✓ Calibré avec succès';
+              phCalAcidStatus.style.color = '#28a745';
+
+              // Mettre à jour la date de calibration
+              const config = collectConfig();
+              config.ph_calibration_date = new Date().toISOString();
+              config.ph_calibration_temp = data.temperature || null;
+              sendConfig(config);
+
+              alert('Calibration pH 4.0 réussie!\n\nVotre sonde pH est maintenant calibrée avec 2 points (pH 4.0 et 7.0).');
+              setTimeout(() => loadConfig(), 500);
+            } else {
+              throw new Error(data.error || 'Calibration échouée');
+            }
+          })
+          .catch(err => {
+            phCalAcidStatus.textContent = '❌ Erreur';
+            phCalAcidStatus.style.color = '#dc3545';
+            alert('Erreur lors de la calibration pH 4.0:\n' + err.message);
+          })
+          .finally(() => {
+            phCalAcidBtn.disabled = false;
+          });
+      });
+
+      // Réinitialiser calibration pH - DFRobot SEN0161-V2
+      phCalResetBtn.addEventListener('click', () => {
+        if (!confirm('⚠️ ATTENTION: Cela effacera toute la calibration pH!\n\nVoulez-vous vraiment réinitialiser la calibration pH ?')) {
+          return;
+        }
+
+        phCalResetBtn.disabled = true;
+
+        // Appeler l'API de réinitialisation (à implémenter côté serveur)
+        fetch('/clear_ph_calibration', { method: 'POST' })
+          .then(res => res.json())
+          .then(data => {
+            if (data.success) {
+              const config = collectConfig();
+              config.ph_calibration_date = '';
+              config.ph_calibration_temp = null;
+              sendConfig(config);
+
+              alert('Calibration pH réinitialisée!\n\nVous devrez recalibrer la sonde (pH 7.0 puis pH 4.0).');
+              setTimeout(() => loadConfig(), 500);
+            } else {
+              throw new Error(data.error || 'Réinitialisation échouée');
+            }
+          })
+          .catch(err => {
+            alert('Erreur lors de la réinitialisation:\n' + err.message);
+          })
+          .finally(() => {
+            phCalResetBtn.disabled = false;
           });
       });
 

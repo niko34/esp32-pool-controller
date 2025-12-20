@@ -120,7 +120,10 @@
         <canvas id="orpChart"></canvas>
       </div>
       <div class="chart-block">
-        <p class="chart-title">pH</p>
+        <p class="chart-title">
+          pH
+          <span id="ph-calibration-badge" style="display: none; margin-left: 8px; font-size: 0.75rem; font-weight: 600; color: #dc3545;">Calibration nécessaire</span>
+        </p>
         <canvas id="phChart"></canvas>
       </div>
     </div>
@@ -176,28 +179,70 @@
           if (!res.ok) return;
           const config = await res.json();
 
-          const badgeEl = document.getElementById('orp-calibration-badge');
-          if (!badgeEl) return;
+          const threeMonthsInDays = 90;
+          const now = new Date();
 
-          const calibrationDate = config.orp_calibration_date;
-          if (!calibrationDate) {
-            // Pas de date de calibration, afficher le badge
-            badgeEl.style.display = 'inline';
-            return;
+          // Vérifier calibration pH (DFRobot_PH)
+          const phBadgeEl = document.getElementById('ph-calibration-badge');
+          if (phBadgeEl) {
+            const phCalValid = config.ph_cal_valid === true;
+            const phCalibrationDate = config.ph_calibration_date;
+
+            if (!phCalValid || !phCalibrationDate) {
+              // Pas de calibration valide, afficher le badge
+              phBadgeEl.style.display = 'inline';
+            } else {
+              // Vérifier si la calibration est trop ancienne (>3 mois)
+              // phCalibrationDate peut être une date ISO 8601 ou un timestamp
+              let calDate;
+
+              // Essayer de parser comme date ISO 8601
+              calDate = new Date(phCalibrationDate);
+
+              // Si la date est invalide, essayer comme timestamp en millisecondes
+              if (isNaN(calDate.getTime())) {
+                const timestamp = parseInt(phCalibrationDate);
+                if (!isNaN(timestamp)) {
+                  calDate = new Date(timestamp);
+                }
+              }
+
+              // Vérifier si on a une date valide
+              if (calDate && !isNaN(calDate.getTime())) {
+                const calDays = (now - calDate) / (1000 * 60 * 60 * 24);
+
+                if (calDays > threeMonthsInDays) {
+                  phBadgeEl.style.display = 'inline';
+                } else {
+                  phBadgeEl.style.display = 'none';
+                }
+              } else {
+                // Format de date invalide, afficher le badge
+                phBadgeEl.style.display = 'inline';
+              }
+            }
           }
 
-          const calibDate = new Date(calibrationDate);
-          const now = new Date();
-          const diffMs = now - calibDate;
-          const diffDays = diffMs / (1000 * 60 * 60 * 24);
-          const threeMonthsInDays = 90;
+          // Vérifier calibration ORP (1 point)
+          const orpBadgeEl = document.getElementById('orp-calibration-badge');
+          if (orpBadgeEl) {
+            const calibrationDate = config.orp_calibration_date;
+            if (!calibrationDate) {
+              // Pas de date de calibration, afficher le badge
+              orpBadgeEl.style.display = 'inline';
+            } else {
+              const calibDate = new Date(calibrationDate);
+              const diffMs = now - calibDate;
+              const diffDays = diffMs / (1000 * 60 * 60 * 24);
 
-          if (diffDays > threeMonthsInDays) {
-            // Calibration obsolète, afficher le badge
-            badgeEl.style.display = 'inline';
-          } else {
-            // Calibration OK, cacher le badge
-            badgeEl.style.display = 'none';
+              if (diffDays > threeMonthsInDays) {
+                // Calibration obsolète, afficher le badge
+                orpBadgeEl.style.display = 'inline';
+              } else {
+                // Calibration OK, cacher le badge
+                orpBadgeEl.style.display = 'none';
+              }
+            }
           }
         } catch (err) {
           console.error('checkCalibrationDate error', err);

@@ -29,7 +29,7 @@ void applyTimeConfig();
 void checkSystemHealth();
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200);
   delay(1000);
 
   systemLogger.info("=== Démarrage ESP32 Pool Controller v2.0 ===");

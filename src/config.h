@@ -11,7 +11,7 @@
 #define PUMP2_CHANNEL 1
 #define PUMP_PWM_FREQ 1000   // 1kHz PWM
 #define PUMP_PWM_RES_BITS 8  // 8-bit resolution (0-255)
-#define TEMP_SENSOR_PIN 4
+#define TEMP_SENSOR_PIN 5
 #define FILTRATION_RELAY_PIN 27
 
 // ==== Constantes ====
@@ -49,15 +49,19 @@ struct MqttConfig {
   int phSensorPin = 35;               // GPIO pour capteur pH (-1 = pas de capteur)
   int orpSensorPin = 34;              // GPIO pour capteur ORP (-1 = pas de capteur)
 
-  // Calibration pH
-  float phCalibrationOffset = 0.0f;   // Offset de calibration pH
-  String phCalibrationDate = "";      // Date de calibration pH (ISO 8601)
-  float phCalibrationTemp = NAN;      // Température lors de la calibration pH (°C)
+  // Calibration pH (géré par DFRobot_PH en EEPROM)
+  // La librairie DFRobot_PH gère automatiquement:
+  // - Calibration 1 point (pH neutre, pH 7.0)
+  // - Calibration 2 points (pH acide 4.0 + pH alcalin 9.18)
+  // - Compensation automatique de température
+  String phCalibrationDate = "";      // Date de dernière calibration (ISO 8601)
+  float phCalibrationTemp = NAN;      // Température lors de la calibration (°C)
 
-  // Calibration ORP
+  // Calibration ORP (1 point)
   float orpCalibrationOffset = 0.0f;  // Offset de calibration ORP (mV)
   String orpCalibrationDate = "";     // Date de calibration ORP (ISO 8601)
   float orpCalibrationReference = 0.0f; // Valeur de référence utilisée (mV)
+  float orpCalibrationTemp = NAN;     // Température lors de la calibration ORP (°C)
 };
 
 struct FiltrationConfig {
@@ -167,5 +171,9 @@ void applyMqttConfig();
 void sanitizePumpSelection();
 int sanitizePumpNumber(int pumpNumber, int defaultValue);
 int pumpIndexFromNumber(int pumpNumber);
+
+// Fonctions de calibration pH à 2 points
+void calculatePhCalibration();  // Calcule gain et offset depuis les 2 points
+bool isPhCalibrationValid();    // Vérifie si la calibration 2 points est valide
 
 #endif // CONFIG_H

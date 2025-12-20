@@ -3,6 +3,7 @@
 #include "logger.h"
 #include "mqtt_manager.h"
 #include <sys/time.h>
+#include <EEPROM.h>
 
 SensorManager sensors;
 
@@ -25,6 +26,18 @@ void SensorManager::begin() {
   }
   if (mqttCfg.phSensorPin >= 0) {
     analogSetPinAttenuation(mqttCfg.phSensorPin, ADC_11db);
+
+    // IMPORTANT: Sur ESP32, l'EEPROM doit être initialisé avant utilisation
+    // La librairie DFRobot_PH utilise les adresses 0-7 (8 bytes)
+    EEPROM.begin(512);  // Allouer 512 bytes pour l'EEPROM
+
+    // Initialiser le capteur pH DFRobot
+    phSensor.begin();
+
+    // Commit les changements EEPROM (nécessaire sur ESP32)
+    EEPROM.commit();
+
+    systemLogger.info("Capteur pH DFRobot SEN0161-V2 initialisé");
   }
 
   if (simulationCfg.enabled) {
@@ -81,6 +94,7 @@ void SensorManager::update() {
 void SensorManager::readRealSensors() {
   unsigned long now = millis();
   static unsigned long lastOrpDebugLog = 0;
+  static unsigned long lastPhDebugLog = 0;
 
   // Lecture non-bloquante de la température
   if (!tempRequestPending) {
@@ -101,7 +115,7 @@ void SensorManager::readRealSensors() {
   // Lecture analogique ORP et pH (seulement si les capteurs sont configurés)
   if (mqttCfg.orpSensorPin >= 0) {
     // Filtrage multi-échantillons pour réduire le bruit WiFi de l'ADC ESP32
-    const int numSamples = 20;  // Plus d'échantillons pour mieux filtrer
+    const int numSamples = 10;  // Échantillons pour filtrage
     int samples[numSamples];
     int sum = 0;
     int minVal = 4095;
@@ -154,21 +168,22 @@ void SensorManager::readRealSensors() {
   }
 
   if (mqttCfg.phSensorPin >= 0) {
-    // Moyennage sur plusieurs lectures pour réduire le bruit de l'ADC ESP32
-    const int numSamples = 10;
-    int sum = 0;
+    // Lire la tension analogique du capteur pH
+    float voltage = analogRead(mqttCfg.phSensorPin) / 4095.0f * 3300.0f;  // en mV
 
-    for (int i = 0; i < numSamples; i++) {
-      sum += analogRead(mqttCfg.phSensorPin);
-      delayMicroseconds(100);
+    // Utiliser la température pour la compensation (si disponible)
+    float temperature = isnan(tempValue) ? 25.0f : tempValue;
+
+    // Calculer le pH avec calibration automatique et compensation de température
+    phValue = phSensor.readPH(voltage, temperature);
+
+    // Debug: afficher les valeurs pH toutes les 2 secondes
+    static unsigned long lastPhDebugLog = 0;
+    if (now - lastPhDebugLog >= 5000) {
+      Serial.printf("[pH DEBUG] GPIO=%d | Voltage=%.2f mV | Temp=%.1f°C | pH=%.2f\n",
+                    mqttCfg.phSensorPin, voltage, temperature, phValue);
+      lastPhDebugLog = now;
     }
-
-    int rawPh = sum / numSamples;
-
-    // Conversion basique (à calibrer selon vos capteurs)
-    float rawPhValue = (rawPh / 4095.0f) * 14.0f;
-    // Appliquer l'offset de calibration
-    phValue = rawPhValue + mqttCfg.phCalibrationOffset;
   } else {
     phValue = NAN;  // Pas de capteur configuré
   }
@@ -358,7 +373,9 @@ float SensorManager::getRawOrp() const {
 }
 
 float SensorManager::getRawPh() const {
-  return phValue - mqttCfg.phCalibrationOffset;
+  // Avec DFRobot_PH, la librairie gère la calibration en interne
+  // On retourne la valeur calibrée directement
+  return phValue;
 }
 
 void SensorManager::publishValues() {
@@ -366,4 +383,86 @@ void SensorManager::publishValues() {
 
   // Cette fonction est appelée par mqtt_manager
   // On la laisse vide ici pour éviter la dépendance circulaire
+}
+
+// ========== Calibration pH (DFRobot_PH) ==========
+
+void SensorManager::calibratePhNeutral() {
+  if (mqttCfg.phSensorPin >= 0) {
+    // Lire la tension actuelle
+    float voltage = analogRead(mqttCfg.phSensorPin) / 4095.0f * 3300.0f;
+
+    // Utiliser la température pour la compensation
+    float temperature = isnan(tempValue) ? 25.0f : tempValue;
+
+    // Processus de calibration DFRobot_PH en 3 étapes:
+    // 1. Entrer en mode calibration
+    phSensor.calibration(voltage, temperature, (char*)"enterph");
+
+    // 2. Calibrer (reconnaît automatiquement pH 7.0)
+    phSensor.calibration(voltage, temperature, (char*)"calph");
+
+    // 3. Sauvegarder et sortir
+    phSensor.calibration(voltage, temperature, (char*)"exitph");
+
+    // IMPORTANT: Sur ESP32, commit les changements EEPROM
+    EEPROM.commit();
+
+    systemLogger.info("Calibration pH point neutre (7.0) effectuée à " + String(temperature, 1) + "°C (voltage: " + String(voltage, 2) + " mV)");
+  }
+}
+
+void SensorManager::calibratePhAcid() {
+  if (mqttCfg.phSensorPin >= 0) {
+    // Lire la tension actuelle
+    float voltage = analogRead(mqttCfg.phSensorPin) / 4095.0f * 3300.0f;
+
+    // Utiliser la température pour la compensation
+    float temperature = isnan(tempValue) ? 25.0f : tempValue;
+
+    // Processus de calibration DFRobot_PH en 3 étapes:
+    // 1. Entrer en mode calibration
+    phSensor.calibration(voltage, temperature, (char*)"enterph");
+
+    // 2. Calibrer (reconnaît automatiquement pH 4.0)
+    phSensor.calibration(voltage, temperature, (char*)"calph");
+
+    // 3. Sauvegarder et sortir
+    phSensor.calibration(voltage, temperature, (char*)"exitph");
+
+    // IMPORTANT: Sur ESP32, commit les changements EEPROM
+    EEPROM.commit();
+
+    systemLogger.info("Calibration pH point acide (4.0) effectuée à " + String(temperature, 1) + "°C (voltage: " + String(voltage, 2) + " mV)");
+  }
+}
+
+void SensorManager::calibratePhAlkaline() {
+  if (mqttCfg.phSensorPin >= 0) {
+    // Lire la tension actuelle
+    float voltage = analogRead(mqttCfg.phSensorPin) / 4095.0f * 3300.0f;
+
+    // Utiliser la température pour la compensation
+    float temperature = isnan(tempValue) ? 25.0f : tempValue;
+
+    // Note: DFRobot_PH ne supporte que 2 points (4.0 et 7.0)
+    // Pour pH 9.18, utiliser la calibration 2 points standard
+    systemLogger.warning("DFRobot_PH ne supporte que calibration 2 points (pH 4.0 et 7.0) - utilisez calibratePhAcid() et calibratePhNeutral()");
+  }
+}
+
+void SensorManager::clearPhCalibration() {
+  if (mqttCfg.phSensorPin >= 0) {
+    // Effacer l'EEPROM utilisé par DFRobot_PH (adresses 0-7)
+    for (int i = 0; i < 8; i++) {
+      EEPROM.write(i, 0xFF);
+    }
+    EEPROM.commit();
+
+    // Réinitialiser le capteur pH avec les valeurs par défaut
+    phSensor.begin();
+    EEPROM.commit();
+
+    systemLogger.info("Calibration pH effacée - réinitialisée aux valeurs par défaut");
+  }
 }

@@ -4,11 +4,13 @@
 #include <Arduino.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <DFRobot_PH.h>
 
 class SensorManager {
 private:
   OneWire* oneWire;
   DallasTemperature* tempSensor;
+  DFRobot_PH phSensor;
 
   float orpValue = 0.0f;
   float phValue = 0.0f;
@@ -70,6 +72,12 @@ public:
   // Setters pour simulation
   void setPhDoseActive(bool active, float flowMlPerMin = 0.0f);
   void setOrpDoseActive(bool active, float flowMlPerMin = 0.0f);
+
+  // Calibration pH (DFRobot_PH)
+  void calibratePhNeutral();         // Calibration point neutre (pH 7.0)
+  void calibratePhAcid();            // Calibration point acide (pH 4.0)
+  void calibratePhAlkaline();        // Calibration point alcalin (pH 9.18)
+  void clearPhCalibration();         // Effacer calibration
 
   // Publication des valeurs
   void publishValues();

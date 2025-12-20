@@ -77,8 +77,8 @@ void saveMqttConfig() {
   prefs.putInt("ph_limit_sec", mqttCfg.phInjectionLimitSeconds);
   prefs.putInt("ph_pin", mqttCfg.phSensorPin);
 
-  // Calibration pH
-  prefs.putFloat("ph_cal_off", mqttCfg.phCalibrationOffset);
+  // Calibration pH (DFRobot_PH stocke ses données en EEPROM)
+  // On garde juste la date et température pour l'interface utilisateur
   prefs.putString("ph_cal_date", mqttCfg.phCalibrationDate);
   if (!isnan(mqttCfg.phCalibrationTemp)) {
     prefs.putFloat("ph_cal_temp", mqttCfg.phCalibrationTemp);
@@ -91,10 +91,13 @@ void saveMqttConfig() {
   prefs.putInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
   prefs.putInt("orp_pin", mqttCfg.orpSensorPin);
 
-  // Calibration ORP
+  // Calibration ORP - 1 point
   prefs.putFloat("orp_cal_off", mqttCfg.orpCalibrationOffset);
   prefs.putString("orp_cal_date", mqttCfg.orpCalibrationDate);
   prefs.putFloat("orp_cal_ref", mqttCfg.orpCalibrationReference);
+  if (!isnan(mqttCfg.orpCalibrationTemp)) {
+    prefs.putFloat("orp_cal_temp", mqttCfg.orpCalibrationTemp);
+  }
 
   // Temps
   prefs.putBool("time_use_ntp", mqttCfg.timeUseNtp);
@@ -140,8 +143,7 @@ void loadMqttConfig() {
   mqttCfg.phInjectionLimitSeconds = prefs.getInt("ph_limit_sec", mqttCfg.phInjectionLimitSeconds);
   mqttCfg.phSensorPin = prefs.getInt("ph_pin", mqttCfg.phSensorPin);
 
-  // Calibration pH
-  mqttCfg.phCalibrationOffset = prefs.getFloat("ph_cal_off", mqttCfg.phCalibrationOffset);
+  // Calibration pH (DFRobot_PH stocke ses données en EEPROM)
   mqttCfg.phCalibrationDate = prefs.getString("ph_cal_date", "");
   mqttCfg.phCalibrationTemp = prefs.getFloat("ph_cal_temp", NAN);
 
@@ -152,10 +154,11 @@ void loadMqttConfig() {
   mqttCfg.orpInjectionLimitSeconds = prefs.getInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
   mqttCfg.orpSensorPin = prefs.getInt("orp_pin", mqttCfg.orpSensorPin);
 
-  // Calibration ORP
+  // Calibration ORP - 1 point
   mqttCfg.orpCalibrationOffset = prefs.getFloat("orp_cal_off", mqttCfg.orpCalibrationOffset);
   mqttCfg.orpCalibrationDate = prefs.getString("orp_cal_date", "");
   mqttCfg.orpCalibrationReference = prefs.getFloat("orp_cal_ref", 0.0f);
+  mqttCfg.orpCalibrationTemp = prefs.getFloat("orp_cal_temp", NAN);
 
   // Temps
   mqttCfg.timeUseNtp = prefs.getBool("time_use_ntp", mqttCfg.timeUseNtp);
@@ -185,4 +188,18 @@ void loadMqttConfig() {
 
 void applyMqttConfig() {
   // Cette fonction sera implémentée dans mqtt_manager.cpp
+}
+
+// ==== Fonctions de calibration pH (DFRobot_PH) ====
+// La calibration est maintenant gérée par la librairie DFRobot_PH
+// qui stocke les données directement en EEPROM
+
+void calculatePhCalibration() {
+  // Fonction conservée pour compatibilité mais non utilisée
+  // La calibration est gérée par DFRobot_PH
+}
+
+bool isPhCalibrationValid() {
+  // Vérifier si une calibration a été effectuée
+  return !mqttCfg.phCalibrationDate.isEmpty();
 }
