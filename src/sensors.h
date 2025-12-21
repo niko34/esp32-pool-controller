@@ -2,24 +2,22 @@
 #define SENSORS_H
 
 #include <Arduino.h>
+#include <DFRobot_PH.h>
+#include <Adafruit_ADS1X15.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
-#include <DFRobot_PH.h>
 
 class SensorManager {
 private:
-  OneWire* oneWire;
-  DallasTemperature* tempSensor;
   DFRobot_PH phSensor;
+  Adafruit_ADS1115 ads;  // ADC 16 bits I2C
+  OneWire oneWire;
+  DallasTemperature tempSensor;
 
   float orpValue = 0.0f;
   float phValue = 0.0f;
   float tempValue = NAN;
   bool sensorsInitialized = false;
-
-  unsigned long lastTempRequest = 0;
-  bool tempRequestPending = false;
-  static const unsigned long TEMP_CONVERSION_TIME = 750; // ms pour DS18B20
 
   // Variables pour simulation - Horloge accélérée
   unsigned long lastSimulationUpdateMs = 0;

@@ -4,41 +4,52 @@
 #include "mqtt_manager.h"
 #include <sys/time.h>
 #include <EEPROM.h>
+#include <Wire.h>
 
 SensorManager sensors;
 
-SensorManager::SensorManager() : oneWire(nullptr), tempSensor(nullptr) {}
+SensorManager::SensorManager() : oneWire(5), tempSensor(&oneWire) {}
 
-SensorManager::~SensorManager() {
-  delete tempSensor;
-  delete oneWire;
-}
+SensorManager::~SensorManager() {}
 
 void SensorManager::begin() {
-  oneWire = new OneWire(TEMP_SENSOR_PIN);
-  tempSensor = new DallasTemperature(oneWire);
-  tempSensor->begin();
+  // Initialiser I2C (SDA=21, SCL=22 par défaut sur ESP32)
+  Wire.begin();
 
-  // Configuration de l'atténuation de l'ADC pour une meilleure précision
-  // ADC_11db = 0-3.3V (par défaut mais explicite)
-  if (mqttCfg.orpSensorPin >= 0) {
-    analogSetPinAttenuation(mqttCfg.orpSensorPin, ADC_11db);
+  // Initialiser l'ADS1115
+  if (!ads.begin()) {
+    systemLogger.error("ADS1115 non détecté sur le bus I2C !");
+  } else {
+    systemLogger.info("ADS1115 initialisé avec succès");
+
+    // Configuration du gain de l'ADS1115
+    // GAIN_TWO = +/- 2.048V (1 bit = 0.0625mV pour ADS1115 16 bits)
+    // Optimal pour les signaux 0-3.3V : meilleure résolution que GAIN_ONE
+    ads.setGain(GAIN_TWO);
+
+    // Configuration du data rate pour précision maximale
+    // 8 SPS (samples per second) = mesure la plus précise et stable
+    // Temps de conversion: ~125ms par échantillon
+    ads.setDataRate(RATE_ADS1115_8SPS);
+
+    systemLogger.info("ADS1115 configuré : Gain=±2.048V (0.0625mV/bit), Data Rate=8 SPS");
   }
-  if (mqttCfg.phSensorPin >= 0) {
-    analogSetPinAttenuation(mqttCfg.phSensorPin, ADC_11db);
 
-    // IMPORTANT: Sur ESP32, l'EEPROM doit être initialisé avant utilisation
-    // La librairie DFRobot_PH utilise les adresses 0-7 (8 bytes)
-    EEPROM.begin(512);  // Allouer 512 bytes pour l'EEPROM
+  // Initialiser le capteur de température DS18B20 sur GPIO 5
+  tempSensor.begin();
+  systemLogger.info("Capteur de température DS18B20 initialisé sur GPIO 5");
 
-    // Initialiser le capteur pH DFRobot
-    phSensor.begin();
+  // IMPORTANT: Sur ESP32, l'EEPROM doit être initialisé avant utilisation
+  // La librairie DFRobot_PH utilise les adresses 0-7 (8 bytes)
+  EEPROM.begin(512);  // Allouer 512 bytes pour l'EEPROM
 
-    // Commit les changements EEPROM (nécessaire sur ESP32)
-    EEPROM.commit();
+  // Initialiser le capteur pH DFRobot
+  phSensor.begin();
 
-    systemLogger.info("Capteur pH DFRobot SEN0161-V2 initialisé");
-  }
+  // Commit les changements EEPROM (nécessaire sur ESP32)
+  EEPROM.commit();
+
+  systemLogger.info("Capteur pH DFRobot SEN0161-V2 initialisé");
 
   if (simulationCfg.enabled) {
     initializeSimulation();
@@ -95,71 +106,90 @@ void SensorManager::readRealSensors() {
   unsigned long now = millis();
   static unsigned long lastOrpDebugLog = 0;
   static unsigned long lastPhDebugLog = 0;
+  static unsigned long lastTempDebugLog = 0;
 
-  // Lecture non-bloquante de la température
-  if (!tempRequestPending) {
-    tempSensor->requestTemperatures();
-    tempRequestPending = true;
+  // ========== Lecture température DS18B20 sur GPIO 5 ==========
+  // Déclencher une requête de lecture (non-bloquant)
+  static unsigned long lastTempRequest = 0;
+  static bool tempRequested = false;
+
+  if (!tempRequested || (now - lastTempRequest >= 1000)) {
+    tempSensor.requestTemperatures();
+    tempRequested = true;
     lastTempRequest = now;
-  } else if (now - lastTempRequest >= TEMP_CONVERSION_TIME) {
-    float measuredTemp = tempSensor->getTempCByIndex(0);
-    if (measuredTemp > -55.0f && measuredTemp < 125.0f) {
-      tempValue = measuredTemp;
-    } else {
-      tempValue = NAN;
-      systemLogger.warning("Température hors limites: " + String(measuredTemp));
-    }
-    tempRequestPending = false;
   }
 
-  // Lecture analogique ORP et pH (seulement si les capteurs sont configurés)
-  if (mqttCfg.orpSensorPin >= 0) {
-    // Filtrage multi-échantillons pour réduire le bruit WiFi de l'ADC ESP32
-    const int numSamples = 10;  // Échantillons pour filtrage
-    int samples[numSamples];
-    int sum = 0;
-    int minVal = 4095;
-    int maxVal = 0;
+  // Lire la température (la conversion prend ~750ms pour 12-bit)
+  float measuredTemp = tempSensor.getTempCByIndex(0);
 
-    // Collecte des échantillons
+  if (measuredTemp != DEVICE_DISCONNECTED_C && measuredTemp > -55.0f && measuredTemp < 125.0f) {
+    // Arrondir à 1 décimale
+    tempValue = roundf(measuredTemp * 10.0f) / 10.0f;
+  } else {
+    tempValue = NAN;
+    if (now - lastTempDebugLog >= 5000) {
+      systemLogger.warning("DS18B20 non détecté ou température invalide");
+    }
+  }
+
+  // Debug température
+  if (now - lastTempDebugLog >= 5000) {
+    Serial.printf("[TEMP DEBUG] DS18B20 GPIO 5 | Temp=%.2f°C\n", tempValue);
+    lastTempDebugLog = now;
+  }
+
+  // ========== Lecture ORP via ADS1115 canal A1 ==========
+  if (mqttCfg.orpSensorPin >= 0) {
+    // Filtrage multi-échantillons pour réduire le bruit
+    const int numSamples = 10;
+    int16_t samples[numSamples];
+    int32_t sum = 0;
+    int16_t minVal = 32767;
+    int16_t maxVal = -32768;
+
+    // Collecte des échantillons depuis l'ADS1115 canal A1
     for (int i = 0; i < numSamples; i++) {
-      int reading = analogRead(mqttCfg.orpSensorPin);
+      int16_t reading = ads.readADC_SingleEnded(1);  // A1 pour ORP
       samples[i] = reading;
       sum += reading;
       if (reading < minVal) minVal = reading;
       if (reading > maxVal) maxVal = reading;
-      delayMicroseconds(200); // Pause pour éviter les lectures consécutives
+      delay(2);  // Petite pause entre lectures
     }
 
     // Tri des échantillons pour filtre médian
     for (int i = 0; i < numSamples - 1; i++) {
       for (int j = i + 1; j < numSamples; j++) {
         if (samples[i] > samples[j]) {
-          int temp = samples[i];
+          int16_t temp = samples[i];
           samples[i] = samples[j];
           samples[j] = temp;
         }
       }
     }
 
-    // Utiliser la médiane (plus robuste que la moyenne contre valeurs aberrantes)
-    int rawOrp = samples[numSamples / 2];
+    // Utiliser la médiane (plus robuste que la moyenne)
+    int16_t rawAdc = samples[numSamples / 2];
 
-    // Conversion pour module ORP 0-3.3V = 0-2000mV
-    // Tension mesurée: (rawOrp / 4095) * 3.3V
-    // ORP en mV: (Tension / 3.3V) * 2000mV = (rawOrp / 4095) * 2000
-    float rawOrpValue = (rawOrp / 4095.0f) * 2000.0f;
-    // Appliquer l'offset de calibration
-    orpValue = rawOrpValue + mqttCfg.orpCalibrationOffset;
+    // Conversion ADC -> Voltage (ADS1115 avec GAIN_TWO)
+    // 1 bit = 0.0625 mV, donc voltage en mV = rawAdc * 0.0625
+    float voltage = rawAdc * 0.0625f;
+
+    // Conversion voltage -> ORP
+    // Module ORP: 0-3.3V = 0-2000mV ORP
+    // ORP (mV) = (voltage / 3300) * 2000
+    float rawOrpValue = (voltage / 3300.0f) * 2000.0f;
+
+    // Appliquer l'offset de calibration et arrondir au mV
+    orpValue = roundf(rawOrpValue + mqttCfg.orpCalibrationOffset);
 
     // Debug: afficher les valeurs ORP toutes les 2 secondes
     if (now - lastOrpDebugLog >= 2000) {
-      float voltage = (rawOrp / 4095.0f) * 3.3f;
-      float voltageMin = (minVal / 4095.0f) * 3.3f;
-      float voltageMax = (maxVal / 4095.0f) * 3.3f;
-      float voltageAvg = (sum / (float)numSamples / 4095.0f) * 3.3f;
-      Serial.printf("[ORP DEBUG] GPIO=%d | Median ADC=%d | Avg ADC=%d | Min=%d Max=%d | V=%.3f (avg=%.3f min=%.3f max=%.3f) | ORP=%.1f mV\n",
-                    mqttCfg.orpSensorPin, rawOrp, sum/numSamples, minVal, maxVal,
+      float voltageMin = minVal * 0.0625f;
+      float voltageMax = maxVal * 0.0625f;
+      float voltageAvg = (sum / (float)numSamples) * 0.0625f;
+      Serial.printf("[ORP DEBUG] ADS1115 A1 | Median ADC=%d | Avg ADC=%d | Min=%d Max=%d | V=%.1f (avg=%.1f min=%.1f max=%.1f) | ORP=%.1f mV\n",
+                    rawAdc, (int)(sum/numSamples), minVal, maxVal,
                     voltage, voltageAvg, voltageMin, voltageMax, orpValue);
       lastOrpDebugLog = now;
     }
@@ -167,21 +197,50 @@ void SensorManager::readRealSensors() {
     orpValue = NAN;  // Pas de capteur configuré
   }
 
+  // ========== Lecture pH via ADS1115 canal A0 avec filtrage médian ==========
   if (mqttCfg.phSensorPin >= 0) {
-    // Lire la tension analogique du capteur pH
-    float voltage = analogRead(mqttCfg.phSensorPin) / 4095.0f * 3300.0f;  // en mV
+    // Prendre plusieurs échantillons pour filtrage médian (réduction du bruit)
+    const int numSamples = 11;  // Nombre impair pour médiane
+    int16_t samples[numSamples];
+
+    for (int i = 0; i < numSamples; i++) {
+      samples[i] = ads.readADC_SingleEnded(0);  // A0 pour pH
+      if (i < numSamples - 1) delay(5);  // Petite pause entre échantillons
+    }
+
+    // Tri par sélection pour trouver la médiane
+    for (int i = 0; i < numSamples - 1; i++) {
+      for (int j = i + 1; j < numSamples; j++) {
+        if (samples[i] > samples[j]) {
+          int16_t temp = samples[i];
+          samples[i] = samples[j];
+          samples[j] = temp;
+        }
+      }
+    }
+
+    // Utiliser la médiane (plus robuste que la moyenne)
+    int16_t rawAdc = samples[numSamples / 2];
+
+    // Conversion ADC -> Voltage en mV
+    // 1 bit = 0.0625 mV pour ADS1115 avec GAIN_TWO
+    float voltage = rawAdc * 0.0625f;
 
     // Utiliser la température pour la compensation (si disponible)
     float temperature = isnan(tempValue) ? 25.0f : tempValue;
 
     // Calculer le pH avec calibration automatique et compensation de température
-    phValue = phSensor.readPH(voltage, temperature);
+    // Arrondir à 1 décimale
+    phValue = roundf(phSensor.readPH(voltage, temperature) * 10.0f) / 10.0f;
 
-    // Debug: afficher les valeurs pH toutes les 2 secondes
-    static unsigned long lastPhDebugLog = 0;
+    // Debug: afficher les valeurs pH toutes les 5 secondes
     if (now - lastPhDebugLog >= 5000) {
-      Serial.printf("[pH DEBUG] GPIO=%d | Voltage=%.2f mV | Temp=%.1f°C | pH=%.2f\n",
-                    mqttCfg.phSensorPin, voltage, temperature, phValue);
+      int16_t minVal = samples[0];
+      int16_t maxVal = samples[numSamples - 1];
+      float voltageMin = minVal * 0.0625f;
+      float voltageMax = maxVal * 0.0625f;
+      Serial.printf("[pH DEBUG] ADS1115 A0 | Median ADC=%d | Min=%d Max=%d | V=%.1f (min=%.1f max=%.1f) | Temp=%.1f°C | pH=%.2f\n",
+                    rawAdc, minVal, maxVal, voltage, voltageMin, voltageMax, temperature, phValue);
       lastPhDebugLog = now;
     }
   } else {
@@ -389,8 +448,9 @@ void SensorManager::publishValues() {
 
 void SensorManager::calibratePhNeutral() {
   if (mqttCfg.phSensorPin >= 0) {
-    // Lire la tension actuelle
-    float voltage = analogRead(mqttCfg.phSensorPin) / 4095.0f * 3300.0f;
+    // Lire la tension actuelle depuis l'ADS1115 canal A0
+    int16_t rawAdc = ads.readADC_SingleEnded(0);
+    float voltage = rawAdc * 0.125f;  // Conversion en mV
 
     // Utiliser la température pour la compensation
     float temperature = isnan(tempValue) ? 25.0f : tempValue;
@@ -408,14 +468,15 @@ void SensorManager::calibratePhNeutral() {
     // IMPORTANT: Sur ESP32, commit les changements EEPROM
     EEPROM.commit();
 
-    systemLogger.info("Calibration pH point neutre (7.0) effectuée à " + String(temperature, 1) + "°C (voltage: " + String(voltage, 2) + " mV)");
+    systemLogger.info("Calibration pH point neutre (7.0) effectuée à " + String(temperature, 1) + "°C (ADC: " + String(rawAdc) + ", voltage: " + String(voltage, 2) + " mV)");
   }
 }
 
 void SensorManager::calibratePhAcid() {
   if (mqttCfg.phSensorPin >= 0) {
-    // Lire la tension actuelle
-    float voltage = analogRead(mqttCfg.phSensorPin) / 4095.0f * 3300.0f;
+    // Lire la tension actuelle depuis l'ADS1115 canal A0
+    int16_t rawAdc = ads.readADC_SingleEnded(0);
+    float voltage = rawAdc * 0.125f;  // Conversion en mV
 
     // Utiliser la température pour la compensation
     float temperature = isnan(tempValue) ? 25.0f : tempValue;
@@ -433,18 +494,12 @@ void SensorManager::calibratePhAcid() {
     // IMPORTANT: Sur ESP32, commit les changements EEPROM
     EEPROM.commit();
 
-    systemLogger.info("Calibration pH point acide (4.0) effectuée à " + String(temperature, 1) + "°C (voltage: " + String(voltage, 2) + " mV)");
+    systemLogger.info("Calibration pH point acide (4.0) effectuée à " + String(temperature, 1) + "°C (ADC: " + String(rawAdc) + ", voltage: " + String(voltage, 2) + " mV)");
   }
 }
 
 void SensorManager::calibratePhAlkaline() {
   if (mqttCfg.phSensorPin >= 0) {
-    // Lire la tension actuelle
-    float voltage = analogRead(mqttCfg.phSensorPin) / 4095.0f * 3300.0f;
-
-    // Utiliser la température pour la compensation
-    float temperature = isnan(tempValue) ? 25.0f : tempValue;
-
     // Note: DFRobot_PH ne supporte que 2 points (4.0 et 7.0)
     // Pour pH 9.18, utiliser la calibration 2 points standard
     systemLogger.warning("DFRobot_PH ne supporte que calibration 2 points (pH 4.0 et 7.0) - utilisez calibratePhAcid() et calibratePhNeutral()");
