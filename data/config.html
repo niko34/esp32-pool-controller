@@ -5,13 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Paramètres</title>
     <style>
+      * {
+        box-sizing: border-box;
+      }
       body {
         font-family: Arial, sans-serif;
         background-color: #f5f5f5;
         color: #333;
         text-align: center;
-        padding: 0;
+        padding: 10px;
         margin: 0;
+        min-height: 100vh;
       }
       .page-title {
         color: #007aff;
@@ -24,44 +28,126 @@
       .card {
         background: white;
         display: block;
-        padding: 20px;
+        padding: 15px;
         border-radius: 10px;
         box-shadow: 0 0 10px rgba(0,0,0,0.1);
         max-width: 360px;
-        margin: 40px auto 0 auto; /* Center form and add top spacing */
+        margin: 20px auto;
+        width: 100%;
+        min-height: 600px;
+      }
+
+      /* Tablette (min 768px) */
+      @media (min-width: 768px) {
+        body {
+          padding: 20px;
+        }
+        .card {
+          max-width: 720px;
+          padding: 25px;
+          margin: 30px auto;
+          min-height: 700px;
+        }
+      }
+
+      /* Desktop (min 1024px) */
+      @media (min-width: 1024px) {
+        body {
+          padding: 30px;
+        }
+        .card {
+          max-width: 1200px;
+          padding: 35px;
+          margin: 40px auto;
+          min-height: 800px;
+        }
+      }
+
+      /* Large desktop (min 1440px) */
+      @media (min-width: 1440px) {
+        .card {
+          max-width: 1400px;
+          padding: 40px;
+          min-height: 850px;
+        }
       }
       .top-link {
         text-align: left;
         margin-bottom: 12px;
       }
       .top-link a {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        text-decoration: none;
+        font-size: 0.95rem;
+        font-weight: 500;
         color: #007aff;
-        text-decoration: underline;
-        font-size: 14px;
+        transition: color 0.2s, transform 0.2s;
+        padding: 6px 10px;
+        border-radius: 12px;
+        background: rgba(0, 122, 255, 0.08);
+      }
+      .top-link a:hover {
+        color: #005bb5;
+        transform: translateY(-1px);
       }
       .tabs {
         display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
         margin-bottom: 15px;
         border-radius: 8px;
-        overflow: hidden;
-        border: 1px solid #d1d1d6;
       }
       .tab-button {
-        flex: 1;
-        padding: 10px;
-        border: none;
+        flex: 1 1 calc(33.333% - 4px);
+        min-width: 80px;
+        padding: 10px 6px;
+        border: 1px solid #d1d1d6;
         background-color: #f0f0f5;
         color: #333;
-        font-size: 15px;
+        font-size: 0.85rem;
         cursor: pointer;
         transition: background-color 0.2s, color 0.2s;
-      }
-      .tab-button + .tab-button {
-        border-left: 1px solid #d1d1d6;
+        border-radius: 6px;
       }
       .tab-button.active {
         background-color: #007aff;
         color: white;
+        border-color: #007aff;
+      }
+
+      /* Tablette: tabs plus larges */
+      @media (min-width: 768px) {
+        .tabs {
+          gap: 8px;
+        }
+        .tab-button {
+          flex: 1 1 auto;
+          min-width: 100px;
+          padding: 12px 16px;
+          font-size: 0.95rem;
+        }
+      }
+
+      /* Desktop: tabs en ligne */
+      @media (min-width: 1024px) {
+        .tabs {
+          flex-wrap: nowrap;
+          gap: 0;
+          overflow: hidden;
+          border: 1px solid #d1d1d6;
+        }
+        .tab-button {
+          flex: 1;
+          padding: 12px;
+          font-size: 1rem;
+          border: none;
+          border-radius: 0;
+        }
+        .tab-button + .tab-button {
+          border-left: 1px solid #d1d1d6;
+        }
       }
       .tab-panel {
         display: none;
@@ -121,37 +207,55 @@
       input {
         display: block;
         width: 100%;
-        margin: 10px 0;
+        margin: 8px 0;
         padding: 10px;
         font-size: 16px;
         box-sizing: border-box;
+        border: 1px solid #d1d1d6;
+        border-radius: 6px;
       }
       select {
         display: block;
         width: 100%;
-        margin: 10px 0;
+        margin: 8px 0;
         padding: 10px;
         font-size: 16px;
         box-sizing: border-box;
+        border: 1px solid #d1d1d6;
+        border-radius: 6px;
       }
       label {
         text-align: left;
         display: block;
         margin-top: 10px;
-        margin-bottom: 2px;
+        margin-bottom: 4px;
+        font-weight: 500;
+        font-size: 0.95rem;
+      }
+
+      /* Améliorer espacement et taille sur grands écrans */
+      @media (min-width: 768px) {
+        input, select {
+          padding: 12px;
+          margin: 10px 0;
+        }
+        label {
+          font-size: 1rem;
+        }
       }
       .info-block {
         margin: 10px 0;
         text-align: left;
         background-color: #f0f4ff;
-        padding: 10px;
-        border-radius: 6px;
-        font-size: 14px;
+        padding: 12px;
+        border-radius: 8px;
+        font-size: 0.9rem;
+        line-height: 1.6;
       }
       .info-label {
-        font-weight: bold;
+        font-weight: 600;
         display: inline-block;
-        min-width: 90px;
+        min-width: 100px;
       }
       .actions {
         margin-top: 15px;
@@ -162,20 +266,46 @@
         color: white;
         border: none;
         padding: 10px 20px;
-        font-size: 16px;
+        font-size: 0.95rem;
         cursor: pointer;
-        border-radius: 5px;
+        border-radius: 6px;
+        font-weight: 500;
+        transition: background-color 0.2s, transform 0.1s;
       }
       button:hover {
         background-color: #005bb5;
+        transform: translateY(-1px);
       }
-      @media (max-width: 480px) {
-        .card {
-          margin-top: 20px;
-          padding: 20px;
+      button:active {
+        transform: translateY(0);
+      }
+
+      /* Améliorer espacement et taille sur tablette */
+      @media (min-width: 768px) {
+        .info-block {
+          padding: 15px;
+          font-size: 1rem;
         }
+        .info-label {
+          min-width: 120px;
+        }
+        button {
+          padding: 12px 24px;
+          font-size: 1rem;
+        }
+      }
+
+      /* Ajustements mobiles */
+      @media (max-width: 480px) {
         .page-title {
           font-size: 1.6rem;
+        }
+        .top-link a {
+          font-size: 0.85rem;
+        }
+        .info-label {
+          min-width: 80px;
+          font-size: 0.85rem;
         }
       }
   </style>
@@ -193,6 +323,7 @@
         <button type="button" class="tab-button" data-tab="mqtt">MQTT</button>
         <button type="button" class="tab-button" data-tab="wifi">Wi-Fi</button>
         <button type="button" class="tab-button" data-tab="time">Horloge</button>
+        <button type="button" class="tab-button" data-tab="system">Système</button>
       </div>
 
       <div class="tab-panel active" data-tab="filtration">
@@ -433,6 +564,63 @@
 
         <div class="info-block" id="time_info" style="display:none;">
           <div><span class="info-label">Heure actuelle :</span><span id="time_current">—</span></div>
+        </div>
+      </div>
+
+      <!-- Onglet Système -->
+      <div class="tab-panel" data-tab="system">
+        <h3>Informations Système</h3>
+
+        <div class="info-block">
+          <div><span class="info-label">Version firmware :</span><span id="sys_firmware_version">—</span></div>
+          <div><span class="info-label">Build :</span><span id="sys_build_date">—</span></div>
+          <div><span class="info-label">Uptime :</span><span id="sys_uptime">—</span></div>
+        </div>
+
+        <div class="info-block">
+          <div><span class="info-label">Modèle puce :</span><span id="sys_chip_model">—</span></div>
+          <div><span class="info-label">Fréquence CPU :</span><span id="sys_cpu_freq">—</span></div>
+          <div><span class="info-label">Mémoire libre :</span><span id="sys_free_heap">—</span></div>
+          <div><span class="info-label">Taille flash :</span><span id="sys_flash_size">—</span></div>
+        </div>
+
+        <div class="info-block">
+          <div><span class="info-label">Système fichiers :</span><span id="sys_fs_usage">—</span></div>
+          <div><span class="info-label">WiFi RSSI :</span><span id="sys_wifi_rssi">—</span></div>
+          <div><span class="info-label">Adresse MAC :</span><span id="sys_mac_address">—</span></div>
+        </div>
+
+        <h3 style="margin-top: 24px;">Mise à jour OTA</h3>
+
+        <div class="info-block" style="background-color: #fff4e6; border-left: 4px solid #ff9500;">
+          <p style="margin: 0; font-size: 0.9rem;">
+            ⚠️ <strong>Attention :</strong> Ne coupez pas l'alimentation pendant la mise à jour.
+          </p>
+        </div>
+
+        <label>Type de mise à jour :</label>
+        <select id="update_type">
+          <option value="firmware">Firmware (.bin)</option>
+          <option value="filesystem">Système de fichiers (.littlefs.bin)</option>
+        </select>
+
+        <label>Fichier de mise à jour :</label>
+        <input type="file" id="update_file" accept=".bin" style="border: 2px dashed #d1d1d6; padding: 20px; text-align: center; cursor: pointer;">
+
+        <div id="update_progress" style="display:none; margin-top: 15px;">
+          <div style="background-color: #f0f0f5; border-radius: 10px; overflow: hidden; height: 30px;">
+            <div id="update_progress_bar" style="background-color: #007aff; height: 100%; width: 0%; transition: width 0.3s; display: flex; align-items: center; justify-content: center; color: white; font-weight: 600; font-size: 0.9rem;">
+              0%
+            </div>
+          </div>
+          <p id="update_status" style="margin-top: 8px; text-align: center; font-size: 0.9rem; color: #666;">
+            Préparation...
+          </p>
+        </div>
+
+        <div class="actions">
+          <button type="button" id="update_btn" disabled style="background-color: #34c759;">Mettre à jour</button>
+          <button type="button" id="refresh_info_btn" style="background-color: #666; margin-left: 10px;">Actualiser</button>
         </div>
       </div>
     </form>
@@ -1204,6 +1392,161 @@
 
       updateTimeControls();
       updateFiltrationControls();
+
+      // ========== Onglet Système ==========
+
+      const updateFileInput = document.getElementById('update_file');
+      const updateBtn = document.getElementById('update_btn');
+      const updateProgress = document.getElementById('update_progress');
+      const updateProgressBar = document.getElementById('update_progress_bar');
+      const updateStatus = document.getElementById('update_status');
+      const refreshInfoBtn = document.getElementById('refresh_info_btn');
+      const updateType = document.getElementById('update_type');
+
+      // Charger les informations système
+      function loadSystemInfo() {
+        fetch('/get-system-info')
+          .then(res => res.json())
+          .then(data => {
+            document.getElementById('sys_firmware_version').textContent = data.firmware_version || '—';
+            document.getElementById('sys_build_date').textContent = (data.build_date + ' ' + data.build_time) || '—';
+
+            // Uptime
+            const days = data.uptime_days || 0;
+            const hours = data.uptime_hours || 0;
+            const minutes = data.uptime_minutes || 0;
+            document.getElementById('sys_uptime').textContent = `${days}j ${hours}h ${minutes}min`;
+
+            // Informations matériel
+            document.getElementById('sys_chip_model').textContent = data.chip_model + ' rev' + data.chip_revision + ' (' + data.chip_cores + ' cores)';
+            document.getElementById('sys_cpu_freq').textContent = data.cpu_freq_mhz + ' MHz';
+
+            // Mémoire
+            const freeHeapKb = Math.round(data.free_heap / 1024);
+            const heapSizeKb = Math.round(data.heap_size / 1024);
+            const heapPercent = Math.round((data.free_heap / data.heap_size) * 100);
+            document.getElementById('sys_free_heap').textContent = `${freeHeapKb} KB / ${heapSizeKb} KB (${heapPercent}% libre)`;
+
+            // Flash
+            const flashSizeMb = Math.round(data.flash_size / (1024 * 1024));
+            document.getElementById('sys_flash_size').textContent = flashSizeMb + ' MB @ ' + Math.round(data.flash_speed / 1000000) + ' MHz';
+
+            // Système de fichiers
+            const fsUsedKb = Math.round(data.fs_used_bytes / 1024);
+            const fsTotalKb = Math.round(data.fs_total_bytes / 1024);
+            const fsPercent = Math.round((data.fs_used_bytes / data.fs_total_bytes) * 100);
+            document.getElementById('sys_fs_usage').textContent = `${fsUsedKb} KB / ${fsTotalKb} KB (${fsPercent}% utilisé)`;
+
+            // WiFi
+            document.getElementById('sys_wifi_rssi').textContent = data.wifi_rssi + ' dBm';
+            document.getElementById('sys_mac_address').textContent = data.wifi_mac || '—';
+          })
+          .catch(err => {
+            console.error('Erreur chargement infos système:', err);
+          });
+      }
+
+      // Activer/désactiver le bouton de mise à jour
+      updateFileInput.addEventListener('change', () => {
+        updateBtn.disabled = !updateFileInput.files || updateFileInput.files.length === 0;
+      });
+
+      // Gérer la mise à jour OTA
+      updateBtn.addEventListener('click', async () => {
+        const file = updateFileInput.files[0];
+        if (!file) {
+          alert('Veuillez sélectionner un fichier.');
+          return;
+        }
+
+        // Vérifier l'extension selon le type
+        const type = updateType.value;
+        if (type === 'filesystem' && !file.name.endsWith('.littlefs.bin') && !file.name.endsWith('.fs.bin')) {
+          if (!confirm('Le fichier ne semble pas être un fichier filesystem (.littlefs.bin). Continuer quand même ?')) {
+            return;
+          }
+        } else if (type === 'firmware' && !file.name.endsWith('.bin')) {
+          if (!confirm('Le fichier ne semble pas être un firmware (.bin). Continuer quand même ?')) {
+            return;
+          }
+        }
+
+        if (!confirm(`⚠️ ATTENTION\n\nVous allez mettre à jour le ${type === 'firmware' ? 'firmware' : 'système de fichiers'}.\n\n• Ne coupez PAS l'alimentation pendant la mise à jour\n• L'ESP32 redémarrera automatiquement après la mise à jour\n• Cette opération peut prendre quelques minutes\n\nContinuer ?`)) {
+          return;
+        }
+
+        // Désactiver les boutons
+        updateBtn.disabled = true;
+        updateFileInput.disabled = true;
+        updateType.disabled = true;
+        refreshInfoBtn.disabled = true;
+
+        // Afficher la progression
+        updateProgress.style.display = 'block';
+        updateProgressBar.style.width = '0%';
+        updateProgressBar.textContent = '0%';
+        updateStatus.textContent = 'Envoi du fichier...';
+
+        try {
+          const formData = new FormData();
+          formData.append('update', file);
+
+          const xhr = new XMLHttpRequest();
+
+          xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+              const percent = Math.round((e.loaded / e.total) * 100);
+              updateProgressBar.style.width = percent + '%';
+              updateProgressBar.textContent = percent + '%';
+              updateStatus.textContent = `Envoi: ${percent}%`;
+            }
+          });
+
+          xhr.addEventListener('load', () => {
+            if (xhr.status === 200) {
+              updateProgressBar.style.width = '100%';
+              updateProgressBar.textContent = '100%';
+              updateProgressBar.style.backgroundColor = '#34c759';
+              updateStatus.textContent = '✓ Mise à jour réussie! Redémarrage en cours...';
+
+              setTimeout(() => {
+                alert('Mise à jour réussie!\n\nL\'ESP32 redémarre. La page se rechargera automatiquement dans 30 secondes.');
+                setTimeout(() => {
+                  window.location.reload();
+                }, 30000);
+              }, 1000);
+            } else {
+              throw new Error('Erreur HTTP: ' + xhr.status);
+            }
+          });
+
+          xhr.addEventListener('error', () => {
+            throw new Error('Erreur réseau lors de l\'envoi');
+          });
+
+          xhr.open('POST', '/update');
+          xhr.send(formData);
+
+        } catch (error) {
+          updateProgressBar.style.backgroundColor = '#ff3b30';
+          updateStatus.textContent = '❌ Erreur: ' + error.message;
+          alert('Erreur lors de la mise à jour:\n' + error.message);
+
+          // Réactiver les boutons
+          updateBtn.disabled = false;
+          updateFileInput.disabled = false;
+          updateType.disabled = false;
+          refreshInfoBtn.disabled = false;
+        }
+      });
+
+      // Bouton actualiser
+      refreshInfoBtn.addEventListener('click', () => {
+        loadSystemInfo();
+      });
+
+      // Charger les infos système au chargement de la page
+      loadSystemInfo();
     </script>
   </body>
 </html>

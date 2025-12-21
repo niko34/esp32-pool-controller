@@ -6,9 +6,12 @@
 #include "pump_controller.h"
 #include "mqtt_manager.h"
 #include "history.h"
+#include "version.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <ESPAsyncWiFiManager.h>
+#include <Update.h>
+#include <esp_ota_ops.h>
 
 WebServerManager webServer;
 
@@ -62,6 +65,7 @@ void WebServerManager::setupRoutes() {
   server.on("/time-now", HTTP_GET, [this](AsyncWebServerRequest *req) { handleTimeNow(req); });
   server.on("/reboot-ap", HTTP_POST, [this](AsyncWebServerRequest *req) { handleRebootAp(req); });
   server.on("/export-csv", HTTP_GET, [this](AsyncWebServerRequest *req) { handleExportCsv(req); });
+  server.on("/get-system-info", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetSystemInfo(req); });
 
   server.on("/save-config", HTTP_POST,
     [](AsyncWebServerRequest *req) { req->send(200, "text/plain", "OK"); },
@@ -134,6 +138,23 @@ void WebServerManager::setupRoutes() {
     serializeJson(doc, response);
     req->send(200, "application/json", response);
   });
+
+  // Route pour mise à jour OTA (firmware ou filesystem)
+  server.on("/update", HTTP_POST,
+    [](AsyncWebServerRequest *req) {
+      bool success = !Update.hasError();
+      AsyncWebServerResponse *response = req->beginResponse(200, "text/plain", success ? "OK" : "FAIL");
+      response->addHeader("Connection", "close");
+      req->send(response);
+      if (success) {
+        delay(1000);
+        ESP.restart();
+      }
+    },
+    [this](AsyncWebServerRequest *req, const String& filename, size_t index, uint8_t *data, size_t len, bool final) {
+      handleOtaUpdate(req, filename, index, data, len, final);
+    }
+  );
 
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
 }
@@ -234,6 +255,16 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
   doc["orp_calibration_reference"] = mqttCfg.orpCalibrationReference;
   if (!isnan(mqttCfg.orpCalibrationTemp)) {
     doc["orp_calibration_temp"] = mqttCfg.orpCalibrationTemp;
+  }
+
+  // Heure actuelle (pour l'affichage dans la configuration)
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 0)) {
+    char buffer[25];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
+    doc["time_current"] = String(buffer);
+  } else {
+    doc["time_current"] = "unavailable";
   }
 
   String json;
@@ -438,6 +469,110 @@ void WebServerManager::handleExportCsv(AsyncWebServerRequest* request) {
   request->send(response);
 
   systemLogger.info("Export CSV généré: " + String(filename));
+}
+
+void WebServerManager::handleGetSystemInfo(AsyncWebServerRequest* request) {
+  DynamicJsonDocument doc(2048);
+
+  // Version firmware
+  doc["firmware_version"] = FIRMWARE_VERSION;
+  doc["build_date"] = FIRMWARE_BUILD_DATE;
+  doc["build_time"] = FIRMWARE_BUILD_TIME;
+
+  // Informations ESP32
+  doc["chip_model"] = ESP.getChipModel();
+  doc["chip_revision"] = ESP.getChipRevision();
+  doc["chip_cores"] = ESP.getChipCores();
+  doc["cpu_freq_mhz"] = ESP.getCpuFreqMHz();
+
+  // Mémoire
+  doc["free_heap"] = ESP.getFreeHeap();
+  doc["heap_size"] = ESP.getHeapSize();
+  doc["free_psram"] = ESP.getFreePsram();
+  doc["psram_size"] = ESP.getPsramSize();
+
+  // Flash
+  doc["flash_size"] = ESP.getFlashChipSize();
+  doc["flash_speed"] = ESP.getFlashChipSpeed();
+
+  // Partition OTA
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  if (running) {
+    doc["ota_partition"] = running->label;
+    doc["ota_partition_size"] = running->size;
+  }
+
+  // Système de fichiers
+  doc["fs_total_bytes"] = LittleFS.totalBytes();
+  doc["fs_used_bytes"] = LittleFS.usedBytes();
+  doc["fs_free_bytes"] = LittleFS.totalBytes() - LittleFS.usedBytes();
+
+  // WiFi
+  doc["wifi_ssid"] = WiFi.SSID();
+  doc["wifi_rssi"] = WiFi.RSSI();
+  doc["wifi_ip"] = WiFi.localIP().toString();
+  doc["wifi_mac"] = WiFi.macAddress();
+
+  // Uptime
+  unsigned long uptime = millis() / 1000;
+  doc["uptime_seconds"] = uptime;
+  doc["uptime_days"] = uptime / 86400;
+  doc["uptime_hours"] = (uptime % 86400) / 3600;
+  doc["uptime_minutes"] = (uptime % 3600) / 60;
+
+  String json;
+  serializeJson(doc, json);
+  request->send(200, "application/json", json);
+}
+
+void WebServerManager::handleOtaUpdate(AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
+  if (!index) {
+    systemLogger.info("Début mise à jour OTA: " + filename);
+
+    // Déterminer le type de mise à jour
+    int cmd = U_FLASH; // Par défaut: firmware
+
+    // Si le fichier se termine par .bin.gz ou .bin, c'est le firmware
+    // Si le fichier se termine par .littlefs.bin ou .spiffs.bin, c'est le filesystem
+    if (filename.endsWith(".littlefs.bin") || filename.endsWith(".spiffs.bin") || filename.endsWith(".fs.bin")) {
+      cmd = U_SPIFFS;
+      systemLogger.info("Type de mise à jour: Filesystem");
+    } else {
+      systemLogger.info("Type de mise à jour: Firmware");
+    }
+
+    // Démarrer la mise à jour
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) {
+      Update.printError(Serial);
+      systemLogger.error("Erreur démarrage OTA: " + String(Update.errorString()));
+    }
+  }
+
+  // Écrire les données
+  if (len) {
+    if (Update.write(data, len) != len) {
+      Update.printError(Serial);
+      systemLogger.error("Erreur écriture OTA");
+    } else {
+      // Log progression toutes les 100KB
+      static size_t lastLog = 0;
+      if (index - lastLog >= 102400) {
+        unsigned int percent = (index + len) * 100 / Update.size();
+        systemLogger.info("Progression OTA: " + String(percent) + "%");
+        lastLog = index;
+      }
+    }
+  }
+
+  // Finaliser
+  if (final) {
+    if (Update.end(true)) {
+      systemLogger.info("Mise à jour OTA réussie. Redémarrage...");
+    } else {
+      Update.printError(Serial);
+      systemLogger.error("Erreur finalisation OTA: " + String(Update.errorString()));
+    }
+  }
 }
 
 void WebServerManager::update() {

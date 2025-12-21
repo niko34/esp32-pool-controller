@@ -14,6 +14,7 @@
 #include "filtration.h"
 #include "mqtt_manager.h"
 #include "web_server.h"
+#include "version.h"
 
 // Variables globales
 DNSServer dns;
@@ -32,7 +33,8 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
 
-  systemLogger.info("=== Démarrage ESP32 Pool Controller v2.0 ===");
+  systemLogger.info("=== Démarrage ESP32 Pool Controller v" + String(FIRMWARE_VERSION) + " ===");
+  systemLogger.info("Build: " + String(FIRMWARE_BUILD_DATE) + " " + String(FIRMWARE_BUILD_TIME));
 
   // Initialisation watchdog
   esp_task_wdt_init(WATCHDOG_TIMEOUT, true);
