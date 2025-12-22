@@ -6,7 +6,27 @@
 #include <EEPROM.h>
 #include <Wire.h>
 
+
 SensorManager sensors;
+
+namespace {
+// DS18B20 conversion time depends on resolution.
+// Typical max conversion times (datasheet):
+// 9-bit: 93.75ms, 10-bit: 187.5ms, 11-bit: 375ms, 12-bit: 750ms
+uint16_t ds18b20ConversionTimeMsForResolution(uint8_t resolutionBits) {
+  switch (resolutionBits) {
+    case 9:  return 94;
+    case 10: return 188;
+    case 11: return 375;
+    case 12:
+    default: return 750;
+  }
+}
+
+// Defaults (set in begin())
+uint8_t g_ds18b20ResolutionBits = 12;
+uint16_t g_ds18b20ConversionMs = 750;
+} // namespace
 
 SensorManager::SensorManager() : oneWire(5), tempSensor(&oneWire) {}
 
@@ -38,7 +58,18 @@ void SensorManager::begin() {
 
   // Initialiser le capteur de température DS18B20 sur GPIO 5
   tempSensor.begin();
-  systemLogger.info("Capteur de température DS18B20 initialisé sur GPIO 5");
+
+  // Lecture non-bloquante : requestTemperatures() ne doit pas attendre la conversion
+  tempSensor.setWaitForConversion(false);
+
+  // Configurer la résolution (impacte directement le temps de conversion)
+  g_ds18b20ResolutionBits = 12; // 9, 10, 11 ou 12
+  tempSensor.setResolution(g_ds18b20ResolutionBits);
+  g_ds18b20ConversionMs = ds18b20ConversionTimeMsForResolution(g_ds18b20ResolutionBits);
+
+  systemLogger.info("Capteur de température DS18B20 initialisé sur GPIO 5 (" +
+                    String(g_ds18b20ResolutionBits) + "-bit, conv=" +
+                    String(g_ds18b20ConversionMs) + "ms)");
 
   // IMPORTANT: Sur ESP32, l'EEPROM doit être initialisé avant utilisation
   // La librairie DFRobot_PH utilise les adresses 0-7 (8 bytes)
@@ -115,32 +146,55 @@ void SensorManager::readRealSensors() {
   const unsigned long SENSOR_READ_INTERVAL = 5000; // 5 secondes
 
   // ========== Lecture température DS18B20 sur GPIO 5 ==========
-  // Déclencher une requête de lecture (non-bloquant)
+  // Non-bloquant: on déclenche une conversion, puis on lit après le temps de conversion.
   static unsigned long lastTempRequest = 0;
   static bool tempRequested = false;
+  static unsigned long lastTempRead = 0;
 
-  if (!tempRequested || (now - lastTempRequest >= 1000)) {
+  // Temps de conversion max dépend de la résolution configurée.
+  // On ajoute une petite marge pour être sûr.
+  const unsigned long TEMP_CONVERSION_MS = (unsigned long)g_ds18b20ConversionMs + 50;
+  const unsigned long TEMP_REQUEST_INTERVAL_MS = 2000; // ne pas relancer trop souvent
+
+  // 1) Lancer une conversion si aucune n'est en cours et si l'intervalle est passé
+  if (!tempRequested && (now - lastTempRequest >= TEMP_REQUEST_INTERVAL_MS)) {
     tempSensor.requestTemperatures();
     tempRequested = true;
     lastTempRequest = now;
   }
 
-  // Lire la température (la conversion prend ~750ms pour 12-bit)
-  float measuredTemp = tempSensor.getTempCByIndex(0);
+  // 2) Lire la température seulement si la conversion a eu le temps de se terminer
+  if (tempRequested && (now - lastTempRequest >= TEMP_CONVERSION_MS)) {
+    float measuredTemp = tempSensor.getTempCByIndex(0);
 
-  if (measuredTemp != DEVICE_DISCONNECTED_C && measuredTemp > -55.0f && measuredTemp < 125.0f) {
-    // Arrondir à 1 décimale
-    tempValue = roundf(measuredTemp * 10.0f) / 10.0f;
-  } else {
-    tempValue = NAN;
-    if (now - lastTempDebugLog >= 5000) {
+    if (measuredTemp != DEVICE_DISCONNECTED_C && measuredTemp > -55.0f && measuredTemp < 125.0f) {
+      // Arrondir à 1 décimale
+      tempValue = roundf(measuredTemp * 10.0f) / 10.0f;
+    } else {
+      tempValue = NAN;
       systemLogger.warning("DS18B20 non détecté ou température invalide");
     }
+
+    tempRequested = false; // prêt pour une nouvelle conversion
+    lastTempRead = now;
   }
 
-  // Debug température
+  // Debug température (toutes les 5 secondes)
   if (now - lastTempDebugLog >= 5000) {
-    Serial.printf("[TEMP DEBUG] DS18B20 GPIO 5 | Temp=%.2f°C\n", tempValue);
+    char logMsg[150];
+    if (!isnan(tempValue)) {
+      snprintf(logMsg, sizeof(logMsg),
+               "Temp: %.2f°C | res=%dbit | age=%lums",
+               tempValue, (int)g_ds18b20ResolutionBits, (unsigned long)(now - lastTempRead));
+      Serial.printf("[TEMP DEBUG] DS18B20 GPIO 5 | %s\n", logMsg);
+      systemLogger.debug(logMsg);
+    } else {
+      snprintf(logMsg, sizeof(logMsg),
+               "Temp: NaN | res=%dbit | conversion=%s",
+               (int)g_ds18b20ResolutionBits, tempRequested ? "EN COURS" : "IDLE");
+      Serial.printf("[TEMP DEBUG] DS18B20 GPIO 5 | %s\n", logMsg);
+      systemLogger.warning(logMsg);
+    }
     lastTempDebugLog = now;
   }
 
@@ -189,22 +243,46 @@ void SensorManager::readRealSensors() {
     // qui tient compte automatiquement du gain configuré
     float voltage = ads.computeVolts(rawAdc) * 1000.0f;  // Convertir V en mV
 
-    // Conversion voltage -> ORP
-    // Module ORP: 0-3.3V = 0-2000mV ORP
-    // ORP (mV) = (voltage / 3300) * 2000
-    float rawOrpValue = (voltage / 3300.0f) * 2000.0f;
+    // IMPORTANT: tu as un pont diviseur (R2=2.2k en haut, R3=10k en bas) pour passer ~0-4V -> ~0-3.28V.
+    // Donc la tension mesurée par l'ADS1115 est la tension APRES diviseur.
+    // On reconstruit la tension réelle de sortie du module ORP avant conversion ORP.
+    constexpr float ORP_R_TOP_OHMS = 2200.0f;   // R2
+    constexpr float ORP_R_BOTTOM_OHMS = 10000.0f; // R3
+    constexpr float ORP_DIVIDER_GAIN = (ORP_R_TOP_OHMS + ORP_R_BOTTOM_OHMS) / ORP_R_BOTTOM_OHMS; // ~1.22
+    float orpModuleVoltage_mV = voltage * ORP_DIVIDER_GAIN;
+
+    // Avertissement si on s'approche de la pleine échelle du PGA (GAIN_ONE -> ~4096mV)
+    if (fabsf(voltage) > 4050.0f) {
+      systemLogger.warning("ORP: tension proche de la saturation ADS1115 (" + String(voltage, 1) + " mV). Vérifier VDD ADS1115 / diviseur de tension.");
+    }
+
+    // Avertissement si la tension reconstruite dépasse la plage attendue du module (~0-4V)
+    if (orpModuleVoltage_mV < -50.0f || orpModuleVoltage_mV > 4100.0f) {
+      systemLogger.warning("ORP: tension module inattendue (" + String(orpModuleVoltage_mV, 1) + " mV). Vérifier le pont diviseur / alim du module.");
+    }
+
+    // Approximation courante de ces modules : ORP(mV) ≈ 2000mV - Vout(mV)
+    // => Vout=0mV -> +2000mV, Vout=2000mV -> 0mV, Vout=4000mV -> -2000mV
+    float rawOrpValue = 2000.0f - orpModuleVoltage_mV;
 
     // Appliquer l'offset de calibration et arrondir au mV
     orpValue = roundf(rawOrpValue + mqttCfg.orpCalibrationOffset);
 
-    // Debug: afficher les valeurs ORP toutes les 2 secondes
-    if (now - lastOrpDebugLog >= 2000) {
+    // Debug: afficher les valeurs ORP toutes les 5 secondes
+    if (now - lastOrpDebugLog >= 5000) {
       float voltageMin = ads.computeVolts(minVal) * 1000.0f;
       float voltageMax = ads.computeVolts(maxVal) * 1000.0f;
       float voltageAvg = ads.computeVolts(sum / numSamples) * 1000.0f;
-      Serial.printf("[ORP DEBUG] ADS1115 A1 | Median ADC=%d | Avg ADC=%d | Min=%d Max=%d | V=%.1f (avg=%.1f min=%.1f max=%.1f) | ORP=%.1f mV\n",
-                    rawAdc, (int)(sum/numSamples), minVal, maxVal,
-                    voltage, voltageAvg, voltageMin, voltageMax, orpValue);
+
+      // Log vers Serial et système de logs
+      char logMsg[200];
+      snprintf(logMsg, sizeof(logMsg),
+               "ORP: ADC=%d (avg=%d min=%d max=%d) | Vads=%.1fmV (avg=%.1f min=%.1f max=%.1f) | Vmod=%.1fmV | ORP=%.1fmV",
+               rawAdc, (int)(sum/numSamples), minVal, maxVal,
+               voltage, voltageAvg, voltageMin, voltageMax, orpModuleVoltage_mV, orpValue);
+      Serial.printf("[ORP DEBUG] ADS1115 A1 | %s\n", logMsg);
+      systemLogger.debug(logMsg);
+
       lastOrpDebugLog = now;
     }
   } else {
@@ -255,8 +333,15 @@ void SensorManager::readRealSensors() {
       int16_t maxVal = samples[numSamples - 1];
       float voltageMin = ads.computeVolts(minVal) * 1000.0f;
       float voltageMax = ads.computeVolts(maxVal) * 1000.0f;
-      Serial.printf("[pH DEBUG] ADS1115 A0 | Median ADC=%d | Min=%d Max=%d | V=%.1f (min=%.1f max=%.1f) | Temp=%.1f°C | pH=%.2f\n",
-                    rawAdc, minVal, maxVal, voltage, voltageMin, voltageMax, temperature, phValue);
+
+      // Log vers Serial et système de logs
+      char logMsg[200];
+      snprintf(logMsg, sizeof(logMsg),
+               "pH: ADC=%d (min=%d max=%d) | V=%.1fmV (min=%.1f max=%.1f) | Temp=%.1f°C | pH=%.2f",
+               rawAdc, minVal, maxVal, voltage, voltageMin, voltageMax, temperature, phValue);
+      Serial.printf("[pH DEBUG] ADS1115 A0 | %s\n", logMsg);
+      systemLogger.debug(logMsg);
+
       lastPhDebugLog = now;
     }
   } else {
@@ -464,8 +549,30 @@ void SensorManager::publishValues() {
 
 void SensorManager::calibratePhNeutral() {
   if (mqttCfg.phSensorPin >= 0) {
-    // Lire la tension actuelle depuis l'ADS1115 canal A0
-    int16_t rawAdc = ads.readADC_SingleEnded(0);
+    // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian 3 samples)
+    const int numSamples = 3;
+    int16_t samples[numSamples];
+
+    for (int i = 0; i < numSamples; i++) {
+      samples[i] = ads.readADC_SingleEnded(0);
+      // Pas de delay - l'ADS1115 prend déjà ~125ms par lecture à 8 SPS
+    }
+
+    // Tri pour obtenir la médiane
+    for (int i = 0; i < numSamples - 1; i++) {
+      for (int j = i + 1; j < numSamples; j++) {
+        if (samples[i] > samples[j]) {
+          int16_t tmp = samples[i];
+          samples[i] = samples[j];
+          samples[j] = tmp;
+        }
+      }
+    }
+
+    int16_t rawAdc = samples[numSamples / 2];
+    int16_t minVal = samples[0];
+    int16_t maxVal = samples[numSamples - 1];
+
     // Conversion en mV en utilisant la fonction de la bibliothèque
     float voltage = ads.computeVolts(rawAdc) * 1000.0f;
 
@@ -485,14 +592,36 @@ void SensorManager::calibratePhNeutral() {
     // IMPORTANT: Sur ESP32, commit les changements EEPROM
     EEPROM.commit();
 
-    systemLogger.info("Calibration pH point neutre (7.0) effectuée à " + String(temperature, 1) + "°C (ADC: " + String(rawAdc) + ", voltage: " + String(voltage, 2) + " mV)");
+    systemLogger.info("Calibration pH point neutre (7.0) effectuée à " + String(temperature, 1) + "°C (ADC med=" + String(rawAdc) + ", min=" + String(minVal) + ", max=" + String(maxVal) + ", V=" + String(voltage, 2) + " mV)");
   }
 }
 
 void SensorManager::calibratePhAcid() {
   if (mqttCfg.phSensorPin >= 0) {
-    // Lire la tension actuelle depuis l'ADS1115 canal A0
-    int16_t rawAdc = ads.readADC_SingleEnded(0);
+    // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian 3 samples)
+    const int numSamples = 3;
+    int16_t samples[numSamples];
+
+    for (int i = 0; i < numSamples; i++) {
+      samples[i] = ads.readADC_SingleEnded(0);
+      // Pas de delay - l'ADS1115 prend déjà ~125ms par lecture à 8 SPS
+    }
+
+    // Tri pour obtenir la médiane
+    for (int i = 0; i < numSamples - 1; i++) {
+      for (int j = i + 1; j < numSamples; j++) {
+        if (samples[i] > samples[j]) {
+          int16_t tmp = samples[i];
+          samples[i] = samples[j];
+          samples[j] = tmp;
+        }
+      }
+    }
+
+    int16_t rawAdc = samples[numSamples / 2];
+    int16_t minVal = samples[0];
+    int16_t maxVal = samples[numSamples - 1];
+
     // Conversion en mV en utilisant la fonction de la bibliothèque
     float voltage = ads.computeVolts(rawAdc) * 1000.0f;
 
@@ -512,7 +641,7 @@ void SensorManager::calibratePhAcid() {
     // IMPORTANT: Sur ESP32, commit les changements EEPROM
     EEPROM.commit();
 
-    systemLogger.info("Calibration pH point acide (4.0) effectuée à " + String(temperature, 1) + "°C (ADC: " + String(rawAdc) + ", voltage: " + String(voltage, 2) + " mV)");
+    systemLogger.info("Calibration pH point acide (4.0) effectuée à " + String(temperature, 1) + "°C (ADC med=" + String(rawAdc) + ", min=" + String(minVal) + ", max=" + String(maxVal) + ", V=" + String(voltage, 2) + " mV)");
   }
 }
 

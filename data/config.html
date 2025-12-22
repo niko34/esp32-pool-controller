@@ -622,6 +622,27 @@
           <button type="button" id="update_btn" disabled style="background-color: #34c759;">Mettre à jour</button>
           <button type="button" id="refresh_info_btn" style="background-color: #666; margin-left: 10px;">Actualiser</button>
         </div>
+
+        <h3 style="margin-top: 24px;">Logs Système</h3>
+
+        <div class="actions" style="margin-bottom: 15px; display: flex; align-items: center; gap: 10px;">
+          <button type="button" id="refresh_logs_btn" style="background-color: #007aff;">Actualiser les logs</button>
+          <button type="button" id="clear_logs_display_btn" style="background-color: #666;">Effacer l'affichage</button>
+
+          <div style="margin-left: auto; display: flex; align-items: center; gap: 8px;">
+            <label for="logs_filter" style="color: #333; font-weight: 500;">Filtre:</label>
+            <select id="logs_filter" style="padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; background-color: white; font-size: 0.9rem;">
+              <option value="all">Tout</option>
+              <option value="temp">Température</option>
+              <option value="ph">pH</option>
+              <option value="orp">ORP</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="logs_container" style="background-color: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 0.85rem; max-height: 400px; overflow-y: auto; line-height: 1.5;">
+          <div id="logs_content">Chargement des logs...</div>
+        </div>
       </div>
     </form>
 
@@ -1547,6 +1568,120 @@
 
       // Charger les infos système au chargement de la page
       loadSystemInfo();
+
+      // ========== Gestion des logs ==========
+      let autoScrollLogs = true; // Activer le scroll automatique par défaut
+
+      function matchesFilter(message, filter) {
+        if (filter === 'all') return true;
+        const msg = message.toLowerCase();
+
+        if (filter === 'temp') {
+          return msg.includes('temp:') || msg.includes('température') || msg.includes('ds18b20');
+        }
+        if (filter === 'ph') {
+          return msg.includes('ph:') || msg.includes('ph ') || msg.startsWith('ph');
+        }
+        if (filter === 'orp') {
+          return msg.includes('orp:') || msg.includes('orp ');
+        }
+        return false;
+      }
+
+      function loadLogs(showLoading = false) {
+        const logsContent = document.getElementById('logs_content');
+        const logsContainer = document.getElementById('logs_container');
+        const filter = document.getElementById('logs_filter').value;
+
+        // Seulement afficher "Chargement" si demandé (premier chargement ou refresh manuel)
+        if (showLoading) {
+          logsContent.innerHTML = 'Chargement des logs...';
+        }
+
+        fetch('/get-logs')
+          .then(res => res.json())
+          .then(data => {
+            if (data.logs && data.logs.length > 0) {
+              let html = '';
+              let count = 0;
+
+              data.logs.forEach(log => {
+                // Appliquer le filtre
+                if (!matchesFilter(log.message || '', filter)) {
+                  return; // Skip ce log
+                }
+
+                count++;
+                const levelColors = {
+                  'DEBUG': '#6c757d',
+                  'INFO': '#0dcaf0',
+                  'WARNING': '#ffc107',
+                  'ERROR': '#dc3545',
+                  'CRITICAL': '#ff0000'
+                };
+                const color = levelColors[log.level] || '#d4d4d4';
+                html += `<div style="margin-bottom: 8px;">`;
+                html += `<span style="color: #6c757d;">[${log.timestamp || log.time || ''}]</span> `;
+                html += `<span style="color: ${color}; font-weight: 600;">${log.level || ''}</span> `;
+                html += `<span>${log.message || ''}</span>`;
+                html += `</div>`;
+              });
+
+              if (count === 0) {
+                logsContent.innerHTML = '<div style="color: #6c757d; text-align: center;">Aucun log correspondant au filtre</div>';
+              } else {
+                // Mémoriser la position de scroll avant mise à jour
+                const wasAtBottom = logsContainer.scrollHeight - logsContainer.scrollTop <= logsContainer.clientHeight + 50;
+
+                logsContent.innerHTML = html;
+
+                // Scroller automatiquement vers le bas seulement si on était déjà en bas ou si autoScroll est activé
+                if (autoScrollLogs || wasAtBottom) {
+                  logsContainer.scrollTop = logsContainer.scrollHeight;
+                }
+              }
+            } else {
+              logsContent.innerHTML = '<div style="color: #6c757d; text-align: center;">Aucun log disponible</div>';
+            }
+          })
+          .catch(err => {
+            console.error('Erreur chargement logs:', err);
+            logsContent.innerHTML = '<div style="color: #dc3545;">Erreur lors du chargement des logs</div>';
+          });
+      }
+
+      // Détecter si l'utilisateur scroll manuellement pour désactiver l'auto-scroll
+      document.getElementById('logs_container').addEventListener('scroll', function() {
+        const logsContainer = this;
+        const isAtBottom = logsContainer.scrollHeight - logsContainer.scrollTop <= logsContainer.clientHeight + 50;
+        autoScrollLogs = isAtBottom;
+      });
+
+      // Bouton actualiser les logs
+      document.getElementById('refresh_logs_btn').addEventListener('click', function() {
+        loadLogs(true); // Afficher "Chargement" lors du refresh manuel
+      });
+
+      // Bouton effacer l'affichage des logs
+      document.getElementById('clear_logs_display_btn').addEventListener('click', function() {
+        document.getElementById('logs_content').innerHTML = '<div style="color: #6c757d; text-align: center;">Affichage effacé - Cliquez sur "Actualiser les logs" pour recharger</div>';
+      });
+
+      // Changement du filtre de logs
+      document.getElementById('logs_filter').addEventListener('change', function() {
+        loadLogs(false); // Recharger les logs avec le nouveau filtre
+      });
+
+      // Charger les logs au chargement de la page
+      loadLogs(true);
+
+      // Actualiser les logs automatiquement toutes les 10 secondes si l'onglet Système est actif
+      setInterval(function() {
+        const systemTab = document.querySelector('.tab-panel[data-tab="system"]');
+        if (systemTab && systemTab.classList.contains('active')) {
+          loadLogs(false); // Pas de message "Chargement" pour les refresh automatiques
+        }
+      }, 10000);
     </script>
   </body>
 </html>
