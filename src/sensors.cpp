@@ -23,16 +23,17 @@ void SensorManager::begin() {
     systemLogger.info("ADS1115 initialisé avec succès");
 
     // Configuration du gain de l'ADS1115
-    // GAIN_TWO = +/- 2.048V (1 bit = 0.0625mV pour ADS1115 16 bits)
-    // Optimal pour les signaux 0-3.3V : meilleure résolution que GAIN_ONE
-    ads.setGain(GAIN_TWO);
+    // GAIN_ONE = +/- 4.096V (1 bit = 0.125mV pour ADS1115 16 bits)
+    // Obligatoire pour les modules pH/ORP qui sortent 0-3.3V
+    // GAIN_TWO (+/- 2.048V) saturerait au-dessus de 2.048V
+    ads.setGain(GAIN_ONE);
 
     // Configuration du data rate pour précision maximale
     // 8 SPS (samples per second) = mesure la plus précise et stable
     // Temps de conversion: ~125ms par échantillon
     ads.setDataRate(RATE_ADS1115_8SPS);
 
-    systemLogger.info("ADS1115 configuré : Gain=±2.048V (0.0625mV/bit), Data Rate=8 SPS");
+    systemLogger.info("ADS1115 configuré : Gain=±4.096V (0.125mV/bit), Data Rate=8 SPS");
   }
 
   // Initialiser le capteur de température DS18B20 sur GPIO 5
@@ -107,6 +108,11 @@ void SensorManager::readRealSensors() {
   static unsigned long lastOrpDebugLog = 0;
   static unsigned long lastPhDebugLog = 0;
   static unsigned long lastTempDebugLog = 0;
+  static unsigned long lastSensorRead = 0;
+
+  // Limiter la fréquence de lecture des capteurs pH/ORP à toutes les 5 secondes
+  // Cela évite de bloquer l'ESP32 trop souvent avec les lectures ADS1115
+  const unsigned long SENSOR_READ_INTERVAL = 5000; // 5 secondes
 
   // ========== Lecture température DS18B20 sur GPIO 5 ==========
   // Déclencher une requête de lecture (non-bloquant)
@@ -138,10 +144,18 @@ void SensorManager::readRealSensors() {
     lastTempDebugLog = now;
   }
 
+  // Vérifier si l'intervalle de lecture des capteurs est atteint
+  if (now - lastSensorRead < SENSOR_READ_INTERVAL) {
+    return; // Trop tôt, ne pas lire les capteurs pH/ORP
+  }
+  lastSensorRead = now;
+
   // ========== Lecture ORP via ADS1115 canal A1 ==========
   if (mqttCfg.orpSensorPin >= 0) {
-    // Filtrage multi-échantillons pour réduire le bruit
-    const int numSamples = 10;
+    // Filtrage médian avec échantillonnage réduit
+    // L'ADS1115 à 8 SPS (125ms/échantillon) fait déjà un filtrage interne précis
+    // 3 échantillons = ~375ms total, suffisant pour éliminer les pics de bruit
+    const int numSamples = 3;
     int16_t samples[numSamples];
     int32_t sum = 0;
     int16_t minVal = 32767;
@@ -154,7 +168,7 @@ void SensorManager::readRealSensors() {
       sum += reading;
       if (reading < minVal) minVal = reading;
       if (reading > maxVal) maxVal = reading;
-      delay(2);  // Petite pause entre lectures
+      // Pas de delay - l'ADS1115 prend déjà ~125ms par lecture à 8 SPS
     }
 
     // Tri des échantillons pour filtre médian
@@ -171,9 +185,9 @@ void SensorManager::readRealSensors() {
     // Utiliser la médiane (plus robuste que la moyenne)
     int16_t rawAdc = samples[numSamples / 2];
 
-    // Conversion ADC -> Voltage (ADS1115 avec GAIN_TWO)
-    // 1 bit = 0.0625 mV, donc voltage en mV = rawAdc * 0.0625
-    float voltage = rawAdc * 0.0625f;
+    // Conversion ADC -> Voltage en utilisant la fonction de la bibliothèque
+    // qui tient compte automatiquement du gain configuré
+    float voltage = ads.computeVolts(rawAdc) * 1000.0f;  // Convertir V en mV
 
     // Conversion voltage -> ORP
     // Module ORP: 0-3.3V = 0-2000mV ORP
@@ -185,9 +199,9 @@ void SensorManager::readRealSensors() {
 
     // Debug: afficher les valeurs ORP toutes les 2 secondes
     if (now - lastOrpDebugLog >= 2000) {
-      float voltageMin = minVal * 0.0625f;
-      float voltageMax = maxVal * 0.0625f;
-      float voltageAvg = (sum / (float)numSamples) * 0.0625f;
+      float voltageMin = ads.computeVolts(minVal) * 1000.0f;
+      float voltageMax = ads.computeVolts(maxVal) * 1000.0f;
+      float voltageAvg = ads.computeVolts(sum / numSamples) * 1000.0f;
       Serial.printf("[ORP DEBUG] ADS1115 A1 | Median ADC=%d | Avg ADC=%d | Min=%d Max=%d | V=%.1f (avg=%.1f min=%.1f max=%.1f) | ORP=%.1f mV\n",
                     rawAdc, (int)(sum/numSamples), minVal, maxVal,
                     voltage, voltageAvg, voltageMin, voltageMax, orpValue);
@@ -199,13 +213,15 @@ void SensorManager::readRealSensors() {
 
   // ========== Lecture pH via ADS1115 canal A0 avec filtrage médian ==========
   if (mqttCfg.phSensorPin >= 0) {
-    // Prendre plusieurs échantillons pour filtrage médian (réduction du bruit)
-    const int numSamples = 11;  // Nombre impair pour médiane
+    // Filtrage médian avec échantillonnage réduit
+    // L'ADS1115 à 8 SPS (125ms/échantillon) fait déjà un filtrage interne précis
+    // 3 échantillons = ~375ms total, suffisant pour éliminer les pics de bruit
+    const int numSamples = 3;  // Nombre impair pour médiane
     int16_t samples[numSamples];
 
     for (int i = 0; i < numSamples; i++) {
       samples[i] = ads.readADC_SingleEnded(0);  // A0 pour pH
-      if (i < numSamples - 1) delay(5);  // Petite pause entre échantillons
+      // Pas de delay - l'ADS1115 prend déjà ~125ms par lecture à 8 SPS
     }
 
     // Tri par sélection pour trouver la médiane
@@ -222,9 +238,9 @@ void SensorManager::readRealSensors() {
     // Utiliser la médiane (plus robuste que la moyenne)
     int16_t rawAdc = samples[numSamples / 2];
 
-    // Conversion ADC -> Voltage en mV
-    // 1 bit = 0.0625 mV pour ADS1115 avec GAIN_TWO
-    float voltage = rawAdc * 0.0625f;
+    // Conversion ADC -> Voltage en utilisant la fonction de la bibliothèque
+    // qui tient compte automatiquement du gain configuré
+    float voltage = ads.computeVolts(rawAdc) * 1000.0f;  // Convertir V en mV
 
     // Utiliser la température pour la compensation (si disponible)
     float temperature = isnan(tempValue) ? 25.0f : tempValue;
@@ -237,8 +253,8 @@ void SensorManager::readRealSensors() {
     if (now - lastPhDebugLog >= 5000) {
       int16_t minVal = samples[0];
       int16_t maxVal = samples[numSamples - 1];
-      float voltageMin = minVal * 0.0625f;
-      float voltageMax = maxVal * 0.0625f;
+      float voltageMin = ads.computeVolts(minVal) * 1000.0f;
+      float voltageMax = ads.computeVolts(maxVal) * 1000.0f;
       Serial.printf("[pH DEBUG] ADS1115 A0 | Median ADC=%d | Min=%d Max=%d | V=%.1f (min=%.1f max=%.1f) | Temp=%.1f°C | pH=%.2f\n",
                     rawAdc, minVal, maxVal, voltage, voltageMin, voltageMax, temperature, phValue);
       lastPhDebugLog = now;
@@ -450,7 +466,8 @@ void SensorManager::calibratePhNeutral() {
   if (mqttCfg.phSensorPin >= 0) {
     // Lire la tension actuelle depuis l'ADS1115 canal A0
     int16_t rawAdc = ads.readADC_SingleEnded(0);
-    float voltage = rawAdc * 0.125f;  // Conversion en mV
+    // Conversion en mV en utilisant la fonction de la bibliothèque
+    float voltage = ads.computeVolts(rawAdc) * 1000.0f;
 
     // Utiliser la température pour la compensation
     float temperature = isnan(tempValue) ? 25.0f : tempValue;
@@ -476,7 +493,8 @@ void SensorManager::calibratePhAcid() {
   if (mqttCfg.phSensorPin >= 0) {
     // Lire la tension actuelle depuis l'ADS1115 canal A0
     int16_t rawAdc = ads.readADC_SingleEnded(0);
-    float voltage = rawAdc * 0.125f;  // Conversion en mV
+    // Conversion en mV en utilisant la fonction de la bibliothèque
+    float voltage = ads.computeVolts(rawAdc) * 1000.0f;
 
     // Utiliser la température pour la compensation
     float temperature = isnan(tempValue) ? 25.0f : tempValue;
