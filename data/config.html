@@ -655,6 +655,14 @@
           <div><span class="info-label">Adresse MAC :</span><span id="sys_mac_address">—</span></div>
         </div>
 
+        <h3 style="margin-top: 24px;">Sécurité OTA</h3>
+
+        <label>Mot de passe OTA (mises à jour sans fil) :</label>
+        <input type="password" id="ota_password" placeholder="ex: ********">
+        <div style="font-size: 0.85em; color: #666; margin-top: 5px; margin-bottom: 20px;">
+          ℹ️ Protège les mises à jour OTA (Over-The-Air). Laissez vide pour désactiver (non recommandé).
+        </div>
+
         <h3 style="margin-top: 24px;">Mise à jour OTA</h3>
 
         <div class="info-block" style="background-color: #fff4e6; border-left: 4px solid #ff9500;">
@@ -1053,6 +1061,7 @@
           topic: document.getElementById('mqtt_topic').value,
           username: document.getElementById('mqtt_username').value,
           password: document.getElementById('mqtt_password').value,
+          ota_password: document.getElementById('ota_password').value,
           ph_target: isNaN(phValue) ? 7.2 : phValue,
           orp_target: isNaN(orpValue) ? 650 : orpValue,
           ph_enabled: phToggle.checked,
@@ -1177,6 +1186,7 @@
           document.getElementById('mqtt_topic').value = cfg.topic || '';
           document.getElementById('mqtt_username').value = cfg.username || '';
           document.getElementById('mqtt_password').value = cfg.password || '';
+          document.getElementById('ota_password').value = cfg.ota_password || '';
           toggle.checked = cfg.enabled !== false;
 
           // Mise à jour de la pastille de statut MQTT

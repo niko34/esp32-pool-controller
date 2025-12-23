@@ -5,6 +5,7 @@
 #include "filtration.h"
 #include "pump_controller.h"
 #include "mqtt_manager.h"
+#include "ota_manager.h"
 #include "history.h"
 #include "version.h"
 #include <LittleFS.h>
@@ -266,8 +267,9 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
   doc["port"] = mqttCfg.port;
   doc["topic"] = mqttCfg.topic;
   doc["username"] = mqttCfg.username;
-  // SÉCURITÉ: Ne jamais envoyer le mot de passe en clair
+  // SÉCURITÉ: Ne jamais envoyer les mots de passe en clair
   doc["password"] = mqttCfg.password.length() > 0 ? "******" : "";
+  doc["ota_password"] = mqttCfg.otaPassword.length() > 0 ? "******" : "";
   doc["enabled"] = mqttCfg.enabled;
   doc["mqtt_connected"] = mqttManager.isConnected();
   doc["ph_target"] = mqttCfg.phTarget;
@@ -339,11 +341,20 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
   if (doc.containsKey("topic")) mqttCfg.topic = doc["topic"].as<String>();
   if (doc.containsKey("username")) mqttCfg.username = doc["username"].as<String>();
 
-  // Mot de passe: ne mettre à jour que s'il n'est pas masqué
+  // Mots de passe: ne mettre à jour que s'ils ne sont pas masqués
   if (doc.containsKey("password")) {
     String pwd = doc["password"].as<String>();
     if (pwd != "******" && pwd.length() > 0) {
       mqttCfg.password = pwd;
+    }
+  }
+
+  if (doc.containsKey("ota_password")) {
+    String otaPwd = doc["ota_password"].as<String>();
+    if (otaPwd != "******") {
+      mqttCfg.otaPassword = otaPwd;
+      // Appliquer immédiatement le nouveau mot de passe OTA
+      otaManager.setPassword(mqttCfg.otaPassword);
     }
   }
 
