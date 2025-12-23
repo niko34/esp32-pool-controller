@@ -129,8 +129,8 @@ Pompe 2 (Chlore): Identique sur GPIO 26
 
 1. **Cloner le projet**
    ```bash
-   git clone https://github.com/votre-username/esp32_pool_controller.git
-   cd esp32_pool_controller
+   git clone https://github.com/niko34/esp32-pool-controller.git
+   cd esp32-pool-controller
    ```
 
 2. **Ouvrir avec VS Code + PlatformIO**
