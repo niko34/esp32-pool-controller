@@ -12,9 +12,10 @@ struct PumpDriver {
 struct DosingState {
   unsigned long windowStart = 0;
   unsigned long usedMs = 0;
-  unsigned long lastTimestamp = 0;
   bool active = false;
-
+  unsigned long lastTimestamp = 0;
+  unsigned long lastSafetyTimestamp = 0; // suivi ml injectés (sécurité)
+  
   // Variables pour protection anti-cycling
   unsigned long lastStartTime = 0;      // Moment du dernier démarrage
   unsigned long lastStopTime = 0;       // Moment du dernier arrêt

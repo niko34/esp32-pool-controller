@@ -432,14 +432,29 @@ void PumpControllerClass::update() {
     }
   }
 
-  // Mettre à jour le tracking de sécurité
+  // Mettre à jour le tracking de sécurité (ml injectés)
+  // IMPORTANT: ne pas utiliser lastTimestamp (mis à jour par refreshDosingState), sinon delta≈0.
   if (phActive) {
-    unsigned long delta = now - phDosingState.lastTimestamp;
+    if (phDosingState.lastSafetyTimestamp == 0) {
+      phDosingState.lastSafetyTimestamp = now;
+    }
+    unsigned long delta = now - phDosingState.lastSafetyTimestamp;
     updateSafetyTracking(true, phFlow, delta);
+    phDosingState.lastSafetyTimestamp = now;
+  } else {
+    // Éviter de compter une longue période OFF au prochain démarrage
+    phDosingState.lastSafetyTimestamp = 0;
   }
+
   if (orpActive) {
-    unsigned long delta = now - orpDosingState.lastTimestamp;
+    if (orpDosingState.lastSafetyTimestamp == 0) {
+      orpDosingState.lastSafetyTimestamp = now;
+    }
+    unsigned long delta = now - orpDosingState.lastSafetyTimestamp;
     updateSafetyTracking(false, orpFlow, delta);
+    orpDosingState.lastSafetyTimestamp = now;
+  } else {
+    orpDosingState.lastSafetyTimestamp = 0;
   }
 
   phDosingState.active = phActive;
