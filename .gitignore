@@ -22,3 +22,4 @@ _autosave-*
 fp-info-cache
 *-save.kicad_pcb
 *-save.kicad_sch
+#auto_saved_files#
