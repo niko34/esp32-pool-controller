@@ -9,7 +9,7 @@
 #define PUMP2_PWM_PIN 26     // PWM Gate pompe 2 (via MOSFET IRLZ44N)
 #define PUMP1_CHANNEL 0
 #define PUMP2_CHANNEL 1
-#define PUMP_PWM_FREQ 1000   // 1kHz PWM
+#define PUMP_PWM_FREQ 20000   // 20kHz PWM
 #define PUMP_PWM_RES_BITS 8  // 8-bit resolution (0-255)
 
 // Capteurs analogiques (ADS1115 via I2C)
