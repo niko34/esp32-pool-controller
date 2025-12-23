@@ -51,13 +51,6 @@ void setup() {
   // Chargement configuration
   loadMqttConfig();
 
-  // En mode simulation, forcer l'activation des contrôles pour tester
-  if (simulationCfg.enabled) {
-    mqttCfg.phEnabled = true;
-    mqttCfg.orpEnabled = true;
-    systemLogger.info("Mode simulation: contrôles pH et ORP activés automatiquement");
-  }
-
   // Initialisation des modules
   sensors.begin();
   PumpController.begin();
@@ -162,11 +155,6 @@ void applyTimeConfig() {
   ensureTimezoneValid();
   applyTimezoneEnv();
 
-  if (simulationCfg.enabled && simulationCfg.overrideClock) {
-    systemLogger.info("Mode simulation: horloge système contrôlée par simulation");
-    return;
-  }
-
   if (mqttCfg.timeUseNtp) {
     if (WiFi.isConnected()) {
       const TimezoneInfo* tz = currentTimezone();
@@ -214,19 +202,17 @@ void checkSystemHealth() {
   float orp = sensors.getOrp();
   float temp = sensors.getTemperature();
 
-  if (!simulationCfg.enabled) {
-    if (ph < 5.0f || ph > 9.0f) {
-      systemLogger.warning("Valeur pH anormale: " + String(ph));
-      mqttManager.publishAlert("ph_abnormal", "pH=" + String(ph));
-    }
-    if (orp < 400.0f || orp > 900.0f) {
-      systemLogger.warning("Valeur ORP anormale: " + String(orp));
-      mqttManager.publishAlert("orp_abnormal", "ORP=" + String(orp));
-    }
-    if (!isnan(temp) && (temp < 5.0f || temp > 40.0f)) {
-      systemLogger.warning("Température anormale: " + String(temp));
-      mqttManager.publishAlert("temp_abnormal", "Temp=" + String(temp) + "°C");
-    }
+  if (ph < 5.0f || ph > 9.0f) {
+    systemLogger.warning("Valeur pH anormale: " + String(ph));
+    mqttManager.publishAlert("ph_abnormal", "pH=" + String(ph));
+  }
+  if (orp < 400.0f || orp > 900.0f) {
+    systemLogger.warning("Valeur ORP anormale: " + String(orp));
+    mqttManager.publishAlert("orp_abnormal", "ORP=" + String(orp));
+  }
+  if (!isnan(temp) && (temp < 5.0f || temp > 40.0f)) {
+    systemLogger.warning("Température anormale: " + String(temp));
+    mqttManager.publishAlert("temp_abnormal", "Temp=" + String(temp) + "°C");
   }
 
   systemLogger.debug("Health check OK - Heap: " + String(freeHeap) + " bytes");

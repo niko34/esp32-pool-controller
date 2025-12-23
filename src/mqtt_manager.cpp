@@ -330,7 +330,6 @@ void MqttManager::publishDiagnostic() {
   doc["filtration_mode"] = filtrationCfg.mode;
 
   // Configuration
-  doc["simulation_enabled"] = simulationCfg.enabled;
   doc["ph_target"] = mqttCfg.phTarget;
   doc["orp_target"] = mqttCfg.orpTarget;
 
