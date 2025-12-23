@@ -1,14 +1,17 @@
-# ESP32 Pool Controller v2.0
+# ESP32 Pool Controller
 
 Contrôleur automatique de piscine basé sur ESP32 avec gestion pH, ORP (chlore), température et filtration automatique. Intégration complète avec Home Assistant via MQTT.
+
+**Version actuelle**: 2025.12.6
 
 ## 🎯 Fonctionnalités
 
 ### Mesures et Contrôle
-- **pH** : Mesure et régulation automatique avec dosage pH- proportionnel
-- **ORP (Redox)** : Mesure et dosage automatique de chlore
-- **Température** : Sonde Dallas DS18B20
+- **pH** : Mesure précise via capteur DFRobot SEN0161-V2 (ADS1115 16-bit) avec compensation automatique de température
+- **ORP (Redox)** : Mesure via ADS1115 16-bit et dosage automatique de chlore
+- **Température** : Sonde Dallas DS18B20 avec lecture non-bloquante
 - **Filtration** : Contrôle automatique basé sur la température de l'eau
+- **Pompes doseuses** : Contrôle PWM 20kHz silencieux (0-100%) via MOSFETs IRLZ44N
 
 ### Sécurité
 - ⚠️ **Limites journalières** : Protection contre le surdosage (500ml pH- / 300ml chlore par défaut)
@@ -25,19 +28,22 @@ Contrôleur automatique de piscine basé sur ESP32 avec gestion pH, ORP (chlore)
 
 ### Monitoring
 - **Interface Web** : Configuration et visualisation temps réel
-- **Logs système** : Buffer circulaire de 100 entrées
+- **Logs système** : Buffer circulaire de 100 entrées avec filtrage par niveau
 - **Historique** : Suivi des injections et alertes
+- **Test manuel** : Interface de test des pompes avec contrôle de puissance (0-100%)
+- **Mise à jour OTA** : Mise à jour firmware via interface web
 - **mDNS** : Accessible via `poolcontroller.local`
 
 ## 📋 Matériel Requis
 
 ### Composants Principaux
 - **ESP32 DevKit** (ou équivalent)
-- **Capteur pH** analogique (0-14 pH)
-- **Capteur ORP** analogique (0-1000 mV)
-- **Sonde température DS18B20** (étanche)
+- **Capteur pH DFRobot SEN0161-V2** avec ADS1115 intégré
+- **Capteur ORP** analogique (0-1000 mV) connecté à ADS1115 externe
+- **ADS1115** - Convertisseur ADC 16-bit I2C (si non intégré au capteur pH)
+- **Sonde température DS18B20** étanche
 - **2x Pompes doseuses péristaltiques** (12V DC)
-- **2x Drivers moteur L298N** (ou équivalent)
+- **2x MOSFETs IRLZ44N** (logic-level, pour contrôle PWM des pompes)
 - **Relais 5V/230V** pour pompe de filtration
 - **Alimentation 5V/2A** pour ESP32
 - **Alimentation 12V/2A** pour pompes
@@ -51,38 +57,51 @@ Contrôleur automatique de piscine basé sur ESP32 avec gestion pH, ORP (chlore)
 
 ```
 ESP32 GPIO Layout:
-├─ GPIO 34 (ADC1_6)  → Capteur ORP (signal analogique)
-├─ GPIO 35 (ADC1_7)  → Capteur pH (signal analogique)
-├─ GPIO 4            → Sonde température DS18B20 (OneWire + pull-up 4.7kΩ)
+├─ I2C (Capteurs ADS1115):
+│  ├─ GPIO 21 (SDA) → ADS1115 SDA
+│  └─ GPIO 22 (SCL) → ADS1115 SCL
+│
+├─ GPIO 34 (ADC1_6)  → ORP (définition config, non utilisé si ADS1115)
+├─ GPIO 35 (ADC1_7)  → pH (définition config, non utilisé si ADS1115)
+├─ GPIO 5            → Sonde température DS18B20 (OneWire + pull-up 4.7kΩ)
 ├─ GPIO 27           → Relais filtration
 │
 ├─ Pompe 1 (pH-):
-│  ├─ GPIO 25 → PWM (vitesse)
-│  ├─ GPIO 32 → IN1 (direction)
-│  └─ GPIO 33 → IN2 (direction)
+│  └─ GPIO 25 → PWM 20kHz (Gate MOSFET IRLZ44N)
 │
 └─ Pompe 2 (Chlore):
-   ├─ GPIO 26 → PWM (vitesse)
-   ├─ GPIO 18 → IN1 (direction)
-   └─ GPIO 19 → IN2 (direction)
+   └─ GPIO 26 → PWM 20kHz (Gate MOSFET IRLZ44N)
 ```
+
+**Notes importantes**:
+- Les capteurs pH et ORP sont connectés à l'ADS1115 via I2C (canaux A0 et A1)
+- Les GPIO 34 et 35 sont définis dans le code mais non utilisés en mode ADS1115
+- PWM configuré à 20kHz pour éviter le sifflement audible des pompes
+- Résolution PWM 8-bit (0-255) pour contrôle fin du débit
 
 ### Branchement Capteurs
 
-**Capteur pH:**
+**Capteur pH DFRobot SEN0161-V2 (avec ADS1115 intégré):**
 ```
 pH Sensor → ESP32
   VCC     → 5V
   GND     → GND
-  OUT     → GPIO 35 (via diviseur si >3.3V)
+  SDA     → GPIO 21 (I2C SDA)
+  SCL     → GPIO 22 (I2C SCL)
+  Adresse I2C: 0x48 (par défaut)
 ```
 
-**Capteur ORP:**
+**Capteur ORP (via ADS1115 externe):**
 ```
-ORP Sensor → ESP32
-  VCC      → 5V
-  GND      → GND
-  OUT      → GPIO 34 (via diviseur si >3.3V)
+ORP Sensor → ADS1115 → ESP32
+  VCC      → 5V       │
+  GND      → GND      │
+  OUT      → A1       │
+                SDA  → GPIO 21 (I2C SDA)
+                SCL  → GPIO 22 (I2C SCL)
+                VDD  → 3.3V
+                GND  → GND
+  Adresse I2C: 0x49 (A0 connecté à VDD)
 ```
 
 **Sonde Température:**
@@ -90,7 +109,18 @@ ORP Sensor → ESP32
 DS18B20 → ESP32
   VCC   → 3.3V
   GND   → GND
-  DATA  → GPIO 4 + Pull-up 4.7kΩ vers 3.3V
+  DATA  → GPIO 5 + Pull-up 4.7kΩ vers 3.3V
+```
+
+**Pompes Doseuses (via MOSFETs IRLZ44N):**
+```
+Pompe 1 (pH-):
+  ESP32 GPIO 25 → Gate MOSFET IRLZ44N
+  MOSFET Drain  → Pompe 12V (-)
+  MOSFET Source → GND
+  Pompe 12V (+) → Alimentation 12V (+)
+
+Pompe 2 (Chlore): Identique sur GPIO 26
 ```
 
 ## 🚀 Installation
@@ -99,7 +129,7 @@ DS18B20 → ESP32
 
 1. **Cloner le projet**
    ```bash
-   git clone <votre-repo>
+   git clone https://github.com/votre-username/esp32_pool_controller.git
    cd esp32_pool_controller
    ```
 
@@ -108,21 +138,21 @@ DS18B20 → ESP32
    code .
    ```
 
-3. **Renommer le fichier principal**
-   ```bash
-   mv src/main.cpp src/main_old.cpp
-   mv src/main_new.cpp src/main.cpp
-   ```
-
-4. **Compiler et uploader**
+3. **Compiler et uploader**
    - Connecter l'ESP32 via USB
    - Cliquer sur "Upload" dans PlatformIO
    - Ou via CLI: `pio run --target upload`
 
-5. **Moniteur série**
+4. **Moniteur série**
    ```bash
    pio device monitor -b 115200
    ```
+
+5. **Upload du système de fichiers (LittleFS)**
+   ```bash
+   pio run --target uploadfs
+   ```
+   Contient l'interface web HTML/CSS/JS dans le dossier `data/`
 
 ### Configuration Initiale
 
@@ -133,7 +163,12 @@ DS18B20 → ESP32
 
 2. **Accès interface web**
    - `http://poolcontroller.local` (ou IP affichée dans les logs)
-   - Aller dans "Configuration" pour régler les paramètres
+   - Onglets disponibles:
+     - **Tableau de bord** : Visualisation temps réel pH/ORP/Température
+     - **Configuration** : Réglages MQTT, consignes, limites de sécurité
+     - **Historique** : Suivi des événements et alertes
+     - **Logs** : Journal système avec filtrage par niveau
+     - **Système** : Test manuel des pompes, mise à jour OTA, informations
 
 3. **Configuration MQTT (optionnel)**
    - Serveur: IP de votre broker MQTT
@@ -161,55 +196,67 @@ DS18B20 → ESP32
 
 ### Calibration Capteurs
 
-#### Calibration pH
+#### Calibration pH (DFRobot SEN0161-V2)
 
-1. **Solution pH 7.0** (neutre)
-   ```
-   - Rincer la sonde
-   - Plonger dans solution pH 7.0
-   - Noter la valeur brute analogique
-   - Calculer: offset = 7.0 - valeur_mesurée
-   ```
+Le capteur DFRobot utilise la librairie DFRobot_PH qui gère automatiquement la calibration en EEPROM.
 
-2. **Solution pH 4.0** (acide)
-   ```
-   - Rincer la sonde
-   - Plonger dans solution pH 4.0
-   - Noter la valeur
-   - Calculer: slope = (7.0 - 4.0) / (valeur_pH7 - valeur_pH4)
-   ```
+**Calibration 1 point (pH neutre 7.0)**:
+```cpp
+// Dans l'interface série, envoyer:
+ENTERPH  // Mode calibration
+CAL:7.0  // Calibrer à pH 7.0 (solution tampon)
+EXITPH   // Sortir calibration
+```
 
-3. **Appliquer dans le code** (sensors.cpp, ligne ~104):
-   ```cpp
-   float rawPh = analogRead(PH_PIN);
-   float voltage = (rawPh / 4095.0f) * 3.3f;
-   phValue = (voltage * slope) + offset;
-   ```
+**Calibration 2 points (pH 4.0 et 9.18)**:
+```cpp
+// 1. Solution pH 4.0
+ENTERPH
+CAL:4.0
+// Rincer, puis solution pH 9.18
+CAL:9.18
+EXITPH
+```
+
+**Compensation de température**: La librairie applique automatiquement la compensation avec la température mesurée par la DS18B20.
 
 #### Calibration ORP
 
-1. **Solution de référence ORP** (généralement 470 mV à 25°C)
-   ```
-   - Rincer la sonde
-   - Plonger dans solution
-   - Noter valeur analogique
-   - Calculer: factor = 470.0 / valeur_analogique
-   ```
+**Via l'interface web** (onglet Configuration):
 
-2. **Appliquer** (sensors.cpp):
-   ```cpp
-   float rawOrp = analogRead(ORP_PIN);
-   orpValue = (rawOrp / 4095.0f) * 1000.0f * factor;
-   ```
+1. **Préparation**:
+   - Utiliser une solution de référence ORP (généralement 470 mV à 25°C)
+   - Rincer la sonde à l'eau déminéralisée
+   - Plonger la sonde dans la solution de référence
+
+2. **Calibration**:
+   - Dans l'interface web, aller dans Configuration
+   - Section "Calibration ORP"
+   - Noter la valeur ORP actuelle affichée
+   - Entrer la valeur de référence de votre solution (ex: 470 mV)
+   - Cliquer sur "Calibrer ORP"
+   - Le système calcule et enregistre automatiquement l'offset
+
+3. **Vérification**:
+   - La valeur ORP affichée doit maintenant correspondre à la référence
+   - L'offset et la date de calibration sont sauvegardés en NVS
 
 ### Tuning PID (Avancé)
 
-Les paramètres PID contrôlent la réactivité du dosage:
-- **Kp** (Proportionnel): Réaction à l'erreur actuelle (défaut: 2.0)
-- **Ki** (Intégral): Correction erreur accumulée (défaut: 0.5)
-- **Kd** (Dérivé): Anticipation tendance (défaut: 1.0)
+Les paramètres PID contrôlent la réactivité du dosage. Voir [pump_controller.h:26-29](src/pump_controller.h#L26-L29).
 
-Modifier dans [pump_controller.h](src/pump_controller.h#L25-L28).
+**Paramètres par défaut** (optimisés pour système avec inertie):
+- **Kp** (Proportionnel): 15.0 - Réaction à l'erreur actuelle
+- **Ki** (Intégral): 0.1 - Correction lente des erreurs persistantes
+- **Kd** (Dérivé): 5.0 - Anticipation (freine si descend rapidement)
+- **integralMax**: 50.0 - Anti-windup pour éviter accumulation excessive
+
+**Protection anti-cycling** (prolonge durée de vie des pompes):
+- Injection minimum: 30 secondes par cycle
+- Pause minimum: 5 minutes entre injections
+- Seuils de démarrage: pH ±0.05 / ORP ±10mV
+- Seuils d'arrêt: pH ±0.01 / ORP ±2mV
+- Maximum: 200 cycles par jour
 
 ## 🏠 Intégration Home Assistant
 
@@ -260,15 +307,17 @@ automation:
 - Appuyer sur bouton BOOT pendant upload
 
 ### Capteurs valeurs aberrantes
-- **pH toujours 0 ou 14**: Vérifier connexion capteur, diviseur tension
-- **ORP fixe à 0**: Sonde pas étalonnée ou HS, vérifier GND commun
-- **Température -127°C**: Sonde DS18B20 non détectée, pull-up manquant
+- **pH toujours 0 ou 14**: Vérifier connexion I2C (SDA/SCL), adresse ADS1115 (0x48)
+- **ORP fixe à 0**: Sonde pas étalonnée ou HS, vérifier ADS1115 (0x49), connexion A1
+- **Température -127°C**: Sonde DS18B20 non détectée, pull-up 4.7kΩ manquant
+- **I2C errors**: Vérifier pull-ups I2C (4.7kΩ sur SDA/SCL), alimentation ADS1115
 
 ### Pompes ne démarrent pas
 - Vérifier alimentation 12V pompes
-- Vérifier connexions drivers moteur
+- Vérifier connexions MOSFETs IRLZ44N (Gate sur GPIO 25/26)
+- Tester manuellement dans onglet "Système" → Test des pompes
 - Logs: chercher "LIMITE" (sécurité déclenchée)
-- Vérifier mode simulation désactivé pour usage réel
+- Vérifier mode simulation désactivé pour usage réel (`simulationCfg.enabled = false`)
 
 ### WiFi/MQTT déconnecté
 - Vérifier portée WiFi (signal faible)
@@ -321,14 +370,24 @@ struct SimulationConfig {
    - Vérifier logs quotidiennement (premiers jours)
    - Tester sécurités (déconnecter sonde → alerte?)
 
-## 📈 Améliorations Futures
+## 📈 Changelog
 
-- [ ] Stockage historique LittleFS (graphiques 7 jours)
-- [ ] Mode maintenance (purge manuelle pompes)
-- [ ] Support multi-langues interface web
-- [ ] OTA (mise à jour sans câble)
-- [ ] Graphiques temps réel (Chart.js)
-- [ ] Export CSV données
+### Version 2025.12.6
+- ✅ Augmentation PWM à 20kHz pour éliminer le sifflement des pompes
+- ✅ Interface de test manuel des pompes avec contrôle de puissance (0-100%)
+- ✅ Optimisation ADS1115 avec GAIN_ONE pour compatibilité 3.3V
+- ✅ Intégration capteur pH DFRobot SEN0161-V2 avec compensation température
+- ✅ Système de logs avec filtrage par niveau (Debug/Info/Warning/Error)
+- ✅ Mise à jour OTA via interface web
+- ✅ Onglet Système avec informations version et diagnostic
+
+### Améliorations Futures
+- [ ] Stockage historique LittleFS étendu (graphiques 7 jours)
+- [ ] Support multi-langues interface web (EN/FR)
+- [ ] Graphiques temps réel avec Chart.js
+- [ ] Export CSV données historiques
+- [ ] API REST complète pour intégrations tierces
+- [ ] Mode maintenance avec purge automatique des pompes
 
 ## 🤝 Contribution
 
@@ -362,6 +421,6 @@ Ce projet est fourni "tel quel" sans garantie. L'utilisation de produits chimiqu
 
 ---
 
-**Auteur**: Nicolas
-**Version**: 2.0
-**Dernière mise à jour**: 2024
+**Auteur**: Nicolas Philippe
+**Version**: 2025.12.6
+**Dernière mise à jour**: Décembre 2025

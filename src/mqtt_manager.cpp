@@ -48,10 +48,12 @@ void MqttManager::refreshTopics() {
 void MqttManager::update() {
   if (reconnectRequested) {
     reconnectRequested = false;
+    // Déconnecter d'abord si déjà connecté pour forcer une reconnexion avec les nouveaux paramètres
+    if (mqtt.connected()) {
+      disconnect();
+    }
     if (mqttCfg.enabled) {
       connect();
-    } else if (mqtt.connected()) {
-      disconnect();
     }
   }
 

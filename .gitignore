@@ -11,3 +11,11 @@
 *.bak
 *_old.*
 *_backup.*
+
+# Build artifacts
+*.bin
+*.elf
+
+# KiCad auto-save and backups
+*-backups/
+_autosave-*
