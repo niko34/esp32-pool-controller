@@ -654,10 +654,10 @@
         </div>
         <div style="margin-left: 20px; margin-bottom: 20px;">
           <label for="pump1_duty" style="display: block; margin-bottom: 5px; color: #666; font-size: 0.9rem;">
-            Puissance: <span id="pump1_duty_value">0</span>% (PWM: <span id="pump1_duty_pwm">0</span>/255)
+            Puissance: <span id="pump1_duty_value">100</span>% (PWM: <span id="pump1_duty_pwm">255</span>/255)
           </label>
           <input type="range" id="pump1_duty" min="0" max="255" value="255"
-                 style="width: 100%; max-width: 400px;" disabled>
+                 style="width: 100%; max-width: 400px;">
         </div>
 
         <div class="switch-row">
@@ -669,10 +669,10 @@
         </div>
         <div style="margin-left: 20px; margin-bottom: 20px;">
           <label for="pump2_duty" style="display: block; margin-bottom: 5px; color: #666; font-size: 0.9rem;">
-            Puissance: <span id="pump2_duty_value">0</span>% (PWM: <span id="pump2_duty_pwm">0</span>/255)
+            Puissance: <span id="pump2_duty_value">100</span>% (PWM: <span id="pump2_duty_pwm">255</span>/255)
           </label>
           <input type="range" id="pump2_duty" min="0" max="255" value="255"
-                 style="width: 100%; max-width: 400px;" disabled>
+                 style="width: 100%; max-width: 400px;">
         </div>
 
         <h3 style="margin-top: 24px;">Logs Système</h3>
@@ -1821,11 +1821,7 @@
 
         if (this.checked) {
           // Activer la pompe avec la puissance du slider
-          slider.disabled = false;
           const duty = parseInt(slider.value);
-          const percent = Math.round((duty / 255) * 100);
-          pump1DutyValue.textContent = percent;
-          pump1DutyPwm.textContent = duty;
 
           fetch('/pump1/duty/' + duty, { method: 'POST' })
             .then(response => response.text())
@@ -1835,21 +1831,15 @@
               } else {
                 alert('Erreur lors du contrôle de la pompe 1');
                 this.checked = false;
-                slider.disabled = true;
               }
             })
             .catch(err => {
               console.error('Erreur:', err);
               alert('Erreur lors du contrôle de la pompe 1');
               this.checked = false;
-              slider.disabled = true;
             });
         } else {
           // Désactiver la pompe
-          slider.disabled = true;
-          pump1DutyValue.textContent = '0';
-          pump1DutyPwm.textContent = '0';
-
           fetch('/pump1/off', { method: 'POST' })
             .then(response => response.text())
             .then(data => {
@@ -1866,11 +1856,7 @@
 
         if (this.checked) {
           // Activer la pompe avec la puissance du slider
-          slider.disabled = false;
           const duty = parseInt(slider.value);
-          const percent = Math.round((duty / 255) * 100);
-          pump2DutyValue.textContent = percent;
-          pump2DutyPwm.textContent = duty;
 
           fetch('/pump2/duty/' + duty, { method: 'POST' })
             .then(response => response.text())
@@ -1880,21 +1866,15 @@
               } else {
                 alert('Erreur lors du contrôle de la pompe 2');
                 this.checked = false;
-                slider.disabled = true;
               }
             })
             .catch(err => {
               console.error('Erreur:', err);
               alert('Erreur lors du contrôle de la pompe 2');
               this.checked = false;
-              slider.disabled = true;
             });
         } else {
           // Désactiver la pompe
-          slider.disabled = true;
-          pump2DutyValue.textContent = '0';
-          pump2DutyPwm.textContent = '0';
-
           fetch('/pump2/off', { method: 'POST' })
             .then(response => response.text())
             .then(data => {
