@@ -19,3 +19,6 @@
 # KiCad auto-save and backups
 *-backups/
 _autosave-*
+fp-info-cache
+*-save.kicad_pcb
+*-save.kicad_sch
