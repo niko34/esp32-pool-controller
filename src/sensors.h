@@ -19,32 +19,7 @@ private:
   float tempValue = NAN;
   bool sensorsInitialized = false;
 
-  // Variables pour simulation - Horloge accélérée
-  unsigned long lastSimulationUpdateMs = 0;
-  bool simulationClockInitialized = false;
-  double simulationClockMs = 0.0;
-  int64_t simulatedTimeOffsetMs = 0;
-
-  // Variables pour simulation - État actuel
-  bool phDoseActive = false;
-  bool orpDoseActive = false;
-  float phCurrentFlowMlPerMin = 0.0f;
-  float orpCurrentFlowMlPerMin = 0.0f;
-
-  // Variables pour simulation - Modèle d'inertie avec mélange progressif
-  // Le produit injecté se trouve dans un "réservoir tampon" qui se mélange progressivement
-  float phPendingEffect = 0.0f;        // Effet du pH- en attente de mélange (en unités pH)
-  float orpPendingEffect = 0.0f;       // Effet du chlore en attente de mélange (en mV)
-
-  // Fonctions de simulation
-  void updateAcceleratedClock(unsigned long deltaMs);
-  void applyNaturalDrift(float hoursElapsed);
-  void applyChemicalInjection(float minutesElapsed);
-  void applyMixingDynamics(float hoursElapsed);
-
-  void updateSimulation(unsigned long now);
   void readRealSensors();
-  void initializeSimulation();
 
 public:
   SensorManager();
@@ -62,14 +37,6 @@ public:
   // Getters pour valeurs brutes (sans offset de calibration)
   float getRawOrp() const;
   float getRawPh() const;
-
-  // Getters pour simulation - effets en attente
-  float getPhPendingEffect() const { return phPendingEffect; }
-  float getOrpPendingEffect() const { return orpPendingEffect; }
-
-  // Setters pour simulation
-  void setPhDoseActive(bool active, float flowMlPerMin = 0.0f);
-  void setOrpDoseActive(bool active, float flowMlPerMin = 0.0f);
 
   // Calibration pH (DFRobot_PH)
   void calibratePhNeutral();         // Calibration point neutre (pH 7.0)

@@ -25,7 +25,6 @@ constexpr float PH_DEADBAND = 0.01f;      // Zone morte réduite : 7.2 à 7.21 (
 constexpr float ORP_DEADBAND = 2.0f;      // Zone morte réduite : ±2mV
 constexpr uint8_t MAX_PWM_DUTY = (1 << PUMP_PWM_RES_BITS) - 1;
 constexpr uint8_t MIN_ACTIVE_DUTY = 20;
-constexpr float SIM_MAX_STEP_MINUTES = 0.25f;
 
 // ==== Home Assistant ====
 const char* const HA_DEVICE_ID = "poolcontroller";
@@ -40,10 +39,11 @@ struct MqttConfig {
   String username = "";
   String password = "";
   bool enabled = false;
+  String otaPassword = "";  // Mot de passe OTA (Over-The-Air updates)
   float phTarget = 7.2f;
   float orpTarget = 650.0f;
-  bool phEnabled = true;              // Activé par défaut pour la simulation
-  bool orpEnabled = true;             // Activé par défaut pour la simulation
+  bool phEnabled = true;
+  bool orpEnabled = true;
   int phPump = 1;
   int orpPump = 2;
   int phInjectionLimitSeconds = 60;
@@ -78,40 +78,6 @@ struct FiltrationConfig {
   String end = "20:00";
   bool hasAutoReference = false;
   float autoReferenceTemp = 24.0f;
-};
-
-struct SimulationConfig {
-  bool enabled = false;
-
-  // Paramètres physiques de la piscine
-  float poolVolumeM3 = 50.0f;                    // Volume de la piscine en m³
-  float filtrationFlowM3PerHour = 16.0f;         // Débit de filtration en m³/h
-
-  // Paramètres pH- (acide)
-  float phPumpRateMlPerMin = 30.0f;              // Débit pompe pH- (ml/min)
-  float phMinusEffectPerLiter = -2.0f;           // Effet de 1L de pH- sur le pH pour 10m³
-  float phMixingTimeConstant = 0.3f;             // Constante de temps mélange (en cycles de filtration)
-
-  // Paramètres Chlore (ORP)
-  float orpPumpRateMlPerMin = 30.0f;             // Débit pompe chlore (ml/min)
-  float chlorineEffectPerLiter = 300.0f;         // Effet de 1L de chlore sur ORP (mV) pour 10m³
-  float orpMixingTimeConstant = 0.3f;            // Constante de temps mélange (en cycles de filtration)
-
-  // Dérive naturelle (évaporation, UV, baignade, etc.)
-  // Le système dérive vers un point d'équilibre naturel
-  float phNaturalEquilibrium = 8.0f;             // pH d'équilibre naturel (sans traitement, eau calcaire)
-  float phDriftSpeed = 0.02f;                    // Vitesse de dérive (0-1, 0.02 = lent)
-  float orpNaturalEquilibrium = 650.0f;          // ORP d'équilibre naturel (sans chlore, baisse naturelle)
-  float orpDriftSpeed = 0.03f;                   // Vitesse de dérive vers équilibre
-
-  // Valeurs initiales
-  float initialPh = 7.8f;                        // pH initial (plus bas que l'équilibre)
-  float initialOrp = 600.0f;                     // ORP initial (plus haut que l'équilibre)
-  float initialTemp = 24.0f;
-
-  // Accélération temporelle
-  float timeAcceleration = 60.0f;               // 360x = 1h réelle en 10 secondes
-  bool overrideClock = true;                     // Accélère l'horloge système
 };
 
 struct PumpControlParams {
@@ -166,7 +132,6 @@ void applyTimezoneEnv();
 // ==== Variables globales de configuration ====
 extern MqttConfig mqttCfg;
 extern FiltrationConfig filtrationCfg;
-extern SimulationConfig simulationCfg;
 extern PumpControlParams phPumpControl;
 extern PumpControlParams orpPumpControl;
 extern SafetyLimits safetyLimits;

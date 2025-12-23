@@ -240,23 +240,9 @@ void PumpControllerClass::update() {
   if (phLimitSec < 0) phLimitSec = 0;
   unsigned long phLimitMs = static_cast<unsigned long>(phLimitSec) * 1000UL;
 
-  if (simulationCfg.enabled && phLimitMs > 0) {
-    float accel = simulationCfg.timeAcceleration;
-    if (accel < 1.0f) accel = 1.0f;
-    double scaled = static_cast<double>(phLimitMs) * accel;
-    phLimitMs = (scaled > UINT32_MAX) ? UINT32_MAX : static_cast<unsigned long>(scaled);
-  }
-
   int orpLimitSec = mqttCfg.orpInjectionLimitSeconds;
   if (orpLimitSec < 0) orpLimitSec = 0;
   unsigned long orpLimitMs = static_cast<unsigned long>(orpLimitSec) * 1000UL;
-
-  if (simulationCfg.enabled && orpLimitMs > 0) {
-    float accel = simulationCfg.timeAcceleration;
-    if (accel < 1.0f) accel = 1.0f;
-    double scaled = static_cast<double>(orpLimitMs) * accel;
-    orpLimitMs = (scaled > UINT32_MAX) ? UINT32_MAX : static_cast<unsigned long>(scaled);
-  }
 
   bool phLimitOk = (phLimitMs == 0) || (phDosingState.usedMs < phLimitMs);
   bool orpLimitOk = (orpLimitMs == 0) || (orpDosingState.usedMs < orpLimitMs);
@@ -268,25 +254,7 @@ void PumpControllerClass::update() {
   // Contrôle pH
   if (mqttCfg.phEnabled && phLimitOk && phSafetyOk) {
     float phValue = sensors.getPh();
-
-    // UNIQUEMENT en simulation : tenir compte de l'effet en attente (anticipation de l'inertie)
-    // En mode réel, on utilise directement la mesure capteur (le PID gère l'inertie réelle via I et D)
     float effectivePh = phValue;
-    if (simulationCfg.enabled) {
-      float pendingEffect = sensors.getPhPendingEffect();
-      effectivePh += pendingEffect; // pH va baisser du montant en attente
-
-      // Log périodique pour debug
-      static unsigned long lastPhLog = 0;
-      if (millis() - lastPhLog > 10000 && fabsf(pendingEffect) > 0.01f) {
-        systemLogger.debug("SIM pH contrôle: pH=" + String(phValue, 3) +
-                          " pending=" + String(pendingEffect, 4) +
-                          " effectif=" + String(effectivePh, 3) +
-                          " cible=" + String(mqttCfg.phTarget, 2));
-        lastPhLog = millis();
-      }
-    }
-    // En mode réel : effectivePh = phValue (pas d'anticipation du pending)
 
     float error = effectivePh - mqttCfg.phTarget;
     
@@ -348,25 +316,7 @@ void PumpControllerClass::update() {
   // Contrôle ORP
   if (mqttCfg.orpEnabled && orpLimitOk && orpSafetyOk) {
     float orpValue = sensors.getOrp();
-
-    // UNIQUEMENT en simulation : tenir compte de l'effet en attente (anticipation de l'inertie)
-    // En mode réel, on utilise directement la mesure capteur (le PID gère l'inertie réelle via I et D)
     float effectiveOrp = orpValue;
-    if (simulationCfg.enabled) {
-      float pendingEffect = sensors.getOrpPendingEffect();
-      effectiveOrp += pendingEffect; // ORP va monter du montant en attente
-
-      // Log périodique pour debug
-      static unsigned long lastOrpLog = 0;
-      if (millis() - lastOrpLog > 10000 && fabsf(pendingEffect) > 1.0f) {
-        systemLogger.debug("SIM ORP contrôle: ORP=" + String(orpValue, 1) +
-                          " pending=" + String(pendingEffect, 1) +
-                          " effectif=" + String(effectiveOrp, 1) +
-                          " cible=" + String(mqttCfg.orpTarget, 0));
-        lastOrpLog = millis();
-      }
-    }
-    // En mode réel : effectiveOrp = orpValue (pas d'anticipation du pending)
 
     float error = effectiveOrp - mqttCfg.orpTarget;
     
@@ -459,10 +409,6 @@ void PumpControllerClass::update() {
 
   phDosingState.active = phActive;
   orpDosingState.active = orpActive;
-
-  // Informer le module sensors pour la simulation
-  sensors.setPhDoseActive(phActive, phFlow);
-  sensors.setOrpDoseActive(orpActive, orpFlow);
 }
 
 void PumpControllerClass::stopAll() {

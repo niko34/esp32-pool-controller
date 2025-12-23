@@ -5,7 +5,6 @@
 // Définition des variables globales
 MqttConfig mqttCfg;
 FiltrationConfig filtrationCfg;
-SimulationConfig simulationCfg;
 PumpControlParams phPumpControl = {5.2f, 90.0f, 1.0f};
 PumpControlParams orpPumpControl = {5.2f, 90.0f, 200.0f};
 SafetyLimits safetyLimits;
@@ -69,6 +68,7 @@ void saveMqttConfig() {
   prefs.putString("mqtt_user", mqttCfg.username);
   prefs.putString("mqtt_pass", mqttCfg.password);
   prefs.putBool("mqtt_enabled", mqttCfg.enabled);
+  prefs.putString("ota_pass", mqttCfg.otaPassword);
 
   // Régulation pH
   prefs.putFloat("ph_target", mqttCfg.phTarget);
@@ -134,6 +134,7 @@ void loadMqttConfig() {
   mqttCfg.username = prefs.getString("mqtt_user", "");
   mqttCfg.password = prefs.getString("mqtt_pass", "");
   mqttCfg.enabled = prefs.getBool("mqtt_enabled", mqttCfg.enabled);
+  mqttCfg.otaPassword = prefs.getString("ota_pass", "");
 
   // Régulation pH
   mqttCfg.phTarget = prefs.getFloat("ph_target", mqttCfg.phTarget);

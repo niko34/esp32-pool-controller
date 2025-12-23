@@ -7,8 +7,8 @@ Contrôleur automatique de piscine basé sur ESP32 avec gestion pH, ORP (chlore)
 ## 🎯 Fonctionnalités
 
 ### Mesures et Contrôle
-- **pH** : Mesure précise via capteur DFRobot SEN0161-V2 (ADS1115 16-bit) avec compensation automatique de température
-- **ORP (Redox)** : Mesure via ADS1115 16-bit et dosage automatique de chlore
+- **pH** : Mesure précise via capteur pH analogique lue par un **ADS1115 16-bit unique** (partagé pH/ORP) avec compensation automatique de température
+- **ORP (Redox)** : Mesure analogique lue par le **même ADS1115 16-bit** et dosage automatique de chlore
 - **Température** : Sonde Dallas DS18B20 avec lecture non-bloquante
 - **Filtration** : Contrôle automatique basé sur la température de l'eau
 - **Pompes doseuses** : Contrôle PWM 20kHz silencieux (0-100%) via MOSFETs IRLZ44N
@@ -38,9 +38,9 @@ Contrôleur automatique de piscine basé sur ESP32 avec gestion pH, ORP (chlore)
 
 ### Composants Principaux
 - **ESP32 DevKit** (ou équivalent)
-- **Capteur pH DFRobot SEN0161-V2** avec ADS1115 intégré
-- **Capteur ORP** analogique (0-1000 mV) connecté à ADS1115 externe
-- **ADS1115** - Convertisseur ADC 16-bit I2C (si non intégré au capteur pH)
+- **Capteur pH analogique** (sortie tension)
+- **Capteur ORP analogique** (0–1000 mV)
+- **ADS1115** - Convertisseur ADC 16-bit I2C **unique**, partagé entre pH et ORP
 - **Sonde température DS18B20** étanche
 - **2x Pompes doseuses péristaltiques** (12V DC)
 - **2x MOSFETs IRLZ44N** (logic-level, pour contrôle PWM des pompes)
@@ -74,34 +74,23 @@ ESP32 GPIO Layout:
 ```
 
 **Notes importantes**:
-- Les capteurs pH et ORP sont connectés à l'ADS1115 via I2C (canaux A0 et A1)
-- Les GPIO 34 et 35 sont définis dans le code mais non utilisés en mode ADS1115
+- Les capteurs pH et ORP sont connectés **au même ADS1115** via I2C (canaux A0 et A1)
+- Les GPIO 34 et 35 sont définis dans le code mais **non utilisés** lorsque l’ADS1115 est actif
 - PWM configuré à 20kHz pour éviter le sifflement audible des pompes
 - Résolution PWM 8-bit (0-255) pour contrôle fin du débit
 
 ### Branchement Capteurs
 
-**Capteur pH DFRobot SEN0161-V2 (avec ADS1115 intégré):**
+**Capteurs pH et ORP (via ADS1115 unique partagé):**
 ```
-pH Sensor → ESP32
-  VCC     → 5V
-  GND     → GND
-  SDA     → GPIO 21 (I2C SDA)
-  SCL     → GPIO 22 (I2C SCL)
-  Adresse I2C: 0x48 (par défaut)
-```
-
-**Capteur ORP (via ADS1115 externe):**
-```
-ORP Sensor → ADS1115 → ESP32
-  VCC      → 5V       │
-  GND      → GND      │
-  OUT      → A1       │
-                SDA  → GPIO 21 (I2C SDA)
-                SCL  → GPIO 22 (I2C SCL)
-                VDD  → 3.3V
-                GND  → GND
-  Adresse I2C: 0x49 (A0 connecté à VDD)
+pH / ORP Sensors → ADS1115 → ESP32
+  pH OUT     → A0
+  ORP OUT    → A1
+  VDD        → 3.3V
+  GND        → GND
+  SDA        → GPIO 21 (I2C SDA)
+  SCL        → GPIO 22 (I2C SCL)
+  Adresse I2C: 0x48
 ```
 
 **Sonde Température:**
@@ -308,7 +297,7 @@ automation:
 
 ### Capteurs valeurs aberrantes
 - **pH toujours 0 ou 14**: Vérifier connexion I2C (SDA/SCL), adresse ADS1115 (0x48)
-- **ORP fixe à 0**: Sonde pas étalonnée ou HS, vérifier ADS1115 (0x49), connexion A1
+- **ORP fixe à 0**: Sonde pas étalonnée ou HS, vérifier ADS1115 (0x48), connexion A1
 - **Température -127°C**: Sonde DS18B20 non détectée, pull-up 4.7kΩ manquant
 - **I2C errors**: Vérifier pull-ups I2C (4.7kΩ sur SDA/SCL), alimentation ADS1115
 
