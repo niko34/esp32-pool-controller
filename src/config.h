@@ -61,8 +61,12 @@ struct MqttConfig {
   String phCalibrationDate = "";      // Date de dernière calibration (ISO 8601)
   float phCalibrationTemp = NAN;      // Température lors de la calibration (°C)
 
-  // Calibration ORP (1 point)
+  // Calibration ORP (1 ou 2 points)
+  // Formule appliquée: ORP_final = (ORP_brut * slope) + offset
+  // Calibration 1 point: slope=1.0, offset calculé
+  // Calibration 2 points: slope et offset calculés à partir de 2 solutions de référence
   float orpCalibrationOffset = 0.0f;  // Offset de calibration ORP (mV)
+  float orpCalibrationSlope = 1.0f;   // Pente/gain de calibration ORP (sans unité)
   String orpCalibrationDate = "";     // Date de calibration ORP (ISO 8601)
   float orpCalibrationReference = 0.0f; // Valeur de référence utilisée (mV)
   float orpCalibrationTemp = NAN;     // Température lors de la calibration ORP (°C)

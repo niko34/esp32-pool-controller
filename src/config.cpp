@@ -89,8 +89,9 @@ void saveMqttConfig() {
   prefs.putInt("orp_pump", mqttCfg.orpPump);
   prefs.putInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
 
-  // Calibration ORP - 1 point
+  // Calibration ORP - 1 ou 2 points
   prefs.putFloat("orp_cal_off", mqttCfg.orpCalibrationOffset);
+  prefs.putFloat("orp_cal_slope", mqttCfg.orpCalibrationSlope);
   prefs.putString("orp_cal_date", mqttCfg.orpCalibrationDate);
   prefs.putFloat("orp_cal_ref", mqttCfg.orpCalibrationReference);
   if (!isnan(mqttCfg.orpCalibrationTemp)) {
@@ -150,8 +151,9 @@ void loadMqttConfig() {
   mqttCfg.orpPump = prefs.getInt("orp_pump", mqttCfg.orpPump);
   mqttCfg.orpInjectionLimitSeconds = prefs.getInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
 
-  // Calibration ORP - 1 point
+  // Calibration ORP - 1 ou 2 points
   mqttCfg.orpCalibrationOffset = prefs.getFloat("orp_cal_off", mqttCfg.orpCalibrationOffset);
+  mqttCfg.orpCalibrationSlope = prefs.getFloat("orp_cal_slope", 1.0f);
   mqttCfg.orpCalibrationDate = prefs.getString("orp_cal_date", "");
   mqttCfg.orpCalibrationReference = prefs.getFloat("orp_cal_ref", 0.0f);
   mqttCfg.orpCalibrationTemp = prefs.getFloat("orp_cal_temp", NAN);
