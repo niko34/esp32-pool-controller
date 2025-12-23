@@ -207,12 +207,20 @@
       input {
         display: block;
         width: 100%;
+        max-width: 100%;
         margin: 8px 0;
         padding: 10px;
         font-size: 16px;
         box-sizing: border-box;
         border: 1px solid #d1d1d6;
         border-radius: 6px;
+      }
+      /* Fix pour inputs type="time" qui dépassent sur mobile */
+      input[type="time"] {
+        width: 100%;
+        max-width: 100%;
+        -webkit-appearance: none;
+        appearance: none;
       }
       select {
         display: block;
