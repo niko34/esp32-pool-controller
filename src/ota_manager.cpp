@@ -1,6 +1,7 @@
 #include "ota_manager.h"
 #include "logger.h"
 #include "version.h"
+#include "config.h"
 #include <WiFi.h>
 
 OTAManager otaManager;
@@ -14,7 +15,14 @@ void OTAManager::begin() {
   }
 
   ArduinoOTA.setHostname("poolcontroller");
-  ArduinoOTA.setPassword(otaPassword.c_str());
+
+  // Utiliser le mot de passe depuis la configuration (ou vide si non défini)
+  if (mqttCfg.otaPassword.length() > 0) {
+    ArduinoOTA.setPassword(mqttCfg.otaPassword.c_str());
+    systemLogger.info("OTA: Mot de passe configuré");
+  } else {
+    systemLogger.warning("OTA: Aucun mot de passe configuré (non sécurisé)");
+  }
 
   ArduinoOTA.onStart([]() {
     String type;
@@ -62,10 +70,13 @@ void OTAManager::handle() {
 }
 
 void OTAManager::setPassword(const String& password) {
-  if (password.length() > 0) {
-    otaPassword = password;
-    if (otaEnabled) {
-      ArduinoOTA.setPassword(otaPassword.c_str());
+  if (otaEnabled) {
+    if (password.length() > 0) {
+      ArduinoOTA.setPassword(password.c_str());
+      systemLogger.info("OTA: Mot de passe mis à jour");
+    } else {
+      ArduinoOTA.setPassword(nullptr);
+      systemLogger.warning("OTA: Mot de passe supprimé (non sécurisé)");
     }
   }
 }

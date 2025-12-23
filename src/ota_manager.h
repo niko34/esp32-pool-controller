@@ -7,7 +7,6 @@
 class OTAManager {
 private:
   bool otaEnabled = false;
-  String otaPassword = "poolcontroller";
 
 public:
   OTAManager();
