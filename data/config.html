@@ -464,6 +464,7 @@
             <div style="font-size: 0.85rem; color: #495057; margin-bottom: 8px; font-weight: 600;">Informations de calibration :</div>
             <div style="font-size: 0.85rem; line-height: 1.6;">
               <div><strong>Offset :</strong> <span id="orp_current_offset">Non défini</span></div>
+              <div><strong>Slope :</strong> <span id="orp_current_slope">1.0</span></div>
               <div><strong>Référence :</strong> <span id="orp_calibration_reference">—</span></div>
               <div><strong>Date :</strong> <span id="orp_calibration_date">—</span></div>
             </div>
@@ -476,14 +477,63 @@
             <div style="font-size: 0.75rem; color: #6c757d; margin-top: 4px;">Mise à jour automatique toutes les 5 secondes</div>
           </div>
 
-          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-            <label style="flex: 0 0 auto; margin: 0;">Valeur de référence (mV) :</label>
-            <input type="number" id="orp_reference_value" min="0" max="1000" step="1" placeholder="ex: 650" style="flex: 1; min-width: 0;">
+          <!-- Choix du type de calibration -->
+          <div style="margin-bottom: 15px;">
+            <label style="display: block; margin-bottom: 8px; font-weight: 500;">Type de calibration :</label>
+            <select id="orp_cal_type" style="width: 100%; padding: 8px;">
+              <option value="1point">1 point (offset seul)</option>
+              <option value="2points">2 points (offset + slope)</option>
+            </select>
           </div>
-          <button type="button" id="orp_calibrate_btn" style="width: 100%; padding: 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; margin-bottom: 10px;">Calibrer</button>
-          <p style="margin: 0; font-size: 0.85rem; color: #6c757d;">
-            Plongez la sonde dans une solution de référence, entrez sa valeur ORP connue en mV, puis cliquez sur Calibrer.
-          </p>
+
+          <!-- Calibration 1 point -->
+          <div id="orp_cal_1point" style="display: block;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+              <label style="flex: 0 0 auto; margin: 0;">Valeur de référence (mV) :</label>
+              <input type="number" id="orp_reference_value" min="0" max="1000" step="1" placeholder="ex: 650" style="flex: 1; min-width: 0;">
+            </div>
+            <button type="button" id="orp_calibrate_btn" style="width: 100%; padding: 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; margin-bottom: 10px;">Calibrer (1 point)</button>
+            <p style="margin: 0; font-size: 0.85rem; color: #6c757d;">
+              Plongez la sonde dans une solution de référence, entrez sa valeur ORP connue en mV, puis cliquez sur Calibrer.
+            </p>
+          </div>
+
+          <!-- Calibration 2 points -->
+          <div id="orp_cal_2points" style="display: none;">
+            <div style="margin-bottom: 15px; padding: 10px; background: #fff3cd; border-left: 4px solid #ffc107; border-radius: 4px;">
+              <p style="margin: 0; font-size: 0.85rem; line-height: 1.5;">
+                <strong>📋 Étapes :</strong><br>
+                1. Plongez la sonde dans la <strong>première</strong> solution de référence<br>
+                2. Notez la valeur ORP affichée et entrez la valeur de référence<br>
+                3. Cliquez sur "Mémoriser Point 1"<br>
+                4. Rincez la sonde, plongez dans la <strong>deuxième</strong> solution<br>
+                5. Entrez la valeur de référence et cliquez sur "Calibrer (2 points)"
+              </p>
+            </div>
+
+            <div style="margin-bottom: 15px; padding: 10px; background: #e7f3ff; border-radius: 4px;">
+              <div style="font-size: 0.85rem; font-weight: 600; margin-bottom: 5px;">Point 1 :</div>
+              <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                <input type="number" id="orp_ref1" min="0" max="1000" step="1" placeholder="Réf. 1 (ex: 470)" style="flex: 1;">
+                <button type="button" id="orp_save_point1_btn" style="padding: 8px 15px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; white-space: nowrap;">Mémoriser Point 1</button>
+              </div>
+              <div style="font-size: 0.8rem; color: #6c757d;">
+                <span id="orp_point1_status">En attente...</span>
+              </div>
+            </div>
+
+            <div style="margin-bottom: 15px; padding: 10px; background: #e7f3ff; border-radius: 4px;">
+              <div style="font-size: 0.85rem; font-weight: 600; margin-bottom: 5px;">Point 2 :</div>
+              <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                <input type="number" id="orp_ref2" min="0" max="1000" step="1" placeholder="Réf. 2 (ex: 650)" style="flex: 1;">
+              </div>
+            </div>
+
+            <button type="button" id="orp_calibrate_2points_btn" style="width: 100%; padding: 10px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500; margin-bottom: 10px;" disabled>Calibrer (2 points)</button>
+            <p style="margin: 0; font-size: 0.85rem; color: #6c757d;">
+              Recommandation : Utilisez 2 solutions espacées (ex: 470 mV et 650 mV) pour une meilleure précision.
+            </p>
+          </div>
         </div>
 
         <div id="orp_regulation_section" style="padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #dee2e6;">
@@ -816,6 +866,18 @@
       const orpReferenceValue = document.getElementById('orp_reference_value');
       const orpCalibrateBtn = document.getElementById('orp_calibrate_btn');
       const orpCurrentValue = document.getElementById('orp_current_value');
+      const orpCalType = document.getElementById('orp_cal_type');
+      const orpCal1Point = document.getElementById('orp_cal_1point');
+      const orpCal2Points = document.getElementById('orp_cal_2points');
+      const orpRef1 = document.getElementById('orp_ref1');
+      const orpRef2 = document.getElementById('orp_ref2');
+      const orpSavePoint1Btn = document.getElementById('orp_save_point1_btn');
+      const orpCalibrate2PointsBtn = document.getElementById('orp_calibrate_2points_btn');
+      const orpPoint1Status = document.getElementById('orp_point1_status');
+
+      // Variables pour calibration 2 points
+      let orpPoint1Measured = null;
+      let orpPoint1Reference = null;
 
       const phCalibrationSection = document.getElementById('ph_calibration_section');
       const orpCalibrationSection = document.getElementById('orp_calibration_section');
@@ -1164,6 +1226,7 @@
 
           // Calibration ORP
           const orpOffsetEl = document.getElementById('orp_current_offset');
+          const orpSlopeEl = document.getElementById('orp_current_slope');
 
           // Afficher les informations complètes de calibration ORP
           const orpCalibrated = cfg.orp_calibration_date && cfg.orp_calibration_date !== '';
@@ -1182,6 +1245,16 @@
               orpOffsetEl.textContent = `${orpOffset >= 0 ? '+' : ''}${orpOffset.toFixed(1)} mV`;
               orpOffsetEl.style.color = '#007bff';
               orpOffsetEl.style.fontWeight = 'normal';
+            }
+          }
+
+          if (orpSlopeEl) {
+            const orpSlope = cfg.orp_calibration_slope || 1.0;
+            orpSlopeEl.textContent = orpSlope.toFixed(3);
+            if (Math.abs(orpSlope - 1.0) < 0.001) {
+              orpSlopeEl.style.color = '#6c757d';
+            } else {
+              orpSlopeEl.style.color = '#007bff';
             }
           }
 
@@ -1519,6 +1592,164 @@
 
         alert(`Calibration ORP effectuée\nOffset appliqué : ${offset.toFixed(1)} mV`);
         orpReferenceValue.value = '';
+      });
+
+      // Event listener pour changement de type de calibration ORP
+      orpCalType.addEventListener('change', () => {
+        const type = orpCalType.value;
+        if (type === '1point') {
+          orpCal1Point.style.display = 'block';
+          orpCal2Points.style.display = 'none';
+          // Réinitialiser les variables de calibration 2 points
+          orpPoint1Measured = null;
+          orpPoint1Reference = null;
+          orpPoint1Status.textContent = '';
+          orpCalibrate2PointsBtn.disabled = true;
+        } else if (type === '2points') {
+          orpCal1Point.style.display = 'none';
+          orpCal2Points.style.display = 'block';
+        }
+      });
+
+      // Event listener pour sauvegarder le point 1 (calibration 2 points)
+      orpSavePoint1Btn.addEventListener('click', () => {
+        const ref1 = parseFloat(orpRef1.value);
+
+        if (isNaN(ref1) || ref1 < 0 || ref1 > 1000) {
+          alert('Veuillez entrer une valeur de référence valide (0-1000 mV) pour le point 1');
+          return;
+        }
+
+        if (!latestSensorData) {
+          alert('Aucune donnée capteur disponible.\nVeuillez patienter quelques secondes et réessayer.');
+          return;
+        }
+
+        const measured1 = latestSensorData.orp_raw;
+
+        if (isNaN(measured1) || measured1 === null || measured1 === undefined) {
+          alert('Impossible de lire la valeur ORP actuelle\nValeur reçue: ' + measured1);
+          return;
+        }
+
+        // Sauvegarder le point 1
+        orpPoint1Measured = measured1;
+        orpPoint1Reference = ref1;
+
+        // Afficher le statut
+        orpPoint1Status.textContent = `✓ Point 1: ${measured1.toFixed(1)} mV → ${ref1.toFixed(0)} mV`;
+        orpPoint1Status.style.color = '#28a745';
+        orpPoint1Status.style.fontWeight = '500';
+
+        // Activer le bouton de calibration
+        orpCalibrate2PointsBtn.disabled = false;
+
+        alert(`Point 1 mémorisé\n\nMesure brute: ${measured1.toFixed(1)} mV\nRéférence: ${ref1.toFixed(0)} mV\n\nVous pouvez maintenant plonger la sonde dans la solution de référence 2 et calibrer.`);
+      });
+
+      // Event listener pour calibration 2 points ORP
+      orpCalibrate2PointsBtn.addEventListener('click', () => {
+        const ref2 = parseFloat(orpRef2.value);
+
+        if (isNaN(ref2) || ref2 < 0 || ref2 > 1000) {
+          alert('Veuillez entrer une valeur de référence valide (0-1000 mV) pour le point 2');
+          return;
+        }
+
+        if (!latestSensorData) {
+          alert('Aucune donnée capteur disponible.\nVeuillez patienter quelques secondes et réessayer.');
+          return;
+        }
+
+        const measured2 = latestSensorData.orp_raw;
+
+        if (isNaN(measured2) || measured2 === null || measured2 === undefined) {
+          alert('Impossible de lire la valeur ORP actuelle\nValeur reçue: ' + measured2);
+          return;
+        }
+
+        // Vérifier que les deux points sont différents
+        if (Math.abs(orpPoint1Measured - measured2) < 10) {
+          alert('⚠️ Les deux points de mesure sont trop proches!\n\nÉcart mesuré: ' + Math.abs(orpPoint1Measured - measured2).toFixed(1) + ' mV\n\nUtilisez deux solutions de référence avec au moins 100 mV d\'écart.');
+          return;
+        }
+
+        if (Math.abs(orpPoint1Reference - ref2) < 50) {
+          alert('⚠️ Les deux valeurs de référence sont trop proches!\n\nÉcart: ' + Math.abs(orpPoint1Reference - ref2).toFixed(0) + ' mV\n\nUtilisez deux solutions de référence avec au moins 100 mV d\'écart.');
+          return;
+        }
+
+        // Calculer slope et offset
+        // Formule: ORP_final = (ORP_brut * slope) + offset
+        // Point 1: ref1 = measured1 * slope + offset
+        // Point 2: ref2 = measured2 * slope + offset
+        // => slope = (ref2 - ref1) / (measured2 - measured1)
+        // => offset = ref1 - (measured1 * slope)
+        const slope = (ref2 - orpPoint1Reference) / (measured2 - orpPoint1Measured);
+        const offset = orpPoint1Reference - (orpPoint1Measured * slope);
+
+        // Get current time
+        const now = new Date();
+        const calibrationDate = now.toISOString();
+
+        // Build confirmation message
+        let confirmMsg = `Calibration ORP 2 points\n\n`;
+        confirmMsg += `Point 1:\n`;
+        confirmMsg += `  Mesure brute: ${orpPoint1Measured.toFixed(1)} mV\n`;
+        confirmMsg += `  Référence: ${orpPoint1Reference.toFixed(0)} mV\n\n`;
+        confirmMsg += `Point 2:\n`;
+        confirmMsg += `  Mesure brute: ${measured2.toFixed(1)} mV\n`;
+        confirmMsg += `  Référence: ${ref2.toFixed(0)} mV\n\n`;
+        confirmMsg += `Slope calculé: ${slope.toFixed(3)}\n`;
+        confirmMsg += `Offset calculé: ${offset.toFixed(1)} mV\n`;
+        confirmMsg += `\nVoulez-vous appliquer cette calibration ?`;
+
+        if (!confirm(confirmMsg)) {
+          return;
+        }
+
+        // Save configuration with all calibration data
+        const config = collectConfig();
+        config.orp_calibration_slope = slope;
+        config.orp_calibration_offset = offset;
+        config.orp_calibration_date = calibrationDate;
+        config.orp_calibration_reference = ref2; // Stocker la dernière référence utilisée
+
+        sendConfig(config);
+
+        // Mettre à jour l'affichage
+        const orpOffsetEl = document.getElementById('orp_current_offset');
+        if (orpOffsetEl) {
+          orpOffsetEl.textContent = `${offset >= 0 ? '+' : ''}${offset.toFixed(1)} mV`;
+          orpOffsetEl.style.color = '#007bff';
+        }
+
+        const orpSlopeEl = document.getElementById('orp_current_slope');
+        if (orpSlopeEl) {
+          orpSlopeEl.textContent = slope.toFixed(3);
+          orpSlopeEl.style.color = '#007bff';
+        }
+
+        const orpRefEl = document.getElementById('orp_calibration_reference');
+        if (orpRefEl) {
+          orpRefEl.textContent = `${ref2.toFixed(0)} mV`;
+        }
+
+        const orpDateEl = document.getElementById('orp_calibration_date');
+        if (orpDateEl) {
+          const options = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' };
+          orpDateEl.textContent = now.toLocaleDateString('fr-FR', options);
+        }
+
+        alert(`Calibration ORP 2 points effectuée\n\nSlope: ${slope.toFixed(3)}\nOffset: ${offset.toFixed(1)} mV`);
+
+        // Réinitialiser
+        orpRef1.value = '';
+        orpRef2.value = '';
+        orpPoint1Measured = null;
+        orpPoint1Reference = null;
+        orpPoint1Status.textContent = '';
+        orpCalibrate2PointsBtn.disabled = true;
       });
 
       filtrationMode.addEventListener('change', () => {

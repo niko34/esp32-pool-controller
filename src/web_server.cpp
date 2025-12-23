@@ -301,8 +301,9 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
   }
   doc["ph_cal_valid"] = !mqttCfg.phCalibrationDate.isEmpty();
 
-  // Données de calibration ORP (1 point)
+  // Données de calibration ORP (1 ou 2 points)
   doc["orp_calibration_offset"] = mqttCfg.orpCalibrationOffset;
+  doc["orp_calibration_slope"] = mqttCfg.orpCalibrationSlope;
   doc["orp_calibration_date"] = mqttCfg.orpCalibrationDate;
   doc["orp_calibration_reference"] = mqttCfg.orpCalibrationReference;
   if (!isnan(mqttCfg.orpCalibrationTemp)) {
@@ -424,9 +425,12 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
     mqttCfg.phCalibrationTemp = doc["ph_calibration_temp"];
   }
 
-  // Données de calibration ORP (1 point)
+  // Données de calibration ORP (1 ou 2 points)
   if (doc.containsKey("orp_calibration_offset")) {
     mqttCfg.orpCalibrationOffset = doc["orp_calibration_offset"];
+  }
+  if (doc.containsKey("orp_calibration_slope")) {
+    mqttCfg.orpCalibrationSlope = doc["orp_calibration_slope"];
   }
   if (doc.containsKey("orp_calibration_date")) {
     mqttCfg.orpCalibrationDate = doc["orp_calibration_date"].as<String>();

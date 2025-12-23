@@ -263,10 +263,14 @@ void SensorManager::readRealSensors() {
 
     // Approximation courante de ces modules : ORP(mV) ≈ 2000mV - Vout(mV)
     // => Vout=0mV -> +2000mV, Vout=2000mV -> 0mV, Vout=4000mV -> -2000mV
+    // Note: Cette formule est une approximation et peut varier selon le module utilisé
     float rawOrpValue = 2000.0f - orpModuleVoltage_mV;
 
-    // Appliquer l'offset de calibration et arrondir au mV
-    orpValue = roundf(rawOrpValue + mqttCfg.orpCalibrationOffset);
+    // Appliquer la calibration (slope + offset) et arrondir au mV
+    // Formule: ORP_final = (ORP_brut * slope) + offset
+    // Calibration 1 point: slope=1.0, offset calculé
+    // Calibration 2 points: slope et offset calculés depuis 2 solutions de référence
+    orpValue = roundf((rawOrpValue * mqttCfg.orpCalibrationSlope) + mqttCfg.orpCalibrationOffset);
 
     // Debug: afficher les valeurs ORP toutes les 5 secondes
     if (now - lastOrpDebugLog >= 5000) {
