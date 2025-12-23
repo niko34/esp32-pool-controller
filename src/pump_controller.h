@@ -37,6 +37,7 @@ class PumpControllerClass {
 private:
   PumpDriver pumps[2];
   uint8_t pumpDuty[2] = {0, 0};
+  bool manualMode[2] = {false, false};  // Mode test manuel par pompe
 
   DosingState phDosingState;
   DosingState orpDosingState;
@@ -77,6 +78,9 @@ public:
 
   // Reset des états
   void resetDosingStates();
+
+  // Test manuel des pompes (à utiliser avec précaution)
+  void setManualPump(int pumpIndex, uint8_t duty);
 };
 
 extern PumpControllerClass PumpController;

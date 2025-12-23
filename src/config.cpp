@@ -75,7 +75,6 @@ void saveMqttConfig() {
   prefs.putBool("ph_enabled", mqttCfg.phEnabled);
   prefs.putInt("ph_pump", mqttCfg.phPump);
   prefs.putInt("ph_limit_sec", mqttCfg.phInjectionLimitSeconds);
-  prefs.putInt("ph_pin", mqttCfg.phSensorPin);
 
   // Calibration pH (DFRobot_PH stocke ses données en EEPROM)
   // On garde juste la date et température pour l'interface utilisateur
@@ -89,7 +88,6 @@ void saveMqttConfig() {
   prefs.putBool("orp_enabled", mqttCfg.orpEnabled);
   prefs.putInt("orp_pump", mqttCfg.orpPump);
   prefs.putInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
-  prefs.putInt("orp_pin", mqttCfg.orpSensorPin);
 
   // Calibration ORP - 1 point
   prefs.putFloat("orp_cal_off", mqttCfg.orpCalibrationOffset);
@@ -141,7 +139,6 @@ void loadMqttConfig() {
   mqttCfg.phEnabled = prefs.getBool("ph_enabled", mqttCfg.phEnabled);
   mqttCfg.phPump = prefs.getInt("ph_pump", mqttCfg.phPump);
   mqttCfg.phInjectionLimitSeconds = prefs.getInt("ph_limit_sec", mqttCfg.phInjectionLimitSeconds);
-  mqttCfg.phSensorPin = prefs.getInt("ph_pin", mqttCfg.phSensorPin);
 
   // Calibration pH (DFRobot_PH stocke ses données en EEPROM)
   mqttCfg.phCalibrationDate = prefs.getString("ph_cal_date", "");
@@ -152,7 +149,6 @@ void loadMqttConfig() {
   mqttCfg.orpEnabled = prefs.getBool("orp_enabled", mqttCfg.orpEnabled);
   mqttCfg.orpPump = prefs.getInt("orp_pump", mqttCfg.orpPump);
   mqttCfg.orpInjectionLimitSeconds = prefs.getInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
-  mqttCfg.orpSensorPin = prefs.getInt("orp_pin", mqttCfg.orpSensorPin);
 
   // Calibration ORP - 1 point
   mqttCfg.orpCalibrationOffset = prefs.getFloat("orp_cal_off", mqttCfg.orpCalibrationOffset);

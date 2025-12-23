@@ -425,9 +425,11 @@ void PumpControllerClass::update() {
     }
   }
 
-  // Appliquer les valeurs de duty
+  // Appliquer les valeurs de duty (sauf pour les pompes en mode manuel)
   for (int i = 0; i < 2; ++i) {
-    applyPumpDuty(i, desiredDuty[i]);
+    if (!manualMode[i]) {
+      applyPumpDuty(i, desiredDuty[i]);
+    }
   }
 
   // Mettre à jour le tracking de sécurité
@@ -474,4 +476,24 @@ void PumpControllerClass::resetDosingStates() {
   phPID = {};
   orpPID = {};
   systemLogger.info("États de dosage réinitialisés");
+}
+
+void PumpControllerClass::setManualPump(int pumpIndex, uint8_t duty) {
+  if (pumpIndex < 0 || pumpIndex >= 2) {
+    systemLogger.error("Index de pompe invalide: " + String(pumpIndex));
+    return;
+  }
+
+  duty = duty > MAX_PWM_DUTY ? MAX_PWM_DUTY : duty;
+
+  // Activer/désactiver le mode manuel
+  manualMode[pumpIndex] = (duty > 0);
+
+  applyPumpDuty(pumpIndex, duty);
+
+  if (duty > 0) {
+    systemLogger.info("Test manuel pompe " + String(pumpIndex + 1) + " activée (duty=" + String(duty) + ")");
+  } else {
+    systemLogger.info("Test manuel pompe " + String(pumpIndex + 1) + " désactivée");
+  }
 }

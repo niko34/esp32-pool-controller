@@ -123,7 +123,7 @@ void SensorManager::update() {
   if (now - lastModeLog >= 10000) {
     Serial.printf("[SENSOR MODE] %s | ORP Pin: %d | pH Pin: %d\n",
                   simulationCfg.enabled ? "SIMULATION" : "REAL",
-                  mqttCfg.orpSensorPin, mqttCfg.phSensorPin);
+                  ORP_SENSOR_PIN, PH_SENSOR_PIN);
     lastModeLog = now;
   }
 
@@ -205,7 +205,7 @@ void SensorManager::readRealSensors() {
   lastSensorRead = now;
 
   // ========== Lecture ORP via ADS1115 canal A1 ==========
-  if (mqttCfg.orpSensorPin >= 0) {
+  if (true) {  // ORP_SENSOR_PIN est toujours défini
     // Filtrage médian avec échantillonnage réduit
     // L'ADS1115 à 8 SPS (125ms/échantillon) fait déjà un filtrage interne précis
     // 3 échantillons = ~375ms total, suffisant pour éliminer les pics de bruit
@@ -290,7 +290,7 @@ void SensorManager::readRealSensors() {
   }
 
   // ========== Lecture pH via ADS1115 canal A0 avec filtrage médian ==========
-  if (mqttCfg.phSensorPin >= 0) {
+  if (true) {  // PH_SENSOR_PIN est toujours défini
     // Filtrage médian avec échantillonnage réduit
     // L'ADS1115 à 8 SPS (125ms/échantillon) fait déjà un filtrage interne précis
     // 3 échantillons = ~375ms total, suffisant pour éliminer les pics de bruit
@@ -548,7 +548,7 @@ void SensorManager::publishValues() {
 // ========== Calibration pH (DFRobot_PH) ==========
 
 void SensorManager::calibratePhNeutral() {
-  if (mqttCfg.phSensorPin >= 0) {
+  if (true) {  // PH_SENSOR_PIN est toujours défini
     // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian 3 samples)
     const int numSamples = 3;
     int16_t samples[numSamples];
@@ -597,7 +597,7 @@ void SensorManager::calibratePhNeutral() {
 }
 
 void SensorManager::calibratePhAcid() {
-  if (mqttCfg.phSensorPin >= 0) {
+  if (true) {  // PH_SENSOR_PIN est toujours défini
     // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian 3 samples)
     const int numSamples = 3;
     int16_t samples[numSamples];
@@ -646,7 +646,7 @@ void SensorManager::calibratePhAcid() {
 }
 
 void SensorManager::calibratePhAlkaline() {
-  if (mqttCfg.phSensorPin >= 0) {
+  if (true) {  // PH_SENSOR_PIN est toujours défini
     // Note: DFRobot_PH ne supporte que 2 points (4.0 et 7.0)
     // Pour pH 9.18, utiliser la calibration 2 points standard
     systemLogger.warning("DFRobot_PH ne supporte que calibration 2 points (pH 4.0 et 7.0) - utilisez calibratePhAcid() et calibratePhNeutral()");
@@ -654,7 +654,7 @@ void SensorManager::calibratePhAlkaline() {
 }
 
 void SensorManager::clearPhCalibration() {
-  if (mqttCfg.phSensorPin >= 0) {
+  if (true) {  // PH_SENSOR_PIN est toujours défini
     // Effacer l'EEPROM utilisé par DFRobot_PH (adresses 0-7)
     for (int i = 0; i < 8; i++) {
       EEPROM.write(i, 0xFF);

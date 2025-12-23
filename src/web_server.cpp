@@ -139,6 +139,57 @@ void WebServerManager::setupRoutes() {
     req->send(200, "application/json", response);
   });
 
+  // Routes pour test manuel des pompes
+  server.on("/pump1/on", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    PumpController.setManualPump(0, MAX_PWM_DUTY); // Pompe 1 à fond
+    req->send(200, "text/plain", "OK");
+  });
+
+  server.on("/pump1/off", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    PumpController.setManualPump(0, 0); // Pompe 1 arrêtée
+    req->send(200, "text/plain", "OK");
+  });
+
+  server.on("/pump2/on", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    PumpController.setManualPump(1, MAX_PWM_DUTY); // Pompe 2 à fond
+    req->send(200, "text/plain", "OK");
+  });
+
+  server.on("/pump2/off", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    PumpController.setManualPump(1, 0); // Pompe 2 arrêtée
+    req->send(200, "text/plain", "OK");
+  });
+
+  // Handler générique pour les routes avec paramètres dans l'URL
+  server.onNotFound([this](AsyncWebServerRequest *req) {
+    String url = req->url();
+
+    // Gérer /pump1/duty/:duty
+    if (req->method() == HTTP_POST && url.startsWith("/pump1/duty/")) {
+      String dutyStr = url.substring(12); // Après "/pump1/duty/"
+      int duty = dutyStr.toInt();
+      if (duty < 0) duty = 0;
+      if (duty > 255) duty = 255;
+      PumpController.setManualPump(0, duty);
+      req->send(200, "text/plain", "OK");
+      return;
+    }
+
+    // Gérer /pump2/duty/:duty
+    if (req->method() == HTTP_POST && url.startsWith("/pump2/duty/")) {
+      String dutyStr = url.substring(12); // Après "/pump2/duty/"
+      int duty = dutyStr.toInt();
+      if (duty < 0) duty = 0;
+      if (duty > 255) duty = 255;
+      PumpController.setManualPump(1, duty);
+      req->send(200, "text/plain", "OK");
+      return;
+    }
+
+    // 404 pour les autres routes non trouvées
+    req->send(404, "text/plain", "Not Found");
+  });
+
   // Route pour mise à jour OTA (firmware ou filesystem)
   server.on("/update", HTTP_POST,
     [](AsyncWebServerRequest *req) {
@@ -218,6 +269,7 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
   // SÉCURITÉ: Ne jamais envoyer le mot de passe en clair
   doc["password"] = mqttCfg.password.length() > 0 ? "******" : "";
   doc["enabled"] = mqttCfg.enabled;
+  doc["mqtt_connected"] = mqttManager.isConnected();
   doc["ph_target"] = mqttCfg.phTarget;
   doc["orp_target"] = mqttCfg.orpTarget;
   doc["ph_enabled"] = mqttCfg.phEnabled;
@@ -239,8 +291,8 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
   doc["wifi_ip"] = WiFi.localIP().toString();
   doc["max_ph_ml_per_day"] = safetyLimits.maxPhMinusMlPerDay;
   doc["max_chlorine_ml_per_day"] = safetyLimits.maxChlorineMlPerDay;
-  doc["ph_sensor_pin"] = mqttCfg.phSensorPin;
-  doc["orp_sensor_pin"] = mqttCfg.orpSensorPin;
+  doc["ph_sensor_pin"] = PH_SENSOR_PIN;
+  doc["orp_sensor_pin"] = ORP_SENSOR_PIN;
 
   // Données de calibration pH (DFRobot_PH)
   doc["ph_calibration_date"] = mqttCfg.phCalibrationDate;
@@ -362,13 +414,7 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
     safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"];
   }
 
-  // Pins des capteurs
-  if (doc.containsKey("ph_sensor_pin")) {
-    mqttCfg.phSensorPin = doc["ph_sensor_pin"];
-  }
-  if (doc.containsKey("orp_sensor_pin")) {
-    mqttCfg.orpSensorPin = doc["orp_sensor_pin"];
-  }
+  // Pins des capteurs sont maintenant des defines (PH_SENSOR_PIN, ORP_SENSOR_PIN)
 
   // Données de calibration pH (DFRobot_PH gère en EEPROM)
   if (doc.containsKey("ph_calibration_date")) {

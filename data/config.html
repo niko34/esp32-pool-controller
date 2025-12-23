@@ -378,7 +378,7 @@
           <div style="margin-bottom: 15px; padding: 15px; background: #fff; border: 2px solid #6c757d; border-radius: 6px; text-align: center;">
             <div style="font-size: 0.85rem; color: #6c757d; margin-bottom: 8px; font-weight: 600;">Valeur pH actuelle :</div>
             <div id="ph_current_value" style="font-size: 2rem; font-weight: bold; color: #007bff; font-family: 'Courier New', monospace;">--</div>
-            <div style="font-size: 0.75rem; color: #6c757d; margin-top: 4px;">Mise à jour automatique toutes les 2 secondes</div>
+            <div style="font-size: 0.75rem; color: #6c757d; margin-top: 4px;">Mise à jour automatique toutes les 5 secondes</div>
           </div>
 
           <!-- Point de calibration pH 7.0 (neutre) -->
@@ -464,7 +464,7 @@
           <div style="margin-bottom: 15px; padding: 15px; background: #fff; border: 2px solid #6c757d; border-radius: 6px; text-align: center;">
             <div style="font-size: 0.85rem; color: #6c757d; margin-bottom: 8px; font-weight: 600;">Valeur ORP actuelle :</div>
             <div id="orp_current_value" style="font-size: 2rem; font-weight: bold; color: #007bff; font-family: 'Courier New', monospace;">--</div>
-            <div style="font-size: 0.75rem; color: #6c757d; margin-top: 4px;">Mise à jour automatique toutes les 2 secondes</div>
+            <div style="font-size: 0.75rem; color: #6c757d; margin-top: 4px;">Mise à jour automatique toutes les 5 secondes</div>
           </div>
 
           <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
@@ -501,12 +501,18 @@
       </div>
 
       <div class="tab-panel" data-tab="mqtt">
-        <div class="switch-row">
-          <span>Activer la publication MQTT</span>
-          <label class="switch">
-            <input type="checkbox" id="mqtt_enabled">
-            <span class="slider"></span>
-          </label>
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; padding: 12px; background: #f8f9fa; border-radius: 6px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-weight: 500;">Activer la publication MQTT</span>
+            <label class="switch">
+              <input type="checkbox" id="mqtt_enabled">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-weight: 500; color: #6c757d;">Statut:</span>
+            <span id="mqtt_status_indicator" style="display: inline-block; width: 14px; height: 14px; border-radius: 50%; background-color: #999; box-shadow: 0 0 4px rgba(0,0,0,0.2);" title="Statut MQTT"></span>
+          </div>
         </div>
 
         <label>Serveur MQTT :</label>
@@ -621,6 +627,44 @@
         <div class="actions">
           <button type="button" id="update_btn" disabled style="background-color: #34c759;">Mettre à jour</button>
           <button type="button" id="refresh_info_btn" style="background-color: #666; margin-left: 10px;">Actualiser</button>
+        </div>
+
+        <h3 style="margin-top: 24px;">Test des Pompes</h3>
+
+        <div class="info-block" style="background-color: #fff4e6; border-left: 4px solid #ff9500;">
+          <p style="margin: 0; font-size: 0.9rem;">
+            ⚠️ <strong>Attention :</strong> Ces commandes permettent de tester manuellement les pompes. Utilisez avec précaution.
+          </p>
+        </div>
+
+        <div class="switch-row">
+          <span>Pompe 1 (Test manuel)</span>
+          <label class="switch">
+            <input type="checkbox" id="pump1_test">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div style="margin-left: 20px; margin-bottom: 20px;">
+          <label for="pump1_duty" style="display: block; margin-bottom: 5px; color: #666; font-size: 0.9rem;">
+            Puissance: <span id="pump1_duty_value">0</span>% (PWM: <span id="pump1_duty_pwm">0</span>/255)
+          </label>
+          <input type="range" id="pump1_duty" min="0" max="255" value="255"
+                 style="width: 100%; max-width: 400px;" disabled>
+        </div>
+
+        <div class="switch-row">
+          <span>Pompe 2 (Test manuel)</span>
+          <label class="switch">
+            <input type="checkbox" id="pump2_test">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div style="margin-left: 20px; margin-bottom: 20px;">
+          <label for="pump2_duty" style="display: block; margin-bottom: 5px; color: #666; font-size: 0.9rem;">
+            Puissance: <span id="pump2_duty_value">0</span>% (PWM: <span id="pump2_duty_pwm">0</span>/255)
+          </label>
+          <input type="range" id="pump2_duty" min="0" max="255" value="255"
+                 style="width: 100%; max-width: 400px;" disabled>
         </div>
 
         <h3 style="margin-top: 24px;">Logs Système</h3>
@@ -961,6 +1005,26 @@
       // Rafraîchir les données toutes les 2 secondes (utile pour la calibration)
       setInterval(loadSensorData, 2000);
 
+      // Fonction pour mettre à jour la pastille de statut MQTT
+      function updateMqttStatusIndicator(enabled, connected) {
+        const indicator = document.getElementById('mqtt_status_indicator');
+        if (!indicator) return;
+
+        if (!enabled) {
+          // MQTT désactivé → pastille grise
+          indicator.style.backgroundColor = '#999';
+          indicator.title = 'MQTT désactivé';
+        } else if (connected) {
+          // MQTT activé et connecté → pastille verte
+          indicator.style.backgroundColor = '#28a745';
+          indicator.title = 'MQTT connecté';
+        } else {
+          // MQTT activé mais non connecté → pastille rouge
+          indicator.style.backgroundColor = '#dc3545';
+          indicator.title = 'MQTT non connecté';
+        }
+      }
+
       // Fonction pour charger la configuration
       function loadConfig() {
         return fetch('/get-config')
@@ -972,6 +1036,9 @@
           document.getElementById('mqtt_username').value = cfg.username || '';
           document.getElementById('mqtt_password').value = cfg.password || '';
           toggle.checked = cfg.enabled !== false;
+
+          // Mise à jour de la pastille de statut MQTT
+          updateMqttStatusIndicator(cfg.enabled, cfg.mqtt_connected);
           phInput.value = (typeof cfg.ph_target === 'number') ? cfg.ph_target : 7.2;
           orpInput.value = (typeof cfg.orp_target === 'number') ? cfg.orp_target : 650;
           phToggle.checked = cfg.ph_enabled === true;
@@ -1104,7 +1171,12 @@
 
       // Event listeners
       toggle.addEventListener('change', () => {
+        // Mettre à jour la pastille immédiatement (grise si désactivé, rouge si activé mais pas encore connecté)
+        updateMqttStatusIndicator(toggle.checked, false);
         sendConfig(collectConfig());
+        // Recharger la config après 6 secondes pour laisser le temps à MQTT de se connecter
+        // (délai anti-spam de 5s + 1s de marge)
+        setTimeout(() => loadConfig(), 6000);
       });
 
       phToggle.addEventListener('change', () => {
@@ -1136,10 +1208,14 @@
 
       document.getElementById('mqtt_server').addEventListener('change', () => {
         sendConfig(collectConfig());
+        // Recharger après 6s pour mettre à jour le statut MQTT
+        setTimeout(() => loadConfig(), 6000);
       });
 
       document.getElementById('mqtt_port').addEventListener('change', () => {
         sendConfig(collectConfig());
+        // Recharger après 6s pour mettre à jour le statut MQTT
+        setTimeout(() => loadConfig(), 6000);
       });
 
       document.getElementById('mqtt_topic').addEventListener('change', () => {
@@ -1148,10 +1224,14 @@
 
       document.getElementById('mqtt_username').addEventListener('change', () => {
         sendConfig(collectConfig());
+        // Recharger après 6s pour mettre à jour le statut MQTT
+        setTimeout(() => loadConfig(), 6000);
       });
 
       document.getElementById('mqtt_password').addEventListener('change', () => {
         sendConfig(collectConfig());
+        // Recharger après 6s pour mettre à jour le statut MQTT
+        setTimeout(() => loadConfig(), 6000);
       });
 
       phPumpSelect.addEventListener('change', () => {
@@ -1670,6 +1750,152 @@
       // Changement du filtre de logs
       document.getElementById('logs_filter').addEventListener('change', function() {
         loadLogs(false); // Recharger les logs avec le nouveau filtre
+      });
+
+      // Gestion des sliders de puissance pompes
+      const pump1DutySlider = document.getElementById('pump1_duty');
+      const pump2DutySlider = document.getElementById('pump2_duty');
+      const pump1DutyValue = document.getElementById('pump1_duty_value');
+      const pump2DutyValue = document.getElementById('pump2_duty_value');
+      const pump1DutyPwm = document.getElementById('pump1_duty_pwm');
+      const pump2DutyPwm = document.getElementById('pump2_duty_pwm');
+
+      // Mettre à jour l'affichage du slider pompe 1
+      pump1DutySlider.addEventListener('input', function() {
+        const duty = parseInt(this.value);
+        const percent = Math.round((duty / 255) * 100);
+        pump1DutyValue.textContent = percent;
+        pump1DutyPwm.textContent = duty;
+      });
+
+      // Mettre à jour l'affichage du slider pompe 2
+      pump2DutySlider.addEventListener('input', function() {
+        const duty = parseInt(this.value);
+        const percent = Math.round((duty / 255) * 100);
+        pump2DutyValue.textContent = percent;
+        pump2DutyPwm.textContent = duty;
+      });
+
+      // Appliquer la puissance lorsque le slider est relâché
+      pump1DutySlider.addEventListener('change', function() {
+        const switch1 = document.getElementById('pump1_test');
+        if (switch1.checked) {
+          const duty = parseInt(this.value);
+          fetch('/pump1/duty/' + duty, { method: 'POST' })
+            .then(response => response.text())
+            .then(data => {
+              if (data === 'OK') {
+                console.log('Pompe 1 duty=' + duty);
+              }
+            })
+            .catch(err => console.error('Erreur:', err));
+        }
+      });
+
+      pump2DutySlider.addEventListener('change', function() {
+        const switch2 = document.getElementById('pump2_test');
+        if (switch2.checked) {
+          const duty = parseInt(this.value);
+          fetch('/pump2/duty/' + duty, { method: 'POST' })
+            .then(response => response.text())
+            .then(data => {
+              if (data === 'OK') {
+                console.log('Pompe 2 duty=' + duty);
+              }
+            })
+            .catch(err => console.error('Erreur:', err));
+        }
+      });
+
+      // Gestion des switches de test des pompes
+      document.getElementById('pump1_test').addEventListener('change', function() {
+        const slider = document.getElementById('pump1_duty');
+
+        if (this.checked) {
+          // Activer la pompe avec la puissance du slider
+          slider.disabled = false;
+          const duty = parseInt(slider.value);
+          const percent = Math.round((duty / 255) * 100);
+          pump1DutyValue.textContent = percent;
+          pump1DutyPwm.textContent = duty;
+
+          fetch('/pump1/duty/' + duty, { method: 'POST' })
+            .then(response => response.text())
+            .then(data => {
+              if (data === 'OK') {
+                console.log('Pompe 1 ON avec duty=' + duty);
+              } else {
+                alert('Erreur lors du contrôle de la pompe 1');
+                this.checked = false;
+                slider.disabled = true;
+              }
+            })
+            .catch(err => {
+              console.error('Erreur:', err);
+              alert('Erreur lors du contrôle de la pompe 1');
+              this.checked = false;
+              slider.disabled = true;
+            });
+        } else {
+          // Désactiver la pompe
+          slider.disabled = true;
+          pump1DutyValue.textContent = '0';
+          pump1DutyPwm.textContent = '0';
+
+          fetch('/pump1/off', { method: 'POST' })
+            .then(response => response.text())
+            .then(data => {
+              if (data === 'OK') {
+                console.log('Pompe 1 OFF');
+              }
+            })
+            .catch(err => console.error('Erreur:', err));
+        }
+      });
+
+      document.getElementById('pump2_test').addEventListener('change', function() {
+        const slider = document.getElementById('pump2_duty');
+
+        if (this.checked) {
+          // Activer la pompe avec la puissance du slider
+          slider.disabled = false;
+          const duty = parseInt(slider.value);
+          const percent = Math.round((duty / 255) * 100);
+          pump2DutyValue.textContent = percent;
+          pump2DutyPwm.textContent = duty;
+
+          fetch('/pump2/duty/' + duty, { method: 'POST' })
+            .then(response => response.text())
+            .then(data => {
+              if (data === 'OK') {
+                console.log('Pompe 2 ON avec duty=' + duty);
+              } else {
+                alert('Erreur lors du contrôle de la pompe 2');
+                this.checked = false;
+                slider.disabled = true;
+              }
+            })
+            .catch(err => {
+              console.error('Erreur:', err);
+              alert('Erreur lors du contrôle de la pompe 2');
+              this.checked = false;
+              slider.disabled = true;
+            });
+        } else {
+          // Désactiver la pompe
+          slider.disabled = true;
+          pump2DutyValue.textContent = '0';
+          pump2DutyPwm.textContent = '0';
+
+          fetch('/pump2/off', { method: 'POST' })
+            .then(response => response.text())
+            .then(data => {
+              if (data === 'OK') {
+                console.log('Pompe 2 OFF');
+              }
+            })
+            .catch(err => console.error('Erreur:', err));
+        }
       });
 
       // Charger les logs au chargement de la page

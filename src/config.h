@@ -11,6 +11,12 @@
 #define PUMP2_CHANNEL 1
 #define PUMP_PWM_FREQ 1000   // 1kHz PWM
 #define PUMP_PWM_RES_BITS 8  // 8-bit resolution (0-255)
+
+// Capteurs analogiques (ADS1115 via I2C)
+#define PH_SENSOR_PIN 35     // GPIO pour capteur pH (ADC1_7)
+#define ORP_SENSOR_PIN 34    // GPIO pour capteur ORP (ADC1_6)
+
+// Capteurs et actionneurs
 #define TEMP_SENSOR_PIN 5
 #define FILTRATION_RELAY_PIN 27
 
@@ -46,8 +52,6 @@ struct MqttConfig {
   String ntpServer = "pool.ntp.org";
   String manualTimeIso = "";
   String timezoneId = "europe_paris";
-  int phSensorPin = 35;               // GPIO pour capteur pH (-1 = pas de capteur)
-  int orpSensorPin = 34;              // GPIO pour capteur ORP (-1 = pas de capteur)
 
   // Calibration pH (géré par DFRobot_PH en EEPROM)
   // La librairie DFRobot_PH gère automatiquement:
