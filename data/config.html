@@ -332,6 +332,7 @@
         <button type="button" class="tab-button" data-tab="wifi">Wi-Fi</button>
         <button type="button" class="tab-button" data-tab="time">Horloge</button>
         <button type="button" class="tab-button" data-tab="system">Système</button>
+        <button type="button" class="tab-button" data-tab="about">À propos</button>
       </div>
 
       <div class="tab-panel active" data-tab="filtration">
@@ -695,6 +696,77 @@
         <div id="logs_container" style="background-color: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 0.85rem; max-height: 400px; overflow-y: auto; line-height: 1.5;">
           <div id="logs_content">Chargement des logs...</div>
         </div>
+      </div>
+
+      <!-- Onglet À propos -->
+      <div class="tab-panel" data-tab="about">
+        <h3 style="margin-bottom: 20px; color: #007aff;">ESP32 Pool Controller</h3>
+
+        <div class="info-block" style="margin-bottom: 20px;">
+          <p style="font-size: 1rem; line-height: 1.6; margin-bottom: 15px;">
+            Contrôleur automatique de piscine basé sur ESP32 avec gestion pH, ORP (chlore),
+            température et filtration automatique. Intégration complète avec Home Assistant via MQTT.
+          </p>
+          <div style="margin-top: 15px;">
+            <span class="info-label">Version :</span>
+            <span id="about_version" style="font-weight: 600; color: #007aff;">2025.12.6</span>
+          </div>
+          <div style="margin-top: 10px;">
+            <span class="info-label">GitHub :</span>
+            <a href="https://github.com/niko34/esp32-pool-controller" target="_blank"
+               style="color: #007aff; text-decoration: none; font-weight: 500;">
+              github.com/niko34/esp32-pool-controller
+            </a>
+          </div>
+          <div style="margin-top: 10px;">
+            <span class="info-label">Auteur :</span>
+            <span>Nicolas Philippe</span>
+          </div>
+          <div style="margin-top: 10px;">
+            <span class="info-label">Licence :</span>
+            <span>MIT License</span>
+          </div>
+        </div>
+
+        <h3 style="margin-top: 30px; margin-bottom: 15px;">Librairies utilisées</h3>
+
+        <div class="info-block" style="margin-bottom: 15px;">
+          <h4 style="margin-bottom: 10px; font-size: 1rem; color: #333;">Framework & Réseau</h4>
+          <div style="margin-left: 15px; line-height: 1.8;">
+            <div>• <strong>ESP32 Arduino Core</strong> - Framework Arduino pour ESP32</div>
+            <div>• <strong>AsyncTCP</strong> - Bibliothèque TCP asynchrone par me-no-dev</div>
+            <div>• <strong>ESPAsyncWebServer</strong> - Serveur web asynchrone par me-no-dev</div>
+            <div>• <strong>ESPAsyncWiFiManager</strong> - Gestionnaire WiFi par alanswx</div>
+            <div>• <strong>PubSubClient</strong> - Client MQTT par Nick O'Leary</div>
+          </div>
+        </div>
+
+        <div class="info-block" style="margin-bottom: 15px;">
+          <h4 style="margin-bottom: 10px; font-size: 1rem; color: #333;">Capteurs & Mesures</h4>
+          <div style="margin-left: 15px; line-height: 1.8;">
+            <div>• <strong>DFRobot_PH</strong> - Bibliothèque capteur pH DFRobot SEN0161-V2</div>
+            <div>• <strong>Adafruit ADS1X15</strong> - Convertisseur ADC 16-bit I2C par Adafruit</div>
+            <div>• <strong>DallasTemperature</strong> - Sondes de température DS18B20</div>
+            <div>• <strong>OneWire</strong> - Protocol OneWire pour DS18B20</div>
+          </div>
+        </div>
+
+        <div class="info-block">
+          <h4 style="margin-bottom: 10px; font-size: 1rem; color: #333;">Utilitaires</h4>
+          <div style="margin-left: 15px; line-height: 1.8;">
+            <div>• <strong>ArduinoJson</strong> - Bibliothèque JSON par Benoît Blanchon</div>
+            <div>• <strong>LittleFS</strong> - Système de fichiers pour ESP32</div>
+            <div>• <strong>ESPmDNS</strong> - Résolution DNS multicast (.local)</div>
+            <div>• <strong>ArduinoOTA</strong> - Mise à jour Over-The-Air</div>
+          </div>
+        </div>
+
+        <p style="margin-top: 30px; padding: 15px; background-color: #f0f4ff; border-left: 4px solid #007aff; border-radius: 4px; font-size: 0.9rem; line-height: 1.6;">
+          <strong>⚠️ Avertissement :</strong> Ce projet est fourni "tel quel" sans garantie.
+          L'utilisation de produits chimiques et d'équipements électriques près de l'eau présente des risques.
+          L'utilisateur est seul responsable de la conformité aux réglementations locales,
+          de la sécurité de l'installation et du bon dosage des produits chimiques.
+        </p>
       </div>
     </form>
 
