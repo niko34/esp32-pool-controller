@@ -2007,14 +2007,14 @@
         }
       });
 
-      // Installer la mise à jour depuis GitHub
+      // Installer la mise à jour depuis GitHub (filesystem puis firmware)
       installUpdateBtn.addEventListener('click', async () => {
-        if (!latestRelease || !latestRelease.firmware_url) {
+        if (!latestRelease || !latestRelease.firmware_url || !latestRelease.filesystem_url) {
           alert('Aucune mise à jour disponible.');
           return;
         }
 
-        if (!confirm(`⚠️ ATTENTION\n\nVous allez installer la version ${latestRelease.latest_version}.\n\n• Ne coupez PAS l'alimentation pendant la mise à jour\n• L'ESP32 redémarrera automatiquement après la mise à jour\n• Cette opération peut prendre quelques minutes\n\nContinuer ?`)) {
+        if (!confirm(`⚠️ ATTENTION\n\nVous allez installer la version ${latestRelease.latest_version}.\n\n• Le filesystem ET le firmware seront mis à jour\n• Ne coupez PAS l'alimentation pendant la mise à jour\n• L'ESP32 redémarrera automatiquement après la mise à jour\n• Cette opération peut prendre quelques minutes\n\nContinuer ?`)) {
           return;
         }
 
@@ -2026,20 +2026,55 @@
         githubUpdateProgress.style.display = 'block';
         githubUpdateProgressBar.style.width = '0%';
         githubUpdateProgressBar.textContent = '0%';
-        githubUpdateStatus.textContent = 'Téléchargement depuis GitHub...';
+        githubUpdateStatus.textContent = 'Étape 1/2 : Mise à jour du filesystem...';
 
         try {
-          // Simuler la progression (car nous ne pouvons pas suivre la progression réelle du téléchargement côté serveur)
+          // ÉTAPE 1 : Installer le filesystem
           let progress = 0;
-          const progressInterval = setInterval(() => {
-            if (progress < 90) {
-              progress += 10;
+          let progressInterval = setInterval(() => {
+            if (progress < 45) {
+              progress += 5;
               githubUpdateProgressBar.style.width = progress + '%';
               githubUpdateProgressBar.textContent = progress + '%';
             }
           }, 500);
 
-          const response = await fetch('/download-update', {
+          const fsResponse = await fetch('/download-update', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: 'url=' + encodeURIComponent(latestRelease.filesystem_url)
+          });
+
+          clearInterval(progressInterval);
+
+          if (!fsResponse.ok) {
+            throw new Error('Erreur lors du téléchargement du filesystem');
+          }
+
+          const fsResult = await fsResponse.json();
+
+          if (fsResult.status !== 'success') {
+            throw new Error('La mise à jour du filesystem a échoué');
+          }
+
+          // Filesystem installé avec succès
+          githubUpdateProgressBar.style.width = '50%';
+          githubUpdateProgressBar.textContent = '50%';
+          githubUpdateStatus.textContent = 'Étape 2/2 : Mise à jour du firmware...';
+
+          // ÉTAPE 2 : Installer le firmware
+          progress = 50;
+          progressInterval = setInterval(() => {
+            if (progress < 95) {
+              progress += 5;
+              githubUpdateProgressBar.style.width = progress + '%';
+              githubUpdateProgressBar.textContent = progress + '%';
+            }
+          }, 500);
+
+          const fwResponse = await fetch('/download-update', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/x-www-form-urlencoded',
@@ -2049,25 +2084,25 @@
 
           clearInterval(progressInterval);
 
-          if (!response.ok) {
-            throw new Error('Erreur lors du téléchargement');
+          if (!fwResponse.ok) {
+            throw new Error('Erreur lors du téléchargement du firmware');
           }
 
-          const result = await response.json();
+          const fwResult = await fwResponse.json();
 
-          if (result.status === 'success') {
+          if (fwResult.status === 'success') {
             githubUpdateProgressBar.style.width = '100%';
             githubUpdateProgressBar.textContent = '100%';
             githubUpdateProgressBar.style.backgroundColor = '#34c759';
             githubUpdateStatus.textContent = '✓ Mise à jour réussie! Redémarrage en cours...';
 
-            alert('Mise à jour réussie!\n\nL\'ESP32 redémarre.\nLa page se rechargera automatiquement dans 30 secondes.');
+            alert('Mise à jour réussie!\n\nFilesystem ET firmware installés.\nL\'ESP32 redémarre.\nLa page se rechargera automatiquement dans 30 secondes.');
 
             setTimeout(() => {
               window.location.reload();
             }, 30000);
           } else {
-            throw new Error('La mise à jour a échoué');
+            throw new Error('La mise à jour du firmware a échoué');
           }
         } catch (err) {
           console.error('Erreur installation mise à jour:', err);
