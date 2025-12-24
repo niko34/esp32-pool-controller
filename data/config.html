@@ -2044,7 +2044,7 @@
             headers: {
               'Content-Type': 'application/x-www-form-urlencoded',
             },
-            body: 'url=' + encodeURIComponent(latestRelease.filesystem_url)
+            body: 'url=' + encodeURIComponent(latestRelease.filesystem_url) + '&restart=false'
           });
 
           clearInterval(progressInterval);
@@ -2079,7 +2079,7 @@
             headers: {
               'Content-Type': 'application/x-www-form-urlencoded',
             },
-            body: 'url=' + encodeURIComponent(latestRelease.firmware_url)
+            body: 'url=' + encodeURIComponent(latestRelease.firmware_url) + '&restart=true'
           });
 
           clearInterval(progressInterval);
