@@ -13,6 +13,8 @@
 #include <ESPAsyncWiFiManager.h>
 #include <Update.h>
 #include <esp_ota_ops.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 
 WebServerManager webServer;
 
@@ -67,6 +69,8 @@ void WebServerManager::setupRoutes() {
   server.on("/reboot-ap", HTTP_POST, [this](AsyncWebServerRequest *req) { handleRebootAp(req); });
   server.on("/export-csv", HTTP_GET, [this](AsyncWebServerRequest *req) { handleExportCsv(req); });
   server.on("/get-system-info", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetSystemInfo(req); });
+  server.on("/check-update", HTTP_GET, [this](AsyncWebServerRequest *req) { handleCheckUpdate(req); });
+  server.on("/download-update", HTTP_POST, [this](AsyncWebServerRequest *req) { handleDownloadUpdate(req); });
 
   server.on("/save-config", HTTP_POST,
     [](AsyncWebServerRequest *req) { req->send(200, "text/plain", "OK"); },
@@ -94,7 +98,7 @@ void WebServerManager::setupRoutes() {
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
 
-    DynamicJsonDocument doc(128);
+    JsonDocument doc;
     doc["success"] = true;
     doc["temperature"] = mqttCfg.phCalibrationTemp;
     String response;
@@ -119,7 +123,7 @@ void WebServerManager::setupRoutes() {
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
 
-    DynamicJsonDocument doc(128);
+    JsonDocument doc;
     doc["success"] = true;
     doc["temperature"] = mqttCfg.phCalibrationTemp;
     String response;
@@ -133,7 +137,7 @@ void WebServerManager::setupRoutes() {
     mqttCfg.phCalibrationTemp = NAN;
     saveMqttConfig();
 
-    DynamicJsonDocument doc(64);
+    JsonDocument doc;
     doc["success"] = true;
     String response;
     serializeJson(doc, response);
@@ -191,7 +195,7 @@ void WebServerManager::setupRoutes() {
     req->send(404, "text/plain", "Not Found");
   });
 
-  // Route pour mise à jour OTA (firmware ou filesystem)
+  // Route pour mise à jour OTA (firmware ou filesystem) - utilisée par l'interface web
   server.on("/update", HTTP_POST,
     [](AsyncWebServerRequest *req) {
       bool success = !Update.hasError();
@@ -199,7 +203,8 @@ void WebServerManager::setupRoutes() {
       response->addHeader("Connection", "close");
       req->send(response);
       if (success) {
-        delay(1000);
+        // Attendre 3 secondes pour laisser le temps au navigateur de recevoir la réponse
+        delay(3000);
         ESP.restart();
       }
     },
@@ -212,7 +217,7 @@ void WebServerManager::setupRoutes() {
 }
 
 void WebServerManager::handleGetData(AsyncWebServerRequest* request) {
-  DynamicJsonDocument doc(512);
+  JsonDocument doc;
 
   // ORP
   if (!isnan(sensors.getOrp())) {
@@ -262,7 +267,7 @@ void WebServerManager::handleGetData(AsyncWebServerRequest* request) {
 }
 
 void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
-  DynamicJsonDocument doc(1024);
+  JsonDocument doc;
   doc["server"] = mqttCfg.server;
   doc["port"] = mqttCfg.port;
   doc["topic"] = mqttCfg.topic;
@@ -328,7 +333,7 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
 }
 
 void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t, size_t) {
-  DynamicJsonDocument doc(1024);
+  JsonDocument doc;
   if (deserializeJson(doc, data, len) != DeserializationError::Ok) {
     request->send(400, "text/plain", "Invalid JSON");
     systemLogger.error("Configuration JSON invalide reçue");
@@ -336,20 +341,20 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
   }
 
   // Validation et application avec logs
-  if (doc.containsKey("server")) mqttCfg.server = doc["server"].as<String>();
-  if (doc.containsKey("port")) mqttCfg.port = doc["port"];
-  if (doc.containsKey("topic")) mqttCfg.topic = doc["topic"].as<String>();
-  if (doc.containsKey("username")) mqttCfg.username = doc["username"].as<String>();
+  if (!doc["server"].isNull()) mqttCfg.server = doc["server"].as<String>();
+  if (!doc["port"].isNull()) mqttCfg.port = doc["port"];
+  if (!doc["topic"].isNull()) mqttCfg.topic = doc["topic"].as<String>();
+  if (!doc["username"].isNull()) mqttCfg.username = doc["username"].as<String>();
 
   // Mots de passe: ne mettre à jour que s'ils ne sont pas masqués
-  if (doc.containsKey("password")) {
+  if (!doc["password"].isNull()) {
     String pwd = doc["password"].as<String>();
     if (pwd != "******" && pwd.length() > 0) {
       mqttCfg.password = pwd;
     }
   }
 
-  if (doc.containsKey("ota_password")) {
+  if (!doc["ota_password"].isNull()) {
     String otaPwd = doc["ota_password"].as<String>();
     if (otaPwd != "******") {
       mqttCfg.otaPassword = otaPwd;
@@ -358,10 +363,10 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
     }
   }
 
-  if (doc.containsKey("enabled")) mqttCfg.enabled = doc["enabled"];
+  if (!doc["enabled"].isNull()) mqttCfg.enabled = doc["enabled"];
 
   // Validation pH target
-  if (doc.containsKey("ph_target")) {
+  if (!doc["ph_target"].isNull()) {
     float phTarget = doc["ph_target"];
     if (validatePhValue(phTarget)) {
       mqttCfg.phTarget = phTarget;
@@ -371,7 +376,7 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
   }
 
   // Validation ORP target
-  if (doc.containsKey("orp_target")) {
+  if (!doc["orp_target"].isNull()) {
     float orpTarget = doc["orp_target"];
     if (validateOrpValue(orpTarget)) {
       mqttCfg.orpTarget = orpTarget;
@@ -380,17 +385,17 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
     }
   }
 
-  if (doc.containsKey("ph_enabled")) mqttCfg.phEnabled = doc["ph_enabled"];
-  if (doc.containsKey("orp_enabled")) mqttCfg.orpEnabled = doc["orp_enabled"];
+  if (!doc["ph_enabled"].isNull()) mqttCfg.phEnabled = doc["ph_enabled"];
+  if (!doc["orp_enabled"].isNull()) mqttCfg.orpEnabled = doc["orp_enabled"];
 
   // Validation pump numbers
-  if (doc.containsKey("ph_pump")) {
+  if (!doc["ph_pump"].isNull()) {
     int pump = doc["ph_pump"];
     if (validatePumpNumber(pump)) {
       mqttCfg.phPump = pump;
     }
   }
-  if (doc.containsKey("orp_pump")) {
+  if (!doc["orp_pump"].isNull()) {
     int pump = doc["orp_pump"];
     if (validatePumpNumber(pump)) {
       mqttCfg.orpPump = pump;
@@ -398,58 +403,58 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
   }
 
   // Validation injection limits
-  if (doc.containsKey("ph_limit_seconds")) {
+  if (!doc["ph_limit_seconds"].isNull()) {
     int limit = doc["ph_limit_seconds"];
     if (validateInjectionLimit(limit)) {
       mqttCfg.phInjectionLimitSeconds = limit;
     }
   }
-  if (doc.containsKey("orp_limit_seconds")) {
+  if (!doc["orp_limit_seconds"].isNull()) {
     int limit = doc["orp_limit_seconds"];
     if (validateInjectionLimit(limit)) {
       mqttCfg.orpInjectionLimitSeconds = limit;
     }
   }
 
-  if (doc.containsKey("time_use_ntp")) mqttCfg.timeUseNtp = doc["time_use_ntp"];
-  if (doc.containsKey("ntp_server")) mqttCfg.ntpServer = doc["ntp_server"].as<String>();
-  if (doc.containsKey("timezone_id")) mqttCfg.timezoneId = doc["timezone_id"].as<String>();
-  if (doc.containsKey("filtration_mode")) filtrationCfg.mode = doc["filtration_mode"].as<String>();
-  if (doc.containsKey("filtration_start")) filtrationCfg.start = doc["filtration_start"].as<String>();
-  if (doc.containsKey("filtration_end")) filtrationCfg.end = doc["filtration_end"].as<String>();
+  if (!doc["time_use_ntp"].isNull()) mqttCfg.timeUseNtp = doc["time_use_ntp"];
+  if (!doc["ntp_server"].isNull()) mqttCfg.ntpServer = doc["ntp_server"].as<String>();
+  if (!doc["timezone_id"].isNull()) mqttCfg.timezoneId = doc["timezone_id"].as<String>();
+  if (!doc["filtration_mode"].isNull()) filtrationCfg.mode = doc["filtration_mode"].as<String>();
+  if (!doc["filtration_start"].isNull()) filtrationCfg.start = doc["filtration_start"].as<String>();
+  if (!doc["filtration_end"].isNull()) filtrationCfg.end = doc["filtration_end"].as<String>();
 
   // Limites de sécurité
-  if (doc.containsKey("max_ph_ml_per_day")) {
+  if (!doc["max_ph_ml_per_day"].isNull()) {
     safetyLimits.maxPhMinusMlPerDay = doc["max_ph_ml_per_day"];
   }
-  if (doc.containsKey("max_chlorine_ml_per_day")) {
+  if (!doc["max_chlorine_ml_per_day"].isNull()) {
     safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"];
   }
 
   // Pins des capteurs sont maintenant des defines (PH_SENSOR_PIN, ORP_SENSOR_PIN)
 
   // Données de calibration pH (DFRobot_PH gère en EEPROM)
-  if (doc.containsKey("ph_calibration_date")) {
+  if (!doc["ph_calibration_date"].isNull()) {
     mqttCfg.phCalibrationDate = doc["ph_calibration_date"].as<String>();
   }
-  if (doc.containsKey("ph_calibration_temp")) {
+  if (!doc["ph_calibration_temp"].isNull()) {
     mqttCfg.phCalibrationTemp = doc["ph_calibration_temp"];
   }
 
   // Données de calibration ORP (1 ou 2 points)
-  if (doc.containsKey("orp_calibration_offset")) {
+  if (!doc["orp_calibration_offset"].isNull()) {
     mqttCfg.orpCalibrationOffset = doc["orp_calibration_offset"];
   }
-  if (doc.containsKey("orp_calibration_slope")) {
+  if (!doc["orp_calibration_slope"].isNull()) {
     mqttCfg.orpCalibrationSlope = doc["orp_calibration_slope"];
   }
-  if (doc.containsKey("orp_calibration_date")) {
+  if (!doc["orp_calibration_date"].isNull()) {
     mqttCfg.orpCalibrationDate = doc["orp_calibration_date"].as<String>();
   }
-  if (doc.containsKey("orp_calibration_reference")) {
+  if (!doc["orp_calibration_reference"].isNull()) {
     mqttCfg.orpCalibrationReference = doc["orp_calibration_reference"];
   }
-  if (doc.containsKey("orp_calibration_temp")) {
+  if (!doc["orp_calibration_temp"].isNull()) {
     mqttCfg.orpCalibrationTemp = doc["orp_calibration_temp"];
   }
 
@@ -472,11 +477,11 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
 
 void WebServerManager::handleGetLogs(AsyncWebServerRequest* request) {
   auto logs = systemLogger.getRecentLogs(50);
-  DynamicJsonDocument doc(4096);
-  JsonArray logsArray = doc.createNestedArray("logs");
+  JsonDocument doc;
+  JsonArray logsArray = doc["logs"].to<JsonArray>();
 
   for (const auto& entry : logs) {
-    JsonObject logObj = logsArray.createNestedObject();
+    JsonObject logObj = logsArray.add<JsonObject>();
     logObj["timestamp"] = entry.timestamp;
     logObj["level"] = systemLogger.getLevelString(entry.level);
     logObj["message"] = entry.message;
@@ -488,7 +493,7 @@ void WebServerManager::handleGetLogs(AsyncWebServerRequest* request) {
 }
 
 void WebServerManager::handleTimeNow(AsyncWebServerRequest* request) {
-  DynamicJsonDocument doc(256);
+  JsonDocument doc;
   struct tm timeinfo;
   if (getLocalTime(&timeinfo, 0)) {
     char buffer[25];
@@ -533,7 +538,7 @@ void WebServerManager::handleExportCsv(AsyncWebServerRequest* request) {
 }
 
 void WebServerManager::handleGetSystemInfo(AsyncWebServerRequest* request) {
-  DynamicJsonDocument doc(2048);
+  JsonDocument doc;
 
   // Version firmware
   doc["firmware_version"] = FIRMWARE_VERSION;
@@ -593,8 +598,7 @@ void WebServerManager::handleOtaUpdate(AsyncWebServerRequest* request, const Str
     // Déterminer le type de mise à jour
     int cmd = U_FLASH; // Par défaut: firmware
 
-    // Si le fichier se termine par .bin.gz ou .bin, c'est le firmware
-    // Si le fichier se termine par .littlefs.bin ou .spiffs.bin, c'est le filesystem
+    // Si le fichier se termine par .littlefs.bin ou .spiffs.bin ou .fs.bin, c'est le filesystem
     if (filename.endsWith(".littlefs.bin") || filename.endsWith(".spiffs.bin") || filename.endsWith(".fs.bin")) {
       cmd = U_SPIFFS;
       systemLogger.info("Type de mise à jour: Filesystem");
@@ -642,5 +646,192 @@ void WebServerManager::update() {
     systemLogger.critical("Redémarrage en mode Point d'accès");
     delay(1000);
     ESP.restart();
+  }
+}
+
+void WebServerManager::handleCheckUpdate(AsyncWebServerRequest* request) {
+  systemLogger.info("Vérification des mises à jour GitHub...");
+
+  WiFiClientSecure client;
+  client.setInsecure(); // Pour GitHub HTTPS (pas de validation du certificat)
+
+  HTTPClient https;
+
+  // Utiliser l'API GitHub pour récupérer la dernière release
+  const char* apiUrl = "https://api.github.com/repos/niko34/esp32-pool-controller/releases/latest";
+
+  if (!https.begin(client, apiUrl)) {
+    systemLogger.error("Impossible de se connecter à GitHub");
+    request->send(500, "application/json", "{\"error\":\"Connection failed\"}");
+    return;
+  }
+
+  https.addHeader("User-Agent", "ESP32-Pool-Controller");
+
+  int httpCode = https.GET();
+
+  if (httpCode != HTTP_CODE_OK) {
+    systemLogger.error("Erreur HTTP GitHub: " + String(httpCode));
+    https.end();
+    request->send(500, "application/json", "{\"error\":\"GitHub API error\"}");
+    return;
+  }
+
+  String payload = https.getString();
+  https.end();
+
+  // Parser la réponse JSON
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, payload);
+
+  if (error) {
+    systemLogger.error("Erreur parsing JSON GitHub");
+    request->send(500, "application/json", "{\"error\":\"JSON parse error\"}");
+    return;
+  }
+
+  String latestVersion = doc["tag_name"].as<String>();
+  String currentVersion = FIRMWARE_VERSION;
+
+  // Retirer le 'v' si présent au début de la version GitHub
+  if (latestVersion.startsWith("v") || latestVersion.startsWith("V")) {
+    latestVersion = latestVersion.substring(1);
+  }
+
+  bool updateAvailable = (latestVersion != currentVersion);
+
+  // Chercher les assets (firmware.bin et littlefs.bin)
+  String firmwareUrl = "";
+  String filesystemUrl = "";
+
+  JsonArray assets = doc["assets"];
+  for (JsonObject asset : assets) {
+    String name = asset["name"].as<String>();
+    if (name == "firmware.bin") {
+      firmwareUrl = asset["browser_download_url"].as<String>();
+    } else if (name == "littlefs.bin") {
+      filesystemUrl = asset["browser_download_url"].as<String>();
+    }
+  }
+
+  // Construire la réponse
+  JsonDocument response;
+  response["current_version"] = currentVersion;
+  response["latest_version"] = latestVersion;
+  response["update_available"] = updateAvailable;
+  response["release_name"] = doc["name"].as<String>();
+  response["release_notes"] = doc["body"].as<String>();
+  response["published_at"] = doc["published_at"].as<String>();
+  response["firmware_url"] = firmwareUrl;
+  response["filesystem_url"] = filesystemUrl;
+
+  String json;
+  serializeJson(response, json);
+
+  systemLogger.info("Version actuelle: " + currentVersion + ", Dernière version: " + latestVersion);
+  request->send(200, "application/json", json);
+}
+
+void WebServerManager::handleDownloadUpdate(AsyncWebServerRequest* request) {
+  // Récupérer l'URL du fichier à télécharger
+  if (!request->hasParam("url", true)) {
+    request->send(400, "application/json", "{\"error\":\"Missing URL parameter\"}");
+    return;
+  }
+
+  String url = request->getParam("url", true)->value();
+
+  // Déterminer le type de mise à jour en fonction de l'URL
+  int cmd = U_FLASH; // Par défaut: firmware
+  if (url.indexOf("littlefs") >= 0 || url.indexOf("filesystem") >= 0) {
+    cmd = U_SPIFFS;
+    systemLogger.info("Téléchargement mise à jour filesystem depuis GitHub");
+  } else {
+    systemLogger.info("Téléchargement mise à jour firmware depuis GitHub");
+  }
+
+  // Créer un client HTTPS
+  WiFiClientSecure client;
+  client.setInsecure(); // Pas de validation du certificat pour GitHub
+
+  HTTPClient http;
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
+  if (!http.begin(client, url)) {
+    systemLogger.error("Impossible de se connecter à GitHub pour téléchargement");
+    request->send(500, "application/json", "{\"error\":\"Connection failed\"}");
+    return;
+  }
+
+  int httpCode = http.GET();
+
+  if (httpCode != HTTP_CODE_OK) {
+    systemLogger.error("Erreur HTTP téléchargement: " + String(httpCode));
+    http.end();
+    request->send(500, "application/json", "{\"error\":\"Download failed\"}");
+    return;
+  }
+
+  int contentLength = http.getSize();
+
+  if (contentLength <= 0) {
+    systemLogger.error("Taille fichier invalide");
+    http.end();
+    request->send(500, "application/json", "{\"error\":\"Invalid file size\"}");
+    return;
+  }
+
+  systemLogger.info("Taille du fichier: " + String(contentLength) + " octets");
+
+  // Démarrer la mise à jour OTA
+  if (!Update.begin(contentLength, cmd)) {
+    systemLogger.error("Erreur démarrage OTA: " + String(Update.errorString()));
+    http.end();
+    request->send(500, "application/json", "{\"error\":\"OTA begin failed\"}");
+    return;
+  }
+
+  // Lire et écrire les données par blocs
+  WiFiClient* stream = http.getStreamPtr();
+  size_t written = 0;
+  uint8_t buff[512];
+
+  while (http.connected() && (written < contentLength)) {
+    size_t available = stream->available();
+
+    if (available) {
+      int c = stream->readBytes(buff, min(available, sizeof(buff)));
+
+      if (c > 0) {
+        if (Update.write(buff, c) != c) {
+          systemLogger.error("Erreur écriture OTA");
+          Update.abort();
+          http.end();
+          request->send(500, "application/json", "{\"error\":\"OTA write failed\"}");
+          return;
+        }
+        written += c;
+
+        // Log de progression tous les 100KB
+        if (written % 102400 == 0 || written == contentLength) {
+          unsigned int percent = (written * 100) / contentLength;
+          systemLogger.info("Téléchargement: " + String(percent) + "%");
+        }
+      }
+    }
+    delay(1);
+  }
+
+  http.end();
+
+  // Finaliser la mise à jour
+  if (Update.end(true)) {
+    systemLogger.info("Mise à jour GitHub réussie! Redémarrage...");
+    request->send(200, "application/json", "{\"status\":\"success\"}");
+    delay(3000);
+    ESP.restart();
+  } else {
+    systemLogger.error("Erreur finalisation OTA: " + String(Update.errorString()));
+    request->send(500, "application/json", "{\"error\":\"OTA finalization failed\"}");
   }
 }

@@ -147,7 +147,7 @@ void MqttManager::publishFiltrationState() {
 
 void MqttManager::publishAlert(const String& alertType, const String& message) {
   if (!mqtt.connected()) return;
-  DynamicJsonDocument doc(256);
+  JsonDocument doc;
   doc["type"] = alertType;
   doc["message"] = message;
   doc["timestamp"] = millis();
@@ -189,14 +189,14 @@ void MqttManager::messageCallback(char* topic, byte* payload, unsigned int lengt
 void MqttManager::publishDiscovery() {
   if (!mqtt.connected() || discoveryPublished) return;
 
-  DynamicJsonDocument doc(768);
+  JsonDocument doc;
   const String discoveryBase = String(HA_DISCOVERY_PREFIX) + "/";
 
   auto makeDevice = [&](JsonObject device) {
     device["name"] = HA_DEVICE_NAME;
     device["manufacturer"] = "ESP32";
     device["model"] = "Pool Controller";
-    JsonArray ids = device.createNestedArray("identifiers");
+    JsonArray ids = device["identifiers"].to<JsonArray>();
     ids.add(HA_DEVICE_ID);
   };
 
@@ -216,7 +216,7 @@ void MqttManager::publishDiscovery() {
   doc["device_class"] = "temperature";
   doc["unit_of_measurement"] = "°C";
   doc["state_class"] = "measurement";
-  makeDevice(doc.createNestedObject("device"));
+  makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 
   // pH
@@ -227,7 +227,7 @@ void MqttManager::publishDiscovery() {
   doc["unit_of_measurement"] = "pH";
   doc["icon"] = "mdi:water";
   doc["state_class"] = "measurement";
-  makeDevice(doc.createNestedObject("device"));
+  makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 
   // ORP
@@ -238,7 +238,7 @@ void MqttManager::publishDiscovery() {
   doc["unit_of_measurement"] = "mV";
   doc["icon"] = "mdi:flash";
   doc["state_class"] = "measurement";
-  makeDevice(doc.createNestedObject("device"));
+  makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 
   // Filtration
@@ -250,7 +250,7 @@ void MqttManager::publishDiscovery() {
   doc["payload_off"] = "OFF";
   doc["device_class"] = "running";
   doc["icon"] = "mdi:water-pump";
-  makeDevice(doc.createNestedObject("device"));
+  makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 
   // Mode filtration
@@ -260,11 +260,11 @@ void MqttManager::publishDiscovery() {
   doc["state_topic"] = topics.filtrationModeState;
   doc["command_topic"] = topics.filtrationModeCommand;
   doc["icon"] = "mdi:water-pump";
-  JsonArray options = doc.createNestedArray("options");
+  JsonArray options = doc["options"].to<JsonArray>();
   options.add("auto");
   options.add("manual");
   options.add("off");
-  makeDevice(doc.createNestedObject("device"));
+  makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 
   // Ajouter binary_sensor pour le status
@@ -276,7 +276,7 @@ void MqttManager::publishDiscovery() {
   doc["payload_off"] = "offline";
   doc["device_class"] = "connectivity";
   doc["icon"] = "mdi:wifi-check";
-  makeDevice(doc.createNestedObject("device"));
+  makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 
   discoveryPublished = true;
@@ -292,7 +292,7 @@ void MqttManager::publishStatus(const String& status) {
 void MqttManager::publishDiagnostic() {
   if (!mqtt.connected()) return;
 
-  DynamicJsonDocument doc(1024);
+  JsonDocument doc;
 
   // Informations système
   doc["uptime_ms"] = millis();

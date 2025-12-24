@@ -52,14 +52,14 @@ void HistoryManager::saveToFile() {
     return;
   }
 
-  DynamicJsonDocument doc(16384); // ~16KB pour historique
-  JsonArray data = doc.createNestedArray("data");
+  JsonDocument doc;
+  JsonArray data = doc["data"].to<JsonArray>();
 
   // Sauvegarder seulement les dernières 24h
   size_t startIdx = memoryBuffer.size() > 288 ? memoryBuffer.size() - 288 : 0;
 
   for (size_t i = startIdx; i < memoryBuffer.size(); i++) {
-    JsonObject point = data.createNestedObject();
+    JsonObject point = data.add<JsonObject>();
     point["t"] = memoryBuffer[i].timestamp;
     point["p"] = serialized(String(memoryBuffer[i].ph, 2));
     point["o"] = serialized(String(memoryBuffer[i].orp, 1));
@@ -90,7 +90,7 @@ void HistoryManager::loadFromFile() {
     return;
   }
 
-  DynamicJsonDocument doc(16384);
+  JsonDocument doc;
   DeserializationError error = deserializeJson(doc, f);
   f.close();
 
