@@ -750,6 +750,13 @@ void WebServerManager::handleDownloadUpdate(AsyncWebServerRequest* request) {
 
   String url = request->getParam("url", true)->value();
 
+  // Paramètre optionnel pour contrôler le redémarrage
+  bool shouldRestart = true;
+  if (request->hasParam("restart", true)) {
+    String restartParam = request->getParam("restart", true)->value();
+    shouldRestart = (restartParam == "true" || restartParam == "1");
+  }
+
   // Déterminer le type de mise à jour en fonction de l'URL
   int cmd = U_FLASH; // Par défaut: firmware
   if (url.indexOf("littlefs") >= 0 || url.indexOf("filesystem") >= 0) {
@@ -835,10 +842,15 @@ void WebServerManager::handleDownloadUpdate(AsyncWebServerRequest* request) {
 
   // Finaliser la mise à jour
   if (Update.end(true)) {
-    systemLogger.info("Mise à jour GitHub réussie! Redémarrage...");
-    request->send(200, "application/json", "{\"status\":\"success\"}");
-    delay(3000);
-    ESP.restart();
+    if (shouldRestart) {
+      systemLogger.info("Mise à jour GitHub réussie! Redémarrage...");
+      request->send(200, "application/json", "{\"status\":\"success\"}");
+      delay(3000);
+      ESP.restart();
+    } else {
+      systemLogger.info("Mise à jour GitHub réussie (sans redémarrage)");
+      request->send(200, "application/json", "{\"status\":\"success\"}");
+    }
   } else {
     systemLogger.error("Erreur finalisation OTA: " + String(Update.errorString()));
     request->send(500, "application/json", "{\"error\":\"OTA finalization failed\"}");
