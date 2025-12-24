@@ -1962,7 +1962,14 @@
           document.getElementById('latest_version').textContent = data.latest_version;
           githubUpdateInfo.style.display = 'block';
 
-          if (data.update_available) {
+          if (data.no_release) {
+            // Aucune release n'existe sur GitHub
+            document.getElementById('update_available_msg').style.display = 'none';
+            document.getElementById('no_update_msg').style.display = 'block';
+            document.getElementById('no_update_msg').innerHTML = '<strong>ℹ️ ' + data.message + '</strong>';
+            document.getElementById('release_info').style.display = 'none';
+            installUpdateBtn.disabled = true;
+          } else if (data.update_available) {
             // Mise à jour disponible
             document.getElementById('update_available_msg').style.display = 'block';
             document.getElementById('no_update_msg').style.display = 'none';
@@ -1985,6 +1992,7 @@
             // Pas de mise à jour
             document.getElementById('update_available_msg').style.display = 'none';
             document.getElementById('no_update_msg').style.display = 'block';
+            document.getElementById('no_update_msg').innerHTML = '<strong>✓ Vous avez la dernière version</strong>';
             document.getElementById('release_info').style.display = 'none';
             installUpdateBtn.disabled = true;
           }

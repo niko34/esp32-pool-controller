@@ -662,7 +662,27 @@ void WebServerManager::handleCheckUpdate(AsyncWebServerRequest* request) {
   if (httpCode != HTTP_CODE_OK) {
     systemLogger.error("Erreur HTTP GitHub: " + String(httpCode));
     https.end();
-    request->send(500, "application/json", "{\"error\":\"GitHub API error\"}");
+
+    // Cas spécial : 404 signifie qu'aucune release n'existe
+    if (httpCode == 404) {
+      JsonDocument response;
+      response["current_version"] = FIRMWARE_VERSION;
+      response["latest_version"] = FIRMWARE_VERSION;
+      response["update_available"] = false;
+      response["no_release"] = true;
+      response["message"] = "Aucune release disponible sur GitHub";
+
+      String json;
+      serializeJson(response, json);
+
+      systemLogger.info("Aucune release GitHub trouvée");
+      request->send(200, "application/json", json);
+      return;
+    }
+
+    // Autres erreurs HTTP
+    String errorMsg = "{\"error\":\"GitHub API error\",\"code\":" + String(httpCode) + "}";
+    request->send(500, "application/json", errorMsg);
     return;
   }
 
