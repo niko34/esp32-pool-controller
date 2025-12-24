@@ -39,7 +39,6 @@ struct MqttConfig {
   String username = "";
   String password = "";
   bool enabled = false;
-  String otaPassword = "";  // Mot de passe OTA (Over-The-Air updates)
   float phTarget = 7.2f;
   float orpTarget = 650.0f;
   bool phEnabled = true;
