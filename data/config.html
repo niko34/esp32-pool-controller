@@ -663,7 +663,60 @@
           ℹ️ Protège les mises à jour OTA (Over-The-Air). Laissez vide pour désactiver (non recommandé).
         </div>
 
-        <h3 style="margin-top: 24px;">Mise à jour OTA</h3>
+        <h3 style="margin-top: 24px;">Mise à jour en ligne (GitHub)</h3>
+
+        <div class="info-block" style="background-color: #e8f5e9; border-left: 4px solid #4caf50;">
+          <p style="margin: 0; font-size: 0.9rem;">
+            ℹ️ <strong>Info :</strong> Vérifiez et installez automatiquement les mises à jour depuis GitHub.
+          </p>
+        </div>
+
+        <div id="github_update_info" style="margin-top: 15px; padding: 15px; background-color: #f5f5f5; border-radius: 8px; display: none;">
+          <div style="margin-bottom: 10px;">
+            <strong>Version actuelle :</strong> <span id="current_version">-</span>
+          </div>
+          <div style="margin-bottom: 10px;">
+            <strong>Dernière version :</strong> <span id="latest_version">-</span>
+          </div>
+          <div id="release_info" style="margin-top: 15px; display: none;">
+            <div style="margin-bottom: 10px;">
+              <strong>Nom de la release :</strong> <span id="release_name">-</span>
+            </div>
+            <div style="margin-bottom: 10px;">
+              <strong>Date de publication :</strong> <span id="release_date">-</span>
+            </div>
+            <div style="margin-bottom: 10px;">
+              <strong>Notes de version :</strong>
+              <div id="release_notes" style="margin-top: 5px; padding: 10px; background-color: white; border-radius: 4px; white-space: pre-wrap; font-size: 0.85rem; max-height: 200px; overflow-y: auto;">
+                -
+              </div>
+            </div>
+          </div>
+          <div id="update_available_msg" style="display: none; margin-top: 15px; padding: 10px; background-color: #fff4e6; border-left: 4px solid #ff9500; border-radius: 4px;">
+            <strong>⚡ Une nouvelle version est disponible !</strong>
+          </div>
+          <div id="no_update_msg" style="display: none; margin-top: 15px; padding: 10px; background-color: #e8f5e9; border-left: 4px solid #4caf50; border-radius: 4px;">
+            <strong>✓ Vous avez la dernière version</strong>
+          </div>
+        </div>
+
+        <div id="github_update_progress" style="display:none; margin-top: 15px;">
+          <div style="background-color: #f0f0f5; border-radius: 10px; overflow: hidden; height: 30px;">
+            <div id="github_update_progress_bar" style="background-color: #007aff; height: 100%; width: 0%; transition: width 0.3s; display: flex; align-items: center; justify-content: center; color: white; font-weight: 600; font-size: 0.9rem;">
+              0%
+            </div>
+          </div>
+          <p id="github_update_status" style="margin-top: 8px; text-align: center; font-size: 0.9rem; color: #666;">
+            Téléchargement...
+          </p>
+        </div>
+
+        <div class="actions" style="margin-top: 15px;">
+          <button type="button" id="check_update_btn" style="background-color: #007aff;">Vérifier les mises à jour</button>
+          <button type="button" id="install_update_btn" disabled style="background-color: #34c759; margin-left: 10px;">Mettre à jour</button>
+        </div>
+
+        <h3 style="margin-top: 24px;">Mise à jour manuelle (fichier local)</h3>
 
         <div class="info-block" style="background-color: #fff4e6; border-left: 4px solid #ff9500;">
           <p style="margin: 0; font-size: 0.9rem;">
@@ -674,7 +727,7 @@
         <label>Type de mise à jour :</label>
         <select id="update_type">
           <option value="firmware">Firmware (.bin)</option>
-          <option value="filesystem">Système de fichiers (.littlefs.bin)</option>
+          <option value="filesystem">Système de fichiers (.bin)</option>
         </select>
 
         <label>Fichier de mise à jour :</label>
@@ -1035,7 +1088,28 @@
         button.addEventListener('click', () => {
           const target = button.dataset.tab;
           setActiveTab(target);
+          // Sauvegarder l'onglet actif
+          localStorage.setItem('activeTab', target);
         });
+      });
+
+      // Restaurer l'onglet actif au chargement de la page
+      const savedTab = localStorage.getItem('activeTab');
+      if (savedTab) {
+        setActiveTab(savedTab);
+      }
+
+      // Sauvegarder la position de scroll avant un rechargement
+      window.addEventListener('beforeunload', () => {
+        localStorage.setItem('scrollPosition', window.scrollY);
+      });
+
+      // Restaurer la position de scroll au chargement
+      window.addEventListener('load', () => {
+        const savedScroll = localStorage.getItem('scrollPosition');
+        if (savedScroll) {
+          window.scrollTo(0, parseInt(savedScroll));
+        }
       });
 
       function collectConfig() {
@@ -1868,7 +1942,148 @@
           });
       }
 
-      // Activer/désactiver le bouton de mise à jour
+      // ========== Mise à jour GitHub ==========
+      const checkUpdateBtn = document.getElementById('check_update_btn');
+      const installUpdateBtn = document.getElementById('install_update_btn');
+      const githubUpdateInfo = document.getElementById('github_update_info');
+      const githubUpdateProgress = document.getElementById('github_update_progress');
+      const githubUpdateProgressBar = document.getElementById('github_update_progress_bar');
+      const githubUpdateStatus = document.getElementById('github_update_status');
+
+      let latestRelease = null;
+
+      // Vérifier les mises à jour GitHub
+      checkUpdateBtn.addEventListener('click', async () => {
+        checkUpdateBtn.disabled = true;
+        checkUpdateBtn.textContent = 'Vérification...';
+        githubUpdateInfo.style.display = 'none';
+        installUpdateBtn.disabled = true;
+
+        try {
+          const response = await fetch('/check-update');
+          if (!response.ok) {
+            throw new Error('Erreur lors de la vérification');
+          }
+
+          const data = await response.json();
+          latestRelease = data;
+
+          // Afficher les informations
+          document.getElementById('current_version').textContent = data.current_version;
+          document.getElementById('latest_version').textContent = data.latest_version;
+          githubUpdateInfo.style.display = 'block';
+
+          if (data.update_available) {
+            // Mise à jour disponible
+            document.getElementById('update_available_msg').style.display = 'block';
+            document.getElementById('no_update_msg').style.display = 'none';
+            document.getElementById('release_info').style.display = 'block';
+            document.getElementById('release_name').textContent = data.release_name || '-';
+
+            // Formater la date
+            if (data.published_at) {
+              const date = new Date(data.published_at);
+              document.getElementById('release_date').textContent = date.toLocaleDateString('fr-FR') + ' ' + date.toLocaleTimeString('fr-FR');
+            } else {
+              document.getElementById('release_date').textContent = '-';
+            }
+
+            document.getElementById('release_notes').textContent = data.release_notes || 'Aucune note de version disponible.';
+
+            // Activer le bouton de mise à jour si le firmware est disponible
+            installUpdateBtn.disabled = !data.firmware_url;
+          } else {
+            // Pas de mise à jour
+            document.getElementById('update_available_msg').style.display = 'none';
+            document.getElementById('no_update_msg').style.display = 'block';
+            document.getElementById('release_info').style.display = 'none';
+            installUpdateBtn.disabled = true;
+          }
+
+          checkUpdateBtn.textContent = 'Vérifier les mises à jour';
+        } catch (err) {
+          console.error('Erreur vérification mise à jour:', err);
+          alert('Erreur lors de la vérification des mises à jour.\nVérifiez votre connexion Internet.');
+          checkUpdateBtn.textContent = 'Vérifier les mises à jour';
+        } finally {
+          checkUpdateBtn.disabled = false;
+        }
+      });
+
+      // Installer la mise à jour depuis GitHub
+      installUpdateBtn.addEventListener('click', async () => {
+        if (!latestRelease || !latestRelease.firmware_url) {
+          alert('Aucune mise à jour disponible.');
+          return;
+        }
+
+        if (!confirm(`⚠️ ATTENTION\n\nVous allez installer la version ${latestRelease.latest_version}.\n\n• Ne coupez PAS l'alimentation pendant la mise à jour\n• L'ESP32 redémarrera automatiquement après la mise à jour\n• Cette opération peut prendre quelques minutes\n\nContinuer ?`)) {
+          return;
+        }
+
+        // Désactiver les boutons
+        checkUpdateBtn.disabled = true;
+        installUpdateBtn.disabled = true;
+
+        // Afficher la progression
+        githubUpdateProgress.style.display = 'block';
+        githubUpdateProgressBar.style.width = '0%';
+        githubUpdateProgressBar.textContent = '0%';
+        githubUpdateStatus.textContent = 'Téléchargement depuis GitHub...';
+
+        try {
+          // Simuler la progression (car nous ne pouvons pas suivre la progression réelle du téléchargement côté serveur)
+          let progress = 0;
+          const progressInterval = setInterval(() => {
+            if (progress < 90) {
+              progress += 10;
+              githubUpdateProgressBar.style.width = progress + '%';
+              githubUpdateProgressBar.textContent = progress + '%';
+            }
+          }, 500);
+
+          const response = await fetch('/download-update', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: 'url=' + encodeURIComponent(latestRelease.firmware_url)
+          });
+
+          clearInterval(progressInterval);
+
+          if (!response.ok) {
+            throw new Error('Erreur lors du téléchargement');
+          }
+
+          const result = await response.json();
+
+          if (result.status === 'success') {
+            githubUpdateProgressBar.style.width = '100%';
+            githubUpdateProgressBar.textContent = '100%';
+            githubUpdateProgressBar.style.backgroundColor = '#34c759';
+            githubUpdateStatus.textContent = '✓ Mise à jour réussie! Redémarrage en cours...';
+
+            alert('Mise à jour réussie!\n\nL\'ESP32 redémarre.\nLa page se rechargera automatiquement dans 30 secondes.');
+
+            setTimeout(() => {
+              window.location.reload();
+            }, 30000);
+          } else {
+            throw new Error('La mise à jour a échoué');
+          }
+        } catch (err) {
+          console.error('Erreur installation mise à jour:', err);
+          alert('Erreur lors de l\'installation de la mise à jour.\n' + err.message);
+
+          // Réinitialiser
+          githubUpdateProgress.style.display = 'none';
+          checkUpdateBtn.disabled = false;
+          installUpdateBtn.disabled = false;
+        }
+      });
+
+      // Activer/désactiver le bouton de mise à jour manuelle
       updateFileInput.addEventListener('change', () => {
         updateBtn.disabled = !updateFileInput.files || updateFileInput.files.length === 0;
       });
@@ -1883,12 +2098,8 @@
 
         // Vérifier l'extension selon le type
         const type = updateType.value;
-        if (type === 'filesystem' && !file.name.endsWith('.littlefs.bin') && !file.name.endsWith('.fs.bin')) {
-          if (!confirm('Le fichier ne semble pas être un fichier filesystem (.littlefs.bin). Continuer quand même ?')) {
-            return;
-          }
-        } else if (type === 'firmware' && !file.name.endsWith('.bin')) {
-          if (!confirm('Le fichier ne semble pas être un firmware (.bin). Continuer quand même ?')) {
+        if (!file.name.endsWith('.bin')) {
+          if (!confirm('Le fichier ne semble pas être un fichier .bin. Continuer quand même ?')) {
             return;
           }
         }
@@ -1915,35 +2126,62 @@
 
           const xhr = new XMLHttpRequest();
 
+          let uploadCompleted = false;
+
           xhr.upload.addEventListener('progress', (e) => {
             if (e.lengthComputable) {
               const percent = Math.round((e.loaded / e.total) * 100);
               updateProgressBar.style.width = percent + '%';
               updateProgressBar.textContent = percent + '%';
               updateStatus.textContent = `Envoi: ${percent}%`;
+
+              // Si l'envoi est à 100%, considérer que c'est réussi
+              if (percent === 100 && !uploadCompleted) {
+                uploadCompleted = true;
+                updateProgressBar.style.backgroundColor = '#34c759';
+                updateStatus.textContent = '✓ Mise à jour réussie! Redémarrage en cours...';
+
+                setTimeout(() => {
+                  const updateTypeName = type === 'firmware' ? 'firmware' : 'système de fichiers';
+                  alert(`Mise à jour ${updateTypeName} réussie!\n\nL\'ESP32 redémarre.\nLa page se rechargera automatiquement dans 30 secondes.`);
+                  setTimeout(() => {
+                    window.location.reload();
+                  }, 30000);
+                }, 500);
+              }
             }
           });
 
           xhr.addEventListener('load', () => {
-            if (xhr.status === 200) {
+            if (xhr.status === 200 && !uploadCompleted) {
+              uploadCompleted = true;
               updateProgressBar.style.width = '100%';
               updateProgressBar.textContent = '100%';
               updateProgressBar.style.backgroundColor = '#34c759';
               updateStatus.textContent = '✓ Mise à jour réussie! Redémarrage en cours...';
 
               setTimeout(() => {
-                alert('Mise à jour réussie!\n\nL\'ESP32 redémarre. La page se rechargera automatiquement dans 30 secondes.');
+                const updateTypeName = type === 'firmware' ? 'firmware' : 'système de fichiers';
+                alert(`Mise à jour ${updateTypeName} réussie!\n\nL\'ESP32 redémarre.\nLa page se rechargera automatiquement dans 30 secondes.`);
                 setTimeout(() => {
                   window.location.reload();
                 }, 30000);
-              }, 1000);
-            } else {
+              }, 500);
+            } else if (xhr.status !== 200 && !uploadCompleted) {
               throw new Error('Erreur HTTP: ' + xhr.status);
             }
           });
 
           xhr.addEventListener('error', () => {
-            throw new Error('Erreur réseau lors de l\'envoi');
+            if (!uploadCompleted) {
+              throw new Error('Erreur réseau lors de l\'envoi');
+            }
+          });
+
+          xhr.addEventListener('abort', () => {
+            if (!uploadCompleted) {
+              throw new Error('Envoi annulé');
+            }
           });
 
           xhr.open('POST', '/update');

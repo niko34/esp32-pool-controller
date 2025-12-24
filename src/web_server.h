@@ -21,6 +21,8 @@ private:
   void handleExportCsv(AsyncWebServerRequest* request);
   void handleGetSystemInfo(AsyncWebServerRequest* request);
   void handleOtaUpdate(AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final);
+  void handleCheckUpdate(AsyncWebServerRequest* request);
+  void handleDownloadUpdate(AsyncWebServerRequest* request);
 
   // Validation des entrées
   bool validatePhValue(float value);
