@@ -47,8 +47,8 @@
 
     setActiveNav(routeObj);
 
-    // Load sensor data when navigating to calibration pages if data is stale (>30s) or never loaded
-    if (routeObj.view === "/temperature" || routeObj.view === "/ph" || routeObj.view === "/orp") {
+    // Load sensor data when navigating to dashboard or calibration pages if data is stale (>30s) or never loaded
+    if (routeObj.view === "/" || routeObj.view === "/temperature" || routeObj.view === "/ph" || routeObj.view === "/orp") {
       const now = Date.now();
       const dataAge = now - lastSensorDataLoadTime;
       const maxDataAge = 30000; // 30 secondes
@@ -119,6 +119,8 @@
   }
 
   let tempChart, phChart, orpChart;
+  let mainChart; // Graphique unique avec onglets
+  let currentChartType = 'temperature'; // Type de graphique actif
 
   // ---------- State ----------
   let latestSensorData = null;
@@ -288,6 +290,9 @@
     const res = await fetch("/get-config");
     const cfg = await res.json();
 
+    // Stocker la config globalement pour les alertes et cartes status
+    window._config = cfg;
+
     $("#mqtt_server").value = cfg.server || "";
     $("#mqtt_port").value = cfg.port || 1883;
     $("#mqtt_topic").value = cfg.topic || "";
@@ -411,6 +416,11 @@
 
     updatePhControls();
     updateOrpControls();
+
+    // Mettre à jour les alertes et cartes status après chargement de la config
+    updateAlerts();
+    updateStatusCards();
+    updateDetailSections();
   }
 
   // ---------- Calibration badges (Dashboard + chip) ----------
@@ -475,6 +485,429 @@
   // ---------- Sensor data loop (/data) ----------
   let lastSensorDataLoadTime = 0; // Timestamp du dernier chargement des données
 
+  // ========== ALERTES ==========
+  let dismissedAlerts = {};
+
+  // Types d'alertes
+  const AlertType = {
+    PH_OUT_OF_RANGE: 'ph_out_range',
+    ORP_OUT_OF_RANGE: 'orp_out_range',
+    PH_CALIBRATION_OLD: 'ph_cal_old',
+    ORP_CALIBRATION_OLD: 'orp_cal_old',
+    TEMP_CALIBRATION_OLD: 'temp_cal_old'
+  };
+
+  // Charger les alertes ignorées depuis localStorage
+  function loadDismissedAlerts() {
+    const stored = localStorage.getItem('dismissedAlerts');
+    if (stored) {
+      try {
+        dismissedAlerts = JSON.parse(stored);
+      } catch (e) {
+        dismissedAlerts = {};
+      }
+    }
+  }
+
+  // Vérifier si une alerte est ignorée
+  function isAlertDismissed(alertType) {
+    const dismissed = dismissedAlerts[alertType];
+    if (!dismissed) return false;
+
+    // Vérifier si l'expiration est dépassée
+    if (Date.now() > dismissed.expiresAt) {
+      delete dismissedAlerts[alertType];
+      localStorage.setItem('dismissedAlerts', JSON.stringify(dismissedAlerts));
+      return false;
+    }
+    return true;
+  }
+
+  // Ignorer une alerte pour 24h
+  window.dismissAlert = function(alertType) {
+    dismissedAlerts[alertType] = {
+      expiresAt: Date.now() + (24 * 60 * 60 * 1000) // 24h
+    };
+    localStorage.setItem('dismissedAlerts', JSON.stringify(dismissedAlerts));
+    updateAlerts();
+  };
+
+  // Stocker le HTML précédent des alertes pour éviter les rerender inutiles
+  let lastAlertsHTML = '';
+
+  // Mettre à jour les alertes
+  function updateAlerts() {
+    const container = $("#alerts-container");
+    if (!container) return;
+
+    const alerts = [];
+
+    // Alerte pH hors plage (7.0-7.4)
+    if (latestSensorData && latestSensorData.ph != null && !isNaN(latestSensorData.ph)) {
+      const ph = latestSensorData.ph;
+      if ((ph < 7.0 || ph > 7.4) && !isAlertDismissed(AlertType.PH_OUT_OF_RANGE)) {
+        alerts.push({
+          type: 'danger',
+          icon: '⚠️',
+          message: `pH hors plage recommandée : ${ph.toFixed(2)} (7.0 - 7.4)`,
+          action: 'Aller à pH',
+          actionLink: '#/ph',
+          dismissable: false
+        });
+      }
+    }
+
+    // Alerte ORP hors plage (600-800 mV)
+    if (latestSensorData && latestSensorData.orp != null && !isNaN(latestSensorData.orp)) {
+      const orp = Math.round(latestSensorData.orp);
+      if ((orp < 600 || orp > 800) && !isAlertDismissed(AlertType.ORP_OUT_OF_RANGE)) {
+        alerts.push({
+          type: 'danger',
+          icon: '⚠️',
+          message: `ORP hors plage recommandée : ${orp} mV (600 - 800 mV)`,
+          action: 'Aller à ORP',
+          actionLink: '#/orp',
+          dismissable: false
+        });
+      }
+    }
+
+    // Alerte calibration pH ancienne (>3 mois)
+    if (window._config && window._config.phCalibrationDate) {
+      try {
+        const calDate = new Date(window._config.phCalibrationDate);
+        const ageMonths = (Date.now() - calDate.getTime()) / (1000 * 60 * 60 * 24 * 30);
+        if (ageMonths > 3 && !isAlertDismissed(AlertType.PH_CALIBRATION_OLD)) {
+          alerts.push({
+            type: 'warning',
+            icon: '🔧',
+            message: `Calibration du pH trop ancienne - Dernière calibration :: ${calDate.toLocaleDateString()}`,
+            action: 'Aller à calibration',
+            actionLink: '#/ph',
+            dismissable: true,
+            alertType: AlertType.PH_CALIBRATION_OLD
+          });
+        }
+      } catch (e) {
+        // Date invalide, ignorer
+      }
+    }
+
+    // Générer le HTML
+    const newHTML = alerts.map(alert => `
+      <div class="alert alert--${alert.type}">
+        <span class="alert__icon">${alert.icon}</span>
+        <span class="alert__content">${alert.message}</span>
+        <a href="${alert.actionLink}" class="alert__action">${alert.action}</a>
+        ${alert.dismissable ? `
+          <button class="alert__dismiss" onclick="dismissAlert('${alert.alertType}')">
+            Ignorer 24h
+          </button>
+        ` : ''}
+      </div>
+    `).join('');
+
+    // Ne mettre à jour le DOM que si le contenu a changé
+    if (newHTML !== lastAlertsHTML) {
+      container.innerHTML = newHTML;
+      lastAlertsHTML = newHTML;
+    }
+  }
+
+  // ========== CARTES STATUS ==========
+  let tempHistory = []; // Stocke les 5 dernières valeurs pour la tendance
+
+  function calculateTrend(newValue) {
+    tempHistory.push(newValue);
+    if (tempHistory.length > 5) tempHistory.shift();
+
+    if (tempHistory.length < 3) return { arrow: '→', text: 'Stable' };
+
+    const recent = tempHistory.slice(-3);
+    const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+    const diff = newValue - avg;
+
+    if (diff > 0.2) return { arrow: '↗', text: 'En hausse', class: 'trend-arrow--up' };
+    if (diff < -0.2) return { arrow: '↘', text: 'En baisse', class: 'trend-arrow--down' };
+    return { arrow: '→', text: 'Stable' };
+  }
+
+  function getFiltrationState(config, data) {
+    const isRunning = data && data.filtration_running;
+    const temp = data && data.temperature;
+
+    if (!config) return { text: 'Chargement...', class: 'state-badge--off' };
+
+    // Température hors gel
+    if (temp != null && temp < 5.0 && isRunning) {
+      return { text: 'Hors gel', class: 'state-badge--warn' };
+    }
+
+    return {
+      text: isRunning ? 'En marche' : 'Arrêtée',
+      class: isRunning ? 'state-badge--ok' : 'state-badge--off'
+    };
+  }
+
+  function updateStatusCards() {
+    if (!latestSensorData) return;
+
+    const data = latestSensorData;
+    const config = window._config || {};
+
+    // === FILTRATION ===
+    const filtrationTemp = $("#filtration-temp");
+    const filtrationTrend = $("#filtration-trend");
+    const filtrationState = $("#filtration-state");
+    const filtrationUpdated = $("#filtration-updated");
+
+    if (filtrationTemp && data.temperature != null) {
+      filtrationTemp.textContent = data.temperature.toFixed(1) + '°C';
+
+      // Tendance
+      if (filtrationTrend) {
+        const trend = calculateTrend(data.temperature);
+        filtrationTrend.innerHTML = `
+          <span class="trend-arrow ${trend.class || ''}">${trend.arrow}</span>
+          <span class="trend-text">${trend.text}</span>
+        `;
+      }
+    }
+
+    if (filtrationState) {
+      const state = getFiltrationState(config, data);
+      filtrationState.innerHTML = `<span class="state-badge ${state.class}">${state.text}</span>`;
+    }
+
+    if (filtrationUpdated) {
+      const now = new Date();
+      filtrationUpdated.textContent = 'Dernière MAJ : ' + now.toLocaleTimeString();
+    }
+
+    // === ÉCLAIRAGE ===
+    const lightingValue = $("#lighting-value");
+    const lightingState = $("#lighting-state");
+
+    if (lightingValue) {
+      // Pour l'instant, afficher un placeholder
+      lightingValue.textContent = '--';
+    }
+
+    if (lightingState) {
+      // État éclairage basé sur la config (à ajuster selon votre backend)
+      lightingState.innerHTML = '<span class="state-badge state-badge--off">Éteint</span>';
+    }
+
+    // === pH COMPACT ===
+    const compactPh = $("#compact-ph");
+    if (compactPh && data.ph != null) {
+      compactPh.textContent = (Math.round(data.ph * 10) / 10).toFixed(1);
+    }
+
+    const compactPhTarget = $("#compact-ph-target");
+    if (compactPhTarget && config.ph_target != null) {
+      compactPhTarget.textContent = config.ph_target.toFixed(1);
+    }
+
+    // === ORP COMPACT ===
+    const compactOrp = $("#compact-orp");
+    if (compactOrp && data.orp != null) {
+      compactOrp.innerHTML = Math.round(data.orp) + '<span class="compact-unit">mV</span>';
+    }
+
+    const compactOrpTarget = $("#compact-orp-target");
+    if (compactOrpTarget && config.orp_target != null) {
+      compactOrpTarget.textContent = Math.round(config.orp_target);
+    }
+  }
+
+  // ========== GRAPHIQUE AVEC ONGLETS ==========
+  function switchChartTab(chartType) {
+    currentChartType = chartType;
+
+    // Mettre à jour les onglets actifs
+    const tabs = document.querySelectorAll('.chart-tab');
+    tabs.forEach(tab => {
+      if (tab.dataset.chart === chartType) {
+        tab.classList.add('chart-tab--active');
+      } else {
+        tab.classList.remove('chart-tab--active');
+      }
+    });
+
+    // Mettre à jour le label et la valeur actuelle
+    updateChartCurrentValue();
+
+    // Copier les données du graphique source vers le graphique principal
+    const sourceChart = chartType === 'temperature' ? tempChart : chartType === 'ph' ? phChart : orpChart;
+
+    if (mainChart && sourceChart) {
+      mainChart.data.labels = [...sourceChart.data.labels];
+      mainChart.data.datasets[0].data = [...sourceChart.data.datasets[0].data];
+
+      // Mettre à jour la couleur et le label
+      const colors = {
+        temperature: '#4f8fff',
+        ph: '#8b5cf6',
+        orp: '#10b981'
+      };
+      const labels = {
+        temperature: 'Température',
+        ph: 'pH',
+        orp: 'ORP'
+      };
+
+      mainChart.data.datasets[0].borderColor = colors[chartType];
+      mainChart.data.datasets[0].backgroundColor = colors[chartType] + '20';
+      mainChart.data.datasets[0].label = labels[chartType];
+
+      // Gérer les entiers pour ORP
+      if (chartType === 'orp') {
+        mainChart.options.scales.y.ticks.callback = function(value) {
+          if (Number.isInteger(value)) return value;
+        };
+      } else {
+        delete mainChart.options.scales.y.ticks.callback;
+      }
+
+      mainChart.update('none');
+    }
+  }
+
+  function updateChartCurrentValue() {
+    if (!latestSensorData) return;
+
+    const valueLabel = $("#chart-value-label");
+    const valueNumber = $("#chart-value-number");
+
+    if (!valueLabel || !valueNumber) return;
+
+    const labels = {
+      temperature: 'Température actuelle',
+      ph: 'pH actuel',
+      orp: 'ORP actuel'
+    };
+
+    const values = {
+      temperature: latestSensorData.temperature != null ? latestSensorData.temperature.toFixed(1) + '°C' : '--',
+      ph: latestSensorData.ph != null ? (Math.round(latestSensorData.ph * 10) / 10).toFixed(1) : '--',
+      orp: latestSensorData.orp != null ? Math.round(latestSensorData.orp) + ' mV' : '--'
+    };
+
+    valueLabel.textContent = labels[currentChartType] || 'Valeur actuelle';
+    valueNumber.textContent = values[currentChartType] || '--';
+  }
+
+  function bindChartTabs() {
+    const tabs = document.querySelectorAll('.chart-tab');
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        const chartType = tab.dataset.chart;
+        switchChartTab(chartType);
+      });
+    });
+  }
+
+  // ========== SECTIONS DÉTAILLÉES ==========
+  function updateDetailSections() {
+    const config = window._config || {};
+    const data = latestSensorData || {};
+
+    // === FILTRATION ===
+    const detailFiltrationMode = $("#detail-filtration-mode");
+    if (detailFiltrationMode) {
+      const modes = {
+        auto: 'Auto',
+        manual: 'Manuel',
+        always_on: 'Toujours allumée',
+        always_off: 'Toujours éteinte'
+      };
+      detailFiltrationMode.textContent = modes[config.filtration_mode] || 'Auto';
+    }
+
+    const detailFiltrationSchedule = $("#detail-filtration-schedule");
+    if (detailFiltrationSchedule) {
+      const start = config.filtration_start || '08:00';
+      const end = config.filtration_end || '20:00';
+      detailFiltrationSchedule.textContent = `${start} - ${end}`;
+    }
+
+    const detailFiltrationStatus = $("#detail-filtration-status");
+    if (detailFiltrationStatus) {
+      const state = getFiltrationState(config, data);
+      detailFiltrationStatus.textContent = state.text;
+      detailFiltrationStatus.className = 'state-badge ' + state.class;
+    }
+
+    // === ÉCLAIRAGE ===
+    const detailLightingStatus = $("#detail-lighting-status");
+    if (detailLightingStatus) {
+      // Pour l'instant, placeholder - à ajuster selon votre backend
+      detailLightingStatus.textContent = 'Éteint';
+      detailLightingStatus.className = 'state-badge state-badge--off';
+    }
+
+    const detailLightingNext = $("#detail-lighting-next");
+    if (detailLightingNext) {
+      // Pour l'instant, placeholder - à ajuster selon votre backend
+      detailLightingNext.textContent = '--:--';
+    }
+  }
+
+  function bindDetailActions() {
+    // Boutons filtration
+    const startBtn = $("#detail-filtration-start");
+    const stopBtn = $("#detail-filtration-stop");
+
+    if (startBtn) {
+      startBtn.addEventListener('click', async () => {
+        try {
+          await fetch('/filtration-start', { method: 'POST' });
+          setTimeout(loadSensorData, 500);
+        } catch (e) {
+          console.error('Erreur démarrage filtration:', e);
+        }
+      });
+    }
+
+    if (stopBtn) {
+      stopBtn.addEventListener('click', async () => {
+        try {
+          await fetch('/filtration-stop', { method: 'POST' });
+          setTimeout(loadSensorData, 500);
+        } catch (e) {
+          console.error('Erreur arrêt filtration:', e);
+        }
+      });
+    }
+
+    // Boutons éclairage
+    const lightOnBtn = $("#detail-lighting-on");
+    const lightOffBtn = $("#detail-lighting-off");
+
+    if (lightOnBtn) {
+      lightOnBtn.addEventListener('click', async () => {
+        try {
+          // À ajuster selon votre backend
+          console.log('Allumer éclairage');
+        } catch (e) {
+          console.error('Erreur allumage éclairage:', e);
+        }
+      });
+    }
+
+    if (lightOffBtn) {
+      lightOffBtn.addEventListener('click', async () => {
+        try {
+          // À ajuster selon votre backend
+          console.log('Éteindre éclairage');
+        } catch (e) {
+          console.error('Erreur extinction éclairage:', e);
+        }
+      });
+    }
+  }
+
   function updateDashboardMetrics(json) {
     const ts = json.timestamp ? new Date(json.timestamp) : new Date();
     $("#m-time").textContent = ts.toLocaleTimeString();
@@ -505,11 +938,31 @@
 
       const label = json.timestamp ? new Date(json.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
 
-      if (json.temperature != null && !isNaN(json.temperature)) pushPoint(tempChart, json.temperature, label);
-      if (json.ph != null && !isNaN(json.ph)) pushPoint(phChart, Math.round(json.ph * 10) / 10, label);
-      if (json.orp != null && !isNaN(json.orp)) pushPoint(orpChart, json.orp, label);
+      if (json.temperature != null && !isNaN(json.temperature) && tempChart) pushPoint(tempChart, json.temperature, label);
+      if (json.ph != null && !isNaN(json.ph) && phChart) pushPoint(phChart, Math.round(json.ph * 10) / 10, label);
+      if (json.orp != null && !isNaN(json.orp) && orpChart) pushPoint(orpChart, json.orp, label);
+
+      // Mettre à jour le graphique principal avec les données du graphique source actif
+      if (mainChart) {
+        const sourceChart = currentChartType === 'temperature' ? tempChart : currentChartType === 'ph' ? phChart : orpChart;
+        if (sourceChart) {
+          mainChart.data.labels = [...sourceChart.data.labels];
+          mainChart.data.datasets[0].data = [...sourceChart.data.datasets[0].data];
+          mainChart.update('none');
+        }
+      }
 
       updateDashboardMetrics(json);
+
+      // Mettre à jour les alertes et cartes status
+      updateAlerts();
+      updateStatusCards();
+
+      // Mettre à jour la valeur actuelle du graphique
+      updateChartCurrentValue();
+
+      // Mettre à jour les sections détaillées
+      updateDetailSections();
 
       // also update readouts in settings
       const phCurrentValue = $("#ph_current_value");
@@ -1810,12 +2263,28 @@
 
   // ---------- Init ----------
   async function init() {
-    // charts
-    tempChart = createLineChart($("#tempChart"), "#4f8fff", "Température");
-    phChart = createLineChart($("#phChart"), "#8b5cf6", "pH");
-    orpChart = createLineChart($("#orpChart"), "#10b981", "ORP", true);
+    // Charger les alertes ignorées depuis localStorage
+    loadDismissedAlerts();
+
+    // charts - Les anciens graphiques restent pour stocker les données historiques
+    const tempChartCanvas = $("#tempChart");
+    const phChartCanvas = $("#phChart");
+    const orpChartCanvas = $("#orpChart");
+
+    // Créer les graphiques cachés seulement s'ils existent (compatibilité)
+    if (tempChartCanvas) tempChart = createLineChart(tempChartCanvas, "#4f8fff", "Température");
+    if (phChartCanvas) phChart = createLineChart(phChartCanvas, "#8b5cf6", "pH");
+    if (orpChartCanvas) orpChart = createLineChart(orpChartCanvas, "#10b981", "ORP", true);
+
+    // Nouveau graphique principal avec onglets
+    const mainChartCanvas = $("#mainChart");
+    if (mainChartCanvas) {
+      mainChart = createLineChart(mainChartCanvas, "#4f8fff", "Température");
+      bindChartTabs();
+    }
 
     bindUI();
+    bindDetailActions();
     bindAutosave();
     bindPhCalibration();
     bindOrpCalibration();
@@ -1826,21 +2295,33 @@
     bindPumps();
     bindLogs();
 
-    // router
-    const applyRoute = () => {
-      const r = getRoute();
-      showView(r);
-    };
-    window.addEventListener("hashchange", applyRoute);
-    applyRoute();
-
     // initial loads
     try {
       setNetStatus("mid", "Connexion…");
       await loadConfig();
+      await loadSensorData(); // Charger les données AVANT d'afficher la route
       await checkCalibrationDate();
       await loadLogs(true);
     } catch (_) {}
+
+    // router
+    const applyRoute = () => {
+      const r = getRoute();
+      showView(r);
+
+      // Forcer le rafraîchissement des données si on navigue vers le dashboard
+      if (r.view === "/") {
+        const now = Date.now();
+        const dataAge = now - lastSensorDataLoadTime;
+        const maxDataAge = 5000; // 5 secondes de tolérance pour éviter double chargement
+
+        if (dataAge > maxDataAge) {
+          loadSensorData();
+        }
+      }
+    };
+    window.addEventListener("hashchange", applyRoute);
+    applyRoute();
 
     // Load system info after a small delay to ensure DOM is ready
     // This is critical when direct linking to #/settings/dev or #/settings/system
@@ -1852,8 +2333,7 @@
       }
     }, 200);
 
-    // loops
-    await loadSensorData();
+    // loops (loadSensorData déjà appelé au démarrage ligne 2302)
     setInterval(loadSensorData, 30000); // 30 secondes
     setInterval(checkCalibrationDate, 300000); // 5 min
 
