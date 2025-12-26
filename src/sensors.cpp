@@ -123,10 +123,14 @@ void SensorManager::readRealSensors() {
     float measuredTemp = tempSensor.getTempCByIndex(0);
 
     if (measuredTemp != DEVICE_DISCONNECTED_C && measuredTemp > -55.0f && measuredTemp < 125.0f) {
-      // Arrondir à 1 décimale
-      tempValue = roundf(measuredTemp * 10.0f) / 10.0f;
+      // Stocker la valeur brute arrondie à 1 décimale
+      tempRawValue = roundf(measuredTemp * 10.0f) / 10.0f;
+      // Appliquer l'offset de calibration
+      // Formule: Temp_final = Temp_brut + offset
+      tempValue = tempRawValue + mqttCfg.tempCalibrationOffset;
     } else {
       tempValue = NAN;
+      tempRawValue = NAN;
       systemLogger.warning("DS18B20 non détecté ou température invalide");
     }
 
@@ -319,6 +323,25 @@ float SensorManager::getRawPh() const {
   // Avec DFRobot_PH, la librairie gère la calibration en interne
   // On retourne la valeur calibrée directement
   return phValue;
+}
+
+void SensorManager::recalculateCalibratedValues() {
+  // Recalculer la température calibrée à partir de la valeur brute
+  if (!isnan(tempRawValue)) {
+    tempValue = tempRawValue + mqttCfg.tempCalibrationOffset;
+  }
+
+  // Note: On ne recalcule PAS le pH ici car la bibliothèque DFRobot_PH
+  // gère sa propre calibration dans l'EEPROM. Recalculer avec une ancienne
+  // tension après une nouvelle calibration pourrait donner des valeurs incohérentes.
+  // Le pH sera mis à jour naturellement lors de la prochaine lecture du capteur.
+
+  // Recalculer l'ORP calibré à partir de la valeur brute
+  // Formule: ORP_final = (ORP_brut × slope) + offset
+  float rawOrp = getRawOrp();
+  if (!isnan(rawOrp)) {
+    orpValue = (rawOrp * mqttCfg.orpCalibrationSlope) + mqttCfg.orpCalibrationOffset;
+  }
 }
 
 void SensorManager::publishValues() {

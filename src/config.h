@@ -18,7 +18,8 @@
 
 // Capteurs et actionneurs
 #define TEMP_SENSOR_PIN 5
-#define FILTRATION_RELAY_PIN 27
+#define FILTRATION_RELAY_PIN 18
+#define LIGHTING_RELAY_PIN 19    // Relais pour éclairage piscine
 
 // ==== Constantes ====
 constexpr float PH_DEADBAND = 0.01f;      // Zone morte réduite : 7.2 à 7.21 (±0.01)
@@ -69,6 +70,11 @@ struct MqttConfig {
   String orpCalibrationDate = "";     // Date de calibration ORP (ISO 8601)
   float orpCalibrationReference = 0.0f; // Valeur de référence utilisée (mV)
   float orpCalibrationTemp = NAN;     // Température lors de la calibration ORP (°C)
+
+  // Calibration Température DS18B20
+  // Formule appliquée: Temp_final = Temp_brut + offset
+  float tempCalibrationOffset = 0.0f; // Offset de calibration température (°C)
+  String tempCalibrationDate = "";    // Date de calibration température (ISO 8601)
 };
 
 struct FiltrationConfig {
@@ -77,6 +83,11 @@ struct FiltrationConfig {
   String end = "20:00";
   bool hasAutoReference = false;
   float autoReferenceTemp = 24.0f;
+};
+
+struct LightingConfig {
+  bool enabled = false;           // Éclairage ON/OFF
+  uint8_t brightness = 255;       // Luminosité PWM (0-255)
 };
 
 struct PumpControlParams {
@@ -131,6 +142,7 @@ void applyTimezoneEnv();
 // ==== Variables globales de configuration ====
 extern MqttConfig mqttCfg;
 extern FiltrationConfig filtrationCfg;
+extern LightingConfig lightingCfg;
 extern PumpControlParams phPumpControl;
 extern PumpControlParams orpPumpControl;
 extern SafetyLimits safetyLimits;

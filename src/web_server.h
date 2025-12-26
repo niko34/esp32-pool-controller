@@ -24,6 +24,10 @@ private:
   void handleCheckUpdate(AsyncWebServerRequest* request);
   void handleDownloadUpdate(AsyncWebServerRequest* request);
 
+  // Éclairage LED
+  void handleLightingOn(AsyncWebServerRequest* request);
+  void handleLightingOff(AsyncWebServerRequest* request);
+
   // Validation des entrées
   bool validatePhValue(float value);
   bool validateOrpValue(float value);

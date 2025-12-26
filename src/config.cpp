@@ -5,6 +5,7 @@
 // Définition des variables globales
 MqttConfig mqttCfg;
 FiltrationConfig filtrationCfg;
+LightingConfig lightingCfg;
 PumpControlParams phPumpControl = {5.2f, 90.0f, 1.0f};
 PumpControlParams orpPumpControl = {5.2f, 90.0f, 200.0f};
 SafetyLimits safetyLimits;
@@ -97,6 +98,10 @@ void saveMqttConfig() {
     prefs.putFloat("orp_cal_temp", mqttCfg.orpCalibrationTemp);
   }
 
+  // Calibration Température
+  prefs.putFloat("temp_cal_off", mqttCfg.tempCalibrationOffset);
+  prefs.putString("temp_cal_date", mqttCfg.tempCalibrationDate);
+
   // Temps
   prefs.putBool("time_use_ntp", mqttCfg.timeUseNtp);
   prefs.putString("ntp_server", mqttCfg.ntpServer);
@@ -109,6 +114,10 @@ void saveMqttConfig() {
   prefs.putString("filt_end", filtrationCfg.end);
   prefs.putBool("filt_has_ref", filtrationCfg.hasAutoReference);
   prefs.putFloat("filt_ref_temp", filtrationCfg.autoReferenceTemp);
+
+  // Éclairage
+  prefs.putBool("light_enabled", lightingCfg.enabled);
+  prefs.putUChar("light_bright", lightingCfg.brightness);
 
   // Limites de sécurité
   prefs.putFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
@@ -157,6 +166,10 @@ void loadMqttConfig() {
   mqttCfg.orpCalibrationReference = prefs.getFloat("orp_cal_ref", 0.0f);
   mqttCfg.orpCalibrationTemp = prefs.getFloat("orp_cal_temp", NAN);
 
+  // Calibration Température
+  mqttCfg.tempCalibrationOffset = prefs.getFloat("temp_cal_off", 0.0f);
+  mqttCfg.tempCalibrationDate = prefs.getString("temp_cal_date", "");
+
   // Temps
   mqttCfg.timeUseNtp = prefs.getBool("time_use_ntp", mqttCfg.timeUseNtp);
   mqttCfg.ntpServer = prefs.getString("ntp_server", mqttCfg.ntpServer);
@@ -169,6 +182,10 @@ void loadMqttConfig() {
   filtrationCfg.end = prefs.getString("filt_end", filtrationCfg.end);
   filtrationCfg.hasAutoReference = prefs.getBool("filt_has_ref", filtrationCfg.hasAutoReference);
   filtrationCfg.autoReferenceTemp = prefs.getFloat("filt_ref_temp", filtrationCfg.autoReferenceTemp);
+
+  // Éclairage
+  lightingCfg.enabled = prefs.getBool("light_enabled", lightingCfg.enabled);
+  lightingCfg.brightness = prefs.getUChar("light_bright", lightingCfg.brightness);
 
   // Limites de sécurité
   safetyLimits.maxPhMinusMlPerDay = prefs.getFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);

@@ -164,6 +164,10 @@ void WebServerManager::setupRoutes() {
     req->send(200, "text/plain", "OK");
   });
 
+  // Routes pour contrôle de l'éclairage (relais)
+  server.on("/lighting/on", HTTP_POST, [this](AsyncWebServerRequest *req) { handleLightingOn(req); });
+  server.on("/lighting/off", HTTP_POST, [this](AsyncWebServerRequest *req) { handleLightingOff(req); });
+
   // Handler générique pour les routes avec paramètres dans l'URL
   server.onNotFound([this](AsyncWebServerRequest *req) {
     String url = req->url();
@@ -252,6 +256,13 @@ void WebServerManager::handleGetData(AsyncWebServerRequest* request) {
   } else {
     doc["temperature"] = nullptr;
   }
+
+  // Température brute (sans calibration)
+  if (!isnan(sensors.getRawTemperature())) {
+    doc["temperature_raw"] = sensors.getRawTemperature();
+  } else {
+    doc["temperature_raw"] = nullptr;
+  }
   doc["filtration_running"] = filtration.isRunning();
   doc["ph_dosing"] = PumpController.isPhDosing();
   doc["orp_dosing"] = PumpController.isOrpDosing();
@@ -285,6 +296,7 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
   doc["orp_limit_seconds"] = mqttCfg.orpInjectionLimitSeconds;
   doc["time_use_ntp"] = mqttCfg.timeUseNtp;
   doc["ntp_server"] = mqttCfg.ntpServer;
+  doc["manual_time"] = mqttCfg.manualTimeIso;
   doc["timezone_id"] = mqttCfg.timezoneId;
   doc["filtration_mode"] = filtrationCfg.mode;
   doc["filtration_start"] = filtrationCfg.start;
@@ -292,8 +304,12 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
   doc["filtration_has_reference"] = filtrationCfg.hasAutoReference;
   doc["filtration_reference_temp"] = filtrationCfg.autoReferenceTemp;
   doc["filtration_running"] = filtration.isRunning();
+  doc["lighting_enabled"] = lightingCfg.enabled;
+  doc["lighting_brightness"] = lightingCfg.brightness;
   doc["wifi_ssid"] = WiFi.SSID();
   doc["wifi_ip"] = WiFi.localIP().toString();
+  doc["wifi_mode"] = WiFi.getMode() == WIFI_MODE_AP ? "AP" : "STA";
+  doc["mdns_host"] = "poolcontroller.local";
   doc["max_ph_ml_per_day"] = safetyLimits.maxPhMinusMlPerDay;
   doc["max_chlorine_ml_per_day"] = safetyLimits.maxChlorineMlPerDay;
   doc["ph_sensor_pin"] = PH_SENSOR_PIN;
@@ -314,6 +330,10 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
   if (!isnan(mqttCfg.orpCalibrationTemp)) {
     doc["orp_calibration_temp"] = mqttCfg.orpCalibrationTemp;
   }
+
+  // Données de calibration Température
+  doc["temp_calibration_offset"] = mqttCfg.tempCalibrationOffset;
+  doc["temp_calibration_date"] = mqttCfg.tempCalibrationDate;
 
   // Heure actuelle (pour l'affichage dans la configuration)
   struct tm timeinfo;
@@ -407,6 +427,7 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
 
   if (!doc["time_use_ntp"].isNull()) mqttCfg.timeUseNtp = doc["time_use_ntp"];
   if (!doc["ntp_server"].isNull()) mqttCfg.ntpServer = doc["ntp_server"].as<String>();
+  if (!doc["manual_time"].isNull()) mqttCfg.manualTimeIso = doc["manual_time"].as<String>();
   if (!doc["timezone_id"].isNull()) mqttCfg.timezoneId = doc["timezone_id"].as<String>();
   if (!doc["filtration_mode"].isNull()) filtrationCfg.mode = doc["filtration_mode"].as<String>();
   if (!doc["filtration_start"].isNull()) filtrationCfg.start = doc["filtration_start"].as<String>();
@@ -447,6 +468,14 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
     mqttCfg.orpCalibrationTemp = doc["orp_calibration_temp"];
   }
 
+  // Données de calibration Température
+  if (!doc["temp_calibration_offset"].isNull()) {
+    mqttCfg.tempCalibrationOffset = doc["temp_calibration_offset"];
+  }
+  if (!doc["temp_calibration_date"].isNull()) {
+    mqttCfg.tempCalibrationDate = doc["temp_calibration_date"].as<String>();
+  }
+
   sanitizePumpSelection();
   filtration.ensureTimesValid();
   ensureTimezoneValid();
@@ -460,16 +489,31 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
   saveMqttConfig();
   mqttManager.requestReconnect();
 
+  // Recalculer les valeurs calibrées (température, ORP) avec les nouveaux offsets
+  sensors.recalculateCalibratedValues();
+
   systemLogger.info("Configuration mise à jour via interface web");
   request->send(200, "text/plain", "Configuration saved");
 }
 
 void WebServerManager::handleGetLogs(AsyncWebServerRequest* request) {
+  // Support paramètre optionnel ?since=TIMESTAMP pour récupération incrémentale
+  unsigned long sinceTimestamp = 0;
+  if (request->hasParam("since")) {
+    String sinceParam = request->getParam("since")->value();
+    sinceTimestamp = sinceParam.toInt();
+  }
+
   auto logs = systemLogger.getRecentLogs(50);
   JsonDocument doc;
   JsonArray logsArray = doc["logs"].to<JsonArray>();
 
   for (const auto& entry : logs) {
+    // Si since est spécifié, filtrer les logs plus anciens
+    if (sinceTimestamp > 0 && entry.timestamp <= sinceTimestamp) {
+      continue;
+    }
+
     JsonObject logObj = logsArray.add<JsonObject>();
     logObj["timestamp"] = entry.timestamp;
     logObj["level"] = systemLogger.getLevelString(entry.level);
@@ -855,4 +899,22 @@ void WebServerManager::handleDownloadUpdate(AsyncWebServerRequest* request) {
     systemLogger.error("Erreur finalisation OTA: " + String(Update.errorString()));
     request->send(500, "application/json", "{\"error\":\"OTA finalization failed\"}");
   }
+}
+
+void WebServerManager::handleLightingOn(AsyncWebServerRequest* request) {
+  lightingCfg.enabled = true;
+  digitalWrite(LIGHTING_RELAY_PIN, HIGH);
+  saveMqttConfig();
+
+  systemLogger.info("Éclairage activé");
+  request->send(200, "text/plain", "OK");
+}
+
+void WebServerManager::handleLightingOff(AsyncWebServerRequest* request) {
+  lightingCfg.enabled = false;
+  digitalWrite(LIGHTING_RELAY_PIN, LOW);
+  saveMqttConfig();
+
+  systemLogger.info("Éclairage désactivé");
+  request->send(200, "text/plain", "OK");
 }
