@@ -129,61 +129,162 @@
             Calibration nécessaire
           </div>
 
-          <div class="grid grid--cards">
-            <div class="card card--metric">
-              <div class="metric">
-                <div class="metric__label">Température</div>
-                <div class="metric__value"><span id="m-temp">--</span><span class="metric__unit">°C</span></div>
+          <!-- Zone d'alertes -->
+          <div id="alerts-container" class="alerts"></div>
+
+          <!-- Cartes principales -->
+          <div class="grid grid--status-cards">
+            <!-- Carte Filtration -->
+            <div class="card card--status">
+              <div class="card__status-header">
+                <div class="card__status-icon">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="7" y="9" width="10" height="8" rx="2"/>
+                    <rect x="3" y="10" width="4" height="6" rx="1.5"/>
+                    <circle cx="12" cy="13" r="1.5"/>
+                    <path d="M17 11h3v4h-3"/>
+                    <path d="M6 18h12"/>
+                  </svg>
+                </div>
+                <div class="card__status-info">
+                  <div class="card__status-label">Filtration</div>
+                  <div class="card__status-value" id="filtration-temp">--</div>
+                </div>
               </div>
-              <div class="metric__sub" id="m-time">--:--:--</div>
+              <div class="card__status-body">
+                <div class="card__status-trend" id="filtration-trend">
+                  <span class="trend-arrow">→</span>
+                  <span class="trend-text">Stable</span>
+                </div>
+                <div class="card__status-state" id="filtration-state">
+                  <span class="state-badge state-badge--ok">Auto</span>
+                </div>
+                <div class="card__status-updated" id="filtration-updated">Dernière MAJ : --:--</div>
+              </div>
             </div>
 
-            <div class="card card--metric">
-              <div class="metric">
-                <div class="metric__label">pH</div>
-                <div class="metric__value"><span id="m-ph">--</span></div>
+            <!-- Carte Éclairage -->
+            <div class="card card--status">
+              <div class="card__status-header">
+                <div class="card__status-icon">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="5"/>
+                    <line x1="12" y1="1" x2="12" y2="3"/>
+                    <line x1="12" y1="21" x2="12" y2="23"/>
+                    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+                    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                    <line x1="1" y1="12" x2="3" y2="12"/>
+                    <line x1="21" y1="12" x2="23" y2="12"/>
+                    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+                    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                  </svg>
+                </div>
+                <div class="card__status-info">
+                  <div class="card__status-label">Éclairage</div>
+                  <div class="card__status-value" id="lighting-value">--</div>
+                </div>
               </div>
-              <div class="metric__sub">
-                <span class="badge badge--warn" id="ph-calibration-badge" style="display:none;">Calibration</span>
+              <div class="card__status-body">
+                <div class="card__status-state" id="lighting-state">
+                  <span class="state-badge state-badge--off">Éteint</span>
+                </div>
+                <div class="card__status-updated">Dernière MAJ : <span id="m-time">--:--</span></div>
               </div>
             </div>
 
-            <div class="card card--metric">
-              <div class="metric">
-                <div class="metric__label">ORP</div>
-                <div class="metric__value"><span id="m-orp">--</span><span class="metric__unit">mV</span></div>
+            <!-- Carte pH compact -->
+            <div class="card card--status card--compact">
+              <div class="card__status-compact">
+                <div class="compact-label">pH</div>
+                <div class="compact-value" id="compact-ph">--</div>
+                <div class="compact-target">Cible: <span id="compact-ph-target">7.2</span></div>
               </div>
-              <div class="metric__sub">
-                <span class="badge badge--warn" id="orp-calibration-badge" style="display:none;">Calibration</span>
+            </div>
+
+            <!-- Carte ORP compact -->
+            <div class="card card--status card--compact">
+              <div class="card__status-compact">
+                <div class="compact-label">ORP</div>
+                <div class="compact-value" id="compact-orp">--<span class="compact-unit">mV</span></div>
+                <div class="compact-target">Cible: <span id="compact-orp-target">650</span> mV</div>
               </div>
             </div>
           </div>
 
-          <div class="grid grid--charts">
-            <div class="card">
+          <!-- Graphique avec onglets -->
+          <div class="card card--chart-tabs">
+            <div class="card__head">
+              <div class="chart-tabs">
+                <button class="chart-tab chart-tab--active" data-chart="temperature">Température</button>
+                <button class="chart-tab" data-chart="ph">pH</button>
+                <button class="chart-tab" data-chart="orp">ORP</button>
+              </div>
+            </div>
+            <div class="card__body">
+              <div class="chart-container">
+                <div class="chart-current-value" id="chart-current-value">
+                  <div class="chart-value-label" id="chart-value-label">Température actuelle</div>
+                  <div class="chart-value-number" id="chart-value-number">--</div>
+                </div>
+                <canvas id="mainChart"></canvas>
+                <!-- Canvas cachés pour stocker l'historique des données -->
+                <canvas id="tempChart" style="display:none;"></canvas>
+                <canvas id="phChart" style="display:none;"></canvas>
+                <canvas id="orpChart" style="display:none;"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sections détaillées -->
+          <div class="grid grid--details">
+            <!-- Détail Filtration -->
+            <div class="card card--detail">
               <div class="card__head">
-                <div class="card__title">Température (°C)</div>
+                <div class="card__title">Filtration</div>
               </div>
               <div class="card__body">
-                <canvas id="tempChart"></canvas>
+                <div class="detail-row">
+                  <div class="detail-label">Mode</div>
+                  <div class="detail-value" id="detail-filtration-mode">Auto</div>
+                </div>
+                <div class="detail-row">
+                  <div class="detail-label">Horaires</div>
+                  <div class="detail-value" id="detail-filtration-schedule">08:00 - 20:00</div>
+                </div>
+                <div class="detail-row">
+                  <div class="detail-label">État actuel</div>
+                  <div class="detail-value">
+                    <span class="state-badge state-badge--ok" id="detail-filtration-status">En marche</span>
+                  </div>
+                </div>
+                <div class="detail-actions">
+                  <button class="btn btn--primary" id="detail-filtration-start">Démarrer</button>
+                  <button class="btn btn--secondary" id="detail-filtration-stop">Arrêter</button>
+                  <a href="#/filtration" class="btn btn--link">Configurer</a>
+                </div>
               </div>
             </div>
 
-            <div class="card">
+            <!-- Détail Éclairage -->
+            <div class="card card--detail">
               <div class="card__head">
-                <div class="card__title">pH</div>
+                <div class="card__title">Éclairage</div>
               </div>
               <div class="card__body">
-                <canvas id="phChart"></canvas>
-              </div>
-            </div>
-
-            <div class="card">
-              <div class="card__head">
-                <div class="card__title">ORP (mV)</div>
-              </div>
-              <div class="card__body">
-                <canvas id="orpChart"></canvas>
+                <div class="detail-row">
+                  <div class="detail-label">État actuel</div>
+                  <div class="detail-value">
+                    <span class="state-badge state-badge--off" id="detail-lighting-status">Éteint</span>
+                  </div>
+                </div>
+                <div class="detail-row">
+                  <div class="detail-label">Prochain changement</div>
+                  <div class="detail-value" id="detail-lighting-next">--:--</div>
+                </div>
+                <div class="detail-actions">
+                  <button class="btn btn--primary" id="detail-lighting-on">Allumer</button>
+                  <button class="btn btn--secondary" id="detail-lighting-off">Éteindre</button>
+                </div>
               </div>
             </div>
           </div>
