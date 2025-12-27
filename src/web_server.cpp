@@ -46,12 +46,17 @@ void WebServerManager::setupRoutes() {
   setupControlRoutes(server);
   setupOtaRoutes(server);
 
+  // Servir les fichiers statiques (HTML, CSS, JS, images)
+  // IMPORTANT: Doit être déclaré AVANT onNotFound pour que les fichiers soient servis
+  server->serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+
   // Page de configuration (fichier statique)
   server->on("/config", HTTP_GET, [](AsyncWebServerRequest *req) {
     req->send(LittleFS, "/config.html", "text/html");
   });
 
   // Handler global pour CORS OPTIONS, routes dynamiques et 404
+  // IMPORTANT: Doit être déclaré en DERNIER pour ne pas intercepter les autres routes
   server->onNotFound([](AsyncWebServerRequest *req) {
     // Gérer CORS OPTIONS
     if (req->method() == HTTP_OPTIONS) {
@@ -67,9 +72,6 @@ void WebServerManager::setupRoutes() {
     // 404 pour les autres routes non trouvées
     req->send(404, "text/plain", "Not Found");
   });
-
-  // Servir les fichiers statiques (HTML, CSS, JS, images)
-  server->serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
 }
 
 void WebServerManager::update() {
