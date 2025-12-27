@@ -69,10 +69,14 @@ void WebServerManager::setupRoutes() {
   server->on("/download-update", HTTP_POST, [this](AsyncWebServerRequest *req) { handleDownloadUpdate(req); });
 
   server->on("/save-config", HTTP_POST,
-    [](AsyncWebServerRequest *req) { req->send(200, "text/plain", "OK"); },
+    [this](AsyncWebServerRequest *req) {
+      // La requête est terminée, nettoyer le buffer
+      configBuffers.erase(req);
+      req->send(200, "text/plain", "OK");
+    },
     nullptr,
-    [this](AsyncWebServerRequest *req, uint8_t* data, size_t len, size_t, size_t) {
-      handleSaveConfig(req, data, len, 0, 0);
+    [this](AsyncWebServerRequest *req, uint8_t* data, size_t len, size_t index, size_t total) {
+      handleSaveConfig(req, data, len, index, total);
     }
   );
 
@@ -353,12 +357,35 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
   request->send(200, "application/json", json);
 }
 
-void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t, size_t) {
-  JsonDocument doc;
-  if (deserializeJson(doc, data, len) != DeserializationError::Ok) {
-    request->send(400, "text/plain", "Invalid JSON");
-    systemLogger.error("Configuration JSON invalide reçue");
+void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+  // Accumuler les données chunkées
+  if (index == 0) {
+    // Premier chunk, créer ou réinitialiser le buffer
+    configBuffers[request].clear();
+    if (total > 0) {
+      configBuffers[request].reserve(total);
+    }
+  }
+
+  // Ajouter les données au buffer
+  if (len > 0) {
+    configBuffers[request].insert(configBuffers[request].end(), data, data + len);
+  }
+
+  // Si ce n'est pas le dernier chunk, ne rien faire
+  if (index + len < total) {
     return;
+  }
+
+  // Dernier chunk reçu, traiter toutes les données accumulées
+  std::vector<uint8_t>& buffer = configBuffers[request];
+
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, buffer.data(), buffer.size());
+
+  if (error != DeserializationError::Ok) {
+    systemLogger.error("Configuration JSON invalide reçue: " + String(error.c_str()));
+    return; // Ne pas envoyer de réponse ici, c'est fait dans le handler principal
   }
 
   // Validation et application avec logs
@@ -496,7 +523,7 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
   sensors.recalculateCalibratedValues();
 
   systemLogger.info("Configuration mise à jour via interface web");
-  request->send(200, "text/plain", "Configuration saved");
+  // La réponse sera envoyée par le handler principal
 }
 
 void WebServerManager::handleGetLogs(AsyncWebServerRequest* request) {
