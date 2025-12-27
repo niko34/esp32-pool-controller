@@ -2,6 +2,8 @@
 #define CONFIG_H
 
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 // ==== Configuration des broches ====
 // MOSFET IRLZ44N - 1 pin PWM par pompe (Gate control)
@@ -148,7 +150,14 @@ extern PumpControlParams orpPumpControl;
 extern SafetyLimits safetyLimits;
 extern PumpProtection pumpProtection;
 
+// ==== Mutex pour protection concurrence ====
+// Protège l'accès aux configurations partagées entre loop() et handlers async
+extern SemaphoreHandle_t configMutex;
+// Protège l'accès au bus I2C partagé entre sensors.update() et calibrations
+extern SemaphoreHandle_t i2cMutex;
+
 // ==== Fonctions de gestion ====
+void initConfigMutexes();  // Initialise les mutex (à appeler dans setup())
 void saveMqttConfig();
 void loadMqttConfig();
 void applyMqttConfig();

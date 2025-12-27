@@ -50,8 +50,11 @@ void WebServerManager::begin(AsyncWebServer* webServer, DNSServer* dnsServer) {
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
 
   setupRoutes();
-  server->begin();
-  systemLogger.info("Serveur Web démarré sur port 80");
+
+  // Note: Ne pas appeler server->begin() ici car AsyncWiFiManager
+  // a déjà appelé begin() sur le serveur lors de l'autoConnect().
+  // Appeler begin() deux fois peut causer des conflits.
+  systemLogger.info("Routes du serveur Web configurées");
 }
 
 void WebServerManager::setupRoutes() {
@@ -70,9 +73,18 @@ void WebServerManager::setupRoutes() {
 
   server->on("/save-config", HTTP_POST,
     [this](AsyncWebServerRequest *req) {
-      // La requête est terminée, nettoyer le buffer
+      // Vérifier si une erreur s'est produite pendant le traitement
+      bool hasError = configErrors[req];
+
+      // Nettoyer les buffers et états
       configBuffers.erase(req);
-      req->send(200, "text/plain", "OK");
+      configErrors.erase(req);
+
+      if (hasError) {
+        req->send(400, "text/plain", "Invalid JSON configuration");
+      } else {
+        req->send(200, "text/plain", "OK");
+      }
     },
     nullptr,
     [this](AsyncWebServerRequest *req, uint8_t* data, size_t len, size_t index, size_t total) {
@@ -82,7 +94,14 @@ void WebServerManager::setupRoutes() {
 
   // Routes de calibration pH (DFRobot SEN0161-V2)
   server->on("/calibrate_ph_neutral", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    // Protéger l'accès I2C (évite collision avec sensors.update())
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+      req->send(503, "application/json", "{\"error\":\"I2C busy\"}");
+      return;
+    }
+
     sensors.calibratePhNeutral();
+    xSemaphoreGive(i2cMutex);
 
     // Obtenir la date/heure actuelle au format ISO 8601
     struct tm timeinfo;
@@ -98,7 +117,8 @@ void WebServerManager::setupRoutes() {
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
 
-    JsonDocument doc;
+    // Buffer statique : 1 champ (calibration_date) = 128 bytes
+    StaticJsonDocument<128> doc;
     doc["success"] = true;
     doc["temperature"] = mqttCfg.phCalibrationTemp;
     String response;
@@ -107,7 +127,14 @@ void WebServerManager::setupRoutes() {
   });
 
   server->on("/calibrate_ph_acid", HTTP_POST, [this](AsyncWebServerRequest *req) {
+    // Protéger l'accès I2C (évite collision avec sensors.update())
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+      req->send(503, "application/json", "{\"error\":\"I2C busy\"}");
+      return;
+    }
+
     sensors.calibratePhAcid();
+    xSemaphoreGive(i2cMutex);
 
     // Obtenir la date/heure actuelle au format ISO 8601
     struct tm timeinfo;
@@ -123,7 +150,8 @@ void WebServerManager::setupRoutes() {
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
 
-    JsonDocument doc;
+    // Buffer statique : 1 champ (calibration_date) = 128 bytes
+    StaticJsonDocument<128> doc;
     doc["success"] = true;
     doc["temperature"] = mqttCfg.phCalibrationTemp;
     String response;
@@ -207,15 +235,15 @@ void WebServerManager::setupRoutes() {
 
   // Route pour mise à jour OTA (firmware ou filesystem) - utilisée par l'interface web
   server->on("/update", HTTP_POST,
-    [](AsyncWebServerRequest *req) {
+    [this](AsyncWebServerRequest *req) {
       bool success = !Update.hasError();
       AsyncWebServerResponse *response = req->beginResponse(200, "text/plain", success ? "OK" : "FAIL");
       response->addHeader("Connection", "close");
       req->send(response);
       if (success) {
-        // Attendre 3 secondes pour laisser le temps au navigateur de recevoir la réponse
-        delay(3000);
-        ESP.restart();
+        // Planifier le redémarrage dans update() pour ne pas bloquer
+        restartRequested = true;
+        restartRequestedTime = millis();
       }
     },
     [this](AsyncWebServerRequest *req, const String& filename, size_t index, uint8_t *data, size_t len, bool final) {
@@ -227,7 +255,9 @@ void WebServerManager::setupRoutes() {
 }
 
 void WebServerManager::handleGetData(AsyncWebServerRequest* request) {
-  JsonDocument doc;
+  // Buffer statique pour éviter la fragmentation du heap
+  // Taille estimée : ~13 champs × 30 bytes + overhead = 512 bytes
+  StaticJsonDocument<512> doc;
 
   // ORP
   if (!isnan(sensors.getOrp())) {
@@ -284,7 +314,8 @@ void WebServerManager::handleGetData(AsyncWebServerRequest* request) {
 }
 
 void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
-  JsonDocument doc;
+  // Buffer statique : ~53 champs (configs MQTT, pH, ORP, calibration, WiFi, etc.) = 2048 bytes
+  StaticJsonDocument<2048> doc;
   doc["server"] = mqttCfg.server;
   doc["port"] = mqttCfg.port;
   doc["topic"] = mqttCfg.topic;
@@ -362,6 +393,7 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
   if (index == 0) {
     // Premier chunk, créer ou réinitialiser le buffer
     configBuffers[request].clear();
+    configErrors[request] = false; // Pas d'erreur pour l'instant
     if (total > 0) {
       configBuffers[request].reserve(total);
     }
@@ -385,7 +417,15 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
 
   if (error != DeserializationError::Ok) {
     systemLogger.error("Configuration JSON invalide reçue: " + String(error.c_str()));
-    return; // Ne pas envoyer de réponse ici, c'est fait dans le handler principal
+    configErrors[request] = true; // Marquer l'erreur
+    return; // Le handler principal renverra 400
+  }
+
+  // Protéger l'accès concurrent aux configurations (web async vs loop)
+  if (xSemaphoreTake(configMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    systemLogger.error("Timeout acquisition configMutex dans handleSaveConfig");
+    configErrors[request] = true;
+    return;
   }
 
   // Validation et application avec logs
@@ -522,6 +562,9 @@ void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t*
   // Recalculer les valeurs calibrées (température, ORP) avec les nouveaux offsets
   sensors.recalculateCalibratedValues();
 
+  // Libérer le mutex
+  xSemaphoreGive(configMutex);
+
   systemLogger.info("Configuration mise à jour via interface web");
   // La réponse sera envoyée par le handler principal
 }
@@ -613,7 +656,8 @@ void WebServerManager::handleGetHistory(AsyncWebServerRequest* request) {
 }
 
 void WebServerManager::handleTimeNow(AsyncWebServerRequest* request) {
-  JsonDocument doc;
+  // Buffer statique : 3 champs (time, time_use_ntp, timezone_id) = 128 bytes
+  StaticJsonDocument<128> doc;
   struct tm timeinfo;
   if (getLocalTime(&timeinfo, 0)) {
     char buffer[25];
@@ -632,13 +676,15 @@ void WebServerManager::handleTimeNow(AsyncWebServerRequest* request) {
 
 void WebServerManager::handleRebootAp(AsyncWebServerRequest* request) {
   restartApRequested = true;
+  restartRequestedTime = millis();
   request->send(200, "text/plain", "Restart scheduled");
   systemLogger.warning("Redémarrage en mode AP demandé");
 }
 
 
 void WebServerManager::handleGetSystemInfo(AsyncWebServerRequest* request) {
-  JsonDocument doc;
+  // Buffer statique : ~24 champs (version, chip, memory, WiFi, uptime) = 1024 bytes
+  StaticJsonDocument<1024> doc;
 
   // Version firmware
   doc["firmware_version"] = FIRMWARE_VERSION;
@@ -741,10 +787,17 @@ void WebServerManager::handleOtaUpdate(AsyncWebServerRequest* request, const Str
 }
 
 void WebServerManager::update() {
-  if (restartApRequested) {
+  // Gérer le redémarrage après OTA (attendre 3s pour que la réponse HTTP soit envoyée)
+  if (restartRequested && (millis() - restartRequestedTime >= 3000)) {
+    restartRequested = false;
+    systemLogger.critical("Redémarrage après mise à jour OTA");
+    ESP.restart();
+  }
+
+  // Gérer le redémarrage en mode AP (attendre 1s)
+  if (restartApRequested && (millis() - restartRequestedTime >= 1000)) {
     restartApRequested = false;
     systemLogger.critical("Redémarrage en mode Point d'accès");
-    delay(1000);
     ESP.restart();
   }
 }
@@ -956,8 +1009,9 @@ void WebServerManager::handleDownloadUpdate(AsyncWebServerRequest* request) {
     if (shouldRestart) {
       systemLogger.info("Mise à jour GitHub réussie! Redémarrage...");
       request->send(200, "application/json", "{\"status\":\"success\"}");
-      delay(3000);
-      ESP.restart();
+      // Planifier le redémarrage dans update() pour ne pas bloquer
+      restartRequested = true;
+      restartRequestedTime = millis();
     } else {
       systemLogger.info("Mise à jour GitHub réussie (sans redémarrage)");
       request->send(200, "application/json", "{\"status\":\"success\"}");

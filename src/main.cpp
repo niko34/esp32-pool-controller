@@ -48,6 +48,9 @@ void setup() {
     systemLogger.info("LittleFS monté avec succès");
   }
 
+  // Initialisation des mutex de protection concurrence
+  initConfigMutexes();
+
   // Chargement configuration
   loadMqttConfig();
 

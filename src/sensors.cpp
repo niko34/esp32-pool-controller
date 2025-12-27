@@ -86,7 +86,13 @@ void SensorManager::begin() {
 }
 
 void SensorManager::update() {
-  readRealSensors();
+  // Protéger l'accès I2C contre collisions avec calibrations (handlers web async)
+  // Utilise tryTake (non-bloquant) pour ne pas ralentir la loop
+  if (xSemaphoreTake(i2cMutex, 0) == pdTRUE) {
+    readRealSensors();
+    xSemaphoreGive(i2cMutex);
+  }
+  // Si mutex indisponible, skip cette itération (la prochaine loop réessaiera)
 }
 
 void SensorManager::readRealSensors() {

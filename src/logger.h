@@ -26,6 +26,8 @@ private:
   bool bufferFull = false;
 
 public:
+  Logger();  // Constructeur pour pré-allouer le buffer
+
   void log(LogLevel level, const String& message);
   void debug(const String& message);
   void info(const String& message);
