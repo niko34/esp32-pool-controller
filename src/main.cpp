@@ -20,7 +20,6 @@
 // Variables globales
 DNSServer dns;
 AsyncWebServer httpServer(80);
-unsigned long lastSensorRead = 0;
 unsigned long lastMqttPublish = 0;
 wifi_mode_t currentWifiMode = WIFI_MODE_NULL;
 const unsigned long WATCHDOG_TIMEOUT = 30; // 30 secondes
@@ -109,12 +108,10 @@ void loop() {
   mqttManager.update();
   history.update();
 
-  // Lecture capteurs toutes les 10s
-  if (now - lastSensorRead >= 10000) {
-    sensors.update();
-    lastSensorRead = now;
-    esp_task_wdt_reset();
-  }
+  // Lecture capteurs à chaque loop (les capteurs gèrent leur propre throttling interne)
+  // DS18B20 : machine à états non-bloquante (request → wait → read) toutes les 2s
+  // pH/ORP : lecture limitée à toutes les 5s en interne
+  sensors.update();
 
   // Publication MQTT toutes les 10s
   if (mqttManager.isConnected() && now - lastMqttPublish >= 10000) {
