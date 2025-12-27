@@ -389,11 +389,22 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
 }
 
 void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
+  // Limite de sécurité: 16KB max pour éviter épuisement RAM
+  const size_t MAX_CONFIG_SIZE = 16384;
+
   // Accumuler les données chunkées
   if (index == 0) {
     // Premier chunk, créer ou réinitialiser le buffer
     configBuffers[request].clear();
     configErrors[request] = false; // Pas d'erreur pour l'instant
+
+    // Vérifier la taille totale
+    if (total > MAX_CONFIG_SIZE) {
+      systemLogger.error("Configuration trop volumineuse: " + String(total) + " bytes (max " + String(MAX_CONFIG_SIZE) + ")");
+      configErrors[request] = true;
+      return;
+    }
+
     if (total > 0) {
       configBuffers[request].reserve(total);
     }
