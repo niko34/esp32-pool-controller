@@ -96,67 +96,41 @@ void WebServerManager::setupRoutes() {
   server->on("/calibrate_ph_neutral", HTTP_POST, [this](AsyncWebServerRequest *req) {
     // Protéger l'accès I2C (évite collision avec sensors.update())
     if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-      req->send(503, "application/json", "{\"error\":\"I2C busy\"}");
+      sendErrorResponse(req, 503, "I2C busy");
       return;
     }
 
     sensors.calibratePhNeutral();
     xSemaphoreGive(i2cMutex);
 
-    // Obtenir la date/heure actuelle au format ISO 8601
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 0)) {
-      char buffer[25];
-      strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
-      mqttCfg.phCalibrationDate = String(buffer);
-    } else {
-      // Fallback: utiliser un timestamp si l'heure n'est pas disponible
-      mqttCfg.phCalibrationDate = String(millis());
-    }
-
+    mqttCfg.phCalibrationDate = getCurrentTimeISO();
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
 
-    // Buffer statique : 1 champ (calibration_date) = 128 bytes
     StaticJsonDocument<128> doc;
     doc["success"] = true;
     doc["temperature"] = mqttCfg.phCalibrationTemp;
-    String response;
-    serializeJson(doc, response);
-    req->send(200, "application/json", response);
+    sendJsonResponse(req, doc);
   });
 
   server->on("/calibrate_ph_acid", HTTP_POST, [this](AsyncWebServerRequest *req) {
     // Protéger l'accès I2C (évite collision avec sensors.update())
     if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-      req->send(503, "application/json", "{\"error\":\"I2C busy\"}");
+      sendErrorResponse(req, 503, "I2C busy");
       return;
     }
 
     sensors.calibratePhAcid();
     xSemaphoreGive(i2cMutex);
 
-    // Obtenir la date/heure actuelle au format ISO 8601
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 0)) {
-      char buffer[25];
-      strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
-      mqttCfg.phCalibrationDate = String(buffer);
-    } else {
-      // Fallback: utiliser un timestamp si l'heure n'est pas disponible
-      mqttCfg.phCalibrationDate = String(millis());
-    }
-
+    mqttCfg.phCalibrationDate = getCurrentTimeISO();
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
 
-    // Buffer statique : 1 champ (calibration_date) = 128 bytes
     StaticJsonDocument<128> doc;
     doc["success"] = true;
     doc["temperature"] = mqttCfg.phCalibrationTemp;
-    String response;
-    serializeJson(doc, response);
-    req->send(200, "application/json", response);
+    sendJsonResponse(req, doc);
   });
 
   server->on("/clear_ph_calibration", HTTP_POST, [this](AsyncWebServerRequest *req) {
@@ -308,9 +282,7 @@ void WebServerManager::handleGetData(AsyncWebServerRequest* request) {
   doc["ph_limit_reached"] = safetyLimits.phLimitReached;
   doc["orp_limit_reached"] = safetyLimits.orpLimitReached;
 
-  String json;
-  serializeJson(doc, json);
-  request->send(200, "application/json", json);
+  sendJsonResponse(request, doc);
 }
 
 void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
@@ -374,18 +346,9 @@ void WebServerManager::handleGetConfig(AsyncWebServerRequest* request) {
   doc["temp_calibration_date"] = mqttCfg.tempCalibrationDate;
 
   // Heure actuelle (pour l'affichage dans la configuration)
-  struct tm timeinfo;
-  if (getLocalTime(&timeinfo, 0)) {
-    char buffer[25];
-    strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
-    doc["time_current"] = String(buffer);
-  } else {
-    doc["time_current"] = "unavailable";
-  }
+  doc["time_current"] = getCurrentTimeISO();
 
-  String json;
-  serializeJson(doc, json);
-  request->send(200, "application/json", json);
+  sendJsonResponse(request, doc);
 }
 
 void WebServerManager::handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
@@ -661,28 +624,17 @@ void WebServerManager::handleGetHistory(AsyncWebServerRequest* request) {
   doc["count"] = historyArray.size();
   doc["range"] = range;
 
-  String json;
-  serializeJson(doc, json);
-  request->send(200, "application/json", json);
+  sendJsonResponse(request, doc);
 }
 
 void WebServerManager::handleTimeNow(AsyncWebServerRequest* request) {
   // Buffer statique : 3 champs (time, time_use_ntp, timezone_id) = 128 bytes
   StaticJsonDocument<128> doc;
-  struct tm timeinfo;
-  if (getLocalTime(&timeinfo, 0)) {
-    char buffer[25];
-    strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
-    doc["time"] = String(buffer);
-  } else {
-    doc["time"] = "unavailable";
-  }
+  doc["time"] = getCurrentTimeISO();
   doc["time_use_ntp"] = mqttCfg.timeUseNtp;
   doc["timezone_id"] = mqttCfg.timezoneId;
 
-  String json;
-  serializeJson(doc, json);
-  request->send(200, "application/json", json);
+  sendJsonResponse(request, doc);
 }
 
 void WebServerManager::handleRebootAp(AsyncWebServerRequest* request) {
@@ -743,9 +695,7 @@ void WebServerManager::handleGetSystemInfo(AsyncWebServerRequest* request) {
   doc["uptime_hours"] = (uptime % 86400) / 3600;
   doc["uptime_minutes"] = (uptime % 3600) / 60;
 
-  String json;
-  serializeJson(doc, json);
-  request->send(200, "application/json", json);
+  sendJsonResponse(request, doc);
 }
 
 void WebServerManager::handleOtaUpdate(AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
@@ -826,7 +776,7 @@ void WebServerManager::handleCheckUpdate(AsyncWebServerRequest* request) {
 
   if (!https.begin(client, apiUrl)) {
     systemLogger.error("Impossible de se connecter à GitHub");
-    request->send(500, "application/json", "{\"error\":\"Connection failed\"}");
+    sendErrorResponse(request, 500, "Connection failed");
     return;
   }
 
@@ -870,7 +820,7 @@ void WebServerManager::handleCheckUpdate(AsyncWebServerRequest* request) {
 
   if (error) {
     systemLogger.error("Erreur parsing JSON GitHub");
-    request->send(500, "application/json", "{\"error\":\"JSON parse error\"}");
+    sendErrorResponse(request, 500, "JSON parse error");
     return;
   }
 
@@ -919,7 +869,7 @@ void WebServerManager::handleCheckUpdate(AsyncWebServerRequest* request) {
 void WebServerManager::handleDownloadUpdate(AsyncWebServerRequest* request) {
   // Récupérer l'URL du fichier à télécharger
   if (!request->hasParam("url", true)) {
-    request->send(400, "application/json", "{\"error\":\"Missing URL parameter\"}");
+    sendErrorResponse(request, 400, "Missing URL parameter");
     return;
   }
 
@@ -950,7 +900,7 @@ void WebServerManager::handleDownloadUpdate(AsyncWebServerRequest* request) {
 
   if (!http.begin(client, url)) {
     systemLogger.error("Impossible de se connecter à GitHub pour téléchargement");
-    request->send(500, "application/json", "{\"error\":\"Connection failed\"}");
+    sendErrorResponse(request, 500, "Connection failed");
     return;
   }
 
@@ -959,7 +909,7 @@ void WebServerManager::handleDownloadUpdate(AsyncWebServerRequest* request) {
   if (httpCode != HTTP_CODE_OK) {
     systemLogger.error("Erreur HTTP téléchargement: " + String(httpCode));
     http.end();
-    request->send(500, "application/json", "{\"error\":\"Download failed\"}");
+    sendErrorResponse(request, 500, "Download failed");
     return;
   }
 
@@ -968,7 +918,7 @@ void WebServerManager::handleDownloadUpdate(AsyncWebServerRequest* request) {
   if (contentLength <= 0) {
     systemLogger.error("Taille fichier invalide");
     http.end();
-    request->send(500, "application/json", "{\"error\":\"Invalid file size\"}");
+    sendErrorResponse(request, 500, "Invalid file size");
     return;
   }
 
@@ -978,7 +928,7 @@ void WebServerManager::handleDownloadUpdate(AsyncWebServerRequest* request) {
   if (!Update.begin(contentLength, cmd)) {
     systemLogger.error("Erreur démarrage OTA: " + String(Update.errorString()));
     http.end();
-    request->send(500, "application/json", "{\"error\":\"OTA begin failed\"}");
+    sendErrorResponse(request, 500, "OTA begin failed");
     return;
   }
 
@@ -998,7 +948,7 @@ void WebServerManager::handleDownloadUpdate(AsyncWebServerRequest* request) {
           systemLogger.error("Erreur écriture OTA");
           Update.abort();
           http.end();
-          request->send(500, "application/json", "{\"error\":\"OTA write failed\"}");
+          sendErrorResponse(request, 500, "OTA write failed");
           return;
         }
         written += c;
@@ -1029,7 +979,7 @@ void WebServerManager::handleDownloadUpdate(AsyncWebServerRequest* request) {
     }
   } else {
     systemLogger.error("Erreur finalisation OTA: " + String(Update.errorString()));
-    request->send(500, "application/json", "{\"error\":\"OTA finalization failed\"}");
+    sendErrorResponse(request, 500, "OTA finalization failed");
   }
 }
 
@@ -1049,4 +999,34 @@ void WebServerManager::handleLightingOff(AsyncWebServerRequest* request) {
 
   systemLogger.info("Éclairage désactivé");
   request->send(200, "text/plain", "OK");
+}
+
+// ==== Helper Functions ====
+
+void WebServerManager::sendJsonResponse(AsyncWebServerRequest* request, JsonDocument& doc) {
+  String json;
+  serializeJson(doc, json);
+  AsyncWebServerResponse* response = request->beginResponse(200, "application/json", json);
+  response->addHeader("Access-Control-Allow-Origin", "*");
+  request->send(response);
+}
+
+void WebServerManager::sendErrorResponse(AsyncWebServerRequest* request, int code, const String& message) {
+  StaticJsonDocument<128> doc;
+  doc["error"] = message;
+  String json;
+  serializeJson(doc, json);
+  AsyncWebServerResponse* response = request->beginResponse(code, "application/json", json);
+  response->addHeader("Access-Control-Allow-Origin", "*");
+  request->send(response);
+}
+
+String WebServerManager::getCurrentTimeISO() {
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 0)) {
+    char buffer[25];
+    strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%S", &timeinfo);
+    return String(buffer);
+  }
+  return "unavailable";
 }
