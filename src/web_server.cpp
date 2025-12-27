@@ -55,15 +55,6 @@ void WebServerManager::begin(AsyncWebServer* webServer, DNSServer* dnsServer) {
 }
 
 void WebServerManager::setupRoutes() {
-  // Handler CORS OPTIONS pour toutes les routes
-  server->onNotFound([](AsyncWebServerRequest *req) {
-    if (req->method() == HTTP_OPTIONS) {
-      req->send(200);
-    } else {
-      req->send(404, "text/plain", "Not found");
-    }
-  });
-
   server->on("/data", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetData(req); });
   server->on("/config", HTTP_GET, [](AsyncWebServerRequest *req) {
     req->send(LittleFS, "/config.html", "text/html");
@@ -174,8 +165,14 @@ void WebServerManager::setupRoutes() {
   server->on("/lighting/on", HTTP_POST, [this](AsyncWebServerRequest *req) { handleLightingOn(req); });
   server->on("/lighting/off", HTTP_POST, [this](AsyncWebServerRequest *req) { handleLightingOff(req); });
 
-  // Handler générique pour les routes avec paramètres dans l'URL
+  // Handler global pour CORS OPTIONS et routes dynamiques
   server->onNotFound([this](AsyncWebServerRequest *req) {
+    // Gérer CORS OPTIONS
+    if (req->method() == HTTP_OPTIONS) {
+      req->send(200);
+      return;
+    }
+
     String url = req->url();
 
     // Gérer /pump1/duty/:duty
