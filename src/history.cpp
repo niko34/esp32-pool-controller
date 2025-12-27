@@ -4,6 +4,8 @@
 #include "filtration.h"
 #include "pump_controller.h"
 #include <ArduinoJson.h>
+#include <map>
+#include <algorithm>
 
 HistoryManager history;
 
@@ -19,6 +21,12 @@ void HistoryManager::update() {
   if (now - lastRecord >= RECORD_INTERVAL) {
     recordDataPoint();
     lastRecord = now;
+  }
+
+  // Consolider les données toutes les heures
+  if (now - lastConsolidation >= CONSOLIDATION_INTERVAL) {
+    consolidateData();
+    lastConsolidation = now;
   }
 
   // Sauvegarder sur fichier toutes les heures
@@ -37,12 +45,28 @@ void HistoryManager::recordDataPoint() {
   point.filtrationActive = filtration.isRunning();
   point.phDosing = PumpController.isPhDosing();
   point.orpDosing = PumpController.isOrpDosing();
-
-  if (memoryBuffer.size() >= MAX_MEMORY_POINTS) {
-    memoryBuffer.erase(memoryBuffer.begin()); // FIFO
-  }
+  point.granularity = RAW;
 
   memoryBuffer.push_back(point);
+
+  // Limiter le nombre de points RAW
+  size_t rawCount = 0;
+  for (const auto& p : memoryBuffer) {
+    if (p.granularity == RAW) rawCount++;
+  }
+
+  if (rawCount > MAX_RAW_POINTS) {
+    // Supprimer les points RAW les plus anciens
+    for (auto it = memoryBuffer.begin(); it != memoryBuffer.end(); ) {
+      if (it->granularity == RAW) {
+        it = memoryBuffer.erase(it);
+        rawCount--;
+        if (rawCount <= MAX_RAW_POINTS) break;
+      } else {
+        ++it;
+      }
+    }
+  }
 }
 
 void HistoryManager::saveToFile() {
@@ -55,19 +79,18 @@ void HistoryManager::saveToFile() {
   JsonDocument doc;
   JsonArray data = doc["data"].to<JsonArray>();
 
-  // Sauvegarder seulement les dernières 24h
-  size_t startIdx = memoryBuffer.size() > 288 ? memoryBuffer.size() - 288 : 0;
-
-  for (size_t i = startIdx; i < memoryBuffer.size(); i++) {
-    JsonObject point = data.add<JsonObject>();
-    point["t"] = memoryBuffer[i].timestamp;
-    point["p"] = serialized(String(memoryBuffer[i].ph, 2));
-    point["o"] = serialized(String(memoryBuffer[i].orp, 1));
-    if (!isnan(memoryBuffer[i].temperature)) {
-      point["T"] = serialized(String(memoryBuffer[i].temperature, 1));
+  // Sauvegarder tous les points (déjà optimisés par consolidation)
+  for (const auto& point : memoryBuffer) {
+    JsonObject obj = data.add<JsonObject>();
+    obj["t"] = point.timestamp;
+    obj["p"] = serialized(String(point.ph, 2));
+    obj["o"] = serialized(String(point.orp, 1));
+    if (!isnan(point.temperature)) {
+      obj["T"] = serialized(String(point.temperature, 1));
     }
-    point["f"] = memoryBuffer[i].filtrationActive;
-    point["d"] = memoryBuffer[i].phDosing || memoryBuffer[i].orpDosing;
+    obj["f"] = point.filtrationActive;
+    obj["d"] = point.phDosing || point.orpDosing;
+    obj["g"] = static_cast<uint8_t>(point.granularity);
   }
 
   if (serializeJson(doc, f) == 0) {
@@ -111,6 +134,7 @@ void HistoryManager::loadFromFile() {
     dp.filtrationActive = point["f"];
     dp.phDosing = point["d"];
     dp.orpDosing = false;
+    dp.granularity = static_cast<Granularity>(point["g"] | 0);
     memoryBuffer.push_back(dp);
   }
 
@@ -136,20 +160,209 @@ std::vector<DataPoint> HistoryManager::getLastDay() {
   return getLastHours(24);
 }
 
-void HistoryManager::exportCSV(String& output) {
-  output = "Timestamp,pH,ORP(mV),Temperature(C),Filtration,Dosing\n";
+std::vector<DataPoint> HistoryManager::getAllData() {
+  return memoryBuffer;
+}
+
+void HistoryManager::consolidateData() {
+  unsigned long now = millis() / 1000;
+  systemLogger.debug("Début consolidation historique");
+
+  // 1. Supprimer les données trop anciennes (> 90 jours)
+  memoryBuffer.erase(
+    std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
+      [now](const DataPoint& p) {
+        unsigned long age = now - p.timestamp; // age en secondes
+        return age > DAILY_MAX_AGE;
+      }),
+    memoryBuffer.end()
+  );
+
+  // 2. Convertir les points RAW > 6h en moyennes horaires
+  std::vector<DataPoint> hourlyPoints;
+
+  // Grouper les points RAW par heure
+  std::map<unsigned long, std::vector<DataPoint>> hourlyGroups;
 
   for (const auto& point : memoryBuffer) {
-    output += String(point.timestamp) + ",";
-    output += String(point.ph, 1) + ",";
-    output += String(point.orp, 1) + ",";
-    output += isnan(point.temperature) ? "N/A" : String(point.temperature, 1);
-    output += ",";
-    output += point.filtrationActive ? "ON" : "OFF";
-    output += ",";
-    output += (point.phDosing || point.orpDosing) ? "ACTIVE" : "IDLE";
-    output += "\n";
+    if (point.granularity == RAW) {
+      unsigned long age = now - point.timestamp; // age en secondes
+      if (age > RAW_MAX_AGE) {
+        // Grouper par heure (arrondir timestamp à l'heure)
+        unsigned long hourTimestamp = (point.timestamp / 3600) * 3600;
+        hourlyGroups[hourTimestamp].push_back(point);
+      }
+    }
   }
+
+  // Créer les moyennes horaires
+  for (const auto& group : hourlyGroups) {
+    if (group.second.empty()) continue;
+
+    DataPoint avgPoint;
+    avgPoint.timestamp = group.first;
+    avgPoint.ph = 0;
+    avgPoint.orp = 0;
+    avgPoint.temperature = 0;
+    avgPoint.filtrationActive = false;
+    avgPoint.phDosing = false;
+    avgPoint.orpDosing = false;
+    avgPoint.granularity = HOURLY;
+
+    int validCount = 0;
+    int filtrationCount = 0;
+    int phDosingCount = 0;
+    int orpDosingCount = 0;
+
+    for (const auto& p : group.second) {
+      if (!isnan(p.ph)) {
+        avgPoint.ph += p.ph;
+        validCount++;
+      }
+      if (!isnan(p.orp)) avgPoint.orp += p.orp;
+      if (!isnan(p.temperature)) avgPoint.temperature += p.temperature;
+      if (p.filtrationActive) filtrationCount++;
+      if (p.phDosing) phDosingCount++;
+      if (p.orpDosing) orpDosingCount++;
+    }
+
+    if (validCount > 0) {
+      avgPoint.ph /= validCount;
+      avgPoint.orp /= validCount;
+      avgPoint.temperature /= validCount;
+      avgPoint.filtrationActive = (filtrationCount > group.second.size() / 2);
+      avgPoint.phDosing = (phDosingCount > 0);
+      avgPoint.orpDosing = (orpDosingCount > 0);
+
+      hourlyPoints.push_back(avgPoint);
+    }
+  }
+
+  // Supprimer les points RAW qui ont été convertis en horaires
+  memoryBuffer.erase(
+    std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
+      [now](const DataPoint& p) {
+        unsigned long age = now - p.timestamp;
+        return p.granularity == RAW && age > RAW_MAX_AGE;
+      }),
+    memoryBuffer.end()
+  );
+
+  // Ajouter les nouveaux points horaires
+  memoryBuffer.insert(memoryBuffer.end(), hourlyPoints.begin(), hourlyPoints.end());
+
+  // 3. Convertir les points HOURLY > 15 jours en moyennes journalières
+  std::vector<DataPoint> dailyPoints;
+  std::map<unsigned long, std::vector<DataPoint>> dailyGroups;
+
+  for (const auto& point : memoryBuffer) {
+    if (point.granularity == HOURLY) {
+      unsigned long age = now - point.timestamp; // age en secondes
+      if (age > HOURLY_MAX_AGE) {
+        // Grouper par jour (arrondir timestamp au jour)
+        unsigned long dayTimestamp = (point.timestamp / 86400) * 86400;
+        dailyGroups[dayTimestamp].push_back(point);
+      }
+    }
+  }
+
+  // Créer les moyennes journalières
+  for (const auto& group : dailyGroups) {
+    if (group.second.empty()) continue;
+
+    DataPoint avgPoint;
+    avgPoint.timestamp = group.first;
+    avgPoint.ph = 0;
+    avgPoint.orp = 0;
+    avgPoint.temperature = 0;
+    avgPoint.filtrationActive = false;
+    avgPoint.phDosing = false;
+    avgPoint.orpDosing = false;
+    avgPoint.granularity = DAILY;
+
+    int validCount = 0;
+    int filtrationCount = 0;
+    int phDosingCount = 0;
+    int orpDosingCount = 0;
+
+    for (const auto& p : group.second) {
+      if (!isnan(p.ph)) {
+        avgPoint.ph += p.ph;
+        validCount++;
+      }
+      if (!isnan(p.orp)) avgPoint.orp += p.orp;
+      if (!isnan(p.temperature)) avgPoint.temperature += p.temperature;
+      if (p.filtrationActive) filtrationCount++;
+      if (p.phDosing) phDosingCount++;
+      if (p.orpDosing) orpDosingCount++;
+    }
+
+    if (validCount > 0) {
+      avgPoint.ph /= validCount;
+      avgPoint.orp /= validCount;
+      avgPoint.temperature /= validCount;
+      avgPoint.filtrationActive = (filtrationCount > group.second.size() / 2);
+      avgPoint.phDosing = (phDosingCount > 0);
+      avgPoint.orpDosing = (orpDosingCount > 0);
+
+      dailyPoints.push_back(avgPoint);
+    }
+  }
+
+  // Supprimer les points HOURLY qui ont été convertis en journaliers
+  memoryBuffer.erase(
+    std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
+      [now](const DataPoint& p) {
+        unsigned long age = now - p.timestamp;
+        return p.granularity == HOURLY && age > HOURLY_MAX_AGE;
+      }),
+    memoryBuffer.end()
+  );
+
+  // Ajouter les nouveaux points journaliers
+  memoryBuffer.insert(memoryBuffer.end(), dailyPoints.begin(), dailyPoints.end());
+
+  // 4. Limiter le nombre de points par granularité
+  size_t hourlyCount = 0, dailyCount = 0;
+  for (const auto& p : memoryBuffer) {
+    if (p.granularity == HOURLY) hourlyCount++;
+    if (p.granularity == DAILY) dailyCount++;
+  }
+
+  // Supprimer les points horaires en excès (les plus anciens)
+  if (hourlyCount > MAX_HOURLY_POINTS) {
+    size_t toRemove = hourlyCount - MAX_HOURLY_POINTS;
+    for (auto it = memoryBuffer.begin(); it != memoryBuffer.end() && toRemove > 0; ) {
+      if (it->granularity == HOURLY) {
+        it = memoryBuffer.erase(it);
+        toRemove--;
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  // Supprimer les points journaliers en excès (les plus anciens)
+  if (dailyCount > MAX_DAILY_POINTS) {
+    size_t toRemove = dailyCount - MAX_DAILY_POINTS;
+    for (auto it = memoryBuffer.begin(); it != memoryBuffer.end() && toRemove > 0; ) {
+      if (it->granularity == DAILY) {
+        it = memoryBuffer.erase(it);
+        toRemove--;
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  // Trier par timestamp
+  std::sort(memoryBuffer.begin(), memoryBuffer.end(),
+    [](const DataPoint& a, const DataPoint& b) {
+      return a.timestamp < b.timestamp;
+    });
+
+  systemLogger.info("Consolidation terminée: " + String(memoryBuffer.size()) + " points");
+  saveToFile();
 }
 
 void HistoryManager::clearHistory() {

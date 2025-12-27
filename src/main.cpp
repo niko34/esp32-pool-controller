@@ -14,6 +14,7 @@
 #include "filtration.h"
 #include "mqtt_manager.h"
 #include "web_server.h"
+#include "history.h"
 #include "version.h"
 
 // Variables globales
@@ -55,6 +56,7 @@ void setup() {
   sensors.begin();
   PumpController.begin();
   filtration.begin();
+  history.begin();
 
   // Initialisation relais éclairage
   pinMode(LIGHTING_RELAY_PIN, OUTPUT);
@@ -82,8 +84,8 @@ void setup() {
     mqttManager.begin();
     applyTimeConfig();
 
-    // Serveur Web
-    webServer.begin(&dns);
+    // Serveur Web (partager le serveur avec WiFiManager)
+    webServer.begin(&httpServer, &dns);
 
     // Connexion MQTT initiale
     if (mqttCfg.enabled) {
@@ -105,6 +107,7 @@ void loop() {
   // Mise à jour des gestionnaires
   webServer.update();
   mqttManager.update();
+  history.update();
 
   // Lecture capteurs toutes les 10s
   if (now - lastSensorRead >= 10000) {

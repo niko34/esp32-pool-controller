@@ -334,7 +334,7 @@ void MqttManager::publishDiagnostic() {
   doc["orp_target"] = mqttCfg.orpTarget;
 
   // Version
-  doc["firmware_version"] = "2.0.0";
+  doc["firmware_version"] = FIRMWARE_VERSION;
   doc["build_timestamp"] = __DATE__ " " __TIME__;
 
   String payload;

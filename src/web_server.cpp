@@ -17,7 +17,7 @@
 
 WebServerManager webServer;
 
-WebServerManager::WebServerManager() : server(80), dns(nullptr) {}
+WebServerManager::WebServerManager() : server(nullptr), dns(nullptr) {}
 
 bool WebServerManager::validatePhValue(float value) {
   return value >= 0.0f && value <= 14.0f;
@@ -35,8 +35,14 @@ bool WebServerManager::validatePumpNumber(int pump) {
   return pump == 1 || pump == 2;
 }
 
-void WebServerManager::begin(DNSServer* dnsServer) {
+void WebServerManager::begin(AsyncWebServer* webServer, DNSServer* dnsServer) {
+  server = webServer;
   dns = dnsServer;
+
+  if (!server) {
+    systemLogger.error("WebServerManager: serveur web non fourni");
+    return;
+  }
 
   // Ajouter les en-têtes CORS pour toutes les requêtes
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
@@ -44,13 +50,13 @@ void WebServerManager::begin(DNSServer* dnsServer) {
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
 
   setupRoutes();
-  server.begin();
+  server->begin();
   systemLogger.info("Serveur Web démarré sur port 80");
 }
 
 void WebServerManager::setupRoutes() {
   // Handler CORS OPTIONS pour toutes les routes
-  server.onNotFound([](AsyncWebServerRequest *req) {
+  server->onNotFound([](AsyncWebServerRequest *req) {
     if (req->method() == HTTP_OPTIONS) {
       req->send(200);
     } else {
@@ -58,20 +64,20 @@ void WebServerManager::setupRoutes() {
     }
   });
 
-  server.on("/data", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetData(req); });
-  server.on("/config", HTTP_GET, [](AsyncWebServerRequest *req) {
+  server->on("/data", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetData(req); });
+  server->on("/config", HTTP_GET, [](AsyncWebServerRequest *req) {
     req->send(LittleFS, "/config.html", "text/html");
   });
-  server.on("/get-config", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetConfig(req); });
-  server.on("/get-logs", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetLogs(req); });
-  server.on("/time-now", HTTP_GET, [this](AsyncWebServerRequest *req) { handleTimeNow(req); });
-  server.on("/reboot-ap", HTTP_POST, [this](AsyncWebServerRequest *req) { handleRebootAp(req); });
-  server.on("/export-csv", HTTP_GET, [this](AsyncWebServerRequest *req) { handleExportCsv(req); });
-  server.on("/get-system-info", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetSystemInfo(req); });
-  server.on("/check-update", HTTP_GET, [this](AsyncWebServerRequest *req) { handleCheckUpdate(req); });
-  server.on("/download-update", HTTP_POST, [this](AsyncWebServerRequest *req) { handleDownloadUpdate(req); });
+  server->on("/get-config", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetConfig(req); });
+  server->on("/get-logs", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetLogs(req); });
+  server->on("/get-history", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetHistory(req); });
+  server->on("/time-now", HTTP_GET, [this](AsyncWebServerRequest *req) { handleTimeNow(req); });
+  server->on("/reboot-ap", HTTP_POST, [this](AsyncWebServerRequest *req) { handleRebootAp(req); });
+  server->on("/get-system-info", HTTP_GET, [this](AsyncWebServerRequest *req) { handleGetSystemInfo(req); });
+  server->on("/check-update", HTTP_GET, [this](AsyncWebServerRequest *req) { handleCheckUpdate(req); });
+  server->on("/download-update", HTTP_POST, [this](AsyncWebServerRequest *req) { handleDownloadUpdate(req); });
 
-  server.on("/save-config", HTTP_POST,
+  server->on("/save-config", HTTP_POST,
     [](AsyncWebServerRequest *req) { req->send(200, "text/plain", "OK"); },
     nullptr,
     [this](AsyncWebServerRequest *req, uint8_t* data, size_t len, size_t, size_t) {
@@ -80,7 +86,7 @@ void WebServerManager::setupRoutes() {
   );
 
   // Routes de calibration pH (DFRobot SEN0161-V2)
-  server.on("/calibrate_ph_neutral", HTTP_POST, [this](AsyncWebServerRequest *req) {
+  server->on("/calibrate_ph_neutral", HTTP_POST, [this](AsyncWebServerRequest *req) {
     sensors.calibratePhNeutral();
 
     // Obtenir la date/heure actuelle au format ISO 8601
@@ -105,7 +111,7 @@ void WebServerManager::setupRoutes() {
     req->send(200, "application/json", response);
   });
 
-  server.on("/calibrate_ph_acid", HTTP_POST, [this](AsyncWebServerRequest *req) {
+  server->on("/calibrate_ph_acid", HTTP_POST, [this](AsyncWebServerRequest *req) {
     sensors.calibratePhAcid();
 
     // Obtenir la date/heure actuelle au format ISO 8601
@@ -130,7 +136,7 @@ void WebServerManager::setupRoutes() {
     req->send(200, "application/json", response);
   });
 
-  server.on("/clear_ph_calibration", HTTP_POST, [this](AsyncWebServerRequest *req) {
+  server->on("/clear_ph_calibration", HTTP_POST, [this](AsyncWebServerRequest *req) {
     sensors.clearPhCalibration();
     mqttCfg.phCalibrationDate = "";
     mqttCfg.phCalibrationTemp = NAN;
@@ -144,32 +150,32 @@ void WebServerManager::setupRoutes() {
   });
 
   // Routes pour test manuel des pompes
-  server.on("/pump1/on", HTTP_POST, [this](AsyncWebServerRequest *req) {
+  server->on("/pump1/on", HTTP_POST, [this](AsyncWebServerRequest *req) {
     PumpController.setManualPump(0, MAX_PWM_DUTY); // Pompe 1 à fond
     req->send(200, "text/plain", "OK");
   });
 
-  server.on("/pump1/off", HTTP_POST, [this](AsyncWebServerRequest *req) {
+  server->on("/pump1/off", HTTP_POST, [this](AsyncWebServerRequest *req) {
     PumpController.setManualPump(0, 0); // Pompe 1 arrêtée
     req->send(200, "text/plain", "OK");
   });
 
-  server.on("/pump2/on", HTTP_POST, [this](AsyncWebServerRequest *req) {
+  server->on("/pump2/on", HTTP_POST, [this](AsyncWebServerRequest *req) {
     PumpController.setManualPump(1, MAX_PWM_DUTY); // Pompe 2 à fond
     req->send(200, "text/plain", "OK");
   });
 
-  server.on("/pump2/off", HTTP_POST, [this](AsyncWebServerRequest *req) {
+  server->on("/pump2/off", HTTP_POST, [this](AsyncWebServerRequest *req) {
     PumpController.setManualPump(1, 0); // Pompe 2 arrêtée
     req->send(200, "text/plain", "OK");
   });
 
   // Routes pour contrôle de l'éclairage (relais)
-  server.on("/lighting/on", HTTP_POST, [this](AsyncWebServerRequest *req) { handleLightingOn(req); });
-  server.on("/lighting/off", HTTP_POST, [this](AsyncWebServerRequest *req) { handleLightingOff(req); });
+  server->on("/lighting/on", HTTP_POST, [this](AsyncWebServerRequest *req) { handleLightingOn(req); });
+  server->on("/lighting/off", HTTP_POST, [this](AsyncWebServerRequest *req) { handleLightingOff(req); });
 
   // Handler générique pour les routes avec paramètres dans l'URL
-  server.onNotFound([this](AsyncWebServerRequest *req) {
+  server->onNotFound([this](AsyncWebServerRequest *req) {
     String url = req->url();
 
     // Gérer /pump1/duty/:duty
@@ -199,7 +205,7 @@ void WebServerManager::setupRoutes() {
   });
 
   // Route pour mise à jour OTA (firmware ou filesystem) - utilisée par l'interface web
-  server.on("/update", HTTP_POST,
+  server->on("/update", HTTP_POST,
     [](AsyncWebServerRequest *req) {
       bool success = !Update.hasError();
       AsyncWebServerResponse *response = req->beginResponse(200, "text/plain", success ? "OK" : "FAIL");
@@ -216,7 +222,7 @@ void WebServerManager::setupRoutes() {
     }
   );
 
-  server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+  server->serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
 }
 
 void WebServerManager::handleGetData(AsyncWebServerRequest* request) {
@@ -525,6 +531,63 @@ void WebServerManager::handleGetLogs(AsyncWebServerRequest* request) {
   request->send(200, "application/json", json);
 }
 
+void WebServerManager::handleGetHistory(AsyncWebServerRequest* request) {
+  // Support paramètre optionnel ?range=24h|7d|30d|all
+  String range = "all";
+  if (request->hasParam("range")) {
+    range = request->getParam("range")->value();
+  }
+
+  std::vector<DataPoint> data;
+
+  if (range == "24h") {
+    data = history.getLastHours(24);
+  } else if (range == "7d") {
+    data = history.getLastHours(24 * 7);
+  } else if (range == "30d") {
+    data = history.getLastHours(24 * 30);
+  } else {
+    data = history.getAllData();
+  }
+
+  JsonDocument doc;
+  JsonArray historyArray = doc["history"].to<JsonArray>();
+
+  for (const auto& point : data) {
+    JsonObject obj = historyArray.add<JsonObject>();
+    obj["timestamp"] = point.timestamp;
+
+    if (!isnan(point.ph)) {
+      obj["ph"] = round(point.ph * 10.0f) / 10.0f;
+    } else {
+      obj["ph"] = nullptr;
+    }
+
+    if (!isnan(point.orp)) {
+      obj["orp"] = round(point.orp);
+    } else {
+      obj["orp"] = nullptr;
+    }
+
+    if (!isnan(point.temperature)) {
+      obj["temperature"] = round(point.temperature * 10.0f) / 10.0f;
+    } else {
+      obj["temperature"] = nullptr;
+    }
+
+    obj["filtration"] = point.filtrationActive;
+    obj["dosing"] = point.phDosing || point.orpDosing;
+    obj["granularity"] = static_cast<uint8_t>(point.granularity);
+  }
+
+  doc["count"] = historyArray.size();
+  doc["range"] = range;
+
+  String json;
+  serializeJson(doc, json);
+  request->send(200, "application/json", json);
+}
+
 void WebServerManager::handleTimeNow(AsyncWebServerRequest* request) {
   JsonDocument doc;
   struct tm timeinfo;
@@ -549,26 +612,6 @@ void WebServerManager::handleRebootAp(AsyncWebServerRequest* request) {
   systemLogger.warning("Redémarrage en mode AP demandé");
 }
 
-void WebServerManager::handleExportCsv(AsyncWebServerRequest* request) {
-  String csv;
-  history.exportCSV(csv);
-
-  // Générer un nom de fichier avec timestamp
-  struct tm timeinfo;
-  char filename[64];
-  if (getLocalTime(&timeinfo, 0)) {
-    strftime(filename, sizeof(filename), "pool_history_%Y%m%d_%H%M%S.csv", &timeinfo);
-  } else {
-    snprintf(filename, sizeof(filename), "pool_history.csv");
-  }
-
-  // Envoyer avec headers pour téléchargement
-  AsyncWebServerResponse* response = request->beginResponse(200, "text/csv", csv);
-  response->addHeader("Content-Disposition", "attachment; filename=\"" + String(filename) + "\"");
-  request->send(response);
-
-  systemLogger.info("Export CSV généré: " + String(filename));
-}
 
 void WebServerManager::handleGetSystemInfo(AsyncWebServerRequest* request) {
   JsonDocument doc;
