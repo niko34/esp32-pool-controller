@@ -3,6 +3,7 @@
 
 #include <ESPAsyncWebServer.h>
 #include <DNSServer.h>
+#include <ArduinoJson.h>
 #include <map>
 #include <vector>
 
@@ -41,6 +42,11 @@ private:
   bool validateOrpValue(float value);
   bool validateInjectionLimit(int seconds);
   bool validatePumpNumber(int pump);
+
+  // Helpers pour réduire duplication
+  void sendJsonResponse(AsyncWebServerRequest* request, JsonDocument& doc);
+  void sendErrorResponse(AsyncWebServerRequest* request, int code, const String& message);
+  String getCurrentTimeISO();
 
 public:
   WebServerManager();
