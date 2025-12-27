@@ -3,6 +3,8 @@
 
 #include <ESPAsyncWebServer.h>
 #include <DNSServer.h>
+#include <map>
+#include <vector>
 
 class WebServerManager {
 private:
@@ -10,6 +12,9 @@ private:
   DNSServer* dns;
 
   bool restartApRequested = false;
+
+  // Buffer pour accumulation des données de configuration chunkées
+  std::map<AsyncWebServerRequest*, std::vector<uint8_t>> configBuffers;
 
   void setupRoutes();
   void handleGetData(AsyncWebServerRequest* request);
