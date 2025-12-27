@@ -316,7 +316,13 @@ void SensorManager::readRealSensors() {
 
 
 float SensorManager::getRawOrp() const {
-  return orpValue - mqttCfg.orpCalibrationOffset;
+  // Inverse de la calibration: ORP_final = (raw × slope) + offset
+  // Donc: raw = (ORP_final - offset) / slope
+  if (mqttCfg.orpCalibrationSlope == 0.0f) {
+    // Protection division par zéro - fallback
+    return orpValue - mqttCfg.orpCalibrationOffset;
+  }
+  return (orpValue - mqttCfg.orpCalibrationOffset) / mqttCfg.orpCalibrationSlope;
 }
 
 float SensorManager::getRawPh() const {
