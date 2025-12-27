@@ -3,6 +3,7 @@
 #include "logger.h"
 #include "sensors.h"
 #include "filtration.h"
+#include "version.h"
 #include "pump_controller.h"
 #include <ArduinoJson.h>
 
