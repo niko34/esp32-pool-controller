@@ -6,7 +6,7 @@
 
 class WebServerManager {
 private:
-  AsyncWebServer server;
+  AsyncWebServer* server;
   DNSServer* dns;
 
   bool restartApRequested = false;
@@ -16,9 +16,9 @@ private:
   void handleGetConfig(AsyncWebServerRequest* request);
   void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total);
   void handleGetLogs(AsyncWebServerRequest* request);
+  void handleGetHistory(AsyncWebServerRequest* request);
   void handleTimeNow(AsyncWebServerRequest* request);
   void handleRebootAp(AsyncWebServerRequest* request);
-  void handleExportCsv(AsyncWebServerRequest* request);
   void handleGetSystemInfo(AsyncWebServerRequest* request);
   void handleOtaUpdate(AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final);
   void handleCheckUpdate(AsyncWebServerRequest* request);
@@ -37,7 +37,7 @@ private:
 public:
   WebServerManager();
 
-  void begin(DNSServer* dnsServer);
+  void begin(AsyncWebServer* webServer, DNSServer* dnsServer);
   void update();
 
   bool isRestartApRequested() const { return restartApRequested; }

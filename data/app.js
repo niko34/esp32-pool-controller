@@ -125,11 +125,85 @@
   function pushPoint(chart, value, label) {
     chart.data.labels.push(label);
     chart.data.datasets[0].data.push(value);
-    if (chart.data.labels.length > 30) {
+    // Keep more points since we're loading historical data (up to 100 points)
+    if (chart.data.labels.length > 100) {
       chart.data.labels.shift();
       chart.data.datasets[0].data.shift();
     }
     chart.update("none");
+  }
+
+  async function loadHistoricalData(range = '24h') {
+    try {
+      const response = await fetch(`/get-history?range=${range}`);
+      if (!response.ok) throw new Error('Failed to load history');
+
+      const data = await response.json();
+
+      if (!data.history || data.history.length === 0) {
+        console.log('No historical data available');
+        return;
+      }
+
+      // Clear existing chart data
+      if (tempChart) {
+        tempChart.data.labels = [];
+        tempChart.data.datasets[0].data = [];
+      }
+      if (phChart) {
+        phChart.data.labels = [];
+        phChart.data.datasets[0].data = [];
+      }
+      if (orpChart) {
+        orpChart.data.labels = [];
+        orpChart.data.datasets[0].data = [];
+      }
+
+      // Add historical data to charts
+      data.history.forEach(point => {
+        const timestamp = new Date(point.timestamp * 1000);
+        const label = timestamp.toLocaleTimeString();
+
+        if (point.temperature != null && !isNaN(point.temperature) && tempChart) {
+          tempChart.data.labels.push(label);
+          tempChart.data.datasets[0].data.push(point.temperature);
+        }
+
+        if (point.ph != null && !isNaN(point.ph) && phChart) {
+          phChart.data.labels.push(label);
+          phChart.data.datasets[0].data.push(Math.round(point.ph * 10) / 10);
+        }
+
+        if (point.orp != null && !isNaN(point.orp) && orpChart) {
+          orpChart.data.labels.push(label);
+          orpChart.data.datasets[0].data.push(Math.round(point.orp));
+        }
+      });
+
+      // Update charts
+      if (tempChart) tempChart.update('none');
+      if (phChart) phChart.update('none');
+      if (orpChart) orpChart.update('none');
+
+      // Update main chart with active chart type data
+      if (mainChart) {
+        if (currentChartType === 'temperature' && tempChart) {
+          mainChart.data.labels = [...tempChart.data.labels];
+          mainChart.data.datasets[0].data = [...tempChart.data.datasets[0].data];
+        } else if (currentChartType === 'ph' && phChart) {
+          mainChart.data.labels = [...phChart.data.labels];
+          mainChart.data.datasets[0].data = [...phChart.data.datasets[0].data];
+        } else if (currentChartType === 'orp' && orpChart) {
+          mainChart.data.labels = [...orpChart.data.labels];
+          mainChart.data.datasets[0].data = [...orpChart.data.datasets[0].data];
+        }
+        mainChart.update('none');
+      }
+
+      console.log(`Loaded ${data.count} historical points (${range})`);
+    } catch (error) {
+      console.error('Error loading historical data:', error);
+    }
   }
 
   let tempChart, phChart, orpChart;
@@ -2377,6 +2451,11 @@
     const configPerf = debugStart("loadConfig");
     await loadConfig().catch(() => {});
     configPerf?.end();
+
+    // Load historical data to populate charts
+    const historyPerf = debugStart("loadHistoricalData");
+    await loadHistoricalData('24h').catch(() => {});
+    historyPerf?.end();
 
     await loadSensorData({ force: true, source: "init" }).catch(() => {}); // Charger les données AVANT d'afficher la route
 
