@@ -56,6 +56,18 @@ void setup() {
   PumpController.begin();
   filtration.begin();
 
+  // Initialisation relais éclairage
+  pinMode(LIGHTING_RELAY_PIN, OUTPUT);
+
+  // Appliquer l'état initial de l'éclairage
+  if (lightingCfg.enabled) {
+    digitalWrite(LIGHTING_RELAY_PIN, HIGH);
+    systemLogger.info("Éclairage activé au démarrage");
+  } else {
+    digitalWrite(LIGHTING_RELAY_PIN, LOW);
+    systemLogger.info("Éclairage désactivé au démarrage");
+  }
+
   // Configuration WiFi
   if (setupWiFi()) {
     // mDNS
