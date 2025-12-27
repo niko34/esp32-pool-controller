@@ -7,11 +7,6 @@
 # macOS
 .DS_Store
 
-# Backup files
-*.bak
-*_old.*
-*_backup.*
-
 # Build artifacts
 *.bin
 *.elf
@@ -22,5 +17,3 @@ _autosave-*
 fp-info-cache
 *-save.kicad_pcb
 *-save.kicad_sch
-#auto_saved_files#
-data/index.html.old
