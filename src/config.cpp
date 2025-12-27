@@ -11,6 +11,21 @@ PumpControlParams orpPumpControl = {5.2f, 90.0f, 200.0f};
 SafetyLimits safetyLimits;
 PumpProtection pumpProtection;
 
+// Mutex pour protection concurrence
+SemaphoreHandle_t configMutex = nullptr;
+SemaphoreHandle_t i2cMutex = nullptr;
+
+void initConfigMutexes() {
+  configMutex = xSemaphoreCreateMutex();
+  i2cMutex = xSemaphoreCreateMutex();
+
+  if (configMutex == nullptr || i2cMutex == nullptr) {
+    systemLogger.critical("Échec création mutex!");
+  } else {
+    systemLogger.info("Mutex de concurrence initialisés");
+  }
+}
+
 const TimezoneInfo* findTimezoneById(const String& id) {
   for (const auto& tz : TIMEZONES) {
     if (id.equalsIgnoreCase(tz.id)) {

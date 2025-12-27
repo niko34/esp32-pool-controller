@@ -12,9 +12,12 @@ private:
   DNSServer* dns;
 
   bool restartApRequested = false;
+  bool restartRequested = false;
+  unsigned long restartRequestedTime = 0;
 
   // Buffer pour accumulation des données de configuration chunkées
   std::map<AsyncWebServerRequest*, std::vector<uint8_t>> configBuffers;
+  std::map<AsyncWebServerRequest*, bool> configErrors;
 
   void setupRoutes();
   void handleGetData(AsyncWebServerRequest* request);

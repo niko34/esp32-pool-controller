@@ -2,6 +2,11 @@
 
 Logger systemLogger;
 
+// Constructeur : pré-alloue le buffer pour éviter les réallocations
+Logger::Logger() {
+  logs.reserve(MAX_LOGS);
+}
+
 void Logger::log(LogLevel level, const String& message) {
   LogEntry entry;
   entry.timestamp = millis();

@@ -56,16 +56,21 @@ void HistoryManager::recordDataPoint() {
   }
 
   if (rawCount > MAX_RAW_POINTS) {
-    // Supprimer les points RAW les plus anciens
-    for (auto it = memoryBuffer.begin(); it != memoryBuffer.end(); ) {
-      if (it->granularity == RAW) {
-        it = memoryBuffer.erase(it);
-        rawCount--;
-        if (rawCount <= MAX_RAW_POINTS) break;
-      } else {
-        ++it;
-      }
-    }
+    // Supprimer les points RAW en excès (les plus anciens)
+    // Utilise erase-remove idiom pour éviter O(n²)
+    size_t toRemove = rawCount - MAX_RAW_POINTS;
+    size_t removed = 0;
+    memoryBuffer.erase(
+      std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
+        [&removed, toRemove](const DataPoint& p) {
+          if (removed < toRemove && p.granularity == RAW) {
+            removed++;
+            return true;
+          }
+          return false;
+        }),
+      memoryBuffer.end()
+    );
   }
 }
 
@@ -330,29 +335,39 @@ void HistoryManager::consolidateData() {
   }
 
   // Supprimer les points horaires en excès (les plus anciens)
+  // Utilise erase-remove idiom pour éviter O(n²)
   if (hourlyCount > MAX_HOURLY_POINTS) {
     size_t toRemove = hourlyCount - MAX_HOURLY_POINTS;
-    for (auto it = memoryBuffer.begin(); it != memoryBuffer.end() && toRemove > 0; ) {
-      if (it->granularity == HOURLY) {
-        it = memoryBuffer.erase(it);
-        toRemove--;
-      } else {
-        ++it;
-      }
-    }
+    size_t removed = 0;
+    memoryBuffer.erase(
+      std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
+        [&removed, toRemove](const DataPoint& p) {
+          if (removed < toRemove && p.granularity == HOURLY) {
+            removed++;
+            return true;
+          }
+          return false;
+        }),
+      memoryBuffer.end()
+    );
   }
 
   // Supprimer les points journaliers en excès (les plus anciens)
+  // Utilise erase-remove idiom pour éviter O(n²)
   if (dailyCount > MAX_DAILY_POINTS) {
     size_t toRemove = dailyCount - MAX_DAILY_POINTS;
-    for (auto it = memoryBuffer.begin(); it != memoryBuffer.end() && toRemove > 0; ) {
-      if (it->granularity == DAILY) {
-        it = memoryBuffer.erase(it);
-        toRemove--;
-      } else {
-        ++it;
-      }
-    }
+    size_t removed = 0;
+    memoryBuffer.erase(
+      std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
+        [&removed, toRemove](const DataPoint& p) {
+          if (removed < toRemove && p.granularity == DAILY) {
+            removed++;
+            return true;
+          }
+          return false;
+        }),
+      memoryBuffer.end()
+    );
   }
 
   // Trier par timestamp
