@@ -5,6 +5,24 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
+  const DEBUG = true;
+
+  function debugLog(msg) {
+    if (!DEBUG) return;
+    console.log(`[dbg] ${msg}`);
+  }
+
+  function debugStart(label) {
+    if (!DEBUG) return null;
+    const t0 = performance.now();
+    debugLog(`${label} -> start`);
+    return {
+      end(extra = "") {
+        const dt = (performance.now() - t0).toFixed(0);
+        debugLog(`${label} -> end ${dt}ms${extra ? " " + extra : ""}`);
+      }
+    };
+  }
 
   function setNetStatus(state, text) {
     const dot = $("#net-dot");
@@ -34,6 +52,7 @@
   }
 
   function showView(routeObj) {
+    const perf = debugStart(`showView ${routeObj.view}`);
     $$(".view").forEach((v) => v.classList.remove("is-active"));
 
     if (routeObj.view === "/settings") {
@@ -47,19 +66,14 @@
 
     setActiveNav(routeObj);
 
-    // Load sensor data when navigating to dashboard or calibration pages if data is stale (>30s) or never loaded
-    if (routeObj.view === "/" || routeObj.view === "/temperature" || routeObj.view === "/ph" || routeObj.view === "/orp") {
-      const now = Date.now();
-      const dataAge = now - lastSensorDataLoadTime;
-      const maxDataAge = 30000; // 30 secondes
-
-      if (lastSensorDataLoadTime === 0 || dataAge > maxDataAge) {
-        loadSensorData();
-      }
+    // Load sensor data when navigating to dashboard or calibration pages
+    if (routeObj.view === "/dashboard" || routeObj.view === "/temperature" || routeObj.view === "/ph" || routeObj.view === "/orp") {
+      loadSensorData({ force: lastSensorDataLoadTime === 0, source: "route-view" });
     }
 
     // Mobile: close sidebar after navigation
     $(".sidebar")?.classList.remove("is-open");
+    perf?.end();
   }
 
   // ---------- Charts (Dashboard) ----------
@@ -483,7 +497,11 @@
   }
 
   // ---------- Sensor data loop (/data) ----------
+  const SENSOR_REFRESH_MS = 30000;
+  const SENSOR_RETRY_MS = 2000;
   let lastSensorDataLoadTime = 0; // Timestamp du dernier chargement des données
+  let sensorDataLoadInFlight = null;
+  let sensorDataRetryTimer = null;
 
   // ========== ALERTES ==========
   let dismissedAlerts = {};
@@ -549,7 +567,7 @@
         alerts.push({
           type: 'danger',
           icon: '⚠️',
-          message: `pH hors plage recommandée : ${ph.toFixed(2)} (7.0 - 7.4)`,
+          message: `pH hors plage recommandée : ${ph.toFixed(1)} (7.0 - 7.4)`,
           action: 'Aller à pH',
           actionLink: '#/ph',
           dismissable: false
@@ -593,19 +611,15 @@
       }
     }
 
-    // Générer le HTML
-    const newHTML = alerts.map(alert => `
-      <div class="alert alert--${alert.type}">
-        <span class="alert__icon">${alert.icon}</span>
-        <span class="alert__content">${alert.message}</span>
-        <a href="${alert.actionLink}" class="alert__action">${alert.action}</a>
-        ${alert.dismissable ? `
-          <button class="alert__dismiss" onclick="dismissAlert('${alert.alertType}')">
-            Ignorer 24h
-          </button>
-        ` : ''}
-      </div>
-    `).join('');
+    // Générer le HTML (template compact pour éviter les variations d'espaces)
+    const newHTML = alerts.map(alert =>
+      `<div class="alert alert--${alert.type}">` +
+      `<span class="alert__icon">${alert.icon}</span>` +
+      `<span class="alert__content">${alert.message}</span>` +
+      `<a href="${alert.actionLink}" class="alert__action">${alert.action}</a>` +
+      (alert.dismissable ? `<button class="alert__dismiss" onclick="dismissAlert('${alert.alertType}')">Ignorer 24h</button>` : '') +
+      `</div>`
+    ).join('');
 
     // Ne mettre à jour le DOM que si le contenu a changé
     if (newHTML !== lastAlertsHTML) {
@@ -909,106 +923,168 @@
   }
 
   function updateDashboardMetrics(json) {
-    const ts = json.timestamp ? new Date(json.timestamp) : new Date();
-    $("#m-time").textContent = ts.toLocaleTimeString();
+    // Anciennes métriques (compatibilité si les éléments existent encore)
+    const mTime = $("#m-time");
+    const mTemp = $("#m-temp");
+    const mPh = $("#m-ph");
+    const mOrp = $("#m-orp");
 
-    if (json.temperature != null && !isNaN(json.temperature)) $("#m-temp").textContent = json.temperature.toFixed(1);
-    if (json.ph != null && !isNaN(json.ph)) $("#m-ph").textContent = (Math.round(json.ph * 10) / 10).toFixed(1);
-    if (json.orp != null && !isNaN(json.orp)) $("#m-orp").textContent = String(Math.round(json.orp));
+    if (mTime) {
+      const ts = json.timestamp ? new Date(json.timestamp) : new Date();
+      mTime.textContent = ts.toLocaleTimeString();
+    }
+
+    if (mTemp && json.temperature != null && !isNaN(json.temperature)) {
+      mTemp.textContent = json.temperature.toFixed(1);
+    }
+    if (mPh && json.ph != null && !isNaN(json.ph)) {
+      mPh.textContent = (Math.round(json.ph * 10) / 10).toFixed(1);
+    }
+    if (mOrp && json.orp != null && !isNaN(json.orp)) {
+      mOrp.textContent = String(Math.round(json.orp));
+    }
   }
 
-  async function loadSensorData() {
-    try {
-      // Add timeout to detect disconnection (increased to 10 seconds for ESP32)
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+  async function loadSensorData(options = {}) {
+    if (sensorDataLoadInFlight) return sensorDataLoadInFlight;
+    const force = options.force === true;
+    const source = options.source || "unknown";
+    const perf = debugStart(`loadSensorData force=${force} source=${source}`);
 
-      // Bypass any HTTP cache so the UI can refresh immediately after calibration
-      const res = await fetch(`/data?t=${Date.now()}`, { signal: controller.signal, cache: "no-store" });
-      clearTimeout(timeoutId);
-
-      if (!res.ok) throw new Error("bad");
-      const json = await res.json();
-
-      latestSensorData = json;
-
-      // Reset failure counter on success
-      consecutiveFailures = 0;
-      setNetStatus("ok", "En ligne");
-
-      const label = json.timestamp ? new Date(json.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
-
-      if (json.temperature != null && !isNaN(json.temperature) && tempChart) pushPoint(tempChart, json.temperature, label);
-      if (json.ph != null && !isNaN(json.ph) && phChart) pushPoint(phChart, Math.round(json.ph * 10) / 10, label);
-      if (json.orp != null && !isNaN(json.orp) && orpChart) pushPoint(orpChart, json.orp, label);
-
-      // Mettre à jour le graphique principal avec les données du graphique source actif
-      if (mainChart) {
-        const sourceChart = currentChartType === 'temperature' ? tempChart : currentChartType === 'ph' ? phChart : orpChart;
-        if (sourceChart) {
-          mainChart.data.labels = [...sourceChart.data.labels];
-          mainChart.data.datasets[0].data = [...sourceChart.data.datasets[0].data];
-          mainChart.update('none');
-        }
-      }
-
-      updateDashboardMetrics(json);
-
-      // Mettre à jour les alertes et cartes status
-      updateAlerts();
-      updateStatusCards();
-
-      // Mettre à jour la valeur actuelle du graphique
-      updateChartCurrentValue();
-
-      // Mettre à jour les sections détaillées
-      updateDetailSections();
-
-      // also update readouts in settings
-      const phCurrentValue = $("#ph_current_value");
-      if (phCurrentValue) {
-        if (json.ph != null && typeof json.ph === "number" && !isNaN(json.ph)) {
-          phCurrentValue.textContent = json.ph.toFixed(2);
-        } else {
-          phCurrentValue.textContent = "--";
-        }
-      }
-
-      const orpCurrentValue = $("#orp_current_value");
-      if (orpCurrentValue) {
-        if (json.orp != null && typeof json.orp === "number" && !isNaN(json.orp)) {
-          orpCurrentValue.textContent = Math.round(json.orp) + " mV";
-        } else {
-          orpCurrentValue.textContent = "--";
-        }
-      }
-
-      const tempCurrentValue = $("#temp_current_value");
-      const tempCurrentRaw = $("#temp_current_raw");
-      if (tempCurrentValue) {
-        if (json.temperature != null && typeof json.temperature === "number" && !isNaN(json.temperature)) {
-          tempCurrentValue.textContent = json.temperature.toFixed(1) + " °C";
-        } else {
-          tempCurrentValue.textContent = "--";
-        }
-      }
-      if (tempCurrentRaw) {
-        if (json.temperature_raw != null && typeof json.temperature_raw === "number" && !isNaN(json.temperature_raw)) {
-          tempCurrentRaw.textContent = json.temperature_raw.toFixed(1) + " °C";
-        } else {
-          tempCurrentRaw.textContent = "--";
-        }
-      }
-
-      // Mettre à jour le timestamp du dernier chargement
-      lastSensorDataLoadTime = Date.now();
-    } catch (e) {
-      // Only mark as offline after 3 consecutive failures (avoid false positives)
-      consecutiveFailures++;
-      if (consecutiveFailures >= 3) {
-        setNetStatus("bad", "Hors ligne");
+    if (!force && lastSensorDataLoadTime !== 0) {
+      const dataAge = Date.now() - lastSensorDataLoadTime;
+      if (dataAge < SENSOR_REFRESH_MS) {
+        perf?.end("cached");
+        return latestSensorData;
       }
     }
+
+    sensorDataLoadInFlight = (async () => {
+      try {
+        
+        // Add timeout to detect disconnection (increased to 10 seconds for ESP32)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+        // Bypass any HTTP cache so the UI can refresh immediately after calibration
+        const fetchPerf = debugStart("fetch /data");
+        const res = await fetch(`/data?t=${Date.now()}`, { signal: controller.signal, cache: "no-store" });
+        clearTimeout(timeoutId);
+        fetchPerf?.end(`status=${res.status}`);
+
+        if (!res.ok) throw new Error("bad");
+        const jsonPerf = debugStart("parse /data json");
+        const json = await res.json();
+        jsonPerf?.end();
+
+        latestSensorData = json;
+
+        if (sensorDataRetryTimer) {
+          clearTimeout(sensorDataRetryTimer);
+          sensorDataRetryTimer = null;
+        }
+
+        // Reset failure counter on success
+        consecutiveFailures = 0;
+        setNetStatus("ok", "En ligne");
+
+        const label = json.timestamp ? new Date(json.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+
+        if (json.temperature != null && !isNaN(json.temperature) && tempChart) pushPoint(tempChart, json.temperature, label);
+        if (json.ph != null && !isNaN(json.ph) && phChart) pushPoint(phChart, Math.round(json.ph * 10) / 10, label);
+        if (json.orp != null && !isNaN(json.orp) && orpChart) pushPoint(orpChart, json.orp, label);
+
+        // Mettre à jour le graphique principal avec les données du graphique source actif
+        if (mainChart) {
+          const sourceChart = currentChartType === 'temperature' ? tempChart : currentChartType === 'ph' ? phChart : orpChart;
+          if (sourceChart) {
+            mainChart.data.labels = [...sourceChart.data.labels];
+            mainChart.data.datasets[0].data = [...sourceChart.data.datasets[0].data];
+            mainChart.update('none');
+          }
+        }
+
+        updateDashboardMetrics(json);
+
+        // Mettre à jour les alertes et cartes status
+        updateAlerts();
+        updateStatusCards();
+
+        // Mettre à jour la valeur actuelle du graphique
+        updateChartCurrentValue();
+
+        // Mettre à jour les sections détaillées
+        updateDetailSections();
+
+        // also update readouts in settings
+        const phCurrentValue = $("#ph_current_value");
+        if (phCurrentValue) {
+          if (json.ph != null && typeof json.ph === "number" && !isNaN(json.ph)) {
+            phCurrentValue.textContent = json.ph.toFixed(2);
+          } else {
+            phCurrentValue.textContent = "--";
+          }
+        }
+
+        const orpCurrentValue = $("#orp_current_value");
+        if (orpCurrentValue) {
+          if (json.orp != null && typeof json.orp === "number" && !isNaN(json.orp)) {
+            orpCurrentValue.textContent = Math.round(json.orp) + " mV";
+          } else {
+            orpCurrentValue.textContent = "--";
+          }
+        }
+
+        const tempCurrentValue = $("#temp_current_value");
+        const tempCurrentRaw = $("#temp_current_raw");
+        if (tempCurrentValue) {
+          if (json.temperature != null && typeof json.temperature === "number" && !isNaN(json.temperature)) {
+            tempCurrentValue.textContent = json.temperature.toFixed(1) + " °C";
+          } else {
+            tempCurrentValue.textContent = "--";
+          }
+        }
+        if (tempCurrentRaw) {
+          if (json.temperature_raw != null && typeof json.temperature_raw === "number" && !isNaN(json.temperature_raw)) {
+            tempCurrentRaw.textContent = json.temperature_raw.toFixed(1) + " °C";
+          } else {
+            tempCurrentRaw.textContent = "--";
+          }
+        }
+
+        // Mettre à jour le timestamp du dernier chargement
+        lastSensorDataLoadTime = Date.now();
+        perf?.end("success");
+      } catch (e) {
+        // Log detailed error information
+        console.error('loadSensorData error:', {
+          name: e?.name,
+          message: e?.message,
+          stack: e?.stack,
+          type: typeof e,
+          error: e
+        });
+
+        // Only mark as offline after 3 consecutive failures (avoid false positives)
+        consecutiveFailures++;
+        if (consecutiveFailures >= 3) {
+          setNetStatus("bad", "Hors ligne");
+        }
+
+        // If we never loaded data, retry quickly to get first paint asap
+        if (lastSensorDataLoadTime === 0 && !sensorDataRetryTimer) {
+          sensorDataRetryTimer = setTimeout(() => {
+            sensorDataRetryTimer = null;
+            loadSensorData({ force: true, source: "retry" });
+          }, SENSOR_RETRY_MS);
+        }
+        perf?.end(`error=${e?.name || "Error"}`);
+      } finally {
+        sensorDataLoadInFlight = null;
+      }
+    })();
+
+    return sensorDataLoadInFlight;
   }
 
   // ---------- Temperature calibration ----------
@@ -2263,6 +2339,7 @@
 
   // ---------- Init ----------
   async function init() {
+    const perf = debugStart("init");
     // Charger les alertes ignorées depuis localStorage
     loadDismissedAlerts();
 
@@ -2296,29 +2373,38 @@
     bindLogs();
 
     // initial loads
-    try {
-      setNetStatus("mid", "Connexion…");
-      await loadConfig();
-      await loadSensorData(); // Charger les données AVANT d'afficher la route
-      await checkCalibrationDate();
-      await loadLogs(true);
-    } catch (_) {}
+    setNetStatus("mid", "Connexion…");
+    const configPerf = debugStart("loadConfig");
+    await loadConfig().catch(() => {});
+    configPerf?.end();
+
+    await loadSensorData({ force: true, source: "init" }).catch(() => {}); // Charger les données AVANT d'afficher la route
+
+    const calibPerf = debugStart("checkCalibrationDate");
+    await checkCalibrationDate().catch(() => {});
+    calibPerf?.end();
+
+    const logsPerf = debugStart("loadLogs");
+    await loadLogs(true).catch(() => {});
+    logsPerf?.end();
 
     // router
     const applyRoute = () => {
+      const perf = debugStart("applyRoute");
       const r = getRoute();
       showView(r);
 
-      // Forcer le rafraîchissement des données si on navigue vers le dashboard
-      if (r.view === "/") {
+      // Forcer un rafraîchissement court quand on arrive sur le dashboard
+      if (r.view === "/dashboard") {
         const now = Date.now();
         const dataAge = now - lastSensorDataLoadTime;
         const maxDataAge = 5000; // 5 secondes de tolérance pour éviter double chargement
 
-        if (dataAge > maxDataAge) {
-          loadSensorData();
+        if (lastSensorDataLoadTime === 0 || dataAge > maxDataAge) {
+          loadSensorData({ force: lastSensorDataLoadTime === 0, source: "route-dashboard" });
         }
       }
+      perf?.end(`route=${r.view}`);
     };
     window.addEventListener("hashchange", applyRoute);
     applyRoute();
@@ -2334,7 +2420,7 @@
     }, 200);
 
     // loops (loadSensorData déjà appelé au démarrage ligne 2302)
-    setInterval(loadSensorData, 30000); // 30 secondes
+    setInterval(() => loadSensorData({ source: "interval" }), SENSOR_REFRESH_MS); // 30 secondes
     setInterval(checkCalibrationDate, 300000); // 5 min
 
     // If you want: refresh config status occasionally (MQTT connected, etc.)
@@ -2342,6 +2428,7 @@
       // ne recharge pas tout en permanence si tu veux limiter la charge
       loadConfig().catch(() => {});
     }, 15000);
+    perf?.end();
   }
 
   window.addEventListener("DOMContentLoaded", init);
