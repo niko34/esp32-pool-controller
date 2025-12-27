@@ -1,0 +1,157 @@
+#include "web_routes_data.h"
+#include "web_helpers.h"
+#include "config.h"
+#include "sensors.h"
+#include "filtration.h"
+#include "pump_controller.h"
+#include "logger.h"
+#include "history.h"
+#include <ArduinoJson.h>
+
+static void handleGetData(AsyncWebServerRequest* request) {
+  // Buffer statique pour éviter la fragmentation du heap
+  // Taille estimée : ~13 champs × 30 bytes + overhead = 512 bytes
+  StaticJsonDocument<512> doc;
+
+  // ORP
+  if (!isnan(sensors.getOrp())) {
+    doc["orp"] = sensors.getOrp();
+  } else {
+    doc["orp"] = nullptr;
+  }
+
+  // pH
+  if (!isnan(sensors.getPh())) {
+    doc["ph"] = round(sensors.getPh() * 10.0f) / 10.0f;
+  } else {
+    doc["ph"] = nullptr;
+  }
+
+  // ORP raw
+  if (!isnan(sensors.getRawOrp())) {
+    doc["orp_raw"] = sensors.getRawOrp();
+  } else {
+    doc["orp_raw"] = nullptr;
+  }
+
+  // pH raw
+  if (!isnan(sensors.getRawPh())) {
+    doc["ph_raw"] = round(sensors.getRawPh() * 10.0f) / 10.0f;
+  } else {
+    doc["ph_raw"] = nullptr;
+  }
+
+  // Température
+  if (!isnan(sensors.getTemperature())) {
+    doc["temperature"] = sensors.getTemperature();
+  } else {
+    doc["temperature"] = nullptr;
+  }
+
+  // Température brute (sans calibration)
+  if (!isnan(sensors.getRawTemperature())) {
+    doc["temperature_raw"] = sensors.getRawTemperature();
+  } else {
+    doc["temperature_raw"] = nullptr;
+  }
+
+  doc["filtration_running"] = filtration.isRunning();
+  doc["ph_dosing"] = PumpController.isPhDosing();
+  doc["orp_dosing"] = PumpController.isOrpDosing();
+  doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;
+  doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;
+  doc["ph_limit_reached"] = safetyLimits.phLimitReached;
+  doc["orp_limit_reached"] = safetyLimits.orpLimitReached;
+
+  sendJsonResponse(request, doc);
+}
+
+static void handleGetLogs(AsyncWebServerRequest* request) {
+  // Support paramètre optionnel ?since=TIMESTAMP pour récupération incrémentale
+  unsigned long sinceTimestamp = 0;
+  if (request->hasParam("since")) {
+    String sinceParam = request->getParam("since")->value();
+    sinceTimestamp = sinceParam.toInt();
+  }
+
+  auto logs = systemLogger.getRecentLogs(50);
+  JsonDocument doc;
+  JsonArray logsArray = doc["logs"].to<JsonArray>();
+
+  for (const auto& entry : logs) {
+    // Si since est spécifié, filtrer les logs plus anciens
+    if (sinceTimestamp > 0 && entry.timestamp <= sinceTimestamp) {
+      continue;
+    }
+
+    JsonObject logObj = logsArray.add<JsonObject>();
+    logObj["timestamp"] = entry.timestamp;
+    logObj["level"] = systemLogger.getLevelString(entry.level);
+    logObj["message"] = entry.message;
+  }
+
+  String json;
+  serializeJson(doc, json);
+  request->send(200, "application/json", json);
+}
+
+static void handleGetHistory(AsyncWebServerRequest* request) {
+  // Support paramètre optionnel ?range=24h|7d|30d|all
+  String range = "all";
+  if (request->hasParam("range")) {
+    range = request->getParam("range")->value();
+  }
+
+  std::vector<DataPoint> data;
+
+  if (range == "24h") {
+    data = history.getLastHours(24);
+  } else if (range == "7d") {
+    data = history.getLastHours(24 * 7);
+  } else if (range == "30d") {
+    data = history.getLastHours(24 * 30);
+  } else {
+    data = history.getAllData();
+  }
+
+  JsonDocument doc;
+  JsonArray historyArray = doc["history"].to<JsonArray>();
+
+  for (const auto& point : data) {
+    JsonObject obj = historyArray.add<JsonObject>();
+    obj["timestamp"] = point.timestamp;
+
+    if (!isnan(point.ph)) {
+      obj["ph"] = round(point.ph * 10.0f) / 10.0f;
+    } else {
+      obj["ph"] = nullptr;
+    }
+
+    if (!isnan(point.orp)) {
+      obj["orp"] = round(point.orp);
+    } else {
+      obj["orp"] = nullptr;
+    }
+
+    if (!isnan(point.temperature)) {
+      obj["temperature"] = round(point.temperature * 10.0f) / 10.0f;
+    } else {
+      obj["temperature"] = nullptr;
+    }
+
+    obj["filtration"] = point.filtrationActive;
+    obj["dosing"] = point.phDosing || point.orpDosing;
+    obj["granularity"] = static_cast<uint8_t>(point.granularity);
+  }
+
+  doc["count"] = historyArray.size();
+  doc["range"] = range;
+
+  sendJsonResponse(request, doc);
+}
+
+void setupDataRoutes(AsyncWebServer* server) {
+  server->on("/data", HTTP_GET, handleGetData);
+  server->on("/get-logs", HTTP_GET, handleGetLogs);
+  server->on("/get-history", HTTP_GET, handleGetHistory);
+}
