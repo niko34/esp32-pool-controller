@@ -10,6 +10,7 @@
 #include "config.h"
 #include "constants.h"
 #include "logger.h"
+#include "auth.h"
 #include "sensors.h"
 #include "pump_controller.h"
 #include "filtration.h"
@@ -53,6 +54,18 @@ void setup() {
 
   // Chargement configuration
   loadMqttConfig();
+
+  // Initialisation authentification (après chargement config)
+  authManager.setEnabled(authCfg.enabled);
+  authManager.setPassword(authCfg.adminPassword);
+  authManager.setApiToken(authCfg.apiToken);
+  authManager.begin();
+
+  // Sauvegarder le token généré si nécessaire
+  if (authCfg.apiToken != authManager.getApiToken()) {
+    authCfg.apiToken = authManager.getApiToken();
+    saveMqttConfig();
+  }
 
   // Initialisation des modules
   sensors.begin();

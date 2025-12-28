@@ -2,12 +2,15 @@
 #include "web_helpers.h"
 #include "config.h"
 #include "constants.h"
+#include "auth.h"
 #include "sensors.h"
 #include <ArduinoJson.h>
 
 void setupCalibrationRoutes(AsyncWebServer* server) {
-  // Routes de calibration pH (DFRobot SEN0161-V2)
+  // Routes de calibration pH (DFRobot SEN0161-V2) - PROTÉGÉES
   server->on("/calibrate_ph_neutral", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+
     // Protéger l'accès I2C (évite collision avec sensors.update())
     if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(kI2cMutexTimeoutMs)) != pdTRUE) {
       sendErrorResponse(req, 503, "I2C busy");
@@ -28,6 +31,8 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
   });
 
   server->on("/calibrate_ph_acid", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+
     // Protéger l'accès I2C (évite collision avec sensors.update())
     if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(kI2cMutexTimeoutMs)) != pdTRUE) {
       sendErrorResponse(req, 503, "I2C busy");
@@ -48,6 +53,8 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
   });
 
   server->on("/clear_ph_calibration", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+
     sensors.clearPhCalibration();
     mqttCfg.phCalibrationDate = "";
     mqttCfg.phCalibrationTemp = NAN;

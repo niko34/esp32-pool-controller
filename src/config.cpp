@@ -6,6 +6,7 @@
 MqttConfig mqttCfg;
 FiltrationConfig filtrationCfg;
 LightingConfig lightingCfg;
+AuthConfig authCfg;
 PumpControlParams phPumpControl = {5.2f, 90.0f, 1.0f};
 PumpControlParams orpPumpControl = {5.2f, 90.0f, 200.0f};
 SafetyLimits safetyLimits;
@@ -134,6 +135,11 @@ void saveMqttConfig() {
   prefs.putBool("light_enabled", lightingCfg.enabled);
   prefs.putUChar("light_bright", lightingCfg.brightness);
 
+  // Authentification
+  prefs.putBool("auth_enabled", authCfg.enabled);
+  prefs.putString("auth_password", authCfg.adminPassword);
+  prefs.putString("auth_token", authCfg.apiToken);
+
   // Limites de sécurité
   prefs.putFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
   prefs.putFloat("max_cl_ml", safetyLimits.maxChlorineMlPerDay);
@@ -201,6 +207,11 @@ void loadMqttConfig() {
   // Éclairage
   lightingCfg.enabled = prefs.getBool("light_enabled", lightingCfg.enabled);
   lightingCfg.brightness = prefs.getUChar("light_bright", lightingCfg.brightness);
+
+  // Authentification
+  authCfg.enabled = prefs.getBool("auth_enabled", authCfg.enabled);
+  authCfg.adminPassword = prefs.getString("auth_password", authCfg.adminPassword);
+  authCfg.apiToken = prefs.getString("auth_token", authCfg.apiToken);
 
   // Limites de sécurité
   safetyLimits.maxPhMinusMlPerDay = prefs.getFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
