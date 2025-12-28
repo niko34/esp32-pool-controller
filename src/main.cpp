@@ -8,6 +8,7 @@
 #include <esp_task_wdt.h>
 
 #include "config.h"
+#include "constants.h"
 #include "logger.h"
 #include "sensors.h"
 #include "pump_controller.h"
@@ -19,10 +20,9 @@
 
 // Variables globales
 DNSServer dns;
-AsyncWebServer httpServer(80);
+AsyncWebServer httpServer(kHttpServerPort);
 unsigned long lastMqttPublish = 0;
 wifi_mode_t currentWifiMode = WIFI_MODE_NULL;
-const unsigned long WATCHDOG_TIMEOUT = 30; // 30 secondes
 
 // Déclaration des fonctions
 bool setupWiFi();
@@ -31,15 +31,15 @@ void checkSystemHealth();
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  delay(kSerialInitDelayMs);
 
   systemLogger.info("=== Démarrage ESP32 Pool Controller v" + String(FIRMWARE_VERSION) + " ===");
   systemLogger.info("Build: " + String(FIRMWARE_BUILD_DATE) + " " + String(FIRMWARE_BUILD_TIME));
 
   // Initialisation watchdog
-  esp_task_wdt_init(WATCHDOG_TIMEOUT, true);
+  esp_task_wdt_init(kWatchdogTimeoutSec, true);
   esp_task_wdt_add(NULL);
-  systemLogger.info("Watchdog activé (" + String(WATCHDOG_TIMEOUT) + "s)");
+  systemLogger.info("Watchdog activé (" + String(kWatchdogTimeoutSec) + "s)");
 
   // Montage système de fichiers
   if (!LittleFS.begin(true)) {
@@ -75,10 +75,10 @@ void setup() {
   // Configuration WiFi
   if (setupWiFi()) {
     // mDNS
-    if (!MDNS.begin("poolcontroller")) {
+    if (!MDNS.begin(kMdnsHostname)) {
       systemLogger.error("Échec démarrage mDNS");
     } else {
-      MDNS.addService("http", "tcp", 80);
+      MDNS.addService("http", "tcp", kMdnsHttpPort);
       systemLogger.info("mDNS: poolcontroller.local disponible");
     }
 
@@ -116,8 +116,8 @@ void loop() {
   // pH/ORP : lecture limitée à toutes les 5s en interne
   sensors.update();
 
-  // Publication MQTT toutes les 10s
-  if (mqttManager.isConnected() && now - lastMqttPublish >= 10000) {
+  // Publication MQTT périodique
+  if (mqttManager.isConnected() && now - lastMqttPublish >= kMqttPublishIntervalMs) {
     mqttManager.publishAllStates();
     lastMqttPublish = now;
   }
@@ -128,23 +128,23 @@ void loop() {
   // Contrôle pompes dosage
   PumpController.update();
 
-  // Vérification santé système toutes les 60s
+  // Vérification santé système périodique
   static unsigned long lastHealthCheck = 0;
-  if (now - lastHealthCheck >= 60000) {
+  if (now - lastHealthCheck >= kHealthCheckIntervalMs) {
     checkSystemHealth();
     lastHealthCheck = now;
     esp_task_wdt_reset();
   }
 
-  // Publication diagnostic MQTT toutes les 5 minutes
+  // Publication diagnostic MQTT périodique
   static unsigned long lastDiagnosticPublish = 0;
-  if (mqttManager.isConnected() && now - lastDiagnosticPublish >= 300000) {
+  if (mqttManager.isConnected() && now - lastDiagnosticPublish >= kDiagnosticPublishIntervalMs) {
     mqttManager.publishDiagnostic();
     lastDiagnosticPublish = now;
   }
 
   // Petit délai pour ne pas monopoliser le CPU
-  delay(10);
+  delay(kLoopDelayMs);
 }
 
 bool setupWiFi() {
@@ -187,7 +187,7 @@ void applyTimeConfig() {
 void checkSystemHealth() {
   // Vérifier l'état général du système
   size_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap < 10000) {
+  if (freeHeap < kMinFreeHeapBytes) {
     systemLogger.critical("Mémoire faible: " + String(freeHeap) + " bytes");
     mqttManager.publishAlert("low_memory", "Free heap: " + String(freeHeap) + " bytes");
   }

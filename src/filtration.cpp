@@ -1,5 +1,6 @@
 #include "filtration.h"
 #include "config.h"
+#include "constants.h"
 #include "logger.h"
 #include "sensors.h"
 #include <time.h>
@@ -52,8 +53,7 @@ void FiltrationManager::computeAutoSchedule() {
   if (durationHours < 1.0f) durationHours = 1.0f;
   if (durationHours > 24.0f) durationHours = 24.0f;
 
-  const float pivotHour = 13.0f;
-  float startHour = pivotHour - (durationHours / 2.0f);
+  float startHour = kFiltrationPivotHour - (durationHours / 2.0f);
   float endHour = startHour + durationHours;
 
   auto wrap = [](float hour) {

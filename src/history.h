@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <vector>
 #include <LittleFS.h>
+#include "constants.h"
 
 enum Granularity : uint8_t {
   RAW = 0,      // Point de données brut (5 minutes)
@@ -25,9 +26,9 @@ struct DataPoint {
 class HistoryManager {
 private:
   // Limites de stockage
-  static const size_t MAX_RAW_POINTS = 72;      // 6h de données brutes (5 min)
-  static const size_t MAX_HOURLY_POINTS = 360;  // 15 jours de moyennes horaires
-  static const size_t MAX_DAILY_POINTS = 75;    // 75 jours de moyennes journalières
+  static const size_t MAX_RAW_POINTS = kMaxRawDataPoints;      // 6h de données brutes (5 min)
+  static const size_t MAX_HOURLY_POINTS = kMaxHourlyDataPoints;  // 15 jours de moyennes horaires
+  static const size_t MAX_DAILY_POINTS = kMaxDailyDataPoints;    // 75 jours de moyennes journalières
   static const unsigned long RAW_MAX_AGE = 21600UL;        // 6 heures (en secondes)
   static const unsigned long HOURLY_MAX_AGE = 1296000UL;   // 15 jours (en secondes)
   static const unsigned long DAILY_MAX_AGE = 7776000UL;    // 90 jours (en secondes)

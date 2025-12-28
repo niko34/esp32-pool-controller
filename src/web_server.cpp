@@ -4,6 +4,7 @@
 #include "web_routes_control.h"
 #include "web_routes_data.h"
 #include "web_routes_ota.h"
+#include "constants.h"
 #include "logger.h"
 #include <LittleFS.h>
 
@@ -28,10 +29,9 @@ void WebServerManager::begin(AsyncWebServer* webServer, DNSServer* dnsServer) {
 
   setupRoutes();
 
-  // Note: Ne pas appeler server->begin() ici car AsyncWiFiManager
-  // a déjà appelé begin() sur le serveur lors de l'autoConnect().
-  // Appeler begin() deux fois peut causer des conflits.
-  systemLogger.info("Routes du serveur Web configurées");
+  // Démarrer le serveur web
+  server->begin();
+  systemLogger.info("Serveur Web démarré sur le port 80");
 }
 
 void WebServerManager::setupRoutes() {
@@ -75,15 +75,15 @@ void WebServerManager::setupRoutes() {
 }
 
 void WebServerManager::update() {
-  // Gérer le redémarrage après OTA (attendre 3s pour que la réponse HTTP soit envoyée)
-  if (restartRequested && (millis() - restartRequestedTime >= 3000)) {
+  // Gérer le redémarrage après OTA (attendre que la réponse HTTP soit envoyée)
+  if (restartRequested && (millis() - restartRequestedTime >= kRestartAfterOtaDelayMs)) {
     restartRequested = false;
     systemLogger.critical("Redémarrage après mise à jour OTA");
     ESP.restart();
   }
 
-  // Gérer le redémarrage en mode AP (attendre 1s)
-  if (restartApRequested && (millis() - restartRequestedTime >= 1000)) {
+  // Gérer le redémarrage en mode AP
+  if (restartApRequested && (millis() - restartRequestedTime >= kRestartApModeDelayMs)) {
     restartApRequested = false;
     systemLogger.critical("Redémarrage en mode Point d'accès");
     ESP.restart();

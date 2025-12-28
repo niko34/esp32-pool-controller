@@ -1,5 +1,6 @@
 #include "web_routes_ota.h"
 #include "web_helpers.h"
+#include "constants.h"
 #include "logger.h"
 #include "version.h"
 #include <WiFiClientSecure.h>
@@ -260,7 +261,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
         }
       }
     }
-    delay(1);
+    delay(kOtaYieldDelayMs);
   }
 
   http.end();

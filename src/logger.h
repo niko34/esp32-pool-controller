@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <vector>
+#include "constants.h"
 
 enum class LogLevel {
   DEBUG,
@@ -20,7 +21,7 @@ struct LogEntry {
 
 class Logger {
 private:
-  static const size_t MAX_LOGS = 100;
+  static const size_t MAX_LOGS = kMaxLogEntries;
   std::vector<LogEntry> logs;
   size_t currentIndex = 0;
   bool bufferFull = false;
