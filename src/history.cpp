@@ -1,4 +1,5 @@
 #include "history.h"
+#include "constants.h"
 #include "logger.h"
 #include "sensors.h"
 #include "filtration.h"
@@ -38,7 +39,7 @@ void HistoryManager::update() {
 
 void HistoryManager::recordDataPoint() {
   DataPoint point;
-  point.timestamp = millis() / 1000; // Secondes depuis démarrage
+  point.timestamp = millis() / kMillisToSeconds; // Secondes depuis démarrage
   point.ph = sensors.getPh();
   point.orp = sensors.getOrp();
   point.temperature = sensors.getTemperature();
@@ -150,7 +151,7 @@ std::vector<DataPoint> HistoryManager::getLastHours(int hours) {
   std::vector<DataPoint> result;
   if (memoryBuffer.empty()) return result;
 
-  unsigned long cutoff = (millis() / 1000) - (hours * 3600);
+  unsigned long cutoff = (millis() / kMillisToSeconds) - (hours * kSecondsPerHour);
 
   for (const auto& point : memoryBuffer) {
     if (point.timestamp >= cutoff) {
@@ -170,7 +171,7 @@ std::vector<DataPoint> HistoryManager::getAllData() {
 }
 
 void HistoryManager::consolidateData() {
-  unsigned long now = millis() / 1000;
+  unsigned long now = millis() / kMillisToSeconds;
   systemLogger.debug("Début consolidation historique");
 
   // 1. Supprimer les données trop anciennes (> 90 jours)
@@ -194,7 +195,7 @@ void HistoryManager::consolidateData() {
       unsigned long age = now - point.timestamp; // age en secondes
       if (age > RAW_MAX_AGE) {
         // Grouper par heure (arrondir timestamp à l'heure)
-        unsigned long hourTimestamp = (point.timestamp / 3600) * 3600;
+        unsigned long hourTimestamp = (point.timestamp / kSecondsPerHour) * kSecondsPerHour;
         hourlyGroups[hourTimestamp].push_back(point);
       }
     }

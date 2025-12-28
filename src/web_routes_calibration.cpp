@@ -1,6 +1,7 @@
 #include "web_routes_calibration.h"
 #include "web_helpers.h"
 #include "config.h"
+#include "constants.h"
 #include "sensors.h"
 #include <ArduinoJson.h>
 
@@ -8,7 +9,7 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
   // Routes de calibration pH (DFRobot SEN0161-V2)
   server->on("/calibrate_ph_neutral", HTTP_POST, [](AsyncWebServerRequest *req) {
     // Protéger l'accès I2C (évite collision avec sensors.update())
-    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(kI2cMutexTimeoutMs)) != pdTRUE) {
       sendErrorResponse(req, 503, "I2C busy");
       return;
     }
@@ -28,7 +29,7 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
 
   server->on("/calibrate_ph_acid", HTTP_POST, [](AsyncWebServerRequest *req) {
     // Protéger l'accès I2C (évite collision avec sensors.update())
-    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(kI2cMutexTimeoutMs)) != pdTRUE) {
       sendErrorResponse(req, 503, "I2C busy");
       return;
     }

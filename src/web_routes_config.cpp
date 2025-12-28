@@ -1,6 +1,7 @@
 #include "web_routes_config.h"
 #include "web_helpers.h"
 #include "config.h"
+#include "constants.h"
 #include "sensors.h"
 #include "filtration.h"
 #include "mqtt_manager.h"
@@ -95,9 +96,6 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     return;
   }
 
-  // Limite de sécurité: 16KB max pour éviter épuisement RAM
-  const size_t MAX_CONFIG_SIZE = 16384;
-
   // Accumuler les données chunkées
   if (index == 0) {
     // Premier chunk, créer ou réinitialiser le buffer
@@ -105,8 +103,8 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     (*g_configErrors)[request] = false; // Pas d'erreur pour l'instant
 
     // Vérifier la taille totale
-    if (total > MAX_CONFIG_SIZE) {
-      systemLogger.error("Configuration trop volumineuse: " + String(total) + " bytes (max " + String(MAX_CONFIG_SIZE) + ")");
+    if (total > kMaxConfigSizeBytes) {
+      systemLogger.error("Configuration trop volumineuse: " + String(total) + " bytes (max " + String(kMaxConfigSizeBytes) + ")");
       (*g_configErrors)[request] = true;
       return;
     }
@@ -139,7 +137,7 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
 
   // Protéger l'accès concurrent aux configurations (web async vs loop)
-  if (xSemaphoreTake(configMutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+  if (xSemaphoreTake(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
     systemLogger.error("Timeout acquisition configMutex dans handleSaveConfig");
     (*g_configErrors)[request] = true;
     return;
@@ -279,11 +277,11 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   doc["wifi_mac"] = WiFi.macAddress();
 
   // Uptime
-  unsigned long uptime = millis() / 1000;
+  unsigned long uptime = millis() / kMillisToSeconds;
   doc["uptime_seconds"] = uptime;
   doc["uptime_days"] = uptime / 86400;
-  doc["uptime_hours"] = (uptime % 86400) / 3600;
-  doc["uptime_minutes"] = (uptime % 3600) / 60;
+  doc["uptime_hours"] = (uptime % 86400) / kSecondsPerHour;
+  doc["uptime_minutes"] = (uptime % kSecondsPerHour) / kSecondsPerMinute;
 
   sendJsonResponse(request, doc);
 }

@@ -1,5 +1,6 @@
 #include "sensors.h"
 #include "config.h"
+#include "constants.h"
 #include "logger.h"
 #include "mqtt_manager.h"
 #include <sys/time.h>
@@ -172,9 +173,9 @@ void SensorManager::readRealSensors() {
   // ========== Lecture ORP via ADS1115 canal A1 ==========
   if (true) {  // ORP_SENSOR_PIN est toujours défini
     // Filtrage médian avec échantillonnage réduit
-    // L'ADS1115 à 8 SPS (125ms/échantillon) fait déjà un filtrage interne précis
-    // 3 échantillons = ~375ms total, suffisant pour éliminer les pics de bruit
-    const int numSamples = 3;
+    // L'ADS1115 à 8 SPS fait déjà un filtrage interne précis
+    // Nombre impair d'échantillons pour filtrage médian robuste
+    const int numSamples = kNumSensorSamples;
     int16_t samples[numSamples];
     int32_t sum = 0;
     int16_t minVal = 32767;
@@ -187,7 +188,7 @@ void SensorManager::readRealSensors() {
       sum += reading;
       if (reading < minVal) minVal = reading;
       if (reading > maxVal) maxVal = reading;
-      // Pas de delay - l'ADS1115 prend déjà ~125ms par lecture à 8 SPS
+      // Pas de delay - l'ADS1115 à 8 SPS prend déjà kAds1115SampleTimeMs par lecture
     }
 
     // Tri des échantillons pour filtre médian
@@ -263,7 +264,7 @@ void SensorManager::readRealSensors() {
     // Filtrage médian avec échantillonnage réduit
     // L'ADS1115 à 8 SPS (125ms/échantillon) fait déjà un filtrage interne précis
     // 3 échantillons = ~375ms total, suffisant pour éliminer les pics de bruit
-    const int numSamples = 3;  // Nombre impair pour médiane
+    const int numSamples = kNumSensorSamples;  // Nombre impair pour médiane
     int16_t samples[numSamples];
 
     for (int i = 0; i < numSamples; i++) {
@@ -368,7 +369,7 @@ void SensorManager::publishValues() {
 void SensorManager::calibratePhNeutral() {
   if (true) {  // PH_SENSOR_PIN est toujours défini
     // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian 3 samples)
-    const int numSamples = 3;
+    const int numSamples = kNumSensorSamples;
     int16_t samples[numSamples];
 
     for (int i = 0; i < numSamples; i++) {
@@ -417,7 +418,7 @@ void SensorManager::calibratePhNeutral() {
 void SensorManager::calibratePhAcid() {
   if (true) {  // PH_SENSOR_PIN est toujours défini
     // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian 3 samples)
-    const int numSamples = 3;
+    const int numSamples = kNumSensorSamples;
     int16_t samples[numSamples];
 
     for (int i = 0; i < numSamples; i++) {

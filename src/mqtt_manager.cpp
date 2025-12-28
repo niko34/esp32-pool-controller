@@ -1,5 +1,6 @@
 #include "mqtt_manager.h"
 #include "config.h"
+#include "constants.h"
 #include "logger.h"
 #include "sensors.h"
 #include "filtration.h"
@@ -297,7 +298,7 @@ void MqttManager::publishDiagnostic() {
 
   // Informations système
   doc["uptime_ms"] = millis();
-  doc["uptime_min"] = millis() / 60000;
+  doc["uptime_min"] = millis() / kMillisToMinutes;
   doc["free_heap"] = ESP.getFreeHeap();
   doc["heap_size"] = ESP.getHeapSize();
   doc["min_free_heap"] = ESP.getMinFreeHeap();
