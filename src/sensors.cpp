@@ -78,8 +78,9 @@ void SensorManager::begin() {
   Wire.begin();
 
   // Initialiser l'ADS1115
-  if (!ads.begin()) {
-    systemLogger.error("ADS1115 non détecté sur le bus I2C !");
+  adsAvailable = ads.begin();
+  if (!adsAvailable) {
+    systemLogger.error("ADS1115 non détecté sur le bus I2C ! Les lectures pH/ORP seront désactivées.");
   } else {
     systemLogger.info("ADS1115 initialisé avec succès");
 
@@ -209,6 +210,17 @@ void SensorManager::readRealSensors() {
     return; // Trop tôt, ne pas lire les capteurs pH/ORP
   }
   lastSensorRead = now;
+
+  // Si l'ADS1115 n'est pas disponible, ne pas tenter de lire les capteurs pH/ORP
+  if (!adsAvailable) {
+    // Log de debug uniquement toutes les 30 secondes pour éviter de spammer
+    static unsigned long lastAdsWarning = 0;
+    if (now - lastAdsWarning >= 30000) {
+      systemLogger.warning("ADS1115 non détecté - lectures pH/ORP désactivées");
+      lastAdsWarning = now;
+    }
+    return;
+  }
 
   // ========== Lecture ORP via ADS1115 canal A1 ==========
   {
@@ -354,6 +366,12 @@ void SensorManager::publishValues() {
 // ========== Calibration pH (DFRobot_PH) ==========
 
 void SensorManager::calibratePhNeutral() {
+  // Vérifier que l'ADS1115 est disponible
+  if (!adsAvailable) {
+    systemLogger.error("Calibration pH impossible - ADS1115 non détecté");
+    return;
+  }
+
   // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian)
   int16_t minVal, maxVal;
   int16_t rawAdc = readMedianAdsChannel(0, kNumSensorSamples, &minVal, &maxVal);
@@ -381,6 +399,12 @@ void SensorManager::calibratePhNeutral() {
 }
 
 void SensorManager::calibratePhAcid() {
+  // Vérifier que l'ADS1115 est disponible
+  if (!adsAvailable) {
+    systemLogger.error("Calibration pH impossible - ADS1115 non détecté");
+    return;
+  }
+
   // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian)
   int16_t minVal, maxVal;
   int16_t rawAdc = readMedianAdsChannel(0, kNumSensorSamples, &minVal, &maxVal);
