@@ -171,17 +171,237 @@ bool setupWiFi() {
   currentWifiMode = WiFi.getMode();
   AsyncWiFiManager wm(&httpServer, &dns);
 
+  // Style custom for AP portal to align with app UI
+  const char* portalStyle = R"rawliteral(
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<style>
+  :root {
+    --bg: #f5f7fa;
+    --panel: #ffffff;
+    --panel2: #f8f9fb;
+    --stroke: rgba(0, 0, 0, 0.08);
+    --text: #1a1d29;
+    --muted: #6b7280;
+    --accent: #4f8fff;
+    --radius: 16px;
+    --shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    padding: 28px 18px 40px;
+    background: radial-gradient(1200px 600px at 20% -10%, #e9f1ff 0%, var(--bg) 45%, #eef2f7 100%);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    text-align: center;
+  }
+  h1 { display: none; }
+  h3 { display: none; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  form {
+    width: 100%;
+    max-width: 420px;
+    margin: 14px auto;
+    padding: 16px;
+    background: var(--panel);
+    border: 1px solid var(--stroke);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+  input, select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--stroke);
+    border-radius: 12px;
+    background: var(--panel2);
+    color: var(--text);
+  }
+  button {
+    border: 0;
+    border-radius: 12px;
+    background-color: var(--accent);
+    color: #fff;
+    line-height: 2.6rem;
+    font-size: 1rem;
+    width: 100%;
+    font-weight: 600;
+  }
+  form[action="/r"] button {
+    background-color: #ff3b30;
+  }
+  .q {
+    float: none;
+    display: inline-block;
+    min-width: 52px;
+    text-align: right;
+    color: var(--muted);
+  }
+  a[href="#p"] {
+    display: inline-block;
+    padding: 8px 10px;
+    margin: 6px 0;
+    background: var(--panel);
+    border: 1px solid var(--stroke);
+    border-radius: 10px;
+  }
+  a[href="#p"] + .q { margin-left: 8px; }
+  .c { text-align: center; }
+  .pc-header {
+    display: grid;
+    gap: 6px;
+    justify-items: center;
+    margin: 4px 0 18px;
+  }
+  .pc-logo {
+    width: 64px;
+    height: 64px;
+  }
+  .pc-title {
+    font-weight: 750;
+    letter-spacing: 0.2px;
+    font-size: 18px;
+  }
+  .pc-sub {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .pc-card {
+    width: 100%;
+    max-width: 420px;
+    margin: 12px auto;
+    padding: 16px;
+    background: var(--panel);
+    border: 1px solid var(--stroke);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+  .pc-center {
+    text-align: center;
+  }
+  .pc-actions form {
+    margin: 10px 0 0;
+    padding: 0;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+  }
+  form[action="/wifi"]:not([data-pc]),
+  form[action="/0wifi"]:not([data-pc]),
+  form[action="/i"]:not([data-pc]),
+  form[action="/r"]:not([data-pc]) {
+    display: none;
+  }
+</style>
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    document.body.classList.add('pc-portal');
+    const h1 = document.querySelector('h1');
+    const apName = h1 ? h1.textContent.trim() : '';
+    const header = document.createElement('div');
+    header.className = 'pc-header';
+    header.innerHTML =
+      '<img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeDI9IjEiIHkxPSIwIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzRmOGZmZiIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzNiODJmNiIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjxyZWN0IHg9IjYiIHk9IjYiIHdpZHRoPSI1MiIgaGVpZ2h0PSI1MiIgcng9IjEyIiBmaWxsPSJ1cmwoI2cpIi8+PHBhdGggZD0iTTE4IDM2YzUgNCAxMSA0IDE2IDBzMTEtNCAxNiAwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+" alt="PoolController" class="pc-logo">' +
+      '<div class="pc-title">PoolController</div>' +
+      '<div class="pc-sub">Point d\'accès: ' + (apName || 'PoolControllerAP') + '</div>';
+    document.body.insertBefore(header, document.body.firstChild);
+
+    const ssid = document.querySelector('input#s');
+    if (ssid) {
+      ssid.placeholder = 'Nom du réseau (SSID)';
+      const label = document.createElement('div');
+      label.className = 'pc-sub';
+      label.style.marginBottom = '6px';
+      label.textContent = 'Réseau Wi-Fi';
+      ssid.parentNode.insertBefore(label, ssid);
+    }
+    const pass = document.querySelector('input#p');
+    if (pass) {
+      pass.placeholder = 'Mot de passe';
+      const label = document.createElement('div');
+      label.className = 'pc-sub';
+      label.style.marginBottom = '6px';
+      label.textContent = 'Mot de passe';
+      pass.parentNode.insertBefore(label, pass);
+    }
+
+    document.querySelectorAll('button').forEach((btn) => {
+      if (btn.textContent.trim().toLowerCase() === 'save') {
+        btn.textContent = 'Enregistrer';
+      }
+    });
+
+    if (document.title === 'Options' || document.title === 'Config ESP' || document.title === 'Credentials Saved') {
+      document.title = 'Configuration Wi-Fi';
+    }
+
+    const bodyText = document.body.textContent || '';
+    if (bodyText.includes('No networks found. Refresh to scan again')) {
+      const card = document.createElement('div');
+      card.className = 'pc-card pc-center';
+      card.innerHTML = '<div class="pc-title">Aucun réseau trouvé</div>' +
+        '<div class="pc-sub">Actualisez la page pour relancer le scan.</div>';
+      document.body.insertBefore(card, document.body.firstChild.nextSibling);
+    }
+
+    const staticFields = [
+      { id: 'ip', label: 'Adresse IP fixe' },
+      { id: 'gw', label: 'Passerelle' },
+      { id: 'sn', label: 'Masque de sous-réseau' },
+      { id: 'dns1', label: 'DNS primaire' },
+      { id: 'dns2', label: 'DNS secondaire' }
+    ];
+    staticFields.forEach((f) => {
+      const el = document.getElementById(f.id);
+      if (el && !el.placeholder) {
+        el.placeholder = f.label;
+      }
+    });
+
+    const text = document.body.textContent || '';
+    if (text.includes('Credentials Saved')) {
+      while (document.body.children.length > 1) {
+        document.body.removeChild(document.body.lastChild);
+      }
+      const card = document.createElement('div');
+      card.className = 'pc-card pc-center';
+      card.innerHTML = '<div class="pc-title">Identifiants enregistrés</div>' +
+        '<div class="pc-sub">Connexion au réseau en cours. Si cela échoue, reconnectez-vous au point d&apos;accès.</div>';
+      document.body.appendChild(card);
+    }
+  });
+</script>
+  )rawliteral";
+  wm.setCustomHeadElement(portalStyle);
+  const char* portalOptions = R"rawliteral(
+    <div class="pc-card pc-actions">
+      <div class="pc-title">Configurer le Wi-Fi</div>
+      <div class="pc-sub">Choisissez un réseau puis enregistrez les identifiants.</div>
+      <form data-pc="1" action="/wifi" method="get"><button>Rechercher les réseaux</button></form>
+      <form data-pc="1" action="/0wifi" method="get"><button>Configurer sans scan</button></form>
+      <form data-pc="1" action="/i" method="get"><button>Infos système</button></form>
+      <form data-pc="1" action="/r" method="post"><button>Réinitialiser la configuration</button></form>
+    </div>
+  )rawliteral";
+  wm.setCustomOptionsElement(portalOptions);
+
   systemLogger.info("Tentative connexion WiFi...");
+
+  // autoConnect peut bloquer assez longtemps pour déclencher le watchdog
+  esp_task_wdt_delete(NULL);
 
   if (!wm.autoConnect("PoolControllerAP", "12345678")) {
     systemLogger.error("Échec connexion WiFi");
     currentWifiMode = WiFi.getMode();
+    esp_task_wdt_add(NULL);
     return false;
   }
 
   systemLogger.info("WiFi connecté: " + WiFi.SSID());
   systemLogger.info("IP: " + WiFi.localIP().toString());
   currentWifiMode = WiFi.getMode();
+  esp_task_wdt_add(NULL);
   return true;
 }
 
