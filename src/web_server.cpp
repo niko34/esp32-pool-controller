@@ -23,11 +23,6 @@ void WebServerManager::begin(AsyncWebServer* webServer, DNSServer* dnsServer) {
     return;
   }
 
-  // Ajouter les en-têtes CORS pour toutes les requêtes
-  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
-  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type, X-Auth-Token");
-
   setupRoutes();
 
   // Démarrer le serveur web
@@ -36,6 +31,14 @@ void WebServerManager::begin(AsyncWebServer* webServer, DNSServer* dnsServer) {
 }
 
 void WebServerManager::setupRoutes() {
+  // CORS: Autoriser toutes les origines pour Home Assistant et accès Internet
+  // L'authentification se fait via token API (X-Auth-Token), pas via cookies
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type, X-Auth-Token, Authorization");
+
+  // Note: credentials:true incompatible avec origin:*, on utilise token auth à la place
+
   // Initialiser les contextes pour les modules qui ont besoin de partager des données
   initConfigContext(&configBuffers, &configErrors);
   initOtaContext(&restartRequested, &restartRequestedTime);
@@ -57,10 +60,10 @@ void WebServerManager::setupRoutes() {
     req->send(LittleFS, "/config.html", "text/html");
   });
 
-  // Handler global pour CORS OPTIONS, routes dynamiques et 404
+  // Handler global pour CORS preflight, routes dynamiques et 404
   // IMPORTANT: Doit être déclaré en DERNIER pour ne pas intercepter les autres routes
   server->onNotFound([](AsyncWebServerRequest *req) {
-    // Gérer CORS OPTIONS
+    // Gérer CORS preflight OPTIONS
     if (req->method() == HTTP_OPTIONS) {
       req->send(200);
       return;
