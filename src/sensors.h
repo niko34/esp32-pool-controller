@@ -19,6 +19,7 @@ private:
   float tempValue = NAN;
   float tempRawValue = NAN;
   bool sensorsInitialized = false;
+  bool adsAvailable = false;  // true si ADS1115 détecté au démarrage
 
   void readRealSensors();
 

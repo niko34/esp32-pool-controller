@@ -89,8 +89,7 @@ bool AuthManager::checkTokenAuth(AsyncWebServerRequest* req) {
     String receivedToken = header->value();
     String maskedReceived = receivedToken.length() > 8 ? (receivedToken.substring(0, 8) + "...") : "***";
     String maskedExpected = apiToken.length() > 8 ? (apiToken.substring(0, 8) + "...") : "***";
-    systemLogger.debug("Token reçu: " + maskedReceived + ", attendu: " + maskedExpected);
-
+    
     if (header->value() == apiToken) {
       return true;
     }
