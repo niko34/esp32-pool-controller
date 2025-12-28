@@ -92,6 +92,12 @@ struct LightingConfig {
   uint8_t brightness = 255;       // Luminosité PWM (0-255)
 };
 
+struct AuthConfig {
+  bool enabled = true;            // Authentification activée/désactivée
+  String adminPassword = "admin"; // Mot de passe administrateur (HTTP Basic Auth)
+  String apiToken = "";           // Token API pour intégrations (généré au boot si vide)
+};
+
 struct PumpControlParams {
   float minFlowMlPerMin;
   float maxFlowMlPerMin;
@@ -145,6 +151,7 @@ void applyTimezoneEnv();
 extern MqttConfig mqttCfg;
 extern FiltrationConfig filtrationCfg;
 extern LightingConfig lightingCfg;
+extern AuthConfig authCfg;
 extern PumpControlParams phPumpControl;
 extern PumpControlParams orpPumpControl;
 extern SafetyLimits safetyLimits;

@@ -2,6 +2,7 @@
 #include "web_helpers.h"
 #include "config.h"
 #include "constants.h"
+#include "auth.h"
 #include "sensors.h"
 #include "filtration.h"
 #include "mqtt_manager.h"
@@ -291,8 +292,11 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
   server->on("/time-now", HTTP_GET, handleTimeNow);
   server->on("/get-system-info", HTTP_GET, handleGetSystemInfo);
 
+  // Route /save-config - PROTÉGÉE (CRITICAL)
   server->on("/save-config", HTTP_POST,
     [](AsyncWebServerRequest *req) {
+      REQUIRE_AUTH(req, RouteProtection::CRITICAL);
+
       if (g_configErrors == nullptr || g_configBuffers == nullptr) {
         req->send(500, "text/plain", "Config context error");
         return;
@@ -315,8 +319,10 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
     handleSaveConfig
   );
 
-  // Route reboot-ap (nécessite accès aux variables de restart)
+  // Route reboot-ap - PROTÉGÉE (CRITICAL)
   server->on("/reboot-ap", HTTP_POST, [restartApRequested, restartRequestedTime](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::CRITICAL);
+
     *restartApRequested = true;
     *restartRequestedTime = millis();
     req->send(200, "text/plain", "Restart scheduled");

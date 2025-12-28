@@ -1,6 +1,7 @@
 #include "web_routes_ota.h"
 #include "web_helpers.h"
 #include "constants.h"
+#include "auth.h"
 #include "logger.h"
 #include "version.h"
 #include <WiFiClientSecure.h>
@@ -285,12 +286,22 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 }
 
 void setupOtaRoutes(AsyncWebServer* server) {
-  server->on("/check-update", HTTP_GET, handleCheckUpdate);
-  server->on("/download-update", HTTP_POST, handleDownloadUpdate);
+  // Routes OTA - TOUTES PROTÉGÉES (CRITICAL)
+  server->on("/check-update", HTTP_GET, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::NONE); // Lecture seule, autorisée
+    handleCheckUpdate(req);
+  });
 
-  // Route pour mise à jour OTA (firmware ou filesystem) - utilisée par l'interface web
+  server->on("/download-update", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::CRITICAL); // Téléchargement OTA critique
+    handleDownloadUpdate(req);
+  });
+
+  // Route pour mise à jour OTA (firmware ou filesystem) - CRITIQUE
   server->on("/update", HTTP_POST,
     [](AsyncWebServerRequest *req) {
+      REQUIRE_AUTH(req, RouteProtection::CRITICAL);
+
       bool success = !Update.hasError();
       AsyncWebServerResponse *response = req->beginResponse(200, "text/plain", success ? "OK" : "FAIL");
       response->addHeader("Connection", "close");
