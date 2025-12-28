@@ -33,6 +33,44 @@ SensorManager::SensorManager() : oneWire(5), tempSensor(&oneWire) {}
 
 SensorManager::~SensorManager() {}
 
+// ========== Helper privé : Lecture médiane depuis ADS1115 ==========
+int16_t SensorManager::readMedianAdsChannel(uint8_t channel, int numSamples,
+                                             int16_t* outMin, int16_t* outMax, int32_t* outSum) {
+  // Collecte des échantillons depuis l'ADS1115
+  int16_t samples[numSamples];
+  int32_t sum = 0;
+  int16_t minVal = 32767;
+  int16_t maxVal = -32768;
+
+  for (int i = 0; i < numSamples; i++) {
+    int16_t reading = ads.readADC_SingleEnded(channel);
+    samples[i] = reading;
+    sum += reading;
+    if (reading < minVal) minVal = reading;
+    if (reading > maxVal) maxVal = reading;
+    // Pas de delay - l'ADS1115 à 8 SPS prend déjà ~125ms par lecture
+  }
+
+  // Tri par insertion pour obtenir la médiane
+  for (int i = 0; i < numSamples - 1; i++) {
+    for (int j = i + 1; j < numSamples; j++) {
+      if (samples[i] > samples[j]) {
+        int16_t tmp = samples[i];
+        samples[i] = samples[j];
+        samples[j] = tmp;
+      }
+    }
+  }
+
+  // Retourner les stats optionnelles
+  if (outMin) *outMin = minVal;
+  if (outMax) *outMax = maxVal;
+  if (outSum) *outSum = sum;
+
+  // Retourner la valeur médiane (milieu du tableau trié)
+  return samples[numSamples / 2];
+}
+
 void SensorManager::begin() {
   // Initialiser I2C (SDA=21, SCL=22 par défaut sur ESP32)
   Wire.begin();
@@ -174,36 +212,9 @@ void SensorManager::readRealSensors() {
   {
     // Filtrage médian avec échantillonnage réduit
     // L'ADS1115 à 8 SPS fait déjà un filtrage interne précis
-    // Nombre impair d'échantillons pour filtrage médian robuste
-    const int numSamples = kNumSensorSamples;
-    int16_t samples[numSamples];
-    int32_t sum = 0;
-    int16_t minVal = 32767;
-    int16_t maxVal = -32768;
-
-    // Collecte des échantillons depuis l'ADS1115 canal A1
-    for (int i = 0; i < numSamples; i++) {
-      int16_t reading = ads.readADC_SingleEnded(1);  // A1 pour ORP
-      samples[i] = reading;
-      sum += reading;
-      if (reading < minVal) minVal = reading;
-      if (reading > maxVal) maxVal = reading;
-      // Pas de delay - l'ADS1115 à 8 SPS prend déjà kAds1115SampleTimeMs par lecture
-    }
-
-    // Tri des échantillons pour filtre médian
-    for (int i = 0; i < numSamples - 1; i++) {
-      for (int j = i + 1; j < numSamples; j++) {
-        if (samples[i] > samples[j]) {
-          int16_t temp = samples[i];
-          samples[i] = samples[j];
-          samples[j] = temp;
-        }
-      }
-    }
-
-    // Utiliser la médiane (plus robuste que la moyenne)
-    int16_t rawAdc = samples[numSamples / 2];
+    int16_t minVal, maxVal;
+    int32_t sum;
+    int16_t rawAdc = readMedianAdsChannel(1, kNumSensorSamples, &minVal, &maxVal, &sum);
 
     // Conversion ADC -> Voltage en utilisant la fonction de la bibliothèque
     // qui tient compte automatiquement du gain configuré
@@ -242,13 +253,13 @@ void SensorManager::readRealSensors() {
     if (now - lastOrpDebugLog >= 5000) {
       float voltageMin = ads.computeVolts(minVal) * 1000.0f;
       float voltageMax = ads.computeVolts(maxVal) * 1000.0f;
-      float voltageAvg = ads.computeVolts(sum / numSamples) * 1000.0f;
+      float voltageAvg = ads.computeVolts(sum / kNumSensorSamples) * 1000.0f;
 
       // Log vers Serial et système de logs
       char logMsg[200];
       snprintf(logMsg, sizeof(logMsg),
                "ORP: ADC=%d (avg=%d min=%d max=%d) | Vads=%.1fmV (avg=%.1f min=%.1f max=%.1f) | Vmod=%.1fmV | ORP=%.1fmV",
-               rawAdc, (int)(sum/numSamples), minVal, maxVal,
+               rawAdc, (int)(sum/kNumSensorSamples), minVal, maxVal,
                voltage, voltageAvg, voltageMin, voltageMax, orpModuleVoltage_mV, orpValue);
       Serial.printf("[ORP DEBUG] ADS1115 A1 | %s\n", logMsg);
       systemLogger.debug(logMsg);
@@ -260,29 +271,9 @@ void SensorManager::readRealSensors() {
   // ========== Lecture pH via ADS1115 canal A0 avec filtrage médian ==========
   {
     // Filtrage médian avec échantillonnage réduit
-    // L'ADS1115 à 8 SPS (125ms/échantillon) fait déjà un filtrage interne précis
-    // 3 échantillons = ~375ms total, suffisant pour éliminer les pics de bruit
-    const int numSamples = kNumSensorSamples;  // Nombre impair pour médiane
-    int16_t samples[numSamples];
-
-    for (int i = 0; i < numSamples; i++) {
-      samples[i] = ads.readADC_SingleEnded(0);  // A0 pour pH
-      // Pas de delay - l'ADS1115 prend déjà ~125ms par lecture à 8 SPS
-    }
-
-    // Tri par sélection pour trouver la médiane
-    for (int i = 0; i < numSamples - 1; i++) {
-      for (int j = i + 1; j < numSamples; j++) {
-        if (samples[i] > samples[j]) {
-          int16_t temp = samples[i];
-          samples[i] = samples[j];
-          samples[j] = temp;
-        }
-      }
-    }
-
-    // Utiliser la médiane (plus robuste que la moyenne)
-    int16_t rawAdc = samples[numSamples / 2];
+    // L'ADS1115 à 8 SPS fait déjà un filtrage interne précis
+    int16_t minVal, maxVal;
+    int16_t rawAdc = readMedianAdsChannel(0, kNumSensorSamples, &minVal, &maxVal);
 
     // Conversion ADC -> Voltage en utilisant la fonction de la bibliothèque
     // qui tient compte automatiquement du gain configuré
@@ -297,8 +288,6 @@ void SensorManager::readRealSensors() {
 
     // Debug: afficher les valeurs pH toutes les 5 secondes
     if (now - lastPhDebugLog >= 5000) {
-      int16_t minVal = samples[0];
-      int16_t maxVal = samples[numSamples - 1];
       float voltageMin = ads.computeVolts(minVal) * 1000.0f;
       float voltageMax = ads.computeVolts(maxVal) * 1000.0f;
 
@@ -364,28 +353,8 @@ void SensorManager::publishValues() {
 
 void SensorManager::calibratePhNeutral() {
   // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian)
-  const int numSamples = kNumSensorSamples;
-  int16_t samples[numSamples];
-
-  for (int i = 0; i < numSamples; i++) {
-    samples[i] = ads.readADC_SingleEnded(0);
-    // Pas de delay - l'ADS1115 prend déjà ~125ms par lecture à 8 SPS
-  }
-
-  // Tri pour obtenir la médiane
-  for (int i = 0; i < numSamples - 1; i++) {
-    for (int j = i + 1; j < numSamples; j++) {
-      if (samples[i] > samples[j]) {
-        int16_t tmp = samples[i];
-        samples[i] = samples[j];
-        samples[j] = tmp;
-      }
-    }
-  }
-
-  int16_t rawAdc = samples[numSamples / 2];
-  int16_t minVal = samples[0];
-  int16_t maxVal = samples[numSamples - 1];
+  int16_t minVal, maxVal;
+  int16_t rawAdc = readMedianAdsChannel(0, kNumSensorSamples, &minVal, &maxVal);
 
   // Conversion en mV en utilisant la fonction de la bibliothèque
   float voltage = ads.computeVolts(rawAdc) * 1000.0f;
@@ -411,28 +380,8 @@ void SensorManager::calibratePhNeutral() {
 
 void SensorManager::calibratePhAcid() {
   // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian)
-  const int numSamples = kNumSensorSamples;
-  int16_t samples[numSamples];
-
-  for (int i = 0; i < numSamples; i++) {
-    samples[i] = ads.readADC_SingleEnded(0);
-    // Pas de delay - l'ADS1115 prend déjà ~125ms par lecture à 8 SPS
-  }
-
-  // Tri pour obtenir la médiane
-  for (int i = 0; i < numSamples - 1; i++) {
-    for (int j = i + 1; j < numSamples; j++) {
-      if (samples[i] > samples[j]) {
-        int16_t tmp = samples[i];
-        samples[i] = samples[j];
-        samples[j] = tmp;
-      }
-    }
-  }
-
-  int16_t rawAdc = samples[numSamples / 2];
-  int16_t minVal = samples[0];
-  int16_t maxVal = samples[numSamples - 1];
+  int16_t minVal, maxVal;
+  int16_t rawAdc = readMedianAdsChannel(0, kNumSensorSamples, &minVal, &maxVal);
 
   // Conversion en mV en utilisant la fonction de la bibliothèque
   float voltage = ads.computeVolts(rawAdc) * 1000.0f;
