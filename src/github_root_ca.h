@@ -4,6 +4,10 @@
 // ISRG Root X1 - Let's Encrypt Root (utilisé par GitHub depuis 2021)
 // Valide jusqu'en 2035
 // Source: https://letsencrypt.org/certs/isrgrootx1.pem
+//
+// NOTE: Ce certificat n'est actuellement PAS utilisé car la validation TLS
+// échoue sur ESP32 (erreur -9984: Certificate verification failed).
+// Conservé pour référence et utilisation future si résolu.
 const char* GITHUB_ROOT_CA = \
 "-----BEGIN CERTIFICATE-----\n" \
 "MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw\n" \

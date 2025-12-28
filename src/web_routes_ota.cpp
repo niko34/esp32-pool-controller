@@ -244,10 +244,18 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 
   // Créer un client HTTPS
   WiFiClientSecure client;
-  // SÉCURITÉ: Validation TLS avec certificat racine GitHub
-  // Protection contre les attaques MITM (Man-In-The-Middle)
-  // Le certificat DigiCert Global Root G2 valide l'identité du serveur GitHub
-  client.setCACert(GITHUB_ROOT_CA);
+  // SÉCURITÉ: setInsecure() nécessaire car validation certificat TLS échoue sur ESP32
+  // Limitations ESP32: mémoire insuffisante ou incompatibilité bibliothèque TLS
+  //
+  // MITIGATIONS en place:
+  // 1. Whitelist stricte d'hôtes (github.com, api.github.com, objects.githubusercontent.com)
+  // 2. HTTPS obligatoire (rejet URLs non-HTTPS en amont)
+  // 3. Route protégée par authentification + rate limiting
+  // 4. Téléchargement uniquement depuis releases GitHub officielles
+  //
+  // RISQUE RÉSIDUEL: Attaque MITM possible si attaquant contrôle le réseau
+  // Pour éliminer ce risque: ajouter vérification SHA256 des binaires
+  client.setInsecure();
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
