@@ -27,13 +27,16 @@ void initConfigContext(
 }
 
 static void handleGetConfig(AsyncWebServerRequest* request) {
+  // Vérifier si l'utilisateur est authentifié pour accéder aux données sensibles
+  bool isAuthenticated = authManager.checkAuth(request, RouteProtection::NONE);
+
   // Buffer statique : ~53 champs (configs MQTT, pH, ORP, calibration, WiFi, etc.) = 2048 bytes
   StaticJsonDocument<2048> doc;
   doc["server"] = mqttCfg.server;
   doc["port"] = mqttCfg.port;
   doc["topic"] = mqttCfg.topic;
   doc["username"] = mqttCfg.username;
-  // SÉCURITÉ: Ne jamais envoyer les mots de passe en clair
+  // SÉCURITÉ: Ne jamais envoyer les mots de passe en clair (même si authentifié)
   doc["password"] = mqttCfg.password.length() > 0 ? "******" : "";
   doc["enabled"] = mqttCfg.enabled;
   doc["mqtt_connected"] = mqttManager.isConnected();
@@ -84,6 +87,20 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // Données de calibration Température
   doc["temp_calibration_offset"] = mqttCfg.tempCalibrationOffset;
   doc["temp_calibration_date"] = mqttCfg.tempCalibrationDate;
+
+  // Configuration d'authentification
+  doc["auth_enabled"] = authCfg.enabled;
+
+  // SÉCURITÉ: Masquer les credentials si non authentifié
+  if (isAuthenticated) {
+    // Utilisateur authentifié : montrer password et token masqués (indication qu'ils existent)
+    doc["auth_password"] = authCfg.adminPassword.length() > 0 ? "******" : "";
+    doc["auth_token"] = authCfg.apiToken.length() > 8 ? (authCfg.apiToken.substring(0, 8) + "...") : "";
+  } else {
+    // Utilisateur non authentifié : ne pas révéler si credentials sont configurés
+    doc["auth_password"] = "******";
+    doc["auth_token"] = "********...";
+  }
 
   // Heure actuelle (pour l'affichage dans la configuration)
   doc["time_current"] = getCurrentTimeISO();
@@ -205,6 +222,25 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["temp_calibration_date"].isNull()) {
     mqttCfg.tempCalibrationDate = doc["temp_calibration_date"].as<String>();
   }
+
+  // Configuration d'authentification
+  if (!doc["auth_enabled"].isNull()) {
+    authCfg.enabled = doc["auth_enabled"];
+    authManager.setEnabled(authCfg.enabled);
+  }
+
+  // Mot de passe admin: ne mettre à jour que si différent de "******"
+  if (!doc["auth_password"].isNull()) {
+    String receivedPassword = doc["auth_password"].as<String>();
+    if (receivedPassword != "******" && receivedPassword.length() > 0) {
+      authCfg.adminPassword = receivedPassword;
+      authManager.setPassword(authCfg.adminPassword);
+      systemLogger.info("Mot de passe administrateur modifié");
+    }
+  }
+
+  // Note: Le token API n'est pas modifiable via /save-config
+  // Il doit être regénéré via une route dédiée pour éviter les modifications accidentelles
 
   sanitizePumpSelection();
   filtration.ensureTimesValid();
