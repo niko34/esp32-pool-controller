@@ -5,6 +5,7 @@
 #include "web_routes_data.h"
 #include "web_routes_ota.h"
 #include "web_routes_auth.h"
+#include "auth.h"
 #include "constants.h"
 #include "logger.h"
 #include <LittleFS.h>
@@ -51,14 +52,60 @@ void WebServerManager::setupRoutes() {
   setupControlRoutes(server);
   setupOtaRoutes(server);
 
-  // Servir les fichiers statiques (HTML, CSS, JS, images)
-  // IMPORTANT: Doit être déclaré AVANT onNotFound pour que les fichiers soient servis
-  server->serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+  // Page de login (PUBLIC - doit être accessible sans auth)
+  server->on("/login.html", HTTP_GET, [](AsyncWebServerRequest *req) {
+    req->send(LittleFS, "/login.html", "text/html");
+  });
 
-  // Page de configuration (fichier statique)
+  // Page principale (PROTÉGÉE - redirige vers login si non auth)
+  server->on("/", HTTP_GET, [](AsyncWebServerRequest *req) {
+    if (!authManager.checkAuth(req, RouteProtection::NONE)) {
+      req->redirect("/login.html");
+      return;
+    }
+    req->send(LittleFS, "/index.html", "text/html");
+  });
+
+  server->on("/index.html", HTTP_GET, [](AsyncWebServerRequest *req) {
+    if (!authManager.checkAuth(req, RouteProtection::NONE)) {
+      req->redirect("/login.html");
+      return;
+    }
+    req->send(LittleFS, "/index.html", "text/html");
+  });
+
+  // Page de configuration (PROTÉGÉE - redirige vers login si non auth)
   server->on("/config", HTTP_GET, [](AsyncWebServerRequest *req) {
+    if (!authManager.checkAuth(req, RouteProtection::NONE)) {
+      req->redirect("/login.html");
+      return;
+    }
     req->send(LittleFS, "/config.html", "text/html");
   });
+
+  server->on("/config.html", HTTP_GET, [](AsyncWebServerRequest *req) {
+    if (!authManager.checkAuth(req, RouteProtection::NONE)) {
+      req->redirect("/login.html");
+      return;
+    }
+    req->send(LittleFS, "/config.html", "text/html");
+  });
+
+  // Fichiers statiques (CSS, JS, images) - PUBLIC pour que la page de login fonctionne
+  server->serveStatic("/", LittleFS, "/")
+    .setDefaultFile("index.html")
+    .setFilter([](AsyncWebServerRequest *req) {
+      String path = req->url();
+      // Autoriser les assets (CSS, JS, images, fonts)
+      if (path.endsWith(".css") || path.endsWith(".js") ||
+          path.endsWith(".png") || path.endsWith(".jpg") || path.endsWith(".jpeg") ||
+          path.endsWith(".gif") || path.endsWith(".ico") || path.endsWith(".svg") ||
+          path.endsWith(".woff") || path.endsWith(".woff2") || path.endsWith(".ttf")) {
+        return true;
+      }
+      // Bloquer les fichiers HTML (gérés par les routes ci-dessus)
+      return false;
+    });
 
   // Handler global pour CORS preflight, routes dynamiques et 404
   // IMPORTANT: Doit être déclaré en DERNIER pour ne pas intercepter les autres routes
