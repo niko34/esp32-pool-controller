@@ -171,7 +171,7 @@ void SensorManager::readRealSensors() {
   lastSensorRead = now;
 
   // ========== Lecture ORP via ADS1115 canal A1 ==========
-  if (true) {  // ORP_SENSOR_PIN est toujours défini
+  {
     // Filtrage médian avec échantillonnage réduit
     // L'ADS1115 à 8 SPS fait déjà un filtrage interne précis
     // Nombre impair d'échantillons pour filtrage médian robuste
@@ -255,12 +255,10 @@ void SensorManager::readRealSensors() {
 
       lastOrpDebugLog = now;
     }
-  } else {
-    orpValue = NAN;  // Pas de capteur configuré
   }
 
   // ========== Lecture pH via ADS1115 canal A0 avec filtrage médian ==========
-  if (true) {  // PH_SENSOR_PIN est toujours défini
+  {
     // Filtrage médian avec échantillonnage réduit
     // L'ADS1115 à 8 SPS (125ms/échantillon) fait déjà un filtrage interne précis
     // 3 échantillons = ~375ms total, suffisant pour éliminer les pics de bruit
@@ -314,8 +312,6 @@ void SensorManager::readRealSensors() {
 
       lastPhDebugLog = now;
     }
-  } else {
-    phValue = NAN;  // Pas de capteur configuré
   }
 
   sensorsInitialized = true;
@@ -367,123 +363,115 @@ void SensorManager::publishValues() {
 // ========== Calibration pH (DFRobot_PH) ==========
 
 void SensorManager::calibratePhNeutral() {
-  if (true) {  // PH_SENSOR_PIN est toujours défini
-    // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian 3 samples)
-    const int numSamples = kNumSensorSamples;
-    int16_t samples[numSamples];
+  // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian)
+  const int numSamples = kNumSensorSamples;
+  int16_t samples[numSamples];
 
-    for (int i = 0; i < numSamples; i++) {
-      samples[i] = ads.readADC_SingleEnded(0);
-      // Pas de delay - l'ADS1115 prend déjà ~125ms par lecture à 8 SPS
-    }
+  for (int i = 0; i < numSamples; i++) {
+    samples[i] = ads.readADC_SingleEnded(0);
+    // Pas de delay - l'ADS1115 prend déjà ~125ms par lecture à 8 SPS
+  }
 
-    // Tri pour obtenir la médiane
-    for (int i = 0; i < numSamples - 1; i++) {
-      for (int j = i + 1; j < numSamples; j++) {
-        if (samples[i] > samples[j]) {
-          int16_t tmp = samples[i];
-          samples[i] = samples[j];
-          samples[j] = tmp;
-        }
+  // Tri pour obtenir la médiane
+  for (int i = 0; i < numSamples - 1; i++) {
+    for (int j = i + 1; j < numSamples; j++) {
+      if (samples[i] > samples[j]) {
+        int16_t tmp = samples[i];
+        samples[i] = samples[j];
+        samples[j] = tmp;
       }
     }
-
-    int16_t rawAdc = samples[numSamples / 2];
-    int16_t minVal = samples[0];
-    int16_t maxVal = samples[numSamples - 1];
-
-    // Conversion en mV en utilisant la fonction de la bibliothèque
-    float voltage = ads.computeVolts(rawAdc) * 1000.0f;
-
-    // Utiliser la température pour la compensation
-    float temperature = isnan(tempValue) ? 25.0f : tempValue;
-
-    // Processus de calibration DFRobot_PH en 3 étapes:
-    // 1. Entrer en mode calibration
-    phSensor.calibration(voltage, temperature, (char*)"enterph");
-
-    // 2. Calibrer (reconnaît automatiquement pH 7.0)
-    phSensor.calibration(voltage, temperature, (char*)"calph");
-
-    // 3. Sauvegarder et sortir
-    phSensor.calibration(voltage, temperature, (char*)"exitph");
-
-    // IMPORTANT: Sur ESP32, commit les changements EEPROM
-    EEPROM.commit();
-
-    systemLogger.info("Calibration pH point neutre (7.0) effectuée à " + String(temperature, 1) + "°C (ADC med=" + String(rawAdc) + ", min=" + String(minVal) + ", max=" + String(maxVal) + ", V=" + String(voltage, 2) + " mV)");
   }
+
+  int16_t rawAdc = samples[numSamples / 2];
+  int16_t minVal = samples[0];
+  int16_t maxVal = samples[numSamples - 1];
+
+  // Conversion en mV en utilisant la fonction de la bibliothèque
+  float voltage = ads.computeVolts(rawAdc) * 1000.0f;
+
+  // Utiliser la température pour la compensation
+  float temperature = isnan(tempValue) ? 25.0f : tempValue;
+
+  // Processus de calibration DFRobot_PH en 3 étapes:
+  // 1. Entrer en mode calibration
+  phSensor.calibration(voltage, temperature, (char*)"enterph");
+
+  // 2. Calibrer (reconnaît automatiquement pH 7.0)
+  phSensor.calibration(voltage, temperature, (char*)"calph");
+
+  // 3. Sauvegarder et sortir
+  phSensor.calibration(voltage, temperature, (char*)"exitph");
+
+  // IMPORTANT: Sur ESP32, commit les changements EEPROM
+  EEPROM.commit();
+
+  systemLogger.info("Calibration pH point neutre (7.0) effectuée à " + String(temperature, 1) + "°C (ADC med=" + String(rawAdc) + ", min=" + String(minVal) + ", max=" + String(maxVal) + ", V=" + String(voltage, 2) + " mV)");
 }
 
 void SensorManager::calibratePhAcid() {
-  if (true) {  // PH_SENSOR_PIN est toujours défini
-    // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian 3 samples)
-    const int numSamples = kNumSensorSamples;
-    int16_t samples[numSamples];
+  // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian)
+  const int numSamples = kNumSensorSamples;
+  int16_t samples[numSamples];
 
-    for (int i = 0; i < numSamples; i++) {
-      samples[i] = ads.readADC_SingleEnded(0);
-      // Pas de delay - l'ADS1115 prend déjà ~125ms par lecture à 8 SPS
-    }
+  for (int i = 0; i < numSamples; i++) {
+    samples[i] = ads.readADC_SingleEnded(0);
+    // Pas de delay - l'ADS1115 prend déjà ~125ms par lecture à 8 SPS
+  }
 
-    // Tri pour obtenir la médiane
-    for (int i = 0; i < numSamples - 1; i++) {
-      for (int j = i + 1; j < numSamples; j++) {
-        if (samples[i] > samples[j]) {
-          int16_t tmp = samples[i];
-          samples[i] = samples[j];
-          samples[j] = tmp;
-        }
+  // Tri pour obtenir la médiane
+  for (int i = 0; i < numSamples - 1; i++) {
+    for (int j = i + 1; j < numSamples; j++) {
+      if (samples[i] > samples[j]) {
+        int16_t tmp = samples[i];
+        samples[i] = samples[j];
+        samples[j] = tmp;
       }
     }
-
-    int16_t rawAdc = samples[numSamples / 2];
-    int16_t minVal = samples[0];
-    int16_t maxVal = samples[numSamples - 1];
-
-    // Conversion en mV en utilisant la fonction de la bibliothèque
-    float voltage = ads.computeVolts(rawAdc) * 1000.0f;
-
-    // Utiliser la température pour la compensation
-    float temperature = isnan(tempValue) ? 25.0f : tempValue;
-
-    // Processus de calibration DFRobot_PH en 3 étapes:
-    // 1. Entrer en mode calibration
-    phSensor.calibration(voltage, temperature, (char*)"enterph");
-
-    // 2. Calibrer (reconnaît automatiquement pH 4.0)
-    phSensor.calibration(voltage, temperature, (char*)"calph");
-
-    // 3. Sauvegarder et sortir
-    phSensor.calibration(voltage, temperature, (char*)"exitph");
-
-    // IMPORTANT: Sur ESP32, commit les changements EEPROM
-    EEPROM.commit();
-
-    systemLogger.info("Calibration pH point acide (4.0) effectuée à " + String(temperature, 1) + "°C (ADC med=" + String(rawAdc) + ", min=" + String(minVal) + ", max=" + String(maxVal) + ", V=" + String(voltage, 2) + " mV)");
   }
+
+  int16_t rawAdc = samples[numSamples / 2];
+  int16_t minVal = samples[0];
+  int16_t maxVal = samples[numSamples - 1];
+
+  // Conversion en mV en utilisant la fonction de la bibliothèque
+  float voltage = ads.computeVolts(rawAdc) * 1000.0f;
+
+  // Utiliser la température pour la compensation
+  float temperature = isnan(tempValue) ? 25.0f : tempValue;
+
+  // Processus de calibration DFRobot_PH en 3 étapes:
+  // 1. Entrer en mode calibration
+  phSensor.calibration(voltage, temperature, (char*)"enterph");
+
+  // 2. Calibrer (reconnaît automatiquement pH 4.0)
+  phSensor.calibration(voltage, temperature, (char*)"calph");
+
+  // 3. Sauvegarder et sortir
+  phSensor.calibration(voltage, temperature, (char*)"exitph");
+
+  // IMPORTANT: Sur ESP32, commit les changements EEPROM
+  EEPROM.commit();
+
+  systemLogger.info("Calibration pH point acide (4.0) effectuée à " + String(temperature, 1) + "°C (ADC med=" + String(rawAdc) + ", min=" + String(minVal) + ", max=" + String(maxVal) + ", V=" + String(voltage, 2) + " mV)");
 }
 
 void SensorManager::calibratePhAlkaline() {
-  if (true) {  // PH_SENSOR_PIN est toujours défini
-    // Note: DFRobot_PH ne supporte que 2 points (4.0 et 7.0)
-    // Pour pH 9.18, utiliser la calibration 2 points standard
-    systemLogger.warning("DFRobot_PH ne supporte que calibration 2 points (pH 4.0 et 7.0) - utilisez calibratePhAcid() et calibratePhNeutral()");
-  }
+  // Note: DFRobot_PH ne supporte que 2 points (4.0 et 7.0)
+  // Pour pH 9.18, utiliser la calibration 2 points standard
+  systemLogger.warning("DFRobot_PH ne supporte que calibration 2 points (pH 4.0 et 7.0) - utilisez calibratePhAcid() et calibratePhNeutral()");
 }
 
 void SensorManager::clearPhCalibration() {
-  if (true) {  // PH_SENSOR_PIN est toujours défini
-    // Effacer l'EEPROM utilisé par DFRobot_PH (adresses 0-7)
-    for (int i = 0; i < 8; i++) {
-      EEPROM.write(i, 0xFF);
-    }
-    EEPROM.commit();
-
-    // Réinitialiser le capteur pH avec les valeurs par défaut
-    phSensor.begin();
-    EEPROM.commit();
-
-    systemLogger.info("Calibration pH effacée - réinitialisée aux valeurs par défaut");
+  // Effacer l'EEPROM utilisé par DFRobot_PH (adresses 0-7)
+  for (int i = 0; i < 8; i++) {
+    EEPROM.write(i, 0xFF);
   }
+  EEPROM.commit();
+
+  // Réinitialiser le capteur pH avec les valeurs par défaut
+  phSensor.begin();
+  EEPROM.commit();
+
+  systemLogger.info("Calibration pH effacée - réinitialisée aux valeurs par défaut");
 }
