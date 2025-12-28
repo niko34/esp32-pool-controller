@@ -10,7 +10,9 @@ void AuthManager::begin() {
   // Générer un token API par défaut si vide
   if (apiToken.isEmpty()) {
     apiToken = generateRandomToken();
-    systemLogger.info("API Token généré: " + apiToken);
+    // SÉCURITÉ: Ne jamais logger le token complet
+    String maskedToken = apiToken.length() > 8 ? (apiToken.substring(0, 8) + "...") : "***";
+    systemLogger.info("API Token généré: " + maskedToken);
   }
 
   // Détecter premier démarrage (mot de passe par défaut)
@@ -60,7 +62,9 @@ void AuthManager::setApiToken(const String& token) {
 
 void AuthManager::regenerateApiToken() {
   apiToken = generateRandomToken();
-  systemLogger.info("Nouveau API Token généré: " + apiToken);
+  // SÉCURITÉ: Ne jamais logger le token complet
+  String maskedToken = apiToken.length() > 8 ? (apiToken.substring(0, 8) + "...") : "***";
+  systemLogger.info("Nouveau API Token généré: " + maskedToken);
 }
 
 bool AuthManager::checkBasicAuth(AsyncWebServerRequest* req) {
@@ -72,20 +76,26 @@ bool AuthManager::checkBasicAuth(AsyncWebServerRequest* req) {
 }
 
 bool AuthManager::checkTokenAuth(AsyncWebServerRequest* req) {
-  // Vérifier le header X-Auth-Token
+  // SÉCURITÉ: Vérifier uniquement le header X-Auth-Token
+  // On n'accepte PAS le query parameter ?token=... car :
+  // - Il apparaît dans les logs serveur
+  // - Il reste dans l'historique du navigateur
+  // - Il peut être transmis via le header Referer
+  // - Il est visible dans l'URL (shoulder surfing)
   if (req->hasHeader("X-Auth-Token")) {
     const AsyncWebHeader* header = req->getHeader("X-Auth-Token");
+
+    // DEBUG: Logger pour diagnostic
+    String receivedToken = header->value();
+    String maskedReceived = receivedToken.length() > 8 ? (receivedToken.substring(0, 8) + "...") : "***";
+    String maskedExpected = apiToken.length() > 8 ? (apiToken.substring(0, 8) + "...") : "***";
+    systemLogger.debug("Token reçu: " + maskedReceived + ", attendu: " + maskedExpected);
+
     if (header->value() == apiToken) {
       return true;
     }
-  }
-
-  // Vérifier le query parameter ?token=...
-  if (req->hasParam("token")) {
-    const AsyncWebParameter* param = req->getParam("token");
-    if (param->value() == apiToken) {
-      return true;
-    }
+  } else {
+    systemLogger.debug("Aucun header X-Auth-Token trouvé");
   }
 
   return false;
@@ -198,4 +208,13 @@ void AuthManager::sendRateLimitExceeded(AsyncWebServerRequest* req) {
   AsyncWebServerResponse* response = req->beginResponse(429, "application/json", "{\"error\":\"Too many requests\"}");
   response->addHeader("Retry-After", "60");
   req->send(response);
+}
+
+void AuthManager::resetPasswordToDefault() {
+  // Réinitialiser le mot de passe à "admin"
+  adminPassword = "admin";
+  isFirstBoot = true;
+
+  systemLogger.critical("SÉCURITÉ: Mot de passe réinitialisé à 'admin' via bouton physique !");
+  systemLogger.warning("Changement de mot de passe obligatoire au prochain login");
 }

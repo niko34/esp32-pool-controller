@@ -57,6 +57,9 @@ public:
   bool isFirstBootDetected() const { return isFirstBoot; }
   void clearFirstBootFlag() { isFirstBoot = false; }
 
+  // Réinitialisation mot de passe (bouton physique)
+  void resetPasswordToDefault();
+
   // Vérification d'authentification
   bool checkAuth(AsyncWebServerRequest* req, RouteProtection level = RouteProtection::WRITE);
 

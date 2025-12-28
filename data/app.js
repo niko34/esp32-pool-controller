@@ -12,6 +12,24 @@
     console.log(`[dbg] ${msg}`);
   }
 
+  // ---------- Auth Helper ----------
+  function authFetch(url, options = {}) {
+    const token = sessionStorage.getItem('authToken');
+    if (token) {
+      options.headers = options.headers || {};
+      options.headers['X-Auth-Token'] = token;
+    }
+    return fetch(url, options).then(response => {
+      // Si 401, rediriger vers login
+      if (response.status === 401) {
+        sessionStorage.removeItem('authToken');
+        window.location.href = '/login.html';
+        throw new Error('Authentication required');
+      }
+      return response;
+    });
+  }
+
   function debugStart(label) {
     if (!DEBUG) return null;
     const t0 = performance.now();
@@ -135,7 +153,7 @@
 
   async function loadHistoricalData(range = '24h') {
     try {
-      const response = await fetch(`/get-history?range=${range}`);
+      const response = await authFetch(`/get-history?range=${range}`);
       if (!response.ok) throw new Error('Failed to load history');
 
       const data = await response.json();
@@ -244,7 +262,7 @@
 
   // ---------- Config helpers ----------
   function sendConfig(data) {
-    return fetch("/save-config", {
+    return authFetch("/save-config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -375,7 +393,7 @@
   }
 
   async function loadConfig() {
-    const res = await fetch("/get-config");
+    const res = await authFetch("/get-config");
     const cfg = await res.json();
 
     // Stocker la config globalement pour les alertes et cartes status
@@ -505,6 +523,9 @@
     updatePhControls();
     updateOrpControls();
 
+    // Security panel
+    $("#auth_cors_origins").value = cfg.auth_cors_origins || "";
+
     // Mettre à jour les alertes et cartes status après chargement de la config
     updateAlerts();
     updateStatusCards();
@@ -514,7 +535,7 @@
   // ---------- Calibration badges (Dashboard + chip) ----------
   async function checkCalibrationDate() {
     try {
-      const res = await fetch("/get-config");
+      const res = await authFetch("/get-config");
       if (!res.ok) return;
       const config = await res.json();
 
@@ -950,7 +971,7 @@
     if (startBtn) {
       startBtn.addEventListener('click', async () => {
         try {
-          await fetch('/filtration-start', { method: 'POST' });
+          await authFetch('/filtration-start', { method: 'POST' });
           setTimeout(loadSensorData, 500);
         } catch (e) {
           console.error('Erreur démarrage filtration:', e);
@@ -961,7 +982,7 @@
     if (stopBtn) {
       stopBtn.addEventListener('click', async () => {
         try {
-          await fetch('/filtration-stop', { method: 'POST' });
+          await authFetch('/filtration-stop', { method: 'POST' });
           setTimeout(loadSensorData, 500);
         } catch (e) {
           console.error('Erreur arrêt filtration:', e);
@@ -1042,7 +1063,7 @@
 
         // Bypass any HTTP cache so the UI can refresh immediately after calibration
         const fetchPerf = debugStart("fetch /data");
-        const res = await fetch(`/data?t=${Date.now()}`, { signal: controller.signal, cache: "no-store" });
+        const res = await authFetch(`/data?t=${Date.now()}`, { signal: controller.signal, cache: "no-store" });
         clearTimeout(timeoutId);
         fetchPerf?.end(`status=${res.status}`);
 
@@ -1406,7 +1427,7 @@
         startBtn.disabled = true;
 
         try {
-          const res = await fetch("/calibrate_ph_neutral", { method: "POST" });
+          const res = await authFetch("/calibrate_ph_neutral", { method: "POST" });
           const data = await res.json();
           if (!data.success) throw new Error(data.error || "Calibration échouée");
 
@@ -1430,7 +1451,7 @@
         startBtn.disabled = true;
 
         try {
-          const res = await fetch("/calibrate_ph_acid", { method: "POST" });
+          const res = await authFetch("/calibrate_ph_acid", { method: "POST" });
           const data = await res.json();
           if (!data.success) throw new Error(data.error || "Calibration échouée");
 
@@ -1917,7 +1938,7 @@
 
   async function loadSystemInfo() {
     try {
-      const res = await fetch("/get-system-info");
+      const res = await authFetch("/get-system-info");
       const data = await res.json();
 
       $("#sys_firmware_version").textContent = data.firmware_version || "—";
@@ -1974,7 +1995,7 @@
       if (installBtn) installBtn.disabled = true;
 
       try {
-        const res = await fetch("/check-update");
+        const res = await authFetch("/check-update");
         if (!res.ok) throw new Error("Erreur vérification");
         const data = await res.json();
         latestRelease = data;
@@ -2045,7 +2066,7 @@
           }
         }, 500);
 
-        const fsRes = await fetch("/download-update", {
+        const fsRes = await authFetch("/download-update", {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: "url=" + encodeURIComponent(latestRelease.filesystem_url) + "&restart=false",
@@ -2070,7 +2091,7 @@
           }
         }, 500);
 
-        const fwRes = await fetch("/download-update", {
+        const fwRes = await authFetch("/download-update", {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: "url=" + encodeURIComponent(latestRelease.firmware_url) + "&restart=true",
@@ -2182,7 +2203,7 @@
         url += `?since=${lastLogTimestamp}`;
       }
 
-      const res = await fetch(url);
+      const res = await authFetch(url);
       const data = await res.json();
 
       const filter = $("#logs_filter")?.value || "all";
@@ -2291,17 +2312,17 @@
     s2?.addEventListener("input", () => updateSliderReadout(s2, "#pump2_duty_value", "#pump2_duty_pwm"));
 
     s1?.addEventListener("change", () => {
-      if (p1?.checked) fetch(`/pump1/duty/${parseInt(s1.value, 10)}`, { method: "POST" }).catch(() => {});
+      if (p1?.checked) authFetch(`/pump1/duty/${parseInt(s1.value, 10)}`, { method: "POST" }).catch(() => {});
     });
     s2?.addEventListener("change", () => {
-      if (p2?.checked) fetch(`/pump2/duty/${parseInt(s2.value, 10)}`, { method: "POST" }).catch(() => {});
+      if (p2?.checked) authFetch(`/pump2/duty/${parseInt(s2.value, 10)}`, { method: "POST" }).catch(() => {});
     });
 
     p1?.addEventListener("change", async () => {
       if (!p1.checked) {
-        await fetch("/pump1/off", { method: "POST" }).catch(() => {});
+        await authFetch("/pump1/off", { method: "POST" }).catch(() => {});
       } else {
-        await fetch(`/pump1/duty/${parseInt(s1.value, 10)}`, { method: "POST" }).catch(() => {
+        await authFetch(`/pump1/duty/${parseInt(s1.value, 10)}`, { method: "POST" }).catch(() => {
           p1.checked = false;
         });
       }
@@ -2309,9 +2330,9 @@
 
     p2?.addEventListener("change", async () => {
       if (!p2.checked) {
-        await fetch("/pump2/off", { method: "POST" }).catch(() => {});
+        await authFetch("/pump2/off", { method: "POST" }).catch(() => {});
       } else {
-        await fetch(`/pump2/duty/${parseInt(s2.value, 10)}`, { method: "POST" }).catch(() => {
+        await authFetch(`/pump2/duty/${parseInt(s2.value, 10)}`, { method: "POST" }).catch(() => {
           p2.checked = false;
         });
       }
@@ -2326,7 +2347,7 @@
   function bindWifi() {
     $("#restart_ap_btn")?.addEventListener("click", async () => {
       if (!confirm("Redémarrer en mode AP ?")) return;
-      await fetch("/reboot-ap", { method: "POST" }).catch(() => {});
+      await authFetch("/reboot-ap", { method: "POST" }).catch(() => {});
       alert("Commande envoyée. L’ESP32 va redémarrer.");
     });
   }
@@ -2375,7 +2396,7 @@
       if (useNtp) {
         // Fetch current time from server when NTP is enabled
         try {
-          const res = await fetch("/time-now");
+          const res = await authFetch("/time-now");
           const data = await res.json();
           updateTimeControls(data.time || "");
         } catch (e) {
@@ -2409,11 +2430,131 @@
     });
 
     $("#refresh_info_btn")?.addEventListener("click", loadSystemInfo);
+
+    // Logout button
+    $("#logout-btn")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      if (confirm("Voulez-vous vraiment vous déconnecter ?")) {
+        // Clear session storage
+        sessionStorage.removeItem('authToken');
+        // Redirect to login page
+        window.location.href = '/login.html';
+      }
+    });
+
+    // Reboot button
+    $("#reboot_btn")?.addEventListener("click", async () => {
+      if (!confirm("Voulez-vous vraiment redémarrer ?\n\nL'appareil sera indisponible pendant environ 10 secondes.")) {
+        return;
+      }
+
+      try {
+        const res = await authFetch("/reboot", {
+          method: "POST"
+        });
+
+        if (res.ok) {
+          alert("Redémarrage en cours...\n\nVeuillez patienter environ 10 secondes puis actualiser la page.");
+          // Désactiver le bouton pour éviter les clics multiples
+          $("#reboot_btn").disabled = true;
+          $("#reboot_btn").textContent = "Redémarrage en cours...";
+        } else {
+          alert("Erreur lors du redémarrage de l'ESP32");
+        }
+      } catch (error) {
+        alert("Erreur de connexion: " + error.message);
+      }
+    });
+  }
+
+  // ---------- Security bindings ----------
+  function bindSecurity() {
+    // Save CORS configuration (auto-save)
+    $("#auth_cors_origins")?.addEventListener("change", () => {
+      const corsValue = $("#auth_cors_origins").value.trim();
+      sendConfig({ auth_cors_origins: corsValue });
+    });
+
+    // Change password
+    $("#change_password_btn")?.addEventListener("click", async () => {
+      const currentPassword = $("#auth_current_password").value;
+      const newPassword = $("#auth_password").value;
+      const confirmPassword = $("#auth_password_confirm").value;
+
+      // Validation: current password required
+      if (!currentPassword) {
+        alert("Veuillez saisir votre mot de passe actuel.");
+        return;
+      }
+
+      // Validation: new password required and minimum length
+      if (!newPassword || newPassword.length < 8) {
+        alert("Le nouveau mot de passe doit contenir au moins 8 caractères.");
+        return;
+      }
+
+      // Validation: passwords match
+      if (newPassword !== confirmPassword) {
+        alert("Les nouveaux mots de passe ne correspondent pas.");
+        return;
+      }
+
+      // Validation: new password must be different
+      if (currentPassword === newPassword) {
+        alert("Le nouveau mot de passe doit être différent du mot de passe actuel.");
+        return;
+      }
+
+      if (!confirm("Voulez-vous vraiment modifier le mot de passe administrateur ?")) {
+        return;
+      }
+
+      try {
+        const res = await authFetch("/auth/change-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            currentPassword: currentPassword,
+            newPassword: newPassword
+          })
+        });
+
+        if (!res.ok) {
+          const error = await res.json();
+          alert("Erreur: " + (error.error || "Échec du changement de mot de passe"));
+          return;
+        }
+
+        const data = await res.json();
+
+        // Update the token in sessionStorage
+        if (data.token) {
+          sessionStorage.setItem('authToken', data.token);
+        }
+
+        alert("Mot de passe modifié avec succès !");
+        // Clear all password fields
+        $("#auth_current_password").value = "";
+        $("#auth_password").value = "";
+        $("#auth_password_confirm").value = "";
+      } catch (error) {
+        alert("Erreur de connexion: " + error.message);
+      }
+    });
   }
 
   // ---------- Init ----------
   async function init() {
     const perf = debugStart("init");
+
+    // Vérifier l'authentification au chargement
+    const token = sessionStorage.getItem('authToken');
+    if (!token) {
+      debugLog("Pas de token trouvé, redirection vers login");
+      window.location.href = '/login.html';
+      return;
+    }
+
     // Charger les alertes ignorées depuis localStorage
     loadDismissedAlerts();
 
@@ -2441,6 +2582,7 @@
     bindOrpCalibration();
     bindTempCalibration();
     bindWifi();
+    bindSecurity();
     bindGithubUpdate();
     bindManualUpdate();
     bindPumps();

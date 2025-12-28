@@ -29,6 +29,7 @@ wifi_mode_t currentWifiMode = WIFI_MODE_NULL;
 bool setupWiFi();
 void applyTimeConfig();
 void checkSystemHealth();
+void checkPasswordResetButton();
 
 void setup() {
   Serial.begin(115200);
@@ -36,6 +37,9 @@ void setup() {
 
   systemLogger.info("=== Démarrage ESP32 Pool Controller v" + String(FIRMWARE_VERSION) + " ===");
   systemLogger.info("Build: " + String(FIRMWARE_BUILD_DATE) + " " + String(FIRMWARE_BUILD_TIME));
+
+  // Vérifier le bouton de réinitialisation AVANT de charger la config
+  checkPasswordResetButton();
 
   // Initialisation watchdog
   esp_task_wdt_init(kWatchdogTimeoutSec, true);
@@ -244,4 +248,62 @@ void checkSystemHealth() {
   }
 
   systemLogger.debug("Health check OK - Heap: " + String(freeHeap) + " bytes");
+}
+
+void checkPasswordResetButton() {
+  // Initialiser le bouton BOOT (GPIO0) et la LED
+  pinMode(kBootButtonPin, INPUT_PULLUP);
+  pinMode(kBuiltinLedPin, OUTPUT);
+  digitalWrite(kBuiltinLedPin, LOW);  // LED éteinte par défaut
+
+  // Vérifier si le bouton BOOT est maintenu enfoncé (actif bas)
+  if (digitalRead(kBootButtonPin) == HIGH) {
+    // Bouton relâché, pas de réinitialisation
+    return;
+  }
+
+  systemLogger.warning("Bouton BOOT détecté enfoncé au démarrage");
+  systemLogger.info("Maintenez enfoncé pendant 10s pour réinitialiser le mot de passe...");
+
+  unsigned long startTime = millis();
+  bool resetConfirmed = true;
+
+  // Faire clignoter la LED pendant 10 secondes
+  while (millis() - startTime < kPasswordResetButtonHoldMs) {
+    // Vérifier que le bouton est toujours enfoncé
+    if (digitalRead(kBootButtonPin) == HIGH) {
+      resetConfirmed = false;
+      systemLogger.info("Bouton relâché - Réinitialisation annulée");
+      break;
+    }
+
+    // Clignoter la LED (100ms ON / 100ms OFF)
+    digitalWrite(kBuiltinLedPin, (millis() / 100) % 2);
+    delay(50);
+  }
+
+  // Éteindre la LED
+  digitalWrite(kBuiltinLedPin, LOW);
+
+  if (resetConfirmed) {
+    systemLogger.critical("=== RÉINITIALISATION MOT DE PASSE CONFIRMÉE ===");
+
+    // Charger la config actuelle
+    loadMqttConfig();
+
+    // Réinitialiser le mot de passe
+    authCfg.adminPassword = "admin";
+
+    // Sauvegarder la config avec le nouveau mot de passe
+    saveMqttConfig();
+
+    systemLogger.critical("Mot de passe réinitialisé à 'admin'");
+    systemLogger.warning("Changement de mot de passe obligatoire au prochain login");
+
+    // Faire clignoter rapidement la LED 5 fois pour confirmer
+    for (int i = 0; i < 10; i++) {
+      digitalWrite(kBuiltinLedPin, i % 2);
+      delay(200);
+    }
+  }
 }

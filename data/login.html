@@ -264,7 +264,7 @@
             const data = await response.json();
             // Stocker le token en session
             sessionStorage.setItem('authToken', data.token);
-            // Rediriger vers l'application
+            // Rediriger vers l'application (le token est déjà en sessionStorage)
             window.location.href = '/';
           } else {
             const error = await response.json();
@@ -310,7 +310,7 @@
             // Stocker le token
             sessionStorage.setItem('authToken', data.token);
 
-            // Rediriger après 2 secondes
+            // Rediriger après 2 secondes (le token est déjà en sessionStorage)
             setTimeout(() => {
               window.location.href = '/';
             }, 2000);
