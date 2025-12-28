@@ -171,6 +171,11 @@ bool setupWiFi() {
   currentWifiMode = WiFi.getMode();
   AsyncWiFiManager wm(&httpServer, &dns);
 
+  // Servir l'icône de l'application pour le portail AP
+  httpServer.on("/logo.png", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send(LittleFS, "/android-chrome-192x192.png", "image/png");
+  });
+
   // Style custom for AP portal to align with app UI
   const char* portalStyle = R"rawliteral(
 <meta charset="UTF-8">
@@ -252,11 +257,12 @@ bool setupWiFi() {
     display: grid;
     gap: 6px;
     justify-items: center;
-    margin: 4px 0 18px;
+    margin: 4px 0 12px;
   }
   .pc-logo {
-    width: 64px;
-    height: 64px;
+    width: 72px;
+    height: 72px;
+    border-radius: 16px;
   }
   .pc-title {
     font-weight: 750;
@@ -270,7 +276,7 @@ bool setupWiFi() {
   .pc-card {
     width: 100%;
     max-width: 420px;
-    margin: 12px auto;
+    margin: 8px auto;
     padding: 16px;
     background: var(--panel);
     border: 1px solid var(--stroke);
@@ -302,7 +308,7 @@ bool setupWiFi() {
     const header = document.createElement('div');
     header.className = 'pc-header';
     header.innerHTML =
-      '<img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeDI9IjEiIHkxPSIwIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzRmOGZmZiIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzNiODJmNiIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjxyZWN0IHg9IjYiIHk9IjYiIHdpZHRoPSI1MiIgaGVpZ2h0PSI1MiIgcng9IjEyIiBmaWxsPSJ1cmwoI2cpIi8+PHBhdGggZD0iTTE4IDM2YzUgNCAxMSA0IDE2IDBzMTEtNCAxNiAwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+" alt="PoolController" class="pc-logo">' +
+      '<img src="/logo.png" alt="PoolController" class="pc-logo">' +
       '<div class="pc-title">PoolController</div>' +
       '<div class="pc-sub">Point d\'accès: ' + (apName || 'PoolControllerAP') + '</div>';
     document.body.insertBefore(header, document.body.firstChild);
