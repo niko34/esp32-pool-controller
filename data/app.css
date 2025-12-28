@@ -135,6 +135,17 @@ button, input, select { font: inherit; }
   background: var(--stroke);
   margin: 0 0 14px 0;
 }
+.nav__item--logout {
+  color: #dc3545;
+}
+.nav__item--logout:hover {
+  background: rgba(220, 53, 69, 0.1);
+  color: #dc3545;
+}
+.nav__item--logout.is-active {
+  background: rgba(220, 53, 69, 0.1);
+  color: #dc3545;
+}
 
 .status__dot {
   width: 8px;
