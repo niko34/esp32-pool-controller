@@ -30,6 +30,9 @@ constexpr unsigned long kRestartApModeDelayMs = 1000;     // 1s - Attente avant 
 constexpr unsigned long kI2cMutexTimeoutMs = 2000;        // 2s - Timeout acquisition mutex I2C
 constexpr unsigned long kConfigMutexTimeoutMs = 1000;     // 1s - Timeout acquisition mutex config
 
+// Sécurité - Réinitialisation mot de passe
+constexpr unsigned long kPasswordResetButtonHoldMs = 10000; // 10s - Maintien bouton pour reset
+
 // ============================================================================
 // MEMORY & BUFFER CONSTANTS - Limites mémoire et buffers
 // ============================================================================
@@ -80,5 +83,15 @@ constexpr uint16_t kMdnsHttpPort = 80;                    // Port mDNS pour HTTP
 
 // mDNS
 constexpr const char* kMdnsHostname = "poolcontroller";   // Nom d'hôte mDNS
+
+// ============================================================================
+// GPIO CONSTANTS - Pins matérielles
+// ============================================================================
+
+// Boutons
+constexpr uint8_t kBootButtonPin = 0;                     // GPIO0 - Bouton BOOT (actif bas)
+
+// LED
+constexpr uint8_t kBuiltinLedPin = 2;                     // GPIO2 - LED intégrée ESP32
 
 #endif // CONSTANTS_H
