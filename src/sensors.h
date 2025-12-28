@@ -22,6 +22,11 @@ private:
 
   void readRealSensors();
 
+  // Helper: lecture médiane depuis ADS1115 avec filtrage
+  // Retourne la valeur médiane, et optionnellement les stats (min, max, sum)
+  int16_t readMedianAdsChannel(uint8_t channel, int numSamples = 3,
+                                int16_t* outMin = nullptr, int16_t* outMax = nullptr, int32_t* outSum = nullptr);
+
 public:
   SensorManager();
   ~SensorManager();
