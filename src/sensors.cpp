@@ -49,6 +49,8 @@ int16_t SensorManager::readMedianAdsChannel(uint8_t channel, int numSamples,
     if (reading < minVal) minVal = reading;
     if (reading > maxVal) maxVal = reading;
     // Pas de delay - l'ADS1115 à 8 SPS prend déjà ~125ms par lecture
+    // IMPORTANT: yield() pour éviter watchdog timeout si ADS1115 non connecté
+    yield();
   }
 
   // Tri par insertion pour obtenir la médiane
