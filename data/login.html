@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#0066cc" />
+    <title>Connexion - PoolController</title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/favicon-32x32.png" sizes="32x32">
+    <link rel="icon" type="image/png" href="/favicon-16x16.png" sizes="16x16">
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }
+
+      .login-container {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+        max-width: 400px;
+        width: 100%;
+        padding: 40px;
+      }
+
+      .logo {
+        text-align: center;
+        margin-bottom: 30px;
+      }
+
+      .logo img {
+        width: 80px;
+        height: 80px;
+        margin-bottom: 15px;
+      }
+
+      .logo h1 {
+        font-size: 24px;
+        color: #333;
+        margin-bottom: 5px;
+      }
+
+      .logo p {
+        font-size: 14px;
+        color: #666;
+      }
+
+      .alert {
+        background: #fff3cd;
+        border: 1px solid #ffc107;
+        border-radius: 6px;
+        padding: 12px;
+        margin-bottom: 20px;
+        font-size: 14px;
+        color: #856404;
+      }
+
+      .alert.error {
+        background: #f8d7da;
+        border-color: #f5c6cb;
+        color: #721c24;
+      }
+
+      .alert.success {
+        background: #d4edda;
+        border-color: #c3e6cb;
+        color: #155724;
+      }
+
+      .form-group {
+        margin-bottom: 20px;
+      }
+
+      label {
+        display: block;
+        font-size: 14px;
+        font-weight: 500;
+        color: #333;
+        margin-bottom: 8px;
+      }
+
+      input {
+        width: 100%;
+        padding: 12px 15px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        font-size: 14px;
+        transition: border-color 0.3s;
+      }
+
+      input:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+
+      .password-requirements {
+        font-size: 12px;
+        color: #666;
+        margin-top: 5px;
+      }
+
+      button {
+        width: 100%;
+        padding: 12px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-size: 16px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: transform 0.2s;
+      }
+
+      button:hover {
+        transform: translateY(-2px);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .hidden {
+        display: none;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="login-container">
+      <div class="logo">
+        <img src="/android-chrome-192x192.png" alt="PoolController" />
+        <h1>PoolController</h1>
+        <p>Connexion administrateur</p>
+      </div>
+
+      <!-- Alert premier démarrage -->
+      <div id="firstBootAlert" class="alert hidden">
+        <strong>Premier démarrage détecté</strong><br>
+        Veuillez définir un nouveau mot de passe administrateur.
+      </div>
+
+      <!-- Alert erreur -->
+      <div id="errorAlert" class="alert error hidden"></div>
+
+      <!-- Alert succès -->
+      <div id="successAlert" class="alert success hidden"></div>
+
+      <!-- Formulaire connexion standard -->
+      <form id="loginForm">
+        <div class="form-group">
+          <label for="username">Nom d'utilisateur</label>
+          <input type="text" id="username" value="admin" readonly />
+        </div>
+
+        <div class="form-group">
+          <label for="password">Mot de passe</label>
+          <input type="password" id="password" placeholder="Entrez votre mot de passe" required autocomplete="current-password" />
+        </div>
+
+        <button type="submit" id="loginBtn">Se connecter</button>
+      </form>
+
+      <!-- Formulaire changement mot de passe (premier démarrage) -->
+      <form id="changePasswordForm" class="hidden">
+        <div class="form-group">
+          <label for="currentPassword">Mot de passe actuel</label>
+          <input type="password" id="currentPassword" value="admin" readonly />
+        </div>
+
+        <div class="form-group">
+          <label for="newPassword">Nouveau mot de passe</label>
+          <input type="password" id="newPassword" placeholder="Minimum 8 caractères" required minlength="8" autocomplete="new-password" />
+          <div class="password-requirements">
+            Minimum 8 caractères recommandé
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="confirmPassword">Confirmer le mot de passe</label>
+          <input type="password" id="confirmPassword" placeholder="Re-tapez le mot de passe" required autocomplete="new-password" />
+        </div>
+
+        <button type="submit" id="changeBtn">Définir le mot de passe</button>
+      </form>
+    </div>
+
+    <script>
+      const loginForm = document.getElementById('loginForm');
+      const changePasswordForm = document.getElementById('changePasswordForm');
+      const firstBootAlert = document.getElementById('firstBootAlert');
+      const errorAlert = document.getElementById('errorAlert');
+      const successAlert = document.getElementById('successAlert');
+
+      // Vérifier si premier démarrage
+      async function checkFirstBoot() {
+        try {
+          const response = await fetch('/auth/status');
+          if (response.ok) {
+            const data = await response.json();
+            if (data.firstBoot) {
+              showFirstBootForm();
+            }
+          }
+        } catch (error) {
+          console.error('Erreur vérification statut:', error);
+        }
+      }
+
+      function showFirstBootForm() {
+        loginForm.classList.add('hidden');
+        changePasswordForm.classList.remove('hidden');
+        firstBootAlert.classList.remove('hidden');
+      }
+
+      function showError(message) {
+        errorAlert.textContent = message;
+        errorAlert.classList.remove('hidden');
+        successAlert.classList.add('hidden');
+        setTimeout(() => errorAlert.classList.add('hidden'), 5000);
+      }
+
+      function showSuccess(message) {
+        successAlert.textContent = message;
+        successAlert.classList.remove('hidden');
+        errorAlert.classList.add('hidden');
+      }
+
+      // Connexion standard
+      loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const password = document.getElementById('password').value;
+
+        try {
+          const response = await fetch('/auth/login', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              username: 'admin',
+              password: password
+            })
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            // Stocker le token en session
+            sessionStorage.setItem('authToken', data.token);
+            // Rediriger vers l'application
+            window.location.href = '/';
+          } else {
+            const error = await response.json();
+            showError(error.error || 'Mot de passe incorrect');
+          }
+        } catch (error) {
+          showError('Erreur de connexion: ' + error.message);
+        }
+      });
+
+      // Changement mot de passe (premier démarrage)
+      changePasswordForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const newPassword = document.getElementById('newPassword').value;
+        const confirmPassword = document.getElementById('confirmPassword').value;
+
+        if (newPassword !== confirmPassword) {
+          showError('Les mots de passe ne correspondent pas');
+          return;
+        }
+
+        if (newPassword.length < 8) {
+          showError('Le mot de passe doit contenir au moins 8 caractères');
+          return;
+        }
+
+        try {
+          const response = await fetch('/auth/change-password', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              currentPassword: 'admin',
+              newPassword: newPassword
+            })
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            showSuccess('Mot de passe modifié avec succès ! Redirection...');
+
+            // Stocker le token
+            sessionStorage.setItem('authToken', data.token);
+
+            // Rediriger après 2 secondes
+            setTimeout(() => {
+              window.location.href = '/';
+            }, 2000);
+          } else {
+            const error = await response.json();
+            showError(error.error || 'Erreur lors du changement de mot de passe');
+          }
+        } catch (error) {
+          showError('Erreur de connexion: ' + error.message);
+        }
+      });
+
+      // Vérifier le statut au chargement
+      checkFirstBoot();
+    </script>
+  </body>
+</html>

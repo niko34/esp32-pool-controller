@@ -13,10 +13,13 @@ void AuthManager::begin() {
     systemLogger.info("API Token généré: " + apiToken);
   }
 
-  // Générer un mot de passe par défaut si vide
-  if (adminPassword.isEmpty()) {
-    adminPassword = "admin";
-    systemLogger.warning("Mot de passe par défaut utilisé. Changez-le dans la configuration !");
+  // Détecter premier démarrage (mot de passe par défaut)
+  if (adminPassword.isEmpty() || adminPassword == "admin") {
+    isFirstBoot = true;
+    if (adminPassword.isEmpty()) {
+      adminPassword = "admin";
+    }
+    systemLogger.warning("SÉCURITÉ: Premier démarrage détecté - Changement de mot de passe obligatoire !");
   }
 
   if (authEnabled) {
@@ -40,7 +43,14 @@ String AuthManager::generateRandomToken() {
 
 void AuthManager::setPassword(const String& pwd) {
   adminPassword = pwd;
-  systemLogger.info("Mot de passe administrateur modifié");
+
+  // Si le mot de passe change et n'est plus "admin", ce n'est plus le premier démarrage
+  if (pwd != "admin" && isFirstBoot) {
+    isFirstBoot = false;
+    systemLogger.info("Premier démarrage finalisé - Mot de passe personnalisé configuré");
+  } else {
+    systemLogger.info("Mot de passe administrateur modifié");
+  }
 }
 
 void AuthManager::setApiToken(const String& token) {
