@@ -12,6 +12,21 @@
 
     <script src="/chart.umd.min.js"></script>
     <link rel="stylesheet" href="/app.css" />
+    <script>
+      // Vérifier l'authentification avant de charger l'app
+      const token = sessionStorage.getItem('authToken');
+      if (!token) {
+        window.location.href = '/login.html';
+      }
+
+      // Nettoyer le token de l'URL (si présent après login)
+      if (window.location.search.includes('token=')) {
+        // Remplacer l'URL sans token dans l'historique
+        const url = new URL(window.location.href);
+        url.searchParams.delete('token');
+        window.history.replaceState({}, document.title, url.pathname + url.hash);
+      }
+    </script>
     <script defer src="/app.js"></script>
   </head>
 
@@ -108,6 +123,19 @@
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 6v6m-6-6h6m6 0h-6M4.22 4.22l4.24 4.24m7.08 7.08l4.24 4.24M19.78 4.22l-4.24 4.24m-7.08 7.08L4.22 19.78"/></svg>
             </span>
             <span class="nav__label">Paramètres</span>
+          </a>
+
+          <div class="nav__separator"></div>
+
+          <a class="nav__item nav__item--logout" href="#" id="logout-btn">
+            <span class="nav__icon" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <polyline points="16 17 21 12 16 7"/>
+                <line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+            </span>
+            <span class="nav__label">Déconnexion</span>
           </a>
         </nav>
       </aside>
@@ -661,6 +689,7 @@
             <button class="segmented__btn is-active" type="button" data-settings-tab="wifi">Wi-Fi</button>
             <button class="segmented__btn" type="button" data-settings-tab="mqtt">MQTT</button>
             <button class="segmented__btn" type="button" data-settings-tab="time">Heure</button>
+            <button class="segmented__btn" type="button" data-settings-tab="security">Sécurité</button>
             <button class="segmented__btn" type="button" data-settings-tab="system">Système</button>
             <button class="segmented__btn" type="button" data-settings-tab="dev">Développement</button>
             <button class="segmented__btn" type="button" data-settings-tab="about">À propos</button>
@@ -787,6 +816,61 @@
               </div>
             </section>
 
+            <!-- Security Panel -->
+            <section class="panel" data-settings-panel="security">
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">Authentification</div>
+                </div>
+                <div class="card__body">
+                  <label class="field">
+                    <span class="field__label">Mot de passe actuel</span>
+                    <input type="password" id="auth_current_password" placeholder="Mot de passe actuel" autocomplete="current-password" />
+                  </label>
+
+                  <label class="field">
+                    <span class="field__label">Nouveau mot de passe</span>
+                    <input type="password" id="auth_password" placeholder="Minimum 8 caractères" autocomplete="new-password" />
+                  </label>
+
+                  <label class="field">
+                    <span class="field__label">Confirmer le mot de passe</span>
+                    <input type="password" id="auth_password_confirm" placeholder="Re-tapez le mot de passe" autocomplete="new-password" />
+                  </label>
+
+                  <div class="hint">
+                    Pour modifier votre mot de passe, saisissez d'abord votre mot de passe actuel, puis le nouveau mot de passe (minimum 8 caractères).
+                  </div>
+
+                  <div class="row row--gap" style="margin-top: 16px;">
+                    <button class="btn btn--primary" type="button" id="change_password_btn">Modifier le mot de passe</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">CORS (Cross-Origin Resource Sharing)</div>
+                </div>
+                <div class="card__body">
+                  <label class="field">
+                    <span class="field__label">Origines autorisées</span>
+                    <input type="text" id="auth_cors_origins" placeholder="Vide = désactivé, * = tous, ou liste séparée par virgules" />
+                  </label>
+
+                  <div class="hint">
+                    <strong>Configuration CORS:</strong>
+                    <ul style="margin: 8px 0; padding-left: 20px; list-style: disc;">
+                      <li><strong>Vide</strong>: CORS désactivé (recommandé pour usage local uniquement)</li>
+                      <li><strong>*</strong>: Accepter toutes les origines (moins sécurisé)</li>
+                      <li><strong>Liste blanche</strong>: Ex: <code>http://homeassistant.local:8123,https://exemple.com</code></li>
+                    </ul>
+                    Nécessite un redémarrage de l'ESP32 pour être appliqué.
+                  </div>
+                </div>
+              </div>
+            </section>
+
             <!-- System Panel -->
             <section class="panel" data-settings-panel="system">
               <div class="card">
@@ -863,6 +947,21 @@
 
                   <div class="row row--gap">
                     <button class="btn btn--ok" type="button" id="update_btn" disabled>Mettre à jour</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">Redémarrage</div>
+                </div>
+                <div class="card__body">
+                  <div class="hint">
+                    Redémarrer pour appliquer certaines modifications (CORS, etc.) ou résoudre des problèmes.
+                  </div>
+
+                  <div class="row row--gap" style="margin-top: 16px;">
+                    <button class="btn btn--danger" type="button" id="reboot_btn">Redémarrer</button>
                   </div>
                 </div>
               </div>
@@ -1054,7 +1153,7 @@
         </section>
 
         <footer class="footer">
-          <span class="muted small">PoolController • UI locale ESP32</span>
+          <span class="muted small">PoolController • UI locale</span>
         </footer>
       </main>
     </div>

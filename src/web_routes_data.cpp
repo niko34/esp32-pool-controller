@@ -1,5 +1,6 @@
 #include "web_routes_data.h"
 #include "web_helpers.h"
+#include "auth.h"
 #include "config.h"
 #include "sensors.h"
 #include "filtration.h"
@@ -9,6 +10,7 @@
 #include <ArduinoJson.h>
 
 static void handleGetData(AsyncWebServerRequest* request) {
+  REQUIRE_AUTH(request, RouteProtection::WRITE);
   // Buffer statique pour éviter la fragmentation du heap
   // Taille estimée : ~13 champs × 30 bytes + overhead = 512 bytes
   StaticJsonDocument<512> doc;
@@ -67,6 +69,8 @@ static void handleGetData(AsyncWebServerRequest* request) {
 }
 
 static void handleGetLogs(AsyncWebServerRequest* request) {
+  REQUIRE_AUTH(request, RouteProtection::WRITE);
+
   // Support paramètre optionnel ?since=TIMESTAMP pour récupération incrémentale
   unsigned long sinceTimestamp = 0;
   if (request->hasParam("since")) {
@@ -96,6 +100,8 @@ static void handleGetLogs(AsyncWebServerRequest* request) {
 }
 
 static void handleGetHistory(AsyncWebServerRequest* request) {
+  REQUIRE_AUTH(request, RouteProtection::WRITE);
+
   // Support paramètre optionnel ?range=24h|7d|30d|all
   String range = "all";
   if (request->hasParam("range")) {

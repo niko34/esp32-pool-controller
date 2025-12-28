@@ -139,6 +139,7 @@ void saveMqttConfig() {
   prefs.putBool("auth_enabled", authCfg.enabled);
   prefs.putString("auth_password", authCfg.adminPassword);
   prefs.putString("auth_token", authCfg.apiToken);
+  prefs.putString("auth_cors", authCfg.corsAllowedOrigins);
 
   // Limites de sécurité
   prefs.putFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
@@ -212,6 +213,7 @@ void loadMqttConfig() {
   authCfg.enabled = prefs.getBool("auth_enabled", authCfg.enabled);
   authCfg.adminPassword = prefs.getString("auth_password", authCfg.adminPassword);
   authCfg.apiToken = prefs.getString("auth_token", authCfg.apiToken);
+  authCfg.corsAllowedOrigins = prefs.getString("auth_cors", authCfg.corsAllowedOrigins);
 
   // Limites de sécurité
   safetyLimits.maxPhMinusMlPerDay = prefs.getFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);

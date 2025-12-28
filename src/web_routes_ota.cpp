@@ -4,6 +4,7 @@
 #include "auth.h"
 #include "logger.h"
 #include "version.h"
+#include "github_root_ca.h"
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Update.h>
@@ -13,9 +14,45 @@
 static bool* g_restartRequested = nullptr;
 static unsigned long* g_restartRequestedTime = nullptr;
 
+// SÉCURITÉ: Liste blanche des hôtes autorisés pour les téléchargements OTA
+static const char* ALLOWED_OTA_HOSTS[] = {
+  "github.com",
+  "api.github.com",
+  "objects.githubusercontent.com"
+};
+static const size_t ALLOWED_OTA_HOSTS_COUNT = sizeof(ALLOWED_OTA_HOSTS) / sizeof(ALLOWED_OTA_HOSTS[0]);
+
 void initOtaContext(bool* restartRequested, unsigned long* restartRequestedTime) {
   g_restartRequested = restartRequested;
   g_restartRequestedTime = restartRequestedTime;
+}
+
+// SÉCURITÉ: Valider que l'URL provient d'un hôte autorisé
+static bool isUrlAllowed(const String& url) {
+  // L'URL doit commencer par https://
+  if (!url.startsWith("https://")) {
+    systemLogger.error("URL refusée (non HTTPS): " + url);
+    return false;
+  }
+
+  // Extraire le nom d'hôte (entre https:// et le premier /)
+  int hostStart = 8; // longueur de "https://"
+  int hostEnd = url.indexOf('/', hostStart);
+  if (hostEnd == -1) {
+    hostEnd = url.length();
+  }
+
+  String host = url.substring(hostStart, hostEnd);
+
+  // Vérifier si l'hôte est dans la liste blanche
+  for (size_t i = 0; i < ALLOWED_OTA_HOSTS_COUNT; i++) {
+    if (host == ALLOWED_OTA_HOSTS[i]) {
+      return true;
+    }
+  }
+
+  systemLogger.error("Hôte refusé (non whitelisté): " + host);
+  return false;
 }
 
 static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
@@ -71,7 +108,9 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   systemLogger.info("Vérification des mises à jour GitHub...");
 
   WiFiClientSecure client;
-  client.setInsecure(); // Pour GitHub HTTPS (pas de validation du certificat)
+  // SÉCURITÉ: Validation TLS avec certificat racine GitHub
+  // Protection contre les attaques MITM (Man-In-The-Middle)
+  client.setCACert(GITHUB_ROOT_CA);
 
   HTTPClient https;
 
@@ -177,6 +216,13 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 
   String url = request->getParam("url", true)->value();
 
+  // SÉCURITÉ: Valider que l'URL provient d'un hôte autorisé
+  if (!isUrlAllowed(url)) {
+    systemLogger.warning("Tentative de téléchargement OTA depuis un hôte non autorisé: " + url);
+    sendErrorResponse(request, 403, "URL not allowed (host not whitelisted)");
+    return;
+  }
+
   // Paramètre optionnel pour contrôler le redémarrage
   bool shouldRestart = true;
   if (request->hasParam("restart", true)) {
@@ -195,7 +241,10 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 
   // Créer un client HTTPS
   WiFiClientSecure client;
-  client.setInsecure(); // Pas de validation du certificat pour GitHub
+  // SÉCURITÉ: Validation TLS avec certificat racine GitHub
+  // Protection contre les attaques MITM (Man-In-The-Middle)
+  // Le certificat DigiCert Global Root G2 valide l'identité du serveur GitHub
+  client.setCACert(GITHUB_ROOT_CA);
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
@@ -288,7 +337,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 void setupOtaRoutes(AsyncWebServer* server) {
   // Routes OTA - TOUTES PROTÉGÉES (CRITICAL)
   server->on("/check-update", HTTP_GET, [](AsyncWebServerRequest *req) {
-    REQUIRE_AUTH(req, RouteProtection::NONE); // Lecture seule, autorisée
+    REQUIRE_AUTH(req, RouteProtection::WRITE); // Protection + rate limiting
     handleCheckUpdate(req);
   });
 

@@ -28,7 +28,14 @@ void setupAuthRoutes(AsyncWebServer* server) {
       String password = doc["password"] | "";
 
       if (username != "admin" || password != authManager.getPassword()) {
-        sendErrorResponse(req, 401, "Invalid credentials");
+        sendErrorResponse(req, 401, "Nom d'utilisateur ou mot de passe invalide");
+        return;
+      }
+
+      // SÉCURITÉ: Bloquer le login si premier démarrage (mot de passe par défaut)
+      // L'utilisateur DOIT changer le mot de passe via /auth/change-password d'abord
+      if (authManager.isFirstBootDetected()) {
+        sendErrorResponse(req, 403, "Changement de mot de passe obligatoire au premier démarrage");
         return;
       }
 
@@ -55,10 +62,36 @@ void setupAuthRoutes(AsyncWebServer* server) {
       String currentPassword = doc["currentPassword"] | "";
       String newPassword = doc["newPassword"] | "";
 
-      // Vérifier que le mot de passe actuel est correct
-      if (currentPassword != authManager.getPassword()) {
-        sendErrorResponse(req, 401, "Current password incorrect");
-        return;
+      // Logique d'authentification :
+      // 1. Si premier démarrage (firstBoot) : autoriser sans authentification
+      // 2. Si currentPassword fourni : vérifier qu'il correspond
+      // 3. Si currentPassword vide : vérifier que l'utilisateur est déjà authentifié
+
+      bool isFirstBoot = authManager.isFirstBootDetected();
+      bool isAuthenticated = false;
+
+      if (!isFirstBoot) {
+        // Pas en premier démarrage : authentification requise
+        if (currentPassword.isEmpty()) {
+          // Pas de currentPassword : vérifier l'authentification par token
+          isAuthenticated = authManager.checkAuth(req, RouteProtection::WRITE);
+          if (!isAuthenticated) {
+            sendErrorResponse(req, 401, "Authentication required");
+            return;
+          }
+        } else {
+          // currentPassword fourni : vérifier qu'il correspond
+          if (currentPassword != authManager.getPassword()) {
+            sendErrorResponse(req, 401, "Current password incorrect");
+            return;
+          }
+        }
+      } else {
+        // Premier démarrage : vérifier que le currentPassword est "admin"
+        if (!currentPassword.isEmpty() && currentPassword != "admin") {
+          sendErrorResponse(req, 401, "Current password incorrect");
+          return;
+        }
       }
 
       // Vérifier la longueur du nouveau mot de passe
@@ -67,8 +100,8 @@ void setupAuthRoutes(AsyncWebServer* server) {
         return;
       }
 
-      // Vérifier que le nouveau mot de passe est différent
-      if (newPassword == currentPassword) {
+      // Vérifier que le nouveau mot de passe est différent (seulement si currentPassword fourni)
+      if (!currentPassword.isEmpty() && newPassword == currentPassword) {
         sendErrorResponse(req, 400, "New password must be different from current password");
         return;
       }

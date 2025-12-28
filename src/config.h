@@ -96,6 +96,7 @@ struct AuthConfig {
   bool enabled = true;            // Authentification activée/désactivée
   String adminPassword = "admin"; // Mot de passe administrateur (HTTP Basic Auth)
   String apiToken = "";           // Token API pour intégrations (généré au boot si vide)
+  String corsAllowedOrigins = ""; // Origines CORS autorisées (séparées par virgules, vide = désactivé)
 };
 
 struct PumpControlParams {

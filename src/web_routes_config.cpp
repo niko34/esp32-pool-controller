@@ -28,7 +28,10 @@ void initConfigContext(
 
 static void handleGetConfig(AsyncWebServerRequest* request) {
   // Vérifier si l'utilisateur est authentifié pour accéder aux données sensibles
-  bool isAuthenticated = authManager.checkAuth(request, RouteProtection::NONE);
+  // Note: On ne bloque PAS la requête (route publique pour premier démarrage),
+  // mais on vérifie l'authentification pour savoir quelles données révéler
+  // On utilise checkTokenAuth/checkBasicAuth directement pour ne pas bloquer avec sendAuthRequired()
+  bool isAuthenticated = authManager.checkTokenAuth(request) || authManager.checkBasicAuth(request);
 
   // Buffer statique : ~53 champs (configs MQTT, pH, ORP, calibration, WiFi, etc.) = 2048 bytes
   StaticJsonDocument<2048> doc;
@@ -96,10 +99,12 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
     // Utilisateur authentifié : montrer password et token masqués (indication qu'ils existent)
     doc["auth_password"] = authCfg.adminPassword.length() > 0 ? "******" : "";
     doc["auth_token"] = authCfg.apiToken.length() > 8 ? (authCfg.apiToken.substring(0, 8) + "...") : "";
+    doc["auth_cors_origins"] = authCfg.corsAllowedOrigins; // Montrer la config CORS complète
   } else {
     // Utilisateur non authentifié : ne pas révéler si credentials sont configurés
     doc["auth_password"] = "******";
     doc["auth_token"] = "********...";
+    doc["auth_cors_origins"] = ""; // Masquer la config CORS
   }
 
   // Heure actuelle (pour l'affichage dans la configuration)
@@ -239,6 +244,12 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     }
   }
 
+  // Configuration CORS
+  if (!doc["auth_cors_origins"].isNull()) {
+    authCfg.corsAllowedOrigins = doc["auth_cors_origins"].as<String>();
+    systemLogger.info("Configuration CORS mise à jour: " + authCfg.corsAllowedOrigins);
+  }
+
   // Note: Le token API n'est pas modifiable via /save-config
   // Il doit être regénéré via une route dédiée pour éviter les modifications accidentelles
 
@@ -266,6 +277,8 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
 }
 
 static void handleTimeNow(AsyncWebServerRequest* request) {
+  REQUIRE_AUTH(request, RouteProtection::WRITE);
+
   // Buffer statique : 3 champs (time, time_use_ntp, timezone_id) = 128 bytes
   StaticJsonDocument<128> doc;
   doc["time"] = getCurrentTimeISO();
@@ -278,6 +291,8 @@ static void handleTimeNow(AsyncWebServerRequest* request) {
 static void handleRebootAp(AsyncWebServerRequest* request);  // Forward declaration
 
 static void handleGetSystemInfo(AsyncWebServerRequest* request) {
+  REQUIRE_AUTH(request, RouteProtection::WRITE);
+
   // Buffer statique : ~24 champs (version, chip, memory, WiFi, uptime) = 1024 bytes
   StaticJsonDocument<1024> doc;
 
@@ -354,6 +369,16 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
     nullptr,
     handleSaveConfig
   );
+
+  // Route reboot - PROTÉGÉE (CRITICAL) - Redémarrage normal
+  server->on("/reboot", HTTP_POST, [restartApRequested, restartRequestedTime](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::CRITICAL);
+
+    *restartApRequested = true;
+    *restartRequestedTime = millis();
+    req->send(200, "text/plain", "Restart scheduled");
+    systemLogger.warning("Redémarrage demandé depuis l'interface web");
+  });
 
   // Route reboot-ap - PROTÉGÉE (CRITICAL)
   server->on("/reboot-ap", HTTP_POST, [restartApRequested, restartRequestedTime](AsyncWebServerRequest *req) {
