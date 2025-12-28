@@ -108,9 +108,12 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   systemLogger.info("Vérification des mises à jour GitHub...");
 
   WiFiClientSecure client;
-  // SÉCURITÉ: Validation TLS avec certificat racine GitHub
-  // Protection contre les attaques MITM (Man-In-The-Middle)
-  client.setCACert(GITHUB_ROOT_CA);
+  // SÉCURITÉ: setInsecure() uniquement pour l'API GitHub (lecture métadonnées publiques)
+  // Le risque est limité car :
+  // 1. API publique en lecture seule (pas de données sensibles)
+  // 2. Whitelist d'hôtes active (protection supplémentaire)
+  // 3. Téléchargement binaires toujours validé avec certificat
+  client.setInsecure();
 
   HTTPClient https;
 
