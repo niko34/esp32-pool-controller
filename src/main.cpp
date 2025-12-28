@@ -33,6 +33,43 @@ void applyTimeConfig();
 void checkSystemHealth();
 void checkPasswordResetButton();
 
+namespace {
+const char kPortalIconSvg[] PROGMEM = R"rawliteral(
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192" role="img" aria-label="PoolController">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6aa8ff"/>
+      <stop offset="1" stop-color="#2f6dff"/>
+    </linearGradient>
+  </defs>
+  <rect width="192" height="192" rx="36" fill="url(#g)"/>
+  <circle cx="96" cy="88" r="42" fill="#ffffff" opacity="0.9"/>
+  <path d="M62 120c10 12 23 18 34 18s24-6 34-18" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round"/>
+  <path d="M76 84a10 10 0 1 1 20 0" fill="none" stroke="#2f6dff" stroke-width="8" stroke-linecap="round"/>
+  <path d="M96 84a10 10 0 1 1 20 0" fill="none" stroke="#2f6dff" stroke-width="8" stroke-linecap="round"/>
+</svg>
+)rawliteral";
+
+void sendPortalIcon(AsyncWebServerRequest *request) {
+  
+  if (LittleFS.exists("/android-chrome-192x192.png")) {
+    
+    request->send(LittleFS, "/android-chrome-192x192.png", "image/png");
+    
+    return;
+  }
+
+  static bool warned = false;
+  if (!warned) {
+    systemLogger.warning("Icône portail AP absente dans LittleFS, fallback SVG utilisé");
+    warned = true;
+  }
+  AsyncWebServerResponse *response = request->beginResponse_P(200, "image/svg+xml", kPortalIconSvg);
+  response->addHeader("Cache-Control", "no-store");
+  request->send(response);
+}
+}  // namespace
+
 void setup() {
   Serial.begin(115200);
   delay(kSerialInitDelayMs);
@@ -172,9 +209,9 @@ bool setupWiFi() {
   AsyncWiFiManager wm(&httpServer, &dns);
 
   // Servir l'icône de l'application pour le portail AP
-  httpServer.on("/logo.png", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send(LittleFS, "/android-chrome-192x192.png", "image/png");
-  });
+  httpServer.on("/android-chrome-192x192.png", HTTP_GET, sendPortalIcon);
+  httpServer.on("/favicon.ico", HTTP_GET, sendPortalIcon);
+  httpServer.on("/apple-touch-icon.png", HTTP_GET, sendPortalIcon);
 
   // Style custom for AP portal to align with app UI
   const char* portalStyle = R"rawliteral(
@@ -214,6 +251,9 @@ bool setupWiFi() {
     border: 1px solid var(--stroke);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
+  }
+  form.portalap {
+    padding: 40px;
   }
   input, select {
     width: 100%;
@@ -257,7 +297,7 @@ bool setupWiFi() {
     display: grid;
     gap: 6px;
     justify-items: center;
-    margin: 4px 0 12px;
+    margin: 4px 0 0;
   }
   .pc-logo {
     width: 72px;
@@ -276,7 +316,7 @@ bool setupWiFi() {
   .pc-card {
     width: 100%;
     max-width: 420px;
-    margin: 8px auto;
+    margin: -10px auto;
     padding: 16px;
     background: var(--panel);
     border: 1px solid var(--stroke);
@@ -308,7 +348,6 @@ bool setupWiFi() {
     const header = document.createElement('div');
     header.className = 'pc-header';
     header.innerHTML =
-      '<img src="/logo.png" alt="PoolController" class="pc-logo">' +
       '<div class="pc-title">PoolController</div>' +
       '<div class="pc-sub">Point d\'accès: ' + (apName || 'PoolControllerAP') + '</div>';
     document.body.insertBefore(header, document.body.firstChild);
@@ -375,6 +414,38 @@ bool setupWiFi() {
       card.innerHTML = '<div class="pc-title">Identifiants enregistrés</div>' +
         '<div class="pc-sub">Connexion au réseau en cours. Si cela échoue, reconnectez-vous au point d&apos;accès.</div>';
       document.body.appendChild(card);
+    }
+
+    // Styliser la page Infos système
+    const dlElements = document.querySelectorAll('dl');
+    if (dlElements.length > 0 && document.title.includes('Info')) {
+      document.title = 'Informations système';
+      dlElements.forEach((dl) => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'pc-card';
+        dl.parentNode.insertBefore(wrapper, dl);
+        wrapper.appendChild(dl);
+
+        // Styliser les éléments dt/dd
+        const style = document.createElement('style');
+        style.textContent = `
+          .pc-card dl { margin: 0; }
+          .pc-card dt {
+            font-weight: 600;
+            color: var(--text);
+            margin-top: 12px;
+            font-size: 13px;
+          }
+          .pc-card dt:first-child { margin-top: 0; }
+          .pc-card dd {
+            margin: 4px 0 0 0;
+            color: var(--muted);
+            font-size: 14px;
+            word-break: break-all;
+          }
+        `;
+        document.head.appendChild(style);
+      });
     }
   });
 </script>
