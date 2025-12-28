@@ -1996,8 +1996,15 @@
 
       try {
         const res = await authFetch("/check-update");
-        if (!res.ok) throw new Error("Erreur vérification");
-        const data = await res.json();
+        let data = null;
+        if (!res.ok) {
+          try {
+            data = await res.json();
+          } catch (_) {}
+          const errMsg = data?.error || "Erreur vérification";
+          throw new Error(errMsg);
+        }
+        data = await res.json();
         latestRelease = data;
 
         $("#current_version").textContent = data.current_version;
@@ -2026,7 +2033,12 @@
           installBtn.disabled = true;
         }
       } catch (e) {
-        alert("Erreur vérification mise à jour.\nVérifie la connexion Internet.");
+        const msg = String(e?.message || "");
+        if (msg.includes("System time not synchronized")) {
+          alert("Heure non synchronisée.\nActive le NTP ou règle l'heure dans les réglages avant de vérifier les mises à jour.");
+        } else {
+          alert("Erreur vérification mise à jour.\nVérifie la connexion Internet.");
+        }
       } finally {
         checkBtn.textContent = "Vérifier";
         checkBtn.disabled = false;
@@ -2073,8 +2085,15 @@
         });
 
         clearInterval(t);
-        if (!fsRes.ok) throw new Error("FS download fail");
-        const fsJson = await fsRes.json();
+        let fsJson = null;
+        if (!fsRes.ok) {
+          try {
+            fsJson = await fsRes.json();
+          } catch (_) {}
+          const errMsg = fsJson?.error || "FS download fail";
+          throw new Error(errMsg);
+        }
+        fsJson = await fsRes.json();
         if (fsJson.status !== "success") throw new Error("FS install fail");
 
         bar.style.width = "50%";
@@ -2098,8 +2117,15 @@
         });
 
         clearInterval(t);
-        if (!fwRes.ok) throw new Error("FW download fail");
-        const fwJson = await fwRes.json();
+        let fwJson = null;
+        if (!fwRes.ok) {
+          try {
+            fwJson = await fwRes.json();
+          } catch (_) {}
+          const errMsg = fwJson?.error || "FW download fail";
+          throw new Error(errMsg);
+        }
+        fwJson = await fwRes.json();
 
         if (fwJson.status === "success") {
           bar.style.width = "100%";
@@ -2111,7 +2137,12 @@
           throw new Error("FW install fail");
         }
       } catch (e) {
-        alert("Erreur mise à jour:\n" + e.message);
+        const msg = String(e?.message || "");
+        if (msg.includes("System time not synchronized")) {
+          alert("Heure non synchronisée.\nActive le NTP ou règle l'heure dans les réglages avant de lancer la mise à jour.");
+        } else {
+          alert("Erreur mise à jour:\n" + e.message);
+        }
       } finally {
         checkBtn.disabled = false;
         // installBtn restera disabled si pas re-check

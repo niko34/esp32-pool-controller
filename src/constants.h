@@ -33,6 +33,10 @@ constexpr unsigned long kConfigMutexTimeoutMs = 1000;     // 1s - Timeout acquis
 // Sécurité - Réinitialisation mot de passe
 constexpr unsigned long kPasswordResetButtonHoldMs = 10000; // 10s - Maintien bouton pour reset
 
+// Sécurité - Rate limiting
+constexpr uint16_t kMaxRequestsPerMinute = 30;            // Limite globale par IP
+constexpr unsigned long kRateLimitWindowMs = 60000;       // Fenêtre de rate limit (1 min)
+
 // ============================================================================
 // MEMORY & BUFFER CONSTANTS - Limites mémoire et buffers
 // ============================================================================

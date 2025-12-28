@@ -16,6 +16,11 @@ void setupAuthRoutes(AsyncWebServer* server) {
   // Route: Login (PUBLIC - génère un token de session)
   server->on("/auth/login", HTTP_POST, [](AsyncWebServerRequest *req) {}, nullptr,
     [](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!authManager.checkRateLimit(req)) {
+        authManager.sendRateLimitExceeded(req);
+        return;
+      }
+
       JsonDocument doc;
       DeserializationError error = deserializeJson(doc, data, len);
 
@@ -51,6 +56,11 @@ void setupAuthRoutes(AsyncWebServer* server) {
   // Route: Changement de mot de passe (PUBLIC pour premier démarrage, sinon AUTH)
   server->on("/auth/change-password", HTTP_POST, [](AsyncWebServerRequest *req) {}, nullptr,
     [](AsyncWebServerRequest *req, uint8_t *data, size_t len, size_t index, size_t total) {
+      if (!authManager.checkRateLimit(req)) {
+        authManager.sendRateLimitExceeded(req);
+        return;
+      }
+
       JsonDocument doc;
       DeserializationError error = deserializeJson(doc, data, len);
 

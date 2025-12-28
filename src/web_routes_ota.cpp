@@ -9,6 +9,7 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <ArduinoJson.h>
+#include <time.h>
 
 // Variables pour gérer les redémarrages différés (partagées avec web_server)
 static bool* g_restartRequested = nullptr;
@@ -25,6 +26,19 @@ static const size_t ALLOWED_OTA_HOSTS_COUNT = sizeof(ALLOWED_OTA_HOSTS) / sizeof
 void initOtaContext(bool* restartRequested, unsigned long* restartRequestedTime) {
   g_restartRequested = restartRequested;
   g_restartRequestedTime = restartRequestedTime;
+}
+
+static bool isTimeSynchronized() {
+  time_t now = time(nullptr);
+  return now > 1609459200; // 2021-01-01
+}
+
+static bool ensureTimeForTls(AsyncWebServerRequest* request) {
+  if (!isTimeSynchronized()) {
+    sendErrorResponse(request, 503, "L'horloge système n'est pas synchronisée (La validation TLS nécessite un serveur NTP)");
+    return false;
+  }
+  return true;
 }
 
 // SÉCURITÉ: Valider que l'URL provient d'un hôte autorisé
@@ -108,12 +122,10 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   systemLogger.info("Vérification des mises à jour GitHub...");
 
   WiFiClientSecure client;
-  // SÉCURITÉ: setInsecure() uniquement pour l'API GitHub (lecture métadonnées publiques)
-  // Le risque est limité car :
-  // 1. API publique en lecture seule (pas de données sensibles)
-  // 2. Whitelist d'hôtes active (protection supplémentaire)
-  // 3. Téléchargement binaires toujours validé avec certificat
-  client.setInsecure();
+  if (!ensureTimeForTls(request)) {
+    return;
+  }
+  client.setCACert(GITHUB_ROOT_CA);
 
   HTTPClient https;
 
@@ -244,18 +256,10 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 
   // Créer un client HTTPS
   WiFiClientSecure client;
-  // SÉCURITÉ: setInsecure() nécessaire car validation certificat TLS échoue sur ESP32
-  // Limitations ESP32: mémoire insuffisante ou incompatibilité bibliothèque TLS
-  //
-  // MITIGATIONS en place:
-  // 1. Whitelist stricte d'hôtes (github.com, api.github.com, objects.githubusercontent.com)
-  // 2. HTTPS obligatoire (rejet URLs non-HTTPS en amont)
-  // 3. Route protégée par authentification + rate limiting
-  // 4. Téléchargement uniquement depuis releases GitHub officielles
-  //
-  // RISQUE RÉSIDUEL: Attaque MITM possible si attaquant contrôle le réseau
-  // Pour éliminer ce risque: ajouter vérification SHA256 des binaires
-  client.setInsecure();
+  if (!ensureTimeForTls(request)) {
+    return;
+  }
+  client.setCACert(GITHUB_ROOT_CA);
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);

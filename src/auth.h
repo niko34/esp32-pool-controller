@@ -5,6 +5,7 @@
 #include <ESPAsyncWebServer.h>
 #include <map>
 #include <vector>
+#include "constants.h"
 
 // Niveau de protection des routes
 enum class RouteProtection {
@@ -29,8 +30,8 @@ private:
 
   // Rate limiting (IP -> stats)
   std::map<String, RateLimitEntry> rateLimitMap;
-  static const uint16_t MAX_REQUESTS_PER_MINUTE = 30;
-  static const unsigned long RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+  static const uint16_t MAX_REQUESTS_PER_MINUTE = kMaxRequestsPerMinute;
+  static const unsigned long RATE_LIMIT_WINDOW_MS = kRateLimitWindowMs;
 
   // Génération de token aléatoire
   String generateRandomToken();
