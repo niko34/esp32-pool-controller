@@ -25,6 +25,7 @@ private:
   bool authEnabled = true;
   String adminPassword = "";
   String apiToken = "";
+  bool isFirstBoot = false;  // Premier démarrage (mot de passe par défaut)
 
   // Rate limiting (IP -> stats)
   std::map<String, RateLimitEntry> rateLimitMap;
@@ -51,6 +52,10 @@ public:
   void setApiToken(const String& token);
   String getApiToken() const { return apiToken; }
   void regenerateApiToken();
+
+  // Gestion premier démarrage
+  bool isFirstBootDetected() const { return isFirstBoot; }
+  void clearFirstBootFlag() { isFirstBoot = false; }
 
   // Vérification d'authentification
   bool checkAuth(AsyncWebServerRequest* req, RouteProtection level = RouteProtection::WRITE);

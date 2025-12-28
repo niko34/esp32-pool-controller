@@ -4,6 +4,7 @@
 #include "web_routes_control.h"
 #include "web_routes_data.h"
 #include "web_routes_ota.h"
+#include "web_routes_auth.h"
 #include "constants.h"
 #include "logger.h"
 #include <LittleFS.h>
@@ -25,7 +26,7 @@ void WebServerManager::begin(AsyncWebServer* webServer, DNSServer* dnsServer) {
   // Ajouter les en-têtes CORS pour toutes les requêtes
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type, X-Auth-Token");
 
   setupRoutes();
 
@@ -40,6 +41,7 @@ void WebServerManager::setupRoutes() {
   initOtaContext(&restartRequested, &restartRequestedTime);
 
   // Configurer les routes par domaine fonctionnel
+  setupAuthRoutes(server);  // Routes d'authentification (login, changement mot de passe, token)
   setupDataRoutes(server);
   setupConfigRoutes(server, &restartApRequested, &restartRequestedTime);
   setupCalibrationRoutes(server);
