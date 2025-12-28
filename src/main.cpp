@@ -6,6 +6,7 @@
 #include <LittleFS.h>
 #include <ESPmDNS.h>
 #include <esp_task_wdt.h>
+#include <Preferences.h>
 
 #include "config.h"
 #include "constants.h"
@@ -185,11 +186,28 @@ bool setupWiFi() {
 }
 
 void resetWiFiSettings() {
-  // Créer une instance temporaire de WiFiManager pour effacer les credentials
-  AsyncWiFiManager wm(&httpServer, &dns);
-
   systemLogger.warning("Effacement des credentials WiFi...");
-  wm.resetSettings();
+
+  // Méthode 1: Effacer via WiFi.disconnect()
+  WiFi.disconnect(true, true);  // disconnect(wifioff=true, eraseap=true)
+  delay(100);
+
+  // Méthode 2: Effacer l'espace de stockage Preferences utilisé par AsyncWiFiManager
+  // AsyncWiFiManager utilise le namespace "wifi" dans les Preferences
+  Preferences preferences;
+  if (preferences.begin("wifi", false)) {  // false = read/write
+    preferences.clear();  // Effacer TOUTES les données du namespace "wifi"
+    preferences.end();
+    systemLogger.info("Preferences 'wifi' effacées");
+  } else {
+    systemLogger.warning("Impossible d'ouvrir Preferences 'wifi'");
+  }
+
+  // Méthode 3: Effacer aussi les credentials WiFi natifs ESP32 (NVS partition nvs.net80211)
+  // Cela garantit un nettoyage complet
+  WiFi.mode(WIFI_OFF);
+  delay(100);
+
   systemLogger.info("Credentials WiFi effacés - Mode AP sera activé au prochain démarrage");
 }
 
