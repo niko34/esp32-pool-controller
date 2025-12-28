@@ -27,6 +27,7 @@ wifi_mode_t currentWifiMode = WIFI_MODE_NULL;
 
 // Déclaration des fonctions
 bool setupWiFi();
+void resetWiFiSettings();
 void applyTimeConfig();
 void checkSystemHealth();
 void checkPasswordResetButton();
@@ -181,6 +182,15 @@ bool setupWiFi() {
   systemLogger.info("IP: " + WiFi.localIP().toString());
   currentWifiMode = WiFi.getMode();
   return true;
+}
+
+void resetWiFiSettings() {
+  // Créer une instance temporaire de WiFiManager pour effacer les credentials
+  AsyncWiFiManager wm(&httpServer, &dns);
+
+  systemLogger.warning("Effacement des credentials WiFi...");
+  wm.resetSettings();
+  systemLogger.info("Credentials WiFi effacés - Mode AP sera activé au prochain démarrage");
 }
 
 void applyTimeConfig() {

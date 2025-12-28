@@ -14,6 +14,9 @@
 #include <ArduinoJson.h>
 #include <esp_ota_ops.h>
 
+// Fonction externe déclarée dans main.cpp pour effacer les credentials WiFi
+extern void resetWiFiSettings();
+
 // Contexte pour les buffers de configuration (partagé avec web_server)
 static std::map<AsyncWebServerRequest*, std::vector<uint8_t>>* g_configBuffers = nullptr;
 static std::map<AsyncWebServerRequest*, bool>* g_configErrors = nullptr;
@@ -381,12 +384,17 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
   });
 
   // Route reboot-ap - PROTÉGÉE (CRITICAL)
+  // Efface les credentials WiFi puis redémarre pour forcer le mode AP
   server->on("/reboot-ap", HTTP_POST, [restartApRequested, restartRequestedTime](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::CRITICAL);
 
+    systemLogger.warning("Redémarrage en mode AP demandé");
+
+    // Effacer les credentials WiFi AVANT de planifier le redémarrage
+    resetWiFiSettings();
+
     *restartApRequested = true;
     *restartRequestedTime = millis();
-    req->send(200, "text/plain", "Restart scheduled");
-    systemLogger.warning("Redémarrage en mode AP demandé");
+    req->send(200, "text/plain", "WiFi reset - AP mode will start after restart");
   });
 }
