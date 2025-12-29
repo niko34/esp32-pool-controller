@@ -163,9 +163,9 @@
           <!-- Cartes principales -->
           <div class="grid grid--status-cards">
             <!-- Carte Filtration -->
-            <div class="card card--status">
+            <div class="card card--status card--filtration">
               <div class="card__status-header">
-                <div class="card__status-icon">
+                <div class="card__status-icon card__status-icon--transparent">
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="7" y="9" width="10" height="8" rx="2"/>
                     <rect x="3" y="10" width="4" height="6" rx="1.5"/>
@@ -176,25 +176,32 @@
                 </div>
                 <div class="card__status-info">
                   <div class="card__status-label">Filtration</div>
-                  <div class="card__status-value" id="filtration-temp">--</div>
+                  <div class="card__status-state">
+                    <span class="state-badge state-badge--ok" id="detail-filtration-status">En marche</span>
+                  </div>
                 </div>
               </div>
-              <div class="card__status-body">
-                <div class="card__status-trend" id="filtration-trend">
-                  <span class="trend-arrow">→</span>
-                  <span class="trend-text">Stable</span>
+              <div class="card__body">
+                <div class="detail-row">
+                  <div class="detail-label">Mode</div>
+                  <div class="detail-value" id="detail-filtration-mode">Auto</div>
                 </div>
-                <div class="card__status-state" id="filtration-state">
-                  <span class="state-badge state-badge--ok">Auto</span>
+                <div class="detail-row">
+                  <div class="detail-label">Horaires</div>
+                  <div class="detail-value" id="detail-filtration-schedule">08:00 - 20:00</div>
                 </div>
-                <div class="card__status-updated" id="filtration-updated">Dernière MAJ : --:--</div>
+                <div class="detail-actions">
+                  <button class="btn btn--primary" id="detail-filtration-start">Démarrer</button>
+                  <button class="btn btn--secondary" id="detail-filtration-stop">Arrêter</button>
+                  <a href="#/filtration" class="btn btn--link">Configurer</a>
+                </div>
               </div>
             </div>
 
             <!-- Carte Éclairage -->
             <div class="card card--status">
               <div class="card__status-header">
-                <div class="card__status-icon">
+                <div class="card__status-icon card__status-icon--transparent">
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="12" cy="12" r="5"/>
                     <line x1="12" y1="1" x2="12" y2="3"/>
@@ -209,14 +216,20 @@
                 </div>
                 <div class="card__status-info">
                   <div class="card__status-label">Éclairage</div>
-                  <div class="card__status-value" id="lighting-value">--</div>
+                  <div class="card__status-state">
+                    <span class="state-badge state-badge--off" id="detail-lighting-status">Éteint</span>
+                  </div>
                 </div>
               </div>
-              <div class="card__status-body">
-                <div class="card__status-state" id="lighting-state">
-                  <span class="state-badge state-badge--off">Éteint</span>
+              <div class="card__body">
+                <div class="detail-row">
+                  <div class="detail-label">Prochain changement</div>
+                  <div class="detail-value" id="detail-lighting-next">--:--</div>
                 </div>
-                <div class="card__status-updated">Dernière MAJ : <span id="m-time">--:--</span></div>
+                <div class="detail-actions">
+                  <button class="btn btn--primary" id="detail-lighting-on">Allumer</button>
+                  <button class="btn btn--secondary" id="detail-lighting-off">Éteindre</button>
+                </div>
               </div>
             </div>
 
@@ -265,56 +278,6 @@
 
           <!-- Sections détaillées -->
           <div class="grid grid--details">
-            <!-- Détail Filtration -->
-            <div class="card card--detail">
-              <div class="card__head">
-                <div class="card__title">Filtration</div>
-              </div>
-              <div class="card__body">
-                <div class="detail-row">
-                  <div class="detail-label">Mode</div>
-                  <div class="detail-value" id="detail-filtration-mode">Auto</div>
-                </div>
-                <div class="detail-row">
-                  <div class="detail-label">Horaires</div>
-                  <div class="detail-value" id="detail-filtration-schedule">08:00 - 20:00</div>
-                </div>
-                <div class="detail-row">
-                  <div class="detail-label">État actuel</div>
-                  <div class="detail-value">
-                    <span class="state-badge state-badge--ok" id="detail-filtration-status">En marche</span>
-                  </div>
-                </div>
-                <div class="detail-actions">
-                  <button class="btn btn--primary" id="detail-filtration-start">Démarrer</button>
-                  <button class="btn btn--secondary" id="detail-filtration-stop">Arrêter</button>
-                  <a href="#/filtration" class="btn btn--link">Configurer</a>
-                </div>
-              </div>
-            </div>
-
-            <!-- Détail Éclairage -->
-            <div class="card card--detail">
-              <div class="card__head">
-                <div class="card__title">Éclairage</div>
-              </div>
-              <div class="card__body">
-                <div class="detail-row">
-                  <div class="detail-label">État actuel</div>
-                  <div class="detail-value">
-                    <span class="state-badge state-badge--off" id="detail-lighting-status">Éteint</span>
-                  </div>
-                </div>
-                <div class="detail-row">
-                  <div class="detail-label">Prochain changement</div>
-                  <div class="detail-value" id="detail-lighting-next">--:--</div>
-                </div>
-                <div class="detail-actions">
-                  <button class="btn btn--primary" id="detail-lighting-on">Allumer</button>
-                  <button class="btn btn--secondary" id="detail-lighting-off">Éteindre</button>
-                </div>
-              </div>
-            </div>
           </div>
         </section>
 
