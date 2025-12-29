@@ -695,6 +695,14 @@ input:focus, select:focus {
 .card--status {
   position: relative;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.card--status .card__body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
 }
 
 .card__status-header {
@@ -996,7 +1004,7 @@ input:focus, select:focus {
 .detail-actions {
   display: flex;
   gap: 8px;
-  margin-top: 6px;
+  margin-top: auto;
   padding-top: 12px;
   border-top: 1px solid var(--border);
 }
