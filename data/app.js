@@ -946,25 +946,18 @@
 
         // Ajouter les zones de fond rouge au-dessus et en-dessous de la plage idéale
         if (!mainChart.data.datasets[1]) {
-          // Zone rouge au-dessus de 7.4 (très transparente)
-          mainChart.data.datasets.push({
-            label: 'Zone hors plage (haute)',
-            data: mainChart.data.labels.map(() => 10),
-            backgroundColor: 'rgba(239, 68, 68, 0.08)',
-            borderWidth: 0,
-            fill: '+1',
-            pointRadius: 0,
-            tension: 0,
-            order: 10
-          });
           // Ligne de référence à 7.4 (maximum de la plage idéale)
           mainChart.data.datasets.push({
             label: 'pH Max (7.4)',
             data: mainChart.data.labels.map(() => 7.4),
             borderColor: 'rgba(239, 68, 68, 0.6)',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)',
             borderWidth: 2,
             borderDash: [5, 5],
-            fill: false,
+            fill: {
+              target: 'end',
+              above: 'rgba(239, 68, 68, 0.08)'
+            },
             pointRadius: 0,
             tension: 0,
             order: 5
@@ -974,30 +967,21 @@
             label: 'pH Min (7.0)',
             data: mainChart.data.labels.map(() => 7.0),
             borderColor: 'rgba(239, 68, 68, 0.6)',
+            backgroundColor: 'rgba(239, 68, 68, 0.08)',
             borderWidth: 2,
             borderDash: [5, 5],
-            fill: false,
+            fill: {
+              target: 'start',
+              below: 'rgba(239, 68, 68, 0.08)'
+            },
             pointRadius: 0,
             tension: 0,
             order: 5
           });
-          // Zone rouge en-dessous de 7.0 (très transparente)
-          mainChart.data.datasets.push({
-            label: 'Zone hors plage (basse)',
-            data: mainChart.data.labels.map(() => 1),
-            backgroundColor: 'rgba(239, 68, 68, 0.08)',
-            borderWidth: 0,
-            fill: '-1',
-            pointRadius: 0,
-            tension: 0,
-            order: 10
-          });
         } else {
           // Mettre à jour les datasets existants
-          mainChart.data.datasets[1].data = mainChart.data.labels.map(() => 10);
-          mainChart.data.datasets[2].data = mainChart.data.labels.map(() => 7.4);
-          mainChart.data.datasets[3].data = mainChart.data.labels.map(() => 7.0);
-          mainChart.data.datasets[4].data = mainChart.data.labels.map(() => 1);
+          mainChart.data.datasets[1].data = mainChart.data.labels.map(() => 7.4);
+          mainChart.data.datasets[2].data = mainChart.data.labels.map(() => 7.0);
         }
       } else {
         // Température: échelle automatique sans lignes de référence
