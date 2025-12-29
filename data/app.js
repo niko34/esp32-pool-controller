@@ -367,6 +367,10 @@
     const filtrationStart = $("#filtration_start")?.value || "08:00";
     const filtrationEnd = $("#filtration_end")?.value || "20:00";
 
+    const lightingScheduleMode = $("#lighting_schedule_mode")?.value || "disabled";
+    const lightingStartTime = $("#lighting_start_time")?.value || "20:00";
+    const lightingEndTime = $("#lighting_end_time")?.value || "23:00";
+
     return {
       enabled: mqttEnabled?.checked ?? true,
       server: $("#mqtt_server")?.value || "",
@@ -389,6 +393,9 @@
       filtration_mode: filtrationMode,
       filtration_start: filtrationStart,
       filtration_end: filtrationEnd,
+      lighting_schedule_enabled: lightingScheduleMode === "enabled",
+      lighting_start_time: lightingStartTime,
+      lighting_end_time: lightingEndTime,
     };
   }
 
@@ -2366,6 +2373,17 @@
       if ($("#filtration_mode").value === "manual") save();
     });
 
+    // Lighting schedule
+    $("#lighting_schedule_mode")?.addEventListener("change", () => {
+      const scheduleSettings = $("#lighting-schedule-settings");
+      if (scheduleSettings) {
+        scheduleSettings.style.display = $("#lighting_schedule_mode").value === "enabled" ? "block" : "none";
+      }
+      save();
+    });
+    $("#lighting_start_time")?.addEventListener("change", save);
+    $("#lighting_end_time")?.addEventListener("change", save);
+
     // pH / ORP regulation
     $("#ph_enabled")?.addEventListener("change", () => { updatePhControls(); save(); });
     $("#orp_enabled")?.addEventListener("change", () => { updateOrpControls(); save(); });
@@ -2640,64 +2658,18 @@
 
   // ========== LIGHTING SCHEDULE SETUP ==========
   function setupLightingSchedule() {
-    const scheduleMode = $("#lighting_schedule_mode");
-    const scheduleSettings = $("#lighting-schedule-settings");
-    const saveBtn = $("#save-lighting-schedule");
     const manualOnBtn = $("#lighting-manual-on");
     const manualOffBtn = $("#lighting-manual-off");
-
-    if (!scheduleMode) return;
-
-    // Toggle schedule settings visibility
-    scheduleMode.addEventListener("change", () => {
-      if (scheduleMode.value === "enabled") {
-        scheduleSettings.style.display = "block";
-      } else {
-        scheduleSettings.style.display = "none";
-      }
-    });
-
-    // Save lighting schedule
-    if (saveBtn) {
-      saveBtn.addEventListener("click", async () => {
-        const mode = scheduleMode.value;
-        const startTime = $("#lighting_start_time")?.value || "20:00";
-        const endTime = $("#lighting_end_time")?.value || "23:00";
-
-        const payload = {
-          lighting_schedule_enabled: mode === "enabled",
-          lighting_start_time: startTime,
-          lighting_end_time: endTime
-        };
-
-        try {
-          const response = await fetch("/api/config/lighting", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-          });
-
-          if (response.ok) {
-            showToast("Programmation de l'éclairage enregistrée", "success");
-            await loadConfig();
-          } else {
-            showToast("Erreur lors de l'enregistrement", "error");
-          }
-        } catch (error) {
-          console.error("Error saving lighting schedule:", error);
-          showToast("Erreur de connexion", "error");
-        }
-      });
-    }
 
     // Manual control buttons
     if (manualOnBtn) {
       manualOnBtn.addEventListener("click", async () => {
         try {
-          const response = await fetch("/api/lighting/on", { method: "POST" });
+          const response = await authFetch("/lighting/on", { method: "POST" });
           if (response.ok) {
             showToast("Éclairage allumé", "success");
             updateLightingStatus(true);
+            await loadConfig();
           }
         } catch (error) {
           console.error("Error turning on lighting:", error);
@@ -2709,10 +2681,11 @@
     if (manualOffBtn) {
       manualOffBtn.addEventListener("click", async () => {
         try {
-          const response = await fetch("/api/lighting/off", { method: "POST" });
+          const response = await authFetch("/lighting/off", { method: "POST" });
           if (response.ok) {
             showToast("Éclairage éteint", "success");
             updateLightingStatus(false);
+            await loadConfig();
           }
         } catch (error) {
           console.error("Error turning off lighting:", error);
