@@ -2650,6 +2650,9 @@
       loadConfig().catch(() => {});
     }, 15000);
 
+    // ========== FILTRATION MANUAL CONTROL ==========
+    setupFiltrationManualControl();
+
     // ========== LIGHTING SCHEDULE ==========
     setupLightingSchedule();
 
@@ -2721,6 +2724,77 @@
     } catch (error) {
       console.error("Error loading lighting config:", error);
     }
+  }
+
+  // ========== FILTRATION MANUAL CONTROL ==========
+  function setupFiltrationManualControl() {
+    const startBtn = $("#filtration-manual-start");
+    const stopBtn = $("#filtration-manual-stop");
+    const statusBadge = $("#filtration-current-status");
+
+    // Update status badge from config
+    function updateFiltrationStatus() {
+      const config = window._config || {};
+      if (statusBadge) {
+        const isRunning = config.filtration_running;
+        statusBadge.textContent = isRunning ? 'En marche' : 'Arrêtée';
+        statusBadge.className = 'state-badge ' + (isRunning ? 'state-badge--ok' : 'state-badge--off');
+      }
+    }
+
+    // Start filtration: switch to manual mode with current time to 23:59
+    if (startBtn) {
+      startBtn.addEventListener("click", async () => {
+        const now = new Date();
+        const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+        const payload = {
+          filtration_mode: "manual",
+          filtration_start: currentTime,
+          filtration_end: "23:59"
+        };
+
+        try {
+          const result = await sendConfig(payload);
+          if (result) {
+            showToast("Filtration démarrée", "success");
+            await loadConfig();
+            updateFiltrationStatus();
+          } else {
+            showToast("Erreur lors du démarrage", "error");
+          }
+        } catch (error) {
+          console.error("Error starting filtration:", error);
+          showToast("Erreur de connexion", "error");
+        }
+      });
+    }
+
+    // Stop filtration: switch to off mode
+    if (stopBtn) {
+      stopBtn.addEventListener("click", async () => {
+        const payload = {
+          filtration_mode: "off"
+        };
+
+        try {
+          const result = await sendConfig(payload);
+          if (result) {
+            showToast("Filtration arrêtée", "success");
+            await loadConfig();
+            updateFiltrationStatus();
+          } else {
+            showToast("Erreur lors de l'arrêt", "error");
+          }
+        } catch (error) {
+          console.error("Error stopping filtration:", error);
+          showToast("Erreur de connexion", "error");
+        }
+      });
+    }
+
+    // Initial status update
+    updateFiltrationStatus();
   }
 
   function updateLightingStatus(isOn) {
