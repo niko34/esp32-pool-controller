@@ -2624,7 +2624,138 @@
       // ne recharge pas tout en permanence si tu veux limiter la charge
       loadConfig().catch(() => {});
     }, 15000);
+
+    // ========== LIGHTING SCHEDULE ==========
+    setupLightingSchedule();
+
     perf?.end();
+  }
+
+  // ========== LIGHTING SCHEDULE SETUP ==========
+  function setupLightingSchedule() {
+    const scheduleMode = $("#lighting_schedule_mode");
+    const scheduleSettings = $("#lighting-schedule-settings");
+    const saveBtn = $("#save-lighting-schedule");
+    const manualOnBtn = $("#lighting-manual-on");
+    const manualOffBtn = $("#lighting-manual-off");
+
+    if (!scheduleMode) return;
+
+    // Toggle schedule settings visibility
+    scheduleMode.addEventListener("change", () => {
+      if (scheduleMode.value === "enabled") {
+        scheduleSettings.style.display = "block";
+      } else {
+        scheduleSettings.style.display = "none";
+      }
+    });
+
+    // Save lighting schedule
+    if (saveBtn) {
+      saveBtn.addEventListener("click", async () => {
+        const mode = scheduleMode.value;
+        const startTime = $("#lighting_start_time")?.value || "20:00";
+        const endTime = $("#lighting_end_time")?.value || "23:00";
+
+        const payload = {
+          lighting_schedule_enabled: mode === "enabled",
+          lighting_start_time: startTime,
+          lighting_end_time: endTime
+        };
+
+        try {
+          const response = await fetch("/api/config/lighting", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+
+          if (response.ok) {
+            showToast("Programmation de l'éclairage enregistrée", "success");
+            await loadConfig();
+          } else {
+            showToast("Erreur lors de l'enregistrement", "error");
+          }
+        } catch (error) {
+          console.error("Error saving lighting schedule:", error);
+          showToast("Erreur de connexion", "error");
+        }
+      });
+    }
+
+    // Manual control buttons
+    if (manualOnBtn) {
+      manualOnBtn.addEventListener("click", async () => {
+        try {
+          const response = await fetch("/api/lighting/on", { method: "POST" });
+          if (response.ok) {
+            showToast("Éclairage allumé", "success");
+            updateLightingStatus(true);
+          }
+        } catch (error) {
+          console.error("Error turning on lighting:", error);
+          showToast("Erreur de connexion", "error");
+        }
+      });
+    }
+
+    if (manualOffBtn) {
+      manualOffBtn.addEventListener("click", async () => {
+        try {
+          const response = await fetch("/api/lighting/off", { method: "POST" });
+          if (response.ok) {
+            showToast("Éclairage éteint", "success");
+            updateLightingStatus(false);
+          }
+        } catch (error) {
+          console.error("Error turning off lighting:", error);
+          showToast("Erreur de connexion", "error");
+        }
+      });
+    }
+
+    // Load current lighting config
+    loadLightingConfig();
+  }
+
+  async function loadLightingConfig() {
+    try {
+      const config = window._config || {};
+      const scheduleMode = $("#lighting_schedule_mode");
+      const scheduleSettings = $("#lighting-schedule-settings");
+
+      if (scheduleMode && config.lighting_schedule_enabled !== undefined) {
+        scheduleMode.value = config.lighting_schedule_enabled ? "enabled" : "disabled";
+        scheduleSettings.style.display = config.lighting_schedule_enabled ? "block" : "none";
+      }
+
+      if (config.lighting_start_time) {
+        const startInput = $("#lighting_start_time");
+        if (startInput) startInput.value = config.lighting_start_time;
+      }
+
+      if (config.lighting_end_time) {
+        const endInput = $("#lighting_end_time");
+        if (endInput) endInput.value = config.lighting_end_time;
+      }
+    } catch (error) {
+      console.error("Error loading lighting config:", error);
+    }
+  }
+
+  function updateLightingStatus(isOn) {
+    const statusBadge = $("#lighting-current-status");
+    const detailStatusBadge = $("#detail-lighting-status");
+
+    if (statusBadge) {
+      statusBadge.textContent = isOn ? "Allumé" : "Éteint";
+      statusBadge.className = isOn ? "state-badge state-badge--ok" : "state-badge state-badge--off";
+    }
+
+    if (detailStatusBadge) {
+      detailStatusBadge.textContent = isOn ? "Allumé" : "Éteint";
+      detailStatusBadge.className = isOn ? "state-badge state-badge--ok" : "state-badge state-badge--off";
+    }
   }
 
   window.addEventListener("DOMContentLoaded", init);

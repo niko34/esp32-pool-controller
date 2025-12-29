@@ -322,21 +322,61 @@
           </div>
         </section>
 
-        <!-- Lighting View (placeholder) -->
+        <!-- Lighting View -->
         <section class="view" id="view-lighting" data-view="/lighting">
           <div class="settingsHead">
             <div class="settingsHead__title">Éclairage</div>
-            <div class="settingsHead__sub">Contrôle de l'éclairage de la piscine</div>
+            <div class="settingsHead__sub">Contrôle et programmation de l'éclairage de la piscine</div>
           </div>
 
           <div class="card">
             <div class="card__head">
-              <div class="card__title">Éclairage</div>
+              <div class="card__title">Contrôle manuel</div>
             </div>
             <div class="card__body">
-              <div class="hint">
-                Fonctionnalité à venir
+              <div class="detail-row">
+                <div class="detail-label">État actuel</div>
+                <div class="detail-value">
+                  <span class="state-badge state-badge--off" id="lighting-current-status">Éteint</span>
+                </div>
               </div>
+              <div class="detail-actions">
+                <button class="btn btn--primary" id="lighting-manual-on">Allumer</button>
+                <button class="btn btn--secondary" id="lighting-manual-off">Éteindre</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card__head">
+              <div class="card__title">Programmation</div>
+            </div>
+            <div class="card__body">
+              <label class="field">
+                <span class="field__label">Mode de programmation</span>
+                <select id="lighting_schedule_mode">
+                  <option value="disabled">Désactivée</option>
+                  <option value="enabled">Activée</option>
+                </select>
+              </label>
+
+              <div id="lighting-schedule-settings" style="display:none;">
+                <label class="field">
+                  <span class="field__label">Heure de début</span>
+                  <input type="time" id="lighting_start_time" value="20:00" />
+                </label>
+
+                <label class="field">
+                  <span class="field__label">Heure de fin</span>
+                  <input type="time" id="lighting_end_time" value="23:00" />
+                </label>
+
+                <div class="hint">
+                  L'éclairage s'allumera automatiquement entre l'heure de début et l'heure de fin.
+                </div>
+              </div>
+
+              <button class="btn btn--primary" id="save-lighting-schedule">Enregistrer</button>
             </div>
           </div>
         </section>
