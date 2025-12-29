@@ -237,6 +237,20 @@ bool setupWiFi() {
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
     text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    min-height: 100vh;
+    box-sizing: border-box;
+    overflow-x: hidden;
+  }
+  * {
+    box-sizing: border-box;
+  }
+  body > div {
+    width: 100%;
+    max-width: 420px;
   }
   h1 { display: none; }
   h3 { display: none; }
@@ -244,7 +258,6 @@ bool setupWiFi() {
   a:hover { text-decoration: underline; }
   form {
     width: 100%;
-    max-width: 420px;
     margin: 14px auto;
     padding: 16px;
     background: var(--panel);
@@ -253,7 +266,7 @@ bool setupWiFi() {
     box-shadow: var(--shadow);
   }
   form.portalap {
-    padding: 40px;
+    padding: 24px;
   }
   input, select {
     width: 100%;
@@ -293,11 +306,17 @@ bool setupWiFi() {
   }
   a[href="#p"] + .q { margin-left: 8px; }
   .c { text-align: center; }
+  body > div > div {
+    width: 100%;
+    margin: 0;
+  }
   .pc-header {
     display: grid;
     gap: 6px;
     justify-items: center;
     margin: 4px 0 0;
+    text-align: center;
+    width: 100%;
   }
   .pc-logo {
     width: 72px;
