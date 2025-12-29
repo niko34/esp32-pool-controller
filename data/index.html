@@ -295,7 +295,25 @@
 
           <div class="card">
             <div class="card__head">
-              <div class="card__title">Filtration</div>
+              <div class="card__title">Contrôle manuel</div>
+            </div>
+            <div class="card__body">
+              <div class="detail-row">
+                <div class="detail-label">État actuel</div>
+                <div class="detail-value">
+                  <span class="state-badge state-badge--off" id="filtration-current-status">Arrêtée</span>
+                </div>
+              </div>
+              <div class="detail-actions">
+                <button class="btn btn--primary" id="filtration-manual-start">Démarrer</button>
+                <button class="btn btn--secondary" id="filtration-manual-stop">Arrêter</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card__head">
+              <div class="card__title">Programmation</div>
             </div>
             <div class="card__body">
               <label class="field">
