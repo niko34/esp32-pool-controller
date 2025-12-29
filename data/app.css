@@ -687,7 +687,8 @@ input:focus, select:focus {
 
 /* ========== CARTES STATUS ========== */
 .grid--status-cards {
-  grid-template-columns: repeat(4, 1fr);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 14px;
 }
 
@@ -714,17 +715,26 @@ input:focus, select:focus {
   flex-shrink: 0;
 }
 
+.card__status-icon--transparent {
+  background: transparent;
+}
+
 .card__status-info {
   flex: 1;
   min-width: 0;
 }
 
 .card__status-label {
-  font-size: 12px;
+  font-size: 16px;
   color: var(--muted);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.card__status-info .card__status-state {
+  margin-top: 0;
 }
 
 .card__status-value {
@@ -839,7 +849,7 @@ input:focus, select:focus {
 
 @media (max-width: 1200px) {
   .grid--status-cards {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   }
 }
 

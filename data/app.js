@@ -724,22 +724,6 @@
   }
 
   // ========== CARTES STATUS ==========
-  let tempHistory = []; // Stocke les 5 dernières valeurs pour la tendance
-
-  function calculateTrend(newValue) {
-    tempHistory.push(newValue);
-    if (tempHistory.length > 5) tempHistory.shift();
-
-    if (tempHistory.length < 3) return { arrow: '→', text: 'Stable' };
-
-    const recent = tempHistory.slice(-3);
-    const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
-    const diff = newValue - avg;
-
-    if (diff > 0.2) return { arrow: '↗', text: 'En hausse', class: 'trend-arrow--up' };
-    if (diff < -0.2) return { arrow: '↘', text: 'En baisse', class: 'trend-arrow--down' };
-    return { arrow: '→', text: 'Stable' };
-  }
 
   function getFiltrationState(config, data) {
     const isRunning = data && data.filtration_running;
@@ -765,47 +749,7 @@
     const config = window._config || {};
 
     // === FILTRATION ===
-    const filtrationTemp = $("#filtration-temp");
-    const filtrationTrend = $("#filtration-trend");
-    const filtrationState = $("#filtration-state");
-    const filtrationUpdated = $("#filtration-updated");
-
-    if (filtrationTemp && data.temperature != null) {
-      filtrationTemp.textContent = data.temperature.toFixed(1) + '°C';
-
-      // Tendance
-      if (filtrationTrend) {
-        const trend = calculateTrend(data.temperature);
-        filtrationTrend.innerHTML = `
-          <span class="trend-arrow ${trend.class || ''}">${trend.arrow}</span>
-          <span class="trend-text">${trend.text}</span>
-        `;
-      }
-    }
-
-    if (filtrationState) {
-      const state = getFiltrationState(config, data);
-      filtrationState.innerHTML = `<span class="state-badge ${state.class}">${state.text}</span>`;
-    }
-
-    if (filtrationUpdated) {
-      const now = new Date();
-      filtrationUpdated.textContent = 'Dernière MAJ : ' + now.toLocaleTimeString();
-    }
-
-    // === ÉCLAIRAGE ===
-    const lightingValue = $("#lighting-value");
-    const lightingState = $("#lighting-state");
-
-    if (lightingValue) {
-      // Pour l'instant, afficher un placeholder
-      lightingValue.textContent = '--';
-    }
-
-    if (lightingState) {
-      // État éclairage basé sur la config (à ajuster selon votre backend)
-      lightingState.innerHTML = '<span class="state-badge state-badge--off">Éteint</span>';
-    }
+    // Les cartes de filtration et éclairage compactes ont été supprimées et fusionnées avec les cartes détaillées
 
     // === pH COMPACT ===
     const compactPh = $("#compact-ph");
