@@ -260,10 +260,9 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     return;
   }
 
-  // IMPORTANT: Utiliser setInsecure() pour les téléchargements GitHub
-  // car les redirections vers objects.githubusercontent.com utilisent
-  // des certificats différents non couverts par GITHUB_ROOT_CA
-  client.setInsecure();
+  // Validation TLS complète avec certificats couvrant github.com ET objects.githubusercontent.com
+  // Le fichier github_root_ca.h contient les chaînes RSA et ECC pour tous les domaines GitHub
+  client.setCACert(GITHUB_ROOT_CA);
 
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
