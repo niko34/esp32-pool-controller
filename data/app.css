@@ -820,7 +820,7 @@ input:focus, select:focus {
 }
 
 .compact-label {
-  font-size: 12px;
+  font-size: 16px;
   color: var(--muted);
   font-weight: 700;
   text-transform: uppercase;
