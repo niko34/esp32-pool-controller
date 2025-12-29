@@ -95,19 +95,25 @@
   }
 
   // ---------- Charts (Dashboard) ----------
-  function createLineChart(ctx, color, label, integerOnly = false) {
+  function createLineChart(ctx, color, label, options = {}) {
+    const { integerOnly = false, yMin = null, yMax = null, annotation = null } = options;
+
     const yAxisConfig = {
       beginAtZero: false,
       grid: { color: 'rgba(0, 0, 0, 0.05)' },
       ticks: { color: '#6b7280' }
     };
+
+    if (yMin !== null) yAxisConfig.min = yMin;
+    if (yMax !== null) yAxisConfig.max = yMax;
+
     if (integerOnly) {
       yAxisConfig.ticks.callback = function (value) {
         if (Number.isInteger(value)) return value;
       };
     }
 
-    return new Chart(ctx, {
+    const chartConfig = {
       type: "line",
       data: {
         labels: [],
@@ -135,9 +141,14 @@
           },
           y: yAxisConfig,
         },
-        plugins: { legend: { display: false } },
+        plugins: {
+          legend: { display: false },
+          annotation: annotation ? { annotations: annotation } : undefined
+        },
       },
-    });
+    };
+
+    return new Chart(ctx, chartConfig);
   }
 
   function pushPoint(chart, value, label) {
@@ -801,9 +812,6 @@
       }
     });
 
-    // Mettre à jour le label et la valeur actuelle
-    updateChartCurrentValue();
-
     // Copier les données du graphique source vers le graphique principal
     const sourceChart = chartType === 'temperature' ? tempChart : chartType === 'ph' ? phChart : orpChart;
 
@@ -827,42 +835,60 @@
       mainChart.data.datasets[0].backgroundColor = colors[chartType] + '20';
       mainChart.data.datasets[0].label = labels[chartType];
 
-      // Gérer les entiers pour ORP
+      // Configurer l'échelle Y selon le type de graphique
       if (chartType === 'orp') {
+        // ORP: échelle fixe 400-1000 mV avec entiers uniquement
+        mainChart.options.scales.y.min = 400;
+        mainChart.options.scales.y.max = 1000;
         mainChart.options.scales.y.ticks.callback = function(value) {
           if (Number.isInteger(value)) return value;
         };
+
+        // Ajouter les lignes de référence ORP à 600mV et 800mV
+        if (!mainChart.data.datasets[1]) {
+          // Dataset pour la ligne à 600mV (minimum de la plage idéale)
+          mainChart.data.datasets.push({
+            label: 'ORP Min (600mV)',
+            data: mainChart.data.labels.map(() => 600),
+            borderColor: 'rgba(239, 68, 68, 0.6)',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            fill: false,
+            pointRadius: 0,
+            tension: 0
+          });
+          // Dataset pour la ligne à 800mV (maximum de la plage idéale)
+          mainChart.data.datasets.push({
+            label: 'ORP Max (800mV)',
+            data: mainChart.data.labels.map(() => 800),
+            borderColor: 'rgba(239, 68, 68, 0.6)',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            fill: false,
+            pointRadius: 0,
+            tension: 0
+          });
+        } else {
+          // Mettre à jour les datasets existants
+          mainChart.data.datasets[1].data = mainChart.data.labels.map(() => 600);
+          mainChart.data.datasets[2].data = mainChart.data.labels.map(() => 800);
+        }
       } else {
+        // Température et pH: échelle automatique
+        delete mainChart.options.scales.y.min;
+        delete mainChart.options.scales.y.max;
         delete mainChart.options.scales.y.ticks.callback;
+
+        // Supprimer les lignes de référence si elles existent
+        while (mainChart.data.datasets.length > 1) {
+          mainChart.data.datasets.pop();
+        }
       }
 
       mainChart.update('none');
     }
   }
 
-  function updateChartCurrentValue() {
-    if (!latestSensorData) return;
-
-    const valueLabel = $("#chart-value-label");
-    const valueNumber = $("#chart-value-number");
-
-    if (!valueLabel || !valueNumber) return;
-
-    const labels = {
-      temperature: 'Température actuelle',
-      ph: 'pH actuel',
-      orp: 'ORP actuel'
-    };
-
-    const values = {
-      temperature: latestSensorData.temperature != null ? latestSensorData.temperature.toFixed(1) + '°C' : '--',
-      ph: latestSensorData.ph != null ? (Math.round(latestSensorData.ph * 10) / 10).toFixed(1) : '--',
-      orp: latestSensorData.orp != null ? Math.round(latestSensorData.orp) + ' mV' : '--'
-    };
-
-    valueLabel.textContent = labels[currentChartType] || 'Valeur actuelle';
-    valueNumber.textContent = values[currentChartType] || '--';
-  }
 
   function bindChartTabs() {
     const tabs = document.querySelectorAll('.chart-tab');
@@ -1068,9 +1094,6 @@
         // Mettre à jour les alertes et cartes status
         updateAlerts();
         updateStatusCards();
-
-        // Mettre à jour la valeur actuelle du graphique
-        updateChartCurrentValue();
 
         // Mettre à jour les sections détaillées
         updateDetailSections();
@@ -2094,8 +2117,7 @@
         if (fwJson.status === "success") {
           bar.style.width = "100%";
           bar.textContent = "100%";
-          status.textContent = "✓ Mise à jour OK. Redémarrage…";
-          alert("Mise à jour OK. Rechargement dans ~30s.");
+          status.textContent = "✓ Mise à jour OK. Redémarrage dans 30 secondes…";
           setTimeout(() => window.location.reload(), 30000);
         } else {
           throw new Error("FW install fail");
@@ -2572,7 +2594,11 @@
     // Créer les graphiques cachés seulement s'ils existent (compatibilité)
     if (tempChartCanvas) tempChart = createLineChart(tempChartCanvas, "#4f8fff", "Température");
     if (phChartCanvas) phChart = createLineChart(phChartCanvas, "#8b5cf6", "pH");
-    if (orpChartCanvas) orpChart = createLineChart(orpChartCanvas, "#10b981", "ORP", true);
+    if (orpChartCanvas) orpChart = createLineChart(orpChartCanvas, "#10b981", "ORP", {
+      integerOnly: true,
+      yMin: 400,
+      yMax: 1000
+    });
 
     // Nouveau graphique principal avec onglets
     const mainChartCanvas = $("#mainChart");
