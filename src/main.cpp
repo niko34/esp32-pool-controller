@@ -15,6 +15,7 @@
 #include "sensors.h"
 #include "pump_controller.h"
 #include "filtration.h"
+#include "lighting.h"
 #include "mqtt_manager.h"
 #include "web_server.h"
 #include "history.h"
@@ -114,19 +115,8 @@ void setup() {
   sensors.begin();
   PumpController.begin();
   filtration.begin();
+  lighting.begin();
   history.begin();
-
-  // Initialisation relais éclairage
-  pinMode(LIGHTING_RELAY_PIN, OUTPUT);
-
-  // Appliquer l'état initial de l'éclairage
-  if (lightingCfg.enabled) {
-    digitalWrite(LIGHTING_RELAY_PIN, HIGH);
-    systemLogger.info("Éclairage activé au démarrage");
-  } else {
-    digitalWrite(LIGHTING_RELAY_PIN, LOW);
-    systemLogger.info("Éclairage désactivé au démarrage");
-  }
 
   // Configuration WiFi
   if (setupWiFi()) {
@@ -180,6 +170,9 @@ void loop() {
 
   // Contrôle filtration (s'exécute fréquemment pour précision)
   filtration.update();
+
+  // Contrôle éclairage
+  lighting.update();
 
   // Contrôle pompes dosage
   PumpController.update();

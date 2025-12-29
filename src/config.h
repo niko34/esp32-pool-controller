@@ -88,8 +88,11 @@ struct FiltrationConfig {
 };
 
 struct LightingConfig {
-  bool enabled = false;           // Éclairage ON/OFF
-  uint8_t brightness = 255;       // Luminosité PWM (0-255)
+  bool enabled = false;                // Éclairage ON/OFF manuel
+  uint8_t brightness = 255;            // Luminosité PWM (0-255)
+  bool scheduleEnabled = false;        // Programmation activée/désactivée
+  String startTime = "20:00";          // Heure de début (HH:MM)
+  String endTime = "23:00";            // Heure de fin (HH:MM)
 };
 
 struct AuthConfig {
