@@ -3,6 +3,7 @@
 #include "config.h"
 #include "auth.h"
 #include "pump_controller.h"
+#include "lighting.h"
 #include "logger.h"
 #include <Arduino.h>
 
@@ -35,21 +36,15 @@ void setupControlRoutes(AsyncWebServer* server) {
   // Routes pour contrôle de l'éclairage (relais) - PROTÉGÉES
   server->on("/lighting/on", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
-    lightingCfg.enabled = true;
-    digitalWrite(LIGHTING_RELAY_PIN, HIGH);
+    lighting.setManualOn();
     saveMqttConfig();
-
-    systemLogger.info("Éclairage activé");
     req->send(200, "text/plain", "OK");
   });
 
   server->on("/lighting/off", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
-    lightingCfg.enabled = false;
-    digitalWrite(LIGHTING_RELAY_PIN, LOW);
+    lighting.setManualOff();
     saveMqttConfig();
-
-    systemLogger.info("Éclairage désactivé");
     req->send(200, "text/plain", "OK");
   });
 }

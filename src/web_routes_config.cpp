@@ -5,6 +5,7 @@
 #include "auth.h"
 #include "sensors.h"
 #include "filtration.h"
+#include "lighting.h"
 #include "mqtt_manager.h"
 #include "pump_controller.h"
 #include "logger.h"
@@ -66,6 +67,9 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["filtration_running"] = filtration.isRunning();
   doc["lighting_enabled"] = lightingCfg.enabled;
   doc["lighting_brightness"] = lightingCfg.brightness;
+  doc["lighting_schedule_enabled"] = lightingCfg.scheduleEnabled;
+  doc["lighting_start_time"] = lightingCfg.startTime;
+  doc["lighting_end_time"] = lightingCfg.endTime;
   doc["wifi_ssid"] = WiFi.SSID();
   doc["wifi_ip"] = WiFi.localIP().toString();
   doc["wifi_mode"] = WiFi.getMode() == WIFI_MODE_AP ? "AP" : "STA";
@@ -205,6 +209,9 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["max_chlorine_ml_per_day"].isNull()) safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"];
   if (!doc["lighting_enabled"].isNull()) lightingCfg.enabled = doc["lighting_enabled"];
   if (!doc["lighting_brightness"].isNull()) lightingCfg.brightness = doc["lighting_brightness"];
+  if (!doc["lighting_schedule_enabled"].isNull()) lightingCfg.scheduleEnabled = doc["lighting_schedule_enabled"];
+  if (!doc["lighting_start_time"].isNull()) lightingCfg.startTime = doc["lighting_start_time"].as<String>();
+  if (!doc["lighting_end_time"].isNull()) lightingCfg.endTime = doc["lighting_end_time"].as<String>();
 
   // Calibration ORP
   if (!doc["orp_calibration_offset"].isNull()) {
@@ -258,6 +265,7 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
 
   sanitizePumpSelection();
   filtration.ensureTimesValid();
+  lighting.ensureTimesValid();
   ensureTimezoneValid();
   applyTimezoneEnv();
 

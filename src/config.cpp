@@ -134,6 +134,9 @@ void saveMqttConfig() {
   // Éclairage
   prefs.putBool("light_enabled", lightingCfg.enabled);
   prefs.putUChar("light_bright", lightingCfg.brightness);
+  prefs.putBool("light_sched_en", lightingCfg.scheduleEnabled);
+  prefs.putString("light_start", lightingCfg.startTime);
+  prefs.putString("light_end", lightingCfg.endTime);
 
   // Authentification
   prefs.putBool("auth_enabled", authCfg.enabled);
@@ -208,6 +211,9 @@ void loadMqttConfig() {
   // Éclairage
   lightingCfg.enabled = prefs.getBool("light_enabled", lightingCfg.enabled);
   lightingCfg.brightness = prefs.getUChar("light_bright", lightingCfg.brightness);
+  lightingCfg.scheduleEnabled = prefs.getBool("light_sched_en", lightingCfg.scheduleEnabled);
+  lightingCfg.startTime = prefs.getString("light_start", lightingCfg.startTime);
+  lightingCfg.endTime = prefs.getString("light_end", lightingCfg.endTime);
 
   // Authentification
   authCfg.enabled = prefs.getBool("auth_enabled", authCfg.enabled);
