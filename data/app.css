@@ -1028,6 +1028,13 @@ input:focus, select:focus {
   justify-content: center;
 }
 
+.btn:disabled,
+.btn[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 .btn--primary {
   background: var(--accent);
   color: white;
