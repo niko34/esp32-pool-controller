@@ -873,8 +873,69 @@
           mainChart.data.datasets[1].data = mainChart.data.labels.map(() => 600);
           mainChart.data.datasets[2].data = mainChart.data.labels.map(() => 800);
         }
+      } else if (chartType === 'ph') {
+        // pH: échelle automatique avec lignes de référence à 7.0 et 7.4
+        delete mainChart.options.scales.y.min;
+        delete mainChart.options.scales.y.max;
+        delete mainChart.options.scales.y.ticks.callback;
+
+        // Ajouter les zones de fond rouge au-dessus et en-dessous de la plage idéale
+        if (!mainChart.data.datasets[1]) {
+          // Zone rouge au-dessus de 7.4 (très transparente)
+          mainChart.data.datasets.push({
+            label: 'Zone hors plage (haute)',
+            data: mainChart.data.labels.map(() => 14),
+            backgroundColor: 'rgba(239, 68, 68, 0.08)',
+            borderWidth: 0,
+            fill: '+1',
+            pointRadius: 0,
+            tension: 0,
+            order: 10
+          });
+          // Ligne de référence à 7.4 (maximum de la plage idéale)
+          mainChart.data.datasets.push({
+            label: 'pH Max (7.4)',
+            data: mainChart.data.labels.map(() => 7.4),
+            borderColor: 'rgba(239, 68, 68, 0.6)',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            fill: false,
+            pointRadius: 0,
+            tension: 0,
+            order: 5
+          });
+          // Ligne de référence à 7.0 (minimum de la plage idéale)
+          mainChart.data.datasets.push({
+            label: 'pH Min (7.0)',
+            data: mainChart.data.labels.map(() => 7.0),
+            borderColor: 'rgba(239, 68, 68, 0.6)',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            fill: false,
+            pointRadius: 0,
+            tension: 0,
+            order: 5
+          });
+          // Zone rouge en-dessous de 7.0 (très transparente)
+          mainChart.data.datasets.push({
+            label: 'Zone hors plage (basse)',
+            data: mainChart.data.labels.map(() => 0),
+            backgroundColor: 'rgba(239, 68, 68, 0.08)',
+            borderWidth: 0,
+            fill: '-1',
+            pointRadius: 0,
+            tension: 0,
+            order: 10
+          });
+        } else {
+          // Mettre à jour les datasets existants
+          mainChart.data.datasets[1].data = mainChart.data.labels.map(() => 14);
+          mainChart.data.datasets[2].data = mainChart.data.labels.map(() => 7.4);
+          mainChart.data.datasets[3].data = mainChart.data.labels.map(() => 7.0);
+          mainChart.data.datasets[4].data = mainChart.data.labels.map(() => 0);
+        }
       } else {
-        // Température et pH: échelle automatique
+        // Température: échelle automatique sans lignes de référence
         delete mainChart.options.scales.y.min;
         delete mainChart.options.scales.y.max;
         delete mainChart.options.scales.y.ticks.callback;
