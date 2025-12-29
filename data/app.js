@@ -895,15 +895,22 @@
     // === ÉCLAIRAGE ===
     const detailLightingStatus = $("#detail-lighting-status");
     if (detailLightingStatus) {
-      // Pour l'instant, placeholder - à ajuster selon votre backend
-      detailLightingStatus.textContent = 'Éteint';
-      detailLightingStatus.className = 'state-badge state-badge--off';
+      const isOn = config.lighting_enabled;
+      detailLightingStatus.textContent = isOn ? 'Allumé' : 'Éteint';
+      detailLightingStatus.className = 'state-badge ' + (isOn ? 'state-badge--ok' : 'state-badge--off');
     }
 
-    const detailLightingNext = $("#detail-lighting-next");
-    if (detailLightingNext) {
-      // Pour l'instant, placeholder - à ajuster selon votre backend
-      detailLightingNext.textContent = '--:--';
+    const detailLightingMode = $("#detail-lighting-mode");
+    if (detailLightingMode) {
+      const scheduleEnabled = config.lighting_schedule_enabled;
+      detailLightingMode.textContent = scheduleEnabled ? 'Programmation activée' : 'Programmation désactivée';
+    }
+
+    const detailLightingSchedule = $("#detail-lighting-schedule");
+    if (detailLightingSchedule) {
+      const startTime = config.lighting_start_time || '20:00';
+      const endTime = config.lighting_end_time || '23:00';
+      detailLightingSchedule.textContent = startTime + ' - ' + endTime;
     }
   }
 
