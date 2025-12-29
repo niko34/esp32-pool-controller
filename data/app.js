@@ -162,6 +162,58 @@
     chart.update("none");
   }
 
+  function initializePhReferenceLines(chart) {
+    // Ajouter les zones de fond rouge et lignes de référence pour le pH
+    if (chart && chart.data.datasets.length === 1) {
+      // Zone rouge au-dessus de 7.4 (très transparente)
+      chart.data.datasets.push({
+        label: 'Zone hors plage (haute)',
+        data: [],
+        backgroundColor: 'rgba(239, 68, 68, 0.08)',
+        borderWidth: 0,
+        fill: '+1',
+        pointRadius: 0,
+        tension: 0,
+        order: 10
+      });
+      // Ligne de référence à 7.4 (maximum de la plage idéale)
+      chart.data.datasets.push({
+        label: 'pH Max (7.4)',
+        data: [],
+        borderColor: 'rgba(239, 68, 68, 0.6)',
+        borderWidth: 2,
+        borderDash: [5, 5],
+        fill: false,
+        pointRadius: 0,
+        tension: 0,
+        order: 5
+      });
+      // Ligne de référence à 7.0 (minimum de la plage idéale)
+      chart.data.datasets.push({
+        label: 'pH Min (7.0)',
+        data: [],
+        borderColor: 'rgba(239, 68, 68, 0.6)',
+        borderWidth: 2,
+        borderDash: [5, 5],
+        fill: false,
+        pointRadius: 0,
+        tension: 0,
+        order: 5
+      });
+      // Zone rouge en-dessous de 7.0 (très transparente)
+      chart.data.datasets.push({
+        label: 'Zone hors plage (basse)',
+        data: [],
+        backgroundColor: 'rgba(239, 68, 68, 0.08)',
+        borderWidth: 0,
+        fill: '-1',
+        pointRadius: 0,
+        tension: 0,
+        order: 10
+      });
+    }
+  }
+
   async function loadHistoricalData(range = '24h') {
     try {
       const response = await authFetch(`/get-history?range=${range}`);
@@ -182,6 +234,12 @@
       if (phChart) {
         phChart.data.labels = [];
         phChart.data.datasets[0].data = [];
+        // Clear reference lines data if they exist
+        if (phChart.data.datasets.length > 1) {
+          for (let i = 1; i < phChart.data.datasets.length; i++) {
+            phChart.data.datasets[i].data = [];
+          }
+        }
       }
       if (orpChart) {
         orpChart.data.labels = [];
@@ -201,6 +259,13 @@
         if (point.ph != null && !isNaN(point.ph) && phChart) {
           phChart.data.labels.push(label);
           phChart.data.datasets[0].data.push(Math.round(point.ph * 10) / 10);
+          // Ajouter les valeurs pour les lignes de référence
+          if (phChart.data.datasets.length > 1) {
+            phChart.data.datasets[1].data.push(10);   // Zone haute
+            phChart.data.datasets[2].data.push(7.4);  // Ligne max
+            phChart.data.datasets[3].data.push(7.0);  // Ligne min
+            phChart.data.datasets[4].data.push(1);    // Zone basse
+          }
         }
 
         if (point.orp != null && !isNaN(point.orp) && orpChart) {
@@ -874,9 +939,9 @@
           mainChart.data.datasets[2].data = mainChart.data.labels.map(() => 800);
         }
       } else if (chartType === 'ph') {
-        // pH: échelle automatique avec lignes de référence à 7.0 et 7.4
-        delete mainChart.options.scales.y.min;
-        delete mainChart.options.scales.y.max;
+        // pH: échelle fixe 1-10 avec lignes de référence à 7.0 et 7.4
+        mainChart.options.scales.y.min = 1;
+        mainChart.options.scales.y.max = 10;
         delete mainChart.options.scales.y.ticks.callback;
 
         // Ajouter les zones de fond rouge au-dessus et en-dessous de la plage idéale
@@ -884,7 +949,7 @@
           // Zone rouge au-dessus de 7.4 (très transparente)
           mainChart.data.datasets.push({
             label: 'Zone hors plage (haute)',
-            data: mainChart.data.labels.map(() => 14),
+            data: mainChart.data.labels.map(() => 10),
             backgroundColor: 'rgba(239, 68, 68, 0.08)',
             borderWidth: 0,
             fill: '+1',
@@ -919,7 +984,7 @@
           // Zone rouge en-dessous de 7.0 (très transparente)
           mainChart.data.datasets.push({
             label: 'Zone hors plage (basse)',
-            data: mainChart.data.labels.map(() => 0),
+            data: mainChart.data.labels.map(() => 1),
             backgroundColor: 'rgba(239, 68, 68, 0.08)',
             borderWidth: 0,
             fill: '-1',
@@ -929,10 +994,10 @@
           });
         } else {
           // Mettre à jour les datasets existants
-          mainChart.data.datasets[1].data = mainChart.data.labels.map(() => 14);
+          mainChart.data.datasets[1].data = mainChart.data.labels.map(() => 10);
           mainChart.data.datasets[2].data = mainChart.data.labels.map(() => 7.4);
           mainChart.data.datasets[3].data = mainChart.data.labels.map(() => 7.0);
-          mainChart.data.datasets[4].data = mainChart.data.labels.map(() => 0);
+          mainChart.data.datasets[4].data = mainChart.data.labels.map(() => 1);
         }
       } else {
         // Température: échelle automatique sans lignes de référence
@@ -2654,7 +2719,14 @@
 
     // Créer les graphiques cachés seulement s'ils existent (compatibilité)
     if (tempChartCanvas) tempChart = createLineChart(tempChartCanvas, "#4f8fff", "Température");
-    if (phChartCanvas) phChart = createLineChart(phChartCanvas, "#8b5cf6", "pH");
+    if (phChartCanvas) {
+      phChart = createLineChart(phChartCanvas, "#8b5cf6", "pH", {
+        yMin: 1,
+        yMax: 10
+      });
+      // Initialiser les lignes de référence du pH dès la création
+      initializePhReferenceLines(phChart);
+    }
     if (orpChartCanvas) orpChart = createLineChart(orpChartCanvas, "#10b981", "ORP", {
       integerOnly: true,
       yMin: 400,
