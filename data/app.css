@@ -818,13 +818,18 @@ input:focus, select:focus {
   color: var(--muted);
 }
 
-/* Cartes compactes pour pH/ORP */
+/* Cartes compactes pour pH/ORP/Température */
 .card--compact {
   padding: 16px;
+  min-height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .card__status-compact {
   text-align: center;
+  width: 100%;
 }
 
 .compact-label {

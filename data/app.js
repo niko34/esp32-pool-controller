@@ -779,6 +779,12 @@
     if (compactOrpTarget && config.orp_target != null) {
       compactOrpTarget.textContent = Math.round(config.orp_target);
     }
+
+    // === TEMPÉRATURE COMPACT ===
+    const compactTemperature = $("#compact-temperature");
+    if (compactTemperature && data.temperature != null) {
+      compactTemperature.innerHTML = (Math.round(data.temperature * 10) / 10).toFixed(1) + '<span class="compact-unit">°C</span>';
+    }
   }
 
   // ========== GRAPHIQUE AVEC ONGLETS ==========
