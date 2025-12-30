@@ -801,7 +801,9 @@
     const tz = cfg.timezone_id || "europe_paris";
     if ($(`#time_timezone option[value="${tz}"]`)) $("#time_timezone").value = tz;
 
-    const timeValue = cfg.manual_time || cfg.time_current || "";
+    const timeValue = (cfg.time_use_ntp !== false)
+      ? (cfg.time_current || "")
+      : (cfg.manual_time || cfg.time_current || "");
     $("#time_value").value = timeValue;
     updateTimeControls(timeValue);
 
@@ -1289,22 +1291,42 @@
 
     if (startBtn) {
       startBtn.addEventListener('click', async () => {
+        const now = new Date();
+        const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        const payload = {
+          filtration_mode: "manual",
+          filtration_start: currentTime,
+          filtration_end: "23:59"
+        };
         try {
-          await authFetch('/filtration-start', { method: 'POST' });
-          setTimeout(loadSensorData, 500);
+          const result = await sendConfig(payload);
+          if (result) {
+            showToast("Filtration démarrée", "success");
+            await loadConfig();
+          } else {
+            showToast("Erreur lors du démarrage", "error");
+          }
         } catch (e) {
           console.error('Erreur démarrage filtration:', e);
+          showToast("Erreur de connexion", "error");
         }
       });
     }
 
     if (stopBtn) {
       stopBtn.addEventListener('click', async () => {
+        const payload = { filtration_mode: "off" };
         try {
-          await authFetch('/filtration-stop', { method: 'POST' });
-          setTimeout(loadSensorData, 500);
+          const result = await sendConfig(payload);
+          if (result) {
+            showToast("Filtration arrêtée", "success");
+            await loadConfig();
+          } else {
+            showToast("Erreur lors de l'arrêt", "error");
+          }
         } catch (e) {
           console.error('Erreur arrêt filtration:', e);
+          showToast("Erreur de connexion", "error");
         }
       });
     }

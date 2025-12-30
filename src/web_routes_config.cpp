@@ -273,6 +273,9 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     filtration.computeAutoSchedule();
   }
 
+  // Appliquer immédiatement la nouvelle configuration de filtration
+  filtration.update();
+
   PumpController.resetDosingStates();
   saveMqttConfig();
   mqttManager.requestReconnect();

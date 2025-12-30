@@ -66,12 +66,13 @@ unsigned long getCurrentEpoch(bool* synced, bool* estimated) {
 void HistoryManager::begin() {
   if (historyFs.begin(true, "/history", 5, "history")) {
     historyStore = &historyFs;
-    historyFilePath = "/history/history.json";
-    systemLogger.info("Partition historique dédiée montée");
-  } else {
-    historyStore = &LittleFS;
     historyFilePath = "/history.json";
-    systemLogger.warning("Partition historique dédiée indisponible, fallback LittleFS");
+    systemLogger.info("Partition historique dédiée montée");
+  }
+  else {
+    systemLogger.info("Partition historique absente. Gestionnaire d'historique en erreur.");
+    historyEnabled = false;
+    return;
   }
 
   loadClockPrefs();
@@ -80,6 +81,7 @@ void HistoryManager::begin() {
 }
 
 void HistoryManager::update() {
+  if (!historyEnabled) return;
   unsigned long now = millis();
 
   // Enregistrer un point toutes les 5 minutes
@@ -88,20 +90,16 @@ void HistoryManager::update() {
     lastRecord = now;
   }
 
-  // Consolider les données toutes les heures
-  if (now - lastConsolidation >= CONSOLIDATION_INTERVAL) {
-    consolidateData();
-    lastConsolidation = now;
-  }
-
   // Sauvegarder sur fichier toutes les heures
-  if (now - lastSave >= 3600000) {
+  if (now - lastSave >= SAVE_INTERVAL) {
+    consolidateData();
     saveToFile();
     lastSave = now;
   }
 }
 
 void HistoryManager::recordDataPoint() {
+  if (!historyEnabled) return;
   bool synced = false;
   bool estimated = false;
   unsigned long nowEpoch = getCurrentEpoch(&synced, &estimated);
@@ -158,6 +156,7 @@ void HistoryManager::recordDataPoint() {
 }
 
 void HistoryManager::saveToFile() {
+  if (!historyEnabled) return;
   File f = historyStore->open(historyFilePath, "w");
   if (!f) {
     systemLogger.error("Impossible de sauvegarder l'historique");
@@ -190,6 +189,7 @@ void HistoryManager::saveToFile() {
 }
 
 void HistoryManager::loadFromFile() {
+  if (!historyEnabled) return;
   if (!historyStore->exists(historyFilePath)) {
     systemLogger.info("Aucun historique existant");
     return;
@@ -298,6 +298,7 @@ std::vector<DataPoint> HistoryManager::getAllData() {
 }
 
 void HistoryManager::consolidateData() {
+  if (!historyEnabled) return;
   bool synced = false;
   bool estimated = false;
   unsigned long now = getCurrentEpoch(&synced, &estimated);
@@ -521,6 +522,7 @@ void HistoryManager::consolidateData() {
 }
 
 void HistoryManager::clearHistory() {
+  if (!historyEnabled) return;
   memoryBuffer.clear();
   historyStore->remove(historyFilePath);
   systemLogger.warning("Historique effacé");
