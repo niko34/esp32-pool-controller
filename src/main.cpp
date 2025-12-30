@@ -34,43 +34,6 @@ void applyTimeConfig();
 void checkSystemHealth();
 void checkPasswordResetButton();
 
-namespace {
-const char kPortalIconSvg[] PROGMEM = R"rawliteral(
-<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192" role="img" aria-label="PoolController">
-  <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#6aa8ff"/>
-      <stop offset="1" stop-color="#2f6dff"/>
-    </linearGradient>
-  </defs>
-  <rect width="192" height="192" rx="36" fill="url(#g)"/>
-  <circle cx="96" cy="88" r="42" fill="#ffffff" opacity="0.9"/>
-  <path d="M62 120c10 12 23 18 34 18s24-6 34-18" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round"/>
-  <path d="M76 84a10 10 0 1 1 20 0" fill="none" stroke="#2f6dff" stroke-width="8" stroke-linecap="round"/>
-  <path d="M96 84a10 10 0 1 1 20 0" fill="none" stroke="#2f6dff" stroke-width="8" stroke-linecap="round"/>
-</svg>
-)rawliteral";
-
-void sendPortalIcon(AsyncWebServerRequest *request) {
-  
-  if (LittleFS.exists("/android-chrome-192x192.png")) {
-    
-    request->send(LittleFS, "/android-chrome-192x192.png", "image/png");
-    
-    return;
-  }
-
-  static bool warned = false;
-  if (!warned) {
-    systemLogger.warning("Icône portail AP absente dans LittleFS, fallback SVG utilisé");
-    warned = true;
-  }
-  AsyncWebServerResponse *response = request->beginResponse_P(200, "image/svg+xml", kPortalIconSvg);
-  response->addHeader("Cache-Control", "no-store");
-  request->send(response);
-}
-}  // namespace
-
 void setup() {
   Serial.begin(115200);
   delay(kSerialInitDelayMs);
@@ -200,11 +163,6 @@ bool setupWiFi() {
   WiFi.mode(WIFI_STA);
   currentWifiMode = WiFi.getMode();
   AsyncWiFiManager wm(&httpServer, &dns);
-
-  // Servir l'icône de l'application pour le portail AP
-  httpServer.on("/android-chrome-192x192.png", HTTP_GET, sendPortalIcon);
-  httpServer.on("/favicon.ico", HTTP_GET, sendPortalIcon);
-  httpServer.on("/apple-touch-icon.png", HTTP_GET, sendPortalIcon);
 
   // Style custom for AP portal to align with app UI
   const char* portalStyle = R"rawliteral(
