@@ -36,9 +36,9 @@ private:
   std::vector<DataPoint> memoryBuffer;
   unsigned long lastSave = 0;
   unsigned long lastRecord = 0;
-  unsigned long lastConsolidation = 0;
   const unsigned long RECORD_INTERVAL = 300000; // 5 minutes
-  const unsigned long CONSOLIDATION_INTERVAL = 3600000; // 1 heure
+  const unsigned long SAVE_INTERVAL = 300000; // 5 minutes
+  bool historyEnabled = true;
   bool legacyHistoryPending = false;
   unsigned long legacyMaxTimestamp = 0;
 

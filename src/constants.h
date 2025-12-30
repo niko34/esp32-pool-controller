@@ -6,7 +6,7 @@
 // ============================================================================
 
 // Delays système
-constexpr unsigned long kSerialInitDelayMs = 1000;        // Attente après Serial.begin()
+constexpr unsigned long kSerialInitDelayMs = 3000;        // Attente après Serial.begin()
 constexpr unsigned long kLoopDelayMs = 10;                // Délai minimal entre cycles loop()
 constexpr unsigned long kOtaYieldDelayMs = 1;             // Délai yield() pendant OTA
 
