@@ -10,7 +10,23 @@
 
 HistoryManager history;
 
+namespace {
+fs::LittleFSFS historyFs;
+fs::FS* historyStore = &LittleFS;
+const char* historyFilePath = "/history.json";
+}  // namespace
+
 void HistoryManager::begin() {
+  if (historyFs.begin(true, "/history", 5, "history")) {
+    historyStore = &historyFs;
+    historyFilePath = "/history/history.json";
+    systemLogger.info("Partition historique dédiée montée");
+  } else {
+    historyStore = &LittleFS;
+    historyFilePath = "/history.json";
+    systemLogger.warning("Partition historique dédiée indisponible, fallback LittleFS");
+  }
+
   loadFromFile();
   systemLogger.info("Gestionnaire d'historique initialisé");
 }
@@ -76,7 +92,7 @@ void HistoryManager::recordDataPoint() {
 }
 
 void HistoryManager::saveToFile() {
-  File f = LittleFS.open("/history.json", "w");
+  File f = historyStore->open(historyFilePath, "w");
   if (!f) {
     systemLogger.error("Impossible de sauvegarder l'historique");
     return;
@@ -108,12 +124,12 @@ void HistoryManager::saveToFile() {
 }
 
 void HistoryManager::loadFromFile() {
-  if (!LittleFS.exists("/history.json")) {
+  if (!historyStore->exists(historyFilePath)) {
     systemLogger.info("Aucun historique existant");
     return;
   }
 
-  File f = LittleFS.open("/history.json", "r");
+  File f = historyStore->open(historyFilePath, "r");
   if (!f) {
     systemLogger.error("Impossible de charger l'historique");
     return;
@@ -151,7 +167,12 @@ std::vector<DataPoint> HistoryManager::getLastHours(int hours) {
   std::vector<DataPoint> result;
   if (memoryBuffer.empty()) return result;
 
-  unsigned long cutoff = (millis() / kMillisToSeconds) - (hours * kSecondsPerHour);
+  unsigned long now = millis() / kMillisToSeconds;
+  unsigned long rangeSeconds = hours * kSecondsPerHour;
+  if (now < rangeSeconds) {
+    return memoryBuffer;
+  }
+  unsigned long cutoff = now - rangeSeconds;
 
   for (const auto& point : memoryBuffer) {
     if (point.timestamp >= cutoff) {
@@ -383,6 +404,6 @@ void HistoryManager::consolidateData() {
 
 void HistoryManager::clearHistory() {
   memoryBuffer.clear();
-  LittleFS.remove("/history.json");
+  historyStore->remove(historyFilePath);
   systemLogger.warning("Historique effacé");
 }

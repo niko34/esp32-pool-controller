@@ -1,4 +1,4 @@
-# Quick Start Guide - ESP32 Pool Controller v2.0
+# Quick Start Guide - ESP32 Pool Controller
 
 ## 🚀 Mise en Route Rapide (30 minutes)
 
@@ -12,13 +12,14 @@
 ✅ **Logiciels:**
 - VS Code installé
 - Extension PlatformIO installée
+- Python 3 (pour minification)
 
 ### Étape 1: Installation (5 min)
 
 ```bash
 # 1. Télécharger le projet
-git clone <votre-repo>
-cd esp32_pool_controller
+git clone https://github.com/niko34/esp32-pool-controller.git
+cd esp32-pool-controller
 
 # 2. Ouvrir avec VS Code
 code .
@@ -27,72 +28,64 @@ code .
 # Attendre que les dépendances se téléchargent
 ```
 
-### Étape 2: Configuration Initiale (5 min)
+### Étape 2: Configuration Port Série
 
-**⚠️ IMPORTANT**: Désactiver le mode simulation avant utilisation réelle !
+**Éditer `platformio.ini` lignes 9-10:**
 
-Éditer `src/config.h` ligne 64:
-
-```cpp
-struct SimulationConfig {
-  bool enabled = false;  // ← METTRE À false POUR PRODUCTION
-  // ...
-};
+```ini
+upload_port = /dev/cu.usbserial-210  # À adapter selon votre système
+monitor_port = /dev/cu.usbserial-210
 ```
 
-**Autres paramètres à vérifier:**
-
-```cpp
-struct MqttConfig {
-  // ...
-  float phTarget = 7.2f;      // Ajuster selon votre piscine
-  float orpTarget = 650.0f;   // 650-750 mV recommandé
-};
-
-struct SafetyLimits {
-  float maxPhMinusMlPerDay = 500.0f;  // Ajuster selon volume
-  float maxChlorineMlPerDay = 300.0f; // Ajuster selon volume
-};
+**Identifier votre port:**
+```bash
+pio device list
 ```
 
-**Calcul limites journalières:**
-```
-Volume piscine = 40 m³
-pH- pour baisser de 0.1 pH ≈ 0.3L pour 10m³
-→ Max raisonnable = 500 ml/jour pour 40m³
-
-Chlore pour remonter ORP de 100mV ≈ 0.2L pour 10m³
-→ Max raisonnable = 300 ml/jour pour 40m³
-```
+**Ports selon OS:**
+- macOS: `/dev/cu.usbserial-*` ou `/dev/cu.SLAB_USBtoUART`
+- Linux: `/dev/ttyUSB0` ou `/dev/ttyACM0`
+- Windows: `COM3`, `COM4`, etc.
 
 ### Étape 3: Compilation et Upload (5 min)
 
+**Option A - Automatique (recommandé):**
 ```bash
-# Dans le terminal PlatformIO:
+# Compile et upload firmware + filesystem en une commande
+./deploy.sh all
+```
 
-# 1. Compiler
+**Option B - Étape par étape:**
+```bash
+# 1. Compiler le firmware
 pio run
 
-# 2. Connecter ESP32 via USB
+# 2. Construire le filesystem (avec minification auto)
+./build_fs.sh
 
-# 3. Identifier le port
-pio device list
-# Exemple: /dev/cu.usbserial-0001 ou COM3
+# 3. Upload firmware
+pio run -t upload
 
-# 4. Upload
-pio run --target upload
+# 4. Upload filesystem
+python3 ~/.platformio/packages/tool-esptoolpy/esptool.py \
+  --chip esp32 --port /dev/cu.usbserial-210 --baud 115200 \
+  write_flash 0x290000 .pio/build/esp32dev/littlefs.bin
 
 # 5. Moniteur série
 pio device monitor -b 115200
 ```
 
+**⚠️ IMPORTANT:**
+- Ne PAS utiliser `pio run -t buildfs` ou `pio run -t uploadfs`
+- Ces commandes utilisent une mauvaise taille (128KB au lieu de 1344KB)
+- Toujours utiliser `./build_fs.sh` pour construire le filesystem
+
 **Logs attendus:**
 ```
-[INFO] === Démarrage ESP32 Pool Controller v2.0 ===
+[INFO] === Démarrage ESP32 Pool Controller v2025.12.21 ===
 [INFO] Watchdog activé (30s)
 [INFO] LittleFS monté avec succès
 [INFO] Configuration chargée avec succès
-[INFO] Gestionnaire de capteurs initialisé (mode RÉEL)
 [INFO] WiFi connecté: PoolControllerAP
 [INFO] IP: 192.168.4.1
 [INFO] Initialisation terminée
@@ -121,28 +114,57 @@ pio device monitor -b 115200
    - Noter l'IP affichée dans les logs série
    - Ou utiliser: `http://poolcontroller.local`
 
-### Étape 5: Vérification Capteurs (5 min)
+### Étape 5: Interface Web (5 min)
 
-**Sans capteurs connectés (test initial):**
-
-```bash
-# Interface web
-http://poolcontroller.local/data
-
-# Réponse attendue (mode simulation off):
-{
-  "orp": <valeur aléatoire 0-1000>,
-  "ph": <valeur aléatoire 0-14>,
-  "temperature": null,
-  "filtration_running": false,
-  "ph_dosing": false,
-  "orp_dosing": false
-}
+**Accès interface:**
 ```
+http://poolcontroller.local
+```
+
+**Onglets disponibles:**
+- **Tableau de bord**: Graphiques temps réel pH/ORP/Température
+  - Échelle dynamique (s'adapte si valeurs hors plage)
+  - Zones rouges pour valeurs hors consignes
+- **Configuration**: Réglages MQTT, consignes, limites
+- **Historique**: Suivi des événements et injections
+- **Logs**: Journal système avec filtrage par niveau
+- **Système**: Test pompes, OTA, informations
+
+**Login par défaut:**
+- Username: `admin`
+- Password: `admin`
+- ⚠️ Changer le mot de passe après première connexion !
+
+### Étape 6: Configuration Initiale (5 min)
+
+**Paramètres essentiels (onglet Configuration):**
+
+```
+Consignes:
+- pH cible: 7.2 (recommandé: 7.0 - 7.4)
+- ORP cible: 650 mV (recommandé: 650 - 750 mV)
+
+Limites de Sécurité:
+- pH- max/jour: 500 ml (ajuster selon volume piscine)
+- Chlore max/jour: 300 ml (ajuster selon volume piscine)
+- Temps injection max/heure: 60 secondes
+```
+
+**Calcul limites journalières:**
+```
+Volume piscine = 40 m³
+pH- pour baisser de 0.1 pH ≈ 0.3L pour 10m³
+→ Max raisonnable = 500 ml/jour pour 40m³
+
+Chlore pour remonter ORP de 100mV ≈ 0.2L pour 10m³
+→ Max raisonnable = 300 ml/jour pour 40m³
+```
+
+### Étape 7: Vérification Capteurs (5 min)
 
 **Avec capteurs connectés:**
 
-1. Brancher capteurs (voir [WIRING_DIAGRAM.md](WIRING_DIAGRAM.md))
+1. Brancher capteurs (voir README.md section Schéma de Câblage)
 2. Plonger sondes dans eau piscine
 3. Attendre 30s stabilisation
 4. Vérifier valeurs réalistes:
@@ -151,20 +173,15 @@ http://poolcontroller.local/data
    - Température: 10 - 35°C
 
 **Si valeurs aberrantes:**
-- pH = 0 ou 14: Capteur non connecté ou HS
-- ORP = 0: Sonde pas étalonnée
+- pH = 0 ou 14: Capteur non connecté, vérifier I2C (ADS1115 @ 0x48)
+- ORP = 0: Sonde pas étalonnée ou HS, vérifier ADS1115
 - Temp = -127°C: DS18B20 non détecté (pull-up 4.7kΩ manquant)
 
-### Étape 6: Configuration MQTT (5 min - Optionnel)
+### Étape 8: Configuration MQTT (Optionnel)
 
 **Si vous avez Home Assistant ou broker MQTT:**
 
-1. **Interface web**
-   ```
-   http://poolcontroller.local/config
-   ```
-
-2. **Paramètres MQTT**
+1. **Interface web → Configuration → MQTT**
    ```
    Serveur: 192.168.1.10 (IP de votre broker)
    Port: 1883
@@ -174,11 +191,12 @@ http://poolcontroller.local/data
    Activé: ☑️
    ```
 
-3. **Sauvegarder**
-   - L'ESP32 se connecte automatiquement
-   - Vérifier logs: `[INFO] MQTT connecté !`
+2. **Sauvegarder et vérifier logs:**
+   ```
+   [INFO] MQTT connecté !
+   ```
 
-4. **Home Assistant**
+3. **Home Assistant Auto-Discovery**
    - Aller dans Paramètres → Appareils et Services → MQTT
    - Nouveaux appareils détectés automatiquement:
      * Pool Controller (appareil)
@@ -192,8 +210,7 @@ http://poolcontroller.local/data
 
 ### Avant de laisser tourner seul:
 
-- [ ] Mode simulation = `false`
-- [ ] Capteurs calibrés (voir [CALIBRATION_GUIDE.md](CALIBRATION_GUIDE.md))
+- [ ] Capteurs calibrés (pH 2 points, ORP 1 point)
 - [ ] Valeurs pH/ORP cohérentes avec test manuel
 - [ ] Limites de sécurité configurées
 - [ ] Pompes testées en mode manuel (tubing dans eau, pas produits!)
@@ -201,7 +218,7 @@ http://poolcontroller.local/data
 - [ ] WiFi stable (signal >-70 dBm)
 - [ ] MQTT connecté (si utilisé)
 - [ ] Watchdog ne déclenche pas (>5min sans reboot)
-- [ ] Backup configuration effectué
+- [ ] Mot de passe admin changé
 
 ### Test Dosage (IMPORTANT)
 
@@ -261,40 +278,44 @@ pio device monitor -b 9600
 
 **Symptôme**: Reste en mode AP
 
-```bash
-# Effacer config WiFi sauvegardée
-# Dans platformio.ini, ajouter temporairement:
-# build_flags = -DWIFI_RESET
-
-# Ou bouton physique sur ESP32 (si board le permet)
+**Solution**: Triple reset WiFi
+```
+Interface web → Système → Reset WiFi
+OU
+Bouton reset mot de passe (GPIO4) pendant 10s au démarrage
 ```
 
-### Capteurs valeurs fixes
+### Capteurs valeurs aberrantes
 
-**pH toujours 7.0:**
-```cpp
-// Vérifier dans sensors.cpp ligne ~104
-// Commenter temporairement la calibration
-phValue = (rawPh / 4095.0f) * 14.0f;  // Formule basique
+**pH toujours 0 ou 14:**
+```
+- Vérifier connexion I2C (SDA/SCL)
+- Vérifier adresse ADS1115 (0x48)
+- Vérifier alimentation ADS1115 (3.3V)
 ```
 
-**ORP toujours 0:**
+**ORP fixe à 0:**
 ```
-- Vérifier GND commun ESP32 ↔ Capteur
+- Sonde pas étalonnée ou HS
+- Vérifier ADS1115 canal A1
 - Tester avec multimètre: tension entre OUT et GND
-- Devrait varier 0-3.3V selon solution
+```
+
+**Température -127°C:**
+```
+- DS18B20 non détecté
+- Vérifier pull-up 4.7kΩ sur GPIO5
+- Vérifier alimentation 3.3V
 ```
 
 ### Watchdog redémarre en boucle
 
 **Symptôme**: `[CRIT] Watchdog timeout!` répété
 
-```cpp
-// Désactiver temporairement dans main.cpp setup():
-// esp_task_wdt_init(WATCHDOG_TIMEOUT, true);  // Commenter cette ligne
-
-// Identifier le blocage via logs
-// Chercher dernière ligne avant reboot
+```
+- Vérifier heap disponible (doit être >10KB)
+- Consulter logs avant reboot
+- Vérifier pas de boucle infinie dans le code
 ```
 
 ### MQTT ne se connecte pas
@@ -310,20 +331,32 @@ mosquitto_sub -h 192.168.1.10 -t test -v
 
 **Vérifier credentials:**
 ```
-Interface web → Configuration
+Interface web → Configuration → MQTT
 - Essayer sans username/password d'abord
 - Vérifier pas d'espace avant/après
 - Vérifier broker accepte connexions anonymes
 ```
 
+### Mot de passe admin oublié
+
+**Solution**: Bouton reset sur GPIO4
+
+1. Débrancher alimentation ESP32
+2. Maintenir bouton reset enfoncé (GPIO4 → GND)
+3. Rebrancher alimentation (maintenir bouton)
+4. Maintenir 10 secondes (LED clignote)
+5. LED clignote rapidement 5× = confirmé
+6. Mot de passe réinitialisé à `admin`
+
+**Note**: Nécessite bouton externe NO connecté entre GPIO4 et GND
+
 ## 📱 Interface Web - Guide Rapide
 
-### Pages Disponibles
+### API Endpoints
 
 | URL | Description |
 |-----|-------------|
-| `/` | Page d'accueil (index.html) |
-| `/config` | Configuration système |
+| `/` | Interface web principale |
 | `/data` | API JSON données temps réel |
 | `/get-config` | API JSON configuration |
 | `/get-logs` | API JSON logs système |
@@ -359,28 +392,29 @@ curl http://poolcontroller.local/get-logs
       "timestamp": 123456,
       "level": "INFO",
       "message": "Démarrage filtration"
-    },
-    ...
+    }
   ]
 }
 ```
 
 ## 🎓 Prochaines Étapes
 
-1. **Calibration capteurs** → [CALIBRATION_GUIDE.md](CALIBRATION_GUIDE.md)
-2. **Câblage complet** → [WIRING_DIAGRAM.md](WIRING_DIAGRAM.md)
-3. **Migration v1→v2** → [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md)
+1. **Calibration capteurs** → Voir README.md section "Calibration Capteurs"
+2. **Câblage complet** → Voir README.md section "Schéma de Câblage"
+3. **Intégration Home Assistant** → Voir README.md section "Intégration Home Assistant"
 4. **Documentation complète** → [README.md](README.md)
+5. **Build et déploiement** → [BUILD.md](BUILD.md)
+6. **Minification** → [MINIFICATION.md](MINIFICATION.md)
 
 ## 📞 Support
 
 **Problème non résolu ?**
 
-1. Vérifier les logs: `/get-logs` ou moniteur série
-2. Consulter [WIRING_DIAGRAM.md](WIRING_DIAGRAM.md) pour câblage
-3. Lire [README.md](README.md) section Dépannage
+1. Vérifier les logs: Interface web → Logs ou moniteur série
+2. Consulter README.md section Dépannage
+3. Vérifier BUILD.md pour problèmes de compilation
 4. Ouvrir Issue GitHub avec:
-   - Version firmware
+   - Version firmware (2025.12.21)
    - Logs complets
    - Configuration (masquer mots de passe)
 

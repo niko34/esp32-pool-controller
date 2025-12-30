@@ -546,18 +546,18 @@ void checkSystemHealth() {
 }
 
 void checkPasswordResetButton() {
-  // Initialiser le bouton BOOT (GPIO0) et la LED
-  pinMode(kBootButtonPin, INPUT_PULLUP);
+  // Initialiser le bouton de réinitialisation (GPIO4) et la LED
+  pinMode(kPasswordResetButtonPin, INPUT_PULLUP);
   pinMode(kBuiltinLedPin, OUTPUT);
   digitalWrite(kBuiltinLedPin, LOW);  // LED éteinte par défaut
 
-  // Vérifier si le bouton BOOT est maintenu enfoncé (actif bas)
-  if (digitalRead(kBootButtonPin) == HIGH) {
+  // Vérifier si le bouton est maintenu enfoncé (actif bas)
+  if (digitalRead(kPasswordResetButtonPin) == HIGH) {
     // Bouton relâché, pas de réinitialisation
     return;
   }
 
-  systemLogger.warning("Bouton BOOT détecté enfoncé au démarrage");
+  systemLogger.warning("Bouton de réinitialisation détecté enfoncé au démarrage");
   systemLogger.info("Maintenez enfoncé pendant 10s pour réinitialiser le mot de passe...");
 
   unsigned long startTime = millis();
@@ -566,7 +566,7 @@ void checkPasswordResetButton() {
   // Faire clignoter la LED pendant 10 secondes
   while (millis() - startTime < kPasswordResetButtonHoldMs) {
     // Vérifier que le bouton est toujours enfoncé
-    if (digitalRead(kBootButtonPin) == HIGH) {
+    if (digitalRead(kPasswordResetButtonPin) == HIGH) {
       resetConfirmed = false;
       systemLogger.info("Bouton relâché - Réinitialisation annulée");
       break;

@@ -97,48 +97,10 @@
   // ---------- Charts (Dashboard) ----------
   const PH_MIN = 7.0;
   const PH_MAX = 7.4;
-  const PH_AXIS_MIN_DEFAULT = 6;
-  const PH_AXIS_MAX_DEFAULT = 8;
+  const PH_AXIS_MIN = 5;
+  const PH_AXIS_MAX = 9;
   const PH_ZONE_COLOR = 'rgba(239, 68, 68, 0.08)';
   const PH_LINE_COLOR = 'rgba(239, 68, 68, 0.7)';
-
-  const ORP_MIN = 600;
-  const ORP_MAX = 800;
-  const ORP_AXIS_MIN_DEFAULT = 500;
-  const ORP_AXIS_MAX_DEFAULT = 900;
-  const ORP_ZONE_COLOR = 'rgba(239, 68, 68, 0.08)';
-  const ORP_LINE_COLOR = 'rgba(239, 68, 68, 0.7)';
-
-  // Fonction pour calculer les limites dynamiques de l'axe Y
-  function calculateAxisLimits(dataPoints, defaultMin, defaultMax, padding = 0.1) {
-    // Filtrer les valeurs null/undefined
-    const validData = dataPoints.filter(v => v != null && !isNaN(v));
-
-    if (validData.length === 0) {
-      return { min: defaultMin, max: defaultMax };
-    }
-
-    const dataMin = Math.min(...validData);
-    const dataMax = Math.max(...validData);
-
-    // Utiliser les valeurs par défaut si les données sont dans la plage
-    let min = defaultMin;
-    let max = defaultMax;
-
-    // Étendre vers le bas si nécessaire
-    if (dataMin < defaultMin) {
-      const range = defaultMax - dataMin;
-      min = dataMin - (range * padding);
-    }
-
-    // Étendre vers le haut si nécessaire
-    if (dataMax > defaultMax) {
-      const range = dataMax - defaultMin;
-      max = dataMax + (range * padding);
-    }
-
-    return { min, max };
-  }
 
   function createLineChart(ctx, color, label, options = {}) {
     const {
@@ -260,94 +222,13 @@
     const points = chart.data.labels.length;
     const build = (value) => Array(points).fill(value);
 
-    // Calculer les limites dynamiques de l'axe Y
-    const dataPoints = chart.data.datasets[0]?.data || [];
-    const limits = calculateAxisLimits(dataPoints, PH_AXIS_MIN_DEFAULT, PH_AXIS_MAX_DEFAULT);
-
-    chart.data.datasets[1].data = build(limits.max);
+    chart.data.datasets[1].data = build(PH_AXIS_MAX);
     chart.data.datasets[2].data = build(PH_MAX);
     chart.data.datasets[3].data = build(PH_MIN);
-    chart.data.datasets[4].data = build(limits.min);
+    chart.data.datasets[4].data = build(PH_AXIS_MIN);
   }
 
   function ensurePhPlaceholderLabels(chart) {
-    if (!chart) return;
-    if (chart.data.labels.length === 0) {
-      chart.data.labels = ["", ""];
-    }
-    if (chart.data.datasets[0] && chart.data.datasets[0].data.length === 0) {
-      chart.data.datasets[0].data = [null, null];
-    }
-  }
-
-  function buildOrpReferenceDatasets() {
-    return [
-      {
-        label: 'Zone hors plage (haute)',
-        data: [],
-        backgroundColor: ORP_ZONE_COLOR,
-        borderWidth: 0,
-        fill: '+1',
-        pointRadius: 0,
-        tension: 0,
-        order: 10
-      },
-      {
-        label: `ORP Max (${ORP_MAX}mV)`,
-        data: [],
-        borderColor: ORP_LINE_COLOR,
-        borderWidth: 2,
-        fill: false,
-        pointRadius: 0,
-        tension: 0,
-        order: 5
-      },
-      {
-        label: `ORP Min (${ORP_MIN}mV)`,
-        data: [],
-        borderColor: ORP_LINE_COLOR,
-        borderWidth: 2,
-        fill: false,
-        pointRadius: 0,
-        tension: 0,
-        order: 5
-      },
-      {
-        label: 'Zone hors plage (basse)',
-        data: [],
-        backgroundColor: ORP_ZONE_COLOR,
-        borderWidth: 0,
-        fill: '-1',
-        pointRadius: 0,
-        tension: 0,
-        order: 10
-      }
-    ];
-  }
-
-  function ensureOrpReferenceDatasets(chart) {
-    if (!chart) return;
-    if (chart.data.datasets.length === 1) {
-      chart.data.datasets.push(...buildOrpReferenceDatasets());
-    }
-  }
-
-  function syncOrpReferenceDatasets(chart) {
-    if (!chart || chart.data.datasets.length < 5) return;
-    const points = chart.data.labels.length;
-    const build = (value) => Array(points).fill(value);
-
-    // Calculer les limites dynamiques de l'axe Y
-    const dataPoints = chart.data.datasets[0]?.data || [];
-    const limits = calculateAxisLimits(dataPoints, ORP_AXIS_MIN_DEFAULT, ORP_AXIS_MAX_DEFAULT);
-
-    chart.data.datasets[1].data = build(limits.max);
-    chart.data.datasets[2].data = build(ORP_MAX);
-    chart.data.datasets[3].data = build(ORP_MIN);
-    chart.data.datasets[4].data = build(limits.min);
-  }
-
-  function ensureOrpPlaceholderLabels(chart) {
     if (!chart) return;
     if (chart.data.labels.length === 0) {
       chart.data.labels = ["", ""];
@@ -378,13 +259,6 @@
     // Ajouter les zones de fond rouge et lignes de référence pour le pH
     if (chart && chart.data.datasets.length === 1) {
       chart.data.datasets.push(...buildPhReferenceDatasets());
-    }
-  }
-
-  function initializeOrpReferenceLines(chart) {
-    // Ajouter les zones de fond rouge et lignes de référence pour l'ORP
-    if (chart && chart.data.datasets.length === 1) {
-      chart.data.datasets.push(...buildOrpReferenceDatasets());
     }
   }
 
@@ -449,12 +323,7 @@
         syncPhReferenceDatasets(phChart);
         phChart.update('none');
       }
-      if (orpChart) {
-        ensureOrpReferenceDatasets(orpChart);
-        ensureOrpPlaceholderLabels(orpChart);
-        syncOrpReferenceDatasets(orpChart);
-        orpChart.update('none');
-      }
+      if (orpChart) orpChart.update('none');
 
       // Update main chart with active chart type data
       if (mainChart) {
@@ -471,10 +340,6 @@
         } else if (currentChartType === 'orp' && orpChart) {
           mainChart.data.labels = [...orpChart.data.labels];
           mainChart.data.datasets[0].data = [...orpChart.data.datasets[0].data];
-          ensureOrpReferenceDatasets(mainChart);
-          ensureOrpPlaceholderLabels(mainChart);
-          syncOrpReferenceDatasets(mainChart);
-          mainChart.data.datasets[0].fill = false;
         }
         mainChart.update('none');
       }
@@ -1084,31 +949,51 @@
       mainChart.data.datasets[0].borderColor = colors[chartType];
       mainChart.data.datasets[0].backgroundColor = colors[chartType] + '20';
       mainChart.data.datasets[0].label = labels[chartType];
-      mainChart.data.datasets[0].fill = chartType !== 'ph' && chartType !== 'orp';
+      mainChart.data.datasets[0].fill = chartType !== 'ph';
 
       // Configurer l'échelle Y selon le type de graphique
       if (chartType === 'orp') {
-        // ORP: échelle dynamique (min 500-900 mV) avec entiers uniquement
-        const dataPoints = mainChart.data.datasets[0]?.data || [];
-        const limits = calculateAxisLimits(dataPoints, ORP_AXIS_MIN_DEFAULT, ORP_AXIS_MAX_DEFAULT);
-
-        mainChart.options.scales.y.min = limits.min;
-        mainChart.options.scales.y.max = limits.max;
+        // ORP: échelle fixe 400-1000 mV avec entiers uniquement
+        mainChart.options.scales.y.min = 400;
+        mainChart.options.scales.y.max = 1000;
         mainChart.options.scales.y.ticks.callback = function(value) {
           if (Number.isInteger(value)) return value;
         };
 
+        // Ajouter les lignes de référence ORP à 600mV et 800mV
         clearReferenceDatasets(mainChart);
-        ensureOrpReferenceDatasets(mainChart);
-        ensureOrpPlaceholderLabels(mainChart);
-        syncOrpReferenceDatasets(mainChart);
+        if (!mainChart.data.datasets[1]) {
+          // Dataset pour la ligne à 600mV (minimum de la plage idéale)
+          mainChart.data.datasets.push({
+            label: 'ORP Min (600mV)',
+            data: mainChart.data.labels.map(() => 600),
+            borderColor: 'rgba(239, 68, 68, 0.6)',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            fill: false,
+            pointRadius: 0,
+            tension: 0
+          });
+          // Dataset pour la ligne à 800mV (maximum de la plage idéale)
+          mainChart.data.datasets.push({
+            label: 'ORP Max (800mV)',
+            data: mainChart.data.labels.map(() => 800),
+            borderColor: 'rgba(239, 68, 68, 0.6)',
+            borderWidth: 2,
+            borderDash: [5, 5],
+            fill: false,
+            pointRadius: 0,
+            tension: 0
+          });
+        } else {
+          // Mettre à jour les datasets existants
+          mainChart.data.datasets[1].data = mainChart.data.labels.map(() => 600);
+          mainChart.data.datasets[2].data = mainChart.data.labels.map(() => 800);
+        }
       } else if (chartType === 'ph') {
-        // pH: échelle dynamique (min 6-8) avec lignes de référence à 7.0 et 7.4
-        const dataPoints = mainChart.data.datasets[0]?.data || [];
-        const limits = calculateAxisLimits(dataPoints, PH_AXIS_MIN_DEFAULT, PH_AXIS_MAX_DEFAULT);
-
-        mainChart.options.scales.y.min = limits.min;
-        mainChart.options.scales.y.max = limits.max;
+        // pH: échelle fixe 1-10 avec lignes de référence à 7.0 et 7.4
+        mainChart.options.scales.y.min = PH_AXIS_MIN;
+        mainChart.options.scales.y.max = PH_AXIS_MAX;
         delete mainChart.options.scales.y.ticks.callback;
 
         clearReferenceDatasets(mainChart);
@@ -1323,13 +1208,7 @@
           syncPhReferenceDatasets(phChart);
           phChart.update('none');
         }
-        if (json.orp != null && !isNaN(json.orp) && orpChart) {
-          pushPoint(orpChart, json.orp, label);
-          ensureOrpReferenceDatasets(orpChart);
-          ensureOrpPlaceholderLabels(orpChart);
-          syncOrpReferenceDatasets(orpChart);
-          orpChart.update('none');
-        }
+        if (json.orp != null && !isNaN(json.orp) && orpChart) pushPoint(orpChart, json.orp, label);
 
         // Mettre à jour le graphique principal avec les données du graphique source actif
         if (mainChart) {
@@ -1341,11 +1220,6 @@
               ensurePhReferenceDatasets(mainChart);
               ensurePhPlaceholderLabels(mainChart);
               syncPhReferenceDatasets(mainChart);
-              mainChart.data.datasets[0].fill = false;
-            } else if (currentChartType === 'orp') {
-              ensureOrpReferenceDatasets(mainChart);
-              ensureOrpPlaceholderLabels(mainChart);
-              syncOrpReferenceDatasets(mainChart);
               mainChart.data.datasets[0].fill = false;
             }
             mainChart.update('none');
@@ -2858,23 +2732,18 @@
     if (tempChartCanvas) tempChart = createLineChart(tempChartCanvas, "#4f8fff", "Température");
     if (phChartCanvas) {
       phChart = createLineChart(phChartCanvas, "#8b5cf6", "pH", {
-        yMin: PH_AXIS_MIN_DEFAULT,
-        yMax: PH_AXIS_MAX_DEFAULT,
+        yMin: PH_AXIS_MIN,
+        yMax: PH_AXIS_MAX,
         fill: false
       });
       // Initialiser les lignes de référence du pH dès la création
       initializePhReferenceLines(phChart);
     }
-    if (orpChartCanvas) {
-      orpChart = createLineChart(orpChartCanvas, "#10b981", "ORP", {
-        integerOnly: true,
-        yMin: ORP_AXIS_MIN_DEFAULT,
-        yMax: ORP_AXIS_MAX_DEFAULT,
-        fill: false
-      });
-      // Initialiser les lignes de référence de l'ORP dès la création
-      initializeOrpReferenceLines(orpChart);
-    }
+    if (orpChartCanvas) orpChart = createLineChart(orpChartCanvas, "#10b981", "ORP", {
+      integerOnly: true,
+      yMin: 400,
+      yMax: 1000
+    });
 
     // Nouveau graphique principal avec onglets
     const mainChartCanvas = $("#mainChart");

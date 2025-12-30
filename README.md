@@ -2,7 +2,7 @@
 
 Contrôleur automatique de piscine basé sur ESP32 avec gestion pH, ORP (chlore), température et filtration automatique. Intégration complète avec Home Assistant via MQTT.
 
-**Version actuelle**: 2025.12.6
+**Version actuelle**: 2025.12.21
 
 ## 🎯 Fonctionnalités
 
@@ -65,6 +65,7 @@ ESP32 GPIO Layout:
 ├─ GPIO 35 (ADC1_7)  → pH (définition config, non utilisé si ADS1115)
 ├─ GPIO 5            → Sonde température DS18B20 (OneWire + pull-up 4.7kΩ)
 ├─ GPIO 27           → Relais filtration
+├─ GPIO 4            → Bouton reset mot de passe (NO vers GND, pull-up interne)
 │
 ├─ Pompe 1 (pH-):
 │  └─ GPIO 25 → PWM 20kHz (Gate MOSFET IRLZ44N)
@@ -127,21 +128,55 @@ Pompe 2 (Chlore): Identique sur GPIO 26
    code .
    ```
 
-3. **Compiler et uploader**
-   - Connecter l'ESP32 via USB
-   - Cliquer sur "Upload" dans PlatformIO
-   - Ou via CLI: `pio run --target upload`
+3. **Compiler et déployer**
+
+   **Option A - Déploiement complet (recommandé)**
+   ```bash
+   # Compile firmware + filesystem et upload tout
+   ./deploy.sh all
+   ```
+
+   **Option B - Déploiement sélectif**
+   ```bash
+   # Firmware uniquement
+   ./deploy.sh firmware
+
+   # Filesystem uniquement (fichiers web)
+   ./deploy.sh fs
+   ```
+
+   **Option C - Compilation manuelle**
+   ```bash
+   # 1. Compiler le firmware
+   pio run
+
+   # 2. Construire le filesystem LittleFS (avec minification auto)
+   ./build_fs.sh
+
+   # 3. Upload firmware
+   pio run -t upload
+
+   # 4. Upload filesystem
+   python3 ~/.platformio/packages/tool-esptoolpy/esptool.py \
+     --chip esp32 --port /dev/cu.usbserial-210 --baud 115200 \
+     write_flash 0x290000 .pio/build/esp32dev/littlefs.bin
+   ```
+
+   ⚠️ **Important**:
+   - Ne PAS utiliser `pio run -t buildfs` ou `pio run -t uploadfs`
+   - Ces commandes utilisent une mauvaise taille (128KB au lieu de 1344KB)
+   - Utilisez toujours `./build_fs.sh` pour construire le filesystem
+   - Le port série est configuré dans `platformio.ini` (`/dev/cu.usbserial-210`)
+   - Modifiez `upload_port` et `monitor_port` selon votre système:
+     - macOS: `/dev/cu.usbserial-*` ou `/dev/cu.SLAB_USBtoUART`
+     - Linux: `/dev/ttyUSB0` ou `/dev/ttyACM0`
+     - Windows: `COM3`, `COM4`, etc.
+   - Voir [BUILD.md](BUILD.md) et [MINIFICATION.md](MINIFICATION.md) pour plus de détails
 
 4. **Moniteur série**
    ```bash
    pio device monitor -b 115200
    ```
-
-5. **Upload du système de fichiers (LittleFS)**
-   ```bash
-   pio run --target uploadfs
-   ```
-   Contient l'interface web HTML/CSS/JS dans le dossier `data/`
 
 ### Configuration Initiale
 
@@ -337,6 +372,45 @@ struct SimulationConfig {
 
 ## 🔐 Sécurité
 
+### Réinitialisation du Mot de Passe Admin
+
+Si vous oubliez le mot de passe administrateur de l'interface web, vous pouvez le réinitialiser via un bouton externe connecté à GPIO4.
+
+**Matériel requis:**
+- Bouton poussoir normalement ouvert (NO)
+- Connexion: un côté à GPIO4, l'autre côté à GND
+- Pas besoin de résistance pull-up (déjà intégrée en interne)
+
+**Procédure de réinitialisation:**
+
+1. **Débrancher l'alimentation** de l'ESP32
+2. **Maintenir enfoncé le bouton de réinitialisation** (connecté à GPIO4)
+3. **Tout en maintenant le bouton**, rebrancher l'alimentation
+4. **Continuer à maintenir le bouton pendant 10 secondes**
+   - La LED intégrée (GPIO2) va clignoter lentement pendant ces 10 secondes
+   - Si vous relâchez le bouton avant 10 secondes, la réinitialisation est annulée
+5. **Après 10 secondes**, la LED clignote rapidement 5 fois pour confirmer
+6. **Le mot de passe est réinitialisé à:** `admin`
+
+**Caractéristiques techniques:**
+- Bouton: GPIO4 (actif bas, pull-up interne activé)
+- LED feedback: GPIO2 (LED intégrée)
+- Durée requise: 10 secondes
+- Indication visuelle: Clignotement lent (100ms) puis rapide (200ms)
+
+**Ce qui est réinitialisé:**
+- ✅ Mot de passe administrateur → `admin`
+
+**Ce qui N'EST PAS réinitialisé:**
+- ❌ Configuration WiFi (SSID, mot de passe)
+- ❌ Configuration MQTT (serveur, port, credentials)
+- ❌ Calibrations des sondes (pH, ORP)
+- ❌ Consignes et paramètres PID
+- ❌ Limites de sécurité
+- ❌ Historique des mesures
+
+**Note importante:** GPIO4 est un GPIO libre qui ne nécessite pas de précautions particulières au démarrage. Vous pouvez ajouter un bouton poussoir simple (bouton arcade, bouton panneau, etc.) dans votre boîtier pour faciliter l'accès à cette fonction.
+
 ### Bonnes Pratiques
 
 1. **Produits chimiques**
@@ -361,6 +435,16 @@ struct SimulationConfig {
 
 ## 📈 Changelog
 
+### Version 2025.12.21
+- ✅ Graphiques pH/ORP avec échelle dynamique (adaptation automatique si valeurs hors plage)
+- ✅ Zones rouges adaptatives sur graphiques pH/ORP (zones hors plage visibles)
+- ✅ Bouton reset mot de passe admin sur GPIO4 (10 secondes, feedback LED)
+- ✅ Partition history séparée (128KB, préservée lors des mises à jour OTA)
+- ✅ Minification automatique fichiers web (économie ~60KB / 13%)
+- ✅ Scripts de déploiement automatisés (deploy.sh, build_fs.sh)
+- ✅ Table de partitions optimisée (1344KB LittleFS + 128KB history)
+- ✅ Documentation complète (BUILD.md, MINIFICATION.md)
+
 ### Version 2025.12.6
 - ✅ Augmentation PWM à 20kHz pour éliminer le sifflement des pompes
 - ✅ Interface de test manuel des pompes avec contrôle de puissance (0-100%)
@@ -377,6 +461,49 @@ struct SimulationConfig {
 - [ ] Export CSV données historiques
 - [ ] API REST complète pour intégrations tierces
 - [ ] Mode maintenance avec purge automatique des pompes
+
+## 📁 Fichiers et Scripts
+
+### Scripts de Build et Déploiement
+
+- **`deploy.sh`** - Script de déploiement principal
+  - `./deploy.sh all` - Build et upload firmware + filesystem
+  - `./deploy.sh firmware` - Build et upload firmware uniquement
+  - `./deploy.sh fs` - Build et upload filesystem uniquement
+
+- **`build_fs.sh`** - Construction du filesystem LittleFS
+  - Minifie automatiquement HTML/CSS/JS (économie ~60KB)
+  - Construit LittleFS avec la bonne taille (1344KB)
+  - Utilise `data-build/` comme source (généré par minify.py)
+
+- **`minify.py`** - Minification des fichiers web
+  - Python pur (aucune dépendance externe)
+  - Minifie HTML, CSS, JavaScript
+  - Source: `data/` → Destination: `data-build/`
+
+### Configuration
+
+- **`platformio.ini`** - Configuration PlatformIO
+  - Définit les dépendances, ports, partitions
+  - Port série: `/dev/cu.usbserial-210` (à adapter)
+
+- **`partitions.csv`** - Table de partitions ESP32 4MB
+  - 2× slots OTA (1280KB chacun)
+  - LittleFS (1344KB) pour interface web
+  - History (128KB) partition séparée préservée lors des mises à jour
+
+### Documentation
+
+- **`BUILD.md`** - Instructions de compilation détaillées
+- **`MINIFICATION.md`** - Détails sur le système de minification
+- **`README.md`** - Ce fichier
+
+### Dossiers
+
+- **`src/`** - Code source C++ du firmware
+- **`data/`** - Fichiers web sources (HTML/CSS/JS) - versionnés
+- **`data-build/`** - Fichiers web minifiés - générés automatiquement (ignoré par git)
+- **`kicad/`** - Schémas électroniques KiCad
 
 ## 🤝 Contribution
 
@@ -411,5 +538,5 @@ Ce projet est fourni "tel quel" sans garantie. L'utilisation de produits chimiqu
 ---
 
 **Auteur**: Nicolas Philippe
-**Version**: 2025.12.6
+**Version**: 2025.12.21
 **Dernière mise à jour**: Décembre 2025
