@@ -33,7 +33,11 @@ Utilisez plutôt le script fourni:
 ./build_fs.sh
 ```
 
-Ce script construit le filesystem avec la bonne taille (1344KB) qui correspond à la partition littlefs dans `partitions.csv`.
+Ce script:
+1. **Minifie** automatiquement les fichiers HTML, CSS et JS (économie ~60KB)
+2. **Construit** le filesystem avec la bonne taille (1344KB) qui correspond à la partition littlefs dans `partitions.csv`
+
+Les fichiers sources restent dans `data/`, les fichiers minifiés sont générés dans `data-build/` (ignoré par git).
 
 ### 3. Uploader sur l'ESP32
 
@@ -82,8 +86,10 @@ python3 ~/.platformio/packages/tool-esptoolpy/esptool.py \
 ## Structure des fichiers
 
 - `partitions.csv` - Table de partitions personnalisée
-- `build_fs.sh` - Script pour construire LittleFS avec la bonne taille
-- `data/` - Fichiers web (HTML, CSS, JS, images)
+- `build_fs.sh` - Script pour construire LittleFS (avec minification)
+- `minify.py` - Script de minification HTML/CSS/JS
+- `data/` - Fichiers web sources (HTML, CSS, JS, images)
+- `data-build/` - Fichiers web minifiés (généré automatiquement, ignoré par git)
 - `src/` - Code source C++
 
 ## Notes
