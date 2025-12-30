@@ -38,6 +38,7 @@ button, input, select { font: inherit; }
   display: grid;
   grid-template-columns: 280px 1fr;
   min-height: 100vh;
+  min-width: 0;
 }
 
 .sidebar {
@@ -164,6 +165,7 @@ button, input, select { font: inherit; }
   display: grid;
   grid-template-rows: 1fr auto;
   gap: 14px;
+  min-width: 0;
 }
 
 .burgerBtn {
@@ -246,19 +248,22 @@ button, input, select { font: inherit; }
 
 .view { display: none; }
 .view.is-active { display: block; }
+.view { min-width: 0; }
 .view .card:not(.card--metric) { margin-bottom: 18px; }
-.view .card:not(.card--metric):last-child { margin-bottom: 0; }
 
 .grid { display: grid; gap: 14px; }
 .grid--cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .grid--charts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grid > * { min-width: 0; }
 
 .card {
   border-radius: var(--radius);
   background: var(--panel);
   border: 1px solid var(--stroke);
   box-shadow: var(--shadow);
+  width: 100%;
+  min-width: 0;
 }
 .card__head {
   padding: 12px 14px;
@@ -603,6 +608,7 @@ input:focus, select:focus {
   .grid--status-cards { grid-template-columns: 1fr; }
   .grid--charts { grid-template-columns: 1fr; }
   canvas { height: 240px !important; }
+  .chart-scroll { height: 240px; }
 }
 
 /* ========== ALERTES ========== */
@@ -839,6 +845,9 @@ input:focus, select:focus {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   margin-bottom: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .compact-value {
@@ -858,6 +867,9 @@ input:focus, select:focus {
 .compact-target {
   font-size: 11px;
   color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @media (max-width: 1200px) {
@@ -869,16 +881,20 @@ input:focus, select:focus {
 /* ========== GRAPHIQUE AVEC ONGLETS ========== */
 .card--chart-tabs {
   margin-top: 18px;
+  min-width: 0;
 }
 
 .card--chart-tabs .card__head {
   padding: 0;
   border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
 }
 
 .chart-tabs {
   display: flex;
   gap: 0;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .chart-tab {
@@ -899,6 +915,60 @@ input:focus, select:focus {
   background: var(--panel2);
 }
 
+.chart-export {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-right: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--stroke);
+  background: var(--panel2);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chart-export svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+.chart-export:hover {
+  color: var(--accent);
+  border-color: rgba(79, 143, 255, 0.4);
+}
+
+.chart-export:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.chart-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 10px;
+}
+
+.clock-badge {
+  display: none;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.clock-badge.is-warn {
+  display: inline-flex;
+}
+
 .chart-tab--active {
   color: var(--accent);
 }
@@ -917,6 +987,35 @@ input:focus, select:focus {
   position: relative;
   padding: 16px;
   min-height: 300px;
+  overflow: hidden;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.chart-scroll {
+  position: relative;
+  width: 100%;
+  height: 300px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.chart-scroll__inner {
+  min-width: 100%;
+  height: 100%;
+}
+
+.chart-scroll__inner canvas {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  aspect-ratio: auto;
 }
 
 .chart-current-value {

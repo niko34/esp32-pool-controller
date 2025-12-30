@@ -273,10 +273,24 @@
                 <button class="chart-tab" data-chart="ph">pH</button>
                 <button class="chart-tab" data-chart="orp">ORP</button>
               </div>
+              <div class="chart-actions">
+                <span class="clock-badge" id="clockSyncBadge" title="Horloge non synchronisée">Horloge non synchronisée</span>
+                <button class="chart-export" id="exportHistoryBtn" type="button" title="Exporter l'historique" aria-label="Exporter l'historique">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4.01 4a1 1 0 0 1-1.38 0l-4.01-4a1 1 0 1 1 1.4-1.42L11 12.59V4a1 1 0 0 1 1-1z"/>
+                    <path d="M5 19a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1z"/>
+                  </svg>
+                  <span>Exporter</span>
+                </button>
+              </div>
             </div>
             <div class="card__body">
               <div class="chart-container">
-                <canvas id="mainChart"></canvas>
+                <div class="chart-scroll" id="mainChartScroll">
+                  <div class="chart-scroll__inner" id="mainChartScrollInner">
+                    <canvas id="mainChart"></canvas>
+                  </div>
+                </div>
                 <!-- Canvas cachés pour stocker l'historique des données -->
                 <canvas id="tempChart" style="display:none;"></canvas>
                 <canvas id="phChart" style="display:none;"></canvas>

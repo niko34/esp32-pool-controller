@@ -8,6 +8,15 @@
 #include "logger.h"
 #include "history.h"
 #include <ArduinoJson.h>
+#include <time.h>
+
+namespace {
+constexpr time_t kMinValidEpoch = 1609459200;  // 2021-01-01
+
+bool isTimeValid(time_t t) {
+  return t >= kMinValidEpoch;
+}
+}  // namespace
 
 static void handleGetData(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
@@ -64,6 +73,9 @@ static void handleGetData(AsyncWebServerRequest* request) {
   doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;
   doc["ph_limit_reached"] = safetyLimits.phLimitReached;
   doc["orp_limit_reached"] = safetyLimits.orpLimitReached;
+
+  time_t nowEpoch = time(nullptr);
+  doc["time_synced"] = isTimeValid(nowEpoch);
 
   sendJsonResponse(request, doc);
 }
