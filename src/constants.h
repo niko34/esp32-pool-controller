@@ -93,7 +93,7 @@ constexpr const char* kMdnsHostname = "poolcontroller";   // Nom d'hôte mDNS
 // ============================================================================
 
 // Boutons
-constexpr uint8_t kBootButtonPin = 0;                     // GPIO0 - Bouton BOOT (actif bas)
+constexpr uint8_t kPasswordResetButtonPin = 4;            // GPIO4 - Bouton reset mot de passe (actif bas, pull-up interne)
 
 // LED
 constexpr uint8_t kBuiltinLedPin = 2;                     // GPIO2 - LED intégrée ESP32
