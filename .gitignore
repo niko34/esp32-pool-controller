@@ -10,6 +10,7 @@
 # Build artifacts
 *.bin
 *.elf
+data-build/
 
 # KiCad auto-save and backups
 *-backups/
