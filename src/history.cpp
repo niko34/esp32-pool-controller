@@ -7,6 +7,8 @@
 #include <ArduinoJson.h>
 #include <map>
 #include <algorithm>
+#include <time.h>
+#include <Preferences.h>
 
 HistoryManager history;
 
@@ -14,6 +16,51 @@ namespace {
 fs::LittleFSFS historyFs;
 fs::FS* historyStore = &LittleFS;
 const char* historyFilePath = "/history.json";
+constexpr time_t kMinValidEpoch = 1609459200;  // 2021-01-01
+unsigned long lastKnownEpoch = 0;
+bool warnedUnsynced = false;
+bool warnedEstimated = false;
+
+bool isTimeValid(time_t t) {
+  return t >= kMinValidEpoch;
+}
+
+void loadClockPrefs() {
+  Preferences prefs;
+  if (prefs.begin("clock", true)) {
+    lastKnownEpoch = prefs.getULong("epoch", 0);
+    prefs.end();
+  }
+}
+
+void saveClockPrefs(unsigned long epoch) {
+  Preferences prefs;
+  if (prefs.begin("clock", false)) {
+    prefs.putULong("epoch", epoch);
+    prefs.end();
+  }
+}
+
+unsigned long getCurrentEpoch(bool* synced, bool* estimated) {
+  time_t nowEpoch = time(nullptr);
+  if (isTimeValid(nowEpoch)) {
+    if (synced) *synced = true;
+    if (estimated) *estimated = false;
+    lastKnownEpoch = static_cast<unsigned long>(nowEpoch);
+    saveClockPrefs(lastKnownEpoch);
+    return lastKnownEpoch;
+  }
+
+  if (synced) *synced = false;
+  if (lastKnownEpoch > 0) {
+    if (estimated) *estimated = true;
+    unsigned long sinceBoot = millis() / kMillisToSeconds;
+    return lastKnownEpoch + sinceBoot;
+  }
+
+  if (estimated) *estimated = false;
+  return 0;
+}
 }  // namespace
 
 void HistoryManager::begin() {
@@ -27,6 +74,7 @@ void HistoryManager::begin() {
     systemLogger.warning("Partition historique dédiée indisponible, fallback LittleFS");
   }
 
+  loadClockPrefs();
   loadFromFile();
   systemLogger.info("Gestionnaire d'historique initialisé");
 }
@@ -54,8 +102,26 @@ void HistoryManager::update() {
 }
 
 void HistoryManager::recordDataPoint() {
+  bool synced = false;
+  bool estimated = false;
+  unsigned long nowEpoch = getCurrentEpoch(&synced, &estimated);
+  if (nowEpoch == 0) {
+    if (!warnedUnsynced) {
+      systemLogger.warning("Horloge non synchronisée, historique ignoré");
+      warnedUnsynced = true;
+    }
+    return;
+  }
+  if (synced) {
+    migrateLegacyHistory(nowEpoch);
+  }
+  if (!synced && estimated && !warnedEstimated) {
+    systemLogger.warning("Horloge non synchronisée, historique estimé depuis la dernière heure connue");
+    warnedEstimated = true;
+  }
+
   DataPoint point;
-  point.timestamp = millis() / kMillisToSeconds; // Secondes depuis démarrage
+  point.timestamp = nowEpoch;
   point.ph = sensors.getPh();
   point.orp = sensors.getOrp();
   point.temperature = sensors.getTemperature();
@@ -146,6 +212,8 @@ void HistoryManager::loadFromFile() {
 
   JsonArray data = doc["data"];
   memoryBuffer.clear();
+  legacyHistoryPending = false;
+  legacyMaxTimestamp = 0;
 
   for (JsonObject point : data) {
     DataPoint dp;
@@ -160,14 +228,52 @@ void HistoryManager::loadFromFile() {
     memoryBuffer.push_back(dp);
   }
 
+  if (!memoryBuffer.empty()) {
+    for (const auto& p : memoryBuffer) {
+      if (p.timestamp > legacyMaxTimestamp) legacyMaxTimestamp = p.timestamp;
+    }
+    if (legacyMaxTimestamp > 0 && legacyMaxTimestamp < static_cast<unsigned long>(kMinValidEpoch)) {
+      legacyHistoryPending = true;
+      systemLogger.warning("Historique legacy détecté (timestamps uptime)");
+      time_t nowEpoch = time(nullptr);
+      if (isTimeValid(nowEpoch)) {
+        migrateLegacyHistory(static_cast<unsigned long>(nowEpoch));
+      }
+    }
+  }
+
   systemLogger.info("Historique chargé (" + String(memoryBuffer.size()) + " points)");
+}
+
+void HistoryManager::migrateLegacyHistory(unsigned long nowEpoch) {
+  if (!legacyHistoryPending || legacyMaxTimestamp == 0) return;
+
+  for (auto& p : memoryBuffer) {
+    unsigned long delta = legacyMaxTimestamp - p.timestamp;
+    p.timestamp = nowEpoch - delta;
+  }
+
+  legacyHistoryPending = false;
+  legacyMaxTimestamp = 0;
+  systemLogger.warning("Historique legacy converti en epoch");
+  saveToFile();
 }
 
 std::vector<DataPoint> HistoryManager::getLastHours(int hours) {
   std::vector<DataPoint> result;
   if (memoryBuffer.empty()) return result;
 
-  unsigned long now = millis() / kMillisToSeconds;
+  bool synced = false;
+  bool estimated = false;
+  unsigned long nowEpoch = getCurrentEpoch(&synced, &estimated);
+  if (nowEpoch == 0) {
+    return memoryBuffer;
+  }
+  if (synced) {
+    migrateLegacyHistory(nowEpoch);
+  }
+
+  unsigned long now = nowEpoch;
   unsigned long rangeSeconds = hours * kSecondsPerHour;
   if (now < rangeSeconds) {
     return memoryBuffer;
@@ -192,7 +298,19 @@ std::vector<DataPoint> HistoryManager::getAllData() {
 }
 
 void HistoryManager::consolidateData() {
-  unsigned long now = millis() / kMillisToSeconds;
+  bool synced = false;
+  bool estimated = false;
+  unsigned long now = getCurrentEpoch(&synced, &estimated);
+  if (now == 0) {
+    if (!warnedUnsynced) {
+      systemLogger.warning("Horloge non synchronisée, consolidation ignorée");
+      warnedUnsynced = true;
+    }
+    return;
+  }
+  if (synced) {
+    migrateLegacyHistory(now);
+  }
   systemLogger.debug("Début consolidation historique");
 
   // 1. Supprimer les données trop anciennes (> 90 jours)

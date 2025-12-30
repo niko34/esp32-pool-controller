@@ -39,10 +39,13 @@ private:
   unsigned long lastConsolidation = 0;
   const unsigned long RECORD_INTERVAL = 300000; // 5 minutes
   const unsigned long CONSOLIDATION_INTERVAL = 3600000; // 1 heure
+  bool legacyHistoryPending = false;
+  unsigned long legacyMaxTimestamp = 0;
 
   void saveToFile();
   void loadFromFile();
   void consolidateData();
+  void migrateLegacyHistory(unsigned long nowEpoch);
 
 public:
   void begin();

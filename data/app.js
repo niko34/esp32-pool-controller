@@ -108,6 +108,9 @@
   const ORP_AXIS_MAX_DEFAULT = 900;
   const ORP_ZONE_COLOR = 'rgba(239, 68, 68, 0.08)';
   const ORP_LINE_COLOR = 'rgba(239, 68, 68, 0.7)';
+  const CHART_POINT_PX = 18;
+  const CHART_SCROLL_EPS = 20;
+  let chartAutoScroll = true;
 
   // Fonction pour calculer les limites dynamiques de l'axe Y
   function calculateAxisLimits(dataPoints, defaultMin, defaultMax, padding = 0.1) {
@@ -183,8 +186,7 @@
       },
       options: {
         responsive: true,
-        maintainAspectRatio: true,
-        aspectRatio: 16 / 9,
+        maintainAspectRatio: false,
         animation: false,
         scales: {
           x: {
@@ -201,6 +203,33 @@
     };
 
     return new Chart(ctx, chartConfig);
+  }
+
+  function updateMainChartScroll() {
+    const container = $("#mainChartScroll");
+    const inner = $("#mainChartScrollInner");
+    if (!mainChart || !container || !inner) return;
+
+    const pointCount = mainChart.data.labels ? mainChart.data.labels.length : 0;
+    const baseWidth = container.clientWidth || 0;
+    const desiredWidth = Math.max(baseWidth, pointCount * CHART_POINT_PX);
+    if (inner.style.width !== `${desiredWidth}px`) {
+      inner.style.width = `${desiredWidth}px`;
+      mainChart.resize();
+    }
+
+    if (chartAutoScroll) {
+      container.scrollLeft = container.scrollWidth;
+    }
+  }
+
+  function bindChartScroll() {
+    const container = $("#mainChartScroll");
+    if (!container) return;
+    container.addEventListener('scroll', () => {
+      const maxScrollLeft = container.scrollWidth - container.clientWidth;
+      chartAutoScroll = (maxScrollLeft - container.scrollLeft) <= CHART_SCROLL_EPS;
+    });
   }
 
   function buildPhReferenceDatasets() {
@@ -477,6 +506,7 @@
           mainChart.data.datasets[0].fill = false;
         }
         mainChart.update('none');
+        updateMainChartScroll();
       }
 
       console.log(`Loaded ${data.count} historical points (${range})`);
@@ -1048,6 +1078,18 @@
     }
   }
 
+  function updateClockBadge(isSynced) {
+    const badge = $("#clockSyncBadge");
+    if (!badge) return;
+    if (isSynced === false) {
+      badge.classList.add("is-warn");
+      badge.textContent = "Horloge non synchronisée";
+    } else {
+      badge.classList.remove("is-warn");
+      badge.textContent = "";
+    }
+  }
+
   // ========== GRAPHIQUE AVEC ONGLETS ==========
   function switchChartTab(chartType) {
     currentChartType = chartType;
@@ -1126,6 +1168,7 @@
       }
 
       mainChart.update('none');
+      updateMainChartScroll();
     }
   }
 
@@ -1137,6 +1180,52 @@
         const chartType = tab.dataset.chart;
         switchChartTab(chartType);
       });
+    });
+  }
+
+  function bindHistoryExport() {
+    const exportBtn = $("#exportHistoryBtn");
+    if (!exportBtn) return;
+
+    exportBtn.addEventListener('click', async () => {
+      exportBtn.disabled = true;
+      try {
+        const res = await authFetch('/get-history?range=all');
+        if (!res.ok) throw new Error('export failed');
+        const data = await res.json();
+        const rows = [
+          ['timestamp_s', 'ph', 'orp', 'temperature', 'filtration', 'dosing', 'granularity'].join(',')
+        ];
+
+        (data.history || []).forEach((point) => {
+          const row = [
+            point.timestamp ?? '',
+            point.ph ?? '',
+            point.orp ?? '',
+            point.temperature ?? '',
+            point.filtration ? 1 : 0,
+            point.dosing ? 1 : 0,
+            point.granularity ?? ''
+          ];
+          rows.push(row.join(','));
+        });
+
+        const csv = rows.join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        a.href = url;
+        a.download = `history-${stamp}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (err) {
+        alert(`Erreur export historique: ${err.message || err}`);
+      } finally {
+        exportBtn.disabled = false;
+      }
     });
   }
 
@@ -1349,10 +1438,12 @@
               mainChart.data.datasets[0].fill = false;
             }
             mainChart.update('none');
+            updateMainChartScroll();
           }
         }
 
         updateDashboardMetrics(json);
+        updateClockBadge(json.time_synced === true);
 
         // Mettre à jour les alertes et cartes status
         updateAlerts();
@@ -2881,9 +2972,12 @@
     if (mainChartCanvas) {
       mainChart = createLineChart(mainChartCanvas, "#4f8fff", "Température");
       bindChartTabs();
+      bindChartScroll();
+      window.addEventListener('resize', updateMainChartScroll);
     }
 
     bindUI();
+    bindHistoryExport();
     bindDetailActions();
     bindAutosave();
     bindPhCalibration();
