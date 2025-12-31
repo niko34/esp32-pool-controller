@@ -234,4 +234,13 @@ void setupDataRoutes(AsyncWebServer* server) {
     });
   importHandler->setMethod(HTTP_POST);
   server->addHandler(importHandler);
+
+  server->on("/history/clear", HTTP_POST, [](AsyncWebServerRequest* request) {
+    REQUIRE_AUTH(request, RouteProtection::WRITE);
+    history.clearHistory();
+
+    JsonDocument doc;
+    doc["status"] = "success";
+    sendJsonResponse(request, doc);
+  });
 }

@@ -1382,6 +1382,7 @@
     const exportBtn = $("#history_export_btn");
     const importInput = $("#history_import_file");
     const importBtn = $("#history_import_btn");
+    const clearBtn = $("#history_clear_btn");
 
     exportBtn?.addEventListener("click", async () => {
       exportBtn.disabled = true;
@@ -1467,6 +1468,55 @@
         importInput.disabled = false;
       }
     });
+
+    clearBtn?.addEventListener("click", async () => {
+      if (!confirm("Supprimer l'historique enregistré ? Cette action est irréversible.")) return;
+      clearBtn.disabled = true;
+      try {
+        const res = await authFetch("/history/clear", { method: "POST" });
+        if (!res.ok) {
+          let errJson = null;
+          try {
+            errJson = await res.json();
+          } catch (_) {}
+          throw new Error(errJson?.error || "Suppression impossible");
+        }
+        clearHistoryCharts();
+        alert("Historique supprimé.");
+      } catch (err) {
+        alert(`Erreur suppression historique: ${err.message || err}`);
+      } finally {
+        clearBtn.disabled = false;
+      }
+    });
+  }
+
+  function clearHistoryCharts() {
+    if (tempChart) {
+      tempChart.data.labels = [];
+      tempChart.data.datasets[0].data = [];
+      tempChart.update("none");
+    }
+    if (phChart) {
+      phChart.data.labels = [];
+      phChart.data.datasets[0].data = [];
+      clearReferenceDatasets(phChart);
+      phChart.update("none");
+    }
+    if (orpChart) {
+      orpChart.data.labels = [];
+      orpChart.data.datasets[0].data = [];
+      clearReferenceDatasets(orpChart);
+      orpChart.update("none");
+    }
+    if (mainChart) {
+      mainChart.data.labels = [];
+      mainChart.data.datasets[0].data = [];
+      clearReferenceDatasets(mainChart);
+      mainChart.update("none");
+      updateYAxisOverlay(mainChart);
+      updateMainChartScroll();
+    }
   }
 
   // ========== SECTIONS DÉTAILLÉES ==========
