@@ -297,6 +297,25 @@ std::vector<DataPoint> HistoryManager::getAllData() {
   return memoryBuffer;
 }
 
+bool HistoryManager::importData(const std::vector<DataPoint>& dataPoints) {
+  if (!historyEnabled) return false;
+  if (dataPoints.empty()) return false;
+
+  memoryBuffer = dataPoints;
+  std::sort(memoryBuffer.begin(), memoryBuffer.end(),
+    [](const DataPoint& a, const DataPoint& b) {
+      return a.timestamp < b.timestamp;
+    });
+
+  legacyHistoryPending = false;
+  legacyMaxTimestamp = 0;
+  lastSave = millis();
+  lastRecord = millis();
+  saveToFile();
+  systemLogger.info("Historique importé (" + String(memoryBuffer.size()) + " points)");
+  return true;
+}
+
 void HistoryManager::consolidateData() {
   if (!historyEnabled) return;
   bool synced = false;

@@ -608,7 +608,9 @@ input:focus, select:focus {
   .grid--status-cards { grid-template-columns: 1fr; }
   .grid--charts { grid-template-columns: 1fr; }
   canvas { height: 240px !important; }
-  .chart-scroll { height: 240px; }
+  .chartAreaWrapper { height: 240px; padding-left: 64px; }
+  .chartWrapper { height: 240px; }
+  .chartYAxisOverlay { width: 64px; }
 }
 
 /* ========== ALERTES ========== */
@@ -994,16 +996,51 @@ input:focus, select:focus {
   box-sizing: border-box;
 }
 
-.chart-scroll {
+.chartWrapper {
+  position: relative;
+  height: 300px;
+}
+
+.chartYAxisOverlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 76px;
+  background: #f8fafc;
+  border-right: 1px solid var(--border);
+  border-top-left-radius: 12px;
+  border-bottom-left-radius: 12px;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  padding: 8px 6px 8px 8px;
+  box-sizing: border-box;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.chartYAxisOverlay .chart-y-tick {
+  position: absolute;
+  right: 8px;
+  font-size: 11px;
+  color: #6b7280;
+  white-space: nowrap;
+}
+
+.chartAreaWrapper {
   position: relative;
   width: 100%;
   height: 300px;
+  padding-left: 76px;
   overflow-x: auto;
+  overflow-y: hidden;
   overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
+  z-index: 1;
 }
 
 .chart-scroll__inner {

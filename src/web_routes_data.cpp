@@ -8,6 +8,7 @@
 #include "logger.h"
 #include "history.h"
 #include <ArduinoJson.h>
+#include <AsyncJson.h>
 #include <time.h>
 
 namespace {
@@ -172,4 +173,65 @@ void setupDataRoutes(AsyncWebServer* server) {
   server->on("/data", HTTP_GET, handleGetData);
   server->on("/get-logs", HTTP_GET, handleGetLogs);
   server->on("/get-history", HTTP_GET, handleGetHistory);
+
+  auto* importHandler = new AsyncCallbackJsonWebHandler(
+    "/history/import",
+    [](AsyncWebServerRequest* request, JsonVariant& json) {
+      REQUIRE_AUTH(request, RouteProtection::WRITE);
+
+      JsonObject root = json.as<JsonObject>();
+      if (!root.containsKey("history") || !root["history"].is<JsonArray>()) {
+        sendErrorResponse(request, 400, "Format invalide: champ history manquant");
+        return;
+      }
+
+      JsonArray items = root["history"].as<JsonArray>();
+      if (items.isNull() || items.size() == 0) {
+        sendErrorResponse(request, 400, "Historique vide");
+        return;
+      }
+
+      std::vector<DataPoint> imported;
+      imported.reserve(items.size());
+
+      for (JsonObject item : items) {
+        if (!item.containsKey("timestamp")) {
+          continue;
+        }
+        unsigned long ts = item["timestamp"] | 0;
+        if (ts == 0) {
+          continue;
+        }
+
+        DataPoint dp;
+        dp.timestamp = ts;
+        dp.ph = item["ph"].isNull() ? NAN : item["ph"].as<float>();
+        dp.orp = item["orp"].isNull() ? NAN : item["orp"].as<float>();
+        dp.temperature = item["temperature"].isNull() ? NAN : item["temperature"].as<float>();
+        dp.filtrationActive = item["filtration"] | false;
+        dp.phDosing = item["dosing"] | false;
+        dp.orpDosing = false;
+        uint8_t granularity = item["granularity"] | 0;
+        dp.granularity = granularity <= DAILY ? static_cast<Granularity>(granularity) : RAW;
+
+        imported.push_back(dp);
+      }
+
+      if (imported.empty()) {
+        sendErrorResponse(request, 400, "Aucune donnée valide à importer");
+        return;
+      }
+
+      if (!history.importData(imported)) {
+        sendErrorResponse(request, 500, "Impossible d'importer l'historique");
+        return;
+      }
+
+      JsonDocument doc;
+      doc["status"] = "success";
+      doc["count"] = imported.size();
+      sendJsonResponse(request, doc);
+    });
+  importHandler->setMethod(HTTP_POST);
+  server->addHandler(importHandler);
 }
