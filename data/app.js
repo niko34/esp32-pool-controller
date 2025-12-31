@@ -98,7 +98,7 @@
   const PH_MIN = 7.0;
   const PH_MAX = 7.4;
   const PH_AXIS_MIN_DEFAULT = 6;
-  const PH_AXIS_MAX_DEFAULT = 8;
+  const PH_AXIS_MAX_DEFAULT = 9;
   const PH_ZONE_COLOR = 'rgba(239, 68, 68, 0.08)';
   const PH_LINE_COLOR = 'rgba(239, 68, 68, 0.7)';
 
@@ -150,13 +150,21 @@
       yMax = null,
       annotation = null,
       fill = true,
-      backgroundColor = null
+      backgroundColor = null,
+      extraPlugins = [],
+      hideYAxis = false,
+      showYAxisGrid = true
     } = options;
 
     const yAxisConfig = {
       beginAtZero: false,
-      grid: { color: 'rgba(0, 0, 0, 0.05)' },
-      ticks: { color: '#6b7280' }
+      grid: {
+        color: 'rgba(0, 0, 0, 0.05)',
+        display: showYAxisGrid,
+        drawTicks: !hideYAxis
+      },
+      ticks: { color: '#6b7280' },
+      display: true
     };
 
     if (yMin !== null) yAxisConfig.min = yMin;
@@ -166,6 +174,10 @@
       yAxisConfig.ticks.callback = function (value) {
         if (Number.isInteger(value)) return value;
       };
+    }
+
+    if (hideYAxis) {
+      yAxisConfig.ticks.display = false;
     }
 
     const chartConfig = {
@@ -200,10 +212,37 @@
           annotation: annotation ? { annotations: annotation } : undefined
         },
       },
+      plugins: extraPlugins
     };
 
     return new Chart(ctx, chartConfig);
   }
+
+  function updateYAxisOverlay(chart) {
+    if (!chart) return;
+    const overlay = $("#mainChartYAxis");
+    if (!overlay) return;
+
+    const scale = chart.scales?.y;
+    if (!scale) return;
+
+    overlay.innerHTML = "";
+    const ticks = scale.ticks || [];
+    const top = chart.chartArea?.top ?? 0;
+
+    ticks.forEach((tick, index) => {
+      const label = tick.label ?? tick.value ?? "";
+      const el = document.createElement("div");
+      el.className = "chart-y-tick";
+      el.textContent = label;
+      const y = scale.getPixelForTick(index);
+      el.style.top = `${y}px`;
+      el.style.transform = "translateY(-50%)";
+      overlay.appendChild(el);
+    });
+  }
+
+  
 
   function updateMainChartScroll() {
     const container = $("#mainChartScroll");
@@ -211,7 +250,9 @@
     if (!mainChart || !container || !inner) return;
 
     const pointCount = mainChart.data.labels ? mainChart.data.labels.length : 0;
-    const baseWidth = container.clientWidth || 0;
+    const styles = getComputedStyle(container);
+    const paddingLeft = parseFloat(styles.paddingLeft || "0") || 0;
+    const baseWidth = Math.max(0, (container.clientWidth || 0) - paddingLeft);
     const desiredWidth = Math.max(baseWidth, pointCount * CHART_POINT_PX);
     if (inner.style.width !== `${desiredWidth}px`) {
       inner.style.width = `${desiredWidth}px`;
@@ -219,7 +260,8 @@
     }
 
     if (chartAutoScroll) {
-      container.scrollLeft = container.scrollWidth;
+      const maxScrollLeft = container.scrollWidth - container.clientWidth;
+      container.scrollLeft = Math.max(0, maxScrollLeft);
     }
   }
 
@@ -506,6 +548,7 @@
           mainChart.data.datasets[0].fill = false;
         }
         mainChart.update('none');
+        updateYAxisOverlay(mainChart);
         updateMainChartScroll();
       }
 
@@ -1170,6 +1213,7 @@
       }
 
       mainChart.update('none');
+      updateYAxisOverlay(mainChart);
       updateMainChartScroll();
     }
   }
@@ -1185,40 +1229,190 @@
     });
   }
 
-  function bindHistoryExport() {
-    const exportBtn = $("#exportHistoryBtn");
-    if (!exportBtn) return;
+  function formatDateTimeFromEpoch(epochSeconds) {
+    if (!Number.isFinite(epochSeconds)) return "";
+    const date = new Date(epochSeconds * 1000);
+    const pad = (value) => String(value).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  }
 
-    exportBtn.addEventListener('click', async () => {
+  function parseDateTimeToEpoch(value) {
+    if (!value) return null;
+    const trimmed = String(value).trim();
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric)) {
+      if (numeric > 10000000000) return Math.floor(numeric / 1000);
+      return Math.floor(numeric);
+    }
+
+    const isoMatch = trimmed.match(/^(\d{4})[-/](\d{2})[-/](\d{2})(?:[ T]?(\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (isoMatch) {
+      const [, year, month, day, hour, minute, second] = isoMatch;
+      const date = new Date(
+        Number(year),
+        Number(month) - 1,
+        Number(day),
+        Number(hour || 0),
+        Number(minute || 0),
+        Number(second || 0)
+      );
+      return Math.floor(date.getTime() / 1000);
+    }
+
+    const frMatch = trimmed.match(/^(\d{2})[-/](\d{2})[-/](\d{4})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (!frMatch) return null;
+    const [, day, month, year, hour, minute, second] = frMatch;
+    const date = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hour || 0),
+      Number(minute || 0),
+      Number(second || 0)
+    );
+    return Math.floor(date.getTime() / 1000);
+  }
+
+  function parseCsvLine(line, delimiter) {
+    const result = [];
+    let current = "";
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i += 1) {
+      const char = line[i];
+      if (char === "\"") {
+        if (inQuotes && line[i + 1] === "\"") {
+          current += "\"";
+          i += 1;
+        } else {
+          inQuotes = !inQuotes;
+        }
+        continue;
+      }
+      if (!inQuotes && char === delimiter) {
+        result.push(current);
+        current = "";
+        continue;
+      }
+      current += char;
+    }
+    result.push(current);
+    return result;
+  }
+
+  function parseHistoryCsv(text) {
+    const cleaned = String(text || "").replace(/^\uFEFF/, "");
+    const lines = cleaned
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length);
+    if (lines.length < 2) return [];
+
+    const delimiter = lines[0].includes(";") ? ";" : (lines[0].includes("\t") ? "\t" : ",");
+    const headers = parseCsvLine(lines[0], delimiter).map((h) => h.trim().toLowerCase());
+    const idxDatetime = headers.findIndex((h) => ["datetime", "date", "date_time", "date_heure"].includes(h));
+    const idxTimestamp = headers.findIndex((h) => ["timestamp", "timestamp_s", "epoch", "epoch_s"].includes(h));
+    const idxPh = headers.indexOf("ph");
+    const idxOrp = headers.indexOf("orp");
+    const idxTemp = headers.indexOf("temperature");
+    const idxFiltration = headers.indexOf("filtration");
+    const idxDosing = headers.indexOf("dosing");
+    const idxGranularity = headers.indexOf("granularity");
+
+    const toValue = (value) => {
+      const trimmed = String(value || "").trim();
+      if (trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
+        return trimmed.slice(1, -1);
+      }
+      return trimmed;
+    };
+
+    const toNumber = (value) => {
+      const cleaned = toValue(value);
+      if (!cleaned) return null;
+      const normalized = cleaned.includes(",") && !cleaned.includes(".")
+        ? cleaned.replace(",", ".")
+        : cleaned;
+      const parsed = Number(normalized);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const toBool = (value) => {
+      const cleaned = toValue(value).toLowerCase();
+      return cleaned === "1" || cleaned === "true" || cleaned === "yes" || cleaned === "y" || cleaned === "on";
+    };
+
+    const result = [];
+    for (let i = 1; i < lines.length; i += 1) {
+      const cols = parseCsvLine(lines[i], delimiter);
+      const getCol = (idx) => (idx >= 0 && idx < cols.length ? cols[idx] : "");
+
+      let timestamp = null;
+      if (idxTimestamp >= 0) {
+        const tsValue = toNumber(getCol(idxTimestamp));
+        if (tsValue != null) {
+          timestamp = tsValue > 10000000000 ? Math.floor(tsValue / 1000) : Math.floor(tsValue);
+        }
+      } else if (idxDatetime >= 0) {
+        timestamp = parseDateTimeToEpoch(toValue(getCol(idxDatetime)));
+      }
+
+      if (!timestamp) {
+        continue;
+      }
+
+      const ph = idxPh >= 0 ? toNumber(getCol(idxPh)) : null;
+      const orp = idxOrp >= 0 ? toNumber(getCol(idxOrp)) : null;
+      const temperature = idxTemp >= 0 ? toNumber(getCol(idxTemp)) : null;
+
+      result.push({
+        timestamp,
+        ph,
+        orp,
+        temperature,
+        filtration: idxFiltration >= 0 ? toBool(getCol(idxFiltration)) : false,
+        dosing: idxDosing >= 0 ? toBool(getCol(idxDosing)) : false,
+        granularity: idxGranularity >= 0 ? Math.max(0, parseInt(getCol(idxGranularity), 10) || 0) : 0
+      });
+    }
+
+    return result;
+  }
+
+  function bindHistoryBackup() {
+    const exportBtn = $("#history_export_btn");
+    const importInput = $("#history_import_file");
+    const importBtn = $("#history_import_btn");
+
+    exportBtn?.addEventListener("click", async () => {
       exportBtn.disabled = true;
       try {
-        const res = await authFetch('/get-history?range=all');
-        if (!res.ok) throw new Error('export failed');
+        const res = await authFetch("/get-history?range=all");
+        if (!res.ok) throw new Error("export failed");
         const data = await res.json();
         const rows = [
-          ['timestamp_s', 'ph', 'orp', 'temperature', 'filtration', 'dosing', 'granularity'].join(',')
+          ["datetime", "ph", "orp", "temperature", "filtration", "dosing", "granularity"].join(",")
         ];
 
         (data.history || []).forEach((point) => {
           const row = [
-            point.timestamp ?? '',
-            point.ph ?? '',
-            point.orp ?? '',
-            point.temperature ?? '',
+            formatDateTimeFromEpoch(point.timestamp),
+            point.ph ?? "",
+            point.orp ?? "",
+            point.temperature ?? "",
             point.filtration ? 1 : 0,
             point.dosing ? 1 : 0,
-            point.granularity ?? ''
+            point.granularity ?? ""
           ];
-          rows.push(row.join(','));
+          rows.push(row.join(","));
         });
 
-        const csv = rows.join('\n');
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const csv = rows.join("\n");
+        const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
         const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const a = document.createElement("a");
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
         a.href = url;
-        a.download = `history-${stamp}.csv`;
+        a.download = `history-backup-${stamp}.csv`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -1227,6 +1421,50 @@
         alert(`Erreur export historique: ${err.message || err}`);
       } finally {
         exportBtn.disabled = false;
+      }
+    });
+
+    importInput?.addEventListener("change", () => {
+      if (importBtn) importBtn.disabled = !(importInput.files && importInput.files.length);
+    });
+
+    importBtn?.addEventListener("click", async () => {
+      if (!(importInput.files && importInput.files.length)) return;
+      if (!confirm("Importer ce fichier va remplacer l'historique actuel. Continuer ?")) return;
+
+      importBtn.disabled = true;
+      importInput.disabled = true;
+
+      try {
+        const text = await importInput.files[0].text();
+        const points = parseHistoryCsv(text);
+        if (!points.length) {
+          alert("Aucune donnée valide trouvée dans le fichier.");
+          return;
+        }
+
+        const res = await authFetch("/history/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ history: points })
+        });
+
+        let response = null;
+        if (!res.ok) {
+          try {
+            response = await res.json();
+          } catch (_) {}
+          throw new Error(response?.error || "Import impossible");
+        }
+        response = await res.json();
+        alert(`Import terminé (${response?.count || points.length} points).`);
+        importInput.value = "";
+        if (importBtn) importBtn.disabled = true;
+      } catch (err) {
+        alert(`Erreur import historique: ${err.message || err}`);
+      } finally {
+        importBtn.disabled = !(importInput.files && importInput.files.length);
+        importInput.disabled = false;
       }
     });
   }
@@ -1460,6 +1698,7 @@
               mainChart.data.datasets[0].fill = false;
             }
             mainChart.update('none');
+            updateYAxisOverlay(mainChart);
             updateMainChartScroll();
           }
         }
@@ -2992,14 +3231,17 @@
     // Nouveau graphique principal avec onglets
     const mainChartCanvas = $("#mainChart");
     if (mainChartCanvas) {
-      mainChart = createLineChart(mainChartCanvas, "#4f8fff", "Température");
+      mainChart = createLineChart(mainChartCanvas, "#4f8fff", "Température", {
+        hideYAxis: true,
+        showYAxisGrid: true
+      });
       bindChartTabs();
       bindChartScroll();
       window.addEventListener('resize', updateMainChartScroll);
     }
 
     bindUI();
-    bindHistoryExport();
+    bindHistoryBackup();
     bindDetailActions();
     bindAutosave();
     bindPhCalibration();

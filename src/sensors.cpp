@@ -224,9 +224,23 @@ void SensorManager::readRealSensors() {
   }
   lastSensorRead = now;
 
+  static bool reportedUnavailable = false;
+  if (adsAvailable) {
+    if (reportedUnavailable) {
+      systemLogger.info("ADS1115 détecté: lectures pH/ORP rétablies");
+    }
+    reportedUnavailable = false;
+  }
+
   // Si l'ADS1115 n'est pas disponible, ne pas tenter de lire les capteurs pH/ORP
   if (!adsAvailable) {
+    phValue = NAN;
+    orpValue = NAN;
     static unsigned long lastAdsRetry = 0;
+    if (!reportedUnavailable) {
+      systemLogger.warning("ADS1115 non détecté: lectures pH/ORP indisponibles");
+      reportedUnavailable = true;
+    }
     if (now - lastAdsRetry >= 2000) {
       detectAdsIfNeeded();
       lastAdsRetry = now;
@@ -234,7 +248,7 @@ void SensorManager::readRealSensors() {
     // Log de debug uniquement toutes les 30 secondes pour éviter de spammer
     static unsigned long lastAdsWarning = 0;
     if (now - lastAdsWarning >= 30000) {
-      systemLogger.warning("ADS1115 non détecté - lectures pH/ORP désactivées");
+    systemLogger.warning("ADS1115 non détecté - lectures pH/ORP désactivées");
       lastAdsWarning = now;
     }
     return;

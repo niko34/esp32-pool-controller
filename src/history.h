@@ -55,6 +55,7 @@ public:
   std::vector<DataPoint> getLastHours(int hours);
   std::vector<DataPoint> getLastDay();
   std::vector<DataPoint> getAllData();
+  bool importData(const std::vector<DataPoint>& dataPoints);
   void clearHistory();
 };
 

@@ -14,8 +14,8 @@ private:
   OneWire oneWire;
   DallasTemperature tempSensor;
 
-  float orpValue = 0.0f;
-  float phValue = 0.0f;
+  float orpValue = NAN;
+  float phValue = NAN;
   float tempValue = NAN;
   float tempRawValue = NAN;
   bool sensorsInitialized = false;

@@ -275,20 +275,16 @@
               </div>
               <div class="chart-actions">
                 <span class="clock-badge" id="clockSyncBadge" title="Horloge non synchronisée">Horloge non synchronisée</span>
-                <button class="chart-export" id="exportHistoryBtn" type="button" title="Exporter l'historique" aria-label="Exporter l'historique">
-                  <svg viewBox="0 0 24 24" aria-hidden="true">
-                    <path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4.01 4a1 1 0 0 1-1.38 0l-4.01-4a1 1 0 1 1 1.4-1.42L11 12.59V4a1 1 0 0 1 1-1z"/>
-                    <path d="M5 19a1 1 0 0 1 1-1h12a1 1 0 1 1 0 2H6a1 1 0 0 1-1-1z"/>
-                  </svg>
-                  <span>Exporter</span>
-                </button>
               </div>
             </div>
             <div class="card__body">
               <div class="chart-container">
-                <div class="chart-scroll" id="mainChartScroll">
-                  <div class="chart-scroll__inner" id="mainChartScrollInner">
-                    <canvas id="mainChart"></canvas>
+                <div class="chartWrapper">
+                  <div class="chartYAxisOverlay" id="mainChartYAxis"></div>
+                  <div class="chartAreaWrapper" id="mainChartScroll">
+                    <div class="chart-scroll__inner" id="mainChartScrollInner">
+                      <canvas id="mainChart"></canvas>
+                    </div>
                   </div>
                 </div>
                 <!-- Canvas cachés pour stocker l'historique des données -->
@@ -989,6 +985,32 @@
 
                   <div class="row row--gap">
                     <button class="btn btn--ok" type="button" id="update_btn" disabled>Mettre à jour</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">Sauvegarde des données</div>
+                </div>
+                <div class="card__body">
+                  <div class="row row--gap">
+                    <button class="btn" type="button" id="history_export_btn">Exporter l'historique</button>
+                  </div>
+                  <div class="hint">
+                    Le fichier CSV contient la date au format <code>yyyy-MM-dd'T'HH:mm:ss</code> pour chaque point.
+                  </div>
+
+                  <label class="field" style="margin-top: 16px;">
+                    <span class="field__label">Importer un fichier CSV</span>
+                    <input type="file" id="history_import_file" accept=".csv,text/csv" />
+                  </label>
+
+                  <div class="row row--gap">
+                    <button class="btn btn--danger" type="button" id="history_import_btn" disabled>Importer</button>
+                  </div>
+                  <div class="hint">
+                    L'import remplace l'historique actuel. Colonnes attendues: <code>datetime, ph, orp, temperature, filtration, dosing, granularity</code>.
                   </div>
                 </div>
               </div>
