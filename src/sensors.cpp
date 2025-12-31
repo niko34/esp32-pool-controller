@@ -127,6 +127,19 @@ void SensorManager::begin() {
   systemLogger.info("Gestionnaire de capteurs initialisé");
 }
 
+void SensorManager::detectAdsIfNeeded() {
+  if (adsAvailable) return;
+
+  if (!ads.begin()) {
+    return;
+  }
+
+  adsAvailable = true;
+  ads.setGain(GAIN_ONE);
+  ads.setDataRate(RATE_ADS1115_8SPS);
+  systemLogger.info("ADS1115 détecté à chaud, mesures pH/ORP activées");
+}
+
 void SensorManager::update() {
   // Protéger l'accès I2C contre collisions avec calibrations (handlers web async)
   // Utilise tryTake (non-bloquant) pour ne pas ralentir la loop
@@ -213,6 +226,11 @@ void SensorManager::readRealSensors() {
 
   // Si l'ADS1115 n'est pas disponible, ne pas tenter de lire les capteurs pH/ORP
   if (!adsAvailable) {
+    static unsigned long lastAdsRetry = 0;
+    if (now - lastAdsRetry >= 2000) {
+      detectAdsIfNeeded();
+      lastAdsRetry = now;
+    }
     // Log de debug uniquement toutes les 30 secondes pour éviter de spammer
     static unsigned long lastAdsWarning = 0;
     if (now - lastAdsWarning >= 30000) {

@@ -52,6 +52,8 @@ public:
   void calibratePhAlkaline();        // Calibration point alcalin (pH 9.18)
   void clearPhCalibration();         // Effacer calibration
 
+  void detectAdsIfNeeded();
+
   // Recalcul des valeurs calibrées (température, ORP) après modification de l'offset
   void recalculateCalibratedValues();
 
