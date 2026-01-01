@@ -88,14 +88,4 @@ constexpr uint16_t kMdnsHttpPort = 80;                    // Port mDNS pour HTTP
 // mDNS
 constexpr const char* kMdnsHostname = "poolcontroller";   // Nom d'hôte mDNS
 
-// ============================================================================
-// GPIO CONSTANTS - Pins matérielles
-// ============================================================================
-
-// Boutons
-constexpr uint8_t kPasswordResetButtonPin = 4;            // GPIO4 - Bouton reset mot de passe (actif bas, pull-up interne)
-
-// LED
-constexpr uint8_t kBuiltinLedPin = 2;                     // GPIO2 - LED intégrée ESP32
-
 #endif // CONSTANTS_H

@@ -194,9 +194,8 @@ void AuthManager::sendAuthRequired(AsyncWebServerRequest* req) {
   String clientIP = req->client()->remoteIP().toString();
   systemLogger.warning("Accès non autorisé depuis " + clientIP + " vers " + req->url());
 
-  // Envoyer la réponse 401 avec demande Basic Auth
+  // Envoyer la réponse 401 sans challenge Basic Auth (évite la pop-up navigateur)
   AsyncWebServerResponse* response = req->beginResponse(401, "application/json", "{\"error\":\"Authentication required\"}");
-  response->addHeader("WWW-Authenticate", "Basic realm=\"Pool Controller\"");
   req->send(response);
 }
 
