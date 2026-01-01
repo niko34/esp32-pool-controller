@@ -547,12 +547,12 @@ void checkSystemHealth() {
 
 void checkPasswordResetButton() {
   // Initialiser le bouton de réinitialisation (GPIO4) et la LED
-  pinMode(kPasswordResetButtonPin, INPUT_PULLUP);
-  pinMode(kBuiltinLedPin, OUTPUT);
-  digitalWrite(kBuiltinLedPin, LOW);  // LED éteinte par défaut
+  pinMode(PASSWORD_RESET_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(BUILTIN_LED_PIN, OUTPUT);
+  digitalWrite(BUILTIN_LED_PIN, LOW);  // LED éteinte par défaut
 
   // Vérifier si le bouton est maintenu enfoncé (actif bas)
-  if (digitalRead(kPasswordResetButtonPin) == HIGH) {
+  if (digitalRead(PASSWORD_RESET_BUTTON_PIN) == HIGH) {
     // Bouton relâché, pas de réinitialisation
     return;
   }
@@ -566,19 +566,19 @@ void checkPasswordResetButton() {
   // Faire clignoter la LED pendant 10 secondes
   while (millis() - startTime < kPasswordResetButtonHoldMs) {
     // Vérifier que le bouton est toujours enfoncé
-    if (digitalRead(kPasswordResetButtonPin) == HIGH) {
+    if (digitalRead(PASSWORD_RESET_BUTTON_PIN) == HIGH) {
       resetConfirmed = false;
       systemLogger.info("Bouton relâché - Réinitialisation annulée");
       break;
     }
 
     // Clignoter la LED (100ms ON / 100ms OFF)
-    digitalWrite(kBuiltinLedPin, (millis() / 100) % 2);
+    digitalWrite(BUILTIN_LED_PIN, (millis() / 100) % 2);
     delay(50);
   }
 
   // Éteindre la LED
-  digitalWrite(kBuiltinLedPin, LOW);
+  digitalWrite(BUILTIN_LED_PIN, LOW);
 
   if (resetConfirmed) {
     systemLogger.critical("=== RÉINITIALISATION MOT DE PASSE CONFIRMÉE ===");
@@ -588,6 +588,7 @@ void checkPasswordResetButton() {
 
     // Réinitialiser le mot de passe
     authCfg.adminPassword = "admin";
+    authCfg.apiToken = "";
 
     // Sauvegarder la config avec le nouveau mot de passe
     saveMqttConfig();
@@ -597,7 +598,7 @@ void checkPasswordResetButton() {
 
     // Faire clignoter rapidement la LED 5 fois pour confirmer
     for (int i = 0; i < 10; i++) {
-      digitalWrite(kBuiltinLedPin, i % 2);
+      digitalWrite(BUILTIN_LED_PIN, i % 2);
       delay(200);
     }
   }

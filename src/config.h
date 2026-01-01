@@ -22,6 +22,8 @@
 #define TEMP_SENSOR_PIN 5
 #define FILTRATION_RELAY_PIN 18
 #define LIGHTING_RELAY_PIN 19    // Relais pour éclairage piscine
+#define PASSWORD_RESET_BUTTON_PIN 4  // GPIO4 - Bouton reset mot de passe (actif bas, pull-up interne)
+#define BUILTIN_LED_PIN 2            // GPIO2 - LED intégrée ESP32
 
 // ==== Constantes ====
 constexpr float PH_DEADBAND = 0.01f;      // Zone morte réduite : 7.2 à 7.21 (±0.01)

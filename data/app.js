@@ -1812,10 +1812,12 @@
           error: e
         });
 
-        // Only mark as offline after 3 consecutive failures (avoid false positives)
+        // Dégrader l'état rapidement en cas d'échec répété
         consecutiveFailures++;
-        if (consecutiveFailures >= 3) {
+        if (consecutiveFailures >= 2) {
           setNetStatus("bad", "Hors ligne");
+        } else {
+          setNetStatus("mid", "Connexion…");
         }
 
         // If we never loaded data, retry quickly to get first paint asap
@@ -3358,6 +3360,15 @@
 
     // loops (loadSensorData déjà appelé au démarrage ligne 2302)
     setInterval(() => loadSensorData({ source: "interval" }), SENSOR_REFRESH_MS); // 30 secondes
+    setInterval(() => {
+      if (!lastSensorDataLoadTime) return;
+      const ageMs = Date.now() - lastSensorDataLoadTime;
+      if (ageMs > SENSOR_REFRESH_MS * 2) {
+        setNetStatus("bad", "Hors ligne");
+      } else if (ageMs > SENSOR_REFRESH_MS * 1.2) {
+        setNetStatus("mid", "Connexion…");
+      }
+    }, 5000);
     setInterval(checkCalibrationDate, 300000); // 5 min
 
     // If you want: refresh config status occasionally (MQTT connected, etc.)
