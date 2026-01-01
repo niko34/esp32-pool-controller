@@ -140,6 +140,7 @@ void saveMqttConfig() {
 
   // Authentification
   prefs.putBool("auth_enabled", authCfg.enabled);
+  prefs.putBool("auth_force_wifi_config", authCfg.forceWifiConfig);
   prefs.putString("auth_password", authCfg.adminPassword);
   prefs.putString("auth_token", authCfg.apiToken);
   prefs.putString("auth_cors", authCfg.corsAllowedOrigins);
@@ -217,6 +218,7 @@ void loadMqttConfig() {
 
   // Authentification
   authCfg.enabled = prefs.getBool("auth_enabled", authCfg.enabled);
+  authCfg.forceWifiConfig = prefs.getBool("auth_force_wifi_config", authCfg.forceWifiConfig);
   authCfg.adminPassword = prefs.getString("auth_password", authCfg.adminPassword);
   authCfg.apiToken = prefs.getString("auth_token", authCfg.apiToken);
   authCfg.corsAllowedOrigins = prefs.getString("auth_cors", authCfg.corsAllowedOrigins);

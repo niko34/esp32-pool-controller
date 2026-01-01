@@ -2,7 +2,6 @@
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <DNSServer.h>
-#include <ESPAsyncWiFiManager.h>
 #include <LittleFS.h>
 #include <ESPmDNS.h>
 #include <esp_task_wdt.h>
@@ -82,7 +81,9 @@ void setup() {
   history.begin();
 
   // Configuration WiFi
-  if (setupWiFi()) {
+  bool wifiConnected = setupWiFi();
+
+  if (wifiConnected) {
     // mDNS
     if (!MDNS.begin(kMdnsHostname)) {
       systemLogger.error("Échec démarrage mDNS");
@@ -95,14 +96,14 @@ void setup() {
     mqttManager.begin();
     applyTimeConfig();
 
-    // Serveur Web (partager le serveur avec WiFiManager)
-    webServer.begin(&httpServer, &dns);
-
     // Connexion MQTT initiale
     if (mqttCfg.enabled) {
       mqttManager.requestReconnect();
     }
   }
+
+  // Serveur Web (disponible en STA ou AP)
+  webServer.begin(&httpServer, &dns);
 
   systemLogger.info("Initialisation terminée");
   esp_task_wdt_reset(); // Reset watchdog après init
@@ -162,294 +163,44 @@ void loop() {
 bool setupWiFi() {
   WiFi.mode(WIFI_STA);
   currentWifiMode = WiFi.getMode();
-  AsyncWiFiManager wm(&httpServer, &dns);
-
-  // Style custom for AP portal to align with app UI
-  const char* portalStyle = R"rawliteral(
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<style>
-  :root {
-    --bg: #f5f7fa;
-    --panel: #ffffff;
-    --panel2: #f8f9fb;
-    --stroke: rgba(0, 0, 0, 0.08);
-    --text: #1a1d29;
-    --muted: #6b7280;
-    --accent: #4f8fff;
-    --radius: 16px;
-    --shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
-  }
-  html, body { height: 100%; }
-  body {
-    margin: 0;
-    padding: 28px 18px 40px;
-    background: radial-gradient(1200px 600px at 20% -10%, #e9f1ff 0%, var(--bg) 45%, #eef2f7 100%);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-    text-align: center;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-start;
-    min-height: 100vh;
-    box-sizing: border-box;
-    overflow-x: hidden;
-  }
-  * {
-    box-sizing: border-box;
-  }
-  body > div {
-    width: 100%;
-    max-width: 420px;
-  }
-  h1 { display: none; }
-  h3 { display: none; }
-  a { color: var(--accent); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  form {
-    width: 100%;
-    margin: 14px auto;
-    padding: 16px;
-    background: var(--panel);
-    border: 1px solid var(--stroke);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-  }
-  form.portalap {
-    padding: 24px;
-  }
-  input, select {
-    width: 100%;
-    padding: 10px 12px;
-    border: 1px solid var(--stroke);
-    border-radius: 12px;
-    background: var(--panel2);
-    color: var(--text);
-  }
-  button {
-    border: 0;
-    border-radius: 12px;
-    background-color: var(--accent);
-    color: #fff;
-    line-height: 2.6rem;
-    font-size: 1rem;
-    width: 100%;
-    font-weight: 600;
-  }
-  form[action="/r"] button {
-    background-color: #ff3b30;
-  }
-  .q {
-    float: none;
-    display: inline-block;
-    min-width: 52px;
-    text-align: right;
-    color: var(--muted);
-  }
-  a[href="#p"] {
-    display: inline-block;
-    padding: 8px 10px;
-    margin: 6px 0;
-    background: var(--panel);
-    border: 1px solid var(--stroke);
-    border-radius: 10px;
-  }
-  a[href="#p"] + .q { margin-left: 8px; }
-  .c { text-align: center; }
-  body > div > div {
-    width: 100%;
-    margin: 0;
-  }
-  .pc-header {
-    display: grid;
-    gap: 6px;
-    justify-items: center;
-    margin: 4px 0 0;
-    text-align: center;
-    width: 100%;
-  }
-  .pc-logo {
-    width: 72px;
-    height: 72px;
-    border-radius: 16px;
-  }
-  .pc-title {
-    font-weight: 750;
-    letter-spacing: 0.2px;
-    font-size: 18px;
-  }
-  .pc-sub {
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .pc-card {
-    width: 100%;
-    max-width: 420px;
-    margin: -10px auto;
-    padding: 16px;
-    background: var(--panel);
-    border: 1px solid var(--stroke);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-  }
-  .pc-center {
-    text-align: center;
-  }
-  .pc-actions form {
-    margin: 10px 0 0;
-    padding: 0;
-    border: 0;
-    box-shadow: none;
-    background: transparent;
-  }
-  form[action="/wifi"]:not([data-pc]),
-  form[action="/0wifi"]:not([data-pc]),
-  form[action="/i"]:not([data-pc]),
-  form[action="/r"]:not([data-pc]) {
-    display: none;
-  }
-</style>
-<script>
-  document.addEventListener('DOMContentLoaded', () => {
-    document.body.classList.add('pc-portal');
-    const h1 = document.querySelector('h1');
-    const apName = h1 ? h1.textContent.trim() : '';
-    const header = document.createElement('div');
-    header.className = 'pc-header';
-    header.innerHTML =
-      '<div class="pc-title">PoolController</div>' +
-      '<div class="pc-sub">Point d\'accès: ' + (apName || 'PoolControllerAP') + '</div>';
-    document.body.insertBefore(header, document.body.firstChild);
-
-    const ssid = document.querySelector('input#s');
-    if (ssid) {
-      ssid.placeholder = 'Nom du réseau (SSID)';
-      const label = document.createElement('div');
-      label.className = 'pc-sub';
-      label.style.marginBottom = '6px';
-      label.textContent = 'Réseau Wi-Fi';
-      ssid.parentNode.insertBefore(label, ssid);
-    }
-    const pass = document.querySelector('input#p');
-    if (pass) {
-      pass.placeholder = 'Mot de passe';
-      const label = document.createElement('div');
-      label.className = 'pc-sub';
-      label.style.marginBottom = '6px';
-      label.textContent = 'Mot de passe';
-      pass.parentNode.insertBefore(label, pass);
-    }
-
-    document.querySelectorAll('button').forEach((btn) => {
-      if (btn.textContent.trim().toLowerCase() === 'save') {
-        btn.textContent = 'Enregistrer';
-      }
-    });
-
-    if (document.title === 'Options' || document.title === 'Config ESP' || document.title === 'Credentials Saved') {
-      document.title = 'Configuration Wi-Fi';
-    }
-
-    const bodyText = document.body.textContent || '';
-    if (bodyText.includes('No networks found. Refresh to scan again')) {
-      const card = document.createElement('div');
-      card.className = 'pc-card pc-center';
-      card.innerHTML = '<div class="pc-title">Aucun réseau trouvé</div>' +
-        '<div class="pc-sub">Actualisez la page pour relancer le scan.</div>';
-      document.body.insertBefore(card, document.body.firstChild.nextSibling);
-    }
-
-    const staticFields = [
-      { id: 'ip', label: 'Adresse IP fixe' },
-      { id: 'gw', label: 'Passerelle' },
-      { id: 'sn', label: 'Masque de sous-réseau' },
-      { id: 'dns1', label: 'DNS primaire' },
-      { id: 'dns2', label: 'DNS secondaire' }
-    ];
-    staticFields.forEach((f) => {
-      const el = document.getElementById(f.id);
-      if (el && !el.placeholder) {
-        el.placeholder = f.label;
-      }
-    });
-
-    const text = document.body.textContent || '';
-    if (text.includes('Credentials Saved')) {
-      while (document.body.children.length > 1) {
-        document.body.removeChild(document.body.lastChild);
-      }
-      const card = document.createElement('div');
-      card.className = 'pc-card pc-center';
-      card.innerHTML = '<div class="pc-title">Identifiants enregistrés</div>' +
-        '<div class="pc-sub">Connexion au réseau en cours. Si cela échoue, reconnectez-vous au point d&apos;accès.</div>';
-      document.body.appendChild(card);
-    }
-
-    // Styliser la page Infos système
-    const dlElements = document.querySelectorAll('dl');
-    if (dlElements.length > 0 && document.title.includes('Info')) {
-      document.title = 'Informations système';
-      dlElements.forEach((dl) => {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'pc-card';
-        dl.parentNode.insertBefore(wrapper, dl);
-        wrapper.appendChild(dl);
-
-        // Styliser les éléments dt/dd
-        const style = document.createElement('style');
-        style.textContent = `
-          .pc-card dl { margin: 0; }
-          .pc-card dt {
-            font-weight: 600;
-            color: var(--text);
-            margin-top: 12px;
-            font-size: 13px;
-          }
-          .pc-card dt:first-child { margin-top: 0; }
-          .pc-card dd {
-            margin: 4px 0 0 0;
-            color: var(--muted);
-            font-size: 14px;
-            word-break: break-all;
-          }
-        `;
-        document.head.appendChild(style);
-      });
-    }
-  });
-</script>
-  )rawliteral";
-  wm.setCustomHeadElement(portalStyle);
-  const char* portalOptions = R"rawliteral(
-    <div class="pc-card pc-actions">
-      <div class="pc-title">Configurer le Wi-Fi</div>
-      <div class="pc-sub">Choisissez un réseau puis enregistrez les identifiants.</div>
-      <form data-pc="1" action="/wifi" method="get"><button>Rechercher les réseaux</button></form>
-      <form data-pc="1" action="/0wifi" method="get"><button>Configurer sans scan</button></form>
-      <form data-pc="1" action="/i" method="get"><button>Infos système</button></form>
-      <form data-pc="1" action="/r" method="post"><button>Réinitialiser la configuration</button></form>
-    </div>
-  )rawliteral";
-  wm.setCustomOptionsElement(portalOptions);
-
   systemLogger.info("Tentative connexion WiFi...");
 
-  // autoConnect peut bloquer assez longtemps pour déclencher le watchdog
-  esp_task_wdt_delete(NULL);
-
-  if (!wm.autoConnect("PoolControllerAP", "12345678")) {
-    systemLogger.error("Échec connexion WiFi");
-    currentWifiMode = WiFi.getMode();
-    esp_task_wdt_add(NULL);
-    return false;
+  // Connexion avec credentials sauvegardés (NVS)
+  WiFi.begin();
+  unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < kWifiConnectTimeoutMs) {
+    delay(250);
   }
 
-  systemLogger.info("WiFi connecté: " + WiFi.SSID());
-  systemLogger.info("IP: " + WiFi.localIP().toString());
+  auto startApMode = [](bool keepSta) {
+    WiFi.mode(keepSta ? WIFI_AP_STA : WIFI_AP);
+    bool apStarted = WiFi.softAP("PoolControllerAP", "12345678");
+    if (apStarted) {
+      systemLogger.info("AP démarré: PoolControllerAP");
+      systemLogger.info("IP AP: " + WiFi.softAPIP().toString());
+      dns.start(53, "*", WiFi.softAPIP());
+    } else {
+      systemLogger.error("Impossible de démarrer le mode AP");
+    }
+  };
+
+  if (WiFi.status() == WL_CONNECTED) {
+    systemLogger.info("WiFi connecté: " + WiFi.SSID());
+    systemLogger.info("IP: " + WiFi.localIP().toString());
+    currentWifiMode = WiFi.getMode();
+
+    // Activer le mode AP si forceWifiConfig OU si premier démarrage
+    if (authCfg.forceWifiConfig || authManager.isFirstBootDetected()) {
+      systemLogger.warning("Mode AP activé (reset password ou premier démarrage): activation AP + STA");
+      startApMode(true);
+    }
+    return true;
+  }
+
+  systemLogger.error("Échec connexion WiFi, activation du mode AP");
+  startApMode(false);
   currentWifiMode = WiFi.getMode();
-  esp_task_wdt_add(NULL);
-  return true;
+  return false;
 }
 
 void resetWiFiSettings() {
@@ -504,10 +255,41 @@ void checkSystemHealth() {
     mqttManager.publishAlert("low_memory", "Free heap: " + String(freeHeap) + " bytes");
   }
 
-  // Vérifier connexion WiFi
-  if (!WiFi.isConnected()) {
-    systemLogger.warning("WiFi déconnecté, tentative de reconnexion");
-    WiFi.reconnect();
+  // Vérifier connexion WiFi et activer AP en secours si nécessaire
+  static unsigned long lastWifiCheckTime = 0;
+  static int wifiReconnectAttempts = 0;
+  wifi_mode_t mode = WiFi.getMode();
+
+  if (!WiFi.isConnected() && (mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA)) {
+    unsigned long now = millis();
+
+    // Première tentative ou si 30 secondes se sont écoulées depuis la dernière tentative
+    if (lastWifiCheckTime == 0 || (now - lastWifiCheckTime >= 30000)) {
+      systemLogger.warning("WiFi déconnecté, tentative de reconnexion (" + String(wifiReconnectAttempts + 1) + "/3)");
+      WiFi.reconnect();
+      lastWifiCheckTime = now;
+      wifiReconnectAttempts++;
+
+      // Après 3 tentatives infructueuses, activer le mode AP en secours
+      if (wifiReconnectAttempts >= 3 && mode == WIFI_MODE_STA) {
+        systemLogger.error("Impossible de reconnecter le WiFi après 3 tentatives, activation du mode AP");
+        WiFi.mode(WIFI_AP_STA);
+        bool apStarted = WiFi.softAP("PoolControllerAP", "12345678");
+        if (apStarted) {
+          systemLogger.info("AP démarré en mode secours: PoolControllerAP");
+          systemLogger.info("IP AP: " + WiFi.softAPIP().toString());
+          dns.start(53, "*", WiFi.softAPIP());
+        }
+        wifiReconnectAttempts = 0; // Réinitialiser pour permettre de nouvelles tentatives plus tard
+      }
+    }
+  } else if (WiFi.isConnected()) {
+    // Réinitialiser le compteur si la connexion est rétablie
+    if (wifiReconnectAttempts > 0) {
+      systemLogger.info("WiFi reconnecté avec succès");
+      wifiReconnectAttempts = 0;
+      lastWifiCheckTime = 0;
+    }
   }
 
   // Vérifier connexion MQTT
@@ -589,6 +371,7 @@ void checkPasswordResetButton() {
     // Réinitialiser le mot de passe
     authCfg.adminPassword = "admin";
     authCfg.apiToken = "";
+    authCfg.forceWifiConfig = true;
 
     // Sauvegarder la config avec le nouveau mot de passe
     saveMqttConfig();

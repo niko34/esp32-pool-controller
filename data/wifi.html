@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#0066cc" />
+    <title>Configuration Wi-Fi - PoolController</title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/favicon-32x32.png" sizes="32x32">
+    <link rel="icon" type="image/png" href="/favicon-16x16.png" sizes="16x16">
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }
+
+      .login-container {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+        max-width: 420px;
+        width: 100%;
+        padding: 40px;
+      }
+
+      .logo {
+        text-align: center;
+        margin-bottom: 30px;
+      }
+
+      .logo img {
+        width: 80px;
+        height: 80px;
+        margin-bottom: 15px;
+      }
+
+      .logo h1 {
+        font-size: 24px;
+        color: #333;
+        margin-bottom: 5px;
+      }
+
+      .logo p {
+        font-size: 14px;
+        color: #666;
+      }
+
+      .alert {
+        background: #fff3cd;
+        border: 1px solid #ffc107;
+        border-radius: 6px;
+        padding: 12px;
+        margin-bottom: 20px;
+        font-size: 14px;
+        color: #856404;
+      }
+
+      .alert.error {
+        background: #f8d7da;
+        border-color: #f5c6cb;
+        color: #721c24;
+      }
+
+      .alert.success {
+        background: #d4edda;
+        border-color: #c3e6cb;
+        color: #155724;
+      }
+
+      .form-group {
+        margin-bottom: 16px;
+      }
+
+      label {
+        display: block;
+        font-size: 14px;
+        font-weight: 500;
+        color: #333;
+        margin-bottom: 8px;
+      }
+
+      input, select {
+        width: 100%;
+        padding: 12px 15px;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        font-size: 14px;
+        transition: border-color 0.3s;
+      }
+
+      input:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+
+      button {
+        width: 100%;
+        padding: 12px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-size: 16px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: transform 0.2s;
+      }
+
+      button:hover { transform: translateY(-2px); }
+      button:active { transform: translateY(0); }
+      button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+      .secondary {
+        background: #f1f3f5;
+        color: #333;
+        margin-top: 10px;
+      }
+
+      .network-list {
+        border: 1px solid #eee;
+        border-radius: 8px;
+        max-height: 180px;
+        overflow: auto;
+        padding: 8px;
+        margin-bottom: 14px;
+      }
+
+      .network-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+
+      .network-item:hover {
+        background: #f5f7ff;
+      }
+
+      .network-item strong {
+        font-size: 14px;
+      }
+
+      .network-item span {
+        font-size: 12px;
+        color: #666;
+      }
+
+      .hidden { display: none; }
+    </style>
+  </head>
+
+  <body>
+    <div class="login-container">
+      <div class="logo">
+        <img src="/apple-touch-icon-144×144.png" alt="PoolController" />
+        <h1>Configurer le Wi-Fi</h1>
+        <p>Connexion réseau de l'appareil</p>
+      </div>
+
+      <div id="statusAlert" class="alert hidden"></div>
+      <div id="errorAlert" class="alert error hidden"></div>
+      <div id="successAlert" class="alert success hidden"></div>
+
+      <div class="form-group">
+        <button type="button" id="scanBtn">Scanner les réseaux</button>
+      </div>
+
+      <div id="networkList" class="network-list hidden"></div>
+
+      <form id="wifiForm">
+        <div class="form-group">
+          <label for="ssid">Réseau Wi-Fi (SSID)</label>
+          <input type="text" id="ssid" placeholder="Nom du réseau" required />
+        </div>
+
+        <div class="form-group">
+          <label for="password">Mot de passe</label>
+          <input type="password" id="password" placeholder="Mot de passe (laisser vide si ouvert)" />
+        </div>
+
+        <button type="submit" id="connectBtn">Se connecter</button>
+      </form>
+
+      <button class="secondary" type="button" id="backBtn">Retour</button>
+    </div>
+
+    <script>
+      const statusAlert = document.getElementById('statusAlert');
+      const errorAlert = document.getElementById('errorAlert');
+      const successAlert = document.getElementById('successAlert');
+      const networkList = document.getElementById('networkList');
+      const scanBtn = document.getElementById('scanBtn');
+      const connectBtn = document.getElementById('connectBtn');
+      const backBtn = document.getElementById('backBtn');
+      let isAuthenticated = false;
+
+      function showStatus(message) {
+        statusAlert.textContent = message;
+        statusAlert.classList.remove('hidden');
+      }
+
+      function showError(message) {
+        errorAlert.textContent = message;
+        errorAlert.classList.remove('hidden');
+        successAlert.classList.add('hidden');
+      }
+
+      function showSuccess(message) {
+        successAlert.textContent = message;
+        successAlert.classList.remove('hidden');
+        errorAlert.classList.add('hidden');
+      }
+
+      async function checkAuth() {
+        // Vérifier si l'utilisateur est authentifié via le token en sessionStorage
+        const token = sessionStorage.getItem('authToken');
+
+        if (token) {
+          // Si un token existe, considérer l'utilisateur comme authentifié
+          // (il vient de l'application)
+          isAuthenticated = true;
+          backBtn.textContent = 'Retour à l\'application';
+        } else {
+          // Pas de token = accès depuis la page de login
+          isAuthenticated = false;
+          backBtn.textContent = 'Retour à la connexion';
+        }
+      }
+
+      async function loadStatus() {
+        try {
+          const res = await fetch('/wifi/status');
+          if (!res.ok) return;
+          const data = await res.json();
+          if (data.mode && data.mode.includes('AP')) {
+            showStatus(`Mode AP actif (${data.ap_ssid || 'PoolControllerAP'})`);
+          }
+        } catch (_) {}
+      }
+
+      function renderNetworks(networks) {
+        networkList.innerHTML = '';
+        if (!networks || networks.length === 0) {
+          networkList.classList.add('hidden');
+          showError('Aucun réseau trouvé.');
+          return;
+        }
+        networkList.classList.remove('hidden');
+        networks.forEach((net) => {
+          const item = document.createElement('div');
+          item.className = 'network-item';
+          item.innerHTML = `<strong>${net.ssid || '(masqué)'}</strong><span>${net.rssi} dBm ${net.secure ? '🔒' : ''}</span>`;
+          item.addEventListener('click', () => {
+            document.getElementById('ssid').value = net.ssid || '';
+          });
+          networkList.appendChild(item);
+        });
+      }
+
+      scanBtn.addEventListener('click', async () => {
+        scanBtn.disabled = true;
+        errorAlert.classList.add('hidden');
+        try {
+          const res = await fetch('/wifi/scan');
+          if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.error || 'Erreur scan Wi-Fi');
+          }
+          const data = await res.json();
+          renderNetworks(data.networks || []);
+        } catch (err) {
+          showError(err.message || 'Erreur scan Wi-Fi');
+        } finally {
+          scanBtn.disabled = false;
+        }
+      });
+
+      document.getElementById('wifiForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        connectBtn.disabled = true;
+        errorAlert.classList.add('hidden');
+        successAlert.classList.add('hidden');
+
+        const ssid = document.getElementById('ssid').value.trim();
+        const password = document.getElementById('password').value;
+        if (!ssid) {
+          showError('Veuillez saisir un SSID.');
+          connectBtn.disabled = false;
+          return;
+        }
+
+        try {
+          const res = await fetch('/wifi/connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ssid, password })
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(data.error || 'Connexion impossible');
+          }
+          if (data.connected) {
+            showSuccess('Wi-Fi configuré. Connectez-vous au réseau puis ouvrez l\'application.');
+          } else {
+            showError('Connexion échouée. Vérifiez le mot de passe.');
+          }
+        } catch (err) {
+          showError(err.message || 'Erreur de connexion');
+        } finally {
+          connectBtn.disabled = false;
+        }
+      });
+
+      backBtn.addEventListener('click', () => {
+        if (isAuthenticated) {
+          window.location.href = '/';
+        } else {
+          window.location.href = '/login.html';
+        }
+      });
+
+      // Initialisation au chargement
+      checkAuth();
+      loadStatus();
+    </script>
+  </body>
+</html>

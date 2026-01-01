@@ -13,6 +13,7 @@
 #include <WiFi.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <AsyncJson.h>
 #include <esp_ota_ops.h>
 
 // Fonction externe déclarée dans main.cpp pour effacer les credentials WiFi
@@ -21,6 +22,14 @@ extern void resetWiFiSettings();
 // Contexte pour les buffers de configuration (partagé avec web_server)
 static std::map<AsyncWebServerRequest*, std::vector<uint8_t>>* g_configBuffers = nullptr;
 static std::map<AsyncWebServerRequest*, bool>* g_configErrors = nullptr;
+
+static bool wifiConfigAllowed() {
+  wifi_mode_t mode = WiFi.getMode();
+  if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) {
+    return true;
+  }
+  return !WiFi.isConnected();
+}
 
 void initConfigContext(
   std::map<AsyncWebServerRequest*, std::vector<uint8_t>>* configBuffers,
@@ -72,7 +81,8 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["lighting_end_time"] = lightingCfg.endTime;
   doc["wifi_ssid"] = WiFi.SSID();
   doc["wifi_ip"] = WiFi.localIP().toString();
-  doc["wifi_mode"] = WiFi.getMode() == WIFI_MODE_AP ? "AP" : "STA";
+  wifi_mode_t mode = WiFi.getMode();
+  doc["wifi_mode"] = mode == WIFI_MODE_AP ? "AP" : (mode == WIFI_MODE_APSTA ? "AP+STA" : "STA");
   doc["mdns_host"] = "poolcontroller.local";
   doc["max_ph_ml_per_day"] = safetyLimits.maxPhMinusMlPerDay;
   doc["max_chlorine_ml_per_day"] = safetyLimits.maxChlorineMlPerDay;
@@ -356,6 +366,113 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
   server->on("/get-config", HTTP_GET, handleGetConfig);
   server->on("/time-now", HTTP_GET, handleTimeNow);
   server->on("/get-system-info", HTTP_GET, handleGetSystemInfo);
+
+  // Routes Wi-Fi publiques (utilisées depuis la page de login en mode AP)
+  server->on("/wifi/status", HTTP_GET, [](AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    wifi_mode_t mode = WiFi.getMode();
+    String modeLabel = (mode == WIFI_MODE_AP) ? "AP" : (mode == WIFI_MODE_APSTA ? "AP+STA" : "STA");
+    doc["mode"] = modeLabel;
+    doc["connected"] = WiFi.isConnected();
+    doc["ssid"] = WiFi.SSID();
+    doc["ap_ssid"] = WiFi.softAPSSID();
+    doc["ap_ip"] = WiFi.softAPIP().toString();
+    sendJsonResponse(request, doc);
+  });
+
+  server->on("/wifi/scan", HTTP_GET, [](AsyncWebServerRequest* request) {
+    if (!wifiConfigAllowed()) {
+      sendErrorResponse(request, 403, "WiFi config not allowed");
+      return;
+    }
+    if (!authManager.checkRateLimit(request)) {
+      authManager.sendRateLimitExceeded(request);
+      return;
+    }
+
+    int count = WiFi.scanNetworks(false, true);
+    JsonDocument doc;
+    JsonArray networks = doc["networks"].to<JsonArray>();
+    for (int i = 0; i < count; i++) {
+      JsonObject item = networks.add<JsonObject>();
+      item["ssid"] = WiFi.SSID(i);
+      item["rssi"] = WiFi.RSSI(i);
+      item["channel"] = WiFi.channel(i);
+      item["secure"] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+    }
+    WiFi.scanDelete();
+    sendJsonResponse(request, doc);
+  });
+
+  auto* wifiConnectHandler = new AsyncCallbackJsonWebHandler(
+    "/wifi/connect",
+    [](AsyncWebServerRequest* request, JsonVariant& json) {
+      if (!wifiConfigAllowed()) {
+        sendErrorResponse(request, 403, "WiFi config not allowed");
+        return;
+      }
+      if (!authManager.checkRateLimit(request)) {
+        authManager.sendRateLimitExceeded(request);
+        return;
+      }
+
+      JsonObject root = json.as<JsonObject>();
+      String ssid = root["ssid"] | "";
+      String password = root["password"] | "";
+
+      if (ssid.isEmpty()) {
+        sendErrorResponse(request, 400, "SSID required");
+        return;
+      }
+
+      wifi_mode_t mode = WiFi.getMode();
+      if (mode == WIFI_MODE_AP) {
+        WiFi.mode(WIFI_AP_STA);
+      } else {
+        WiFi.mode(WIFI_STA);
+      }
+
+      systemLogger.info("Tentative connexion WiFi depuis l'UI: " + ssid);
+      WiFi.begin(ssid.c_str(), password.c_str());
+      unsigned long start = millis();
+      while (WiFi.status() != WL_CONNECTED && millis() - start < kWifiConnectTimeoutMs) {
+        delay(250);
+      }
+
+      bool connected = WiFi.status() == WL_CONNECTED;
+
+      JsonDocument doc;
+      doc["connected"] = connected;
+      doc["ssid"] = WiFi.SSID();
+      doc["ip"] = WiFi.localIP().toString();
+      doc["mode"] = (WiFi.getMode() == WIFI_MODE_APSTA) ? "AP+STA" : (WiFi.getMode() == WIFI_MODE_AP ? "AP" : "STA");
+      sendJsonResponse(request, doc);
+    });
+  wifiConnectHandler->setMethod(HTTP_POST);
+  server->addHandler(wifiConnectHandler);
+
+  server->on("/wifi/ap/disable", HTTP_POST, [](AsyncWebServerRequest* request) {
+    REQUIRE_AUTH(request, RouteProtection::CRITICAL);
+
+    if (!WiFi.isConnected()) {
+      sendErrorResponse(request, 400, "WiFi not connected");
+      return;
+    }
+
+    wifi_mode_t mode = WiFi.getMode();
+    if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) {
+      WiFi.softAPdisconnect(true);
+      WiFi.mode(WIFI_STA);
+      authCfg.forceWifiConfig = false;
+      saveMqttConfig();
+      systemLogger.info("Mode AP désactivé par l'administrateur");
+    }
+
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["mode"] = (WiFi.getMode() == WIFI_MODE_STA) ? "STA" : "AP";
+    sendJsonResponse(request, doc);
+  });
 
   // Route /save-config - PROTÉGÉE (CRITICAL)
   server->on("/save-config", HTTP_POST,

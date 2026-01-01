@@ -21,9 +21,9 @@
 // Capteurs et actionneurs
 #define TEMP_SENSOR_PIN 5
 #define FILTRATION_RELAY_PIN 18
-#define LIGHTING_RELAY_PIN 19    // Relais pour éclairage piscine
-#define PASSWORD_RESET_BUTTON_PIN 4  // GPIO4 - Bouton reset mot de passe (actif bas, pull-up interne)
-#define BUILTIN_LED_PIN 2            // GPIO2 - LED intégrée ESP32
+#define LIGHTING_RELAY_PIN 19           // Relais pour éclairage piscine
+#define PASSWORD_RESET_BUTTON_PIN 4     // GPIO4 - Bouton reset mot de passe (actif bas, pull-up interne)
+#define BUILTIN_LED_PIN 2               // GPIO2 - LED intégrée ESP32
 
 // ==== Constantes ====
 constexpr float PH_DEADBAND = 0.01f;      // Zone morte réduite : 7.2 à 7.21 (±0.01)
@@ -102,6 +102,7 @@ struct AuthConfig {
   String adminPassword = "admin"; // Mot de passe administrateur (HTTP Basic Auth)
   String apiToken = "";           // Token API pour intégrations (généré au boot si vide)
   String corsAllowedOrigins = ""; // Origines CORS autorisées (séparées par virgules, vide = désactivé)
+  bool forceWifiConfig = false;   // Forcer l'affichage du bouton Wi-Fi sur l'écran login
 };
 
 struct PumpControlParams {

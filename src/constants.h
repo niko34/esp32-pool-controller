@@ -88,4 +88,7 @@ constexpr uint16_t kMdnsHttpPort = 80;                    // Port mDNS pour HTTP
 // mDNS
 constexpr const char* kMdnsHostname = "poolcontroller";   // Nom d'hôte mDNS
 
+// Wi-Fi
+constexpr uint32_t kWifiConnectTimeoutMs = 15000;          // Timeout connexion Wi-Fi (ms)
+
 #endif // CONSTANTS_H
