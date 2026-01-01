@@ -3027,12 +3027,11 @@
     if (s2) updateSliderReadout(s2, "#pump2_duty_value", "#pump2_duty_pwm");
   }
 
-  // Restart AP
+  // WiFi Configuration
   function bindWifi() {
-    $("#restart_ap_btn")?.addEventListener("click", async () => {
-      if (!confirm("Redémarrer en mode AP ?")) return;
-      await authFetch("/reboot-ap", { method: "POST" }).catch(() => {});
-      alert("Commande envoyée. L’ESP32 va redémarrer.");
+    $("#wifi_config_btn")?.addEventListener("click", () => {
+      // Rediriger vers la page de configuration WiFi
+      window.location.href = "/wifi.html";
     });
   }
 

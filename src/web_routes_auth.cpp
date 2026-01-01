@@ -3,6 +3,7 @@
 #include "auth.h"
 #include "config.h"
 #include <ArduinoJson.h>
+#include <WiFi.h>
 
 void setupAuthRoutes(AsyncWebServer* server) {
   // Route: Statut d'authentification (PUBLIC - vérifier si premier démarrage)
@@ -10,6 +11,7 @@ void setupAuthRoutes(AsyncWebServer* server) {
     JsonDocument doc;
     doc["firstBoot"] = authManager.isFirstBootDetected();
     doc["authEnabled"] = authManager.isEnabled();
+    doc["forceWifiConfig"] = authCfg.forceWifiConfig;
     sendJsonResponse(req, doc);
   });
 
@@ -119,6 +121,14 @@ void setupAuthRoutes(AsyncWebServer* server) {
       // Changer le mot de passe
       authCfg.adminPassword = newPassword;
       authManager.setPassword(newPassword);
+
+      // Si c'était un reset password, désactiver le flag forceWifiConfig
+      // L'utilisateur a maintenant défini un nouveau mot de passe sécurisé
+      // Le mode AP sera désactivé automatiquement après connexion si WiFi est connecté
+      if (authCfg.forceWifiConfig) {
+        authCfg.forceWifiConfig = false;
+      }
+
       saveMqttConfig();
 
       // Retourner le token API pour connexion automatique

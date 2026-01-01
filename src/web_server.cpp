@@ -122,6 +122,10 @@ void WebServerManager::setupRoutes() {
     req->send(LittleFS, "/login.html", "text/html");
   });
 
+  server->on("/wifi.html", HTTP_GET, [](AsyncWebServerRequest *req) {
+    req->send(LittleFS, "/wifi.html", "text/html");
+  });
+
   // Pages HTML (PUBLIC - le JavaScript vérifie l'auth au chargement via sessionStorage)
   // Les pages HTML ne peuvent pas vérifier le token car les navigateurs n'envoient pas
   // de headers personnalisés lors des navigations (redirections, liens directs, etc.)
