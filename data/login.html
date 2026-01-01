@@ -283,7 +283,7 @@
       }
 
       function showSuccess(message) {
-        successAlert.textContent = message;
+        successAlert.innerHTML = message;
         successAlert.classList.remove('hidden');
         errorAlert.classList.add('hidden');
       }
@@ -378,7 +378,7 @@
 
           if (response.ok) {
             const data = await response.json();
-            showSuccess('Mot de passe modifié avec succès ! Redirection...');
+            showSuccess('Mot de passe modifié avec succès&nbsp;!&nbsp;Redirection en cours...');
 
             // Stocker le token
             sessionStorage.setItem('authToken', data.token);
