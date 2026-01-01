@@ -228,7 +228,7 @@
           // Si un token existe, considérer l'utilisateur comme authentifié
           // (il vient de l'application)
           isAuthenticated = true;
-          backBtn.textContent = 'Retour à l\'application';
+          backBtn.textContent = 'Retour aux paramètres';
         } else {
           // Pas de token = accès depuis la page de login
           isAuthenticated = false;
@@ -322,7 +322,7 @@
 
       backBtn.addEventListener('click', () => {
         if (isAuthenticated) {
-          window.location.href = '/';
+          window.location.href = '/config.html';
         } else {
           window.location.href = '/login.html';
         }
