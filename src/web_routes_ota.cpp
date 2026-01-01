@@ -76,12 +76,22 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     // Déterminer le type de mise à jour
     int cmd = U_FLASH; // Par défaut: firmware
 
-    // Si le fichier se termine par .littlefs.bin ou .spiffs.bin ou .fs.bin, c'est le filesystem
-    if (filename.endsWith(".littlefs.bin") || filename.endsWith(".spiffs.bin") || filename.endsWith(".fs.bin")) {
+    // Priorité 1: Utiliser le paramètre update_type du formulaire si disponible
+    if (request->hasParam("update_type", true)) {
+      String updateType = request->getParam("update_type", true)->value();
+      if (updateType == "filesystem") {
+        cmd = U_SPIFFS;
+        systemLogger.info("Type de mise à jour: Filesystem (paramètre formulaire)");
+      } else {
+        systemLogger.info("Type de mise à jour: Firmware (paramètre formulaire)");
+      }
+    }
+    // Priorité 2: Détecter par le nom de fichier si pas de paramètre
+    else if (filename.endsWith(".littlefs.bin") || filename.endsWith(".spiffs.bin") || filename.endsWith(".fs.bin")) {
       cmd = U_SPIFFS;
-      systemLogger.info("Type de mise à jour: Filesystem");
+      systemLogger.info("Type de mise à jour: Filesystem (détection nom fichier)");
     } else {
-      systemLogger.info("Type de mise à jour: Firmware");
+      systemLogger.info("Type de mise à jour: Firmware (détection nom fichier)");
     }
 
     // Démarrer la mise à jour
