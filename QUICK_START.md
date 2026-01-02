@@ -341,14 +341,32 @@ Interface web → Configuration → MQTT
 
 **Solution**: Bouton reset sur GPIO4
 
+#### Procédure de reset
+
 1. Débrancher alimentation ESP32
 2. Maintenir bouton reset enfoncé (GPIO4 → GND)
 3. Rebrancher alimentation (maintenir bouton)
 4. Maintenir 10 secondes (LED clignote)
 5. LED clignote rapidement 5× = confirmé
-6. Mot de passe réinitialisé à `admin`
+6. Relâcher le bouton
 
-**Note**: Nécessite bouton externe NO connecté entre GPIO4 et GND
+#### Effets du reset
+
+- ✅ Mot de passe réinitialisé à `admin`
+- ✅ Token API régénéré
+- ✅ Mode AP activé automatiquement (WiFi AP + STA)
+- ✅ Bouton "Configurer le Wi-Fi" affiché sur l'écran de login
+- ✅ L'application demande de changer le mot de passe à la première connexion
+
+#### Après le reset
+
+1. Connectez-vous avec `admin` / `admin`
+2. L'application vous demandera de changer le mot de passe
+3. Définissez un nouveau mot de passe sécurisé
+4. Si le WiFi est déjà configuré et connecté, le mode AP se désactive automatiquement
+5. Sinon, utilisez le bouton "Configurer le Wi-Fi" pour configurer le réseau
+
+**Note**: Nécessite bouton externe NO (Normally Open) connecté entre GPIO4 et GND avec résistance pull-up interne activée
 
 ## 📱 Interface Web - Guide Rapide
 
