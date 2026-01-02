@@ -1589,6 +1589,12 @@
         try {
           const result = await sendConfig(payload);
           if (result) {
+            // Mise à jour immédiate de l'interface après confirmation serveur
+            const statusBadge = $("#detail-filtration-status");
+            if (statusBadge) {
+              statusBadge.textContent = "En marche";
+              statusBadge.className = "state-badge state-badge--ok";
+            }
             showToast("Filtration démarrée", "success");
             await loadConfig();
           } else {
@@ -1607,6 +1613,12 @@
         try {
           const result = await sendConfig(payload);
           if (result) {
+            // Mise à jour immédiate de l'interface après confirmation serveur
+            const statusBadge = $("#detail-filtration-status");
+            if (statusBadge) {
+              statusBadge.textContent = "Arrêtée";
+              statusBadge.className = "state-badge state-badge--off";
+            }
             showToast("Filtration arrêtée", "success");
             await loadConfig();
           } else {
@@ -1626,10 +1638,21 @@
     if (lightOnBtn) {
       lightOnBtn.addEventListener('click', async () => {
         try {
-          // À ajuster selon votre backend
-          console.log('Allumer éclairage');
+          const response = await authFetch("/lighting/on", { method: "POST" });
+          if (response.ok) {
+            // Mise à jour immédiate de l'interface après confirmation serveur
+            const statusBadge = $("#detail-lighting-status");
+            if (statusBadge) {
+              statusBadge.textContent = "Allumé";
+              statusBadge.className = "state-badge state-badge--ok";
+            }
+            showToast("Éclairage allumé", "success");
+          } else {
+            showToast("Erreur lors de l'allumage", "error");
+          }
         } catch (e) {
           console.error('Erreur allumage éclairage:', e);
+          showToast("Erreur de connexion", "error");
         }
       });
     }
@@ -1637,10 +1660,21 @@
     if (lightOffBtn) {
       lightOffBtn.addEventListener('click', async () => {
         try {
-          // À ajuster selon votre backend
-          console.log('Éteindre éclairage');
+          const response = await authFetch("/lighting/off", { method: "POST" });
+          if (response.ok) {
+            // Mise à jour immédiate de l'interface après confirmation serveur
+            const statusBadge = $("#detail-lighting-status");
+            if (statusBadge) {
+              statusBadge.textContent = "Éteint";
+              statusBadge.className = "state-badge state-badge--off";
+            }
+            showToast("Éclairage éteint", "success");
+          } else {
+            showToast("Erreur lors de l'extinction", "error");
+          }
         } catch (e) {
           console.error('Erreur extinction éclairage:', e);
+          showToast("Erreur de connexion", "error");
         }
       });
     }
@@ -3396,8 +3430,9 @@
         try {
           const response = await authFetch("/lighting/on", { method: "POST" });
           if (response.ok) {
-            showToast("Éclairage allumé", "success");
+            // Mise à jour immédiate de l'interface après confirmation serveur
             updateLightingStatus(true);
+            showToast("Éclairage allumé", "success");
             await loadConfig();
           }
         } catch (error) {
@@ -3412,8 +3447,9 @@
         try {
           const response = await authFetch("/lighting/off", { method: "POST" });
           if (response.ok) {
-            showToast("Éclairage éteint", "success");
+            // Mise à jour immédiate de l'interface après confirmation serveur
             updateLightingStatus(false);
+            showToast("Éclairage éteint", "success");
             await loadConfig();
           }
         } catch (error) {
@@ -3483,9 +3519,13 @@
         try {
           const result = await sendConfig(payload);
           if (result) {
+            // Mise à jour immédiate de l'interface après confirmation serveur
+            if (statusBadge) {
+              statusBadge.textContent = 'En marche';
+              statusBadge.className = 'state-badge state-badge--ok';
+            }
             showToast("Filtration démarrée", "success");
             await loadConfig();
-            updateFiltrationStatus();
           } else {
             showToast("Erreur lors du démarrage", "error");
           }
@@ -3506,9 +3546,13 @@
         try {
           const result = await sendConfig(payload);
           if (result) {
+            // Mise à jour immédiate de l'interface après confirmation serveur
+            if (statusBadge) {
+              statusBadge.textContent = 'Arrêtée';
+              statusBadge.className = 'state-badge state-badge--off';
+            }
             showToast("Filtration arrêtée", "success");
             await loadConfig();
-            updateFiltrationStatus();
           } else {
             showToast("Erreur lors de l'arrêt", "error");
           }
