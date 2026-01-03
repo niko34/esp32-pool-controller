@@ -1,5 +1,6 @@
 #include "auth.h"
 #include "logger.h"
+#include "config.h"
 #include <esp_random.h>
 
 AuthManager authManager;
@@ -15,13 +16,16 @@ void AuthManager::begin() {
     systemLogger.info("API Token généré: " + maskedToken);
   }
 
-  // Détecter premier démarrage (mot de passe par défaut)
-  if (adminPassword.isEmpty() || adminPassword == "admin") {
+  // Détecter premier démarrage (wizard non complété)
+  // Le wizard est considéré comme non complété si:
+  // 1. Le flag wizardCompleted n'est pas défini dans la NVS (false par défaut)
+  // 2. OU le mot de passe est toujours "admin" ou vide
+  if (!authCfg.wizardCompleted || adminPassword.isEmpty() || adminPassword == "admin") {
     isFirstBoot = true;
     if (adminPassword.isEmpty()) {
       adminPassword = "admin";
     }
-    systemLogger.warning("SÉCURITÉ: Premier démarrage détecté - Changement de mot de passe obligatoire !");
+    systemLogger.warning("SÉCURITÉ: Premier démarrage détecté - Configuration initiale requise !");
   }
 
   if (authEnabled) {
@@ -45,14 +49,9 @@ String AuthManager::generateRandomToken() {
 
 void AuthManager::setPassword(const String& pwd) {
   adminPassword = pwd;
-
-  // Si le mot de passe change et n'est plus "admin", ce n'est plus le premier démarrage
-  if (pwd != "admin" && isFirstBoot) {
-    isFirstBoot = false;
-    systemLogger.info("Premier démarrage finalisé - Mot de passe personnalisé configuré");
-  } else {
-    systemLogger.info("Mot de passe administrateur modifié");
-  }
+  systemLogger.info("Mot de passe administrateur modifié");
+  // Note: isFirstBoot n'est plus désactivé ici, il sera désactivé uniquement
+  // quand le wizard est complété via completeFirstBoot()
 }
 
 void AuthManager::setApiToken(const String& token) {
@@ -172,6 +171,12 @@ bool AuthManager::checkAuth(AsyncWebServerRequest* req, RouteProtection level) {
     return true;
   }
 
+  // Si premier démarrage (wizard en cours), autoriser l'accès à /save-config
+  // car l'utilisateur configure le système pour la première fois
+  if (isFirstBoot && String(req->url()).startsWith("/save-config")) {
+    return true;
+  }
+
   // Vérifier le rate limiting d'abord (même pour les requêtes authentifiées)
   if (!checkRateLimit(req)) {
     sendRateLimitExceeded(req);
@@ -206,6 +211,14 @@ void AuthManager::sendRateLimitExceeded(AsyncWebServerRequest* req) {
   AsyncWebServerResponse* response = req->beginResponse(429, "application/json", "{\"error\":\"Too many requests\"}");
   response->addHeader("Retry-After", "60");
   req->send(response);
+}
+
+void AuthManager::clearFirstBootFlag() {
+  isFirstBoot = false;
+  authCfg.wizardCompleted = true;
+
+  // Sauvegarder immédiatement dans la NVS pour persister au redémarrage
+  saveMqttConfig();
 }
 
 void AuthManager::resetPasswordToDefault() {

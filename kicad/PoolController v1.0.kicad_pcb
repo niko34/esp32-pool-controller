@@ -173,7 +173,7 @@
 	(footprint "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "09d59263-0b52-4417-adff-02cf24419a63")
-		(at -118.92 45.21)
+		(at 90.9 161.685)
 		(descr "Resistor, Axial_DIN0207 series, Axial, Horizontal, pin pitch=10.16mm, 0.25W = 1/4W, length*diameter=6.3*2.5mm^2, http://cdn-reichelt.de/documents/datenblatt/B400/1_4W%23YAG.pdf")
 		(tags "Resistor Axial_DIN0207 series Axial Horizontal pin pitch 10.16mm 0.25W = 1/4W length 6.3mm diameter 2.5mm")
 		(property "Reference" "R1"
@@ -4913,7 +4913,7 @@
 	(footprint "TerminalBlock_Altech:Altech_AK100_1x03_P5.00mm"
 		(layer "F.Cu")
 		(uuid "49f30480-2060-49a6-9452-f6f7b3570083")
-		(at -83.46 60.525)
+		(at 126.36 177)
 		(descr "Terminal block Altech AK100, 3 pins, pitch 5mm, size 15x9mm, drill diameter 1.3mm, pad diameter 3mm, https://www.altechcorp.com/PDFS/PCBMETRC.PDF#page=3, generated with kicad-footprint-generator TerminalBlock_Altech")
 		(tags "THT Terminal block Altech AK100 pitch 5mm size 15x9mm drill 1.3mm pad 3mm")
 		(property "Reference" "J6"
@@ -10823,7 +10823,7 @@
 	(footprint "Capacitor_THT:C_Disc_D3.8mm_W2.6mm_P2.50mm"
 		(layer "F.Cu")
 		(uuid "9aa60efe-c5eb-49e8-8869-9f6fdd2d937f")
-		(at -71.3 79.2)
+		(at 138.52 195.675)
 		(descr "C, Disc series, Radial, pin pitch=2.50mm, diameter*width=3.8*2.6mm^2, Capacitor, http://www.vishay.com/docs/45233/krseries.pdf")
 		(tags "C Disc series Radial pin pitch 2.50mm diameter 3.8mm width 2.6mm Capacitor")
 		(property "Reference" "C1"

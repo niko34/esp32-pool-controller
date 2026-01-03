@@ -1,336 +1,486 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="fr">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="theme-color" content="#0066cc" />
-    <title>Configuration Wi-Fi - PoolController</title>
-    <link rel="icon" href="/favicon.ico" sizes="any">
-    <link rel="icon" type="image/png" href="/favicon-32x32.png" sizes="32x32">
-    <link rel="icon" type="image/png" href="/favicon-16x16.png" sizes="16x16">
-    <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Configuration Wi-Fi - PoolController</title>
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" href="/favicon-32x32.png" sizes="32x32">
+  <link rel="icon" type="image/png" href="/favicon-16x16.png" sizes="16x16">
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
 
-      body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        min-height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 20px;
-      }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
 
-      .login-container {
-        background: white;
-        border-radius: 12px;
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
-        max-width: 420px;
-        width: 100%;
-        padding: 40px;
-      }
+    .container {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+      max-width: 600px;
+      width: 100%;
+      padding: 40px;
+    }
 
-      .logo {
-        text-align: center;
-        margin-bottom: 30px;
-      }
+    .header {
+      text-align: center;
+      margin-bottom: 30px;
+    }
 
-      .logo img {
-        width: 80px;
-        height: 80px;
-        margin-bottom: 15px;
-      }
+    .header img {
+      width: 64px;
+      height: 64px;
+      margin-bottom: 15px;
+    }
 
-      .logo h1 {
-        font-size: 24px;
-        color: #333;
-        margin-bottom: 5px;
-      }
+    .header h1 {
+      font-size: 24px;
+      color: #333;
+      margin-bottom: 8px;
+    }
 
-      .logo p {
-        font-size: 14px;
-        color: #666;
-      }
+    .header p {
+      color: #666;
+      font-size: 14px;
+    }
 
-      .alert {
-        background: #fff3cd;
-        border: 1px solid #ffc107;
-        border-radius: 6px;
-        padding: 12px;
-        margin-bottom: 20px;
-        font-size: 14px;
-        color: #856404;
-      }
+    .field {
+      margin-bottom: 20px;
+    }
 
-      .alert.error {
-        background: #f8d7da;
-        border-color: #f5c6cb;
-        color: #721c24;
-      }
+    .field label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 500;
+      color: #333;
+      font-size: 14px;
+    }
 
-      .alert.success {
-        background: #d4edda;
-        border-color: #c3e6cb;
-        color: #155724;
-      }
+    .field input,
+    .field select {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+      transition: border-color 0.3s ease;
+    }
 
-      .form-group {
-        margin-bottom: 16px;
-      }
+    .field input:focus,
+    .field select:focus {
+      outline: none;
+      border-color: #667eea;
+    }
 
-      label {
-        display: block;
-        font-size: 14px;
-        font-weight: 500;
-        color: #333;
-        margin-bottom: 8px;
-      }
+    .btn {
+      width: 100%;
+      padding: 12px 24px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
 
-      input, select {
-        width: 100%;
-        padding: 12px 15px;
-        border: 1px solid #ddd;
-        border-radius: 6px;
-        font-size: 14px;
-        transition: border-color 0.3s;
-      }
+    .btn-primary {
+      background: #667eea;
+      color: white;
+    }
 
-      input:focus {
-        outline: none;
-        border-color: #667eea;
-      }
+    .btn-primary:hover {
+      background: #5568d3;
+      transform: translateY(-1px);
+    }
 
-      button {
-        width: 100%;
-        padding: 12px;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        border-radius: 6px;
-        font-size: 16px;
-        font-weight: 500;
-        cursor: pointer;
-        transition: transform 0.2s;
-      }
+    .btn-primary:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+      transform: none;
+    }
 
-      button:hover { transform: translateY(-2px); }
-      button:active { transform: translateY(0); }
-      button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+    .btn-secondary {
+      background: #f5f5f5;
+      color: #333;
+    }
 
-      .secondary {
-        background: #f1f3f5;
-        color: #333;
-        margin-top: 10px;
-      }
+    .btn-secondary:hover {
+      background: #e0e0e0;
+    }
 
-      .network-list {
-        border: 1px solid #eee;
-        border-radius: 8px;
-        max-height: 180px;
-        overflow: auto;
-        padding: 8px;
-        margin-bottom: 14px;
-      }
+    .info-box {
+      background: #e3f2fd;
+      border-left: 4px solid #2196f3;
+      padding: 16px;
+      margin-bottom: 20px;
+      border-radius: 4px;
+    }
 
-      .network-item {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 8px;
-        border-radius: 6px;
-        cursor: pointer;
-      }
+    .info-box strong {
+      display: block;
+      margin-bottom: 8px;
+      color: #1976d2;
+    }
 
-      .network-item:hover {
-        background: #f5f7ff;
-      }
+    .info-box p {
+      margin: 0;
+      font-size: 14px;
+      color: #333;
+    }
 
-      .network-item strong {
-        font-size: 14px;
-      }
+    .info-box ul {
+      margin: 8px 0 0 20px;
+      padding: 0;
+    }
 
-      .network-item span {
-        font-size: 12px;
-        color: #666;
-      }
+    .info-box li {
+      margin: 4px 0;
+    }
 
-      .hidden { display: none; }
-    </style>
-  </head>
+    .network-list {
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      max-height: 300px;
+      overflow-y: auto;
+      margin-top: 12px;
+    }
 
-  <body>
-    <div class="login-container">
-      <div class="logo">
-        <img src="/apple-touch-icon-144×144.png" alt="PoolController" />
-        <h1>Configurer le Wi-Fi</h1>
-        <p>Connexion réseau de l'appareil</p>
-      </div>
+    .network-item {
+      padding: 12px;
+      border-bottom: 1px solid #eee;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
 
-      <div id="statusAlert" class="alert hidden"></div>
-      <div id="errorAlert" class="alert error hidden"></div>
-      <div id="successAlert" class="alert success hidden"></div>
+    .network-item:last-child {
+      border-bottom: none;
+    }
 
-      <div class="form-group">
-        <button type="button" id="scanBtn">Scanner les réseaux</button>
-      </div>
+    .network-item:hover {
+      background: #f5f5f5;
+    }
 
-      <div id="networkList" class="network-list hidden"></div>
+    .network-item.selected {
+      background: #e3f2fd;
+    }
 
-      <form id="wifiForm">
-        <div class="form-group">
-          <label for="ssid">Réseau Wi-Fi (SSID)</label>
-          <input type="text" id="ssid" placeholder="Nom du réseau" required />
-        </div>
+    .network-item strong {
+      display: block;
+      margin-bottom: 4px;
+    }
 
-        <div class="form-group">
-          <label for="password">Mot de passe</label>
-          <input type="password" id="password" placeholder="Mot de passe (laisser vide si ouvert)" />
-        </div>
+    .network-item small {
+      color: #999;
+    }
 
-        <button type="submit" id="connectBtn">Se connecter</button>
-      </form>
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: #6c757d;
+    }
 
-      <button class="secondary" type="button" id="backBtn">Retour</button>
+    .hidden {
+      display: none;
+    }
+
+    .alert {
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      font-size: 14px;
+    }
+
+    .alert-success {
+      background: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+
+    .alert-error {
+      background: #f8d7da;
+      color: #721c24;
+      border: 1px solid #f5c6cb;
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 24px;
+    }
+
+    .actions .btn {
+      flex: 1;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <img src="/favicon-48x48.png" alt="PoolController">
+      <h1>Configuration Wi-Fi</h1>
+      <p>Connectez votre PoolController à votre réseau Wi-Fi</p>
     </div>
 
-    <script>
-      const statusAlert = document.getElementById('statusAlert');
-      const errorAlert = document.getElementById('errorAlert');
-      const successAlert = document.getElementById('successAlert');
-      const networkList = document.getElementById('networkList');
-      const scanBtn = document.getElementById('scanBtn');
-      const connectBtn = document.getElementById('connectBtn');
-      const backBtn = document.getElementById('backBtn');
-      let isAuthenticated = false;
+    <div class="alert alert-error hidden" id="errorAlert"></div>
+    <div class="alert alert-success hidden" id="successAlert"></div>
 
-      function showStatus(message) {
-        statusAlert.textContent = message;
-        statusAlert.classList.remove('hidden');
-      }
+    <div class="info-box">
+      <strong>ℹ️ Avantages de la connexion Wi-Fi</strong>
+      <ul>
+        <li>Mises à jour automatiques du firmware</li>
+        <li>Synchronisation automatique de l'heure via NTP</li>
+        <li>Accès à distance via <span style="font-weight: 600;">http://poolcontroller.local</span></li>
+        <li>Publication des données via MQTT (optionnel)</li>
+      </ul>
+    </div>
 
-      function showError(message) {
-        errorAlert.textContent = message;
-        errorAlert.classList.remove('hidden');
-        successAlert.classList.add('hidden');
-      }
+    <div class="field">
+      <label>Réseaux Wi-Fi disponibles</label>
+      <button type="button" class="btn btn-secondary" id="scanWifiBtn">
+        🔍 Scanner les réseaux
+      </button>
+      <div class="network-list hidden" id="networkList"></div>
+      <div class="loading hidden" id="scanLoading">Scan en cours...</div>
+    </div>
 
-      function showSuccess(message) {
-        successAlert.textContent = message;
-        successAlert.classList.remove('hidden');
+    <div class="field">
+      <label>Nom du réseau (SSID)</label>
+      <input type="text" id="wifiSsid" placeholder="Sélectionnez ou saisissez le SSID">
+    </div>
+
+    <div class="field">
+      <label>Mot de passe Wi-Fi</label>
+      <input type="password" id="wifiPassword" placeholder="Mot de passe du réseau">
+    </div>
+
+    <div class="actions">
+      <button type="button" class="btn btn-secondary" id="cancelBtn">Annuler</button>
+      <button type="button" class="btn btn-primary" id="connectBtn">Se connecter</button>
+    </div>
+  </div>
+
+  <script>
+    const errorAlert = document.getElementById('errorAlert');
+    const successAlert = document.getElementById('successAlert');
+    const scanWifiBtn = document.getElementById('scanWifiBtn');
+    const networkList = document.getElementById('networkList');
+    const scanLoading = document.getElementById('scanLoading');
+    const wifiSsid = document.getElementById('wifiSsid');
+    const wifiPassword = document.getElementById('wifiPassword');
+    const connectBtn = document.getElementById('connectBtn');
+    const cancelBtn = document.getElementById('cancelBtn');
+
+    function showError(message) {
+      errorAlert.textContent = message;
+      errorAlert.classList.remove('hidden');
+      successAlert.classList.add('hidden');
+      setTimeout(() => {
         errorAlert.classList.add('hidden');
+      }, 5000);
+    }
+
+    function showSuccess(message) {
+      successAlert.textContent = message;
+      successAlert.classList.remove('hidden');
+      errorAlert.classList.add('hidden');
+    }
+
+    function authFetch(url, options = {}) {
+      const token = sessionStorage.getItem('authToken');
+      if (token) {
+        options.headers = options.headers || {};
+        options.headers['X-Auth-Token'] = token;
       }
+      return fetch(url, options);
+    }
 
-      async function checkAuth() {
-        // Vérifier si l'utilisateur est authentifié via le token en sessionStorage
-        const token = sessionStorage.getItem('authToken');
+    async function scanWifi() {
+      scanWifiBtn.disabled = true;
+      scanLoading.classList.remove('hidden');
+      networkList.classList.add('hidden');
+      networkList.innerHTML = '';
 
-        if (token) {
-          // Si un token existe, considérer l'utilisateur comme authentifié
-          // (il vient de l'application)
-          isAuthenticated = true;
-          backBtn.textContent = 'Retour aux paramètres';
-        } else {
-          // Pas de token = accès depuis la page de login
-          isAuthenticated = false;
-          backBtn.textContent = 'Retour à la connexion';
-        }
-      }
+      try {
+        const response = await authFetch('/wifi/scan');
+        if (!response.ok) throw new Error('Erreur lors du scan Wi-Fi');
 
-      async function loadStatus() {
-        try {
-          const res = await fetch('/wifi/status');
-          if (!res.ok) return;
-          const data = await res.json();
-          if (data.mode && data.mode.includes('AP')) {
-            showStatus(`Mode AP actif (${data.ap_ssid || 'PoolControllerAP'})`);
-          }
-        } catch (_) {}
-      }
+        const data = await response.json();
+        const networks = data.networks || [];
 
-      function renderNetworks(networks) {
-        networkList.innerHTML = '';
-        if (!networks || networks.length === 0) {
-          networkList.classList.add('hidden');
-          showError('Aucun réseau trouvé.');
-          return;
-        }
-        networkList.classList.remove('hidden');
-        networks.forEach((net) => {
-          const item = document.createElement('div');
-          item.className = 'network-item';
-          item.innerHTML = `<strong>${net.ssid || '(masqué)'}</strong><span>${net.rssi} dBm ${net.secure ? '🔒' : ''}</span>`;
-          item.addEventListener('click', () => {
-            document.getElementById('ssid').value = net.ssid || '';
+        if (networks.length > 0) {
+          networks.forEach(network => {
+            const item = document.createElement('div');
+            item.className = 'network-item';
+            item.innerHTML = `
+              <strong>${network.ssid}</strong>
+              <small>Signal: ${network.rssi} dBm | ${network.secure ? 'Sécurisé' : 'Ouvert'}</small>
+            `;
+            item.onclick = () => {
+              document.querySelectorAll('.network-item').forEach(i => i.classList.remove('selected'));
+              item.classList.add('selected');
+              wifiSsid.value = network.ssid;
+            };
+            networkList.appendChild(item);
           });
-          networkList.appendChild(item);
+          networkList.classList.remove('hidden');
+        } else {
+          showError('Aucun réseau Wi-Fi trouvé');
+        }
+      } catch (error) {
+        showError(error.message);
+      } finally {
+        scanWifiBtn.disabled = false;
+        scanLoading.classList.add('hidden');
+      }
+    }
+
+    async function connectWifi() {
+      const ssid = wifiSsid.value.trim();
+      const password = wifiPassword.value;
+
+      if (!ssid) {
+        showError('Veuillez sélectionner ou saisir un réseau Wi-Fi');
+        return;
+      }
+
+      if (ssid.length > 32) {
+        showError('Le nom du réseau (SSID) ne peut pas dépasser 32 caractères');
+        return;
+      }
+
+      if (password.length > 63) {
+        showError('Le mot de passe Wi-Fi ne peut pas dépasser 63 caractères');
+        return;
+      }
+
+      connectBtn.disabled = true;
+      connectBtn.textContent = 'Connexion...';
+
+      try {
+        const response = await authFetch('/wifi/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ssid, password })
         });
+
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.error || 'Erreur de connexion Wi-Fi');
+        }
+
+        const data = await response.json();
+        if (data.connected) {
+          showSuccess('Connexion Wi-Fi réussie ! Désactivation du mode AP...');
+
+          // Attendre un peu avant de désactiver l'AP
+          await new Promise(resolve => setTimeout(resolve, 1000));
+
+          // Désactiver le mode AP
+          try {
+            const apResponse = await authFetch('/wifi/ap/disable', {
+              method: 'POST'
+            });
+            if (apResponse.ok) {
+              console.log('Mode AP désactivé avec succès');
+            }
+          } catch (error) {
+            console.error('Erreur désactivation AP:', error);
+          }
+
+          // Afficher les instructions et attendre que le mDNS soit accessible
+          showSuccess('Mode AP désactivé ! Connectez-vous au réseau WiFi configuré. Vous pouvez accéder immédiatement à http://poolcontroller.local ou attendre la redirection automatique...');
+
+          // Fonction pour tester si l'URL mDNS est accessible
+          const waitForMdns = async () => {
+            const maxAttempts = 30; // Maximum 30 tentatives (30 secondes)
+            let attempts = 0;
+
+            const checkUrl = async () => {
+              try {
+                const response = await fetch('http://poolcontroller.local/auth/status', {
+                  method: 'GET',
+                  cache: 'no-cache'
+                });
+                if (response.ok) {
+                  showSuccess('PoolController accessible ! Redirection...');
+                  setTimeout(() => {
+                    window.location.href = 'http://poolcontroller.local/#/settings/wifi';
+                  }, 500);
+                  return true;
+                }
+              } catch (error) {
+                // URL pas encore accessible, réessayer
+              }
+              return false;
+            };
+
+            // Tenter de se connecter toutes les secondes
+            const interval = setInterval(async () => {
+              attempts++;
+              const success = await checkUrl();
+
+              if (success) {
+                clearInterval(interval);
+              } else if (attempts >= maxAttempts) {
+                clearInterval(interval);
+                showSuccess('Redirection vers http://poolcontroller.local (si cela ne fonctionne pas, accédez-y manuellement)');
+                setTimeout(() => {
+                  window.location.href = 'http://poolcontroller.local/#/settings/wifi';
+                }, 2000);
+              }
+            }, 1000);
+          };
+
+          waitForMdns();
+        } else {
+          showError('Échec de connexion au réseau Wi-Fi');
+          connectBtn.disabled = false;
+          connectBtn.textContent = 'Se connecter';
+        }
+      } catch (error) {
+        showError(error.message);
+        connectBtn.disabled = false;
+        connectBtn.textContent = 'Se connecter';
+      }
+    }
+
+    scanWifiBtn.onclick = scanWifi;
+    connectBtn.onclick = connectWifi;
+    cancelBtn.onclick = () => {
+      window.location.href = '/#/settings/wifi';
+    };
+
+    // Vérifier l'authentification au chargement
+    async function checkAuth() {
+      const token = sessionStorage.getItem('authToken');
+      if (!token) {
+        window.location.href = '/login.html';
+        return;
       }
 
-      scanBtn.addEventListener('click', async () => {
-        scanBtn.disabled = true;
-        errorAlert.classList.add('hidden');
-        try {
-          const res = await fetch('/wifi/scan');
-          if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.error || 'Erreur scan Wi-Fi');
-          }
-          const data = await res.json();
-          renderNetworks(data.networks || []);
-        } catch (err) {
-          showError(err.message || 'Erreur scan Wi-Fi');
-        } finally {
-          scanBtn.disabled = false;
-        }
-      });
-
-      document.getElementById('wifiForm').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        connectBtn.disabled = true;
-        errorAlert.classList.add('hidden');
-        successAlert.classList.add('hidden');
-
-        const ssid = document.getElementById('ssid').value.trim();
-        const password = document.getElementById('password').value;
-        if (!ssid) {
-          showError('Veuillez saisir un SSID.');
-          connectBtn.disabled = false;
-          return;
-        }
-
-        try {
-          const res = await fetch('/wifi/connect', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ssid, password })
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            throw new Error(data.error || 'Connexion impossible');
-          }
-          if (data.connected) {
-            showSuccess('Wi-Fi configuré. Connectez-vous au réseau puis ouvrez l\'application.');
-          } else {
-            showError('Connexion échouée. Vérifiez le mot de passe.');
-          }
-        } catch (err) {
-          showError(err.message || 'Erreur de connexion');
-        } finally {
-          connectBtn.disabled = false;
-        }
-      });
-
-      backBtn.addEventListener('click', () => {
-        if (isAuthenticated) {
-          window.location.href = '/config.html';
-        } else {
+      try {
+        const response = await authFetch('/auth/status');
+        if (!response.ok) {
+          sessionStorage.removeItem('authToken');
           window.location.href = '/login.html';
         }
-      });
+      } catch (error) {
+        console.error('Erreur vérification auth:', error);
+      }
+    }
 
-      // Initialisation au chargement
-      checkAuth();
-      loadStatus();
-    </script>
-  </body>
+    checkAuth();
+  </script>
+</body>
 </html>

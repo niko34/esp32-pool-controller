@@ -5,7 +5,7 @@
 set -e  # Arrêter en cas d'erreur
 
 echo "🔧 Minification des fichiers web..."
-python3 minify.py
+node minify.js
 
 echo ""
 echo "📦 Building LittleFS with size 1376256 bytes (1344KB)..."

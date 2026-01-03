@@ -1,0 +1,5 @@
+# Exclure les fichiers avec noms trop longs
+logo-1024.png
+
+# Exclure les sauvegardes
+bak/

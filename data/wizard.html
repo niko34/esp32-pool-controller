@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Configuration Initiale - PoolController</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .wizard-container {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+      max-width: 600px;
+      width: 100%;
+      overflow: hidden;
+    }
+
+    .wizard-header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 30px;
+      text-align: center;
+    }
+
+    .wizard-header-logo {
+      width: 48px;
+      height: 48px;
+      margin: 0 auto 16px;
+      display: block;
+    }
+
+    .wizard-header h1 {
+      font-size: 24px;
+      margin-bottom: 8px;
+    }
+
+    .wizard-header p {
+      opacity: 0.9;
+      font-size: 14px;
+    }
+
+    .stepper {
+      display: flex;
+      justify-content: space-between;
+      padding: 30px;
+      position: relative;
+    }
+
+    .stepper::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 60px;
+      right: 60px;
+      height: 2px;
+      background: #e0e0e0;
+      z-index: 0;
+    }
+
+    .stepper-progress {
+      position: absolute;
+      top: 50%;
+      left: 60px;
+      height: 2px;
+      background: #667eea;
+      z-index: 1;
+      transition: width 0.3s ease;
+    }
+
+    .step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      position: relative;
+      z-index: 2;
+      flex: 1;
+    }
+
+    .step-number {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: white;
+      border: 2px solid #e0e0e0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      color: #999;
+      margin-bottom: 8px;
+      transition: all 0.3s ease;
+    }
+
+    .step.active .step-number {
+      background: #667eea;
+      border-color: #667eea;
+      color: white;
+    }
+
+    .step.completed .step-number {
+      background: #4caf50;
+      border-color: #4caf50;
+      color: white;
+    }
+
+    .step-label {
+      font-size: 12px;
+      color: #999;
+      text-align: center;
+    }
+
+    .step.active .step-label {
+      color: #667eea;
+      font-weight: 600;
+    }
+
+    .wizard-content {
+      padding: 30px;
+    }
+
+    .step-content {
+      display: none;
+    }
+
+    .step-content.active {
+      display: block;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .step-title {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #333;
+    }
+
+    .step-description {
+      color: #666;
+      margin-bottom: 24px;
+      font-size: 14px;
+    }
+
+    .field {
+      margin-bottom: 20px;
+    }
+
+    .field label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: 500;
+      color: #333;
+      font-size: 14px;
+    }
+
+    .field input,
+    .field select {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 14px;
+      transition: border-color 0.3s ease;
+    }
+
+    .field input:focus,
+    .field select:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .hint {
+      font-size: 12px;
+      color: #999;
+      margin-top: 4px;
+    }
+
+    .info-box {
+      background: #e3f2fd;
+      border-left: 4px solid #2196f3;
+      padding: 16px;
+      margin-bottom: 20px;
+      border-radius: 4px;
+    }
+
+    .info-box strong {
+      display: block;
+      margin-bottom: 8px;
+      color: #1976d2;
+    }
+
+    .info-box p {
+      margin: 0;
+      font-size: 14px;
+      color: #555;
+      line-height: 1.5;
+    }
+
+    .warning-box {
+      background: #fff3e0;
+      border-left: 4px solid #ff9800;
+      padding: 16px;
+      margin-bottom: 20px;
+      border-radius: 4px;
+    }
+
+    .warning-box strong {
+      display: block;
+      margin-bottom: 8px;
+      color: #f57c00;
+    }
+
+    .warning-box p {
+      margin: 0;
+      font-size: 14px;
+      color: #555;
+      line-height: 1.5;
+    }
+
+    .field.required label::after {
+      content: ' *';
+      color: #f44336;
+    }
+
+    .btn {
+      padding: 12px 24px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+
+    .btn-primary {
+      background: #667eea;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: #5568d3;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    .btn-secondary {
+      background: #e0e0e0;
+      color: #666;
+    }
+
+    .btn-secondary:hover {
+      background: #d0d0d0;
+    }
+
+    .btn-success {
+      background: #4caf50;
+      color: white;
+    }
+
+    .btn-success:hover {
+      background: #45a049;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(76, 175, 80, 0.4);
+    }
+
+    .wizard-actions {
+      display: flex;
+      justify-content: space-between;
+      padding: 20px 30px;
+      border-top: 1px solid #e0e0e0;
+      background: #f9f9f9;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .alert {
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-bottom: 20px;
+      font-size: 14px;
+      display: none;
+    }
+
+    .alert.show {
+      display: block;
+      animation: slideDown 0.3s ease;
+    }
+
+    @keyframes slideDown {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .alert-error {
+      background: #ffebee;
+      color: #c62828;
+      border-left: 4px solid #f44336;
+    }
+
+    .alert-success {
+      background: #e8f5e9;
+      color: #2e7d32;
+      border-left: 4px solid #4caf50;
+    }
+
+    .network-list {
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      max-height: 200px;
+      overflow-y: auto;
+      margin-top: 12px;
+    }
+
+    .network-item {
+      padding: 12px;
+      border-bottom: 1px solid #eee;
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .network-item:last-child {
+      border-bottom: none;
+    }
+
+    .network-item:hover {
+      background: #f5f5f5;
+    }
+
+    .network-item.selected {
+      background: #e3f2fd;
+    }
+
+    .network-item strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .network-item small {
+      color: #999;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: #6c757d;
+    }
+  </style>
+</head>
+<body>
+  <div class="wizard-container">
+    <div class="wizard-header">
+      <img src="/favicon-48x48.png" alt="PoolController" class="wizard-header-logo">
+      <h1>Configuration Initiale</h1>
+      <p>Bienvenue ! Configurons votre PoolController en 3 étapes</p>
+    </div>
+
+    <!-- Stepper -->
+    <div class="stepper">
+      <div class="stepper-progress" id="stepperProgress"></div>
+      <div class="step active" data-step="1">
+        <div class="step-number">1</div>
+        <div class="step-label">Mot de passe</div>
+      </div>
+      <div class="step" data-step="2">
+        <div class="step-number">2</div>
+        <div class="step-label">Wi-Fi</div>
+      </div>
+      <div class="step" data-step="3">
+        <div class="step-number">3</div>
+        <div class="step-label">Heure</div>
+      </div>
+    </div>
+
+    <!-- Content -->
+    <div class="wizard-content">
+      <div class="alert alert-error" id="errorAlert"></div>
+      <div class="alert alert-success" id="successAlert"></div>
+
+      <!-- Step 1: Password -->
+      <div class="step-content active" data-step="1">
+        <div class="step-title">Sécurité de votre PoolController</div>
+        <div class="step-description">
+          Définissez un mot de passe administrateur sécurisé pour protéger l'accès à votre installation.
+        </div>
+
+        <div class="info-box">
+          <strong>🔒 Sécurité</strong>
+          <p>Ce mot de passe sera utilisé pour vous connecter à l'interface web et aux API. Choisissez un mot de passe fort d'au moins 8 caractères.</p>
+        </div>
+
+        <div class="field required">
+          <label>Mot de passe administrateur</label>
+          <input type="password" id="adminPassword" placeholder="Minimum 8 caractères">
+          <div class="hint">Au moins 8 caractères</div>
+        </div>
+
+        <div class="field required">
+          <label>Confirmer le mot de passe</label>
+          <input type="password" id="adminPasswordConfirm" placeholder="Re-saisir le mot de passe">
+        </div>
+      </div>
+
+      <!-- Step 2: WiFi -->
+      <div class="step-content" data-step="2">
+        <div class="step-title">Connexion Wi-Fi</div>
+        <div class="step-description">
+          Connectez votre PoolController à votre réseau Wi-Fi pour accéder aux fonctionnalités en ligne.
+        </div>
+
+        <div class="info-box">
+          <strong>ℹ️ Connexion optionnelle</strong>
+          <p>La connexion Wi-Fi n'est pas obligatoire, mais elle offre de nombreux avantages :</p>
+          <ul style="margin: 8px 0 0 20px; padding: 0;">
+            <li>Mises à jour automatiques du firmware</li>
+            <li>Synchronisation automatique de l'heure via NTP</li>
+            <li>Accès à distance à l'interface web via <span style="font-weight: 600;">http://poolcontroller.local</span></li>
+            <li>Publication des données via MQTT (optionnel)</li>
+          </ul>
+          <p style="margin-top: 8px;"><strong>Sans Wi-Fi :</strong> Vous devrez vous connecter au réseau AP du PoolController (<span style="font-weight: 600;">PoolControllerAP</span>) et accéder à l'interface via <span style="font-weight: 600;">http://192.168.4.1</span>, régler l'heure manuellement et effectuer les mises à jour par upload manuel.</p>
+        </div>
+
+        <div class="field">
+          <label>Réseaux Wi-Fi disponibles</label>
+          <button type="button" class="btn btn-secondary" id="scanWifiBtn" style="width: 100%; margin-bottom: 12px;">
+            🔍 Scanner les réseaux
+          </button>
+          <div class="network-list hidden" id="networkList"></div>
+          <div class="loading hidden" id="scanLoading">Scan en cours...</div>
+        </div>
+
+        <div class="field required" id="ssidField">
+          <label>Nom du réseau (SSID)</label>
+          <input type="text" id="wifiSsid" placeholder="Sélectionnez ou saisissez le SSID">
+        </div>
+
+        <div class="field required" id="passwordField">
+          <label>Mot de passe Wi-Fi</label>
+          <input type="password" id="wifiPassword" placeholder="Mot de passe du réseau">
+        </div>
+
+        <div class="field">
+          <label style="display: flex; align-items: center; cursor: pointer;">
+            <input type="checkbox" id="skipWifi" style="width: auto; margin-right: 8px;">
+            <span>Ignorer la configuration Wi-Fi (configurer plus tard)</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Step 3: Time -->
+      <div class="step-content" data-step="3">
+        <div class="step-title">Configuration de l'heure</div>
+        <div class="step-description">
+          Configurez l'heure de votre PoolController pour les fonctionnalités programmables.
+        </div>
+
+        <div class="warning-box">
+          <strong>⏰ Importance de l'heure</strong>
+          <p>L'heure est essentielle pour :</p>
+          <ul style="margin: 8px 0 0 20px; padding: 0;">
+            <li><strong>Programmation de la filtration</strong> : Horaires de démarrage/arrêt automatiques</li>
+            <li><strong>Programmation de l'éclairage</strong> : Allumage/extinction selon l'heure</li>
+            <li><strong>Historique des mesures</strong> : Horodatage des relevés de température, pH et ORP</li>
+            <li><strong>Logs système</strong> : Traçabilité des événements</li>
+          </ul>
+        </div>
+
+        <div class="info-box hidden" id="ntpDisabledInfo">
+          <strong>ℹ️ NTP désactivé</strong>
+          <p>Aucune connexion Wi-Fi configurée. L'heure doit être réglée manuellement.</p>
+        </div>
+
+        <div class="field required">
+          <label>Mode de configuration</label>
+          <select id="timeMode">
+            <option value="ntp">Automatique (NTP) - Nécessite une connexion Internet</option>
+            <option value="manual">Manuel - Réglage manuel de l'heure</option>
+          </select>
+        </div>
+
+        <div id="ntpConfig" class="hidden">
+          <div class="field">
+            <label>Serveur NTP</label>
+            <input type="text" id="ntpServer" value="pool.ntp.org" placeholder="pool.ntp.org">
+            <div class="hint">Serveur de temps pour la synchronisation automatique</div>
+          </div>
+
+          <div class="field">
+            <label>Fuseau horaire</label>
+            <select id="timezone">
+              <option value="europe_paris" selected>Europe/Paris (CET/CEST)</option>
+              <option value="utc">UTC</option>
+              <option value="america_new_york">America/New_York (EST/EDT)</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="manualTimeConfig" class="hidden">
+          <div class="field required">
+            <label>Date et heure</label>
+            <input type="datetime-local" id="manualTime" required>
+            <div class="hint">Sélectionnez la date et l'heure actuelles</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="wizard-actions">
+      <button type="button" class="btn btn-secondary hidden" id="prevBtn">← Précédent</button>
+      <button type="button" class="btn btn-primary" id="nextBtn">Suivant →</button>
+      <button type="button" class="btn btn-success hidden" id="finishBtn">Terminer la configuration</button>
+    </div>
+  </div>
+
+  <script>
+    let currentStep = 1;
+    let wifiConfigured = false;
+
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const finishBtn = document.getElementById('finishBtn');
+    const errorAlert = document.getElementById('errorAlert');
+    const successAlert = document.getElementById('successAlert');
+
+    function showError(message) {
+      errorAlert.textContent = message;
+      errorAlert.classList.add('show');
+      successAlert.classList.remove('show');
+      setTimeout(() => errorAlert.classList.remove('show'), 5000);
+    }
+
+    function showSuccess(message) {
+      successAlert.textContent = message;
+      successAlert.classList.add('show');
+      errorAlert.classList.remove('show');
+    }
+
+    function updateStepper() {
+      // Update steps
+      document.querySelectorAll('.step').forEach(step => {
+        const stepNum = parseInt(step.dataset.step);
+        step.classList.remove('active', 'completed');
+        if (stepNum === currentStep) {
+          step.classList.add('active');
+        } else if (stepNum < currentStep) {
+          step.classList.add('completed');
+        }
+      });
+
+      // Update content
+      document.querySelectorAll('.step-content').forEach(content => {
+        content.classList.remove('active');
+        if (parseInt(content.dataset.step) === currentStep) {
+          content.classList.add('active');
+        }
+      });
+
+      // Update progress bar
+      const progress = ((currentStep - 1) / 2) * 100;
+      const progressBar = document.getElementById('stepperProgress');
+      progressBar.style.width = progress + '%';
+
+      // Update buttons
+      prevBtn.classList.toggle('hidden', currentStep === 1);
+      nextBtn.classList.toggle('hidden', currentStep === 3);
+      finishBtn.classList.toggle('hidden', currentStep !== 3);
+
+      return true;
+    }
+
+    function validateStep1() {
+      const password = document.getElementById('adminPassword').value;
+      const confirm = document.getElementById('adminPasswordConfirm').value;
+
+      console.log('validateStep1 - password length:', password.length);
+      console.log('validateStep1 - passwords match:', password === confirm);
+
+      if (password.length < 8) {
+        showError('Le mot de passe doit contenir au moins 8 caractères');
+        return false;
+      }
+
+      if (password !== confirm) {
+        showError('Les mots de passe ne correspondent pas');
+        return false;
+      }
+
+      return true;
+    }
+
+    async function saveStep1() {
+      const password = document.getElementById('adminPassword').value;
+
+      console.log('saveStep1 - début');
+
+      try {
+        const response = await fetch('/auth/change-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            currentPassword: 'admin',
+            newPassword: password
+          })
+        });
+
+        console.log('saveStep1 - response status:', response.status);
+
+        if (!response.ok) {
+          const data = await response.json();
+          console.error('saveStep1 - erreur:', data.error);
+          throw new Error(data.error || 'Erreur lors de la configuration du mot de passe');
+        }
+
+        const data = await response.json();
+        console.log('saveStep1 - succès, token reçu');
+        // Stocker le token pour les prochaines requêtes
+        sessionStorage.setItem('authToken', data.token);
+        return true;
+      } catch (error) {
+        console.error('saveStep1 - exception:', error);
+        showError(error.message);
+        return false;
+      }
+    }
+
+    async function saveStep2() {
+      const skipWifi = document.getElementById('skipWifi').checked;
+
+      if (skipWifi) {
+        // Si l'utilisateur décide d'ignorer le WiFi, effacer toute configuration WiFi existante
+        try {
+          const response = await authFetch('/wifi/disconnect', {
+            method: 'POST'
+          });
+          if (response.ok) {
+            systemLogger.info('Configuration WiFi effacée');
+          }
+        } catch (error) {
+          console.error('Erreur lors de l\'effacement de la config WiFi:', error);
+          // On continue quand même, ce n'est pas bloquant
+        }
+        wifiConfigured = false;
+        return true;
+      }
+
+      const ssid = document.getElementById('wifiSsid').value;
+      const password = document.getElementById('wifiPassword').value;
+
+      if (!ssid) {
+        showError('Veuillez sélectionner ou saisir un réseau Wi-Fi');
+        return false;
+      }
+
+      if (ssid.length > 32) {
+        showError('Le nom du réseau (SSID) ne peut pas dépasser 32 caractères');
+        return false;
+      }
+
+      if (password.length > 63) {
+        showError('Le mot de passe Wi-Fi ne peut pas dépasser 63 caractères');
+        return false;
+      }
+
+      try {
+        const response = await authFetch('/wifi/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ssid, password })
+        });
+
+        if (!response.ok) {
+          const data = await response.json();
+          throw new Error(data.error || 'Erreur de connexion Wi-Fi');
+        }
+
+        wifiConfigured = true;
+        showSuccess('Connexion Wi-Fi réussie !');
+        return true;
+      } catch (error) {
+        showError(error.message);
+        return false;
+      }
+    }
+
+    async function saveStep3() {
+      const timeMode = document.getElementById('timeMode').value;
+
+      const config = {
+        time_use_ntp: timeMode === 'ntp',
+        timezone_id: timeMode === 'ntp' ?
+          document.getElementById('timezone').value : 'europe_paris',
+        ntp_server: timeMode === 'ntp' ?
+          document.getElementById('ntpServer').value : 'pool.ntp.org'
+      };
+
+      if (timeMode === 'manual') {
+        const manualTime = document.getElementById('manualTime').value;
+        if (!manualTime) {
+          showError('Veuillez définir la date et l\'heure');
+          return false;
+        }
+        config.time_value = manualTime;
+      }
+
+      try {
+        const response = await authFetch('/save-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(config)
+        });
+
+        if (!response.ok) {
+          throw new Error('Erreur lors de la sauvegarde de la configuration');
+        }
+
+        return true;
+      } catch (error) {
+        showError(error.message);
+        return false;
+      }
+    }
+
+    function authFetch(url, options = {}) {
+      const token = sessionStorage.getItem('authToken');
+      if (token) {
+        options.headers = options.headers || {};
+        options.headers['X-Auth-Token'] = token;
+      }
+      return fetch(url, options);
+    }
+
+    async function scanWifi() {
+      const scanBtn = document.getElementById('scanWifiBtn');
+      const networkList = document.getElementById('networkList');
+      const scanLoading = document.getElementById('scanLoading');
+
+      scanBtn.disabled = true;
+      scanLoading.classList.remove('hidden');
+      networkList.classList.add('hidden');
+      networkList.innerHTML = '';
+
+      try {
+        const response = await fetch('/wifi/scan');
+        if (!response.ok) throw new Error('Erreur lors du scan Wi-Fi');
+
+        const data = await response.json();
+        const networks = data.networks || [];
+
+        if (networks.length > 0) {
+          networks.forEach(network => {
+            const item = document.createElement('div');
+            item.className = 'network-item';
+            item.innerHTML = `
+              <strong>${network.ssid}</strong>
+              <small>Signal: ${network.rssi} dBm | ${network.encryption ? 'Sécurisé' : 'Ouvert'}</small>
+            `;
+            item.onclick = () => {
+              document.querySelectorAll('.network-item').forEach(i => i.classList.remove('selected'));
+              item.classList.add('selected');
+              document.getElementById('wifiSsid').value = network.ssid;
+            };
+            networkList.appendChild(item);
+          });
+          networkList.classList.remove('hidden');
+        } else {
+          showError('Aucun réseau Wi-Fi trouvé');
+        }
+      } catch (error) {
+        showError(error.message);
+      } finally {
+        scanBtn.disabled = false;
+        scanLoading.classList.add('hidden');
+      }
+    }
+
+    // Event Listeners
+    prevBtn.onclick = () => {
+      if (currentStep > 1) {
+        currentStep--;
+        updateStepper();
+      }
+    };
+
+    nextBtn.onclick = async () => {
+      console.log('nextBtn clicked - currentStep:', currentStep);
+
+      if (currentStep === 1) {
+        console.log('Validation étape 1...');
+        if (!validateStep1()) {
+          console.log('Validation échouée');
+          return;
+        }
+        console.log('Validation réussie, sauvegarde...');
+        if (!await saveStep1()) {
+          console.log('Sauvegarde échouée');
+          return;
+        }
+        console.log('Sauvegarde réussie');
+      } else if (currentStep === 2) {
+        if (!await saveStep2()) return;
+      }
+
+      currentStep++;
+      console.log("Passage à l'étape:", currentStep);
+      updateStepper();
+
+      // Update time mode availability based on WiFi config
+      if (currentStep === 3) {
+        const timeMode = document.getElementById('timeMode');
+        const ntpDisabledInfo = document.getElementById('ntpDisabledInfo');
+        if (!wifiConfigured) {
+          // Pas de WiFi configuré -> forcer le mode manuel
+          timeMode.value = 'manual';
+          timeMode.disabled = true;
+          ntpDisabledInfo.classList.remove('hidden');
+          document.getElementById('ntpConfig').classList.add('hidden');
+          document.getElementById('manualTimeConfig').classList.remove('hidden');
+          // Initialiser l'heure actuelle
+          initializeManualTime();
+        } else {
+          // WiFi configuré -> activer le mode NTP par défaut
+          timeMode.value = 'ntp';
+          timeMode.disabled = false;
+          ntpDisabledInfo.classList.add('hidden');
+          document.getElementById('ntpConfig').classList.remove('hidden');
+          document.getElementById('manualTimeConfig').classList.add('hidden');
+        }
+      }
+    };
+
+      finishBtn.onclick = async () => {
+      if (!await saveStep3()) return;
+
+      // Marquer le wizard comme complété (désactive le flag firstBoot)
+      try {
+        const response = await authFetch('/auth/complete-wizard', {
+          method: 'POST'
+        });
+        if (!response.ok) {
+          console.error('Erreur lors de la finalisation du wizard');
+        }
+      } catch (error) {
+        console.error('Erreur lors de la finalisation du wizard:', error);
+      }
+
+      // Si WiFi configuré, désactiver le mode AP pour passer en mode STA uniquement
+      if (wifiConfigured) {
+        const mdnsBase = 'http:\\/\\/poolcontroller.local';
+        showSuccess('Configuration terminée avec succès ! Désactivation du mode AP...');
+
+        // Attendre un peu avant de désactiver l'AP
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        try {
+          console.log('Appel /wifi/ap/disable...');
+          const response = await authFetch('/wifi/ap/disable', {
+            method: 'POST'
+          });
+          console.log('Réponse /wifi/ap/disable - status:', response.status);
+          if (!response.ok) {
+            const data = await response.json();
+            console.error('Erreur lors de la désactivation du mode AP:', data);
+            showError('Erreur désactivation AP: ' + (data.error || response.status));
+          } else {
+            const data = await response.json();
+            console.log('Mode AP désactivé avec succès:', data);
+          }
+        } catch (error) {
+          console.error('Exception lors de la désactivation du mode AP:', error);
+          showError('Exception désactivation AP: ' + error.message);
+        }
+
+        // Afficher les instructions pour se reconnecter et rediriger automatiquement
+        showSuccess('Mode AP désactivé ! Connectez-vous au réseau WiFi configuré. Vous pouvez accéder immédiatement à http://poolcontroller.local ou attendre la redirection automatique...');
+
+        // Fonction pour tester si l'URL mDNS est accessible
+        const waitForMdns = async () => {
+          const maxAttempts = 30; // Maximum 30 tentatives (30 secondes)
+          let attempts = 0;
+
+          const checkUrl = async () => {
+            try {
+              // Tenter de fetch /auth/status sur l'URL mDNS
+              const response = await fetch(mdnsBase + '/auth/status', {
+                method: 'GET',
+                cache: 'no-cache'
+              });
+              if (response.ok) {
+                showSuccess('PoolController accessible ! Redirection...');
+                setTimeout(() => {
+                  window.location.href = mdnsBase;
+                }, 500);
+                return true;
+              }
+            } catch (error) {
+              // URL pas encore accessible, réessayer
+            }
+            return false;
+          };
+
+          // Tenter de se connecter toutes les secondes
+          const interval = setInterval(async () => {
+            attempts++;
+            const success = await checkUrl();
+
+            if (success) {
+              clearInterval(interval);
+            } else if (attempts >= maxAttempts) {
+              clearInterval(interval);
+              showSuccess('Redirection vers ' + mdnsBase + ' (si cela ne fonctionne pas, accédez-y manuellement)');
+              setTimeout(() => {
+                window.location.href = mdnsBase;
+              }, 2000);
+            }
+          }, 1000);
+        };
+
+        waitForMdns();
+      } else {
+        // Pas de WiFi configuré, rester en mode AP
+        showSuccess('Configuration terminée avec succès ! Redirection...');
+        setTimeout(() => {
+          window.location.href = '/';
+        }, 2000);
+      }
+    };
+
+    document.getElementById('scanWifiBtn').onclick = scanWifi;
+
+    document.getElementById('skipWifi').onchange = (e) => {
+      const disabled = e.target.checked;
+      document.getElementById('ssidField').style.opacity = disabled ? 0.5 : 1;
+      document.getElementById('passwordField').style.opacity = disabled ? 0.5 : 1;
+      document.getElementById('wifiSsid').disabled = disabled;
+      document.getElementById('wifiPassword').disabled = disabled;
+      document.getElementById('scanWifiBtn').disabled = disabled;
+    };
+
+    document.getElementById('timeMode').onchange = (e) => {
+      const isNtp = e.target.value === 'ntp';
+      document.getElementById('ntpConfig').classList.toggle('hidden', !isNtp);
+      document.getElementById('manualTimeConfig').classList.toggle('hidden', isNtp);
+
+      // Initialiser le champ date/heure avec l'heure actuelle lors du passage en mode manuel
+      if (!isNtp) {
+        initializeManualTime();
+      }
+    };
+
+    // Fonction pour initialiser le champ date/heure avec l'heure actuelle
+    function initializeManualTime() {
+      const manualTimeInput = document.getElementById('manualTime');
+      if (!manualTimeInput.value) {
+        // Formater la date actuelle au format datetime-local (YYYY-MM-DDTHH:MM)
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        const hours = String(now.getHours()).padStart(2, '0');
+        const minutes = String(now.getMinutes()).padStart(2, '0');
+
+        manualTimeInput.value = `${year}-${month}-${day}T${hours}:${minutes}`;
+      }
+    }
+
+    // Initialize
+    updateStepper();
+  </script>
+</body>
+</html>

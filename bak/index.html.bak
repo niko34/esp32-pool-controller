@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#f5f7fa" />
+    <title>PoolController</title>
+
+    <!-- Chart.js (CDN). Si tu veux du 100% offline LAN, embarque chart.min.js dans LittleFS et pointe dessus. -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <link rel="stylesheet" href="/app.css" />
+    <script defer src="/app.js"></script>
+  </head>
+
+  <body>
+    <div class="app">
+      <!-- Sidebar -->
+      <aside class="sidebar" aria-label="Navigation">
+        <div class="brand">
+          <div class="brand__logo" aria-hidden="true">🏊‍♂️</div>
+          <div class="brand__text">
+            <div class="brand__name">PoolController</div>
+            <div class="brand__sub" id="sidebar-subtitle">ESP32</div>
+          </div>
+        </div>
+
+        <nav class="nav">
+          <a class="nav__item" href="#/dashboard" data-route="/dashboard">
+            <span class="nav__icon" aria-hidden="true">📊</span>
+            <span class="nav__label">Tableau de bord</span>
+          </a>
+
+          <a class="nav__item" href="#/filtration" data-route="/filtration">
+            <span class="nav__icon" aria-hidden="true">💧</span>
+            <span class="nav__label">Filtration</span>
+          </a>
+
+          <a class="nav__item" href="#/lighting" data-route="/lighting">
+            <span class="nav__icon" aria-hidden="true">💡</span>
+            <span class="nav__label">Éclairage</span>
+          </a>
+
+          <a class="nav__item" href="#/temperature" data-route="/temperature">
+            <span class="nav__icon" aria-hidden="true">🌡️</span>
+            <span class="nav__label">Température</span>
+          </a>
+
+          <a class="nav__item" href="#/ph" data-route="/ph">
+            <span class="nav__icon" aria-hidden="true">⚗️</span>
+            <span class="nav__label">pH</span>
+          </a>
+
+          <a class="nav__item" href="#/orp" data-route="/orp">
+            <span class="nav__icon" aria-hidden="true">⚡</span>
+            <span class="nav__label">ORP</span>
+          </a>
+
+          <a class="nav__item" href="#/dosages" data-route="/dosages">
+            <span class="nav__icon" aria-hidden="true">💉</span>
+            <span class="nav__label">Dosages</span>
+          </a>
+
+          <a class="nav__item" href="#/settings" data-route="/settings">
+            <span class="nav__icon" aria-hidden="true">⚙️</span>
+            <span class="nav__label">Paramètres</span>
+          </a>
+        </nav>
+
+        <div class="sidebar__footer">
+          <div class="status">
+            <span class="status__dot" id="net-dot" aria-hidden="true"></span>
+            <span class="status__text" id="net-text">Connexion…</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main -->
+      <main class="main">
+        <!-- Top bar -->
+        <header class="topbar">
+          <div class="topbar__left">
+            <button class="iconBtn" id="burger" type="button" aria-label="Ouvrir le menu">
+              ☰
+            </button>
+            <div class="topbar__title" id="page-title">Tableau de bord</div>
+          </div>
+
+          <div class="topbar__right">
+            <div class="chip" id="calib-chip" style="display:none;">
+              <span class="chip__dot" aria-hidden="true"></span>
+              Calibration nécessaire
+            </div>
+            <button class="btn btn--ghost" id="refresh-now" type="button">Actualiser</button>
+          </div>
+        </header>
+
+        <!-- Views -->
+        <section class="view" id="view-dashboard" data-view="/dashboard">
+          <div class="grid grid--cards">
+            <div class="card card--metric">
+              <div class="metric">
+                <div class="metric__label">Température</div>
+                <div class="metric__value"><span id="m-temp">--</span><span class="metric__unit">°C</span></div>
+              </div>
+              <div class="metric__sub" id="m-time">--:--:--</div>
+            </div>
+
+            <div class="card card--metric">
+              <div class="metric">
+                <div class="metric__label">pH</div>
+                <div class="metric__value"><span id="m-ph">--</span></div>
+              </div>
+              <div class="metric__sub">
+                <span class="badge badge--warn" id="ph-calibration-badge" style="display:none;">Calibration</span>
+              </div>
+            </div>
+
+            <div class="card card--metric">
+              <div class="metric">
+                <div class="metric__label">ORP</div>
+                <div class="metric__value"><span id="m-orp">--</span><span class="metric__unit">mV</span></div>
+              </div>
+              <div class="metric__sub">
+                <span class="badge badge--warn" id="orp-calibration-badge" style="display:none;">Calibration</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid grid--charts">
+            <div class="card">
+              <div class="card__head">
+                <div class="card__title">Température (°C)</div>
+              </div>
+              <div class="card__body">
+                <canvas id="tempChart"></canvas>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card__head">
+                <div class="card__title">pH</div>
+              </div>
+              <div class="card__body">
+                <canvas id="phChart"></canvas>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card__head">
+                <div class="card__title">ORP (mV)</div>
+              </div>
+              <div class="card__body">
+                <canvas id="orpChart"></canvas>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-settings" data-view="/settings">
+          <div class="settingsHead">
+            <div class="settingsHead__row">
+              <div>
+                <div class="settingsHead__title">Paramètres</div>
+                <div class="settingsHead__sub">Configuration système et avancée</div>
+              </div>
+              <!-- Menu segmenté pour navigation dans Paramètres -->
+              <div class="segmented" id="settings-segmented">
+                <button class="segmented__btn" type="button" data-settings-tab="wifi">Wi-Fi</button>
+                <button class="segmented__btn" type="button" data-settings-tab="time">Heure</button>
+                <button class="segmented__btn" type="button" data-settings-tab="system">Système</button>
+                <button class="segmented__btn" type="button" data-settings-tab="about">À propos</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Panels pour Paramètres -->
+          <div class="settingsPanels">
+            <!-- Wi-Fi -->
+            <section class="panel" data-settings-panel="wifi">
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">Wi-Fi</div>
+                </div>
+                <div class="card__body">
+                  <div class="kv">
+                    <div class="kv__row"><span class="kv__k">SSID</span><span class="kv__v" id="wifi_ssid">—</span></div>
+                    <div class="kv__row"><span class="kv__k">IP</span><span class="kv__v" id="wifi_ip">—</span></div>
+                    <div class="kv__row"><span class="kv__k">Mode</span><span class="kv__v" id="wifi_mode">—</span></div>
+                    <div class="kv__row"><span class="kv__k">mDNS</span><span class="kv__v" id="wifi_mdns">—</span></div>
+                  </div>
+
+                  <button class="btn btn--danger" type="button" id="restart_ap_btn">Redémarrer en mode AP</button>
+                </div>
+              </div>
+            </section>
+
+            <!-- Time -->
+            <section class="panel" data-settings-panel="time">
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">Heure</div>
+                </div>
+                <div class="card__body">
+                  <div class="row row--between">
+                    <div>
+                      <div class="row__title">Utiliser NTP</div>
+                      <div class="muted small">Sinon: heure manuelle</div>
+                    </div>
+                    <label class="switch">
+                      <input type="checkbox" id="time_use_ntp" />
+                      <span class="switch__track"></span>
+                    </label>
+                  </div>
+
+                  <label class="field">
+                    <span class="field__label">Timezone</span>
+                    <select id="time_timezone">
+                      <option value="europe_paris">Europe/Paris</option>
+                      <option value="utc">UTC</option>
+                      <option value="america_new_york">America/New_York</option>
+                      <option value="america_los_angeles">America/Los_Angeles</option>
+                      <option value="asia_tokyo">Asia/Tokyo</option>
+                      <option value="australia_sydney">Australia/Sydney</option>
+                    </select>
+                  </label>
+
+                  <label class="field">
+                    <span class="field__label">Serveur NTP</span>
+                    <input type="text" id="time_ntp_server" placeholder="pool.ntp.org" />
+                  </label>
+
+                  <label class="field">
+                    <span class="field__label">Heure manuelle</span>
+                    <input type="datetime-local" id="time_manual" />
+                  </label>
+
+                  <div class="callout callout--info" id="time_info" style="display:none;">
+                    <div><strong>Heure actuelle :</strong> <span id="time_current">—</span></div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- System -->
+            <section class="panel" data-settings-panel="system">
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">Infos système</div>
+                </div>
+                <div class="card__body">
+                  <div class="kv">
+                    <div class="kv__row"><span class="kv__k">Firmware</span><span class="kv__v" id="sys_firmware_version">—</span></div>
+                    <div class="kv__row"><span class="kv__k">Build</span><span class="kv__v" id="sys_build_date">—</span></div>
+                    <div class="kv__row"><span class="kv__k">Uptime</span><span class="kv__v" id="sys_uptime">—</span></div>
+                    <div class="kv__row"><span class="kv__k">Chip</span><span class="kv__v" id="sys_chip_model">—</span></div>
+                    <div class="kv__row"><span class="kv__k">CPU</span><span class="kv__v" id="sys_cpu_freq">—</span></div>
+                    <div class="kv__row"><span class="kv__k">Heap libre</span><span class="kv__v" id="sys_free_heap">—</span></div>
+                    <div class="kv__row"><span class="kv__k">Flash</span><span class="kv__v" id="sys_flash_size">—</span></div>
+                    <div class="kv__row"><span class="kv__k">FS</span><span class="kv__v" id="sys_fs_usage">—</span></div>
+                    <div class="kv__row"><span class="kv__k">Wi-Fi RSSI</span><span class="kv__v" id="sys_wifi_rssi">—</span></div>
+                    <div class="kv__row"><span class="kv__k">MAC</span><span class="kv__v" id="sys_mac_address">—</span></div>
+                  </div>
+
+                  <div class="row row--gap">
+                    <button class="btn btn--ghost" type="button" id="refresh_info_btn">Actualiser</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">Mise à jour en ligne (GitHub)</div>
+                </div>
+                <div class="card__body">
+                  <div id="github_update_info" class="callout callout--info" style="display:none;">
+                    <div><strong>Version actuelle :</strong> <span id="current_version">-</span></div>
+                    <div><strong>Dernière version :</strong> <span id="latest_version">-</span></div>
+
+                    <div id="release_info" style="display:none; margin-top:10px;">
+                      <div><strong>Release :</strong> <span id="release_name">-</span></div>
+                      <div><strong>Date :</strong> <span id="release_date">-</span></div>
+                      <div style="margin-top:8px;">
+                        <strong>Notes :</strong>
+                        <pre id="release_notes" class="pre">-</pre>
+                      </div>
+                    </div>
+
+                    <div id="update_available_msg" class="badgeLine" style="display:none;">⚡ Mise à jour disponible</div>
+                    <div id="no_update_msg" class="badgeLine" style="display:none;">✓ À jour</div>
+                  </div>
+
+                  <div id="github_update_progress" style="display:none;">
+                    <div class="progress">
+                      <div class="progress__bar" id="github_update_progress_bar">0%</div>
+                    </div>
+                    <div class="muted small" id="github_update_status">Téléchargement...</div>
+                  </div>
+
+                  <div class="row row--gap">
+                    <button class="btn" type="button" id="check_update_btn">Vérifier</button>
+                    <button class="btn btn--ok" type="button" id="install_update_btn" disabled>Mettre à jour</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">Mise à jour manuelle</div>
+                </div>
+                <div class="card__body">
+                  <label class="field">
+                    <span class="field__label">Type</span>
+                    <select id="update_type">
+                      <option value="firmware">Firmware (.bin)</option>
+                      <option value="filesystem">Système de fichiers (.bin)</option>
+                    </select>
+                  </label>
+
+                  <label class="field">
+                    <span class="field__label">Fichier</span>
+                    <input type="file" id="update_file" accept=".bin" />
+                  </label>
+
+                  <div id="update_progress" style="display:none;">
+                    <div class="progress">
+                      <div class="progress__bar" id="update_progress_bar">0%</div>
+                    </div>
+                    <div class="muted small" id="update_status">Préparation…</div>
+                  </div>
+
+                  <div class="row row--gap">
+                    <button class="btn btn--ok" type="button" id="update_btn" disabled>Mettre à jour</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">Test des pompes</div>
+                </div>
+                <div class="card__body">
+                  <div class="pump">
+                    <div class="row row--between">
+                      <div>
+                        <div class="row__title">Pompe 1</div>
+                        <div class="muted small">
+                          Puissance: <span id="pump1_duty_value">100</span>% (PWM <span id="pump1_duty_pwm">255</span>/255)
+                        </div>
+                      </div>
+                      <label class="switch">
+                        <input type="checkbox" id="pump1_test" />
+                        <span class="switch__track"></span>
+                      </label>
+                    </div>
+                    <input type="range" id="pump1_duty" min="0" max="255" value="255" />
+                  </div>
+
+                  <div class="pump">
+                    <div class="row row--between">
+                      <div>
+                        <div class="row__title">Pompe 2</div>
+                        <div class="muted small">
+                          Puissance: <span id="pump2_duty_value">100</span>% (PWM <span id="pump2_duty_pwm">255</span>/255)
+                        </div>
+                      </div>
+                      <label class="switch">
+                        <input type="checkbox" id="pump2_test" />
+                        <span class="switch__track"></span>
+                      </label>
+                    </div>
+                    <input type="range" id="pump2_duty" min="0" max="255" value="255" />
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">Logs</div>
+                </div>
+                <div class="card__body">
+                  <div class="row row--gap row--between">
+                    <div class="row row--gap">
+                      <button class="btn btn--ghost" type="button" id="refresh_logs_btn">Actualiser</button>
+                      <button class="btn btn--ghost" type="button" id="clear_logs_display_btn">Effacer</button>
+                    </div>
+
+                    <label class="field field--inline">
+                      <span class="field__label">Filtre</span>
+                      <select id="logs_filter">
+                        <option value="all">Tout</option>
+                        <option value="temp">Temp</option>
+                        <option value="ph">pH</option>
+                        <option value="orp">ORP</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div class="terminal" id="logs_container">
+                    <div id="logs_content">Chargement…</div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- About -->
+            <section class="panel" data-settings-panel="about">
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">À propos</div>
+                </div>
+                <div class="card__body">
+                  <div class="hint">
+                    UI SPA (index/app.js/app.css). Auth / notifications / recherche : à implémenter côté serveur si besoin.
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <footer class="footer">
+          <span class="muted small">PoolController • UI locale ESP32</span>
+        </footer>
+      </main>
+    </div>
+  </body>
+</html>

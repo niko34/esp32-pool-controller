@@ -6,6 +6,7 @@
 #include <ESPmDNS.h>
 #include <esp_task_wdt.h>
 #include <Preferences.h>
+#include <nvs_flash.h>
 
 #include "config.h"
 #include "constants.h"
@@ -204,29 +205,30 @@ bool setupWiFi() {
 }
 
 void resetWiFiSettings() {
-  systemLogger.warning("Effacement des credentials WiFi...");
+  systemLogger.warning("Effacement complet de la partition NVS (factory reset)...");
 
-  // Méthode 1: Effacer via WiFi.disconnect()
-  WiFi.disconnect(true, true);  // disconnect(wifioff=true, eraseap=true)
-  delay(100);
-
-  // Méthode 2: Effacer l'espace de stockage Preferences utilisé par AsyncWiFiManager
-  // AsyncWiFiManager utilise le namespace "wifi" dans les Preferences
-  Preferences preferences;
-  if (preferences.begin("wifi", false)) {  // false = read/write
-    preferences.clear();  // Effacer TOUTES les données du namespace "wifi"
-    preferences.end();
-    systemLogger.info("Preferences 'wifi' effacées");
-  } else {
-    systemLogger.warning("Impossible d'ouvrir Preferences 'wifi'");
-  }
-
-  // Méthode 3: Effacer aussi les credentials WiFi natifs ESP32 (NVS partition nvs.net80211)
-  // Cela garantit un nettoyage complet
+  // Déconnecter le WiFi avant d'effacer
   WiFi.mode(WIFI_OFF);
   delay(100);
 
-  systemLogger.info("Credentials WiFi effacés - Mode AP sera activé au prochain démarrage");
+  // Effacer TOUTE la partition NVS - Équivalent à un factory reset
+  // Cela efface TOUTES les données stockées : WiFi, Preferences, etc.
+  esp_err_t err = nvs_flash_erase();
+  if (err == ESP_OK) {
+    systemLogger.info("Partition NVS effacée avec succès");
+
+    // Réinitialiser la partition NVS
+    err = nvs_flash_init();
+    if (err == ESP_OK) {
+      systemLogger.info("Partition NVS réinitialisée");
+    } else {
+      systemLogger.error("Erreur réinitialisation NVS: " + String(err));
+    }
+  } else {
+    systemLogger.error("Erreur effacement NVS: " + String(err));
+  }
+
+  systemLogger.info("Factory reset complet - Redémarrage nécessaire");
 }
 
 void applyTimeConfig() {
@@ -379,10 +381,20 @@ void checkPasswordResetButton() {
     systemLogger.critical("Mot de passe réinitialisé à 'admin'");
     systemLogger.warning("Changement de mot de passe obligatoire au prochain login");
 
+    // Effacer les credentials WiFi
+    systemLogger.warning("Effacement des credentials WiFi...");
+    resetWiFiSettings();
+    systemLogger.info("WiFi réinitialisé - Mode AP uniquement au prochain démarrage");
+
     // Faire clignoter rapidement la LED 5 fois pour confirmer
     for (int i = 0; i < 10; i++) {
       digitalWrite(BUILTIN_LED_PIN, i % 2);
       delay(200);
     }
+
+    // Redémarrer l'ESP32 pour appliquer les changements
+    systemLogger.critical("Redémarrage de l'ESP32...");
+    delay(1000);
+    ESP.restart();
   }
 }

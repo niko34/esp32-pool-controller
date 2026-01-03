@@ -381,10 +381,17 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
   });
 
   server->on("/wifi/scan", HTTP_GET, [](AsyncWebServerRequest* request) {
-    if (!wifiConfigAllowed()) {
-      sendErrorResponse(request, 403, "WiFi config not allowed");
-      return;
+    // Permettre le scan si:
+    // 1. wifiConfigAllowed() == true (mode AP ou WiFi non connecté) OU
+    // 2. L'utilisateur est authentifié (accès depuis les paramètres)
+    bool allowed = wifiConfigAllowed();
+    if (!allowed) {
+      // Vérifier l'authentification pour les utilisateurs connectés en WiFi
+      if (!authManager.checkAuth(request, RouteProtection::WRITE)) {
+        return;
+      }
     }
+
     if (!authManager.checkRateLimit(request)) {
       authManager.sendRateLimitExceeded(request);
       return;
@@ -428,9 +435,12 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
       wifi_mode_t mode = WiFi.getMode();
       if (mode == WIFI_MODE_AP) {
         WiFi.mode(WIFI_AP_STA);
-      } else {
-        WiFi.mode(WIFI_STA);
+      } else if (mode == WIFI_MODE_STA) {
+        // Si on était en mode STA uniquement, passer en AP+STA pour garder l'AP actif
+        // Cela évite de perdre la connexion pendant le wizard
+        WiFi.mode(WIFI_AP_STA);
       }
+      // Si déjà en WIFI_MODE_APSTA, ne rien changer
 
       systemLogger.info("Tentative connexion WiFi depuis l'UI: " + ssid);
       WiFi.begin(ssid.c_str(), password.c_str());
@@ -451,6 +461,28 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
   wifiConnectHandler->setMethod(HTTP_POST);
   server->addHandler(wifiConnectHandler);
 
+  // Route: Déconnecter du WiFi et effacer les credentials
+  server->on("/wifi/disconnect", HTTP_POST, [](AsyncWebServerRequest* request) {
+    if (!wifiConfigAllowed()) {
+      sendErrorResponse(request, 403, "WiFi config not allowed");
+      return;
+    }
+
+    systemLogger.info("Déconnexion WiFi demandée depuis l'UI");
+
+    // Déconnecter et effacer les credentials WiFi
+    WiFi.disconnect(true, true);  // disconnect(wifioff=true, eraseap=true)
+    delay(100);
+
+    // Repasser en mode AP uniquement
+    WiFi.mode(WIFI_MODE_AP);
+
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["message"] = "WiFi disconnected and credentials erased";
+    sendJsonResponse(request, doc);
+  });
+
   server->on("/wifi/ap/disable", HTTP_POST, [](AsyncWebServerRequest* request) {
     REQUIRE_AUTH(request, RouteProtection::CRITICAL);
 
@@ -465,7 +497,7 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
       WiFi.mode(WIFI_STA);
       authCfg.forceWifiConfig = false;
       saveMqttConfig();
-      systemLogger.info("Mode AP désactivé par l'administrateur");
+      systemLogger.info("Mode AP désactivé - Mode STA uniquement");
     }
 
     JsonDocument doc;
