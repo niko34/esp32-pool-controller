@@ -130,12 +130,57 @@ http://poolcontroller.local
 - **Logs**: Journal système avec filtrage par niveau
 - **Système**: Test pompes, OTA, informations
 
-**Login par défaut:**
-- Username: `admin`
-- Password: `admin`
-- ⚠️ Changer le mot de passe après première connexion !
+### Étape 6: Assistant de Configuration Initiale (3 étapes)
 
-### Étape 6: Configuration Initiale (5 min)
+Au **premier démarrage**, l'application affiche automatiquement un assistant de configuration en 3 étapes :
+
+#### Étape 1: Mot de passe administrateur
+- Définir un mot de passe sécurisé (minimum 8 caractères)
+- Confirmer le mot de passe
+- ⚠️ **Important** : Ce mot de passe protège l'accès à votre installation
+
+#### Étape 2: Configuration Wi-Fi (optionnelle)
+**Avantages avec Wi-Fi :**
+- ✅ Mises à jour automatiques du firmware
+- ✅ Synchronisation automatique de l'heure via NTP
+- ✅ Accès à distance à l'interface web
+- ✅ Publication des données via MQTT (optionnel)
+
+**Sans Wi-Fi :**
+- ⚠️ Connexion uniquement via le réseau AP du PoolController
+- ⚠️ Réglage manuel de l'heure
+- ⚠️ Mises à jour manuelles par upload
+
+**Configuration :**
+1. Cliquer sur "Scanner les réseaux"
+2. Sélectionner votre réseau WiFi
+3. Saisir le mot de passe WiFi
+4. Ou cocher "Ignorer la configuration Wi-Fi" pour configurer plus tard
+
+#### Étape 3: Configuration de l'heure
+L'heure est **essentielle** pour :
+- ⏰ Programmation de la filtration (horaires auto)
+- ⏰ Programmation de l'éclairage (allumage/extinction)
+- 📊 Historique des mesures (horodatage)
+- 📝 Logs système (traçabilité)
+
+**Deux modes disponibles :**
+
+**Mode Automatique (NTP)** - Si WiFi configuré :
+- Synchronisation automatique via serveur NTP
+- Fuseau horaire : Europe/Paris (CET/CEST)
+- Pas de maintenance nécessaire
+
+**Mode Manuel** - Sans WiFi ou par choix :
+- Réglage manuel de la date et l'heure
+- À mettre à jour manuellement en cas de changement d'heure
+
+**Validation :**
+- Cliquer sur "Terminer la configuration"
+- Redirection automatique vers le tableau de bord
+- L'assistant ne s'affichera plus au prochain démarrage
+
+### Étape 7: Configuration Avancée (5 min)
 
 **Paramètres essentiels (onglet Configuration):**
 
@@ -339,34 +384,40 @@ Interface web → Configuration → MQTT
 
 ### Mot de passe admin oublié
 
-**Solution**: Bouton reset sur GPIO4
+**Solution**: Factory Reset via bouton sur GPIO4
 
-#### Procédure de reset
+#### Procédure de reset (Factory Reset complet)
 
-1. Débrancher alimentation ESP32
-2. Maintenir bouton reset enfoncé (GPIO4 → GND)
-3. Rebrancher alimentation (maintenir bouton)
-4. Maintenir 10 secondes (LED clignote)
-5. LED clignote rapidement 5× = confirmé
-6. Relâcher le bouton
+1. **Débrancher** l'alimentation ESP32
+2. **Maintenir** le bouton reset enfoncé (GPIO4 → GND)
+3. **Rebrancher** l'alimentation (continuer à maintenir le bouton)
+4. **Maintenir 10 secondes** (la LED clignote pour indiquer la progression)
+5. **Confirmation** : LED clignote rapidement 5× quand le reset est validé
+6. **Redémarrage automatique** de l'ESP32
 
-#### Effets du reset
+#### Effets du Factory Reset
 
-- ✅ Mot de passe réinitialisé à `admin`
-- ✅ Token API régénéré
-- ✅ Mode AP activé automatiquement (WiFi AP + STA)
-- ✅ Bouton "Configurer le Wi-Fi" affiché sur l'écran de login
-- ✅ L'application demande de changer le mot de passe à la première connexion
+- ✅ **Mot de passe réinitialisé** à `admin`
+- ✅ **Token API régénéré**
+- ✅ **Partition NVS complètement effacée** (toutes les données stockées)
+- ✅ **Credentials WiFi supprimés** (retour en mode AP uniquement)
+- ✅ **Redémarrage automatique** de l'ESP32
+- ✅ **Assistant de configuration affiché** au prochain accès
 
-#### Après le reset
+#### Après le Factory Reset
 
-1. Connectez-vous avec `admin` / `admin`
-2. L'application vous demandera de changer le mot de passe
-3. Définissez un nouveau mot de passe sécurisé
-4. Si le WiFi est déjà configuré et connecté, le mode AP se désactive automatiquement
-5. Sinon, utilisez le bouton "Configurer le Wi-Fi" pour configurer le réseau
+1. **L'ESP32 redémarre** automatiquement en **mode AP uniquement**
+2. **Connectez-vous au réseau WiFi** : `PoolControllerAP`
+3. **Accédez à l'interface** via `http://192.168.4.1`
+4. **L'assistant de configuration s'affiche automatiquement** :
+   - Étape 1 : Définir un nouveau mot de passe administrateur
+   - Étape 2 : Reconfigurer le WiFi (optionnel)
+   - Étape 3 : Configurer l'heure (NTP ou manuel)
+5. **Terminer la configuration** et accéder au tableau de bord
 
-**Note**: Nécessite bouton externe NO (Normally Open) connecté entre GPIO4 et GND avec résistance pull-up interne activée
+**Matériel requis**: Bouton externe NO (Normally Open) connecté entre **GPIO4** et **GND**. La résistance pull-up interne de l'ESP32 est activée automatiquement.
+
+**⚠️ Attention** : Le Factory Reset efface **TOUTES** les données stockées dans la partition NVS (WiFi, préférences, etc.). Seule la configuration sauvegardée dans les fichiers JSON du système de fichiers LittleFS est conservée (consignes, limites, MQTT, etc.).
 
 ## 📱 Interface Web - Guide Rapide
 

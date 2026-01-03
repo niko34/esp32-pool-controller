@@ -472,14 +472,17 @@ Si vous oubliez le mot de passe administrateur de l'interface web, vous pouvez l
   - `./deploy.sh fs` - Build et upload filesystem uniquement
 
 - **`build_fs.sh`** - Construction du filesystem LittleFS
-  - Minifie automatiquement HTML/CSS/JS (économie ~60KB)
+  - Minifie automatiquement HTML/CSS/JS (économie ~92KB / 15%)
   - Construit LittleFS avec la bonne taille (1344KB)
-  - Utilise `data-build/` comme source (généré par minify.py)
+  - Utilise `data-build/` comme source (généré par minify.js)
 
-- **`minify.py`** - Minification des fichiers web
-  - Python pur (aucune dépendance externe)
-  - Minifie HTML, CSS, JavaScript
+- **`minify.js`** - Minification des fichiers web
+  - Utilise des outils professionnels standards de l'industrie:
+    - **html-minifier-terser** - Minification HTML
+    - **Terser** - Minification JavaScript
+    - **CleanCSS** - Minification CSS
   - Source: `data/` → Destination: `data-build/`
+  - Exécuté automatiquement par `build_fs.sh`
 
 ### Configuration
 

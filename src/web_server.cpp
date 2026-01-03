@@ -133,6 +133,10 @@ void WebServerManager::setupRoutes() {
     req->send(LittleFS, "/index.html", "text/html");
   });
 
+  server->on("/wizard.html", HTTP_GET, [](AsyncWebServerRequest *req) {
+    req->send(LittleFS, "/wizard.html", "text/html");
+  });
+
   server->on("/index.html", HTTP_GET, [](AsyncWebServerRequest *req) {
     req->send(LittleFS, "/index.html", "text/html");
   });

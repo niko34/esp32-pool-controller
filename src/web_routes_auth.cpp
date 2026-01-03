@@ -2,6 +2,7 @@
 #include "web_helpers.h"
 #include "auth.h"
 #include "config.h"
+#include "logger.h"
 #include <ArduinoJson.h>
 #include <WiFi.h>
 
@@ -162,6 +163,24 @@ void setupAuthRoutes(AsyncWebServer* server) {
 
     JsonDocument doc;
     doc["token"] = authManager.getApiToken();
+    sendJsonResponse(req, doc);
+  });
+
+  // Route: Marquer le wizard comme complété (désactive le flag firstBoot)
+  server->on("/auth/complete-wizard", HTTP_POST, [](AsyncWebServerRequest *req) {
+    // Cette route est accessible uniquement pendant le premier démarrage
+    if (!authManager.isFirstBootDetected()) {
+      sendErrorResponse(req, 403, "Wizard already completed");
+      return;
+    }
+
+    // Désactiver le flag firstBoot
+    authManager.clearFirstBootFlag();
+    systemLogger.info("Premier démarrage finalisé - Configuration wizard complétée");
+
+    JsonDocument doc;
+    doc["success"] = true;
+    doc["message"] = "Wizard completed successfully";
     sendJsonResponse(req, doc);
   });
 }

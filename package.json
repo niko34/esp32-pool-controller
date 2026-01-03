@@ -1,0 +1,21 @@
+{
+  "name": "esp32-pool-controller",
+  "version": "2025.12.21",
+  "description": "Contrôleur automatique de piscine basé sur ESP32 avec régulation pH/ORP",
+  "author": "Nicolas Philippe",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/niko34/esp32-pool-controller.git"
+  },
+  "scripts": {
+    "minify": "node minify.js",
+    "build:fs": "./build_fs.sh"
+  },
+  "devDependencies": {
+    "clean-css": "^5.3.3",
+    "clean-css-cli": "^5.6.3",
+    "html-minifier-terser": "^7.2.0",
+    "terser": "^5.44.1"
+  }
+}

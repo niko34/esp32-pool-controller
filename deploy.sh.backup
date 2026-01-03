@@ -1,0 +1,216 @@
+#!/bin/bash
+# deploy.sh - Script de déploiement automatique OTA
+# Usage: ./deploy.sh [hostname ou IP]
+
+set -e  # Arrêter en cas d'erreur
+
+# Configuration
+ESP32_HOST="${1:-poolcontroller.local}"
+FIRMWARE_PATH=".pio/build/esp32dev/firmware.bin"
+FILESYSTEM_PATH=".pio/build/esp32dev/littlefs.bin"
+UPDATE_URL="http://$ESP32_HOST/update"
+INFO_URL="http://$ESP32_HOST/get-system-info"
+
+# Couleurs pour l'affichage
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Fonctions utilitaires
+print_info() {
+    echo -e "${BLUE}ℹ ${NC}$1"
+}
+
+print_success() {
+    echo -e "${GREEN}✅ ${NC}$1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠️  ${NC}$1"
+}
+
+print_error() {
+    echo -e "${RED}❌ ${NC}$1"
+}
+
+# Vérifier la connectivité
+print_info "Vérification de la connexion avec $ESP32_HOST..."
+if ! curl -s --connect-timeout 20 "$INFO_URL" > /dev/null; then
+    print_error "Impossible de contacter l'ESP32 sur $ESP32_HOST"
+    print_info "Vérifiez que :"
+    print_info "  - L'ESP32 est allumé et connecté au WiFi"
+    print_info "  - L'adresse hostname/IP est correcte"
+    print_info "  - Vous êtes sur le même réseau"
+    exit 1
+fi
+
+# Afficher la version actuelle
+print_info "Récupération de la version actuelle..."
+CURRENT_VERSION=$(curl -s "$INFO_URL" | grep -o '"firmware_version":"[^"]*"' | cut -d'"' -f4)
+if [ -n "$CURRENT_VERSION" ]; then
+    print_info "Version actuelle : $CURRENT_VERSION"
+else
+    print_warning "Impossible de récupérer la version actuelle"
+fi
+
+# Compilation du firmware
+print_info "Compilation du firmware..."
+if pio run; then
+    print_success "Firmware compilé"
+else
+    print_error "Erreur lors de la compilation du firmware"
+    exit 1
+fi
+
+# Construction du système de fichiers
+print_info "Construction du système de fichiers..."
+if pio run --target buildfs; then
+    print_success "Système de fichiers construit"
+else
+    print_error "Erreur lors de la construction du système de fichiers"
+    exit 1
+fi
+
+# Vérifier que les fichiers existent
+if [ ! -f "$FIRMWARE_PATH" ]; then
+    print_error "Fichier firmware introuvable : $FIRMWARE_PATH"
+    exit 1
+fi
+
+if [ ! -f "$FILESYSTEM_PATH" ]; then
+    print_error "Fichier filesystem introuvable : $FILESYSTEM_PATH"
+    exit 1
+fi
+
+# Afficher les tailles
+FIRMWARE_SIZE=$(du -h "$FIRMWARE_PATH" | cut -f1)
+FILESYSTEM_SIZE=$(du -h "$FILESYSTEM_PATH" | cut -f1)
+print_info "Taille firmware : $FIRMWARE_SIZE"
+print_info "Taille filesystem : $FILESYSTEM_SIZE"
+
+# Confirmation
+echo ""
+print_warning "Vous allez mettre à jour l'ESP32 sur $ESP32_HOST"
+read -p "Continuer ? (y/N) " -n 1 -r
+echo ""
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    print_info "Mise à jour annulée"
+    exit 0
+fi
+
+# Mise à jour du firmware
+echo ""
+print_info "📤 Mise à jour du firmware (1.0MB - peut prendre 30-60 secondes)..."
+print_info "Commande: curl --max-time 180 --connect-timeout 10 -w \"\\n%{http_code}\" -X POST -F \"update=@$FIRMWARE_PATH\" \"$UPDATE_URL\""
+
+# Uploader avec barre de progression
+echo -n "Upload en cours: "
+HTTP_CODE=$(curl --max-time 180 --connect-timeout 10 -w "%{http_code}" -X POST -F "update=@$FIRMWARE_PATH" "$UPDATE_URL" 2>&1 | tail -n1)
+echo " OK"
+
+if [ "$HTTP_CODE" = "200" ]; then
+    print_success "Firmware mis à jour avec succès"
+    print_info "⏳ Attente du redémarrage de l'ESP32 (30 secondes)..."
+
+    # Animation de progression
+    for i in {1..30}; do
+        printf "\r${BLUE}⏳${NC} Redémarrage... %d/30 secondes" $i
+        sleep 1
+    done
+    echo ""
+
+    # Vérifier que l'ESP32 est de nouveau accessible
+    print_info "Vérification de la connexion..."
+    RETRY=0
+    MAX_RETRY=10
+    while [ $RETRY -lt $MAX_RETRY ]; do
+        if curl -s --connect-timeout 2 "$INFO_URL" > /dev/null 2>&1; then
+            print_success "ESP32 accessible"
+            break
+        fi
+        RETRY=$((RETRY + 1))
+        printf "\r${BLUE}⏳${NC} Tentative %d/$MAX_RETRY..." $RETRY
+        sleep 2
+    done
+    echo ""
+
+    if [ $RETRY -eq $MAX_RETRY ]; then
+        print_error "Impossible de se reconnecter à l'ESP32"
+        print_warning "Le firmware a été mis à jour mais l'ESP32 ne répond pas"
+        print_info "Vérifiez manuellement l'état de l'ESP32"
+        exit 1
+    fi
+else
+    print_error "Erreur lors de la mise à jour du firmware (HTTP $HTTP_CODE)"
+    print_error "Réponse : $(echo "$RESPONSE" | head -n -1)"
+    exit 1
+fi
+
+# Mise à jour du système de fichiers
+echo ""
+print_info "📤 Mise à jour du système de fichiers..."
+print_info "Commande: curl --max-time 180 --connect-timeout 10 -w \"\\n%{http_code}\" -X POST -F \"update=@$FILESYSTEM_PATH\" \"$UPDATE_URL\""
+
+# Uploader avec barre de progression
+echo -n "Upload en cours: "
+HTTP_CODE=$(curl --max-time 180 --connect-timeout 10 -w "%{http_code}" -X POST -F "update=@$FILESYSTEM_PATH" "$UPDATE_URL" 2>&1 | tail -n1)
+echo " OK"
+
+if [ "$HTTP_CODE" = "200" ]; then
+    print_success "Système de fichiers mis à jour avec succès"
+    print_info "⏳ Attente du redémarrage de l'ESP32 (30 secondes)..."
+
+    # Animation de progression
+    for i in {1..30}; do
+        printf "\r${BLUE}⏳${NC} Redémarrage... %d/30 secondes" $i
+        sleep 1
+    done
+    echo ""
+
+    # Vérifier que l'ESP32 est de nouveau accessible
+    print_info "Vérification de la connexion..."
+    RETRY=0
+    MAX_RETRY=10
+    while [ $RETRY -lt $MAX_RETRY ]; do
+        if curl -s --connect-timeout 2 "$INFO_URL" > /dev/null 2>&1; then
+            print_success "ESP32 accessible"
+            break
+        fi
+        RETRY=$((RETRY + 1))
+        printf "\r${BLUE}⏳${NC} Tentative %d/$MAX_RETRY..." $RETRY
+        sleep 2
+    done
+    echo ""
+
+    if [ $RETRY -eq $MAX_RETRY ]; then
+        print_error "Impossible de se reconnecter à l'ESP32"
+        print_warning "Le système de fichiers a été mis à jour mais l'ESP32 ne répond pas"
+        print_info "Vérifiez manuellement l'état de l'ESP32"
+        exit 1
+    fi
+else
+    print_error "Erreur lors de la mise à jour du système de fichiers (HTTP $HTTP_CODE)"
+    print_error "Réponse : $(echo "$RESPONSE" | head -n -1)"
+    exit 1
+fi
+
+# Vérifier la nouvelle version
+echo ""
+print_info "Vérification de la nouvelle version..."
+NEW_VERSION=$(curl -s "$INFO_URL" | grep -o '"firmware_version":"[^"]*"' | cut -d'"' -f4)
+if [ -n "$NEW_VERSION" ]; then
+    print_success "Nouvelle version : $NEW_VERSION"
+    if [ "$NEW_VERSION" != "$CURRENT_VERSION" ]; then
+        print_success "Mise à jour réussie : $CURRENT_VERSION → $NEW_VERSION"
+    else
+        print_warning "La version n'a pas changé (peut-être pas de changement dans version.h)"
+    fi
+else
+    print_warning "Impossible de récupérer la nouvelle version"
+fi
+
+echo ""
+print_success "🎉 Déploiement terminé avec succès !"
+print_info "Interface web disponible sur : http://$ESP32_HOST"

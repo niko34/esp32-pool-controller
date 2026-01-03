@@ -221,7 +221,9 @@
           if (response.ok) {
             const data = await response.json();
             if (data.firstBoot) {
-              showFirstBootForm();
+              // Rediriger vers l'assistant de configuration au lieu d'afficher le formulaire
+              window.location.href = '/wizard.html';
+              return;
             }
           }
         } catch (error) {
@@ -378,7 +380,7 @@
 
           if (response.ok) {
             const data = await response.json();
-            showSuccess('Mot de passe modifié avec succès&nbsp;!&nbsp;Redirection en cours...');
+            showSuccess('Mot de passe modifié avec succès ! Redirection en cours...');
 
             // Stocker le token
             sessionStorage.setItem('authToken', data.token);

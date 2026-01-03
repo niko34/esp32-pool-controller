@@ -3416,6 +3416,14 @@
     // ========== LIGHTING SCHEDULE ==========
     setupLightingSchedule();
 
+    // ========== WIFI CONFIG BUTTON ==========
+    const wifiConfigBtn = $("#wifi_config_btn");
+    if (wifiConfigBtn) {
+      wifiConfigBtn.addEventListener("click", () => {
+        window.location.href = '/wifi.html';
+      });
+    }
+
     perf?.end();
   }
 

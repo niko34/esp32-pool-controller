@@ -56,7 +56,7 @@ public:
 
   // Gestion premier démarrage
   bool isFirstBootDetected() const { return isFirstBoot; }
-  void clearFirstBootFlag() { isFirstBoot = false; }
+  void clearFirstBootFlag();
 
   // Réinitialisation mot de passe (bouton physique)
   void resetPasswordToDefault();
