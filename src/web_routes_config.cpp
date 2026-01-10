@@ -23,6 +23,12 @@ extern void resetWiFiSettings();
 static std::map<AsyncWebServerRequest*, std::vector<uint8_t>>* g_configBuffers = nullptr;
 static std::map<AsyncWebServerRequest*, bool>* g_configErrors = nullptr;
 
+// Variables globales pour la reconnexion WiFi asynchrone
+static bool g_wifiReconnectRequested = false;
+static String g_wifiReconnectSsid = "";
+static String g_wifiReconnectPassword = "";
+static unsigned long g_wifiReconnectRequestedTime = 0;
+
 static bool wifiConfigAllowed() {
   wifi_mode_t mode = WiFi.getMode();
   if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) {
@@ -414,9 +420,15 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
   auto* wifiConnectHandler = new AsyncCallbackJsonWebHandler(
     "/wifi/connect",
     [](AsyncWebServerRequest* request, JsonVariant& json) {
-      if (!wifiConfigAllowed()) {
-        sendErrorResponse(request, 403, "WiFi config not allowed");
-        return;
+      // Permettre la configuration WiFi si:
+      // 1. wifiConfigAllowed() == true (mode AP ou WiFi non connecté) OU
+      // 2. L'utilisateur est authentifié (accès depuis les paramètres)
+      bool allowed = wifiConfigAllowed();
+      if (!allowed) {
+        // Vérifier l'authentification pour les utilisateurs connectés en WiFi
+        if (!authManager.checkAuth(request, RouteProtection::WRITE)) {
+          return;
+        }
       }
       if (!authManager.checkRateLimit(request)) {
         authManager.sendRateLimitExceeded(request);
@@ -432,30 +444,17 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
         return;
       }
 
-      wifi_mode_t mode = WiFi.getMode();
-      if (mode == WIFI_MODE_AP) {
-        WiFi.mode(WIFI_AP_STA);
-      } else if (mode == WIFI_MODE_STA) {
-        // Si on était en mode STA uniquement, passer en AP+STA pour garder l'AP actif
-        // Cela évite de perdre la connexion pendant le wizard
-        WiFi.mode(WIFI_AP_STA);
-      }
-      // Si déjà en WIFI_MODE_APSTA, ne rien changer
+      // Enregistrer les credentials pour reconnexion asynchrone
+      systemLogger.info("Configuration WiFi demandée depuis l'UI: " + ssid);
+      g_wifiReconnectSsid = ssid;
+      g_wifiReconnectPassword = password;
+      g_wifiReconnectRequested = true;
+      g_wifiReconnectRequestedTime = millis();
 
-      systemLogger.info("Tentative connexion WiFi depuis l'UI: " + ssid);
-      WiFi.begin(ssid.c_str(), password.c_str());
-      unsigned long start = millis();
-      while (WiFi.status() != WL_CONNECTED && millis() - start < kWifiConnectTimeoutMs) {
-        delay(250);
-      }
-
-      bool connected = WiFi.status() == WL_CONNECTED;
-
+      // Retourner immédiatement une réponse (la connexion se fera de manière asynchrone)
       JsonDocument doc;
-      doc["connected"] = connected;
-      doc["ssid"] = WiFi.SSID();
-      doc["ip"] = WiFi.localIP().toString();
-      doc["mode"] = (WiFi.getMode() == WIFI_MODE_APSTA) ? "AP+STA" : (WiFi.getMode() == WIFI_MODE_AP ? "AP" : "STA");
+      doc["accepted"] = true;
+      doc["message"] = "WiFi connection request accepted, connecting asynchronously";
       sendJsonResponse(request, doc);
     });
   wifiConnectHandler->setMethod(HTTP_POST);
@@ -463,9 +462,15 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
 
   // Route: Déconnecter du WiFi et effacer les credentials
   server->on("/wifi/disconnect", HTTP_POST, [](AsyncWebServerRequest* request) {
-    if (!wifiConfigAllowed()) {
-      sendErrorResponse(request, 403, "WiFi config not allowed");
-      return;
+    // Permettre la déconnexion WiFi si:
+    // 1. wifiConfigAllowed() == true (mode AP ou WiFi non connecté) OU
+    // 2. L'utilisateur est authentifié (accès depuis les paramètres)
+    bool allowed = wifiConfigAllowed();
+    if (!allowed) {
+      // Vérifier l'authentification pour les utilisateurs connectés en WiFi
+      if (!authManager.checkAuth(request, RouteProtection::CRITICAL)) {
+        return;
+      }
     }
 
     systemLogger.info("Déconnexion WiFi demandée depuis l'UI");
@@ -491,19 +496,22 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
       return;
     }
 
-    wifi_mode_t mode = WiFi.getMode();
-    if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) {
-      WiFi.softAPdisconnect(true);
-      WiFi.mode(WIFI_STA);
-      authCfg.forceWifiConfig = false;
-      saveMqttConfig();
-      systemLogger.info("Mode AP désactivé - Mode STA uniquement");
-    }
+    // Activer le flag pour désactiver l'AP au prochain démarrage
+    authCfg.disableApOnBoot = true;
+    authCfg.forceWifiConfig = false;
+    saveMqttConfig();
+    systemLogger.info("Flag disableApOnBoot activé - Redémarrage programmé");
 
+    // Envoyer la réponse avant le redémarrage
     JsonDocument doc;
     doc["success"] = true;
-    doc["mode"] = (WiFi.getMode() == WIFI_MODE_STA) ? "STA" : "AP";
+    doc["message"] = "ESP32 redémarrage en mode STA uniquement";
+    doc["restarting"] = true;
     sendJsonResponse(request, doc);
+
+    // Redémarrer après un court délai pour permettre à la réponse d'être envoyée
+    delay(500);
+    ESP.restart();
   });
 
   // Route /save-config - PROTÉGÉE (CRITICAL)
@@ -557,4 +565,52 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
     *restartRequestedTime = millis();
     req->send(200, "text/plain", "WiFi reset - AP mode will start after restart");
   });
+}
+
+// Fonction pour traiter les reconnexions WiFi asynchrones
+// À appeler régulièrement depuis loop() pour ne pas bloquer le serveur web
+void processWifiReconnectIfNeeded() {
+  // Si aucune reconnexion n'est demandée, rien à faire
+  if (!g_wifiReconnectRequested) {
+    return;
+  }
+
+  // Attendre un petit délai pour que la réponse HTTP soit bien envoyée
+  if (millis() - g_wifiReconnectRequestedTime < 100) {
+    return;
+  }
+
+  // Marquer comme traité pour éviter de refaire plusieurs fois
+  g_wifiReconnectRequested = false;
+
+  systemLogger.info("Démarrage reconnexion WiFi asynchrone: " + g_wifiReconnectSsid);
+
+  // Déterminer le mode WiFi actuel
+  wifi_mode_t mode = WiFi.getMode();
+
+  // Si on est en mode AP uniquement, passer en APSTA pour garder l'AP actif pendant la connexion
+  // Si on est déjà en mode STA ou APSTA, ne rien changer (on reste en STA ou APSTA)
+  if (mode == WIFI_MODE_AP) {
+    systemLogger.info("Mode AP détecté, passage en APSTA pour garder l'AP actif");
+    WiFi.mode(WIFI_AP_STA);
+  } else if (mode == WIFI_MODE_STA) {
+    systemLogger.info("Mode STA détecté, on reste en STA pour la reconnexion");
+    // Ne rien faire, rester en mode STA
+  } else if (mode == WIFI_MODE_APSTA) {
+    systemLogger.info("Mode APSTA détecté, on garde ce mode");
+    // Ne rien faire, garder le mode APSTA
+  }
+
+  // Lancer la connexion WiFi (en mode STA ou APSTA selon le cas)
+  WiFi.begin(g_wifiReconnectSsid.c_str(), g_wifiReconnectPassword.c_str());
+
+  // Note: On ne bloque PAS ici pour attendre la connexion
+  // Le statut WiFi sera mis à jour automatiquement par WiFi.begin() en arrière-plan
+  // Le client pourra interroger /wifi/status pour vérifier l'état de la connexion
+
+  systemLogger.info("Connexion WiFi lancée en arrière-plan");
+
+  // Effacer les credentials pour la sécurité
+  g_wifiReconnectSsid = "";
+  g_wifiReconnectPassword = "";
 }
