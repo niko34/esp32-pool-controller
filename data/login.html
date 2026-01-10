@@ -312,24 +312,10 @@
             // Stocker le token en session
             sessionStorage.setItem('authToken', data.token);
 
-            // Vérifier si WiFi est connecté et désactiver le mode AP si c'est le cas
-            try {
-              const wifiResponse = await fetch('/wifi/status');
-              if (wifiResponse.ok) {
-                const wifiData = await wifiResponse.json();
-                // Désactiver le mode AP si WiFi connecté et mode AP actif
-                if (wifiData.connected && wifiData.mode && wifiData.mode.includes('AP')) {
-                  await fetch('/wifi/ap/disable', {
-                    method: 'POST',
-                    headers: {
-                      'X-Auth-Token': data.token
-                    }
-                  });
-                }
-              }
-            } catch (err) {
-              console.error('Erreur désactivation AP:', err);
-            }
+            // Note: Ne pas désactiver automatiquement l'AP lors du login
+            // L'utilisateur peut désactiver l'AP manuellement depuis la page de configuration WiFi
+            // ou via l'assistant de configuration (wizard)
+            // Cela évite un redémarrage inattendu de l'ESP32 pendant la connexion
 
             // Rediriger vers l'application (le token est déjà en sessionStorage)
             window.location.href = '/';
@@ -385,24 +371,9 @@
             // Stocker le token
             sessionStorage.setItem('authToken', data.token);
 
-            // Vérifier si WiFi est connecté et désactiver le mode AP si c'est le cas
-            try {
-              const wifiResponse = await fetch('/wifi/status');
-              if (wifiResponse.ok) {
-                const wifiData = await wifiResponse.json();
-                // Désactiver le mode AP si WiFi connecté et mode AP actif
-                if (wifiData.connected && wifiData.mode && wifiData.mode.includes('AP')) {
-                  await fetch('/wifi/ap/disable', {
-                    method: 'POST',
-                    headers: {
-                      'X-Auth-Token': data.token
-                    }
-                  });
-                }
-              }
-            } catch (err) {
-              console.error('Erreur désactivation AP:', err);
-            }
+            // Note: Ne pas désactiver automatiquement l'AP lors du changement de mot de passe
+            // L'utilisateur sera redirigé vers le wizard qui gérera la configuration WiFi
+            // et la désactivation de l'AP si nécessaire
 
             // Rediriger après 2 secondes (le token est déjà en sessionStorage)
             setTimeout(() => {

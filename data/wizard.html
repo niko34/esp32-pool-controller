@@ -255,6 +255,17 @@
       font-weight: 600;
       cursor: pointer;
       transition: all 0.3s ease;
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none !important;
     }
 
     .btn-primary {
@@ -262,7 +273,7 @@
       color: white;
     }
 
-    .btn-primary:hover {
+    .btn-primary:hover:not(:disabled) {
       background: #5568d3;
       transform: translateY(-1px);
       box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
@@ -273,7 +284,7 @@
       color: #666;
     }
 
-    .btn-secondary:hover {
+    .btn-secondary:hover:not(:disabled) {
       background: #d0d0d0;
     }
 
@@ -282,10 +293,23 @@
       color: white;
     }
 
-    .btn-success:hover {
+    .btn-success:hover:not(:disabled) {
       background: #45a049;
       transform: translateY(-1px);
       box-shadow: 0 4px 12px rgba(76, 175, 80, 0.4);
+    }
+
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
 
     .wizard-actions {
@@ -294,6 +318,14 @@
       padding: 20px 30px;
       border-top: 1px solid #e0e0e0;
       background: #f9f9f9;
+    }
+
+    .wizard-actions > :only-child {
+      margin-left: auto;
+    }
+
+    .wizard-actions.align-right {
+      justify-content: flex-end;
     }
 
     .hidden {
@@ -568,6 +600,17 @@
       errorAlert.classList.remove('show');
     }
 
+    function setButtonLoading(button, loading, originalText) {
+      if (loading) {
+        button.disabled = true;
+        button.dataset.originalText = button.innerHTML;
+        button.innerHTML = `<span class="spinner"></span><span>${originalText || 'Traitement...'}</span>`;
+      } else {
+        button.disabled = false;
+        button.innerHTML = button.dataset.originalText || originalText || 'Suivant →';
+      }
+    }
+
     function updateStepper() {
       // Update steps
       document.querySelectorAll('.step').forEach(step => {
@@ -597,6 +640,10 @@
       prevBtn.classList.toggle('hidden', currentStep === 1);
       nextBtn.classList.toggle('hidden', currentStep === 3);
       finishBtn.classList.toggle('hidden', currentStep !== 3);
+
+      // Aligner les boutons à droite sur l'étape 1
+      const wizardActions = document.querySelector('.wizard-actions');
+      wizardActions.classList.toggle('align-right', currentStep === 1);
 
       return true;
     }
@@ -767,7 +814,7 @@
       const networkList = document.getElementById('networkList');
       const scanLoading = document.getElementById('scanLoading');
 
-      scanBtn.disabled = true;
+      setButtonLoading(scanBtn, true, 'Scan en cours...');
       scanLoading.classList.remove('hidden');
       networkList.classList.add('hidden');
       networkList.innerHTML = '';
@@ -801,7 +848,7 @@
       } catch (error) {
         showError(error.message);
       } finally {
-        scanBtn.disabled = false;
+        setButtonLoading(scanBtn, false, '🔍 Scanner les réseaux');
         scanLoading.classList.add('hidden');
       }
     }
@@ -817,25 +864,42 @@
     nextBtn.onclick = async () => {
       console.log('nextBtn clicked - currentStep:', currentStep);
 
-      if (currentStep === 1) {
-        console.log('Validation étape 1...');
-        if (!validateStep1()) {
-          console.log('Validation échouée');
-          return;
-        }
-        console.log('Validation réussie, sauvegarde...');
-        if (!await saveStep1()) {
-          console.log('Sauvegarde échouée');
-          return;
-        }
-        console.log('Sauvegarde réussie');
-      } else if (currentStep === 2) {
-        if (!await saveStep2()) return;
-      }
+      // Activer le spinner sur le bouton
+      setButtonLoading(nextBtn, true, 'Traitement...');
 
-      currentStep++;
-      console.log("Passage à l'étape:", currentStep);
-      updateStepper();
+      try {
+        if (currentStep === 1) {
+          console.log('Validation étape 1...');
+          if (!validateStep1()) {
+            console.log('Validation échouée');
+            setButtonLoading(nextBtn, false);
+            return;
+          }
+          console.log('Validation réussie, sauvegarde...');
+          if (!await saveStep1()) {
+            console.log('Sauvegarde échouée');
+            setButtonLoading(nextBtn, false);
+            return;
+          }
+          console.log('Sauvegarde réussie');
+        } else if (currentStep === 2) {
+          if (!await saveStep2()) {
+            setButtonLoading(nextBtn, false);
+            return;
+          }
+        }
+
+        currentStep++;
+        console.log("Passage à l'étape:", currentStep);
+        updateStepper();
+
+        // Désactiver le spinner
+        setButtonLoading(nextBtn, false);
+      } catch (error) {
+        console.error('Erreur lors du traitement:', error);
+        setButtonLoading(nextBtn, false);
+        showError('Une erreur est survenue');
+      }
 
       // Update time mode availability based on WiFi config
       if (currentStep === 3) {
@@ -862,93 +926,104 @@
     };
 
       finishBtn.onclick = async () => {
-      if (!await saveStep3()) return;
+      // Activer le spinner sur le bouton
+      setButtonLoading(finishBtn, true, 'Finalisation...');
 
-      // Marquer le wizard comme complété (désactive le flag firstBoot)
       try {
-        const response = await authFetch('/auth/complete-wizard', {
-          method: 'POST'
-        });
-        if (!response.ok) {
-          console.error('Erreur lors de la finalisation du wizard');
+        if (!await saveStep3()) {
+          setButtonLoading(finishBtn, false);
+          return;
         }
-      } catch (error) {
-        console.error('Erreur lors de la finalisation du wizard:', error);
-      }
 
-      // Si WiFi configuré, désactiver le mode AP pour passer en mode STA uniquement
-      if (wifiConfigured) {
-        const mdnsBase = 'http:\\/\\/poolcontroller.local';
-        showSuccess('Configuration terminée avec succès ! Désactivation du mode AP...');
-
-        // Attendre un peu avant de désactiver l'AP
-        await new Promise(resolve => setTimeout(resolve, 1000));
-
+        // Marquer le wizard comme complété (désactive le flag firstBoot)
         try {
-          console.log('Appel /wifi/ap/disable...');
+          const response = await authFetch('/auth/complete-wizard', {
+            method: 'POST'
+          });
+          if (!response.ok) {
+            console.error('Erreur lors de la finalisation du wizard');
+          }
+        } catch (error) {
+          console.error('Erreur lors de la finalisation du wizard:', error);
+        }
+
+        // Si WiFi configuré, désactiver le mode AP pour passer en mode STA uniquement
+        if (wifiConfigured) {
+          const mdnsBase = 'http://poolcontroller.local';
+          showSuccess('Configuration terminée avec succès !');
+
+          // Attendre que l'ESP32 se stabilise sur le nouveau réseau
+          await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Désactiver le mode AP et déclencher le redémarrage
+        try {
+          console.log('Appel /wifi/ap/disable pour redémarrage...');
+          showSuccess('L\'ESP32 va redémarrer en mode WiFi uniquement. Connectez-vous au réseau WiFi configuré et attendez la redirection automatique...');
+
+          // Appeler l'API qui va redémarrer l'ESP32
           const response = await authFetch('/wifi/ap/disable', {
             method: 'POST'
           });
+
           console.log('Réponse /wifi/ap/disable - status:', response.status);
-          if (!response.ok) {
+
+          if (response.ok) {
             const data = await response.json();
-            console.error('Erreur lors de la désactivation du mode AP:', data);
-            showError('Erreur désactivation AP: ' + (data.error || response.status));
-          } else {
-            const data = await response.json();
-            console.log('Mode AP désactivé avec succès:', data);
+            console.log('Redémarrage déclenché:', data);
           }
         } catch (error) {
-          console.error('Exception lors de la désactivation du mode AP:', error);
-          showError('Exception désactivation AP: ' + error.message);
+          // L'erreur est normale car l'ESP32 redémarre et coupe la connexion
+          console.log('Connexion perdue (ESP32 en cours de redémarrage):', error);
         }
 
-        // Afficher les instructions pour se reconnecter et rediriger automatiquement
-        showSuccess('Mode AP désactivé ! Connectez-vous au réseau WiFi configuré. Vous pouvez accéder immédiatement à http://poolcontroller.local ou attendre la redirection automatique...');
+        // Redirection simple sans vérification CORS
+        const redirectToMdns = async () => {
+          // Instructions pour l'utilisateur
+          let countdown = 15; // 15 secondes pour laisser le temps à l'ESP32 de redémarrer
 
-        // Fonction pour tester si l'URL mDNS est accessible
-        const waitForMdns = async () => {
-          const maxAttempts = 30; // Maximum 30 tentatives (30 secondes)
-          let attempts = 0;
-
-          const checkUrl = async () => {
-            try {
-              // Tenter de fetch /auth/status sur l'URL mDNS
-              const response = await fetch(mdnsBase + '/auth/status', {
-                method: 'GET',
-                cache: 'no-cache'
-              });
-              if (response.ok) {
-                showSuccess('PoolController accessible ! Redirection...');
-                setTimeout(() => {
-                  window.location.href = mdnsBase;
-                }, 500);
-                return true;
-              }
-            } catch (error) {
-              // URL pas encore accessible, réessayer
-            }
-            return false;
+          const updateInstructions = () => {
+            const instructions = `
+              <div style="background: #e3f2fd; border-left: 4px solid #2196f3; padding: 16px; margin: 20px 0; border-radius: 4px;">
+                <strong style="display: block; margin-bottom: 8px; color: #1976d2;">📡 Configuration terminée !</strong>
+                <ol style="margin: 8px 0 0 20px; padding: 0; font-size: 14px; color: #555; line-height: 1.6;">
+                  <li><strong>Connectez-vous au réseau WiFi configuré</strong> (si ce n'est pas déjà fait)</li>
+                  <li>L'ESP32 redémarre en mode WiFi uniquement</li>
+                  <li>Redirection automatique vers <strong>http://poolcontroller.local</strong> dans <strong>${countdown} secondes</strong></li>
+                </ol>
+                <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #90caf9;">
+                  <button onclick="window.location.href='${mdnsBase}'" style="width: 100%; padding: 12px; background: #2196f3; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 14px;">
+                    🚀 Accéder maintenant à PoolController
+                  </button>
+                  <p style="margin: 8px 0 0 0; font-size: 12px; color: #666; text-align: center;">
+                    Cliquez si vous êtes déjà connecté au WiFi configuré
+                  </p>
+                </div>
+              </div>
+            `;
+            successAlert.innerHTML = instructions;
+            successAlert.classList.add('show');
           };
 
-          // Tenter de se connecter toutes les secondes
-          const interval = setInterval(async () => {
-            attempts++;
-            const success = await checkUrl();
+          // Afficher les instructions initiales
+          updateInstructions();
 
-            if (success) {
-              clearInterval(interval);
-            } else if (attempts >= maxAttempts) {
-              clearInterval(interval);
-              showSuccess('Redirection vers ' + mdnsBase + ' (si cela ne fonctionne pas, accédez-y manuellement)');
+          // Compte à rebours avec mise à jour visuelle
+          const countdownInterval = setInterval(() => {
+            countdown--;
+            if (countdown > 0) {
+              updateInstructions();
+            } else {
+              clearInterval(countdownInterval);
+              showSuccess('Redirection vers PoolController...');
+              // Redirection directe sans vérification (pas de problème CORS)
               setTimeout(() => {
                 window.location.href = mdnsBase;
-              }, 2000);
+              }, 500);
             }
           }, 1000);
         };
 
-        waitForMdns();
+        redirectToMdns();
       } else {
         // Pas de WiFi configuré, rester en mode AP
         showSuccess('Configuration terminée avec succès ! Redirection...');
@@ -956,7 +1031,12 @@
           window.location.href = '/';
         }, 2000);
       }
-    };
+    } catch (error) {
+      console.error('Erreur lors de la finalisation:', error);
+      setButtonLoading(finishBtn, false);
+      showError('Une erreur est survenue lors de la finalisation');
+    }
+  };
 
     document.getElementById('scanWifiBtn').onclick = scanWifi;
 

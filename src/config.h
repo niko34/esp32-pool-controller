@@ -104,6 +104,7 @@ struct AuthConfig {
   String corsAllowedOrigins = ""; // Origines CORS autorisées (séparées par virgules, vide = désactivé)
   bool forceWifiConfig = false;   // Forcer l'affichage du bouton Wi-Fi sur l'écran login
   bool wizardCompleted = false;   // Wizard de configuration initiale complété (persiste au redémarrage)
+  bool disableApOnBoot = false;   // Désactiver le mode AP au prochain redémarrage (pour transition WiFi)
 };
 
 struct PumpControlParams {

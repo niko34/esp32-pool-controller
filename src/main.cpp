@@ -18,6 +18,7 @@
 #include "lighting.h"
 #include "mqtt_manager.h"
 #include "web_server.h"
+#include "web_routes_config.h"
 #include "history.h"
 #include "version.h"
 
@@ -117,6 +118,9 @@ void loop() {
   unsigned long now = millis();
   currentWifiMode = WiFi.getMode();
 
+  // Traiter les reconnexions WiFi asynchrones si nécessaire
+  processWifiReconnectIfNeeded();
+
   // Mise à jour des gestionnaires
   webServer.update();
   mqttManager.update();
@@ -190,12 +194,36 @@ bool setupWiFi() {
     systemLogger.info("IP: " + WiFi.localIP().toString());
     currentWifiMode = WiFi.getMode();
 
-    // Activer le mode AP si forceWifiConfig OU si premier démarrage
-    if (authCfg.forceWifiConfig || authManager.isFirstBootDetected()) {
+    // Réinitialiser le flag disableApOnBoot après une connexion réussie
+    if (authCfg.disableApOnBoot) {
+      systemLogger.info("Flag disableApOnBoot réinitialisé (connexion WiFi réussie)");
+      authCfg.disableApOnBoot = false;
+      saveMqttConfig();
+    }
+
+    // Activer le mode AP seulement si :
+    // - forceWifiConfig est activé OU
+    // - premier démarrage détecté ET
+    // - le flag disableApOnBoot n'est PAS activé
+    if ((authCfg.forceWifiConfig || authManager.isFirstBootDetected()) && !authCfg.disableApOnBoot) {
       systemLogger.warning("Mode AP activé (reset password ou premier démarrage): activation AP + STA");
       startApMode(true);
+    } else if (authCfg.disableApOnBoot) {
+      systemLogger.info("Mode AP désactivé (flag disableApOnBoot actif) - Mode STA uniquement");
     }
     return true;
+  }
+
+  // Échec de connexion WiFi
+  // Ne pas démarrer l'AP si le flag disableApOnBoot est activé
+  // (peut arriver si les credentials WiFi sont incorrects après configuration)
+  if (authCfg.disableApOnBoot) {
+    systemLogger.warning("Échec connexion WiFi mais disableApOnBoot actif - Mode STA sans AP");
+    systemLogger.warning("L'ESP32 restera sans AP. Réinitialisez le mot de passe pour activer l'AP.");
+    // Réinitialiser le flag après plusieurs échecs pour éviter un blocage permanent
+    authCfg.disableApOnBoot = false;
+    saveMqttConfig();
+    return false;
   }
 
   systemLogger.error("Échec connexion WiFi, activation du mode AP");

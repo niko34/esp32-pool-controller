@@ -92,6 +92,16 @@
       font-weight: 500;
       cursor: pointer;
       transition: all 0.3s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none !important;
     }
 
     .btn-primary {
@@ -99,15 +109,9 @@
       color: white;
     }
 
-    .btn-primary:hover {
+    .btn-primary:hover:not(:disabled) {
       background: #5568d3;
       transform: translateY(-1px);
-    }
-
-    .btn-primary:disabled {
-      background: #ccc;
-      cursor: not-allowed;
-      transform: none;
     }
 
     .btn-secondary {
@@ -115,8 +119,21 @@
       color: #333;
     }
 
-    .btn-secondary:hover {
+    .btn-secondary:hover:not(:disabled) {
       background: #e0e0e0;
+    }
+
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
 
     .info-box {
@@ -235,16 +252,6 @@
     <div class="alert alert-error hidden" id="errorAlert"></div>
     <div class="alert alert-success hidden" id="successAlert"></div>
 
-    <div class="info-box">
-      <strong>ℹ️ Avantages de la connexion Wi-Fi</strong>
-      <ul>
-        <li>Mises à jour automatiques du firmware</li>
-        <li>Synchronisation automatique de l'heure via NTP</li>
-        <li>Accès à distance via <span style="font-weight: 600;">http://poolcontroller.local</span></li>
-        <li>Publication des données via MQTT (optionnel)</li>
-      </ul>
-    </div>
-
     <div class="field">
       <label>Réseaux Wi-Fi disponibles</label>
       <button type="button" class="btn btn-secondary" id="scanWifiBtn">
@@ -305,8 +312,19 @@
       return fetch(url, options);
     }
 
+    function setButtonLoading(button, loading, originalText) {
+      if (loading) {
+        button.disabled = true;
+        button.dataset.originalText = button.innerHTML;
+        button.innerHTML = `<span class="spinner"></span><span>${originalText || 'Traitement...'}</span>`;
+      } else {
+        button.disabled = false;
+        button.innerHTML = button.dataset.originalText || originalText || 'Se connecter';
+      }
+    }
+
     async function scanWifi() {
-      scanWifiBtn.disabled = true;
+      setButtonLoading(scanWifiBtn, true, 'Scan en cours...');
       scanLoading.classList.remove('hidden');
       networkList.classList.add('hidden');
       networkList.innerHTML = '';
@@ -340,16 +358,19 @@
       } catch (error) {
         showError(error.message);
       } finally {
-        scanWifiBtn.disabled = false;
+        setButtonLoading(scanWifiBtn, false, '🔍 Scanner les réseaux');
         scanLoading.classList.add('hidden');
       }
     }
 
     async function connectWifi() {
+      console.log('=== Début de connectWifi() ===');
       const ssid = wifiSsid.value.trim();
       const password = wifiPassword.value;
+      console.log('SSID:', ssid, 'Password length:', password.length);
 
       if (!ssid) {
+        console.log('Erreur: SSID vide');
         showError('Veuillez sélectionner ou saisir un réseau Wi-Fi');
         return;
       }
@@ -364,94 +385,219 @@
         return;
       }
 
-      connectBtn.disabled = true;
-      connectBtn.textContent = 'Connexion...';
+      setButtonLoading(connectBtn, true, 'Connexion...');
 
       try {
+        console.log('Appel authFetch /wifi/connect...');
         const response = await authFetch('/wifi/connect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ssid, password })
         });
+        console.log('Réponse reçue, status:', response.status);
 
         if (!response.ok) {
+          console.log('Réponse non OK, lecture du message d\'erreur...');
           const data = await response.json();
+          console.log('Erreur reçue:', data);
           throw new Error(data.error || 'Erreur de connexion Wi-Fi');
         }
 
+        console.log('Réponse OK, lecture des données...');
         const data = await response.json();
-        if (data.connected) {
-          showSuccess('Connexion Wi-Fi réussie ! Désactivation du mode AP...');
+        console.log('Réponse /wifi/connect:', data);
 
-          // Attendre un peu avant de désactiver l'AP
+        // La connexion WiFi est maintenant asynchrone côté ESP32
+        if (data.accepted) {
+          console.log('Demande de connexion WiFi acceptée, attente de la connexion...');
+          showSuccess('Connexion en cours...');
+
+          // Attendre que l'ESP32 démarre la connexion
           await new Promise(resolve => setTimeout(resolve, 1000));
 
-          // Désactiver le mode AP
-          try {
-            const apResponse = await authFetch('/wifi/ap/disable', {
-              method: 'POST'
-            });
-            if (apResponse.ok) {
-              console.log('Mode AP désactivé avec succès');
+          // Vérifier le statut WiFi en interrogeant /wifi/status
+          let connected = false;
+          let attempts = 0;
+          const maxAttempts = 30; // 30 tentatives * 1000ms = 30 secondes max
+
+          while (attempts < maxAttempts && !connected) {
+            try {
+              console.log(`Tentative ${attempts + 1}/${maxAttempts} - Vérification du statut WiFi...`);
+              const statusResponse = await authFetch('/wifi/status');
+              if (statusResponse.ok) {
+                const statusData = await statusResponse.json();
+                console.log('Statut WiFi complet:', JSON.stringify(statusData, null, 2));
+                console.log('  - connected:', statusData.connected);
+                console.log('  - ssid:', statusData.ssid);
+                console.log('  - SSID cible:', ssid);
+
+                // Vérifier si connecté au réseau cible
+                if (statusData.connected && statusData.ssid === ssid) {
+                  connected = true;
+                  console.log('✓ WiFi connecté avec succès au réseau:', ssid);
+                  break;
+                } else if (statusData.connected) {
+                  console.log('✗ Connecté mais au mauvais réseau:', statusData.ssid, 'au lieu de', ssid);
+                } else {
+                  console.log('✗ Pas encore connecté (connected = false)');
+                }
+              } else {
+                console.log('Erreur HTTP:', statusResponse.status, statusResponse.statusText);
+              }
+            } catch (error) {
+              console.log('Exception lors de la vérification du statut:', error.message);
             }
-          } catch (error) {
-            console.error('Erreur désactivation AP:', error);
+
+            attempts++;
+            if (!connected && attempts < maxAttempts) {
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            }
           }
 
-          // Afficher les instructions et attendre que le mDNS soit accessible
-          showSuccess('Mode AP désactivé ! Connectez-vous au réseau WiFi configuré. Vous pouvez accéder immédiatement à http://poolcontroller.local ou attendre la redirection automatique...');
+          if (!connected) {
+            console.error('TIMEOUT: Impossible de se connecter après', maxAttempts, 'tentatives');
+            throw new Error(`Timeout: impossible de se connecter au réseau WiFi après ${maxAttempts} secondes. Vérifiez le mot de passe et que le réseau est accessible.`);
+          }
 
-          // Fonction pour tester si l'URL mDNS est accessible
-          const waitForMdns = async () => {
-            const maxAttempts = 30; // Maximum 30 tentatives (30 secondes)
-            let attempts = 0;
+          showSuccess('Connexion Wi-Fi réussie !');
 
-            const checkUrl = async () => {
-              try {
-                const response = await fetch('http://poolcontroller.local/auth/status', {
-                  method: 'GET',
-                  cache: 'no-cache'
-                });
-                if (response.ok) {
-                  showSuccess('PoolController accessible ! Redirection...');
-                  setTimeout(() => {
-                    window.location.href = 'http://poolcontroller.local/#/settings/wifi';
-                  }, 500);
-                  return true;
-                }
-              } catch (error) {
-                // URL pas encore accessible, réessayer
+          // Attendre que l'ESP32 se stabilise sur le nouveau réseau
+          await new Promise(resolve => setTimeout(resolve, 1000));
+
+          // Vérifier si le mode AP est actif avant de le désactiver
+          let shouldRestart = false;
+          try {
+            const statusResponse = await authFetch('/wifi/status');
+            if (statusResponse.ok) {
+              const statusData = await statusResponse.json();
+              console.log('Statut WiFi complet:', statusData);
+              // Vérifier si le mode AP est actif
+              shouldRestart = statusData.mode && (statusData.mode.includes('AP') || statusData.mode === 'APSTA');
+              console.log('Mode WiFi actuel:', statusData.mode, '- Redémarrage nécessaire:', shouldRestart);
+            }
+          } catch (error) {
+            console.log('Impossible de vérifier le statut WiFi:', error);
+          }
+
+          // Désactiver le mode AP et déclencher le redémarrage seulement si nécessaire
+          if (shouldRestart) {
+            try {
+              console.log('Appel /wifi/ap/disable pour redémarrage...');
+              showSuccess('L\'ESP32 va redémarrer en mode WiFi uniquement. Connectez-vous au réseau WiFi configuré et attendez la redirection automatique...');
+
+              // Appeler l'API qui va redémarrer l'ESP32
+              const apResponse = await authFetch('/wifi/ap/disable', {
+                method: 'POST'
+              });
+
+              console.log('Réponse /wifi/ap/disable - status:', apResponse.status);
+
+              if (apResponse.ok) {
+                const apData = await apResponse.json();
+                console.log('Redémarrage déclenché:', apData);
+              } else if (apResponse.status === 403) {
+                console.log('Erreur 403 - Token invalide après redémarrage, redirection simple');
+                shouldRestart = false; // Pas de redémarrage, juste rediriger
               }
-              return false;
+            } catch (error) {
+              // L'erreur est normale car l'ESP32 redémarre et coupe la connexion
+              console.log('Connexion perdue (ESP32 en cours de redémarrage):', error);
+            }
+          }
+
+          // Redirection simple sans vérification CORS
+          const redirectToMdns = (needsRestart) => {
+            console.log('redirectToMdns appelée avec needsRestart =', needsRestart);
+            const mdnsTarget = '/#/settings/wifi';
+
+            // Si pas de redémarrage nécessaire, redirection immédiate
+            if (!needsRestart) {
+              console.log('Pas de redémarrage nécessaire, redirection immédiate vers:', mdnsTarget);
+              showSuccess('Configuration WiFi mise à jour ! Redirection...');
+              setTimeout(() => {
+                console.log('Exécution de la redirection vers:', mdnsTarget);
+                window.location.href = mdnsTarget;
+              }, 1500);
+              return;
+            }
+
+            // Sinon, afficher les instructions avec compte à rebours
+            const mdnsBase = 'http://poolcontroller.local';
+            const mdnsFullTarget = mdnsBase + mdnsTarget;
+            let countdown = 15; // 15 secondes pour laisser le temps à l'ESP32 de redémarrer
+
+            const updateInstructions = () => {
+              successAlert.innerHTML = `
+                <strong style="display: block; margin-bottom: 8px; color: #1976d2;">📡 Configuration WiFi réussie !</strong>
+                <ol style="margin: 8px 0 0 20px; padding: 0; font-size: 14px; color: #555; line-height: 1.6;">
+                  <li><strong>Connectez-vous au réseau WiFi configuré</strong> (si ce n'est pas déjà fait)</li>
+                  <li>L'ESP32 redémarre en mode WiFi uniquement</li>
+                  <li>Redirection automatique vers <strong>${mdnsBase}</strong> dans <strong>${countdown} secondes</strong></li>
+                </ol>
+                <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #c3e6cb;">
+                  <button onclick="window.location.href='${mdnsFullTarget}'" style="width: 100%; padding: 12px; background: #28a745; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 14px;">
+                    🚀 Accéder maintenant à PoolController
+                  </button>
+                  <p style="margin: 8px 0 0 0; font-size: 12px; color: #155724; text-align: center;">
+                    Cliquez si vous êtes déjà connecté au WiFi configuré
+                  </p>
+                </div>
+              `;
+              successAlert.classList.remove('hidden');
+              errorAlert.classList.add('hidden');
             };
 
-            // Tenter de se connecter toutes les secondes
-            const interval = setInterval(async () => {
-              attempts++;
-              const success = await checkUrl();
+            // Afficher les instructions initiales
+            updateInstructions();
 
-              if (success) {
-                clearInterval(interval);
-              } else if (attempts >= maxAttempts) {
-                clearInterval(interval);
-                showSuccess('Redirection vers http://poolcontroller.local (si cela ne fonctionne pas, accédez-y manuellement)');
+            // Compte à rebours avec mise à jour visuelle
+            const countdownInterval = setInterval(() => {
+              countdown--;
+              if (countdown > 0) {
+                updateInstructions();
+              } else {
+                clearInterval(countdownInterval);
+                showSuccess('Redirection vers PoolController...');
+                // Redirection directe sans vérification (pas de problème CORS)
                 setTimeout(() => {
-                  window.location.href = 'http://poolcontroller.local/#/settings/wifi';
-                }, 2000);
+                  window.location.href = mdnsFullTarget;
+                }, 500);
               }
             }, 1000);
           };
 
-          waitForMdns();
+          console.log('Appel de redirectToMdns avec shouldRestart =', shouldRestart);
+          redirectToMdns(shouldRestart);
         } else {
+          console.log('Connexion WiFi échouée:', data);
           showError('Échec de connexion au réseau Wi-Fi');
-          connectBtn.disabled = false;
-          connectBtn.textContent = 'Se connecter';
+          setButtonLoading(connectBtn, false, 'Se connecter');
         }
       } catch (error) {
-        showError(error.message);
-        connectBtn.disabled = false;
-        connectBtn.textContent = 'Se connecter';
+        console.error('=== ERREUR CAPTURÉE ===');
+        console.error('Type:', error.constructor.name);
+        console.error('Message:', error.message);
+        console.error('Stack:', error.stack);
+
+        // Si la connexion réseau est perdue, c'est probablement parce que l'ESP32
+        // a changé de réseau WiFi avec succès. On considère cela comme un succès.
+        if (error.message && (error.message.includes('connexion réseau') ||
+                              error.message.includes('network') ||
+                              error.message.includes('Failed to fetch') ||
+                              error.name === 'TypeError')) {
+          console.log('Connexion perdue - probable succès de la reconfiguration WiFi');
+          showSuccess('Configuration WiFi enregistrée ! Redirection...');
+
+          // Attendre un peu pour que l'ESP32 se reconnecte
+          setTimeout(() => {
+            console.log('Redirection vers /#/settings/wifi');
+            window.location.href = '/#/settings/wifi';
+          }, 2000);
+        } else {
+          // Autre type d'erreur
+          showError(error.message);
+          setButtonLoading(connectBtn, false, 'Se connecter');
+        }
       }
     }
 
@@ -460,6 +606,11 @@
     cancelBtn.onclick = () => {
       window.location.href = '/#/settings/wifi';
     };
+
+    console.log('Event handlers attached:');
+    console.log('- scanWifiBtn:', scanWifiBtn);
+    console.log('- connectBtn:', connectBtn);
+    console.log('- cancelBtn:', cancelBtn);
 
     // Vérifier l'authentification au chargement
     async function checkAuth() {

@@ -14,4 +14,7 @@ void initConfigContext(
 // Déclarations des handlers pour les routes de configuration
 void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigned long* restartRequestedTime);
 
+// Fonction pour traiter les reconnexions WiFi asynchrones (à appeler dans loop())
+void processWifiReconnectIfNeeded();
+
 #endif // WEB_ROUTES_CONFIG_H
