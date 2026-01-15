@@ -31,9 +31,12 @@ static unsigned long g_wifiReconnectRequestedTime = 0;
 
 static bool wifiConfigAllowed() {
   wifi_mode_t mode = WiFi.getMode();
-  if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) {
+  // Autoriser la configuration WiFi uniquement en mode AP (pas de WiFi configuré)
+  // ou si on n'est pas connecté en mode STA
+  if (mode == WIFI_MODE_AP) {
     return true;
   }
+  // En mode STA ou APSTA, autoriser seulement si pas connecté
   return !WiFi.isConnected();
 }
 
@@ -588,27 +591,56 @@ void processWifiReconnectIfNeeded() {
   // Déterminer le mode WiFi actuel
   wifi_mode_t mode = WiFi.getMode();
 
-  // Si on est en mode AP uniquement, passer en APSTA pour garder l'AP actif pendant la connexion
-  // Si on est déjà en mode STA ou APSTA, ne rien changer (on reste en STA ou APSTA)
+  // Gestion des modes WiFi selon le contexte :
+  // - Mode AP uniquement : passer en APSTA pour garder l'AP actif pendant la connexion (wizard/première config)
+  // - Mode STA : si déjà connecté, déconnecter d'abord pour forcer la sauvegarde NVS
+  // - Mode APSTA : si déjà connecté, passer en STA (sortir du mode secours), sinon conserver APSTA (connexion en cours)
   if (mode == WIFI_MODE_AP) {
-    systemLogger.info("Mode AP détecté, passage en APSTA pour garder l'AP actif");
+    systemLogger.info("Mode AP détecté, passage temporaire en APSTA pour garder l'AP actif");
     WiFi.mode(WIFI_AP_STA);
   } else if (mode == WIFI_MODE_STA) {
-    systemLogger.info("Mode STA détecté, on reste en STA pour la reconnexion");
-    // Ne rien faire, rester en mode STA
+    // En mode STA, si on est déjà connecté, il faut déconnecter pour forcer la sauvegarde NVS
+    if (WiFi.isConnected()) {
+      systemLogger.info("Mode STA avec connexion active, déconnexion pour forcer la sauvegarde NVS");
+      WiFi.disconnect(false, false); // Déconnecter sans éteindre le WiFi ni effacer la config NVS
+      delay(100);
+    } else {
+      systemLogger.info("Mode STA sans connexion, prêt pour nouvelle connexion");
+    }
   } else if (mode == WIFI_MODE_APSTA) {
-    systemLogger.info("Mode APSTA détecté, on garde ce mode");
-    // Ne rien faire, garder le mode APSTA
+    // Si on est déjà connecté en APSTA (mode secours après échecs), passer en STA pour la nouvelle connexion
+    // Si on n'est pas encore connecté, c'est qu'on est en train de se connecter (wizard), garder APSTA
+    if (WiFi.isConnected()) {
+      systemLogger.info("Mode APSTA détecté avec connexion active (mode secours), passage en STA pour nouvelle connexion");
+      WiFi.disconnect(false, false); // Déconnecter sans effacer la config
+      delay(100);
+      WiFi.mode(WIFI_MODE_STA);
+    } else {
+      systemLogger.info("Mode APSTA détecté sans connexion (configuration initiale), on conserve APSTA");
+      // Ne rien faire, garder le mode APSTA pendant la connexion initiale
+    }
   }
 
   // Lancer la connexion WiFi (en mode STA ou APSTA selon le cas)
+  systemLogger.info("=== DEBUG Reconnexion WiFi ===");
+  systemLogger.info("SSID: '" + g_wifiReconnectSsid + "' (longueur: " + String(g_wifiReconnectSsid.length()) + ")");
+  systemLogger.info("Password: '" + g_wifiReconnectPassword + "' (longueur: " + String(g_wifiReconnectPassword.length()) + ")");
+  systemLogger.info("==============================");
+
+  // Sauvegarder les credentials dans la NVS et démarrer la connexion
+  systemLogger.info("Connexion WiFi avec sauvegarde NVS...");
+
+  // IMPORTANT: Activer la persistence avant WiFi.begin() pour sauvegarder dans la NVS
+  WiFi.persistent(true);
+
+  // WiFi.begin() va maintenant sauvegarder les credentials dans la NVS
   WiFi.begin(g_wifiReconnectSsid.c_str(), g_wifiReconnectPassword.c_str());
 
-  // Note: On ne bloque PAS ici pour attendre la connexion
-  // Le statut WiFi sera mis à jour automatiquement par WiFi.begin() en arrière-plan
-  // Le client pourra interroger /wifi/status pour vérifier l'état de la connexion
+  // Désactiver la persistence après pour éviter l'usure inutile de la flash
+  WiFi.persistent(false);
 
-  systemLogger.info("Connexion WiFi lancée en arrière-plan");
+  systemLogger.info("WiFi.begin() appelé avec persistence activée - connexion en arrière-plan");
+  systemLogger.info("Les credentials ont été sauvegardés dans la NVS");
 
   // Effacer les credentials pour la sécurité
   g_wifiReconnectSsid = "";

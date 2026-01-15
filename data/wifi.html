@@ -27,42 +27,48 @@
     .container {
       background: white;
       border-radius: 12px;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
       max-width: 600px;
       width: 100%;
-      padding: 40px;
+      overflow: hidden;
     }
 
     .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 30px;
       text-align: center;
-      margin-bottom: 30px;
     }
 
     .header img {
-      width: 64px;
-      height: 64px;
-      margin-bottom: 15px;
+      width: 48px;
+      height: 48px;
+      margin: 0 auto 16px;
+      display: block;
     }
 
     .header h1 {
       font-size: 24px;
-      color: #333;
       margin-bottom: 8px;
     }
 
     .header p {
-      color: #666;
+      opacity: 0.9;
       font-size: 14px;
     }
 
+    .content {
+      padding: 30px;
+    }
+
     .field {
-      margin-bottom: 20px;
+      margin-bottom: 24px;
     }
 
     .field label {
       display: block;
       margin-bottom: 8px;
-      font-weight: 500;
+      font-weight: 600;
       color: #333;
       font-size: 14px;
     }
@@ -83,15 +89,22 @@
       border-color: #667eea;
     }
 
+    .field small {
+      display: block;
+      margin-top: 6px;
+      color: #666;
+      font-size: 13px;
+    }
+
     .btn {
-      width: 100%;
       padding: 12px 24px;
       border: none;
       border-radius: 6px;
       font-size: 14px;
-      font-weight: 500;
+      font-weight: 600;
       cursor: pointer;
       transition: all 0.3s ease;
+      position: relative;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -112,15 +125,16 @@
     .btn-primary:hover:not(:disabled) {
       background: #5568d3;
       transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
     }
 
     .btn-secondary {
-      background: #f5f5f5;
-      color: #333;
+      background: #e0e0e0;
+      color: #666;
     }
 
     .btn-secondary:hover:not(:disabled) {
-      background: #e0e0e0;
+      background: #d0d0d0;
     }
 
     .spinner {
@@ -134,35 +148,6 @@
 
     @keyframes spin {
       to { transform: rotate(360deg); }
-    }
-
-    .info-box {
-      background: #e3f2fd;
-      border-left: 4px solid #2196f3;
-      padding: 16px;
-      margin-bottom: 20px;
-      border-radius: 4px;
-    }
-
-    .info-box strong {
-      display: block;
-      margin-bottom: 8px;
-      color: #1976d2;
-    }
-
-    .info-box p {
-      margin: 0;
-      font-size: 14px;
-      color: #333;
-    }
-
-    .info-box ul {
-      margin: 8px 0 0 20px;
-      padding: 0;
-    }
-
-    .info-box li {
-      margin: 4px 0;
     }
 
     .network-list {
@@ -208,7 +193,7 @@
     }
 
     .hidden {
-      display: none;
+      display: none !important;
     }
 
     .alert {
@@ -216,6 +201,10 @@
       border-radius: 6px;
       margin-bottom: 20px;
       font-size: 14px;
+    }
+
+    .alert.show {
+      display: block;
     }
 
     .alert-success {
@@ -233,7 +222,9 @@
     .actions {
       display: flex;
       gap: 12px;
-      margin-top: 24px;
+      margin-top: 30px;
+      padding-top: 20px;
+      border-top: 1px solid #e0e0e0;
     }
 
     .actions .btn {
@@ -249,31 +240,32 @@
       <p>Connectez votre PoolController à votre réseau Wi-Fi</p>
     </div>
 
-    <div class="alert alert-error hidden" id="errorAlert"></div>
-    <div class="alert alert-success hidden" id="successAlert"></div>
+    <div class="content">
+      <div class="alert alert-error hidden" id="errorAlert"></div>
+      <div class="alert alert-success hidden" id="successAlert"></div>
 
-    <div class="field">
-      <label>Réseaux Wi-Fi disponibles</label>
-      <button type="button" class="btn btn-secondary" id="scanWifiBtn">
-        🔍 Scanner les réseaux
-      </button>
-      <div class="network-list hidden" id="networkList"></div>
-      <div class="loading hidden" id="scanLoading">Scan en cours...</div>
-    </div>
+      <div class="field">
+        <label>Réseaux Wi-Fi disponibles</label>
+        <button type="button" class="btn btn-secondary" id="scanWifiBtn">🔍 Scanner les réseaux</button>
+        <div class="network-list hidden" id="networkList"></div>
+        <div class="loading hidden" id="scanLoading">Scan en cours...</div>
+      </div>
 
-    <div class="field">
-      <label>Nom du réseau (SSID)</label>
-      <input type="text" id="wifiSsid" placeholder="Sélectionnez ou saisissez le SSID">
-    </div>
+      <div class="field">
+        <label for="wifiSsid">Nom du réseau (SSID)</label>
+        <input type="text" id="wifiSsid" placeholder="Sélectionnez ou saisissez le SSID">
+        <small>Sélectionnez un réseau dans la liste ou saisissez manuellement</small>
+      </div>
 
-    <div class="field">
-      <label>Mot de passe Wi-Fi</label>
-      <input type="password" id="wifiPassword" placeholder="Mot de passe du réseau">
-    </div>
+      <div class="field">
+        <label for="wifiPassword">Mot de passe Wi-Fi</label>
+        <input type="password" id="wifiPassword" placeholder="Mot de passe du réseau">
+      </div>
 
-    <div class="actions">
-      <button type="button" class="btn btn-secondary" id="cancelBtn">Annuler</button>
-      <button type="button" class="btn btn-primary" id="connectBtn">Se connecter</button>
+      <div class="actions">
+        <button type="button" class="btn btn-secondary" id="cancelBtn">Annuler</button>
+        <button type="button" class="btn btn-primary" id="connectBtn">Se connecter</button>
+      </div>
     </div>
   </div>
 
@@ -290,16 +282,17 @@
 
     function showError(message) {
       errorAlert.textContent = message;
+      errorAlert.classList.add('show');
       errorAlert.classList.remove('hidden');
+      successAlert.classList.remove('show');
       successAlert.classList.add('hidden');
-      setTimeout(() => {
-        errorAlert.classList.add('hidden');
-      }, 5000);
     }
 
     function showSuccess(message) {
       successAlert.textContent = message;
+      successAlert.classList.add('show');
       successAlert.classList.remove('hidden');
+      errorAlert.classList.remove('show');
       errorAlert.classList.add('hidden');
     }
 
@@ -364,13 +357,10 @@
     }
 
     async function connectWifi() {
-      console.log('=== Début de connectWifi() ===');
       const ssid = wifiSsid.value.trim();
       const password = wifiPassword.value;
-      console.log('SSID:', ssid, 'Password length:', password.length);
 
       if (!ssid) {
-        console.log('Erreur: SSID vide');
         showError('Veuillez sélectionner ou saisir un réseau Wi-Fi');
         return;
       }
@@ -388,229 +378,37 @@
       setButtonLoading(connectBtn, true, 'Connexion...');
 
       try {
-        console.log('Appel authFetch /wifi/connect...');
         const response = await authFetch('/wifi/connect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ssid, password })
         });
-        console.log('Réponse reçue, status:', response.status);
 
         if (!response.ok) {
-          console.log('Réponse non OK, lecture du message d\'erreur...');
           const data = await response.json();
-          console.log('Erreur reçue:', data);
           throw new Error(data.error || 'Erreur de connexion Wi-Fi');
         }
 
-        console.log('Réponse OK, lecture des données...');
-        const data = await response.json();
-        console.log('Réponse /wifi/connect:', data);
+        showSuccess('Connexion Wi-Fi réussie !');
 
-        // La connexion WiFi est maintenant asynchrone côté ESP32
-        if (data.accepted) {
-          console.log('Demande de connexion WiFi acceptée, attente de la connexion...');
-          showSuccess('Connexion en cours...');
+        // Attendre un court délai pour que l'utilisateur voie le message
+        await new Promise(resolve => setTimeout(resolve, 1500));
 
-          // Attendre que l'ESP32 démarre la connexion
-          await new Promise(resolve => setTimeout(resolve, 1000));
+        // Rediriger vers la page de paramètres WiFi
+        window.location.href = '/#/settings/wifi';
 
-          // Vérifier le statut WiFi en interrogeant /wifi/status
-          let connected = false;
-          let attempts = 0;
-          const maxAttempts = 30; // 30 tentatives * 1000ms = 30 secondes max
-
-          while (attempts < maxAttempts && !connected) {
-            try {
-              console.log(`Tentative ${attempts + 1}/${maxAttempts} - Vérification du statut WiFi...`);
-              const statusResponse = await authFetch('/wifi/status');
-              if (statusResponse.ok) {
-                const statusData = await statusResponse.json();
-                console.log('Statut WiFi complet:', JSON.stringify(statusData, null, 2));
-                console.log('  - connected:', statusData.connected);
-                console.log('  - ssid:', statusData.ssid);
-                console.log('  - SSID cible:', ssid);
-
-                // Vérifier si connecté au réseau cible
-                if (statusData.connected && statusData.ssid === ssid) {
-                  connected = true;
-                  console.log('✓ WiFi connecté avec succès au réseau:', ssid);
-                  break;
-                } else if (statusData.connected) {
-                  console.log('✗ Connecté mais au mauvais réseau:', statusData.ssid, 'au lieu de', ssid);
-                } else {
-                  console.log('✗ Pas encore connecté (connected = false)');
-                }
-              } else {
-                console.log('Erreur HTTP:', statusResponse.status, statusResponse.statusText);
-              }
-            } catch (error) {
-              console.log('Exception lors de la vérification du statut:', error.message);
-            }
-
-            attempts++;
-            if (!connected && attempts < maxAttempts) {
-              await new Promise(resolve => setTimeout(resolve, 1000));
-            }
-          }
-
-          if (!connected) {
-            console.error('TIMEOUT: Impossible de se connecter après', maxAttempts, 'tentatives');
-            throw new Error(`Timeout: impossible de se connecter au réseau WiFi après ${maxAttempts} secondes. Vérifiez le mot de passe et que le réseau est accessible.`);
-          }
-
-          showSuccess('Connexion Wi-Fi réussie !');
-
-          // Attendre que l'ESP32 se stabilise sur le nouveau réseau
-          await new Promise(resolve => setTimeout(resolve, 1000));
-
-          // Vérifier si le mode AP est actif avant de le désactiver
-          let shouldRestart = false;
-          try {
-            const statusResponse = await authFetch('/wifi/status');
-            if (statusResponse.ok) {
-              const statusData = await statusResponse.json();
-              console.log('Statut WiFi complet:', statusData);
-              // Vérifier si le mode AP est actif
-              shouldRestart = statusData.mode && (statusData.mode.includes('AP') || statusData.mode === 'APSTA');
-              console.log('Mode WiFi actuel:', statusData.mode, '- Redémarrage nécessaire:', shouldRestart);
-            }
-          } catch (error) {
-            console.log('Impossible de vérifier le statut WiFi:', error);
-          }
-
-          // Désactiver le mode AP et déclencher le redémarrage seulement si nécessaire
-          if (shouldRestart) {
-            try {
-              console.log('Appel /wifi/ap/disable pour redémarrage...');
-              showSuccess('L\'ESP32 va redémarrer en mode WiFi uniquement. Connectez-vous au réseau WiFi configuré et attendez la redirection automatique...');
-
-              // Appeler l'API qui va redémarrer l'ESP32
-              const apResponse = await authFetch('/wifi/ap/disable', {
-                method: 'POST'
-              });
-
-              console.log('Réponse /wifi/ap/disable - status:', apResponse.status);
-
-              if (apResponse.ok) {
-                const apData = await apResponse.json();
-                console.log('Redémarrage déclenché:', apData);
-              } else if (apResponse.status === 403) {
-                console.log('Erreur 403 - Token invalide après redémarrage, redirection simple');
-                shouldRestart = false; // Pas de redémarrage, juste rediriger
-              }
-            } catch (error) {
-              // L'erreur est normale car l'ESP32 redémarre et coupe la connexion
-              console.log('Connexion perdue (ESP32 en cours de redémarrage):', error);
-            }
-          }
-
-          // Redirection simple sans vérification CORS
-          const redirectToMdns = (needsRestart) => {
-            console.log('redirectToMdns appelée avec needsRestart =', needsRestart);
-            const mdnsTarget = '/#/settings/wifi';
-
-            // Si pas de redémarrage nécessaire, redirection immédiate
-            if (!needsRestart) {
-              console.log('Pas de redémarrage nécessaire, redirection immédiate vers:', mdnsTarget);
-              showSuccess('Configuration WiFi mise à jour ! Redirection...');
-              setTimeout(() => {
-                console.log('Exécution de la redirection vers:', mdnsTarget);
-                window.location.href = mdnsTarget;
-              }, 1500);
-              return;
-            }
-
-            // Sinon, afficher les instructions avec compte à rebours
-            const mdnsBase = 'http://poolcontroller.local';
-            const mdnsFullTarget = mdnsBase + mdnsTarget;
-            let countdown = 15; // 15 secondes pour laisser le temps à l'ESP32 de redémarrer
-
-            const updateInstructions = () => {
-              successAlert.innerHTML = `
-                <strong style="display: block; margin-bottom: 8px; color: #1976d2;">📡 Configuration WiFi réussie !</strong>
-                <ol style="margin: 8px 0 0 20px; padding: 0; font-size: 14px; color: #555; line-height: 1.6;">
-                  <li><strong>Connectez-vous au réseau WiFi configuré</strong> (si ce n'est pas déjà fait)</li>
-                  <li>L'ESP32 redémarre en mode WiFi uniquement</li>
-                  <li>Redirection automatique vers <strong>${mdnsBase}</strong> dans <strong>${countdown} secondes</strong></li>
-                </ol>
-                <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #c3e6cb;">
-                  <button onclick="window.location.href='${mdnsFullTarget}'" style="width: 100%; padding: 12px; background: #28a745; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; font-size: 14px;">
-                    🚀 Accéder maintenant à PoolController
-                  </button>
-                  <p style="margin: 8px 0 0 0; font-size: 12px; color: #155724; text-align: center;">
-                    Cliquez si vous êtes déjà connecté au WiFi configuré
-                  </p>
-                </div>
-              `;
-              successAlert.classList.remove('hidden');
-              errorAlert.classList.add('hidden');
-            };
-
-            // Afficher les instructions initiales
-            updateInstructions();
-
-            // Compte à rebours avec mise à jour visuelle
-            const countdownInterval = setInterval(() => {
-              countdown--;
-              if (countdown > 0) {
-                updateInstructions();
-              } else {
-                clearInterval(countdownInterval);
-                showSuccess('Redirection vers PoolController...');
-                // Redirection directe sans vérification (pas de problème CORS)
-                setTimeout(() => {
-                  window.location.href = mdnsFullTarget;
-                }, 500);
-              }
-            }, 1000);
-          };
-
-          console.log('Appel de redirectToMdns avec shouldRestart =', shouldRestart);
-          redirectToMdns(shouldRestart);
-        } else {
-          console.log('Connexion WiFi échouée:', data);
-          showError('Échec de connexion au réseau Wi-Fi');
-          setButtonLoading(connectBtn, false, 'Se connecter');
-        }
       } catch (error) {
-        console.error('=== ERREUR CAPTURÉE ===');
-        console.error('Type:', error.constructor.name);
-        console.error('Message:', error.message);
-        console.error('Stack:', error.stack);
-
-        // Si la connexion réseau est perdue, c'est probablement parce que l'ESP32
-        // a changé de réseau WiFi avec succès. On considère cela comme un succès.
-        if (error.message && (error.message.includes('connexion réseau') ||
-                              error.message.includes('network') ||
-                              error.message.includes('Failed to fetch') ||
-                              error.name === 'TypeError')) {
-          console.log('Connexion perdue - probable succès de la reconfiguration WiFi');
-          showSuccess('Configuration WiFi enregistrée ! Redirection...');
-
-          // Attendre un peu pour que l'ESP32 se reconnecte
-          setTimeout(() => {
-            console.log('Redirection vers /#/settings/wifi');
-            window.location.href = '/#/settings/wifi';
-          }, 2000);
-        } else {
-          // Autre type d'erreur
-          showError(error.message);
-          setButtonLoading(connectBtn, false, 'Se connecter');
-        }
+        showError(error.message);
+        setButtonLoading(connectBtn, false, 'Se connecter');
       }
     }
 
+    // Event handlers
     scanWifiBtn.onclick = scanWifi;
     connectBtn.onclick = connectWifi;
     cancelBtn.onclick = () => {
       window.location.href = '/#/settings/wifi';
     };
-
-    console.log('Event handlers attached:');
-    console.log('- scanWifiBtn:', scanWifiBtn);
-    console.log('- connectBtn:', connectBtn);
-    console.log('- cancelBtn:', cancelBtn);
 
     // Vérifier l'authentification au chargement
     async function checkAuth() {
