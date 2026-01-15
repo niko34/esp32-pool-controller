@@ -31,7 +31,7 @@ constexpr unsigned long kI2cMutexTimeoutMs = 2000;        // 2s - Timeout acquis
 constexpr unsigned long kConfigMutexTimeoutMs = 1000;     // 1s - Timeout acquisition mutex config
 
 // Sécurité - Réinitialisation mot de passe
-constexpr unsigned long kPasswordResetButtonHoldMs = 10000; // 10s - Maintien bouton pour reset
+constexpr unsigned long kPasswordResetButtonHoldMs = 5000; // 5s - Maintien bouton pour reset
 
 // Sécurité - Rate limiting
 constexpr uint16_t kMaxRequestsPerMinute = 30;            // Limite globale par IP

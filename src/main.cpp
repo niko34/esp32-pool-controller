@@ -165,17 +165,51 @@ void loop() {
   delay(kLoopDelayMs);
 }
 
+// Fonction utilitaire pour convertir le statut WiFi en string lisible
+String getWifiStatusString(int status) {
+  switch (status) {
+    case WL_IDLE_STATUS: return "IDLE";
+    case WL_NO_SSID_AVAIL: return "NO_SSID_AVAILABLE";
+    case WL_SCAN_COMPLETED: return "SCAN_COMPLETED";
+    case WL_CONNECTED: return "CONNECTED";
+    case WL_CONNECT_FAILED: return "CONNECT_FAILED";
+    case WL_CONNECTION_LOST: return "CONNECTION_LOST";
+    case WL_DISCONNECTED: return "DISCONNECTED";
+    default: return "UNKNOWN";
+  }
+}
+
 bool setupWiFi() {
   WiFi.mode(WIFI_STA);
   currentWifiMode = WiFi.getMode();
+
+  // Afficher les credentials WiFi stockés en NVS (pour debug)
+  String storedSsid = WiFi.SSID();
+  String storedPassword = WiFi.psk();
+  systemLogger.info("=== DEBUG WiFi Credentials ===");
+  systemLogger.info("SSID stocké: '" + storedSsid + "' (longueur: " + String(storedSsid.length()) + ")");
+  systemLogger.info("Password stocké: '" + storedPassword + "' (longueur: " + String(storedPassword.length()) + ")");
+  systemLogger.info("==============================");
+
   systemLogger.info("Tentative connexion WiFi...");
 
   // Connexion avec credentials sauvegardés (NVS)
   WiFi.begin();
   unsigned long start = millis();
+  int lastStatus = -1;
   while (WiFi.status() != WL_CONNECTED && millis() - start < kWifiConnectTimeoutMs) {
+    int currentStatus = WiFi.status();
+    if (currentStatus != lastStatus) {
+      // Afficher le code de statut WiFi
+      systemLogger.info("Statut WiFi: " + String(currentStatus) + " (" + getWifiStatusString(currentStatus) + ")");
+      lastStatus = currentStatus;
+    }
     delay(250);
   }
+
+  // Afficher le statut final
+  int finalStatus = WiFi.status();
+  systemLogger.info("Statut final: " + String(finalStatus) + " (" + getWifiStatusString(finalStatus) + ")");
 
   auto startApMode = [](bool keepSta) {
     WiFi.mode(keepSta ? WIFI_AP_STA : WIFI_AP);
