@@ -304,7 +304,7 @@ void MqttManager::publishDiagnostic() {
   doc["min_free_heap"] = ESP.getMinFreeHeap();
 
   // WiFi
-  doc["wifi_ssid"] = WiFi.SSID();
+  doc["wifi_"] = WiFi.SSID();
   doc["wifi_rssi"] = WiFi.RSSI();
   doc["wifi_quality"] = constrain(map(WiFi.RSSI(), -100, -50, 0, 100), 0, 100);
   doc["ip_address"] = WiFi.localIP().toString();

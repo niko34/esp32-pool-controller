@@ -192,15 +192,17 @@ void SensorManager::readRealSensors() {
     } else {
       tempValue = NAN;
       tempRawValue = NAN;
-      systemLogger.warning("DS18B20 non détecté ou température invalide");
+      if (authCfg.sensorLogsEnabled) {
+        systemLogger.warning("DS18B20 non détecté ou température invalide");
+      }
     }
 
     tempRequested = false; // prêt pour une nouvelle conversion
     lastTempRead = now;
   }
 
-  // Debug température (toutes les 5 secondes)
-  if (now - lastTempDebugLog >= 5000) {
+  // Debug température (toutes les 5 secondes, si activé)
+  if (authCfg.sensorLogsEnabled && now - lastTempDebugLog >= 5000) {
     char logMsg[150];
     if (!isnan(tempValue)) {
       snprintf(logMsg, sizeof(logMsg),
@@ -226,7 +228,7 @@ void SensorManager::readRealSensors() {
 
   static bool reportedUnavailable = false;
   if (adsAvailable) {
-    if (reportedUnavailable) {
+    if (reportedUnavailable && authCfg.sensorLogsEnabled) {
       systemLogger.info("ADS1115 détecté: lectures pH/ORP rétablies");
     }
     reportedUnavailable = false;
@@ -238,7 +240,9 @@ void SensorManager::readRealSensors() {
     orpValue = NAN;
     static unsigned long lastAdsRetry = 0;
     if (!reportedUnavailable) {
-      systemLogger.warning("ADS1115 non détecté: lectures pH/ORP indisponibles");
+      if (authCfg.sensorLogsEnabled) {
+        systemLogger.warning("ADS1115 non détecté: lectures pH/ORP indisponibles");
+      }
       reportedUnavailable = true;
     }
     if (now - lastAdsRetry >= 2000) {
@@ -247,8 +251,8 @@ void SensorManager::readRealSensors() {
     }
     // Log de debug uniquement toutes les 30 secondes pour éviter de spammer
     static unsigned long lastAdsWarning = 0;
-    if (now - lastAdsWarning >= 30000) {
-    systemLogger.warning("ADS1115 non détecté - lectures pH/ORP désactivées");
+    if (authCfg.sensorLogsEnabled && now - lastAdsWarning >= 30000) {
+      systemLogger.warning("ADS1115 non détecté - lectures pH/ORP désactivées");
       lastAdsWarning = now;
     }
     return;
@@ -275,12 +279,12 @@ void SensorManager::readRealSensors() {
     float orpModuleVoltage_mV = voltage * ORP_DIVIDER_GAIN;
 
     // Avertissement si on s'approche de la pleine échelle du PGA (GAIN_ONE -> ~4096mV)
-    if (fabsf(voltage) > 4050.0f) {
+    if (authCfg.sensorLogsEnabled && fabsf(voltage) > 4050.0f) {
       systemLogger.warning("ORP: tension proche de la saturation ADS1115 (" + String(voltage, 1) + " mV). Vérifier VDD ADS1115 / diviseur de tension.");
     }
 
     // Avertissement si la tension reconstruite dépasse la plage attendue du module (~0-4V)
-    if (orpModuleVoltage_mV < -50.0f || orpModuleVoltage_mV > 4100.0f) {
+    if (authCfg.sensorLogsEnabled && (orpModuleVoltage_mV < -50.0f || orpModuleVoltage_mV > 4100.0f)) {
       systemLogger.warning("ORP: tension module inattendue (" + String(orpModuleVoltage_mV, 1) + " mV). Vérifier le pont diviseur / alim du module.");
     }
 
@@ -295,8 +299,8 @@ void SensorManager::readRealSensors() {
     // Calibration 2 points: slope et offset calculés depuis 2 solutions de référence
     orpValue = roundf((rawOrpValue * mqttCfg.orpCalibrationSlope) + mqttCfg.orpCalibrationOffset);
 
-    // Debug: afficher les valeurs ORP toutes les 5 secondes
-    if (now - lastOrpDebugLog >= 5000) {
+    // Debug: afficher les valeurs ORP toutes les 5 secondes (si activé)
+    if (authCfg.sensorLogsEnabled && now - lastOrpDebugLog >= 5000) {
       float voltageMin = ads.computeVolts(minVal) * 1000.0f;
       float voltageMax = ads.computeVolts(maxVal) * 1000.0f;
       float voltageAvg = ads.computeVolts(sum / kNumSensorSamples) * 1000.0f;
@@ -332,8 +336,8 @@ void SensorManager::readRealSensors() {
     // Arrondir à 1 décimale
     phValue = roundf(phSensor.readPH(voltage, temperature) * 10.0f) / 10.0f;
 
-    // Debug: afficher les valeurs pH toutes les 5 secondes
-    if (now - lastPhDebugLog >= 5000) {
+    // Debug: afficher les valeurs pH toutes les 5 secondes (si activé)
+    if (authCfg.sensorLogsEnabled && now - lastPhDebugLog >= 5000) {
       float voltageMin = ads.computeVolts(minVal) * 1000.0f;
       float voltageMax = ads.computeVolts(maxVal) * 1000.0f;
 

@@ -1137,6 +1137,17 @@
                   <div class="card__title">Logs</div>
                 </div>
                 <div class="card__body">
+                  <div class="row row--between" style="margin-bottom: 12px;">
+                    <div>
+                      <div class="row__title">Logs des sondes</div>
+                      <div class="muted small">Logs détaillés pH, ORP, température</div>
+                    </div>
+                    <label class="switch">
+                      <input type="checkbox" id="sensor_logs_enabled" />
+                      <span class="switch__track"></span>
+                    </label>
+                  </div>
+
                   <div class="row row--gap row--between">
                     <div class="row row--gap">
                       <button class="btn btn--ghost" type="button" id="refresh_logs_btn">Actualiser</button>

@@ -730,6 +730,7 @@
       lighting_schedule_enabled: lightingScheduleMode === "enabled",
       lighting_start_time: lightingStartTime,
       lighting_end_time: lightingEndTime,
+      sensor_logs_enabled: $("#sensor_logs_enabled")?.checked === true,
     };
   }
 
@@ -868,6 +869,11 @@
 
     // Security panel
     $("#auth_cors_origins").value = cfg.auth_cors_origins || "";
+
+    // Development panel
+    if ($("#sensor_logs_enabled")) {
+      $("#sensor_logs_enabled").checked = cfg.sensor_logs_enabled === true;
+    }
 
     // Mettre à jour les alertes et cartes status après chargement de la config
     updateAlerts();
@@ -3142,6 +3148,9 @@
       // Auto-save when manually editing time (only when NTP is disabled)
       if (!$("#time_use_ntp").checked) save();
     });
+
+    // Development panel - Sensor logs
+    $("#sensor_logs_enabled")?.addEventListener("change", save);
   }
 
   // ---------- UI bindings ----------
