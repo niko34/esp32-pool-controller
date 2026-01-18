@@ -53,7 +53,8 @@
   // ---------- Router ----------
   function getRoute() {
     const hash = window.location.hash || "#/dashboard";
-    const clean = hash.replace(/^#/, "");
+    // Nettoyer les query params du hash avant de parser
+    const clean = hash.replace(/^#/, "").split("?")[0];
     const parts = clean.split("/").filter(Boolean);
     if (parts.length === 0) return { view: "/dashboard" };
     if (parts[0] === "settings") return { view: "/settings", sub: parts[1] || "wifi" };
