@@ -230,6 +230,33 @@
     .actions .btn {
       flex: 1;
     }
+
+    .password-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .password-wrapper input {
+      padding-right: 44px;
+    }
+
+    .password-toggle {
+      position: absolute;
+      right: 12px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px;
+      color: #666;
+      font-size: 18px;
+      line-height: 1;
+      transition: color 0.2s ease;
+    }
+
+    .password-toggle:hover {
+      color: #333;
+    }
   </style>
 </head>
 <body>
@@ -259,7 +286,13 @@
 
       <div class="field">
         <label for="wifiPassword">Mot de passe Wi-Fi</label>
-        <input type="password" id="wifiPassword" placeholder="Mot de passe du réseau">
+        <div class="password-wrapper">
+          <input type="password" id="wifiPassword" placeholder="Mot de passe du réseau">
+          <button type="button" class="password-toggle" id="passwordToggle" title="Afficher/Masquer">
+            <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.6-6.5 9.5-6.5S21.5 12 21.5 12s-3.6 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+            <svg class="eye-closed hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12s3.4-6.5 9-6.5 9 6.5 9 6.5-3.4 6.5-9 6.5-9-6.5-9-6.5z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>
+          </button>
+        </div>
       </div>
 
       <div class="actions">
@@ -409,6 +442,21 @@
     cancelBtn.onclick = () => {
       window.location.href = '/#/settings/wifi';
     };
+
+    // Password toggle handler
+    document.getElementById('passwordToggle').addEventListener('click', function() {
+      const eyeOpen = this.querySelector('.eye-open');
+      const eyeClosed = this.querySelector('.eye-closed');
+      if (wifiPassword.type === 'password') {
+        wifiPassword.type = 'text';
+        eyeOpen.classList.add('hidden');
+        eyeClosed.classList.remove('hidden');
+      } else {
+        wifiPassword.type = 'password';
+        eyeOpen.classList.remove('hidden');
+        eyeClosed.classList.add('hidden');
+      }
+    });
 
     // Vérifier l'authentification au chargement
     async function checkAuth() {

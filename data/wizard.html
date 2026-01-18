@@ -409,6 +409,33 @@
       padding: 20px;
       color: #6c757d;
     }
+
+    .password-wrapper {
+      position: relative;
+      display: flex;
+      align-items: center;
+    }
+
+    .password-wrapper input {
+      padding-right: 44px;
+    }
+
+    .password-toggle {
+      position: absolute;
+      right: 12px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px;
+      color: #666;
+      font-size: 18px;
+      line-height: 1;
+      transition: color 0.2s ease;
+    }
+
+    .password-toggle:hover {
+      color: #333;
+    }
   </style>
 </head>
 <body>
@@ -455,13 +482,25 @@
 
         <div class="field required">
           <label>Mot de passe administrateur</label>
-          <input type="password" id="adminPassword" placeholder="Minimum 8 caractères">
+          <div class="password-wrapper">
+            <input type="password" id="adminPassword" placeholder="Minimum 8 caractères">
+            <button type="button" class="password-toggle" data-target="adminPassword" title="Afficher/Masquer">
+              <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.6-6.5 9.5-6.5S21.5 12 21.5 12s-3.6 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+              <svg class="eye-closed hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12s3.4-6.5 9-6.5 9 6.5 9 6.5-3.4 6.5-9 6.5-9-6.5-9-6.5z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>
+            </button>
+          </div>
           <div class="hint">Au moins 8 caractères</div>
         </div>
 
         <div class="field required">
           <label>Confirmer le mot de passe</label>
-          <input type="password" id="adminPasswordConfirm" placeholder="Re-saisir le mot de passe">
+          <div class="password-wrapper">
+            <input type="password" id="adminPasswordConfirm" placeholder="Re-saisir le mot de passe">
+            <button type="button" class="password-toggle" data-target="adminPasswordConfirm" title="Afficher/Masquer">
+              <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.6-6.5 9.5-6.5S21.5 12 21.5 12s-3.6 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+              <svg class="eye-closed hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12s3.4-6.5 9-6.5 9 6.5 9 6.5-3.4 6.5-9 6.5-9-6.5-9-6.5z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -500,7 +539,13 @@
 
         <div class="field required" id="passwordField">
           <label>Mot de passe Wi-Fi</label>
-          <input type="password" id="wifiPassword" placeholder="Mot de passe du réseau">
+          <div class="password-wrapper">
+            <input type="password" id="wifiPassword" placeholder="Mot de passe du réseau">
+            <button type="button" class="password-toggle" data-target="wifiPassword" title="Afficher/Masquer">
+              <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.6-6.5 9.5-6.5S21.5 12 21.5 12s-3.6 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+              <svg class="eye-closed hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12s3.4-6.5 9-6.5 9 6.5 9 6.5-3.4 6.5-9 6.5-9-6.5-9-6.5z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>
+            </button>
+          </div>
         </div>
 
         <div class="field">
@@ -1075,6 +1120,25 @@
         manualTimeInput.value = `${year}-${month}-${day}T${hours}:${minutes}`;
       }
     }
+
+    // Password toggle handlers
+    document.querySelectorAll('.password-toggle').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const targetId = btn.dataset.target;
+        const input = document.getElementById(targetId);
+        const eyeOpen = btn.querySelector('.eye-open');
+        const eyeClosed = btn.querySelector('.eye-closed');
+        if (input.type === 'password') {
+          input.type = 'text';
+          eyeOpen.classList.add('hidden');
+          eyeClosed.classList.remove('hidden');
+        } else {
+          input.type = 'password';
+          eyeOpen.classList.remove('hidden');
+          eyeClosed.classList.add('hidden');
+        }
+      });
+    });
 
     // Initialize
     updateStepper();

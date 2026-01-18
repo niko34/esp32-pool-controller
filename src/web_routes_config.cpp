@@ -120,6 +120,9 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // Configuration d'authentification
   doc["auth_enabled"] = authCfg.enabled;
 
+  // Options de développement
+  doc["sensor_logs_enabled"] = authCfg.sensorLogsEnabled;
+
   // SÉCURITÉ: Masquer les credentials si non authentifié
   if (isAuthenticated) {
     // Utilisateur authentifié : montrer password et token masqués (indication qu'ils existent)
@@ -277,6 +280,12 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["auth_cors_origins"].isNull()) {
     authCfg.corsAllowedOrigins = doc["auth_cors_origins"].as<String>();
     systemLogger.info("Configuration CORS mise à jour: " + authCfg.corsAllowedOrigins);
+  }
+
+  // Options de développement
+  if (!doc["sensor_logs_enabled"].isNull()) {
+    authCfg.sensorLogsEnabled = doc["sensor_logs_enabled"];
+    systemLogger.info(String("Logs des sondes: ") + (authCfg.sensorLogsEnabled ? "activés" : "désactivés"));
   }
 
   // Note: Le token API n'est pas modifiable via /save-config
@@ -635,6 +644,13 @@ void processWifiReconnectIfNeeded() {
 
   // WiFi.begin() va maintenant sauvegarder les credentials dans la NVS
   WiFi.begin(g_wifiReconnectSsid.c_str(), g_wifiReconnectPassword.c_str());
+
+  unsigned long startTime = millis();
+  unsigned long timeout = 15000; // Timeout de 15 secondes pour la connexion initiale
+
+  while (!WiFi.isConnected() && (millis() - startTime) < timeout) {
+    delay(100);
+  }
 
   // Désactiver la persistence après pour éviter l'usure inutile de la flash
   WiFi.persistent(false);
