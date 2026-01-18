@@ -991,13 +991,61 @@
           console.error('Erreur lors de la finalisation du wizard:', error);
         }
 
-        // Si WiFi configuré, désactiver le mode AP pour passer en mode STA uniquement
+        // Si WiFi configuré, vérifier la connexion avant de redémarrer
         if (wifiConfigured) {
           const mdnsBase = 'http://poolcontroller.local';
-          showSuccess('Configuration terminée avec succès !');
 
-          // Attendre que l'ESP32 se stabilise sur le nouveau réseau
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          // Mettre à jour le bouton pour indiquer la vérification en cours
+          setButtonLoading(finishBtn, true, 'Vérification WiFi...');
+          showSuccess('Vérification de la connexion WiFi en cours...');
+
+          // Attendre que l'ESP32 tente de se connecter et vérifier le statut
+          const maxAttempts = 20;
+          let connected = false;
+
+          for (let i = 0; i < maxAttempts; i++) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
+            try {
+              const statusRes = await authFetch('/wifi/status');
+              if (statusRes.ok) {
+                const status = await statusRes.json();
+                if (status.connected) {
+                  connected = true;
+                  break;
+                }
+              }
+            } catch (e) {
+              // Ignorer les erreurs de polling
+            }
+          }
+
+          // Si la connexion a échoué, proposer à l'utilisateur de reconfigurer ou continuer en AP
+          if (!connected) {
+            errorAlert.innerHTML = `
+              <div style="margin-bottom: 16px;">
+                <strong>❌ Échec de la connexion WiFi</strong>
+                <p style="margin: 8px 0 0 0;">Impossible de se connecter au réseau WiFi configuré.</p>
+              </div>
+              <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                <button onclick="retryWifiConfig()" style="flex: 1; padding: 12px; background: #2196f3; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; min-width: 200px;">
+                  🔄 Reconfigurer le WiFi
+                </button>
+                <button onclick="continueWithoutWifi()" style="flex: 1; padding: 12px; background: #ff9800; color: white; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; min-width: 200px;">
+                  ✓ Continuer en mode AP
+                </button>
+              </div>
+            `;
+            errorAlert.classList.add('show');
+
+            // Remettre le bouton à son état désactivé avec le texte original
+            finishBtn.disabled = true;
+            finishBtn.innerHTML = 'Terminer la configuration';
+            return;
+          }
+
+          // Connexion WiFi réussie, continuer avec le redémarrage
+          showSuccess('Configuration terminée avec succès !');
 
         // Désactiver le mode AP et déclencher le redémarrage
         try {
@@ -1137,6 +1185,36 @@
         }
       });
     });
+
+    // Fonction globale pour retourner à la configuration WiFi
+    window.retryWifiConfig = function() {
+      errorAlert.classList.remove('show');
+      currentStep = 2;
+      updateStepper();
+    };
+
+    // Fonction globale pour continuer sans WiFi
+    window.continueWithoutWifi = async function() {
+      errorAlert.classList.remove('show');
+
+      // Marquer WiFi comme non configuré
+      wifiConfigured = false;
+
+      // Marquer le wizard comme complété
+      try {
+        await authFetch('/auth/complete-wizard', {
+          method: 'POST'
+        });
+      } catch (error) {
+        console.error('Erreur lors de la finalisation du wizard:', error);
+      }
+
+      // Rester en mode AP, rediriger vers l'interface principale
+      showSuccess('Configuration terminée en mode AP. Redirection...');
+      setTimeout(() => {
+        window.location.href = '/';
+      }, 2000);
+    };
 
     // Initialize
     updateStepper();
