@@ -408,9 +408,10 @@
         return;
       }
 
-      setButtonLoading(connectBtn, true, 'Connexion...');
+      setButtonLoading(connectBtn, true, 'Connexion en cours...');
 
       try {
+        // Envoyer la demande de connexion
         const response = await authFetch('/wifi/connect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -422,13 +423,41 @@
           throw new Error(data.error || 'Erreur de connexion Wi-Fi');
         }
 
-        showSuccess('Connexion Wi-Fi réussie !');
+        // Attendre que la connexion se fasse (le serveur traite de manière asynchrone)
+        // Polling toutes les secondes pendant 20 secondes max
+        const maxAttempts = 20;
+        let connected = false;
+        let connectedSsid = '';
 
-        // Attendre un court délai pour que l'utilisateur voie le message
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        for (let i = 0; i < maxAttempts; i++) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
 
-        // Rediriger vers la page de paramètres WiFi
-        window.location.href = '/#/settings/wifi';
+          try {
+            const statusRes = await authFetch('/wifi/status');
+            if (statusRes.ok) {
+              const status = await statusRes.json();
+              if (status.connected && status.ssid === ssid) {
+                connected = true;
+                connectedSsid = status.ssid;
+                break;
+              }
+            }
+          } catch (e) {
+            // Ignorer les erreurs de polling (la connexion peut être en cours)
+          }
+        }
+
+        if (connected) {
+          showSuccess('Connexion Wi-Fi réussie !');
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          window.location.href = '/#/settings/wifi?wifi=success&ssid=' + encodeURIComponent(connectedSsid);
+        } else {
+          showError('Échec de la connexion au réseau "' + ssid + '"');
+          setButtonLoading(connectBtn, false, 'Se connecter');
+          // Attendre un peu puis rediriger avec le statut d'échec
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          window.location.href = '/#/settings/wifi?wifi=failed&ssid=' + encodeURIComponent(ssid);
+        }
 
       } catch (error) {
         showError(error.message);

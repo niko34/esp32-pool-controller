@@ -11,6 +11,7 @@
 #include "logger.h"
 #include "version.h"
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <AsyncJson.h>
@@ -503,8 +504,14 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
   server->on("/wifi/ap/disable", HTTP_POST, [](AsyncWebServerRequest* request) {
     REQUIRE_AUTH(request, RouteProtection::CRITICAL);
 
-    if (!WiFi.isConnected()) {
-      sendErrorResponse(request, 400, "WiFi not connected");
+    // Vérifier qu'il y a des credentials WiFi configurés dans la NVS
+    wifi_config_t wifi_config;
+    memset(&wifi_config, 0, sizeof(wifi_config_t));
+    esp_wifi_get_config(WIFI_IF_STA, &wifi_config);
+    String ssid = String((char*)wifi_config.sta.ssid);
+
+    if (ssid.length() == 0) {
+      sendErrorResponse(request, 400, "No WiFi credentials configured");
       return;
     }
 
@@ -512,7 +519,12 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
     authCfg.disableApOnBoot = true;
     authCfg.forceWifiConfig = false;
     saveMqttConfig();
-    systemLogger.info("Flag disableApOnBoot activé - Redémarrage programmé");
+
+    if (WiFi.isConnected()) {
+      systemLogger.info("Flag disableApOnBoot activé - WiFi connecté - Redémarrage programmé");
+    } else {
+      systemLogger.info("Flag disableApOnBoot activé - WiFi configuré mais pas encore connecté - Redémarrage programmé");
+    }
 
     // Envoyer la réponse avant le redémarrage
     JsonDocument doc;
@@ -600,6 +612,9 @@ void processWifiReconnectIfNeeded() {
   // Déterminer le mode WiFi actuel
   wifi_mode_t mode = WiFi.getMode();
 
+  unsigned long startTime = millis();
+  unsigned long timeout = 15000; // Timeout de 15 secondes pour la connexion initiale
+
   // Gestion des modes WiFi selon le contexte :
   // - Mode AP uniquement : passer en APSTA pour garder l'AP actif pendant la connexion (wizard/première config)
   // - Mode STA : si déjà connecté, déconnecter d'abord pour forcer la sauvegarde NVS
@@ -612,7 +627,13 @@ void processWifiReconnectIfNeeded() {
     if (WiFi.isConnected()) {
       systemLogger.info("Mode STA avec connexion active, déconnexion pour forcer la sauvegarde NVS");
       WiFi.disconnect(false, false); // Déconnecter sans éteindre le WiFi ni effacer la config NVS
-      delay(100);
+
+      // Attendre la déconnexion effective
+      startTime = millis();
+      while (WiFi.isConnected() && (millis() - startTime) < timeout) {
+        delay(100);
+      }
+      delay(200); // Laisser le temps à la déconnexion de se stabiliser
     } else {
       systemLogger.info("Mode STA sans connexion, prêt pour nouvelle connexion");
     }
@@ -622,8 +643,15 @@ void processWifiReconnectIfNeeded() {
     if (WiFi.isConnected()) {
       systemLogger.info("Mode APSTA détecté avec connexion active (mode secours), passage en STA pour nouvelle connexion");
       WiFi.disconnect(false, false); // Déconnecter sans effacer la config
-      delay(100);
+
+      // Attendre la déconnexion effective (WiFi.disconnect n'est pas synchrone)
+      startTime = millis();
+      while (WiFi.isConnected() && (millis() - startTime) < timeout) {
+        delay(100);
+      }
+
       WiFi.mode(WIFI_MODE_STA);
+      delay(200); // Laisser le temps au changement de mode de s'appliquer
     } else {
       systemLogger.info("Mode APSTA détecté sans connexion (configuration initiale), on conserve APSTA");
       // Ne rien faire, garder le mode APSTA pendant la connexion initiale
@@ -636,27 +664,56 @@ void processWifiReconnectIfNeeded() {
   systemLogger.info("Password: '" + g_wifiReconnectPassword + "' (longueur: " + String(g_wifiReconnectPassword.length()) + ")");
   systemLogger.info("==============================");
 
-  // Sauvegarder les credentials dans la NVS et démarrer la connexion
-  systemLogger.info("Connexion WiFi avec sauvegarde NVS...");
+  // Sauvegarder les anciens credentials AVANT de tenter la connexion
+  // Car WiFi.begin() peut corrompre la NVS même avec persistent(false)
+  wifi_config_t old_wifi_config;
+  memset(&old_wifi_config, 0, sizeof(wifi_config_t));
+  esp_wifi_get_config(WIFI_IF_STA, &old_wifi_config);
+  String oldSsid = String((char*)old_wifi_config.sta.ssid);
+  systemLogger.info("Anciens credentials sauvegardés: SSID='" + oldSsid + "'");
 
-  // IMPORTANT: Activer la persistence avant WiFi.begin() pour sauvegarder dans la NVS
-  WiFi.persistent(true);
+  // Démarrer la connexion WiFi SANS persistence automatique
+  // On sauvegarde manuellement dans la NVS seulement si la connexion réussit
+  systemLogger.info("Tentative de connexion WiFi (sauvegarde NVS uniquement si succès)...");
 
-  // WiFi.begin() va maintenant sauvegarder les credentials dans la NVS
+  // Désactiver la persistence automatique pour éviter d'écraser les anciens credentials
+  WiFi.persistent(false);
+
+  // Tenter la connexion au nouveau réseau
   WiFi.begin(g_wifiReconnectSsid.c_str(), g_wifiReconnectPassword.c_str());
 
-  unsigned long startTime = millis();
-  unsigned long timeout = 15000; // Timeout de 15 secondes pour la connexion initiale
+  startTime = millis();
 
   while (!WiFi.isConnected() && (millis() - startTime) < timeout) {
     delay(100);
   }
 
-  // Désactiver la persistence après pour éviter l'usure inutile de la flash
-  WiFi.persistent(false);
+  if (WiFi.isConnected()) {
+    systemLogger.info("Connexion WiFi réussie! IP: " + WiFi.localIP().toString());
 
-  systemLogger.info("WiFi.begin() appelé avec persistence activée - connexion en arrière-plan");
-  systemLogger.info("Les credentials ont été sauvegardés dans la NVS");
+    // Sauvegarder les nouveaux credentials dans la NVS
+    wifi_config_t wifi_config;
+    memset(&wifi_config, 0, sizeof(wifi_config_t));
+    strncpy((char*)wifi_config.sta.ssid, g_wifiReconnectSsid.c_str(), sizeof(wifi_config.sta.ssid) - 1);
+    strncpy((char*)wifi_config.sta.password, g_wifiReconnectPassword.c_str(), sizeof(wifi_config.sta.password) - 1);
+
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+    if (err == ESP_OK) {
+      systemLogger.info("Credentials WiFi sauvegardés dans la NVS");
+    } else {
+      systemLogger.error("Erreur sauvegarde NVS: " + String(esp_err_to_name(err)));
+    }
+  } else {
+    systemLogger.warning("Échec connexion WiFi - restauration des anciens credentials dans la NVS");
+
+    // Restaurer les anciens credentials dans la NVS
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &old_wifi_config);
+    if (err == ESP_OK) {
+      systemLogger.info("Anciens credentials restaurés: SSID='" + oldSsid + "'");
+    } else {
+      systemLogger.error("Erreur restauration NVS: " + String(esp_err_to_name(err)));
+    }
+  }
 
   // Effacer les credentials pour la sécurité
   g_wifiReconnectSsid = "";

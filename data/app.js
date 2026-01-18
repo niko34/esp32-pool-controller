@@ -587,8 +587,57 @@
     // Update WiFi display when WiFi panel is shown
     if (panelKey === "wifi") {
       updateWiFiDisplay();
+      checkWiFiNotification();
     }
   }
+
+  // Vérifier et afficher une notification WiFi basée sur les paramètres URL
+  function checkWiFiNotification() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const wifiStatus = urlParams.get('wifi');
+    const ssid = urlParams.get('ssid');
+
+    if (!wifiStatus) return;
+
+    const notifEl = $("#wifi-notification");
+    if (!notifEl) return;
+
+    // Nettoyer l'URL sans recharger la page
+    const cleanUrl = window.location.pathname + window.location.hash.split('?')[0];
+    window.history.replaceState({}, document.title, cleanUrl);
+
+    // Afficher la notification
+    notifEl.classList.remove('hidden', 'success', 'error');
+
+    if (wifiStatus === 'success') {
+      notifEl.classList.add('success');
+      notifEl.innerHTML = `
+        <span class="wifi-notification__icon">✓</span>
+        <span class="wifi-notification__text">Connexion au réseau "${ssid || 'WiFi'}" réussie</span>
+        <button class="wifi-notification__close" onclick="hideWifiNotification()">×</button>
+      `;
+    } else if (wifiStatus === 'failed') {
+      notifEl.classList.add('error');
+      notifEl.innerHTML = `
+        <span class="wifi-notification__icon">✕</span>
+        <span class="wifi-notification__text">Échec de la connexion au réseau "${ssid || 'WiFi'}"</span>
+        <button class="wifi-notification__close" onclick="hideWifiNotification()">×</button>
+      `;
+    }
+
+    // Masquer automatiquement après 8 secondes
+    setTimeout(() => {
+      hideWifiNotification();
+    }, 8000);
+  }
+
+  // Fonction globale pour fermer la notification
+  window.hideWifiNotification = function() {
+    const notifEl = $("#wifi-notification");
+    if (notifEl) {
+      notifEl.classList.add('hidden');
+    }
+  };
 
   function goSettings(panelKey) {
     window.location.hash = `#/settings/${panelKey}`;

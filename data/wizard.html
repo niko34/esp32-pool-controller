@@ -520,7 +520,7 @@
             <li>Accès à distance à l'interface web via <span style="font-weight: 600;">http://poolcontroller.local</span></li>
             <li>Publication des données via MQTT (optionnel)</li>
           </ul>
-          <p style="margin-top: 8px;"><strong>Sans Wi-Fi :</strong> Vous devrez vous connecter au réseau AP du PoolController (<span style="font-weight: 600;">PoolControllerAP</span>) et accéder à l'interface via <span style="font-weight: 600;">http://192.168.4.1</span>, régler l'heure manuellement et effectuer les mises à jour par upload manuel.</p>
+          <p style="margin-top: 8px;"><strong>Sans Wi-Fi :</strong> Vous devrez vous connecter au réseau AP du PoolController (<span style="font-weight: 600;">Réseau Wifi PoolControllerAP</span>) et accéder à l'interface via <span style="font-weight: 600;">http://192.168.4.1</span>, régler l'heure manuellement et effectuer les mises à jour par upload manuel.</p>
         </div>
 
         <div class="field">
@@ -799,7 +799,6 @@
         }
 
         wifiConfigured = true;
-        showSuccess('Connexion Wi-Fi réussie !');
         return true;
       } catch (error) {
         showError(error.message);
@@ -1003,7 +1002,6 @@
         // Désactiver le mode AP et déclencher le redémarrage
         try {
           console.log('Appel /wifi/ap/disable pour redémarrage...');
-          showSuccess('L\'ESP32 va redémarrer en mode WiFi uniquement. Connectez-vous au réseau WiFi configuré et attendez la redirection automatique...');
 
           // Appeler l'API qui va redémarrer l'ESP32
           const response = await authFetch('/wifi/ap/disable', {
