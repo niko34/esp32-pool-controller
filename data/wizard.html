@@ -1200,6 +1200,20 @@
       // Marquer WiFi comme non configuré
       wifiConfigured = false;
 
+      // Déconnecter le WiFi et effacer la configuration pour revenir en mode AP uniquement
+      try {
+        showSuccess('Déconnexion WiFi et passage en mode AP...');
+        const response = await authFetch('/wifi/disconnect', {
+          method: 'POST'
+        });
+        if (response.ok) {
+          console.log('WiFi déconnecté, passage en mode AP');
+        }
+      } catch (error) {
+        console.error('Erreur lors de la déconnexion WiFi:', error);
+        // On continue quand même, ce n'est pas bloquant
+      }
+
       // Marquer le wizard comme complété
       try {
         await authFetch('/auth/complete-wizard', {

@@ -90,8 +90,26 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["lighting_start_time"] = lightingCfg.startTime;
   doc["lighting_end_time"] = lightingCfg.endTime;
   doc["wifi_ssid"] = WiFi.SSID();
-  doc["wifi_ip"] = WiFi.localIP().toString();
+
+  // Déterminer l'IP à afficher selon le mode WiFi
   wifi_mode_t mode = WiFi.getMode();
+  String ipAddress;
+  if (mode == WIFI_MODE_AP) {
+    // En mode AP uniquement, afficher l'IP de l'AP
+    ipAddress = WiFi.softAPIP().toString();
+  } else if (mode == WIFI_MODE_APSTA) {
+    // En mode AP+STA, afficher l'IP STA si connecté, sinon l'IP AP
+    if (WiFi.isConnected()) {
+      ipAddress = WiFi.localIP().toString();
+    } else {
+      ipAddress = WiFi.softAPIP().toString();
+    }
+  } else {
+    // En mode STA, afficher l'IP STA
+    ipAddress = WiFi.localIP().toString();
+  }
+  doc["wifi_ip"] = ipAddress;
+
   doc["wifi_mode"] = mode == WIFI_MODE_AP ? "AP" : (mode == WIFI_MODE_APSTA ? "AP+STA" : "STA");
   doc["mdns_host"] = "poolcontroller.local";
   doc["max_ph_ml_per_day"] = safetyLimits.maxPhMinusMlPerDay;
@@ -611,6 +629,7 @@ void processWifiReconnectIfNeeded() {
 
   // Déterminer le mode WiFi actuel
   wifi_mode_t mode = WiFi.getMode();
+  wifi_mode_t initialMode = mode; // Sauvegarder le mode initial pour y revenir en cas d'échec
 
   unsigned long startTime = millis();
   unsigned long timeout = 15000; // Timeout de 15 secondes pour la connexion initiale
@@ -712,6 +731,13 @@ void processWifiReconnectIfNeeded() {
       systemLogger.info("Anciens credentials restaurés: SSID='" + oldSsid + "'");
     } else {
       systemLogger.error("Erreur restauration NVS: " + String(esp_err_to_name(err)));
+    }
+
+    // Si on était en mode AP au départ, revenir en mode AP (pas APSTA)
+    if (initialMode == WIFI_MODE_AP) {
+      systemLogger.info("Retour au mode AP après échec de connexion");
+      WiFi.mode(WIFI_MODE_AP);
+      delay(200);
     }
   }
 
