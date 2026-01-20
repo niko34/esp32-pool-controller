@@ -13,27 +13,51 @@
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      /* 2026 Ambient gradient - désaturé, device UI feel */
+      background: linear-gradient(135deg, #e8ecf4 0%, #dfe5f0 100%);
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 20px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      position: relative;
+    }
+
+    /* Subtle grain/noise overlay for premium device feel */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0.035;
+      z-index: 0;
+      pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
     }
 
     .wizard-container {
       background: white;
-      border-radius: 12px;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+      border-radius: 16px;
+      /* 2026 softer shadow with layered elevation */
+      box-shadow:
+        0 8px 24px rgba(0, 0, 0, 0.08),
+        0 2px 6px rgba(0, 0, 0, 0.04);
       max-width: 600px;
       width: 100%;
       overflow: hidden;
+      position: relative;
+      z-index: 1;
     }
 
     .wizard-header {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      /* 2026: Subtle branded header, less aggressive */
+      background: linear-gradient(135deg, #5c7cdb 0%, #687ad8 100%);
       color: white;
-      padding: 30px;
+      padding: 32px 30px 28px;
       text-align: center;
     }
 
@@ -45,88 +69,94 @@
     }
 
     .wizard-header h1 {
-      font-size: 24px;
-      margin-bottom: 8px;
+      font-size: 22px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      letter-spacing: -0.3px;
     }
 
     .wizard-header p {
-      opacity: 0.9;
+      opacity: 0.85;
       font-size: 14px;
+      font-weight: 400;
     }
 
+    /* 2026 Minimal stepper with progress bar */
     .stepper {
-      display: flex;
-      justify-content: space-between;
-      padding: 30px;
+      padding: 24px 30px 20px;
+      background: #fafbfc;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+    }
+
+    /* Top progress bar - minimal & modern */
+    .stepper-progress {
+      height: 3px;
+      background: rgba(92, 124, 219, 0.12);
+      border-radius: 999px;
+      overflow: hidden;
+      margin-bottom: 20px;
       position: relative;
     }
 
-    .stepper::before {
+    .stepper-progress::after {
       content: '';
       position: absolute;
-      top: 50%;
-      left: 60px;
-      right: 60px;
-      height: 2px;
-      background: #e0e0e0;
-      z-index: 0;
+      left: 0;
+      top: 0;
+      height: 100%;
+      background: linear-gradient(90deg, #5c7cdb 0%, #687ad8 100%);
+      border-radius: 999px;
+      transition: width 400ms cubic-bezier(0.4, 0, 0.2, 1);
+      width: var(--progress, 0%);
     }
 
-    .stepper-progress {
-      position: absolute;
-      top: 50%;
-      left: 60px;
-      height: 2px;
-      background: #667eea;
-      z-index: 1;
-      transition: width 0.3s ease;
-    }
-
+    /* Steps indicators - minimal */
     .step {
-      display: flex;
-      flex-direction: column;
+      display: inline-flex;
       align-items: center;
-      position: relative;
-      z-index: 2;
-      flex: 1;
+      gap: 8px;
+      margin-right: 24px;
+      opacity: 0.4;
+      transition: opacity 200ms ease;
+    }
+
+    .step.active {
+      opacity: 1;
+    }
+
+    .step.completed {
+      opacity: 0.6;
     }
 
     .step-number {
-      width: 40px;
-      height: 40px;
+      width: 24px;
+      height: 24px;
       border-radius: 50%;
-      background: white;
-      border: 2px solid #e0e0e0;
+      background: rgba(92, 124, 219, 0.1);
       display: flex;
       align-items: center;
       justify-content: center;
-      font-weight: bold;
-      color: #999;
-      margin-bottom: 8px;
-      transition: all 0.3s ease;
+      font-weight: 600;
+      font-size: 12px;
+      color: #687ad8;
+      transition: all 200ms ease;
     }
 
     .step.active .step-number {
-      background: #667eea;
-      border-color: #667eea;
+      background: #5c7cdb;
       color: white;
+      box-shadow: 0 2px 8px rgba(92, 124, 219, 0.3);
     }
 
     .step.completed .step-number {
-      background: #4caf50;
-      border-color: #4caf50;
+      background: #34c759;
       color: white;
     }
 
     .step-label {
-      font-size: 12px;
-      color: #999;
-      text-align: center;
-    }
-
-    .step.active .step-label {
-      color: #667eea;
-      font-weight: 600;
+      font-size: 13px;
+      font-weight: 500;
+      color: #1a1d29;
     }
 
     .wizard-content {
@@ -153,17 +183,21 @@
       }
     }
 
+    /* 2026 Typography hierarchy */
     .step-title {
-      font-size: 20px;
+      font-size: 19px;
       font-weight: 600;
-      margin-bottom: 8px;
-      color: #333;
+      margin-bottom: 6px;
+      color: #1a1d29;
+      letter-spacing: -0.2px;
     }
 
     .step-description {
-      color: #666;
+      color: #6b7280;
       margin-bottom: 24px;
       font-size: 14px;
+      line-height: 1.5;
+      font-weight: 400;
     }
 
     .field {
@@ -174,30 +208,127 @@
       display: block;
       margin-bottom: 8px;
       font-weight: 500;
-      color: #333;
-      font-size: 14px;
+      color: #1a1d29;
+      font-size: 13px;
+      letter-spacing: -0.1px;
     }
 
     .field input,
     .field select {
       width: 100%;
-      padding: 12px;
-      border: 1px solid #ddd;
-      border-radius: 6px;
+      padding: 12px 14px;
+      border: 1.5px solid #e5e7eb;
+      border-radius: 10px;
       font-size: 14px;
-      transition: border-color 0.3s ease;
+      background: #fafbfc;
+      transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .field input:hover {
+      border-color: #d1d5db;
+      background: white;
     }
 
     .field input:focus,
     .field select:focus {
       outline: none;
-      border-color: #667eea;
+      border-color: #5c7cdb;
+      background: white;
+      box-shadow: 0 0 0 3px rgba(92, 124, 219, 0.08);
+    }
+
+    /* Password validation states */
+    .field input.valid {
+      border-color: #34c759;
+      background: rgba(52, 199, 89, 0.02);
+    }
+
+    .field input.invalid {
+      border-color: #ff3b30;
+      background: rgba(255, 59, 48, 0.02);
     }
 
     .hint {
       font-size: 12px;
       color: #999;
       margin-top: 4px;
+    }
+
+    /* 2026 Password strength checklist */
+    .password-checklist {
+      margin-top: 12px;
+      padding: 12px;
+      background: #f8f9fb;
+      border-radius: 8px;
+      border: 1px solid #e5e7eb;
+    }
+
+    .password-checklist-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #6b7280;
+      margin-bottom: 6px;
+      transition: color 200ms ease;
+    }
+
+    .password-checklist-item:last-child {
+      margin-bottom: 0;
+    }
+
+    .password-checklist-item .icon {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      border: 1.5px solid #d1d5db;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      transition: all 200ms ease;
+    }
+
+    .password-checklist-item.valid {
+      color: #34c759;
+    }
+
+    .password-checklist-item.valid .icon {
+      background: #34c759;
+      border-color: #34c759;
+      color: white;
+    }
+
+    .password-checklist-item.valid .icon::before {
+      content: '✓';
+    }
+
+    /* Password strength indicator */
+    .password-strength {
+      margin-top: 12px;
+      display: flex;
+      gap: 4px;
+      height: 4px;
+    }
+
+    .password-strength-bar {
+      flex: 1;
+      background: #e5e7eb;
+      border-radius: 999px;
+      transition: background 300ms ease;
+    }
+
+    .password-strength.weak .password-strength-bar:nth-child(1) {
+      background: #ff3b30;
+    }
+
+    .password-strength.medium .password-strength-bar:nth-child(1),
+    .password-strength.medium .password-strength-bar:nth-child(2) {
+      background: #ffcc00;
+    }
+
+    .password-strength.strong .password-strength-bar {
+      background: #34c759;
     }
 
     .info-box {
@@ -247,14 +378,15 @@
       color: #f44336;
     }
 
+    /* 2026 Modern CTA buttons */
     .btn {
-      padding: 12px 24px;
+      padding: 13px 24px;
       border: none;
-      border-radius: 6px;
+      border-radius: 10px;
       font-size: 14px;
       font-weight: 600;
       cursor: pointer;
-      transition: all 0.3s ease;
+      transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
       position: relative;
       display: inline-flex;
       align-items: center;
@@ -263,29 +395,44 @@
     }
 
     .btn:disabled {
-      opacity: 0.6;
+      opacity: 0.4;
       cursor: not-allowed;
       transform: none !important;
+      box-shadow: none !important;
     }
 
     .btn-primary {
-      background: #667eea;
+      background: linear-gradient(135deg, #5c7cdb 0%, #687ad8 100%);
       color: white;
+      box-shadow: 0 2px 8px rgba(92, 124, 219, 0.2);
     }
 
     .btn-primary:hover:not(:disabled) {
-      background: #5568d3;
+      box-shadow: 0 4px 16px rgba(92, 124, 219, 0.3);
       transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+    }
+
+    .btn-primary:active:not(:disabled) {
+      transform: translateY(0);
+      box-shadow: 0 1px 4px rgba(92, 124, 219, 0.2);
     }
 
     .btn-secondary {
-      background: #e0e0e0;
-      color: #666;
+      background: white;
+      color: #1a1d29;
+      border: 1.5px solid #e5e7eb;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
     }
 
     .btn-secondary:hover:not(:disabled) {
-      background: #d0d0d0;
+      background: #fafbfc;
+      border-color: #d1d5db;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+    }
+
+    .btn-secondary:active:not(:disabled) {
+      transform: translateY(0);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
     }
 
     .btn-success {
@@ -489,7 +636,30 @@
               <svg class="eye-closed hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12s3.4-6.5 9-6.5 9 6.5 9 6.5-3.4 6.5-9 6.5-9-6.5-9-6.5z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>
             </button>
           </div>
-          <div class="hint">Au moins 8 caractères</div>
+
+          <!-- 2026 Real-time validation checklist -->
+          <div class="password-checklist" id="passwordChecklist" style="display: none;">
+            <div class="password-checklist-item" data-rule="length">
+              <span class="icon"></span>
+              <span>Au moins 8 caractères</span>
+            </div>
+            <div class="password-checklist-item" data-rule="number">
+              <span class="icon"></span>
+              <span>Au moins 1 chiffre</span>
+            </div>
+            <div class="password-checklist-item" data-rule="special">
+              <span class="icon"></span>
+              <span>Au moins 1 caractère spécial (!@#$%^&*)</span>
+            </div>
+          </div>
+
+          <!-- Password strength indicator -->
+          <div class="password-strength" id="passwordStrength" style="display: none;">
+            <div class="password-strength-bar"></div>
+            <div class="password-strength-bar"></div>
+            <div class="password-strength-bar"></div>
+            <div class="password-strength-bar"></div>
+          </div>
         </div>
 
         <div class="field required">
@@ -676,10 +846,12 @@
         }
       });
 
-      // Update progress bar
+      // Update progress bar (2026 style with CSS variable)
       const progress = ((currentStep - 1) / 2) * 100;
       const progressBar = document.getElementById('stepperProgress');
-      progressBar.style.width = progress + '%';
+      if (progressBar) {
+        progressBar.style.setProperty('--progress', `${progress}%`);
+      }
 
       // Update buttons
       prevBtn.classList.toggle('hidden', currentStep === 1);
@@ -693,15 +865,80 @@
       return true;
     }
 
+    // 2026 Real-time password validation
+    function checkPasswordStrength(password) {
+      const rules = {
+        length: password.length >= 8,
+        number: /\d/.test(password),
+        special: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)
+      };
+
+      const validCount = Object.values(rules).filter(Boolean).length;
+      let strength = 'weak';
+      if (validCount === 3) strength = 'strong';
+      else if (validCount >= 2) strength = 'medium';
+
+      return { rules, strength };
+    }
+
+    function updatePasswordFeedback() {
+      const password = document.getElementById('adminPassword').value;
+      const checklist = document.getElementById('passwordChecklist');
+      const strengthBar = document.getElementById('passwordStrength');
+      const input = document.getElementById('adminPassword');
+
+      if (password.length > 0) {
+        checklist.style.display = 'block';
+        strengthBar.style.display = 'flex';
+
+        const { rules, strength } = checkPasswordStrength(password);
+
+        // Update checklist items
+        Object.keys(rules).forEach(rule => {
+          const item = checklist.querySelector(`[data-rule="${rule}"]`);
+          if (item) {
+            item.classList.toggle('valid', rules[rule]);
+          }
+        });
+
+        // Update strength bar
+        strengthBar.className = `password-strength ${strength}`;
+
+        // Update input border
+        const allValid = Object.values(rules).every(Boolean);
+        input.classList.toggle('valid', allValid);
+        input.classList.toggle('invalid', !allValid && password.length > 0);
+      } else {
+        checklist.style.display = 'none';
+        strengthBar.style.display = 'none';
+        input.classList.remove('valid', 'invalid');
+      }
+
+      // Update next button state
+      updateNextButtonState();
+    }
+
+    function updateNextButtonState() {
+      if (currentStep !== 1) return;
+
+      const password = document.getElementById('adminPassword').value;
+      const confirm = document.getElementById('adminPasswordConfirm').value;
+      const { rules } = checkPasswordStrength(password);
+      const allValid = Object.values(rules).every(Boolean);
+      const passwordsMatch = password === confirm && password.length > 0;
+
+      nextBtn.disabled = !(allValid && passwordsMatch);
+    }
+
     function validateStep1() {
       const password = document.getElementById('adminPassword').value;
       const confirm = document.getElementById('adminPasswordConfirm').value;
 
-      console.log('validateStep1 - password length:', password.length);
-      console.log('validateStep1 - passwords match:', password === confirm);
+      const { rules } = checkPasswordStrength(password);
+      const allValid = Object.values(rules).every(Boolean);
 
-      if (password.length < 8) {
-        showError('Le mot de passe doit contenir au moins 8 caractères');
+      if (!allValid) {
+        showError('Le mot de passe ne respecte pas tous les critères de sécurité');
         return false;
       }
 
@@ -1229,6 +1466,20 @@
         window.location.href = '/';
       }, 2000);
     };
+
+    // 2026 Real-time password validation listeners
+    const adminPasswordInput = document.getElementById('adminPassword');
+    const adminPasswordConfirmInput = document.getElementById('adminPasswordConfirm');
+
+    if (adminPasswordInput) {
+      adminPasswordInput.addEventListener('input', updatePasswordFeedback);
+      adminPasswordInput.addEventListener('blur', updatePasswordFeedback);
+    }
+
+    if (adminPasswordConfirmInput) {
+      adminPasswordConfirmInput.addEventListener('input', updateNextButtonState);
+      adminPasswordConfirmInput.addEventListener('blur', updateNextButtonState);
+    }
 
     // Initialize
     updateStepper();
