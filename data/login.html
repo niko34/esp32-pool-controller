@@ -15,23 +15,47 @@
         box-sizing: border-box;
       }
 
+      /* 2026 Ambient background - cohérent avec wizard */
       body {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #e8ecf4 0%, #dfe5f0 100%);
+        background-attachment: fixed;
         min-height: 100vh;
         display: flex;
         align-items: center;
         justify-content: center;
         padding: 20px;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        position: relative;
       }
 
+      /* Subtle grain overlay */
+      body::before {
+        content: '';
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        opacity: 0.03;
+        z-index: 0;
+        pointer-events: none;
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+      }
+
+      /* 2026 Container - cohérent avec wizard */
       .login-container {
         background: white;
-        border-radius: 12px;
-        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+        border-radius: 16px;
+        /* 2026 Card System - élévation perceptible */
+        border: 1px solid rgba(0, 0, 0, 0.1);
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12), 0 4px 8px rgba(0, 0, 0, 0.08);
         max-width: 400px;
         width: 100%;
         padding: 40px;
+        position: relative;
+        z-index: 1;
       }
 
       .logo {
@@ -56,52 +80,87 @@
         color: #666;
       }
 
+      /* 2026 Alerts - cohérent avec système global */
       .alert {
-        background: #fff3cd;
-        border: 1px solid #ffc107;
-        border-radius: 6px;
-        padding: 12px;
+        padding: 14px 16px;
+        border-radius: 12px;
+        border: 1.5px solid;
         margin-bottom: 20px;
         font-size: 14px;
-        color: #856404;
+        animation: slideDown 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      @keyframes slideDown {
+        from {
+          opacity: 0;
+          transform: translateY(-8px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
       }
 
       .alert.error {
-        background: #f8d7da;
-        border-color: #f5c6cb;
-        color: #721c24;
+        background: rgba(255, 59, 48, 0.06);
+        border-color: rgba(255, 59, 48, 0.2);
+        color: #ff3b30;
       }
 
       .alert.success {
-        background: #d4edda;
-        border-color: #c3e6cb;
-        color: #155724;
+        background: rgba(52, 199, 89, 0.06);
+        border-color: rgba(52, 199, 89, 0.2);
+        color: #34c759;
       }
 
       .form-group {
         margin-bottom: 20px;
       }
 
+      /* 2026 Machine d'états - inputs standardisés */
       label {
         display: block;
-        font-size: 14px;
-        font-weight: 500;
-        color: #333;
+        font-size: 13px;
+        font-weight: 600;
+        color: #1a1d29;
         margin-bottom: 8px;
+        letter-spacing: -0.1px;
       }
 
       input {
         width: 100%;
-        padding: 12px 15px;
-        border: 1px solid #ddd;
-        border-radius: 6px;
+        padding: 12px 14px;
+        border: 1.5px solid #e5e7eb;
+        border-radius: 10px;
         font-size: 14px;
-        transition: border-color 0.3s;
+        background: #fafbfc;
+        transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+        height: 44px;
+      }
+
+      input:hover {
+        border-color: #d1d5db;
+        background: white;
       }
 
       input:focus {
         outline: none;
-        border-color: #667eea;
+        border-color: #5c7cdb;
+        background: white;
+        box-shadow: 0 0 0 3px rgba(92, 124, 219, 0.08);
+      }
+
+      /* État error - SEULEMENT après blur ou submit */
+      input.is-error {
+        border-color: #ff3b30;
+        background: rgba(255, 59, 48, 0.03);
+      }
+
+      input.is-error:focus {
+        box-shadow: 0 0 0 3px rgba(255, 59, 48, 0.1);
       }
 
       .password-requirements {
@@ -110,37 +169,69 @@
         margin-top: 5px;
       }
 
+      /* 2026 Boutons - micro-polish CTA */
       button {
         width: 100%;
-        padding: 12px;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 44px;
+        padding: 12px 20px;
+        background: linear-gradient(135deg, #5c7cdb 0%, #687ad8 100%);
         color: white;
         border: none;
-        border-radius: 6px;
-        font-size: 16px;
-        font-weight: 500;
+        border-radius: 10px;
+        font-size: 14px;
+        font-weight: 600;
         cursor: pointer;
-        transition: transform 0.2s;
+        transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        box-shadow: 0 2px 8px rgba(92, 124, 219, 0.2);
       }
 
-      button:hover {
+      button:hover:not(:disabled) {
         transform: translateY(-2px);
+        box-shadow: 0 4px 16px rgba(92, 124, 219, 0.35);
       }
 
-      button:active {
+      button:active:not(:disabled) {
         transform: translateY(0);
+        box-shadow: 0 1px 4px rgba(92, 124, 219, 0.25);
+      }
+
+      button:focus-visible {
+        outline: 2px solid #5c7cdb;
+        outline-offset: 2px;
       }
 
       button:disabled {
-        opacity: 0.6;
+        opacity: 0.4;
         cursor: not-allowed;
         transform: none;
+        pointer-events: none;
+        box-shadow: none;
       }
 
       .secondary {
         margin-top: 12px;
-        background: #f1f3f5;
-        color: #333;
+        background: #e5e7eb;
+        color: #1a1d29;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+      }
+
+      .secondary:hover:not(:disabled) {
+        background: #d1d5db;
+        transform: translateY(-1px);
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+      }
+
+      .secondary:active:not(:disabled) {
+        transform: translateY(0);
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+      }
+
+      .secondary:focus-visible {
+        outline-color: #6b7280;
       }
 
       .hidden {
@@ -157,51 +248,81 @@
         <p>Connexion administrateur</p>
       </div>
 
+      <!-- 2026 Accessible alerts -->
       <!-- Alert premier démarrage -->
-      <div id="firstBootAlert" class="alert hidden">
+      <div id="firstBootAlert" class="alert hidden" role="status" aria-live="polite">
         <strong>Premier démarrage détecté</strong><br>
         Veuillez définir un nouveau mot de passe administrateur.
       </div>
 
       <!-- Alert erreur -->
-      <div id="errorAlert" class="alert error hidden"></div>
+      <div id="errorAlert" class="alert error hidden" role="alert" aria-live="assertive" aria-atomic="true"></div>
 
       <!-- Alert succès -->
-      <div id="successAlert" class="alert success hidden"></div>
+      <div id="successAlert" class="alert success hidden" role="status" aria-live="polite" aria-atomic="true"></div>
 
       <!-- Formulaire connexion standard -->
-      <form id="loginForm">
+      <form id="loginForm" aria-label="Formulaire de connexion">
         <div class="form-group">
           <label for="username">Nom d'utilisateur</label>
-          <input type="text" id="username" value="admin" readonly />
+          <input
+            type="text"
+            id="username"
+            name="username"
+            value="admin"
+            readonly
+            aria-readonly="true" />
         </div>
 
         <div class="form-group">
           <label for="password">Mot de passe</label>
-          <input type="password" id="password" placeholder="Entrez votre mot de passe" required autocomplete="current-password" />
+          <input
+            type="password"
+            id="password"
+            name="password"
+            placeholder="Entrez votre mot de passe"
+            required
+            autocomplete="current-password"
+            aria-required="true" />
         </div>
 
         <button type="submit" id="loginBtn">Se connecter</button>
-        <button type="button" id="wifiConfigBtn" class="secondary hidden">Configurer le Wi-Fi</button>
+        <button type="button" id="wifiConfigBtn" class="secondary hidden" aria-label="Accéder à la configuration Wi-Fi">Configurer le Wi-Fi</button>
       </form>
 
       <!-- Formulaire changement mot de passe (premier démarrage) -->
-      <form id="changePasswordForm" class="hidden">
+      <form id="changePasswordForm" class="hidden" aria-label="Formulaire de changement de mot de passe">
         <div class="form-group">
           <label for="newPassword">Nouveau mot de passe</label>
-          <input type="password" id="newPassword" placeholder="Minimum 8 caractères" required minlength="8" autocomplete="new-password" />
-          <div class="password-requirements">
+          <input
+            type="password"
+            id="newPassword"
+            name="new-password"
+            placeholder="Minimum 8 caractères"
+            required
+            minlength="8"
+            autocomplete="new-password"
+            aria-required="true"
+            aria-describedby="passwordHint" />
+          <div class="password-requirements" id="passwordHint">
             Minimum 8 caractères recommandé
           </div>
         </div>
 
         <div class="form-group">
           <label for="confirmPassword">Confirmer le mot de passe</label>
-          <input type="password" id="confirmPassword" placeholder="Re-tapez le mot de passe" required autocomplete="new-password" />
+          <input
+            type="password"
+            id="confirmPassword"
+            name="confirm-password"
+            placeholder="Re-tapez le mot de passe"
+            required
+            autocomplete="new-password"
+            aria-required="true" />
         </div>
 
         <button type="submit" id="changeBtn">Définir le mot de passe</button>
-        <button type="button" id="wifiConfigBtn2" class="secondary hidden">Configurer le Wi-Fi</button>
+        <button type="button" id="wifiConfigBtn2" class="secondary hidden" aria-label="Accéder à la configuration Wi-Fi">Configurer le Wi-Fi</button>
       </form>
     </div>
 

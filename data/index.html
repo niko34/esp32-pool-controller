@@ -268,10 +268,10 @@
           <!-- Graphique avec onglets -->
           <div class="card card--chart-tabs">
             <div class="card__head">
-              <div class="chart-tabs">
-                <button class="chart-tab chart-tab--active" data-chart="temperature">Température</button>
-                <button class="chart-tab" data-chart="ph">pH</button>
-                <button class="chart-tab" data-chart="orp">ORP</button>
+              <div class="chart-tabs" role="tablist" aria-label="Sélection du graphique">
+                <button class="chart-tab chart-tab--active" data-chart="temperature" role="tab" aria-selected="true" aria-controls="mainChart">Température</button>
+                <button class="chart-tab" data-chart="ph" role="tab" aria-selected="false" aria-controls="mainChart">pH</button>
+                <button class="chart-tab" data-chart="orp" role="tab" aria-selected="false" aria-controls="mainChart">ORP</button>
               </div>
               <div class="chart-actions">
                 <span class="clock-badge" id="clockSyncBadge" title="Horloge non synchronisée">Horloge non synchronisée</span>
@@ -723,19 +723,19 @@
           </div>
 
           <!-- Menu segmenté au-dessus des panels -->
-          <div class="segmented" id="settings-segmented">
-            <button class="segmented__btn is-active" type="button" data-settings-tab="wifi">Wi-Fi</button>
-            <button class="segmented__btn" type="button" data-settings-tab="mqtt">MQTT</button>
-            <button class="segmented__btn" type="button" data-settings-tab="time">Heure</button>
-            <button class="segmented__btn" type="button" data-settings-tab="security">Sécurité</button>
-            <button class="segmented__btn" type="button" data-settings-tab="system">Système</button>
-            <button class="segmented__btn" type="button" data-settings-tab="dev">Développement</button>
-            <button class="segmented__btn" type="button" data-settings-tab="about">À propos</button>
+          <div class="segmented" id="settings-segmented" role="tablist" aria-label="Navigation des paramètres">
+            <button id="tab-wifi" class="segmented__btn is-active" type="button" data-settings-tab="wifi" role="tab" aria-selected="true" aria-controls="panel-wifi">Wi-Fi</button>
+            <button id="tab-mqtt" class="segmented__btn" type="button" data-settings-tab="mqtt" role="tab" aria-selected="false" aria-controls="panel-mqtt">MQTT</button>
+            <button id="tab-time" class="segmented__btn" type="button" data-settings-tab="time" role="tab" aria-selected="false" aria-controls="panel-time">Heure</button>
+            <button id="tab-security" class="segmented__btn" type="button" data-settings-tab="security" role="tab" aria-selected="false" aria-controls="panel-security">Sécurité</button>
+            <button id="tab-system" class="segmented__btn" type="button" data-settings-tab="system" role="tab" aria-selected="false" aria-controls="panel-system">Système</button>
+            <button id="tab-dev" class="segmented__btn" type="button" data-settings-tab="dev" role="tab" aria-selected="false" aria-controls="panel-dev">Développement</button>
+            <button id="tab-about" class="segmented__btn" type="button" data-settings-tab="about" role="tab" aria-selected="false" aria-controls="panel-about">À propos</button>
           </div>
 
           <div class="settingsPanels">
             <!-- Wi-Fi Panel -->
-            <section class="panel is-active" data-settings-panel="wifi">
+            <section class="panel is-active" data-settings-panel="wifi" id="panel-wifi" role="tabpanel" aria-labelledby="tab-wifi">
               <!-- Zone de notification WiFi -->
               <div id="wifi-notification" class="wifi-notification hidden"></div>
 
@@ -744,7 +744,7 @@
                   <div class="card__title">Wi-Fi</div>
                 </div>
                 <div class="card__body">
-                  <div class="kv">
+                  <div class="kv kv--compact">
                     <div class="kv__row"><span class="kv__k">SSID</span><span class="kv__v" id="wifi_ssid">—</span></div>
                     <div class="kv__row"><span class="kv__k">IP</span><span class="kv__v" id="wifi_ip">—</span></div>
                     <div class="kv__row"><span class="kv__k">Mode</span><span class="kv__v" id="wifi_mode">—</span></div>
@@ -759,7 +759,7 @@
             </section>
 
             <!-- MQTT Panel -->
-            <section class="panel" data-settings-panel="mqtt">
+            <section class="panel" data-settings-panel="mqtt" id="panel-mqtt" role="tabpanel" aria-labelledby="tab-mqtt">
               <div class="card">
                 <div class="card__head">
                   <div class="card__title">
@@ -815,7 +815,7 @@
             </section>
 
             <!-- Time Panel -->
-            <section class="panel" data-settings-panel="time">
+            <section class="panel" data-settings-panel="time" id="panel-time" role="tabpanel" aria-labelledby="tab-time">
               <div class="card">
                 <div class="card__head">
                   <div class="card__title">Heure</div>
@@ -858,7 +858,7 @@
             </section>
 
             <!-- Security Panel -->
-            <section class="panel" data-settings-panel="security">
+            <section class="panel" data-settings-panel="security" id="panel-security" role="tabpanel" aria-labelledby="tab-security">
               <div class="card">
                 <div class="card__head">
                   <div class="card__title">Authentification</div>
@@ -913,13 +913,13 @@
             </section>
 
             <!-- System Panel -->
-            <section class="panel" data-settings-panel="system">
+            <section class="panel" data-settings-panel="system" id="panel-system" role="tabpanel" aria-labelledby="tab-system">
               <div class="card">
                 <div class="card__head">
                   <div class="card__title">Version du firmware</div>
                 </div>
                 <div class="card__body">
-                  <div class="kv">
+                  <div class="kv kv--compact">
                     <div class="kv__row"><span class="kv__k">Version installée</span><span class="kv__v" id="sys_current_firmware_version">—</span></div>
                   </div>
                 </div>
@@ -1042,7 +1042,7 @@
             </section>
 
             <!-- Development Panel -->
-            <section class="panel" data-settings-panel="dev">
+            <section class="panel" data-settings-panel="dev" id="panel-dev" role="tabpanel" aria-labelledby="tab-dev">
               <div class="card">
                 <div class="card__head">
                   <div class="card__title">Configuration pompes</div>
@@ -1116,7 +1116,7 @@
                   <div class="card__title">Infos système</div>
                 </div>
                 <div class="card__body">
-                  <div class="kv">
+                  <div class="kv kv--compact">
                     <div class="kv__row"><span class="kv__k">Firmware</span><span class="kv__v" id="sys_firmware_version">—</span></div>
                     <div class="kv__row"><span class="kv__k">Build</span><span class="kv__v" id="sys_build_date">—</span></div>
                     <div class="kv__row"><span class="kv__k">Uptime</span><span class="kv__v" id="sys_uptime">—</span></div>
@@ -1180,7 +1180,7 @@
             </section>
 
             <!-- About Panel -->
-            <section class="panel" data-settings-panel="about">
+            <section class="panel" data-settings-panel="about" id="panel-about" role="tabpanel" aria-labelledby="tab-about">
               <div class="card">
                 <div class="card__head">
                   <div class="card__title">À propos</div>

@@ -14,27 +14,51 @@
       box-sizing: border-box;
     }
 
+    /* 2026 Ambient background - cohérent avec wizard */
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background: linear-gradient(135deg, #e8ecf4 0%, #dfe5f0 100%);
+      background-attachment: fixed;
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 20px;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      position: relative;
     }
 
+    /* Subtle grain overlay */
+    body::before {
+      content: '';
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0.03;
+      z-index: 0;
+      pointer-events: none;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+    }
+
+    /* 2026 Container - cohérent avec wizard */
     .container {
       background: white;
-      border-radius: 12px;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+      border-radius: 16px;
+      /* 2026 Card System - élévation perceptible */
+      border: 1px solid rgba(0, 0, 0, 0.1);
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12), 0 4px 8px rgba(0, 0, 0, 0.08);
       max-width: 600px;
       width: 100%;
       overflow: hidden;
+      position: relative;
+      z-index: 1;
     }
 
     .header {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background: linear-gradient(135deg, #5c7cdb 0%, #687ad8 100%);
       color: white;
       padding: 30px;
       text-align: center;
@@ -73,20 +97,43 @@
       font-size: 14px;
     }
 
+    /* 2026 Machine d'états - inputs standardisés */
     .field input,
     .field select {
       width: 100%;
-      padding: 12px;
-      border: 1px solid #ddd;
-      border-radius: 6px;
+      padding: 12px 14px;
+      border: 1.5px solid #e5e7eb;
+      border-radius: 10px;
       font-size: 14px;
-      transition: border-color 0.3s ease;
+      background: #fafbfc;
+      transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+      height: 44px;
+    }
+
+    .field input:hover,
+    .field select:hover {
+      border-color: #d1d5db;
+      background: white;
     }
 
     .field input:focus,
     .field select:focus {
       outline: none;
-      border-color: #667eea;
+      border-color: #5c7cdb;
+      background: white;
+      box-shadow: 0 0 0 3px rgba(92, 124, 219, 0.08);
+    }
+
+    /* État error - SEULEMENT après blur ou submit */
+    .field input.is-error,
+    .field select.is-error {
+      border-color: #ff3b30;
+      background: rgba(255, 59, 48, 0.03);
+    }
+
+    .field input.is-error:focus,
+    .field select.is-error:focus {
+      box-shadow: 0 0 0 3px rgba(255, 59, 48, 0.1);
     }
 
     .field small {
@@ -96,14 +143,16 @@
       font-size: 13px;
     }
 
+    /* 2026 Boutons - micro-polish CTA */
     .btn {
-      padding: 12px 24px;
+      min-height: 44px;
+      padding: 12px 20px;
       border: none;
-      border-radius: 6px;
+      border-radius: 10px;
       font-size: 14px;
       font-weight: 600;
       cursor: pointer;
-      transition: all 0.3s ease;
+      transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
       position: relative;
       display: inline-flex;
       align-items: center;
@@ -111,30 +160,58 @@
       gap: 8px;
     }
 
+    .btn:focus-visible {
+      outline: 2px solid #5c7cdb;
+      outline-offset: 2px;
+    }
+
     .btn:disabled {
-      opacity: 0.6;
+      opacity: 0.4;
       cursor: not-allowed;
       transform: none !important;
+      pointer-events: none;
+      box-shadow: none !important;
     }
 
     .btn-primary {
-      background: #667eea;
+      background: linear-gradient(135deg, #5c7cdb 0%, #687ad8 100%);
       color: white;
+      box-shadow: 0 2px 8px rgba(92, 124, 219, 0.2);
     }
 
     .btn-primary:hover:not(:disabled) {
-      background: #5568d3;
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 16px rgba(92, 124, 219, 0.35);
+    }
+
+    .btn-primary:active:not(:disabled) {
+      transform: translateY(0);
+      box-shadow: 0 1px 4px rgba(92, 124, 219, 0.25);
+    }
+
+    .btn-primary:focus-visible {
+      outline-color: #5c7cdb;
     }
 
     .btn-secondary {
-      background: #e0e0e0;
-      color: #666;
+      background: #e5e7eb;
+      color: #1a1d29;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
     }
 
     .btn-secondary:hover:not(:disabled) {
-      background: #d0d0d0;
+      background: #d1d5db;
+      transform: translateY(-1px);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+    }
+
+    .btn-secondary:active:not(:disabled) {
+      transform: translateY(0);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    }
+
+    .btn-secondary:focus-visible {
+      outline-color: #6b7280;
     }
 
     .spinner {
@@ -196,11 +273,26 @@
       display: none !important;
     }
 
+    /* 2026 Alerts - cohérent avec système global */
     .alert {
-      padding: 12px 16px;
-      border-radius: 6px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      border: 1.5px solid;
       margin-bottom: 20px;
       font-size: 14px;
+      display: none;
+      animation: slideDown 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    @keyframes slideDown {
+      from {
+        opacity: 0;
+        transform: translateY(-8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
     .alert.show {
@@ -208,15 +300,15 @@
     }
 
     .alert-success {
-      background: #d4edda;
-      color: #155724;
-      border: 1px solid #c3e6cb;
+      background: rgba(52, 199, 89, 0.06);
+      border-color: rgba(52, 199, 89, 0.2);
+      color: #34c759;
     }
 
     .alert-error {
-      background: #f8d7da;
-      color: #721c24;
-      border: 1px solid #f5c6cb;
+      background: rgba(255, 59, 48, 0.06);
+      border-color: rgba(255, 59, 48, 0.2);
+      color: #ff3b30;
     }
 
     .actions {
@@ -268,29 +360,47 @@
     </div>
 
     <div class="content">
-      <div class="alert alert-error hidden" id="errorAlert"></div>
-      <div class="alert alert-success hidden" id="successAlert"></div>
+      <!-- 2026 Accessible alerts -->
+      <div class="alert alert-error hidden" id="errorAlert" role="alert" aria-live="assertive" aria-atomic="true"></div>
+      <div class="alert alert-success hidden" id="successAlert" role="status" aria-live="polite" aria-atomic="true"></div>
 
       <div class="field">
-        <label>Réseaux Wi-Fi disponibles</label>
-        <button type="button" class="btn btn-secondary" id="scanWifiBtn">🔍 Scanner les réseaux</button>
-        <div class="network-list hidden" id="networkList"></div>
-        <div class="loading hidden" id="scanLoading">Scan en cours...</div>
+        <label id="networksLabel">Réseaux Wi-Fi disponibles</label>
+        <button type="button" class="btn btn-secondary" id="scanWifiBtn" aria-describedby="networksLabel">🔍 Scanner les réseaux</button>
+        <div class="network-list hidden" id="networkList" role="listbox" aria-label="Liste des réseaux Wi-Fi disponibles"></div>
+        <div class="loading hidden" id="scanLoading" role="status" aria-live="polite">Scan en cours...</div>
       </div>
 
       <div class="field">
         <label for="wifiSsid">Nom du réseau (SSID)</label>
-        <input type="text" id="wifiSsid" placeholder="Sélectionnez ou saisissez le SSID">
-        <small>Sélectionnez un réseau dans la liste ou saisissez manuellement</small>
+        <input
+          type="text"
+          id="wifiSsid"
+          name="ssid"
+          placeholder="Sélectionnez ou saisissez le SSID"
+          maxlength="32"
+          aria-describedby="ssidHint">
+        <small id="ssidHint">Sélectionnez un réseau dans la liste ou saisissez manuellement</small>
       </div>
 
       <div class="field">
         <label for="wifiPassword">Mot de passe Wi-Fi</label>
         <div class="password-wrapper">
-          <input type="password" id="wifiPassword" placeholder="Mot de passe du réseau">
-          <button type="button" class="password-toggle" id="passwordToggle" title="Afficher/Masquer">
-            <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.6-6.5 9.5-6.5S21.5 12 21.5 12s-3.6 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
-            <svg class="eye-closed hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12s3.4-6.5 9-6.5 9 6.5 9 6.5-3.4 6.5-9 6.5-9-6.5-9-6.5z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>
+          <input
+            type="password"
+            id="wifiPassword"
+            name="password"
+            placeholder="Mot de passe du réseau"
+            maxlength="63"
+            autocomplete="off">
+          <button
+            type="button"
+            class="password-toggle"
+            id="passwordToggle"
+            aria-label="Afficher ou masquer le mot de passe"
+            title="Afficher/Masquer">
+            <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12s3.6-6.5 9.5-6.5S21.5 12 21.5 12s-3.6 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+            <svg class="eye-closed hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12s3.4-6.5 9-6.5 9 6.5 9 6.5-3.4 6.5-9 6.5-9-6.5-9-6.5z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>
           </button>
         </div>
       </div>
