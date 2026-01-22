@@ -10,10 +10,10 @@
 #include "pump_controller.h"
 #include "logger.h"
 #include "version.h"
+#include "json_compat.h"
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <LittleFS.h>
-#include <ArduinoJson.h>
 #include <AsyncJson.h>
 #include <esp_ota_ops.h>
 
@@ -57,7 +57,7 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   bool isAuthenticated = authManager.checkTokenAuth(request) || authManager.checkBasicAuth(request);
 
   // Buffer statique : ~53 champs (configs MQTT, pH, ORP, calibration, WiFi, etc.) = 2048 bytes
-  StaticJsonDocument<2048> doc;
+  StaticJson<2048> doc;
   doc["server"] = mqttCfg.server;
   doc["port"] = mqttCfg.port;
   doc["topic"] = mqttCfg.topic;
@@ -341,7 +341,7 @@ static void handleTimeNow(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
   // Buffer statique : 3 champs (time, time_use_ntp, timezone_id) = 128 bytes
-  StaticJsonDocument<128> doc;
+  StaticJson<128> doc;
   doc["time"] = getCurrentTimeISO();
   doc["time_use_ntp"] = mqttCfg.timeUseNtp;
   doc["timezone_id"] = mqttCfg.timezoneId;
@@ -355,7 +355,7 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
   // Buffer statique : ~24 champs (version, chip, memory, WiFi, uptime) = 1024 bytes
-  StaticJsonDocument<1024> doc;
+  StaticJson<1024> doc;
 
   // Version firmware
   doc["firmware_version"] = FIRMWARE_VERSION;

@@ -10,6 +10,8 @@
 #include <Update.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <esp_partition.h>
+#include <LittleFS.h>
 
 // Variables pour gérer les redémarrages différés (partagées avec web_server)
 static bool* g_restartRequested = nullptr;
@@ -256,9 +258,9 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
   }
 
   // Déterminer le type de mise à jour en fonction de l'URL
-  int cmd = U_FLASH; // Par défaut: firmware
-  if (url.indexOf("littlefs") >= 0 || url.indexOf("filesystem") >= 0) {
-    cmd = U_SPIFFS;
+  bool isFilesystem = (url.indexOf("littlefs") >= 0 || url.indexOf("filesystem") >= 0);
+
+  if (isFilesystem) {
     systemLogger.info("Téléchargement mise à jour filesystem depuis GitHub");
   } else {
     systemLogger.info("Téléchargement mise à jour firmware depuis GitHub");
@@ -303,62 +305,139 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 
   systemLogger.info("Taille du fichier: " + String(contentLength) + " octets");
 
-  // Démarrer la mise à jour OTA
-  if (!Update.begin(contentLength, cmd)) {
-    systemLogger.error("Erreur démarrage OTA: " + String(Update.errorString()));
-    http.end();
-    sendErrorResponse(request, 500, "OTA begin failed");
-    return;
-  }
-
-  // Lire et écrire les données par blocs
   WiFiClient* stream = http.getStreamPtr();
   size_t written = 0;
   uint8_t buff[512];
 
-  while (http.connected() && (written < contentLength)) {
-    size_t available = stream->available();
+  if (isFilesystem) {
+    // Mise à jour du filesystem: écriture directe dans la partition SPIFFS
+    const esp_partition_t* partition = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, NULL);
 
-    if (available) {
-      int c = stream->readBytes(buff, min(available, sizeof(buff)));
+    if (!partition) {
+      systemLogger.error("Partition SPIFFS non trouvée");
+      http.end();
+      sendErrorResponse(request, 500, "SPIFFS partition not found");
+      return;
+    }
 
-      if (c > 0) {
-        if (Update.write(buff, c) != c) {
-          systemLogger.error("Erreur écriture OTA");
-          Update.abort();
-          http.end();
-          sendErrorResponse(request, 500, "OTA write failed");
-          return;
-        }
-        written += c;
+    if (contentLength > partition->size) {
+      systemLogger.error("Image trop grande pour la partition");
+      http.end();
+      sendErrorResponse(request, 500, "Image too large for partition");
+      return;
+    }
 
-        // Log de progression tous les 100KB
-        if (written % 102400 == 0 || written == contentLength) {
-          unsigned int percent = (written * 100) / contentLength;
-          systemLogger.info("Téléchargement: " + String(percent) + "%");
+    // Démonter LittleFS avant l'écriture
+    LittleFS.end();
+    systemLogger.info("LittleFS démonté pour mise à jour");
+
+    // Effacer la partition
+    esp_err_t err = esp_partition_erase_range(partition, 0, partition->size);
+    if (err != ESP_OK) {
+      systemLogger.error("Erreur effacement partition: " + String(esp_err_to_name(err)));
+      http.end();
+      sendErrorResponse(request, 500, "Partition erase failed");
+      return;
+    }
+    systemLogger.info("Partition effacée, début de l'écriture...");
+
+    // Lire et écrire les données par blocs
+    while (http.connected() && (written < (size_t)contentLength)) {
+      size_t available = stream->available();
+
+      if (available) {
+        int c = stream->readBytes(buff, min(available, sizeof(buff)));
+
+        if (c > 0) {
+          err = esp_partition_write(partition, written, buff, c);
+          if (err != ESP_OK) {
+            systemLogger.error("Erreur écriture partition: " + String(esp_err_to_name(err)));
+            http.end();
+            sendErrorResponse(request, 500, "Partition write failed");
+            return;
+          }
+          written += c;
+
+          // Log de progression tous les 100KB
+          if (written % 102400 == 0 || written == (size_t)contentLength) {
+            unsigned int percent = (written * 100) / contentLength;
+            systemLogger.info("Téléchargement FS: " + String(percent) + "%");
+          }
         }
       }
+      delay(kOtaYieldDelayMs);
     }
-    delay(kOtaYieldDelayMs);
-  }
 
-  http.end();
+    http.end();
+    systemLogger.info("Mise à jour filesystem réussie (" + String(written) + " octets)");
 
-  // Finaliser la mise à jour
-  if (Update.end(true)) {
+    // Remonter LittleFS
+    if (!LittleFS.begin(false)) {
+      systemLogger.warning("Impossible de remonter LittleFS (normal après mise à jour, redémarrage requis)");
+    }
+
     if (shouldRestart && g_restartRequested != nullptr && g_restartRequestedTime != nullptr) {
-      systemLogger.info("Mise à jour GitHub réussie! Redémarrage...");
       request->send(200, "application/json", "{\"status\":\"success\"}");
-      // Planifier le redémarrage dans update() pour ne pas bloquer
       *g_restartRequested = true;
       *g_restartRequestedTime = millis();
     } else {
-      systemLogger.info("Mise à jour GitHub réussie (sans redémarrage)");
       request->send(200, "application/json", "{\"status\":\"success\"}");
     }
+
   } else {
-    systemLogger.error("Erreur finalisation OTA: " + String(Update.errorString()));
-    sendErrorResponse(request, 500, "OTA finalization failed");
+    // Mise à jour firmware: utiliser l'API Update standard
+    if (!Update.begin(contentLength, U_FLASH)) {
+      systemLogger.error("Erreur démarrage OTA: " + String(Update.errorString()));
+      http.end();
+      sendErrorResponse(request, 500, "OTA begin failed");
+      return;
+    }
+
+    // Lire et écrire les données par blocs
+    while (http.connected() && (written < (size_t)contentLength)) {
+      size_t available = stream->available();
+
+      if (available) {
+        int c = stream->readBytes(buff, min(available, sizeof(buff)));
+
+        if (c > 0) {
+          if (Update.write(buff, c) != (size_t)c) {
+            systemLogger.error("Erreur écriture OTA");
+            Update.abort();
+            http.end();
+            sendErrorResponse(request, 500, "OTA write failed");
+            return;
+          }
+          written += c;
+
+          // Log de progression tous les 100KB
+          if (written % 102400 == 0 || written == (size_t)contentLength) {
+            unsigned int percent = (written * 100) / contentLength;
+            systemLogger.info("Téléchargement FW: " + String(percent) + "%");
+          }
+        }
+      }
+      delay(kOtaYieldDelayMs);
+    }
+
+    http.end();
+
+    // Finaliser la mise à jour
+    if (Update.end(true)) {
+      if (shouldRestart && g_restartRequested != nullptr && g_restartRequestedTime != nullptr) {
+        systemLogger.info("Mise à jour firmware réussie! Redémarrage...");
+        request->send(200, "application/json", "{\"status\":\"success\"}");
+        *g_restartRequested = true;
+        *g_restartRequestedTime = millis();
+      } else {
+        systemLogger.info("Mise à jour firmware réussie (sans redémarrage)");
+        request->send(200, "application/json", "{\"status\":\"success\"}");
+      }
+    } else {
+      systemLogger.error("Erreur finalisation OTA: " + String(Update.errorString()));
+      sendErrorResponse(request, 500, "OTA finalization failed");
+    }
   }
 }
 

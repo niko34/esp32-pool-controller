@@ -186,10 +186,10 @@ bool setupWiFi() {
   // Afficher les credentials WiFi stockés en NVS (pour debug)
   String storedSsid = WiFi.SSID();
   String storedPassword = WiFi.psk();
-  systemLogger.info("=== DEBUG WiFi Credentials ===");
-  systemLogger.info("SSID stocké: '" + storedSsid + "' (longueur: " + String(storedSsid.length()) + ")");
-  systemLogger.info("Password stocké: '" + storedPassword + "' (longueur: " + String(storedPassword.length()) + ")");
-  systemLogger.info("==============================");
+  //systemLogger.info("=== DEBUG WiFi Credentials ===");
+  //systemLogger.info("SSID stocké: '" + storedSsid + "' (longueur: " + String(storedSsid.length()) + ")");
+  //systemLogger.info("Password stocké: '" + storedPassword + "' (longueur: " + String(storedPassword.length()) + ")");
+  //systemLogger.info("==============================");
 
   systemLogger.info("Tentative connexion WiFi...");
 
