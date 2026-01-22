@@ -15,6 +15,7 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       /* 2026 Ambient gradient - désaturé, device UI feel */
       background: linear-gradient(135deg, #e8ecf4 0%, #dfe5f0 100%);
+      background-attachment: fixed;
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -42,10 +43,11 @@
     .wizard-container {
       background: white;
       border-radius: 16px;
-      /* 2026 softer shadow with layered elevation */
+      /* 2026 Card System - élévation perceptible */
+      border: 1px solid rgba(0, 0, 0, 0.1);
       box-shadow:
-        0 8px 24px rgba(0, 0, 0, 0.08),
-        0 2px 6px rgba(0, 0, 0, 0.04);
+        0 12px 32px rgba(0, 0, 0, 0.12),
+        0 4px 8px rgba(0, 0, 0, 0.08);
       max-width: 600px;
       width: 100%;
       overflow: hidden;
@@ -237,15 +239,41 @@
       box-shadow: 0 0 0 3px rgba(92, 124, 219, 0.08);
     }
 
-    /* Password validation states */
-    .field input.valid {
+    /* 2026 Machine d'états - PAS de rouge pendant typing */
+    /* État valid - après validation complète */
+    .field input.is-valid {
       border-color: #34c759;
       background: rgba(52, 199, 89, 0.02);
     }
 
-    .field input.invalid {
+    /* État error - SEULEMENT après blur ou submit, JAMAIS pendant typing */
+    .field input.is-error {
       border-color: #ff3b30;
       background: rgba(255, 59, 48, 0.02);
+    }
+
+    /* Message d'erreur (caché par défaut) */
+    .field__error {
+      font-size: 12px;
+      color: #ff3b30;
+      margin-top: 6px;
+      display: none;
+      animation: slideDown 0.2s ease;
+    }
+
+    .field.has-error .field__error {
+      display: block;
+    }
+
+    @keyframes slideDown {
+      from {
+        opacity: 0;
+        transform: translateY(-4px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
 
     .hint {
@@ -331,6 +359,31 @@
       background: #34c759;
     }
 
+    .password-strength-label {
+      margin-top: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      text-align: right;
+      opacity: 0;
+      transition: opacity 200ms ease;
+    }
+
+    .password-strength-label.visible {
+      opacity: 1;
+    }
+
+    .password-strength.weak + .password-strength-label {
+      color: #ff3b30;
+    }
+
+    .password-strength.medium + .password-strength-label {
+      color: #ffcc00;
+    }
+
+    .password-strength.strong + .password-strength-label {
+      color: #34c759;
+    }
+
     .info-box {
       background: #e3f2fd;
       border-left: 4px solid #2196f3;
@@ -379,6 +432,7 @@
     }
 
     /* 2026 Modern CTA buttons */
+    /* 2026 Boutons - micro-polish CTA */
     .btn {
       padding: 13px 24px;
       border: none;
@@ -392,15 +446,25 @@
       align-items: center;
       justify-content: center;
       gap: 8px;
+      min-height: 44px;
     }
 
+    /* État focus - accessibilité */
+    .btn:focus-visible {
+      outline: 2px solid #5c7cdb;
+      outline-offset: 2px;
+    }
+
+    /* État disabled */
     .btn:disabled {
       opacity: 0.4;
       cursor: not-allowed;
       transform: none !important;
       box-shadow: none !important;
+      pointer-events: none;
     }
 
+    /* Primary - CTA principal */
     .btn-primary {
       background: linear-gradient(135deg, #5c7cdb 0%, #687ad8 100%);
       color: white;
@@ -408,15 +472,20 @@
     }
 
     .btn-primary:hover:not(:disabled) {
-      box-shadow: 0 4px 16px rgba(92, 124, 219, 0.3);
-      transform: translateY(-1px);
+      box-shadow: 0 4px 16px rgba(92, 124, 219, 0.35);
+      transform: translateY(-2px);
     }
 
     .btn-primary:active:not(:disabled) {
       transform: translateY(0);
-      box-shadow: 0 1px 4px rgba(92, 124, 219, 0.2);
+      box-shadow: 0 1px 4px rgba(92, 124, 219, 0.25);
     }
 
+    .btn-primary:focus-visible {
+      outline-color: #5c7cdb;
+    }
+
+    /* Secondary - actions secondaires */
     .btn-secondary {
       background: white;
       color: #1a1d29;
@@ -427,7 +496,8 @@
     .btn-secondary:hover:not(:disabled) {
       background: #fafbfc;
       border-color: #d1d5db;
-      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.06);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+      transform: translateY(-1px);
     }
 
     .btn-secondary:active:not(:disabled) {
@@ -435,15 +505,29 @@
       box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
     }
 
+    .btn-secondary:focus-visible {
+      outline-color: #6b7280;
+    }
+
+    /* Success - validation */
     .btn-success {
-      background: #4caf50;
+      background: linear-gradient(135deg, #4caf50 0%, #45a049 100%);
       color: white;
+      box-shadow: 0 2px 8px rgba(76, 175, 80, 0.25);
     }
 
     .btn-success:hover:not(:disabled) {
-      background: #45a049;
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(76, 175, 80, 0.4);
+      box-shadow: 0 4px 16px rgba(76, 175, 80, 0.4);
+      transform: translateY(-2px);
+    }
+
+    .btn-success:active:not(:disabled) {
+      transform: translateY(0);
+      box-shadow: 0 1px 4px rgba(76, 175, 80, 0.3);
+    }
+
+    .btn-success:focus-visible {
+      outline-color: #4caf50;
     }
 
     .spinner {
@@ -612,8 +696,9 @@
 
     <!-- Content -->
     <div class="wizard-content">
-      <div class="alert alert-error" id="errorAlert"></div>
-      <div class="alert alert-success" id="successAlert"></div>
+      <!-- 2026 Accessible feedback messages -->
+      <div class="alert alert-error" id="errorAlert" role="alert" aria-live="assertive" aria-atomic="true"></div>
+      <div class="alert alert-success" id="successAlert" role="status" aria-live="polite" aria-atomic="true"></div>
 
       <!-- Step 1: Password -->
       <div class="step-content active" data-step="1">
@@ -628,12 +713,23 @@
         </div>
 
         <div class="field required">
-          <label>Mot de passe administrateur</label>
+          <label for="adminPassword">Mot de passe administrateur</label>
           <div class="password-wrapper">
-            <input type="password" id="adminPassword" placeholder="Minimum 8 caractères">
-            <button type="button" class="password-toggle" data-target="adminPassword" title="Afficher/Masquer">
-              <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.6-6.5 9.5-6.5S21.5 12 21.5 12s-3.6 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
-              <svg class="eye-closed hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12s3.4-6.5 9-6.5 9 6.5 9 6.5-3.4 6.5-9 6.5-9-6.5-9-6.5z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>
+            <input
+              type="password"
+              id="adminPassword"
+              name="password"
+              placeholder="Minimum 8 caractères"
+              aria-describedby="passwordChecklist passwordStrength"
+              autocomplete="new-password">
+            <button
+              type="button"
+              class="password-toggle"
+              data-target="adminPassword"
+              aria-label="Afficher ou masquer le mot de passe"
+              title="Afficher/Masquer">
+              <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12s3.6-6.5 9.5-6.5S21.5 12 21.5 12s-3.6 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+              <svg class="eye-closed hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12s3.4-6.5 9-6.5 9 6.5 9 6.5-3.4 6.5-9 6.5-9-6.5-9-6.5z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>
             </button>
           </div>
 
@@ -660,15 +756,26 @@
             <div class="password-strength-bar"></div>
             <div class="password-strength-bar"></div>
           </div>
+          <div class="password-strength-label" id="passwordStrengthLabel"></div>
         </div>
 
         <div class="field required">
-          <label>Confirmer le mot de passe</label>
+          <label for="adminPasswordConfirm">Confirmer le mot de passe</label>
           <div class="password-wrapper">
-            <input type="password" id="adminPasswordConfirm" placeholder="Re-saisir le mot de passe">
-            <button type="button" class="password-toggle" data-target="adminPasswordConfirm" title="Afficher/Masquer">
-              <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.6-6.5 9.5-6.5S21.5 12 21.5 12s-3.6 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
-              <svg class="eye-closed hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12s3.4-6.5 9-6.5 9 6.5 9 6.5-3.4 6.5-9 6.5-9-6.5-9-6.5z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>
+            <input
+              type="password"
+              id="adminPasswordConfirm"
+              name="password-confirm"
+              placeholder="Re-saisir le mot de passe"
+              autocomplete="new-password">
+            <button
+              type="button"
+              class="password-toggle"
+              data-target="adminPasswordConfirm"
+              aria-label="Afficher ou masquer la confirmation du mot de passe"
+              title="Afficher/Masquer">
+              <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12s3.6-6.5 9.5-6.5S21.5 12 21.5 12s-3.6 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+              <svg class="eye-closed hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12s3.4-6.5 9-6.5 9 6.5 9 6.5-3.4 6.5-9 6.5-9-6.5-9-6.5z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>
             </button>
           </div>
         </div>
@@ -881,10 +988,12 @@
       return { rules, strength };
     }
 
+    // 2026 Machine d'états: JAMAIS rouge pendant typing
     function updatePasswordFeedback() {
       const password = document.getElementById('adminPassword').value;
       const checklist = document.getElementById('passwordChecklist');
       const strengthBar = document.getElementById('passwordStrength');
+      const strengthLabel = document.getElementById('passwordStrengthLabel');
       const input = document.getElementById('adminPassword');
 
       if (password.length > 0) {
@@ -904,14 +1013,29 @@
         // Update strength bar
         strengthBar.className = `password-strength ${strength}`;
 
-        // Update input border
+        // Update strength label text (Faible / Moyen / Fort)
+        const strengthText = {
+          weak: 'Faible',
+          medium: 'Moyen',
+          strong: 'Fort'
+        };
+        strengthLabel.textContent = strengthText[strength];
+        strengthLabel.classList.add('visible');
+
+        // ✅ SEULEMENT marquer comme valid, JAMAIS rouge pendant typing
         const allValid = Object.values(rules).every(Boolean);
-        input.classList.toggle('valid', allValid);
-        input.classList.toggle('invalid', !allValid && password.length > 0);
+        if (allValid) {
+          input.classList.add('is-valid');
+          input.classList.remove('is-error');
+        } else {
+          // Pendant typing: rester neutre (gris/bleu)
+          input.classList.remove('is-valid', 'is-error');
+        }
       } else {
         checklist.style.display = 'none';
         strengthBar.style.display = 'none';
-        input.classList.remove('valid', 'invalid');
+        strengthLabel.classList.remove('visible');
+        input.classList.remove('is-valid', 'is-error');
       }
 
       // Update next button state
@@ -930,6 +1054,7 @@
       nextBtn.disabled = !(allValid && passwordsMatch);
     }
 
+    // 2026 Validation avec messages factuels, non anxiogènes
     function validateStep1() {
       const password = document.getElementById('adminPassword').value;
       const confirm = document.getElementById('adminPasswordConfirm').value;
@@ -938,12 +1063,18 @@
       const allValid = Object.values(rules).every(Boolean);
 
       if (!allValid) {
-        showError('Le mot de passe ne respecte pas tous les critères de sécurité');
+        // Message factuel, indique ce qu'il manque
+        const missing = [];
+        if (!rules.length) missing.push('8 caractères minimum');
+        if (!rules.number) missing.push('1 chiffre');
+        if (!rules.special) missing.push('1 caractère spécial');
+        showError(`Mot de passe incomplet: ${missing.join(', ')}`);
         return false;
       }
 
       if (password !== confirm) {
-        showError('Les mots de passe ne correspondent pas');
+        // Message factuel, non alarmiste
+        showError('Les deux mots de passe doivent être identiques');
         return false;
       }
 
@@ -1467,18 +1598,69 @@
       }, 2000);
     };
 
+    // 2026 Machine d'états - validation après blur
+    function validatePasswordOnBlur() {
+      const password = document.getElementById('adminPassword').value;
+      const input = document.getElementById('adminPassword');
+
+      // Si vide, reset
+      if (password.length === 0) {
+        input.classList.remove('is-valid', 'is-error');
+        return;
+      }
+
+      const { rules } = checkPasswordStrength(password);
+      const allValid = Object.values(rules).every(Boolean);
+
+      // Après blur: montrer erreur si invalide
+      if (!allValid) {
+        input.classList.add('is-error');
+        input.classList.remove('is-valid');
+      }
+    }
+
+    function validateConfirmPasswordOnBlur() {
+      const password = document.getElementById('adminPassword').value;
+      const confirm = document.getElementById('adminPasswordConfirm').value;
+      const input = document.getElementById('adminPasswordConfirm');
+
+      // Si vide, reset
+      if (confirm.length === 0) {
+        input.classList.remove('is-valid', 'is-error');
+        return;
+      }
+
+      // Après blur: montrer erreur si pas match
+      if (password !== confirm) {
+        input.classList.add('is-error');
+        input.classList.remove('is-valid');
+      } else if (password === confirm && password.length > 0) {
+        input.classList.add('is-valid');
+        input.classList.remove('is-error');
+      }
+    }
+
     // 2026 Real-time password validation listeners
     const adminPasswordInput = document.getElementById('adminPassword');
     const adminPasswordConfirmInput = document.getElementById('adminPasswordConfirm');
 
     if (adminPasswordInput) {
+      // input: feedback neutre en temps réel
       adminPasswordInput.addEventListener('input', updatePasswordFeedback);
-      adminPasswordInput.addEventListener('blur', updatePasswordFeedback);
+      // blur: validation avec potentiel état error
+      adminPasswordInput.addEventListener('blur', validatePasswordOnBlur);
+      // focus: reset l'erreur pour permettre correction
+      adminPasswordInput.addEventListener('focus', () => {
+        adminPasswordInput.classList.remove('is-error');
+      });
     }
 
     if (adminPasswordConfirmInput) {
       adminPasswordConfirmInput.addEventListener('input', updateNextButtonState);
-      adminPasswordConfirmInput.addEventListener('blur', updateNextButtonState);
+      adminPasswordConfirmInput.addEventListener('blur', validateConfirmPasswordOnBlur);
+      adminPasswordConfirmInput.addEventListener('focus', () => {
+        adminPasswordConfirmInput.classList.remove('is-error');
+      });
     }
 
     // Initialize
