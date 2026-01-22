@@ -12,6 +12,7 @@
 #include <time.h>
 #include <esp_partition.h>
 #include <LittleFS.h>
+#include <esp_task_wdt.h>
 
 // Variables pour gérer les redémarrages différés (partagées avec web_server)
 static bool* g_restartRequested = nullptr;
@@ -343,6 +344,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     systemLogger.info("Partition effacée, début de l'écriture...");
 
     // Lire et écrire les données par blocs
+    size_t yieldCounter = 0;
     while (http.connected() && (written < (size_t)contentLength)) {
       size_t available = stream->available();
 
@@ -358,15 +360,23 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
             return;
           }
           written += c;
+          yieldCounter++;
+
+          // Yield et feed watchdog toutes les 8 écritures (~4KB)
+          if (yieldCounter % 8 == 0) {
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(10));
+          }
 
           // Log de progression tous les 100KB
           if (written % 102400 == 0 || written == (size_t)contentLength) {
             unsigned int percent = (written * 100) / contentLength;
             systemLogger.info("Téléchargement FS: " + String(percent) + "%");
+            esp_task_wdt_reset();
           }
         }
       }
-      delay(kOtaYieldDelayMs);
+      delay(1);
     }
 
     http.end();
@@ -395,6 +405,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     }
 
     // Lire et écrire les données par blocs
+    size_t yieldCounter = 0;
     while (http.connected() && (written < (size_t)contentLength)) {
       size_t available = stream->available();
 
@@ -410,15 +421,23 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
             return;
           }
           written += c;
+          yieldCounter++;
+
+          // Yield et feed watchdog toutes les 8 écritures (~4KB)
+          if (yieldCounter % 8 == 0) {
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(10));
+          }
 
           // Log de progression tous les 100KB
           if (written % 102400 == 0 || written == (size_t)contentLength) {
             unsigned int percent = (written * 100) / contentLength;
             systemLogger.info("Téléchargement FW: " + String(percent) + "%");
+            esp_task_wdt_reset();
           }
         }
       }
-      delay(kOtaYieldDelayMs);
+      delay(1);
     }
 
     http.end();
