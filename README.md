@@ -1,5 +1,7 @@
 # ESP32 Pool Controller
 
+Disclaimer : ce projet est en cours de construction. Il n'est pas utilisable en l'état. Des releases ont été créées, uniquement pour des besoins de tests.
+
 Contrôleur automatique de piscine basé sur ESP32 avec gestion pH, ORP (chlore), température et filtration automatique. Intégration complète avec Home Assistant via MQTT.
 
 **Version actuelle**: 2025.12.21
