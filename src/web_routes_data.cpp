@@ -7,7 +7,7 @@
 #include "pump_controller.h"
 #include "logger.h"
 #include "history.h"
-#include <ArduinoJson.h>
+#include "json_compat.h"
 #include <AsyncJson.h>
 #include <time.h>
 
@@ -23,7 +23,7 @@ static void handleGetData(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
   // Buffer statique pour éviter la fragmentation du heap
   // Taille estimée : ~13 champs × 30 bytes + overhead = 512 bytes
-  StaticJsonDocument<512> doc;
+  StaticJson<512> doc;
 
   // ORP
   if (!isnan(sensors.getOrp())) {
@@ -180,7 +180,7 @@ void setupDataRoutes(AsyncWebServer* server) {
       REQUIRE_AUTH(request, RouteProtection::WRITE);
 
       JsonObject root = json.as<JsonObject>();
-      if (!root.containsKey("history") || !root["history"].is<JsonArray>()) {
+      if (!root["history"].is<JsonArray>()) {
         sendErrorResponse(request, 400, "Format invalide: champ history manquant");
         return;
       }
@@ -195,7 +195,7 @@ void setupDataRoutes(AsyncWebServer* server) {
       imported.reserve(items.size());
 
       for (JsonObject item : items) {
-        if (!item.containsKey("timestamp")) {
+        if (!item["timestamp"].is<unsigned long>()) {
           continue;
         }
         unsigned long ts = item["timestamp"] | 0;

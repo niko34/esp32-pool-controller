@@ -4,7 +4,7 @@
 #include "constants.h"
 #include "auth.h"
 #include "sensors.h"
-#include <ArduinoJson.h>
+#include "json_compat.h"
 
 void setupCalibrationRoutes(AsyncWebServer* server) {
   // Routes de calibration pH (DFRobot SEN0161-V2) - PROTÉGÉES
@@ -24,7 +24,7 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
 
-    StaticJsonDocument<128> doc;
+    StaticJson<128> doc;
     doc["success"] = true;
     doc["temperature"] = mqttCfg.phCalibrationTemp;
     sendJsonResponse(req, doc);
@@ -46,7 +46,7 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
 
-    StaticJsonDocument<128> doc;
+    StaticJson<128> doc;
     doc["success"] = true;
     doc["temperature"] = mqttCfg.phCalibrationTemp;
     sendJsonResponse(req, doc);
