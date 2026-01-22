@@ -218,6 +218,13 @@ void PumpControllerClass::updateSafetyTracking(bool isPhPump, float flowMlPerMin
 
 void PumpControllerClass::update() {
   unsigned long now = millis();
+
+  if (otaInProgress) {
+    applyPumpDuty(0, 0);
+    applyPumpDuty(1, 0);
+    return;
+  }
+
   refreshDosingState(phDosingState, now);
   refreshDosingState(orpDosingState, now);
 
@@ -415,6 +422,24 @@ void PumpControllerClass::stopAll() {
   applyPumpDuty(0, 0);
   applyPumpDuty(1, 0);
   systemLogger.warning("Arrêt d'urgence de toutes les pompes");
+}
+
+void PumpControllerClass::setOtaInProgress(bool inProgress) {
+  if (otaInProgress == inProgress) return;
+  otaInProgress = inProgress;
+
+  if (otaInProgress) {
+    unsigned long now = millis();
+    manualMode[0] = false;
+    manualMode[1] = false;
+    phDosingState.active = false;
+    orpDosingState.active = false;
+    phDosingState.lastStopTime = now;
+    orpDosingState.lastStopTime = now;
+    applyPumpDuty(0, 0);
+    applyPumpDuty(1, 0);
+    systemLogger.warning("Arrêt pompes dosage (OTA en cours)");
+  }
 }
 
 void PumpControllerClass::setPhPID(float kp, float ki, float kd) {

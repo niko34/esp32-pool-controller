@@ -164,7 +164,7 @@
         display: showYAxisGrid,
         drawTicks: !hideYAxis
       },
-      ticks: { color: '#6b7280' },
+      ticks: { color: '#4b5563' },
       display: true
     };
 
@@ -203,7 +203,7 @@
         animation: false,
         scales: {
           x: {
-            ticks: { maxRotation: 0, minRotation: 0, color: '#6b7280' },
+            ticks: { maxRotation: 0, minRotation: 0, color: '#4b5563' },
             grid: { color: 'rgba(0, 0, 0, 0.05)' }
           },
           y: yAxisConfig,

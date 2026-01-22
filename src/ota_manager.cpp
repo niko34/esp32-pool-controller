@@ -2,6 +2,7 @@
 #include "logger.h"
 #include "version.h"
 #include "config.h"
+#include "pump_controller.h"
 #include <WiFi.h>
 
 OTAManager otaManager;
@@ -32,10 +33,12 @@ void OTAManager::begin() {
       type = "filesystem";
     }
     systemLogger.info("Début mise à jour OTA: " + type);
+    PumpController.setOtaInProgress(true);
   });
 
   ArduinoOTA.onEnd([]() {
     systemLogger.info("Mise à jour OTA terminée");
+    PumpController.setOtaInProgress(false);
   });
 
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
@@ -56,6 +59,7 @@ void OTAManager::begin() {
     else if (error == OTA_RECEIVE_ERROR) errorMsg += "Échec réception";
     else if (error == OTA_END_ERROR) errorMsg += "Échec finalisation";
     systemLogger.error(errorMsg);
+    PumpController.setOtaInProgress(false);
   });
 
   ArduinoOTA.begin();

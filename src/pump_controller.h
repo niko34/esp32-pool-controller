@@ -39,6 +39,7 @@ private:
   PumpDriver pumps[2];
   uint8_t pumpDuty[2] = {0, 0};
   bool manualMode[2] = {false, false};  // Mode test manuel par pompe
+  bool otaInProgress = false;
 
   DosingState phDosingState;
   DosingState orpDosingState;
@@ -66,6 +67,7 @@ public:
   void begin();
   void update();
   void stopAll();
+  void setOtaInProgress(bool inProgress);
 
   // Getters pour l'état
   bool isPhDosing() const { return phDosingState.active; }

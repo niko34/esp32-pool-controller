@@ -115,7 +115,12 @@ void FiltrationManager::update() {
   int endMin = timeStringToMinutes(filtrationCfg.end);
 
   if (mode == "manual" || mode == "auto") {
-    if (haveTime) runTarget = isMinutesInRange(nowMinutes, startMin, endMin);
+    if (haveTime) {
+      runTarget = isMinutesInRange(nowMinutes, startMin, endMin);
+    } else {
+      // Time unavailable: keep current state to avoid false stop/start during OTA.
+      runTarget = state.running;
+    }
   }
 
   bool wasRunning = state.running;

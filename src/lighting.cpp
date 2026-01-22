@@ -85,6 +85,9 @@ void LightingManager::update() {
       int startMin = timeStringToMinutes(lightingCfg.startTime);
       int endMin = timeStringToMinutes(lightingCfg.endTime);
       shouldBeOn = isMinutesInRange(nowMinutes, startMin, endMin);
+    } else {
+      // Time unavailable: keep current state to avoid false toggles during OTA.
+      shouldBeOn = relayState;
     }
   }
   // Sinon, utiliser lightingCfg.enabled

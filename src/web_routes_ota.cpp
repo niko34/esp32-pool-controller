@@ -4,6 +4,7 @@
 #include "auth.h"
 #include "logger.h"
 #include "version.h"
+#include "pump_controller.h"
 #include "github_root_ca.h"
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -75,6 +76,7 @@ static bool isUrlAllowed(const String& url) {
 static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
   if (!index) {
     systemLogger.info("Début mise à jour OTA: " + filename);
+    PumpController.setOtaInProgress(true);
 
     // Déterminer le type de mise à jour
     int cmd = U_FLASH; // Par défaut: firmware
@@ -124,9 +126,13 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
   if (final) {
     if (Update.end(true)) {
       systemLogger.info("Mise à jour OTA réussie. Redémarrage...");
+      if (g_restartRequested == nullptr || g_restartRequestedTime == nullptr) {
+        PumpController.setOtaInProgress(false);
+      }
     } else {
       Update.printError(Serial);
       systemLogger.error("Erreur finalisation OTA: " + String(Update.errorString()));
+      PumpController.setOtaInProgress(false);
     }
   }
 }
@@ -329,6 +335,8 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
       return;
     }
 
+    PumpController.setOtaInProgress(true);
+
     // Démonter LittleFS avant l'écriture
     LittleFS.end();
     systemLogger.info("LittleFS démonté pour mise à jour");
@@ -338,6 +346,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     if (err != ESP_OK) {
       systemLogger.error("Erreur effacement partition: " + String(esp_err_to_name(err)));
       http.end();
+      PumpController.setOtaInProgress(false);
       sendErrorResponse(request, 500, "Partition erase failed");
       return;
     }
@@ -356,6 +365,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
           if (err != ESP_OK) {
             systemLogger.error("Erreur écriture partition: " + String(esp_err_to_name(err)));
             http.end();
+            PumpController.setOtaInProgress(false);
             sendErrorResponse(request, 500, "Partition write failed");
             return;
           }
@@ -381,6 +391,10 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
 
     http.end();
     systemLogger.info("Mise à jour filesystem réussie (" + String(written) + " octets)");
+    bool restartPlanned = shouldRestart && g_restartRequested != nullptr && g_restartRequestedTime != nullptr;
+    if (!restartPlanned) {
+      PumpController.setOtaInProgress(false);
+    }
 
     // Remonter LittleFS
     if (!LittleFS.begin(false)) {
@@ -403,6 +417,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
       sendErrorResponse(request, 500, "OTA begin failed");
       return;
     }
+    PumpController.setOtaInProgress(true);
 
     // Lire et écrire les données par blocs
     size_t yieldCounter = 0;
@@ -417,6 +432,7 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
             systemLogger.error("Erreur écriture OTA");
             Update.abort();
             http.end();
+            PumpController.setOtaInProgress(false);
             sendErrorResponse(request, 500, "OTA write failed");
             return;
           }
@@ -453,8 +469,13 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
         systemLogger.info("Mise à jour firmware réussie (sans redémarrage)");
         request->send(200, "application/json", "{\"status\":\"success\"}");
       }
+      bool restartPlanned = shouldRestart && g_restartRequested != nullptr && g_restartRequestedTime != nullptr;
+      if (!restartPlanned) {
+        PumpController.setOtaInProgress(false);
+      }
     } else {
       systemLogger.error("Erreur finalisation OTA: " + String(Update.errorString()));
+      PumpController.setOtaInProgress(false);
       sendErrorResponse(request, 500, "OTA finalization failed");
     }
   }
