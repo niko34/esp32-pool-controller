@@ -3342,6 +3342,27 @@
       return;
     }
 
+    // Router - Appliquer immédiatement pour éviter le flash d'écran
+    const applyRoute = () => {
+      const routePerf = debugStart("applyRoute");
+      const r = getRoute();
+      showView(r);
+
+      // Forcer un rafraîchissement court quand on arrive sur le dashboard
+      if (r.view === "/dashboard") {
+        const now = Date.now();
+        const dataAge = now - lastSensorDataLoadTime;
+        const maxDataAge = 5000; // 5 secondes de tolérance pour éviter double chargement
+
+        if (lastSensorDataLoadTime === 0 || dataAge > maxDataAge) {
+          loadSensorData({ force: lastSensorDataLoadTime === 0, source: "route-dashboard" });
+        }
+      }
+      routePerf?.end(`route=${r.view}`);
+    };
+    window.addEventListener("hashchange", applyRoute);
+    applyRoute(); // Afficher la vue immédiatement
+
     // Charger les alertes ignorées depuis localStorage
     loadDismissedAlerts();
 
@@ -3418,27 +3439,6 @@
     const logsPerf = debugStart("loadLogs");
     await loadLogs(true).catch(() => {});
     logsPerf?.end();
-
-    // router
-    const applyRoute = () => {
-      const perf = debugStart("applyRoute");
-      const r = getRoute();
-      showView(r);
-
-      // Forcer un rafraîchissement court quand on arrive sur le dashboard
-      if (r.view === "/dashboard") {
-        const now = Date.now();
-        const dataAge = now - lastSensorDataLoadTime;
-        const maxDataAge = 5000; // 5 secondes de tolérance pour éviter double chargement
-
-        if (lastSensorDataLoadTime === 0 || dataAge > maxDataAge) {
-          loadSensorData({ force: lastSensorDataLoadTime === 0, source: "route-dashboard" });
-        }
-      }
-      perf?.end(`route=${r.view}`);
-    };
-    window.addEventListener("hashchange", applyRoute);
-    applyRoute();
 
     // Load system info after a small delay to ensure DOM is ready
     // This is critical when direct linking to #/settings/dev or #/settings/system
