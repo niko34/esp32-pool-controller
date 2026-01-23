@@ -772,7 +772,7 @@
                   <div class="row row--between">
                     <div>
                       <div class="row__title">Activer MQTT</div>
-                      <div class="muted small">Auto-save</div>
+                      <div class="muted small">Enregistrer pour appliquer</div>
                     </div>
                     <label class="switch">
                       <input type="checkbox" id="mqtt_enabled" />
@@ -809,6 +809,10 @@
 
                   <div class="hint">
                     Après un changement serveur/identifiants, le statut MQTT peut mettre quelques secondes à se mettre à jour.
+                  </div>
+                  <div class="row row--between" style="margin-top: 12px;">
+                    <div></div>
+                    <button class="btn btn--primary" type="button" id="mqtt_save_btn">Sauvegarder</button>
                   </div>
                 </div>
               </div>
@@ -853,6 +857,10 @@
                     <span class="field__label">Heure</span>
                     <input type="datetime-local" id="time_value" />
                   </label>
+                  <div class="row row--between" style="margin-top: 12px;">
+                    <div></div>
+                    <button class="btn btn--primary" type="button" id="time_save_btn">Sauvegarder</button>
+                  </div>
                 </div>
               </div>
             </section>

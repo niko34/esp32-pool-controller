@@ -695,6 +695,7 @@
     const useNtp = $("#time_use_ntp")?.checked ?? true;
     const ntp = $("#time_ntp_server");
     const timeValue = $("#time_value");
+    const timeSaveBtn = $("#time_save_btn");
 
     // Si NTP activé: serveur NTP actif, champ heure en lecture seule avec heure du serveur
     // Si NTP désactivé: serveur NTP grisé, champ heure modifiable
@@ -704,6 +705,9 @@
       if (current) {
         timeValue.value = current;
       }
+    }
+    if (timeSaveBtn) {
+      timeSaveBtn.style.display = useNtp ? "none" : "inline-flex";
     }
   }
 
@@ -784,6 +788,34 @@
     };
   }
 
+  function collectMqttConfig() {
+    const mqttEnabled = $("#mqtt_enabled");
+    const portValue = parseInt($("#mqtt_port")?.value || "1883", 10);
+
+    return {
+      enabled: mqttEnabled?.checked ?? true,
+      server: $("#mqtt_server")?.value || "",
+      port: isNaN(portValue) ? 1883 : portValue,
+      topic: $("#mqtt_topic")?.value || "",
+      username: $("#mqtt_username")?.value || "",
+      password: $("#mqtt_password")?.value || "",
+    };
+  }
+
+  function collectTimeConfig() {
+    const timeUseNtp = $("#time_use_ntp")?.checked ?? true;
+    const timeNtpServer = $("#time_ntp_server")?.value || "pool.ntp.org";
+    const timeTimezone = $("#time_timezone")?.value || "europe_paris";
+    const timeValue = $("#time_value")?.value || "";
+
+    return {
+      time_use_ntp: timeUseNtp,
+      ntp_server: timeNtpServer,
+      timezone_id: timeTimezone,
+      manual_time: timeValue,
+    };
+  }
+
   async function loadConfig() {
     const res = await authFetch("/get-config");
     const cfg = await res.json();
@@ -791,12 +823,17 @@
     // Stocker la config globalement pour les alertes et cartes status
     window._config = cfg;
 
-    $("#mqtt_server").value = cfg.server || "";
-    $("#mqtt_port").value = cfg.port || 1883;
-    $("#mqtt_topic").value = cfg.topic || "";
-    $("#mqtt_username").value = cfg.username || "";
-    $("#mqtt_password").value = cfg.password || "";
-    $("#mqtt_enabled").checked = cfg.enabled !== false;
+    const activeId = document.activeElement?.id || "";
+    const mqttEditing = ["mqtt_server", "mqtt_port", "mqtt_topic", "mqtt_username", "mqtt_password", "mqtt_enabled"].includes(activeId);
+
+    if (!mqttEditing) {
+      $("#mqtt_server").value = cfg.server || "";
+      $("#mqtt_port").value = cfg.port || 1883;
+      $("#mqtt_topic").value = cfg.topic || "";
+      $("#mqtt_username").value = cfg.username || "";
+      $("#mqtt_password").value = cfg.password || "";
+      $("#mqtt_enabled").checked = cfg.enabled !== false;
+    }
 
     updateMqttStatusIndicator(cfg.enabled, cfg.mqtt_connected);
 
@@ -889,17 +926,22 @@
     updateFiltrationControls();
 
     // Time
-    $("#time_use_ntp").checked = cfg.time_use_ntp !== false;
-    $("#time_ntp_server").value = cfg.ntp_server || "pool.ntp.org";
+    const timeActiveId = document.activeElement?.id || "";
+    const timeEditing = ["time_use_ntp", "time_ntp_server", "time_timezone", "time_value"].includes(timeActiveId);
 
-    const tz = cfg.timezone_id || "europe_paris";
-    if ($(`#time_timezone option[value="${tz}"]`)) $("#time_timezone").value = tz;
+    if (!timeEditing) {
+      $("#time_use_ntp").checked = cfg.time_use_ntp !== false;
+      $("#time_ntp_server").value = cfg.ntp_server || "pool.ntp.org";
 
-    const timeValue = (cfg.time_use_ntp !== false)
-      ? (cfg.time_current || "")
-      : (cfg.manual_time || cfg.time_current || "");
-    $("#time_value").value = timeValue;
-    updateTimeControls(timeValue);
+      const tz = cfg.timezone_id || "europe_paris";
+      if ($(`#time_timezone option[value="${tz}"]`)) $("#time_timezone").value = tz;
+
+      const timeValue = (cfg.time_use_ntp !== false)
+        ? (cfg.time_current || "")
+        : (cfg.manual_time || cfg.time_current || "");
+      $("#time_value").value = timeValue;
+      updateTimeControls(timeValue);
+    }
 
     // Wi-Fi summary - store for later update
     window._wifiData = {
@@ -2809,18 +2851,18 @@
       progress.style.display = "block";
       bar.style.width = "0%";
       bar.textContent = "0%";
-      status.textContent = "Étape 1/2 : filesystem…";
+      status.textContent = "1/2 Filesystem : téléchargement…";
 
       try {
-        // step 1 FS
+        // step 1 FS - téléchargement + installation
         let p = 0;
         let t = setInterval(() => {
-          if (p < 45) {
-            p += 5;
+          if (p < 40) {
+            p += 2;
             bar.style.width = p + "%";
             bar.textContent = p + "%";
           }
-        }, 500);
+        }, 800);
 
         const fsRes = await authFetch("/download-update", {
           method: "POST",
@@ -2829,30 +2871,34 @@
         });
 
         clearInterval(t);
+        bar.style.width = "45%";
+        bar.textContent = "45%";
+        status.textContent = "1/2 Filesystem : installation…";
+
         let fsJson = null;
         if (!fsRes.ok) {
           try {
             fsJson = await fsRes.json();
           } catch (_) {}
-          const errMsg = fsJson?.error || "FS download fail";
+          const errMsg = fsJson?.error || "Erreur téléchargement filesystem";
           throw new Error(errMsg);
         }
         fsJson = await fsRes.json();
-        if (fsJson.status !== "success") throw new Error("FS install fail");
+        if (fsJson.status !== "success") throw new Error("Erreur installation filesystem");
 
         bar.style.width = "50%";
         bar.textContent = "50%";
-        status.textContent = "Étape 2/2 : firmware…";
+        status.textContent = "✓ Filesystem OK — 2/2 Firmware : téléchargement…";
 
-        // step 2 FW
+        // step 2 FW - téléchargement + installation
         p = 50;
         t = setInterval(() => {
-          if (p < 95) {
-            p += 5;
+          if (p < 90) {
+            p += 2;
             bar.style.width = p + "%";
             bar.textContent = p + "%";
           }
-        }, 500);
+        }, 800);
 
         const fwRes = await authFetch("/download-update", {
           method: "POST",
@@ -2861,12 +2907,16 @@
         });
 
         clearInterval(t);
+        bar.style.width = "95%";
+        bar.textContent = "95%";
+        status.textContent = "2/2 Firmware : installation…";
+
         let fwJson = null;
         if (!fwRes.ok) {
           try {
             fwJson = await fwRes.json();
           } catch (_) {}
-          const errMsg = fwJson?.error || "FW download fail";
+          const errMsg = fwJson?.error || "Erreur téléchargement firmware";
           throw new Error(errMsg);
         }
         fwJson = await fwRes.json();
@@ -2874,10 +2924,10 @@
         if (fwJson.status === "success") {
           bar.style.width = "100%";
           bar.textContent = "100%";
-          status.textContent = "✓ Mise à jour OK. Redémarrage dans 30 secondes…";
+          status.textContent = "✓ Mise à jour terminée. Redémarrage…";
           setTimeout(() => window.location.reload(), 30000);
         } else {
-          throw new Error("FW install fail");
+          throw new Error("Erreur installation firmware");
         }
       } catch (e) {
         const msg = String(e?.message || "");
@@ -3125,23 +3175,127 @@
     });
   }
 
+  function bindMqttManualSave() {
+    const saveBtn = $("#mqtt_save_btn");
+    const mqttEnabled = $("#mqtt_enabled");
+    const defaultLabel = "Sauvegarder";
+    const savingLabel = "Sauvegarde...";
+    const savedLabel = "Sauvegarde réussie";
+
+    const setButtonState = (label, showSpinner, disabled, status) => {
+      saveBtn.disabled = disabled;
+      saveBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
+      if (status === "success") {
+        saveBtn.classList.add("btn--ok");
+      } else if (status === "error") {
+        saveBtn.classList.add("btn--danger");
+      } else {
+        saveBtn.classList.add("btn--primary");
+      }
+      if (showSpinner) {
+        saveBtn.innerHTML = `<span class="btn__spinner"></span><span>${label}</span>`;
+      } else {
+        saveBtn.textContent = label;
+      }
+    };
+
+    mqttEnabled?.addEventListener("change", () => {
+      updateMqttStatusIndicator(mqttEnabled.checked, false);
+    });
+
+    saveBtn?.addEventListener("click", async () => {
+      if (saveBtn.disabled) return;
+      setButtonState(savingLabel, true, true, "default");
+
+      const ok = await sendConfig(collectMqttConfig());
+      if (ok) {
+        updateMqttStatusIndicator($("#mqtt_enabled").checked, false);
+        setTimeout(loadConfig, 6000);
+        setButtonState(savedLabel, false, true, "success");
+        setTimeout(() => {
+          setButtonState(defaultLabel, false, false, "default");
+        }, 2000);
+      } else {
+        alert("Erreur lors de la sauvegarde MQTT.");
+        setButtonState("Erreur", false, true, "error");
+        setTimeout(() => {
+          setButtonState(defaultLabel, false, false, "default");
+        }, 2000);
+      }
+    });
+  }
+
+  function bindTimeManualSave() {
+    const saveBtn = $("#time_save_btn");
+    const timeUseNtp = $("#time_use_ntp");
+    const defaultLabel = "Sauvegarder";
+    const savingLabel = "Sauvegarde...";
+    const savedLabel = "Sauvegarde réussie";
+
+    const setButtonState = (label, showSpinner, disabled, status) => {
+      saveBtn.disabled = disabled;
+      saveBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
+      if (status === "success") {
+        saveBtn.classList.add("btn--ok");
+      } else if (status === "error") {
+        saveBtn.classList.add("btn--danger");
+      } else {
+        saveBtn.classList.add("btn--primary");
+      }
+      if (showSpinner) {
+        saveBtn.innerHTML = `<span class="btn__spinner"></span><span>${label}</span>`;
+      } else {
+        saveBtn.textContent = label;
+      }
+    };
+
+    timeUseNtp?.addEventListener("change", async () => {
+      const useNtp = timeUseNtp.checked;
+      if (useNtp) {
+        try {
+          const res = await authFetch("/time-now");
+          const data = await res.json();
+          updateTimeControls(data.time || "");
+        } catch (e) {
+          updateTimeControls("");
+        }
+      } else {
+        updateTimeControls($("#time_value").value);
+      }
+    });
+
+    saveBtn?.addEventListener("click", async () => {
+      if (saveBtn.disabled) return;
+      setButtonState(savingLabel, true, true, "default");
+
+      const ok = await sendConfig(collectTimeConfig());
+      if (ok) {
+        setButtonState(savedLabel, false, true, "success");
+        setTimeout(() => {
+          setButtonState(defaultLabel, false, false, "default");
+        }, 2000);
+        setTimeout(loadConfig, 2000);
+      } else {
+        setButtonState("Erreur", false, true, "error");
+        setTimeout(() => {
+          setButtonState(defaultLabel, false, false, "default");
+        }, 2000);
+      }
+    });
+  }
+
   // ---------- Auto-save bindings ----------
   function bindAutosave() {
-    const save = () => sendConfig(collectConfig());
-
-    // MQTT
-    $("#mqtt_enabled")?.addEventListener("change", () => {
-      updateMqttStatusIndicator($("#mqtt_enabled").checked, false);
-      save();
-      setTimeout(loadConfig, 6000);
-    });
-    ["mqtt_server", "mqtt_port", "mqtt_username", "mqtt_password"].forEach((id) => {
-      $(`#${id}`)?.addEventListener("change", () => {
-        save();
-        setTimeout(loadConfig, 6000);
+    const save = () => {
+      const cfg = collectConfig();
+      [
+        "enabled", "server", "port", "topic", "username", "password",
+        "time_use_ntp", "ntp_server", "timezone_id", "manual_time"
+      ].forEach((key) => {
+        delete cfg[key];
       });
-    });
-    $("#mqtt_topic")?.addEventListener("change", save);
+      return sendConfig(cfg);
+    };
 
     // Filtration
     $("#filtration_mode")?.addEventListener("change", () => {
@@ -3173,31 +3327,6 @@
     $("#orp_enabled")?.addEventListener("change", () => { updateOrpControls(); save(); });
     ["ph_target", "ph_limit", "ph_pump"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => { updatePhControls(); save(); }));
     ["orp_target", "orp_limit", "orp_pump"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => { updateOrpControls(); save(); }));
-
-    // Time
-    $("#time_use_ntp")?.addEventListener("change", async () => {
-      const useNtp = $("#time_use_ntp").checked;
-      if (useNtp) {
-        // Fetch current time from server when NTP is enabled
-        try {
-          const res = await authFetch("/time-now");
-          const data = await res.json();
-          updateTimeControls(data.time || "");
-        } catch (e) {
-          updateTimeControls("");
-        }
-      } else {
-        // Keep current value when switching to manual mode, just make it editable
-        updateTimeControls($("#time_value").value);
-      }
-      save();
-    });
-    $("#time_ntp_server")?.addEventListener("change", () => { if ($("#time_use_ntp").checked) save(); });
-    $("#time_timezone")?.addEventListener("change", save);
-    $("#time_value")?.addEventListener("input", () => {
-      // Auto-save when manually editing time (only when NTP is disabled)
-      if (!$("#time_use_ntp").checked) save();
-    });
 
     // Development panel - Sensor logs
     $("#sensor_logs_enabled")?.addEventListener("change", save);
@@ -3413,6 +3542,8 @@
     bindOrpCalibration();
     bindTempCalibration();
     bindWifi();
+    bindMqttManualSave();
+    bindTimeManualSave();
     bindSecurity();
     bindGithubUpdate();
     bindManualUpdate();
@@ -3466,6 +3597,10 @@
     // If you want: refresh config status occasionally (MQTT connected, etc.)
     setInterval(() => {
       // ne recharge pas tout en permanence si tu veux limiter la charge
+      const activeId = document.activeElement?.id || "";
+      const mqttEditing = ["mqtt_server", "mqtt_port", "mqtt_topic", "mqtt_username", "mqtt_password", "mqtt_enabled"].includes(activeId);
+      const timeEditing = ["time_use_ntp", "time_ntp_server", "time_timezone", "time_value"].includes(activeId);
+      if (mqttEditing || timeEditing) return;
       loadConfig().catch(() => {});
     }, 15000);
 
