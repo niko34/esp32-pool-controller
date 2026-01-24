@@ -15,6 +15,14 @@ data-build/
 # Node.js
 node_modules/
 
+# Python / CrewAI
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.crew/
+
 # KiCad auto-save and backups
 *-backups/
 _autosave-*
