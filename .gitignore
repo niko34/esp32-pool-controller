@@ -12,6 +12,9 @@
 *.elf
 data-build/
 
+# Node.js
+node_modules/
+
 # KiCad auto-save and backups
 *-backups/
 _autosave-*
