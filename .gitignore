@@ -21,7 +21,9 @@ __pycache__/
 .venv/
 venv/
 .env
+ai/.env
 .crew/
+ai/outputs/
 
 # KiCad auto-save and backups
 *-backups/
