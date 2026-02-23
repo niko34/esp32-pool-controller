@@ -21,12 +21,14 @@
 #include "web_routes_config.h"
 #include "history.h"
 #include "version.h"
+#include "rtc_manager.h"
 
 // Variables globales
 DNSServer dns;
 AsyncWebServer httpServer(kHttpServerPort);
 unsigned long lastMqttPublish = 0;
 wifi_mode_t currentWifiMode = WIFI_MODE_NULL;
+bool ntpSyncedOnce = false;  // Flag pour éviter sync RTC multiple
 
 // Déclaration des fonctions
 bool setupWiFi();
@@ -34,6 +36,7 @@ void resetWiFiSettings();
 void applyTimeConfig();
 void checkSystemHealth();
 void checkPasswordResetButton();
+void onNtpTimeSync();
 
 void setup() {
   Serial.begin(115200);
@@ -76,7 +79,19 @@ void setup() {
   }
 
   // Initialisation des modules
-  sensors.begin();
+  sensors.begin();  // Initialise aussi Wire (I2C)
+
+  // Initialisation RTC DS1307 (après sensors.begin() qui initialise I2C)
+  if (rtcManager.begin()) {
+    // Si le RTC a une heure valide, l'appliquer au système
+    // Cela donne une heure approximative avant que NTP ne soit disponible
+    if (rtcManager.isTimeValid()) {
+      rtcManager.applyToSystem();
+    } else if (rtcManager.hasLostPower()) {
+      systemLogger.warning("RTC: Heure non valide (batterie vide?), attente sync NTP ou réglage manuel");
+    }
+  }
+
   PumpController.begin();
   filtration.begin();
   lighting.begin();
@@ -152,6 +167,16 @@ void loop() {
     checkSystemHealth();
     lastHealthCheck = now;
     esp_task_wdt_reset();
+  }
+
+  // Vérification sync NTP et mise à jour RTC
+  if (!ntpSyncedOnce && mqttCfg.timeUseNtp && WiFi.isConnected()) {
+    time_t nowTime;
+    time(&nowTime);
+    // Si l'heure est valide (après 2021), NTP a synchronisé
+    if (nowTime > 1609459200) {
+      onNtpTimeSync();
+    }
   }
 
   // Publication diagnostic MQTT périodique
@@ -298,6 +323,21 @@ void resetWiFiSettings() {
   systemLogger.info("Factory reset complet - Redémarrage nécessaire");
 }
 
+// Callback appelé quand NTP se synchronise
+void onNtpTimeSync() {
+  if (!ntpSyncedOnce) {
+    ntpSyncedOnce = true;
+    systemLogger.info("NTP synchronisé avec succès");
+
+    // Mettre à jour le RTC avec l'heure NTP
+    if (rtcManager.isAvailable()) {
+      if (rtcManager.syncFromSystem()) {
+        systemLogger.info("RTC mis à jour depuis NTP");
+      }
+    }
+  }
+}
+
 void applyTimeConfig() {
   ensureTimezoneValid();
   applyTimezoneEnv();
@@ -310,6 +350,9 @@ void applyTimeConfig() {
       }
       configTzTime(tz->posix, mqttCfg.ntpServer.c_str(), "time.nist.gov", "pool.ntp.org");
       systemLogger.info("Synchronisation NTP demandée: " + mqttCfg.ntpServer);
+
+      // Reset le flag pour permettre une nouvelle sync RTC
+      ntpSyncedOnce = false;
     } else {
       systemLogger.warning("NTP activé mais WiFi indisponible");
     }

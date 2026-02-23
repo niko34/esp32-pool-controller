@@ -860,8 +860,12 @@
                     <input type="text" id="time_ntp_server" placeholder="pool.ntp.org" />
                   </label>
 
-                  <label class="field">
+                  <label class="field" id="time_field_container">
                     <span class="field__label">Heure</span>
+                    <div id="time_sync_spinner" class="time-sync-spinner" style="display: none;">
+                      <span class="spinner"></span>
+                      <span>Synchronisation NTP...</span>
+                    </div>
                     <input type="datetime-local" id="time_value" />
                   </label>
                   <div class="row row--between" style="margin-top: 12px;">

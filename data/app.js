@@ -691,21 +691,43 @@
     }
   }
 
-  function updateTimeControls(current) {
+  // Variable pour stocker l'heure complète avec secondes (mode manuel)
+  let fullTimeValue = "";
+
+  function updateTimeControls(current, syncing = false) {
     const useNtp = $("#time_use_ntp")?.checked ?? true;
     const ntp = $("#time_ntp_server");
     const timeValue = $("#time_value");
     const timeSaveBtn = $("#time_save_btn");
+    const syncSpinner = $("#time_sync_spinner");
 
     // Si NTP activé: serveur NTP actif, champ heure en lecture seule avec heure du serveur
     // Si NTP désactivé: serveur NTP grisé, champ heure modifiable
     if (ntp) ntp.disabled = !useNtp;
-    if (timeValue) {
-      timeValue.readOnly = useNtp;
-      if (current) {
-        timeValue.value = current;
+
+    if (useNtp && syncing) {
+      // NTP activé mais en cours de sync : afficher spinner, masquer champ
+      if (syncSpinner) syncSpinner.style.display = "flex";
+      if (timeValue) timeValue.style.display = "none";
+    } else {
+      // Sync terminée ou mode manuel : masquer spinner, afficher champ
+      if (syncSpinner) syncSpinner.style.display = "none";
+      if (timeValue) {
+        timeValue.style.display = "block";
+        timeValue.readOnly = useNtp;
+        if (current) {
+          // Stocker l'heure complète pour le mode manuel
+          fullTimeValue = current;
+          // Toujours masquer les secondes à l'affichage (sauf si en cours d'édition)
+          let displayValue = current;
+          if (displayValue.length > 16) {
+            displayValue = displayValue.substring(0, 16);
+          }
+          timeValue.value = displayValue;
+        }
       }
     }
+
     if (timeSaveBtn) {
       timeSaveBtn.style.display = useNtp ? "none" : "inline-flex";
     }
@@ -930,17 +952,21 @@
     const timeEditing = ["time_use_ntp", "time_ntp_server", "time_timezone", "time_value"].includes(timeActiveId);
 
     if (!timeEditing) {
-      $("#time_use_ntp").checked = cfg.time_use_ntp !== false;
+      const useNtp = cfg.time_use_ntp !== false;
+      $("#time_use_ntp").checked = useNtp;
       $("#time_ntp_server").value = cfg.ntp_server || "pool.ntp.org";
 
       const tz = cfg.timezone_id || "europe_paris";
       if ($(`#time_timezone option[value="${tz}"]`)) $("#time_timezone").value = tz;
 
-      const timeValue = (cfg.time_use_ntp !== false)
-        ? (cfg.time_current || "")
-        : (cfg.manual_time || cfg.time_current || "");
-      $("#time_value").value = timeValue;
-      updateTimeControls(timeValue);
+      // Toujours afficher l'heure actuelle du système (time_current)
+      let timeValue = cfg.time_current || "";
+      const year = parseInt(timeValue.substring(0, 4), 10);
+      const timeValid = year >= 2021;
+
+      // Si NTP activé mais heure non valide, afficher le spinner de sync
+      const syncing = useNtp && !timeValid;
+      updateTimeControls(timeValue, syncing);
     }
 
     // Wi-Fi summary - store for later update
@@ -3252,15 +3278,40 @@
     timeUseNtp?.addEventListener("change", async () => {
       const useNtp = timeUseNtp.checked;
       if (useNtp) {
-        try {
-          const res = await authFetch("/time-now");
-          const data = await res.json();
-          updateTimeControls(data.time || "");
-        } catch (e) {
-          updateTimeControls("");
-        }
+        // Afficher le spinner pendant la sync NTP
+        updateTimeControls("", true);
+
+        // Sauvegarder pour déclencher la sync NTP côté serveur
+        await sendConfig(collectTimeConfig());
+
+        // Attendre que l'heure soit synchronisée (max 10 secondes)
+        let attempts = 0;
+        const maxAttempts = 10;
+        const pollInterval = setInterval(async () => {
+          attempts++;
+          try {
+            const res = await authFetch("/time-now");
+            const data = await res.json();
+            const timeStr = data.time || "";
+            // Vérifier si l'heure est valide (année >= 2021)
+            const year = parseInt(timeStr.substring(0, 4), 10);
+            if (year >= 2021) {
+              clearInterval(pollInterval);
+              updateTimeControls(timeStr, false);
+            } else if (attempts >= maxAttempts) {
+              clearInterval(pollInterval);
+              updateTimeControls(timeStr, false);
+            }
+          } catch (e) {
+            if (attempts >= maxAttempts) {
+              clearInterval(pollInterval);
+              updateTimeControls("", false);
+            }
+          }
+        }, 1000);
       } else {
-        updateTimeControls($("#time_value").value);
+        updateTimeControls($("#time_value").value, false);
+        await sendConfig(collectTimeConfig());
       }
     });
 
@@ -3280,6 +3331,27 @@
         setTimeout(() => {
           setButtonState(defaultLabel, false, false, "default");
         }, 2000);
+      }
+    });
+
+    // En mode manuel : afficher les secondes au focus, les masquer au blur
+    const timeValueInput = $("#time_value");
+    timeValueInput?.addEventListener("focus", () => {
+      const useNtp = $("#time_use_ntp")?.checked ?? true;
+      if (!useNtp && fullTimeValue) {
+        // Mode manuel : afficher l'heure complète avec secondes
+        timeValueInput.value = fullTimeValue;
+      }
+    });
+
+    timeValueInput?.addEventListener("blur", () => {
+      const useNtp = $("#time_use_ntp")?.checked ?? true;
+      if (!useNtp) {
+        // Mode manuel : stocker la nouvelle valeur et masquer les secondes
+        fullTimeValue = timeValueInput.value;
+        if (timeValueInput.value.length > 16) {
+          timeValueInput.value = timeValueInput.value.substring(0, 16);
+        }
       }
     });
   }
@@ -3593,6 +3665,37 @@
       }
     }, 5000);
     setInterval(checkCalibrationDate, 300000); // 5 min
+
+    // Rafraîchissement de l'heure au changement de minute (si on est sur settings et pas en édition)
+    const refreshTimeField = async () => {
+      const currentView = window.location.hash || "#view-home";
+      if (!currentView.includes("settings")) return;
+
+      const activeId = document.activeElement?.id || "";
+      const timeEditing = ["time_use_ntp", "time_ntp_server", "time_timezone", "time_value"].includes(activeId);
+      if (timeEditing) return;
+
+      try {
+        const res = await authFetch("/get-config");
+        if (!res.ok) return;
+        const cfg = await res.json();
+        if (cfg.time_current) {
+          // Masquer les secondes pour l'affichage
+          let timeValue = cfg.time_current;
+          if (timeValue.length > 16) {
+            timeValue = timeValue.substring(0, 16);
+          }
+          $("#time_value").value = timeValue;
+        }
+      } catch (e) { /* ignore */ }
+    };
+
+    // Synchroniser avec le changement de minute réel
+    const msUntilNextMinute = (60 - new Date().getSeconds()) * 1000;
+    setTimeout(() => {
+      refreshTimeField();
+      setInterval(refreshTimeField, 60000);
+    }, msUntilNextMinute);
 
     // If you want: refresh config status occasionally (MQTT connected, etc.)
     setInterval(() => {

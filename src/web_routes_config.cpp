@@ -11,14 +11,17 @@
 #include "logger.h"
 #include "version.h"
 #include "json_compat.h"
+#include "rtc_manager.h"
+#include <sys/time.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <LittleFS.h>
 #include <AsyncJson.h>
 #include <esp_ota_ops.h>
 
-// Fonction externe déclarée dans main.cpp pour effacer les credentials WiFi
+// Fonctions externes déclarées dans main.cpp
 extern void resetWiFiSettings();
+extern void applyTimeConfig();
 
 // Contexte pour les buffers de configuration (partagé avec web_server)
 static std::map<AsyncWebServerRequest*, std::vector<uint8_t>>* g_configBuffers = nullptr;
@@ -239,7 +242,47 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["orp_limit_seconds"].isNull()) mqttCfg.orpInjectionLimitSeconds = doc["orp_limit_seconds"];
   if (!doc["time_use_ntp"].isNull()) mqttCfg.timeUseNtp = doc["time_use_ntp"];
   if (!doc["ntp_server"].isNull()) mqttCfg.ntpServer = doc["ntp_server"].as<String>();
-  if (!doc["manual_time"].isNull()) mqttCfg.manualTimeIso = doc["manual_time"].as<String>();
+  if (!doc["manual_time"].isNull()) {
+    String newManualTime = doc["manual_time"].as<String>();
+    // Si l'heure manuelle a changé et n'est pas vide, l'appliquer au système et au RTC
+    if (newManualTime.length() > 0 && newManualTime != mqttCfg.manualTimeIso) {
+      mqttCfg.manualTimeIso = newManualTime;
+
+      // Parser l'ISO 8601 (format: "YYYY-MM-DDTHH:MM:SS" ou "YYYY-MM-DD HH:MM:SS")
+      int year, month, day, hour, minute, second;
+      if (sscanf(newManualTime.c_str(), "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour, &minute, &second) == 6 ||
+          sscanf(newManualTime.c_str(), "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &minute, &second) == 6) {
+
+        // Créer un struct tm et convertir en epoch
+        struct tm timeinfo = {};
+        timeinfo.tm_year = year - 1900;
+        timeinfo.tm_mon = month - 1;
+        timeinfo.tm_mday = day;
+        timeinfo.tm_hour = hour;
+        timeinfo.tm_min = minute;
+        timeinfo.tm_sec = second;
+        time_t epoch = mktime(&timeinfo);
+
+        if (epoch > 0) {
+          // Appliquer au système
+          struct timeval tv;
+          tv.tv_sec = epoch;
+          tv.tv_usec = 0;
+          settimeofday(&tv, nullptr);
+
+          // Mettre à jour le RTC
+          if (rtcManager.isAvailable()) {
+            rtcManager.setTimeFromEpoch(epoch);
+            systemLogger.info("Heure manuelle appliquée au système et au RTC: " + newManualTime);
+          } else {
+            systemLogger.info("Heure manuelle appliquée au système: " + newManualTime);
+          }
+        }
+      }
+    } else {
+      mqttCfg.manualTimeIso = newManualTime;
+    }
+  }
   if (!doc["timezone_id"].isNull()) mqttCfg.timezoneId = doc["timezone_id"].as<String>();
   if (!doc["filtration_mode"].isNull()) filtrationCfg.mode = doc["filtration_mode"].as<String>();
   if (!doc["filtration_start"].isNull()) filtrationCfg.start = doc["filtration_start"].as<String>();
@@ -315,6 +358,7 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   lighting.ensureTimesValid();
   ensureTimezoneValid();
   applyTimezoneEnv();
+  applyTimeConfig();  // Appliquer la config NTP si activée
 
   if (filtrationCfg.mode.equalsIgnoreCase("auto")) {
     filtration.computeAutoSchedule();
