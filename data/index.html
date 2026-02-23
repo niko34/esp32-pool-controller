@@ -169,7 +169,7 @@
           <!-- Cartes principales -->
           <div class="grid grid--status-cards">
             <!-- Carte Filtration -->
-            <div class="card card--status card--filtration">
+            <div class="card card--status card--filtration" id="dashboard-filtration-card">
               <div class="card__status-header">
                 <div class="card__status-icon card__status-icon--transparent">
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -205,7 +205,7 @@
             </div>
 
             <!-- Carte Éclairage -->
-            <div class="card card--status">
+            <div class="card card--status" id="dashboard-lighting-card">
               <div class="card__status-header">
                 <div class="card__status-icon card__status-icon--transparent">
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -245,7 +245,7 @@
             </div>
 
             <!-- Carte pH compact -->
-            <div class="card card--status card--compact">
+            <div class="card card--status card--compact" id="dashboard-ph-card">
               <div class="card__status-compact">
                 <div class="compact-label">pH</div>
                 <div class="compact-value" id="compact-ph">--</div>
@@ -254,7 +254,7 @@
             </div>
 
             <!-- Carte ORP compact -->
-            <div class="card card--status card--compact">
+            <div class="card card--status card--compact" id="dashboard-orp-card">
               <div class="card__status-compact">
                 <div class="compact-label">ORP</div>
                 <div class="compact-value" id="compact-orp">--<span class="compact-unit">mV</span></div>
@@ -263,7 +263,7 @@
             </div>
 
             <!-- Carte Température compact -->
-            <div class="card card--status card--compact">
+            <div class="card card--status card--compact" id="dashboard-temperature-card">
               <div class="card__status-compact">
                 <div class="compact-label">Température</div>
                 <div class="compact-value" id="compact-temperature">--<span class="compact-unit">°C</span></div>
@@ -315,51 +315,71 @@
           </div>
 
           <div class="card">
-            <div class="card__head">
-              <div class="card__title">Contrôle manuel</div>
-            </div>
             <div class="card__body">
-              <div class="detail-row">
-                <div class="detail-label">État actuel</div>
-                <div class="detail-value">
-                  <span class="state-badge state-badge--off" id="filtration-current-status">Arrêtée</span>
+              <div class="row row--between">
+                <div>
+                  <div class="row__title">Activer la filtration</div>
+                  <div class="muted small">Auto-save</div>
                 </div>
-              </div>
-              <div class="detail-actions">
-                <button class="btn btn--primary" id="filtration-manual-start">Démarrer</button>
-                <button class="btn btn--danger" id="filtration-manual-stop">Arrêter</button>
+                <label class="switch">
+                  <input type="checkbox" id="filtration_enabled" />
+                  <span class="switch__track"></span>
+                </label>
               </div>
             </div>
           </div>
 
-          <div class="card">
-            <div class="card__head">
-              <div class="card__title">Programmation</div>
-            </div>
-            <div class="card__body">
-              <label class="field">
-                <span class="field__label">Mode de filtration</span>
-                <select id="filtration_mode">
-                  <option value="auto">Auto</option>
-                  <option value="manual">Manuel</option>
-                  <option value="off">Désactivé</option>
-                </select>
-              </label>
-
-              <div class="grid grid--2">
-                <label class="field">
-                  <span class="field__label">Début</span>
-                  <input type="time" id="filtration_start" value="08:00" />
-                </label>
-
-                <label class="field">
-                  <span class="field__label">Fin</span>
-                  <input type="time" id="filtration_end" value="20:00" />
-                </label>
+          <div id="filtration-content">
+            <div class="card">
+              <div class="card__head">
+                <div class="card__title">Contrôle manuel</div>
               </div>
+              <div class="card__body">
+                <div class="detail-row">
+                  <div class="detail-label">État actuel</div>
+                  <div class="detail-value">
+                    <span class="state-badge state-badge--off" id="filtration-current-status">Arrêtée</span>
+                  </div>
+                </div>
+                <div class="detail-actions">
+                  <button class="btn btn--primary" id="filtration-manual-start">Démarrer</button>
+                  <button class="btn btn--danger" id="filtration-manual-stop">Arrêter</button>
+                </div>
+              </div>
+            </div>
 
-              <div class="hint">
-                En mode Auto, la durée peut être recalculée automatiquement après un premier cycle.
+            <div class="card">
+              <div class="card__head">
+                <div class="card__title">Programmation</div>
+              </div>
+              <div class="card__body">
+                <label class="field">
+                  <span class="field__label">Mode de filtration</span>
+                  <select id="filtration_mode">
+                    <option value="auto">Auto</option>
+                    <option value="manual">Manuel</option>
+                    <option value="off">Désactivé</option>
+                  </select>
+                  <span class="field__hint" id="filtration_auto_hint" style="display:none; color: var(--warning-color, #e67e22);">
+                    Le mode Auto nécessite l'activation de la mesure de température.
+                  </span>
+                </label>
+
+                <div class="grid grid--2">
+                  <label class="field">
+                    <span class="field__label">Début</span>
+                    <input type="time" id="filtration_start" value="08:00" />
+                  </label>
+
+                  <label class="field">
+                    <span class="field__label">Fin</span>
+                    <input type="time" id="filtration_end" value="20:00" />
+                  </label>
+                </div>
+
+                <div class="hint" id="filtration_mode_hint">
+                  En mode Auto, la durée est calculée selon la température de l'eau (Temp ÷ 2 = heures de filtration) et recalculée après chaque cycle.
+                </div>
               </div>
             </div>
           </div>
@@ -373,49 +393,66 @@
           </div>
 
           <div class="card">
-            <div class="card__head">
-              <div class="card__title">Contrôle manuel</div>
-            </div>
             <div class="card__body">
-              <div class="detail-row">
-                <div class="detail-label">État actuel</div>
-                <div class="detail-value">
-                  <span class="state-badge state-badge--off" id="lighting-current-status">Éteint</span>
+              <div class="row row--between">
+                <div>
+                  <div class="row__title">Activer l'éclairage</div>
+                  <div class="muted small">Auto-save</div>
                 </div>
-              </div>
-              <div class="detail-actions">
-                <button class="btn btn--primary" id="lighting-manual-on">Allumer</button>
-                <button class="btn btn--danger" id="lighting-manual-off">Éteindre</button>
+                <label class="switch">
+                  <input type="checkbox" id="lighting_feature_enabled" />
+                  <span class="switch__track"></span>
+                </label>
               </div>
             </div>
           </div>
 
-          <div class="card">
-            <div class="card__head">
-              <div class="card__title">Programmation</div>
+          <div id="lighting-content">
+            <div class="card">
+              <div class="card__head">
+                <div class="card__title">Contrôle manuel</div>
+              </div>
+              <div class="card__body">
+                <div class="detail-row">
+                  <div class="detail-label">État actuel</div>
+                  <div class="detail-value">
+                    <span class="state-badge state-badge--off" id="lighting-current-status">Éteint</span>
+                  </div>
+                </div>
+                <div class="detail-actions">
+                  <button class="btn btn--primary" id="lighting-manual-on">Allumer</button>
+                  <button class="btn btn--danger" id="lighting-manual-off">Éteindre</button>
+                </div>
+              </div>
             </div>
-            <div class="card__body">
-              <label class="field">
-                <span class="field__label">Mode de programmation</span>
-                <select id="lighting_schedule_mode">
-                  <option value="disabled">Désactivée</option>
-                  <option value="enabled">Activée</option>
-                </select>
-              </label>
 
-              <div id="lighting-schedule-settings" style="display:none;">
+            <div class="card">
+              <div class="card__head">
+                <div class="card__title">Programmation</div>
+              </div>
+              <div class="card__body">
                 <label class="field">
-                  <span class="field__label">Heure de début</span>
-                  <input type="time" id="lighting_start_time" value="20:00" />
+                  <span class="field__label">Mode de programmation</span>
+                  <select id="lighting_schedule_mode">
+                    <option value="disabled">Désactivée</option>
+                    <option value="enabled">Activée</option>
+                  </select>
                 </label>
 
-                <label class="field">
-                  <span class="field__label">Heure de fin</span>
-                  <input type="time" id="lighting_end_time" value="23:00" />
-                </label>
+                <div id="lighting-schedule-settings" style="display:none;">
+                  <label class="field">
+                    <span class="field__label">Heure de début</span>
+                    <input type="time" id="lighting_start_time" value="20:00" />
+                  </label>
 
-                <div class="hint">
-                  L'éclairage s'allumera automatiquement entre l'heure de début et l'heure de fin.
+                  <label class="field">
+                    <span class="field__label">Heure de fin</span>
+                    <input type="time" id="lighting_end_time" value="23:00" />
+                  </label>
+
+                  <div class="hint">
+                    L'éclairage s'allumera automatiquement entre l'heure de début et l'heure de fin.
+                  </div>
                 </div>
               </div>
             </div>
@@ -430,49 +467,66 @@
           </div>
 
           <div class="card">
-            <div class="card__head">
-              <div class="card__title">Calibration de la température</div>
-            </div>
             <div class="card__body">
-              <div class="callout callout--success" id="temp_calibrated_status" style="display:none;">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                  <span style="font-size: 18px;">✓</span>
-                  <strong>Calibré</strong>
-                  <span style="margin-left: auto;">✓</span>
+              <div class="row row--between">
+                <div>
+                  <div class="row__title">Activer la mesure de température</div>
+                  <div class="muted small">Auto-save</div>
                 </div>
-                <div class="muted small" id="temp_cal_date">Dernière calibration : —</div>
+                <label class="switch">
+                  <input type="checkbox" id="temperature_enabled" />
+                  <span class="switch__track"></span>
+                </label>
               </div>
+            </div>
+          </div>
 
-              <div class="readout">
-                <div class="readout__label">Température actuelle</div>
-                <div class="readout__value" id="temp_current_value">--</div>
-                <div class="readout__sub muted">
-                  <span>Brute: <span id="temp_current_raw">--</span></span>
-                  <span style="margin-left: 12px;">MAJ auto toutes les 30 secondes</span>
-                </div>
+          <div id="temperature-content">
+            <div class="card">
+              <div class="card__head">
+                <div class="card__title">Calibration de la sonde de température</div>
               </div>
-
-              <div class="calibration-steps">
-                <div class="step" id="temp_step1">
-                  <div class="step__number">1</div>
-                  <div class="step__content">Plonger la sonde dans un liquide à température connue</div>
+              <div class="card__body">
+                <div class="callout callout--success" id="temp_calibrated_status" style="display:none;">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 18px;">✓</span>
+                    <strong>Calibré</strong>
+                    <span style="margin-left: auto;">✓</span>
+                  </div>
+                  <div class="muted small" id="temp_cal_date">Dernière calibration : —</div>
                 </div>
-                <div class="step" id="temp_step2">
-                  <div class="step__number">2</div>
-                  <div class="step__content">
-                    <div>Entrer la température de référence</div>
-                    <input type="number" id="temp_reference_value" min="-10" max="50" step="0.1" placeholder="ex: 25.0 °C" style="margin-top: 8px; width: 100%;" />
+
+                <div class="readout">
+                  <div class="readout__label">Température actuelle</div>
+                  <div class="readout__value" id="temp_current_value">--</div>
+                  <div class="readout__sub muted">
+                    <span>Brute: <span id="temp_current_raw">--</span></span>
+                    <span style="margin-left: 12px;">MAJ auto toutes les 30 secondes</span>
                   </div>
                 </div>
-                <div class="step" id="temp_step3">
-                  <div class="step__number">3</div>
-                  <div class="step__content">Calibrer</div>
-                </div>
-              </div>
 
-              <div class="row row--gap">
-                <button class="btn btn--primary" type="button" id="temp_cal_start_btn">Commencer la calibration</button>
-                <button class="btn btn--danger" type="button" id="temp_cal_cancel_btn" style="display:none;">Annuler</button>
+                <div class="calibration-steps">
+                  <div class="step" id="temp_step1">
+                    <div class="step__number">1</div>
+                    <div class="step__content">Plonger la sonde dans un liquide à température connue</div>
+                  </div>
+                  <div class="step" id="temp_step2">
+                    <div class="step__number">2</div>
+                    <div class="step__content">
+                      <div>Entrer la température de référence</div>
+                      <input type="number" id="temp_reference_value" min="-10" max="50" step="0.1" placeholder="ex: 25.0 °C" style="margin-top: 8px; width: 100%;" />
+                    </div>
+                  </div>
+                  <div class="step" id="temp_step3">
+                    <div class="step__number">3</div>
+                    <div class="step__content">Calibrer</div>
+                  </div>
+                </div>
+
+                <div class="row row--gap">
+                  <button class="btn btn--primary" type="button" id="temp_cal_start_btn">Commencer la calibration</button>
+                  <button class="btn btn--danger" type="button" id="temp_cal_cancel_btn" style="display:none;">Annuler</button>
+                </div>
               </div>
             </div>
           </div>
@@ -486,13 +540,10 @@
           </div>
 
           <div class="card">
-            <div class="card__head">
-              <div class="card__title">Régulation pH</div>
-            </div>
             <div class="card__body">
               <div class="row row--between">
                 <div>
-                  <div class="row__title">Activer la régulation</div>
+                  <div class="row__title">Activer la régulation pH</div>
                   <div class="muted small">Auto-save</div>
                 </div>
                 <label class="switch">
@@ -500,63 +551,80 @@
                   <span class="switch__track"></span>
                 </label>
               </div>
-
-              <div class="grid grid--2">
-                <label class="field">
-                  <span class="field__label">pH cible</span>
-                  <input type="number" id="ph_target" min="0" max="14" step="0.1" placeholder="ex: 7.2" />
-                </label>
-
-                <label class="field">
-                  <span class="field__label">Durée max / heure (s)</span>
-                  <input type="number" id="ph_limit" min="0" step="1" value="60" />
-                </label>
-              </div>
             </div>
           </div>
 
-          <div class="card">
-            <div class="card__head">
-              <div class="card__title">Calibration du pH</div>
+          <div id="ph-content">
+            <div class="card">
+              <div class="card__head">
+                <div class="card__title">Paramètres de régulation</div>
+              </div>
+              <div class="card__body">
+                <label class="field">
+                  <span class="field__label">Type de correction</span>
+                  <select id="ph_correction_type">
+                    <option value="ph_minus">pH- (acide) : baisser le pH</option>
+                    <option value="ph_plus">pH+ (base) : augmenter le pH</option>
+                  </select>
+                </label>
+
+                <div class="grid grid--2">
+                  <label class="field">
+                    <span class="field__label">pH cible</span>
+                    <input type="number" id="ph_target" min="0" max="14" step="0.1" placeholder="ex: 7.2" />
+                  </label>
+
+                  <label class="field">
+                    <span class="field__label">Durée max / heure (s)</span>
+                    <input type="number" id="ph_limit" min="0" step="1" value="60" />
+                  </label>
+                </div>
+              </div>
             </div>
-            <div class="card__body">
-              <div class="callout callout--success" id="ph_calibrated_status" style="display:none;">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                  <span style="font-size: 18px;">✓</span>
-                  <strong>Calibré</strong>
-                  <span style="margin-left: auto;">✓</span>
-                </div>
-                <div class="muted small" id="ph_cal_date">Dernière calibration : —</div>
-              </div>
 
-              <div class="readout">
-                <div class="readout__label">Valeur pH actuelle</div>
-                <div class="readout__value" id="ph_current_value">--</div>
-                <div class="readout__sub muted">MAJ auto toutes les 30 secondes</div>
+            <div class="card">
+              <div class="card__head">
+                <div class="card__title">Calibration de la sonde pH</div>
               </div>
+              <div class="card__body">
+                <div class="callout callout--success" id="ph_calibrated_status" style="display:none;">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 18px;">✓</span>
+                    <strong>Calibré</strong>
+                    <span style="margin-left: auto;">✓</span>
+                  </div>
+                  <div class="muted small" id="ph_cal_date">Dernière calibration : —</div>
+                </div>
 
-              <div class="calibration-steps">
-                <div class="step" id="ph_step1">
-                  <div class="step__number">1</div>
-                  <div class="step__content">Plonger dans une solution d'étalonnage pH 7.0</div>
+                <div class="readout">
+                  <div class="readout__label">Valeur pH actuelle</div>
+                  <div class="readout__value" id="ph_current_value">--</div>
+                  <div class="readout__sub muted">MAJ auto toutes les 30 secondes</div>
                 </div>
-                <div class="step" id="ph_step2">
-                  <div class="step__number">2</div>
-                  <div class="step__content">Calibrer pH 7.0</div>
-                </div>
-                <div class="step" id="ph_step3">
-                  <div class="step__number">3</div>
-                  <div class="step__content">Plonger dans une solution d'étalonnage pH 4.0</div>
-                </div>
-                <div class="step" id="ph_step4">
-                  <div class="step__number">4</div>
-                  <div class="step__content">Calibrer pH 4.0 (acide)</div>
-                </div>
-              </div>
 
-              <div class="row row--gap">
-                <button class="btn btn--primary" type="button" id="ph_cal_start_btn">Commencer la calibration</button>
-                <button class="btn btn--danger" type="button" id="ph_cal_cancel_btn" style="display:none;">Annuler</button>
+                <div class="calibration-steps">
+                  <div class="step" id="ph_step1">
+                    <div class="step__number">1</div>
+                    <div class="step__content">Plonger dans une solution d'étalonnage pH 7.0</div>
+                  </div>
+                  <div class="step" id="ph_step2">
+                    <div class="step__number">2</div>
+                    <div class="step__content">Calibrer pH 7.0</div>
+                  </div>
+                  <div class="step" id="ph_step3">
+                    <div class="step__number">3</div>
+                    <div class="step__content">Plonger dans une solution d'étalonnage pH 4.0</div>
+                  </div>
+                  <div class="step" id="ph_step4">
+                    <div class="step__number">4</div>
+                    <div class="step__content">Calibrer pH 4.0 (acide)</div>
+                  </div>
+                </div>
+
+                <div class="row row--gap">
+                  <button class="btn btn--primary" type="button" id="ph_cal_start_btn">Commencer la calibration</button>
+                  <button class="btn btn--danger" type="button" id="ph_cal_cancel_btn" style="display:none;">Annuler</button>
+                </div>
               </div>
             </div>
           </div>
@@ -571,13 +639,10 @@
           </div>
 
           <div class="card">
-            <div class="card__head">
-              <div class="card__title">Régulation ORP</div>
-            </div>
             <div class="card__body">
               <div class="row row--between">
                 <div>
-                  <div class="row__title">Activer la régulation</div>
+                  <div class="row__title">Activer la régulation ORP</div>
                   <div class="muted small">Auto-save</div>
                 </div>
                 <label class="switch">
@@ -585,24 +650,32 @@
                   <span class="switch__track"></span>
                 </label>
               </div>
-
-              <div class="grid grid--2">
-                <label class="field">
-                  <span class="field__label">ORP cible (mV)</span>
-                  <input type="number" id="orp_target" min="0" max="1000" step="1" placeholder="ex: 650" />
-                </label>
-
-                <label class="field">
-                  <span class="field__label">Durée max / heure (s)</span>
-                  <input type="number" id="orp_limit" min="0" step="1" value="60" />
-                </label>
-              </div>
             </div>
           </div>
-          
-          <div class="card">
+
+          <div id="orp-content">
+            <div class="card">
+              <div class="card__head">
+                <div class="card__title">Paramètres de régulation</div>
+              </div>
+              <div class="card__body">
+                <div class="grid grid--2">
+                  <label class="field">
+                    <span class="field__label">ORP cible (mV)</span>
+                    <input type="number" id="orp_target" min="0" max="1000" step="1" placeholder="ex: 650" />
+                  </label>
+
+                  <label class="field">
+                    <span class="field__label">Durée max / heure (s)</span>
+                    <input type="number" id="orp_limit" min="0" step="1" value="60" />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
             <div class="card__head">
-              <div class="card__title">Calibration de l'ORP</div>
+              <div class="card__title">Calibration de la sonde ORP</div>
             </div>
             <div class="card__body">
               <div class="callout callout--success" id="orp_calibrated_status" style="display:none;">
@@ -699,6 +772,7 @@
                 </div>
               </div>
             </div>
+          </div>
           </div>
 
         </section>
@@ -933,6 +1007,25 @@
 
             <!-- System Panel -->
             <section class="panel" data-settings-panel="system" id="panel-system" role="tabpanel" aria-labelledby="tab-system">
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">Mode de régulation pH/ORP</div>
+                </div>
+                <div class="card__body">
+                  <label class="field">
+                    <span class="field__label">Fonctionnement</span>
+                    <select id="regulation_mode">
+                      <option value="pilote">Piloté (suit la filtration)</option>
+                      <option value="continu">Continu (alimentation liée)</option>
+                    </select>
+                  </label>
+                  <div class="muted small" style="margin-top: 8px;">
+                    <strong>Piloté</strong> : régulation pH et ORP active uniquement pendant la filtration, contrôllée par le PoolController<br>
+                    <strong>Continu</strong> : régulation permanente (alimenter le contrôleur via le circuit filtration)
+                  </div>
+                </div>
+              </div>
+
               <div class="card">
                 <div class="card__head">
                   <div class="card__title">Version du firmware</div>

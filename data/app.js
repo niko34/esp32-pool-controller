@@ -677,10 +677,32 @@
   }
 
   function updateFiltrationControls() {
-    const mode = $("#filtration_mode")?.value || "auto";
+    const modeSelect = $("#filtration_mode");
     const start = $("#filtration_start");
     const end = $("#filtration_end");
-    if (!start || !end) return;
+    const autoHint = $("#filtration_auto_hint");
+    const autoOption = modeSelect?.querySelector('option[value="auto"]');
+    if (!modeSelect || !start || !end) return;
+
+    // Vérifier si la température est activée
+    const tempEnabled = $("#temperature_enabled")?.checked ?? false;
+
+    // Activer/désactiver l'option auto selon la disponibilité de la température
+    if (autoOption) {
+      autoOption.disabled = !tempEnabled;
+    }
+
+    // Afficher l'avertissement si auto n'est pas disponible
+    if (autoHint) {
+      autoHint.style.display = !tempEnabled ? "block" : "none";
+    }
+
+    // Si température désactivée et mode auto sélectionné, basculer vers manuel
+    if (!tempEnabled && modeSelect.value === "auto") {
+      modeSelect.value = "manual";
+    }
+
+    const mode = modeSelect.value || "auto";
 
     if (mode === "manual") {
       start.disabled = false;
@@ -733,14 +755,58 @@
     }
   }
 
+  // Toggle visibility of feature content based on enable switch
+  function updateFeatureVisibility(feature) {
+    const switchMap = {
+      filtration: "filtration_enabled",
+      lighting: "lighting_feature_enabled",
+      temperature: "temperature_enabled",
+      ph: "ph_enabled",
+      orp: "orp_enabled"
+    };
+    const contentMap = {
+      filtration: "filtration-content",
+      lighting: "lighting-content",
+      temperature: "temperature-content",
+      ph: "ph-content",
+      orp: "orp-content"
+    };
+    const dashboardCardMap = {
+      filtration: "dashboard-filtration-card",
+      lighting: "dashboard-lighting-card",
+      temperature: "dashboard-temperature-card",
+      ph: "dashboard-ph-card",
+      orp: "dashboard-orp-card"
+    };
+
+    const switchId = switchMap[feature];
+    const contentId = contentMap[feature];
+    const dashboardCardId = dashboardCardMap[feature];
+    if (!switchId || !contentId) return;
+
+    const switchEl = $(`#${switchId}`);
+    const contentEl = $(`#${contentId}`);
+    const dashboardCardEl = dashboardCardId ? $(`#${dashboardCardId}`) : null;
+    if (!switchEl || !contentEl) return;
+
+    const enabled = switchEl.checked;
+    contentEl.style.display = enabled ? "block" : "none";
+    if (dashboardCardEl) {
+      dashboardCardEl.style.display = enabled ? "" : "none";
+    }
+  }
+
   function updatePhControls() {
     const enabled = $("#ph_enabled")?.checked ?? false;
     const target = $("#ph_target");
     const pump = $("#ph_pump");
     const limit = $("#ph_limit");
+    const correctionType = $("#ph_correction_type");
     if (target) target.disabled = !enabled;
     if (pump) pump.disabled = !enabled;
     if (limit) limit.disabled = !enabled;
+    if (correctionType) correctionType.disabled = !enabled;
+    updateFeatureVisibility("ph");
   }
 
   function updateOrpControls() {
@@ -751,6 +817,7 @@
     if (target) target.disabled = !enabled;
     if (pump) pump.disabled = !enabled;
     if (limit) limit.disabled = !enabled;
+    updateFeatureVisibility("orp");
   }
 
   function collectConfig() {
@@ -767,19 +834,25 @@
 
     const phLimitValue = parseInt($("#ph_limit")?.value || "60", 10);
     const orpLimitValue = parseInt($("#orp_limit")?.value || "60", 10);
+    const regulationMode = $("#regulation_mode")?.value || "pilote";
+    const phCorrectionType = $("#ph_correction_type")?.value || "ph_minus";
 
     const timeUseNtp = $("#time_use_ntp")?.checked ?? true;
     const timeNtpServer = $("#time_ntp_server")?.value || "pool.ntp.org";
     const timeTimezone = $("#time_timezone")?.value || "europe_paris";
     const timeValue = $("#time_value")?.value || "";
 
+    const filtrationEnabled = $("#filtration_enabled")?.checked ?? true;
     const filtrationMode = $("#filtration_mode")?.value || "auto";
     const filtrationStart = $("#filtration_start")?.value || "08:00";
     const filtrationEnd = $("#filtration_end")?.value || "20:00";
 
+    const lightingFeatureEnabled = $("#lighting_feature_enabled")?.checked ?? true;
     const lightingScheduleMode = $("#lighting_schedule_mode")?.value || "disabled";
     const lightingStartTime = $("#lighting_start_time")?.value || "20:00";
     const lightingEndTime = $("#lighting_end_time")?.value || "23:00";
+
+    const temperatureEnabled = $("#temperature_enabled")?.checked ?? true;
 
     return {
       enabled: mqttEnabled?.checked ?? true,
@@ -796,16 +869,21 @@
       orp_pump: isNaN(orpPumpValue) ? 2 : orpPumpValue,
       ph_limit_seconds: isNaN(phLimitValue) ? 60 : phLimitValue,
       orp_limit_seconds: isNaN(orpLimitValue) ? 60 : orpLimitValue,
+      regulation_mode: regulationMode,
+      ph_correction_type: phCorrectionType,
       time_use_ntp: timeUseNtp,
       ntp_server: timeNtpServer,
       manual_time: timeValue,
       timezone_id: timeTimezone,
+      filtration_enabled: filtrationEnabled,
       filtration_mode: filtrationMode,
       filtration_start: filtrationStart,
       filtration_end: filtrationEnd,
+      lighting_feature_enabled: lightingFeatureEnabled,
       lighting_schedule_enabled: lightingScheduleMode === "enabled",
       lighting_start_time: lightingStartTime,
       lighting_end_time: lightingEndTime,
+      temperature_enabled: temperatureEnabled,
       sensor_logs_enabled: $("#sensor_logs_enabled")?.checked === true,
     };
   }
@@ -864,12 +942,16 @@
 
     $("#ph_enabled").checked = cfg.ph_enabled === true;
     $("#orp_enabled").checked = cfg.orp_enabled === true;
+    updateFeatureVisibility("ph");
+    updateFeatureVisibility("orp");
 
     $("#ph_pump").value = cfg.ph_pump === 2 ? "2" : "1";
     $("#orp_pump").value = cfg.orp_pump === 1 ? "1" : "2";
 
     $("#ph_limit").value = typeof cfg.ph_limit_seconds === "number" ? cfg.ph_limit_seconds : 60;
     $("#orp_limit").value = typeof cfg.orp_limit_seconds === "number" ? cfg.orp_limit_seconds : 60;
+    $("#regulation_mode").value = cfg.regulation_mode || "pilote";
+    $("#ph_correction_type").value = cfg.ph_correction_type || "ph_minus";
 
     // pH calibration info
     const phCalValid = cfg.ph_cal_valid === true;
@@ -915,7 +997,10 @@
       }
     }
 
-    // Temperature calibration info
+    // Temperature enabled and calibration info
+    $("#temperature_enabled").checked = cfg.temperature_enabled !== false;
+    updateFeatureVisibility("temperature");
+
     const tempCalibrated = cfg.temp_calibration_date && cfg.temp_calibration_date !== "";
     const tempCalibratedStatus = $("#temp_calibrated_status");
     const tempCalDate = $("#temp_cal_date");
@@ -937,6 +1022,7 @@
     }
 
     // Filtration
+    $("#filtration_enabled").checked = cfg.filtration_enabled !== false;
     if (cfg.filtration_mode) $("#filtration_mode").value = cfg.filtration_mode;
     if (cfg.filtration_start) $("#filtration_start").value = cfg.filtration_start;
     if (cfg.filtration_end) $("#filtration_end").value = cfg.filtration_end;
@@ -946,6 +1032,7 @@
       cachedManualEnd = $("#filtration_end").value;
     }
     updateFiltrationControls();
+    updateFeatureVisibility("filtration");
 
     // Time
     const timeActiveId = document.activeElement?.id || "";
@@ -1161,7 +1248,7 @@
           alerts.push({
             type: 'warning',
             icon: '🔧',
-            message: `Calibration du pH trop ancienne - Dernière calibration :: ${calDate.toLocaleDateString()}`,
+            message: `Calibration de la sonde pH trop ancienne - Dernière calibration :: ${calDate.toLocaleDateString()}`,
             action: 'Aller à calibration',
             actionLink: '#/ph',
             dismissable: true,
@@ -3370,6 +3457,10 @@
     };
 
     // Filtration
+    $("#filtration_enabled")?.addEventListener("change", () => {
+      updateFeatureVisibility("filtration");
+      save();
+    });
     $("#filtration_mode")?.addEventListener("change", () => {
       updateFiltrationControls();
       save();
@@ -3381,6 +3472,12 @@
     $("#filtration_end")?.addEventListener("change", () => {
       cachedManualEnd = $("#filtration_end").value;
       if ($("#filtration_mode").value === "manual") save();
+    });
+
+    // Lighting feature
+    $("#lighting_feature_enabled")?.addEventListener("change", () => {
+      updateFeatureVisibility("lighting");
+      save();
     });
 
     // Lighting schedule
@@ -3397,8 +3494,16 @@
     // pH / ORP regulation
     $("#ph_enabled")?.addEventListener("change", () => { updatePhControls(); save(); });
     $("#orp_enabled")?.addEventListener("change", () => { updateOrpControls(); save(); });
-    ["ph_target", "ph_limit", "ph_pump"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => { updatePhControls(); save(); }));
+    ["ph_target", "ph_limit", "ph_pump", "ph_correction_type"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => { updatePhControls(); save(); }));
     ["orp_target", "orp_limit", "orp_pump"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => { updateOrpControls(); save(); }));
+    $("#regulation_mode")?.addEventListener("change", save);
+
+    // Temperature feature
+    $("#temperature_enabled")?.addEventListener("change", () => {
+      updateFeatureVisibility("temperature");
+      updateFiltrationControls();  // Mode auto dépend de la température
+      save();
+    });
 
     // Development panel - Sensor logs
     $("#sensor_logs_enabled")?.addEventListener("change", save);
@@ -3771,6 +3876,11 @@
   async function loadLightingConfig() {
     try {
       const config = window._config || {};
+
+      // Feature enabled switch
+      $("#lighting_feature_enabled").checked = config.lighting_feature_enabled !== false;
+      updateFeatureVisibility("lighting");
+
       const scheduleMode = $("#lighting_schedule_mode");
       const scheduleSettings = $("#lighting-schedule-settings");
 

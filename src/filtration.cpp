@@ -104,6 +104,22 @@ bool FiltrationManager::isMinutesInRange(int now, int start, int end) {
 }
 
 void FiltrationManager::update() {
+  // Si la fonction filtration est désactivée, arrêter le relais
+  if (!filtrationCfg.enabled) {
+    if (state.running || relayState) {
+      state.running = false;
+      state.cycleMaxTemp = -INFINITY;
+      state.scheduleComputedThisCycle = false;
+      state.startedAtMs = 0;
+      if (relayState) {
+        digitalWrite(FILTRATION_RELAY_PIN, LOW);
+        relayState = false;
+        publishState();
+      }
+    }
+    return;
+  }
+
   ensureTimesValid();
   int nowMinutes = 0;
   bool haveTime = getCurrentMinutesOfDay(nowMinutes);

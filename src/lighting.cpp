@@ -68,6 +68,16 @@ void LightingManager::setManualOff() {
 }
 
 void LightingManager::update() {
+  // Si la fonction éclairage est désactivée, éteindre
+  if (!lightingCfg.featureEnabled) {
+    if (relayState) {
+      digitalWrite(LIGHTING_RELAY_PIN, LOW);
+      relayState = false;
+      publishState();
+    }
+    return;
+  }
+
   ensureTimesValid();
 
   bool shouldBeOn = false;

@@ -77,16 +77,20 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["orp_pump"] = mqttCfg.orpPump;
   doc["ph_limit_seconds"] = mqttCfg.phInjectionLimitSeconds;
   doc["orp_limit_seconds"] = mqttCfg.orpInjectionLimitSeconds;
+  doc["regulation_mode"] = mqttCfg.regulationMode;
+  doc["ph_correction_type"] = mqttCfg.phCorrectionType;
   doc["time_use_ntp"] = mqttCfg.timeUseNtp;
   doc["ntp_server"] = mqttCfg.ntpServer;
   doc["manual_time"] = mqttCfg.manualTimeIso;
   doc["timezone_id"] = mqttCfg.timezoneId;
+  doc["filtration_enabled"] = filtrationCfg.enabled;
   doc["filtration_mode"] = filtrationCfg.mode;
   doc["filtration_start"] = filtrationCfg.start;
   doc["filtration_end"] = filtrationCfg.end;
   doc["filtration_has_reference"] = filtrationCfg.hasAutoReference;
   doc["filtration_reference_temp"] = filtrationCfg.autoReferenceTemp;
   doc["filtration_running"] = filtration.isRunning();
+  doc["lighting_feature_enabled"] = lightingCfg.featureEnabled;
   doc["lighting_enabled"] = lightingCfg.enabled;
   doc["lighting_brightness"] = lightingCfg.brightness;
   doc["lighting_schedule_enabled"] = lightingCfg.scheduleEnabled;
@@ -138,6 +142,7 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // Données de calibration Température
   doc["temp_calibration_offset"] = mqttCfg.tempCalibrationOffset;
   doc["temp_calibration_date"] = mqttCfg.tempCalibrationDate;
+  doc["temperature_enabled"] = mqttCfg.temperatureEnabled;
 
   // Configuration d'authentification
   doc["auth_enabled"] = authCfg.enabled;
@@ -240,6 +245,18 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["orp_pump"].isNull()) mqttCfg.orpPump = doc["orp_pump"];
   if (!doc["ph_limit_seconds"].isNull()) mqttCfg.phInjectionLimitSeconds = doc["ph_limit_seconds"];
   if (!doc["orp_limit_seconds"].isNull()) mqttCfg.orpInjectionLimitSeconds = doc["orp_limit_seconds"];
+  if (!doc["regulation_mode"].isNull()) {
+    String mode = doc["regulation_mode"].as<String>();
+    if (mode == "continu" || mode == "pilote") {
+      mqttCfg.regulationMode = mode;
+    }
+  }
+  if (!doc["ph_correction_type"].isNull()) {
+    String corrType = doc["ph_correction_type"].as<String>();
+    if (corrType == "ph_minus" || corrType == "ph_plus") {
+      mqttCfg.phCorrectionType = corrType;
+    }
+  }
   if (!doc["time_use_ntp"].isNull()) mqttCfg.timeUseNtp = doc["time_use_ntp"];
   if (!doc["ntp_server"].isNull()) mqttCfg.ntpServer = doc["ntp_server"].as<String>();
   if (!doc["manual_time"].isNull()) {
@@ -284,6 +301,7 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     }
   }
   if (!doc["timezone_id"].isNull()) mqttCfg.timezoneId = doc["timezone_id"].as<String>();
+  if (!doc["filtration_enabled"].isNull()) filtrationCfg.enabled = doc["filtration_enabled"];
   if (!doc["filtration_mode"].isNull()) filtrationCfg.mode = doc["filtration_mode"].as<String>();
   if (!doc["filtration_start"].isNull()) filtrationCfg.start = doc["filtration_start"].as<String>();
   if (!doc["filtration_end"].isNull()) filtrationCfg.end = doc["filtration_end"].as<String>();
@@ -291,6 +309,7 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["filtration_reference_temp"].isNull()) filtrationCfg.autoReferenceTemp = doc["filtration_reference_temp"];
   if (!doc["max_ph_ml_per_day"].isNull()) safetyLimits.maxPhMinusMlPerDay = doc["max_ph_ml_per_day"];
   if (!doc["max_chlorine_ml_per_day"].isNull()) safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"];
+  if (!doc["lighting_feature_enabled"].isNull()) lightingCfg.featureEnabled = doc["lighting_feature_enabled"];
   if (!doc["lighting_enabled"].isNull()) lightingCfg.enabled = doc["lighting_enabled"];
   if (!doc["lighting_brightness"].isNull()) lightingCfg.brightness = doc["lighting_brightness"];
   if (!doc["lighting_schedule_enabled"].isNull()) lightingCfg.scheduleEnabled = doc["lighting_schedule_enabled"];
@@ -320,6 +339,9 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
   if (!doc["temp_calibration_date"].isNull()) {
     mqttCfg.tempCalibrationDate = doc["temp_calibration_date"].as<String>();
+  }
+  if (!doc["temperature_enabled"].isNull()) {
+    mqttCfg.temperatureEnabled = doc["temperature_enabled"];
   }
 
   // Configuration d'authentification

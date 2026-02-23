@@ -2,6 +2,7 @@
 #include "config.h"
 #include "logger.h"
 #include "sensors.h"
+#include "filtration.h"
 #include <esp_task_wdt.h>
 
 PumpControllerClass PumpController;
@@ -107,6 +108,15 @@ bool PumpControllerClass::shouldContinueDosing(float error, float stopThreshold,
   return false;  // Arrêter
 }
 
+bool PumpControllerClass::canDose() {
+  // En mode continu : toujours OK (l'alimentation du contrôleur suit la filtration)
+  if (mqttCfg.regulationMode == "continu") {
+    return true;
+  }
+  // En mode piloté : uniquement si la filtration est active
+  return filtration.isRunning();
+}
+
 float PumpControllerClass::computePID(PIDController& pid, float error, unsigned long now) {
   if (pid.lastTime == 0) {
     pid.lastTime = now;
@@ -186,7 +196,8 @@ bool PumpControllerClass::checkSafetyLimits(bool isPhPump) {
   if (isPhPump) {
     if (safetyLimits.dailyPhInjectedMl >= safetyLimits.maxPhMinusMlPerDay) {
       if (!safetyLimits.phLimitReached) {
-        systemLogger.critical("LIMITE JOURNALIÈRE pH- ATTEINTE: " + String(safetyLimits.dailyPhInjectedMl) + " ml");
+        String corrType = (mqttCfg.phCorrectionType == "ph_plus") ? "pH+" : "pH-";
+        systemLogger.critical("LIMITE JOURNALIÈRE " + corrType + " ATTEINTE: " + String(safetyLimits.dailyPhInjectedMl) + " ml");
         safetyLimits.phLimitReached = true;
       }
       return false;
@@ -236,6 +247,19 @@ void PumpControllerClass::update() {
     return;
   }
 
+  // Vérifier si le dosage est autorisé (mode régulation + état filtration)
+  if (!canDose()) {
+    // Arrêter le dosage en cours si la filtration s'arrête
+    if (phDosingState.active || orpDosingState.active) {
+      systemLogger.info("Dosage suspendu (filtration arrêtée ou mode piloté)");
+      phDosingState.active = false;
+      orpDosingState.active = false;
+    }
+    applyPumpDuty(0, 0);
+    applyPumpDuty(1, 0);
+    return;
+  }
+
   uint8_t desiredDuty[2] = {0, 0};
   bool phActive = false;
   bool orpActive = false;
@@ -263,7 +287,15 @@ void PumpControllerClass::update() {
     float phValue = sensors.getPh();
     float effectivePh = phValue;
 
-    float error = effectivePh - mqttCfg.phTarget;
+    // Calcul de l'erreur selon le type de correction
+    // pH- (acide) : dose quand pH > cible → error = pH - cible (positive si pH trop haut)
+    // pH+ (base)  : dose quand pH < cible → error = cible - pH (positive si pH trop bas)
+    float error;
+    if (mqttCfg.phCorrectionType == "ph_plus") {
+      error = mqttCfg.phTarget - effectivePh;
+    } else {
+      error = effectivePh - mqttCfg.phTarget;
+    }
     
     // Déterminer si on doit doser (avec protection anti-cycling)
     bool shouldDose = false;
@@ -301,7 +333,7 @@ void PumpControllerClass::update() {
         systemLogger.info("Arrêt dosage pH (durée: " + String(runTime) + "s)");
       }
       
-      // Reset PID si erreur négative (pH trop bas)
+      // Reset PID si erreur négative (pH hors plage de correction)
       if (error < -pumpProtection.phStopThreshold) {
         phPID.integral = 0.0f;
         phPID.lastError = 0.0f;

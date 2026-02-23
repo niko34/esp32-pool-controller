@@ -61,6 +61,9 @@ private:
   bool shouldStartDosing(float error, float startThreshold, DosingState& state, unsigned long now);
   bool shouldContinueDosing(float error, float stopThreshold, DosingState& state, unsigned long now);
 
+  // Vérifie si le dosage est autorisé (selon mode régulation et état filtration)
+  bool canDose();
+
 public:
   PumpControllerClass();
 

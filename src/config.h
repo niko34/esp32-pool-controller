@@ -52,6 +52,8 @@ struct MqttConfig {
   int orpPump = 2;
   int phInjectionLimitSeconds = 60;
   int orpInjectionLimitSeconds = 60;
+  String regulationMode = "pilote";  // "continu" ou "pilote"
+  String phCorrectionType = "ph_minus";  // "ph_minus" (acide) ou "ph_plus" (base)
   bool timeUseNtp = true;
   String ntpServer = "pool.ntp.org";
   String manualTimeIso = "";
@@ -79,9 +81,11 @@ struct MqttConfig {
   // Formule appliquée: Temp_final = Temp_brut + offset
   float tempCalibrationOffset = 0.0f; // Offset de calibration température (°C)
   String tempCalibrationDate = "";    // Date de calibration température (ISO 8601)
+  bool temperatureEnabled = true;     // Fonction température activée/désactivée
 };
 
 struct FiltrationConfig {
+  bool enabled = true;  // Fonction filtration activée/désactivée
   String mode = "auto"; // auto, manual, off
   String start = "08:00";
   String end = "20:00";
@@ -90,6 +94,7 @@ struct FiltrationConfig {
 };
 
 struct LightingConfig {
+  bool featureEnabled = true;          // Fonction éclairage activée/désactivée (masque l'UI)
   bool enabled = false;                // Éclairage ON/OFF manuel
   uint8_t brightness = 255;            // Luminosité PWM (0-255)
   bool scheduleEnabled = false;        // Programmation activée/désactivée

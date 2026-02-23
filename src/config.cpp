@@ -104,6 +104,8 @@ void saveMqttConfig() {
   prefs.putBool("orp_enabled", mqttCfg.orpEnabled);
   prefs.putInt("orp_pump", mqttCfg.orpPump);
   prefs.putInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
+  prefs.putString("reg_mode", mqttCfg.regulationMode);
+  prefs.putString("ph_corr_type", mqttCfg.phCorrectionType);
 
   // Calibration ORP - 1 ou 2 points
   prefs.putFloat("orp_cal_off", mqttCfg.orpCalibrationOffset);
@@ -117,6 +119,7 @@ void saveMqttConfig() {
   // Calibration Température
   prefs.putFloat("temp_cal_off", mqttCfg.tempCalibrationOffset);
   prefs.putString("temp_cal_date", mqttCfg.tempCalibrationDate);
+  prefs.putBool("temp_enabled", mqttCfg.temperatureEnabled);
 
   // Temps
   prefs.putBool("time_use_ntp", mqttCfg.timeUseNtp);
@@ -125,6 +128,7 @@ void saveMqttConfig() {
   prefs.putString("timezone_id", mqttCfg.timezoneId);
 
   // Filtration
+  prefs.putBool("filt_enabled", filtrationCfg.enabled);
   prefs.putString("filt_mode", filtrationCfg.mode);
   prefs.putString("filt_start", filtrationCfg.start);
   prefs.putString("filt_end", filtrationCfg.end);
@@ -132,6 +136,7 @@ void saveMqttConfig() {
   prefs.putFloat("filt_ref_temp", filtrationCfg.autoReferenceTemp);
 
   // Éclairage
+  prefs.putBool("light_feat_en", lightingCfg.featureEnabled);
   prefs.putBool("light_enabled", lightingCfg.enabled);
   prefs.putUChar("light_bright", lightingCfg.brightness);
   prefs.putBool("light_sched_en", lightingCfg.scheduleEnabled);
@@ -187,6 +192,8 @@ void loadMqttConfig() {
   mqttCfg.orpEnabled = prefs.getBool("orp_enabled", mqttCfg.orpEnabled);
   mqttCfg.orpPump = prefs.getInt("orp_pump", mqttCfg.orpPump);
   mqttCfg.orpInjectionLimitSeconds = prefs.getInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
+  mqttCfg.regulationMode = prefs.getString("reg_mode", "pilote");
+  mqttCfg.phCorrectionType = prefs.getString("ph_corr_type", "ph_minus");
 
   // Calibration ORP - 1 ou 2 points
   mqttCfg.orpCalibrationOffset = prefs.getFloat("orp_cal_off", mqttCfg.orpCalibrationOffset);
@@ -198,6 +205,7 @@ void loadMqttConfig() {
   // Calibration Température
   mqttCfg.tempCalibrationOffset = prefs.getFloat("temp_cal_off", 0.0f);
   mqttCfg.tempCalibrationDate = prefs.getString("temp_cal_date", "");
+  mqttCfg.temperatureEnabled = prefs.getBool("temp_enabled", mqttCfg.temperatureEnabled);
 
   // Temps
   mqttCfg.timeUseNtp = prefs.getBool("time_use_ntp", mqttCfg.timeUseNtp);
@@ -206,6 +214,7 @@ void loadMqttConfig() {
   mqttCfg.timezoneId = prefs.getString("timezone_id", mqttCfg.timezoneId);
 
   // Filtration
+  filtrationCfg.enabled = prefs.getBool("filt_enabled", filtrationCfg.enabled);
   filtrationCfg.mode = prefs.getString("filt_mode", filtrationCfg.mode);
   filtrationCfg.start = prefs.getString("filt_start", filtrationCfg.start);
   filtrationCfg.end = prefs.getString("filt_end", filtrationCfg.end);
@@ -213,6 +222,7 @@ void loadMqttConfig() {
   filtrationCfg.autoReferenceTemp = prefs.getFloat("filt_ref_temp", filtrationCfg.autoReferenceTemp);
 
   // Éclairage
+  lightingCfg.featureEnabled = prefs.getBool("light_feat_en", lightingCfg.featureEnabled);
   lightingCfg.enabled = prefs.getBool("light_enabled", lightingCfg.enabled);
   lightingCfg.brightness = prefs.getUChar("light_bright", lightingCfg.brightness);
   lightingCfg.scheduleEnabled = prefs.getBool("light_sched_en", lightingCfg.scheduleEnabled);
