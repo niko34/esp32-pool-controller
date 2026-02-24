@@ -4,7 +4,7 @@ Disclaimer : ce projet est en cours de construction. Il n'est pas utilisable en 
 
 Contrôleur automatique de piscine basé sur ESP32 avec gestion pH, ORP (chlore), température et filtration automatique. Intégration complète avec Home Assistant via MQTT.
 
-**Version actuelle**: 2026.2
+**Version actuelle**: 2.3.1
 
 ## 🎯 Fonctionnalités
 
@@ -434,7 +434,7 @@ Si vous oubliez le mot de passe administrateur de l'interface web, vous pouvez l
 
 ## 📈 Changelog
 
-### Version 2026.2 (Février 2026)
+### Version 2.3.1
 - ✅ **Type de correction pH** : Choix entre pH- (acide) et pH+ (base) selon le produit
 - ✅ **Mode de régulation** : Piloté (dosage si filtration active) ou Continu (permanent)
 - ✅ **Toggles de fonctionnalités** : Activation/désactivation de chaque fonction (Filtration, Éclairage, Température, pH, ORP)
@@ -442,7 +442,7 @@ Si vous oubliez le mot de passe administrateur de l'interface web, vous pouvez l
 - ✅ **Mode Auto filtration conditionnel** : Nécessite l'activation de la mesure de température
 - ✅ **Gestion éclairage** : On/Off manuel et programmation horaire avec relais dédié
 
-### Version 2026.1.21
+### Version 2.3.0
 - ✅ Graphiques pH/ORP avec échelle dynamique (adaptation automatique si valeurs hors plage)
 - ✅ Zones rouges adaptatives sur graphiques pH/ORP (zones hors plage visibles)
 - ✅ Bouton reset mot de passe admin sur GPIO4 (10 secondes, feedback LED)
@@ -452,7 +452,7 @@ Si vous oubliez le mot de passe administrateur de l'interface web, vous pouvez l
 - ✅ Table de partitions optimisée (1344KB LittleFS + 128KB history)
 - ✅ Documentation complète (BUILD.md, MINIFICATION.md)
 
-### Version 2026.1.6
+### Version 2.2.0
 - ✅ Augmentation PWM à 20kHz pour éliminer le sifflement des pompes
 - ✅ Interface de test manuel des pompes avec contrôle de puissance (0-100%)
 - ✅ Optimisation ADS1115 avec GAIN_ONE pour compatibilité 3.3V
@@ -548,5 +548,4 @@ Ce projet est fourni "tel quel" sans garantie. L'utilisation de produits chimiqu
 ---
 
 **Auteur**: Nicolas Philippe
-**Version**: 2026.2
-**Dernière mise à jour**: Février 2026
+**Version**: 2.3.1

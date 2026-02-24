@@ -16,7 +16,7 @@ curl http://poolcontroller.local/get-system-info
 **Réponse (JSON) :**
 ```json
 {
-  "firmware_version": "2026.2.1",
+  "firmware_version": "2.3.1",
   "build_date": "Feb 24 2026",
   "build_time": "14:30:45",
   "chip_model": "ESP32-D0WDQ6",
@@ -143,7 +143,7 @@ curl http://poolcontroller.local/get-config
 }
 ```
 
-**Nouveaux paramètres (v2026.1+) :**
+**Nouveaux paramètres (v2.3+) :**
 
 | Paramètre | Type | Description |
 |-----------|------|-------------|

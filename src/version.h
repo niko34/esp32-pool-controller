@@ -1,9 +1,11 @@
 #ifndef VERSION_H
 #define VERSION_H
 
-// Format de version: ANNÉE.MOIS.RÉVISION
-// Exemple: 2026.2.1 = Février 2026, révision 1
-#define FIRMWARE_VERSION "2026.2.1"
+// Format de version: MAJEUR.MINEUR.CORRECTIF (SemVer)
+// MAJEUR = changements incompatibles
+// MINEUR = nouvelles fonctionnalités rétrocompatibles
+// CORRECTIF = corrections de bugs
+#define FIRMWARE_VERSION "2.3.1"
 #define FIRMWARE_BUILD_DATE __DATE__
 #define FIRMWARE_BUILD_TIME __TIME__
 

@@ -1,6 +1,6 @@
 # Changelog - ESP32 Pool Controller
 
-## [2026.2] - Février 2026 - Fonctionnalités Avancées
+## [2.3.1] - Fonctionnalités Avancées
 
 ### ✨ Nouvelles Fonctionnalités
 
