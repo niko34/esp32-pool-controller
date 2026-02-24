@@ -232,6 +232,8 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   response["update_available"] = updateAvailable;
   response["firmware_url"] = firmwareUrl;
   response["filesystem_url"] = filesystemUrl;
+  response["release_name"] = doc["name"];
+  response["published_at"] = doc["published_at"];
   response["release_notes"] = doc["body"];
 
   String json;
