@@ -36,10 +36,11 @@
 
 | GPIO | Fonction | Destination | Type |
 |------|----------|-------------|------|
-| 4 | OneWire | DS18B20 Température | Input avec pull-up 4.7kΩ |
+| 4 | Input | Bouton Reset Password | Input avec pull-up interne (10s pour reset) |
+| 5 | OneWire | DS18B20 Température | Input avec pull-up 4.7kΩ |
 | 27 | Output | Relais Filtration | Output 3.3V → 5V relay module |
-| 25 | PWM (CH0) | Pompe 1 - Gate MOSFET | LEDC 1kHz, 8-bit → IRLZ44N |
-| 26 | PWM (CH1) | Pompe 2 - Gate MOSFET | LEDC 1kHz, 8-bit → IRLZ44N |
+| 25 | PWM (CH0) | Pompe 1 - Gate MOSFET | LEDC 20kHz, 8-bit → IRLZ44N |
+| 26 | PWM (CH1) | Pompe 2 - Gate MOSFET | LEDC 20kHz, 8-bit → IRLZ44N |
 
 ### Broches Réservées (Ne Pas Utiliser)
 
@@ -139,7 +140,7 @@ DS18B20 (étanche)                ESP32
 │              │                │         │
 │  Black (GND) ├────────────────┤ GND     │
 │              │        ┌───────┤         │
-│  Yellow (Data)├───┬───┤       │ GPIO 4  │
+│  Yellow (Data)├───┬───┤       │ GPIO 5  │
 │              │   │   │        │         │
 └──────────────┘   │   │        │         │
                    │   │        │         │

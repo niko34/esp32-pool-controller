@@ -1,5 +1,33 @@
 # Changelog - ESP32 Pool Controller
 
+## [2026.2] - Février 2026 - Fonctionnalités Avancées
+
+### ✨ Nouvelles Fonctionnalités
+
+#### Régulation pH+/pH-
+- **Type de correction configurable** : Choix entre pH- (acide) et pH+ (base) selon le produit utilisé
+- **Logique de dosage adaptée** : Le sens de correction s'inverse automatiquement selon le type
+
+#### Mode de Régulation
+- **Mode Piloté** : La régulation pH/ORP ne fonctionne que lorsque la filtration est active
+- **Mode Continu** : La régulation fonctionne en permanence (pour alimentation liée à la filtration)
+
+#### Toggles de Fonctionnalités
+- **Activation/désactivation par fonction** : Filtration, Éclairage, Température, pH, ORP
+- **Visibilité dashboard dynamique** : Les widgets non utilisés sont masqués automatiquement
+- **Mode Auto filtration conditionnel** : Nécessite l'activation de la mesure de température
+
+#### Éclairage
+- **Gestion complète de l'éclairage** : On/Off manuel et programmation horaire
+- **Relais dédié** : Contrôle via GPIO configurable
+
+### 🔧 Améliorations
+- Interface utilisateur plus claire avec sections conditionnelles
+- Persistance de tous les paramètres en NVS
+- Documentation API mise à jour
+
+---
+
 ## [2.0.0] - 2024 - Refonte Majeure
 
 ### 🎯 Objectifs de la v2.0
@@ -224,4 +252,4 @@ MIT License - Voir fichier LICENSE
 
 ---
 
-**Pour migration v1→v2, voir [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md)**
+**Note** : La migration v1→v2 est obsolète. Les nouvelles installations utilisent directement la version actuelle.

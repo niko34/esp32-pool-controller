@@ -43,15 +43,17 @@ Le fichier sera généré dans : `.pio/build/esp32dev/firmware.bin`
 Contient les fichiers web (HTML, CSS, JS, images).
 
 **Quand mettre à jour :**
-- Modifications de l'interface web (config.html, index.html)
-- Changements de CSS/JavaScript
+- Modifications de l'interface web (index.html, login.html)
+- Changements de CSS/JavaScript (app.css, app.js)
 - Nouveaux fichiers statiques
 
 **Comment générer :**
 ```bash
-pio run --target buildfs
+./build_fs.sh
 ```
 Le fichier sera généré dans : `.pio/build/esp32dev/littlefs.bin`
+
+⚠️ **Important** : Ne PAS utiliser `pio run --target buildfs` car cette commande utilise une mauvaise taille de partition (128KB au lieu de 1344KB). Utilisez toujours `./build_fs.sh` qui minifie les fichiers et construit le filesystem avec la bonne taille.
 
 ## Procédure de Mise à Jour via l'Interface Web
 
@@ -94,7 +96,7 @@ echo "🔨 Compilation du firmware..."
 pio run || exit 1
 
 echo "🔨 Construction du système de fichiers..."
-pio run --target buildfs || exit 1
+./build_fs.sh || exit 1
 
 echo "📤 Mise à jour du firmware..."
 curl -X POST -F "update=@.pio/build/esp32dev/firmware.bin" http://$ESP32_HOST/update
@@ -184,8 +186,11 @@ jobs:
       - name: Build Firmware
         run: pio run
 
+      - name: Install Node dependencies
+        run: npm install
+
       - name: Build Filesystem
-        run: pio run --target buildfs
+        run: ./build_fs.sh
 
       - name: Deploy to ESP32
         env:
@@ -246,8 +251,8 @@ Pour distribuer une mise à jour :
 # 2. Compiler le firmware
 pio run
 
-# 3. Construire le système de fichiers
-pio run --target buildfs
+# 3. Construire le système de fichiers (avec minification)
+./build_fs.sh
 
 # 4. Les fichiers seront dans :
 # - Firmware : .pio/build/esp32dev/firmware.bin

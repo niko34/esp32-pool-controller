@@ -51,7 +51,7 @@ vim data/app.css
 Pour tester les fichiers minifiés sans uploader:
 
 ```bash
-python3 minify.py
+node minify.js
 # Vérifier data-build/
 ```
 
@@ -72,24 +72,30 @@ Ou utiliser le script de déploiement complet:
 
 ## Script de minification
 
-### minify.py
+### minify.js
 
-Script Python pur (sans dépendances externes) qui:
+Script Node.js utilisant des outils professionnels standards de l'industrie :
 
-- **JavaScript**: Supprime commentaires, espaces superflus, sauts de ligne
-- **CSS**: Supprime commentaires, espaces, optimise la syntaxe
-- **HTML**: Supprime commentaires, espaces entre balises, minifie les `<script>` et `<style>` intégrés
-- **Images/binaires**: Copiés tels quels (pas de minification)
+- **JavaScript** : Minification via **Terser** (suppression commentaires, renommage variables, optimisation)
+- **CSS** : Minification via **CleanCSS** (suppression commentaires, optimisation syntaxe)
+- **HTML** : Minification via **html-minifier-terser** (suppression commentaires, espaces, minification des scripts et styles intégrés)
+- **Images/binaires** : Copiés tels quels (pas de minification)
 
-### Limitations
+### Dépendances
 
-La minification basique ne fait pas:
-- Renommage de variables (obfuscation)
-- Tree shaking
-- Compression gzip/brotli
-- Optimisation d'images
+Les outils sont installés via npm (voir `package.json`) :
+```bash
+npm install  # Installe terser, clean-css, html-minifier-terser
+```
 
-Pour une optimisation maximale, utilisez des outils externes (uglify-js, terser, csso) et copiez les résultats dans `data/`.
+### Fonctionnalités
+
+La minification inclut :
+- ✅ Suppression des commentaires
+- ✅ Suppression des espaces superflus
+- ✅ Renommage des variables (JavaScript)
+- ✅ Optimisation de la syntaxe CSS
+- ✅ Minification des scripts inline dans le HTML
 
 ## Dépannage
 

@@ -16,8 +16,8 @@ curl http://poolcontroller.local/get-system-info
 **Réponse (JSON) :**
 ```json
 {
-  "firmware_version": "2025.1.1",
-  "build_date": "Dec 21 2025",
+  "firmware_version": "2026.2.1",
+  "build_date": "Feb 24 2026",
   "build_time": "14:30:45",
   "chip_model": "ESP32-D0WDQ6",
   "chip_revision": 1,
@@ -112,26 +112,50 @@ curl http://poolcontroller.local/get-config
   "username": "user",
   "password": "******",
   "enabled": true,
+  "regulation_mode": "pilote",
+  "ph_correction_type": "minus",
   "ph_target": 7.2,
   "orp_target": 700,
-  "ph_enabled": true,
+  "ph_regulation_enabled": true,
   "ph_pump": 1,
-  "orp_enabled": true,
+  "orp_regulation_enabled": true,
   "orp_pump": 2,
   "ph_limit_seconds": 300,
   "orp_limit_seconds": 300,
   "time_use_ntp": true,
   "ntp_server": "pool.ntp.org",
   "timezone_id": "europe_paris",
+  "filtration_enabled": true,
   "filtration_mode": "auto",
   "filtration_start": "08:00",
   "filtration_end": "20:00",
+  "lighting_feature_enabled": true,
+  "lighting_enabled": false,
+  "lighting_schedule_enabled": true,
+  "lighting_start": "20:00",
+  "lighting_end": "23:00",
+  "temperature_enabled": true,
   "wifi_ssid": "MonWiFi",
   "wifi_ip": "192.168.1.100",
   "max_ph_ml_per_day": 1000,
   "max_chlorine_ml_per_day": 1000,
   "time_current": "2025-12-21T14:30:45"
 }
+```
+
+**Nouveaux paramètres (v2026.1+) :**
+
+| Paramètre | Type | Description |
+|-----------|------|-------------|
+| `regulation_mode` | string | `"pilote"` (dosage si filtration active) ou `"continu"` (dosage permanent) |
+| `ph_correction_type` | string | `"minus"` (acide pH-) ou `"plus"` (base pH+) |
+| `filtration_enabled` | bool | Activation de la fonction filtration |
+| `lighting_feature_enabled` | bool | Activation de la fonction éclairage |
+| `lighting_enabled` | bool | État actuel de l'éclairage (on/off) |
+| `lighting_schedule_enabled` | bool | Programmation horaire de l'éclairage |
+| `lighting_start` | string | Heure de début éclairage (HH:MM) |
+| `lighting_end` | string | Heure de fin éclairage (HH:MM) |
+| `temperature_enabled` | bool | Activation de la mesure de température |
 ```
 
 ---
@@ -360,12 +384,37 @@ app.listen(3000);
 
 ## Authentification
 
-Actuellement, l'API ne nécessite **pas d'authentification**. Il est recommandé de :
+L'interface web et certaines API sont protégées par authentification.
+
+### Endpoints Publics (sans authentification)
+- `GET /data` - Données capteurs temps réel
+- `GET /time-now` - Heure actuelle
+
+### Endpoints Protégés (authentification requise)
+- `GET /get-config` - Configuration complète
+- `POST /save-config` - Sauvegarde configuration
+- `POST /update` - Mise à jour OTA
+- `GET /get-system-info` - Informations système
+- Toutes les pages web (sauf `/login.html`)
+
+### Méthode d'Authentification
+
+**Session Cookie** : Après connexion via `/login.html`, un cookie de session est créé.
+
+**Token API** : Pour les appels automatisés, utiliser le header `Authorization`:
+```bash
+curl -H "Authorization: Bearer <token>" http://poolcontroller.local/get-config
+```
+
+Le token API est généré lors de la première configuration et peut être régénéré via l'interface web (Système → Régénérer Token).
+
+### Recommandations de Sécurité
 
 1. Utiliser un réseau WiFi sécurisé
 2. Ne pas exposer l'ESP32 sur Internet directement
 3. Utiliser un VPN pour l'accès distant
 4. Configurer un firewall sur votre routeur
+5. Changer le mot de passe admin par défaut
 
 ---
 

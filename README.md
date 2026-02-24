@@ -4,7 +4,7 @@ Disclaimer : ce projet est en cours de construction. Il n'est pas utilisable en 
 
 Contrôleur automatique de piscine basé sur ESP32 avec gestion pH, ORP (chlore), température et filtration automatique. Intégration complète avec Home Assistant via MQTT.
 
-**Version actuelle**: 2025.12.21
+**Version actuelle**: 2026.2
 
 ## 🎯 Fonctionnalités
 
@@ -226,23 +226,20 @@ Pompe 2 (Chlore): Identique sur GPIO 26
 
 Le capteur DFRobot utilise la librairie DFRobot_PH qui gère automatiquement la calibration en EEPROM.
 
-**Calibration 1 point (pH neutre 7.0)**:
-```cpp
-// Dans l'interface série, envoyer:
-ENTERPH  // Mode calibration
-CAL:7.0  // Calibrer à pH 7.0 (solution tampon)
-EXITPH   // Sortir calibration
-```
+**Calibration 1 point (pH neutre 7.0)** via l'interface web :
+1. Aller dans **Configuration** → Section **Calibration pH**
+2. Plonger la sonde dans solution **pH 7.0**, attendre stabilisation (30-60s)
+3. Cliquer sur **"Calibrer pH Neutre"**
 
-**Calibration 2 points (pH 4.0 et 9.18)**:
-```cpp
-// 1. Solution pH 4.0
-ENTERPH
-CAL:4.0
-// Rincer, puis solution pH 9.18
-CAL:9.18
-EXITPH
-```
+**Calibration 2 points (pH 4.0 et 7.0)** via l'interface web :
+1. Aller dans **Configuration** → Section **Calibration pH**
+2. Plonger la sonde dans solution **pH 7.0**, attendre stabilisation
+3. Cliquer sur **"Calibrer pH Neutre"**
+4. Rincer la sonde à l'eau distillée
+5. Plonger la sonde dans solution **pH 4.0**, attendre stabilisation
+6. Cliquer sur **"Calibrer pH Acide"**
+
+> **Note** : La librairie DFRobot_PH ne supporte que pH 4.0 et 7.0. Les solutions pH 9 ou 10 ne sont pas supportées.
 
 **Compensation de température**: La librairie applique automatiquement la compensation avec la température mesurée par la DS18B20.
 
@@ -437,7 +434,15 @@ Si vous oubliez le mot de passe administrateur de l'interface web, vous pouvez l
 
 ## 📈 Changelog
 
-### Version 2025.12.21
+### Version 2026.2 (Février 2026)
+- ✅ **Type de correction pH** : Choix entre pH- (acide) et pH+ (base) selon le produit
+- ✅ **Mode de régulation** : Piloté (dosage si filtration active) ou Continu (permanent)
+- ✅ **Toggles de fonctionnalités** : Activation/désactivation de chaque fonction (Filtration, Éclairage, Température, pH, ORP)
+- ✅ **Visibilité dashboard dynamique** : Les widgets non utilisés sont masqués automatiquement
+- ✅ **Mode Auto filtration conditionnel** : Nécessite l'activation de la mesure de température
+- ✅ **Gestion éclairage** : On/Off manuel et programmation horaire avec relais dédié
+
+### Version 2026.1.21
 - ✅ Graphiques pH/ORP avec échelle dynamique (adaptation automatique si valeurs hors plage)
 - ✅ Zones rouges adaptatives sur graphiques pH/ORP (zones hors plage visibles)
 - ✅ Bouton reset mot de passe admin sur GPIO4 (10 secondes, feedback LED)
@@ -447,7 +452,7 @@ Si vous oubliez le mot de passe administrateur de l'interface web, vous pouvez l
 - ✅ Table de partitions optimisée (1344KB LittleFS + 128KB history)
 - ✅ Documentation complète (BUILD.md, MINIFICATION.md)
 
-### Version 2025.12.6
+### Version 2026.1.6
 - ✅ Augmentation PWM à 20kHz pour éliminer le sifflement des pompes
 - ✅ Interface de test manuel des pompes avec contrôle de puissance (0-100%)
 - ✅ Optimisation ADS1115 avec GAIN_ONE pour compatibilité 3.3V
@@ -543,5 +548,5 @@ Ce projet est fourni "tel quel" sans garantie. L'utilisation de produits chimiqu
 ---
 
 **Auteur**: Nicolas Philippe
-**Version**: 2025.12.21
-**Dernière mise à jour**: Décembre 2025
+**Version**: 2026.2
+**Dernière mise à jour**: Février 2026

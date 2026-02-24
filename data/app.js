@@ -965,16 +965,15 @@
       phCalibratedStatus.style.display = phCalValid ? "block" : "none";
     }
 
-    if (phCalDate) {
-      if (phCalDateStr && phCalValid) {
-        const d = new Date(phCalDateStr);
-        let t = "Dernière calibration : " + d.toLocaleString("fr-FR");
-        if (phCalTemp && !isNaN(phCalTemp)) t += ` à ${phCalTemp.toFixed(1)}°C`;
-        phCalDate.textContent = t;
-      } else {
-        phCalDate.textContent = "Dernière calibration : —";
-      }
+    const phCalDateHeader = $("#ph_cal_date_header");
+    let phCalText = "Dernière calibration : —";
+    if (phCalDateStr && phCalValid) {
+      const d = new Date(phCalDateStr);
+      phCalText = "Dernière calibration : " + d.toLocaleString("fr-FR");
+      if (phCalTemp && !isNaN(phCalTemp)) phCalText += ` à ${phCalTemp.toFixed(1)}°C`;
     }
+    if (phCalDate) phCalDate.textContent = phCalText;
+    if (phCalDateHeader) phCalDateHeader.textContent = phCalText;
 
     // ORP calibration info
     const orpCalibrated = cfg.orp_calibration_date && cfg.orp_calibration_date !== "";
@@ -985,17 +984,16 @@
       orpCalibratedStatus.style.display = orpCalibrated ? "block" : "none";
     }
 
-    if (orpCalDate) {
-      if (orpCalibrated) {
-        const d = new Date(cfg.orp_calibration_date);
-        const ref = cfg.orp_calibration_reference;
-        let t = "Dernière calibration : " + d.toLocaleString("fr-FR");
-        if (ref && ref > 0) t += ` (réf: ${ref.toFixed(0)} mV)`;
-        orpCalDate.textContent = t;
-      } else {
-        orpCalDate.textContent = "Dernière calibration : —";
-      }
+    const orpCalDateHeader = $("#orp_cal_date_header");
+    let orpCalText = "Dernière calibration : —";
+    if (orpCalibrated) {
+      const d = new Date(cfg.orp_calibration_date);
+      const ref = cfg.orp_calibration_reference;
+      orpCalText = "Dernière calibration : " + d.toLocaleString("fr-FR");
+      if (ref && ref > 0) orpCalText += ` (réf: ${ref.toFixed(0)} mV)`;
     }
+    if (orpCalDate) orpCalDate.textContent = orpCalText;
+    if (orpCalDateHeader) orpCalDateHeader.textContent = orpCalText;
 
     // Temperature enabled and calibration info
     $("#temperature_enabled").checked = cfg.temperature_enabled !== false;
@@ -1009,17 +1007,16 @@
       tempCalibratedStatus.style.display = tempCalibrated ? "block" : "none";
     }
 
-    if (tempCalDate) {
-      if (tempCalibrated) {
-        const d = new Date(cfg.temp_calibration_date);
-        const offset = cfg.temp_calibration_offset;
-        let t = "Dernière calibration : " + d.toLocaleString("fr-FR");
-        if (offset != null && !isNaN(offset)) t += ` (offset: ${offset > 0 ? '+' : ''}${offset.toFixed(1)}°C)`;
-        tempCalDate.textContent = t;
-      } else {
-        tempCalDate.textContent = "Dernière calibration : —";
-      }
+    const tempCalDateHeader = $("#temp_cal_date_header");
+    let tempCalText = "Dernière calibration : —";
+    if (tempCalibrated) {
+      const d = new Date(cfg.temp_calibration_date);
+      const offset = cfg.temp_calibration_offset;
+      tempCalText = "Dernière calibration : " + d.toLocaleString("fr-FR");
+      if (offset != null && !isNaN(offset)) tempCalText += ` (offset: ${offset > 0 ? '+' : ''}${offset.toFixed(1)}°C)`;
     }
+    if (tempCalDate) tempCalDate.textContent = tempCalText;
+    if (tempCalDateHeader) tempCalDateHeader.textContent = tempCalText;
 
     // Filtration
     $("#filtration_enabled").checked = cfg.filtration_enabled !== false;
@@ -1139,6 +1136,42 @@
       if (chip) {
         const need = (phBadgeEl && phBadgeEl.style.display !== "none") || (orpBadgeEl && orpBadgeEl.style.display !== "none");
         chip.style.display = need ? "inline-flex" : "none";
+      }
+
+      // Dashboard calibration alerts
+      const phDashAlert = $("#ph-calibration-alert");
+      const orpDashAlert = $("#orp-calibration-alert");
+
+      if (phDashAlert) {
+        const phCalValid = config.ph_cal_valid === true;
+        const phCalibrationDate = config.ph_calibration_date;
+        let needsCal = false;
+        if (!phCalValid || !phCalibrationDate) needsCal = true;
+        else {
+          let calDate = new Date(phCalibrationDate);
+          if (isNaN(calDate.getTime())) {
+            const ts = parseInt(phCalibrationDate);
+            if (!isNaN(ts)) calDate = new Date(ts);
+          }
+          if (!calDate || isNaN(calDate.getTime())) needsCal = true;
+          else {
+            const calDays = (now - calDate) / (1000 * 60 * 60 * 24);
+            needsCal = calDays > threeMonthsInDays;
+          }
+        }
+        phDashAlert.style.display = needsCal ? "flex" : "none";
+      }
+
+      if (orpDashAlert) {
+        const orpCalibrationDate = config.orp_calibration_date;
+        let needsCal = false;
+        if (!orpCalibrationDate) needsCal = true;
+        else {
+          const d = new Date(orpCalibrationDate);
+          const diffDays = (now - d) / (1000 * 60 * 60 * 24);
+          needsCal = diffDays > threeMonthsInDays;
+        }
+        orpDashAlert.style.display = needsCal ? "flex" : "none";
       }
     } catch (e) {
       // ignore

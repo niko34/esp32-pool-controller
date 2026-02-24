@@ -251,6 +251,10 @@
                 <div class="compact-value" id="compact-ph">--</div>
                 <div class="compact-target">Cible: <span id="compact-ph-target">7.2</span></div>
               </div>
+              <div class="calibration-alert" id="ph-calibration-alert" style="display:none;">
+                <span class="calibration-alert__text">Calibration requise</span>
+                <a href="#/ph" class="calibration-alert__btn">Configurer</a>
+              </div>
             </div>
 
             <!-- Carte ORP compact -->
@@ -259,6 +263,10 @@
                 <div class="compact-label">ORP</div>
                 <div class="compact-value" id="compact-orp">--<span class="compact-unit">mV</span></div>
                 <div class="compact-target">Cible: <span id="compact-orp-target">650</span> mV</div>
+              </div>
+              <div class="calibration-alert" id="orp-calibration-alert" style="display:none;">
+                <span class="calibration-alert__text">Calibration requise</span>
+                <a href="#/orp" class="calibration-alert__btn">Configurer</a>
               </div>
             </div>
 
@@ -485,8 +493,14 @@
             <div class="card">
               <div class="card__head">
                 <div class="card__title">Calibration de la sonde de température</div>
+                <div class="muted small" id="temp_cal_date_header">Dernière calibration : —</div>
               </div>
               <div class="card__body">
+                <p class="muted small" style="margin-bottom: 16px;">
+                  La sonde de température nécessite une calibration pour garantir des mesures précises.
+                  Une mesure incorrecte affecte également la compensation de température du pH.
+                  Recalibrer si les mesures semblent décalées par rapport à un thermomètre de référence.
+                </p>
                 <div class="callout callout--success" id="temp_calibrated_status" style="display:none;">
                   <div style="display: flex; align-items: center; gap: 8px;">
                     <span style="font-size: 18px;">✓</span>
@@ -585,8 +599,14 @@
             <div class="card">
               <div class="card__head">
                 <div class="card__title">Calibration de la sonde pH</div>
+                <div class="muted small" id="ph_cal_date_header">Dernière calibration : —</div>
               </div>
               <div class="card__body">
+                <p class="muted small" style="margin-bottom: 16px;">
+                  La sonde pH nécessite une calibration régulière pour garantir des mesures précises.
+                  Sans calibration, vous risquez un dosage incorrect et des problèmes de qualité d'eau.
+                  Recalibrer tous les 3 mois avec des solutions pH 7.0 et pH 4.0.
+                </p>
                 <div class="callout callout--success" id="ph_calibrated_status" style="display:none;">
                   <div style="display: flex; align-items: center; gap: 8px;">
                     <span style="font-size: 18px;">✓</span>
@@ -676,8 +696,14 @@
             <div class="card">
             <div class="card__head">
               <div class="card__title">Calibration de la sonde ORP</div>
+              <div class="muted small" id="orp_cal_date_header">Dernière calibration : —</div>
             </div>
             <div class="card__body">
+              <p class="muted small" style="margin-bottom: 16px;">
+                La sonde ORP nécessite une calibration régulière pour garantir des mesures précises.
+                Sans calibration, vous risquez un dosage incorrect et des problèmes de qualité d'eau.
+                Recalibrer tous les 3 mois avec une solution ORP 470 mV.
+              </p>
               <div class="callout callout--success" id="orp_calibrated_status" style="display:none;">
                 <div style="display: flex; align-items: center; gap: 8px;">
                   <span style="font-size: 18px;">✓</span>
