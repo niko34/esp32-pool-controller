@@ -1065,6 +1065,137 @@ input:disabled, select:disabled, textarea:disabled {
   border-color: var(--border);
 }
 
+/* 2026 Password validation checklist */
+.password-checklist {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--panel2);
+  border-radius: 8px;
+  border: 1px solid var(--stroke);
+}
+
+.password-checklist-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 6px;
+  transition: color 200ms ease;
+}
+
+.password-checklist-item:last-child {
+  margin-bottom: 0;
+}
+
+.password-checklist-item .icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid #d1d5db;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  transition: all 200ms ease;
+  flex-shrink: 0;
+}
+
+.password-checklist-item.valid {
+  color: var(--success);
+}
+
+.password-checklist-item.valid .icon {
+  background: var(--success);
+  border-color: var(--success);
+  color: white;
+}
+
+.password-checklist-item.valid .icon::before {
+  content: '\2713';
+}
+
+/* Password strength indicator */
+.password-strength {
+  margin-top: 12px;
+  display: flex;
+  gap: 4px;
+  height: 4px;
+}
+
+.password-strength-bar {
+  flex: 1;
+  background: #e5e7eb;
+  border-radius: 999px;
+  transition: background 300ms ease;
+}
+
+.password-strength.weak .password-strength-bar:nth-child(1) {
+  background: var(--danger);
+}
+
+.password-strength.medium .password-strength-bar:nth-child(1),
+.password-strength.medium .password-strength-bar:nth-child(2) {
+  background: var(--warn);
+}
+
+.password-strength.strong .password-strength-bar {
+  background: var(--success);
+}
+
+.password-strength-label {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+
+.password-strength-label.visible {
+  opacity: 1;
+}
+
+.password-strength.weak + .password-strength-label {
+  color: var(--danger);
+}
+
+.password-strength.medium + .password-strength-label {
+  color: var(--warn);
+}
+
+.password-strength.strong + .password-strength-label {
+  color: var(--success);
+}
+
+/* Password wrapper with toggle button */
+.password-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.password-wrapper input {
+  padding-right: 44px;
+}
+
+.password-toggle {
+  position: absolute;
+  right: 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  transition: color 0.2s ease;
+}
+
+.password-toggle:hover {
+  color: var(--text);
+}
+
 /* 2026 Callout - refined */
 .callout {
   padding: 12px;

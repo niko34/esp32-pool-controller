@@ -988,18 +988,55 @@
                     <input type="password" id="auth_current_password" placeholder="Mot de passe actuel" autocomplete="current-password" />
                   </label>
 
-                  <label class="field">
+                  <div class="field">
                     <span class="field__label">Nouveau mot de passe</span>
-                    <input type="password" id="auth_password" placeholder="Minimum 8 caractères" autocomplete="new-password" />
-                  </label>
+                    <div class="password-wrapper">
+                      <input type="password" id="auth_password" placeholder="Minimum 8 caractères" autocomplete="new-password" />
+                      <button type="button" class="password-toggle" data-target="auth_password" aria-label="Afficher/Masquer">
+                        <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.6-6.5 9.5-6.5S21.5 12 21.5 12s-3.6 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+                        <svg class="eye-closed hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12s3.4-6.5 9-6.5 9 6.5 9 6.5-3.4 6.5-9 6.5-9-6.5-9-6.5z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>
+                      </button>
+                    </div>
 
-                  <label class="field">
+                    <!-- Password validation checklist -->
+                    <div class="password-checklist" id="passwordChecklist" style="display: none;">
+                      <div class="password-checklist-item" data-rule="length">
+                        <span class="icon"></span>
+                        <span>Au moins 8 caractères</span>
+                      </div>
+                      <div class="password-checklist-item" data-rule="number">
+                        <span class="icon"></span>
+                        <span>Au moins 1 chiffre</span>
+                      </div>
+                      <div class="password-checklist-item" data-rule="special">
+                        <span class="icon"></span>
+                        <span>Au moins 1 caractère spécial (!@#$%^&*)</span>
+                      </div>
+                    </div>
+
+                    <!-- Password strength indicator -->
+                    <div class="password-strength" id="passwordStrength" style="display: none;">
+                      <div class="password-strength-bar"></div>
+                      <div class="password-strength-bar"></div>
+                      <div class="password-strength-bar"></div>
+                      <div class="password-strength-bar"></div>
+                    </div>
+                    <div class="password-strength-label" id="passwordStrengthLabel"></div>
+                  </div>
+
+                  <div class="field">
                     <span class="field__label">Confirmer le mot de passe</span>
-                    <input type="password" id="auth_password_confirm" placeholder="Re-tapez le mot de passe" autocomplete="new-password" />
-                  </label>
+                    <div class="password-wrapper">
+                      <input type="password" id="auth_password_confirm" placeholder="Re-tapez le mot de passe" autocomplete="new-password" />
+                      <button type="button" class="password-toggle" data-target="auth_password_confirm" aria-label="Afficher/Masquer">
+                        <svg class="eye-open" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12s3.6-6.5 9.5-6.5S21.5 12 21.5 12s-3.6 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></svg>
+                        <svg class="eye-closed hidden" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12s3.4-6.5 9-6.5 9 6.5 9 6.5-3.4 6.5-9 6.5-9-6.5-9-6.5z"/><circle cx="12" cy="12" r="2.6"/><path d="M4 4l16 16"/></svg>
+                      </button>
+                    </div>
+                  </div>
 
                   <div class="hint">
-                    Pour modifier votre mot de passe, saisissez d'abord votre mot de passe actuel, puis le nouveau mot de passe (minimum 8 caractères).
+                    Pour modifier votre mot de passe, saisissez d'abord votre mot de passe actuel, puis le nouveau mot de passe respectant les critères ci-dessus.
                   </div>
 
                   <div class="row row--gap" style="margin-top: 16px;">
@@ -1339,43 +1376,35 @@
                   <div style="margin-top: 16px;">
                     <strong>Interface utilisateur:</strong>
                     <ul style="margin: 8px 0; padding-left: 20px;">
-                      <li>SPA vanilla JavaScript (app.js, app.css, index.html)</li>
+                      <li>SPA vanilla JavaScript</li>
                       <li><a href="https://github.com/chartjs/Chart.js" target="_blank">Chart.js</a> - Visualisation des données</li>
                     </ul>
                   </div>
 
                   <div style="margin-top: 16px;">
-                    <strong>Outils de build:</strong>
+                    <strong>Outils de build et tests:</strong>
                     <ul style="margin: 8px 0; padding-left: 20px;">
+                      <li><a href="https://platformio.org" target="_blank">PlatformIO</a> - Build et upload firmware</li>
                       <li><a href="https://github.com/terser/html-minifier-terser" target="_blank">html-minifier-terser</a> - Minification HTML</li>
                       <li><a href="https://github.com/terser/terser" target="_blank">Terser</a> - Minification JavaScript</li>
-                      <li><a href="https://github.com/clean-css/clean-css" target="_blank">CleanCSS</a> - Minification CSS</li>
+                      <li><a href="https://github.com/clean-css/clean-css" target="_blank">clean-css</a> - Minification CSS</li>
+                      <li><a href="https://playwright.dev" target="_blank">Playwright</a> - Tests E2E</li>
                     </ul>
                   </div>
 
                   <div style="margin-top: 16px;">
-                    <strong>Librairies Backend (ESP32):</strong>
+                    <strong>Librairies ESP32:</strong>
                     <ul style="margin: 8px 0; padding-left: 20px;">
-                      <li><a href="https://github.com/me-no-dev/AsyncTCP" target="_blank">AsyncTCP</a> - Gestion TCP asynchrone</li>
-                      <li><a href="https://github.com/me-no-dev/ESPAsyncWebServer" target="_blank">ESPAsyncWebServer</a> - Serveur web asynchrone</li>
+                      <li><a href="https://github.com/me-no-dev/AsyncTCP" target="_blank">AsyncTCP</a> - TCP asynchrone</li>
+                      <li><a href="https://github.com/me-no-dev/ESPAsyncWebServer" target="_blank">ESPAsyncWebServer</a> - Serveur web</li>
                       <li><a href="https://github.com/alanswx/ESPAsyncWiFiManager" target="_blank">ESPAsyncWiFiManager</a> - Configuration WiFi</li>
                       <li><a href="https://github.com/bblanchon/ArduinoJson" target="_blank">ArduinoJson v7</a> - Sérialisation JSON</li>
                       <li><a href="https://github.com/knolleary/pubsubclient" target="_blank">PubSubClient v2.8</a> - Client MQTT</li>
-                      <li><a href="https://github.com/DFRobot/DFRobot_PH" target="_blank">DFRobot_PH</a> - Capteur pH avec calibration</li>
-                      <li><a href="https://github.com/adafruit/Adafruit_ADS1X15" target="_blank">Adafruit ADS1X15 v2.5</a> - Convertisseur ADC</li>
-                      <li><a href="https://github.com/milesburton/Arduino-Temperature-Control-Library" target="_blank">DallasTemperature v3.11</a> - Capteur de température</li>
+                      <li><a href="https://github.com/DFRobot/DFRobot_PH" target="_blank">DFRobot_PH</a> - Capteur pH</li>
+                      <li><a href="https://github.com/adafruit/Adafruit_ADS1X15" target="_blank">Adafruit ADS1X15 v2.5</a> - ADC 16-bit</li>
+                      <li><a href="https://github.com/milesburton/Arduino-Temperature-Control-Library" target="_blank">DallasTemperature v3.11</a> - DS18B20</li>
                       <li><a href="https://github.com/PaulStoffregen/OneWire" target="_blank">OneWire v2.3.8</a> - Protocole 1-Wire</li>
-                    </ul>
-                  </div>
-
-                  <div style="margin-top: 16px;">
-                    <strong>Matériel:</strong>
-                    <ul style="margin: 8px 0; padding-left: 20px;">
-                      <li>ESP32 Dev Board</li>
-                      <li>MOSFET IRLZ44N - Contrôle PWM pompes</li>
-                      <li>Capteurs pH et ORP (Redox)</li>
-                      <li>DS18B20 - Température</li>
-                      <li>Relais pour filtration et éclairage</li>
+                      <li><a href="https://github.com/adafruit/RTClib" target="_blank">RTClib v2.1.4</a> - Horloge temps réel</li>
                     </ul>
                   </div>
                 </div>

@@ -509,6 +509,28 @@
         }
       });
 
+      // Gestion touche Entrée sur les champs password
+      document.getElementById('password').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          loginForm.dispatchEvent(new Event('submit', { cancelable: true }));
+        }
+      });
+
+      document.getElementById('newPassword').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          document.getElementById('confirmPassword').focus();
+        }
+      });
+
+      document.getElementById('confirmPassword').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          changePasswordForm.dispatchEvent(new Event('submit', { cancelable: true }));
+        }
+      });
+
       // Vérifier le statut au chargement
       checkFirstBoot();
       checkWifiConfigButton();

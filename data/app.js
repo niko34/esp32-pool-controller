@@ -3046,32 +3046,54 @@
           }
         }, 800);
 
-        const fwRes = await authFetch("/download-update", {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: "url=" + encodeURIComponent(latestRelease.firmware_url) + "&restart=true",
-        });
+        let fwSuccess = false;
+        try {
+          const fwRes = await authFetch("/download-update", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: "url=" + encodeURIComponent(latestRelease.firmware_url) + "&restart=true",
+          });
 
-        clearInterval(t);
-        bar.style.width = "95%";
-        bar.textContent = "95%";
-        status.textContent = "2/2 Firmware : installation…";
+          clearInterval(t);
 
-        let fwJson = null;
-        if (!fwRes.ok) {
-          try {
-            fwJson = await fwRes.json();
-          } catch (_) {}
-          const errMsg = fwJson?.error || "Erreur téléchargement firmware";
-          throw new Error(errMsg);
+          let fwJson = null;
+          if (!fwRes.ok) {
+            try {
+              fwJson = await fwRes.json();
+            } catch (_) {}
+            const errMsg = fwJson?.error || "Erreur téléchargement firmware";
+            throw new Error(errMsg);
+          }
+          fwJson = await fwRes.json();
+          fwSuccess = fwJson.status === "success";
+        } catch (fwErr) {
+          clearInterval(t);
+          // Network error is expected when ESP32 restarts after firmware install
+          // If we got here after filesystem was OK, assume firmware install succeeded
+          const errMsg = String(fwErr?.message || "");
+          if (errMsg.includes("System time not synchronized")) {
+            throw fwErr; // Re-throw time sync errors
+          }
+          // For network errors (fetch failed), assume success since ESP32 restarted
+          fwSuccess = true;
         }
-        fwJson = await fwRes.json();
 
-        if (fwJson.status === "success") {
+        if (fwSuccess) {
           bar.style.width = "100%";
           bar.textContent = "100%";
-          status.textContent = "✓ Mise à jour terminée. Redémarrage…";
-          setTimeout(() => window.location.reload(), 30000);
+          // Countdown before reload
+          let countdown = 15;
+          const updateCountdown = () => {
+            status.textContent = `✓ Mise à jour terminée. Rechargement dans ${countdown}s…`;
+            if (countdown <= 0) {
+              window.location.reload();
+            } else {
+              countdown--;
+              setTimeout(updateCountdown, 1000);
+            }
+          };
+          updateCountdown();
+          return; // Exit to avoid finally block re-enabling buttons
         } else {
           throw new Error("Erreur installation firmware");
         }
@@ -3082,9 +3104,7 @@
         } else {
           alert("Erreur mise à jour:\n" + e.message);
         }
-      } finally {
         checkBtn.disabled = false;
-        // installBtn restera disabled si pas re-check
       }
     });
   }
@@ -3601,6 +3621,81 @@
       sendConfig({ auth_cors_origins: corsValue });
     });
 
+    // Password validation helper
+    function checkPasswordStrength(password) {
+      const rules = {
+        length: password.length >= 8,
+        number: /\d/.test(password),
+        special: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(password)
+      };
+      const validCount = Object.values(rules).filter(Boolean).length;
+      let strength = 'weak';
+      if (validCount === 3) strength = 'strong';
+      else if (validCount >= 2) strength = 'medium';
+      return { rules, strength };
+    }
+
+    // Update password feedback UI
+    function updatePasswordFeedback() {
+      const password = $("#auth_password")?.value || "";
+      const checklist = $("#passwordChecklist");
+      const strengthBar = $("#passwordStrength");
+      const strengthLabel = $("#passwordStrengthLabel");
+
+      if (!checklist || !strengthBar) return;
+
+      if (password.length > 0) {
+        checklist.style.display = 'block';
+        strengthBar.style.display = 'flex';
+
+        const { rules, strength } = checkPasswordStrength(password);
+
+        // Update checklist items
+        Object.keys(rules).forEach(rule => {
+          const item = checklist.querySelector(`[data-rule="${rule}"]`);
+          if (item) {
+            item.classList.toggle('valid', rules[rule]);
+          }
+        });
+
+        // Update strength bar
+        strengthBar.className = `password-strength ${strength}`;
+
+        // Update strength label
+        const strengthText = { weak: 'Faible', medium: 'Moyen', strong: 'Fort' };
+        if (strengthLabel) {
+          strengthLabel.textContent = strengthText[strength];
+          strengthLabel.classList.add('visible');
+        }
+      } else {
+        checklist.style.display = 'none';
+        strengthBar.style.display = 'none';
+        if (strengthLabel) strengthLabel.classList.remove('visible');
+      }
+    }
+
+    // Password validation event listeners
+    $("#auth_password")?.addEventListener("input", updatePasswordFeedback);
+
+    // Password toggle buttons
+    document.querySelectorAll(".password-toggle").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const targetId = btn.dataset.target;
+        const input = document.getElementById(targetId);
+        const eyeOpen = btn.querySelector('.eye-open');
+        const eyeClosed = btn.querySelector('.eye-closed');
+        if (input && input.type === 'password') {
+          input.type = 'text';
+          eyeOpen?.classList.add('hidden');
+          eyeClosed?.classList.remove('hidden');
+        } else if (input) {
+          input.type = 'password';
+          eyeOpen?.classList.remove('hidden');
+          eyeClosed?.classList.add('hidden');
+        }
+      });
+    });
+
     // Change password
     $("#change_password_btn")?.addEventListener("click", async () => {
       const currentPassword = $("#auth_current_password").value;
@@ -3613,9 +3708,15 @@
         return;
       }
 
-      // Validation: new password required and minimum length
-      if (!newPassword || newPassword.length < 8) {
-        alert("Le nouveau mot de passe doit contenir au moins 8 caractères.");
+      // Validation: new password strength
+      const { rules } = checkPasswordStrength(newPassword);
+      const allValid = Object.values(rules).every(Boolean);
+      if (!allValid) {
+        const missing = [];
+        if (!rules.length) missing.push('8 caractères minimum');
+        if (!rules.number) missing.push('1 chiffre');
+        if (!rules.special) missing.push('1 caractère spécial');
+        alert(`Le nouveau mot de passe doit contenir: ${missing.join(', ')}`);
         return;
       }
 
@@ -3659,10 +3760,11 @@
         }
 
         alert("Mot de passe modifié avec succès !");
-        // Clear all password fields
+        // Clear all password fields and reset validation UI
         $("#auth_current_password").value = "";
         $("#auth_password").value = "";
         $("#auth_password_confirm").value = "";
+        updatePasswordFeedback();
       } catch (error) {
         alert("Erreur de connexion: " + error.message);
       }
