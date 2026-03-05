@@ -30,13 +30,12 @@ bool RtcManager::begin() {
   xSemaphoreGive(i2cMutex);
 
   if (!rtcAvailable) {
-    systemLogger.warning("RTC DS1307 non détecté sur le bus I2C (adresse 0x68)");
+    systemLogger.warning("RTC DS3231 non détecté sur le bus I2C (adresse 0x68)");
     return false;
   }
 
-  // Vérifier si le RTC a perdu l'alimentation
-  // Le DS1307 met le bit CH (Clock Halt) à 1 quand il perd l'alimentation
-  if (!rtc.isrunning()) {
+  // Vérifier si le RTC a perdu l'alimentation (batterie vide ou première utilisation)
+  if (rtc.lostPower()) {
     rtcLostPower = true;
     systemLogger.warning("RTC: L'horloge était arrêtée (batterie vide ou première utilisation)");
     // Démarrer l'horloge avec une date par défaut
@@ -46,7 +45,7 @@ bool RtcManager::begin() {
   }
 
   DateTime now = rtc.now();
-  systemLogger.info("RTC DS1307 initialisé - Heure: " + formatDateTime(now));
+  systemLogger.info("RTC DS3231 initialisé - Heure: " + formatDateTime(now));
 
   return true;
 }

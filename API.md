@@ -384,29 +384,33 @@ app.listen(3000);
 
 ## Authentification
 
-L'interface web et certaines API sont protégées par authentification.
+Tous les endpoints API nécessitent une authentification (sauf `/login.html` et les routes WiFi en mode AP).
 
-### Endpoints Publics (sans authentification)
-- `GET /data` - Données capteurs temps réel
-- `GET /time-now` - Heure actuelle
+### Méthodes d'Authentification
 
-### Endpoints Protégés (authentification requise)
-- `GET /get-config` - Configuration complète
-- `POST /save-config` - Sauvegarde configuration
-- `POST /update` - Mise à jour OTA
-- `GET /get-system-info` - Informations système
-- Toutes les pages web (sauf `/login.html`)
+#### 1. HTTP Basic Auth (recommandé pour curl)
 
-### Méthode d'Authentification
-
-**Session Cookie** : Après connexion via `/login.html`, un cookie de session est créé.
-
-**Token API** : Pour les appels automatisés, utiliser le header `Authorization`:
 ```bash
-curl -H "Authorization: Bearer <token>" http://poolcontroller.local/get-config
+# Syntaxe : curl -u admin:MOT_DE_PASSE URL
+curl -u admin:monmotdepasse http://poolcontroller.local/get-config
+
+# Avec l'adresse IP
+curl -u admin:monmotdepasse http://192.168.1.100/get-system-info
+
+# Mise à jour OTA avec authentification
+curl -u admin:monmotdepasse -X POST -F "update=@firmware.bin" http://poolcontroller.local/update
 ```
 
-Le token API est généré lors de la première configuration et peut être régénéré via l'interface web (Système → Régénérer Token).
+#### 2. Token API (pour scripts automatisés)
+
+```bash
+# Syntaxe : curl -H "X-Auth-Token: TOKEN" URL
+curl -H "X-Auth-Token: abc123def456..." http://poolcontroller.local/get-config
+
+# Le token est visible dans Paramètres → Système → Token API
+```
+
+Le token API est généré automatiquement au premier démarrage et peut être régénéré via l'interface web.
 
 ### Recommandations de Sécurité
 

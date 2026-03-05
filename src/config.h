@@ -7,8 +7,8 @@
 
 // ==== Configuration des broches ====
 // MOSFET IRLZ44N - 1 pin PWM par pompe (Gate control)
-#define PUMP1_PWM_PIN 25     // PWM Gate pompe 1 (via MOSFET IRLZ44N)
-#define PUMP2_PWM_PIN 26     // PWM Gate pompe 2 (via MOSFET IRLZ44N)
+#define PUMP1_PWM_PIN 18     // PWM Gate pompe 1 (via MOSFET IRLZ44N)
+#define PUMP2_PWM_PIN 19     // PWM Gate pompe 2 (via MOSFET IRLZ44N)
 #define PUMP1_CHANNEL 0
 #define PUMP2_CHANNEL 1
 #define PUMP_PWM_FREQ 20000   // 20kHz PWM
@@ -20,8 +20,8 @@
 
 // Capteurs et actionneurs
 #define TEMP_SENSOR_PIN 5
-#define FILTRATION_RELAY_PIN 18
-#define LIGHTING_RELAY_PIN 19           // Relais pour éclairage piscine
+#define FILTRATION_RELAY_PIN 25
+#define LIGHTING_RELAY_PIN 26           // Relais pour éclairage piscine
 #define PASSWORD_RESET_BUTTON_PIN 4     // GPIO4 - Bouton reset mot de passe (actif bas, pull-up interne)
 #define BUILTIN_LED_PIN 2               // GPIO2 - LED intégrée ESP32
 

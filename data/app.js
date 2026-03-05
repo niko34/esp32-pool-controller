@@ -48,6 +48,22 @@
     dot.classList.remove("ok", "mid", "bad");
     if (state) dot.classList.add(state);
     if (label) label.textContent = text || "";
+
+    if (state === "bad") {
+      const dash = "–";
+      const els = {
+        "#compact-ph": dash,
+        "#compact-orp": dash,
+        "#compact-temperature": dash,
+        "#m-temp": dash,
+        "#m-ph": dash,
+        "#m-orp": dash,
+      };
+      for (const [id, val] of Object.entries(els)) {
+        const el = $(id);
+        if (el) el.textContent = val;
+      }
+    }
   }
 
   // ---------- Router ----------

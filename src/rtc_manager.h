@@ -5,11 +5,11 @@
 #include <RTClib.h>
 
 /**
- * Gestionnaire du module RTC DS1307
+ * Gestionnaire du module RTC DS3231
  *
  * Hiérarchie des sources de temps :
  * 1. NTP (WiFi) - priorité haute, précis
- * 2. RTC DS1307 - priorité moyenne, conserve l'heure hors tension
+ * 2. RTC DS3231 - priorité moyenne, conserve l'heure hors tension
  * 3. NVS + uptime - priorité basse, estimation
  *
  * Le RTC est mis à jour automatiquement quand NTP se synchronise
@@ -17,7 +17,7 @@
  */
 class RtcManager {
 private:
-  RTC_DS1307 rtc;
+  RTC_DS3231 rtc;
   bool rtcAvailable = false;
   bool rtcLostPower = false;  // true si batterie vide détectée
 

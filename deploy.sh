@@ -5,7 +5,7 @@
 set -e  # Arrêter en cas d'erreur
 
 # Configuration
-PORT="/dev/cu.usbserial-210"
+PORT="/dev/cu.usbserial-0001"
 BAUD="115200"
 LITTLEFS_OFFSET="0x290000"
 BUILD_DIR=".pio/build/esp32dev"
@@ -66,7 +66,7 @@ upload_filesystem() {
         build_filesystem
     fi
 
-    python3 ~/.platformio/packages/tool-esptoolpy/esptool.py \
+    ~/.platformio/penv/bin/python ~/.platformio/packages/tool-esptoolpy/esptool.py \
         --chip esp32 \
         --port "$PORT" \
         --baud "$BAUD" \

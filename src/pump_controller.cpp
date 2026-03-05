@@ -255,8 +255,9 @@ void PumpControllerClass::update() {
       phDosingState.active = false;
       orpDosingState.active = false;
     }
-    applyPumpDuty(0, 0);
-    applyPumpDuty(1, 0);
+    // Ne pas arrêter les pompes en mode manuel (test développement)
+    if (!manualMode[0]) applyPumpDuty(0, 0);
+    if (!manualMode[1]) applyPumpDuty(1, 0);
     return;
   }
 

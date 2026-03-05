@@ -29,7 +29,7 @@ uint8_t g_ds18b20ResolutionBits = 12;
 uint16_t g_ds18b20ConversionMs = 750;
 } // namespace
 
-SensorManager::SensorManager() : oneWire(5), tempSensor(&oneWire) {}
+SensorManager::SensorManager() : oneWire(TEMP_SENSOR_PIN), tempSensor(&oneWire) {}
 
 SensorManager::~SensorManager() {}
 
@@ -98,8 +98,15 @@ void SensorManager::begin() {
     systemLogger.info("ADS1115 configuré : Gain=±4.096V (0.125mV/bit), Data Rate=8 SPS");
   }
 
-  // Initialiser le capteur de température DS18B20 sur GPIO 5
+  // Initialiser le capteur de température DS18B20
   tempSensor.begin();
+
+  uint8_t deviceCount = tempSensor.getDeviceCount();
+  if (deviceCount == 0) {
+    systemLogger.warning("DS18B20 non détecté sur GPIO " + String(TEMP_SENSOR_PIN) + " - vérifier câblage et résistance pull-up 4.7kΩ");
+  } else {
+    systemLogger.info("DS18B20: " + String(deviceCount) + " capteur(s) détecté(s) sur GPIO " + String(TEMP_SENSOR_PIN));
+  }
 
   // Lecture non-bloquante : requestTemperatures() ne doit pas attendre la conversion
   tempSensor.setWaitForConversion(false);
@@ -109,7 +116,7 @@ void SensorManager::begin() {
   tempSensor.setResolution(g_ds18b20ResolutionBits);
   g_ds18b20ConversionMs = ds18b20ConversionTimeMsForResolution(g_ds18b20ResolutionBits);
 
-  systemLogger.info("Capteur de température DS18B20 initialisé sur GPIO 5 (" +
+  systemLogger.info("Capteur de température DS18B20 initialisé sur GPIO " + String(TEMP_SENSOR_PIN) + " (" +
                     String(g_ds18b20ResolutionBits) + "-bit, conv=" +
                     String(g_ds18b20ConversionMs) + "ms)");
 
@@ -183,7 +190,9 @@ void SensorManager::readRealSensors() {
   if (tempRequested && (now - lastTempRequest >= TEMP_CONVERSION_MS)) {
     float measuredTemp = tempSensor.getTempCByIndex(0);
 
-    if (measuredTemp != DEVICE_DISCONNECTED_C && measuredTemp > -55.0f && measuredTemp < 125.0f) {
+    // 85.0°C est la valeur EEPROM par défaut du DS18B20 (power-on reset value)
+    // Elle indique une conversion non complétée ou un problème d'alimentation
+    if (measuredTemp != DEVICE_DISCONNECTED_C && measuredTemp > -55.0f && measuredTemp < 125.0f && measuredTemp != 85.0f) {
       // Stocker la valeur brute arrondie à 1 décimale
       tempRawValue = roundf(measuredTemp * 10.0f) / 10.0f;
       // Appliquer l'offset de calibration
