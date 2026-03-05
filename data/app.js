@@ -2991,7 +2991,7 @@
         if (msg.includes("System time not synchronized")) {
           alert("Heure non synchronisée.\nActive le NTP ou règle l'heure dans les réglages avant de vérifier les mises à jour.");
         } else {
-          alert("Erreur vérification mise à jour.\nVérifie la connexion Internet.");
+          alert("Erreur vérification mise à jour.\n" + (msg || "Vérifie la connexion Internet de l'ESP32."));
         }
       } finally {
         checkBtn.textContent = "Vérifier";

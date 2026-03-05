@@ -39,7 +39,7 @@ static bool isTimeSynchronized() {
 
 static bool ensureTimeForTls(AsyncWebServerRequest* request) {
   if (!isTimeSynchronized()) {
-    sendErrorResponse(request, 503, "L'horloge système n'est pas synchronisée (La validation TLS nécessite un serveur NTP)");
+    sendErrorResponse(request, 503, "System time not synchronized (NTP requis pour la validation TLS)");
     return false;
   }
   return true;
