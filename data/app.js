@@ -850,6 +850,8 @@
 
     const phLimitValue = parseInt($("#ph_limit")?.value || "60", 10);
     const orpLimitValue = parseInt($("#orp_limit")?.value || "60", 10);
+    const phDailyLimitValue = parseFloat($("#ph_daily_limit")?.value || "500");
+    const orpDailyLimitValue = parseFloat($("#orp_daily_limit")?.value || "300");
     const regulationMode = $("#regulation_mode")?.value || "pilote";
     const phCorrectionType = $("#ph_correction_type")?.value || "ph_minus";
 
@@ -885,6 +887,8 @@
       orp_pump: isNaN(orpPumpValue) ? 2 : orpPumpValue,
       ph_limit_seconds: isNaN(phLimitValue) ? 60 : phLimitValue,
       orp_limit_seconds: isNaN(orpLimitValue) ? 60 : orpLimitValue,
+      max_ph_ml_per_day: isNaN(phDailyLimitValue) ? 500 : phDailyLimitValue,
+      max_chlorine_ml_per_day: isNaN(orpDailyLimitValue) ? 300 : orpDailyLimitValue,
       regulation_mode: regulationMode,
       ph_correction_type: phCorrectionType,
       time_use_ntp: timeUseNtp,
@@ -966,6 +970,8 @@
 
     $("#ph_limit").value = typeof cfg.ph_limit_seconds === "number" ? cfg.ph_limit_seconds : 60;
     $("#orp_limit").value = typeof cfg.orp_limit_seconds === "number" ? cfg.orp_limit_seconds : 60;
+    $("#ph_daily_limit").value = typeof cfg.max_ph_ml_per_day === "number" ? cfg.max_ph_ml_per_day : 500;
+    $("#orp_daily_limit").value = typeof cfg.max_chlorine_ml_per_day === "number" ? cfg.max_chlorine_ml_per_day : 300;
     $("#regulation_mode").value = cfg.regulation_mode || "pilote";
     $("#ph_correction_type").value = cfg.ph_correction_type || "ph_minus";
 
@@ -3183,6 +3189,8 @@
       });
 
       xhr.open("POST", "/update");
+      const token = sessionStorage.getItem('authToken');
+      if (token) xhr.setRequestHeader("X-Auth-Token", token);
       xhr.send(formData);
     });
   }
@@ -3563,8 +3571,8 @@
     // pH / ORP regulation
     $("#ph_enabled")?.addEventListener("change", () => { updatePhControls(); save(); });
     $("#orp_enabled")?.addEventListener("change", () => { updateOrpControls(); save(); });
-    ["ph_target", "ph_limit", "ph_pump", "ph_correction_type"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => { updatePhControls(); save(); }));
-    ["orp_target", "orp_limit", "orp_pump"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => { updateOrpControls(); save(); }));
+    ["ph_target", "ph_limit", "ph_daily_limit", "ph_pump", "ph_correction_type"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => { updatePhControls(); save(); }));
+    ["orp_target", "orp_limit", "orp_daily_limit", "orp_pump"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => { updateOrpControls(); save(); }));
     $("#regulation_mode")?.addEventListener("change", save);
 
     // Temperature feature
