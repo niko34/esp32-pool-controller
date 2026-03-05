@@ -125,6 +125,7 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["orp_sensor_pin"] = ORP_SENSOR_PIN;
 
   // Données de calibration pH
+  doc["ph_cal_valid"] = sensors.isPhCalibrated();
   doc["ph_calibration_date"] = mqttCfg.phCalibrationDate;
   if (!isnan(mqttCfg.phCalibrationTemp)) {
     doc["ph_calibration_temp"] = mqttCfg.phCalibrationTemp;

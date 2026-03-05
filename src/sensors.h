@@ -19,7 +19,8 @@ private:
   float tempValue = NAN;
   float tempRawValue = NAN;
   bool sensorsInitialized = false;
-  bool adsAvailable = false;  // true si ADS1115 détecté au démarrage
+  bool adsAvailable = false;   // true si ADS1115 détecté au démarrage
+  bool _phCalibrated = false;  // true si EEPROM diffère des valeurs par défaut
 
   void readRealSensors();
 
@@ -40,6 +41,7 @@ public:
   float getPh() const { return phValue; }
   float getTemperature() const { return tempValue; }
   bool isInitialized() const { return sensorsInitialized; }
+  bool isPhCalibrated() const { return _phCalibrated; }
 
   // Getters pour valeurs brutes (sans offset de calibration)
   float getRawOrp() const;

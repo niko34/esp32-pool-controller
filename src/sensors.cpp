@@ -130,6 +130,18 @@ void SensorManager::begin() {
   // Commit les changements EEPROM (nécessaire sur ESP32)
   EEPROM.commit();
 
+  // Lire et logger les valeurs de calibration pH stockées en EEPROM
+  // Struct DFRobot_PH: float NeutralVoltage (offset 0), float AcidVoltage (offset 4)
+  float eepromNeutralV, eepromAcidV;
+  EEPROM.get(0, eepromNeutralV);
+  EEPROM.get(4, eepromAcidV);
+  systemLogger.info("pH EEPROM calibration chargée: neutre=" + String(eepromNeutralV, 1) +
+                    "mV (défaut=1500), acide=" + String(eepromAcidV, 1) + "mV (défaut=2032)");
+  _phCalibrated = !(eepromNeutralV == 1500.0f && eepromAcidV == 2032.44f);
+  if (!_phCalibrated) {
+    systemLogger.warning("pH: calibration par défaut détectée - sonde non calibrée");
+  }
+
   systemLogger.info("Capteur pH DFRobot SEN0161-V2 initialisé");
   systemLogger.info("Gestionnaire de capteurs initialisé");
 }
@@ -345,6 +357,22 @@ void SensorManager::readRealSensors() {
     // Arrondir à 1 décimale
     phValue = roundf(phSensor.readPH(voltage, temperature) * 10.0f) / 10.0f;
 
+    // Log permanent toutes les 30s : tension brute ADS (diagnostic câblage/sonde)
+    static unsigned long lastPhInfoLog = 0;
+    if (now - lastPhInfoLog >= 30000) {
+      char logMsg[200];
+      snprintf(logMsg, sizeof(logMsg),
+               "pH: ADC A0=%d | V=%.1fmV | Temp=%.1f°C | pH=%.2f",
+               rawAdc, voltage, temperature, phValue);
+      systemLogger.info(logMsg);
+      // Avertissement si tension hors plage normale (~500-3500mV pour sonde pH)
+      if (voltage < 500.0f || voltage > 3500.0f) {
+        systemLogger.warning("pH: tension ADS anormale (" + String(voltage, 1) +
+                             "mV) - vérifier câblage sonde sur A0 et alimentation module");
+      }
+      lastPhInfoLog = now;
+    }
+
     // Debug: afficher les valeurs pH toutes les 5 secondes (si activé)
     if (authCfg.sensorLogsEnabled && now - lastPhDebugLog >= 5000) {
       float voltageMin = ads.computeVolts(minVal) * 1000.0f;
@@ -413,67 +441,135 @@ void SensorManager::publishValues() {
 void SensorManager::calibratePhNeutral() {
   // Vérifier que l'ADS1115 est disponible
   if (!adsAvailable) {
-    systemLogger.error("Calibration pH impossible - ADS1115 non détecté");
+    systemLogger.error("Calibration pH impossible - ADS1115 non détecté sur I2C");
     return;
   }
 
   // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian)
   int16_t minVal, maxVal;
   int16_t rawAdc = readMedianAdsChannel(0, kNumSensorSamples, &minVal, &maxVal);
-
-  // Conversion en mV en utilisant la fonction de la bibliothèque
   float voltage = ads.computeVolts(rawAdc) * 1000.0f;
-
-  // Utiliser la température pour la compensation
   float temperature = isnan(tempValue) ? 25.0f : tempValue;
 
-  // Processus de calibration DFRobot_PH en 3 étapes:
-  // 1. Entrer en mode calibration
+  systemLogger.info("Calibration pH neutre (7.0): ADC A0=" + String(rawAdc) +
+                    " | V=" + String(voltage, 1) + "mV" +
+                    " (min=" + String(ads.computeVolts(minVal)*1000.0f, 1) +
+                    " max=" + String(ads.computeVolts(maxVal)*1000.0f, 1) + ")" +
+                    " | T=" + String(temperature, 1) + "°C");
+
+  // La bibliothèque DFRobot_PH accepte neutre uniquement entre 1322-1678mV (plage exacte lib)
+  const bool neutralInLibRange = (voltage >= 1322.0f && voltage <= 1678.0f);
+  if (!neutralInLibRange) {
+    systemLogger.warning("ATTENTION pH neutre: tension " + String(voltage, 1) +
+                         "mV hors plage DFRobot (1322-1678mV) - calibration IGNOREE par la lib !");
+    systemLogger.warning("Vérifier: sonde sur A0, solution tampon pH 7, alimentation module");
+  } else {
+    systemLogger.info("Tension dans la plage pH 7.0 (1322-1678mV) - calibration valide");
+  }
+
+  // Processus de calibration DFRobot_PH
   phSensor.calibration(voltage, temperature, (char*)"enterph");
-
-  // 2. Calibrer (reconnaît automatiquement pH 7.0)
   phSensor.calibration(voltage, temperature, (char*)"calph");
-
-  // 3. Sauvegarder et sortir
   phSensor.calibration(voltage, temperature, (char*)"exitph");
-
-  // IMPORTANT: Sur ESP32, commit les changements EEPROM
   EEPROM.commit();
 
-  systemLogger.info("Calibration pH point neutre (7.0) effectuée à " + String(temperature, 1) + "°C (ADC med=" + String(rawAdc) + ", min=" + String(minVal) + ", max=" + String(maxVal) + ", V=" + String(voltage, 2) + " mV)");
+  // Vérification: relire EEPROM pour confirmer la sauvegarde
+  // Struct DFRobot_PH: NeutralVoltage à offset 0, AcidVoltage à offset 4
+  float storedNeutralV, storedAcidV;
+  EEPROM.get(0, storedNeutralV);
+  EEPROM.get(4, storedAcidV);
+  systemLogger.info("EEPROM après calibration neutre: neutre=" + String(storedNeutralV, 1) +
+                    "mV, acide=" + String(storedAcidV, 1) + "mV");
+  if (fabsf(storedNeutralV - voltage) > 5.0f) {
+    // La lib a rejeté la calibration (voltage hors de sa plage stricte).
+    // Si la tension est dans une plage raisonnable, écrire directement en EEPROM.
+    if (voltage >= 1200.0f && voltage <= 1900.0f) {
+      systemLogger.warning("Écriture directe EEPROM neutre (bypass plage lib): " + String(voltage, 1) + "mV");
+      EEPROM.put(0, voltage);
+      EEPROM.commit();
+      phSensor.begin();  // Recharger les nouvelles valeurs depuis l'EEPROM
+      EEPROM.get(0, storedNeutralV);
+      if (fabsf(storedNeutralV - voltage) < 5.0f) {
+        systemLogger.info("Calibration neutre directe réussie: " + String(storedNeutralV, 1) + "mV");
+        _phCalibrated = true;
+      } else {
+        systemLogger.error("Calibration neutre directe échouée !");
+      }
+    } else {
+      systemLogger.error("EEPROM calibration neutre non sauvegardée ! (stored=" +
+                         String(storedNeutralV, 1) + "mV, expected=" + String(voltage, 1) +
+                         "mV) - tension hors plage (1200-1900mV)");
+    }
+  } else {
+    _phCalibrated = true;  // Lib a accepté et écrit en EEPROM
+  }
 }
 
 void SensorManager::calibratePhAcid() {
   // Vérifier que l'ADS1115 est disponible
   if (!adsAvailable) {
-    systemLogger.error("Calibration pH impossible - ADS1115 non détecté");
+    systemLogger.error("Calibration pH impossible - ADS1115 non détecté sur I2C");
     return;
   }
 
   // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian)
   int16_t minVal, maxVal;
   int16_t rawAdc = readMedianAdsChannel(0, kNumSensorSamples, &minVal, &maxVal);
-
-  // Conversion en mV en utilisant la fonction de la bibliothèque
   float voltage = ads.computeVolts(rawAdc) * 1000.0f;
-
-  // Utiliser la température pour la compensation
   float temperature = isnan(tempValue) ? 25.0f : tempValue;
 
-  // Processus de calibration DFRobot_PH en 3 étapes:
-  // 1. Entrer en mode calibration
+  systemLogger.info("Calibration pH acide (4.0): ADC A0=" + String(rawAdc) +
+                    " | V=" + String(voltage, 1) + "mV" +
+                    " (min=" + String(ads.computeVolts(minVal)*1000.0f, 1) +
+                    " max=" + String(ads.computeVolts(maxVal)*1000.0f, 1) + ")" +
+                    " | T=" + String(temperature, 1) + "°C");
+
+  // La bibliothèque DFRobot_PH accepte acide uniquement entre 1854-2210mV (plage exacte lib)
+  const bool acidInLibRange = (voltage >= 1854.0f && voltage <= 2210.0f);
+  if (!acidInLibRange) {
+    systemLogger.warning("ATTENTION pH acide: tension " + String(voltage, 1) +
+                         "mV hors plage DFRobot (1854-2210mV) - calibration IGNOREE par la lib !");
+    systemLogger.warning("Vérifier: sonde sur A0, solution tampon pH 4, alimentation module");
+  } else {
+    systemLogger.info("Tension dans la plage pH 4.0 (1854-2210mV) - calibration valide");
+  }
+
+  // Processus de calibration DFRobot_PH
   phSensor.calibration(voltage, temperature, (char*)"enterph");
-
-  // 2. Calibrer (reconnaît automatiquement pH 4.0)
   phSensor.calibration(voltage, temperature, (char*)"calph");
-
-  // 3. Sauvegarder et sortir
   phSensor.calibration(voltage, temperature, (char*)"exitph");
-
-  // IMPORTANT: Sur ESP32, commit les changements EEPROM
   EEPROM.commit();
 
-  systemLogger.info("Calibration pH point acide (4.0) effectuée à " + String(temperature, 1) + "°C (ADC med=" + String(rawAdc) + ", min=" + String(minVal) + ", max=" + String(maxVal) + ", V=" + String(voltage, 2) + " mV)");
+  // Vérification: relire EEPROM pour confirmer la sauvegarde
+  // Struct DFRobot_PH: NeutralVoltage à offset 0, AcidVoltage à offset 4
+  float storedNeutralV, storedAcidV;
+  EEPROM.get(0, storedNeutralV);
+  EEPROM.get(4, storedAcidV);
+  systemLogger.info("EEPROM après calibration acide: neutre=" + String(storedNeutralV, 1) +
+                    "mV, acide=" + String(storedAcidV, 1) + "mV");
+  if (fabsf(storedAcidV - voltage) > 5.0f) {
+    // La lib a rejeté la calibration (voltage hors de sa plage stricte 1854-2210mV).
+    // Si la tension est dans une plage raisonnable, écrire directement en EEPROM.
+    if (voltage >= 1700.0f && voltage <= 2500.0f) {
+      systemLogger.warning("Écriture directe EEPROM acide (bypass plage lib): " + String(voltage, 1) + "mV");
+      EEPROM.put(4, voltage);
+      EEPROM.commit();
+      phSensor.begin();  // Recharger les nouvelles valeurs depuis l'EEPROM
+      EEPROM.get(4, storedAcidV);
+      if (fabsf(storedAcidV - voltage) < 5.0f) {
+        systemLogger.info("Calibration acide directe réussie: " + String(storedAcidV, 1) + "mV");
+        _phCalibrated = true;
+      } else {
+        systemLogger.error("Calibration acide directe échouée !");
+      }
+    } else {
+      systemLogger.error("EEPROM calibration acide non sauvegardée ! (stored=" +
+                         String(storedAcidV, 1) + "mV, expected=" + String(voltage, 1) +
+                         "mV) - tension hors plage (1700-2500mV)");
+    }
+  } else {
+    _phCalibrated = true;  // Lib a accepté et écrit en EEPROM
+  }
 }
 
 void SensorManager::calibratePhAlkaline() {
@@ -493,5 +589,6 @@ void SensorManager::clearPhCalibration() {
   phSensor.begin();
   EEPROM.commit();
 
+  _phCalibrated = false;
   systemLogger.info("Calibration pH effacée - réinitialisée aux valeurs par défaut");
 }
