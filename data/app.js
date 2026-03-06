@@ -3548,7 +3548,13 @@
     };
 
     // Filtration — save séparé pour ne pas interférer avec les autres réglages
-    const saveFiltration = () => sendConfig(collectFiltrationConfig());
+    const saveFiltration = () => sendConfig(collectFiltrationConfig()).then((ok) => {
+      if (ok) {
+        loadConfig();
+        setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
+      }
+      return ok;
+    });
     $("#filtration_enabled")?.addEventListener("change", () => {
       updateFeatureVisibility("filtration");
       saveFiltration();
@@ -3566,10 +3572,13 @@
       if ($("#filtration_mode").value === "manual") saveFiltration();
     });
 
+    // Lighting — rafraîchit la config après sauvegarde pour mettre à jour le tableau de bord
+    const saveLighting = () => save().then((ok) => { if (ok !== false) loadConfig(); return ok; });
+
     // Lighting feature
     $("#lighting_feature_enabled")?.addEventListener("change", () => {
       updateFeatureVisibility("lighting");
-      save();
+      saveLighting();
     });
 
     // Lighting schedule
@@ -3578,10 +3587,10 @@
       if (scheduleSettings) {
         scheduleSettings.style.display = $("#lighting_schedule_mode").value === "enabled" ? "block" : "none";
       }
-      save();
+      saveLighting();
     });
-    $("#lighting_start_time")?.addEventListener("change", save);
-    $("#lighting_end_time")?.addEventListener("change", save);
+    $("#lighting_start_time")?.addEventListener("change", saveLighting);
+    $("#lighting_end_time")?.addEventListener("change", saveLighting);
 
     // pH / ORP regulation
     $("#ph_enabled")?.addEventListener("change", () => { updatePhControls(); save(); });
