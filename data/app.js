@@ -1208,6 +1208,7 @@
   let lastSensorDataLoadTime = 0; // Timestamp du dernier chargement des données
   let sensorDataLoadInFlight = null;
   let sensorDataRetryTimer = null;
+  let filtrationRunningOverride = null; // Valeur optimiste après sauvegarde, null = utiliser /data
 
   // ========== ALERTES ==========
   let dismissedAlerts = {};
@@ -1362,7 +1363,7 @@
   }
 
   function getFiltrationState(config, data) {
-    const isRunning = data && data.filtration_running;
+    const isRunning = filtrationRunningOverride !== null ? filtrationRunningOverride : (data && data.filtration_running);
     const temp = data && data.temperature;
 
     if (!config) return { text: 'Chargement...', class: 'state-badge--off' };
@@ -3577,14 +3578,15 @@
       const cfg = collectFiltrationConfig();
       return sendConfig(cfg).then((ok) => {
         if (ok) {
-          // Mise à jour optimiste immédiate : pas besoin d'attendre /data
-          if (latestSensorData) {
-            latestSensorData.filtration_running = predictFiltrationRunning(cfg);
-            updateDetailSections();
-            updateStatusCards();
-          }
+          // Override optimiste : immunise l'affichage contre les /data stales
+          filtrationRunningOverride = predictFiltrationRunning(cfg);
+          updateDetailSections();
+          updateStatusCards();
           loadConfig();
-          setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
+          // Après 500ms l'ESP32 a traité le changement : on lit la vraie valeur et on lève l'override
+          setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }).then(() => {
+            filtrationRunningOverride = null;
+          }), 500);
         }
         return ok;
       });
