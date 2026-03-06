@@ -353,6 +353,9 @@ void SensorManager::readRealSensors() {
     // Utiliser la température pour la compensation (si disponible)
     float temperature = isnan(tempValue) ? 25.0f : tempValue;
 
+    // Stocker la tension brute (utile pour affichage pendant calibration)
+    phVoltageMv = voltage;
+
     // Calculer le pH avec calibration automatique et compensation de température
     // Arrondir à 1 décimale
     phValue = roundf(phSensor.readPH(voltage, temperature) * 10.0f) / 10.0f;

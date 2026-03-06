@@ -53,6 +53,13 @@ static void handleGetData(AsyncWebServerRequest* request) {
     doc["ph_raw"] = nullptr;
   }
 
+  // Tension brute pH en mV (utile pendant calibration, avant toute correction)
+  if (!isnan(sensors.getPhVoltageMv())) {
+    doc["ph_voltage_mv"] = round(sensors.getPhVoltageMv() * 10.0f) / 10.0f;
+  } else {
+    doc["ph_voltage_mv"] = nullptr;
+  }
+
   // Température
   if (!isnan(sensors.getTemperature())) {
     doc["temperature"] = sensors.getTemperature();

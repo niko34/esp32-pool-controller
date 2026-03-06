@@ -2015,14 +2015,14 @@
         const label = json.timestamp ? new Date(json.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
 
         if (json.temperature != null && !isNaN(json.temperature) && tempChart) pushPoint(tempChart, json.temperature, label);
-        if (json.ph != null && !isNaN(json.ph) && phChart) {
+        if (!phCalibrationActive && json.ph != null && !isNaN(json.ph) && phChart) {
           pushPoint(phChart, Math.round(json.ph * 10) / 10, label);
           ensurePhReferenceDatasets(phChart);
           ensurePhPlaceholderLabels(phChart);
           syncPhReferenceDatasets(phChart);
           phChart.update('none');
         }
-        if (json.orp != null && !isNaN(json.orp) && orpChart) {
+        if (!orpCalibrationActive && json.orp != null && !isNaN(json.orp) && orpChart) {
           pushPoint(orpChart, json.orp, label);
           ensureOrpReferenceDatasets(orpChart);
           ensureOrpPlaceholderLabels(orpChart);
@@ -2066,7 +2066,13 @@
         // also update readouts in settings
         const phCurrentValue = $("#ph_current_value");
         if (phCurrentValue) {
-          if (json.ph != null && typeof json.ph === "number" && !isNaN(json.ph)) {
+          if (phCalibrationActive) {
+            if (json.ph_voltage_mv != null && typeof json.ph_voltage_mv === "number" && !isNaN(json.ph_voltage_mv)) {
+              phCurrentValue.textContent = json.ph_voltage_mv.toFixed(1) + " mV";
+            } else {
+              phCurrentValue.textContent = "--";
+            }
+          } else if (json.ph != null && typeof json.ph === "number" && !isNaN(json.ph)) {
             phCurrentValue.textContent = json.ph.toFixed(2);
           } else {
             phCurrentValue.textContent = "--";
@@ -2075,7 +2081,13 @@
 
         const orpCurrentValue = $("#orp_current_value");
         if (orpCurrentValue) {
-          if (json.orp != null && typeof json.orp === "number" && !isNaN(json.orp)) {
+          if (orpCalibrationActive) {
+            if (json.orp_raw != null && typeof json.orp_raw === "number" && !isNaN(json.orp_raw)) {
+              orpCurrentValue.textContent = Math.round(json.orp_raw) + " mV (brut)";
+            } else {
+              orpCurrentValue.textContent = "--";
+            }
+          } else if (json.orp != null && typeof json.orp === "number" && !isNaN(json.orp)) {
             orpCurrentValue.textContent = Math.round(json.orp) + " mV";
           } else {
             orpCurrentValue.textContent = "--";
@@ -2302,6 +2314,23 @@
 
   // ---------- pH calibration endpoints ----------
   let phCalibrationStep = 0; // 0=idle, 1=plunge7.0, 2=calibrate7.0, 3=plunge4.0, 4=calibrate4.0
+  let phCalibrationActive = false;
+  let orpCalibrationActive = false;
+  let calibrationRefreshInterval = null;
+
+  function startCalibrationRefresh() {
+    if (calibrationRefreshInterval) return;
+    calibrationRefreshInterval = setInterval(() => {
+      loadSensorData({ force: true, source: "calibration" });
+    }, 5000);
+  }
+
+  function stopCalibrationRefresh() {
+    if (calibrationRefreshInterval) {
+      clearInterval(calibrationRefreshInterval);
+      calibrationRefreshInterval = null;
+    }
+  }
 
   function updatePhCalibrationSteps() {
     const step1 = $("#ph_step1");
@@ -2357,6 +2386,8 @@
     cancelBtn?.addEventListener("click", () => {
       if (confirm("Annuler la calibration en cours ?")) {
         phCalibrationStep = 0;
+        phCalibrationActive = false;
+        stopCalibrationRefresh();
         updatePhCalibrationSteps();
         if (calibratedStatus) {
           // Re-show calibrated status if it was previously calibrated
@@ -2369,6 +2400,8 @@
       if (phCalibrationStep === 0) {
         // Start calibration process
         phCalibrationStep = 1;
+        phCalibrationActive = true;
+        startCalibrationRefresh();
         updatePhCalibrationSteps();
         if (calibratedStatus) calibratedStatus.style.display = "none";
       } else if (phCalibrationStep === 1) {
@@ -2423,21 +2456,8 @@
 
           // Reset to idle
           phCalibrationStep = 0;
-
-          // Mise à jour immédiate (optimiste) : pendant la calibration 4.0, le pH corrigé doit être proche de 4.0
-          const nowLabel = new Date().toLocaleTimeString();
-          if (!latestSensorData) latestSensorData = {};
-          latestSensorData.ph = 4.0;
-
-          const mPh = $("#m-ph");
-          if (mPh) mPh.textContent = (Math.round(4.0 * 10) / 10).toFixed(1);
-          const mTime = $("#m-time");
-          if (mTime) mTime.textContent = nowLabel;
-
-          const phCurrentValue = $("#ph_current_value");
-          if (phCurrentValue) phCurrentValue.textContent = (4.0).toFixed(2);
-
-          if (phChart) pushPoint(phChart, Math.round(4.0 * 10) / 10, nowLabel);
+          phCalibrationActive = false;
+          stopCalibrationRefresh();
 
           // Invalider le timestamp pour forcer le rechargement
           lastSensorDataLoadTime = 0;
@@ -2449,11 +2469,13 @@
 
           // Recharger les données après un court délai pour se resynchroniser avec le backend
           setTimeout(async () => {
-            await loadSensorData();
+            await loadSensorData({ force: true });
           }, 2000);
         } catch (err) {
           alert("Erreur calibration pH 4.0:\n" + err.message);
           phCalibrationStep = 0;
+          phCalibrationActive = false;
+          stopCalibrationRefresh();
           updatePhCalibrationSteps();
         } finally {
           startBtn.disabled = false;
@@ -2571,6 +2593,8 @@
       // Reset states
       orpCalibrationStep1pt = 0;
       orpCalibrationStep2pt = 0;
+      orpCalibrationActive = false;
+      stopCalibrationRefresh();
       orpPoint1Measured = null;
       orpPoint1Reference = null;
       updateOrpCalibrationSteps1pt();
@@ -2585,6 +2609,8 @@
     cancelBtn1pt?.addEventListener("click", () => {
       if (confirm("Annuler la calibration en cours ?")) {
         orpCalibrationStep1pt = 0;
+        orpCalibrationActive = false;
+        stopCalibrationRefresh();
         if (refInput1pt) refInput1pt.value = "";
         updateOrpCalibrationSteps1pt();
         loadConfig();
@@ -2594,6 +2620,8 @@
     startBtn1pt?.addEventListener("click", async () => {
       if (orpCalibrationStep1pt === 0) {
         orpCalibrationStep1pt = 1;
+        orpCalibrationActive = true;
+        startCalibrationRefresh();
         updateOrpCalibrationSteps1pt();
         if (calibratedStatus) calibratedStatus.style.display = "none";
       } else if (orpCalibrationStep1pt === 1) {
@@ -2655,23 +2683,9 @@
           if (calibratedStatus) calibratedStatus.style.display = "block";
 
           orpCalibrationStep1pt = 0;
+          orpCalibrationActive = false;
+          stopCalibrationRefresh();
           if (refInput1pt) refInput1pt.value = "";
-
-          // Mise à jour immédiate (optimiste) : l'ORP corrigé doit correspondre à la référence (point unique)
-          const nowLabel = new Date().toLocaleTimeString();
-          if (!latestSensorData) latestSensorData = {};
-          latestSensorData.orp = referenceValue;
-          latestSensorData.orp_raw = currentOrpRaw;
-
-          const mOrp = $("#m-orp");
-          if (mOrp) mOrp.textContent = String(Math.round(referenceValue));
-          const mTime = $("#m-time");
-          if (mTime) mTime.textContent = nowLabel;
-
-          const orpCurrentValue = $("#orp_current_value");
-          if (orpCurrentValue) orpCurrentValue.textContent = Math.round(referenceValue) + " mV";
-
-          if (orpChart) pushPoint(orpChart, referenceValue, nowLabel);
 
           // Invalider le timestamp pour forcer le rechargement
           lastSensorDataLoadTime = 0;
@@ -2683,11 +2697,13 @@
 
           // Recharger les données après un court délai pour se resynchroniser avec le backend
           setTimeout(async () => {
-            await loadSensorData();
+            await loadSensorData({ force: true });
           }, 2000);
         } catch (err) {
           alert("Erreur calibration ORP:\n" + err.message);
           orpCalibrationStep1pt = 0;
+          orpCalibrationActive = false;
+          stopCalibrationRefresh();
           updateOrpCalibrationSteps1pt();
         } finally {
           startBtn1pt.disabled = false;
@@ -2704,6 +2720,8 @@
     cancelBtn2pt?.addEventListener("click", () => {
       if (confirm("Annuler la calibration en cours ?")) {
         orpCalibrationStep2pt = 0;
+        orpCalibrationActive = false;
+        stopCalibrationRefresh();
         orpPoint1Measured = null;
         orpPoint1Reference = null;
         if (ref1) ref1.value = "";
@@ -2716,6 +2734,8 @@
     startBtn2pt?.addEventListener("click", async () => {
       if (orpCalibrationStep2pt === 0) {
         orpCalibrationStep2pt = 1;
+        orpCalibrationActive = true;
+        startCalibrationRefresh();
         updateOrpCalibrationSteps2pt();
         if (calibratedStatus) calibratedStatus.style.display = "none";
       } else if (orpCalibrationStep2pt === 1) {
@@ -2821,25 +2841,12 @@
           if (calibratedStatus) calibratedStatus.style.display = "block";
 
           orpCalibrationStep2pt = 0;
+          orpCalibrationActive = false;
+          stopCalibrationRefresh();
           orpPoint1Measured = null;
           orpPoint1Reference = null;
           if (ref1) ref1.value = "";
           if (ref2) ref2.value = "";
-
-          // Mise à jour immédiate (optimiste) : juste après calibration, on est souvent encore dans la solution r2
-          const nowLabel = new Date().toLocaleTimeString();
-          if (!latestSensorData) latestSensorData = {};
-          latestSensorData.orp = r2;
-
-          const mOrp = $("#m-orp");
-          if (mOrp) mOrp.textContent = String(Math.round(r2));
-          const mTime = $("#m-time");
-          if (mTime) mTime.textContent = nowLabel;
-
-          const orpCurrentValue = $("#orp_current_value");
-          if (orpCurrentValue) orpCurrentValue.textContent = Math.round(r2) + " mV";
-
-          if (orpChart) pushPoint(orpChart, r2, nowLabel);
 
           // Invalider le timestamp pour forcer le rechargement
           lastSensorDataLoadTime = 0;
@@ -2851,11 +2858,13 @@
 
           // Recharger les données après un court délai pour se resynchroniser avec le backend
           setTimeout(async () => {
-            await loadSensorData();
+            await loadSensorData({ force: true });
           }, 2000);
         } catch (err) {
           alert("Erreur calibration ORP:\n" + err.message);
           orpCalibrationStep2pt = 0;
+          orpCalibrationActive = false;
+          stopCalibrationRefresh();
           updateOrpCalibrationSteps2pt();
         } finally {
           startBtn2pt.disabled = false;

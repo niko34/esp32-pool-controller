@@ -16,6 +16,7 @@ private:
 
   float orpValue = NAN;
   float phValue = NAN;
+  float phVoltageMv = NAN;  // Tension brute ADS1115 canal A0 (avant calibration pH)
   float tempValue = NAN;
   float tempRawValue = NAN;
   bool sensorsInitialized = false;
@@ -39,6 +40,7 @@ public:
   // Getters
   float getOrp() const { return orpValue; }
   float getPh() const { return phValue; }
+  float getPhVoltageMv() const { return phVoltageMv; }
   float getTemperature() const { return tempValue; }
   bool isInitialized() const { return sensorsInitialized; }
   bool isPhCalibrated() const { return _phCalibrated; }
