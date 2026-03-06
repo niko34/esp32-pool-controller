@@ -860,11 +860,6 @@
     const timeTimezone = $("#time_timezone")?.value || "europe_paris";
     const timeValue = $("#time_value")?.value || "";
 
-    const filtrationEnabled = $("#filtration_enabled")?.checked ?? true;
-    const filtrationMode = $("#filtration_mode")?.value || "auto";
-    const filtrationStart = $("#filtration_start")?.value || "08:00";
-    const filtrationEnd = $("#filtration_end")?.value || "20:00";
-
     const lightingFeatureEnabled = $("#lighting_feature_enabled")?.checked ?? true;
     const lightingScheduleMode = $("#lighting_schedule_mode")?.value || "disabled";
     const lightingStartTime = $("#lighting_start_time")?.value || "20:00";
@@ -895,16 +890,23 @@
       ntp_server: timeNtpServer,
       manual_time: timeValue,
       timezone_id: timeTimezone,
-      filtration_enabled: filtrationEnabled,
-      filtration_mode: filtrationMode,
-      filtration_start: filtrationStart,
-      filtration_end: filtrationEnd,
       lighting_feature_enabled: lightingFeatureEnabled,
       lighting_schedule_enabled: lightingScheduleMode === "enabled",
       lighting_start_time: lightingStartTime,
       lighting_end_time: lightingEndTime,
       temperature_enabled: temperatureEnabled,
       sensor_logs_enabled: $("#sensor_logs_enabled")?.checked === true,
+    };
+  }
+
+  // Séparé de collectConfig() pour éviter qu'un save() ORP/pH
+  // n'écrase accidentellement le mode de filtration en cours.
+  function collectFiltrationConfig() {
+    return {
+      filtration_enabled: $("#filtration_enabled")?.checked ?? true,
+      filtration_mode: $("#filtration_mode")?.value || "auto",
+      filtration_start: $("#filtration_start")?.value || "08:00",
+      filtration_end: $("#filtration_end")?.value || "20:00",
     };
   }
 
@@ -3545,22 +3547,23 @@
       return sendConfig(cfg);
     };
 
-    // Filtration
+    // Filtration — save séparé pour ne pas interférer avec les autres réglages
+    const saveFiltration = () => sendConfig(collectFiltrationConfig());
     $("#filtration_enabled")?.addEventListener("change", () => {
       updateFeatureVisibility("filtration");
-      save();
+      saveFiltration();
     });
     $("#filtration_mode")?.addEventListener("change", () => {
       updateFiltrationControls();
-      save();
+      saveFiltration();
     });
     $("#filtration_start")?.addEventListener("change", () => {
       cachedManualStart = $("#filtration_start").value;
-      if ($("#filtration_mode").value === "manual") save();
+      if ($("#filtration_mode").value === "manual") saveFiltration();
     });
     $("#filtration_end")?.addEventListener("change", () => {
       cachedManualEnd = $("#filtration_end").value;
-      if ($("#filtration_mode").value === "manual") save();
+      if ($("#filtration_mode").value === "manual") saveFiltration();
     });
 
     // Lighting feature
