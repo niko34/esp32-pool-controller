@@ -3930,7 +3930,7 @@
     }, 200);
 
     // loops (loadSensorData déjà appelé au démarrage ligne 2302)
-    setInterval(() => loadSensorData({ source: "interval" }), SENSOR_REFRESH_MS); // 30 secondes
+    setInterval(() => loadSensorData({ source: "interval", force: true }), SENSOR_REFRESH_MS); // 30 secondes
     setInterval(() => {
       if (!lastSensorDataLoadTime) return;
       const ageMs = Date.now() - lastSensorDataLoadTime;
