@@ -2444,6 +2444,7 @@
 
           // Refresh réel depuis l'ESP (valeurs calculées après calibration)
           await loadConfig();
+          await checkCalibrationDate();
           updatePhCalibrationSteps();
 
           // Recharger les données après un court délai pour se resynchroniser avec le backend
@@ -2677,6 +2678,7 @@
 
           // Refresh réel depuis l'ESP
           await loadConfig();
+          await checkCalibrationDate();
           updateOrpCalibrationSteps1pt();
 
           // Recharger les données après un court délai pour se resynchroniser avec le backend
@@ -2844,6 +2846,7 @@
 
           // Refresh réel depuis l'ESP
           await loadConfig();
+          await checkCalibrationDate();
           updateOrpCalibrationSteps2pt();
 
           // Recharger les données après un court délai pour se resynchroniser avec le backend
