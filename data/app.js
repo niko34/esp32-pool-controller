@@ -1336,6 +1336,31 @@
 
   // ========== CARTES STATUS ==========
 
+  function predictFiltrationRunning(cfg) {
+    if (!cfg || !cfg.filtration_enabled) return false;
+    const mode = (cfg.filtration_mode || '').toLowerCase();
+    if (mode === 'off') return false;
+    if (mode === 'manual' || mode === 'auto') {
+      const now = new Date();
+      const nowMin = now.getHours() * 60 + now.getMinutes();
+      const parseTime = (s) => {
+        if (!s || s.length < 5) return -1;
+        const parts = s.split(':');
+        const h = parseInt(parts[0], 10);
+        const m = parseInt(parts[1], 10);
+        if (isNaN(h) || isNaN(m)) return -1;
+        return h * 60 + m;
+      };
+      const startMin = parseTime(cfg.filtration_start);
+      const endMin = parseTime(cfg.filtration_end);
+      if (startMin === -1 || endMin === -1) return false;
+      if (startMin === endMin) return true;
+      if (startMin < endMin) return nowMin >= startMin && nowMin < endMin;
+      return nowMin >= startMin || nowMin < endMin;
+    }
+    return false;
+  }
+
   function getFiltrationState(config, data) {
     const isRunning = data && data.filtration_running;
     const temp = data && data.temperature;
@@ -3548,13 +3573,22 @@
     };
 
     // Filtration — save séparé pour ne pas interférer avec les autres réglages
-    const saveFiltration = () => sendConfig(collectFiltrationConfig()).then((ok) => {
-      if (ok) {
-        loadConfig();
-        setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
-      }
-      return ok;
-    });
+    const saveFiltration = () => {
+      const cfg = collectFiltrationConfig();
+      return sendConfig(cfg).then((ok) => {
+        if (ok) {
+          // Mise à jour optimiste immédiate : pas besoin d'attendre /data
+          if (latestSensorData) {
+            latestSensorData.filtration_running = predictFiltrationRunning(cfg);
+            updateDetailSections();
+            updateStatusCards();
+          }
+          loadConfig();
+          setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
+        }
+        return ok;
+      });
+    };
     $("#filtration_enabled")?.addEventListener("change", () => {
       updateFeatureVisibility("filtration");
       saveFiltration();
