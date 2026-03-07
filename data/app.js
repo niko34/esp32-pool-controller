@@ -1883,14 +1883,14 @@
         try {
           const result = await sendConfig(payload);
           if (result) {
-            // Mise à jour immédiate de l'interface après confirmation serveur
-            const statusBadge = $("#detail-filtration-status");
-            if (statusBadge) {
-              statusBadge.textContent = "En marche";
-              statusBadge.className = "state-badge state-badge--ok";
-            }
+            filtrationRunningOverride = true;
+            updateDetailSections();
+            updateStatusCards();
             showToast("Filtration démarrée", "success");
-            await loadConfig();
+            loadConfig();
+            setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }).then(() => {
+              filtrationRunningOverride = null;
+            }), 500);
           } else {
             showToast("Erreur lors du démarrage", "error");
           }
@@ -1907,14 +1907,14 @@
         try {
           const result = await sendConfig(payload);
           if (result) {
-            // Mise à jour immédiate de l'interface après confirmation serveur
-            const statusBadge = $("#detail-filtration-status");
-            if (statusBadge) {
-              statusBadge.textContent = "Arrêtée";
-              statusBadge.className = "state-badge state-badge--off";
-            }
+            filtrationRunningOverride = false;
+            updateDetailSections();
+            updateStatusCards();
             showToast("Filtration arrêtée", "success");
-            await loadConfig();
+            loadConfig();
+            setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }).then(() => {
+              filtrationRunningOverride = null;
+            }), 500);
           } else {
             showToast("Erreur lors de l'arrêt", "error");
           }
@@ -4138,6 +4138,16 @@
       }
     }
 
+    function applyFiltrationOverride(isRunning) {
+      filtrationRunningOverride = isRunning;
+      updateDetailSections();
+      updateStatusCards();
+      loadConfig();
+      setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }).then(() => {
+        filtrationRunningOverride = null;
+      }), 500);
+    }
+
     // Start filtration: switch to manual mode with current time to 23:59
     if (startBtn) {
       startBtn.addEventListener("click", async () => {
@@ -4153,13 +4163,12 @@
         try {
           const result = await sendConfig(payload);
           if (result) {
-            // Mise à jour immédiate de l'interface après confirmation serveur
             if (statusBadge) {
               statusBadge.textContent = 'En marche';
               statusBadge.className = 'state-badge state-badge--ok';
             }
             showToast("Filtration démarrée", "success");
-            await loadConfig();
+            applyFiltrationOverride(true);
           } else {
             showToast("Erreur lors du démarrage", "error");
           }
@@ -4173,20 +4182,17 @@
     // Stop filtration: switch to off mode
     if (stopBtn) {
       stopBtn.addEventListener("click", async () => {
-        const payload = {
-          filtration_mode: "off"
-        };
+        const payload = { filtration_mode: "off" };
 
         try {
           const result = await sendConfig(payload);
           if (result) {
-            // Mise à jour immédiate de l'interface après confirmation serveur
             if (statusBadge) {
               statusBadge.textContent = 'Arrêtée';
               statusBadge.className = 'state-badge state-badge--off';
             }
             showToast("Filtration arrêtée", "success");
-            await loadConfig();
+            applyFiltrationOverride(false);
           } else {
             showToast("Erreur lors de l'arrêt", "error");
           }
