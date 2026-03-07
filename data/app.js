@@ -1362,6 +1362,17 @@
     return false;
   }
 
+  function updateFiltrationBadges() {
+    const state = getFiltrationState(window._config || {}, latestSensorData || {});
+    ["#detail-filtration-status", "#filtration-current-status"].forEach((sel) => {
+      const badge = $(sel);
+      if (badge) {
+        badge.textContent = state.text;
+        badge.className = 'state-badge ' + state.class;
+      }
+    });
+  }
+
   function getFiltrationState(config, data) {
     const isRunning = filtrationRunningOverride !== null ? filtrationRunningOverride : (data && data.filtration_running);
     const temp = data && data.temperature;
@@ -1816,7 +1827,6 @@
   // ========== SECTIONS DÉTAILLÉES ==========
   function updateDetailSections() {
     const config = window._config || {};
-    const data = latestSensorData || {};
 
     // === FILTRATION ===
     const detailFiltrationMode = $("#detail-filtration-mode");
@@ -1837,12 +1847,7 @@
       detailFiltrationSchedule.textContent = `${start} - ${end}`;
     }
 
-    const detailFiltrationStatus = $("#detail-filtration-status");
-    if (detailFiltrationStatus) {
-      const state = getFiltrationState(config, data);
-      detailFiltrationStatus.textContent = state.text;
-      detailFiltrationStatus.className = 'state-badge ' + state.class;
-    }
+    updateFiltrationBadges();
 
     // === ÉCLAIRAGE ===
     const detailLightingStatus = $("#detail-lighting-status");
@@ -4126,18 +4131,6 @@
   function setupFiltrationManualControl() {
     const startBtn = $("#filtration-manual-start");
     const stopBtn = $("#filtration-manual-stop");
-    const statusBadge = $("#filtration-current-status");
-
-    // Update status badge from config
-    function updateFiltrationStatus() {
-      const config = window._config || {};
-      if (statusBadge) {
-        const isRunning = config.filtration_running;
-        statusBadge.textContent = isRunning ? 'En marche' : 'Arrêtée';
-        statusBadge.className = 'state-badge ' + (isRunning ? 'state-badge--ok' : 'state-badge--off');
-      }
-    }
-
     function applyFiltrationOverride(isRunning) {
       filtrationRunningOverride = isRunning;
       updateDetailSections();
@@ -4163,10 +4156,6 @@
         try {
           const result = await sendConfig(payload);
           if (result) {
-            if (statusBadge) {
-              statusBadge.textContent = 'En marche';
-              statusBadge.className = 'state-badge state-badge--ok';
-            }
             showToast("Filtration démarrée", "success");
             applyFiltrationOverride(true);
           } else {
@@ -4187,10 +4176,6 @@
         try {
           const result = await sendConfig(payload);
           if (result) {
-            if (statusBadge) {
-              statusBadge.textContent = 'Arrêtée';
-              statusBadge.className = 'state-badge state-badge--off';
-            }
             showToast("Filtration arrêtée", "success");
             applyFiltrationOverride(false);
           } else {
@@ -4204,7 +4189,7 @@
     }
 
     // Initial status update
-    updateFiltrationStatus();
+    updateFiltrationBadges();
   }
 
   function updateLightingStatus(isOn) {
