@@ -1893,9 +1893,7 @@
             updateStatusCards();
             showToast("Filtration démarrée", "success");
             loadConfig();
-            setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }).then(() => {
-              filtrationRunningOverride = null;
-            }), 500);
+            setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
           } else {
             showToast("Erreur lors du démarrage", "error");
           }
@@ -1917,9 +1915,7 @@
             updateStatusCards();
             showToast("Filtration arrêtée", "success");
             loadConfig();
-            setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }).then(() => {
-              filtrationRunningOverride = null;
-            }), 500);
+            setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
           } else {
             showToast("Erreur lors de l'arrêt", "error");
           }
@@ -2035,6 +2031,11 @@
         jsonPerf?.end();
 
         latestSensorData = json;
+
+        // Lever l'override filtration uniquement quand le serveur confirme l'état attendu
+        if (filtrationRunningOverride !== null && json.filtration_running === filtrationRunningOverride) {
+          filtrationRunningOverride = null;
+        }
 
         if (sensorDataRetryTimer) {
           clearTimeout(sensorDataRetryTimer);
@@ -3588,10 +3589,7 @@
           updateDetailSections();
           updateStatusCards();
           loadConfig();
-          // Après 500ms l'ESP32 a traité le changement : on lit la vraie valeur et on lève l'override
-          setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }).then(() => {
-            filtrationRunningOverride = null;
-          }), 500);
+          setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
         }
         return ok;
       });
@@ -4136,9 +4134,7 @@
       updateDetailSections();
       updateStatusCards();
       loadConfig();
-      setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }).then(() => {
-        filtrationRunningOverride = null;
-      }), 500);
+      setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
     }
 
     // Start filtration: switch to manual mode with current time to 23:59
