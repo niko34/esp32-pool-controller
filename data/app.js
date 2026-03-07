@@ -1881,6 +1881,7 @@
         const now = new Date();
         const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
         const payload = {
+          filtration_enabled: true,
           filtration_mode: "manual",
           filtration_start: currentTime,
           filtration_end: "23:59"
@@ -4137,13 +4138,14 @@
       setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
     }
 
-    // Start filtration: switch to manual mode with current time to 23:59
+    // Start filtration: enable + manual mode from now to 23:59
     if (startBtn) {
       startBtn.addEventListener("click", async () => {
         const now = new Date();
         const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
         const payload = {
+          filtration_enabled: true,
           filtration_mode: "manual",
           filtration_start: currentTime,
           filtration_end: "23:59"
@@ -4152,6 +4154,9 @@
         try {
           const result = await sendConfig(payload);
           if (result) {
+            const enabledEl = $("#filtration_enabled");
+            if (enabledEl) enabledEl.checked = true;
+            updateFeatureVisibility("filtration");
             showToast("Filtration démarrée", "success");
             applyFiltrationOverride(true);
           } else {
