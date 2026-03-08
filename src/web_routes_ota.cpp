@@ -99,6 +99,12 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
       systemLogger.info("Type de mise à jour: Firmware (détection nom fichier)");
     }
 
+    // Démonter LittleFS avant la mise à jour du filesystem
+    if (cmd == U_SPIFFS) {
+      LittleFS.end();
+      systemLogger.info("LittleFS démonté pour mise à jour manuelle");
+    }
+
     // Démarrer la mise à jour
     if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) {
       Update.printError(Serial);

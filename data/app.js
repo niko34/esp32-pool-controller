@@ -767,7 +767,7 @@
     }
 
     if (timeSaveBtn) {
-      timeSaveBtn.style.display = useNtp ? "none" : "inline-flex";
+      timeSaveBtn.style.display = "inline-flex";
     }
   }
 
@@ -3220,8 +3220,17 @@
 
         if (percent === 100 && !uploadCompleted) {
           uploadCompleted = true;
-          status.textContent = "✓ Envoi terminé. Redémarrage…";
-          setTimeout(() => window.location.reload(), 30000);
+          let countdown = 30;
+          const updateCountdown = () => {
+            status.textContent = `✓ Envoi terminé. Rechargement dans ${countdown}s…`;
+            if (countdown <= 0) {
+              window.location.reload();
+            } else {
+              countdown--;
+              setTimeout(updateCountdown, 1000);
+            }
+          };
+          updateCountdown();
         }
       });
 
@@ -3486,44 +3495,30 @@
       }
     };
 
-    timeUseNtp?.addEventListener("change", async () => {
-      const useNtp = timeUseNtp.checked;
-      if (useNtp) {
-        // Afficher le spinner pendant la sync NTP
-        updateTimeControls("", true);
+    // Mise à jour de l'UI uniquement lors du changement du switch NTP (pas de sauvegarde auto)
+    timeUseNtp?.addEventListener("change", () => {
+      updateTimeControls($("#time_value").value, false);
+    });
 
-        // Sauvegarder pour déclencher la sync NTP côté serveur
-        await sendConfig(collectTimeConfig());
-
-        // Attendre que l'heure soit synchronisée (max 10 secondes)
-        let attempts = 0;
-        const maxAttempts = 10;
-        const pollInterval = setInterval(async () => {
-          attempts++;
-          try {
-            const res = await authFetch("/time-now");
-            const data = await res.json();
-            const timeStr = data.time || "";
-            // Vérifier si l'heure est valide (année >= 2021)
-            const year = parseInt(timeStr.substring(0, 4), 10);
-            if (year >= 2021) {
-              clearInterval(pollInterval);
-              updateTimeControls(timeStr, false);
-            } else if (attempts >= maxAttempts) {
-              clearInterval(pollInterval);
-              updateTimeControls(timeStr, false);
-            }
-          } catch (e) {
-            if (attempts >= maxAttempts) {
-              clearInterval(pollInterval);
-              updateTimeControls("", false);
-            }
-          }
-        }, 1000);
-      } else {
-        updateTimeControls($("#time_value").value, false);
-        await sendConfig(collectTimeConfig());
-      }
+    // Quand la timezone change en mode NTP : recalculer l'heure affichée sans appel serveur
+    const tzMap = {
+      europe_paris: "Europe/Paris",
+      utc: "UTC",
+      america_new_york: "America/New_York",
+      america_los_angeles: "America/Los_Angeles",
+      asia_tokyo: "Asia/Tokyo",
+      australia_sydney: "Australia/Sydney"
+    };
+    $("#time_timezone")?.addEventListener("change", () => {
+      if (!(timeUseNtp?.checked ?? true)) return;
+      const ianaTimezone = tzMap[$("#time_timezone").value] || "UTC";
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: ianaTimezone,
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hour12: false
+      }).formatToParts(new Date());
+      const g = (t) => parts.find(p => p.type === t)?.value || "00";
+      updateTimeControls(`${g("year")}-${g("month")}-${g("day")}T${g("hour")}:${g("minute")}`, false);
     });
 
     saveBtn?.addEventListener("click", async () => {
@@ -3531,17 +3526,14 @@
       setButtonState(savingLabel, true, true, "default");
 
       const ok = await sendConfig(collectTimeConfig());
+
       if (ok) {
         setButtonState(savedLabel, false, true, "success");
-        setTimeout(() => {
-          setButtonState(defaultLabel, false, false, "default");
-        }, 2000);
-        setTimeout(loadConfig, 2000);
+        setTimeout(() => setButtonState(defaultLabel, false, false, "default"), 2000);
+        setTimeout(loadConfig, 1500);
       } else {
         setButtonState("Erreur", false, true, "error");
-        setTimeout(() => {
-          setButtonState(defaultLabel, false, false, "default");
-        }, 2000);
+        setTimeout(() => setButtonState(defaultLabel, false, false, "default"), 2000);
       }
     });
 
@@ -3703,10 +3695,27 @@
 
   // ---------- Security bindings ----------
   function bindSecurity() {
-    // Save CORS configuration (auto-save)
-    $("#auth_cors_origins")?.addEventListener("change", () => {
-      const corsValue = $("#auth_cors_origins").value.trim();
-      sendConfig({ auth_cors_origins: corsValue });
+    // Save CORS configuration (bouton manuel)
+    const corsBtn = $("#cors-save-btn");
+    const setCorsBtnState = (label, status) => {
+      if (!corsBtn) return;
+      corsBtn.disabled = status === "saving";
+      corsBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
+      if (status === "success") corsBtn.classList.add("btn--ok");
+      else if (status === "error") corsBtn.classList.add("btn--danger");
+      else corsBtn.classList.add("btn--primary");
+      corsBtn.textContent = label;
+    };
+    corsBtn?.addEventListener("click", async () => {
+      setCorsBtnState("Sauvegarde...", "saving");
+      const ok = await sendConfig({ auth_cors_origins: $("#auth_cors_origins").value.trim() });
+      if (ok) {
+        setCorsBtnState("Sauvegarde réussie", "success");
+        setTimeout(() => setCorsBtnState("Sauvegarder", "default"), 2000);
+      } else {
+        setCorsBtnState("Erreur", "error");
+        setTimeout(() => setCorsBtnState("Sauvegarder", "default"), 2000);
+      }
     });
 
     // Password validation helper
@@ -4130,15 +4139,8 @@
   function setupFiltrationManualControl() {
     const startBtn = $("#filtration-manual-start");
     const stopBtn = $("#filtration-manual-stop");
-    function applyFiltrationOverride(isRunning) {
-      filtrationRunningOverride = isRunning;
-      updateDetailSections();
-      updateStatusCards();
-      loadConfig();
-      setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
-    }
 
-    // Start filtration: enable + manual mode from now to 23:59
+    // Start filtration: ouvre une fenêtre horaire de maintenant à 23:59, sans jamais changer le mode
     if (startBtn) {
       startBtn.addEventListener("click", async () => {
         const now = new Date();
@@ -4146,7 +4148,6 @@
 
         const payload = {
           filtration_enabled: true,
-          filtration_mode: "manual",
           filtration_start: currentTime,
           filtration_end: "23:59"
         };
@@ -4154,11 +4155,23 @@
         try {
           const result = await sendConfig(payload);
           if (result) {
+            if (!window._config) window._config = {};
+            Object.assign(window._config, payload);
             const enabledEl = $("#filtration_enabled");
             if (enabledEl) enabledEl.checked = true;
+            const startEl = $("#filtration_start");
+            if (startEl) startEl.value = currentTime;
+            const endEl = $("#filtration_end");
+            if (endEl) endEl.value = "23:59";
+            updateFiltrationControls();
             updateFeatureVisibility("filtration");
+            filtrationRunningOverride = true;
+            updateFiltrationBadges();
             showToast("Filtration démarrée", "success");
-            applyFiltrationOverride(true);
+            setTimeout(() => {
+              loadSensorData({ force: true, source: "filtration-start" });
+              loadConfig().catch(() => {});
+            }, 1000);
           } else {
             showToast("Erreur lors du démarrage", "error");
           }
@@ -4169,16 +4182,27 @@
       });
     }
 
-    // Stop filtration: switch to off mode
+    // Stop filtration: ferme la fenêtre horaire (end = maintenant) sans toucher au mode
     if (stopBtn) {
       stopBtn.addEventListener("click", async () => {
-        const payload = { filtration_mode: "off" };
+        const now = new Date();
+        const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        const payload = { filtration_end: currentTime };
 
         try {
           const result = await sendConfig(payload);
           if (result) {
+            if (window._config) window._config.filtration_end = currentTime;
+            const endEl = $("#filtration_end");
+            if (endEl) endEl.value = currentTime;
+            updateFiltrationControls();
+            filtrationRunningOverride = false;
+            updateFiltrationBadges();
             showToast("Filtration arrêtée", "success");
-            applyFiltrationOverride(false);
+            setTimeout(() => {
+              loadSensorData({ force: true, source: "filtration-stop" });
+              loadConfig().catch(() => {});
+            }, 1000);
           } else {
             showToast("Erreur lors de l'arrêt", "error");
           }
