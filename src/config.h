@@ -89,8 +89,6 @@ struct FiltrationConfig {
   String mode = "auto"; // auto, manual, off
   String start = "08:00";
   String end = "20:00";
-  bool hasAutoReference = false;
-  float autoReferenceTemp = 24.0f;
 };
 
 struct LightingConfig {

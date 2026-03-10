@@ -700,22 +700,27 @@
     const autoOption = modeSelect?.querySelector('option[value="auto"]');
     if (!modeSelect || !start || !end) return;
 
-    // Vérifier si la température est activée
+    // Auto disponible uniquement si la fonctionnalité température est active ET qu'une valeur est mesurée.
+    // Si les données capteur ne sont pas encore chargées, on ne bloque pas (pas de faux positif au démarrage).
     const tempEnabled = $("#temperature_enabled")?.checked ?? false;
+    const sensorDataLoaded = latestSensorData != null;
+    const tempValue = latestSensorData?.temperature;
+    const tempMeasured = !sensorDataLoaded || (tempEnabled && tempValue != null && !isNaN(tempValue));
 
-    // Activer/désactiver l'option auto selon la disponibilité de la température
     if (autoOption) {
-      autoOption.disabled = !tempEnabled;
+      autoOption.disabled = !tempMeasured;
     }
 
-    // Afficher l'avertissement si auto n'est pas disponible
     if (autoHint) {
-      autoHint.style.display = !tempEnabled ? "block" : "none";
-    }
-
-    // Si température désactivée et mode auto sélectionné, basculer vers manuel
-    if (!tempEnabled && modeSelect.value === "auto") {
-      modeSelect.value = "manual";
+      if (!tempEnabled) {
+        autoHint.textContent = "Le mode Auto nécessite l'activation de la mesure de température.";
+        autoHint.style.display = "block";
+      } else if (!tempMeasured) {
+        autoHint.textContent = "Le mode Auto nécessite une mesure de température valide. Vérifiez le capteur.";
+        autoHint.style.display = "block";
+      } else {
+        autoHint.style.display = "none";
+      }
     }
 
     const mode = modeSelect.value || "auto";
@@ -723,9 +728,13 @@
     if (mode === "manual") {
       start.disabled = false;
       end.disabled = false;
+      start.classList.remove("is-computed");
+      end.classList.remove("is-computed");
     } else {
       start.disabled = true;
       end.disabled = true;
+      start.classList.add("is-computed");
+      end.classList.add("is-computed");
     }
   }
 
@@ -1044,13 +1053,16 @@
 
     // Filtration
     $("#filtration_enabled").checked = cfg.filtration_enabled !== false;
-    if (cfg.filtration_mode) $("#filtration_mode").value = cfg.filtration_mode;
-    if (cfg.filtration_start) $("#filtration_start").value = cfg.filtration_start;
-    if (cfg.filtration_end) $("#filtration_end").value = cfg.filtration_end;
+    if (!filtrationDirty) {
+      // Ne pas écraser les modifications non sauvegardées de l'utilisateur
+      if (cfg.filtration_mode) $("#filtration_mode").value = cfg.filtration_mode;
+      if (cfg.filtration_start) $("#filtration_start").value = cfg.filtration_start;
+      if (cfg.filtration_end) $("#filtration_end").value = cfg.filtration_end;
 
-    if ($("#filtration_mode").value === "manual") {
-      cachedManualStart = $("#filtration_start").value;
-      cachedManualEnd = $("#filtration_end").value;
+      if ($("#filtration_mode").value === "manual") {
+        cachedManualStart = $("#filtration_start").value;
+        cachedManualEnd = $("#filtration_end").value;
+      }
     }
     updateFiltrationControls();
     updateFeatureVisibility("filtration");
@@ -1209,6 +1221,7 @@
   let sensorDataLoadInFlight = null;
   let sensorDataRetryTimer = null;
   let filtrationRunningOverride = null; // Valeur optimiste après sauvegarde, null = utiliser /data
+  let filtrationDirty = false; // Modifications non sauvegardées dans la section Programmation
 
   // ========== ALERTES ==========
   let dismissedAlerts = {};
@@ -2032,6 +2045,7 @@
         jsonPerf?.end();
 
         latestSensorData = json;
+        updateFiltrationControls(); // Réévaluer la disponibilité du mode Auto après réception des données
 
         // Lever l'override filtration uniquement quand le serveur confirme l'état attendu
         if (filtrationRunningOverride !== null && json.filtration_running === filtrationRunningOverride) {
@@ -3471,6 +3485,47 @@
     });
   }
 
+  function bindFiltrationManualSave() {
+    const saveBtn = $("#filtration_save_btn");
+    const defaultLabel = "Sauvegarder";
+    const savingLabel = "Sauvegarde...";
+    const savedLabel = "Sauvegarde réussie";
+
+    const setFiltBtnState = (label, showSpinner, disabled, status) => {
+      if (!saveBtn) return;
+      saveBtn.disabled = disabled;
+      saveBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
+      if (status === "success") saveBtn.classList.add("btn--ok");
+      else if (status === "error") saveBtn.classList.add("btn--danger");
+      else saveBtn.classList.add("btn--primary");
+      if (showSpinner) {
+        saveBtn.innerHTML = `<span class="btn__spinner"></span><span>${label}</span>`;
+      } else {
+        saveBtn.textContent = label;
+      }
+    };
+
+    saveBtn?.addEventListener("click", async () => {
+      if (saveBtn.disabled) return;
+      setFiltBtnState(savingLabel, true, true, "default");
+      const cfg = collectFiltrationConfig();
+      const ok = await sendConfig(cfg);
+      if (ok) {
+        filtrationDirty = false;
+        filtrationRunningOverride = predictFiltrationRunning(cfg);
+        updateDetailSections();
+        updateStatusCards();
+        setFiltBtnState(savedLabel, false, true, "success");
+        setTimeout(() => setFiltBtnState(defaultLabel, false, false, "default"), 2000);
+        setTimeout(loadConfig, 1500);
+        setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
+      } else {
+        setFiltBtnState("Erreur", false, true, "error");
+        setTimeout(() => setFiltBtnState(defaultLabel, false, false, "default"), 2000);
+      }
+    });
+  }
+
   function bindTimeManualSave() {
     const saveBtn = $("#time_save_btn");
     const timeUseNtp = $("#time_use_ntp");
@@ -3572,36 +3627,32 @@
       return sendConfig(cfg);
     };
 
-    // Filtration — save séparé pour ne pas interférer avec les autres réglages
-    const saveFiltration = () => {
+    // Filtration feature toggle — sauvegarde immédiate (interrupteur on/off)
+    $("#filtration_enabled")?.addEventListener("change", () => {
+      updateFeatureVisibility("filtration");
       const cfg = collectFiltrationConfig();
-      return sendConfig(cfg).then((ok) => {
+      sendConfig(cfg).then((ok) => {
         if (ok) {
-          // Override optimiste : immunise l'affichage contre les /data stales
           filtrationRunningOverride = predictFiltrationRunning(cfg);
           updateDetailSections();
           updateStatusCards();
           loadConfig();
           setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
         }
-        return ok;
       });
-    };
-    $("#filtration_enabled")?.addEventListener("change", () => {
-      updateFeatureVisibility("filtration");
-      saveFiltration();
     });
+    // Programmation (mode, start, end) — pas d'auto-save, bouton Sauvegarder uniquement
     $("#filtration_mode")?.addEventListener("change", () => {
+      filtrationDirty = true;
       updateFiltrationControls();
-      saveFiltration();
     });
     $("#filtration_start")?.addEventListener("change", () => {
       cachedManualStart = $("#filtration_start").value;
-      if ($("#filtration_mode").value === "manual") saveFiltration();
+      filtrationDirty = true;
     });
     $("#filtration_end")?.addEventListener("change", () => {
       cachedManualEnd = $("#filtration_end").value;
-      if ($("#filtration_mode").value === "manual") saveFiltration();
+      filtrationDirty = true;
     });
 
     // Lighting — rafraîchit la config après sauvegarde pour mettre à jour le tableau de bord
@@ -3952,6 +4003,7 @@
     bindTempCalibration();
     bindWifi();
     bindMqttManualSave();
+    bindFiltrationManualSave();
     bindTimeManualSave();
     bindSecurity();
     bindGithubUpdate();
@@ -4040,7 +4092,7 @@
       const activeId = document.activeElement?.id || "";
       const mqttEditing = ["mqtt_server", "mqtt_port", "mqtt_topic", "mqtt_username", "mqtt_password", "mqtt_enabled"].includes(activeId);
       const timeEditing = ["time_use_ntp", "time_ntp_server", "time_timezone", "time_value"].includes(activeId);
-      if (mqttEditing || timeEditing) return;
+      if (mqttEditing || timeEditing || filtrationDirty) return;
       loadConfig().catch(() => {});
     }, 15000);
 

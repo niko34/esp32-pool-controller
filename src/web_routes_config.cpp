@@ -87,8 +87,6 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["filtration_mode"] = filtrationCfg.mode;
   doc["filtration_start"] = filtrationCfg.start;
   doc["filtration_end"] = filtrationCfg.end;
-  doc["filtration_has_reference"] = filtrationCfg.hasAutoReference;
-  doc["filtration_reference_temp"] = filtrationCfg.autoReferenceTemp;
   doc["filtration_running"] = filtration.isRunning();
   doc["lighting_feature_enabled"] = lightingCfg.featureEnabled;
   doc["lighting_enabled"] = lightingCfg.enabled;
@@ -306,8 +304,6 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["filtration_mode"].isNull()) filtrationCfg.mode = doc["filtration_mode"].as<String>();
   if (!doc["filtration_start"].isNull()) filtrationCfg.start = doc["filtration_start"].as<String>();
   if (!doc["filtration_end"].isNull()) filtrationCfg.end = doc["filtration_end"].as<String>();
-  if (!doc["filtration_has_reference"].isNull()) filtrationCfg.hasAutoReference = doc["filtration_has_reference"];
-  if (!doc["filtration_reference_temp"].isNull()) filtrationCfg.autoReferenceTemp = doc["filtration_reference_temp"];
   if (!doc["max_ph_ml_per_day"].isNull()) safetyLimits.maxPhMinusMlPerDay = doc["max_ph_ml_per_day"];
   if (!doc["max_chlorine_ml_per_day"].isNull()) safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"];
   if (!doc["lighting_feature_enabled"].isNull()) lightingCfg.featureEnabled = doc["lighting_feature_enabled"];

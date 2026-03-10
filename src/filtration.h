@@ -8,7 +8,6 @@ struct FiltrationRuntime {
   bool running = false;
   bool scheduleComputedThisCycle = false;
   unsigned long startedAtMs = 0;
-  float cycleMaxTemp = -INFINITY;
 };
 
 class FiltrationManager {

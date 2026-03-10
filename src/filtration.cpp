@@ -38,15 +38,8 @@ void FiltrationManager::ensureTimesValid() {
 void FiltrationManager::computeAutoSchedule() {
   if (!filtrationCfg.mode.equalsIgnoreCase("auto")) return;
 
-  float referenceTemp = filtrationCfg.hasAutoReference ? filtrationCfg.autoReferenceTemp : sensors.getTemperature();
-  if (isnan(referenceTemp)) {
-    if (!filtrationCfg.hasAutoReference) {
-      filtrationCfg.start = "08:00";
-      filtrationCfg.end = "20:00";
-      return;
-    }
-    referenceTemp = filtrationCfg.autoReferenceTemp;
-  }
+  float referenceTemp = sensors.getTemperature();
+  if (isnan(referenceTemp)) return; // Pas de température valide, on conserve le planning actuel
 
   if (referenceTemp < 0) referenceTemp = 0;
   float durationHours = referenceTemp / 2.0f;
@@ -77,6 +70,7 @@ void FiltrationManager::computeAutoSchedule() {
   filtrationCfg.start = toTimeString(startHour);
   filtrationCfg.end = toTimeString(endHour);
   ensureTimesValid();
+  systemLogger.info("Planning auto: " + String(referenceTemp, 1) + "°C → " + filtrationCfg.start + "-" + filtrationCfg.end);
 }
 
 bool FiltrationManager::getCurrentMinutesOfDay(int& minutes) {
@@ -108,7 +102,7 @@ void FiltrationManager::update() {
   if (!filtrationCfg.enabled) {
     if (state.running || relayState) {
       state.running = false;
-      state.cycleMaxTemp = -INFINITY;
+
       state.scheduleComputedThisCycle = false;
       state.startedAtMs = 0;
       if (relayState) {
@@ -143,7 +137,6 @@ void FiltrationManager::update() {
   if (!wasRunning && runTarget) {
     state.running = true;
     state.startedAtMs = millis();
-    state.cycleMaxTemp = -INFINITY;
     state.scheduleComputedThisCycle = false;
     systemLogger.info("Démarrage filtration");
   }
@@ -151,35 +144,25 @@ void FiltrationManager::update() {
   bool runNow = state.running;
   unsigned long elapsed = runNow ? millis() - state.startedAtMs : 0;
 
-  if (runNow) {
-    if (elapsed >= 600000UL && !isnan(sensors.getTemperature())) {
-      state.cycleMaxTemp = (state.cycleMaxTemp == -INFINITY)
-        ? sensors.getTemperature()
-        : max(state.cycleMaxTemp, sensors.getTemperature());
-    }
+  // Après 5 min de filtration en mode auto, recalculer avec la température réelle
+  // (l'eau stagnante dans les tuyauteries peut fausser la mesure initiale)
+  if (runNow && mode == "auto" && elapsed >= 300000UL && !state.scheduleComputedThisCycle) {
+    computeAutoSchedule();
+    saveMqttConfig();
+    state.scheduleComputedThisCycle = true;
 
-    if (mode == "auto" && elapsed >= 600000UL && state.cycleMaxTemp > -INFINITY && !state.scheduleComputedThisCycle) {
-      filtrationCfg.autoReferenceTemp = state.cycleMaxTemp;
-      filtrationCfg.hasAutoReference = true;
-      computeAutoSchedule();
-      saveMqttConfig();
-      systemLogger.info("Référence auto filtration: " + String(filtrationCfg.autoReferenceTemp) + "°C");
-      state.scheduleComputedThisCycle = true;
-
-      if (haveTime) {
-        startMin = timeStringToMinutes(filtrationCfg.start);
-        endMin = timeStringToMinutes(filtrationCfg.end);
-        if (!isMinutesInRange(nowMinutes, startMin, endMin)) {
-          runTarget = false;
-        }
+    if (haveTime) {
+      startMin = timeStringToMinutes(filtrationCfg.start);
+      endMin = timeStringToMinutes(filtrationCfg.end);
+      if (!isMinutesInRange(nowMinutes, startMin, endMin)) {
+        runTarget = false;
       }
-      publishState();
     }
+    publishState();
   }
 
   if (runNow && !runTarget) {
     state.running = false;
-    state.cycleMaxTemp = -INFINITY;
     state.scheduleComputedThisCycle = false;
     state.startedAtMs = 0;
     systemLogger.info("Arrêt filtration");

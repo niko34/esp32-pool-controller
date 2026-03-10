@@ -177,7 +177,7 @@ void MqttManager::messageCallback(char* topic, byte* payload, unsigned int lengt
       if (filtrationCfg.mode != cmd) {
         filtrationCfg.mode = cmd;
         filtration.ensureTimesValid();
-        if (filtrationCfg.mode == "auto" && filtrationCfg.hasAutoReference) {
+        if (filtrationCfg.mode == "auto") {
           filtration.computeAutoSchedule();
         }
         saveMqttConfig();

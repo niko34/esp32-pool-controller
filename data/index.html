@@ -368,9 +368,7 @@
                     <option value="manual">Manuel</option>
                     <option value="off">Désactivé</option>
                   </select>
-                  <span class="field__hint" id="filtration_auto_hint" style="display:none; color: var(--warning-color, #e67e22);">
-                    Le mode Auto nécessite l'activation de la mesure de température.
-                  </span>
+                  <span class="field__hint" id="filtration_auto_hint" style="display:none; color: var(--warning-color, #e67e22);"></span>
                 </label>
 
                 <div class="grid grid--2">
@@ -386,7 +384,10 @@
                 </div>
 
                 <div class="hint" id="filtration_mode_hint">
-                  En mode Auto, la durée est calculée selon la température de l'eau (Temp ÷ 2 = heures de filtration) et recalculée après chaque cycle.
+                  En mode Auto, les heures de début et de fin sont calculées après enregistrement selon la température (T°÷2 heures, centrée à 13h). Elles sont affinées après 5 min de filtration pour corriger la mesure sur eau stagnante.
+                </div>
+                <div class="row row--gap" style="margin-top: 16px;">
+                  <button class="btn btn--primary" type="button" id="filtration_save_btn">Sauvegarder</button>
                 </div>
               </div>
             </div>
@@ -1070,9 +1071,13 @@
                     <ul style="margin: 8px 0; padding-left: 20px; list-style: disc;">
                       <li><strong>Vide</strong>: CORS désactivé (recommandé pour usage local uniquement)</li>
                       <li><strong>*</strong>: Accepter toutes les origines (moins sécurisé)</li>
-                      <li><strong>Liste blanche</strong>: Ex: <code>http://homeassistant.local:8123,https://exemple.com</code></li>
+                      <li><strong>Liste blanche</strong>: Ex: <code>http://homeassistant.local:8123, https://exemple.com</code></li>
                     </ul>
                     Nécessite un redémarrage de l'ESP32 pour être appliqué.
+                  </div>
+
+                  <div class="row row--gap" style="margin-top: 16px;">
+                    <button class="btn btn--primary" id="cors-save-btn">Sauvegarder</button>
                   </div>
                 </div>
               </div>

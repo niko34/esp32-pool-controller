@@ -132,8 +132,7 @@ void saveMqttConfig() {
   prefs.putString("filt_mode", filtrationCfg.mode);
   prefs.putString("filt_start", filtrationCfg.start);
   prefs.putString("filt_end", filtrationCfg.end);
-  prefs.putBool("filt_has_ref", filtrationCfg.hasAutoReference);
-  prefs.putFloat("filt_ref_temp", filtrationCfg.autoReferenceTemp);
+
 
   // Éclairage
   prefs.putBool("light_feat_en", lightingCfg.featureEnabled);
@@ -218,8 +217,7 @@ void loadMqttConfig() {
   filtrationCfg.mode = prefs.getString("filt_mode", filtrationCfg.mode);
   filtrationCfg.start = prefs.getString("filt_start", filtrationCfg.start);
   filtrationCfg.end = prefs.getString("filt_end", filtrationCfg.end);
-  filtrationCfg.hasAutoReference = prefs.getBool("filt_has_ref", filtrationCfg.hasAutoReference);
-  filtrationCfg.autoReferenceTemp = prefs.getFloat("filt_ref_temp", filtrationCfg.autoReferenceTemp);
+
 
   // Éclairage
   lightingCfg.featureEnabled = prefs.getBool("light_feat_en", lightingCfg.featureEnabled);

@@ -1048,6 +1048,13 @@ input:disabled, select:disabled, textarea:disabled {
   background: var(--panel2);
 }
 
+/* Champ en lecture seule calculé (ex: heures auto filtration) — contraste préservé */
+input.is-computed:disabled {
+  opacity: 1;
+  cursor: default;
+  color: var(--text);
+}
+
 /* 2026 Hint - refined */
 .hint {
   color: var(--muted);
