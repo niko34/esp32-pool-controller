@@ -21,6 +21,9 @@ void Logger::log(LogLevel level, const String& message) {
     bufferFull = true;
   }
 
+  // Push WebSocket temps réel (si callback enregistré)
+  if (_logCallback) _logCallback(entry);
+
   // Affichage série avec préfixe niveau
   Serial.print("[");
   Serial.print(getLevelString(level));

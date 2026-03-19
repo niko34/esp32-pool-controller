@@ -3,6 +3,7 @@
 #include "constants.h"
 #include "logger.h"
 #include "sensors.h"
+#include "uart_protocol.h"
 #include <time.h>
 
 FiltrationManager filtration;
@@ -124,7 +125,9 @@ void FiltrationManager::update() {
   int startMin = timeStringToMinutes(filtrationCfg.start);
   int endMin = timeStringToMinutes(filtrationCfg.end);
 
-  if (mode == "manual" || mode == "auto") {
+  if (filtrationCfg.forceOn) {
+    runTarget = true;
+  } else if (mode == "manual" || mode == "auto") {
     if (haveTime) {
       runTarget = isMinutesInRange(nowMinutes, startMin, endMin);
     } else {
@@ -175,6 +178,7 @@ void FiltrationManager::update() {
     digitalWrite(FILTRATION_RELAY_PIN, relayShouldBeOn ? HIGH : LOW);
     relayState = relayShouldBeOn;
     publishState();
+    uartProtocol.sendEventBool("event", "filtration_changed", "running", relayState);
   }
 }
 

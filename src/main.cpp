@@ -22,6 +22,8 @@
 #include "history.h"
 #include "version.h"
 #include "rtc_manager.h"
+#include "uart_transport.h"
+#include "uart_protocol.h"
 
 // Variables globales
 DNSServer dns;
@@ -40,6 +42,7 @@ void onNtpTimeSync();
 
 void setup() {
   Serial.begin(115200);
+  uartTransport.begin();
   delay(kSerialInitDelayMs);
 
   systemLogger.info("=== Démarrage ESP32 Pool Controller v" + String(FIRMWARE_VERSION) + " ===");
@@ -54,7 +57,7 @@ void setup() {
   systemLogger.info("Watchdog activé (" + String(kWatchdogTimeoutSec) + "s)");
 
   // Montage système de fichiers
-  if (!LittleFS.begin(true)) {
+  if (!LittleFS.begin(false)) {
     systemLogger.critical("Échec montage LittleFS !");
   } else {
     systemLogger.info("LittleFS monté avec succès");
@@ -140,6 +143,7 @@ void loop() {
   webServer.update();
   mqttManager.update();
   history.update();
+  uartTransport.update();
 
   // Lecture capteurs à chaque loop (les capteurs gèrent leur propre throttling interne)
   // DS18B20 : machine à états non-bloquante (request → wait → read) toutes les 2s
@@ -411,12 +415,28 @@ void checkSystemHealth() {
   }
 
   // Vérifier limites de sécurité
+  static bool lastPhLimitReached = false;
+  static bool lastOrpLimitReached = false;
+
   if (safetyLimits.phLimitReached) {
     mqttManager.publishAlert("ph_limit", "Limite journalière pH- atteinte");
+    if (!lastPhLimitReached) {
+      uartProtocol.sendAlarmRaised("PH_LIMIT", "Limite journalière pH atteinte");
+    }
+  } else if (lastPhLimitReached) {
+    uartProtocol.sendAlarmCleared("PH_LIMIT");
   }
+  lastPhLimitReached = safetyLimits.phLimitReached;
+
   if (safetyLimits.orpLimitReached) {
     mqttManager.publishAlert("orp_limit", "Limite journalière chlore atteinte");
+    if (!lastOrpLimitReached) {
+      uartProtocol.sendAlarmRaised("ORP_LIMIT", "Limite journalière ORP/chlore atteinte");
+    }
+  } else if (lastOrpLimitReached) {
+    uartProtocol.sendAlarmCleared("ORP_LIMIT");
   }
+  lastOrpLimitReached = safetyLimits.orpLimitReached;
 
   // Vérifier valeurs capteurs aberrantes
   float ph = sensors.getPh();

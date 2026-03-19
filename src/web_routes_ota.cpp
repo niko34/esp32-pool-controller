@@ -117,6 +117,7 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     if (Update.write(data, len) != len) {
       Update.printError(Serial);
       systemLogger.error("Erreur écriture OTA");
+      Update.abort();
     } else {
       // Log progression toutes les 100KB
       static size_t lastLog = 0;

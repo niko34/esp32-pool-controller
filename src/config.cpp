@@ -152,6 +152,10 @@ void saveMqttConfig() {
   prefs.putString("auth_cors", authCfg.corsAllowedOrigins);
   prefs.putBool("sensor_logs", authCfg.sensorLogsEnabled);
 
+  // Puissance maximale des pompes
+  prefs.putUChar("pump1_max_duty", mqttCfg.pump1MaxDutyPct);
+  prefs.putUChar("pump2_max_duty", mqttCfg.pump2MaxDutyPct);
+
   // Limites de sécurité
   prefs.putFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
   prefs.putFloat("max_cl_ml", safetyLimits.maxChlorineMlPerDay);
@@ -236,6 +240,10 @@ void loadMqttConfig() {
   authCfg.apiToken = prefs.getString("auth_token", authCfg.apiToken);
   authCfg.corsAllowedOrigins = prefs.getString("auth_cors", authCfg.corsAllowedOrigins);
   authCfg.sensorLogsEnabled = prefs.getBool("sensor_logs", false);
+
+  // Puissance maximale des pompes
+  mqttCfg.pump1MaxDutyPct = prefs.getUChar("pump1_max_duty", mqttCfg.pump1MaxDutyPct);
+  mqttCfg.pump2MaxDutyPct = prefs.getUChar("pump2_max_duty", mqttCfg.pump2MaxDutyPct);
 
   // Limites de sécurité
   safetyLimits.maxPhMinusMlPerDay = prefs.getFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);

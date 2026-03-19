@@ -3,6 +3,7 @@
 #include "config.h"
 #include "constants.h"
 #include "auth.h"
+#include "ws_manager.h"
 #include "sensors.h"
 #include "filtration.h"
 #include "lighting.h"
@@ -75,6 +76,8 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["ph_pump"] = mqttCfg.phPump;
   doc["orp_enabled"] = mqttCfg.orpEnabled;
   doc["orp_pump"] = mqttCfg.orpPump;
+  doc["pump1_max_duty_pct"] = mqttCfg.pump1MaxDutyPct;
+  doc["pump2_max_duty_pct"] = mqttCfg.pump2MaxDutyPct;
   doc["ph_limit_seconds"] = mqttCfg.phInjectionLimitSeconds;
   doc["orp_limit_seconds"] = mqttCfg.orpInjectionLimitSeconds;
   doc["regulation_mode"] = mqttCfg.regulationMode;
@@ -242,6 +245,8 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["orp_enabled"].isNull()) mqttCfg.orpEnabled = doc["orp_enabled"];
   if (!doc["ph_pump"].isNull()) mqttCfg.phPump = doc["ph_pump"];
   if (!doc["orp_pump"].isNull()) mqttCfg.orpPump = doc["orp_pump"];
+  if (!doc["pump1_max_duty_pct"].isNull()) mqttCfg.pump1MaxDutyPct = constrain((int)doc["pump1_max_duty_pct"], 0, 100);
+  if (!doc["pump2_max_duty_pct"].isNull()) mqttCfg.pump2MaxDutyPct = constrain((int)doc["pump2_max_duty_pct"], 0, 100);
   if (!doc["ph_limit_seconds"].isNull()) mqttCfg.phInjectionLimitSeconds = doc["ph_limit_seconds"];
   if (!doc["orp_limit_seconds"].isNull()) mqttCfg.orpInjectionLimitSeconds = doc["orp_limit_seconds"];
   if (!doc["regulation_mode"].isNull()) {
@@ -304,12 +309,17 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["filtration_mode"].isNull()) filtrationCfg.mode = doc["filtration_mode"].as<String>();
   if (!doc["filtration_start"].isNull()) filtrationCfg.start = doc["filtration_start"].as<String>();
   if (!doc["filtration_end"].isNull()) filtrationCfg.end = doc["filtration_end"].as<String>();
+  if (!doc["filtration_force_on"].isNull()) filtrationCfg.forceOn = doc["filtration_force_on"].as<bool>();
   if (!doc["max_ph_ml_per_day"].isNull()) safetyLimits.maxPhMinusMlPerDay = doc["max_ph_ml_per_day"];
   if (!doc["max_chlorine_ml_per_day"].isNull()) safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"];
   if (!doc["lighting_feature_enabled"].isNull()) lightingCfg.featureEnabled = doc["lighting_feature_enabled"];
   if (!doc["lighting_enabled"].isNull()) lightingCfg.enabled = doc["lighting_enabled"];
   if (!doc["lighting_brightness"].isNull()) lightingCfg.brightness = doc["lighting_brightness"];
-  if (!doc["lighting_schedule_enabled"].isNull()) lightingCfg.scheduleEnabled = doc["lighting_schedule_enabled"];
+  if (!doc["lighting_schedule_enabled"].isNull()) {
+    lightingCfg.scheduleEnabled = doc["lighting_schedule_enabled"];
+    // Quand la programmation est activée, annuler le contrôle manuel pour que le planning prenne effet
+    if (lightingCfg.scheduleEnabled) lighting.clearManualOverride();
+  }
   if (!doc["lighting_start_time"].isNull()) lightingCfg.startTime = doc["lighting_start_time"].as<String>();
   if (!doc["lighting_end_time"].isNull()) lightingCfg.endTime = doc["lighting_end_time"].as<String>();
 
@@ -640,6 +650,7 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
         req->send(400, "text/plain", "Invalid JSON configuration");
       } else {
         req->send(200, "text/plain", "OK");
+        wsManager.broadcastConfig();  // Push config mise à jour vers tous les clients WS
       }
     },
     nullptr,

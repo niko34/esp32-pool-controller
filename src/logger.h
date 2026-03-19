@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <vector>
+#include <functional>
 #include "constants.h"
 
 enum class LogLevel {
@@ -25,6 +26,7 @@ private:
   std::vector<LogEntry> logs;
   size_t currentIndex = 0;
   bool bufferFull = false;
+  std::function<void(const LogEntry&)> _logCallback = nullptr;
 
 public:
   Logger();  // Constructeur pour pré-allouer le buffer
@@ -35,6 +37,9 @@ public:
   void warning(const String& message);
   void error(const String& message);
   void critical(const String& message);
+
+  // Callback appelé à chaque nouveau log (utilisé par WsManager pour le push temps réel)
+  void setLogCallback(std::function<void(const LogEntry&)> cb) { _logCallback = cb; }
 
   String getLevelString(LogLevel level);
   std::vector<LogEntry> getRecentLogs(size_t count = 50);

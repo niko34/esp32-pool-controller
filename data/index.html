@@ -250,6 +250,7 @@
                 <div class="compact-label">pH</div>
                 <div class="compact-value" id="compact-ph">--</div>
                 <div class="compact-target">Cible: <span id="compact-ph-target">7.2</span></div>
+                <div class="dosing-status" id="ph-dosing-status"></div>
               </div>
               <div class="calibration-alert" id="ph-calibration-alert" style="display:none;">
                 <span class="calibration-alert__text">Calibration requise</span>
@@ -263,6 +264,7 @@
                 <div class="compact-label">ORP</div>
                 <div class="compact-value" id="compact-orp">--<span class="compact-unit">mV</span></div>
                 <div class="compact-target">Cible: <span id="compact-orp-target">650</span> mV</div>
+                <div class="dosing-status" id="orp-dosing-status"></div>
               </div>
               <div class="calibration-alert" id="orp-calibration-alert" style="display:none;">
                 <span class="calibration-alert__text">Calibration requise</span>
@@ -327,7 +329,6 @@
               <div class="row row--between">
                 <div>
                   <div class="row__title">Activer la filtration</div>
-                  <div class="muted small">Auto-save</div>
                 </div>
                 <label class="switch">
                   <input type="checkbox" id="filtration_enabled" />
@@ -406,7 +407,6 @@
               <div class="row row--between">
                 <div>
                   <div class="row__title">Activer l'éclairage</div>
-                  <div class="muted small">Auto-save</div>
                 </div>
                 <label class="switch">
                   <input type="checkbox" id="lighting_feature_enabled" />
@@ -463,6 +463,9 @@
                     L'éclairage s'allumera automatiquement entre l'heure de début et l'heure de fin.
                   </div>
                 </div>
+                <div class="detail-actions">
+                  <button class="btn btn--primary" type="button" id="lighting_save_btn">Sauvegarder</button>
+                </div>
               </div>
             </div>
           </div>
@@ -480,7 +483,6 @@
               <div class="row row--between">
                 <div>
                   <div class="row__title">Activer la mesure de température</div>
-                  <div class="muted small">Auto-save</div>
                 </div>
                 <label class="switch">
                   <input type="checkbox" id="temperature_enabled" />
@@ -559,7 +561,6 @@
               <div class="row row--between">
                 <div>
                   <div class="row__title">Activer la régulation pH</div>
-                  <div class="muted small">Auto-save</div>
                 </div>
                 <label class="switch">
                   <input type="checkbox" id="ph_enabled" />
@@ -598,6 +599,9 @@
                     <span class="field__label">Volume max / jour (ml)</span>
                     <input type="number" id="ph_daily_limit" min="0" step="10" value="500" />
                   </label>
+                </div>
+                <div class="detail-actions" style="margin-top:12px">
+                  <button class="btn btn--primary" type="button" id="ph_regulation_save_btn">Sauvegarder</button>
                 </div>
               </div>
             </div>
@@ -669,7 +673,6 @@
               <div class="row row--between">
                 <div>
                   <div class="row__title">Activer la régulation ORP</div>
-                  <div class="muted small">Auto-save</div>
                 </div>
                 <label class="switch">
                   <input type="checkbox" id="orp_enabled" />
@@ -700,6 +703,9 @@
                     <span class="field__label">Volume max / jour (ml)</span>
                     <input type="number" id="orp_daily_limit" min="0" step="10" value="300" />
                   </label>
+                </div>
+                <div class="detail-actions" style="margin-top:12px">
+                  <button class="btn btn--primary" type="button" id="orp_regulation_save_btn">Sauvegarder</button>
                 </div>
               </div>
             </div>
@@ -847,7 +853,7 @@
             <button id="tab-time" class="segmented__btn" type="button" data-settings-tab="time" role="tab" aria-selected="false" aria-controls="panel-time">Heure</button>
             <button id="tab-security" class="segmented__btn" type="button" data-settings-tab="security" role="tab" aria-selected="false" aria-controls="panel-security">Sécurité</button>
             <button id="tab-system" class="segmented__btn" type="button" data-settings-tab="system" role="tab" aria-selected="false" aria-controls="panel-system">Système</button>
-            <button id="tab-dev" class="segmented__btn" type="button" data-settings-tab="dev" role="tab" aria-selected="false" aria-controls="panel-dev">Développement</button>
+            <button id="tab-dev" class="segmented__btn" type="button" data-settings-tab="dev" role="tab" aria-selected="false" aria-controls="panel-dev">Avancé</button>
             <button id="tab-about" class="segmented__btn" type="button" data-settings-tab="about" role="tab" aria-selected="false" aria-controls="panel-about">À propos</button>
           </div>
 
@@ -979,8 +985,7 @@
                     </div>
                     <input type="datetime-local" id="time_value" />
                   </label>
-                  <div class="row row--between" style="margin-top: 12px;">
-                    <div></div>
+                  <div class="detail-actions" style="margin-top: 12px;">
                     <button class="btn btn--primary" type="button" id="time_save_btn">Sauvegarder</button>
                   </div>
                 </div>
@@ -1235,9 +1240,10 @@
             <section class="panel" data-settings-panel="dev" id="panel-dev" role="tabpanel" aria-labelledby="tab-dev">
               <div class="card">
                 <div class="card__head">
-                  <div class="card__title">Configuration pompes</div>
+                  <div class="card__title">Configuration des pompes</div>
                 </div>
                 <div class="card__body">
+                  <div class="muted small" style="margin-bottom:10px">Pompe 1 = gauche &nbsp;·&nbsp; Pompe 2 = droite</div>
                   <div class="grid grid--2">
                     <label class="field">
                       <span class="field__label">Pompe pH</span>
@@ -1256,47 +1262,31 @@
                     </label>
                   </div>
 
+                  <div class="pump" style="margin-top:16px">
+                    <div class="row row--between">
+                      <div>
+                        <div class="row__title">Puissance max — Pompe 1</div>
+                        <div class="muted small">En régulation&nbsp;: <span id="pump1_max_duty_value">100</span>%</div>
+                      </div>
+                    </div>
+                    <input type="range" id="pump1_max_duty" min="0" max="100" step="5" value="100" />
+                  </div>
+
+                  <div class="pump">
+                    <div class="row row--between">
+                      <div>
+                        <div class="row__title">Puissance max — Pompe 2</div>
+                        <div class="muted small">En régulation&nbsp;: <span id="pump2_max_duty_value">100</span>%</div>
+                      </div>
+                    </div>
+                    <input type="range" id="pump2_max_duty" min="0" max="100" step="5" value="100" />
+                  </div>
+
                   <div class="hint">
-                    Configuration des pompes doseuses pour la régulation pH et ORP. Auto-save.
+                    Affectation des pompes doseuses et puissance maximale en régulation pH/ORP.
                   </div>
-                </div>
-              </div>
-
-              <div class="card">
-                <div class="card__head">
-                  <div class="card__title">Test des pompes</div>
-                </div>
-                <div class="card__body">
-                  <div class="pump">
-                    <div class="row row--between">
-                      <div>
-                        <div class="row__title">Pompe 1</div>
-                        <div class="muted small">
-                          Puissance: <span id="pump1_duty_value">100</span>% (PWM <span id="pump1_duty_pwm">255</span>/255)
-                        </div>
-                      </div>
-                      <label class="switch">
-                        <input type="checkbox" id="pump1_test" />
-                        <span class="switch__track"></span>
-                      </label>
-                    </div>
-                    <input type="range" id="pump1_duty" min="0" max="255" value="255" />
-                  </div>
-
-                  <div class="pump">
-                    <div class="row row--between">
-                      <div>
-                        <div class="row__title">Pompe 2</div>
-                        <div class="muted small">
-                          Puissance: <span id="pump2_duty_value">100</span>% (PWM <span id="pump2_duty_pwm">255</span>/255)
-                        </div>
-                      </div>
-                      <label class="switch">
-                        <input type="checkbox" id="pump2_test" />
-                        <span class="switch__track"></span>
-                      </label>
-                    </div>
-                    <input type="range" id="pump2_duty" min="0" max="255" value="255" />
+                  <div class="detail-actions" style="margin-top:12px">
+                    <button class="btn btn--primary" id="pump_config_save_btn">Sauvegarder</button>
                   </div>
                 </div>
               </div>
@@ -1341,25 +1331,21 @@
                     </label>
                   </div>
 
-                  <div class="row row--gap row--between">
+                  <div class="row row--gap row--between" style="flex-wrap:wrap;gap:8px">
                     <div class="row row--gap">
                       <button class="btn btn--ghost" type="button" id="refresh_logs_btn">Actualiser</button>
                       <button class="btn btn--ghost" type="button" id="clear_logs_display_btn">Effacer</button>
-                      <label class="field field--inline" style="margin: 0;">
-                        <input type="checkbox" id="logs_auto_refresh" />
-                        <span class="field__label">Auto-refresh (2s)</span>
-                      </label>
+                      <label class="field field--inline" style="margin:0"><input type="checkbox" id="logs_auto_refresh" /><span class="field__label">Auto (5s)</span></label>
+                      <label class="field field--inline" style="margin:0"><input type="checkbox" id="logs_auto_scroll" checked /><span class="field__label">Scroll auto</span></label>
                     </div>
-
-                    <label class="field field--inline">
-                      <span class="field__label">Filtre</span>
-                      <select id="logs_filter">
-                        <option value="all">Tout</option>
-                        <option value="temp">Temp</option>
-                        <option value="ph">pH</option>
-                        <option value="orp">ORP</option>
-                      </select>
-                    </label>
+                    <div class="row row--gap" style="align-items:center;flex-wrap:wrap">
+                      <span style="font-size:13px;color:var(--muted)">Niveaux :</span>
+                      <label class="field field--inline" style="margin:0"><input type="checkbox" id="log_level_info" checked /><span class="field__label">INFO</span></label>
+                      <label class="field field--inline" style="margin:0"><input type="checkbox" id="log_level_warn" checked /><span class="field__label">WARN</span></label>
+                      <label class="field field--inline" style="margin:0"><input type="checkbox" id="log_level_error" checked /><span class="field__label">ERROR</span></label>
+                      <label class="field field--inline" style="margin:0"><input type="checkbox" id="log_level_critical" checked /><span class="field__label">CRITICAL</span></label>
+                      <label class="field field--inline" style="margin:0"><input type="checkbox" id="log_level_debug" checked /><span class="field__label">DEBUG</span></label>
+                    </div>
                   </div>
 
                   <div class="terminal" id="logs_container">
@@ -1392,7 +1378,7 @@
                     <strong>Interface utilisateur:</strong>
                     <ul style="margin: 8px 0; padding-left: 20px;">
                       <li>SPA vanilla JavaScript</li>
-                      <li><a href="https://github.com/chartjs/Chart.js" target="_blank">Chart.js</a> - Visualisation des données</li>
+                      <li><a href="https://github.com/chartjs/Chart.js" target="_blank">Chart.js v4.5.1</a> - Visualisation des données</li>
                     </ul>
                   </div>
 
@@ -1400,24 +1386,24 @@
                     <strong>Outils de build et tests:</strong>
                     <ul style="margin: 8px 0; padding-left: 20px;">
                       <li><a href="https://platformio.org" target="_blank">PlatformIO</a> - Build et upload firmware</li>
-                      <li><a href="https://github.com/terser/html-minifier-terser" target="_blank">html-minifier-terser</a> - Minification HTML</li>
-                      <li><a href="https://github.com/terser/terser" target="_blank">Terser</a> - Minification JavaScript</li>
-                      <li><a href="https://github.com/clean-css/clean-css" target="_blank">clean-css</a> - Minification CSS</li>
-                      <li><a href="https://playwright.dev" target="_blank">Playwright</a> - Tests E2E</li>
+                      <li><a href="https://github.com/terser/html-minifier-terser" target="_blank">html-minifier-terser v7.2.0</a> - Minification HTML</li>
+                      <li><a href="https://github.com/terser/terser" target="_blank">Terser v5.44.1</a> - Minification JavaScript</li>
+                      <li><a href="https://github.com/clean-css/clean-css" target="_blank">clean-css v5.3.3</a> - Minification CSS</li>
+                      <li><a href="https://playwright.dev" target="_blank">Playwright v1.58.0</a> - Tests E2E</li>
                     </ul>
                   </div>
 
                   <div style="margin-top: 16px;">
                     <strong>Librairies ESP32:</strong>
                     <ul style="margin: 8px 0; padding-left: 20px;">
-                      <li><a href="https://github.com/me-no-dev/AsyncTCP" target="_blank">AsyncTCP</a> - TCP asynchrone</li>
-                      <li><a href="https://github.com/me-no-dev/ESPAsyncWebServer" target="_blank">ESPAsyncWebServer</a> - Serveur web</li>
-                      <li><a href="https://github.com/alanswx/ESPAsyncWiFiManager" target="_blank">ESPAsyncWiFiManager</a> - Configuration WiFi</li>
-                      <li><a href="https://github.com/bblanchon/ArduinoJson" target="_blank">ArduinoJson v7</a> - Sérialisation JSON</li>
+                      <li><a href="https://github.com/me-no-dev/AsyncTCP" target="_blank">AsyncTCP v3.4.9</a> - TCP asynchrone</li>
+                      <li><a href="https://github.com/me-no-dev/ESPAsyncWebServer" target="_blank">ESPAsyncWebServer v3.6.0</a> - Serveur web</li>
+                      <li><a href="https://github.com/alanswx/ESPAsyncWiFiManager" target="_blank">ESPAsyncWiFiManager v0.31</a> - Configuration WiFi</li>
+                      <li><a href="https://github.com/bblanchon/ArduinoJson" target="_blank">ArduinoJson v7.4.2</a> - Sérialisation JSON</li>
                       <li><a href="https://github.com/knolleary/pubsubclient" target="_blank">PubSubClient v2.8</a> - Client MQTT</li>
-                      <li><a href="https://github.com/DFRobot/DFRobot_PH" target="_blank">DFRobot_PH</a> - Capteur pH</li>
-                      <li><a href="https://github.com/adafruit/Adafruit_ADS1X15" target="_blank">Adafruit ADS1X15 v2.5</a> - ADC 16-bit</li>
-                      <li><a href="https://github.com/milesburton/Arduino-Temperature-Control-Library" target="_blank">DallasTemperature v3.11</a> - DS18B20</li>
+                      <li><a href="https://github.com/DFRobot/DFRobot_PH" target="_blank">DFRobot_PH v1.0.0</a> - Capteur pH</li>
+                      <li><a href="https://github.com/adafruit/Adafruit_ADS1X15" target="_blank">Adafruit ADS1X15 v2.6.0</a> - ADC 16-bit</li>
+                      <li><a href="https://github.com/milesburton/Arduino-Temperature-Control-Library" target="_blank">DallasTemperature v3.11.0</a> - DS18B20</li>
                       <li><a href="https://github.com/PaulStoffregen/OneWire" target="_blank">OneWire v2.3.8</a> - Protocole 1-Wire</li>
                       <li><a href="https://github.com/adafruit/RTClib" target="_blank">RTClib v2.1.4</a> - Horloge temps réel</li>
                     </ul>

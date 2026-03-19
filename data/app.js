@@ -7,9 +7,122 @@
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
   const DEBUG = true;
 
+  // ---------- WebSocket ----------
+  let _ws = null;
+  let _wsReconnectTimer = null;
+
+  function initWebSocket() {
+    if (_ws && (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING)) return;
+    // Detach handlers from previous WS to avoid stale events
+    if (_ws) { _ws.onopen = _ws.onclose = _ws.onerror = _ws.onmessage = null; }
+    const token = sessionStorage.getItem('authToken');
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = `${proto}//${location.host}/ws`;
+    _ws = new WebSocket(url);
+
+    _ws.onopen = () => {
+      if (_wsReconnectTimer) { clearTimeout(_wsReconnectTimer); _wsReconnectTimer = null; }
+      if (token) _ws.send(JSON.stringify({ type: 'auth', token }));
+      setNetStatus('ok', 'En ligne');
+      debugLog('[WS] Connected');
+    };
+
+    _ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.type === 'sensor_data') {
+          _onWsSensorData(msg.data);
+        } else if (msg.type === 'config') {
+          loadConfig({ data: msg.data });
+        } else if (msg.type === 'log') {
+          _onWsLog(msg.data);
+        }
+      } catch (e) { console.error('[WS] parse error:', e); }
+    };
+
+    const _onDisconnect = () => {
+      if (_wsReconnectTimer) return;  // onerror fires before onclose — schedule only once
+      setNetStatus('bad', 'Déconnecté');
+      debugLog('[WS] Disconnected, reconnecting in 3s...');
+      _wsReconnectTimer = setTimeout(() => { _wsReconnectTimer = null; initWebSocket(); }, 3000);
+    };
+    _ws.onclose = _ws.onerror = _onDisconnect;
+  }
+
+  // Heure de démarrage de l'ESP32 estimée à partir de uptime_ms (mis à jour à chaque push sensor_data)
+  let _bootEpochMs = null;
+
+  function formatLogTimestamp(ms) {
+    if (_bootEpochMs == null || ms == null) return ms ?? '';
+    const d = new Date(_bootEpochMs + ms);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
+  function _onWsSensorData(json) {
+    if (json.uptime_ms != null) _bootEpochMs = Date.now() - json.uptime_ms;
+    loadSensorData({ data: json, force: true, source: 'ws' });
+  }
+
+  function isLogEntryVisible(entry) {
+    const level = (typeof entry === 'string' ? '' : (entry.level || '')).toUpperCase();
+    if (level === 'INFO')     return $("#log_level_info")?.checked !== false;
+    if (level === 'WARN' || level === 'WARNING') return $("#log_level_warn")?.checked !== false;
+    if (level === 'ERROR')    return $("#log_level_error")?.checked !== false;
+    if (level === 'CRITICAL') return $("#log_level_critical")?.checked !== false;
+    if (level === 'DEBUG')    return $("#log_level_debug")?.checked !== false;
+    return true; // niveaux inconnus : affichés par défaut
+  }
+
+  function renderLogs(scroll = true) {
+    const content = $("#logs_content");
+    if (!content) return;
+    const filtered = allLogEntries.filter(isLogEntryVisible);
+    if (filtered.length === 0) {
+      content.textContent = "(vide)";
+    } else {
+      content.innerHTML = filtered.map(entry => {
+        if (typeof entry === 'string') return `<div>${entry}</div>`;
+        return `<div>[${formatLogTimestamp(entry.timestamp)}] ${entry.level || ''}: ${entry.message || ''}</div>`;
+      }).join('');
+    }
+    const autoScroll = $("#logs_auto_scroll")?.checked !== false;
+    const container = $("#logs_container");
+    if ((scroll || autoScroll) && container) requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
+  }
+
+  function _onWsLog(entry) {
+    allLogEntries.push(entry);
+    if ((entry.timestamp || 0) > lastLogTimestamp) lastLogTimestamp = entry.timestamp;
+    // Mettre à jour l'affichage si le panneau logs est visible
+    const content = $("#logs_content");
+    if (!content || content.children.length === 0) return;
+    if (!isLogEntryVisible(entry)) return;
+    const div = document.createElement('div');
+    div.textContent = `[${formatLogTimestamp(entry.timestamp)}] ${entry.level || ''}: ${entry.message || ''}`;
+    content.appendChild(div);
+    // Auto-scroll si activé
+    if ($("#logs_auto_scroll")?.checked !== false) {
+      const container = $("#logs_container");
+      if (container) requestAnimationFrame(() => { container.scrollTop = container.scrollHeight; });
+    }
+  }
+
   function debugLog(msg) {
     if (!DEBUG) return;
     console.log(`[dbg] ${msg}`);
+  }
+
+  // ---------- Toast ----------
+  function showToast(message, type = 'info') {
+    const toast = document.createElement('div');
+    toast.className = `toast toast--${type}`;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      setTimeout(() => toast.remove(), 300);
+    }, 3000);
   }
 
   // ---------- Auth Helper ----------
@@ -856,6 +969,8 @@
 
     const phPumpValue = parseInt($("#ph_pump")?.value || "1", 10);
     const orpPumpValue = parseInt($("#orp_pump")?.value || "2", 10);
+    const pump1MaxDutyPct = parseInt($("#pump1_max_duty")?.value || "100", 10);
+    const pump2MaxDutyPct = parseInt($("#pump2_max_duty")?.value || "100", 10);
 
     const phLimitValue = parseInt($("#ph_limit")?.value || "60", 10);
     const orpLimitValue = parseInt($("#orp_limit")?.value || "60", 10);
@@ -889,6 +1004,8 @@
       ph_pump: isNaN(phPumpValue) ? 1 : phPumpValue,
       orp_enabled: orpToggle?.checked === true,
       orp_pump: isNaN(orpPumpValue) ? 2 : orpPumpValue,
+      pump1_max_duty_pct: isNaN(pump1MaxDutyPct) ? 100 : Math.min(100, Math.max(0, pump1MaxDutyPct)),
+      pump2_max_duty_pct: isNaN(pump2MaxDutyPct) ? 100 : Math.min(100, Math.max(0, pump2MaxDutyPct)),
       ph_limit_seconds: isNaN(phLimitValue) ? 60 : phLimitValue,
       orp_limit_seconds: isNaN(orpLimitValue) ? 60 : orpLimitValue,
       max_ph_ml_per_day: isNaN(phDailyLimitValue) ? 500 : phDailyLimitValue,
@@ -947,9 +1064,14 @@
     };
   }
 
-  async function loadConfig() {
-    const res = await authFetch("/get-config");
-    const cfg = await res.json();
+  async function loadConfig(options = {}) {
+    let cfg;
+    if (options.data) {
+      cfg = options.data;
+    } else {
+      const res = await authFetch("/get-config");
+      cfg = await res.json();
+    }
 
     // Stocker la config globalement pour les alertes et cartes status
     window._config = cfg;
@@ -978,6 +1100,11 @@
 
     $("#ph_pump").value = cfg.ph_pump === 2 ? "2" : "1";
     $("#orp_pump").value = cfg.orp_pump === 1 ? "1" : "2";
+
+    const p1max = typeof cfg.pump1_max_duty_pct === "number" ? cfg.pump1_max_duty_pct : 100;
+    const p2max = typeof cfg.pump2_max_duty_pct === "number" ? cfg.pump2_max_duty_pct : 100;
+    if ($("#pump1_max_duty")) { $("#pump1_max_duty").value = p1max; $("#pump1_max_duty_value").textContent = String(p1max); }
+    if ($("#pump2_max_duty")) { $("#pump2_max_duty").value = p2max; $("#pump2_max_duty_value").textContent = String(p2max); }
 
     $("#ph_limit").value = typeof cfg.ph_limit_seconds === "number" ? cfg.ph_limit_seconds : 60;
     $("#orp_limit").value = typeof cfg.orp_limit_seconds === "number" ? cfg.orp_limit_seconds : 60;
@@ -1403,6 +1530,39 @@
     };
   }
 
+  function updateDosingStatus(sensor, isActive, stopReason) {
+    const el = $(`#${sensor}-dosing-status`);
+    if (!el) return;
+    if (isActive) {
+      el.innerHTML = '<span class="dosing-status__dot"></span>Injection en cours';
+      el.classList.add("is-visible", "is-active");
+    } else if (stopReason) {
+      el.textContent = stopReason;
+      el.classList.add("is-visible");
+      el.classList.remove("is-active");
+    } else {
+      el.textContent = "";
+      el.classList.remove("is-visible", "is-active");
+    }
+  }
+
+  function getDosingStopReason(data, config, sensor) {
+    const enabled = sensor === "ph" ? config.ph_enabled : config.orp_enabled;
+    if (!enabled) return "Régulation désactivée";
+
+    const regulationMode = config.regulation_mode || "pilote";
+    if (regulationMode === "pilote" && !data.filtration_running) return "Filtration arrêtée";
+
+    if (sensor === "ph"  && data.ph_limit_reached)  return "Limite journalière atteinte";
+    if (sensor === "orp" && data.orp_limit_reached)  return "Limite journalière atteinte";
+
+    const usedMs    = sensor === "ph" ? (data.ph_used_ms  || 0) : (data.orp_used_ms  || 0);
+    const limitSec  = sensor === "ph" ? (config.ph_limit_seconds || 0) : (config.orp_limit_seconds || 0);
+    if (limitSec > 0 && usedMs >= limitSec * 1000) return "Limite de durée atteinte";
+
+    return "";  // Pas d'erreur identifiée (pause anti-cycling ou valeur OK)
+  }
+
   function updateStatusCards() {
     if (!latestSensorData) return;
 
@@ -1423,6 +1583,8 @@
       compactPhTarget.textContent = config.ph_target.toFixed(1);
     }
 
+    updateDosingStatus("ph",  !!data.ph_dosing,  getDosingStopReason(data, config, "ph"));
+
     // === ORP COMPACT ===
     const compactOrp = $("#compact-orp");
     if (compactOrp && data.orp != null) {
@@ -1433,6 +1595,11 @@
     if (compactOrpTarget && config.orp_target != null) {
       compactOrpTarget.textContent = Math.round(config.orp_target);
     }
+
+    updateDosingStatus("orp", !!data.orp_dosing, getDosingStopReason(data, config, "orp"));
+
+    // === ÉCLAIRAGE ===
+    if (data.lighting_enabled != null) updateLightingStatus(data.lighting_enabled);
 
     // === TEMPÉRATURE COMPACT ===
     const compactTemperature = $("#compact-temperature");
@@ -1863,9 +2030,10 @@
     updateFiltrationBadges();
 
     // === ÉCLAIRAGE ===
+    // Préférer latestSensorData.lighting_enabled (rafraîchi toutes les 5s) à config.lighting_enabled (stale)
     const detailLightingStatus = $("#detail-lighting-status");
     if (detailLightingStatus) {
-      const isOn = config.lighting_enabled;
+      const isOn = latestSensorData?.lighting_enabled ?? config.lighting_enabled;
       detailLightingStatus.textContent = isOn ? 'Allumé' : 'Éteint';
       detailLightingStatus.className = 'state-badge ' + (isOn ? 'state-badge--ok' : 'state-badge--off');
     }
@@ -1891,14 +2059,7 @@
 
     if (startBtn) {
       startBtn.addEventListener('click', async () => {
-        const now = new Date();
-        const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-        const payload = {
-          filtration_enabled: true,
-          filtration_mode: "manual",
-          filtration_start: currentTime,
-          filtration_end: "23:59"
-        };
+        const payload = { filtration_enabled: true, filtration_force_on: true };
         try {
           const result = await sendConfig(payload);
           if (result) {
@@ -1920,7 +2081,7 @@
 
     if (stopBtn) {
       stopBtn.addEventListener('click', async () => {
-        const payload = { filtration_mode: "off" };
+        const payload = { filtration_force_on: false };
         try {
           const result = await sendConfig(payload);
           if (result) {
@@ -1949,12 +2110,8 @@
         try {
           const response = await authFetch("/lighting/on", { method: "POST" });
           if (response.ok) {
-            // Mise à jour immédiate de l'interface après confirmation serveur
-            const statusBadge = $("#detail-lighting-status");
-            if (statusBadge) {
-              statusBadge.textContent = "Allumé";
-              statusBadge.className = "state-badge state-badge--ok";
-            }
+            if (latestSensorData) latestSensorData.lighting_enabled = true;
+            updateLightingStatus(true);
             showToast("Éclairage allumé", "success");
           } else {
             showToast("Erreur lors de l'allumage", "error");
@@ -1971,12 +2128,8 @@
         try {
           const response = await authFetch("/lighting/off", { method: "POST" });
           if (response.ok) {
-            // Mise à jour immédiate de l'interface après confirmation serveur
-            const statusBadge = $("#detail-lighting-status");
-            if (statusBadge) {
-              statusBadge.textContent = "Éteint";
-              statusBadge.className = "state-badge state-badge--off";
-            }
+            if (latestSensorData) latestSensorData.lighting_enabled = false;
+            updateLightingStatus(false);
             showToast("Éclairage éteint", "success");
           } else {
             showToast("Erreur lors de l'extinction", "error");
@@ -2013,7 +2166,7 @@
   }
 
   async function loadSensorData(options = {}) {
-    if (sensorDataLoadInFlight) return sensorDataLoadInFlight;
+    if (sensorDataLoadInFlight && !options.data) return sensorDataLoadInFlight;
     const force = options.force === true;
     const source = options.source || "unknown";
     const perf = debugStart(`loadSensorData force=${force} source=${source}`);
@@ -2028,29 +2181,32 @@
 
     sensorDataLoadInFlight = (async () => {
       try {
-        
-        // Add timeout to detect disconnection (increased to 10 seconds for ESP32)
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+        let json;
+        if (options.data) {
+          // Données fournies directement (depuis WebSocket) : pas de fetch HTTP
+          json = options.data;
+        } else {
+          // Add timeout to detect disconnection (increased to 10 seconds for ESP32)
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
 
-        // Bypass any HTTP cache so the UI can refresh immediately after calibration
-        const fetchPerf = debugStart("fetch /data");
-        const res = await authFetch(`/data?t=${Date.now()}`, { signal: controller.signal, cache: "no-store" });
-        clearTimeout(timeoutId);
-        fetchPerf?.end(`status=${res.status}`);
+          // Bypass any HTTP cache so the UI can refresh immediately after calibration
+          const fetchPerf = debugStart("fetch /data");
+          const res = await authFetch(`/data?t=${Date.now()}`, { signal: controller.signal, cache: "no-store" });
+          clearTimeout(timeoutId);
+          fetchPerf?.end(`status=${res.status}`);
 
-        if (!res.ok) throw new Error("bad");
-        const jsonPerf = debugStart("parse /data json");
-        const json = await res.json();
-        jsonPerf?.end();
+          if (!res.ok) throw new Error("bad");
+          const jsonPerf = debugStart("parse /data json");
+          json = await res.json();
+          jsonPerf?.end();
+        }
 
         latestSensorData = json;
         updateFiltrationControls(); // Réévaluer la disponibilité du mode Auto après réception des données
 
-        // Lever l'override filtration uniquement quand le serveur confirme l'état attendu
-        if (filtrationRunningOverride !== null && json.filtration_running === filtrationRunningOverride) {
-          filtrationRunningOverride = null;
-        }
+        // Les données serveur font autorité — lever l'override optimiste
+        filtrationRunningOverride = null;
 
         if (sensorDataRetryTimer) {
           clearTimeout(sensorDataRetryTimer);
@@ -2193,6 +2349,11 @@
         sensorDataLoadInFlight = null;
       }
     })();
+
+    // WS path has no awaits, so the IIFE above ran synchronously and the outer assignment
+    // left sensorDataLoadInFlight as a resolved (truthy) Promise. Clear it so future
+    // calls (WS or HTTP) are not incorrectly blocked.
+    if (options.data) sensorDataLoadInFlight = null;
 
     return sensorDataLoadInFlight;
   }
@@ -2368,10 +2529,7 @@
   let calibrationRefreshInterval = null;
 
   function startCalibrationRefresh() {
-    if (calibrationRefreshInterval) return;
-    calibrationRefreshInterval = setInterval(() => {
-      loadSensorData({ force: true, source: "calibration" });
-    }, 5000);
+    // No-op: WebSocket pushes sensor data every 5s
   }
 
   function stopCalibrationRefresh() {
@@ -3230,13 +3388,16 @@
         const percent = Math.round((e.loaded / e.total) * 100);
         bar.style.width = percent + "%";
         bar.textContent = percent + "%";
-        status.textContent = `Envoi: ${percent}%`;
+        status.textContent = percent < 100 ? `Envoi: ${percent}%` : "Envoi terminé, application en cours…";
+      });
 
-        if (percent === 100 && !uploadCompleted) {
-          uploadCompleted = true;
+      xhr.addEventListener("load", () => {
+        if (xhr.status === 200 && xhr.responseText.trim() === "OK") {
+          bar.style.width = "100%";
+          bar.textContent = "100%";
           let countdown = 30;
           const updateCountdown = () => {
-            status.textContent = `✓ Envoi terminé. Rechargement dans ${countdown}s…`;
+            status.textContent = `✓ Mise à jour réussie. Rechargement dans ${countdown}s…`;
             if (countdown <= 0) {
               window.location.reload();
             } else {
@@ -3245,17 +3406,22 @@
             }
           };
           updateCountdown();
-        }
-      });
-
-      xhr.addEventListener("load", () => {
-        if (xhr.status !== 200 && !uploadCompleted) {
-          alert("Erreur HTTP: " + xhr.status);
+        } else {
+          bar.style.width = "100%";
+          bar.classList.add("error");
+          const msg = xhr.responseText.trim() || `Erreur HTTP ${xhr.status}`;
+          status.textContent = `✗ Échec de la mise à jour: ${msg}`;
+          btn.disabled = false;
+          file.disabled = false;
+          type.disabled = false;
         }
       });
 
       xhr.addEventListener("error", () => {
-        if (!uploadCompleted) alert("Erreur réseau upload");
+        status.textContent = "✗ Erreur réseau";
+        btn.disabled = false;
+        file.disabled = false;
+        type.disabled = false;
       });
 
       xhr.open("POST", "/update");
@@ -3266,18 +3432,8 @@
   }
 
   // Logs (/get-logs)
-  let logsAutoRefreshInterval = null;
   let lastLogTimestamp = 0;
   let allLogEntries = [];
-
-  function matchesFilter(message, filter) {
-    if (filter === "all") return true;
-    const msg = String(message || "").toLowerCase();
-    if (filter === "temp") return msg.includes("temp:") || msg.includes("température") || msg.includes("ds18b20");
-    if (filter === "ph") return msg.includes("ph:");
-    if (filter === "orp") return msg.includes("orp:");
-    return true;
-  }
 
   async function loadLogs(scroll = true, incremental = false) {
     try {
@@ -3290,7 +3446,6 @@
       const res = await authFetch(url);
       const data = await res.json();
 
-      const filter = $("#logs_filter")?.value || "all";
       const lines = Array.isArray(data) ? data : data.logs || [];
 
       if (incremental) {
@@ -3316,35 +3471,22 @@
         });
       }
 
-      // Filtrer et afficher
-      const filtered = allLogEntries.filter((l) => matchesFilter(l, filter));
-
-      const content = $("#logs_content");
-      if (content) {
-        // Format each log entry as a string
-        const formattedLogs = filtered.map(entry => {
-          if (typeof entry === 'string') return entry;
-          // Format: [timestamp] LEVEL: message
-          const ts = entry.timestamp || '';
-          const level = entry.level || '';
-          const msg = entry.message || '';
-          return `[${ts}] ${level}: ${msg}`;
-        });
-
-        // Use innerHTML with <div> elements to ensure proper line breaks
-        if (formattedLogs.length === 0) {
-          content.textContent = "(vide)";
-        } else {
-          content.innerHTML = formattedLogs.map(line => `<div>${line}</div>`).join('');
-        }
-      }
-
-      const container = $("#logs_container");
-      if (scroll && container) container.scrollTop = container.scrollHeight;
+      renderLogs(scroll);
     } catch (e) {
       const content = $("#logs_content");
       if (content) content.textContent = "Erreur chargement logs.";
     }
+  }
+
+  let _logsAutoRefreshTimer = null;
+
+  function _startLogsAutoRefresh() {
+    if (_logsAutoRefreshTimer) return;
+    _logsAutoRefreshTimer = setInterval(() => loadLogs(false, true), 5000);
+  }
+
+  function _stopLogsAutoRefresh() {
+    if (_logsAutoRefreshTimer) { clearInterval(_logsAutoRefreshTimer); _logsAutoRefreshTimer = null; }
   }
 
   function bindLogs() {
@@ -3357,81 +3499,36 @@
       lastLogTimestamp = 0;
     });
 
-    $("#logs_filter")?.addEventListener("change", () => loadLogs(true, false));
+    ["log_level_info", "log_level_warn", "log_level_error", "log_level_critical", "log_level_debug"].forEach(id => {
+      $(`#${id}`)?.addEventListener("change", () => renderLogs(false));
+    });
 
-    // Gestion de l'auto-refresh
-    const autoRefreshCheckbox = $("#logs_auto_refresh");
-    autoRefreshCheckbox?.addEventListener("change", (e) => {
-      if (e.target.checked) {
-        // Démarrer l'auto-refresh toutes les 2 secondes
-        loadLogs(true, false); // Premier chargement complet
-        logsAutoRefreshInterval = setInterval(() => {
-          loadLogs(true, true); // Chargements suivants en mode incrémental
-        }, 2000);
-      } else {
-        // Arrêter l'auto-refresh
-        if (logsAutoRefreshInterval) {
-          clearInterval(logsAutoRefreshInterval);
-          logsAutoRefreshInterval = null;
-        }
-      }
+    $("#logs_auto_refresh")?.addEventListener("change", (e) => {
+      if (e.target.checked) _startLogsAutoRefresh();
+      else _stopLogsAutoRefresh();
     });
   }
 
-  // Pump test
-  function bindPumps() {
-    const p1 = $("#pump1_test");
-    const p2 = $("#pump2_test");
-    const s1 = $("#pump1_duty");
-    const s2 = $("#pump2_duty");
-
-    function updateSliderReadout(slider, idPct, idPwm) {
-      const duty = parseInt(slider.value, 10);
-      const pct = Math.round((duty / 255) * 100);
-      $(idPct).textContent = String(pct);
-      $(idPwm).textContent = String(duty);
-    }
-
-    s1?.addEventListener("input", () => updateSliderReadout(s1, "#pump1_duty_value", "#pump1_duty_pwm"));
-    s2?.addEventListener("input", () => updateSliderReadout(s2, "#pump2_duty_value", "#pump2_duty_pwm"));
-
-    s1?.addEventListener("change", () => {
-      if (p1?.checked) authFetch(`/pump1/duty/${parseInt(s1.value, 10)}`, { method: "POST" }).catch(() => {});
-    });
-    s2?.addEventListener("change", () => {
-      if (p2?.checked) authFetch(`/pump2/duty/${parseInt(s2.value, 10)}`, { method: "POST" }).catch(() => {});
-    });
-
-    p1?.addEventListener("change", async () => {
-      if (!p1.checked) {
-        await authFetch("/pump1/off", { method: "POST" }).catch(() => {});
-      } else {
-        await authFetch(`/pump1/duty/${parseInt(s1.value, 10)}`, { method: "POST" }).catch(() => {
-          p1.checked = false;
-        });
-      }
-    });
-
-    p2?.addEventListener("change", async () => {
-      if (!p2.checked) {
-        await authFetch("/pump2/off", { method: "POST" }).catch(() => {});
-      } else {
-        await authFetch(`/pump2/duty/${parseInt(s2.value, 10)}`, { method: "POST" }).catch(() => {
-          p2.checked = false;
-        });
-      }
-    });
-
-    // init
-    if (s1) updateSliderReadout(s1, "#pump1_duty_value", "#pump1_duty_pwm");
-    if (s2) updateSliderReadout(s2, "#pump2_duty_value", "#pump2_duty_pwm");
-  }
 
   // WiFi Configuration
   function bindWifi() {
     $("#wifi_config_btn")?.addEventListener("click", () => {
       // Rediriger vers la page de configuration WiFi
       window.location.href = "/wifi.html";
+    });
+  }
+
+  // Désactive un bouton Sauvegarder par défaut ; l'active dès qu'un champ est modifié.
+  function trackDirtyState(btnSelector, fieldIds) {
+    const btn = $(btnSelector);
+    if (!btn) return;
+    btn.disabled = true;
+    const enable = () => { btn.disabled = false; };
+    fieldIds.forEach((id) => {
+      const el = $(`#${id}`);
+      if (!el) return;
+      el.addEventListener("change", enable);
+      el.addEventListener("input", enable);
     });
   }
 
@@ -3459,6 +3556,8 @@
       }
     };
 
+    trackDirtyState("#mqtt_save_btn", ["mqtt_enabled", "mqtt_server", "mqtt_port", "mqtt_topic", "mqtt_username", "mqtt_password"]);
+
     mqttEnabled?.addEventListener("change", () => {
       updateMqttStatusIndicator(mqttEnabled.checked, false);
     });
@@ -3472,20 +3571,50 @@
         updateMqttStatusIndicator($("#mqtt_enabled").checked, false);
         setTimeout(loadConfig, 6000);
         setButtonState(savedLabel, false, true, "success");
-        setTimeout(() => {
-          setButtonState(defaultLabel, false, false, "default");
-        }, 2000);
+        setTimeout(() => setButtonState(defaultLabel, false, true, "default"), 2000);
       } else {
         alert("Erreur lors de la sauvegarde MQTT.");
         setButtonState("Erreur", false, true, "error");
-        setTimeout(() => {
-          setButtonState(defaultLabel, false, false, "default");
-        }, 2000);
+        setTimeout(() => setButtonState(defaultLabel, false, false, "default"), 2000);
+      }
+    });
+  }
+
+  function bindLightingManualSave() {
+    trackDirtyState("#lighting_save_btn", ["lighting_schedule_mode", "lighting_start_time", "lighting_end_time"]);
+    const saveBtn = $("#lighting_save_btn");
+    if (!saveBtn) return;
+    const defaultLabel = "Sauvegarder";
+    const setBtn = (label, spinner, disabled, status) => {
+      saveBtn.disabled = disabled;
+      saveBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
+      if (status === "success") saveBtn.classList.add("btn--ok");
+      else if (status === "error") saveBtn.classList.add("btn--danger");
+      else saveBtn.classList.add("btn--primary");
+      saveBtn.innerHTML = spinner ? `<span class="btn__spinner"></span><span>${label}</span>` : label;
+    };
+    saveBtn.addEventListener("click", async () => {
+      if (saveBtn.disabled) return;
+      setBtn("Sauvegarde...", true, true, "default");
+      const cfg = {
+        lighting_schedule_enabled: $("#lighting_schedule_mode")?.value === "enabled",
+        lighting_start_time: $("#lighting_start_time")?.value,
+        lighting_end_time: $("#lighting_end_time")?.value,
+      };
+      const ok = await sendConfig(cfg);
+      if (ok) {
+        loadConfig();
+        setBtn("Sauvegarde réussie", false, true, "success");
+        setTimeout(() => setBtn(defaultLabel, false, true, "default"), 2000);
+      } else {
+        setBtn("Erreur", false, true, "error");
+        setTimeout(() => setBtn(defaultLabel, false, false, "default"), 2000);
       }
     });
   }
 
   function bindFiltrationManualSave() {
+    trackDirtyState("#filtration_save_btn", ["filtration_mode", "filtration_start", "filtration_end"]);
     const saveBtn = $("#filtration_save_btn");
     const defaultLabel = "Sauvegarder";
     const savingLabel = "Sauvegarde...";
@@ -3516,7 +3645,7 @@
         updateDetailSections();
         updateStatusCards();
         setFiltBtnState(savedLabel, false, true, "success");
-        setTimeout(() => setFiltBtnState(defaultLabel, false, false, "default"), 2000);
+        setTimeout(() => setFiltBtnState(defaultLabel, false, true, "default"), 2000);
         setTimeout(loadConfig, 1500);
         setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
       } else {
@@ -3526,7 +3655,68 @@
     });
   }
 
+  function bindPumpConfigSave() {
+    trackDirtyState("#pump_config_save_btn", ["ph_pump", "orp_pump", "pump1_max_duty", "pump2_max_duty"]);
+    const saveBtn = $("#pump_config_save_btn");
+    if (!saveBtn) return;
+    const defaultLabel = "Sauvegarder";
+    const savingLabel = "Sauvegarde...";
+    const savedLabel = "Sauvegarde réussie";
+
+    const setButtonState = (label, showSpinner, disabled, status) => {
+      saveBtn.disabled = disabled;
+      saveBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
+      if (status === "success") saveBtn.classList.add("btn--ok");
+      else if (status === "error") saveBtn.classList.add("btn--danger");
+      else saveBtn.classList.add("btn--primary");
+      if (showSpinner) {
+        saveBtn.innerHTML = `<span class="btn__spinner"></span><span>${label}</span>`;
+      } else {
+        saveBtn.textContent = label;
+      }
+    };
+
+    // Mise à jour de l'affichage des sliders en temps réel (sans sauvegarder)
+    ["pump1_max_duty", "pump2_max_duty"].forEach((id) => {
+      const slider = $(`#${id}`);
+      const display = $(`#${id}_value`);
+      if (slider && display) slider.addEventListener("input", () => { display.textContent = slider.value; });
+    });
+
+    // Basculement automatique de la pompe ORP quand la pompe pH change (et vice-versa)
+    const phPumpSel  = $("#ph_pump");
+    const orpPumpSel = $("#orp_pump");
+    if (phPumpSel && orpPumpSel) {
+      phPumpSel.addEventListener("change", () => {
+        orpPumpSel.value = phPumpSel.value === "1" ? "2" : "1";
+      });
+      orpPumpSel.addEventListener("change", () => {
+        phPumpSel.value = orpPumpSel.value === "1" ? "2" : "1";
+      });
+    }
+
+    saveBtn.addEventListener("click", async () => {
+      if (saveBtn.disabled) return;
+      setButtonState(savingLabel, true, true, "default");
+      const cfg = {
+        ph_pump:            parseInt($("#ph_pump")?.value || "1", 10),
+        orp_pump:           parseInt($("#orp_pump")?.value || "2", 10),
+        pump1_max_duty_pct: parseInt($("#pump1_max_duty")?.value || "100", 10),
+        pump2_max_duty_pct: parseInt($("#pump2_max_duty")?.value || "100", 10),
+      };
+      const ok = await sendConfig(cfg);
+      if (ok) {
+        setButtonState(savedLabel, false, true, "success");
+        setTimeout(() => setButtonState(defaultLabel, false, true, "default"), 2000);
+      } else {
+        setButtonState("Erreur", false, true, "error");
+        setTimeout(() => setButtonState(defaultLabel, false, false, "default"), 2000);
+      }
+    });
+  }
+
   function bindTimeManualSave() {
+    trackDirtyState("#time_save_btn", ["time_use_ntp", "time_timezone", "time_ntp_server", "time_value"]);
     const saveBtn = $("#time_save_btn");
     const timeUseNtp = $("#time_use_ntp");
     const defaultLabel = "Sauvegarder";
@@ -3584,7 +3774,7 @@
 
       if (ok) {
         setButtonState(savedLabel, false, true, "success");
-        setTimeout(() => setButtonState(defaultLabel, false, false, "default"), 2000);
+        setTimeout(() => setButtonState(defaultLabel, false, true, "default"), 2000);
         setTimeout(loadConfig, 1500);
       } else {
         setButtonState("Erreur", false, true, "error");
@@ -3615,6 +3805,34 @@
   }
 
   // ---------- Auto-save bindings ----------
+  function bindRegulationSave(sensor, btnSelector) {
+    const fields = sensor === "ph"
+      ? ["ph_enabled", "ph_target", "ph_limit", "ph_daily_limit", "ph_correction_type"]
+      : ["orp_enabled", "orp_target", "orp_limit", "orp_daily_limit"];
+    trackDirtyState(btnSelector, fields);
+    const saveBtn = $(btnSelector);
+    if (!saveBtn) return;
+    const defaultLabel = "Sauvegarder";
+    const setBtn = (label, spinner, disabled, status) => {
+      saveBtn.disabled = disabled;
+      saveBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
+      saveBtn.classList.add(status === "success" ? "btn--ok" : status === "error" ? "btn--danger" : "btn--primary");
+      saveBtn.innerHTML = spinner ? `<span class="btn__spinner"></span><span>${label}</span>` : label;
+    };
+    saveBtn.addEventListener("click", async () => {
+      if (saveBtn.disabled) return;
+      setBtn("Sauvegarde...", true, true, "default");
+      const ok = await sendConfig(collectConfig());
+      if (ok) {
+        setBtn("Sauvegarde réussie", false, true, "success");
+        setTimeout(() => setBtn(defaultLabel, false, true, "default"), 2000);
+      } else {
+        setBtn("Erreur", false, true, "error");
+        setTimeout(() => setBtn(defaultLabel, false, false, "default"), 2000);
+      }
+    });
+  }
+
   function bindAutosave() {
     const save = () => {
       const cfg = collectConfig();
@@ -3655,31 +3873,28 @@
       filtrationDirty = true;
     });
 
-    // Lighting — rafraîchit la config après sauvegarde pour mettre à jour le tableau de bord
-    const saveLighting = () => save().then((ok) => { if (ok !== false) loadConfig(); return ok; });
-
-    // Lighting feature
+    // Lighting feature — sauvegarde immédiate (interrupteur on/off)
     $("#lighting_feature_enabled")?.addEventListener("change", () => {
       updateFeatureVisibility("lighting");
-      saveLighting();
+      save().then((ok) => { if (ok !== false) loadConfig(); });
     });
 
-    // Lighting schedule
+    // Lighting schedule — sauvegarde manuelle via bouton
     $("#lighting_schedule_mode")?.addEventListener("change", () => {
       const scheduleSettings = $("#lighting-schedule-settings");
       if (scheduleSettings) {
         scheduleSettings.style.display = $("#lighting_schedule_mode").value === "enabled" ? "block" : "none";
       }
-      saveLighting();
     });
-    $("#lighting_start_time")?.addEventListener("change", saveLighting);
-    $("#lighting_end_time")?.addEventListener("change", saveLighting);
+    bindLightingManualSave();
 
-    // pH / ORP regulation
-    $("#ph_enabled")?.addEventListener("change", () => { updatePhControls(); save(); });
-    $("#orp_enabled")?.addEventListener("change", () => { updateOrpControls(); save(); });
-    ["ph_target", "ph_limit", "ph_daily_limit", "ph_pump", "ph_correction_type"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => { updatePhControls(); save(); }));
-    ["orp_target", "orp_limit", "orp_daily_limit", "orp_pump"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => { updateOrpControls(); save(); }));
+    // pH / ORP regulation — sauvegarde manuelle via bouton
+    $("#ph_enabled")?.addEventListener("change", () => updatePhControls());
+    $("#orp_enabled")?.addEventListener("change", () => updateOrpControls());
+    ["ph_target", "ph_limit", "ph_daily_limit", "ph_correction_type"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => updatePhControls()));
+    ["orp_target", "orp_limit", "orp_daily_limit"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => updateOrpControls()));
+    bindRegulationSave("ph",  "#ph_regulation_save_btn");
+    bindRegulationSave("orp", "#orp_regulation_save_btn");
     $("#regulation_mode")?.addEventListener("change", save);
 
     // Temperature feature
@@ -3746,11 +3961,12 @@
 
   // ---------- Security bindings ----------
   function bindSecurity() {
+    trackDirtyState("#cors-save-btn", ["auth_cors_origins"]);
     // Save CORS configuration (bouton manuel)
     const corsBtn = $("#cors-save-btn");
     const setCorsBtnState = (label, status) => {
       if (!corsBtn) return;
-      corsBtn.disabled = status === "saving";
+      corsBtn.disabled = status === "saving" || status === "clean";
       corsBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
       if (status === "success") corsBtn.classList.add("btn--ok");
       else if (status === "error") corsBtn.classList.add("btn--danger");
@@ -3762,7 +3978,7 @@
       const ok = await sendConfig({ auth_cors_origins: $("#auth_cors_origins").value.trim() });
       if (ok) {
         setCorsBtnState("Sauvegarde réussie", "success");
-        setTimeout(() => setCorsBtnState("Sauvegarder", "default"), 2000);
+        setTimeout(() => setCorsBtnState("Sauvegarder", "clean"), 2000);
       } else {
         setCorsBtnState("Erreur", "error");
         setTimeout(() => setCorsBtnState("Sauvegarder", "default"), 2000);
@@ -4004,15 +4220,18 @@
     bindWifi();
     bindMqttManualSave();
     bindFiltrationManualSave();
+    bindPumpConfigSave();
     bindTimeManualSave();
     bindSecurity();
     bindGithubUpdate();
     bindManualUpdate();
-    bindPumps();
     bindLogs();
 
-    // initial loads
+    // WebSocket : démarre immédiatement pour ne pas bloquer sur les fetches HTTP initiaux
     setNetStatus("mid", "Connexion…");
+    initWebSocket();
+
+    // initial loads (en parallèle avec la connexion WS)
     const configPerf = debugStart("loadConfig");
     await loadConfig().catch(() => {});
     configPerf?.end();
@@ -4021,8 +4240,6 @@
     const historyPerf = debugStart("loadHistoricalData");
     await loadHistoricalData('24h').catch(() => {});
     historyPerf?.end();
-
-    await loadSensorData({ force: true, source: "init" }).catch(() => {}); // Charger les données AVANT d'afficher la route
 
     const calibPerf = debugStart("checkCalibrationDate");
     await checkCalibrationDate().catch(() => {});
@@ -4041,18 +4258,6 @@
         console.error("Failed to load system info:", e);
       }
     }, 200);
-
-    // loops (loadSensorData déjà appelé au démarrage ligne 2302)
-    setInterval(() => loadSensorData({ source: "interval", force: true }), SENSOR_REFRESH_MS); // 30 secondes
-    setInterval(() => {
-      if (!lastSensorDataLoadTime) return;
-      const ageMs = Date.now() - lastSensorDataLoadTime;
-      if (ageMs > SENSOR_REFRESH_MS * 2) {
-        setNetStatus("bad", "Hors ligne");
-      } else if (ageMs > SENSOR_REFRESH_MS * 1.2) {
-        setNetStatus("mid", "Connexion…");
-      }
-    }, 5000);
     setInterval(checkCalibrationDate, 300000); // 5 min
 
     // Rafraîchissement de l'heure au changement de minute (si on est sur settings et pas en édition)
@@ -4086,15 +4291,8 @@
       setInterval(refreshTimeField, 60000);
     }, msUntilNextMinute);
 
-    // If you want: refresh config status occasionally (MQTT connected, etc.)
-    setInterval(() => {
-      // ne recharge pas tout en permanence si tu veux limiter la charge
-      const activeId = document.activeElement?.id || "";
-      const mqttEditing = ["mqtt_server", "mqtt_port", "mqtt_topic", "mqtt_username", "mqtt_password", "mqtt_enabled"].includes(activeId);
-      const timeEditing = ["time_use_ntp", "time_ntp_server", "time_timezone", "time_value"].includes(activeId);
-      if (mqttEditing || timeEditing || filtrationDirty) return;
-      loadConfig().catch(() => {});
-    }, 15000);
+    // La config est maintenant poussée par WebSocket après chaque save-config.
+    // Le polling HTTP (15s) est supprimé.
 
     // ========== FILTRATION MANUAL CONTROL ==========
     setupFiltrationManualControl();
@@ -4124,10 +4322,9 @@
         try {
           const response = await authFetch("/lighting/on", { method: "POST" });
           if (response.ok) {
-            // Mise à jour immédiate de l'interface après confirmation serveur
+            if (latestSensorData) latestSensorData.lighting_enabled = true;
             updateLightingStatus(true);
             showToast("Éclairage allumé", "success");
-            await loadConfig();
           }
         } catch (error) {
           console.error("Error turning on lighting:", error);
@@ -4141,10 +4338,9 @@
         try {
           const response = await authFetch("/lighting/off", { method: "POST" });
           if (response.ok) {
-            // Mise à jour immédiate de l'interface après confirmation serveur
+            if (latestSensorData) latestSensorData.lighting_enabled = false;
             updateLightingStatus(false);
             showToast("Éclairage éteint", "success");
-            await loadConfig();
           }
         } catch (error) {
           console.error("Error turning off lighting:", error);
@@ -4192,32 +4388,16 @@
     const startBtn = $("#filtration-manual-start");
     const stopBtn = $("#filtration-manual-stop");
 
-    // Start filtration: ouvre une fenêtre horaire de maintenant à 23:59, sans jamais changer le mode
+    // Start filtration: force ON sans modifier la programmation
     if (startBtn) {
       startBtn.addEventListener("click", async () => {
-        const now = new Date();
-        const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-
-        const payload = {
-          filtration_enabled: true,
-          filtration_start: currentTime,
-          filtration_end: "23:59"
-        };
-
+        const payload = { filtration_enabled: true, filtration_force_on: true };
         try {
           const result = await sendConfig(payload);
           if (result) {
-            if (!window._config) window._config = {};
-            Object.assign(window._config, payload);
-            const enabledEl = $("#filtration_enabled");
-            if (enabledEl) enabledEl.checked = true;
-            const startEl = $("#filtration_start");
-            if (startEl) startEl.value = currentTime;
-            const endEl = $("#filtration_end");
-            if (endEl) endEl.value = "23:59";
+            filtrationRunningOverride = true;
             updateFiltrationControls();
             updateFeatureVisibility("filtration");
-            filtrationRunningOverride = true;
             updateFiltrationBadges();
             showToast("Filtration démarrée", "success");
             setTimeout(() => {
@@ -4234,21 +4414,15 @@
       });
     }
 
-    // Stop filtration: ferme la fenêtre horaire (end = maintenant) sans toucher au mode
+    // Stop filtration: désactive le forçage, retour à la programmation normale
     if (stopBtn) {
       stopBtn.addEventListener("click", async () => {
-        const now = new Date();
-        const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-        const payload = { filtration_end: currentTime };
-
+        const payload = { filtration_force_on: false };
         try {
           const result = await sendConfig(payload);
           if (result) {
-            if (window._config) window._config.filtration_end = currentTime;
-            const endEl = $("#filtration_end");
-            if (endEl) endEl.value = currentTime;
-            updateFiltrationControls();
             filtrationRunningOverride = false;
+            updateFiltrationControls();
             updateFiltrationBadges();
             showToast("Filtration arrêtée", "success");
             setTimeout(() => {

@@ -5,6 +5,7 @@
 #include <DNSServer.h>
 #include <map>
 #include <vector>
+#include "ws_manager.h"
 
 class WebServerManager {
 private:

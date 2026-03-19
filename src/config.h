@@ -50,6 +50,8 @@ struct MqttConfig {
   bool orpEnabled = true;
   int phPump = 1;
   int orpPump = 2;
+  uint8_t pump1MaxDutyPct = 100;   // Puissance maximale pompe 1 en régulation (0-100 %)
+  uint8_t pump2MaxDutyPct = 100;   // Puissance maximale pompe 2 en régulation (0-100 %)
   int phInjectionLimitSeconds = 60;
   int orpInjectionLimitSeconds = 60;
   String regulationMode = "pilote";  // "continu" ou "pilote"
@@ -89,6 +91,7 @@ struct FiltrationConfig {
   String mode = "auto"; // auto, manual, off
   String start = "08:00";
   String end = "20:00";
+  bool forceOn = false; // Forçage ON temporaire (non persisté, remis à false au redémarrage)
 };
 
 struct LightingConfig {

@@ -117,6 +117,9 @@ void WebServerManager::setupRoutes() {
   setupControlRoutes(server);
   setupOtaRoutes(server);
 
+  // WebSocket (push temps réel : capteurs toutes les 5s, config après save, logs en direct)
+  wsManager.begin(server);
+
   // Page de login (PUBLIC - doit être accessible sans auth)
   server->on("/login.html", HTTP_GET, [](AsyncWebServerRequest *req) {
     req->send(LittleFS, "/login.html", "text/html");
@@ -185,6 +188,8 @@ void WebServerManager::setupRoutes() {
 }
 
 void WebServerManager::update() {
+  wsManager.update();
+
   // Gérer le redémarrage après OTA (attendre que la réponse HTTP soit envoyée)
   if (restartRequested && (millis() - restartRequestedTime >= kRestartAfterOtaDelayMs)) {
     restartRequested = false;

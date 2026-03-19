@@ -5,6 +5,7 @@
 #include "auth.h"
 #include "sensors.h"
 #include "json_compat.h"
+#include "uart_protocol.h"
 
 void setupCalibrationRoutes(AsyncWebServer* server) {
   // Routes de calibration pH (DFRobot SEN0161-V2) - PROTÉGÉES
@@ -23,6 +24,8 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
     mqttCfg.phCalibrationDate = getCurrentTimeISO();
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
+
+    uartProtocol.sendEventStr("event", "calibration_done", "sensor", "ph_neutral");
 
     StaticJson<128> doc;
     doc["success"] = true;
@@ -45,6 +48,8 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
     mqttCfg.phCalibrationDate = getCurrentTimeISO();
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
+
+    uartProtocol.sendEventStr("event", "calibration_done", "sensor", "ph_acid");
 
     StaticJson<128> doc;
     doc["success"] = true;

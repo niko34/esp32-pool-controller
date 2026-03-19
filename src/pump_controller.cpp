@@ -3,6 +3,7 @@
 #include "logger.h"
 #include "sensors.h"
 #include "filtration.h"
+#include "uart_protocol.h"
 #include <esp_task_wdt.h>
 
 PumpControllerClass PumpController;
@@ -358,8 +359,9 @@ void PumpControllerClass::update() {
     float orpValue = sensors.getOrp();
     float effectiveOrp = orpValue;
 
-    float error = effectiveOrp - mqttCfg.orpTarget;
-    
+    // Erreur positive = ORP trop bas → injecter du chlore pour monter l'ORP
+    float error = mqttCfg.orpTarget - effectiveOrp;
+
     // Déterminer si on doit doser (avec protection anti-cycling)
     bool shouldDose = false;
     
@@ -396,7 +398,7 @@ void PumpControllerClass::update() {
         systemLogger.info("Arrêt dosage ORP (durée: " + String(runTime) + "s)");
       }
       
-      // Reset PID si erreur négative (ORP trop haut)
+      // Reset PID si erreur négative (ORP trop haut, au-dessus de la cible)
       if (error < -pumpProtection.orpStopThreshold) {
         orpPID.integral = 0.0f;
         orpPID.lastError = 0.0f;
@@ -415,6 +417,12 @@ void PumpControllerClass::update() {
     }
   }
 
+  // Appliquer la puissance maximale configurée (ne s'applique pas au mode test manuel)
+  uint8_t maxDuty0 = (uint8_t)((mqttCfg.pump1MaxDutyPct * MAX_PWM_DUTY) / 100);
+  uint8_t maxDuty1 = (uint8_t)((mqttCfg.pump2MaxDutyPct * MAX_PWM_DUTY) / 100);
+  if (desiredDuty[0] > maxDuty0) desiredDuty[0] = maxDuty0;
+  if (desiredDuty[1] > maxDuty1) desiredDuty[1] = maxDuty1;
+
   // Appliquer les valeurs de duty (sauf pour les pompes en mode manuel)
   for (int i = 0; i < 2; ++i) {
     if (!manualMode[i]) {
@@ -423,16 +431,23 @@ void PumpControllerClass::update() {
   }
 
   // Mettre à jour le tracking de sécurité (ml injectés)
+  // Le flow est scalé par le ratio duty réel / duty demandé pour tenir compte
+  // de la puissance maximale configurée (pump1MaxDutyPct / pump2MaxDutyPct).
   // IMPORTANT: ne pas utiliser lastTimestamp (mis à jour par refreshDosingState), sinon delta≈0.
   if (phActive) {
     if (phDosingState.lastSafetyTimestamp == 0) {
       phDosingState.lastSafetyTimestamp = now;
     }
     unsigned long delta = now - phDosingState.lastSafetyTimestamp;
-    updateSafetyTracking(true, phFlow, delta);
+    int phIdx = pumpIndexFromNumber(mqttCfg.phPump);
+    uint8_t phRequestedDuty = flowToDuty(phPumpControl, phFlow);
+    uint8_t phActualDuty    = desiredDuty[phIdx];
+    float phEffectiveFlow = (phRequestedDuty > 0)
+      ? phFlow * ((float)phActualDuty / phRequestedDuty)
+      : phFlow;
+    updateSafetyTracking(true, phEffectiveFlow, delta);
     phDosingState.lastSafetyTimestamp = now;
   } else {
-    // Éviter de compter une longue période OFF au prochain démarrage
     phDosingState.lastSafetyTimestamp = 0;
   }
 
@@ -441,10 +456,21 @@ void PumpControllerClass::update() {
       orpDosingState.lastSafetyTimestamp = now;
     }
     unsigned long delta = now - orpDosingState.lastSafetyTimestamp;
-    updateSafetyTracking(false, orpFlow, delta);
+    int orpIdx = pumpIndexFromNumber(mqttCfg.orpPump);
+    uint8_t orpRequestedDuty = flowToDuty(orpPumpControl, orpFlow);
+    uint8_t orpActualDuty    = desiredDuty[orpIdx];
+    float orpEffectiveFlow = (orpRequestedDuty > 0)
+      ? orpFlow * ((float)orpActualDuty / orpRequestedDuty)
+      : orpFlow;
+    updateSafetyTracking(false, orpEffectiveFlow, delta);
     orpDosingState.lastSafetyTimestamp = now;
   } else {
     orpDosingState.lastSafetyTimestamp = 0;
+  }
+
+  // Envoyer un événement UART si l'état de dosage a changé
+  if (phDosingState.active != phActive || orpDosingState.active != orpActive) {
+    uartProtocol.sendDosingEvent(phActive, orpActive);
   }
 
   phDosingState.active = phActive;

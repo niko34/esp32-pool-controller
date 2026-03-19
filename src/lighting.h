@@ -27,6 +27,7 @@ public:
 
   void setManualOn();
   void setManualOff();
+  void clearManualOverride() { state.manualOverride = false; }
   void ensureTimesValid();
   void publishState();
 };
