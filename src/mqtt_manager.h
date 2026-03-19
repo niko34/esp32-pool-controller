@@ -13,6 +13,9 @@ struct MqttTopics {
   String filtrationState;
   String filtrationModeState;
   String filtrationModeCommand;
+  String filtrationCommand;    // ON/OFF switch command
+  String lightingState;        // État éclairage
+  String lightingCommand;      // ON/OFF switch command
   String phDosageState;
   String orpDosageState;
   String alertsTopic;
@@ -50,6 +53,7 @@ public:
   void publishSensorState(const String& topic, const String& payload, bool retain = true);
   void publishAllStates();
   void publishFiltrationState();
+  void publishLightingState();
   void publishAlert(const String& alertType, const String& message);
   void publishLog(const String& logMessage);
   void publishStatus(const String& status);

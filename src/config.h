@@ -91,7 +91,8 @@ struct FiltrationConfig {
   String mode = "auto"; // auto, manual, off
   String start = "08:00";
   String end = "20:00";
-  bool forceOn = false; // Forçage ON temporaire (non persisté, remis à false au redémarrage)
+  bool forceOn = false;  // Forçage ON temporaire (non persisté, remis à false au redémarrage)
+  bool forceOff = false; // Forçage OFF temporaire (non persisté, remis à false au redémarrage)
 };
 
 struct LightingConfig {

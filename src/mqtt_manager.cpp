@@ -4,6 +4,7 @@
 #include "logger.h"
 #include "sensors.h"
 #include "filtration.h"
+#include "lighting.h"
 #include "version.h"
 #include "pump_controller.h"
 #include <ArduinoJson.h>
@@ -39,6 +40,9 @@ void MqttManager::refreshTopics() {
   topics.filtrationState = base + "/filtration_state";
   topics.filtrationModeState = base + "/filtration_mode";
   topics.filtrationModeCommand = base + "/filtration_mode/set";
+  topics.filtrationCommand = base + "/filtration/set";
+  topics.lightingState = base + "/lighting_state";
+  topics.lightingCommand = base + "/lighting/set";
   topics.phDosageState = base + "/ph_dosage";
   topics.orpDosageState = base + "/orp_dosage";
   topics.alertsTopic = base + "/alerts";
@@ -103,6 +107,8 @@ void MqttManager::connect() {
     publishStatus("online");
 
     mqtt.subscribe(topics.filtrationModeCommand.c_str());
+    mqtt.subscribe(topics.filtrationCommand.c_str());
+    mqtt.subscribe(topics.lightingCommand.c_str());
     discoveryPublished = false;
     publishDiscovery();
     publishAllStates();
@@ -139,12 +145,18 @@ void MqttManager::publishAllStates() {
     publishSensorState(topics.orpState, String(sensors.getOrp(), 1));
   }
   publishFiltrationState();
+  publishLightingState();
 }
 
 void MqttManager::publishFiltrationState() {
   if (!mqtt.connected()) return;
   publishSensorState(topics.filtrationModeState, filtrationCfg.mode);
   publishSensorState(topics.filtrationState, filtration.isRunning() ? "ON" : "OFF");
+}
+
+void MqttManager::publishLightingState() {
+  if (!mqtt.connected()) return;
+  publishSensorState(topics.lightingState, lighting.isOn() ? "ON" : "OFF");
 }
 
 void MqttManager::publishAlert(const String& alertType, const String& message) {
@@ -166,14 +178,15 @@ void MqttManager::publishLog(const String& logMessage) {
 
 void MqttManager::messageCallback(char* topic, byte* payload, unsigned int length) {
   String topicStr(topic);
+  String cmd;
+  for (unsigned int i = 0; i < length; ++i) {
+    cmd += static_cast<char>(payload[i]);
+  }
+  cmd.trim();
+
   if (topicStr == topics.filtrationModeCommand) {
-    String cmd;
-    for (unsigned int i = 0; i < length; ++i) {
-      cmd += static_cast<char>(payload[i]);
-    }
-    cmd.trim();
     cmd.toLowerCase();
-    if (cmd == "auto" || cmd == "manual" || cmd == "off") {
+    if (cmd == "auto" || cmd == "manual" || cmd == "force" || cmd == "off") {
       if (filtrationCfg.mode != cmd) {
         filtrationCfg.mode = cmd;
         filtration.ensureTimesValid();
@@ -185,6 +198,25 @@ void MqttManager::messageCallback(char* topic, byte* payload, unsigned int lengt
       }
       publishFiltrationState();
     }
+  } else if (topicStr == topics.filtrationCommand) {
+    cmd.toUpperCase();
+    if (cmd == "ON") {
+      filtrationCfg.forceOn = true;
+      systemLogger.info("Filtration forcée ON (MQTT)");
+    } else if (cmd == "OFF") {
+      filtrationCfg.forceOn = false;
+      systemLogger.info("Filtration forcée OFF (MQTT)");
+    }
+    // Ne pas publier ici : filtration.update() va changer le relais
+    // et appeler publishState() une fois l'état réel mis à jour.
+  } else if (topicStr == topics.lightingCommand) {
+    cmd.toUpperCase();
+    if (cmd == "ON") {
+      lighting.setManualOn();
+    } else if (cmd == "OFF") {
+      lighting.setManualOff();
+    }
+    publishLightingState();
   }
 }
 
@@ -265,7 +297,36 @@ void MqttManager::publishDiscovery() {
   JsonArray options = doc["options"].to<JsonArray>();
   options.add("auto");
   options.add("manual");
+  options.add("force");
   options.add("off");
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Switch filtration ON/OFF
+  topic = discoveryBase + "switch/" + HA_DEVICE_ID + "_filtration_switch/config";
+  doc["name"] = "Filtration Marche/Arrêt";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_filtration_switch";
+  doc["state_topic"] = topics.filtrationState;
+  doc["command_topic"] = topics.filtrationCommand;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["state_on"] = "ON";
+  doc["state_off"] = "OFF";
+  doc["icon"] = "mdi:water-pump";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Switch éclairage ON/OFF
+  topic = discoveryBase + "switch/" + HA_DEVICE_ID + "_lighting/config";
+  doc["name"] = "Éclairage Piscine";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_lighting";
+  doc["state_topic"] = topics.lightingState;
+  doc["command_topic"] = topics.lightingCommand;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["state_on"] = "ON";
+  doc["state_off"] = "OFF";
+  doc["icon"] = "mdi:pool";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 

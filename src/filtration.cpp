@@ -3,6 +3,7 @@
 #include "constants.h"
 #include "logger.h"
 #include "sensors.h"
+#include "mqtt_manager.h"
 #include "uart_protocol.h"
 #include <time.h>
 
@@ -18,7 +19,7 @@ void FiltrationManager::begin() {
 void FiltrationManager::ensureTimesValid() {
   String modeLower = filtrationCfg.mode;
   modeLower.toLowerCase();
-  if (modeLower != "auto" && modeLower != "manual" && modeLower != "off") {
+  if (modeLower != "auto" && modeLower != "manual" && modeLower != "off" && modeLower != "force") {
     filtrationCfg.mode = "auto";
   }
 
@@ -127,6 +128,8 @@ void FiltrationManager::update() {
 
   if (filtrationCfg.forceOn) {
     runTarget = true;
+  } else if (filtrationCfg.forceOff) {
+    runTarget = false;
   } else if (mode == "manual" || mode == "auto") {
     if (haveTime) {
       runTarget = isMinutesInRange(nowMinutes, startMin, endMin);
@@ -183,5 +186,5 @@ void FiltrationManager::update() {
 }
 
 void FiltrationManager::publishState() {
-  // Appelé par mqtt_manager pour éviter dépendance circulaire
+  mqttManager.publishFiltrationState();
 }

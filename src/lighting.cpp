@@ -1,6 +1,7 @@
 #include "lighting.h"
 #include "config.h"
 #include "logger.h"
+#include "mqtt_manager.h"
 #include <time.h>
 
 LightingManager lighting;
@@ -115,5 +116,5 @@ void LightingManager::update() {
 }
 
 void LightingManager::publishState() {
-  // Appelé par mqtt_manager pour éviter dépendance circulaire
+  mqttManager.publishLightingState();
 }

@@ -837,17 +837,41 @@
     }
 
     const mode = modeSelect.value || "auto";
+    const manualCard = $("#filtration-manual-card");
+    const scheduleFields = $("#filtration-schedule-fields");
+    const startBtn = $("#filtration-manual-start");
+    const stopBtn = $("#filtration-manual-stop");
+    const modeHint = $("#filtration_mode_hint");
+
+    // La carte Contrôle manuel est toujours visible
+    if (manualCard) manualCard.style.display = "";
+    // Boutons désactivés uniquement en mode "Désactivé"
+    const buttonsDisabled = (mode === "off");
+    if (startBtn) startBtn.disabled = buttonsDisabled;
+    if (stopBtn) stopBtn.disabled = buttonsDisabled;
 
     if (mode === "manual") {
+      // Programmation : horaires éditables
+      if (scheduleFields) scheduleFields.style.display = "";
+      if (modeHint) modeHint.style.display = "none";
       start.disabled = false;
       end.disabled = false;
       start.classList.remove("is-computed");
       end.classList.remove("is-computed");
-    } else {
+    } else if (mode === "auto") {
+      // Auto : horaires calculés (lecture seule)
+      if (scheduleFields) scheduleFields.style.display = "";
+      if (modeHint) modeHint.style.display = "";
       start.disabled = true;
       end.disabled = true;
       start.classList.add("is-computed");
       end.classList.add("is-computed");
+    } else {
+      // Manuel ou Désactivé : pas d'horaires
+      if (scheduleFields) scheduleFields.style.display = "none";
+      if (modeHint) modeHint.style.display = "none";
+      start.disabled = true;
+      end.disabled = true;
     }
   }
 
@@ -1240,8 +1264,8 @@
       $("#sensor_logs_enabled").checked = cfg.sensor_logs_enabled === true;
     }
 
-    // Mettre à jour les alertes et cartes status après chargement de la config
-    updateAlerts();
+    // Mettre à jour les badges et cartes status après chargement de la config
+    updateSensorBadges();
     updateStatusCards();
     updateDetailSections();
   }
@@ -1350,129 +1374,58 @@
   let filtrationRunningOverride = null; // Valeur optimiste après sauvegarde, null = utiliser /data
   let filtrationDirty = false; // Modifications non sauvegardées dans la section Programmation
 
-  // ========== ALERTES ==========
-  let dismissedAlerts = {};
+  // ========== BADGES CAPTEURS ==========
 
-  // Types d'alertes
-  const AlertType = {
-    PH_OUT_OF_RANGE: 'ph_out_range',
-    ORP_OUT_OF_RANGE: 'orp_out_range',
-    PH_CALIBRATION_OLD: 'ph_cal_old',
-    ORP_CALIBRATION_OLD: 'orp_cal_old',
-    TEMP_CALIBRATION_OLD: 'temp_cal_old'
-  };
-
-  // Charger les alertes ignorées depuis localStorage
-  function loadDismissedAlerts() {
-    const stored = localStorage.getItem('dismissedAlerts');
-    if (stored) {
-      try {
-        dismissedAlerts = JSON.parse(stored);
-      } catch (e) {
-        dismissedAlerts = {};
+  function updateSensorBadges() {
+    function setBadge(id, variant, text, link) {
+      const el = $(`#${id}`);
+      if (!el) return;
+      if (!variant) {
+        el.style.display = 'none';
+        el.className = 'sensor-badge';
+        el.innerHTML = '';
+        return;
       }
+      el.className = `sensor-badge sensor-badge--${variant}`;
+      el.innerHTML = `<span>${text}</span><a href="${link}" class="sensor-badge__link">Corriger</a>`;
+      el.style.display = '';
     }
-  }
 
-  // Vérifier si une alerte est ignorée
-  function isAlertDismissed(alertType) {
-    const dismissed = dismissedAlerts[alertType];
-    if (!dismissed) return false;
-
-    // Vérifier si l'expiration est dépassée
-    if (Date.now() > dismissed.expiresAt) {
-      delete dismissedAlerts[alertType];
-      localStorage.setItem('dismissedAlerts', JSON.stringify(dismissedAlerts));
-      return false;
-    }
-    return true;
-  }
-
-  // Ignorer une alerte pour 24h
-  window.dismissAlert = function(alertType) {
-    dismissedAlerts[alertType] = {
-      expiresAt: Date.now() + (24 * 60 * 60 * 1000) // 24h
-    };
-    localStorage.setItem('dismissedAlerts', JSON.stringify(dismissedAlerts));
-    updateAlerts();
-  };
-
-  // Stocker le HTML précédent des alertes pour éviter les rerender inutiles
-  let lastAlertsHTML = '';
-
-  // Mettre à jour les alertes
-  function updateAlerts() {
-    const container = $("#alerts-container");
-    if (!container) return;
-
-    const alerts = [];
-
-    // Alerte pH hors plage (7.0-7.4)
-    if (latestSensorData && latestSensorData.ph != null && !isNaN(latestSensorData.ph)) {
+    // Badge pH
+    let phVariant = null, phText = '';
+    if (latestSensorData?.ph != null && !isNaN(latestSensorData.ph)) {
       const ph = latestSensorData.ph;
-      if ((ph < 7.0 || ph > 7.4) && !isAlertDismissed(AlertType.PH_OUT_OF_RANGE)) {
-        alerts.push({
-          type: 'danger',
-          icon: '⚠️',
-          message: `pH hors plage recommandée : ${ph.toFixed(1)} (7.0 - 7.4)`,
-          action: 'Aller à pH',
-          actionLink: '#/ph',
-          dismissable: false
-        });
+      const phTarget = window._config?.ph_target ?? 7.2;
+      const phLow = +(phTarget - 0.2).toFixed(1);
+      const phHigh = +(phTarget + 0.2).toFixed(1);
+      if (ph < phLow || ph > phHigh) {
+        phVariant = 'danger';
+        phText = ph < phLow ? `Trop bas (${ph.toFixed(1)})` : `Trop élevé (${ph.toFixed(1)})`;
       }
     }
+    if (!phVariant && latestSensorData?.ph_limit_reached) {
+      phVariant = 'warning';
+      phText = 'Limite journalière atteinte';
+    }
+    setBadge('ph-sensor-badge', phVariant, phText, '#/ph');
 
-    // Alerte ORP hors plage (600-800 mV)
-    if (latestSensorData && latestSensorData.orp != null && !isNaN(latestSensorData.orp)) {
+    // Badge ORP
+    let orpVariant = null, orpText = '';
+    if (latestSensorData?.orp != null && !isNaN(latestSensorData.orp)) {
       const orp = Math.round(latestSensorData.orp);
-      if ((orp < 600 || orp > 800) && !isAlertDismissed(AlertType.ORP_OUT_OF_RANGE)) {
-        alerts.push({
-          type: 'danger',
-          icon: '⚠️',
-          message: `ORP hors plage recommandée : ${orp} mV (600 - 800 mV)`,
-          action: 'Aller à ORP',
-          actionLink: '#/orp',
-          dismissable: false
-        });
+      const orpTarget = window._config?.orp_target ?? 650;
+      const orpLow = Math.round(orpTarget - 150);
+      const orpHigh = Math.round(orpTarget + 150);
+      if (orp < orpLow || orp > orpHigh) {
+        orpVariant = 'danger';
+        orpText = orp < orpLow ? `Trop bas (${orp} mV)` : `Trop élevé (${orp} mV)`;
       }
     }
-
-    // Alerte calibration pH ancienne (>3 mois)
-    if (window._config && window._config.phCalibrationDate) {
-      try {
-        const calDate = new Date(window._config.phCalibrationDate);
-        const ageMonths = (Date.now() - calDate.getTime()) / (1000 * 60 * 60 * 24 * 30);
-        if (ageMonths > 3 && !isAlertDismissed(AlertType.PH_CALIBRATION_OLD)) {
-          alerts.push({
-            type: 'warning',
-            icon: '🔧',
-            message: `Calibration de la sonde pH trop ancienne - Dernière calibration :: ${calDate.toLocaleDateString()}`,
-            action: 'Aller à calibration',
-            actionLink: '#/ph',
-            dismissable: true,
-            alertType: AlertType.PH_CALIBRATION_OLD
-          });
-        }
-      } catch (e) {
-        // Date invalide, ignorer
-      }
+    if (!orpVariant && latestSensorData?.orp_limit_reached) {
+      orpVariant = 'warning';
+      orpText = 'Limite journalière atteinte';
     }
-
-    // Générer le HTML (template compact pour éviter les variations d'espaces)
-    const newHTML = alerts.map(alert =>
-      `<div class="alert alert--${alert.type}">` +
-      `<span class="alert__icon">${alert.icon}</span>` +
-      `<span class="alert__content">${alert.message}</span>` +
-      `<a href="${alert.actionLink}" class="alert__action">${alert.action}</a>` +
-      (alert.dismissable ? `<button class="alert__dismiss" onclick="dismissAlert('${alert.alertType}')">Ignorer 24h</button>` : '') +
-      `</div>`
-    ).join('');
-
-    // Ne mettre à jour le DOM que si le contenu a changé
-    if (newHTML !== lastAlertsHTML) {
-      container.innerHTML = newHTML;
-      lastAlertsHTML = newHTML;
-    }
+    setBadge('orp-sensor-badge', orpVariant, orpText, '#/orp');
   }
 
   // ========== CARTES STATUS ==========
@@ -2013,9 +1966,9 @@
     if (detailFiltrationMode) {
       const modes = {
         auto: 'Auto',
-        manual: 'Manuel',
-        always_on: 'Toujours allumée',
-        always_off: 'Toujours éteinte'
+        manual: 'Programmation',
+        force: 'Manuel',
+        off: 'Désactivé'
       };
       detailFiltrationMode.textContent = modes[config.filtration_mode] || 'Auto';
     }
@@ -2028,6 +1981,13 @@
     }
 
     updateFiltrationBadges();
+
+    // Boutons Démarrer/Arrêter du tableau de bord : grisés en mode Désactivé
+    const isOff = (config.filtration_mode || '').toLowerCase() === 'off';
+    const detailStartBtn = $("#detail-filtration-start");
+    const detailStopBtn = $("#detail-filtration-stop");
+    if (detailStartBtn) detailStartBtn.disabled = isOff;
+    if (detailStopBtn) detailStopBtn.disabled = isOff;
 
     // === ÉCLAIRAGE ===
     // Préférer latestSensorData.lighting_enabled (rafraîchi toutes les 5s) à config.lighting_enabled (stale)
@@ -2059,7 +2019,7 @@
 
     if (startBtn) {
       startBtn.addEventListener('click', async () => {
-        const payload = { filtration_enabled: true, filtration_force_on: true };
+        const payload = { filtration_enabled: true, filtration_force_on: true, filtration_force_off: false };
         try {
           const result = await sendConfig(payload);
           if (result) {
@@ -2081,7 +2041,7 @@
 
     if (stopBtn) {
       stopBtn.addEventListener('click', async () => {
-        const payload = { filtration_force_on: false };
+        const payload = { filtration_force_on: false, filtration_force_off: true };
         try {
           const result = await sendConfig(payload);
           if (result) {
@@ -2261,8 +2221,8 @@
         updateDashboardMetrics(json);
         updateClockBadge(json.time_synced === true);
 
-        // Mettre à jour les alertes et cartes status
-        updateAlerts();
+        // Mettre à jour les badges et cartes status
+        updateSensorBadges();
         updateStatusCards();
 
         // Mettre à jour les sections détaillées
@@ -3642,6 +3602,13 @@
       if (ok) {
         filtrationDirty = false;
         filtrationRunningOverride = predictFiltrationRunning(cfg);
+        // Mise à jour optimiste de window._config pour que updateDetailSections
+        // reflète immédiatement le nouveau mode (ex: grise les boutons si "off")
+        if (window._config) {
+          window._config.filtration_mode = cfg.filtration_mode;
+          window._config.filtration_start = cfg.filtration_start;
+          window._config.filtration_end = cfg.filtration_end;
+        }
         updateDetailSections();
         updateStatusCards();
         setFiltBtnState(savedLabel, false, true, "success");
@@ -4168,9 +4135,6 @@
     window.addEventListener("hashchange", applyRoute);
     applyRoute(); // Afficher la vue immédiatement
 
-    // Charger les alertes ignorées depuis localStorage
-    loadDismissedAlerts();
-
     // charts - Les anciens graphiques restent pour stocker les données historiques
     const tempChartCanvas = $("#tempChart");
     const phChartCanvas = $("#phChart");
@@ -4391,7 +4355,7 @@
     // Start filtration: force ON sans modifier la programmation
     if (startBtn) {
       startBtn.addEventListener("click", async () => {
-        const payload = { filtration_enabled: true, filtration_force_on: true };
+        const payload = { filtration_enabled: true, filtration_force_on: true, filtration_force_off: false };
         try {
           const result = await sendConfig(payload);
           if (result) {
@@ -4414,10 +4378,10 @@
       });
     }
 
-    // Stop filtration: désactive le forçage, retour à la programmation normale
+    // Stop filtration: force OFF (overrides schedule)
     if (stopBtn) {
       stopBtn.addEventListener("click", async () => {
-        const payload = { filtration_force_on: false };
+        const payload = { filtration_force_on: false, filtration_force_off: true };
         try {
           const result = await sendConfig(payload);
           if (result) {

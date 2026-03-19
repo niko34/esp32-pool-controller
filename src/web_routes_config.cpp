@@ -306,10 +306,24 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
   if (!doc["timezone_id"].isNull()) mqttCfg.timezoneId = doc["timezone_id"].as<String>();
   if (!doc["filtration_enabled"].isNull()) filtrationCfg.enabled = doc["filtration_enabled"];
-  if (!doc["filtration_mode"].isNull()) filtrationCfg.mode = doc["filtration_mode"].as<String>();
-  if (!doc["filtration_start"].isNull()) filtrationCfg.start = doc["filtration_start"].as<String>();
-  if (!doc["filtration_end"].isNull()) filtrationCfg.end = doc["filtration_end"].as<String>();
-  if (!doc["filtration_force_on"].isNull()) filtrationCfg.forceOn = doc["filtration_force_on"].as<bool>();
+  String prevFiltrationMode = filtrationCfg.mode;
+  bool scheduleChanged = false;
+  if (!doc["filtration_mode"].isNull()) { filtrationCfg.mode = doc["filtration_mode"].as<String>(); scheduleChanged = true; }
+  if (!doc["filtration_start"].isNull()) { filtrationCfg.start = doc["filtration_start"].as<String>(); scheduleChanged = true; }
+  if (!doc["filtration_end"].isNull()) { filtrationCfg.end = doc["filtration_end"].as<String>(); scheduleChanged = true; }
+  // Quand le mode ou les horaires changent, effacer les overrides manuels pour que le planning prenne effet immédiatement
+  if (scheduleChanged && doc["filtration_force_on"].isNull() && doc["filtration_force_off"].isNull()) {
+    filtrationCfg.forceOn = false;
+    filtrationCfg.forceOff = false;
+  }
+  if (!doc["filtration_force_on"].isNull()) {
+    filtrationCfg.forceOn = doc["filtration_force_on"].as<bool>();
+    if (filtrationCfg.forceOn) filtrationCfg.forceOff = false;
+  }
+  if (!doc["filtration_force_off"].isNull()) {
+    filtrationCfg.forceOff = doc["filtration_force_off"].as<bool>();
+    if (filtrationCfg.forceOff) filtrationCfg.forceOn = false;
+  }
   if (!doc["max_ph_ml_per_day"].isNull()) safetyLimits.maxPhMinusMlPerDay = doc["max_ph_ml_per_day"];
   if (!doc["max_chlorine_ml_per_day"].isNull()) safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"];
   if (!doc["lighting_feature_enabled"].isNull()) lightingCfg.featureEnabled = doc["lighting_feature_enabled"];
@@ -389,7 +403,13 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   applyTimezoneEnv();
   applyTimeConfig();  // Appliquer la config NTP si activée
 
-  if (filtrationCfg.mode.equalsIgnoreCase("auto")) {
+  // Calculer le planning auto uniquement si le mode VIENT DE PASSER à "auto"
+  // (transition depuis un autre mode). Si le mode était déjà "auto", on ne
+  // recalcule pas pour ne pas écraser les horaires que l'utilisateur vient
+  // d'enregistrer. Le recalcul périodique se fait dans filtration.update().
+  bool modeChangedToAuto = filtrationCfg.mode.equalsIgnoreCase("auto") &&
+                           !prevFiltrationMode.equalsIgnoreCase("auto");
+  if (modeChangedToAuto) {
     filtration.computeAutoSchedule();
   }
 

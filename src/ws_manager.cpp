@@ -138,6 +138,7 @@ String WsManager::_buildSensorJson() const {
 
   d["filtration_running"]  = filtration.isRunning();
   d["filtration_force_on"] = filtrationCfg.forceOn;
+  d["filtration_force_off"] = filtrationCfg.forceOff;
   d["ph_dosing"]           = PumpController.isPhDosing();
   d["orp_dosing"]         = PumpController.isOrpDosing();
   d["ph_used_ms"]         = PumpController.getPhUsedMs();

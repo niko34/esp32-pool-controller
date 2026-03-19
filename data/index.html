@@ -163,8 +163,6 @@
             Calibration nécessaire
           </div>
 
-          <!-- Zone d'alertes -->
-          <div id="alerts-container" class="alerts"></div>
 
           <!-- Cartes principales -->
           <div class="grid grid--status-cards">
@@ -252,6 +250,7 @@
                 <div class="compact-target">Cible: <span id="compact-ph-target">7.2</span></div>
                 <div class="dosing-status" id="ph-dosing-status"></div>
               </div>
+              <div class="sensor-badge" id="ph-sensor-badge" style="display:none;"></div>
               <div class="calibration-alert" id="ph-calibration-alert" style="display:none;">
                 <span class="calibration-alert__text">Calibration requise</span>
                 <a href="#/ph" class="calibration-alert__btn">Configurer</a>
@@ -266,6 +265,7 @@
                 <div class="compact-target">Cible: <span id="compact-orp-target">650</span> mV</div>
                 <div class="dosing-status" id="orp-dosing-status"></div>
               </div>
+              <div class="sensor-badge" id="orp-sensor-badge" style="display:none;"></div>
               <div class="calibration-alert" id="orp-calibration-alert" style="display:none;">
                 <span class="calibration-alert__text">Calibration requise</span>
                 <a href="#/orp" class="calibration-alert__btn">Configurer</a>
@@ -339,7 +339,7 @@
           </div>
 
           <div id="filtration-content">
-            <div class="card">
+            <div class="card" id="filtration-manual-card" style="display:none;">
               <div class="card__head">
                 <div class="card__title">Contrôle manuel</div>
               </div>
@@ -366,13 +366,14 @@
                   <span class="field__label">Mode de filtration</span>
                   <select id="filtration_mode">
                     <option value="auto">Auto</option>
-                    <option value="manual">Manuel</option>
+                    <option value="manual">Programmation</option>
+                    <option value="force">Manuel</option>
                     <option value="off">Désactivé</option>
                   </select>
                   <span class="field__hint" id="filtration_auto_hint" style="display:none; color: var(--warning-color, #e67e22);"></span>
                 </label>
 
-                <div class="grid grid--2">
+                <div id="filtration-schedule-fields" class="grid grid--2">
                   <label class="field">
                     <span class="field__label">Début</span>
                     <input type="time" id="filtration_start" value="08:00" />
@@ -934,8 +935,7 @@
                   <div class="hint">
                     Après un changement serveur/identifiants, le statut MQTT peut mettre quelques secondes à se mettre à jour.
                   </div>
-                  <div class="row row--between" style="margin-top: 12px;">
-                    <div></div>
+                  <div class="detail-actions">
                     <button class="btn btn--primary" type="button" id="mqtt_save_btn">Sauvegarder</button>
                   </div>
                 </div>
