@@ -63,6 +63,10 @@ void MqttManager::update() {
     }
   }
 
+  if (!mqtt.connected() && mqttCfg.enabled) {
+    connect(); // connect() gère son propre rate-limit (5s entre les tentatives)
+  }
+
   if (mqtt.connected()) {
     mqtt.loop();
   }
