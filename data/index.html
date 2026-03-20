@@ -821,20 +821,89 @@
 
         </section>
 
-        <!-- Produits View (placeholder) -->
+        <!-- Produits View -->
         <section class="view" id="view-dosages" data-view="/dosages">
           <div class="settingsHead">
             <div class="settingsHead__title">Produits</div>
-            <div class="settingsHead__sub">Gestion des produits chimiques</div>
+            <div class="settingsHead__sub">Suivi des volumes de produits chimiques</div>
           </div>
 
-          <div class="card">
+          <!-- Carte pH -->
+          <div class="card product-card" id="product-ph-card">
             <div class="card__head">
-              <div class="card__title">Produits</div>
+              <div class="card__title" id="product-ph-title">pH</div>
+              <label class="switch" title="Activer le suivi du produit pH">
+                <input type="checkbox" id="ph_tracking_enabled">
+                <span class="switch__track"></span>
+              </label>
             </div>
-            <div class="card__body">
-              <div class="hint">
-                Fonctionnalité à venir
+            <div class="card__body" id="product-ph-body">
+              <!-- Barre de volume -->
+              <div class="product-volume">
+                <div class="product-volume__bar-wrap">
+                  <div class="product-volume__bar" id="product-ph-bar" style="width:100%"></div>
+                </div>
+                <div class="product-volume__labels">
+                  <span class="product-volume__remaining" id="product-ph-remaining">-- L</span>
+                  <span class="product-volume__total">/ <span id="product-ph-total">20</span> L</span>
+                </div>
+              </div>
+
+              <!-- Paramètres -->
+              <div class="form-grid">
+                <div class="form-group">
+                  <label class="form-label" for="ph_container_l">Volume du bidon (L)</label>
+                  <input type="number" class="form-control" id="ph_container_l" min="0.1" max="1000" step="0.5" value="20">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="ph_alert_threshold_l">Seuil d'alerte (L)</label>
+                  <input type="number" class="form-control" id="ph_alert_threshold_l" min="0" max="1000" step="0.5" value="2">
+                </div>
+              </div>
+
+              <div class="detail-actions" style="margin-top:12px;">
+                <button class="btn btn--primary" id="product-ph-save">Enregistrer</button>
+                <button class="btn btn--outline" id="product-ph-reset">Nouveau bidon</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Carte ORP / Chlore -->
+          <div class="card product-card" id="product-orp-card">
+            <div class="card__head">
+              <div class="card__title">Chlore</div>
+              <label class="switch" title="Activer le suivi du produit chlore">
+                <input type="checkbox" id="orp_tracking_enabled">
+                <span class="switch__track"></span>
+              </label>
+            </div>
+            <div class="card__body" id="product-orp-body">
+              <!-- Barre de volume -->
+              <div class="product-volume">
+                <div class="product-volume__bar-wrap">
+                  <div class="product-volume__bar" id="product-orp-bar" style="width:100%"></div>
+                </div>
+                <div class="product-volume__labels">
+                  <span class="product-volume__remaining" id="product-orp-remaining">-- L</span>
+                  <span class="product-volume__total">/ <span id="product-orp-total">20</span> L</span>
+                </div>
+              </div>
+
+              <!-- Paramètres -->
+              <div class="form-grid">
+                <div class="form-group">
+                  <label class="form-label" for="orp_container_l">Volume du bidon (L)</label>
+                  <input type="number" class="form-control" id="orp_container_l" min="0.1" max="1000" step="0.5" value="20">
+                </div>
+                <div class="form-group">
+                  <label class="form-label" for="orp_alert_threshold_l">Seuil d'alerte (L)</label>
+                  <input type="number" class="form-control" id="orp_alert_threshold_l" min="0" max="1000" step="0.5" value="2">
+                </div>
+              </div>
+
+              <div class="detail-actions" style="margin-top:12px;">
+                <button class="btn btn--primary" id="product-orp-save">Enregistrer</button>
+                <button class="btn btn--outline" id="product-orp-reset">Nouveau bidon</button>
               </div>
             </div>
           </div>
@@ -853,6 +922,7 @@
             <button id="tab-mqtt" class="segmented__btn" type="button" data-settings-tab="mqtt" role="tab" aria-selected="false" aria-controls="panel-mqtt">MQTT</button>
             <button id="tab-time" class="segmented__btn" type="button" data-settings-tab="time" role="tab" aria-selected="false" aria-controls="panel-time">Heure</button>
             <button id="tab-security" class="segmented__btn" type="button" data-settings-tab="security" role="tab" aria-selected="false" aria-controls="panel-security">Sécurité</button>
+            <button id="tab-regulation" class="segmented__btn" type="button" data-settings-tab="regulation" role="tab" aria-selected="false" aria-controls="panel-regulation">Dosage</button>
             <button id="tab-system" class="segmented__btn" type="button" data-settings-tab="system" role="tab" aria-selected="false" aria-controls="panel-system">Système</button>
             <button id="tab-dev" class="segmented__btn" type="button" data-settings-tab="dev" role="tab" aria-selected="false" aria-controls="panel-dev">Avancé</button>
             <button id="tab-about" class="segmented__btn" type="button" data-settings-tab="about" role="tab" aria-selected="false" aria-controls="panel-about">À propos</button>
@@ -1088,11 +1158,11 @@
               </div>
             </section>
 
-            <!-- System Panel -->
-            <section class="panel" data-settings-panel="system" id="panel-system" role="tabpanel" aria-labelledby="tab-system">
+            <!-- Regulation Panel -->
+            <section class="panel" data-settings-panel="regulation" id="panel-regulation" role="tabpanel" aria-labelledby="tab-regulation">
               <div class="card">
                 <div class="card__head">
-                  <div class="card__title">Mode de régulation pH/ORP</div>
+                  <div class="card__title">Régulation pH / ORP</div>
                 </div>
                 <div class="card__body">
                   <label class="field">
@@ -1103,11 +1173,28 @@
                     </select>
                   </label>
                   <div class="muted small" style="margin-top: 8px;">
-                    <strong>Piloté</strong> : régulation pH et ORP active uniquement pendant la filtration, contrôllée par le PoolController<br>
+                    <strong>Piloté</strong> : régulation pH et ORP active uniquement pendant la filtration, contrôlée par le PoolController<br>
                     <strong>Continu</strong> : régulation permanente (alimenter le contrôleur via le circuit filtration)
+                  </div>
+
+                  <label class="field" style="margin-top: 16px;">
+                    <span class="field__label">Délai avant injection (minutes)</span>
+                    <input type="number" class="form-control" id="stabilization_delay_min" min="0" max="60" step="1" value="5" style="width:120px;">
+                  </label>
+                  <div class="muted small" style="margin-top: 8px;">
+                    Durée d'attente après le démarrage de la filtration (mode piloté) ou après le boot de l'ESP32 (mode continu) avant d'autoriser toute injection de produit.<br>
+                    Permet aux capteurs pH et ORP de se stabiliser. Valeur recommandée : 5 à 10 minutes. Mettre 0 pour désactiver.
+                  </div>
+
+                  <div class="detail-actions" style="margin-top: 16px;">
+                    <button class="btn btn--primary" id="regulation_save_btn">Sauvegarder</button>
                   </div>
                 </div>
               </div>
+            </section>
+
+            <!-- System Panel -->
+            <section class="panel" data-settings-panel="system" id="panel-system" role="tabpanel" aria-labelledby="tab-system">
 
               <div class="card">
                 <div class="card__head">
@@ -1231,6 +1318,20 @@
 
                   <div class="row row--gap" style="margin-top: 16px;">
                     <button class="btn btn--danger" type="button" id="reboot_btn">Redémarrer</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card__head">
+                  <div class="card__title">Réinitialisation du système</div>
+                </div>
+                <div class="card__body">
+                  <div class="callout callout--warn" style="margin-bottom: 12px;">
+                    <strong>⚠ Action irréversible.</strong> Toutes les données seront supprimées : configuration, calibrations, identifiants Wi-Fi, historique des produits. Le système redémarrera et affichera l'assistant de configuration initiale.
+                  </div>
+                  <div class="row row--gap">
+                    <button class="btn btn--danger" type="button" id="factory_reset_btn">Réinitialiser</button>
                   </div>
                 </div>
               </div>

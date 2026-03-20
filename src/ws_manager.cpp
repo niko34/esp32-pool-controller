@@ -148,6 +148,16 @@ String WsManager::_buildSensorJson() const {
   d["ph_limit_reached"]   = safetyLimits.phLimitReached;
   d["orp_limit_reached"]  = safetyLimits.orpLimitReached;
 
+  // Volumes produits
+  d["ph_tracking_enabled"]  = productCfg.phTrackingEnabled;
+  d["ph_remaining_ml"]      = max(0.0f, productCfg.phContainerVolumeMl - productCfg.phTotalInjectedMl);
+  d["ph_container_ml"]      = productCfg.phContainerVolumeMl;
+  d["ph_alert_threshold_ml"]= productCfg.phAlertThresholdMl;
+  d["orp_tracking_enabled"] = productCfg.orpTrackingEnabled;
+  d["orp_remaining_ml"]     = max(0.0f, productCfg.orpContainerVolumeMl - productCfg.orpTotalInjectedMl);
+  d["orp_container_ml"]     = productCfg.orpContainerVolumeMl;
+  d["orp_alert_threshold_ml"]= productCfg.orpAlertThresholdMl;
+
   d["lighting_enabled"] = lighting.isOn();  // état réel du relais, pas lightingCfg.enabled
 
   constexpr time_t kMinValidEpoch = 1609459200;

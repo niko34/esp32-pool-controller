@@ -11,6 +11,8 @@ PumpControlParams phPumpControl = {5.2f, 90.0f, 1.0f};
 PumpControlParams orpPumpControl = {5.2f, 90.0f, 200.0f};
 SafetyLimits safetyLimits;
 PumpProtection pumpProtection;
+ProductConfig productCfg;
+bool productConfigDirty = false;
 
 // Mutex pour protection concurrence
 SemaphoreHandle_t configMutex = nullptr;
@@ -105,6 +107,7 @@ void saveMqttConfig() {
   prefs.putInt("orp_pump", mqttCfg.orpPump);
   prefs.putInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
   prefs.putString("reg_mode", mqttCfg.regulationMode);
+  prefs.putInt("stab_delay", mqttCfg.stabilizationDelayMin);
   prefs.putString("ph_corr_type", mqttCfg.phCorrectionType);
 
   // Calibration ORP - 1 ou 2 points
@@ -196,6 +199,7 @@ void loadMqttConfig() {
   mqttCfg.orpPump = prefs.getInt("orp_pump", mqttCfg.orpPump);
   mqttCfg.orpInjectionLimitSeconds = prefs.getInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
   mqttCfg.regulationMode = prefs.getString("reg_mode", "pilote");
+  mqttCfg.stabilizationDelayMin = prefs.getInt("stab_delay", 5);
   mqttCfg.phCorrectionType = prefs.getString("ph_corr_type", "ph_minus");
 
   // Calibration ORP - 1 ou 2 points
@@ -256,6 +260,42 @@ void loadMqttConfig() {
   applyTimezoneEnv();
 
   systemLogger.info("Configuration chargée depuis NVS");
+}
+
+void saveProductConfig() {
+  Preferences prefs;
+  if (!prefs.begin("pool_prod", false)) {
+    systemLogger.error("Échec ouverture NVS produits");
+    return;
+  }
+  prefs.putBool("ph_track_en", productCfg.phTrackingEnabled);
+  prefs.putFloat("ph_cont_ml", productCfg.phContainerVolumeMl);
+  prefs.putFloat("ph_inj_ml", productCfg.phTotalInjectedMl);
+  prefs.putFloat("ph_alert_ml", productCfg.phAlertThresholdMl);
+  prefs.putBool("orp_track_en", productCfg.orpTrackingEnabled);
+  prefs.putFloat("orp_cont_ml", productCfg.orpContainerVolumeMl);
+  prefs.putFloat("orp_inj_ml", productCfg.orpTotalInjectedMl);
+  prefs.putFloat("orp_alert_ml", productCfg.orpAlertThresholdMl);
+  prefs.end();
+  productConfigDirty = false;
+  systemLogger.debug("Config produits sauvegardée");
+}
+
+void loadProductConfig() {
+  Preferences prefs;
+  if (!prefs.begin("pool_prod", true)) {
+    return; // Pas encore de config produits, utiliser les valeurs par défaut
+  }
+  productCfg.phTrackingEnabled = prefs.getBool("ph_track_en", productCfg.phTrackingEnabled);
+  productCfg.phContainerVolumeMl = prefs.getFloat("ph_cont_ml", productCfg.phContainerVolumeMl);
+  productCfg.phTotalInjectedMl = prefs.getFloat("ph_inj_ml", productCfg.phTotalInjectedMl);
+  productCfg.phAlertThresholdMl = prefs.getFloat("ph_alert_ml", productCfg.phAlertThresholdMl);
+  productCfg.orpTrackingEnabled = prefs.getBool("orp_track_en", productCfg.orpTrackingEnabled);
+  productCfg.orpContainerVolumeMl = prefs.getFloat("orp_cont_ml", productCfg.orpContainerVolumeMl);
+  productCfg.orpTotalInjectedMl = prefs.getFloat("orp_inj_ml", productCfg.orpTotalInjectedMl);
+  productCfg.orpAlertThresholdMl = prefs.getFloat("orp_alert_ml", productCfg.orpAlertThresholdMl);
+  prefs.end();
+  systemLogger.info("Config produits chargée depuis NVS");
 }
 
 void applyMqttConfig() {

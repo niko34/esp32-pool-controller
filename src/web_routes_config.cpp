@@ -81,6 +81,7 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["ph_limit_seconds"] = mqttCfg.phInjectionLimitSeconds;
   doc["orp_limit_seconds"] = mqttCfg.orpInjectionLimitSeconds;
   doc["regulation_mode"] = mqttCfg.regulationMode;
+  doc["stabilization_delay_min"] = mqttCfg.stabilizationDelayMin;
   doc["ph_correction_type"] = mqttCfg.phCorrectionType;
   doc["time_use_ntp"] = mqttCfg.timeUseNtp;
   doc["ntp_server"] = mqttCfg.ntpServer;
@@ -164,6 +165,20 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
     doc["auth_token"] = "********...";
     doc["auth_cors_origins"] = ""; // Masquer la config CORS
   }
+
+  // Suivi volumes produits
+  float phRemaining = max(0.0f, productCfg.phContainerVolumeMl - productCfg.phTotalInjectedMl);
+  float orpRemaining = max(0.0f, productCfg.orpContainerVolumeMl - productCfg.orpTotalInjectedMl);
+  doc["ph_tracking_enabled"] = productCfg.phTrackingEnabled;
+  doc["ph_container_ml"] = productCfg.phContainerVolumeMl;
+  doc["ph_total_injected_ml"] = productCfg.phTotalInjectedMl;
+  doc["ph_remaining_ml"] = phRemaining;
+  doc["ph_alert_threshold_ml"] = productCfg.phAlertThresholdMl;
+  doc["orp_tracking_enabled"] = productCfg.orpTrackingEnabled;
+  doc["orp_container_ml"] = productCfg.orpContainerVolumeMl;
+  doc["orp_total_injected_ml"] = productCfg.orpTotalInjectedMl;
+  doc["orp_remaining_ml"] = orpRemaining;
+  doc["orp_alert_threshold_ml"] = productCfg.orpAlertThresholdMl;
 
   // Heure actuelle (pour l'affichage dans la configuration)
   doc["time_current"] = getCurrentTimeISO();
@@ -254,6 +269,10 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     if (mode == "continu" || mode == "pilote") {
       mqttCfg.regulationMode = mode;
     }
+  }
+  if (!doc["stabilization_delay_min"].isNull()) {
+    int v = doc["stabilization_delay_min"].as<int>();
+    if (v >= 0 && v <= 60) mqttCfg.stabilizationDelayMin = v;
   }
   if (!doc["ph_correction_type"].isNull()) {
     String corrType = doc["ph_correction_type"].as<String>();
@@ -415,6 +434,45 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
 
   // Appliquer immédiatement la nouvelle configuration de filtration
   filtration.update();
+
+  // Suivi volumes produits
+  if (!doc["ph_tracking_enabled"].isNull()) {
+    productCfg.phTrackingEnabled = doc["ph_tracking_enabled"].as<bool>();
+    productConfigDirty = true;
+  }
+  if (!doc["orp_tracking_enabled"].isNull()) {
+    productCfg.orpTrackingEnabled = doc["orp_tracking_enabled"].as<bool>();
+    productConfigDirty = true;
+  }
+  if (!doc["ph_container_ml"].isNull()) {
+    productCfg.phContainerVolumeMl = max(0.0f, doc["ph_container_ml"].as<float>());
+    productConfigDirty = true;
+  }
+  if (!doc["ph_alert_threshold_ml"].isNull()) {
+    productCfg.phAlertThresholdMl = max(0.0f, doc["ph_alert_threshold_ml"].as<float>());
+    productConfigDirty = true;
+  }
+  if (doc["ph_reset_container"] == true) {
+    productCfg.phTotalInjectedMl = 0.0f;
+    productConfigDirty = true;
+    systemLogger.info("Bidon pH réinitialisé");
+  }
+  if (!doc["orp_container_ml"].isNull()) {
+    productCfg.orpContainerVolumeMl = max(0.0f, doc["orp_container_ml"].as<float>());
+    productConfigDirty = true;
+  }
+  if (!doc["orp_alert_threshold_ml"].isNull()) {
+    productCfg.orpAlertThresholdMl = max(0.0f, doc["orp_alert_threshold_ml"].as<float>());
+    productConfigDirty = true;
+  }
+  if (doc["orp_reset_container"] == true) {
+    productCfg.orpTotalInjectedMl = 0.0f;
+    productConfigDirty = true;
+    systemLogger.info("Bidon chlore réinitialisé");
+  }
+  if (productConfigDirty) {
+    saveProductConfig();
+  }
 
   PumpController.resetDosingStates();
   saveMqttConfig();
@@ -700,6 +758,21 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
     *restartApRequested = true;
     *restartRequestedTime = millis();
     req->send(200, "text/plain", "WiFi reset - AP mode will start after restart");
+  });
+
+  // Route factory-reset - PROTÉGÉE (CRITICAL)
+  // Efface toutes les données NVS et redémarre (retour à l'assistant de configuration)
+  server->on("/factory-reset", HTTP_POST, [restartApRequested, restartRequestedTime](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::CRITICAL);
+
+    systemLogger.critical("Réinitialisation usine demandée depuis l'interface web");
+
+    // Effacer TOUTE la partition NVS (WiFi, config, calibrations, produits, etc.)
+    resetWiFiSettings();
+
+    *restartApRequested = true;
+    *restartRequestedTime = millis();
+    req->send(200, "application/json", "{\"status\":\"ok\"}");
   });
 }
 

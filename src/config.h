@@ -55,6 +55,7 @@ struct MqttConfig {
   int phInjectionLimitSeconds = 60;
   int orpInjectionLimitSeconds = 60;
   String regulationMode = "pilote";  // "continu" ou "pilote"
+  int stabilizationDelayMin = 5;     // Délai de stabilisation avant dosage (minutes)
   String phCorrectionType = "ph_minus";  // "ph_minus" (acide) ou "ph_plus" (base)
   bool timeUseNtp = true;
   String ntpServer = "pool.ntp.org";
@@ -121,6 +122,18 @@ struct PumpControlParams {
   float maxError;
 };
 
+struct ProductConfig {
+  bool phTrackingEnabled = false;         // Suivi volume pH activé
+  float phContainerVolumeMl = 20000.0f;   // Volume bidon pH (ml), défaut 20L
+  float phTotalInjectedMl = 0.0f;         // Total injecté depuis dernier reset (ml)
+  float phAlertThresholdMl = 2000.0f;     // Seuil d'alerte volume restant (ml), défaut 2L
+
+  bool orpTrackingEnabled = false;        // Suivi volume chlore activé
+  float orpContainerVolumeMl = 20000.0f;  // Volume bidon chlore (ml)
+  float orpTotalInjectedMl = 0.0f;        // Total injecté depuis dernier reset (ml)
+  float orpAlertThresholdMl = 2000.0f;    // Seuil d'alerte volume restant (ml)
+};
+
 struct SafetyLimits {
   float maxPhMinusMlPerDay = 500.0f;
   float maxChlorineMlPerDay = 300.0f;
@@ -173,6 +186,11 @@ extern PumpControlParams phPumpControl;
 extern PumpControlParams orpPumpControl;
 extern SafetyLimits safetyLimits;
 extern PumpProtection pumpProtection;
+extern ProductConfig productCfg;
+extern bool productConfigDirty;
+
+void saveProductConfig();
+void loadProductConfig();
 
 // ==== Mutex pour protection concurrence ====
 // Protège l'accès aux configurations partagées entre loop() et handlers async

@@ -68,6 +68,7 @@ void setup() {
 
   // Chargement configuration
   loadMqttConfig();
+  loadProductConfig();
 
   // Initialisation authentification (après chargement config)
   authManager.setEnabled(authCfg.enabled);
@@ -96,6 +97,10 @@ void setup() {
   }
 
   PumpController.begin();
+  // En mode continu : armer le timer de stabilisation dès le boot
+  if (mqttCfg.regulationMode == "continu") {
+    PumpController.armStabilizationTimer();
+  }
   filtration.begin();
   lighting.begin();
   history.begin();
@@ -181,6 +186,13 @@ void loop() {
     if (nowTime > 1609459200) {
       onNtpTimeSync();
     }
+  }
+
+  // Sauvegarde périodique des volumes de produits (toutes les 60s si modifié)
+  static unsigned long lastProductSave = 0;
+  if (productConfigDirty && now - lastProductSave >= 60000UL) {
+    saveProductConfig();
+    lastProductSave = now;
   }
 
   // Publication diagnostic MQTT périodique

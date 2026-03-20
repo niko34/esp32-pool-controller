@@ -5,6 +5,7 @@
 #include "sensors.h"
 #include "mqtt_manager.h"
 #include "uart_protocol.h"
+#include "pump_controller.h"
 #include <time.h>
 
 FiltrationManager filtration;
@@ -145,6 +146,10 @@ void FiltrationManager::update() {
     state.startedAtMs = millis();
     state.scheduleComputedThisCycle = false;
     systemLogger.info("Démarrage filtration");
+    // En mode piloté : armer le timer de stabilisation au démarrage de la filtration
+    if (mqttCfg.regulationMode == "pilote") {
+      PumpController.armStabilizationTimer();
+    }
   }
 
   bool runNow = state.running;

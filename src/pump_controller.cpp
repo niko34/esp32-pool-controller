@@ -109,7 +109,30 @@ bool PumpControllerClass::shouldContinueDosing(float error, float stopThreshold,
   return false;  // Arrêter
 }
 
+void PumpControllerClass::armStabilizationTimer() {
+  int delayMin = mqttCfg.stabilizationDelayMin;
+  if (delayMin <= 0) {
+    _stabilizationEndMs = 0;
+    return;
+  }
+  _stabilizationEndMs = millis() + (unsigned long)delayMin * 60000UL;
+  systemLogger.info(String("[Dosage] Stabilisation : injection suspendue ") + delayMin + " min");
+}
+
+unsigned long PumpControllerClass::getStabilizationRemainingS() const {
+  if (_stabilizationEndMs == 0) return 0;
+  unsigned long now = millis();
+  if (now >= _stabilizationEndMs) return 0;
+  return (_stabilizationEndMs - now) / 1000UL;
+}
+
 bool PumpControllerClass::canDose() {
+  // Délai de stabilisation en cours : bloquer toute injection
+  if (_stabilizationEndMs > 0) {
+    if (millis() < _stabilizationEndMs) return false;
+    _stabilizationEndMs = 0;  // Timer expiré
+    systemLogger.info("[Dosage] Stabilisation terminée, dosage autorisé");
+  }
   // En mode continu : toujours OK (l'alimentation du contrôleur suit la filtration)
   if (mqttCfg.regulationMode == "continu") {
     return true;
@@ -223,8 +246,16 @@ void PumpControllerClass::updateSafetyTracking(bool isPhPump, float flowMlPerMin
 
   if (isPhPump) {
     safetyLimits.dailyPhInjectedMl += static_cast<unsigned long>(injectedMl);
+    if (productCfg.phTrackingEnabled) {
+      productCfg.phTotalInjectedMl += injectedMl;
+      productConfigDirty = true;
+    }
   } else {
     safetyLimits.dailyOrpInjectedMl += static_cast<unsigned long>(injectedMl);
+    if (productCfg.orpTrackingEnabled) {
+      productCfg.orpTotalInjectedMl += injectedMl;
+      productConfigDirty = true;
+    }
   }
 }
 

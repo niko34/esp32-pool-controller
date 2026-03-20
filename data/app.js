@@ -11,6 +11,20 @@
   let _ws = null;
   let _wsReconnectTimer = null;
 
+  // Heartbeat : si aucun message WS reçu depuis > 12 s, on considère l'ESP hors ligne
+  const kWsHeartbeatMs = 12000;
+  let _wsHeartbeatTimer = null;
+
+  function _resetWsHeartbeat() {
+    if (_wsHeartbeatTimer) clearTimeout(_wsHeartbeatTimer);
+    _wsHeartbeatTimer = setTimeout(() => {
+      setNetStatus('bad', 'Hors ligne');
+      debugLog('[WS] Heartbeat timeout — no message received');
+      // Forcer la fermeture pour déclencher la reconnexion
+      if (_ws) _ws.close();
+    }, kWsHeartbeatMs);
+  }
+
   function initWebSocket() {
     if (_ws && (_ws.readyState === WebSocket.OPEN || _ws.readyState === WebSocket.CONNECTING)) return;
     // Detach handlers from previous WS to avoid stale events
@@ -24,10 +38,12 @@
       if (_wsReconnectTimer) { clearTimeout(_wsReconnectTimer); _wsReconnectTimer = null; }
       if (token) _ws.send(JSON.stringify({ type: 'auth', token }));
       setNetStatus('ok', 'En ligne');
+      _resetWsHeartbeat();
       debugLog('[WS] Connected');
     };
 
     _ws.onmessage = (evt) => {
+      _resetWsHeartbeat();
       try {
         const msg = JSON.parse(evt.data);
         if (msg.type === 'sensor_data') {
@@ -41,6 +57,7 @@
     };
 
     const _onDisconnect = () => {
+      if (_wsHeartbeatTimer) { clearTimeout(_wsHeartbeatTimer); _wsHeartbeatTimer = null; }
       if (_wsReconnectTimer) return;  // onerror fires before onclose — schedule only once
       setNetStatus('bad', 'Déconnecté');
       debugLog('[WS] Disconnected, reconnecting in 3s...');
@@ -1000,7 +1017,6 @@
     const orpLimitValue = parseInt($("#orp_limit")?.value || "60", 10);
     const phDailyLimitValue = parseFloat($("#ph_daily_limit")?.value || "500");
     const orpDailyLimitValue = parseFloat($("#orp_daily_limit")?.value || "300");
-    const regulationMode = $("#regulation_mode")?.value || "pilote";
     const phCorrectionType = $("#ph_correction_type")?.value || "ph_minus";
 
     const timeUseNtp = $("#time_use_ntp")?.checked ?? true;
@@ -1034,7 +1050,6 @@
       orp_limit_seconds: isNaN(orpLimitValue) ? 60 : orpLimitValue,
       max_ph_ml_per_day: isNaN(phDailyLimitValue) ? 500 : phDailyLimitValue,
       max_chlorine_ml_per_day: isNaN(orpDailyLimitValue) ? 300 : orpDailyLimitValue,
-      regulation_mode: regulationMode,
       ph_correction_type: phCorrectionType,
       time_use_ntp: timeUseNtp,
       ntp_server: timeNtpServer,
@@ -1135,6 +1150,9 @@
     $("#ph_daily_limit").value = typeof cfg.max_ph_ml_per_day === "number" ? cfg.max_ph_ml_per_day : 500;
     $("#orp_daily_limit").value = typeof cfg.max_chlorine_ml_per_day === "number" ? cfg.max_chlorine_ml_per_day : 300;
     $("#regulation_mode").value = cfg.regulation_mode || "pilote";
+    if ($("#stabilization_delay_min") && cfg.stabilization_delay_min != null) {
+      $("#stabilization_delay_min").value = cfg.stabilization_delay_min;
+    }
     $("#ph_correction_type").value = cfg.ph_correction_type || "ph_minus";
 
     // pH calibration info
@@ -1268,6 +1286,7 @@
     updateSensorBadges();
     updateStatusCards();
     updateDetailSections();
+    loadProductConfig(cfg);
   }
 
   // ---------- Calibration badges (Dashboard + chip) ----------
@@ -1407,6 +1426,14 @@
       phVariant = 'warning';
       phText = 'Limite journalière atteinte';
     }
+    if (!phVariant) {
+      const rem = latestSensorData?.ph_remaining_ml;
+      const thr = latestSensorData?.ph_alert_threshold_ml;
+      if (rem != null && thr != null && rem <= thr && thr > 0) {
+        phVariant = 'warning';
+        phText = `Stock faible (${(rem / 1000).toFixed(1)} L)`;
+      }
+    }
     setBadge('ph-sensor-badge', phVariant, phText, '#/ph');
 
     // Badge ORP
@@ -1425,7 +1452,145 @@
       orpVariant = 'warning';
       orpText = 'Limite journalière atteinte';
     }
+    if (!orpVariant) {
+      const rem = latestSensorData?.orp_remaining_ml;
+      const thr = latestSensorData?.orp_alert_threshold_ml;
+      if (rem != null && thr != null && rem <= thr && thr > 0) {
+        orpVariant = 'warning';
+        orpText = `Stock faible (${(rem / 1000).toFixed(1)} L)`;
+      }
+    }
     setBadge('orp-sensor-badge', orpVariant, orpText, '#/orp');
+  }
+
+  // ========== ÉCRAN PRODUITS ==========
+
+  function updateProductUI(data) {
+    function updateCard(prefix, remainingMl, containerMl, thresholdMl) {
+      const pct = containerMl > 0 ? Math.max(0, Math.min(100, (remainingMl / containerMl) * 100)) : 0;
+      const bar = $(`#product-${prefix}-bar`);
+      const remEl = $(`#product-${prefix}-remaining`);
+      const totEl = $(`#product-${prefix}-total`);
+      const status = $(`#product-${prefix}-status`);
+
+      if (bar) {
+        bar.style.width = pct.toFixed(1) + '%';
+        bar.classList.remove('is-low', 'is-critical');
+        if (pct < 10) bar.classList.add('is-critical');
+        else if (thresholdMl > 0 && remainingMl <= thresholdMl) bar.classList.add('is-low');
+      }
+      if (remEl) remEl.textContent = (remainingMl / 1000).toFixed(1) + ' L';
+      if (totEl) totEl.textContent = (containerMl / 1000).toFixed(1);
+
+      if (status) {
+        const isLow = thresholdMl > 0 && remainingMl <= thresholdMl;
+        status.textContent = isLow ? 'Stock faible' : 'OK';
+        status.className = 'state-badge ' + (isLow ? 'state-badge--warn' : 'state-badge--on');
+      }
+    }
+
+    if (data.ph_remaining_ml != null) {
+      updateCard('ph', data.ph_remaining_ml, data.ph_container_ml ?? 20000, data.ph_alert_threshold_ml ?? 2000);
+    }
+    if (data.orp_remaining_ml != null) {
+      updateCard('orp', data.orp_remaining_ml, data.orp_container_ml ?? 20000, data.orp_alert_threshold_ml ?? 2000);
+    }
+    // Synchroniser les toggles depuis sensor_data (source de vérité pour ces champs)
+    const phToggle = $('#ph_tracking_enabled');
+    const orpToggle = $('#orp_tracking_enabled');
+    if (phToggle && data.ph_tracking_enabled != null) phToggle.checked = data.ph_tracking_enabled === true;
+    if (orpToggle && data.orp_tracking_enabled != null) orpToggle.checked = data.orp_tracking_enabled === true;
+    if (data.ph_tracking_enabled != null) applyProductTracking('ph', data.ph_tracking_enabled === true);
+    if (data.orp_tracking_enabled != null) applyProductTracking('orp', data.orp_tracking_enabled === true);
+  }
+
+  function applyProductTracking(prefix, enabled) {
+    const body = $(`#product-${prefix}-body`);
+    if (body) body.style.display = enabled ? '' : 'none';
+  }
+
+  function loadProductConfig(cfg) {
+    if (!cfg) return;
+    const phCont = $(`#ph_container_l`);
+    const phAlert = $(`#ph_alert_threshold_l`);
+    const orpCont = $(`#orp_container_l`);
+    const orpAlert = $(`#orp_alert_threshold_l`);
+    if (phCont && cfg.ph_container_ml != null) phCont.value = (cfg.ph_container_ml / 1000).toFixed(1);
+    if (phAlert && cfg.ph_alert_threshold_ml != null) phAlert.value = (cfg.ph_alert_threshold_ml / 1000).toFixed(1);
+    if (orpCont && cfg.orp_container_ml != null) orpCont.value = (cfg.orp_container_ml / 1000).toFixed(1);
+    if (orpAlert && cfg.orp_alert_threshold_ml != null) orpAlert.value = (cfg.orp_alert_threshold_ml / 1000).toFixed(1);
+
+    const phToggle = $('#ph_tracking_enabled');
+    const orpToggle = $('#orp_tracking_enabled');
+    if (phToggle && cfg.ph_tracking_enabled != null) phToggle.checked = cfg.ph_tracking_enabled === true;
+    if (orpToggle && cfg.orp_tracking_enabled != null) orpToggle.checked = cfg.orp_tracking_enabled === true;
+    if (cfg.ph_tracking_enabled != null) applyProductTracking('ph', cfg.ph_tracking_enabled === true);
+    if (cfg.orp_tracking_enabled != null) applyProductTracking('orp', cfg.orp_tracking_enabled === true);
+
+    // Mettre à jour le nom du produit pH selon la correction
+    const phTitle = $('#product-ph-title');
+    if (phTitle && cfg.ph_correction_type) {
+      phTitle.textContent = cfg.ph_correction_type === 'ph_plus' ? 'pH+ (base)' : 'pH− (acide)';
+    }
+
+    updateProductUI({
+      ph_remaining_ml: cfg.ph_remaining_ml,
+      ph_container_ml: cfg.ph_container_ml,
+      ph_alert_threshold_ml: cfg.ph_alert_threshold_ml,
+      orp_remaining_ml: cfg.orp_remaining_ml,
+      orp_container_ml: cfg.orp_container_ml,
+      orp_alert_threshold_ml: cfg.orp_alert_threshold_ml
+    });
+  }
+
+  function setupProductScreen() {
+    async function saveProduct(prefix) {
+      const contL = parseFloat($(`#${prefix}_container_l`)?.value);
+      const alertL = parseFloat($(`#${prefix}_alert_threshold_l`)?.value);
+      if (isNaN(contL) || isNaN(alertL)) { showToast('Valeurs invalides', 'error'); return; }
+      const payload = {
+        [`${prefix}_container_ml`]: contL * 1000,
+        [`${prefix}_alert_threshold_ml`]: alertL * 1000
+      };
+      const ok = await sendConfig(payload);
+      if (ok) {
+        showToast('Sauvegardé', 'success');
+        loadConfig().catch(() => {});
+      } else {
+        showToast('Erreur lors de la sauvegarde', 'error');
+      }
+    }
+
+    async function resetProduct(prefix) {
+      const label = prefix === 'ph' ? 'pH' : 'chlore';
+      const contL = parseFloat($(`#${prefix}_container_l`)?.value) || 20;
+      const ok = await sendConfig({
+        [`${prefix}_container_ml`]: contL * 1000,
+        [`${prefix}_reset_container`]: true
+      });
+      if (ok) {
+        showToast(`Bidon ${label} réinitialisé`, 'success');
+        loadConfig().catch(() => {});
+      } else {
+        showToast('Erreur lors de la réinitialisation', 'error');
+      }
+    }
+
+    $('#product-ph-save')?.addEventListener('click', () => saveProduct('ph'));
+    $('#product-orp-save')?.addEventListener('click', () => saveProduct('orp'));
+    $('#product-ph-reset')?.addEventListener('click', () => resetProduct('ph'));
+    $('#product-orp-reset')?.addEventListener('click', () => resetProduct('orp'));
+
+    $('#ph_tracking_enabled')?.addEventListener('change', async (e) => {
+      const enabled = e.target.checked;
+      applyProductTracking('ph', enabled);
+      await sendConfig({ ph_tracking_enabled: enabled });
+    });
+    $('#orp_tracking_enabled')?.addEventListener('change', async (e) => {
+      const enabled = e.target.checked;
+      applyProductTracking('orp', enabled);
+      await sendConfig({ orp_tracking_enabled: enabled });
+    });
   }
 
   // ========== CARTES STATUS ==========
@@ -2224,6 +2389,7 @@
         // Mettre à jour les badges et cartes status
         updateSensorBadges();
         updateStatusCards();
+        updateProductUI(json);
 
         // Mettre à jour les sections détaillées
         updateDetailSections();
@@ -3862,7 +4028,17 @@
     ["orp_target", "orp_limit", "orp_daily_limit"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => updateOrpControls()));
     bindRegulationSave("ph",  "#ph_regulation_save_btn");
     bindRegulationSave("orp", "#orp_regulation_save_btn");
-    $("#regulation_mode")?.addEventListener("change", save);
+    // Onglet Régulation : save dédié
+    $("#regulation_save_btn")?.addEventListener("click", async () => {
+      const mode = $("#regulation_mode")?.value || "pilote";
+      const delay = parseInt($("#stabilization_delay_min")?.value ?? "5", 10);
+      const ok = await sendConfig({
+        regulation_mode: mode,
+        stabilization_delay_min: isNaN(delay) ? 5 : Math.min(60, Math.max(0, delay)),
+      });
+      if (ok) showToast("Enregistré", "success");
+      else showToast("Erreur lors de la sauvegarde", "error");
+    });
 
     // Temperature feature
     $("#temperature_enabled")?.addEventListener("change", () => {
@@ -3922,6 +4098,34 @@
         }
       } catch (error) {
         alert("Erreur de connexion: " + error.message);
+      }
+    });
+
+    // Factory reset button
+    $("#factory_reset_btn")?.addEventListener("click", async () => {
+      if (!confirm("Réinitialisation du système\n\n⚠ Cette action est irréversible.\n\nToutes les données seront supprimées :\n- Configuration (pH, ORP, MQTT, Wi-Fi…)\n- Calibrations\n- Historique des produits\n\nLe système redémarrera sur l'assistant de configuration.\n\nConfirmer la réinitialisation ?")) {
+        return;
+      }
+      // Double confirmation
+      if (!confirm("Dernière confirmation.\n\nVoulez-vous vraiment effacer toutes les données ?")) {
+        return;
+      }
+      try {
+        const btn = $("#factory_reset_btn");
+        btn.disabled = true;
+        btn.textContent = "Réinitialisation…";
+        const res = await authFetch("/factory-reset", { method: "POST" });
+        if (res.ok) {
+          alert("Réinitialisation effectuée.\n\nL'appareil redémarre. Connectez-vous au réseau Wi-Fi de l'ESP32 pour accéder à l'assistant de configuration.");
+        } else {
+          alert("Erreur lors de la réinitialisation.");
+          btn.disabled = false;
+          btn.textContent = "Réinitialiser";
+        }
+      } catch {
+        alert("Erreur de connexion.");
+        const btn = $("#factory_reset_btn");
+        if (btn) { btn.disabled = false; btn.textContent = "Réinitialiser"; }
       }
     });
   }
@@ -4257,6 +4461,9 @@
 
     // La config est maintenant poussée par WebSocket après chaque save-config.
     // Le polling HTTP (15s) est supprimé.
+
+    // ========== PRODUITS ==========
+    setupProductScreen();
 
     // ========== FILTRATION MANUAL CONTROL ==========
     setupFiltrationManualControl();

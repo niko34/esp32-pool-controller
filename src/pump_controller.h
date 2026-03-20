@@ -64,6 +64,9 @@ private:
   // Vérifie si le dosage est autorisé (selon mode régulation et état filtration)
   bool canDose();
 
+  // Timer de stabilisation
+  unsigned long _stabilizationEndMs = 0;
+
 public:
   PumpControllerClass();
 
@@ -84,6 +87,12 @@ public:
 
   // Reset des états
   void resetDosingStates();
+
+  // Arme le timer de stabilisation (bloque le dosage pendant stabilizationDelayMin)
+  void armStabilizationTimer();
+
+  // Retourne les secondes restantes de stabilisation (0 si expiré)
+  unsigned long getStabilizationRemainingS() const;
 
   // Test manuel des pompes (à utiliser avec précaution)
   void setManualPump(int pumpIndex, uint8_t duty);
