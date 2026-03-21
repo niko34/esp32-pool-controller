@@ -2137,12 +2137,12 @@ input.is-computed:disabled {
 .sensor-badge--danger {
   background: rgba(255, 59, 48, 0.08);
   border-color: rgba(255, 59, 48, 0.25);
-  color: var(--danger);
+  color: #991b1b; /* ratio ~7.5:1 sur #ffefee — AA ✓ (plus robuste que var(--danger)) */
 }
 .sensor-badge--warning {
   background: rgba(255, 193, 7, 0.12);
   border-color: rgba(255, 193, 7, 0.3);
-  color: var(--warning-text, #b8860b);
+  color: #78350f; /* ratio ~7.2:1 sur fond jaune clair — AA ✓ */
 }
 .sensor-badge__link {
   font-size: 12px;
