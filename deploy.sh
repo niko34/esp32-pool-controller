@@ -7,7 +7,7 @@ set -e  # Arrêter en cas d'erreur
 # Configuration
 PORT="/dev/cu.usbserial-0001"
 BAUD="115200"
-LITTLEFS_OFFSET="0x290000"
+LITTLEFS_OFFSET="0x2B0000"
 BUILD_DIR=".pio/build/esp32dev"
 
 # Couleurs pour l'affichage
@@ -47,6 +47,13 @@ build_filesystem() {
 upload_firmware() {
     print_step "Upload du firmware..."
     pio run -t upload
+    # Effacer l'OTA data pour forcer le boot sur app0 (partition table à jour)
+    print_step "Réinitialisation OTA data (boot → app0)..."
+    ~/.platformio/penv/bin/python ~/.platformio/packages/tool-esptoolpy/esptool.py \
+        --chip esp32 \
+        --port "$PORT" \
+        --baud "$BAUD" \
+        erase_region 0xE000 0x2000
     print_success "Firmware uploadé"
 }
 
@@ -60,8 +67,8 @@ upload_filesystem() {
 
     # Vérifier la taille du fichier
     SIZE=$(stat -f%z "$BUILD_DIR/littlefs.bin" 2>/dev/null || stat -c%s "$BUILD_DIR/littlefs.bin" 2>/dev/null)
-    if [ "$SIZE" != "1376256" ]; then
-        print_warning "Taille incorrecte du fichier littlefs.bin: $SIZE bytes (attendu: 1376256)"
+    if [ "$SIZE" != "1245184" ]; then
+        print_warning "Taille incorrecte du fichier littlefs.bin: $SIZE bytes (attendu: 1245184)"
         print_warning "Reconstruction avec build_fs.sh..."
         build_filesystem
     fi

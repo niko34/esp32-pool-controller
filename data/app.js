@@ -2155,10 +2155,11 @@
     if (detailStopBtn) detailStopBtn.disabled = isOff;
 
     // === ÉCLAIRAGE ===
-    // Préférer latestSensorData.lighting_enabled (rafraîchi toutes les 5s) à config.lighting_enabled (stale)
+    // lighting_enabled vient exclusivement des push sensor_data (état réel du relais)
+    // Ne pas utiliser config.lighting_enabled (= état du toggle config, pas du relais)
     const detailLightingStatus = $("#detail-lighting-status");
-    if (detailLightingStatus) {
-      const isOn = latestSensorData?.lighting_enabled ?? config.lighting_enabled;
+    if (detailLightingStatus && latestSensorData?.lighting_enabled != null) {
+      const isOn = latestSensorData.lighting_enabled;
       detailLightingStatus.textContent = isOn ? 'Allumé' : 'Éteint';
       detailLightingStatus.className = 'state-badge ' + (isOn ? 'state-badge--ok' : 'state-badge--off');
     }
