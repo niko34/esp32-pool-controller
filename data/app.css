@@ -1435,7 +1435,6 @@ input.is-computed:disabled {
   grid-template-columns: auto 1fr;
   gap: 12px 20px;
   max-width: 780px;
-  margin: 0 auto;
 }
 
 .kv--compact .kv__row {
