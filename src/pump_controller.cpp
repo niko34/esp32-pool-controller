@@ -119,6 +119,10 @@ void PumpControllerClass::armStabilizationTimer() {
   systemLogger.info(String("[Dosage] Stabilisation : injection suspendue ") + delayMin + " min");
 }
 
+void PumpControllerClass::clearStabilizationTimer() {
+  _stabilizationEndMs = 0;
+}
+
 unsigned long PumpControllerClass::getStabilizationRemainingS() const {
   if (_stabilizationEndMs == 0) return 0;
   unsigned long now = millis();

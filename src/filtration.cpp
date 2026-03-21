@@ -177,6 +177,9 @@ void FiltrationManager::update() {
     state.scheduleComputedThisCycle = false;
     state.startedAtMs = 0;
     systemLogger.info("Arrêt filtration");
+    if (mqttCfg.regulationMode == "pilote") {
+      PumpController.clearStabilizationTimer();
+    }
   } else {
     state.running = runTarget;
   }

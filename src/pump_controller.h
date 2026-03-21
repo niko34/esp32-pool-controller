@@ -91,6 +91,9 @@ public:
   // Arme le timer de stabilisation (bloque le dosage pendant stabilizationDelayMin)
   void armStabilizationTimer();
 
+  // Réinitialise le timer de stabilisation (ex: arrêt filtration)
+  void clearStabilizationTimer();
+
   // Retourne les secondes restantes de stabilisation (0 si expiré)
   unsigned long getStabilizationRemainingS() const;
 
