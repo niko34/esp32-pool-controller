@@ -690,7 +690,7 @@ select:focus-visible {
 .metric__label {
   color: var(--muted);
   font-weight: 650;
-  font-size: 11px;
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   transition: color var(--transition-fast);
@@ -1465,8 +1465,8 @@ input.is-computed:disabled {
   .kv--compact .kv__k {
     text-align: left;
     padding-right: 0;
-    font-size: 11px;
-    opacity: 0.7;
+    font-size: 12px;
+    opacity: 0.85;
   }
 
   .kv--compact .kv__v {
@@ -1951,7 +1951,7 @@ input.is-computed:disabled {
   display: inline-flex;
   padding: 5px 11px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   border: 1.5px solid;
   transition: all var(--transition-fast);
@@ -1986,7 +1986,7 @@ input.is-computed:disabled {
 }
 
 .card__status-updated {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--muted);
 }
 
@@ -2054,8 +2054,8 @@ input.is-computed:disabled {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  font-size: 11px;
-  color: var(--muted);
+  font-size: 13px;
+  color: var(--text-secondary);
   min-height: 16px;
   text-align: center;
 }
@@ -2098,13 +2098,13 @@ input.is-computed:disabled {
 }
 
 .calibration-alert__text {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--warning-text, #b8860b);
 }
 
 .calibration-alert__btn {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   padding: 4px 10px;
   background: var(--accent);
@@ -2131,7 +2131,7 @@ input.is-computed:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 .sensor-badge--danger {
@@ -2145,7 +2145,7 @@ input.is-computed:disabled {
   color: var(--warning-text, #b8860b);
 }
 .sensor-badge__link {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: inherit;
   text-decoration: none;
