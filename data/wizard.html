@@ -805,7 +805,7 @@
           <button type="button" class="btn btn-secondary" id="scanWifiBtn" style="width: 100%; margin-bottom: 12px;">
             🔍 Scanner les réseaux
           </button>
-          <div class="network-list hidden" id="networkList"></div>
+          <div class="network-list hidden" id="networkList" role="listbox" aria-label="Réseaux Wi-Fi disponibles"></div>
           <div class="loading hidden" id="scanLoading">Scan en cours...</div>
         </div>
 
@@ -1242,15 +1242,24 @@
           networks.forEach(network => {
             const item = document.createElement('div');
             item.className = 'network-item';
+            item.setAttribute('role', 'option');
+            item.setAttribute('aria-selected', 'false');
+            item.setAttribute('tabindex', '0');
             item.innerHTML = `
               <strong>${network.ssid}</strong>
               <small>Signal: ${network.rssi} dBm | ${network.encryption ? 'Sécurisé' : 'Ouvert'}</small>
             `;
-            item.onclick = () => {
-              document.querySelectorAll('.network-item').forEach(i => i.classList.remove('selected'));
+            const selectNetwork = () => {
+              document.querySelectorAll('.network-item').forEach(i => {
+                i.classList.remove('selected');
+                i.setAttribute('aria-selected', 'false');
+              });
               item.classList.add('selected');
+              item.setAttribute('aria-selected', 'true');
               document.getElementById('wifiSsid').value = network.ssid;
             };
+            item.onclick = selectNetwork;
+            item.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectNetwork(); } };
             networkList.appendChild(item);
           });
           networkList.classList.remove('hidden');
