@@ -135,6 +135,15 @@
     const toast = document.createElement('div');
     toast.className = `toast toast--${type}`;
     toast.textContent = message;
+    // Errors use role="alert" (assertive); info/success use role="status" (polite)
+    if (type === 'error') {
+      toast.setAttribute('role', 'alert');
+      toast.setAttribute('aria-live', 'assertive');
+    } else {
+      toast.setAttribute('role', 'status');
+      toast.setAttribute('aria-live', 'polite');
+    }
+    toast.setAttribute('aria-atomic', 'true');
     document.body.appendChild(toast);
     setTimeout(() => {
       toast.style.opacity = '0';
@@ -212,7 +221,13 @@
 
     $$(".nav__item").forEach((a) => {
       const r = a.getAttribute("data-route");
-      a.classList.toggle("is-active", r === routeKey);
+      const isActive = r === routeKey;
+      a.classList.toggle("is-active", isActive);
+      if (isActive) {
+        a.setAttribute("aria-current", "page");
+      } else {
+        a.removeAttribute("aria-current");
+      }
     });
   }
 
@@ -237,7 +252,7 @@
     }
 
     // Mobile: close sidebar after navigation
-    $(".sidebar")?.classList.remove("is-open");
+    closeSidebar();
     perf?.end();
   }
 
@@ -728,8 +743,15 @@
     $(`.panel[data-settings-panel="${panelKey}"]`)?.classList.add("is-active");
 
     // Update segmented buttons
-    $$(".segmented__btn").forEach((b) => b.classList.remove("is-active"));
-    $(`.segmented__btn[data-settings-tab="${panelKey}"]`)?.classList.add("is-active");
+    $$(".segmented__btn").forEach((b) => {
+      b.classList.remove("is-active");
+      b.setAttribute("aria-selected", "false");
+    });
+    const activeBtn = $(`.segmented__btn[data-settings-tab="${panelKey}"]`);
+    if (activeBtn) {
+      activeBtn.classList.add("is-active");
+      activeBtn.setAttribute("aria-selected", "true");
+    }
 
     // Update WiFi display when WiFi panel is shown
     if (panelKey === "wifi") {
@@ -758,17 +780,21 @@
 
     if (wifiStatus === 'success') {
       notifEl.classList.add('success');
+      notifEl.setAttribute('role', 'status');
+      notifEl.setAttribute('aria-live', 'polite');
       notifEl.innerHTML = `
-        <span class="wifi-notification__icon">✓</span>
+        <span class="wifi-notification__icon" aria-hidden="true">✓</span>
         <span class="wifi-notification__text">Connexion au réseau "${ssid || 'WiFi'}" réussie</span>
-        <button class="wifi-notification__close" onclick="hideWifiNotification()">×</button>
+        <button class="wifi-notification__close" type="button" aria-label="Fermer la notification" onclick="hideWifiNotification()">×</button>
       `;
     } else if (wifiStatus === 'failed') {
       notifEl.classList.add('error');
+      notifEl.setAttribute('role', 'alert');
+      notifEl.setAttribute('aria-live', 'assertive');
       notifEl.innerHTML = `
-        <span class="wifi-notification__icon">✕</span>
+        <span class="wifi-notification__icon" aria-hidden="true">✕</span>
         <span class="wifi-notification__text">Échec de la connexion au réseau "${ssid || 'WiFi'}"</span>
-        <button class="wifi-notification__close" onclick="hideWifiNotification()">×</button>
+        <button class="wifi-notification__close" type="button" aria-label="Fermer la notification" onclick="hideWifiNotification()">×</button>
       `;
     }
 
@@ -1752,11 +1778,9 @@
     // Mettre à jour les onglets actifs
     const tabs = document.querySelectorAll('.chart-tab');
     tabs.forEach(tab => {
-      if (tab.dataset.chart === chartType) {
-        tab.classList.add('chart-tab--active');
-      } else {
-        tab.classList.remove('chart-tab--active');
-      }
+      const isActive = tab.dataset.chart === chartType;
+      tab.classList.toggle('chart-tab--active', isActive);
+      tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
     });
 
     // Copier les données du graphique source vers le graphique principal
@@ -1826,15 +1850,47 @@
       updateYAxisOverlay(mainChart);
       updateMainChartScroll();
     }
+
+    // Update accessible label on canvas and tabpanel
+    const chartLabels = {
+      temperature: 'Graphique Température (dernières 24 heures)',
+      ph: 'Graphique pH (dernières 24 heures)',
+      orp: 'Graphique ORP (dernières 24 heures)'
+    };
+    const tabIds = {
+      temperature: 'tab-temperature',
+      ph: 'tab-ph-chart',
+      orp: 'tab-orp-chart'
+    };
+    const mainChartCanvas = document.getElementById('mainChart');
+    if (mainChartCanvas) mainChartCanvas.setAttribute('aria-label', chartLabels[chartType] || '');
+    const tabpanel = document.getElementById('chart-tabpanel');
+    if (tabpanel) tabpanel.setAttribute('aria-labelledby', tabIds[chartType] || 'tab-temperature');
   }
 
 
   function bindChartTabs() {
-    const tabs = document.querySelectorAll('.chart-tab');
-    tabs.forEach(tab => {
+    const tabs = Array.from(document.querySelectorAll('.chart-tab'));
+    tabs.forEach((tab, i) => {
       tab.addEventListener('click', () => {
-        const chartType = tab.dataset.chart;
-        switchChartTab(chartType);
+        switchChartTab(tab.dataset.chart);
+      });
+      tab.addEventListener('keydown', (e) => {
+        let target = null;
+        if (e.key === 'ArrowRight') {
+          target = tabs[(i + 1) % tabs.length];
+        } else if (e.key === 'ArrowLeft') {
+          target = tabs[(i - 1 + tabs.length) % tabs.length];
+        } else if (e.key === 'Home') {
+          target = tabs[0];
+        } else if (e.key === 'End') {
+          target = tabs[tabs.length - 1];
+        }
+        if (target) {
+          e.preventDefault();
+          switchChartTab(target.dataset.chart);
+          target.focus();
+        }
       });
     });
   }
@@ -4059,17 +4115,72 @@
     $("#sensor_logs_enabled")?.addEventListener("change", save);
   }
 
+  // ---------- Sidebar helpers ----------
+  function openSidebar() {
+    const sidebar = $("#sidebar");
+    const overlay = $("#sidebar-overlay");
+    const burgerOpen = $("#burger-open");
+    const burgerClose = $("#burger");
+    sidebar?.classList.add("is-open");
+    overlay?.classList.add("is-visible");
+    overlay?.removeAttribute("aria-hidden");
+    burgerOpen?.setAttribute("aria-expanded", "true");
+    burgerClose?.setAttribute("aria-expanded", "true");
+    burgerClose?.focus();
+  }
+
+  function closeSidebar() {
+    const sidebar = $("#sidebar");
+    const overlay = $("#sidebar-overlay");
+    const burgerOpen = $("#burger-open");
+    const burgerClose = $("#burger");
+    sidebar?.classList.remove("is-open");
+    overlay?.classList.remove("is-visible");
+    overlay?.setAttribute("aria-hidden", "true");
+    burgerOpen?.setAttribute("aria-expanded", "false");
+    burgerClose?.setAttribute("aria-expanded", "false");
+  }
+
   // ---------- UI bindings ----------
   function bindUI() {
     // mobile burger (open from main)
-    $("#burger-open")?.addEventListener("click", () => $(".sidebar")?.classList.add("is-open"));
+    $("#burger-open")?.addEventListener("click", openSidebar);
 
     // mobile burger (close from sidebar)
-    $("#burger")?.addEventListener("click", () => $(".sidebar")?.classList.remove("is-open"));
+    $("#burger")?.addEventListener("click", closeSidebar);
 
-    // segmented -> route
-    $$(".segmented__btn").forEach((btn) => {
+    // Close sidebar on overlay click
+    $("#sidebar-overlay")?.addEventListener("click", closeSidebar);
+
+    // Close sidebar on Escape key
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && $("#sidebar")?.classList.contains("is-open")) {
+        closeSidebar();
+        $("#burger-open")?.focus();
+      }
+    });
+
+    // segmented -> route (with arrow key navigation)
+    const segmentedBtns = $$(".segmented__btn");
+    segmentedBtns.forEach((btn, i) => {
       btn.addEventListener("click", () => goSettings(btn.getAttribute("data-settings-tab")));
+      btn.addEventListener("keydown", (e) => {
+        let target = null;
+        if (e.key === "ArrowRight") {
+          target = segmentedBtns[(i + 1) % segmentedBtns.length];
+        } else if (e.key === "ArrowLeft") {
+          target = segmentedBtns[(i - 1 + segmentedBtns.length) % segmentedBtns.length];
+        } else if (e.key === "Home") {
+          target = segmentedBtns[0];
+        } else if (e.key === "End") {
+          target = segmentedBtns[segmentedBtns.length - 1];
+        }
+        if (target) {
+          e.preventDefault();
+          target.click();
+          target.focus();
+        }
+      });
     });
 
     $("#refresh_info_btn")?.addEventListener("click", loadSystemInfo);
