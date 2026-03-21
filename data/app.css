@@ -213,10 +213,19 @@ select:focus-visible {
   padding: 6px 12px;
   border-radius: 8px;
   border: none;
+  background: transparent; /* reset Safari default button background */
+  -webkit-appearance: none;
+  appearance: none;
   color: var(--muted);
   transition: all var(--transition-fast);
   position: relative;
   margin-left: 8px;
+  cursor: pointer;
+  text-decoration: none;
+  font-family: inherit;
+  font-size: inherit;
+  text-align: left;
+  width: 100%;
 }
 .nav__item:hover {
   background: var(--panel2);
