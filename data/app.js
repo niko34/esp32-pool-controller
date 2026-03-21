@@ -1668,6 +1668,13 @@
     const enabled = sensor === "ph" ? config.ph_enabled : config.orp_enabled;
     if (!enabled) return "Régulation désactivée";
 
+    const remainS = data.stabilization_remaining_s || 0;
+    if (remainS > 0) {
+      const m = Math.floor(remainS / 60);
+      const s = remainS % 60;
+      return m > 0 ? `Stabilisation : ${m} min ${String(s).padStart(2, '0')} s` : `Stabilisation : ${s} s`;
+    }
+
     const regulationMode = config.regulation_mode || "pilote";
     if (regulationMode === "pilote" && !data.filtration_running) return "Filtration arrêtée";
 

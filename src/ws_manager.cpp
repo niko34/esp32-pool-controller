@@ -143,6 +143,7 @@ String WsManager::_buildSensorJson() const {
   d["orp_dosing"]         = PumpController.isOrpDosing();
   d["ph_used_ms"]         = PumpController.getPhUsedMs();
   d["orp_used_ms"]        = PumpController.getOrpUsedMs();
+  d["stabilization_remaining_s"] = PumpController.getStabilizationRemainingS();
   d["ph_daily_ml"]        = safetyLimits.dailyPhInjectedMl;
   d["orp_daily_ml"]       = safetyLimits.dailyOrpInjectedMl;
   d["ph_limit_reached"]   = safetyLimits.phLimitReached;
