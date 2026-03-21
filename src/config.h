@@ -137,8 +137,8 @@ struct ProductConfig {
 struct SafetyLimits {
   float maxPhMinusMlPerDay = 500.0f;
   float maxChlorineMlPerDay = 300.0f;
-  unsigned long dailyPhInjectedMl = 0;
-  unsigned long dailyOrpInjectedMl = 0;
+  float dailyPhInjectedMl = 0.0f;
+  float dailyOrpInjectedMl = 0.0f;
   unsigned long dayStartTimestamp = 0;
   bool phLimitReached = false;
   bool orpLimitReached = false;

@@ -249,13 +249,13 @@ void PumpControllerClass::updateSafetyTracking(bool isPhPump, float flowMlPerMin
   float injectedMl = (flowMlPerMin / 60000.0f) * deltaMs;
 
   if (isPhPump) {
-    safetyLimits.dailyPhInjectedMl += static_cast<unsigned long>(injectedMl);
+    safetyLimits.dailyPhInjectedMl += injectedMl;
     if (productCfg.phTrackingEnabled) {
       productCfg.phTotalInjectedMl += injectedMl;
       productConfigDirty = true;
     }
   } else {
-    safetyLimits.dailyOrpInjectedMl += static_cast<unsigned long>(injectedMl);
+    safetyLimits.dailyOrpInjectedMl += injectedMl;
     if (productCfg.orpTrackingEnabled) {
       productCfg.orpTotalInjectedMl += injectedMl;
       productConfigDirty = true;
