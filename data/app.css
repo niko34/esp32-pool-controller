@@ -2050,8 +2050,8 @@ input.is-computed:disabled {
 }
 
 .compact-target {
-  font-size: 11px;
-  color: var(--muted);
+  font-size: 13px;
+  color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
