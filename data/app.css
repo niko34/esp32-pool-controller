@@ -225,7 +225,7 @@ select:focus-visible {
 .nav__item.is-active,
 .nav__item[aria-current="page"] {
   background: var(--accent-light);
-  color: var(--accent);
+  color: var(--accent-hover); /* #1d4ed8 sur #e5ecfd ≈ 5.1:1 — AA ✓ */
 }
 .nav__item.is-active::before,
 .nav__item[aria-current="page"]::before {
