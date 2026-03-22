@@ -474,7 +474,6 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     saveProductConfig();
   }
 
-  PumpController.resetDosingStates();
   saveMqttConfig();
   mqttManager.requestReconnect();
 
