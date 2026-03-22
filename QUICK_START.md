@@ -69,7 +69,7 @@ pio run -t upload
 # 4. Upload filesystem
 python3 ~/.platformio/packages/tool-esptoolpy/esptool.py \
   --chip esp32 --port /dev/cu.usbserial-210 --baud 115200 \
-  write_flash 0x290000 .pio/build/esp32dev/littlefs.bin
+  write_flash 0x2B0000 .pio/build/esp32dev/littlefs.bin
 
 # 5. Moniteur série
 pio device monitor -b 115200
@@ -82,7 +82,7 @@ pio device monitor -b 115200
 
 **Logs attendus:**
 ```
-[INFO] === Démarrage ESP32 Pool Controller v2025.12.21 ===
+[INFO] === Démarrage ESP32 Pool Controller v2.9.4 ===
 [INFO] Watchdog activé (30s)
 [INFO] LittleFS monté avec succès
 [INFO] Configuration chargée avec succès
@@ -205,11 +205,11 @@ Chlore pour remonter ORP de 100mV ≈ 0.2L pour 10m³
 → Max raisonnable = 300 ml/jour pour 40m³
 ```
 
-### Étape 7: Vérification Capteurs (5 min)
+### Étape 8: Vérification Capteurs (5 min)
 
 **Avec capteurs connectés:**
 
-1. Brancher capteurs (voir README.md section Schéma de Câblage)
+1. Brancher capteurs (ADS1115 en I2C @ 0x48, DS18B20 sur GPIO5)
 2. Plonger sondes dans eau piscine
 3. Attendre 30s stabilisation
 4. Vérifier valeurs réalistes:
@@ -222,7 +222,7 @@ Chlore pour remonter ORP de 100mV ≈ 0.2L pour 10m³
 - ORP = 0: Sonde pas étalonnée ou HS, vérifier ADS1115
 - Temp = -127°C: DS18B20 non détecté (pull-up 4.7kΩ manquant)
 
-### Étape 8: Configuration MQTT (Optionnel)
+### Étape 9: Configuration MQTT (Optionnel)
 
 **Si vous avez Home Assistant ou broker MQTT:**
 
@@ -468,22 +468,19 @@ curl http://poolcontroller.local/get-logs
 
 ## 🎓 Prochaines Étapes
 
-1. **Calibration capteurs** → Voir README.md section "Calibration Capteurs"
-2. **Câblage complet** → Voir README.md section "Schéma de Câblage"
-3. **Intégration Home Assistant** → Voir README.md section "Intégration Home Assistant"
-4. **Documentation complète** → [README.md](README.md)
-5. **Build et déploiement** → [BUILD.md](BUILD.md)
-6. **Minification** → [MINIFICATION.md](MINIFICATION.md)
+1. **Build et déploiement** → [BUILD.md](BUILD.md)
+2. **Minification des fichiers web** → [MINIFICATION.md](MINIFICATION.md)
+3. **Mises à jour OTA** → [UPDATE_GUIDE.md](UPDATE_GUIDE.md)
+4. **Protocole UART (écran)** → [docs/uart_protocol.md](docs/uart_protocol.md)
 
 ## 📞 Support
 
 **Problème non résolu ?**
 
 1. Vérifier les logs: Interface web → Logs ou moniteur série
-2. Consulter README.md section Dépannage
-3. Vérifier BUILD.md pour problèmes de compilation
-4. Ouvrir Issue GitHub avec:
-   - Version firmware (2025.12.21)
+2. Vérifier BUILD.md pour problèmes de compilation
+3. Ouvrir Issue GitHub avec:
+   - Version firmware (voir Interface web → Système)
    - Logs complets
    - Configuration (masquer mots de passe)
 

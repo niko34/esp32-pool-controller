@@ -1,5 +1,7 @@
 # Changelog - ESP32 Pool Controller
 
+> **Note** : Ce changelog couvre les versions jusqu'à 2.3.1. La version actuelle est **2.9.4**.
+
 ## [2.3.1] - Fonctionnalités Avancées
 
 ### ✨ Nouvelles Fonctionnalités
@@ -123,8 +125,6 @@ Transformer le code monolithique initial (1383 lignes) en architecture modulaire
 #### Nouveaux Documents
 - **README.md** : Documentation complète utilisateur
 - **CALIBRATION_GUIDE.md** : Procédure calibration détaillée pH/ORP
-- **MIGRATION_GUIDE.md** : Guide migration v1→v2 pas à pas
-- **WIRING_DIAGRAM.md** : Schémas câblage complets avec explications
 - **CHANGELOG.md** : Ce fichier
 
 #### Améliorations Inline

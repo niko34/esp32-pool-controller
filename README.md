@@ -4,7 +4,7 @@ Disclaimer : projet en cours de construction.
 
 Contrôleur automatique de piscine basé sur ESP32 avec gestion pH, ORP (chlore), température et filtration automatique. Intégration complète avec Home Assistant via MQTT.
 
-**Version actuelle**: 2.3.3
+**Version actuelle**: 2.9.4
 
 ## 🎯 Fonctionnalités
 
@@ -160,15 +160,15 @@ Pompe 2 (Chlore): Identique sur GPIO 26
 
    # 4. Upload filesystem
    python3 ~/.platformio/packages/tool-esptoolpy/esptool.py \
-     --chip esp32 --port /dev/cu.usbserial-210 --baud 115200 \
-     write_flash 0x290000 .pio/build/esp32dev/littlefs.bin
+     --chip esp32 --port /dev/cu.usbserial-0001 --baud 115200 \
+     write_flash 0x2B0000 .pio/build/esp32dev/littlefs.bin
    ```
 
    ⚠️ **Important**:
    - Ne PAS utiliser `pio run -t buildfs` ou `pio run -t uploadfs`
-   - Ces commandes utilisent une mauvaise taille (128KB au lieu de 1344KB)
+   - Ces commandes utilisent une mauvaise taille (128KB au lieu de 1216KB)
    - Utilisez toujours `./build_fs.sh` pour construire le filesystem
-   - Le port série est configuré dans `platformio.ini` (`/dev/cu.usbserial-210`)
+   - Le port série est configuré dans `platformio.ini` (`/dev/cu.usbserial-0001`)
    - Modifiez `upload_port` et `monitor_port` selon votre système:
      - macOS: `/dev/cu.usbserial-*` ou `/dev/cu.SLAB_USBtoUART`
      - Linux: `/dev/ttyUSB0` ou `/dev/ttyACM0`
@@ -397,16 +397,16 @@ Si vous oubliez le mot de passe administrateur de l'interface web, vous pouvez l
 - Durée requise: 10 secondes
 - Indication visuelle: Clignotement lent (100ms) puis rapide (200ms)
 
-**Ce qui est réinitialisé:**
+**Ce qui est réinitialisé (partition NVS effacée entièrement) :**
 - ✅ Mot de passe administrateur → `admin`
+- ✅ Token API régénéré
+- ✅ Credentials WiFi supprimés (retour en mode AP)
+- ✅ Configuration MQTT effacée
+- ✅ Calibrations des sondes (pH, ORP) effacées
 
-**Ce qui N'EST PAS réinitialisé:**
-- ❌ Configuration WiFi (SSID, mot de passe)
-- ❌ Configuration MQTT (serveur, port, credentials)
-- ❌ Calibrations des sondes (pH, ORP)
-- ❌ Consignes et paramètres PID
-- ❌ Limites de sécurité
-- ❌ Historique des mesures
+**Ce qui N'EST PAS effacé :**
+- ✅ Fichiers JSON sur LittleFS (consignes, limites, config) — préservés
+- ✅ Historique des mesures (partition séparée) — préservé
 
 **Note importante:** GPIO4 est un GPIO libre qui ne nécessite pas de précautions particulières au démarrage. Vous pouvez ajouter un bouton poussoir simple (bouton arcade, bouton panneau, etc.) dans votre boîtier pour faciliter l'accès à cette fonction.
 
@@ -434,40 +434,7 @@ Si vous oubliez le mot de passe administrateur de l'interface web, vous pouvez l
 
 ## 📈 Changelog
 
-### Version 2.3.1
-- ✅ **Type de correction pH** : Choix entre pH- (acide) et pH+ (base) selon le produit
-- ✅ **Mode de régulation** : Piloté (dosage si filtration active) ou Continu (permanent)
-- ✅ **Toggles de fonctionnalités** : Activation/désactivation de chaque fonction (Filtration, Éclairage, Température, pH, ORP)
-- ✅ **Visibilité dashboard dynamique** : Les widgets non utilisés sont masqués automatiquement
-- ✅ **Mode Auto filtration conditionnel** : Nécessite l'activation de la mesure de température
-- ✅ **Gestion éclairage** : On/Off manuel et programmation horaire avec relais dédié
-
-### Version 2.3.0
-- ✅ Graphiques pH/ORP avec échelle dynamique (adaptation automatique si valeurs hors plage)
-- ✅ Zones rouges adaptatives sur graphiques pH/ORP (zones hors plage visibles)
-- ✅ Bouton reset mot de passe admin sur GPIO4 (10 secondes, feedback LED)
-- ✅ Partition history séparée (128KB, préservée lors des mises à jour OTA)
-- ✅ Minification automatique fichiers web (économie ~60KB / 13%)
-- ✅ Scripts de déploiement automatisés (deploy.sh, build_fs.sh)
-- ✅ Table de partitions optimisée (1344KB LittleFS + 128KB history)
-- ✅ Documentation complète (BUILD.md, MINIFICATION.md)
-
-### Version 2.2.0
-- ✅ Augmentation PWM à 20kHz pour éliminer le sifflement des pompes
-- ✅ Interface de test manuel des pompes avec contrôle de puissance (0-100%)
-- ✅ Optimisation ADS1115 avec GAIN_ONE pour compatibilité 3.3V
-- ✅ Intégration capteur pH DFRobot SEN0161-V2 avec compensation température
-- ✅ Système de logs avec filtrage par niveau (Debug/Info/Warning/Error)
-- ✅ Mise à jour OTA via interface web
-- ✅ Onglet Système avec informations version et diagnostic
-
-### Améliorations Futures
-- [ ] Stockage historique LittleFS étendu (graphiques 7 jours)
-- [ ] Support multi-langues interface web (EN/FR)
-- [ ] Graphiques temps réel avec Chart.js
-- [ ] Export CSV données historiques
-- [ ] API REST complète pour intégrations tierces
-- [ ] Mode maintenance avec purge automatique des pompes
+Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
 
 ## 📁 Fichiers et Scripts
 
@@ -480,7 +447,7 @@ Si vous oubliez le mot de passe administrateur de l'interface web, vous pouvez l
 
 - **`build_fs.sh`** - Construction du filesystem LittleFS
   - Minifie automatiquement HTML/CSS/JS (économie ~92KB / 15%)
-  - Construit LittleFS avec la bonne taille (1344KB)
+  - Construit LittleFS avec la bonne taille (1216KB)
   - Utilise `data-build/` comme source (généré par minify.js)
 
 - **`minify.js`** - Minification des fichiers web
@@ -495,11 +462,11 @@ Si vous oubliez le mot de passe administrateur de l'interface web, vous pouvez l
 
 - **`platformio.ini`** - Configuration PlatformIO
   - Définit les dépendances, ports, partitions
-  - Port série: `/dev/cu.usbserial-210` (à adapter)
+  - Port série: `/dev/cu.usbserial-0001` (à adapter)
 
 - **`partitions.csv`** - Table de partitions ESP32 4MB
-  - 2× slots OTA (1280KB chacun)
-  - LittleFS (1344KB) pour interface web
+  - 2× slots OTA (1344KB chacun)
+  - LittleFS/spiffs (1216KB) pour interface web
   - History (128KB) partition séparée préservée lors des mises à jour
 
 ### Documentation
@@ -548,4 +515,4 @@ Ce projet est fourni "tel quel" sans garantie. L'utilisation de produits chimiqu
 ---
 
 **Auteur**: Nicolas Philippe
-**Version**: 2.3.1
+**Version**: 2.9.4

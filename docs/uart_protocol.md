@@ -168,6 +168,9 @@ Modifie un ou plusieurs champs de configuration. Seuls les champs présents sont
 | `lighting_end_time` | string | `"HH:MM"` |
 | `max_ph_ml_per_day` | float | > 0 |
 | `max_chlorine_ml_per_day` | float | > 0 |
+| `time_use_ntp` | bool | — |
+| `ntp_server` | string | — |
+| `timezone_id` | string | ex: `"europe_paris"` |
 
 ### `save_config`
 Force la sauvegarde de la configuration sur le filesystem.
@@ -234,6 +237,51 @@ Force la sauvegarde de la configuration sur le filesystem.
 ← {"type":"alarm","event":"cleared","data":{"code":"PH_LIMIT"}}
 ```
 - `code` : `"PH_LIMIT"` ou `"ORP_LIMIT"`
+
+---
+
+## Commandes wizard (mise en service depuis l'écran)
+
+Ces commandes sont utilisées par l'application écran LVGL lors de l'assistant de première configuration.
+
+### `get_setup_status`
+```json
+→ {"cmd":"get_setup_status"}
+← {"type":"setup_status","data":{"wizard_completed":false,"first_boot":true}}
+```
+
+### `complete_wizard`
+Marque l'assistant comme terminé (persiste en NVS).
+```json
+→ {"cmd":"complete_wizard"}
+← {"type":"ack","cmd":"complete_wizard"}
+```
+
+### `wifi_scan`
+Déclenche un scan WiFi synchrone (~2-4 s). Renvoie jusqu'à 20 réseaux.
+```json
+→ {"cmd":"wifi_scan"}
+← {"type":"wifi_scan_result","data":{"networks":[
+    {"ssid":"MonReseau","rssi":-55,"secure":true},
+    {"ssid":"Voisin","rssi":-72,"secure":true}
+  ]}}
+```
+
+### `wifi_connect`
+Lance la connexion WiFi (non bloquant — vérifier ensuite via `get_status`).
+```json
+→ {"cmd":"wifi_connect","data":{"ssid":"MonReseau","password":"motdepasse"}}
+← {"type":"ack","cmd":"wifi_connect"}
+```
+- `password` est optionnel (réseau ouvert si absent)
+
+### `change_password`
+Change le mot de passe administrateur et régénère le token API.
+```json
+→ {"cmd":"change_password","data":{"new_password":"nouveaumdp"}}
+← {"type":"ack","cmd":"change_password"}
+```
+- Minimum 8 caractères
 
 ---
 

@@ -38,7 +38,7 @@ pio run --target upload
 
 # Système de fichiers (2 étapes)
 ./build_fs.sh
-~/.platformio/penv/bin/python ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32 --port /dev/cu.usbserial-0001 write_flash 0x290000 .pio/build/esp32dev/littlefs.bin
+~/.platformio/penv/bin/python ~/.platformio/packages/tool-esptoolpy/esptool.py --chip esp32 --port /dev/cu.usbserial-0001 write_flash 0x2B0000 .pio/build/esp32dev/littlefs.bin
 ```
 
 > **Note** : Ne pas utiliser `pio run --target uploadfs` car il reconstruit le filesystem avec une mauvaise taille.

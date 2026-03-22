@@ -113,7 +113,7 @@ curl http://poolcontroller.local/get-config
   "password": "******",
   "enabled": true,
   "regulation_mode": "pilote",
-  "ph_correction_type": "minus",
+  "ph_correction_type": "ph_minus",
   "ph_target": 7.2,
   "orp_target": 700,
   "ph_regulation_enabled": true,
@@ -156,7 +156,6 @@ curl http://poolcontroller.local/get-config
 | `lighting_start` | string | Heure de début éclairage (HH:MM) |
 | `lighting_end` | string | Heure de fin éclairage (HH:MM) |
 | `temperature_enabled` | bool | Activation de la mesure de température |
-```
 
 ---
 
@@ -426,7 +425,7 @@ Le token API est généré automatiquement au premier démarrage et peut être r
 
 - **Rate Limiting** : Pas de limitation, mais éviter les requêtes trop fréquentes
 - **Timeout** : 30 secondes pour les mises à jour OTA
-- **Taille maximale** : ~1.5 MB pour le firmware, ~1.5 MB pour le filesystem
+- **Taille maximale** : ~1.3 MB pour le firmware (slot OTA 1344KB), ~1.2 MB pour le filesystem (partition 1216KB)
 - **Concurrent Updates** : Une seule mise à jour à la fois
 
 ---

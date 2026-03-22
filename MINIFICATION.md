@@ -129,7 +129,7 @@ Toujours rebuilder le filesystem après modification:
 ./build_fs.sh
 python3 ~/.platformio/packages/tool-esptoolpy/esptool.py \
   --chip esp32 --port /dev/cu.usbserial-210 --baud 115200 \
-  write_flash 0x290000 .pio/build/esp32dev/littlefs.bin
+  write_flash 0x2B0000 .pio/build/esp32dev/littlefs.bin
 ```
 
 ## Notes importantes
