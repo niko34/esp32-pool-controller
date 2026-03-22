@@ -52,8 +52,8 @@ struct MqttConfig {
   int orpPump = 2;
   uint8_t pump1MaxDutyPct = 100;   // Puissance maximale pompe 1 en régulation (0-100 %)
   uint8_t pump2MaxDutyPct = 100;   // Puissance maximale pompe 2 en régulation (0-100 %)
-  int phInjectionLimitSeconds = 60;
-  int orpInjectionLimitSeconds = 60;
+  int phInjectionLimitSeconds = 3600;
+  int orpInjectionLimitSeconds = 3600;
   String regulationMode = "pilote";  // "continu" ou "pilote"
   int stabilizationDelayMin = 5;     // Délai de stabilisation avant dosage (minutes)
   String phCorrectionType = "ph_minus";  // "ph_minus" (acide) ou "ph_plus" (base)
@@ -135,8 +135,8 @@ struct ProductConfig {
 };
 
 struct SafetyLimits {
-  float maxPhMinusMlPerDay = 500.0f;
-  float maxChlorineMlPerDay = 300.0f;
+  float maxPhMinusMlPerDay = 1000.0f;
+  float maxChlorineMlPerDay = 1000.0f;
   float dailyPhInjectedMl = 0.0f;
   float dailyOrpInjectedMl = 0.0f;
   unsigned long dayStartTimestamp = 0;
