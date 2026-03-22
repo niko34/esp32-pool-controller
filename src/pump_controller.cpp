@@ -188,6 +188,12 @@ float PumpControllerClass::computeFlowFromError(float error, float deadband, con
   return params.minFlowMlPerMin + normalized * (params.maxFlowMlPerMin - params.minFlowMlPerMin);
 }
 
+float PumpControllerClass::dutyToFlow(const PumpControlParams& params, uint8_t duty) {
+  if (duty < MIN_ACTIVE_DUTY) return 0.0f;
+  float normalized = (float)(duty - MIN_ACTIVE_DUTY) / (MAX_PWM_DUTY - MIN_ACTIVE_DUTY);
+  return params.minFlowMlPerMin + normalized * (params.maxFlowMlPerMin - params.minFlowMlPerMin);
+}
+
 uint8_t PumpControllerClass::flowToDuty(const PumpControlParams& params, float flowMlPerMin) {
   if (flowMlPerMin <= 0.0f) return 0;
   if (flowMlPerMin < params.minFlowMlPerMin) flowMlPerMin = params.minFlowMlPerMin;
@@ -475,11 +481,7 @@ void PumpControllerClass::update() {
     }
     unsigned long delta = now - phDosingState.lastSafetyTimestamp;
     int phIdx = pumpIndexFromNumber(mqttCfg.phPump);
-    uint8_t phRequestedDuty = flowToDuty(phPumpControl, phFlow);
-    uint8_t phActualDuty    = desiredDuty[phIdx];
-    float phEffectiveFlow = (phRequestedDuty > 0)
-      ? phFlow * ((float)phActualDuty / phRequestedDuty)
-      : phFlow;
+    float phEffectiveFlow = dutyToFlow(phPumpControl, desiredDuty[phIdx]);
     updateSafetyTracking(true, phEffectiveFlow, delta);
     phDosingState.lastSafetyTimestamp = now;
   } else {
@@ -492,11 +494,7 @@ void PumpControllerClass::update() {
     }
     unsigned long delta = now - orpDosingState.lastSafetyTimestamp;
     int orpIdx = pumpIndexFromNumber(mqttCfg.orpPump);
-    uint8_t orpRequestedDuty = flowToDuty(orpPumpControl, orpFlow);
-    uint8_t orpActualDuty    = desiredDuty[orpIdx];
-    float orpEffectiveFlow = (orpRequestedDuty > 0)
-      ? orpFlow * ((float)orpActualDuty / orpRequestedDuty)
-      : orpFlow;
+    float orpEffectiveFlow = dutyToFlow(orpPumpControl, desiredDuty[orpIdx]);
     updateSafetyTracking(false, orpEffectiveFlow, delta);
     orpDosingState.lastSafetyTimestamp = now;
   } else {
