@@ -1,4 +1,5 @@
 #include "config.h"
+#include "constants.h"
 #include "logger.h"
 #include <Preferences.h>
 
@@ -7,8 +8,8 @@ MqttConfig mqttCfg;
 FiltrationConfig filtrationCfg;
 LightingConfig lightingCfg;
 AuthConfig authCfg;
-PumpControlParams phPumpControl = {5.2f, 90.0f, 1.0f};
-PumpControlParams orpPumpControl = {5.2f, 90.0f, 200.0f};
+PumpControlParams phPumpControl  = {kPumpMinFlowMlPerMin, kPumpMaxFlowMlPerMin, kPhMaxError};
+PumpControlParams orpPumpControl = {kPumpMinFlowMlPerMin, kPumpMaxFlowMlPerMin, kOrpMaxError};
 SafetyLimits safetyLimits;
 PumpProtection pumpProtection;
 ProductConfig productCfg;

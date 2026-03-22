@@ -78,6 +78,18 @@ constexpr unsigned long kSecondsPerHour = 3600;           // Secondes par heure
 constexpr float kFiltrationPivotHour = 13.0f;             // 13h - Pivot pour calcul durée selon température
 
 // ============================================================================
+// PUMP CONSTANTS - Paramètres pompes doseuses
+// ============================================================================
+
+// Débits pompes (ml/min) — à ajuster selon le modèle de pompe utilisé
+constexpr float kPumpMinFlowMlPerMin  =  5.2f;   // Débit minimal (duty minimum actif)
+constexpr float kPumpMaxFlowMlPerMin  = 90.0f;   // Débit maximal (duty 100%)
+
+// Erreur max pour normalisation PID
+constexpr float kPhMaxError           =  1.0f;   // Erreur pH maximale (unités pH)
+constexpr float kOrpMaxError          = 200.0f;  // Erreur ORP maximale (mV)
+
+// ============================================================================
 // NETWORK CONSTANTS - Paramètres réseau
 // ============================================================================
 
