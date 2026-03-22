@@ -78,6 +78,7 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["orp_pump"] = mqttCfg.orpPump;
   doc["pump1_max_duty_pct"] = mqttCfg.pump1MaxDutyPct;
   doc["pump2_max_duty_pct"] = mqttCfg.pump2MaxDutyPct;
+  doc["pump_max_flow_ml_per_min"] = mqttCfg.pumpMaxFlowMlPerMin;
   doc["ph_limit_seconds"] = mqttCfg.phInjectionLimitSeconds;
   doc["orp_limit_seconds"] = mqttCfg.orpInjectionLimitSeconds;
   doc["regulation_mode"] = mqttCfg.regulationMode;
@@ -262,6 +263,11 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["orp_pump"].isNull()) mqttCfg.orpPump = doc["orp_pump"];
   if (!doc["pump1_max_duty_pct"].isNull()) mqttCfg.pump1MaxDutyPct = constrain((int)doc["pump1_max_duty_pct"], 0, 100);
   if (!doc["pump2_max_duty_pct"].isNull()) mqttCfg.pump2MaxDutyPct = constrain((int)doc["pump2_max_duty_pct"], 0, 100);
+  if (!doc["pump_max_flow_ml_per_min"].isNull()) {
+    mqttCfg.pumpMaxFlowMlPerMin = constrain((float)doc["pump_max_flow_ml_per_min"], 1.0f, 500.0f);
+    phPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
+    orpPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
+  }
   if (!doc["ph_limit_seconds"].isNull()) mqttCfg.phInjectionLimitSeconds = doc["ph_limit_seconds"];
   if (!doc["orp_limit_seconds"].isNull()) mqttCfg.orpInjectionLimitSeconds = doc["orp_limit_seconds"];
   if (!doc["regulation_mode"].isNull()) {

@@ -1170,6 +1170,7 @@
     const p2max = typeof cfg.pump2_max_duty_pct === "number" ? cfg.pump2_max_duty_pct : 100;
     if ($("#pump1_max_duty")) { $("#pump1_max_duty").value = p1max; $("#pump1_max_duty_value").textContent = String(p1max); }
     if ($("#pump2_max_duty")) { $("#pump2_max_duty").value = p2max; $("#pump2_max_duty_value").textContent = String(p2max); }
+    if ($("#pump_max_flow_ml_per_min")) $("#pump_max_flow_ml_per_min").value = typeof cfg.pump_max_flow_ml_per_min === "number" ? cfg.pump_max_flow_ml_per_min : 90;
 
     $("#ph_limit").value = typeof cfg.ph_limit_seconds === "number" ? cfg.ph_limit_seconds : 60;
     $("#orp_limit").value = typeof cfg.orp_limit_seconds === "number" ? cfg.orp_limit_seconds : 60;
@@ -1556,7 +1557,7 @@
     // Mettre à jour le nom du produit pH selon la correction
     const phTitle = $('#product-ph-title');
     if (phTitle && cfg.ph_correction_type) {
-      phTitle.textContent = cfg.ph_correction_type === 'ph_plus' ? 'pH+ (base)' : 'pH− (acide)';
+      phTitle.textContent = cfg.ph_correction_type === 'ph_plus' ? 'pH+ (base)' : 'pH';
     }
 
     updateProductUI({
@@ -3898,8 +3899,9 @@
       const cfg = {
         ph_pump:            parseInt($("#ph_pump")?.value || "1", 10),
         orp_pump:           parseInt($("#orp_pump")?.value || "2", 10),
-        pump1_max_duty_pct: parseInt($("#pump1_max_duty")?.value || "100", 10),
-        pump2_max_duty_pct: parseInt($("#pump2_max_duty")?.value || "100", 10),
+        pump1_max_duty_pct:       parseInt($("#pump1_max_duty")?.value || "100", 10),
+        pump2_max_duty_pct:       parseInt($("#pump2_max_duty")?.value || "100", 10),
+        pump_max_flow_ml_per_min: parseFloat($("#pump_max_flow_ml_per_min")?.value || "90"),
       };
       const ok = await sendConfig(cfg);
       if (ok) {

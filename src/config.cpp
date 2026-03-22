@@ -159,6 +159,7 @@ void saveMqttConfig() {
   // Puissance maximale des pompes
   prefs.putUChar("pump1_max_duty", mqttCfg.pump1MaxDutyPct);
   prefs.putUChar("pump2_max_duty", mqttCfg.pump2MaxDutyPct);
+  prefs.putFloat("pump_max_flow", mqttCfg.pumpMaxFlowMlPerMin);
 
   // Limites de sécurité
   prefs.putFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
@@ -249,6 +250,9 @@ void loadMqttConfig() {
   // Puissance maximale des pompes
   mqttCfg.pump1MaxDutyPct = prefs.getUChar("pump1_max_duty", mqttCfg.pump1MaxDutyPct);
   mqttCfg.pump2MaxDutyPct = prefs.getUChar("pump2_max_duty", mqttCfg.pump2MaxDutyPct);
+  mqttCfg.pumpMaxFlowMlPerMin = prefs.getFloat("pump_max_flow", mqttCfg.pumpMaxFlowMlPerMin);
+  phPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
+  orpPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
 
   // Limites de sécurité
   safetyLimits.maxPhMinusMlPerDay = prefs.getFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
