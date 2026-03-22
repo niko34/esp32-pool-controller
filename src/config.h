@@ -52,7 +52,7 @@ struct MqttConfig {
   int orpPump = 2;
   uint8_t pump1MaxDutyPct = 100;   // Puissance maximale pompe 1 en régulation (0-100 %)
   uint8_t pump2MaxDutyPct = 100;   // Puissance maximale pompe 2 en régulation (0-100 %)
-  float pumpMaxFlowMlPerMin = kPumpMaxFlowMlPerMin; // Débit maximal pompes (ml/min)
+  float pumpMaxFlowMlPerMin = 90.0f; // Débit maximal pompes (ml/min)
   int phInjectionLimitSeconds = 3600;
   int orpInjectionLimitSeconds = 3600;
   String regulationMode = "pilote";  // "continu" ou "pilote"
