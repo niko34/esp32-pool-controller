@@ -1391,12 +1391,13 @@
                   </div>
 
                   <div class="kv" style="margin-top:16px">
-                    <label class="kv__k" for="pump_max_flow_ml_per_min">Débit max des pompes (ml/min)</label>
-                    <input class="kv__v input" type="number" id="pump_max_flow_ml_per_min" min="1" max="500" step="0.1" value="90" aria-label="Débit maximal des pompes (ml/min)" />
+                    <label class="kv__k" for="pump_max_flow_ml_per_min">Débit nominal des pompes (ml/min)</label>
+                    <input class="kv__v input" type="number" id="pump_max_flow_ml_per_min" min="1" max="500" step="0.1" value="90" aria-label="Débit nominal des pompes (ml/min)" />
                   </div>
 
                   <div class="hint">
-                    Affectation des pompes doseuses, puissance maximale et débit nominal en régulation pH/ORP.
+                    Affectation des pompes doseuses et puissance maximale en régulation pH/ORP.<br>
+                    Le débit nominal correspond aux caractéristiques physiques des pompes (fiche technique) à puissance maximale. Il est utilisé pour estimer les volumes injectés.
                   </div>
                   <div class="detail-actions" style="margin-top:12px">
                     <button class="btn btn--primary" id="pump_config_save_btn">Sauvegarder</button>
