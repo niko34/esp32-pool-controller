@@ -27,3 +27,6 @@ ai/outputs/
 
 # KiCad (stored separately)
 kicad/
+
+# FreeCAD (stored separately)
+freecad/
