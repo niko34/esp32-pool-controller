@@ -629,7 +629,7 @@
       const data = await response.json();
 
       if (!data.history || data.history.length === 0) {
-        console.log('No historical data available');
+        debugLog('No historical data available');
         return;
       }
 
@@ -714,7 +714,7 @@
         updateMainChartScroll();
       }
 
-      console.log(`Loaded ${data.count} historical points (${range})`);
+      debugLog(`Loaded ${data.count} historical points (${range})`);
     } catch (error) {
       console.error('Error loading historical data:', error);
     }
@@ -1293,7 +1293,7 @@
       mdns: cfg.mdns_host ?? "poolcontroller.local"
     };
 
-    console.log("WiFi data loaded:", window._wifiData);
+    debugLog("WiFi data loaded");
 
     // Update WiFi display immediately after loading config
     updateWiFiDisplay();
@@ -3277,12 +3277,7 @@
 
   // ---------- Wi-Fi / System / Logs / Updates (ported endpoints) ----------
   function updateWiFiDisplay() {
-    console.log("updateWiFiDisplay() called, _wifiData:", window._wifiData);
-
-    if (!window._wifiData) {
-      console.warn("No WiFi data available");
-      return;
-    }
+    if (!window._wifiData) return;
 
     const wifi = window._wifiData;
     const ssidEl = $("#wifi_ssid");
@@ -3290,14 +3285,10 @@
     const modeEl = $("#wifi_mode");
     const mdnsEl = $("#wifi_mdns");
 
-    console.log("WiFi elements found:", { ssidEl: !!ssidEl, ipEl: !!ipEl, modeEl: !!modeEl, mdnsEl: !!mdnsEl });
-
     if (ssidEl) ssidEl.textContent = wifi.ssid;
     if (ipEl) ipEl.textContent = wifi.ip;
     if (modeEl) modeEl.textContent = wifi.mode;
     if (mdnsEl) mdnsEl.textContent = wifi.mdns;
-
-    console.log("WiFi display updated");
   }
 
   async function loadSystemInfo() {
