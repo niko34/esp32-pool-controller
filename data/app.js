@@ -5,7 +5,7 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
-  const DEBUG = true;
+  const DEBUG = false;
 
   // ---------- WebSocket ----------
   let _ws = null;
