@@ -67,7 +67,7 @@ ESP32 GPIO Layout:
 ├─ GPIO 35 (ADC1_7)  → pH (définition config, non utilisé si ADS1115)
 ├─ GPIO 5            → Sonde température DS18B20 (OneWire + pull-up 4.7kΩ)
 ├─ GPIO 27           → Relais filtration
-├─ GPIO 4            → Bouton reset mot de passe (NO vers GND, pull-up interne)
+├─ GPIO 32           → Bouton factory reset (NO vers 3.3V, pull-down interne)
 │
 ├─ Pompe 1 (pH-):
 │  └─ GPIO 25 → PWM 20kHz (Gate MOSFET IRLZ44N)
@@ -371,28 +371,27 @@ struct SimulationConfig {
 
 ## 🔐 Sécurité
 
-### Réinitialisation du Mot de Passe Admin
+### Factory Reset (bouton physique)
 
-Si vous oubliez le mot de passe administrateur de l'interface web, vous pouvez le réinitialiser via un bouton externe connecté à GPIO4.
+En cas d'oubli du mot de passe ou de nécessité de réinitialisation complète, utiliser le bouton factory reset connecté à GPIO32.
 
 **Matériel requis:**
 - Bouton poussoir normalement ouvert (NO)
-- Connexion: un côté à GPIO4, l'autre côté à GND
-- Pas besoin de résistance pull-up (déjà intégrée en interne)
+- Connexion: un côté à GPIO32, l'autre côté à 3.3V
+- Pas besoin de résistance pull-down (déjà intégrée en interne)
 
 **Procédure de réinitialisation:**
 
 1. **Débrancher l'alimentation** de l'ESP32
-2. **Maintenir enfoncé le bouton de réinitialisation** (connecté à GPIO4)
+2. **Maintenir enfoncé le bouton factory reset** (connecté à GPIO32)
 3. **Tout en maintenant le bouton**, rebrancher l'alimentation
 4. **Continuer à maintenir le bouton pendant 10 secondes**
    - La LED intégrée (GPIO2) va clignoter lentement pendant ces 10 secondes
    - Si vous relâchez le bouton avant 10 secondes, la réinitialisation est annulée
 5. **Après 10 secondes**, la LED clignote rapidement 5 fois pour confirmer
-6. **Le mot de passe est réinitialisé à:** `admin`
 
 **Caractéristiques techniques:**
-- Bouton: GPIO4 (actif bas, pull-up interne activé)
+- Bouton: GPIO32 (actif haut, pull-down interne activé)
 - LED feedback: GPIO2 (LED intégrée)
 - Durée requise: 10 secondes
 - Indication visuelle: Clignotement lent (100ms) puis rapide (200ms)
@@ -408,7 +407,7 @@ Si vous oubliez le mot de passe administrateur de l'interface web, vous pouvez l
 - ✅ Fichiers JSON sur LittleFS (consignes, limites, config) — préservés
 - ✅ Historique des mesures (partition séparée) — préservé
 
-**Note importante:** GPIO4 est un GPIO libre qui ne nécessite pas de précautions particulières au démarrage. Vous pouvez ajouter un bouton poussoir simple (bouton arcade, bouton panneau, etc.) dans votre boîtier pour faciliter l'accès à cette fonction.
+**Note importante:** GPIO32 est un GPIO libre qui ne nécessite pas de précautions particulières au démarrage.
 
 ### Bonnes Pratiques
 

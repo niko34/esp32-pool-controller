@@ -327,7 +327,7 @@ pio device monitor -b 9600
 ```
 Interface web → Système → Reset WiFi
 OU
-Bouton reset mot de passe (GPIO4) pendant 10s au démarrage
+Bouton factory reset (GPIO32) pendant 10s au démarrage
 ```
 
 ### Capteurs valeurs aberrantes
@@ -384,12 +384,12 @@ Interface web → Configuration → MQTT
 
 ### Mot de passe admin oublié
 
-**Solution**: Factory Reset via bouton sur GPIO4
+**Solution**: Factory Reset via bouton sur GPIO32
 
 #### Procédure de reset (Factory Reset complet)
 
 1. **Débrancher** l'alimentation ESP32
-2. **Maintenir** le bouton reset enfoncé (GPIO4 → GND)
+2. **Maintenir** le bouton reset enfoncé (GPIO32 → 3.3V)
 3. **Rebrancher** l'alimentation (continuer à maintenir le bouton)
 4. **Maintenir 10 secondes** (la LED clignote pour indiquer la progression)
 5. **Confirmation** : LED clignote rapidement 5× quand le reset est validé
@@ -415,7 +415,7 @@ Interface web → Configuration → MQTT
    - Étape 3 : Configurer l'heure (NTP ou manuel)
 5. **Terminer la configuration** et accéder au tableau de bord
 
-**Matériel requis**: Bouton externe NO (Normally Open) connecté entre **GPIO4** et **GND**. La résistance pull-up interne de l'ESP32 est activée automatiquement.
+**Matériel requis**: Bouton externe NO (Normally Open) connecté entre **GPIO32** et **3.3V**. La résistance pull-down interne de l'ESP32 est activée automatiquement.
 
 **⚠️ Attention** : Le Factory Reset efface **TOUTES** les données stockées dans la partition NVS (WiFi, préférences, etc.). Seule la configuration sauvegardée dans les fichiers JSON du système de fichiers LittleFS est conservée (consignes, limites, MQTT, etc.).
 

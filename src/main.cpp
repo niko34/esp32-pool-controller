@@ -170,6 +170,16 @@ void loop() {
   // Contrôle pompes dosage
   PumpController.update();
 
+  // Détection appui bouton reset en cours de fonctionnement (simple log, pas de reset)
+  {
+    static bool lastButtonState = LOW;
+    bool buttonState = digitalRead(FACTORY_RESET_BUTTON_PIN);
+    if (buttonState == HIGH && lastButtonState == LOW) {
+      systemLogger.info("Bouton reset détecté (GPIO" + String(FACTORY_RESET_BUTTON_PIN) + ") - maintenir au démarrage pour factory reset");
+    }
+    lastButtonState = buttonState;
+  }
+
   // Vérification santé système périodique
   static unsigned long lastHealthCheck = 0;
   if (now - lastHealthCheck >= kHealthCheckIntervalMs) {
@@ -472,13 +482,13 @@ void checkSystemHealth() {
 }
 
 void checkPasswordResetButton() {
-  // Initialiser le bouton de réinitialisation (GPIO4) et la LED
-  pinMode(PASSWORD_RESET_BUTTON_PIN, INPUT_PULLUP);
+  // Initialiser le bouton de réinitialisation (GPIO32) et la LED
+  pinMode(FACTORY_RESET_BUTTON_PIN, INPUT_PULLDOWN);
   pinMode(BUILTIN_LED_PIN, OUTPUT);
   digitalWrite(BUILTIN_LED_PIN, LOW);  // LED éteinte par défaut
 
-  // Vérifier si le bouton est maintenu enfoncé (actif bas)
-  if (digitalRead(PASSWORD_RESET_BUTTON_PIN) == HIGH) {
+  // Vérifier si le bouton est maintenu enfoncé (actif haut)
+  if (digitalRead(FACTORY_RESET_BUTTON_PIN) == LOW) {
     // Bouton relâché, pas de réinitialisation
     return;
   }
@@ -492,7 +502,7 @@ void checkPasswordResetButton() {
   // Faire clignoter la LED pendant 10 secondes
   while (millis() - startTime < kPasswordResetButtonHoldMs) {
     // Vérifier que le bouton est toujours enfoncé
-    if (digitalRead(PASSWORD_RESET_BUTTON_PIN) == HIGH) {
+    if (digitalRead(FACTORY_RESET_BUTTON_PIN) == LOW) {
       resetConfirmed = false;
       systemLogger.info("Bouton relâché - Réinitialisation annulée");
       break;

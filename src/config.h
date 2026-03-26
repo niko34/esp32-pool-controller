@@ -22,7 +22,7 @@
 #define TEMP_SENSOR_PIN 5
 #define FILTRATION_RELAY_PIN 25
 #define LIGHTING_RELAY_PIN 26           // Relais pour éclairage piscine
-#define PASSWORD_RESET_BUTTON_PIN 4     // GPIO4 - Bouton reset mot de passe (actif bas, pull-up interne)
+#define FACTORY_RESET_BUTTON_PIN 32    // GPIO32 - Bouton factory reset (actif haut, pull-down interne)
 #define BUILTIN_LED_PIN 2               // GPIO2 - LED intégrée ESP32
 
 // ==== Constantes ====
