@@ -2,118 +2,53 @@
 
 Disclaimer : projet en cours de construction.
 
-Contrôleur automatique de piscine basé sur ESP32 avec gestion pH, ORP (chlore), température et filtration automatique. Intégration complète avec Home Assistant via MQTT.
+Contrôleur automatique de piscine basé sur ESP32 :
+- mesure : température, pH, ORP
+- pilotage : pompe de filtration, éclairage
+- correction avec pompes doseuses : pH et ORP
+- interfaces : application web locale, MQTT, API
 
-**Version actuelle**: 2.9.4
+**Version actuelle**: 1.0.3
 
 ## 🎯 Fonctionnalités
 
 ### Mesures et Contrôle
 - **pH** : Mesure précise via capteur pH analogique lue par un **ADS1115 16-bit unique** (partagé pH/ORP) avec compensation automatique de température
 - **ORP (Redox)** : Mesure analogique lue par le **même ADS1115 16-bit** et dosage automatique de chlore
-- **Température** : Sonde Dallas DS18B20 avec lecture non-bloquante
-- **Filtration** : Contrôle automatique basé sur la température de l'eau
-- **Pompes doseuses** : Contrôle PWM 20kHz silencieux (0-100%) via MOSFETs IRLZ44N
+- **Température** : Sonde Dallas DS18B20
+- **Historique** : Historique des mesures
+- **Filtration** : Programmation automatique en fonction de la température de l'eau, programmation horaire, manuel
+- **Eclairage** : Programmation horaire, manuel
+- **Régulation automatique de pH et ORP** : Injection de produit de correction (pH-, pH+, Chlore liquide) avec régulation PID et contrôle de débit PWM.
+- **Consommation de produits** : Estimation de la consommation de produit
+- **Application Web locale** : Configuration et visualisation temps réel. Accessible sur le réseau Wifi configuré (`http://poolcontroller.local`) ou un réseau Wifi de en mode point d'accès (`http://192.168.4.1`). Aucune dépendance au Cloud.
+- **API** : Toutes les fonctionnalités sont exposées avec une API
+- **MQTT** : Exposition des données sur MQTT. Auto-discovery HomeAssistant.
+- **Mise à jour OTA** : Mise à jour firmware via interface web
 
 ### Sécurité
-- ⚠️ **Limites journalières** : Protection contre le surdosage (500ml pH- / 300ml chlore par défaut)
+- ⚠️ **Limites journalières** : Protection contre le surdosage
 - ⚠️ **Limites horaires** : Temps maximum d'injection par heure configurable
-- ⚠️ **Watchdog** : Redémarrage automatique en cas de blocage (30s)
+- ⚠️ **Watchdog** : Redémarrage automatique en cas de blocage du système (30s)
 - ⚠️ **Alertes MQTT** : Notifications en cas d'anomalie
-- ⚠️ **Validation entrées** : Toutes les entrées utilisateur sont validées
-
-### Automatisation
-- **Mode Auto** : Calcul automatique du temps de filtration (température ÷ 2)
-- **Mode Manuel** : Plages horaires personnalisées
-- **Contrôle PID** : Dosage progressif pour éviter les oscillations
-- **Intégration Home Assistant** : Auto-discovery MQTT
-
-### Monitoring
-- **Interface Web** : Configuration et visualisation temps réel
-- **Logs système** : Buffer circulaire de 100 entrées avec filtrage par niveau
-- **Historique** : Suivi des injections et alertes
-- **Test manuel** : Interface de test des pompes avec contrôle de puissance (0-100%)
-- **Mise à jour OTA** : Mise à jour firmware via interface web
-- **mDNS** : Accessible via `poolcontroller.local`
 
 ## 📋 Matériel Requis
 
-### Composants Principaux
-- **ESP32 DevKit** (ou équivalent)
-- **Capteur pH analogique** (sortie tension)
-- **Capteur ORP analogique** (0–1000 mV)
-- **ADS1115** - Convertisseur ADC 16-bit I2C **unique**, partagé entre pH et ORP
-- **Sonde température DS18B20** étanche
-- **2x Pompes doseuses péristaltiques** (12V DC)
-- **2x MOSFETs IRLZ44N** (logic-level, pour contrôle PWM des pompes)
-- **Relais 5V/230V** pour pompe de filtration
-- **Alimentation 5V/2A** pour ESP32
-- **Alimentation 12V/2A** pour pompes
+### PCB
 
-### Optionnel
-- Boîtier étanche IP65
-- Convertisseur DC-DC 12V→5V
-- Protection surtension
+Les fichiers Gerber pour la fabrication du PCB sont disponibles dans le dossier [`hardware/`](hardware/Gerber.zip).
 
-## 🔌 Schéma de Câblage
+<p align="center">
+  <img src="screenshots/Schema.png" width="48%" alt="Schéma électronique" />
+  <img src="screenshots/PCB.png" width="48%" alt="PCB" />
+</p>
 
-```
-ESP32 GPIO Layout:
-├─ I2C (Capteurs ADS1115):
-│  ├─ GPIO 21 (SDA) → ADS1115 SDA
-│  └─ GPIO 22 (SCL) → ADS1115 SCL
-│
-├─ GPIO 34 (ADC1_6)  → ORP (définition config, non utilisé si ADS1115)
-├─ GPIO 35 (ADC1_7)  → pH (définition config, non utilisé si ADS1115)
-├─ GPIO 5            → Sonde température DS18B20 (OneWire + pull-up 4.7kΩ)
-├─ GPIO 27           → Relais filtration
-├─ GPIO 32           → Bouton factory reset (NO vers 3.3V, pull-down interne)
-│
-├─ Pompe 1 (pH-):
-│  └─ GPIO 25 → PWM 20kHz (Gate MOSFET IRLZ44N)
-│
-└─ Pompe 2 (Chlore):
-   └─ GPIO 26 → PWM 20kHz (Gate MOSFET IRLZ44N)
-```
+### Boîtier
 
-**Notes importantes**:
-- Les capteurs pH et ORP sont connectés **au même ADS1115** via I2C (canaux A0 et A1)
-- Les GPIO 34 et 35 sont définis dans le code mais **non utilisés** lorsque l’ADS1115 est actif
-- PWM configuré à 20kHz pour éviter le sifflement audible des pompes
-- Résolution PWM 8-bit (0-255) pour contrôle fin du débit
+Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dossier [`hardware/`](hardware/) :
 
-### Branchement Capteurs
-
-**Capteurs pH et ORP (via ADS1115 unique partagé):**
-```
-pH / ORP Sensors → ADS1115 → ESP32
-  pH OUT     → A0
-  ORP OUT    → A1
-  VDD        → 3.3V
-  GND        → GND
-  SDA        → GPIO 21 (I2C SDA)
-  SCL        → GPIO 22 (I2C SCL)
-  Adresse I2C: 0x48
-```
-
-**Sonde Température:**
-```
-DS18B20 → ESP32
-  VCC   → 3.3V
-  GND   → GND
-  DATA  → GPIO 5 + Pull-up 4.7kΩ vers 3.3V
-```
-
-**Pompes Doseuses (via MOSFETs IRLZ44N):**
-```
-Pompe 1 (pH-):
-  ESP32 GPIO 25 → Gate MOSFET IRLZ44N
-  MOSFET Drain  → Pompe 12V (-)
-  MOSFET Source → GND
-  Pompe 12V (+) → Alimentation 12V (+)
-
-Pompe 2 (Chlore): Identique sur GPIO 26
-```
+- [`esp32-pool-controller v3-Boitier.stl`](hardware/esp32-pool-controller%20v3-Boitier.stl) — Corps du boîtier
+- [`esp32-pool-controller v3-Couvercle.stl`](hardware/esp32-pool-controller%20v3-Couvercle.stl) — Couvercle
 
 ## 🚀 Installation
 
@@ -211,8 +146,8 @@ Pompe 2 (Chlore): Identique sur GPIO 26
 - ORP cible: 650 mV (recommandé: 650 - 750 mV)
 
 **Limites de Sécurité:**
-- pH- max/jour: 500 ml (ajuster selon volume piscine)
-- Chlore max/jour: 300 ml (ajuster selon volume piscine)
+- pH- max/jour: 1000 ml (ajuster selon volume piscine)
+- Chlore max/jour: 1000 ml (ajuster selon volume piscine)
 - Temps injection max/heure: 60 secondes
 
 **Filtration:**
@@ -382,19 +317,21 @@ En cas d'oubli du mot de passe ou de nécessité de réinitialisation complète,
 
 **Procédure de réinitialisation:**
 
-1. **Débrancher l'alimentation** de l'ESP32
-2. **Maintenir enfoncé le bouton factory reset** (connecté à GPIO32)
-3. **Tout en maintenant le bouton**, rebrancher l'alimentation
-4. **Continuer à maintenir le bouton pendant 10 secondes**
-   - La LED intégrée (GPIO2) va clignoter lentement pendant ces 10 secondes
-   - Si vous relâchez le bouton avant 10 secondes, la réinitialisation est annulée
-5. **Après 10 secondes**, la LED clignote rapidement 5 fois pour confirmer
+Le factory reset se déclenche pendant le fonctionnement normal de l'ESP32 (pas besoin de couper l'alimentation) :
+
+1. **Appuyer et maintenir** le bouton factory reset (GPIO32)
+   - Le log série affiche : `Bouton reset enfoncé - maintenir 10s pour factory reset`
+   - La LED intégrée (GPIO2) clignote lentement pendant l'appui
+2. **Maintenir 10 secondes**
+   - Relâcher avant 10s annule la réinitialisation (log : `factory reset annulé`)
+3. **Après 10 secondes**, la LED clignote rapidement 5 fois pour confirmer
+4. L'ESP32 redémarre automatiquement
 
 **Caractéristiques techniques:**
 - Bouton: GPIO32 (actif haut, pull-down interne activé)
 - LED feedback: GPIO2 (LED intégrée)
 - Durée requise: 10 secondes
-- Indication visuelle: Clignotement lent (100ms) puis rapide (200ms)
+- Indication visuelle: Clignotement lent pendant l'appui, rapide (×5) à la confirmation
 
 **Ce qui est réinitialisé (partition NVS effacée entièrement) :**
 - ✅ Mot de passe administrateur → `admin`

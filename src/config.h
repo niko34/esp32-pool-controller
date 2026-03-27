@@ -14,10 +14,6 @@
 #define PUMP_PWM_FREQ 20000   // 20kHz PWM
 #define PUMP_PWM_RES_BITS 8  // 8-bit resolution (0-255)
 
-// Capteurs analogiques (ADS1115 via I2C)
-#define PH_SENSOR_PIN 35     // GPIO pour capteur pH (ADC1_7)
-#define ORP_SENSOR_PIN 34    // GPIO pour capteur ORP (ADC1_6)
-
 // Capteurs et actionneurs
 #define TEMP_SENSOR_PIN 5
 #define FILTRATION_RELAY_PIN 25

@@ -30,8 +30,8 @@ constexpr unsigned long kRestartApModeDelayMs = 1000;     // 1s - Attente avant 
 constexpr unsigned long kI2cMutexTimeoutMs = 2000;        // 2s - Timeout acquisition mutex I2C
 constexpr unsigned long kConfigMutexTimeoutMs = 1000;     // 1s - Timeout acquisition mutex config
 
-// Sécurité - Réinitialisation mot de passe
-constexpr unsigned long kPasswordResetButtonHoldMs = 5000; // 5s - Maintien bouton pour reset
+// Sécurité - Factory reset bouton
+constexpr unsigned long kFactoryResetButtonHoldMs = 10000; // 10s - Maintien bouton pour factory reset
 
 // Sécurité - Rate limiting
 constexpr uint16_t kMaxRequestsPerMinute = 30;            // Limite globale par IP

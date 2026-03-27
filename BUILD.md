@@ -83,9 +83,20 @@ python3 ~/.platformio/packages/tool-esptoolpy/esptool.py \
   write_flash 0x2B0000 .pio/build/esp32dev/littlefs.bin
 ```
 
+### Compilation complète en une commande
+
+Pour compiler firmware + filesystem et copier les deux `.bin` à la racine du projet (utile avant une mise à jour OTA manuelle) :
+
+```bash
+./build_all.sh
+```
+
+Ce script enchaîne `pio run`, `build_fs.sh`, puis copie `firmware.bin` et `littlefs.bin` à la racine. Ces fichiers peuvent ensuite être uploadés via l'interface web (Système → Mise à jour OTA).
+
 ## Structure des fichiers
 
 - `partitions.csv` - Table de partitions personnalisée
+- `build_all.sh` - Script tout-en-un : compile firmware + filesystem, copie les `.bin` à la racine
 - `build_fs.sh` - Script pour construire LittleFS (avec minification)
 - `minify.js` - Script de minification HTML/CSS/JS (Node.js)
 - `data/` - Fichiers web sources (HTML, CSS, JS, images)

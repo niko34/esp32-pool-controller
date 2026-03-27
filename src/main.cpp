@@ -37,7 +37,6 @@ bool setupWiFi();
 void resetWiFiSettings();
 void applyTimeConfig();
 void checkSystemHealth();
-void checkPasswordResetButton();
 void onNtpTimeSync();
 
 void setup() {
@@ -48,8 +47,10 @@ void setup() {
   systemLogger.info("=== Démarrage ESP32 Pool Controller v" + String(FIRMWARE_VERSION) + " ===");
   systemLogger.info("Build: " + String(FIRMWARE_BUILD_DATE) + " " + String(FIRMWARE_BUILD_TIME));
 
-  // Vérifier le bouton de réinitialisation AVANT de charger la config
-  checkPasswordResetButton();
+  // Initialisation GPIO bouton factory reset et LED intégrée
+  pinMode(FACTORY_RESET_BUTTON_PIN, INPUT_PULLDOWN);
+  pinMode(BUILTIN_LED_PIN, OUTPUT);
+  digitalWrite(BUILTIN_LED_PIN, LOW);
 
   // Initialisation watchdog
   esp_task_wdt_init(kWatchdogTimeoutSec, true);
@@ -170,13 +171,51 @@ void loop() {
   // Contrôle pompes dosage
   PumpController.update();
 
-  // Détection appui bouton reset en cours de fonctionnement (simple log, pas de reset)
+  // Détection appui long bouton factory reset (10s) en cours de fonctionnement
   {
+    static unsigned long buttonPressStart = 0;
     static bool lastButtonState = LOW;
+    static bool ledState = false;
+    static unsigned long lastLedToggle = 0;
     bool buttonState = digitalRead(FACTORY_RESET_BUTTON_PIN);
+
     if (buttonState == HIGH && lastButtonState == LOW) {
-      systemLogger.info("Bouton reset détecté (GPIO" + String(FACTORY_RESET_BUTTON_PIN) + ") - maintenir au démarrage pour factory reset");
+      // Début d'appui
+      buttonPressStart = now;
+      systemLogger.info("Bouton reset enfoncé - maintenir 10s pour factory reset");
+    } else if (buttonState == HIGH && buttonPressStart > 0) {
+      unsigned long held = now - buttonPressStart;
+
+      // Faire clignoter la LED pendant l'appui
+      if (now - lastLedToggle >= 200) {
+        ledState = !ledState;
+        digitalWrite(BUILTIN_LED_PIN, ledState);
+        lastLedToggle = now;
+        esp_task_wdt_reset();
+      }
+
+      // Factory reset après 10s
+      if (held >= kFactoryResetButtonHoldMs) {
+        systemLogger.critical("=== FACTORY RESET CONFIRMÉ (appui 10s) ===");
+        // Clignotement rapide de confirmation (5 fois)
+        for (int i = 0; i < 10; i++) {
+          digitalWrite(BUILTIN_LED_PIN, i % 2);
+          delay(150);
+        }
+        digitalWrite(BUILTIN_LED_PIN, LOW);
+        resetWiFiSettings();
+        delay(500);
+        ESP.restart();
+      }
+    } else if (buttonState == LOW && lastButtonState == HIGH) {
+      // Relâché avant 10s
+      if (buttonPressStart > 0 && (now - buttonPressStart) < kFactoryResetButtonHoldMs) {
+        systemLogger.info("Bouton relâché - factory reset annulé");
+      }
+      buttonPressStart = 0;
+      digitalWrite(BUILTIN_LED_PIN, LOW);
     }
+
     lastButtonState = buttonState;
   }
 
@@ -481,72 +520,3 @@ void checkSystemHealth() {
   systemLogger.debug("Health check OK - Heap: " + String(freeHeap) + " bytes");
 }
 
-void checkPasswordResetButton() {
-  // Initialiser le bouton de réinitialisation (GPIO32) et la LED
-  pinMode(FACTORY_RESET_BUTTON_PIN, INPUT_PULLDOWN);
-  pinMode(BUILTIN_LED_PIN, OUTPUT);
-  digitalWrite(BUILTIN_LED_PIN, LOW);  // LED éteinte par défaut
-
-  // Vérifier si le bouton est maintenu enfoncé (actif haut)
-  if (digitalRead(FACTORY_RESET_BUTTON_PIN) == LOW) {
-    // Bouton relâché, pas de réinitialisation
-    return;
-  }
-
-  systemLogger.warning("Bouton de réinitialisation détecté enfoncé au démarrage");
-  systemLogger.info("Maintenez enfoncé pendant 10s pour réinitialiser le mot de passe...");
-
-  unsigned long startTime = millis();
-  bool resetConfirmed = true;
-
-  // Faire clignoter la LED pendant 10 secondes
-  while (millis() - startTime < kPasswordResetButtonHoldMs) {
-    // Vérifier que le bouton est toujours enfoncé
-    if (digitalRead(FACTORY_RESET_BUTTON_PIN) == LOW) {
-      resetConfirmed = false;
-      systemLogger.info("Bouton relâché - Réinitialisation annulée");
-      break;
-    }
-
-    // Clignoter la LED (100ms ON / 100ms OFF)
-    digitalWrite(BUILTIN_LED_PIN, (millis() / 100) % 2);
-    delay(50);
-  }
-
-  // Éteindre la LED
-  digitalWrite(BUILTIN_LED_PIN, LOW);
-
-  if (resetConfirmed) {
-    systemLogger.critical("=== RÉINITIALISATION MOT DE PASSE CONFIRMÉE ===");
-
-    // Charger la config actuelle
-    loadMqttConfig();
-
-    // Réinitialiser le mot de passe
-    authCfg.adminPassword = "admin";
-    authCfg.apiToken = "";
-    authCfg.forceWifiConfig = true;
-
-    // Sauvegarder la config avec le nouveau mot de passe
-    saveMqttConfig();
-
-    systemLogger.critical("Mot de passe réinitialisé à 'admin'");
-    systemLogger.warning("Changement de mot de passe obligatoire au prochain login");
-
-    // Effacer les credentials WiFi
-    systemLogger.warning("Effacement des credentials WiFi...");
-    resetWiFiSettings();
-    systemLogger.info("WiFi réinitialisé - Mode AP uniquement au prochain démarrage");
-
-    // Faire clignoter rapidement la LED 5 fois pour confirmer
-    for (int i = 0; i < 10; i++) {
-      digitalWrite(BUILTIN_LED_PIN, i % 2);
-      delay(200);
-    }
-
-    // Redémarrer l'ESP32 pour appliquer les changements
-    systemLogger.critical("Redémarrage de l'ESP32...");
-    delay(1000);
-    ESP.restart();
-  }
-}

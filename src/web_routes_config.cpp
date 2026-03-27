@@ -124,9 +124,6 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["mdns_host"] = "poolcontroller.local";
   doc["max_ph_ml_per_day"] = safetyLimits.maxPhMinusMlPerDay;
   doc["max_chlorine_ml_per_day"] = safetyLimits.maxChlorineMlPerDay;
-  doc["ph_sensor_pin"] = PH_SENSOR_PIN;
-  doc["orp_sensor_pin"] = ORP_SENSOR_PIN;
-
   // Données de calibration pH
   doc["ph_cal_valid"] = sensors.isPhCalibrated();
   doc["ph_calibration_date"] = mqttCfg.phCalibrationDate;

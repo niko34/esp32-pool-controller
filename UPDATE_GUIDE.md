@@ -2,17 +2,25 @@
 
 ## Génération des Fichiers
 
-### Firmware (.bin)
-Code de l'application (C++/Arduino).
+### Compilation complète (recommandé)
 
+Pour préparer les deux fichiers en une seule commande :
+
+```bash
+./build_all.sh
+```
+
+Ce script compile le firmware, construit le filesystem, puis copie `firmware.bin` et `littlefs.bin` à la racine du projet — prêts à être uploadés via l'interface web.
+
+### Compilation séparée
+
+#### Firmware (.bin)
 ```bash
 pio run
 ```
 Fichier généré : `.pio/build/esp32dev/firmware.bin`
 
-### Système de Fichiers (.littlefs.bin)
-Fichiers web (HTML, CSS, JS).
-
+#### Système de Fichiers (littlefs.bin)
 ```bash
 ./build_fs.sh
 ```

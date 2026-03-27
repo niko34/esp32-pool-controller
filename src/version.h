@@ -5,7 +5,7 @@
 // MAJEUR = changements incompatibles
 // MINEUR = nouvelles fonctionnalités rétrocompatibles
 // CORRECTIF = corrections de bugs
-#define FIRMWARE_VERSION "1.0.1"
+#define FIRMWARE_VERSION "1.0.3"
 #define FIRMWARE_BUILD_DATE __DATE__
 #define FIRMWARE_BUILD_TIME __TIME__
 

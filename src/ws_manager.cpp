@@ -222,8 +222,6 @@ String WsManager::_buildConfigJson() const {
   d["mdns_host"]        = "poolcontroller.local";
   d["max_ph_ml_per_day"]      = safetyLimits.maxPhMinusMlPerDay;
   d["max_chlorine_ml_per_day"]= safetyLimits.maxChlorineMlPerDay;
-  d["ph_sensor_pin"]    = PH_SENSOR_PIN;
-  d["orp_sensor_pin"]   = ORP_SENSOR_PIN;
   d["ph_cal_valid"]     = sensors.isPhCalibrated();
   d["ph_calibration_date"]  = mqttCfg.phCalibrationDate;
   if (!isnan(mqttCfg.phCalibrationTemp)) d["ph_calibration_temp"] = mqttCfg.phCalibrationTemp;

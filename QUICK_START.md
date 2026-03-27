@@ -12,7 +12,7 @@
 ✅ **Logiciels:**
 - VS Code installé
 - Extension PlatformIO installée
-- Python 3 (pour minification)
+- Node.js (pour la minification des fichiers web)
 
 ### Étape 1: Installation (5 min)
 
@@ -82,7 +82,7 @@ pio device monitor -b 115200
 
 **Logs attendus:**
 ```
-[INFO] === Démarrage ESP32 Pool Controller v2.9.4 ===
+[INFO] === Démarrage ESP32 Pool Controller vX.X.X ===
 [INFO] Watchdog activé (30s)
 [INFO] LittleFS monté avec succès
 [INFO] Configuration chargée avec succès
@@ -327,7 +327,7 @@ pio device monitor -b 9600
 ```
 Interface web → Système → Reset WiFi
 OU
-Bouton factory reset (GPIO32) pendant 10s au démarrage
+Bouton factory reset (GPIO32) maintenu 10s pendant le fonctionnement
 ```
 
 ### Capteurs valeurs aberrantes
@@ -388,12 +388,14 @@ Interface web → Configuration → MQTT
 
 #### Procédure de reset (Factory Reset complet)
 
-1. **Débrancher** l'alimentation ESP32
-2. **Maintenir** le bouton reset enfoncé (GPIO32 → 3.3V)
-3. **Rebrancher** l'alimentation (continuer à maintenir le bouton)
-4. **Maintenir 10 secondes** (la LED clignote pour indiquer la progression)
-5. **Confirmation** : LED clignote rapidement 5× quand le reset est validé
-6. **Redémarrage automatique** de l'ESP32
+Le factory reset se déclenche pendant le fonctionnement normal — pas besoin de couper l'alimentation :
+
+1. **Appuyer et maintenir** le bouton reset (GPIO32 → 3.3V)
+   - La LED intégrée (GPIO2) clignote lentement pour indiquer la progression
+2. **Maintenir 10 secondes**
+   - Relâcher avant 10s annule le reset
+3. **Confirmation** : LED clignote rapidement 5× quand le reset est validé
+4. **Redémarrage automatique** de l'ESP32
 
 #### Effets du Factory Reset
 
