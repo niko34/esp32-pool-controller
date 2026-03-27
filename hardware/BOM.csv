@@ -1,0 +1,36 @@
+Reference;Qty;Value;Footprint;Référence;Lien
+C1,C2,C3,C6,C7,C10,C11,C12,C14,C16,C18,C20,C22,C24;14;100nF céramique;Capacitor_THT:C_Disc_D3.8mm_W2.6mm_P2.50mm;K104K10X7RF5UL2;https://www.tme.eu/fr/details/k104k10x7rf5ul2/condensateurs-en-ceramique/vishay/
+C4,C5,C8,C9,C13,C17,C19,C21,C23;9;10µF céramique mlcc;Capacitor_THT:C_Disc_D6.0mm_W4.4mm_P5.00mm;FG20X7R1H106KRT06;https://www.tme.eu/fr/details/fg20x7r1h106krt06/condensateurs-mlcc-tht/tdk/
+C15;1;470µF;Capacitor_THT:CP_Radial_D10.0mm_P5.00mm;;
+D1;1;1N5245B;Diode_THT:D_DO-35_SOD27_P7.62mm_Horizontal;;
+D2,D4,D6,D7;4;1N5819;Diode_THT:D_DO-15_P10.16mm_Horizontal;;
+D5;1;P6KE13A;Diode_THT:D_DO-15_P10.16mm_Horizontal;;
+F1;1;Fusible polymère PTC;Fuse:Fuse_Bourns_MF-RHT200;FX200-16 FX200-16 ECE;https://www.tme.eu/fr/details/fx200-16/fusibles-en-polymere-tht/ece/
+FB1,FB2;2;BBPY00321611601Y00;Resistor_SMD:R_1206_3216Metric;;
+J1,J2,J5,J8,J9;5;DG301-5.0-02P-12-00A;TerminalBlock_Altech:Altech_AK100_1x02_P5.00mm;;
+J3;1;module ADC ADS1115;Connector_PinSocket_2.54mm:PinSocket_1x10_P2.54mm_Vertical;;https://www.aliexpress.com/item/1005006390649404.html?src=google&src=google&albch=shopping&acnt=248-630-5778&slnk=&plac=&mtctp=&albbt=Google_7_shopping&gclsrc=aw.ds&albagn=888888&ds_e_adid=796733351213&ds_e_matchtype=search&ds_e_device=c&ds_e_network=g&ds_e_product_group_id=2466574367433&ds_e_product_id=fr1005006390649404&ds_e_product_merchant_id=5085734345&ds_e_product_country=FR&ds_e_product_language=fr&ds_e_product_channel=online&ds_e_product_store_id=&ds_url_v=2&albcp=23540084289&albag=190785579497&isSmbAutoCall=false&needSmbHouyi=false&gad_source=1&gad_campaignid=23540084289&gbraid=0AAAAACWaBwfQdZB4EMZ5MCcAV_PsOyrFU&gclid=Cj0KCQjw7IjOBhDyARIsAFzrWQzczjCT92PYxpsA-REFiG4VVuNtn6JSKK_cNbsQ5kwxc13CSa1zGpsaAjyXEALw_wcB&aff_fcid=79e6e99111ee4f1c95b2b6647cd914a6-1774371888895-04573-irey5Th&aff_fsk=irey5Th&aff_platform=promotion&sk=irey5Th&aff_trace_key=79e6e99111ee4f1c95b2b6647cd914a6-1774371888895-04573-irey5Th&terminal_id=9a414890b6904894a7b4550ae0a93bba&afSmartRedirect=n
+J4,J6,J7;3;DG301-5.0-03P-12-00AH;TerminalBlock_Altech:Altech_AK100_1x03_P5.00mm;DG301-5.0-03P-12-00AH;https://www.tme.eu/fr/details/dg301-5.0-3p12/blocs-de-bornes-dimpression/degson-electronics/dg301-5-0-03p-12-00a-h/
+J11;1;Module RTC DS3231 AT24C32 IIC;Connector_PinSocket_2.54mm:PinSocket_1x06_P2.54mm_Vertical;;Aliexpress
+Q2,Q4,Q6,Q7;4;IRLZ44N;Package_TO_SOT_THT:TO-220-3_Vertical;IRLZ44N;https://www.tme.eu/fr/details/irlz44npbf/transistors-tht-a-canal-n/infineon-technologies/
+Q5;1;IRF4905;Package_TO_SOT_THT:TO-220-3_Vertical;IRF4905;https://www.tme.eu/fr/details/irf4905pbf/transistors-a-canal-p-tht/infineon-technologies/
+R1;1;1KΩ;Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal;;
+R2;1;2.2KΩ;Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal;;
+R4,R7,R13,R15;4;100Ω;Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal;;
+R3, R5,R6,R8,R10,R12,R14,R16;8;10KΩ;Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal;;
+R9,R19,R20;3;4.7KΩ;Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal;;
+R11;1;100KΩ;Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal;;
+SW1;1;bouton 6mmx6mm (boitier) 6mmx4.5mm (pins);Button_Switch_THT:SW_PUSH_6mm;;
+U2;1;ESP32-DevKitC;Espressif:ESP32-DevKitC;;
+U3;1;Pololu D24V10F3;Pololu_D24V10F3;D24V10F3;https://www.tme.eu/fr/details/pololu-2830/onduleurs/pololu/3-3v-1a-step-down-d24v10f3/
+U4;1;Murata OKI-78SR-5_1.5-W36-C;Converter_DCDC:Converter_DCDC_Murata_OKI-78SR_Vertical;OKI-78SR-5;https://www.tme.eu/fr/details/oki-78sr5_1.5w36hc/convertisseurs-dc-dc/murata-power-solutions/oki-78sr-5-1-5-w36h-c/
+Si contrôle filtration : Contacteur rail DIN 12V / 220V 25A;1;;Finder 22.32.0.012.4340;;https://www.conrad.fr/fr/p/contacteur-finder-22-32-0-012-4340-2-no-t-12-v-dc-12-v-ac-25-a-1-pc-s-504712.html
+Si contrôle filtration : Contacteur rail DIN 12V / 220V 25A;1;;Finder 22.32.0.012.4340;;https://www.conrad.fr/fr/p/contacteur-finder-22-32-0-012-4340-2-no-t-12-v-dc-12-v-ac-25-a-1-pc-s-504712.html
+Pompe Péristaltique 12V  avec tuyau en BPT PharMed (plus simple à trouver que tuyau Norprene ou Santoprène);2;;;;https://fr.aliexpress.com/item/1005008568962671.html?spm=a2g0o.order_list.order_list_main.110.25855e5b3NTOSc&gatewayAdapt=glo2fra
+Si tuyau pompe pas en Pharmed : tuyau Pharmed à la coupe;1;;;;https://fr.aliexpress.com/item/1005005939700189.html?spm=a2g0o.order_list.order_list_main.11.25855e5b3NTOSc&gatewayAdapt=glo2fra
+Raccord ou clapet anti-retour en PVDF vers tuyau injection 4x6. Taille 1/8'';2;;;KH-CSDV2;https://fr.aliexpress.com/item/32721015040.html?spm=a2g0o.order_list.order_list_main.5.25855e5b3NTOSc&gatewayAdapt=glo2fra
+Tuyau 4x6mm en PE pour raccorder tuyau pompe au bidon de produit;2;;;;https://eau2.fr/tube-pe-chlore-et-ph/597-49-tube-pe-4x6mm-chlore-ph-piscine-pompe.html#/30-bobine-1_ml_a_la_coupe
+Alimentation Rail DIN : Mean Well HDR-30-12 2A;1;;;;https://www.amazon.fr/dp/B071KXJPYB?ref=ppx_yo2ov_dt_b_fed_asin_title
+Clapet d'injection raccord 1/2'' Chlore ou pH;2;;;11.100.088;https://eau2.fr/analyseur-pieces-detachees-astralpool/404-clapet-ou-canne-injection-chlore-microdos-11100088-injection-ph-8432611951310.html
+Collecteur piscine porte sonde diamètre 50;1;;;;https://jardiboutique.com/fr/regulateur-ph-rx/15015-collecteur-piscine-porte-sonde-transparent-diametre-50-jardiboutique-jb-so-1n500.html
+Module pH DFRobot SEN0161-V2 (livré avec sonde);1;;;SEN0161-V2;https://fr.farnell.com/dfrobot/sen0161-v2/capteur-mesure-de-ph-analog-v2/dp/3769978
+Module ORP + sonde ORP;1;;;;Aliexpress
