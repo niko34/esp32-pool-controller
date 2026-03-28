@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="data/apple-touch-icon.png" width="120" alt="ESP32 Pool Controller" />
+</p>
+
 # ESP32 Pool Controller
 
 Disclaimer : projet en cours de construction.
@@ -21,7 +25,7 @@ Contrôleur automatique de piscine basé sur ESP32 :
 - **Eclairage** : Programmation horaire, manuel
 - **Régulation automatique de pH et ORP** : Injection de produit de correction (pH-, pH+, Chlore liquide) avec régulation PID et contrôle de débit PWM.
 - **Consommation de produits** : Estimation de la consommation de produit
-- **Application Web locale** : Configuration et visualisation temps réel. Accessible sur le réseau Wifi configuré (`http://poolcontroller.local`) ou un réseau Wifi de en mode point d'accès (`http://192.168.4.1`). Aucune dépendance au Cloud.
+- **Application Web locale** : Configuration et visualisation temps réel. Accessible sur le réseau Wifi configuré (`http://poolcontroller.local`) ou un réseau Wifi de en mode point d'accès (`http://192.168.4.1`). Aucune dépendance au Cloud. [Voir les screenshots](screenshots/)
 - **API** : Toutes les fonctionnalités sont exposées avec une API
 - **MQTT** : Exposition des données sur MQTT. Auto-discovery HomeAssistant.
 - **Mise à jour OTA** : Mise à jour firmware via interface web
