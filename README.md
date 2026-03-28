@@ -239,7 +239,7 @@ Le factory reset se déclenche pendant le fonctionnement normal de l'ESP32 (pas 
 3. Suivre les instructions données plus haut dans la partie "1ère connexion"
 
 **Ce qui est réinitialisé (partition NVS effacée entièrement) :**
-- ✅ Mot de passe administrateur → `admin`
+- ✅ Mot de passe
 - ✅ Token API régénéré
 - ✅ Credentials WiFi supprimés (retour en mode AP)
 - ✅ Configuration MQTT effacée
