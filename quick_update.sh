@@ -40,6 +40,7 @@ fi
 update_file() {
     local file=$1
     local name=$2
+    local type=${3:-firmware}  # "firmware" ou "filesystem"
 
     if [ ! -f "$file" ]; then
         echo -e "${RED}❌ Fichier introuvable : $file${NC}"
@@ -47,7 +48,7 @@ update_file() {
     fi
 
     echo -e "${BLUE}📤 Envoi de $name...${NC}"
-    response=$(curl -s -w "\n%{http_code}" -X POST "${AUTH_ARGS[@]}" -F "update=@$file" "$UPDATE_URL")
+    response=$(curl -s -w "\n%{http_code}" -X POST "${AUTH_ARGS[@]}" -F "update=@$file" -F "update_type=$type" "$UPDATE_URL")
     http_code=$(echo "$response" | tail -1)
     body=$(echo "$response" | head -1)
 
@@ -65,13 +66,13 @@ update_file() {
 
 case "$TYPE" in
     firmware)
-        update_file "$FIRMWARE_PATH" "Firmware"
+        update_file "$FIRMWARE_PATH" "Firmware" "firmware"
         ;;
     filesystem|fs)
-        update_file "$FILESYSTEM_PATH" "Filesystem"
+        update_file "$FILESYSTEM_PATH" "Filesystem" "filesystem"
         ;;
     both)
-        update_file "$FIRMWARE_PATH" "Firmware" && sleep 30 && update_file "$FILESYSTEM_PATH" "Filesystem"
+        update_file "$FIRMWARE_PATH" "Firmware" "firmware" && sleep 30 && update_file "$FILESYSTEM_PATH" "Filesystem" "filesystem"
         ;;
     *)
         echo "Usage: $0 [firmware|filesystem|both] [hostname] [password]"
