@@ -40,7 +40,7 @@ Les fichiers Gerber et BOM pour la fabrication du PCB sont disponibles dans le d
 
 <p align="center">
   <img src="screenshots/Schema.png" width="48%" alt="Schéma électronique" />
-  <img src="screenshots/Diagram" width="48%" alt="Diagramme" />
+  <img src="screenshots/Diagram.png" width="48%" alt="Diagramme" />
 </p>
 
 ### Boîtier
