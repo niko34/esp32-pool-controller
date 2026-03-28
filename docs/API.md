@@ -2,155 +2,258 @@
 
 ## Authentification
 
-Tous les endpoints API nécessitent une authentification (sauf `/login.html` et les routes WiFi en mode AP).
+Tous les endpoints nécessitent une authentification sauf ceux marqués **public**.
 
 ### Méthodes d'Authentification
 
-#### 1. HTTP Basic Auth (recommandé pour curl)
+#### HTTP Basic Auth
 
 ```bash
-# Syntaxe : curl -u admin:MOT_DE_PASSE URL
 curl -u admin:monmotdepasse http://poolcontroller.local/get-config
-
-# Avec l'adresse IP
-curl -u admin:monmotdepasse http://192.168.1.100/get-system-info
-
-# Mise à jour OTA avec authentification
-curl -u admin:monmotdepasse -X POST -F "update=@firmware.bin" http://poolcontroller.local/update
 ```
 
-#### 2. Token API (pour scripts automatisés)
+#### Token API (header)
 
 ```bash
-# Syntaxe : curl -H "X-Auth-Token: TOKEN" URL
 curl -H "X-Auth-Token: abc123def456..." http://poolcontroller.local/get-config
-
-# Le token est visible dans Paramètres → Système → Token API
 ```
 
-Le token API est généré automatiquement au premier démarrage et peut être régénéré via l'interface web.
+Le token API est généré automatiquement au premier démarrage. Il est visible dans **Paramètres → Système → Token API** et peut être régénéré via `/auth/regenerate-token`.
 
-### Recommandations de Sécurité
+### Niveaux de protection
 
-1. Utiliser un réseau WiFi sécurisé
-2. Ne pas exposer l'ESP32 sur Internet directement
-3. Utiliser un VPN pour l'accès distant
-4. Configurer un firewall sur votre routeur
-5. Changer le mot de passe admin par défaut
+| Niveau | Description |
+|--------|-------------|
+| Public | Accessible sans authentification |
+| WRITE  | Authentification requise |
+| CRITICAL | Authentification requise — opérations sensibles |
+
+### Recommandations de sécurité
+
+- Utiliser un réseau WiFi sécurisé
+- Ne pas exposer l'ESP32 directement sur Internet
+- Changer le mot de passe admin par défaut
+- Utiliser le token API plutôt que le mot de passe dans les scripts automatisés
 
 ---
 
-## Endpoints Disponibles
+## Codes d'erreur
 
-### 1. Informations Système
+| Code | Description |
+|------|-------------|
+| 200  | Succès |
+| 400  | Requête invalide (paramètre manquant ou JSON invalide) |
+| 401  | Authentification requise ou mot de passe incorrect |
+| 403  | Accès refusé (ex: wizard déjà complété) |
+| 404  | Endpoint introuvable |
+| 429  | Trop de requêtes (rate limiting) |
+| 500  | Erreur serveur |
 
-**GET** `/get-system-info`
+---
 
-Retourne les informations complètes sur le système ESP32.
+## Authentification et Wizard
 
-**Exemple de requête :**
+### GET /auth/status — public
+
+Retourne l'état d'authentification du système.
+
 ```bash
-curl http://poolcontroller.local/get-system-info
+curl http://poolcontroller.local/auth/status
 ```
 
-**Réponse (JSON) :**
 ```json
 {
-  "firmware_version": "2.3.1",
-  "build_date": "Feb 24 2026",
-  "build_time": "14:30:45",
-  "chip_model": "ESP32-D0WDQ6",
-  "chip_revision": 1,
-  "chip_cores": 2,
-  "cpu_freq_mhz": 240,
-  "free_heap": 123456,
-  "heap_size": 327680,
-  "free_psram": 0,
-  "psram_size": 0,
-  "flash_size": 4194304,
-  "flash_speed": 40000000,
-  "ota_partition": "app0",
-  "ota_partition_size": 1310720,
-  "fs_total_bytes": 1507328,
-  "fs_used_bytes": 245760,
-  "fs_free_bytes": 1261568,
-  "wifi_ssid": "MonWiFi",
-  "wifi_rssi": -45,
-  "wifi_ip": "192.168.1.100",
-  "wifi_mac": "AA:BB:CC:DD:EE:FF",
-  "uptime_seconds": 86400,
-  "uptime_days": 1,
-  "uptime_hours": 0,
-  "uptime_minutes": 0
+  "firstBoot": false,
+  "authEnabled": true,
+  "forceWifiConfig": false
 }
 ```
 
-**Utilisation avec jq :**
+---
+
+### POST /auth/login — public
+
+Authentifie l'utilisateur et retourne le token API.
+
 ```bash
-# Version du firmware
-curl -s http://poolcontroller.local/get-system-info | jq -r '.firmware_version'
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"monmotdepasse"}' \
+  http://poolcontroller.local/auth/login
+```
 
-# Mémoire libre en KB
-curl -s http://poolcontroller.local/get-system-info | jq '.free_heap / 1024'
+```json
+{
+  "success": true,
+  "token": "abc123def456...",
+  "username": "admin"
+}
+```
 
-# Adresse IP
-curl -s http://poolcontroller.local/get-system-info | jq -r '.wifi_ip'
+> ⚠️ Bloqué si `firstBoot=true` — le mot de passe doit d'abord être changé via `/auth/change-password`.
 
-# Uptime formaté
-curl -s http://poolcontroller.local/get-system-info | jq -r '"\(.uptime_days)j \(.uptime_hours)h \(.uptime_minutes)min"'
+---
+
+### POST /auth/change-password — public (premier démarrage) / WRITE (ensuite)
+
+Change le mot de passe admin. Accessible sans authentification lors du premier démarrage.
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"currentPassword":"admin","newPassword":"nouveaumotdepasse"}' \
+  http://poolcontroller.local/auth/change-password
+```
+
+```json
+{
+  "success": true,
+  "token": "abc123def456...",
+  "message": "Password changed successfully"
+}
+```
+
+Règles : minimum 8 caractères, différent du mot de passe actuel.
+
+---
+
+### POST /auth/complete-wizard — public (premier démarrage uniquement)
+
+Marque le wizard de configuration initiale comme complété.
+
+```bash
+curl -X POST http://poolcontroller.local/auth/complete-wizard
 ```
 
 ---
 
-### 2. Mise à Jour OTA
+### GET /auth/token — CRITICAL
 
-**POST** `/update`
+Retourne le token API courant.
 
-Permet de mettre à jour le firmware ou le système de fichiers via HTTP multipart/form-data.
-
-**Détection automatique du type :**
-- Fichier `.bin` → Firmware
-- Fichier `.littlefs.bin` ou `.fs.bin` → Filesystem
-
-**Exemple de requête :**
 ```bash
-# Mise à jour du firmware
-curl -X POST -F "update=@firmware.bin" http://poolcontroller.local/update
-
-# Mise à jour du filesystem
-curl -X POST -F "update=@littlefs.bin" http://poolcontroller.local/update
+curl -u admin:monmotdepasse http://poolcontroller.local/auth/token
 ```
 
-**Réponse :**
-- `200 OK` : Mise à jour réussie, l'ESP32 va redémarrer
-- `500 Internal Server Error` : Erreur lors de la mise à jour
-
-**Notes importantes :**
-- L'ESP32 redémarre automatiquement après la mise à jour
-- Attendre environ 30 secondes avant d'envoyer une nouvelle requête
-- Ne PAS couper l'alimentation pendant la mise à jour
+```json
+{ "token": "abc123def456..." }
+```
 
 ---
 
-### 3. Configuration
+### POST /auth/regenerate-token — CRITICAL
 
-**GET** `/get-config`
+Régénère un nouveau token API (invalide l'ancien).
 
-Retourne la configuration actuelle du système.
-
-**Exemple de requête :**
 ```bash
-curl http://poolcontroller.local/get-config
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/auth/regenerate-token
 ```
 
-**Réponse (JSON) :**
+```json
+{
+  "success": true,
+  "token": "nouveautoken...",
+  "message": "API token regenerated"
+}
+```
+
+---
+
+## Données et Historique
+
+### GET /data — WRITE
+
+Retourne les valeurs actuelles des capteurs.
+
+```bash
+curl -u admin:monmotdepasse http://poolcontroller.local/data
+```
+
+```json
+{
+  "orp": 720,
+  "ph": 7.3,
+  "orp_raw": 715,
+  "ph_raw": 7.28,
+  "temperature": 24.5,
+  "filtration_running": true,
+  "ph_dosing": false,
+  "orp_dosing": false,
+  "ph_daily_ml": 45.2,
+  "orp_daily_ml": 120.5,
+  "ph_limit_reached": false,
+  "orp_limit_reached": false
+}
+```
+
+---
+
+### GET /get-history — WRITE
+
+Retourne l'historique des mesures.
+
+```bash
+curl -u admin:monmotdepasse "http://poolcontroller.local/get-history?range=24h"
+```
+
+Paramètre `range` : `24h` (défaut), `7d`, `30d`, `all`.
+
+---
+
+### POST /history/clear — CRITICAL
+
+Efface tout l'historique des mesures.
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/history/clear
+```
+
+---
+
+### POST /history/import — WRITE
+
+Importe un lot de points d'historique.
+
+```bash
+curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+  -d '[{"timestamp":1700000000,"ph":7.2,"orp":720,"temperature":24.5}]' \
+  http://poolcontroller.local/history/import
+```
+
+---
+
+### GET /get-logs — WRITE
+
+Retourne les 50 derniers logs système. Paramètre optionnel `?since=TIMESTAMP`.
+
+```bash
+curl -u admin:monmotdepasse http://poolcontroller.local/get-logs
+```
+
+```json
+{
+  "logs": [
+    { "timestamp": "14:30:45", "level": "INFO", "message": "Capteurs initialisés" },
+    { "timestamp": "14:30:50", "level": "WARNING", "message": "pH hors limites: 7.8" }
+  ]
+}
+```
+
+---
+
+## Configuration
+
+### GET /get-config — WRITE
+
+Retourne la configuration complète du système.
+
+```bash
+curl -u admin:monmotdepasse http://poolcontroller.local/get-config
+```
+
 ```json
 {
   "server": "mqtt.example.com",
   "port": 1883,
   "topic": "pool/controller",
-  "username": "user",
-  "password": "******",
   "enabled": true,
   "regulation_mode": "pilote",
   "ph_correction_type": "ph_minus",
@@ -179,146 +282,68 @@ curl http://poolcontroller.local/get-config
   "wifi_ip": "192.168.1.100",
   "max_ph_ml_per_day": 1000,
   "max_chlorine_ml_per_day": 1000,
-  "time_current": "2025-12-21T14:30:45"
-}
-```
-
-**Nouveaux paramètres (v2.3+) :**
-
-| Paramètre | Type | Description |
-|-----------|------|-------------|
-| `regulation_mode` | string | `"pilote"` (dosage si filtration active) ou `"continu"` (dosage permanent) |
-| `ph_correction_type` | string | `"minus"` (acide pH-) ou `"plus"` (base pH+) |
-| `filtration_enabled` | bool | Activation de la fonction filtration |
-| `lighting_feature_enabled` | bool | Activation de la fonction éclairage |
-| `lighting_enabled` | bool | État actuel de l'éclairage (on/off) |
-| `lighting_schedule_enabled` | bool | Programmation horaire de l'éclairage |
-| `lighting_start` | string | Heure de début éclairage (HH:MM) |
-| `lighting_end` | string | Heure de fin éclairage (HH:MM) |
-| `temperature_enabled` | bool | Activation de la mesure de température |
-
----
-
-### 4. Données Capteurs
-
-**GET** `/data`
-
-Retourne les valeurs actuelles des capteurs.
-
-**Exemple de requête :**
-```bash
-curl http://poolcontroller.local/data
-```
-
-**Réponse (JSON) :**
-```json
-{
-  "orp": 720,
-  "ph": 7.3,
-  "orp_raw": 715,
-  "ph_raw": 7.28,
-  "temperature": 24.5,
-  "filtration_running": true,
-  "ph_dosing": false,
-  "orp_dosing": false,
-  "ph_daily_ml": 45.2,
-  "orp_daily_ml": 120.5,
-  "ph_limit_reached": false,
-  "orp_limit_reached": false
-}
-```
-
-**Monitoring avec script :**
-```bash
-#!/bin/bash
-# monitor.sh - Affiche les valeurs en temps réel
-
-while true; do
-    DATA=$(curl -s http://poolcontroller.local/data)
-    PH=$(echo $DATA | jq -r '.ph')
-    ORP=$(echo $DATA | jq -r '.orp')
-    TEMP=$(echo $DATA | jq -r '.temperature')
-
-    clear
-    echo "=== Pool Monitor ==="
-    echo "pH:          $PH"
-    echo "ORP:         $ORP mV"
-    echo "Température: $TEMP °C"
-    echo ""
-    echo "$(date)"
-
-    sleep 5
-done
-```
-
----
-
-### 5. Logs Système
-
-**GET** `/get-logs`
-
-Retourne les 50 derniers logs du système.
-
-**Exemple de requête :**
-```bash
-curl http://poolcontroller.local/get-logs
-```
-
-**Réponse (JSON) :**
-```json
-{
-  "logs": [
-    {
-      "timestamp": "14:30:45",
-      "level": "INFO",
-      "message": "Capteurs initialisés"
-    },
-    {
-      "timestamp": "14:30:50",
-      "level": "WARNING",
-      "message": "pH hors limites: 7.8"
-    }
-  ]
+  "time_current": "2026-03-28T14:30:45"
 }
 ```
 
 ---
 
-### 6. Export CSV
+### POST /save-config — CRITICAL
 
-**GET** `/export-csv`
+Sauvegarde la configuration complète. Corps JSON identique à la réponse de `/get-config`.
 
-Exporte l'historique des mesures au format CSV.
-
-**Exemple de requête :**
 ```bash
-curl -o pool_history.csv http://poolcontroller.local/export-csv
-```
-
-**Format CSV :**
-```csv
-timestamp,ph,orp,temperature
-2025-12-21T14:30:00,7.2,720,24.5
-2025-12-21T14:40:00,7.3,715,24.6
+curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+  -d '{"ph_target":7.2,"orp_target":700}' \
+  http://poolcontroller.local/save-config
 ```
 
 ---
 
-### 7. Heure Actuelle
+### GET /get-system-info — WRITE
 
-**GET** `/time-now`
+Retourne les informations système de l'ESP32.
 
-Retourne l'heure actuelle du système.
-
-**Exemple de requête :**
 ```bash
-curl http://poolcontroller.local/time-now
+curl -u admin:monmotdepasse http://poolcontroller.local/get-system-info
 ```
 
-**Réponse (JSON) :**
 ```json
 {
-  "time": "2025-12-21T14:30:45",
+  "firmware_version": "1.0.3",
+  "build_date": "Mar 28 2026",
+  "chip_model": "ESP32-D0WDQ6",
+  "cpu_freq_mhz": 240,
+  "free_heap": 123456,
+  "heap_size": 327680,
+  "flash_size": 4194304,
+  "ota_partition": "app0",
+  "fs_total_bytes": 1507328,
+  "fs_used_bytes": 245760,
+  "wifi_ssid": "MonWiFi",
+  "wifi_rssi": -45,
+  "wifi_ip": "192.168.1.100",
+  "wifi_mac": "AA:BB:CC:DD:EE:FF",
+  "uptime_seconds": 86400,
+  "uptime_days": 1,
+  "uptime_hours": 0,
+  "uptime_minutes": 0
+}
+```
+
+---
+
+### GET /time-now — WRITE
+
+Retourne l'heure système courante.
+
+```bash
+curl -u admin:monmotdepasse http://poolcontroller.local/time-now
+```
+
+```json
+{
+  "time": "2026-03-28T14:30:45",
   "time_use_ntp": true,
   "timezone_id": "europe_paris"
 }
@@ -326,117 +351,250 @@ curl http://poolcontroller.local/time-now
 
 ---
 
-## Exemples d'Utilisation Avancés
+## WiFi
 
-### Monitoring Prometheus
+### GET /wifi/status — public
 
-Créer un exporter pour Prometheus :
-
-```python
-#!/usr/bin/env python3
-# prometheus_exporter.py
-
-import requests
-import time
-from prometheus_client import start_http_server, Gauge
-
-# Métriques
-ph_gauge = Gauge('pool_ph', 'pH de la piscine')
-orp_gauge = Gauge('pool_orp_mv', 'ORP en mV')
-temp_gauge = Gauge('pool_temperature_celsius', 'Température en °C')
-
-def collect_metrics():
-    try:
-        r = requests.get('http://poolcontroller.local/data')
-        data = r.json()
-
-        if data['ph'] is not None:
-            ph_gauge.set(data['ph'])
-        if data['orp'] is not None:
-            orp_gauge.set(data['orp'])
-        if data['temperature'] is not None:
-            temp_gauge.set(data['temperature'])
-
-    except Exception as e:
-        print(f"Erreur: {e}")
-
-if __name__ == '__main__':
-    start_http_server(8000)
-    while True:
-        collect_metrics()
-        time.sleep(10)
-```
-
-### Alertes Slack
+Retourne l'état de la connexion WiFi.
 
 ```bash
-#!/bin/bash
-# check_and_alert.sh
-
-SLACK_WEBHOOK="https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
-
-DATA=$(curl -s http://poolcontroller.local/data)
-PH=$(echo $DATA | jq -r '.ph')
-ORP=$(echo $DATA | jq -r '.orp')
-
-# Vérifier le pH
-if (( $(echo "$PH < 7.0 || $PH > 7.6" | bc -l) )); then
-    curl -X POST -H 'Content-type: application/json' \
-        --data "{\"text\":\"⚠️ pH anormal: $PH\"}" \
-        $SLACK_WEBHOOK
-fi
-
-# Vérifier l'ORP
-if (( $(echo "$ORP < 650 || $ORP > 800" | bc -l) )); then
-    curl -X POST -H 'Content-type: application/json' \
-        --data "{\"text\":\"⚠️ ORP anormal: $ORP mV\"}" \
-        $SLACK_WEBHOOK
-fi
+curl http://poolcontroller.local/wifi/status
 ```
 
-### Dashboard Grafana
-
-Configuration de datasource dans Grafana avec SimpleJSON :
-
-```bash
-# Installer le plugin SimpleJSON
-grafana-cli plugins install grafana-simple-json-datasource
-
-# Créer un proxy vers l'ESP32
-# server.js (Node.js)
-const express = require('express');
-const axios = require('axios');
-const app = express();
-
-app.use(express.json());
-
-app.all('/api/*', async (req, res) => {
-    const espUrl = 'http://poolcontroller.local' + req.path.replace('/api', '');
-    const response = await axios.get(espUrl);
-    res.json(response.data);
-});
-
-app.listen(3000);
+```json
+{
+  "mode": "STA",
+  "connected": true,
+  "ssid": "MonWiFi",
+  "ap_ssid": "PoolControllerAP",
+  "ap_ip": "192.168.4.1"
+}
 ```
 
 ---
 
-## Limitations
+### GET /wifi/scan — public (mode AP) / WRITE (mode STA)
 
-- **Rate Limiting** : Pas de limitation, mais éviter les requêtes trop fréquentes
-- **Timeout** : 30 secondes pour les mises à jour OTA
-- **Taille maximale** : ~1.3 MB pour le firmware (slot OTA 1344KB), ~1.2 MB pour le filesystem (partition 1216KB)
-- **Concurrent Updates** : Une seule mise à jour à la fois
+Scanne les réseaux WiFi disponibles.
+
+```bash
+curl http://poolcontroller.local/wifi/scan
+```
+
+```json
+{
+  "networks": [
+    { "ssid": "MonWiFi", "rssi": -45, "channel": 6, "secure": true }
+  ]
+}
+```
 
 ---
 
-## Code d'Erreur
+### POST /wifi/connect — public (mode AP) / WRITE (mode STA)
 
-| Code | Description |
-|------|-------------|
-| 200  | Succès |
-| 400  | Requête invalide |
-| 401  | Authentification requise |
-| 404  | Endpoint introuvable |
-| 429  | Trop de requêtes (rate limiting) |
-| 500  | Erreur serveur |
+Se connecte à un réseau WiFi.
+
+```bash
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"ssid":"MonWiFi","password":"wifipassword"}' \
+  http://poolcontroller.local/wifi/connect
+```
+
+```json
+{
+  "accepted": true,
+  "message": "WiFi connection request accepted, connecting asynchronously"
+}
+```
+
+---
+
+### POST /wifi/disconnect — WRITE
+
+Déconnecte du WiFi et efface les credentials.
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/wifi/disconnect
+```
+
+---
+
+### POST /wifi/ap/disable — CRITICAL
+
+Désactive le mode point d'accès.
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/wifi/ap/disable
+```
+
+---
+
+## Contrôle
+
+### POST /pump1/on, /pump1/off — WRITE
+
+Démarre ou arrête la pompe doseuse 1 (pH) manuellement.
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/on
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/off
+```
+
+---
+
+### POST /pump2/on, /pump2/off — WRITE
+
+Démarre ou arrête la pompe doseuse 2 (ORP/chlore) manuellement.
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump2/on
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump2/off
+```
+
+---
+
+### POST /pump1/duty/:duty, /pump2/duty/:duty — WRITE
+
+Règle la puissance PWM d'une pompe (0–255).
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/duty/128
+```
+
+---
+
+### POST /lighting/on, /lighting/off — WRITE
+
+Allume ou éteint l'éclairage (relais).
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/lighting/on
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/lighting/off
+```
+
+---
+
+## Calibration
+
+### POST /calibrate_ph_neutral — CRITICAL
+
+Calibration pH point neutre (sonde dans solution pH 7.0).
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/calibrate_ph_neutral
+```
+
+---
+
+### POST /calibrate_ph_acid — CRITICAL
+
+Calibration pH point acide (sonde dans solution pH 4.0).
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/calibrate_ph_acid
+```
+
+---
+
+### POST /clear_ph_calibration — CRITICAL
+
+Efface la calibration pH.
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/clear_ph_calibration
+```
+
+---
+
+## Mises à jour OTA
+
+### POST /update — CRITICAL
+
+Met à jour le firmware ou le filesystem via multipart/form-data.
+
+```bash
+# Firmware
+curl -u admin:monmotdepasse -X POST \
+  -F "update_type=firmware" -F "update=@.pio/build/esp32dev/firmware.bin" \
+  http://poolcontroller.local/update
+
+# Filesystem
+curl -u admin:monmotdepasse -X POST \
+  -F "update_type=filesystem" -F "update=@.pio/build/esp32dev/littlefs.bin" \
+  http://poolcontroller.local/update
+```
+
+> ⚠️ `update_type` doit être envoyé **avant** le fichier dans le multipart.
+
+Réponse : `200 OK` (corps `OK`) ou `200 OK` (corps `FAIL`).
+
+L'ESP32 redémarre automatiquement après une mise à jour réussie.
+
+---
+
+### GET /check-update — WRITE
+
+Vérifie la dernière release disponible sur GitHub.
+
+```bash
+curl -u admin:monmotdepasse http://poolcontroller.local/check-update
+```
+
+```json
+{
+  "current_version": "1.0.3",
+  "latest_version": "1.0.4",
+  "update_available": true,
+  "firmware_url": "https://github.com/.../firmware.bin",
+  "filesystem_url": "https://github.com/.../littlefs.bin"
+}
+```
+
+---
+
+### POST /download-update — CRITICAL
+
+Télécharge et installe une mise à jour depuis une URL GitHub.
+
+```bash
+curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+  -d '{"url":"https://github.com/.../firmware.bin"}' \
+  http://poolcontroller.local/download-update
+```
+
+> Seuls les hôtes `github.com`, `api.github.com` et `objects.githubusercontent.com` sont autorisés.
+
+---
+
+## Système
+
+### POST /reboot — CRITICAL
+
+Redémarre l'ESP32.
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/reboot
+```
+
+---
+
+### POST /reboot-ap — CRITICAL
+
+Efface les credentials WiFi et redémarre en mode point d'accès.
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/reboot-ap
+```
+
+---
+
+### POST /factory-reset — CRITICAL
+
+Réinitialisation d'usine complète (efface la partition NVS).
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/factory-reset
+```
+
+> Efface : mot de passe, token API, WiFi, MQTT, calibrations. Préserve l'historique et les fichiers LittleFS.
