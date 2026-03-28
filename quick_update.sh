@@ -1,6 +1,12 @@
 #!/bin/bash
 # quick_update.sh - Mise à jour rapide sans recompilation
-# Usage: ./quick_update.sh [firmware|filesystem|both] [hostname]
+# Usage: ./quick_update.sh [firmware|filesystem|both] [hostname] [password]
+#
+# Authentification (par ordre de priorité) :
+#   1. Argument $3 : ./quick_update.sh both poolcontroller.local monmotdepasse
+#   2. Variable d'environnement POOL_PASSWORD : POOL_PASSWORD=monmotdepasse ./quick_update.sh
+#   3. Variable d'environnement POOL_TOKEN    : POOL_TOKEN=<api_token> ./quick_update.sh
+#   4. Saisie interactive si aucun des précédents n'est défini
 
 set -e
 
@@ -17,6 +23,20 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# Résoudre les credentials
+AUTH_ARGS=()
+if [ -n "${3}" ]; then
+    AUTH_ARGS=(-u "admin:${3}")
+elif [ -n "${POOL_PASSWORD}" ]; then
+    AUTH_ARGS=(-u "admin:${POOL_PASSWORD}")
+elif [ -n "${POOL_TOKEN}" ]; then
+    AUTH_ARGS=(-H "X-Auth-Token: ${POOL_TOKEN}")
+else
+    read -rsp "Mot de passe admin (poolcontroller.local) : " password
+    echo
+    AUTH_ARGS=(-u "admin:${password}")
+fi
+
 update_file() {
     local file=$1
     local name=$2
@@ -27,11 +47,18 @@ update_file() {
     fi
 
     echo -e "${BLUE}📤 Envoi de $name...${NC}"
-    if curl -X POST -F "update=@$file" "$UPDATE_URL" 2>&1 | grep -q "OK"; then
+    response=$(curl -s -w "\n%{http_code}" -X POST "${AUTH_ARGS[@]}" -F "update=@$file" "$UPDATE_URL")
+    http_code=$(echo "$response" | tail -1)
+    body=$(echo "$response" | head -1)
+
+    if [ "$http_code" = "200" ] && echo "$body" | grep -q "OK"; then
         echo -e "${GREEN}✅ $name mis à jour${NC}"
         return 0
+    elif [ "$http_code" = "401" ]; then
+        echo -e "${RED}❌ Authentification refusée (mot de passe incorrect ?)${NC}"
+        return 1
     else
-        echo -e "${RED}❌ Erreur lors de la mise à jour de $name${NC}"
+        echo -e "${RED}❌ Erreur lors de la mise à jour de $name (HTTP $http_code : $body)${NC}"
         return 1
     fi
 }
@@ -47,7 +74,7 @@ case "$TYPE" in
         update_file "$FIRMWARE_PATH" "Firmware" && sleep 30 && update_file "$FILESYSTEM_PATH" "Filesystem"
         ;;
     *)
-        echo "Usage: $0 [firmware|filesystem|both] [hostname]"
+        echo "Usage: $0 [firmware|filesystem|both] [hostname] [password]"
         exit 1
         ;;
 esac
