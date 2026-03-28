@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="data/apple-touch-icon.png" width="120" alt="ESP32 Pool Controller" />
-</p>
-
-# ESP32 Pool Controller
+<h1><img src="data/apple-touch-icon.png" height="40" alt="" /> ESP32 Pool Controller</h1>
 
 Disclaimer : projet en cours de construction.
 
