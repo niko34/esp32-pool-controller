@@ -285,6 +285,7 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
 
 ### Documentation
 
+- **[`docs/API.md`](docs/API.md)** - Documentation de l'API REST
 - **[`docs/BUILD.md`](docs/BUILD.md)** - Instructions de compilation détaillées
 - **[`docs/UPDATE_GUIDE.md`](docs/UPDATE_GUIDE.md)** - Guide de mise à jour (USB, WiFi OTA, GitHub)
 - **[`docs/MINIFICATION.md`](docs/MINIFICATION.md)** - Détails sur le système de minification
