@@ -54,7 +54,7 @@ pio run -t upload
 Utilisez plutôt `esptool.py` directement pour uploader le fichier construit par `build_fs.sh`:
 
 ```bash
-python3 ~/.platformio/packages/tool-esptoolpy/esptool.py \
+~/.platformio/penv/bin/esptool.py \
   --chip esp32 \
   --port /dev/cu.usbserial-0001 \
   --baud 115200 \

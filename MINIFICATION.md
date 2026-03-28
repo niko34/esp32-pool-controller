@@ -10,6 +10,8 @@ Pour optimiser l'utilisation de la mémoire flash de l'ESP32, tous les fichiers 
 - `data/` - Contient les fichiers sources lisibles et éditables
   - `index.html` - Interface principale
   - `login.html` - Page de connexion
+  - `wizard.html` - Assistant de configuration initiale
+  - `wifi.html` - Page de configuration WiFi
   - `app.js` - Logique JavaScript
   - `app.css` - Styles CSS
   - Images et autres fichiers statiques
@@ -60,14 +62,16 @@ node minify.js
 Le script `build_fs.sh` minifie automatiquement:
 
 ```bash
-./build_fs.sh  # Minifie + construit LittleFS
+./build_fs.sh   # Minifie + construit LittleFS
+./build_all.sh  # Compile firmware + filesystem, copie les .bin à la racine
 ```
 
-Ou utiliser le script de déploiement complet:
+Ou utiliser le script de déploiement complet (upload USB) :
 
 ```bash
-./deploy.sh fs   # Filesystem uniquement
-./deploy.sh all  # Firmware + filesystem
+./deploy.sh fs       # Build + upload filesystem uniquement
+./deploy.sh firmware # Build + upload firmware uniquement
+./deploy.sh all      # Build + upload firmware + filesystem
 ```
 
 ## Script de minification
@@ -127,8 +131,8 @@ Toujours rebuilder le filesystem après modification:
 
 ```bash
 ./build_fs.sh
-python3 ~/.platformio/packages/tool-esptoolpy/esptool.py \
-  --chip esp32 --port /dev/cu.usbserial-210 --baud 115200 \
+~/.platformio/penv/bin/esptool.py \
+  --chip esp32 --port /dev/cu.usbserial-0001 --baud 115200 \
   write_flash 0x2B0000 .pio/build/esp32dev/littlefs.bin
 ```
 

@@ -98,7 +98,7 @@ show_usage() {
     echo "Exemples:"
     echo "  $0                # Déploiement USB complet"
     echo "  $0 ota-all        # Déploiement OTA complet (WiFi)"
-    echo "  $0 ota-firmware   # Firmware uniquement en OTA"
+    echo "  $0 ota-firmware   # Firmware uniquement en OTA (Wifi)"
 }
 
 # Programme principal
