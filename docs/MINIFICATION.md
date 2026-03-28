@@ -63,7 +63,7 @@ Le script `build_fs.sh` minifie automatiquement:
 
 ```bash
 ./build_fs.sh   # Minifie + construit LittleFS
-./build_all.sh  # Compile firmware + filesystem, copie les .bin à la racine
+./build_all.sh  # Compile firmware + filesystem
 ```
 
 Ou utiliser le script de déploiement complet (upload USB) :
