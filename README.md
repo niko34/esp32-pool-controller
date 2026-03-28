@@ -13,8 +13,8 @@ Contrôleur automatique de piscine basé sur ESP32 :
 ## 🎯 Fonctionnalités
 
 ### Mesures et Contrôle
-- **pH** : Mesure précise via capteur pH analogique lue par un **ADS1115 16-bit unique** (partagé pH/ORP) avec compensation automatique de température
-- **ORP (Redox)** : Mesure analogique lue par le **même ADS1115 16-bit** et dosage automatique de chlore
+- **pH** : Mesure via capteur pH analogique avec compensation automatique de température
+- **ORP (Redox)** : Mesure via capteur analogique
 - **Température** : Sonde Dallas DS18B20
 - **Historique** : Historique des mesures
 - **Filtration** : Programmation automatique en fonction de la température de l'eau, programmation horaire, manuel
@@ -40,7 +40,7 @@ Les fichiers Gerber et BOM pour la fabrication du PCB sont disponibles dans le d
 
 <p align="center">
   <img src="screenshots/Schema.png" width="48%" alt="Schéma électronique" />
-  <img src="screenshots/PCB.png" width="48%" alt="PCB" />
+  <img src="screenshots/Diagram" width="48%" alt="Diagramme" />
 </p>
 
 ### Boîtier
@@ -136,24 +136,6 @@ Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dos
    - Port: 1883 (par défaut)
    - Topic de base: `pool/sensors`
    - Username/Password si nécessaire
-
-## ⚙️ Configuration
-
-### Paramètres Essentiels
-
-**Consignes:**
-- pH cible: 7.2 (recommandé: 7.0 - 7.4)
-- ORP cible: 650 mV (recommandé: 650 - 750 mV)
-
-**Limites de Sécurité:**
-- pH- max/jour: 1000 ml (ajuster selon volume piscine)
-- Chlore max/jour: 1000 ml (ajuster selon volume piscine)
-- Temps injection max/heure: 60 secondes
-
-**Filtration:**
-- Mode Auto: Durée = Température ÷ 2 (ex: 24°C → 12h filtration)
-- Mode Manuel: Définir plages horaires
-- Mode Off: Filtration désactivée
 
 ### Calibration Capteurs
 
@@ -256,53 +238,6 @@ automation:
           title: "Piscine - Alerte Sécurité"
           message: "{{ trigger.payload_json.message }}"
 ```
-
-## 🐛 Dépannage
-
-### ESP32 ne démarre pas
-- Vérifier alimentation 5V/2A minimum
-- Vérifier câble USB (data, pas charge seule)
-- Appuyer sur bouton BOOT pendant upload
-
-### Capteurs valeurs aberrantes
-- **pH toujours 0 ou 14**: Vérifier connexion I2C (SDA/SCL), adresse ADS1115 (0x48)
-- **ORP fixe à 0**: Sonde pas étalonnée ou HS, vérifier ADS1115 (0x48), connexion A1
-- **Température -127°C**: Sonde DS18B20 non détectée, pull-up 4.7kΩ manquant
-- **I2C errors**: Vérifier pull-ups I2C (4.7kΩ sur SDA/SCL), alimentation ADS1115
-
-### Pompes ne démarrent pas
-- Vérifier alimentation 12V pompes
-- Vérifier connexions MOSFETs IRLZ44N (Gate sur GPIO 25/26)
-- Tester manuellement dans onglet "Système" → Test des pompes
-- Logs: chercher "LIMITE" (sécurité déclenchée)
-- Vérifier mode simulation désactivé pour usage réel (`simulationCfg.enabled = false`)
-
-### WiFi/MQTT déconnecté
-- Vérifier portée WiFi (signal faible)
-- MQTT: vérifier broker accessible (ping IP)
-- Voir logs dans interface web `/get-logs`
-
-### Watchdog Redémarrage
-- Mémoire insuffisante: vérifier heap (doit être >10KB)
-- Boucle infinie détectée: consulter logs avant reboot
-
-## 📊 Mode Simulation
-
-Pour tester sans matériel réel, modifier [config.h](src/config.h):
-
-```cpp
-struct SimulationConfig {
-  bool enabled = true;  // Activer simulation
-  float poolVolumeM3 = 50.0f;
-  float initialPh = 8.5f;
-  float initialOrp = 650.0f;
-  float initialTemp = 24.0f;
-  float timeAcceleration = 360.0f;  // 1h réelle = 10s simulation
-  // ...
-};
-```
-
-**Attention**: Désactiver (`enabled = false`) avant utilisation réelle !
 
 ## 🔐 Sécurité
 
@@ -451,4 +386,4 @@ Ce projet est fourni "tel quel" sans garantie. L'utilisation de produits chimiqu
 ---
 
 **Auteur**: Nicolas Philippe
-**Version**: 2.9.4
+**Version**: 1.0.3
