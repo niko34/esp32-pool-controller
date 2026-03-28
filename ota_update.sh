@@ -1,11 +1,11 @@
 #!/bin/bash
-# quick_update.sh - Mise à jour rapide sans recompilation
-# Usage: ./quick_update.sh [firmware|filesystem|both] [hostname] [password]
+# ota_update.sh - Mise à jour rapide sans recompilation
+# Usage: ./ota_update.sh [firmware|filesystem|both] [hostname] [password]
 #
 # Authentification (par ordre de priorité) :
-#   1. Argument $3 : ./quick_update.sh both poolcontroller.local monmotdepasse
-#   2. Variable d'environnement POOL_PASSWORD : POOL_PASSWORD=monmotdepasse ./quick_update.sh
-#   3. Variable d'environnement POOL_TOKEN    : POOL_TOKEN=<api_token> ./quick_update.sh
+#   1. Argument $3 : ./ota_update.sh both poolcontroller.local monmotdepasse
+#   2. Variable d'environnement POOL_PASSWORD : POOL_PASSWORD=monmotdepasse ./ota_update.sh
+#   3. Variable d'environnement POOL_TOKEN    : POOL_TOKEN=<api_token> ./ota_update.sh
 #   4. Saisie interactive si aucun des précédents n'est défini
 
 set -e

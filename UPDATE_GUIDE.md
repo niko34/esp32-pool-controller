@@ -10,7 +10,7 @@ Pour préparer les deux fichiers en une seule commande :
 ./build_all.sh
 ```
 
-Ce script compile le firmware, construit le filesystem, puis copie `firmware.bin` et `littlefs.bin` à la racine du projet — prêts à être uploadés via l'interface web ou `quick_update.sh`.
+Ce script compile le firmware, construit le filesystem, puis copie `firmware.bin` et `littlefs.bin` à la racine du projet — prêts à être uploadés via l'interface web ou `ota_update.sh`.
 
 ### Compilation séparée
 
@@ -35,7 +35,7 @@ Fichier généré : `.pio/build/esp32dev/littlefs.bin`
 | Méthode | USB requis | Réseau WiFi requis |
 |---------|:----------:|:------------------:|
 | Interface web (OTA) | ❌ | ✅ |
-| `quick_update.sh` | ❌ | ✅ |
+| `ota_update.sh` | ❌ | ✅ |
 | Mise à jour automatique GitHub | ❌ | ✅ |
 | `deploy.sh` | ✅ | ❌ |
 
@@ -54,7 +54,7 @@ Fichier généré : `.pio/build/esp32dev/littlefs.bin`
 
 ---
 
-## Mise à Jour via `quick_update.sh` — WiFi uniquement
+## Mise à Jour via `ota_update.sh` — WiFi uniquement
 
 Script automatisant l'envoi des fichiers `.bin` via HTTP (endpoint `/update`), sans USB.
 
@@ -63,16 +63,16 @@ Script automatisant l'envoi des fichiers `.bin` via HTTP (endpoint `/update`), s
 ./build_all.sh
 
 # Envoyer firmware uniquement
-./quick_update.sh firmware
+./ota_update.sh firmware
 
 # Envoyer filesystem uniquement
-./quick_update.sh filesystem
+./ota_update.sh filesystem
 
 # Envoyer les deux (firmware, attend 30s, puis filesystem)
-./quick_update.sh both
+./ota_update.sh both
 
 # Avec un hostname personnalisé
-./quick_update.sh both 192.168.1.42
+./ota_update.sh both 192.168.1.42
 ```
 
 Par défaut, le script cible `poolcontroller.local`.
@@ -97,7 +97,7 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 
 Nécessite une connexion USB au PC. Utile pour la première installation ou si l'ESP32 n'est pas accessible sur le réseau.
 
-> Contrairement à `quick_update.sh`, ce script **compile** le firmware et le filesystem avant de les uploader — pas besoin de lancer `build_all.sh` au préalable.
+> Contrairement à `ota_update.sh`, ce script **compile** le firmware et le filesystem avant de les uploader — pas besoin de lancer `build_all.sh` au préalable.
 
 ```bash
 # Firmware + filesystem en une commande
@@ -126,4 +126,4 @@ Le port série est configuré dans `platformio.ini` (`upload_port`). Adapter sel
 | Update Failed | Vérifier la connexion WiFi et réessayer |
 | ESP32 ne redémarre pas | Utiliser le bouton RESET ou débrancher |
 | Interface inaccessible | Mettre à jour le filesystem via USB (`./deploy.sh fs`) |
-| `quick_update.sh` : fichier introuvable | Lancer `./build_all.sh` d'abord |
+| `ota_update.sh` : fichier introuvable | Lancer `./build_all.sh` d'abord |
