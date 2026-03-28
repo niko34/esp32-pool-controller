@@ -1,5 +1,7 @@
 # Guide de Mise à Jour
 
+> ⚠️ **Première installation obligatoire via USB** : le bootloader et la table de partitions personnalisée (`partitions.csv`) ne peuvent être flashés que via USB. Une fois cette installation initiale effectuée, toutes les mises à jour suivantes peuvent se faire en OTA (WiFi).
+
 ---
 
 ## Méthodes de mise à jour

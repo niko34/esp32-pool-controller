@@ -67,14 +67,14 @@ Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dos
 
 3. **Compiler et déployer**
 
-   **Via USB** (première installation ou ESP32 non accessible sur le réseau) :
+   **Via USB** (obligatoire pour la première installation — bootloader et table de partitions) :
    ```bash
    ./deploy.sh all       # Compile et upload firmware + filesystem
    ./deploy.sh firmware  # Firmware uniquement
    ./deploy.sh fs        # Filesystem uniquement
    ```
 
-   **Via WiFi OTA** (ESP32 déjà connecté au réseau) :
+   **Via WiFi OTA** (mises à jour suivantes, une fois la première installation USB effectuée) :
    ```bash
    ./deploy.sh ota-all       # Compile et envoie firmware + filesystem
    ./deploy.sh ota-firmware  # Firmware uniquement
