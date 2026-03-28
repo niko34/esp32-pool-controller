@@ -1,5 +1,45 @@
 # API Documentation - ESP32 Pool Controller
 
+## Authentification
+
+Tous les endpoints API nécessitent une authentification (sauf `/login.html` et les routes WiFi en mode AP).
+
+### Méthodes d'Authentification
+
+#### 1. HTTP Basic Auth (recommandé pour curl)
+
+```bash
+# Syntaxe : curl -u admin:MOT_DE_PASSE URL
+curl -u admin:monmotdepasse http://poolcontroller.local/get-config
+
+# Avec l'adresse IP
+curl -u admin:monmotdepasse http://192.168.1.100/get-system-info
+
+# Mise à jour OTA avec authentification
+curl -u admin:monmotdepasse -X POST -F "update=@firmware.bin" http://poolcontroller.local/update
+```
+
+#### 2. Token API (pour scripts automatisés)
+
+```bash
+# Syntaxe : curl -H "X-Auth-Token: TOKEN" URL
+curl -H "X-Auth-Token: abc123def456..." http://poolcontroller.local/get-config
+
+# Le token est visible dans Paramètres → Système → Token API
+```
+
+Le token API est généré automatiquement au premier démarrage et peut être régénéré via l'interface web.
+
+### Recommandations de Sécurité
+
+1. Utiliser un réseau WiFi sécurisé
+2. Ne pas exposer l'ESP32 sur Internet directement
+3. Utiliser un VPN pour l'accès distant
+4. Configurer un firewall sur votre routeur
+5. Changer le mot de passe admin par défaut
+
+---
+
 ## Endpoints Disponibles
 
 ### 1. Informations Système
@@ -381,46 +421,6 @@ app.listen(3000);
 
 ---
 
-## Authentification
-
-Tous les endpoints API nécessitent une authentification (sauf `/login.html` et les routes WiFi en mode AP).
-
-### Méthodes d'Authentification
-
-#### 1. HTTP Basic Auth (recommandé pour curl)
-
-```bash
-# Syntaxe : curl -u admin:MOT_DE_PASSE URL
-curl -u admin:monmotdepasse http://poolcontroller.local/get-config
-
-# Avec l'adresse IP
-curl -u admin:monmotdepasse http://192.168.1.100/get-system-info
-
-# Mise à jour OTA avec authentification
-curl -u admin:monmotdepasse -X POST -F "update=@firmware.bin" http://poolcontroller.local/update
-```
-
-#### 2. Token API (pour scripts automatisés)
-
-```bash
-# Syntaxe : curl -H "X-Auth-Token: TOKEN" URL
-curl -H "X-Auth-Token: abc123def456..." http://poolcontroller.local/get-config
-
-# Le token est visible dans Paramètres → Système → Token API
-```
-
-Le token API est généré automatiquement au premier démarrage et peut être régénéré via l'interface web.
-
-### Recommandations de Sécurité
-
-1. Utiliser un réseau WiFi sécurisé
-2. Ne pas exposer l'ESP32 sur Internet directement
-3. Utiliser un VPN pour l'accès distant
-4. Configurer un firewall sur votre routeur
-5. Changer le mot de passe admin par défaut
-
----
-
 ## Limitations
 
 - **Rate Limiting** : Pas de limitation, mais éviter les requêtes trop fréquentes
@@ -436,5 +436,7 @@ Le token API est généré automatiquement au premier démarrage et peut être r
 |------|-------------|
 | 200  | Succès |
 | 400  | Requête invalide |
+| 401  | Authentification requise |
 | 404  | Endpoint introuvable |
+| 429  | Trop de requêtes (rate limiting) |
 | 500  | Erreur serveur |
