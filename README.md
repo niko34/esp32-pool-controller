@@ -81,7 +81,7 @@ Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dos
    ./deploy.sh ota-fs        # Filesystem uniquement
    ```
 
-   Voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md) pour plus de détails sur les méthodes de mise à jour.
+   Voir [UPDATE_GUIDE.md](docs/UPDATE_GUIDE.md) pour plus de détails sur les méthodes de mise à jour.
 
 4. **Moniteur série**
    ```bash
@@ -285,9 +285,9 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
 
 ### Documentation
 
-- **`BUILD.md`** - Instructions de compilation détaillées
-- **`UPDATE_GUIDE.md`** - Guide de mise à jour (USB, WiFi OTA, GitHub)
-- **`MINIFICATION.md`** - Détails sur le système de minification
+- **[`docs/BUILD.md`](docs/BUILD.md)** - Instructions de compilation détaillées
+- **[`docs/UPDATE_GUIDE.md`](docs/UPDATE_GUIDE.md)** - Guide de mise à jour (USB, WiFi OTA, GitHub)
+- **[`docs/MINIFICATION.md`](docs/MINIFICATION.md)** - Détails sur le système de minification
 - **`README.md`** - Ce fichier
 
 ### Dossiers
