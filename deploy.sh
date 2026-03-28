@@ -1,6 +1,6 @@
 #!/bin/bash
 # Script de déploiement complet pour ESP32 Pool Controller
-# Usage: ./deploy.sh [firmware|fs|all]
+# Usage: ./deploy.sh [firmware|fs|all|ota-firmware|ota-fs|ota-all]
 
 set -e  # Arrêter en cas d'erreur
 
@@ -83,17 +83,22 @@ upload_filesystem() {
 }
 
 show_usage() {
-    echo "Usage: $0 [firmware|fs|all]"
+    echo "Usage: $0 [firmware|fs|all|ota-firmware|ota-fs|ota-all]"
     echo ""
-    echo "Options:"
-    echo "  firmware  - Compile et upload uniquement le firmware"
-    echo "  fs        - Build et upload uniquement le filesystem"
-    echo "  all       - Compile et upload firmware + filesystem (défaut)"
+    echo "Options USB (connexion série requise) :"
+    echo "  firmware      - Compile et upload uniquement le firmware"
+    echo "  fs            - Build et upload uniquement le filesystem"
+    echo "  all           - Compile et upload firmware + filesystem (défaut)"
+    echo ""
+    echo "Options OTA (WiFi, pas d'USB) :"
+    echo "  ota-firmware  - Compile et envoie uniquement le firmware en OTA"
+    echo "  ota-fs        - Build et envoie uniquement le filesystem en OTA"
+    echo "  ota-all       - Compile et envoie firmware + filesystem en OTA"
     echo ""
     echo "Exemples:"
-    echo "  $0           # Déploiement complet"
-    echo "  $0 firmware  # Uniquement le firmware"
-    echo "  $0 fs        # Uniquement le filesystem"
+    echo "  $0                # Déploiement USB complet"
+    echo "  $0 ota-all        # Déploiement OTA complet (WiFi)"
+    echo "  $0 ota-firmware   # Firmware uniquement en OTA"
 }
 
 # Programme principal
@@ -101,21 +106,37 @@ MODE="${1:-all}"
 
 case "$MODE" in
     firmware)
-        print_step "Déploiement du firmware uniquement"
+        print_step "Déploiement USB du firmware uniquement"
         build_firmware
         upload_firmware
         ;;
     fs)
-        print_step "Déploiement du filesystem uniquement"
+        print_step "Déploiement USB du filesystem uniquement"
         build_filesystem
         upload_filesystem
         ;;
     all)
-        print_step "Déploiement complet (firmware + filesystem)"
+        print_step "Déploiement USB complet (firmware + filesystem)"
         build_firmware
         build_filesystem
         upload_firmware
         upload_filesystem
+        ;;
+    ota-firmware)
+        print_step "Déploiement OTA du firmware uniquement"
+        build_firmware
+        ./ota_update.sh firmware
+        ;;
+    ota-fs)
+        print_step "Déploiement OTA du filesystem uniquement"
+        build_filesystem
+        ./ota_update.sh filesystem
+        ;;
+    ota-all)
+        print_step "Déploiement OTA complet (firmware + filesystem)"
+        build_firmware
+        build_filesystem
+        ./ota_update.sh both
         ;;
     -h|--help)
         show_usage
