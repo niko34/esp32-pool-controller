@@ -117,33 +117,30 @@ Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dos
    pio device monitor -b 115200
    ```
 
-### Configuration Initiale
+### Première connexion et accès à l'interface Web
 
-1. **Première connexion WiFi**
+1. **Première connexion**
    - Au démarrage, l'ESP32 crée un point d'accès `PoolControllerAP`
    - Mot de passe: `12345678`
-   - Se connecter et configurer votre réseau WiFi
+   - Se connecter à ce réseau wifi et accéder à l'assistant de configuration http://192.168.4.1
 
 2. **Accès interface web**
-   - `http://poolcontroller.local` (ou IP affichée dans les logs)
+   - `http://poolcontroller.local` si réseau wifi configuré, sinon se connecter au réseau AP PoolControllerAP et utiliser l'adresse http://192.168.4.1
    - Onglets disponibles:
      - **Tableau de bord** : Visualisation temps réel pH/ORP/Température
-     - **Configuration** : Réglages MQTT, consignes, limites de sécurité
-     - **Historique** : Suivi des événements et alertes
-     - **Logs** : Journal système avec filtrage par niveau
-     - **Système** : Test manuel des pompes, mise à jour OTA, informations
-
-3. **Configuration MQTT (optionnel)**
-   - Serveur: IP de votre broker MQTT
-   - Port: 1883 (par défaut)
-   - Topic de base: `pool/sensors`
-   - Username/Password si nécessaire
+     - **Filtration** : Contrôle et programmation de la pompe de filtration
+     - **Éclairage** : Contrôle et programmation de l'éclairage
+     - **Température** : Historique et calibration de la sonde de température
+     - **pH** : Mesure, historique, calibration et réglages dosage pH
+     - **ORP** : Mesure, historique, calibration et réglages dosage chlore
+     - **Produits** : Suivi de la consommation des produits chimiques
+     - **Paramètres** : WiFi, MQTT, heure, sécurité, régulation, système
 
 ### Calibration Capteurs
 
 #### Calibration pH (DFRobot SEN0161-V2)
 
-Le capteur DFRobot utilise la librairie DFRobot_PH qui gère automatiquement la calibration en EEPROM.
+Le capteur utilise la librairie DFRobot_PH qui gère automatiquement la calibration en EEPROM.
 
 **Calibration 1 point (pH neutre 7.0)** via l'interface web :
 1. Aller dans **Configuration** → Section **Calibration pH**
@@ -204,12 +201,18 @@ Les paramètres PID contrôlent la réactivité du dosage. Voir [pump_controller
 
 ### Auto-Discovery
 
-Le contrôleur publie automatiquement sa configuration MQTT:
-- Sensor: Température
-- Sensor: pH
-- Sensor: ORP
-- Binary Sensor: État filtration
-- Select: Mode filtration (auto/manual/off)
+Le contrôleur publie automatiquement sa configuration MQTT pour Home Assistant :
+
+| Type | Entité | Description |
+|------|--------|-------------|
+| Sensor | Température | Température de l'eau (°C) |
+| Sensor | pH | Valeur pH |
+| Sensor | ORP | Valeur ORP (mV) |
+| Binary Sensor | Filtration active | État de la pompe de filtration (ON/OFF) |
+| Binary Sensor | Statut contrôleur | Disponibilité du contrôleur (online/offline) |
+| Select | Mode filtration | Sélection du mode (auto / manual / off) |
+| Switch | Filtration ON/OFF | Forçage marche/arrêt de la filtration |
+| Switch | Éclairage ON/OFF | Contrôle de l'éclairage |
 
 ### Exemple Automation
 
@@ -245,30 +248,18 @@ automation:
 
 ### Factory Reset (bouton physique)
 
-En cas d'oubli du mot de passe ou de nécessité de réinitialisation complète, utiliser le bouton factory reset connecté à GPIO32.
-
-**Matériel requis:**
-- Bouton poussoir normalement ouvert (NO)
-- Connexion: un côté à GPIO32, l'autre côté à 3.3V
-- Pas besoin de résistance pull-down (déjà intégrée en interne)
+En cas d'oubli du mot de passe ou de nécessité de réinitialisation complète, utiliser le bouton factory reset situé à côté de l'ESP32 sur la carte électronique.
 
 **Procédure de réinitialisation:**
 
 Le factory reset se déclenche pendant le fonctionnement normal de l'ESP32 (pas besoin de couper l'alimentation) :
 
-1. **Appuyer et maintenir** le bouton factory reset (GPIO32)
+1. **Appuyer et maintenir** le bouton factory reset
    - Le log série affiche : `Bouton reset enfoncé - maintenir 10s pour factory reset`
-   - La LED intégrée (GPIO2) clignote lentement pendant l'appui
 2. **Maintenir 10 secondes**
    - Relâcher avant 10s annule la réinitialisation (log : `factory reset annulé`)
-3. **Après 10 secondes**, la LED clignote rapidement 5 fois pour confirmer
-4. L'ESP32 redémarre automatiquement
-
-**Caractéristiques techniques:**
-- Bouton: GPIO32 (actif haut, pull-down interne activé)
-- LED feedback: GPIO2 (LED intégrée)
-- Durée requise: 10 secondes
-- Indication visuelle: Clignotement lent pendant l'appui, rapide (×5) à la confirmation
+3. L'ESP32 redémarre automatiquement
+3. Suivre les instructions données plus haut dans la partie "1ère connexion"
 
 **Ce qui est réinitialisé (partition NVS effacée entièrement) :**
 - ✅ Mot de passe administrateur → `admin`
@@ -280,30 +271,6 @@ Le factory reset se déclenche pendant le fonctionnement normal de l'ESP32 (pas 
 **Ce qui N'EST PAS effacé :**
 - ✅ Fichiers JSON sur LittleFS (consignes, limites, config) — préservés
 - ✅ Historique des mesures (partition séparée) — préservé
-
-**Note importante:** GPIO32 est un GPIO libre qui ne nécessite pas de précautions particulières au démarrage.
-
-### Bonnes Pratiques
-
-1. **Produits chimiques**
-   - Utiliser pH- et chlore liquides adaptés piscines
-   - Stockage bidons dans local ventilé, hors gel
-   - Ajuster limites journalières selon volume piscine
-
-2. **Électricité**
-   - Boîtier étanche IP65 minimum
-   - Relais filtration avec protection 16A
-   - Disjoncteur différentiel 30mA obligatoire
-
-3. **Maintenance**
-   - Calibrer sondes pH/ORP tous les 3 mois
-   - Nettoyer électrodes mensuellement (solution acide pH)
-   - Vérifier tubing pompes (usure, fuites)
-
-4. **Monitoring**
-   - Activer alertes MQTT
-   - Vérifier logs quotidiennement (premiers jours)
-   - Tester sécurités (déconnecter sonde → alerte?)
 
 ## 📈 Changelog
 
@@ -345,25 +312,21 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
 ### Documentation
 
 - **`BUILD.md`** - Instructions de compilation détaillées
+- **`UPDATE_GUIDE.md`** - Guide de mise à jour (USB, WiFi OTA, GitHub)
 - **`MINIFICATION.md`** - Détails sur le système de minification
 - **`README.md`** - Ce fichier
 
 ### Dossiers
 
 - **`src/`** - Code source C++ du firmware
-- **`data/`** - Fichiers web sources (HTML/CSS/JS) - versionnés
-- **`data-build/`** - Fichiers web minifiés - générés automatiquement (ignoré par git)
+- **`data/`** - Fichiers web sources (HTML/CSS/JS) — versionnés
+- **`data-build/`** - Fichiers web minifiés — générés automatiquement (ignoré par git)
+- **`hardware/`** - Fichiers Gerber, BOM et STL du boîtier
 - **`kicad/`** - Schémas électroniques KiCad
-
-## 🤝 Contribution
-
-Les Pull Requests sont bienvenues ! Pour changements majeurs:
-1. Ouvrir une Issue pour discussion
-2. Fork le projet
-3. Créer branche feature (`git checkout -b feature/AmazingFeature`)
-4. Commit (`git commit -m 'Add AmazingFeature'`)
-5. Push (`git push origin feature/AmazingFeature`)
-6. Ouvrir Pull Request
+- **`docs/`** - Documentation technique complémentaire
+- **`screenshots/`** - Captures d'écran de l'interface
+- **`tools/`** - Scripts utilitaires (ex: test UART)
+- **`logo/`** - Fichiers logo du projet
 
 ## 📄 Licence
 
@@ -378,14 +341,3 @@ Ce projet est fourni "tel quel" sans garantie. L'utilisation de produits chimiqu
 - La surveillance du système
 
 **En cas de doute, consulter un professionnel.**
-
-## 📞 Support
-
-- **Issues GitHub**: Pour bugs et demandes de fonctionnalités
-- **Discussions**: Pour questions générales
-- **Wiki**: Documentation détaillée (à venir)
-
----
-
-**Auteur**: Nicolas Philippe
-**Version**: 1.0.3
