@@ -8,8 +8,6 @@ Contrôleur automatique de piscine basé sur ESP32 :
 - correction avec pompes doseuses : pH et ORP
 - interfaces : application web locale, MQTT, API
 
-**Version actuelle**: 1.0.3
-
 ## 🎯 Fonctionnalités
 
 ### Mesures et Contrôle
@@ -43,7 +41,7 @@ Les fichiers pour la partie électronique sont disponibles dans le dossier [`har
 - [Fichiers Gerber](hardware/Gerber.zip)
 - [BOM](hardware/BOM.csv)
 
-![Diagramme](screenshots/Diagram.png)
+![Diagramme](screenshots/Diagram.jpg)
 
 ### Boîtier
 
