@@ -48,7 +48,7 @@ update_file() {
     fi
 
     echo -e "${BLUE}📤 Envoi de $name...${NC}"
-    response=$(curl -s -w "\n%{http_code}" -X POST "${AUTH_ARGS[@]}" -F "update=@$file" -F "update_type=$type" "$UPDATE_URL")
+    response=$(curl -s -w "\n%{http_code}" -X POST "${AUTH_ARGS[@]}" -F "update_type=$type" -F "update=@$file" "$UPDATE_URL")
     http_code=$(echo "$response" | tail -1)
     body=$(echo "$response" | head -1)
 
