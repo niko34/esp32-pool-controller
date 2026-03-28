@@ -69,48 +69,21 @@ Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dos
 
 3. **Compiler et déployer**
 
-   **Option A - Déploiement complet (recommandé)**
+   **Via USB** (première installation ou ESP32 non accessible sur le réseau) :
    ```bash
-   # Compile firmware + filesystem et upload tout
-   ./deploy.sh all
+   ./deploy.sh all       # Compile et upload firmware + filesystem
+   ./deploy.sh firmware  # Firmware uniquement
+   ./deploy.sh fs        # Filesystem uniquement
    ```
 
-   **Option B - Déploiement sélectif**
+   **Via WiFi OTA** (ESP32 déjà connecté au réseau) :
    ```bash
-   # Firmware uniquement
-   ./deploy.sh firmware
-
-   # Filesystem uniquement (fichiers web)
-   ./deploy.sh fs
+   ./deploy.sh ota-all       # Compile et envoie firmware + filesystem
+   ./deploy.sh ota-firmware  # Firmware uniquement
+   ./deploy.sh ota-fs        # Filesystem uniquement
    ```
 
-   **Option C - Compilation manuelle**
-   ```bash
-   # 1. Compiler le firmware
-   pio run
-
-   # 2. Construire le filesystem LittleFS (avec minification auto)
-   ./build_fs.sh
-
-   # 3. Upload firmware
-   pio run -t upload
-
-   # 4. Upload filesystem
-   python3 ~/.platformio/packages/tool-esptoolpy/esptool.py \
-     --chip esp32 --port /dev/cu.usbserial-0001 --baud 115200 \
-     write_flash 0x2B0000 .pio/build/esp32dev/littlefs.bin
-   ```
-
-   ⚠️ **Important**:
-   - Ne PAS utiliser `pio run -t buildfs` ou `pio run -t uploadfs`
-   - Ces commandes utilisent une mauvaise taille (128KB au lieu de 1216KB)
-   - Utilisez toujours `./build_fs.sh` pour construire le filesystem
-   - Le port série est configuré dans `platformio.ini` (`/dev/cu.usbserial-0001`)
-   - Modifiez `upload_port` et `monitor_port` selon votre système:
-     - macOS: `/dev/cu.usbserial-*` ou `/dev/cu.SLAB_USBtoUART`
-     - Linux: `/dev/ttyUSB0` ou `/dev/ttyACM0`
-     - Windows: `COM3`, `COM4`, etc.
-   - Voir [BUILD.md](BUILD.md) et [MINIFICATION.md](MINIFICATION.md) pour plus de détails
+   Voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md) pour plus de détails sur les méthodes de mise à jour.
 
 4. **Moniteur série**
    ```bash
@@ -281,9 +254,12 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
 ### Scripts de Build et Déploiement
 
 - **`deploy.sh`** - Script de déploiement principal
-  - `./deploy.sh all` - Build et upload firmware + filesystem
-  - `./deploy.sh firmware` - Build et upload firmware uniquement
-  - `./deploy.sh fs` - Build et upload filesystem uniquement
+  - `./deploy.sh all` - Compile et upload USB firmware + filesystem
+  - `./deploy.sh firmware` - Compile et upload USB firmware uniquement
+  - `./deploy.sh fs` - Compile et upload USB filesystem uniquement
+  - `./deploy.sh ota-all` - Compile et envoie OTA (WiFi) firmware + filesystem
+  - `./deploy.sh ota-firmware` - Compile et envoie OTA firmware uniquement
+  - `./deploy.sh ota-fs` - Compile et envoie OTA filesystem uniquement
 
 - **`build_fs.sh`** - Construction du filesystem LittleFS
   - Minifie automatiquement HTML/CSS/JS (économie ~92KB / 15%)
