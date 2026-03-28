@@ -37,6 +37,8 @@ Contrôleur automatique de piscine basé sur ESP32 :
 ### PCB
 
 Les fichiers Gerber et BOM pour la fabrication du PCB sont disponibles dans le dossier [`hardware/`](hardware/).
+[`screenshots/Schema.png/`](Schéma du PCB).
+[`screenshots/PCB.png/`](PCB).
 
 <p align="center">
   <img src="screenshots/Schema.png" width="48%" alt="Schéma électronique" />
