@@ -97,6 +97,8 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 
 Nécessite une connexion USB au PC. Utile pour la première installation ou si l'ESP32 n'est pas accessible sur le réseau.
 
+> Contrairement à `quick_update.sh`, ce script **compile** le firmware et le filesystem avant de les uploader — pas besoin de lancer `build_all.sh` au préalable.
+
 ```bash
 # Firmware + filesystem en une commande
 ./deploy.sh all
