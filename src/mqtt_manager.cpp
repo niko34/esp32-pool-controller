@@ -45,6 +45,14 @@ void MqttManager::refreshTopics() {
   topics.lightingCommand = base + "/lighting/set";
   topics.phDosageState = base + "/ph_dosage";
   topics.orpDosageState = base + "/orp_dosage";
+  topics.phDosingState = base + "/ph_dosing";
+  topics.orpDosingState = base + "/orp_dosing";
+  topics.phLimitState = base + "/ph_limit";
+  topics.orpLimitState = base + "/orp_limit";
+  topics.phTargetState = base + "/ph_target";
+  topics.orpTargetState = base + "/orp_target";
+  topics.phTargetCommand = base + "/ph_target/set";
+  topics.orpTargetCommand = base + "/orp_target/set";
   topics.alertsTopic = base + "/alerts";
   topics.logsTopic = base + "/logs";
   topics.statusTopic = base + "/status";
@@ -113,6 +121,8 @@ void MqttManager::connect() {
     mqtt.subscribe(topics.filtrationModeCommand.c_str());
     mqtt.subscribe(topics.filtrationCommand.c_str());
     mqtt.subscribe(topics.lightingCommand.c_str());
+    mqtt.subscribe(topics.phTargetCommand.c_str());
+    mqtt.subscribe(topics.orpTargetCommand.c_str());
     discoveryPublished = false;
     publishDiscovery();
     publishAllStates();
@@ -150,6 +160,8 @@ void MqttManager::publishAllStates() {
   }
   publishFiltrationState();
   publishLightingState();
+  publishDosingState();
+  publishTargetState();
 }
 
 void MqttManager::publishFiltrationState() {
@@ -161,6 +173,20 @@ void MqttManager::publishFiltrationState() {
 void MqttManager::publishLightingState() {
   if (!mqtt.connected()) return;
   publishSensorState(topics.lightingState, lighting.isOn() ? "ON" : "OFF");
+}
+
+void MqttManager::publishDosingState() {
+  if (!mqtt.connected()) return;
+  publishSensorState(topics.phDosingState,  PumpController.isPhDosing()  ? "ON" : "OFF");
+  publishSensorState(topics.orpDosingState, PumpController.isOrpDosing() ? "ON" : "OFF");
+  publishSensorState(topics.phLimitState,   safetyLimits.phLimitReached  ? "ON" : "OFF");
+  publishSensorState(topics.orpLimitState,  safetyLimits.orpLimitReached ? "ON" : "OFF");
+}
+
+void MqttManager::publishTargetState() {
+  if (!mqtt.connected()) return;
+  publishSensorState(topics.phTargetState,  String(mqttCfg.phTarget,  1));
+  publishSensorState(topics.orpTargetState, String(mqttCfg.orpTarget, 0));
 }
 
 void MqttManager::publishAlert(const String& alertType, const String& message) {
@@ -221,6 +247,26 @@ void MqttManager::messageCallback(char* topic, byte* payload, unsigned int lengt
       lighting.setManualOff();
     }
     publishLightingState();
+  } else if (topicStr == topics.phTargetCommand) {
+    float value = cmd.toFloat();
+    if (value >= 6.0f && value <= 8.5f) {
+      mqttCfg.phTarget = value;
+      saveMqttConfig();
+      publishTargetState();
+      systemLogger.info("Consigne pH changée via MQTT: " + String(value, 1));
+    } else {
+      systemLogger.warning("Consigne pH invalide (MQTT): " + cmd);
+    }
+  } else if (topicStr == topics.orpTargetCommand) {
+    float value = cmd.toFloat();
+    if (value >= 400.0f && value <= 900.0f) {
+      mqttCfg.orpTarget = value;
+      saveMqttConfig();
+      publishTargetState();
+      systemLogger.info("Consigne ORP changée via MQTT: " + String(value, 0));
+    } else {
+      systemLogger.warning("Consigne ORP invalide (MQTT): " + cmd);
+    }
   }
 }
 
@@ -334,7 +380,81 @@ void MqttManager::publishDiscovery() {
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 
-  // Ajouter binary_sensor pour le status
+  // Dosage pH actif
+  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_ph_dosing/config";
+  doc["name"] = "Dosage pH Actif";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_dosing";
+  doc["state_topic"] = topics.phDosingState;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["icon"] = "mdi:water-plus";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Dosage ORP actif
+  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_orp_dosing/config";
+  doc["name"] = "Dosage Chlore Actif";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_dosing";
+  doc["state_topic"] = topics.orpDosingState;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["icon"] = "mdi:flask";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Limite pH atteinte
+  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_ph_limit/config";
+  doc["name"] = "Limite Journalière pH";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_limit";
+  doc["state_topic"] = topics.phLimitState;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["device_class"] = "problem";
+  doc["icon"] = "mdi:alert";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Limite ORP atteinte
+  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_orp_limit/config";
+  doc["name"] = "Limite Journalière Chlore";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_limit";
+  doc["state_topic"] = topics.orpLimitState;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["device_class"] = "problem";
+  doc["icon"] = "mdi:alert";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Consigne pH
+  topic = discoveryBase + "number/" + HA_DEVICE_ID + "_ph_target/config";
+  doc["name"] = "Consigne pH";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_target";
+  doc["state_topic"] = topics.phTargetState;
+  doc["command_topic"] = topics.phTargetCommand;
+  doc["min"] = 6.0;
+  doc["max"] = 8.5;
+  doc["step"] = 0.1;
+  doc["unit_of_measurement"] = "pH";
+  doc["icon"] = "mdi:water";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Consigne ORP
+  topic = discoveryBase + "number/" + HA_DEVICE_ID + "_orp_target/config";
+  doc["name"] = "Consigne ORP";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_target";
+  doc["state_topic"] = topics.orpTargetState;
+  doc["command_topic"] = topics.orpTargetCommand;
+  doc["min"] = 400;
+  doc["max"] = 900;
+  doc["step"] = 10;
+  doc["unit_of_measurement"] = "mV";
+  doc["icon"] = "mdi:flash";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Binary sensor status
   topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_status/config";
   doc["name"] = "Contrôleur Status";
   doc["unique_id"] = String(HA_DEVICE_ID) + "_status";

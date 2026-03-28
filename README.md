@@ -180,10 +180,16 @@ Le contrôleur publie automatiquement sa configuration MQTT pour Home Assistant 
 | Sensor | pH | Valeur pH |
 | Sensor | ORP | Valeur ORP (mV) |
 | Binary Sensor | Filtration active | État de la pompe de filtration (ON/OFF) |
+| Binary Sensor | Dosage pH actif | Pompe doseuse pH en cours d'injection |
+| Binary Sensor | Dosage chlore actif | Pompe doseuse ORP en cours d'injection |
+| Binary Sensor | Limite journalière pH | Limite de dosage pH atteinte |
+| Binary Sensor | Limite journalière chlore | Limite de dosage ORP atteinte |
 | Binary Sensor | Statut contrôleur | Disponibilité du contrôleur (online/offline) |
-| Select | Mode filtration | Sélection du mode (auto / manual / off) |
+| Select | Mode filtration | Sélection du mode (auto / manual / force / off) |
 | Switch | Filtration ON/OFF | Forçage marche/arrêt de la filtration |
 | Switch | Éclairage ON/OFF | Contrôle de l'éclairage |
+| Number | Consigne pH | Valeur cible pH (6.0 – 8.5, pas 0.1) |
+| Number | Consigne ORP | Valeur cible ORP en mV (400 – 900, pas 10) |
 
 ### Exemple Automation
 

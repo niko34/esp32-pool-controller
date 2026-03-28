@@ -18,6 +18,14 @@ struct MqttTopics {
   String lightingCommand;      // ON/OFF switch command
   String phDosageState;
   String orpDosageState;
+  String phDosingState;        // Pompe pH active (ON/OFF)
+  String orpDosingState;       // Pompe ORP active (ON/OFF)
+  String phLimitState;         // Limite journalière pH atteinte (ON/OFF)
+  String orpLimitState;        // Limite journalière ORP atteinte (ON/OFF)
+  String phTargetState;        // Consigne pH (état)
+  String orpTargetState;       // Consigne ORP (état)
+  String phTargetCommand;      // Consigne pH (commande)
+  String orpTargetCommand;     // Consigne ORP (commande)
   String alertsTopic;
   String logsTopic;
   String statusTopic;          // LWT et status
@@ -54,6 +62,8 @@ public:
   void publishAllStates();
   void publishFiltrationState();
   void publishLightingState();
+  void publishDosingState();
+  void publishTargetState();
   void publishAlert(const String& alertType, const String& message);
   void publishLog(const String& logMessage);
   void publishStatus(const String& status);
