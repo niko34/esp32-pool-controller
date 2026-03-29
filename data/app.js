@@ -3085,7 +3085,6 @@
           const ok = await sendConfig(cfg);
           if (!ok) throw new Error("Impossible d'enregistrer la configuration");
 
-          alert(`Calibration ORP effectuée\nOffset: ${offset.toFixed(1)} mV`);
           $("#orp_step1_1pt")?.classList.add("is-completed");
           $("#orp_step2_1pt")?.classList.add("is-completed");
           $("#orp_step3_1pt")?.classList.add("is-completed");
@@ -3250,7 +3249,6 @@
           const ok = await sendConfig(cfg);
           if (!ok) throw new Error("Impossible d'enregistrer la configuration");
 
-          alert(`Calibration ORP 2 points OK\nSlope: ${slope.toFixed(3)}\nOffset: ${offset.toFixed(1)}`);
           for (let i = 1; i <= 8; i++) {
             $(`#orp_step${i}_2pt`)?.classList.add("is-completed");
             $(`#orp_step${i}_2pt`)?.classList.remove("is-active");
