@@ -2496,19 +2496,11 @@
         }
 
         const tempCurrentValue = $("#temp_current_value");
-        const tempCurrentRaw = $("#temp_current_raw");
         if (tempCurrentValue) {
           if (json.temperature != null && typeof json.temperature === "number" && !isNaN(json.temperature)) {
             tempCurrentValue.textContent = json.temperature.toFixed(1) + " °C";
           } else {
             tempCurrentValue.textContent = "--";
-          }
-        }
-        if (tempCurrentRaw) {
-          if (json.temperature_raw != null && typeof json.temperature_raw === "number" && !isNaN(json.temperature_raw)) {
-            tempCurrentRaw.textContent = json.temperature_raw.toFixed(1) + " °C";
-          } else {
-            tempCurrentRaw.textContent = "--";
           }
         }
 
@@ -2687,8 +2679,6 @@
           // Page température
           const tempCurrentValue = $("#temp_current_value");
           if (tempCurrentValue) tempCurrentValue.textContent = correctedTemp.toFixed(1) + " °C";
-          const tempCurrentRawEl = $("#temp_current_raw");
-          if (tempCurrentRawEl) tempCurrentRawEl.textContent = currentTempRaw.toFixed(1) + " °C";
 
           // Graphe (optionnel, mais rend le changement visible immédiatement)
           if (tempChart) pushPoint(tempChart, correctedTemp, nowLabel);
