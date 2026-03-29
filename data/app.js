@@ -2496,11 +2496,22 @@
         }
 
         const tempCurrentValue = $("#temp_current_value");
+        const tempCurrentLabel = $("#temp_current_label");
         if (tempCurrentValue) {
-          if (json.temperature != null && typeof json.temperature === "number" && !isNaN(json.temperature)) {
-            tempCurrentValue.textContent = json.temperature.toFixed(1) + " °C";
+          if (tempCalibrationStep > 0) {
+            if (tempCurrentLabel) tempCurrentLabel.textContent = "Température brute capteur";
+            if (json.temperature_raw != null && typeof json.temperature_raw === "number" && !isNaN(json.temperature_raw)) {
+              tempCurrentValue.textContent = json.temperature_raw.toFixed(1) + " °C";
+            } else {
+              tempCurrentValue.textContent = "--";
+            }
           } else {
-            tempCurrentValue.textContent = "--";
+            if (tempCurrentLabel) tempCurrentLabel.textContent = "Température actuelle";
+            if (json.temperature != null && typeof json.temperature === "number" && !isNaN(json.temperature)) {
+              tempCurrentValue.textContent = json.temperature.toFixed(1) + " °C";
+            } else {
+              tempCurrentValue.textContent = "--";
+            }
           }
         }
 
