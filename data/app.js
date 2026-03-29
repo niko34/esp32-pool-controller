@@ -2803,7 +2803,6 @@
         updatePhCalibrationSteps();
       } else if (phCalibrationStep === 2) {
         // Calibrate pH 7.0
-        if (!confirm("Sonde dans tampon pH 7.0 (stable) ? Continuer ?")) return;
         startBtn.disabled = true;
 
         try {
@@ -2827,7 +2826,6 @@
         updatePhCalibrationSteps();
       } else if (phCalibrationStep === 4) {
         // Calibrate pH 4.0
-        if (!confirm("Sonde dans tampon pH 4.0 (stable) ? Continuer ?")) return;
         startBtn.disabled = true;
 
         try {
