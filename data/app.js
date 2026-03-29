@@ -2831,8 +2831,6 @@
           const data = await res.json();
           if (!data.success) throw new Error(data.error || "Calibration échouée");
 
-          alert("Calibration pH 4.0 effectuée. Calibration complète !");
-
           // Mark all steps as completed
           $("#ph_step1")?.classList.add("is-completed");
           $("#ph_step2")?.classList.add("is-completed");
