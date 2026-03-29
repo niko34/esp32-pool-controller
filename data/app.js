@@ -2880,13 +2880,13 @@
   }
 
   // ---------- ORP calibration ----------
-  let orpCalibrationStep1pt = 0; // 0=idle, 1=plunge, 2=enterRef, 3=calibrate
-  let orpCalibrationStep2pt = 0; // 0=idle, 1-6=steps
+  let orpCalibrationStep1pt = 0; // 0=idle, 1=plunge, 2=wait, 3=enterRef, 4=calibrate
+  let orpCalibrationStep2pt = 0; // 0=idle, 1-8=steps
   let orpPoint1Measured = null;
   let orpPoint1Reference = null;
 
   function updateOrpCalibrationSteps1pt() {
-    const steps = [$("#orp_step1_1pt"), $("#orp_step2_1pt"), $("#orp_step3_1pt")];
+    const steps = [$("#orp_step1_1pt"), $("#orp_step2_1pt"), $("#orp_step3_1pt"), $("#orp_step4_1pt")];
     const startBtn = $("#orp_cal_start_btn_1pt");
     const cancelBtn = $("#orp_cal_cancel_btn_1pt");
     const refInput = $("#orp_reference_value_1pt");
@@ -2907,11 +2907,19 @@
       steps[1]?.classList.add("is-active");
       if (startBtn) startBtn.textContent = "Étape suivante";
       if (cancelBtn) cancelBtn.style.display = "inline-block";
-      if (refInput) refInput.disabled = false;
+      if (refInput) refInput.disabled = true;
     } else if (orpCalibrationStep1pt === 3) {
       steps[0]?.classList.add("is-completed");
       steps[1]?.classList.add("is-completed");
       steps[2]?.classList.add("is-active");
+      if (startBtn) startBtn.textContent = "Étape suivante";
+      if (cancelBtn) cancelBtn.style.display = "inline-block";
+      if (refInput) refInput.disabled = false;
+    } else if (orpCalibrationStep1pt === 4) {
+      steps[0]?.classList.add("is-completed");
+      steps[1]?.classList.add("is-completed");
+      steps[2]?.classList.add("is-completed");
+      steps[3]?.classList.add("is-active");
       if (startBtn) startBtn.textContent = "Calibrer";
       if (cancelBtn) cancelBtn.style.display = "inline-block";
       if (refInput) refInput.disabled = true;
@@ -2920,8 +2928,8 @@
 
   function updateOrpCalibrationSteps2pt() {
     const steps = [
-      $("#orp_step1_2pt"), $("#orp_step2_2pt"), $("#orp_step3_2pt"),
-      $("#orp_step4_2pt"), $("#orp_step5_2pt"), $("#orp_step6_2pt")
+      $("#orp_step1_2pt"), $("#orp_step2_2pt"), $("#orp_step3_2pt"), $("#orp_step4_2pt"),
+      $("#orp_step5_2pt"), $("#orp_step6_2pt"), $("#orp_step7_2pt"), $("#orp_step8_2pt")
     ];
     const startBtn = $("#orp_cal_start_btn_2pt");
     const cancelBtn = $("#orp_cal_cancel_btn_2pt");
@@ -2945,26 +2953,33 @@
       steps[0]?.classList.add("is-completed");
       steps[1]?.classList.add("is-active");
       if (startBtn) startBtn.textContent = "Étape suivante";
-      if (ref1Input) ref1Input.disabled = false;
     } else if (orpCalibrationStep2pt === 3) {
-      steps[0]?.classList.add("is-completed");
-      steps[1]?.classList.add("is-completed");
+      for (let i = 0; i < 2; i++) steps[i]?.classList.add("is-completed");
       steps[2]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Mémoriser point 1";
-      if (ref1Input) ref1Input.disabled = true;
+      if (startBtn) startBtn.textContent = "Étape suivante";
+      if (ref1Input) ref1Input.disabled = false;
     } else if (orpCalibrationStep2pt === 4) {
       for (let i = 0; i < 3; i++) steps[i]?.classList.add("is-completed");
       steps[3]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Étape suivante";
-      if (statusHint) statusHint.style.display = "block";
+      if (startBtn) startBtn.textContent = "Mémoriser point 1";
+      if (ref1Input) ref1Input.disabled = true;
     } else if (orpCalibrationStep2pt === 5) {
       for (let i = 0; i < 4; i++) steps[i]?.classList.add("is-completed");
       steps[4]?.classList.add("is-active");
       if (startBtn) startBtn.textContent = "Étape suivante";
-      if (ref2Input) ref2Input.disabled = false;
+      if (statusHint) statusHint.style.display = "block";
     } else if (orpCalibrationStep2pt === 6) {
       for (let i = 0; i < 5; i++) steps[i]?.classList.add("is-completed");
       steps[5]?.classList.add("is-active");
+      if (startBtn) startBtn.textContent = "Étape suivante";
+    } else if (orpCalibrationStep2pt === 7) {
+      for (let i = 0; i < 6; i++) steps[i]?.classList.add("is-completed");
+      steps[6]?.classList.add("is-active");
+      if (startBtn) startBtn.textContent = "Étape suivante";
+      if (ref2Input) ref2Input.disabled = false;
+    } else if (orpCalibrationStep2pt === 8) {
+      for (let i = 0; i < 7; i++) steps[i]?.classList.add("is-completed");
+      steps[7]?.classList.add("is-active");
       if (startBtn) startBtn.textContent = "Calibrer (2 points)";
       if (ref2Input) ref2Input.disabled = true;
     }
@@ -3019,16 +3034,19 @@
       } else if (orpCalibrationStep1pt === 1) {
         orpCalibrationStep1pt = 2;
         updateOrpCalibrationSteps1pt();
-        if (refInput1pt) refInput1pt.focus();
       } else if (orpCalibrationStep1pt === 2) {
+        orpCalibrationStep1pt = 3;
+        updateOrpCalibrationSteps1pt();
+        if (refInput1pt) refInput1pt.focus();
+      } else if (orpCalibrationStep1pt === 3) {
         const referenceValue = parseFloat(refInput1pt.value);
         if (isNaN(referenceValue) || referenceValue < 0 || referenceValue > 1000) {
           alert("Valeur de référence ORP invalide (0-1000 mV)");
           return;
         }
-        orpCalibrationStep1pt = 3;
+        orpCalibrationStep1pt = 4;
         updateOrpCalibrationSteps1pt();
-      } else if (orpCalibrationStep1pt === 3) {
+      } else if (orpCalibrationStep1pt === 4) {
         const referenceValue = parseFloat(refInput1pt.value);
         if (isNaN(referenceValue) || referenceValue < 0 || referenceValue > 1000) {
           alert("Valeur de référence ORP invalide (0-1000 mV)");
@@ -3071,7 +3089,8 @@
           $("#orp_step1_1pt")?.classList.add("is-completed");
           $("#orp_step2_1pt")?.classList.add("is-completed");
           $("#orp_step3_1pt")?.classList.add("is-completed");
-          $("#orp_step3_1pt")?.classList.remove("is-active");
+          $("#orp_step4_1pt")?.classList.add("is-completed");
+          $("#orp_step4_1pt")?.classList.remove("is-active");
           if (calibratedStatus) calibratedStatus.style.display = "block";
 
           orpCalibrationStep1pt = 0;
@@ -3133,21 +3152,24 @@
       } else if (orpCalibrationStep2pt === 1) {
         orpCalibrationStep2pt = 2;
         updateOrpCalibrationSteps2pt();
-        if (ref1) ref1.focus();
       } else if (orpCalibrationStep2pt === 2) {
+        orpCalibrationStep2pt = 3;
+        updateOrpCalibrationSteps2pt();
+        if (ref1) ref1.focus();
+      } else if (orpCalibrationStep2pt === 3) {
         const r1 = parseFloat(ref1.value);
         if (isNaN(r1) || r1 < 0 || r1 > 1000) {
           alert("Réf 1 invalide (0-1000 mV)");
           return;
         }
-        orpCalibrationStep2pt = 3;
+        orpCalibrationStep2pt = 4;
         updateOrpCalibrationSteps2pt();
-      } else if (orpCalibrationStep2pt === 3) {
+      } else if (orpCalibrationStep2pt === 4) {
         // Memorize point 1
         const r1 = parseFloat(ref1.value);
         if (isNaN(r1) || r1 < 0 || r1 > 1000) {
           alert("Réf 1 invalide (0-1000 mV)");
-          orpCalibrationStep2pt = 2;
+          orpCalibrationStep2pt = 3;
           updateOrpCalibrationSteps2pt();
           return;
         }
@@ -3157,26 +3179,29 @@
         }
         orpPoint1Measured = latestSensorData.orp_raw;
         orpPoint1Reference = r1;
-        orpCalibrationStep2pt = 4;
-        updateOrpCalibrationSteps2pt();
-      } else if (orpCalibrationStep2pt === 4) {
         orpCalibrationStep2pt = 5;
         updateOrpCalibrationSteps2pt();
-        if (ref2) ref2.focus();
       } else if (orpCalibrationStep2pt === 5) {
+        orpCalibrationStep2pt = 6;
+        updateOrpCalibrationSteps2pt();
+      } else if (orpCalibrationStep2pt === 6) {
+        orpCalibrationStep2pt = 7;
+        updateOrpCalibrationSteps2pt();
+        if (ref2) ref2.focus();
+      } else if (orpCalibrationStep2pt === 7) {
         const r2 = parseFloat(ref2.value);
         if (isNaN(r2) || r2 < 0 || r2 > 1000) {
           alert("Réf 2 invalide (0-1000 mV)");
           return;
         }
-        orpCalibrationStep2pt = 6;
+        orpCalibrationStep2pt = 8;
         updateOrpCalibrationSteps2pt();
-      } else if (orpCalibrationStep2pt === 6) {
+      } else if (orpCalibrationStep2pt === 8) {
         // Calibrate 2 points
         const r2 = parseFloat(ref2.value);
         if (isNaN(r2) || r2 < 0 || r2 > 1000) {
           alert("Réf 2 invalide (0-1000 mV)");
-          orpCalibrationStep2pt = 5;
+          orpCalibrationStep2pt = 7;
           updateOrpCalibrationSteps2pt();
           return;
         }
@@ -3226,7 +3251,7 @@
           if (!ok) throw new Error("Impossible d'enregistrer la configuration");
 
           alert(`Calibration ORP 2 points OK\nSlope: ${slope.toFixed(3)}\nOffset: ${offset.toFixed(1)}`);
-          for (let i = 1; i <= 6; i++) {
+          for (let i = 1; i <= 8; i++) {
             $(`#orp_step${i}_2pt`)?.classList.add("is-completed");
             $(`#orp_step${i}_2pt`)?.classList.remove("is-active");
           }
