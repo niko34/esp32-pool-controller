@@ -2481,17 +2481,22 @@
         }
 
         const orpCurrentValue = $("#orp_current_value");
+        const orpCurrentLabel = $("#orp_current_label");
         if (orpCurrentValue) {
           if (orpCalibrationActive) {
+            if (orpCurrentLabel) orpCurrentLabel.textContent = "Tension brute capteur";
             if (json.orp_raw != null && typeof json.orp_raw === "number" && !isNaN(json.orp_raw)) {
-              orpCurrentValue.textContent = Math.round(json.orp_raw) + " mV (brut)";
+              orpCurrentValue.textContent = Math.round(json.orp_raw) + " mV";
             } else {
               orpCurrentValue.textContent = "--";
             }
-          } else if (json.orp != null && typeof json.orp === "number" && !isNaN(json.orp)) {
-            orpCurrentValue.textContent = Math.round(json.orp) + " mV";
           } else {
-            orpCurrentValue.textContent = "--";
+            if (orpCurrentLabel) orpCurrentLabel.textContent = "Valeur ORP actuelle";
+            if (json.orp != null && typeof json.orp === "number" && !isNaN(json.orp)) {
+              orpCurrentValue.textContent = Math.round(json.orp) + " mV";
+            } else {
+              orpCurrentValue.textContent = "--";
+            }
           }
         }
 
