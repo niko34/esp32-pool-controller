@@ -2643,16 +2643,6 @@
         const offset = referenceValue - currentTempRaw;
         const calibrationDate = new Date().toISOString();
 
-        let msg = `Calibration Température\n\n`;
-        msg += `Brute: ${currentTempRaw.toFixed(2)} °C\n`;
-        msg += `Réf: ${referenceValue.toFixed(1)} °C\n`;
-        msg += `Offset: ${offset.toFixed(2)} °C\n\nAppliquer ?`;
-        if (!confirm(msg)) {
-          tempCalibrationStep = 0;
-          updateTempCalibrationSteps();
-          return;
-        }
-
         startBtn.disabled = true;
         try {
           const cfg = collectConfig();
@@ -2661,8 +2651,6 @@
 
           const ok = await sendConfig(cfg);
           if (!ok) throw new Error("Impossible d'enregistrer la configuration");
-
-          alert(`Calibration température effectuée\nOffset: ${offset.toFixed(2)} °C`);
           $("#temp_step1")?.classList.add("is-completed");
           $("#temp_step2")?.classList.add("is-completed");
           $("#temp_step3")?.classList.add("is-completed");
