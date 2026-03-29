@@ -2809,7 +2809,6 @@
           const data = await res.json();
           if (!data.success) throw new Error(data.error || "Calibration échouée");
 
-          alert("Calibration pH 7.0 effectuée.\nRincez la sonde puis plongez-la dans le tampon pH 4.0.");
           phCalibrationStep = 3;
           updatePhCalibrationSteps();
         } catch (err) {
