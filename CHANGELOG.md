@@ -1,5 +1,22 @@
 # Changelog - ESP32 Pool Controller
 
+## [1.1.0] - 2026-03-29
+
+### Firmware
+- **MQTT** : ajout des topics publiés `ph_dosing`, `orp_dosing`, `ph_limit`, `orp_limit`, `ph_target`, `orp_target`
+- **MQTT** : ajout des topics de commande `ph_target/set` et `orp_target/set` (modification des consignes pH et ORP depuis HA ou MQTT)
+- **MQTT** : correction du switch "Filtration Marche/Arrêt" — la commande `OFF` forçait l'arrêt de la filtration mais elle redémarrait immédiatement selon le planning
+- **Home Assistant Auto-Discovery** : ajout de 6 nouvelles entités (Dosage pH Actif, Dosage Chlore Actif, Limite Journalière pH, Limite Journalière Chlore, Consigne pH, Consigne ORP)
+
+### Documentation
+- `docs/MQTT.md` : documentation complète des topics publiés, commandes et entités Home Assistant avec les noms tels qu'ils apparaissent dans l'interface HA
+- `docs/API.md` : réécriture complète — tous les endpoints documentés (30+)
+- `docs/UPDATE_GUIDE.md` : mise à jour avec les modes OTA de `deploy.sh`
+- `deploy.sh` : ajout des modes `ota-firmware`, `ota-fs`, `ota-all` (compile + envoi OTA en une commande)
+- Renommage `quick_update.sh` → `ota_update.sh`
+
+---
+
 ## [1.0.3] - 2026-03-27
 
 ### Firmware
