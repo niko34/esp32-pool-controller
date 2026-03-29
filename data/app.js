@@ -2461,17 +2461,22 @@
 
         // also update readouts in settings
         const phCurrentValue = $("#ph_current_value");
+        const phCurrentLabel = $("#ph_current_label");
         if (phCurrentValue) {
           if (phCalibrationActive) {
+            if (phCurrentLabel) phCurrentLabel.textContent = "Tension brute capteur";
             if (json.ph_voltage_mv != null && typeof json.ph_voltage_mv === "number" && !isNaN(json.ph_voltage_mv)) {
               phCurrentValue.textContent = json.ph_voltage_mv.toFixed(1) + " mV";
             } else {
               phCurrentValue.textContent = "--";
             }
-          } else if (json.ph != null && typeof json.ph === "number" && !isNaN(json.ph)) {
-            phCurrentValue.textContent = json.ph.toFixed(2);
           } else {
-            phCurrentValue.textContent = "--";
+            if (phCurrentLabel) phCurrentLabel.textContent = "Valeur pH actuelle";
+            if (json.ph != null && typeof json.ph === "number" && !isNaN(json.ph)) {
+              phCurrentValue.textContent = json.ph.toFixed(2);
+            } else {
+              phCurrentValue.textContent = "--";
+            }
           }
         }
 
