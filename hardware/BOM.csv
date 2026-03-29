@@ -24,7 +24,7 @@ U2;1;ESP32-DevKitC;Espressif:ESP32-DevKitC;;
 U3;1;Pololu D24V10F3;Pololu_D24V10F3;D24V10F3;https://www.tme.eu/fr/details/pololu-2830/onduleurs/pololu/3-3v-1a-step-down-d24v10f3/
 U4;1;Murata OKI-78SR-5_1.5-W36-C;Converter_DCDC:Converter_DCDC_Murata_OKI-78SR_Vertical;OKI-78SR-5;https://www.tme.eu/fr/details/oki-78sr5_1.5w36hc/convertisseurs-dc-dc/murata-power-solutions/oki-78sr-5-1-5-w36h-c/
 Si contrôle filtration : Contacteur rail DIN 12V / 220V 25A;1;;Finder 22.32.0.012.4340;;https://www.conrad.fr/fr/p/contacteur-finder-22-32-0-012-4340-2-no-t-12-v-dc-12-v-ac-25-a-1-pc-s-504712.html
-Si contrôle filtration : Contacteur rail DIN 12V / 220V 25A;1;;Finder 22.32.0.012.4340;;https://www.conrad.fr/fr/p/contacteur-finder-22-32-0-012-4340-2-no-t-12-v-dc-12-v-ac-25-a-1-pc-s-504712.html
+Si contrôle éclairage : Contacteur rail DIN 12V / 220V 25A;1;;Finder 22.32.0.012.4340;;https://www.conrad.fr/fr/p/contacteur-finder-22-32-0-012-4340-2-no-t-12-v-dc-12-v-ac-25-a-1-pc-s-504712.html
 Pompe Péristaltique 12V  avec tuyau en BPT PharMed (plus simple à trouver que tuyau Norprene ou Santoprène);2;;;;https://fr.aliexpress.com/item/1005008568962671.html?spm=a2g0o.order_list.order_list_main.110.25855e5b3NTOSc&gatewayAdapt=glo2fra
 Si tuyau pompe pas en Pharmed : tuyau Pharmed à la coupe;1;;;;https://fr.aliexpress.com/item/1005005939700189.html?spm=a2g0o.order_list.order_list_main.11.25855e5b3NTOSc&gatewayAdapt=glo2fra
 Raccord ou clapet anti-retour en PVDF vers tuyau injection 4x6. Taille 1/8'';2;;;KH-CSDV2;https://fr.aliexpress.com/item/32721015040.html?spm=a2g0o.order_list.order_list_main.5.25855e5b3NTOSc&gatewayAdapt=glo2fra
