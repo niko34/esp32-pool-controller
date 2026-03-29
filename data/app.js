@@ -3064,16 +3064,6 @@
         const offset = referenceValue - currentOrpRaw;
         const calibrationDate = new Date().toISOString();
 
-        let msg = `Calibration ORP (1 point)\n\n`;
-        msg += `Brut: ${currentOrpRaw.toFixed(1)} mV\n`;
-        msg += `Réf: ${referenceValue.toFixed(0)} mV\n`;
-        msg += `Offset: ${offset.toFixed(1)} mV\n\nAppliquer ?`;
-        if (!confirm(msg)) {
-          orpCalibrationStep1pt = 0;
-          updateOrpCalibrationSteps1pt();
-          return;
-        }
-
         startBtn1pt.disabled = true;
         try {
           const cfg = collectConfig();
@@ -3227,16 +3217,6 @@
         const slope = (r2 - orpPoint1Reference) / (measured2 - orpPoint1Measured);
         const offset = orpPoint1Reference - (orpPoint1Measured * slope);
         const calibrationDate = new Date().toISOString();
-
-        let msg = `Calibration ORP 2 points\n\n`;
-        msg += `P1: ${orpPoint1Measured.toFixed(1)} → ${orpPoint1Reference.toFixed(0)}\n`;
-        msg += `P2: ${measured2.toFixed(1)} → ${r2.toFixed(0)}\n\n`;
-        msg += `Slope: ${slope.toFixed(3)}\nOffset: ${offset.toFixed(1)}\n\nAppliquer ?`;
-        if (!confirm(msg)) {
-          orpCalibrationStep2pt = 0;
-          updateOrpCalibrationSteps2pt();
-          return;
-        }
 
         startBtn2pt.disabled = true;
         try {
