@@ -232,9 +232,11 @@ void MqttManager::messageCallback(char* topic, byte* payload, unsigned int lengt
     cmd.toUpperCase();
     if (cmd == "ON") {
       filtrationCfg.forceOn = true;
+      filtrationCfg.forceOff = false;
       systemLogger.info("Filtration forcée ON (MQTT)");
     } else if (cmd == "OFF") {
       filtrationCfg.forceOn = false;
+      filtrationCfg.forceOff = true;
       systemLogger.info("Filtration forcée OFF (MQTT)");
     }
     // Ne pas publier ici : filtration.update() va changer le relais
