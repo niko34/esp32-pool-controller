@@ -109,6 +109,13 @@ bool PumpControllerClass::shouldContinueDosing(float error, float stopThreshold,
   return false;  // Arrêter
 }
 
+void PumpControllerClass::resetPhPauseGuard() {
+  phDosingState.lastStopTime = 0;
+  phPID.integral = 0.0f;
+  phPID.lastError = 0.0f;
+  phPID.lastTime = 0;
+}
+
 void PumpControllerClass::armStabilizationTimer() {
   int delayMin = mqttCfg.stabilizationDelayMin;
   if (delayMin <= 0) {

@@ -89,6 +89,9 @@ public:
   // Reset des états
   void resetDosingStates();
 
+  // Réinitialise la garde anti-cycling du pH (ex: changement de type de correction)
+  void resetPhPauseGuard();
+
   // Arme le timer de stabilisation (bloque le dosage pendant stabilizationDelayMin)
   void armStabilizationTimer();
 

@@ -280,7 +280,10 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["ph_correction_type"].isNull()) {
     String corrType = doc["ph_correction_type"].as<String>();
     if (corrType == "ph_minus" || corrType == "ph_plus") {
-      mqttCfg.phCorrectionType = corrType;
+      if (corrType != mqttCfg.phCorrectionType) {
+        mqttCfg.phCorrectionType = corrType;
+        PumpController.resetPhPauseGuard();
+      }
     }
   }
   if (!doc["time_use_ntp"].isNull()) mqttCfg.timeUseNtp = doc["time_use_ntp"];
