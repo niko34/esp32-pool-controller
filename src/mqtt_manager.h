@@ -22,6 +22,10 @@ struct MqttTopics {
   String orpDosingState;       // Pompe ORP active (ON/OFF)
   String phLimitState;         // Limite journalière pH atteinte (ON/OFF)
   String orpLimitState;        // Limite journalière ORP atteinte (ON/OFF)
+  String phStockLowState;      // Stock pH faible (ON/OFF)
+  String orpStockLowState;     // Stock ORP faible (ON/OFF)
+  String phRemainingState;     // Volume pH restant (ml)
+  String orpRemainingState;    // Volume ORP restant (ml)
   String phTargetState;        // Consigne pH (état)
   String orpTargetState;       // Consigne ORP (état)
   String phTargetCommand;      // Consigne pH (commande)
@@ -63,6 +67,7 @@ public:
   void publishFiltrationState();
   void publishLightingState();
   void publishDosingState();
+  void publishProductState();
   void publishTargetState();
   void publishAlert(const String& alertType, const String& message);
   void publishLog(const String& logMessage);

@@ -241,6 +241,7 @@ void loop() {
   static unsigned long lastProductSave = 0;
   if (productConfigDirty && now - lastProductSave >= 60000UL) {
     saveProductConfig();
+    mqttManager.publishProductState();
     lastProductSave = now;
   }
 

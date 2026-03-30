@@ -49,6 +49,10 @@ void MqttManager::refreshTopics() {
   topics.orpDosingState = base + "/orp_dosing";
   topics.phLimitState = base + "/ph_limit";
   topics.orpLimitState = base + "/orp_limit";
+  topics.phStockLowState = base + "/ph_stock_low";
+  topics.orpStockLowState = base + "/orp_stock_low";
+  topics.phRemainingState = base + "/ph_remaining_ml";
+  topics.orpRemainingState = base + "/orp_remaining_ml";
   topics.phTargetState = base + "/ph_target";
   topics.orpTargetState = base + "/orp_target";
   topics.phTargetCommand = base + "/ph_target/set";
@@ -161,6 +165,7 @@ void MqttManager::publishAllStates() {
   publishFiltrationState();
   publishLightingState();
   publishDosingState();
+  publishProductState();
   publishTargetState();
 }
 
@@ -181,6 +186,18 @@ void MqttManager::publishDosingState() {
   publishSensorState(topics.orpDosingState, PumpController.isOrpDosing() ? "ON" : "OFF");
   publishSensorState(topics.phLimitState,   safetyLimits.phLimitReached  ? "ON" : "OFF");
   publishSensorState(topics.orpLimitState,  safetyLimits.orpLimitReached ? "ON" : "OFF");
+}
+
+void MqttManager::publishProductState() {
+  if (!mqtt.connected()) return;
+  float phRemaining  = max(0.0f, productCfg.phContainerVolumeMl  - productCfg.phTotalInjectedMl);
+  float orpRemaining = max(0.0f, productCfg.orpContainerVolumeMl - productCfg.orpTotalInjectedMl);
+  bool phStockLow  = productCfg.phTrackingEnabled  && productCfg.phAlertThresholdMl  > 0 && phRemaining  <= productCfg.phAlertThresholdMl;
+  bool orpStockLow = productCfg.orpTrackingEnabled && productCfg.orpAlertThresholdMl > 0 && orpRemaining <= productCfg.orpAlertThresholdMl;
+  publishSensorState(topics.phStockLowState,   phStockLow  ? "ON" : "OFF");
+  publishSensorState(topics.orpStockLowState,  orpStockLow ? "ON" : "OFF");
+  publishSensorState(topics.phRemainingState,  String(phRemaining,  0));
+  publishSensorState(topics.orpRemainingState, String(orpRemaining, 0));
 }
 
 void MqttManager::publishTargetState() {
@@ -425,6 +442,50 @@ void MqttManager::publishDiscovery() {
   doc["payload_off"] = "OFF";
   doc["device_class"] = "problem";
   doc["icon"] = "mdi:alert";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Stock pH faible
+  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_ph_stock_low/config";
+  doc["name"] = "Stock pH Faible";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_stock_low";
+  doc["state_topic"] = topics.phStockLowState;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["device_class"] = "problem";
+  doc["icon"] = "mdi:bottle-tonic-outline";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Stock ORP faible
+  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_orp_stock_low/config";
+  doc["name"] = "Stock Chlore Faible";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_stock_low";
+  doc["state_topic"] = topics.orpStockLowState;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["device_class"] = "problem";
+  doc["icon"] = "mdi:bottle-tonic-outline";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Volume pH restant
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_remaining/config";
+  doc["name"] = "Volume pH Restant";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_remaining";
+  doc["state_topic"] = topics.phRemainingState;
+  doc["unit_of_measurement"] = "mL";
+  doc["icon"] = "mdi:cup-water";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Volume ORP restant
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_orp_remaining/config";
+  doc["name"] = "Volume Chlore Restant";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_remaining";
+  doc["state_topic"] = topics.orpRemainingState;
+  doc["unit_of_measurement"] = "mL";
+  doc["icon"] = "mdi:cup-water";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 
