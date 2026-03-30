@@ -1453,12 +1453,12 @@
       phVariant = 'warning';
       phText = 'Limite journalière atteinte';
     }
-    if (!phVariant) {
-      const rem = latestSensorData?.ph_remaining_ml;
+    { const rem = latestSensorData?.ph_remaining_ml;
       const thr = latestSensorData?.ph_alert_threshold_ml;
       if (rem != null && thr != null && rem <= thr && thr > 0) {
-        phVariant = 'warning';
-        phText = `Stock faible (${(rem / 1000).toFixed(1)} L)`;
+        const stockText = `Stock faible (${(rem / 1000).toFixed(1)} L)`;
+        if (!phVariant) { phVariant = 'warning'; phText = stockText; }
+        else phText += ` · ${stockText}`;
       }
     }
     setBadge('ph-sensor-badge', phVariant, phText);
@@ -1479,12 +1479,12 @@
       orpVariant = 'warning';
       orpText = 'Limite journalière atteinte';
     }
-    if (!orpVariant) {
-      const rem = latestSensorData?.orp_remaining_ml;
+    { const rem = latestSensorData?.orp_remaining_ml;
       const thr = latestSensorData?.orp_alert_threshold_ml;
       if (rem != null && thr != null && rem <= thr && thr > 0) {
-        orpVariant = 'warning';
-        orpText = `Stock faible (${(rem / 1000).toFixed(1)} L)`;
+        const stockText = `Stock faible (${(rem / 1000).toFixed(1)} L)`;
+        if (!orpVariant) { orpVariant = 'warning'; orpText = stockText; }
+        else orpText += ` · ${stockText}`;
       }
     }
     setBadge('orp-sensor-badge', orpVariant, orpText);
