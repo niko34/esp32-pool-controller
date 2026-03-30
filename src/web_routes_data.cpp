@@ -23,7 +23,7 @@ static void handleGetData(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
   // Buffer statique pour éviter la fragmentation du heap
   // Taille estimée : ~13 champs × 30 bytes + overhead = 512 bytes
-  StaticJson<512> doc;
+  StaticJson<768> doc;
 
   // ORP
   if (!isnan(sensors.getOrp())) {
@@ -81,6 +81,12 @@ static void handleGetData(AsyncWebServerRequest* request) {
   doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;
   doc["ph_limit_reached"] = safetyLimits.phLimitReached;
   doc["orp_limit_reached"] = safetyLimits.orpLimitReached;
+  doc["ph_tracking_enabled"]  = productCfg.phTrackingEnabled;
+  doc["ph_remaining_ml"]      = max(0.0f, productCfg.phContainerVolumeMl  - productCfg.phTotalInjectedMl);
+  doc["ph_alert_threshold_ml"]= productCfg.phAlertThresholdMl;
+  doc["orp_tracking_enabled"] = productCfg.orpTrackingEnabled;
+  doc["orp_remaining_ml"]     = max(0.0f, productCfg.orpContainerVolumeMl - productCfg.orpTotalInjectedMl);
+  doc["orp_alert_threshold_ml"]= productCfg.orpAlertThresholdMl;
 
   time_t nowEpoch = time(nullptr);
   doc["time_synced"] = isTimeValid(nowEpoch);

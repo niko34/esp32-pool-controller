@@ -180,7 +180,13 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
   "ph_daily_ml": 45.2,
   "orp_daily_ml": 120.5,
   "ph_limit_reached": false,
-  "orp_limit_reached": false
+  "orp_limit_reached": false,
+  "ph_tracking_enabled": true,
+  "ph_remaining_ml": 1500,
+  "ph_alert_threshold_ml": 500,
+  "orp_tracking_enabled": true,
+  "orp_remaining_ml": 3200,
+  "orp_alert_threshold_ml": 1000
 }
 ```
 
