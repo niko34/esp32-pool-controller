@@ -146,9 +146,18 @@ void FiltrationManager::update() {
     state.startedAtMs = millis();
     state.scheduleComputedThisCycle = false;
     systemLogger.info("Démarrage filtration");
-    // En mode piloté : armer le timer de stabilisation au démarrage de la filtration
+    // En mode piloté : armer le timer de stabilisation au démarrage de la filtration.
+    // On n'arme le timer que si la filtration a été arrêtée suffisamment longtemps
+    // (durée >= délai de stabilisation) pour éviter les boucles sur un arrêt/redémarrage
+    // fugace (glitch, sauvegarde config, etc.).
     if (mqttCfg.regulationMode == "pilote") {
-      PumpController.armStabilizationTimer();
+      unsigned long pauseMs = (state.lastStoppedAtMs == 0)
+                                ? 0xFFFFFFFFUL
+                                : (millis() - state.lastStoppedAtMs);
+      unsigned long stabilizationMs = (unsigned long)mqttCfg.stabilizationDelayMin * 60000UL;
+      if (pauseMs > stabilizationMs) {
+        PumpController.armStabilizationTimer();
+      }
     }
   }
 
@@ -165,7 +174,9 @@ void FiltrationManager::update() {
     if (haveTime) {
       startMin = timeStringToMinutes(filtrationCfg.start);
       endMin = timeStringToMinutes(filtrationCfg.end);
-      if (!isMinutesInRange(nowMinutes, startMin, endMin)) {
+      // Ne pas annuler un forceOn : si l'utilisateur a forcé le démarrage
+      // (ex: avant la plage horaire calculée), le planning ne doit pas l'arrêter.
+      if (!filtrationCfg.forceOn && !isMinutesInRange(nowMinutes, startMin, endMin)) {
         runTarget = false;
       }
     }
@@ -177,6 +188,7 @@ void FiltrationManager::update() {
     state.scheduleComputedThisCycle = false;
     state.startedAtMs = 0;
     systemLogger.info("Arrêt filtration");
+    state.lastStoppedAtMs = millis();
     if (mqttCfg.regulationMode == "pilote") {
       PumpController.clearStabilizationTimer();
     }

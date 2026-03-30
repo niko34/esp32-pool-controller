@@ -2016,6 +2016,26 @@ input.is-computed:disabled {
   transform: translateY(-2px);
 }
 
+.card__settings-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  border-radius: 6px;
+  text-decoration: none;
+  transition: color var(--transition-fast), background var(--transition-fast);
+  z-index: 1;
+}
+.card__settings-btn:hover {
+  color: var(--accent);
+  background: var(--accent-light);
+}
+
 .card__status-compact {
   text-align: center;
   width: 100%;

@@ -8,6 +8,7 @@ struct FiltrationRuntime {
   bool running = false;
   bool scheduleComputedThisCycle = false;
   unsigned long startedAtMs = 0;
+  unsigned long lastStoppedAtMs = 0;  // Horodatage du dernier arrêt (0 = jamais arrêtée)
 };
 
 class FiltrationManager {

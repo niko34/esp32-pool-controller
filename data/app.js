@@ -1423,7 +1423,7 @@
   // ========== BADGES CAPTEURS ==========
 
   function updateSensorBadges() {
-    function setBadge(id, variant, text, link) {
+    function setBadge(id, variant, text) {
       const el = $(`#${id}`);
       if (!el) return;
       if (!variant) {
@@ -1433,7 +1433,7 @@
         return;
       }
       el.className = `sensor-badge sensor-badge--${variant}`;
-      el.innerHTML = `<span>${text}</span><a href="${link}" class="sensor-badge__link">Corriger</a>`;
+      el.innerHTML = `<span>${text}</span>`;
       el.style.display = '';
     }
 
@@ -1461,7 +1461,7 @@
         phText = `Stock faible (${(rem / 1000).toFixed(1)} L)`;
       }
     }
-    setBadge('ph-sensor-badge', phVariant, phText, '#/ph');
+    setBadge('ph-sensor-badge', phVariant, phText);
 
     // Badge ORP
     let orpVariant = null, orpText = '';
@@ -1487,7 +1487,7 @@
         orpText = `Stock faible (${(rem / 1000).toFixed(1)} L)`;
       }
     }
-    setBadge('orp-sensor-badge', orpVariant, orpText, '#/orp');
+    setBadge('orp-sensor-badge', orpVariant, orpText);
   }
 
   // ========== ÉCRAN PRODUITS ==========

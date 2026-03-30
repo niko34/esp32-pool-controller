@@ -327,12 +327,13 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     }
   }
   if (!doc["timezone_id"].isNull()) mqttCfg.timezoneId = doc["timezone_id"].as<String>();
-  if (!doc["filtration_enabled"].isNull()) filtrationCfg.enabled = doc["filtration_enabled"];
+  bool filtrationConfigChanged = false;
+  if (!doc["filtration_enabled"].isNull()) { filtrationCfg.enabled = doc["filtration_enabled"]; filtrationConfigChanged = true; }
   String prevFiltrationMode = filtrationCfg.mode;
   bool scheduleChanged = false;
-  if (!doc["filtration_mode"].isNull()) { filtrationCfg.mode = doc["filtration_mode"].as<String>(); scheduleChanged = true; }
-  if (!doc["filtration_start"].isNull()) { filtrationCfg.start = doc["filtration_start"].as<String>(); scheduleChanged = true; }
-  if (!doc["filtration_end"].isNull()) { filtrationCfg.end = doc["filtration_end"].as<String>(); scheduleChanged = true; }
+  if (!doc["filtration_mode"].isNull()) { filtrationCfg.mode = doc["filtration_mode"].as<String>(); scheduleChanged = true; filtrationConfigChanged = true; }
+  if (!doc["filtration_start"].isNull()) { filtrationCfg.start = doc["filtration_start"].as<String>(); scheduleChanged = true; filtrationConfigChanged = true; }
+  if (!doc["filtration_end"].isNull()) { filtrationCfg.end = doc["filtration_end"].as<String>(); scheduleChanged = true; filtrationConfigChanged = true; }
   // Quand le mode ou les horaires changent, effacer les overrides manuels pour que le planning prenne effet immédiatement
   if (scheduleChanged && doc["filtration_force_on"].isNull() && doc["filtration_force_off"].isNull()) {
     filtrationCfg.forceOn = false;
@@ -341,10 +342,12 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["filtration_force_on"].isNull()) {
     filtrationCfg.forceOn = doc["filtration_force_on"].as<bool>();
     if (filtrationCfg.forceOn) filtrationCfg.forceOff = false;
+    filtrationConfigChanged = true;
   }
   if (!doc["filtration_force_off"].isNull()) {
     filtrationCfg.forceOff = doc["filtration_force_off"].as<bool>();
     if (filtrationCfg.forceOff) filtrationCfg.forceOn = false;
+    filtrationConfigChanged = true;
   }
   if (!doc["max_ph_ml_per_day"].isNull()) safetyLimits.maxPhMinusMlPerDay = doc["max_ph_ml_per_day"];
   if (!doc["max_chlorine_ml_per_day"].isNull()) safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"];
@@ -436,7 +439,12 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
 
   // Appliquer immédiatement la nouvelle configuration de filtration
-  filtration.update();
+  // (seulement si un paramètre de filtration a changé, pour éviter de déclencher
+  // involontairement un démarrage de filtration et une temporisation de stabilisation
+  // lors d'une sauvegarde sans lien avec la filtration, ex: changement de type pH)
+  if (filtrationConfigChanged) {
+    filtration.update();
+  }
 
   // Suivi volumes produits
   if (!doc["ph_tracking_enabled"].isNull()) {
