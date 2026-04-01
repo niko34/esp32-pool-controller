@@ -305,6 +305,195 @@
     return { min, max };
   }
 
+  // Mini charts pour les cartes pH et ORP du dashboard
+  function getMiniChartRGB(value, target, tolerance) {
+    if (value == null || isNaN(value)) return [156, 163, 175];
+    const dev = Math.abs(value - target) - tolerance;
+    if (dev <= 0) return [34, 197, 94];
+    const t = Math.min(1, dev / tolerance);
+    return [
+      Math.round(34 + (239 - 34) * t),
+      Math.round(197 - (197 - 68) * t),
+      Math.round(94 - (94 - 68) * t)
+    ];
+  }
+
+  function getMiniChartColor(value, target, tolerance, alpha) {
+    const [r, g, b] = getMiniChartRGB(value, target, tolerance);
+    return `rgba(${r},${g},${b},${alpha ?? 1})`;
+  }
+
+  function createMiniLineChart(canvasId, getTarget, getTolerance, formatValue) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return null;
+    const c2d = canvas.getContext('2d');
+
+    return new Chart(c2d, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [{
+          data: [],
+          tension: 0.4,
+          borderWidth: 1.5,
+          pointRadius: 0,
+          fill: true,
+          backgroundColor: (context) => {
+            const { ctx: c, chartArea, data } = context.chart;
+            if (!chartArea) return 'rgba(34,197,94,0.12)';
+            const vals = data.datasets[0]?.data ?? [];
+            let lastVal = null;
+            for (let i = vals.length - 1; i >= 0; i--) {
+              if (vals[i] != null && !isNaN(vals[i])) { lastVal = vals[i]; break; }
+            }
+            const [r, gv, bv] = getMiniChartRGB(lastVal, getTarget(), getTolerance());
+            const grad = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
+            grad.addColorStop(0, `rgba(${r},${gv},${bv},0.22)`);
+            grad.addColorStop(1, `rgba(${r},${gv},${bv},0.02)`);
+            return grad;
+          },
+          segment: {
+            borderColor: ctx => getMiniChartColor(
+              (ctx.p0.parsed.y + ctx.p1.parsed.y) / 2, getTarget(), getTolerance()
+            )
+          },
+          borderColor: '#22c55e'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        layout: { padding: { top: 4, left: 2, right: 2, bottom: 0 } },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            enabled: true,
+            displayColors: false,
+            backgroundColor: 'rgba(17,24,39,0.88)',
+            titleColor: 'rgba(156,163,175,1)',
+            bodyColor: '#f9fafb',
+            titleFont: { size: 10 },
+            bodyFont: { size: 13, weight: '700' },
+            padding: { x: 10, y: 6 },
+            cornerRadius: 8,
+            callbacks: {
+              title: ctx => ctx[0]?.label ?? '',
+              label: ctx => formatValue ? formatValue(ctx.parsed.y) : String(ctx.parsed.y)
+            }
+          }
+        },
+        scales: {
+          x: {
+            ticks: { maxTicksLimit: 4, maxRotation: 0, font: { size: 9 }, color: 'rgba(75,85,99,0.7)' },
+            grid: { display: false },
+            border: { display: false }
+          },
+          y: {
+            position: 'right',
+            ticks: { maxTicksLimit: 3, font: { size: 9 }, color: 'rgba(75,85,99,0.7)', padding: 2 },
+            grid: { color: 'rgba(0,0,0,0.06)', drawTicks: false },
+            border: { display: false }
+          }
+        }
+      }
+    });
+  }
+
+  let lastMiniChartTimestamp = 0;
+
+  function miniChartPointLabel(timestamp) {
+    const ts = new Date(timestamp * 1000);
+    const isToday = ts.toDateString() === new Date().toDateString();
+    return isToday
+      ? ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      : ts.toLocaleDateString([], { month: 'numeric', day: 'numeric' }) + ' '
+        + ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
+  async function loadMiniChartData(since = 0) {
+    try {
+      const url = since > 0
+        ? `/get-history?range=3d&since=${since}`
+        : '/get-history?range=3d';
+      const resp = await authFetch(url);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (!data.history) return;
+
+      const phLabels = [], phValues = [];
+      const orpLabels = [], orpValues = [];
+      const tempLabels = [], tempValues = [];
+      let maxTs = since;
+
+      data.history.forEach(point => {
+        if (point.timestamp > maxTs) maxTs = point.timestamp;
+        const label = miniChartPointLabel(point.timestamp);
+        if (point.ph != null && !isNaN(point.ph)) {
+          phLabels.push(label);
+          phValues.push(Math.round(point.ph * 10) / 10);
+        }
+        if (point.orp != null && !isNaN(point.orp)) {
+          orpLabels.push(label);
+          orpValues.push(Math.round(point.orp));
+        }
+        if (point.temperature != null && !isNaN(point.temperature)) {
+          tempLabels.push(label);
+          tempValues.push(Math.round(point.temperature * 10) / 10);
+        }
+      });
+
+      if (since === 0) {
+        // Chargement initial : remplace toutes les données
+        updateMiniChart(phMiniChart, phLabels, phValues, window._config?.ph_target ?? 7.2, 0.2);
+        updateMiniChart(orpMiniChart, orpLabels, orpValues, window._config?.orp_target ?? 700, 50);
+        updateMiniChart(tempMiniChart, tempLabels, tempValues, 26, 8);
+      } else {
+        // Mise à jour incrémentale : ajoute les nouveaux points
+        appendMiniChart(phMiniChart, phLabels, phValues, window._config?.ph_target ?? 7.2, 0.2);
+        appendMiniChart(orpMiniChart, orpLabels, orpValues, window._config?.orp_target ?? 700, 50);
+        appendMiniChart(tempMiniChart, tempLabels, tempValues, 26, 8);
+      }
+
+      if (maxTs > lastMiniChartTimestamp) lastMiniChartTimestamp = maxTs;
+    } catch (e) {
+      console.error('Error loading mini chart data:', e);
+    }
+  }
+
+  function appendMiniChart(chart, newLabels, newValues, target, tolerance) {
+    if (!chart || !newLabels.length) return;
+    chart.data.labels.push(...newLabels);
+    chart.data.datasets[0].data.push(...newValues);
+    // Recalcule la couleur de fond basée sur la dernière valeur
+    const vals = chart.data.datasets[0].data;
+    const hasData = vals.some(v => v != null && !isNaN(v));
+    if (!hasData && target != null) {
+      chart.options.scales.y.min = target - tolerance * 4;
+      chart.options.scales.y.max = target + tolerance * 4;
+    } else {
+      chart.options.scales.y.min = undefined;
+      chart.options.scales.y.max = undefined;
+    }
+    chart.update('none');
+  }
+
+  function updateMiniChart(chart, labels, values, target, tolerance) {
+    if (!chart) return;
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = values;
+    // Quand il n'y a pas de données, définir une plage Y sensée autour de la cible
+    const hasData = values.some(v => v != null && !isNaN(v));
+    if (!hasData && target != null && tolerance != null) {
+      chart.options.scales.y.min = target - tolerance * 4;
+      chart.options.scales.y.max = target + tolerance * 4;
+    } else {
+      chart.options.scales.y.min = undefined;
+      chart.options.scales.y.max = undefined;
+    }
+    chart.update('none');
+  }
+
   function createLineChart(ctx, color, label, options = {}) {
     const {
       integerOnly = false,
@@ -380,59 +569,19 @@
     return new Chart(ctx, chartConfig);
   }
 
-  function updateYAxisOverlay(chart) {
-    if (!chart) return;
-    const overlay = $("#mainChartYAxis");
-    if (!overlay) return;
-
-    const scale = chart.scales?.y;
-    if (!scale) return;
-
-    overlay.innerHTML = "";
-    const ticks = scale.ticks || [];
-    const top = chart.chartArea?.top ?? 0;
-
-    ticks.forEach((tick, index) => {
-      const label = tick.label ?? tick.value ?? "";
-      const el = document.createElement("div");
-      el.className = "chart-y-tick";
-      el.textContent = label;
-      const y = scale.getPixelForTick(index);
-      el.style.top = `${y}px`;
-      el.style.transform = "translateY(-50%)";
-      overlay.appendChild(el);
-    });
-  }
-
-  
-
-  function updateMainChartScroll() {
-    const container = $("#mainChartScroll");
-    const inner = $("#mainChartScrollInner");
-    if (!mainChart || !container || !inner) return;
-
-    const pointCount = mainChart.data.labels ? mainChart.data.labels.length : 0;
-    const styles = getComputedStyle(container);
-    const paddingLeft = parseFloat(styles.paddingLeft || "0") || 0;
-    const baseWidth = Math.max(0, (container.clientWidth || 0) - paddingLeft);
-    const desiredWidth = Math.max(baseWidth, pointCount * CHART_POINT_PX);
-    if (inner.style.width !== `${desiredWidth}px`) {
-      inner.style.width = `${desiredWidth}px`;
-      mainChart.resize();
-    }
-
-    if (chartAutoScroll) {
-      const maxScrollLeft = container.scrollWidth - container.clientWidth;
-      container.scrollLeft = Math.max(0, maxScrollLeft);
-    }
-  }
-
-  function bindChartScroll() {
-    const container = $("#mainChartScroll");
-    if (!container) return;
-    container.addEventListener('scroll', () => {
-      const maxScrollLeft = container.scrollWidth - container.clientWidth;
-      chartAutoScroll = (maxScrollLeft - container.scrollLeft) <= CHART_SCROLL_EPS;
+  function bindDetailCharts() {
+    document.querySelectorAll('.detail-chart-ranges').forEach(container => {
+      container.querySelectorAll('.range-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const range = btn.dataset.range;
+          // Synchronise tous les sélecteurs de plage
+          document.querySelectorAll('.detail-chart-ranges .range-btn').forEach(b => {
+            b.classList.toggle('range-btn--active', b.dataset.range === range);
+          });
+          currentHistoryRange = range;
+          await loadHistoricalData(range).catch(() => {});
+        });
+      });
     });
   }
 
@@ -493,24 +642,15 @@
     const points = chart.data.labels.length;
     const build = (value) => Array(points).fill(value);
 
-    // Calculer les limites dynamiques de l'axe Y
     const dataPoints = chart.data.datasets[0]?.data || [];
     const limits = calculateAxisLimits(dataPoints, PH_AXIS_MIN_DEFAULT, PH_AXIS_MAX_DEFAULT);
 
+    chart.options.scales.y.min = limits.min;
+    chart.options.scales.y.max = limits.max;
     chart.data.datasets[1].data = build(limits.max);
     chart.data.datasets[2].data = build(PH_MAX);
     chart.data.datasets[3].data = build(PH_MIN);
     chart.data.datasets[4].data = build(limits.min);
-  }
-
-  function ensurePhPlaceholderLabels(chart) {
-    if (!chart) return;
-    if (chart.data.labels.length === 0) {
-      chart.data.labels = ["", ""];
-    }
-    if (chart.data.datasets[0] && chart.data.datasets[0].data.length === 0) {
-      chart.data.datasets[0].data = [null, null];
-    }
   }
 
   function buildOrpReferenceDatasets() {
@@ -570,159 +710,128 @@
     const points = chart.data.labels.length;
     const build = (value) => Array(points).fill(value);
 
-    // Calculer les limites dynamiques de l'axe Y
     const dataPoints = chart.data.datasets[0]?.data || [];
     const limits = calculateAxisLimits(dataPoints, ORP_AXIS_MIN_DEFAULT, ORP_AXIS_MAX_DEFAULT);
 
+    chart.options.scales.y.min = limits.min;
+    chart.options.scales.y.max = limits.max;
     chart.data.datasets[1].data = build(limits.max);
     chart.data.datasets[2].data = build(ORP_MAX);
     chart.data.datasets[3].data = build(ORP_MIN);
     chart.data.datasets[4].data = build(limits.min);
   }
 
-  function ensureOrpPlaceholderLabels(chart) {
-    if (!chart) return;
-    if (chart.data.labels.length === 0) {
-      chart.data.labels = ["", ""];
-    }
-    if (chart.data.datasets[0] && chart.data.datasets[0].data.length === 0) {
-      chart.data.datasets[0].data = [null, null];
-    }
-  }
-
-  function clearReferenceDatasets(chart) {
-    while (chart && chart.data.datasets.length > 1) {
-      chart.data.datasets.pop();
-    }
-  }
-
-  function pushPoint(chart, value, label) {
-    chart.data.labels.push(label);
-    chart.data.datasets[0].data.push(value);
-    // Keep more points since we're loading historical data (up to 100 points)
-    if (chart.data.labels.length > 100) {
-      chart.data.labels.shift();
-      chart.data.datasets[0].data.shift();
-    }
-    chart.update("none");
-  }
-
-  function initializePhReferenceLines(chart) {
-    // Ajouter les zones de fond rouge et lignes de référence pour le pH
-    if (chart && chart.data.datasets.length === 1) {
-      chart.data.datasets.push(...buildPhReferenceDatasets());
-    }
-  }
-
-  function initializeOrpReferenceLines(chart) {
-    // Ajouter les zones de fond rouge et lignes de référence pour l'ORP
-    if (chart && chart.data.datasets.length === 1) {
-      chart.data.datasets.push(...buildOrpReferenceDatasets());
-    }
-  }
-
-  async function loadHistoricalData(range = '24h') {
+  async function loadHistoricalData(range = 'all') {
     try {
       const response = await authFetch(`/get-history?range=${range}`);
       if (!response.ok) throw new Error('Failed to load history');
 
       const data = await response.json();
+      const history = data.history || [];
 
-      if (!data.history || data.history.length === 0) {
-        debugLog('No historical data available');
-        return;
-      }
+      // Agréger par jour calendaire — dernier point connu par jour par capteur
+      const todayKey = new Date().toDateString();
+      const dayMap = new Map();
 
-      // Clear existing chart data
-      if (tempChart) {
-        tempChart.data.labels = [];
-        tempChart.data.datasets[0].data = [];
-      }
-      if (phChart) {
-        phChart.data.labels = [];
-        phChart.data.datasets[0].data = [];
-        // Clear reference lines data if they exist
-        if (phChart.data.datasets.length > 1) {
-          for (let i = 1; i < phChart.data.datasets.length; i++) {
-            phChart.data.datasets[i].data = [];
-          }
+      history.forEach(point => {
+        const d = new Date(point.timestamp * 1000);
+        const key = d.toDateString();
+        if (!dayMap.has(key)) {
+          const isToday = key === todayKey;
+          const label = isToday
+            ? "Aujourd'hui"
+            : d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+          dayMap.set(key, { label, ph: null, orp: null, temperature: null });
         }
-      }
-      if (orpChart) {
-        orpChart.data.labels = [];
-        orpChart.data.datasets[0].data = [];
-      }
-
-      // Add historical data to charts
-      data.history.forEach(point => {
-        const timestamp = new Date(point.timestamp * 1000);
-        const label = timestamp.toLocaleTimeString();
-
-        if (point.temperature != null && !isNaN(point.temperature) && tempChart) {
-          tempChart.data.labels.push(label);
-          tempChart.data.datasets[0].data.push(point.temperature);
-        }
-
-        if (point.ph != null && !isNaN(point.ph) && phChart) {
-          phChart.data.labels.push(label);
-          phChart.data.datasets[0].data.push(Math.round(point.ph * 10) / 10);
-        }
-
-        if (point.orp != null && !isNaN(point.orp) && orpChart) {
-          orpChart.data.labels.push(label);
-          orpChart.data.datasets[0].data.push(Math.round(point.orp));
-        }
+        const entry = dayMap.get(key);
+        if (point.ph != null && !isNaN(point.ph)) entry.ph = Math.round(point.ph * 10) / 10;
+        if (point.orp != null && !isNaN(point.orp)) entry.orp = Math.round(point.orp);
+        if (point.temperature != null && !isNaN(point.temperature)) entry.temperature = point.temperature;
       });
 
-      // Update charts
-      if (tempChart) tempChart.update('none');
+      // Si aujourd'hui absent de l'historique mais données temps réel disponibles, l'injecter
+      if (!dayMap.has(todayKey) && latestSensorData) {
+        const s = latestSensorData;
+        dayMap.set(todayKey, {
+          label: "Aujourd'hui",
+          ph: s.ph != null ? Math.round(s.ph * 10) / 10 : null,
+          orp: s.orp != null ? Math.round(s.orp) : null,
+          temperature: s.temperature ?? null
+        });
+      }
+
+      // Trier par date croissante
+      const entries = [...dayMap.entries()]
+        .sort((a, b) => new Date(a[0]) - new Date(b[0]))
+        .map(([, e]) => e);
+
+      if (tempChart) {
+        const labels = [], values = [];
+        entries.forEach(e => { if (e.temperature != null) { labels.push(e.label); values.push(e.temperature); } });
+        tempChart.data.labels = labels;
+        tempChart.data.datasets[0].data = values;
+        tempChart.update('none');
+      }
+
       if (phChart) {
-        ensurePhReferenceDatasets(phChart);
-        ensurePhPlaceholderLabels(phChart);
+        const labels = [], values = [];
+        entries.forEach(e => { if (e.ph != null) { labels.push(e.label); values.push(e.ph); } });
+        phChart.data.labels = labels;
+        phChart.data.datasets[0].data = values;
         syncPhReferenceDatasets(phChart);
         phChart.update('none');
       }
+
       if (orpChart) {
-        ensureOrpReferenceDatasets(orpChart);
-        ensureOrpPlaceholderLabels(orpChart);
+        const labels = [], values = [];
+        entries.forEach(e => { if (e.orp != null) { labels.push(e.label); values.push(e.orp); } });
+        orpChart.data.labels = labels;
+        orpChart.data.datasets[0].data = values;
         syncOrpReferenceDatasets(orpChart);
         orpChart.update('none');
       }
 
-      // Update main chart with active chart type data
-      if (mainChart) {
-        if (currentChartType === 'temperature' && tempChart) {
-          mainChart.data.labels = [...tempChart.data.labels];
-          mainChart.data.datasets[0].data = [...tempChart.data.datasets[0].data];
-        } else if (currentChartType === 'ph' && phChart) {
-          mainChart.data.labels = [...phChart.data.labels];
-          mainChart.data.datasets[0].data = [...phChart.data.datasets[0].data];
-          ensurePhReferenceDatasets(mainChart);
-          ensurePhPlaceholderLabels(mainChart);
-          syncPhReferenceDatasets(mainChart);
-          mainChart.data.datasets[0].fill = false;
-        } else if (currentChartType === 'orp' && orpChart) {
-          mainChart.data.labels = [...orpChart.data.labels];
-          mainChart.data.datasets[0].data = [...orpChart.data.datasets[0].data];
-          ensureOrpReferenceDatasets(mainChart);
-          ensureOrpPlaceholderLabels(mainChart);
-          syncOrpReferenceDatasets(mainChart);
-          mainChart.data.datasets[0].fill = false;
-        }
-        mainChart.update('none');
-        updateYAxisOverlay(mainChart);
-        updateMainChartScroll();
-      }
-
-      debugLog(`Loaded ${data.count} historical points (${range})`);
+      debugLog(`Loaded ${history.length} points → ${dayMap.size} jours agrégés (${range})`);
     } catch (error) {
       console.error('Error loading historical data:', error);
     }
   }
 
+  // Met à jour uniquement le point "Aujourd'hui" sur les graphiques détaillés
+  function updateTodayOnCharts(sensorData) {
+    const todayLabel = "Aujourd'hui";
+
+    function updateChart(chart, value) {
+      if (!chart || value == null || isNaN(value)) return;
+      const labels = chart.data.labels;
+      const values = chart.data.datasets[0].data;
+      if (labels.length > 0 && labels[labels.length - 1] === todayLabel) {
+        values[values.length - 1] = value;
+      } else {
+        labels.push(todayLabel);
+        values.push(value);
+      }
+    }
+
+    if (tempChart && sensorData.temperature != null) {
+      updateChart(tempChart, sensorData.temperature);
+      tempChart.update('none');
+    }
+    if (!phCalibrationActive && phChart && sensorData.ph != null) {
+      updateChart(phChart, Math.round(sensorData.ph * 10) / 10);
+      syncPhReferenceDatasets(phChart);
+      phChart.update('none');
+    }
+    if (!orpCalibrationActive && orpChart && sensorData.orp != null) {
+      updateChart(orpChart, Math.round(sensorData.orp));
+      syncOrpReferenceDatasets(orpChart);
+      orpChart.update('none');
+    }
+  }
+
   let tempChart, phChart, orpChart;
-  let mainChart; // Graphique unique avec onglets
-  let currentChartType = 'temperature'; // Type de graphique actif
+  let phMiniChart = null, orpMiniChart = null, tempMiniChart = null;
+  let currentHistoryRange = 'all';
 
   // ---------- State ----------
   let latestSensorData = null;
@@ -1772,130 +1881,6 @@
     }
   }
 
-  // ========== GRAPHIQUE AVEC ONGLETS ==========
-  function switchChartTab(chartType) {
-    currentChartType = chartType;
-
-    // Mettre à jour les onglets actifs
-    const tabs = document.querySelectorAll('.chart-tab');
-    tabs.forEach(tab => {
-      const isActive = tab.dataset.chart === chartType;
-      tab.classList.toggle('chart-tab--active', isActive);
-      tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
-    });
-
-    // Copier les données du graphique source vers le graphique principal
-    const sourceChart = chartType === 'temperature' ? tempChart : chartType === 'ph' ? phChart : orpChart;
-
-    if (mainChart && sourceChart) {
-      mainChart.data.labels = [...sourceChart.data.labels];
-      mainChart.data.datasets[0].data = [...sourceChart.data.datasets[0].data];
-
-      // Mettre à jour la couleur et le label
-      const colors = {
-        temperature: '#4f8fff',
-        ph: '#8b5cf6',
-        orp: '#10b981'
-      };
-      const labels = {
-        temperature: 'Température',
-        ph: 'pH',
-        orp: 'ORP'
-      };
-
-      mainChart.data.datasets[0].borderColor = colors[chartType];
-      mainChart.data.datasets[0].backgroundColor = colors[chartType] + '20';
-      mainChart.data.datasets[0].label = labels[chartType];
-      mainChart.data.datasets[0].fill = chartType !== 'ph' && chartType !== 'orp';
-
-      // Configurer l'échelle Y selon le type de graphique
-      if (chartType === 'orp') {
-        // ORP: échelle dynamique (min 500-900 mV) avec entiers uniquement
-        const dataPoints = mainChart.data.datasets[0]?.data || [];
-        const limits = calculateAxisLimits(dataPoints, ORP_AXIS_MIN_DEFAULT, ORP_AXIS_MAX_DEFAULT);
-
-        mainChart.options.scales.y.min = limits.min;
-        mainChart.options.scales.y.max = limits.max;
-        mainChart.options.scales.y.ticks.callback = function(value) {
-          if (Number.isInteger(value)) return value;
-        };
-
-        clearReferenceDatasets(mainChart);
-        ensureOrpReferenceDatasets(mainChart);
-        ensureOrpPlaceholderLabels(mainChart);
-        syncOrpReferenceDatasets(mainChart);
-      } else if (chartType === 'ph') {
-        // pH: échelle dynamique (min 6-8) avec lignes de référence à 7.0 et 7.4
-        const dataPoints = mainChart.data.datasets[0]?.data || [];
-        const limits = calculateAxisLimits(dataPoints, PH_AXIS_MIN_DEFAULT, PH_AXIS_MAX_DEFAULT);
-
-        mainChart.options.scales.y.min = limits.min;
-        mainChart.options.scales.y.max = limits.max;
-        delete mainChart.options.scales.y.ticks.callback;
-
-        clearReferenceDatasets(mainChart);
-        ensurePhReferenceDatasets(mainChart);
-        ensurePhPlaceholderLabels(mainChart);
-        syncPhReferenceDatasets(mainChart);
-      } else {
-        // Température: échelle automatique sans lignes de référence
-        delete mainChart.options.scales.y.min;
-        delete mainChart.options.scales.y.max;
-        delete mainChart.options.scales.y.ticks.callback;
-
-        // Supprimer les lignes de référence si elles existent
-        clearReferenceDatasets(mainChart);
-      }
-
-      mainChart.update('none');
-      updateYAxisOverlay(mainChart);
-      updateMainChartScroll();
-    }
-
-    // Update accessible label on canvas and tabpanel
-    const chartLabels = {
-      temperature: 'Graphique Température (dernières 24 heures)',
-      ph: 'Graphique pH (dernières 24 heures)',
-      orp: 'Graphique ORP (dernières 24 heures)'
-    };
-    const tabIds = {
-      temperature: 'tab-temperature',
-      ph: 'tab-ph-chart',
-      orp: 'tab-orp-chart'
-    };
-    const mainChartCanvas = document.getElementById('mainChart');
-    if (mainChartCanvas) mainChartCanvas.setAttribute('aria-label', chartLabels[chartType] || '');
-    const tabpanel = document.getElementById('chart-tabpanel');
-    if (tabpanel) tabpanel.setAttribute('aria-labelledby', tabIds[chartType] || 'tab-temperature');
-  }
-
-
-  function bindChartTabs() {
-    const tabs = Array.from(document.querySelectorAll('.chart-tab'));
-    tabs.forEach((tab, i) => {
-      tab.addEventListener('click', () => {
-        switchChartTab(tab.dataset.chart);
-      });
-      tab.addEventListener('keydown', (e) => {
-        let target = null;
-        if (e.key === 'ArrowRight') {
-          target = tabs[(i + 1) % tabs.length];
-        } else if (e.key === 'ArrowLeft') {
-          target = tabs[(i - 1 + tabs.length) % tabs.length];
-        } else if (e.key === 'Home') {
-          target = tabs[0];
-        } else if (e.key === 'End') {
-          target = tabs[tabs.length - 1];
-        }
-        if (target) {
-          e.preventDefault();
-          switchChartTab(target.dataset.chart);
-          target.focus();
-        }
-      });
-    });
-  }
-
   function formatDateTimeFromEpoch(epochSeconds) {
     if (!Number.isFinite(epochSeconds)) return "";
     const date = new Date(epochSeconds * 1000);
@@ -2167,22 +2152,14 @@
     if (phChart) {
       phChart.data.labels = [];
       phChart.data.datasets[0].data = [];
-      clearReferenceDatasets(phChart);
+      syncPhReferenceDatasets(phChart);
       phChart.update("none");
     }
     if (orpChart) {
       orpChart.data.labels = [];
       orpChart.data.datasets[0].data = [];
-      clearReferenceDatasets(orpChart);
+      syncOrpReferenceDatasets(orpChart);
       orpChart.update("none");
-    }
-    if (mainChart) {
-      mainChart.data.labels = [];
-      mainChart.data.datasets[0].data = [];
-      clearReferenceDatasets(mainChart);
-      mainChart.update("none");
-      updateYAxisOverlay(mainChart);
-      updateMainChartScroll();
     }
   }
 
@@ -2407,46 +2384,8 @@
         consecutiveFailures = 0;
         setNetStatus("ok", "En ligne");
 
-        const label = json.timestamp ? new Date(json.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+        updateTodayOnCharts(json);
 
-        if (json.temperature != null && !isNaN(json.temperature) && tempChart) pushPoint(tempChart, json.temperature, label);
-        if (!phCalibrationActive && json.ph != null && !isNaN(json.ph) && phChart) {
-          pushPoint(phChart, Math.round(json.ph * 10) / 10, label);
-          ensurePhReferenceDatasets(phChart);
-          ensurePhPlaceholderLabels(phChart);
-          syncPhReferenceDatasets(phChart);
-          phChart.update('none');
-        }
-        if (!orpCalibrationActive && json.orp != null && !isNaN(json.orp) && orpChart) {
-          pushPoint(orpChart, json.orp, label);
-          ensureOrpReferenceDatasets(orpChart);
-          ensureOrpPlaceholderLabels(orpChart);
-          syncOrpReferenceDatasets(orpChart);
-          orpChart.update('none');
-        }
-
-        // Mettre à jour le graphique principal avec les données du graphique source actif
-        if (mainChart) {
-          const sourceChart = currentChartType === 'temperature' ? tempChart : currentChartType === 'ph' ? phChart : orpChart;
-          if (sourceChart) {
-            mainChart.data.labels = [...sourceChart.data.labels];
-            mainChart.data.datasets[0].data = [...sourceChart.data.datasets[0].data];
-            if (currentChartType === 'ph') {
-              ensurePhReferenceDatasets(mainChart);
-              ensurePhPlaceholderLabels(mainChart);
-              syncPhReferenceDatasets(mainChart);
-              mainChart.data.datasets[0].fill = false;
-            } else if (currentChartType === 'orp') {
-              ensureOrpReferenceDatasets(mainChart);
-              ensureOrpPlaceholderLabels(mainChart);
-              syncOrpReferenceDatasets(mainChart);
-              mainChart.data.datasets[0].fill = false;
-            }
-            mainChart.update('none');
-            updateYAxisOverlay(mainChart);
-            updateMainChartScroll();
-          }
-        }
 
         updateDashboardMetrics(json);
         updateClockBadge(json.time_synced === true);
@@ -2683,9 +2622,6 @@
           // Page température
           const tempCurrentValue = $("#temp_current_value");
           if (tempCurrentValue) tempCurrentValue.textContent = correctedTemp.toFixed(1) + " °C";
-
-          // Graphe (optionnel, mais rend le changement visible immédiatement)
-          if (tempChart) pushPoint(tempChart, correctedTemp, nowLabel);
 
           // Invalider le timestamp pour forcer le rechargement
           lastSensorDataLoadTime = 0;
@@ -4461,8 +4397,7 @@
         yMax: PH_AXIS_MAX_DEFAULT,
         fill: false
       });
-      // Initialiser les lignes de référence du pH dès la création
-      initializePhReferenceLines(phChart);
+      ensurePhReferenceDatasets(phChart);
     }
     if (orpChartCanvas) {
       orpChart = createLineChart(orpChartCanvas, "#10b981", "ORP", {
@@ -4471,21 +4406,10 @@
         yMax: ORP_AXIS_MAX_DEFAULT,
         fill: false
       });
-      // Initialiser les lignes de référence de l'ORP dès la création
-      initializeOrpReferenceLines(orpChart);
+      ensureOrpReferenceDatasets(orpChart);
     }
 
-    // Nouveau graphique principal avec onglets
-    const mainChartCanvas = $("#mainChart");
-    if (mainChartCanvas) {
-      mainChart = createLineChart(mainChartCanvas, "#4f8fff", "Température", {
-        hideYAxis: true,
-        showYAxisGrid: true
-      });
-      bindChartTabs();
-      bindChartScroll();
-      window.addEventListener('resize', updateMainChartScroll);
-    }
+    bindDetailCharts();
 
     bindUI();
     bindHistoryBackup();
@@ -4513,10 +4437,37 @@
     await loadConfig().catch(() => {});
     configPerf?.end();
 
+    // Create mini charts for dashboard cards
+    phMiniChart = createMiniLineChart(
+      'ph-mini-chart',
+      () => window._config?.ph_target ?? 7.2,
+      () => 0.2,
+      v => v.toFixed(1)
+    );
+    orpMiniChart = createMiniLineChart(
+      'orp-mini-chart',
+      () => window._config?.orp_target ?? 700,
+      () => 50,
+      v => Math.round(v) + ' mV'
+    );
+    tempMiniChart = createMiniLineChart(
+      'temp-mini-chart',
+      () => 26,
+      () => 8,
+      v => v.toFixed(1) + ' °C'
+    );
+
     // Load historical data to populate charts
     const historyPerf = debugStart("loadHistoricalData");
-    await loadHistoricalData('24h').catch(() => {});
+    await loadHistoricalData('all').catch(() => {});
     historyPerf?.end();
+
+    // Chargement initial des mini charts (3 jours)
+    loadMiniChartData(0).catch(() => {});
+    // Polling incrémental toutes les 5 minutes
+    setInterval(() => {
+      loadMiniChartData(lastMiniChartTimestamp).catch(() => {});
+    }, 5 * 60 * 1000);
 
     const calibPerf = debugStart("checkCalibrationDate");
     await checkCalibrationDate().catch(() => {});
