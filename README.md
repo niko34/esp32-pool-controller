@@ -96,7 +96,7 @@ Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dos
    - Il s'affiche en clair dans le moniteur série **tant que le wizard de configuration n'est pas complété** :
      ```
      [INFO] AP démarré: PoolControllerAP
-     [INFO] AP Password: A3F12C88
+     [INFO] AP Password: XXXXXXXX
      [INFO] IP AP: 192.168.4.1
      ```
    - Ouvrir le moniteur série **avant** d'alimenter l'appareil : `pio device monitor -b 115200`
