@@ -44,6 +44,9 @@ void FiltrationManager::computeAutoSchedule() {
   float referenceTemp = sensors.getTemperature();
   if (isnan(referenceTemp)) return; // Pas de température valide, on conserve le planning actuel
 
+  // Deadband 1°C : évite les recalculs et écritures NVS pour des variations mineures
+  if (!isnan(_lastScheduledTemp) && fabsf(referenceTemp - _lastScheduledTemp) < 1.0f) return;
+
   if (referenceTemp < 0) referenceTemp = 0;
   float durationHours = referenceTemp / 2.0f;
   if (durationHours < 1.0f) durationHours = 1.0f;
@@ -73,6 +76,7 @@ void FiltrationManager::computeAutoSchedule() {
   filtrationCfg.start = toTimeString(startHour);
   filtrationCfg.end = toTimeString(endHour);
   ensureTimesValid();
+  _lastScheduledTemp = referenceTemp;
   systemLogger.info("Planning auto: " + String(referenceTemp, 1) + "°C → " + filtrationCfg.start + "-" + filtrationCfg.end);
 }
 

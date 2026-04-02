@@ -7,7 +7,7 @@ set -e  # Arrêter en cas d'erreur
 # Configuration
 PORT="/dev/cu.usbserial-0001"
 BAUD="115200"
-LITTLEFS_OFFSET="0x2B0000"
+LITTLEFS_OFFSET="0x2D0000"
 BUILD_DIR=".pio/build/esp32dev"
 
 # Couleurs pour l'affichage
@@ -40,7 +40,7 @@ build_firmware() {
 }
 
 build_filesystem() {
-    print_step "Construction du filesystem LittleFS (1344KB)..."
+    print_step "Construction du filesystem LittleFS (1088KB)..."
     ./build_fs.sh
 }
 
@@ -77,8 +77,8 @@ upload_filesystem() {
 
     # Vérifier la taille du fichier
     SIZE=$(stat -f%z "$BUILD_DIR/littlefs.bin" 2>/dev/null || stat -c%s "$BUILD_DIR/littlefs.bin" 2>/dev/null)
-    if [ "$SIZE" != "1245184" ]; then
-        print_warning "Taille incorrecte du fichier littlefs.bin: $SIZE bytes (attendu: 1245184)"
+    if [ "$SIZE" != "1114112" ]; then
+        print_warning "Taille incorrecte du fichier littlefs.bin: $SIZE bytes (attendu: 1114112)"
         print_warning "Reconstruction avec build_fs.sh..."
         build_filesystem
     fi

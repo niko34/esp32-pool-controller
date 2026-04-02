@@ -83,6 +83,8 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["orp_limit_seconds"] = mqttCfg.orpInjectionLimitSeconds;
   doc["regulation_mode"] = mqttCfg.regulationMode;
   doc["stabilization_delay_min"] = mqttCfg.stabilizationDelayMin;
+  doc["regulation_speed"] = mqttCfg.regulationSpeed;
+  doc["min_pause_between_min"] = mqttCfg.minPauseBetweenMin;
   doc["ph_correction_type"] = mqttCfg.phCorrectionType;
   doc["time_use_ntp"] = mqttCfg.timeUseNtp;
   doc["ntp_server"] = mqttCfg.ntpServer;
@@ -276,6 +278,20 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["stabilization_delay_min"].isNull()) {
     int v = doc["stabilization_delay_min"].as<int>();
     if (v >= 0 && v <= 60) mqttCfg.stabilizationDelayMin = v;
+  }
+  if (!doc["regulation_speed"].isNull()) {
+    String speed = doc["regulation_speed"].as<String>();
+    if (speed == "slow" || speed == "normal" || speed == "fast") {
+      mqttCfg.regulationSpeed = speed;
+      PumpController.applyRegulationSpeed();
+    }
+  }
+  if (!doc["min_pause_between_min"].isNull()) {
+    int v = doc["min_pause_between_min"].as<int>();
+    if (v >= 1 && v <= 120) {
+      mqttCfg.minPauseBetweenMin = (uint32_t)v;
+      pumpProtection.minPauseBetweenMs = mqttCfg.minPauseBetweenMin * 60000UL;
+    }
   }
   if (!doc["ph_correction_type"].isNull()) {
     String corrType = doc["ph_correction_type"].as<String>();

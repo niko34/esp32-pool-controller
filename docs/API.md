@@ -281,13 +281,19 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "topic": "pool/controller",
   "enabled": true,
   "regulation_mode": "pilote",
+  "regulation_speed": "normal",
+  "min_pause_between_min": 30,
+  "stabilization_delay_min": 5,
   "ph_correction_type": "ph_minus",
   "ph_target": 7.2,
   "orp_target": 700,
   "ph_regulation_enabled": true,
   "ph_pump": 1,
+  "pump1_max_duty_pct": 50,
   "orp_regulation_enabled": true,
   "orp_pump": 2,
+  "pump2_max_duty_pct": 50,
+  "pump_max_flow_ml_per_min": 90,
   "ph_limit_seconds": 300,
   "orp_limit_seconds": 300,
   "time_use_ntp": true,
@@ -310,6 +316,20 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "time_current": "2026-03-28T14:30:45"
 }
 ```
+
+---
+
+Champs notables de la réponse :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `regulation_mode` | string | `"pilote"` (suit la filtration) ou `"continu"` |
+| `regulation_speed` | string | `"slow"` / `"normal"` / `"fast"` — préréglages PID |
+| `min_pause_between_min` | integer | Pause minimale entre deux injections (minutes, 1–120) |
+| `stabilization_delay_min` | integer | Délai de stabilisation capteurs après démarrage filtration (0–60 min) |
+| `pump1_max_duty_pct` | integer | Puissance maximale pompe 1 en régulation (0–100 %) |
+| `pump2_max_duty_pct` | integer | Puissance maximale pompe 2 en régulation (0–100 %) |
+| `pump_max_flow_ml_per_min` | float | Débit nominal des pompes à 100 % de puissance (mL/min) |
 
 ---
 

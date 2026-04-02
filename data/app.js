@@ -5,6 +5,26 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const clamp = (n, a, b) => Math.max(a, Math.min(b, n));
+
+  // Segmented value controls (ex: regulation_speed)
+  function setSegmented(id, value) {
+    const container = $(`#${id}`);
+    if (!container) return;
+    container.querySelectorAll(".segmented__btn").forEach(btn => {
+      btn.classList.toggle("is-active", btn.dataset.value === value);
+    });
+  }
+  function getSegmented(id) {
+    const active = $(`#${id} .segmented__btn.is-active`);
+    return active ? active.dataset.value : null;
+  }
+  function initSegmented(id) {
+    const container = $(`#${id}`);
+    if (!container) return;
+    container.querySelectorAll(".segmented__btn").forEach(btn => {
+      btn.addEventListener("click", () => setSegmented(id, btn.dataset.value));
+    });
+  }
   const DEBUG = false;
 
   // ---------- WebSocket ----------
@@ -851,8 +871,8 @@
     $$(".panel").forEach((p) => p.classList.remove("is-active"));
     $(`.panel[data-settings-panel="${panelKey}"]`)?.classList.add("is-active");
 
-    // Update segmented buttons
-    $$(".segmented__btn").forEach((b) => {
+    // Update segmented buttons (navigation tabs only)
+    $$(".segmented__btn[data-settings-tab]").forEach((b) => {
       b.classList.remove("is-active");
       b.setAttribute("aria-selected", "false");
     });
@@ -1148,10 +1168,10 @@
     const pump1MaxDutyPct = parseInt($("#pump1_max_duty")?.value || "100", 10);
     const pump2MaxDutyPct = parseInt($("#pump2_max_duty")?.value || "100", 10);
 
-    const phLimitValue = parseInt($("#ph_limit")?.value || "60", 10);
-    const orpLimitValue = parseInt($("#orp_limit")?.value || "60", 10);
-    const phDailyLimitValue = parseFloat($("#ph_daily_limit")?.value || "500");
-    const orpDailyLimitValue = parseFloat($("#orp_daily_limit")?.value || "300");
+    const phLimitValue = parseInt($("#ph_limit")?.value || "300", 10);
+    const orpLimitValue = parseInt($("#orp_limit")?.value || "600", 10);
+    const phDailyLimitValue = parseFloat($("#ph_daily_limit")?.value || "300");
+    const orpDailyLimitValue = parseFloat($("#orp_daily_limit")?.value || "500");
     const phCorrectionType = $("#ph_correction_type")?.value || "ph_minus";
 
     const timeUseNtp = $("#time_use_ntp")?.checked ?? true;
@@ -1179,12 +1199,12 @@
       ph_pump: isNaN(phPumpValue) ? 1 : phPumpValue,
       orp_enabled: orpToggle?.checked === true,
       orp_pump: isNaN(orpPumpValue) ? 2 : orpPumpValue,
-      pump1_max_duty_pct: isNaN(pump1MaxDutyPct) ? 100 : Math.min(100, Math.max(0, pump1MaxDutyPct)),
-      pump2_max_duty_pct: isNaN(pump2MaxDutyPct) ? 100 : Math.min(100, Math.max(0, pump2MaxDutyPct)),
-      ph_limit_seconds: isNaN(phLimitValue) ? 60 : phLimitValue,
-      orp_limit_seconds: isNaN(orpLimitValue) ? 60 : orpLimitValue,
-      max_ph_ml_per_day: isNaN(phDailyLimitValue) ? 500 : phDailyLimitValue,
-      max_chlorine_ml_per_day: isNaN(orpDailyLimitValue) ? 300 : orpDailyLimitValue,
+      pump1_max_duty_pct: isNaN(pump1MaxDutyPct) ? 50 : Math.min(100, Math.max(0, pump1MaxDutyPct)),
+      pump2_max_duty_pct: isNaN(pump2MaxDutyPct) ? 50 : Math.min(100, Math.max(0, pump2MaxDutyPct)),
+      ph_limit_seconds: isNaN(phLimitValue) ? 300 : phLimitValue,
+      orp_limit_seconds: isNaN(orpLimitValue) ? 600 : orpLimitValue,
+      max_ph_ml_per_day: isNaN(phDailyLimitValue) ? 300 : phDailyLimitValue,
+      max_chlorine_ml_per_day: isNaN(orpDailyLimitValue) ? 500 : orpDailyLimitValue,
       ph_correction_type: phCorrectionType,
       time_use_ntp: timeUseNtp,
       ntp_server: timeNtpServer,
@@ -1281,14 +1301,18 @@
     if ($("#pump2_max_duty")) { $("#pump2_max_duty").value = p2max; $("#pump2_max_duty_value").textContent = String(p2max); }
     if ($("#pump_max_flow_ml_per_min")) $("#pump_max_flow_ml_per_min").value = typeof cfg.pump_max_flow_ml_per_min === "number" ? cfg.pump_max_flow_ml_per_min : 90;
 
-    $("#ph_limit").value = typeof cfg.ph_limit_seconds === "number" ? cfg.ph_limit_seconds : 60;
-    $("#orp_limit").value = typeof cfg.orp_limit_seconds === "number" ? cfg.orp_limit_seconds : 60;
-    $("#ph_daily_limit").value = typeof cfg.max_ph_ml_per_day === "number" ? cfg.max_ph_ml_per_day : 500;
-    $("#orp_daily_limit").value = typeof cfg.max_chlorine_ml_per_day === "number" ? cfg.max_chlorine_ml_per_day : 300;
+    $("#ph_limit").value = typeof cfg.ph_limit_seconds === "number" ? cfg.ph_limit_seconds : 300;
+    $("#orp_limit").value = typeof cfg.orp_limit_seconds === "number" ? cfg.orp_limit_seconds : 600;
+    $("#ph_daily_limit").value = typeof cfg.max_ph_ml_per_day === "number" ? cfg.max_ph_ml_per_day : 300;
+    $("#orp_daily_limit").value = typeof cfg.max_chlorine_ml_per_day === "number" ? cfg.max_chlorine_ml_per_day : 500;
     $("#regulation_mode").value = cfg.regulation_mode || "pilote";
+    if ($("#min_pause_between_min") && cfg.min_pause_between_min != null) {
+      $("#min_pause_between_min").value = cfg.min_pause_between_min;
+    }
     if ($("#stabilization_delay_min") && cfg.stabilization_delay_min != null) {
       $("#stabilization_delay_min").value = cfg.stabilization_delay_min;
     }
+    setSegmented("regulation_speed", cfg.regulation_speed || "normal");
     $("#ph_correction_type").value = cfg.ph_correction_type || "ph_minus";
 
     // pH calibration info
@@ -3930,8 +3954,8 @@
   // ---------- Auto-save bindings ----------
   function bindRegulationSave(sensor, btnSelector) {
     const fields = sensor === "ph"
-      ? ["ph_enabled", "ph_target", "ph_limit", "ph_daily_limit", "ph_correction_type"]
-      : ["orp_enabled", "orp_target", "orp_limit", "orp_daily_limit"];
+      ? ["ph_enabled", "ph_target", "ph_correction_type"]
+      : ["orp_enabled", "orp_target"];
     trackDirtyState(btnSelector, fields);
     const saveBtn = $(btnSelector);
     if (!saveBtn) return;
@@ -4018,13 +4042,26 @@
     ["orp_target", "orp_limit", "orp_daily_limit"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => updateOrpControls()));
     bindRegulationSave("ph",  "#ph_regulation_save_btn");
     bindRegulationSave("orp", "#orp_regulation_save_btn");
-    // Onglet Régulation : save dédié
+    // Onglet Régulation : initialisation segmented + save dédié
+    initSegmented("regulation_speed");
     $("#regulation_save_btn")?.addEventListener("click", async () => {
       const mode = $("#regulation_mode")?.value || "pilote";
+      const pause = parseInt($("#min_pause_between_min")?.value ?? "30", 10);
       const delay = parseInt($("#stabilization_delay_min")?.value ?? "5", 10);
+      const speed = getSegmented("regulation_speed") || "normal";
+      const phLimit = parseInt($("#ph_limit")?.value ?? "300", 10);
+      const phDaily = parseFloat($("#ph_daily_limit")?.value ?? "300");
+      const orpLimit = parseInt($("#orp_limit")?.value ?? "600", 10);
+      const orpDaily = parseFloat($("#orp_daily_limit")?.value ?? "500");
       const ok = await sendConfig({
         regulation_mode: mode,
+        min_pause_between_min: isNaN(pause) ? 30 : Math.min(120, Math.max(1, pause)),
         stabilization_delay_min: isNaN(delay) ? 5 : Math.min(60, Math.max(0, delay)),
+        regulation_speed: speed,
+        ph_limit_seconds:        isNaN(phLimit)  ? 300 : Math.max(0, phLimit),
+        max_ph_ml_per_day:       isNaN(phDaily)  ? 300 : Math.max(0, phDaily),
+        orp_limit_seconds:       isNaN(orpLimit) ? 600 : Math.max(0, orpLimit),
+        max_chlorine_ml_per_day: isNaN(orpDaily) ? 500 : Math.max(0, orpDaily),
       });
       if (ok) showToast("Enregistré", "success");
       else showToast("Erreur lors de la sauvegarde", "error");
@@ -4087,7 +4124,7 @@
     });
 
     // segmented -> route (with arrow key navigation)
-    const segmentedBtns = $$(".segmented__btn");
+    const segmentedBtns = $$(".segmented__btn[data-settings-tab]");
     segmentedBtns.forEach((btn, i) => {
       btn.addEventListener("click", () => goSettings(btn.getAttribute("data-settings-tab")));
       btn.addEventListener("keydown", (e) => {

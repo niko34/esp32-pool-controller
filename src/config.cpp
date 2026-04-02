@@ -109,6 +109,7 @@ void saveMqttConfig() {
   prefs.putInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
   prefs.putString("reg_mode", mqttCfg.regulationMode);
   prefs.putInt("stab_delay", mqttCfg.stabilizationDelayMin);
+  prefs.putString("reg_speed", mqttCfg.regulationSpeed);
   prefs.putString("ph_corr_type", mqttCfg.phCorrectionType);
 
   // Calibration ORP - 1 ou 2 points
@@ -161,6 +162,7 @@ void saveMqttConfig() {
   prefs.putUChar("pump1_max_duty", mqttCfg.pump1MaxDutyPct);
   prefs.putUChar("pump2_max_duty", mqttCfg.pump2MaxDutyPct);
   prefs.putFloat("pump_max_flow", mqttCfg.pumpMaxFlowMlPerMin);
+  prefs.putUInt("pump_pause_min", mqttCfg.minPauseBetweenMin);
 
   // Limites de sécurité
   prefs.putFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
@@ -203,6 +205,7 @@ void loadMqttConfig() {
   mqttCfg.orpInjectionLimitSeconds = prefs.getInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
   mqttCfg.regulationMode = prefs.getString("reg_mode", "pilote");
   mqttCfg.stabilizationDelayMin = prefs.getInt("stab_delay", 5);
+  mqttCfg.regulationSpeed = prefs.getString("reg_speed", "normal");
   mqttCfg.phCorrectionType = prefs.getString("ph_corr_type", "ph_minus");
 
   // Calibration ORP - 1 ou 2 points
@@ -255,6 +258,8 @@ void loadMqttConfig() {
   mqttCfg.pumpMaxFlowMlPerMin = prefs.getFloat("pump_max_flow", mqttCfg.pumpMaxFlowMlPerMin);
   phPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
   orpPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
+  mqttCfg.minPauseBetweenMin = prefs.getUInt("pump_pause_min", mqttCfg.minPauseBetweenMin);
+  pumpProtection.minPauseBetweenMs = mqttCfg.minPauseBetweenMin * 60000UL;
 
   // Limites de sécurité
   safetyLimits.maxPhMinusMlPerDay = prefs.getFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);

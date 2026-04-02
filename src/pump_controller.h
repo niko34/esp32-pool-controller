@@ -88,6 +88,9 @@ public:
   unsigned long getPhUsedMs() const { return phDosingState.usedMs; }
   unsigned long getOrpUsedMs() const { return orpDosingState.usedMs; }
 
+  // Applique les paramètres PID selon mqttCfg.regulationSpeed
+  void applyRegulationSpeed();
+
   // Setters pour PID tuning
   void setPhPID(float kp, float ki, float kd);
   void setOrpPID(float kp, float ki, float kd);

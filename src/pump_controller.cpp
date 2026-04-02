@@ -13,6 +13,26 @@ PumpControllerClass::PumpControllerClass() {
   pumps[1] = {PUMP2_PWM_PIN, PUMP2_CHANNEL};
 }
 
+// Applique les paramètres PID selon la vitesse de régulation configurée
+void PumpControllerClass::applyRegulationSpeed() {
+  const String& speed = mqttCfg.regulationSpeed;
+  if (speed == "slow") {
+    phPID.kp = 3.0f;  phPID.ki = 0.05f;  phPID.kd = 12.0f;
+    orpPID.kp = 3.0f; orpPID.ki = 0.05f; orpPID.kd = 12.0f;
+  } else if (speed == "fast") {
+    phPID.kp = 12.0f;  phPID.ki = 0.2f;  phPID.kd = 4.0f;
+    orpPID.kp = 12.0f; orpPID.ki = 0.2f; orpPID.kd = 4.0f;
+  } else {
+    // "normal" (défaut)
+    phPID.kp = 6.0f;  phPID.ki = 0.1f;  phPID.kd = 8.0f;
+    orpPID.kp = 6.0f; orpPID.ki = 0.1f; orpPID.kd = 8.0f;
+  }
+  systemLogger.info("PID régulation: vitesse=" + speed +
+    " Kp=" + String(phPID.kp, 1) +
+    " Ki=" + String(phPID.ki, 2) +
+    " Kd=" + String(phPID.kd, 1));
+}
+
 void PumpControllerClass::begin() {
   for (int i = 0; i < 2; ++i) {
     // MOSFET IRLZ44N: Configuration PWM sur Gate
@@ -21,6 +41,7 @@ void PumpControllerClass::begin() {
     ledcAttachPin(pumps[i].pwmPin, pumps[i].channel);
     ledcWrite(pumps[i].channel, 0);  // Pompe arrêtée au démarrage
   }
+  applyRegulationSpeed();
   systemLogger.info("Contrôleur de pompes MOSFET IRLZ44N initialisé");
 }
 

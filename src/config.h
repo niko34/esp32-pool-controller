@@ -46,13 +46,15 @@ struct MqttConfig {
   bool orpEnabled = true;
   int phPump = 1;
   int orpPump = 2;
-  uint8_t pump1MaxDutyPct = 100;   // Puissance maximale pompe 1 en régulation (0-100 %)
-  uint8_t pump2MaxDutyPct = 100;   // Puissance maximale pompe 2 en régulation (0-100 %)
+  uint8_t pump1MaxDutyPct = 50;    // Puissance maximale pompe 1 en régulation (0-100 %)
+  uint8_t pump2MaxDutyPct = 50;    // Puissance maximale pompe 2 en régulation (0-100 %)
+  uint32_t minPauseBetweenMin = 30; // Pause min entre deux injections (minutes)
   float pumpMaxFlowMlPerMin = 90.0f; // Débit maximal pompes (ml/min)
-  int phInjectionLimitSeconds = 3600;
-  int orpInjectionLimitSeconds = 3600;
+  int phInjectionLimitSeconds = 300;   // Max 5 min d'injection par fenêtre d'1h
+  int orpInjectionLimitSeconds = 600;  // Max 10 min d'injection par fenêtre d'1h
   String regulationMode = "pilote";  // "continu" ou "pilote"
   int stabilizationDelayMin = 5;     // Délai de stabilisation avant dosage (minutes)
+  String regulationSpeed = "normal"; // Vitesse de correction PID : "slow", "normal", "fast"
   String phCorrectionType = "ph_minus";  // "ph_minus" (acide) ou "ph_plus" (base)
   bool timeUseNtp = true;
   String ntpServer = "pool.ntp.org";
@@ -133,8 +135,8 @@ struct ProductConfig {
 };
 
 struct SafetyLimits {
-  float maxPhMinusMlPerDay = 1000.0f;
-  float maxChlorineMlPerDay = 1000.0f;
+  float maxPhMinusMlPerDay = 300.0f;
+  float maxChlorineMlPerDay = 500.0f;
   float dailyPhInjectedMl = 0.0f;
   float dailyOrpInjectedMl = 0.0f;
   unsigned long dayStartTimestamp = 0;
@@ -145,12 +147,12 @@ struct SafetyLimits {
 struct PumpProtection {
   // Protection anti-cycling pour prolonger la durée de vie des pompes
   unsigned long minInjectionTimeMs = 30000;      // 30s minimum par injection
-  unsigned long minPauseBetweenMs = 300000;      // 5min pause minimum entre injections
+  unsigned long minPauseBetweenMs = 1800000;     // 30min pause minimum entre injections
   float phStartThreshold = 0.05f;                // Démarre dosage si erreur pH > 0.05
   float phStopThreshold = 0.01f;                 // Continue dosage si erreur pH > 0.01
   float orpStartThreshold = 10.0f;               // Démarre dosage si erreur ORP > 10mV
   float orpStopThreshold = 2.0f;                 // Continue dosage si erreur ORP > 2mV
-  unsigned int maxCyclesPerDay = 200;            // Max 200 démarrages par jour
+  unsigned int maxCyclesPerDay = 20;             // Max 20 démarrages par jour
 };
 
 struct TimezoneInfo {

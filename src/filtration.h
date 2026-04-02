@@ -17,6 +17,7 @@ class FiltrationManager {
 private:
   FiltrationRuntime state;
   bool relayState = false;
+  float _lastScheduledTemp = NAN;  // Température du dernier calcul auto (deadband 1°C)
 
   bool getCurrentMinutesOfDay(int& minutes);
   int timeStringToMinutes(const String& value);

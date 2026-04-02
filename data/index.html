@@ -632,16 +632,6 @@
                     <span class="field__label">pH cible</span>
                     <input type="number" id="ph_target" min="0" max="14" step="0.1" placeholder="ex: 7.2" />
                   </label>
-
-                  <label class="field">
-                    <span class="field__label">Durée max / heure (s)</span>
-                    <input type="number" id="ph_limit" min="0" step="1" value="60" />
-                  </label>
-
-                  <label class="field">
-                    <span class="field__label">Volume max / jour (ml)</span>
-                    <input type="number" id="ph_daily_limit" min="0" step="10" value="500" />
-                  </label>
                 </div>
                 <div class="detail-actions" style="margin-top:12px">
                   <button class="btn btn--primary" type="button" id="ph_regulation_save_btn">Sauvegarder</button>
@@ -752,16 +742,6 @@
                   <label class="field">
                     <span class="field__label">ORP cible (mV)</span>
                     <input type="number" id="orp_target" min="0" max="1000" step="1" placeholder="ex: 650" />
-                  </label>
-
-                  <label class="field">
-                    <span class="field__label">Durée max / heure (s)</span>
-                    <input type="number" id="orp_limit" min="0" step="1" value="60" />
-                  </label>
-
-                  <label class="field">
-                    <span class="field__label">Volume max / jour (ml)</span>
-                    <input type="number" id="orp_daily_limit" min="0" step="10" value="300" />
                   </label>
                 </div>
                 <div class="detail-actions" style="margin-top:12px">
@@ -1249,7 +1229,53 @@
                   </div>
 
                   <label class="field" style="margin-top: 16px;">
-                    <span class="field__label">Délai avant injection (minutes)</span>
+                    <span class="field__label">Vitesse de correction</span>
+                    <div class="segmented" id="regulation_speed" role="group" aria-label="Vitesse de correction">
+                      <button class="segmented__btn" type="button" data-value="slow">Lente</button>
+                      <button class="segmented__btn" type="button" data-value="normal">Normale</button>
+                      <button class="segmented__btn" type="button" data-value="fast">Rapide</button>
+                    </div>
+                  </label>
+                  <div class="muted small" style="margin-top: 8px;">
+                    Définit la réactivité de la régulation pH et ORP (paramètres PID).<br>
+                    <strong>Lente</strong> : piscine &gt; 60 m³ ou eau très tamponnée — corrections progressives, aucun dépassement.<br>
+                    <strong>Normale</strong> : piscine 20 – 60 m³ — bon équilibre réactivité / stabilité (recommandé).<br>
+                    <strong>Rapide</strong> : piscine &lt; 20 m³ ou spa — corrections plus vives, surveiller les dépassements.
+                  </div>
+
+                  <div class="grid grid--2" style="margin-top: 16px;">
+                    <label class="field">
+                      <span class="field__label">pH — durée max / heure (s)</span>
+                      <input type="number" id="ph_limit" min="0" step="1" value="300" style="width:120px;" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">pH — volume max / jour (ml)</span>
+                      <input type="number" id="ph_daily_limit" min="0" step="10" value="300" style="width:120px;" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">ORP — durée max / heure (s)</span>
+                      <input type="number" id="orp_limit" min="0" step="1" value="600" style="width:120px;" />
+                    </label>
+                    <label class="field">
+                      <span class="field__label">ORP — volume max / jour (ml)</span>
+                      <input type="number" id="orp_daily_limit" min="0" step="10" value="500" style="width:120px;" />
+                    </label>
+                  </div>
+                  <div class="muted small" style="margin-top: 8px;">
+                    <strong>Durée max / heure</strong> : temps total d'injection autorisé dans une fenêtre glissante d'1h — limite la durée d'un cycle et protège contre l'inertie (mélange lent dans un grand bassin).<br>
+                    <strong>Volume max / jour</strong> : seuil de sécurité absolu — le dosage s'arrête et une alerte est émise si ce volume est atteint.
+                  </div>
+
+                  <label class="field" style="margin-top: 16px;">
+                    <span class="field__label">Pause entre deux injections (minutes)</span>
+                    <input type="number" class="form-control" id="min_pause_between_min" min="1" max="120" step="1" value="30" style="width:120px;">
+                  </label>
+                  <div class="muted small" style="margin-top: 8px;">
+                    Temps d'attente minimum entre la fin d'une injection et le début de la suivante. Doit être suffisant pour que le correcteur se diffuse jusqu'aux capteurs. Recommandé : 20–30 min pour une piscine de 30–60 m³, 10–15 min pour un spa ou bassin &lt; 20 m³.
+                  </div>
+
+                  <label class="field" style="margin-top: 16px;">
+                    <span class="field__label">Délai avant injection au démarrage (minutes)</span>
                     <input type="number" class="form-control" id="stabilization_delay_min" min="0" max="60" step="1" value="5" style="width:120px;">
                   </label>
                   <div class="muted small" style="margin-top: 8px;">
@@ -1262,6 +1288,7 @@
                   </div>
                 </div>
               </div>
+
             </section>
 
             <!-- System Panel -->
@@ -1438,20 +1465,20 @@
                     <div class="row row--between">
                       <div>
                         <div class="row__title">Puissance max — Pompe 1</div>
-                        <div class="muted small">En régulation&nbsp;: <span id="pump1_max_duty_value">100</span>%</div>
+                        <div class="muted small">En régulation&nbsp;: <span id="pump1_max_duty_value">50</span>%</div>
                       </div>
                     </div>
-                    <input type="range" id="pump1_max_duty" min="0" max="100" step="5" value="100" aria-label="Puissance maximale Pompe 1 (%)" />
+                    <input type="range" id="pump1_max_duty" min="0" max="100" step="5" value="50" aria-label="Puissance maximale Pompe 1 (%)" />
                   </div>
 
                   <div class="pump">
                     <div class="row row--between">
                       <div>
                         <div class="row__title">Puissance max — Pompe 2</div>
-                        <div class="muted small">En régulation&nbsp;: <span id="pump2_max_duty_value">100</span>%</div>
+                        <div class="muted small">En régulation&nbsp;: <span id="pump2_max_duty_value">50</span>%</div>
                       </div>
                     </div>
-                    <input type="range" id="pump2_max_duty" min="0" max="100" step="5" value="100" aria-label="Puissance maximale Pompe 2 (%)" />
+                    <input type="range" id="pump2_max_duty" min="0" max="100" step="5" value="50" aria-label="Puissance maximale Pompe 2 (%)" />
                   </div>
 
                   <div class="kv" style="margin-top:16px">
