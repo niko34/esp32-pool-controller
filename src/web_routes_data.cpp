@@ -128,16 +128,24 @@ static void handleGetLogs(AsyncWebServerRequest* request) {
 static void handleGetHistory(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
-  // Support paramètre optionnel ?range=24h|7d|30d|all
+  // Support paramètre optionnel ?range=24h|3d|7d|30d|all
   String range = "all";
   if (request->hasParam("range")) {
     range = request->getParam("range")->value();
+  }
+
+  // Support paramètre optionnel ?since=TIMESTAMP pour récupération incrémentale
+  unsigned long since = 0;
+  if (request->hasParam("since")) {
+    since = request->getParam("since")->value().toInt();
   }
 
   std::vector<DataPoint> data;
 
   if (range == "24h") {
     data = history.getLastHours(24);
+  } else if (range == "3d") {
+    data = history.getLastHours(24 * 3);
   } else if (range == "7d") {
     data = history.getLastHours(24 * 7);
   } else if (range == "30d") {
@@ -150,6 +158,7 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
   JsonArray historyArray = doc["history"].to<JsonArray>();
 
   for (const auto& point : data) {
+    if (since > 0 && point.timestamp <= since) continue;
     JsonObject obj = historyArray.add<JsonObject>();
     obj["timestamp"] = point.timestamp;
 

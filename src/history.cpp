@@ -64,6 +64,8 @@ unsigned long getCurrentEpoch(bool* synced, bool* estimated) {
 }  // namespace
 
 void HistoryManager::begin() {
+  _mutex = xSemaphoreCreateMutex();
+
   if (historyFs.begin(true, "/history", 5, "history")) {
     historyStore = &historyFs;
     historyFilePath = "/history.json";
@@ -86,14 +88,18 @@ void HistoryManager::update() {
 
   // Enregistrer un point toutes les 5 minutes
   if (now - lastRecord >= RECORD_INTERVAL) {
+    xSemaphoreTake(_mutex, portMAX_DELAY);
     recordDataPoint();
+    xSemaphoreGive(_mutex);
     lastRecord = now;
   }
 
   // Sauvegarder sur fichier toutes les heures
   if (now - lastSave >= SAVE_INTERVAL) {
+    xSemaphoreTake(_mutex, portMAX_DELAY);
     consolidateData();
     saveToFile();
+    xSemaphoreGive(_mutex);
     lastSave = now;
   }
 }
@@ -261,13 +267,22 @@ void HistoryManager::migrateLegacyHistory(unsigned long nowEpoch) {
 
 std::vector<DataPoint> HistoryManager::getLastHours(int hours) {
   std::vector<DataPoint> result;
-  if (memoryBuffer.empty()) return result;
 
   bool synced = false;
   bool estimated = false;
   unsigned long nowEpoch = getCurrentEpoch(&synced, &estimated);
+
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+
+  if (memoryBuffer.empty()) {
+    xSemaphoreGive(_mutex);
+    return result;
+  }
+
   if (nowEpoch == 0) {
-    return memoryBuffer;
+    result = memoryBuffer;
+    xSemaphoreGive(_mutex);
+    return result;
   }
   if (synced) {
     migrateLegacyHistory(nowEpoch);
@@ -276,7 +291,9 @@ std::vector<DataPoint> HistoryManager::getLastHours(int hours) {
   unsigned long now = nowEpoch;
   unsigned long rangeSeconds = hours * kSecondsPerHour;
   if (now < rangeSeconds) {
-    return memoryBuffer;
+    result = memoryBuffer;
+    xSemaphoreGive(_mutex);
+    return result;
   }
   unsigned long cutoff = now - rangeSeconds;
 
@@ -286,6 +303,7 @@ std::vector<DataPoint> HistoryManager::getLastHours(int hours) {
     }
   }
 
+  xSemaphoreGive(_mutex);
   return result;
 }
 
@@ -294,13 +312,17 @@ std::vector<DataPoint> HistoryManager::getLastDay() {
 }
 
 std::vector<DataPoint> HistoryManager::getAllData() {
-  return memoryBuffer;
+  xSemaphoreTake(_mutex, portMAX_DELAY);
+  std::vector<DataPoint> copy = memoryBuffer;
+  xSemaphoreGive(_mutex);
+  return copy;
 }
 
 bool HistoryManager::importData(const std::vector<DataPoint>& dataPoints) {
   if (!historyEnabled) return false;
   if (dataPoints.empty()) return false;
 
+  xSemaphoreTake(_mutex, portMAX_DELAY);
   memoryBuffer = dataPoints;
   std::sort(memoryBuffer.begin(), memoryBuffer.end(),
     [](const DataPoint& a, const DataPoint& b) {
@@ -312,7 +334,10 @@ bool HistoryManager::importData(const std::vector<DataPoint>& dataPoints) {
   lastSave = millis();
   lastRecord = millis();
   saveToFile();
-  systemLogger.info("Historique importé (" + String(memoryBuffer.size()) + " points)");
+  size_t count = memoryBuffer.size();
+  xSemaphoreGive(_mutex);
+
+  systemLogger.info("Historique importé (" + String(count) + " points)");
   return true;
 }
 
@@ -542,7 +567,9 @@ void HistoryManager::consolidateData() {
 
 void HistoryManager::clearHistory() {
   if (!historyEnabled) return;
+  xSemaphoreTake(_mutex, portMAX_DELAY);
   memoryBuffer.clear();
+  xSemaphoreGive(_mutex);
   historyStore->remove(historyFilePath);
   systemLogger.warning("Historique effacé");
 }

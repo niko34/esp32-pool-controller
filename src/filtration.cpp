@@ -93,7 +93,7 @@ int FiltrationManager::timeStringToMinutes(const String& value) {
 
 bool FiltrationManager::isMinutesInRange(int now, int start, int end) {
   if (start == -1 || end == -1) return false;
-  if (start == end) return true;
+  if (start == end) return false;  // Plage invalide → pas de filtration
   if (start < end) {
     return now >= start && now < end;
   }
@@ -115,6 +115,31 @@ void FiltrationManager::update() {
       }
     }
     return;
+  }
+
+  // Expiration des forcages après 4 heures (sécurité si l'utilisateur oublie de désactiver)
+  constexpr unsigned long kForceTimeoutMs = 4UL * 3600000UL;
+
+  if (filtrationCfg.forceOn) {
+    if (state.forceOnStartMs == 0) state.forceOnStartMs = millis();
+    if (millis() - state.forceOnStartMs >= kForceTimeoutMs) {
+      filtrationCfg.forceOn = false;
+      state.forceOnStartMs = 0;
+      systemLogger.warning("ForceOn expiré (timeout 4h), retour au mode normal");
+    }
+  } else {
+    state.forceOnStartMs = 0;
+  }
+
+  if (filtrationCfg.forceOff) {
+    if (state.forceOffStartMs == 0) state.forceOffStartMs = millis();
+    if (millis() - state.forceOffStartMs >= kForceTimeoutMs) {
+      filtrationCfg.forceOff = false;
+      state.forceOffStartMs = 0;
+      systemLogger.warning("ForceOff expiré (timeout 4h), retour au mode normal");
+    }
+  } else {
+    state.forceOffStartMs = 0;
   }
 
   ensureTimesValid();

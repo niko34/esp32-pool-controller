@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <vector>
 #include <LittleFS.h>
+#include <freertos/semphr.h>
 #include "constants.h"
 
 enum Granularity : uint8_t {
@@ -34,6 +35,7 @@ private:
   static const unsigned long DAILY_MAX_AGE = 7776000UL;    // 90 jours (en secondes)
 
   std::vector<DataPoint> memoryBuffer;
+  SemaphoreHandle_t _mutex = nullptr;
   unsigned long lastSave = 0;
   unsigned long lastRecord = 0;
   const unsigned long RECORD_INTERVAL = 300000; // 5 minutes

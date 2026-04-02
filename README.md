@@ -91,9 +91,29 @@ Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dos
 ### Première connexion et accès à l'interface Web
 
 1. **Première connexion**
-   - Au démarrage, l'ESP32 crée un point d'accès `PoolControllerAP`
-   - Mot de passe: `12345678`
-   - Se connecter à ce réseau wifi et accéder à l'assistant de configuration http://192.168.4.1
+   - Au démarrage, l'ESP32 crée un point d'accès WiFi `PoolControllerAP`
+   - Le mot de passe WiFi AP est **unique par appareil**, généré aléatoirement au premier boot et stocké en NVS
+   - Il s'affiche en clair dans le moniteur série **tant que le wizard de configuration n'est pas complété** :
+     ```
+     [INFO] AP démarré: PoolControllerAP
+     [INFO] AP Password: A3F12C88
+     [INFO] IP AP: 192.168.4.1
+     ```
+   - Ouvrir le moniteur série **avant** d'alimenter l'appareil : `pio device monitor -b 115200`
+   - Coller le mot de passe sur une étiquette sur le boîtier
+   - Se connecter au réseau `PoolControllerAP` avec ce mot de passe et accéder à l'assistant de configuration http://192.168.4.1
+
+   > **Après le wizard complété**, si l'AP redémarre (ex : perte WiFi), le mot de passe n'est plus affiché en clair dans les logs pour des raisons de sécurité. Utiliser l'étiquette ou l'API :
+   > ```
+   > GET http://poolcontroller.local/auth/ap-password
+   > ```
+
+   > **Forcer la génération d'un nouveau mot de passe AP** (ex : fabrication d'un nouvel appareil, remplacement d'étiquette) : utiliser l'option `factory` qui efface toute la flash avant de flasher.
+   > ```bash
+   > ./deploy.sh factory
+   > pio device monitor -b 115200   # ouvrir avant d'alimenter l'appareil
+   > ```
+   > ⚠️ Efface **toute** la flash (firmware, filesystem, NVS, historique). À n'utiliser que sur un appareil qu'on réinitialise complètement.
 
 2. **Accès interface web**
    - `http://poolcontroller.local` si réseau wifi configuré, sinon se connecter au réseau AP PoolControllerAP et utiliser l'adresse http://192.168.4.1
@@ -239,13 +259,14 @@ Le factory reset se déclenche pendant le fonctionnement normal de l'ESP32 (pas 
 3. Suivre les instructions données plus haut dans la partie "1ère connexion"
 
 **Ce qui est réinitialisé (partition NVS effacée entièrement) :**
-- ✅ Mot de passe
+- ✅ Mot de passe admin (retour à `admin`)
 - ✅ Token API régénéré
 - ✅ Credentials WiFi supprimés (retour en mode AP)
 - ✅ Configuration MQTT effacée
 - ✅ Calibrations des sondes (pH, ORP) effacées
 
 **Ce qui N'EST PAS effacé :**
+- ✅ **Mot de passe WiFi AP** — préservé intentionnellement (l'étiquette sur le boîtier reste valide)
 - ✅ Fichiers JSON sur LittleFS (consignes, limites, config) — préservés
 - ✅ Historique des mesures (partition séparée) — préservé
 
@@ -258,7 +279,8 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
 ### Scripts de Build et Déploiement
 
 - **`deploy.sh`** - Script de déploiement principal
-  - `./deploy.sh all` - Compile et upload USB firmware + filesystem
+  - `./deploy.sh all` - Compile et upload USB firmware + filesystem (NVS préservée)
+  - `./deploy.sh factory` - Efface toute la flash, compile et upload firmware + filesystem (génère un nouveau mot de passe AP)
   - `./deploy.sh firmware` - Compile et upload USB firmware uniquement
   - `./deploy.sh fs` - Compile et upload USB filesystem uniquement
   - `./deploy.sh ota-all` - Compile et envoie OTA (WiFi) firmware + filesystem

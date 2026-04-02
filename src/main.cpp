@@ -44,6 +44,7 @@ void setup() {
   uartTransport.begin();
   delay(kSerialInitDelayMs);
 
+  systemLogger.begin();  // Initialise le mutex avant tout accès multi-core
   systemLogger.info("=== Démarrage ESP32 Pool Controller v" + String(FIRMWARE_VERSION) + " ===");
   systemLogger.info("Build: " + String(FIRMWARE_BUILD_DATE) + " " + String(FIRMWARE_BUILD_TIME));
 
@@ -309,9 +310,16 @@ bool setupWiFi() {
       WiFi.persistent(false);
     }
     WiFi.mode(keepSta ? WIFI_AP_STA : WIFI_AP);
-    bool apStarted = WiFi.softAP("PoolControllerAP", "12345678");
+    bool apStarted = WiFi.softAP("PoolControllerAP", authManager.getApPassword().c_str());
     if (apStarted) {
       systemLogger.info("AP démarré: PoolControllerAP");
+      // Logger le mot de passe en clair uniquement si le wizard n'est pas encore complété
+      // (premier boot, étiquette pas encore écrite). Après setup, utiliser GET /auth/ap-password.
+      if (authManager.isFirstBootDetected()) {
+        systemLogger.info("AP Password: " + authManager.getApPassword());
+      } else {
+        systemLogger.info("AP Password: [voir etiquette ou GET /auth/ap-password]");
+      }
       systemLogger.info("IP AP: " + WiFi.softAPIP().toString());
       dns.start(53, "*", WiFi.softAPIP());
     } else {
@@ -365,6 +373,9 @@ bool setupWiFi() {
 void resetWiFiSettings() {
   systemLogger.warning("Effacement complet de la partition NVS (factory reset)...");
 
+  // Préserver le mot de passe AP : identifiant matériel unique, doit survivre au factory reset
+  String savedApPassword = authCfg.apPassword;
+
   // Déconnecter le WiFi avant d'effacer
   WiFi.mode(WIFI_OFF);
   delay(100);
@@ -379,6 +390,16 @@ void resetWiFiSettings() {
     err = nvs_flash_init();
     if (err == ESP_OK) {
       systemLogger.info("Partition NVS réinitialisée");
+
+      // Restaurer le mot de passe AP immédiatement pour qu'il survive au redémarrage
+      if (!savedApPassword.isEmpty()) {
+        Preferences prefs;
+        if (prefs.begin("poolctrl", false)) {
+          prefs.putString("auth_ap_pwd", savedApPassword);
+          prefs.end();
+          systemLogger.info("Mot de passe AP restauré après factory reset");
+        }
+      }
     } else {
       systemLogger.error("Erreur réinitialisation NVS: " + String(err));
     }
@@ -452,7 +473,7 @@ void checkSystemHealth() {
       if (wifiReconnectAttempts >= 3 && mode == WIFI_MODE_STA) {
         systemLogger.error("Impossible de reconnecter le WiFi après 3 tentatives, activation du mode AP");
         WiFi.mode(WIFI_AP_STA);
-        bool apStarted = WiFi.softAP("PoolControllerAP", "12345678");
+        bool apStarted = WiFi.softAP("PoolControllerAP", authManager.getApPassword().c_str());
         if (apStarted) {
           systemLogger.info("AP démarré en mode secours: PoolControllerAP");
           systemLogger.info("IP AP: " + WiFi.softAPIP().toString());

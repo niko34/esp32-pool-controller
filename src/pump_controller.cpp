@@ -110,10 +110,8 @@ bool PumpControllerClass::shouldContinueDosing(float error, float stopThreshold,
 }
 
 void PumpControllerClass::resetPhPauseGuard() {
-  phDosingState.lastStopTime = 0;
-  phPID.integral = 0.0f;
-  phPID.lastError = 0.0f;
-  phPID.lastTime = 0;
+  // Demande différée : résolution dans update() sur la tâche loop (évite la race inter-core)
+  _phPauseResetRequested.store(true);
 }
 
 void PumpControllerClass::armStabilizationTimer() {
@@ -278,6 +276,21 @@ void PumpControllerClass::updateSafetyTracking(bool isPhPump, float flowMlPerMin
 
 void PumpControllerClass::update() {
   unsigned long now = millis();
+
+  // Résoudre les demandes de reset issues de tâches externes (web handlers)
+  // Exécuté ici, sur la tâche loop, pour éviter toute race inter-core
+  if (_resetRequested.exchange(false)) {
+    phDosingState = {};
+    orpDosingState = {};
+    phPID = {};
+    orpPID = {};
+  }
+  if (_phPauseResetRequested.exchange(false)) {
+    phDosingState.lastStopTime = 0;
+    phPID.integral = 0.0f;
+    phPID.lastError = 0.0f;
+    phPID.lastTime = 0;
+  }
 
   if (otaInProgress) {
     applyPumpDuty(0, 0);
@@ -556,11 +569,9 @@ void PumpControllerClass::setOrpPID(float kp, float ki, float kd) {
 }
 
 void PumpControllerClass::resetDosingStates() {
-  phDosingState = {};
-  orpDosingState = {};
-  phPID = {};
-  orpPID = {};
-  systemLogger.info("États de dosage réinitialisés");
+  // Demande différée : résolution dans update() sur la tâche loop (évite la race inter-core)
+  _resetRequested.store(true);
+  systemLogger.info("États de dosage réinitialisés (demande)");
 }
 
 void PumpControllerClass::setManualPump(int pumpIndex, uint8_t duty) {

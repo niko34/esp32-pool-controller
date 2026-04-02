@@ -57,6 +57,16 @@ upload_firmware() {
     print_success "Firmware uploadé"
 }
 
+erase_flash() {
+    print_step "Effacement complet de la flash (firmware, filesystem, NVS)..."
+    ~/.platformio/penv/bin/python ~/.platformio/packages/tool-esptoolpy/esptool.py \
+        --chip esp32 \
+        --port "$PORT" \
+        --baud "$BAUD" \
+        erase_flash
+    print_success "Flash effacée"
+}
+
 upload_filesystem() {
     print_step "Upload du filesystem LittleFS..."
 
@@ -83,12 +93,14 @@ upload_filesystem() {
 }
 
 show_usage() {
-    echo "Usage: $0 [firmware|fs|all|ota-firmware|ota-fs|ota-all]"
+    echo "Usage: $0 [firmware|fs|all|factory|ota-firmware|ota-fs|ota-all]"
     echo ""
     echo "Options USB (connexion série requise) :"
     echo "  firmware      - Compile et upload uniquement le firmware"
     echo "  fs            - Build et upload uniquement le filesystem"
     echo "  all           - Compile et upload firmware + filesystem (défaut)"
+    echo "  factory       - Efface toute la flash puis compile et upload firmware + filesystem"
+    echo "                  Génère un nouveau mot de passe WiFi AP (NVS effacée)"
     echo ""
     echo "Options OTA (WiFi, pas d'USB) :"
     echo "  ota-firmware  - Compile et envoie uniquement le firmware en OTA"
@@ -96,7 +108,8 @@ show_usage() {
     echo "  ota-all       - Compile et envoie firmware + filesystem en OTA"
     echo ""
     echo "Exemples:"
-    echo "  $0                # Déploiement USB complet"
+    echo "  $0                # Déploiement USB complet (NVS préservée)"
+    echo "  $0 factory        # Flash complet avec nouveau mot de passe AP"
     echo "  $0 ota-all        # Déploiement OTA complet (WiFi)"
     echo "  $0 ota-firmware   # Firmware uniquement en OTA (Wifi)"
 }
@@ -121,6 +134,21 @@ case "$MODE" in
         build_filesystem
         upload_firmware
         upload_filesystem
+        ;;
+    factory)
+        print_warning "Flash complet avec effacement NVS — un nouveau mot de passe WiFi AP sera généré"
+        print_warning "Ouvrir le moniteur série après le boot pour récupérer le mot de passe"
+        read -p "Confirmer ? (o/N) " confirm
+        if [[ "$confirm" != "o" && "$confirm" != "O" ]]; then
+            print_error "Annulé"
+            exit 1
+        fi
+        build_firmware
+        build_filesystem
+        erase_flash
+        upload_firmware
+        upload_filesystem
+        print_success "Flash complet terminé — lancer 'pio device monitor -b 115200' et redémarrer l'ESP32 pour récupérer le mot de passe AP"
         ;;
     ota-firmware)
         print_step "Déploiement OTA du firmware uniquement"

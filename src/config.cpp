@@ -153,6 +153,7 @@ void saveMqttConfig() {
   prefs.putBool("disable_ap_boot", authCfg.disableApOnBoot);
   prefs.putString("auth_password", authCfg.adminPassword);
   prefs.putString("auth_token", authCfg.apiToken);
+  prefs.putString("auth_ap_pwd", authCfg.apPassword);
   prefs.putString("auth_cors", authCfg.corsAllowedOrigins);
   prefs.putBool("sensor_logs", authCfg.sensorLogsEnabled);
 
@@ -244,6 +245,7 @@ void loadMqttConfig() {
   authCfg.disableApOnBoot = prefs.getBool("disable_ap_boot", false);
   authCfg.adminPassword = prefs.getString("auth_password", authCfg.adminPassword);
   authCfg.apiToken = prefs.getString("auth_token", authCfg.apiToken);
+  authCfg.apPassword = prefs.getString("auth_ap_pwd", authCfg.apPassword);
   authCfg.corsAllowedOrigins = prefs.getString("auth_cors", authCfg.corsAllowedOrigins);
   authCfg.sensorLogsEnabled = prefs.getBool("sensor_logs", false);
 

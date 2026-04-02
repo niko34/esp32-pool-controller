@@ -106,6 +106,7 @@ struct AuthConfig {
   bool enabled = true;            // Authentification activée/désactivée
   String adminPassword = "admin"; // Mot de passe administrateur (HTTP Basic Auth)
   String apiToken = "";           // Token API pour intégrations (généré au boot si vide)
+  String apPassword = "";         // Mot de passe réseau WiFi AP (généré au premier boot si vide)
   String corsAllowedOrigins = ""; // Origines CORS autorisées (séparées par virgules, vide = désactivé)
   bool forceWifiConfig = false;   // Forcer l'affichage du bouton Wi-Fi sur l'écran login
   bool wizardCompleted = false;   // Wizard de configuration initiale complété (persiste au redémarrage)

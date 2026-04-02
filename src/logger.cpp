@@ -7,12 +7,24 @@ Logger::Logger() {
   logs.reserve(MAX_LOGS);
 }
 
+// Initialise le mutex FreeRTOS — appeler depuis setup() avant de démarrer le web server
+void Logger::begin() {
+  if (!_mutex) {
+    _mutex = xSemaphoreCreateMutex();
+  }
+}
+
 void Logger::log(LogLevel level, const String& message) {
   LogEntry entry;
   entry.timestamp = millis();
   entry.level = level;
   entry.message = message;
 
+  // Capture du callback hors section critique pour éviter un deadlock
+  // si le callback tente lui-même de logger.
+  std::function<void(const LogEntry&)> cb = nullptr;
+
+  if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
   if (logs.size() < MAX_LOGS) {
     logs.push_back(entry);
   } else {
@@ -20,9 +32,11 @@ void Logger::log(LogLevel level, const String& message) {
     currentIndex = (currentIndex + 1) % MAX_LOGS;
     bufferFull = true;
   }
+  cb = _logCallback;
+  if (_mutex) xSemaphoreGive(_mutex);
 
-  // Push WebSocket temps réel (si callback enregistré)
-  if (_logCallback) _logCallback(entry);
+  // Push WebSocket temps réel (si callback enregistré) — hors mutex
+  if (cb) cb(entry);
 
   // Affichage série avec préfixe niveau
   Serial.print("[");
@@ -65,6 +79,8 @@ String Logger::getLevelString(LogLevel level) {
 std::vector<LogEntry> Logger::getRecentLogs(size_t count) {
   std::vector<LogEntry> result;
 
+  if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
+
   if (!bufferFull) {
     // Buffer pas encore plein, retourner les derniers n éléments
     size_t start = logs.size() > count ? logs.size() - count : 0;
@@ -82,15 +98,21 @@ std::vector<LogEntry> Logger::getRecentLogs(size_t count) {
     }
   }
 
+  if (_mutex) xSemaphoreGive(_mutex);
   return result;
 }
 
 void Logger::clear() {
+  if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
   logs.clear();
   currentIndex = 0;
   bufferFull = false;
+  if (_mutex) xSemaphoreGive(_mutex);
 }
 
 size_t Logger::getLogCount() {
-  return bufferFull ? MAX_LOGS : logs.size();
+  if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
+  size_t count = bufferFull ? MAX_LOGS : logs.size();
+  if (_mutex) xSemaphoreGive(_mutex);
+  return count;
 }

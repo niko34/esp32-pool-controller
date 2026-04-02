@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <vector>
 #include <functional>
+#include <freertos/semphr.h>
 #include "constants.h"
 
 enum class LogLevel {
@@ -27,9 +28,11 @@ private:
   size_t currentIndex = 0;
   bool bufferFull = false;
   std::function<void(const LogEntry&)> _logCallback = nullptr;
+  SemaphoreHandle_t _mutex = nullptr;
 
 public:
   Logger();  // Constructeur pour pré-allouer le buffer
+  void begin();  // Initialise le mutex FreeRTOS (appeler depuis setup())
 
   void log(LogLevel level, const String& message);
   void debug(const String& message);

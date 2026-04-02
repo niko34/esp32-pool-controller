@@ -166,6 +166,16 @@ void setupAuthRoutes(AsyncWebServer* server) {
     sendJsonResponse(req, doc);
   });
 
+  // Route: Mot de passe AP WiFi (PROTÉGÉE - nécessite auth admin)
+  server->on("/auth/ap-password", HTTP_GET, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::CRITICAL);
+
+    JsonDocument doc;
+    doc["ap_password"] = authCfg.apPassword;
+    doc["ap_ssid"] = "PoolControllerAP";
+    sendJsonResponse(req, doc);
+  });
+
   // Route: Marquer le wizard comme complété (désactive le flag firstBoot)
   server->on("/auth/complete-wizard", HTTP_POST, [](AsyncWebServerRequest *req) {
     // Cette route est accessible uniquement pendant le premier démarrage

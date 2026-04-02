@@ -2,6 +2,7 @@
 #define PUMP_CONTROLLER_H
 
 #include <Arduino.h>
+#include <atomic>
 #include "config.h"
 
 struct PumpDriver {
@@ -67,6 +68,11 @@ private:
 
   // Timer de stabilisation
   unsigned long _stabilizationEndMs = 0;
+
+  // Flags de reset demandés depuis des tâches externes (web handlers)
+  // Résolus au début de update() pour éviter les races inter-core
+  std::atomic<bool> _resetRequested{false};
+  std::atomic<bool> _phPauseResetRequested{false};
 
 public:
   PumpControllerClass();

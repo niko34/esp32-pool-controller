@@ -53,6 +53,7 @@ public:
   void setApiToken(const String& token);
   String getApiToken() const { return apiToken; }
   void regenerateApiToken();
+  String getApPassword() const;
 
   // Gestion premier démarrage
   bool isFirstBootDetected() const { return isFirstBoot; }

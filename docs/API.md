@@ -157,6 +157,25 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/auth/regenerate-
 
 ---
 
+### GET /auth/ap-password — CRITICAL
+
+Retourne le mot de passe WiFi du point d'accès `PoolControllerAP`. Utile si l'étiquette collée sur le boîtier est illisible ou perdue.
+
+```bash
+curl -u admin:monmotdepasse http://poolcontroller.local/auth/ap-password
+```
+
+```json
+{
+  "ap_ssid": "PoolControllerAP",
+  "ap_password": "A3F12C88"
+}
+```
+
+> Le mot de passe AP est généré aléatoirement au premier boot et ne change pas lors des mises à jour OTA ni des factory resets (bouton physique). Pour en générer un nouveau, utiliser `./deploy.sh factory`.
+
+---
+
 ## Données et Historique
 
 ### GET /data — WRITE
@@ -603,4 +622,4 @@ Réinitialisation d'usine complète (efface la partition NVS).
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/factory-reset
 ```
 
-> Efface : mot de passe, token API, WiFi, MQTT, calibrations. Préserve l'historique et les fichiers LittleFS.
+> Efface : mot de passe admin, token API, WiFi, MQTT, calibrations. Préserve : historique, fichiers LittleFS, **mot de passe AP WiFi** (l'étiquette sur le boîtier reste valide).

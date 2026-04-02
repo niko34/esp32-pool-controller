@@ -16,11 +16,23 @@ void AuthManager::begin() {
     systemLogger.info("API Token généré: " + maskedToken);
   }
 
+  // Générer le mot de passe AP WiFi si vide (premier boot ou factory reset)
+  // Loggué en clair volontairement : c'est le seul moyen de le récupérer sans écran.
+  if (authCfg.apPassword.isEmpty()) {
+    String apPwd = generateRandomToken().substring(0, 8);
+    apPwd.toUpperCase();
+    authCfg.apPassword = apPwd;
+    saveMqttConfig();
+    systemLogger.info("================================================");
+    systemLogger.info("=== MOT DE PASSE AP WIFI: " + authCfg.apPassword + " ===");
+    systemLogger.info("=== Notez-le sur une etiquette !            ===");
+    systemLogger.info("================================================");
+  }
+
   // Détecter premier démarrage (wizard non complété)
-  // Le wizard est considéré comme non complété si:
-  // 1. Le flag wizardCompleted n'est pas défini dans la NVS (false par défaut)
-  // 2. OU le mot de passe est toujours "admin" ou vide
-  if (!authCfg.wizardCompleted || adminPassword.isEmpty() || adminPassword == "admin") {
+  // Basé uniquement sur wizardCompleted pour éviter de déclencher le wizard
+  // si l'utilisateur change volontairement son mot de passe vers une valeur simple.
+  if (!authCfg.wizardCompleted) {
     isFirstBoot = true;
     if (adminPassword.isEmpty()) {
       adminPassword = "admin";
@@ -52,6 +64,10 @@ void AuthManager::setPassword(const String& pwd) {
   systemLogger.info("Mot de passe administrateur modifié");
   // Note: isFirstBoot n'est plus désactivé ici, il sera désactivé uniquement
   // quand le wizard est complété via completeFirstBoot()
+}
+
+String AuthManager::getApPassword() const {
+  return authCfg.apPassword;
 }
 
 void AuthManager::setApiToken(const String& token) {

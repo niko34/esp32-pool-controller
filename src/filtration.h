@@ -8,7 +8,9 @@ struct FiltrationRuntime {
   bool running = false;
   bool scheduleComputedThisCycle = false;
   unsigned long startedAtMs = 0;
-  unsigned long lastStoppedAtMs = 0;  // Horodatage du dernier arrêt (0 = jamais arrêtée)
+  unsigned long lastStoppedAtMs = 0;   // Horodatage du dernier arrêt (0 = jamais arrêtée)
+  unsigned long forceOnStartMs = 0;    // Quand forceOn a été activé (0 = inactif)
+  unsigned long forceOffStartMs = 0;   // Quand forceOff a été activé (0 = inactif)
 };
 
 class FiltrationManager {
