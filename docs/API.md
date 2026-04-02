@@ -168,7 +168,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/auth/ap-password
 ```json
 {
   "ap_ssid": "PoolControllerAP",
-  "ap_password": "A3F12C88"
+  "ap_password": "XXXXXXXX"
 }
 ```
 
