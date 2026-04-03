@@ -43,7 +43,7 @@ constexpr unsigned long kRateLimitWindowMs = 60000;       // Fenêtre de rate li
 
 // Limites de buffers
 constexpr size_t kMaxConfigSizeBytes = 16384;             // 16KB - Taille max configuration JSON
-constexpr size_t kMaxLogEntries = 100;                    // Nombre max d'entrées logs
+constexpr size_t kMaxLogEntries = 200;                    // Nombre max d'entrées logs
 
 // Historique de données
 constexpr size_t kMaxRawDataPoints = 72;                  // 6h de données brutes (intervalle 5min)

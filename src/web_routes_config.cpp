@@ -152,6 +152,7 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
 
   // Options de développement
   doc["sensor_logs_enabled"] = authCfg.sensorLogsEnabled;
+  doc["screen_enabled"] = authCfg.screenEnabled;
 
   // SÉCURITÉ: Masquer les credentials si non authentifié
   if (isAuthenticated) {
@@ -435,6 +436,10 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["sensor_logs_enabled"].isNull()) {
     authCfg.sensorLogsEnabled = doc["sensor_logs_enabled"];
     systemLogger.info(String("Logs des sondes: ") + (authCfg.sensorLogsEnabled ? "activés" : "désactivés"));
+  }
+  if (!doc["screen_enabled"].isNull()) {
+    authCfg.screenEnabled = doc["screen_enabled"];
+    systemLogger.info(String("Écran LVGL: ") + (authCfg.screenEnabled ? "activé" : "désactivé"));
   }
 
   // Note: Le token API n'est pas modifiable via /save-config

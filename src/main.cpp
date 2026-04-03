@@ -41,7 +41,6 @@ void onNtpTimeSync();
 
 void setup() {
   Serial.begin(115200);
-  uartTransport.begin();
   delay(kSerialInitDelayMs);
 
   systemLogger.begin();  // Initialise le mutex avant tout accès multi-core
@@ -71,6 +70,12 @@ void setup() {
   // Chargement configuration
   loadMqttConfig();
   loadProductConfig();
+
+  // Initialisation UART écran (après chargement config pour respecter screenEnabled)
+  if (authCfg.screenEnabled) {
+    uartTransport.begin();
+    systemLogger.info("Écran LVGL activé — UART2 initialisé");
+  }
 
   // Initialisation authentification (après chargement config)
   authManager.setEnabled(authCfg.enabled);
@@ -150,7 +155,7 @@ void loop() {
   webServer.update();
   mqttManager.update();
   history.update();
-  uartTransport.update();
+  if (authCfg.screenEnabled) uartTransport.update();
 
   // Lecture capteurs à chaque loop (les capteurs gèrent leur propre throttling interne)
   // DS18B20 : machine à états non-bloquante (request → wait → read) toutes les 2s
@@ -503,20 +508,20 @@ void checkSystemHealth() {
 
   if (safetyLimits.phLimitReached) {
     mqttManager.publishAlert("ph_limit", "Limite journalière pH- atteinte");
-    if (!lastPhLimitReached) {
+    if (!lastPhLimitReached && authCfg.screenEnabled) {
       uartProtocol.sendAlarmRaised("PH_LIMIT", "Limite journalière pH atteinte");
     }
-  } else if (lastPhLimitReached) {
+  } else if (lastPhLimitReached && authCfg.screenEnabled) {
     uartProtocol.sendAlarmCleared("PH_LIMIT");
   }
   lastPhLimitReached = safetyLimits.phLimitReached;
 
   if (safetyLimits.orpLimitReached) {
     mqttManager.publishAlert("orp_limit", "Limite journalière chlore atteinte");
-    if (!lastOrpLimitReached) {
+    if (!lastOrpLimitReached && authCfg.screenEnabled) {
       uartProtocol.sendAlarmRaised("ORP_LIMIT", "Limite journalière ORP/chlore atteinte");
     }
-  } else if (lastOrpLimitReached) {
+  } else if (lastOrpLimitReached && authCfg.screenEnabled) {
     uartProtocol.sendAlarmCleared("ORP_LIMIT");
   }
   lastOrpLimitReached = safetyLimits.orpLimitReached;
@@ -526,19 +531,20 @@ void checkSystemHealth() {
   float orp = sensors.getOrp();
   float temp = sensors.getTemperature();
 
-  if (ph < 5.0f || ph > 9.0f) {
-    systemLogger.warning("Valeur pH anormale: " + String(ph));
-    mqttManager.publishAlert("ph_abnormal", "pH=" + String(ph));
+  if (authCfg.sensorLogsEnabled) {
+    if (ph < 5.0f || ph > 9.0f) {
+      systemLogger.warning("Valeur pH anormale: " + String(ph));
+    }
+    if (orp < 400.0f || orp > 900.0f) {
+      systemLogger.warning("Valeur ORP anormale: " + String(orp));
+    }
+    if (!isnan(temp) && (temp < 5.0f || temp > 40.0f)) {
+      systemLogger.warning("Température anormale: " + String(temp));
+    }
+    systemLogger.debug("Health check OK - Heap: " + String(freeHeap) + " bytes");
   }
-  if (orp < 400.0f || orp > 900.0f) {
-    systemLogger.warning("Valeur ORP anormale: " + String(orp));
-    mqttManager.publishAlert("orp_abnormal", "ORP=" + String(orp));
-  }
-  if (!isnan(temp) && (temp < 5.0f || temp > 40.0f)) {
-    systemLogger.warning("Température anormale: " + String(temp));
-    mqttManager.publishAlert("temp_abnormal", "Temp=" + String(temp) + "°C");
-  }
-
-  systemLogger.debug("Health check OK - Heap: " + String(freeHeap) + " bytes");
+  if (ph < 5.0f || ph > 9.0f) mqttManager.publishAlert("ph_abnormal", "pH=" + String(ph));
+  if (orp < 400.0f || orp > 900.0f) mqttManager.publishAlert("orp_abnormal", "ORP=" + String(orp));
+  if (!isnan(temp) && (temp < 5.0f || temp > 40.0f)) mqttManager.publishAlert("temp_abnormal", "Temp=" + String(temp) + "°C");
 }
 

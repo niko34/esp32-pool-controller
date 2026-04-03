@@ -2,6 +2,7 @@
 #include "web_helpers.h"
 #include "auth.h"
 #include "config.h"
+#include "constants.h"
 #include "sensors.h"
 #include "filtration.h"
 #include "pump_controller.h"
@@ -94,6 +95,46 @@ static void handleGetData(AsyncWebServerRequest* request) {
   sendJsonResponse(request, doc);
 }
 
+static void handleDownloadLogs(AsyncWebServerRequest* request) {
+  REQUIRE_AUTH(request, RouteProtection::WRITE);
+
+  auto logs = systemLogger.getRecentLogs(kMaxLogEntries);
+
+  String output;
+  output.reserve(logs.size() * 80);
+
+  // En-tête
+  output += "# Pool Controller — Journal système\n";
+  output += "# Exporté le boot+";
+  output += String(millis() / 1000);
+  output += "s | Entrées: ";
+  output += String(logs.size());
+  output += "\n";
+  output += "# Format: [+Xs] NIVEAU : message\n\n";
+
+  for (const auto& entry : logs) {
+    unsigned long totalSec = entry.timestamp / 1000;
+    unsigned long h = totalSec / 3600;
+    unsigned long m = (totalSec % 3600) / 60;
+    unsigned long s = totalSec % 60;
+    char timeBuf[16];
+    snprintf(timeBuf, sizeof(timeBuf), "%02lu:%02lu:%02lu", h, m, s);
+
+    output += "[+";
+    output += timeBuf;
+    output += "] ";
+    output += systemLogger.getLevelString(entry.level);
+    output += " : ";
+    output += entry.message;
+    output += "\n";
+  }
+
+  AsyncWebServerResponse* resp = request->beginResponse(200, "text/plain; charset=utf-8", output);
+  resp->addHeader("Content-Disposition", "attachment; filename=\"pool_logs.txt\"");
+  resp->addHeader("Cache-Control", "no-cache");
+  request->send(resp);
+}
+
 static void handleGetLogs(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
@@ -104,7 +145,7 @@ static void handleGetLogs(AsyncWebServerRequest* request) {
     sinceTimestamp = sinceParam.toInt();
   }
 
-  auto logs = systemLogger.getRecentLogs(50);
+  auto logs = systemLogger.getRecentLogs(kMaxLogEntries);
   JsonDocument doc;
   JsonArray logsArray = doc["logs"].to<JsonArray>();
 
@@ -194,6 +235,7 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
 void setupDataRoutes(AsyncWebServer* server) {
   server->on("/data", HTTP_GET, handleGetData);
   server->on("/get-logs", HTTP_GET, handleGetLogs);
+  server->on("/download-logs", HTTP_GET, handleDownloadLogs);
   server->on("/get-history", HTTP_GET, handleGetHistory);
 
   auto* importHandler = new AsyncCallbackJsonWebHandler(

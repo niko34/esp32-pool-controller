@@ -1216,6 +1216,7 @@
       lighting_end_time: lightingEndTime,
       temperature_enabled: temperatureEnabled,
       sensor_logs_enabled: $("#sensor_logs_enabled")?.checked === true,
+      screen_enabled: $("#screen_enabled")?.checked === true,
     };
   }
 
@@ -1440,6 +1441,9 @@
     // Development panel
     if ($("#sensor_logs_enabled")) {
       $("#sensor_logs_enabled").checked = cfg.sensor_logs_enabled === true;
+    }
+    if ($("#screen_enabled")) {
+      $("#screen_enabled").checked = cfg.screen_enabled === true;
     }
 
     // Mettre à jour les badges et cartes status après chargement de la config
@@ -3638,6 +3642,15 @@
       lastLogTimestamp = 0;
     });
 
+    $("#download_logs_btn")?.addEventListener("click", () => {
+      const a = document.createElement("a");
+      a.href = "/download-logs";
+      a.download = "pool_logs.txt";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    });
+
     ["log_level_info", "log_level_warn", "log_level_error", "log_level_critical", "log_level_debug"].forEach(id => {
       $(`#${id}`)?.addEventListener("change", () => renderLogs(false));
     });
@@ -4074,8 +4087,9 @@
       save();
     });
 
-    // Development panel - Sensor logs
+    // Development panel - Sensor logs / Screen
     $("#sensor_logs_enabled")?.addEventListener("change", save);
+    $("#screen_enabled")?.addEventListener("change", save);
   }
 
   // ---------- Sidebar helpers ----------

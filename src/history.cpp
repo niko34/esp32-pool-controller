@@ -110,18 +110,25 @@ void HistoryManager::recordDataPoint() {
   bool estimated = false;
   unsigned long nowEpoch = getCurrentEpoch(&synced, &estimated);
   if (nowEpoch == 0) {
+    // Pas d'heure disponible : enregistrer avec uptime comme timestamp provisoire.
+    // Sera corrigé a posteriori lors de la première sync NTP (_applyPreNtpCorrection).
+    nowEpoch = millis() / kMillisToSeconds;
+    _preNtpPending = true;
     if (!warnedUnsynced) {
-      systemLogger.warning("Horloge non synchronisée, historique ignoré");
+      systemLogger.warning("Horloge non synchronisée — timestamp provisoire (uptime), correction à la sync NTP");
       warnedUnsynced = true;
     }
-    return;
-  }
-  if (synced) {
-    migrateLegacyHistory(nowEpoch);
-  }
-  if (!synced && estimated && !warnedEstimated) {
-    systemLogger.warning("Horloge non synchronisée, historique estimé depuis la dernière heure connue");
-    warnedEstimated = true;
+  } else {
+    if (synced) {
+      migrateLegacyHistory(nowEpoch);
+      if (_preNtpPending) {
+        _applyPreNtpCorrection(nowEpoch, millis() / kMillisToSeconds);
+      }
+    }
+    if (!synced && estimated && !warnedEstimated) {
+      systemLogger.warning("Horloge non synchronisée, historique estimé depuis la dernière heure connue");
+      warnedEstimated = true;
+    }
   }
 
   DataPoint point;
@@ -265,6 +272,28 @@ void HistoryManager::migrateLegacyHistory(unsigned long nowEpoch) {
   saveToFile();
 }
 
+void HistoryManager::_applyPreNtpCorrection(unsigned long ntpEpoch, unsigned long uptimeSec) {
+  // Corrige les timestamps provisoires (uptime en secondes) enregistrés avant la sync NTP.
+  // Formule : timestamp_réel = uptime_enregistré + (epoch_NTP - uptime_courant)
+  // Seuls les points de ce boot sont touchés : timestamp < kMinValidEpoch ET <= uptimeSec.
+  // Les points "legacy" de boots précédents ont des timestamps qui peuvent dépasser uptimeSec.
+  if (ntpEpoch <= uptimeSec) return;  // sécurité : l'epoch doit être > uptime
+  unsigned long bootOffset = ntpEpoch - uptimeSec;
+
+  int count = 0;
+  for (auto& p : memoryBuffer) {
+    if (p.timestamp < static_cast<unsigned long>(kMinValidEpoch) && p.timestamp <= uptimeSec) {
+      p.timestamp += bootOffset;
+      count++;
+    }
+  }
+
+  _preNtpPending = false;
+  if (count > 0) {
+    systemLogger.info("Historique pré-NTP: " + String(count) + " point(s) corrigé(s) après sync NTP");
+  }
+}
+
 std::vector<DataPoint> HistoryManager::getLastHours(int hours) {
   std::vector<DataPoint> result;
 
@@ -355,6 +384,9 @@ void HistoryManager::consolidateData() {
   }
   if (synced) {
     migrateLegacyHistory(now);
+    if (_preNtpPending) {
+      _applyPreNtpCorrection(now, millis() / kMillisToSeconds);
+    }
   }
   systemLogger.debug("Début consolidation historique");
 

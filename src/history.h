@@ -43,11 +43,13 @@ private:
   bool historyEnabled = true;
   bool legacyHistoryPending = false;
   unsigned long legacyMaxTimestamp = 0;
+  bool _preNtpPending = false;  // Points enregistrés avant sync NTP (timestamps uptime provisoires)
 
   void saveToFile();
   void loadFromFile();
   void consolidateData();
   void migrateLegacyHistory(unsigned long nowEpoch);
+  void _applyPreNtpCorrection(unsigned long ntpEpoch, unsigned long uptimeSec);
 
 public:
   void begin();

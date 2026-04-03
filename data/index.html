@@ -1522,6 +1522,25 @@
 
               <div class="card">
                 <div class="card__head">
+                  <h2 class="card__title">Écran LVGL</h2>
+                </div>
+                <div class="card__body">
+                  <div class="row row--between">
+                    <div>
+                      <p class="row__title" id="label-screen-enabled">Écran externe activé</p>
+                      <div class="muted small">ESP32 dédié connecté en UART2 (GPIO16/17)</div>
+                    </div>
+                    <label class="switch">
+                      <input type="checkbox" id="screen_enabled" aria-labelledby="label-screen-enabled" />
+                      <span class="switch__track"></span>
+                    </label>
+                  </div>
+                  <div class="hint">L'activation prend effet au prochain redémarrage.</div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card__head">
                   <h2 class="card__title">Logs</h2>
                 </div>
                 <div class="card__body">
@@ -1540,6 +1559,7 @@
                     <div class="row row--gap">
                       <button class="btn btn--ghost" type="button" id="refresh_logs_btn">Actualiser</button>
                       <button class="btn btn--ghost" type="button" id="clear_logs_display_btn">Effacer</button>
+                      <button class="btn btn--ghost" type="button" id="download_logs_btn">Télécharger</button>
                       <label class="field field--inline" style="margin:0"><input type="checkbox" id="logs_auto_refresh" /><span class="field__label">Auto (5s)</span></label>
                       <label class="field field--inline" style="margin:0"><input type="checkbox" id="logs_auto_scroll" checked /><span class="field__label">Scroll auto</span></label>
                     </div>

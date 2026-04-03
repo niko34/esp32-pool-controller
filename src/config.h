@@ -114,6 +114,7 @@ struct AuthConfig {
   bool wizardCompleted = false;   // Wizard de configuration initiale complété (persiste au redémarrage)
   bool disableApOnBoot = false;   // Désactiver le mode AP au prochain redémarrage (pour transition WiFi)
   bool sensorLogsEnabled = false; // Logs détaillés des sondes (pH, ORP, Temp) activés/désactivés
+  bool screenEnabled = false;     // Écran LVGL externe (ESP32 dédié via UART2) activé/désactivé
 };
 
 struct PumpControlParams {

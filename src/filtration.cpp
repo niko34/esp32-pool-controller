@@ -230,7 +230,7 @@ void FiltrationManager::update() {
     digitalWrite(FILTRATION_RELAY_PIN, relayShouldBeOn ? HIGH : LOW);
     relayState = relayShouldBeOn;
     publishState();
-    uartProtocol.sendEventBool("event", "filtration_changed", "running", relayState);
+    if (authCfg.screenEnabled) uartProtocol.sendEventBool("event", "filtration_changed", "running", relayState);
   }
 }
 

@@ -219,7 +219,9 @@ Retourne l'historique des mesures.
 curl -u admin:monmotdepasse "http://poolcontroller.local/get-history?range=24h"
 ```
 
-Paramètre `range` : `24h` (défaut), `7d`, `30d`, `all`.
+Paramètre `range` : `24h` (défaut), `3d`, `7d`, `30d`, `all`.
+
+Paramètre optionnel `?since=TIMESTAMP` pour récupération incrémentale.
 
 ---
 
@@ -247,20 +249,45 @@ curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
 
 ### GET /get-logs — WRITE
 
-Retourne les 50 derniers logs système. Paramètre optionnel `?since=TIMESTAMP`.
+Retourne les 200 derniers logs système. Paramètre optionnel `?since=TIMESTAMP` pour récupération incrémentale (ne retourne que les entrées postérieures à ce timestamp).
 
 ```bash
 curl -u admin:monmotdepasse http://poolcontroller.local/get-logs
+curl -u admin:monmotdepasse "http://poolcontroller.local/get-logs?since=14400000"
 ```
 
 ```json
 {
   "logs": [
-    { "timestamp": "14:30:45", "level": "INFO", "message": "Capteurs initialisés" },
-    { "timestamp": "14:30:50", "level": "WARNING", "message": "pH hors limites: 7.8" }
+    { "timestamp": 14400000, "level": "INFO", "message": "Capteurs initialisés" },
+    { "timestamp": 14405000, "level": "WARNING", "message": "pH hors limites: 7.8" }
   ]
 }
 ```
+
+> `timestamp` est exprimé en millisecondes depuis le démarrage de l'ESP32 (`millis()`).
+
+---
+
+### GET /download-logs — WRITE
+
+Télécharge les logs système sous forme de fichier texte (`pool_logs.txt`).
+
+```bash
+curl -u admin:monmotdepasse http://poolcontroller.local/download-logs -o pool_logs.txt
+```
+
+```
+# Pool Controller — Journal système
+# Exporté le boot+3600s | Entrées: 42
+# Format: [+Xs] NIVEAU : message
+
+[+01:00:00] INFO : Démarrage dosage pH: pH=7.85 cible=7.20 erreur=+0.65
+[+01:00:45] INFO : Arrêt dosage pH: durée=45s vol≈3.5mL total jour=3.5/300mL — pause 30min
+[+01:31:00] INFO : Démarrage dosage pH: pH=7.78 cible=7.20 erreur=+0.58
+```
+
+> Les logs enrichis incluent les événements de dosage (démarrage, arrêt, paramètres) ainsi que les alertes de limites horaires/journalières.
 
 ---
 

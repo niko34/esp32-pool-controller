@@ -360,9 +360,9 @@ void SensorManager::readRealSensors() {
     // Arrondir à 1 décimale
     phValue = roundf(phSensor.readPH(voltage, temperature) * 10.0f) / 10.0f;
 
-    // Log permanent toutes les 30s : tension brute ADS (diagnostic câblage/sonde)
+    // Log diagnostic toutes les 30s : tension brute ADS (câblage/sonde) — si logs sondes activés
     static unsigned long lastPhInfoLog = 0;
-    if (now - lastPhInfoLog >= 30000) {
+    if (authCfg.sensorLogsEnabled && now - lastPhInfoLog >= 30000) {
       char logMsg[200];
       snprintf(logMsg, sizeof(logMsg),
                "pH: ADC A0=%d | V=%.1fmV | Temp=%.1f°C | pH=%.2f",

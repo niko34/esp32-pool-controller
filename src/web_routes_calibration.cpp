@@ -25,7 +25,7 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
 
-    uartProtocol.sendEventStr("event", "calibration_done", "sensor", "ph_neutral");
+    if (authCfg.screenEnabled) uartProtocol.sendEventStr("event", "calibration_done", "sensor", "ph_neutral");
 
     StaticJson<128> doc;
     doc["success"] = true;
@@ -49,7 +49,7 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
 
-    uartProtocol.sendEventStr("event", "calibration_done", "sensor", "ph_acid");
+    if (authCfg.screenEnabled) uartProtocol.sendEventStr("event", "calibration_done", "sensor", "ph_acid");
 
     StaticJson<128> doc;
     doc["success"] = true;

@@ -42,7 +42,17 @@ void PumpControllerClass::begin() {
     ledcWrite(pumps[i].channel, 0);  // Pompe arrêtée au démarrage
   }
   applyRegulationSpeed();
-  systemLogger.info("Contrôleur de pompes MOSFET IRLZ44N initialisé");
+  systemLogger.info("Contrôleur de pompes initialisé");
+  systemLogger.info("Config pH: cible=" + String(mqttCfg.phTarget, 2) +
+    " seuil=" + String(pumpProtection.phStartThreshold, 2) +
+    " limite=" + String(mqttCfg.phInjectionLimitSeconds) + "s/h" +
+    " max=" + String(safetyLimits.maxPhMinusMlPerDay, 0) + "mL/j");
+  systemLogger.info("Config ORP: cible=" + String(mqttCfg.orpTarget, 0) + "mV" +
+    " seuil=" + String(pumpProtection.orpStartThreshold, 0) + "mV" +
+    " limite=" + String(mqttCfg.orpInjectionLimitSeconds) + "s/h" +
+    " max=" + String(safetyLimits.maxChlorineMlPerDay, 0) + "mL/j");
+  systemLogger.info("Pause inter-injections: " + String(mqttCfg.minPauseBetweenMin) + "min" +
+    " puissance: P1=" + String(mqttCfg.pump1MaxDutyPct) + "% P2=" + String(mqttCfg.pump2MaxDutyPct) + "%");
 }
 
 void PumpControllerClass::applyPumpDuty(int index, uint8_t duty) {
@@ -362,6 +372,23 @@ void PumpControllerClass::update() {
   bool phLimitOk = (phLimitMs == 0) || (phDosingState.usedMs < phLimitMs);
   bool orpLimitOk = (orpLimitMs == 0) || (orpDosingState.usedMs < orpLimitMs);
 
+  // Log une seule fois quand la limite horaire est atteinte
+  static bool phWindowLimitLogged = false;
+  if (!phLimitOk && phDosingState.active && !phWindowLimitLogged) {
+    systemLogger.warning("Limite horaire pH atteinte: " + String(phLimitSec) + "s/h consommées — dosage suspendu jusqu'au prochain cycle");
+    phWindowLimitLogged = true;
+  } else if (phLimitOk) {
+    phWindowLimitLogged = false;
+  }
+
+  static bool orpWindowLimitLogged = false;
+  if (!orpLimitOk && orpDosingState.active && !orpWindowLimitLogged) {
+    systemLogger.warning("Limite horaire ORP atteinte: " + String(orpLimitSec) + "s/h consommées — dosage suspendu jusqu'au prochain cycle");
+    orpWindowLimitLogged = true;
+  } else if (orpLimitOk) {
+    orpWindowLimitLogged = false;
+  }
+
   // Vérifier les limites de sécurité journalières
   bool phSafetyOk = checkSafetyLimits(true);
   bool orpSafetyOk = checkSafetyLimits(false);
@@ -395,16 +422,19 @@ void PumpControllerClass::update() {
         // Démarrage d'un nouveau cycle
         phDosingState.lastStartTime = now;
         phDosingState.cyclesToday++;
-        systemLogger.info("Démarrage dosage pH (cycle " + String(phDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
+        systemLogger.info("Démarrage dosage pH: pH=" + String(sensors.getPh(), 2) +
+          " cible=" + String(mqttCfg.phTarget, 2) +
+          " erreur=" + String(error, 3) +
+          " (cycle " + String(phDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
       }
     }
-    
+
     float flow = 0.0f;
     if (shouldDose) {
       // Calcul PID
       float pidOutput = computePID(phPID, error, now);
       flow = constrain(pidOutput, 0.0f, phPumpControl.maxFlowMlPerMin);
-      
+
       // Appliquer un débit minimum si actif
       if (flow > 0.0f && flow < phPumpControl.minFlowMlPerMin) {
         flow = phPumpControl.minFlowMlPerMin;
@@ -414,7 +444,11 @@ void PumpControllerClass::update() {
       if (phDosingState.active) {
         phDosingState.lastStopTime = now;
         unsigned long runTime = (now - phDosingState.lastStartTime) / 1000;
-        systemLogger.info("Arrêt dosage pH (durée: " + String(runTime) + "s)");
+        float volumeMl = (phFlow * runTime) / 60.0f;
+        systemLogger.info("Arrêt dosage pH: durée=" + String(runTime) + "s" +
+          " vol≈" + String(volumeMl, 1) + "mL" +
+          " total jour=" + String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(safetyLimits.maxPhMinusMlPerDay, 0) + "mL" +
+          " — pause " + String(mqttCfg.minPauseBetweenMin) + "min");
       }
       
       // Reset PID si erreur négative (pH hors plage de correction)
@@ -458,16 +492,19 @@ void PumpControllerClass::update() {
         // Démarrage d'un nouveau cycle
         orpDosingState.lastStartTime = now;
         orpDosingState.cyclesToday++;
-        systemLogger.info("Démarrage dosage ORP (cycle " + String(orpDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
+        systemLogger.info("Démarrage dosage ORP: ORP=" + String(sensors.getOrp(), 0) + "mV" +
+          " cible=" + String(mqttCfg.orpTarget, 0) + "mV" +
+          " erreur=" + String(error, 0) + "mV" +
+          " (cycle " + String(orpDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
       }
     }
-    
+
     float flow = 0.0f;
     if (shouldDose) {
       // Calcul PID
       float pidOutput = computePID(orpPID, error, now);
       flow = constrain(pidOutput, 0.0f, orpPumpControl.maxFlowMlPerMin);
-      
+
       // Appliquer un débit minimum si actif
       if (flow > 0.0f && flow < orpPumpControl.minFlowMlPerMin) {
         flow = orpPumpControl.minFlowMlPerMin;
@@ -477,7 +514,11 @@ void PumpControllerClass::update() {
       if (orpDosingState.active) {
         orpDosingState.lastStopTime = now;
         unsigned long runTime = (now - orpDosingState.lastStartTime) / 1000;
-        systemLogger.info("Arrêt dosage ORP (durée: " + String(runTime) + "s)");
+        float volumeMl = (orpFlow * runTime) / 60.0f;
+        systemLogger.info("Arrêt dosage ORP: durée=" + String(runTime) + "s" +
+          " vol≈" + String(volumeMl, 1) + "mL" +
+          " total jour=" + String(safetyLimits.dailyOrpInjectedMl, 0) + "/" + String(safetyLimits.maxChlorineMlPerDay, 0) + "mL" +
+          " — pause " + String(mqttCfg.minPauseBetweenMin) + "min");
       }
       
       // Reset PID si erreur négative (ORP trop haut, au-dessus de la cible)
@@ -544,7 +585,7 @@ void PumpControllerClass::update() {
 
   // Envoyer un événement UART si l'état de dosage a changé
   if (phDosingState.active != phActive || orpDosingState.active != orpActive) {
-    uartProtocol.sendDosingEvent(phActive, orpActive);
+    if (authCfg.screenEnabled) uartProtocol.sendDosingEvent(phActive, orpActive);
   }
 
   phDosingState.active = phActive;
