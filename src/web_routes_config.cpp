@@ -199,6 +199,12 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     (*g_configBuffers)[request].clear();
     (*g_configErrors)[request] = false; // Pas d'erreur pour l'instant
 
+    // Nettoyage si la connexion est abandonnée avant complétion (timeout, fermeture navigateur)
+    request->onDisconnect([request]() {
+      if (g_configBuffers) g_configBuffers->erase(request);
+      if (g_configErrors) g_configErrors->erase(request);
+    });
+
     // Vérifier la taille totale
     if (total > kMaxConfigSizeBytes) {
       systemLogger.error("Configuration trop volumineuse: " + String(total) + " bytes (max " + String(kMaxConfigSizeBytes) + ")");
