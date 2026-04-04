@@ -21,9 +21,11 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
     sensors.calibratePhNeutral();
     xSemaphoreGive(i2cMutex);
 
+    xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
     mqttCfg.phCalibrationDate = getCurrentTimeISO();
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
+    xSemaphoreGiveRecursive(configMutex);
 
     if (authCfg.screenEnabled) uartProtocol.sendEventStr("event", "calibration_done", "sensor", "ph_neutral");
 
@@ -45,9 +47,11 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
     sensors.calibratePhAcid();
     xSemaphoreGive(i2cMutex);
 
+    xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
     mqttCfg.phCalibrationDate = getCurrentTimeISO();
     mqttCfg.phCalibrationTemp = sensors.getTemperature();
     saveMqttConfig();
+    xSemaphoreGiveRecursive(configMutex);
 
     if (authCfg.screenEnabled) uartProtocol.sendEventStr("event", "calibration_done", "sensor", "ph_acid");
 
@@ -61,9 +65,11 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
 
     sensors.clearPhCalibration();
+    xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
     mqttCfg.phCalibrationDate = "";
     mqttCfg.phCalibrationTemp = NAN;
     saveMqttConfig();
+    xSemaphoreGiveRecursive(configMutex);
 
     JsonDocument doc;
     doc["success"] = true;

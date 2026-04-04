@@ -237,6 +237,7 @@ void MqttManager::messageCallback(char* topic, byte* payload, unsigned int lengt
   if (topicStr == topics.filtrationModeCommand) {
     cmd.toLowerCase();
     if (cmd == "auto" || cmd == "manual" || cmd == "force" || cmd == "off") {
+      xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
       if (filtrationCfg.mode != cmd) {
         filtrationCfg.mode = cmd;
         filtration.ensureTimesValid();
@@ -246,10 +247,12 @@ void MqttManager::messageCallback(char* topic, byte* payload, unsigned int lengt
         saveMqttConfig();
         systemLogger.info("Mode filtration changé: " + cmd);
       }
+      xSemaphoreGiveRecursive(configMutex);
       publishFiltrationState();
     }
   } else if (topicStr == topics.filtrationCommand) {
     cmd.toUpperCase();
+    xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
     if (cmd == "ON") {
       filtrationCfg.forceOn = true;
       filtrationCfg.forceOff = false;
@@ -259,6 +262,7 @@ void MqttManager::messageCallback(char* topic, byte* payload, unsigned int lengt
       filtrationCfg.forceOff = true;
       systemLogger.info("Filtration forcée OFF (MQTT)");
     }
+    xSemaphoreGiveRecursive(configMutex);
     // Ne pas publier ici : filtration.update() va changer le relais
     // et appeler publishState() une fois l'état réel mis à jour.
   } else if (topicStr == topics.lightingCommand) {
@@ -272,8 +276,10 @@ void MqttManager::messageCallback(char* topic, byte* payload, unsigned int lengt
   } else if (topicStr == topics.phTargetCommand) {
     float value = cmd.toFloat();
     if (value >= 6.0f && value <= 8.5f) {
+      xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
       mqttCfg.phTarget = value;
       saveMqttConfig();
+      xSemaphoreGiveRecursive(configMutex);
       publishTargetState();
       systemLogger.info("Consigne pH changée via MQTT: " + String(value, 1));
     } else {
@@ -282,8 +288,10 @@ void MqttManager::messageCallback(char* topic, byte* payload, unsigned int lengt
   } else if (topicStr == topics.orpTargetCommand) {
     float value = cmd.toFloat();
     if (value >= 400.0f && value <= 900.0f) {
+      xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
       mqttCfg.orpTarget = value;
       saveMqttConfig();
+      xSemaphoreGiveRecursive(configMutex);
       publishTargetState();
       systemLogger.info("Consigne ORP changée via MQTT: " + String(value, 0));
     } else {

@@ -240,7 +240,7 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
 
   // Protéger l'accès concurrent aux configurations (web async vs loop)
-  if (xSemaphoreTake(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+  if (xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
     systemLogger.error("Timeout acquisition configMutex dans handleSaveConfig");
     (*g_configErrors)[request] = true;
     return;
@@ -522,7 +522,7 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   sensors.recalculateCalibratedValues();
 
   // Libérer le mutex
-  xSemaphoreGive(configMutex);
+  xSemaphoreGiveRecursive(configMutex);
 
   systemLogger.info("Configuration mise à jour via interface web");
   // La réponse sera envoyée par le handler principal

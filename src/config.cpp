@@ -20,7 +20,7 @@ SemaphoreHandle_t configMutex = nullptr;
 SemaphoreHandle_t i2cMutex = nullptr;
 
 void initConfigMutexes() {
-  configMutex = xSemaphoreCreateMutex();
+  configMutex = xSemaphoreCreateRecursiveMutex();  // Récursif : saveConfig() peut être appelé dans une section déjà sous mutex
   i2cMutex = xSemaphoreCreateMutex();
 
   if (configMutex == nullptr || i2cMutex == nullptr) {
@@ -75,9 +75,11 @@ void sanitizePumpSelection() {
 }
 
 void saveMqttConfig() {
+  if (configMutex) xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
   Preferences prefs;
   if (!prefs.begin("poolctrl", false)) {
     systemLogger.error("Échec ouverture NVS pour sauvegarde");
+    if (configMutex) xSemaphoreGiveRecursive(configMutex);
     return;
   }
 
@@ -170,6 +172,7 @@ void saveMqttConfig() {
   prefs.putFloat("max_cl_ml", safetyLimits.maxChlorineMlPerDay);
 
   prefs.end();
+  if (configMutex) xSemaphoreGiveRecursive(configMutex);
   systemLogger.info("Configuration sauvegardée dans NVS");
 }
 
@@ -277,9 +280,11 @@ void loadMqttConfig() {
 }
 
 void saveProductConfig() {
+  if (configMutex) xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
   Preferences prefs;
   if (!prefs.begin("pool_prod", false)) {
     systemLogger.error("Échec ouverture NVS produits");
+    if (configMutex) xSemaphoreGiveRecursive(configMutex);
     return;
   }
   prefs.putBool("ph_track_en", productCfg.phTrackingEnabled);
@@ -292,6 +297,7 @@ void saveProductConfig() {
   prefs.putFloat("orp_alert_ml", productCfg.orpAlertThresholdMl);
   prefs.end();
   productConfigDirty = false;
+  if (configMutex) xSemaphoreGiveRecursive(configMutex);
   systemLogger.debug("Config produits sauvegardée");
 }
 

@@ -279,7 +279,7 @@ void UartCommands::handleSetConfig(JsonVariant data) {
   bool changed = false;
   String errorMsg;
 
-  if (xSemaphoreTake(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+  if (xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
     uartProtocol.sendError("set_config", "config busy, retry");
     return;
   }
@@ -416,7 +416,7 @@ void UartCommands::handleSetConfig(JsonVariant data) {
     }
   }
 
-  xSemaphoreGive(configMutex);
+  xSemaphoreGiveRecursive(configMutex);
 
   if (!errorMsg.isEmpty()) {
     uartProtocol.sendError("set_config", errorMsg);
