@@ -177,12 +177,10 @@ void setupAuthRoutes(AsyncWebServer* server) {
   });
 
   // Route: Marquer le wizard comme complété (désactive le flag firstBoot)
-  // PROTÉGÉE : nécessite un token valide (obtenu via /auth/change-password).
-  // Idempotente : retourne 200 même si firstBoot est déjà false (wizard appelé plusieurs fois).
+  // PUBLIC : doit rester accessible sans token pour couvrir le cas où l'utilisateur
+  // revient sur le wizard après interruption (sessionStorage vidé, pas de token).
+  // Idempotente : retourne 200 même si firstBoot est déjà false.
   server->on("/auth/complete-wizard", HTTP_POST, [](AsyncWebServerRequest *req) {
-    REQUIRE_AUTH(req, RouteProtection::WRITE);
-
-    // Idempotent : effacer seulement si encore actif
     if (authManager.isFirstBootDetected()) {
       authManager.clearFirstBootFlag();
       systemLogger.info("Premier démarrage finalisé - Configuration wizard complétée");
