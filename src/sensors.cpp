@@ -137,7 +137,7 @@ void SensorManager::begin() {
   EEPROM.get(4, eepromAcidV);
   systemLogger.info("pH EEPROM calibration chargée: neutre=" + String(eepromNeutralV, 1) +
                     "mV (défaut=1500), acide=" + String(eepromAcidV, 1) + "mV (défaut=2032)");
-  _phCalibrated = !(eepromNeutralV == 1500.0f && eepromAcidV == 2032.44f);
+  _phCalibrated = !(fabsf(eepromNeutralV - 1500.0f) < 0.01f && fabsf(eepromAcidV - 2032.44f) < 0.01f);
   if (!_phCalibrated) {
     systemLogger.warning("pH: calibration par défaut détectée - sonde non calibrée");
   }

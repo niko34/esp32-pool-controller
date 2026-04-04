@@ -431,14 +431,9 @@ void PumpControllerClass::update() {
 
     float flow = 0.0f;
     if (shouldDose) {
-      // Calcul PID
+      // Calcul PID — constrain avec minimum pour éviter flow=0 à la première invocation du PID
       float pidOutput = computePID(phPID, error, now);
-      flow = constrain(pidOutput, 0.0f, phPumpControl.maxFlowMlPerMin);
-
-      // Appliquer un débit minimum si actif
-      if (flow > 0.0f && flow < phPumpControl.minFlowMlPerMin) {
-        flow = phPumpControl.minFlowMlPerMin;
-      }
+      flow = constrain(pidOutput, phPumpControl.minFlowMlPerMin, phPumpControl.maxFlowMlPerMin);
     } else {
       // Arrêt du dosage
       if (phDosingState.active) {
@@ -501,14 +496,9 @@ void PumpControllerClass::update() {
 
     float flow = 0.0f;
     if (shouldDose) {
-      // Calcul PID
+      // Calcul PID — constrain avec minimum pour éviter flow=0 à la première invocation du PID
       float pidOutput = computePID(orpPID, error, now);
-      flow = constrain(pidOutput, 0.0f, orpPumpControl.maxFlowMlPerMin);
-
-      // Appliquer un débit minimum si actif
-      if (flow > 0.0f && flow < orpPumpControl.minFlowMlPerMin) {
-        flow = orpPumpControl.minFlowMlPerMin;
-      }
+      flow = constrain(pidOutput, orpPumpControl.minFlowMlPerMin, orpPumpControl.maxFlowMlPerMin);
     } else {
       // Arrêt du dosage
       if (orpDosingState.active) {

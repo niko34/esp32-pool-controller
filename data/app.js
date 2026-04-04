@@ -3642,13 +3642,18 @@
       lastLogTimestamp = 0;
     });
 
-    $("#download_logs_btn")?.addEventListener("click", () => {
+    $("#download_logs_btn")?.addEventListener("click", async () => {
+      const resp = await authFetch("/download-logs");
+      if (!resp.ok) { showToast("Erreur lors du téléchargement des logs", "error"); return; }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = "/download-logs";
+      a.href = url;
       a.download = "pool_logs.txt";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      URL.revokeObjectURL(url);
     });
 
     ["log_level_info", "log_level_warn", "log_level_error", "log_level_critical", "log_level_debug"].forEach(id => {
