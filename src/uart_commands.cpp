@@ -597,25 +597,12 @@ void UartCommands::handleCompleteWizard() {
 // ---------------------------------------------------------------------------
 
 void UartCommands::handleWifiScan() {
-  // Scan asynchrone : vTaskDelay cède le CPU entre chaque sondage,
-  // évitant de bloquer Core 1 (pompes, capteurs) pendant le scan.
-  WiFi.scanNetworks(true, false);  // async=true, show_hidden=false
-
-  unsigned long scanStart = millis();
-  int n = WIFI_SCAN_RUNNING;
-  while ((n = WiFi.scanComplete()) == WIFI_SCAN_RUNNING) {
-    if (millis() - scanStart > 6000) {
-      WiFi.scanDelete();
-      uartProtocol.sendError("wifi_scan", "scan timeout");
-      return;
-    }
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
-
-  if (n == WIFI_SCAN_FAILED) {
-    uartProtocol.sendError("wifi_scan", "scan failed");
-    return;
-  }
+  // Scan synchrone : bloque Core 1 (loop) 2-4s le temps du scan.
+  // Le mode asynchrone (WiFi.scanNetworks(true)) échoue en mode AP pur
+  // car l'interface STA n'est pas initialisée de la même façon.
+  // Acceptable ici : le wizard n'est utilisé qu'à la configuration initiale,
+  // avant que le dosage soit actif.
+  int n = WiFi.scanNetworks(false, false);
 
   JsonDocument doc;
   doc["type"] = "wifi_scan_result";
