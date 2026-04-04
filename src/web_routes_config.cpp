@@ -625,7 +625,27 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
       return;
     }
 
-    int count = WiFi.scanNetworks(false, true);
+    // Scan asynchrone : ne bloque pas Core 1 (pompes, capteurs).
+    // vTaskDelay() cède le CPU au scheduler entre chaque sondage,
+    // évitant de geler les autres tâches FreeRTOS pendant le scan.
+    WiFi.scanNetworks(true, true);  // async=true, show_hidden=true
+
+    unsigned long scanStart = millis();
+    int count = WIFI_SCAN_RUNNING;
+    while ((count = WiFi.scanComplete()) == WIFI_SCAN_RUNNING) {
+      if (millis() - scanStart > 6000) {
+        WiFi.scanDelete();
+        sendErrorResponse(request, 504, "WiFi scan timeout");
+        return;
+      }
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
+
+    if (count == WIFI_SCAN_FAILED) {
+      sendErrorResponse(request, 500, "WiFi scan failed");
+      return;
+    }
+
     JsonDocument doc;
     JsonArray networks = doc["networks"].to<JsonArray>();
     for (int i = 0; i < count; i++) {
