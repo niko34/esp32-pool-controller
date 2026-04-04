@@ -45,6 +45,7 @@ private:
   bool discoveryPublished = false;
   bool reconnectRequested = false;
   unsigned long lastAttempt = 0;
+  unsigned long _reconnectDelay = 5000;  // Backoff exponentiel : 5s → 10s → 20s → ... → 120s max
 
   void publishDiscovery();
   void refreshTopics();
@@ -59,7 +60,7 @@ public:
   void messageCallback(char* topic, byte* payload, unsigned int length);
 
   bool isConnected() { return mqtt.connected(); }
-  void requestReconnect() { reconnectRequested = true; }
+  void requestReconnect() { reconnectRequested = true; _reconnectDelay = 5000; lastAttempt = 0; }
 
   // Publication
   void publishSensorState(const String& topic, const String& payload, bool retain = true);

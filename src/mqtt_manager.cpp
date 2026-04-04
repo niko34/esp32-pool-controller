@@ -92,10 +92,10 @@ void MqttManager::connect() {
   if (mqtt.connected()) return;
 
   unsigned long now = millis();
-  if (now - lastAttempt < 5000) return;
+  if (now - lastAttempt < _reconnectDelay) return;
   lastAttempt = now;
 
-  systemLogger.info("Tentative connexion MQTT...");
+  systemLogger.info("Tentative connexion MQTT (délai=" + String(_reconnectDelay / 1000) + "s)...");
   refreshTopics();
 
   // Préparer LWT (Last Will Testament)
@@ -117,6 +117,7 @@ void MqttManager::connect() {
   }
 
   if (connected) {
+    _reconnectDelay = 5000;  // Reset backoff après connexion réussie
     systemLogger.info("MQTT connecté !");
 
     // Publier immédiatement le status online
@@ -132,7 +133,9 @@ void MqttManager::connect() {
     publishAllStates();
     publishDiagnostic();
   } else {
-    systemLogger.error("MQTT échec, code=" + String(mqtt.state()));
+    constexpr unsigned long kMqttMaxReconnectDelayMs = 120000UL;  // 120s max
+    _reconnectDelay = min(_reconnectDelay * 2, kMqttMaxReconnectDelayMs);
+    systemLogger.error("MQTT échec, code=" + String(mqtt.state()) + " — prochaine tentative dans " + String(_reconnectDelay / 1000) + "s");
   }
 }
 
