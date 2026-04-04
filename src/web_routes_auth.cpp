@@ -132,15 +132,6 @@ void setupAuthRoutes(AsyncWebServer* server) {
 
       saveMqttConfig();
 
-      // Option B : effacer le flag firstBoot dès que l'admin a défini son mot de passe.
-      // Cela rend /auth/complete-wizard non bloquant sur la sécurité : un attaquant
-      // non authentifié ne peut plus effacer firstBoot sans avoir d'abord changé
-      // le mot de passe (ce qui lui donnerait le token).
-      if (isFirstBoot) {
-        authManager.clearFirstBootFlag();
-        systemLogger.info("Premier démarrage : mot de passe défini, flag firstBoot effacé");
-      }
-
       // Retourner le token API pour connexion automatique
       JsonDocument response;
       response["success"] = true;
