@@ -597,20 +597,35 @@ void UartCommands::handleCompleteWizard() {
 // ---------------------------------------------------------------------------
 
 void UartCommands::handleWifiScan() {
-  // Scan synchrone (bloque 2-4 s) — acceptable car appelé depuis le wizard
-  int n = WiFi.scanNetworks(false, false);
+  // Scan asynchrone : vTaskDelay cède le CPU entre chaque sondage,
+  // évitant de bloquer Core 1 (pompes, capteurs) pendant le scan.
+  WiFi.scanNetworks(true, false);  // async=true, show_hidden=false
+
+  unsigned long scanStart = millis();
+  int n = WIFI_SCAN_RUNNING;
+  while ((n = WiFi.scanComplete()) == WIFI_SCAN_RUNNING) {
+    if (millis() - scanStart > 6000) {
+      WiFi.scanDelete();
+      uartProtocol.sendError("wifi_scan", "scan timeout");
+      return;
+    }
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+
+  if (n == WIFI_SCAN_FAILED) {
+    uartProtocol.sendError("wifi_scan", "scan failed");
+    return;
+  }
 
   JsonDocument doc;
   doc["type"] = "wifi_scan_result";
   JsonArray networks = doc["data"]["networks"].to<JsonArray>();
 
-  if (n > 0) {
-    for (int i = 0; i < n && i < 20; i++) {
-      JsonObject net = networks.add<JsonObject>();
-      net["ssid"]   = WiFi.SSID(i);
-      net["rssi"]   = WiFi.RSSI(i);
-      net["secure"] = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
-    }
+  for (int i = 0; i < n && i < 20; i++) {
+    JsonObject net = networks.add<JsonObject>();
+    net["ssid"]   = WiFi.SSID(i);
+    net["rssi"]   = WiFi.RSSI(i);
+    net["secure"] = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
   }
   WiFi.scanDelete();
   uartProtocol.sendJson(doc);
