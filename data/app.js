@@ -4375,9 +4375,10 @@
       }
 
       try {
-        const res = await authFetch("/auth/change-password", {
+        const token = sessionStorage.getItem('authToken');
+        const res = await fetch("/auth/change-password", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: Object.assign({ "Content-Type": "application/json" }, token ? { "X-Auth-Token": token } : {}),
           body: JSON.stringify({
             currentPassword: currentPassword,
             newPassword: newPassword
@@ -4385,8 +4386,12 @@
         });
 
         if (!res.ok) {
-          const error = await res.json();
-          alert("Erreur: " + (error.error || "Échec du changement de mot de passe"));
+          const error = await res.json().catch(() => ({}));
+          if (res.status === 401) {
+            alert("L'ancien mot de passe est incorrect.");
+          } else {
+            alert("Erreur: " + (error.error || "Échec du changement de mot de passe"));
+          }
           return;
         }
 
