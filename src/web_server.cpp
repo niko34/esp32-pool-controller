@@ -105,6 +105,12 @@ void WebServerManager::setupRoutes() {
     systemLogger.info("CORS désactivé (pas d'origines configurées)");
   }
 
+  // En-têtes de sécurité globaux (ajoutés à toutes les réponses)
+  DefaultHeaders::Instance().addHeader("Content-Security-Policy",
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
+  DefaultHeaders::Instance().addHeader("X-Content-Type-Options", "nosniff");
+  DefaultHeaders::Instance().addHeader("X-Frame-Options", "SAMEORIGIN");
+
   // Initialiser les contextes pour les modules qui ont besoin de partager des données
   initConfigContext(&configBuffers, &configErrors);
   initOtaContext(&restartRequested, &restartRequestedTime);

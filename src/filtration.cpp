@@ -12,9 +12,40 @@ FiltrationManager filtration;
 
 void FiltrationManager::begin() {
   pinMode(FILTRATION_RELAY_PIN, OUTPUT);
-  digitalWrite(FILTRATION_RELAY_PIN, LOW);
   ensureTimesValid();
-  systemLogger.info("Gestionnaire de filtration initialisé");
+
+  // Calculer et appliquer l'état initial du relais immédiatement.
+  // Pré-requis satisfaits dans main.cpp : config et heure RTC chargées avant cet appel.
+  // Cela évite une coupure prolongée de la pompe de filtration au reboot :
+  // sans ce calcul, le relais resterait LOW pendant tout le setup (WiFi inclus, jusqu'à ~18s)
+  // avant que filtration.update() dans loop() ne le remette dans son état correct.
+  bool initialState = false;
+  if (filtrationCfg.enabled) {
+    String mode = filtrationCfg.mode;
+    mode.toLowerCase();
+    if (mode != "off") {
+      if (filtrationCfg.forceOn) {
+        initialState = true;
+      } else if (!filtrationCfg.forceOff && (mode == "manual" || mode == "auto")) {
+        int nowMinutes = 0;
+        if (getCurrentMinutesOfDay(nowMinutes)) {
+          int startMin = timeStringToMinutes(filtrationCfg.start);
+          int endMin = timeStringToMinutes(filtrationCfg.end);
+          initialState = isMinutesInRange(nowMinutes, startMin, endMin);
+        }
+      }
+    }
+  }
+
+  digitalWrite(FILTRATION_RELAY_PIN, initialState ? HIGH : LOW);
+  relayState = initialState;
+  state.running = initialState;
+  if (initialState) {
+    state.startedAtMs = millis();
+    systemLogger.info("Gestionnaire de filtration initialisé (filtration maintenue active)");
+  } else {
+    systemLogger.info("Gestionnaire de filtration initialisé");
+  }
 }
 
 void FiltrationManager::ensureTimesValid() {

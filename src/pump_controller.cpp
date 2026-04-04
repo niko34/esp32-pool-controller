@@ -439,7 +439,9 @@ void PumpControllerClass::update() {
       if (phDosingState.active) {
         phDosingState.lastStopTime = now;
         unsigned long runTime = (now - phDosingState.lastStartTime) / 1000;
-        float volumeMl = (phFlow * runTime) / 60.0f;
+        // Estimer le volume depuis le duty PWM de la dernière itération active
+        float lastFlow = dutyToFlow(phPumpControl, pumpDuty[pumpIndexFromNumber(mqttCfg.phPump)]);
+        float volumeMl = (lastFlow * runTime) / 60.0f;
         systemLogger.info("Arrêt dosage pH: durée=" + String(runTime) + "s" +
           " vol≈" + String(volumeMl, 1) + "mL" +
           " total jour=" + String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(safetyLimits.maxPhMinusMlPerDay, 0) + "mL" +
@@ -504,7 +506,9 @@ void PumpControllerClass::update() {
       if (orpDosingState.active) {
         orpDosingState.lastStopTime = now;
         unsigned long runTime = (now - orpDosingState.lastStartTime) / 1000;
-        float volumeMl = (orpFlow * runTime) / 60.0f;
+        // Estimer le volume depuis le duty PWM de la dernière itération active
+        float lastFlow = dutyToFlow(orpPumpControl, pumpDuty[pumpIndexFromNumber(mqttCfg.orpPump)]);
+        float volumeMl = (lastFlow * runTime) / 60.0f;
         systemLogger.info("Arrêt dosage ORP: durée=" + String(runTime) + "s" +
           " vol≈" + String(volumeMl, 1) + "mL" +
           " total jour=" + String(safetyLimits.dailyOrpInjectedMl, 0) + "/" + String(safetyLimits.maxChlorineMlPerDay, 0) + "mL" +

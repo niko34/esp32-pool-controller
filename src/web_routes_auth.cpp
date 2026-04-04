@@ -132,6 +132,15 @@ void setupAuthRoutes(AsyncWebServer* server) {
 
       saveMqttConfig();
 
+      // Option B : effacer le flag firstBoot dès que l'admin a défini son mot de passe.
+      // Cela rend /auth/complete-wizard non bloquant sur la sécurité : un attaquant
+      // non authentifié ne peut plus effacer firstBoot sans avoir d'abord changé
+      // le mot de passe (ce qui lui donnerait le token).
+      if (isFirstBoot) {
+        authManager.clearFirstBootFlag();
+        systemLogger.info("Premier démarrage : mot de passe défini, flag firstBoot effacé");
+      }
+
       // Retourner le token API pour connexion automatique
       JsonDocument response;
       response["success"] = true;
@@ -177,16 +186,16 @@ void setupAuthRoutes(AsyncWebServer* server) {
   });
 
   // Route: Marquer le wizard comme complété (désactive le flag firstBoot)
+  // PROTÉGÉE : nécessite un token valide (obtenu via /auth/change-password).
+  // Idempotente : retourne 200 même si firstBoot est déjà false (wizard appelé plusieurs fois).
   server->on("/auth/complete-wizard", HTTP_POST, [](AsyncWebServerRequest *req) {
-    // Cette route est accessible uniquement pendant le premier démarrage
-    if (!authManager.isFirstBootDetected()) {
-      sendErrorResponse(req, 403, "Wizard already completed");
-      return;
-    }
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
 
-    // Désactiver le flag firstBoot
-    authManager.clearFirstBootFlag();
-    systemLogger.info("Premier démarrage finalisé - Configuration wizard complétée");
+    // Idempotent : effacer seulement si encore actif
+    if (authManager.isFirstBootDetected()) {
+      authManager.clearFirstBootFlag();
+      systemLogger.info("Premier démarrage finalisé - Configuration wizard complétée");
+    }
 
     JsonDocument doc;
     doc["success"] = true;

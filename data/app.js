@@ -130,6 +130,7 @@
 
   function _onWsLog(entry) {
     allLogEntries.push(entry);
+    if (allLogEntries.length > 500) allLogEntries.shift();
     if ((entry.timestamp || 0) > lastLogTimestamp) lastLogTimestamp = entry.timestamp;
     // Mettre à jour l'affichage si le panneau logs est visible
     const content = $("#logs_content");
@@ -3595,6 +3596,7 @@
         // En mode incrémental, ajouter les nouveaux logs reçus
         if (lines.length > 0) {
           allLogEntries = [...allLogEntries, ...lines];
+          if (allLogEntries.length > 500) allLogEntries = allLogEntries.slice(-500);
 
           // Mettre à jour le dernier timestamp
           lines.forEach(entry => {
