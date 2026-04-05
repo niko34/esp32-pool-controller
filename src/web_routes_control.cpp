@@ -11,25 +11,29 @@ void setupControlRoutes(AsyncWebServer* server) {
   // Routes pour test manuel des pompes - PROTÉGÉES
   server->on("/pump1/on", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
-    PumpController.setManualPump(0, MAX_PWM_DUTY); // Pompe 1 à fond
+    PumpController.setManualPump(0, MAX_PWM_DUTY);
+    systemLogger.info("[Test] Pompe 1 démarrée en mode manuel");
     req->send(200, "text/plain", "OK");
   });
 
   server->on("/pump1/off", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
-    PumpController.setManualPump(0, 0); // Pompe 1 arrêtée
+    PumpController.setManualPump(0, 0);
+    systemLogger.info("[Test] Pompe 1 arrêtée");
     req->send(200, "text/plain", "OK");
   });
 
   server->on("/pump2/on", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
-    PumpController.setManualPump(1, MAX_PWM_DUTY); // Pompe 2 à fond
+    PumpController.setManualPump(1, MAX_PWM_DUTY);
+    systemLogger.info("[Test] Pompe 2 démarrée en mode manuel");
     req->send(200, "text/plain", "OK");
   });
 
   server->on("/pump2/off", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
-    PumpController.setManualPump(1, 0); // Pompe 2 arrêtée
+    PumpController.setManualPump(1, 0);
+    systemLogger.info("[Test] Pompe 2 arrêtée");
     req->send(200, "text/plain", "OK");
   });
 

@@ -3880,6 +3880,62 @@
         setTimeout(() => setButtonState(defaultLabel, false, false, "default"), 2000);
       }
     });
+
+    // Boutons test pompes
+    const PUMP_TEST_DURATION = 10;
+    let pumpTestTimer = null;
+    let pumpCountdownInterval = null;
+
+    const resetPumpButtons = () => {
+      const b1 = $("#pump1_test_btn"), b2 = $("#pump2_test_btn");
+      if (b1) { b1.textContent = "▶ Pompe 1"; b1.disabled = false; }
+      if (b2) { b2.textContent = "▶ Pompe 2"; b2.disabled = false; }
+    };
+
+    const stopAllPumps = async () => {
+      clearTimeout(pumpTestTimer);
+      clearInterval(pumpCountdownInterval);
+      pumpTestTimer = null;
+      pumpCountdownInterval = null;
+      resetPumpButtons();
+      await authFetch("/pump1/off", { method: "POST" }).catch(() => {});
+      await authFetch("/pump2/off", { method: "POST" }).catch(() => {});
+    };
+
+    const startPumpTest = async (onRoute, btnId, otherBtnId, label) => {
+      clearTimeout(pumpTestTimer);
+      clearInterval(pumpCountdownInterval);
+
+      const btn = document.querySelector(btnId);
+      const otherBtn = document.querySelector(otherBtnId);
+
+      // Feedback immédiat avant la requête
+      let remaining = PUMP_TEST_DURATION;
+      if (btn) { btn.textContent = `⏳ ${label} — ${remaining}s`; btn.disabled = true; }
+      if (otherBtn) otherBtn.disabled = true;
+
+      // Décompte
+      pumpCountdownInterval = setInterval(() => {
+        remaining--;
+        if (remaining > 0) {
+          if (btn) btn.textContent = `⏳ ${label} — ${remaining}s`;
+        }
+      }, 1000);
+
+      // Arrêt auto
+      pumpTestTimer = setTimeout(async () => {
+        clearInterval(pumpCountdownInterval);
+        resetPumpButtons();
+        await authFetch(onRoute.replace("/on", "/off"), { method: "POST" }).catch(() => {});
+      }, PUMP_TEST_DURATION * 1000);
+
+      // Requête démarrage (après le feedback visuel)
+      await authFetch(onRoute, { method: "POST" }).catch(() => {});
+    };
+
+    $("#pump1_test_btn")?.addEventListener("click", () => startPumpTest("/pump1/on", "#pump1_test_btn", "#pump2_test_btn", "Pompe 1"));
+    $("#pump2_test_btn")?.addEventListener("click", () => startPumpTest("/pump2/on", "#pump2_test_btn", "#pump1_test_btn", "Pompe 2"));
+    $("#pumps_stop_btn")?.addEventListener("click", stopAllPumps);
   }
 
   function bindTimeManualSave() {

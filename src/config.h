@@ -25,7 +25,7 @@
 constexpr float PH_DEADBAND = 0.01f;      // Zone morte réduite : 7.2 à 7.21 (±0.01)
 constexpr float ORP_DEADBAND = 2.0f;      // Zone morte réduite : ±2mV
 constexpr uint8_t MAX_PWM_DUTY = (1 << PUMP_PWM_RES_BITS) - 1;
-constexpr uint8_t MIN_ACTIVE_DUTY = 20;
+constexpr uint8_t MIN_ACTIVE_DUTY = 80;
 
 // ==== Home Assistant ====
 const char* const HA_DEVICE_ID = "poolcontroller";
