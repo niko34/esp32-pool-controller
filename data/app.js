@@ -209,6 +209,16 @@
     if (state) dot.classList.add(state);
     if (label) label.textContent = text || "";
 
+    // Bannière hors ligne + blocage des contrôles
+    const appEl = document.querySelector(".app");
+    if (appEl) {
+      if (state === "ok") {
+        appEl.classList.remove("app--offline");
+      } else {
+        appEl.classList.add("app--offline");
+      }
+    }
+
     if (state === "bad") {
       const dash = "–";
       const els = {
@@ -4160,34 +4170,37 @@
     const sidebar = $("#sidebar");
     const overlay = $("#sidebar-overlay");
     const burgerOpen = $("#burger-open");
-    const burgerClose = $("#burger");
     sidebar?.classList.add("is-open");
     overlay?.classList.add("is-visible");
     overlay?.removeAttribute("aria-hidden");
-    burgerOpen?.setAttribute("aria-expanded", "true");
-    burgerClose?.setAttribute("aria-expanded", "true");
-    burgerClose?.focus();
+    if (burgerOpen) {
+      burgerOpen.setAttribute("aria-expanded", "true");
+      burgerOpen.setAttribute("aria-label", "Fermer le menu de navigation");
+      burgerOpen.querySelector("span").textContent = "✕";
+    }
   }
 
   function closeSidebar() {
     const sidebar = $("#sidebar");
     const overlay = $("#sidebar-overlay");
     const burgerOpen = $("#burger-open");
-    const burgerClose = $("#burger");
     sidebar?.classList.remove("is-open");
     overlay?.classList.remove("is-visible");
     overlay?.setAttribute("aria-hidden", "true");
-    burgerOpen?.setAttribute("aria-expanded", "false");
-    burgerClose?.setAttribute("aria-expanded", "false");
+    if (burgerOpen) {
+      burgerOpen.setAttribute("aria-expanded", "false");
+      burgerOpen.setAttribute("aria-label", "Ouvrir le menu de navigation");
+      burgerOpen.querySelector("span").textContent = "☰";
+    }
   }
 
   // ---------- UI bindings ----------
   function bindUI() {
-    // mobile burger (open from main)
-    $("#burger-open")?.addEventListener("click", openSidebar);
-
-    // mobile burger (close from sidebar)
-    $("#burger")?.addEventListener("click", closeSidebar);
+    // burger topbar : toggle open/close
+    $("#burger-open")?.addEventListener("click", () => {
+      if ($("#sidebar")?.classList.contains("is-open")) closeSidebar();
+      else openSidebar();
+    });
 
     // Close sidebar on overlay click
     $("#sidebar-overlay")?.addEventListener("click", closeSidebar);

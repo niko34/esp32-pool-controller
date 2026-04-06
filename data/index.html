@@ -34,24 +34,26 @@
     <a class="skip-link" href="#main-content">Aller au contenu principal</a>
 
     <div class="app">
+      <!-- Barre de titre persistante (toujours visible sur mobile/iPad) -->
+      <header class="topbar" id="topbar">
+        <button class="burgerBtn burgerBtn--open" id="burger-open" type="button" aria-label="Ouvrir le menu de navigation" aria-expanded="false" aria-controls="sidebar"><span aria-hidden="true">☰</span></button>
+        <img src="/apple-touch-icon.png" alt="PoolController" class="topbar__logo" />
+        <div class="topbar__brand-text">
+          <div class="topbar__name">PoolController</div>
+          <div class="topbar__status" role="status" aria-label="Statut de connexion" aria-live="polite">
+            <span class="status__dot" id="net-dot" aria-hidden="true"></span>
+            <span class="status__text" id="net-text">Connexion…</span>
+            <span class="topbar__offline" id="topbar-offline-msg" aria-live="polite">— Modifications non sauvegardées</span>
+          </div>
+        </div>
+      </header>
+
+      <div class="app-body">
       <!-- Overlay mobile pour fermer la sidebar au clic extérieur -->
       <div class="sidebar-overlay" id="sidebar-overlay" aria-hidden="true"></div>
 
       <!-- Sidebar -->
       <aside class="sidebar" aria-label="Navigation principale" id="sidebar">
-        <button class="burgerBtn" id="burger" type="button" aria-label="Fermer le menu" aria-expanded="true" aria-controls="sidebar"><span aria-hidden="true">✕</span></button>
-
-        <div class="brand">
-          <img src="/apple-touch-icon.png" alt="PoolController" class="brand__logo" />
-          <div class="brand__text">
-            <div class="brand__name">PoolController</div>
-            <div class="brand__sub" role="status" aria-label="Statut de connexion" aria-live="polite">
-              <span class="status__dot" id="net-dot" aria-hidden="true"></span>
-              <span class="status__text" id="net-text">Connexion…</span>
-            </div>
-          </div>
-        </div>
-
         <div class="nav__separator"></div>
 
         <nav class="nav" aria-label="Menu principal">
@@ -154,8 +156,6 @@
 
       <!-- Main -->
       <main class="main" id="main-content">
-        <!-- Mobile burger button -->
-        <button class="burgerBtn burgerBtn--open" id="burger-open" type="button" aria-label="Ouvrir le menu de navigation" aria-expanded="false" aria-controls="sidebar"><span aria-hidden="true">☰</span></button>
 
         <!-- Dashboard View -->
         <section class="view" id="view-dashboard" data-view="/dashboard" aria-labelledby="heading-dashboard">
@@ -1647,6 +1647,7 @@
           <span class="muted small">PoolController • UI locale</span>
         </footer>
       </main>
+      </div><!-- app-body -->
     </div>
   </body>
 </html>
