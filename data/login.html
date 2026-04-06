@@ -287,7 +287,6 @@
         </div>
 
         <button type="submit" id="loginBtn">Se connecter</button>
-        <button type="button" id="wifiConfigBtn" class="secondary hidden" aria-label="Accéder à la configuration Wi-Fi">Configurer le Wi-Fi</button>
       </form>
 
       <!-- Formulaire changement mot de passe (premier démarrage) -->
@@ -322,7 +321,6 @@
         </div>
 
         <button type="submit" id="changeBtn">Définir le mot de passe</button>
-        <button type="button" id="wifiConfigBtn2" class="secondary hidden" aria-label="Accéder à la configuration Wi-Fi">Configurer le Wi-Fi</button>
       </form>
     </div>
 
@@ -332,9 +330,6 @@
       const firstBootAlert = document.getElementById('firstBootAlert');
       const errorAlert = document.getElementById('errorAlert');
       const successAlert = document.getElementById('successAlert');
-      const wifiConfigBtn = document.getElementById('wifiConfigBtn');
-      const wifiConfigBtn2 = document.getElementById('wifiConfigBtn2');
-
       // Vérifier si premier démarrage
       async function checkFirstBoot() {
         try {
@@ -356,46 +351,6 @@
         loginForm.classList.add('hidden');
         changePasswordForm.classList.remove('hidden');
         firstBootAlert.classList.remove('hidden');
-      }
-
-      async function checkWifiConfigButton() {
-        try {
-          let shouldShowButton = false;
-
-          // Vérifier le statut d'authentification
-          const authResponse = await fetch('/auth/status');
-          if (authResponse.ok) {
-            const authData = await authResponse.json();
-            // Afficher le bouton si forceWifiConfig est activé (après reset password)
-            // OU si c'est le premier démarrage
-            if (authData.forceWifiConfig || authData.firstBoot) {
-              shouldShowButton = true;
-            }
-          }
-
-          // Vérifier le statut WiFi si pas encore décidé
-          if (!shouldShowButton) {
-            const wifiResponse = await fetch('/wifi/status');
-            if (wifiResponse.ok) {
-              const wifiData = await wifiResponse.json();
-              // Afficher le bouton si le mode AP est actif (WiFi non connecté)
-              if (wifiData.mode && wifiData.mode.includes('AP')) {
-                shouldShowButton = true;
-              }
-            }
-          }
-
-          // Afficher les deux boutons (un dans chaque formulaire)
-          if (shouldShowButton) {
-            wifiConfigBtn.classList.remove('hidden');
-            wifiConfigBtn2.classList.remove('hidden');
-          }
-        } catch (error) {
-          console.error('Erreur vérification statut WiFi:', error);
-          // En cas d'erreur, afficher les boutons par sécurité
-          wifiConfigBtn.classList.remove('hidden');
-          wifiConfigBtn2.classList.remove('hidden');
-        }
       }
 
       function showError(message) {
@@ -447,14 +402,6 @@
         } catch (error) {
           showError('Erreur de connexion: ' + error.message);
         }
-      });
-
-      wifiConfigBtn.addEventListener('click', () => {
-        window.location.href = '/wifi.html';
-      });
-
-      wifiConfigBtn2.addEventListener('click', () => {
-        window.location.href = '/wifi.html';
       });
 
       // Changement mot de passe (premier démarrage)
@@ -533,7 +480,6 @@
 
       // Vérifier le statut au chargement
       checkFirstBoot();
-      checkWifiConfigButton();
     </script>
   </body>
 </html>
