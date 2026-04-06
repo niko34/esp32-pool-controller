@@ -583,8 +583,11 @@
           </div>
 
           <div class="card">
+            <div class="card__head">
+              <h2 class="card__title">Régulation pH</h2>
+            </div>
             <div class="card__body">
-              <div class="row row--between">
+              <div class="row row--between" style="margin-bottom:16px">
                 <div>
                   <p class="row__title" id="label-ph-enabled">Gérer la régulation pH</p>
                 </div>
@@ -592,6 +595,24 @@
                   <input type="checkbox" id="ph_enabled" aria-labelledby="label-ph-enabled" />
                   <span class="switch__track"></span>
                 </label>
+              </div>
+              <div id="ph-regulation-params">
+                <label class="field">
+                  <span class="field__label">Type de correction</span>
+                  <select id="ph_correction_type">
+                    <option value="ph_minus">pH- (acide) : baisser le pH</option>
+                    <option value="ph_plus">pH+ (base) : augmenter le pH</option>
+                  </select>
+                </label>
+                <div class="grid grid--2" style="margin-top:12px">
+                  <label class="field">
+                    <span class="field__label">pH cible</span>
+                    <input type="number" id="ph_target" min="0" max="14" step="0.1" placeholder="ex: 7.2" />
+                  </label>
+                </div>
+                <div class="detail-actions" style="margin-top:12px">
+                  <button class="btn btn--primary" type="button" id="ph_regulation_save_btn">Sauvegarder</button>
+                </div>
               </div>
             </div>
           </div>
@@ -614,31 +635,6 @@
           </div>
 
           <div id="ph-content">
-            <div class="card">
-              <div class="card__head">
-                <h2 class="card__title">Paramètres de régulation</h2>
-              </div>
-              <div class="card__body">
-                <label class="field">
-                  <span class="field__label">Type de correction</span>
-                  <select id="ph_correction_type">
-                    <option value="ph_minus">pH- (acide) : baisser le pH</option>
-                    <option value="ph_plus">pH+ (base) : augmenter le pH</option>
-                  </select>
-                </label>
-
-                <div class="grid grid--2">
-                  <label class="field">
-                    <span class="field__label">pH cible</span>
-                    <input type="number" id="ph_target" min="0" max="14" step="0.1" placeholder="ex: 7.2" />
-                  </label>
-                </div>
-                <div class="detail-actions" style="margin-top:12px">
-                  <button class="btn btn--primary" type="button" id="ph_regulation_save_btn">Sauvegarder</button>
-                </div>
-              </div>
-            </div>
-
             <div class="card">
               <div class="card__head">
                 <h2 class="card__title">Calibration de la sonde pH</h2>
@@ -702,8 +698,11 @@
           </div>
 
           <div class="card">
+            <div class="card__head">
+              <h2 class="card__title">Régulation ORP</h2>
+            </div>
             <div class="card__body">
-              <div class="row row--between">
+              <div class="row row--between" style="margin-bottom:16px">
                 <div>
                   <p class="row__title" id="label-orp-enabled">Gérer la régulation ORP</p>
                 </div>
@@ -711,6 +710,17 @@
                   <input type="checkbox" id="orp_enabled" aria-labelledby="label-orp-enabled" />
                   <span class="switch__track"></span>
                 </label>
+              </div>
+              <div id="orp-regulation-params">
+                <div class="grid grid--2">
+                  <label class="field">
+                    <span class="field__label">ORP cible (mV)</span>
+                    <input type="number" id="orp_target" min="0" max="1000" step="1" placeholder="ex: 650" />
+                  </label>
+                </div>
+                <div class="detail-actions" style="margin-top:12px">
+                  <button class="btn btn--primary" type="button" id="orp_regulation_save_btn">Sauvegarder</button>
+                </div>
               </div>
             </div>
           </div>
@@ -733,23 +743,6 @@
           </div>
 
           <div id="orp-content">
-            <div class="card">
-              <div class="card__head">
-                <h2 class="card__title">Paramètres de régulation</h2>
-              </div>
-              <div class="card__body">
-                <div class="grid grid--2">
-                  <label class="field">
-                    <span class="field__label">ORP cible (mV)</span>
-                    <input type="number" id="orp_target" min="0" max="1000" step="1" placeholder="ex: 650" />
-                  </label>
-                </div>
-                <div class="detail-actions" style="margin-top:12px">
-                  <button class="btn btn--primary" type="button" id="orp_regulation_save_btn">Sauvegarder</button>
-                </div>
-              </div>
-            </div>
-
             <div class="card">
             <div class="card__head">
               <h2 class="card__title">Calibration de la sonde ORP</h2>

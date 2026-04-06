@@ -1133,25 +1133,15 @@
 
   function updatePhControls() {
     const enabled = $("#ph_enabled")?.checked ?? false;
-    const target = $("#ph_target");
-    const pump = $("#ph_pump");
-    const limit = $("#ph_limit");
-    const correctionType = $("#ph_correction_type");
-    if (target) target.disabled = !enabled;
-    if (pump) pump.disabled = !enabled;
-    if (limit) limit.disabled = !enabled;
-    if (correctionType) correctionType.disabled = !enabled;
+    const params = $("#ph-regulation-params");
+    if (params) params.style.display = enabled ? "" : "none";
     updateFeatureVisibility("ph");
   }
 
   function updateOrpControls() {
     const enabled = $("#orp_enabled")?.checked ?? false;
-    const target = $("#orp_target");
-    const pump = $("#orp_pump");
-    const limit = $("#orp_limit");
-    if (target) target.disabled = !enabled;
-    if (pump) pump.disabled = !enabled;
-    if (limit) limit.disabled = !enabled;
+    const params = $("#orp-regulation-params");
+    if (params) params.style.display = enabled ? "" : "none";
     updateFeatureVisibility("orp");
   }
 
@@ -4111,9 +4101,15 @@
     });
     bindLightingManualSave();
 
-    // pH / ORP regulation — sauvegarde manuelle via bouton
-    $("#ph_enabled")?.addEventListener("change", () => updatePhControls());
-    $("#orp_enabled")?.addEventListener("change", () => updateOrpControls());
+    // pH / ORP regulation — sauvegarde immédiate sur le toggle enabled
+    $("#ph_enabled")?.addEventListener("change", () => {
+      updatePhControls();
+      sendConfig({ ph_enabled: $("#ph_enabled").checked }).then((ok) => { if (ok) loadConfig(); });
+    });
+    $("#orp_enabled")?.addEventListener("change", () => {
+      updateOrpControls();
+      sendConfig({ orp_enabled: $("#orp_enabled").checked }).then((ok) => { if (ok) loadConfig(); });
+    });
     ["ph_target", "ph_limit", "ph_daily_limit", "ph_correction_type"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => updatePhControls()));
     ["orp_target", "orp_limit", "orp_daily_limit"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => updateOrpControls()));
     bindRegulationSave("ph",  "#ph_regulation_save_btn");
