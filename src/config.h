@@ -42,8 +42,8 @@ struct MqttConfig {
   bool enabled = false;
   float phTarget = 7.2f;
   float orpTarget = 650.0f;
-  bool phEnabled = true;
-  bool orpEnabled = true;
+  bool phEnabled = false;
+  bool orpEnabled = false;
   int phPump = 1;
   int orpPump = 2;
   uint8_t pump1MaxDutyPct = 50;    // Puissance maximale pompe 1 en régulation (0-100 %)
