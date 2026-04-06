@@ -1109,9 +1109,7 @@
     const dashboardCardMap = {
       filtration: "dashboard-filtration-card",
       lighting: "dashboard-lighting-card",
-      temperature: "dashboard-temperature-card",
-      ph: "dashboard-ph-card",
-      orp: "dashboard-orp-card"
+      temperature: "dashboard-temperature-card"
     };
 
     const switchId = switchMap[feature];
