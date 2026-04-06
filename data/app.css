@@ -819,11 +819,6 @@ canvas:hover {
   line-height: 1.5;
 }
 
-@media (max-width: 980px) {
-  .settingsHead {
-    margin-left: 50px;
-  }
-}
 
 /* ========== 2026 SEGMENTED CONTROL - MICRO-INTERACTIONS ========== */
 /* États expressifs avec transitions fluides */
