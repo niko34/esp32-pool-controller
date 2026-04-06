@@ -4101,12 +4101,18 @@
 
     // pH / ORP regulation — sauvegarde immédiate sur le toggle enabled
     $("#ph_enabled")?.addEventListener("change", () => {
+      const val = $("#ph_enabled").checked;
+      if (window._config) window._config.ph_enabled = val;
       updatePhControls();
-      sendConfig({ ph_enabled: $("#ph_enabled").checked }).then((ok) => { if (ok) loadConfig(); });
+      updateStatusCards();
+      sendConfig({ ph_enabled: val }).then((ok) => { if (ok) loadConfig(); });
     });
     $("#orp_enabled")?.addEventListener("change", () => {
+      const val = $("#orp_enabled").checked;
+      if (window._config) window._config.orp_enabled = val;
       updateOrpControls();
-      sendConfig({ orp_enabled: $("#orp_enabled").checked }).then((ok) => { if (ok) loadConfig(); });
+      updateStatusCards();
+      sendConfig({ orp_enabled: val }).then((ok) => { if (ok) loadConfig(); });
     });
     ["ph_target", "ph_limit", "ph_daily_limit", "ph_correction_type"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => updatePhControls()));
     ["orp_target", "orp_limit", "orp_daily_limit"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => updateOrpControls()));
@@ -4544,6 +4550,15 @@
     // WebSocket : démarre immédiatement pour ne pas bloquer sur les fetches HTTP initiaux
     setNetStatus("mid", "Connexion…");
     initWebSocket();
+
+    // Reconnexion immédiate lors du retour sur la page (iPad/mobile : après déverrouillage)
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        if (_ws) { _ws.onopen = _ws.onclose = _ws.onerror = _ws.onmessage = null; _ws.close(); _ws = null; }
+        if (_wsReconnectTimer) { clearTimeout(_wsReconnectTimer); _wsReconnectTimer = null; }
+        initWebSocket();
+      }
+    });
 
     // initial loads (en parallèle avec la connexion WS)
     const configPerf = debugStart("loadConfig");
