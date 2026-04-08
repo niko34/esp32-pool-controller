@@ -101,26 +101,65 @@ static void handleDownloadLogs(AsyncWebServerRequest* request) {
   auto logs = systemLogger.getRecentLogs(kMaxLogEntries);
 
   String output;
-  output.reserve(logs.size() * 80);
+  output.reserve(logs.size() * 100 + 1024);
+
+  // Calculer l'epoch de démarrage pour reconstruire les timestamps absolus
+  time_t nowEpoch = time(nullptr);
+  unsigned long nowMs = millis();
+  bool hasAbsoluteTime = (nowEpoch > 1609459200L);
+  long bootEpoch = hasAbsoluteTime ? (long)(nowEpoch - nowMs / 1000) : 0;
 
   // En-tête
   output += "# Pool Controller — Journal système\n";
-  output += "# Exporté le boot+";
-  output += String(millis() / 1000);
-  output += "s | Entrées: ";
-  output += String(logs.size());
-  output += "\n";
-  output += "# Format: [+Xs] NIVEAU : message\n\n";
+  if (hasAbsoluteTime) {
+    char exportTime[24];
+    struct tm t;
+    localtime_r(&nowEpoch, &t);
+    strftime(exportTime, sizeof(exportTime), "%Y-%m-%d %H:%M:%S", &t);
+    output += "# Exporté le : ";
+    output += exportTime;
+  } else {
+    output += "# Exporté le boot+";
+    output += String(nowMs / 1000);
+    output += "s (heure non synchronisée)";
+  }
+  output += "\n# Format: [YYYY-MM-DD HH:MM:SS] NIVEAU : message\n";
 
+  // ---- Logs persistants (boots précédents) ----
+  fs::FS* pfs = systemLogger.getPersistenceFs();
+  if (pfs) {
+    File f = pfs->open("/system.log", "r");
+    if (f && f.size() > 0) {
+      output += "\n# === Historique persistant ===\n";
+      while (f.available()) {
+        output += f.readStringUntil('\n');
+        output += "\n";
+        // Éviter de dépasser la RAM : flush par blocs de 8KB
+        if (output.length() > 8192) {
+          // On continue d'accumuler — la String gère la réallocation
+          // Sur ESP32 avec 300KB+ de heap libre c'est acceptable
+        }
+      }
+      f.close();
+      output += "# === Fin historique persistant ===\n";
+    }
+  }
+
+  // ---- Logs RAM (session courante) ----
+  output += "\n# === Session courante ===\n";
   for (const auto& entry : logs) {
-    unsigned long totalSec = entry.timestamp / 1000;
-    unsigned long h = totalSec / 3600;
-    unsigned long m = (totalSec % 3600) / 60;
-    unsigned long s = totalSec % 60;
-    char timeBuf[16];
-    snprintf(timeBuf, sizeof(timeBuf), "%02lu:%02lu:%02lu", h, m, s);
-
-    output += "[+";
+    char timeBuf[24];
+    if (hasAbsoluteTime) {
+      time_t entryEpoch = bootEpoch + (long)(entry.timestamp / 1000);
+      struct tm t;
+      localtime_r(&entryEpoch, &t);
+      strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &t);
+    } else {
+      unsigned long totalSec = entry.timestamp / 1000;
+      snprintf(timeBuf, sizeof(timeBuf), "+%02lu:%02lu:%02lu",
+               totalSec / 3600, (totalSec % 3600) / 60, totalSec % 60);
+    }
+    output += "[";
     output += timeBuf;
     output += "] ";
     output += systemLogger.getLevelString(entry.level);
@@ -146,23 +185,38 @@ static void handleGetLogs(AsyncWebServerRequest* request) {
   }
 
   auto logs = systemLogger.getRecentLogs(kMaxLogEntries);
-  JsonDocument doc;
-  JsonArray logsArray = doc["logs"].to<JsonArray>();
 
-  for (const auto& entry : logs) {
-    // Si since est spécifié, filtrer les logs plus anciens
-    if (sinceTimestamp > 0 && entry.timestamp <= sinceTimestamp) {
-      continue;
-    }
-
-    JsonObject logObj = logsArray.add<JsonObject>();
-    logObj["timestamp"] = entry.timestamp;
-    logObj["level"] = systemLogger.getLevelString(entry.level);
-    logObj["message"] = entry.message;
-  }
-
+  // Sérialisation manuelle pour éviter la limite du JsonDocument avec 200 entrées
   String json;
-  serializeJson(doc, json);
+  json.reserve(logs.size() * 120 + 32);
+  json = "{\"uptime_ms\":";
+  json += String(millis());
+  json += ",\"logs\":[";
+
+  bool first = true;
+  for (const auto& entry : logs) {
+    if (sinceTimestamp > 0 && entry.timestamp <= sinceTimestamp) continue;
+
+    if (!first) json += ",";
+    first = false;
+
+    // Échapper le message pour JSON
+    String escaped = entry.message;
+    escaped.replace("\\", "\\\\");
+    escaped.replace("\"", "\\\"");
+    escaped.replace("\n", "\\n");
+    escaped.replace("\r", "");
+
+    json += "{\"timestamp\":";
+    json += String(entry.timestamp);
+    json += ",\"level\":\"";
+    json += systemLogger.getLevelString(entry.level);
+    json += "\",\"message\":\"";
+    json += escaped;
+    json += "\"}";
+  }
+  json += "]}";
+
   request->send(200, "application/json", json);
 }
 

@@ -70,6 +70,7 @@ void HistoryManager::begin() {
     historyStore = &historyFs;
     historyFilePath = "/history.json";
     systemLogger.info("Partition historique dédiée montée");
+    systemLogger.setPersistenceFs(&historyFs);
   }
   else {
     systemLogger.info("Partition historique absente. Gestionnaire d'historique en erreur.");

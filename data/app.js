@@ -1333,6 +1333,9 @@
       const d = new Date(phCalDateStr);
       phCalText = "Dernière calibration : " + d.toLocaleString("fr-FR");
       if (phCalTemp && !isNaN(phCalTemp)) phCalText += ` à ${phCalTemp.toFixed(1)}°C`;
+      const vn = cfg.ph_cal_vn;
+      const va = cfg.ph_cal_va;
+      if (vn != null && va != null) phCalText += ` — Vn=${vn.toFixed(1)}mV Va=${va.toFixed(1)}mV`;
     }
     if (phCalDate) phCalDate.textContent = phCalText;
     if (phCalDateHeader) phCalDateHeader.textContent = phCalText;
@@ -3587,6 +3590,11 @@
 
       const res = await authFetch(url);
       const data = await res.json();
+
+      // Initialiser _bootEpochMs depuis uptime_ms si pas encore connu via WebSocket
+      if (_bootEpochMs == null && data.uptime_ms != null) {
+        _bootEpochMs = Date.now() - data.uptime_ms;
+      }
 
       const lines = Array.isArray(data) ? data : data.logs || [];
 

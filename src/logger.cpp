@@ -1,4 +1,5 @@
 #include "logger.h"
+#include <time.h>
 
 Logger systemLogger;
 
@@ -33,6 +34,20 @@ void Logger::log(LogLevel level, const String& message) {
     bufferFull = true;
   }
   cb = _logCallback;
+
+  // Bufferiser pour la persistance (hors DEBUG)
+  if (_persistEnabled && level != LogLevel::DEBUG) {
+    char timeBuf[20] = "????-??-??T??:??:??";
+    time_t now = time(nullptr);
+    if (now > 1609459200L) {
+      struct tm t;
+      localtime_r(&now, &t);
+      strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%dT%H:%M:%S", &t);
+    }
+    String line = String(timeBuf) + " " + getLevelString(level) + " " + message + "\n";
+    _persistBuffer.push_back(line);
+  }
+
   if (_mutex) xSemaphoreGive(_mutex);
 
   // Push WebSocket temps réel (si callback enregistré) — hors mutex
@@ -115,4 +130,86 @@ size_t Logger::getLogCount() {
   size_t count = bufferFull ? MAX_LOGS : logs.size();
   if (_mutex) xSemaphoreGive(_mutex);
   return count;
+}
+
+void Logger::setPersistenceFs(fs::FS* fs) {
+  _persistFs = fs;
+  _persistEnabled = true;
+  _lastFlushMs = millis();
+
+  // Écrire un marqueur de démarrage dans le fichier existant
+  File f = fs->open("/system.log", "a");
+  if (f) {
+    char timeBuf[20] = "????-??-??T??:??:??";
+    time_t now = time(nullptr);
+    if (now > 1609459200L) {
+      struct tm t;
+      localtime_r(&now, &t);
+      strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%dT%H:%M:%S", &t);
+    }
+    f.printf("--- DÉMARRAGE %s ---\n", timeBuf);
+    f.close();
+  }
+}
+
+void Logger::update() {
+  if (!_persistEnabled) return;
+  if (millis() - _lastFlushMs >= kFlushIntervalMs) {
+    flushToDisk();
+  }
+}
+
+void Logger::flushToDisk() {
+  if (!_persistEnabled || !_persistFs) return;
+
+  // Échanger le buffer sous mutex pour libérer rapidement
+  std::vector<String> toWrite;
+  if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
+  toWrite.swap(_persistBuffer);
+  if (_mutex) xSemaphoreGive(_mutex);
+
+  if (toWrite.empty()) {
+    _lastFlushMs = millis();
+    return;
+  }
+
+  // Écrire les entrées en append
+  File f = _persistFs->open("/system.log", "a");
+  if (!f) f = _persistFs->open("/system.log", "w");
+  if (!f) {
+    // Remettre le buffer si l'écriture échoue
+    if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
+    _persistBuffer.insert(_persistBuffer.begin(), toWrite.begin(), toWrite.end());
+    if (_mutex) xSemaphoreGive(_mutex);
+    return;
+  }
+  for (const String& line : toWrite) {
+    f.print(line);
+  }
+  size_t fileSize = f.size();
+  f.close();
+
+  // Rotation si le fichier dépasse 32KB : garder les 24 derniers KB
+  if (fileSize > kMaxLogFileBytes) {
+    File rf = _persistFs->open("/system.log", "r");
+    if (rf) {
+      size_t sz = rf.size();
+      // Sauter les premiers octets pour ne garder que kRotateKeepBytes
+      rf.seek(sz > kRotateKeepBytes ? sz - kRotateKeepBytes : 0);
+      // Avancer jusqu'à la prochaine fin de ligne pour éviter une ligne tronquée
+      while (rf.available() && rf.peek() != '\n') rf.read();
+      if (rf.available()) rf.read();  // Consommer le \n
+
+      String kept = rf.readString();
+      rf.close();
+
+      File wf = _persistFs->open("/system.log", "w");
+      if (wf) {
+        wf.print(kept);
+        wf.close();
+      }
+    }
+  }
+
+  _lastFlushMs = millis();
 }

@@ -10,6 +10,7 @@
 #include "mqtt_manager.h"
 #include "pump_controller.h"
 #include "logger.h"
+#include <EEPROM.h>
 #include "version.h"
 #include "json_compat.h"
 #include "rtc_manager.h"
@@ -70,8 +71,8 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["password"] = mqttCfg.password.length() > 0 ? "******" : "";
   doc["enabled"] = mqttCfg.enabled;
   doc["mqtt_connected"] = mqttManager.isConnected();
-  doc["ph_target"] = mqttCfg.phTarget;
-  doc["orp_target"] = mqttCfg.orpTarget;
+  doc["ph_target"] = roundf(mqttCfg.phTarget * 100.0f) / 100.0f;
+  doc["orp_target"] = roundf(mqttCfg.orpTarget);
   doc["ph_enabled"] = mqttCfg.phEnabled;
   doc["ph_pump"] = mqttCfg.phPump;
   doc["orp_enabled"] = mqttCfg.orpEnabled;
@@ -131,6 +132,13 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["ph_calibration_date"] = mqttCfg.phCalibrationDate;
   if (!isnan(mqttCfg.phCalibrationTemp)) {
     doc["ph_calibration_temp"] = mqttCfg.phCalibrationTemp;
+  }
+  {
+    float vn, va;
+    EEPROM.get(0, vn);
+    EEPROM.get(4, va);
+    doc["ph_cal_vn"] = roundf(vn * 10.0f) / 10.0f;
+    doc["ph_cal_va"] = roundf(va * 10.0f) / 10.0f;
   }
 
   // Données de calibration ORP

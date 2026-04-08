@@ -66,13 +66,15 @@ update_file() {
 
 case "$TYPE" in
     firmware)
-        update_file "$FIRMWARE_PATH" "Firmware" "firmware"
+        update_file "$FIRMWARE_PATH" "Firmware" "firmware" || exit 1
         ;;
     filesystem|fs)
-        update_file "$FILESYSTEM_PATH" "Filesystem" "filesystem"
+        update_file "$FILESYSTEM_PATH" "Filesystem" "filesystem" || exit 1
         ;;
     both)
-        update_file "$FIRMWARE_PATH" "Firmware" "firmware" && sleep 30 && update_file "$FILESYSTEM_PATH" "Filesystem" "filesystem"
+        update_file "$FIRMWARE_PATH" "Firmware" "firmware" || exit 1
+        sleep 30
+        update_file "$FILESYSTEM_PATH" "Filesystem" "filesystem" || exit 1
         ;;
     *)
         echo "Usage: $0 [firmware|filesystem|both] [hostname] [password]"

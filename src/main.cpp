@@ -155,6 +155,7 @@ void loop() {
   webServer.update();
   mqttManager.update();
   history.update();
+  systemLogger.update();
   if (authCfg.screenEnabled) uartTransport.update();
 
   // Lecture capteurs à chaque loop (les capteurs gèrent leur propre throttling interne)
@@ -470,6 +471,7 @@ void checkSystemHealth() {
     // Première tentative ou si 30 secondes se sont écoulées depuis la dernière tentative
     if (lastWifiCheckTime == 0 || (now - lastWifiCheckTime >= 30000)) {
       systemLogger.warning("WiFi déconnecté, tentative de reconnexion (" + String(wifiReconnectAttempts + 1) + "/3)");
+      WiFi.disconnect(false);  // Libère la stack WiFi sans effacer les credentials
       WiFi.reconnect();
       lastWifiCheckTime = now;
       wifiReconnectAttempts++;
@@ -493,6 +495,13 @@ void checkSystemHealth() {
       systemLogger.info("WiFi reconnecté avec succès");
       wifiReconnectAttempts = 0;
       lastWifiCheckTime = 0;
+    }
+    // Désactiver l'AP secours si le WiFi est de nouveau connecté
+    if (mode == WIFI_MODE_APSTA) {
+      systemLogger.info("WiFi rétabli — désactivation du mode AP secours");
+      WiFi.softAPdisconnect(true);
+      WiFi.mode(WIFI_STA);
+      currentWifiMode = WIFI_MODE_STA;
     }
   }
 
