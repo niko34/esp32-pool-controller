@@ -2,6 +2,11 @@
 # ota_update.sh - Mise à jour rapide sans recompilation
 # Usage: ./ota_update.sh [firmware|filesystem|both] [hostname] [password]
 #
+# Le paramètre [hostname] accepte :
+#   - Un nom mDNS : poolcontroller.local  (nécessite que le mDNS fonctionne sur le réseau)
+#   - Une adresse IP : 192.168.1.42       (fonctionne sans mDNS, utile si le réseau ne le supporte pas)
+# Par défaut : poolcontroller.local
+#
 # Authentification (par ordre de priorité) :
 #   1. Argument $3 : ./ota_update.sh both poolcontroller.local monmotdepasse
 #   2. Variable d'environnement POOL_PASSWORD : POOL_PASSWORD=monmotdepasse ./ota_update.sh

@@ -36,7 +36,7 @@ private:
   bool _persistEnabled = false;
   std::vector<String> _persistBuffer;
   unsigned long _lastFlushMs = 0;
-  static constexpr unsigned long kFlushIntervalMs = 3600000UL;  // 1h
+  static constexpr unsigned long kFlushIntervalMs = 600000UL;   // 10min
   static constexpr size_t kMaxLogFileBytes = 32768;             // 32KB
   static constexpr size_t kRotateKeepBytes = 24576;             // Garde les 24 derniers KB
 

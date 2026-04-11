@@ -200,12 +200,18 @@ static void handleGetLogs(AsyncWebServerRequest* request) {
     if (!first) json += ",";
     first = false;
 
-    // Échapper le message pour JSON
-    String escaped = entry.message;
-    escaped.replace("\\", "\\\\");
-    escaped.replace("\"", "\\\"");
-    escaped.replace("\n", "\\n");
-    escaped.replace("\r", "");
+    // Échapper le message pour JSON (tous les caractères problématiques)
+    String escaped;
+    escaped.reserve(entry.message.length() + 8);
+    for (char c : entry.message) {
+      if      (c == '\\') escaped += "\\\\";
+      else if (c == '"')  escaped += "\\\"";
+      else if (c == '\n') escaped += "\\n";
+      else if (c == '\r') { /* skip */ }
+      else if (c == '\t') escaped += "\\t";
+      else if ((uint8_t)c < 0x20) { /* skip autres ctrl */ }
+      else escaped += c;
+    }
 
     json += "{\"timestamp\":";
     json += String(entry.timestamp);
@@ -249,41 +255,43 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
     data = history.getAllData();
   }
 
-  JsonDocument doc;
-  JsonArray historyArray = doc["history"].to<JsonArray>();
+  // Sérialisation manuelle pour éviter la limite mémoire du JsonDocument
+  // avec plusieurs centaines de points (360 horaires + 75 journaliers)
+  String json;
+  json.reserve(data.size() * 80 + 64);
+  json = "{\"range\":\"";
+  json += range;
+  json += "\",\"count\":0,\"history\":[";
 
+  size_t count = 0;
+  bool first = true;
   for (const auto& point : data) {
     if (since > 0 && point.timestamp <= since) continue;
-    JsonObject obj = historyArray.add<JsonObject>();
-    obj["timestamp"] = point.timestamp;
+    if (!first) json += ",";
+    first = false;
+    count++;
 
-    if (!isnan(point.ph)) {
-      obj["ph"] = round(point.ph * 10.0f) / 10.0f;
-    } else {
-      obj["ph"] = nullptr;
-    }
-
-    if (!isnan(point.orp)) {
-      obj["orp"] = round(point.orp);
-    } else {
-      obj["orp"] = nullptr;
-    }
-
-    if (!isnan(point.temperature)) {
-      obj["temperature"] = round(point.temperature * 10.0f) / 10.0f;
-    } else {
-      obj["temperature"] = nullptr;
-    }
-
-    obj["filtration"] = point.filtrationActive;
-    obj["dosing"] = point.phDosing || point.orpDosing;
-    obj["granularity"] = static_cast<uint8_t>(point.granularity);
+    json += "{\"timestamp\":";
+    json += String(point.timestamp);
+    json += ",\"ph\":";
+    json += isnan(point.ph)  ? "null" : String(round(point.ph * 10.0f) / 10.0f, 1);
+    json += ",\"orp\":";
+    json += isnan(point.orp) ? "null" : String((int)round(point.orp));
+    json += ",\"temperature\":";
+    json += isnan(point.temperature) ? "null" : String(round(point.temperature * 10.0f) / 10.0f, 1);
+    json += ",\"filtration\":";
+    json += point.filtrationActive ? "true" : "false";
+    json += ",\"dosing\":";
+    json += (point.phDosing || point.orpDosing) ? "true" : "false";
+    json += ",\"granularity\":";
+    json += String(static_cast<uint8_t>(point.granularity));
+    json += "}";
   }
+  json += "],\"count\":";
+  json += String(count);
+  json += "}";
 
-  doc["count"] = historyArray.size();
-  doc["range"] = range;
-
-  sendJsonResponse(request, doc);
+  request->send(200, "application/json", json);
 }
 
 void setupDataRoutes(AsyncWebServer* server) {

@@ -617,6 +617,28 @@
             </div>
           </div>
 
+          <div class="card">
+            <div class="card__head">
+              <h2 class="card__title">Injection manuelle</h2>
+            </div>
+            <div class="card__body">
+              <p class="muted small" style="margin-bottom:14px">
+                Démarre la pompe pH à la puissance configurée. Utile pour corriger manuellement le pH
+                ou vérifier le fonctionnement de la pompe, même si la régulation automatique est désactivée.
+                Cliquez à nouveau sur le bouton pour arrêter l'injection avant la fin.
+              </p>
+              <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em">
+                  Durée
+                  <input type="number" id="ph_inject_min" min="1" max="60" value="1"
+                    style="width:60px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:1em">
+                  min
+                </label>
+                <button class="btn btn--secondary" type="button" id="ph_inject_btn">▶ Injecter</button>
+              </div>
+            </div>
+          </div>
+
           <div class="card card--detail-chart">
             <div class="card__head">
               <h2 class="card__title">Historique</h2>
@@ -721,6 +743,28 @@
                 <div class="detail-actions" style="margin-top:12px">
                   <button class="btn btn--primary" type="button" id="orp_regulation_save_btn">Sauvegarder</button>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card__head">
+              <h2 class="card__title">Injection manuelle</h2>
+            </div>
+            <div class="card__body">
+              <p class="muted small" style="margin-bottom:14px">
+                Démarre la pompe ORP à la puissance configurée. Utile pour corriger manuellement le taux
+                de chlore ou vérifier le fonctionnement de la pompe, même si la régulation automatique est désactivée.
+                Cliquez à nouveau sur le bouton pour arrêter l'injection avant la fin.
+              </p>
+              <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em">
+                  Durée
+                  <input type="number" id="orp_inject_min" min="1" max="60" value="1"
+                    style="width:60px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:1em">
+                  min
+                </label>
+                <button class="btn btn--secondary" type="button" id="orp_inject_btn">▶ Injecter</button>
               </div>
             </div>
           </div>

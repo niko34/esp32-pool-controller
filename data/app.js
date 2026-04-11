@@ -3942,6 +3942,69 @@
     $("#pump1_test_btn")?.addEventListener("click", () => startPumpTest("/pump1/on", "#pump1_test_btn", "#pump2_test_btn", "Pompe 1"));
     $("#pump2_test_btn")?.addEventListener("click", () => startPumpTest("/pump2/on", "#pump2_test_btn", "#pump1_test_btn", "Pompe 2"));
     $("#pumps_stop_btn")?.addEventListener("click", stopAllPumps);
+
+    // Boutons injection manuelle pH / ORP
+    const injectState = { ph: null, orp: null };  // { timer, interval }
+
+    const fmtInjectRemaining = (s) => {
+      if (s >= 60) {
+        const m = Math.floor(s / 60), sec = s % 60;
+        return sec > 0 ? `${m}min ${sec}s` : `${m}min`;
+      }
+      return `${s}s`;
+    };
+
+    const stopInject = async (product) => {
+      const state = injectState[product];
+      if (state) {
+        clearTimeout(state.timer);
+        clearInterval(state.interval);
+        injectState[product] = null;
+      }
+      const btn = $(`#${product}_inject_btn`);
+      const minInput = $(`#${product}_inject_min`);
+      if (btn) { btn.textContent = "▶ Injecter"; btn.disabled = false; }
+      if (minInput) minInput.disabled = false;
+      await authFetch(`/${product}/inject/stop`, { method: "POST" }).catch(() => {});
+    };
+
+    const startInject = async (product) => {
+      // Si déjà en cours → arrêt
+      if (injectState[product]) {
+        await stopInject(product);
+        return;
+      }
+
+      const btn = $(`#${product}_inject_btn`);
+      const minInput = $(`#${product}_inject_min`);
+      const minutes = Math.max(1, Math.min(60, parseInt(minInput?.value) || 1));
+      let remaining = minutes * 60;
+
+      if (btn) btn.textContent = `⏹ Arrêter — ${fmtInjectRemaining(remaining)}`;
+      if (minInput) minInput.disabled = true;
+
+      const interval = setInterval(() => {
+        remaining--;
+        if (remaining > 0) {
+          if (btn) btn.textContent = `⏹ Arrêter — ${fmtInjectRemaining(remaining)}`;
+        }
+      }, 1000);
+
+      const timer = setTimeout(async () => {
+        clearInterval(interval);
+        injectState[product] = null;
+        if (btn) { btn.textContent = "▶ Injecter"; btn.disabled = false; }
+        if (minInput) minInput.disabled = false;
+        await authFetch(`/${product}/inject/stop`, { method: "POST" }).catch(() => {});
+      }, remaining * 1000);
+
+      injectState[product] = { timer, interval };
+
+      await authFetch(`/${product}/inject/start`, { method: "POST" }).catch(() => {});
+    };
+
+    $("#ph_inject_btn")?.addEventListener("click", () => startInject("ph"));
+    $("#orp_inject_btn")?.addEventListener("click", () => startInject("orp"));
   }
 
   function bindTimeManualSave() {

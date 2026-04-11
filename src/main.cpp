@@ -310,12 +310,10 @@ bool setupWiFi() {
   systemLogger.info("Statut final: " + String(finalStatus) + " (" + getWifiStatusString(finalStatus) + ")");
 
   auto startApMode = [](bool keepSta) {
-    // Si on passe en mode AP seul (échec connexion), désactiver la persistence
-    // pour éviter que le changement de mode n'efface les credentials WiFi stockés
-    if (!keepSta) {
-      WiFi.persistent(false);
-    }
-    WiFi.mode(keepSta ? WIFI_AP_STA : WIFI_AP);
+    // Toujours utiliser WIFI_AP_STA pour préserver les credentials NVS.
+    // WIFI_AP seul peut effacer les credentials sur certaines versions IDF.
+    (void)keepSta;
+    WiFi.mode(WIFI_AP_STA);
     bool apStarted = WiFi.softAP("PoolControllerAP", authManager.getApPassword().c_str());
     if (apStarted) {
       systemLogger.info("AP démarré: PoolControllerAP");

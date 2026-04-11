@@ -44,6 +44,15 @@ Le port série est configuré dans `platformio.ini` (`upload_port`). Adapter sel
 
 Le script demande le mot de passe admin au lancement (ou via `POOL_PASSWORD=... ./deploy.sh ota-all`).
 
+Par défaut, le script contacte l'ESP32 via mDNS (`poolcontroller.local`). Si le mDNS ne fonctionne pas sur votre réseau (certains CPL ou routeurs ne le relaient pas), utilisez directement l'adresse IP :
+
+```bash
+./ota_update.sh both 192.168.1.42 monmotdepasse
+./ota_update.sh firmware 192.168.1.42 monmotdepasse
+```
+
+> L'adresse IP de l'ESP32 est visible dans **Paramètres > Système** ou dans les logs au démarrage (`INFO: IP: 192.168.x.x`).
+
 ---
 
 ## Mise à Jour via Interface Web — WiFi uniquement
@@ -79,3 +88,4 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 | ESP32 ne redémarre pas | Utiliser le bouton RESET ou débrancher |
 | Interface inaccessible | `./deploy.sh fs` (USB) |
 | Authentification refusée | Vérifier le mot de passe ou utiliser `POOL_PASSWORD=...` |
+| `poolcontroller.local` inaccessible | mDNS non supporté par le réseau — utiliser l'IP directe : `./ota_update.sh both 192.168.1.x motdepasse` |

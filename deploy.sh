@@ -107,11 +107,18 @@ show_usage() {
     echo "  ota-fs        - Build et envoie uniquement le filesystem en OTA"
     echo "  ota-all       - Compile et envoie firmware + filesystem en OTA"
     echo ""
+    echo "  Les options OTA appellent ota_update.sh qui accepte un hostname ou une IP :"
+    echo "    poolcontroller.local  — mDNS (défaut, nécessite support mDNS sur le réseau)"
+    echo "    192.168.1.x           — IP directe (fonctionne sans mDNS)"
+    echo ""
     echo "Exemples:"
     echo "  $0                # Déploiement USB complet (NVS préservée)"
     echo "  $0 factory        # Flash complet avec nouveau mot de passe AP"
-    echo "  $0 ota-all        # Déploiement OTA complet (WiFi)"
-    echo "  $0 ota-firmware   # Firmware uniquement en OTA (Wifi)"
+    echo "  $0 ota-all        # Déploiement OTA complet (WiFi, via mDNS)"
+    echo "  $0 ota-firmware   # Firmware uniquement en OTA (WiFi, via mDNS)"
+    echo ""
+    echo "  Pour OTA sans mDNS (IP directe) :"
+    echo "    ./ota_update.sh both 192.168.1.42 monmotdepasse"
 }
 
 # Programme principal

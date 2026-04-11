@@ -37,6 +37,44 @@ void setupControlRoutes(AsyncWebServer* server) {
     req->send(200, "text/plain", "OK");
   });
 
+  // Injection manuelle pH — démarre la pompe pH à la puissance configurée
+  server->on("/ph/inject/start", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+    int pumpIdx = mqttCfg.phPump - 1;  // 0-based
+    uint8_t dutyPct = (pumpIdx == 0) ? mqttCfg.pump1MaxDutyPct : mqttCfg.pump2MaxDutyPct;
+    uint8_t duty = (uint8_t)((dutyPct * MAX_PWM_DUTY) / 100);
+    PumpController.setManualPump(pumpIdx, duty);
+    systemLogger.info("[Injection] pH démarrée manuellement (pompe " + String(mqttCfg.phPump) + ", duty=" + String(duty) + ")");
+    req->send(200, "text/plain", "OK");
+  });
+
+  server->on("/ph/inject/stop", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+    int pumpIdx = mqttCfg.phPump - 1;
+    PumpController.setManualPump(pumpIdx, 0);
+    systemLogger.info("[Injection] pH arrêtée manuellement");
+    req->send(200, "text/plain", "OK");
+  });
+
+  // Injection manuelle ORP — démarre la pompe ORP à la puissance configurée
+  server->on("/orp/inject/start", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+    int pumpIdx = mqttCfg.orpPump - 1;  // 0-based
+    uint8_t dutyPct = (pumpIdx == 0) ? mqttCfg.pump1MaxDutyPct : mqttCfg.pump2MaxDutyPct;
+    uint8_t duty = (uint8_t)((dutyPct * MAX_PWM_DUTY) / 100);
+    PumpController.setManualPump(pumpIdx, duty);
+    systemLogger.info("[Injection] ORP démarrée manuellement (pompe " + String(mqttCfg.orpPump) + ", duty=" + String(duty) + ")");
+    req->send(200, "text/plain", "OK");
+  });
+
+  server->on("/orp/inject/stop", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+    int pumpIdx = mqttCfg.orpPump - 1;
+    PumpController.setManualPump(pumpIdx, 0);
+    systemLogger.info("[Injection] ORP arrêtée manuellement");
+    req->send(200, "text/plain", "OK");
+  });
+
   // Routes pour contrôle de l'éclairage (relais) - PROTÉGÉES
   server->on("/lighting/on", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
