@@ -10,6 +10,10 @@ BAUD="115200"
 LITTLEFS_OFFSET="0x2D0000"
 BUILD_DIR=".pio/build/esp32dev"
 
+# Hôte OTA : nom mDNS ou IP directe
+# Surcharger via variable d'environnement : OTA_HOST=192.168.1.42 ./deploy.sh ota-all
+OTA_HOST="${OTA_HOST:-poolcontroller.local}"
+
 # Couleurs pour l'affichage
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -158,20 +162,20 @@ case "$MODE" in
         print_success "Flash complet terminé — lancer 'pio device monitor -b 115200' et redémarrer l'ESP32 pour récupérer le mot de passe AP"
         ;;
     ota-firmware)
-        print_step "Déploiement OTA du firmware uniquement"
+        print_step "Déploiement OTA du firmware uniquement (hôte: $OTA_HOST)"
         build_firmware
-        ./ota_update.sh firmware
+        ./ota_update.sh firmware "$OTA_HOST"
         ;;
     ota-fs)
-        print_step "Déploiement OTA du filesystem uniquement"
+        print_step "Déploiement OTA du filesystem uniquement (hôte: $OTA_HOST)"
         build_filesystem
-        ./ota_update.sh filesystem
+        ./ota_update.sh filesystem "$OTA_HOST"
         ;;
     ota-all)
-        print_step "Déploiement OTA complet (firmware + filesystem)"
+        print_step "Déploiement OTA complet (firmware + filesystem) (hôte: $OTA_HOST)"
         build_firmware
         build_filesystem
-        ./ota_update.sh both
+        ./ota_update.sh both "$OTA_HOST"
         ;;
     -h|--help)
         show_usage

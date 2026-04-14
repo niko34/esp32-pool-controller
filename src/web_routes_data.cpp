@@ -274,11 +274,11 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
     json += "{\"timestamp\":";
     json += String(point.timestamp);
     json += ",\"ph\":";
-    json += isnan(point.ph)  ? "null" : String(round(point.ph * 10.0f) / 10.0f, 1);
+    json += (!isfinite(point.ph))  ? "null" : String(round(point.ph * 10.0f) / 10.0f, 1);
     json += ",\"orp\":";
-    json += isnan(point.orp) ? "null" : String((int)round(point.orp));
+    json += (!isfinite(point.orp)) ? "null" : String((int)round(point.orp));
     json += ",\"temperature\":";
-    json += isnan(point.temperature) ? "null" : String(round(point.temperature * 10.0f) / 10.0f, 1);
+    json += (!isfinite(point.temperature)) ? "null" : String(round(point.temperature * 10.0f) / 10.0f, 1);
     json += ",\"filtration\":";
     json += point.filtrationActive ? "true" : "false";
     json += ",\"dosing\":";
