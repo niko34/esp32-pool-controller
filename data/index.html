@@ -37,15 +37,16 @@
       <!-- Barre de titre persistante (toujours visible sur mobile/iPad) -->
       <header class="topbar" id="topbar">
         <button class="burgerBtn burgerBtn--open" id="burger-open" type="button" aria-label="Ouvrir le menu de navigation" aria-expanded="false" aria-controls="sidebar"><span aria-hidden="true">☰</span></button>
-        <img src="/apple-touch-icon.png" alt="PoolController" class="topbar__logo" />
-        <div class="topbar__brand-text">
+        <a href="#/dashboard" aria-label="Tableau de bord" style="display:flex;align-items:center;gap:0;text-decoration:none">
+          <img src="/apple-touch-icon.png" alt="PoolController" class="topbar__logo" />
+          <div class="topbar__brand-text">
           <div class="topbar__name">PoolController</div>
           <div class="topbar__status" role="status" aria-label="Statut de connexion" aria-live="polite">
             <span class="status__dot" id="net-dot" aria-hidden="true"></span>
             <span class="status__text" id="net-text">Connexion…</span>
             <span class="topbar__offline" id="topbar-offline-msg" aria-live="polite">— Modifications non sauvegardées</span>
           </div>
-        </div>
+        </div></a>
       </header>
 
       <div class="app-body">

@@ -548,29 +548,35 @@ void PumpControllerClass::update() {
   }
 
   // Mettre à jour le tracking de sécurité (ml injectés)
-  // Le flow est scalé par le ratio duty réel / duty demandé pour tenir compte
-  // de la puissance maximale configurée (pump1MaxDutyPct / pump2MaxDutyPct).
+  // Couvre à la fois la régulation automatique ET l'injection manuelle.
   // IMPORTANT: ne pas utiliser lastTimestamp (mis à jour par refreshDosingState), sinon delta≈0.
-  if (phActive) {
+  int phIdx  = pumpIndexFromNumber(mqttCfg.phPump);
+  int orpIdx = pumpIndexFromNumber(mqttCfg.orpPump);
+  bool phManualActive  = manualMode[phIdx]  && pumpDuty[phIdx]  > 0;
+  bool orpManualActive = manualMode[orpIdx] && pumpDuty[orpIdx] > 0;
+
+  if (phActive || phManualActive) {
     if (phDosingState.lastSafetyTimestamp == 0) {
       phDosingState.lastSafetyTimestamp = now;
     }
     unsigned long delta = now - phDosingState.lastSafetyTimestamp;
-    int phIdx = pumpIndexFromNumber(mqttCfg.phPump);
-    float phEffectiveFlow = dutyToFlow(phPumpControl, desiredDuty[phIdx]);
+    float phEffectiveFlow = phManualActive
+      ? dutyToFlow(phPumpControl, pumpDuty[phIdx])
+      : dutyToFlow(phPumpControl, desiredDuty[phIdx]);
     updateSafetyTracking(true, phEffectiveFlow, delta);
     phDosingState.lastSafetyTimestamp = now;
   } else {
     phDosingState.lastSafetyTimestamp = 0;
   }
 
-  if (orpActive) {
+  if (orpActive || orpManualActive) {
     if (orpDosingState.lastSafetyTimestamp == 0) {
       orpDosingState.lastSafetyTimestamp = now;
     }
     unsigned long delta = now - orpDosingState.lastSafetyTimestamp;
-    int orpIdx = pumpIndexFromNumber(mqttCfg.orpPump);
-    float orpEffectiveFlow = dutyToFlow(orpPumpControl, desiredDuty[orpIdx]);
+    float orpEffectiveFlow = orpManualActive
+      ? dutyToFlow(orpPumpControl, pumpDuty[orpIdx])
+      : dutyToFlow(orpPumpControl, desiredDuty[orpIdx]);
     updateSafetyTracking(false, orpEffectiveFlow, delta);
     orpDosingState.lastSafetyTimestamp = now;
   } else {

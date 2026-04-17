@@ -184,11 +184,9 @@ void HistoryManager::saveToFile() {
   for (const auto& point : memoryBuffer) {
     JsonObject obj = data.add<JsonObject>();
     obj["t"] = point.timestamp;
-    obj["p"] = serialized(String(point.ph, 2));
-    obj["o"] = serialized(String(point.orp, 1));
-    if (!isnan(point.temperature)) {
-      obj["T"] = serialized(String(point.temperature, 1));
-    }
+    if (isfinite(point.ph))          obj["p"] = serialized(String(point.ph, 2));
+    if (isfinite(point.orp))         obj["o"] = serialized(String(point.orp, 1));
+    if (isfinite(point.temperature)) obj["T"] = serialized(String(point.temperature, 1));
     obj["f"] = point.filtrationActive;
     obj["d"] = point.phDosing || point.orpDosing;
     obj["g"] = static_cast<uint8_t>(point.granularity);
@@ -232,8 +230,8 @@ void HistoryManager::loadFromFile() {
   for (JsonObject point : data) {
     DataPoint dp;
     dp.timestamp = point["t"];
-    dp.ph = point["p"].as<float>();
-    dp.orp = point["o"].as<float>();
+    dp.ph = point["p"] | NAN;
+    dp.orp = point["o"] | NAN;
     dp.temperature = point["T"] | NAN;
     dp.filtrationActive = point["f"];
     dp.phDosing = point["d"];

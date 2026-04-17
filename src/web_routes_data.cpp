@@ -6,6 +6,7 @@
 #include "sensors.h"
 #include "filtration.h"
 #include "pump_controller.h"
+#include "web_routes_control.h"
 #include "logger.h"
 #include "history.h"
 #include "json_compat.h"
@@ -82,6 +83,9 @@ static void handleGetData(AsyncWebServerRequest* request) {
   doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;
   doc["ph_limit_reached"] = safetyLimits.phLimitReached;
   doc["orp_limit_reached"] = safetyLimits.orpLimitReached;
+  doc["ph_inject_remaining_s"]  = manualInjectRemainingS(manualInjectPh);
+  doc["orp_inject_remaining_s"] = manualInjectRemainingS(manualInjectOrp);
+
   doc["ph_tracking_enabled"]  = productCfg.phTrackingEnabled;
   doc["ph_remaining_ml"]      = max(0.0f, productCfg.phContainerVolumeMl  - productCfg.phTotalInjectedMl);
   doc["ph_alert_threshold_ml"]= productCfg.phAlertThresholdMl;

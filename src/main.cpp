@@ -19,6 +19,7 @@
 #include "mqtt_manager.h"
 #include "web_server.h"
 #include "web_routes_config.h"
+#include "web_routes_control.h"
 #include "history.h"
 #include "version.h"
 #include "rtc_manager.h"
@@ -156,6 +157,7 @@ void loop() {
   mqttManager.update();
   history.update();
   systemLogger.update();
+  updateManualInject();
   if (authCfg.screenEnabled) uartTransport.update();
 
   // Lecture capteurs à chaque loop (les capteurs gèrent leur propre throttling interne)
@@ -493,6 +495,14 @@ void checkSystemHealth() {
       systemLogger.info("WiFi reconnecté avec succès");
       wifiReconnectAttempts = 0;
       lastWifiCheckTime = 0;
+      // Redémarrer mDNS : le service ne survit pas à une déconnexion WiFi sur ESP32
+      MDNS.end();
+      if (MDNS.begin(kMdnsHostname)) {
+        MDNS.addService("http", "tcp", kMdnsHttpPort);
+        systemLogger.info("mDNS relancé: poolcontroller.local");
+      } else {
+        systemLogger.warning("Échec relance mDNS après reconnexion WiFi");
+      }
     }
     // Désactiver l'AP secours si le WiFi est de nouveau connecté
     if (mode == WIFI_MODE_APSTA) {

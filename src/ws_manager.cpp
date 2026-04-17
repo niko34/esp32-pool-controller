@@ -4,6 +4,7 @@
 #include "sensors.h"
 #include "filtration.h"
 #include "pump_controller.h"
+#include "web_routes_control.h"
 #include "mqtt_manager.h"
 #include "lighting.h"
 #include "auth.h"
@@ -30,7 +31,7 @@ void WsManager::begin(AsyncWebServer* server) {
 
 void WsManager::update() {
   if (!_ws) return;
-  _ws->cleanupClients();
+  _ws->cleanupClients(4);  // Max 4 clients WS simultanés pour préserver les sockets lwIP
 
   if (_authenticatedClients.empty()) return;
 
@@ -158,6 +159,9 @@ String WsManager::_buildSensorJson() const {
   d["orp_remaining_ml"]     = max(0.0f, productCfg.orpContainerVolumeMl - productCfg.orpTotalInjectedMl);
   d["orp_container_ml"]     = productCfg.orpContainerVolumeMl;
   d["orp_alert_threshold_ml"]= productCfg.orpAlertThresholdMl;
+
+  d["ph_inject_remaining_s"]  = manualInjectRemainingS(manualInjectPh);
+  d["orp_inject_remaining_s"] = manualInjectRemainingS(manualInjectOrp);
 
   d["lighting_enabled"] = lighting.isOn();  // état réel du relais, pas lightingCfg.enabled
 

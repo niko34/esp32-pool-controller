@@ -40,9 +40,18 @@
     _wsHeartbeatTimer = setTimeout(() => {
       setNetStatus('bad', 'Hors ligne');
       debugLog('[WS] Heartbeat timeout — no message received');
-      // Forcer la fermeture pour déclencher la reconnexion
-      if (_ws) _ws.close();
+      _closeWs();
+      _wsReconnectTimer = setTimeout(() => { _wsReconnectTimer = null; initWebSocket(); }, 3000);
     }, kWsHeartbeatMs);
+  }
+
+  function _closeWs() {
+    if (!_ws) return;
+    _ws.onopen = _ws.onclose = _ws.onerror = _ws.onmessage = null;
+    try { _ws.close(); } catch (e) { /* ignore */ }
+    _ws = null;
+    if (_wsHeartbeatTimer) { clearTimeout(_wsHeartbeatTimer); _wsHeartbeatTimer = null; }
+    if (_wsReconnectTimer) { clearTimeout(_wsReconnectTimer); _wsReconnectTimer = null; }
   }
 
   function initWebSocket() {
@@ -2424,6 +2433,7 @@
         updateSensorBadges();
         updateStatusCards();
         updateProductUI(json);
+        if (window._updateInjectButtons) window._updateInjectButtons(json);
 
         // Mettre à jour les sections détaillées
         updateDetailSections();
@@ -3944,7 +3954,8 @@
     $("#pumps_stop_btn")?.addEventListener("click", stopAllPumps);
 
     // Boutons injection manuelle pH / ORP
-    const injectState = { ph: null, orp: null };  // { timer, interval }
+    // L'état est géré côté ESP32 (durée, auto-stop) — le JS lit ph_inject_remaining_s / orp_inject_remaining_s
+    const injectInterval = { ph: null, orp: null };
 
     const fmtInjectRemaining = (s) => {
       if (s >= 60) {
@@ -3954,54 +3965,62 @@
       return `${s}s`;
     };
 
+    // Appelé à chaque push sensor_data pour mettre à jour les boutons
+    window._updateInjectButtons = (data) => {
+      ["ph", "orp"].forEach(product => {
+        const remaining = data[`${product}_inject_remaining_s`] ?? 0;
+        const btn = $(`#${product}_inject_btn`);
+        const minInput = $(`#${product}_inject_min`);
+        if (!btn) return;
+
+        if (remaining > 0) {
+          btn.textContent = `⏹ Arrêter — ${fmtInjectRemaining(remaining)}`;
+          if (minInput) minInput.disabled = true;
+          // Décompte local entre deux pushes WebSocket (~5s)
+          if (!injectInterval[product]) {
+            injectInterval[product] = setInterval(() => {
+              const cur = data[`${product}_inject_remaining_s`] ?? 0;
+              if (cur <= 0) {
+                clearInterval(injectInterval[product]);
+                injectInterval[product] = null;
+                btn.textContent = "▶ Injecter";
+                if (minInput) minInput.disabled = false;
+                return;
+              }
+              data[`${product}_inject_remaining_s`]--;
+              btn.textContent = `⏹ Arrêter — ${fmtInjectRemaining(data[`${product}_inject_remaining_s`])}`;
+            }, 1000);
+          }
+        } else {
+          if (injectInterval[product]) {
+            clearInterval(injectInterval[product]);
+            injectInterval[product] = null;
+          }
+          btn.textContent = "▶ Injecter";
+          if (minInput) minInput.disabled = false;
+        }
+      });
+    };
+
     const stopInject = async (product) => {
-      const state = injectState[product];
-      if (state) {
-        clearTimeout(state.timer);
-        clearInterval(state.interval);
-        injectState[product] = null;
-      }
-      const btn = $(`#${product}_inject_btn`);
-      const minInput = $(`#${product}_inject_min`);
-      if (btn) { btn.textContent = "▶ Injecter"; btn.disabled = false; }
-      if (minInput) minInput.disabled = false;
       await authFetch(`/${product}/inject/stop`, { method: "POST" }).catch(() => {});
     };
 
     const startInject = async (product) => {
+      const remaining = latestSensorData?.[`${product}_inject_remaining_s`] ?? 0;
       // Si déjà en cours → arrêt
-      if (injectState[product]) {
+      if (remaining > 0) {
         await stopInject(product);
         return;
       }
-
-      const btn = $(`#${product}_inject_btn`);
       const minInput = $(`#${product}_inject_min`);
       const minutes = Math.max(1, Math.min(60, parseInt(minInput?.value) || 1));
-      let remaining = minutes * 60;
-
-      if (btn) btn.textContent = `⏹ Arrêter — ${fmtInjectRemaining(remaining)}`;
-      if (minInput) minInput.disabled = true;
-
-      const interval = setInterval(() => {
-        remaining--;
-        if (remaining > 0) {
-          if (btn) btn.textContent = `⏹ Arrêter — ${fmtInjectRemaining(remaining)}`;
-        }
-      }, 1000);
-
-      const timer = setTimeout(async () => {
-        clearInterval(interval);
-        injectState[product] = null;
-        if (btn) { btn.textContent = "▶ Injecter"; btn.disabled = false; }
-        if (minInput) minInput.disabled = false;
-        await authFetch(`/${product}/inject/stop`, { method: "POST" }).catch(() => {});
-      }, remaining * 1000);
-
-      injectState[product] = { timer, interval };
-
-      await authFetch(`/${product}/inject/start`, { method: "POST" }).catch(() => {});
+      const durationS = minutes * 60;
+      await authFetch(`/${product}/inject/start?duration=${durationS}`, { method: "POST" }).catch(() => {});
     };
+
+    // Initialiser l'état des boutons depuis les données courantes (si déjà connecté)
+    if (latestSensorData) window._updateInjectButtons(latestSensorData);
 
     $("#ph_inject_btn")?.addEventListener("click", () => startInject("ph"));
     $("#orp_inject_btn")?.addEventListener("click", () => startInject("orp"));
@@ -4638,9 +4657,9 @@
     // Reconnexion immédiate lors du retour sur la page (iPad/mobile : après déverrouillage)
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) {
-        if (_ws) { _ws.onopen = _ws.onclose = _ws.onerror = _ws.onmessage = null; _ws.close(); _ws = null; }
-        if (_wsReconnectTimer) { clearTimeout(_wsReconnectTimer); _wsReconnectTimer = null; }
-        initWebSocket();
+        _closeWs();
+        // Petit délai pour laisser Safari libérer la socket avant d'en ouvrir une nouvelle
+        setTimeout(initWebSocket, 100);
       }
     });
 

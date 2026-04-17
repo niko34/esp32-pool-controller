@@ -186,27 +186,53 @@ void Logger::flushToDisk() {
   for (const String& line : toWrite) {
     f.print(line);
   }
-  size_t fileSize = f.size();
-  f.close();
+  f.close();  // Fermer avant de lire la taille (LittleFS finalise les métadonnées au close)
 
-  // Rotation si le fichier dépasse 32KB : garder les 24 derniers KB
-  if (fileSize > kMaxLogFileBytes) {
-    File rf = _persistFs->open("/system.log", "r");
-    if (rf) {
-      size_t sz = rf.size();
-      // Sauter les premiers octets pour ne garder que kRotateKeepBytes
-      rf.seek(sz > kRotateKeepBytes ? sz - kRotateKeepBytes : 0);
-      // Avancer jusqu'à la prochaine fin de ligne pour éviter une ligne tronquée
-      while (rf.available() && rf.peek() != '\n') rf.read();
-      if (rf.available()) rf.read();  // Consommer le \n
+  // Relire la taille après close pour avoir la valeur réelle
+  {
+    File fsize = _persistFs->open("/system.log", "r");
+    if (!fsize) { _lastFlushMs = millis(); return; }
+    size_t fileSize = fsize.size();
+    fsize.close();
 
-      String kept = rf.readString();
-      rf.close();
+    // Rotation si le fichier dépasse 32KB : garder les 24 derniers KB
+    // Utilise un fichier temporaire pour éviter la perte de données si le heap est insuffisant
+    if (fileSize > kMaxLogFileBytes) {
+      File rf = _persistFs->open("/system.log", "r");
+      if (rf) {
+        size_t sz = rf.size();
+        size_t skipTo = sz > kRotateKeepBytes ? sz - kRotateKeepBytes : 0;
+        rf.seek(skipTo);
+        // Avancer jusqu'à la prochaine fin de ligne pour éviter une ligne tronquée
+        while (rf.available() && rf.peek() != '\n') rf.read();
+        if (rf.available()) rf.read();  // Consommer le \n
 
-      File wf = _persistFs->open("/system.log", "w");
-      if (wf) {
-        wf.print(kept);
-        wf.close();
+        // Écrire dans un fichier temporaire d'abord
+        File wf = _persistFs->open("/system.log.tmp", "w");
+        if (wf) {
+          // Copie par blocs de 512 bytes pour ne pas allouer 24KB d'un coup
+          uint8_t buf[512];
+          while (rf.available()) {
+            size_t n = rf.read(buf, sizeof(buf));
+            if (n > 0) wf.write(buf, n);
+          }
+          wf.close();
+          rf.close();
+
+          // Remplacer seulement si le fichier temporaire n'est pas vide
+          File check = _persistFs->open("/system.log.tmp", "r");
+          bool tmpOk = check && check.size() > 0;
+          if (check) check.close();
+
+          if (tmpOk) {
+            _persistFs->remove("/system.log");
+            _persistFs->rename("/system.log.tmp", "/system.log");
+          } else {
+            _persistFs->remove("/system.log.tmp");
+          }
+        } else {
+          rf.close();
+        }
       }
     }
   }
