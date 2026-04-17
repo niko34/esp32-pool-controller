@@ -190,6 +190,10 @@ select:focus-visible {
   flex-shrink: 0;
 }
 
+.topbar a:focus {
+  outline: none;
+}
+
 .topbar__brand-text {
   display: flex;
   flex-direction: column;
