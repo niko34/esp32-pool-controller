@@ -190,8 +190,10 @@ select:focus-visible {
   flex-shrink: 0;
 }
 
-.topbar a:focus {
+.topbar a:focus,
+.topbar a:focus-visible {
   outline: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .topbar__brand-text {
