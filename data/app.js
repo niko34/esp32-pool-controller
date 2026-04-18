@@ -4328,6 +4328,11 @@
 
     $("#refresh_info_btn")?.addEventListener("click", loadSystemInfo);
 
+    // Logo topbar → blur immédiat pour éviter le focus ring persistant sur iOS Safari
+    $("#topbar-home-link")?.addEventListener("click", (e) => {
+      e.currentTarget.blur();
+    });
+
     // Logout button
     $("#logout-btn")?.addEventListener("click", (e) => {
       e.preventDefault();
