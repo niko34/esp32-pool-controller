@@ -149,7 +149,14 @@ void Logger::setPersistenceFs(fs::FS* fs) {
     }
     f.printf("--- DÉMARRAGE %s ---\n", timeBuf);
     f.close();
+  } else {
+    // Logguer en Serial uniquement (pas de récursion possible ici)
+    Serial.println("[LOGGER] ERREUR: impossible d'ouvrir /system.log au démarrage");
   }
+
+  // Flush immédiat des logs accumulés avant le montage de la partition
+  // Sans cela, les logs du démarrage restent en RAM pendant 10 minutes
+  flushToDisk();
 }
 
 void Logger::update() {
@@ -177,6 +184,7 @@ void Logger::flushToDisk() {
   File f = _persistFs->open("/system.log", "a");
   if (!f) f = _persistFs->open("/system.log", "w");
   if (!f) {
+    Serial.println("[LOGGER] ERREUR: impossible d'ouvrir /system.log pour écriture");
     // Remettre le buffer si l'écriture échoue
     if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
     _persistBuffer.insert(_persistBuffer.begin(), toWrite.begin(), toWrite.end());

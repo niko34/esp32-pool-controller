@@ -3965,17 +3965,44 @@
       return `${s}s`;
     };
 
+    // Calcule la durée d'injection (secondes) pour un volume donné (mL)
+    // Utilise les paramètres de pompe depuis window._config
+    const calcInjectDurationS = (product, volumeMl) => {
+      const cfg = window._config;
+      if (!cfg) return null;
+      const pumpNum = product === "ph" ? cfg.ph_pump : cfg.orp_pump; // 1 ou 2
+      const dutyPct = pumpNum === 1 ? (cfg.pump1_max_duty_pct ?? 50) : (cfg.pump2_max_duty_pct ?? 50);
+      const maxFlow = cfg.pump_max_flow_ml_per_min ?? 90;
+      const MIN_FLOW = 5.2, MAX_PWM = 255, MIN_DUTY = 80;
+      let duty = Math.floor((dutyPct * MAX_PWM) / 100);
+      if (duty < MIN_DUTY) duty = MIN_DUTY;
+      const normalized = (duty - MIN_DUTY) / (MAX_PWM - MIN_DUTY);
+      const flow = MIN_FLOW + normalized * (maxFlow - MIN_FLOW); // mL/min
+      return Math.max(1, Math.round((volumeMl / flow) * 60));
+    };
+
+    // Met à jour le hint "≈ Xmin" sous le champ volume
+    const updateInjectHint = (product) => {
+      const mlInput = $(`#${product}_inject_ml`);
+      const hint = $(`#${product}_inject_hint`);
+      if (!mlInput || !hint) return;
+      const vol = parseFloat(mlInput.value);
+      if (!vol || vol <= 0) { hint.textContent = ""; return; }
+      const dur = calcInjectDurationS(product, vol);
+      hint.textContent = dur != null ? `≈ ${fmtInjectRemaining(dur)}` : "";
+    };
+
     // Appelé à chaque push sensor_data pour mettre à jour les boutons
     window._updateInjectButtons = (data) => {
       ["ph", "orp"].forEach(product => {
         const remaining = data[`${product}_inject_remaining_s`] ?? 0;
         const btn = $(`#${product}_inject_btn`);
-        const minInput = $(`#${product}_inject_min`);
+        const mlInput = $(`#${product}_inject_ml`);
         if (!btn) return;
 
         if (remaining > 0) {
           btn.textContent = `⏹ Arrêter — ${fmtInjectRemaining(remaining)}`;
-          if (minInput) minInput.disabled = true;
+          if (mlInput) mlInput.disabled = true;
           // Décompte local entre deux pushes WebSocket (~5s)
           if (!injectInterval[product]) {
             injectInterval[product] = setInterval(() => {
@@ -3984,7 +4011,7 @@
                 clearInterval(injectInterval[product]);
                 injectInterval[product] = null;
                 btn.textContent = "▶ Injecter";
-                if (minInput) minInput.disabled = false;
+                if (mlInput) mlInput.disabled = false;
                 return;
               }
               data[`${product}_inject_remaining_s`]--;
@@ -3997,7 +4024,7 @@
             injectInterval[product] = null;
           }
           btn.textContent = "▶ Injecter";
-          if (minInput) minInput.disabled = false;
+          if (mlInput) mlInput.disabled = false;
         }
       });
     };
@@ -4013,11 +4040,27 @@
         await stopInject(product);
         return;
       }
-      const minInput = $(`#${product}_inject_min`);
-      const minutes = Math.max(1, Math.min(60, parseInt(minInput?.value) || 1));
-      const durationS = minutes * 60;
-      await authFetch(`/${product}/inject/start?duration=${durationS}`, { method: "POST" }).catch(() => {});
+      const btn = $(`#${product}_inject_btn`);
+      const mlInput = $(`#${product}_inject_ml`);
+      const volumeMl = Math.max(1, Math.min(2000, parseFloat(mlInput?.value) || 50));
+      // Feedback immédiat : afficher la durée estimée pendant que l'ESP32 traite
+      const estDur = calcInjectDurationS(product, volumeMl);
+      if (btn) btn.textContent = estDur ? `⏳ Démarrage — ≈ ${fmtInjectRemaining(estDur)}` : "⏳ Démarrage…";
+      if (mlInput) mlInput.disabled = true;
+      const resp = await authFetch(`/${product}/inject/start?volume=${volumeMl}`, { method: "POST" }).catch(() => null);
+      if (!resp || !resp.ok) {
+        // Erreur : restaurer le bouton
+        if (btn) btn.textContent = "▶ Injecter";
+        if (mlInput) mlInput.disabled = false;
+      }
+      // Le bouton sera mis à jour précisément par le prochain push WebSocket
     };
+
+    // Hints dynamiques au changement de volume
+    ["ph", "orp"].forEach(product => {
+      $(`#${product}_inject_ml`)?.addEventListener("input", () => updateInjectHint(product));
+      updateInjectHint(product);
+    });
 
     // Initialiser l'état des boutons depuis les données courantes (si déjà connecté)
     if (latestSensorData) window._updateInjectButtons(latestSensorData);

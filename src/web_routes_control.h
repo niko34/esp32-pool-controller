@@ -8,6 +8,7 @@ struct ManualInjectState {
   bool active = false;
   unsigned long startMs = 0;
   unsigned long durationMs = 0;
+  float requestedVolumeMl = 0.0f; // Volume demandé (0 si non renseigné)
 };
 
 extern ManualInjectState manualInjectPh;

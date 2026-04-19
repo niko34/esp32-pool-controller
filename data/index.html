@@ -630,11 +630,12 @@
               </p>
               <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
                 <label style="display:flex;align-items:center;gap:6px;font-size:0.9em">
-                  Durée
-                  <input type="number" id="ph_inject_min" min="1" max="60" value="1"
-                    style="width:60px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:1em">
-                  min
+                  Volume
+                  <input type="number" id="ph_inject_ml" min="1" max="2000" step="5" value="50"
+                    style="width:70px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:1em">
+                  mL
                 </label>
+                <span id="ph_inject_hint" style="font-size:0.85em;color:var(--text-secondary)"></span>
                 <button class="btn btn--secondary" type="button" id="ph_inject_btn">▶ Injecter</button>
               </div>
             </div>
@@ -760,11 +761,12 @@
               </p>
               <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
                 <label style="display:flex;align-items:center;gap:6px;font-size:0.9em">
-                  Durée
-                  <input type="number" id="orp_inject_min" min="1" max="60" value="1"
-                    style="width:60px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:1em">
-                  min
+                  Volume
+                  <input type="number" id="orp_inject_ml" min="1" max="2000" step="5" value="50"
+                    style="width:70px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:1em">
+                  mL
                 </label>
+                <span id="orp_inject_hint" style="font-size:0.85em;color:var(--text-secondary)"></span>
                 <button class="btn btn--secondary" type="button" id="orp_inject_btn">▶ Injecter</button>
               </div>
             </div>

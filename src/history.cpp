@@ -73,7 +73,8 @@ void HistoryManager::begin() {
     systemLogger.setPersistenceFs(&historyFs);
   }
   else {
-    systemLogger.info("Partition historique absente. Gestionnaire d'historique en erreur.");
+    systemLogger.error("Partition historique absente ou échec montage — logs persistants et historique désactivés");
+    Serial.println("[HISTORY] ERREUR CRITIQUE: partition 'history' introuvable ou corrompue");
     historyEnabled = false;
     return;
   }
