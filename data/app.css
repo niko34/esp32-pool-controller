@@ -2907,3 +2907,83 @@ h1, h2, h3 {
   pointer-events: none;
   opacity: 0.45;
 }
+
+/* ========== DOSAGE JOURNALIER ========== */
+.daily-dose {
+  margin: 12px 0 16px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--panel2);
+  border: 1px solid var(--stroke);
+  transition: all var(--transition-base);
+}
+
+.daily-dose__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.daily-dose__label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.daily-dose__value {
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.daily-dose__bar-wrap {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+
+.daily-dose__bar {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1), background 0.3s ease;
+  min-width: 0;
+}
+
+.dose-bar--ok {
+  background: var(--success);
+}
+
+.dose-bar--warning {
+  background: #d97706; /* ambre foncé, ratio ≈7:1 sur fond clair */
+}
+
+.dose-bar--danger {
+  background: var(--danger);
+}
+
+.daily-dose__status {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--danger);
+  min-height: 0;
+  line-height: 1.4;
+}
+
+.daily-dose__status:empty {
+  display: none;
+}
+
+/* État hors ligne : griser le bloc */
+.app--offline .daily-dose {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.app--offline .daily-dose__value {
+  color: var(--muted);
+}

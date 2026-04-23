@@ -2202,6 +2202,69 @@
     }
   }
 
+  // ========== DOSAGE JOURNALIER ==========
+  // type : 'ph' ou 'orp'
+  function updateDailyDoseDisplay(type) {
+    const injectedMl = type === 'ph'
+      ? (latestSensorData?.ph_daily_ml ?? null)
+      : (latestSensorData?.orp_daily_ml ?? null);
+    const limitReached = type === 'ph'
+      ? (latestSensorData?.ph_limit_reached === true)
+      : (latestSensorData?.orp_limit_reached === true);
+    const maxMl = type === 'ph'
+      ? (window._config?.max_ph_ml_per_day ?? 0)
+      : (window._config?.max_chlorine_ml_per_day ?? 0);
+
+    const valueEl  = $(`#daily-dose-${type}-value`);
+    const barEl    = $(`#daily-dose-${type}-bar`);
+    const statusEl = $(`#daily-dose-${type}-status`);
+    if (!valueEl || !barEl || !statusEl) return;
+
+    if (injectedMl === null) {
+      valueEl.textContent = '— mL';
+      barEl.style.width = '0%';
+      barEl.setAttribute('aria-valuenow', '0');
+      barEl.className = 'daily-dose__bar dose-bar--ok';
+      statusEl.textContent = '';
+      return;
+    }
+
+    const injected = Math.round(injectedMl);
+
+    if (!maxMl || maxMl <= 0) {
+      // Limite non configurée
+      valueEl.textContent = `${injected} mL`;
+      barEl.style.width = '0%';
+      barEl.setAttribute('aria-valuenow', '0');
+      barEl.className = 'daily-dose__bar dose-bar--ok';
+      statusEl.textContent = 'Limite non configurée';
+      statusEl.style.color = 'var(--muted)';
+      return;
+    }
+
+    const max = Math.round(maxMl);
+    valueEl.textContent = `${injected} / ${max} mL`;
+
+    const pct = Math.min(100, Math.round((injected / max) * 100));
+    barEl.style.width = `${pct}%`;
+    barEl.setAttribute('aria-valuenow', String(pct));
+
+    let barClass = 'dose-bar--ok';
+    if (limitReached || pct >= 90) {
+      barClass = 'dose-bar--danger';
+    } else if (pct >= 75) {
+      barClass = 'dose-bar--warning';
+    }
+    barEl.className = `daily-dose__bar ${barClass}`;
+
+    if (limitReached) {
+      statusEl.textContent = 'Limite atteinte — dosage suspendu jusqu\'à minuit';
+      statusEl.style.color = 'var(--danger)';
+    } else {
+      statusEl.textContent = '';
+    }
+  }
+
   // ========== SECTIONS DÉTAILLÉES ==========
   function updateDetailSections() {
     const config = window._config || {};
@@ -2226,6 +2289,10 @@
     }
 
     updateFiltrationBadges();
+
+    // Dosage journalier pH et ORP
+    updateDailyDoseDisplay('ph');
+    updateDailyDoseDisplay('orp');
 
     // Boutons Démarrer/Arrêter du tableau de bord : grisés en mode Désactivé
     const isOff = (config.filtration_mode || '').toLowerCase() === 'off';

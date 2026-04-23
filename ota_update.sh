@@ -53,9 +53,15 @@ update_file() {
     fi
 
     echo -e "${BLUE}📤 Envoi de $name...${NC}"
-    response=$(curl -s -w "\n%{http_code}" -X POST "${AUTH_ARGS[@]}" -F "update_type=$type" -F "update=@$file" "$UPDATE_URL")
+    if ! response=$(curl -s --show-error --connect-timeout 10 --max-time 120 \
+            -w "\n%{http_code}" -X POST "${AUTH_ARGS[@]}" \
+            -F "update_type=$type" -F "update=@$file" "$UPDATE_URL" 2>&1); then
+        echo -e "${RED}❌ curl a échoué pour $name :${NC}"
+        echo "$response"
+        return 1
+    fi
     http_code=$(echo "$response" | tail -1)
-    body=$(echo "$response" | head -1)
+    body=$(echo "$response" | sed '$d')
 
     if [ "$http_code" = "200" ] && echo "$body" | grep -q "OK"; then
         echo -e "${GREEN}✅ $name mis à jour${NC}"
