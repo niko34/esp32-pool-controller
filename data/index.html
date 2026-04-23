@@ -590,13 +590,31 @@
             <div class="card__body">
               <div class="row row--between" style="margin-bottom:16px">
                 <div>
-                  <p class="row__title" id="label-ph-enabled">Gérer la régulation pH</p>
+                  <p class="row__title" id="label-ph-enabled">Gérer automatiquement la régulation pH</p>
                 </div>
                 <label class="switch">
                   <input type="checkbox" id="ph_enabled" aria-labelledby="label-ph-enabled" />
                   <span class="switch__track"></span>
                 </label>
               </div>
+
+              <div class="daily-dose" id="daily-dose-ph" aria-label="Dosage pH du jour">
+                <div class="daily-dose__header">
+                  <span class="daily-dose__label">Dosage du jour</span>
+                  <span class="daily-dose__value" id="daily-dose-ph-value">— mL</span>
+                </div>
+                <div class="daily-dose__bar-wrap">
+                  <div class="daily-dose__bar dose-bar--ok"
+                    id="daily-dose-ph-bar"
+                    role="progressbar"
+                    aria-valuenow="0"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    style="width:0%"></div>
+                </div>
+                <p class="daily-dose__status" id="daily-dose-ph-status"></p>
+              </div>
+
               <div id="ph-regulation-params">
                 <label class="field">
                   <span class="field__label">Type de correction</span>
@@ -728,13 +746,31 @@
             <div class="card__body">
               <div class="row row--between" style="margin-bottom:16px">
                 <div>
-                  <p class="row__title" id="label-orp-enabled">Gérer la régulation ORP</p>
+                  <p class="row__title" id="label-orp-enabled">Gérer automatiquement la régulation ORP</p>
                 </div>
                 <label class="switch">
                   <input type="checkbox" id="orp_enabled" aria-labelledby="label-orp-enabled" />
                   <span class="switch__track"></span>
                 </label>
               </div>
+
+              <div class="daily-dose" id="daily-dose-orp" aria-label="Dosage ORP du jour">
+                <div class="daily-dose__header">
+                  <span class="daily-dose__label">Dosage du jour</span>
+                  <span class="daily-dose__value" id="daily-dose-orp-value">— mL</span>
+                </div>
+                <div class="daily-dose__bar-wrap">
+                  <div class="daily-dose__bar dose-bar--ok"
+                    id="daily-dose-orp-bar"
+                    role="progressbar"
+                    aria-valuenow="0"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                    style="width:0%"></div>
+                </div>
+                <p class="daily-dose__status" id="daily-dose-orp-status"></p>
+              </div>
+
               <div id="orp-regulation-params">
                 <div class="grid grid--2">
                   <label class="field">
