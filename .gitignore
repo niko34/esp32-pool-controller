@@ -25,8 +25,14 @@ ai/.env
 .crew/
 ai/outputs/
 
+# Claude Code
+.claude/
+CLAUDE.md
+specs/
+
 # KiCad (stored separately)
 kicad/
+kicad v2/
 
 # FreeCAD (stored separately)
 freecad/
