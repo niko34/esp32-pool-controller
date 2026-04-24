@@ -80,6 +80,27 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 
 ---
 
+## Notes de migration
+
+### Mode de régulation pH (`ph_regulation_mode`) — depuis 2026-04-23
+
+**Contexte :** avant cette version, la régulation pH était pilotée par un booléen `ph_enabled`. Ce champ est remplacé par un enum `ph_regulation_mode` à trois valeurs (`automatic`, `scheduled`, `manual`).
+
+**Migration automatique au premier démarrage :**
+
+| Ancienne valeur | Nouvelle valeur |
+|----------------|----------------|
+| `ph_enabled = true` | `ph_regulation_mode = "automatic"` |
+| `ph_enabled = false` | `ph_regulation_mode = "manual"` |
+
+Aucune action requise. Le firmware effectue la migration à la première lecture de la NVS si la clé `ph_reg_mode` est absente.
+
+**Compatibilité MQTT / Home Assistant :** le champ `ph_enabled` est conservé comme miroir dérivé (`true` si mode ≠ `manual`). Les automations Home Assistant utilisant le switch `ph_enabled` continuent de fonctionner sans modification.
+
+**Nouveau champ `ph_daily_target_ml` :** initialisé à `0` (aucune injection programmée). À configurer dans la page pH, onglet Programmée, si vous souhaitez utiliser ce mode.
+
+---
+
 ## Dépannage
 
 | Problème | Solution |

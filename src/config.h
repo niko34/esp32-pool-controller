@@ -56,6 +56,8 @@ struct MqttConfig {
   int stabilizationDelayMin = 5;     // Délai de stabilisation avant dosage (minutes)
   String regulationSpeed = "normal"; // Vitesse de correction PID : "slow", "normal", "fast"
   String phCorrectionType = "ph_minus";  // "ph_minus" (acide) ou "ph_plus" (base)
+  String phRegulationMode = "automatic"; // "automatic" / "scheduled" / "manual"
+  int phDailyTargetMl = 0;               // Volume quotidien cible (mL) pour le mode programmée
   bool timeUseNtp = true;
   String ntpServer = "pool.ntp.org";
   String manualTimeIso = "";

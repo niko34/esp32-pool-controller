@@ -189,7 +189,9 @@ String WsManager::_buildConfigJson() const {
   d["mqtt_connected"]   = mqttManager.isConnected();
   d["ph_target"]        = mqttCfg.phTarget;
   d["orp_target"]       = mqttCfg.orpTarget;
-  d["ph_enabled"]       = mqttCfg.phEnabled;
+  d["ph_enabled"]       = mqttCfg.phEnabled;  // dérivé : true si mode != manual
+  d["ph_regulation_mode"] = mqttCfg.phRegulationMode;
+  d["ph_daily_target_ml"] = mqttCfg.phDailyTargetMl;
   d["ph_pump"]          = mqttCfg.phPump;
   d["orp_enabled"]      = mqttCfg.orpEnabled;
   d["orp_pump"]         = mqttCfg.orpPump;

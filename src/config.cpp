@@ -96,6 +96,8 @@ void saveMqttConfig() {
   prefs.putBool("ph_enabled", mqttCfg.phEnabled);
   prefs.putInt("ph_pump", mqttCfg.phPump);
   prefs.putInt("ph_limit_sec", mqttCfg.phInjectionLimitSeconds);
+  prefs.putString("ph_reg_mode", mqttCfg.phRegulationMode);
+  prefs.putInt("ph_daily_ml", mqttCfg.phDailyTargetMl);
 
   // Calibration pH (DFRobot_PH stocke ses données en EEPROM)
   // On garde juste la date et température pour l'interface utilisateur
@@ -197,6 +199,21 @@ void loadMqttConfig() {
   mqttCfg.phEnabled = prefs.getBool("ph_enabled", mqttCfg.phEnabled);
   mqttCfg.phPump = prefs.getInt("ph_pump", mqttCfg.phPump);
   mqttCfg.phInjectionLimitSeconds = prefs.getInt("ph_limit_sec", mqttCfg.phInjectionLimitSeconds);
+
+  // Migration ph_enabled → ph_regulation_mode
+  if (prefs.isKey("ph_reg_mode")) {
+    mqttCfg.phRegulationMode = prefs.getString("ph_reg_mode", "automatic");
+  } else {
+    mqttCfg.phRegulationMode = mqttCfg.phEnabled ? "automatic" : "manual";
+    systemLogger.info("Migration ph_enabled → ph_regulation_mode: " + mqttCfg.phRegulationMode);
+  }
+  mqttCfg.phDailyTargetMl = prefs.getInt("ph_daily_ml", 0);
+  if (mqttCfg.phRegulationMode != "automatic" &&
+      mqttCfg.phRegulationMode != "scheduled" &&
+      mqttCfg.phRegulationMode != "manual") {
+    mqttCfg.phRegulationMode = "automatic";
+  }
+  mqttCfg.phEnabled = (mqttCfg.phRegulationMode != "manual");
 
   // Calibration pH (DFRobot_PH stocke ses données en EEPROM)
   mqttCfg.phCalibrationDate = prefs.getString("ph_cal_date", "");

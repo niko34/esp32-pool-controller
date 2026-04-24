@@ -357,6 +357,16 @@ Champs notables de la réponse :
 | `pump1_max_duty_pct` | integer | Puissance maximale pompe 1 en régulation (0–100 %) |
 | `pump2_max_duty_pct` | integer | Puissance maximale pompe 2 en régulation (0–100 %) |
 | `pump_max_flow_ml_per_min` | float | Débit nominal des pompes à 100 % de puissance (mL/min) |
+| `ph_regulation_mode` | string | Mode de régulation pH : `"automatic"` (PID vers ph_target), `"scheduled"` (volume quotidien réparti sur 24 h), `"manual"` (aucune régulation automatique) |
+| `ph_daily_target_ml` | integer | Volume quotidien cible en mL pour le mode Programmée (0 = désactivé, borné par `max_ph_ml_per_day`) |
+| `ph_enabled` | boolean | Miroir dérivé de `ph_regulation_mode` : `true` si mode ≠ `"manual"`. Maintenu pour compatibilité MQTT / HA. |
+
+**`POST /save-config` — champs pH spécifiques :**
+
+| Champ | Type | Validation |
+|-------|------|------------|
+| `ph_regulation_mode` | string | Valeurs acceptées : `"automatic"`, `"scheduled"`, `"manual"`. Toute autre valeur est ignorée. Met à jour `ph_enabled` automatiquement. |
+| `ph_daily_target_ml` | integer | Doit être ≥ 0 et ≤ `max_ph_ml_per_day` (si configuré). Retourne HTTP 400 si la limite est dépassée. |
 
 ---
 

@@ -1,5 +1,19 @@
 # Changelog - ESP32 Pool Controller
 
+## [En cours] - 2026-04-23
+
+### Régulation pH — mode Programmée (feature-003 itération 2)
+
+- **Nouveau mode de régulation pH** : `automatic` / `scheduled` / `manual` remplace le booléen `ph_enabled`. Le sélecteur 3 boutons dans la carte Régulation pH sauvegarde immédiatement le mode choisi.
+- **Mode Programmée** : l'utilisateur saisit un volume quotidien en mL à injecter ; le firmware répartit l'injection sur 24 fenêtres horaires. La saisie est bornée par la limite journalière de sécurité côté UI et côté firmware.
+- **Migration automatique** au premier démarrage : `ph_enabled=true` → `ph_regulation_mode=automatic`, `ph_enabled=false` → `ph_regulation_mode=manual`. Aucune action requise.
+- **`ph_enabled` maintenu comme miroir dérivé** (`true` si mode ≠ `manual`) pour ne pas casser les automations MQTT / Home Assistant existantes.
+- **Sécurité** : 5 gardes validés par l'agent pool-chemistry — validation du capteur pH [4.0, 10.0], plafonnement à `maxPhMinusMlPerDay`, garde division par zéro sur le débit, reset quotidien des cycles, vérification `maxCyclesPerDay`.
+- **Nouveaux champs** `ph_regulation_mode` et `ph_daily_target_ml` dans `GET /get-config`, `POST /save-config` et WebSocket config.
+- **Nouveaux topics MQTT** : `{base}/ph_regulation_mode` et `{base}/ph_daily_target_ml` publiés dans `publishTargetState()`.
+
+---
+
 ## [1.1.0] - 2026-03-29
 
 ### Firmware

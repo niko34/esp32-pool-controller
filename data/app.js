@@ -1115,14 +1115,12 @@
       filtration: "filtration_enabled",
       lighting: "lighting_feature_enabled",
       temperature: "temperature_enabled",
-      ph: "ph_enabled",
       orp: "orp_enabled"
     };
     const contentMap = {
       filtration: "filtration-content",
       lighting: "lighting-content",
       temperature: "temperature-content",
-      ph: "ph-content",
       orp: "orp-content"
     };
     const dashboardCardMap = {
@@ -1148,11 +1146,21 @@
     }
   }
 
+  function updatePhModeControls() {
+    const mode = getSegmented("ph_regulation_mode") || "automatic";
+    const params = $("#ph-regulation-params");      // sous-bloc Auto
+    const scheduled = $("#ph-params-scheduled");    // sous-bloc Programmée
+    const inject = $("#ph-inject-section");         // Injection manuelle
+    const calInfo = $("#ph-calibration-info");      // Infos calibration + bouton Calibrer
+
+    if (params)    params.style.display    = mode === "automatic"  ? "" : "none";
+    if (scheduled) scheduled.style.display = mode === "scheduled"  ? "" : "none";
+    if (inject)    inject.style.display    = mode === "manual"     ? "" : "none";
+    if (calInfo)   calInfo.style.display   = mode === "automatic"  ? "" : "none";
+  }
+
   function updatePhControls() {
-    const enabled = $("#ph_enabled")?.checked ?? false;
-    const params = $("#ph-regulation-params");
-    if (params) params.style.display = enabled ? "" : "none";
-    updateFeatureVisibility("ph");
+    updatePhModeControls();
   }
 
   function updateOrpControls() {
@@ -1164,7 +1172,6 @@
 
   function collectConfig() {
     const mqttEnabled = $("#mqtt_enabled");
-    const phToggle = $("#ph_enabled");
     const orpToggle = $("#orp_enabled");
 
     const portValue = parseInt($("#mqtt_port")?.value || "1883", 10);
@@ -1203,7 +1210,9 @@
       password: $("#mqtt_password")?.value || "",
       ph_target: isNaN(phValue) ? 7.2 : phValue,
       orp_target: isNaN(orpValue) ? 650 : orpValue,
-      ph_enabled: phToggle?.checked === true,
+      ph_enabled: (window._config?.ph_regulation_mode || "automatic") !== "manual",
+      ph_regulation_mode: window._config?.ph_regulation_mode || "automatic",
+      ph_daily_target_ml: parseInt($("#ph_daily_target_ml")?.value ?? "0", 10) || 0,
       ph_pump: isNaN(phPumpValue) ? 1 : phPumpValue,
       orp_enabled: orpToggle?.checked === true,
       orp_pump: isNaN(orpPumpValue) ? 2 : orpPumpValue,
@@ -1296,9 +1305,15 @@
     $("#ph_target").value = typeof cfg.ph_target === "number" ? cfg.ph_target : 7.2;
     $("#orp_target").value = typeof cfg.orp_target === "number" ? cfg.orp_target : 650;
 
-    $("#ph_enabled").checked = cfg.ph_enabled === true;
+    setSegmented("ph_regulation_mode", cfg.ph_regulation_mode || "automatic");
+    updatePhModeControls();
+    if ($("#ph_daily_target_ml") && cfg.ph_daily_target_ml != null)
+      $("#ph_daily_target_ml").value = cfg.ph_daily_target_ml;
+    const maxMl = typeof cfg.max_ph_ml_per_day === "number" ? cfg.max_ph_ml_per_day : 0;
+    const hint = $("#ph_daily_target_hint");
+    if (hint) hint.textContent = maxMl > 0 ? `limite de sécurité : ${maxMl} mL` : "";
+    if ($("#ph_daily_target_ml") && maxMl > 0) $("#ph_daily_target_ml").max = maxMl;
     $("#orp_enabled").checked = cfg.orp_enabled === true;
-    updateFeatureVisibility("ph");
     updateFeatureVisibility("orp");
 
     $("#ph_pump").value = cfg.ph_pump === 2 ? "2" : "1";
@@ -2818,10 +2833,48 @@
     }
   }
 
+  function showPhCalibrationCard() {
+    const reg = $("#ph-card-regulation");
+    const hist = $("#ph-card-history");
+    const cal = $("#ph-card-calibration");
+    const calBtn = $("#ph_cal_trigger_btn");
+    if (reg) reg.style.display = "none";
+    if (hist) hist.style.display = "none";
+    if (cal) cal.style.display = "";
+    if (calBtn) calBtn.disabled = true;
+    // Masquer le bloc calibration-info (bandeau Calibré + bouton) pendant la calibration
+    const calInfo = $("#ph-calibration-info");
+    if (calInfo) calInfo.style.display = "none";
+  }
+
+  function hidePhCalibrationCard() {
+    const reg = $("#ph-card-regulation");
+    const hist = $("#ph-card-history");
+    const cal = $("#ph-card-calibration");
+    const calBtn = $("#ph_cal_trigger_btn");
+    if (reg) reg.style.display = "";
+    if (hist) hist.style.display = "";
+    if (cal) cal.style.display = "none";
+    if (calBtn) calBtn.disabled = false;
+    // Restaure la visibilité selon le mode actif
+    updatePhModeControls();
+  }
+
   function bindPhCalibration() {
     const startBtn = $("#ph_cal_start_btn");
     const cancelBtn = $("#ph_cal_cancel_btn");
-    const calibratedStatus = $("#ph_calibrated_status");
+
+    // Bouton "Calibrer" dans la carte Statistiques
+    const triggerBtn = $("#ph_cal_trigger_btn");
+    triggerBtn?.addEventListener("click", () => {
+      // Ignorer si calibration déjà active ou injection en cours
+      if (phCalibrationActive) return;
+      phCalibrationStep = 1;
+      phCalibrationActive = true;
+      showPhCalibrationCard();
+      startCalibrationRefresh();
+      updatePhCalibrationSteps();
+    });
 
     cancelBtn?.addEventListener("click", () => {
       if (confirm("Annuler la calibration en cours ?")) {
@@ -2829,21 +2882,20 @@
         phCalibrationActive = false;
         stopCalibrationRefresh();
         updatePhCalibrationSteps();
-        if (calibratedStatus) {
-          // Re-show calibrated status if it was previously calibrated
-          loadConfig();
-        }
+        hidePhCalibrationCard();
+        // Restaure le bandeau Calibré si la sonde était déjà calibrée
+        loadConfig();
       }
     });
 
     startBtn?.addEventListener("click", async () => {
       if (phCalibrationStep === 0) {
-        // Start calibration process
+        // Start calibration process (atteint via ph_cal_start_btn directement — cas non nominal)
         phCalibrationStep = 1;
         phCalibrationActive = true;
+        showPhCalibrationCard();
         startCalibrationRefresh();
         updatePhCalibrationSteps();
-        if (calibratedStatus) calibratedStatus.style.display = "none";
       } else if (phCalibrationStep === 1) {
         // Move to step 2
         phCalibrationStep = 2;
@@ -2886,13 +2938,13 @@
           $("#ph_step4")?.classList.add("is-completed");
           $("#ph_step4")?.classList.remove("is-active");
 
-          // Show calibrated status
-          if (calibratedStatus) calibratedStatus.style.display = "block";
-
           // Reset to idle
           phCalibrationStep = 0;
           phCalibrationActive = false;
           stopCalibrationRefresh();
+
+          // Masquer la carte calibration et restaurer les cartes normales
+          hidePhCalibrationCard();
 
           // Invalider le timestamp pour forcer le rechargement
           lastSensorDataLoadTime = 0;
@@ -2911,6 +2963,7 @@
           phCalibrationStep = 0;
           phCalibrationActive = false;
           stopCalibrationRefresh();
+          hidePhCalibrationCard();
           updatePhCalibrationSteps();
         } finally {
           startBtn.disabled = false;
@@ -4061,6 +4114,9 @@
 
     // Appelé à chaque push sensor_data pour mettre à jour les boutons
     window._updateInjectButtons = (data) => {
+      const phInjecting = (data["ph_inject_remaining_s"] ?? 0) > 0;
+      const calBtn = $("#ph_cal_trigger_btn");
+
       ["ph", "orp"].forEach(product => {
         const remaining = data[`${product}_inject_remaining_s`] ?? 0;
         const btn = $(`#${product}_inject_btn`);
@@ -4079,6 +4135,10 @@
                 injectInterval[product] = null;
                 btn.textContent = "▶ Injecter";
                 if (mlInput) mlInput.disabled = false;
+                // Réactiver le bouton Calibrer si plus aucune injection pH
+                if (product === "ph" && !phCalibrationActive && calBtn) {
+                  calBtn.disabled = false;
+                }
                 return;
               }
               data[`${product}_inject_remaining_s`]--;
@@ -4094,6 +4154,11 @@
           if (mlInput) mlInput.disabled = false;
         }
       });
+
+      // Désactiver le bouton Calibrer pendant l'injection pH
+      if (calBtn && !phCalibrationActive) {
+        calBtn.disabled = phInjecting;
+      }
     };
 
     const stopInject = async (product) => {
@@ -4228,7 +4293,7 @@
   // ---------- Auto-save bindings ----------
   function bindRegulationSave(sensor, btnSelector) {
     const fields = sensor === "ph"
-      ? ["ph_enabled", "ph_target", "ph_correction_type"]
+      ? ["ph_target", "ph_correction_type"]
       : ["orp_enabled", "orp_target"];
     trackDirtyState(btnSelector, fields);
     const saveBtn = $(btnSelector);
@@ -4309,14 +4374,35 @@
     });
     bindLightingManualSave();
 
-    // pH / ORP regulation — sauvegarde immédiate sur le toggle enabled
-    $("#ph_enabled")?.addEventListener("change", () => {
-      const val = $("#ph_enabled").checked;
-      if (window._config) window._config.ph_enabled = val;
-      updatePhControls();
-      updateStatusCards();
-      sendConfig({ ph_enabled: val }).then((ok) => { if (ok) loadConfig(); });
+    // pH / ORP regulation — sauvegarde immédiate sur le sélecteur de mode
+    initSegmented("ph_regulation_mode");
+    $$(`#ph_regulation_mode .segmented__btn`).forEach(btn => {
+      btn.addEventListener("click", () => {
+        updatePhModeControls();
+        const mode = btn.dataset.value;
+        if (window._config) { window._config.ph_regulation_mode = mode; window._config.ph_enabled = (mode !== "manual"); }
+        sendConfig({ ph_regulation_mode: mode }).then(ok => { if (ok) loadConfig(); });
+      });
     });
+    const schedBtn = $("#ph_scheduled_save_btn");
+    if (schedBtn) {
+      const setSchedBtn = (label, spinner, disabled, status) => {
+        schedBtn.disabled = disabled;
+        schedBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
+        schedBtn.classList.add(status === "success" ? "btn--ok" : status === "error" ? "btn--danger" : "btn--primary");
+        schedBtn.innerHTML = spinner ? `<span class="btn__spinner"></span><span>${label}</span>` : label;
+      };
+      schedBtn.addEventListener("click", async () => {
+        if (schedBtn.disabled) return;
+        const rawVal = parseInt($("#ph_daily_target_ml")?.value ?? "0", 10);
+        const maxMl = typeof window._config?.max_ph_ml_per_day === "number" ? window._config.max_ph_ml_per_day : 0;
+        if (maxMl > 0 && rawVal > maxMl) { showToast(`Volume supérieur à la limite journalière (${maxMl} mL)`, "error"); return; }
+        setSchedBtn("Sauvegarde...", true, true, "default");
+        const ok = await sendConfig({ ph_daily_target_ml: isNaN(rawVal) ? 0 : Math.max(0, rawVal) });
+        if (ok) { setSchedBtn("Sauvegarde réussie", false, true, "success"); setTimeout(() => setSchedBtn("Sauvegarder", false, false, "default"), 2000); }
+        else { setSchedBtn("Erreur", false, false, "error"); setTimeout(() => setSchedBtn("Sauvegarder", false, false, "default"), 2000); }
+      });
+    }
     $("#orp_enabled")?.addEventListener("change", () => {
       const val = $("#orp_enabled").checked;
       if (window._config) window._config.orp_enabled = val;

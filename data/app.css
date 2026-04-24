@@ -2987,3 +2987,40 @@ h1, h2, h3 {
 .app--offline .daily-dose__value {
   color: var(--muted);
 }
+
+/* Bloc Statistiques pH compact (itération 3) */
+.ph-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  background: var(--surface-alt, var(--surface));
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: 12px 16px;
+  margin-bottom: 16px;
+}
+.ph-stats__col {
+  padding: 4px 12px;
+}
+.ph-stats__col:first-child {
+  border-right: 1px solid var(--border);
+  padding-left: 0;
+}
+.ph-stats__col:last-child {
+  padding-right: 0;
+}
+@media (max-width: 500px) {
+  .ph-stats {
+    grid-template-columns: 1fr;
+  }
+  .ph-stats__col:first-child {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px;
+    padding-left: 0;
+  }
+  .ph-stats__col:last-child {
+    padding-top: 10px;
+    padding-left: 0;
+  }
+}

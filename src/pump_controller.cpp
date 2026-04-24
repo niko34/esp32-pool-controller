@@ -394,7 +394,8 @@ void PumpControllerClass::update() {
   bool orpSafetyOk = checkSafetyLimits(false);
 
   // Contrôle pH
-  if (mqttCfg.phEnabled && phLimitOk && phSafetyOk) {
+  const String& phMode = mqttCfg.phRegulationMode;
+  if (phMode == "automatic" && phLimitOk && phSafetyOk) {
     float phValue = sensors.getPh();
     float effectivePh = phValue;
 
@@ -407,22 +408,22 @@ void PumpControllerClass::update() {
     } else {
       error = effectivePh - mqttCfg.phTarget;
     }
-    
+
     // Déterminer si on doit doser (avec protection anti-cycling)
     bool shouldDose = false;
-    
+
     if (phDosingState.active) {
       // Déjà en cours : vérifier si on continue
       shouldDose = shouldContinueDosing(error, pumpProtection.phStopThreshold, phDosingState, now);
     } else {
       // Arrêté : vérifier si on démarre
       shouldDose = shouldStartDosing(error, pumpProtection.phStartThreshold, phDosingState, now);
-      
+
       if (shouldDose) {
         // Démarrage d'un nouveau cycle
         phDosingState.lastStartTime = now;
         phDosingState.cyclesToday++;
-        systemLogger.info("Démarrage dosage pH: pH=" + String(sensors.getPh(), 2) +
+        systemLogger.info("Démarrage dosage pH (auto): pH=" + String(sensors.getPh(), 2) +
           " cible=" + String(mqttCfg.phTarget, 2) +
           " erreur=" + String(error, 3) +
           " (cycle " + String(phDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
@@ -442,12 +443,12 @@ void PumpControllerClass::update() {
         // Estimer le volume depuis le duty PWM de la dernière itération active
         float lastFlow = dutyToFlow(phPumpControl, pumpDuty[pumpIndexFromNumber(mqttCfg.phPump)]);
         float volumeMl = (lastFlow * runTime) / 60.0f;
-        systemLogger.info("Arrêt dosage pH: durée=" + String(runTime) + "s" +
+        systemLogger.info("Arrêt dosage pH (auto): durée=" + String(runTime) + "s" +
           " vol≈" + String(volumeMl, 1) + "mL" +
           " total jour=" + String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(safetyLimits.maxPhMinusMlPerDay, 0) + "mL" +
           " — pause " + String(mqttCfg.minPauseBetweenMin) + "min");
       }
-      
+
       // Reset PID si erreur négative (pH hors plage de correction)
       if (error < -pumpProtection.phStopThreshold) {
         phPID.integral = 0.0f;
@@ -465,6 +466,65 @@ void PumpControllerClass::update() {
         phFlow = flow;
       }
     }
+  } else if (phMode == "scheduled" && mqttCfg.phEnabled && phLimitOk && phSafetyOk && mqttCfg.phDailyTargetMl > 0) {
+    // Vérification validité capteur pH même en mode aveugle
+    float currentPh = sensors.getPh();
+    if (isnan(currentPh) || currentPh < 4.0f || currentPh > 10.0f) {
+      systemLogger.critical("[Scheduled] Capteur pH invalide (" + String(currentPh, 2) + ") — dosage programmée suspendu");
+    } else {
+      // Plafonner à la limite journalière de sécurité
+      float effectiveDailyMl = static_cast<float>(mqttCfg.phDailyTargetMl);
+      if (safetyLimits.maxPhMinusMlPerDay > 0.0f && effectiveDailyMl > safetyLimits.maxPhMinusMlPerDay) {
+        systemLogger.warning("[Scheduled] phDailyTargetMl (" + String(mqttCfg.phDailyTargetMl) +
+          "mL) dépasse maxPhMinusMlPerDay (" + String(safetyLimits.maxPhMinusMlPerDay, 0) + "mL) — plafonné");
+        effectiveDailyMl = safetyLimits.maxPhMinusMlPerDay;
+      }
+      float targetMlPerHour = effectiveDailyMl / 24.0f;
+      float effectiveFlowMlPerMin = phPumpControl.maxFlowMlPerMin *
+                                    (static_cast<float>(mqttCfg.pump1MaxDutyPct) / 100.0f);
+      if (effectiveFlowMlPerMin < phPumpControl.minFlowMlPerMin)
+        effectiveFlowMlPerMin = phPumpControl.minFlowMlPerMin;
+      if (effectiveFlowMlPerMin <= 0.0f) {
+        systemLogger.critical("[Scheduled] Débit pompe pH non configuré (0 mL/min) — dosage bloqué");
+      } else {
+        float targetMsPerHour = (targetMlPerHour / effectiveFlowMlPerMin) * 60000.0f;
+        // Réinitialisation quotidienne des cycles
+        if (phDosingState.cyclesDayStart == 0 || now - phDosingState.cyclesDayStart >= 86400000UL) {
+          phDosingState.cyclesToday = 0;
+          phDosingState.cyclesDayStart = now;
+        }
+        bool shouldDose = (phDosingState.usedMs < static_cast<unsigned long>(targetMsPerHour)) &&
+                          (phDosingState.cyclesToday < pumpProtection.maxCyclesPerDay);
+        if (shouldDose && !phDosingState.active) {
+          phDosingState.lastStartTime = now;
+          phDosingState.cyclesToday++;
+          systemLogger.info("Démarrage dosage pH (programmée): quota=" + String(targetMlPerHour, 1) +
+            "mL/h usedMs=" + String(phDosingState.usedMs) +
+            " (cycle " + String(phDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
+        } else if (!shouldDose && phDosingState.active) {
+          phDosingState.lastStopTime = now;
+          systemLogger.info("Arrêt dosage pH (programmée): quota horaire atteint total=" +
+            String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(safetyLimits.maxPhMinusMlPerDay, 0) + "mL");
+        } else if (!shouldDose && phDosingState.cyclesToday >= pumpProtection.maxCyclesPerDay) {
+          static unsigned long lastCycleWarn = 0;
+          if (now - lastCycleWarn > 3600000UL) {
+            systemLogger.warning("[Scheduled] Limite cycles pH atteinte: " +
+              String(phDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay));
+            lastCycleWarn = now;
+          }
+        }
+        if (shouldDose) {
+          int index = pumpIndexFromNumber(mqttCfg.phPump);
+          uint8_t duty = flowToDuty(phPumpControl, effectiveFlowMlPerMin);
+          if (duty > desiredDuty[index]) desiredDuty[index] = duty;
+          if (duty > 0) { phActive = true; phFlow = effectiveFlowMlPerMin; }
+        }
+      }
+    }
+    // Reset PID pour éviter le windup au retour en mode automatique
+    phPID.integral = 0.0f;
+    phPID.lastError = 0.0f;
+    phPID.lastTime = 0;
   }
 
   // Contrôle ORP

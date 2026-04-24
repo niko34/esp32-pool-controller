@@ -74,6 +74,8 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["ph_target"] = roundf(mqttCfg.phTarget * 100.0f) / 100.0f;
   doc["orp_target"] = roundf(mqttCfg.orpTarget);
   doc["ph_enabled"] = mqttCfg.phEnabled;
+  doc["ph_regulation_mode"] = mqttCfg.phRegulationMode;
+  doc["ph_daily_target_ml"] = mqttCfg.phDailyTargetMl;
   doc["ph_pump"] = mqttCfg.phPump;
   doc["orp_enabled"] = mqttCfg.orpEnabled;
   doc["orp_pump"] = mqttCfg.orpPump;
@@ -272,6 +274,28 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["ph_target"].isNull()) mqttCfg.phTarget = doc["ph_target"];
   if (!doc["orp_target"].isNull()) mqttCfg.orpTarget = doc["orp_target"];
   if (!doc["ph_enabled"].isNull()) mqttCfg.phEnabled = doc["ph_enabled"];
+  if (!doc["ph_regulation_mode"].isNull()) {
+    String regMode = doc["ph_regulation_mode"].as<String>();
+    if (regMode == "automatic" || regMode == "scheduled" || regMode == "manual") {
+      mqttCfg.phRegulationMode = regMode;
+      mqttCfg.phEnabled = (regMode != "manual");
+      systemLogger.info("Mode régulation pH changé: " + regMode);
+    }
+  }
+  if (!doc["ph_daily_target_ml"].isNull()) {
+    int dailyMl = doc["ph_daily_target_ml"].as<int>();
+    if (dailyMl < 0) dailyMl = 0;
+    if (safetyLimits.maxPhMinusMlPerDay > 0.0f &&
+        dailyMl > static_cast<int>(safetyLimits.maxPhMinusMlPerDay)) {
+      xSemaphoreGiveRecursive(configMutex);
+      request->send(400, "application/json",
+        "{\"error\":\"ph_daily_target_ml d\\u00e9passe la limite journali\\u00e8re\"}");
+      g_configBuffers->erase(request);
+      g_configErrors->erase(request);
+      return;
+    }
+    mqttCfg.phDailyTargetMl = dailyMl;
+  }
   if (!doc["orp_enabled"].isNull()) mqttCfg.orpEnabled = doc["orp_enabled"];
   if (!doc["ph_pump"].isNull()) mqttCfg.phPump = doc["ph_pump"];
   if (!doc["orp_pump"].isNull()) mqttCfg.orpPump = doc["orp_pump"];

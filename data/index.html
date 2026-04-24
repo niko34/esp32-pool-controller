@@ -583,21 +583,13 @@
             <p class="settingsHead__sub">Calibration et régulation du pH</p>
           </div>
 
-          <div class="card">
-            <div class="card__head">
-              <h2 class="card__title">Régulation pH</h2>
+          <div class="ph-stats" id="ph-card-stats">
+            <div class="ph-stats__col">
+              <div class="readout__label" id="ph_current_label" style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px">Valeur pH actuelle</div>
+              <div class="readout__value" id="ph_current_value" style="font-size:2rem;font-weight:700;line-height:1">--</div>
+              <div class="muted small" style="margin-top:4px">MAJ auto toutes les 5 secondes</div>
             </div>
-            <div class="card__body">
-              <div class="row row--between" style="margin-bottom:16px">
-                <div>
-                  <p class="row__title" id="label-ph-enabled">Gérer automatiquement la régulation pH</p>
-                </div>
-                <label class="switch">
-                  <input type="checkbox" id="ph_enabled" aria-labelledby="label-ph-enabled" />
-                  <span class="switch__track"></span>
-                </label>
-              </div>
-
+            <div class="ph-stats__col">
               <div class="daily-dose" id="daily-dose-ph" aria-label="Dosage pH du jour">
                 <div class="daily-dose__header">
                   <span class="daily-dose__label">Dosage du jour</span>
@@ -607,12 +599,23 @@
                   <div class="daily-dose__bar dose-bar--ok"
                     id="daily-dose-ph-bar"
                     role="progressbar"
-                    aria-valuenow="0"
-                    aria-valuemin="0"
-                    aria-valuemax="100"
+                    aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"
                     style="width:0%"></div>
                 </div>
                 <p class="daily-dose__status" id="daily-dose-ph-status"></p>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" id="ph-card-regulation">
+            <div class="card__head">
+              <h2 class="card__title">Régulation pH</h2>
+            </div>
+            <div class="card__body">
+              <div class="segmented" id="ph_regulation_mode" style="margin-bottom:16px">
+                <button class="segmented__btn is-active" data-value="automatic">Automatique</button>
+                <button class="segmented__btn" data-value="scheduled">Programmée</button>
+                <button class="segmented__btn" data-value="manual">Manuelle</button>
               </div>
 
               <div id="ph-regulation-params">
@@ -632,34 +635,57 @@
                 <div class="detail-actions" style="margin-top:12px">
                   <button class="btn btn--primary" type="button" id="ph_regulation_save_btn">Sauvegarder</button>
                 </div>
+                <hr style="margin:14px 0;border:none;border-top:1px solid var(--border)">
+                <div id="ph-calibration-info">
+                  <div class="callout callout--success" id="ph_calibrated_status" style="display:none">
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <span style="font-size:18px">✓</span>
+                      <strong>Calibré</strong>
+                    </div>
+                    <div class="muted small" id="ph_cal_date">Dernière calibration : —</div>
+                  </div>
+                  <div class="detail-actions" style="margin-top:8px">
+                    <button class="btn btn--secondary" type="button" id="ph_cal_trigger_btn">Calibrer</button>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
 
-          <div class="card">
-            <div class="card__head">
-              <h2 class="card__title">Injection manuelle</h2>
-            </div>
-            <div class="card__body">
-              <p class="muted small" style="margin-bottom:14px">
-                Démarre la pompe pH à la puissance configurée. Utile pour corriger manuellement le pH
-                ou vérifier le fonctionnement de la pompe, même si la régulation automatique est désactivée.
-                Cliquez à nouveau sur le bouton pour arrêter l'injection avant la fin.
-              </p>
-              <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em">
-                  Volume
-                  <input type="number" id="ph_inject_ml" min="1" max="2000" step="5" value="50"
-                    style="width:70px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:1em">
-                  mL
+              <div id="ph-params-scheduled" style="display:none">
+                <label class="field" style="margin-top:12px">
+                  <span class="field__label">Volume quotidien à injecter</span>
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <input type="number" id="ph_daily_target_ml" min="0" step="10" value="0" style="width:100px" />
+                    <span class="muted small">mL</span>
+                  </div>
+                  <span class="field__hint muted small" id="ph_daily_target_hint"></span>
                 </label>
-                <span id="ph_inject_hint" style="font-size:0.85em;color:var(--text-secondary)"></span>
-                <button class="btn btn--secondary" type="button" id="ph_inject_btn">▶ Injecter</button>
+                <div class="detail-actions" style="margin-top:12px">
+                  <button class="btn btn--primary" type="button" id="ph_scheduled_save_btn">Sauvegarder</button>
+                </div>
+              </div>
+
+              <div id="ph-inject-section" style="display:none">
+                <hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">
+                <p class="muted small" style="margin-bottom:10px">
+                  Démarre la pompe pH à la puissance configurée. Utile pour corriger manuellement le pH
+                  ou vérifier le fonctionnement de la pompe, même si la régulation automatique est désactivée.
+                  Cliquez à nouveau sur le bouton pour arrêter l'injection avant la fin.
+                </p>
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+                  <label style="display:flex;align-items:center;gap:6px;font-size:0.9em">
+                    Volume
+                    <input type="number" id="ph_inject_ml" min="1" max="2000" step="5" value="50"
+                      style="width:70px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:1em">
+                    mL
+                  </label>
+                  <span id="ph_inject_hint" style="font-size:0.85em;color:var(--text-secondary)"></span>
+                  <button class="btn btn--secondary" type="button" id="ph_inject_btn">▶ Injecter</button>
+                </div>
               </div>
             </div>
           </div>
 
-          <div class="card card--detail-chart">
+          <div class="card card--detail-chart" id="ph-card-history">
             <div class="card__head">
               <h2 class="card__title">Historique</h2>
               <div class="detail-chart-ranges" data-chart="ph">
@@ -676,56 +702,38 @@
             </div>
           </div>
 
-          <div id="ph-content">
-            <div class="card">
-              <div class="card__head">
-                <h2 class="card__title">Calibration de la sonde pH</h2>
-                <div class="muted small" id="ph_cal_date_header">Dernière calibration : —</div>
+          <div class="card" id="ph-card-calibration" style="display:none">
+            <div class="card__head">
+              <h2 class="card__title">Calibration de la sonde pH</h2>
+              <div class="muted small" id="ph_cal_date_header">Dernière calibration : —</div>
+            </div>
+            <div class="card__body">
+              <p class="muted small" style="margin-bottom:16px">
+                La sonde pH nécessite une calibration régulière pour garantir des mesures précises.
+                Sans calibration, vous risquez un dosage incorrect et des problèmes de qualité d'eau.
+                Recalibrer tous les 3 mois avec des solutions pH 7.0 et pH 4.0.
+              </p>
+              <div class="calibration-steps">
+                <div class="step" id="ph_step1">
+                  <div class="step__number">1</div>
+                  <div class="step__content">Plonger dans une solution d'étalonnage pH 7.0</div>
+                </div>
+                <div class="step" id="ph_step2">
+                  <div class="step__number">2</div>
+                  <div class="step__content">Attendre que la tension brute du capteur se stabilise (environ 1 min)</div>
+                </div>
+                <div class="step" id="ph_step3">
+                  <div class="step__number">3</div>
+                  <div class="step__content">Rincer et plonger la sonde dans une solution d'étalonnage pH 4.0</div>
+                </div>
+                <div class="step" id="ph_step4">
+                  <div class="step__number">4</div>
+                  <div class="step__content">Attendre que la tension brute du capteur se stabilise (environ 1 min)</div>
+                </div>
               </div>
-              <div class="card__body">
-                <p class="muted small" style="margin-bottom: 16px;">
-                  La sonde pH nécessite une calibration régulière pour garantir des mesures précises.
-                  Sans calibration, vous risquez un dosage incorrect et des problèmes de qualité d'eau.
-                  Recalibrer tous les 3 mois avec des solutions pH 7.0 et pH 4.0.
-                </p>
-                <div class="callout callout--success" id="ph_calibrated_status" style="display:none;">
-                  <div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 18px;">✓</span>
-                    <strong>Calibré</strong>
-                    <span style="margin-left: auto;">✓</span>
-                  </div>
-                  <div class="muted small" id="ph_cal_date">Dernière calibration : —</div>
-                </div>
-
-                <div class="readout">
-                  <div class="readout__label" id="ph_current_label">Valeur pH actuelle</div>
-                  <div class="readout__value" id="ph_current_value">--</div>
-                  <div class="readout__sub muted">MAJ auto toutes les 5 secondes</div>
-                </div>
-
-                <div class="calibration-steps">
-                  <div class="step" id="ph_step1">
-                    <div class="step__number">1</div>
-                    <div class="step__content">Plonger dans une solution d'étalonnage pH 7.0</div>
-                  </div>
-                  <div class="step" id="ph_step2">
-                    <div class="step__number">2</div>
-                    <div class="step__content">Attendre que la tension brute du capteur se stabilise (environ 1 min)</div>
-                  </div>
-                  <div class="step" id="ph_step3">
-                    <div class="step__number">3</div>
-                    <div class="step__content">Rincer et plonger la sonde dans une solution d'étalonnage pH 4.0</div>
-                  </div>
-                  <div class="step" id="ph_step4">
-                    <div class="step__number">4</div>
-                    <div class="step__content">Attendre que la tension brute du capteur se stabilise (environ 1 min)</div>
-                  </div>
-                </div>
-
-                <div class="row row--gap">
-                  <button class="btn btn--primary" type="button" id="ph_cal_start_btn">Commencer la calibration</button>
-                  <button class="btn btn--danger" type="button" id="ph_cal_cancel_btn" style="display:none;">Annuler</button>
-                </div>
+              <div class="row row--gap" style="margin-top:16px">
+                <button class="btn btn--primary" type="button" id="ph_cal_start_btn">Commencer la calibration</button>
+                <button class="btn btn--danger" type="button" id="ph_cal_cancel_btn" style="display:none">Annuler</button>
               </div>
             </div>
           </div>
