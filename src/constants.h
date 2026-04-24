@@ -103,4 +103,11 @@ constexpr const char* kMdnsHostname = "poolcontroller";   // Nom d'hôte mDNS
 // Wi-Fi
 constexpr uint32_t kWifiConnectTimeoutMs = 15000;          // Timeout connexion Wi-Fi (ms)
 
+// ============================================================================
+// TIME CONSTANTS - Valeurs temporelles de référence
+// ============================================================================
+
+// Epoch minimal considéré comme valide (heure synchronisée NTP/RTC)
+constexpr time_t kMinValidEpoch = 1700000000;  // 14 nov. 2023
+
 #endif // CONSTANTS_H

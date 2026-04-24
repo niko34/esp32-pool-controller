@@ -163,8 +163,8 @@ void UartCommands::handleGetConfig() {
   d["orp_pump"] = mqttCfg.orpPump;
   d["regulation_mode"] = mqttCfg.regulationMode;
   d["ph_correction_type"] = mqttCfg.phCorrectionType;
-  d["ph_injection_limit_s"] = mqttCfg.phInjectionLimitSeconds;
-  d["orp_injection_limit_s"] = mqttCfg.orpInjectionLimitSeconds;
+  d["ph_injection_limit_min"] = mqttCfg.phInjectionLimitMinutes;
+  d["orp_injection_limit_min"] = mqttCfg.orpInjectionLimitMinutes;
 
   // Filtration
   d["filtration_enabled"] = filtrationCfg.enabled;

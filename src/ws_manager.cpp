@@ -1,6 +1,10 @@
+#include <WiFi.h>
+#include <time.h>
+#include <esp_system.h>
 #include "ws_manager.h"
 #include "web_helpers.h"
 #include "config.h"
+#include "constants.h"
 #include "sensors.h"
 #include "filtration.h"
 #include "pump_controller.h"
@@ -9,8 +13,21 @@
 #include "lighting.h"
 #include "auth.h"
 #include "json_compat.h"
-#include <WiFi.h>
-#include <time.h>
+
+static const char* getResetReason() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:   return "POWER_ON";
+    case ESP_RST_SW:        return "SW_RESET";
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_WDT:       return "WATCHDOG";
+    case ESP_RST_BROWNOUT:  return "BROWNOUT";
+    case ESP_RST_PANIC:     return "PANIC";
+    case ESP_RST_DEEPSLEEP: return "DEEP_SLEEP";
+    case ESP_RST_EXT:       return "EXTERNAL";
+    default:                return "UNKNOWN";
+  }
+}
 
 WsManager wsManager;
 
@@ -165,9 +182,9 @@ String WsManager::_buildSensorJson() const {
 
   d["lighting_enabled"] = lighting.isOn();  // état réel du relais, pas lightingCfg.enabled
 
-  constexpr time_t kMinValidEpoch = 1609459200;
-  d["time_synced"] = (time(nullptr) >= kMinValidEpoch);
-  d["uptime_ms"]   = millis();
+  d["time_synced"]   = (time(nullptr) >= kMinValidEpoch);
+  d["uptime_ms"]     = millis();
+  d["reset_reason"]  = getResetReason();
 
   String out;
   out.reserve(640);
@@ -193,12 +210,16 @@ String WsManager::_buildConfigJson() const {
   d["ph_regulation_mode"] = mqttCfg.phRegulationMode;
   d["ph_daily_target_ml"] = mqttCfg.phDailyTargetMl;
   d["ph_pump"]          = mqttCfg.phPump;
-  d["orp_enabled"]      = mqttCfg.orpEnabled;
+  d["orp_enabled"]      = mqttCfg.orpEnabled;  // miroir : true si orpRegulationMode != manual
+  d["orp_regulation_mode"] = mqttCfg.orpRegulationMode;
+  d["orp_daily_target_ml"] = mqttCfg.orpDailyTargetMl;
+  d["max_orp_ml_per_day"]  = safetyLimits.maxChlorineMlPerDay;
+  d["orp_cal_valid"]    = !mqttCfg.orpCalibrationDate.isEmpty();
   d["orp_pump"]         = mqttCfg.orpPump;
   d["pump1_max_duty_pct"] = mqttCfg.pump1MaxDutyPct;
   d["pump2_max_duty_pct"] = mqttCfg.pump2MaxDutyPct;
-  d["ph_limit_seconds"] = mqttCfg.phInjectionLimitSeconds;
-  d["orp_limit_seconds"]= mqttCfg.orpInjectionLimitSeconds;
+  d["ph_limit_minutes"] = mqttCfg.phInjectionLimitMinutes;
+  d["orp_limit_minutes"] = mqttCfg.orpInjectionLimitMinutes;
   d["regulation_mode"]  = mqttCfg.regulationMode;
   d["ph_correction_type"] = mqttCfg.phCorrectionType;
   d["time_use_ntp"]     = mqttCfg.timeUseNtp;

@@ -30,8 +30,10 @@ struct MqttTopics {
   String orpTargetState;       // Consigne ORP (état)
   String phTargetCommand;      // Consigne pH (commande)
   String orpTargetCommand;     // Consigne ORP (commande)
-  String phRegulationModeState;  // Mode de régulation pH (automatic/scheduled/manual)
-  String phDailyTargetMlState;   // Volume quotidien programmée (mL)
+  String phRegulationModeState;    // Mode de régulation pH (automatic/scheduled/manual)
+  String phDailyTargetMlState;     // Volume quotidien pH programmée (mL)
+  String orpRegulationModeState;   // Mode de régulation ORP (automatic/scheduled/manual)
+  String orpDailyTargetMlState;    // Volume quotidien ORP programmée (mL)
   String alertsTopic;
   String logsTopic;
   String statusTopic;          // LWT et status

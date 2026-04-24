@@ -14,8 +14,6 @@
 #include <time.h>
 
 namespace {
-constexpr time_t kMinValidEpoch = 1609459200;  // 2021-01-01
-
 bool isTimeValid(time_t t) {
   return t >= kMinValidEpoch;
 }

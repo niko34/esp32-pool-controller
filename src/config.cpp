@@ -2,6 +2,7 @@
 #include "constants.h"
 #include "logger.h"
 #include <Preferences.h>
+#include <time.h>
 
 // Définition des variables globales
 MqttConfig mqttCfg;
@@ -95,7 +96,7 @@ void saveMqttConfig() {
   prefs.putFloat("ph_target", mqttCfg.phTarget);
   prefs.putBool("ph_enabled", mqttCfg.phEnabled);
   prefs.putInt("ph_pump", mqttCfg.phPump);
-  prefs.putInt("ph_limit_sec", mqttCfg.phInjectionLimitSeconds);
+  prefs.putInt("ph_limit_min", mqttCfg.phInjectionLimitMinutes);
   prefs.putString("ph_reg_mode", mqttCfg.phRegulationMode);
   prefs.putInt("ph_daily_ml", mqttCfg.phDailyTargetMl);
 
@@ -110,7 +111,9 @@ void saveMqttConfig() {
   prefs.putFloat("orp_target", mqttCfg.orpTarget);
   prefs.putBool("orp_enabled", mqttCfg.orpEnabled);
   prefs.putInt("orp_pump", mqttCfg.orpPump);
-  prefs.putInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
+  prefs.putInt("orp_limit_min", mqttCfg.orpInjectionLimitMinutes);
+  prefs.putString("orp_reg_mode", mqttCfg.orpRegulationMode);
+  prefs.putInt("orp_daily_ml", mqttCfg.orpDailyTargetMl);
   prefs.putString("reg_mode", mqttCfg.regulationMode);
   prefs.putInt("stab_delay", mqttCfg.stabilizationDelayMin);
   prefs.putString("reg_speed", mqttCfg.regulationSpeed);
@@ -167,7 +170,6 @@ void saveMqttConfig() {
   prefs.putUChar("pump1_max_duty", mqttCfg.pump1MaxDutyPct);
   prefs.putUChar("pump2_max_duty", mqttCfg.pump2MaxDutyPct);
   prefs.putFloat("pump_max_flow", mqttCfg.pumpMaxFlowMlPerMin);
-  prefs.putUInt("pump_pause_min", mqttCfg.minPauseBetweenMin);
 
   // Limites de sécurité
   prefs.putFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
@@ -198,7 +200,21 @@ void loadMqttConfig() {
   mqttCfg.phTarget = prefs.getFloat("ph_target", mqttCfg.phTarget);
   mqttCfg.phEnabled = prefs.getBool("ph_enabled", mqttCfg.phEnabled);
   mqttCfg.phPump = prefs.getInt("ph_pump", mqttCfg.phPump);
-  mqttCfg.phInjectionLimitSeconds = prefs.getInt("ph_limit_sec", mqttCfg.phInjectionLimitSeconds);
+  // Migration NVS : ph_limit_sec (secondes) → ph_limit_min (minutes)
+  if (prefs.isKey("ph_limit_sec")) {
+    int oldSec = prefs.getInt("ph_limit_sec", 300);
+    mqttCfg.phInjectionLimitMinutes = max(1, oldSec / 60);
+    systemLogger.info("Migration NVS ph_limit_sec=" + String(oldSec) + "s → ph_limit_min=" + String(mqttCfg.phInjectionLimitMinutes) + "min");
+    prefs.end();
+    if (prefs.begin("poolctrl", false)) {
+      prefs.putInt("ph_limit_min", mqttCfg.phInjectionLimitMinutes);
+      prefs.remove("ph_limit_sec");
+      prefs.end();
+    }
+    prefs.begin("poolctrl", true);
+  } else {
+    mqttCfg.phInjectionLimitMinutes = prefs.getInt("ph_limit_min", mqttCfg.phInjectionLimitMinutes);
+  }
 
   // Migration ph_enabled → ph_regulation_mode
   if (prefs.isKey("ph_reg_mode")) {
@@ -223,7 +239,36 @@ void loadMqttConfig() {
   mqttCfg.orpTarget = prefs.getFloat("orp_target", mqttCfg.orpTarget);
   mqttCfg.orpEnabled = prefs.getBool("orp_enabled", mqttCfg.orpEnabled);
   mqttCfg.orpPump = prefs.getInt("orp_pump", mqttCfg.orpPump);
-  mqttCfg.orpInjectionLimitSeconds = prefs.getInt("orp_limit_sec", mqttCfg.orpInjectionLimitSeconds);
+  // Migration NVS : orp_limit_sec (secondes) → orp_limit_min (minutes)
+  if (prefs.isKey("orp_limit_sec")) {
+    int oldSec = prefs.getInt("orp_limit_sec", 600);
+    mqttCfg.orpInjectionLimitMinutes = max(1, oldSec / 60);
+    systemLogger.info("Migration NVS orp_limit_sec=" + String(oldSec) + "s → orp_limit_min=" + String(mqttCfg.orpInjectionLimitMinutes) + "min");
+    prefs.end();
+    if (prefs.begin("poolctrl", false)) {
+      prefs.putInt("orp_limit_min", mqttCfg.orpInjectionLimitMinutes);
+      prefs.remove("orp_limit_sec");
+      prefs.end();
+    }
+    prefs.begin("poolctrl", true);
+  } else {
+    mqttCfg.orpInjectionLimitMinutes = prefs.getInt("orp_limit_min", mqttCfg.orpInjectionLimitMinutes);
+  }
+  // Migration orp_enabled → orp_regulation_mode
+  if (prefs.isKey("orp_reg_mode")) {
+    mqttCfg.orpRegulationMode = prefs.getString("orp_reg_mode", "automatic");
+  } else {
+    mqttCfg.orpRegulationMode = mqttCfg.orpEnabled ? "automatic" : "manual";
+    systemLogger.info("Migration orp_enabled → orp_regulation_mode: " + mqttCfg.orpRegulationMode);
+  }
+  mqttCfg.orpDailyTargetMl = prefs.getInt("orp_daily_ml", 0);
+  if (mqttCfg.orpRegulationMode != "automatic" &&
+      mqttCfg.orpRegulationMode != "scheduled" &&
+      mqttCfg.orpRegulationMode != "manual") {
+    mqttCfg.orpRegulationMode = "automatic";
+  }
+  mqttCfg.orpEnabled = (mqttCfg.orpRegulationMode != "manual");
+
   mqttCfg.regulationMode = prefs.getString("reg_mode", "pilote");
   mqttCfg.stabilizationDelayMin = prefs.getInt("stab_delay", 5);
   mqttCfg.regulationSpeed = prefs.getString("reg_speed", "normal");
@@ -280,8 +325,6 @@ void loadMqttConfig() {
   mqttCfg.pumpMaxFlowMlPerMin = prefs.getFloat("pump_max_flow", mqttCfg.pumpMaxFlowMlPerMin);
   phPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
   orpPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
-  mqttCfg.minPauseBetweenMin = prefs.getUInt("pump_pause_min", mqttCfg.minPauseBetweenMin);
-  pumpProtection.minPauseBetweenMs = mqttCfg.minPauseBetweenMin * 60000UL;
 
   // Limites de sécurité
   safetyLimits.maxPhMinusMlPerDay = prefs.getFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
@@ -351,4 +394,81 @@ void calculatePhCalibration() {
 bool isPhCalibrationValid() {
   // Vérifier si une calibration a été effectuée
   return !mqttCfg.phCalibrationDate.isEmpty();
+}
+
+/**
+ * Persiste les compteurs journaliers de dosage en NVS (namespace "pool-daily").
+ * Appelé : au démarrage d'une injection, toutes les 30s pendant l'injection,
+ * et au reset journalier (minuit local).
+ */
+void saveDailyCounters() {
+  if (configMutex && xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+    systemLogger.warning("[Config] saveDailyCounters: mutex timeout");
+    return;
+  }
+  Preferences prefs;
+  prefs.begin("pool-daily", false);
+  prefs.putFloat("ph_daily_ml", safetyLimits.dailyPhInjectedMl);
+  prefs.putFloat("orp_daily_ml", safetyLimits.dailyOrpInjectedMl);
+  prefs.putString("daily_date", safetyLimits.currentDayDate);
+  prefs.end();
+  if (configMutex) xSemaphoreGiveRecursive(configMutex);
+}
+
+/**
+ * Restaure les compteurs journaliers depuis NVS au démarrage.
+ * Compare la date sauvegardée avec la date courante (si NTP/RTC valide).
+ * Si nouveau jour : remet les compteurs à 0 et sauvegarde.
+ * Si heure non synchronisée : restaure conservativement pour ne pas perdre les comptages.
+ */
+void loadDailyCounters() {
+  Preferences prefs;
+  prefs.begin("pool-daily", true);
+  bool hasDate = prefs.isKey("daily_date");
+  float phMl   = prefs.getFloat("ph_daily_ml", 0.0f);
+  float orpMl  = prefs.getFloat("orp_daily_ml", 0.0f);
+  String savedDate = prefs.getString("daily_date", "");
+  prefs.end();
+
+  if (!hasDate) {
+    systemLogger.info("[Config] loadDailyCounters: aucune donnée NVS, démarrage à 0");
+    return;
+  }
+
+  // Validation des valeurs lues
+  if (phMl < 0.0f) phMl = 0.0f;
+  if (orpMl < 0.0f) orpMl = 0.0f;
+  if (phMl > safetyLimits.maxPhMinusMlPerDay * 1.1f) {
+    systemLogger.critical("[Config] NVS ph_daily_ml hors plage: " + String(phMl, 0) + " mL — remis à limite");
+    phMl = safetyLimits.maxPhMinusMlPerDay;
+  }
+  if (orpMl > safetyLimits.maxChlorineMlPerDay * 1.1f) {
+    systemLogger.critical("[Config] NVS orp_daily_ml hors plage: " + String(orpMl, 0) + " mL — remis à limite");
+    orpMl = safetyLimits.maxChlorineMlPerDay;
+  }
+
+  time_t now = time(nullptr);
+  if (now >= kMinValidEpoch) {
+    struct tm timeinfo;
+    localtime_r(&now, &timeinfo);
+    char todayStr[9];
+    strftime(todayStr, sizeof(todayStr), "%Y%m%d", &timeinfo);
+
+    if (savedDate == todayStr) {
+      safetyLimits.dailyPhInjectedMl  = phMl;
+      safetyLimits.dailyOrpInjectedMl = orpMl;
+      strlcpy(safetyLimits.currentDayDate, todayStr, sizeof(safetyLimits.currentDayDate));
+      systemLogger.info("[Config] Compteurs journaliers restaurés: pH=" + String(phMl, 0) + " mL, ORP=" + String(orpMl, 0) + " mL");
+    } else {
+      strlcpy(safetyLimits.currentDayDate, todayStr, sizeof(safetyLimits.currentDayDate));
+      saveDailyCounters();
+      systemLogger.info("[Config] Nouveau jour détecté — compteurs remis à 0");
+    }
+  } else {
+    // Heure non synchronisée : restore conservatif (sécurité)
+    safetyLimits.dailyPhInjectedMl  = phMl;
+    safetyLimits.dailyOrpInjectedMl = orpMl;
+    strlcpy(safetyLimits.currentDayDate, savedDate.c_str(), sizeof(safetyLimits.currentDayDate));
+    systemLogger.info("[Config] Heure non synchro — compteurs restaurés conservativement");
+  }
 }

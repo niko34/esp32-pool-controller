@@ -1,16 +1,44 @@
 # Changelog - ESP32 Pool Controller
 
-## [En cours] - 2026-04-23
+## [Unreleased] - 2026-04-24
 
-### Régulation pH — mode Programmée (feature-003 itération 2)
+### Firmware
+- **Persistance compteurs journaliers** : `dailyPhInjectedMl` et `dailyOrpInjectedMl` sont désormais persistés en NVS (namespace `pool-daily`) — les compteurs survivent aux reboots ESP32 et sont restaurés si le jour calendaire est identique
+- **Reset journalier** : aligné sur minuit local (RTC/NTP) au lieu d'une fenêtre glissante 24 h ; `armStabilizationTimer()` est armé au passage de minuit (mitigation double quota)
+- **`kMinValidEpoch`** : constante consolidée dans `src/constants.h` (valeur : 1700000000, 14 nov. 2023)
+- **Raison du dernier reboot** : champ `reset_reason` ajouté dans le payload WebSocket `sensor_data` — valeurs possibles : `POWER_ON`, `SW_RESET`, `WATCHDOG`, `BROWNOUT`, `PANIC`, `DEEP_SLEEP`, `EXTERNAL`, `UNKNOWN` ; constant pendant le runtime
 
-- **Nouveau mode de régulation pH** : `automatic` / `scheduled` / `manual` remplace le booléen `ph_enabled`. Le sélecteur 3 boutons dans la carte Régulation pH sauvegarde immédiatement le mode choisi.
-- **Mode Programmée** : l'utilisateur saisit un volume quotidien en mL à injecter ; le firmware répartit l'injection sur 24 fenêtres horaires. La saisie est bornée par la limite journalière de sécurité côté UI et côté firmware.
-- **Migration automatique** au premier démarrage : `ph_enabled=true` → `ph_regulation_mode=automatic`, `ph_enabled=false` → `ph_regulation_mode=manual`. Aucune action requise.
-- **`ph_enabled` maintenu comme miroir dérivé** (`true` si mode ≠ `manual`) pour ne pas casser les automations MQTT / Home Assistant existantes.
-- **Sécurité** : 5 gardes validés par l'agent pool-chemistry — validation du capteur pH [4.0, 10.0], plafonnement à `maxPhMinusMlPerDay`, garde division par zéro sur le débit, reset quotidien des cycles, vérification `maxCyclesPerDay`.
-- **Nouveaux champs** `ph_regulation_mode` et `ph_daily_target_ml` dans `GET /get-config`, `POST /save-config` et WebSocket config.
-- **Nouveaux topics MQTT** : `{base}/ph_regulation_mode` et `{base}/ph_daily_target_ml` publiés dans `publishTargetState()`.
+### Fonctionnalités
+- **Pages /ph et /orp** : les blocs Statistiques sont grisés (`opacity: 0.5`) lors d'une déconnexion WebSocket — indique visuellement que les données affichées ne sont plus à jour
+- **Toast reboot inattendu** : un toast dismissable s'affiche une fois par session si le champ `reset_reason` indique un reboot inattendu (`WATCHDOG`, `BROWNOUT` ou `PANIC`) — libellé : « Redémarrage inattendu détecté (raison : X) »
+- **Régulation pH** : remplacement du toggle binaire `ph_enabled` par un sélecteur de mode à 3 valeurs (`automatic` / `scheduled` / `manual`)
+- **Régulation pH** : mode Programmée — volume quotidien configurable (mL), injecté pendant les plages de filtration jusqu'au quota journalier
+- **Régulation pH** : migration automatique au premier boot : `ph_enabled=true` → `automatic`, `ph_enabled=false` → `manual`
+- **Limites horaires** : renommage `phInjectionLimitSeconds` → `phInjectionLimitMinutes` (idem ORP) — les limites sont désormais saisies en minutes (1–60) au lieu de secondes ; migration NVS transparente au boot (`ph_limit_sec` → `ph_limit_min`)
+- **Protection pompes** : suppression de `minPauseBetweenMs` — la pause inter-injections configurable est retirée ; la protection contre le short-cycling reste assurée par `minInjectionTimeMs` (30 s) et `maxCyclesPerDay` (20/24 h)
+- **MQTT** : publication des champs `ph_regulation_mode` et `ph_daily_target_ml` dans `publishTargetState()`
+- **Sécurité** : suppression du log du mot de passe WiFi en clair dans les traces de reconnexion
+- **Régulation pH (Programmée)** : refonte de l'algorithme d'injection — la pompe injecte librement pendant la filtration jusqu'à atteindre le quota journalier (`phDailyTargetMl`), sans répartition sur 24 h ; la limite horaire (`phInjectionLimitMinutes`) reste la seule barrière contre l'injection rapide
+- **Régulation ORP** : remplacement du toggle binaire `orp_enabled` par un sélecteur de mode à 3 valeurs (`automatic` / `scheduled` / `manual`)
+- **Régulation ORP** : mode Programmée — volume quotidien de chlore configurable (mL), aveugle au capteur ORP, borné par `maxChlorineMlPerDay` ; PID réinitialisé au retour en mode automatique
+- **Régulation ORP** : migration automatique au premier boot : `orp_enabled=true` → `automatic`, `orp_enabled=false` → `manual` ; champ `orp_enabled` conservé comme miroir pour compatibilité HA
+- **MQTT** : publication des champs `orp_regulation_mode` et `orp_daily_target_ml` dans `publishTargetState()`
+
+### API
+- `GET /get-config` / `POST /save-config` : `ph_limit_seconds` → `ph_limit_minutes`, `orp_limit_seconds` → `orp_limit_minutes` ; suppression de `min_pause_between_min`
+- WebSocket config : mêmes renommages (`ph_limit_minutes`, `orp_limit_minutes`)
+- `GET /get-config` : ajout des champs `orp_regulation_mode`, `orp_daily_target_ml`, `max_orp_ml_per_day`, `orp_cal_valid`
+- `POST /save-config` : validation de `orp_regulation_mode` (enum), `orp_daily_target_ml` (borné par `max_orp_ml_per_day`, HTTP 400 si dépassé)
+
+### Fonctionnalités
+- **Page pH** : sélecteur de mode régulation (Automatique / Programmée / Manuelle) avec sous-blocs conditionnels
+- **Page pH** : mode Programmée avec saisie du volume quotidien (mL) borné par la limite journalière configurée
+- **Paramètres** : champs durée max pH/ORP en minutes (1–60 min/h) au lieu de secondes ; suppression du champ « Pause entre deux injections »
+- **Page ORP** : refonte complète — architecture 4 cartes (Statistiques compact / Régulation / Historique / Calibration conditionnelle)
+- **Page ORP** : sélecteur de mode régulation (Automatique / Programmée / Manuelle) avec sous-blocs conditionnels (symétrie avec page pH)
+- **Page ORP** : mode Programmée avec saisie du volume quotidien de chlore (mL), borné par la limite journalière de sécurité
+- **Page ORP** : calibration accessible uniquement en mode Automatique (bouton Calibrer dans le sous-bloc Automatique) ; carte Calibration en superposition pendant le protocole
+- **Page ORP** : bloc Statistiques compact (ORP actuelle + Dosage du jour) en en-tête de page, hors carte
 
 ---
 

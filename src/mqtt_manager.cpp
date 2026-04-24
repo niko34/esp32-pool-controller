@@ -57,8 +57,10 @@ void MqttManager::refreshTopics() {
   topics.orpTargetState = base + "/orp_target";
   topics.phTargetCommand = base + "/ph_target/set";
   topics.orpTargetCommand = base + "/orp_target/set";
-  topics.phRegulationModeState = base + "/ph_regulation_mode";
-  topics.phDailyTargetMlState  = base + "/ph_daily_target_ml";
+  topics.phRegulationModeState  = base + "/ph_regulation_mode";
+  topics.phDailyTargetMlState   = base + "/ph_daily_target_ml";
+  topics.orpRegulationModeState = base + "/orp_regulation_mode";
+  topics.orpDailyTargetMlState  = base + "/orp_daily_target_ml";
   topics.alertsTopic = base + "/alerts";
   topics.logsTopic = base + "/logs";
   topics.statusTopic = base + "/status";
@@ -209,8 +211,10 @@ void MqttManager::publishTargetState() {
   if (!mqtt.connected()) return;
   publishSensorState(topics.phTargetState,  String(mqttCfg.phTarget,  1));
   publishSensorState(topics.orpTargetState, String(mqttCfg.orpTarget, 0));
-  publishSensorState(topics.phRegulationModeState, mqttCfg.phRegulationMode);
-  publishSensorState(topics.phDailyTargetMlState,  String(mqttCfg.phDailyTargetMl));
+  publishSensorState(topics.phRegulationModeState,  mqttCfg.phRegulationMode);
+  publishSensorState(topics.phDailyTargetMlState,   String(mqttCfg.phDailyTargetMl));
+  publishSensorState(topics.orpRegulationModeState, mqttCfg.orpRegulationMode);
+  publishSensorState(topics.orpDailyTargetMlState,  String(mqttCfg.orpDailyTargetMl));
 }
 
 void MqttManager::publishAlert(const String& alertType, const String& message) {

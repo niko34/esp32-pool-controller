@@ -747,21 +747,14 @@
             <p class="settingsHead__sub">Calibration et régulation du potentiel redox</p>
           </div>
 
-          <div class="card">
-            <div class="card__head">
-              <h2 class="card__title">Régulation ORP</h2>
+          <!-- Bloc Statistiques : compact, sans titre, pas une .card -->
+          <div class="orp-stats" id="orp-card-stats">
+            <div class="orp-stats__col">
+              <div class="readout__label" id="orp_current_label" style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px">Valeur ORP actuelle</div>
+              <div class="readout__value" id="orp_current_value" style="font-size:2rem;font-weight:700;line-height:1">--</div>
+              <div class="muted small" style="margin-top:4px">MAJ auto toutes les 5 secondes</div>
             </div>
-            <div class="card__body">
-              <div class="row row--between" style="margin-bottom:16px">
-                <div>
-                  <p class="row__title" id="label-orp-enabled">Gérer automatiquement la régulation ORP</p>
-                </div>
-                <label class="switch">
-                  <input type="checkbox" id="orp_enabled" aria-labelledby="label-orp-enabled" />
-                  <span class="switch__track"></span>
-                </label>
-              </div>
-
+            <div class="orp-stats__col">
               <div class="daily-dose" id="daily-dose-orp" aria-label="Dosage ORP du jour">
                 <div class="daily-dose__header">
                   <span class="daily-dose__label">Dosage du jour</span>
@@ -771,14 +764,28 @@
                   <div class="daily-dose__bar dose-bar--ok"
                     id="daily-dose-orp-bar"
                     role="progressbar"
-                    aria-valuenow="0"
-                    aria-valuemin="0"
-                    aria-valuemax="100"
+                    aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"
                     style="width:0%"></div>
                 </div>
                 <p class="daily-dose__status" id="daily-dose-orp-status"></p>
               </div>
+            </div>
+          </div>
 
+          <!-- Carte Régulation ORP (visible en mode nominal, masquée pendant calibration) -->
+          <div class="card" id="orp-card-regulation">
+            <div class="card__head">
+              <h2 class="card__title">Régulation ORP</h2>
+            </div>
+            <div class="card__body">
+              <!-- Sélecteur 3 modes -->
+              <div class="segmented" id="orp_regulation_mode" style="margin-bottom:16px">
+                <button class="segmented__btn is-active" data-value="automatic">Automatique</button>
+                <button class="segmented__btn" data-value="scheduled">Programmée</button>
+                <button class="segmented__btn" data-value="manual">Manuelle</button>
+              </div>
+
+              <!-- Sous-bloc Automatique -->
               <div id="orp-regulation-params">
                 <div class="grid grid--2">
                   <label class="field">
@@ -789,34 +796,61 @@
                 <div class="detail-actions" style="margin-top:12px">
                   <button class="btn btn--primary" type="button" id="orp_regulation_save_btn">Sauvegarder</button>
                 </div>
+                <hr style="margin:14px 0;border:none;border-top:1px solid var(--border)">
+                <!-- Infos calibration + bouton Calibrer (uniquement en mode Automatique) -->
+                <div id="orp-calibration-info">
+                  <div class="callout callout--success" id="orp_calibrated_status" style="display:none">
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <span style="font-size:18px">✓</span>
+                      <strong>Calibré</strong>
+                    </div>
+                    <div class="muted small" id="orp_cal_date">Dernière calibration : —</div>
+                  </div>
+                  <div class="detail-actions" style="margin-top:8px">
+                    <button class="btn btn--secondary" type="button" id="orp_cal_trigger_btn">Calibrer</button>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
 
-          <div class="card">
-            <div class="card__head">
-              <h2 class="card__title">Injection manuelle</h2>
-            </div>
-            <div class="card__body">
-              <p class="muted small" style="margin-bottom:14px">
-                Démarre la pompe ORP à la puissance configurée. Utile pour corriger manuellement le taux
-                de chlore ou vérifier le fonctionnement de la pompe, même si la régulation automatique est désactivée.
-                Cliquez à nouveau sur le bouton pour arrêter l'injection avant la fin.
-              </p>
-              <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-                <label style="display:flex;align-items:center;gap:6px;font-size:0.9em">
-                  Volume
-                  <input type="number" id="orp_inject_ml" min="1" max="2000" step="5" value="50"
-                    style="width:70px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:1em">
-                  mL
+              <!-- Sous-bloc Programmée -->
+              <div id="orp-params-scheduled" style="display:none">
+                <label class="field" style="margin-top:12px">
+                  <span class="field__label">Volume quotidien à injecter</span>
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <input type="number" id="orp_daily_target_ml" min="0" step="10" value="0" style="width:100px" />
+                    <span class="muted small">mL</span>
+                  </div>
+                  <span class="field__hint muted small" id="orp_daily_target_hint"></span>
                 </label>
-                <span id="orp_inject_hint" style="font-size:0.85em;color:var(--text-secondary)"></span>
-                <button class="btn btn--secondary" type="button" id="orp_inject_btn">▶ Injecter</button>
+                <div class="detail-actions" style="margin-top:12px">
+                  <button class="btn btn--primary" type="button" id="orp_scheduled_save_btn">Sauvegarder</button>
+                </div>
+              </div>
+
+              <!-- Sous-bloc Injection manuelle (uniquement en mode Manuelle) -->
+              <div id="orp-inject-section" style="display:none">
+                <hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">
+                <p class="muted small" style="margin-bottom:10px">
+                  Démarre la pompe ORP à la puissance configurée. Utile pour corriger manuellement le taux
+                  de chlore ou vérifier le fonctionnement de la pompe. Cliquez à nouveau sur le bouton pour
+                  arrêter l'injection avant la fin.
+                </p>
+                <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+                  <label style="display:flex;align-items:center;gap:6px;font-size:0.9em">
+                    Volume
+                    <input type="number" id="orp_inject_ml" min="1" max="2000" step="5" value="50"
+                      style="width:70px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--input-bg);color:var(--text);font-size:1em">
+                    mL
+                  </label>
+                  <span id="orp_inject_hint" style="font-size:0.85em;color:var(--text-secondary)"></span>
+                  <button class="btn btn--secondary" type="button" id="orp_inject_btn">▶ Injecter</button>
+                </div>
               </div>
             </div>
           </div>
 
-          <div class="card card--detail-chart">
+          <!-- Carte Historique (visible en mode nominal, masquée pendant calibration) -->
+          <div class="card card--detail-chart" id="orp-card-history">
             <div class="card__head">
               <h2 class="card__title">Historique</h2>
               <div class="detail-chart-ranges" data-chart="orp">
@@ -833,32 +867,19 @@
             </div>
           </div>
 
-          <div id="orp-content">
-            <div class="card">
+          <!-- Carte Calibration (masquée par défaut, remplace Régulation + Historique pendant le protocole) -->
+          <div class="card" id="orp-card-calibration" style="display:none">
             <div class="card__head">
               <h2 class="card__title">Calibration de la sonde ORP</h2>
               <div class="muted small" id="orp_cal_date_header">Dernière calibration : —</div>
             </div>
             <div class="card__body">
-              <p class="muted small" style="margin-bottom: 16px;">
+              <p class="muted small" style="margin-bottom:16px">
                 La sonde ORP nécessite une calibration régulière pour garantir des mesures précises.
-                Sans calibration, vous risquez un dosage incorrect et des problèmes de qualité d'eau.
-                Recalibrer tous les 3 mois avec une solution ORP 470 mV.
+                Sans calibration, vous risquez un dosage de chlore incorrect (sous- ou surdosage) et
+                des problèmes de qualité d'eau. Recalibrer tous les 3 mois avec une solution ORP 470 mV
+                (calibration 1 point) ou 470 mV + 650 mV (calibration 2 points).
               </p>
-              <div class="callout callout--success" id="orp_calibrated_status" style="display:none;">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                  <span style="font-size: 18px;">✓</span>
-                  <strong>Calibré</strong>
-                  <span style="margin-left: auto;">✓</span>
-                </div>
-                <div class="muted small" id="orp_cal_date">Dernière calibration : —</div>
-              </div>
-
-              <div class="readout">
-                <div class="readout__label" id="orp_current_label">Valeur ORP actuelle</div>
-                <div class="readout__value" id="orp_current_value">--</div>
-                <div class="readout__sub muted">MAJ auto toutes les 5 secondes</div>
-              </div>
 
               <label class="field">
                 <span class="field__label">Type de calibration</span>
@@ -883,7 +904,7 @@
                     <div class="step__number">3</div>
                     <div class="step__content">
                       <div>Entrer la valeur de référence de la solution d'étalonnage ORP</div>
-                      <input type="number" id="orp_reference_value_1pt" min="0" max="1000" step="1" placeholder="ex: 650 mV" style="margin-top: 8px; width: 100%;" />
+                      <input type="number" id="orp_reference_value_1pt" min="0" max="1000" step="1" placeholder="ex: 470 mV" style="margin-top:8px;width:100%" />
                     </div>
                   </div>
                   <div class="step" id="orp_step4_1pt">
@@ -891,15 +912,14 @@
                     <div class="step__content">Calibrer</div>
                   </div>
                 </div>
-
                 <div class="row row--gap">
                   <button class="btn btn--primary" type="button" id="orp_cal_start_btn_1pt">Commencer la calibration</button>
-                  <button class="btn btn--danger" type="button" id="orp_cal_cancel_btn_1pt" style="display:none;">Annuler</button>
+                  <button class="btn btn--danger" type="button" id="orp_cal_cancel_btn_1pt" style="display:none">Annuler</button>
                 </div>
               </div>
 
               <!-- Calibration 2 points -->
-              <div id="orp_cal_2points" style="display:none;">
+              <div id="orp_cal_2points" style="display:none">
                 <div class="calibration-steps">
                   <div class="step" id="orp_step1_2pt">
                     <div class="step__number">1</div>
@@ -913,7 +933,7 @@
                     <div class="step__number">3</div>
                     <div class="step__content">
                       <div>Entrer la valeur de référence de la solution 1 d'étalonnage ORP</div>
-                      <input type="number" id="orp_ref1" min="0" max="1000" step="1" placeholder="ex: 470 mV" style="margin-top: 8px; width: 100%;" />
+                      <input type="number" id="orp_ref1" min="0" max="1000" step="1" placeholder="ex: 470 mV" style="margin-top:8px;width:100%" />
                     </div>
                   </div>
                   <div class="step" id="orp_step4_2pt">
@@ -932,7 +952,7 @@
                     <div class="step__number">7</div>
                     <div class="step__content">
                       <div>Entrer la valeur de référence de la solution 2 d'étalonnage ORP</div>
-                      <input type="number" id="orp_ref2" min="0" max="1000" step="1" placeholder="ex: 650 mV" style="margin-top: 8px; width: 100%;" />
+                      <input type="number" id="orp_ref2" min="0" max="1000" step="1" placeholder="ex: 650 mV" style="margin-top:8px;width:100%" />
                     </div>
                   </div>
                   <div class="step" id="orp_step8_2pt">
@@ -940,18 +960,15 @@
                     <div class="step__content">Calibrer (2 points)</div>
                   </div>
                 </div>
-
-                <div class="hint" id="orp_2pt_status" style="display:none; margin-bottom: 12px;">
+                <div class="hint" id="orp_2pt_status" style="display:none;margin-bottom:12px">
                   Point 1 mémorisé
                 </div>
-
                 <div class="row row--gap">
                   <button class="btn btn--primary" type="button" id="orp_cal_start_btn_2pt">Commencer la calibration</button>
-                  <button class="btn btn--danger" type="button" id="orp_cal_cancel_btn_2pt" style="display:none;">Annuler</button>
+                  <button class="btn btn--danger" type="button" id="orp_cal_cancel_btn_2pt" style="display:none">Annuler</button>
                 </div>
               </div>
             </div>
-          </div>
           </div>
 
         </section>
@@ -1329,16 +1346,16 @@
 
                   <div class="grid grid--2" style="margin-top: 16px;">
                     <label class="field">
-                      <span class="field__label">pH — durée max / heure (s)</span>
-                      <input type="number" id="ph_limit" min="0" step="1" value="300" style="width:120px;" />
+                      <span class="field__label">pH — durée max / heure (min/h)</span>
+                      <input type="number" id="ph_limit" min="1" max="60" step="1" value="5" style="width:120px;" />
                     </label>
                     <label class="field">
                       <span class="field__label">pH — volume max / jour (ml)</span>
                       <input type="number" id="ph_daily_limit" min="0" step="10" value="300" style="width:120px;" />
                     </label>
                     <label class="field">
-                      <span class="field__label">ORP — durée max / heure (s)</span>
-                      <input type="number" id="orp_limit" min="0" step="1" value="600" style="width:120px;" />
+                      <span class="field__label">ORP — durée max / heure (min/h)</span>
+                      <input type="number" id="orp_limit" min="1" max="60" step="1" value="10" style="width:120px;" />
                     </label>
                     <label class="field">
                       <span class="field__label">ORP — volume max / jour (ml)</span>
@@ -1348,14 +1365,6 @@
                   <div class="muted small" style="margin-top: 8px;">
                     <strong>Durée max / heure</strong> : temps total d'injection autorisé dans une fenêtre glissante d'1h — limite la durée d'un cycle et protège contre l'inertie (mélange lent dans un grand bassin).<br>
                     <strong>Volume max / jour</strong> : seuil de sécurité absolu — le dosage s'arrête et une alerte est émise si ce volume est atteint.
-                  </div>
-
-                  <label class="field" style="margin-top: 16px;">
-                    <span class="field__label">Pause entre deux injections (minutes)</span>
-                    <input type="number" class="form-control" id="min_pause_between_min" min="1" max="120" step="1" value="30" style="width:120px;">
-                  </label>
-                  <div class="muted small" style="margin-top: 8px;">
-                    Temps d'attente minimum entre la fin d'une injection et le début de la suivante. Doit être suffisant pour que le correcteur se diffuse jusqu'aux capteurs. Recommandé : 20–30 min pour une piscine de 30–60 m³, 10–15 min pour un spa ou bassin &lt; 20 m³.
                   </div>
 
                   <label class="field" style="margin-top: 16px;">

@@ -48,16 +48,17 @@ struct MqttConfig {
   int orpPump = 2;
   uint8_t pump1MaxDutyPct = 50;    // Puissance maximale pompe 1 en régulation (0-100 %)
   uint8_t pump2MaxDutyPct = 50;    // Puissance maximale pompe 2 en régulation (0-100 %)
-  uint32_t minPauseBetweenMin = 30; // Pause min entre deux injections (minutes)
   float pumpMaxFlowMlPerMin = 90.0f; // Débit maximal pompes (ml/min)
-  int phInjectionLimitSeconds = 300;   // Max 5 min d'injection par fenêtre d'1h
-  int orpInjectionLimitSeconds = 600;  // Max 10 min d'injection par fenêtre d'1h
+  int phInjectionLimitMinutes = 5;    // Max 5 min d'injection par fenêtre d'1h
+  int orpInjectionLimitMinutes = 10;  // Max 10 min d'injection par fenêtre d'1h
   String regulationMode = "pilote";  // "continu" ou "pilote"
   int stabilizationDelayMin = 5;     // Délai de stabilisation avant dosage (minutes)
   String regulationSpeed = "normal"; // Vitesse de correction PID : "slow", "normal", "fast"
   String phCorrectionType = "ph_minus";  // "ph_minus" (acide) ou "ph_plus" (base)
   String phRegulationMode = "automatic"; // "automatic" / "scheduled" / "manual"
   int phDailyTargetMl = 0;               // Volume quotidien cible (mL) pour le mode programmée
+  String orpRegulationMode = "automatic"; // "automatic" / "scheduled" / "manual"
+  int orpDailyTargetMl = 0;               // Volume quotidien cible (mL) pour le mode Programmée ORP
   bool timeUseNtp = true;
   String ntpServer = "pool.ntp.org";
   String manualTimeIso = "";
@@ -145,12 +146,12 @@ struct SafetyLimits {
   unsigned long dayStartTimestamp = 0;
   bool phLimitReached = false;
   bool orpLimitReached = false;
+  char currentDayDate[9] = {};  // YYYYMMDD\0 — date locale du dernier reset journalier
 };
 
 struct PumpProtection {
   // Protection anti-cycling pour prolonger la durée de vie des pompes
   unsigned long minInjectionTimeMs = 30000;      // 30s minimum par injection
-  unsigned long minPauseBetweenMs = 1800000;     // 30min pause minimum entre injections
   float phStartThreshold = 0.05f;                // Démarre dosage si erreur pH > 0.05
   float phStopThreshold = 0.01f;                 // Continue dosage si erreur pH > 0.01
   float orpStartThreshold = 10.0f;               // Démarre dosage si erreur ORP > 10mV
@@ -194,6 +195,8 @@ extern bool productConfigDirty;
 
 void saveProductConfig();
 void loadProductConfig();
+void saveDailyCounters();
+void loadDailyCounters();
 
 // ==== Mutex pour protection concurrence ====
 // Protège l'accès aux configurations partagées entre loop() et handlers async

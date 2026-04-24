@@ -77,17 +77,20 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["ph_regulation_mode"] = mqttCfg.phRegulationMode;
   doc["ph_daily_target_ml"] = mqttCfg.phDailyTargetMl;
   doc["ph_pump"] = mqttCfg.phPump;
-  doc["orp_enabled"] = mqttCfg.orpEnabled;
+  doc["orp_enabled"] = mqttCfg.orpEnabled;  // miroir : true si orpRegulationMode != manual
+  doc["orp_regulation_mode"] = mqttCfg.orpRegulationMode;
+  doc["orp_daily_target_ml"] = mqttCfg.orpDailyTargetMl;
+  doc["max_orp_ml_per_day"] = safetyLimits.maxChlorineMlPerDay;
+  doc["orp_cal_valid"] = !mqttCfg.orpCalibrationDate.isEmpty();
   doc["orp_pump"] = mqttCfg.orpPump;
   doc["pump1_max_duty_pct"] = mqttCfg.pump1MaxDutyPct;
   doc["pump2_max_duty_pct"] = mqttCfg.pump2MaxDutyPct;
   doc["pump_max_flow_ml_per_min"] = mqttCfg.pumpMaxFlowMlPerMin;
-  doc["ph_limit_seconds"] = mqttCfg.phInjectionLimitSeconds;
-  doc["orp_limit_seconds"] = mqttCfg.orpInjectionLimitSeconds;
+  doc["ph_limit_minutes"] = mqttCfg.phInjectionLimitMinutes;
+  doc["orp_limit_minutes"] = mqttCfg.orpInjectionLimitMinutes;
   doc["regulation_mode"] = mqttCfg.regulationMode;
   doc["stabilization_delay_min"] = mqttCfg.stabilizationDelayMin;
   doc["regulation_speed"] = mqttCfg.regulationSpeed;
-  doc["min_pause_between_min"] = mqttCfg.minPauseBetweenMin;
   doc["ph_correction_type"] = mqttCfg.phCorrectionType;
   doc["time_use_ntp"] = mqttCfg.timeUseNtp;
   doc["ntp_server"] = mqttCfg.ntpServer;
@@ -297,6 +300,28 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     mqttCfg.phDailyTargetMl = dailyMl;
   }
   if (!doc["orp_enabled"].isNull()) mqttCfg.orpEnabled = doc["orp_enabled"];
+  if (!doc["orp_regulation_mode"].isNull()) {
+    String orpRegMode = doc["orp_regulation_mode"].as<String>();
+    if (orpRegMode == "automatic" || orpRegMode == "scheduled" || orpRegMode == "manual") {
+      mqttCfg.orpRegulationMode = orpRegMode;
+      mqttCfg.orpEnabled = (orpRegMode != "manual");
+      systemLogger.info("Mode régulation ORP changé: " + orpRegMode);
+    }
+  }
+  if (!doc["orp_daily_target_ml"].isNull()) {
+    int orpDailyMl = doc["orp_daily_target_ml"].as<int>();
+    if (orpDailyMl < 0) orpDailyMl = 0;
+    if (safetyLimits.maxChlorineMlPerDay > 0.0f &&
+        orpDailyMl > static_cast<int>(safetyLimits.maxChlorineMlPerDay)) {
+      xSemaphoreGiveRecursive(configMutex);
+      request->send(400, "application/json",
+        "{\"error\":\"orp_daily_target_ml d\\u00e9passe la limite journali\\u00e8re\"}");
+      g_configBuffers->erase(request);
+      g_configErrors->erase(request);
+      return;
+    }
+    mqttCfg.orpDailyTargetMl = orpDailyMl;
+  }
   if (!doc["ph_pump"].isNull()) mqttCfg.phPump = doc["ph_pump"];
   if (!doc["orp_pump"].isNull()) mqttCfg.orpPump = doc["orp_pump"];
   if (!doc["pump1_max_duty_pct"].isNull()) mqttCfg.pump1MaxDutyPct = constrain((int)doc["pump1_max_duty_pct"], 0, 100);
@@ -306,8 +331,8 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     phPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
     orpPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
   }
-  if (!doc["ph_limit_seconds"].isNull()) mqttCfg.phInjectionLimitSeconds = doc["ph_limit_seconds"];
-  if (!doc["orp_limit_seconds"].isNull()) mqttCfg.orpInjectionLimitSeconds = doc["orp_limit_seconds"];
+  if (!doc["ph_limit_minutes"].isNull()) mqttCfg.phInjectionLimitMinutes = constrain((int)doc["ph_limit_minutes"], 1, 60);
+  if (!doc["orp_limit_minutes"].isNull()) mqttCfg.orpInjectionLimitMinutes = constrain((int)doc["orp_limit_minutes"], 1, 60);
   if (!doc["regulation_mode"].isNull()) {
     String mode = doc["regulation_mode"].as<String>();
     if (mode == "continu" || mode == "pilote") {
@@ -323,13 +348,6 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     if (speed == "slow" || speed == "normal" || speed == "fast") {
       mqttCfg.regulationSpeed = speed;
       PumpController.applyRegulationSpeed();
-    }
-  }
-  if (!doc["min_pause_between_min"].isNull()) {
-    int v = doc["min_pause_between_min"].as<int>();
-    if (v >= 1 && v <= 120) {
-      mqttCfg.minPauseBetweenMin = (uint32_t)v;
-      pumpProtection.minPauseBetweenMs = mqttCfg.minPauseBetweenMin * 60000UL;
     }
   }
   if (!doc["ph_correction_type"].isNull()) {
@@ -919,7 +937,7 @@ void processWifiReconnectIfNeeded() {
   // Lancer la connexion WiFi (en mode STA ou APSTA selon le cas)
   systemLogger.info("=== DEBUG Reconnexion WiFi ===");
   systemLogger.info("SSID: '" + g_wifiReconnectSsid + "' (longueur: " + String(g_wifiReconnectSsid.length()) + ")");
-  systemLogger.info("Password: '" + g_wifiReconnectPassword + "' (longueur: " + String(g_wifiReconnectPassword.length()) + ")");
+  systemLogger.info("Password: (longueur: " + String(g_wifiReconnectPassword.length()) + ")");
   systemLogger.info("==============================");
 
   // Sauvegarder les anciens credentials AVANT de tenter la connexion

@@ -89,6 +89,10 @@
       if (_wsHeartbeatTimer) { clearTimeout(_wsHeartbeatTimer); _wsHeartbeatTimer = null; }
       if (_wsReconnectTimer) return;  // onerror fires before onclose — schedule only once
       setNetStatus('bad', 'Déconnecté');
+      ['#ph-card-stats', '#orp-card-stats'].forEach(sel => {
+        const el = $(sel);
+        if (el) el.classList.add('is-stale');
+      });
       debugLog('[WS] Disconnected, reconnecting in 3s...');
       _wsReconnectTimer = setTimeout(() => { _wsReconnectTimer = null; initWebSocket(); }, 3000);
     };
@@ -97,6 +101,7 @@
 
   // Heure de démarrage de l'ESP32 estimée à partir de uptime_ms (mis à jour à chaque push sensor_data)
   let _bootEpochMs = null;
+  let _lastNotifiedResetReason = null;
 
   function formatLogTimestamp(ms) {
     if (_bootEpochMs == null || ms == null) return ms ?? '';
@@ -105,8 +110,32 @@
     return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   }
 
+  function _showResetToast(reason) {
+    const existing = document.getElementById('_reset-toast');
+    if (existing) existing.remove();
+    const toast = document.createElement('div');
+    toast.id = '_reset-toast';
+    toast.className = 'reset-toast';
+    const msg = document.createTextNode('Redémarrage inattendu détecté (raison : ' + reason + ') ');
+    const btn = document.createElement('button');
+    btn.textContent = '×';
+    btn.setAttribute('aria-label', 'Fermer');
+    btn.onclick = () => toast.remove();
+    toast.setAttribute('role', 'alert');
+    toast.setAttribute('aria-live', 'assertive');
+    toast.appendChild(msg);
+    toast.appendChild(btn);
+    document.body.appendChild(toast);
+    setTimeout(() => { if (toast.isConnected) toast.remove(); }, 15000);
+  }
+
   function _onWsSensorData(json) {
     if (json.uptime_ms != null) _bootEpochMs = Date.now() - json.uptime_ms;
+    const reason = json.reset_reason;
+    if (reason && !['POWER_ON', 'SW_RESET', 'DEEP_SLEEP'].includes(reason) && reason !== _lastNotifiedResetReason) {
+      _lastNotifiedResetReason = reason;
+      _showResetToast(reason);
+    }
     loadSensorData({ data: json, force: true, source: 'ws' });
   }
 
@@ -1114,14 +1143,13 @@
     const switchMap = {
       filtration: "filtration_enabled",
       lighting: "lighting_feature_enabled",
-      temperature: "temperature_enabled",
-      orp: "orp_enabled"
+      temperature: "temperature_enabled"
+      // orp n'est plus un toggle binaire — la visibilité est gérée par updateOrpModeControls()
     };
     const contentMap = {
       filtration: "filtration-content",
       lighting: "lighting-content",
-      temperature: "temperature-content",
-      orp: "orp-content"
+      temperature: "temperature-content"
     };
     const dashboardCardMap = {
       filtration: "dashboard-filtration-card",
@@ -1163,16 +1191,26 @@
     updatePhModeControls();
   }
 
+  function updateOrpModeControls() {
+    const mode = getSegmented("orp_regulation_mode") || "automatic";
+    const params = $("#orp-regulation-params");      // sous-bloc Automatique
+    const scheduled = $("#orp-params-scheduled");    // sous-bloc Programmée
+    const inject = $("#orp-inject-section");         // Injection manuelle
+    const calInfo = $("#orp-calibration-info");      // Infos calibration + bouton Calibrer
+
+    if (params)    params.style.display    = mode === "automatic"  ? "" : "none";
+    if (scheduled) scheduled.style.display = mode === "scheduled"  ? "" : "none";
+    if (inject)    inject.style.display    = mode === "manual"     ? "" : "none";
+    if (calInfo)   calInfo.style.display   = mode === "automatic"  ? "" : "none";
+  }
+
   function updateOrpControls() {
-    const enabled = $("#orp_enabled")?.checked ?? false;
-    const params = $("#orp-regulation-params");
-    if (params) params.style.display = enabled ? "" : "none";
+    updateOrpModeControls();
     updateFeatureVisibility("orp");
   }
 
   function collectConfig() {
     const mqttEnabled = $("#mqtt_enabled");
-    const orpToggle = $("#orp_enabled");
 
     const portValue = parseInt($("#mqtt_port")?.value || "1883", 10);
     const phValue = parseFloat($("#ph_target")?.value || "7.2");
@@ -1183,8 +1221,8 @@
     const pump1MaxDutyPct = parseInt($("#pump1_max_duty")?.value || "100", 10);
     const pump2MaxDutyPct = parseInt($("#pump2_max_duty")?.value || "100", 10);
 
-    const phLimitValue = parseInt($("#ph_limit")?.value || "300", 10);
-    const orpLimitValue = parseInt($("#orp_limit")?.value || "600", 10);
+    const phLimitValue = parseInt($("#ph_limit")?.value || "5", 10);
+    const orpLimitValue = parseInt($("#orp_limit")?.value || "10", 10);
     const phDailyLimitValue = parseFloat($("#ph_daily_limit")?.value || "300");
     const orpDailyLimitValue = parseFloat($("#orp_daily_limit")?.value || "500");
     const phCorrectionType = $("#ph_correction_type")?.value || "ph_minus";
@@ -1214,12 +1252,14 @@
       ph_regulation_mode: window._config?.ph_regulation_mode || "automatic",
       ph_daily_target_ml: parseInt($("#ph_daily_target_ml")?.value ?? "0", 10) || 0,
       ph_pump: isNaN(phPumpValue) ? 1 : phPumpValue,
-      orp_enabled: orpToggle?.checked === true,
+      orp_regulation_mode: window._config?.orp_regulation_mode || "automatic",
+      orp_enabled: (window._config?.orp_regulation_mode || "automatic") !== "manual",
+      orp_daily_target_ml: parseInt($("#orp_daily_target_ml")?.value ?? "0", 10) || 0,
       orp_pump: isNaN(orpPumpValue) ? 2 : orpPumpValue,
       pump1_max_duty_pct: isNaN(pump1MaxDutyPct) ? 50 : Math.min(100, Math.max(0, pump1MaxDutyPct)),
       pump2_max_duty_pct: isNaN(pump2MaxDutyPct) ? 50 : Math.min(100, Math.max(0, pump2MaxDutyPct)),
-      ph_limit_seconds: isNaN(phLimitValue) ? 300 : phLimitValue,
-      orp_limit_seconds: isNaN(orpLimitValue) ? 600 : orpLimitValue,
+      ph_limit_minutes: isNaN(phLimitValue) ? 5 : Math.min(60, Math.max(1, phLimitValue)),
+      orp_limit_minutes: isNaN(orpLimitValue) ? 10 : Math.min(60, Math.max(1, orpLimitValue)),
       max_ph_ml_per_day: isNaN(phDailyLimitValue) ? 300 : phDailyLimitValue,
       max_chlorine_ml_per_day: isNaN(orpDailyLimitValue) ? 500 : orpDailyLimitValue,
       ph_correction_type: phCorrectionType,
@@ -1313,7 +1353,17 @@
     const hint = $("#ph_daily_target_hint");
     if (hint) hint.textContent = maxMl > 0 ? `limite de sécurité : ${maxMl} mL` : "";
     if ($("#ph_daily_target_ml") && maxMl > 0) $("#ph_daily_target_ml").max = maxMl;
-    $("#orp_enabled").checked = cfg.orp_enabled === true;
+
+    // ORP regulation mode
+    setSegmented("orp_regulation_mode", cfg.orp_regulation_mode || "automatic");
+    updateOrpModeControls();
+    if ($("#orp_daily_target_ml") && cfg.orp_daily_target_ml != null)
+      $("#orp_daily_target_ml").value = cfg.orp_daily_target_ml;
+    const maxOrpMl = typeof cfg.max_orp_ml_per_day === "number" ? cfg.max_orp_ml_per_day
+                   : (typeof cfg.max_chlorine_ml_per_day === "number" ? cfg.max_chlorine_ml_per_day : 0);
+    const orpHint = $("#orp_daily_target_hint");
+    if (orpHint) orpHint.textContent = maxOrpMl > 0 ? `limite de sécurité : ${maxOrpMl} mL` : "";
+    if ($("#orp_daily_target_ml") && maxOrpMl > 0) $("#orp_daily_target_ml").max = maxOrpMl;
     updateFeatureVisibility("orp");
 
     $("#ph_pump").value = cfg.ph_pump === 2 ? "2" : "1";
@@ -1325,14 +1375,11 @@
     if ($("#pump2_max_duty")) { $("#pump2_max_duty").value = p2max; $("#pump2_max_duty_value").textContent = String(p2max); }
     if ($("#pump_max_flow_ml_per_min")) $("#pump_max_flow_ml_per_min").value = typeof cfg.pump_max_flow_ml_per_min === "number" ? cfg.pump_max_flow_ml_per_min : 90;
 
-    $("#ph_limit").value = typeof cfg.ph_limit_seconds === "number" ? cfg.ph_limit_seconds : 300;
-    $("#orp_limit").value = typeof cfg.orp_limit_seconds === "number" ? cfg.orp_limit_seconds : 600;
+    $("#ph_limit").value = typeof cfg.ph_limit_minutes === "number" ? cfg.ph_limit_minutes : 5;
+    $("#orp_limit").value = typeof cfg.orp_limit_minutes === "number" ? cfg.orp_limit_minutes : 10;
     $("#ph_daily_limit").value = typeof cfg.max_ph_ml_per_day === "number" ? cfg.max_ph_ml_per_day : 300;
     $("#orp_daily_limit").value = typeof cfg.max_chlorine_ml_per_day === "number" ? cfg.max_chlorine_ml_per_day : 500;
     $("#regulation_mode").value = cfg.regulation_mode || "pilote";
-    if ($("#min_pause_between_min") && cfg.min_pause_between_min != null) {
-      $("#min_pause_between_min").value = cfg.min_pause_between_min;
-    }
     if ($("#stabilization_delay_min") && cfg.stabilization_delay_min != null) {
       $("#stabilization_delay_min").value = cfg.stabilization_delay_min;
     }
@@ -1872,8 +1919,8 @@
     if (sensor === "orp" && data.orp_limit_reached)  return "Limite journalière atteinte";
 
     const usedMs    = sensor === "ph" ? (data.ph_used_ms  || 0) : (data.orp_used_ms  || 0);
-    const limitSec  = sensor === "ph" ? (config.ph_limit_seconds || 0) : (config.orp_limit_seconds || 0);
-    if (limitSec > 0 && usedMs >= limitSec * 1000) return "Limite de durée atteinte";
+    const limitMin  = sensor === "ph" ? (config.ph_limit_minutes || 0) : (config.orp_limit_minutes || 0);
+    if (limitMin > 0 && usedMs >= limitMin * 60000) return "Limite de durée atteinte";
 
     return "";  // Pas d'erreur identifiée (pause anti-cycling ou valeur OK)
   }
@@ -2491,6 +2538,7 @@
         }
 
         latestSensorData = json;
+        document.querySelectorAll('.is-stale').forEach(el => el.classList.remove('is-stale'));
         updateFiltrationControls(); // Réévaluer la disponibilité du mode Auto après réception des données
 
         // Les données serveur font autorité — lever l'override optimiste
@@ -3081,11 +3129,55 @@
     }
   }
 
+  function showOrpCalibrationCard() {
+    const reg = $("#orp-card-regulation");
+    const hist = $("#orp-card-history");
+    const cal = $("#orp-card-calibration");
+    const calBtn = $("#orp_cal_trigger_btn");
+    if (reg) reg.style.display = "none";
+    if (hist) hist.style.display = "none";
+    if (cal) cal.style.display = "";
+    if (calBtn) calBtn.disabled = true;
+    // Masquer le bloc calibration-info pendant la calibration (il disparait avec la carte Régulation)
+    const calInfo = $("#orp-calibration-info");
+    if (calInfo) calInfo.style.display = "none";
+  }
+
+  function hideOrpCalibrationCard() {
+    const reg = $("#orp-card-regulation");
+    const hist = $("#orp-card-history");
+    const cal = $("#orp-card-calibration");
+    const calBtn = $("#orp_cal_trigger_btn");
+    if (reg) reg.style.display = "";
+    if (hist) hist.style.display = "";
+    if (cal) cal.style.display = "none";
+    if (calBtn) calBtn.disabled = false;
+    // Restaure la visibilité selon le mode actif
+    updateOrpModeControls();
+  }
+
   function bindOrpCalibration() {
     const typeSel = $("#orp_cal_type");
     const cal1 = $("#orp_cal_1point");
     const cal2 = $("#orp_cal_2points");
     const calibratedStatus = $("#orp_calibrated_status");
+
+    // Bouton "Calibrer" dans le sous-bloc Automatique de la carte Régulation
+    const triggerBtn = $("#orp_cal_trigger_btn");
+    triggerBtn?.addEventListener("click", () => {
+      if (orpCalibrationActive) return;
+      // Vérifier qu'aucune injection ORP n'est en cours
+      const orpInjecting = (latestSensorData?.orp_inject_remaining_s ?? 0) > 0
+                        || (latestSensorData?.orp_dosing === true);
+      if (orpInjecting) { showToast("Calibration impossible pendant une injection ORP", "error"); return; }
+      orpCalibrationStep1pt = 0;
+      orpCalibrationStep2pt = 0;
+      orpCalibrationActive = true;
+      showOrpCalibrationCard();
+      startCalibrationRefresh();
+      updateOrpCalibrationSteps1pt();
+      updateOrpCalibrationSteps2pt();
+    });
 
     // Type selector
     typeSel?.addEventListener("change", () => {
@@ -3116,6 +3208,7 @@
         stopCalibrationRefresh();
         if (refInput1pt) refInput1pt.value = "";
         updateOrpCalibrationSteps1pt();
+        hideOrpCalibrationCard();
         loadConfig();
       }
     });
@@ -3124,6 +3217,7 @@
       if (orpCalibrationStep1pt === 0) {
         orpCalibrationStep1pt = 1;
         orpCalibrationActive = true;
+        showOrpCalibrationCard();
         startCalibrationRefresh();
         updateOrpCalibrationSteps1pt();
         if (calibratedStatus) calibratedStatus.style.display = "none";
@@ -3186,10 +3280,11 @@
           // Invalider le timestamp pour forcer le rechargement
           lastSensorDataLoadTime = 0;
 
-          // Refresh réel depuis l'ESP
+          // Refresh réel depuis l'ESP puis fermeture de la carte calibration
           await loadConfig();
           await checkCalibrationDate();
           updateOrpCalibrationSteps1pt();
+          hideOrpCalibrationCard();
 
           // Recharger les données après un court délai pour se resynchroniser avec le backend
           setTimeout(async () => {
@@ -3223,6 +3318,7 @@
         if (ref1) ref1.value = "";
         if (ref2) ref2.value = "";
         updateOrpCalibrationSteps2pt();
+        hideOrpCalibrationCard();
         loadConfig();
       }
     });
@@ -3231,6 +3327,7 @@
       if (orpCalibrationStep2pt === 0) {
         orpCalibrationStep2pt = 1;
         orpCalibrationActive = true;
+        showOrpCalibrationCard();
         startCalibrationRefresh();
         updateOrpCalibrationSteps2pt();
         if (calibratedStatus) calibratedStatus.style.display = "none";
@@ -3342,10 +3439,11 @@
           // Invalider le timestamp pour forcer le rechargement
           lastSensorDataLoadTime = 0;
 
-          // Refresh réel depuis l'ESP
+          // Refresh réel depuis l'ESP puis fermeture de la carte calibration
           await loadConfig();
           await checkCalibrationDate();
           updateOrpCalibrationSteps2pt();
+          hideOrpCalibrationCard();
 
           // Recharger les données après un court délai pour se resynchroniser avec le backend
           setTimeout(async () => {
@@ -4115,7 +4213,9 @@
     // Appelé à chaque push sensor_data pour mettre à jour les boutons
     window._updateInjectButtons = (data) => {
       const phInjecting = (data["ph_inject_remaining_s"] ?? 0) > 0;
-      const calBtn = $("#ph_cal_trigger_btn");
+      const orpInjecting = (data["orp_inject_remaining_s"] ?? 0) > 0 || (data["orp_dosing"] === true);
+      const phCalBtn = $("#ph_cal_trigger_btn");
+      const orpCalBtn = $("#orp_cal_trigger_btn");
 
       ["ph", "orp"].forEach(product => {
         const remaining = data[`${product}_inject_remaining_s`] ?? 0;
@@ -4135,9 +4235,12 @@
                 injectInterval[product] = null;
                 btn.textContent = "▶ Injecter";
                 if (mlInput) mlInput.disabled = false;
-                // Réactiver le bouton Calibrer si plus aucune injection pH
-                if (product === "ph" && !phCalibrationActive && calBtn) {
-                  calBtn.disabled = false;
+                // Réactiver le bouton Calibrer si plus aucune injection
+                if (product === "ph" && !phCalibrationActive && phCalBtn) {
+                  phCalBtn.disabled = false;
+                }
+                if (product === "orp" && !orpCalibrationActive && orpCalBtn) {
+                  orpCalBtn.disabled = false;
                 }
                 return;
               }
@@ -4156,8 +4259,12 @@
       });
 
       // Désactiver le bouton Calibrer pendant l'injection pH
-      if (calBtn && !phCalibrationActive) {
-        calBtn.disabled = phInjecting;
+      if (phCalBtn && !phCalibrationActive) {
+        phCalBtn.disabled = phInjecting;
+      }
+      // Désactiver le bouton Calibrer ORP pendant l'injection ORP
+      if (orpCalBtn && !orpCalibrationActive) {
+        orpCalBtn.disabled = orpInjecting;
       }
     };
 
@@ -4294,7 +4401,7 @@
   function bindRegulationSave(sensor, btnSelector) {
     const fields = sensor === "ph"
       ? ["ph_target", "ph_correction_type"]
-      : ["orp_enabled", "orp_target"];
+      : ["orp_target"];
     trackDirtyState(btnSelector, fields);
     const saveBtn = $(btnSelector);
     if (!saveBtn) return;
@@ -4403,13 +4510,36 @@
         else { setSchedBtn("Erreur", false, false, "error"); setTimeout(() => setSchedBtn("Sauvegarder", false, false, "default"), 2000); }
       });
     }
-    $("#orp_enabled")?.addEventListener("change", () => {
-      const val = $("#orp_enabled").checked;
-      if (window._config) window._config.orp_enabled = val;
-      updateOrpControls();
-      updateStatusCards();
-      sendConfig({ orp_enabled: val }).then((ok) => { if (ok) loadConfig(); });
+    // ORP regulation — sauvegarde immédiate sur le sélecteur de mode
+    initSegmented("orp_regulation_mode");
+    $$(`#orp_regulation_mode .segmented__btn`).forEach(btn => {
+      btn.addEventListener("click", () => {
+        updateOrpModeControls();
+        const mode = btn.dataset.value;
+        if (window._config) { window._config.orp_regulation_mode = mode; window._config.orp_enabled = (mode !== "manual"); }
+        sendConfig({ orp_regulation_mode: mode }).then(ok => { if (ok) loadConfig(); });
+      });
     });
+    const orpSchedBtn = $("#orp_scheduled_save_btn");
+    if (orpSchedBtn) {
+      const setOrpSchedBtn = (label, spinner, disabled, status) => {
+        orpSchedBtn.disabled = disabled;
+        orpSchedBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
+        orpSchedBtn.classList.add(status === "success" ? "btn--ok" : status === "error" ? "btn--danger" : "btn--primary");
+        orpSchedBtn.innerHTML = spinner ? `<span class="btn__spinner"></span><span>${label}</span>` : label;
+      };
+      orpSchedBtn.addEventListener("click", async () => {
+        if (orpSchedBtn.disabled) return;
+        const rawVal = parseInt($("#orp_daily_target_ml")?.value ?? "0", 10);
+        const maxOrpMl = typeof window._config?.max_orp_ml_per_day === "number" ? window._config.max_orp_ml_per_day
+                       : (typeof window._config?.max_chlorine_ml_per_day === "number" ? window._config.max_chlorine_ml_per_day : 0);
+        if (maxOrpMl > 0 && rawVal > maxOrpMl) { showToast(`Volume supérieur à la limite journalière (${maxOrpMl} mL)`, "error"); return; }
+        setOrpSchedBtn("Sauvegarde...", true, true, "default");
+        const ok = await sendConfig({ orp_daily_target_ml: isNaN(rawVal) ? 0 : Math.max(0, rawVal) });
+        if (ok) { setOrpSchedBtn("Sauvegarde réussie", false, true, "success"); setTimeout(() => setOrpSchedBtn("Sauvegarder", false, false, "default"), 2000); }
+        else { setOrpSchedBtn("Erreur", false, false, "error"); setTimeout(() => setOrpSchedBtn("Sauvegarder", false, false, "default"), 2000); }
+      });
+    }
     ["ph_target", "ph_limit", "ph_daily_limit", "ph_correction_type"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => updatePhControls()));
     ["orp_target", "orp_limit", "orp_daily_limit"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => updateOrpControls()));
     bindRegulationSave("ph",  "#ph_regulation_save_btn");
@@ -4418,21 +4548,19 @@
     initSegmented("regulation_speed");
     $("#regulation_save_btn")?.addEventListener("click", async () => {
       const mode = $("#regulation_mode")?.value || "pilote";
-      const pause = parseInt($("#min_pause_between_min")?.value ?? "30", 10);
       const delay = parseInt($("#stabilization_delay_min")?.value ?? "5", 10);
       const speed = getSegmented("regulation_speed") || "normal";
-      const phLimit = parseInt($("#ph_limit")?.value ?? "300", 10);
+      const phLimit = parseInt($("#ph_limit")?.value ?? "5", 10);
       const phDaily = parseFloat($("#ph_daily_limit")?.value ?? "300");
-      const orpLimit = parseInt($("#orp_limit")?.value ?? "600", 10);
+      const orpLimit = parseInt($("#orp_limit")?.value ?? "10", 10);
       const orpDaily = parseFloat($("#orp_daily_limit")?.value ?? "500");
       const ok = await sendConfig({
         regulation_mode: mode,
-        min_pause_between_min: isNaN(pause) ? 30 : Math.min(120, Math.max(1, pause)),
         stabilization_delay_min: isNaN(delay) ? 5 : Math.min(60, Math.max(0, delay)),
         regulation_speed: speed,
-        ph_limit_seconds:        isNaN(phLimit)  ? 300 : Math.max(0, phLimit),
+        ph_limit_minutes:        isNaN(phLimit)  ? 5  : Math.min(60, Math.max(1, phLimit)),
         max_ph_ml_per_day:       isNaN(phDaily)  ? 300 : Math.max(0, phDaily),
-        orp_limit_seconds:       isNaN(orpLimit) ? 600 : Math.max(0, orpLimit),
+        orp_limit_minutes:       isNaN(orpLimit) ? 10 : Math.min(60, Math.max(1, orpLimit)),
         max_chlorine_ml_per_day: isNaN(orpDaily) ? 500 : Math.max(0, orpDaily),
       });
       if (ok) showToast("Enregistré", "success");

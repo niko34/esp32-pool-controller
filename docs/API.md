@@ -309,7 +309,6 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "enabled": true,
   "regulation_mode": "pilote",
   "regulation_speed": "normal",
-  "min_pause_between_min": 30,
   "stabilization_delay_min": 5,
   "ph_correction_type": "ph_minus",
   "ph_target": 7.2,
@@ -321,8 +320,8 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "orp_pump": 2,
   "pump2_max_duty_pct": 50,
   "pump_max_flow_ml_per_min": 90,
-  "ph_limit_seconds": 300,
-  "orp_limit_seconds": 300,
+  "ph_limit_minutes": 5,
+  "orp_limit_minutes": 10,
   "time_use_ntp": true,
   "ntp_server": "pool.ntp.org",
   "timezone_id": "europe_paris",
@@ -352,14 +351,20 @@ Champs notables de la réponse :
 |-------|------|-------------|
 | `regulation_mode` | string | `"pilote"` (suit la filtration) ou `"continu"` |
 | `regulation_speed` | string | `"slow"` / `"normal"` / `"fast"` — préréglages PID |
-| `min_pause_between_min` | integer | Pause minimale entre deux injections (minutes, 1–120) |
 | `stabilization_delay_min` | integer | Délai de stabilisation capteurs après démarrage filtration (0–60 min) |
+| `ph_limit_minutes` | integer | Durée max d'injection pH par fenêtre glissante d'1 h (minutes, 1–60) |
+| `orp_limit_minutes` | integer | Durée max d'injection ORP par fenêtre glissante d'1 h (minutes, 1–60) |
 | `pump1_max_duty_pct` | integer | Puissance maximale pompe 1 en régulation (0–100 %) |
 | `pump2_max_duty_pct` | integer | Puissance maximale pompe 2 en régulation (0–100 %) |
 | `pump_max_flow_ml_per_min` | float | Débit nominal des pompes à 100 % de puissance (mL/min) |
 | `ph_regulation_mode` | string | Mode de régulation pH : `"automatic"` (PID vers ph_target), `"scheduled"` (volume quotidien réparti sur 24 h), `"manual"` (aucune régulation automatique) |
-| `ph_daily_target_ml` | integer | Volume quotidien cible en mL pour le mode Programmée (0 = désactivé, borné par `max_ph_ml_per_day`) |
+| `ph_daily_target_ml` | integer | Volume quotidien cible en mL pour le mode Programmée pH (0 = désactivé, borné par `max_ph_ml_per_day`) |
 | `ph_enabled` | boolean | Miroir dérivé de `ph_regulation_mode` : `true` si mode ≠ `"manual"`. Maintenu pour compatibilité MQTT / HA. |
+| `orp_regulation_mode` | string | Mode de régulation ORP : `"automatic"` (PID vers orp_target), `"scheduled"` (volume quotidien de chlore, aveugle au capteur), `"manual"` (aucune régulation automatique) |
+| `orp_daily_target_ml` | integer | Volume quotidien cible en mL pour le mode Programmée ORP (0 = désactivé, borné par `max_orp_ml_per_day`) |
+| `orp_enabled` | boolean | Miroir dérivé de `orp_regulation_mode` : `true` si mode ≠ `"manual"`. Maintenu pour compatibilité MQTT / HA. |
+| `max_orp_ml_per_day` | float | Limite journalière ORP configurée (mL) — alias de `max_chlorine_ml_per_day` |
+| `orp_cal_valid` | boolean | `true` si une calibration ORP a déjà été enregistrée (date non vide) |
 
 **`POST /save-config` — champs pH spécifiques :**
 
@@ -367,6 +372,13 @@ Champs notables de la réponse :
 |-------|------|------------|
 | `ph_regulation_mode` | string | Valeurs acceptées : `"automatic"`, `"scheduled"`, `"manual"`. Toute autre valeur est ignorée. Met à jour `ph_enabled` automatiquement. |
 | `ph_daily_target_ml` | integer | Doit être ≥ 0 et ≤ `max_ph_ml_per_day` (si configuré). Retourne HTTP 400 si la limite est dépassée. |
+
+**`POST /save-config` — champs ORP spécifiques :**
+
+| Champ | Type | Validation |
+|-------|------|------------|
+| `orp_regulation_mode` | string | Valeurs acceptées : `"automatic"`, `"scheduled"`, `"manual"`. Toute autre valeur est ignorée. Met à jour `orp_enabled` automatiquement. |
+| `orp_daily_target_ml` | integer | Doit être ≥ 0 et ≤ `max_orp_ml_per_day` (si configuré). Retourne HTTP 400 si la limite est dépassée. |
 
 ---
 
@@ -509,6 +521,68 @@ Désactive le mode point d'accès.
 ```bash
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/wifi/ap/disable
 ```
+
+---
+
+## WebSocket temps réel
+
+### WS /ws — WRITE
+
+Flux temps réel basse latence. L'ESP32 pousse un message JSON à chaque changement d'état significatif (mesures capteurs, dosage, configuration).
+
+**Connexion**
+
+```js
+const ws = new WebSocket('ws://poolcontroller.local/ws');
+```
+
+**Message d'état courant** (poussé à la connexion puis à chaque changement)
+
+```json
+{
+  "ph": 7.31,
+  "orp": 718,
+  "temperature": 24.5,
+  "filtration_running": true,
+  "ph_dosing": false,
+  "orp_dosing": false,
+  "ph_daily_ml": 45.2,
+  "orp_daily_ml": 120.5,
+  "ph_regulation_mode": "automatic",
+  "ph_daily_target_ml": 0,
+  "orp_regulation_mode": "automatic",
+  "orp_daily_target_ml": 0,
+  "max_orp_ml_per_day": 1000,
+  "orp_cal_valid": true,
+  "reset_reason": "POWER_ON"
+}
+```
+
+Champs notables liés à la régulation pH :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `ph_regulation_mode` | string | Mode actif : `"automatic"`, `"scheduled"` ou `"manual"` |
+| `ph_daily_target_ml` | integer | Volume quotidien programmé (mL) — pertinent uniquement en mode `"scheduled"` |
+
+Champ système :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `reset_reason` | string | Raison du dernier reboot ESP32. Constant pendant tout le runtime. Valeurs possibles : `"POWER_ON"` (mise sous tension), `"SW_RESET"` (reboot logiciel, inclut les OTA), `"WATCHDOG"` (timeout watchdog matériel ou tâche), `"BROWNOUT"` (sous-tension), `"PANIC"` (exception / crash firmware), `"DEEP_SLEEP"` (réveil depuis veille profonde), `"EXTERNAL"` (signal RESET externe), `"UNKNOWN"` (autre). |
+
+> Le champ `reset_reason` est absent des versions antérieures à la branche `feature-003` itération 4. L'UI se comporte gracieusement si le champ est absent (aucun toast affiché).
+
+Champs notables liés à la régulation ORP :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `orp_regulation_mode` | string | Mode actif : `"automatic"`, `"scheduled"` ou `"manual"` |
+| `orp_daily_target_ml` | integer | Volume quotidien programmé de chlore (mL) — pertinent uniquement en mode `"scheduled"` |
+| `max_orp_ml_per_day` | float | Limite journalière ORP (mL) — utilisée pour borner la saisie côté UI |
+| `orp_cal_valid` | boolean | `true` si une calibration ORP a été enregistrée |
+
+> Le WebSocket pousse la configuration complète à la connexion initiale ; les mises à jour suivantes sont différentielles (seuls les champs modifiés sont inclus).
 
 ---
 

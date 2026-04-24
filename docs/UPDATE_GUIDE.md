@@ -82,6 +82,45 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 
 ## Notes de migration
 
+### Persistance des compteurs journaliers en NVS (`pool-daily`) — depuis 2026-04-24
+
+**Contexte :** avant cette version, les compteurs `dailyPhInjectedMl` et `dailyOrpInjectedMl` étaient stockés uniquement en RAM. Tout reboot (watchdog, brownout, coupure secteur, OTA) les remettait silencieusement à zéro, contournant potentiellement la limite journalière de sécurité.
+
+**Comportement après mise à jour :**
+
+- Les compteurs sont persistés en NVS (namespace `pool-daily`, clés `ph_daily_ml`, `orp_daily_ml`, `daily_date`).
+- Au boot, si la date locale (RTC/NTP) est la même que celle enregistrée en NVS, les compteurs sont restaurés.
+- Si NTP/RTC n'est pas encore synchronisé au boot, les valeurs NVS sont restaurées de façon conservatrice (hypothèse même jour).
+
+**Aucune migration nécessaire :** au premier boot après mise à jour, le namespace `pool-daily` n'existe pas encore — les compteurs démarrent à 0, ce qui est le comportement attendu.
+
+**Reset journalier :** le reset est désormais aligné sur **minuit local** (heure RTC/NTP) et non sur une fenêtre glissante de 24 h depuis le dernier boot.
+
+> ⚠️ **Recommandation :** configurer `stabilizationDelayMin ≥ 5 min` (Paramètres → Régulation) pour bénéficier d'une protection anti-double-quota au passage de minuit. Si ce paramètre est à `0`, le dosage peut reprendre immédiatement après le reset de minuit alors que la journée précédente venait d'atteindre son quota.
+
+---
+
+### Mode de régulation ORP (`orp_regulation_mode`) — depuis 2026-04-24
+
+**Contexte :** avant cette version, la régulation ORP était pilotée par un booléen `orp_enabled`. Ce champ est remplacé par un enum `orp_regulation_mode` à trois valeurs (`automatic`, `scheduled`, `manual`).
+
+**Migration automatique au premier démarrage :**
+
+| Ancienne valeur | Nouvelle valeur |
+|----------------|----------------|
+| `orp_enabled = true` | `orp_regulation_mode = "automatic"` |
+| `orp_enabled = false` | `orp_regulation_mode = "manual"` |
+
+Aucune action requise. Le firmware effectue la migration à la première lecture de la NVS si la clé `orp_reg_mode` est absente.
+
+**Compatibilité MQTT / Home Assistant :** le champ `orp_enabled` est conservé comme miroir dérivé (`true` si mode ≠ `manual`). Les automations Home Assistant utilisant ce champ continuent de fonctionner sans modification.
+
+**Nouveau mode Programmée :** en mode `scheduled`, le firmware injecte un volume fixe de chlore par jour (`orp_daily_target_ml` mL), indépendamment de la valeur mesurée par le capteur ORP. Ce mode est adapté aux situations où le capteur ORP est en cours de remplacement ou de calibration. La limite journalière (`max_chlorine_ml_per_day`) reste appliquée.
+
+**Nouveau champ `orp_daily_target_ml` :** initialisé à `0` (aucune injection programmée). À configurer dans la page ORP, onglet Programmée, si vous souhaitez utiliser ce mode.
+
+---
+
 ### Mode de régulation pH (`ph_regulation_mode`) — depuis 2026-04-23
 
 **Contexte :** avant cette version, la régulation pH était pilotée par un booléen `ph_enabled`. Ce champ est remplacé par un enum `ph_regulation_mode` à trois valeurs (`automatic`, `scheduled`, `manual`).

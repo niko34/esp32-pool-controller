@@ -16,7 +16,6 @@ namespace {
 fs::LittleFSFS historyFs;
 fs::FS* historyStore = &LittleFS;
 const char* historyFilePath = "/history.json";
-constexpr time_t kMinValidEpoch = 1609459200;  // 2021-01-01
 unsigned long lastKnownEpoch = 0;
 bool warnedUnsynced = false;
 bool warnedEstimated = false;

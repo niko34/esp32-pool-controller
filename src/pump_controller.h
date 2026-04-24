@@ -74,6 +74,13 @@ private:
   std::atomic<bool> _resetRequested{false};
   std::atomic<bool> _phPauseResetRequested{false};
 
+  // Persistance des compteurs journaliers en NVS
+  static bool _dailyLoaded;          // Chargement différé effectué (attend NTP)
+  static bool _dailyCountersDirty;   // Indique qu'une sauvegarde est en attente
+  static unsigned long _lastDailySaveMs; // Timestamp dernier flush NVS
+  static bool _phWasActive;          // État pH précédent (détection démarrage injection)
+  static bool _orpWasActive;         // État ORP précédent
+
 public:
   PumpControllerClass();
 
