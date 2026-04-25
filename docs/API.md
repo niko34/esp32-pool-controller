@@ -571,7 +571,7 @@ Champ système :
 |-------|------|-------------|
 | `reset_reason` | string | Raison du dernier reboot ESP32. Constant pendant tout le runtime. Valeurs possibles : `"POWER_ON"` (mise sous tension), `"SW_RESET"` (reboot logiciel, inclut les OTA), `"WATCHDOG"` (timeout watchdog matériel ou tâche), `"BROWNOUT"` (sous-tension), `"PANIC"` (exception / crash firmware), `"DEEP_SLEEP"` (réveil depuis veille profonde), `"EXTERNAL"` (signal RESET externe), `"UNKNOWN"` (autre). |
 
-> Le champ `reset_reason` est absent des versions antérieures à la branche `feature-003` itération 4. L'UI se comporte gracieusement si le champ est absent (aucun toast affiché).
+> Le champ `reset_reason` est absent des versions antérieures à la v2.5.x. L'UI se comporte gracieusement si le champ est absent (aucun toast affiché).
 
 Champs notables liés à la régulation ORP :
 
@@ -616,6 +616,59 @@ Règle la puissance PWM d'une pompe (0–255).
 
 ```bash
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/duty/128
+```
+
+---
+
+### POST /ph/inject/start — WRITE
+
+Démarre une injection manuelle pH à la puissance configurée (`pump1_max_duty_pct` ou `pump2_max_duty_pct` selon `ph_pump`). La durée est calculée à partir du volume demandé et du débit nominal de la pompe.
+
+> ⚠️ **L'injection manuelle NE VÉRIFIE PAS les gardes de régulation** : elle ignore la limite horaire (`ph_limit_minutes`), la limite journalière (`max_ph_ml_per_day`), le délai de stabilisation, l'état de la filtration et le mode de régulation. Le volume injecté **est compté** dans le cumul journalier (`ph_daily_ml`) et peut donc le dépasser. Responsabilité opérateur. Voir [docs/subsystems/pump-controller.md](subsystems/pump-controller.md) et [docs/features/page-ph.md](features/page-ph.md).
+
+Paramètres (querystring, exclusifs) :
+
+| Paramètre | Type | Validation |
+|-----------|------|------------|
+| `volume` | float (mL) | 1 – 2000 (mode préféré) |
+| `duration` | integer (secondes) | fallback legacy, borné 1 – 3600 |
+
+```bash
+curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/ph/inject/start?volume=15"
+```
+
+Réponse : `200 OK` / `400` si le paramètre est manquant ou hors plage.
+
+---
+
+### POST /ph/inject/stop — WRITE
+
+Arrête immédiatement l'injection manuelle pH en cours.
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/ph/inject/stop
+```
+
+---
+
+### POST /orp/inject/start — WRITE
+
+Identique à `/ph/inject/start` pour la pompe ORP (`orp_pump`). Mêmes paramètres et contraintes.
+
+> ⚠️ **Même avertissement que `/ph/inject/start`** : les limites horaire / journalière / stabilisation / filtration ne sont PAS vérifiées. Le volume est compté dans `orp_daily_ml` et peut dépasser `max_chlorine_ml_per_day`. Voir [docs/subsystems/pump-controller.md](subsystems/pump-controller.md) et [docs/features/page-orp.md](features/page-orp.md).
+
+```bash
+curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/orp/inject/start?volume=50"
+```
+
+---
+
+### POST /orp/inject/stop — WRITE
+
+Arrête immédiatement l'injection manuelle ORP en cours.
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/orp/inject/stop
 ```
 
 ---

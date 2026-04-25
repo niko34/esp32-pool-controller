@@ -1,110 +1,85 @@
-# Guide de compilation
+# Guide de compilation et déploiement
 
-## Table des partitions
-
-Le projet utilise une table de partitions personnalisée pour ESP32 4MB:
-
-| Partition | Offset     | Taille  | Usage |
-|-----------|------------|---------|-------|
-| nvs       | 0x9000     | 20KB    | Configuration NVS |
-| otadata   | 0xE000     | 8KB     | Métadonnées OTA |
-| app0      | 0x10000    | 1344KB  | Firmware slot 0 (OTA) |
-| app1      | 0x160000   | 1344KB  | Firmware slot 1 (OTA) |
-| spiffs    | 0x2B0000   | 1216KB  | Fichiers web (LittleFS) |
-| history   | 0x3E0000   | 128KB   | Historique séparé (préservé lors des mises à jour) |
-
-**Total utilisé**: ~4060KB sur 4096KB (4MB)
+Guide **opérationnel** : quelles commandes lancer pour compiler et déployer. Pour la structure des partitions et le pourquoi du layout, voir [ADR-0007](adr/0007-table-partitions-custom.md) et la source de vérité [`partitions.csv`](../partitions.csv).
 
 ## Compilation
 
-### 1. Compiler le firmware
+### Firmware seul
 
 ```bash
 pio run
 ```
 
-### 2. Construire le filesystem LittleFS
+Génère `.pio/build/esp32dev/firmware.bin`.
 
-⚠️ **Important**: N'utilisez PAS `pio run -t buildfs` car il utilise une mauvaise taille (128KB au lieu de 1216KB).
-
-Utilisez plutôt le script fourni:
+### Filesystem (LittleFS) seul
 
 ```bash
 ./build_fs.sh
 ```
 
-Ce script:
-1. **Minifie** automatiquement les fichiers HTML, CSS et JS (économie ~60KB)
-2. **Construit** le filesystem avec la bonne taille (1216KB) qui correspond à la partition spiffs dans `partitions.csv`
+Ce script :
+1. Minifie HTML / CSS / JS (via `minify.js`, sortie dans `data-build/`, ignoré par git) ;
+2. Construit `littlefs.bin` avec la **taille exacte de la partition `spiffs`** (1 114 112 octets = 1088 KB).
 
-Les fichiers sources restent dans `data/`, les fichiers minifiés sont générés dans `data-build/` (ignoré par git).
+⚠️ **Ne pas utiliser `pio run -t buildfs`** : PlatformIO recalcule une taille incorrecte (128 KB), ce qui produit un `littlefs.bin` non conforme à la partition `spiffs`.
 
-### 3. Uploader sur l'ESP32
-
-#### Upload du firmware
-
-```bash
-pio run -t upload
-```
-
-#### Upload du filesystem
-
-⚠️ **Important**: N'utilisez PAS `pio run -t uploadfs` car il reconstruit le filesystem avec la mauvaise taille.
-
-Utilisez plutôt `esptool.py` directement pour uploader le fichier construit par `build_fs.sh`:
-
-```bash
-~/.platformio/penv/bin/esptool.py \
-  --chip esp32 \
-  --port /dev/cu.usbserial-0001 \
-  --baud 115200 \
-  write_flash 0x2B0000 .pio/build/esp32dev/littlefs.bin
-```
-
-**Note**: `0x2B0000` est l'offset de la partition littlefs défini dans `partitions.csv`.
-
-#### Déploiement complet
-
-Pour tout uploader en une seule fois:
-
-```bash
-# 1. Build firmware
-pio run
-
-# 2. Build filesystem
-./build_fs.sh
-
-# 3. Upload firmware
-pio run -t upload
-
-# 4. Upload filesystem
-python3 ~/.platformio/packages/tool-esptoolpy/esptool.py \
-  --chip esp32 --port /dev/cu.usbserial-0001 --baud 115200 \
-  write_flash 0x2B0000 .pio/build/esp32dev/littlefs.bin
-```
-
-### Compilation complète en une commande
-
-Pour compiler firmware + filesystem en une seule commande :
+### Tout en une commande
 
 ```bash
 ./build_all.sh
 ```
 
-Ce script enchaîne `pio run` et `build_fs.sh`. Les fichiers générés sont dans `.pio/build/esp32dev/`. Pour envoyer la mise à jour, utiliser `./deploy.sh ota-all` ou `./deploy.sh all`.
+Enchaîne `pio run` puis `build_fs.sh`.
 
-## Structure des fichiers
+## Upload / Déploiement
 
-- `partitions.csv` - Table de partitions personnalisée
-- `build_all.sh` - Script tout-en-un : compile firmware + filesystem
-- `build_fs.sh` - Script pour construire LittleFS (avec minification)
-- `minify.js` - Script de minification HTML/CSS/JS (Node.js)
-- `data/` - Fichiers web sources (HTML, CSS, JS, images)
-- `data-build/` - Fichiers web minifiés (généré automatiquement, ignoré par git)
-- `src/` - Code source C++
+Le script [`deploy.sh`](../deploy.sh) est l'entrée unique pour tous les modes de déploiement. Lancer sans argument pour l'aide :
 
-## Notes
+```bash
+./deploy.sh
+```
 
-- L'historique est stocké dans une partition séparée (`history`) qui n'est PAS effacée lors des mises à jour OTA du filesystem
-- Le fichier d'historique sera `/history/history.json` sur la partition dédiée
-- Si la partition history n'est pas disponible, le système utilise `/history.json` sur littlefs en fallback
+### Modes USB (câble série)
+
+| Commande | Action |
+|----------|--------|
+| `./deploy.sh firmware` | Compile + upload firmware uniquement |
+| `./deploy.sh fs` | Build + upload filesystem uniquement |
+| `./deploy.sh all` *(défaut)* | Firmware + filesystem |
+| `./deploy.sh factory` | Efface toute la flash, puis upload complet. **Génère un nouveau mot de passe WiFi AP** (NVS effacée) |
+
+### Modes OTA (WiFi)
+
+| Commande | Action |
+|----------|--------|
+| `./deploy.sh ota-firmware` | Firmware uniquement en OTA |
+| `./deploy.sh ota-fs` | Filesystem uniquement en OTA |
+| `./deploy.sh ota-all` | Firmware + filesystem en OTA |
+
+Les modes OTA utilisent par défaut `poolcontroller.local` (mDNS). Pour cibler une IP directe :
+
+```bash
+./ota_update.sh both 192.168.1.42 monmotdepasse
+```
+
+Voir aussi [UPDATE_GUIDE.md](UPDATE_GUIDE.md) pour la procédure détaillée.
+
+## Pièges connus
+
+- **`pio run -t buildfs`** : ne génère pas un `littlefs.bin` de la bonne taille → utiliser `./build_fs.sh`.
+- **`pio run -t uploadfs`** : reconstruit le filesystem à la mauvaise taille avant upload → utiliser `./deploy.sh fs` ou `./deploy.sh ota-fs`.
+- **Partition `history` préservée** : l'upload filesystem OTA n'écrase que la partition `spiffs`. L'historique des mesures n'est **pas** perdu à la mise à jour UI (voir [ADR-0007](adr/0007-table-partitions-custom.md) et [history.md](subsystems/history.md)).
+
+## Structure des fichiers de build
+
+- [`partitions.csv`](../partitions.csv) — source de vérité pour les offsets et tailles.
+- [`platformio.ini`](../platformio.ini) — plateforme, libs, flags de compilation.
+- [`build_all.sh`](../build_all.sh) — firmware + filesystem en une commande.
+- [`build_fs.sh`](../build_fs.sh) — filesystem uniquement (minification + taille correcte).
+- [`minify.js`](../minify.js) — minification HTML / CSS / JS.
+- [`deploy.sh`](../deploy.sh) — wrapper unique pour upload USB ou OTA.
+- [`ota_update.sh`](../ota_update.sh) — utilitaire OTA bas niveau (appelé par `deploy.sh`).
+- `data/` — sources UI (HTML / CSS / JS / images).
+- `data-build/` — UI minifiée (généré automatiquement, ignoré par git).
+- `.pio/build/esp32dev/` — artéfacts de build (`firmware.bin`, `littlefs.bin`).

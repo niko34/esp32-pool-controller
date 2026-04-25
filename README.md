@@ -317,7 +317,6 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
 - **[`docs/MQTT.md`](docs/MQTT.md)** - Documentation des topics MQTT
 - **[`docs/BUILD.md`](docs/BUILD.md)** - Instructions de compilation détaillées
 - **[`docs/UPDATE_GUIDE.md`](docs/UPDATE_GUIDE.md)** - Guide de mise à jour (USB, WiFi OTA, GitHub)
-- **[`docs/MINIFICATION.md`](docs/MINIFICATION.md)** - Détails sur le système de minification
 - **`README.md`** - Ce fichier
 
 ### Dossiers
