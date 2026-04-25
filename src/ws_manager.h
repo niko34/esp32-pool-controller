@@ -15,12 +15,18 @@ public:
   void broadcastConfig();
   void broadcastLog(const LogEntry& entry);
 
+  // À utiliser depuis un handler HTTP (tâche AsyncTCP) : marque le broadcast
+  // pour exécution dans la main loop. Évite l'allocation d'un StaticJson<2048>
+  // sur la pile de la tâche AsyncTCP qui a peu de stack.
+  void requestConfigBroadcast();
+
   bool hasClients() const;
 
 private:
   AsyncWebSocket* _ws = nullptr;
   unsigned long _lastSensorPush = 0;
   bool _pendingInitialPush = false;
+  bool _pendingConfigBroadcast = false;
   std::set<uint32_t> _authenticatedClients;
   static constexpr unsigned long kSensorPushIntervalMs = 5000;
 

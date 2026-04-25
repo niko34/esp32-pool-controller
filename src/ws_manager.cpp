@@ -54,16 +54,26 @@ void WsManager::update() {
 
   if (_pendingInitialPush) {
     _pendingInitialPush = false;
+    _pendingConfigBroadcast = false;  // initial push couvre déjà la config
     broadcastSensorData();
     broadcastConfig();
     _lastSensorPush = millis();
     return;
   }
 
+  if (_pendingConfigBroadcast) {
+    _pendingConfigBroadcast = false;
+    broadcastConfig();
+  }
+
   if (millis() - _lastSensorPush >= kSensorPushIntervalMs) {
     broadcastSensorData();
     _lastSensorPush = millis();
   }
+}
+
+void WsManager::requestConfigBroadcast() {
+  _pendingConfigBroadcast = true;
 }
 
 bool WsManager::hasClients() const {
@@ -268,6 +278,7 @@ String WsManager::_buildConfigJson() const {
   d["time_current"]        = getCurrentTimeISO();
 
   String out;
+  out.reserve(2048);
   serializeJson(doc, out);
   return out;
 }

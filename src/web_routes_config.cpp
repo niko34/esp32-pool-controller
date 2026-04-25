@@ -818,7 +818,10 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
         req->send(400, "text/plain", "Invalid JSON configuration");
       } else {
         req->send(200, "text/plain", "OK");
-        wsManager.broadcastConfig();  // Push config mise à jour vers tous les clients WS
+        // Exécuté en tâche AsyncTCP (~8 KB stack). _buildConfigJson() alloue
+        // un StaticJson<2048> sur la pile : on diffère le broadcast à la main
+        // loop pour éviter le PANIC stack overflow.
+        wsManager.requestConfigBroadcast();
       }
     },
     nullptr,
