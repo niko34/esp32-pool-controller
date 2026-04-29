@@ -69,6 +69,20 @@ Détection de calibration : `_phCalibrated` à `true` si offset ≠ valeurs par 
 
 `temp_final = temp_raw + tempCalibrationOffset`. Offset calculé dans l'UI (`ref − raw`), sauvegardé via `POST /save-config` (`temp_calibration_offset`, `temp_calibration_date`).
 
+## Surveillance des valeurs aberrantes (health check)
+
+`checkSystemHealth()` dans [`main.cpp`](../../src/main.cpp) est appelée toutes les **60 s** (`kHealthCheckIntervalMs` [`constants.h:18`](../../src/constants.h:18)).
+
+Elle vérifie si chaque valeur capteur sort de sa plage de normalité :
+
+| Capteur | Plage normale | Alerte |
+|---------|--------------|--------|
+| pH | [5.0 – 9.0] | warning log + MQTT `ph_abnormal` |
+| ORP | [400 – 900] mV | warning log + MQTT `orp_abnormal` |
+| Température | [5.0 – 40.0] °C | warning log + MQTT `temp_abnormal` |
+
+Les logs et alertes MQTT ne sont émis qu'**aux transitions** (entrée et sortie de la zone anormale), pas à chaque cycle de 60 s. Un message `info` est logué lors du retour à la normale. Les logs sont conditionnés à `authCfg.sensorLogsEnabled` (paramètre `sensor_logs_enabled` dans la config).
+
 ## Cas limites
 
 - **ADS1115 absent** (pas de pull-ups, mauvais branchement I²C) : `adsAvailable = false`, pH/ORP restent à `NAN`, WS publie `--`.

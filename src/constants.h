@@ -18,6 +18,17 @@ constexpr unsigned long kMqttPublishIntervalMs = 10000;   // 10s - Publication �
 constexpr unsigned long kHealthCheckIntervalMs = 60000;   // 60s - Vérification santé système
 constexpr unsigned long kDiagnosticPublishIntervalMs = 300000; // 5min - Publication diagnostic MQTT
 
+// Tâche dédiée MQTT (cf. ADR-0011) — isole les blocages réseau (TCP retransmits, DNS lwip)
+// de la régulation pH/ORP et de la filtration. Voir docs/subsystems/mqtt-manager.md.
+constexpr uint32_t kMqttTaskStackSize       = 8192;       // 8 KB - publishDiscovery() sérialise 17 JSON consécutifs
+constexpr uint32_t kMqttTaskPriority        = 2;          // Bas, > IDLE, < tiT (lwip) et async_tcp
+constexpr int      kMqttTaskCore            = 0;          // Core 0 (loopTask sur core 1) — répartit la charge réseau
+constexpr uint32_t kMqttOutQueueLength      = 32;         // File sortante (publish) — ~3s de débit nominal
+constexpr uint32_t kMqttInQueueLength       = 16;         // File entrante (commandes HA)
+constexpr uint32_t kMqttTaskLoopTimeoutMs   = 100;        // Timeout xQueueReceive dans mqttTask (cadence mqtt.loop())
+constexpr uint32_t kMqttOfflineFlushMs      = 1000;       // Timeout flush "status=offline" avant ESP.restart() (OTA)
+constexpr uint32_t kMqttClientConnectTimeoutSec = 2;      // WiFiClient::setTimeout attend des SECONDES (Arduino-ESP32 6.9.0 — WiFiClient.cpp:327, _timeout = seconds*1000). 2 s borne SO_SNDTIMEO/SO_RCVTIMEO sur le client TCP de PubSubClient.
+
 // Intervalles capteurs (voir aussi sensors.cpp pour détails internes)
 constexpr unsigned long kTempSensorIntervalMs = 2000;     // 2s - Lecture température DS18B20
 constexpr unsigned long kPhOrpSensorIntervalMs = 5000;    // 5s - Lecture pH/ORP
@@ -47,7 +58,7 @@ constexpr size_t kMaxLogEntries = 200;                    // Nombre max d'entré
 
 // Historique de données
 constexpr size_t kMaxRawDataPoints = 72;                  // 6h de données brutes (intervalle 5min)
-constexpr size_t kMaxHourlyDataPoints = 360;              // 15 jours de moyennes horaires
+constexpr size_t kMaxHourlyDataPoints = 168;              // 7 jours de moyennes horaires (64KB partition)
 constexpr size_t kMaxDailyDataPoints = 75;                // 75 jours de moyennes journalières
 
 // Seuils mémoire

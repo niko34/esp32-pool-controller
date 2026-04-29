@@ -8,22 +8,61 @@
 #include "version.h"
 #include "pump_controller.h"
 #include <ArduinoJson.h>
+#include <esp_task_wdt.h>
+#include <WiFi.h>
+#include <fcntl.h>
+#include <errno.h>
+
+using mqtt_internal::OutboundMsg;
+using mqtt_internal::InboundCmd;
+using mqtt_internal::InboundCmdType;
 
 MqttManager mqttManager;
 
 MqttManager::MqttManager() : mqtt(wifiClient) {}
+
+// ============================================================================
+// Initialisation
+// ============================================================================
 
 void MqttManager::begin() {
   mqtt.setServer(mqttCfg.server.c_str(), mqttCfg.port);
   mqtt.setCallback([](char* topic, byte* payload, unsigned int length) {
     mqttManager.messageCallback(topic, payload, length);
   });
-  mqtt.setSocketTimeout(5);
-  mqtt.setKeepAlive(30);
+  mqtt.setSocketTimeout(2);  // 2s max de gel par tentative ratée — voir ADR-0010
+  mqtt.setKeepAlive(60);     // Mosquitto applique 1.5×keepalive = 90s de tolérance
   mqtt.setBufferSize(1024);
-  wifiClient.setTimeout(5000);
+  wifiClient.setTimeout(kMqttClientConnectTimeoutSec);  // unité = secondes (cf. constants.h)
   refreshTopics();
-  systemLogger.info("Gestionnaire MQTT initialisé");
+
+  // Création des queues — allouées une fois, jamais libérées (cycle de vie = vie du firmware)
+  outQueue = xQueueCreate(kMqttOutQueueLength, sizeof(OutboundMsg));
+  inQueue  = xQueueCreate(kMqttInQueueLength,  sizeof(InboundCmd));
+  if (outQueue == nullptr || inQueue == nullptr) {
+    systemLogger.critical("MQTT: échec création queues FreeRTOS");
+    return;
+  }
+
+  // Création de la tâche dédiée — voir ADR-0011
+  // Pinned core 0 : loopTask est sur core 1, on répartit la charge réseau.
+  BaseType_t ok = xTaskCreatePinnedToCore(
+      &MqttManager::mqttTaskFunction,
+      "mqttTask",
+      kMqttTaskStackSize,
+      this,
+      kMqttTaskPriority,
+      &taskHandle,
+      kMqttTaskCore);
+  if (ok != pdPASS) {
+    systemLogger.critical("MQTT: échec xTaskCreatePinnedToCore (mqttTask)");
+    taskHandle = nullptr;
+    return;
+  }
+
+  systemLogger.info("Gestionnaire MQTT initialisé (mqttTask core=" + String(kMqttTaskCore) +
+                    " prio=" + String(kMqttTaskPriority) +
+                    " stack=" + String(kMqttTaskStackSize) + ")");
 }
 
 void MqttManager::refreshTopics() {
@@ -67,32 +106,80 @@ void MqttManager::refreshTopics() {
   topics.diagnosticTopic = base + "/diagnostic";
 }
 
-void MqttManager::update() {
-  if (reconnectRequested) {
-    reconnectRequested = false;
-    // Déconnecter d'abord si déjà connecté pour forcer une reconnexion avec les nouveaux paramètres
-    if (mqtt.connected()) {
-      disconnect();
-    }
-    if (mqttCfg.enabled) {
-      connect();
-    }
-  }
+// ============================================================================
+// Tâche dédiée (core 0) — pilote unique de mqtt.connect() / mqtt.loop() / mqtt.publish()
+// ============================================================================
 
-  if (!mqtt.connected() && mqttCfg.enabled) {
-    connect(); // connect() gère son propre rate-limit (5s entre les tentatives)
-  }
+void MqttManager::mqttTaskFunction(void* pvParameters) {
+  MqttManager* self = static_cast<MqttManager*>(pvParameters);
+  // Inscription au watchdog : la tâche doit reset toutes les < 30s.
+  esp_task_wdt_add(NULL);
+  systemLogger.info("mqttTask démarrée (core=" + String(xPortGetCoreID()) +
+                    " prio=" + String(uxTaskPriorityGet(NULL)) + ")");
+  self->taskLoop();
+  // taskLoop ne retourne que sur shutdownForRestart()
+  esp_task_wdt_delete(NULL);
+  vTaskDelete(NULL);
+}
 
-  if (mqtt.connected()) {
-    mqtt.loop();
+void MqttManager::taskLoop() {
+  while (!taskShouldStop.load(std::memory_order_relaxed)) {
+    esp_task_wdt_reset();
+    // Single source of truth pour l'UI : connectedAtomic suit l'état canonique de la lib à chaque tour.
+    connectedAtomic.store(mqtt.connected(), std::memory_order_relaxed);
+
+    // 1) Reconnect/connect géré ici (pas depuis loopTask)
+    if (reconnectRequested) {
+      reconnectRequested = false;
+      if (mqtt.connected()) {
+        mqtt.disconnect();
+        // connectedAtomic mis à jour au prochain tour par le store canonique.
+        systemLogger.info("MQTT déconnecté (reconnect demandé)");
+      }
+      if (mqttCfg.enabled) {
+        connectInTask();
+      }
+    }
+
+    static bool wasConnected = false;
+    if (!mqtt.connected() && mqttCfg.enabled) {
+      if (wasConnected) {
+        systemLogger.warning("MQTT déconnecté détecté — état=" + String(mqtt.state()));
+        wasConnected = false;
+      }
+      connectInTask();  // rate-limit interne 5s + backoff exponentiel
+    } else if (mqtt.connected()) {
+      wasConnected = true;
+      mqtt.loop();  // peut bloquer brièvement (setSocketTimeout=2s) — isolé de loopTask
+    }
+
+    // 2) Publications périodiques signalées depuis loopTask via flags atomiques.
+    //    On lit/snapshot les états sous configMutex DANS la tâche pour éviter
+    //    que loopTask n'attende sur un mutex pendant qu'on publie ~15 messages.
+    if (publishStatesRequested.exchange(false, std::memory_order_relaxed)) {
+      publishAllStatesInternal();
+    }
+    if (publishDiagnosticRequested.exchange(false, std::memory_order_relaxed)) {
+      publishDiagnosticInternal();
+    }
+
+    // 3) Drainer la queue sortante (publish unitaires depuis publishAlert/publishStatus/etc.)
+    drainOutQueue();
+
+    // 4) Attente courte avant la prochaine itération.
+    //    Pas de vTaskDelay direct : on attend sur la queue sortante avec timeout
+    //    pour réveiller la tâche dès qu'un nouveau message est posté.
+    OutboundMsg peek;
+    if (xQueuePeek(outQueue, &peek, pdMS_TO_TICKS(kMqttTaskLoopTimeoutMs)) == pdTRUE) {
+      // Message disponible — la prochaine itération drainera. Pas de pop ici.
+    }
   }
 }
 
-void MqttManager::connect() {
+void MqttManager::connectInTask() {
   if (!mqttCfg.enabled || mqttCfg.server.length() == 0 || !WiFi.isConnected()) {
     return;
   }
-
   if (mqtt.connected()) return;
 
   unsigned long now = millis();
@@ -102,211 +189,535 @@ void MqttManager::connect() {
   systemLogger.info("Tentative connexion MQTT (délai=" + String(_reconnectDelay / 1000) + "s)...");
   refreshTopics();
 
-  // Préparer LWT (Last Will Testament)
+  // Pré-résolution DNS séparée du connect TCP (cf. ADR-0010).
+  // Court-circuit IP : si server est déjà une IP, skip lwip dns_*.
+  IPAddress brokerIp;
+  if (!brokerIp.fromString(mqttCfg.server)) {
+    if (!WiFi.hostByName(mqttCfg.server.c_str(), brokerIp)) {
+      constexpr unsigned long kMqttMaxReconnectDelayMs = 120000UL;
+      _reconnectDelay = min(_reconnectDelay * 2, kMqttMaxReconnectDelayMs);
+      systemLogger.error("MQTT échec DNS pour '" + mqttCfg.server + "' — prochaine tentative dans " +
+                         String(_reconnectDelay / 1000) + "s");
+      return;
+    }
+  }
+  mqtt.setServer(brokerIp, mqttCfg.port);
+
+  esp_task_wdt_reset();  // juste avant l'appel bloquant
+
   const char* lwtTopic = topics.statusTopic.c_str();
   const char* lwtMessage = "offline";
   uint8_t lwtQos = 1;
   bool lwtRetain = true;
 
   bool connected = false;
-
   if (mqttCfg.username.length() > 0) {
     connected = mqtt.connect("ESP32PoolController",
-                            mqttCfg.username.c_str(),
-                            mqttCfg.password.c_str(),
-                            lwtTopic, lwtQos, lwtRetain, lwtMessage);
+                             mqttCfg.username.c_str(),
+                             mqttCfg.password.c_str(),
+                             lwtTopic, lwtQos, lwtRetain, lwtMessage);
   } else {
     connected = mqtt.connect("ESP32PoolController",
-                            lwtTopic, lwtQos, lwtRetain, lwtMessage);
+                             lwtTopic, lwtQos, lwtRetain, lwtMessage);
   }
+  esp_task_wdt_reset();  // borne le pire cas connect/CONNACK même en cas d'échec
 
   if (connected) {
-    _reconnectDelay = 5000;  // Reset backoff après connexion réussie
+    _reconnectDelay = 5000;
+
+    // Passer la socket TCP en mode non-bloquant pour que WiFiClient::write() retourne
+    // EAGAIN au lieu de bloquer en retransmission TCP. Voir feature-014 IT4 / ADR-0011.
+    int fd = wifiClient.fd();
+    if (fd >= 0) {
+      int flags = fcntl(fd, F_GETFL, 0);
+      if (flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        systemLogger.warning("MQTT: échec fcntl O_NONBLOCK (errno=" + String(errno) + ")");
+      }
+    }
+
+    connectedAtomic.store(true, std::memory_order_relaxed);
     systemLogger.info("MQTT connecté !");
 
-    // Publier immédiatement le status online
-    publishStatus("online");
+    // Status online : direct (on est dans la tâche) — court-circuite outQueue
+    safePublish(topics.statusTopic.c_str(), "online", true);
 
     mqtt.subscribe(topics.filtrationModeCommand.c_str());
     mqtt.subscribe(topics.filtrationCommand.c_str());
     mqtt.subscribe(topics.lightingCommand.c_str());
     mqtt.subscribe(topics.phTargetCommand.c_str());
     mqtt.subscribe(topics.orpTargetCommand.c_str());
+
     discoveryPublished = false;
-    publishDiscovery();
-    publishAllStates();
-    publishDiagnostic();
+    esp_task_wdt_reset();
+    publishDiscovery();              // 17 publish — long si CPL lossy
+    esp_task_wdt_reset();
+    publishAllStatesInternal();      // ~15 publish
+    esp_task_wdt_reset();
+    publishDiagnosticInternal();     // 1 publish JSON ~400c
+    esp_task_wdt_reset();
   } else {
-    constexpr unsigned long kMqttMaxReconnectDelayMs = 120000UL;  // 120s max
+    constexpr unsigned long kMqttMaxReconnectDelayMs = 120000UL;
     _reconnectDelay = min(_reconnectDelay * 2, kMqttMaxReconnectDelayMs);
-    systemLogger.error("MQTT échec, code=" + String(mqtt.state()) + " — prochaine tentative dans " + String(_reconnectDelay / 1000) + "s");
+    systemLogger.error("MQTT échec, code=" + String(mqtt.state()) +
+                       " — prochaine tentative dans " + String(_reconnectDelay / 1000) + "s");
   }
 }
 
+// Wrapper unique pour tout mqtt.publish() depuis mqttTask. Reset wdt + check
+// mqtt.connected() + délégation. La socket est en mode non-bloquant (cf. connectInTask),
+// donc mqtt.publish() retourne false rapidement si le send buffer est plein, sans bloquer
+// mqttTask. Voir feature-014 IT4 / ADR-0011.
+bool MqttManager::safePublish(const char* topic, const char* payload, bool retain) {
+  esp_task_wdt_reset();
+  if (!mqtt.connected()) return false;
+  return mqtt.publish(topic, payload, retain);
+}
+
+void MqttManager::drainOutQueue() {
+  // Limite le nombre de publish par itération pour laisser respirer mqtt.loop()
+  // et la consommation des sockets entrantes (callbacks HA).
+  constexpr int kMaxPublishPerIter = 8;
+  if (outQueue == nullptr) return;
+
+  for (int i = 0; i < kMaxPublishPerIter; ++i) {
+    OutboundMsg msg;
+    if (xQueueReceive(outQueue, &msg, 0) != pdTRUE) {
+      return;  // queue vide
+    }
+    if (!mqtt.connected()) {
+      // On drop silencieusement : impossible de publier sans connexion.
+      // Les états seront republiés au prochain publishAllStatesInternal()
+      // lors de la reconnexion.
+      continue;
+    }
+    if (!safePublish(msg.topic, msg.payload, msg.retain)) {
+      // Peut devenir bruyant en cas de coupure réseau, debug-level approprié.
+      systemLogger.debug("MQTT publish drop: " + String(msg.topic));
+    }
+  }
+}
+
+// ============================================================================
+// Update legacy — no-op (toute la logique vit dans mqttTask)
+// ============================================================================
+
+void MqttManager::update() {
+  // Conservé pour préserver les call sites historiques (main.cpp). La logique de
+  // connect/loop/publish vit désormais dans mqttTask. Voir ADR-0011.
+  // Note : si reconnectRequested a été posé par requestReconnect() depuis loopTask,
+  // mqttTask le détectera à sa prochaine itération (< 100 ms).
+}
+
+void MqttManager::connect() {
+  // Préserve l'API : déclenche une reconnexion via mqttTask.
+  requestReconnect();
+}
+
 void MqttManager::disconnect() {
+  // Appelable depuis loopTask. La déconnexion réelle est portée par mqttTask
+  // au prochain reconnectRequested (qui détectera connected==true et déconnectera).
+  // Pour les cas synchrones (shutdown OTA), passer par shutdownForRestart().
+  reconnectRequested = false;
   if (mqtt.connected()) {
     mqtt.disconnect();
+    connectedAtomic.store(false, std::memory_order_relaxed);
     systemLogger.info("MQTT déconnecté");
   }
 }
 
+// ============================================================================
+// Producteurs (depuis loopTask) — non-bloquants
+// ============================================================================
+
+void MqttManager::enqueueOutbound(const String& topic, const String& payload, bool retain) {
+  if (outQueue == nullptr || topic.length() == 0) return;
+  OutboundMsg msg;
+  // Tronque si dépassement (les payloads MQTT sont bornés à kMaxPayloadLen=384).
+  // En pratique aucun topic ne dépasse ~80c, aucun payload ~300c (publishDiagnostic).
+  strlcpy(msg.topic,   topic.c_str(),   sizeof(msg.topic));
+  strlcpy(msg.payload, payload.c_str(), sizeof(msg.payload));
+  msg.retain = retain;
+
+  if (xQueueSend(outQueue, &msg, 0) != pdTRUE) {
+    // Queue pleine : drop le plus ancien (best-effort) et retente.
+    OutboundMsg dropped;
+    if (xQueueReceive(outQueue, &dropped, 0) == pdTRUE) {
+      noteDropEdgeTriggered();
+    }
+    xQueueSend(outQueue, &msg, 0);  // si ça échoue à nouveau, on perd ce message
+  }
+}
+
+void MqttManager::noteDropEdgeTriggered() {
+  // Edge-triggered : un seul WARN par fenêtre de 5s pour éviter le spam log.
+  droppedSinceLastWarn++;
+  unsigned long now = millis();
+  if (now - lastDropWarnMs >= 5000) {
+    systemLogger.warning("MQTT outQueue saturée — " + String(droppedSinceLastWarn) +
+                         " message(s) abandonné(s)");
+    droppedSinceLastWarn = 0;
+    lastDropWarnMs = now;
+  }
+}
+
 void MqttManager::publishSensorState(const String& topic, const String& payload, bool retain) {
-  if (!mqtt.connected() || topic.length() == 0) return;
-  if (!mqtt.publish(topic.c_str(), payload.c_str(), retain)) {
-    systemLogger.warning("Échec publication MQTT: " + topic);
-  }
+  // Devient un producteur — non-bloquant. Le check connected() est fait DANS mqttTask
+  // pour éviter une race entre l'enqueue et la déconnexion : dropper côté consommateur
+  // si pas connecté est plus simple et thread-safe.
+  enqueueOutbound(topic, payload, retain);
 }
 
+// publishAllStates / publishDiagnostic depuis loopTask = simple signal atomique.
+// La sérialisation et les snapshots sont faits dans mqttTask.
 void MqttManager::publishAllStates() {
-  if (!mqtt.connected()) return;
-
-  if (!isnan(sensors.getTemperature())) {
-    publishSensorState(topics.temperatureState, String(sensors.getTemperature(), 1));
-  }
-  if (!isnan(sensors.getPh())) {
-    publishSensorState(topics.phState, String(sensors.getPh(), 1));
-  }
-  if (!isnan(sensors.getOrp())) {
-    publishSensorState(topics.orpState, String(sensors.getOrp(), 1));
-  }
-  publishFiltrationState();
-  publishLightingState();
-  publishDosingState();
-  publishProductState();
-  publishTargetState();
+  publishStatesRequested.store(true, std::memory_order_relaxed);
 }
 
+void MqttManager::publishDiagnostic() {
+  publishDiagnosticRequested.store(true, std::memory_order_relaxed);
+}
+
+// Les méthodes "atomiques" (un seul publish, payload simple) restent disponibles
+// depuis loopTask : elles enfilent directement le message dans outQueue.
+// Elles peuvent aussi être appelées depuis mqttTask (lors de la reconnexion par exemple).
 void MqttManager::publishFiltrationState() {
-  if (!mqtt.connected()) return;
-  publishSensorState(topics.filtrationModeState, filtrationCfg.mode);
-  publishSensorState(topics.filtrationState, filtration.isRunning() ? "ON" : "OFF");
+  enqueueOutbound(topics.filtrationModeState, filtrationCfg.mode, true);
+  enqueueOutbound(topics.filtrationState, filtration.isRunning() ? "ON" : "OFF", true);
 }
 
 void MqttManager::publishLightingState() {
-  if (!mqtt.connected()) return;
-  publishSensorState(topics.lightingState, lighting.isOn() ? "ON" : "OFF");
+  enqueueOutbound(topics.lightingState, lighting.isOn() ? "ON" : "OFF", true);
 }
 
 void MqttManager::publishDosingState() {
-  if (!mqtt.connected()) return;
-  publishSensorState(topics.phDosingState,  PumpController.isPhDosing()  ? "ON" : "OFF");
-  publishSensorState(topics.orpDosingState, PumpController.isOrpDosing() ? "ON" : "OFF");
-  publishSensorState(topics.phLimitState,   safetyLimits.phLimitReached  ? "ON" : "OFF");
-  publishSensorState(topics.orpLimitState,  safetyLimits.orpLimitReached ? "ON" : "OFF");
+  enqueueOutbound(topics.phDosingState,  PumpController.isPhDosing()  ? "ON" : "OFF", true);
+  enqueueOutbound(topics.orpDosingState, PumpController.isOrpDosing() ? "ON" : "OFF", true);
+  enqueueOutbound(topics.phLimitState,   safetyLimits.phLimitReached  ? "ON" : "OFF", true);
+  enqueueOutbound(topics.orpLimitState,  safetyLimits.orpLimitReached ? "ON" : "OFF", true);
 }
 
 void MqttManager::publishProductState() {
-  if (!mqtt.connected()) return;
+  if (configMutex) xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
   float phRemaining  = max(0.0f, productCfg.phContainerVolumeMl  - productCfg.phTotalInjectedMl);
   float orpRemaining = max(0.0f, productCfg.orpContainerVolumeMl - productCfg.orpTotalInjectedMl);
   bool phStockLow  = productCfg.phTrackingEnabled  && productCfg.phAlertThresholdMl  > 0 && phRemaining  <= productCfg.phAlertThresholdMl;
   bool orpStockLow = productCfg.orpTrackingEnabled && productCfg.orpAlertThresholdMl > 0 && orpRemaining <= productCfg.orpAlertThresholdMl;
-  publishSensorState(topics.phStockLowState,   phStockLow  ? "ON" : "OFF");
-  publishSensorState(topics.orpStockLowState,  orpStockLow ? "ON" : "OFF");
-  publishSensorState(topics.phRemainingState,  String(phRemaining,  0));
-  publishSensorState(topics.orpRemainingState, String(orpRemaining, 0));
+  if (configMutex) xSemaphoreGiveRecursive(configMutex);
+
+  enqueueOutbound(topics.phStockLowState,   phStockLow  ? "ON" : "OFF", true);
+  enqueueOutbound(topics.orpStockLowState,  orpStockLow ? "ON" : "OFF", true);
+  enqueueOutbound(topics.phRemainingState,  String(phRemaining,  0), true);
+  enqueueOutbound(topics.orpRemainingState, String(orpRemaining, 0), true);
 }
 
 void MqttManager::publishTargetState() {
-  if (!mqtt.connected()) return;
-  publishSensorState(topics.phTargetState,  String(mqttCfg.phTarget,  1));
-  publishSensorState(topics.orpTargetState, String(mqttCfg.orpTarget, 0));
-  publishSensorState(topics.phRegulationModeState,  mqttCfg.phRegulationMode);
-  publishSensorState(topics.phDailyTargetMlState,   String(mqttCfg.phDailyTargetMl));
-  publishSensorState(topics.orpRegulationModeState, mqttCfg.orpRegulationMode);
-  publishSensorState(topics.orpDailyTargetMlState,  String(mqttCfg.orpDailyTargetMl));
+  if (configMutex) xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
+  float phT = mqttCfg.phTarget;
+  float orpT = mqttCfg.orpTarget;
+  String phMode = mqttCfg.phRegulationMode;
+  int phDaily = mqttCfg.phDailyTargetMl;
+  String orpMode = mqttCfg.orpRegulationMode;
+  int orpDaily = mqttCfg.orpDailyTargetMl;
+  if (configMutex) xSemaphoreGiveRecursive(configMutex);
+
+  enqueueOutbound(topics.phTargetState,  String(phT,  1), true);
+  enqueueOutbound(topics.orpTargetState, String(orpT, 0), true);
+  enqueueOutbound(topics.phRegulationModeState,  phMode, true);
+  enqueueOutbound(topics.phDailyTargetMlState,   String(phDaily), true);
+  enqueueOutbound(topics.orpRegulationModeState, orpMode, true);
+  enqueueOutbound(topics.orpDailyTargetMlState,  String(orpDaily), true);
 }
 
 void MqttManager::publishAlert(const String& alertType, const String& message) {
-  if (!mqtt.connected()) return;
   JsonDocument doc;
   doc["type"] = alertType;
   doc["message"] = message;
   doc["timestamp"] = millis();
   String payload;
   serializeJson(doc, payload);
-  publishSensorState(topics.alertsTopic, payload, false);
+  enqueueOutbound(topics.alertsTopic, payload, false);
   systemLogger.warning("Alerte: " + alertType + " - " + message);
 }
 
 void MqttManager::publishLog(const String& logMessage) {
-  if (!mqtt.connected()) return;
-  publishSensorState(topics.logsTopic, logMessage, false);
+  enqueueOutbound(topics.logsTopic, logMessage, false);
 }
+
+void MqttManager::publishStatus(const String& status) {
+  enqueueOutbound(topics.statusTopic, status, true);
+  systemLogger.info("Status MQTT: " + status);
+}
+
+// ============================================================================
+// Implémentations internes (mqttTask uniquement) — snapshots sous mutex
+// ============================================================================
+
+void MqttManager::publishAllStatesInternal() {
+  if (!mqtt.connected()) return;
+
+  // Capteurs : lectures atomiques côté firmware (float scalaires)
+  float t = sensors.getTemperature();
+  float ph = sensors.getPh();
+  float orp = sensors.getOrp();
+
+  // Tous les publish passent par safePublish() : reset wdt + check connected interne.
+  // Plus besoin de garde-fous intermédiaires ni de wdt reset explicites — voir IT4 / ADR-0011.
+  if (!isnan(t)) {
+    String p = String(t, 1);
+    safePublish(topics.temperatureState.c_str(), p.c_str(), true);
+  }
+  if (!isnan(ph)) {
+    String p = String(ph, 1);
+    safePublish(topics.phState.c_str(), p.c_str(), true);
+  }
+  if (!isnan(orp)) {
+    String p = String(orp, 1);
+    safePublish(topics.orpState.c_str(), p.c_str(), true);
+  }
+
+  // Filtration / lighting / dosing
+  safePublish(topics.filtrationModeState.c_str(), filtrationCfg.mode.c_str(), true);
+  safePublish(topics.filtrationState.c_str(), filtration.isRunning() ? "ON" : "OFF", true);
+  safePublish(topics.lightingState.c_str(), lighting.isOn() ? "ON" : "OFF", true);
+
+  safePublish(topics.phDosingState.c_str(),  PumpController.isPhDosing()  ? "ON" : "OFF", true);
+  safePublish(topics.orpDosingState.c_str(), PumpController.isOrpDosing() ? "ON" : "OFF", true);
+  safePublish(topics.phLimitState.c_str(),   safetyLimits.phLimitReached  ? "ON" : "OFF", true);
+  safePublish(topics.orpLimitState.c_str(),  safetyLimits.orpLimitReached ? "ON" : "OFF", true);
+
+  // Product / target sous configMutex — snapshot puis publish hors verrou.
+  float phRemaining, orpRemaining;
+  bool phStockLow, orpStockLow;
+  float phT, orpT;
+  String phMode, orpMode;
+  int phDaily, orpDaily;
+  if (configMutex) xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
+  phRemaining  = max(0.0f, productCfg.phContainerVolumeMl  - productCfg.phTotalInjectedMl);
+  orpRemaining = max(0.0f, productCfg.orpContainerVolumeMl - productCfg.orpTotalInjectedMl);
+  phStockLow   = productCfg.phTrackingEnabled  && productCfg.phAlertThresholdMl  > 0 && phRemaining  <= productCfg.phAlertThresholdMl;
+  orpStockLow  = productCfg.orpTrackingEnabled && productCfg.orpAlertThresholdMl > 0 && orpRemaining <= productCfg.orpAlertThresholdMl;
+  phT = mqttCfg.phTarget;
+  orpT = mqttCfg.orpTarget;
+  phMode = mqttCfg.phRegulationMode;
+  phDaily = mqttCfg.phDailyTargetMl;
+  orpMode = mqttCfg.orpRegulationMode;
+  orpDaily = mqttCfg.orpDailyTargetMl;
+  if (configMutex) xSemaphoreGiveRecursive(configMutex);
+
+  safePublish(topics.phStockLowState.c_str(),   phStockLow  ? "ON" : "OFF", true);
+  safePublish(topics.orpStockLowState.c_str(),  orpStockLow ? "ON" : "OFF", true);
+  safePublish(topics.phRemainingState.c_str(),  String(phRemaining,  0).c_str(), true);
+  safePublish(topics.orpRemainingState.c_str(), String(orpRemaining, 0).c_str(), true);
+
+  safePublish(topics.phTargetState.c_str(),  String(phT,  1).c_str(), true);
+  safePublish(topics.orpTargetState.c_str(), String(orpT, 0).c_str(), true);
+  safePublish(topics.phRegulationModeState.c_str(),  phMode.c_str(), true);
+  safePublish(topics.phDailyTargetMlState.c_str(),   String(phDaily).c_str(), true);
+  safePublish(topics.orpRegulationModeState.c_str(), orpMode.c_str(), true);
+  safePublish(topics.orpDailyTargetMlState.c_str(),  String(orpDaily).c_str(), true);
+}
+
+void MqttManager::publishDiagnosticInternal() {
+  if (!mqtt.connected()) return;
+
+  JsonDocument doc;
+  doc["uptime_ms"] = millis();
+  doc["uptime_min"] = millis() / kMillisToMinutes;
+  doc["free_heap"] = ESP.getFreeHeap();
+  doc["heap_size"] = ESP.getHeapSize();
+  doc["min_free_heap"] = ESP.getMinFreeHeap();
+  doc["wifi_"] = WiFi.SSID();
+  doc["wifi_rssi"] = WiFi.RSSI();
+  doc["wifi_quality"] = constrain(map(WiFi.RSSI(), -100, -50, 0, 100), 0, 100);
+  doc["ip_address"] = WiFi.localIP().toString();
+  doc["sensors_initialized"] = sensors.isInitialized();
+  doc["ph_value"] = round(sensors.getPh() * 10.0f) / 10.0f;
+  doc["orp_value"] = sensors.getOrp();
+  doc["temperature"] = sensors.getTemperature();
+  doc["ph_dosing_active"] = PumpController.isPhDosing();
+  doc["orp_dosing_active"] = PumpController.isOrpDosing();
+  doc["ph_used_ms"] = PumpController.getPhUsedMs();
+  doc["orp_used_ms"] = PumpController.getOrpUsedMs();
+  doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;
+  doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;
+  doc["ph_limit_reached"] = safetyLimits.phLimitReached;
+  doc["orp_limit_reached"] = safetyLimits.orpLimitReached;
+  doc["filtration_running"] = filtration.isRunning();
+  doc["filtration_mode"] = filtrationCfg.mode;
+  doc["ph_target"] = mqttCfg.phTarget;
+  doc["orp_target"] = mqttCfg.orpTarget;
+  doc["firmware_version"] = FIRMWARE_VERSION;
+  doc["build_timestamp"] = __DATE__ " " __TIME__;
+
+  // Stack high-water-mark de la tâche (utile pour caler kMqttTaskStackSize en prod)
+  if (taskHandle) {
+    doc["mqtt_task_stack_hwm"] = uxTaskGetStackHighWaterMark(taskHandle);
+  }
+
+  String payload;
+  serializeJson(doc, payload);
+  safePublish(topics.diagnosticTopic.c_str(), payload.c_str(), true);
+  systemLogger.debug("Diagnostic publié");
+}
+
+// ============================================================================
+// Réception : messageCallback (s'exécute dans mqttTask via mqtt.loop())
+// → poste les commandes dans inQueue. JAMAIS d'action directe sur les actuateurs ici.
+// ============================================================================
 
 void MqttManager::messageCallback(char* topic, byte* payload, unsigned int length) {
   String topicStr(topic);
-  String cmd;
-  for (unsigned int i = 0; i < length; ++i) {
-    cmd += static_cast<char>(payload[i]);
-  }
-  cmd.trim();
+  InboundCmd cmd;
+  cmd.payload[0] = '\0';
 
-  if (topicStr == topics.filtrationModeCommand) {
-    cmd.toLowerCase();
-    if (cmd == "auto" || cmd == "manual" || cmd == "force" || cmd == "off") {
-      xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
-      if (filtrationCfg.mode != cmd) {
-        filtrationCfg.mode = cmd;
-        filtration.ensureTimesValid();
-        if (filtrationCfg.mode == "auto") {
-          filtration.computeAutoSchedule();
+  // Copie du payload tronqué
+  size_t copyLen = (length < sizeof(cmd.payload) - 1) ? length : sizeof(cmd.payload) - 1;
+  for (size_t i = 0; i < copyLen; ++i) {
+    cmd.payload[i] = static_cast<char>(payload[i]);
+  }
+  cmd.payload[copyLen] = '\0';
+
+  if      (topicStr == topics.filtrationModeCommand) cmd.type = InboundCmdType::FiltrationMode;
+  else if (topicStr == topics.filtrationCommand)     cmd.type = InboundCmdType::FiltrationOnOff;
+  else if (topicStr == topics.lightingCommand)       cmd.type = InboundCmdType::Lighting;
+  else if (topicStr == topics.phTargetCommand)       cmd.type = InboundCmdType::PhTarget;
+  else if (topicStr == topics.orpTargetCommand)      cmd.type = InboundCmdType::OrpTarget;
+  else return;
+
+  if (inQueue == nullptr) return;
+  if (xQueueSend(inQueue, &cmd, 0) != pdTRUE) {
+    systemLogger.warning("MQTT inQueue saturée — commande HA abandonnée");
+  }
+}
+
+// ============================================================================
+// Drainage des commandes HA — appelé depuis loopTask à chaque tour de loop()
+// Toutes les actions sur les actuateurs s'exécutent ici, sous configMutex.
+// ============================================================================
+
+void MqttManager::drainCommandQueue() {
+  if (inQueue == nullptr) return;
+
+  // Limite par tour pour éviter de saturer loopTask en cas de rafale.
+  constexpr int kMaxCmdPerIter = 8;
+  for (int i = 0; i < kMaxCmdPerIter; ++i) {
+    InboundCmd cmd;
+    if (xQueueReceive(inQueue, &cmd, 0) != pdTRUE) return;
+
+    String payloadStr(cmd.payload);
+    payloadStr.trim();
+
+    switch (cmd.type) {
+      case InboundCmdType::FiltrationMode: {
+        payloadStr.toLowerCase();
+        if (payloadStr == "auto" || payloadStr == "manual" || payloadStr == "force" || payloadStr == "off") {
+          xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
+          if (filtrationCfg.mode != payloadStr) {
+            filtrationCfg.mode = payloadStr;
+            filtration.ensureTimesValid();
+            if (filtrationCfg.mode == "auto") {
+              filtration.computeAutoSchedule();
+            }
+            saveMqttConfig();
+            systemLogger.info("Mode filtration changé: " + payloadStr);
+          }
+          xSemaphoreGiveRecursive(configMutex);
+          publishFiltrationState();
         }
-        saveMqttConfig();
-        systemLogger.info("Mode filtration changé: " + cmd);
+        break;
       }
-      xSemaphoreGiveRecursive(configMutex);
-      publishFiltrationState();
-    }
-  } else if (topicStr == topics.filtrationCommand) {
-    cmd.toUpperCase();
-    xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
-    if (cmd == "ON") {
-      filtrationCfg.forceOn = true;
-      filtrationCfg.forceOff = false;
-      systemLogger.info("Filtration forcée ON (MQTT)");
-    } else if (cmd == "OFF") {
-      filtrationCfg.forceOn = false;
-      filtrationCfg.forceOff = true;
-      systemLogger.info("Filtration forcée OFF (MQTT)");
-    }
-    xSemaphoreGiveRecursive(configMutex);
-    // Ne pas publier ici : filtration.update() va changer le relais
-    // et appeler publishState() une fois l'état réel mis à jour.
-  } else if (topicStr == topics.lightingCommand) {
-    cmd.toUpperCase();
-    if (cmd == "ON") {
-      lighting.setManualOn();
-    } else if (cmd == "OFF") {
-      lighting.setManualOff();
-    }
-    publishLightingState();
-  } else if (topicStr == topics.phTargetCommand) {
-    float value = cmd.toFloat();
-    if (value >= 6.0f && value <= 8.5f) {
-      xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
-      mqttCfg.phTarget = value;
-      saveMqttConfig();
-      xSemaphoreGiveRecursive(configMutex);
-      publishTargetState();
-      systemLogger.info("Consigne pH changée via MQTT: " + String(value, 1));
-    } else {
-      systemLogger.warning("Consigne pH invalide (MQTT): " + cmd);
-    }
-  } else if (topicStr == topics.orpTargetCommand) {
-    float value = cmd.toFloat();
-    if (value >= 400.0f && value <= 900.0f) {
-      xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
-      mqttCfg.orpTarget = value;
-      saveMqttConfig();
-      xSemaphoreGiveRecursive(configMutex);
-      publishTargetState();
-      systemLogger.info("Consigne ORP changée via MQTT: " + String(value, 0));
-    } else {
-      systemLogger.warning("Consigne ORP invalide (MQTT): " + cmd);
+      case InboundCmdType::FiltrationOnOff: {
+        payloadStr.toUpperCase();
+        xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
+        if (payloadStr == "ON") {
+          filtrationCfg.forceOn = true;
+          filtrationCfg.forceOff = false;
+          systemLogger.info("Filtration forcée ON (MQTT)");
+        } else if (payloadStr == "OFF") {
+          filtrationCfg.forceOn = false;
+          filtrationCfg.forceOff = true;
+          systemLogger.info("Filtration forcée OFF (MQTT)");
+        }
+        xSemaphoreGiveRecursive(configMutex);
+        // Pas de publish ici : filtration.update() va publier après changement réel du relais.
+        break;
+      }
+      case InboundCmdType::Lighting: {
+        payloadStr.toUpperCase();
+        if (payloadStr == "ON") {
+          lighting.setManualOn();
+        } else if (payloadStr == "OFF") {
+          lighting.setManualOff();
+        }
+        publishLightingState();
+        break;
+      }
+      case InboundCmdType::PhTarget: {
+        float value = payloadStr.toFloat();
+        if (value >= 6.0f && value <= 8.5f) {
+          xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
+          mqttCfg.phTarget = value;
+          saveMqttConfig();
+          xSemaphoreGiveRecursive(configMutex);
+          publishTargetState();
+          systemLogger.info("Consigne pH changée via MQTT: " + String(value, 1));
+        } else {
+          systemLogger.warning("Consigne pH invalide (MQTT): " + payloadStr);
+        }
+        break;
+      }
+      case InboundCmdType::OrpTarget: {
+        float value = payloadStr.toFloat();
+        if (value >= 400.0f && value <= 900.0f) {
+          xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
+          mqttCfg.orpTarget = value;
+          saveMqttConfig();
+          xSemaphoreGiveRecursive(configMutex);
+          publishTargetState();
+          systemLogger.info("Consigne ORP changée via MQTT: " + String(value, 0));
+        } else {
+          systemLogger.warning("Consigne ORP invalide (MQTT): " + payloadStr);
+        }
+        break;
+      }
     }
   }
 }
+
+// ============================================================================
+// Arrêt propre avant ESP.restart() — publie status=offline avec timeout court.
+// ============================================================================
+
+void MqttManager::shutdownForRestart() {
+  if (taskHandle == nullptr) return;
+
+  systemLogger.info("MQTT shutdown — flush status=offline");
+
+  // Demande à mqttTask de s'arrêter et publie le status=offline.
+  // On ne peut PAS publier directement depuis loopTask sans risquer le blocage qu'on
+  // cherche justement à éviter — donc on enfile dans outQueue, on laisse mqttTask
+  // drainer pendant kMqttOfflineFlushMs, puis on stoppe la tâche proprement.
+  enqueueOutbound(topics.statusTopic, "offline", true);
+
+  unsigned long deadline = millis() + kMqttOfflineFlushMs;
+  while (millis() < deadline) {
+    if (uxQueueMessagesWaiting(outQueue) == 0) break;
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+
+  taskShouldStop.store(true, std::memory_order_relaxed);
+  // Attendre que la tâche sorte de taskLoop() — borne 200 ms supplémentaires.
+  unsigned long stopDeadline = millis() + 200;
+  while (millis() < stopDeadline && eTaskGetState(taskHandle) != eDeleted) {
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  // Si toujours en vie, on laisse — vTaskDelete sera appelé en sortie de mqttTaskFunction.
+  systemLogger.info("MQTT shutdown terminé");
+}
+
+// ============================================================================
+// publishDiscovery — exécuté UNIQUEMENT depuis mqttTask (lors de la connect réussie)
+// ============================================================================
 
 void MqttManager::publishDiscovery() {
   if (!mqtt.connected() || discoveryPublished) return;
@@ -323,9 +734,10 @@ void MqttManager::publishDiscovery() {
   };
 
   auto publishConfig = [&](const String& configTopic) {
+    // safePublish() retourne false silencieusement si déconnecté, et reset le wdt avant publish.
     String payload;
     serializeJson(doc, payload);
-    bool ok = mqtt.publish(configTopic.c_str(), payload.c_str(), true);
+    bool ok = safePublish(configTopic.c_str(), payload.c_str(), true);
     systemLogger.info("Discovery " + configTopic + (ok ? " OK" : " FAILED"));
     doc.clear();
   };
@@ -550,65 +962,4 @@ void MqttManager::publishDiscovery() {
 
   discoveryPublished = true;
   systemLogger.info("Home Assistant discovery publié");
-}
-
-void MqttManager::publishStatus(const String& status) {
-  if (!mqtt.connected()) return;
-  publishSensorState(topics.statusTopic, status, true);
-  systemLogger.info("Status MQTT: " + status);
-}
-
-void MqttManager::publishDiagnostic() {
-  if (!mqtt.connected()) return;
-
-  JsonDocument doc;
-
-  // Informations système
-  doc["uptime_ms"] = millis();
-  doc["uptime_min"] = millis() / kMillisToMinutes;
-  doc["free_heap"] = ESP.getFreeHeap();
-  doc["heap_size"] = ESP.getHeapSize();
-  doc["min_free_heap"] = ESP.getMinFreeHeap();
-
-  // WiFi
-  doc["wifi_"] = WiFi.SSID();
-  doc["wifi_rssi"] = WiFi.RSSI();
-  doc["wifi_quality"] = constrain(map(WiFi.RSSI(), -100, -50, 0, 100), 0, 100);
-  doc["ip_address"] = WiFi.localIP().toString();
-
-  // Capteurs
-  doc["sensors_initialized"] = sensors.isInitialized();
-  doc["ph_value"] = round(sensors.getPh() * 10.0f) / 10.0f;
-  doc["orp_value"] = sensors.getOrp();
-  doc["temperature"] = sensors.getTemperature();
-
-  // Dosage
-  doc["ph_dosing_active"] = PumpController.isPhDosing();
-  doc["orp_dosing_active"] = PumpController.isOrpDosing();
-  doc["ph_used_ms"] = PumpController.getPhUsedMs();
-  doc["orp_used_ms"] = PumpController.getOrpUsedMs();
-
-  // Sécurité
-  doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;
-  doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;
-  doc["ph_limit_reached"] = safetyLimits.phLimitReached;
-  doc["orp_limit_reached"] = safetyLimits.orpLimitReached;
-
-  // Filtration
-  doc["filtration_running"] = filtration.isRunning();
-  doc["filtration_mode"] = filtrationCfg.mode;
-
-  // Configuration
-  doc["ph_target"] = mqttCfg.phTarget;
-  doc["orp_target"] = mqttCfg.orpTarget;
-
-  // Version
-  doc["firmware_version"] = FIRMWARE_VERSION;
-  doc["build_timestamp"] = __DATE__ " " __TIME__;
-
-  String payload;
-  serializeJson(doc, payload);
-  publishSensorState(topics.diagnosticTopic, payload, true);
-
-  systemLogger.debug("Diagnostic publié");
 }

@@ -36,9 +36,10 @@ private:
   bool _persistEnabled = false;
   std::vector<String> _persistBuffer;
   unsigned long _lastFlushMs = 0;
-  static constexpr unsigned long kFlushIntervalMs = 600000UL;   // 10min
-  static constexpr size_t kMaxLogFileBytes = 32768;             // 32KB
-  static constexpr size_t kRotateKeepBytes = 24576;             // Garde les 24 derniers KB
+  static constexpr unsigned long kFlushIntervalMs = 600000UL;   // 10 min (flush immédiat sur ERROR/CRITICAL)
+  static constexpr size_t kMaxPersistBufferEntries = 100;       // Capacité fixe, pré-allouée dans le constructeur
+  static constexpr size_t kMaxLogFileBytes = 16384;             // 16KB (réduit pour tenir dans la partition history 64KB)
+  static constexpr size_t kRotateKeepBytes = 12288;             // Garde les 12 derniers KB
 
 public:
   Logger();  // Constructeur pour pré-allouer le buffer
@@ -56,7 +57,8 @@ public:
 
   String getLevelString(LogLevel level);
   std::vector<LogEntry> getRecentLogs(size_t count = 50);
-  void clear();
+  void clear();        // Vide uniquement le buffer RAM circulaire
+  void clearAll();     // Vide RAM + buffer pending + supprime /system.log sur le FS persistant
   size_t getLogCount();
 
   // Persistance LittleFS

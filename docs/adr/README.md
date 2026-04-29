@@ -23,8 +23,10 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0004](0004-mode-regulation-enum-3-valeurs.md) | Sélecteur de mode à 3 valeurs au lieu de booléens `ph_enabled` / `orp_enabled` | Accepté |
 | [0005](0005-websocket-push-sans-polling.md) | WebSocket push pour le temps réel, pas de polling périodique | Accepté |
 | [0006](0006-frontend-vanilla-js.md) | Frontend en vanilla JS sans framework ni bundler | Accepté |
-| [0007](0007-table-partitions-custom.md) | Table de partitions custom (SPIFFS 1088 KB, history séparée) | Accepté |
+| [0007](0007-table-partitions-custom.md) | Table de partitions custom (SPIFFS 1088 KB, history séparée) | Superseded by ADR-0009 |
 | [0008](0008-persistance-cumuls-journaliers-nvs.md) | Persistance NVS des cumuls journaliers + reset aligné minuit local | Accepté |
+| [0009](0009-partition-coredump.md) | Partition coredump dédiée + redimensionnement history (128 KB → 64 KB) | Accepté |
+| [0010](0010-stabilite-mqtt-reseau.md) | Stabilité MQTT et réseau : WiFi sans power save, pré-résolution DNS, backoff non réinitialisé | Accepté |
 
 ## Template
 

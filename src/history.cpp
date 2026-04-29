@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <time.h>
 #include <Preferences.h>
+#include <esp_partition.h>
 
 HistoryManager history;
 
@@ -65,6 +66,33 @@ unsigned long getCurrentEpoch(bool* synced, bool* estimated) {
 void HistoryManager::begin() {
   _mutex = xSemaphoreCreateMutex();
 
+  // Effacer la partition si sa taille a changé depuis le dernier boot (ex: partition réduite).
+  // LittleFS monte sans erreur sur un filesystem corrompu puis plante (division par zéro)
+  // à la première écriture — on prévient ça en effaçant avant montage.
+  {
+    const esp_partition_t* histPart = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "history");
+    if (histPart) {
+      Preferences histPrefs;
+      uint32_t storedSize = 0;
+      if (histPrefs.begin("hist_meta", true)) {
+        storedSize = histPrefs.getUInt("part_sz", 0);
+        histPrefs.end();
+      }
+      if (storedSize != histPart->size) {
+        if (storedSize != 0) {
+          Serial.printf("[HISTORY] Partition redimensionnée (%u→%u o) — effacement LittleFS\n",
+                        storedSize, histPart->size);
+        }
+        esp_partition_erase_range(histPart, 0, histPart->size);
+        if (histPrefs.begin("hist_meta", false)) {
+          histPrefs.putUInt("part_sz", (uint32_t)histPart->size);
+          histPrefs.end();
+        }
+      }
+    }
+  }
+
   if (historyFs.begin(true, "/history", 5, "history")) {
     historyStore = &historyFs;
     historyFilePath = "/history.json";
@@ -95,11 +123,10 @@ void HistoryManager::update() {
     lastRecord = now;
   }
 
-  // Sauvegarder sur fichier toutes les heures
+  // Consolidation + sauvegarde toutes les 5 min (consolidateData appelle saveToFile en interne)
   if (now - lastSave >= SAVE_INTERVAL) {
     xSemaphoreTake(_mutex, portMAX_DELAY);
     consolidateData();
-    saveToFile();
     xSemaphoreGive(_mutex);
     lastSave = now;
   }
@@ -387,8 +414,6 @@ void HistoryManager::consolidateData() {
       _applyPreNtpCorrection(now, millis() / kMillisToSeconds);
     }
   }
-  systemLogger.debug("Début consolidation historique");
-
   // 1. Supprimer les données trop anciennes (> 90 jours)
   memoryBuffer.erase(
     std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
@@ -592,7 +617,7 @@ void HistoryManager::consolidateData() {
       return a.timestamp < b.timestamp;
     });
 
-  systemLogger.info("Consolidation terminée: " + String(memoryBuffer.size()) + " points");
+  systemLogger.debug("Consolidation terminée: " + String(memoryBuffer.size()) + " points");
   saveToFile();
 }
 

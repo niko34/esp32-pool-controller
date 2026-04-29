@@ -5,10 +5,12 @@
 #include "web_routes_data.h"
 #include "web_routes_ota.h"
 #include "web_routes_auth.h"
+#include "web_routes_coredump.h"
 #include "auth.h"
 #include "config.h"
 #include "constants.h"
 #include "logger.h"
+#include "mqtt_manager.h"
 #include <LittleFS.h>
 
 WebServerManager webServer;
@@ -107,7 +109,7 @@ void WebServerManager::setupRoutes() {
 
   // En-têtes de sécurité globaux (ajoutés à toutes les réponses)
   DefaultHeaders::Instance().addHeader("Content-Security-Policy",
-    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'");
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:");
   DefaultHeaders::Instance().addHeader("X-Content-Type-Options", "nosniff");
   DefaultHeaders::Instance().addHeader("X-Frame-Options", "SAMEORIGIN");
 
@@ -122,6 +124,7 @@ void WebServerManager::setupRoutes() {
   setupCalibrationRoutes(server);
   setupControlRoutes(server);
   setupOtaRoutes(server);
+  setupCoredumpRoutes(server);
 
   // WebSocket (push temps réel : capteurs toutes les 5s, config après save, logs en direct)
   wsManager.begin(server);
@@ -200,6 +203,7 @@ void WebServerManager::update() {
   if (restartRequested && (millis() - restartRequestedTime >= kRestartAfterOtaDelayMs)) {
     restartRequested = false;
     systemLogger.critical("Redémarrage après mise à jour OTA");
+    mqttManager.shutdownForRestart();  // ADR-0011 : flush status=offline + stop mqttTask
     ESP.restart();
   }
 
@@ -207,6 +211,7 @@ void WebServerManager::update() {
   if (restartApRequested && (millis() - restartRequestedTime >= kRestartApModeDelayMs)) {
     restartApRequested = false;
     systemLogger.critical("Redémarrage en mode Point d'accès");
+    mqttManager.shutdownForRestart();  // ADR-0011 : flush status=offline + stop mqttTask
     ESP.restart();
   }
 }

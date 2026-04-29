@@ -129,10 +129,7 @@ void setup() {
     mqttManager.begin();
     applyTimeConfig();
 
-    // Connexion MQTT initiale
-    if (mqttCfg.enabled) {
-      mqttManager.requestReconnect();
-    }
+    // Connexion MQTT initiale gérée par mqttTask au 1er tour de taskLoop() — voir ADR-0011.
   }
 
   // Serveur Web (disponible en STA ou AP)
@@ -154,7 +151,8 @@ void loop() {
 
   // Mise à jour des gestionnaires
   webServer.update();
-  mqttManager.update();
+  mqttManager.update();              // No-op depuis ADR-0011 (mqttTask gère tout)
+  mqttManager.drainCommandQueue();   // Applique les commandes HA reçues sous configMutex
   history.update();
   systemLogger.update();
   updateManualInject();
@@ -214,6 +212,7 @@ void loop() {
         digitalWrite(BUILTIN_LED_PIN, LOW);
         resetWiFiSettings();
         delay(500);
+        mqttManager.shutdownForRestart();  // ADR-0011 : flush status=offline + stop mqttTask
         ESP.restart();
       }
     } else if (buttonState == LOW && lastButtonState == HIGH) {
@@ -281,6 +280,38 @@ String getWifiStatusString(int status) {
 
 bool setupWiFi() {
   WiFi.mode(WIFI_STA);
+  // Désactiver le mode économie d'énergie : la radio reste allumée en permanence.
+  // Sans ça, le mode par défaut WIFI_PS_MIN_MODEM fait dormir la radio entre les beacons DTIM,
+  // ce qui cause une latence ping de 90-260ms au lieu de <10ms et des déconnexions MQTT toutes
+  // les 1-2h (paquets queue côté AP qui finissent par déborder). L'ESP32 est alimenté en
+  // permanence ici, le gain en autonomie n'a pas d'intérêt — la stabilité prime.
+  WiFi.setSleep(false);
+
+  // Logger les événements WiFi pour diagnostiquer les blackouts réseau (ping qui ne répond plus,
+  // app injoignable, MQTT qui se reconnecte). Sans ces logs, impossible de savoir si la cause
+  // est côté Wi-Fi (drop AP, RSSI, DHCP renew) ou côté firmware/broker.
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    switch (event) {
+      case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
+        uint8_t reason = info.wifi_sta_disconnected.reason;
+        systemLogger.warning("WiFi déconnecté (reason=" + String(reason) + ")");
+        break;
+      }
+      case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+        systemLogger.info("WiFi associé à l'AP");
+        break;
+      case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+        systemLogger.info("WiFi IP obtenue: " + WiFi.localIP().toString() +
+                          " RSSI=" + String(WiFi.RSSI()) + "dBm");
+        break;
+      case ARDUINO_EVENT_WIFI_STA_LOST_IP:
+        systemLogger.warning("WiFi IP perdue");
+        break;
+      default:
+        break;
+    }
+  });
+
   currentWifiMode = WiFi.getMode();
 
   // Afficher les credentials WiFi stockés en NVS (pour debug)
@@ -513,11 +544,9 @@ void checkSystemHealth() {
     }
   }
 
-  // Vérifier connexion MQTT
-  if (mqttCfg.enabled && !mqttManager.isConnected()) {
-    systemLogger.warning("MQTT déconnecté, reconnexion automatique");
-    mqttManager.requestReconnect();
-  }
+  // La reconnexion MQTT est gérée par MqttManager::update() (avec rate-limit + backoff exponentiel)
+  // Ne PAS appeler requestReconnect() périodiquement : ça réinitialise le backoff et empêche
+  // l'augmentation jusqu'à 120s en cas de broker injoignable.
 
   // Vérifier limites de sécurité
   static bool lastPhLimitReached = false;
@@ -543,25 +572,45 @@ void checkSystemHealth() {
   }
   lastOrpLimitReached = safetyLimits.orpLimitReached;
 
-  // Vérifier valeurs capteurs aberrantes
+  // Vérifier valeurs capteurs aberrantes — log et alerte MQTT à la transition seulement
   float ph = sensors.getPh();
   float orp = sensors.getOrp();
   float temp = sensors.getTemperature();
 
+  static bool lastPhAbnormal   = false;
+  static bool lastOrpAbnormal  = false;
+  static bool lastTempAbnormal = false;
+
+  bool phAbnormal   = (ph < 5.0f || ph > 9.0f);
+  bool orpAbnormal  = (orp < 400.0f || orp > 900.0f);
+  bool tempAbnormal = (!isnan(temp) && (temp < 5.0f || temp > 40.0f));
+
+  if (phAbnormal && !lastPhAbnormal) {
+    if (authCfg.sensorLogsEnabled) systemLogger.warning("Valeur pH anormale: " + String(ph));
+    mqttManager.publishAlert("ph_abnormal", "pH=" + String(ph));
+  } else if (!phAbnormal && lastPhAbnormal) {
+    if (authCfg.sensorLogsEnabled) systemLogger.info("Valeur pH revenue à la normale: " + String(ph, 2));
+  }
+  lastPhAbnormal = phAbnormal;
+
+  if (orpAbnormal && !lastOrpAbnormal) {
+    if (authCfg.sensorLogsEnabled) systemLogger.warning("Valeur ORP anormale: " + String(orp));
+    mqttManager.publishAlert("orp_abnormal", "ORP=" + String(orp));
+  } else if (!orpAbnormal && lastOrpAbnormal) {
+    if (authCfg.sensorLogsEnabled) systemLogger.info("Valeur ORP revenue à la normale: " + String(orp, 0) + " mV");
+  }
+  lastOrpAbnormal = orpAbnormal;
+
+  if (tempAbnormal && !lastTempAbnormal) {
+    if (authCfg.sensorLogsEnabled) systemLogger.warning("Température anormale: " + String(temp));
+    mqttManager.publishAlert("temp_abnormal", "Temp=" + String(temp) + "°C");
+  } else if (!tempAbnormal && lastTempAbnormal) {
+    if (authCfg.sensorLogsEnabled) systemLogger.info("Température revenue à la normale: " + String(temp, 1) + " °C");
+  }
+  lastTempAbnormal = tempAbnormal;
+
   if (authCfg.sensorLogsEnabled) {
-    if (ph < 5.0f || ph > 9.0f) {
-      systemLogger.warning("Valeur pH anormale: " + String(ph));
-    }
-    if (orp < 400.0f || orp > 900.0f) {
-      systemLogger.warning("Valeur ORP anormale: " + String(orp));
-    }
-    if (!isnan(temp) && (temp < 5.0f || temp > 40.0f)) {
-      systemLogger.warning("Température anormale: " + String(temp));
-    }
     systemLogger.debug("Health check OK - Heap: " + String(freeHeap) + " bytes");
   }
-  if (ph < 5.0f || ph > 9.0f) mqttManager.publishAlert("ph_abnormal", "pH=" + String(ph));
-  if (orp < 400.0f || orp > 900.0f) mqttManager.publishAlert("orp_abnormal", "ORP=" + String(orp));
-  if (!isnan(temp) && (temp < 5.0f || temp > 40.0f)) mqttManager.publishAlert("temp_abnormal", "Temp=" + String(temp) + "°C");
 }
 

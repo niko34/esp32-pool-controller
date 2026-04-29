@@ -82,6 +82,23 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 
 ## Notes de migration
 
+### Stabilité réseau MQTT — tâche dédiée — depuis 2026-04-27
+
+**Aucune action utilisateur requise. Aucun changement de configuration.**
+
+Avant cette version, une publication MQTT (par exemple un simple `OFF` de 33 octets sur un capteur de stock faible) pouvait bloquer la régulation pH/ORP plusieurs dizaines de secondes lorsque le réseau entre l'ESP32 et le routeur était lossy (typiquement sur un lien CPL/Powerline bruyant). Trois crashes `PANIC` watchdog ont été observés en production avec exactement cette signature.
+
+Depuis cette version, **toute la communication MQTT s'exécute dans une tâche FreeRTOS dédiée** (`mqttTask`), totalement isolée de la régulation pH/ORP, de la filtration et du watchdog principal. Conséquences observables :
+
+- **Aucun gel de la régulation** lors d'un broker injoignable ou d'une microcoupure réseau de plusieurs dizaines de secondes. Les compteurs `dailyPhInjectedMl`/`dailyOrpInjectedMl` continuent de s'incrémenter, les checks horaires/journaliers restent évalués, le PID continue de tourner.
+- **Comportement utilisateur strictement identique** : mêmes topics MQTT, mêmes payloads, mêmes intervalles de publication, même auto-discovery Home Assistant. Aucune automation HA à reconfigurer.
+- **`status=offline` publié immédiatement** lors d'un OTA / factory reset / redémarrage manuel, au lieu d'attendre les 90 s de timeout broker.
+- **Coût RAM marginal** : ~16 KB de heap supplémentaire (8 KB stack `mqttTask` + 7 KB queues). RAM statique reste à 16.4 % (vs 16.4 % avant), bien sous le budget.
+
+Détails techniques : voir [ADR-0011](adr/0011-mqtt-task-dediee.md) et [`docs/subsystems/mqtt-manager.md`](subsystems/mqtt-manager.md).
+
+---
+
 ### Persistance des compteurs journaliers en NVS (`pool-daily`) — depuis 2026-04-24
 
 **Contexte :** avant cette version, les compteurs `dailyPhInjectedMl` et `dailyOrpInjectedMl` étaient stockés uniquement en RAM. Tout reboot (watchdog, brownout, coupure secteur, OTA) les remettait silencieusement à zéro, contournant potentiellement la limite journalière de sécurité.

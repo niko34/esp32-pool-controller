@@ -1645,6 +1645,28 @@
 
               <div class="card">
                 <div class="card__head">
+                  <h2 class="card__title">Diagnostic crash</h2>
+                </div>
+                <div class="card__body">
+                  <div class="kv kv--compact">
+                    <div class="kv__row"><span class="kv__k">Coredump</span><span class="kv__v" id="coredump_status">—</span></div>
+                    <div id="coredump_details" style="display:none">
+                      <div class="kv__row"><span class="kv__k">Tâche</span><span class="kv__v" id="coredump_task">—</span></div>
+                      <div class="kv__row"><span class="kv__k">Exception</span><span class="kv__v" id="coredump_exc">—</span></div>
+                      <div class="kv__row"><span class="kv__k">PC</span><span class="kv__v" id="coredump_pc">—</span></div>
+                    </div>
+                  </div>
+                  <div class="row row--gap" style="margin-top:12px">
+                    <button class="btn btn--ghost" type="button" id="coredump_refresh_btn">Actualiser</button>
+                    <button class="btn btn--ghost" type="button" id="coredump_download_btn" disabled>Télécharger</button>
+                    <button class="btn btn--danger" type="button" id="coredump_erase_btn" disabled>Effacer</button>
+                  </div>
+                  <div class="hint" style="margin-top:10px">Décodage&nbsp;: <code>./tools/decode_coredump.sh coredump.bin</code></div>
+                </div>
+              </div>
+
+              <div class="card">
+                <div class="card__head">
                   <h2 class="card__title">Logs</h2>
                 </div>
                 <div class="card__body">
@@ -1662,8 +1684,9 @@
                   <div class="row row--gap row--between" style="flex-wrap:wrap;gap:8px">
                     <div class="row row--gap">
                       <button class="btn btn--ghost" type="button" id="refresh_logs_btn">Actualiser</button>
-                      <button class="btn btn--ghost" type="button" id="clear_logs_display_btn">Effacer</button>
+                      <button class="btn btn--ghost" type="button" id="clear_logs_display_btn" title="Vide uniquement la vue actuelle, les logs restent côté ESP32">Effacer (écran)</button>
                       <button class="btn btn--ghost" type="button" id="download_logs_btn">Télécharger</button>
+                      <button class="btn btn--danger" type="button" id="clear_logs_firmware_btn" title="Vide la mémoire et supprime le fichier persistant côté ESP32">Effacer (firmware)</button>
                       <label class="field field--inline" style="margin:0"><input type="checkbox" id="logs_auto_refresh" /><span class="field__label">Auto (5s)</span></label>
                       <label class="field field--inline" style="margin:0"><input type="checkbox" id="logs_auto_scroll" checked /><span class="field__label">Scroll auto</span></label>
                     </div>

@@ -44,7 +44,9 @@ docs/
 │   ├── 0005-websocket-push-sans-polling.md
 │   ├── 0006-frontend-vanilla-js.md
 │   ├── 0007-table-partitions-custom.md
-│   └── 0008-persistance-cumuls-journaliers-nvs.md
+│   ├── 0008-persistance-cumuls-journaliers-nvs.md
+│   ├── 0009-partition-coredump.md
+│   └── 0010-stabilite-mqtt-reseau.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

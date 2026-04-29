@@ -39,11 +39,12 @@ Voir [`pump_controller.h`](../../src/pump_controller.h).
 Ordre par cycle :
 1. Consommation des resets atomiques (`_resetRequested`, `_phPauseResetRequested`) — évite les races inter-core (web handler vs loop).
 2. Chargement différé des cumuls NVS : `_dailyLoaded` reste à `false` tant que NTP/RTC n'a pas synchronisé une date valide (sinon on chargerait sur une date 1970 fantôme).
-3. **Court-circuit OTA** : `otaInProgress` actif → `applyPumpDuty(0,0)` + `applyPumpDuty(1,0)` puis `return`. Pompes coupées tant que l'OTA dure.
-4. Refresh des fenêtres glissantes 1 h (`refreshDosingState`).
-5. Court-circuit capteurs : `!sensors.isInitialized()` → arrêt pompes.
-6. Gate `canDose()` (cf. ci-dessous) → arrêt pompes si non autorisé (mais respecte `manualMode[i]` pour ne pas couper un test développeur en cours).
-7. Pour pH puis ORP : calcul de l'erreur, anti-cycling start/stop, PID, conversion duty via `flowToDuty()`, `applyPumpDuty()`.
+3. **`tickDailyRollover()`** — bascule date / reset des compteurs journaliers. Appelé **avant** `canDose()` pour que le passage à minuit soit honoré même si la filtration est arrêtée. Voir [Reset journalier](#reset-journalier) ci-dessous.
+4. **Court-circuit OTA** : `otaInProgress` actif → `applyPumpDuty(0,0)` + `applyPumpDuty(1,0)` puis `return`. Pompes coupées tant que l'OTA dure.
+5. Refresh des fenêtres glissantes 1 h (`refreshDosingState`).
+6. Court-circuit capteurs : `!sensors.isInitialized()` → arrêt pompes.
+7. Gate `canDose()` (cf. ci-dessous) → arrêt pompes si non autorisé (mais respecte `manualMode[i]` pour ne pas couper un test développeur en cours).
+8. Pour pH puis ORP : calcul de l'erreur, anti-cycling start/stop, PID, conversion duty via `flowToDuty()`, `applyPumpDuty()`.
 
 ## Algorithme (résumé)
 
@@ -82,7 +83,19 @@ Ordre par cycle :
 5. **Limites de sécurité** ([`config.h:141`](../../src/config.h:141) `SafetyLimits`) :
    - Horaire : `ph_limit_minutes` / `orp_limit_minutes` dans une fenêtre glissante de 1 h (`windowStart` / `usedMs` dans `DosingState`). **Non reflétée dans l'UI** (pas de badge dédié à date).
    - Journalière : `maxPhMinusMlPerDay = 300`, `maxChlorineMlPerDay = 500`.
-6. **Cumul journalier persisté** : `dailyPhInjectedMl` / `dailyOrpInjectedMl`, persistés en NVS, reset à minuit local (détection via `currentDayDate[9]`). Voir [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md).
+6. **Cumul journalier persisté** : `dailyPhInjectedMl` / `dailyOrpInjectedMl`, persistés en NVS, reset à minuit local (détection via `currentDayDate[9]`). Voir [Reset journalier](#reset-journalier) et [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md).
+
+## Reset journalier
+
+`PumpControllerClass::tickDailyRollover()` ([`pump_controller.cpp:251`](../../src/pump_controller.cpp:251)) gère seul la bascule de date et la remise à zéro des compteurs `dailyPhInjectedMl` / `dailyOrpInjectedMl` + flags `phLimitReached` / `orpLimitReached`. Cette méthode est **appelée depuis `update()` avant le check `canDose()`** : la réinitialisation à minuit se produit donc **indépendamment de l'état de la filtration**.
+
+> Bug historique corrigé : la logique de reset était auparavant dans `checkSafetyLimits()`, qui n'est invoqué qu'après `canDose()`. Tant que la filtration n'avait pas tourné dans la journée, les compteurs restaient figés sur la valeur de la veille. `checkSafetyLimits()` ne fait désormais plus que la vérification des seuils journaliers.
+
+Trois branches dans `tickDailyRollover()` :
+
+1. **NTP/RTC synchronisé + date connue + jour différent** → reset complet, `saveDailyCounters()`, `armStabilizationTimer()` (mitigation double quota).
+2. **NTP/RTC synchronisé + `currentDayDate` vide** (première initialisation après boot) → date stockée, `dayStartTimestamp` remis à `0` pour invalider tout timer fallback `millis()` accumulé depuis le boot. Évite un double reset si NTP retombe en panne plus tard.
+3. **Pas de temps valide** → fallback `millis()` : reset après 24 h écoulées depuis `dayStartTimestamp`. Persiste les compteurs (`saveDailyCounters()`) et arme le timer de stabilisation.
 
 ## Stabilisation au démarrage filtration
 
@@ -140,6 +153,21 @@ duty = MIN_ACTIVE_DUTY + round( ((flow − minFlow) / (maxFlow − minFlow)) × 
 ## Mode `scheduled`
 
 Injecte jusqu'à `phDailyTargetMl` / `orpDailyTargetMl` **pendant la filtration**, **aveugle à la mesure capteur**. Le volume à injecter est réparti sur les plages de filtration. Borné par `ph_limit_minutes`, `max_ph_ml_per_day`, et `maxCyclesPerDay`. Voir [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md).
+
+### Warnings edge-triggered
+
+Six conditions warning/critical sont signalées **une seule fois** à l'entrée dans l'état problématique, puis un INFO de recovery quand la condition disparaît. Sans cela, chaque itération de `update()` (~100 Hz) émettait le même log → centaines de lignes par seconde, partition `history` saturée en quelques minutes.
+
+| Branche | Message warning/critical | Message recovery (INFO) |
+|---------|--------------------------|-------------------------|
+| pH | `[Scheduled] Capteur pH hors plage (X) — dosage programmé maintenu` | `[Scheduled] Capteur pH revenu dans la plage normale` |
+| pH | `[Scheduled] phDailyTargetMl (X mL) dépasse maxPhMinusMlPerDay (Y mL) — plafonné` | (reset silencieux du flag) |
+| pH | `[Scheduled] Débit pompe pH non configuré (0 mL/min) — dosage bloqué` | (reset silencieux du flag) |
+| ORP | `[Scheduled ORP] Capteur ORP hors plage (XmV) — dosage programmé maintenu` | `[Scheduled ORP] Capteur ORP revenu dans la plage normale` |
+| ORP | `[Scheduled ORP] orpDailyTargetMl (X mL) dépasse maxChlorineMlPerDay (Y mL) — plafonné` | (reset silencieux du flag) |
+| ORP | `[Scheduled ORP] Débit pompe ORP non configuré (0 mL/min) — dosage bloqué` | (reset silencieux du flag) |
+
+**Pattern** : variable `static bool xxxLogged` locale à la branche, mise à `true` au premier signalement, remise à `false` quand la condition redevient normale (ce qui ré-arme le warning si l'état repart en faute).
 
 ## Interaction avec les autres composants
 

@@ -11,6 +11,7 @@
 *.bin
 *.elf
 data-build/
+builds/
 
 # Node.js
 node_modules/

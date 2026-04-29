@@ -73,6 +73,52 @@ Page de configuration système. Structurée en **8 onglets segmentés** ([`data/
 - `pump_max_flow_ml_per_min` — débit nominal pour calcul volume injecté (défaut `kPumpMaxFlowMlPerMin = 90.0` [`constants.h`](../../src/constants.h)).
 - Tests pompe : `POST /pump1/on`, `/pump1/off`, `/pump2/on`, `/pump2/off` — arrêt auto après 10 s côté firmware.
 - `sensor_logs_enabled` (bool) — verbosité logs capteurs pour diagnostic.
+- **Card "Diagnostic crash"** — voir section dédiée ci-dessous.
+- **Card "Logs"** — voir section dédiée ci-dessous.
+
+#### Card Diagnostic crash
+
+Positionnée entre la card "Infos système" et la card "Logs" dans le panneau Avancé. Chargée au démarrage de la page via `GET /coredump/info`.
+
+**Contenu affiché :**
+
+| Élément | Description |
+|---------|-------------|
+| Statut | "Disponible" (badge vert) ou "Aucun coredump" (badge gris) |
+| Tâche | Nom FreeRTOS de la tâche crashée (`task`) — affiché si disponible |
+| Exception | Code cause + libellé (`exc_cause` / `exc_cause_str`) — affiché si disponible |
+| Adresse PC | Valeur hexadécimale du Program Counter (`pc`) — affichée si disponible |
+
+**Boutons :**
+
+| Bouton | Endpoint | Actif quand |
+|--------|----------|-------------|
+| Actualiser | `GET /coredump/info` | Toujours |
+| Télécharger | `GET /coredump/download` → téléchargement de `coredump.bin` | Coredump disponible |
+| Effacer | `DELETE /coredump` avec dialogue de confirmation | Coredump disponible |
+
+**Workflow de décodage (hint affiché dans la card) :**
+
+```bash
+./tools/decode_coredump.sh coredump.bin
+```
+
+Le script utilise `xtensa-esp32-elf-gdb` et `esp_coredump` du penv PlatformIO pour produire un backtrace lisible avec noms de fonctions et numéros de ligne.
+
+Voir [`docs/API.md#diagnostic-crash-coredump`](../API.md#diagnostic-crash-coredump) pour les détails des endpoints.
+
+#### Card Logs
+
+Liste défilante des derniers logs poussés via WebSocket + filtres par niveau (DEBUG/INFO/WARN/ERROR/CRITICAL). Quatre boutons dans la barre d'action :
+
+| Bouton | Style | Action |
+|--------|-------|--------|
+| Actualiser | ghost | Force un rechargement complet via `GET /get-logs` |
+| Effacer (écran) | ghost | Vide **uniquement la vue navigateur locale** (`#logs_content`, `allLogEntries`, `lastLogTimestamp`). Les logs côté ESP32 sont intacts ; un rechargement les fait réapparaître. Tooltip : *« Vide uniquement la vue actuelle, les logs restent côté ESP32 »*. |
+| Télécharger | ghost | Téléchargement de `pool_logs.txt` via `GET /download-logs` |
+| Effacer (firmware) | **danger (rouge)** | Dialogue `confirm()` natif puis `DELETE /logs` (cf. [`docs/API.md`](../API.md#delete-logs--write)). Vide RAM + buffer pending + supprime `/system.log` côté ESP32, vide aussi la vue locale, toast de succès `Logs effacés (RAM + fichier)`. Tooltip : *« Vide la mémoire et supprime le fichier persistant côté ESP32 »*. |
+
+Toggles complémentaires : `Auto (5s)` (rafraîchissement automatique), `Scroll auto` (suivi de fin), `sensor_logs_enabled` (verbosité capteurs).
 
 ## Actions
 
@@ -93,6 +139,11 @@ Page de configuration système. Structurée en **8 onglets segmentés** ([`data/
 | Redémarrer | `POST /reboot` | CRITICAL |
 | Réinitialisation d'usine | `POST /factory-reset` | CRITICAL |
 | Lire heure serveur | `GET /time-now` | READ |
+| Statut coredump | `GET /coredump/info` | WRITE |
+| Télécharger coredump | `GET /coredump/download` | WRITE |
+| Effacer coredump | `DELETE /coredump` | WRITE |
+| Effacer logs (firmware) | `DELETE /logs` | WRITE |
+| Télécharger logs | `GET /download-logs` | WRITE |
 
 Auth = le niveau minimum requis, voir [`docs/API.md`](../API.md).
 
@@ -100,7 +151,7 @@ Auth = le niveau minimum requis, voir [`docs/API.md`](../API.md).
 
 - **Reboot obligatoire** pour appliquer : CORS, bascule Wi-Fi STA ↔ AP, changement de timezone (nouvel env TZ).
 - **Factory reset** ([`web_routes_config.cpp`](../../src/web_routes_config.cpp) `/factory-reset`) : efface NVS + config LittleFS + calibrations, redémarre en mode AP `PoolControllerAP` sur `192.168.4.1`.
-- **OTA** : partition active préservée, partitions app0/app1 = 1408 KB chacune, historique isolé sur une partition dédiée `history` 128 KB — voir [ADR-0007](../adr/0007-table-partitions-custom.md) et [`partitions.csv`](../../partitions.csv).
+- **OTA** : partition active préservée, partitions app0/app1 = 1408 KB chacune, historique isolé sur une partition dédiée `history` 64 KB, coredump sur partition dédiée 64 KB — voir [ADR-0009](../adr/0009-partition-coredump.md) et [`partitions.csv`](../../partitions.csv).
 - **Mot de passe** : hashé par `hashPassword()` avec salt ([`auth_*.cpp`](../../src/)), stocké en NVS, jamais renvoyé par l'API.
 - **CORS** : chaîne vide = désactivé ; `*` = wildcard ; liste = origines autorisées séparées par `,`.
 

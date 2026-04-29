@@ -291,6 +291,24 @@ curl -u admin:monmotdepasse http://poolcontroller.local/download-logs -o pool_lo
 
 ---
 
+### DELETE /logs — WRITE
+
+Efface intégralement les logs côté ESP32 : buffer RAM circulaire, tampon de flush en attente, fichier persistant `/system.log` et son éventuel `.tmp` de rotation.
+
+```bash
+curl -u admin:monmotdepasse -X DELETE http://poolcontroller.local/logs
+```
+
+```json
+{ "success": true }
+```
+
+Une entrée `INFO : Logs effacés (RAM + fichier persistant)` est écrite immédiatement après l'effacement pour tracer l'action.
+
+> ⚠️ Action irréversible. Pour ne vider que la vue navigateur sans toucher au firmware, utiliser le bouton « Effacer (écran) » côté UI.
+
+---
+
 ## Configuration
 
 ### GET /get-config — WRITE
@@ -773,6 +791,90 @@ curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
 ```
 
 > Seuls les hôtes `github.com`, `api.github.com` et `objects.githubusercontent.com` sont autorisés.
+
+---
+
+## Diagnostic crash (coredump)
+
+Ces trois endpoints permettent de consulter, télécharger et effacer le coredump ESP-IDF persisté dans la partition flash dédiée (`coredump`, 64 KB). Le dump est produit automatiquement par le firmware lors d'un crash de type `PANIC` (exception Xtensa) et persiste jusqu'à effacement explicite.
+
+> Le contenu de la partition `coredump` **n'est pas effacé par les OTA** (firmware ou filesystem) ni par un factory reset.
+
+### GET /coredump/info — WRITE
+
+Retourne un résumé JSON du dernier coredump disponible.
+
+```bash
+curl -u admin:monmotdepasse http://poolcontroller.local/coredump/info
+```
+
+**Si un coredump est disponible :**
+
+```json
+{
+  "available": true,
+  "task": "loopTask",
+  "pc": 1074038456,
+  "exc_cause": 29,
+  "exc_cause_str": "StoreProhibited",
+  "exc_vaddr": 0
+}
+```
+
+**Si aucun coredump n'est présent :**
+
+```json
+{
+  "available": false,
+  "partition_found": true
+}
+```
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `available` | boolean | `true` si un coredump valide a été trouvé dans la partition |
+| `task` | string | Nom de la tâche FreeRTOS qui a crashé |
+| `pc` | integer | Adresse du Program Counter au moment du crash (décimale) |
+| `exc_cause` | integer | Code cause d'exception Xtensa (ex. 29 = `StoreProhibited`) |
+| `exc_cause_str` | string | Libellé lisible de la cause d'exception |
+| `exc_vaddr` | integer | Adresse mémoire ayant déclenché l'exception (accès invalide) |
+| `partition_found` | boolean | `false` si la partition `coredump` est absente de la table de partitions |
+
+---
+
+### GET /coredump/download — WRITE
+
+Télécharge le coredump brut sous forme de fichier binaire. Streamé via `AsyncCallbackResponse` sans allocation de 64 KB côté firmware.
+
+```bash
+curl -u admin:monmotdepasse http://poolcontroller.local/coredump/download -o coredump.bin
+```
+
+- **Content-Type** : `application/octet-stream`
+- **Content-Disposition** : `attachment; filename="coredump.bin"`
+- Retourne `404` si aucun coredump n'est disponible.
+
+Pour décoder le fichier obtenu :
+
+```bash
+./tools/decode_coredump.sh coredump.bin
+```
+
+---
+
+### DELETE /coredump — WRITE
+
+Efface la partition `coredump` pour permettre l'enregistrement d'un prochain crash.
+
+```bash
+curl -u admin:monmotdepasse -X DELETE http://poolcontroller.local/coredump
+```
+
+```json
+{ "success": true }
+```
+
+> ⚠️ L'effacement est irréversible. Télécharger le dump avant d'effacer.
 
 ---
 

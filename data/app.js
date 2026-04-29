@@ -799,17 +799,22 @@
       const history = data.history || [];
 
       // Agréger par jour calendaire — dernier point connu par jour par capteur
-      const todayKey = new Date().toDateString();
+      // Clé ISO YYYY-MM-DD (tri lexicographique correct, pas de re-parsing par Safari)
+      // Noms de mois en dur pour éviter toLocaleDateString("fr-FR") qui lance SyntaxError dans certains Safari
+      const MOIS_FR = ['janv.','févr.','mars','avr.','mai','juin','juil.','août','sept.','oct.','nov.','déc.'];
+      const nowD = new Date();
+      const todayKey = `${nowD.getFullYear()}-${String(nowD.getMonth()+1).padStart(2,'0')}-${String(nowD.getDate()).padStart(2,'0')}`;
       const dayMap = new Map();
 
       history.forEach(point => {
         const d = new Date(point.timestamp * 1000);
-        const key = d.toDateString();
+        if (isNaN(d.getTime())) return;
+        const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
         if (!dayMap.has(key)) {
           const isToday = key === todayKey;
           const label = isToday
             ? "Aujourd'hui"
-            : d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short' });
+            : `${d.getDate()} ${MOIS_FR[d.getMonth()]}`;
           dayMap.set(key, { label, ph: null, orp: null, temperature: null });
         }
         const entry = dayMap.get(key);
@@ -829,9 +834,9 @@
         });
       }
 
-      // Trier par date croissante
+      // Trier par date croissante — tri lexicographique direct sur YYYY-MM-DD
       const entries = [...dayMap.entries()]
-        .sort((a, b) => new Date(a[0]) - new Date(b[0]))
+        .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
         .map(([, e]) => e);
 
       if (tempChart) {
@@ -863,6 +868,7 @@
       debugLog(`Loaded ${history.length} points → ${dayMap.size} jours agrégés (${range})`);
     } catch (error) {
       console.error('Error loading historical data:', error);
+      if (error && error.stack) console.error('Stack:', error.stack);
     }
   }
 
@@ -2633,19 +2639,22 @@
         lastSensorDataLoadTime = Date.now();
         perf?.end("success");
       } catch (e) {
-        // Log detailed error information
-        console.error('loadSensorData error:', {
-          name: e?.name,
-          message: e?.message,
-          stack: e?.stack,
-          type: typeof e,
-          error: e
-        });
+        // AbortError = timeout volontaire (10s) — ESP32 lent à répondre, pas une vraie erreur
+        const isAbort = e?.name === 'AbortError';
+        if (!isAbort) {
+          console.error('loadSensorData error:', {
+            name: e?.name,
+            message: e?.message,
+            stack: e?.stack,
+            type: typeof e,
+            error: e
+          });
+        }
 
         // Dégrader l'état rapidement en cas d'échec répété
         consecutiveFailures++;
         if (consecutiveFailures >= 2) {
-          setNetStatus("bad", "Hors ligne");
+          setNetStatus("bad", isAbort ? "Connexion lente" : "Hors ligne");
         } else {
           setNetStatus("mid", "Connexion…");
         }
@@ -3522,6 +3531,29 @@
     }
   }
 
+  async function loadCoredumpInfo() {
+    try {
+      const res = await authFetch("/coredump/info");
+      if (!res.ok) { $("#coredump_status").textContent = "Erreur API"; return; }
+      const d = await res.json();
+      const available = d.available === true;
+      $("#coredump_status").textContent = available ? "Disponible" : "Aucun coredump";
+      const details = $("#coredump_details");
+      if (details) details.style.display = available ? "" : "none";
+      if (available) {
+        $("#coredump_task").textContent  = d.task  || "—";
+        $("#coredump_exc").textContent   = d.exc_cause_str ? `${d.exc_cause_str} (${d.exc_cause})` : "—";
+        $("#coredump_pc").textContent    = d.pc ? "0x" + d.pc.toString(16) : "—";
+      }
+      const dl = $("#coredump_download_btn");
+      const er = $("#coredump_erase_btn");
+      if (dl) dl.disabled = !available;
+      if (er) er.disabled = !available;
+    } catch (e) {
+      $("#coredump_status").textContent = "Erreur";
+    }
+  }
+
   // GitHub update
   let latestRelease = null;
 
@@ -3876,6 +3908,21 @@
       if (content) content.textContent = "";
       allLogEntries = [];
       lastLogTimestamp = 0;
+    });
+
+    $("#clear_logs_firmware_btn")?.addEventListener("click", async () => {
+      if (!confirm("Effacer tous les logs côté ESP32 ?\n\nLa mémoire RAM ET le fichier persistant seront vidés.\nCette action est irréversible.")) return;
+      try {
+        const resp = await authFetch("/logs", { method: "DELETE" });
+        if (!resp.ok) { showToast("Erreur lors de l'effacement", "error"); return; }
+        const content = $("#logs_content");
+        if (content) content.textContent = "";
+        allLogEntries = [];
+        lastLogTimestamp = 0;
+        showToast("Logs effacés (RAM + fichier)", "success");
+      } catch (e) {
+        showToast("Erreur lors de l'effacement", "error");
+      }
     });
 
     $("#download_logs_btn")?.addEventListener("click", async () => {
@@ -4652,6 +4699,38 @@
 
     $("#refresh_info_btn")?.addEventListener("click", loadSystemInfo);
 
+    $("#coredump_refresh_btn")?.addEventListener("click", loadCoredumpInfo);
+
+    $("#coredump_download_btn")?.addEventListener("click", async () => {
+      try {
+        const resp = await authFetch("/coredump/download");
+        if (!resp.ok) { showToast("Aucun coredump disponible", "error"); return; }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "coredump.bin";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        showToast("Erreur lors du téléchargement", "error");
+      }
+    });
+
+    $("#coredump_erase_btn")?.addEventListener("click", async () => {
+      if (!confirm("Effacer le coredump ?\n\nL'analyse du crash actuel sera définitivement perdue.")) return;
+      try {
+        const resp = await authFetch("/coredump", { method: "DELETE" });
+        if (!resp.ok) { showToast("Erreur lors de l'effacement", "error"); return; }
+        showToast("Coredump effacé", "success");
+        await loadCoredumpInfo();
+      } catch (e) {
+        showToast("Erreur lors de l'effacement", "error");
+      }
+    });
+
     // Logo topbar → blur immédiat pour éviter le focus ring persistant sur iOS Safari
     $("#topbar-home-link")?.addEventListener("click", (e) => {
       e.currentTarget.blur();
@@ -4979,10 +5058,6 @@
     bindManualUpdate();
     bindLogs();
 
-    // WebSocket : démarre immédiatement pour ne pas bloquer sur les fetches HTTP initiaux
-    setNetStatus("mid", "Connexion…");
-    initWebSocket();
-
     // Reconnexion immédiate lors du retour sur la page (iPad/mobile : après déverrouillage)
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) {
@@ -4992,10 +5067,15 @@
       }
     });
 
-    // initial loads (en parallèle avec la connexion WS)
+    // Charger la config avant d'ouvrir le WebSocket : l'ESP32 a fini de traiter
+    // les requêtes HTTP initiales (assets statiques), les sockets lwIP sont libérées,
+    // et le WS ne concurrence plus les fetches de chargement.
     const configPerf = debugStart("loadConfig");
     await loadConfig().catch(() => {});
     configPerf?.end();
+
+    setNetStatus("mid", "Connexion…");
+    initWebSocket();
 
     // Create mini charts for dashboard cards
     phMiniChart = createMiniLineChart(
@@ -5042,6 +5122,7 @@
     setTimeout(async () => {
       try {
         await loadSystemInfo();
+        await loadCoredumpInfo().catch(() => {});
       } catch (e) {
         console.error("Failed to load system info:", e);
       }

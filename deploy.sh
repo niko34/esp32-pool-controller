@@ -37,9 +37,22 @@ print_warning() {
     echo -e "${YELLOW}⚠️${NC} $1"
 }
 
+archive_elf() {
+    local elf="$BUILD_DIR/firmware.elf"
+    [ -f "$elf" ] || return
+    local archive_dir="builds"
+    mkdir -p "$archive_dir"
+    local ts; ts=$(date +%Y%m%d_%H%M%S)
+    cp "$elf" "$archive_dir/firmware_${ts}.elf"
+    # Garder uniquement les 10 archives les plus récentes
+    ls -t "$archive_dir"/firmware_*.elf 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null || true
+    print_success "ELF archivé → builds/firmware_${ts}.elf"
+}
+
 build_firmware() {
     print_step "Compilation du firmware..."
     pio run
+    archive_elf
     print_success "Firmware compilé"
 }
 

@@ -293,13 +293,21 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
   json += String(count);
   json += "}";
 
-  request->send(200, "application/json", json);
+  sendRawJsonResponse(request, json);
 }
 
 void setupDataRoutes(AsyncWebServer* server) {
   server->on("/data", HTTP_GET, handleGetData);
   server->on("/get-logs", HTTP_GET, handleGetLogs);
   server->on("/download-logs", HTTP_GET, handleDownloadLogs);
+  server->on("/logs", HTTP_DELETE, [](AsyncWebServerRequest* request) {
+    REQUIRE_AUTH(request, RouteProtection::WRITE);
+    systemLogger.clearAll();
+    systemLogger.info("Logs effacés (RAM + fichier persistant)");
+    JsonDocument doc;
+    doc["success"] = true;
+    sendJsonResponse(request, doc);
+  });
   server->on("/get-history", HTTP_GET, handleGetHistory);
 
   auto* importHandler = new AsyncCallbackJsonWebHandler(

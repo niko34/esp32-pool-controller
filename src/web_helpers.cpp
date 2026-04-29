@@ -1,30 +1,36 @@
 #include "web_helpers.h"
 #include <memory>
 
-// Envoi via chunked response avec un shared_ptr<String> capturé dans la lambda.
-// Évite le bug de AsyncBasicResponse qui mute _content à chaque ACK TCP via
-// String::substring() — sur grosse réponse (> 1 packet TCP) et heap fragmenté,
-// substring() peut renvoyer un String à buffer null et planter en LoadProhibited.
-// Avec chunked + shared_ptr, le String reste immuable et vit jusqu'à fin de l'envoi.
-static void sendJsonChunked(AsyncWebServerRequest* request, int code, std::shared_ptr<String> json) {
-  AsyncWebServerResponse* response = request->beginChunkedResponse(
-    "application/json",
+// Envoi via AsyncCallbackResponse avec Content-Length connu.
+// Évite le bug de AsyncBasicResponse qui mute _content via String::substring()
+// à chaque ACK TCP — sur grosse réponse et heap fragmenté, substring() peut
+// renvoyer un String à buffer null et planter en LoadProhibited.
+// Le shared_ptr<String> garde le contenu vivant jusqu'à la fin du transfert,
+// et Content-Length permet à lwIP de fermer le socket dès le dernier octet.
+static void sendJsonBuffered(AsyncWebServerRequest* request, int code, std::shared_ptr<String> json) {
+  size_t len = json->length();
+  AsyncWebServerResponse* response = request->beginResponse(
+    "application/json", len,
     [json](uint8_t* buffer, size_t maxLen, size_t index) -> size_t {
-      const size_t total = json->length();
-      if (index >= total) return 0;
-      size_t remaining = total - index;
+      size_t remaining = json->length() - index;
       size_t toCopy = remaining < maxLen ? remaining : maxLen;
       memcpy(buffer, json->c_str() + index, toCopy);
       return toCopy;
     });
-  response->setCode(code);
+  if (code != 200) response->setCode(code);
   request->send(response);
+}
+
+void sendRawJsonResponse(AsyncWebServerRequest* request, String& json) {
+  // std::move évite la copie du buffer — json devient invalide après l'appel
+  auto ptr = std::make_shared<String>(std::move(json));
+  sendJsonBuffered(request, 200, ptr);
 }
 
 void sendJsonResponse(AsyncWebServerRequest* request, JsonDocument& doc) {
   auto json = std::make_shared<String>();
   serializeJson(doc, *json);
-  sendJsonChunked(request, 200, json);
+  sendJsonBuffered(request, 200, json);
 }
 
 void sendErrorResponse(AsyncWebServerRequest* request, int code, const String& message) {
@@ -32,7 +38,7 @@ void sendErrorResponse(AsyncWebServerRequest* request, int code, const String& m
   JsonDocument doc;
   doc["error"] = message;
   serializeJson(doc, *json);
-  sendJsonChunked(request, code, json);
+  sendJsonBuffered(request, code, json);
 }
 
 String getCurrentTimeISO() {

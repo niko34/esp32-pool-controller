@@ -109,6 +109,7 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) {
       Update.printError(Serial);
       systemLogger.error("Erreur démarrage OTA: " + String(Update.errorString()));
+      return;  // Arrêter immédiatement — Update.write() échouerait en cascade sinon
     }
   }
 

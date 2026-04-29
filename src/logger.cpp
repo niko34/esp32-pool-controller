@@ -6,6 +6,9 @@ Logger systemLogger;
 // Constructeur : pré-alloue le buffer pour éviter les réallocations
 Logger::Logger() {
   logs.reserve(MAX_LOGS);
+  // Pré-allouer le buffer de persistance tôt (heap frais) pour éviter les réallocations
+  // tardives qui causeraient std::bad_alloc si le heap est fragmenté
+  _persistBuffer.reserve(kMaxPersistBufferEntries);
 }
 
 // Initialise le mutex FreeRTOS — appeler depuis setup() avant de démarrer le web server
@@ -45,6 +48,10 @@ void Logger::log(LogLevel level, const String& message) {
       strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%dT%H:%M:%S", &t);
     }
     String line = String(timeBuf) + " " + getLevelString(level) + " " + message + "\n";
+    // Capacité fixe : supprimer la plus ancienne plutôt que de réallouer (évite std::bad_alloc)
+    if (_persistBuffer.size() >= kMaxPersistBufferEntries) {
+      _persistBuffer.erase(_persistBuffer.begin());
+    }
     _persistBuffer.push_back(line);
   }
 
@@ -52,6 +59,11 @@ void Logger::log(LogLevel level, const String& message) {
 
   // Push WebSocket temps réel (si callback enregistré) — hors mutex
   if (cb) cb(entry);
+
+  // Flush immédiat sur ERROR/CRITICAL pour survivre aux crashes imminents
+  if (_persistEnabled && (level == LogLevel::ERROR || level == LogLevel::CRITICAL)) {
+    flushToDisk();
+  }
 
   // Affichage série avec préfixe niveau
   Serial.print("[");
@@ -123,6 +135,22 @@ void Logger::clear() {
   currentIndex = 0;
   bufferFull = false;
   if (_mutex) xSemaphoreGive(_mutex);
+}
+
+void Logger::clearAll() {
+  // Vider RAM + buffer pending sous mutex
+  if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
+  logs.clear();
+  currentIndex = 0;
+  bufferFull = false;
+  _persistBuffer.clear();
+  if (_mutex) xSemaphoreGive(_mutex);
+
+  // Supprimer le fichier persistant (et son éventuel .tmp de rotation)
+  if (_persistFs) {
+    _persistFs->remove("/system.log");
+    _persistFs->remove("/system.log.tmp");
+  }
 }
 
 size_t Logger::getLogCount() {

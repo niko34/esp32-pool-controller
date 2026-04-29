@@ -57,6 +57,10 @@ private:
   uint8_t flowToDuty(const PumpControlParams& params, float flowMlPerMin);
 
   bool checkSafetyLimits(bool isPhPump);
+  // Reset journalier (RTC/NTP local minuit, ou fallback millis() 24h).
+  // Doit être appelé en permanence depuis update(), AVANT le check de filtration,
+  // pour que les compteurs se réinitialisent même quand la filtration est arrêtée.
+  void tickDailyRollover();
   void updateSafetyTracking(bool isPhPump, float flowMlPerMin, unsigned long deltaMs);
 
   // Fonctions anti-cycling

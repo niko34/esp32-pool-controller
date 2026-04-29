@@ -1,6 +1,6 @@
 # ADR-0007 — Table de partitions custom (SPIFFS 1088 KB, history séparée 128 KB)
 
-- **Statut** : Accepté
+- **Statut** : Superseded by ADR-0009
 - **Date** : 2025 (refonte des partitions pour permettre OTA + historique préservé)
 - **Spec(s) liée(s)** : aucune (décision infrastructure)
 

@@ -794,6 +794,7 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
 
     // Redémarrer après un court délai pour permettre à la réponse d'être envoyée
     delay(500);
+    mqttManager.shutdownForRestart();  // ADR-0011 : flush status=offline avant restart
     ESP.restart();
   });
 
