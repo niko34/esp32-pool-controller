@@ -1666,6 +1666,16 @@ input.is-computed:disabled {
   color: var(--warn);
 }
 
+/* Pill placée juste à droite du titre dans .card__head : pas de retour ligne,
+   collée au titre via flex-start (au lieu du space-between par défaut). */
+.card__head:has(.pill) {
+  justify-content: flex-start;
+}
+.card__head .pill {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 

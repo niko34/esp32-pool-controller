@@ -1883,29 +1883,35 @@
 
   function updateFiltrationBadges() {
     const state = getFiltrationState(window._config || {}, latestSensorData || {});
-    ["#detail-filtration-status", "#filtration-current-status"].forEach((sel) => {
-      const badge = $(sel);
-      if (badge) {
-        badge.textContent = state.text;
-        badge.className = 'state-badge ' + state.class;
-      }
-    });
+    // Dashboard : conserve la classe legacy .state-badge--*
+    const dashBadge = $("#detail-filtration-status");
+    if (dashBadge) {
+      dashBadge.textContent = state.text;
+      dashBadge.className = 'state-badge ' + state.class;
+    }
+    // Card "Contrôle manuel" : badge .pill placé dans .card__head
+    const headBadge = $("#filtration-current-status");
+    if (headBadge) {
+      headBadge.textContent = state.text;
+      headBadge.className = 'pill ' + state.pillClass;
+    }
   }
 
   function getFiltrationState(config, data) {
     const isRunning = filtrationRunningOverride !== null ? filtrationRunningOverride : (data && data.filtration_running);
     const temp = data && data.temperature;
 
-    if (!config) return { text: 'Chargement...', class: 'state-badge--off' };
+    if (!config) return { text: 'Chargement...', class: 'state-badge--off', pillClass: '' };
 
     // Température hors gel
     if (temp != null && temp < 5.0 && isRunning) {
-      return { text: 'Hors gel', class: 'state-badge--warn' };
+      return { text: 'Hors gel', class: 'state-badge--warn', pillClass: 'mid' };
     }
 
     return {
       text: isRunning ? 'En marche' : 'Arrêtée',
-      class: isRunning ? 'state-badge--ok' : 'state-badge--off'
+      class: isRunning ? 'state-badge--ok' : 'state-badge--off',
+      pillClass: isRunning ? 'ok' : 'bad'
     };
   }
 
@@ -5337,11 +5343,13 @@
     const statusBadge = $("#lighting-current-status");
     const detailStatusBadge = $("#detail-lighting-status");
 
+    // Card "Contrôle manuel" : badge .pill placé dans .card__head
     if (statusBadge) {
       statusBadge.textContent = isOn ? "Allumé" : "Éteint";
-      statusBadge.className = isOn ? "state-badge state-badge--ok" : "state-badge state-badge--off";
+      statusBadge.className = isOn ? "pill ok" : "pill bad";
     }
 
+    // Dashboard : conserve la classe legacy .state-badge--*
     if (detailStatusBadge) {
       detailStatusBadge.textContent = isOn ? "Allumé" : "Éteint";
       detailStatusBadge.className = isOn ? "state-badge state-badge--ok" : "state-badge state-badge--off";

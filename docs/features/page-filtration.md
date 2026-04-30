@@ -16,7 +16,7 @@ Un **forçage temporaire** (ON ou OFF) permet de déroger à la planification sa
 ## Structure
 
 - **Toggle « Gérer la filtration »** (`#filtration_enabled`) — active ou désactive la fonctionnalité dans son ensemble.
-- **Carte Contrôle manuel** (`#filtration-manual-card`) — état actuel, boutons Démarrer / Arrêter.
+- **Carte Contrôle manuel** (`#filtration-manual-card`) — boutons Démarrer / Arrêter. Le **badge d'état (Marche / Arrêt)** est placé à droite du titre dans le `card__head` (frère direct du `<h2>`, classes `pill ok` ou `pill bad`) — voir feature-001. La ligne « État actuel » du body, devenue redondante, a été supprimée.
 - **Carte Configuration** — sélecteur de mode, heure de début, heure de fin, bouton Sauvegarder.
 
 Les autres cartes (graphe, statistiques) peuvent être ajoutées au fil du temps ; se référer à `#view-filtration` pour l'état courant.
@@ -65,7 +65,7 @@ Voir [`docs/MQTT.md`](../MQTT.md) pour l'auto-discovery complet.
 ## Fichiers
 
 - [`data/index.html:332`](../../data/index.html:332)
-- [`data/app.js`](../../data/app.js) — `saveFiltration()`, `updateFiltrationBadges()`
+- [`data/app.js`](../../data/app.js) — `saveFiltration()`, `updateFiltrationBadges()` (split détail = `pill ok/bad/mid` dans `card__head` ; dashboard = `state-badge--*` inchangé), `getFiltrationState()` qui expose `pillClass` (mapping `warn → mid`)
 - [`src/filtration.h`](../../src/filtration.h), [`src/filtration.cpp`](../../src/filtration.cpp) — logique firmware
 - [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — endpoints `/filtration/*`
 - [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) — persistance config

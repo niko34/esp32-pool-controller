@@ -353,14 +353,9 @@
             <div class="card" id="filtration-manual-card" style="display:none;">
               <div class="card__head">
                 <h2 class="card__title">Contrôle manuel</h2>
+                <span class="pill" id="filtration-current-status" role="status" aria-live="polite">Arrêtée</span>
               </div>
               <div class="card__body">
-                <div class="detail-row">
-                  <div class="detail-label">État actuel</div>
-                  <div class="detail-value">
-                    <span class="state-badge state-badge--off" id="filtration-current-status">Arrêtée</span>
-                  </div>
-                </div>
                 <div class="detail-actions">
                   <button class="btn btn--primary" id="filtration-manual-start">Démarrer</button>
                   <button class="btn btn--danger" id="filtration-manual-stop">Arrêter</button>
@@ -432,14 +427,9 @@
             <div class="card">
               <div class="card__head">
                 <h2 class="card__title">Contrôle manuel</h2>
+                <span class="pill" id="lighting-current-status" role="status" aria-live="polite">Éteint</span>
               </div>
               <div class="card__body">
-                <div class="detail-row">
-                  <div class="detail-label">État actuel</div>
-                  <div class="detail-value">
-                    <span class="state-badge state-badge--off" id="lighting-current-status">Éteint</span>
-                  </div>
-                </div>
                 <div class="detail-actions">
                   <button class="btn btn--primary" id="lighting-manual-on">Allumer</button>
                   <button class="btn btn--danger" id="lighting-manual-off">Éteindre</button>
@@ -1109,10 +1099,8 @@
             <section class="panel" data-settings-panel="mqtt" id="panel-mqtt" role="tabpanel" aria-labelledby="tab-mqtt">
               <div class="card">
                 <div class="card__head">
-                  <h2 class="card__title">
-                    MQTT
-                    <span class="pill" id="mqtt_status_pill">—</span>
-                  </h2>
+                  <h2 class="card__title">MQTT</h2>
+                  <span class="pill" id="mqtt_status_pill" role="status" aria-live="polite">—</span>
                 </div>
 
                 <div class="card__body">

@@ -10,7 +10,7 @@ Contrôler l'éclairage de la piscine (relais GPIO26). Permet un allumage manuel
 ## Structure
 
 - **Toggle « Gérer l'éclairage »** — masque / démasque la carte si la fonctionnalité n'est pas désirée (équivalent `lighting_feature_enabled` dans [`config.h:103`](../../src/config.h:103)).
-- **Carte Contrôle manuel** — boutons Allumer / Éteindre, état actuel.
+- **Carte Contrôle manuel** — boutons Allumer / Éteindre. Le **badge d'état (Allumé / Éteint)** est placé à droite du titre dans le `card__head` (frère direct du `<h2>`, classes `pill ok` ou `pill bad`) — voir feature-001. La ligne « État actuel » du body, devenue redondante, a été supprimée.
 - **Carte Programmation** — toggle programmation + heures de début et de fin (format `HH:MM`) + bouton Sauvegarder.
 
 ## Données consommées (WebSocket `/ws`)
@@ -47,6 +47,7 @@ Contrôler l'éclairage de la piscine (relais GPIO26). Permet un allumage manuel
 ## Fichiers
 
 - [`data/index.html:411`](../../data/index.html:411)
+- [`data/app.js`](../../data/app.js) — `updateLightingStatus()` (split détail = `pill ok/bad` dans `card__head` ; dashboard = `state-badge--*` inchangé)
 - [`src/lighting.h`](../../src/lighting.h), [`src/lighting.cpp`](../../src/lighting.cpp)
 - [`src/config.h:101`](../../src/config.h:101) struct `LightingConfig`
 - [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — endpoints `/lighting/*`
