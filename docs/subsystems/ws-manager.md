@@ -46,7 +46,24 @@ JSON avec un champ `type` :
 - `type: "config"` → payload identique à `/get-config`
 - `type: "log"` → `{timestamp, level, message}`
 
-### Champ `reset_reason` (sensor_data)
+### Champs notables de `sensor_data`
+
+Au-delà des mesures capteur (pH, ORP, température…) et des états de contrôle (filtration, dosage, éclairage), la payload `sensor_data` transporte aussi quelques champs d'observabilité :
+
+| Champ | Type | Source | Notes |
+|-------|------|--------|-------|
+| `time_synced` | bool | `time(nullptr) >= kMinValidEpoch` | Vrai dès que NTP/RTC a fourni une heure valide |
+| `uptime_ms` | uint | `millis()` | Permet au client de calculer le timestamp boot |
+| `reset_reason` | string | `esp_reset_reason()` | Voir tableau ci-dessous |
+| `mqtt_connected` | bool | `mqttManager.isConnected()` | État de connexion broker en temps réel — voir ci-dessous |
+
+#### Champ `mqtt_connected` (sensor_data)
+
+Ajouté par feature-015 pour rafraîchir le badge UI Paramètres → MQTT sans nécessiter de reload page. Lit la single source of truth `connectedAtomic` du `MqttManager` (introduit par feature-014 IT2 — atomic relaxed, pas de mutex). Permet à l'UI de basculer le badge en moins de 5 s après la détection firmware d'une coupure broker.
+
+> Le champ `mqtt_connected` est aussi présent dans la payload `config` ([`_buildConfigJson()`](../../src/ws_manager.cpp:219)) — doublon volontaire : `sensor_data` est le canal **temps réel** (push 5 s), `config` est le **snapshot stable** broadcast à la transition (save HTTP `/save-config`, ouverture de page via `/get-config`). Les deux pointent vers la même source `mqttManager.isConnected()`.
+
+#### Champ `reset_reason` (sensor_data)
 
 Calculé à chaque push via `esp_reset_reason()` ([`ws_manager.cpp:17`](../../src/ws_manager.cpp:17)) — la valeur reflète la cause du **dernier reboot** et reste constante pendant toute la session.
 

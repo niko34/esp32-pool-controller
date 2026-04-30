@@ -152,7 +152,7 @@ void WsManager::broadcastLog(const LogEntry& entry) {
 // =============================================================================
 
 String WsManager::_buildSensorJson() const {
-  StaticJson<768> doc;
+  StaticJson<832> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -195,9 +195,12 @@ String WsManager::_buildSensorJson() const {
   d["time_synced"]   = (time(nullptr) >= kMinValidEpoch);
   d["uptime_ms"]     = millis();
   d["reset_reason"]  = getResetReason();
+  // Statut MQTT poussé toutes les 5s pour rafraîchir le badge UI sans reload (feature-015).
+  // Lit connectedAtomic (atomic relaxed) — pas de mutex nécessaire (cf. feature-014 IT2).
+  d["mqtt_connected"] = mqttManager.isConnected();
 
   String out;
-  out.reserve(640);
+  out.reserve(672);
   serializeJson(doc, out);
   return out;
 }

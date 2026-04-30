@@ -130,6 +130,16 @@
   }
 
   function _onWsSensorData(json) {
+    // Statut MQTT temps réel (feature-015) — mise à jour PRIORITAIRE en tête de
+    // fonction, blindée par try/catch, pour garantir l'exécution même si une
+    // étape ultérieure (loadSensorData, _showResetToast) lance une exception.
+    try {
+      if (json.mqtt_connected !== undefined && window._config) {
+        window._config.mqtt_connected = json.mqtt_connected;
+        updateMqttStatusIndicator(window._config.enabled, json.mqtt_connected);
+      }
+    } catch (e) { console.error('[mqtt-status] update failed:', e); }
+
     if (json.uptime_ms != null) _bootEpochMs = Date.now() - json.uptime_ms;
     const reason = json.reset_reason;
     if (reason && !['POWER_ON', 'SW_RESET', 'DEEP_SLEEP'].includes(reason) && reason !== _lastNotifiedResetReason) {
@@ -941,6 +951,14 @@
     if (panelKey === "wifi") {
       updateWiFiDisplay();
       checkWiFiNotification();
+    }
+
+    // Re-render du badge MQTT à l'activation du panel : garantit l'affichage
+    // correct même si le bloc mqtt_connected dans _onWsSensorData n'a pas
+    // propagé jusqu'à window._config (cf. feature-015).
+    if (panelKey === "mqtt") {
+      const connected = latestSensorData?.mqtt_connected ?? window._config?.mqtt_connected ?? false;
+      updateMqttStatusIndicator(window._config?.enabled, connected);
     }
   }
 
