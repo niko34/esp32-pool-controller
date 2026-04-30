@@ -357,7 +357,9 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "wifi_ip": "192.168.1.100",
   "max_ph_ml_per_day": 1000,
   "max_chlorine_ml_per_day": 1000,
-  "time_current": "2026-03-28T14:30:45"
+  "time_current": "2026-03-28T14:30:45",
+  "sensor_logs_enabled": false,
+  "debug_logs_enabled": false
 }
 ```
 
@@ -383,6 +385,8 @@ Champs notables de la réponse :
 | `orp_enabled` | boolean | Miroir dérivé de `orp_regulation_mode` : `true` si mode ≠ `"manual"`. Maintenu pour compatibilité MQTT / HA. |
 | `max_orp_ml_per_day` | float | Limite journalière ORP configurée (mL) — alias de `max_chlorine_ml_per_day` |
 | `orp_cal_valid` | boolean | `true` si une calibration ORP a déjà été enregistrée (date non vide) |
+| `sensor_logs_enabled` | boolean | Verbosité des logs capteurs (default `false`). Modifiable via Paramètres → Avancé → « Log des sondes ». |
+| `debug_logs_enabled` | boolean | Active la production des logs de niveau `DEBUG` côté firmware (default `false`). Quand `false`, `Logger::debug()` court-circuite immédiatement (early return). Les niveaux `INFO`/`WARN`/`ERROR`/`CRITICAL` ne sont pas affectés. Modifiable via Paramètres → Avancé → « Logs DEBUG activés ». Persisté en NVS sous la clé `debug_logs`. Effet immédiat, pas de redémarrage requis. |
 
 **`POST /save-config` — champs pH spécifiques :**
 

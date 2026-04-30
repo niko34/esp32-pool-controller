@@ -164,6 +164,7 @@ void saveMqttConfig() {
   prefs.putString("auth_ap_pwd", authCfg.apPassword);
   prefs.putString("auth_cors", authCfg.corsAllowedOrigins);
   prefs.putBool("sensor_logs", authCfg.sensorLogsEnabled);
+  prefs.putBool("debug_logs", authCfg.debugLogsEnabled);
   prefs.putBool("screen_enabled", authCfg.screenEnabled);
 
   // Puissance maximale des pompes
@@ -317,6 +318,7 @@ void loadMqttConfig() {
   authCfg.apPassword = prefs.getString("auth_ap_pwd", authCfg.apPassword);
   authCfg.corsAllowedOrigins = prefs.getString("auth_cors", authCfg.corsAllowedOrigins);
   authCfg.sensorLogsEnabled = prefs.getBool("sensor_logs", false);
+  authCfg.debugLogsEnabled = prefs.getBool("debug_logs", false);
   authCfg.screenEnabled = prefs.getBool("screen_enabled", false);
 
   // Puissance maximale des pompes

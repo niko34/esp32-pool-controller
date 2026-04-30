@@ -119,7 +119,11 @@ Liste défilante des derniers logs poussés via WebSocket + filtres par niveau (
 | Télécharger | ghost | Téléchargement de `pool_logs.txt` via `GET /download-logs` |
 | Effacer (firmware) | **danger (rouge)** | Dialogue `confirm()` natif puis `DELETE /logs` (cf. [`docs/API.md`](../API.md#delete-logs--write)). Vide RAM + buffer pending + supprime `/system.log` côté ESP32, vide aussi la vue locale, toast de succès `Logs effacés (RAM + fichier)`. Tooltip : *« Vide la mémoire et supprime le fichier persistant côté ESP32 »*. |
 
-Toggles complémentaires : `Auto (5s)` (rafraîchissement automatique), `Scroll auto` (suivi de fin), `sensor_logs_enabled` (verbosité capteurs).
+Toggles complémentaires :
+- `Auto (5s)` — rafraîchissement automatique
+- `Scroll auto` — suivi de fin
+- `sensor_logs_enabled` — verbosité capteurs (« Log des sondes »)
+- `debug_logs_enabled` — switch **« Logs DEBUG activés »** placé immédiatement sous « Log des sondes ». Default `false`. Quand le switch est désactivé, `Logger::debug()` court-circuite immédiatement côté firmware (early return, aucune allocation, aucun push WS, aucune écriture buffer). Effet immédiat (pas de redémarrage requis), persistance NVS sous la clé `debug_logs`. Les niveaux `INFO`/`WARNING`/`ERROR`/`CRITICAL` ne sont **pas** affectés. Le filtre UI `#log_level_debug` (case « DEBUG » de la barre de filtres) reste indépendant : il pilote uniquement l'affichage côté navigateur des entrées DEBUG déjà produites.
 
 ## Actions
 

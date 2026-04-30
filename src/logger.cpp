@@ -1,4 +1,5 @@
 #include "logger.h"
+#include "config.h"
 #include <time.h>
 
 Logger systemLogger;
@@ -73,6 +74,7 @@ void Logger::log(LogLevel level, const String& message) {
 }
 
 void Logger::debug(const String& message) {
+  if (!authCfg.debugLogsEnabled) return;  // feature-017 : court-circuit firmware si DEBUG désactivé
   log(LogLevel::DEBUG, message);
 }
 

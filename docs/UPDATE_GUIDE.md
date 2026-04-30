@@ -82,6 +82,29 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 
 ## Notes de migration
 
+### Logs DEBUG désactivés par défaut — depuis 2026-04-30
+
+**Aucune action utilisateur requise.**
+
+Depuis cette version, les logs de niveau `DEBUG` sont **désactivés par défaut** côté firmware. L'objectif est d'alléger le buffer NVS (200 entrées max, partagé avec INFO/WARN/ERROR/CRITICAL) pendant le fonctionnement nominal et de faciliter la lecture de la page Logs.
+
+**Comportement après mise à jour :**
+
+- Default `false` après flash neuf ou OTA. Aucun nouveau log `DEBUG` n'apparaît dans la page Logs ni dans le buffer persistant.
+- Les niveaux `INFO`, `WARN`, `ERROR`, `CRITICAL` ne sont **pas** affectés et continuent de s'afficher comme avant.
+
+**Pour activer les logs DEBUG (par ex. en cas de diagnostic) :**
+
+1. Aller dans **Paramètres → Avancé → card Logs**
+2. Cocher le switch **« Logs DEBUG activés »** (placé immédiatement sous « Log des sondes »)
+3. Cliquer **Enregistrer**
+
+L'effet est immédiat (pas de redémarrage requis). La valeur est persistée en NVS sous la clé `debug_logs` et survit aux reboots. Pour désactiver à nouveau, décocher et enregistrer.
+
+> Le filtre `DEBUG` de la barre de filtres de la page Logs reste indépendant : il pilote l'affichage navigateur uniquement. Quand le switch firmware est désactivé, ce filtre n'a plus rien à afficher (les entrées ne sont plus produites).
+
+---
+
 ### Stabilité réseau MQTT — tâche dédiée — depuis 2026-04-27
 
 **Aucune action utilisateur requise. Aucun changement de configuration.**

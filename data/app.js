@@ -1297,6 +1297,7 @@
       lighting_end_time: lightingEndTime,
       temperature_enabled: temperatureEnabled,
       sensor_logs_enabled: $("#sensor_logs_enabled")?.checked === true,
+      debug_logs_enabled: $("#debug_logs_enabled")?.checked === true,
       screen_enabled: $("#screen_enabled")?.checked === true,
     };
   }
@@ -1538,6 +1539,9 @@
     // Development panel
     if ($("#sensor_logs_enabled")) {
       $("#sensor_logs_enabled").checked = cfg.sensor_logs_enabled === true;
+    }
+    if ($("#debug_logs_enabled")) {
+      $("#debug_logs_enabled").checked = cfg.debug_logs_enabled === true;
     }
     if ($("#screen_enabled")) {
       $("#screen_enabled").checked = cfg.screen_enabled === true;
@@ -4645,8 +4649,9 @@
       save();
     });
 
-    // Development panel - Sensor logs / Screen
+    // Development panel - Sensor logs / Debug logs / Screen
     $("#sensor_logs_enabled")?.addEventListener("change", save);
+    $("#debug_logs_enabled")?.addEventListener("change", save);
     $("#screen_enabled")?.addEventListener("change", save);
   }
 

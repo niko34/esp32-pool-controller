@@ -275,6 +275,7 @@ String WsManager::_buildConfigJson() const {
   d["temperature_enabled"]       = mqttCfg.temperatureEnabled;
   d["auth_enabled"]        = authCfg.enabled;
   d["sensor_logs_enabled"] = authCfg.sensorLogsEnabled;
+  d["debug_logs_enabled"]  = authCfg.debugLogsEnabled;
   d["auth_password"]       = authCfg.adminPassword.length() > 0 ? "******" : "";
   d["auth_token"]          = authCfg.apiToken.length() > 8 ? (authCfg.apiToken.substring(0, 8) + "...") : "";
   d["auth_cors_origins"]   = authCfg.corsAllowedOrigins;
