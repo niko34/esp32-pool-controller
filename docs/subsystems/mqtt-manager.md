@@ -84,6 +84,7 @@ Configurés dans [`src/constants.h`](../../src/constants.h) :
 | `kMqttTaskLoopTimeoutMs` | `100` | Timeout `xQueuePeek` dans `mqttTask` |
 | `kMqttOfflineFlushMs` | `1000` | Timeout flush `status=offline` avant restart |
 | `kMqttClientConnectTimeoutSec` | `2` | **Timeout en SECONDES** passé à `WiFiClient::setTimeout()` — borne le SYN/CONNACK TCP côté broker injoignable. Voir avertissement ci-dessous |
+| `kMqttSocketSendTimeoutMs` | `500` | **Timeout en MILLISECONDES** posé via `setsockopt(SO_SNDTIMEO)` après chaque `mqtt.connect()` réussi — borne tout `WiFiClient::write()` à 500 ms (cf. ADR-0011 IT5). Le PINGREQ keepalive (2 octets) part en < 100 ms en réseau normal et reste fiable même si un publish massif est en cours |
 
 Le high-water-mark de la stack est exposé dans le payload `diagnostic` MQTT (champ `mqtt_task_stack_hwm`) — utile pour réduire `kMqttTaskStackSize` si on observe un large headroom après plusieurs jours.
 
@@ -126,6 +127,10 @@ Voir [`docs/MQTT.md`](../MQTT.md) pour la liste exhaustive avec les entités HA 
 Conséquence côté broker : Mosquitto (et la plupart des brokers MQTT) applique `1.5 × keepalive` comme délai max sans paquet reçu avant de fermer la session. Avec un keepalive de 60 s, **la tolérance broker est de 90 s** (contre 45 s avec le précédent réglage de 30 s).
 
 **Trade-off** : une vraie déconnexion (broker arrêté, lien WiFi coupé) est détectée en 90 s au lieu de 45 s. Acceptable pour la régulation pH/ORP qui ne dépend pas d'une latence sub-minute. En contrepartie, le client tolère sans broncher des microcoupures réseau jusqu'à ~60 s — utile sur les chemins instables (CPL/Powerline, WiFi à RSSI marginal).
+
+> ⚠️ **Fragilité historique du PINGREQ keepalive — résolue en IT5.** PubSubClient `loop()` envoie le PINGREQ (2 octets) via `_client->write(buf, 2)` **sans vérifier le retour** ; `lastOutActivity` est immédiatement mis à jour et `pingOutstanding = true`. Conséquence : si le `write()` échoue silencieusement, le PINGREQ ne part pas, le broker ne reçoit rien pendant 90 s et coupe la session avec `disconnected: exceeded timeout`.
+>
+> Ce risque s'est matérialisé en IT4 quand la socket TCP était en mode `O_NONBLOCK` total : sur send buffer plein à l'instant exact du PINGREQ, `lwip_send()` retournait `EAGAIN` instantanément et les 2 octets étaient perdus. **IT5 corrige le problème** en remplaçant `O_NONBLOCK` par `SO_SNDTIMEO=500 ms` : la socket reste bloquante et le PINGREQ a largement le temps de partir (latence typique < 100 ms), même quand un publish concurrent occupe le buffer. Cf. section « Garde-fou : `safePublish()` + socket avec `SO_SNDTIMEO` » et ADR-0011 IT5.
 
 ## Reconnexion
 
@@ -177,7 +182,7 @@ esp_task_wdt_add(NULL);   // mqtt_manager.cpp:114, début de mqttTaskFunction
 
 Le timeout watchdog par tâche reste celui de `kWatchdogTimeoutSec = 30 s`. Pour rester sous cette borne quelles que soient les conditions réseau, des `esp_task_wdt_reset()` sont insérés sur tous les chemins potentiellement bloquants.
 
-Depuis IT4 (cf. ADR-0011 « Évolutions »), **les `esp_task_wdt_reset()` granulaires de IT3 (un reset avant chaque `mqtt.publish()`) ont été factorisés dans le wrapper `safePublish()`** — voir section « Garde-fou : `safePublish()` + socket non-bloquant (IT4) » ci-dessous. Tous les call sites `mqtt.publish(...)` directs ont été remplacés par `safePublish(...)`, et les checks `if (!mqtt.connected()) return;` répétés ont été supprimés (le wrapper retourne `false` silencieusement). Les emplacements résiduels visibles dans le code source sont :
+Depuis IT4 (cf. ADR-0011 « Évolutions »), **les `esp_task_wdt_reset()` granulaires de IT3 (un reset avant chaque `mqtt.publish()`) ont été factorisés dans le wrapper `safePublish()`** — voir section « Garde-fou : `safePublish()` + socket avec `SO_SNDTIMEO` (IT5, remplace O_NONBLOCK d'IT4) » ci-dessous. Tous les call sites `mqtt.publish(...)` directs ont été remplacés par `safePublish(...)`, et les checks `if (!mqtt.connected()) return;` répétés ont été supprimés (le wrapper retourne `false` silencieusement). Les emplacements résiduels visibles dans le code source sont :
 
 | # | Emplacement (`mqtt_manager.cpp`) | Rôle |
 |---|---|---|
@@ -194,27 +199,32 @@ Depuis IT4 (cf. ADR-0011 « Évolutions »), **les `esp_task_wdt_reset()` granul
 
 > **Rationnel des resets #2 et #3** : avant ADR-0011 itération 2, seul un reset existait avant `mqtt.connect()`. Pendant le test D2 (câble Ethernet HA débranché), `mqttTask` est restée bloquée dans `WiFiClient::connect()` → `lwip_select` plus de 30 s sur le SYN TCP retransmis, déclenchant un PANIC watchdog avant qu'aucun reset ultérieur ne soit atteint. L'ajout du reset post-`connect()` (#3) borne le pire cas même quand `connect()` retourne sans appeler aucun autre code (échec immédiat ou abandon TCP).
 >
-> **Rationnel wrapper `safePublish()` (IT4)** : le 3ᵉ re-test D2 humain APRÈS le flash IT3 a déclenché un nouveau PANIC, cette fois dans `drainOutQueue()` (publish d'un message ~110 octets `orp_limit`) — fonction qui n'avait pas été instrumentée par IT3 (oubli) et qui consomme `outQueue` (alertes, status, logs, états relais). En parallèle, l'analyse a révélé que `CONFIG_LWIP_TCP_MAXRTX=5` borne en réalité à ~93 s (et non ~10 s) à cause du `TCP_RTO_INITIAL=3 s` × backoff exponentiel — bien au-delà du watchdog 30 s. Le pivot architectural d'IT4 est donc de **passer la socket TCP en mode non-bloquant** (cf. section suivante), puis d'imposer un **wrapper unique `safePublish()`** sur les 24 call sites de `mqtt.publish()` dans `mqttTask`.
+> **Rationnel wrapper `safePublish()` (IT4) puis pivot `SO_SNDTIMEO` (IT5)** : le 3ᵉ re-test D2 humain APRÈS le flash IT3 a déclenché un nouveau PANIC, cette fois dans `drainOutQueue()` (publish d'un message ~110 octets `orp_limit`) — fonction qui n'avait pas été instrumentée par IT3 (oubli) et qui consomme `outQueue` (alertes, status, logs, états relais). En parallèle, l'analyse a révélé que `CONFIG_LWIP_TCP_MAXRTX=5` borne en réalité à ~93 s (et non ~10 s) à cause du `TCP_RTO_INITIAL=3 s` × backoff exponentiel — bien au-delà du watchdog 30 s. Le pivot architectural d'IT4 a été de **passer la socket TCP en mode non-bloquant** (`O_NONBLOCK`) et d'imposer un **wrapper unique `safePublish()`** sur les 24 call sites de `mqtt.publish()` dans `mqttTask`. **IT5 corrige le side-effect** d'IT4 sur le keepalive PINGREQ en remplaçant `O_NONBLOCK` par `SO_SNDTIMEO=500 ms` : la socket reste bloquante mais bornée, le PINGREQ part fiablement, le wrapper est inchangé.
 
-## Garde-fou : `safePublish()` + socket non-bloquant (IT4)
+## Garde-fou : `safePublish()` + socket avec `SO_SNDTIMEO` (IT5, remplace O_NONBLOCK d'IT4)
 
 > ⚠️ **AVERTISSEMENT — `WiFiClient::availableForWrite()` retourne TOUJOURS 0 dans Arduino-ESP32 6.9.0.**
-> La méthode héritée de `Print::availableForWrite()` n'est **pas surchargée** par `WiFiClient`, donc elle renvoie systématiquement la valeur par défaut `0`. **Ne JAMAIS l'utiliser** pour décider si la socket peut accepter un `write()`. C'est cette découverte qui a fait pivoter le plan IT4 : la constante `kMqttPublishHeadersOverhead` envisagée (F12) a été annulée, et le bornage repose désormais sur le **mode non-bloquant** via `fcntl()`. Référence : implémentation `WiFiClient::write()` qui appelle `Print::availableForWrite()` sans override.
+> La méthode héritée de `Print::availableForWrite()` n'est **pas surchargée** par `WiFiClient`, donc elle renvoie systématiquement la valeur par défaut `0`. **Ne JAMAIS l'utiliser** pour décider si la socket peut accepter un `write()`. C'est cette découverte qui avait fait pivoter le plan IT4 (annulation de `kMqttPublishHeadersOverhead` / F12). IT5 conserve l'approche socket-level mais remplace `O_NONBLOCK` par `SO_SNDTIMEO` (cf. ci-dessous).
 
-### Mode non-bloquant via `fcntl()`
+### Timeout d'écriture via `SO_SNDTIMEO` (IT5)
 
-Après chaque `mqtt.connect()` réussi, dans `connectInTask()`, la socket TCP sous-jacente est passée en mode non-bloquant :
+Après chaque `mqtt.connect()` réussi, dans `connectInTask()`, la socket TCP sous-jacente reçoit un timeout d'écriture borné à `kMqttSocketSendTimeoutMs = 500 ms` :
 
 ```cpp
-// Récupère le fd natif du WiFiClient et active O_NONBLOCK
 int fd = wifiClient.fd();
-int flags = fcntl(fd, F_GETFL, 0);
-if (flags >= 0) {
-  fcntl(fd, F_SETFL, flags | O_NONBLOCK);  // socket non-bloquante : write retourne EAGAIN si buffer plein
+if (fd >= 0) {
+  struct timeval tv;
+  tv.tv_sec  = kMqttSocketSendTimeoutMs / 1000;
+  tv.tv_usec = (kMqttSocketSendTimeoutMs % 1000) * 1000;
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 ```
 
-**Effet** : tout `WiFiClient::write()` ultérieur retourne immédiatement avec `EAGAIN` si le send buffer TCP est plein (au lieu de bloquer dans `lwip_select`). `PubSubClient::publish()` propage cette erreur en retournant `false` (sans retry interne — confirmé `PubSubClient.cpp:599`). `safePublish()` retourne alors `false` aussi → drop silencieux du message.
+**Effet** : tout `WiFiClient::write()` ultérieur reste **bloquant**, mais avec une borne dure de 500 ms. Au-delà, `lwip_send()` retourne avec un nombre d'octets écrits partiel ou `EAGAIN`/`EWOULDBLOCK` si rien n'a pu être posté. `PubSubClient::publish()` propage l'erreur en retournant `false` (sans retry interne — confirmé `PubSubClient.cpp:599`). `safePublish()` retourne alors `false` aussi → drop silencieux du message.
+
+**Pourquoi pas `O_NONBLOCK` total (approche IT4) ?** Le keepalive applicatif PubSubClient envoie un `PINGREQ` de 2 octets toutes les 60 s via `_client->write(buf, 2)` **sans vérifier le retour** ; `lastOutActivity` est mis à jour et `pingOutstanding = true` même si le `write` a retourné 0. En `O_NONBLOCK`, si le send buffer TCP était plein à cet instant précis (publish concurrent, retransmission, latence pic), `lwip_send()` renvoyait `EAGAIN` instantanément et **les 2 octets du PINGREQ ne partaient jamais**. Mosquitto ne recevait alors plus aucun paquet pendant `keepalive × 1.5 = 90 s` et coupait la session avec `disconnected: exceeded timeout` — observé en production avec une fréquence non systématique mais récurrente après le déploiement IT4. Le mode `SO_SNDTIMEO` à 500 ms laisse au PINGREQ le temps réel de partir (latence typique < 100 ms), tout en bornant le pire cas d'un publish massif bien en deçà du watchdog 30 s.
+
+**Pire cas borné** : un `publishDiscovery()` (17 publishes enchaînés) sur réseau saturé pourrait théoriquement consommer 17 × 500 ms = 8.5 s. Toujours sous le watchdog 30 s avec une marge confortable, et en pratique très éloigné du nominal (les publishes individuels < 50 ms).
 
 ### Wrapper `safePublish()`
 
@@ -225,8 +235,8 @@ bool MqttManager::safePublish(const char* topic, const char* payload, bool retai
   esp_task_wdt_reset();
   // Bail-out fail-fast : socket fermée par lwip ou jamais connectée
   if (!mqtt.connected()) return false;
-  // mqtt.publish() ne peut plus bloquer : socket en O_NONBLOCK,
-  // retourne false si write retourne EAGAIN (buffer TCP plein)
+  // mqtt.publish() borné par SO_SNDTIMEO=500 ms (IT5) — retourne false
+  // après au plus 500 ms si le send buffer reste plein
   return mqtt.publish(topic, payload, retain);
 }
 ```
@@ -234,7 +244,9 @@ bool MqttManager::safePublish(const char* topic, const char* payload, bool retai
 Trois garanties combinées :
 1. **Watchdog reset** systématique avant chaque publish.
 2. **Court-circuit** si la socket n'est plus connectée (au lieu de subir un timeout TCP).
-3. **Aucun blocage** dans `lwip_write` — la socket non-bloquante propage `EAGAIN` instantanément.
+3. **Blocage borné** dans `lwip_write` — `SO_SNDTIMEO=500 ms` (IT5) plafonne chaque write, le PINGREQ keepalive part toujours dans la fenêtre.
+
+> ℹ️ Note : `WiFiClient::availableForWrite()` n'est pas utilisable comme avertissement préventif (cf. encadré ci-dessus). Le check connecté + le timeout socket sont les deux garde-fous effectifs.
 
 ### Call sites couverts (24 au total)
 
@@ -252,10 +264,11 @@ Les `esp_task_wdt_reset()` IT3 et les bail-out `if (!mqtt.connected()) return;` 
 
 ### Trade-off accepté
 
-- **Drop silencieux des publish quand le send buffer TCP est plein** : pas de retry, pas de reput dans `outQueue`. Acceptable parce que :
+- **Drop silencieux des publish quand le send buffer TCP reste plein > 500 ms** : pas de retry, pas de reput dans `outQueue`. Acceptable parce que :
   - Les **états retain** (température, pH, ORP, targets, …) seront republiés au prochain `publishAllStatesInternal()` post-reconnect (cadence 10 s).
-  - Les **alertes ponctuelles** (`publishAlert`) **peuvent être perdues**. C'était déjà le cas avec `PubSubClient` en mode bloquant qui timeoutait sur send buffer plein avant ADR-0011 — IT4 ne dégrade pas cette propriété, il rend juste le drop instantané et silencieux au lieu de bloquer 30 s puis dropper.
+  - Les **alertes ponctuelles** (`publishAlert`) **peuvent être perdues**. C'était déjà le cas avec `PubSubClient` en mode bloquant qui timeoutait sur send buffer plein avant ADR-0011 — IT4/IT5 ne dégradent pas cette propriété, ils rendent juste le drop borné (≤ 500 ms IT5, instantané IT4) au lieu de bloquer 30 s puis dropper.
   - L'auto-discovery HA est republiée à chaque reconnect (`discoveryPublished` reset à la déconnexion) → un drop pendant la salve initiale est rattrapé au cycle suivant.
+- **Latence de publish nominale +0 ms** : sur LAN sain, `lwip_send()` retourne en quelques ms, le timeout 500 ms n'est jamais atteint. Le coût n'est payé que sur send buffer saturé.
 
 ## Bornage TCP côté lwip
 
@@ -278,7 +291,7 @@ build_flags =
 > - retrans 4 : T+45 s (21+24)
 > - retrans 5 : T+93 s (45+48)
 >
-> **Pire cas réel ≈ 93 s avant abandon de socket par lwip**, bien au-delà du watchdog 30 s. `CONFIG_LWIP_TCP_MAXRTX=5` **seul ne suffit pas** à protéger `mqttTask`. Le vrai mécanisme de protection contre les blocages `lwip_write` est le **mode non-bloquant** via `fcntl(F_SETFL, O_NONBLOCK)` introduit en IT4 (cf. section « Garde-fou : `safePublish()` + socket non-bloquant »). Le bornage TCP est conservé comme **garde-fou complémentaire** : il accélère la fermeture propre de la socket côté lwip une fois qu'elle est en retransmit prolongé, ce qui permet à `mqtt.connected()` de retourner `false` plus rapidement.
+> **Pire cas réel ≈ 93 s avant abandon de socket par lwip**, bien au-delà du watchdog 30 s. `CONFIG_LWIP_TCP_MAXRTX=5` **seul ne suffit pas** à protéger `mqttTask`. Le vrai mécanisme de protection contre les blocages `lwip_write` est le **timeout d'écriture socket** via `setsockopt(SO_SNDTIMEO=500 ms)` introduit en IT5 (cf. section « Garde-fou : `safePublish()` + socket avec `SO_SNDTIMEO` »), qui remplace le mode non-bloquant `O_NONBLOCK` d'IT4. Le bornage TCP est conservé comme **garde-fou complémentaire** : il accélère la fermeture propre de la socket côté lwip une fois qu'elle est en retransmit prolongé, ce qui permet à `mqtt.connected()` de retourner `false` plus rapidement.
 
 > ⚠️ **Trade-off — ce paramètre est GLOBAL à toute la pile lwip.** Il s'applique **à toutes les sockets TCP** ouvertes par le firmware, pas uniquement à MQTT :
 > - **AsyncWebServer** : un client web mal connecté verra sa socket fermée plus rapidement (~93 s vs bien au-delà avec la valeur lwip par défaut de 12). Imperceptible en LAN sain.
@@ -327,7 +340,7 @@ if (!mqtt.connected() && mqttCfg.enabled) {
 
 > **Avant IT4 (mode bloquant)** : `mqtt.publish()` bloquait dans `WiFiClient::write` → `lwip_select` quand le send buffer TCP était plein. `mqtt.loop()` n'avait alors plus le temps de gérer le keepalive applicatif. C'était lwip qui finissait par fermer la socket après ses retransmissions TCP (~90–180 s), `mqtt.connected()` retournait `false`, et l'état observable se figeait sur **`-3` (`MQTT_CONNECTION_LOST`)**. Le code `-4` était théorique et jamais atteint.
 >
-> **Depuis IT4 (mode non-bloquant via `fcntl(O_NONBLOCK)`)** : tout `WiFiClient::write()` retourne immédiatement avec `EAGAIN` si le send buffer est plein. `mqtt.loop()` continue donc à tourner régulièrement et **le keepalive applicatif PubSubClient (60 s) devient le mécanisme de détection effectif** : un `PINGREQ` est posté (qu'il passe ou non n'a pas d'importance), aucun `PINGRESP` ne revient, et après ~60 s sans `PINGRESP` PubSubClient pose `_state = MQTT_CONNECTION_TIMEOUT` via un `_client->stop()` interne. Au tour suivant de `taskLoop()`, `mqtt.connected()` retourne `false` et l'état observable est désormais **`-4` (`MQTT_CONNECTION_TIMEOUT`)**.
+> **Depuis IT4/IT5 (timeout socket borné, IT4 `O_NONBLOCK` puis IT5 `SO_SNDTIMEO=500 ms`)** : tout `WiFiClient::write()` retourne en ≤ 500 ms même quand le send buffer est plein (au lieu de bloquer dans `lwip_select`). `mqtt.loop()` continue donc à tourner régulièrement et **le keepalive applicatif PubSubClient (60 s) devient le mécanisme de détection effectif** : un `PINGREQ` est posté (et part fiablement depuis IT5 — voir section « Keepalive »), aucun `PINGRESP` ne revient, et après ~60 s sans `PINGRESP` PubSubClient pose `_state = MQTT_CONNECTION_TIMEOUT` via un `_client->stop()` interne. Au tour suivant de `taskLoop()`, `mqtt.connected()` retourne `false` et l'état observable est désormais **`-4` (`MQTT_CONNECTION_TIMEOUT`)**.
 
 **Conséquence pratique** : le code `-4` est désormais **dominant** lors d'une coupure réseau (ex. câble Ethernet HA débranché). `-3` reste possible mais devient **minoritaire** — typiquement quand le broker se ferme proprement (envoi `FIN`/`RST` reçu par lwip) ou quand lwip abandonne ses retransmissions avant le keepalive (cas tordus de timing).
 
@@ -343,11 +356,11 @@ Deux transitions explicites complètent ce store canonique :
 
 Les stores intermédiaires redondants présents avant ADR-0011 itération 2 (3 emplacements supplémentaires dans `taskLoop()` post-publish) ont été supprimés : ils créaient une fenêtre de divergence où l'UI affichait « Déconnecté » pendant que `mqtt.connected()` retournait encore `true` côté `mqttTask` (et inversement, pas de `WARN: MQTT déconnecté détecté` parce que la transition `mqtt.connected()` n'avait pas encore été observée). Cette divergence a été rapportée pendant le test manuel D2 — supprimée par cette refactorisation.
 
-`PubSubClient::connected()` interroge la socket TCP sous-jacente. Avec le mode non-bloquant introduit en IT4, `mqtt.loop()` reste appelé tant que la socket n'a pas été abattue, ce qui laisse le keepalive applicatif arriver au bout : après ~60 s sans `PINGRESP`, `PubSubClient::loop()` détecte le timeout, exécute `_client->stop()` en interne (qui invalide la socket TCP) et pose `_state = MQTT_CONNECTION_TIMEOUT` (`-4`). Au tour suivant de `taskLoop()`, `mqtt.connected()` retourne `false` et le WARN edge-triggered est émis avec `état=-4`. Le code `-3` (`MQTT_CONNECTION_LOST`) reste possible quand la socket est invalidée par un autre chemin (FIN/RST reçu, abandon retransmissions lwip avant le keepalive), mais devient minoritaire.
+`PubSubClient::connected()` interroge la socket TCP sous-jacente. Avec le timeout socket borné introduit en IT4/IT5, `mqtt.loop()` reste appelé tant que la socket n'a pas été abattue, ce qui laisse le keepalive applicatif arriver au bout : après ~60 s sans `PINGRESP`, `PubSubClient::loop()` détecte le timeout, exécute `_client->stop()` en interne (qui invalide la socket TCP) et pose `_state = MQTT_CONNECTION_TIMEOUT` (`-4`). Au tour suivant de `taskLoop()`, `mqtt.connected()` retourne `false` et le WARN edge-triggered est émis avec `état=-4`. Le code `-3` (`MQTT_CONNECTION_LOST`) reste possible quand la socket est invalidée par un autre chemin (FIN/RST reçu, abandon retransmissions lwip avant le keepalive), mais devient minoritaire.
 
 ### Bail-out fail-fast pendant les salves de publish (IT3 → IT4)
 
-L'IT3 d'ADR-0011 introduisait des bail-out `if (!mqtt.connected()) return;` répartis dans `publishAllStatesInternal()` (5 sites) et en tête de la lambda `publishConfig` de `publishDiscovery()`. **Ces bail-out manuels ont été supprimés en IT4** au profit du wrapper `safePublish()` qui intègre la même logique de manière centralisée (cf. section « Garde-fou : `safePublish()` + socket non-bloquant (IT4) » plus haut). Tout `mqtt.publish()` direct passe désormais par `safePublish()`, qui retourne `false` si la socket est fermée — l'appelant enchaîne sur le publish suivant sans surcoût mesurable.
+L'IT3 d'ADR-0011 introduisait des bail-out `if (!mqtt.connected()) return;` répartis dans `publishAllStatesInternal()` (5 sites) et en tête de la lambda `publishConfig` de `publishDiscovery()`. **Ces bail-out manuels ont été supprimés en IT4** au profit du wrapper `safePublish()` qui intègre la même logique de manière centralisée (cf. section « Garde-fou : `safePublish()` + socket avec `SO_SNDTIMEO` (IT5, remplace O_NONBLOCK d'IT4) » plus haut). Tout `mqtt.publish()` direct passe désormais par `safePublish()`, qui retourne `false` si la socket est fermée — l'appelant enchaîne sur le publish suivant sans surcoût mesurable.
 
 Le rôle fonctionnel est identique (réduire la durée totale d'une salve dégradée une fois que lwip a abandonné la socket), mais la mécanique est désormais portée par le wrapper unique au lieu d'être éparpillée.
 
@@ -362,7 +375,7 @@ Le rôle fonctionnel est identique (réduire la durée totale d'une salve dégra
 | Broker injoignable au moment du connect (port fermé, firewall) | `-2` | détecté par `setSocketTimeout(2)` au prochain `connect()` |
 | `disconnect()` ou `requestReconnect()` côté firmware | `-1` | immédiat |
 
-> **Cohérence avec les tests manuels feature-014 (D1/D2)** — la timeline ~60 s observée en test D2 IT4 reflète le keepalive applicatif PubSubClient (60 s sans `PINGRESP`) qui devient le mécanisme dominant grâce au mode non-bloquant. C'est **plus précoce et plus propre** qu'avant IT4 (où le mécanisme d'abandon TCP lwip mettait 90–180 s à détecter). La régulation pH/ORP, la filtration et le watchdog continuent indépendamment pendant toute la fenêtre de détection grâce à l'architecture `mqttTask` (cf. [ADR-0011](../adr/0011-mqtt-task-dediee.md)).
+> **Cohérence avec les tests manuels feature-014 (D1/D2)** — la timeline ~60 s observée en test D2 IT4 reflète le keepalive applicatif PubSubClient (60 s sans `PINGRESP`) qui devient le mécanisme dominant grâce au timeout socket borné (IT4 `O_NONBLOCK`, puis IT5 `SO_SNDTIMEO=500 ms`). C'est **plus précoce et plus propre** qu'avant IT4 (où le mécanisme d'abandon TCP lwip mettait 90–180 s à détecter). La régulation pH/ORP, la filtration et le watchdog continuent indépendamment pendant toute la fenêtre de détection grâce à l'architecture `mqttTask` (cf. [ADR-0011](../adr/0011-mqtt-task-dediee.md)).
 
 ## Gestion des commandes HA reçues
 

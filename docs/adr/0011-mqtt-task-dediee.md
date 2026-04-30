@@ -103,7 +103,7 @@ Implémentation côté firmware :
 - Code : [`src/mqtt_manager.cpp`](../../src/mqtt_manager.cpp) — `mqttTaskFunction`, `taskLoop`, `connectInTask`, `drainOutQueue`, `drainCommandQueue`, `shutdownForRestart`
 - Code : [`src/main.cpp`](../../src/main.cpp) — `mqttManager.update()` rendu no-op, ajout `drainCommandQueue()` dans `loop()`
 - Code : [`src/web_server.cpp`](../../src/web_server.cpp) — `shutdownForRestart()` avant tous les `ESP.restart()`
-- Code : [`src/constants.h`](../../src/constants.h) — `kMqttTaskStackSize`, `kMqttTaskPriority`, `kMqttTaskCore`, `kMqttOutQueueLength`, `kMqttInQueueLength`, `kMqttTaskLoopTimeoutMs`, `kMqttOfflineFlushMs`, `kMqttClientConnectTimeoutSec` (ajouté itération 2)
+- Code : [`src/constants.h`](../../src/constants.h) — `kMqttTaskStackSize`, `kMqttTaskPriority`, `kMqttTaskCore`, `kMqttOutQueueLength`, `kMqttInQueueLength`, `kMqttTaskLoopTimeoutMs`, `kMqttOfflineFlushMs`, `kMqttClientConnectTimeoutSec` (ajouté itération 2), `kMqttSocketSendTimeoutMs` (ajouté itération 5)
 - Spec : [`specs/features/done/feature-014-mqtt-task-dediee.md`](../../specs/features/done/feature-014-mqtt-task-dediee.md)
 - ADR superseded (partiellement) : [ADR-0010](0010-stabilite-mqtt-reseau.md) — alternative « Tâche FreeRTOS dédiée » remplacée par cette décision
 - Doc subsystem : [`docs/subsystems/mqtt-manager.md`](../subsystems/mqtt-manager.md) — refonte producer/consumer
@@ -238,3 +238,72 @@ Tous les `mqtt.publish()` directs dans `mqttTask` ont été remplacés par `safe
 **Build** : `pio run` SUCCESS, RAM 16.4 %, Flash 97.8 % (légère baisse vs IT3 grâce aux ~50 lignes supprimées), 0 nouveau warning.
 
 **Re-test D2 humain** (4ᵉ tentative) délégué après flash OTA pour confirmer l'absence de PANIC pendant 3 min de broker injoignable, cette fois sur la phase `drainOutQueue()`.
+
+### Itération 5 — 2026-04-30 — Fiabilisation keepalive PINGREQ via `SO_SNDTIMEO` (au lieu de `O_NONBLOCK`)
+
+Après le déploiement IT4 et la validation D2 humaine, l'utilisateur a observé des **déconnexions MQTT ponctuelles non systématiques** sur plusieurs heures de fonctionnement nominal (sans coupure réseau). Logs corrélés :
+
+```
+Mosquitto :
+  13:55:57 Client ESP32PoolController disconnected: exceeded timeout.
+ESP32 :
+  13:56:05 WARN: MQTT déconnecté détecté — état=-3
+  13:56:05 INFO: Tentative connexion MQTT (délai=5s)...
+  ... backoff 5→10→20→40→80s ...
+```
+
+`exceeded timeout` côté broker = aucun paquet reçu pendant `keepAlive × 1.5 = 90 s`. Le client ESP32 le détecte ~8 s plus tard via le `FIN` TCP envoyé par Mosquitto (état=-3, `MQTT_CONNECTION_LOST`).
+
+**Cause racine — side-effect d'IT4** : le socket TCP est mis en `O_NONBLOCK` après chaque `mqtt.connect()` réussi. PubSubClient `loop()` envoie le PINGREQ (2 octets) toutes les `keepAlive = 60 s` via `_client->write(buf, 2)` **sans vérifier le retour** ; il met immédiatement `lastOutActivity = t` et `pingOutstanding = true`. En mode `O_NONBLOCK`, si le send buffer TCP est plein à cet instant précis (publish concurrent en cours, retransmission, latence pic), `lwip_send()` retourne `EAGAIN` instantanément et **les 2 octets ne partent jamais**. Mosquitto ne reçoit alors plus aucun paquet pendant 90 s → coupe la session.
+
+C'est exactement le contre-pied de ce qu'IT4 cherchait à éviter (blocage long), mais le pivot total `O_NONBLOCK` a fragilisé le keepalive applicatif. Confirmé par lecture de `PubSubClient.cpp` (méthode `loop()`, gestion PINGREQ) : pas d'audit du retour de `_client->write()` pour le PINGREQ.
+
+**La décision principale de cet ADR n'est PAS inversée** — la tâche dédiée reste retenue. Cette itération corrige un side-effect du pivot socket-level introduit en IT4, sans changement d'API ni de contrat externe. Le wrapper `safePublish()` reste inchangé.
+
+**Approche IT5 — `SO_SNDTIMEO` à 500 ms** :
+
+Remplacement de `fcntl(F_SETFL, O_NONBLOCK)` par `setsockopt(SOL_SOCKET, SO_SNDTIMEO, ...)` :
+
+```cpp
+int fd = wifiClient.fd();
+if (fd >= 0) {
+  struct timeval tv;
+  tv.tv_sec  = kMqttSocketSendTimeoutMs / 1000;     // 0
+  tv.tv_usec = (kMqttSocketSendTimeoutMs % 1000) * 1000;  // 500_000 µs
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+```
+
+**Effet** :
+
+- Socket reste **bloquante** mais avec un **timeout d'écriture borné à 500 ms**.
+- Le PINGREQ keepalive (2 octets) a largement le temps de partir en < 100 ms sur réseau normal — fiabilité retrouvée.
+- Tout `mqtt.publish()` est borné à 500 ms par appel (vs blocage > 30 s avant IT4).
+- Pire cas `publishDiscovery` (17 publishes enchaînés) : 17 × 500 ms = 8.5 s, **sous le watchdog 30 s avec marge confortable**.
+- `mqttTask` reste protégée du blocage long (objectif initial d'IT4 préservé).
+
+**Fixes appliqués (F17, F18, F19, F20)** :
+
+- **F17** — `src/mqtt_manager.cpp` `connectInTask()` : remplacement du bloc `fcntl(F_GETFL) + fcntl(F_SETFL, O_NONBLOCK)` par `setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv))`. Garde `if (fd >= 0)` conservée, log warning sur échec `setsockopt`.
+- **F18** — `src/constants.h` : nouvelle constante `kMqttSocketSendTimeoutMs = 500` (ms) avec commentaire d'unité explicite et référence ADR-0011 IT5. `kMqttClientConnectTimeoutSec = 2` (s, pour `setTimeout` connect) reste inchangée.
+- **F19** — `src/mqtt_manager.cpp` : `<fcntl.h>` retiré (plus utilisé), `<lwip/sockets.h>` ajouté pour `SO_SNDTIMEO`, `SOL_SOCKET` et `struct timeval`.
+- **F20** — `safePublish()` **inchangé runtime** : check `mqtt.connected()` + `esp_task_wdt_reset()` toujours pertinents. Le `mqtt.publish()` interne est désormais borné par `SO_SNDTIMEO` au lieu d'un retour `EAGAIN` immédiat. Drop silencieux préservé. Commentaire d'en-tête mis à jour pour refléter le nouveau mécanisme.
+
+**Trade-off accepté** :
+
+- Un publish lent peut prendre jusqu'à 500 ms (vs retour immédiat IT4 sur send buffer plein). Imperceptible utilisateur. Pire cas théorique borné cf. ci-dessus.
+- Le keepalive applicatif PubSubClient redevient le mécanisme dominant de détection des déconnexions (cohérent avec ce qui était documenté pour IT4, mais réellement effectif depuis IT5 — avant, certaines coupures se manifestaient par `exceeded timeout` côté broker au lieu du timeout client).
+
+**Hors scope IT5** :
+
+- Pas de changement de l'API publique ni des topics MQTT.
+- Pas de routage de `publishAllStatesInternal` via `outQueue`.
+- Pas de migration vers `esp-mqtt`.
+- Pas de modification du keepalive PubSubClient (60 s) ni de `setSocketTimeout` (2 s).
+- Pas de modif de `CONFIG_LWIP_TCP_MAXRTX=5` (laissé à 5, ne nuit pas).
+
+**Fichiers touchés** : `src/constants.h`, `src/mqtt_manager.cpp` (2 fichiers).
+
+**Build** : `pio run` SUCCESS, RAM 16.4 %, Flash 97.8 %, 0 nouveau warning.
+
+**Tests dynamiques restants** : AC-IT5-3 (aucune déconnexion `exceeded timeout` côté Mosquitto sur plusieurs heures) et AC-IT5-4 (re-test D2 Ethernet HA débranché 2-3 min sans crash watchdog, non-régression IT4) délégués à l'humain après flash OTA.

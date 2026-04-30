@@ -10,7 +10,7 @@
 #include <ArduinoJson.h>
 #include <esp_task_wdt.h>
 #include <WiFi.h>
-#include <fcntl.h>
+#include <lwip/sockets.h>
 #include <errno.h>
 
 using mqtt_internal::OutboundMsg;
@@ -225,13 +225,16 @@ void MqttManager::connectInTask() {
   if (connected) {
     _reconnectDelay = 5000;
 
-    // Passer la socket TCP en mode non-bloquant pour que WiFiClient::write() retourne
-    // EAGAIN au lieu de bloquer en retransmission TCP. Voir feature-014 IT4 / ADR-0011.
+    // Borne le write() TCP à kMqttSocketSendTimeoutMs (500 ms) — le PINGREQ keepalive
+    // a le temps de partir (vs IT4 O_NONBLOCK qui pouvait le faire échouer silencieusement
+    // si le send buffer était plein → broker exceeded_timeout).
     int fd = wifiClient.fd();
     if (fd >= 0) {
-      int flags = fcntl(fd, F_GETFL, 0);
-      if (flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        systemLogger.warning("MQTT: échec fcntl O_NONBLOCK (errno=" + String(errno) + ")");
+      struct timeval tv;
+      tv.tv_sec = kMqttSocketSendTimeoutMs / 1000;
+      tv.tv_usec = (kMqttSocketSendTimeoutMs % 1000) * 1000;
+      if (setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) < 0) {
+        systemLogger.warning("MQTT: échec setsockopt SO_SNDTIMEO (errno=" + String(errno) + ")");
       }
     }
 
@@ -264,9 +267,11 @@ void MqttManager::connectInTask() {
 }
 
 // Wrapper unique pour tout mqtt.publish() depuis mqttTask. Reset wdt + check
-// mqtt.connected() + délégation. La socket est en mode non-bloquant (cf. connectInTask),
-// donc mqtt.publish() retourne false rapidement si le send buffer est plein, sans bloquer
-// mqttTask. Voir feature-014 IT4 / ADR-0011.
+// mqtt.connected() + délégation. Le socket TCP est configuré avec SO_SNDTIMEO=500ms
+// (cf. connectInTask, kMqttSocketSendTimeoutMs), donc mqtt.publish() retourne false
+// après au plus 500 ms si le send buffer reste plein, sans bloquer mqttTask. Le
+// keepalive PINGREQ PubSubClient redevient fiable (vs IT4 O_NONBLOCK où EAGAIN
+// silencieux pouvait le perdre → broker exceeded_timeout). Voir feature-014 IT5 / ADR-0011.
 bool MqttManager::safePublish(const char* topic, const char* payload, bool retain) {
   esp_task_wdt_reset();
   if (!mqtt.connected()) return false;
