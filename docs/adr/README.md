@@ -27,6 +27,8 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0008](0008-persistance-cumuls-journaliers-nvs.md) | Persistance NVS des cumuls journaliers + reset aligné minuit local | Accepté |
 | [0009](0009-partition-coredump.md) | Partition coredump dédiée + redimensionnement history (128 KB → 64 KB) | Accepté |
 | [0010](0010-stabilite-mqtt-reseau.md) | Stabilité MQTT et réseau : WiFi sans power save, pré-résolution DNS, backoff non réinitialisé | Accepté |
+| [0011](0011-mqtt-task-dediee.md) | MQTT déplacé dans une tâche FreeRTOS dédiée | Accepté |
+| [0012](0012-mapping-gpio-pcb-v2.md) | Mapping GPIO PCB v2 (Atlas EZO + 2ᵉ DS18B20 + CTN_AUX, plus d'ADS1115) | Accepté |
 
 ## Template
 

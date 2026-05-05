@@ -8,11 +8,13 @@
 
 | Capteur | Interface | Lib | Pin / Canal |
 |---------|-----------|-----|-------------|
-| pH | ADS1115 canal A0 + DFRobot_PH | [DFRobot_PH](https://github.com/DFRobot/DFRobot_PH), [Adafruit_ADS1X15](https://github.com/adafruit/Adafruit_ADS1X15) | I²C (SDA=21, SCL=22) |
+| pH | ADS1115 canal A0 + DFRobot_PH | [DFRobot_PH](https://github.com/DFRobot/DFRobot_PH), [Adafruit_ADS1X15](https://github.com/adafruit/Adafruit_ADS1X15) | I²C (`kI2cSdaPin=21`, `kI2cSclPin=22`) |
 | ORP | ADS1115 canal A1 | Adafruit_ADS1X15 | I²C (partagé) |
-| Température eau | DS18B20 1-Wire | [OneWire](https://github.com/PaulStoffregen/OneWire), [DallasTemperature](https://github.com/milesburton/Arduino-Temperature-Control-Library) | GPIO (voir `config.h`) |
+| Température (eau + circuit) | DS18B20 1-Wire | [OneWire](https://github.com/PaulStoffregen/OneWire), [DallasTemperature](https://github.com/milesburton/Arduino-Temperature-Control-Library) | `kTempSensorPin = 5` ([`constants.h`](../../src/constants.h)) — bus partagé entre les 2 sondes |
 
-Voir [ADR-0001](../adr/0001-capteurs-analogiques-ads1115.md) pour la justification du choix ADS1115 + DFRobot_PH vs modules I²C intelligents.
+Voir [ADR-0001](../adr/0001-capteurs-analogiques-ads1115.md) pour la justification historique du choix ADS1115 + DFRobot_PH (PCB v1). Le PCB v2 supprime l'ADS1115 au profit de modules Atlas EZO I²C — voir [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md) (mapping pin) et feature-020 à venir (intégration logicielle EZO).
+
+> **PCB v2** : la 2ᵉ sonde DS18B20 (température circuit/électronique) est câblée sur le même bus `kTempSensorPin=5` que la sonde eau, mais elle ne sera détectée et utilisée par le firmware qu'à partir de feature-021. Aujourd'hui, seule la sonde eau est lue.
 
 ## API publique
 
@@ -101,6 +103,8 @@ Les logs et alertes MQTT ne sont émis qu'**aux transitions** (entrée et sortie
 
 - [`src/sensors.h`](../../src/sensors.h), [`src/sensors.cpp`](../../src/sensors.cpp)
 - [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp)
+- [`src/constants.h`](../../src/constants.h) — `kTempSensorPin = 5` (OneWire), `kI2cSdaPin = 21`, `kI2cSclPin = 22`
 - [`src/constants.h:22`](../../src/constants.h:22) — intervalles de lecture
-- [ADR-0001](../adr/0001-capteurs-analogiques-ads1115.md) — choix ADS1115
+- [ADR-0001](../adr/0001-capteurs-analogiques-ads1115.md) — choix ADS1115 (historique, PCB v1)
 - [ADR-0003](../adr/0003-calibration-orp-cote-client.md) — calibration ORP client-side
+- [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md) — mapping GPIO PCB v2 (bus OneWire conservé sur GPIO 5, ADS1115 supprimé)

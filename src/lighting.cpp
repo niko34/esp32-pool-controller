@@ -1,5 +1,6 @@
 #include "lighting.h"
 #include "config.h"
+#include "constants.h"
 #include "logger.h"
 #include "mqtt_manager.h"
 #include <time.h>
@@ -7,8 +8,8 @@
 LightingManager lighting;
 
 void LightingManager::begin() {
-  pinMode(LIGHTING_RELAY_PIN, OUTPUT);
-  digitalWrite(LIGHTING_RELAY_PIN, LOW);
+  pinMode(kLightingRelayPin, OUTPUT);
+  digitalWrite(kLightingRelayPin, LOW);
   ensureTimesValid();
   systemLogger.info("Gestionnaire d'éclairage initialisé");
 }
@@ -72,7 +73,7 @@ void LightingManager::update() {
   // Si la fonction éclairage est désactivée, éteindre
   if (!lightingCfg.featureEnabled) {
     if (relayState) {
-      digitalWrite(LIGHTING_RELAY_PIN, LOW);
+      digitalWrite(kLightingRelayPin, LOW);
       relayState = false;
       publishState();
     }
@@ -108,7 +109,7 @@ void LightingManager::update() {
 
   // Mettre à jour le relais si nécessaire
   if (shouldBeOn != relayState) {
-    digitalWrite(LIGHTING_RELAY_PIN, shouldBeOn ? HIGH : LOW);
+    digitalWrite(kLightingRelayPin, shouldBeOn ? HIGH : LOW);
     relayState = shouldBeOn;
     systemLogger.info(shouldBeOn ? "Éclairage allumé" : "Éclairage éteint");
     publishState();

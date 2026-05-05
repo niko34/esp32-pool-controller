@@ -49,9 +49,11 @@ void setup() {
   systemLogger.info("Build: " + String(FIRMWARE_BUILD_DATE) + " " + String(FIRMWARE_BUILD_TIME));
 
   // Initialisation GPIO bouton factory reset et LED intégrée
-  pinMode(FACTORY_RESET_BUTTON_PIN, INPUT_PULLDOWN);
-  pinMode(BUILTIN_LED_PIN, OUTPUT);
-  digitalWrite(BUILTIN_LED_PIN, LOW);
+  // PCB v2 (feature-019) : bouton factory reset sur GPIO35 (input-only,
+  // sans pull-up interne possible) avec pull-up externe 10 kΩ vers 3V3 → actif bas.
+  pinMode(kFactoryResetButtonPin, INPUT);
+  pinMode(kBuiltinLedPin, OUTPUT);
+  digitalWrite(kBuiltinLedPin, LOW);
 
   // Initialisation watchdog
   esp_task_wdt_init(kWatchdogTimeoutSec, true);
@@ -178,25 +180,28 @@ void loop() {
   // Contrôle pompes dosage
   PumpController.update();
 
-  // Détection appui long bouton factory reset (10s) en cours de fonctionnement
+  // Détection appui long bouton factory reset (10s) en cours de fonctionnement.
+  // PCB v2 (feature-019) : bouton actif bas, pull-up externe 10 kΩ vers 3V3.
+  // GPIO35 est input-only sans pull-up interne possible.
+  // Comportement utilisateur identique à PCB v1 : appui maintenu = factory reset.
   {
     static unsigned long buttonPressStart = 0;
-    static bool lastButtonState = LOW;
+    static bool lastPressed = false;
     static bool ledState = false;
     static unsigned long lastLedToggle = 0;
-    bool buttonState = digitalRead(FACTORY_RESET_BUTTON_PIN);
+    bool pressed = (digitalRead(kFactoryResetButtonPin) == LOW);
 
-    if (buttonState == HIGH && lastButtonState == LOW) {
+    if (pressed && !lastPressed) {
       // Début d'appui
       buttonPressStart = now;
       systemLogger.info("Bouton reset enfoncé - maintenir 10s pour factory reset");
-    } else if (buttonState == HIGH && buttonPressStart > 0) {
+    } else if (pressed && buttonPressStart > 0) {
       unsigned long held = now - buttonPressStart;
 
       // Faire clignoter la LED pendant l'appui
       if (now - lastLedToggle >= 200) {
         ledState = !ledState;
-        digitalWrite(BUILTIN_LED_PIN, ledState);
+        digitalWrite(kBuiltinLedPin, ledState);
         lastLedToggle = now;
         esp_task_wdt_reset();
       }
@@ -206,25 +211,25 @@ void loop() {
         systemLogger.critical("=== FACTORY RESET CONFIRMÉ (appui 10s) ===");
         // Clignotement rapide de confirmation (5 fois)
         for (int i = 0; i < 10; i++) {
-          digitalWrite(BUILTIN_LED_PIN, i % 2);
+          digitalWrite(kBuiltinLedPin, i % 2);
           delay(150);
         }
-        digitalWrite(BUILTIN_LED_PIN, LOW);
+        digitalWrite(kBuiltinLedPin, LOW);
         resetWiFiSettings();
         delay(500);
         mqttManager.shutdownForRestart();  // ADR-0011 : flush status=offline + stop mqttTask
         ESP.restart();
       }
-    } else if (buttonState == LOW && lastButtonState == HIGH) {
+    } else if (!pressed && lastPressed) {
       // Relâché avant 10s
       if (buttonPressStart > 0 && (now - buttonPressStart) < kFactoryResetButtonHoldMs) {
         systemLogger.info("Bouton relâché - factory reset annulé");
       }
       buttonPressStart = 0;
-      digitalWrite(BUILTIN_LED_PIN, LOW);
+      digitalWrite(kBuiltinLedPin, LOW);
     }
 
-    lastButtonState = buttonState;
+    lastPressed = pressed;
   }
 
   // Vérification santé système périodique

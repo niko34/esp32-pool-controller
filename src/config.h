@@ -5,21 +5,12 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
-// ==== Configuration des broches ====
-// MOSFET IRLZ44N - 1 pin PWM par pompe (Gate control)
-#define PUMP1_PWM_PIN 18     // PWM Gate pompe 1 (via MOSFET IRLZ44N)
-#define PUMP2_PWM_PIN 19     // PWM Gate pompe 2 (via MOSFET IRLZ44N)
+// ==== Configuration des canaux PWM pompes ====
+// MOSFET IRLZ44N - PWM sur Gate, pins définis dans constants.h (PCB v2)
 #define PUMP1_CHANNEL 0
 #define PUMP2_CHANNEL 1
 #define PUMP_PWM_FREQ 20000   // 20kHz PWM
 #define PUMP_PWM_RES_BITS 8  // 8-bit resolution (0-255)
-
-// Capteurs et actionneurs
-#define TEMP_SENSOR_PIN 5
-#define FILTRATION_RELAY_PIN 25
-#define LIGHTING_RELAY_PIN 26           // Relais pour éclairage piscine
-#define FACTORY_RESET_BUTTON_PIN 32    // GPIO32 - Bouton factory reset (actif haut, pull-down interne)
-#define BUILTIN_LED_PIN 2               // GPIO2 - LED intégrée ESP32
 
 // ==== Constantes ====
 constexpr float PH_DEADBAND = 0.01f;      // Zone morte réduite : 7.2 à 7.21 (±0.01)

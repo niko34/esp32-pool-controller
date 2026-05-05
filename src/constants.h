@@ -1,6 +1,34 @@
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
+#include <stdint.h>
+
+// =============================================================================
+// GPIO PIN ASSIGNMENTS - PCB v2
+// =============================================================================
+// Mapping matériel pour le circuit imprimé v2. Voir feature-019 et
+// docs/adr/0012-pcb-v2-gpio-mapping.md.
+// Bascule unidirectionnelle : ce code n'est plus compatible avec le PCB v1.
+//
+// Note : kUart2RxPin (16) et kUart2TxPin (17) sont définis dans
+// src/uart_transport.h — ne pas dupliquer ici.
+
+// Pins actifs
+constexpr uint8_t kBuiltinLedPin           = 2;   // LED bleue interne (status)
+constexpr uint8_t kTempSensorPin           = 5;   // OneWire DS18B20 (eau + circuit, 2 sondes)
+constexpr uint8_t kI2cSdaPin               = 21;  // I2C SDA — DS3231 + EZO pH + EZO ORP (default Arduino-ESP32)
+constexpr uint8_t kI2cSclPin               = 22;  // I2C SCL — DS3231 + EZO pH + EZO ORP (default Arduino-ESP32)
+constexpr uint8_t kPumpPhPin               = 25;  // Pompe doseuse pH (PWM via ledc)
+constexpr uint8_t kFiltrationRelayPin      = 26;  // Relais filtration (actif haut)
+constexpr uint8_t kLightingRelayPin        = 27;  // Relais éclairage (actif haut)
+constexpr uint8_t kPumpOrpPin              = 33;  // Pompe doseuse ORP/chlore (PWM via ledc)
+constexpr uint8_t kFactoryResetButtonPin   = 35;  // Bouton factory reset (input-only, pull-up externe 10kΩ — actif bas)
+
+// Pins réservés feature-future — déclarés mais pas de pinMode() actif dans cette feature
+constexpr uint8_t kRtcSqwPin               = 23;  // RTC DS3231 SQW (open-drain, INPUT_PULLUP attendu, future feature)
+constexpr uint8_t kCtnAuxPin               = 32;  // CTN_AUX MOSFET 12V tableau (OUTPUT actif haut, future feature)
+constexpr uint8_t kRtcIntPin               = 36;  // RTC DS3231 INT (input-only, pull-up externe 10kΩ, future feature)
+
 // ============================================================================
 // TIMING CONSTANTS - Intervalles et délais temporels
 // ============================================================================

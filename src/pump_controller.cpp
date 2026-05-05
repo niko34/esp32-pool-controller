@@ -18,8 +18,9 @@ bool PumpControllerClass::_phWasActive = false;
 bool PumpControllerClass::_orpWasActive = false;
 
 PumpControllerClass::PumpControllerClass() {
-  pumps[0] = {PUMP1_PWM_PIN, PUMP1_CHANNEL};
-  pumps[1] = {PUMP2_PWM_PIN, PUMP2_CHANNEL};
+  // Convention pool-chemistry : pumps[0] = pH, pumps[1] = ORP/chlore.
+  pumps[0] = {kPumpPhPin,  PUMP1_CHANNEL};
+  pumps[1] = {kPumpOrpPin, PUMP2_CHANNEL};
 }
 
 // Applique les paramètres PID selon la vitesse de régulation configurée
@@ -45,10 +46,16 @@ void PumpControllerClass::applyRegulationSpeed() {
 void PumpControllerClass::begin() {
   for (int i = 0; i < 2; ++i) {
     // MOSFET IRLZ44N: Configuration PWM sur Gate
-    // Logic-level MOSFET compatible 3.3V ESP32
+    // Logic-level MOSFET compatible 3.3V ESP32.
+    // Force OUTPUT en amont de ledcAttachPin : sur PCB v2, GPIO25 (DAC1/ADC2)
+    // et GPIO33 (ADC1) restent muets si LEDC est attaché sans pinMode préalable.
+    pinMode(pumps[i].pwmPin, OUTPUT);
+    digitalWrite(pumps[i].pwmPin, LOW);
     ledcSetup(pumps[i].channel, PUMP_PWM_FREQ, PUMP_PWM_RES_BITS);
     ledcAttachPin(pumps[i].pwmPin, pumps[i].channel);
     ledcWrite(pumps[i].channel, 0);  // Pompe arrêtée au démarrage
+    systemLogger.info("Pompe " + String(i + 1) + " : GPIO=" + String(pumps[i].pwmPin) +
+                      " canal LEDC=" + String(pumps[i].channel));
   }
   applyRegulationSpeed();
   systemLogger.info("Contrôleur de pompes initialisé");
@@ -377,8 +384,9 @@ void PumpControllerClass::update() {
   if (!sensors.isInitialized()) {
     phDosingState.active = false;
     orpDosingState.active = false;
-    applyPumpDuty(0, 0);
-    applyPumpDuty(1, 0);
+    // Respect du mode manuel (test développement) — cohérent avec le bloc canDose() ci-dessous
+    if (!manualMode[0]) applyPumpDuty(0, 0);
+    if (!manualMode[1]) applyPumpDuty(1, 0);
     return;
   }
 

@@ -29,7 +29,7 @@ uint8_t g_ds18b20ResolutionBits = 12;
 uint16_t g_ds18b20ConversionMs = 750;
 } // namespace
 
-SensorManager::SensorManager() : oneWire(TEMP_SENSOR_PIN), tempSensor(&oneWire) {}
+SensorManager::SensorManager() : oneWire(kTempSensorPin), tempSensor(&oneWire) {}
 
 SensorManager::~SensorManager() {}
 
@@ -103,9 +103,9 @@ void SensorManager::begin() {
 
   uint8_t deviceCount = tempSensor.getDeviceCount();
   if (deviceCount == 0) {
-    systemLogger.warning("DS18B20 non détecté sur GPIO " + String(TEMP_SENSOR_PIN) + " - vérifier câblage et résistance pull-up 4.7kΩ");
+    systemLogger.warning("DS18B20 non détecté sur GPIO " + String(kTempSensorPin) + " - vérifier câblage et résistance pull-up 4.7kΩ");
   } else {
-    systemLogger.info("DS18B20: " + String(deviceCount) + " capteur(s) détecté(s) sur GPIO " + String(TEMP_SENSOR_PIN));
+    systemLogger.info("DS18B20: " + String(deviceCount) + " capteur(s) détecté(s) sur GPIO " + String(kTempSensorPin));
   }
 
   // Lecture non-bloquante : requestTemperatures() ne doit pas attendre la conversion
@@ -116,7 +116,7 @@ void SensorManager::begin() {
   tempSensor.setResolution(g_ds18b20ResolutionBits);
   g_ds18b20ConversionMs = ds18b20ConversionTimeMsForResolution(g_ds18b20ResolutionBits);
 
-  systemLogger.info("Capteur de température DS18B20 initialisé sur GPIO " + String(TEMP_SENSOR_PIN) + " (" +
+  systemLogger.info("Capteur de température DS18B20 initialisé sur GPIO " + String(kTempSensorPin) + " (" +
                     String(g_ds18b20ResolutionBits) + "-bit, conv=" +
                     String(g_ds18b20ConversionMs) + "ms)");
 

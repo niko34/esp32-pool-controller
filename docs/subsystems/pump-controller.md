@@ -8,6 +8,17 @@
 
 Pilote les deux pompes doseuses (PWM sur MOSFET IRLZ44N) selon le mode sélectionné (`automatic` / `scheduled` / `manual`), les valeurs cibles, l'état de la filtration, les limites de sécurité et les cumuls journaliers. C'est le composant le plus critique côté chimie — **toute modification passe obligatoirement par l'agent `pool-chemistry`**.
 
+## Mapping pompes ↔ pins (PCB v2)
+
+Convention figée par [feature-019](../../specs/features/done/feature-019-gpio-pcb-v2.md) et [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md) :
+
+| Index | Sortie pin | Constante | Rôle chimique |
+|-------|-----------|-----------|---------------|
+| `pumps[0]` | GPIO 25 | `kPumpPhPin` ([`constants.h`](../../src/constants.h)) | Pompe doseuse **pH** (acide ou base selon `phCorrectionType`) |
+| `pumps[1]` | GPIO 33 | `kPumpOrpPin` ([`constants.h`](../../src/constants.h)) | Pompe doseuse **ORP/chlore** |
+
+L'affectation `pumps[0] = pH` / `pumps[1] = ORP` est posée dans `PumpController.begin()` ([`pump_controller.cpp:22`](../../src/pump_controller.cpp:22)) et ne doit pas être inversée — un module externe (test manuel via `setManualPump(int pumpIndex, ...)`) qui passerait l'index inverse activerait la mauvaise pompe (risque chimique). Le PWM est généré via `ledc` (channels `PUMP1_CHANNEL` / `PUMP2_CHANNEL` définis dans [`config.h`](../../src/config.h)).
+
 ## API publique
 
 ```cpp
@@ -201,5 +212,6 @@ Flush différé : `_dailyCountersDirty` armé à chaque injection, écrit en NVS
 - [`src/config.h:152`](../../src/config.h:152) — `PumpProtection`
 - [`src/config.h:141`](../../src/config.h:141) — `SafetyLimits`
 - [`src/constants.h:84`](../../src/constants.h:84) — `kPumpMinFlowMlPerMin`, `kPumpMaxFlowMlPerMin`
-- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md)
+- [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
+- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md)
 - [page-ph.md](../features/page-ph.md), [page-orp.md](../features/page-orp.md) — UI consommatrices

@@ -11,7 +11,7 @@
 FiltrationManager filtration;
 
 void FiltrationManager::begin() {
-  pinMode(FILTRATION_RELAY_PIN, OUTPUT);
+  pinMode(kFiltrationRelayPin, OUTPUT);
   ensureTimesValid();
 
   // Calculer et appliquer l'état initial du relais immédiatement.
@@ -37,7 +37,7 @@ void FiltrationManager::begin() {
     }
   }
 
-  digitalWrite(FILTRATION_RELAY_PIN, initialState ? HIGH : LOW);
+  digitalWrite(kFiltrationRelayPin, initialState ? HIGH : LOW);
   relayState = initialState;
   state.running = initialState;
   if (initialState) {
@@ -144,7 +144,7 @@ void FiltrationManager::update() {
       state.scheduleComputedThisCycle = false;
       state.startedAtMs = 0;
       if (relayState) {
-        digitalWrite(FILTRATION_RELAY_PIN, LOW);
+        digitalWrite(kFiltrationRelayPin, LOW);
         relayState = false;
         publishState();
       }
@@ -258,7 +258,7 @@ void FiltrationManager::update() {
 
   bool relayShouldBeOn = state.running && (filtrationCfg.mode != "off");
   if (relayShouldBeOn != relayState) {
-    digitalWrite(FILTRATION_RELAY_PIN, relayShouldBeOn ? HIGH : LOW);
+    digitalWrite(kFiltrationRelayPin, relayShouldBeOn ? HIGH : LOW);
     relayState = relayShouldBeOn;
     publishState();
     if (authCfg.screenEnabled) uartProtocol.sendEventBool("event", "filtration_changed", "running", relayState);

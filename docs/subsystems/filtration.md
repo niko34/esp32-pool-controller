@@ -2,7 +2,7 @@
 
 - **Fichiers** : [`src/filtration.h`](../../src/filtration.h), [`src/filtration.cpp`](../../src/filtration.cpp)
 - **Singleton** : `extern FiltrationManager filtration;`
-- **GPIO relais** : `FILTRATION_RELAY_PIN = 25` ([`config.h:19`](../../src/config.h:19))
+- **GPIO relais** : `kFiltrationRelayPin = 26` (PCB v2, [`constants.h`](../../src/constants.h)) — actif haut. Voir [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md).
 
 ## Rôle
 
@@ -73,6 +73,8 @@ Voir [`web_routes_control.cpp`](../../src/web_routes_control.cpp).
 ## Fichiers liés
 
 - [`src/filtration.h`](../../src/filtration.h), [`src/filtration.cpp`](../../src/filtration.cpp)
+- [`src/constants.h`](../../src/constants.h) — `kFiltrationRelayPin = 26` (PCB v2)
 - [`src/constants.h:78`](../../src/constants.h:78) — `kFiltrationPivotHour`
+- [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md) — mapping GPIO PCB v2
 - [page-filtration.md](../features/page-filtration.md) — UI correspondante
 - [pump-controller.md](pump-controller.md) — interaction régulation (`canDose()` requiert filtration active)

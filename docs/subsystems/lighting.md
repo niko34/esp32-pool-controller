@@ -2,7 +2,7 @@
 
 - **Fichiers** : [`src/lighting.h`](../../src/lighting.h), [`src/lighting.cpp`](../../src/lighting.cpp)
 - **Singleton** : `extern LightingManager lighting;`
-- **GPIO relais** : `LIGHTING_RELAY_PIN = 26` ([`config.h:20`](../../src/config.h:20))
+- **GPIO relais** : `kLightingRelayPin = 27` (PCB v2, [`constants.h`](../../src/constants.h)) — actif haut. Voir [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md).
 
 ## Rôle
 
@@ -61,5 +61,7 @@ Entité : `switch.*_lighting` — topic état `{base}/lighting_state`, commande 
 ## Fichiers liés
 
 - [`src/lighting.h`](../../src/lighting.h), [`src/lighting.cpp`](../../src/lighting.cpp)
+- [`src/constants.h`](../../src/constants.h) — `kLightingRelayPin = 27` (PCB v2)
 - [`src/config.h:101`](../../src/config.h:101) — struct `LightingConfig`
+- [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md) — mapping GPIO PCB v2
 - [page-lighting.md](../features/page-lighting.md) — UI correspondante
