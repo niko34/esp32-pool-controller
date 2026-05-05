@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-05-05
 - **Décideurs** : Nicolas Philippe
-- **Spec(s) liée(s)** : [`feature-019-gpio-pcb-v2`](../../specs/features/done/feature-019-gpio-pcb-v2.md), feature-020 (Atlas EZO pH/ORP — à venir), feature-021 (2ᵉ sonde DS18B20 — à venir)
+- **Spec(s) liée(s)** : [`feature-019-gpio-pcb-v2`](../../specs/features/done/feature-019-gpio-pcb-v2.md), feature-021 (Atlas EZO pH/ORP — à venir), feature-020 (2ᵉ sonde DS18B20 — à venir)
 
 ## Contexte
 
@@ -29,8 +29,8 @@ Le **PCB v1** était bâti autour d'un ADS1115 (canaux pH/ORP analogiques), d'un
 
 Le **PCB v2** introduit trois changements matériels structurants :
 
-1. **Modules Atlas Scientific EZO pH + EZO ORP** (I²C) qui **remplacent** l'ADS1115. Les EZO partagent le bus I²C avec le DS3231. La régulation côté firmware passera à la lecture I²C en feature-020.
-2. **Deuxième sonde DS18B20** (température circuit/électronique) ajoutée sur le même bus OneWire que la sonde eau. La 2ᵉ sonde sera adressée en feature-021.
+1. **Modules Atlas Scientific EZO pH + EZO ORP** (I²C) qui **remplacent** l'ADS1115. Les EZO partagent le bus I²C avec le DS3231. La régulation côté firmware passera à la lecture I²C en feature-021.
+2. **Deuxième sonde DS18B20** (température circuit/électronique) ajoutée sur le même bus OneWire que la sonde eau. La 2ᵉ sonde sera adressée en feature-020.
 3. **Nouveau MOSFET 12V `CTN_AUX`** piloté par l'ESP32, à disposition pour un usage futur (pompe à chaleur, vanne motorisée, etc.). Doit être OUTPUT actif haut, sans fonction firmware aujourd'hui.
 
 L'ADS1115 et ses pins associés sont supprimés. Le PCB v2 expose aussi désormais deux signaux du DS3231 vers l'ESP32 : `RTC_SQW` (sortie carrée open-drain) et `RTC_INT` (broche 32K, interruption disponible). Ces deux pins sont câblés mais resteront en haute impédance (`pinMode` non appelé) tant qu'aucune feature ne les utilise.
@@ -78,7 +78,7 @@ Justifications clés des choix non triviaux :
 ### Positives
 
 - **Mapping unique et lisible** dans `src/constants.h` — plus de `#define` dispersés dans `config.h`.
-- **Préparation feature-020 et feature-021** : les pins I²C et OneWire sont prêts, la 2ᵉ sonde DS18B20 et les EZO peuvent être ajoutés sans toucher à la table de pin.
+- **Préparation feature-021 et feature-020** : les pins I²C et OneWire sont prêts, la 2ᵉ sonde DS18B20 et les EZO peuvent être ajoutés sans toucher à la table de pin.
 - **Pin `CTN_AUX` réservé** sur GPIO 32 : disponible immédiatement pour une future feature (pompe à chaleur, vanne) sans nouvelle migration GPIO.
 - **Bouton reset insensible au strapping** : GPIO 35 input-only n'a aucun rôle au boot, contrairement à GPIO 32 (v1) qui partageait certains states.
 - **Style code modernisé** : suppression des derniers `#define` historiques (`PUMP1_PWM_PIN`, `PUMP2_PWM_PIN`, `TEMP_SENSOR_PIN`, `FILTRATION_RELAY_PIN`, `LIGHTING_RELAY_PIN`, `BUILTIN_LED_PIN`, `FACTORY_RESET_BUTTON_PIN`) au profit de `constexpr uint8_t kXxxPin`.
@@ -95,7 +95,7 @@ Justifications clés des choix non triviaux :
 - **Toute future feature qui utilisera GPIO 23/32/36 doit explicitement appeler `pinMode`** dans son `begin()` — l'ADR documente l'intention « réservé », pas une initialisation automatique.
 - **`pumps[0]` = pH (kPumpPhPin)** et **`pumps[1]` = ORP (kPumpOrpPin)** est désormais une convention figée. Un module externe (ex. test interactif via `setManualPump`) doit utiliser cet ordre — l'inversion serait un bug de sécurité chimique (mauvaise pompe activée).
 - **Le bouton factory reset est actif bas** sur PCB v2. Toute future logique qui consomme `digitalRead(kFactoryResetButtonPin)` doit comparer à `LOW` pour détecter un appui. Documenté dans `constants.h` et `main.cpp`.
-- **L'ADS1115 et `DFRobot_PH` sont en sursis** : feature-020 retirera les libs et la chaîne de calibration ADS1115. Toute feature pH/ORP ajoutée d'ici là doit être migrée par feature-020.
+- **L'ADS1115 et `DFRobot_PH` sont en sursis** : feature-021 retirera les libs et la chaîne de calibration ADS1115. Toute feature pH/ORP ajoutée d'ici là doit être migrée par feature-021.
 - **Plus de support PCB v1** sur les versions ≥ 2.0.0. La compatibilité descendante n'est pas garantie : un utilisateur qui flashe une 2.0.0 sur PCB v1 verra des lectures aberrantes (mauvais pin OneWire, mauvais relais commandés).
 
 ## Références
@@ -106,7 +106,7 @@ Justifications clés des choix non triviaux :
 - Code : [`src/pump_controller.cpp`](../../src/pump_controller.cpp) — `pumps[0] = {kPumpPhPin, ...}`, `pumps[1] = {kPumpOrpPin, ...}`
 - Code : [`src/filtration.cpp`](../../src/filtration.cpp), [`src/lighting.cpp`](../../src/lighting.cpp), [`src/sensors.cpp`](../../src/sensors.cpp) — références renommées
 - Spec : [`specs/features/done/feature-019-gpio-pcb-v2.md`](../../specs/features/done/feature-019-gpio-pcb-v2.md)
-- Specs à venir : feature-020 (Atlas EZO pH/ORP), feature-021 (2ᵉ DS18B20 circuit)
+- Specs à venir : feature-021 (Atlas EZO pH/ORP), feature-020 (2ᵉ DS18B20 circuit)
 - Doc subsystem : [`docs/subsystems/pump-controller.md`](../subsystems/pump-controller.md), [`docs/subsystems/sensors.md`](../subsystems/sensors.md), [`docs/subsystems/filtration.md`](../subsystems/filtration.md), [`docs/subsystems/lighting.md`](../subsystems/lighting.md)
-- ADR lié (capteur analogique antérieur) : [ADR-0001](0001-capteurs-analogiques-ads1115.md) — sera partiellement révisé par l'ADR feature-020 (passage Atlas EZO)
+- ADR lié (capteur analogique antérieur) : [ADR-0001](0001-capteurs-analogiques-ads1115.md) — sera partiellement révisé par l'ADR feature-021 (passage Atlas EZO)
 - CHANGELOG `[Unreleased]` 2026-05-05 — section Hardware « Bascule cible PCB v1 → PCB v2 »
