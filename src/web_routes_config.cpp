@@ -260,6 +260,16 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     return;
   }
 
+  // Snapshot pour détecter si la config MQTT a réellement changé (feature-018).
+  // Évite les reconnect/republish discovery inutiles sur les saves de paramètres
+  // non-MQTT (modes régulation, NTP, logs, etc.).
+  const String oldMqttServer   = mqttCfg.server;
+  const int    oldMqttPort     = mqttCfg.port;
+  const String oldMqttTopic    = mqttCfg.topic;
+  const String oldMqttUsername = mqttCfg.username;
+  const String oldMqttPassword = mqttCfg.password;
+  const bool   oldMqttEnabled  = mqttCfg.enabled;
+
   // Validation et application avec logs
   if (!doc["server"].isNull()) mqttCfg.server = doc["server"].as<String>();
   if (!doc["port"].isNull()) mqttCfg.port = doc["port"];
@@ -571,7 +581,20 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
 
   saveMqttConfig();
-  mqttManager.requestReconnect();
+
+  // Reconnect MQTT uniquement si un champ MQTT a réellement changé (feature-018).
+  // Évite les disconnect/reconnect et la republication des messages discovery
+  // pour les saves de paramètres non-MQTT.
+  bool mqttChanged = (mqttCfg.server   != oldMqttServer)   ||
+                     (mqttCfg.port     != oldMqttPort)     ||
+                     (mqttCfg.topic    != oldMqttTopic)    ||
+                     (mqttCfg.username != oldMqttUsername) ||
+                     (mqttCfg.password != oldMqttPassword) ||
+                     (mqttCfg.enabled  != oldMqttEnabled);
+  if (mqttChanged) {
+    systemLogger.info("MQTT reconnect demandé (config MQTT modifiée)");
+    mqttManager.requestReconnect();
+  }
 
   // Recalculer les valeurs calibrées (température, ORP) avec les nouveaux offsets
   sensors.recalculateCalibratedValues();

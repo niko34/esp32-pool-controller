@@ -140,6 +140,33 @@ Reset sur appel explicite à `requestReconnect()` (après changement de config b
 
 > ⚠️ La reconnexion est **entièrement pilotée par `mqttTask`** — rate-limit + backoff internes. **Aucun appel externe à `requestReconnect()` ne doit être fait en boucle**, sous peine de réinitialiser le backoff et de générer une tentative toutes les 5 s en permanence sur broker injoignable. Voir [ADR-0010](../adr/0010-stabilite-mqtt-reseau.md).
 
+### Déclenchement conditionnel post-`POST /save-config` (feature-018)
+
+Depuis feature-018, l'appel à `mqttManager.requestReconnect()` dans le handler `POST /save-config` ([`src/web_routes_config.cpp`](../../src/web_routes_config.cpp)) est **conditionnel** : il n'est déclenché **que si au moins un des 6 champs MQTT a réellement changé** entre l'avant et l'après application du payload.
+
+Champs MQTT comparés :
+
+| Champ `MqttConfig` | Type |
+|---|---|
+| `server` | `String` (hostname ou IP littérale) |
+| `port` | `uint16_t` |
+| `topic` | `String` (base topic) |
+| `username` | `String` |
+| `password` | `String` |
+| `enabled` | `bool` |
+
+Mécanique dans le handler :
+
+1. Snapshot des 6 champs effectué après `xSemaphoreTakeRecursive(configMutex)`, **avant** le parsing JSON.
+2. Application du payload (parsing + écriture des structs + `saveMqttConfig()` + `saveAuthConfig()` + autres saves).
+3. Comparaison des 6 champs post-application avec le snapshot → booléen `mqttChanged`.
+4. Si `mqttChanged == true` → `mqttManager.requestReconnect()` + log INFO `"MQTT reconnect demandé (config MQTT modifiée)"`.
+5. Sinon → aucun appel, aucun log (la session MQTT continue intact).
+
+**Bénéfice** : un save de paramètres non-MQTT (modes de régulation pH/ORP, NTP, toggle DEBUG, écran LVGL, calibrations, etc.) **ne provoque plus** de cycle disconnect/reconnect, donc plus de republication des 17 messages auto-discovery HA, plus de transition transitoire « Déconnecté » sur le badge UI Paramètres → MQTT (voir [`docs/features/page-settings.md`](../features/page-settings.md)). En contrepartie, un save où l'utilisateur retape la même valeur MQTT (sans changement effectif) ne déclenche pas non plus de reconnect — comportement cohérent.
+
+Cas `enabled` true → false : `requestReconnect()` est bien appelé (changement détecté). `connectInTask()` n'agit pas tant que `enabled` reste off, mais la session existante est fermée proprement par la prochaine itération de `taskLoop()`.
+
 ### Connexion initiale au boot
 
 Aucun appel à `mqttManager.requestReconnect()` n'est fait depuis `setup()` ([`main.cpp`](../../src/main.cpp)). Dès que `MqttManager::begin()` a démarré `mqttTask`, le premier tour de `taskLoop()` détecte `!mqtt.connected() && mqttCfg.enabled` et lance `connectInTask()` tout seul. Cela évite la **race observée avant ADR-0011 itération 2** : la 1ʳᵉ connexion réussissait via `mqttTask`, le `requestReconnect()` posé par `setup()` la marquait pour reconnexion, `mqttTask` se déconnectait/reconnectait → 2× publication d'auto-discovery (32 publishes au lieu de 17), donc 2× l'exposition aux blocages réseau juste après le boot.
