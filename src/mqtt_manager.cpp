@@ -74,6 +74,7 @@ void MqttManager::refreshTopics() {
 
   topics.base = base;
   topics.temperatureState = base + "/temperature";
+  topics.temperatureCircuitState = base + "/temperature_circuit";  // feature-020
   topics.phState = base + "/ph";
   topics.orpState = base + "/orp";
   topics.filtrationState = base + "/filtration_state";
@@ -462,6 +463,7 @@ void MqttManager::publishAllStatesInternal() {
 
   // Capteurs : lectures atomiques côté firmware (float scalaires)
   float t = sensors.getTemperature();
+  float tCircuit = sensors.getCircuitTemperature();   // feature-020
   float ph = sensors.getPh();
   float orp = sensors.getOrp();
 
@@ -470,6 +472,10 @@ void MqttManager::publishAllStatesInternal() {
   if (!isnan(t)) {
     String p = String(t, 1);
     safePublish(topics.temperatureState.c_str(), p.c_str(), true);
+  }
+  if (!isnan(tCircuit)) {
+    String p = String(tCircuit, 1);
+    safePublish(topics.temperatureCircuitState.c_str(), p.c_str(), true);
   }
   if (!isnan(ph)) {
     String p = String(ph, 1);
@@ -539,6 +545,7 @@ void MqttManager::publishDiagnosticInternal() {
   doc["ph_value"] = round(sensors.getPh() * 10.0f) / 10.0f;
   doc["orp_value"] = sensors.getOrp();
   doc["temperature"] = sensors.getTemperature();
+  doc["temperature_circuit"] = sensors.getCircuitTemperature();  // feature-020
   doc["ph_dosing_active"] = PumpController.isPhDosing();
   doc["orp_dosing_active"] = PumpController.isOrpDosing();
   doc["ph_used_ms"] = PumpController.getPhUsedMs();
@@ -755,6 +762,18 @@ void MqttManager::publishDiscovery() {
   doc["device_class"] = "temperature";
   doc["unit_of_measurement"] = "°C";
   doc["state_class"] = "measurement";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Température circuit (feature-020 : 2ᵉ sonde DS18B20 sur PCB v2)
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_temperature_circuit/config";
+  doc["name"] = "Piscine Température Circuit";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_temperature_circuit";
+  doc["state_topic"] = topics.temperatureCircuitState;
+  doc["device_class"] = "temperature";
+  doc["unit_of_measurement"] = "°C";
+  doc["state_class"] = "measurement";
+  doc["icon"] = "mdi:chip";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 

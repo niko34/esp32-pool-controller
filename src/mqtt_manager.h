@@ -12,6 +12,7 @@
 struct MqttTopics {
   String base;
   String temperatureState;
+  String temperatureCircuitState;  // feature-020 : T° circuit (2ᵉ sonde DS18B20)
   String phState;
   String orpState;
   String filtrationState;

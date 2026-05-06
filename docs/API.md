@@ -913,3 +913,44 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/factory-reset
 ```
 
 > Efface : mot de passe admin, token API, WiFi, MQTT, calibrations. Préserve : historique, fichiers LittleFS, **mot de passe AP WiFi** (l'étiquette sur le boîtier reste valide).
+
+## Endpoints ajoutés en feature-020 (identification 2 sondes DS18B20, PCB v2)
+
+Tous les endpoints `/sensors/onewire/*` requièrent l'auth (HTTP Basic + token).
+
+### `GET /sensors/onewire/scan`
+
+Liste les sondes DS18B20 actuellement détectées sur le bus OneWire (GPIO 5) avec leurs adresses ROM, T° brutes lues du cache (lecture rapide non bloquante) et leur rôle assigné.
+
+```json
+{
+  "sondes": [
+    { "address": "28FF1A2B3C4D5E6F", "temperature": 18.4, "role": "water" },
+    { "address": "28FF9988776655AA", "temperature": 24.1, "role": "unknown" }
+  ],
+  "identified_count": 1,
+  "detected_count": 2
+}
+```
+
+`role` ∈ `"water" | "circuit" | "unknown"`. La T° peut être périmée jusqu'à `kPhOrpSensorIntervalMs` (~5 s) car le handler lit le cache mis à jour par `Sensors::update()` — pas de `requestTemperatures()` synchrone (qui prendrait 750 ms en 12-bit, > timeout 50 ms d'AsyncWebServer).
+
+### `POST /sensors/onewire/identify`
+
+Assigne une sonde à un rôle. **Auto-permutation activée** : si une autre sonde avait déjà le rôle demandé, elle bascule automatiquement à l'autre rôle.
+
+Payload :
+
+```json
+{ "address": "28FF1A2B3C4D5E6F", "role": "water" }
+```
+
+Réponse : `{ "success": true }`. Erreurs : 400 si adresse hex invalide ou role hors `"water"|"circuit"` ; 404 si l'adresse n'est pas présente sur le bus.
+
+### `POST /sensors/onewire/reset`
+
+Efface l'identification persistée NVS (clés `ow_water_addr` et `ow_circuit_addr`). L'utilisateur devra refaire le workflow d'identification.
+
+Payload : `{}` (objet vide). Réponse : `{ "success": true }`.
+
+Voir [ADR-0013](adr/0013-identification-sondes-onewire.md) pour la décision d'identification + alternatives écartées.

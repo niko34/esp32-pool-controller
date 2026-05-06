@@ -170,6 +170,12 @@
             Calibration nécessaire
           </div>
 
+          <button class="chip" id="sondes-chip" type="button" hidden
+                  aria-label="Identifier les sondes de température dans les paramètres">
+            <span class="chip__dot" aria-hidden="true"></span>
+            Sondes de température à identifier
+          </button>
+
 
           <!-- Cartes principales -->
           <div class="grid grid--status-cards">
@@ -1584,6 +1590,28 @@
 
                   <div class="detail-actions" style="margin-top:12px">
                     <button class="btn btn--primary" id="pump_config_save_btn">Sauvegarder</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card" id="card-sensors-onewire">
+                <div class="card__head">
+                  <h2 class="card__title">Identification des sondes de température</h2>
+                  <span class="pill" id="sondes-status-pill" role="status" aria-live="polite">—</span>
+                </div>
+                <div class="card__body">
+                  <div class="muted small" id="sondes-instructions">
+                    Tenez l'une des sondes dans votre main pendant 30 secondes.
+                    Sa température va monter en temps réel : cliquez sur le bouton correspondant en face de celle qui chauffe.
+                  </div>
+                  <div id="sondes-warn" class="callout callout--warn" style="display:none;"></div>
+                  <div id="sondes-list" aria-live="polite">
+                    <div class="muted small" style="padding:12px 0;">Chargement…</div>
+                  </div>
+                  <div class="row row--gap" style="margin-top:12px;">
+                    <button class="btn btn--ghost" type="button" id="sondes-reset-btn" hidden>
+                      Réinitialiser l'identification
+                    </button>
                   </div>
                 </div>
               </div>

@@ -409,6 +409,11 @@ select:focus-visible {
 }
 
 /* 2026 Chip - refined */
+/* Respecter l'attribut HTML `hidden` sur les éléments à display non-block. */
+.chip[hidden],
+.btn[hidden],
+.state-badge[hidden] { display: none !important; }
+
 .chip {
   display: inline-flex;
   gap: 8px;

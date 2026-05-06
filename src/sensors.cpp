@@ -5,6 +5,7 @@
 #include "mqtt_manager.h"
 #include <sys/time.h>
 #include <EEPROM.h>
+#include <Preferences.h>
 #include <Wire.h>
 
 
@@ -27,9 +28,37 @@ uint16_t ds18b20ConversionTimeMsForResolution(uint8_t resolutionBits) {
 // Defaults (set in begin())
 uint8_t g_ds18b20ResolutionBits = 12;
 uint16_t g_ds18b20ConversionMs = 750;
+
+// Helper local : formate une adresse ROM 1-Wire en hex majuscule sans séparateur.
+// Doublon léger avec web_helpers::formatRomHex pour rester autoportant côté logs.
+String romHex(const uint8_t addr[kSondeAddrLen]) {
+  char buf[2 * kSondeAddrLen + 1];
+  for (size_t i = 0; i < kSondeAddrLen; ++i) {
+    snprintf(&buf[i * 2], 3, "%02X", addr[i]);
+  }
+  buf[2 * kSondeAddrLen] = '\0';
+  return String(buf);
+}
+
+const char* sondeRoleLabel(SondeRole r) {
+  switch (r) {
+    case SondeRole::Water:   return "eau";
+    case SondeRole::Circuit: return "circuit";
+    case SondeRole::Unknown:
+    default:                 return "non identifiée";
+  }
+}
 } // namespace
 
-SensorManager::SensorManager() : oneWire(kTempSensorPin), tempSensor(&oneWire) {}
+SensorManager::SensorManager() : oneWire(kTempSensorPin), tempSensor(&oneWire) {
+  // Initialiser le tableau des sondes à un état "absent / non identifié"
+  for (size_t i = 0; i < kMaxDs18b20Sondes; ++i) {
+    memset(_sondes[i].addr, 0, kSondeAddrLen);
+    _sondes[i].lastTempRaw = NAN;
+    _sondes[i].present = false;
+    _sondes[i].role = SondeRole::Unknown;
+  }
+}
 
 SensorManager::~SensorManager() {}
 
@@ -98,14 +127,18 @@ void SensorManager::begin() {
     systemLogger.info("ADS1115 configuré : Gain=±4.096V (0.125mV/bit), Data Rate=8 SPS");
   }
 
-  // Initialiser le capteur de température DS18B20
+  // Initialiser le bus OneWire + DallasTemperature (feature-020 : 2 sondes possibles)
   tempSensor.begin();
 
   uint8_t deviceCount = tempSensor.getDeviceCount();
   if (deviceCount == 0) {
     systemLogger.warning("DS18B20 non détecté sur GPIO " + String(kTempSensorPin) + " - vérifier câblage et résistance pull-up 4.7kΩ");
   } else {
-    systemLogger.info("DS18B20: " + String(deviceCount) + " capteur(s) détecté(s) sur GPIO " + String(kTempSensorPin));
+    systemLogger.info("OneWire: " + String(deviceCount) + " sonde(s) DS18B20 détectée(s) sur GPIO " + String(kTempSensorPin));
+    if (deviceCount > kMaxDs18b20Sondes) {
+      systemLogger.warning("Trop de sondes détectées (" + String(deviceCount) +
+                           ") - seules les " + String(kMaxDs18b20Sondes) + " premières seront prises en compte");
+    }
   }
 
   // Lecture non-bloquante : requestTemperatures() ne doit pas attendre la conversion
@@ -115,6 +148,33 @@ void SensorManager::begin() {
   g_ds18b20ResolutionBits = 12; // 9, 10, 11 ou 12
   tempSensor.setResolution(g_ds18b20ResolutionBits);
   g_ds18b20ConversionMs = ds18b20ConversionTimeMsForResolution(g_ds18b20ResolutionBits);
+
+  // Scanner les adresses ROM des sondes détectées (jusqu'à kMaxDs18b20Sondes).
+  // L'ordre des index OneWire est stable pour un même hardware mais peut varier
+  // entre PCB (adresses ROM uniques par sonde) — d'où l'identification par adresse.
+  _detectedCount = 0;
+  uint8_t scanLimit = (deviceCount > kMaxDs18b20Sondes) ? (uint8_t)kMaxDs18b20Sondes : deviceCount;
+  for (uint8_t i = 0; i < scanLimit; ++i) {
+    uint8_t addr[kSondeAddrLen];
+    if (tempSensor.getAddress(addr, i)) {
+      memcpy(_sondes[_detectedCount].addr, addr, kSondeAddrLen);
+      _sondes[_detectedCount].lastTempRaw = NAN;
+      _sondes[_detectedCount].present = true;
+      _sondes[_detectedCount].role = SondeRole::Unknown;
+      _detectedCount++;
+    } else {
+      systemLogger.warning("DS18B20 index " + String(i) + " : impossible de lire l'adresse ROM");
+    }
+  }
+
+  // Charger les adresses identifiées depuis NVS et matcher avec les sondes détectées
+  _loadSondeIdentificationFromNvs();
+
+  // Logger l'état final de chaque sonde détectée
+  for (uint8_t i = 0; i < _detectedCount; ++i) {
+    systemLogger.info("  - sonde[" + String(i) + "] = " + romHex(_sondes[i].addr) +
+                      " (" + String(sondeRoleLabel(_sondes[i].role)) + ")");
+  }
 
   systemLogger.info("Capteur de température DS18B20 initialisé sur GPIO " + String(kTempSensorPin) + " (" +
                     String(g_ds18b20ResolutionBits) + "-bit, conv=" +
@@ -198,24 +258,53 @@ void SensorManager::readRealSensors() {
     lastTempRequest = now;
   }
 
-  // 2) Lire la température seulement si la conversion a eu le temps de se terminer
+  // 2) Lire la température seulement si la conversion a eu le temps de se terminer.
+  //    Lecture par adresse (feature-020) : on parcourt _sondes[] et on lit chacune
+  //    via getTempC(addr) — l'index n'est pas stable entre PCB, l'adresse ROM si.
   if (tempRequested && (now - lastTempRequest >= TEMP_CONVERSION_MS)) {
-    float measuredTemp = tempSensor.getTempCByIndex(0);
+    bool anyValidRead = false;
+    for (uint8_t i = 0; i < _detectedCount; ++i) {
+      float measuredTemp = tempSensor.getTempC(_sondes[i].addr);
+      // 85.0 °C est la valeur EEPROM par défaut du DS18B20 (power-on reset value) :
+      // elle signale une conversion non complétée ou un problème d'alim.
+      bool valid = (measuredTemp != DEVICE_DISCONNECTED_C &&
+                    measuredTemp > -55.0f && measuredTemp < 125.0f &&
+                    measuredTemp != 85.0f);
+      if (valid) {
+        _sondes[i].lastTempRaw = roundf(measuredTemp * 10.0f) / 10.0f;
+        anyValidRead = true;
+      } else {
+        _sondes[i].lastTempRaw = NAN;
+        if (authCfg.sensorLogsEnabled) {
+          systemLogger.warning("DS18B20 " + romHex(_sondes[i].addr) +
+                               " : lecture invalide (déconnectée ou T° hors plage)");
+        }
+      }
+    }
 
-    // 85.0°C est la valeur EEPROM par défaut du DS18B20 (power-on reset value)
-    // Elle indique une conversion non complétée ou un problème d'alimentation
-    if (measuredTemp != DEVICE_DISCONNECTED_C && measuredTemp > -55.0f && measuredTemp < 125.0f && measuredTemp != 85.0f) {
-      // Stocker la valeur brute arrondie à 1 décimale
-      tempRawValue = roundf(measuredTemp * 10.0f) / 10.0f;
-      // Appliquer l'offset de calibration
-      // Formule: Temp_final = Temp_brut + offset
+    // Mise à jour des champs rétrocompat tempRawValue/tempValue (alias eau).
+    // Si sonde "eau" identifiée → on utilise sa valeur ; sinon fallback sur 1ʳᵉ sonde
+    // présente pour ne pas casser MQTT/WS tant que l'utilisateur n'a pas identifié.
+    int waterIdx = _findSondeIndexByRole(SondeRole::Water);
+    if (waterIdx >= 0 && !isnan(_sondes[waterIdx].lastTempRaw)) {
+      tempRawValue = _sondes[waterIdx].lastTempRaw;
       tempValue = tempRawValue + mqttCfg.tempCalibrationOffset;
     } else {
-      tempValue = NAN;
+      // Fallback gracieux : 1ʳᵉ sonde présente avec lecture valide (sans offset si non identifiée
+      // pour éviter d'appliquer une calibration "eau" sur une mesure de circuit).
       tempRawValue = NAN;
-      if (authCfg.sensorLogsEnabled) {
-        systemLogger.warning("DS18B20 non détecté ou température invalide");
+      tempValue = NAN;
+      for (uint8_t i = 0; i < _detectedCount; ++i) {
+        if (!isnan(_sondes[i].lastTempRaw)) {
+          tempRawValue = _sondes[i].lastTempRaw;
+          tempValue = tempRawValue;  // pas d'offset : sonde non identifiée comme "eau"
+          break;
+        }
       }
+    }
+
+    if (!anyValidRead && _detectedCount > 0 && authCfg.sensorLogsEnabled) {
+      systemLogger.warning("Aucune sonde DS18B20 n'a fourni de lecture valide ce cycle");
     }
 
     tempRequested = false; // prêt pour une nouvelle conversion
@@ -414,9 +503,17 @@ float SensorManager::getRawPh() const {
 }
 
 void SensorManager::recalculateCalibratedValues() {
-  // Recalculer la température calibrée à partir de la valeur brute
-  if (!isnan(tempRawValue)) {
+  // Recalculer la température calibrée à partir de la valeur brute de la sonde "eau".
+  // Note (feature-020) : l'offset utilisateur s'applique UNIQUEMENT à la T° eau.
+  // La T° circuit reste brute (calibration usine DS18B20 suffisante).
+  int waterIdx = _findSondeIndexByRole(SondeRole::Water);
+  if (waterIdx >= 0 && !isnan(_sondes[waterIdx].lastTempRaw)) {
+    tempRawValue = _sondes[waterIdx].lastTempRaw;
     tempValue = tempRawValue + mqttCfg.tempCalibrationOffset;
+  } else if (!isnan(tempRawValue)) {
+    // Pas d'identification eau : on conserve la valeur brute mais sans offset
+    // (cas du fallback gracieux 1ʳᵉ sonde).
+    tempValue = tempRawValue;
   }
 
   // Note: On ne recalcule PAS le pH ici car la bibliothèque DFRobot_PH
@@ -594,4 +691,173 @@ void SensorManager::clearPhCalibration() {
 
   _phCalibrated = false;
   systemLogger.info("Calibration pH effacée - réinitialisée aux valeurs par défaut");
+}
+
+// ============================================================================
+// API 2 sondes DS18B20 (feature-020)
+// ============================================================================
+
+int SensorManager::_findSondeIndexByRole(SondeRole role) const {
+  for (uint8_t i = 0; i < _detectedCount; ++i) {
+    if (_sondes[i].role == role) return (int)i;
+  }
+  return -1;
+}
+
+int SensorManager::_findSondeIndexByAddr(const uint8_t addr[kSondeAddrLen]) const {
+  for (uint8_t i = 0; i < _detectedCount; ++i) {
+    if (memcmp(_sondes[i].addr, addr, kSondeAddrLen) == 0) return (int)i;
+  }
+  return -1;
+}
+
+void SensorManager::_loadSondeIdentificationFromNvs() {
+  Preferences prefs;
+  if (!prefs.begin("poolctrl", true /*readonly*/)) {
+    systemLogger.warning("OneWire ID: NVS poolctrl indisponible (lecture)");
+    return;
+  }
+
+  uint8_t waterAddr[kSondeAddrLen];
+  uint8_t circuitAddr[kSondeAddrLen];
+  size_t waterLen = prefs.getBytes(kNvsKeyOwWaterAddr, waterAddr, kSondeAddrLen);
+  size_t circuitLen = prefs.getBytes(kNvsKeyOwCircuitAddr, circuitAddr, kSondeAddrLen);
+  prefs.end();
+
+  // Matcher l'adresse "eau" stockée avec une sonde détectée
+  if (waterLen == kSondeAddrLen) {
+    int idx = _findSondeIndexByAddr(waterAddr);
+    if (idx >= 0) {
+      _sondes[idx].role = SondeRole::Water;
+    } else {
+      systemLogger.warning("OneWire ID: sonde 'eau' (" + romHex(waterAddr) +
+                           ") non détectée - identification à refaire");
+    }
+  }
+
+  // Matcher l'adresse "circuit" stockée
+  if (circuitLen == kSondeAddrLen) {
+    int idx = _findSondeIndexByAddr(circuitAddr);
+    if (idx >= 0) {
+      _sondes[idx].role = SondeRole::Circuit;
+    } else {
+      systemLogger.warning("OneWire ID: sonde 'circuit' (" + romHex(circuitAddr) +
+                           ") non détectée - identification à refaire");
+    }
+  }
+}
+
+bool SensorManager::_saveSondeAddrToNvs(const char* nvsKey, const uint8_t addr[kSondeAddrLen]) {
+  Preferences prefs;
+  if (!prefs.begin("poolctrl", false /*RW*/)) {
+    systemLogger.error("OneWire ID: échec ouverture NVS poolctrl en écriture");
+    return false;
+  }
+  size_t written = prefs.putBytes(nvsKey, addr, kSondeAddrLen);
+  prefs.end();
+  if (written != kSondeAddrLen) {
+    systemLogger.error("OneWire ID: écriture NVS " + String(nvsKey) + " incomplète (" +
+                       String(written) + "/" + String(kSondeAddrLen) + ")");
+    return false;
+  }
+  return true;
+}
+
+float SensorManager::getTemperature() const {
+  // Alias rétrocompat de la T° eau, avec fallback gracieux sur la 1ʳᵉ sonde présente
+  // tant que l'identification utilisateur n'a pas été faite. Évite NaN sur MQTT/WS
+  // pour les utilisateurs qui n'auraient pas encore lancé le workflow.
+  float waterT = getWaterTemperature();
+  if (!isnan(waterT)) return waterT;
+  // Fallback : 1ʳᵉ sonde présente (sans offset car non identifiée comme "eau")
+  for (uint8_t i = 0; i < _detectedCount; ++i) {
+    if (!isnan(_sondes[i].lastTempRaw)) {
+      return _sondes[i].lastTempRaw;
+    }
+  }
+  return NAN;
+}
+
+float SensorManager::getWaterTemperature() const {
+  int idx = _findSondeIndexByRole(SondeRole::Water);
+  if (idx < 0) return NAN;
+  float raw = _sondes[idx].lastTempRaw;
+  if (isnan(raw)) return NAN;
+  // Offset de calibration utilisateur appliqué UNIQUEMENT sur la T° eau
+  return raw + mqttCfg.tempCalibrationOffset;
+}
+
+float SensorManager::getCircuitTemperature() const {
+  int idx = _findSondeIndexByRole(SondeRole::Circuit);
+  if (idx < 0) return NAN;
+  return _sondes[idx].lastTempRaw;  // Pas d'offset (calibration usine seule)
+}
+
+bool SensorManager::areSondesIdentified() const {
+  return _findSondeIndexByRole(SondeRole::Water) >= 0 &&
+         _findSondeIndexByRole(SondeRole::Circuit) >= 0;
+}
+
+void SensorManager::getDetectedSondeAddresses(uint8_t addrs[kMaxDs18b20Sondes][kSondeAddrLen],
+                                              bool matched[kMaxDs18b20Sondes]) const {
+  for (size_t i = 0; i < kMaxDs18b20Sondes; ++i) {
+    if (i < _detectedCount) {
+      memcpy(addrs[i], _sondes[i].addr, kSondeAddrLen);
+      matched[i] = (_sondes[i].role != SondeRole::Unknown);
+    } else {
+      memset(addrs[i], 0, kSondeAddrLen);
+      matched[i] = false;
+    }
+  }
+}
+
+bool SensorManager::identifySonde(const uint8_t addr[kSondeAddrLen], bool isWater) {
+  int targetIdx = _findSondeIndexByAddr(addr);
+  if (targetIdx < 0) {
+    systemLogger.warning("OneWire ID: adresse " + romHex(addr) + " non détectée - identification refusée");
+    return false;
+  }
+
+  SondeRole newRole = isWater ? SondeRole::Water : SondeRole::Circuit;
+  SondeRole otherRole = isWater ? SondeRole::Circuit : SondeRole::Water;
+  const char* newKey = isWater ? kNvsKeyOwWaterAddr : kNvsKeyOwCircuitAddr;
+  const char* otherKey = isWater ? kNvsKeyOwCircuitAddr : kNvsKeyOwWaterAddr;
+
+  // Auto-permutation : si une autre sonde porte déjà ce rôle, on la bascule à l'autre rôle
+  // (cas typique : utilisateur réalise qu'il a inversé l'identification).
+  for (uint8_t i = 0; i < _detectedCount; ++i) {
+    if ((int)i == targetIdx) continue;
+    if (_sondes[i].role == newRole) {
+      _sondes[i].role = otherRole;
+      _saveSondeAddrToNvs(otherKey, _sondes[i].addr);
+      systemLogger.info("Sonde " + romHex(_sondes[i].addr) + " permutée " +
+                        String(sondeRoleLabel(newRole)) + " -> " + String(sondeRoleLabel(otherRole)) +
+                        " (suite à identification de " + romHex(addr) + " comme " +
+                        String(sondeRoleLabel(newRole)) + ")");
+    }
+  }
+
+  _sondes[targetIdx].role = newRole;
+  if (!_saveSondeAddrToNvs(newKey, addr)) {
+    return false;
+  }
+  systemLogger.info("Sonde " + romHex(addr) + " identifiée comme " + String(sondeRoleLabel(newRole)));
+  return true;
+}
+
+void SensorManager::resetSondeIdentification() {
+  Preferences prefs;
+  if (prefs.begin("poolctrl", false /*RW*/)) {
+    prefs.remove(kNvsKeyOwWaterAddr);
+    prefs.remove(kNvsKeyOwCircuitAddr);
+    prefs.end();
+  } else {
+    systemLogger.error("OneWire ID: échec ouverture NVS pour reset identification");
+  }
+
+  for (uint8_t i = 0; i < _detectedCount; ++i) {
+    _sondes[i].role = SondeRole::Unknown;
+  }
+  // Reset des alias rétrocompat (le prochain readRealSensors les ré-alimentera).
+  systemLogger.info("Identification des sondes DS18B20 réinitialisée (NVS effacé)");
 }

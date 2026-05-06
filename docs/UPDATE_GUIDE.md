@@ -189,3 +189,25 @@ Aucune action requise. Le firmware effectue la migration à la première lecture
 | Interface inaccessible | `./deploy.sh fs` (USB) |
 | Authentification refusée | Vérifier le mot de passe ou utiliser `POOL_PASSWORD=...` |
 | `poolcontroller.local` inaccessible | mDNS non supporté par le réseau — utiliser l'IP directe : `./ota_update.sh both 192.168.1.x motdepasse` |
+
+## Migration v2.0.0 — PCB v2
+
+⚠️ La version 2.0.0 cible exclusivement le **PCB v2** et n'est plus compatible avec le PCB v1 (mapping GPIO entièrement réassigné, voir ADR-0012). Ne pas flasher la 2.0.0 sur un PCB v1.
+
+### Étape post-update : identification des 2 sondes DS18B20 (feature-020)
+
+Le PCB v2 ajoute une 2ᵉ sonde DS18B20 (eau piscine + circuit électronique). Après la première mise à jour vers 2.0.0, l'utilisateur doit identifier ces 2 sondes via :
+
+**Paramètres → Avancé → card « Identification des sondes de température »**
+
+Une **chip de notification ambré** apparaît sur le Dashboard tant que l'identification n'est pas faite. Workflow :
+
+1. Tenir l'une des 2 sondes dans la main pendant ~30 secondes
+2. Observer dans la card laquelle voit sa T° monter en temps réel
+3. Cliquer le bouton « C'est l'eau de la piscine » ou « C'est le circuit interne » sur la sonde correspondante
+4. La 2ᵉ sonde est automatiquement identifiée comme l'autre rôle (auto-permutation)
+5. La card affiche « 2/2 sondes identifiées ✓ »
+
+Tant que l'identification n'est pas faite, **`getTemperature()` continue de fonctionner** via fallback gracieux sur la 1ʳᵉ sonde détectée — pas d'interruption de service côté MQTT/HA. La compensation de température du pH (feature-021 Atlas EZO) sera plus précise une fois l'identification effectuée.
+
+Si une sonde est remplacée physiquement (adresse ROM différente), un warning est loggé et l'utilisateur doit refaire l'identification pour la sonde manquante.

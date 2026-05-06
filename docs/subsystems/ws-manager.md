@@ -97,3 +97,15 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 - [`src/web_server.cpp`](../../src/web_server.cpp) — instanciation du serveur
 - [`src/logger.h:55`](../../src/logger.h:55) — `setLogCallback()`
 - [ADR-0005](../adr/0005-websocket-push-sans-polling.md)
+
+## Champs `sensor_data` ajoutés en feature-020 (PCB v2)
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `temperature_circuit` | float \| null | T° de la sonde DS18B20 « circuit électronique » (NaN/null si non identifiée ou en erreur) |
+| `sondes_identified` | bool | true ssi les 2 sondes DS18B20 sont identifiées (eau + circuit) |
+| `sondes_detected` | int (0..2) | Nombre de sondes DS18B20 physiquement détectées sur le bus OneWire |
+
+Buffer `_buildSensorJson()` agrandi de **832 → 896 octets** pour absorber ces champs (marge ~30 octets sur le payload réel mesuré).
+
+Les champs `sondes_identified` et `sondes_detected` pilotent la chip de notification ambré sur le Dashboard côté UI (visible tant que l'identification n'est pas faite). Voir `data/app.js` `_updateSondesChip()`.

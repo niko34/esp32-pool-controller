@@ -173,3 +173,13 @@ Le contrôleur publie automatiquement sa configuration pour Home Assistant au d�
 | Number | Consigne ORP | `{base}/orp_target` | `{base}/orp_target/set` |
 
 > **Compatibilité `orp_enabled` :** le champ `orp_enabled` (booléen) est maintenu comme miroir de `orp_regulation_mode` (`true` si mode ≠ `manual`). Les automations Home Assistant qui testent la valeur de ce champ continuent de fonctionner sans modification. Le topic `{base}/orp_regulation_mode` est la source de vérité pour le mode actif.
+
+## Topic et entité ajoutés en feature-020 (PCB v2)
+
+| Topic | Description | Retain | Auto-discovery HA |
+|-------|-------------|--------|-------------------|
+| `{base}/temperature_circuit` | T° de la sonde DS18B20 « circuit électronique » (NaN/null si non identifiée) | true | `sensor` "Piscine Température Circuit", `device_class: temperature`, `unit: °C`, `state_class: measurement` |
+
+Le topic `{base}/temperature` (eau piscine) et son entité « Piscine Température » restent **inchangés** (rétrocompat HA).
+
+Le bus OneWire (GPIO 5) supporte 2 sondes DS18B20 sur le PCB v2. Chaque sonde a un rôle (eau/circuit) identifié via Paramètres → Avancé. Voir [ADR-0013](adr/0013-identification-sondes-onewire.md).

@@ -152,7 +152,8 @@ void WsManager::broadcastLog(const LogEntry& entry) {
 // =============================================================================
 
 String WsManager::_buildSensorJson() const {
-  StaticJson<832> doc;
+  // Buffer +64 octets vs version 1 sonde : champs temperature_circuit / sondes_identified / sondes_detected (feature-020)
+  StaticJson<896> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -163,6 +164,11 @@ String WsManager::_buildSensorJson() const {
   if (!isnan(sensors.getPhVoltageMv()))    d["ph_voltage_mv"] = round(sensors.getPhVoltageMv() * 10.0f) / 10.0f; else d["ph_voltage_mv"] = nullptr;
   if (!isnan(sensors.getTemperature()))    d["temperature"] = sensors.getTemperature();     else d["temperature"] = nullptr;
   if (!isnan(sensors.getRawTemperature())) d["temperature_raw"] = sensors.getRawTemperature(); else d["temperature_raw"] = nullptr;
+  // feature-020 : 2ᵉ sonde DS18B20 "circuit" + indicateurs identification
+  float tc = sensors.getCircuitTemperature();
+  if (!isnan(tc))                          d["temperature_circuit"] = round(tc * 10.0f) / 10.0f; else d["temperature_circuit"] = nullptr;
+  d["sondes_identified"] = sensors.areSondesIdentified();
+  d["sondes_detected"]   = sensors.getDetectedSondeCount();
 
   d["filtration_running"]  = filtration.isRunning();
   d["filtration_force_on"] = filtrationCfg.forceOn;
@@ -200,7 +206,8 @@ String WsManager::_buildSensorJson() const {
   d["mqtt_connected"] = mqttManager.isConnected();
 
   String out;
-  out.reserve(672);
+  // +64 octets pour les champs feature-020 (temperature_circuit + sondes_identified + sondes_detected)
+  out.reserve(736);
   serializeJson(doc, out);
   return out;
 }

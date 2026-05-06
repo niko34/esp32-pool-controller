@@ -188,3 +188,28 @@ Le champ `mqtt_enabled` pilote directement la présence / l'absence du client MQ
 ## Specs historiques
 
 Aucune spec dédiée. Les changements récents (renommage `ph_limit_minutes`, suppression `min_pause`, ajout `stabilization_delay_min`) sont tracés dans [`CHANGELOG.md`](../../CHANGELOG.md).
+
+## Card « Identification des sondes de température » (feature-020, panel Avancé)
+
+Sur le PCB v2, le bus OneWire (GPIO 5) supporte 2 sondes DS18B20 (eau piscine + circuit électronique). Comme leurs adresses ROM 1-Wire sont uniques à la fabrication et que l'ordre de scan n'est pas garanti entre PCB, l'utilisateur doit identifier explicitement laquelle est laquelle.
+
+La card s'affiche dans le panel **Avancé** et présente :
+
+- **Pill de statut** : « 0/2 », « 1/2 », « 2/2 ✓ » selon l'avancement
+- Pour chaque sonde détectée : adresse ROM en hex majuscule (`28FF1A2B3C4D5E6F`), T° brute mise à jour en temps réel (polling 2 s sur `/sensors/onewire/scan`), un badge « ✓ Eau » ou « ✓ Circuit » une fois identifiée
+- Boutons d'assignation : « C'est l'eau de la piscine » + « C'est le circuit interne » (masqués une fois la sonde identifiée)
+- Bouton « Réinitialiser l'identification » (visible une fois 2/2 identifiées)
+
+### Workflow utilisateur
+
+1. Ouvrir Paramètres → Avancé → card « Identification des sondes »
+2. Tenir l'une des 2 sondes dans la main pendant ~30 secondes
+3. Observer dans la card laquelle voit sa T° monter
+4. Cliquer le bon bouton sur la sonde qui chauffe
+5. La 2ᵉ sonde est automatiquement identifiée comme l'autre rôle (auto-permutation)
+
+### Chip Dashboard
+
+Une chip de notification ambré (pattern `.chip` existant) apparaît sur le Dashboard tant que `sondes_identified === false && sondes_detected >= 1`. Au clic, redirige vers la card d'identification.
+
+Voir [ADR-0013](../adr/0013-identification-sondes-onewire.md) pour la décision (alternatives écartées : convention « plus chaude », index OneWire, QR usine, refus strict).

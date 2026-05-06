@@ -22,8 +22,8 @@ bool isTimeValid(time_t t) {
 static void handleGetData(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
   // Buffer statique pour éviter la fragmentation du heap
-  // Taille estimée : ~13 champs × 30 bytes + overhead = 512 bytes
-  StaticJson<768> doc;
+  // Taille estimée : ~16 champs × 30 bytes + overhead (feature-020 ajoute 3 champs)
+  StaticJson<832> doc;
 
   // ORP
   if (!isnan(sensors.getOrp())) {
@@ -73,6 +73,16 @@ static void handleGetData(AsyncWebServerRequest* request) {
   } else {
     doc["temperature_raw"] = nullptr;
   }
+
+  // feature-020 : T° circuit (2ᵉ sonde DS18B20) + indicateurs identification
+  float tCircuit = sensors.getCircuitTemperature();
+  if (!isnan(tCircuit)) {
+    doc["temperature_circuit"] = round(tCircuit * 10.0f) / 10.0f;
+  } else {
+    doc["temperature_circuit"] = nullptr;
+  }
+  doc["sondes_identified"] = sensors.areSondesIdentified();
+  doc["sondes_detected"]   = sensors.getDetectedSondeCount();
 
   doc["filtration_running"] = filtration.isRunning();
   doc["ph_dosing"] = PumpController.isPhDosing();

@@ -108,3 +108,40 @@ Les logs et alertes MQTT ne sont émis qu'**aux transitions** (entrée et sortie
 - [ADR-0001](../adr/0001-capteurs-analogiques-ads1115.md) — choix ADS1115 (historique, PCB v1)
 - [ADR-0003](../adr/0003-calibration-orp-cote-client.md) — calibration ORP client-side
 - [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md) — mapping GPIO PCB v2 (bus OneWire conservé sur GPIO 5, ADS1115 supprimé)
+- [ADR-0013](../adr/0013-identification-sondes-onewire.md) — identification 2 sondes DS18B20 par adresse ROM persistée NVS (feature-020)
+
+## Multi-sondes DS18B20 — PCB v2 (feature-020)
+
+Le PCB v2 ajoute une **2ᵉ sonde DS18B20** sur le même bus OneWire (`kTempSensorPin = 5`). Une sonde mesure l'**eau de la piscine**, l'autre est soudée sur le PCB pour mesurer la **température du circuit électronique**.
+
+### Identification
+
+Les adresses ROM 1-Wire (8 octets) étant uniques à la fabrication et l'ordre de scan non garanti entre PCB, l'utilisateur doit identifier chaque sonde via le workflow UI (Paramètres → Avancé → card « Identification des sondes »). L'adresse de chaque sonde est persistée en NVS sous les clés `kNvsKeyOwWaterAddr = "ow_water_addr"` et `kNvsKeyOwCircuitAddr = "ow_circuit_addr"` (8 octets binaires via `Preferences::putBytes`).
+
+API publique exposée par `Sensors` :
+
+| Méthode | Comportement |
+|---------|--------------|
+| `getWaterTemperature()` | T° de la sonde marquée « eau » ; NaN si non identifiée |
+| `getCircuitTemperature()` | T° de la sonde marquée « circuit » ; NaN si non identifiée |
+| `getTemperature()` | **Alias rétrocompat** : retourne `getWaterTemperature()` ; **fallback** sur la T° de la 1ʳᵉ sonde présente si NaN. Garantit qu'aucun consommateur existant (MQTT, WS, HA) ne casse tant que l'utilisateur n'a pas fait l'identification |
+| `areSondesIdentified()` | true ssi les 2 adresses NVS matchent 2 sondes détectées |
+| `getDetectedSondeCount()` | 0, 1 ou 2 |
+| `identifySonde(addr, isWater)` | Persiste l'adresse en NVS + **auto-permutation** si une autre sonde avait déjà ce rôle |
+| `resetSondeIdentification()` | Efface les 2 clés NVS |
+
+### Auto-permutation
+
+Si l'utilisateur identifie la sonde A comme « eau » alors qu'une autre sonde B était déjà marquée « eau », B bascule automatiquement à « circuit » (son adresse est ré-écrite en NVS). Log info : `"Sonde XXXX permutée eau→circuit (suite à identification de YYYY comme eau)"`. Cohérent avec le workflow UI à un seul clic décisif.
+
+### Calibration
+
+Le `tempCalibrationOffset` (calibration utilisateur via Paramètres → Calibrations) **ne s'applique qu'à la T° eau** (`getWaterTemperature()` et le fallback `getTemperature()`). La T° circuit reste **brute** : la précision usine DS18B20 (±0.5 °C) est suffisante pour la surveillance interne du boîtier.
+
+### ⚠️ Contrat mono-appelant du bus OneWire
+
+Aujourd'hui, **un seul appelant accède au bus OneWire** : `Sensors::update()` depuis `loopTask`. Les routes HTTP `/sensors/onewire/*` lisent uniquement les caches `_sondes[].lastTempRaw` mis à jour par `update()` — elles ne déclenchent JAMAIS un `requestTemperatures()` synchrone (qui prendrait 750 ms en 12-bit, > timeout 50 ms d'AsyncWebServer). Si une feature future ajoute un autre appelant concurrent (debug, scan à la demande), il faudra introduire un mutex dédié.
+
+### Sonde changée à chaud
+
+Si une sonde est remplacée physiquement (adresse ROM différente), le scan au boot loggue un warning. L'identification de l'autre sonde est conservée, mais l'utilisateur doit refaire le workflow pour la sonde manquante (ou bien Réinitialiser et tout refaire).

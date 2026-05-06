@@ -50,3 +50,32 @@ String getCurrentTimeISO() {
   }
   return "unavailable";
 }
+
+// ===== Helpers adresse ROM 1-Wire (feature-020) =====
+
+String formatRomHex(const uint8_t addr[8]) {
+  char buf[17];
+  for (size_t i = 0; i < 8; ++i) {
+    snprintf(&buf[i * 2], 3, "%02X", addr[i]);
+  }
+  buf[16] = '\0';
+  return String(buf);
+}
+
+bool parseRomHex(const String& hex, uint8_t addr[8]) {
+  if (hex.length() != 16) return false;
+  for (size_t i = 0; i < 8; ++i) {
+    char hi = hex.charAt(i * 2);
+    char lo = hex.charAt(i * 2 + 1);
+    auto hexVal = [](char c, int& out) -> bool {
+      if (c >= '0' && c <= '9') { out = c - '0'; return true; }
+      if (c >= 'a' && c <= 'f') { out = c - 'a' + 10; return true; }
+      if (c >= 'A' && c <= 'F') { out = c - 'A' + 10; return true; }
+      return false;
+    };
+    int hv, lv;
+    if (!hexVal(hi, hv) || !hexVal(lo, lv)) return false;
+    addr[i] = (uint8_t)((hv << 4) | lv);
+  }
+  return true;
+}

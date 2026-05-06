@@ -6,6 +6,7 @@
 #include "web_routes_ota.h"
 #include "web_routes_auth.h"
 #include "web_routes_coredump.h"
+#include "web_routes_sensor_id.h"
 #include "auth.h"
 #include "config.h"
 #include "constants.h"
@@ -125,6 +126,7 @@ void WebServerManager::setupRoutes() {
   setupControlRoutes(server);
   setupOtaRoutes(server);
   setupCoredumpRoutes(server);
+  setupSensorIdRoutes(server);  // feature-020 : identification 2 sondes DS18B20
 
   // WebSocket (push temps réel : capteurs toutes les 5s, config après save, logs en direct)
   wsManager.begin(server);

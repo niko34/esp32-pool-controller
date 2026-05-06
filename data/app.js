@@ -2597,6 +2597,7 @@
         updateSensorBadges();
         updateStatusCards();
         updateProductUI(json);
+        _updateSondesChip();
         if (window._updateInjectButtons) window._updateInjectButtons(json);
 
         // Mettre à jour les sections détaillées
@@ -3928,6 +3929,267 @@
     if (_logsAutoRefreshTimer) { clearInterval(_logsAutoRefreshTimer); _logsAutoRefreshTimer = null; }
   }
 
+  // ========== SONDES 1-WIRE (feature-020) ==========
+  // Polling 2 s sur /sensors/onewire/scan UNIQUEMENT quand le panel-dev est actif.
+  // Les boutons d'identification déclenchent un POST /sensors/onewire/identify
+  // (auto-permutation côté firmware). Le bouton « Réinitialiser » appelle
+  // POST /sensors/onewire/reset après confirmation.
+  let _sondesPollTimer = null;
+  let _sondesIdentifyInFlight = false;
+  let _sondesLastScan = null; // dernière réponse JSON pour éviter re-render inutile
+
+  function _isPanelDevActive() {
+    const panel = $("#panel-dev");
+    return !!(panel && panel.classList.contains("is-active"));
+  }
+
+  function _renderSondesOnewire(scan) {
+    const list = $("#sondes-list");
+    const pill = $("#sondes-status-pill");
+    const warn = $("#sondes-warn");
+    const resetBtn = $("#sondes-reset-btn");
+    const instructions = $("#sondes-instructions");
+    if (!list || !pill) return;
+
+    const sondes = Array.isArray(scan?.sondes) ? scan.sondes : [];
+    const detected = scan?.detected_count ?? sondes.length;
+    const identified = scan?.identified_count ?? sondes.filter(s => s.role === "water" || s.role === "circuit").length;
+
+    // --- Pill statut ---
+    pill.classList.remove("ok", "bad", "mid");
+    if (detected === 0) {
+      pill.textContent = "Aucune sonde détectée";
+      pill.classList.add("bad");
+    } else if (identified === 0) {
+      pill.textContent = `0/${detected} sondes identifiées`;
+      pill.classList.add("bad");
+    } else if (identified < detected || (detected < 2 && identified < 2)) {
+      pill.textContent = `${identified}/${detected} sondes identifiées`;
+      pill.classList.add("mid");
+    } else {
+      pill.textContent = `${identified}/${detected} ✓`;
+      pill.classList.add("ok");
+    }
+
+    // --- Warning (sonde précédemment identifiée disparue) ---
+    // Heuristique : si on a vu auparavant une sonde identifiée puis qu'elle
+    // n'est plus dans la liste, c'est un câblage à vérifier. On s'appuie
+    // ici uniquement sur la réponse courante : si detected < 2 et
+    // identified === 0 alors qu'on avait déjà vu plus, on prévient.
+    // Simplification : laisser firmware piloter. Ici on n'affiche le warn
+    // que si la spec firmware ajoute un champ explicite à l'avenir ; pour
+    // l'instant on masque. (Cas couvert par l'UI : pill « 0/X » + boutons.)
+    if (warn) warn.style.display = "none";
+
+    // --- Hint dynamique selon nombre de sondes ---
+    if (instructions) {
+      if (detected === 1) {
+        instructions.textContent =
+          "Branchez la 2ᵉ sonde pour terminer la configuration. " +
+          "Vous pouvez identifier la sonde déjà branchée en attendant.";
+      } else if (detected === 0) {
+        instructions.textContent =
+          "Aucune sonde détectée. Vérifiez le câblage du bus 1-Wire.";
+      } else if (identified >= 2) {
+        instructions.textContent =
+          "Les deux sondes sont identifiées. Vous pouvez réinitialiser pour recommencer.";
+      } else {
+        instructions.textContent =
+          "Tenez l'une des sondes dans votre main pendant 30 secondes. " +
+          "Sa température va monter en temps réel : cliquez sur le bouton correspondant en face de celle qui chauffe.";
+      }
+    }
+
+    // --- Liste des sondes ---
+    if (sondes.length === 0) {
+      list.innerHTML = `<div class="muted small" style="padding:12px 0;">Aucune sonde 1-Wire détectée.</div>`;
+    } else {
+      // Identifier les rôles déjà assignés
+      const hasWater = sondes.some(s => s.role === "water");
+      const hasCircuit = sondes.some(s => s.role === "circuit");
+
+      list.innerHTML = sondes.map((s, idx) => {
+        const addr = String(s.address || "").toUpperCase();
+        const tempStr = (typeof s.temperature === "number" && !isNaN(s.temperature))
+          ? `${s.temperature.toFixed(1)} °C`
+          : "—";
+        const role = s.role || "unknown";
+
+        let badgeHtml = "";
+        let actionsHtml = "";
+        if (role === "water") {
+          badgeHtml = `<span class="state-badge state-badge--ok">✓ Eau</span>`;
+        } else if (role === "circuit") {
+          badgeHtml = `<span class="state-badge state-badge--ok">✓ Circuit</span>`;
+        } else {
+          // Sonde non identifiée : afficher les boutons pour les rôles encore libres
+          const buttons = [];
+          if (!hasWater) {
+            buttons.push(`<button class="btn btn--secondary" data-role="water" data-address="${addr}">C'est l'eau de la piscine</button>`);
+          }
+          if (!hasCircuit) {
+            buttons.push(`<button class="btn btn--secondary" data-role="circuit" data-address="${addr}">C'est le circuit interne</button>`);
+          }
+          // Si les deux rôles sont déjà pris (ne devrait pas arriver mais safety net),
+          // proposer les deux quand même (auto-permutation côté firmware).
+          if (buttons.length === 0) {
+            buttons.push(`<button class="btn btn--secondary" data-role="water" data-address="${addr}">C'est l'eau de la piscine</button>`);
+            buttons.push(`<button class="btn btn--secondary" data-role="circuit" data-address="${addr}">C'est le circuit interne</button>`);
+          }
+          actionsHtml = `<div class="detail-actions">${buttons.join("")}</div>`;
+        }
+
+        return `
+          <div class="detail-row sonde-row" data-address="${addr}">
+            <div>
+              <div class="row__title">
+                Sonde ${idx + 1}
+                ${badgeHtml}
+              </div>
+              <div class="muted small">
+                <code>${addr}</code> — <span class="sonde-temp">${tempStr}</span>
+              </div>
+            </div>
+            ${actionsHtml}
+          </div>
+        `;
+      }).join("");
+
+      // Brancher les handlers d'identification
+      list.querySelectorAll("button[data-role]").forEach(btn => {
+        btn.addEventListener("click", () => _onSondeIdentifyClick(btn));
+      });
+    }
+
+    // --- Bouton « Réinitialiser » : visible uniquement si au moins une sonde identifiée ---
+    if (resetBtn) {
+      resetBtn.hidden = (identified === 0);
+    }
+  }
+
+  async function _onSondeIdentifyClick(btn) {
+    if (_sondesIdentifyInFlight) return;
+    const address = btn.getAttribute("data-address");
+    const role = btn.getAttribute("data-role");
+    if (!address || !role) return;
+
+    // Optimistic UI : disable tous les boutons pendant la requête
+    const allBtns = $("#sondes-list")?.querySelectorAll("button[data-role]") || [];
+    allBtns.forEach(b => { b.disabled = true; });
+    _sondesIdentifyInFlight = true;
+
+    try {
+      const resp = await authFetch("/sensors/onewire/identify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ address, role })
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const json = await resp.json().catch(() => ({}));
+      if (json.success === false) throw new Error("identify failed");
+      const roleLabel = role === "water" ? "Eau" : "Circuit";
+      showToast(`Sonde identifiée : ${roleLabel}`, "success");
+      // Rafraîchir immédiatement pour afficher la mise à jour
+      await _refreshSondesOnewire().catch(() => {});
+    } catch (e) {
+      console.error("[sondes] identify failed:", e);
+      showToast("Échec de l'identification", "error");
+      allBtns.forEach(b => { b.disabled = false; });
+    } finally {
+      _sondesIdentifyInFlight = false;
+    }
+  }
+
+  async function _refreshSondesOnewire() {
+    try {
+      const resp = await authFetch("/sensors/onewire/scan");
+      if (!resp.ok) return;
+      const scan = await resp.json();
+      _sondesLastScan = scan;
+      _renderSondesOnewire(scan);
+    } catch (e) {
+      // Réseau temporairement indisponible : on garde l'affichage précédent
+      debugLog("[sondes] scan failed: " + e.message);
+    }
+  }
+
+  function _startSondesPoll() {
+    if (_sondesPollTimer) return;
+    _refreshSondesOnewire().catch(() => {});
+    _sondesPollTimer = setInterval(() => {
+      if (!_isPanelDevActive()) {
+        _stopSondesPoll();
+        return;
+      }
+      _refreshSondesOnewire().catch(() => {});
+    }, 2000);
+  }
+
+  function _stopSondesPoll() {
+    if (_sondesPollTimer) { clearInterval(_sondesPollTimer); _sondesPollTimer = null; }
+  }
+
+  // Met à jour la chip Dashboard à partir des champs WS sondes_*
+  function _updateSondesChip() {
+    const chip = $("#sondes-chip");
+    if (!chip) return;
+    const identified = latestSensorData?.sondes_identified;
+    const detected = latestSensorData?.sondes_detected;
+    if (identified === false && typeof detected === "number" && detected >= 1) {
+      chip.hidden = false;
+    } else {
+      chip.hidden = true;
+    }
+  }
+
+  function bindSondesOnewire() {
+    // Clic sur la chip Dashboard : navigation + scroll vers la card
+    const chip = $("#sondes-chip");
+    if (chip) {
+      chip.addEventListener("click", () => {
+        window.location.hash = "#/settings/dev";
+        // Attendre que le panel soit affiché puis scroller
+        setTimeout(() => {
+          const card = $("#card-sensors-onewire");
+          if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 120);
+      });
+    }
+
+    // Bouton « Réinitialiser »
+    const resetBtn = $("#sondes-reset-btn");
+    if (resetBtn) {
+      resetBtn.addEventListener("click", async () => {
+        if (!confirm("Réinitialiser l'identification des deux sondes ?\n\nVous devrez les ré-identifier ensuite.")) return;
+        try {
+          const resp = await authFetch("/sensors/onewire/reset", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: "{}"
+          });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          showToast("Identification réinitialisée", "success");
+          await _refreshSondesOnewire().catch(() => {});
+        } catch (e) {
+          console.error("[sondes] reset failed:", e);
+          showToast("Échec de la réinitialisation", "error");
+        }
+      });
+    }
+
+    // Démarrage / arrêt du polling sur changement de route
+    const onRouteChange = () => {
+      if (_isPanelDevActive()) {
+        _startSondesPoll();
+      } else {
+        _stopSondesPoll();
+      }
+    };
+    window.addEventListener("hashchange", onRouteChange);
+    // État initial
+    onRouteChange();
+  }
+
   function bindLogs() {
     $("#refresh_logs_btn")?.addEventListener("click", () => loadLogs(true, false));
 
@@ -5086,6 +5348,7 @@
     bindGithubUpdate();
     bindManualUpdate();
     bindLogs();
+    bindSondesOnewire();
 
     // Reconnexion immédiate lors du retour sur la page (iPad/mobile : après déverrouillage)
     document.addEventListener('visibilitychange', () => {

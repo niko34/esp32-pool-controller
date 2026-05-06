@@ -104,6 +104,15 @@ constexpr int kNumSensorSamples = 3;                      // Nombre d'échantill
 constexpr unsigned long kAds1115SampleTimeMs = 125;       // Temps par échantillon à 8 SPS
 constexpr unsigned long kAds1115ThreeSamplesMs = 375;     // Temps pour 3 échantillons
 
+// DS18B20 - Sondes OneWire (feature-020)
+constexpr size_t kMaxDs18b20Sondes = 2;                   // 2 sondes : eau piscine + circuit interne
+constexpr size_t kSondeAddrLen = 8;                       // Adresse ROM 1-Wire 64 bits
+
+// Clés NVS pour les adresses ROM des sondes (8 octets binaires, putBytes/getBytes)
+// Stockées dans le namespace "poolctrl" comme le reste de la config.
+constexpr const char* kNvsKeyOwWaterAddr = "ow_water_addr";    // Adresse sonde eau piscine
+constexpr const char* kNvsKeyOwCircuitAddr = "ow_circuit_addr"; // Adresse sonde circuit interne
+
 // Conversion temps
 constexpr unsigned long kMillisToSeconds = 1000;          // Conversion ms → s
 constexpr unsigned long kSecondsPerMinute = 60;           // Secondes par minute
