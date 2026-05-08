@@ -157,18 +157,31 @@ String WsManager::_buildSensorJson() const {
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
-  if (!isnan(sensors.getOrp()))            d["orp"] = sensors.getOrp();            else d["orp"] = nullptr;
-  if (!isnan(sensors.getPh()))             d["ph"] = round(sensors.getPh() * 10.0f) / 10.0f; else d["ph"] = nullptr;
-  if (!isnan(sensors.getRawOrp()))         d["orp_raw"] = sensors.getRawOrp();      else d["orp_raw"] = nullptr;
-  if (!isnan(sensors.getRawPh()))          d["ph_raw"] = round(sensors.getRawPh() * 10.0f) / 10.0f; else d["ph_raw"] = nullptr;
-  if (!isnan(sensors.getPhVoltageMv()))    d["ph_voltage_mv"] = round(sensors.getPhVoltageMv() * 10.0f) / 10.0f; else d["ph_voltage_mv"] = nullptr;
-  if (!isnan(sensors.getTemperature()))    d["temperature"] = sensors.getTemperature();     else d["temperature"] = nullptr;
-  if (!isnan(sensors.getRawTemperature())) d["temperature_raw"] = sensors.getRawTemperature(); else d["temperature_raw"] = nullptr;
+  // feature-021 : pH publié avec 3 décimales (l'EZO rend 3 décimales fiables, cf. spec ligne 247).
+  // ORP reste en entier (mV) — la résolution physique du capteur ne justifie pas de décimales.
+  // Les champs *_raw / ph_voltage_mv ont été supprimés Pass 4a : l'EZO calibre en interne,
+  // il n'existe pas de "valeur brute" séparée côté firmware.
+  // Lectures cachées en variables locales pour éviter une race entre le check `isnan` et le `round`.
+  float orpVal = sensors.getOrp();
+  float phVal  = sensors.getPh();
+  float tVal   = sensors.getTemperature();
+  // T° eau brute (sans offset utilisateur) : exposée pour permettre à l'UI de calibration
+  // de calculer un nouvel offset à partir d'une référence externe sans dépendre de la
+  // formule firmware. NaN si sonde "eau" non identifiée.
+  float tRawWater = sensors.getWaterTemperatureRaw();
+  if (!isnan(orpVal))     d["orp"] = orpVal;                                    else d["orp"] = nullptr;
+  if (!isnan(phVal))      d["ph"]  = round(phVal * 1000.0f) / 1000.0f;          else d["ph"] = nullptr;
+  if (!isnan(tVal))       d["temperature"] = tVal;                              else d["temperature"] = nullptr;
+  if (!isnan(tRawWater))  d["temperature_raw"] = round(tRawWater * 100.0f) / 100.0f; else d["temperature_raw"] = nullptr;
   // feature-020 : 2ᵉ sonde DS18B20 "circuit" + indicateurs identification
   float tc = sensors.getCircuitTemperature();
   if (!isnan(tc))                          d["temperature_circuit"] = round(tc * 10.0f) / 10.0f; else d["temperature_circuit"] = nullptr;
   d["sondes_identified"] = sensors.areSondesIdentified();
   d["sondes_detected"]   = sensors.getDetectedSondeCount();
+
+  // feature-021 : statut calibration EZO (lecture cache, pas d'I²C dans le chemin WS).
+  d["phCalPoints"]  = sensors.getPhCalibrationPointsCached();
+  d["orpCalPoints"] = sensors.getOrpCalibrationPointsCached();
 
   d["filtration_running"]  = filtration.isRunning();
   d["filtration_force_on"] = filtrationCfg.forceOn;
@@ -234,7 +247,8 @@ String WsManager::_buildConfigJson() const {
   d["orp_regulation_mode"] = mqttCfg.orpRegulationMode;
   d["orp_daily_target_ml"] = mqttCfg.orpDailyTargetMl;
   d["max_orp_ml_per_day"]  = safetyLimits.maxChlorineMlPerDay;
-  d["orp_cal_valid"]    = !mqttCfg.orpCalibrationDate.isEmpty();
+  // feature-021 : orp_cal_valid dérivé de Cal,? (cache) plutôt que d'une date NVS supprimée.
+  d["orp_cal_valid"]    = sensors.getOrpCalibrationPointsCached() >= 1;
   d["orp_pump"]         = mqttCfg.orpPump;
   d["pump1_max_duty_pct"] = mqttCfg.pump1MaxDutyPct;
   d["pump2_max_duty_pct"] = mqttCfg.pump2MaxDutyPct;
@@ -266,17 +280,14 @@ String WsManager::_buildConfigJson() const {
   else                              ip = WiFi.localIP().toString();
   d["wifi_ip"]          = ip;
   d["wifi_mode"]        = mode == WIFI_MODE_AP ? "AP" : (mode == WIFI_MODE_APSTA ? "AP+STA" : "STA");
-  d["mdns_host"]        = "poolcontroller.local";
+  d["mdns_host"]        = kMdnsFullHost;
   d["max_ph_ml_per_day"]      = safetyLimits.maxPhMinusMlPerDay;
   d["max_chlorine_ml_per_day"]= safetyLimits.maxChlorineMlPerDay;
-  d["ph_cal_valid"]     = sensors.isPhCalibrated();
-  d["ph_calibration_date"]  = mqttCfg.phCalibrationDate;
-  if (!isnan(mqttCfg.phCalibrationTemp)) d["ph_calibration_temp"] = mqttCfg.phCalibrationTemp;
-  d["orp_calibration_offset"]    = mqttCfg.orpCalibrationOffset;
-  d["orp_calibration_slope"]     = mqttCfg.orpCalibrationSlope;
-  d["orp_calibration_date"]      = mqttCfg.orpCalibrationDate;
-  d["orp_calibration_reference"] = mqttCfg.orpCalibrationReference;
-  if (!isnan(mqttCfg.orpCalibrationTemp)) d["orp_calibration_temp"] = mqttCfg.orpCalibrationTemp;
+  // feature-021 : statut calibration EZO depuis le cache Cal,? (lecture sans I²C).
+  // ph_cal_valid = au moins 1 point calibré ; les détails (mid/low) sont dans phCalPoints.
+  d["ph_cal_valid"]     = sensors.getPhCalibrationPointsCached() >= 1;
+  d["ph_cal_points"]    = sensors.getPhCalibrationPointsCached();
+  d["orp_cal_points"]   = sensors.getOrpCalibrationPointsCached();
   d["temp_calibration_offset"]   = mqttCfg.tempCalibrationOffset;
   d["temp_calibration_date"]     = mqttCfg.tempCalibrationDate;
   d["temperature_enabled"]       = mqttCfg.temperatureEnabled;

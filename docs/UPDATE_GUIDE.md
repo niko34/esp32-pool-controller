@@ -192,9 +192,9 @@ Aucune action requise. Le firmware effectue la migration à la première lecture
 
 ## Migration v2.0.0 — PCB v2
 
-⚠️ La version 2.0.0 cible exclusivement le **PCB v2** et n'est plus compatible avec le PCB v1 (mapping GPIO entièrement réassigné, voir ADR-0012). Ne pas flasher la 2.0.0 sur un PCB v1.
+⚠️ La version 2.0.0 cible exclusivement le **PCB v2** et n'est plus compatible avec le PCB v1 (mapping GPIO entièrement réassigné, voir [ADR-0012](adr/0012-mapping-gpio-pcb-v2.md) ; chaîne pH/ORP refondue sur Atlas EZO, voir [ADR-0014](adr/0014-migration-atlas-ezo.md)). **Ne pas flasher la 2.0.0 sur un PCB v1** — les sondes analogiques pH/ORP du v1 ne sont plus supportées par le firmware.
 
-### Étape post-update : identification des 2 sondes DS18B20 (feature-020)
+### Étape post-update 1 : identification des 2 sondes DS18B20 (feature-020)
 
 Le PCB v2 ajoute une 2ᵉ sonde DS18B20 (eau piscine + circuit électronique). Après la première mise à jour vers 2.0.0, l'utilisateur doit identifier ces 2 sondes via :
 
@@ -211,3 +211,54 @@ Une **chip de notification ambré** apparaît sur le Dashboard tant que l'identi
 Tant que l'identification n'est pas faite, **`getTemperature()` continue de fonctionner** via fallback gracieux sur la 1ʳᵉ sonde détectée — pas d'interruption de service côté MQTT/HA. La compensation de température du pH (feature-021 Atlas EZO) sera plus précise une fois l'identification effectuée.
 
 Si une sonde est remplacée physiquement (adresse ROM différente), un warning est loggé et l'utilisateur doit refaire l'identification pour la sonde manquante.
+
+### Étape post-update 2 : recalibration EZO pH + ORP — OBLIGATOIRE (feature-021)
+
+⚠️ La version 2.0.0 remplace la chaîne pH/ORP analogique (ADS1115 + DFRobot_PH) par les modules **Atlas Scientific EZO Embedded I²C** (pH 0x63, ORP 0x62). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md). La calibration est désormais **mémorisée dans le module EZO**, pas en NVS ESP32 — aucune migration de données n'est possible depuis v1.x.
+
+**Tant que la calibration n'est pas faite, la régulation pH/ORP automatique est inhibée** (10 garde-fous fail-closed dans `canDose()`, voir [docs/subsystems/pump-controller.md](subsystems/pump-controller.md)). En parallèle :
+
+- Une alerte MQTT retain est publiée sur `pool/alerts/calibration_required`
+- Une chip ambrée apparaît sur les cartes Régulation des pages pH et ORP
+- Logger `critical` au boot et à chaque transition
+
+#### Préparation
+
+| Solution tampon requise | Quantité |
+|-------------------------|----------|
+| pH 7.00 (point milieu) | ~50 mL pour rincer + plonger |
+| pH 4.00 (point bas) | ~50 mL |
+| Solution standard ORP (225 mV ou 470 mV — kit Atlas/Hanna) | ~50 mL |
+| Eau distillée pour rinçage entre tampons | au besoin |
+
+#### Workflow pH (2 points)
+
+Pages **pH → carte Calibration**. Les 2 sous-blocs (point milieu + point bas) sont **parallèles** : ordre libre.
+
+1. Rincer la sonde à l'eau distillée, sécher à la lingette douce.
+2. Plonger dans le tampon **pH 7.00**, attendre 1 min.
+3. Cliquer **« Calibrer le point 7.0 »** → toast info « Calibration en cours ».
+4. Attendre que `phCalPoints` passe à `1` (toast succès, ~5 s).
+5. Rincer, plonger dans le tampon **pH 4.00**, attendre 1 min.
+6. Cliquer **« Calibrer le point 4.0 »** → `phCalPoints` passe à `2` → callout vert « Calibré 2 points ✓ ».
+
+**Attendre 5 minutes** avant qu'un dosage automatique ne reprenne (stabilisation post-calibration `kStabilizationDurationPhMs`).
+
+#### Workflow ORP (1 point)
+
+Page **ORP → carte Calibration**.
+
+1. Rincer la sonde, sécher.
+2. Saisir la valeur de référence du tampon dans le champ « Référence (mV) » (par défaut 470).
+3. Plonger dans la solution standard, attendre 1 min.
+4. Cliquer **« Calibrer »** → `orpCalPoints` passe à `1` → callout vert.
+
+**Attendre 3 minutes** avant qu'un dosage ORP automatique ne reprenne (stabilisation `kStabilizationDurationOrpMs`).
+
+#### Vérifications
+
+- L'alerte MQTT `pool/alerts/calibration_required` est clearée automatiquement (payload vide retain) une fois `phCalPoints >= 2` ET `orpCalPoints >= 1`.
+- L'auto-discovery HA expose 2 nouveaux sensors (`Piscine pH Points Calibrés`, `Piscine ORP Points Calibrés`) — les ajouter en card pour visualiser l'état au quotidien.
+- Plage de référence ORP acceptée : `0..1000` mV. Hors plage → HTTP 400.
+
+> Si vous voulez **repartir d'une calibration vierge** (changement de sonde, recalibration complète), utiliser `POST /calibrate_clear {sensor:"ph"}` ou `{sensor:"orp"}` (exposé via UI sur les cartes Calibration). Le compteur `phCalPoints` / `orpCalPoints` repasse à `0`.

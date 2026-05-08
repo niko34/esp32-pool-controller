@@ -120,6 +120,20 @@ constexpr unsigned long kMillisToMinutes = 60000;         // Conversion ms → m
 constexpr unsigned long kSecondsPerHour = 3600;           // Secondes par heure
 
 // ============================================================================
+// ATLAS EZO CONSTANTS - Modules Atlas Scientific EZO Embedded I²C (PCB v2)
+// ============================================================================
+// Voir feature-021 (migration ADS1115 → EZO) et docs/adr/0012-pcb-v2-gpio-mapping.md.
+// Bus I²C partagé avec DS3231 (kI2cSdaPin / kI2cSclPin).
+
+constexpr uint8_t  kEzoPhAddress              = 0x63;     // EZO pH I²C address (default Atlas)
+constexpr uint8_t  kEzoOrpAddress             = 0x62;     // EZO ORP I²C address (default Atlas)
+constexpr uint32_t kEzoReadDelayMs            = 900;      // Délai après commande R (lecture)
+constexpr uint32_t kEzoCalDelayMs             = 900;      // Délai après commande Cal,*
+constexpr uint32_t kEzoRtDelayMs              = 600;      // Délai après commande RT,<temp>
+constexpr uint32_t kSensorStaleTimeoutMs      = 20000;    // 20 s : timeout lecture pH/ORP stale (pool-chemistry condition #1)
+constexpr int      kEzoBusFailMaxConsecutive  = 2;        // 2 échecs consécutifs I²C → blocage dosage (pool-chemistry condition #5)
+
+// ============================================================================
 // FILTRATION CONSTANTS - Paramètres filtration
 // ============================================================================
 
@@ -138,6 +152,24 @@ constexpr float kPumpMaxFlowMlPerMin  = 90.0f;   // Débit maximal (duty 100%)
 constexpr float kPhMaxError           =  1.0f;   // Erreur pH maximale (unités pH)
 constexpr float kOrpMaxError          = 200.0f;  // Erreur ORP maximale (mV)
 
+// Durées de stabilisation post-calibration EZO (pool-chemistry condition #3).
+// Validation pool-chemistry feature-021 :
+//   - pH  : équilibre membrane verre + jonction Ag/AgCl ≈ 5 min
+//   - ORP : équilibre Pt/Ag ≈ 3 min (cinétique plus rapide que pH)
+// Si `mqttCfg.stabilizationDelayMin > 0`, l'override utilisateur prend la priorité
+// pour les armings legacy (filtration, mode continu). Les armings post-calibration
+// EZO utilisent toujours ces durées spécifiques (la cinétique chimique l'impose).
+constexpr unsigned long kStabilizationDurationPhMs  = 300000UL;  // 5 min — pH post-cal
+constexpr unsigned long kStabilizationDurationOrpMs = 180000UL;  // 3 min — ORP post-cal
+
+// Anti-rafale dosage chimique (pool-chemistry feature-021, Pass 3.5).
+// Limite le nombre de DÉMARRAGES de cycle de dosage par fenêtre glissante
+// (indépendant des limites journalières/horaires existantes). Couvre les cas
+// PID instable, oscillation autour de la cible, capteur bruité, etc.
+constexpr uint8_t kMaxDosingCyclesPerMinute = 6;     // 1 cycle / 10s max
+constexpr uint8_t kMaxDosingCyclesPer15Min  = 20;    // anti-emballement PID
+constexpr size_t  kDosingCycleHistorySize   = 20;    // ring buffer (couvre 15min)
+
 // ============================================================================
 // NETWORK CONSTANTS - Paramètres réseau
 // ============================================================================
@@ -147,7 +179,8 @@ constexpr uint16_t kHttpServerPort = 80;                  // Port serveur HTTP
 constexpr uint16_t kMdnsHttpPort = 80;                    // Port mDNS pour HTTP
 
 // mDNS
-constexpr const char* kMdnsHostname = "poolcontroller";   // Nom d'hôte mDNS
+constexpr const char* kMdnsHostname = "poolcontroller2";       // Nom d'hôte mDNS (sans suffixe)
+constexpr const char* kMdnsFullHost = "poolcontroller2.local"; // FQDN mDNS (utilisé par UI/HTTP/WS pour les liens)
 
 // Wi-Fi
 constexpr uint32_t kWifiConnectTimeoutMs = 15000;          // Timeout connexion Wi-Fi (ms)

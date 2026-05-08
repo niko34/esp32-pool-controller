@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <atomic>
 #include "config.h"
+#include "constants.h"
 
 struct PumpDriver {
   int pwmPin;    // Pin PWM Gate MOSFET (IRLZ44N)
@@ -67,11 +68,34 @@ private:
   bool shouldStartDosing(float error, float startThreshold, DosingState& state, unsigned long now);
   bool shouldContinueDosing(float error, float stopThreshold, DosingState& state, unsigned long now);
 
-  // Vérifie si le dosage est autorisé (selon mode régulation et état filtration)
-  bool canDose();
+  // Timer de stabilisation par pompe (index 0 = pH, 1 = ORP).
+  // La cinétique chimique différente justifie une fenêtre indépendante par sonde
+  // (cf. kStabilizationDurationPhMs / kStabilizationDurationOrpMs et
+  // pool-chemistry condition #3).
+  uint32_t _stabilizationEndMs[2] = {0, 0};
 
-  // Timer de stabilisation
-  unsigned long _stabilizationEndMs = 0;
+  // Cache de la dernière cause de refus pour log "edge-triggered" (1 seule entrée
+  // par transition de cause). Évite le spam quand canDose() est appelé chaque cycle.
+  String _lastRefusalCause[2];
+
+  // Helpers internes pour le log de refus (canDose).
+  void logRefusalOnce(int pumpIndex, const String& cause);
+  void resetRefusalLogState(int pumpIndex);
+
+  // Ring buffer anti-rafale (pool-chemistry Pass 3.5) — timestamps de start
+  // de cycle (millis) par pompe. Index circulaire, 0 = pH, 1 = ORP.
+  // Capacité 20 entrées : couvre largement la fenêtre 15 min à raison de
+  // kMaxDosingCyclesPer15Min = 20 cycles max.
+  uint32_t _dosingCycleHistory[2][kDosingCycleHistorySize] = {{0}, {0}};
+  size_t _dosingCycleHistoryIdx[2] = {0, 0};
+
+  // Enregistre un nouveau timestamp de démarrage de cycle dans le ring buffer.
+  // À appeler EXACTEMENT au moment où le PWM passe de 0 → >0 (pas dans canDose,
+  // qui ne fait que valider).
+  void recordDosingCycleStart(int pumpIndex);
+
+  // Compte les cycles dans la fenêtre [now - windowMs, now] pour la pompe.
+  int countRecentDosingCycles(int pumpIndex, uint32_t windowMs) const;
 
   // Flags de reset demandés depuis des tâches externes (web handlers)
   // Résolus au début de update() pour éviter les races inter-core
@@ -112,14 +136,42 @@ public:
   // Réinitialise la garde anti-cycling du pH (ex: changement de type de correction)
   void resetPhPauseGuard();
 
-  // Arme le timer de stabilisation (bloque le dosage pendant stabilizationDelayMin)
+  // Arme le timer de stabilisation pour une pompe donnée (0 = pH, 1 = ORP).
+  // Bloque le dosage pendant la durée appropriée :
+  //   - kStabilizationDurationPhMs / kStabilizationDurationOrpMs après calibration EZO,
+  //   - mqttCfg.stabilizationDelayMin (override utilisateur) pour les armings legacy
+  //     (filtration, mode continu, passage de minuit) — applique la même durée aux 2 pompes.
+  void armStabilizationTimer(int pumpIndex);
+
+  // Surcharge legacy (sans paramètre) : conservée pour les sites d'arming "globaux"
+  // (filtration, boot mode continu, rollover minuit). Arme les 2 pompes simultanément
+  // avec la durée utilisateur `mqttCfg.stabilizationDelayMin`.
   void armStabilizationTimer();
 
-  // Réinitialise le timer de stabilisation (ex: arrêt filtration)
+  // True si le timer de stabilisation est encore actif pour la pompe donnée.
+  bool isStabilizationTimerActive(int pumpIndex) const;
+
+  // Réinitialise le timer de stabilisation des deux pompes (ex: arrêt filtration)
   void clearStabilizationTimer();
 
-  // Retourne les secondes restantes de stabilisation (0 si expiré)
+  // Retourne les secondes restantes de stabilisation max sur les 2 pompes
+  // (0 si les deux sont expirés). Utilisé par l'UI WS pour afficher le compte à rebours.
   unsigned long getStabilizationRemainingS() const;
+
+  // Vérifie si le dosage est autorisé pour la pompe `pumpIndex` (0 = pH, 1 = ORP).
+  // Ordre des gardes (validé pool-chemistry feature-021) — fail-closed strict :
+  //   1. Watchdog actif
+  //   2. Filtration en marche (ou mode continu)
+  //   3. Lecture pH/ORP non NaN (cond #1 stale + cond #5 bus dégradé)
+  //   4. EZO calibré (cond #2 : pH ≥ 2 points, ORP ≥ 1 point ; -1 → bloqué)
+  //   5. Pas de stabilisation post-cal en cours (cond #3)
+  //   6. Mode régulation = automatic
+  //   7. Limite journalière non atteinte
+  //   8. Limite horaire non atteinte
+  //   9. Anti-cycling : cyclesToday < maxCyclesPerDay
+  //  10. Anti-rafale court terme (ring buffer 1 min / 15 min, Pass 3.5)
+  // Log "edge-triggered" : 1 entrée info par transition de cause de refus.
+  bool canDose(int pumpIndex);
 
   // Test manuel des pompes (à utiliser avec précaution)
   void setManualPump(int pumpIndex, uint8_t duty);

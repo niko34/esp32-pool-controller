@@ -43,6 +43,10 @@ struct MqttTopics {
   String logsTopic;
   String statusTopic;          // LWT et status
   String diagnosticTopic;      // Diagnostic détaillé
+  String alertsCalibrationTopic;  // feature-021 : alerte calibration EZO requise (retain)
+  String alertsSensorStaleTopic;  // feature-021 : alerte capteur stale > kSensorStaleTimeoutMs
+  String phCalPointsState;        // feature-021 : nb points calibration pH (Cal,?)
+  String orpCalPointsState;       // feature-021 : nb points calibration ORP (Cal,?)
 };
 
 // Architecture producer/consumer (cf. ADR-0011) :
@@ -90,6 +94,15 @@ private:
 
   void publishDiscovery();
   void refreshTopics();
+
+  // feature-021 : caches pour publication edge-triggered de l'alerte calibration
+  // et des états cal points. Lus/écrits uniquement depuis mqttTask.
+  int  _lastPhCalPoints  = -2;  // -2 = jamais publié, -1..3 = valeurs réelles
+  int  _lastOrpCalPoints = -2;
+  bool _lastSensorStale  = false; // Cache pour alerte sensor_stale (NaN sur pH OU ORP)
+  // Vérifie l'état de calibration et stale, publie/clear les alertes au besoin.
+  // Appelé depuis mqttTask (publishAllStatesInternal + connectInTask).
+  void publishCalibrationStatusInternal();
 
   // Internes — exécutées UNIQUEMENT depuis mqttTask
   static void mqttTaskFunction(void* pvParameters);

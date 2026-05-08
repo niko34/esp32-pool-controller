@@ -25,53 +25,26 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // Taille estimée : ~16 champs × 30 bytes + overhead (feature-020 ajoute 3 champs)
   StaticJson<832> doc;
 
-  // ORP
+  // ORP (feature-021 : Atlas EZO, pas de "raw" séparé)
   if (!isnan(sensors.getOrp())) {
     doc["orp"] = sensors.getOrp();
   } else {
     doc["orp"] = nullptr;
   }
 
-  // pH
-  if (!isnan(sensors.getPh())) {
-    doc["ph"] = round(sensors.getPh() * 10.0f) / 10.0f;
+  // pH (feature-021 : 3 décimales fiables EZO — alignement WS / MQTT / REST).
+  float phVal = sensors.getPh();
+  if (!isnan(phVal)) {
+    doc["ph"] = round(phVal * 1000.0f) / 1000.0f;
   } else {
     doc["ph"] = nullptr;
   }
 
-  // ORP raw
-  if (!isnan(sensors.getRawOrp())) {
-    doc["orp_raw"] = sensors.getRawOrp();
-  } else {
-    doc["orp_raw"] = nullptr;
-  }
-
-  // pH raw
-  if (!isnan(sensors.getRawPh())) {
-    doc["ph_raw"] = round(sensors.getRawPh() * 10.0f) / 10.0f;
-  } else {
-    doc["ph_raw"] = nullptr;
-  }
-
-  // Tension brute pH en mV (utile pendant calibration, avant toute correction)
-  if (!isnan(sensors.getPhVoltageMv())) {
-    doc["ph_voltage_mv"] = round(sensors.getPhVoltageMv() * 10.0f) / 10.0f;
-  } else {
-    doc["ph_voltage_mv"] = nullptr;
-  }
-
-  // Température
+  // Température (offset utilisateur appliqué dans getTemperature())
   if (!isnan(sensors.getTemperature())) {
     doc["temperature"] = sensors.getTemperature();
   } else {
     doc["temperature"] = nullptr;
-  }
-
-  // Température brute (sans calibration)
-  if (!isnan(sensors.getRawTemperature())) {
-    doc["temperature_raw"] = sensors.getRawTemperature();
-  } else {
-    doc["temperature_raw"] = nullptr;
   }
 
   // feature-020 : T° circuit (2ᵉ sonde DS18B20) + indicateurs identification

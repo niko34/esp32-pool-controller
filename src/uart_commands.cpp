@@ -189,11 +189,11 @@ void UartCommands::handleGetConfig() {
   d["ntp_server"] = mqttCfg.ntpServer;
   d["timezone_id"] = mqttCfg.timezoneId;
 
-  // Calibration
-  d["ph_calibration_date"] = mqttCfg.phCalibrationDate;
-  d["orp_calibration_date"] = mqttCfg.orpCalibrationDate;
-  d["orp_calibration_offset"] = mqttCfg.orpCalibrationOffset;
-  d["orp_calibration_slope"] = mqttCfg.orpCalibrationSlope;
+  // Calibration (feature-021 : Atlas EZO — calibration interne aux modules)
+  // pH/ORP : nb de points de calibration mémorisés en cache (-1 si EZO injoignable)
+  d["ph_cal_points"] = sensors.getPhCalibrationPointsCached();
+  d["orp_cal_points"] = sensors.getOrpCalibrationPointsCached();
+  // Température DS18B20 (offset utilisateur, conservé)
   d["temp_calibration_date"] = mqttCfg.tempCalibrationDate;
   d["temp_calibration_offset"] = mqttCfg.tempCalibrationOffset;
   d["temperature_enabled"] = mqttCfg.temperatureEnabled;
@@ -458,12 +458,19 @@ void UartCommands::handleRunAction(JsonVariant data) {
     actionLightingOff();
   } else if (strcmp(action, "filtration_mode") == 0) {
     actionFiltrationMode(data);
-  } else if (strcmp(action, "calibrate_ph_neutral") == 0) {
+  } else if (strcmp(action, "calibrate_ph_neutral") == 0 ||
+             strcmp(action, "calibrate_ph_mid") == 0) {
+    // feature-021 : pH neutral 7.0 → EZO Cal,mid,7.00 (alias rétrocompat écran)
     actionCalibratePhNeutral();
-  } else if (strcmp(action, "calibrate_ph_acid") == 0) {
+  } else if (strcmp(action, "calibrate_ph_acid") == 0 ||
+             strcmp(action, "calibrate_ph_low") == 0) {
+    // feature-021 : pH acid 4.0 → EZO Cal,low,4.00 (alias rétrocompat écran)
     actionCalibratePhAcid();
   } else if (strcmp(action, "clear_ph_calibration") == 0) {
     actionClearPhCalibration();
+  } else if (strcmp(action, "calibrate_orp") == 0) {
+    // feature-021 : nouvelle action UART pour calibration ORP (1 point)
+    actionCalibrateOrp(data);
   } else if (strcmp(action, "ack_alarm") == 0) {
     actionAckAlarm(data);
   } else {
@@ -532,45 +539,68 @@ void UartCommands::actionFiltrationMode(JsonVariant data) {
 }
 
 void UartCommands::actionCalibratePhNeutral() {
-  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(kI2cMutexTimeoutMs)) != pdTRUE) {
-    uartProtocol.sendError("run_action", "calibrate_ph_neutral: bus I2C occupé");
+  // feature-021 : enqueue async (pas d'I²C bloquant ici).
+  // L'écran observe la transition via le statut phCalPoints publié dans
+  // les events get_status / sensor_data.
+  bool ok = sensors.enqueueCalibratePhMid();
+  if (!ok) {
+    uartProtocol.sendError("run_action", "calibrate_ph_mid: queue saturée");
     return;
   }
-  sensors.calibratePhNeutral();
-  xSemaphoreGive(i2cMutex);
   uartProtocol.sendAck("run_action");
-  // L'event calibration_done est envoyé depuis web_routes_calibration aussi,
-  // mais ici on l'envoie directement
   StaticJson<96> doc;
   doc["type"] = "event";
-  doc["event"] = "calibration_done";
-  doc["data"]["sensor"] = "ph_neutral";
+  doc["event"] = "calibration_queued";
+  doc["data"]["sensor"] = "ph_mid";
   uartProtocol.sendJson(doc);
 }
 
 void UartCommands::actionCalibratePhAcid() {
-  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(kI2cMutexTimeoutMs)) != pdTRUE) {
-    uartProtocol.sendError("run_action", "calibrate_ph_acid: bus I2C occupé");
+  bool ok = sensors.enqueueCalibratePhLow();
+  if (!ok) {
+    uartProtocol.sendError("run_action", "calibrate_ph_low: queue saturée");
     return;
   }
-  sensors.calibratePhAcid();
-  xSemaphoreGive(i2cMutex);
   uartProtocol.sendAck("run_action");
   StaticJson<96> doc;
   doc["type"] = "event";
-  doc["event"] = "calibration_done";
-  doc["data"]["sensor"] = "ph_acid";
+  doc["event"] = "calibration_queued";
+  doc["data"]["sensor"] = "ph_low";
   uartProtocol.sendJson(doc);
 }
 
 void UartCommands::actionClearPhCalibration() {
-  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(kI2cMutexTimeoutMs)) != pdTRUE) {
-    uartProtocol.sendError("run_action", "clear_ph_calibration: bus I2C occupé");
+  bool ok = sensors.enqueueClearPhCalibration();
+  if (!ok) {
+    uartProtocol.sendError("run_action", "clear_ph_calibration: queue saturée");
     return;
   }
-  sensors.clearPhCalibration();
-  xSemaphoreGive(i2cMutex);
   uartProtocol.sendAck("run_action");
+}
+
+void UartCommands::actionCalibrateOrp(JsonVariant data) {
+  // feature-021 : calibration ORP 1 point (Cal,<reference>).
+  // Payload attendu : { "reference": <mV float> } dans 0..1000 (couvre Zobell ~228, kits 0 mV, etc.).
+  if (!data["reference"].is<float>() && !data["reference"].is<int>()) {
+    uartProtocol.sendError("run_action", "calibrate_orp: missing 'reference' (mV)");
+    return;
+  }
+  float ref = data["reference"].as<float>();
+  if (isnan(ref) || ref < 0.0f || ref > 1000.0f) {
+    uartProtocol.sendError("run_action", "calibrate_orp: reference must be 0..1000 mV");
+    return;
+  }
+  bool ok = sensors.enqueueCalibrateOrp(ref);
+  if (!ok) {
+    uartProtocol.sendError("run_action", "calibrate_orp: queue saturée");
+    return;
+  }
+  uartProtocol.sendAck("run_action");
+  StaticJson<96> doc;
+  doc["type"] = "event";
+  doc["event"] = "calibration_queued";
+  doc["data"]["sensor"] = "orp";
+  uartProtocol.sendJson(doc);
 }
 
 // ---------------------------------------------------------------------------

@@ -46,7 +46,11 @@ docs/
 │   ├── 0007-table-partitions-custom.md
 │   ├── 0008-persistance-cumuls-journaliers-nvs.md
 │   ├── 0009-partition-coredump.md
-│   └── 0010-stabilite-mqtt-reseau.md
+│   ├── 0010-stabilite-mqtt-reseau.md
+│   ├── 0011-mqtt-task-dediee.md
+│   ├── 0012-mapping-gpio-pcb-v2.md
+│   ├── 0013-identification-sondes-onewire.md
+│   └── 0014-migration-atlas-ezo.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

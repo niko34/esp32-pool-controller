@@ -22,8 +22,10 @@ Tous les topics utilisent le préfixe configurable (ex: `pool/sensors`). Les val
 | Topic | Payload | Description |
 |-------|---------|-------------|
 | `{base}/temperature` | `24.5` | Température de l'eau (°C) |
-| `{base}/ph` | `7.2` | Valeur pH (1 décimale) |
+| `{base}/ph` | `7.234` | Valeur pH (**3 décimales** depuis 2.0.0 — voir [ADR-0014](adr/0014-migration-atlas-ezo.md)) |
 | `{base}/orp` | `720` | Valeur ORP (mV) |
+| `{base}/ph_cal_points` | `2` | Points de calibration EZO pH (entier `-1..3`, `-1` = EZO injoignable). Retain. Voir [feature-021](../specs/features/done/feature-021-migration-atlas-ezo.md). |
+| `{base}/orp_cal_points` | `1` | Points de calibration EZO ORP (entier `-1..1`, `-1` = EZO injoignable). Retain. |
 
 ### Filtration
 
@@ -110,6 +112,17 @@ Topic : `{base}/alerts` — QoS 0, sans rétention.
 | `temp_abnormal` | Température < 5°C ou > 40°C |
 | `low_memory` | Mémoire heap disponible sous le seuil |
 
+### Alertes dédiées (feature-021, retain, edge-triggered)
+
+Ces deux topics sont **retain** : le dernier état persiste sur le broker même après un reboot. Une **payload vide** publiée en retain efface l'alerte (clear) — utile pour HA qui peut alors retirer le badge automatiquement.
+
+| Topic | Payload alerte | Payload clear | Condition de bascule |
+|-------|----------------|---------------|----------------------|
+| `{base}/alerts/calibration_required` | JSON `{"type":"calibration_required","phCalPoints":<int>,"orpCalPoints":<int>,"timestamp":<ms>}` | (vide) | Bascule **alerte** : `phCalPoints < 2` OU `orpCalPoints < 1`. Bascule **clear** : les deux capteurs OK. |
+| `{base}/alerts/sensor_stale` | JSON `{"type":"sensor_stale","phStale":<bool>,"orpStale":<bool>,"timestamp":<ms>}` | (vide) | Bascule **alerte** : `getPh()` ou `getOrp()` retourne NaN (lecture > `kSensorStaleTimeoutMs = 20 s`). Bascule **clear** : les deux lectures redeviennent valides. |
+
+Publication **edge-triggered** : un message n'est émis qu'à la transition (entrée ou sortie de l'état d'alerte), pas à chaque cycle MQTT. Voir [`docs/subsystems/sensors.md`](subsystems/sensors.md) et [`docs/subsystems/mqtt-manager.md`](subsystems/mqtt-manager.md).
+
 ---
 
 ## Diagnostic
@@ -156,6 +169,8 @@ Le contrôleur publie automatiquement sa configuration pour Home Assistant au d�
 | Sensor | Piscine Température | `{base}/temperature` | — |
 | Sensor | Piscine pH | `{base}/ph` | — |
 | Sensor | Piscine ORP | `{base}/orp` | — |
+| Sensor | Piscine pH Points Calibrés | `{base}/ph_cal_points` | — |
+| Sensor | Piscine ORP Points Calibrés | `{base}/orp_cal_points` | — |
 | Binary Sensor | Filtration Active | `{base}/filtration_state` | — |
 | Binary Sensor | Dosage pH Actif | `{base}/ph_dosing` | — |
 | Binary Sensor | Dosage Chlore Actif | `{base}/orp_dosing` | — |
@@ -183,3 +198,18 @@ Le contrôleur publie automatiquement sa configuration pour Home Assistant au d�
 Le topic `{base}/temperature` (eau piscine) et son entité « Piscine Température » restent **inchangés** (rétrocompat HA).
 
 Le bus OneWire (GPIO 5) supporte 2 sondes DS18B20 sur le PCB v2. Chaque sonde a un rôle (eau/circuit) identifié via Paramètres → Avancé. Voir [ADR-0013](adr/0013-identification-sondes-onewire.md).
+
+## Topics et entités ajoutés en feature-021 (Atlas EZO pH/ORP, PCB v2)
+
+| Topic | Description | Retain | Auto-discovery HA |
+|-------|-------------|--------|-------------------|
+| `{base}/ph_cal_points` | Nombre de points calibrés EZO pH (-1 = injoignable, 0..3 sinon) | true | `sensor` "Piscine pH Points Calibrés" — `unique_id: poolcontroller_ph_cal_points`, `icon: mdi:numeric` |
+| `{base}/orp_cal_points` | Nombre de points calibrés EZO ORP (-1 = injoignable, 0..1 sinon) | true | `sensor` "Piscine ORP Points Calibrés" — `unique_id: poolcontroller_orp_cal_points`, `icon: mdi:numeric` |
+| `{base}/alerts/calibration_required` | Alerte calibration EZO incomplète. JSON ou payload vide (clear). | true | aucun (pour automation HA personnalisée) |
+| `{base}/alerts/sensor_stale` | Alerte lecture pH/ORP stale (NaN > 20 s). JSON ou payload vide (clear). | true | aucun |
+
+**Précision pH** : le topic `{base}/ph` publie désormais avec **3 décimales** (vs 1 décimale en v1.x). Tout consommateur HA qui parsait `int()` doit basculer sur `float()` ; les sensors HA standards (`device_class: ph`) gèrent cela nativement.
+
+**Topics inchangés** (rétrocompat HA) : `{base}/orp`, `{base}/ph_target`, `{base}/orp_target`, `{base}/ph_dosing`, `{base}/orp_dosing`, `{base}/ph_limit`, `{base}/orp_limit`, `{base}/ph_regulation_mode`, `{base}/orp_regulation_mode`, etc. Les topics et entités HA de calibration ORP héritées (notamment `orp_cal_valid`) restent diffusés pour compatibilité, mais leur source de vérité côté firmware est désormais le module EZO (`orp_cal_points >= 1`).
+
+Voir [ADR-0014](adr/0014-migration-atlas-ezo.md) (décision migration) et [`docs/subsystems/sensors.md`](subsystems/sensors.md) (détails techniques EZO + cache cal_points).

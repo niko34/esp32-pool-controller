@@ -152,40 +152,229 @@ void PumpControllerClass::resetPhPauseGuard() {
   _phPauseResetRequested.store(true);
 }
 
+// Arme le timer pour une pompe spécifique. Sélectionne la durée selon l'index :
+//   - pH (0)  : kStabilizationDurationPhMs (post-cal) ou stabilizationDelayMin (override)
+//   - ORP (1) : kStabilizationDurationOrpMs (post-cal) ou stabilizationDelayMin (override)
+// Si l'utilisateur a configuré `mqttCfg.stabilizationDelayMin > 0`, son override prime
+// (il a explicitement choisi une durée). Sinon, on applique la durée chimique par défaut.
+void PumpControllerClass::armStabilizationTimer(int pumpIndex) {
+  if (pumpIndex < 0 || pumpIndex > 1) return;
+
+  int delayMin = mqttCfg.stabilizationDelayMin;
+  unsigned long durationMs;
+  if (delayMin > 0) {
+    durationMs = (unsigned long)delayMin * 60000UL;
+  } else {
+    durationMs = (pumpIndex == 0) ? kStabilizationDurationPhMs
+                                  : kStabilizationDurationOrpMs;
+  }
+  _stabilizationEndMs[pumpIndex] = millis() + durationMs;
+  systemLogger.info(String("[Dosage] Stabilisation pompe ") +
+                    (pumpIndex == 0 ? "pH" : "ORP") +
+                    " : injection suspendue " + String(durationMs / 60000UL) + " min " +
+                    String((durationMs % 60000UL) / 1000UL) + " s");
+}
+
+// Surcharge legacy : arme les 2 pompes simultanément (cas filtration / continu / minuit).
+// Délègue à armStabilizationTimer(int) pour conserver le comportement par-pompe.
+// Désactive le log info de la version par-pompe pour produire un seul log condensé.
 void PumpControllerClass::armStabilizationTimer() {
   int delayMin = mqttCfg.stabilizationDelayMin;
-  if (delayMin <= 0) {
-    _stabilizationEndMs = 0;
-    return;
-  }
-  _stabilizationEndMs = millis() + (unsigned long)delayMin * 60000UL;
-  systemLogger.info(String("[Dosage] Stabilisation : injection suspendue ") + delayMin + " min");
+  unsigned long durationPhMs  = (delayMin > 0) ? ((unsigned long)delayMin * 60000UL) : kStabilizationDurationPhMs;
+  unsigned long durationOrpMs = (delayMin > 0) ? ((unsigned long)delayMin * 60000UL) : kStabilizationDurationOrpMs;
+  uint32_t now = millis();
+  _stabilizationEndMs[0] = now + durationPhMs;
+  _stabilizationEndMs[1] = now + durationOrpMs;
+  systemLogger.info(String("[Dosage] Stabilisation pompes pH+ORP : injection suspendue ") +
+                    String(durationPhMs / 60000UL) + " min (pH) / " +
+                    String(durationOrpMs / 60000UL) + " min (ORP)");
+}
+
+bool PumpControllerClass::isStabilizationTimerActive(int pumpIndex) const {
+  if (pumpIndex < 0 || pumpIndex > 1) return false;
+  uint32_t end = _stabilizationEndMs[pumpIndex];
+  if (end == 0) return false;
+  return millis() < end;
 }
 
 void PumpControllerClass::clearStabilizationTimer() {
-  _stabilizationEndMs = 0;
+  _stabilizationEndMs[0] = 0;
+  _stabilizationEndMs[1] = 0;
 }
 
 unsigned long PumpControllerClass::getStabilizationRemainingS() const {
-  if (_stabilizationEndMs == 0) return 0;
   unsigned long now = millis();
-  if (now >= _stabilizationEndMs) return 0;
-  return (_stabilizationEndMs - now) / 1000UL;
+  unsigned long maxRem = 0;
+  for (int i = 0; i < 2; ++i) {
+    if (_stabilizationEndMs[i] == 0) continue;
+    if (now >= _stabilizationEndMs[i]) continue;
+    unsigned long rem = (_stabilizationEndMs[i] - now) / 1000UL;
+    if (rem > maxRem) maxRem = rem;
+  }
+  return maxRem;
 }
 
-bool PumpControllerClass::canDose() {
-  // Délai de stabilisation en cours : bloquer toute injection
-  if (_stabilizationEndMs > 0) {
-    if (millis() < _stabilizationEndMs) return false;
-    _stabilizationEndMs = 0;  // Timer expiré
-    systemLogger.info("[Dosage] Stabilisation terminée, dosage autorisé");
+// Logge la cause de refus uniquement à la transition (1 seule entrée par changement
+// de cause). Évite le spam quand canDose() est appelé chaque cycle de update().
+void PumpControllerClass::logRefusalOnce(int pumpIndex, const String& cause) {
+  if (pumpIndex < 0 || pumpIndex > 1) return;
+  if (_lastRefusalCause[pumpIndex] != cause) {
+    systemLogger.info(String("[Dosage ") + (pumpIndex == 0 ? "pH" : "ORP") +
+                      "] Refus : " + cause);
+    _lastRefusalCause[pumpIndex] = cause;
   }
-  // En mode continu : toujours OK (l'alimentation du contrôleur suit la filtration)
-  if (mqttCfg.regulationMode == "continu") {
-    return true;
+}
+
+void PumpControllerClass::resetRefusalLogState(int pumpIndex) {
+  if (pumpIndex < 0 || pumpIndex > 1) return;
+  _lastRefusalCause[pumpIndex] = "";
+}
+
+// Ring buffer anti-rafale (pool-chemistry Pass 3.5).
+// Enregistre l'instant `millis()` du démarrage d'un cycle de dosage pour la
+// pompe `pumpIndex`. Index circulaire borné par kDosingCycleHistorySize.
+void PumpControllerClass::recordDosingCycleStart(int pumpIndex) {
+  if (pumpIndex < 0 || pumpIndex > 1) return;
+  uint32_t now = millis();
+  _dosingCycleHistory[pumpIndex][_dosingCycleHistoryIdx[pumpIndex]] = now;
+  _dosingCycleHistoryIdx[pumpIndex] =
+      (_dosingCycleHistoryIdx[pumpIndex] + 1) % kDosingCycleHistorySize;
+}
+
+// Compte les démarrages de cycle survenus dans la fenêtre [now-windowMs, now]
+// pour la pompe donnée. Itération O(kDosingCycleHistorySize) — négligeable
+// (20 comparaisons) appelée au plus 2 fois par tour de update().
+int PumpControllerClass::countRecentDosingCycles(int pumpIndex, uint32_t windowMs) const {
+  if (pumpIndex < 0 || pumpIndex > 1) return 0;
+  uint32_t now = millis();
+  int count = 0;
+  for (size_t i = 0; i < kDosingCycleHistorySize; ++i) {
+    uint32_t ts = _dosingCycleHistory[pumpIndex][i];
+    // ts == 0 = slot vide (jamais utilisé). On ignore.
+    // Cas wrap millis() (49.7 jours) : (now - ts) déborde correctement en
+    // arithmétique non-signée → la fenêtre reste cohérente au passage 0xFFFFFFFF.
+    if (ts != 0 && (now - ts) <= windowMs) count++;
   }
-  // En mode piloté : uniquement si la filtration est active
-  return filtration.isRunning();
+  return count;
+}
+
+// canDose(int) — fail-closed strict, ordre validé pool-chemistry feature-021.
+// Toute condition non remplie → return false avec log edge-triggered.
+bool PumpControllerClass::canDose(int pumpIndex) {
+  if (pumpIndex < 0 || pumpIndex > 1) return false;
+
+  // 1. Watchdog actif (le plus critique — sans wdt, un crash dans la boucle
+  // de dosage laisse la pompe en marche indéfiniment).
+  // esp_task_wdt_status(NULL) retourne ESP_OK si la tâche courante est
+  // inscrite au watchdog, ESP_ERR_NOT_FOUND sinon.
+  if (esp_task_wdt_status(NULL) != ESP_OK) {
+    logRefusalOnce(pumpIndex, "watchdog inactif");
+    return false;
+  }
+
+  // 2. Filtration en marche : eau circule devant la sonde.
+  // En mode continu (alimentation 24/7), on accepte sans filtration ;
+  // sinon on impose le relais filtration ON.
+  if (mqttCfg.regulationMode != "continu" && !filtration.isRunning()) {
+    logRefusalOnce(pumpIndex, "filtration arrêtée");
+    return false;
+  }
+
+  // 3. Cond #1/#5 pool-chemistry : lecture stale ou bus I²C dégradé → NaN.
+  float reading = (pumpIndex == 0) ? sensors.getPh() : sensors.getOrp();
+  if (isnan(reading)) {
+    logRefusalOnce(pumpIndex, "lecture pH/ORP stale ou indisponible (NaN)");
+    return false;
+  }
+
+  // 4. Cond #2 pool-chemistry : EZO calibré OU joignable.
+  // Cal,? renvoie -1 si EZO injoignable → on bloque (fail-closed).
+  // pH demande ≥ 2 points (mid + low), ORP ≥ 1 point.
+  // Lecture du cache (pas d'I²C dans la boucle pump_controller : ce serait un
+  // appel bloquant ~900 ms à chaque cycle update()).
+  int calPoints = (pumpIndex == 0)
+      ? sensors.getPhCalibrationPointsCached()
+      : sensors.getOrpCalibrationPointsCached();
+  int requiredPoints = (pumpIndex == 0) ? 2 : 1;
+  if (calPoints < requiredPoints) {
+    logRefusalOnce(pumpIndex, String("calibration insuffisante (cal=") +
+                              String(calPoints) + ", requis=" +
+                              String(requiredPoints) + ")");
+    return false;
+  }
+
+  // 5. Cond #3 pool-chemistry : stabilisation post-cal en cours pour cette pompe.
+  if (isStabilizationTimerActive(pumpIndex)) {
+    logRefusalOnce(pumpIndex, "stabilisation post-calibration en cours");
+    return false;
+  }
+
+  // 6. Mode régulation = automatic (les modes scheduled / manual sont gérés en amont
+  // dans update(), mais on protège ici aussi par défense en profondeur).
+  const String& mode = (pumpIndex == 0) ? mqttCfg.phRegulationMode
+                                        : mqttCfg.orpRegulationMode;
+  if (mode != "automatic") {
+    logRefusalOnce(pumpIndex, String("mode régulation != automatic (") + mode + ")");
+    return false;
+  }
+
+  // 7. Limite journalière non atteinte.
+  if (pumpIndex == 0) {
+    if (safetyLimits.dailyPhInjectedMl >= safetyLimits.maxPhMinusMlPerDay) {
+      logRefusalOnce(pumpIndex, "limite journalière pH atteinte");
+      return false;
+    }
+  } else {
+    if (safetyLimits.dailyOrpInjectedMl >= safetyLimits.maxChlorineMlPerDay) {
+      logRefusalOnce(pumpIndex, "limite journalière ORP atteinte");
+      return false;
+    }
+  }
+
+  // 8. Limite horaire (minutes/h consommées).
+  // Cohérent avec phLimitOk/orpLimitOk dans update() — recalcul ici pour autonomie.
+  int limitMin = (pumpIndex == 0) ? mqttCfg.phInjectionLimitMinutes
+                                  : mqttCfg.orpInjectionLimitMinutes;
+  if (limitMin > 0) {
+    unsigned long limitMs = (unsigned long)limitMin * 60000UL;
+    unsigned long usedMs = (pumpIndex == 0) ? phDosingState.usedMs
+                                            : orpDosingState.usedMs;
+    if (usedMs >= limitMs) {
+      logRefusalOnce(pumpIndex, "limite horaire atteinte");
+      return false;
+    }
+  }
+
+  // 9. Anti-rafale : nombre de cycles aujourd'hui dépasse maxCyclesPerDay.
+  // (Pas exactement kMaxRequestsPerMinute mentionné dans la spec — on utilise la
+  // garde anti-cycling existante côté pool-chemistry, plus pertinente ici.)
+  unsigned int cyclesToday = (pumpIndex == 0) ? phDosingState.cyclesToday
+                                              : orpDosingState.cyclesToday;
+  if (cyclesToday >= pumpProtection.maxCyclesPerDay) {
+    logRefusalOnce(pumpIndex, "limite cycles/jour atteinte");
+    return false;
+  }
+
+  // 10. Anti-rafale court terme (pool-chemistry Pass 3.5) — protège contre les
+  // emballements PID sur fenêtres glissantes 1 min et 15 min.
+  // Complémentaire de la garde maxCyclesPerDay : un PID instable pourrait
+  // démarrer 30 cycles en 5 minutes sans dépasser le quota journalier.
+  int cyclesInLastMin = countRecentDosingCycles(pumpIndex, 60000);
+  if (cyclesInLastMin >= kMaxDosingCyclesPerMinute) {
+    logRefusalOnce(pumpIndex, "anti-rafale : " + String(cyclesInLastMin) +
+                              " cycles dans la dernière minute");
+    return false;
+  }
+  int cyclesInLast15Min = countRecentDosingCycles(pumpIndex, 900000);
+  if (cyclesInLast15Min >= kMaxDosingCyclesPer15Min) {
+    logRefusalOnce(pumpIndex, "anti-rafale : " + String(cyclesInLast15Min) +
+                              " cycles dans les 15 dernières minutes");
+    return false;
+  }
+
+  // Toutes les gardes sont passées : reset le log de refus et autorise.
+  resetRefusalLogState(pumpIndex);
+  return true;
 }
 
 float PumpControllerClass::computePID(PIDController& pid, float error, unsigned long now) {
@@ -390,11 +579,21 @@ void PumpControllerClass::update() {
     return;
   }
 
-  // Vérifier si le dosage est autorisé (mode régulation + état filtration)
-  if (!canDose()) {
-    // Arrêter le dosage en cours si la filtration s'arrête
+  // Garde structurelle "globale" : filtration + stabilisation post-cal + mode continu.
+  // Note importante : on ne peut pas appeler canDose(0/1) ici parce qu'il filtre AUSSI
+  // sur le mode régulation (== "automatic"), or la branche `scheduled` doit pouvoir
+  // tourner même quand le capteur est NaN (intentionnellement aveugle, cf. spec).
+  // La garde "automatic + capteur valide + calibration" est appliquée plus bas dans
+  // les branches dédiées (canDose(0) et canDose(1)) — défense en profondeur.
+  bool filtrationOk = (mqttCfg.regulationMode == "continu") || filtration.isRunning();
+  bool stabilizationActive = isStabilizationTimerActive(0) ||
+                             isStabilizationTimerActive(1);
+  if (!filtrationOk || stabilizationActive) {
+    // Arrêter le dosage en cours si la filtration s'arrête / stabilisation active
     if (phDosingState.active || orpDosingState.active) {
-      systemLogger.info("Dosage suspendu (filtration arrêtée ou mode piloté)");
+      const char* reason = !filtrationOk ? "filtration arrêtée ou mode piloté"
+                                         : "stabilisation post-cal en cours";
+      systemLogger.info(String("Dosage suspendu (") + reason + ")");
       phDosingState.active = false;
       orpDosingState.active = false;
     }
@@ -443,9 +642,11 @@ void PumpControllerClass::update() {
   bool phSafetyOk = checkSafetyLimits(true);
   bool orpSafetyOk = checkSafetyLimits(false);
 
-  // Contrôle pH
+  // Contrôle pH — branche automatique gardée en profondeur par canDose(0).
+  // canDose(0) vérifie watchdog, filtration, stale/NaN, calibration, stabilisation,
+  // mode automatic, limites journalière/horaire, anti-cycling.
   const String& phMode = mqttCfg.phRegulationMode;
-  if (phMode == "automatic" && phLimitOk && phSafetyOk) {
+  if (phMode == "automatic" && phLimitOk && phSafetyOk && canDose(0)) {
     float phValue = sensors.getPh();
     float effectivePh = phValue;
 
@@ -473,6 +674,9 @@ void PumpControllerClass::update() {
         // Démarrage d'un nouveau cycle
         phDosingState.lastStartTime = now;
         phDosingState.cyclesToday++;
+        // Anti-rafale Pass 3.5 : on enregistre le timestamp de start dans le
+        // ring buffer pour les fenêtres glissantes 1 min / 15 min (cf. canDose()).
+        recordDosingCycleStart(0);
         systemLogger.info("Démarrage dosage pH (auto): pH=" + String(sensors.getPh(), 2) +
           " cible=" + String(mqttCfg.phTarget, 2) +
           " erreur=" + String(error, 3) +
@@ -563,6 +767,10 @@ void PumpControllerClass::update() {
         bool shouldDose = safetyLimits.dailyPhInjectedMl < effectiveDailyMl;
         if (shouldDose && !phDosingState.active) {
           phDosingState.lastStartTime = now;
+          // Anti-rafale Pass 3.5 : la branche scheduled n'incrémente pas cyclesToday,
+          // mais elle peut redémarrer plusieurs fois en cas de quota approchant la
+          // limite — on enregistre quand même chaque start pour cohérence.
+          recordDosingCycleStart(0);
           systemLogger.info("[Scheduled] Démarrage dosage pH : quota=" + String(static_cast<int>(effectiveDailyMl)) +
             "mL, injecté=" + String(safetyLimits.dailyPhInjectedMl, 0) + "mL");
         } else if (!shouldDose && phDosingState.active) {
@@ -585,9 +793,9 @@ void PumpControllerClass::update() {
     phPID.lastTime = 0;
   }
 
-  // Contrôle ORP — dispatch sur orpRegulationMode
+  // Contrôle ORP — dispatch sur orpRegulationMode, gardé en profondeur par canDose(1).
   const String& orpMode = mqttCfg.orpRegulationMode;
-  if (orpMode == "automatic" && orpLimitOk && orpSafetyOk) {
+  if (orpMode == "automatic" && orpLimitOk && orpSafetyOk && canDose(1)) {
     float orpValue = sensors.getOrp();
     float effectiveOrp = orpValue;
 
@@ -608,6 +816,8 @@ void PumpControllerClass::update() {
         // Démarrage d'un nouveau cycle
         orpDosingState.lastStartTime = now;
         orpDosingState.cyclesToday++;
+        // Anti-rafale Pass 3.5 : timestamp de start pour les fenêtres glissantes.
+        recordDosingCycleStart(1);
         systemLogger.info("Démarrage dosage ORP (auto): ORP=" + String(sensors.getOrp(), 0) + "mV" +
           " cible=" + String(mqttCfg.orpTarget, 0) + "mV" +
           " erreur=" + String(error, 0) + "mV" +
@@ -698,6 +908,8 @@ void PumpControllerClass::update() {
         bool shouldDose = safetyLimits.dailyOrpInjectedMl < effectiveDailyMl;
         if (shouldDose && !orpDosingState.active) {
           orpDosingState.lastStartTime = now;
+          // Anti-rafale Pass 3.5 : enregistre le start pour les fenêtres glissantes.
+          recordDosingCycleStart(1);
           systemLogger.info("[Scheduled ORP] Démarrage dosage ORP : quota=" + String(static_cast<int>(effectiveDailyMl)) +
             "mL, injecté=" + String(safetyLimits.dailyOrpInjectedMl, 0) + "mL");
         } else if (!shouldDose && orpDosingState.active) {

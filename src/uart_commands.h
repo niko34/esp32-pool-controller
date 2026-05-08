@@ -40,6 +40,7 @@ private:
   void actionCalibratePhNeutral();
   void actionCalibratePhAcid();
   void actionClearPhCalibration();
+  void actionCalibrateOrp(JsonVariant data);
   void actionAckAlarm(JsonVariant data);
 };
 

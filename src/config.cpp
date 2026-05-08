@@ -100,12 +100,8 @@ void saveMqttConfig() {
   prefs.putString("ph_reg_mode", mqttCfg.phRegulationMode);
   prefs.putInt("ph_daily_ml", mqttCfg.phDailyTargetMl);
 
-  // Calibration pH (DFRobot_PH stocke ses données en EEPROM)
-  // On garde juste la date et température pour l'interface utilisateur
-  prefs.putString("ph_cal_date", mqttCfg.phCalibrationDate);
-  if (!isnan(mqttCfg.phCalibrationTemp)) {
-    prefs.putFloat("ph_cal_temp", mqttCfg.phCalibrationTemp);
-  }
+  // feature-021 (Pass 4a) : calibration pH/ORP entièrement gérée par les modules
+  // Atlas EZO (NVS interne au module). Aucune clé NVS pH/ORP côté ESP32.
 
   // Régulation ORP
   prefs.putFloat("orp_target", mqttCfg.orpTarget);
@@ -118,15 +114,6 @@ void saveMqttConfig() {
   prefs.putInt("stab_delay", mqttCfg.stabilizationDelayMin);
   prefs.putString("reg_speed", mqttCfg.regulationSpeed);
   prefs.putString("ph_corr_type", mqttCfg.phCorrectionType);
-
-  // Calibration ORP - 1 ou 2 points
-  prefs.putFloat("orp_cal_off", mqttCfg.orpCalibrationOffset);
-  prefs.putFloat("orp_cal_slope", mqttCfg.orpCalibrationSlope);
-  prefs.putString("orp_cal_date", mqttCfg.orpCalibrationDate);
-  prefs.putFloat("orp_cal_ref", mqttCfg.orpCalibrationReference);
-  if (!isnan(mqttCfg.orpCalibrationTemp)) {
-    prefs.putFloat("orp_cal_temp", mqttCfg.orpCalibrationTemp);
-  }
 
   // Calibration Température
   prefs.putFloat("temp_cal_off", mqttCfg.tempCalibrationOffset);
@@ -232,9 +219,30 @@ void loadMqttConfig() {
   }
   mqttCfg.phEnabled = (mqttCfg.phRegulationMode != "manual");
 
-  // Calibration pH (DFRobot_PH stocke ses données en EEPROM)
-  mqttCfg.phCalibrationDate = prefs.getString("ph_cal_date", "");
-  mqttCfg.phCalibrationTemp = prefs.getFloat("ph_cal_temp", NAN);
+  // feature-021 (Pass 4a) : purge silencieuse des anciennes clés de calibration
+  // pH/ORP. La calibration est désormais entièrement stockée dans les modules
+  // Atlas EZO (commandes Cal,? / Cal,mid / Cal,low / Cal,<ref>).
+  bool needPurge =
+      prefs.isKey("ph_cal_date") || prefs.isKey("ph_cal_temp") ||
+      prefs.isKey("orp_cal_off") || prefs.isKey("orp_cal_slope") ||
+      prefs.isKey("orp_cal_date") || prefs.isKey("orp_cal_ref") ||
+      prefs.isKey("orp_cal_temp");
+  if (needPurge) {
+    prefs.end();
+    Preferences cleanup;
+    if (cleanup.begin("poolctrl", false /*RW*/)) {
+      cleanup.remove("ph_cal_date");
+      cleanup.remove("ph_cal_temp");
+      cleanup.remove("orp_cal_off");
+      cleanup.remove("orp_cal_slope");
+      cleanup.remove("orp_cal_date");
+      cleanup.remove("orp_cal_ref");
+      cleanup.remove("orp_cal_temp");
+      cleanup.end();
+      systemLogger.info("Migration NVS feature-021 : clés ph_cal_*/orp_cal_* purgées (calibration EZO interne)");
+    }
+    prefs.begin("poolctrl", true);
+  }
 
   // Régulation ORP
   mqttCfg.orpTarget = prefs.getFloat("orp_target", mqttCfg.orpTarget);
@@ -275,12 +283,8 @@ void loadMqttConfig() {
   mqttCfg.regulationSpeed = prefs.getString("reg_speed", "normal");
   mqttCfg.phCorrectionType = prefs.getString("ph_corr_type", "ph_minus");
 
-  // Calibration ORP - 1 ou 2 points
-  mqttCfg.orpCalibrationOffset = prefs.getFloat("orp_cal_off", mqttCfg.orpCalibrationOffset);
-  mqttCfg.orpCalibrationSlope = prefs.getFloat("orp_cal_slope", 1.0f);
-  mqttCfg.orpCalibrationDate = prefs.getString("orp_cal_date", "");
-  mqttCfg.orpCalibrationReference = prefs.getFloat("orp_cal_ref", 0.0f);
-  mqttCfg.orpCalibrationTemp = prefs.getFloat("orp_cal_temp", NAN);
+  // feature-021 (Pass 4a) : calibration ORP gérée par le module Atlas EZO
+  // (commande Cal,<ref>) — aucune lecture NVS ESP32.
 
   // Calibration Température
   mqttCfg.tempCalibrationOffset = prefs.getFloat("temp_cal_off", 0.0f);
@@ -384,19 +388,10 @@ void applyMqttConfig() {
   // Cette fonction sera implémentée dans mqtt_manager.cpp
 }
 
-// ==== Fonctions de calibration pH (DFRobot_PH) ====
-// La calibration est maintenant gérée par la librairie DFRobot_PH
-// qui stocke les données directement en EEPROM
-
-void calculatePhCalibration() {
-  // Fonction conservée pour compatibilité mais non utilisée
-  // La calibration est gérée par DFRobot_PH
-}
-
-bool isPhCalibrationValid() {
-  // Vérifier si une calibration a été effectuée
-  return !mqttCfg.phCalibrationDate.isEmpty();
-}
+// ==== Calibration pH/ORP ====
+// feature-021 : entièrement gérée par les modules Atlas EZO (commandes Cal,?,
+// Cal,mid, Cal,low, Cal,<ref>). Plus de calculs offset/slope ni d'EEPROM côté
+// ESP32. Voir SensorManager::enqueueCalibrate*() et getPhCalibrationPointsCached().
 
 /**
  * Persiste les compteurs journaliers de dosage en NVS (namespace "pool-daily").

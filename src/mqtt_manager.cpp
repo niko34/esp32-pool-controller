@@ -105,6 +105,11 @@ void MqttManager::refreshTopics() {
   topics.logsTopic = base + "/logs";
   topics.statusTopic = base + "/status";
   topics.diagnosticTopic = base + "/diagnostic";
+  // feature-021 : alertes calibration / capteur stale + états cal points
+  topics.alertsCalibrationTopic = base + "/alerts/calibration_required";
+  topics.alertsSensorStaleTopic = base + "/alerts/sensor_stale";
+  topics.phCalPointsState       = base + "/ph_cal_points";
+  topics.orpCalPointsState      = base + "/orp_cal_points";
 }
 
 // ============================================================================
@@ -477,12 +482,13 @@ void MqttManager::publishAllStatesInternal() {
     String p = String(tCircuit, 1);
     safePublish(topics.temperatureCircuitState.c_str(), p.c_str(), true);
   }
+  // feature-021 spec ligne 247 : pH publié avec 3 décimales (l'EZO rend 3 décimales fiables)
   if (!isnan(ph)) {
-    String p = String(ph, 1);
+    String p = String(ph, 3);
     safePublish(topics.phState.c_str(), p.c_str(), true);
   }
   if (!isnan(orp)) {
-    String p = String(orp, 1);
+    String p = String(orp, 0);  // ORP entier (mV)
     safePublish(topics.orpState.c_str(), p.c_str(), true);
   }
 
@@ -526,6 +532,90 @@ void MqttManager::publishAllStatesInternal() {
   safePublish(topics.phDailyTargetMlState.c_str(),   String(phDaily).c_str(), true);
   safePublish(topics.orpRegulationModeState.c_str(), orpMode.c_str(), true);
   safePublish(topics.orpDailyTargetMlState.c_str(),  String(orpDaily).c_str(), true);
+
+  // feature-021 : statut calibration EZO + alertes (cf. cond #4 pool-chemistry).
+  publishCalibrationStatusInternal();
+}
+
+// =============================================================================
+// feature-021 : publication edge-triggered alerte calibration + sensor_stale
+// =============================================================================
+//
+// Topics retenus (retain=true) :
+//   - {base}/ph_cal_points / {base}/orp_cal_points : entier (-1..3)
+//   - {base}/alerts/calibration_required : JSON si pH<2 OU ORP<1 ; payload vide sinon
+//   - {base}/alerts/sensor_stale         : JSON si pH OU ORP NaN ; payload vide sinon
+//
+// La méthode est idempotente : on republie l'état des cal points à chaque appel
+// (il s'agit d'entiers retain), mais on ne publie l'alerte que sur transition
+// (cache _lastPhCalPoints / _lastOrpCalPoints / _lastSensorStale) pour limiter
+// le trafic MQTT et le bruit dans les logs HA.
+//
+// Appelée :
+//   - À chaque publishAllStatesInternal() (cadencé par publishStatesRequested,
+//     posé toutes les kMqttPublishIntervalMs depuis loopTask).
+//   - Lors d'une (re)connexion MQTT (connectInTask) — état initial après reboot.
+void MqttManager::publishCalibrationStatusInternal() {
+  if (!mqtt.connected()) return;
+
+  // Lectures via cache (mises à jour en begin() puis à chaque calibration EZO).
+  // Pas d'appel I²C ici : on évite ~1.8 s de bus monopolisé par cycle MQTT (10 s).
+  // En cas de désynchro improbable cache vs réalité, le prochain cycle de
+  // calibration ou un boot resync remettra les valeurs à jour.
+  int phCal  = sensors.getPhCalibrationPointsCached();
+  int orpCal = sensors.getOrpCalibrationPointsCached();
+  bool phStale  = isnan(sensors.getPh());
+  bool orpStale = isnan(sensors.getOrp());
+
+  // 1) États bruts cal points (toujours retain — HA peut filtrer -1)
+  safePublish(topics.phCalPointsState.c_str(),  String(phCal).c_str(),  true);
+  safePublish(topics.orpCalPointsState.c_str(), String(orpCal).c_str(), true);
+
+  // 2) Alerte calibration_required — edge-triggered sur transition cal points
+  bool needsCal = (phCal < 2) || (orpCal < 1);
+  bool calChanged = (phCal != _lastPhCalPoints) || (orpCal != _lastOrpCalPoints);
+  if (calChanged) {
+    if (needsCal) {
+      JsonDocument doc;
+      doc["type"] = "calibration_required";
+      doc["phCalPoints"]  = phCal;
+      doc["orpCalPoints"] = orpCal;
+      doc["timestamp"]    = millis();
+      String payload;
+      serializeJson(doc, payload);
+      safePublish(topics.alertsCalibrationTopic.c_str(), payload.c_str(), true);
+      systemLogger.warning("MQTT alerte calibration_required publiée (pH=" +
+                           String(phCal) + ", ORP=" + String(orpCal) + ")");
+    } else {
+      // Clear retain : payload vide
+      safePublish(topics.alertsCalibrationTopic.c_str(), "", true);
+      systemLogger.info("MQTT alerte calibration_required clearée (calibration OK)");
+    }
+    _lastPhCalPoints  = phCal;
+    _lastOrpCalPoints = orpCal;
+  }
+
+  // 3) Alerte sensor_stale — edge-triggered sur transition NaN
+  bool isStale = phStale || orpStale;
+  if (isStale != _lastSensorStale) {
+    if (isStale) {
+      JsonDocument doc;
+      doc["type"] = "sensor_stale";
+      doc["phStale"]   = phStale;
+      doc["orpStale"]  = orpStale;
+      doc["timestamp"] = millis();
+      String payload;
+      serializeJson(doc, payload);
+      safePublish(topics.alertsSensorStaleTopic.c_str(), payload.c_str(), true);
+      systemLogger.warning(String("MQTT alerte sensor_stale publiée (pH=") +
+                           (phStale ? "NaN" : "OK") + ", ORP=" +
+                           (orpStale ? "NaN" : "OK") + ")");
+    } else {
+      safePublish(topics.alertsSensorStaleTopic.c_str(), "", true);
+      systemLogger.info("MQTT alerte sensor_stale clearée");
+    }
+    _lastSensorStale = isStale;
+  }
 }
 
 void MqttManager::publishDiagnosticInternal() {
@@ -542,7 +632,8 @@ void MqttManager::publishDiagnosticInternal() {
   doc["wifi_quality"] = constrain(map(WiFi.RSSI(), -100, -50, 0, 100), 0, 100);
   doc["ip_address"] = WiFi.localIP().toString();
   doc["sensors_initialized"] = sensors.isInitialized();
-  doc["ph_value"] = round(sensors.getPh() * 10.0f) / 10.0f;
+  // feature-021 : pH avec 3 décimales (cf. spec ligne 247 — l'EZO rend 3 décimales fiables)
+  doc["ph_value"] = round(sensors.getPh() * 1000.0f) / 1000.0f;
   doc["orp_value"] = sensors.getOrp();
   doc["temperature"] = sensors.getTemperature();
   doc["temperature_circuit"] = sensors.getCircuitTemperature();  // feature-020
@@ -981,6 +1072,24 @@ void MqttManager::publishDiscovery() {
   doc["payload_off"] = "offline";
   doc["device_class"] = "connectivity";
   doc["icon"] = "mdi:wifi-check";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-021 : nb points calibration pH (entier -1..3, -1 = EZO injoignable)
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_cal_points/config";
+  doc["name"] = "Piscine pH Points Calibrés";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_cal_points";
+  doc["state_topic"] = topics.phCalPointsState;
+  doc["icon"] = "mdi:numeric";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-021 : nb points calibration ORP (entier -1..1)
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_orp_cal_points/config";
+  doc["name"] = "Piscine ORP Points Calibrés";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_cal_points";
+  doc["state_topic"] = topics.orpCalPointsState;
+  doc["icon"] = "mdi:numeric";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 

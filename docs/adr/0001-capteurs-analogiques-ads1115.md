@@ -1,6 +1,10 @@
 # ADR-0001 — Capteurs pH/ORP analogiques via ADS1115 + DFRobot_PH
 
-- **Statut** : Accepté
+> **Statut : Superseded by [ADR-0014](0014-migration-atlas-ezo.md)** (2026-05-06)
+> La chaîne ADS1115 + DFRobot_PH a été remplacée par les modules Atlas EZO Embedded I²C
+> sur le PCB v2 pour éliminer la sensibilité au bruit filtration. Voir feature-021.
+
+- **Statut** : Superseded by [ADR-0014](0014-migration-atlas-ezo.md)
 - **Date** : 2024 (date d'origine du projet)
 - **Spec(s) liée(s)** : aucune (décision antérieure aux specs documentaires)
 

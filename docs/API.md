@@ -189,10 +189,11 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 ```json
 {
   "orp": 720,
-  "ph": 7.3,
-  "orp_raw": 715,
-  "ph_raw": 7.28,
+  "ph": 7.234,
   "temperature": 24.5,
+  "temperature_circuit": 28.1,
+  "phCalPoints": 2,
+  "orpCalPoints": 1,
   "filtration_running": true,
   "ph_dosing": false,
   "orp_dosing": false,
@@ -208,6 +209,8 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
   "orp_alert_threshold_ml": 1000
 }
 ```
+
+> **feature-021** : `ph` est désormais publié avec **3 décimales** (vs 1 décimale en v1.x). Champs `phCalPoints` (`-1..3`) et `orpCalPoints` (`-1..1`) ajoutés. Champs **supprimés** de la réponse `/data` : `orp_raw`, `ph_raw`, `ph_voltage_mv`, `temperature_raw` (la notion de « valeur brute » n'a pas de sens côté Atlas EZO — la valeur est déjà calibrée par le module). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md).
 
 ---
 
@@ -562,9 +565,12 @@ const ws = new WebSocket('ws://poolcontroller.local/ws');
 
 ```json
 {
-  "ph": 7.31,
+  "ph": 7.234,
   "orp": 718,
   "temperature": 24.5,
+  "temperature_circuit": 28.1,
+  "phCalPoints": 2,
+  "orpCalPoints": 1,
   "filtration_running": true,
   "ph_dosing": false,
   "orp_dosing": false,
@@ -579,6 +585,8 @@ const ws = new WebSocket('ws://poolcontroller.local/ws');
   "reset_reason": "POWER_ON"
 }
 ```
+
+> **feature-021** : `ph` 3 décimales, ajout de `phCalPoints` (`-1..3`) et `orpCalPoints` (`-1..1`). Champs **supprimés** de la payload WS : `orp_raw`, `ph_raw`, `ph_voltage_mv`, `temperature_raw`. Voir [ADR-0014](adr/0014-migration-atlas-ezo.md).
 
 Champs notables liés à la régulation pH :
 
@@ -602,7 +610,14 @@ Champs notables liés à la régulation ORP :
 | `orp_regulation_mode` | string | Mode actif : `"automatic"`, `"scheduled"` ou `"manual"` |
 | `orp_daily_target_ml` | integer | Volume quotidien programmé de chlore (mL) — pertinent uniquement en mode `"scheduled"` |
 | `max_orp_ml_per_day` | float | Limite journalière ORP (mL) — utilisée pour borner la saisie côté UI |
-| `orp_cal_valid` | boolean | `true` si une calibration ORP a été enregistrée |
+| `orp_cal_valid` | boolean | `true` si une calibration ORP a été enregistrée (depuis 2.0.0 : miroir de `orpCalPoints >= 1`) |
+
+Champs ajoutés en feature-021 (calibration EZO) :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `phCalPoints` | integer | Points de calibration EZO pH. `-1` = module injoignable / bus dégradé, `0` = non calibré, `1` = mid seul, `2` = mid + low (calibration nominale), `3` = mid + low + high. La régulation pH automatique est inhibée tant que la valeur est `< 2`. |
+| `orpCalPoints` | integer | Points de calibration EZO ORP. `-1` = module injoignable, `0` = non calibré, `1` = calibré (Atlas ORP n'a qu'un seul point de calibration). La régulation ORP automatique est inhibée tant que la valeur est `< 1`. |
 
 > Le WebSocket pousse la configuration complète à la connexion initiale ; les mises à jour suivantes sont différentielles (seuls les champs modifiés sont inclus).
 
@@ -706,35 +721,95 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/lighting/off
 
 ---
 
-## Calibration
+## Calibration (Atlas EZO — feature-021)
 
-### POST /calibrate_ph_neutral — CRITICAL
+Toutes les routes de calibration retournent **immédiatement** (`< 1 ms`) en mettant la commande dans la queue FreeRTOS de `SensorManager`. La commande s'exécute dans `loopTask` en ~900 ms (transaction I²C bloquante avec le module EZO). L'UI observe l'avancement via les champs WS `phCalPoints` / `orpCalPoints` rafraîchis automatiquement.
 
-Calibration pH point neutre (sonde dans solution pH 7.0).
+### POST /calibrate_ph — WRITE
+
+Calibration EZO pH — déclenche `Cal,mid,7.00` (point milieu) ou `Cal,low,4.00` (point bas).
+
+**Payload JSON :**
+
+```json
+{ "step": "mid" }    // ou { "step": "low" }
+```
+
+**Réponse 200** :
+
+```json
+{ "success": true, "queued": true, "step": "mid" }
+```
+
+**Erreurs** :
+- `400 step must be 'mid' or 'low'` si payload invalide.
+- `503 calibration queue saturée — réessayer dans 1s` si la queue (4 slots) est pleine.
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/calibrate_ph_neutral
+curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+  -d '{"step":"mid"}' \
+  http://poolcontroller.local/calibrate_ph
 ```
 
 ---
 
-### POST /calibrate_ph_acid — CRITICAL
+### POST /calibrate_orp — WRITE
 
-Calibration pH point acide (sonde dans solution pH 4.0).
+Calibration EZO ORP — déclenche `Cal,<reference>` avec la référence en mV.
+
+**Payload JSON :**
+
+```json
+{ "reference": 470 }
+```
+
+**Plage acceptée** : `0..1000` mV (couvre les standards usuels 225, 470, 650 mV).
+
+**Réponse 200** :
+
+```json
+{ "success": true, "queued": true, "reference": 470 }
+```
+
+**Erreurs** :
+- `400 reference must be 0..1000 mV` si valeur hors plage.
+- `503 calibration queue saturée — réessayer dans 1s`.
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/calibrate_ph_acid
+curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+  -d '{"reference":470}' \
+  http://poolcontroller.local/calibrate_orp
 ```
 
 ---
 
-### POST /clear_ph_calibration — CRITICAL
+### POST /calibrate_clear — WRITE
 
-Efface la calibration pH.
+Efface complètement la calibration EZO mémorisée dans le module (`Cal,clear`). À utiliser pour repartir d'une calibration vierge avant de refaire le workflow complet.
+
+**Payload JSON :**
+
+```json
+{ "sensor": "ph" }    // ou { "sensor": "orp" }
+```
+
+**Réponse 200** :
+
+```json
+{ "success": true, "queued": true, "sensor": "ph" }
+```
+
+**Erreurs** :
+- `400 sensor must be 'ph' or 'orp'`.
+- `503 calibration queue saturée`.
 
 ```bash
-curl -u admin:monmotdepasse -X POST http://poolcontroller.local/clear_ph_calibration
+curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+  -d '{"sensor":"ph"}' \
+  http://poolcontroller.local/calibrate_clear
 ```
+
+> **Routes legacy supprimées** (404 désormais) : `POST /calibrate_ph_neutral`, `POST /calibrate_ph_acid`, `POST /clear_ph_calibration`. Remplacées par les 3 routes ci-dessus. Voir [ADR-0014](adr/0014-migration-atlas-ezo.md).
 
 ---
 

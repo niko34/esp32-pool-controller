@@ -55,23 +55,11 @@ struct MqttConfig {
   String manualTimeIso = "";
   String timezoneId = "europe_paris";
 
-  // Calibration pH (géré par DFRobot_PH en EEPROM)
-  // La librairie DFRobot_PH gère automatiquement:
-  // - Calibration 1 point (pH neutre, pH 7.0)
-  // - Calibration 2 points (pH acide 4.0 + pH alcalin 9.18)
-  // - Compensation automatique de température
-  String phCalibrationDate = "";      // Date de dernière calibration (ISO 8601)
-  float phCalibrationTemp = NAN;      // Température lors de la calibration (°C)
-
-  // Calibration ORP (1 ou 2 points)
-  // Formule appliquée: ORP_final = (ORP_brut * slope) + offset
-  // Calibration 1 point: slope=1.0, offset calculé
-  // Calibration 2 points: slope et offset calculés à partir de 2 solutions de référence
-  float orpCalibrationOffset = 0.0f;  // Offset de calibration ORP (mV)
-  float orpCalibrationSlope = 1.0f;   // Pente/gain de calibration ORP (sans unité)
-  String orpCalibrationDate = "";     // Date de calibration ORP (ISO 8601)
-  float orpCalibrationReference = 0.0f; // Valeur de référence utilisée (mV)
-  float orpCalibrationTemp = NAN;     // Température lors de la calibration ORP (°C)
+  // feature-021 (Pass 4a) : calibration pH/ORP entièrement déléguée aux modules
+  // Atlas EZO (commande Cal,? + cache _phCalCachedPoints / _orpCalCachedPoints
+  // dans SensorManager). Aucun champ de calibration pH/ORP n'est plus persisté
+  // en NVS côté ESP32. Les anciens champs phCalibrationDate/Temp,
+  // orpCalibrationOffset/Slope/Date/Reference/Temp ont été supprimés.
 
   // Calibration Température DS18B20
   // Formule appliquée: Temp_final = Temp_brut + offset
@@ -205,8 +193,8 @@ void sanitizePumpSelection();
 int sanitizePumpNumber(int pumpNumber, int defaultValue);
 int pumpIndexFromNumber(int pumpNumber);
 
-// Fonctions de calibration pH à 2 points
-void calculatePhCalibration();  // Calcule gain et offset depuis les 2 points
-bool isPhCalibrationValid();    // Vérifie si la calibration 2 points est valide
+// feature-021 : la calibration pH 2 points est gérée par le module Atlas EZO.
+// Les fonctions calculatePhCalibration() / isPhCalibrationValid() ont été
+// supprimées (utiliser sensors.getPhCalibrationPointsCached() à la place).
 
 #endif // CONFIG_H

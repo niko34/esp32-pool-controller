@@ -10,7 +10,6 @@
 #include "mqtt_manager.h"
 #include "pump_controller.h"
 #include "logger.h"
-#include <EEPROM.h>
 #include "version.h"
 #include "json_compat.h"
 #include "rtc_manager.h"
@@ -81,7 +80,8 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["orp_regulation_mode"] = mqttCfg.orpRegulationMode;
   doc["orp_daily_target_ml"] = mqttCfg.orpDailyTargetMl;
   doc["max_orp_ml_per_day"] = safetyLimits.maxChlorineMlPerDay;
-  doc["orp_cal_valid"] = !mqttCfg.orpCalibrationDate.isEmpty();
+  // feature-021 : orp_cal_valid dérivé du cache Cal,? EZO (plus de date NVS).
+  doc["orp_cal_valid"] = sensors.getOrpCalibrationPointsCached() >= 1;
   doc["orp_pump"] = mqttCfg.orpPump;
   doc["pump1_max_duty_pct"] = mqttCfg.pump1MaxDutyPct;
   doc["pump2_max_duty_pct"] = mqttCfg.pump2MaxDutyPct;
@@ -129,33 +129,17 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["wifi_ip"] = ipAddress;
 
   doc["wifi_mode"] = mode == WIFI_MODE_AP ? "AP" : (mode == WIFI_MODE_APSTA ? "AP+STA" : "STA");
-  doc["mdns_host"] = "poolcontroller.local";
+  doc["mdns_host"] = kMdnsFullHost;
   doc["max_ph_ml_per_day"] = safetyLimits.maxPhMinusMlPerDay;
   doc["max_chlorine_ml_per_day"] = safetyLimits.maxChlorineMlPerDay;
-  // Données de calibration pH
-  doc["ph_cal_valid"] = sensors.isPhCalibrated();
-  doc["ph_calibration_date"] = mqttCfg.phCalibrationDate;
-  if (!isnan(mqttCfg.phCalibrationTemp)) {
-    doc["ph_calibration_temp"] = mqttCfg.phCalibrationTemp;
-  }
-  {
-    float vn, va;
-    EEPROM.get(0, vn);
-    EEPROM.get(4, va);
-    doc["ph_cal_vn"] = roundf(vn * 10.0f) / 10.0f;
-    doc["ph_cal_va"] = roundf(va * 10.0f) / 10.0f;
-  }
+  // feature-021 : Calibration capteurs Atlas EZO — stockée dans le module
+  // (NVS interne EZO), exposée ici via le cache Cal,?.
+  // Les champs voltage / offset / slope / date NVS legacy ont été supprimés.
+  doc["ph_cal_valid"]   = sensors.getPhCalibrationPointsCached() >= 1;
+  doc["ph_cal_points"]  = sensors.getPhCalibrationPointsCached();
+  doc["orp_cal_points"] = sensors.getOrpCalibrationPointsCached();
 
-  // Données de calibration ORP
-  doc["orp_calibration_offset"] = mqttCfg.orpCalibrationOffset;
-  doc["orp_calibration_slope"] = mqttCfg.orpCalibrationSlope;
-  doc["orp_calibration_date"] = mqttCfg.orpCalibrationDate;
-  doc["orp_calibration_reference"] = mqttCfg.orpCalibrationReference;
-  if (!isnan(mqttCfg.orpCalibrationTemp)) {
-    doc["orp_calibration_temp"] = mqttCfg.orpCalibrationTemp;
-  }
-
-  // Données de calibration Température
+  // Données de calibration Température (offset utilisateur DS18B20)
   doc["temp_calibration_offset"] = mqttCfg.tempCalibrationOffset;
   doc["temp_calibration_date"] = mqttCfg.tempCalibrationDate;
   doc["temperature_enabled"] = mqttCfg.temperatureEnabled;
@@ -449,22 +433,9 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["lighting_start_time"].isNull()) lightingCfg.startTime = doc["lighting_start_time"].as<String>();
   if (!doc["lighting_end_time"].isNull()) lightingCfg.endTime = doc["lighting_end_time"].as<String>();
 
-  // Calibration ORP
-  if (!doc["orp_calibration_offset"].isNull()) {
-    mqttCfg.orpCalibrationOffset = doc["orp_calibration_offset"];
-  }
-  if (!doc["orp_calibration_slope"].isNull()) {
-    mqttCfg.orpCalibrationSlope = doc["orp_calibration_slope"];
-  }
-  if (!doc["orp_calibration_date"].isNull()) {
-    mqttCfg.orpCalibrationDate = doc["orp_calibration_date"].as<String>();
-  }
-  if (!doc["orp_calibration_reference"].isNull()) {
-    mqttCfg.orpCalibrationReference = doc["orp_calibration_reference"];
-  }
-  if (!doc["orp_calibration_temp"].isNull()) {
-    mqttCfg.orpCalibrationTemp = doc["orp_calibration_temp"];
-  }
+  // feature-021 : la calibration ORP est désormais stockée dans le module Atlas EZO
+  // (commande Cal,<ref>). Plus de champs orp_calibration_* à persister côté ESP32.
+  // L'UI utilise POST /calibrate_orp + WS phCalPoints/orpCalPoints pour le suivi.
 
   // Données de calibration Température
   if (!doc["temp_calibration_offset"].isNull()) {
@@ -596,8 +567,9 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     mqttManager.requestReconnect();
   }
 
-  // Recalculer les valeurs calibrées (température, ORP) avec les nouveaux offsets
-  sensors.recalculateCalibratedValues();
+  // feature-021 : pH/ORP calibrés en interne par les modules EZO ; seul l'offset
+  // température utilisateur est appliqué côté firmware (alias eau dans
+  // SensorManager::_readDs18b20s()). Pas besoin de recalcul global ici.
 
   // Libérer le mutex
   xSemaphoreGiveRecursive(configMutex);

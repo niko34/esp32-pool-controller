@@ -2,6 +2,7 @@
 #include "logger.h"
 #include "version.h"
 #include "config.h"
+#include "constants.h"
 #include "pump_controller.h"
 #include <WiFi.h>
 
@@ -15,7 +16,7 @@ void OTAManager::begin() {
     return;
   }
 
-  ArduinoOTA.setHostname("poolcontroller");
+  ArduinoOTA.setHostname(kMdnsHostname);
 
   // Utiliser le mot de passe administrateur pour sécuriser l'OTA
   if (authCfg.adminPassword.length() > 0 && authCfg.adminPassword != "admin") {

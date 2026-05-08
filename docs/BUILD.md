@@ -146,6 +146,22 @@ Voir aussi [ADR-0009](adr/0009-partition-coredump.md) pour la décision architec
 - **`pio run -t uploadfs`** : reconstruit le filesystem à la mauvaise taille avant upload → utiliser `./deploy.sh fs` ou `./deploy.sh ota-fs`.
 - **Partition `history` préservée** : l'upload filesystem OTA n'écrase que la partition `spiffs`. L'historique des mesures n'est **pas** perdu à la mise à jour UI (voir [ADR-0007](adr/0007-table-partitions-custom.md) et [history.md](subsystems/history.md)).
 
+## Dépendances PlatformIO
+
+Liste des libs déclarées dans `platformio.ini` (`lib_deps`) — voir le fichier source pour les versions épinglées.
+
+| Lib | Usage |
+|-----|-------|
+| `AsyncTCP` | TCP asynchrone (base de ESPAsyncWebServer) |
+| `ESPAsyncWebServer` | Serveur HTTP / WebSocket non bloquant |
+| `ESPAsyncWiFiManager` | Wizard Wi-Fi premier boot |
+| `ArduinoJson` (v7) | Sérialisation JSON |
+| `PubSubClient` | Client MQTT |
+| `OneWire` + `DallasTemperature` | Bus 1-Wire pour DS18B20 (eau + circuit) |
+| `RTClib` | DS3231 RTC |
+
+> **Libs supprimées en feature-021 (v2.0.0)** : `Adafruit ADS1X15` et `DFRobot_PH` ont été retirées des `lib_deps`. La chaîne pH/ORP est désormais entièrement portée par la mini-classe maison [`AtlasEzoSensor`](../src/atlas_ezo.h) qui pilote les modules Atlas EZO Embedded en I²C natif (`Wire`). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md). Cette suppression libère ~12 KB de flash mais l'ajout de la queue + des routes de calibration consomme environ autant — le build courant tient à 98.8 % flash (≈ 17 KB de marge), point d'attention pour les futures features.
+
 ## Structure des fichiers de build
 
 - [`partitions.csv`](../partitions.csv) — source de vérité pour les offsets et tailles.

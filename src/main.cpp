@@ -20,6 +20,7 @@
 #include "web_server.h"
 #include "web_routes_config.h"
 #include "web_routes_control.h"
+#include "web_routes_debug.h"
 #include "history.h"
 #include "version.h"
 #include "rtc_manager.h"
@@ -124,7 +125,7 @@ void setup() {
       systemLogger.error("Échec démarrage mDNS");
     } else {
       MDNS.addService("http", "tcp", kMdnsHttpPort);
-      systemLogger.info("mDNS: poolcontroller.local disponible");
+      systemLogger.info(String("mDNS: ") + kMdnsFullHost + " disponible");
     }
 
     // Initialisation MQTT
@@ -164,6 +165,9 @@ void loop() {
   // DS18B20 : machine à états non-bloquante (request → wait → read) toutes les 2s
   // pH/ORP : lecture limitée à toutes les 5s en interne
   sensors.update();
+
+  // Debug temporaire feature-021 : gestion de la pause WiFi (POST /debug/wifi_pause)
+  updateWifiPauseLoop();
 
   // Publication MQTT périodique
   if (mqttManager.isConnected() && now - lastMqttPublish >= kMqttPublishIntervalMs) {
@@ -535,7 +539,7 @@ void checkSystemHealth() {
       MDNS.end();
       if (MDNS.begin(kMdnsHostname)) {
         MDNS.addService("http", "tcp", kMdnsHttpPort);
-        systemLogger.info("mDNS relancé: poolcontroller.local");
+        systemLogger.info(String("mDNS relancé: ") + kMdnsFullHost);
       } else {
         systemLogger.warning("Échec relance mDNS après reconnexion WiFi");
       }

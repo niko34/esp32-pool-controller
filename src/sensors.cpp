@@ -1,17 +1,22 @@
 #include "sensors.h"
+
+#include <Preferences.h>
+#include <Wire.h>
+#include <esp_task_wdt.h>
+
 #include "config.h"
 #include "constants.h"
 #include "logger.h"
-#include "mqtt_manager.h"
-#include <sys/time.h>
-#include <EEPROM.h>
-#include <Preferences.h>
-#include <Wire.h>
-
+#include "pump_controller.h"  // armStabilizationTimer() après calibration EZO
 
 SensorManager sensors;
 
 namespace {
+
+// =============================================================================
+// Helpers DS18B20 — Conservés tels quels (feature-020)
+// =============================================================================
+
 // DS18B20 conversion time depends on resolution.
 // Typical max conversion times (datasheet):
 // 9-bit: 93.75ms, 10-bit: 187.5ms, 11-bit: 375ms, 12-bit: 750ms
@@ -48,10 +53,18 @@ const char* sondeRoleLabel(SondeRole r) {
     default:                 return "non identifiée";
   }
 }
-} // namespace
+
+// Température de référence sécuritaire si la sonde "eau" n'est pas disponible.
+// Erreur de mesure pH < 0.1 dans la plage 15-30 °C piscine (cf. spec ligne 312).
+constexpr float kEzoFallbackTempC = 25.0f;
+
+}  // namespace
+
+// =============================================================================
+// Construction / destruction
+// =============================================================================
 
 SensorManager::SensorManager() : oneWire(kTempSensorPin), tempSensor(&oneWire) {
-  // Initialiser le tableau des sondes à un état "absent / non identifié"
   for (size_t i = 0; i < kMaxDs18b20Sondes; ++i) {
     memset(_sondes[i].addr, 0, kSondeAddrLen);
     _sondes[i].lastTempRaw = NAN;
@@ -60,98 +73,48 @@ SensorManager::SensorManager() : oneWire(kTempSensorPin), tempSensor(&oneWire) {
   }
 }
 
-SensorManager::~SensorManager() {}
-
-// ========== Helper privé : Lecture médiane depuis ADS1115 ==========
-int16_t SensorManager::readMedianAdsChannel(uint8_t channel, int numSamples,
-                                             int16_t* outMin, int16_t* outMax, int32_t* outSum) {
-  // Collecte des échantillons depuis l'ADS1115
-  int16_t samples[numSamples];
-  int32_t sum = 0;
-  int16_t minVal = 32767;
-  int16_t maxVal = -32768;
-
-  for (int i = 0; i < numSamples; i++) {
-    int16_t reading = ads.readADC_SingleEnded(channel);
-    samples[i] = reading;
-    sum += reading;
-    if (reading < minVal) minVal = reading;
-    if (reading > maxVal) maxVal = reading;
-    // Pas de delay - l'ADS1115 à 8 SPS prend déjà ~125ms par lecture
-    // IMPORTANT: yield() pour éviter watchdog timeout si ADS1115 non connecté
-    yield();
+SensorManager::~SensorManager() {
+  if (_ezoQueue != nullptr) {
+    vQueueDelete(_ezoQueue);
+    _ezoQueue = nullptr;
   }
-
-  // Tri par insertion pour obtenir la médiane
-  for (int i = 0; i < numSamples - 1; i++) {
-    for (int j = i + 1; j < numSamples; j++) {
-      if (samples[i] > samples[j]) {
-        int16_t tmp = samples[i];
-        samples[i] = samples[j];
-        samples[j] = tmp;
-      }
-    }
-  }
-
-  // Retourner les stats optionnelles
-  if (outMin) *outMin = minVal;
-  if (outMax) *outMax = maxVal;
-  if (outSum) *outSum = sum;
-
-  // Retourner la valeur médiane (milieu du tableau trié)
-  return samples[numSamples / 2];
 }
 
+// =============================================================================
+// begin() — Initialisation matériel
+// =============================================================================
+
 void SensorManager::begin() {
-  // Initialiser I2C (SDA=21, SCL=22 par défaut sur ESP32)
+  // Bus I²C partagé : DS3231 + EZO pH + EZO ORP (cf. constants.h kI2cSdaPin/kI2cSclPin)
   Wire.begin();
 
-  // Initialiser l'ADS1115
-  adsAvailable = ads.begin();
-  if (!adsAvailable) {
-    systemLogger.error("ADS1115 non détecté sur le bus I2C ! Les lectures pH/ORP seront désactivées.");
-  } else {
-    systemLogger.info("ADS1115 initialisé avec succès");
-
-    // Configuration du gain de l'ADS1115
-    // GAIN_ONE = +/- 4.096V (1 bit = 0.125mV pour ADS1115 16 bits)
-    // Obligatoire pour les modules pH/ORP qui sortent 0-3.3V
-    // GAIN_TWO (+/- 2.048V) saturerait au-dessus de 2.048V
-    ads.setGain(GAIN_ONE);
-
-    // Configuration du data rate pour précision maximale
-    // 8 SPS (samples per second) = mesure la plus précise et stable
-    // Temps de conversion: ~125ms par échantillon
-    ads.setDataRate(RATE_ADS1115_8SPS);
-
-    systemLogger.info("ADS1115 configuré : Gain=±4.096V (0.125mV/bit), Data Rate=8 SPS");
+  // Création de la queue FreeRTOS pour les commandes longues (calibration).
+  _ezoQueue = xQueueCreate(kEzoQueueLen, sizeof(EzoCmdRequest));
+  if (_ezoQueue == nullptr) {
+    systemLogger.error("Sensors : échec création queue EZO (mémoire insuffisante)");
   }
 
-  // Initialiser le bus OneWire + DallasTemperature (feature-020 : 2 sondes possibles)
+  // ----- DS18B20 (inchangé feature-020) -----
   tempSensor.begin();
 
   uint8_t deviceCount = tempSensor.getDeviceCount();
   if (deviceCount == 0) {
-    systemLogger.warning("DS18B20 non détecté sur GPIO " + String(kTempSensorPin) + " - vérifier câblage et résistance pull-up 4.7kΩ");
+    systemLogger.warning("DS18B20 non détecté sur GPIO " + String(kTempSensorPin) +
+                         " - vérifier câblage et résistance pull-up 4.7kΩ");
   } else {
-    systemLogger.info("OneWire: " + String(deviceCount) + " sonde(s) DS18B20 détectée(s) sur GPIO " + String(kTempSensorPin));
+    systemLogger.info("OneWire: " + String(deviceCount) + " sonde(s) DS18B20 détectée(s) sur GPIO " +
+                      String(kTempSensorPin));
     if (deviceCount > kMaxDs18b20Sondes) {
       systemLogger.warning("Trop de sondes détectées (" + String(deviceCount) +
                            ") - seules les " + String(kMaxDs18b20Sondes) + " premières seront prises en compte");
     }
   }
 
-  // Lecture non-bloquante : requestTemperatures() ne doit pas attendre la conversion
   tempSensor.setWaitForConversion(false);
-
-  // Configurer la résolution (impacte directement le temps de conversion)
-  g_ds18b20ResolutionBits = 12; // 9, 10, 11 ou 12
+  g_ds18b20ResolutionBits = 12;
   tempSensor.setResolution(g_ds18b20ResolutionBits);
   g_ds18b20ConversionMs = ds18b20ConversionTimeMsForResolution(g_ds18b20ResolutionBits);
 
-  // Scanner les adresses ROM des sondes détectées (jusqu'à kMaxDs18b20Sondes).
-  // L'ordre des index OneWire est stable pour un même hardware mais peut varier
-  // entre PCB (adresses ROM uniques par sonde) — d'où l'identification par adresse.
   _detectedCount = 0;
   uint8_t scanLimit = (deviceCount > kMaxDs18b20Sondes) ? (uint8_t)kMaxDs18b20Sondes : deviceCount;
   for (uint8_t i = 0; i < scanLimit; ++i) {
@@ -167,535 +130,522 @@ void SensorManager::begin() {
     }
   }
 
-  // Charger les adresses identifiées depuis NVS et matcher avec les sondes détectées
   _loadSondeIdentificationFromNvs();
 
-  // Logger l'état final de chaque sonde détectée
   for (uint8_t i = 0; i < _detectedCount; ++i) {
     systemLogger.info("  - sonde[" + String(i) + "] = " + romHex(_sondes[i].addr) +
                       " (" + String(sondeRoleLabel(_sondes[i].role)) + ")");
   }
 
-  systemLogger.info("Capteur de température DS18B20 initialisé sur GPIO " + String(kTempSensorPin) + " (" +
-                    String(g_ds18b20ResolutionBits) + "-bit, conv=" +
+  systemLogger.info("Capteur de température DS18B20 initialisé sur GPIO " + String(kTempSensorPin) +
+                    " (" + String(g_ds18b20ResolutionBits) + "-bit, conv=" +
                     String(g_ds18b20ConversionMs) + "ms)");
 
-  // IMPORTANT: Sur ESP32, l'EEPROM doit être initialisé avant utilisation
-  // La librairie DFRobot_PH utilise les adresses 0-7 (8 bytes)
-  EEPROM.begin(512);  // Allouer 512 bytes pour l'EEPROM
-
-  // Initialiser le capteur pH DFRobot
-  phSensor.begin();
-
-  // Commit les changements EEPROM (nécessaire sur ESP32)
-  EEPROM.commit();
-
-  // Lire et logger les valeurs de calibration pH stockées en EEPROM
-  // Struct DFRobot_PH: float NeutralVoltage (offset 0), float AcidVoltage (offset 4)
-  float eepromNeutralV, eepromAcidV;
-  EEPROM.get(0, eepromNeutralV);
-  EEPROM.get(4, eepromAcidV);
-  systemLogger.info("pH EEPROM calibration chargée: neutre=" + String(eepromNeutralV, 1) +
-                    "mV (défaut=1500), acide=" + String(eepromAcidV, 1) + "mV (défaut=2032)");
-  _phCalibrated = !(fabsf(eepromNeutralV - 1500.0f) < 0.01f && fabsf(eepromAcidV - 2032.44f) < 0.01f);
-  if (!_phCalibrated) {
-    systemLogger.warning("pH: calibration par défaut détectée - sonde non calibrée");
+  // ----- Atlas EZO pH / ORP -----
+  // AC5 (résilience EZO débranché) : on ne bloque pas le boot si un EZO est muet.
+  // Une simple lecture I (info) suffit à confirmer la présence du module.
+  String fwInfo;
+  if (_phEzo.readInfo(fwInfo)) {
+    systemLogger.info("EZO pH détecté : " + fwInfo);
+    _ezoEverResponded = true;
+  } else {
+    systemLogger.warning("EZO pH non détecté à l'adresse 0x" + String(kEzoPhAddress, HEX) +
+                         " - lectures pH désactivées tant que la sonde n'est pas connectée");
   }
 
-  systemLogger.info("Capteur pH DFRobot SEN0161-V2 initialisé");
-  systemLogger.info("Gestionnaire de capteurs initialisé");
-}
-
-void SensorManager::detectAdsIfNeeded() {
-  if (adsAvailable) return;
-
-  if (!ads.begin()) {
-    return;
+  if (_orpEzo.readInfo(fwInfo)) {
+    systemLogger.info("EZO ORP détecté : " + fwInfo);
+    _ezoEverResponded = true;
+  } else {
+    systemLogger.warning("EZO ORP non détecté à l'adresse 0x" + String(kEzoOrpAddress, HEX) +
+                         " - lectures ORP désactivées tant que la sonde n'est pas connectée");
   }
 
-  adsAvailable = true;
-  ads.setGain(GAIN_ONE);
-  ads.setDataRate(RATE_ADS1115_8SPS);
-  systemLogger.info("ADS1115 détecté à chaud, mesures pH/ORP activées");
+  // Lecture initiale du nombre de points de calibration (cache).
+  // pool-chemistry condition #2 : si Cal,? injoignable → -1 → régulation auto inhibée.
+  _phCalCachedPoints = _phEzo.queryCalPoints();
+  _orpCalCachedPoints = _orpEzo.queryCalPoints();
+
+  if (_phCalCachedPoints <= 0) {
+    systemLogger.critical("EZO pH non calibré (Cal,?=" + String(_phCalCachedPoints) +
+                          ") — régulation pH automatique inhibée jusqu'à calibration");
+  } else {
+    systemLogger.info("EZO pH calibration : " + String(_phCalCachedPoints) + " point(s)");
+  }
+  if (_orpCalCachedPoints <= 0) {
+    systemLogger.critical("EZO ORP non calibré (Cal,?=" + String(_orpCalCachedPoints) +
+                          ") — régulation ORP automatique inhibée jusqu'à calibration");
+  } else {
+    systemLogger.info("EZO ORP calibration : " + String(_orpCalCachedPoints) + " point(s)");
+  }
+
+  systemLogger.info("Gestionnaire de capteurs initialisé (DS18B20 + Atlas EZO)");
 }
+
+// =============================================================================
+// update() — Boucle de lecture périodique (appelée depuis loopTask)
+// =============================================================================
 
 void SensorManager::update() {
-  // Protéger l'accès I2C contre collisions avec calibrations (handlers web async)
-  // Utilise tryTake (non-bloquant) pour ne pas ralentir la loop
-  if (xSemaphoreTake(i2cMutex, 0) == pdTRUE) {
-    readRealSensors();
-    xSemaphoreGive(i2cMutex);
+  // 1) Lecture DS18B20 (gère son propre timing de conversion)
+  _readDs18b20s();
+
+  // 2) Lecture pH/ORP via EZO (cadencée à kPhOrpSensorIntervalMs = 5 s)
+  static unsigned long lastEzoRead = 0;
+  unsigned long now = millis();
+  if (now - lastEzoRead >= kPhOrpSensorIntervalMs) {
+    lastEzoRead = now;
+    // Compensation T° : sonde "eau" si identifiée, sinon fallback 25 °C (cf. spec).
+    float tempC = getWaterTemperature();
+    if (isnan(tempC)) tempC = kEzoFallbackTempC;
+    _readEzoSensors(tempC);
   }
-  // Si mutex indisponible, skip cette itération (la prochaine loop réessaiera)
+
+  // 3) Détection de stale (log critical une fois à la transition)
+  _checkStaleAndLog();
+
+  // 4) Traitement d'au plus 1 commande EZO de la queue (calibration ~1-2 s)
+  _processEzoQueue();
 }
 
-void SensorManager::readRealSensors() {
+// =============================================================================
+// Lecture DS18B20 (multi-sondes feature-020) — Logique inchangée
+// =============================================================================
+
+void SensorManager::_readDs18b20s() {
   unsigned long now = millis();
-  static unsigned long lastOrpDebugLog = 0;
-  static unsigned long lastPhDebugLog = 0;
   static unsigned long lastTempDebugLog = 0;
-  static unsigned long lastSensorRead = 0;
-
-  // Limiter la fréquence de lecture des capteurs pH/ORP à toutes les 5 secondes
-  // Cela évite de bloquer l'ESP32 trop souvent avec les lectures ADS1115
-  const unsigned long SENSOR_READ_INTERVAL = 5000; // 5 secondes
-
-  // ========== Lecture température DS18B20 sur GPIO 5 ==========
-  // Non-bloquant: on déclenche une conversion, puis on lit après le temps de conversion.
   static unsigned long lastTempRequest = 0;
   static bool tempRequested = false;
   static unsigned long lastTempRead = 0;
 
-  // Temps de conversion max dépend de la résolution configurée.
-  // On ajoute une petite marge pour être sûr.
   const unsigned long TEMP_CONVERSION_MS = (unsigned long)g_ds18b20ConversionMs + 50;
-  const unsigned long TEMP_REQUEST_INTERVAL_MS = 2000; // ne pas relancer trop souvent
+  const unsigned long TEMP_REQUEST_INTERVAL_MS = 2000;
 
-  // 1) Lancer une conversion si aucune n'est en cours et si l'intervalle est passé
+  // 1) Lancer une conversion si aucune n'est en cours et si l'intervalle est passé.
+  //    On prend le mutex I²C uniquement le temps de l'envoi (la conversion se fait
+  //    en arrière-plan côté DS18B20, pas besoin de tenir le bus).
   if (!tempRequested && (now - lastTempRequest >= TEMP_REQUEST_INTERVAL_MS)) {
-    tempSensor.requestTemperatures();
-    tempRequested = true;
-    lastTempRequest = now;
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      tempSensor.requestTemperatures();
+      xSemaphoreGive(i2cMutex);
+      tempRequested = true;
+      lastTempRequest = now;
+    }
   }
 
-  // 2) Lire la température seulement si la conversion a eu le temps de se terminer.
-  //    Lecture par adresse (feature-020) : on parcourt _sondes[] et on lit chacune
-  //    via getTempC(addr) — l'index n'est pas stable entre PCB, l'adresse ROM si.
+  // 2) Lecture après le délai de conversion. Multi-sondes par adresse ROM.
   if (tempRequested && (now - lastTempRequest >= TEMP_CONVERSION_MS)) {
-    bool anyValidRead = false;
-    for (uint8_t i = 0; i < _detectedCount; ++i) {
-      float measuredTemp = tempSensor.getTempC(_sondes[i].addr);
-      // 85.0 °C est la valeur EEPROM par défaut du DS18B20 (power-on reset value) :
-      // elle signale une conversion non complétée ou un problème d'alim.
-      bool valid = (measuredTemp != DEVICE_DISCONNECTED_C &&
-                    measuredTemp > -55.0f && measuredTemp < 125.0f &&
-                    measuredTemp != 85.0f);
-      if (valid) {
-        _sondes[i].lastTempRaw = roundf(measuredTemp * 10.0f) / 10.0f;
-        anyValidRead = true;
-      } else {
-        _sondes[i].lastTempRaw = NAN;
-        if (authCfg.sensorLogsEnabled) {
-          systemLogger.warning("DS18B20 " + romHex(_sondes[i].addr) +
-                               " : lecture invalide (déconnectée ou T° hors plage)");
-        }
-      }
-    }
-
-    // Mise à jour des champs rétrocompat tempRawValue/tempValue (alias eau).
-    // Si sonde "eau" identifiée → on utilise sa valeur ; sinon fallback sur 1ʳᵉ sonde
-    // présente pour ne pas casser MQTT/WS tant que l'utilisateur n'a pas identifié.
-    int waterIdx = _findSondeIndexByRole(SondeRole::Water);
-    if (waterIdx >= 0 && !isnan(_sondes[waterIdx].lastTempRaw)) {
-      tempRawValue = _sondes[waterIdx].lastTempRaw;
-      tempValue = tempRawValue + mqttCfg.tempCalibrationOffset;
-    } else {
-      // Fallback gracieux : 1ʳᵉ sonde présente avec lecture valide (sans offset si non identifiée
-      // pour éviter d'appliquer une calibration "eau" sur une mesure de circuit).
-      tempRawValue = NAN;
-      tempValue = NAN;
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      bool anyValidRead = false;
       for (uint8_t i = 0; i < _detectedCount; ++i) {
-        if (!isnan(_sondes[i].lastTempRaw)) {
-          tempRawValue = _sondes[i].lastTempRaw;
-          tempValue = tempRawValue;  // pas d'offset : sonde non identifiée comme "eau"
-          break;
+        float measuredTemp = tempSensor.getTempC(_sondes[i].addr);
+        // 85.0 °C = power-on reset value DS18B20 (conversion incomplète).
+        bool valid = (measuredTemp != DEVICE_DISCONNECTED_C &&
+                      measuredTemp > -55.0f && measuredTemp < 125.0f &&
+                      measuredTemp != 85.0f);
+        if (valid) {
+          _sondes[i].lastTempRaw = roundf(measuredTemp * 10.0f) / 10.0f;
+          anyValidRead = true;
+        } else {
+          _sondes[i].lastTempRaw = NAN;
+          if (authCfg.sensorLogsEnabled) {
+            systemLogger.warning("DS18B20 " + romHex(_sondes[i].addr) +
+                                 " : lecture invalide (déconnectée ou T° hors plage)");
+          }
         }
       }
-    }
+      xSemaphoreGive(i2cMutex);
 
-    if (!anyValidRead && _detectedCount > 0 && authCfg.sensorLogsEnabled) {
-      systemLogger.warning("Aucune sonde DS18B20 n'a fourni de lecture valide ce cycle");
-    }
+      // Mise à jour des champs rétrocompat tempRawValue/tempValue (alias eau).
+      int waterIdx = _findSondeIndexByRole(SondeRole::Water);
+      if (waterIdx >= 0 && !isnan(_sondes[waterIdx].lastTempRaw)) {
+        tempRawValue = _sondes[waterIdx].lastTempRaw;
+        tempValue = tempRawValue + mqttCfg.tempCalibrationOffset;
+      } else {
+        // Fallback gracieux : 1ʳᵉ sonde présente sans offset (rôle inconnu).
+        tempRawValue = NAN;
+        tempValue = NAN;
+        for (uint8_t i = 0; i < _detectedCount; ++i) {
+          if (!isnan(_sondes[i].lastTempRaw)) {
+            tempRawValue = _sondes[i].lastTempRaw;
+            tempValue = tempRawValue;
+            break;
+          }
+        }
+      }
 
-    tempRequested = false; // prêt pour une nouvelle conversion
-    lastTempRead = now;
+      if (!anyValidRead && _detectedCount > 0 && authCfg.sensorLogsEnabled) {
+        systemLogger.warning("Aucune sonde DS18B20 n'a fourni de lecture valide ce cycle");
+      }
+
+      tempRequested = false;
+      lastTempRead = now;
+    }
   }
 
-  // Debug température (toutes les 5 secondes, si activé)
+  // Debug température (toutes les 5 s, si activé)
   if (authCfg.sensorLogsEnabled && now - lastTempDebugLog >= 5000) {
     char logMsg[150];
     if (!isnan(tempValue)) {
       snprintf(logMsg, sizeof(logMsg),
                "Temp: %.2f°C | res=%dbit | age=%lums",
                tempValue, (int)g_ds18b20ResolutionBits, (unsigned long)(now - lastTempRead));
-      Serial.printf("[TEMP DEBUG] DS18B20 GPIO 5 | %s\n", logMsg);
       systemLogger.debug(logMsg);
     } else {
       snprintf(logMsg, sizeof(logMsg),
                "Temp: NaN | res=%dbit | conversion=%s",
                (int)g_ds18b20ResolutionBits, tempRequested ? "EN COURS" : "IDLE");
-      Serial.printf("[TEMP DEBUG] DS18B20 GPIO 5 | %s\n", logMsg);
       systemLogger.warning(logMsg);
     }
     lastTempDebugLog = now;
   }
+}
 
-  // Vérifier si l'intervalle de lecture des capteurs est atteint
-  if (now - lastSensorRead < SENSOR_READ_INTERVAL) {
-    return; // Trop tôt, ne pas lire les capteurs pH/ORP
-  }
-  lastSensorRead = now;
+// =============================================================================
+// Lecture pH / ORP via Atlas EZO
+// =============================================================================
 
-  static bool reportedUnavailable = false;
-  if (adsAvailable) {
-    if (reportedUnavailable && authCfg.sensorLogsEnabled) {
-      systemLogger.info("ADS1115 détecté: lectures pH/ORP rétablies");
-    }
-    reportedUnavailable = false;
-  }
+void SensorManager::_readEzoSensors(float tempC) {
+  unsigned long now = millis();
 
-  // Si l'ADS1115 n'est pas disponible, ne pas tenter de lire les capteurs pH/ORP
-  if (!adsAvailable) {
-    phValue = NAN;
-    orpValue = NAN;
-    static unsigned long lastAdsRetry = 0;
-    if (!reportedUnavailable) {
-      if (authCfg.sensorLogsEnabled) {
-        systemLogger.warning("ADS1115 non détecté: lectures pH/ORP indisponibles");
+  // ----- pH -----
+  float ph = NAN;
+  if (_phEzo.readSingle(ph, tempC)) {
+    _lastPh = ph;
+    _lastPhMs = now;
+    _phI2cFailStreak = 0;
+    _phStaleLogged = false;
+    _phI2cDegradedLogged = false;
+    _ezoEverResponded = true;
+    // Correctif Pass 3.5 (pool-chemistry) : si le cache cal_points a été invalidé
+    // à -1 par une période de bus dégradé (ou n'a jamais été initialisé), on le
+    // rafraîchit dès qu'un retour de bus est confirmé. Strictement borné à -1 →
+    // un seul Cal,? est émis (et non chaque cycle, ce qui gèlerait loopTask 900 ms).
+    if (_phCalCachedPoints == -1) {
+      int pts = _phEzo.queryCalPoints();
+      if (pts >= 0) {
+        _phCalCachedPoints = pts;
+        systemLogger.info("EZO pH : cache calibration rafraîchi (points=" +
+                          String(pts) + ")");
       }
-      reportedUnavailable = true;
     }
-    if (now - lastAdsRetry >= 2000) {
-      detectAdsIfNeeded();
-      lastAdsRetry = now;
+    if (authCfg.sensorLogsEnabled) {
+      char buf[80];
+      snprintf(buf, sizeof(buf), "EZO pH: %.2f (T=%.1f°C)", ph, tempC);
+      systemLogger.debug(buf);
     }
-    // Log de debug uniquement toutes les 30 secondes pour éviter de spammer
-    static unsigned long lastAdsWarning = 0;
-    if (authCfg.sensorLogsEnabled && now - lastAdsWarning >= 30000) {
-      systemLogger.warning("ADS1115 non détecté - lectures pH/ORP désactivées");
-      lastAdsWarning = now;
-    }
-    return;
-  }
-
-  // ========== Lecture ORP via ADS1115 canal A1 ==========
-  {
-    // Filtrage médian avec échantillonnage réduit
-    // L'ADS1115 à 8 SPS fait déjà un filtrage interne précis
-    int16_t minVal, maxVal;
-    int32_t sum;
-    int16_t rawAdc = readMedianAdsChannel(1, kNumSensorSamples, &minVal, &maxVal, &sum);
-
-    // Conversion ADC -> Voltage en utilisant la fonction de la bibliothèque
-    // qui tient compte automatiquement du gain configuré
-    float voltage = ads.computeVolts(rawAdc) * 1000.0f;  // Convertir V en mV
-
-    // IMPORTANT: tu as un pont diviseur (R2=2.2k en haut, R3=10k en bas) pour passer ~0-4V -> ~0-3.28V.
-    // Donc la tension mesurée par l'ADS1115 est la tension APRES diviseur.
-    // On reconstruit la tension réelle de sortie du module ORP avant conversion ORP.
-    constexpr float ORP_R_TOP_OHMS = 2200.0f;   // R2
-    constexpr float ORP_R_BOTTOM_OHMS = 10000.0f; // R3
-    constexpr float ORP_DIVIDER_GAIN = (ORP_R_TOP_OHMS + ORP_R_BOTTOM_OHMS) / ORP_R_BOTTOM_OHMS; // ~1.22
-    float orpModuleVoltage_mV = voltage * ORP_DIVIDER_GAIN;
-
-    // Avertissement si on s'approche de la pleine échelle du PGA (GAIN_ONE -> ~4096mV)
-    if (authCfg.sensorLogsEnabled && fabsf(voltage) > 4050.0f) {
-      systemLogger.warning("ORP: tension proche de la saturation ADS1115 (" + String(voltage, 1) + " mV). Vérifier VDD ADS1115 / diviseur de tension.");
-    }
-
-    // Avertissement si la tension reconstruite dépasse la plage attendue du module (~0-4V)
-    if (authCfg.sensorLogsEnabled && (orpModuleVoltage_mV < -50.0f || orpModuleVoltage_mV > 4100.0f)) {
-      systemLogger.warning("ORP: tension module inattendue (" + String(orpModuleVoltage_mV, 1) + " mV). Vérifier le pont diviseur / alim du module.");
-    }
-
-    // Approximation courante de ces modules : ORP(mV) ≈ 2000mV - Vout(mV)
-    // => Vout=0mV -> +2000mV, Vout=2000mV -> 0mV, Vout=4000mV -> -2000mV
-    // Note: Cette formule est une approximation et peut varier selon le module utilisé
-    float rawOrpValue = 2000.0f - orpModuleVoltage_mV;
-
-    // Appliquer la calibration (slope + offset) et arrondir au mV
-    // Formule: ORP_final = (ORP_brut * slope) + offset
-    // Calibration 1 point: slope=1.0, offset calculé
-    // Calibration 2 points: slope et offset calculés depuis 2 solutions de référence
-    orpValue = roundf((rawOrpValue * mqttCfg.orpCalibrationSlope) + mqttCfg.orpCalibrationOffset);
-
-    // Debug: afficher les valeurs ORP toutes les 5 secondes (si activé)
-    if (authCfg.sensorLogsEnabled && now - lastOrpDebugLog >= 5000) {
-      float voltageMin = ads.computeVolts(minVal) * 1000.0f;
-      float voltageMax = ads.computeVolts(maxVal) * 1000.0f;
-      float voltageAvg = ads.computeVolts(sum / kNumSensorSamples) * 1000.0f;
-
-      // Log vers Serial et système de logs
-      char logMsg[200];
-      snprintf(logMsg, sizeof(logMsg),
-               "ORP: ADC=%d (avg=%d min=%d max=%d) | Vads=%.1fmV (avg=%.1f min=%.1f max=%.1f) | Vmod=%.1fmV | ORP=%.1fmV",
-               rawAdc, (int)(sum/kNumSensorSamples), minVal, maxVal,
-               voltage, voltageAvg, voltageMin, voltageMax, orpModuleVoltage_mV, orpValue);
-      Serial.printf("[ORP DEBUG] ADS1115 A1 | %s\n", logMsg);
-      systemLogger.debug(logMsg);
-
-      lastOrpDebugLog = now;
-    }
-  }
-
-  // ========== Lecture pH via ADS1115 canal A0 avec filtrage médian ==========
-  {
-    // Filtrage médian avec échantillonnage réduit
-    // L'ADS1115 à 8 SPS fait déjà un filtrage interne précis
-    int16_t minVal, maxVal;
-    int16_t rawAdc = readMedianAdsChannel(0, kNumSensorSamples, &minVal, &maxVal);
-
-    // Conversion ADC -> Voltage en utilisant la fonction de la bibliothèque
-    // qui tient compte automatiquement du gain configuré
-    float voltage = ads.computeVolts(rawAdc) * 1000.0f;  // Convertir V en mV
-
-    // Utiliser la température pour la compensation (si disponible)
-    float temperature = isnan(tempValue) ? 25.0f : tempValue;
-
-    // Stocker la tension brute (utile pour affichage pendant calibration)
-    phVoltageMv = voltage;
-
-    // Calculer le pH avec calibration automatique et compensation de température
-    // Arrondir à 1 décimale
-    phValue = roundf(phSensor.readPH(voltage, temperature) * 10.0f) / 10.0f;
-
-    // Log diagnostic toutes les 30s : tension brute ADS (câblage/sonde) — si logs sondes activés
-    static unsigned long lastPhInfoLog = 0;
-    if (authCfg.sensorLogsEnabled && now - lastPhInfoLog >= 30000) {
-      char logMsg[200];
-      snprintf(logMsg, sizeof(logMsg),
-               "pH: ADC A0=%d | V=%.1fmV | Temp=%.1f°C | pH=%.2f",
-               rawAdc, voltage, temperature, phValue);
-      systemLogger.info(logMsg);
-      // Avertissement si tension hors plage normale (~500-3500mV pour sonde pH)
-      if (voltage < 500.0f || voltage > 3500.0f) {
-        systemLogger.warning("pH: tension ADS anormale (" + String(voltage, 1) +
-                             "mV) - vérifier câblage sonde sur A0 et alimentation module");
-      }
-      lastPhInfoLog = now;
-    }
-
-    // Debug: afficher les valeurs pH toutes les 5 secondes (si activé)
-    if (authCfg.sensorLogsEnabled && now - lastPhDebugLog >= 5000) {
-      float voltageMin = ads.computeVolts(minVal) * 1000.0f;
-      float voltageMax = ads.computeVolts(maxVal) * 1000.0f;
-
-      // Log vers Serial et système de logs
-      char logMsg[200];
-      snprintf(logMsg, sizeof(logMsg),
-               "pH: ADC=%d (min=%d max=%d) | V=%.1fmV (min=%.1f max=%.1f) | Temp=%.1f°C | pH=%.2f",
-               rawAdc, minVal, maxVal, voltage, voltageMin, voltageMax, temperature, phValue);
-      Serial.printf("[pH DEBUG] ADS1115 A0 | %s\n", logMsg);
-      systemLogger.debug(logMsg);
-
-      lastPhDebugLog = now;
-    }
-  }
-
-  sensorsInitialized = true;
-}
-
-
-float SensorManager::getRawOrp() const {
-  // Inverse de la calibration: ORP_final = (raw × slope) + offset
-  // Donc: raw = (ORP_final - offset) / slope
-  if (mqttCfg.orpCalibrationSlope == 0.0f) {
-    // Protection division par zéro - fallback
-    return orpValue - mqttCfg.orpCalibrationOffset;
-  }
-  return (orpValue - mqttCfg.orpCalibrationOffset) / mqttCfg.orpCalibrationSlope;
-}
-
-float SensorManager::getRawPh() const {
-  // Avec DFRobot_PH, la librairie gère la calibration en interne
-  // On retourne la valeur calibrée directement
-  return phValue;
-}
-
-void SensorManager::recalculateCalibratedValues() {
-  // Recalculer la température calibrée à partir de la valeur brute de la sonde "eau".
-  // Note (feature-020) : l'offset utilisateur s'applique UNIQUEMENT à la T° eau.
-  // La T° circuit reste brute (calibration usine DS18B20 suffisante).
-  int waterIdx = _findSondeIndexByRole(SondeRole::Water);
-  if (waterIdx >= 0 && !isnan(_sondes[waterIdx].lastTempRaw)) {
-    tempRawValue = _sondes[waterIdx].lastTempRaw;
-    tempValue = tempRawValue + mqttCfg.tempCalibrationOffset;
-  } else if (!isnan(tempRawValue)) {
-    // Pas d'identification eau : on conserve la valeur brute mais sans offset
-    // (cas du fallback gracieux 1ʳᵉ sonde).
-    tempValue = tempRawValue;
-  }
-
-  // Note: On ne recalcule PAS le pH ici car la bibliothèque DFRobot_PH
-  // gère sa propre calibration dans l'EEPROM. Recalculer avec une ancienne
-  // tension après une nouvelle calibration pourrait donner des valeurs incohérentes.
-  // Le pH sera mis à jour naturellement lors de la prochaine lecture du capteur.
-
-  // Recalculer l'ORP calibré à partir de la valeur brute
-  // Formule: ORP_final = (ORP_brut × slope) + offset
-  float rawOrp = getRawOrp();
-  if (!isnan(rawOrp)) {
-    orpValue = (rawOrp * mqttCfg.orpCalibrationSlope) + mqttCfg.orpCalibrationOffset;
-  }
-}
-
-void SensorManager::publishValues() {
-  if (!sensorsInitialized) return;
-
-  // Cette fonction est appelée par mqtt_manager
-  // On la laisse vide ici pour éviter la dépendance circulaire
-}
-
-// ========== Calibration pH (DFRobot_PH) ==========
-
-void SensorManager::calibratePhNeutral() {
-  // Vérifier que l'ADS1115 est disponible
-  if (!adsAvailable) {
-    systemLogger.error("Calibration pH impossible - ADS1115 non détecté sur I2C");
-    return;
-  }
-
-  // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian)
-  int16_t minVal, maxVal;
-  int16_t rawAdc = readMedianAdsChannel(0, kNumSensorSamples, &minVal, &maxVal);
-  float voltage = ads.computeVolts(rawAdc) * 1000.0f;
-  float temperature = isnan(tempValue) ? 25.0f : tempValue;
-
-  systemLogger.info("Calibration pH neutre (7.0): ADC A0=" + String(rawAdc) +
-                    " | V=" + String(voltage, 1) + "mV" +
-                    " (min=" + String(ads.computeVolts(minVal)*1000.0f, 1) +
-                    " max=" + String(ads.computeVolts(maxVal)*1000.0f, 1) + ")" +
-                    " | T=" + String(temperature, 1) + "°C");
-
-  // La bibliothèque DFRobot_PH accepte neutre uniquement entre 1322-1678mV (plage exacte lib)
-  const bool neutralInLibRange = (voltage >= 1322.0f && voltage <= 1678.0f);
-  if (!neutralInLibRange) {
-    systemLogger.warning("ATTENTION pH neutre: tension " + String(voltage, 1) +
-                         "mV hors plage DFRobot (1322-1678mV) - calibration IGNOREE par la lib !");
-    systemLogger.warning("Vérifier: sonde sur A0, solution tampon pH 7, alimentation module");
   } else {
-    systemLogger.info("Tension dans la plage pH 7.0 (1322-1678mV) - calibration valide");
+    _phI2cFailStreak++;
+    if (_phI2cFailStreak == kEzoBusFailMaxConsecutive) {
+      // Logger une seule fois quand on franchit le seuil — au-delà, silence
+      // pour ne pas inonder les logs en cas de débranchement durable.
+      systemLogger.warning("EZO pH : " + String(_phI2cFailStreak) +
+                           " échecs I²C consécutifs — dosage pH bloqué");
+    }
+    // Cond #5 pool-chemistry : invalider explicitement la lecture si bus dégradé.
+    // Sans ça, getPh() pourrait retourner une valeur "fraîche" pendant la fenêtre
+    // stale (20 s) alors que le bus I²C est en panne durable. canDose() doit
+    // bloquer immédiatement → on fait passer _lastPh à NaN.
+    if (_phI2cFailStreak >= kEzoBusFailMaxConsecutive) {
+      _lastPh = NAN;
+      // Correctif Pass 3.5 (pool-chemistry) : invalider aussi le cache cal_points.
+      // Sinon, après une coupure I²C transitoire, canDose() pourrait reposer sur
+      // un cache obsolète (ex. cal effacée pendant la coupure côté EZO). On
+      // remet -1 → canDose() bloque jusqu'à un Cal,? réussi au retour de bus.
+      _phCalCachedPoints = -1;
+      if (!_phI2cDegradedLogged) {
+        systemLogger.critical("EZO pH : bus I²C dégradé (" + String(_phI2cFailStreak) +
+                              " échecs) — lecture invalidée, régulation auto inhibée");
+        _phI2cDegradedLogged = true;
+      }
+    }
   }
 
-  // Processus de calibration DFRobot_PH
-  phSensor.calibration(voltage, temperature, (char*)"enterph");
-  phSensor.calibration(voltage, temperature, (char*)"calph");
-  phSensor.calibration(voltage, temperature, (char*)"exitph");
-  EEPROM.commit();
+  // ----- ORP -----
+  float orp = NAN;
+  if (_orpEzo.readSingle(orp, tempC)) {
+    _lastOrp = orp;
+    _lastOrpMs = now;
+    _orpI2cFailStreak = 0;
+    _orpStaleLogged = false;
+    _orpI2cDegradedLogged = false;
+    _ezoEverResponded = true;
+    // Correctif Pass 3.5 : rafraîchissement borné du cache cal_points ORP
+    // (idem pH, cf. commentaire ci-dessus).
+    if (_orpCalCachedPoints == -1) {
+      int pts = _orpEzo.queryCalPoints();
+      if (pts >= 0) {
+        _orpCalCachedPoints = pts;
+        systemLogger.info("EZO ORP : cache calibration rafraîchi (points=" +
+                          String(pts) + ")");
+      }
+    }
+    if (authCfg.sensorLogsEnabled) {
+      char buf[80];
+      snprintf(buf, sizeof(buf), "EZO ORP: %.0f mV", orp);
+      systemLogger.debug(buf);
+    }
+  } else {
+    _orpI2cFailStreak++;
+    if (_orpI2cFailStreak == kEzoBusFailMaxConsecutive) {
+      systemLogger.warning("EZO ORP : " + String(_orpI2cFailStreak) +
+                           " échecs I²C consécutifs — dosage ORP bloqué");
+    }
+    // Cond #5 pool-chemistry : invalider la lecture ORP en cas de bus dégradé.
+    if (_orpI2cFailStreak >= kEzoBusFailMaxConsecutive) {
+      _lastOrp = NAN;
+      // Correctif Pass 3.5 (pool-chemistry) : invalider aussi le cache cal_points
+      // ORP. Cohérent avec pH ci-dessus → canDose() refuse jusqu'à un Cal,?
+      // réussi au retour de bus.
+      _orpCalCachedPoints = -1;
+      if (!_orpI2cDegradedLogged) {
+        systemLogger.critical("EZO ORP : bus I²C dégradé (" + String(_orpI2cFailStreak) +
+                              " échecs) — lecture invalidée, régulation auto inhibée");
+        _orpI2cDegradedLogged = true;
+      }
+    }
+  }
 
-  // Vérification: relire EEPROM pour confirmer la sauvegarde
-  // Struct DFRobot_PH: NeutralVoltage à offset 0, AcidVoltage à offset 4
-  float storedNeutralV, storedAcidV;
-  EEPROM.get(0, storedNeutralV);
-  EEPROM.get(4, storedAcidV);
-  systemLogger.info("EEPROM après calibration neutre: neutre=" + String(storedNeutralV, 1) +
-                    "mV, acide=" + String(storedAcidV, 1) + "mV");
-  if (fabsf(storedNeutralV - voltage) > 5.0f) {
-    // La lib a rejeté la calibration (voltage hors de sa plage stricte).
-    // Si la tension est dans une plage raisonnable, écrire directement en EEPROM.
-    if (voltage >= 1200.0f && voltage <= 1900.0f) {
-      systemLogger.warning("Écriture directe EEPROM neutre (bypass plage lib): " + String(voltage, 1) + "mV");
-      EEPROM.put(0, voltage);
-      EEPROM.commit();
-      phSensor.begin();  // Recharger les nouvelles valeurs depuis l'EEPROM
-      EEPROM.get(0, storedNeutralV);
-      if (fabsf(storedNeutralV - voltage) < 5.0f) {
-        systemLogger.info("Calibration neutre directe réussie: " + String(storedNeutralV, 1) + "mV");
-        _phCalibrated = true;
+  // Trace debug : on enregistre TOUJOURS (même si ph ou orp = NaN), pour visualiser
+  // les trous de lecture aussi clairement que les valeurs.
+  _recordPhDebugSample(_lastPh, _lastOrp, tempC);
+}
+
+// =============================================================================
+// Trace debug pH (ring buffer en RAM)
+// =============================================================================
+
+void SensorManager::_recordPhDebugSample(float ph, float orp, float tempC) {
+  PhDebugSample& s = _phDebugBuffer[_phDebugIdx];
+  s.ms    = millis();
+  s.ph    = ph;
+  s.orp   = orp;
+  s.tempC = tempC;
+  _phDebugIdx = (_phDebugIdx + 1) % kPhDebugBufferSize;
+  if (_phDebugCount < kPhDebugBufferSize) ++_phDebugCount;
+}
+
+size_t SensorManager::getPhDebugSampleCount() const {
+  return _phDebugCount;
+}
+
+void SensorManager::getPhDebugSamplesJson(JsonArray out) const {
+  // Parcours dans l'ordre chronologique (plus ancien d'abord).
+  // Si buffer plein : on commence à l'index actuel (= position du plus ancien).
+  // Sinon : on commence à 0.
+  size_t start = (_phDebugCount == kPhDebugBufferSize) ? _phDebugIdx : 0;
+  for (size_t i = 0; i < _phDebugCount; ++i) {
+    size_t idx = (start + i) % kPhDebugBufferSize;
+    const PhDebugSample& s = _phDebugBuffer[idx];
+    JsonObject o = out.add<JsonObject>();
+    o["t"] = s.ms;
+    if (!isnan(s.ph))    o["ph"]    = roundf(s.ph * 1000.0f) / 1000.0f;
+    else                 o["ph"]    = nullptr;
+    if (!isnan(s.orp))   o["orp"]   = roundf(s.orp * 10.0f) / 10.0f;
+    else                 o["orp"]   = nullptr;
+    if (!isnan(s.tempC)) o["tempC"] = roundf(s.tempC * 10.0f) / 10.0f;
+    else                 o["tempC"] = nullptr;
+  }
+}
+
+void SensorManager::clearPhDebugBuffer() {
+  _phDebugIdx = 0;
+  _phDebugCount = 0;
+}
+
+// =============================================================================
+// Détection stale + log critical à la transition (pool-chemistry condition #1)
+// =============================================================================
+
+void SensorManager::_checkStaleAndLog() {
+  uint32_t now = millis();
+
+  // pH : log critical UNE FOIS quand la dernière lecture valide dépasse le seuil
+  if (!isnan(_lastPh) && !_phStaleLogged &&
+      (now - _lastPhMs > kSensorStaleTimeoutMs)) {
+    systemLogger.critical("EZO pH : lectures stale > " +
+                          String(kSensorStaleTimeoutMs / 1000) +
+                          "s — régulation auto inhibée");
+    _phStaleLogged = true;
+  }
+
+  // ORP idem
+  if (!isnan(_lastOrp) && !_orpStaleLogged &&
+      (now - _lastOrpMs > kSensorStaleTimeoutMs)) {
+    systemLogger.critical("EZO ORP : lectures stale > " +
+                          String(kSensorStaleTimeoutMs / 1000) +
+                          "s — régulation auto inhibée");
+    _orpStaleLogged = true;
+  }
+}
+
+// =============================================================================
+// Queue de commandes EZO — exécution asynchrone (depuis update() dans loopTask)
+// =============================================================================
+
+void SensorManager::_processEzoQueue() {
+  if (_ezoQueue == nullptr) return;
+
+  EzoCmdRequest req;
+  // Réception non bloquante : 0 tick. Au plus 1 commande par cycle pour ne pas
+  // monopoliser loopTask (chaque commande peut prendre 900 ms côté I²C).
+  if (xQueueReceive(_ezoQueue, &req, 0) != pdTRUE) {
+    return;
+  }
+
+  _executeEzoCmd(req);
+
+  // Watchdog : la commande de calibration peut bloquer ~1 s (delay 900 ms +
+  // wire transactions). On reset après pour rester dans la fenêtre 30 s.
+  esp_task_wdt_reset();
+}
+
+void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
+  bool ok = false;
+  switch (req.kind) {
+    case EzoCmdKind::CalibratePhMid: {
+      systemLogger.info("EZO pH : calibration point milieu (pH 7.00) en cours...");
+      ok = _phEzo.calibrate("mid,7.00");
+      if (ok) {
+        _phCalCachedPoints = _phEzo.queryCalPoints();
+        PumpController.armStabilizationTimer(0);  // Stabilisation pH post-cal
+        systemLogger.info("EZO pH : calibration mid OK (points=" + String(_phCalCachedPoints) + ")");
       } else {
-        systemLogger.error("Calibration neutre directe échouée !");
+        systemLogger.error("EZO pH : calibration mid échouée");
       }
-    } else {
-      systemLogger.error("EEPROM calibration neutre non sauvegardée ! (stored=" +
-                         String(storedNeutralV, 1) + "mV, expected=" + String(voltage, 1) +
-                         "mV) - tension hors plage (1200-1900mV)");
+      break;
     }
-  } else {
-    _phCalibrated = true;  // Lib a accepté et écrit en EEPROM
-  }
-}
-
-void SensorManager::calibratePhAcid() {
-  // Vérifier que l'ADS1115 est disponible
-  if (!adsAvailable) {
-    systemLogger.error("Calibration pH impossible - ADS1115 non détecté sur I2C");
-    return;
-  }
-
-  // Lire la tension actuelle depuis l'ADS1115 canal A0 (filtre médian)
-  int16_t minVal, maxVal;
-  int16_t rawAdc = readMedianAdsChannel(0, kNumSensorSamples, &minVal, &maxVal);
-  float voltage = ads.computeVolts(rawAdc) * 1000.0f;
-  float temperature = isnan(tempValue) ? 25.0f : tempValue;
-
-  systemLogger.info("Calibration pH acide (4.0): ADC A0=" + String(rawAdc) +
-                    " | V=" + String(voltage, 1) + "mV" +
-                    " (min=" + String(ads.computeVolts(minVal)*1000.0f, 1) +
-                    " max=" + String(ads.computeVolts(maxVal)*1000.0f, 1) + ")" +
-                    " | T=" + String(temperature, 1) + "°C");
-
-  // La bibliothèque DFRobot_PH accepte acide uniquement entre 1854-2210mV (plage exacte lib)
-  const bool acidInLibRange = (voltage >= 1854.0f && voltage <= 2210.0f);
-  if (!acidInLibRange) {
-    systemLogger.warning("ATTENTION pH acide: tension " + String(voltage, 1) +
-                         "mV hors plage DFRobot (1854-2210mV) - calibration IGNOREE par la lib !");
-    systemLogger.warning("Vérifier: sonde sur A0, solution tampon pH 4, alimentation module");
-  } else {
-    systemLogger.info("Tension dans la plage pH 4.0 (1854-2210mV) - calibration valide");
-  }
-
-  // Processus de calibration DFRobot_PH
-  phSensor.calibration(voltage, temperature, (char*)"enterph");
-  phSensor.calibration(voltage, temperature, (char*)"calph");
-  phSensor.calibration(voltage, temperature, (char*)"exitph");
-  EEPROM.commit();
-
-  // Vérification: relire EEPROM pour confirmer la sauvegarde
-  // Struct DFRobot_PH: NeutralVoltage à offset 0, AcidVoltage à offset 4
-  float storedNeutralV, storedAcidV;
-  EEPROM.get(0, storedNeutralV);
-  EEPROM.get(4, storedAcidV);
-  systemLogger.info("EEPROM après calibration acide: neutre=" + String(storedNeutralV, 1) +
-                    "mV, acide=" + String(storedAcidV, 1) + "mV");
-  if (fabsf(storedAcidV - voltage) > 5.0f) {
-    // La lib a rejeté la calibration (voltage hors de sa plage stricte 1854-2210mV).
-    // Si la tension est dans une plage raisonnable, écrire directement en EEPROM.
-    if (voltage >= 1700.0f && voltage <= 2500.0f) {
-      systemLogger.warning("Écriture directe EEPROM acide (bypass plage lib): " + String(voltage, 1) + "mV");
-      EEPROM.put(4, voltage);
-      EEPROM.commit();
-      phSensor.begin();  // Recharger les nouvelles valeurs depuis l'EEPROM
-      EEPROM.get(4, storedAcidV);
-      if (fabsf(storedAcidV - voltage) < 5.0f) {
-        systemLogger.info("Calibration acide directe réussie: " + String(storedAcidV, 1) + "mV");
-        _phCalibrated = true;
+    case EzoCmdKind::CalibratePhLow: {
+      systemLogger.info("EZO pH : calibration point bas (pH 4.00) en cours...");
+      ok = _phEzo.calibrate("low,4.00");
+      if (ok) {
+        _phCalCachedPoints = _phEzo.queryCalPoints();
+        PumpController.armStabilizationTimer(0);  // Stabilisation pH post-cal
+        systemLogger.info("EZO pH : calibration low OK (points=" + String(_phCalCachedPoints) + ")");
       } else {
-        systemLogger.error("Calibration acide directe échouée !");
+        systemLogger.error("EZO pH : calibration low échouée");
       }
-    } else {
-      systemLogger.error("EEPROM calibration acide non sauvegardée ! (stored=" +
-                         String(storedAcidV, 1) + "mV, expected=" + String(voltage, 1) +
-                         "mV) - tension hors plage (1700-2500mV)");
+      break;
     }
-  } else {
-    _phCalibrated = true;  // Lib a accepté et écrit en EEPROM
+    case EzoCmdKind::CalibrateOrp: {
+      // Cal,<ref> sur EZO ORP attend la valeur de référence en mV (entier).
+      char arg[16];
+      snprintf(arg, sizeof(arg), "%d", (int)roundf(req.arg));
+      systemLogger.info("EZO ORP : calibration référence " + String(arg) + " mV en cours...");
+      ok = _orpEzo.calibrate(arg);
+      if (ok) {
+        _orpCalCachedPoints = _orpEzo.queryCalPoints();
+        PumpController.armStabilizationTimer(1);  // Stabilisation ORP post-cal
+        systemLogger.info("EZO ORP : calibration OK (points=" + String(_orpCalCachedPoints) + ")");
+      } else {
+        systemLogger.error("EZO ORP : calibration échouée");
+      }
+      break;
+    }
+    case EzoCmdKind::ClearPhCal: {
+      systemLogger.info("EZO pH : effacement calibration en cours...");
+      ok = _phEzo.clearCalibration();
+      if (ok) {
+        _phCalCachedPoints = _phEzo.queryCalPoints();
+        systemLogger.info("EZO pH : calibration effacée (points=" + String(_phCalCachedPoints) + ")");
+      } else {
+        systemLogger.error("EZO pH : effacement calibration échoué");
+      }
+      break;
+    }
+    case EzoCmdKind::ClearOrpCal: {
+      systemLogger.info("EZO ORP : effacement calibration en cours...");
+      ok = _orpEzo.clearCalibration();
+      if (ok) {
+        _orpCalCachedPoints = _orpEzo.queryCalPoints();
+        systemLogger.info("EZO ORP : calibration effacée (points=" + String(_orpCalCachedPoints) + ")");
+      } else {
+        systemLogger.error("EZO ORP : effacement calibration échoué");
+      }
+      break;
+    }
   }
 }
 
-void SensorManager::calibratePhAlkaline() {
-  // Note: DFRobot_PH ne supporte que 2 points (4.0 et 7.0)
-  // Pour pH 9.18, utiliser la calibration 2 points standard
-  systemLogger.warning("DFRobot_PH ne supporte que calibration 2 points (pH 4.0 et 7.0) - utilisez calibratePhAcid() et calibratePhNeutral()");
+// =============================================================================
+// Getters publics — pH / ORP (avec fenêtre stale)
+// =============================================================================
+
+float SensorManager::getPh() const {
+  if (isnan(_lastPh)) return NAN;
+  if (millis() - _lastPhMs > kSensorStaleTimeoutMs) return NAN;
+  return _lastPh;
 }
 
-void SensorManager::clearPhCalibration() {
-  // Effacer l'EEPROM utilisé par DFRobot_PH (adresses 0-7)
-  for (int i = 0; i < 8; i++) {
-    EEPROM.write(i, 0xFF);
+float SensorManager::getOrp() const {
+  if (isnan(_lastOrp)) return NAN;
+  if (millis() - _lastOrpMs > kSensorStaleTimeoutMs) return NAN;
+  return _lastOrp;
+}
+
+int SensorManager::getPhCalibrationPoints() {
+  // Rafraîchit à la demande pour les routes de diagnostic (peut prendre ~900 ms).
+  // La régulation s'appuie sur le cache `_phCalCachedPoints` mis à jour en begin()
+  // et après chaque calibration → pas de lecture I²C dans le chemin chaud.
+  int pts = _phEzo.queryCalPoints();
+  if (pts >= 0) {
+    _phCalCachedPoints = pts;
   }
-  EEPROM.commit();
-
-  // Réinitialiser le capteur pH avec les valeurs par défaut
-  phSensor.begin();
-  EEPROM.commit();
-
-  _phCalibrated = false;
-  systemLogger.info("Calibration pH effacée - réinitialisée aux valeurs par défaut");
+  return pts;
 }
 
-// ============================================================================
-// API 2 sondes DS18B20 (feature-020)
-// ============================================================================
+int SensorManager::getOrpCalibrationPoints() {
+  int pts = _orpEzo.queryCalPoints();
+  if (pts >= 0) {
+    _orpCalCachedPoints = pts;
+  }
+  return pts;
+}
+
+bool SensorManager::isInitialized() const {
+  // Considéré initialisé si au moins un EZO a déjà répondu (boot ou lecture)
+  // ET qu'au moins une lecture pH ou ORP valide est en cache.
+  return _ezoEverResponded && (!isnan(_lastPh) || !isnan(_lastOrp));
+}
+
+// =============================================================================
+// Enqueue de commandes — appelé par handlers async (Pass 4) ou UART (uart_commands)
+// =============================================================================
+
+bool SensorManager::enqueueCalibratePhMid() {
+  if (_ezoQueue == nullptr) return false;
+  EzoCmdRequest req{EzoCmdKind::CalibratePhMid, 0.0f};
+  return xQueueSend(_ezoQueue, &req, 0) == pdTRUE;
+}
+
+bool SensorManager::enqueueCalibratePhLow() {
+  if (_ezoQueue == nullptr) return false;
+  EzoCmdRequest req{EzoCmdKind::CalibratePhLow, 0.0f};
+  return xQueueSend(_ezoQueue, &req, 0) == pdTRUE;
+}
+
+bool SensorManager::enqueueCalibrateOrp(float referenceMv) {
+  if (_ezoQueue == nullptr) return false;
+  EzoCmdRequest req{EzoCmdKind::CalibrateOrp, referenceMv};
+  return xQueueSend(_ezoQueue, &req, 0) == pdTRUE;
+}
+
+bool SensorManager::enqueueClearPhCalibration() {
+  if (_ezoQueue == nullptr) return false;
+  EzoCmdRequest req{EzoCmdKind::ClearPhCal, 0.0f};
+  return xQueueSend(_ezoQueue, &req, 0) == pdTRUE;
+}
+
+bool SensorManager::enqueueClearOrpCalibration() {
+  if (_ezoQueue == nullptr) return false;
+  EzoCmdRequest req{EzoCmdKind::ClearOrpCal, 0.0f};
+  return xQueueSend(_ezoQueue, &req, 0) == pdTRUE;
+}
+
+// =============================================================================
+// API DS18B20 (feature-020) — Inchangé
+// =============================================================================
 
 int SensorManager::_findSondeIndexByRole(SondeRole role) const {
   for (uint8_t i = 0; i < _detectedCount; ++i) {
@@ -724,7 +674,6 @@ void SensorManager::_loadSondeIdentificationFromNvs() {
   size_t circuitLen = prefs.getBytes(kNvsKeyOwCircuitAddr, circuitAddr, kSondeAddrLen);
   prefs.end();
 
-  // Matcher l'adresse "eau" stockée avec une sonde détectée
   if (waterLen == kSondeAddrLen) {
     int idx = _findSondeIndexByAddr(waterAddr);
     if (idx >= 0) {
@@ -735,7 +684,6 @@ void SensorManager::_loadSondeIdentificationFromNvs() {
     }
   }
 
-  // Matcher l'adresse "circuit" stockée
   if (circuitLen == kSondeAddrLen) {
     int idx = _findSondeIndexByAddr(circuitAddr);
     if (idx >= 0) {
@@ -764,12 +712,8 @@ bool SensorManager::_saveSondeAddrToNvs(const char* nvsKey, const uint8_t addr[k
 }
 
 float SensorManager::getTemperature() const {
-  // Alias rétrocompat de la T° eau, avec fallback gracieux sur la 1ʳᵉ sonde présente
-  // tant que l'identification utilisateur n'a pas été faite. Évite NaN sur MQTT/WS
-  // pour les utilisateurs qui n'auraient pas encore lancé le workflow.
   float waterT = getWaterTemperature();
   if (!isnan(waterT)) return waterT;
-  // Fallback : 1ʳᵉ sonde présente (sans offset car non identifiée comme "eau")
   for (uint8_t i = 0; i < _detectedCount; ++i) {
     if (!isnan(_sondes[i].lastTempRaw)) {
       return _sondes[i].lastTempRaw;
@@ -783,14 +727,19 @@ float SensorManager::getWaterTemperature() const {
   if (idx < 0) return NAN;
   float raw = _sondes[idx].lastTempRaw;
   if (isnan(raw)) return NAN;
-  // Offset de calibration utilisateur appliqué UNIQUEMENT sur la T° eau
   return raw + mqttCfg.tempCalibrationOffset;
+}
+
+float SensorManager::getWaterTemperatureRaw() const {
+  int idx = _findSondeIndexByRole(SondeRole::Water);
+  if (idx < 0) return NAN;
+  return _sondes[idx].lastTempRaw;
 }
 
 float SensorManager::getCircuitTemperature() const {
   int idx = _findSondeIndexByRole(SondeRole::Circuit);
   if (idx < 0) return NAN;
-  return _sondes[idx].lastTempRaw;  // Pas d'offset (calibration usine seule)
+  return _sondes[idx].lastTempRaw;
 }
 
 bool SensorManager::areSondesIdentified() const {
@@ -823,8 +772,6 @@ bool SensorManager::identifySonde(const uint8_t addr[kSondeAddrLen], bool isWate
   const char* newKey = isWater ? kNvsKeyOwWaterAddr : kNvsKeyOwCircuitAddr;
   const char* otherKey = isWater ? kNvsKeyOwCircuitAddr : kNvsKeyOwWaterAddr;
 
-  // Auto-permutation : si une autre sonde porte déjà ce rôle, on la bascule à l'autre rôle
-  // (cas typique : utilisateur réalise qu'il a inversé l'identification).
   for (uint8_t i = 0; i < _detectedCount; ++i) {
     if ((int)i == targetIdx) continue;
     if (_sondes[i].role == newRole) {
@@ -858,6 +805,5 @@ void SensorManager::resetSondeIdentification() {
   for (uint8_t i = 0; i < _detectedCount; ++i) {
     _sondes[i].role = SondeRole::Unknown;
   }
-  // Reset des alias rétrocompat (le prochain readRealSensors les ré-alimentera).
   systemLogger.info("Identification des sondes DS18B20 réinitialisée (NVS effacé)");
 }

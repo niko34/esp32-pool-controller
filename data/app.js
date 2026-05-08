@@ -1411,50 +1411,8 @@
     setSegmented("regulation_speed", cfg.regulation_speed || "normal");
     $("#ph_correction_type").value = cfg.ph_correction_type || "ph_minus";
 
-    // pH calibration info
-    const phCalValid = cfg.ph_cal_valid === true;
-    const phCalDateStr = cfg.ph_calibration_date || "";
-    const phCalTemp = cfg.ph_calibration_temp;
-
-    const phCalibratedStatus = $("#ph_calibrated_status");
-    const phCalDate = $("#ph_cal_date");
-
-    if (phCalibratedStatus) {
-      phCalibratedStatus.style.display = phCalValid ? "block" : "none";
-    }
-
-    const phCalDateHeader = $("#ph_cal_date_header");
-    let phCalText = "Dernière calibration : —";
-    if (phCalDateStr && phCalValid) {
-      const d = new Date(phCalDateStr);
-      phCalText = "Dernière calibration : " + d.toLocaleString("fr-FR");
-      if (phCalTemp && !isNaN(phCalTemp)) phCalText += ` à ${phCalTemp.toFixed(1)}°C`;
-      const vn = cfg.ph_cal_vn;
-      const va = cfg.ph_cal_va;
-      if (vn != null && va != null) phCalText += ` — Vn=${vn.toFixed(1)}mV Va=${va.toFixed(1)}mV`;
-    }
-    if (phCalDate) phCalDate.textContent = phCalText;
-    if (phCalDateHeader) phCalDateHeader.textContent = phCalText;
-
-    // ORP calibration info
-    const orpCalibrated = cfg.orp_calibration_date && cfg.orp_calibration_date !== "";
-    const orpCalibratedStatus = $("#orp_calibrated_status");
-    const orpCalDate = $("#orp_cal_date");
-
-    if (orpCalibratedStatus) {
-      orpCalibratedStatus.style.display = orpCalibrated ? "block" : "none";
-    }
-
-    const orpCalDateHeader = $("#orp_cal_date_header");
-    let orpCalText = "Dernière calibration : —";
-    if (orpCalibrated) {
-      const d = new Date(cfg.orp_calibration_date);
-      const ref = cfg.orp_calibration_reference;
-      orpCalText = "Dernière calibration : " + d.toLocaleString("fr-FR");
-      if (ref && ref > 0) orpCalText += ` (réf: ${ref.toFixed(0)} mV)`;
-    }
-    if (orpCalDate) orpCalDate.textContent = orpCalText;
-    if (orpCalDateHeader) orpCalDateHeader.textContent = orpCalText;
+    // pH/ORP calibration info — Atlas EZO : basé sur phCalPoints / orpCalPoints (WS sensor_data)
+    renderCalibrationStatus();
 
     // Temperature enabled and calibration info
     $("#temperature_enabled").checked = cfg.temperature_enabled !== false;
@@ -1555,95 +1513,35 @@
   }
 
   // ---------- Calibration badges (Dashboard + chip) ----------
+  // Atlas EZO : statut basé sur phCalPoints (-1..3) et orpCalPoints (-1..1) du WS sensor_data.
+  //   pH OK si >= 2 points calibrés. ORP OK si >= 1 point.
+  //   -1 = EZO injoignable.
   async function checkCalibrationDate() {
     try {
-      const res = await authFetch("/get-config");
-      if (!res.ok) return;
-      const config = await res.json();
+      const phPts = (latestSensorData?.phCalPoints != null) ? latestSensorData.phCalPoints : null;
+      const orpPts = (latestSensorData?.orpCalPoints != null) ? latestSensorData.orpCalPoints : null;
 
-      const threeMonthsInDays = 90;
-      const now = new Date();
+      const phNeedsCal = (phPts === null) ? false : (phPts < 2); // inclut -1 (injoignable) et 0..1
+      const orpNeedsCal = (orpPts === null) ? false : (orpPts < 1);
 
       const phBadgeEl = $("#ph-calibration-badge");
       const orpBadgeEl = $("#orp-calibration-badge");
 
-      // pH
-      if (phBadgeEl) {
-        const phCalValid = config.ph_cal_valid === true;
-        const phCalibrationDate = config.ph_calibration_date;
-
-        let show = false;
-        if (!phCalValid || !phCalibrationDate) show = true;
-        else {
-          let calDate = new Date(phCalibrationDate);
-          if (isNaN(calDate.getTime())) {
-            const ts = parseInt(phCalibrationDate);
-            if (!isNaN(ts)) calDate = new Date(ts);
-          }
-          if (!calDate || isNaN(calDate.getTime())) show = true;
-          else {
-            const calDays = (now - calDate) / (1000 * 60 * 60 * 24);
-            show = calDays > threeMonthsInDays;
-          }
-        }
-        phBadgeEl.style.display = show ? "inline-flex" : "none";
-      }
-
-      // ORP
-      if (orpBadgeEl) {
-        const calibrationDate = config.orp_calibration_date;
-        let show = false;
-        if (!calibrationDate) show = true;
-        else {
-          const d = new Date(calibrationDate);
-          const diffDays = (now - d) / (1000 * 60 * 60 * 24);
-          show = diffDays > threeMonthsInDays;
-        }
-        orpBadgeEl.style.display = show ? "inline-flex" : "none";
-      }
+      if (phBadgeEl) phBadgeEl.style.display = phNeedsCal ? "inline-flex" : "none";
+      if (orpBadgeEl) orpBadgeEl.style.display = orpNeedsCal ? "inline-flex" : "none";
 
       // Global chip
       const chip = $("#calib-chip");
       if (chip) {
-        const need = (phBadgeEl && phBadgeEl.style.display !== "none") || (orpBadgeEl && orpBadgeEl.style.display !== "none");
+        const need = phNeedsCal || orpNeedsCal;
         chip.style.display = need ? "inline-flex" : "none";
       }
 
       // Dashboard calibration alerts
       const phDashAlert = $("#ph-calibration-alert");
       const orpDashAlert = $("#orp-calibration-alert");
-
-      if (phDashAlert) {
-        const phCalValid = config.ph_cal_valid === true;
-        const phCalibrationDate = config.ph_calibration_date;
-        let needsCal = false;
-        if (!phCalValid || !phCalibrationDate) needsCal = true;
-        else {
-          let calDate = new Date(phCalibrationDate);
-          if (isNaN(calDate.getTime())) {
-            const ts = parseInt(phCalibrationDate);
-            if (!isNaN(ts)) calDate = new Date(ts);
-          }
-          if (!calDate || isNaN(calDate.getTime())) needsCal = true;
-          else {
-            const calDays = (now - calDate) / (1000 * 60 * 60 * 24);
-            needsCal = calDays > threeMonthsInDays;
-          }
-        }
-        phDashAlert.style.display = needsCal ? "flex" : "none";
-      }
-
-      if (orpDashAlert) {
-        const orpCalibrationDate = config.orp_calibration_date;
-        let needsCal = false;
-        if (!orpCalibrationDate) needsCal = true;
-        else {
-          const d = new Date(orpCalibrationDate);
-          const diffDays = (now - d) / (1000 * 60 * 60 * 24);
-          needsCal = diffDays > threeMonthsInDays;
-        }
-        orpDashAlert.style.display = needsCal ? "flex" : "none";
-      }
+      if (phDashAlert) phDashAlert.style.display = phNeedsCal ? "flex" : "none";
+      if (orpDashAlert) orpDashAlert.style.display = orpNeedsCal ? "flex" : "none";
     } catch (e) {
       // ignore
     }
@@ -2603,66 +2501,44 @@
         // Mettre à jour les sections détaillées
         updateDetailSections();
 
-        // also update readouts in settings
+        // also update readouts in settings — Atlas EZO : la sonde retourne directement la valeur
+        // calibrée (pas de "tension brute" à exposer). Pendant la calibration on affiche la
+        // lecture pH/ORP live (3 décimales pour pH).
         const phCurrentValue = $("#ph_current_value");
         const phCurrentLabel = $("#ph_current_label");
         if (phCurrentValue) {
-          if (phCalibrationActive) {
-            if (phCurrentLabel) phCurrentLabel.textContent = "Tension brute capteur";
-            if (json.ph_voltage_mv != null && typeof json.ph_voltage_mv === "number" && !isNaN(json.ph_voltage_mv)) {
-              phCurrentValue.textContent = json.ph_voltage_mv.toFixed(1) + " mV";
-            } else {
-              phCurrentValue.textContent = "--";
-            }
+          if (phCurrentLabel) phCurrentLabel.textContent = "Valeur pH actuelle";
+          if (json.ph != null && typeof json.ph === "number" && !isNaN(json.ph)) {
+            phCurrentValue.textContent = json.ph.toFixed(2);
           } else {
-            if (phCurrentLabel) phCurrentLabel.textContent = "Valeur pH actuelle";
-            if (json.ph != null && typeof json.ph === "number" && !isNaN(json.ph)) {
-              phCurrentValue.textContent = json.ph.toFixed(2);
-            } else {
-              phCurrentValue.textContent = "--";
-            }
+            phCurrentValue.textContent = "--";
           }
         }
 
         const orpCurrentValue = $("#orp_current_value");
         const orpCurrentLabel = $("#orp_current_label");
         if (orpCurrentValue) {
-          if (orpCalibrationActive) {
-            if (orpCurrentLabel) orpCurrentLabel.textContent = "Tension brute capteur";
-            if (json.orp_raw != null && typeof json.orp_raw === "number" && !isNaN(json.orp_raw)) {
-              orpCurrentValue.textContent = Math.round(json.orp_raw) + " mV";
-            } else {
-              orpCurrentValue.textContent = "--";
-            }
+          if (orpCurrentLabel) orpCurrentLabel.textContent = "Valeur ORP actuelle";
+          if (json.orp != null && typeof json.orp === "number" && !isNaN(json.orp)) {
+            orpCurrentValue.textContent = Math.round(json.orp) + " mV";
           } else {
-            if (orpCurrentLabel) orpCurrentLabel.textContent = "Valeur ORP actuelle";
-            if (json.orp != null && typeof json.orp === "number" && !isNaN(json.orp)) {
-              orpCurrentValue.textContent = Math.round(json.orp) + " mV";
-            } else {
-              orpCurrentValue.textContent = "--";
-            }
+            orpCurrentValue.textContent = "--";
           }
         }
 
         const tempCurrentValue = $("#temp_current_value");
         const tempCurrentLabel = $("#temp_current_label");
         if (tempCurrentValue) {
-          if (tempCalibrationStep > 0) {
-            if (tempCurrentLabel) tempCurrentLabel.textContent = "Température brute capteur";
-            if (json.temperature_raw != null && typeof json.temperature_raw === "number" && !isNaN(json.temperature_raw)) {
-              tempCurrentValue.textContent = json.temperature_raw.toFixed(1) + " °C";
-            } else {
-              tempCurrentValue.textContent = "--";
-            }
+          if (tempCurrentLabel) tempCurrentLabel.textContent = "Température actuelle";
+          if (json.temperature != null && typeof json.temperature === "number" && !isNaN(json.temperature)) {
+            tempCurrentValue.textContent = json.temperature.toFixed(1) + " °C";
           } else {
-            if (tempCurrentLabel) tempCurrentLabel.textContent = "Température actuelle";
-            if (json.temperature != null && typeof json.temperature === "number" && !isNaN(json.temperature)) {
-              tempCurrentValue.textContent = json.temperature.toFixed(1) + " °C";
-            } else {
-              tempCurrentValue.textContent = "--";
-            }
+            tempCurrentValue.textContent = "--";
           }
         }
+
+        // Mise à jour des readouts de la carte de calibration EZO (live)
+        if (typeof updateCalibrationReadouts === "function") updateCalibrationReadouts(json);
 
         // Mettre à jour le timestamp du dernier chargement
         lastSensorDataLoadTime = Date.now();
@@ -2786,12 +2662,23 @@
           return;
         }
 
-        if (!latestSensorData || isNaN(latestSensorData.temperature_raw) || latestSensorData.temperature_raw == null) {
-          alert("Aucune donnée capteur brute disponible (/data).");
+        if (!latestSensorData || isNaN(latestSensorData.temperature) || latestSensorData.temperature == null) {
+          alert("Aucune donnée capteur disponible (/data).");
           return;
         }
 
-        const currentTempRaw = latestSensorData.temperature_raw;
+        // T° brute fournie par le firmware via le champ WS `temperature_raw` (sans offset).
+        // Évite la formule fragile `calibrated - offset_précédent`. Fallback rétrocompat
+        // si le champ est absent (firmware antérieur à feature-021 hotfix WS raw).
+        let currentTempRaw;
+        if (typeof latestSensorData.temperature_raw === "number" && !isNaN(latestSensorData.temperature_raw)) {
+          currentTempRaw = latestSensorData.temperature_raw;
+        } else {
+          const currentTempCalibrated = latestSensorData.temperature;
+          const previousOffset = (typeof window._config?.temp_calibration_offset === "number")
+            ? window._config.temp_calibration_offset : 0;
+          currentTempRaw = currentTempCalibrated - previousOffset;
+        }
         const offset = referenceValue - currentTempRaw;
         const calibrationDate = new Date().toISOString();
 
@@ -2819,7 +2706,6 @@
           // Met à jour l'état local pour que l'écran reflète la calibration sans attendre
           if (!latestSensorData) latestSensorData = {};
           latestSensorData.temperature = correctedTemp;
-          latestSensorData.temperature_raw = currentTempRaw;
 
           // Dashboard
           const mTemp = $("#m-temp");
@@ -2856,67 +2742,108 @@
     updateTempCalibrationSteps();
   }
 
-  // ---------- pH calibration endpoints ----------
-  let phCalibrationStep = 0; // 0=idle, 1=plunge7.0, 2=calibrate7.0, 3=plunge4.0, 4=calibrate4.0
+  // ---------- Atlas EZO Calibration (pH 2 points + ORP 1 point) ----------
+  // Backend Pass 4a : POST /calibrate_ph {step:'mid'|'low'} et /calibrate_orp {reference:200..1000}.
+  // L'EZO exécute la commande en background ; le firmware met ensuite à jour phCalPoints/orpCalPoints
+  // via le push WS sensor_data. On poll latestSensorData jusqu'à constater l'incrément.
   let phCalibrationActive = false;
   let orpCalibrationActive = false;
-  let calibrationRefreshInterval = null;
 
-  function startCalibrationRefresh() {
-    // No-op: WebSocket pushes sensor data every 5s
-  }
+  function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  function stopCalibrationRefresh() {
-    if (calibrationRefreshInterval) {
-      clearInterval(calibrationRefreshInterval);
-      calibrationRefreshInterval = null;
+  // Met à jour les badges, les chips d'inhibition, et les readouts live
+  function renderCalibrationStatus() {
+    const phPts = (latestSensorData?.phCalPoints != null) ? latestSensorData.phCalPoints : null;
+    const orpPts = (latestSensorData?.orpCalPoints != null) ? latestSensorData.orpCalPoints : null;
+
+    // ===== pH =====
+    const phUnreachable = (phPts === -1);
+    const phComplete = (phPts != null && phPts >= 2);
+    const phPartial = (phPts === 1);
+    const phNone = (phPts === 0);
+
+    // Callouts/chips de la carte Régulation pH
+    const phOk = $("#ph_calibrated_status");
+    const phInhib = $("#ph_inhibition_chip");
+    const phUnreach = $("#ph_ezo_unreachable");
+    const phPtsLabel = $("#ph_cal_points_label");
+    if (phOk) phOk.style.display = phComplete ? "block" : "none";
+    if (phInhib) phInhib.style.display = (phPartial || phNone) ? "block" : "none";
+    if (phUnreach) phUnreach.style.display = phUnreachable ? "block" : "none";
+    if (phPtsLabel) phPtsLabel.textContent = phPartial ? "1" : "0";
+
+    // Badges des sous-blocs (carte Calibration pH)
+    const midBadge = $("#cal-ph-mid-badge");
+    const lowBadge = $("#cal-ph-low-badge");
+    const setBadge = (el, label, cls) => {
+      if (!el) return;
+      el.className = "state-badge" + (cls ? " " + cls : "");
+      el.textContent = label;
+    };
+    if (phComplete) {
+      setBadge(midBadge, "Calibré ✓", "is-ok");
+      setBadge(lowBadge, "Calibré ✓", "is-ok");
+    } else if (phPartial) {
+      // EZO ne distingue pas mid/low via Cal,? — afficher les 2 en partiel
+      setBadge(midBadge, "1 point calibré (indéterminé)", "is-warn");
+      setBadge(lowBadge, "1 point calibré (indéterminé)", "is-warn");
+    } else if (phUnreachable) {
+      setBadge(midBadge, "EZO injoignable", "is-warn");
+      setBadge(lowBadge, "EZO injoignable", "is-warn");
+    } else {
+      setBadge(midBadge, "Non calibré", "");
+      setBadge(lowBadge, "Non calibré", "");
+    }
+
+    // Status header de la carte Calibration pH
+    const phHeader = $("#ph_cal_status_header");
+    if (phHeader) {
+      if (phUnreachable) phHeader.textContent = "EZO pH injoignable";
+      else if (phComplete) phHeader.textContent = "Calibré 2 points ✓";
+      else if (phPartial) phHeader.textContent = "1 point calibré sur 2";
+      else phHeader.textContent = "Aucun point calibré";
+    }
+
+    // ===== ORP =====
+    const orpUnreachable = (orpPts === -1);
+    const orpCalibrated = (orpPts != null && orpPts >= 1);
+
+    const orpOk = $("#orp_calibrated_status");
+    const orpInhib = $("#orp_inhibition_chip");
+    const orpUnreach = $("#orp_ezo_unreachable");
+    if (orpOk) orpOk.style.display = orpCalibrated ? "block" : "none";
+    if (orpInhib) orpInhib.style.display = (orpPts === 0) ? "block" : "none";
+    if (orpUnreach) orpUnreach.style.display = orpUnreachable ? "block" : "none";
+
+    const orpBadge = $("#cal-orp-badge");
+    if (orpCalibrated) setBadge(orpBadge, "Calibré ✓", "is-ok");
+    else if (orpUnreachable) setBadge(orpBadge, "EZO injoignable", "is-warn");
+    else setBadge(orpBadge, "Non calibré", "");
+
+    const orpHeader = $("#orp_cal_status_header");
+    if (orpHeader) {
+      if (orpUnreachable) orpHeader.textContent = "EZO ORP injoignable";
+      else if (orpCalibrated) orpHeader.textContent = "Calibré ✓";
+      else orpHeader.textContent = "Non calibré";
     }
   }
 
-  function updatePhCalibrationSteps() {
-    const step1 = $("#ph_step1");
-    const step2 = $("#ph_step2");
-    const step3 = $("#ph_step3");
-    const step4 = $("#ph_step4");
-    const startBtn = $("#ph_cal_start_btn");
-    const cancelBtn = $("#ph_cal_cancel_btn");
-
-    // Reset all states
-    [step1, step2, step3, step4].forEach(el => {
-      el?.classList.remove("is-active", "is-completed");
-    });
-
-    if (phCalibrationStep === 0) {
-      // Idle state
-      if (startBtn) startBtn.textContent = "Commencer la calibration";
-      if (cancelBtn) cancelBtn.style.display = "none";
-    } else if (phCalibrationStep === 1) {
-      // Step 1: Plunge in pH 7.0
-      step1?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Étape suivante";
-      if (cancelBtn) cancelBtn.style.display = "inline-block";
-    } else if (phCalibrationStep === 2) {
-      // Step 2: Calibrating pH 7.0
-      step1?.classList.add("is-completed");
-      step2?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Calibrer pH 7.0";
-      if (cancelBtn) cancelBtn.style.display = "inline-block";
-    } else if (phCalibrationStep === 3) {
-      // Step 3: Plunge in pH 4.0
-      step1?.classList.add("is-completed");
-      step2?.classList.add("is-completed");
-      step3?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Étape suivante";
-      if (cancelBtn) cancelBtn.style.display = "inline-block";
-    } else if (phCalibrationStep === 4) {
-      // Step 4: Calibrating pH 4.0
-      step1?.classList.add("is-completed");
-      step2?.classList.add("is-completed");
-      step3?.classList.add("is-completed");
-      step4?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Calibrer pH 4.0";
-      if (cancelBtn) cancelBtn.style.display = "inline-block";
+  // Appelé par la boucle sensor_data : met à jour les readouts live des cards de calibration
+  function updateCalibrationReadouts(json) {
+    const phMid = $("#cal-ph-mid-readout");
+    const phLow = $("#cal-ph-low-readout");
+    if (phMid || phLow) {
+      const phStr = (typeof json.ph === "number" && !isNaN(json.ph)) ? json.ph.toFixed(3) : "--";
+      if (phMid) phMid.textContent = phStr;
+      if (phLow) phLow.textContent = phStr;
     }
+    const orpRo = $("#cal-orp-readout");
+    if (orpRo) {
+      orpRo.textContent = (typeof json.orp === "number" && !isNaN(json.orp))
+        ? Math.round(json.orp) + " mV" : "--";
+    }
+    // Synchroniser badges/chips/header à chaque push
+    renderCalibrationStatus();
   }
 
   function showPhCalibrationCard() {
@@ -2928,11 +2855,7 @@
     if (hist) hist.style.display = "none";
     if (cal) cal.style.display = "";
     if (calBtn) calBtn.disabled = true;
-    // Masquer le bloc calibration-info (bandeau Calibré + bouton) pendant la calibration
-    const calInfo = $("#ph-calibration-info");
-    if (calInfo) calInfo.style.display = "none";
   }
-
   function hidePhCalibrationCard() {
     const reg = $("#ph-card-regulation");
     const hist = $("#ph-card-history");
@@ -2942,231 +2865,8 @@
     if (hist) hist.style.display = "";
     if (cal) cal.style.display = "none";
     if (calBtn) calBtn.disabled = false;
-    // Restaure la visibilité selon le mode actif
     updatePhModeControls();
   }
-
-  function bindPhCalibration() {
-    const startBtn = $("#ph_cal_start_btn");
-    const cancelBtn = $("#ph_cal_cancel_btn");
-
-    // Bouton "Calibrer" dans la carte Statistiques
-    const triggerBtn = $("#ph_cal_trigger_btn");
-    triggerBtn?.addEventListener("click", () => {
-      // Ignorer si calibration déjà active ou injection en cours
-      if (phCalibrationActive) return;
-      phCalibrationStep = 1;
-      phCalibrationActive = true;
-      showPhCalibrationCard();
-      startCalibrationRefresh();
-      updatePhCalibrationSteps();
-    });
-
-    cancelBtn?.addEventListener("click", () => {
-      if (confirm("Annuler la calibration en cours ?")) {
-        phCalibrationStep = 0;
-        phCalibrationActive = false;
-        stopCalibrationRefresh();
-        updatePhCalibrationSteps();
-        hidePhCalibrationCard();
-        // Restaure le bandeau Calibré si la sonde était déjà calibrée
-        loadConfig();
-      }
-    });
-
-    startBtn?.addEventListener("click", async () => {
-      if (phCalibrationStep === 0) {
-        // Start calibration process (atteint via ph_cal_start_btn directement — cas non nominal)
-        phCalibrationStep = 1;
-        phCalibrationActive = true;
-        showPhCalibrationCard();
-        startCalibrationRefresh();
-        updatePhCalibrationSteps();
-      } else if (phCalibrationStep === 1) {
-        // Move to step 2
-        phCalibrationStep = 2;
-        updatePhCalibrationSteps();
-      } else if (phCalibrationStep === 2) {
-        // Calibrate pH 7.0
-        startBtn.disabled = true;
-
-        try {
-          const res = await authFetch("/calibrate_ph_neutral", { method: "POST" });
-          const data = await res.json();
-          if (!data.success) throw new Error(data.error || "Calibration échouée");
-
-          phCalibrationStep = 3;
-          updatePhCalibrationSteps();
-        } catch (err) {
-          alert("Erreur calibration pH 7.0:\n" + err.message);
-          phCalibrationStep = 0;
-          updatePhCalibrationSteps();
-        } finally {
-          startBtn.disabled = false;
-        }
-      } else if (phCalibrationStep === 3) {
-        // Move to step 4 (plunge in pH 4.0 done)
-        phCalibrationStep = 4;
-        updatePhCalibrationSteps();
-      } else if (phCalibrationStep === 4) {
-        // Calibrate pH 4.0
-        startBtn.disabled = true;
-
-        try {
-          const res = await authFetch("/calibrate_ph_acid", { method: "POST" });
-          const data = await res.json();
-          if (!data.success) throw new Error(data.error || "Calibration échouée");
-
-          // Mark all steps as completed
-          $("#ph_step1")?.classList.add("is-completed");
-          $("#ph_step2")?.classList.add("is-completed");
-          $("#ph_step3")?.classList.add("is-completed");
-          $("#ph_step4")?.classList.add("is-completed");
-          $("#ph_step4")?.classList.remove("is-active");
-
-          // Reset to idle
-          phCalibrationStep = 0;
-          phCalibrationActive = false;
-          stopCalibrationRefresh();
-
-          // Masquer la carte calibration et restaurer les cartes normales
-          hidePhCalibrationCard();
-
-          // Invalider le timestamp pour forcer le rechargement
-          lastSensorDataLoadTime = 0;
-
-          // Refresh réel depuis l'ESP (valeurs calculées après calibration)
-          await loadConfig();
-          await checkCalibrationDate();
-          updatePhCalibrationSteps();
-
-          // Recharger les données après un court délai pour se resynchroniser avec le backend
-          setTimeout(async () => {
-            await loadSensorData({ force: true });
-          }, 2000);
-        } catch (err) {
-          alert("Erreur calibration pH 4.0:\n" + err.message);
-          phCalibrationStep = 0;
-          phCalibrationActive = false;
-          stopCalibrationRefresh();
-          hidePhCalibrationCard();
-          updatePhCalibrationSteps();
-        } finally {
-          startBtn.disabled = false;
-        }
-      }
-    });
-
-    // Initialize
-    updatePhCalibrationSteps();
-  }
-
-  // ---------- ORP calibration ----------
-  let orpCalibrationStep1pt = 0; // 0=idle, 1=plunge, 2=wait, 3=enterRef, 4=calibrate
-  let orpCalibrationStep2pt = 0; // 0=idle, 1-8=steps
-  let orpPoint1Measured = null;
-  let orpPoint1Reference = null;
-
-  function updateOrpCalibrationSteps1pt() {
-    const steps = [$("#orp_step1_1pt"), $("#orp_step2_1pt"), $("#orp_step3_1pt"), $("#orp_step4_1pt")];
-    const startBtn = $("#orp_cal_start_btn_1pt");
-    const cancelBtn = $("#orp_cal_cancel_btn_1pt");
-    const refInput = $("#orp_reference_value_1pt");
-
-    steps.forEach(el => el?.classList.remove("is-active", "is-completed"));
-
-    if (orpCalibrationStep1pt === 0) {
-      if (startBtn) startBtn.textContent = "Commencer la calibration";
-      if (cancelBtn) cancelBtn.style.display = "none";
-      if (refInput) refInput.disabled = true;
-    } else if (orpCalibrationStep1pt === 1) {
-      steps[0]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Étape suivante";
-      if (cancelBtn) cancelBtn.style.display = "inline-block";
-      if (refInput) refInput.disabled = true;
-    } else if (orpCalibrationStep1pt === 2) {
-      steps[0]?.classList.add("is-completed");
-      steps[1]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Étape suivante";
-      if (cancelBtn) cancelBtn.style.display = "inline-block";
-      if (refInput) refInput.disabled = true;
-    } else if (orpCalibrationStep1pt === 3) {
-      steps[0]?.classList.add("is-completed");
-      steps[1]?.classList.add("is-completed");
-      steps[2]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Étape suivante";
-      if (cancelBtn) cancelBtn.style.display = "inline-block";
-      if (refInput) refInput.disabled = false;
-    } else if (orpCalibrationStep1pt === 4) {
-      steps[0]?.classList.add("is-completed");
-      steps[1]?.classList.add("is-completed");
-      steps[2]?.classList.add("is-completed");
-      steps[3]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Calibrer";
-      if (cancelBtn) cancelBtn.style.display = "inline-block";
-      if (refInput) refInput.disabled = true;
-    }
-  }
-
-  function updateOrpCalibrationSteps2pt() {
-    const steps = [
-      $("#orp_step1_2pt"), $("#orp_step2_2pt"), $("#orp_step3_2pt"), $("#orp_step4_2pt"),
-      $("#orp_step5_2pt"), $("#orp_step6_2pt"), $("#orp_step7_2pt"), $("#orp_step8_2pt")
-    ];
-    const startBtn = $("#orp_cal_start_btn_2pt");
-    const cancelBtn = $("#orp_cal_cancel_btn_2pt");
-    const ref1Input = $("#orp_ref1");
-    const ref2Input = $("#orp_ref2");
-    const statusHint = $("#orp_2pt_status");
-
-    steps.forEach(el => el?.classList.remove("is-active", "is-completed"));
-
-    if (orpCalibrationStep2pt === 0) {
-      if (startBtn) startBtn.textContent = "Commencer la calibration";
-      if (cancelBtn) cancelBtn.style.display = "none";
-      if (ref1Input) ref1Input.disabled = true;
-      if (ref2Input) ref2Input.disabled = true;
-      if (statusHint) statusHint.style.display = "none";
-    } else if (orpCalibrationStep2pt === 1) {
-      steps[0]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Étape suivante";
-      if (cancelBtn) cancelBtn.style.display = "inline-block";
-    } else if (orpCalibrationStep2pt === 2) {
-      steps[0]?.classList.add("is-completed");
-      steps[1]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Étape suivante";
-    } else if (orpCalibrationStep2pt === 3) {
-      for (let i = 0; i < 2; i++) steps[i]?.classList.add("is-completed");
-      steps[2]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Étape suivante";
-      if (ref1Input) ref1Input.disabled = false;
-    } else if (orpCalibrationStep2pt === 4) {
-      for (let i = 0; i < 3; i++) steps[i]?.classList.add("is-completed");
-      steps[3]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Mémoriser point 1";
-      if (ref1Input) ref1Input.disabled = true;
-    } else if (orpCalibrationStep2pt === 5) {
-      for (let i = 0; i < 4; i++) steps[i]?.classList.add("is-completed");
-      steps[4]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Étape suivante";
-      if (statusHint) statusHint.style.display = "block";
-    } else if (orpCalibrationStep2pt === 6) {
-      for (let i = 0; i < 5; i++) steps[i]?.classList.add("is-completed");
-      steps[5]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Étape suivante";
-    } else if (orpCalibrationStep2pt === 7) {
-      for (let i = 0; i < 6; i++) steps[i]?.classList.add("is-completed");
-      steps[6]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Étape suivante";
-      if (ref2Input) ref2Input.disabled = false;
-    } else if (orpCalibrationStep2pt === 8) {
-      for (let i = 0; i < 7; i++) steps[i]?.classList.add("is-completed");
-      steps[7]?.classList.add("is-active");
-      if (startBtn) startBtn.textContent = "Calibrer (2 points)";
-      if (ref2Input) ref2Input.disabled = true;
-    }
-  }
-
   function showOrpCalibrationCard() {
     const reg = $("#orp-card-regulation");
     const hist = $("#orp-card-history");
@@ -3176,11 +2876,7 @@
     if (hist) hist.style.display = "none";
     if (cal) cal.style.display = "";
     if (calBtn) calBtn.disabled = true;
-    // Masquer le bloc calibration-info pendant la calibration (il disparait avec la carte Régulation)
-    const calInfo = $("#orp-calibration-info");
-    if (calInfo) calInfo.style.display = "none";
   }
-
   function hideOrpCalibrationCard() {
     const reg = $("#orp-card-regulation");
     const hist = $("#orp-card-history");
@@ -3190,318 +2886,180 @@
     if (hist) hist.style.display = "";
     if (cal) cal.style.display = "none";
     if (calBtn) calBtn.disabled = false;
-    // Restaure la visibilité selon le mode actif
     updateOrpModeControls();
   }
 
-  function bindOrpCalibration() {
-    const typeSel = $("#orp_cal_type");
-    const cal1 = $("#orp_cal_1point");
-    const cal2 = $("#orp_cal_2points");
-    const calibratedStatus = $("#orp_calibrated_status");
+  // POST /calibrate_ph {step}, puis attente que phCalPoints incrémente (timeout 15s)
+  async function calibratePh(step /* 'mid' | 'low' */) {
+    const btnId = step === "mid" ? "btn-cal-ph-mid" : "btn-cal-ph-low";
+    const btn = $("#" + btnId);
+    const originalLabel = btn ? btn.textContent : "";
+    const stepLabel = step === "mid" ? "pH 7.0" : "pH 4.0";
 
-    // Bouton "Calibrer" dans le sous-bloc Automatique de la carte Régulation
+    // Pulse visuel sur le readout du sous-bloc
+    const ro = step === "mid" ? $(".readout", $("#cal-ph-mid-block")) : $(".readout", $("#cal-ph-low-block"));
+    if (ro) ro.classList.add("is-pulsing");
+
+    if (btn) { btn.disabled = true; btn.textContent = "Calibration en cours…"; }
+    // Désactiver l'autre bouton pendant la calibration pour éviter une double commande EZO
+    const otherBtn = step === "mid" ? $("#btn-cal-ph-low") : $("#btn-cal-ph-mid");
+    if (otherBtn) otherBtn.disabled = true;
+
+    try {
+      const previous = (latestSensorData?.phCalPoints != null && latestSensorData.phCalPoints >= 0)
+                     ? latestSensorData.phCalPoints : 0;
+
+      const res = await authFetch("/calibrate_ph", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ step })
+      });
+
+      if (!res.ok) {
+        let errMsg = "HTTP " + res.status;
+        try { const j = await res.json(); if (j?.error) errMsg = j.error; } catch (_) {}
+        showToast("Erreur calibration " + stepLabel + " : " + errMsg, "error");
+        return;
+      }
+
+      showToast("Calibration " + stepLabel + " envoyée — exécution EZO en cours…", "info");
+
+      // Polling phCalPoints (15 s max, vérification toutes les secondes)
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline) {
+        await _sleep(1000);
+        const cur = latestSensorData?.phCalPoints;
+        if (cur === -1) {
+          showToast("Calibration " + stepLabel + " : EZO pH injoignable", "error");
+          return;
+        }
+        if (typeof cur === "number" && cur > previous) {
+          showToast("Calibration " + stepLabel + " réussie (" + cur + "/2 points)", "success");
+          renderCalibrationStatus();
+          return;
+        }
+      }
+      showToast("Calibration " + stepLabel + " : délai dépassé — vérifier la sonde", "warning");
+    } catch (e) {
+      showToast("Erreur réseau : " + (e?.message || e), "error");
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
+      if (otherBtn) otherBtn.disabled = false;
+      if (ro) ro.classList.remove("is-pulsing");
+      renderCalibrationStatus();
+    }
+  }
+
+  // POST /calibrate_orp {reference}
+  async function calibrateOrp(reference) {
+    const btn = $("#btn-cal-orp");
+    const originalLabel = btn ? btn.textContent : "";
+    const ro = $(".readout", $("#cal-orp-block"));
+    if (ro) ro.classList.add("is-pulsing");
+    if (btn) { btn.disabled = true; btn.textContent = "Calibration en cours…"; }
+
+    try {
+      const previous = (latestSensorData?.orpCalPoints != null && latestSensorData.orpCalPoints >= 0)
+                     ? latestSensorData.orpCalPoints : 0;
+
+      const res = await authFetch("/calibrate_orp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reference })
+      });
+      if (!res.ok) {
+        let errMsg = "HTTP " + res.status;
+        try { const j = await res.json(); if (j?.error) errMsg = j.error; } catch (_) {}
+        showToast("Erreur calibration ORP : " + errMsg, "error");
+        return;
+      }
+
+      showToast("Calibration ORP envoyée — exécution EZO en cours…", "info");
+
+      const deadline = Date.now() + 15000;
+      while (Date.now() < deadline) {
+        await _sleep(1000);
+        const cur = latestSensorData?.orpCalPoints;
+        if (cur === -1) {
+          showToast("Calibration ORP : EZO injoignable", "error");
+          return;
+        }
+        if (typeof cur === "number" && cur >= 1 && cur > previous) {
+          showToast("Calibration ORP réussie (référence " + reference + " mV)", "success");
+          renderCalibrationStatus();
+          return;
+        }
+      }
+      // Cas particulier : si l'utilisateur recalibre alors que orpCalPoints == 1 déjà,
+      // le nombre de points ne changera pas. Considérer comme succès après 5s sans erreur.
+      if (latestSensorData?.orpCalPoints >= 1) {
+        showToast("Calibration ORP mise à jour (référence " + reference + " mV)", "success");
+        renderCalibrationStatus();
+        return;
+      }
+      showToast("Calibration ORP : délai dépassé — vérifier la sonde", "warning");
+    } catch (e) {
+      showToast("Erreur réseau : " + (e?.message || e), "error");
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
+      if (ro) ro.classList.remove("is-pulsing");
+      renderCalibrationStatus();
+    }
+  }
+
+  function bindPhCalibration() {
+    // Bouton "Calibrer" (carte Régulation) → ouvre la carte de calibration
+    const triggerBtn = $("#ph_cal_trigger_btn");
+    triggerBtn?.addEventListener("click", () => {
+      if (phCalibrationActive) return;
+      phCalibrationActive = true;
+      showPhCalibrationCard();
+      renderCalibrationStatus();
+    });
+
+    // Bouton "Fermer" → revient à la carte Régulation
+    const closeBtn = $("#ph_cal_close_btn");
+    closeBtn?.addEventListener("click", () => {
+      phCalibrationActive = false;
+      hidePhCalibrationCard();
+    });
+
+    // Boutons de calibration
+    $("#btn-cal-ph-mid")?.addEventListener("click", () => calibratePh("mid"));
+    $("#btn-cal-ph-low")?.addEventListener("click", () => calibratePh("low"));
+
+    renderCalibrationStatus();
+  }
+
+  function bindOrpCalibration() {
     const triggerBtn = $("#orp_cal_trigger_btn");
     triggerBtn?.addEventListener("click", () => {
       if (orpCalibrationActive) return;
-      // Vérifier qu'aucune injection ORP n'est en cours
       const orpInjecting = (latestSensorData?.orp_inject_remaining_s ?? 0) > 0
                         || (latestSensorData?.orp_dosing === true);
       if (orpInjecting) { showToast("Calibration impossible pendant une injection ORP", "error"); return; }
-      orpCalibrationStep1pt = 0;
-      orpCalibrationStep2pt = 0;
       orpCalibrationActive = true;
       showOrpCalibrationCard();
-      startCalibrationRefresh();
-      updateOrpCalibrationSteps1pt();
-      updateOrpCalibrationSteps2pt();
+      renderCalibrationStatus();
     });
 
-    // Type selector
-    typeSel?.addEventListener("change", () => {
-      const is2pt = typeSel.value === "2points";
-      if (cal1) cal1.style.display = is2pt ? "none" : "block";
-      if (cal2) cal2.style.display = is2pt ? "block" : "none";
-
-      // Reset states
-      orpCalibrationStep1pt = 0;
-      orpCalibrationStep2pt = 0;
+    const closeBtn = $("#orp_cal_close_btn");
+    closeBtn?.addEventListener("click", () => {
       orpCalibrationActive = false;
-      stopCalibrationRefresh();
-      orpPoint1Measured = null;
-      orpPoint1Reference = null;
-      updateOrpCalibrationSteps1pt();
-      updateOrpCalibrationSteps2pt();
+      hideOrpCalibrationCard();
     });
 
-    // 1-point calibration
-    const startBtn1pt = $("#orp_cal_start_btn_1pt");
-    const cancelBtn1pt = $("#orp_cal_cancel_btn_1pt");
-    const refInput1pt = $("#orp_reference_value_1pt");
-
-    cancelBtn1pt?.addEventListener("click", () => {
-      if (confirm("Annuler la calibration en cours ?")) {
-        orpCalibrationStep1pt = 0;
-        orpCalibrationActive = false;
-        stopCalibrationRefresh();
-        if (refInput1pt) refInput1pt.value = "";
-        updateOrpCalibrationSteps1pt();
-        hideOrpCalibrationCard();
-        loadConfig();
+    $("#btn-cal-orp")?.addEventListener("click", () => {
+      const refInput = $("#orp-cal-reference");
+      const reference = parseInt(refInput?.value, 10);
+      if (isNaN(reference) || reference < 200 || reference > 1000) {
+        showToast("Valeur de référence invalide (200–1000 mV)", "error");
+        return;
       }
+      calibrateOrp(reference);
     });
 
-    startBtn1pt?.addEventListener("click", async () => {
-      if (orpCalibrationStep1pt === 0) {
-        orpCalibrationStep1pt = 1;
-        orpCalibrationActive = true;
-        showOrpCalibrationCard();
-        startCalibrationRefresh();
-        updateOrpCalibrationSteps1pt();
-        if (calibratedStatus) calibratedStatus.style.display = "none";
-      } else if (orpCalibrationStep1pt === 1) {
-        orpCalibrationStep1pt = 2;
-        updateOrpCalibrationSteps1pt();
-      } else if (orpCalibrationStep1pt === 2) {
-        orpCalibrationStep1pt = 3;
-        updateOrpCalibrationSteps1pt();
-        if (refInput1pt) refInput1pt.focus();
-      } else if (orpCalibrationStep1pt === 3) {
-        const referenceValue = parseFloat(refInput1pt.value);
-        if (isNaN(referenceValue) || referenceValue < 0 || referenceValue > 1000) {
-          alert("Valeur de référence ORP invalide (0-1000 mV)");
-          return;
-        }
-        orpCalibrationStep1pt = 4;
-        updateOrpCalibrationSteps1pt();
-      } else if (orpCalibrationStep1pt === 4) {
-        const referenceValue = parseFloat(refInput1pt.value);
-        if (isNaN(referenceValue) || referenceValue < 0 || referenceValue > 1000) {
-          alert("Valeur de référence ORP invalide (0-1000 mV)");
-          orpCalibrationStep1pt = 2;
-          updateOrpCalibrationSteps1pt();
-          return;
-        }
-
-        if (!latestSensorData || isNaN(latestSensorData.orp_raw) || latestSensorData.orp_raw == null) {
-          alert("Aucune donnée capteur disponible (/data).");
-          return;
-        }
-
-        const currentOrpRaw = latestSensorData.orp_raw;
-        const offset = referenceValue - currentOrpRaw;
-        const calibrationDate = new Date().toISOString();
-
-        startBtn1pt.disabled = true;
-        try {
-          const cfg = collectConfig();
-          cfg.orp_calibration_offset = offset;
-          cfg.orp_calibration_slope = 1.0;
-          cfg.orp_calibration_date = calibrationDate;
-          cfg.orp_calibration_reference = referenceValue;
-
-          const ok = await sendConfig(cfg);
-          if (!ok) throw new Error("Impossible d'enregistrer la configuration");
-
-          $("#orp_step1_1pt")?.classList.add("is-completed");
-          $("#orp_step2_1pt")?.classList.add("is-completed");
-          $("#orp_step3_1pt")?.classList.add("is-completed");
-          $("#orp_step4_1pt")?.classList.add("is-completed");
-          $("#orp_step4_1pt")?.classList.remove("is-active");
-          if (calibratedStatus) calibratedStatus.style.display = "block";
-
-          orpCalibrationStep1pt = 0;
-          orpCalibrationActive = false;
-          stopCalibrationRefresh();
-          if (refInput1pt) refInput1pt.value = "";
-
-          // Invalider le timestamp pour forcer le rechargement
-          lastSensorDataLoadTime = 0;
-
-          // Refresh réel depuis l'ESP puis fermeture de la carte calibration
-          await loadConfig();
-          await checkCalibrationDate();
-          updateOrpCalibrationSteps1pt();
-          hideOrpCalibrationCard();
-
-          // Recharger les données après un court délai pour se resynchroniser avec le backend
-          setTimeout(async () => {
-            await loadSensorData({ force: true });
-          }, 2000);
-        } catch (err) {
-          alert("Erreur calibration ORP:\n" + err.message);
-          orpCalibrationStep1pt = 0;
-          orpCalibrationActive = false;
-          stopCalibrationRefresh();
-          updateOrpCalibrationSteps1pt();
-        } finally {
-          startBtn1pt.disabled = false;
-        }
-      }
-    });
-
-    // 2-point calibration
-    const startBtn2pt = $("#orp_cal_start_btn_2pt");
-    const cancelBtn2pt = $("#orp_cal_cancel_btn_2pt");
-    const ref1 = $("#orp_ref1");
-    const ref2 = $("#orp_ref2");
-
-    cancelBtn2pt?.addEventListener("click", () => {
-      if (confirm("Annuler la calibration en cours ?")) {
-        orpCalibrationStep2pt = 0;
-        orpCalibrationActive = false;
-        stopCalibrationRefresh();
-        orpPoint1Measured = null;
-        orpPoint1Reference = null;
-        if (ref1) ref1.value = "";
-        if (ref2) ref2.value = "";
-        updateOrpCalibrationSteps2pt();
-        hideOrpCalibrationCard();
-        loadConfig();
-      }
-    });
-
-    startBtn2pt?.addEventListener("click", async () => {
-      if (orpCalibrationStep2pt === 0) {
-        orpCalibrationStep2pt = 1;
-        orpCalibrationActive = true;
-        showOrpCalibrationCard();
-        startCalibrationRefresh();
-        updateOrpCalibrationSteps2pt();
-        if (calibratedStatus) calibratedStatus.style.display = "none";
-      } else if (orpCalibrationStep2pt === 1) {
-        orpCalibrationStep2pt = 2;
-        updateOrpCalibrationSteps2pt();
-      } else if (orpCalibrationStep2pt === 2) {
-        orpCalibrationStep2pt = 3;
-        updateOrpCalibrationSteps2pt();
-        if (ref1) ref1.focus();
-      } else if (orpCalibrationStep2pt === 3) {
-        const r1 = parseFloat(ref1.value);
-        if (isNaN(r1) || r1 < 0 || r1 > 1000) {
-          alert("Réf 1 invalide (0-1000 mV)");
-          return;
-        }
-        orpCalibrationStep2pt = 4;
-        updateOrpCalibrationSteps2pt();
-      } else if (orpCalibrationStep2pt === 4) {
-        // Memorize point 1
-        const r1 = parseFloat(ref1.value);
-        if (isNaN(r1) || r1 < 0 || r1 > 1000) {
-          alert("Réf 1 invalide (0-1000 mV)");
-          orpCalibrationStep2pt = 3;
-          updateOrpCalibrationSteps2pt();
-          return;
-        }
-        if (!latestSensorData || isNaN(latestSensorData.orp_raw) || latestSensorData.orp_raw == null) {
-          alert("Aucune donnée capteur disponible (/data).");
-          return;
-        }
-        orpPoint1Measured = latestSensorData.orp_raw;
-        orpPoint1Reference = r1;
-        orpCalibrationStep2pt = 5;
-        updateOrpCalibrationSteps2pt();
-      } else if (orpCalibrationStep2pt === 5) {
-        orpCalibrationStep2pt = 6;
-        updateOrpCalibrationSteps2pt();
-      } else if (orpCalibrationStep2pt === 6) {
-        orpCalibrationStep2pt = 7;
-        updateOrpCalibrationSteps2pt();
-        if (ref2) ref2.focus();
-      } else if (orpCalibrationStep2pt === 7) {
-        const r2 = parseFloat(ref2.value);
-        if (isNaN(r2) || r2 < 0 || r2 > 1000) {
-          alert("Réf 2 invalide (0-1000 mV)");
-          return;
-        }
-        orpCalibrationStep2pt = 8;
-        updateOrpCalibrationSteps2pt();
-      } else if (orpCalibrationStep2pt === 8) {
-        // Calibrate 2 points
-        const r2 = parseFloat(ref2.value);
-        if (isNaN(r2) || r2 < 0 || r2 > 1000) {
-          alert("Réf 2 invalide (0-1000 mV)");
-          orpCalibrationStep2pt = 7;
-          updateOrpCalibrationSteps2pt();
-          return;
-        }
-        if (!latestSensorData || !orpPoint1Measured || !orpPoint1Reference) {
-          alert("Point 1 manquant ou données capteur indisponibles.");
-          return;
-        }
-
-        const measured2 = latestSensorData.orp_raw;
-        if (isNaN(measured2) || measured2 == null) {
-          alert("orp_raw indisponible.");
-          return;
-        }
-
-        if (Math.abs(orpPoint1Measured - measured2) < 10) {
-          alert("⚠️ Points de mesure trop proches. Utilisez 2 solutions plus espacées.");
-          return;
-        }
-        if (Math.abs(orpPoint1Reference - r2) < 50) {
-          alert("⚠️ Références trop proches. Utilisez 2 solutions plus espacées.");
-          return;
-        }
-
-        const slope = (r2 - orpPoint1Reference) / (measured2 - orpPoint1Measured);
-        const offset = orpPoint1Reference - (orpPoint1Measured * slope);
-        const calibrationDate = new Date().toISOString();
-
-        startBtn2pt.disabled = true;
-        try {
-          const cfg = collectConfig();
-          cfg.orp_calibration_slope = slope;
-          cfg.orp_calibration_offset = offset;
-          cfg.orp_calibration_date = calibrationDate;
-          cfg.orp_calibration_reference = r2;
-
-          const ok = await sendConfig(cfg);
-          if (!ok) throw new Error("Impossible d'enregistrer la configuration");
-
-          for (let i = 1; i <= 8; i++) {
-            $(`#orp_step${i}_2pt`)?.classList.add("is-completed");
-            $(`#orp_step${i}_2pt`)?.classList.remove("is-active");
-          }
-          if (calibratedStatus) calibratedStatus.style.display = "block";
-
-          orpCalibrationStep2pt = 0;
-          orpCalibrationActive = false;
-          stopCalibrationRefresh();
-          orpPoint1Measured = null;
-          orpPoint1Reference = null;
-          if (ref1) ref1.value = "";
-          if (ref2) ref2.value = "";
-
-          // Invalider le timestamp pour forcer le rechargement
-          lastSensorDataLoadTime = 0;
-
-          // Refresh réel depuis l'ESP puis fermeture de la carte calibration
-          await loadConfig();
-          await checkCalibrationDate();
-          updateOrpCalibrationSteps2pt();
-          hideOrpCalibrationCard();
-
-          // Recharger les données après un court délai pour se resynchroniser avec le backend
-          setTimeout(async () => {
-            await loadSensorData({ force: true });
-          }, 2000);
-        } catch (err) {
-          alert("Erreur calibration ORP:\n" + err.message);
-          orpCalibrationStep2pt = 0;
-          orpCalibrationActive = false;
-          stopCalibrationRefresh();
-          updateOrpCalibrationSteps2pt();
-        } finally {
-          startBtn2pt.disabled = false;
-        }
-      }
-    });
-
-    // Initialize
-    updateOrpCalibrationSteps1pt();
-    updateOrpCalibrationSteps2pt();
+    renderCalibrationStatus();
   }
 
   // ---------- Wi-Fi / System / Logs / Updates (ported endpoints) ----------
@@ -5020,6 +4578,133 @@
       } catch (e) {
         showToast("Erreur lors de l'effacement", "error");
       }
+    });
+
+    // ===== Debug oscillation pH (feature-021 hotfix) =====
+    let debugPhChart = null;
+    let debugPhPauseTimer = null;
+    const __debugPhRender = (json) => {
+      const samples = (json && Array.isArray(json.samples)) ? json.samples : [];
+      const count = samples.length;
+      const countEl = document.getElementById("debug_ph_count");
+      if (countEl) countEl.textContent = String(count);
+      const wrap = document.getElementById("debug_ph_chart_wrap");
+      const stats = document.getElementById("debug_ph_stats");
+      if (count === 0) {
+        if (wrap) wrap.style.display = "none";
+        if (stats) stats.style.display = "none";
+        return;
+      }
+      // Convertir t (millis ESP32) en delta secondes vs maintenant côté ESP32
+      const nowEsp = json.now || (samples[count - 1].t);
+      const labels = samples.map(s => `-${Math.round((nowEsp - s.t) / 1000)}s`);
+      const phData = samples.map(s => (typeof s.ph === "number") ? s.ph : null);
+      const orpData = samples.map(s => (typeof s.orp === "number") ? s.orp : null);
+      const tData = samples.map(s => (typeof s.tempC === "number") ? s.tempC : null);
+
+      const ctx = document.getElementById("debug_ph_chart")?.getContext("2d");
+      if (!ctx) return;
+      if (debugPhChart) debugPhChart.destroy();
+      debugPhChart = new Chart(ctx, {
+        type: "line",
+        data: {
+          labels,
+          datasets: [
+            { label: "pH", data: phData, borderColor: "#1976d2", backgroundColor: "transparent", yAxisID: "y", tension: 0.1, pointRadius: 1.5, spanGaps: true },
+            { label: "ORP (mV)", data: orpData, borderColor: "#d32f2f", backgroundColor: "transparent", yAxisID: "y1", tension: 0.1, pointRadius: 1.5, spanGaps: true, hidden: true },
+            { label: "T° envoyée (°C)", data: tData, borderColor: "#388e3c", backgroundColor: "transparent", yAxisID: "y2", tension: 0.1, pointRadius: 1.5, spanGaps: true, hidden: true },
+          ]
+        },
+        options: {
+          responsive: true,
+          interaction: { mode: "index", intersect: false },
+          scales: {
+            y:  { type: "linear", position: "left",  title: { display: true, text: "pH" } },
+            y1: { type: "linear", position: "right", title: { display: true, text: "ORP (mV)" }, grid: { drawOnChartArea: false } },
+            y2: { type: "linear", display: false }
+          },
+          plugins: { legend: { position: "top" } }
+        }
+      });
+      if (wrap) wrap.style.display = "block";
+
+      // Stats
+      const phNum  = phData.filter(v => v !== null);
+      const orpNum = orpData.filter(v => v !== null);
+      const tNum   = tData.filter(v => v !== null);
+      const fmt = (arr, dec) => arr.length ? `${Math.min(...arr).toFixed(dec)} / ${Math.max(...arr).toFixed(dec)} / Δ ${(Math.max(...arr) - Math.min(...arr)).toFixed(dec)}` : "—";
+      document.getElementById("debug_ph_stats_ph").textContent  = fmt(phNum, 3);
+      document.getElementById("debug_ph_stats_orp").textContent = fmt(orpNum, 1);
+      document.getElementById("debug_ph_stats_t").textContent   = tNum.length ? `${Math.min(...tNum).toFixed(1)}°C / ${Math.max(...tNum).toFixed(1)}°C` : "—";
+      if (stats) stats.style.display = "block";
+    };
+
+    const __debugPhLoad = async () => {
+      try {
+        const resp = await authFetch("/debug/ph_trace");
+        if (!resp.ok) { showToast("Erreur chargement trace pH", "error"); return; }
+        const json = await resp.json();
+        __debugPhRender(json);
+      } catch (e) {
+        showToast("Erreur réseau /debug/ph_trace", "error");
+      }
+    };
+
+    const __debugWifiPauseStatus = async () => {
+      try {
+        const resp = await authFetch("/debug/wifi_pause");
+        if (!resp.ok) return;
+        const json = await resp.json();
+        const el = document.getElementById("debug_wifi_pause_status");
+        if (!el) return;
+        if (json.active) {
+          const sec = Math.ceil((json.remaining_ms || 0) / 1000);
+          el.textContent = `active — ${sec} s restantes`;
+        } else {
+          el.textContent = "inactive";
+        }
+      } catch (e) { /* ignore */ }
+    };
+
+    document.getElementById("debug_ph_refresh_btn")?.addEventListener("click", __debugPhLoad);
+
+    document.getElementById("debug_ph_clear_btn")?.addEventListener("click", async () => {
+      try {
+        const resp = await authFetch("/debug/ph_trace_clear", { method: "POST" });
+        if (resp.ok) {
+          showToast("Buffer vidé", "success");
+          if (debugPhChart) { debugPhChart.destroy(); debugPhChart = null; }
+          document.getElementById("debug_ph_chart_wrap").style.display = "none";
+          document.getElementById("debug_ph_stats").style.display = "none";
+          document.getElementById("debug_ph_count").textContent = "0";
+        }
+      } catch (e) { showToast("Erreur réseau", "error"); }
+    });
+
+    document.getElementById("debug_wifi_pause_btn")?.addEventListener("click", async () => {
+      const seconds = 120;
+      if (!confirm(`Couper le WiFi pendant ${seconds} secondes ?\n\nLa page sera inaccessible. Recharge-la après ${seconds + 10} s pour voir la trace.`)) return;
+      try {
+        const resp = await authFetch("/debug/wifi_pause", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ seconds })
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          showToast(`Erreur : ${err.error || resp.status}`, "error");
+          return;
+        }
+        showToast(`WiFi va se couper. Recharge la page dans ${seconds + 10}s.`, "info");
+      } catch (e) {
+        // Le WiFi peut s'être déjà coupé → c'est attendu
+        showToast(`WiFi coupé. Recharge la page dans ${seconds + 10}s.`, "info");
+      }
+    });
+
+    // Auto-load à l'arrivée sur la page Diagnostic
+    document.querySelector('[data-target="advanced"]')?.addEventListener("click", () => {
+      setTimeout(() => { __debugPhLoad(); __debugWifiPauseStatus(); }, 200);
     });
 
     // Logo topbar → blur immédiat pour éviter le focus ring persistant sur iOS Safari

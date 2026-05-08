@@ -1775,6 +1775,77 @@ input.is-computed:disabled {
   color: var(--text);
 }
 
+/* 2026 Calibration point block (Atlas EZO — pH mid/low, ORP 1 point) */
+.cal-point-block {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 16px;
+  background: var(--panel2);
+  transition: box-shadow var(--transition-base);
+}
+.cal-point-block:hover {
+  box-shadow: var(--shadow-sm);
+}
+.cal-point-block h3 {
+  margin: 0 0 8px 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+.cal-point-block__state {
+  margin: 8px 0;
+}
+.cal-point-block__state .state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 650;
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--muted);
+  border: 1px solid var(--stroke);
+}
+.cal-point-block__state .state-badge.is-ok {
+  background: rgba(52, 199, 89, 0.12);
+  color: var(--ok);
+  border-color: rgba(52, 199, 89, 0.35);
+}
+.cal-point-block__state .state-badge.is-warn {
+  background: rgba(255, 193, 7, 0.15);
+  color: var(--warn);
+  border-color: rgba(255, 193, 7, 0.4);
+}
+.cal-point-block__steps {
+  font-size: 13px;
+  color: var(--muted);
+  padding-left: 22px;
+  margin: 8px 0 12px;
+}
+.cal-point-block__steps li {
+  margin-bottom: 4px;
+}
+.cal-point-block .readout {
+  margin: 12px 0;
+  padding: 10px 12px;
+}
+.cal-point-block .readout__value {
+  font-size: 26px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.cal-point-block .readout.is-pulsing .readout__value {
+  animation: cal-readout-pulse 1.5s ease-in-out infinite;
+}
+@keyframes cal-readout-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+.cal-point-block button {
+  width: 100%;
+}
+
 .btn--primary {
   background: var(--accent);
   border-color: var(--accent);

@@ -633,12 +633,20 @@
                 </div>
                 <hr style="margin:14px 0;border:none;border-top:1px solid var(--border)">
                 <div id="ph-calibration-info">
+                  <!-- Callout vert : calibration complète (>=2 points) -->
                   <div class="callout callout--success" id="ph_calibrated_status" style="display:none">
                     <div style="display:flex;align-items:center;gap:8px">
                       <span style="font-size:18px">✓</span>
-                      <strong>Calibré</strong>
+                      <strong>Calibré 2 points</strong>
                     </div>
-                    <div class="muted small" id="ph_cal_date">Dernière calibration : —</div>
+                  </div>
+                  <!-- Chip ambrée : régulation inhibée car cal incomplète -->
+                  <div class="callout callout--warn" id="ph_inhibition_chip" style="display:none">
+                    Régulation pH inhibée — calibration incomplète (<span id="ph_cal_points_label">0</span>/2 points). Calibrez les 2 points pour activer la régulation.
+                  </div>
+                  <!-- Callout rouge : EZO injoignable -->
+                  <div class="callout" id="ph_ezo_unreachable" style="display:none;border-color:rgba(185,28,28,0.35);background:rgba(185,28,28,0.08);color:var(--danger)">
+                    <strong>EZO pH injoignable.</strong> Vérifiez le câblage I²C et l'alimentation du module Atlas Scientific.
                   </div>
                   <div class="detail-actions" style="margin-top:8px">
                     <button class="btn btn--secondary" type="button" id="ph_cal_trigger_btn">Calibrer</button>
@@ -701,35 +709,53 @@
           <div class="card" id="ph-card-calibration" style="display:none">
             <div class="card__head">
               <h2 class="card__title">Calibration de la sonde pH</h2>
-              <div class="muted small" id="ph_cal_date_header">Dernière calibration : —</div>
+              <div class="muted small" id="ph_cal_status_header">Aucun point calibré</div>
             </div>
             <div class="card__body">
               <p class="muted small" style="margin-bottom:16px">
-                La sonde pH nécessite une calibration régulière pour garantir des mesures précises.
-                Sans calibration, vous risquez un dosage incorrect et des problèmes de qualité d'eau.
-                Recalibrer tous les 3 mois avec des solutions pH 7.0 et pH 4.0.
+                La sonde pH Atlas Scientific EZO nécessite 2 points de calibration (pH 7.00 et pH 4.00).
+                Calibrez chaque point indépendamment dans n'importe quel ordre. La régulation pH
+                ne sera activée qu'une fois les 2 points calibrés.
               </p>
-              <div class="calibration-steps">
-                <div class="step" id="ph_step1">
-                  <div class="step__number">1</div>
-                  <div class="step__content">Plonger dans une solution d'étalonnage pH 7.0</div>
+
+              <!-- Sous-bloc Point milieu (pH 7.00) -->
+              <div class="cal-point-block" id="cal-ph-mid-block">
+                <h3>Point milieu (pH 7.00)</h3>
+                <div class="cal-point-block__state">
+                  <span class="state-badge" id="cal-ph-mid-badge">Non calibré</span>
                 </div>
-                <div class="step" id="ph_step2">
-                  <div class="step__number">2</div>
-                  <div class="step__content">Attendre que la tension brute du capteur se stabilise (environ 1 min)</div>
+                <ol class="cal-point-block__steps">
+                  <li>Rincer la sonde puis la plonger dans la solution tampon pH 7.00</li>
+                  <li>Attendre 1 minute que la lecture se stabilise</li>
+                  <li>Cliquer sur le bouton « Calibrer le point 7.0 »</li>
+                </ol>
+                <div class="readout">
+                  <span class="readout__label">Lecture pH live</span>
+                  <div class="readout__value" id="cal-ph-mid-readout">--</div>
                 </div>
-                <div class="step" id="ph_step3">
-                  <div class="step__number">3</div>
-                  <div class="step__content">Rincer et plonger la sonde dans une solution d'étalonnage pH 4.0</div>
-                </div>
-                <div class="step" id="ph_step4">
-                  <div class="step__number">4</div>
-                  <div class="step__content">Attendre que la tension brute du capteur se stabilise (environ 1 min)</div>
-                </div>
+                <button class="btn btn--primary" type="button" id="btn-cal-ph-mid">Calibrer le point 7.0</button>
               </div>
+
+              <!-- Sous-bloc Point bas (pH 4.00) -->
+              <div class="cal-point-block" id="cal-ph-low-block">
+                <h3>Point bas (pH 4.00)</h3>
+                <div class="cal-point-block__state">
+                  <span class="state-badge" id="cal-ph-low-badge">Non calibré</span>
+                </div>
+                <ol class="cal-point-block__steps">
+                  <li>Rincer la sonde puis la plonger dans la solution tampon pH 4.00</li>
+                  <li>Attendre 1 minute que la lecture se stabilise</li>
+                  <li>Cliquer sur le bouton « Calibrer le point 4.0 »</li>
+                </ol>
+                <div class="readout">
+                  <span class="readout__label">Lecture pH live</span>
+                  <div class="readout__value" id="cal-ph-low-readout">--</div>
+                </div>
+                <button class="btn btn--primary" type="button" id="btn-cal-ph-low">Calibrer le point 4.0</button>
+              </div>
+
               <div class="row row--gap" style="margin-top:16px">
-                <button class="btn btn--primary" type="button" id="ph_cal_start_btn">Commencer la calibration</button>
-                <button class="btn btn--danger" type="button" id="ph_cal_cancel_btn" style="display:none">Annuler</button>
+                <button class="btn btn--secondary" type="button" id="ph_cal_close_btn">Fermer</button>
               </div>
             </div>
           </div>
@@ -795,12 +821,20 @@
                 <hr style="margin:14px 0;border:none;border-top:1px solid var(--border)">
                 <!-- Infos calibration + bouton Calibrer (uniquement en mode Automatique) -->
                 <div id="orp-calibration-info">
+                  <!-- Callout vert : ORP calibré -->
                   <div class="callout callout--success" id="orp_calibrated_status" style="display:none">
                     <div style="display:flex;align-items:center;gap:8px">
                       <span style="font-size:18px">✓</span>
                       <strong>Calibré</strong>
                     </div>
-                    <div class="muted small" id="orp_cal_date">Dernière calibration : —</div>
+                  </div>
+                  <!-- Chip ambrée : régulation inhibée -->
+                  <div class="callout callout--warn" id="orp_inhibition_chip" style="display:none">
+                    Régulation ORP inhibée — calibration manquante. Effectuez la calibration 1 point pour activer la régulation.
+                  </div>
+                  <!-- Callout rouge : EZO injoignable -->
+                  <div class="callout" id="orp_ezo_unreachable" style="display:none;border-color:rgba(185,28,28,0.35);background:rgba(185,28,28,0.08);color:var(--danger)">
+                    <strong>EZO ORP injoignable.</strong> Vérifiez le câblage I²C et l'alimentation du module Atlas Scientific.
                   </div>
                   <div class="detail-actions" style="margin-top:8px">
                     <button class="btn btn--secondary" type="button" id="orp_cal_trigger_btn">Calibrer</button>
@@ -867,102 +901,38 @@
           <div class="card" id="orp-card-calibration" style="display:none">
             <div class="card__head">
               <h2 class="card__title">Calibration de la sonde ORP</h2>
-              <div class="muted small" id="orp_cal_date_header">Dernière calibration : —</div>
+              <div class="muted small" id="orp_cal_status_header">Non calibré</div>
             </div>
             <div class="card__body">
               <p class="muted small" style="margin-bottom:16px">
-                La sonde ORP nécessite une calibration régulière pour garantir des mesures précises.
-                Sans calibration, vous risquez un dosage de chlore incorrect (sous- ou surdosage) et
-                des problèmes de qualité d'eau. Recalibrer tous les 3 mois avec une solution ORP 470 mV
-                (calibration 1 point) ou 470 mV + 650 mV (calibration 2 points).
+                La sonde ORP Atlas Scientific EZO se calibre en 1 point avec une solution standard
+                (typiquement 225 mV ou 470 mV). La régulation ORP ne sera activée qu'après calibration.
               </p>
 
-              <label class="field">
-                <span class="field__label">Type de calibration</span>
-                <select id="orp_cal_type">
-                  <option value="1point">1 point (offset uniquement)</option>
-                  <option value="2points">2 points (offset + slope)</option>
-                </select>
-              </label>
-
-              <!-- Calibration 1 point -->
-              <div id="orp_cal_1point">
-                <div class="calibration-steps">
-                  <div class="step" id="orp_step1_1pt">
-                    <div class="step__number">1</div>
-                    <div class="step__content">Plonger la sonde dans la solution d'étalonnage ORP</div>
-                  </div>
-                  <div class="step" id="orp_step2_1pt">
-                    <div class="step__number">2</div>
-                    <div class="step__content">Attendre que la tension brute du capteur se stabilise (environ 1 min)</div>
-                  </div>
-                  <div class="step" id="orp_step3_1pt">
-                    <div class="step__number">3</div>
-                    <div class="step__content">
-                      <div>Entrer la valeur de référence de la solution d'étalonnage ORP</div>
-                      <input type="number" id="orp_reference_value_1pt" min="0" max="1000" step="1" placeholder="ex: 470 mV" style="margin-top:8px;width:100%" />
-                    </div>
-                  </div>
-                  <div class="step" id="orp_step4_1pt">
-                    <div class="step__number">4</div>
-                    <div class="step__content">Calibrer</div>
-                  </div>
+              <!-- Sous-bloc unique ORP -->
+              <div class="cal-point-block" id="cal-orp-block">
+                <h3>Calibration ORP (1 point)</h3>
+                <div class="cal-point-block__state">
+                  <span class="state-badge" id="cal-orp-badge">Non calibré</span>
                 </div>
-                <div class="row row--gap">
-                  <button class="btn btn--primary" type="button" id="orp_cal_start_btn_1pt">Commencer la calibration</button>
-                  <button class="btn btn--danger" type="button" id="orp_cal_cancel_btn_1pt" style="display:none">Annuler</button>
+                <ol class="cal-point-block__steps">
+                  <li>Rincer la sonde puis la plonger dans la solution standard ORP (225 mV ou 470 mV)</li>
+                  <li>Attendre 1 minute que la lecture se stabilise</li>
+                  <li>Saisir la valeur de référence (en mV) puis cliquer sur « Calibrer »</li>
+                </ol>
+                <label class="field">
+                  <span class="field__label">Valeur de référence (mV)</span>
+                  <input type="number" id="orp-cal-reference" min="200" max="1000" step="1" value="470" />
+                </label>
+                <div class="readout">
+                  <span class="readout__label">Lecture ORP live</span>
+                  <div class="readout__value" id="cal-orp-readout">--</div>
                 </div>
+                <button class="btn btn--primary" type="button" id="btn-cal-orp">Calibrer</button>
               </div>
 
-              <!-- Calibration 2 points -->
-              <div id="orp_cal_2points" style="display:none">
-                <div class="calibration-steps">
-                  <div class="step" id="orp_step1_2pt">
-                    <div class="step__number">1</div>
-                    <div class="step__content">Plonger la sonde dans la solution 1 d'étalonnage ORP</div>
-                  </div>
-                  <div class="step" id="orp_step2_2pt">
-                    <div class="step__number">2</div>
-                    <div class="step__content">Attendre que la tension brute du capteur se stabilise (environ 1 min)</div>
-                  </div>
-                  <div class="step" id="orp_step3_2pt">
-                    <div class="step__number">3</div>
-                    <div class="step__content">
-                      <div>Entrer la valeur de référence de la solution 1 d'étalonnage ORP</div>
-                      <input type="number" id="orp_ref1" min="0" max="1000" step="1" placeholder="ex: 470 mV" style="margin-top:8px;width:100%" />
-                    </div>
-                  </div>
-                  <div class="step" id="orp_step4_2pt">
-                    <div class="step__number">4</div>
-                    <div class="step__content">Mémoriser le point 1</div>
-                  </div>
-                  <div class="step" id="orp_step5_2pt">
-                    <div class="step__number">5</div>
-                    <div class="step__content">Plonger la sonde dans la solution 2 d'étalonnage ORP</div>
-                  </div>
-                  <div class="step" id="orp_step6_2pt">
-                    <div class="step__number">6</div>
-                    <div class="step__content">Attendre que la tension brute du capteur se stabilise (environ 1 min)</div>
-                  </div>
-                  <div class="step" id="orp_step7_2pt">
-                    <div class="step__number">7</div>
-                    <div class="step__content">
-                      <div>Entrer la valeur de référence de la solution 2 d'étalonnage ORP</div>
-                      <input type="number" id="orp_ref2" min="0" max="1000" step="1" placeholder="ex: 650 mV" style="margin-top:8px;width:100%" />
-                    </div>
-                  </div>
-                  <div class="step" id="orp_step8_2pt">
-                    <div class="step__number">8</div>
-                    <div class="step__content">Calibrer (2 points)</div>
-                  </div>
-                </div>
-                <div class="hint" id="orp_2pt_status" style="display:none;margin-bottom:12px">
-                  Point 1 mémorisé
-                </div>
-                <div class="row row--gap">
-                  <button class="btn btn--primary" type="button" id="orp_cal_start_btn_2pt">Commencer la calibration</button>
-                  <button class="btn btn--danger" type="button" id="orp_cal_cancel_btn_2pt" style="display:none">Annuler</button>
-                </div>
+              <div class="row row--gap" style="margin-top:16px">
+                <button class="btn btn--secondary" type="button" id="orp_cal_close_btn">Fermer</button>
               </div>
             </div>
           </div>
@@ -1678,6 +1648,39 @@
                     <button class="btn btn--danger" type="button" id="coredump_erase_btn" disabled>Effacer</button>
                   </div>
                   <div class="hint" style="margin-top:10px">Décodage&nbsp;: <code>./tools/decode_coredump.sh coredump.bin</code></div>
+                </div>
+              </div>
+
+              <div class="card" id="card-debug-ph">
+                <div class="card__head">
+                  <h2 class="card__title">Debug oscillation pH</h2>
+                </div>
+                <div class="card__body">
+                  <div class="muted small" style="margin-bottom:12px">
+                    Ring buffer pH/ORP/T° en RAM (~25 min, 5 s/cycle). Permet de visualiser
+                    une oscillation et tester si elle dépend du WiFi.
+                  </div>
+                  <div class="kv kv--compact">
+                    <div class="kv__row"><span class="kv__k">Échantillons</span><span class="kv__v" id="debug_ph_count">—</span></div>
+                    <div class="kv__row"><span class="kv__k">Pause WiFi</span><span class="kv__v" id="debug_wifi_pause_status">—</span></div>
+                  </div>
+                  <div class="row row--gap" style="margin-top:12px">
+                    <button class="btn btn--ghost" type="button" id="debug_ph_refresh_btn">Recharger la trace</button>
+                    <button class="btn btn--ghost" type="button" id="debug_ph_clear_btn">Vider le buffer</button>
+                    <button class="btn btn--warning" type="button" id="debug_wifi_pause_btn">Pauser WiFi 120 s</button>
+                  </div>
+                  <div id="debug_ph_chart_wrap" style="margin-top:16px;display:none">
+                    <canvas id="debug_ph_chart" height="220"></canvas>
+                  </div>
+                  <div id="debug_ph_stats" class="kv kv--compact" style="margin-top:12px;display:none">
+                    <div class="kv__row"><span class="kv__k">pH min / max / Δ</span><span class="kv__v" id="debug_ph_stats_ph">—</span></div>
+                    <div class="kv__row"><span class="kv__k">ORP min / max / Δ</span><span class="kv__v" id="debug_ph_stats_orp">—</span></div>
+                    <div class="kv__row"><span class="kv__k">T° envoyée min / max</span><span class="kv__v" id="debug_ph_stats_t">—</span></div>
+                  </div>
+                  <div class="hint" style="margin-top:10px">
+                    Workflow&nbsp;: clique « Pauser WiFi 120 s », attends 130 s, recharge la page,
+                    clique « Recharger la trace ». La période de coupure WiFi est annotée sur le graphique.
+                  </div>
                 </div>
               </div>
 

@@ -17,7 +17,7 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 
 | # | Titre | Statut |
 |---|-------|--------|
-| [0001](0001-capteurs-analogiques-ads1115.md) | Capteurs pH/ORP analogiques via ADS1115 + DFRobot_PH | Accepté |
+| [0001](0001-capteurs-analogiques-ads1115.md) | Capteurs pH/ORP analogiques via ADS1115 + DFRobot_PH | Superseded by ADR-0014 |
 | [0002](0002-mode-programmee-volume-quotidien.md) | Mode Programmée exprimé en volume quotidien (mL), pas en cadence | Accepté |
 | [0003](0003-calibration-orp-cote-client.md) | Calibration ORP calculée côté client, pas par le firmware | Accepté |
 | [0004](0004-mode-regulation-enum-3-valeurs.md) | Sélecteur de mode à 3 valeurs au lieu de booléens `ph_enabled` / `orp_enabled` | Accepté |
@@ -30,6 +30,7 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0011](0011-mqtt-task-dediee.md) | MQTT déplacé dans une tâche FreeRTOS dédiée | Accepté |
 | [0012](0012-mapping-gpio-pcb-v2.md) | Mapping GPIO PCB v2 (Atlas EZO + 2ᵉ DS18B20 + CTN_AUX, plus d'ADS1115) | Accepté |
 | [0013](0013-identification-sondes-onewire.md) | Identification des sondes DS18B20 par adresse ROM persistée NVS + workflow utilisateur | Accepté |
+| [0014](0014-migration-atlas-ezo.md) | Migration Atlas EZO pH/ORP (PCB v2) — supersedes ADR-0001 | Accepté |
 
 ## Template
 

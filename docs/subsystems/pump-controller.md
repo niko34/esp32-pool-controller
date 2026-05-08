@@ -35,9 +35,18 @@ void setPhPID(float kp, float ki, float kd);
 void setOrpPID(float kp, float ki, float kd);
 void resetDosingStates();
 void resetPhPauseGuard();
-void armStabilizationTimer();
+
+// Stabilisation par pompe (feature-021) — durée différenciée pH / ORP
+void armStabilizationTimer(int pumpIndex);     // 0 = pH (5 min), 1 = ORP (3 min)
+void armStabilizationTimer();                   // surcharge legacy : arme les 2 pompes
+                                                // avec mqttCfg.stabilizationDelayMin
+bool isStabilizationTimerActive(int pumpIndex) const;
 void clearStabilizationTimer();
 unsigned long getStabilizationRemainingS() const;
+
+// Gate fail-closed (feature-021)
+bool canDose(int pumpIndex);                    // 0 = pH, 1 = ORP
+
 void setManualPump(int pumpIndex, uint8_t duty);  // test manuel
 ```
 
@@ -59,11 +68,7 @@ Ordre par cycle :
 
 ## Algorithme (résumé)
 
-1. **Gate `canDose()`** bloque le dosage si :
-   - Mode régulation = `manual`
-   - Mode régulation = `pilote` + filtration à l'arrêt (sauf mode `scheduled`)
-   - OTA en cours
-   - Timer de stabilisation non expiré
+1. **Gate `canDose(int pumpIndex)`** — fail-closed strict (feature-021, validé pool-chemistry). Voir [Garde-fous `canDose`](#garde-fous-candose) ci-dessous pour la liste complète des 10 conditions évaluées dans l'ordre.
 2. **Calcul de l'erreur** ([`pump_controller.cpp:432`](../../src/pump_controller.cpp:432)) — deux modes exclusifs sélectionnés via `mqttCfg.phCorrectionType` :
 
    | Mode | Formule erreur | Direction du dosage |
@@ -108,16 +113,58 @@ Trois branches dans `tickDailyRollover()` :
 2. **NTP/RTC synchronisé + `currentDayDate` vide** (première initialisation après boot) → date stockée, `dayStartTimestamp` remis à `0` pour invalider tout timer fallback `millis()` accumulé depuis le boot. Évite un double reset si NTP retombe en panne plus tard.
 3. **Pas de temps valide** → fallback `millis()` : reset après 24 h écoulées depuis `dayStartTimestamp`. Persiste les compteurs (`saveDailyCounters()`) et arme le timer de stabilisation.
 
-## Stabilisation au démarrage filtration
+## Garde-fous `canDose`
 
-Géré par [`filtration.cpp:213`](../../src/filtration.cpp:213) (démarrage) et [`filtration.cpp:252`](../../src/filtration.cpp:252) (arrêt) :
+`canDose(int pumpIndex)` (feature-021, validé pool-chemistry — voir [ADR-0014](../adr/0014-migration-atlas-ezo.md)) est appelée à chaque cycle `update()` pour la pompe pH (index 0) puis ORP (index 1), **avant** tout calcul PID ou démarrage d'injection. La fonction est **fail-closed strict** : tout résultat ambigu retourne `false` (refus de dosage).
 
-- **Démarrage filtration en mode `pilote`** : `armStabilizationTimer()` n'est appelé **que si** la pause précédente est plus longue que `stabilizationDelayMin` (`pauseMs > stabilizationMs`). Empêche le réarmement après un glitch très court (sauvegarde config, redémarrage relais involontaire). Au tout premier démarrage (`lastStoppedAtMs == 0`), la pause est considérée infinie → timer armé.
-- **Arrêt filtration en mode `pilote`** : `clearStabilizationTimer()`.
-- Mode `continu` : aucun appel automatique. Le timer peut être armé manuellement ou ignoré selon le besoin.
-- **Mitigation double quota** : `armStabilizationTimer()` est aussi appelé au passage de minuit ([`pump_controller.cpp:268`](../../src/pump_controller.cpp:268)) pour éviter qu'un cumul reset déclenche immédiatement un dosage.
+Les 10 conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontré court-circuite les suivants et logue la cause **edge-triggered** (1 entrée info par transition de cause, pas de spam).
 
-`stabilizationDelayMin` est **configurable via `/save-config`** (plage 0-60 min, défaut 5). Valeur 0 = stabilisation désactivée.
+| # | Condition | Refus si | Cause documentée |
+|---|-----------|----------|------------------|
+| 1 | **Index pompe valide** | `pumpIndex` ∉ {0, 1} | bug interne |
+| 2 | **Watchdog actif** | wdt non initialisé | sécurité hardware |
+| 3 | **Filtration en marche** | filtration arrêtée (sauf mode `continu`) | eau ne circule pas — risque bouchon doseuse |
+| 4 | **Lecture pH/ORP non NaN** | `getPh()` ou `getOrp()` = NaN | pool-chemistry **cond #1** : stale > 20 s OU **cond #5** : bus I²C dégradé OU jamais lu valide |
+| 5 | **EZO calibré** | `cal_points < 2` (pH) ou `< 1` (ORP). `-1` (bus down) bloque. | pool-chemistry **cond #2** : régulation auto inhibée tant que calibration incomplète |
+| 6 | **Pas de stabilisation post-cal** | `isStabilizationTimerActive(pumpIndex)` = true | pool-chemistry **cond #3** : 5 min pH / 3 min ORP après calibration EZO |
+| 7 | **Mode régulation = `automatic`** | mode `manual` ou `scheduled` | la branche `scheduled` a sa propre logique, ne passe pas par `canDose` |
+| 8 | **Limite journalière non atteinte** | `dailyXxxInjectedMl >= maxXxxMlPerDay` | sécurité chimique config |
+| 9 | **Limite horaire non atteinte** | `usedMs > xxxLimitMinutes × 60000` dans la fenêtre 1 h glissante | sécurité chimique config |
+| 10 | **Anti-rafale court terme** (Pass 3.5) | > 6 cycles/min OU > 20 cycles/15 min | anti-emballement PID — voir [Ring buffer anti-rafale](#ring-buffer-anti-rafale) |
+
+> **Conditions #1, #2, #3, #5, #6** issues du checklist `pool-chemistry` validé en cadrage feature-021. **Condition #10** ajoutée en correctif Pass 3.5 suite à code-review.
+
+### Ring buffer anti-rafale
+
+Chaque pompe maintient un ring buffer `_dosingCycleHistory[2][kDosingCycleHistorySize = 20]` indexé par `_dosingCycleHistoryIdx[2]`. À chaque démarrage effectif d'un cycle de dosage (transition PWM 0 → >0), `recordDosingCycleStart(pumpIndex)` ajoute le timestamp `millis()` courant.
+
+Au prochain `canDose(pumpIndex)`, `countRecentDosingCycles(pumpIndex, windowMs)` compte les entrées dans la fenêtre `[now - windowMs, now]` :
+- `kMaxDosingCyclesPerMinute = 6` cycles max sur 60 000 ms
+- `kMaxDosingCyclesPer15Min = 20` cycles max sur 900 000 ms
+
+Sites d'appel à `recordDosingCycleStart()` (4 au total) : démarrage cycle pH automatique, démarrage cycle pH scheduled, démarrage cycle ORP automatique, démarrage cycle ORP scheduled.
+
+> **Indépendant** des limites volumétriques (`ph_limit_minutes`, `max_ph_ml_per_day`) et de l'anti-cycling existant (`maxCyclesPerDay = 20` mesuré sur 24 h glissante). Couvre le cas d'un PID qui démarrerait 30 cycles très courts en 5 minutes (lectures bruitées sur sonde mal calibrée par exemple).
+
+## Stabilisation au démarrage filtration et post-calibration
+
+**Stabilisation par pompe** (feature-021) : `_stabilizationEndMs[2]` — un timer indépendant pour pH (index 0) et ORP (index 1). La cinétique chimique différente justifie une fenêtre par sonde.
+
+| Source d'arming | Fonction | Durée |
+|-----------------|----------|-------|
+| Calibration EZO pH réussie (`Cal,mid`, `Cal,low`, `Cal,clear`) | `armStabilizationTimer(0)` | `kStabilizationDurationPhMs = 5 min` |
+| Calibration EZO ORP réussie | `armStabilizationTimer(1)` | `kStabilizationDurationOrpMs = 3 min` |
+| Démarrage filtration en mode `pilote` (pause précédente > `stabilizationDelayMin`) | `armStabilizationTimer()` (legacy, sans index) | `mqttCfg.stabilizationDelayMin` × 60 s — applique aux 2 pompes |
+| Boot en mode `continu` | `armStabilizationTimer()` (legacy) | idem |
+| Passage de minuit (mitigation double quota) | `armStabilizationTimer()` (legacy) | idem |
+
+**Surcharge legacy `armStabilizationTimer()` (sans paramètre)** : conservée pour les sites « globaux » (filtration, boot continu, rollover minuit). Arme **les 2 pompes simultanément** avec `mqttCfg.stabilizationDelayMin × 60_000` ms.
+
+- **Démarrage filtration en mode `pilote`** : appel **conditionnel** — uniquement si `pauseMs > stabilizationMs`. Empêche le réarmement après un glitch très court (sauvegarde config, redémarrage relais involontaire). Au tout premier démarrage (`lastStoppedAtMs == 0`), la pause est considérée infinie → timer armé.
+- **Arrêt filtration en mode `pilote`** : `clearStabilizationTimer()` (efface les 2 pompes).
+- **Mode `continu`** : aucun appel automatique au démarrage filtration. Le timer peut être armé manuellement ou ignoré selon le besoin.
+
+`stabilizationDelayMin` est **configurable via `/save-config`** (plage 0-60 min, défaut 5). Valeur 0 = stabilisation legacy désactivée — la stabilisation post-calibration EZO reste, elle, toujours active (5 min pH / 3 min ORP).
 
 ## Conversion duty ↔ débit
 
@@ -158,6 +205,11 @@ duty = MIN_ACTIVE_DUTY + round( ((flow − minFlow) / (maxFlow − minFlow)) × 
 | Pompe — duty max | `MAX_PWM_DUTY` | 255 (8 bits) | [`config.h:27`](../../src/config.h:27) |
 | Pompe — débit min | `kPumpMinFlowMlPerMin` | 5.2 mL/min | [`constants.h:85`](../../src/constants.h:85) |
 | Pompe — débit max | `kPumpMaxFlowMlPerMin` | 90.0 mL/min | [`constants.h:86`](../../src/constants.h:86) |
+| Stabilisation post-cal pH (feature-021) | `kStabilizationDurationPhMs` | 300 000 ms (5 min) | [`constants.h`](../../src/constants.h) |
+| Stabilisation post-cal ORP (feature-021) | `kStabilizationDurationOrpMs` | 180 000 ms (3 min) | [`constants.h`](../../src/constants.h) |
+| Anti-rafale — fenêtre 1 min (Pass 3.5) | `kMaxDosingCyclesPerMinute` | 6 | [`constants.h`](../../src/constants.h) |
+| Anti-rafale — fenêtre 15 min (Pass 3.5) | `kMaxDosingCyclesPer15Min` | 20 | [`constants.h`](../../src/constants.h) |
+| Anti-rafale — capacité ring buffer | `kDosingCycleHistorySize` | 20 entrées / pompe | [`constants.h`](../../src/constants.h) |
 
 > Une refonte est prévue pour rendre une partie de ces paramètres modifiables via un mode expert UI (cf. spec en cours).
 
@@ -213,5 +265,5 @@ Flush différé : `_dailyCountersDirty` armé à chaque injection, écrit en NVS
 - [`src/config.h:141`](../../src/config.h:141) — `SafetyLimits`
 - [`src/constants.h:84`](../../src/constants.h:84) — `kPumpMinFlowMlPerMin`, `kPumpMaxFlowMlPerMin`
 - [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
-- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md)
+- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose` 10 garde-fous)
 - [page-ph.md](../features/page-ph.md), [page-orp.md](../features/page-orp.md) — UI consommatrices
