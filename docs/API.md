@@ -619,6 +619,15 @@ Champs ajoutés en feature-021 (calibration EZO) :
 | `phCalPoints` | integer | Points de calibration EZO pH. `-1` = module injoignable / bus dégradé, `0` = non calibré, `1` = mid seul, `2` = mid + low (calibration nominale), `3` = mid + low + high. La régulation pH automatique est inhibée tant que la valeur est `< 2`. |
 | `orpCalPoints` | integer | Points de calibration EZO ORP. `-1` = module injoignable, `0` = non calibré, `1` = calibré (Atlas ORP n'a qu'un seul point de calibration). La régulation ORP automatique est inhibée tant que la valeur est `< 1`. |
 
+Champs ajoutés en feature-024 (pente sonde pH) :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `phSlopeAcid` | float \| null | Pente acide EZO en % (1 décimale, idéal 100). `null` si jamais lu, bus dégradé ou EZO injoignable. |
+| `phSlopeBase` | float \| null | Pente base EZO en % (1 décimale, idéal 100). `null` mêmes conditions. |
+| `phSlopeZero` | float \| null | Décalage zéro EZO en mV (2 décimales, idéal 0). `null` si firmware EZO ancien ne le rapporte pas. |
+| `phSlopeAgeMs` | integer \| null | Millisecondes depuis la dernière query `Slope,?` réussie. `null` si jamais lue depuis le boot (cohérent avec `phSlope*` nullables). L'UI considère l'état stale au-delà de 36 h. |
+
 > Le WebSocket pousse la configuration complète à la connexion initiale ; les mises à jour suivantes sont différentielles (seuls les champs modifiés sont inclus).
 
 ---
@@ -1029,3 +1038,27 @@ Efface l'identification persistée NVS (clés `ow_water_addr` et `ow_circuit_add
 Payload : `{}` (objet vide). Réponse : `{ "success": true }`.
 
 Voir [ADR-0013](adr/0013-identification-sondes-onewire.md) pour la décision d'identification + alternatives écartées.
+
+## Endpoints ajoutés en feature-024 (pente sonde pH)
+
+### `POST /debug/ph_slope_refresh` — pas d'auth (cohérent avec autres `/debug/*`)
+
+Force une nouvelle interrogation `Slope,?` sur l'EZO pH sans attendre le cycle automatique 24 h ni une recalibration. Utile pour valider la chaîne de mesure ou une nouvelle calibration.
+
+```bash
+curl -X POST http://poolcontroller.local/debug/ph_slope_refresh
+```
+
+**Réponse 200** :
+
+```json
+{ "success": true, "queued": true }
+```
+
+**Réponse 503** (queue EZO pleine OU query déjà en attente) :
+
+```json
+{ "error": "queue full or already pending" }
+```
+
+L'UI page `/ph` (chip d'état sonde) utilise cet endpoint via le bouton « Rafraîchir » du modal détails. La nouvelle valeur arrive dans le payload WS dès que le handler EZO traite la commande (~1-2 s côté `loopTask`). Voir [feature-024](../specs/features/done/feature-024-pente-sonde-ph.md) et [`docs/features/page-ph.md`](features/page-ph.md#chip-détat-sonde-feature-024).

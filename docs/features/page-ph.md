@@ -11,7 +11,7 @@ Point d'entrée unique pour **tout** ce qui concerne le pH : mesure, mode de ré
 
 En mode nominal, quatre zones :
 
-1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH courante (3 décimales) + dosage du jour (barre de progression).
+1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH courante (3 décimales) + **chip d'état sonde pH** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression).
 2. **Carte Régulation pH** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs conditionnels :
    - **Automatique** : pH cible + bouton Sauvegarder. Affichage du **statut de calibration EZO** (cf. [Statut de calibration](#statut-de-calibration-ezo)) :
      - **Callout vert** « Calibré 2 points ✓ » si `phCalPoints >= 2`.
@@ -23,6 +23,52 @@ En mode nominal, quatre zones :
 4. **Carte Calibration** — **remplace** Régulation + Historique pendant une session de calibration. Architecture en 2 sous-blocs **parallèles** `.cal-point-block` (workflow non séquentiel — voir [Workflow calibration](#workflow-calibration)).
 
 Le bloc Statistiques reste visible **en permanence**, y compris pendant la calibration.
+
+## Chip d'état sonde (feature-024)
+
+Sous la valeur pH dans le bloc Statistiques, un **chip cliquable** affiche en permanence l'état diagnostique de la sonde pH (pente Atlas EZO + décalage zéro). L'évaluation est faite **côté UI** — le firmware expose les valeurs brutes (cf. [docs/subsystems/sensors.md](../subsystems/sensors.md#pente-sonde-ph--feature-024)).
+
+### Placement
+
+Élément `<button id="ph-probe-chip" class="chip chip--probe ...">` à l'intérieur du bloc Statistiques pH (`#ph-card-stats`), sous l'affichage pH 3 décimales. Le chip est focusable (rôle bouton, `Enter`/`Espace` ouvrent le modal).
+
+### Classification (UI)
+
+Source : champs WS `phSlopeAcid`, `phSlopeBase`, `phSlopeZero`, `phSlopeAgeMs`, `phCalPoints`. Les seuils sont **dans `data/app.js`** (constantes `PH_PROBE_*` + fonction `classifyPhProbe()`) — modifier sans reflasher le firmware.
+
+| `phCalPoints` | min(acide, base) | \|zéro\| (mV) | Variante CSS | Libellé | Couleur |
+|---|---|---|---|---|---|
+| `null` ou `< 2` | — | — | `chip--probe-unknown` | « Calibration 2 points requise » | gris |
+| `≥ 2` | NaN / `null` | — | `chip--probe-unknown` | « Pente non disponible » | gris |
+| `≥ 2` | `≥ 95 %` | `≤ 15` | `chip--probe-good` | « Sonde excellente · 98 % » | vert (`var(--success)`) |
+| `≥ 2` | `90–95 %` | `≤ 30` | `chip--probe-warn` | « Sonde correcte · 92 % » | ambré clair (`var(--warn)`) |
+| `≥ 2` | `85–90 %` | `≤ 30` | `chip--probe-warn2` | « Sonde usée · 87 % » | ambré (`var(--warn)`) |
+| `≥ 2` | `< 85 %` OU `> 30` | — | `chip--probe-bad` | « Sonde à remplacer · 81 % » | rouge (`var(--danger)`, point pulsant) |
+
+### État stale (âge > 36 h)
+
+Si `phSlopeAgeMs > 36 h` (`PH_PROBE_STALE_MS`), la classe `chip--probe-stale` est ajoutée (encadré jaune) en plus de la variante de couleur. Indique que la dernière mesure de pente date — la valeur affichée est toujours valide mais l'utilisateur peut forcer un refresh.
+
+### Modal détails
+
+Au clic (ou `Enter`/`Espace`), un `<dialog id="ph-probe-modal">` s'ouvre :
+
+- **Pente acide** — `<id="ph-probe-acid">` au format `99.7 %` (1 décimale). `--` si NaN ou `phCalPoints < 2`.
+- **Pente base** — `<id="ph-probe-base">` au format `100.3 %`.
+- **Décalage zéro** — `<id="ph-probe-zero">` au format `-0.89 mV` (2 décimales). `--` si firmware EZO ancien ne le rapporte pas.
+- **Vérifié** — `<id="ph-probe-age">` libellé lisible : « à l'instant », « il y a 14 h », « il y a 2 j 3 h », « jamais ».
+- **Bouton « Rafraîchir »** (`#ph-probe-refresh`) → `POST /debug/ph_slope_refresh`. Texte bascule en « Rafraîchissement… » jusqu'à ce que `phSlopeAgeMs` redescende sous 60 s (succès → toast « Pente sonde pH rafraîchie ») ou timeout 8 s (`PH_PROBE_REFRESH_TIMEOUT_MS` → toast « Sonde non joignable »).
+- **Bouton « Fermer »** (`#ph-probe-close`) ou clic backdrop ou `ESC`.
+
+### Fallback `<dialog>` non supporté
+
+Si `dialog.showModal` est absent (vieux navigateur), le chip est rendu non cliquable (`aria-disabled="true"`, `cursor: default`) avec un `console.warn` — la valeur reste affichée mais le détail n'est pas accessible. Aucun crash, aucun fallback DOM custom.
+
+### Cas particuliers
+
+- **WebSocket déconnecté** : le chip ne change pas immédiatement (dernière classification mémorisée par `latestSensorData`). À la reconnexion, l'UI re-classifie sur le payload reçu.
+- **EZO pH débranché en runtime** : après 2 échecs consécutifs (`kEzoBusFailMaxConsecutive`), les 4 champs WS passent à `null` → chip gris « Pente non disponible » — pas de crash, pas de toast.
+- **Refresh en cours et payload WS qui apporte une nouvelle valeur** : si `phSlopeAgeMs < 60 s`, l'état refresh est résolu en succès (toast).
 
 ## Statut de calibration EZO
 
@@ -77,6 +123,7 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 
 **Mesure** : `ph` (3 décimales depuis 2.0.0)
 **Calibration** : `phCalPoints` (`-1..3`) — voir [Statut de calibration](#statut-de-calibration-ezo)
+**Pente sonde** : `phSlopeAcid`, `phSlopeBase`, `phSlopeZero`, `phSlopeAgeMs` (feature-024) — voir [Chip d'état sonde](#chip-détat-sonde-feature-024)
 **Dosage** : `ph_dosing`, `ph_used_ms`, `ph_daily_ml`, `ph_limit_reached`
 **Mode** : `ph_regulation_mode` (`automatic` / `scheduled` / `manual`), `ph_daily_target_ml`, `ph_enabled` (miroir, voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
 **Config** : `ph_target`, `ph_correction_type` (`ph_minus` / `ph_plus`), `max_ph_ml_per_day`
@@ -94,6 +141,7 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 | Injection manuelle stop | `POST /ph/inject/stop` | — | WRITE |
 | Calibration EZO (mid ou low) | `POST /calibrate_ph` | `{"step":"mid"}` ou `{"step":"low"}` | WRITE |
 | Effacer calibration EZO | `POST /calibrate_clear` | `{"sensor":"ph"}` | WRITE |
+| Refresh pente sonde (feature-024) | `POST /debug/ph_slope_refresh` | — | aucune |
 
 > Routes legacy supprimées (404) : `/calibrate_ph_neutral`, `/calibrate_ph_acid`, `/clear_ph_calibration`. Voir [ADR-0014](../adr/0014-migration-atlas-ezo.md).
 
@@ -133,6 +181,9 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) pour
 | `number.*_ph_target` | `{base}/ph_target` | `{base}/ph_target/set` |
 | `binary_sensor.*_ph_dosing` | `{base}/ph_dosing` | — |
 | `binary_sensor.*_ph_limit` | `{base}/ph_limit` | — |
+| `sensor.*_ph_slope_acid` | `{base}/ph_slope_acid` (% — feature-024) | — |
+| `sensor.*_ph_slope_base` | `{base}/ph_slope_base` (% — feature-024) | — |
+| `sensor.*_ph_slope_zero` | `{base}/ph_slope_zero` (mV — feature-024) | — |
 | (alerte) | `{base}/alerts/calibration_required` | — |
 
 ## Fichiers

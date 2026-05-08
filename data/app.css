@@ -3177,3 +3177,107 @@ h1, h2, h3 {
   padding: 0;
   line-height: 1;
 }
+
+/* ---------- Chip d'état sonde pH (feature-024) ---------- */
+/* Hérite de .chip — variantes de couleur selon l'état de la sonde */
+.chip--probe {
+  cursor: pointer;
+  margin: 8px 0 0;
+  font-family: inherit;
+  /* Reset bouton natif */
+  appearance: none;
+  -webkit-appearance: none;
+}
+.chip--probe:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.chip--probe:hover { transform: translateY(-1px); }
+
+/* Vert : sonde excellente (≥ 95 % et |zéro| ≤ 15 mV) */
+.chip--probe-good {
+  background: rgba(21, 128, 61, 0.10);
+  border-color: rgba(21, 128, 61, 0.30);
+  color: var(--success);
+}
+.chip--probe-good .chip__dot { background: var(--success); animation: none; }
+
+/* Ambré clair : sonde correcte (90-95 % ou |zéro| > 15 mV) */
+.chip--probe-warn {
+  background: rgba(255, 204, 0, 0.10);
+  border-color: rgba(255, 204, 0, 0.30);
+  color: var(--warn);
+}
+.chip--probe-warn .chip__dot { background: var(--warn); animation: none; }
+
+/* Ambré soutenu : sonde usée (85-90 %) */
+.chip--probe-warn2 {
+  background: rgba(255, 193, 7, 0.18);
+  border-color: rgba(255, 193, 7, 0.45);
+  color: var(--warn);
+}
+.chip--probe-warn2 .chip__dot { background: var(--warn); animation: none; }
+
+/* Rouge : sonde à remplacer (< 85 % ou |zéro| > 30 mV) */
+.chip--probe-bad {
+  background: rgba(185, 28, 28, 0.10);
+  border-color: rgba(185, 28, 28, 0.30);
+  color: var(--danger);
+}
+.chip--probe-bad .chip__dot { background: var(--danger); animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+
+/* Gris : inconnu (calibration < 2 points, NaN, jamais lu) */
+.chip--probe-unknown {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: var(--border);
+  color: var(--muted);
+}
+.chip--probe-unknown .chip__dot { background: var(--muted); animation: none; }
+
+/* Modificateur "stale" : ajouté en plus de la classe principale (âge > 36 h) */
+.chip--probe-stale {
+  box-shadow: inset 0 0 0 1px rgba(255, 193, 7, 0.45), var(--shadow-sm);
+}
+
+/* ---------- Modal détails sonde pH (feature-024) ---------- */
+.probe-modal {
+  padding: 18px;
+  border-radius: var(--card-radius);
+  border: 1px solid var(--card-border);
+  box-shadow: var(--shadow-lg);
+  background: var(--card-bg, #fff);
+  color: var(--text);
+  max-width: 320px;
+  width: calc(100vw - 32px);
+}
+.probe-modal::backdrop {
+  background: rgba(0, 0, 0, 0.35);
+}
+.probe-modal__title {
+  margin: 0 0 12px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+.probe-modal__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--stroke);
+  font-size: 13px;
+}
+.probe-modal__row:last-of-type { border-bottom: 0; }
+.probe-modal__label { color: var(--muted); }
+.probe-modal__value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.probe-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+.probe-modal__actions .btn { min-height: 40px; padding: 8px 14px; }

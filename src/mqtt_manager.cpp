@@ -110,6 +110,10 @@ void MqttManager::refreshTopics() {
   topics.alertsSensorStaleTopic = base + "/alerts/sensor_stale";
   topics.phCalPointsState       = base + "/ph_cal_points";
   topics.orpCalPointsState      = base + "/orp_cal_points";
+  // feature-024 : pente sonde pH (3 topics retain).
+  topics.phSlopeAcidState       = base + "/ph_slope_acid";
+  topics.phSlopeBaseState       = base + "/ph_slope_base";
+  topics.phSlopeZeroState       = base + "/ph_slope_zero";
 }
 
 // ============================================================================
@@ -616,6 +620,35 @@ void MqttManager::publishCalibrationStatusInternal() {
     }
     _lastSensorStale = isStale;
   }
+
+  // 4) feature-024 : pente sonde pH — publication edge-triggered.
+  // Publié UNIQUEMENT après la 1ʳᵉ query Slope,? réussie (NaN check).
+  // Chaque query réussie suivante (24h ou post-cal) re-publie si la valeur
+  // arrondie a changé — évite le bruit MQTT pour des oscillations <0.1%.
+  float slopeAcid = sensors.getPhSlopeAcid();
+  float slopeBase = sensors.getPhSlopeBase();
+  float slopeZero = sensors.getPhSlopeZero();
+  if (!isnan(slopeAcid)) {
+    float rounded = round(slopeAcid * 10.0f) / 10.0f;
+    if (isnan(_lastPhSlopeAcidPub) || rounded != _lastPhSlopeAcidPub) {
+      safePublish(topics.phSlopeAcidState.c_str(), String(rounded, 1).c_str(), true);
+      _lastPhSlopeAcidPub = rounded;
+    }
+  }
+  if (!isnan(slopeBase)) {
+    float rounded = round(slopeBase * 10.0f) / 10.0f;
+    if (isnan(_lastPhSlopeBasePub) || rounded != _lastPhSlopeBasePub) {
+      safePublish(topics.phSlopeBaseState.c_str(), String(rounded, 1).c_str(), true);
+      _lastPhSlopeBasePub = rounded;
+    }
+  }
+  if (!isnan(slopeZero)) {
+    float rounded = round(slopeZero * 100.0f) / 100.0f;
+    if (isnan(_lastPhSlopeZeroPub) || rounded != _lastPhSlopeZeroPub) {
+      safePublish(topics.phSlopeZeroState.c_str(), String(rounded, 2).c_str(), true);
+      _lastPhSlopeZeroPub = rounded;
+    }
+  }
 }
 
 void MqttManager::publishDiagnosticInternal() {
@@ -1090,6 +1123,40 @@ void MqttManager::publishDiscovery() {
   doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_cal_points";
   doc["state_topic"] = topics.orpCalPointsState;
   doc["icon"] = "mdi:numeric";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-024 : pente sonde pH — % côté acide (idéal 100%)
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_slope_acid/config";
+  doc["name"] = "Piscine pH Pente Acide";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_slope_acid";
+  doc["state_topic"] = topics.phSlopeAcidState;
+  doc["unit_of_measurement"] = "%";
+  doc["icon"] = "mdi:angle-acute";
+  doc["state_class"] = "measurement";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-024 : pente sonde pH — % côté base (idéal 100%)
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_slope_base/config";
+  doc["name"] = "Piscine pH Pente Base";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_slope_base";
+  doc["state_topic"] = topics.phSlopeBaseState;
+  doc["unit_of_measurement"] = "%";
+  doc["icon"] = "mdi:angle-obtuse";
+  doc["state_class"] = "measurement";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-024 : pente sonde pH — décalage zéro en mV (idéal 0 mV).
+  // Peut rester NaN/non publié si le firmware EZO ne rapporte pas le 3ᵉ float.
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_slope_zero/config";
+  doc["name"] = "Piscine pH Décalage Zéro";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_slope_zero";
+  doc["state_topic"] = topics.phSlopeZeroState;
+  doc["unit_of_measurement"] = "mV";
+  doc["icon"] = "mdi:sine-wave";
+  doc["state_class"] = "measurement";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 

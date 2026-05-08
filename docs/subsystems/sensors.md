@@ -31,6 +31,7 @@ Encapsule la communication I²C avec un module EZO et le timing requis par le fi
 | `bool clearCalibration()` | `Cal,clear` — efface toute la calibration mémorisée dans le module. |
 | `int queryCalPoints()` | `Cal,?` → renvoie -1 (injoignable) ou 0..3. |
 | `bool readInfo(String& fw)` | `I` — version firmware module (utilisé au boot pour log diagnostique). |
+| `bool querySlope(PhSlopeInfo& out)` | `Slope,?` — pente sonde pH ([feature-024](#pente-sonde-ph--feature-024)). Parsing tolérant 2 ou 3 floats. Prend le mutex. |
 
 **Codes de retour Atlas** parsés en interne :
 - `1` → succès (réponse utile suit)
@@ -63,6 +64,13 @@ bool enqueueCalibratePhLow();           // Cal,low,4.00
 bool enqueueCalibrateOrp(float refMv);  // Cal,<refMv>
 bool enqueueClearPhCalibration();
 bool enqueueClearOrpCalibration();
+
+// feature-024 — pente sonde pH (diagnostic d'usure)
+float getPhSlopeAcid()  const;          // % pente acide (NaN si jamais lu / bus dégradé)
+float getPhSlopeBase()  const;          // % pente base
+float getPhSlopeZero()  const;          // mV décalage zéro (NaN si firmware EZO ancien)
+uint32_t getPhSlopeAgeMs() const;       // ms depuis dernière query OK (UINT32_MAX si jamais)
+bool enqueuePhSlopeQuery();             // force un refresh — dédoublonné
 
 // Diagnostic global
 bool isInitialized() const;             // true si au moins un EZO a répondu + 1 lecture valide
@@ -143,6 +151,7 @@ Conséquences :
 | `kPhOrpSensorIntervalMs` | `5000` ms | Période lecture pH/ORP |
 | `kTempSensorIntervalMs` | `2000` ms | Période lecture DS18B20 |
 | `kI2cMutexTimeoutMs` | `2000` ms | Timeout d'acquisition mutex I²C |
+| `kPhSlopeQueryIntervalMs` | `86_400_000` ms (24 h) | Re-query auto `Slope,?` (feature-024) |
 
 Toutes définies dans [`src/constants.h`](../../src/constants.h).
 
@@ -162,6 +171,54 @@ Toutes définies dans [`src/constants.h`](../../src/constants.h).
 - **DS18B20 absente** : `tempValue = NaN`. `getWaterTemperature()` retourne NaN → fallback 25.0 °C pour la compensation pH.
 - **EZO froid au démarrage** (réponse `255 = no data` pendant les premières lectures) : tolérance `kEzoBusFailMaxConsecutive = 2` permet de passer 1 échec isolé avant de bloquer le dosage.
 
+## Pente sonde pH — feature-024
+
+Diagnostic **passif** d'usure de la sonde pH via la commande Atlas `Slope,?`. La feature **n'affecte pas** `canDose()` ni le PID — elle expose uniquement des valeurs brutes que l'UI évalue (chip + modal sur la page `/ph`).
+
+### Méthode `AtlasEzoSensor::querySlope(PhSlopeInfo& out)`
+
+Envoie `Slope,?` sous mutex I²C tenu pour toute la séquence (cmd + delay `kEzoCalDelayMs` + read + parse). Réponse Atlas attendue :
+
+```
+?Slope,99.7,100.3,-0.89
+```
+
+- **Parsing tolérant 2 ou 3 floats** : sur firmware EZO ancien, la 3ᵉ valeur (décalage zéro) peut être absente → `out.zeroOffsetMv = NaN`. Les 2 premiers floats (acide / base) sont obligatoires.
+- **Trace brute en `debug` uniquement** ([feature-017](../../specs/features/done/feature-017-toggle-logs-debug.md)) — `warning` rejeté pour éviter le spam HA via le topic `{base}/logs` à chaque re-query 24 h.
+- En cas d'échec parsing : `warning` une fois + `out` inchangé.
+
+### Cache RAM dans `Sensors`
+
+| Champ | Type | Description |
+|---|---|---|
+| `_phSlopeAcid` / `_phSlopeBase` | `float` | % pente Nernst (NaN si jamais lu OU bus dégradé) |
+| `_phSlopeZero` | `float` | mV décalage zéro (NaN si firmware ancien ne le rapporte pas) |
+| `_phSlopeQueriedMs` | `uint32_t` | `millis()` de la dernière query OK ; `0` = jamais lu |
+| `_phSlopeQueryPending` | `bool` | Anti-doublon enqueue — levé par le handler dès le début du traitement |
+| `_phSlopeFailStreak` | `int` | Compteur d'échecs ; ≥ `kEzoBusFailMaxConsecutive` → cache invalidé à NaN (cohérent avec `_phCalCachedPoints`) |
+
+### Politique de refresh
+
+1. **Au boot** : 1 query enfilée après init EZO (1ʳᵉ valeur disponible dans les ~30 s).
+2. **Après chaque calibration pH réussie** (mid / low / clear) : re-query enfilée automatiquement par `_processEzoQueue()` pour rafraîchir l'info dans les ~5 s.
+3. **Automatique 24 h** : `update()` enfile une re-query si `(millis() - _phSlopeQueriedMs) >= kPhSlopeQueryIntervalMs` ET `!_phSlopeQueryPending`.
+4. **À la demande** : `POST /debug/ph_slope_refresh` (cf. [API.md](../API.md)) → `enqueuePhSlopeQuery()`.
+
+### Dédoublonnage `_phSlopeQueryPending`
+
+`enqueuePhSlopeQuery()` retourne `true` même si une query est déjà en file (« noop satisfait » — pas de spam de la queue 4 slots). Le flag est levé en début de handler `QueryPhSlope` pour permettre une demande suivante.
+
+### Invalidation en mode dégradé
+
+Si `_phSlopeFailStreak >= kEzoBusFailMaxConsecutive` (= `2`), les 3 valeurs passent à NaN. `_phSlopeQueriedMs` n'est **pas** remis à zéro : l'âge continue de croître côté UI, qui peut afficher l'état « stale » (encadré jaune si > 36 h).
+
+### Publication
+
+- **WebSocket** (`sensor_data`, toutes les 5 s) : 4 champs `phSlopeAcid` (1 décimale), `phSlopeBase` (1 décimale), `phSlopeZero` (2 décimales), `phSlopeAgeMs`. `null` si NaN ou jamais lu — voir [API.md](../API.md#ws-ws--write).
+- **MQTT** : 3 topics retain `{base}/ph_slope_acid|base|zero` publiés **edge-triggered** (uniquement si la valeur arrondie a changé). 3 sensors auto-discovery HA — voir [MQTT.md](../MQTT.md).
+
+> Évaluation des seuils (vert / ambré / rouge / gris) faite **côté UI** ([page-ph.md](../features/page-ph.md#chip-détat-sonde-feature-024)) — permet d'ajuster sans reflasher.
+
 ## Surveillance des valeurs aberrantes (health check)
 
 `checkSystemHealth()` dans [`main.cpp`](../../src/main.cpp) est appelée toutes les **60 s** (`kHealthCheckIntervalMs`). Elle vérifie si chaque valeur capteur sort de sa plage de normalité :
@@ -177,8 +234,8 @@ Logs et alertes MQTT émis **aux transitions uniquement** (entrée et sortie de 
 ## Interaction avec les autres composants
 
 - [`pump_controller`](pump-controller.md) : lit `getPh()` / `getOrp()` chaque cycle pour calculer l'erreur PID. Vérifie `getPhCalibrationPointsCached()` / `getOrpCalibrationPointsCached()` dans `canDose(int)` (conditions #1, #2, #5).
-- [`ws_manager`](ws-manager.md) : `broadcastSensorData()` publie `ph` (3 décimales), `orp`, `temperature`, `temperature_circuit`, `phCalPoints`, `orpCalPoints` toutes les 5 s.
-- [`mqtt_manager`](mqtt-manager.md) : publie `{base}/ph` (3 décimales), `{base}/orp`, `{base}/temperature`, `{base}/temperature_circuit`, `{base}/ph_cal_points`, `{base}/orp_cal_points` toutes les 10 s (`kMqttPublishIntervalMs`). Alertes edge-triggered `{base}/alerts/calibration_required` et `{base}/alerts/sensor_stale`.
+- [`ws_manager`](ws-manager.md) : `broadcastSensorData()` publie `ph` (3 décimales), `orp`, `temperature`, `temperature_circuit`, `phCalPoints`, `orpCalPoints`, `phSlopeAcid/Base/Zero/AgeMs` toutes les 5 s.
+- [`mqtt_manager`](mqtt-manager.md) : publie `{base}/ph` (3 décimales), `{base}/orp`, `{base}/temperature`, `{base}/temperature_circuit`, `{base}/ph_cal_points`, `{base}/orp_cal_points` toutes les 10 s (`kMqttPublishIntervalMs`). 3 topics `{base}/ph_slope_*` edge-triggered. Alertes edge-triggered `{base}/alerts/calibration_required` et `{base}/alerts/sensor_stale`.
 - [`history`](history.md) : snapshot des valeurs courantes toutes les 5 min.
 
 ## Multi-sondes DS18B20 — PCB v2 (feature-020)

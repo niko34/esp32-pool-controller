@@ -224,6 +224,64 @@ int AtlasEzoSensor::queryCalPoints() {
   return points;
 }
 
+bool AtlasEzoSensor::querySlope(PhSlopeInfo& out) {
+  if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(kI2cMutexTimeoutMs)) != pdTRUE) {
+    systemLogger.warning(String(_name) + " : timeout mutex I²C (querySlope)");
+    return false;
+  }
+
+  bool ok = false;
+  if (_sendCmdLocked("Slope,?")) {
+    char buf[kEzoReadBufLen];
+    int n = _readResponseLocked(buf, sizeof(buf), kEzoCalDelayMs);
+    if (n > 0) {
+      // Réponse Atlas EZO pH attendue : "?Slope,<acid>,<base>[,<zero>]".
+      // Trace brute en debug uniquement (toggle DEBUG via feature-017).
+      // Niveau warning évité : query auto toutes les 24h → spam HA si warning.
+      systemLogger.debug(String(_name) + " : Slope,? réponse brute = \"" +
+                         String(buf) + "\"");
+
+      // Recherche de la 1ʳᵉ virgule (après "?Slope") puis parsing séquentiel.
+      const char* p = strchr(buf, ',');
+      if (p != nullptr) {
+        ++p;  // après la virgule
+        char* endptr = nullptr;
+        float acid = strtof(p, &endptr);
+        if (endptr != p && *endptr == ',') {
+          const char* p2 = endptr + 1;
+          float base = strtof(p2, &endptr);
+          if (endptr != p2) {
+            // 2 floats valides au minimum (acide + base).
+            out.acidPct = acid;
+            out.basePct = base;
+            // 3ᵉ float optionnel : décalage zéro en mV si présent.
+            if (*endptr == ',') {
+              const char* p3 = endptr + 1;
+              float zero = strtof(p3, &endptr);
+              if (endptr != p3) {
+                out.zeroOffsetMv = zero;
+              } else {
+                out.zeroOffsetMv = NAN;
+              }
+            } else {
+              // Firmware EZO ancien : pas de 3ᵉ valeur.
+              out.zeroOffsetMv = NAN;
+            }
+            ok = true;
+          }
+        }
+      }
+      if (!ok) {
+        systemLogger.warning(String(_name) + " : Slope,? parsing échoué (\"" +
+                             String(buf) + "\")");
+      }
+    }
+  }
+
+  xSemaphoreGive(i2cMutex);
+  return ok;
+}
+
 bool AtlasEzoSensor::readInfo(String& fw) {
   if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(kI2cMutexTimeoutMs)) != pdTRUE) {
     systemLogger.warning(String(_name) + " : timeout mutex I²C (readInfo)");

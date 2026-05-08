@@ -55,7 +55,8 @@ public:
     CalibratePhLow,    // Cal,low,4.00
     CalibrateOrp,      // Cal,<referenceMv>
     ClearPhCal,        // Cal,clear sur pH
-    ClearOrpCal        // Cal,clear sur ORP
+    ClearOrpCal,       // Cal,clear sur ORP
+    QueryPhSlope       // Slope,? sur pH (feature-024 — re-query auto 24h + post-cal)
   };
 
   // Requête de commande EZO posée par les handlers async, traitée par update()
@@ -100,6 +101,25 @@ public:
   bool enqueueCalibrateOrp(float referenceMv);  // Calibration ORP (référence en mV)
   bool enqueueClearPhCalibration();
   bool enqueueClearOrpCalibration();
+
+  // ===== feature-024 : pente sonde pH =====
+  // Acide / base : % de la pente Nernst théorique (idéal 100%).
+  // Zero offset : décalage du point isopotentiel en mV (idéal 0).
+  // Tous renvoient NaN si :
+  //   - aucune query Slope,? n'a encore réussi depuis le boot, OU
+  //   - le bus I²C est dégradé (fail streak ≥ kEzoBusFailMaxConsecutive), OU
+  //   - pour getPhSlopeZero() uniquement : firmware EZO ne rapporte pas le zéro.
+  float getPhSlopeAcid() const;
+  float getPhSlopeBase() const;
+  float getPhSlopeZero() const;
+  // Renvoie l'âge de la dernière query Slope,? réussie (millis() - timestamp).
+  // UINT32_MAX si jamais lue avec succès depuis le boot.
+  uint32_t getPhSlopeAgeMs() const;
+  // Pose une demande de query Slope,? dans la file EZO (dédoublonnée via
+  // _phSlopeQueryPending : un appel répété tant que la précédente n'a pas été
+  // traitée renverra true mais n'enfilera qu'une seule fois). Retourne false
+  // si la queue est pleine ou non initialisée.
+  bool enqueuePhSlopeQuery();
 
   // ===== Diagnostic / état =====
   // True si au moins un EZO a répondu au boot ET qu'au moins une lecture pH
@@ -203,6 +223,17 @@ private:
 
   // True si au moins un EZO a répondu (au moins une fois) — utilisé par isInitialized()
   bool _ezoEverResponded = false;
+
+  // ===== feature-024 : cache pente sonde pH (Slope,?) =====
+  // Mis à jour au boot puis : (a) toutes les kPhSlopeQueryIntervalMs (24h),
+  //                            (b) après chaque calibration pH (post-cal),
+  //                            (c) sur demande POST /debug/ph_slope_refresh.
+  float _phSlopeAcid = NAN;     // % pente acide ; NaN si jamais lu OU bus dégradé
+  float _phSlopeBase = NAN;     // % pente base
+  float _phSlopeZero = NAN;     // mV zéro (NaN si firmware EZO ne le rapporte pas)
+  uint32_t _phSlopeQueriedMs = 0;     // 0 = jamais ; sinon millis() de la dernière query OK
+  bool _phSlopeQueryPending = false;  // anti-doublon enqueue → handler lève le flag
+  int _phSlopeFailStreak = 0;         // ≥ kEzoBusFailMaxConsecutive → invalider cache à NaN
 
   // ===== Queue FreeRTOS pour commandes longues =====
   static constexpr UBaseType_t kEzoQueueLen = 4;

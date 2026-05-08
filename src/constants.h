@@ -132,6 +132,7 @@ constexpr uint32_t kEzoCalDelayMs             = 900;      // Délai après comma
 constexpr uint32_t kEzoRtDelayMs              = 600;      // Délai après commande RT,<temp>
 constexpr uint32_t kSensorStaleTimeoutMs      = 20000;    // 20 s : timeout lecture pH/ORP stale (pool-chemistry condition #1)
 constexpr int      kEzoBusFailMaxConsecutive  = 2;        // 2 échecs consécutifs I²C → blocage dosage (pool-chemistry condition #5)
+constexpr unsigned long kPhSlopeQueryIntervalMs = 86400000UL; // 24h - re-query Slope,? auto (feature-024 pente sonde pH)
 
 // ============================================================================
 // FILTRATION CONSTANTS - Paramètres filtration

@@ -2432,6 +2432,206 @@
     }
   }
 
+  // ---------- État sonde pH (feature-024) ----------
+  // UINT32_MAX renvoyé par le firmware = "jamais lu"
+  const PH_SLOPE_NEVER = 0xFFFFFFFF;
+  const PH_PROBE_STALE_MS = 36 * 3600 * 1000; // 36 h
+  const PH_PROBE_REFRESH_TIMEOUT_MS = 8000;   // 8 s max d'attente après POST
+
+  // État du refresh manuel : null = idle, sinon { startedAt, ageAtStart }
+  let _phProbeRefreshState = null;
+
+  // Classification de la sonde pH selon les seuils livrés par ux-ui-designer.
+  function classifyPhProbe({ acid, base, zero, calPoints, ageMs }) {
+    // Nombre de points de calibration insuffisant : pas d'évaluation possible
+    if (calPoints == null || calPoints < 2) {
+      return { cls: 'unknown', label: 'Calibration 2 points requise' };
+    }
+    const acidNum = (acid == null || isNaN(acid)) ? null : Number(acid);
+    const baseNum = (base == null || isNaN(base)) ? null : Number(base);
+    if (acidNum == null || baseNum == null) {
+      return { cls: 'unknown', label: 'Pente non disponible' };
+    }
+    const min = Math.min(acidNum, baseNum);
+    const zeroAbs = (zero == null || isNaN(zero)) ? 0 : Math.abs(Number(zero));
+    if (min < 85 || zeroAbs > 30) {
+      return { cls: 'bad', label: `Sonde à remplacer · ${Math.round(min)} %` };
+    }
+    if (min < 90) {
+      return { cls: 'warn2', label: `Sonde usée · ${Math.round(min)} %` };
+    }
+    if (min < 95 || zeroAbs > 15) {
+      return { cls: 'warn', label: `Sonde correcte · ${Math.round(min)} %` };
+    }
+    return { cls: 'good', label: `Sonde excellente · ${Math.round(min)} %` };
+  }
+
+  // Met en forme l'âge en libellé lisible : "il y a 14 h", "il y a 12 min", "jamais"
+  function formatProbeAge(ageMs) {
+    if (ageMs == null || ageMs >= PH_SLOPE_NEVER) return 'jamais';
+    if (ageMs < 60 * 1000) return 'à l\'instant';
+    const minutes = Math.floor(ageMs / 60000);
+    if (minutes < 60) return `il y a ${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    const remMin = minutes - hours * 60;
+    if (hours < 24) {
+      return remMin === 0 ? `il y a ${hours} h` : `il y a ${hours} h ${remMin} min`;
+    }
+    const days = Math.floor(hours / 24);
+    const remHours = hours - days * 24;
+    return remHours === 0 ? `il y a ${days} j` : `il y a ${days} j ${remHours} h`;
+  }
+
+  // Met à jour le chip d'état sonde pH dans la carte « Lecture pH ».
+  // Appelé depuis loadSensorData après chaque push WS / fetch /data.
+  function updatePhProbeChip(json) {
+    const chip = $("#ph-probe-chip");
+    const lblEl = $("#ph-probe-chip-label");
+    if (!chip || !lblEl) return;
+
+    const acid = json?.phSlopeAcid;
+    const base = json?.phSlopeBase;
+    const zero = json?.phSlopeZero;
+    const calPoints = json?.phCalPoints;
+    const ageMs = json?.phSlopeAgeMs;
+
+    const { cls, label } = classifyPhProbe({ acid, base, zero, calPoints, ageMs });
+
+    // Reset les classes de variantes uniquement
+    chip.classList.remove(
+      'chip--probe-good', 'chip--probe-warn', 'chip--probe-warn2',
+      'chip--probe-bad', 'chip--probe-unknown', 'chip--probe-stale'
+    );
+    chip.classList.add(`chip--probe-${cls}`);
+
+    // État stale : âge connu et > 36 h
+    const isStale = (typeof ageMs === 'number') && ageMs < PH_SLOPE_NEVER && ageMs > PH_PROBE_STALE_MS;
+    if (isStale) chip.classList.add('chip--probe-stale');
+
+    lblEl.textContent = label;
+
+    // Détection de refresh terminé : si on attend un refresh et que ageMs est redescendu sous 60 s
+    if (_phProbeRefreshState && typeof ageMs === 'number' && ageMs < PH_SLOPE_NEVER && ageMs < 60000) {
+      _phProbeRefreshFinish(true);
+    }
+
+    // Mettre à jour le contenu du modal si ouvert
+    const modal = $("#ph-probe-modal");
+    if (modal && modal.open) _renderPhProbeModalValues(json);
+  }
+
+  function _renderPhProbeModalValues(json) {
+    const acidEl = $("#ph-probe-acid");
+    const baseEl = $("#ph-probe-base");
+    const zeroEl = $("#ph-probe-zero");
+    const ageEl = $("#ph-probe-age");
+    if (!acidEl || !baseEl || !zeroEl || !ageEl) return;
+
+    const acid = json?.phSlopeAcid;
+    const base = json?.phSlopeBase;
+    const zero = json?.phSlopeZero;
+    const ageMs = json?.phSlopeAgeMs;
+    const calPoints = json?.phCalPoints;
+
+    const fmtPct = (v) => (v == null || isNaN(v)) ? '--' : `${Number(v).toFixed(1)} %`;
+    const fmtMv = (v) => (v == null || isNaN(v)) ? '--' : `${Number(v).toFixed(2)} mV`;
+
+    if (calPoints != null && calPoints < 2) {
+      acidEl.textContent = '--';
+      baseEl.textContent = '--';
+      zeroEl.textContent = '--';
+    } else {
+      acidEl.textContent = fmtPct(acid);
+      baseEl.textContent = fmtPct(base);
+      zeroEl.textContent = fmtMv(zero);
+    }
+    ageEl.textContent = formatProbeAge(ageMs);
+  }
+
+  function _phProbeRefreshFinish(success) {
+    if (!_phProbeRefreshState) return;
+    if (_phProbeRefreshState.timeoutId) clearTimeout(_phProbeRefreshState.timeoutId);
+    const btn = $("#ph-probe-refresh");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Rafraîchir';
+    }
+    if (success) {
+      showToast('Pente sonde pH rafraîchie', 'success');
+    }
+    _phProbeRefreshState = null;
+  }
+
+  async function _phProbeRefresh() {
+    if (_phProbeRefreshState) return; // refresh déjà en cours
+    const btn = $("#ph-probe-refresh");
+    try {
+      const res = await authFetch('/debug/ph_slope_refresh', { method: 'POST' });
+      if (res.status === 503) {
+        showToast('Queue saturée, réessayer dans 1s', 'warning');
+        return;
+      }
+      if (!res.ok) {
+        showToast('Erreur lors du rafraîchissement', 'error');
+        return;
+      }
+      // 200 OK : on enregistre l'état et on attend que phSlopeAgeMs retombe sous 60s via WS
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Rafraîchissement…';
+      }
+      _phProbeRefreshState = {
+        startedAt: Date.now(),
+        timeoutId: setTimeout(() => {
+          showToast('Sonde non joignable', 'error');
+          _phProbeRefreshFinish(false);
+        }, PH_PROBE_REFRESH_TIMEOUT_MS),
+      };
+    } catch (e) {
+      console.error('[ph-probe] refresh failed:', e);
+      showToast('Erreur réseau', 'error');
+    }
+  }
+
+  function bindPhProbeChip() {
+    const chip = $("#ph-probe-chip");
+    const modal = $("#ph-probe-modal");
+    const closeBtn = $("#ph-probe-close");
+    const refreshBtn = $("#ph-probe-refresh");
+    if (!chip || !modal) return;
+
+    // Fallback si <dialog> non supporté : on log + on désactive le clic
+    if (typeof modal.showModal !== 'function') {
+      console.warn('[ph-probe] <dialog> non supporté par ce navigateur, popup désactivé');
+      chip.setAttribute('aria-disabled', 'true');
+      chip.style.cursor = 'default';
+      return;
+    }
+
+    chip.addEventListener('click', () => {
+      _renderPhProbeModalValues(latestSensorData || {});
+      try { modal.showModal(); } catch (e) { console.error('[ph-probe] showModal:', e); }
+    });
+    chip.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        chip.click();
+      }
+    });
+
+    if (closeBtn) closeBtn.addEventListener('click', () => modal.close());
+    if (refreshBtn) refreshBtn.addEventListener('click', _phProbeRefresh);
+
+    // Backdrop close : clic en dehors du contenu du dialog
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) modal.close();
+    });
+    // Cleanup state si le modal est fermé (ESC ou autre)
+    modal.addEventListener('close', () => {
+      // Pas de reset du refresh ici : il continue en arrière-plan jusqu'au timeout
+    });
+  }
+
   async function loadSensorData(options = {}) {
     if (sensorDataLoadInFlight && !options.data) return sensorDataLoadInFlight;
     const force = options.force === true;
@@ -2514,6 +2714,9 @@
             phCurrentValue.textContent = "--";
           }
         }
+
+        // Chip d'état sonde pH (feature-024) — basé sur phSlopeAcid/Base/Zero/AgeMs + phCalPoints
+        updatePhProbeChip(json);
 
         const orpCurrentValue = $("#orp_current_value");
         const orpCurrentLabel = $("#orp_current_label");
@@ -5022,6 +5225,7 @@
     bindDetailActions();
     bindAutosave();
     bindPhCalibration();
+    bindPhProbeChip();
     bindOrpCalibration();
     bindTempCalibration();
     bindWifi();

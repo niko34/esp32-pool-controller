@@ -112,6 +112,19 @@ void setupDebugRoutes(AsyncWebServer* server) {
       req->send(200, "application/json", resp);
     });
 
+  // ---------- POST /debug/ph_slope_refresh ----------
+  // feature-024 : force une re-query Slope,? sur l'EZO pH (utile pour valider
+  // une nouvelle calibration sans attendre le cycle 24h).
+  // Réponse 200 si la commande a été enfilée, 503 si la queue est saturée.
+  server->on("/debug/ph_slope_refresh", HTTP_POST, [](AsyncWebServerRequest* req) {
+    bool ok = sensors.enqueuePhSlopeQuery();
+    if (ok) {
+      req->send(200, "application/json", "{\"success\":true,\"queued\":true}");
+    } else {
+      req->send(503, "application/json", "{\"error\":\"queue full or already pending\"}");
+    }
+  });
+
   // ---------- GET /debug/wifi_pause ----------
   server->on("/debug/wifi_pause", HTTP_GET, [](AsyncWebServerRequest* req) {
     JsonDocument doc;

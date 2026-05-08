@@ -28,6 +28,19 @@
 // Voir spec : specs/features/doing/feature-021-migration-atlas-ezo.md
 // =============================================================================
 
+// Informations de pente d'une sonde pH (feature-024).
+// Renvoyées par la commande Atlas "Slope,?" sur l'EZO pH.
+// Réponse type firmware EZO pH 2.x : "?Slope,99.7,100.3,-0.89"
+//  - acidPct      : pente côté acide (point pH 4) en % de la pente théorique Nernst
+//  - basePct      : pente côté base (point pH 10) en % de la pente théorique Nernst
+//  - zeroOffsetMv : décalage du point isopotentiel (pH 7) en mV ; NaN si firmware
+//                   EZO ancien ne le rapporte pas (réponse à 2 floats seulement)
+struct PhSlopeInfo {
+  float acidPct;
+  float basePct;
+  float zeroOffsetMv;
+};
+
 class AtlasEzoSensor {
 public:
   // Construit le pilote. `name` est utilisé uniquement pour les logs (ex. "EZO pH").
@@ -70,6 +83,13 @@ public:
   // Réponse type : "?I,pH,2.10" ou "?I,ORP,2.10".
   // Prend le mutex I²C en interne. Place la chaîne brute dans `fw` et retourne true si succès.
   bool readInfo(String& fw);
+
+  // Lit la pente de la sonde pH ("Slope,?" command) — feature-024.
+  // Réponse Atlas : "?Slope,<acid>,<base>[,<zero>]" — tolérante 2 ou 3 floats.
+  // Si seulement 2 floats parsés (firmware EZO ancien) → out.zeroOffsetMv = NaN.
+  // Prend le mutex I²C en interne pour toute la séquence (cmd + delay + read).
+  // Retourne true si parsing OK (au moins acide+base), false sinon (out inchangé).
+  bool querySlope(PhSlopeInfo& out);
 
   // Accesseurs simples
   uint8_t address() const { return _address; }

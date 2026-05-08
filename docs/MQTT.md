@@ -26,6 +26,9 @@ Tous les topics utilisent le préfixe configurable (ex: `pool/sensors`). Les val
 | `{base}/orp` | `720` | Valeur ORP (mV) |
 | `{base}/ph_cal_points` | `2` | Points de calibration EZO pH (entier `-1..3`, `-1` = EZO injoignable). Retain. Voir [feature-021](../specs/features/done/feature-021-migration-atlas-ezo.md). |
 | `{base}/orp_cal_points` | `1` | Points de calibration EZO ORP (entier `-1..1`, `-1` = EZO injoignable). Retain. |
+| `{base}/ph_slope_acid` | `99.7` | Pente acide sonde pH EZO en % (1 décimale). Retain. Edge-triggered ([feature-024](../specs/features/done/feature-024-pente-sonde-ph.md)). |
+| `{base}/ph_slope_base` | `100.3` | Pente base sonde pH EZO en % (1 décimale). Retain. Edge-triggered. |
+| `{base}/ph_slope_zero` | `-0.89` | Décalage zéro sonde pH EZO en mV (2 décimales). Retain. Non publié si firmware EZO ancien. |
 
 ### Filtration
 
@@ -213,3 +216,19 @@ Le bus OneWire (GPIO 5) supporte 2 sondes DS18B20 sur le PCB v2. Chaque sonde a 
 **Topics inchangés** (rétrocompat HA) : `{base}/orp`, `{base}/ph_target`, `{base}/orp_target`, `{base}/ph_dosing`, `{base}/orp_dosing`, `{base}/ph_limit`, `{base}/orp_limit`, `{base}/ph_regulation_mode`, `{base}/orp_regulation_mode`, etc. Les topics et entités HA de calibration ORP héritées (notamment `orp_cal_valid`) restent diffusés pour compatibilité, mais leur source de vérité côté firmware est désormais le module EZO (`orp_cal_points >= 1`).
 
 Voir [ADR-0014](adr/0014-migration-atlas-ezo.md) (décision migration) et [`docs/subsystems/sensors.md`](subsystems/sensors.md) (détails techniques EZO + cache cal_points).
+
+## Topics et entités ajoutés en feature-024 (pente sonde pH)
+
+Diagnostic d'usure de la sonde pH via la commande Atlas `Slope,?`. Toutes les valeurs sont **strictement diagnostiques** — elles n'affectent ni `canDose()` ni le PID. L'évaluation des seuils (sonde excellente / correcte / usée / à remplacer) est faite côté UI, pas en firmware.
+
+| Topic | Description | Retain | Auto-discovery HA |
+|-------|-------------|--------|-------------------|
+| `{base}/ph_slope_acid` | Pente acide en % (1 décimale, idéal 100 %) | true | `sensor` "Piscine pH Pente Acide" — `unique_id: poolcontroller_ph_slope_acid`, `unit: %`, `icon: mdi:angle-acute`, `state_class: measurement` |
+| `{base}/ph_slope_base` | Pente base en % (1 décimale, idéal 100 %) | true | `sensor` "Piscine pH Pente Base" — `unique_id: poolcontroller_ph_slope_base`, `unit: %`, `icon: mdi:angle-obtuse`, `state_class: measurement` |
+| `{base}/ph_slope_zero` | Décalage zéro en mV (2 décimales, idéal 0). Non publié tant que NaN — peut rester absent sur firmware EZO ancien qui ne renvoie que 2 floats. | true | `sensor` "Piscine pH Décalage Zéro" — `unique_id: poolcontroller_ph_slope_zero`, `unit: mV`, `icon: mdi:sine-wave`, `state_class: measurement` |
+
+**Publication edge-triggered** : un message n'est émis qu'à la transition de la valeur **arrondie** (1 décimale pour les pentes, 2 pour le zéro). Pas de spam à chaque cycle — la query `Slope,?` n'est elle-même rafraîchie qu'au boot, après calibration EZO et toutes les 24 h.
+
+**Pas de `binary_sensor` "à remplacer"** côté firmware : l'utilisateur peut le créer en automation HA depuis les 3 sensors selon ses propres seuils (par défaut UI : pente min ≥ 95 % et |zéro| ≤ 15 mV → vert ; < 85 % ou |zéro| > 30 mV → rouge).
+
+Voir [`docs/features/page-ph.md`](features/page-ph.md#chip-détat-sonde-feature-024) (chip + modal UI) et [`docs/subsystems/sensors.md`](subsystems/sensors.md#pente-sonde-ph--feature-024) (détails firmware : cache, fail streak, refresh policy).

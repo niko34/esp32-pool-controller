@@ -153,7 +153,8 @@ void WsManager::broadcastLog(const LogEntry& entry) {
 
 String WsManager::_buildSensorJson() const {
   // Buffer +64 octets vs version 1 sonde : champs temperature_circuit / sondes_identified / sondes_detected (feature-020)
-  StaticJson<896> doc;
+  // feature-024 : +4 champs phSlope* (~80 octets) → bump à 1024.
+  StaticJson<1024> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -182,6 +183,20 @@ String WsManager::_buildSensorJson() const {
   // feature-021 : statut calibration EZO (lecture cache, pas d'I²C dans le chemin WS).
   d["phCalPoints"]  = sensors.getPhCalibrationPointsCached();
   d["orpCalPoints"] = sensors.getOrpCalibrationPointsCached();
+
+  // feature-024 : pente sonde pH (cache lu sans I²C).
+  // Arrondis : pentes à 1 décimale (résolution EZO), zéro à 2 décimales (mV).
+  // null si jamais lu OU bus dégradé (NaN), l'UI affiche alors "—".
+  float slopeAcid = sensors.getPhSlopeAcid();
+  float slopeBase = sensors.getPhSlopeBase();
+  float slopeZero = sensors.getPhSlopeZero();
+  if (!isnan(slopeAcid))  d["phSlopeAcid"] = round(slopeAcid * 10.0f) / 10.0f;     else d["phSlopeAcid"] = nullptr;
+  if (!isnan(slopeBase))  d["phSlopeBase"] = round(slopeBase * 10.0f) / 10.0f;     else d["phSlopeBase"] = nullptr;
+  if (!isnan(slopeZero))  d["phSlopeZero"] = round(slopeZero * 100.0f) / 100.0f;   else d["phSlopeZero"] = nullptr;
+  // phSlopeAgeMs : null si jamais lu (cohérent avec phSlope* nullables), sinon ms écoulés.
+  uint32_t slopeAge = sensors.getPhSlopeAgeMs();
+  if (slopeAge == UINT32_MAX) d["phSlopeAgeMs"] = nullptr;
+  else                        d["phSlopeAgeMs"] = slopeAge;
 
   d["filtration_running"]  = filtration.isRunning();
   d["filtration_force_on"] = filtrationCfg.forceOn;
@@ -219,8 +234,9 @@ String WsManager::_buildSensorJson() const {
   d["mqtt_connected"] = mqttManager.isConnected();
 
   String out;
-  // +64 octets pour les champs feature-020 (temperature_circuit + sondes_identified + sondes_detected)
-  out.reserve(736);
+  // +64 octets feature-020 (temperature_circuit + sondes_identified + sondes_detected)
+  // +80 octets feature-024 (phSlopeAcid/Base/Zero/AgeMs)
+  out.reserve(896);
   serializeJson(doc, out);
   return out;
 }

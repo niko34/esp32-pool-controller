@@ -47,6 +47,9 @@ struct MqttTopics {
   String alertsSensorStaleTopic;  // feature-021 : alerte capteur stale > kSensorStaleTimeoutMs
   String phCalPointsState;        // feature-021 : nb points calibration pH (Cal,?)
   String orpCalPointsState;       // feature-021 : nb points calibration ORP (Cal,?)
+  String phSlopeAcidState;        // feature-024 : % pente acide pH (Slope,?)
+  String phSlopeBaseState;        // feature-024 : % pente base pH (Slope,?)
+  String phSlopeZeroState;        // feature-024 : décalage zéro pH (mV)
 };
 
 // Architecture producer/consumer (cf. ADR-0011) :
@@ -100,6 +103,14 @@ private:
   int  _lastPhCalPoints  = -2;  // -2 = jamais publié, -1..3 = valeurs réelles
   int  _lastOrpCalPoints = -2;
   bool _lastSensorStale  = false; // Cache pour alerte sensor_stale (NaN sur pH OU ORP)
+
+  // feature-024 : caches pour publication edge-triggered des 3 topics pente.
+  // Sentinelle NaN = "jamais publié" — la 1ʳᵉ query Slope,? réussie déclenchera
+  // la publication initiale, puis chaque query réussie suivante (24h ou post-cal)
+  // republiera les 3 topics. Lus/écrits uniquement depuis mqttTask.
+  float _lastPhSlopeAcidPub = NAN;
+  float _lastPhSlopeBasePub = NAN;
+  float _lastPhSlopeZeroPub = NAN;
   // Vérifie l'état de calibration et stale, publie/clear les alertes au besoin.
   // Appelé depuis mqttTask (publishAllStatesInternal + connectInTask).
   void publishCalibrationStatusInternal();

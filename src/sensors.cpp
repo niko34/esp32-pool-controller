@@ -148,6 +148,9 @@ void SensorManager::begin() {
   if (_phEzo.readInfo(fwInfo)) {
     systemLogger.info("EZO pH détecté : " + fwInfo);
     _ezoEverResponded = true;
+    // feature-024 : 1ʳᵉ query Slope,? différée via la queue EZO.
+    // Sera traitée au prochain tick _processEzoQueue() — n'allonge pas le boot.
+    enqueuePhSlopeQuery();
   } else {
     systemLogger.warning("EZO pH non détecté à l'adresse 0x" + String(kEzoPhAddress, HEX) +
                          " - lectures pH désactivées tant que la sonde n'est pas connectée");
@@ -206,6 +209,14 @@ void SensorManager::update() {
 
   // 4) Traitement d'au plus 1 commande EZO de la queue (calibration ~1-2 s)
   _processEzoQueue();
+
+  // 5) feature-024 : re-query Slope,? automatique toutes les 24h.
+  // Conditions : 1ʳᵉ query déjà réussie (_phSlopeQueriedMs != 0), pas de query
+  // en attente (_phSlopeQueryPending=false), et délai écoulé.
+  if (_phSlopeQueriedMs != 0 && !_phSlopeQueryPending &&
+      (now - _phSlopeQueriedMs) >= kPhSlopeQueryIntervalMs) {
+    enqueuePhSlopeQuery();
+  }
 }
 
 // =============================================================================
@@ -354,6 +365,11 @@ void SensorManager::_readEzoSensors(float tempC) {
       // un cache obsolète (ex. cal effacée pendant la coupure côté EZO). On
       // remet -1 → canDose() bloque jusqu'à un Cal,? réussi au retour de bus.
       _phCalCachedPoints = -1;
+      // feature-024 : cohérence avec _phCalCachedPoints — invalider aussi le
+      // cache pente. La pente n'a aucun sens tant que le bus EZO pH est dégradé.
+      _phSlopeAcid = NAN;
+      _phSlopeBase = NAN;
+      _phSlopeZero = NAN;
       if (!_phI2cDegradedLogged) {
         systemLogger.critical("EZO pH : bus I²C dégradé (" + String(_phI2cFailStreak) +
                               " échecs) — lecture invalidée, régulation auto inhibée");
@@ -511,6 +527,8 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
         _phCalCachedPoints = _phEzo.queryCalPoints();
         PumpController.armStabilizationTimer(0);  // Stabilisation pH post-cal
         systemLogger.info("EZO pH : calibration mid OK (points=" + String(_phCalCachedPoints) + ")");
+        // feature-024 : refresh pente post-calibration.
+        enqueuePhSlopeQuery();
       } else {
         systemLogger.error("EZO pH : calibration mid échouée");
       }
@@ -523,6 +541,8 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
         _phCalCachedPoints = _phEzo.queryCalPoints();
         PumpController.armStabilizationTimer(0);  // Stabilisation pH post-cal
         systemLogger.info("EZO pH : calibration low OK (points=" + String(_phCalCachedPoints) + ")");
+        // feature-024 : refresh pente post-calibration.
+        enqueuePhSlopeQuery();
       } else {
         systemLogger.error("EZO pH : calibration low échouée");
       }
@@ -549,6 +569,9 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
       if (ok) {
         _phCalCachedPoints = _phEzo.queryCalPoints();
         systemLogger.info("EZO pH : calibration effacée (points=" + String(_phCalCachedPoints) + ")");
+        // feature-024 : la pente n'a plus de sens après un Cal,clear — refresh
+        // pour récupérer les valeurs par défaut EZO (typiquement 100/100/0).
+        enqueuePhSlopeQuery();
       } else {
         systemLogger.error("EZO pH : effacement calibration échoué");
       }
@@ -562,6 +585,37 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
         systemLogger.info("EZO ORP : calibration effacée (points=" + String(_orpCalCachedPoints) + ")");
       } else {
         systemLogger.error("EZO ORP : effacement calibration échoué");
+      }
+      break;
+    }
+    case EzoCmdKind::QueryPhSlope: {
+      // feature-024 — re-query Slope,? sur l'EZO pH.
+      // Le flag _phSlopeQueryPending est levé en début de handler pour permettre
+      // une nouvelle demande de re-query sans attendre la fin du traitement.
+      _phSlopeQueryPending = false;
+      PhSlopeInfo info{NAN, NAN, NAN};
+      if (_phEzo.querySlope(info)) {
+        _phSlopeAcid = info.acidPct;
+        _phSlopeBase = info.basePct;
+        _phSlopeZero = info.zeroOffsetMv;
+        _phSlopeQueriedMs = millis();
+        _phSlopeFailStreak = 0;
+        systemLogger.info("EZO pH slope : acide=" + String(info.acidPct, 1) +
+                          "% base=" + String(info.basePct, 1) + "% zéro=" +
+                          (isnan(info.zeroOffsetMv) ? String("N/A")
+                                                    : String(info.zeroOffsetMv, 2) + "mV"));
+      } else {
+        _phSlopeFailStreak++;
+        if (_phSlopeFailStreak >= kEzoBusFailMaxConsecutive) {
+          // Cohérence avec _phCalCachedPoints : invalider à NaN après seuil.
+          _phSlopeAcid = NAN;
+          _phSlopeBase = NAN;
+          _phSlopeZero = NAN;
+          // _phSlopeQueriedMs reste à sa dernière valeur — l'âge sera détecté
+          // comme stale par l'UI (Pass B), inutile de remettre à 0 ici.
+          systemLogger.warning("EZO pH slope : " + String(_phSlopeFailStreak) +
+                               " échecs Slope,? consécutifs — cache invalidé");
+        }
       }
       break;
     }
@@ -641,6 +695,34 @@ bool SensorManager::enqueueClearOrpCalibration() {
   if (_ezoQueue == nullptr) return false;
   EzoCmdRequest req{EzoCmdKind::ClearOrpCal, 0.0f};
   return xQueueSend(_ezoQueue, &req, 0) == pdTRUE;
+}
+
+// =============================================================================
+// feature-024 — pente sonde pH : enqueue + getters
+// =============================================================================
+
+bool SensorManager::enqueuePhSlopeQuery() {
+  if (_ezoQueue == nullptr) return false;
+  // Anti-doublon : si une query est déjà en file, ne pas en empiler une seconde.
+  // Le flag est levé par le handler QueryPhSlope dès le début de son traitement.
+  if (_phSlopeQueryPending) return true;  // succès "noop" — caller satisfait
+  EzoCmdRequest req{EzoCmdKind::QueryPhSlope, 0.0f};
+  if (xQueueSend(_ezoQueue, &req, 0) != pdTRUE) {
+    return false;  // queue pleine — pas de flag posé
+  }
+  _phSlopeQueryPending = true;
+  return true;
+}
+
+float SensorManager::getPhSlopeAcid() const { return _phSlopeAcid; }
+float SensorManager::getPhSlopeBase() const { return _phSlopeBase; }
+float SensorManager::getPhSlopeZero() const { return _phSlopeZero; }
+
+uint32_t SensorManager::getPhSlopeAgeMs() const {
+  if (_phSlopeQueriedMs == 0) return UINT32_MAX;
+  uint32_t now = millis();
+  // Sécurise un éventuel overflow (millis() roule tous les ~49.7 jours).
+  return (now >= _phSlopeQueriedMs) ? (now - _phSlopeQueriedMs) : 0;
 }
 
 // =============================================================================

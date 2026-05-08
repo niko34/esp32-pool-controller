@@ -584,6 +584,13 @@
               <div class="readout__label" id="ph_current_label" style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px">Valeur pH actuelle</div>
               <div class="readout__value" id="ph_current_value" style="font-size:2rem;font-weight:700;line-height:1">--</div>
               <div class="muted small" style="margin-top:4px">MAJ auto toutes les 5 secondes</div>
+              <button type="button" id="ph-probe-chip"
+                      class="chip chip--probe chip--probe-unknown"
+                      aria-haspopup="dialog" aria-controls="ph-probe-modal"
+                      aria-label="État de la sonde pH, ouvrir les détails">
+                <span class="chip__dot" aria-hidden="true"></span>
+                <span class="chip__label" id="ph-probe-chip-label">Pente non disponible</span>
+              </button>
             </div>
             <div class="ph-stats__col">
               <div class="daily-dose" id="daily-dose-ph" aria-label="Dosage pH du jour">
@@ -759,6 +766,31 @@
               </div>
             </div>
           </div>
+
+          <!-- Modal détails sonde pH (feature-024) -->
+          <dialog id="ph-probe-modal" class="probe-modal" aria-labelledby="ph-probe-modal-title">
+            <h3 id="ph-probe-modal-title" class="probe-modal__title">État sonde pH</h3>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Pente acide</span>
+              <span class="probe-modal__value" id="ph-probe-acid">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Pente base</span>
+              <span class="probe-modal__value" id="ph-probe-base">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Décalage zéro</span>
+              <span class="probe-modal__value" id="ph-probe-zero">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Vérifié</span>
+              <span class="probe-modal__value" id="ph-probe-age">--</span>
+            </div>
+            <div class="probe-modal__actions">
+              <button class="btn btn--ghost" type="button" id="ph-probe-refresh">Rafraîchir</button>
+              <button class="btn" type="button" id="ph-probe-close" autofocus>Fermer</button>
+            </div>
+          </dialog>
 
         </section>
 
