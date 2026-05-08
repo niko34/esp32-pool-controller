@@ -97,6 +97,47 @@ void HistoryManager::begin() {
     historyStore = &historyFs;
     historyFilePath = "/history.json";
     systemLogger.info("Partition historique dédiée montée");
+
+    // Validation post-montage (défense en profondeur).
+    // LittleFS peut monter un filesystem corrompu sans erreur puis crasher
+    // (IntegerDivideByZero) à la 1ʳᵉ écriture — observé sur PCB v1 après
+    // longue inactivité ESP32. On force un test write/read avant tout autre
+    // accès. Si le test échoue → erase + remount propre.
+    bool fsHealthy = false;
+    {
+      File f = historyFs.open("/.fscheck", "w");
+      if (f) {
+        if (f.print("ok") == 2) {
+          f.close();
+          File r = historyFs.open("/.fscheck", "r");
+          if (r) {
+            String s = r.readString();
+            r.close();
+            if (s == "ok") fsHealthy = true;
+          }
+          historyFs.remove("/.fscheck");
+        } else {
+          f.close();
+        }
+      }
+    }
+
+    if (!fsHealthy) {
+      systemLogger.warning("Partition history corrompue détectée — reformatage automatique");
+      historyFs.end();
+      const esp_partition_t* histPart = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "history");
+      if (histPart) {
+        esp_partition_erase_range(histPart, 0, histPart->size);
+      }
+      if (!historyFs.begin(true, "/history", 5, "history")) {
+        systemLogger.error("Échec remontage partition history après reformatage");
+        historyEnabled = false;
+        return;
+      }
+      systemLogger.info("Partition history reformatée et remontée");
+    }
+
     systemLogger.setPersistenceFs(&historyFs);
   }
   else {
