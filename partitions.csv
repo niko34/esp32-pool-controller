@@ -1,8 +1,13 @@
 # Name,   Type, SubType, Offset,  Size,   Flags
+# Layout v2 (ADR-0015) — feature-024 a fait déborder app à 1408 KB.
+# app0/app1 portées à 1536 KB (1.5 MB) pour absorber feature-024 + marge ~90 KB.
+# spiffs réduit de 1088→832 KB (FS actuel ~660 KB → 21% libre).
+# history et coredump inchangés.
+# ATTENTION : tout changement nécessite un flash USB du bootloader+partition table.
 nvs,      data, nvs,     0x9000,  0x5000,
 otadata,  data, ota,     0xE000,  0x2000,
-app0,     app,  ota_0,   0x10000, 0x160000,
-app1,     app,  ota_1,   0x170000,0x160000,
-spiffs,   data, spiffs,  0x2D0000,0x110000,
+app0,     app,  ota_0,   0x10000, 0x180000,
+app1,     app,  ota_1,   0x190000,0x180000,
+spiffs,   data, spiffs,  0x310000,0xD0000,
 history,  data, spiffs,  0x3E0000,0x10000,
 coredump, data, coredump,0x3F0000,0x10000,

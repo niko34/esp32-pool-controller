@@ -7,7 +7,7 @@ set -e  # Arrêter en cas d'erreur
 # Configuration
 PORT="/dev/cu.usbserial-0001"
 BAUD="115200"
-LITTLEFS_OFFSET="0x2D0000"
+LITTLEFS_OFFSET="0x310000"  # Layout v2 (ADR-0015) — était 0x2D0000 avant repartitionnement
 BUILD_DIR=".pio/build/esp32dev"
 
 # Hôte OTA : nom mDNS ou IP directe
