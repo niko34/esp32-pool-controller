@@ -46,6 +46,7 @@ Le token API est généré automatiquement au premier démarrage. Il est visible
 | 401  | Authentification requise ou mot de passe incorrect |
 | 403  | Accès refusé (ex: wizard déjà complété) |
 | 404  | Endpoint introuvable |
+| 409  | Conflit d'état — typiquement injection manuelle refusée car filtration arrêtée (sécurité chimique). Voir [`POST /ph/inject/start`](#post-phinjectstart--write). |
 | 429  | Trop de requêtes (rate limiting) |
 | 500  | Erreur serveur |
 
@@ -636,23 +637,27 @@ Champs ajoutés en feature-024 (pente sonde pH) :
 
 ### POST /pump1/on, /pump1/off — WRITE
 
-Démarre ou arrête la pompe doseuse 1 (pH) manuellement.
+Démarre ou arrête la pompe doseuse 1 (pH) manuellement (test bench).
 
 ```bash
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/on
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/off
 ```
 
+> ⚠️ **Garde filtration (v2.1.2)** : `/pump1/on` retourne **`409 Conflict`** si la filtration est arrêtée et que `regulationMode != "continu"`. `/pump1/off` reste inconditionnel (pouvoir arrêter en toute circonstance).
+
 ---
 
 ### POST /pump2/on, /pump2/off — WRITE
 
-Démarre ou arrête la pompe doseuse 2 (ORP/chlore) manuellement.
+Démarre ou arrête la pompe doseuse 2 (ORP/chlore) manuellement (test bench).
 
 ```bash
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump2/on
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump2/off
 ```
+
+> ⚠️ **Garde filtration (v2.1.2)** : mêmes règles que `/pump1/on` ci-dessus.
 
 ---
 
@@ -670,20 +675,25 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/duty/128
 
 Démarre une injection manuelle pH à la puissance configurée (`pump1_max_duty_pct` ou `pump2_max_duty_pct` selon `ph_pump`). La durée est calculée à partir du volume demandé et du débit nominal de la pompe.
 
-> ⚠️ **L'injection manuelle NE VÉRIFIE PAS les gardes de régulation** : elle ignore la limite horaire (`ph_limit_minutes`), la limite journalière (`max_ph_ml_per_day`), le délai de stabilisation, l'état de la filtration et le mode de régulation. Le volume injecté **est compté** dans le cumul journalier (`ph_daily_ml`) et peut donc le dépasser. Responsabilité opérateur. Voir [docs/subsystems/pump-controller.md](subsystems/pump-controller.md) et [docs/features/page-ph.md](features/page-ph.md).
+> ⚠️ **Garde filtration (v2.1.2)** : l'injection est **refusée HTTP 409** si la filtration est arrêtée et que `regulationMode != "continu"` (corps texte : « filtration arrêtée — injection refusée pour sécurité chimique »). Si la filtration s'arrête **pendant** l'injection, celle-ci est interrompue automatiquement (< 100 ms après détection) et une alerte MQTT `ph_injection_aborted` est publiée sur `{base}/alerts`. Pas de reprise automatique : l'utilisateur doit relancer manuellement après reprise filtration.
+>
+> **Limites volumétriques toujours non gardées** : l'injection manuelle ignore la limite horaire (`ph_limit_minutes`), la limite journalière (`max_ph_ml_per_day`), le délai de stabilisation et le mode de régulation. Le volume injecté **est compté** dans le cumul journalier (`ph_daily_ml`) et peut donc le dépasser. Responsabilité opérateur. Voir [docs/subsystems/pump-controller.md](subsystems/pump-controller.md) et [docs/features/page-ph.md](features/page-ph.md).
 
 Paramètres (querystring, exclusifs) :
 
 | Paramètre | Type | Validation |
 |-----------|------|------------|
 | `volume` | float (mL) | 1 – 2000 (mode préféré) |
-| `duration` | integer (secondes) | fallback legacy, borné 1 – 3600 |
+| `duration` | integer (secondes) | fallback legacy, borné **1 – 600** (`kManualInjectMaxDurationS`, abaissé de 3600 → 600 en v2.1.2 — voir CHANGELOG) |
 
 ```bash
 curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/ph/inject/start?volume=15"
 ```
 
-Réponse : `200 OK` / `400` si le paramètre est manquant ou hors plage.
+Réponses :
+- `200 OK` — injection démarrée.
+- `400` — paramètre manquant ou hors plage.
+- `409 Conflict` — filtration arrêtée (sauf mode `continu`). Corps : texte explicite.
 
 ---
 
@@ -701,7 +711,9 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/ph/inject/stop
 
 Identique à `/ph/inject/start` pour la pompe ORP (`orp_pump`). Mêmes paramètres et contraintes.
 
-> ⚠️ **Même avertissement que `/ph/inject/start`** : les limites horaire / journalière / stabilisation / filtration ne sont PAS vérifiées. Le volume est compté dans `orp_daily_ml` et peut dépasser `max_chlorine_ml_per_day`. Voir [docs/subsystems/pump-controller.md](subsystems/pump-controller.md) et [docs/features/page-orp.md](features/page-orp.md).
+> ⚠️ **Garde filtration (v2.1.2)** : refus **HTTP 409** si filtration arrêtée (sauf mode `continu`). Arrêt cyclique automatique si la filtration tombe en cours d'injection, alerte MQTT `orp_injection_aborted` publiée sur `{base}/alerts`. Bornage `duration` à 600 s (idem `/ph/inject/start`).
+>
+> **Limites volumétriques toujours non gardées** : `orp_limit_minutes`, `max_chlorine_ml_per_day`, stabilisation et mode de régulation ne sont PAS vérifiés. Le volume est compté dans `orp_daily_ml` et peut dépasser `max_chlorine_ml_per_day`. Voir [docs/subsystems/pump-controller.md](subsystems/pump-controller.md) et [docs/features/page-orp.md](features/page-orp.md).
 
 ```bash
 curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/orp/inject/start?volume=50"

@@ -134,6 +134,27 @@ Les 10 conditions sont évaluées dans l'ordre suivant. Le premier `false` renco
 
 > **Conditions #1, #2, #3, #5, #6** issues du checklist `pool-chemistry` validé en cadrage feature-021. **Condition #10** ajoutée en correctif Pass 3.5 suite à code-review.
 
+### Garde filtration sur l'injection manuelle (v2.1.2)
+
+`canDose()` couvre la régulation **automatique**. L'injection **manuelle** (routes `/ph/inject/start`, `/orp/inject/start`, `/pump1/on`, `/pump2/on`) ne passe pas par `canDose()` — elle a sa propre garde implémentée dans [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp), avec **le même critère** pour cohérence :
+
+```cpp
+mqttCfg.regulationMode == "continu" || filtration.isRunning()
+```
+
+Deux mitigations :
+
+1. **Refus en amont** — helper `injectionAllowedOrReject(req, tag)` retourne **HTTP 409** si la condition n'est pas remplie. Évite de démarrer une injection sans circulation d'eau (risque surdosage local zone retour).
+2. **Arrêt cyclique** — `updateManualInject()` (appelée chaque tour `loopTask`) interrompt l'injection si la filtration tombe pendant celle-ci. Latence < 100 ms. Émet un log `critical("[Injection] {pH|ORP} INTERROMPUE — filtration arrêtée (sécurité chimique)")` + alerte MQTT `ph_injection_aborted` ou `orp_injection_aborted` sur `{base}/alerts`.
+
+**Routes d'arrêt** (`/ph/inject/stop`, `/orp/inject/stop`, `/pump[12]/off`) : **inconditionnelles** — pouvoir arrêter en toute circonstance.
+
+**Pas de reprise automatique** après reprise filtration : choix produit explicite. L'injection est perdue, l'utilisateur doit relancer manuellement (toast UI explicite, voir [`docs/features/page-ph.md`](../features/page-ph.md) et [`docs/features/page-orp.md`](../features/page-orp.md)).
+
+**Bornage durée** : `duration` query param plafonné à `kManualInjectMaxDurationS = 600 s` (10 min, abaissé de 3600 s en v2.1.2). Justification `pool-chemistry` : 3600 s expose à un risque trop long si la filtration s'arrête en milieu de cycle ; 10 min couvrent les usages typiques.
+
+> Cohérence : la garde web reproduit **exactement** la condition #3 de `canDose()` (filtration en marche sauf mode `continu`). En mode `continu`, l'alimentation 12 V des pompes suit la filtration au niveau matériel — la garde firmware est inutile et casserait le cas d'usage.
+
 ### Ring buffer anti-rafale
 
 Chaque pompe maintient un ring buffer `_dosingCycleHistory[2][kDosingCycleHistorySize = 20]` indexé par `_dosingCycleHistoryIdx[2]`. À chaque démarrage effectif d'un cycle de dosage (transition PWM 0 → >0), `recordDosingCycleStart(pumpIndex)` ajoute le timestamp `millis()` courant.
@@ -210,6 +231,7 @@ duty = MIN_ACTIVE_DUTY + round( ((flow − minFlow) / (maxFlow − minFlow)) × 
 | Anti-rafale — fenêtre 1 min (Pass 3.5) | `kMaxDosingCyclesPerMinute` | 6 | [`constants.h`](../../src/constants.h) |
 | Anti-rafale — fenêtre 15 min (Pass 3.5) | `kMaxDosingCyclesPer15Min` | 20 | [`constants.h`](../../src/constants.h) |
 | Anti-rafale — capacité ring buffer | `kDosingCycleHistorySize` | 20 entrées / pompe | [`constants.h`](../../src/constants.h) |
+| Injection manuelle — durée max (v2.1.2) | `kManualInjectMaxDurationS` | 600 s (10 min) | [`constants.h`](../../src/constants.h) |
 
 > Une refonte est prévue pour rendre une partie de ces paramètres modifiables via un mode expert UI (cf. spec en cours).
 

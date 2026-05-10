@@ -114,6 +114,8 @@ Topic : `{base}/alerts` — QoS 0, sans rétention.
 | `orp_abnormal` | ORP < 400 mV ou ORP > 900 mV |
 | `temp_abnormal` | Température < 5°C ou > 40°C |
 | `low_memory` | Mémoire heap disponible sous le seuil |
+| `ph_injection_aborted` | Injection manuelle pH interrompue par la sécurité chimique : la filtration s'est arrêtée pendant l'injection (v2.1.2). Pas de reprise auto, l'utilisateur doit relancer manuellement après reprise filtration. |
+| `orp_injection_aborted` | Injection manuelle ORP/chlore interrompue par la sécurité chimique (mêmes conditions que `ph_injection_aborted`). |
 
 ### Alertes dédiées (feature-021, retain, edge-triggered)
 

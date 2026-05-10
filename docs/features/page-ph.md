@@ -160,7 +160,19 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) pour
 - **Anti-rafale court terme** : ≤ 6 cycles/min ET ≤ 20 cycles/15 min (correctif Pass 3.5).
 - **Stabilisation post-cal pH** : 5 min (`kStabilizationDurationPhMs`) après chaque calibration EZO réussie. Le dosage est refusé pendant cette fenêtre (cond #3 pool-chemistry).
 - **Cumul journalier** : persisté en NVS, reset à minuit local — voir [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md).
-- ⚠️ **Injection manuelle non gardée** : le bloc Injection manuelle (et les endpoints `/ph/inject/*`) **ignorent** `canDose()`, la limite horaire, la limite journalière, le délai de stabilisation et l'état de la filtration. Le volume injecté est compté dans `ph_daily_ml` et peut le faire dépasser `max_ph_ml_per_day`. Responsabilité opérateur.
+- ⚠️ **Injection manuelle — garde filtration uniquement (v2.1.2)** : le bloc Injection manuelle (et les endpoints `/ph/inject/*`) vérifie **uniquement** que la filtration est active (sauf mode `continu`). Refus HTTP 409 au démarrage si filtration arrêtée + arrêt cyclique automatique si la filtration s'arrête pendant l'injection. Voir [Comportement UI injection manuelle](#comportement-ui-injection-manuelle-v212) et [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md#garde-filtration-sur-linjection-manuelle-v212).
+- ⚠️ **Limites volumétriques toujours non gardées** : `canDose()`, la limite horaire (`ph_limit_minutes`), la limite journalière (`max_ph_ml_per_day`), le délai de stabilisation et le mode de régulation **ne sont pas vérifiés**. Le volume injecté est compté dans `ph_daily_ml` et peut le faire dépasser `max_ph_ml_per_day`. Responsabilité opérateur.
+- **Bornage durée** : `duration` plafonné à 600 s (10 min, `kManualInjectMaxDurationS`) au lieu de 3600 s avant v2.1.2.
+
+### Comportement UI injection manuelle (v2.1.2)
+
+| Situation | Réaction UI |
+|-----------|-------------|
+| Clic « Injecter » avec filtration **arrêtée** (sauf mode `continu`) | Bouton restauré + toast rouge : « Injection refusée : la filtration doit être active avant d'injecter (sécurité chimique : pas de circulation = surdosage local). » |
+| Filtration **s'arrête en cours** d'injection | Toast rouge capté via WS log critical (`[Injection] pH INTERROMPUE`) : « Injection pH interrompue : la filtration s'est arrêtée. Relancez l'injection après reprise de la filtration. » |
+| Erreur HTTP autre (4xx/5xx) | Lecture du body texte affiché si court (< 200 chars), sinon message générique. |
+
+**Comportement attendu utilisateur** : démarrer la filtration **avant** d'injecter, ou relancer manuellement après reprise. Pas de reprise automatique — l'injection en cours est perdue.
 
 ## Cas limites
 

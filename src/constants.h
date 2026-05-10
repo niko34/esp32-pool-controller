@@ -73,6 +73,15 @@ constexpr unsigned long kConfigMutexTimeoutMs = 1000;     // 1s - Timeout acquis
 // Sécurité - Factory reset bouton
 constexpr unsigned long kFactoryResetButtonHoldMs = 10000; // 10s - Maintien bouton pour factory reset
 
+// Sécurité chimique - Injection manuelle
+// Borne supérieure de la durée d'une injection manuelle volumée (POST /ph/inject/start
+// ou /orp/inject/start). Au-delà de 10 min, c'est probablement un usage non
+// supervisé qui mérite d'être stoppé par sécurité — l'utilisateur peut toujours
+// relancer une 2ᵉ injection si besoin réel de plus.
+// Valeur précédente non bornée explicitement : 3600s = 1h, jugé trop long par
+// pool-chemistry (risque de surdosage si filtration s'arrête en milieu de cycle).
+constexpr int kManualInjectMaxDurationS = 600;             // 10 min
+
 // Sécurité - Rate limiting
 // 120 req/min = 2 req/s moyenne — couvre la navigation UI active normale
 // (page /params ouverte + clics + polling /get-config + /data + /coredump/info).

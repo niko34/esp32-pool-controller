@@ -103,7 +103,19 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md), not
 - **Limites** : `orp_limit_minutes` (défaut 10 min/h glissante) et `max_chlorine_ml_per_day` (défaut 500 mL/j).
 - **Anti-rafale court terme** : ≤ 6 cycles/min ET ≤ 20 cycles/15 min (correctif Pass 3.5).
 - **Stabilisation post-cal ORP** : 3 min (`kStabilizationDurationOrpMs`) après chaque calibration EZO réussie.
-- ⚠️ **Injection manuelle non gardée** : les endpoints `/orp/inject/*` **ignorent** `canDose()` et toutes les limites. Le volume injecté est compté dans `orp_daily_ml`. Responsabilité opérateur.
+- ⚠️ **Injection manuelle — garde filtration uniquement (v2.1.2)** : les endpoints `/orp/inject/*` vérifient **uniquement** que la filtration est active (sauf mode `continu`). Refus HTTP 409 au démarrage si filtration arrêtée + arrêt cyclique automatique si la filtration tombe pendant l'injection (alerte MQTT `orp_injection_aborted` sur `{base}/alerts`). Voir [Comportement UI injection manuelle](#comportement-ui-injection-manuelle-v212) et [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md#garde-filtration-sur-linjection-manuelle-v212).
+- ⚠️ **Limites volumétriques toujours non gardées** : `canDose()`, `orp_limit_minutes`, `max_chlorine_ml_per_day`, stabilisation et mode de régulation **ne sont pas vérifiés**. Le volume injecté est compté dans `orp_daily_ml`. Responsabilité opérateur.
+- **Bornage durée** : `duration` plafonné à 600 s (`kManualInjectMaxDurationS`) au lieu de 3600 s avant v2.1.2.
+
+### Comportement UI injection manuelle (v2.1.2)
+
+| Situation | Réaction UI |
+|-----------|-------------|
+| Clic « Injecter » avec filtration **arrêtée** (sauf mode `continu`) | Bouton restauré + toast rouge : « Injection refusée : la filtration doit être active avant d'injecter (sécurité chimique : pas de circulation = surdosage local). » |
+| Filtration **s'arrête en cours** d'injection | Toast rouge capté via WS log critical (`[Injection] ORP INTERROMPUE`) : « Injection ORP/chlore interrompue : la filtration s'est arrêtée. Relancez l'injection après reprise de la filtration. » |
+| Erreur HTTP autre (4xx/5xx) | Lecture du body texte affiché si court (< 200 chars), sinon message générique. |
+
+**Comportement attendu utilisateur** : démarrer la filtration **avant** d'injecter, ou relancer manuellement après reprise. Pas de reprise automatique — l'injection en cours est perdue.
 
 ## Cas limites
 

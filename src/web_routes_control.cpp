@@ -1,11 +1,33 @@
 #include "web_routes_control.h"
 #include "web_helpers.h"
 #include "config.h"
+#include "constants.h"
 #include "auth.h"
 #include "pump_controller.h"
+#include "filtration.h"
 #include "lighting.h"
 #include "logger.h"
+#include "mqtt_manager.h"
 #include <Arduino.h>
+
+// =============================================================================
+// Sécurité chimique (pool-chemistry validation 2026-05-11)
+// =============================================================================
+// Toute injection manuelle volumée OU activation directe d'une pompe (test bench)
+// nécessite que la filtration soit active, SAUF en mode régulation "continu"
+// où l'alimentation du contrôleur suit la filtration de toute façon.
+// Sans circulation d'eau, l'acide/le chlore injecté reste local au point de
+// retour → surdosage massif dans une zone confinée → corrosion + risque sanitaire.
+// Cette garde est cohérente avec PumpController::canDose() qui applique la
+// même règle pour la régulation auto.
+static bool injectionAllowedOrReject(AsyncWebServerRequest* req, const char* tag) {
+  if (mqttCfg.regulationMode == "continu") return true;  // alim suit filtration
+  if (filtration.isRunning()) return true;
+  systemLogger.critical(String("[Sécurité] ") + tag +
+                        " refusé : filtration arrêtée (sécurité chimique : pas de circulation = surdosage local)");
+  req->send(409, "text/plain", "filtration arrêtée — injection refusée pour sécurité chimique");
+  return false;
+}
 
 // Calcule le débit effectif (mL/min) pour un maxDutyPct donné et les params de pompe
 static float calcInjectFlow(uint8_t maxDutyPct, const PumpControlParams& params) {
@@ -25,25 +47,64 @@ int manualInjectRemainingS(const ManualInjectState& s) {
   return (int)((s.durationMs - elapsed) / 1000UL);
 }
 
+// Sécurité chimique : vérifie qu'une injection volumée doit continuer.
+// Garde filtration cohérente avec canDose() côté régulation auto.
+static bool filtrationOkForInjection() {
+  return mqttCfg.regulationMode == "continu" || filtration.isRunning();
+}
+
 void updateManualInject() {
-  if (manualInjectPh.active && millis() - manualInjectPh.startMs >= manualInjectPh.durationMs) {
-    int pumpIdx = mqttCfg.phPump - 1;
-    PumpController.setManualPump(pumpIdx, 0);
-    manualInjectPh.active = false;
-    systemLogger.info("[Injection] pH arrêtée automatiquement (fin de durée)");
+  unsigned long now = millis();
+
+  // ========== pH ==========
+  if (manualInjectPh.active) {
+    // 1. Arrêt fin de durée (cas nominal)
+    if (now - manualInjectPh.startMs >= manualInjectPh.durationMs) {
+      PumpController.setManualPump(mqttCfg.phPump - 1, 0);
+      manualInjectPh.active = false;
+      manualInjectPh.requestedVolumeMl = 0.0f;
+      systemLogger.info("[Injection] pH arrêtée automatiquement (fin de durée)");
+    }
+    // 2. Arrêt sécurité chimique : filtration arrêtée pendant l'injection
+    //    (pool-chemistry condition #1 : pas de circulation = surdosage local)
+    else if (!filtrationOkForInjection()) {
+      PumpController.setManualPump(mqttCfg.phPump - 1, 0);
+      manualInjectPh.active = false;
+      manualInjectPh.requestedVolumeMl = 0.0f;
+      systemLogger.critical("[Injection] pH INTERROMPUE — filtration arrêtée (sécurité chimique)");
+      mqttManager.publishAlert("ph_injection_aborted",
+                               "Injection pH interrompue : filtration arrêtée pendant l'injection. Relancer manuellement après reprise filtration.");
+    }
   }
-  if (manualInjectOrp.active && millis() - manualInjectOrp.startMs >= manualInjectOrp.durationMs) {
-    int pumpIdx = mqttCfg.orpPump - 1;
-    PumpController.setManualPump(pumpIdx, 0);
-    manualInjectOrp.active = false;
-    systemLogger.info("[Injection] ORP arrêtée automatiquement (fin de durée)");
+
+  // ========== ORP ==========
+  if (manualInjectOrp.active) {
+    if (now - manualInjectOrp.startMs >= manualInjectOrp.durationMs) {
+      PumpController.setManualPump(mqttCfg.orpPump - 1, 0);
+      manualInjectOrp.active = false;
+      manualInjectOrp.requestedVolumeMl = 0.0f;
+      systemLogger.info("[Injection] ORP arrêtée automatiquement (fin de durée)");
+    }
+    else if (!filtrationOkForInjection()) {
+      PumpController.setManualPump(mqttCfg.orpPump - 1, 0);
+      manualInjectOrp.active = false;
+      manualInjectOrp.requestedVolumeMl = 0.0f;
+      systemLogger.critical("[Injection] ORP INTERROMPUE — filtration arrêtée (sécurité chimique)");
+      mqttManager.publishAlert("orp_injection_aborted",
+                               "Injection ORP/chlore interrompue : filtration arrêtée pendant l'injection. Relancer manuellement après reprise filtration.");
+    }
   }
 }
 
 void setupControlRoutes(AsyncWebServer* server) {
   // Routes pour test manuel des pompes - PROTÉGÉES
+  // Sécurité chimique (pool-chemistry validation 2026-05-11) : démarrage refusé
+  // si la filtration n'est pas active (sauf mode "continu" où l'alim suit la
+  // filtration). Pas de bornage de durée ici (test bench) — l'utilisateur doit
+  // arrêter manuellement via /pumpN/off OU passer par /ph/inject/start qui borne.
   server->on("/pump1/on", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
+    if (!injectionAllowedOrReject(req, "Test pompe 1")) return;
     PumpController.setManualPump(0, MAX_PWM_DUTY);
     systemLogger.info("[Test] Pompe 1 démarrée en mode manuel");
     req->send(200, "text/plain", "OK");
@@ -58,6 +119,7 @@ void setupControlRoutes(AsyncWebServer* server) {
 
   server->on("/pump2/on", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
+    if (!injectionAllowedOrReject(req, "Test pompe 2")) return;
     PumpController.setManualPump(1, MAX_PWM_DUTY);
     systemLogger.info("[Test] Pompe 2 démarrée en mode manuel");
     req->send(200, "text/plain", "OK");
@@ -72,9 +134,11 @@ void setupControlRoutes(AsyncWebServer* server) {
 
   // Injection manuelle pH — démarre la pompe pH à la puissance configurée
   // Paramètre préféré : ?volume=N (mL, max 2000)
-  // Fallback legacy : ?duration=N (secondes)
+  // Fallback legacy : ?duration=N (secondes, borné à kManualInjectMaxDurationS)
+  // Sécurité chimique : démarrage refusé si filtration arrêtée (sauf mode continu).
   server->on("/ph/inject/start", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
+    if (!injectionAllowedOrReject(req, "Injection pH")) return;
     int pumpIdx = mqttCfg.phPump - 1;
     uint8_t dutyPct = (pumpIdx == 0) ? mqttCfg.pump1MaxDutyPct : mqttCfg.pump2MaxDutyPct;
     float flow = calcInjectFlow(dutyPct, phPumpControl);
@@ -91,7 +155,7 @@ void setupControlRoutes(AsyncWebServer* server) {
       req->send(400, "text/plain", "parametre volume manquant"); return;
     }
     if (durationS < 1) durationS = 1;
-    if (durationS > 3600) durationS = 3600;
+    if (durationS > kManualInjectMaxDurationS) durationS = kManualInjectMaxDurationS;
     uint8_t duty = (uint8_t)((dutyPct * MAX_PWM_DUTY) / 100);
     PumpController.setManualPump(pumpIdx, duty);
     manualInjectPh.active = true;
@@ -113,9 +177,11 @@ void setupControlRoutes(AsyncWebServer* server) {
 
   // Injection manuelle ORP — démarre la pompe ORP à la puissance configurée
   // Paramètre préféré : ?volume=N (mL, max 2000)
-  // Fallback legacy : ?duration=N (secondes)
+  // Fallback legacy : ?duration=N (secondes, borné à kManualInjectMaxDurationS)
+  // Sécurité chimique : démarrage refusé si filtration arrêtée (sauf mode continu).
   server->on("/orp/inject/start", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
+    if (!injectionAllowedOrReject(req, "Injection ORP")) return;
     int pumpIdx = mqttCfg.orpPump - 1;
     uint8_t dutyPct = (pumpIdx == 0) ? mqttCfg.pump1MaxDutyPct : mqttCfg.pump2MaxDutyPct;
     float flow = calcInjectFlow(dutyPct, orpPumpControl);
@@ -132,7 +198,7 @@ void setupControlRoutes(AsyncWebServer* server) {
       req->send(400, "text/plain", "parametre volume manquant"); return;
     }
     if (durationS < 1) durationS = 1;
-    if (durationS > 3600) durationS = 3600;
+    if (durationS > kManualInjectMaxDurationS) durationS = kManualInjectMaxDurationS;
     uint8_t duty = (uint8_t)((dutyPct * MAX_PWM_DUTY) / 100);
     PumpController.setManualPump(pumpIdx, duty);
     manualInjectOrp.active = true;

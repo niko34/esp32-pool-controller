@@ -180,6 +180,20 @@
     allLogEntries.push(entry);
     if (allLogEntries.length > 500) allLogEntries.shift();
     if ((entry.timestamp || 0) > lastLogTimestamp) lastLogTimestamp = entry.timestamp;
+
+    // Toast pour les interruptions d'injection (sécurité chimique pool-chemistry).
+    // Le firmware émet un log critical "[Injection] {pH|ORP} INTERROMPUE — filtration
+    // arrêtée" quand updateManualInject() détecte la filtration KO en cours d'injection.
+    // L'utilisateur doit voir ce message immédiatement, pas seulement dans le panneau logs.
+    if (entry.level === 'CRITICAL' && entry.message &&
+        entry.message.includes('[Injection]') && entry.message.includes('INTERROMPUE')) {
+      const product = entry.message.includes('ORP') ? 'ORP/chlore' : 'pH';
+      showToast(
+        `Injection ${product} interrompue : la filtration s'est arrêtée. Relancez l'injection après reprise de la filtration.`,
+        'error'
+      );
+    }
+
     // Mettre à jour l'affichage si le panneau logs est visible
     const content = $("#logs_content");
     if (!content || content.children.length === 0) return;
@@ -4386,9 +4400,22 @@
       if (mlInput) mlInput.disabled = true;
       const resp = await authFetch(`/${product}/inject/start?volume=${volumeMl}`, { method: "POST" }).catch(() => null);
       if (!resp || !resp.ok) {
-        // Erreur : restaurer le bouton
+        // Erreur : restaurer le bouton et afficher un message clair
         if (btn) btn.textContent = "▶ Injecter";
         if (mlInput) mlInput.disabled = false;
+
+        // Récupérer le message d'erreur du backend (text/plain) pour le toast
+        let errorMsg = "Erreur lors du démarrage de l'injection";
+        if (resp) {
+          if (resp.status === 409) {
+            // Sécurité chimique : filtration arrêtée
+            errorMsg = "Injection refusée : la filtration doit être active avant d'injecter (sécurité chimique : pas de circulation = surdosage local).";
+          } else {
+            const body = await resp.text().catch(() => "");
+            if (body && body.length < 200) errorMsg = body;
+          }
+        }
+        showToast(errorMsg, "error");
       }
       // Le bouton sera mis à jour précisément par le prochain push WebSocket
     };
