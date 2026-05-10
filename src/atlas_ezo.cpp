@@ -127,21 +127,29 @@ bool AtlasEzoSensor::readSingle(float& out, float tempC) {
   bool ok = false;
   char buf[kEzoReadBufLen];
 
-  // Commande "RT,<tempC>" : sur l'EZO pH, applique la compensation T° (Nernst)
-  // ET retourne la valeur pH compensée en une seule commande (statut 1 + payload).
-  // L'EZO ORP ignore la T° mais accepte la commande et retourne la valeur ORP
-  // courante en mV.
+  // Choix de la commande selon le module :
+  //   - EZO pH (0x63) : "RT,<tempC>" applique la compensation T° (Nernst) ET
+  //     retourne la valeur pH compensée en une seule commande (statut 1 + payload).
+  //   - EZO ORP (0x62) : "R" lecture standard. Le module ORP ACCEPTE la commande
+  //     "RT,<tempC>" (statut 1) mais NE RETOURNE PAS de payload (resp vide) car
+  //     il n'a pas de compensation T° à faire — l'ORP est potentiométrique direct.
+  //     Confirmé empiriquement 2026-05-10 via /debug/ezo_command : RT,25.0 → status=1
+  //     resp="", R → status=1 resp="-369.2". Le firmware attendait un payload qui
+  //     ne venait jamais → fail streak → "bus I²C dégradé".
   //
   // Hotfix oscillation 2026-05-07 (PCB v2) : la séquence précédente envoyait
   // RT,<t> puis R, ce qui causait une oscillation cyclique pH "1 sur 2"
-  // (~0.1 pH crête-à-crête, période 10 s). Cause : la lecture R après RT
-  // retournait parfois une valeur transitoire (sonde pas stabilisée après
-  // changement de T° interne) et le délai kEzoRtDelayMs = 600 ms était sous le
-  // seuil 900 ms recommandé par le datasheet Atlas → statut 254 intermittent.
-  // RT seul = une lecture stable, pas de double appel I²C.
-  char rtCmd[16];
-  snprintf(rtCmd, sizeof(rtCmd), "RT,%.1f", tempC);
-  if (_sendCmdLocked(rtCmd)) {
+  // (~0.1 pH crête-à-crête, période 10 s). RT seul = une lecture stable.
+  char cmd[16];
+  if (_address == kEzoPhAddress) {
+    snprintf(cmd, sizeof(cmd), "RT,%.1f", tempC);
+  } else {
+    // EZO ORP : lecture simple, pas de compensation T°.
+    strncpy(cmd, "R", sizeof(cmd) - 1);
+    cmd[sizeof(cmd) - 1] = '\0';
+  }
+
+  if (_sendCmdLocked(cmd)) {
     // 900 ms : délai standard pour R/RT sur EZO (datasheet Atlas).
     int n = _readResponseLocked(buf, sizeof(buf), kEzoReadDelayMs);
     if (n > 0) {
