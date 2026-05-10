@@ -74,7 +74,12 @@ constexpr unsigned long kConfigMutexTimeoutMs = 1000;     // 1s - Timeout acquis
 constexpr unsigned long kFactoryResetButtonHoldMs = 10000; // 10s - Maintien bouton pour factory reset
 
 // Sécurité - Rate limiting
-constexpr uint16_t kMaxRequestsPerMinute = 30;            // Limite globale par IP
+// 120 req/min = 2 req/s moyenne — couvre la navigation UI active normale
+// (page /params ouverte + clics + polling /get-config + /data + /coredump/info).
+// Reste une protection efficace contre les bots brute-force (auth) et DOS accidentel.
+// Ancienne valeur 30 : trop basse, déclenchait des "Rate limit dépassé" en usage normal
+// dès qu'on naviguait dans Paramètres → Diagnostic ou qu'on cliquait plusieurs boutons rapidement.
+constexpr uint16_t kMaxRequestsPerMinute = 120;           // Limite globale par IP
 constexpr unsigned long kRateLimitWindowMs = 60000;       // Fenêtre de rate limit (1 min)
 
 // ============================================================================
