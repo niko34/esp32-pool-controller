@@ -26,7 +26,7 @@ Encapsule la communication I²C avec un module EZO et le timing requis par le fi
 |---------|-------|
 | `bool sendCmd(const char* cmd)` | Envoie une commande ASCII brute (ex `"R"`, `"RT,25.5"`). **Mutex à la charge de l'appelant.** |
 | `int readResponse(char* buf, size_t bufLen, uint32_t delayMs)` | Lit la réponse après attente. **Mutex à la charge de l'appelant.** |
-| `bool readSingle(float& out, float tempC)` | Séquence atomique `RT,<temp>` + delay 600 ms + `R` + delay 900 ms + parse float. Prend le mutex. |
+| `bool readSingle(float& out, float tempC)` | Séquence atomique de lecture, **différenciée par adresse I²C** (cf. [Différenciation pH / ORP](#différenciation-de-readsingle-ph--orp-v211) ci-dessous). Prend le mutex. |
 | `bool calibrate(const char* arg)` | Envoie `Cal,<arg>` (ex `"mid,7.00"`, `"low,4.00"`, `"470"`). Prend le mutex. |
 | `bool clearCalibration()` | `Cal,clear` — efface toute la calibration mémorisée dans le module. |
 | `int queryCalPoints()` | `Cal,?` → renvoie -1 (injoignable) ou 0..3. |
@@ -38,6 +38,23 @@ Encapsule la communication I²C avec un module EZO et le timing requis par le fi
 - `2` → erreur de syntaxe
 - `254` → commande pas encore prête (re-essayer)
 - `255` → pas de données
+
+### Différenciation de `readSingle()` pH / ORP (v2.1.1)
+
+`AtlasEzoSensor::readSingle()` choisit la commande Atlas selon l'adresse I²C du module :
+
+| Module | Adresse | Commande envoyée | Justification |
+|--------|---------|------------------|---------------|
+| EZO pH | `kEzoPhAddress = 0x63` | `RT,<tempC>` (1 décimale) | Compense la T° (équation de Nernst) ET retourne la valeur pH compensée en une seule transaction (`statut 1` + payload). |
+| EZO ORP | `kEzoOrpAddress = 0x62` | `R` | L'ORP est potentiométrique direct, sans compensation T° à effectuer. La commande `RT,<t>` est ACCEPTÉE par le module (`statut 1`) mais **NE RETOURNE PAS de payload**. |
+
+> **Bug historique fixé en v2.1.1** (commit `c0f2962`) : depuis feature-021, `RT,<temp>` était envoyé indistinctement aux deux modules. Sur l'ORP, la réponse vide était interprétée comme un échec → `_orpI2cFailStreak++` → bus I²C dégradé après `kEzoBusFailMaxConsecutive = 2` cycles → régulation ORP inhibée. Le commentaire originel prétendait à tort que « l'EZO ORP ignore RT et retourne la valeur ORP » — hypothèse non vérifiée empiriquement à l'époque, infirmée via `/debug/ezo_command` :
+>
+> - `0x62 cmd="RT,25.0"` → `status=1 resp=""` (vide)
+> - `0x62 cmd="R"` → `status=1 resp="-369.2"` (mV)
+> - `0x62 cmd="Status"` → `status=1 resp="?STATUS,P,5.24"` (module sain)
+
+Délai après commande : `kEzoReadDelayMs = 900 ms` (datasheet Atlas) — identique pour les deux modules.
 
 ## API publique `SensorManager`
 
@@ -201,8 +218,10 @@ Envoie `Slope,?` sous mutex I²C tenu pour toute la séquence (cmd + delay `kEzo
 
 1. **Au boot** : 1 query enfilée après init EZO (1ʳᵉ valeur disponible dans les ~30 s).
 2. **Après chaque calibration pH réussie** (mid / low / clear) : re-query enfilée automatiquement par `_processEzoQueue()` pour rafraîchir l'info dans les ~5 s.
-3. **Automatique 24 h** : `update()` enfile une re-query si `(millis() - _phSlopeQueriedMs) >= kPhSlopeQueryIntervalMs` ET `!_phSlopeQueryPending`.
+3. **Automatique 24 h** : `update()` enfile une re-query si `(nowAfterQueue - _phSlopeQueriedMs) >= kPhSlopeQueryIntervalMs` ET `!_phSlopeQueryPending`.
 4. **À la demande** : `POST /debug/ph_slope_refresh` (cf. [API.md](../API.md)) → `enqueuePhSlopeQuery()`.
+
+> **Garde anti-underflow `nowAfterQueue`** (commit `933f17c`, v2.1.1) : le `now` lu en début de `SensorManager::update()` est **figé** avant `_processEzoQueue()` qui peut bloquer ~900 ms sur une transaction I²C. Si le handler `QueryPhSlope` met `_phSlopeQueriedMs = millis()` à un instant postérieur, alors `now < _phSlopeQueriedMs` → soustraction `uint32_t` underflow → ~4,3 milliards → toujours ≥ 86 400 000 → ré-enqueue immédiat à chaque cycle `update()` → spam de `Slope,?` à ~1/s, monopolisation du mutex I²C, EZO ORP perturbé. Le firmware recalcule donc `nowAfterQueue = millis()` après `_processEzoQueue()` ET ajoute la garde explicite `nowAfterQueue >= _phSlopeQueriedMs` avant la soustraction.
 
 ### Dédoublonnage `_phSlopeQueryPending`
 

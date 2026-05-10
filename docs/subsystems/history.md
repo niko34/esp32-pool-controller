@@ -84,6 +84,30 @@ Cette protection évite un crash `IntegerDivideByZero` dans `lfs_alloc` lorsque 
 
 > ⚠️ Le premier boot après un changement de table de partitions **efface l'historique**. C'est intentionnel et documenté dans [`docs/UPDATE_GUIDE.md`](../UPDATE_GUIDE.md).
 
+### Détection de corruption LittleFS au boot (v2.1.1)
+
+Le mécanisme précédent (vérification de taille) ne couvre **pas** les corruptions internes du filesystem (bit flips, écritures interrompues, métadonnées LittleFS incohérentes). LittleFS peut **monter sans erreur un FS corrompu** puis crasher en `IntegerDivideByZero` à la première écriture — symptôme observé sur PCB v1 après une longue inactivité ESP32 (boot loop sans message après le log « Partition historique dédiée montée »).
+
+Depuis le commit `3c8b657` (v2.1.1), `HistoryManager::begin()` exécute, **après** un mount LittleFS réussi et **avant** tout autre accès (notamment `setPersistenceFs` qui déclenche le 1ᵉʳ printf vers le filesystem) :
+
+1. **Test write** : ouverture en écriture du fichier témoin `/.fscheck`, écriture des 2 octets `"ok"`, fermeture.
+2. **Test read** : ouverture en lecture, comparaison du contenu lu avec `"ok"`.
+3. **Cleanup** : suppression de `/.fscheck`.
+
+Si **toute** étape échoue (`open` retourne null, `print` retourne ≠ 2 octets, ou contenu lu ≠ `"ok"`), le firmware considère la partition corrompue :
+
+- Log `warning` : `Partition history corrompue détectée — reformatage automatique`.
+- Démontage LittleFS (`historyFs.end()`), effacement intégral via `esp_partition_erase_range(histPart, 0, histPart->size)`, remontage avec `formatOnFail=true`.
+- Si le remontage post-erase échoue à son tour : log `error` + `historyEnabled = false` (le système boote, mais sans persistance d'historique).
+- Sinon : log `info` : `Partition history reformatée et remontée`. L'historique persistant **est perdu** — c'est jugé acceptable face à un boot loop infini.
+
+| Cas | Coût |
+|-----|------|
+| Nominal (FS sain) | 4 opérations FS + cleanup ≈ 10 ms au boot, ~500 B flash ajoutés |
+| Corrompu | Erase 64 KB ≈ 100 ms + remount + reformatage LittleFS ≈ 300-500 ms total |
+
+> Cette validation s'exécute **après** le test de redimensionnement de partition décrit ci-dessus. Les deux mécanismes sont indépendants : le premier détecte un changement de géométrie matérielle, le second détecte une corruption logique du filesystem monté avec succès.
+
 ## Cas limites
 
 - **Partition pleine** : écriture impossible → log ERROR, `historyEnabled` peut être basculé à `false` manuellement depuis l'UI Avancé.

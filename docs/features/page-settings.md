@@ -75,6 +75,7 @@ Page de configuration système. Structurée en **8 onglets segmentés** ([`data/
 - Tests pompe : `POST /pump1/on`, `/pump1/off`, `/pump2/on`, `/pump2/off` — arrêt auto après 10 s côté firmware.
 - `sensor_logs_enabled` (bool) — verbosité logs capteurs pour diagnostic.
 - **Card "Diagnostic crash"** — voir section dédiée ci-dessous.
+- **Card "Diagnostic EZO"** — voir section dédiée ci-dessous.
 - **Card "Logs"** — voir section dédiée ci-dessous.
 
 #### Card Diagnostic crash
@@ -107,6 +108,36 @@ Positionnée entre la card "Infos système" et la card "Logs" dans le panneau Av
 Le script utilise `xtensa-esp32-elf-gdb` et `esp_coredump` du penv PlatformIO pour produire un backtrace lisible avec noms de fonctions et numéros de ligne.
 
 Voir [`docs/API.md#diagnostic-crash-coredump`](../API.md#diagnostic-crash-coredump) pour les détails des endpoints.
+
+#### Card Diagnostic EZO
+
+Ajoutée en v2.1.1 (commit `20e4a9b`). Positionnée dans le panel **Avancé**, sous la card « Debug oscillation pH ». Permet d'envoyer une commande Atlas EZO arbitraire à n'importe quel module présent sur le bus I²C et d'observer la réponse parsée. Utile pour diagnostiquer un module silencieux, valider une réponse vide (status=1 sans payload, cf. bug ORP commit `c0f2962`), préparer un RMA Atlas avec preuves reproductibles.
+
+**Contrôles affichés** :
+
+| Élément | Description |
+|---------|-------------|
+| Sélecteur **Module** | `EZO ORP (0x62)` ou `EZO pH (0x63)` (sélection par défaut). Adresse passée en décimal (`98` / `99`) à l'endpoint. |
+| Boutons préprogrammés | 10 commandes courantes : `I` (info firmware), `Status`, `R` (read), `Cal,?` (points calibrés), `Slope,?` (pente sonde pH), `L,?` / `L,1` / `L,0` (LED status / on / off), `Plock,?` (protocol lock status), `Find` (clignotement LED rapide pour identification physique). Chaque bouton porte ses propres `data-ezo-cmd` et `data-ezo-delay` (300 ms pour les commandes courtes, 900 ms pour `R`). |
+| Champ **Commande perso** | Texte libre (max 30 caractères). Touche **Entrée** dans le champ → envoie. |
+| Champ **Délai (ms)** | Numérique, 50-5000 ms, pas 50, défaut 900. |
+| Bouton **Envoyer** | Déclenche `POST /debug/ezo_command` avec `{addr, cmd, delay_ms}`. |
+
+**Affichage de la réponse** (visible uniquement après le 1er envoi) :
+
+| Ligne | Contenu |
+|-------|---------|
+| Statut | Code numérique + libellé Atlas (`1=success`, `2=syntax error`, `254=not ready`, `255=no data`, `0=no response`). Coloré vert si code `1`, rouge sinon. |
+| Réponse | Texte parsé (police monospace) — peut être vide même avec status=1 (ex. `RT,25.0` sur l'ORP). |
+| Bytes (hex) | Tous les octets bruts retournés par le module, en hexa, séparés par des espaces. Inclut le status code en tête et l'éventuel null terminator Atlas en fin. |
+
+**Historique** : zone scrollable (max 160 px de haut, fond gris clair, police monospace 11 px) listant les 30 dernières commandes envoyées dans la session navigateur (timestamp + cmd + status + extrait réponse). Réinitialisé au reload de la page (état non persisté côté serveur).
+
+**Hint affiché en pied de carte** : rappel des 4 status codes principaux pour faciliter l'interprétation sans aller-retour vers la doc.
+
+> Le bouton **Factory** (commande destructive `POST /debug/ezo_factory`) n'est pas exposé dans cette carte. Il est accessible uniquement via curl ou la console navigateur — voir [`docs/API.md`](../API.md#post-debugezo_factory--write) pour les détails. Choix volontaire pour éviter les clics accidentels qui effaceraient une calibration EZO en place.
+
+Voir [`docs/API.md#diagnostic-atlas-ezo-v211`](../API.md#diagnostic-atlas-ezo-v211) pour les contrats d'endpoint complets.
 
 #### Card Logs
 
@@ -149,6 +180,8 @@ Toggles complémentaires :
 | Effacer coredump | `DELETE /coredump` | WRITE |
 | Effacer logs (firmware) | `DELETE /logs` | WRITE |
 | Télécharger logs | `GET /download-logs` | WRITE |
+| Envoyer commande Atlas EZO | `POST /debug/ezo_command` | — (pas d'auth, cohérent avec `/debug/*`) |
+| Factory reset module EZO | `POST /debug/ezo_factory?addr=N` | — (pas d'auth, cohérent avec `/debug/*`) |
 
 Auth = le niveau minimum requis, voir [`docs/API.md`](../API.md).
 

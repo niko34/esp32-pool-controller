@@ -822,6 +822,110 @@ curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
 
 ---
 
+## Diagnostic Atlas EZO (v2.1.1)
+
+Deux endpoints permettent d'interroger directement les modules Atlas EZO sur le bus I²C, sans passer par les caches `Sensors`. Utilisés par la carte **Diagnostic EZO** de la page Paramètres → Avancé (voir [`docs/features/page-settings.md`](features/page-settings.md#card-diagnostic-ezo)) et par les agents (RMA Atlas, validation empirique d'une réponse module).
+
+> Ces endpoints prennent le mutex `i2cMutex` (timeout `kI2cMutexTimeoutMs = 2000 ms`) et bloquent le handler HTTP pendant `delay_ms` ms (50-5000 ms). Ils ne passent **pas** par la queue `_ezoQueue` — l'opération est synchrone côté serveur web. Le rate-limit s'applique normalement.
+
+### Codes de statut Atlas EZO
+
+| Code | Libellé | Signification |
+|------|---------|---------------|
+| `1` | success | Commande exécutée, payload présent (si attendu) |
+| `2` | syntax error | Commande non reconnue par le module |
+| `254` | not ready | Réponse pas encore disponible — rallonger le délai |
+| `255` | no data | Pas de données à retourner |
+| `0` | no response | Le module n'a rien retourné (timeout I²C) |
+
+---
+
+### POST /debug/ezo_command — pas d'auth (cohérent avec autres `/debug/*`)
+
+Envoie une commande Atlas EZO arbitraire et retourne la réponse parsée (status code + texte + bytes hex bruts).
+
+**Body JSON** :
+
+| Champ | Type | Validation |
+|-------|------|------------|
+| `addr` | int | `8..119` décimal (= `0x08..0x77`). Adresses Atlas par défaut : `98` = `0x62` (ORP), `99` = `0x63` (pH). |
+| `cmd` | string | 1-30 caractères ASCII (ex. `I`, `Status`, `R`, `Cal,?`, `Slope,?`, `RT,25.0`). |
+| `delay_ms` | int | 50-5000 ms. Délai d'attente entre l'envoi et la lecture. Défaut côté UI : 900 ms (commandes longues `R`/`Cal,*`), 300 ms (commandes courtes `I`/`Status`/`?`). |
+
+**Réponse 200** :
+
+```json
+{
+  "success": true,
+  "addr": "0x62",
+  "cmd": "R",
+  "status_code": 1,
+  "status_label": "success",
+  "response": "-369.2",
+  "raw_hex": ["01", "2D", "33", "36", "39", "2E", "32", "00"],
+  "delay_ms": 900
+}
+```
+
+**Erreurs** :
+- `400` — JSON invalide, `addr` hors plage, `cmd` vide ou > 30 chars, `delay_ms` hors plage.
+- `500` — Échec transmission I²C (`endTransmission != 0`) — typiquement aucun module à cette adresse.
+- `503` — Bus I²C occupé (acquisition mutex échouée dans les 2 s).
+
+**Exemple curl** :
+
+```bash
+# Lire le pH brut sur l'EZO pH
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"addr":99,"cmd":"R","delay_ms":900}' \
+  http://poolcontroller.local/debug/ezo_command
+
+# Diagnostiquer un module silencieux (Status doit retourner ?STATUS,P,...)
+curl -X POST -H "Content-Type: application/json" \
+  -d '{"addr":98,"cmd":"Status","delay_ms":300}' \
+  http://poolcontroller.local/debug/ezo_command
+```
+
+---
+
+### POST /debug/ezo_factory — pas d'auth (cohérent avec autres `/debug/*`)
+
+Restaure les paramètres usine d'un module Atlas EZO via la commande `Factory`. Calibration effacée, adresse I²C par défaut (`0x63` pH / `0x62` ORP), baud rate UART par défaut, compensation T° remise à zéro.
+
+> ⚠️ **Le mode de communication (I²C vs UART) n'est PAS modifié** par cette commande. Le firmware EZO n'est pas touché. Après l'appel : couper / rallumer l'alimentation ESP32, puis recalibrer le module via la page de calibration.
+
+**Paramètre query** :
+
+| Paramètre | Type | Validation |
+|-----------|------|------------|
+| `addr` | int | `8..119` décimal. |
+
+**Réponse 200** :
+
+```json
+{
+  "success": true,
+  "addr": "0x62",
+  "note": "power-cycle ESP32 then recalibrate"
+}
+```
+
+**Erreurs** :
+- `400` — Paramètre `addr` manquant ou hors plage.
+- `500` — Échec transmission I²C (aucun module à cette adresse).
+- `503` — Bus I²C occupé.
+
+**Exemple curl** :
+
+```bash
+# Factory reset de l'EZO ORP (0x62 = 98 décimal)
+curl -X POST "http://poolcontroller.local/debug/ezo_factory?addr=98"
+```
+
+> Un log `warning` est émis côté firmware : `[Debug] Commande Factory envoyée à 0xNN — couper/rallumer l'alim puis recalibrer`.
+
+---
+
 ## Mises à jour OTA
 
 ### POST /update — CRITICAL
