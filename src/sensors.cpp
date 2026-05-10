@@ -213,8 +213,16 @@ void SensorManager::update() {
   // 5) feature-024 : re-query Slope,? automatique toutes les 24h.
   // Conditions : 1ʳᵉ query déjà réussie (_phSlopeQueriedMs != 0), pas de query
   // en attente (_phSlopeQueryPending=false), et délai écoulé.
+  //
+  // BUG FIX : `now` doit être rafraîchi APRÈS _processEzoQueue() qui peut bloquer
+  // ~900 ms sur une commande I²C. Sans ce rafraîchissement, si le handler met à
+  // jour _phSlopeQueriedMs = millis() à T+900ms, on a now=T < _phSlopeQueriedMs
+  // → underflow uint32_t sur (now - _phSlopeQueriedMs) → ~4.3 milliards → >= 24h
+  // → ré-enqueue immédiate → boucle infinie de query Slope toutes les ~secondes.
+  unsigned long nowAfterQueue = millis();
   if (_phSlopeQueriedMs != 0 && !_phSlopeQueryPending &&
-      (now - _phSlopeQueriedMs) >= kPhSlopeQueryIntervalMs) {
+      nowAfterQueue >= _phSlopeQueriedMs &&  // garde anti-underflow
+      (nowAfterQueue - _phSlopeQueriedMs) >= kPhSlopeQueryIntervalMs) {
     enqueuePhSlopeQuery();
   }
 }
