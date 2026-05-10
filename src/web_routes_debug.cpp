@@ -3,7 +3,10 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <Wire.h>
 
+#include "config.h"   // i2cMutex
+#include "constants.h"
 #include "logger.h"
 #include "sensors.h"
 
@@ -136,5 +139,176 @@ void setupDebugRoutes(AsyncWebServer* server) {
     String out;
     serializeJson(doc, out);
     req->send(200, "application/json", out);
+  });
+
+  // ---------- POST /debug/ezo_command ----------
+  // Envoie une commande Atlas EZO arbitraire et retourne la réponse parsée.
+  // Body JSON : {"addr": 98, "cmd": "Status", "delay_ms": 900}
+  //   addr     : 8..119 (décimal, 0x08..0x77)
+  //   cmd      : commande ASCII (max 30 caractères, ex. "I", "Status", "R", "Slope,?")
+  //   delay_ms : optionnel, défaut 900 (R/Cal/I), 600 pour les commandes courtes
+  // Réponse : {"success", "addr", "cmd", "status_code", "response", "raw_hex"}
+  //   status_code : 1=succès, 2=erreur syntaxe, 254=pas prêt, 255=pas de data, 0=timeout
+  server->on("/debug/ezo_command", HTTP_POST,
+    [](AsyncWebServerRequest* req) {},
+    nullptr,
+    [](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t /*index*/, size_t /*total*/) {
+      JsonDocument body;
+      DeserializationError perr = deserializeJson(body, data, len);
+      if (perr) {
+        req->send(400, "application/json", "{\"error\":\"bad json\"}");
+        return;
+      }
+      int addrInt = body["addr"] | 0;
+      const char* cmd = body["cmd"] | "";
+      uint32_t delayMs = body["delay_ms"] | 900u;
+
+      if (addrInt < 0x08 || addrInt > 0x77) {
+        req->send(400, "application/json", "{\"error\":\"addr must be 8..119\"}");
+        return;
+      }
+      size_t cmdLen = strlen(cmd);
+      if (cmdLen == 0 || cmdLen > 30) {
+        req->send(400, "application/json", "{\"error\":\"cmd must be 1..30 chars\"}");
+        return;
+      }
+      if (delayMs < 50 || delayMs > 5000) {
+        req->send(400, "application/json", "{\"error\":\"delay_ms must be 50..5000\"}");
+        return;
+      }
+      uint8_t addr = static_cast<uint8_t>(addrInt);
+
+      if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(kI2cMutexTimeoutMs)) != pdTRUE) {
+        req->send(503, "application/json", "{\"error\":\"i2c bus busy\"}");
+        return;
+      }
+
+      // 1) Envoi de la commande
+      Wire.beginTransmission(addr);
+      Wire.write(reinterpret_cast<const uint8_t*>(cmd), cmdLen);
+      uint8_t txErr = Wire.endTransmission();
+
+      if (txErr != 0) {
+        xSemaphoreGive(i2cMutex);
+        char msg[128];
+        snprintf(msg, sizeof(msg),
+                 "{\"error\":\"i2c tx failed err=%u (no device at 0x%02X?)\"}",
+                 (unsigned)txErr, addr);
+        req->send(500, "application/json", msg);
+        return;
+      }
+
+      // 2) Délai obligatoire avant lecture
+      delay(delayMs);
+
+      // 3) Lecture de la réponse
+      static constexpr size_t kMaxResp = 32;
+      uint8_t rawBytes[kMaxResp] = {0};
+      size_t received = Wire.requestFrom(static_cast<int>(addr),
+                                         static_cast<int>(kMaxResp));
+      size_t rawCount = 0;
+      uint8_t statusCode = 0;
+      char respText[kMaxResp + 1] = {0};
+      size_t textIdx = 0;
+
+      if (received > 0 && Wire.available()) {
+        statusCode = Wire.read();
+        rawBytes[rawCount++] = statusCode;
+        while (Wire.available() && rawCount < kMaxResp) {
+          uint8_t b = Wire.read();
+          rawBytes[rawCount++] = b;
+          if (b == 0) break;  // null terminator Atlas
+          if (textIdx < kMaxResp) respText[textIdx++] = static_cast<char>(b);
+        }
+        // Drain
+        while (Wire.available()) (void)Wire.read();
+      }
+      respText[textIdx] = '\0';
+
+      xSemaphoreGive(i2cMutex);
+
+      // 4) Construire la réponse JSON
+      JsonDocument doc;
+      doc["success"] = true;
+      char addrHex[8];
+      snprintf(addrHex, sizeof(addrHex), "0x%02X", addr);
+      doc["addr"] = addrHex;
+      doc["cmd"] = cmd;
+      doc["delay_ms"] = delayMs;
+      doc["status_code"] = statusCode;
+      const char* statusLabel = "unknown";
+      switch (statusCode) {
+        case 1:   statusLabel = "success"; break;
+        case 2:   statusLabel = "syntax error"; break;
+        case 254: statusLabel = "not ready"; break;
+        case 255: statusLabel = "no data"; break;
+        case 0:   statusLabel = "no response"; break;
+      }
+      doc["status_label"] = statusLabel;
+      doc["response"] = respText;
+      JsonArray hex = doc["raw_hex"].to<JsonArray>();
+      for (size_t i = 0; i < rawCount; ++i) {
+        char b[4];
+        snprintf(b, sizeof(b), "%02X", rawBytes[i]);
+        hex.add(b);
+      }
+      String out;
+      serializeJson(doc, out);
+
+      systemLogger.info(String("[Debug EZO] ") + addrHex + " cmd=\"" + cmd +
+                        "\" status=" + statusCode + " resp=\"" + respText + "\"");
+      req->send(200, "application/json", out);
+    });
+
+  // ---------- POST /debug/ezo_factory?addr=<N> ----------
+  // Envoie la commande "Factory" à un module Atlas EZO sur le bus I²C ISO.
+  // Restaure les paramètres par défaut du module (calibration, adresse I²C,
+  // baud rate UART, compensation T°). Le mode de communication (I²C vs UART)
+  // est PRÉSERVÉ. Le firmware EZO n'est pas touché.
+  //
+  // Usage : curl -X POST "http://<host>/debug/ezo_factory?addr=98"
+  // (98 décimal = 0x62 hexadécimal = adresse ORP par défaut)
+  // (99 décimal = 0x63 = adresse pH par défaut)
+  //
+  // Après l'appel : couper l'alim ESP32, rallumer, recalibrer le module.
+  server->on("/debug/ezo_factory", HTTP_POST, [](AsyncWebServerRequest* req) {
+    if (!req->hasParam("addr")) {
+      req->send(400, "application/json", "{\"error\":\"missing 'addr' query param (decimal)\"}");
+      return;
+    }
+    int addrInt = req->getParam("addr")->value().toInt();
+    if (addrInt < 0x08 || addrInt > 0x77) {
+      req->send(400, "application/json", "{\"error\":\"addr must be 8..119 (0x08..0x77)\"}");
+      return;
+    }
+    uint8_t addr = static_cast<uint8_t>(addrInt);
+
+    if (xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(kI2cMutexTimeoutMs)) != pdTRUE) {
+      req->send(503, "application/json", "{\"error\":\"i2c bus busy\"}");
+      return;
+    }
+
+    Wire.beginTransmission(addr);
+    Wire.write(reinterpret_cast<const uint8_t*>("Factory"), 7);
+    uint8_t err = Wire.endTransmission();
+
+    xSemaphoreGive(i2cMutex);
+
+    if (err != 0) {
+      char msg[96];
+      snprintf(msg, sizeof(msg),
+               "{\"error\":\"i2c transmission failed err=%u (no device at 0x%02X?)\"}",
+               (unsigned)err, addr);
+      req->send(500, "application/json", msg);
+      return;
+    }
+
+    systemLogger.warning(String("[Debug] Commande Factory envoyée à 0x") +
+                         String(addr, HEX) + " — couper/rallumer l'alim puis recalibrer");
+    char resp[160];
+    snprintf(resp, sizeof(resp),
+             "{\"success\":true,\"addr\":\"0x%02X\",\"note\":\"power-cycle ESP32 then recalibrate\"}",
+             addr);
+    req->send(200, "application/json", resp);
   });
 }

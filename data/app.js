@@ -4910,6 +4910,108 @@
       setTimeout(() => { __debugPhLoad(); __debugWifiPauseStatus(); }, 200);
     });
 
+    // ===== Diagnostic EZO — commandes manuelles (debug feature-024) =====
+    const __debugEzoHistory = [];
+    const __debugEzoMaxHistory = 30;
+
+    const __debugEzoFormatHistoryEntry = (addrLabel, cmd, json) => {
+      const t = new Date();
+      const ts = `${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}:${String(t.getSeconds()).padStart(2,'0')}`;
+      const status = json.status_code != null ? json.status_code : '?';
+      const label = json.status_label || 'unknown';
+      const resp = json.response || '';
+      return `⏱ ${ts} ${addrLabel} ${cmd.padEnd(10)} → ${status} (${label})${resp ? ': ' + resp : ''}`;
+    };
+
+    const __debugEzoUpdateHistoryUI = () => {
+      const div = document.getElementById('debug_ezo_history');
+      if (!div) return;
+      if (__debugEzoHistory.length === 0) {
+        div.innerHTML = '<em class="muted">Aucune commande envoyée.</em>';
+        return;
+      }
+      div.innerHTML = __debugEzoHistory.slice().reverse()
+        .map(e => `<div>${e.replace(/</g,'&lt;')}</div>`).join('');
+    };
+
+    const __debugEzoSend = async (cmd, delayMs) => {
+      const addrSelect = document.getElementById('debug_ezo_addr');
+      const addr = parseInt(addrSelect?.value || '98', 10);
+      const addrLabel = addrSelect?.selectedOptions?.[0]?.textContent?.split(' ')?.[0] || 'EZO';
+      const respDiv = document.getElementById('debug_ezo_response');
+      const statusEl = document.getElementById('debug_ezo_status');
+      const respTextEl = document.getElementById('debug_ezo_resp_text');
+      const respHexEl = document.getElementById('debug_ezo_resp_hex');
+
+      try {
+        const res = await authFetch('/debug/ezo_command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ addr, cmd, delay_ms: delayMs })
+        });
+        const json = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          const errMsg = json.error || `HTTP ${res.status}`;
+          if (statusEl) statusEl.textContent = `⚠ ${errMsg}`;
+          if (respTextEl) respTextEl.textContent = '—';
+          if (respHexEl) respHexEl.textContent = '—';
+          if (respDiv) respDiv.style.display = 'block';
+          showToast(`Erreur EZO : ${errMsg}`, 'error');
+          __debugEzoHistory.push(`⚠ ${addrLabel} ${cmd} → ${errMsg}`);
+          while (__debugEzoHistory.length > __debugEzoMaxHistory) __debugEzoHistory.shift();
+          __debugEzoUpdateHistoryUI();
+          return;
+        }
+
+        if (statusEl) {
+          const sc = json.status_code;
+          const lbl = json.status_label || '';
+          const cls = sc === 1 ? 'success' : sc === 2 ? 'danger' : 'warn';
+          statusEl.innerHTML = `<span style="color:var(--${cls})">${sc} (${lbl})</span>`;
+        }
+        if (respTextEl) respTextEl.textContent = json.response || '(vide)';
+        if (respHexEl) respHexEl.textContent = (json.raw_hex || []).join(' ');
+        if (respDiv) respDiv.style.display = 'block';
+
+        __debugEzoHistory.push(__debugEzoFormatHistoryEntry(addrLabel, cmd, json));
+        while (__debugEzoHistory.length > __debugEzoMaxHistory) __debugEzoHistory.shift();
+        __debugEzoUpdateHistoryUI();
+      } catch (e) {
+        showToast(`Erreur réseau : ${e.message}`, 'error');
+      }
+    };
+
+    // Boutons commandes courantes
+    document.querySelectorAll('[data-ezo-cmd]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const cmd = btn.getAttribute('data-ezo-cmd');
+        const delayMs = parseInt(btn.getAttribute('data-ezo-delay') || '900', 10);
+        __debugEzoSend(cmd, delayMs);
+      });
+    });
+
+    // Bouton « Envoyer » pour commande personnalisée
+    document.getElementById('debug_ezo_send_btn')?.addEventListener('click', () => {
+      const cmdInput = document.getElementById('debug_ezo_cmd');
+      const delayInput = document.getElementById('debug_ezo_delay');
+      const cmd = (cmdInput?.value || '').trim();
+      const delayMs = parseInt(delayInput?.value || '900', 10);
+      if (!cmd) {
+        showToast('Saisis une commande', 'warning');
+        return;
+      }
+      __debugEzoSend(cmd, delayMs);
+    });
+
+    // Enter dans le champ commande perso → envoyer
+    document.getElementById('debug_ezo_cmd')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        document.getElementById('debug_ezo_send_btn')?.click();
+      }
+    });
+
     // Logo topbar → blur immédiat pour éviter le focus ring persistant sur iOS Safari
     $("#topbar-home-link")?.addEventListener("click", (e) => {
       e.currentTarget.blur();
