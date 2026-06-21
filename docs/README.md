@@ -50,7 +50,9 @@ docs/
 │   ├── 0011-mqtt-task-dediee.md
 │   ├── 0012-mapping-gpio-pcb-v2.md
 │   ├── 0013-identification-sondes-onewire.md
-│   └── 0014-migration-atlas-ezo.md
+│   ├── 0014-migration-atlas-ezo.md
+│   ├── 0015-partition-app-1.5mb.md
+│   └── 0016-regulation-p-temporisee-vs-pid.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

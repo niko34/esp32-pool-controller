@@ -2646,6 +2646,144 @@
     });
   }
 
+  // ---- feature-025 : chips + modals « état filtre » pH/ORP ----
+  // La valeur principale (#xx_current_value) affiche déjà la valeur FILTRÉE (json.ph/json.orp).
+  // Ces helpers gèrent la ligne brute discrète, le chip d'état et le modal détail.
+  const FILTER_REJECT_WINDOW_MS = 30000; // fenêtre « pics rejetés récents »
+  const _filterState = {
+    ph:  { lastRawAt: 0, prevRejected: null, lastRejectAt: 0 },
+    orp: { lastRawAt: 0, prevRejected: null, lastRejectAt: 0 },
+  };
+
+  function _filterRawIsValid(v) { return v != null && !(typeof v === 'number' && isNaN(v)); }
+
+  function _fmtFilterVal(prefix, v) {
+    if (!_filterRawIsValid(v)) return '--';
+    return prefix === 'orp' ? `${Math.round(v)} mV` : Number(v).toFixed(2);
+  }
+
+  function _filterAgeText(prefix) {
+    const st = _filterState[prefix];
+    if (!st || !st.lastRawAt) return '--';
+    const age = Date.now() - st.lastRawAt;
+    if (age < 10000) return "à l'instant";
+    if (age < 60000) return `il y a ${Math.round(age / 1000)} s`;
+    if (age < 3600000) return `il y a ${Math.round(age / 60000)} min`;
+    return formatProbeAge(age);
+  }
+
+  // Le compteur de rejets est cumulatif côté firmware : on ne signale « Pics rejetés »
+  // que si le compteur a augmenté récemment (fenêtre FILTER_REJECT_WINDOW_MS).
+  function _classifyFilterState(json, prefix, st) {
+    const raw = json?.[prefix + 'Raw'];
+    if (!_filterRawIsValid(raw)) return { cls: 'unknown', label: 'EZO indisponible' };
+    if (json?.[prefix + 'FilterUnstable'] === true) return { cls: 'bad', label: 'Capteur instable' };
+    if (json?.[prefix + 'FilterReady'] === false) return { cls: 'warn', label: 'Stabilisation…' };
+    if (st.lastRejectAt && (Date.now() - st.lastRejectAt) < FILTER_REJECT_WINDOW_MS) {
+      return { cls: 'warn2', label: 'Pics rejetés' };
+    }
+    return { cls: 'good', label: 'Mesure stable' };
+  }
+
+  function _renderFilterSub(prefix, json) {
+    const el = $(`#${prefix}-filter-sub`);
+    if (!el) return;
+    const raw = _fmtFilterVal(prefix, json?.[prefix + 'Raw']);
+    const med = _fmtFilterVal(prefix, json?.[prefix + 'Median']);
+    el.textContent = `brut ${raw} · médiane ${med} · maj ${_filterAgeText(prefix)}`;
+  }
+
+  function _doseBlockReasonFr(r) {
+    if (!r) return '';
+    const s = String(r).toLowerCase();
+    if (s.includes('warm') || s.includes('stabil')) return 'Stabilisation du filtre';
+    if (s.includes('unstab') || s.includes('instab')) return 'Capteur instable';
+    if (s.includes('mix') || s.includes('mélange') || s.includes('melange')) return 'Mélange en cours';
+    if (s.includes('ezo') || s.includes('indispo')) return 'EZO indisponible';
+    return r; // déjà rédigé en clair côté firmware
+  }
+
+  function _renderFilterModalValues(prefix, json) {
+    const rawEl = $(`#${prefix}-fm-raw`);
+    if (!rawEl) return;
+    const medEl = $(`#${prefix}-fm-median`);
+    const filEl = $(`#${prefix}-fm-filtered`);
+    const rejEl = $(`#${prefix}-fm-rejected`);
+    const ageEl = $(`#${prefix}-fm-age`);
+    const rdyEl = $(`#${prefix}-fm-ready`);
+    const blockedRow = $(`#${prefix}-fm-blocked-row`);
+    const blockedEl = $(`#${prefix}-fm-blocked`);
+
+    rawEl.textContent = _fmtFilterVal(prefix, json?.[prefix + 'Raw']);
+    if (medEl) medEl.textContent = _fmtFilterVal(prefix, json?.[prefix + 'Median']);
+    if (filEl) filEl.textContent = _fmtFilterVal(prefix, json?.[prefix + 'Filtered']);
+    if (rejEl) { const r = json?.[prefix + 'RejectedCount']; rejEl.textContent = (typeof r === 'number') ? String(r) : '--'; }
+    if (ageEl) ageEl.textContent = _filterAgeText(prefix);
+    if (rdyEl) {
+      const ready = json?.[prefix + 'FilterReady'];
+      rdyEl.textContent = ready === true ? 'Oui' : (ready === false ? 'Non' : '--');
+    }
+
+    let reason = _doseBlockReasonFr(json?.[prefix + 'DoseBlockedReason']);
+    if (!reason && json?.[prefix + 'MixingDelayActive'] === true) reason = 'Mélange en cours';
+    if (blockedRow && blockedEl) {
+      if (reason) { blockedEl.textContent = reason; blockedRow.style.display = ''; }
+      else { blockedRow.style.display = 'none'; }
+    }
+  }
+
+  // Met à jour le chip d'état filtre + la ligne brute. Appelé depuis loadSensorData
+  // après chaque push WS / fetch /data.
+  function updateFilterChip(prefix, json) {
+    const chip = $(`#${prefix}-filter-chip`);
+    const lblEl = $(`#${prefix}-filter-chip-label`);
+    const st = _filterState[prefix];
+    if (!chip || !lblEl || !st) return;
+
+    const raw = json?.[prefix + 'Raw'];
+    if (_filterRawIsValid(raw)) st.lastRawAt = Date.now();
+    const rejected = json?.[prefix + 'RejectedCount'];
+    if (typeof rejected === 'number') {
+      if (st.prevRejected != null && rejected > st.prevRejected) st.lastRejectAt = Date.now();
+      st.prevRejected = rejected;
+    }
+
+    const { cls, label } = _classifyFilterState(json, prefix, st);
+    chip.classList.remove(
+      'chip--probe-good', 'chip--probe-warn', 'chip--probe-warn2',
+      'chip--probe-bad', 'chip--probe-unknown', 'chip--probe-stale'
+    );
+    chip.classList.add(`chip--probe-${cls}`);
+    lblEl.textContent = label;
+
+    _renderFilterSub(prefix, json);
+    const modal = $(`#${prefix}-filter-modal`);
+    if (modal && modal.open) _renderFilterModalValues(prefix, json);
+  }
+
+  function bindFilterChip(prefix) {
+    const chip = $(`#${prefix}-filter-chip`);
+    const modal = $(`#${prefix}-filter-modal`);
+    const closeBtn = $(`#${prefix}-filter-close`);
+    if (!chip || !modal) return;
+
+    if (typeof modal.showModal !== 'function') {
+      chip.setAttribute('aria-disabled', 'true');
+      chip.style.cursor = 'default';
+      return;
+    }
+
+    chip.addEventListener('click', () => {
+      _renderFilterModalValues(prefix, latestSensorData || {});
+      try { modal.showModal(); } catch (e) { console.error(`[${prefix}-filter] showModal:`, e); }
+    });
+    chip.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); chip.click(); }
+    });
+    if (closeBtn) closeBtn.addEventListener('click', () => modal.close());
+    modal.addEventListener('click', (e) => { if (e.target === modal) modal.close(); });
+  }
+
   async function loadSensorData(options = {}) {
     if (sensorDataLoadInFlight && !options.data) return sensorDataLoadInFlight;
     const force = options.force === true;
@@ -2731,6 +2869,8 @@
 
         // Chip d'état sonde pH (feature-024) — basé sur phSlopeAcid/Base/Zero/AgeMs + phCalPoints
         updatePhProbeChip(json);
+        // Chip d'état filtre pH (feature-025) — brut/médiane/filtré + stabilité
+        updateFilterChip('ph', json);
 
         const orpCurrentValue = $("#orp_current_value");
         const orpCurrentLabel = $("#orp_current_label");
@@ -2742,6 +2882,8 @@
             orpCurrentValue.textContent = "--";
           }
         }
+        // Chip d'état filtre ORP (feature-025)
+        updateFilterChip('orp', json);
 
         const tempCurrentValue = $("#temp_current_value");
         const tempCurrentLabel = $("#temp_current_label");
@@ -3047,17 +3189,26 @@
 
   // Appelé par la boucle sensor_data : met à jour les readouts live des cards de calibration
   function updateCalibrationReadouts(json) {
+    // Calibration : on affiche la valeur BRUTE (lecture EZO directe), PAS la valeur
+    // lissée. Le filtre (médiane + EMA + rejet de saut) rejetterait justement les
+    // grands écarts produits en changeant de solution étalon (ex. pH 7 → pH 4),
+    // figeant le live pendant ~2 min. Le brut suit le potentiel réel de l'électrode,
+    // indispensable pour juger la stabilité avant de calibrer. Repli sur le lissé
+    // si le brut est indisponible. Voir feature-025.
+    const phRaw = (typeof json.phRaw === "number" && !isNaN(json.phRaw)) ? json.phRaw
+                : (typeof json.ph === "number" && !isNaN(json.ph)) ? json.ph : null;
     const phMid = $("#cal-ph-mid-readout");
     const phLow = $("#cal-ph-low-readout");
     if (phMid || phLow) {
-      const phStr = (typeof json.ph === "number" && !isNaN(json.ph)) ? json.ph.toFixed(3) : "--";
+      const phStr = (phRaw != null) ? phRaw.toFixed(3) : "--";
       if (phMid) phMid.textContent = phStr;
       if (phLow) phLow.textContent = phStr;
     }
+    const orpRaw = (typeof json.orpRaw === "number" && !isNaN(json.orpRaw)) ? json.orpRaw
+                 : (typeof json.orp === "number" && !isNaN(json.orp)) ? json.orp : null;
     const orpRo = $("#cal-orp-readout");
     if (orpRo) {
-      orpRo.textContent = (typeof json.orp === "number" && !isNaN(json.orp))
-        ? Math.round(json.orp) + " mV" : "--";
+      orpRo.textContent = (orpRaw != null) ? Math.round(orpRaw) + " mV" : "--";
     }
     // Synchroniser badges/chips/header à chaque push
     renderCalibrationStatus();
@@ -4829,6 +4980,7 @@
       const nowEsp = json.now || (samples[count - 1].t);
       const labels = samples.map(s => `-${Math.round((nowEsp - s.t) / 1000)}s`);
       const phData = samples.map(s => (typeof s.ph === "number") ? s.ph : null);
+      const phFilteredData = samples.map(s => (typeof s.phFiltered === "number") ? s.phFiltered : null);
       const orpData = samples.map(s => (typeof s.orp === "number") ? s.orp : null);
       const tData = samples.map(s => (typeof s.tempC === "number") ? s.tempC : null);
 
@@ -4840,7 +4992,8 @@
         data: {
           labels,
           datasets: [
-            { label: "pH", data: phData, borderColor: "#1976d2", backgroundColor: "transparent", yAxisID: "y", tension: 0.1, pointRadius: 1.5, spanGaps: true },
+            { label: "pH brut", data: phData, borderColor: "#1976d2", backgroundColor: "transparent", yAxisID: "y", tension: 0.1, pointRadius: 1.5, spanGaps: true },
+            { label: "pH lissé", data: phFilteredData, borderColor: "#ff9800", backgroundColor: "transparent", yAxisID: "y", tension: 0.1, pointRadius: 0, borderWidth: 2, spanGaps: true },
             { label: "ORP (mV)", data: orpData, borderColor: "#d32f2f", backgroundColor: "transparent", yAxisID: "y1", tension: 0.1, pointRadius: 1.5, spanGaps: true, hidden: true },
             { label: "T° envoyée (°C)", data: tData, borderColor: "#388e3c", backgroundColor: "transparent", yAxisID: "y2", tension: 0.1, pointRadius: 1.5, spanGaps: true, hidden: true },
           ]
@@ -4860,10 +5013,12 @@
 
       // Stats
       const phNum  = phData.filter(v => v !== null);
+      const phFilteredNum = phFilteredData.filter(v => v !== null);
       const orpNum = orpData.filter(v => v !== null);
       const tNum   = tData.filter(v => v !== null);
       const fmt = (arr, dec) => arr.length ? `${Math.min(...arr).toFixed(dec)} / ${Math.max(...arr).toFixed(dec)} / Δ ${(Math.max(...arr) - Math.min(...arr)).toFixed(dec)}` : "—";
       document.getElementById("debug_ph_stats_ph").textContent  = fmt(phNum, 3);
+      { const el = document.getElementById("debug_ph_stats_ph_filtered"); if (el) el.textContent = fmt(phFilteredNum, 3); }
       document.getElementById("debug_ph_stats_orp").textContent = fmt(orpNum, 1);
       document.getElementById("debug_ph_stats_t").textContent   = tNum.length ? `${Math.min(...tNum).toFixed(1)}°C / ${Math.max(...tNum).toFixed(1)}°C` : "—";
       if (stats) stats.style.display = "block";
@@ -5355,6 +5510,8 @@
     bindAutosave();
     bindPhCalibration();
     bindPhProbeChip();
+    bindFilterChip('ph');
+    bindFilterChip('orp');
     bindOrpCalibration();
     bindTempCalibration();
     bindWifi();

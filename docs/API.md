@@ -195,6 +195,18 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
   "temperature_circuit": 28.1,
   "phCalPoints": 2,
   "orpCalPoints": 1,
+  "phRaw": 7.241,
+  "phMedian": 7.236,
+  "phFiltered": 7.234,
+  "phFilterReady": true,
+  "phFilterUnstable": false,
+  "phRejectedCount": 0,
+  "orpRaw": 722,
+  "orpMedian": 720,
+  "orpFiltered": 720,
+  "orpFilterReady": true,
+  "orpFilterUnstable": false,
+  "orpRejectedCount": 0,
   "filtration_running": true,
   "ph_dosing": false,
   "orp_dosing": false,
@@ -212,6 +224,8 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 ```
 
 > **feature-021** : `ph` est désormais publié avec **3 décimales** (vs 1 décimale en v1.x). Champs `phCalPoints` (`-1..3`) et `orpCalPoints` (`-1..1`) ajoutés. Champs **supprimés** de la réponse `/data` : `orp_raw`, `ph_raw`, `ph_voltage_mv`, `temperature_raw` (la notion de « valeur brute » n'a pas de sens côté Atlas EZO — la valeur est déjà calibrée par le module). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md).
+>
+> **feature-025** : `ph` / `orp` correspondent désormais à la valeur **filtrée** (médiane + EMA), avec fallback sur le brut tant que le filtre n'est pas amorcé. Champs `phRaw/phMedian/phFiltered/phFilterReady/phFilterUnstable/phRejectedCount` (+ équivalents `orp*`) ajoutés. Les champs flottants valent `null` si la mesure est indisponible (stale / non amorcé). Mêmes champs côté WS. Voir [`docs/subsystems/sensors.md`](subsystems/sensors.md#filtrage-des-mesures-phorp--feature-025).
 
 ---
 
@@ -588,6 +602,8 @@ const ws = new WebSocket('ws://poolcontroller.local/ws');
 ```
 
 > **feature-021** : `ph` 3 décimales, ajout de `phCalPoints` (`-1..3`) et `orpCalPoints` (`-1..1`). Champs **supprimés** de la payload WS : `orp_raw`, `ph_raw`, `ph_voltage_mv`, `temperature_raw`. Voir [ADR-0014](adr/0014-migration-atlas-ezo.md).
+>
+> **feature-025** : `ph` / `orp` = valeur **filtrée** (fallback brut si non amorcé). Champs de filtrage ajoutés (voir tableau dédié ci-dessous).
 
 Champs notables liés à la régulation pH :
 
@@ -628,6 +644,24 @@ Champs ajoutés en feature-024 (pente sonde pH) :
 | `phSlopeBase` | float \| null | Pente base EZO en % (1 décimale, idéal 100). `null` mêmes conditions. |
 | `phSlopeZero` | float \| null | Décalage zéro EZO en mV (2 décimales, idéal 0). `null` si firmware EZO ancien ne le rapporte pas. |
 | `phSlopeAgeMs` | integer \| null | Millisecondes depuis la dernière query `Slope,?` réussie. `null` si jamais lue depuis le boot (cohérent avec `phSlope*` nullables). L'UI considère l'état stale au-delà de 36 h. |
+
+Champs ajoutés en feature-025 (lissage mesures + régulation P temporisée) :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `phRaw` | float \| null | Dernière mesure pH **brute** Atlas (3 décimales). `null` si stale / jamais lue. |
+| `phMedian` | float \| null | Médiane glissante pH (fenêtre 7). `null` si pas de donnée. |
+| `phFiltered` | float \| null | pH **filtré** (médiane + EMA) — valeur utilisée par le PID et affichée en principal. `null` si non amorcé. |
+| `phFilterReady` | boolean | `true` après warmup (≥ 5 mesures valides) **et** dernière mesure récente. Le dosage pH est bloqué tant que `false`. |
+| `phFilterUnstable` | boolean | `true` si trop de rejets consécutifs (≥ 10) → capteur déclaré instable, dosage bloqué. |
+| `phRejectedCount` | integer | Nombre de mesures pH rejetées (compteur glissant 0..255). |
+| `orpRaw` / `orpMedian` / `orpFiltered` | float \| null | Équivalents ORP (mV, sans décimale). |
+| `orpFilterReady` / `orpFilterUnstable` | boolean | Équivalents ORP. |
+| `orpRejectedCount` | integer | Équivalent ORP. |
+| `phMixingDelayActive` | boolean | `true` pendant la pause mélange hydraulique pH (15 min après injection). |
+| `orpMixingDelayActive` | boolean | `true` pendant la pause mélange hydraulique ORP (20 min après injection). |
+| `phDoseBlockedReason` | string \| null | Dernière cause de refus de `canDose(0)` (ex `"filtre capteur non prêt (warmup / EZO injoignable)"`, `"pause mélange en cours"`). `null` si dosage autorisé. |
+| `orpDoseBlockedReason` | string \| null | Équivalent ORP. |
 
 > Le WebSocket pousse la configuration complète à la connexion initiale ; les mises à jour suivantes sont différentielles (seuls les champs modifiés sont inclus).
 
@@ -1178,3 +1212,68 @@ curl -X POST http://poolcontroller.local/debug/ph_slope_refresh
 ```
 
 L'UI page `/ph` (chip d'état sonde) utilise cet endpoint via le bouton « Rafraîchir » du modal détails. La nouvelle valeur arrive dans le payload WS dès que le handler EZO traite la commande (~1-2 s côté `loopTask`). Voir [feature-024](../specs/features/done/feature-024-pente-sonde-ph.md) et [`docs/features/page-ph.md`](features/page-ph.md#chip-détat-sonde-feature-024).
+
+### `POST /debug/sensor_filter_reset` — pas d'auth (cohérent avec autres `/debug/*`)
+
+Réinitialise **les deux** filtres pH et ORP (médiane + EMA). Les filtres repassent en **warmup** → le dosage automatique est bloqué jusqu'à ce que chaque filtre ait reçu `kSensorFilterWarmupSamples` (= 5) nouvelles mesures valides. Utile après un débranchement EZO, un test, ou une recalibration manuelle hors workflow.
+
+```bash
+curl -X POST http://poolcontroller.local/debug/sensor_filter_reset
+```
+
+**Réponse 200**
+
+```json
+{ "success": true, "reset": ["ph", "orp"] }
+```
+
+### `GET /debug/sensor_filter_state` — pas d'auth (cohérent avec autres `/debug/*`)
+
+Retourne l'état brut des deux filtres pour diagnostic. Lecture lock-free des getters `SensorManager` (valeurs scalaires).
+
+```bash
+curl http://poolcontroller.local/debug/sensor_filter_state
+```
+
+**Réponse 200**
+
+```json
+{
+  "ph":  { "raw": 7.241, "median": 7.236, "filtered": 7.234, "ready": true, "unstable": false, "rejected": 0 },
+  "orp": { "raw": 722, "median": 720, "filtered": 720, "ready": true, "unstable": false, "rejected": 0 }
+}
+```
+
+Les champs `raw` / `median` / `filtered` valent `null` si la mesure est indisponible. Voir [feature-025](../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) et [`docs/subsystems/sensors.md`](subsystems/sensors.md#reset-manuel--diagnostic).
+
+### `GET /debug/ph_trace` — pas d'auth (cohérent avec autres `/debug/*`)
+
+Retourne le ring buffer de diagnostic d'oscillation pH (~25 min d'historique, 1 échantillon par cycle capteur). Consommé par la card « Debug oscillation pH » du panel **Avancé** (voir [`docs/features/page-settings.md`](features/page-settings.md)).
+
+```bash
+curl http://poolcontroller.local/debug/ph_trace
+```
+
+**Réponse 200**
+
+```json
+{
+  "count": 2,
+  "interval_ms": 5000,
+  "now": 1234567,
+  "samples": [
+    { "t": 1229000, "ph": 7.241, "phFiltered": 7.234, "orp": 720, "tempC": 24.5 },
+    { "t": 1234000, "ph": 7.255, "phFiltered": 7.236, "orp": 721, "tempC": 24.5 }
+  ]
+}
+```
+
+- `t` : horodatage `millis()` de l'échantillon (à comparer à `now`).
+- `ph` : pH **brut** (`_lastPh`), arrondi 3 décimales, `null` si indisponible.
+- `phFiltered` : pH **lissé** (médiane + EMA, `_phFilter.filtered()`), arrondi 3 décimales, `null` si le filtre n'est pas amorcé. Permet de comparer visuellement l'effet du filtre feature-025 face au brut.
+- `orp` : ORP brut (arrondi 0,1), `null` si indisponible.
+- `tempC` : température envoyée à la compensation (arrondi 0,1), `null` si indisponible.
+
+### `POST /debug/ph_trace_clear` — pas d'auth (cohérent avec autres `/debug/*`)
+
+Vide le ring buffer de diagnostic d'oscillation pH. Réponse : `{ "success": true }`.

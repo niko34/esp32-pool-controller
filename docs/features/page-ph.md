@@ -11,7 +11,7 @@ Point d'entrée unique pour **tout** ce qui concerne le pH : mesure, mode de ré
 
 En mode nominal, quatre zones :
 
-1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH courante (3 décimales) + **chip d'état sonde pH** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression).
+1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH **filtrée** courante en grand (3 décimales) + **ligne brute discrète** « brut · médiane · maj » + **chip d'état filtre** cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) + **chip d'état sonde pH** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression).
 2. **Carte Régulation pH** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs conditionnels :
    - **Automatique** : pH cible + bouton Sauvegarder. Affichage du **statut de calibration EZO** (cf. [Statut de calibration](#statut-de-calibration-ezo)) :
      - **Callout vert** « Calibré 2 points ✓ » si `phCalPoints >= 2`.
@@ -23,6 +23,38 @@ En mode nominal, quatre zones :
 4. **Carte Calibration** — **remplace** Régulation + Historique pendant une session de calibration. Architecture en 2 sous-blocs **parallèles** `.cal-point-block` (workflow non séquentiel — voir [Workflow calibration](#workflow-calibration)).
 
 Le bloc Statistiques reste visible **en permanence**, y compris pendant la calibration.
+
+## Affichage mesure filtrée / brute (feature-025)
+
+La valeur affichée **en grand** dans le bloc Statistiques est la mesure **filtrée** (`phFiltered`, médiane + EMA). C'est aussi la valeur utilisée par la régulation. La fonction `_renderFilterSub('ph', json)` ([`data/app.js`](../../data/app.js)) rend une **ligne discrète** `#ph-filter-sub` :
+
+```
+brut 7.24 · médiane 7.24 · maj à l'instant
+```
+
+- **brut** = `phRaw` (dernière mesure Atlas non filtrée — diagnostic EMI) ;
+- **médiane** = `phMedian` (médiane glissante fenêtre 7) ;
+- **maj** = âge de la dernière mesure brute valide (`à l'instant` / `il y a N s/min`).
+
+`--` est affiché si la valeur est `null` (filtre non amorcé / EZO injoignable).
+
+## Chip d'état filtre (feature-025)
+
+À côté de la valeur filtrée, un **chip cliquable** `#ph-filter-chip` reflète l'état du filtre. Classification **côté UI** par `_classifyFilterState(json, 'ph', st)` ([`data/app.js`](../../data/app.js)), évaluée dans cet ordre :
+
+| Condition (ordre de priorité) | Label chip | Classe / couleur |
+|---|---|---|
+| `phRaw` invalide (`null`) | « EZO indisponible » | `unknown` (gris) |
+| `phFilterUnstable === true` | « Capteur instable » | `bad` (rouge) |
+| `phFilterReady === false` | « Stabilisation… » | `warn` (ambré) |
+| `phRejectedCount` a augmenté récemment (`< FILTER_REJECT_WINDOW_MS`) | « Pics rejetés » | `warn2` (ambré) |
+| sinon | « Mesure stable » | `good` (vert) |
+
+> Le compteur de rejets étant **cumulatif** côté firmware, l'UI ne signale « Pics rejetés » que si `phRejectedCount` a augmenté dans la fenêtre récente (`st.lastRejectAt`), pas tant que le total reste non nul.
+
+### Modal détail filtre
+
+Clic sur le chip → `<dialog id="ph-filter-modal">` (`État filtre pH`). `_renderFilterModalValues('ph', json)` remplit : valeur brute, médiane, filtrée, **Pics rejetés** (`phRejectedCount`), âge dernière mesure, **Filtre prêt** (Oui/Non), et une ligne conditionnelle **raison de blocage dosage** (`phDoseBlockedReason`, traduite en clair par `_doseBlockReasonFr()` ; affiche aussi « Mélange en cours » si `phMixingDelayActive`).
 
 ## Chip d'état sonde (feature-024)
 
@@ -97,6 +129,8 @@ La carte calibration contient 2 sous-blocs **indépendants** dans `#ph-card-cali
 
 Chaque bloc affiche : un badge état (Calibré / Non calibré), 2 micro-étapes (« Plonger la sonde dans la solution » + « Attendre 1 min »), un readout live (`<div class="readout">` rafraîchi 5 s — pH affiché 3 décimales) et un bouton **« Calibrer le point X.X »**.
 
+> **Readout de calibration = valeur brute.** `updateCalibrationReadouts()` alimente `#cal-ph-mid-readout` et `#cal-ph-low-readout` avec la mesure **brute** (`json.phRaw`, repli sur `json.ph` si absent), **pas** la valeur lissée affichée ailleurs dans l'UI. Raison : en changeant de solution étalon (ex. pH 7 → pH 4, saut ≈ 3.0 > `maxStep` du filtre), le filtre rejette les mesures pendant ~2 min avant re-sync ; le lissé resterait figé sur l'ancienne valeur, rendant la calibration impraticable. Le brut suit le potentiel réel de l'électrode, indispensable pour juger la stabilité avant de calibrer. Le reste de l'UI (dashboard, valeur principale pH, MQTT) continue d'afficher le lissé.
+
 L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les utilisateurs commencent par le milieu (référence neutre) puis enchaînent avec le bas.
 
 ### Workflow temporel
@@ -121,7 +155,8 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 
 ## Données consommées (WebSocket `/ws`)
 
-**Mesure** : `ph` (3 décimales depuis 2.0.0)
+**Mesure** : `ph` (= valeur **filtrée**, 3 décimales) ; `phRaw`, `phMedian`, `phFiltered` (feature-025)
+**État filtre** : `phFilterReady`, `phFilterUnstable`, `phRejectedCount`, `phMixingDelayActive`, `phDoseBlockedReason` (feature-025) — voir [Chip d'état filtre](#chip-détat-filtre-feature-025)
 **Calibration** : `phCalPoints` (`-1..3`) — voir [Statut de calibration](#statut-de-calibration-ezo)
 **Pente sonde** : `phSlopeAcid`, `phSlopeBase`, `phSlopeZero`, `phSlopeAgeMs` (feature-024) — voir [Chip d'état sonde](#chip-détat-sonde-feature-024)
 **Dosage** : `ph_dosing`, `ph_used_ms`, `ph_daily_ml`, `ph_limit_reached`
@@ -208,13 +243,15 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) pour
 - [`src/atlas_ezo.h`](../../src/atlas_ezo.h), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp) — mini-classe pilote EZO
 - [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) — endpoints `/calibrate_ph`, `/calibrate_clear`
 - [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — endpoints `/ph/inject/*`
-- [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — diffusion `ph` (3 décimales) + `phCalPoints`
+- [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — diffusion `ph` (= filtré) + `phRaw/Median/Filtered/FilterReady/...` (feature-025)
+- [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — filtre médiane + EMA (feature-025)
 
 ## Documentation liée
 
-- [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) — règles de régulation, garde-fous `canDose`, anti-rafale.
-- [docs/subsystems/sensors.md](../subsystems/sensors.md) — lecture EZO pH, queue, cache cal_points.
+- [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) — règles de régulation, garde-fous `canDose`, anti-rafale, pause mélange.
+- [docs/subsystems/sensors.md](../subsystems/sensors.md) — lecture EZO pH, queue, cache cal_points, chaîne de filtrage.
 - [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md) — mode `scheduled` aveugle au capteur.
 - [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md) — enum à 3 valeurs et booléen miroir `ph_enabled`.
 - [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md) — persistance NVS du cumul journalier.
 - [ADR-0014](../adr/0014-migration-atlas-ezo.md) — migration Atlas EZO (supersedes ADR-0001).
+- [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) — régulation P temporisée sur mesure filtrée (feature-025).

@@ -23,22 +23,48 @@ static void handleGetData(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
   // Buffer statique pour éviter la fragmentation du heap
   // Taille estimée : ~16 champs × 30 bytes + overhead (feature-020 ajoute 3 champs)
-  StaticJson<832> doc;
+  // feature-025 : +14 champs filtre pH/ORP → bump du buffer.
+  StaticJson<1152> doc;
 
-  // ORP (feature-021 : Atlas EZO, pas de "raw" séparé)
-  if (!isnan(sensors.getOrp())) {
-    doc["orp"] = sensors.getOrp();
+  // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
+  // (médiane + EMA), alignée sur le WS. Le brut reste exposé séparément (phRaw/orpRaw).
+  // Fallback sur le brut si le filtre n'est pas encore amorcé (warmup).
+  float orpRaw = sensors.getOrpRaw();
+  float phRaw  = sensors.getPhRaw();
+  float orpMed = sensors.getOrpMedian();
+  float phMed  = sensors.getPhMedian();
+  float orpFil = sensors.getOrpFiltered();
+  float phFil  = sensors.getPhFiltered();
+  float orpVal = !isnan(orpFil) ? orpFil : orpRaw;
+  float phVal  = !isnan(phFil)  ? phFil  : phRaw;
+
+  // ORP (valeur courante = filtrée)
+  if (!isnan(orpVal)) {
+    doc["orp"] = round(orpVal);
   } else {
     doc["orp"] = nullptr;
   }
 
   // pH (feature-021 : 3 décimales fiables EZO — alignement WS / MQTT / REST).
-  float phVal = sensors.getPh();
   if (!isnan(phVal)) {
     doc["ph"] = round(phVal * 1000.0f) / 1000.0f;
   } else {
     doc["ph"] = nullptr;
   }
+
+  // feature-025 : chaîne de filtrage exposée pour la chip d'état + ligne brute UI.
+  if (!isnan(phRaw)) doc["phRaw"] = round(phRaw * 1000.0f) / 1000.0f; else doc["phRaw"] = nullptr;
+  if (!isnan(phMed)) doc["phMedian"] = round(phMed * 1000.0f) / 1000.0f; else doc["phMedian"] = nullptr;
+  if (!isnan(phFil)) doc["phFiltered"] = round(phFil * 1000.0f) / 1000.0f; else doc["phFiltered"] = nullptr;
+  doc["phFilterReady"]    = sensors.isPhFilterReady();
+  doc["phFilterUnstable"] = sensors.isPhFilterUnstable();
+  doc["phRejectedCount"]  = sensors.getPhRejectedCount();
+  if (!isnan(orpRaw)) doc["orpRaw"] = round(orpRaw); else doc["orpRaw"] = nullptr;
+  if (!isnan(orpMed)) doc["orpMedian"] = round(orpMed); else doc["orpMedian"] = nullptr;
+  if (!isnan(orpFil)) doc["orpFiltered"] = round(orpFil); else doc["orpFiltered"] = nullptr;
+  doc["orpFilterReady"]    = sensors.isOrpFilterReady();
+  doc["orpFilterUnstable"] = sensors.isOrpFilterUnstable();
+  doc["orpRejectedCount"]  = sensors.getOrpRejectedCount();
 
   // Température (offset utilisateur appliqué dans getTemperature())
   if (!isnan(sensors.getTemperature())) {

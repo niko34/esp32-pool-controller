@@ -583,14 +583,26 @@
             <div class="ph-stats__col">
               <div class="readout__label" id="ph_current_label" style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px">Valeur pH actuelle</div>
               <div class="readout__value" id="ph_current_value" style="font-size:2rem;font-weight:700;line-height:1">--</div>
+              <!-- feature-025 : ligne brute discrète (brut · médiane · maj) -->
+              <div class="filter-sub" id="ph-filter-sub">brut -- · médiane -- · maj --</div>
               <div class="muted small" style="margin-top:4px">MAJ auto toutes les 5 secondes</div>
-              <button type="button" id="ph-probe-chip"
-                      class="chip chip--probe chip--probe-unknown"
-                      aria-haspopup="dialog" aria-controls="ph-probe-modal"
-                      aria-label="État de la sonde pH, ouvrir les détails">
-                <span class="chip__dot" aria-hidden="true"></span>
-                <span class="chip__label" id="ph-probe-chip-label">Pente non disponible</span>
-              </button>
+              <div class="chip-row">
+                <button type="button" id="ph-probe-chip"
+                        class="chip chip--probe chip--probe-unknown"
+                        aria-haspopup="dialog" aria-controls="ph-probe-modal"
+                        aria-label="État de la sonde pH, ouvrir les détails">
+                  <span class="chip__dot" aria-hidden="true"></span>
+                  <span class="chip__label" id="ph-probe-chip-label">Pente non disponible</span>
+                </button>
+                <!-- feature-025 : chip jumeau état filtre pH -->
+                <button type="button" id="ph-filter-chip"
+                        class="chip chip--probe chip--probe-unknown"
+                        aria-haspopup="dialog" aria-controls="ph-filter-modal"
+                        aria-label="État du filtre pH, ouvrir les détails">
+                  <span class="chip__dot" aria-hidden="true"></span>
+                  <span class="chip__label" id="ph-filter-chip-label">Filtre --</span>
+                </button>
+              </div>
             </div>
             <div class="ph-stats__col">
               <div class="daily-dose" id="daily-dose-ph" aria-label="Dosage pH du jour">
@@ -792,6 +804,42 @@
             </div>
           </dialog>
 
+          <!-- Modal détails filtre pH (feature-025) -->
+          <dialog id="ph-filter-modal" class="probe-modal" aria-labelledby="ph-filter-modal-title">
+            <h3 id="ph-filter-modal-title" class="probe-modal__title">État filtre pH</h3>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Valeur brute</span>
+              <span class="probe-modal__value" id="ph-fm-raw">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Médiane</span>
+              <span class="probe-modal__value" id="ph-fm-median">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Valeur filtrée</span>
+              <span class="probe-modal__value" id="ph-fm-filtered">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Pics rejetés</span>
+              <span class="probe-modal__value" id="ph-fm-rejected">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Dernière mesure</span>
+              <span class="probe-modal__value" id="ph-fm-age">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Filtre prêt</span>
+              <span class="probe-modal__value" id="ph-fm-ready">--</span>
+            </div>
+            <div class="probe-modal__row" id="ph-fm-blocked-row" style="display:none">
+              <span class="probe-modal__label">Dosage bloqué</span>
+              <span class="probe-modal__value" id="ph-fm-blocked">--</span>
+            </div>
+            <div class="probe-modal__actions">
+              <button class="btn" type="button" id="ph-filter-close" autofocus>Fermer</button>
+            </div>
+          </dialog>
+
         </section>
 
         <!-- ORP View -->
@@ -806,7 +854,19 @@
             <div class="orp-stats__col">
               <div class="readout__label" id="orp_current_label" style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px">Valeur ORP actuelle</div>
               <div class="readout__value" id="orp_current_value" style="font-size:2rem;font-weight:700;line-height:1">--</div>
+              <!-- feature-025 : ligne brute discrète (brut · médiane · maj) -->
+              <div class="filter-sub" id="orp-filter-sub">brut -- · médiane -- · maj --</div>
               <div class="muted small" style="margin-top:4px">MAJ auto toutes les 5 secondes</div>
+              <div class="chip-row">
+                <!-- feature-025 : chip état filtre ORP -->
+                <button type="button" id="orp-filter-chip"
+                        class="chip chip--probe chip--probe-unknown"
+                        aria-haspopup="dialog" aria-controls="orp-filter-modal"
+                        aria-label="État du filtre ORP, ouvrir les détails">
+                  <span class="chip__dot" aria-hidden="true"></span>
+                  <span class="chip__label" id="orp-filter-chip-label">Filtre --</span>
+                </button>
+              </div>
             </div>
             <div class="orp-stats__col">
               <div class="daily-dose" id="daily-dose-orp" aria-label="Dosage ORP du jour">
@@ -968,6 +1028,42 @@
               </div>
             </div>
           </div>
+
+          <!-- Modal détails filtre ORP (feature-025) -->
+          <dialog id="orp-filter-modal" class="probe-modal" aria-labelledby="orp-filter-modal-title">
+            <h3 id="orp-filter-modal-title" class="probe-modal__title">État filtre ORP</h3>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Valeur brute</span>
+              <span class="probe-modal__value" id="orp-fm-raw">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Médiane</span>
+              <span class="probe-modal__value" id="orp-fm-median">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Valeur filtrée</span>
+              <span class="probe-modal__value" id="orp-fm-filtered">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Pics rejetés</span>
+              <span class="probe-modal__value" id="orp-fm-rejected">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Dernière mesure</span>
+              <span class="probe-modal__value" id="orp-fm-age">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Filtre prêt</span>
+              <span class="probe-modal__value" id="orp-fm-ready">--</span>
+            </div>
+            <div class="probe-modal__row" id="orp-fm-blocked-row" style="display:none">
+              <span class="probe-modal__label">Dosage bloqué</span>
+              <span class="probe-modal__value" id="orp-fm-blocked">--</span>
+            </div>
+            <div class="probe-modal__actions">
+              <button class="btn" type="button" id="orp-filter-close" autofocus>Fermer</button>
+            </div>
+          </dialog>
 
         </section>
 
@@ -1705,7 +1801,8 @@
                     <canvas id="debug_ph_chart" height="220"></canvas>
                   </div>
                   <div id="debug_ph_stats" class="kv kv--compact" style="margin-top:12px;display:none">
-                    <div class="kv__row"><span class="kv__k">pH min / max / Δ</span><span class="kv__v" id="debug_ph_stats_ph">—</span></div>
+                    <div class="kv__row"><span class="kv__k">pH brut min / max / Δ</span><span class="kv__v" id="debug_ph_stats_ph">—</span></div>
+                    <div class="kv__row"><span class="kv__k">pH lissé min / max / Δ</span><span class="kv__v" id="debug_ph_stats_ph_filtered">—</span></div>
                     <div class="kv__row"><span class="kv__k">ORP min / max / Δ</span><span class="kv__v" id="debug_ph_stats_orp">—</span></div>
                     <div class="kv__row"><span class="kv__k">T° envoyée min / max</span><span class="kv__v" id="debug_ph_stats_t">—</span></div>
                   </div>

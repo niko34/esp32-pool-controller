@@ -1,5 +1,51 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.2.1] - 2026-06-20
+
+### Firmware
+
+- **fix(sensors)** : correction du gel de la valeur filtrée après immersion en solution de calibration (re-synchronisation + anti-boucle). Un changement réel et durable au-delà de `maxStep` (ex. sonde plongée en solution puis retour en bassin) figeait `filtered` à vie → dosage bloqué en permanence. Le filtre se ré-amorce désormais sur la médiane des bruts rejetés après `kSensorFilterResyncRejects` (= 24, ≈ 120 s) rejets consécutifs, puis repart en warmup. Anti-boucle EMI : au-delà de `kSensorFilterMaxResyncPerWindow` (= 3) re-sync sur `kSensorFilterResyncWindowMs` (= 10 min), le capteur est déclaré instable de façon **latchée** jusqu'à un `reset()` explicite (`POST /debug/sensor_filter_reset` ou calibration réussie). Gardes `canDose()` inchangées.
+
+### Fonctionnalités
+
+- **fix(calibration)** : le readout live de calibration pH/ORP affiche la valeur brute (la valeur lissée figeait l'affichage en changeant de solution étalon).
+
+### Documentation
+
+- `docs/subsystems/sensors.md` : sections re-synchronisation (latch-up résolu) et anti-boucle latché, 3 nouvelles constantes, getters `resyncCount()` / `unstableLatched()`, levée du latch par `reset()`.
+
+---
+
+## [2.2.0] - 2026-06-16
+
+### Fonctionnalités
+
+- **Lissage des mesures pH/ORP** (feature-025) : les pages pH et ORP affichent désormais la valeur **filtrée** (médiane glissante + moyenne exponentielle) en grand, avec une ligne discrète « brut · médiane · maj » pour le diagnostic. Un **chip d'état filtre** à 5 états (`Stabilisation…` / `Mesure stable` / `Pics rejetés` / `Capteur instable` / `EZO indisponible`) résume la santé de la chaîne de mesure ; un clic ouvre un modal détail (brut/médiane/filtré, rejets, âge, raison de blocage du dosage).
+- **Debug oscillation pH** : la courbe de diagnostic du panel Avancé trace désormais **deux séries pH** — « pH brut » (bleu) et « pH lissé » (orange) — sur le même axe, avec une ligne de stats « pH lissé min / max / Δ » en complément du brut. Permet de visualiser l'effet du filtre feature-025. Le payload de `GET /debug/ph_trace` expose le nouveau champ `phFiltered` par échantillon.
+
+### Firmware
+
+- **Filtrage capteurs** (feature-025) : nouvelle chaîne `mesure brute Atlas EZO → rejet aberrants → médiane (fenêtre 7) → EMA (alpha pH 0.10 / ORP 0.08) → valeur filtrée`. Classe dédiée `SensorFilter` déterministe (buffer fixe, testable hors matériel). Valeurs brutes conservées pour diagnostic EMI. Filtre réinitialisé (warmup) après calibration pH/ORP réussie. Paramètres centralisés dans `constants.h` (`kSensorFilter*`, `kPhEmaAlpha`, `kOrpEmaAlpha`, plages plausibles, seuils de rejet).
+- **Régulation P temporisée** (feature-025, [ADR-0016](docs/adr/0016-regulation-p-temporisee-vs-pid.md)) : le PID consomme désormais la mesure **filtrée et prête** (jamais la brute). Stratégie par défaut proportionnelle pure (`Kp` pH=8 / ORP=0.3, `Ki=0`, `Kd=0` impératif). Anti-windup strict, zone morte = seuil de démarrage, nouvelles gardes `canDose()` fail-closed (filtre non prêt, capteur instable, pause mélange).
+- **Pause mélange hydraulique** (feature-025) : après chaque injection, blocage de toute nouvelle décision de dosage le temps de l'homogénéisation du bassin — `kPhMixingDelayMs = 15 min`, `kOrpMixingDelayMs = 20 min` (gérée par timestamps, pas de `delay()`).
+- **MQTT** : nouveaux topics retain `{base}/ph|orp_raw|median|filtered|filter_ready|filter_unstable|rejected_count` + `{base}/ph|orp_mixing_delay_active`. Les topics `{base}/ph` et `{base}/orp` publient désormais la valeur filtrée. Auto-discovery HA : sensors « pH/ORP Brut » et « pH/ORP Filtré » + binary_sensors « Filtre pH/ORP Prêt ».
+
+### API
+
+- **WebSocket / `GET /data`** : champs `phRaw/phMedian/phFiltered/phFilterReady/phFilterUnstable/phRejectedCount/phMixingDelayActive/phDoseBlockedReason` (+ équivalents `orp*`). `ph` / `orp` correspondent désormais à la valeur **filtrée** (fallback brut tant que le filtre n'est pas amorcé).
+- **`POST /debug/sensor_filter_reset`** : réinitialise les deux filtres (warmup). **`GET /debug/sensor_filter_state`** : état JSON brut des filtres.
+
+### Documentation
+
+- `docs/subsystems/sensors.md` : chaîne de filtrage, classe `SensorFilter`, paramètres, reset après calibration, états warmup/unstable.
+- `docs/subsystems/pump-controller.md` : entrée PID filtrée, régulation P temporisée, anti-windup, zone morte, pause mélange, nouvelles gardes `canDose()`.
+- `docs/MQTT.md` / `docs/API.md` : nouveaux topics, champs WS et endpoints debug.
+- `docs/features/page-ph.md` / `docs/features/page-orp.md` : affichage filtré/brut, chip d'état filtre, modal détail.
+- `docs/features/page-settings.md` / `docs/API.md` : card « Debug oscillation pH » à 2 courbes (brut + lissé), champ `phFiltered` du payload `GET /debug/ph_trace`.
+- **ADR-0016** créé : régulation P temporisée par défaut (Kp seul, Ki=0, Kd=0) sur mesure filtrée vs PID complet.
+
+---
+
 ## [2.1.2] - 2026-05-10
 
 ### Sécurité chimique

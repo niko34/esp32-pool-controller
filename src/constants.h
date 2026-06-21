@@ -149,6 +149,44 @@ constexpr int      kEzoBusFailMaxConsecutive  = 2;        // 2 échecs consécut
 constexpr unsigned long kPhSlopeQueryIntervalMs = 86400000UL; // 24h - re-query Slope,? auto (feature-024 pente sonde pH)
 
 // ============================================================================
+// SENSOR FILTER CONSTANTS - Lissage mesures pH/ORP (feature-025)
+// ============================================================================
+// Chaîne de filtrage : rejet aberrant → médiane courte → EMA lente.
+// Centralisé ici pour ajustement terrain. Buffer FIXE (pas d'alloc dynamique).
+// Validation pool-chemistry feature-025 (conditions non négociables).
+
+constexpr uint8_t kSensorFilterMedianWindow      = 7;        // Taille buffer médian (impair, FIXE)
+constexpr float   kPhEmaAlpha                    = 0.10f;    // Coefficient EMA pH (lissage lent)
+constexpr float   kOrpEmaAlpha                   = 0.08f;    // Coefficient EMA ORP (lissage lent)
+constexpr float   kPhFilterMaxStep               = 0.15f;    // Saut max pH/lecture (rejet au-delà)
+constexpr float   kOrpFilterMaxStep              = 50.0f;    // Saut max ORP/lecture (mV, rejet au-delà)
+constexpr float   kPhFilterMin                   = 0.0f;     // Plage plausible pH min
+constexpr float   kPhFilterMax                   = 14.0f;    // Plage plausible pH max
+constexpr float   kOrpFilterMin                  = -1000.0f; // Plage plausible ORP min (mV)
+constexpr float   kOrpFilterMax                  = 1500.0f;  // Plage plausible ORP max (mV)
+constexpr uint8_t kSensorFilterWarmupSamples     = 5;        // Mesures valides avant filtre prêt
+constexpr uint8_t kSensorFilterMaxConsecutiveRejects = 10;   // Rejets consécutifs → capteur instable
+// Re-synchronisation : un changement réel et DURABLE (> maxStep maintenu) ne doit pas
+// figer le filtre indéfiniment. Au-delà de ce seuil de rejets consécutifs, on conclut
+// à un vrai changement et on ré-amorce le filtre sur la médiane des derniers bruts rejetés.
+// 24 cycles × 5 s/cycle = 120 s. STRICTEMENT > kSensorFilterMaxConsecutiveRejects (seuil "instable").
+constexpr uint8_t  kSensorFilterResyncRejects     = 24;      // Rejets consécutifs → re-sync (≈120 s)
+// Anti-boucle : un capteur qui re-sync en boucle = défaut EMI, pas un vrai changement.
+// Au-delà de ce nombre de re-sync sur la fenêtre glissante → latch "instable" jusqu'à reset().
+constexpr uint8_t  kSensorFilterMaxResyncPerWindow = 3;      // Re-sync max avant latch instable
+constexpr uint32_t kSensorFilterResyncWindowMs    = 600000;  // 10 min — fenêtre glissante anti-boucle
+// Âge max de la dernière mesure valide pour que le filtre soit considéré "prêt".
+// Au-delà, ready() repasse false (mesure trop ancienne → fail-closed dosage).
+// 4 × kPhOrpSensorIntervalMs (5 s) = 20 s, cohérent avec kSensorStaleTimeoutMs.
+constexpr uint32_t kSensorFilterMaxAgeMs         = 20000;    // 20 s
+
+// Pause mélange hydraulique après injection (pool-chemistry feature-025).
+// Distincte du timer post-calibration (_stabilizationEndMs). Gates indépendantes (OR).
+// Empêche un surdosage avant homogénéisation du bassin. Gérée par timestamps (pas de delay()).
+constexpr unsigned long kPhMixingDelayMs         = 900000UL;  // 15 min — pause mélange pH
+constexpr unsigned long kOrpMixingDelayMs        = 1200000UL; // 20 min — pause mélange ORP
+
+// ============================================================================
 // FILTRATION CONSTANTS - Paramètres filtration
 // ============================================================================
 

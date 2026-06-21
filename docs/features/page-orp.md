@@ -11,7 +11,7 @@ Point d'entrée unique pour **tout** ce qui concerne l'ORP (potentiel redox, pil
 
 En mode nominal, quatre zones :
 
-1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP courante (mV) + dosage du jour (barre de progression, borne `max_orp_ml_per_day`).
+1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP **filtrée** courante en grand (mV) + **ligne brute discrète** « brut · médiane · maj » + **chip d'état filtre** cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) + dosage du jour (barre de progression, borne `max_orp_ml_per_day`).
 2. **Carte Régulation ORP** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs :
    - **Automatique** : ORP cible (mV) + bouton Sauvegarder. Affichage du **statut de calibration EZO** (cf. [Statut de calibration](#statut-de-calibration-ezo)) :
      - **Callout vert** « Calibré ✓ » si `orpCalPoints >= 1`.
@@ -23,6 +23,30 @@ En mode nominal, quatre zones :
 4. **Carte Calibration** — **remplace** Régulation + Historique pendant une session. **1 sous-bloc unique** `.cal-point-block` (architecture symétrique de la page pH, sans le sélecteur 1pt/2pts du firmware v1).
 
 Le bloc Statistiques reste visible en permanence.
+
+## Affichage mesure filtrée / brute (feature-025)
+
+La valeur affichée **en grand** est l'ORP **filtré** (`orpFiltered`, médiane + EMA), également utilisé par la régulation. La ligne discrète `#orp-filter-sub` (`_renderFilterSub('orp', json)`) affiche :
+
+```
+brut 720 mV · médiane 720 mV · maj à l'instant
+```
+
+- **brut** = `orpRaw` ; **médiane** = `orpMedian` ; **maj** = âge de la dernière mesure brute valide. `--` si `null`.
+
+## Chip d'état filtre (feature-025)
+
+Chip cliquable `#orp-filter-chip` reflétant l'état du filtre ORP. Classification UI par `_classifyFilterState(json, 'orp', st)` (même logique que la page pH) :
+
+| Condition (ordre) | Label | Classe / couleur |
+|---|---|---|
+| `orpRaw` invalide | « EZO indisponible » | `unknown` (gris) |
+| `orpFilterUnstable === true` | « Capteur instable » | `bad` (rouge) |
+| `orpFilterReady === false` | « Stabilisation… » | `warn` (ambré) |
+| `orpRejectedCount` augmenté récemment | « Pics rejetés » | `warn2` (ambré) |
+| sinon | « Mesure stable » | `good` (vert) |
+
+Clic → `<dialog id="orp-filter-modal">` (`État filtre ORP`) : brut, médiane, filtré, **Pics rejetés**, âge, **Filtre prêt**, et raison de blocage dosage conditionnelle (`orpDoseBlockedReason`, ou « Mélange en cours » si `orpMixingDelayActive`). La pause mélange ORP est plus longue (20 min vs 15 min pour le pH).
 
 ## Statut de calibration EZO
 
@@ -42,7 +66,7 @@ Champ source : `orpCalPoints` (WebSocket / `GET /data`). L'EZO ORP n'accepte qu'
 
 - **Champ d'entrée** `orp-cal-reference` : valeur de référence en mV (range `0..1000`, défaut `470`). Standards usuels : 225 mV (kit Hanna), 470 mV (kit Atlas), 650 mV (rare).
 - **Micro-étapes** : « Plonger la sonde dans la solution standard » + « Attendre 1 min ».
-- **Readout live** : `<div class="readout">` affichant la valeur ORP brute lue toutes les 5 s.
+- **Readout live** : `<div class="readout">` (`#cal-orp-readout`) affichant la valeur ORP **brute** lue toutes les 5 s. `updateCalibrationReadouts()` utilise `json.orpRaw` (repli sur `json.orp` si absent), **pas** la valeur lissée. Raison : en changeant de solution étalon (saut > `maxStep` du filtre), le lissé reste figé ~2 min avant re-sync ; le brut suit le potentiel réel de l'électrode, indispensable pour juger la stabilité avant de calibrer. Le reste de l'UI (valeur principale ORP, MQTT) continue d'afficher le lissé.
 - **Bouton « Calibrer »**.
 
 ### Workflow temporel
@@ -66,7 +90,8 @@ Champ source : `orpCalPoints` (WebSocket / `GET /data`). L'EZO ORP n'accepte qu'
 
 ## Données consommées (WebSocket `/ws`)
 
-**Mesure** : `orp` (entier mV)
+**Mesure** : `orp` (= valeur **filtrée**, entier mV) ; `orpRaw`, `orpMedian`, `orpFiltered` (feature-025)
+**État filtre** : `orpFilterReady`, `orpFilterUnstable`, `orpRejectedCount`, `orpMixingDelayActive`, `orpDoseBlockedReason` (feature-025) — voir [Chip d'état filtre](#chip-détat-filtre-feature-025)
 **Calibration** : `orpCalPoints` (`-1..1`) — voir [Statut de calibration](#statut-de-calibration-ezo)
 **Dosage** : `orp_dosing`, `orp_used_ms`, `orp_daily_ml`, `orp_limit_reached`
 **Mode** : `orp_regulation_mode`, `orp_daily_target_ml`, `orp_enabled` (miroir — voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
@@ -130,7 +155,10 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md), not
 
 | Entité HA | Topic | Commande |
 |-----------|-------|----------|
-| `sensor.*_orp` | `{base}/orp` | — |
+| `sensor.*_orp` | `{base}/orp` (= filtré) | — |
+| `sensor.*_orp_raw` | `{base}/orp_raw` (feature-025) | — |
+| `sensor.*_orp_filtered` | `{base}/orp_filtered` (feature-025) | — |
+| `binary_sensor.*_orp_filter_ready` | `{base}/orp_filter_ready` (feature-025) | — |
 | `sensor.*_orp_cal_points` | `{base}/orp_cal_points` (`-1..1`) | — |
 | `number.*_orp_target` | `{base}/orp_target` | `{base}/orp_target/set` |
 | `binary_sensor.*_orp_dosing` | `{base}/orp_dosing` | — |
@@ -147,13 +175,15 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md), not
 - [`src/atlas_ezo.h`](../../src/atlas_ezo.h), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp)
 - [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) — endpoints `/calibrate_orp`, `/calibrate_clear`
 - [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) — validation `orp_regulation_mode` et `orp_daily_target_ml`
-- [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — diffusion champs ORP + `orpCalPoints`
-- [`src/mqtt_manager.cpp`](../../src/mqtt_manager.cpp) — publication `orp_regulation_mode`, `orp_daily_target_ml`, `orp_cal_points`, `orp_cal_valid`
+- [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — diffusion `orp` (= filtré) + `orpRaw/Median/Filtered/FilterReady/...` (feature-025)
+- [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — filtre médiane + EMA (feature-025)
+- [`src/mqtt_manager.cpp`](../../src/mqtt_manager.cpp) — publication `orp_regulation_mode`, `orp_daily_target_ml`, `orp_cal_points`, `orp_cal_valid`, topics filtre (feature-025)
 
 ## Documentation liée
 
-- [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) — règles de régulation, garde-fous, anti-rafale.
-- [docs/subsystems/sensors.md](../subsystems/sensors.md) — lecture EZO ORP, queue, cache cal_points.
+- [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) — règles de régulation, garde-fous, anti-rafale, pause mélange.
+- [docs/subsystems/sensors.md](../subsystems/sensors.md) — lecture EZO ORP, queue, cache cal_points, chaîne de filtrage.
+- [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) — régulation P temporisée sur mesure filtrée (feature-025).
 - [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md) — mode `scheduled` aveugle au capteur.
 - [ADR-0003](../adr/0003-calibration-orp-cote-client.md) — calibration ORP côté client (historique PCB v1, supersédée).
 - [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md) — enum à 3 valeurs et booléen miroir `orp_enabled`.

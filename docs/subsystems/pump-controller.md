@@ -47,6 +47,16 @@ unsigned long getStabilizationRemainingS() const;
 // Gate fail-closed (feature-021)
 bool canDose(int pumpIndex);                    // 0 = pH, 1 = ORP
 
+// Pause mélange hydraulique post-injection (feature-025)
+void notifyPhDose(uint32_t nowMs);              // arme la pause au démarrage d'une injection pH
+void notifyOrpDose(uint32_t nowMs);
+bool isPhMixingDelayActive(uint32_t nowMs) const;
+bool isOrpMixingDelayActive(uint32_t nowMs) const;
+
+// Raison de blocage du dosage (feature-025) — "" si autorisé
+String getPhDoseBlockedReason() const;          // dernière cause de refus canDose(0)
+String getOrpDoseBlockedReason() const;         // dernière cause de refus canDose(1)
+
 void setManualPump(int pumpIndex, uint8_t duty);  // test manuel
 ```
 
@@ -54,7 +64,9 @@ Voir [`pump_controller.h`](../../src/pump_controller.h).
 
 ## Boucle d'exécution
 
-`PumpController.update()` est invoquée depuis [`main.cpp:181`](../../src/main.cpp:181) à chaque tour de `loop()`. Le `loop()` se termine par `delay(kLoopDelayMs)` (= 10 ms, [`constants.h:10`](../../src/constants.h:10)) → fréquence pratique ~100 Hz, mais les capteurs ont leur propre throttling interne (pH/ORP toutes les 5 s, DS18B20 toutes les 2 s) lu via `sensors.getPh()` / `getOrp()`.
+`PumpController.update()` est invoquée depuis [`main.cpp:181`](../../src/main.cpp:181) à chaque tour de `loop()`. Le `loop()` se termine par `delay(kLoopDelayMs)` (= 10 ms, [`constants.h:10`](../../src/constants.h:10)) → fréquence pratique ~100 Hz, mais les capteurs ont leur propre throttling interne (pH/ORP toutes les 5 s, DS18B20 toutes les 2 s).
+
+> **feature-025** : l'entrée de la régulation est la mesure **filtrée** `sensors.getPhFiltered()` / `getOrpFiltered()` (médiane + EMA), **jamais** la brute. `getPh()` / `getOrp()` (brut) restent utilisés pour les logs de diagnostic uniquement.
 
 Ordre par cycle :
 1. Consommation des resets atomiques (`_resetRequested`, `_phPauseResetRequested`) — évite les races inter-core (web handler vs loop).
@@ -77,23 +89,31 @@ Ordre par cycle :
    | `ph_plus` (base) | `error = phTarget − pH_mesuré` | dose si `error > 0` (pH trop bas) |
    | ORP | `error = orpTarget − ORP_mesuré` | dose chlore si `error > 0` (ORP trop bas) |
 
-3. **PID** : `computePID(pid, error, now)` avec anti-windup (`integralMax = 50.0`). `applyRegulationSpeed()` réécrit kp/ki/kd selon `mqttCfg.regulationSpeed` ∈ {`slow`, `normal`, `fast`} ([`pump_controller.cpp:17`](../../src/pump_controller.cpp:17)) :
+3. **Régulation P temporisée** (feature-025, [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md)) : `computePID(pid, error, now, deadband, freezeIntegral)`. La stratégie par défaut est **proportionnelle pure temporisée**, pas un PID complet :
 
-   | Vitesse | Kp | Ki | Kd |
-   |---------|----|----|----|
-   | `slow` | 3 | 0.05 | 12 |
-   | `normal` (défaut) | 6 | 0.1 | 8 |
-   | `fast` | 12 | 0.2 | 4 |
+   | Grandeur | Kp | Ki | Kd |
+   |----------|----|----|----|
+   | pH (défaut struct) | 8 | 0 | 0 |
+   | ORP (override constructeur) | 0.3 | 0 | 0 |
 
-   Normalisation d'erreur (bornée) : `kPhMaxError = 1.0`, `kOrpMaxError = 200 mV` ([`constants.h:89`](../../src/constants.h:89)). `dt` PID plafonné : deltas > 10 s ignorés.
+   - **`Kd = 0` IMPÉRATIF** — un terme dérivé amplifierait le bruit résiduel après filtrage (incompatible avec un système hydraulique lent).
+   - **`Ki = 0`** — l'intégrale est inerte (l'`integralMax = 50` reste codé pour une réactivation terrain future, mais sans effet tant que Ki = 0). Anti-windup strict de toute façon (cf. ci-dessous).
+   - La temporisation vient de la **pause mélange** (point 6) et de l'anti-cycling : on dose un pulse court, puis on attend l'homogénéisation avant de réévaluer.
+   - Normalisation d'erreur (bornée) : `kPhMaxError = 1.0`, `kOrpMaxError = 200 mV`. `dt` PID plafonné : deltas > 10 s ignorés.
+
+   **Anti-windup** : `computePID()` reçoit `freezeIntegral` — l'intégrale est **gelée** (aucune accumulation) si l'un des cas suivants est vrai : filtre non prêt, `canDose() == false`, pause mélange active, sortie PID saturée, erreur dans la zone morte, ou mesure rejetée / capteur instable.
+
+   **Zone morte** : le paramètre `deadband` passé à `computePID()` est le **seuil de démarrage existant** (`phStartThreshold` / `orpStartThreshold`) — **un seul** deadband fait foi, aucun second seuil dupliqué. Si `|error| < deadband` → sortie forcée à 0 **et** intégrale figée.
 4. **Anti-cycling** ([`config.h:152`](../../src/config.h:152) `PumpProtection`) — **en dur, non configurables via UI** :
    - `minInjectionTimeMs = 30000` — 30 s minimum par injection démarrée.
    - Hystérésis de seuils (démarrage / arrêt) :
 
-     | Grandeur | Deadband | Seuil démarrage | Seuil arrêt |
+     | Grandeur | Deadband | Seuil démarrage (= zone morte feature-025) | Seuil arrêt |
      |----------|----------|-----------------|-------------|
      | pH | `PH_DEADBAND = 0.01` | `phStartThreshold = 0.05` | `phStopThreshold = 0.01` |
-     | ORP | `ORP_DEADBAND = 2.0 mV` | `orpStartThreshold = 10 mV` | `orpStopThreshold = 2 mV` |
+     | ORP | `ORP_DEADBAND = 2.0 mV` | `orpStartThreshold = 15 mV` (relevé de 10, feature-025) | `orpStopThreshold = 2 mV` |
+
+   > feature-025 : `phStartThreshold` / `orpStartThreshold` servent désormais aussi de **zone morte PID** (passés comme `deadband` à `computePID`). ORP relevé de 10 → 15 mV pour élargir la zone morte (l'ORP étant plus bruité et dépendant du pH/T°/stabilisant).
 
    - `maxCyclesPerDay = 20` — démarrages comptés dans une fenêtre 24 h glissante.
 5. **Limites de sécurité** ([`config.h:141`](../../src/config.h:141) `SafetyLimits`) :
@@ -117,22 +137,25 @@ Trois branches dans `tickDailyRollover()` :
 
 `canDose(int pumpIndex)` (feature-021, validé pool-chemistry — voir [ADR-0014](../adr/0014-migration-atlas-ezo.md)) est appelée à chaque cycle `update()` pour la pompe pH (index 0) puis ORP (index 1), **avant** tout calcul PID ou démarrage d'injection. La fonction est **fail-closed strict** : tout résultat ambigu retourne `false` (refus de dosage).
 
-Les 10 conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontré court-circuite les suivants et logue la cause **edge-triggered** (1 entrée info par transition de cause, pas de spam).
+Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontré court-circuite les suivants et logue la cause **edge-triggered** (1 entrée info par transition de cause, pas de spam). La dernière cause de refus est **exposée au WS** via `getPhDoseBlockedReason()` / `getOrpDoseBlockedReason()` (chaîne vide si autorisé).
 
 | # | Condition | Refus si | Cause documentée |
 |---|-----------|----------|------------------|
 | 1 | **Index pompe valide** | `pumpIndex` ∉ {0, 1} | bug interne |
 | 2 | **Watchdog actif** | wdt non initialisé | sécurité hardware |
 | 3 | **Filtration en marche** | filtration arrêtée (sauf mode `continu`) | eau ne circule pas — risque bouchon doseuse |
-| 4 | **Lecture pH/ORP non NaN** | `getPh()` ou `getOrp()` = NaN | pool-chemistry **cond #1** : stale > 20 s OU **cond #5** : bus I²C dégradé OU jamais lu valide |
+| 4 | **Lecture FILTRÉE non NaN** | `getPhFiltered()` ou `getOrpFiltered()` = NaN | feature-025 : le PID consomme le filtré ; NaN = warmup non amorcé / stale |
+| 4b | **Filtre prêt** (feature-025) | `!isPhFilterReady()` / `!isOrpFilterReady()` | warmup en cours, mesure trop ancienne (> 20 s), ou EZO injoignable — **fail-closed** |
+| 4c | **Capteur stable** (feature-025) | `isPhFilterUnstable()` / `isOrpFilterUnstable()` | ≥ 10 rejets consécutifs (EMI persistant) → on bloque plutôt que de lisser |
 | 5 | **EZO calibré** | `cal_points < 2` (pH) ou `< 1` (ORP). `-1` (bus down) bloque. | pool-chemistry **cond #2** : régulation auto inhibée tant que calibration incomplète |
 | 6 | **Pas de stabilisation post-cal** | `isStabilizationTimerActive(pumpIndex)` = true | pool-chemistry **cond #3** : 5 min pH / 3 min ORP après calibration EZO |
+| 6b | **Pas de pause mélange** (feature-025) | `isPhMixingDelayActive()` / `isOrpMixingDelayActive()` | homogénéisation du bassin après injection (15 min pH / 20 min ORP) — gate **indépendante** de la stabilisation post-cal |
 | 7 | **Mode régulation = `automatic`** | mode `manual` ou `scheduled` | la branche `scheduled` a sa propre logique, ne passe pas par `canDose` |
 | 8 | **Limite journalière non atteinte** | `dailyXxxInjectedMl >= maxXxxMlPerDay` | sécurité chimique config |
 | 9 | **Limite horaire non atteinte** | `usedMs > xxxLimitMinutes × 60000` dans la fenêtre 1 h glissante | sécurité chimique config |
 | 10 | **Anti-rafale court terme** (Pass 3.5) | > 6 cycles/min OU > 20 cycles/15 min | anti-emballement PID — voir [Ring buffer anti-rafale](#ring-buffer-anti-rafale) |
 
-> **Conditions #1, #2, #3, #5, #6** issues du checklist `pool-chemistry` validé en cadrage feature-021. **Condition #10** ajoutée en correctif Pass 3.5 suite à code-review.
+> **Conditions #1, #2, #3, #5, #6** issues du checklist `pool-chemistry` validé en cadrage feature-021. **Condition #10** ajoutée en correctif Pass 3.5. **Conditions #4 (filtré), #4b, #4c, #6b** ajoutées en feature-025 — toutes **fail-closed** et **prioritaires** : elles s'ajoutent aux gardes existantes sans les contourner.
 
 ### Garde filtration sur l'injection manuelle (v2.1.2)
 
@@ -166,6 +189,21 @@ Au prochain `canDose(pumpIndex)`, `countRecentDosingCycles(pumpIndex, windowMs)`
 Sites d'appel à `recordDosingCycleStart()` (4 au total) : démarrage cycle pH automatique, démarrage cycle pH scheduled, démarrage cycle ORP automatique, démarrage cycle ORP scheduled.
 
 > **Indépendant** des limites volumétriques (`ph_limit_minutes`, `max_ph_ml_per_day`) et de l'anti-cycling existant (`maxCyclesPerDay = 20` mesuré sur 24 h glissante). Couvre le cas d'un PID qui démarrerait 30 cycles très courts en 5 minutes (lectures bruitées sur sonde mal calibrée par exemple).
+
+## Pause mélange hydraulique (feature-025)
+
+Après chaque injection, le bassin a besoin de temps pour s'homogénéiser avant qu'une nouvelle mesure soit représentative. La pause mélange empêche tout surdosage par réaction prématurée.
+
+- `_mixingEndMs[2]` ([0] = pH, [1] = ORP) : timestamps gérés **par `millis()`**, **aucun `delay()`** (contrainte loop).
+- `notifyPhDose(nowMs)` / `notifyOrpDose(nowMs)` : armés **au démarrage d'une injection** (transition PWM 0 → >0), positionnent `_mixingEndMs[i] = nowMs + kXxxMixingDelayMs`.
+- `isPhMixingDelayActive(nowMs)` / `isOrpMixingDelayActive(nowMs)` : `true` tant que `nowMs < _mixingEndMs[i]`. Consommés par `canDose()` (condition #6b) **et** publiés au WS / MQTT (`ph/orp_mixing_delay_active`).
+
+| Constante | Valeur | Grandeur |
+|-----------|--------|----------|
+| `kPhMixingDelayMs` | `900000` ms (15 min) | pause après injection pH |
+| `kOrpMixingDelayMs` | `1200000` ms (20 min) | pause après injection ORP (plus conservateur) |
+
+> Gate **indépendante** du timer de stabilisation post-calibration (`_stabilizationEndMs`). Les deux sont des `OR` dans `canDose()` : la pompe reste bloquée tant que l'une OU l'autre est active. Écrits/lus uniquement en `loopTask` → pas de mutex (cohérent avec `_stabilizationEndMs`). Pendant la pause, l'intégrale PID est gelée (`freezeIntegral`).
 
 ## Stabilisation au démarrage filtration et post-calibration
 
@@ -210,7 +248,10 @@ duty = MIN_ACTIVE_DUTY + round( ((flow − minFlow) / (maxFlow − minFlow)) × 
 
 | Catégorie | Constante | Valeur | Source |
 |-----------|-----------|--------|--------|
-| PID — anti-windup | `integralMax` | 50.0 | `PIDState` ([`pump_controller.h`](../../src/pump_controller.h)) |
+| Régulation P — Kp pH (feature-025) | `kp` (défaut struct) | 8.0 | [`pump_controller.h`](../../src/pump_controller.h) |
+| Régulation P — Kp ORP (feature-025) | `kp` (override constructeur) | 0.3 | [`pump_controller.cpp`](../../src/pump_controller.cpp) |
+| Régulation P — Ki / Kd (feature-025) | `ki` / `kd` | 0 / 0 (Kd=0 impératif) | [`pump_controller.h`](../../src/pump_controller.h) |
+| PID — anti-windup | `integralMax` | 50.0 (inerte avec Ki=0) | `PIDState` ([`pump_controller.h`](../../src/pump_controller.h)) |
 | PID — borne erreur pH | `kPhMaxError` | 1.0 | [`constants.h:89`](../../src/constants.h:89) |
 | PID — borne erreur ORP | `kOrpMaxError` | 200.0 mV | [`constants.h:90`](../../src/constants.h:90) |
 | PID — `dt` max | (literal in code) | 10 s | [`pump_controller.cpp`](../../src/pump_controller.cpp) |
@@ -232,6 +273,8 @@ duty = MIN_ACTIVE_DUTY + round( ((flow − minFlow) / (maxFlow − minFlow)) × 
 | Anti-rafale — fenêtre 15 min (Pass 3.5) | `kMaxDosingCyclesPer15Min` | 20 | [`constants.h`](../../src/constants.h) |
 | Anti-rafale — capacité ring buffer | `kDosingCycleHistorySize` | 20 entrées / pompe | [`constants.h`](../../src/constants.h) |
 | Injection manuelle — durée max (v2.1.2) | `kManualInjectMaxDurationS` | 600 s (10 min) | [`constants.h`](../../src/constants.h) |
+| Pause mélange pH (feature-025) | `kPhMixingDelayMs` | 900 000 ms (15 min) | [`constants.h`](../../src/constants.h) |
+| Pause mélange ORP (feature-025) | `kOrpMixingDelayMs` | 1 200 000 ms (20 min) | [`constants.h`](../../src/constants.h) |
 
 > Une refonte est prévue pour rendre une partie de ces paramètres modifiables via un mode expert UI (cf. spec en cours).
 
@@ -259,8 +302,8 @@ Six conditions warning/critical sont signalées **une seule fois** à l'entrée 
 | Composant | Interaction |
 |-----------|-------------|
 | [`filtration`](filtration.md) | Démarrage filtration → `armStabilizationTimer()` ; arrêt filtration → `clearStabilizationTimer()` |
-| [`sensors`](sensors.md) | Lecture `getPh()` / `getOrp()` chaque cycle pour calculer l'erreur |
-| [`mqtt_manager`](mqtt-manager.md) | Publication `ph_dosing`, `orp_dosing`, `ph_limit`, `orp_limit` |
+| [`sensors`](sensors.md) | Lecture **filtrée** `getPhFiltered()` / `getOrpFiltered()` pour l'erreur PID (+ `isPhFilterReady`/`isPhFilterUnstable` dans `canDose`). Brut `getPh()`/`getOrp()` pour logs uniquement (feature-025) |
+| [`mqtt_manager`](mqtt-manager.md) | Publication `ph_dosing`, `orp_dosing`, `ph_limit`, `orp_limit`, `ph/orp_mixing_delay_active` |
 | [`ota_manager`](ota-manager.md) | `setOtaInProgress(true)` arrête toutes les pompes |
 | [`web_routes_control`](web-server.md) | `/ph/inject/start`, `/orp/inject/start`, `/pump[12]/on` |
 
@@ -287,5 +330,6 @@ Flush différé : `_dailyCountersDirty` armé à chaque injection, écrit en NVS
 - [`src/config.h:141`](../../src/config.h:141) — `SafetyLimits`
 - [`src/constants.h:84`](../../src/constants.h:84) — `kPumpMinFlowMlPerMin`, `kPumpMaxFlowMlPerMin`
 - [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
-- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose` 10 garde-fous)
+- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025)
+- [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — entrée filtrée, anti-windup, pause mélange, zone morte
 - [page-ph.md](../features/page-ph.md), [page-orp.md](../features/page-orp.md) — UI consommatrices

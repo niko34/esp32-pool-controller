@@ -26,14 +26,19 @@ struct DosingState {
 };
 
 struct PIDController {
-  // Paramètres ajustés pour un système avec inertie
-  float kp = 15.0f;    // Proportionnel: réaction à l'erreur actuelle
-  float ki = 0.1f;     // Intégral: correction lente des erreurs persistantes
-  float kd = 5.0f;     // Dérivé: anticipation (freine si descend rapidement)
+  // feature-025 (pool-chemistry) : régulation P temporisée par défaut.
+  //   - pH  : Kp=8, Ki=0, Kd=0
+  //   - ORP : Kp=0.3, Ki=0, Kd=0 (override en construction PumpController)
+  // Kd=0 IMPÉRATIF (pas d'amplification du bruit résiduel). Ki=0 → intégrale inerte
+  // (integralMax conservé mais sans effet). Les valeurs ci-dessous sont les défauts pH ;
+  // l'ORP est ajusté dans le constructeur de PumpControllerClass.
+  float kp = 8.0f;     // Proportionnel : réaction à l'erreur actuelle
+  float ki = 0.0f;     // Intégral : désactivé (anti-windup strict, P pure)
+  float kd = 0.0f;     // Dérivé : désactivé (bruit)
   float integral = 0.0f;
   float lastError = 0.0f;
   unsigned long lastTime = 0;
-  float integralMax = 50.0f; // Anti-windup réduit
+  float integralMax = 50.0f; // Anti-windup (inerte avec Ki=0, conservé pour réactivation future)
 };
 
 class PumpControllerClass {
@@ -52,7 +57,12 @@ private:
   void applyPumpDuty(int index, uint8_t duty);
   void refreshDosingState(DosingState& state, unsigned long now);
 
-  float computePID(PIDController& pid, float error, unsigned long now);
+  // feature-025 : `deadband` = seuil de démarrage existant (phStartThreshold /
+  // orpStartThreshold) ; `freezeIntegral` gèle l'accumulation intégrale (anti-windup
+  // strict : filtre non prêt, canDose==false, pause mélange, saturation, mesure
+  // rejetée/instable, erreur dans deadband). Le gel est appliqué AVANT le calcul.
+  float computePID(PIDController& pid, float error, unsigned long now,
+                   float deadband, bool freezeIntegral);
   float computeFlowFromError(float error, float deadband, const PumpControlParams& params);
   float   dutyToFlow(const PumpControlParams& params, uint8_t duty);
   uint8_t flowToDuty(const PumpControlParams& params, float flowMlPerMin);
@@ -76,7 +86,15 @@ private:
 
   // Cache de la dernière cause de refus pour log "edge-triggered" (1 seule entrée
   // par transition de cause). Évite le spam quand canDose() est appelé chaque cycle.
+  // feature-025 : également exposé via getPhDoseBlockedReason()/getOrpDoseBlockedReason()
+  // pour le WS (chaîne vide si dosage autorisé). Écrit/lu en loopTask uniquement.
   String _lastRefusalCause[2];
+
+  // feature-025 : pause mélange hydraulique post-injection (pool-chemistry).
+  // _mixingEndMs[0]=pH, [1]=ORP. Armé par notifyPhDose()/notifyOrpDose() au démarrage
+  // d'une injection. Gate indépendante (OR) dans canDose(), distincte du timer post-cal.
+  // Écrits/lus en loopTask uniquement → pas de mutex (cohérent avec _stabilizationEndMs).
+  uint32_t _mixingEndMs[2] = {0, 0};
 
   // Helpers internes pour le log de refus (canDose).
   void logRefusalOnce(int pumpIndex, const String& cause);
@@ -162,9 +180,12 @@ public:
   // Ordre des gardes (validé pool-chemistry feature-021) — fail-closed strict :
   //   1. Watchdog actif
   //   2. Filtration en marche (ou mode continu)
-  //   3. Lecture pH/ORP non NaN (cond #1 stale + cond #5 bus dégradé)
+  //   3. Lecture pH/ORP FILTRÉE non NaN (feature-025 ; cond #1 stale + cond #5 bus dégradé)
+  //   3b. Filtre capteur prêt (feature-025 : warmup / EZO injoignable → fail-closed)
+  //   3c. Capteur non instable (feature-025 : rejets consécutifs → fail-closed)
   //   4. EZO calibré (cond #2 : pH ≥ 2 points, ORP ≥ 1 point ; -1 → bloqué)
   //   5. Pas de stabilisation post-cal en cours (cond #3)
+  //   5b. Pas de pause mélange hydraulique active (feature-025 — gate indépendante)
   //   6. Mode régulation = automatic
   //   7. Limite journalière non atteinte
   //   8. Limite horaire non atteinte
@@ -172,6 +193,20 @@ public:
   //  10. Anti-rafale court terme (ring buffer 1 min / 15 min, Pass 3.5)
   // Log "edge-triggered" : 1 entrée info par transition de cause de refus.
   bool canDose(int pumpIndex);
+
+  // ===== feature-025 : pause mélange hydraulique post-injection =====
+  // À appeler au démarrage d'une injection (à côté de recordDosingCycleStart).
+  // Arme _mixingEndMs[pompe] = nowMs + kPhMixingDelayMs / kOrpMixingDelayMs.
+  // Géré uniquement par timestamps (AUCUN delay()).
+  void notifyPhDose(uint32_t nowMs);
+  void notifyOrpDose(uint32_t nowMs);
+  bool isPhMixingDelayActive(uint32_t nowMs) const;
+  bool isOrpMixingDelayActive(uint32_t nowMs) const;
+
+  // ===== feature-025 : raison de blocage dosage exposée au WS =====
+  // Chaîne vide si dosage autorisé, sinon la dernière cause de refus de canDose().
+  String getPhDoseBlockedReason() const { return _lastRefusalCause[0]; }
+  String getOrpDoseBlockedReason() const { return _lastRefusalCause[1]; }
 
   // Test manuel des pompes (à utiliser avec précaution)
   void setManualPump(int pumpIndex, uint8_t duty);

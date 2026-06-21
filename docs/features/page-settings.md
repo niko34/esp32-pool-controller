@@ -74,9 +74,34 @@ Page de configuration système. Structurée en **8 onglets segmentés** ([`data/
 - `pump_max_flow_ml_per_min` — débit nominal pour calcul volume injecté (défaut `kPumpMaxFlowMlPerMin = 90.0` [`constants.h`](../../src/constants.h)).
 - Tests pompe : `POST /pump1/on`, `/pump1/off`, `/pump2/on`, `/pump2/off` — arrêt auto après 10 s côté firmware.
 - `sensor_logs_enabled` (bool) — verbosité logs capteurs pour diagnostic.
+- **Card "Debug oscillation pH"** — voir section dédiée ci-dessous.
 - **Card "Diagnostic crash"** — voir section dédiée ci-dessous.
 - **Card "Diagnostic EZO"** — voir section dédiée ci-dessous.
 - **Card "Logs"** — voir section dédiée ci-dessous.
+
+#### Card Debug oscillation pH
+
+Card `#card-debug-ph` du panel **Avancé**. Trace le ring buffer renvoyé par `GET /debug/ph_trace` (~25 min, 1 échantillon par cycle capteur) pour diagnostiquer une oscillation de la mesure pH et visualiser l'effet du lissage feature-025.
+
+**Graphique (Chart.js)** — deux courbes pH partageant le même axe `y` :
+
+| Courbe | Source payload | Couleur |
+|--------|----------------|---------|
+| **pH brut** | champ `ph` (`_lastPh`) | bleu |
+| **pH lissé** | champ `phFiltered` (médiane + EMA) | orange `#ff9800` |
+
+La courbe « pH lissé » est masquée pour les échantillons où `phFiltered` est `null` (filtre non amorcé).
+
+**Statistiques (`#debug_ph_stats`)** — calculées côté client sur la fenêtre affichée :
+
+| Ligne | Élément | Source |
+|-------|---------|--------|
+| pH brut min / max / Δ | `#debug_ph_stats_ph` | champ `ph` |
+| pH lissé min / max / Δ | `#debug_ph_stats_ph_filtered` | champ `phFiltered` |
+| ORP min / max / Δ | `#debug_ph_stats_orp` | champ `orp` |
+| T° envoyée min / max | `#debug_ph_stats_t` | champ `tempC` |
+
+**Endpoints** : `GET /debug/ph_trace` (rafraîchir), `POST /debug/ph_trace_clear` (vider). Voir [`docs/API.md`](../API.md) et [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md).
 
 #### Card Diagnostic crash
 

@@ -334,6 +334,10 @@ void SensorManager::_readEzoSensors(float tempC) {
     _lastPh = ph;
     _lastPhMs = now;
     _phI2cFailStreak = 0;
+    // feature-025 : alimenter le filtre pH (médiane + EMA + rejet pics).
+    // En cas de fail-streak I²C ci-dessous, on N'alimente PAS → le filtre devient
+    // non prêt par âge (kSensorFilterMaxAgeMs) et canDose() bloque (fail-closed).
+    _phFilter.addSample(ph, (uint32_t)now);
     _phStaleLogged = false;
     _phI2cDegradedLogged = false;
     _ezoEverResponded = true;
@@ -392,6 +396,8 @@ void SensorManager::_readEzoSensors(float tempC) {
     _lastOrp = orp;
     _lastOrpMs = now;
     _orpI2cFailStreak = 0;
+    // feature-025 : alimenter le filtre ORP (cf. commentaire pH ci-dessus).
+    _orpFilter.addSample(orp, (uint32_t)now);
     _orpStaleLogged = false;
     _orpI2cDegradedLogged = false;
     _ezoEverResponded = true;
@@ -433,19 +439,20 @@ void SensorManager::_readEzoSensors(float tempC) {
 
   // Trace debug : on enregistre TOUJOURS (même si ph ou orp = NaN), pour visualiser
   // les trous de lecture aussi clairement que les valeurs.
-  _recordPhDebugSample(_lastPh, _lastOrp, tempC);
+  _recordPhDebugSample(_lastPh, _phFilter.filtered(), _lastOrp, tempC);
 }
 
 // =============================================================================
 // Trace debug pH (ring buffer en RAM)
 // =============================================================================
 
-void SensorManager::_recordPhDebugSample(float ph, float orp, float tempC) {
+void SensorManager::_recordPhDebugSample(float ph, float phFiltered, float orp, float tempC) {
   PhDebugSample& s = _phDebugBuffer[_phDebugIdx];
-  s.ms    = millis();
-  s.ph    = ph;
-  s.orp   = orp;
-  s.tempC = tempC;
+  s.ms         = millis();
+  s.ph         = ph;
+  s.phFiltered = phFiltered;
+  s.orp        = orp;
+  s.tempC      = tempC;
   _phDebugIdx = (_phDebugIdx + 1) % kPhDebugBufferSize;
   if (_phDebugCount < kPhDebugBufferSize) ++_phDebugCount;
 }
@@ -464,8 +471,10 @@ void SensorManager::getPhDebugSamplesJson(JsonArray out) const {
     const PhDebugSample& s = _phDebugBuffer[idx];
     JsonObject o = out.add<JsonObject>();
     o["t"] = s.ms;
-    if (!isnan(s.ph))    o["ph"]    = roundf(s.ph * 1000.0f) / 1000.0f;
-    else                 o["ph"]    = nullptr;
+    if (!isnan(s.ph))         o["ph"]         = roundf(s.ph * 1000.0f) / 1000.0f;
+    else                      o["ph"]         = nullptr;
+    if (!isnan(s.phFiltered)) o["phFiltered"] = roundf(s.phFiltered * 1000.0f) / 1000.0f;
+    else                      o["phFiltered"] = nullptr;
     if (!isnan(s.orp))   o["orp"]   = roundf(s.orp * 10.0f) / 10.0f;
     else                 o["orp"]   = nullptr;
     if (!isnan(s.tempC)) o["tempC"] = roundf(s.tempC * 10.0f) / 10.0f;
@@ -534,6 +543,7 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
       if (ok) {
         _phCalCachedPoints = _phEzo.queryCalPoints();
         PumpController.armStabilizationTimer(0);  // Stabilisation pH post-cal
+        resetPhFilter();  // feature-025 : warmup obligatoire après cal réussie
         systemLogger.info("EZO pH : calibration mid OK (points=" + String(_phCalCachedPoints) + ")");
         // feature-024 : refresh pente post-calibration.
         enqueuePhSlopeQuery();
@@ -548,6 +558,7 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
       if (ok) {
         _phCalCachedPoints = _phEzo.queryCalPoints();
         PumpController.armStabilizationTimer(0);  // Stabilisation pH post-cal
+        resetPhFilter();  // feature-025 : warmup obligatoire après cal réussie
         systemLogger.info("EZO pH : calibration low OK (points=" + String(_phCalCachedPoints) + ")");
         // feature-024 : refresh pente post-calibration.
         enqueuePhSlopeQuery();
@@ -565,6 +576,7 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
       if (ok) {
         _orpCalCachedPoints = _orpEzo.queryCalPoints();
         PumpController.armStabilizationTimer(1);  // Stabilisation ORP post-cal
+        resetOrpFilter();  // feature-025 : warmup obligatoire après cal réussie
         systemLogger.info("EZO ORP : calibration OK (points=" + String(_orpCalCachedPoints) + ")");
       } else {
         systemLogger.error("EZO ORP : calibration échouée");
@@ -576,6 +588,7 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
       ok = _phEzo.clearCalibration();
       if (ok) {
         _phCalCachedPoints = _phEzo.queryCalPoints();
+        resetPhFilter();  // feature-025 : warmup obligatoire après clear réussi
         systemLogger.info("EZO pH : calibration effacée (points=" + String(_phCalCachedPoints) + ")");
         // feature-024 : la pente n'a plus de sens après un Cal,clear — refresh
         // pour récupérer les valeurs par défaut EZO (typiquement 100/100/0).
@@ -590,6 +603,7 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
       ok = _orpEzo.clearCalibration();
       if (ok) {
         _orpCalCachedPoints = _orpEzo.queryCalPoints();
+        resetOrpFilter();  // feature-025 : warmup obligatoire après clear réussi
         systemLogger.info("EZO ORP : calibration effacée (points=" + String(_orpCalCachedPoints) + ")");
       } else {
         systemLogger.error("EZO ORP : effacement calibration échoué");
@@ -644,6 +658,36 @@ float SensorManager::getOrp() const {
   if (isnan(_lastOrp)) return NAN;
   if (millis() - _lastOrpMs > kSensorStaleTimeoutMs) return NAN;
   return _lastOrp;
+}
+
+// =============================================================================
+// feature-025 — Getters filtre pH / ORP (lock-free, contexte loopTask)
+// =============================================================================
+// getPhRaw()/getOrpRaw() retournent la même valeur brute que getPh()/getOrp()
+// (avec la même fenêtre stale) — exposés explicitement pour le diagnostic UI/MQTT.
+
+float SensorManager::getPhRaw() const { return getPh(); }
+float SensorManager::getPhMedian() const { return _phFilter.median(); }
+float SensorManager::getPhFiltered() const { return _phFilter.filtered(); }
+bool SensorManager::isPhFilterReady() const { return _phFilter.ready(millis()); }
+bool SensorManager::isPhFilterUnstable() const { return _phFilter.unstable(); }
+uint8_t SensorManager::getPhRejectedCount() const { return _phFilter.rejectedCount(); }
+
+float SensorManager::getOrpRaw() const { return getOrp(); }
+float SensorManager::getOrpMedian() const { return _orpFilter.median(); }
+float SensorManager::getOrpFiltered() const { return _orpFilter.filtered(); }
+bool SensorManager::isOrpFilterReady() const { return _orpFilter.ready(millis()); }
+bool SensorManager::isOrpFilterUnstable() const { return _orpFilter.unstable(); }
+uint8_t SensorManager::getOrpRejectedCount() const { return _orpFilter.rejectedCount(); }
+
+void SensorManager::resetPhFilter() {
+  _phFilter.reset();
+  systemLogger.info("Filtre pH réinitialisé — warmup en cours (dosage auto pH bloqué)");
+}
+
+void SensorManager::resetOrpFilter() {
+  _orpFilter.reset();
+  systemLogger.info("Filtre ORP réinitialisé — warmup en cours (dosage auto ORP bloqué)");
 }
 
 int SensorManager::getPhCalibrationPoints() {

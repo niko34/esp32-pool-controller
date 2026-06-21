@@ -114,6 +114,21 @@ void MqttManager::refreshTopics() {
   topics.phSlopeAcidState       = base + "/ph_slope_acid";
   topics.phSlopeBaseState       = base + "/ph_slope_base";
   topics.phSlopeZeroState       = base + "/ph_slope_zero";
+  // feature-025 : chaîne de filtrage pH/ORP (médiane + EMA + rejet pics).
+  topics.phRawState                 = base + "/ph_raw";
+  topics.phMedianState              = base + "/ph_median";
+  topics.phFilteredState            = base + "/ph_filtered";
+  topics.phFilterReadyState         = base + "/ph_filter_ready";
+  topics.phFilterUnstableState      = base + "/ph_filter_unstable";
+  topics.phRejectedCountState       = base + "/ph_rejected_count";
+  topics.orpRawState                = base + "/orp_raw";
+  topics.orpMedianState             = base + "/orp_median";
+  topics.orpFilteredState           = base + "/orp_filtered";
+  topics.orpFilterReadyState        = base + "/orp_filter_ready";
+  topics.orpFilterUnstableState     = base + "/orp_filter_unstable";
+  topics.orpRejectedCountState      = base + "/orp_rejected_count";
+  topics.phMixingDelayActiveState   = base + "/ph_mixing_delay_active";
+  topics.orpMixingDelayActiveState  = base + "/orp_mixing_delay_active";
 }
 
 // ============================================================================
@@ -262,7 +277,7 @@ void MqttManager::connectInTask() {
 
     discoveryPublished = false;
     esp_task_wdt_reset();
-    publishDiscovery();              // 17 publish — long si CPL lossy
+    publishDiscovery();              // ~29 publish — long si CPL lossy
     esp_task_wdt_reset();
     publishAllStatesInternal();      // ~15 publish
     esp_task_wdt_reset();
@@ -539,6 +554,58 @@ void MqttManager::publishAllStatesInternal() {
 
   // feature-021 : statut calibration EZO + alertes (cf. cond #4 pool-chemistry).
   publishCalibrationStatusInternal();
+
+  // feature-025 : chaîne de filtrage pH/ORP (raw/median/filtered/ready/unstable/rejected).
+  publishFilterStatesInternal();
+}
+
+// =============================================================================
+// feature-025 : publication des états de la chaîne de filtrage pH/ORP
+// =============================================================================
+//
+// Topics retain=true, dédupliqués (anti-spam) : on ne republie un topic que si
+// sa valeur arrondie a changé depuis la dernière publication (cache _lastFilterPub).
+// Suit le rythme MQTT existant (appelé depuis publishAllStatesInternal, cadencé par
+// publishStatesRequested toutes les kMqttPublishIntervalMs).
+// Valeurs NaN/indisponibles : non publiées (le retain précédent reste valable côté HA).
+void MqttManager::safePublishDedup(int cacheIdx, const char* topic, const String& payload) {
+  if (cacheIdx >= 0 && cacheIdx < 14 && _lastFilterPub[cacheIdx] == payload) return;
+  if (safePublish(topic, payload.c_str(), true) && cacheIdx >= 0 && cacheIdx < 14) {
+    _lastFilterPub[cacheIdx] = payload;
+  }
+}
+
+void MqttManager::publishFilterStatesInternal() {
+  if (!mqtt.connected()) return;
+
+  // Lectures atomiques (float scalaires / bool) — pas d'I²C ici.
+  float phRaw = sensors.getPhRaw();
+  float phMed = sensors.getPhMedian();
+  float phFil = sensors.getPhFiltered();
+  float orpRaw = sensors.getOrpRaw();
+  float orpMed = sensors.getOrpMedian();
+  float orpFil = sensors.getOrpFiltered();
+  uint32_t nowMs = millis();
+
+  // pH (3 décimales, alignement WS/REST) — uniquement si non NaN.
+  if (!isnan(phRaw)) safePublishDedup(0, topics.phRawState.c_str(),      String(phRaw, 3));
+  if (!isnan(phMed)) safePublishDedup(1, topics.phMedianState.c_str(),   String(phMed, 3));
+  if (!isnan(phFil)) safePublishDedup(2, topics.phFilteredState.c_str(), String(phFil, 3));
+  safePublishDedup(3, topics.phFilterReadyState.c_str(),    sensors.isPhFilterReady()    ? "ON" : "OFF");
+  safePublishDedup(4, topics.phFilterUnstableState.c_str(), sensors.isPhFilterUnstable() ? "ON" : "OFF");
+  safePublishDedup(5, topics.phRejectedCountState.c_str(),  String(sensors.getPhRejectedCount()));
+
+  // ORP (entier mV) — uniquement si non NaN.
+  if (!isnan(orpRaw)) safePublishDedup(6, topics.orpRawState.c_str(),      String(orpRaw, 0));
+  if (!isnan(orpMed)) safePublishDedup(7, topics.orpMedianState.c_str(),   String(orpMed, 0));
+  if (!isnan(orpFil)) safePublishDedup(8, topics.orpFilteredState.c_str(), String(orpFil, 0));
+  safePublishDedup(9,  topics.orpFilterReadyState.c_str(),    sensors.isOrpFilterReady()    ? "ON" : "OFF");
+  safePublishDedup(10, topics.orpFilterUnstableState.c_str(), sensors.isOrpFilterUnstable() ? "ON" : "OFF");
+  safePublishDedup(11, topics.orpRejectedCountState.c_str(),  String(sensors.getOrpRejectedCount()));
+
+  // Pause mélange hydraulique active (post-injection).
+  safePublishDedup(12, topics.phMixingDelayActiveState.c_str(),  PumpController.isPhMixingDelayActive(nowMs)  ? "ON" : "OFF");
+  safePublishDedup(13, topics.orpMixingDelayActiveState.c_str(), PumpController.isOrpMixingDelayActive(nowMs) ? "ON" : "OFF");
 }
 
 // =============================================================================
@@ -1157,6 +1224,72 @@ void MqttManager::publishDiscovery() {
   doc["unit_of_measurement"] = "mV";
   doc["icon"] = "mdi:sine-wave";
   doc["state_class"] = "measurement";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-025 : sonde pH brut (mesure Atlas non filtrée — diagnostic EMI)
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_raw/config";
+  doc["name"] = "Piscine pH Brut";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_raw";
+  doc["state_topic"] = topics.phRawState;
+  doc["unit_of_measurement"] = "pH";
+  doc["icon"] = "mdi:water-outline";
+  doc["state_class"] = "measurement";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-025 : sonde pH filtré (médiane + EMA — valeur de régulation)
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_filtered/config";
+  doc["name"] = "Piscine pH Filtré";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_filtered";
+  doc["state_topic"] = topics.phFilteredState;
+  doc["unit_of_measurement"] = "pH";
+  doc["icon"] = "mdi:water-check";
+  doc["state_class"] = "measurement";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-025 : sonde ORP brut (mV)
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_orp_raw/config";
+  doc["name"] = "Piscine ORP Brut";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_raw";
+  doc["state_topic"] = topics.orpRawState;
+  doc["unit_of_measurement"] = "mV";
+  doc["icon"] = "mdi:flash-outline";
+  doc["state_class"] = "measurement";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-025 : sonde ORP filtré (mV — valeur de régulation)
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_orp_filtered/config";
+  doc["name"] = "Piscine ORP Filtré";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_filtered";
+  doc["state_topic"] = topics.orpFilteredState;
+  doc["unit_of_measurement"] = "mV";
+  doc["icon"] = "mdi:flash-alert";
+  doc["state_class"] = "measurement";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-025 : binary_sensor Filtre pH prêt
+  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_ph_filter_ready/config";
+  doc["name"] = "Piscine Filtre pH Prêt";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_filter_ready";
+  doc["state_topic"] = topics.phFilterReadyState;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["icon"] = "mdi:filter-check";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-025 : binary_sensor Filtre ORP prêt
+  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_orp_filter_ready/config";
+  doc["name"] = "Piscine Filtre ORP Prêt";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_filter_ready";
+  doc["state_topic"] = topics.orpFilterReadyState;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["icon"] = "mdi:filter-check";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 

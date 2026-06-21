@@ -154,17 +154,28 @@ void WsManager::broadcastLog(const LogEntry& entry) {
 String WsManager::_buildSensorJson() const {
   // Buffer +64 octets vs version 1 sonde : champs temperature_circuit / sondes_identified / sondes_detected (feature-020)
   // feature-024 : +4 champs phSlope* (~80 octets) → bump à 1024.
-  StaticJson<1024> doc;
+  // feature-025 : +14 champs filtre pH/ORP + mixing/blocked (~300 octets) → bump à 1408.
+  StaticJson<1408> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
   // feature-021 : pH publié avec 3 décimales (l'EZO rend 3 décimales fiables, cf. spec ligne 247).
   // ORP reste en entier (mV) — la résolution physique du capteur ne justifie pas de décimales.
-  // Les champs *_raw / ph_voltage_mv ont été supprimés Pass 4a : l'EZO calibre en interne,
-  // il n'existe pas de "valeur brute" séparée côté firmware.
+  // feature-025 : la "valeur courante" UI/MQTT (champs ph/orp) reflète désormais la valeur
+  // FILTRÉE (getPhFiltered/getOrpFiltered), pas le brut. getPh()/getOrp() firmware restent
+  // bruts (rétrocompat scheduled/diagnostic), mais l'utilisateur affiche la mesure lissée.
+  // Le brut reste exposé séparément via phRaw/orpRaw pour diagnostic EMI. Si le filtre n'est
+  // pas encore amorcé (NaN filtré), on retombe sur le brut pour ne pas afficher "--" au boot.
   // Lectures cachées en variables locales pour éviter une race entre le check `isnan` et le `round`.
-  float orpVal = sensors.getOrp();
-  float phVal  = sensors.getPh();
+  float orpRaw = sensors.getOrpRaw();
+  float phRaw  = sensors.getPhRaw();
+  float orpFiltered = sensors.getOrpFiltered();
+  float phFiltered  = sensors.getPhFiltered();
+  float orpMedian = sensors.getOrpMedian();
+  float phMedian  = sensors.getPhMedian();
+  // Valeur principale = filtrée si disponible, sinon brut (warmup), sinon null.
+  float orpVal = !isnan(orpFiltered) ? orpFiltered : orpRaw;
+  float phVal  = !isnan(phFiltered)  ? phFiltered  : phRaw;
   float tVal   = sensors.getTemperature();
   // T° eau brute (sans offset utilisateur) : exposée pour permettre à l'UI de calibration
   // de calculer un nouvel offset à partir d'une référence externe sans dépendre de la
@@ -172,6 +183,27 @@ String WsManager::_buildSensorJson() const {
   float tRawWater = sensors.getWaterTemperatureRaw();
   if (!isnan(orpVal))     d["orp"] = orpVal;                                    else d["orp"] = nullptr;
   if (!isnan(phVal))      d["ph"]  = round(phVal * 1000.0f) / 1000.0f;          else d["ph"] = nullptr;
+  // feature-025 : champs filtre — null si NaN/indisponible (EZO débranché → UI sans crash).
+  if (!isnan(phRaw))      d["phRaw"] = round(phRaw * 1000.0f) / 1000.0f;        else d["phRaw"] = nullptr;
+  if (!isnan(phMedian))   d["phMedian"] = round(phMedian * 1000.0f) / 1000.0f;  else d["phMedian"] = nullptr;
+  if (!isnan(phFiltered)) d["phFiltered"] = round(phFiltered * 1000.0f) / 1000.0f; else d["phFiltered"] = nullptr;
+  d["phFilterReady"]    = sensors.isPhFilterReady();
+  d["phFilterUnstable"] = sensors.isPhFilterUnstable();
+  d["phRejectedCount"]  = sensors.getPhRejectedCount();
+  if (!isnan(orpRaw))      d["orpRaw"] = round(orpRaw);                          else d["orpRaw"] = nullptr;
+  if (!isnan(orpMedian))   d["orpMedian"] = round(orpMedian);                    else d["orpMedian"] = nullptr;
+  if (!isnan(orpFiltered)) d["orpFiltered"] = round(orpFiltered);               else d["orpFiltered"] = nullptr;
+  d["orpFilterReady"]    = sensors.isOrpFilterReady();
+  d["orpFilterUnstable"] = sensors.isOrpFilterUnstable();
+  d["orpRejectedCount"]  = sensors.getOrpRejectedCount();
+  // Pause mélange hydraulique active (post-injection) + raison de blocage dosage.
+  uint32_t nowMs = millis();
+  d["phMixingDelayActive"]  = PumpController.isPhMixingDelayActive(nowMs);
+  d["orpMixingDelayActive"] = PumpController.isOrpMixingDelayActive(nowMs);
+  String phBlocked  = PumpController.getPhDoseBlockedReason();
+  String orpBlocked = PumpController.getOrpDoseBlockedReason();
+  if (phBlocked.length() > 0)  d["phDoseBlockedReason"]  = phBlocked;  else d["phDoseBlockedReason"]  = nullptr;
+  if (orpBlocked.length() > 0) d["orpDoseBlockedReason"] = orpBlocked; else d["orpDoseBlockedReason"] = nullptr;
   if (!isnan(tVal))       d["temperature"] = tVal;                              else d["temperature"] = nullptr;
   if (!isnan(tRawWater))  d["temperature_raw"] = round(tRawWater * 100.0f) / 100.0f; else d["temperature_raw"] = nullptr;
   // feature-020 : 2ᵉ sonde DS18B20 "circuit" + indicateurs identification
@@ -236,7 +268,8 @@ String WsManager::_buildSensorJson() const {
   String out;
   // +64 octets feature-020 (temperature_circuit + sondes_identified + sondes_detected)
   // +80 octets feature-024 (phSlopeAcid/Base/Zero/AgeMs)
-  out.reserve(896);
+  // +300 octets feature-025 (filtre pH/ORP + mixing/blocked)
+  out.reserve(1200);
   serializeJson(doc, out);
   return out;
 }

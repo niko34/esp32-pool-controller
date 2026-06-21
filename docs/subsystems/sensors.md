@@ -63,9 +63,26 @@ Délai après commande : `kEzoReadDelayMs = 900 ms` (datasheet Atlas) — identi
 void begin();
 void update();                          // appelé dans loopTask, non bloquant côté HTTP
 
-// Lectures EZO — NaN si stale (> kSensorStaleTimeoutMs) ou jamais lu valide
+// Lectures EZO BRUTES — NaN si stale (> kSensorStaleTimeoutMs) ou jamais lu valide.
+// Ne PAS utiliser pour la régulation (cf. feature-025 : le PID consomme getPhFiltered()).
 float getPh()  const;
 float getOrp() const;
+
+// Chaîne de filtrage pH/ORP (feature-025) — médiane(7) + EMA. NaN si non amorcé.
+float getPhRaw()  const;             // Dernière brute pH (= getPh(), NaN si stale)
+float getPhMedian()  const;          // Médiane courante pH (NaN si pas de donnée)
+float getPhFiltered()  const;        // pH filtré EMA — valeur PID/UI/MQTT
+bool isPhFilterReady()  const;       // true après warmup + dernière mesure valide récente
+bool isPhFilterUnstable()  const;    // true si trop de rejets consécutifs
+uint8_t getPhRejectedCount()  const; // Compteur glissant de rejets pH (sature à 255)
+float getOrpRaw()  const;
+float getOrpMedian()  const;
+float getOrpFiltered()  const;
+bool isOrpFilterReady()  const;
+bool isOrpFilterUnstable()  const;
+uint8_t getOrpRejectedCount()  const;
+void resetPhFilter();                // Reset filtre (warmup) — appelé après calibration pH
+void resetOrpFilter();               // Reset filtre (warmup) — appelé après calibration ORP
 
 // Statut calibration EZO — version live (lecture I²C bloquante ~900 ms, diagnostic)
 int getPhCalibrationPoints();           // -1 = injoignable, 0..3 sinon
@@ -154,6 +171,111 @@ Conséquences :
 - Logger `critical` 1× à la **transition** vers stale (flag `_phStaleLogged` / `_orpStaleLogged`).
 - Alerte MQTT `pool/alerts/sensor_stale` publiée edge-triggered (cf. [docs/MQTT.md](../MQTT.md)).
 
+## Filtrage des mesures pH/ORP — feature-025
+
+Lissage logiciel **robuste** des mesures EZO pour réduire l'impact des fluctuations ponctuelles (bruit secteur, EMI, couplage 12 V) sur l'affichage, MQTT/HA et **surtout la régulation**. Les valeurs **brutes restent exposées** pour diagnostic ; les valeurs **filtrées deviennent la référence** pour l'UI principale, MQTT et le PID.
+
+### Chaîne de filtrage
+
+```text
+mesure brute Atlas EZO
+  → rejet aberrant (NaN / hors plage plausible / saut > maxStep)
+  → médiane glissante (fenêtre 7)
+  → EMA (moyenne exponentielle lente : alpha pH 0.10 / ORP 0.08)
+  → valeur filtrée → UI / MQTT / PID
+```
+
+À chaque lecture EZO valide (`_readEzoSensors`), `SensorManager` soumet la brute au filtre du capteur via `SensorFilter::addSample(raw, nowMs)`. La brute est **toujours** mémorisée (`getPhRaw()`/`getOrpRaw()` = `getPh()`/`getOrp()`), même si le filtre la rejette.
+
+### Classe `SensorFilter`
+
+Module dédié **déterministe et testable hors matériel** ([`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp)). Une instance par capteur dans `SensorManager` (`_phFilter`, `_orpFilter`).
+
+- **Zéro allocation dynamique** : buffer médian FIXE `float[kSensorFilterMedianWindow]` (= 7).
+- **Mono-contexte** : écrit par `addSample()` (loopTask), lu par les getters. Pas de mutex interne — l'appelant respecte le contrat mono-thread, comme `_lastPh`/`_lastOrp`.
+- **Pas de membre statique** : couvert par les tests unitaires (`test/`).
+
+| Méthode | Effet |
+|---------|-------|
+| `bool addSample(float raw, uint32_t nowMs)` | Soumet une brute. Retourne `true` si **acceptée** (filtre alimenté), `false` si rejetée |
+| `void reset()` | Réinitialise warmup, buffers et compteurs |
+| `float raw() / median() / filtered()` | Dernière brute / médiane courante / valeur EMA (NaN tant que non amorcé) |
+| `bool ready(uint32_t nowMs)` | `true` ssi warmup atteint **ET** dernière mesure valide récente (`< maxAgeMs`) |
+| `bool unstable()` | `true` si `consecutiveRejects >= maxConsecutiveRejects` **OU** latch anti-boucle posé |
+| `uint8_t rejectedCount() / consecutiveRejects()` | Compteur glissant 8 bits (sature à 255) / rejets consécutifs courants |
+| `uint8_t resyncCount()` | Nb de re-sync dans la fenêtre glissante courante (anti latch-up) |
+| `bool unstableLatched()` | `true` si le latch anti-boucle EMI est posé — persistant jusqu'à `reset()` |
+| `uint32_t ageMs(uint32_t nowMs)` | Âge de la dernière mesure acceptée (`UINT32_MAX` si aucune) |
+
+### Logique de rejet
+
+Une mesure **n'alimente pas** le filtre (mais la brute reste lisible) si :
+
+- elle vaut `NaN` (lecture stale / bus I²C dégradé via `getPh()`/`getOrp()` qui renvoient déjà NaN) ;
+- elle sort de `[minValue, maxValue]` (plage plausible) ;
+- `|raw − filtered| > maxStep` — **sauf pendant le warmup** (le filtre doit pouvoir converger vers une valeur initiale même éloignée).
+
+### États du filtre
+
+- **warmup** : tant que `< kSensorFilterWarmupSamples` (= 5) mesures valides reçues → `ready() = false`. **Aucun dosage** tant que non prêt.
+- **ready** : warmup atteint ET dernière mesure valide `< kSensorFilterMaxAgeMs` (= 20 s). Au-delà (EZO injoignable) → `ready()` repasse `false` → dosage fail-closed.
+- **unstable** : `>= kSensorFilterMaxConsecutiveRejects` (= 10) rejets consécutifs → capteur déclaré instable, dosage bloqué (on bloque plutôt que de lisser un défaut EMI persistant). Cet état est **transitoire** : il s'éteint dès qu'une mesure est acceptée. À ne pas confondre avec le **latch anti-boucle** ci-dessous, qui est persistant.
+
+### Re-synchronisation (anti latch-up)
+
+> **Bug corrigé** : un saut réel **et durable** au-delà de `maxStep` figeait la valeur filtrée à vie. Cas terrain : sonde plongée en solution de calibration (~4.871) pendant le warmup, puis retour à la vraie valeur en bassin → toutes les mesures suivantes rejetées comme « saut excessif » → `filtered` figé indéfiniment → **dosage bloqué en permanence**.
+
+Le filtre distingue désormais un **pic isolé** d'un **vrai changement durable** :
+
+- Chaque rejet pour « saut excessif » incrémente `consecutiveRejects` et mémorise le brut rejeté dans un mini-buffer FIXE (`_rejBuffer`, réutilise la capacité physique `kSensorFilterMedianWindow` → aucune allocation).
+- Après `kSensorFilterResyncRejects` (= **24**, ≈ 120 s à 5 s/cycle) rejets consécutifs sur saut excessif, le filtre conclut à un **changement réel** : il se **ré-amorce sur la MÉDIANE des derniers bruts rejetés** (et non sur l'échantillon courant, pour ignorer un éventuel pic final) puis **repart en warmup** → `ready()` repasse `false` → **dosage bloqué pendant le re-warmup** (invariant fail-closed préservé).
+- Un **pic isolé** (`< 24` cycles avant retour dans la bande `maxStep`) reste simplement rejeté, sans jamais toucher `filtered`.
+- Chaque re-sync logue un `warning` (ancienne valeur filtrée + médiane d'amorçage).
+
+`kSensorFilterResyncRejects` (= 24) est **strictement supérieur** à `kSensorFilterMaxConsecutiveRejects` (= 10) : un capteur réellement bruité est donc déclaré `unstable()` (et le dosage bloqué) **bien avant** qu'une re-sync ne se déclenche.
+
+### Anti-boucle latché
+
+Un capteur qui re-synchronise en boucle n'observe pas un vrai changement mais un **défaut EMI**. Garde-fou :
+
+- Les timestamps des re-sync sont conservés dans une **fenêtre glissante** `kSensorFilterResyncWindowMs` (= **600 000 ms** = 10 min).
+- Si `>= kSensorFilterMaxResyncPerWindow` (= **3**) re-sync surviennent dans cette fenêtre, le capteur est déclaré instable de façon **LATCHÉE** : `unstable()` reste `true` (via `unstableLatched()`) **jusqu'à un `reset()` explicite**, indépendamment des mesures suivantes. Le dosage reste bloqué.
+- L'activation du latch logue un `critical`.
+
+Le latch est levé **uniquement** par `reset()`, déclenché par :
+- `POST /debug/sensor_filter_reset` (reset manuel des deux filtres) ;
+- une **calibration pH/ORP réussie** (`resetPhFilter()` / `resetOrpFilter()`).
+
+Getters associés : `resyncCount()` (re-sync dans la fenêtre courante) et `unstableLatched()` (état du latch).
+
+### Paramètres (centralisés dans [`constants.h`](../../src/constants.h))
+
+| Paramètre | pH | ORP |
+|---|---:|---:|
+| Fenêtre médiane (`kSensorFilterMedianWindow`) | 7 | 7 |
+| EMA alpha | `kPhEmaAlpha` = 0.10 | `kOrpEmaAlpha` = 0.08 |
+| Saut max rejet | `kPhFilterMaxStep` = 0.15 pH | `kOrpFilterMaxStep` = 50 mV |
+| Plage plausible | `kPhFilterMin/Max` = 0.0 – 14.0 | `kOrpFilterMin/Max` = -1000 – +1500 mV |
+| Warmup (`kSensorFilterWarmupSamples`) | 5 | 5 |
+| Rejets consécutifs → instable (`kSensorFilterMaxConsecutiveRejects`) | 10 | 10 |
+| Rejets consécutifs → re-sync (`kSensorFilterResyncRejects`) | 24 | 24 |
+| Re-sync max avant latch (`kSensorFilterMaxResyncPerWindow`) | 3 | 3 |
+| Fenêtre anti-boucle (`kSensorFilterResyncWindowMs`) | 600 000 ms | 600 000 ms |
+| Âge max ready (`kSensorFilterMaxAgeMs`) | 20 000 ms | 20 000 ms |
+
+### Reset après calibration
+
+Une calibration change la fonction de transfert de la sonde → la valeur filtrée pré-calibration n'est plus représentative. Après **succès** d'une calibration via `_processEzoQueue()` :
+
+- **pH** (`mid` / `low` / `clear`) → `resetPhFilter()` ;
+- **ORP** (`cal` / `clear`) → `resetOrpFilter()`.
+
+Le filtre repasse en **warmup** → dosage de la sonde concernée bloqué jusqu'à `kSensorFilterWarmupSamples` nouvelles mesures valides (cumulé avec le timer de stabilisation post-cal `kStabilizationDuration*Ms`, gates indépendantes).
+
+### Reset manuel / diagnostic
+
+`POST /debug/sensor_filter_reset` réinitialise **les deux** filtres (warmup) — c'est aussi le **seul** moyen, avec une calibration réussie, de **lever le latch anti-boucle** (`unstableLatched()`). `GET /debug/sensor_filter_state` retourne l'état JSON brut (raw/median/filtered/ready/unstable/rejected par capteur). Voir [API.md](../API.md).
+
 ## Constantes clés
 
 | Constante | Valeur | Usage |
@@ -169,6 +291,16 @@ Conséquences :
 | `kTempSensorIntervalMs` | `2000` ms | Période lecture DS18B20 |
 | `kI2cMutexTimeoutMs` | `2000` ms | Timeout d'acquisition mutex I²C |
 | `kPhSlopeQueryIntervalMs` | `86_400_000` ms (24 h) | Re-query auto `Slope,?` (feature-024) |
+| `kSensorFilterMedianWindow` | `7` | Fenêtre médiane (feature-025, buffer FIXE) |
+| `kPhEmaAlpha` / `kOrpEmaAlpha` | `0.10` / `0.08` | Coefficient EMA (lissage lent) |
+| `kPhFilterMaxStep` / `kOrpFilterMaxStep` | `0.15` pH / `50` mV | Saut max → rejet |
+| `kPhFilterMin/Max` / `kOrpFilterMin/Max` | `0/14` pH / `-1000/1500` mV | Plage plausible |
+| `kSensorFilterWarmupSamples` | `5` | Mesures valides avant `ready()` |
+| `kSensorFilterMaxConsecutiveRejects` | `10` | Rejets consécutifs → instable (transitoire) |
+| `kSensorFilterResyncRejects` | `24` | Rejets consécutifs → re-sync (≈120 s), strictement > seuil instable |
+| `kSensorFilterMaxResyncPerWindow` | `3` | Re-sync max sur la fenêtre → latch instable persistant |
+| `kSensorFilterResyncWindowMs` | `600000` ms (10 min) | Fenêtre glissante anti-boucle EMI |
+| `kSensorFilterMaxAgeMs` | `20000` ms | Âge max dernière mesure valide pour `ready()` |
 
 Toutes définies dans [`src/constants.h`](../../src/constants.h).
 
@@ -252,9 +384,9 @@ Logs et alertes MQTT émis **aux transitions uniquement** (entrée et sortie de 
 
 ## Interaction avec les autres composants
 
-- [`pump_controller`](pump-controller.md) : lit `getPh()` / `getOrp()` chaque cycle pour calculer l'erreur PID. Vérifie `getPhCalibrationPointsCached()` / `getOrpCalibrationPointsCached()` dans `canDose(int)` (conditions #1, #2, #5).
-- [`ws_manager`](ws-manager.md) : `broadcastSensorData()` publie `ph` (3 décimales), `orp`, `temperature`, `temperature_circuit`, `phCalPoints`, `orpCalPoints`, `phSlopeAcid/Base/Zero/AgeMs` toutes les 5 s.
-- [`mqtt_manager`](mqtt-manager.md) : publie `{base}/ph` (3 décimales), `{base}/orp`, `{base}/temperature`, `{base}/temperature_circuit`, `{base}/ph_cal_points`, `{base}/orp_cal_points` toutes les 10 s (`kMqttPublishIntervalMs`). 3 topics `{base}/ph_slope_*` edge-triggered. Alertes edge-triggered `{base}/alerts/calibration_required` et `{base}/alerts/sensor_stale`.
+- [`pump_controller`](pump-controller.md) : le PID consomme **uniquement** `getPhFiltered()` / `getOrpFiltered()` (feature-025) et exige `isPhFilterReady()` / `isOrpFilterReady()` (+ `!isPhFilterUnstable()`) dans `canDose(int)`. `getPh()`/`getOrp()` restent disponibles pour les logs et l'affichage brut. Vérifie aussi `getPhCalibrationPointsCached()` / `getOrpCalibrationPointsCached()` (conditions #1, #2, #5).
+- [`ws_manager`](ws-manager.md) : `broadcastSensorData()` publie `ph`/`orp` (= valeur **filtrée**, fallback brut si filtre non amorcé), `temperature`, `temperature_circuit`, `phCalPoints`, `orpCalPoints`, `phSlopeAcid/Base/Zero/AgeMs` toutes les 5 s. feature-025 : champs supplémentaires `ph/orpRaw|Median|Filtered`, `ph/orpFilterReady`, `ph/orpFilterUnstable`, `ph/orpRejectedCount`, `ph/orpMixingDelayActive`, `ph/orpDoseBlockedReason`.
+- [`mqtt_manager`](mqtt-manager.md) : publie `{base}/ph` / `{base}/orp` (= **filtré**), `{base}/temperature`, `{base}/temperature_circuit`, `{base}/ph_cal_points`, `{base}/orp_cal_points` toutes les 10 s (`kMqttPublishIntervalMs`). 3 topics `{base}/ph_slope_*` edge-triggered. feature-025 : topics `{base}/ph|orp_raw|median|filtered|filter_ready|filter_unstable|rejected_count` + `{base}/ph|orp_mixing_delay_active` (retain). Alertes edge-triggered `{base}/alerts/calibration_required` et `{base}/alerts/sensor_stale`.
 - [`history`](history.md) : snapshot des valeurs courantes toutes les 5 min.
 
 ## Multi-sondes DS18B20 — PCB v2 (feature-020)
@@ -296,6 +428,7 @@ Si une sonde est remplacée physiquement (adresse ROM différente), le scan au b
 ## Fichiers liés
 
 - [`src/sensors.h`](../../src/sensors.h), [`src/sensors.cpp`](../../src/sensors.cpp)
+- [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — filtre médiane + EMA (feature-025)
 - [`src/atlas_ezo.h`](../../src/atlas_ezo.h), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp)
 - [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) — routes refondues `/calibrate_ph`, `/calibrate_orp`, `/calibrate_clear`
 - [`src/web_routes_sensor_id.cpp`](../../src/web_routes_sensor_id.cpp) — routes feature-020 inchangées
@@ -303,4 +436,6 @@ Si une sonde est remplacée physiquement (adresse ROM différente), le scan au b
 - [ADR-0014](../adr/0014-migration-atlas-ezo.md) — migration Atlas EZO (supersedes ADR-0001)
 - [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md) — mapping GPIO PCB v2
 - [ADR-0013](../adr/0013-identification-sondes-onewire.md) — identification 2 sondes DS18B20
+- [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) — régulation P temporisée sur mesure filtrée (feature-025)
 - [feature-021](../../specs/features/done/feature-021-migration-atlas-ezo.md) — spec d'origine
+- [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — filtrage mesures + adaptation régulation

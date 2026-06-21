@@ -21,26 +21,45 @@ PumpControllerClass::PumpControllerClass() {
   // Convention pool-chemistry : pumps[0] = pH, pumps[1] = ORP/chlore.
   pumps[0] = {kPumpPhPin,  PUMP1_CHANNEL};
   pumps[1] = {kPumpOrpPin, PUMP2_CHANNEL};
+
+  // feature-025 (pool-chemistry) : coefficients par défaut "P temporisée pure".
+  // pH garde les défauts du struct (Kp=8, Ki=0, Kd=0). ORP plus conservateur :
+  // Kp=0.3 (l'ORP dépend du pH, de la T° et du stabilisant). Kd=0 IMPÉRATIF.
+  orpPID.kp = 0.3f;
+  orpPID.ki = 0.0f;
+  orpPID.kd = 0.0f;
 }
 
-// Applique les paramètres PID selon la vitesse de régulation configurée
+// Applique les paramètres PID selon la vitesse de régulation configurée.
+//
+// feature-025 (pool-chemistry, NON NÉGOCIABLE) : régulation "P temporisée pure".
+//   - Ki = 0 et Kd = 0 IMPÉRATIFS quelle que soit la vitesse choisie.
+//   - Seul Kp module la vitesse (slow / normal / fast).
+//   - pH plus réactif (Kp 4..12), ORP plus conservateur (Kp 0.15..0.5) car l'ORP
+//     dépend du pH, de la T° et du stabilisant.
+// Les anciennes valeurs Ki≠0 / Kd≠0 sont volontairement supprimées : avec une mesure
+// filtrée (médiane + EMA) et une pause mélange, un terme dérivé amplifierait le bruit
+// résiduel et un terme intégral provoquerait un windup malgré l'anti-windup strict.
 void PumpControllerClass::applyRegulationSpeed() {
   const String& speed = mqttCfg.regulationSpeed;
   if (speed == "slow") {
-    phPID.kp = 3.0f;  phPID.ki = 0.05f;  phPID.kd = 12.0f;
-    orpPID.kp = 3.0f; orpPID.ki = 0.05f; orpPID.kd = 12.0f;
+    phPID.kp  = 4.0f;
+    orpPID.kp = 0.15f;
   } else if (speed == "fast") {
-    phPID.kp = 12.0f;  phPID.ki = 0.2f;  phPID.kd = 4.0f;
-    orpPID.kp = 12.0f; orpPID.ki = 0.2f; orpPID.kd = 4.0f;
+    phPID.kp  = 12.0f;
+    orpPID.kp = 0.5f;
   } else {
     // "normal" (défaut)
-    phPID.kp = 6.0f;  phPID.ki = 0.1f;  phPID.kd = 8.0f;
-    orpPID.kp = 6.0f; orpPID.ki = 0.1f; orpPID.kd = 8.0f;
+    phPID.kp  = 8.0f;
+    orpPID.kp = 0.3f;
   }
-  systemLogger.info("PID régulation: vitesse=" + speed +
-    " Kp=" + String(phPID.kp, 1) +
-    " Ki=" + String(phPID.ki, 2) +
-    " Kd=" + String(phPID.kd, 1));
+  // Ki/Kd toujours forcés à 0 (P temporisée pure — pool-chemistry feature-025).
+  phPID.ki  = 0.0f;  phPID.kd  = 0.0f;
+  orpPID.ki = 0.0f;  orpPID.kd = 0.0f;
+  systemLogger.info("PID régulation (P temporisée): vitesse=" + speed +
+    " Kp_pH=" + String(phPID.kp, 2) +
+    " Kp_ORP=" + String(orpPID.kp, 2) +
+    " Ki=0 Kd=0");
 }
 
 void PumpControllerClass::begin() {
@@ -202,6 +221,31 @@ void PumpControllerClass::clearStabilizationTimer() {
   _stabilizationEndMs[1] = 0;
 }
 
+// =============================================================================
+// feature-025 — Pause mélange hydraulique post-injection (pool-chemistry)
+// =============================================================================
+// Géré par timestamps (AUCUN delay()). Gate indépendante (OR) dans canDose(),
+// distincte du timer post-calibration. Écrits/lus en loopTask uniquement.
+
+void PumpControllerClass::notifyPhDose(uint32_t nowMs) {
+  _mixingEndMs[0] = nowMs + (uint32_t)kPhMixingDelayMs;
+}
+
+void PumpControllerClass::notifyOrpDose(uint32_t nowMs) {
+  _mixingEndMs[1] = nowMs + (uint32_t)kOrpMixingDelayMs;
+}
+
+bool PumpControllerClass::isPhMixingDelayActive(uint32_t nowMs) const {
+  if (_mixingEndMs[0] == 0) return false;
+  // Arithmétique non signée : (end - now) > 0 si encore actif (gère wrap millis()).
+  return (int32_t)(_mixingEndMs[0] - nowMs) > 0;
+}
+
+bool PumpControllerClass::isOrpMixingDelayActive(uint32_t nowMs) const {
+  if (_mixingEndMs[1] == 0) return false;
+  return (int32_t)(_mixingEndMs[1] - nowMs) > 0;
+}
+
 unsigned long PumpControllerClass::getStabilizationRemainingS() const {
   unsigned long now = millis();
   unsigned long maxRem = 0;
@@ -281,9 +325,30 @@ bool PumpControllerClass::canDose(int pumpIndex) {
   }
 
   // 3. Cond #1/#5 pool-chemistry : lecture stale ou bus I²C dégradé → NaN.
-  float reading = (pumpIndex == 0) ? sensors.getPh() : sensors.getOrp();
+  // feature-025 : le PID auto consomme la mesure FILTRÉE → on valide le filtré ici.
+  float reading = (pumpIndex == 0) ? sensors.getPhFiltered()
+                                    : sensors.getOrpFiltered();
   if (isnan(reading)) {
-    logRefusalOnce(pumpIndex, "lecture pH/ORP stale ou indisponible (NaN)");
+    logRefusalOnce(pumpIndex, "lecture pH/ORP filtrée indisponible (NaN)");
+    return false;
+  }
+
+  // 3b. feature-025 (fail-closed) : filtre non prêt (warmup en cours, mesure trop
+  // ancienne, ou EZO injoignable → âge dépassé). Bloque le dosage tant que le filtre
+  // n'a pas reçu kSensorFilterWarmupSamples mesures valides récentes.
+  bool filterReady = (pumpIndex == 0) ? sensors.isPhFilterReady()
+                                       : sensors.isOrpFilterReady();
+  if (!filterReady) {
+    logRefusalOnce(pumpIndex, "filtre capteur non prêt (warmup / EZO injoignable)");
+    return false;
+  }
+
+  // 3c. feature-025 (fail-closed) : capteur déclaré instable (trop de rejets
+  // consécutifs → bruit EMI persistant). On bloque plutôt que de lisser agressivement.
+  bool filterUnstable = (pumpIndex == 0) ? sensors.isPhFilterUnstable()
+                                          : sensors.isOrpFilterUnstable();
+  if (filterUnstable) {
+    logRefusalOnce(pumpIndex, "capteur instable (rejets consécutifs)");
     return false;
   }
 
@@ -306,6 +371,17 @@ bool PumpControllerClass::canDose(int pumpIndex) {
   // 5. Cond #3 pool-chemistry : stabilisation post-cal en cours pour cette pompe.
   if (isStabilizationTimerActive(pumpIndex)) {
     logRefusalOnce(pumpIndex, "stabilisation post-calibration en cours");
+    return false;
+  }
+
+  // 5b. feature-025 (pool-chemistry) : pause mélange hydraulique active.
+  // Gate INDÉPENDANTE de la stabilisation post-cal (pas de cumul) : après une
+  // injection, on laisse le bassin s'homogénéiser avant toute nouvelle décision.
+  uint32_t nowMs = (uint32_t)millis();
+  bool mixingActive = (pumpIndex == 0) ? isPhMixingDelayActive(nowMs)
+                                        : isOrpMixingDelayActive(nowMs);
+  if (mixingActive) {
+    logRefusalOnce(pumpIndex, "pause mélange en cours");
     return false;
   }
 
@@ -377,7 +453,8 @@ bool PumpControllerClass::canDose(int pumpIndex) {
   return true;
 }
 
-float PumpControllerClass::computePID(PIDController& pid, float error, unsigned long now) {
+float PumpControllerClass::computePID(PIDController& pid, float error, unsigned long now,
+                                      float deadband, bool freezeIntegral) {
   if (pid.lastTime == 0) {
     pid.lastTime = now;
     pid.lastError = error;
@@ -390,13 +467,34 @@ float PumpControllerClass::computePID(PIDController& pid, float error, unsigned 
     return 0.0f;
   }
 
+  // feature-025 (B7) : zone morte = seuil de démarrage existant (un SEUL deadband
+  // fait foi). Si |erreur| < deadband → sortie 0 ET aucune accumulation intégrale.
+  // Ne PAS dupliquer de second deadband (computeFlowFromError n'est pas touché).
+  bool inDeadband = (fabsf(error) < deadband);
+
+  // feature-025 (B6) : anti-windup strict — geler l'accumulation de l'intégrale
+  // AVANT le calcul dans tous les cas signalés par l'appelant (filtre non prêt,
+  // canDose==false, pause mélange, sortie saturée, mesure rejetée/instable) ou si
+  // l'erreur est dans la zone morte. Avec Ki=0 (P temporisée pure), l'intégrale est
+  // de toute façon inerte ; ce gel garantit l'absence de windup si Ki est réactivé.
+  bool allowIntegration = !freezeIntegral && !inDeadband;
+
+  if (inDeadband) {
+    // Sortie nulle dans la zone morte (pas de proportionnel non plus).
+    pid.lastError = error;
+    pid.lastTime = now;
+    return 0.0f;
+  }
+
   // Calcul PID
   float proportional = pid.kp * error;
 
-  pid.integral += error * dt;
-  // Anti-windup
-  if (pid.integral > pid.integralMax) pid.integral = pid.integralMax;
-  if (pid.integral < -pid.integralMax) pid.integral = -pid.integralMax;
+  if (allowIntegration) {
+    pid.integral += error * dt;
+    // Anti-windup (borne intégrale)
+    if (pid.integral > pid.integralMax) pid.integral = pid.integralMax;
+    if (pid.integral < -pid.integralMax) pid.integral = -pid.integralMax;
+  }
   float integralTerm = pid.ki * pid.integral;
 
   float derivative = pid.kd * (error - pid.lastError) / dt;
@@ -647,7 +745,9 @@ void PumpControllerClass::update() {
   // mode automatic, limites journalière/horaire, anti-cycling.
   const String& phMode = mqttCfg.phRegulationMode;
   if (phMode == "automatic" && phLimitOk && phSafetyOk && canDose(0)) {
-    float phValue = sensors.getPh();
+    // feature-025 : le PID auto consomme la mesure FILTRÉE (médiane + EMA).
+    // canDose(0) a déjà garanti isPhFilterReady() && !isPhFilterUnstable() → non NaN.
+    float phValue = sensors.getPhFiltered();
     float effectivePh = phValue;
 
     // Calcul de l'erreur selon le type de correction
@@ -677,7 +777,9 @@ void PumpControllerClass::update() {
         // Anti-rafale Pass 3.5 : on enregistre le timestamp de start dans le
         // ring buffer pour les fenêtres glissantes 1 min / 15 min (cf. canDose()).
         recordDosingCycleStart(0);
-        systemLogger.info("Démarrage dosage pH (auto): pH=" + String(sensors.getPh(), 2) +
+        // feature-025 : pause mélange hydraulique armée au démarrage d'injection.
+        notifyPhDose((uint32_t)now);
+        systemLogger.info("Démarrage dosage pH (auto): pH=" + String(sensors.getPhFiltered(), 2) +
           " cible=" + String(mqttCfg.phTarget, 2) +
           " erreur=" + String(error, 3) +
           " (cycle " + String(phDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
@@ -686,8 +788,12 @@ void PumpControllerClass::update() {
 
     float flow = 0.0f;
     if (shouldDose) {
+      // feature-025 (B6) : geler l'intégrale si la sortie sature (terme P seul
+      // ≥ débit max → toute accumulation serait du windup). deadband = seuil start.
+      bool phSaturated = (phPID.kp * error >= phPumpControl.maxFlowMlPerMin);
       // Calcul PID — constrain avec minimum pour éviter flow=0 à la première invocation du PID
-      float pidOutput = computePID(phPID, error, now);
+      float pidOutput = computePID(phPID, error, now,
+                                   pumpProtection.phStartThreshold, phSaturated);
       flow = constrain(pidOutput, phPumpControl.minFlowMlPerMin, phPumpControl.maxFlowMlPerMin);
     } else {
       // Arrêt du dosage
@@ -796,7 +902,9 @@ void PumpControllerClass::update() {
   // Contrôle ORP — dispatch sur orpRegulationMode, gardé en profondeur par canDose(1).
   const String& orpMode = mqttCfg.orpRegulationMode;
   if (orpMode == "automatic" && orpLimitOk && orpSafetyOk && canDose(1)) {
-    float orpValue = sensors.getOrp();
+    // feature-025 : le PID auto consomme la mesure FILTRÉE (médiane + EMA).
+    // canDose(1) a déjà garanti isOrpFilterReady() && !isOrpFilterUnstable() → non NaN.
+    float orpValue = sensors.getOrpFiltered();
     float effectiveOrp = orpValue;
 
     // Erreur positive = ORP trop bas → injecter du chlore pour monter l'ORP
@@ -818,7 +926,9 @@ void PumpControllerClass::update() {
         orpDosingState.cyclesToday++;
         // Anti-rafale Pass 3.5 : timestamp de start pour les fenêtres glissantes.
         recordDosingCycleStart(1);
-        systemLogger.info("Démarrage dosage ORP (auto): ORP=" + String(sensors.getOrp(), 0) + "mV" +
+        // feature-025 : pause mélange hydraulique armée au démarrage d'injection.
+        notifyOrpDose((uint32_t)now);
+        systemLogger.info("Démarrage dosage ORP (auto): ORP=" + String(sensors.getOrpFiltered(), 0) + "mV" +
           " cible=" + String(mqttCfg.orpTarget, 0) + "mV" +
           " erreur=" + String(error, 0) + "mV" +
           " (cycle " + String(orpDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
@@ -827,8 +937,11 @@ void PumpControllerClass::update() {
 
     float flow = 0.0f;
     if (shouldDose) {
+      // feature-025 (B6) : geler l'intégrale si la sortie sature. deadband = seuil start.
+      bool orpSaturated = (orpPID.kp * error >= orpPumpControl.maxFlowMlPerMin);
       // Calcul PID — constrain avec minimum pour éviter flow=0 à la première invocation du PID
-      float pidOutput = computePID(orpPID, error, now);
+      float pidOutput = computePID(orpPID, error, now,
+                                   pumpProtection.orpStartThreshold, orpSaturated);
       flow = constrain(pidOutput, orpPumpControl.minFlowMlPerMin, orpPumpControl.maxFlowMlPerMin);
     } else {
       // Arrêt du dosage

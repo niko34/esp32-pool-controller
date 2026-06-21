@@ -9,6 +9,7 @@
 #include <DallasTemperature.h>
 #include "atlas_ezo.h"
 #include "constants.h"
+#include "sensor_filter.h"
 
 // Rôle attribué à une sonde DS18B20 (feature-020)
 enum class SondeRole : uint8_t {
@@ -77,6 +78,32 @@ public:
   float getPh() const;
   // NaN si lecture stale (dernière lecture valide > kSensorStaleTimeoutMs).
   float getOrp() const;
+
+  // ===== feature-025 : chaîne de filtrage pH/ORP (médiane + EMA + rejet pics) =====
+  // getPh()/getOrp() restent VOLONTAIREMENT bruts (rétrocompat affichage/MQTT/scheduled).
+  // Le PID auto consomme getPhFiltered()/getOrpFiltered() et exige isPhFilterReady()/
+  // isOrpFilterReady() avant tout dosage (fail-closed warmup / EZO injoignable / instable).
+  // Tous les getters sont lock-free (lecture dans le SEUL contexte loopTask, comme _lastPh).
+  float getPhRaw() const;             // Dernière brute pH (= getPh() brut, NaN si stale)
+  float getPhMedian() const;          // Médiane courante pH (NaN si pas de donnée)
+  float getPhFiltered() const;        // pH filtré EMA — valeur PID (NaN si non amorcé)
+  bool isPhFilterReady() const;       // true après warmup + dernière mesure valide récente
+  bool isPhFilterUnstable() const;    // true si trop de rejets consécutifs
+  uint8_t getPhRejectedCount() const; // Compteur glissant de rejets pH
+
+  float getOrpRaw() const;
+  float getOrpMedian() const;
+  float getOrpFiltered() const;
+  bool isOrpFilterReady() const;
+  bool isOrpFilterUnstable() const;
+  uint8_t getOrpRejectedCount() const;
+
+  // Reset manuel des filtres (appelé après calibration EZO réussie, ou debug).
+  // Repasse le filtre en warmup → dosage auto bloqué jusqu'à kSensorFilterWarmupSamples
+  // mesures valides.
+  void resetPhFilter();
+  void resetOrpFilter();
+
   // Nombre de points de calibration mémorisés dans l'EZO.
   // -1 si module injoignable (erreur I²C ou bus indisponible),
   // 0..3 sinon (Atlas pH supporte 1pt/2pts/3pts, ORP 1pt seul).
@@ -130,15 +157,16 @@ public:
   // Capture chaque cycle EZO (pH + ORP + tempC envoyé). Sert au diagnostic d'oscillation.
   // Buffer glissant ~25 min à kPhOrpSensorIntervalMs = 5 s.
   struct PhDebugSample {
-    uint32_t ms;     // millis() au moment de la lecture
-    float    ph;     // NaN si lecture échouée
-    float    orp;    // NaN si lecture échouée
-    float    tempC;  // T° envoyée à l'EZO pour compensation
+    uint32_t ms;          // millis() au moment de la lecture
+    float    ph;          // pH brut Atlas EZO, NaN si lecture échouée
+    float    phFiltered;  // pH lissé (médiane + EMA, feature-025), NaN si filtre vide
+    float    orp;         // NaN si lecture échouée
+    float    tempC;       // T° envoyée à l'EZO pour compensation
   };
   static constexpr size_t kPhDebugBufferSize = 300;
   // Sérialise les échantillons valides dans l'ordre chronologique (plus ancien d'abord).
   size_t getPhDebugSampleCount() const;
-  // Remplit `out` avec les samples sous forme JSON `[{t, ph, orp, tempC}, ...]`.
+  // Remplit `out` avec les samples sous forme JSON `[{t, ph, phFiltered, orp, tempC}, ...]`.
   // `out` doit déjà être un JsonArray dans un JsonDocument suffisamment grand.
   void getPhDebugSamplesJson(JsonArray out) const;
   // Vide le ring buffer (utile pour démarrer une fenêtre d'observation propre).
@@ -198,6 +226,19 @@ private:
   uint32_t _lastPhMs = 0;
   uint32_t _lastOrpMs = 0;
 
+  // ===== feature-025 : filtres pH / ORP =====
+  // Alimentés dans _readEzoSensors() à chaque lecture EZO valide (contexte loopTask).
+  // Lus par les getters get*Filtered()/is*FilterReady() depuis loopTask uniquement
+  // (pump_controller, ws_manager côté loop). Pas de mutex : cf. contrat SensorFilter.
+  SensorFilter _phFilter{SensorFilter::Config{
+      kPhFilterMin, kPhFilterMax, kPhFilterMaxStep, kPhEmaAlpha,
+      kSensorFilterMedianWindow, kSensorFilterWarmupSamples,
+      kSensorFilterMaxConsecutiveRejects, kSensorFilterMaxAgeMs}};
+  SensorFilter _orpFilter{SensorFilter::Config{
+      kOrpFilterMin, kOrpFilterMax, kOrpFilterMaxStep, kOrpEmaAlpha,
+      kSensorFilterMedianWindow, kSensorFilterWarmupSamples,
+      kSensorFilterMaxConsecutiveRejects, kSensorFilterMaxAgeMs}};
+
   // Compteurs d'échecs I²C consécutifs (pool-chemistry condition #5)
   int _phI2cFailStreak = 0;
   int _orpI2cFailStreak = 0;
@@ -246,7 +287,7 @@ private:
 
   // ===== Helpers privés =====
   void _readEzoSensors(float tempC);   // Lecture pH puis ORP, mise à jour caches
-  void _recordPhDebugSample(float ph, float orp, float tempC);
+  void _recordPhDebugSample(float ph, float phFiltered, float orp, float tempC);
   void _readDs18b20s();                // Lecture multi-sondes DS18B20
   void _processEzoQueue();             // Dépile au plus 1 commande par cycle
   void _executeEzoCmd(const EzoCmdRequest& req);

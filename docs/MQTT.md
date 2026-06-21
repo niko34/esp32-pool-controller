@@ -22,8 +22,8 @@ Tous les topics utilisent le préfixe configurable (ex: `pool/sensors`). Les val
 | Topic | Payload | Description |
 |-------|---------|-------------|
 | `{base}/temperature` | `24.5` | Température de l'eau (°C) |
-| `{base}/ph` | `7.234` | Valeur pH (**3 décimales** depuis 2.0.0 — voir [ADR-0014](adr/0014-migration-atlas-ezo.md)) |
-| `{base}/orp` | `720` | Valeur ORP (mV) |
+| `{base}/ph` | `7.234` | Valeur pH **filtrée** (médiane + EMA) depuis 2.2.0 — fallback brut si filtre non amorcé (**3 décimales** depuis 2.0.0 — voir [ADR-0014](adr/0014-migration-atlas-ezo.md)). Topics brut/médiane séparés ci-dessous (feature-025). |
+| `{base}/orp` | `720` | Valeur ORP **filtrée** (mV) depuis 2.2.0 — fallback brut si filtre non amorcé |
 | `{base}/ph_cal_points` | `2` | Points de calibration EZO pH (entier `-1..3`, `-1` = EZO injoignable). Retain. Voir [feature-021](../specs/features/done/feature-021-migration-atlas-ezo.md). |
 | `{base}/orp_cal_points` | `1` | Points de calibration EZO ORP (entier `-1..1`, `-1` = EZO injoignable). Retain. |
 | `{base}/ph_slope_acid` | `99.7` | Pente acide sonde pH EZO en % (1 décimale). Retain. Edge-triggered ([feature-024](../specs/features/done/feature-024-pente-sonde-ph.md)). |
@@ -234,3 +234,37 @@ Diagnostic d'usure de la sonde pH via la commande Atlas `Slope,?`. Toutes les va
 **Pas de `binary_sensor` "à remplacer"** côté firmware : l'utilisateur peut le créer en automation HA depuis les 3 sensors selon ses propres seuils (par défaut UI : pente min ≥ 95 % et |zéro| ≤ 15 mV → vert ; < 85 % ou |zéro| > 30 mV → rouge).
 
 Voir [`docs/features/page-ph.md`](features/page-ph.md#chip-détat-sonde-feature-024) (chip + modal UI) et [`docs/subsystems/sensors.md`](subsystems/sensors.md#pente-sonde-ph--feature-024) (détails firmware : cache, fail streak, refresh policy).
+
+## Topics et entités ajoutés en feature-025 (lissage mesures pH/ORP)
+
+Lissage logiciel des mesures (médiane 7 + EMA). Le topic `{base}/ph` / `{base}/orp` publie désormais la valeur **filtrée** (cf. tableau Capteurs ci-dessus) ; les topics ci-dessous exposent en plus le brut, la médiane et l'état du filtre pour diagnostic EMI. Tous **retain**.
+
+| Topic | Payload | Description |
+|-------|---------|-------------|
+| `{base}/ph_raw` | `7.46` | Dernière mesure pH **brute** Atlas (diagnostic EMI, 3 décimales) |
+| `{base}/ph_median` | `7.43` | Médiane glissante pH (fenêtre 7) |
+| `{base}/ph_filtered` | `7.43` | Mesure pH **filtrée** (EMA) — valeur de régulation |
+| `{base}/ph_filter_ready` | `ON`/`OFF` | Filtre pH prêt (warmup terminé + mesure récente) |
+| `{base}/ph_filter_unstable` | `ON`/`OFF` | Capteur pH instable (trop de rejets consécutifs) |
+| `{base}/ph_rejected_count` | `3` | Nombre de mesures pH rejetées (glissant, 0..255) |
+| `{base}/orp_raw` | `690` | Dernière mesure ORP **brute** Atlas (mV) |
+| `{base}/orp_median` | `682` | Médiane glissante ORP (mV) |
+| `{base}/orp_filtered` | `682` | Mesure ORP **filtrée** (mV) — valeur de régulation |
+| `{base}/orp_filter_ready` | `ON`/`OFF` | Filtre ORP prêt |
+| `{base}/orp_filter_unstable` | `ON`/`OFF` | Capteur ORP instable |
+| `{base}/orp_rejected_count` | `2` | Nombre de mesures ORP rejetées |
+| `{base}/ph_mixing_delay_active` | `ON`/`OFF` | Pause mélange pH active (15 min après injection) |
+| `{base}/orp_mixing_delay_active` | `ON`/`OFF` | Pause mélange ORP active (20 min après injection) |
+
+### Auto-discovery HA (feature-025)
+
+| Entité | Type | Topic d'état | `unique_id` | Détails |
+|--------|------|--------------|-------------|---------|
+| Piscine pH Brut | `sensor` | `{base}/ph_raw` | `poolcontroller_ph_raw` | `unit: pH`, `icon: mdi:water-outline`, `state_class: measurement` |
+| Piscine pH Filtré | `sensor` | `{base}/ph_filtered` | `poolcontroller_ph_filtered` | `unit: pH`, `icon: mdi:water-check`, `state_class: measurement` |
+| Piscine ORP Brut | `sensor` | `{base}/orp_raw` | `poolcontroller_orp_raw` | `unit: mV`, `icon: mdi:flash-outline`, `state_class: measurement` |
+| Piscine ORP Filtré | `sensor` | `{base}/orp_filtered` | `poolcontroller_orp_filtered` | `unit: mV`, `icon: mdi:flash-alert`, `state_class: measurement` |
+| Piscine Filtre pH Prêt | `binary_sensor` | `{base}/ph_filter_ready` | `poolcontroller_ph_filter_ready` | `payload_on: ON`, `payload_off: OFF`, `icon: mdi:filter-check` |
+| Piscine Filtre ORP Prêt | `binary_sensor` | `{base}/orp_filter_ready` | `poolcontroller_orp_filter_ready` | `payload_on: ON`, `payload_off: OFF`, `icon: mdi:filter-check` |
+
+> Le préfixe réel `unique_id` est `HA_DEVICE_ID` (`poolcontroller`). Les topics `median`, `filter_unstable`, `rejected_count` et `mixing_delay_active` sont publiés en retain mais **sans** entité auto-discovery dédiée (l'utilisateur peut créer des sensors HA manuels s'il le souhaite). Voir [`src/mqtt_manager.cpp`](../src/mqtt_manager.cpp) et [`docs/subsystems/sensors.md`](subsystems/sensors.md#filtrage-des-mesures-phorp--feature-025).

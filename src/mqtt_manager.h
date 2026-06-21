@@ -50,6 +50,21 @@ struct MqttTopics {
   String phSlopeAcidState;        // feature-024 : % pente acide pH (Slope,?)
   String phSlopeBaseState;        // feature-024 : % pente base pH (Slope,?)
   String phSlopeZeroState;        // feature-024 : décalage zéro pH (mV)
+  // feature-025 : chaîne de filtrage pH/ORP (médiane + EMA + rejet pics)
+  String phRawState;              // pH brut Atlas
+  String phMedianState;           // pH médian
+  String phFilteredState;         // pH filtré (valeur PID)
+  String phFilterReadyState;      // ON/OFF filtre pH prêt
+  String phFilterUnstableState;   // ON/OFF capteur pH instable
+  String phRejectedCountState;    // nb rejets pH
+  String orpRawState;
+  String orpMedianState;
+  String orpFilteredState;
+  String orpFilterReadyState;
+  String orpFilterUnstableState;
+  String orpRejectedCountState;
+  String phMixingDelayActiveState;  // ON/OFF pause mélange pH
+  String orpMixingDelayActiveState; // ON/OFF pause mélange ORP
 };
 
 // Architecture producer/consumer (cf. ADR-0011) :
@@ -111,6 +126,15 @@ private:
   float _lastPhSlopeAcidPub = NAN;
   float _lastPhSlopeBasePub = NAN;
   float _lastPhSlopeZeroPub = NAN;
+
+  // feature-025 : caches anti-spam pour les topics filtre pH/ORP. On ne republie
+  // un topic retain que si la valeur (déjà arrondie) a changé. Lus/écrits uniquement
+  // depuis mqttTask. Sentinelle vide = "jamais publié".
+  String _lastFilterPub[14];
+  // Publie `payload` sur `topic` uniquement si différent du dernier publié (slot `cacheIdx`).
+  void safePublishDedup(int cacheIdx, const char* topic, const String& payload);
+  // Publie l'ensemble des topics de la chaîne de filtrage (edge-triggered).
+  void publishFilterStatesInternal();
   // Vérifie l'état de calibration et stale, publie/clear les alertes au besoin.
   // Appelé depuis mqttTask (publishAllStatesInternal + connectInTask).
   void publishCalibrationStatusInternal();

@@ -134,7 +134,7 @@ struct PumpProtection {
   unsigned long minInjectionTimeMs = 30000;      // 30s minimum par injection
   float phStartThreshold = 0.05f;                // Démarre dosage si erreur pH > 0.05
   float phStopThreshold = 0.01f;                 // Continue dosage si erreur pH > 0.01
-  float orpStartThreshold = 10.0f;               // Démarre dosage si erreur ORP > 10mV
+  float orpStartThreshold = 15.0f;               // Démarre dosage si erreur ORP > 15mV (feature-025 : deadband effectif ORP ±15 mV)
   float orpStopThreshold = 2.0f;                 // Continue dosage si erreur ORP > 2mV
   unsigned int maxCyclesPerDay = 20;             // Max 20 démarrages par jour
 };
