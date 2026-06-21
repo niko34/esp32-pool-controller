@@ -11,7 +11,7 @@ Point d'entrée unique pour **tout** ce qui concerne le pH : mesure, mode de ré
 
 En mode nominal, quatre zones :
 
-1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH **filtrée** courante en grand (3 décimales) + **ligne brute discrète** « brut · médiane · maj » + **chip d'état filtre** cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) + **chip d'état sonde pH** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression).
+1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH **filtrée** courante en grand (1 décimale, cohérent avec le tableau de bord) + **ligne brute discrète** « brut · médiane · maj » + **chip d'état filtre** cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) + **chip d'état sonde pH** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression).
 2. **Carte Régulation pH** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs conditionnels :
    - **Automatique** : pH cible + bouton Sauvegarder. Affichage du **statut de calibration EZO** (cf. [Statut de calibration](#statut-de-calibration-ezo)) :
      - **Callout vert** « Calibré 2 points ✓ » si `phCalPoints >= 2`.
@@ -62,7 +62,7 @@ Sous la valeur pH dans le bloc Statistiques, un **chip cliquable** affiche en pe
 
 ### Placement
 
-Élément `<button id="ph-probe-chip" class="chip chip--probe ...">` à l'intérieur du bloc Statistiques pH (`#ph-card-stats`), sous l'affichage pH 3 décimales. Le chip est focusable (rôle bouton, `Enter`/`Espace` ouvrent le modal).
+Élément `<button id="ph-probe-chip" class="chip chip--probe ...">` à l'intérieur du bloc Statistiques pH (`#ph-card-stats`), sous l'affichage pH (1 décimale). Le chip est focusable (rôle bouton, `Enter`/`Espace` ouvrent le modal).
 
 ### Classification (UI)
 

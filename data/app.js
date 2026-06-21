@@ -2861,7 +2861,8 @@
         if (phCurrentValue) {
           if (phCurrentLabel) phCurrentLabel.textContent = "Valeur pH actuelle";
           if (json.ph != null && typeof json.ph === "number" && !isNaN(json.ph)) {
-            phCurrentValue.textContent = json.ph.toFixed(2);
+            // Arrondi à 1 décimale, cohérent avec le tableau de bord (updateDashboardMetrics).
+            phCurrentValue.textContent = (Math.round(json.ph * 10) / 10).toFixed(1);
           } else {
             phCurrentValue.textContent = "--";
           }
