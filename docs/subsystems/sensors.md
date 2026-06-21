@@ -228,11 +228,11 @@ Une mesure **n'alimente pas** le filtre (mais la brute reste lisible) si :
 Le filtre distingue désormais un **pic isolé** d'un **vrai changement durable** :
 
 - Chaque rejet pour « saut excessif » incrémente `consecutiveRejects` et mémorise le brut rejeté dans un mini-buffer FIXE (`_rejBuffer`, réutilise la capacité physique `kSensorFilterMedianWindow` → aucune allocation).
-- Après `kSensorFilterResyncRejects` (= **24**, ≈ 120 s à 5 s/cycle) rejets consécutifs sur saut excessif, le filtre conclut à un **changement réel** : il se **ré-amorce sur la MÉDIANE des derniers bruts rejetés** (et non sur l'échantillon courant, pour ignorer un éventuel pic final) puis **repart en warmup** → `ready()` repasse `false` → **dosage bloqué pendant le re-warmup** (invariant fail-closed préservé).
-- Un **pic isolé** (`< 24` cycles avant retour dans la bande `maxStep`) reste simplement rejeté, sans jamais toucher `filtered`.
+- Après `kSensorFilterResyncRejects` (= **12**, ≈ 60 s à 5 s/cycle, feature-033) rejets consécutifs sur saut excessif, le filtre conclut à un **changement réel** : il se **ré-amorce sur la MÉDIANE des derniers bruts rejetés** (et non sur l'échantillon courant, pour ignorer un éventuel pic final) puis **repart en warmup** → `ready()` repasse `false` → **dosage bloqué pendant le re-warmup** (invariant fail-closed préservé).
+- Un **pic isolé** (`< 12` cycles avant retour dans la bande `maxStep`) reste simplement rejeté, sans jamais toucher `filtered`.
 - Chaque re-sync logue un `warning` (ancienne valeur filtrée + médiane d'amorçage).
 
-`kSensorFilterResyncRejects` (= 24) est **strictement supérieur** à `kSensorFilterMaxConsecutiveRejects` (= 10) : un capteur réellement bruité est donc déclaré `unstable()` (et le dosage bloqué) **bien avant** qu'une re-sync ne se déclenche.
+`kSensorFilterResyncRejects` (= 12) reste **strictement supérieur** à `kSensorFilterMaxConsecutiveRejects` (= 10) : un capteur réellement bruité est donc déclaré `unstable()` (et le dosage bloqué) **avant** qu'une re-sync ne se déclenche (invariant 12 > 10 préservé).
 
 ### Anti-boucle latché
 
@@ -258,7 +258,7 @@ Getters associés : `resyncCount()` (re-sync dans la fenêtre courante) et `unst
 | Plage plausible | `kPhFilterMin/Max` = 0.0 – 14.0 | `kOrpFilterMin/Max` = -1000 – +1500 mV |
 | Warmup (`kSensorFilterWarmupSamples`) | 5 | 5 |
 | Rejets consécutifs → instable (`kSensorFilterMaxConsecutiveRejects`) | 10 | 10 |
-| Rejets consécutifs → re-sync (`kSensorFilterResyncRejects`) | 24 | 24 |
+| Rejets consécutifs → re-sync (`kSensorFilterResyncRejects`) | 12 | 12 |
 | Re-sync max avant latch (`kSensorFilterMaxResyncPerWindow`) | 3 | 3 |
 | Fenêtre anti-boucle (`kSensorFilterResyncWindowMs`) | 600 000 ms | 600 000 ms |
 | Âge max ready (`kSensorFilterMaxAgeMs`) | 20 000 ms | 20 000 ms |
@@ -297,7 +297,7 @@ Le filtre repasse en **warmup** → dosage de la sonde concernée bloqué jusqu'
 | `kPhFilterMin/Max` / `kOrpFilterMin/Max` | `0/14` pH / `-1000/1500` mV | Plage plausible |
 | `kSensorFilterWarmupSamples` | `5` | Mesures valides avant `ready()` |
 | `kSensorFilterMaxConsecutiveRejects` | `10` | Rejets consécutifs → instable (transitoire) |
-| `kSensorFilterResyncRejects` | `24` | Rejets consécutifs → re-sync (≈120 s), strictement > seuil instable |
+| `kSensorFilterResyncRejects` | `12` | Rejets consécutifs → re-sync (≈60 s, feature-033), strictement > seuil instable |
 | `kSensorFilterMaxResyncPerWindow` | `3` | Re-sync max sur la fenêtre → latch instable persistant |
 | `kSensorFilterResyncWindowMs` | `600000` ms (10 min) | Fenêtre glissante anti-boucle EMI |
 | `kSensorFilterMaxAgeMs` | `20000` ms | Âge max dernière mesure valide pour `ready()` |

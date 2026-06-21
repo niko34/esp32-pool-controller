@@ -192,7 +192,7 @@ void test_slow_drift_is_tracked(void) {
 // Re-synchronisation + anti-boucle latché (correctif terrain calibration→retour)
 // =============================================================================
 // Constantes attendues (constants.h) :
-//   kSensorFilterResyncRejects        = 24  (seuil re-sync)
+//   kSensorFilterResyncRejects        = 12  (seuil re-sync, ≈60 s — feature-033)
 //   kSensorFilterMaxConsecutiveRejects= 10  (instable)
 //   kSensorFilterMaxResyncPerWindow   = 3   (anti-boucle)
 //   kSensorFilterResyncWindowMs       = 600000
@@ -200,10 +200,15 @@ void test_slow_drift_is_tracked(void) {
 
 // --- Cas 0 : sanity des constantes (verrou de régression) -------------------
 void test_resync_constants_values(void) {
-  TEST_ASSERT_EQUAL_UINT8(24, kSensorFilterResyncRejects);
+  TEST_ASSERT_EQUAL_UINT8(12, kSensorFilterResyncRejects);
   TEST_ASSERT_EQUAL_UINT8(10, kSensorFilterMaxConsecutiveRejects);
   TEST_ASSERT_EQUAL_UINT8(3, kSensorFilterMaxResyncPerWindow);
   TEST_ASSERT_EQUAL_UINT32(600000u, kSensorFilterResyncWindowMs);
+  // Invariants structurels : le seuil de re-sync doit rester STRICTEMENT
+  // au-dessus du seuil "instable" (sinon plus jamais d'état instable observable)
+  // ET au-dessus de la fenêtre médiane (sinon mini-buffer de rejets non plein).
+  TEST_ASSERT_GREATER_THAN_UINT8(kSensorFilterMaxConsecutiveRejects, kSensorFilterResyncRejects);
+  TEST_ASSERT_GREATER_THAN_UINT8(kSensorFilterMedianWindow, kSensorFilterResyncRejects);
 }
 
 // --- Cas A : PIC ISOLÉ (< 24 cycles) → rejeté, filtré figé, PAS de re-sync ---
@@ -244,7 +249,7 @@ void test_caseB_durable_change_triggers_resync_and_rewarmup(void) {
   TEST_ASSERT_FLOAT_WITHIN(0.01f, kCal, f.filtered());
   float frozen = f.filtered();
 
-  // (1) Les 23 premières mesures à 4.0 sont rejetées, _filtered FIGÉ.
+  // (1) Les (kResync-1) premières mesures à 4.0 sont rejetées, _filtered FIGÉ.
   for (int i = 0; i < (int)kSensorFilterResyncRejects - 1; ++i) {
     TEST_ASSERT_FALSE(f.addSample(kNew, t));
     TEST_ASSERT_EQUAL_FLOAT(frozen, f.filtered());  // figé pendant le rejet
@@ -253,7 +258,7 @@ void test_caseB_durable_change_triggers_resync_and_rewarmup(void) {
   TEST_ASSERT_EQUAL_UINT8(kSensorFilterResyncRejects - 1, f.consecutiveRejects());
   TEST_ASSERT_EQUAL_UINT8(0, f.resyncCount());
 
-  // (2) 24e rejet consécutif → re-sync : retour warmup.
+  // (2) kResync-ième rejet consécutif (12e) → re-sync : retour warmup.
   TEST_ASSERT_FALSE(f.addSample(kNew, t));
   t += 5000;
   TEST_ASSERT_EQUAL_UINT8(1, f.resyncCount());
@@ -271,20 +276,22 @@ void test_caseB_durable_change_triggers_resync_and_rewarmup(void) {
 }
 
 // --- Cas C : RÉ-AMORÇAGE SUR MÉDIANE des bruts rejetés (pas un pic final) ----
-// On rejette 23 mesures à ~4.0 puis le 24e (déclencheur) est un transitoire isolé
-// à 6.0. La médiane d'amorçage doit ressortir proche de 4.0, pas 6.0.
+// On rejette (kResync-1) mesures à ~4.0 puis le déclencheur est un transitoire
+// isolé à 6.0. La médiane d'amorçage doit ressortir proche de 4.0, pas 6.0.
+// Note : kSensorFilterResyncRejects (12) > kSensorFilterMedianWindow (7) garantit
+// que le mini-buffer de rejets est plein de 4.0 avant le pic final.
 void test_caseC_reseed_on_median_of_rejected(void) {
   SensorFilter f(phCfg());
   uint32_t t = 0;
   for (int i = 0; i < 20; ++i) { f.addSample(7.00f, t); t += 5000; }
   TEST_ASSERT_FLOAT_WITHIN(0.01f, 7.00f, f.filtered());
 
-  // 23 rejets à 4.0 (le mini-buffer ne garde que les 7 derniers → tous 4.0).
+  // (kResync-1) rejets à 4.0 (le mini-buffer ne garde que les 7 derniers → tous 4.0).
   for (int i = 0; i < (int)kSensorFilterResyncRejects - 1; ++i) {
     f.addSample(4.00f, t);
     t += 5000;
   }
-  // 24e rejet : transitoire isolé à 6.0 → déclenche la re-sync.
+  // Rejet déclencheur : transitoire isolé à 6.0 → déclenche la re-sync.
   f.addSample(6.00f, t);
   t += 5000;
   TEST_ASSERT_EQUAL_UINT8(1, f.resyncCount());
@@ -302,7 +309,8 @@ void test_caseD_resync_loop_latches_unstable(void) {
   uint32_t t = 0;
 
   // Helper : amène le filtre stable à `base`, puis force une re-sync vers `next`
-  // (24 rejets consécutifs). Tout dans la fenêtre glissante (incréments courts).
+  // (kSensorFilterResyncRejects rejets consécutifs). Tout dans la fenêtre
+  // glissante (incréments courts) : 3 re-sync tiennent dans kResyncWindowMs.
   auto stabilize = [&](float v, int n) {
     for (int i = 0; i < n; ++i) { f.addSample(v, t); t += 5000; }
   };
@@ -343,7 +351,7 @@ void test_caseE_reset_clears_resync_state(void) {
   SensorFilter f(phCfg());
   uint32_t t = 0;
   for (int i = 0; i < 20; ++i) { f.addSample(7.00f, t); t += 5000; }
-  // Provoque une re-sync (24 rejets durables).
+  // Provoque une re-sync (kSensorFilterResyncRejects rejets durables).
   for (int i = 0; i < (int)kSensorFilterResyncRejects; ++i) {
     f.addSample(4.00f, t); t += 5000;
   }
@@ -358,7 +366,7 @@ void test_caseE_reset_clears_resync_state(void) {
   TEST_ASSERT_FALSE(f.ready(t));
 
   // Après reset, le mini-buffer rejetés est vide : un nouveau cycle complet
-  // de re-sync (24 rejets) repart de zéro sans contamination.
+  // de re-sync (kSensorFilterResyncRejects rejets) repart de zéro sans contamination.
   for (int i = 0; i < 5; ++i) { f.addSample(5.00f, t); t += 5000; }  // nouveau warmup à 5.0
   TEST_ASSERT_FLOAT_WITHIN(0.05f, 5.00f, f.filtered());
 }

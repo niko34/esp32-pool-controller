@@ -1,5 +1,17 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.2.2] - 2026-06-21
+
+### Firmware
+
+- **fix(sensors)/tune** : délai de re-synchronisation du filtre réduit de ~2 min à ~1 min (feature-033) — `kSensorFilterResyncRejects` 24 → 12. Invariant fail-closed préservé (12 > 10 instable, 12 > 7 fenêtre médiane).
+
+### Documentation
+
+- `docs/subsystems/sensors.md` : seuil et délai de re-synchronisation (24 → 12, ~120 s → ~60 s).
+
+---
+
 ## [2.2.1] - 2026-06-20
 
 ### Firmware

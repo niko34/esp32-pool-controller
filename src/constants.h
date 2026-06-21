@@ -169,8 +169,10 @@ constexpr uint8_t kSensorFilterMaxConsecutiveRejects = 10;   // Rejets consécut
 // Re-synchronisation : un changement réel et DURABLE (> maxStep maintenu) ne doit pas
 // figer le filtre indéfiniment. Au-delà de ce seuil de rejets consécutifs, on conclut
 // à un vrai changement et on ré-amorce le filtre sur la médiane des derniers bruts rejetés.
-// 24 cycles × 5 s/cycle = 120 s. STRICTEMENT > kSensorFilterMaxConsecutiveRejects (seuil "instable").
-constexpr uint8_t  kSensorFilterResyncRejects     = 24;      // Rejets consécutifs → re-sync (≈120 s)
+// 12 cycles × 5 s/cycle ≈ 60 s. STRICTEMENT > kSensorFilterMaxConsecutiveRejects (10, seuil "instable")
+// ET > kSensorFilterMedianWindow (7) pour garantir un mini-buffer de rejets plein → médiane d'amorçage fiable.
+// Le dosage est de toute façon bloqué dès 10 rejets (unstable) puis pendant le re-warmup (ready=false).
+constexpr uint8_t  kSensorFilterResyncRejects     = 12;      // Rejets consécutifs → re-sync (≈60 s, feature-033)
 // Anti-boucle : un capteur qui re-sync en boucle = défaut EMI, pas un vrai changement.
 // Au-delà de ce nombre de re-sync sur la fenêtre glissante → latch "instable" jusqu'à reset().
 constexpr uint8_t  kSensorFilterMaxResyncPerWindow = 3;      // Re-sync max avant latch instable
