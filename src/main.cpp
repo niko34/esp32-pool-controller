@@ -193,7 +193,7 @@ void loop() {
     static bool lastPressed = false;
     static bool ledState = false;
     static unsigned long lastLedToggle = 0;
-    bool pressed = (digitalRead(kFactoryResetButtonPin) == LOW);
+    bool pressed = (digitalRead(kFactoryResetButtonPin) == HIGH);
 
     if (pressed && !lastPressed) {
       // Début d'appui
