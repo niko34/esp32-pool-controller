@@ -41,8 +41,6 @@ Les fichiers pour la partie électronique sont disponibles dans le dossier [`har
 - [Fichiers Gerber](hardware/Gerber.zip)
 - [BOM](hardware/BOM.csv)
 
-![Diagramme](screenshots/Diagram.jpg)
-
 ### Boîtier
 
 Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dossier [`hardware/`](hardware/) :
