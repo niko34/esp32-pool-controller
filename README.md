@@ -11,13 +11,13 @@ Contrôleur automatique de piscine basé sur ESP32 :
 ## 🎯 Fonctionnalités
 
 ### Mesures et Contrôle
-- **pH** : Mesure via capteur pH analogique avec compensation automatique de température
-- **ORP (Redox)** : Mesure via capteur analogique
-- **Température** : Sonde Dallas DS18B20
+- **pH** : Mesure via module numérique Atlas Scientific **EZO pH** (I²C). La température de l'eau est transmise au module pour la compensation de température de la mesure.
+- **ORP (Redox)** : Mesure via module numérique Atlas Scientific **EZO ORP** (I²C)
+- **Température** : Deux sondes Dallas **DS18B20** (eau + circuit/boîtier), identification automatique des rôles sur le bus OneWire
 - **Historique** : Historique des mesures
 - **Filtration** : Programmation automatique en fonction de la température de l'eau, programmation horaire, manuel
 - **Eclairage** : Programmation horaire, manuel
-- **Régulation automatique de pH et ORP** : Injection de produit de correction (pH-, pH+, Chlore liquide) avec régulation PID et contrôle de débit PWM.
+- **Régulation automatique de pH et ORP** : Injection de produit de correction (pH-, chlore liquide) par **régulation proportionnelle temporisée (P)** avec pause de mélange et contrôle de débit PWM. Les mesures sont **lissées** (médiane + EMA) avant d'alimenter la régulation. *(pH+ : option de configuration présente mais non gérée actuellement.)*
 - **Consommation de produits** : Estimation de la consommation de produit
 - **Application Web locale** : Configuration et visualisation temps réel. Accessible sur le réseau Wifi configuré (`http://poolcontroller.local`) ou un réseau Wifi de en mode point d'accès (`http://192.168.4.1`). Aucune dépendance au Cloud. [Voir les screenshots](screenshots/)
 - **API** : Toutes les fonctionnalités sont exposées avec une API
@@ -129,64 +129,53 @@ Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dos
 
 ### Calibration Capteurs
 
-#### Calibration pH (DFRobot SEN0161-V2)
+#### Calibration pH (Atlas Scientific EZO pH)
 
-Le capteur utilise la librairie DFRobot_PH qui gère automatiquement la calibration en EEPROM.
+La calibration est gérée **en interne par le module EZO** (commandes I²C `Cal,...`), mémorisée dans le module lui-même — il n'y a ni offset/pente stockés côté ESP32, ni EEPROM, ni librairie analogique. Elle se déclenche depuis l'interface web, onglet **pH** → carte **Calibration** (deux sous-blocs indépendants). Le module EZO pH accepte les points **milieu (pH 7.0)**, **bas (pH 4.0)** et, optionnellement, **haut**. La régulation automatique du pH est **inhibée tant que les 2 points (mid + low) ne sont pas calibrés**.
 
-**Calibration 1 point (pH neutre 7.0)** via l'interface web :
-1. Aller dans **Configuration** → Section **Calibration pH**
-2. Plonger la sonde dans solution **pH 7.0**, attendre stabilisation (30-60s)
-3. Cliquer sur **"Calibrer pH Neutre"**
+**Calibration via l'interface web** :
+1. Aller dans l'onglet **pH** → carte **Calibration**
+2. Rincer la sonde à l'eau distillée, la plonger dans la solution tampon **pH 7.00**, attendre stabilisation (~1 min)
+3. Cliquer sur **« Calibrer le point 7.0 »** (sous-bloc *Point milieu*)
+4. Rincer la sonde, la plonger dans la solution **pH 4.00**, attendre stabilisation
+5. Cliquer sur **« Calibrer le point 4.0 »** (sous-bloc *Point bas*)
 
-**Calibration 2 points (pH 4.0 et 7.0)** via l'interface web :
-1. Aller dans **Configuration** → Section **Calibration pH**
-2. Plonger la sonde dans solution **pH 7.0**, attendre stabilisation
-3. Cliquer sur **"Calibrer pH Neutre"**
-4. Rincer la sonde à l'eau distillée
-5. Plonger la sonde dans solution **pH 4.0**, attendre stabilisation
-6. Cliquer sur **"Calibrer pH Acide"**
+> **Compensation de température** : la température de l'eau mesurée par la DS18B20 est transmise au module EZO pour compenser la mesure de pH.
 
-> **Note** : La librairie DFRobot_PH ne supporte que pH 4.0 et 7.0. Les solutions pH 9 ou 10 ne sont pas supportées.
+Détails du workflow et des cas d'erreur : voir [docs/features/page-ph.md](docs/features/page-ph.md).
 
-**Compensation de température**: La librairie applique automatiquement la compensation avec la température mesurée par la DS18B20.
+#### Calibration ORP (Atlas Scientific EZO ORP)
 
-#### Calibration ORP
+La calibration ORP est une commande **interne au module EZO** (`Cal,<référence>`, un seul point), déclenchée depuis l'interface web, onglet **ORP** → carte **Calibration**. Comme pour le pH, aucun offset/date n'est calculé ni stocké côté ESP32. La régulation automatique de l'ORP est **inhibée tant que le module n'est pas calibré**.
 
-**Via l'interface web** (onglet Configuration):
+**Calibration via l'interface web** :
+1. Aller dans l'onglet **ORP** → carte **Calibration**
+2. Rincer la sonde à l'eau déminéralisée, la plonger dans la solution de référence ORP
+3. Saisir la valeur de référence de la solution dans le champ (ex : 470 mV ; plage acceptée 0–1000 mV)
+4. Attendre stabilisation (~1 min), puis cliquer sur **« Calibrer »**
 
-1. **Préparation**:
-   - Utiliser une solution de référence ORP (généralement 470 mV à 25°C)
-   - Rincer la sonde à l'eau déminéralisée
-   - Plonger la sonde dans la solution de référence
+Détails du workflow et des cas d'erreur : voir [docs/features/page-orp.md](docs/features/page-orp.md).
 
-2. **Calibration**:
-   - Dans l'interface web, aller dans Configuration
-   - Section "Calibration ORP"
-   - Noter la valeur ORP actuelle affichée
-   - Entrer la valeur de référence de votre solution (ex: 470 mV)
-   - Cliquer sur "Calibrer ORP"
-   - Le système calcule et enregistre automatiquement l'offset
+### Tuning de la régulation (Avancé)
 
-3. **Vérification**:
-   - La valeur ORP affichée doit maintenant correspondre à la référence
-   - L'offset et la date de calibration sont sauvegardés en NVS
+La régulation est une **proportionnelle temporisée (P)** : seul le gain **Kp** module la vitesse, **Ki = 0** et **Kd = 0** sont impératifs (pas d'intégrale ni de dérivée). La valeur d'entrée de la régulation est la mesure **lissée** (médiane + EMA) ; le dosage est **bloqué tant que le filtre de mesure n'est pas amorcé/prêt**. Voir [applyRegulationSpeed()](src/pump_controller.cpp) et [ADR-0016](docs/adr/0016-regulation-p-temporisee-vs-pid.md).
 
-### Tuning PID (Avancé)
+**Gain Kp par vitesse** (sélectionnable dans Paramètres → Régulation) :
 
-Les paramètres PID contrôlent la réactivité du dosage. Voir [pump_controller.h:26-29](src/pump_controller.h#L26-L29).
+| Vitesse | Kp pH | Kp ORP |
+|---------|-------|--------|
+| Lente   | 4.0   | 0.15   |
+| Normale | 8.0   | 0.30   |
+| Rapide  | 12.0  | 0.50   |
 
-**Paramètres par défaut** (optimisés pour système avec inertie):
-- **Kp** (Proportionnel): 15.0 - Réaction à l'erreur actuelle
-- **Ki** (Intégral): 0.1 - Correction lente des erreurs persistantes
-- **Kd** (Dérivé): 5.0 - Anticipation (freine si descend rapidement)
-- **integralMax**: 50.0 - Anti-windup pour éviter accumulation excessive
+> **Ki = 0 / Kd = 0** quelle que soit la vitesse (P temporisée pure). `integralMax` (50.0) est conservé pour une éventuelle réactivation future mais reste **inerte** tant que Ki = 0.
 
-**Protection anti-cycling** (prolonge durée de vie des pompes):
-- Injection minimum: 30 secondes par cycle
-- Pause minimum: 5 minutes entre injections
-- Seuils de démarrage: pH ±0.05 / ORP ±10mV
-- Seuils d'arrêt: pH ±0.01 / ORP ±2mV
-- Maximum: 200 cycles par jour
+**Protection anti-cycling** (prolonge durée de vie des pompes) :
+- Injection minimum : 30 secondes par cycle
+- Pause de mélange : **15 min** (pH) / **20 min** (ORP) après chaque injection (`kPhMixingDelayMs` / `kOrpMixingDelayMs`)
+- Seuils de démarrage : pH ±0.05 / ORP ±15 mV
+- Seuils d'arrêt : pH ±0.01 / ORP ±2 mV
+- Maximum : 20 cycles par jour
 
 ## 🏠 Intégration Home Assistant
 
@@ -288,8 +277,8 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
   - `./deploy.sh ota-fs` - Compile et envoie OTA filesystem uniquement
 
 - **`build_fs.sh`** - Construction du filesystem LittleFS
-  - Minifie automatiquement HTML/CSS/JS (économie ~92KB / 15%)
-  - Construit LittleFS avec la bonne taille (1216KB)
+  - Minifie automatiquement HTML/CSS/JS
+  - Construit LittleFS avec la bonne taille (832 KB — 851 968 octets)
   - Utilise `data-build/` comme source (généré par minify.js)
 
 - **`minify.js`** - Minification des fichiers web
@@ -306,10 +295,10 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
   - Définit les dépendances, ports, partitions
   - Port série: `/dev/cu.usbserial-0001` (à adapter)
 
-- **`partitions.csv`** - Table de partitions ESP32 4MB
-  - 2× slots OTA (1344KB chacun)
-  - LittleFS/spiffs (1216KB) pour interface web
-  - History (128KB) partition séparée préservée lors des mises à jour
+- **`partitions.csv`** - Table de partitions ESP32 4MB (layout v2, [ADR-0015](docs/adr/0015-partition-app-1.5mb.md))
+  - 2× slots OTA app0/app1 (1.5 MB / 1536 KB chacun)
+  - LittleFS/spiffs (832 KB) pour l'interface web
+  - History (64 KB) partition séparée préservée lors des mises à jour
 
 ### Documentation
 
