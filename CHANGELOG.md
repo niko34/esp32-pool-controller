@@ -1,5 +1,17 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.2.5] - 2026-06-23
+
+### Firmware
+
+- **Corrections — régulation pH/ORP auto** : la pause mélange hydraulique (15 min pH / 20 min ORP, feature-025) était armée par erreur **au démarrage** de l'injection. Conséquence : la garde `canDose()` (« pause mélange en cours », #5b/#6b) sautait la branche de régulation au cycle `update()` suivant, coupant la pompe après ~un cycle de boucle. Les injections automatiques ne duraient jamais le minimum prévu (`minInjectionTimeMs` = 30 s) → régulation inefficace (le pH/ORP ne convergeait pas vers la cible, chip « Mélange en cours » affiché en continu). La pause est désormais armée à l'**arrêt** de l'injection (homogénéisation post-dose) : `notifyPhDose()` / `notifyOrpDose()` sont appelés quand l'injection en cours se termine, sans interrompre celle-ci. `minInjectionTimeMs` et `shouldContinueDosing` sont de nouveau effectifs. Bug introduit par feature-025 ; **fail-safe** (sous-dosage, aucun risque de surdosage).
+
+### Documentation
+
+- `docs/subsystems/pump-controller.md` : section « Pause mélange hydraulique » corrigée — pause armée à l'arrêt de l'injection (et non au démarrage), interaction avec `minInjectionTimeMs` / `shouldContinueDosing` précisée.
+
+---
+
 ## [2.2.4] - 2026-06-23
 
 ### Fonctionnalités

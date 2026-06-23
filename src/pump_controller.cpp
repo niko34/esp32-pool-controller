@@ -777,8 +777,6 @@ void PumpControllerClass::update() {
         // Anti-rafale Pass 3.5 : on enregistre le timestamp de start dans le
         // ring buffer pour les fenêtres glissantes 1 min / 15 min (cf. canDose()).
         recordDosingCycleStart(0);
-        // feature-025 : pause mélange hydraulique armée au démarrage d'injection.
-        notifyPhDose((uint32_t)now);
         systemLogger.info("Démarrage dosage pH (auto): pH=" + String(sensors.getPhFiltered(), 2) +
           " cible=" + String(mqttCfg.phTarget, 2) +
           " erreur=" + String(error, 3) +
@@ -799,6 +797,9 @@ void PumpControllerClass::update() {
       // Arrêt du dosage
       if (phDosingState.active) {
         phDosingState.lastStopTime = now;
+        // feature-025 : pause mélange hydraulique armée à l'ARRÊT de l'injection
+        // (homogénéisation post-dose), une fois la dose réellement versée.
+        notifyPhDose((uint32_t)now);
         unsigned long runTime = (now - phDosingState.lastStartTime) / 1000;
         // Estimer le volume depuis le duty PWM de la dernière itération active
         float lastFlow = dutyToFlow(phPumpControl, pumpDuty[pumpIndexFromNumber(mqttCfg.phPump)]);
@@ -926,8 +927,6 @@ void PumpControllerClass::update() {
         orpDosingState.cyclesToday++;
         // Anti-rafale Pass 3.5 : timestamp de start pour les fenêtres glissantes.
         recordDosingCycleStart(1);
-        // feature-025 : pause mélange hydraulique armée au démarrage d'injection.
-        notifyOrpDose((uint32_t)now);
         systemLogger.info("Démarrage dosage ORP (auto): ORP=" + String(sensors.getOrpFiltered(), 0) + "mV" +
           " cible=" + String(mqttCfg.orpTarget, 0) + "mV" +
           " erreur=" + String(error, 0) + "mV" +
@@ -947,6 +946,9 @@ void PumpControllerClass::update() {
       // Arrêt du dosage
       if (orpDosingState.active) {
         orpDosingState.lastStopTime = now;
+        // feature-025 : pause mélange hydraulique armée à l'ARRÊT de l'injection
+        // (homogénéisation post-dose), une fois la dose réellement versée.
+        notifyOrpDose((uint32_t)now);
         unsigned long runTime = (now - orpDosingState.lastStartTime) / 1000;
         // Estimer le volume depuis le duty PWM de la dernière itération active
         float lastFlow = dutyToFlow(orpPumpControl, pumpDuty[pumpIndexFromNumber(mqttCfg.orpPump)]);

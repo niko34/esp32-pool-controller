@@ -91,8 +91,9 @@ private:
   String _lastRefusalCause[2];
 
   // feature-025 : pause mélange hydraulique post-injection (pool-chemistry).
-  // _mixingEndMs[0]=pH, [1]=ORP. Armé par notifyPhDose()/notifyOrpDose() au démarrage
-  // d'une injection. Gate indépendante (OR) dans canDose(), distincte du timer post-cal.
+  // _mixingEndMs[0]=pH, [1]=ORP. Armé par notifyPhDose()/notifyOrpDose() à l'ARRÊT
+  // d'une injection (homogénéisation post-dose) — bloque ainsi le cycle suivant sans
+  // interrompre l'injection en cours. Gate indépendante (OR) dans canDose(), distincte du timer post-cal.
   // Écrits/lus en loopTask uniquement → pas de mutex (cohérent avec _stabilizationEndMs).
   uint32_t _mixingEndMs[2] = {0, 0};
 

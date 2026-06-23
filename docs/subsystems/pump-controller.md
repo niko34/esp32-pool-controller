@@ -48,7 +48,7 @@ unsigned long getStabilizationRemainingS() const;
 bool canDose(int pumpIndex);                    // 0 = pH, 1 = ORP
 
 // Pause mélange hydraulique post-injection (feature-025)
-void notifyPhDose(uint32_t nowMs);              // arme la pause au démarrage d'une injection pH
+void notifyPhDose(uint32_t nowMs);              // arme la pause à l'arrêt d'une injection pH
 void notifyOrpDose(uint32_t nowMs);
 bool isPhMixingDelayActive(uint32_t nowMs) const;
 bool isOrpMixingDelayActive(uint32_t nowMs) const;
@@ -195,8 +195,10 @@ Sites d'appel à `recordDosingCycleStart()` (4 au total) : démarrage cycle pH a
 Après chaque injection, le bassin a besoin de temps pour s'homogénéiser avant qu'une nouvelle mesure soit représentative. La pause mélange empêche tout surdosage par réaction prématurée.
 
 - `_mixingEndMs[2]` ([0] = pH, [1] = ORP) : timestamps gérés **par `millis()`**, **aucun `delay()`** (contrainte loop).
-- `notifyPhDose(nowMs)` / `notifyOrpDose(nowMs)` : armés **au démarrage d'une injection** (transition PWM 0 → >0), positionnent `_mixingEndMs[i] = nowMs + kXxxMixingDelayMs`.
+- `notifyPhDose(nowMs)` / `notifyOrpDose(nowMs)` : armés à l'**arrêt d'une injection** (lorsque l'injection en cours se termine, dans le bloc où `lastStopTime` est posé), positionnent `_mixingEndMs[i] = nowMs + kXxxMixingDelayMs`. La pause s'applique donc **après que la dose est versée** et bloque le **cycle suivant**, sans interrompre l'injection en cours.
 - `isPhMixingDelayActive(nowMs)` / `isOrpMixingDelayActive(nowMs)` : `true` tant que `nowMs < _mixingEndMs[i]`. Consommés par `canDose()` (condition #6b) **et** publiés au WS / MQTT (`ph/orp_mixing_delay_active`).
+
+> ⚠️ **Correctif v2.2.5 — armement à l'arrêt et non au démarrage.** Armer la pause au **démarrage** de l'injection (comportement initial de feature-025) la rendait active dès le cycle `update()` suivant : `canDose()` (condition #6b) court-circuitait alors la branche de régulation et coupait la pompe après ~un cycle de boucle. `minInjectionTimeMs` (30 s) et `shouldContinueDosing` devenaient du code mort sur le chemin auto → injections trop courtes, pH/ORP ne convergeant jamais. En armant la pause à l'**arrêt**, l'injection en cours dure au moins `minInjectionTimeMs` et `shouldContinueDosing` reste effectif ; la pause ne bloque que le cycle d'injection **suivant**. Bug **fail-safe** (sous-dosage, jamais surdosage).
 
 | Constante | Valeur | Grandeur |
 |-----------|--------|----------|
