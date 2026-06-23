@@ -1186,8 +1186,9 @@
     };
     const contentMap = {
       filtration: "filtration-content",
-      lighting: "lighting-content",
-      temperature: "temperature-content"
+      lighting: "lighting-content"
+      // temperature : plusieurs cartes (stats/historique/calibration), géré ci-dessous —
+      // la carte d'activation reste visible pour pouvoir réactiver la mesure.
     };
     const dashboardCardMap = {
       filtration: "dashboard-filtration-card",
@@ -1196,20 +1197,36 @@
     };
 
     const switchId = switchMap[feature];
-    const contentId = contentMap[feature];
-    const dashboardCardId = dashboardCardMap[feature];
-    if (!switchId || !contentId) return;
+    if (!switchId) return;
 
     const switchEl = $(`#${switchId}`);
-    const contentEl = $(`#${contentId}`);
-    const dashboardCardEl = dashboardCardId ? $(`#${dashboardCardId}`) : null;
-    if (!switchEl || !contentEl) return;
-
+    if (!switchEl) return;
     const enabled = switchEl.checked;
-    contentEl.style.display = enabled ? "block" : "none";
+
+    const dashboardCardId = dashboardCardMap[feature];
+    const dashboardCardEl = dashboardCardId ? $(`#${dashboardCardId}`) : null;
     if (dashboardCardEl) {
       dashboardCardEl.style.display = enabled ? "" : "none";
     }
+
+    if (feature === "temperature") {
+      // Pas de wrapper unique : masquer les cartes de mesure/calibration quand la
+      // sonde est désactivée, tout en gardant la carte d'activation accessible.
+      ["temperature-card-stats", "temperature-card-history"].forEach((id) => {
+        const el = $(`#${id}`);
+        if (el) el.style.display = enabled ? "" : "none";
+      });
+      if (!enabled) {
+        const calCard = $("#temperature-card-calibration");
+        if (calCard) calCard.style.display = "none";
+      }
+      return;
+    }
+
+    const contentId = contentMap[feature];
+    const contentEl = contentId ? $(`#${contentId}`) : null;
+    if (!contentEl) return;
+    contentEl.style.display = enabled ? "block" : "none";
   }
 
   function updatePhModeControls() {
@@ -1434,24 +1451,8 @@
     $("#temperature_enabled").checked = cfg.temperature_enabled !== false;
     updateFeatureVisibility("temperature");
 
-    const tempCalibrated = cfg.temp_calibration_date && cfg.temp_calibration_date !== "";
-    const tempCalibratedStatus = $("#temp_calibrated_status");
-    const tempCalDate = $("#temp_cal_date");
-
-    if (tempCalibratedStatus) {
-      tempCalibratedStatus.style.display = tempCalibrated ? "block" : "none";
-    }
-
-    const tempCalDateHeader = $("#temp_cal_date_header");
-    let tempCalText = "Dernière calibration : —";
-    if (tempCalibrated) {
-      const d = new Date(cfg.temp_calibration_date);
-      const offset = cfg.temp_calibration_offset;
-      tempCalText = "Dernière calibration : " + d.toLocaleString("fr-FR");
-      if (offset != null && !isNaN(offset)) tempCalText += ` (offset: ${offset > 0 ? '+' : ''}${offset.toFixed(1)}°C)`;
-    }
-    if (tempCalDate) tempCalDate.textContent = tempCalText;
-    if (tempCalDateHeader) tempCalDateHeader.textContent = tempCalText;
+    // feature-035 : chip d'état de calibration température (remplace l'ancien callout/entête)
+    updateTempCalChip();
 
     // Filtration
     $("#filtration_enabled").checked = cfg.filtration_enabled !== false;
@@ -2900,13 +2901,18 @@
 
         const tempCurrentValue = $("#temp_current_value");
         const tempCurrentLabel = $("#temp_current_label");
-        if (tempCurrentValue) {
-          if (tempCurrentLabel) tempCurrentLabel.textContent = "Température actuelle";
+        const tempCalLiveValue = $("#temp_cal_live_value");
+        {
+          let tempText = "--";
           if (json.temperature != null && typeof json.temperature === "number" && !isNaN(json.temperature)) {
-            tempCurrentValue.textContent = json.temperature.toFixed(1) + " °C";
-          } else {
-            tempCurrentValue.textContent = "--";
+            tempText = json.temperature.toFixed(1) + " °C";
           }
+          if (tempCurrentValue) {
+            if (tempCurrentLabel) tempCurrentLabel.textContent = "Température actuelle";
+            tempCurrentValue.textContent = tempText;
+          }
+          // feature-035 : lecture live dans la carte de calibration
+          if (tempCalLiveValue) tempCalLiveValue.textContent = tempText;
         }
 
         // Mise à jour des readouts de la carte de calibration EZO (live)
@@ -2960,6 +2966,79 @@
   // ---------- Temperature calibration ----------
   let tempCalibrationStep = 0; // 0=idle, 1=plunge, 2=enterRef, 3=calibrate
 
+  // feature-035 : chip d'état de calibration température (offset 1 point).
+  // Lit window._config.temp_calibration_date + temp_calibration_offset, calcule l'âge côté JS.
+  function updateTempCalChip() {
+    const chip = $("#temp-cal-chip");
+    const lbl = $("#temp-cal-chip-label");
+    const header = $("#temp_cal_status_header");
+    const cfg = window._config || {};
+    const dateStr = cfg.temp_calibration_date;
+    let cls, label, headerText;
+
+    if (dateStr && dateStr !== "") {
+      const d = new Date(dateStr);
+      const ageMs = Date.now() - d.getTime();
+      const ageDays = Math.floor(ageMs / 86400000);
+      const ageMonths = Math.floor(ageDays / 30);
+      if (ageMonths > 6) {
+        cls = "chip--probe-warn";
+        label = `Calibré · ancien (il y a ${ageMonths} mois)`;
+      } else {
+        cls = "chip--probe-good";
+        if (ageDays > 30) {
+          label = `Calibré · le ${d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })}`;
+        } else if (ageDays >= 1) {
+          label = `Calibré · il y a ${ageDays} j`;
+        } else {
+          label = "Calibré · aujourd'hui";
+        }
+      }
+      const offset = cfg.temp_calibration_offset;
+      headerText = "Calibré · " + d.toLocaleString("fr-FR");
+      if (offset != null && !isNaN(offset)) headerText += ` (offset ${offset > 0 ? "+" : ""}${offset.toFixed(1)} °C)`;
+    } else {
+      cls = "chip--probe-unknown";
+      label = "Non calibré";
+      headerText = "Non calibré";
+    }
+
+    if (chip) chip.className = "chip chip--probe chip--cal " + cls;
+    if (lbl) lbl.textContent = label;
+    if (header) header.textContent = headerText;
+  }
+
+  // feature-035 : show/hide de la carte de calibration température (calqué sur showOrp/hideOrpCalibrationCard)
+  function showTempCalibrationCard() {
+    const enable = $("#temperature-card-enable");
+    const hist = $("#temperature-card-history");
+    const cal = $("#temperature-card-calibration");
+    const calBtn = $("#temp_cal_trigger_btn");
+    if (enable) enable.style.display = "none";
+    if (hist) hist.style.display = "none";
+    if (cal) cal.style.display = "";
+    if (calBtn) calBtn.disabled = true;
+    tempCalibrationStep = 0;
+    const refInput = $("#temp_reference_value");
+    if (refInput) refInput.value = "";
+    updateTempCalibrationSteps();
+  }
+  function hideTempCalibrationCard() {
+    const enable = $("#temperature-card-enable");
+    const hist = $("#temperature-card-history");
+    const cal = $("#temperature-card-calibration");
+    const calBtn = $("#temp_cal_trigger_btn");
+    if (enable) enable.style.display = "";
+    if (hist) hist.style.display = "";
+    if (cal) cal.style.display = "none";
+    if (calBtn) calBtn.disabled = false;
+    tempCalibrationStep = 0;
+    const refInput = $("#temp_reference_value");
+    if (refInput) refInput.value = "";
+    updateTempCalibrationSteps();
+    calBtn?.focus();
+  }
+
   function updateTempCalibrationSteps() {
     const steps = [$("#temp_step1"), $("#temp_step2"), $("#temp_step3")];
     const startBtn = $("#temp_cal_start_btn");
@@ -2997,7 +3076,15 @@
     const startBtn = $("#temp_cal_start_btn");
     const cancelBtn = $("#temp_cal_cancel_btn");
     const refInput = $("#temp_reference_value");
-    const calibratedStatus = $("#temp_calibrated_status");
+
+    // feature-035 : déclencheur / fermeture de la carte de calibration
+    $("#temp_cal_trigger_btn")?.addEventListener("click", () => {
+      showTempCalibrationCard();
+      $("#temp_step1")?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+    });
+    $("#temp_cal_close_btn")?.addEventListener("click", () => {
+      hideTempCalibrationCard();
+    });
 
     cancelBtn?.addEventListener("click", () => {
       if (confirm("Annuler la calibration en cours ?")) {
@@ -3012,7 +3099,6 @@
       if (tempCalibrationStep === 0) {
         tempCalibrationStep = 1;
         updateTempCalibrationSteps();
-        if (calibratedStatus) calibratedStatus.style.display = "none";
       } else if (tempCalibrationStep === 1) {
         tempCalibrationStep = 2;
         updateTempCalibrationSteps();
@@ -3066,7 +3152,6 @@
           $("#temp_step2")?.classList.add("is-completed");
           $("#temp_step3")?.classList.add("is-completed");
           $("#temp_step3")?.classList.remove("is-active");
-          if (calibratedStatus) calibratedStatus.style.display = "block";
 
           tempCalibrationStep = 0;
           if (refInput) refInput.value = "";
@@ -3088,13 +3173,18 @@
           // Page température
           const tempCurrentValue = $("#temp_current_value");
           if (tempCurrentValue) tempCurrentValue.textContent = correctedTemp.toFixed(1) + " °C";
+          const tempCalLiveValue = $("#temp_cal_live_value");
+          if (tempCalLiveValue) tempCalLiveValue.textContent = correctedTemp.toFixed(1) + " °C";
 
           // Invalider le timestamp pour forcer le rechargement
           lastSensorDataLoadTime = 0;
 
-          // Rafraîchir la config pour mettre à jour la date de calibration
+          // Rafraîchir la config pour mettre à jour la date de calibration (met aussi à jour le chip)
           await loadConfig();
           updateTempCalibrationSteps();
+          // feature-035 : chip « Calibré » + retour à l'état nominal
+          updateTempCalChip();
+          hideTempCalibrationCard();
 
           // Recharger les données après un court délai pour se resynchroniser avec le backend
           setTimeout(async () => {

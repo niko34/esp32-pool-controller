@@ -1,5 +1,18 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.2.4] - 2026-06-23
+
+### Fonctionnalités
+
+- **Uniformisation de l'écran Température** (feature-035) : l'écran Température adopte le même agencement que pH/ORP — un **bloc « stats » en haut** (valeur courante + **chip d'état de calibration** + bouton **« Calibrer la sonde »**), et une **carte de calibration masquée** qui s'affiche au clic (masque les cartes Activation + Historique, bouton **Fermer** pour revenir). La calibration reste **par offset 1 point** (saisie d'une température de référence connue → offset, via `/save-config`) : logique inchangée. Le chip affiche « Calibré · aujourd'hui / il y a N j / le JJ/MM » (vert), « Calibré · ancien (il y a N mois) » si > 6 mois (ambré), ou « Non calibré » (gris). La lecture live de la température reste visible pendant la calibration (pas d'indicateur de stabilité — température lente). Les anciens callouts (`#temp_cal_date_header` / `#temp_calibrated_status`) sont **supprimés** au profit du chip.
+- **Désactivation de la sonde** (feature-035) : décocher l'activation masque désormais correctement la carte du tableau de bord ainsi que les blocs stats/historique/calibration de la page Température (la carte d'activation reste accessible pour réactiver).
+
+### Documentation
+
+- `docs/features/page-temperature.md` : réécriture pour le nouvel agencement (feature-035) — bloc stats (valeur + chip de calibration), bouton « Calibrer la sonde », carte de calibration masquée (stepper offset + lecture live + Fermer), états du chip, données consommées et cas limites.
+
+---
+
 ## [2.2.3] - 2026-06-23
 
 ### Fonctionnalités

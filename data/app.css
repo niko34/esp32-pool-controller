@@ -3080,6 +3080,14 @@ h1, h2, h3 {
   padding: 12px 16px;
   margin-bottom: 16px;
 }
+/* feature-035 : variante mono-colonne (écran Température, pas de 2ᵉ colonne dosage) */
+.ph-stats--single {
+  grid-template-columns: 1fr;
+}
+.ph-stats--single .ph-stats__col:first-child {
+  border-right: none;
+  padding-left: 0;
+}
 .ph-stats__col {
   padding: 4px 12px;
 }

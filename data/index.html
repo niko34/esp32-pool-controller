@@ -486,7 +486,25 @@
             <p class="settingsHead__sub">Calibration et surveillance de la température de l'eau</p>
           </div>
 
-          <div class="card">
+          <!-- Bloc Statistiques : mono-colonne (valeur + chip calibration + bouton) — feature-035 -->
+          <div class="ph-stats ph-stats--single" id="temperature-card-stats">
+            <div class="ph-stats__col">
+              <div class="readout__label" id="temp_current_label" style="font-size:0.8em;color:var(--text-secondary);margin-bottom:4px">Température actuelle</div>
+              <div class="readout__value" id="temp_current_value" style="font-size:2rem;font-weight:700;line-height:1">--</div>
+              <div class="muted small" style="margin-top:4px">MAJ auto toutes les 5 secondes</div>
+              <div class="chip-row">
+                <!-- feature-035 : chip d'état de calibration température (NON cliquable), calqué sur #orp-cal-chip -->
+                <span id="temp-cal-chip" class="chip chip--probe chip--cal chip--probe-unknown" role="status" aria-live="polite"><span class="chip__dot" aria-hidden="true"></span><span class="chip__label" id="temp-cal-chip-label">Non calibré</span></span>
+              </div>
+              <div class="cal-trigger-row">
+                <button class="btn btn--secondary" type="button" id="temp_cal_trigger_btn">Calibrer la sonde</button>
+                <span class="muted small" id="temp_cal_hint"></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Carte Activation de la mesure (masquée pendant calibration) -->
+          <div class="card" id="temperature-card-enable">
             <div class="card__body">
               <div class="row row--between">
                 <div>
@@ -500,7 +518,8 @@
             </div>
           </div>
 
-          <div class="card card--detail-chart">
+          <!-- Carte Historique (masquée pendant calibration) -->
+          <div class="card card--detail-chart" id="temperature-card-history">
             <div class="card__head">
               <h2 class="card__title">Historique</h2>
               <div class="detail-chart-ranges" data-chart="temp">
@@ -517,55 +536,47 @@
             </div>
           </div>
 
-          <div id="temperature-content">
-            <div class="card">
-              <div class="card__head">
-                <h2 class="card__title">Calibration de la sonde de température</h2>
-                <div class="muted small" id="temp_cal_date_header">Dernière calibration : —</div>
+          <!-- Carte Calibration (masquée par défaut, s'affiche au clic sur « Calibrer la sonde ») -->
+          <div class="card" id="temperature-card-calibration" style="display:none">
+            <div class="card__head">
+              <h2 class="card__title">Calibration de la sonde de température</h2>
+              <div class="muted small" id="temp_cal_status_header">Non calibré</div>
+            </div>
+            <div class="card__body">
+              <p class="muted small" style="margin-bottom: 16px;">
+                La sonde de température nécessite une calibration pour garantir des mesures précises.
+                Une mesure incorrecte affecte également la compensation de température du pH.
+                Recalibrer si les mesures semblent décalées par rapport à un thermomètre de référence.
+              </p>
+
+              <div class="readout">
+                <div class="readout__label">Lecture live</div>
+                <div class="readout__value" id="temp_cal_live_value">--</div>
+                <div class="readout__sub muted">Attendre la stabilisation avant de calibrer</div>
               </div>
-              <div class="card__body">
-                <p class="muted small" style="margin-bottom: 16px;">
-                  La sonde de température nécessite une calibration pour garantir des mesures précises.
-                  Une mesure incorrecte affecte également la compensation de température du pH.
-                  Recalibrer si les mesures semblent décalées par rapport à un thermomètre de référence.
-                </p>
-                <div class="callout callout--success" id="temp_calibrated_status" style="display:none;">
-                  <div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 18px;">✓</span>
-                    <strong>Calibré</strong>
-                    <span style="margin-left: auto;">✓</span>
-                  </div>
-                  <div class="muted small" id="temp_cal_date">Dernière calibration : —</div>
-                </div>
 
-                <div class="readout">
-                  <div class="readout__label" id="temp_current_label">Température actuelle</div>
-                  <div class="readout__value" id="temp_current_value">--</div>
-                  <div class="readout__sub muted">MAJ auto toutes les 5 secondes</div>
+              <div class="calibration-steps">
+                <div class="step" id="temp_step1">
+                  <div class="step__number">1</div>
+                  <div class="step__content">Plonger la sonde dans un liquide à température connue</div>
                 </div>
+                <div class="step" id="temp_step2">
+                  <div class="step__number">2</div>
+                  <div class="step__content">
+                    <div>Attendre que la température brute se stabilise et entrer la température connue</div>
+                    <input type="number" id="temp_reference_value" min="-10" max="50" step="0.1" placeholder="ex: 25.0 °C" style="margin-top: 8px; width: 100%;" />
+                  </div>
+                </div>
+                <div class="step" id="temp_step3">
+                  <div class="step__number">3</div>
+                  <div class="step__content">Calibrer</div>
+                </div>
+              </div>
 
-                <div class="calibration-steps">
-                  <div class="step" id="temp_step1">
-                    <div class="step__number">1</div>
-                    <div class="step__content">Plonger la sonde dans un liquide à température connue</div>
-                  </div>
-                  <div class="step" id="temp_step2">
-                    <div class="step__number">2</div>
-                    <div class="step__content">
-                      <div>Attendre que la température brute se stabilise et entrer la température connue</div>
-                      <input type="number" id="temp_reference_value" min="-10" max="50" step="0.1" placeholder="ex: 25.0 °C" style="margin-top: 8px; width: 100%;" />
-                    </div>
-                  </div>
-                  <div class="step" id="temp_step3">
-                    <div class="step__number">3</div>
-                    <div class="step__content">Calibrer</div>
-                  </div>
-                </div>
-
-                <div class="row row--gap">
-                  <button class="btn btn--primary" type="button" id="temp_cal_start_btn">Commencer la calibration</button>
-                  <button class="btn btn--danger" type="button" id="temp_cal_cancel_btn" style="display:none;">Annuler</button>
-                </div>
+              <div class="row row--gap">
+                <button class="btn btn--primary" type="button" id="temp_cal_start_btn">Commencer la calibration</button>
+                <button class="btn btn--danger" type="button" id="temp_cal_cancel_btn" style="display:none;">Annuler</button>
+                <button class="btn btn--secondary" type="button" id="temp_cal_close_btn">Fermer</button>
               </div>
             </div>
           </div>
