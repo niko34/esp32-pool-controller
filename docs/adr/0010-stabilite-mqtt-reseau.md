@@ -1,6 +1,6 @@
 # ADR-0010 — Stabilité MQTT et réseau : WiFi sans power save, pré-résolution DNS, backoff non réinitialisé
 
-- **Statut** : Accepté (l'alternative « Tâche FreeRTOS dédiée pour MQTT » écartée ici a été reprise et retenue par [ADR-0011](0011-mqtt-task-dediee.md) après 3 crashes production confirmant son nécessité)
+- **Statut** : Accepté (l'alternative « Tâche FreeRTOS dédiée pour MQTT » écartée ici a été reprise et retenue par [ADR-0011](0011-mqtt-task-dediee.md) après 3 crashes production confirmant sa nécessité)
 - **Date** : 2026-04-27
 - **Décideurs** : Nicolas Philippe
 - **Spec(s) liée(s)** : aucune (correctif de stabilité)

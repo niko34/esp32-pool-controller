@@ -1,6 +1,14 @@
 # ADR-0003 — Calibration ORP calculée côté client, pas par le firmware
 
-- **Statut** : Accepté
+> **Statut : Superseded by [ADR-0014](0014-migration-atlas-ezo.md)** (2026-05-06)
+> Cette décision valait pour la chaîne analogique ADS1115 (formule `offset + slope`
+> calculée côté navigateur, persistée via `POST /save-config`). La migration Atlas EZO
+> a supprimé ce calcul : la calibration ORP se fait désormais **dans le module EZO**
+> (commande `Cal,<reference>` envoyée par `POST /calibrate_orp`), le firmware ne calcule
+> plus aucun `offset`/`slope` et les clés NVS `orp_cal_*` ont été retirées. Voir feature-021
+> et [ADR-0014](0014-migration-atlas-ezo.md). Contenu ci-dessous conservé à titre historique.
+
+- **Statut** : Superseded by [ADR-0014](0014-migration-atlas-ezo.md)
 - **Date** : antérieur à 2026-04 (comportement déjà en place lors de la refonte de la page ORP)
 - **Doc(s) liée(s)** : [page-orp.md](../features/page-orp.md), [sensors.md](../subsystems/sensors.md)
 

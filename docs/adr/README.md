@@ -19,11 +19,11 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 |---|-------|--------|
 | [0001](0001-capteurs-analogiques-ads1115.md) | Capteurs pH/ORP analogiques via ADS1115 + DFRobot_PH | Superseded by ADR-0014 |
 | [0002](0002-mode-programmee-volume-quotidien.md) | Mode Programmée exprimé en volume quotidien (mL), pas en cadence | Accepté |
-| [0003](0003-calibration-orp-cote-client.md) | Calibration ORP calculée côté client, pas par le firmware | Accepté |
+| [0003](0003-calibration-orp-cote-client.md) | Calibration ORP calculée côté client, pas par le firmware | Superseded by ADR-0014 |
 | [0004](0004-mode-regulation-enum-3-valeurs.md) | Sélecteur de mode à 3 valeurs au lieu de booléens `ph_enabled` / `orp_enabled` | Accepté |
 | [0005](0005-websocket-push-sans-polling.md) | WebSocket push pour le temps réel, pas de polling périodique | Accepté |
 | [0006](0006-frontend-vanilla-js.md) | Frontend en vanilla JS sans framework ni bundler | Accepté |
-| [0007](0007-table-partitions-custom.md) | Table de partitions custom (SPIFFS 1088 KB, history séparée) | Superseded by ADR-0009 |
+| [0007](0007-table-partitions-custom.md) | Table de partitions custom (SPIFFS 1088 KB, history séparée) | Superseded by ADR-0009 puis ADR-0015 |
 | [0008](0008-persistance-cumuls-journaliers-nvs.md) | Persistance NVS des cumuls journaliers + reset aligné minuit local | Accepté |
 | [0009](0009-partition-coredump.md) | Partition coredump dédiée + redimensionnement history (128 KB → 64 KB) | Accepté |
 | [0010](0010-stabilite-mqtt-reseau.md) | Stabilité MQTT et réseau : WiFi sans power save, pré-résolution DNS, backoff non réinitialisé | Accepté |

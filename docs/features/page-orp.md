@@ -66,7 +66,7 @@ Champ source : `orpCalPoints` (WebSocket / `GET /data`). L'EZO ORP n'accepte qu'
 
 - **Champ d'entrée** `orp-cal-reference` : valeur de référence en mV (range `0..1000`, défaut `470`). Standards usuels : 225 mV (kit Hanna), 470 mV (kit Atlas), 650 mV (rare).
 - **Micro-étapes** : « Plonger la sonde dans la solution standard » + « Attendre 1 min ».
-- **Readout live** : `<div class="readout">` (`#cal-orp-readout`) affichant la valeur ORP **brute** lue toutes les 5 s. `updateCalibrationReadouts()` utilise `json.orpRaw` (repli sur `json.orp` si absent), **pas** la valeur lissée. Raison : en changeant de solution étalon (saut > `maxStep` du filtre), le lissé reste figé ~2 min avant re-sync ; le brut suit le potentiel réel de l'électrode, indispensable pour juger la stabilité avant de calibrer. Le reste de l'UI (valeur principale ORP, MQTT) continue d'afficher le lissé.
+- **Readout live** : `<div class="readout">` (`#cal-orp-readout`) affichant la valeur ORP **brute** lue toutes les 5 s. `updateCalibrationReadouts()` utilise `json.orpRaw` (repli sur `json.orp` si absent), **pas** la valeur lissée. Raison : en changeant de solution étalon (saut > `maxStep` du filtre), le lissé reste figé ~1 min (12 lectures × 5 s, `kSensorFilterResyncRejects`, feature-033) avant re-sync ; le brut suit le potentiel réel de l'électrode, indispensable pour juger la stabilité avant de calibrer. Le reste de l'UI (valeur principale ORP, MQTT) continue d'afficher le lissé.
 - **Bouton « Calibrer »**.
 
 ### Workflow temporel
