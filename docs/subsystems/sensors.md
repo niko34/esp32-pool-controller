@@ -246,6 +246,8 @@ Le latch est levé **uniquement** par `reset()`, déclenché par :
 - `POST /debug/sensor_filter_reset` (reset manuel des deux filtres) ;
 - une **calibration pH/ORP réussie** (`resetPhFilter()` / `resetOrpFilter()`).
 
+> Le reset filtre + warmup post-calibration est **mode-indépendant** : il est déclenché par le **succès de la commande EZO** dans `_processEzoQueue()`, sans aucune condition sur le mode de régulation (`automatic` / `scheduled` / `manual`). L'élargissement de l'accès à la calibration dans tous les modes (feature-034, purement frontend) ne modifie donc pas ce comportement firmware.
+
 Getters associés : `resyncCount()` (re-sync dans la fenêtre courante) et `unstableLatched()` (état du latch).
 
 ### Paramètres (centralisés dans [`constants.h`](../../src/constants.h))

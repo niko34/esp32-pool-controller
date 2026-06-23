@@ -11,18 +11,17 @@ Point d'entrée unique pour **tout** ce qui concerne le pH : mesure, mode de ré
 
 En mode nominal, quatre zones :
 
-1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH **filtrée** courante en grand (1 décimale, cohérent avec le tableau de bord) + **ligne brute discrète** « brut · médiane · maj » + **chip d'état filtre** cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) + **chip d'état sonde pH** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression).
+1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH **filtrée** courante en grand (1 décimale, cohérent avec le tableau de bord) + **ligne brute discrète** « brut · médiane · maj » + **rangée de chips** : chip d'état filtre cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) et **chip unique sonde + calibration** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression). Depuis feature-034, le chip de calibration distinct est **supprimé** : son information est fusionnée dans le chip sonde.
 2. **Carte Régulation pH** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs conditionnels :
-   - **Automatique** : pH cible + bouton Sauvegarder. Affichage du **statut de calibration EZO** (cf. [Statut de calibration](#statut-de-calibration-ezo)) :
-     - **Callout vert** « Calibré 2 points ✓ » si `phCalPoints >= 2`.
-     - **Chip ambrée** « Régulation pH inhibée — calibration incomplète » si `phCalPoints < 2`.
-     - **Chip rouge** « EZO pH injoignable » si `phCalPoints == -1` (module débranché ou bus I²C dégradé).
+   - **Automatique** : pH cible + bouton Sauvegarder.
    - **Programmée** : volume quotidien en mL (borné par `max_ph_ml_per_day`) + bouton Sauvegarder.
    - **Manuelle** : bloc Injection manuelle (volume + bouton ▶ Injecter / ⏹ Stopper).
 3. **Carte Historique** — graphique Chart.js, plages `Tout` / `30j` / `7j` / `24h`.
-4. **Carte Calibration** — **remplace** Régulation + Historique pendant une session de calibration. Architecture en 2 sous-blocs **parallèles** `.cal-point-block` (workflow non séquentiel — voir [Workflow calibration](#workflow-calibration)).
+4. **Carte Calibration** — **remplace** Régulation + Historique pendant une session de calibration. Écran **guidé par stepper** (feature-034) — voir [Workflow calibration](#workflow-calibration).
 
 Le bloc Statistiques reste visible **en permanence**, y compris pendant la calibration.
+
+> **Calibration accessible dans tous les modes (feature-034)** : le bouton « Calibrer la sonde » (`#ph_cal_trigger_btn`) est désormais affiché et fonctionnel quel que soit le mode de régulation — **automatique, programmée et manuelle**. Depuis l'itération 3, ce bouton est placé **sous la rangée de chips** du bloc Statistiques (et non plus en bas de la carte de régulation dans `#ph-calibration-info`, supprimé). La session de calibration ne modifie pas `ph_regulation_mode` : à la fermeture (`#ph_cal_close_btn`), on **revient au mode précédemment sélectionné** (aucune bascule forcée en automatique).
 
 ## Affichage mesure filtrée / brute (feature-025)
 
@@ -68,9 +67,13 @@ Sous la valeur pH dans le bloc Statistiques, un **chip cliquable** affiche en pe
 
 Source : champs WS `phSlopeAcid`, `phSlopeBase`, `phSlopeZero`, `phSlopeAgeMs`, `phCalPoints`. Les seuils sont **dans `data/app.js`** (constantes `PH_PROBE_*` + fonction `classifyPhProbe()`) — modifier sans reflasher le firmware.
 
+> **feature-034 — chip unique sonde + calibration** : ce chip est désormais l'**unique** indicateur « sonde + calibration » du bloc Statistiques pH (le chip de calibration séparé `#ph-cal-chip` a été supprimé). Pour `phCalPoints < 2`, il affiche l'**état de calibration** ; pour `≥ 2`, il affiche le **diagnostic de pente** (santé sonde).
+
 | `phCalPoints` | min(acide, base) | \|zéro\| (mV) | Variante CSS | Libellé | Couleur |
 |---|---|---|---|---|---|
-| `null` ou `< 2` | — | — | `chip--probe-unknown` | « Calibration 2 points requise » | gris |
+| `null` ou `< 0` | — | — | `chip--probe-unknown` | « EZO indisponible » | gris |
+| `0` | — | — | `chip--probe-bad` | « Calibration requise » | rouge |
+| `1` | — | — | `chip--probe-warn` | « Calibration 1/2 » | ambré |
 | `≥ 2` | NaN / `null` | — | `chip--probe-unknown` | « Pente non disponible » | gris |
 | `≥ 2` | `≥ 95 %` | `≤ 15` | `chip--probe-good` | « Sonde excellente · 98 % » | vert (`var(--success)`) |
 | `≥ 2` | `90–95 %` | `≤ 30` | `chip--probe-warn` | « Sonde correcte · 92 % » | ambré clair (`var(--warn)`) |
@@ -102,32 +105,55 @@ Si `dialog.showModal` est absent (vieux navigateur), le chip est rendu non cliqu
 - **EZO pH débranché en runtime** : après 2 échecs consécutifs (`kEzoBusFailMaxConsecutive`), les 4 champs WS passent à `null` → chip gris « Pente non disponible » — pas de crash, pas de toast.
 - **Refresh en cours et payload WS qui apporte une nouvelle valeur** : si `phSlopeAgeMs < 60 s`, l'état refresh est résolu en succès (toast).
 
-## Statut de calibration EZO
+## État de calibration & bouton « Calibrer la sonde » (feature-034)
 
-Champ source : `phCalPoints` (WebSocket / `GET /data`, voir [API.md](../API.md)). Valeurs :
+Depuis l'itération 2 de feature-034, l'état de calibration EZO n'est plus présenté par trois callouts noyés dans la carte Régulation (supprimés). L'itération suivante a **fusionné** le chip de calibration séparé (`#ph-cal-chip`, supprimé) dans le **chip unique sonde + calibration** `#ph-probe-chip` (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) : pour `phCalPoints < 2`, ce chip affiche directement l'état de calibration. Il ne reste donc plus qu'**un seul chip** côté sonde/calibration pH.
 
-| `phCalPoints` | UI | Régulation auto |
-|---------------|-----|-----------------|
-| `-1` | Chip rouge « EZO pH injoignable » | Inhibée (cond #5 pool-chemistry) |
-| `0` | Chip ambrée « Régulation pH inhibée — non calibré » | Inhibée |
-| `1` | Chip ambrée « Régulation pH inhibée — calibration incomplète » (mid OU low seul) | Inhibée |
-| `2` | Callout vert « Calibré 2 points ✓ » (mid + low — état nominal) | Active |
-| `3` | Callout vert « Calibré 3 points ✓ » (mid + low + high) | Active |
+Le **bouton de calibration** (`#ph_cal_trigger_btn`) est rendu **sous la rangée de chips** avec un **libellé fixe « Calibrer la sonde »**, accompagné d'un **hint** texte (`#ph_cal_hint`). Le bouton/hint sont pilotés par `renderCalibrationStatus()` ([`data/app.js`](../../data/app.js)) à partir de `phCalPoints` (WebSocket / `GET /data`, voir [API.md](../API.md)) :
 
-> ⚠️ Quand `phCalPoints == 1`, le badge UI ambré ne distingue pas mid seul de low seul (l'EZO ne renvoie que le compteur via `Cal,?`). C'est un risque résiduel mineur — l'utilisateur sait normalement quel point il vient d'effectuer.
+| `phCalPoints` | Bouton « Calibrer la sonde » | Hint | Régulation auto |
+|---------------|---------------------|------|-----------------|
+| `null` (avant données) | actif | — | — |
+| `-1` | **désactivé** | « EZO pH injoignable — vérifiez le câblage I²C et l'alimentation. » | Inhibée (cond #5 pool-chemistry) |
+| `0` | actif | « Régulation auto inhibée tant que non calibré. » | Inhibée |
+| `1` | actif | « Régulation auto inhibée (1/2 point). » | Inhibée |
+| `≥ 2` | actif | — | Active |
+
+- Le **libellé du bouton est fixe** (« Calibrer la sonde ») quel que soit l'état (itération 3) ; le bouton est **sous la rangée de chips** (`#ph_cal_trigger_btn`), **toujours accessible** dans tous les modes — y compris quand la sonde est calibrée (recalibration possible).
+- On ne désactive le bouton que sur **preuve d'EZO injoignable** (`phCalPoints < 0`). Le garde « injection en cours » reste **prioritaire** et peut le désactiver indépendamment.
+- L'état de calibration ORP, lui, conserve son **chip dédié** `#orp-cal-chip` (l'ORP n'a pas de chip sonde) piloté par `setCalChip('orp', …)`.
+- ⚠️ Quand `phCalPoints == 1`, le chip ne distingue pas mid seul de low seul (l'EZO ne renvoie que le compteur via `Cal,?`). Risque résiduel mineur — l'utilisateur sait normalement quel point il vient d'effectuer.
+- **Garde injection prioritaire** : le bouton « Calibrer la sonde » est forcé **désactivé** pendant une injection pH en cours, indépendamment de l'état de calibration (cf. [Cas limites](#cas-limites)).
 
 ## Workflow calibration
 
-### Architecture UI
+### Architecture UI — écran guidé (feature-034)
 
-La carte calibration contient 2 sous-blocs **indépendants** dans `#ph-card-calibration` (pas de stepper séquentiel) :
+La carte `#ph-card-calibration` présente un **stepper** (`<ol class="calibration-steps" id="ph-cal-steps">`, réutilisant le pattern `.step` / `.calibration-steps` déjà employé pour la calibration température). Les étapes pour le pH (2 points) :
 
-| Sous-bloc | Solution tampon | Commande EZO |
-|-----------|-----------------|--------------|
-| Point milieu (pH 7.0) | pH 7.00 | `Cal,mid,7.00` |
-| Point bas (pH 4.0) | pH 4.00 | `Cal,low,4.00` |
+| Idx | Étape | Action UI |
+|-----|-------|-----------|
+| 0 | Rincer la sonde, plonger en solution **pH 7.00** | bouton « C'est fait → » (`.cal-step-advance`) |
+| 1 | Attendre la stabilisation + **calibrer le point milieu** | minuterie + bouton « Calibrer le point 7.0 » (`#btn-cal-ph-mid`) → `Cal,mid,7.00` |
+| 2 | Rincer, plonger en solution **pH 4.00** | bouton « C'est fait → » |
+| 3 | Attendre la stabilisation + **calibrer le point bas** | minuterie + bouton « Calibrer le point 4.0 » (`#btn-cal-ph-low`) → `Cal,low,4.00` |
+| 4 | Terminé | — |
 
-Chaque bloc affiche : un badge état (Calibré / Non calibré), 2 micro-étapes (« Plonger la sonde dans la solution » + « Attendre 1 min »), un readout live (`<div class="readout">` rafraîchi 5 s — pH affiché 3 décimales) et un bouton **« Calibrer le point X.X »**.
+**États visuels du stepper** (`setCalStepState()` dans [`data/app.js`](../../data/app.js)) : chaque `.step` reçoit une classe selon sa position relative à l'étape courante —
+
+| État | Classe CSS | `aria-current` |
+|------|-----------|----------------|
+| Faite (✓) | `is-completed` | — |
+| En cours | `is-active` | `step` |
+| Restante | `is-upcoming` | — |
+
+Le focus est déplacé sur le contrôle de l'étape active (`focusActiveStep()`) pour l'accessibilité clavier.
+
+**Minuterie de stabilisation** (aide **non bloquante**) : chaque étape d'attente propose un bouton « Démarrer la minuterie de stabilisation (60 s) » (`.cal-timer-start`). Le compte à rebours est géré **côté client** par timestamp (`startCalTimer()`, constante `CAL_STAB_DURATION_S = 60`), affiche `mm:ss` + une barre de progression dans `#ph-cal-timer` (`role="timer" aria-live="polite"`), et bascule en « Stabilisation atteinte, vous pouvez calibrer » à 0. L'utilisateur **peut calibrer avant la fin** — la minuterie n'inhibe pas le bouton « Calibrer ». Annulation par « Annuler » (`.cal-timer-cancel`).
+
+**Indicateur de stabilité Δ60 s** (purement **indicatif**) : `renderStability()` calcule l'amplitude `max − min` de la mesure **brute** sur une fenêtre glissante de ~60 s (`CAL_STAB_WINDOW_MS`) et affiche `Δ60 s : <valeur> — stable/en cours`. Seuils cosmétiques `CAL_STAB_THRESHOLD = { ph: 0.05, orp: 5 }`. La fenêtre est réinitialisée à chaque changement de solution (avance de stepper / calibration réussie).
+
+Après une calibration EZO réussie, `completeCalStep()` marque l'étape « calibrer » comme faite (✓) et avance le stepper. La fermeture de la carte (`#ph_cal_close_btn`) annule toute minuterie en cours et restaure la carte Régulation dans le mode initial.
 
 > **Readout de calibration = valeur brute.** `updateCalibrationReadouts()` alimente `#cal-ph-mid-readout` et `#cal-ph-low-readout` avec la mesure **brute** (`json.phRaw`, repli sur `json.ph` si absent), **pas** la valeur lissée affichée ailleurs dans l'UI. Raison : en changeant de solution étalon (ex. pH 7 → pH 4, saut ≈ 3.0 > `maxStep` du filtre), le filtre rejette les mesures pendant ~1 min (12 lectures × 5 s, `kSensorFilterResyncRejects`, feature-033) avant re-sync ; le lissé resterait figé sur l'ancienne valeur, rendant la calibration impraticable. Le brut suit le potentiel réel de l'électrode, indispensable pour juger la stabilité avant de calibrer. Le reste de l'UI (dashboard, valeur principale pH, MQTT) continue d'afficher le lissé.
 
@@ -157,7 +183,7 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 
 **Mesure** : `ph` (= valeur **filtrée**, 3 décimales) ; `phRaw`, `phMedian`, `phFiltered` (feature-025)
 **État filtre** : `phFilterReady`, `phFilterUnstable`, `phRejectedCount`, `phMixingDelayActive`, `phDoseBlockedReason` (feature-025) — voir [Chip d'état filtre](#chip-détat-filtre-feature-025)
-**Calibration** : `phCalPoints` (`-1..3`) — voir [Statut de calibration](#statut-de-calibration-ezo)
+**Calibration** : `phCalPoints` (`-1..3`) — voir [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)
 **Pente sonde** : `phSlopeAcid`, `phSlopeBase`, `phSlopeZero`, `phSlopeAgeMs` (feature-024) — voir [Chip d'état sonde](#chip-détat-sonde-feature-024)
 **Dosage** : `ph_dosing`, `ph_used_ms`, `ph_daily_ml`, `ph_limit_reached`
 **Mode** : `ph_regulation_mode` (`automatic` / `scheduled` / `manual`), `ph_daily_target_ml`, `ph_enabled` (miroir, voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
@@ -217,7 +243,8 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) pour
 - **WebSocket déconnecté** : éléments dépendants des données capteur taggés `.is-stale` (transition 300 ms). Reset automatique à la reconnexion.
 - **Reboot inattendu** : à la première réception WS après un reboot dont `reset_reason` ∈ {`WATCHDOG`, `BROWNOUT`, `PANIC`, `EXTERNAL`, `UNKNOWN`}, un toast d'alerte est affiché une seule fois par session.
 - **Limite journalière atteinte** : message « Limite atteinte — dosage suspendu jusqu'à minuit », barre en rouge.
-- **Pendant la calibration** : le bouton « Calibrer le point » du sous-bloc concerné affiche un spinner. Les autres actions UI restent disponibles.
+- **Pendant la calibration** : le bouton « Calibrer le point » de l'étape concernée affiche un spinner. Les autres actions UI restent disponibles.
+- **Injection pH en cours (feature-034)** : le clic sur « Calibrer » (`#ph_cal_trigger_btn`) est **bloqué** si une injection pH est active — condition `(ph_inject_remaining_s > 0) || (ph_dosing === true)`, toast « Calibration impossible pendant une injection pH ». Ce garde existait déjà côté ORP ; il est désormais ajouté côté pH (symétrie de sécurité).
 
 ## Interaction MQTT
 

@@ -11,18 +11,17 @@ Point d'entrée unique pour **tout** ce qui concerne l'ORP (potentiel redox, pil
 
 En mode nominal, quatre zones :
 
-1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP **filtrée** courante en grand (mV) + **ligne brute discrète** « brut · médiane · maj » + **chip d'état filtre** cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) + dosage du jour (barre de progression, borne `max_orp_ml_per_day`).
+1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP **filtrée** courante en grand (mV) + **ligne brute discrète** « brut · médiane · maj » + **rangée de chips** : chip d'état filtre cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) et **chip d'état de calibration** (cf. [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)) + dosage du jour (barre de progression, borne `max_orp_ml_per_day`).
 2. **Carte Régulation ORP** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs :
-   - **Automatique** : ORP cible (mV) + bouton Sauvegarder. Affichage du **statut de calibration EZO** (cf. [Statut de calibration](#statut-de-calibration-ezo)) :
-     - **Callout vert** « Calibré ✓ » si `orpCalPoints >= 1`.
-     - **Chip ambrée** « Régulation ORP inhibée — non calibré » si `orpCalPoints == 0`.
-     - **Chip rouge** « EZO ORP injoignable » si `orpCalPoints == -1`.
+   - **Automatique** : ORP cible (mV) + bouton Sauvegarder.
    - **Programmée** : volume quotidien de chlore en mL + bouton Sauvegarder.
    - **Manuelle** : bloc Injection manuelle.
 3. **Carte Historique** — graphique Chart.js, plages `Tout` / `30j` / `7j` / `24h`, zone ombrée 600–750 mV indiquant la plage de désinfection.
-4. **Carte Calibration** — **remplace** Régulation + Historique pendant une session. **1 sous-bloc unique** `.cal-point-block` (architecture symétrique de la page pH, sans le sélecteur 1pt/2pts du firmware v1).
+4. **Carte Calibration** — **remplace** Régulation + Historique pendant une session. Écran **guidé par stepper** (feature-034), 1 seul point de calibration (architecture symétrique de la page pH) — voir [Workflow calibration](#workflow-calibration).
 
 Le bloc Statistiques reste visible en permanence.
+
+> **Calibration accessible dans tous les modes (feature-034)** : le bouton « Calibrer la sonde » (`#orp_cal_trigger_btn`) est désormais affiché et fonctionnel en **automatique, programmée et manuelle**. Depuis l'itération 3, ce bouton est placé **sous la rangée de chips** du bloc Statistiques (et non plus en bas de la carte de régulation dans `#orp-calibration-info`, supprimé). La session de calibration ne modifie pas `orp_regulation_mode` : à la fermeture, on **revient au mode précédemment sélectionné**.
 
 ## Affichage mesure filtrée / brute (feature-025)
 
@@ -48,26 +47,40 @@ Chip cliquable `#orp-filter-chip` reflétant l'état du filtre ORP. Classificati
 
 Clic → `<dialog id="orp-filter-modal">` (`État filtre ORP`) : brut, médiane, filtré, **Pics rejetés**, âge, **Filtre prêt**, et raison de blocage dosage conditionnelle (`orpDoseBlockedReason`, ou « Mélange en cours » si `orpMixingDelayActive`). La pause mélange ORP est plus longue (20 min vs 15 min pour le pH).
 
-## Statut de calibration EZO
+## Chip d'état de calibration (feature-034)
 
-Champ source : `orpCalPoints` (WebSocket / `GET /data`). L'EZO ORP n'accepte qu'**un seul point de calibration** côté Atlas, contrairement au pH (mid + low + high).
+Depuis l'itération 2 de feature-034, l'état de calibration EZO n'est plus présenté par trois callouts noyés dans la carte Régulation (supprimés). Il est condensé dans un **chip d'état de calibration** placé dans la **rangée de chips** du bloc Statistiques (à côté du chip filtre) + un **hint** texte. Depuis l'itération 3, le **bouton de calibration** (`#orp_cal_trigger_btn`) est rendu **sous la rangée de chips** avec un **libellé fixe « Calibrer la sonde »** (le libellé adaptatif de l'itération 2 est abandonné) ; l'état de calibration reste entièrement porté par le chip + le hint. L'EZO ORP n'accepte qu'**un seul point de calibration** côté Atlas (pas d'état « 1/2 » comme le pH).
 
-| `orpCalPoints` | UI | Régulation auto |
-|----------------|-----|-----------------|
-| `-1` | Chip rouge « EZO ORP injoignable » | Inhibée (cond #5) |
-| `0` | Chip ambrée « Régulation ORP inhibée — non calibré » | Inhibée |
-| `1` | Callout vert « Calibré ✓ » | Active |
+**Élément** : `<span id="orp-cal-chip" role="status" aria-live="polite">` — **non cliquable** (annonce d'état, pas d'action). Classification côté UI par `renderCalibrationStatus()` / `setCalChip('orp', …)` ([`data/app.js`](../../data/app.js)) à partir de `orpCalPoints` (WebSocket / `GET /data`).
+
+| `orpCalPoints` | Libellé chip | Variante CSS | Bouton « Calibrer la sonde » | Hint | Régulation auto |
+|----------------|--------------|--------------|---------------------|------|-----------------|
+| `null` (avant données) | « Calibration — » | `chip--probe-unknown` (gris) | actif | — | — |
+| `-1` | « EZO indisponible » | `chip--probe-unknown` (gris) | **désactivé** | « EZO ORP injoignable — vérifiez le câblage I²C et l'alimentation. » | Inhibée (cond #5) |
+| `0` | « Calibration requise » | `chip--probe-bad` (rouge) | actif | « Régulation auto inhibée tant que non calibré. » | Inhibée |
+| `≥ 1` | « Calibré » | `chip--probe-good` (vert) | actif | — | Active |
+
+- Le **libellé du bouton est fixe** (« Calibrer la sonde ») quel que soit l'état (itération 3) ; le bouton est **sous la rangée de chips** (`#orp_cal_trigger_btn`), **toujours accessible** dans tous les modes — y compris une fois la sonde calibrée (recalibration possible).
+- Tant que les données ne sont pas reçues (`orpCalPoints == null`) et hors EZO injoignable, le chip affiche « Calibration — » et le bouton reste **actif**.
+- **Garde injection prioritaire** : le bouton « Calibrer la sonde » est forcé **désactivé** pendant une injection ORP en cours, indépendamment de l'état de calibration (cf. [Cas limites](#cas-limites)).
 
 ## Workflow calibration
 
-### Architecture UI
+### Architecture UI — écran guidé (feature-034)
 
-1 seul bloc `.cal-point-block` dans `#orp-card-calibration`, contenant :
+La carte `#orp-card-calibration` présente un **stepper** (`<ol class="calibration-steps" id="orp-cal-steps">`, même pattern `.step` / `.calibration-steps` que le pH). Étapes ORP (1 point) :
+
+| Idx | Étape | Action UI |
+|-----|-------|-----------|
+| 0 | Saisir la référence + rincer, plonger en **solution étalon** | champ `#orp-cal-reference` + bouton « C'est fait → » (`.cal-step-advance`) |
+| 1 | Attendre la stabilisation + **calibrer** | minuterie + bouton « Calibrer » (`#btn-cal-orp`) → `Cal,<reference>` |
+| 2 | Terminé | — |
 
 - **Champ d'entrée** `orp-cal-reference` : valeur de référence en mV (range `0..1000`, défaut `470`). Standards usuels : 225 mV (kit Hanna), 470 mV (kit Atlas), 650 mV (rare).
-- **Micro-étapes** : « Plonger la sonde dans la solution standard » + « Attendre 1 min ».
+- **États visuels du stepper** : `is-completed` (✓) / `is-active` (`aria-current="step"`) / `is-upcoming`, identiques à la page pH (voir [page-ph.md](page-ph.md#architecture-ui--écran-guidé-feature-034)).
+- **Minuterie de stabilisation** (aide non bloquante, `CAL_STAB_DURATION_S = 60`) : bouton « Démarrer la minuterie (60 s) » → compte à rebours `mm:ss` + barre dans `#orp-cal-timer` (`role="timer"`), message « Stabilisation atteinte » à 0. On peut calibrer avant la fin.
+- **Indicateur de stabilité Δ60 s** (indicatif) : amplitude `max − min` de la mesure brute sur ~60 s, seuil cosmétique `5` mV.
 - **Readout live** : `<div class="readout">` (`#cal-orp-readout`) affichant la valeur ORP **brute** lue toutes les 5 s. `updateCalibrationReadouts()` utilise `json.orpRaw` (repli sur `json.orp` si absent), **pas** la valeur lissée. Raison : en changeant de solution étalon (saut > `maxStep` du filtre), le lissé reste figé ~1 min (12 lectures × 5 s, `kSensorFilterResyncRejects`, feature-033) avant re-sync ; le brut suit le potentiel réel de l'électrode, indispensable pour juger la stabilité avant de calibrer. Le reste de l'UI (valeur principale ORP, MQTT) continue d'afficher le lissé.
-- **Bouton « Calibrer »**.
 
 ### Workflow temporel
 
@@ -92,7 +105,7 @@ Champ source : `orpCalPoints` (WebSocket / `GET /data`). L'EZO ORP n'accepte qu'
 
 **Mesure** : `orp` (= valeur **filtrée**, entier mV) ; `orpRaw`, `orpMedian`, `orpFiltered` (feature-025)
 **État filtre** : `orpFilterReady`, `orpFilterUnstable`, `orpRejectedCount`, `orpMixingDelayActive`, `orpDoseBlockedReason` (feature-025) — voir [Chip d'état filtre](#chip-détat-filtre-feature-025)
-**Calibration** : `orpCalPoints` (`-1..1`) — voir [Statut de calibration](#statut-de-calibration-ezo)
+**Calibration** : `orpCalPoints` (`-1..1`) — voir [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)
 **Dosage** : `orp_dosing`, `orp_used_ms`, `orp_daily_ml`, `orp_limit_reached`
 **Mode** : `orp_regulation_mode`, `orp_daily_target_ml`, `orp_enabled` (miroir — voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
 **Config** : `orp_target`, `max_orp_ml_per_day` (= `max_chlorine_ml_per_day`)
@@ -150,6 +163,7 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md), not
 - **WebSocket déconnecté** : éléments capteur taggés `.is-stale`. Reset à la reconnexion.
 - **Reboot inattendu** : toast à la première réception WS si `reset_reason` ∈ {`WATCHDOG`, `BROWNOUT`, `PANIC`, `EXTERNAL`, `UNKNOWN`}.
 - **Mode Programmée sans sonde** : fonctionne — c'est justement un cas d'usage (utilisateur sans sonde ORP). Aucune dépendance sur `orpCalPoints` dans cette branche.
+- **Injection ORP en cours (feature-034)** : le clic sur « Calibrer » (`#orp_cal_trigger_btn`) est **bloqué** si une injection ORP est active — condition `(orp_inject_remaining_s > 0) || (orp_dosing === true)`, toast « Calibration impossible pendant une injection ORP ».
 
 ## Interaction MQTT
 

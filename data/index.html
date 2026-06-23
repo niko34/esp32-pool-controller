@@ -602,6 +602,12 @@
                   <span class="chip__dot" aria-hidden="true"></span>
                   <span class="chip__label" id="ph-filter-chip-label">Filtre --</span>
                 </button>
+                <!-- feature-034 : chip calibration pH fusionné dans #ph-probe-chip -->
+              </div>
+              <!-- feature-034 itération 3 (volet A) : bouton Calibrer la sonde sous la rangée des badges -->
+              <div class="cal-trigger-row">
+                <button class="btn btn--secondary" type="button" id="ph_cal_trigger_btn">Calibrer la sonde</button>
+                <span class="muted small" id="ph_cal_hint"></span>
               </div>
             </div>
             <div class="ph-stats__col">
@@ -650,27 +656,6 @@
                 <div class="detail-actions" style="margin-top:12px">
                   <button class="btn btn--primary" type="button" id="ph_regulation_save_btn">Sauvegarder</button>
                 </div>
-                <hr style="margin:14px 0;border:none;border-top:1px solid var(--border)">
-                <div id="ph-calibration-info">
-                  <!-- Callout vert : calibration complète (>=2 points) -->
-                  <div class="callout callout--success" id="ph_calibrated_status" style="display:none">
-                    <div style="display:flex;align-items:center;gap:8px">
-                      <span style="font-size:18px">✓</span>
-                      <strong>Calibré 2 points</strong>
-                    </div>
-                  </div>
-                  <!-- Chip ambrée : régulation inhibée car cal incomplète -->
-                  <div class="callout callout--warn" id="ph_inhibition_chip" style="display:none">
-                    Régulation pH inhibée — calibration incomplète (<span id="ph_cal_points_label">0</span>/2 points). Calibrez les 2 points pour activer la régulation.
-                  </div>
-                  <!-- Callout rouge : EZO injoignable -->
-                  <div class="callout" id="ph_ezo_unreachable" style="display:none;border-color:rgba(185,28,28,0.35);background:rgba(185,28,28,0.08);color:var(--danger)">
-                    <strong>EZO pH injoignable.</strong> Vérifiez le câblage I²C et l'alimentation du module Atlas Scientific.
-                  </div>
-                  <div class="detail-actions" style="margin-top:8px">
-                    <button class="btn btn--secondary" type="button" id="ph_cal_trigger_btn">Calibrer</button>
-                  </div>
-                </div>
               </div>
 
               <div id="ph-params-scheduled" style="display:none">
@@ -705,6 +690,7 @@
                   <button class="btn btn--secondary" type="button" id="ph_inject_btn">▶ Injecter</button>
                 </div>
               </div>
+
             </div>
           </div>
 
@@ -737,40 +723,54 @@
                 ne sera activée qu'une fois les 2 points calibrés.
               </p>
 
-              <!-- Sous-bloc Point milieu (pH 7.00) -->
-              <div class="cal-point-block" id="cal-ph-mid-block">
-                <h3>Point milieu (pH 7.00)</h3>
-                <div class="cal-point-block__state">
-                  <span class="state-badge" id="cal-ph-mid-badge">Non calibré</span>
-                </div>
-                <ol class="cal-point-block__steps">
-                  <li>Rincer la sonde puis la plonger dans la solution tampon pH 7.00</li>
-                  <li>Attendre 1 minute que la lecture se stabilise</li>
-                  <li>Cliquer sur le bouton « Calibrer le point 7.0 »</li>
+              <!-- feature-034 : stepper de calibration guidé (Option C) -->
+              <div class="cal-stepper" id="ph-cal-stepper">
+                <ol class="calibration-steps" id="ph-cal-steps">
+                  <li class="step is-active" data-step="0" aria-current="step">
+                    <span class="step__number">1</span>
+                    <div class="step__content">
+                      <div class="step__title">Rincer puis plonger dans la solution pH 7.00</div>
+                      <button class="btn btn--secondary cal-step-advance" type="button" data-advance="0">C'est fait, continuer →</button>
+                    </div>
+                  </li>
+                  <li class="step is-upcoming" data-step="1">
+                    <span class="step__number">2</span>
+                    <div class="step__content">
+                      <div class="step__title">Stabiliser puis calibrer le point milieu (pH 7.00)</div>
+                      <div class="readout cal-step-readout" data-readout="ph-mid">
+                        <span class="readout__label">Lecture pH (stabilisée)</span>
+                        <div class="readout__value" id="cal-ph-mid-readout">--</div>
+                        <div class="cal-stability small" id="cal-ph-mid-stability">Δ60 s : --</div>
+                      </div>
+                      <button class="btn btn--primary" type="button" id="btn-cal-ph-mid">Calibrer le point 7.0</button>
+                    </div>
+                  </li>
+                  <li class="step is-upcoming" data-step="2">
+                    <span class="step__number">3</span>
+                    <div class="step__content">
+                      <div class="step__title">Rincer puis plonger dans la solution pH 4.00</div>
+                      <button class="btn btn--secondary cal-step-advance" type="button" data-advance="2">C'est fait, continuer →</button>
+                    </div>
+                  </li>
+                  <li class="step is-upcoming" data-step="3">
+                    <span class="step__number">4</span>
+                    <div class="step__content">
+                      <div class="step__title">Stabiliser puis calibrer le point bas (pH 4.00)</div>
+                      <div class="readout cal-step-readout" data-readout="ph-low">
+                        <span class="readout__label">Lecture pH (stabilisée)</span>
+                        <div class="readout__value" id="cal-ph-low-readout">--</div>
+                        <div class="cal-stability small" id="cal-ph-low-stability">Δ60 s : --</div>
+                      </div>
+                      <button class="btn btn--primary" type="button" id="btn-cal-ph-low">Calibrer le point 4.0</button>
+                    </div>
+                  </li>
+                  <li class="step is-upcoming" data-step="4">
+                    <span class="step__number">✓</span>
+                    <div class="step__content">
+                      <div class="step__title">Calibration terminée</div>
+                    </div>
+                  </li>
                 </ol>
-                <div class="readout">
-                  <span class="readout__label">Lecture pH live</span>
-                  <div class="readout__value" id="cal-ph-mid-readout">--</div>
-                </div>
-                <button class="btn btn--primary" type="button" id="btn-cal-ph-mid">Calibrer le point 7.0</button>
-              </div>
-
-              <!-- Sous-bloc Point bas (pH 4.00) -->
-              <div class="cal-point-block" id="cal-ph-low-block">
-                <h3>Point bas (pH 4.00)</h3>
-                <div class="cal-point-block__state">
-                  <span class="state-badge" id="cal-ph-low-badge">Non calibré</span>
-                </div>
-                <ol class="cal-point-block__steps">
-                  <li>Rincer la sonde puis la plonger dans la solution tampon pH 4.00</li>
-                  <li>Attendre 1 minute que la lecture se stabilise</li>
-                  <li>Cliquer sur le bouton « Calibrer le point 4.0 »</li>
-                </ol>
-                <div class="readout">
-                  <span class="readout__label">Lecture pH live</span>
-                  <div class="readout__value" id="cal-ph-low-readout">--</div>
-                </div>
-                <button class="btn btn--primary" type="button" id="btn-cal-ph-low">Calibrer le point 4.0</button>
               </div>
 
               <div class="row row--gap" style="margin-top:16px">
@@ -858,7 +858,9 @@
               <div class="filter-sub" id="orp-filter-sub">brut -- · médiane -- · maj --</div>
               <div class="muted small" style="margin-top:4px">MAJ auto toutes les 5 secondes</div>
               <div class="chip-row">
-                <!-- feature-025 : chip état filtre ORP -->
+                <!-- feature-034 itération 2 : chip d'état de calibration (NON cliquable) — 1ʳᵉ position (cohérent avec pH) -->
+                <span id="orp-cal-chip" class="chip chip--probe chip--cal chip--probe-unknown" role="status" aria-live="polite"><span class="chip__dot" aria-hidden="true"></span><span class="chip__label" id="orp-cal-chip-label">Calibration --</span></span>
+                <!-- feature-025 : chip état filtre ORP (« Mesure stable ») — 2ᵉ position -->
                 <button type="button" id="orp-filter-chip"
                         class="chip chip--probe chip--probe-unknown"
                         aria-haspopup="dialog" aria-controls="orp-filter-modal"
@@ -866,6 +868,11 @@
                   <span class="chip__dot" aria-hidden="true"></span>
                   <span class="chip__label" id="orp-filter-chip-label">Filtre --</span>
                 </button>
+              </div>
+              <!-- feature-034 itération 3 (volet A) : bouton Calibrer la sonde sous la rangée des badges -->
+              <div class="cal-trigger-row">
+                <button class="btn btn--secondary" type="button" id="orp_cal_trigger_btn">Calibrer la sonde</button>
+                <span class="muted small" id="orp_cal_hint"></span>
               </div>
             </div>
             <div class="orp-stats__col">
@@ -910,28 +917,6 @@
                 <div class="detail-actions" style="margin-top:12px">
                   <button class="btn btn--primary" type="button" id="orp_regulation_save_btn">Sauvegarder</button>
                 </div>
-                <hr style="margin:14px 0;border:none;border-top:1px solid var(--border)">
-                <!-- Infos calibration + bouton Calibrer (uniquement en mode Automatique) -->
-                <div id="orp-calibration-info">
-                  <!-- Callout vert : ORP calibré -->
-                  <div class="callout callout--success" id="orp_calibrated_status" style="display:none">
-                    <div style="display:flex;align-items:center;gap:8px">
-                      <span style="font-size:18px">✓</span>
-                      <strong>Calibré</strong>
-                    </div>
-                  </div>
-                  <!-- Chip ambrée : régulation inhibée -->
-                  <div class="callout callout--warn" id="orp_inhibition_chip" style="display:none">
-                    Régulation ORP inhibée — calibration manquante. Effectuez la calibration 1 point pour activer la régulation.
-                  </div>
-                  <!-- Callout rouge : EZO injoignable -->
-                  <div class="callout" id="orp_ezo_unreachable" style="display:none;border-color:rgba(185,28,28,0.35);background:rgba(185,28,28,0.08);color:var(--danger)">
-                    <strong>EZO ORP injoignable.</strong> Vérifiez le câblage I²C et l'alimentation du module Atlas Scientific.
-                  </div>
-                  <div class="detail-actions" style="margin-top:8px">
-                    <button class="btn btn--secondary" type="button" id="orp_cal_trigger_btn">Calibrer</button>
-                  </div>
-                </div>
               </div>
 
               <!-- Sous-bloc Programmée -->
@@ -968,6 +953,7 @@
                   <button class="btn btn--secondary" type="button" id="orp_inject_btn">▶ Injecter</button>
                 </div>
               </div>
+
             </div>
           </div>
 
@@ -1001,26 +987,47 @@
                 (typiquement 225 mV ou 470 mV). La régulation ORP ne sera activée qu'après calibration.
               </p>
 
-              <!-- Sous-bloc unique ORP -->
-              <div class="cal-point-block" id="cal-orp-block">
-                <h3>Calibration ORP (1 point)</h3>
-                <div class="cal-point-block__state">
-                  <span class="state-badge" id="cal-orp-badge">Non calibré</span>
-                </div>
-                <ol class="cal-point-block__steps">
-                  <li>Rincer la sonde puis la plonger dans la solution standard ORP (225 mV ou 470 mV)</li>
-                  <li>Attendre 1 minute que la lecture se stabilise</li>
-                  <li>Saisir la valeur de référence (en mV) puis cliquer sur « Calibrer »</li>
+              <!-- feature-034 : stepper de calibration guidé (Option C) -->
+              <div class="cal-stepper" id="orp-cal-stepper">
+
+                <ol class="calibration-steps" id="orp-cal-steps">
+                  <li class="step is-active" data-step="0" aria-current="step">
+                    <span class="step__number">1</span>
+                    <div class="step__content">
+                      <div class="step__title">Rincer puis plonger dans la solution standard ORP (225 mV ou 470 mV)</div>
+                      <button class="btn btn--secondary cal-step-advance" type="button" data-advance="0">C'est fait, continuer →</button>
+                    </div>
+                  </li>
+                  <li class="step is-upcoming" data-step="1">
+                    <span class="step__number">2</span>
+                    <div class="step__content">
+                      <div class="step__title">Saisir la valeur de référence de l'étalon</div>
+                      <label class="field">
+                        <span class="field__label">Valeur de référence (mV)</span>
+                        <input type="number" id="orp-cal-reference" min="200" max="1000" step="1" value="470" />
+                      </label>
+                      <button class="btn btn--secondary cal-step-advance" type="button" data-advance="1">Valider →</button>
+                    </div>
+                  </li>
+                  <li class="step is-upcoming" data-step="2">
+                    <span class="step__number">3</span>
+                    <div class="step__content">
+                      <div class="step__title">Stabiliser puis calibrer</div>
+                      <div class="readout cal-step-readout" data-readout="orp">
+                        <span class="readout__label">Lecture ORP (stabilisée)</span>
+                        <div class="readout__value" id="cal-orp-readout">--</div>
+                        <div class="cal-stability small" id="cal-orp-stability">Δ60 s : --</div>
+                      </div>
+                      <button class="btn btn--primary" type="button" id="btn-cal-orp">Calibrer</button>
+                    </div>
+                  </li>
+                  <li class="step is-upcoming" data-step="3">
+                    <span class="step__number">✓</span>
+                    <div class="step__content">
+                      <div class="step__title">Calibration terminée</div>
+                    </div>
+                  </li>
                 </ol>
-                <label class="field">
-                  <span class="field__label">Valeur de référence (mV)</span>
-                  <input type="number" id="orp-cal-reference" min="200" max="1000" step="1" value="470" />
-                </label>
-                <div class="readout">
-                  <span class="readout__label">Lecture ORP live</span>
-                  <div class="readout__value" id="cal-orp-readout">--</div>
-                </div>
-                <button class="btn btn--primary" type="button" id="btn-cal-orp">Calibrer</button>
               </div>
 
               <div class="row row--gap" style="margin-top:16px">

@@ -1776,74 +1776,69 @@ input.is-computed:disabled {
 }
 
 /* 2026 Calibration point block (Atlas EZO — pH mid/low, ORP 1 point) */
-.cal-point-block {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
-  margin-bottom: 16px;
-  background: var(--panel2);
-  transition: box-shadow var(--transition-base);
-}
-.cal-point-block:hover {
-  box-shadow: var(--shadow-sm);
-}
-.cal-point-block h3 {
-  margin: 0 0 8px 0;
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text);
-}
-.cal-point-block__state {
-  margin: 8px 0;
-}
-.cal-point-block__state .state-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 650;
-  background: rgba(0, 0, 0, 0.06);
-  color: var(--muted);
-  border: 1px solid var(--stroke);
-}
-.cal-point-block__state .state-badge.is-ok {
-  background: rgba(52, 199, 89, 0.12);
-  color: var(--ok);
-  border-color: rgba(52, 199, 89, 0.35);
-}
-.cal-point-block__state .state-badge.is-warn {
-  background: rgba(255, 193, 7, 0.15);
-  color: var(--warn);
-  border-color: rgba(255, 193, 7, 0.4);
-}
-.cal-point-block__steps {
-  font-size: 13px;
-  color: var(--muted);
-  padding-left: 22px;
-  margin: 8px 0 12px;
-}
-.cal-point-block__steps li {
-  margin-bottom: 4px;
-}
-.cal-point-block .readout {
-  margin: 12px 0;
-  padding: 10px 12px;
-}
-.cal-point-block .readout__value {
-  font-size: 26px;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-}
-.cal-point-block .readout.is-pulsing .readout__value {
+/* feature-034 : pulse du readout pendant une calibration en cours.
+   La classe `is-pulsing` est posée sur l'élément .readout__value (#cal-*-readout).
+   (L'ancien bloc .cal-point-block* a été supprimé — remplacé par le stepper .cal-stepper.) */
+.readout__value.is-pulsing {
   animation: cal-readout-pulse 1.5s ease-in-out infinite;
 }
 @keyframes cal-readout-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
 }
-.cal-point-block button {
+
+/* ===== feature-034 : stepper de calibration guidé (Option C) ===== */
+.cal-stepper {
+  margin: 8px 0 4px;
+}
+.cal-stepper .step__title {
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.cal-stepper .step__content {
+  flex: 1;
+  min-width: 0;
+}
+.cal-stepper .step.is-upcoming {
+  opacity: 0.55;
+}
+/* Pastille validée : ✓ injecté via CSS, jamais dans le DOM */
+.cal-stepper .step.is-completed .step__number {
+  font-size: 0; /* masque le chiffre */
+}
+.cal-stepper .step.is-completed .step__number::after {
+  content: '✓';
+  font-size: 15px;
+  line-height: 1;
+}
+.cal-stepper .step .btn {
   width: 100%;
+  margin-top: 8px;
+  min-height: 44px;
+}
+.cal-stepper .step .field {
+  margin: 8px 0;
+}
+.cal-stepper .cal-step-readout {
+  margin: 10px 0;
+  padding: 10px 12px;
+}
+.cal-stepper .cal-step-readout .readout__value {
+  font-size: 26px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.cal-stability {
+  margin-top: 4px;
+  color: var(--muted);
+}
+.cal-stability.is-stable {
+  color: var(--ok);
+  font-weight: 650;
+}
+
+@media (max-width: 500px) {
+  .cal-stepper .cal-step-readout .readout__value { font-size: 22px; }
 }
 
 .btn--primary {
@@ -3301,3 +3296,23 @@ h1, h2, h3 {
 .chip-row .chip--probe { margin: 0; }
 /* Espacement entre deux chips jumeaux (sonde puis filtre) — pas d'override global */
 .chip--probe + .chip--probe { margin-left: 8px; }
+/* feature-034 itération 2 : chip d'état de calibration NON cliquable
+   (réutilise les variantes couleur chip--probe-good/warn/bad/unknown). */
+.chip--cal { cursor: default; }
+.chip--cal:hover { transform: none; }
+.chip-row .chip--cal { margin-left: 8px; }
+
+/* feature-034 itération 3 (volet A) : bouton « Calibrer la sonde » sous la rangée
+   des badges. Libellé fixe, cible tactile ≥ 44 px, hint sur la même ligne. */
+.cal-trigger-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+}
+.cal-trigger-row .btn { min-height: 44px; }
+@media (max-width: 500px) {
+  .cal-trigger-row { gap: 8px; }
+  .cal-trigger-row .btn { width: 100%; }
+}

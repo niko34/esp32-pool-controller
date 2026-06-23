@@ -1217,12 +1217,13 @@
     const params = $("#ph-regulation-params");      // sous-bloc Auto
     const scheduled = $("#ph-params-scheduled");    // sous-bloc Programmée
     const inject = $("#ph-inject-section");         // Injection manuelle
-    const calInfo = $("#ph-calibration-info");      // Infos calibration + bouton Calibrer
 
     if (params)    params.style.display    = mode === "automatic"  ? "" : "none";
     if (scheduled) scheduled.style.display = mode === "scheduled"  ? "" : "none";
     if (inject)    inject.style.display    = mode === "manual"     ? "" : "none";
-    if (calInfo)   calInfo.style.display   = mode === "automatic"  ? "" : "none";
+    // feature-034 itération 3 (volet A) : le bouton Calibrer la sonde vit désormais
+    // sous la rangée des badges (#ph-card-stats, toujours visible) → accessible
+    // dans tous les modes par construction, sans gestion de display ici.
   }
 
   function updatePhControls() {
@@ -1234,12 +1235,13 @@
     const params = $("#orp-regulation-params");      // sous-bloc Automatique
     const scheduled = $("#orp-params-scheduled");    // sous-bloc Programmée
     const inject = $("#orp-inject-section");         // Injection manuelle
-    const calInfo = $("#orp-calibration-info");      // Infos calibration + bouton Calibrer
 
     if (params)    params.style.display    = mode === "automatic"  ? "" : "none";
     if (scheduled) scheduled.style.display = mode === "scheduled"  ? "" : "none";
     if (inject)    inject.style.display    = mode === "manual"     ? "" : "none";
-    if (calInfo)   calInfo.style.display   = mode === "automatic"  ? "" : "none";
+    // feature-034 itération 3 (volet A) : le bouton Calibrer la sonde vit désormais
+    // sous la rangée des badges (#orp-card-stats, toujours visible) → accessible
+    // dans tous les modes par construction, sans gestion de display ici.
   }
 
   function updateOrpControls() {
@@ -2456,10 +2458,18 @@
   let _phProbeRefreshState = null;
 
   // Classification de la sonde pH selon les seuils livrés par ux-ui-designer.
+  // feature-034 : chip unique « sonde + calibration ».
+  //   calPoints null/<0 → EZO indisponible ; 0 → calibration requise ;
+  //   1 → calibration 1/2 ; >=2 → diagnostic de pente (santé sonde).
   function classifyPhProbe({ acid, base, zero, calPoints, ageMs }) {
-    // Nombre de points de calibration insuffisant : pas d'évaluation possible
-    if (calPoints == null || calPoints < 2) {
-      return { cls: 'unknown', label: 'Calibration 2 points requise' };
+    if (calPoints == null || calPoints < 0) {
+      return { cls: 'unknown', label: 'EZO indisponible' };
+    }
+    if (calPoints === 0) {
+      return { cls: 'bad', label: 'Calibration requise' };
+    }
+    if (calPoints === 1) {
+      return { cls: 'warn', label: 'Calibration 1/2' };
     }
     const acidNum = (acid == null || isNaN(acid)) ? null : Number(acid);
     const baseNum = (base == null || isNaN(base)) ? null : Number(base);
@@ -2468,16 +2478,18 @@
     }
     const min = Math.min(acidNum, baseNum);
     const zeroAbs = (zero == null || isNaN(zero)) ? 0 : Math.abs(Number(zero));
+    // Sonde calibrée : préfixer « Calibré » pour uniformiser avec le chip ORP, tout en
+    // conservant l'info de santé (pente %). Cas « à remplacer » : l'alerte prime sur « Calibré ».
     if (min < 85 || zeroAbs > 30) {
       return { cls: 'bad', label: `Sonde à remplacer · ${Math.round(min)} %` };
     }
     if (min < 90) {
-      return { cls: 'warn2', label: `Sonde usée · ${Math.round(min)} %` };
+      return { cls: 'warn2', label: `Calibré · sonde usée ${Math.round(min)} %` };
     }
     if (min < 95 || zeroAbs > 15) {
-      return { cls: 'warn', label: `Sonde correcte · ${Math.round(min)} %` };
+      return { cls: 'warn', label: `Calibré · sonde ${Math.round(min)} %` };
     }
-    return { cls: 'good', label: `Sonde excellente · ${Math.round(min)} %` };
+    return { cls: 'good', label: `Calibré · sonde ${Math.round(min)} %` };
   }
 
   // Met en forme l'âge en libellé lisible : "il y a 14 h", "il y a 12 min", "jamais"
@@ -3111,48 +3123,55 @@
 
   function _sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  // Met à jour les badges, les chips d'inhibition, et les readouts live
+  // feature-034 itération 2 : applique l'état du chip de calibration (NON cliquable)
+  // + le disabled du bouton Calibrer + le hint contextuel.
+  // feature-034 itération 3 (volet A) : le bouton porte un LIBELLÉ FIXE
+  // « Calibrer la sonde » (défini dans le HTML) ; on ne réécrit plus son texte
+  // selon l'état (btnLabel ignoré). L'état reste porté par le chip et le hint.
+  // Le garde « injection en cours » (_updateInjectButtons) reste PRIORITAIRE et
+  // peut écraser btnDisabled/hint après cet appel.
+  function setCalChip(prefix, { cls, label, btnDisabled, hint }) {
+    const chip = $(`#${prefix}-cal-chip`);
+    if (chip) chip.className = "chip chip--probe chip--cal " + cls;
+    const lbl = $(`#${prefix}-cal-chip-label`);
+    if (lbl) lbl.textContent = label;
+    const btn = $(`#${prefix}_cal_trigger_btn`);
+    if (btn) {
+      // Libellé fixe « Calibrer la sonde » (cf. HTML) — on ne modifie que disabled.
+      btn.disabled = !!btnDisabled;
+    }
+    const hintEl = $(`#${prefix}_cal_hint`);
+    if (hintEl) hintEl.textContent = hint || "";
+  }
+
+  // Met à jour le chip d'état de calibration, les badges des sous-cartes, et les readouts live
   function renderCalibrationStatus() {
     const phPts = (latestSensorData?.phCalPoints != null) ? latestSensorData.phCalPoints : null;
     const orpPts = (latestSensorData?.orpCalPoints != null) ? latestSensorData.orpCalPoints : null;
+    const phRaw = (typeof latestSensorData?.phRaw === "number" && !isNaN(latestSensorData.phRaw)) ? latestSensorData.phRaw
+                : (typeof latestSensorData?.ph === "number" && !isNaN(latestSensorData.ph)) ? latestSensorData.ph : null;
+    const orpRaw = (typeof latestSensorData?.orpRaw === "number" && !isNaN(latestSensorData.orpRaw)) ? latestSensorData.orpRaw
+                 : (typeof latestSensorData?.orp === "number" && !isNaN(latestSensorData.orp)) ? latestSensorData.orp : null;
 
     // ===== pH =====
+    // feature-034 : le chip « sonde + calibration » pH est piloté par
+    // updatePhProbeChip (#ph-probe-chip). Ici on ne gère plus que le bouton
+    // « Calibrer la sonde », son hint, et le header de la carte calibration.
     const phUnreachable = (phPts === -1);
     const phComplete = (phPts != null && phPts >= 2);
     const phPartial = (phPts === 1);
-    const phNone = (phPts === 0);
 
-    // Callouts/chips de la carte Régulation pH
-    const phOk = $("#ph_calibrated_status");
-    const phInhib = $("#ph_inhibition_chip");
-    const phUnreach = $("#ph_ezo_unreachable");
-    const phPtsLabel = $("#ph_cal_points_label");
-    if (phOk) phOk.style.display = phComplete ? "block" : "none";
-    if (phInhib) phInhib.style.display = (phPartial || phNone) ? "block" : "none";
-    if (phUnreach) phUnreach.style.display = phUnreachable ? "block" : "none";
-    if (phPtsLabel) phPtsLabel.textContent = phPartial ? "1" : "0";
-
-    // Badges des sous-blocs (carte Calibration pH)
-    const midBadge = $("#cal-ph-mid-badge");
-    const lowBadge = $("#cal-ph-low-badge");
-    const setBadge = (el, label, cls) => {
-      if (!el) return;
-      el.className = "state-badge" + (cls ? " " + cls : "");
-      el.textContent = label;
-    };
-    if (phComplete) {
-      setBadge(midBadge, "Calibré ✓", "is-ok");
-      setBadge(lowBadge, "Calibré ✓", "is-ok");
-    } else if (phPartial) {
-      // EZO ne distingue pas mid/low via Cal,? — afficher les 2 en partiel
-      setBadge(midBadge, "1 point calibré (indéterminé)", "is-warn");
-      setBadge(lowBadge, "1 point calibré (indéterminé)", "is-warn");
-    } else if (phUnreachable) {
-      setBadge(midBadge, "EZO injoignable", "is-warn");
-      setBadge(lowBadge, "EZO injoignable", "is-warn");
-    } else {
-      setBadge(midBadge, "Non calibré", "");
-      setBadge(lowBadge, "Non calibré", "");
+    // Bouton + hint pH (priorité : EZO injoignable > état calibration).
+    // Le garde injection est appliqué après (prioritaire).
+    const phEzoDown = (phPts != null && phPts < 0);
+    const phBtn = $("#ph_cal_trigger_btn");
+    if (phBtn) phBtn.disabled = phEzoDown;
+    const phHint = $("#ph_cal_hint");
+    if (phHint) {
+      if (phEzoDown) phHint.textContent = "EZO pH injoignable — vérifiez le câblage I²C et l'alimentation.";
+      else if (phPartial) phHint.textContent = "Régulation auto inhibée (1/2 point).";
+      else if (phPts === 0) phHint.textContent = "Régulation auto inhibée tant que non calibré.";
+      else phHint.textContent = "";
     }
 
     // Status header de la carte Calibration pH
@@ -3168,17 +3187,20 @@
     const orpUnreachable = (orpPts === -1);
     const orpCalibrated = (orpPts != null && orpPts >= 1);
 
-    const orpOk = $("#orp_calibrated_status");
-    const orpInhib = $("#orp_inhibition_chip");
-    const orpUnreach = $("#orp_ezo_unreachable");
-    if (orpOk) orpOk.style.display = orpCalibrated ? "block" : "none";
-    if (orpInhib) orpInhib.style.display = (orpPts === 0) ? "block" : "none";
-    if (orpUnreach) orpUnreach.style.display = orpUnreachable ? "block" : "none";
-
-    const orpBadge = $("#cal-orp-badge");
-    if (orpCalibrated) setBadge(orpBadge, "Calibré ✓", "is-ok");
-    else if (orpUnreachable) setBadge(orpBadge, "EZO injoignable", "is-warn");
-    else setBadge(orpBadge, "Non calibré", "");
+    // Chip d'état de calibration ORP (1 point, pas d'état warn).
+    if (orpPts == null || orpPts < 0 || orpRaw == null) {
+      const ezoDown = (orpPts != null && orpPts < 0);
+      setCalChip("orp", {
+        cls: "chip--probe-unknown",
+        label: ezoDown ? "EZO indisponible" : "Calibration —",
+        btnDisabled: ezoDown,
+        hint: ezoDown ? "EZO ORP injoignable — vérifiez le câblage I²C." : "",
+      });
+    } else if (orpCalibrated) {
+      setCalChip("orp", { cls: "chip--probe-good", label: "Calibré", btnDisabled: false, hint: "" });
+    } else { // orpPts === 0
+      setCalChip("orp", { cls: "chip--probe-bad", label: "Calibration requise", btnDisabled: false, hint: "Régulation auto inhibée tant que non calibré." });
+    }
 
     const orpHeader = $("#orp_cal_status_header");
     if (orpHeader) {
@@ -3186,33 +3208,192 @@
       else if (orpCalibrated) orpHeader.textContent = "Calibré ✓";
       else orpHeader.textContent = "Non calibré";
     }
+
+    // INVARIANT : le garde « injection en cours » est PRIORITAIRE sur l'état
+    // calibration. Appliqué en dernier ici pour rester robuste quel que soit
+    // l'ordre d'appel (renderCalibrationStatus vs _updateInjectButtons).
+    // Ordre de priorité : injection > EZO injoignable > état calibration.
+    const phInjecting = (latestSensorData?.ph_inject_remaining_s ?? 0) > 0
+                      || (latestSensorData?.ph_dosing === true);
+    const orpInjecting = (latestSensorData?.orp_inject_remaining_s ?? 0) > 0
+                       || (latestSensorData?.orp_dosing === true);
+    if (phInjecting && !phCalibrationActive) {
+      const b = $("#ph_cal_trigger_btn"); if (b) b.disabled = true;
+      const h = $("#ph_cal_hint"); if (h) h.textContent = "Injection en cours, calibration indisponible";
+    }
+    if (orpInjecting && !orpCalibrationActive) {
+      const b = $("#orp_cal_trigger_btn"); if (b) b.disabled = true;
+      const h = $("#orp_cal_hint"); if (h) h.textContent = "Injection en cours, calibration indisponible";
+    }
+
+    // feature-034 it.5 : détection événementielle de fin de calibration (remplace le polling
+    // bloquant). Exécuté à chaque mise à jour de données puisque renderCalibrationStatus est
+    // appelé par updateCalibrationReadouts (lui-même appelé à chaque fetch /data ET WS push).
+    checkCalAwait();
   }
 
   // Appelé par la boucle sensor_data : met à jour les readouts live des cards de calibration
   function updateCalibrationReadouts(json) {
-    // Calibration : on affiche la valeur BRUTE (lecture EZO directe), PAS la valeur
-    // lissée. Le filtre (médiane + EMA + rejet de saut) rejetterait justement les
-    // grands écarts produits en changeant de solution étalon (ex. pH 7 → pH 4),
-    // figeant le live pendant ~2 min. Le brut suit le potentiel réel de l'électrode,
-    // indispensable pour juger la stabilité avant de calibrer. Repli sur le lissé
-    // si le brut est indisponible. Voir feature-025.
+    // Calibration (feature-034 it.4) : on N'affiche PAS la valeur lissée de la
+    // RÉGULATION (médiane+EMA+rejet de saut) — elle se figerait ~1 min en changeant
+    // de solution étalon (le rejet `maxStep` bloque le grand saut). À la place on
+    // affiche un LISSAGE LÉGER dédié calibration : la médiane des ~5 dernières mesures
+    // brutes (sans rejet, sans latch) → suit immédiatement la solution tout en gommant
+    // le jitter. Repli sur le brut si la fenêtre est vide.
     const phRaw = (typeof json.phRaw === "number" && !isNaN(json.phRaw)) ? json.phRaw
                 : (typeof json.ph === "number" && !isNaN(json.ph)) ? json.ph : null;
-    const phMid = $("#cal-ph-mid-readout");
-    const phLow = $("#cal-ph-low-readout");
-    if (phMid || phLow) {
-      const phStr = (phRaw != null) ? phRaw.toFixed(3) : "--";
-      if (phMid) phMid.textContent = phStr;
-      if (phLow) phLow.textContent = phStr;
-    }
     const orpRaw = (typeof json.orpRaw === "number" && !isNaN(json.orpRaw)) ? json.orpRaw
                  : (typeof json.orp === "number" && !isNaN(json.orp)) ? json.orp : null;
+
+    // Alimenter d'abord la fenêtre glissante (sert au lissage ET à la stabilité).
+    if (phCalibrationActive && phRaw != null) pushStabilitySample("ph", phRaw);
+    if (orpCalibrationActive && orpRaw != null) pushStabilitySample("orp", orpRaw);
+
+    // FIGEAGE des étapes franchies : une fois une étape « Calibrer » passée (son index <
+    // étape active courante), on STOPPE la mise à jour de sa lecture (elle reste figée à la
+    // valeur lue au moment de la calibration) et on DÉSACTIVE son bouton. Étapes calibrer :
+    // pH mid = step 1, pH low = step 3, ORP = step 2.
+    const phActive = _calActiveIdx.ph;
+    const phMid = $("#cal-ph-mid-readout");
+    const phLow = $("#cal-ph-low-readout");
+    const phV = phCalibrationActive ? calSmoothed("ph", phRaw) : phRaw;
+    const phStr = (phV != null) ? phV.toFixed(2) : "--";
+    if (phMid && phActive <= 1) phMid.textContent = phStr;   // figé si étape mid (1) franchie
+    if (phLow && phActive <= 3) phLow.textContent = phStr;   // figé si étape low (3) franchie
+
+    const orpActive = _calActiveIdx.orp;
     const orpRo = $("#cal-orp-readout");
-    if (orpRo) {
-      orpRo.textContent = (orpRaw != null) ? Math.round(orpRaw) + " mV" : "--";
+    if (orpRo && orpActive <= 2) {   // figé si étape calibrer ORP (2) franchie
+      const v = orpCalibrationActive ? calSmoothed("orp", orpRaw) : orpRaw;
+      orpRo.textContent = (v != null) ? Math.round(v) + " mV" : "--";
     }
+    _calRefreshFrozenButtons(); // désactive les boutons des étapes calibrer franchies
+
+    if (phCalibrationActive && phRaw != null) renderStability("ph");
+    if (orpCalibrationActive && orpRaw != null) renderStability("orp");
     // Synchroniser badges/chips/header à chaque push
     renderCalibrationStatus();
+  }
+
+  // Lissage léger dédié calibration : médiane des ~5 dernières mesures brutes de la
+  // fenêtre glissante (aucun rejet, aucun latch). Repli sur `fallback` si vide.
+  function calSmoothed(product, fallback) {
+    const arr = _calStab[product];
+    if (!arr || !arr.length) return fallback;
+    const recent = arr.slice(-5).map(s => s.v).sort((a, b) => a - b);
+    const mid = Math.floor(recent.length / 2);
+    return recent.length % 2 ? recent[mid] : (recent[mid - 1] + recent[mid]) / 2;
+  }
+
+  // ---------- feature-034 : moteur stepper + stabilité ----------
+  const CAL_STAB_WINDOW_MS = 20000;          // fenêtre glissante d'analyse de stabilité (~20 s)
+  // Seuils INDICATIFS au-dessus du bruit de lecture (~0,07 pH observé) pour distinguer
+  // « sonde stabilisée (bruit seul) » de « encore en dérive ». Cosmétiques (non bloquants).
+  const CAL_STAB_THRESHOLD = { ph: 0.9, orp: 10 };
+  const CAL_STAB_WINDOW_S = Math.round(CAL_STAB_WINDOW_MS / 1000);
+
+  // Indices d'étapes du stepper que l'utilisateur fait avancer manuellement.
+  const CAL_MANUAL_STEPS = { ph: [0, 2], orp: [0, 1] };
+  const CAL_STEP_COUNT   = { ph: 5, orp: 4 };
+
+  const _calStab = { ph: [], orp: [] };      // [{t, v}] fenêtre glissante
+  const _calActiveIdx = { ph: 0, orp: 0 };   // index de l'étape active (pour figer les étapes franchies)
+
+  function pushStabilitySample(product, value) {
+    const now = Date.now();
+    const arr = _calStab[product];
+    arr.push({ t: now, v: value });
+    const cutoff = now - CAL_STAB_WINDOW_MS;
+    while (arr.length && arr[0].t < cutoff) arr.shift();
+  }
+
+  function renderStability(product) {
+    // Cible UNIQUEMENT le libellé de stabilité de l'étape calibrer ACTIVE (mid=1, low=3, ORP=2).
+    // Les étapes franchies gardent leur libellé figé (comme leur lecture).
+    let el = null;
+    if (product === "ph") {
+      if (_calActiveIdx.ph === 1) el = $("#cal-ph-mid-stability");
+      else if (_calActiveIdx.ph === 3) el = $("#cal-ph-low-stability");
+    } else if (_calActiveIdx.orp === 2) {
+      el = $("#cal-orp-stability");
+    }
+    if (!el) return;
+    const arr = _calStab[product];
+    let txt = "○ Stabilisation…", stable = false;
+    if (arr.length >= 3) {
+      let min = arr[0].v, max = arr[0].v;
+      for (const s of arr) { if (s.v < min) min = s.v; if (s.v > max) max = s.v; }
+      const delta = max - min;
+      stable = delta <= CAL_STAB_THRESHOLD[product];
+      const fmt = product === "ph" ? delta.toFixed(2) : Math.round(delta) + " mV";
+      txt = stable
+        ? "● Stable — vous pouvez calibrer"
+        : "○ Stabilisation… (Δ" + CAL_STAB_WINDOW_S + "s " + fmt + ")";
+    }
+    el.textContent = txt;
+    el.classList.toggle("is-stable", stable);
+  }
+
+  // --- progression du stepper ---
+  function setCalStepState(product, idx) {
+    _calActiveIdx[product] = idx;
+    const steps = $$(`#${product}-cal-steps .step`);
+    steps.forEach((li) => {
+      const i = parseInt(li.dataset.step, 10);
+      li.classList.remove("is-active", "is-completed", "is-upcoming");
+      li.removeAttribute("aria-current");
+      if (i < idx) {
+        li.classList.add("is-completed");
+      } else if (i === idx) {
+        li.classList.add("is-active");
+        li.setAttribute("aria-current", "step");
+      } else {
+        li.classList.add("is-upcoming");
+      }
+    });
+  }
+
+  function resetCalStepper(product) {
+    _calStab[product] = [];
+    renderStability(product);
+    setCalStepState(product, 0);
+    // Ré-armer les boutons « Calibrer » figés d'une session précédente (réouverture).
+    const btnIds = product === "ph" ? ["btn-cal-ph-mid", "btn-cal-ph-low"] : ["btn-cal-orp"];
+    btnIds.forEach(id => { const b = $("#" + id); if (b) b.disabled = false; });
+  }
+
+  // Avance manuelle (boutons « C'est fait → »).
+  function advanceCalStepper(product, fromIdx) {
+    const active = $$(`#${product}-cal-steps .step.is-active`)[0];
+    if (!active || parseInt(active.dataset.step, 10) !== fromIdx) return;
+    setCalStepState(product, fromIdx + 1);
+    _calStab[product] = []; // repartir d'une fenêtre propre à chaque changement de solution
+    renderStability(product);
+    focusActiveStep(product);
+  }
+
+  // Marque une étape « calibrer » comme faite après succès EZO et passe à la suivante.
+  function completeCalStep(product, idx) {
+    setCalStepState(product, idx + 1);
+    _calStab[product] = [];
+    renderStability(product);
+    focusActiveStep(product);
+  }
+
+  function focusActiveStep(product) {
+    const active = $$(`#${product}-cal-steps .step.is-active`)[0];
+    const btn = active ? active.querySelector("button, input") : null;
+    if (btn) { try { btn.focus(); } catch (_) {} }
+  }
+  function focusFirstStep(product) {
+    // léger délai pour laisser la carte s'afficher avant de déplacer le focus
+    setTimeout(() => focusActiveStep(product), 60);
+  }
+
+  function bindStepperControls(product) {
+    $$(`#${product}-cal-stepper .cal-step-advance`).forEach(btn => {
+      btn.addEventListener("click", () => advanceCalStepper(product, parseInt(btn.dataset.advance, 10)));
+    });
   }
 
   function showPhCalibrationCard() {
@@ -3226,6 +3407,7 @@
     if (calBtn) calBtn.disabled = true;
   }
   function hidePhCalibrationCard() {
+    _calEndAwait(); // annuler une attente de calibration en cours
     const reg = $("#ph-card-regulation");
     const hist = $("#ph-card-history");
     const cal = $("#ph-card-calibration");
@@ -3247,6 +3429,7 @@
     if (calBtn) calBtn.disabled = true;
   }
   function hideOrpCalibrationCard() {
+    _calEndAwait(); // annuler une attente de calibration en cours
     const reg = $("#orp-card-regulation");
     const hist = $("#orp-card-history");
     const cal = $("#orp-card-calibration");
@@ -3258,83 +3441,125 @@
     updateOrpModeControls();
   }
 
-  // POST /calibrate_ph {step}, puis attente que phCalPoints incrémente (timeout 15s)
+  // ---------- feature-034 : calibration ÉVÉNEMENTIELLE (remplace le polling bloquant) ----------
+  // Plus de boucle `while + await`. Au clic « Calibrer », on POST puis on enregistre une
+  // attente (_calAwait) ; la détection de fin se fait dans checkCalAwait(), appelé à CHAQUE
+  // mise à jour de données (WS push, fetch /data périodique/forcé, retour de focus). C'est
+  // robuste : insensible à la pause des timers/WebSocket par Safari (au retour sur l'onglet,
+  // le refresh déclenche la détection). _calPollTimer force /data en best-effort pendant l'attente.
+  let _calAwait = null;
+  let _calPollTimer = null;
+  const CAL_AWAIT_TIMEOUT_MS = 20000;
+  // Délai d'exécution EZO avant de valider une RECALIBRATION (point déjà calibré : le compteur
+  // de points ne change pas, donc on ne peut pas se fier à un incrément). Au-delà de ce délai,
+  // si la sonde est joignable et que le point attendu est présent, on considère la cal réussie.
+  const CAL_SETTLE_MS = 4000;
+
+  function _calStartPolling() {
+    if (_calPollTimer) clearInterval(_calPollTimer);
+    _calPollTimer = setInterval(() => { loadSensorData({ force: true, source: "cal-await" }); }, 1500);
+    loadSensorData({ force: true, source: "cal-await" }); // refresh immédiat
+  }
+
+  // Désactive les boutons « Calibrer » des étapes déjà franchies (figeage). Idempotent.
+  function _calRefreshFrozenButtons() {
+    { const b = $("#btn-cal-ph-mid"); if (b && _calActiveIdx.ph > 1) b.disabled = true; }
+    { const b = $("#btn-cal-ph-low"); if (b && _calActiveIdx.ph > 3) b.disabled = true; }
+    { const b = $("#btn-cal-orp");    if (b && _calActiveIdx.orp > 2) b.disabled = true; }
+  }
+
+  function _calEndAwait() {
+    if (_calPollTimer) { clearInterval(_calPollTimer); _calPollTimer = null; }
+    if (_calAwait) {
+      const a = _calAwait;
+      _calAwait = null; // libérer AVANT de toucher le DOM (évite toute ré-entrance)
+      const btn = $("#" + a.btnId);
+      if (btn) { btn.disabled = false; btn.textContent = a.originalLabel; }
+      if (a.otherBtnId) { const o = $("#" + a.otherBtnId); if (o) o.disabled = false; }
+      if (a.roId) { const r = $("#" + a.roId); if (r) r.classList.remove("is-pulsing"); }
+    }
+    // Succès → l'étape vient d'être franchie : re-figer son bouton (sinon réactivé ci-dessus).
+    _calRefreshFrozenButtons();
+  }
+
+  // Détection de fin de calibration — appelée depuis renderCalibrationStatus() à chaque rendu.
+  function checkCalAwait() {
+    if (!_calAwait) return;
+    const a = _calAwait;
+    const pts = a.product === "ph" ? latestSensorData?.phCalPoints : latestSensorData?.orpCalPoints;
+    if (pts === -1) {
+      showToast("Calibration " + a.stepLabel + " : EZO injoignable", "error");
+      _calEndAwait();
+      return;
+    }
+    const elapsed = Date.now() - a.startMs;
+    // Nombre de points attendu après cette étape (sert au cas recalibration).
+    const expectedMin = a.product === "ph" ? (a.step === "mid" ? 1 : 2) : 1;
+    // Succès si : (a) le compteur a augmenté → nouvelle calibration d'un point non encore fait ;
+    // OU (b) cas RECALIBRATION — le point était déjà calibré donc le compteur ne change pas :
+    //   après le délai d'exécution EZO, la sonde est joignable et le point attendu est présent.
+    const incremented = (typeof pts === "number") && (pts > a.baseline);
+    const settled = (typeof pts === "number") && (pts >= expectedMin) && (elapsed > CAL_SETTLE_MS);
+    if (incremented || settled) {
+      const detail = a.product === "ph" ? " (" + pts + "/2 points)"
+                   : (a.reference != null ? " (référence " + a.reference + " mV)" : "");
+      showToast("Calibration " + a.stepLabel + " réussie" + detail, "success");
+      if (a.product === "ph") completeCalStep("ph", a.step === "mid" ? 1 : 3);
+      else completeCalStep("orp", 2);
+      _calEndAwait();
+      return;
+    }
+    if (elapsed > CAL_AWAIT_TIMEOUT_MS) {
+      showToast("Calibration " + a.stepLabel + " : délai dépassé — vérifier la sonde", "warning");
+      _calEndAwait();
+    }
+  }
+
+  // POST /calibrate_ph {step} — non bloquant : la détection se fait via checkCalAwait().
   async function calibratePh(step /* 'mid' | 'low' */) {
+    if (_calAwait) return; // une calibration déjà en attente
     const btnId = step === "mid" ? "btn-cal-ph-mid" : "btn-cal-ph-low";
-    const btn = $("#" + btnId);
-    const originalLabel = btn ? btn.textContent : "";
+    const otherBtnId = step === "mid" ? "btn-cal-ph-low" : "btn-cal-ph-mid";
+    const roId = step === "mid" ? "cal-ph-mid-readout" : "cal-ph-low-readout";
     const stepLabel = step === "mid" ? "pH 7.0" : "pH 4.0";
-
-    // Pulse visuel sur le readout du sous-bloc
-    const ro = step === "mid" ? $(".readout", $("#cal-ph-mid-block")) : $(".readout", $("#cal-ph-low-block"));
-    if (ro) ro.classList.add("is-pulsing");
-
-    if (btn) { btn.disabled = true; btn.textContent = "Calibration en cours…"; }
-    // Désactiver l'autre bouton pendant la calibration pour éviter une double commande EZO
-    const otherBtn = step === "mid" ? $("#btn-cal-ph-low") : $("#btn-cal-ph-mid");
-    if (otherBtn) otherBtn.disabled = true;
-
+    const btn = $("#" + btnId);
+    const originalLabel = btn ? btn.textContent : "Calibrer";
+    const baseline = (typeof latestSensorData?.phCalPoints === "number" && latestSensorData.phCalPoints >= 0)
+                   ? latestSensorData.phCalPoints : 0;
     try {
-      const previous = (latestSensorData?.phCalPoints != null && latestSensorData.phCalPoints >= 0)
-                     ? latestSensorData.phCalPoints : 0;
-
       const res = await authFetch("/calibrate_ph", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ step })
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ step })
       });
-
       if (!res.ok) {
         let errMsg = "HTTP " + res.status;
         try { const j = await res.json(); if (j?.error) errMsg = j.error; } catch (_) {}
         showToast("Erreur calibration " + stepLabel + " : " + errMsg, "error");
         return;
       }
-
       showToast("Calibration " + stepLabel + " envoyée — exécution EZO en cours…", "info");
-
-      // Polling phCalPoints (15 s max, vérification toutes les secondes)
-      const deadline = Date.now() + 15000;
-      while (Date.now() < deadline) {
-        await _sleep(1000);
-        const cur = latestSensorData?.phCalPoints;
-        if (cur === -1) {
-          showToast("Calibration " + stepLabel + " : EZO pH injoignable", "error");
-          return;
-        }
-        if (typeof cur === "number" && cur > previous) {
-          showToast("Calibration " + stepLabel + " réussie (" + cur + "/2 points)", "success");
-          renderCalibrationStatus();
-          return;
-        }
-      }
-      showToast("Calibration " + stepLabel + " : délai dépassé — vérifier la sonde", "warning");
+      if (btn) { btn.disabled = true; btn.textContent = "Calibration en cours…"; }
+      const other = $("#" + otherBtnId); if (other) other.disabled = true;
+      const ro = $("#" + roId); if (ro) ro.classList.add("is-pulsing");
+      _calAwait = { product: "ph", step, baseline, startMs: Date.now(), btnId, otherBtnId, roId, originalLabel, stepLabel };
+      _calStartPolling();
     } catch (e) {
       showToast("Erreur réseau : " + (e?.message || e), "error");
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
-      if (otherBtn) otherBtn.disabled = false;
-      if (ro) ro.classList.remove("is-pulsing");
-      renderCalibrationStatus();
     }
   }
 
-  // POST /calibrate_orp {reference}
+  // POST /calibrate_orp {reference} — non bloquant.
   async function calibrateOrp(reference) {
-    const btn = $("#btn-cal-orp");
-    const originalLabel = btn ? btn.textContent : "";
-    const ro = $(".readout", $("#cal-orp-block"));
-    if (ro) ro.classList.add("is-pulsing");
-    if (btn) { btn.disabled = true; btn.textContent = "Calibration en cours…"; }
-
+    if (_calAwait) return;
+    const btnId = "btn-cal-orp";
+    const roId = "cal-orp-readout";
+    const stepLabel = "ORP";
+    const btn = $("#" + btnId);
+    const originalLabel = btn ? btn.textContent : "Calibrer";
+    const baseline = (typeof latestSensorData?.orpCalPoints === "number" && latestSensorData.orpCalPoints >= 0)
+                   ? latestSensorData.orpCalPoints : 0;
     try {
-      const previous = (latestSensorData?.orpCalPoints != null && latestSensorData.orpCalPoints >= 0)
-                     ? latestSensorData.orpCalPoints : 0;
-
       const res = await authFetch("/calibrate_orp", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reference })
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reference })
       });
       if (!res.ok) {
         let errMsg = "HTTP " + res.status;
@@ -3342,37 +3567,13 @@
         showToast("Erreur calibration ORP : " + errMsg, "error");
         return;
       }
-
       showToast("Calibration ORP envoyée — exécution EZO en cours…", "info");
-
-      const deadline = Date.now() + 15000;
-      while (Date.now() < deadline) {
-        await _sleep(1000);
-        const cur = latestSensorData?.orpCalPoints;
-        if (cur === -1) {
-          showToast("Calibration ORP : EZO injoignable", "error");
-          return;
-        }
-        if (typeof cur === "number" && cur >= 1 && cur > previous) {
-          showToast("Calibration ORP réussie (référence " + reference + " mV)", "success");
-          renderCalibrationStatus();
-          return;
-        }
-      }
-      // Cas particulier : si l'utilisateur recalibre alors que orpCalPoints == 1 déjà,
-      // le nombre de points ne changera pas. Considérer comme succès après 5s sans erreur.
-      if (latestSensorData?.orpCalPoints >= 1) {
-        showToast("Calibration ORP mise à jour (référence " + reference + " mV)", "success");
-        renderCalibrationStatus();
-        return;
-      }
-      showToast("Calibration ORP : délai dépassé — vérifier la sonde", "warning");
+      if (btn) { btn.disabled = true; btn.textContent = "Calibration en cours…"; }
+      const ro = $("#" + roId); if (ro) ro.classList.add("is-pulsing");
+      _calAwait = { product: "orp", step: "orp", baseline, startMs: Date.now(), btnId, otherBtnId: null, roId, originalLabel, stepLabel, reference };
+      _calStartPolling();
     } catch (e) {
       showToast("Erreur réseau : " + (e?.message || e), "error");
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = originalLabel; }
-      if (ro) ro.classList.remove("is-pulsing");
-      renderCalibrationStatus();
     }
   }
 
@@ -3381,9 +3582,15 @@
     const triggerBtn = $("#ph_cal_trigger_btn");
     triggerBtn?.addEventListener("click", () => {
       if (phCalibrationActive) return;
+      // feature-034 (B5) : garde injection pH (calqué sur le pattern ORP).
+      const phInjecting = (latestSensorData?.ph_inject_remaining_s ?? 0) > 0
+                        || (latestSensorData?.ph_dosing === true);
+      if (phInjecting) { showToast("Calibration impossible pendant une injection pH", "error"); return; }
       phCalibrationActive = true;
       showPhCalibrationCard();
+      resetCalStepper("ph");
       renderCalibrationStatus();
+      focusFirstStep("ph");
     });
 
     // Bouton "Fermer" → revient à la carte Régulation
@@ -3391,12 +3598,14 @@
     closeBtn?.addEventListener("click", () => {
       phCalibrationActive = false;
       hidePhCalibrationCard();
+      $("#ph_cal_trigger_btn")?.focus();
     });
 
     // Boutons de calibration
     $("#btn-cal-ph-mid")?.addEventListener("click", () => calibratePh("mid"));
     $("#btn-cal-ph-low")?.addEventListener("click", () => calibratePh("low"));
 
+    bindStepperControls("ph");
     renderCalibrationStatus();
   }
 
@@ -3409,13 +3618,16 @@
       if (orpInjecting) { showToast("Calibration impossible pendant une injection ORP", "error"); return; }
       orpCalibrationActive = true;
       showOrpCalibrationCard();
+      resetCalStepper("orp");
       renderCalibrationStatus();
+      focusFirstStep("orp");
     });
 
     const closeBtn = $("#orp_cal_close_btn");
     closeBtn?.addEventListener("click", () => {
       orpCalibrationActive = false;
       hideOrpCalibrationCard();
+      $("#orp_cal_trigger_btn")?.focus();
     });
 
     $("#btn-cal-orp")?.addEventListener("click", () => {
@@ -3428,6 +3640,7 @@
       calibrateOrp(reference);
     });
 
+    bindStepperControls("orp");
     renderCalibrationStatus();
   }
 

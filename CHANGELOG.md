@@ -1,5 +1,23 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.3.0] - 2026-06-23
+
+### Fonctionnalités
+
+- **Calibration guidée pH/ORP accessible dans tous les modes** (feature-034) : la calibration des sondes pH et ORP est désormais accessible quel que soit le mode de régulation (**automatique, programmée, manuelle**) — auparavant limitée au mode automatique. Le mode en cours est **conservé** à la sortie de la calibration (plus de bascule forcée en automatique).
+- **Écran de calibration guidé** (feature-034) : nouvel accompagnement par **stepper** avec états visuels (étape faite ✓ / en cours / restante, `aria-current`), **minuterie de stabilisation** par étape d'attente (compte à rebours 60 s, non bloquant — on peut calibrer avant la fin), et **indicateur de stabilité Δ60 s** (amplitude max−min de la mesure brute, purement indicatif). Le readout reste la valeur **brute** (feature-025, non régressé).
+- **Sécurité (feature-034)** : le bouton « Calibrer » est désormais aussi bloqué pendant une **injection pH** en cours (le garde n'existait que côté ORP).
+- **Chip d'état de calibration** (feature-034, itération 2) : sur les pages pH et ORP, l'état de calibration est désormais résumé par un **chip** dans la rangée de chips (à côté des chips sonde et filtre) — états « Calibré 2/2 » (pH) / « Calibré » (ORP) en vert, « Calibration 1/2 » en ambré (pH partiel), « Calibration requise » en rouge (régulation auto inhibée), « EZO indisponible » en gris, et « Calibration — » tant que les données ne sont pas reçues. Les **3 anciens callouts** (calibré / régulation inhibée / EZO injoignable) sont **supprimés** ; leur information est portée par le chip + un hint texte.
+- **Bouton « Calibrer la sonde » repositionné** (feature-034, itération 3) : sur les pages pH et ORP, le bouton de calibration est désormais affiché **sous la rangée de chips** (dans le bloc Statistiques) avec un **libellé fixe « Calibrer la sonde »** (remplace les libellés adaptatifs « Calibrer » / « Continuer la calibration » / « Recalibrer » de l'itération 2). L'état de calibration reste porté par le chip + le hint. Les blocs `#ph-calibration-info` / `#orp-calibration-info` en bas de la carte de régulation sont **retirés**. Le bouton reste **toujours accessible** dans tous les modes (recalibration possible) et **désactivé** pendant une injection en cours.
+- **Chip pH unique « sonde + calibration »** (feature-034) : sur la page pH, le chip de calibration séparé est **supprimé** ; son information est **fusionnée** dans le chip sonde (`#ph-probe-chip`) pour lever la redondance. Le chip pH affiche « EZO indisponible » (gris) si EZO injoignable, « Calibration requise » (rouge) si 0 point, « Calibration 1/2 » (ambré) si 1 point, et le **diagnostic de pente** habituel (« Sonde excellente / correcte / usée / à remplacer · N% ») dès 2 points calibrés. La page ORP conserve son chip de calibration dédié (pas de chip sonde côté ORP). Le bouton « Calibrer la sonde » et son hint restent inchangés.
+
+### Documentation
+
+- `docs/features/page-ph.md` / `docs/features/page-orp.md` : calibration accessible tous modes, écran guidé (stepper d'états, minuterie de stabilisation, indicateur de stabilité Δ60 s), garde injection, **chip d'état de calibration** remplaçant les callouts (itération 2), et **bouton « Calibrer la sonde »** repositionné sous les chips avec libellé fixe (itération 3, volet A ; volet B « calibration périmée » abandonné).
+- `docs/subsystems/sensors.md` : précision que le reset filtre + warmup post-calibration est **mode-indépendant** (déclenché par le succès EZO).
+
+---
+
 ## [2.2.2] - 2026-06-21
 
 ### Firmware

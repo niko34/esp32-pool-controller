@@ -66,6 +66,12 @@ static void handleGetData(AsyncWebServerRequest* request) {
   doc["orpFilterUnstable"] = sensors.isOrpFilterUnstable();
   doc["orpRejectedCount"]  = sensors.getOrpRejectedCount();
 
+  // feature-034 : points de calibration EZO (déjà publiés en WS, mais ABSENTS de /data —
+  // nécessaires au polling de calibration qui interroge /data activement, Safari mettant
+  // le WebSocket en pause sur un onglet non focalisé).
+  doc["phCalPoints"]  = sensors.getPhCalibrationPointsCached();
+  doc["orpCalPoints"] = sensors.getOrpCalibrationPointsCached();
+
   // Température (offset utilisateur appliqué dans getTemperature())
   if (!isnan(sensors.getTemperature())) {
     doc["temperature"] = sensors.getTemperature();
