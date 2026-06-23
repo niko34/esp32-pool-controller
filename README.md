@@ -41,7 +41,7 @@ Les fichiers pour la partie électronique sont disponibles dans le dossier [`har
 - [Fichiers Gerber](hardware/Gerber.zip)
 - [BOM](hardware/BOM.csv)
 
-![Diagramme](screenshots/Diagram.jpg)
+![PCB](screenshots/PCB_3D.png)
 
 ### Boîtier
 
