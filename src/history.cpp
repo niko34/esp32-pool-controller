@@ -1,4 +1,5 @@
 #include "history.h"
+#include "history_logic.h"
 #include "constants.h"
 #include "logger.h"
 #include "sensors.h"
@@ -459,8 +460,7 @@ void HistoryManager::consolidateData() {
   memoryBuffer.erase(
     std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
       [now](const DataPoint& p) {
-        unsigned long age = now - p.timestamp; // age en secondes
-        return age > DAILY_MAX_AGE;
+        return isOlderThan((uint32_t)now, (uint32_t)p.timestamp, (uint32_t)DAILY_MAX_AGE);
       }),
     memoryBuffer.end()
   );
@@ -473,10 +473,9 @@ void HistoryManager::consolidateData() {
 
   for (const auto& point : memoryBuffer) {
     if (point.granularity == RAW) {
-      unsigned long age = now - point.timestamp; // age en secondes
-      if (age > RAW_MAX_AGE) {
+      if (isOlderThan((uint32_t)now, (uint32_t)point.timestamp, (uint32_t)RAW_MAX_AGE)) {
         // Grouper par heure (arrondir timestamp à l'heure)
-        unsigned long hourTimestamp = (point.timestamp / kSecondsPerHour) * kSecondsPerHour;
+        unsigned long hourTimestamp = bucketTimestamp((uint32_t)point.timestamp, kSecondsPerHour);
         hourlyGroups[hourTimestamp].push_back(point);
       }
     }
@@ -514,12 +513,12 @@ void HistoryManager::consolidateData() {
     }
 
     if (validCount > 0) {
-      avgPoint.ph /= validCount;
-      avgPoint.orp /= validCount;
-      avgPoint.temperature /= validCount;
-      avgPoint.filtrationActive = (filtrationCount > group.second.size() / 2);
-      avgPoint.phDosing = (phDosingCount > 0);
-      avgPoint.orpDosing = (orpDosingCount > 0);
+      avgPoint.ph = finalizeMean(avgPoint.ph, validCount);
+      avgPoint.orp = finalizeMean(avgPoint.orp, validCount);
+      avgPoint.temperature = finalizeMean(avgPoint.temperature, validCount);
+      avgPoint.filtrationActive = isMajority(filtrationCount, (int)group.second.size());
+      avgPoint.phDosing = anyTrue(phDosingCount);
+      avgPoint.orpDosing = anyTrue(orpDosingCount);
 
       hourlyPoints.push_back(avgPoint);
     }
@@ -529,8 +528,7 @@ void HistoryManager::consolidateData() {
   memoryBuffer.erase(
     std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
       [now](const DataPoint& p) {
-        unsigned long age = now - p.timestamp;
-        return p.granularity == RAW && age > RAW_MAX_AGE;
+        return p.granularity == RAW && isOlderThan((uint32_t)now, (uint32_t)p.timestamp, (uint32_t)RAW_MAX_AGE);
       }),
     memoryBuffer.end()
   );
@@ -544,10 +542,9 @@ void HistoryManager::consolidateData() {
 
   for (const auto& point : memoryBuffer) {
     if (point.granularity == HOURLY) {
-      unsigned long age = now - point.timestamp; // age en secondes
-      if (age > HOURLY_MAX_AGE) {
+      if (isOlderThan((uint32_t)now, (uint32_t)point.timestamp, (uint32_t)HOURLY_MAX_AGE)) {
         // Grouper par jour (arrondir timestamp au jour)
-        unsigned long dayTimestamp = (point.timestamp / 86400) * 86400;
+        unsigned long dayTimestamp = bucketTimestamp((uint32_t)point.timestamp, 86400UL);
         dailyGroups[dayTimestamp].push_back(point);
       }
     }
@@ -585,12 +582,12 @@ void HistoryManager::consolidateData() {
     }
 
     if (validCount > 0) {
-      avgPoint.ph /= validCount;
-      avgPoint.orp /= validCount;
-      avgPoint.temperature /= validCount;
-      avgPoint.filtrationActive = (filtrationCount > group.second.size() / 2);
-      avgPoint.phDosing = (phDosingCount > 0);
-      avgPoint.orpDosing = (orpDosingCount > 0);
+      avgPoint.ph = finalizeMean(avgPoint.ph, validCount);
+      avgPoint.orp = finalizeMean(avgPoint.orp, validCount);
+      avgPoint.temperature = finalizeMean(avgPoint.temperature, validCount);
+      avgPoint.filtrationActive = isMajority(filtrationCount, (int)group.second.size());
+      avgPoint.phDosing = anyTrue(phDosingCount);
+      avgPoint.orpDosing = anyTrue(orpDosingCount);
 
       dailyPoints.push_back(avgPoint);
     }
@@ -600,8 +597,7 @@ void HistoryManager::consolidateData() {
   memoryBuffer.erase(
     std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
       [now](const DataPoint& p) {
-        unsigned long age = now - p.timestamp;
-        return p.granularity == HOURLY && age > HOURLY_MAX_AGE;
+        return p.granularity == HOURLY && isOlderThan((uint32_t)now, (uint32_t)p.timestamp, (uint32_t)HOURLY_MAX_AGE);
       }),
     memoryBuffer.end()
   );

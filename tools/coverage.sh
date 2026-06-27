@@ -53,7 +53,7 @@ echo "==> Exécution des tests natifs instrumentés ($ENV)…"
 
 # --- 3. Rapport gcovr (uniquement les 2 classes pures sous test) -------------
 echo
-echo "==> Rapport de couverture (sensor_filter, dosing_logic, schedule_logic) :"
+echo "==> Rapport de couverture (sensor_filter, dosing_logic, schedule_logic, history_logic) :"
 echo
 COMMON_ARGS=(
   --root .
@@ -61,6 +61,7 @@ COMMON_ARGS=(
   --filter 'src/sensor_filter\.(cpp|h)'
   --filter 'src/dosing_logic\.(cpp|h)'
   --filter 'src/schedule_logic\.(cpp|h)'
+  --filter 'src/history_logic\.(cpp|h)'
   "$BUILD_DIR"
 )
 

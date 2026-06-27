@@ -32,6 +32,24 @@ Voir [`constants.h:49`](../../src/constants.h:49) et [`history.h:30`](../../src/
 
 > Niveau de log : la trace `Consolidation terminée: N points` est en **DEBUG** (n'apparaît pas dans la persistance par défaut, niveau `INFO` minimum sur le fichier). Le marqueur antérieur `DEBUG: Début consolidation historique` a été supprimé.
 
+## Math d'agrégation pure (`history_logic`)
+
+- **Fichiers** : [`src/history_logic.h`](../../src/history_logic.h), [`src/history_logic.cpp`](../../src/history_logic.cpp)
+
+Depuis **feature-041** (*characterization refactor*), la math **scalaire** d'agrégation est extraite de `history.cpp::consolidateData()` vers le module **pur** `history_logic` (pattern *Humble Object*, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)). Headers C uniquement (`<stdint.h>`/`<math.h>`), sans `<vector>`/`<map>`/Arduino/FreeRTOS — donc **testable en natif** sans libc++.
+
+| Fonction | Rôle | Frontières / particularités |
+|---|---|---|
+| `bucketTimestamp(ts, bucketSeconds)` | Tronque un timestamp au début de son bucket (horaire/quotidien) : `(ts / bucketSeconds) * bucketSeconds` | `bucketSeconds == 0` → renvoie `ts` tel quel (garde anti-division par zéro) |
+| `isOlderThan(now, ts, maxAgeSeconds)` | Prédicat d'ancienneté `(now - ts) > maxAgeSeconds` | Frontière **stricte** (`>`) : `age == maxAge` → `false`. Arithmétique `uint32`, wrap (`ts > now`) conservé tel quel |
+| `finalizeMean(sum, count)` | Moyenne `sum/count` | `count == 0` → **`NaN`** (le point est ignoré par la coquille) |
+| `isMajority(trueCount, total)` | Majorité stricte `trueCount > total/2` | Division **entière** : `2/4` → `false`, `3/4` → `true`, `3/5` → `true` |
+| `anyTrue(count)` | « Au moins un » : `count > 0` | — |
+
+Les deux passes de `consolidateData()` (raw → horaire, horaire → quotidien) **délèguent** à ces fonctions. *Characterization refactor* : la math reproduit **exactement** l'ancien comportement inline (frontières strictes, divisions entières, wrap `uint32`) — **aucun changement de comportement**. Ne pas « corriger » ces frontières.
+
+> ⚠️ **Limite de testabilité** : seule la math scalaire est couverte en natif. Le **regroupement** par bucket (`std::map`/`std::vector`), l'accumulation des sommes/compteurs et la **persistance** (`saveToFile`) restent dans la coquille `consolidateData()` et **hors tests natifs** (contrainte libc++ absente de l'environnement natif). 25 tests Unity natifs ; `history_logic.cpp` couvert à **100 % des lignes**.
+
 ## Pré-NTP handling
 
 Si un snapshot est pris **avant** que l'heure soit synchronisée (timestamp uptime < `kMinValidEpoch`), il est marqué via `_preNtpPending = true`. Dès la synchro NTP réussie, `_applyPreNtpCorrection(ntpEpoch, uptimeSec)` re-date les points en calculant `epoch = ntpEpoch − (uptimeSec − pointUptime)`.
@@ -120,5 +138,7 @@ Si **toute** étape échoue (`open` retourne null, `print` retourne ≠ 2 octets
 - [`src/history.h`](../../src/history.h), [`src/history.cpp`](../../src/history.cpp)
 - [`src/constants.h:49`](../../src/constants.h:49) — limites (`kMaxHourlyDataPoints = 168`)
 - [`partitions.csv`](../../partitions.csv)
+- [`src/history_logic.h`](../../src/history_logic.h), [`src/history_logic.cpp`](../../src/history_logic.cpp) — math d'agrégation pure
 - [ADR-0009](../adr/0009-partition-coredump.md) — table de partitions courante
 - [ADR-0007](../adr/0007-table-partitions-custom.md) — supersedé
+- [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) — logique métier pure / Humble Object

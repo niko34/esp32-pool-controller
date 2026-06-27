@@ -1,5 +1,21 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.2.11] - 2026-06-27
+
+### Firmware
+
+- **Refactor interne (feature-041) — math d'agrégation de l'historique testable** : la math **scalaire** d'agrégation est extraite de `history.cpp::consolidateData()` vers le module **pur** `src/history_logic.{h,cpp}` (headers C uniquement `<stdint.h>`/`<math.h>`, sans `<vector>`/`<map>`/Arduino/FreeRTOS, pattern *Humble Object*) : `bucketTimestamp` (troncature au bucket horaire/quotidien, garde `bucketSeconds==0`), `isOlderThan` (prédicat d'ancienneté `(now-ts) > maxAge`, frontière **stricte**, wrap `uint32` conservé), `finalizeMean` (moyenne, `count==0` → `NaN`), `isMajority` (majorité stricte `> total/2`, division entière), `anyTrue` (`>0`). Les deux passes (raw → horaire, horaire → quotidien) **délèguent** ; le regroupement `std::map`/`std::vector`, l'accumulation et la persistance restent dans la coquille. *Characterization refactor* : **aucun changement de comportement** (frontières strictes, divisions entières et wrap reproduits à l'identique — revue **Approved**). Aucun comportement visible utilisateur, aucun endpoint / WS / MQTT touché.
+
+### Tests
+
+- **25 tests Unity natifs** (feature-041) couvrant la math d'agrégation : troncature au bucket (garde division par zéro), prédicat d'ancienneté (frontière `==`, wrap post-`0xFFFFFFFF`), moyenne (`count==0` → `NaN`), majorité stricte (`2/4`, `3/4`, `3/5`) et `anyTrue`. `history_logic.cpp` couvert à **100 % des lignes** (**118 tests au total**). `coverage.sh` et `build_src_filter` étendus au nouveau module. Le regroupement `std::vector`/`std::map` de `consolidateData()` reste **hors tests natifs** (contrainte libc++ absente en natif).
+
+### Documentation
+
+- `docs/subsystems/history.md` : nouvelle section « Math d'agrégation pure (`history_logic`) » — les 5 fonctions pures, leurs frontières (strictes, divisions entières, wrap `uint32`, `NaN`), la délégation des deux passes, et la note explicite que le regroupement `std::vector`/`std::map` reste hors tests natifs. Réutilise [ADR-0017](docs/adr/0017-logique-metier-pure-humble-object-testabilite.md) (Humble Object) — **pas de nouvel ADR**.
+
+---
+
 ## [2.2.10] - 2026-06-27
 
 ### Firmware
