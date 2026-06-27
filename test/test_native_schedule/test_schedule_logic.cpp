@@ -73,6 +73,43 @@ void test_range_invalid(void) {
 }
 
 // -----------------------------------------------------------------------------
+// feature-040 AC2 — isMinutesInRange : 4e param equalMeansAlways + non-régression
+// -----------------------------------------------------------------------------
+void test_range_equal_means_always_default_false(void) {
+  // start==end : par défaut (filtration) → false ; explicite false → false ;
+  // explicite true (éclairage) → toute la journée → true.
+  TEST_ASSERT_FALSE(isMinutesInRange(600, 300, 300));         // défaut = false
+  TEST_ASSERT_FALSE(isMinutesInRange(600, 300, 300, false));  // filtration
+  TEST_ASSERT_TRUE(isMinutesInRange(600, 300, 300, true));    // éclairage
+}
+
+void test_range_minus_one_guard_beats_equal_means_always(void) {
+  // La garde -1 prime sur start==end, même avec equalMeansAlways=true.
+  TEST_ASSERT_FALSE(isMinutesInRange(600, -1, -1, true));   // -1==-1 ne doit pas
+                                                           // renvoyer true
+  TEST_ASSERT_FALSE(isMinutesInRange(600, -1, 300, true)); // start invalide
+}
+
+// feature-040 AC3 — fenêtres éclairage (equalMeansAlways=true ne change rien hors
+// du cas start==end : les plages normales conservent la sémantique [start, end)).
+void test_range_lighting_simple_window(void) {
+  // 20:00-23:00 = [1200, 1380)
+  TEST_ASSERT_TRUE(isMinutesInRange(1200, 1200, 1380, true));  // début inclus
+  TEST_ASSERT_TRUE(isMinutesInRange(1379, 1200, 1380, true));  // avant fin
+  TEST_ASSERT_FALSE(isMinutesInRange(1380, 1200, 1380, true)); // fin exclue
+  TEST_ASSERT_FALSE(isMinutesInRange(1199, 1200, 1380, true)); // avant début
+}
+
+void test_range_lighting_midnight_window(void) {
+  // 22:00-02:00 = [1320, 120) à cheval sur minuit
+  TEST_ASSERT_TRUE(isMinutesInRange(1320, 1320, 120, true));  // début inclus
+  TEST_ASSERT_TRUE(isMinutesInRange(0, 1320, 120, true));     // minuit inclus
+  TEST_ASSERT_TRUE(isMinutesInRange(119, 1320, 120, true));   // avant fin
+  TEST_ASSERT_FALSE(isMinutesInRange(120, 1320, 120, true));  // fin exclue
+  TEST_ASSERT_FALSE(isMinutesInRange(720, 1320, 120, true));  // milieu de journée
+}
+
+// -----------------------------------------------------------------------------
 // AC4 — computeAutoWindow (pivot = 13.0)
 // -----------------------------------------------------------------------------
 void test_auto_window_floor_one_hour_temp_zero(void) {
@@ -154,6 +191,40 @@ void test_decide_off_or_unknown_mode_is_false(void) {
 }
 
 // -----------------------------------------------------------------------------
+// feature-040 AC1/AC4 — decideLightingOn (table de vérité, copie de update())
+// -----------------------------------------------------------------------------
+void test_lighting_manual_override_returns_enabled_flag(void) {
+  // manualOverride=true → renvoie enabledFlag, quel que soit le reste.
+  TEST_ASSERT_TRUE(decideLightingOn(true, true, true, true, 1200, 1200, 1380, false));
+  TEST_ASSERT_FALSE(decideLightingOn(true, false, true, true, 1200, 1200, 1380, true));
+  // indépendant de scheduleEnabled / haveTime / plage
+  TEST_ASSERT_TRUE(decideLightingOn(true, true, false, false, 0, -1, -1, false));
+  TEST_ASSERT_FALSE(decideLightingOn(true, false, false, false, 0, -1, -1, true));
+}
+
+void test_lighting_schedule_disabled_returns_enabled_flag(void) {
+  // manualOverride=false, scheduleEnabled=false → renvoie enabledFlag.
+  TEST_ASSERT_TRUE(decideLightingOn(false, true, false, true, 1200, 1200, 1380, false));
+  TEST_ASSERT_FALSE(decideLightingOn(false, false, false, true, 1200, 1200, 1380, true));
+}
+
+void test_lighting_schedule_follows_range_when_have_time(void) {
+  // scheduleEnabled=true, haveTime=true → suit isMinutesInRange(...,true).
+  // dans la plage 20:00-23:00
+  TEST_ASSERT_TRUE(decideLightingOn(false, false, true, true, 1200, 1200, 1380, false));
+  // hors plage
+  TEST_ASSERT_FALSE(decideLightingOn(false, true, true, true, 1199, 1200, 1380, true));
+  // start==end → equalMeansAlways=true → allumé toute la journée
+  TEST_ASSERT_TRUE(decideLightingOn(false, false, true, true, 600, 300, 300, false));
+}
+
+void test_lighting_schedule_no_time_keeps_current_state(void) {
+  // scheduleEnabled=true, haveTime=false → renvoie currentlyOn tel quel.
+  TEST_ASSERT_TRUE(decideLightingOn(false, false, true, false, 1200, 1200, 1380, true));
+  TEST_ASSERT_FALSE(decideLightingOn(false, true, true, false, 1200, 1200, 1380, false));
+}
+
+// -----------------------------------------------------------------------------
 int main(int /*argc*/, char** /*argv*/) {
   UNITY_BEGIN();
 
@@ -167,6 +238,12 @@ int main(int /*argc*/, char** /*argv*/) {
   RUN_TEST(test_range_simple_start_lt_end);
   RUN_TEST(test_range_midnight_start_gt_end);
   RUN_TEST(test_range_invalid);
+
+  // feature-040 AC2/AC3 — isMinutesInRange equalMeansAlways
+  RUN_TEST(test_range_equal_means_always_default_false);
+  RUN_TEST(test_range_minus_one_guard_beats_equal_means_always);
+  RUN_TEST(test_range_lighting_simple_window);
+  RUN_TEST(test_range_lighting_midnight_window);
 
   // AC4
   RUN_TEST(test_auto_window_floor_one_hour_temp_zero);
@@ -183,6 +260,12 @@ int main(int /*argc*/, char** /*argv*/) {
   RUN_TEST(test_decide_manual_follows_range_when_have_time);
   RUN_TEST(test_decide_no_time_keeps_current_state);
   RUN_TEST(test_decide_off_or_unknown_mode_is_false);
+
+  // feature-040 AC1/AC4 — decideLightingOn
+  RUN_TEST(test_lighting_manual_override_returns_enabled_flag);
+  RUN_TEST(test_lighting_schedule_disabled_returns_enabled_flag);
+  RUN_TEST(test_lighting_schedule_follows_range_when_have_time);
+  RUN_TEST(test_lighting_schedule_no_time_keeps_current_state);
 
   return UNITY_END();
 }

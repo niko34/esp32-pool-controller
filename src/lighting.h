@@ -15,8 +15,6 @@ private:
   bool relayState = false;
 
   bool getCurrentMinutesOfDay(int& minutes);
-  int timeStringToMinutes(const String& value);
-  bool isMinutesInRange(int now, int start, int end);
 
 public:
   void begin();

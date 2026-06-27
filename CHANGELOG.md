@@ -1,5 +1,22 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.2.10] - 2026-06-27
+
+### Firmware
+
+- **Refactor interne (feature-040) — logique d'horaire de l'éclairage testable** : la décision d'horaire de l'éclairage est extraite de `lighting.cpp` vers le module **pur** `src/schedule_logic.{h,cpp}` (créé en feature-038, **réutilisé** ici). Nouvelle fonction `decideLightingOn(manualOverride, enabledFlag, scheduleEnabled, haveTime, nowMin, startMin, endMin, currentlyOn)` ; `isMinutesInRange` gagne un 4ᵉ paramètre `bool equalMeansAlways = false`. La divergence `start == end` entre les deux domaines est **intentionnellement préservée** : filtration → `false` (plage invalide, jamais) ; éclairage → `true` (allumé toute la journée). `lighting.cpp::update()` devient une coquille mince déléguant ; RTC/`millis()`/`digitalWrite`/`publishState`/MQTT restent dans la coquille. *Characterization refactor* : **aucun changement de comportement** (ni éclairage ni filtration — la valeur par défaut `false` garantit la non-régression de la filtration). Aucun comportement visible utilisateur, aucun endpoint / WS / MQTT touché.
+
+### Tests
+
+- **11 nouveaux tests Unity natifs** (feature-040) couvrant la décision d'horaire éclairage : équivalence stricte de `decideLightingOn`, divergence `start == end` (éclairage → `true`, filtration → `false`), fenêtre simple et fenêtre franchissant minuit, priorités manuel/horaire, conservation de l'état quand l'heure est indisponible. `schedule_logic.cpp` reste couvert à **100 % des lignes** (**93 tests au total**).
+
+### Documentation
+
+- `docs/subsystems/lighting.md` : nouvelle section « Logique d'horaire pure (`schedule_logic`) » — `decideLightingOn`, paramètre `equalMeansAlways`, divergence intentionnelle `start==end` (filtration `false` / éclairage `true`), non-régression filtration, testabilité native. Réutilise [ADR-0017](docs/adr/0017-logique-metier-pure-humble-object-testabilite.md) (Humble Object) — **pas de nouvel ADR**.
+- `docs/subsystems/filtration.md` : la ligne `isMinutesInRange` documente le 4ᵉ paramètre `equalMeansAlways` et la divergence éclairage.
+
+---
+
 ## [2.2.9] - 2026-06-27
 
 ### Firmware

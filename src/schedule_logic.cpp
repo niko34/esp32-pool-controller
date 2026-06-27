@@ -32,9 +32,11 @@ int timeStringToMinutes(const char* hhmm) {
   return hh * 60 + mm;
 }
 
-bool isMinutesInRange(int now, int start, int end) {
+bool isMinutesInRange(int now, int start, int end, bool equalMeansAlways) {
+  // La garde -1 reste AVANT le test start==end : sinon -1==-1 renverrait
+  // equalMeansAlways à tort.
   if (start == -1 || end == -1) return false;
-  if (start == end) return false;  // Plage invalide → pas de filtration
+  if (start == end) return equalMeansAlways;  // filtration: false ; éclairage: true
   if (start < end) {
     return now >= start && now < end;
   }
@@ -85,4 +87,17 @@ bool decideFiltrationRun(const char* mode, bool forceOn, bool forceOff,
     }
   }
   return false;
+}
+
+bool decideLightingOn(bool manualOverride, bool enabledFlag, bool scheduleEnabled,
+                      bool haveTime, int nowMin, int startMin, int endMin,
+                      bool currentlyOn) {
+  // Copie exacte de LightingManager::update() L85-108 (characterization).
+  if (manualOverride) return enabledFlag;
+  if (scheduleEnabled) {
+    // Heure indisponible : on conserve l'état courant pour éviter un faux
+    // toggle pendant un OTA / perte RTC.
+    return haveTime ? isMinutesInRange(nowMin, startMin, endMin, true) : currentlyOn;
+  }
+  return enabledFlag;
 }

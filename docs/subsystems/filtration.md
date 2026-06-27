@@ -65,7 +65,7 @@ Module **générique** (pas spécifique filtration) : conçu pour être réutili
 | Fonction | Rôle | Sémantique préservée |
 |----------|------|----------------------|
 | `int timeStringToMinutes(const char* hhmm)` | Parse `"HH:MM"` → minutes depuis minuit | longueur < 5 ou `[2] != ':'` → `-1` ; `hh` hors `[0,23]` ou `mm` hors `[0,59]` → `-1` ; sinon `hh*60+mm` |
-| `bool isMinutesInRange(int now, int start, int end)` | Appartenance à `[start, end)` | `start`/`end` à `-1` → `false` ; `start==end` → `false` ; `start<end` → `now>=start && now<end` ; `start>end` (wrap minuit) → `now>=start \|\| now<end` |
+| `bool isMinutesInRange(int now, int start, int end, bool equalMeansAlways = false)` | Appartenance à `[start, end)` | `start`/`end` à `-1` → `false` (garde **avant** le test `start==end`) ; `start==end` → `equalMeansAlways` (filtration `false`, éclairage `true` — voir feature-040) ; `start<end` → `now>=start && now<end` ; `start>end` (wrap minuit) → `now>=start \|\| now<end` |
 | `ScheduleWindow computeAutoWindow(float tempC, float pivotHour)` | Créneau auto selon température | `tempC<0` ramené à 0 ; `durationHours = tempC/2` borné `[1,24]` ; centré sur `pivotHour` (`start = pivot - duration/2`, `end = start + duration`) ; **wrap des deux bornes dans `[0,24)`** ; conversion heure→minutes avec arrondi/carry identique à l'origine |
 | `bool decideFiltrationRun(mode, forceOn, forceOff, haveTime, nowMin, startMin, endMin, currentlyRunning)` | Décision marche/arrêt | priorités **`forceOn` > `forceOff` > plage horaire** ; `mode` (en minuscules) `manual`/`auto` → `isMinutesInRange(...)` si `haveTime`, sinon **conserve `currentlyRunning`** ; autre mode → `false` |
 

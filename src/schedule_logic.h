@@ -37,12 +37,16 @@
 int timeStringToMinutes(const char* hhmm);
 
 // true ssi `now` (minutes depuis minuit) est dans la plage [start, end).
-// Reproduit EXACTEMENT FiltrationManager::isMinutesInRange :
-//   - start==-1 OU end==-1 → false
-//   - start==end → false (plage invalide)
+// Reproduit EXACTEMENT FiltrationManager::isMinutesInRange (équivalent aussi de
+// LightingManager::isMinutesInRange via le paramètre `equalMeansAlways`) :
+//   - start==-1 OU end==-1 → false (garde AVANT le test start==end : -1==-1 ne
+//     doit jamais renvoyer equalMeansAlways)
+//   - start==end → `equalMeansAlways` (filtration: false=plage invalide ;
+//     éclairage: true=allumé toute la journée)
 //   - start<end → now>=start && now<end
 //   - sinon (start>end, plage à cheval sur minuit) → now>=start || now<end
-bool isMinutesInRange(int now, int start, int end);
+// equalMeansAlways=false par défaut → comportement filtration inchangé.
+bool isMinutesInRange(int now, int start, int end, bool equalMeansAlways = false);
 
 // Créneau horaire en minutes depuis minuit (planning auto).
 struct ScheduleWindow {
@@ -75,5 +79,18 @@ ScheduleWindow computeAutoWindow(float tempC, float pivotHour);
 bool decideFiltrationRun(const char* mode, bool forceOn, bool forceOff,
                          bool haveTime, int nowMin, int startMin, int endMin,
                          bool currentlyRunning);
+
+// Décision marche/arrêt de l'éclairage (extrait pur de la décision de
+// LightingManager::update()). Reproduit EXACTEMENT :
+//   - manualOverride → enabledFlag
+//   - sinon scheduleEnabled →
+//       haveTime ? isMinutesInRange(nowMin, startMin, endMin, true) : currentlyOn
+//   - sinon → enabledFlag
+// L'éclairage utilise equalMeansAlways=true (start==end → allumé toute la
+// journée). Quand haveTime=false sous programmation, conserve l'état courant
+// pour éviter un faux toggle pendant un OTA / perte RTC.
+bool decideLightingOn(bool manualOverride, bool enabledFlag, bool scheduleEnabled,
+                      bool haveTime, int nowMin, int startMin, int endMin,
+                      bool currentlyOn);
 
 #endif // SCHEDULE_LOGIC_H

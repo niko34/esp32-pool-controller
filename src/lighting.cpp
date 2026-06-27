@@ -3,6 +3,7 @@
 #include "constants.h"
 #include "logger.h"
 #include "mqtt_manager.h"
+#include "schedule_logic.h"
 #include <time.h>
 
 LightingManager lighting;
@@ -36,23 +37,6 @@ bool LightingManager::getCurrentMinutesOfDay(int& minutes) {
   return true;
 }
 
-int LightingManager::timeStringToMinutes(const String& value) {
-  if (value.length() < 5 || value.charAt(2) != ':') return -1;
-  int hh = value.substring(0, 2).toInt();
-  int mm = value.substring(3, 5).toInt();
-  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return -1;
-  return hh * 60 + mm;
-}
-
-bool LightingManager::isMinutesInRange(int now, int start, int end) {
-  if (start == -1 || end == -1) return false;
-  if (start == end) return true;
-  if (start < end) {
-    return now >= start && now < end;
-  }
-  return now >= start || now < end;
-}
-
 void LightingManager::setManualOn() {
   lightingCfg.enabled = true;
   state.manualOverride = true;
@@ -82,30 +66,18 @@ void LightingManager::update() {
 
   ensureTimesValid();
 
-  bool shouldBeOn = false;
+  // Collecte des entrées pour la décision pure (schedule_logic).
+  bool manualOverride = state.manualOverride;
+  bool enabledFlag = lightingCfg.enabled;
+  bool scheduleEnabled = lightingCfg.scheduleEnabled;
+  int nowMinutes = 0;
+  bool haveTime = getCurrentMinutesOfDay(nowMinutes);
+  int startMin = timeStringToMinutes(lightingCfg.startTime.c_str());
+  int endMin = timeStringToMinutes(lightingCfg.endTime.c_str());
 
-  // Si contrôle manuel actif, utiliser lightingCfg.enabled
-  if (state.manualOverride) {
-    shouldBeOn = lightingCfg.enabled;
-  }
-  // Si programmation activée, vérifier l'horaire
-  else if (lightingCfg.scheduleEnabled) {
-    int nowMinutes = 0;
-    bool haveTime = getCurrentMinutesOfDay(nowMinutes);
-
-    if (haveTime) {
-      int startMin = timeStringToMinutes(lightingCfg.startTime);
-      int endMin = timeStringToMinutes(lightingCfg.endTime);
-      shouldBeOn = isMinutesInRange(nowMinutes, startMin, endMin);
-    } else {
-      // Time unavailable: keep current state to avoid false toggles during OTA.
-      shouldBeOn = relayState;
-    }
-  }
-  // Sinon, utiliser lightingCfg.enabled
-  else {
-    shouldBeOn = lightingCfg.enabled;
-  }
+  bool shouldBeOn = decideLightingOn(manualOverride, enabledFlag, scheduleEnabled,
+                                     haveTime, nowMinutes, startMin, endMin,
+                                     relayState);
 
   // Mettre à jour le relais si nécessaire
   if (shouldBeOn != relayState) {
