@@ -5,10 +5,17 @@
 #include "sensors.h"
 #include "filtration.h"
 #include "uart_protocol.h"
+#include "dosing_logic.h"
 #include <esp_task_wdt.h>
 #include <time.h>
 
 PumpControllerClass PumpController;
+
+// pool-chemistry (feature-036) : verrou de complétude de la table énum→String FR
+// du switch de canDose(). BurstPer15Min DOIT rester la dernière valeur de
+// DoseRefusal ; si l'énum évolue, ce static_assert force la relecture du mapping.
+static_assert(static_cast<int>(DoseRefusal::BurstPer15Min) == 14,
+              "DoseRefusal modifié : mettre à jour le switch énum→String FR de canDose()");
 
 // Définitions des membres statiques
 bool PumpControllerClass::_dailyLoaded = false;
@@ -124,6 +131,9 @@ void PumpControllerClass::refreshDosingState(DosingState& state, unsigned long n
 }
 
 
+// COQUILLE (feature-036) : conserve le reset journalier de cyclesToday et le
+// warning "Limite cycles atteinte" (effets de bord) ; délègue le verdict pur à
+// shouldStartDosingPure().
 bool PumpControllerClass::shouldStartDosing(float error, float startThreshold, DosingState& state, unsigned long now) {
   // Réinitialiser le compteur de cycles chaque jour
   if (state.cyclesDayStart == 0 || now - state.cyclesDayStart >= 86400000UL) {
@@ -131,39 +141,29 @@ bool PumpControllerClass::shouldStartDosing(float error, float startThreshold, D
     state.cyclesDayStart = now;
   }
 
-  // 1. Vérifier le nombre de cycles par jour
+  // Effet de bord conservé : warning edge-triggered quand la limite est atteinte.
   if (state.cyclesToday >= pumpProtection.maxCyclesPerDay) {
     static unsigned long lastWarning = 0;
     if (now - lastWarning > 3600000) {  // Log toutes les heures
       systemLogger.warning("Limite cycles atteinte: " + String(state.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay));
       lastWarning = now;
     }
-    return false;
   }
 
-  // 2. Vérifier le seuil de démarrage (hystérésis)
-  if (error > startThreshold) {
-    return true;
-  }
-
-  return false;
+  return shouldStartDosingPure(error, startThreshold, state.cyclesToday,
+                               pumpProtection.maxCyclesPerDay);
 }
 
+// COQUILLE (feature-036) : calcule runTimeMs (lastStartTime>0) puis délègue à
+// shouldContinueDosingPure(). Si lastStartTime==0, on neutralise la garde temps
+// minimum (runTimeMs = minInjectionTimeMs → `<` faux), comportement identique
+// à l'origine où le bloc temps minimum était entièrement sauté.
 bool PumpControllerClass::shouldContinueDosing(float error, float stopThreshold, DosingState& state, unsigned long now) {
-  // 1. Forcer le temps minimum d'injection
-  if (state.lastStartTime > 0) {
-    unsigned long runTime = now - state.lastStartTime;
-    if (runTime < pumpProtection.minInjectionTimeMs) {
-      return true;  // Force à continuer minimum 30s
-    }
-  }
-
-  // 2. Continuer si au-dessus du seuil d'arrêt (hystérésis)
-  if (error > stopThreshold) {
-    return true;
-  }
-
-  return false;  // Arrêter
+  unsigned long runTimeMs = (state.lastStartTime > 0)
+      ? (now - state.lastStartTime)
+      : pumpProtection.minInjectionTimeMs;
+  return shouldContinueDosingPure(error, stopThreshold, runTimeMs,
+                                  pumpProtection.minInjectionTimeMs);
 }
 
 void PumpControllerClass::resetPhPauseGuard() {
@@ -302,155 +302,135 @@ int PumpControllerClass::countRecentDosingCycles(int pumpIndex, uint32_t windowM
   return count;
 }
 
-// canDose(int) — fail-closed strict, ordre validé pool-chemistry feature-021.
-// Toute condition non remplie → return false avec log edge-triggered.
+// canDose(int) — COQUILLE (feature-036). Collecte les entrées depuis les globals
+// puis délègue la décision à evaluateDose() (logique pure testable en natif).
+// Fail-closed strict, ordre des gardes validé pool-chemistry feature-021 reproduit
+// à l'identique dans dosing_logic.cpp. Le formatage français des causes de refus
+// (au mot près, valeurs runtime réinjectées) reste ici, dans la coquille.
 bool PumpControllerClass::canDose(int pumpIndex) {
+  // Garde structurelle (feature-036, condition pool-chemistry n°1) : index invalide.
+  // RESTE dans la coquille, AVANT evaluateDose, SANS log (comportement actuel).
   if (pumpIndex < 0 || pumpIndex > 1) return false;
 
-  // 1. Watchdog actif (le plus critique — sans wdt, un crash dans la boucle
-  // de dosage laisse la pompe en marche indéfiniment).
-  // esp_task_wdt_status(NULL) retourne ESP_OK si la tâche courante est
-  // inscrite au watchdog, ESP_ERR_NOT_FOUND sinon.
-  if (esp_task_wdt_status(NULL) != ESP_OK) {
-    logRefusalOnce(pumpIndex, "watchdog inactif");
-    return false;
-  }
-
-  // 2. Filtration en marche : eau circule devant la sonde.
-  // En mode continu (alimentation 24/7), on accepte sans filtration ;
-  // sinon on impose le relais filtration ON.
-  if (mqttCfg.regulationMode != "continu" && !filtration.isRunning()) {
-    logRefusalOnce(pumpIndex, "filtration arrêtée");
-    return false;
-  }
-
-  // 3. Cond #1/#5 pool-chemistry : lecture stale ou bus I²C dégradé → NaN.
-  // feature-025 : le PID auto consomme la mesure FILTRÉE → on valide le filtré ici.
-  float reading = (pumpIndex == 0) ? sensors.getPhFiltered()
-                                    : sensors.getOrpFiltered();
-  if (isnan(reading)) {
-    logRefusalOnce(pumpIndex, "lecture pH/ORP filtrée indisponible (NaN)");
-    return false;
-  }
-
-  // 3b. feature-025 (fail-closed) : filtre non prêt (warmup en cours, mesure trop
-  // ancienne, ou EZO injoignable → âge dépassé). Bloque le dosage tant que le filtre
-  // n'a pas reçu kSensorFilterWarmupSamples mesures valides récentes.
-  bool filterReady = (pumpIndex == 0) ? sensors.isPhFilterReady()
-                                       : sensors.isOrpFilterReady();
-  if (!filterReady) {
-    logRefusalOnce(pumpIndex, "filtre capteur non prêt (warmup / EZO injoignable)");
-    return false;
-  }
-
-  // 3c. feature-025 (fail-closed) : capteur déclaré instable (trop de rejets
-  // consécutifs → bruit EMI persistant). On bloque plutôt que de lisser agressivement.
-  bool filterUnstable = (pumpIndex == 0) ? sensors.isPhFilterUnstable()
-                                          : sensors.isOrpFilterUnstable();
-  if (filterUnstable) {
-    logRefusalOnce(pumpIndex, "capteur instable (rejets consécutifs)");
-    return false;
-  }
-
-  // 4. Cond #2 pool-chemistry : EZO calibré OU joignable.
-  // Cal,? renvoie -1 si EZO injoignable → on bloque (fail-closed).
-  // pH demande ≥ 2 points (mid + low), ORP ≥ 1 point.
-  // Lecture du cache (pas d'I²C dans la boucle pump_controller : ce serait un
-  // appel bloquant ~900 ms à chaque cycle update()).
-  int calPoints = (pumpIndex == 0)
-      ? sensors.getPhCalibrationPointsCached()
-      : sensors.getOrpCalibrationPointsCached();
-  int requiredPoints = (pumpIndex == 0) ? 2 : 1;
-  if (calPoints < requiredPoints) {
-    logRefusalOnce(pumpIndex, String("calibration insuffisante (cal=") +
-                              String(calPoints) + ", requis=" +
-                              String(requiredPoints) + ")");
-    return false;
-  }
-
-  // 5. Cond #3 pool-chemistry : stabilisation post-cal en cours pour cette pompe.
-  if (isStabilizationTimerActive(pumpIndex)) {
-    logRefusalOnce(pumpIndex, "stabilisation post-calibration en cours");
-    return false;
-  }
-
-  // 5b. feature-025 (pool-chemistry) : pause mélange hydraulique active.
-  // Gate INDÉPENDANTE de la stabilisation post-cal (pas de cumul) : après une
-  // injection, on laisse le bassin s'homogénéiser avant toute nouvelle décision.
+  // --- Collecte des entrées (globals, I²C cache, millis(), historique anti-rafale) ---
   uint32_t nowMs = (uint32_t)millis();
-  bool mixingActive = (pumpIndex == 0) ? isPhMixingDelayActive(nowMs)
-                                        : isOrpMixingDelayActive(nowMs);
-  if (mixingActive) {
-    logRefusalOnce(pumpIndex, "pause mélange en cours");
-    return false;
-  }
-
-  // 6. Mode régulation = automatic (les modes scheduled / manual sont gérés en amont
-  // dans update(), mais on protège ici aussi par défense en profondeur).
-  const String& mode = (pumpIndex == 0) ? mqttCfg.phRegulationMode
-                                        : mqttCfg.orpRegulationMode;
-  if (mode != "automatic") {
-    logRefusalOnce(pumpIndex, String("mode régulation != automatic (") + mode + ")");
-    return false;
-  }
-
-  // 7. Limite journalière non atteinte.
-  if (pumpIndex == 0) {
-    if (safetyLimits.dailyPhInjectedMl >= safetyLimits.maxPhMinusMlPerDay) {
-      logRefusalOnce(pumpIndex, "limite journalière pH atteinte");
-      return false;
-    }
-  } else {
-    if (safetyLimits.dailyOrpInjectedMl >= safetyLimits.maxChlorineMlPerDay) {
-      logRefusalOnce(pumpIndex, "limite journalière ORP atteinte");
-      return false;
-    }
-  }
-
-  // 8. Limite horaire (minutes/h consommées).
-  // Cohérent avec phLimitOk/orpLimitOk dans update() — recalcul ici pour autonomie.
   int limitMin = (pumpIndex == 0) ? mqttCfg.phInjectionLimitMinutes
                                   : mqttCfg.orpInjectionLimitMinutes;
-  if (limitMin > 0) {
-    unsigned long limitMs = (unsigned long)limitMin * 60000UL;
-    unsigned long usedMs = (pumpIndex == 0) ? phDosingState.usedMs
-                                            : orpDosingState.usedMs;
-    if (usedMs >= limitMs) {
-      logRefusalOnce(pumpIndex, "limite horaire atteinte");
-      return false;
-    }
+
+  DoseInputs in;
+  // 1. Watchdog actif. esp_task_wdt_status(NULL) == ESP_OK si la tâche courante
+  // est inscrite au watchdog, ESP_ERR_NOT_FOUND sinon.
+  in.watchdogActive = (esp_task_wdt_status(NULL) == ESP_OK);
+  // 2. Filtration (mode continu accepté sans relais filtration ON).
+  in.continuousMode = (mqttCfg.regulationMode == "continu");
+  in.filtrationRunning = filtration.isRunning();
+  // 3. Lecture FILTRÉE (feature-025 : le PID auto consomme la mesure filtrée).
+  in.reading = (pumpIndex == 0) ? sensors.getPhFiltered()
+                                : sensors.getOrpFiltered();
+  // 3b/3c. État du filtre capteur (warmup / instabilité).
+  in.filterReady = (pumpIndex == 0) ? sensors.isPhFilterReady()
+                                    : sensors.isOrpFilterReady();
+  in.filterUnstable = (pumpIndex == 0) ? sensors.isPhFilterUnstable()
+                                       : sensors.isOrpFilterUnstable();
+  // 4. Calibration (cache, pas d'I²C bloquant dans la boucle ; -1 si injoignable).
+  in.calPoints = (pumpIndex == 0) ? sensors.getPhCalibrationPointsCached()
+                                  : sensors.getOrpCalibrationPointsCached();
+  in.requiredPoints = (pumpIndex == 0) ? 2 : 1;
+  // 5/5b. Stabilisation post-cal et pause mélange hydraulique (gates indépendantes).
+  in.stabilizationActive = isStabilizationTimerActive(pumpIndex);
+  in.mixingActive = (pumpIndex == 0) ? isPhMixingDelayActive(nowMs)
+                                     : isOrpMixingDelayActive(nowMs);
+  // 6. Mode régulation = automatic.
+  const String& mode = (pumpIndex == 0) ? mqttCfg.phRegulationMode
+                                        : mqttCfg.orpRegulationMode;
+  in.modeAutomatic = (mode == "automatic");
+  // 7. Limite journalière.
+  in.dailyInjectedMl = (pumpIndex == 0) ? safetyLimits.dailyPhInjectedMl
+                                        : safetyLimits.dailyOrpInjectedMl;
+  in.maxDailyMl = (pumpIndex == 0) ? safetyLimits.maxPhMinusMlPerDay
+                                   : safetyLimits.maxChlorineMlPerDay;
+  // 8. Limite horaire (0 = pas de limite).
+  in.usedMs = (pumpIndex == 0) ? phDosingState.usedMs : orpDosingState.usedMs;
+  in.hourlyLimitMs = (limitMin > 0) ? (unsigned long)limitMin * 60000UL : 0UL;
+  // 9. Anti-cycling journalier.
+  in.cyclesToday = (pumpIndex == 0) ? phDosingState.cyclesToday
+                                    : orpDosingState.cyclesToday;
+  in.maxCyclesPerDay = pumpProtection.maxCyclesPerDay;
+  // 10. Anti-rafale court terme (condition pool-chemistry n°4 : countRecentDosingCycles
+  // RESTE dans la coquille, seul le comparatif est dans evaluateDose).
+  in.cyclesLastMin = countRecentDosingCycles(pumpIndex, 60000);
+  in.maxCyclesPerMin = kMaxDosingCyclesPerMinute;
+  in.cyclesLast15Min = countRecentDosingCycles(pumpIndex, 900000);
+  in.maxCyclesPer15Min = kMaxDosingCyclesPer15Min;
+
+  // --- Décision pure ---
+  DoseDecision decision = evaluateDose(in);
+
+  if (decision.cause == DoseRefusal::None) {
+    resetRefusalLogState(pumpIndex);
+    return true;
   }
 
-  // 9. Anti-rafale : nombre de cycles aujourd'hui dépasse maxCyclesPerDay.
-  // (Pas exactement kMaxRequestsPerMinute mentionné dans la spec — on utilise la
-  // garde anti-cycling existante côté pool-chemistry, plus pertinente ici.)
-  unsigned int cyclesToday = (pumpIndex == 0) ? phDosingState.cyclesToday
-                                              : orpDosingState.cyclesToday;
-  if (cyclesToday >= pumpProtection.maxCyclesPerDay) {
-    logRefusalOnce(pumpIndex, "limite cycles/jour atteinte");
-    return false;
+  // --- Mapping énum → cause française (au mot près, identique à l'historique) ---
+  // ATTENTION pool-chemistry (feature-036) : ce switch DOIT couvrir tous les cas
+  // de DoseRefusal sauf None. Toute nouvelle valeur ajoutée à l'énum sans entrée
+  // ici déclenchera le static_assert ci-dessous (complétude verrouillée). Les
+  // chaînes sont des COPIES exactes du canDose() d'origine — ne pas reformuler.
+  String cause;
+  switch (decision.cause) {
+    case DoseRefusal::WatchdogInactive:
+      cause = "watchdog inactif";
+      break;
+    case DoseRefusal::FiltrationOff:
+      cause = "filtration arrêtée";
+      break;
+    case DoseRefusal::ReadingNaN:
+      cause = "lecture pH/ORP filtrée indisponible (NaN)";
+      break;
+    case DoseRefusal::FilterNotReady:
+      cause = "filtre capteur non prêt (warmup / EZO injoignable)";
+      break;
+    case DoseRefusal::FilterUnstable:
+      cause = "capteur instable (rejets consécutifs)";
+      break;
+    case DoseRefusal::CalibrationInsufficient:
+      cause = String("calibration insuffisante (cal=") + String(in.calPoints) +
+              ", requis=" + String(in.requiredPoints) + ")";
+      break;
+    case DoseRefusal::StabilizationActive:
+      cause = "stabilisation post-calibration en cours";
+      break;
+    case DoseRefusal::MixingActive:
+      cause = "pause mélange en cours";
+      break;
+    case DoseRefusal::ModeNotAutomatic:
+      cause = String("mode régulation != automatic (") + mode + ")";
+      break;
+    case DoseRefusal::DailyLimit:
+      cause = (pumpIndex == 0) ? "limite journalière pH atteinte"
+                               : "limite journalière ORP atteinte";
+      break;
+    case DoseRefusal::HourlyLimit:
+      cause = "limite horaire atteinte";
+      break;
+    case DoseRefusal::CyclesPerDay:
+      cause = "limite cycles/jour atteinte";
+      break;
+    case DoseRefusal::BurstPerMinute:
+      cause = "anti-rafale : " + String(in.cyclesLastMin) +
+              " cycles dans la dernière minute";
+      break;
+    case DoseRefusal::BurstPer15Min:
+      cause = "anti-rafale : " + String(in.cyclesLast15Min) +
+              " cycles dans les 15 dernières minutes";
+      break;
+    case DoseRefusal::None:
+      // Inatteignable (traité plus haut) — présent pour la complétude du switch.
+      break;
   }
 
-  // 10. Anti-rafale court terme (pool-chemistry Pass 3.5) — protège contre les
-  // emballements PID sur fenêtres glissantes 1 min et 15 min.
-  // Complémentaire de la garde maxCyclesPerDay : un PID instable pourrait
-  // démarrer 30 cycles en 5 minutes sans dépasser le quota journalier.
-  int cyclesInLastMin = countRecentDosingCycles(pumpIndex, 60000);
-  if (cyclesInLastMin >= kMaxDosingCyclesPerMinute) {
-    logRefusalOnce(pumpIndex, "anti-rafale : " + String(cyclesInLastMin) +
-                              " cycles dans la dernière minute");
-    return false;
-  }
-  int cyclesInLast15Min = countRecentDosingCycles(pumpIndex, 900000);
-  if (cyclesInLast15Min >= kMaxDosingCyclesPer15Min) {
-    logRefusalOnce(pumpIndex, "anti-rafale : " + String(cyclesInLast15Min) +
-                              " cycles dans les 15 dernières minutes");
-    return false;
-  }
-
-  // Toutes les gardes sont passées : reset le log de refus et autorise.
-  resetRefusalLogState(pumpIndex);
-  return true;
+  logRefusalOnce(pumpIndex, cause);
+  return false;
 }
 
 float PumpControllerClass::computePID(PIDController& pid, float error, unsigned long now,

@@ -371,6 +371,108 @@ void test_caseE_reset_clears_resync_state(void) {
   TEST_ASSERT_FLOAT_WITHIN(0.05f, 5.00f, f.filtered());
 }
 
+// =============================================================================
+// Couverture résiduelle (zones non atteintes par les cas A–E)
+// =============================================================================
+
+// --- Cas F : medianWindow > capacité (99) clampé à kSensorFilterMedianWindow --
+// Couvre le clamp L14-16 du constructeur. Assert indirect : le filtre se comporte
+// comme une fenêtre de 7 (warmup + médiane cohérente), aucun débordement.
+void test_caseF_median_window_clamped_to_capacity(void) {
+  SensorFilter::Config cfg = phCfg();
+  cfg.medianWindow = 99;  // > kSensorFilterMedianWindow (7) → doit être borné
+  SensorFilter f(cfg);
+  uint32_t t = 0;
+  // Warmup : 5 valides suffisent (warmupSamples=5), comme une fenêtre normale.
+  for (int i = 0; i < 5; ++i) {
+    TEST_ASSERT_TRUE(f.addSample(7.00f, t));
+    t += 1000;
+  }
+  TEST_ASSERT_TRUE(f.ready(t));
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 7.00f, f.median());
+  // Injecter au-delà de 7 échantillons reste stable (pas d'écriture hors buffer).
+  for (int i = 0; i < 20; ++i) {
+    TEST_ASSERT_TRUE(f.addSample(7.00f, t));
+    t += 1000;
+  }
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 7.00f, f.median());
+}
+
+// --- Cas G : raw() reflète le dernier brut, y compris si rejeté --------------
+// Couvre le getter raw() (L199). _raw est mis à jour AVANT tout rejet (L42).
+void test_caseG_raw_reflects_last_sample_even_if_rejected(void) {
+  SensorFilter f(phCfg());
+  uint32_t t = 0;
+  // Échantillon accepté.
+  TEST_ASSERT_TRUE(f.addSample(7.00f, t));
+  TEST_ASSERT_EQUAL_FLOAT(7.00f, f.raw());
+  t += 1000;
+  // Warmup terminé pour activer la garde de saut.
+  for (int i = 0; i < 5; ++i) { f.addSample(7.00f, t); t += 1000; }
+  // Échantillon rejeté (pic > maxStep) : raw() reflète quand même la valeur brute.
+  TEST_ASSERT_FALSE(f.addSample(9.50f, t));
+  TEST_ASSERT_EQUAL_FLOAT(9.50f, f.raw());
+}
+
+// --- Cas H : médiane des rejetés, branche PAIRE (medianWindow=6) --------------
+// Couvre L196 (0.5*(tmp[n/2-1]+tmp[n/2])). Avec medianWindow=6, _rejCount plafonne
+// à 6 (pair) au moment de la re-sync → branche paire de _computeRejectedMedian().
+void test_caseH_rejected_median_even_window(void) {
+  SensorFilter::Config cfg = phCfg();
+  cfg.medianWindow = 6;  // PAIR
+  SensorFilter f(cfg);
+  uint32_t t = 0;
+  // Warmup + stabilisation à 7.00.
+  for (int i = 0; i < 10; ++i) { f.addSample(7.00f, t); t += 5000; }
+  TEST_ASSERT_TRUE(f.ready(t));
+
+  // 12 rejets consécutifs hors maxStep (saut durable vers 4.0) → re-sync.
+  // Le mini-buffer (taille 6, pair) se remplit de 4.0 avant le déclenchement.
+  for (int i = 0; i < (int)kSensorFilterResyncRejects; ++i) {
+    f.addSample(4.00f, t);
+    t += 5000;
+  }
+  TEST_ASSERT_EQUAL_UINT8(1, f.resyncCount());
+  // Re-sync → retour warmup : ready() retombe false.
+  TEST_ASSERT_FALSE(f.ready(t));
+
+  // Ré-amorçage sur la médiane paire des bruts rejetés {4,4,4,4,4,4} = 4.0.
+  TEST_ASSERT_TRUE(f.addSample(4.00f, t));
+  TEST_ASSERT_FLOAT_WITHIN(0.5f, 4.00f, f.filtered());
+}
+
+// --- Cas I : 4e re-sync → décalage FIFO des timestamps (L94-97) ---------------
+// Pousse au-delà du cas D : 4 re-sync dans la même fenêtre. À la 4e, _resyncCount
+// est déjà à kSensorFilterMaxResyncPerWindow (3) → branche else (FIFO) exécutée.
+void test_caseI_fourth_resync_shifts_timestamps_fifo(void) {
+  SensorFilter f(phCfg());
+  uint32_t t = 0;
+
+  auto stabilize = [&](float v, int n) {
+    for (int i = 0; i < n; ++i) { f.addSample(v, t); t += 5000; }
+  };
+  auto forceResync = [&](float from, float to) {
+    stabilize(from, 8);
+    for (int i = 0; i < (int)kSensorFilterResyncRejects; ++i) {
+      f.addSample(to, t); t += 5000;
+    }
+  };
+
+  forceResync(7.0f, 4.0f);   // re-sync 1
+  forceResync(4.0f, 7.0f);   // re-sync 2
+  forceResync(7.0f, 4.0f);   // re-sync 3 → latch
+  TEST_ASSERT_EQUAL_UINT8(3, f.resyncCount());
+  TEST_ASSERT_TRUE(f.unstableLatched());
+
+  // 4e re-sync : _resyncCount déjà à 3 → décalage FIFO (L94-97). Tous les nowMs
+  // restent < kSensorFilterResyncWindowMs d'écart (incréments de 5000 ms).
+  TEST_ASSERT_LESS_THAN_UINT32(kSensorFilterResyncWindowMs, t);
+  forceResync(4.0f, 7.0f);   // re-sync 4
+  TEST_ASSERT_EQUAL_UINT8(3, f.resyncCount());  // plafonné, pas incrémenté
+  TEST_ASSERT_TRUE_MESSAGE(f.unstableLatched(), "latch persiste apres la 4e re-sync");
+  TEST_ASSERT_TRUE(f.unstable());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_warmup_not_ready_until_5_valid_samples);
@@ -391,5 +493,10 @@ int main(int, char **) {
   RUN_TEST(test_caseC_reseed_on_median_of_rejected);
   RUN_TEST(test_caseD_resync_loop_latches_unstable);
   RUN_TEST(test_caseE_reset_clears_resync_state);
+  // Couverture résiduelle.
+  RUN_TEST(test_caseF_median_window_clamped_to_capacity);
+  RUN_TEST(test_caseG_raw_reflects_last_sample_even_if_rejected);
+  RUN_TEST(test_caseH_rejected_median_even_window);
+  RUN_TEST(test_caseI_fourth_resync_shifts_timestamps_fifo);
   return UNITY_END();
 }

@@ -152,10 +152,50 @@ Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontr
 | 6b | **Pas de pause mélange** (feature-025) | `isPhMixingDelayActive()` / `isOrpMixingDelayActive()` | homogénéisation du bassin après injection (15 min pH / 20 min ORP) — gate **indépendante** de la stabilisation post-cal |
 | 7 | **Mode régulation = `automatic`** | mode `manual` ou `scheduled` | la branche `scheduled` a sa propre logique, ne passe pas par `canDose` |
 | 8 | **Limite journalière non atteinte** | `dailyXxxInjectedMl >= maxXxxMlPerDay` | sécurité chimique config |
-| 9 | **Limite horaire non atteinte** | `usedMs > xxxLimitMinutes × 60000` dans la fenêtre 1 h glissante | sécurité chimique config |
+| 9 | **Limite horaire non atteinte** | `usedMs >= xxxLimitMinutes × 60000` dans la fenêtre 1 h glissante (limite à 0 = désactivée) | sécurité chimique config |
 | 10 | **Anti-rafale court terme** (Pass 3.5) | > 6 cycles/min OU > 20 cycles/15 min | anti-emballement PID — voir [Ring buffer anti-rafale](#ring-buffer-anti-rafale) |
 
 > **Conditions #1, #2, #3, #5, #6** issues du checklist `pool-chemistry` validé en cadrage feature-021. **Condition #10** ajoutée en correctif Pass 3.5. **Conditions #4 (filtré), #4b, #4c, #6b** ajoutées en feature-025 — toutes **fail-closed** et **prioritaires** : elles s'ajoutent aux gardes existantes sans les contourner.
+
+## Décision de dosage : logique pure (`src/dosing_logic`) vs coquille hardware
+
+[feature-036](../../specs/features/done/feature-036-dosage-testable-decision-pure.md) ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) applique le pattern **Humble Object** à la décision « peut-on doser ? ». La décision est extraite dans un module **pur** ([`src/dosing_logic.h`](../../src/dosing_logic.h) / [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp)) **sans `<Arduino.h>`, sans FreeRTOS, sans I²C, sans `String`** — donc **compilable et testable en natif** (sur PC). C'est un *characterization refactor* : **aucun verdict, aucune cause de refus, aucun seuil ni ordre d'évaluation n'a changé**.
+
+### Frontière
+
+| | Logique pure (`dosing_logic`) | Coquille hardware (`pump_controller.cpp`) |
+|---|---|---|
+| **Entrées** | `struct DoseInputs` (POD : `bool` / `int` / `float` / `unsigned long`) | collecte les globals : `sensors`, `filtration`, `mqttCfg`, `safetyLimits`, `millis()`, `esp_task_wdt_status()`, ring buffer anti-rafale |
+| **Sortie** | `struct DoseDecision { bool allowed; DoseRefusal cause; }` (énum pur) | mappe `DoseRefusal` → **String FR** (cause au mot près), réinjecte les valeurs runtime (`cal=X requis=Y`, `mode=X`, compteurs…) |
+| **Effets de bord** | aucun | `logRefusalOnce()` edge-triggered, exposition WS via `getPhDoseBlockedReason()` / `getOrpDoseBlockedReason()`, log `warning(...)` |
+| **Temps** | injecté en paramètre (`runTimeMs`, `usedMs`) | fourni depuis `millis()` |
+
+### Fonctions pures
+
+- **`DoseDecision evaluateDose(const DoseInputs& in)`** — reproduit **exactement** l'ordre des gardes 2→15 de `canDose()` (la garde 1 « index pompe invalide » reste dans la coquille). Première garde en échec → cause correspondante ; sinon `{ true, None }`. **Fail-closed strict** conservé.
+- **`bool shouldStartDosingPure(error, startThreshold, cyclesToday, maxCyclesPerDay)`** — démarre ssi `cyclesToday < maxCyclesPerDay` ET `error > startThreshold`.
+- **`bool shouldContinueDosingPure(error, stopThreshold, runTimeMs, minInjectionTimeMs)`** — force la poursuite tant que `runTimeMs < minInjectionTimeMs` (30 s), puis poursuit ssi `error > stopThreshold`. Le **temps est injecté** → le minimum d'injection est testable sans attendre 30 s réelles.
+
+### Causes de refus (énum ↔ String FR)
+
+`enum class DoseRefusal` ([`dosing_logic.h`](../../src/dosing_logic.h:27)) — l'ordre des valeurs **suit l'ordre des gardes** de `canDose()`. La coquille traduit chaque valeur en la chaîne française **identique** à celle exposée avant le refactor (les valeurs runtime — points de calibration, mode, nombre de cycles — sont réinjectées par la coquille au moment du formatage) :
+
+| `DoseRefusal` | Garde `canDose` | Cause FR (réinjectée) |
+|---|---|---|
+| `WatchdogInactive` | #2 | watchdog inactif |
+| `FiltrationOff` | #3 | filtration arrêtée |
+| `ReadingNaN` | #4 | lecture filtrée indisponible |
+| `FilterNotReady` | #4b | filtre non prêt |
+| `FilterUnstable` | #4c | capteur instable |
+| `CalibrationInsufficient` | #5 | calibration insuffisante (`cal=X requis=Y`) |
+| `StabilizationActive` | #6 | stabilisation post-calibration en cours |
+| `MixingActive` | #6b | pause mélange en cours |
+| `ModeNotAutomatic` | #7 | mode régulation ≠ automatic (`X`) |
+| `DailyLimit` | #8 | limite journalière atteinte |
+| `HourlyLimit` | #9 | limite horaire atteinte |
+| `CyclesPerDay` / `BurstPerMinute` / `BurstPer15Min` | #4 (anti-cycling) / #10 | limite cycles/jour / anti-rafale |
+
+> ⚠️ **Invariant** : toute évolution future de la décision de dosage **passe par `dosing_logic`** et doit conserver l'équivalence stricte (table d'équivalence validée par `pool-chemistry`). La logique pure est verrouillée par les tests natifs (`test/test_native_dosing/`, dont un **verrou de non-régression** du bug pause-mélange v2.2.5 : une injection auto dure **≥ `minInjectionTimeMs`** avant que la pause ne s'arme). Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
 
 ### Garde filtration sur l'injection manuelle (v2.1.2)
 
@@ -332,6 +372,8 @@ Flush différé : `_dailyCountersDirty` armé à chaque injection, écrit en NVS
 - [`src/config.h:141`](../../src/config.h:141) — `SafetyLimits`
 - [`src/constants.h:84`](../../src/constants.h:84) — `kPumpMinFlowMlPerMin`, `kPumpMaxFlowMlPerMin`
 - [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
-- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025)
+- [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036)
+- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036)
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — entrée filtrée, anti-windup, pause mélange, zone morte
+- [feature-036](../../specs/features/done/feature-036-dosage-testable-decision-pure.md) — extraction de la décision de dosage en module pur testable
 - [page-ph.md](../features/page-ph.md), [page-orp.md](../features/page-orp.md) — UI consommatrices

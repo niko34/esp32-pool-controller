@@ -1,5 +1,23 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.2.6] - 2026-06-27
+
+### Firmware
+
+- **Refactor interne (feature-036) — décision de dosage testable** : la logique de décision « peut-on doser ? » de `pump_controller` est extraite dans un module **pur** `src/dosing_logic.{h,cpp}` (pattern *Humble Object*), sans dépendance Arduino / FreeRTOS / I²C, donc **testable en natif**. `canDose()` devient une coquille mince qui collecte les globals, délègue à `evaluateDose(DoseInputs) → DoseDecision`, puis mappe l'énum de cause vers la chaîne française exposée (valeurs runtime réinjectées). *Characterization refactor* : **aucun seuil, verdict, cause de refus ni ordre d'évaluation des gardes n'a changé** (équivalence stricte validée par `pool-chemistry`). Hystérésis de démarrage/arrêt et temps minimum d'injection également exposés en fonctions pures (`shouldStartDosingPure` / `shouldContinueDosingPure`, temps injecté). Aucun comportement visible utilisateur.
+
+### Tests
+
+- **21 nouveaux tests Unity natifs** (feature-036) couvrant la décision de dosage : chaque cause de refus de `evaluateDose`, l'hystérésis start/stop aux bornes (deadband), et un **verrou de non-régression** du bug pause-mélange v2.2.5 (une injection auto dure ≥ `minInjectionTimeMs` avant l'armement de la pause). `pio test -e native` couvre désormais deux suites (`test/test_native_sensor_filter/` + `test/test_native_dosing/`).
+
+### Documentation
+
+- `docs/subsystems/pump-controller.md` : nouvelle section « Décision de dosage : logique pure (`src/dosing_logic`) vs coquille hardware » (frontière POD/String, table énum `DoseRefusal` ↔ cause FR, fonctions pures). Correction d'une imprécision préexistante : limite horaire évaluée avec `>=` (et non `>`).
+- `docs/BUILD.md` : section « Tests natifs (hors matériel) » — `pio test -e native` couvre deux suites, `build_src_filter` inclut `sensor_filter.cpp` + `dosing_logic.cpp`.
+- `docs/adr/0017-logique-metier-pure-humble-object-testabilite.md` : nouvel ADR « Logique métier pure (Humble Object) séparée de la couche hardware pour testabilité native » (lié à ADR-0016 et feature-025).
+
+---
+
 ## [2.2.5] - 2026-06-23
 
 ### Firmware

@@ -32,6 +32,42 @@ Ce script :
 
 Enchaîne `pio run` puis `build_fs.sh`.
 
+## Tests natifs (hors matériel)
+
+L'environnement `native` (`platform = native` dans [`platformio.ini`](../platformio.ini)) compile et exécute la **logique pure** du firmware sur le PC, sans ESP32. Il ne se lance qu'explicitement :
+
+```bash
+pio test -e native
+```
+
+PlatformIO compile **un binaire par dossier `test/test_*`** ; `pio test -e native` couvre donc désormais **deux suites** :
+
+| Dossier | Couvre | Source testée |
+|---------|--------|---------------|
+| `test/test_native_sensor_filter/` | filtrage médiane + EMA, warmup, rejets (feature-025) | `src/sensor_filter.cpp` |
+| `test/test_native_dosing/` | décision de dosage (`evaluateDose`, hystérésis start/stop, non-régression pause-mélange) (feature-036) | `src/dosing_logic.cpp` |
+
+Le `build_src_filter` de l'env `native` inclut les deux modules purs :
+
+```ini
+build_src_filter = +<sensor_filter.cpp> +<dosing_logic.cpp>
+```
+
+Ces deux sources ne dépendent **ni d'Arduino, ni de FreeRTOS, ni d'I²C** ; seul un shim minimal (`test/native_shim/`) fournit `NAN` / `isnan` / types entiers. Voir [ADR-0017](adr/0017-logique-metier-pure-humble-object-testabilite.md) pour la convention « logique pure séparée de la couche hardware ».
+
+### Couverture de tests
+
+Le script [`tools/coverage.sh`](../tools/coverage.sh) mesure la couverture des classes pures (`sensor_filter`, `dosing_logic`) via l'env dédié `native_coverage` (env `native` + instrumentation `--coverage`) et **gcovr** :
+
+```bash
+./tools/coverage.sh          # résumé console (lignes + branches) + rapport HTML
+./tools/coverage.sh --open   # idem + ouvre coverage/index.html (macOS)
+```
+
+Prérequis : `gcovr` dans le venv PlatformIO (`~/.platformio/penv/bin/pip install gcovr`) et `/usr/bin/gcov` (Command Line Tools sur macOS — Apple LLVM, compatible). Le rapport HTML est généré dans `coverage/` (ignoré par git).
+
+> **Portée** : seules les **classes pures** sont mesurées. La coquille `pump_controller.cpp` (collecte des globals + mapping énum→chaîne) est **exclue du build natif** — son équivalence est validée par revue, pas par couverture. Voir [ADR-0017](adr/0017-logique-metier-pure-humble-object-testabilite.md).
+
 ## Upload / Déploiement
 
 Le script [`deploy.sh`](../deploy.sh) est l'entrée unique pour tous les modes de déploiement. Lancer sans argument pour l'aide :

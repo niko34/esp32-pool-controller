@@ -52,7 +52,8 @@ docs/
 │   ├── 0013-identification-sondes-onewire.md
 │   ├── 0014-migration-atlas-ezo.md
 │   ├── 0015-partition-app-1.5mb.md
-│   └── 0016-regulation-p-temporisee-vs-pid.md
+│   ├── 0016-regulation-p-temporisee-vs-pid.md
+│   └── 0017-logique-metier-pure-humble-object-testabilite.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant
