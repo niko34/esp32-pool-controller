@@ -103,6 +103,8 @@ Ordre par cycle :
 
    **Anti-windup** : `computePID()` reçoit `freezeIntegral` — l'intégrale est **gelée** (aucune accumulation) si l'un des cas suivants est vrai : filtre non prêt, `canDose() == false`, pause mélange active, sortie PID saturée, erreur dans la zone morte, ou mesure rejetée / capteur instable.
 
+   > Le **cœur du calcul** (terme proportionnel, anti-windup, plancher 0, bornage final min/max) est extrait dans la fonction pure `computePidPure` testée en natif. `computePID` n'est plus qu'une coquille qui gère `dt`/`millis()` et l'état PID. Voir [Calcul proportionnel pur (`computePidPure`)](#calcul-proportionnel-pur-computepidpure).
+
    **Zone morte** : le paramètre `deadband` passé à `computePID()` est le **seuil de démarrage existant** (`phStartThreshold` / `orpStartThreshold`) — **un seul** deadband fait foi, aucun second seuil dupliqué. Si `|error| < deadband` → sortie forcée à 0 **et** intégrale figée.
 4. **Anti-cycling** ([`config.h:152`](../../src/config.h:152) `PumpProtection`) — **en dur, non configurables via UI** :
    - `minInjectionTimeMs = 30000` — 30 s minimum par injection démarrée.
@@ -196,6 +198,25 @@ Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontr
 | `CyclesPerDay` / `BurstPerMinute` / `BurstPer15Min` | #4 (anti-cycling) / #10 | limite cycles/jour / anti-rafale |
 
 > ⚠️ **Invariant** : toute évolution future de la décision de dosage **passe par `dosing_logic`** et doit conserver l'équivalence stricte (table d'équivalence validée par `pool-chemistry`). La logique pure est verrouillée par les tests natifs (`test/test_native_dosing/`, dont un **verrou de non-régression** du bug pause-mélange v2.2.5 : une injection auto dure **≥ `minInjectionTimeMs`** avant que la pause ne s'arme). Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
+
+### Calcul proportionnel pur (`computePidPure`)
+
+[feature-037](../../specs/features/done/feature-037-dosage-proportionnel-testable.md) prolonge le pattern **Humble Object** ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md), **pas de nouvel ADR**) au **cœur du calcul de débit**. Le calcul PID lui-même est extrait de `computePID()` vers une fonction **pure** [`computePidPure`](../../src/dosing_logic.h) ([`src/dosing_logic.cpp`](../../src/dosing_logic.cpp)) — sans `<Arduino.h>`, sans `millis()`, sans état membre — donc **testable en natif**. *Characterization refactor* : **les débits calculés et l'évolution de l'intégrale sont strictement préservés** (équivalence validée par `pool-chemistry`).
+
+**Ce que `computePidPure` calcule** (tout le métier) :
+
+1. Terme proportionnel `kp × error`, plus termes `ki × integral` et `kd × (error − lastError) / dt` (inertes tant que `Ki = Kd = 0`).
+2. **Anti-windup** : si `freezeIntegral` est vrai, l'intégrale est **gelée** (aucune accumulation) ; sinon elle est accumulée puis **bornée** à `±integralMax` (= 50).
+3. **Plancher** : une sortie négative est forcée à `0` (pas de débit négatif).
+4. **Bornage final min/max intégré (« Option Y »)** : le `constrain(flow, minFlow, maxFlow)` qui était appliqué *chez les appelants* pH/ORP **après** `computePID` est désormais **dans la fonction pure**. `computePidPure` renvoie donc directement le **débit FINAL borné** ; le `constrain` externe a été supprimé des chemins pH et ORP.
+
+**État PID injecté / renvoyé** : l'état n'est plus une variable membre mutée en place. Il est **passé en paramètre** (intégrale + dernière erreur) et **renvoyé** via `struct PidResult { float flow; float integral; float lastError; }`. La coquille relit `flow` (débit final) et réinjecte `integral` / `lastError` dans l'état PID persistant de la pompe.
+
+**`computePID` = coquille mince** : ne fait plus que gérer le **temps** (`dt` via `millis()`, plafonnement des deltas > 10 s), porter l'**état PID** d'un cycle à l'autre, dériver le flag `freezeIntegral`, déléguer à `computePidPure`, puis renvoyer le débit final. Les **deux chemins appelants pH et ORP** sont eux aussi des coquilles : ils ne réimplémentent aucune arithmétique de régulation.
+
+> `computeFlowFromError` est marquée **DEAD CODE** (ancien calcul de débit non utilisé par le chemin actif) — **non extraite** dans le module pur.
+
+**Testabilité native** : `computePidPure` est couverte à **100 % des lignes** par la suite Unity native (`test/test_native_dosing/`). Le temps et l'état étant injectés, chaque branche (gel intégrale, bornage `±integralMax`, plancher 0, bornage final min/max) est exercée sans matériel ni attente réelle.
 
 ### Garde filtration sur l'injection manuelle (v2.1.2)
 

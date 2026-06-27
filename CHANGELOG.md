@@ -1,5 +1,21 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.2.7] - 2026-06-27
+
+### Firmware
+
+- **Refactor interne (feature-037) — calcul proportionnel testable** : le cœur du calcul PID de `pump_controller` (terme proportionnel `kp × error`, termes `Ki`/`Kd`, anti-windup par gel/bornage de l'intégrale à `±integralMax`, plancher sortie négative → 0, **bornage final min/max**) est extrait de `computePID` vers une fonction **pure** `computePidPure` (`src/dosing_logic.{h,cpp}`), sans dépendance Arduino / `millis()` / état membre, donc **testable en natif**. L'état PID (intégrale + dernière erreur) est désormais **injecté en paramètre** et **renvoyé** via `struct PidResult`. Le `constrain` de débit qui était appliqué chez les appelants pH/ORP est déplacé **dans la fonction pure** (« Option Y ») : `computePidPure` renvoie le débit **final borné**, et `computePID` ainsi que les deux chemins pH/ORP deviennent des coquilles minces (gestion du temps + état uniquement). `computeFlowFromError` reste du code mort (non extrait). *Characterization refactor* : **les débits calculés et l'évolution de l'intégrale sont strictement préservés** (équivalence stricte validée par `pool-chemistry`). Aucun comportement visible utilisateur.
+
+### Tests
+
+- **Tests Unity natifs étendus (feature-037)** : couverture **100 % des lignes** de `computePidPure` (21 tests et plus) — terme proportionnel, gel de l'intégrale, bornage anti-windup `±integralMax`, plancher 0, bornage final min/max. Le temps et l'état PID étant injectés, chaque branche est exercée sans matériel ni attente réelle. `pio test -e native` continue de couvrir les suites `test/test_native_sensor_filter/` + `test/test_native_dosing/`.
+
+### Documentation
+
+- `docs/subsystems/pump-controller.md` : nouvelle section « Calcul proportionnel pur (`computePidPure`) » — fonction pure, état PID injecté/renvoyé (`PidResult`), bornage final intégré (« Option Y »), testabilité native 100 %, `computePID` et chemins pH/ORP réduits à des coquilles. Réutilise [ADR-0017](docs/adr/0017-logique-metier-pure-humble-object-testabilite.md) (Humble Object) — **pas de nouvel ADR**.
+
+---
+
 ## [2.2.6] - 2026-06-27
 
 ### Firmware

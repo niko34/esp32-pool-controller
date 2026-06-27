@@ -100,3 +100,48 @@ bool shouldContinueDosingPure(float error, float stopThreshold,
   // 2. Continuer si au-dessus du seuil d'arrêt (hystérésis).
   return error > stopThreshold;
 }
+
+// Clamp maison : Arduino::constrain est une macro indisponible en natif.
+static inline float clampf(float v, float lo, float hi) {
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+
+PidResult computePidPure(float kp, float ki, float kd,
+                         float error, float prevError, float integral,
+                         float dtSec, float integralMax, float deadband,
+                         float minFlow, float maxFlow, bool freezeIntegral) {
+  // feature-025 (B7) : zone morte = seuil de démarrage (deadband). STRICT < :
+  // |erreur| < deadband → sortie 0 ET aucune accumulation intégrale.
+  bool inDeadband = (fabsf(error) < deadband);
+
+  if (inDeadband) {
+    // Sortie nulle dans la zone morte ; intégrale NON modifiée.
+    return { 0.0f, integral, error };
+  }
+
+  // feature-025 (B6) : anti-windup strict — geler l'accumulation si la coquille
+  // le signale (saturation, filtre non prêt, etc.) ou si on est dans la deadband
+  // (déjà traité ci-dessus).
+  bool allowIntegration = !freezeIntegral;
+
+  // Calcul PID
+  float proportional = kp * error;
+
+  if (allowIntegration) {
+    integral += error * dtSec;
+    // Anti-windup (borne intégrale : clamp haut ET bas)
+    if (integral > integralMax) integral = integralMax;
+    if (integral < -integralMax) integral = -integralMax;
+  }
+  float integralTerm = ki * integral;
+
+  float derivative = kd * (error - prevError) / dtSec;
+
+  float output = proportional + integralTerm + derivative;
+  if (output < 0.0f) output = 0.0f;
+
+  // feature-037 (Option Y) : bornage final déplacé ici depuis la coquille.
+  float flow = clampf(output, minFlow, maxFlow);
+
+  return { flow, integral, error };
+}

@@ -61,8 +61,13 @@ private:
   // orpStartThreshold) ; `freezeIntegral` gèle l'accumulation intégrale (anti-windup
   // strict : filtre non prêt, canDose==false, pause mélange, saturation, mesure
   // rejetée/instable, erreur dans deadband). Le gel est appliqué AVANT le calcul.
+  // feature-037 : le cœur du calcul (proportionnel + anti-windup + bornage final)
+  // est délégué à computePidPure() (src/dosing_logic.*, testable en natif). La
+  // coquille gère le temps (dt depuis millis), l'état PID et renvoie le débit
+  // FINAL déjà borné [minFlow, maxFlow] (plus de constrain externe chez l'appelant).
   float computePID(PIDController& pid, float error, unsigned long now,
-                   float deadband, bool freezeIntegral);
+                   float deadband, bool freezeIntegral,
+                   float minFlow, float maxFlow);
   float computeFlowFromError(float error, float deadband, const PumpControlParams& params);
   float   dutyToFlow(const PumpControlParams& params, uint8_t duty);
   uint8_t flowToDuty(const PumpControlParams& params, float flowMlPerMin);

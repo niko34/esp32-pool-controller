@@ -434,7 +434,10 @@ bool PumpControllerClass::canDose(int pumpIndex) {
 }
 
 float PumpControllerClass::computePID(PIDController& pid, float error, unsigned long now,
-                                      float deadband, bool freezeIntegral) {
+                                      float deadband, bool freezeIntegral,
+                                      float minFlow, float maxFlow) {
+  // Coquille (feature-037) : gestion du temps + de l'état PID. Le cœur du calcul
+  // (proportionnel + anti-windup + bornage final) est délégué à computePidPure().
   if (pid.lastTime == 0) {
     pid.lastTime = now;
     pid.lastError = error;
@@ -447,46 +450,20 @@ float PumpControllerClass::computePID(PIDController& pid, float error, unsigned 
     return 0.0f;
   }
 
-  // feature-025 (B7) : zone morte = seuil de démarrage existant (un SEUL deadband
-  // fait foi). Si |erreur| < deadband → sortie 0 ET aucune accumulation intégrale.
-  // Ne PAS dupliquer de second deadband (computeFlowFromError n'est pas touché).
-  bool inDeadband = (fabsf(error) < deadband);
+  // Délégation au cœur pur : l'état PID est passé en paramètre et renvoyé.
+  // computePidPure renvoie le débit FINAL déjà borné [minFlow, maxFlow].
+  PidResult r = computePidPure(pid.kp, pid.ki, pid.kd, error, pid.lastError,
+                               pid.integral, dt, pid.integralMax, deadband,
+                               minFlow, maxFlow, freezeIntegral);
 
-  // feature-025 (B6) : anti-windup strict — geler l'accumulation de l'intégrale
-  // AVANT le calcul dans tous les cas signalés par l'appelant (filtre non prêt,
-  // canDose==false, pause mélange, sortie saturée, mesure rejetée/instable) ou si
-  // l'erreur est dans la zone morte. Avec Ki=0 (P temporisée pure), l'intégrale est
-  // de toute façon inerte ; ce gel garantit l'absence de windup si Ki est réactivé.
-  bool allowIntegration = !freezeIntegral && !inDeadband;
-
-  if (inDeadband) {
-    // Sortie nulle dans la zone morte (pas de proportionnel non plus).
-    pid.lastError = error;
-    pid.lastTime = now;
-    return 0.0f;
-  }
-
-  // Calcul PID
-  float proportional = pid.kp * error;
-
-  if (allowIntegration) {
-    pid.integral += error * dt;
-    // Anti-windup (borne intégrale)
-    if (pid.integral > pid.integralMax) pid.integral = pid.integralMax;
-    if (pid.integral < -pid.integralMax) pid.integral = -pid.integralMax;
-  }
-  float integralTerm = pid.ki * pid.integral;
-
-  float derivative = pid.kd * (error - pid.lastError) / dt;
-
-  float output = proportional + integralTerm + derivative;
-
-  pid.lastError = error;
+  pid.integral = r.integral;
+  pid.lastError = r.lastError;
   pid.lastTime = now;
 
-  return output > 0.0f ? output : 0.0f;
+  return r.flow;
 }
 
+// DEAD CODE : non appelé dans le chemin de dosage (cf. feature-037) — conservé pour usage futur
 float PumpControllerClass::computeFlowFromError(float error, float deadband, const PumpControlParams& params) {
   float delta = error - deadband;
   if (delta <= 0.0f) return 0.0f;
@@ -769,10 +746,12 @@ void PumpControllerClass::update() {
       // feature-025 (B6) : geler l'intégrale si la sortie sature (terme P seul
       // ≥ débit max → toute accumulation serait du windup). deadband = seuil start.
       bool phSaturated = (phPID.kp * error >= phPumpControl.maxFlowMlPerMin);
-      // Calcul PID — constrain avec minimum pour éviter flow=0 à la première invocation du PID
-      float pidOutput = computePID(phPID, error, now,
-                                   pumpProtection.phStartThreshold, phSaturated);
-      flow = constrain(pidOutput, phPumpControl.minFlowMlPerMin, phPumpControl.maxFlowMlPerMin);
+      // Calcul PID — computePID renvoie le débit FINAL borné (feature-037 : le
+      // bornage [minFlow, maxFlow] est appliqué dans computePidPure, plus de
+      // constrain externe). minFlow évite flow=0 à la première invocation du PID.
+      flow = computePID(phPID, error, now,
+                        pumpProtection.phStartThreshold, phSaturated,
+                        phPumpControl.minFlowMlPerMin, phPumpControl.maxFlowMlPerMin);
     } else {
       // Arrêt du dosage
       if (phDosingState.active) {
@@ -918,10 +897,12 @@ void PumpControllerClass::update() {
     if (shouldDose) {
       // feature-025 (B6) : geler l'intégrale si la sortie sature. deadband = seuil start.
       bool orpSaturated = (orpPID.kp * error >= orpPumpControl.maxFlowMlPerMin);
-      // Calcul PID — constrain avec minimum pour éviter flow=0 à la première invocation du PID
-      float pidOutput = computePID(orpPID, error, now,
-                                   pumpProtection.orpStartThreshold, orpSaturated);
-      flow = constrain(pidOutput, orpPumpControl.minFlowMlPerMin, orpPumpControl.maxFlowMlPerMin);
+      // Calcul PID — computePID renvoie le débit FINAL borné (feature-037 : le
+      // bornage [minFlow, maxFlow] est appliqué dans computePidPure, plus de
+      // constrain externe). minFlow évite flow=0 à la première invocation du PID.
+      flow = computePID(orpPID, error, now,
+                        pumpProtection.orpStartThreshold, orpSaturated,
+                        orpPumpControl.minFlowMlPerMin, orpPumpControl.maxFlowMlPerMin);
     } else {
       // Arrêt du dosage
       if (orpDosingState.active) {

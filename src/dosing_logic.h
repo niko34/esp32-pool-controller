@@ -90,4 +90,33 @@ bool shouldStartDosingPure(float error, float startThreshold,
 bool shouldContinueDosingPure(float error, float stopThreshold,
                               unsigned long runTimeMs, unsigned long minInjectionTimeMs);
 
+// Résultat pur d'un pas PID : débit final borné + nouvel état PID (intégrale,
+// dernière erreur) renvoyés explicitement, jamais lus/écrits en global.
+struct PidResult {
+  float flow;       // débit FINAL borné [minFlow, maxFlow], 0 dans la zone morte / sortie négative
+  float integral;   // intégrale après mise à jour anti-windup (inchangée si gelée ou deadband)
+  float lastError;  // erreur courante (= error), à recopier dans pid.lastError
+};
+
+// Cœur PID PUR extrait de PumpControllerClass::computePID (feature-037,
+// characterization refactor — AUCUN changement de comportement).
+//
+// Reproduit EXACTEMENT, dans cet ordre :
+//   1. deadband STRICT : inDeadband = fabsf(error) < deadband ;
+//   2. si inDeadband → { flow:0, integral inchangée, lastError:error } ;
+//   3. sinon allowIntegration = !freezeIntegral → integral += error*dtSec puis
+//      bornage ±integralMax (clamp haut ET bas) ; gelée si freezeIntegral ;
+//   4. output = kp*error + ki*integral + kd*(error - prevError)/dtSec ;
+//   5. if (output < 0) output = 0 ;
+//   6. flow = clampf(output, minFlow, maxFlow) (bornage final, déplacé ici
+//      depuis la coquille — feature-037 Option Y ; équivalent au constrain()
+//      Arduino externe d'origine, réécrit en clampf() car constrain indispo en natif).
+//
+// L'état PID (integral, prevError) est passé en paramètre et renvoyé ; la
+// coquille fournit dtSec (calculé depuis millis) et le flag freezeIntegral.
+PidResult computePidPure(float kp, float ki, float kd,
+                         float error, float prevError, float integral,
+                         float dtSec, float integralMax, float deadband,
+                         float minFlow, float maxFlow, bool freezeIntegral);
+
 #endif // DOSING_LOGIC_H
