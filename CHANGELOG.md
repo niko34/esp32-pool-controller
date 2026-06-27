@@ -1,5 +1,21 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.2.8] - 2026-06-27
+
+### Firmware
+
+- **Refactor interne (feature-038) — logique d'horaire de filtration testable** : la décision d'horaire de `filtration` (parsing `"HH:MM"` `timeStringToMinutes`, appartenance à une fenêtre `isMinutesInRange` gérant le passage minuit, calcul du créneau auto selon température `computeAutoWindow` — durée = temp/2 bornée `[1,24]`, centrée sur `kFiltrationPivotHour`, wrap des bornes dans `[0,24)` —, et décision marche/arrêt `decideFiltrationRun` avec priorités **`forceOn` > `forceOff` > plage** et **conservation de l'état si l'heure est indisponible**) est extraite vers un module **pur** `src/schedule_logic.{h,cpp}` (pattern *Humble Object*), sans dépendance Arduino / RTC / `millis()` / NVS / FreeRTOS — donc **testable en natif**. Module **générique**, réutilisable pour l'éclairage. `update()` / `begin()` / `computeAutoSchedule()` deviennent des coquilles minces ; RTC, `millis()`, NVS, deadband 1 °C, timeout 4 h, stabilisation et commande relais restent dans la coquille. *Characterization refactor* : **aucun changement de comportement** (équivalence stricte validée par `pool-chemistry`, dont la préservation de la garde « présence d'eau » de `canDose()`). Aucun comportement visible utilisateur.
+
+### Tests
+
+- **19 nouveaux tests Unity natifs** (feature-038) couvrant la décision d'horaire : parsing `"HH:MM"` (cas invalides inclus), appartenance à une fenêtre traversant minuit, créneau auto borné/centré, priorités des forçages et conservation de l'état sans heure valide. `schedule_logic.cpp` couvert à **100 % des lignes** (**70 tests au total**).
+
+### Documentation
+
+- `docs/subsystems/filtration.md` : nouvelle section « Logique d'horaire pure (`schedule_logic`) » — les 4 fonctions pures, décision/priorités, temps indisponible → conservation d'état, fenêtre auto centrée et wrap minuit, testabilité native, coquilles `update()`/`begin()`/`computeAutoSchedule()`. Réutilise [ADR-0017](docs/adr/0017-logique-metier-pure-humble-object-testabilite.md) (Humble Object) — **pas de nouvel ADR** ; `schedule_logic` est un module générique partagé filtration/éclairage.
+
+---
+
 ## [2.2.7] - 2026-06-27
 
 ### Firmware

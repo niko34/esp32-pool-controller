@@ -6,7 +6,17 @@
 #include "mqtt_manager.h"
 #include "uart_protocol.h"
 #include "pump_controller.h"
+#include "schedule_logic.h"
 #include <time.h>
+
+// Formate des minutes depuis minuit en chaîne "HH:MM" (helper local coquille).
+static String minutesToTimeString(int minutes) {
+  int h = (minutes / 60) % 24;
+  int m = minutes % 60;
+  char buffer[6];
+  snprintf(buffer, sizeof(buffer), "%02d:%02d", h, m);
+  return String(buffer);
+}
 
 FiltrationManager filtration;
 
@@ -78,34 +88,10 @@ void FiltrationManager::computeAutoSchedule() {
   // Deadband 1°C : évite les recalculs et écritures NVS pour des variations mineures
   if (!isnan(_lastScheduledTemp) && fabsf(referenceTemp - _lastScheduledTemp) < 1.0f) return;
 
-  if (referenceTemp < 0) referenceTemp = 0;
-  float durationHours = referenceTemp / 2.0f;
-  if (durationHours < 1.0f) durationHours = 1.0f;
-  if (durationHours > 24.0f) durationHours = 24.0f;
-
-  float startHour = kFiltrationPivotHour - (durationHours / 2.0f);
-  float endHour = startHour + durationHours;
-
-  auto wrap = [](float hour) {
-    while (hour < 0) hour += 24.0f;
-    while (hour >= 24.0f) hour -= 24.0f;
-    return hour;
-  };
-
-  startHour = wrap(startHour);
-  endHour = wrap(endHour);
-
-  auto toTimeString = [](float hour) {
-    int h = static_cast<int>(hour);
-    int m = static_cast<int>(round((hour - h) * 60.0f));
-    if (m >= 60) { m -= 60; h = (h + 1) % 24; }
-    char buffer[6];
-    snprintf(buffer, sizeof(buffer), "%02d:%02d", h, m);
-    return String(buffer);
-  };
-
-  filtrationCfg.start = toTimeString(startHour);
-  filtrationCfg.end = toTimeString(endHour);
+  // Calcul du créneau (logique pure) puis formatage en "HH:MM" pour la config.
+  ScheduleWindow w = computeAutoWindow(referenceTemp, kFiltrationPivotHour);
+  filtrationCfg.start = minutesToTimeString(w.startMin);
+  filtrationCfg.end = minutesToTimeString(w.endMin);
   ensureTimesValid();
   _lastScheduledTemp = referenceTemp;
   systemLogger.info("Planning auto: " + String(referenceTemp, 1) + "°C → " + filtrationCfg.start + "-" + filtrationCfg.end);
@@ -119,20 +105,13 @@ bool FiltrationManager::getCurrentMinutesOfDay(int& minutes) {
 }
 
 int FiltrationManager::timeStringToMinutes(const String& value) {
-  if (value.length() < 5 || value.charAt(2) != ':') return -1;
-  int hh = value.substring(0, 2).toInt();
-  int mm = value.substring(3, 5).toInt();
-  if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return -1;
-  return hh * 60 + mm;
+  // Délègue à la fonction pure (schedule_logic).
+  return ::timeStringToMinutes(value.c_str());
 }
 
 bool FiltrationManager::isMinutesInRange(int now, int start, int end) {
-  if (start == -1 || end == -1) return false;
-  if (start == end) return false;  // Plage invalide → pas de filtration
-  if (start < end) {
-    return now >= start && now < end;
-  }
-  return now >= start || now < end;
+  // Délègue à la fonction pure (schedule_logic).
+  return ::isMinutesInRange(now, start, end);
 }
 
 void FiltrationManager::update() {
@@ -183,22 +162,14 @@ void FiltrationManager::update() {
   String mode = filtrationCfg.mode;
   mode.toLowerCase();
 
-  bool runTarget = false;
   int startMin = timeStringToMinutes(filtrationCfg.start);
   int endMin = timeStringToMinutes(filtrationCfg.end);
 
-  if (filtrationCfg.forceOn) {
-    runTarget = true;
-  } else if (filtrationCfg.forceOff) {
-    runTarget = false;
-  } else if (mode == "manual" || mode == "auto") {
-    if (haveTime) {
-      runTarget = isMinutesInRange(nowMinutes, startMin, endMin);
-    } else {
-      // Time unavailable: keep current state to avoid false stop/start during OTA.
-      runTarget = state.running;
-    }
-  }
+  // Décision marche/arrêt (logique pure). `mode` est déjà en minuscules.
+  bool runTarget = decideFiltrationRun(mode.c_str(), filtrationCfg.forceOn,
+                                       filtrationCfg.forceOff, haveTime,
+                                       nowMinutes, startMin, endMin,
+                                       state.running);
 
   bool wasRunning = state.running;
   if (!wasRunning && runTarget) {
