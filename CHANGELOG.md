@@ -1,5 +1,21 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.2.9] - 2026-06-27
+
+### Firmware
+
+- **Refactor interne (feature-039) — anti-rafale & rollover journalier testables** : la logique d'**anti-rafale** du dosage (comptage de cycles sur fenêtres glissantes 1 min / 15 min via ring buffer, gestion du **wrap `millis()`** en `uint32_t`, écriture circulaire) et les **déclencheurs de rollover journalier** (reset des quotas à minuit date NTP / fallback 24 h) sont extraits de `pump_controller.cpp` vers le module **pur** `src/dosing_logic.{h,cpp}` : `countCyclesInWindow`, `recordCycleTimestamp`, `shouldRolloverByDate`, `shouldRolloverByMillis` — sans dépendance Arduino / `millis()` / `time()` / NVS / état membre, donc **testables en natif**. Les méthodes `recordDosingCycleStart` / `countRecentDosingCycles` / `tickDailyRollover` deviennent des coquilles minces (fournissent `millis()` / `time()` / les buffers et délèguent ; `localtime_r`/`strftime`, écriture `safetyLimits`, `saveDailyCounters`, `armStabilizationTimer`, logs et branche première-init restent dans la coquille). *Characterization refactor* : **seuils et frontières strictement préservés** (6 cycles/min, 20 cycles/15 min, ring buffer 20, rollover 24 h) — la garde anti-emballement de `canDose()` (#14/#15) et le reset des quotas sont inchangés (équivalence stricte validée par `pool-chemistry`, 2 passages). Aucun comportement visible utilisateur.
+
+### Tests
+
+- **15 nouveaux tests Unity natifs** (feature-039) couvrant l'anti-rafale et le rollover : comptage en fenêtre glissante (buffer vide, slots à 0, `ts` dans/hors fenêtre, `ts == now`, **wrap `millis()` post-`0xFFFFFFFF`**), écriture circulaire du ring buffer (avance d'index, écrasement du plus ancien), déclencheurs de rollover par date (vide / identique / différente) et par fallback 24 h (frontière `== 86400000`, wrap). `dosing_logic.cpp` couvert à **100 % des lignes** (**85 tests au total**).
+
+### Documentation
+
+- `docs/subsystems/pump-controller.md` : nouvelle section « Anti-rafale & rollover journalier (logique pure) » — les 4 fonctions pures, comptage wrap-safe `uint32_t`, déclencheurs de rollover (date NTP / fallback 24 h), coquilles `pump_controller` qui délèguent, comportement strictement préservé, testabilité native. Réutilise [ADR-0017](docs/adr/0017-logique-metier-pure-humble-object-testabilite.md) (Humble Object) — **pas de nouvel ADR**.
+
+---
+
 ## [2.2.8] - 2026-06-27
 
 ### Firmware

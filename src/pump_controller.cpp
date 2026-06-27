@@ -280,9 +280,11 @@ void PumpControllerClass::resetRefusalLogState(int pumpIndex) {
 void PumpControllerClass::recordDosingCycleStart(int pumpIndex) {
   if (pumpIndex < 0 || pumpIndex > 1) return;
   uint32_t now = millis();
-  _dosingCycleHistory[pumpIndex][_dosingCycleHistoryIdx[pumpIndex]] = now;
-  _dosingCycleHistoryIdx[pumpIndex] =
-      (_dosingCycleHistoryIdx[pumpIndex] + 1) % kDosingCycleHistorySize;
+  // COQUILLE (feature-039) : délègue au pur ; réassigner le retour est impératif
+  // (sinon index figé = écriture toujours sur le même slot = emballement pompe).
+  _dosingCycleHistoryIdx[pumpIndex] = recordCycleTimestamp(
+      _dosingCycleHistory[pumpIndex], _dosingCycleHistoryIdx[pumpIndex],
+      kDosingCycleHistorySize, now);
 }
 
 // Compte les démarrages de cycle survenus dans la fenêtre [now-windowMs, now]
@@ -291,15 +293,8 @@ void PumpControllerClass::recordDosingCycleStart(int pumpIndex) {
 int PumpControllerClass::countRecentDosingCycles(int pumpIndex, uint32_t windowMs) const {
   if (pumpIndex < 0 || pumpIndex > 1) return 0;
   uint32_t now = millis();
-  int count = 0;
-  for (size_t i = 0; i < kDosingCycleHistorySize; ++i) {
-    uint32_t ts = _dosingCycleHistory[pumpIndex][i];
-    // ts == 0 = slot vide (jamais utilisé). On ignore.
-    // Cas wrap millis() (49.7 jours) : (now - ts) déborde correctement en
-    // arithmétique non-signée → la fenêtre reste cohérente au passage 0xFFFFFFFF.
-    if (ts != 0 && (now - ts) <= windowMs) count++;
-  }
-  return count;
+  // COQUILLE (feature-039) : délègue au pur (gestion wrap millis, frontière <=).
+  return countCyclesInWindow(_dosingCycleHistory[pumpIndex], kDosingCycleHistorySize, now, windowMs);
 }
 
 // canDose(int) — COQUILLE (feature-036). Collecte les entrées depuis les globals
@@ -508,7 +503,7 @@ void PumpControllerClass::tickDailyRollover() {
     localtime_r(&epochNow, &timeinfo);
     char todayStr[9];
     strftime(todayStr, sizeof(todayStr), "%Y%m%d", &timeinfo);
-    if (strlen(safetyLimits.currentDayDate) > 0 && strcmp(safetyLimits.currentDayDate, todayStr) != 0) {
+    if (shouldRolloverByDate(safetyLimits.currentDayDate, todayStr)) {
       systemLogger.info("Reset journalier (minuit local) — pH=" +
         String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(safetyLimits.maxPhMinusMlPerDay, 0) +
         " mL, ORP=" + String(safetyLimits.dailyOrpInjectedMl, 0) + "/" + String(safetyLimits.maxChlorineMlPerDay, 0) + " mL");
@@ -531,7 +526,7 @@ void PumpControllerClass::tickDailyRollover() {
     if (safetyLimits.dayStartTimestamp == 0) {
       safetyLimits.dayStartTimestamp = now;
     }
-    if (now - safetyLimits.dayStartTimestamp >= 86400000UL) {
+    if (shouldRolloverByMillis((uint32_t)safetyLimits.dayStartTimestamp, (uint32_t)now)) {
       safetyLimits.dailyPhInjectedMl  = 0;
       safetyLimits.dailyOrpInjectedMl = 0;
       safetyLimits.phLimitReached     = false;

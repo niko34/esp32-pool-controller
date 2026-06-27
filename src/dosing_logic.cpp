@@ -145,3 +145,34 @@ PidResult computePidPure(float kp, float ki, float kd,
 
   return { flow, integral, error };
 }
+
+// =============================================================================
+// Anti-rafale + rollover journalier PURS (feature-039)
+// =============================================================================
+
+int countCyclesInWindow(const uint32_t* history, size_t size, uint32_t now, uint32_t windowMs) {
+  int count = 0;
+  for (size_t i = 0; i < size; ++i) {
+    uint32_t ts = history[i];
+    // ts == 0 = slot vide (jamais utilisé). On ignore.
+    // Cas wrap millis() (49.7 jours) : (now - ts) déborde correctement en
+    // arithmétique non-signée → la fenêtre reste cohérente au passage 0xFFFFFFFF.
+    // frontière <= inclusive volontaire.
+    if (ts != 0 && (now - ts) <= windowMs) count++;
+  }
+  return count;
+}
+
+size_t recordCycleTimestamp(uint32_t* history, size_t idx, size_t size, uint32_t now) {
+  history[idx] = now;
+  return (idx + 1) % size;
+}
+
+bool shouldRolloverByDate(const char* currentDayDate, const char* todayStr) {
+  return strlen(currentDayDate) > 0 && strcmp(currentDayDate, todayStr) != 0;
+}
+
+bool shouldRolloverByMillis(uint32_t dayStartMs, uint32_t now) {
+  // frontière >= inclusive volontaire ; wrap millis uint32 (arithmétique non signée).
+  return (now - dayStartMs) >= 86400000UL;
+}

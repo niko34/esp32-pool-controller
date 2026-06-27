@@ -21,6 +21,7 @@
 
 #include <stdint.h>
 #include <math.h>
+#include <string.h>
 
 // Cause de refus de dosage (énum pur). L'ordre suit exactement l'ordre des
 // gardes de canDose(). None = dosage autorisé.
@@ -118,5 +119,32 @@ PidResult computePidPure(float kp, float ki, float kd,
                          float error, float prevError, float integral,
                          float dtSec, float integralMax, float deadband,
                          float minFlow, float maxFlow, bool freezeIntegral);
+
+// =============================================================================
+// Anti-rafale + rollover journalier PURS (feature-039, characterization refactor)
+// =============================================================================
+// Logique pure extraite de pump_controller (countRecentDosingCycles,
+// recordDosingCycleStart, déclencheurs de tickDailyRollover). AUCUN changement
+// de comportement : seuils/fenêtres/frontières strictement préservés. La
+// coquille fournit millis()/time()/les buffers membres.
+
+// Compte les démarrages de cycle dans la fenêtre [now-windowMs, now].
+// Copie exacte de countRecentDosingCycles : slot 0 ignoré (jamais utilisé),
+// comptage si (now - ts) <= windowMs.
+// frontière <= inclusive volontaire ; wrap millis uint32 (arithmétique non
+// signée → fenêtre cohérente au passage 0xFFFFFFFF) ; size doit valoir
+// kDosingCycleHistorySize.
+int countCyclesInWindow(const uint32_t* history, size_t size, uint32_t now, uint32_t windowMs);
+
+// Écrit `now` au slot idx du ring buffer et renvoie le prochain index circulaire.
+size_t recordCycleTimestamp(uint32_t* history, size_t idx, size_t size, uint32_t now);
+
+// Déclencheur rollover par changement de date NTP : vrai ssi une date est déjà
+// connue (non vide) ET diffère de la date du jour.
+bool shouldRolloverByDate(const char* currentDayDate, const char* todayStr);
+
+// Déclencheur rollover fallback 24 h (heure non synchronisée).
+// frontière >= inclusive volontaire ; wrap millis uint32 (arithmétique non signée).
+bool shouldRolloverByMillis(uint32_t dayStartMs, uint32_t now);
 
 #endif // DOSING_LOGIC_H

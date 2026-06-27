@@ -251,6 +251,27 @@ Sites d'appel à `recordDosingCycleStart()` (4 au total) : démarrage cycle pH a
 
 > **Indépendant** des limites volumétriques (`ph_limit_minutes`, `max_ph_ml_per_day`) et de l'anti-cycling existant (`maxCyclesPerDay = 20` mesuré sur 24 h glissante). Couvre le cas d'un PID qui démarrerait 30 cycles très courts en 5 minutes (lectures bruitées sur sonde mal calibrée par exemple).
 
+## Anti-rafale & rollover journalier (logique pure)
+
+[feature-039](../../specs/features/done/feature-039-anti-rafale-rollover-testable.md) prolonge le pattern **Humble Object** ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md), **pas de nouvel ADR**) à deux gardes critiques restées non testées : l'**anti-rafale** (comptage de cycles sur fenêtres glissantes) et les **déclencheurs de rollover journalier**. Leur cœur est extrait de `pump_controller.cpp` vers le module pur [`src/dosing_logic.{h,cpp}`](../../src/dosing_logic.h) (sans `<Arduino.h>`, sans `millis()`, sans `time()`/NVS, sans état membre) → **testable en natif**. *Characterization refactor* : **aucun seuil, fenêtre ni frontière n'a changé** (équivalence stricte, 2 passages `pool-chemistry`).
+
+### Fonctions pures
+
+- **`int countCyclesInWindow(const uint32_t* history, size_t size, uint32_t now, uint32_t windowMs)`** — copie exacte de `countRecentDosingCycles` : ignore les slots à `0`, compte un timestamp si `(now - ts) <= windowMs`. L'arithmétique en **`uint32_t` non signé** est **wrap-safe** : au passage `0xFFFFFFFF → 0`, un `ts` pré-wrap et un `now` post-wrap donnent toujours un delta cohérent (la fenêtre reste correcte). Frontière `<=` **inclusive** (un `ts == now`, delta 0, est compté). `now` injecté en paramètre.
+- **`size_t recordCycleTimestamp(uint32_t* history, size_t idx, size_t size, uint32_t now)`** — écrit `now` au slot `idx` du ring buffer et **renvoie** le prochain index circulaire `(idx + 1) % size` (pas de référence mutée). Écrase le plus ancien une fois le buffer plein.
+- **`bool shouldRolloverByDate(const char* currentDayDate, const char* todayStr)`** — vrai ssi une date est **déjà connue** (`strlen > 0`) **ET** diffère de la date du jour. `currentDayDate` vide (première init après boot) → `false` (cas géré par la coquille, branche 2 de [Reset journalier](#reset-journalier)).
+- **`bool shouldRolloverByMillis(uint32_t dayStartMs, uint32_t now)`** — fallback 24 h quand l'heure n'est pas synchronisée : vrai ssi `(now - dayStartMs) >= 86400000` (24 h). Frontière `>=` **inclusive**, arithmétique `uint32_t` wrap-safe.
+
+### Coquilles `pump_controller`
+
+`countRecentDosingCycles(pumpIndex, windowMs)`, `recordDosingCycleStart(pumpIndex)` et `tickDailyRollover()` deviennent des **coquilles minces** : elles fournissent `millis()` / `time()` / les buffers membres (`_dosingCycleHistory`, `_dosingCycleHistoryIdx`) et délèguent aux fonctions pures. Restent dans la coquille `tickDailyRollover()` : `localtime_r` / `strftime` (calcul de `todayStr`), l'écriture de `safetyLimits`, `saveDailyCounters()`, `armStabilizationTimer()`, les logs et la **branche première-init** (date vide).
+
+> ⚠️ **Comportement strictement préservé** : la garde anti-emballement de `canDose()` (conditions #14 `BurstPerMinute` / #15 `BurstPer15Min` — refus si > 6 cycles/min OU > 20 cycles/15 min) et le reset des quotas journaliers à minuit (date NTP) / fallback 24 h sont **inchangés**. Seuls les seuils `kMaxDosingCyclesPerMinute = 6`, `kMaxDosingCyclesPer15Min = 20`, `kDosingCycleHistorySize = 20` et le délai de 24 h restent en vigueur, à l'identique.
+
+### Testabilité native
+
+`countCyclesInWindow`, `recordCycleTimestamp`, `shouldRolloverByDate` et `shouldRolloverByMillis` sont couvertes par la suite Unity native (`test/test_native_dosing/`, **15 tests** dédiés, **85 tests au total**) ; `dosing_logic.cpp` atteint **100 % des lignes**. Le temps étant injecté, le **wrap `millis()`** (piège principal) et les frontières (`86400000`, fenêtres 60 000 / 900 000 ms) sont exercés sans matériel ni attente réelle. Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
+
 ## Pause mélange hydraulique (feature-025)
 
 Après chaque injection, le bassin a besoin de temps pour s'homogénéiser avant qu'une nouvelle mesure soit représentative. La pause mélange empêche tout surdosage par réaction prématurée.
@@ -397,4 +418,5 @@ Flush différé : `_dailyCountersDirty` armé à chaque injection, écrit en NVS
 - [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036)
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — entrée filtrée, anti-windup, pause mélange, zone morte
 - [feature-036](../../specs/features/done/feature-036-dosage-testable-decision-pure.md) — extraction de la décision de dosage en module pur testable
+- [feature-039](../../specs/features/done/feature-039-anti-rafale-rollover-testable.md) — extraction de l'anti-rafale + déclencheurs de rollover en logique pure testable
 - [page-ph.md](../features/page-ph.md), [page-orp.md](../features/page-orp.md) — UI consommatrices

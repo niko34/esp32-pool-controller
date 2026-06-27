@@ -532,6 +532,208 @@ void test_pid_negative_error_zero_flow(void) {
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 0.0f, r.flow);
 }
 
+// =============================================================================
+// feature-039 — Anti-rafale + rollover journalier PURS
+// =============================================================================
+// On verrouille le COMPORTEMENT observable des 4 fonctions pures extraites de
+// pump_controller (countCyclesInWindow, recordCycleTimestamp, shouldRolloverByDate,
+// shouldRolloverByMillis). Constantes réelles : kDosingCycleHistorySize=20,
+// fenêtres 60000 (1 min) / 900000 (15 min), seuils anti-rafale 6/min, 20/15min,
+// frontière rollover 86400000 ms (24 h). Wrap millis uint32 testé explicitement.
+
+static const size_t   kHistorySize  = 20;       // kDosingCycleHistorySize
+static const uint32_t kWindow1Min   = 60000UL;
+static const uint32_t kWindow15Min  = 900000UL;
+static const int      kMaxPerMinute = 6;        // kMaxDosingCyclesPerMinute
+static const int      kMaxPer15Min  = 20;       // kMaxDosingCyclesPer15Min
+static const uint32_t kDayMs        = 86400000UL;
+
+// -----------------------------------------------------------------------------
+// AC1/AC2 — countCyclesInWindow
+// -----------------------------------------------------------------------------
+
+// Buffer entièrement vide (tous 0) → 0.
+void test_F039_count_empty_buffer_zero(void) {
+  uint32_t hist[20] = {0};
+  TEST_ASSERT_EQUAL_INT(0, countCyclesInWindow(hist, kHistorySize, 1000000UL, kWindow1Min));
+}
+
+// Tous les slots non nuls et récents (dans la fenêtre) → count = nombre de slots non nuls.
+void test_F039_count_all_recent_in_window(void) {
+  uint32_t hist[20];
+  for (size_t i = 0; i < kHistorySize; ++i) hist[i] = 1000000UL - (uint32_t)(i * 1000);  // 0..19s avant now
+  uint32_t now = 1000000UL;
+  // delta max = 19000 < 60000 → tous comptés.
+  TEST_ASSERT_EQUAL_INT(20, countCyclesInWindow(hist, kHistorySize, now, kWindow1Min));
+}
+
+// ts hors fenêtre (now-ts > windowMs) ignoré.
+void test_F039_count_out_of_window_ignored(void) {
+  uint32_t now = 1000000UL;
+  uint32_t hist[20] = {0};
+  hist[1] = now - 30000UL;   // dans la fenêtre
+  hist[2] = now - 90000UL;   // hors fenêtre (90s > 60s)
+  TEST_ASSERT_EQUAL_INT(1, countCyclesInWindow(hist, kHistorySize, now, kWindow1Min));
+}
+
+// ts == now (delta 0) compté.
+void test_F039_count_ts_equals_now_counted(void) {
+  uint32_t now = 1000000UL;
+  uint32_t hist[20] = {0};
+  hist[5] = now;             // delta 0 → compté
+  TEST_ASSERT_EQUAL_INT(1, countCyclesInWindow(hist, kHistorySize, now, kWindow1Min));
+}
+
+// Frontière : now-ts == windowMs → compté ; now-ts == windowMs+1 → ignoré.
+void test_F039_count_window_boundary_inclusive(void) {
+  uint32_t now = 1000000UL;
+  {
+    uint32_t hist[20] = {0};
+    hist[0] = now - kWindow1Min;       // delta == 60000 → <= window → compté
+    TEST_ASSERT_EQUAL_INT(1, countCyclesInWindow(hist, kHistorySize, now, kWindow1Min));
+  }
+  {
+    uint32_t hist[20] = {0};
+    hist[0] = now - (kWindow1Min + 1); // delta == 60001 → > window → ignoré
+    TEST_ASSERT_EQUAL_INT(0, countCyclesInWindow(hist, kHistorySize, now, kWindow1Min));
+  }
+}
+
+// WRAP MILLIS : now=50, ts=0xFFFFFFF0 → (now-ts) = 66 (uint32) → compté.
+void test_F039_count_millis_wrap_counted(void) {
+  uint32_t now = 50UL;
+  uint32_t hist[20] = {0};
+  hist[3] = 0xFFFFFFF0UL;             // 50 - 0xFFFFFFF0 = 66 en arithmétique uint32
+  // Vérifie l'arithmétique de débordement attendue.
+  TEST_ASSERT_EQUAL_UINT32(66UL, now - 0xFFFFFFF0UL);
+  TEST_ASSERT_EQUAL_INT(1, countCyclesInWindow(hist, kHistorySize, now, kWindow1Min));
+}
+
+// Slot à valeur 0 ignoré même si "récent par hasard" (0 == vide par convention).
+void test_F039_count_zero_slot_is_empty(void) {
+  // now choisi pour que (now - 0) <= window serait vrai si 0 n'était pas traité comme vide.
+  uint32_t now = 30000UL;            // now - 0 = 30000 <= 60000
+  uint32_t hist[20] = {0};
+  hist[7] = now - 10000UL;           // un vrai slot récent
+  // Seul le slot non nul compte ; tous les 0 restent ignorés.
+  TEST_ASSERT_EQUAL_INT(1, countCyclesInWindow(hist, kHistorySize, now, kWindow1Min));
+}
+
+// -----------------------------------------------------------------------------
+// AC3 — recordCycleTimestamp
+// -----------------------------------------------------------------------------
+
+// Écrit à idx et renvoie (idx+1)%size.
+void test_F039_record_writes_and_advances(void) {
+  uint32_t hist[20] = {0};
+  size_t next = recordCycleTimestamp(hist, 0, kHistorySize, 12345UL);
+  TEST_ASSERT_EQUAL_UINT32(12345UL, hist[0]);
+  TEST_ASSERT_EQUAL_UINT(1, next);
+  next = recordCycleTimestamp(hist, next, kHistorySize, 67890UL);
+  TEST_ASSERT_EQUAL_UINT32(67890UL, hist[1]);
+  TEST_ASSERT_EQUAL_UINT(2, next);
+}
+
+// Après `size` écritures successives (en réinjectant le retour), idx revient à 0.
+void test_F039_record_wraps_index_after_size(void) {
+  uint32_t hist[20] = {0};
+  size_t idx = 0;
+  for (size_t i = 0; i < kHistorySize; ++i) {
+    idx = recordCycleTimestamp(hist, idx, kHistorySize, (uint32_t)(1000 + i));
+  }
+  TEST_ASSERT_EQUAL_UINT(0, idx);  // revenu au début du ring buffer
+}
+
+// Écrase le plus ancien : 21e écriture remplace le slot 0.
+void test_F039_record_overwrites_oldest(void) {
+  uint32_t hist[20] = {0};
+  size_t idx = 0;
+  for (size_t i = 0; i < kHistorySize; ++i) {
+    idx = recordCycleTimestamp(hist, idx, kHistorySize, (uint32_t)(1000 + i));
+  }
+  TEST_ASSERT_EQUAL_UINT32(1000UL, hist[0]);          // ancien
+  idx = recordCycleTimestamp(hist, idx, kHistorySize, 9999UL);
+  TEST_ASSERT_EQUAL_UINT32(9999UL, hist[0]);          // écrasé par le plus récent
+  TEST_ASSERT_EQUAL_UINT(1, idx);
+}
+
+// Après 20 écritures, le buffer reflète les 20 derniers timestamps :
+// countCyclesInWindow voit bien size cycles dans une fenêtre les couvrant tous.
+void test_F039_record_then_count_sees_all(void) {
+  uint32_t hist[20] = {0};
+  size_t idx = 0;
+  uint32_t base = 5000000UL;
+  // 20 cycles espacés de 1 s, tous dans la dernière minute.
+  for (size_t i = 0; i < kHistorySize; ++i) {
+    idx = recordCycleTimestamp(hist, idx, kHistorySize, base + (uint32_t)(i * 1000));
+  }
+  uint32_t now = base + 19000UL;  // delta max 19s < 60s
+  TEST_ASSERT_EQUAL_INT(20, countCyclesInWindow(hist, kHistorySize, now, kWindow1Min));
+}
+
+// -----------------------------------------------------------------------------
+// AC4 — shouldRolloverByDate
+// -----------------------------------------------------------------------------
+void test_F039_rollover_by_date(void) {
+  // Date courante vide → pas encore de jour connu → pas de rollover.
+  TEST_ASSERT_FALSE(shouldRolloverByDate("", "20260627"));
+  // Même date → pas de rollover.
+  TEST_ASSERT_FALSE(shouldRolloverByDate("20260627", "20260627"));
+  // Date différente (jour précédent) → rollover.
+  TEST_ASSERT_TRUE(shouldRolloverByDate("20260626", "20260627"));
+}
+
+// -----------------------------------------------------------------------------
+// AC5 — shouldRolloverByMillis (frontière >= inclusive, wrap uint32)
+// -----------------------------------------------------------------------------
+void test_F039_rollover_by_millis(void) {
+  // Exactement 24 h écoulées → rollover (frontière inclusive).
+  TEST_ASSERT_TRUE(shouldRolloverByMillis(0UL, kDayMs));
+  // 1 ms avant 24 h → pas encore.
+  TEST_ASSERT_FALSE(shouldRolloverByMillis(0UL, kDayMs - 1));
+}
+
+// Wrap : dayStart=0xFFFFFFFF, now=86399999 → (now-dayStart) = 86400000 → true.
+void test_F039_rollover_by_millis_wrap(void) {
+  uint32_t dayStart = 0xFFFFFFFFUL;
+  uint32_t now = 86399999UL;
+  // Arithmétique uint32 : 86399999 - 0xFFFFFFFF = 86400000.
+  TEST_ASSERT_EQUAL_UINT32(86400000UL, now - dayStart);
+  TEST_ASSERT_TRUE(shouldRolloverByMillis(dayStart, now));
+}
+
+// -----------------------------------------------------------------------------
+// AC6 — scénario anti-rafale combiné (cohérence avec seuils 6/min et 20/15min)
+// -----------------------------------------------------------------------------
+void test_F039_burst_scenario_combined(void) {
+  uint32_t hist[20] = {0};
+  size_t idx = 0;
+  uint32_t base = 10000000UL;
+
+  // 7 cycles dans la dernière minute (espacés de 5 s : 0,5,...,30 s) →
+  // count sur 60s == 7 >= seuil 6/min → anti-rafale minute déclenché.
+  for (int i = 0; i < 7; ++i) {
+    idx = recordCycleTimestamp(hist, idx, kHistorySize, base + (uint32_t)(i * 5000));
+  }
+  uint32_t now = base + 30000UL;  // dernier cycle = now, plus ancien à -30s
+  int c1 = countCyclesInWindow(hist, kHistorySize, now, kWindow1Min);
+  TEST_ASSERT_EQUAL_INT(7, c1);
+  TEST_ASSERT_TRUE(c1 >= kMaxPerMinute);
+
+  // 21 cycles sur 15 min mais buffer plafonné à 20 → count plafonné à 20.
+  uint32_t hist2[20] = {0};
+  size_t idx2 = 0;
+  uint32_t base2 = 20000000UL;
+  // 21 cycles espacés de 40 s (840 s total < 900 s) ; le ring n'en garde que 20.
+  for (int i = 0; i < 21; ++i) {
+    idx2 = recordCycleTimestamp(hist2, idx2, kHistorySize, base2 + (uint32_t)(i * 40000));
+  }
+  uint32_t now2 = base2 + 20 * 40000UL;  // dernier cycle
+  int c15 = countCyclesInWindow(hist2, kHistorySize, now2, kWindow15Min);
+  TEST_ASSERT_EQUAL_INT(20, c15);             // plafonné par la taille du buffer
+  TEST_ASSERT_TRUE(c15 >= kMaxPer15Min);      // >= seuil 20/15min → déclenché
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   // T2 — hystérésis de démarrage.
@@ -572,5 +774,21 @@ int main(int, char **) {
   RUN_TEST(test_AC6_anti_windup);
   RUN_TEST(test_AC7_p_temporisee);
   RUN_TEST(test_pid_negative_error_zero_flow);
+  // feature-039 — anti-rafale + rollover journalier purs.
+  RUN_TEST(test_F039_count_empty_buffer_zero);
+  RUN_TEST(test_F039_count_all_recent_in_window);
+  RUN_TEST(test_F039_count_out_of_window_ignored);
+  RUN_TEST(test_F039_count_ts_equals_now_counted);
+  RUN_TEST(test_F039_count_window_boundary_inclusive);
+  RUN_TEST(test_F039_count_millis_wrap_counted);
+  RUN_TEST(test_F039_count_zero_slot_is_empty);
+  RUN_TEST(test_F039_record_writes_and_advances);
+  RUN_TEST(test_F039_record_wraps_index_after_size);
+  RUN_TEST(test_F039_record_overwrites_oldest);
+  RUN_TEST(test_F039_record_then_count_sees_all);
+  RUN_TEST(test_F039_rollover_by_date);
+  RUN_TEST(test_F039_rollover_by_millis);
+  RUN_TEST(test_F039_rollover_by_millis_wrap);
+  RUN_TEST(test_F039_burst_scenario_combined);
   return UNITY_END();
 }
