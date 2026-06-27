@@ -13,6 +13,9 @@
 data-build/
 builds/
 
+# Couverture de tests (rapport gcovr, généré par ./tools/coverage.sh)
+coverage/
+
 # Node.js
 node_modules/
 
