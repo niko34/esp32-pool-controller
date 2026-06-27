@@ -52,6 +52,7 @@ jobs:
       - name: Couverture (gcovr, seuil lignes ≥ 90%)
         run: |
           pio test -e native_coverage
+          mkdir -p coverage
           gcovr --root . \
             --filter 'src/sensor_filter\.(cpp|h)' \
             --filter 'src/dosing_logic\.(cpp|h)' \
