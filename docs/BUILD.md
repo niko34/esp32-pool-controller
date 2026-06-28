@@ -68,6 +68,10 @@ Prérequis : `gcovr` dans le venv PlatformIO (`~/.platformio/penv/bin/pip instal
 
 > **Portée** : seules les **classes pures** sont mesurées. La coquille `pump_controller.cpp` (collecte des globals + mapping énum→chaîne) est **exclue du build natif** — son équivalence est validée par revue, pas par couverture. Voir [ADR-0017](adr/0017-logique-metier-pure-humble-object-testabilite.md).
 
+### Validation on-target (manuelle)
+
+Les tests natifs ne couvrent que la **logique pure**. L'**intégration matériel + réseau** (I²C, PWM, RTC, LittleFS, WiFi, WebSocket, MQTT) et les **scénarios complets de régulation** se valident à la main sur la carte, via la check-list [`docs/test-on-target.md`](test-on-target.md) — à dérouler après un `./deploy.sh` touchant la régulation, la filtration, les capteurs ou la persistance.
+
 ## Upload / Déploiement
 
 Le script [`deploy.sh`](../deploy.sh) est l'entrée unique pour tous les modes de déploiement. Lancer sans argument pour l'aide :
