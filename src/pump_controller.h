@@ -68,7 +68,6 @@ private:
   float computePID(PIDController& pid, float error, unsigned long now,
                    float deadband, bool freezeIntegral,
                    float minFlow, float maxFlow);
-  float computeFlowFromError(float error, float deadband, const PumpControlParams& params);
   float   dutyToFlow(const PumpControlParams& params, uint8_t duty);
   uint8_t flowToDuty(const PumpControlParams& params, float flowMlPerMin);
 

@@ -458,18 +458,6 @@ float PumpControllerClass::computePID(PIDController& pid, float error, unsigned 
   return r.flow;
 }
 
-// DEAD CODE : non appelé dans le chemin de dosage (cf. feature-037) — conservé pour usage futur
-float PumpControllerClass::computeFlowFromError(float error, float deadband, const PumpControlParams& params) {
-  float delta = error - deadband;
-  if (delta <= 0.0f) return 0.0f;
-
-  float normalized = delta / params.maxError;
-  if (normalized < 0.0f) normalized = 0.0f;
-  if (normalized > 1.0f) normalized = 1.0f;
-
-  return params.minFlowMlPerMin + normalized * (params.maxFlowMlPerMin - params.minFlowMlPerMin);
-}
-
 float PumpControllerClass::dutyToFlow(const PumpControlParams& params, uint8_t duty) {
   if (duty < MIN_ACTIVE_DUTY) return 0.0f;
   float normalized = (float)(duty - MIN_ACTIVE_DUTY) / (MAX_PWM_DUTY - MIN_ACTIVE_DUTY);
