@@ -31,10 +31,11 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0012](0012-mapping-gpio-pcb-v2.md) | Mapping GPIO PCB v2 (Atlas EZO + 2ᵉ DS18B20 + CTN_AUX, plus d'ADS1115) | Accepté |
 | [0013](0013-identification-sondes-onewire.md) | Identification des sondes DS18B20 par adresse ROM persistée NVS + workflow utilisateur | Accepté |
 | [0014](0014-migration-atlas-ezo.md) | Migration Atlas EZO pH/ORP (PCB v2) — supersedes ADR-0001 | Accepté |
-| [0015](0015-partition-app-1.5mb.md) | Partition application 1.5 MB | Accepté |
+| [0015](0015-partition-app-1.5mb.md) | Partition application 1.5 MB (layout v2) | Superseded by ADR-0019 |
 | [0016](0016-regulation-p-temporisee-vs-pid.md) | Régulation P temporisée par défaut (Kp seul, Ki=0, Kd=0) sur mesure filtrée | Accepté |
 | [0017](0017-logique-metier-pure-humble-object-testabilite.md) | Logique métier pure (Humble Object) séparée de la couche hardware pour testabilité native | Accepté |
 | [0018](0018-migration-uplot.md) | uPlot au lieu de Chart.js pour les graphiques de l'UI (contrainte Flash/FS) | Accepté |
+| [0019](0019-partition-app-1664k.md) | Partitions app à 1664 KB (layout v3, spiffs 576 KB) | Accepté |
 
 ## Template
 

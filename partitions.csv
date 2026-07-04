@@ -1,13 +1,13 @@
 # Name,   Type, SubType, Offset,  Size,   Flags
-# Layout v2 (ADR-0015) — feature-024 a fait déborder app à 1408 KB.
-# app0/app1 portées à 1536 KB (1.5 MB) pour absorber feature-024 + marge ~90 KB.
-# spiffs réduit de 1088→832 KB (FS actuel ~660 KB → 21% libre).
-# history et coredump inchangés.
-# ATTENTION : tout changement nécessite un flash USB du bootloader+partition table.
+# Layout v3 (ADR-0019) — app0/app1 portées à 1664 KB pour marge firmware (~84 %).
+# spiffs réduit de 832→576 KB (possible depuis la migration uPlot, payload 449 KB).
+# history et coredump inchangés (données préservées).
+# ATTENTION : tout changement de table nécessite un flash USB obligatoire
+# (bootloader + partition table) — l'OTA ne peut PAS appliquer ce changement.
 nvs,      data, nvs,     0x9000,  0x5000,
 otadata,  data, ota,     0xE000,  0x2000,
-app0,     app,  ota_0,   0x10000, 0x180000,
-app1,     app,  ota_1,   0x190000,0x180000,
-spiffs,   data, spiffs,  0x310000,0xD0000,
+app0,     app,  ota_0,   0x10000, 0x1A0000,
+app1,     app,  ota_1,   0x1B0000,0x1A0000,
+spiffs,   data, spiffs,  0x350000,0x90000,
 history,  data, spiffs,  0x3E0000,0x10000,
 coredump, data, coredump,0x3F0000,0x10000,

@@ -54,7 +54,8 @@ docs/
 │   ├── 0015-partition-app-1.5mb.md
 │   ├── 0016-regulation-p-temporisee-vs-pid.md
 │   ├── 0017-logique-metier-pure-humble-object-testabilite.md
-│   └── 0018-migration-uplot.md
+│   ├── 0018-migration-uplot.md
+│   └── 0019-partition-app-1664k.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

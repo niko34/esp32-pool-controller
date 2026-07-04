@@ -18,12 +18,13 @@ Double-bank app0/app1 pour l'OTA firmware :
 |-----------|------|--------|
 | `nvs` | data | 20 KB |
 | `otadata` | data | 8 KB |
-| `app0` | app | **1408 KB** |
-| `app1` | app | **1408 KB** |
-| `spiffs` | data | 1088 KB |
-| `history` | data | 128 KB |
+| `app0` | app | **1664 KB** |
+| `app1` | app | **1664 KB** |
+| `spiffs` | data | 576 KB |
+| `history` | data | 64 KB |
+| `coredump` | data | 64 KB |
 
-Voir [`partitions.csv`](../../partitions.csv) et [ADR-0007](../adr/0007-table-partitions-custom.md).
+Layout v3 — voir [`partitions.csv`](../../partitions.csv), [ADR-0007](../adr/0007-table-partitions-custom.md) et [ADR-0019](../adr/0019-partition-app-1664k.md).
 
 ## API publique
 

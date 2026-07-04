@@ -1,6 +1,14 @@
 # ADR-0015 — Partitions app à 1.5 MB (layout v2)
 
-- **Statut** : Accepté
+> **Statut : Superseded by [ADR-0019](0019-partition-app-1664k.md)** (2026-07-04)
+> Le layout v2 (app 1536 KB / spiffs 832 KB) est remplacé par le **layout v3**
+> (app 1664 KB / spiffs 576 KB), rendu possible par la migration uPlot
+> ([ADR-0018](0018-migration-uplot.md), payload FS 449 KB) et déclenché par
+> l'occupation firmware à 90,8 %. `nvs`, `history` et `coredump` restent inchangés.
+> Voir feature-044 et [ADR-0019](0019-partition-app-1664k.md).
+> Contenu ci-dessous conservé à titre historique.
+
+- **Statut** : Superseded by [ADR-0019](0019-partition-app-1664k.md)
 - **Date** : 2026-05-08
 - **Décideurs** : Nicolas Philippe
 - **Spec(s) liée(s)** : feature-024 (déclencheur), feature-021 (origine indirecte)

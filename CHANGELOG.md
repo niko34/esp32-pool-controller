@@ -1,5 +1,20 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.4.0] - 2026-07-04
+
+### Firmware
+
+- **Repartitionnement flash — layout v3 (feature-044)** : les slots firmware `app0`/`app1` passent de 1536 à **1664 KB** (+128 KB chacun), pris sur la partition `spiffs` réduite de 832 à **576 KB** (offset déplacé à `0x350000`) — rendu possible par la migration uPlot (feature-043, payload FS 449 KB). Occupation firmware : 90,8 % → **83,8 %** (1 427 753 / 1 703 936 o, marge ~270 KB) ; FS à ~82 % de 576 KB (marge ~104 KB). Partitions `nvs`, `history` et `coredump` strictement inchangées : **config, historique et coredump préservés**. ⚠️ **Mise à jour par câble USB requise une seule fois** (`./deploy.sh all`) — l'OTA ne peut pas réécrire la table de partitions ; ne pas utiliser `./deploy.sh factory` (efface la NVS). L'OTA redevient normal ensuite. Fichiers alignés : `partitions.csv`, `platformio.ini` (`filesystem_size = 589824`), `build_fs.sh`, `deploy.sh`.
+- **`deploy.sh`** : correction du check de taille de `littlefs.bin` resté au layout v1 (1 114 112 → 589 824 octets) — il déclenchait à tort une reconstruction du FS à chaque upload.
+
+### Documentation
+
+- Nouvel [ADR-0019](docs/adr/0019-partition-app-1664k.md) : partitions app à 1664 KB (layout v3) — contexte (app0 à 90,8 %, gains `CORE_DEBUG_LEVEL` −33 KB et uPlot −148 KB FS), alternatives écartées (palier +64 KB conservateur ; +192 KB impossible, FS à 100 %), conséquences (flash USB unique, données préservées). [ADR-0015](docs/adr/0015-partition-app-1.5mb.md) marqué « Superseded by ADR-0019 ».
+- `docs/BUILD.md` : taille filesystem 589 824 o = 576 KB (layout v3, ADR-0019), piège « changement de table = flash USB », occupation firmware actualisée.
+- `docs/UPDATE_GUIDE.md` : nouvelle note « Migration layout v2 → v3 (v2.4.0) » — procédure USB, préservé/réécrit, avertissement `factory`.
+
+---
+
 ## [2.3.0] - 2026-07-04
 
 ### Frontend

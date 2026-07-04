@@ -1,6 +1,6 @@
 # Guide de compilation et déploiement
 
-Guide **opérationnel** : quelles commandes lancer pour compiler et déployer. Pour la structure des partitions et le pourquoi du layout, voir [ADR-0007](adr/0007-table-partitions-custom.md) et la source de vérité [`partitions.csv`](../partitions.csv).
+Guide **opérationnel** : quelles commandes lancer pour compiler et déployer. Pour la structure des partitions et le pourquoi du layout courant (v3), voir [ADR-0019](adr/0019-partition-app-1664k.md) et la source de vérité [`partitions.csv`](../partitions.csv).
 
 ## Compilation
 
@@ -20,7 +20,7 @@ Génère `.pio/build/esp32dev/firmware.bin`.
 
 Ce script :
 1. Minifie HTML / CSS / JS (via `minify.js`, sortie dans `data-build/`, ignoré par git) ;
-2. Construit `littlefs.bin` avec la **taille exacte de la partition `spiffs`** (851 968 octets = 832 KB, layout v2 — voir [ADR-0015](adr/0015-partition-app-1.5mb.md)).
+2. Construit `littlefs.bin` avec la **taille exacte de la partition `spiffs`** (589 824 octets = 576 KB, layout v3 — voir [ADR-0019](adr/0019-partition-app-1664k.md)).
 
 ⚠️ **Ne pas utiliser `pio run -t buildfs`** : PlatformIO recalcule une taille incorrecte (128 KB), ce qui produit un `littlefs.bin` non conforme à la partition `spiffs`.
 
@@ -184,7 +184,8 @@ Voir aussi [ADR-0009](adr/0009-partition-coredump.md) pour la décision architec
 
 - **`pio run -t buildfs`** : ne génère pas un `littlefs.bin` de la bonne taille → utiliser `./build_fs.sh`.
 - **`pio run -t uploadfs`** : reconstruit le filesystem à la mauvaise taille avant upload → utiliser `./deploy.sh fs` ou `./deploy.sh ota-fs`.
-- **Partition `history` préservée** : l'upload filesystem OTA n'écrase que la partition `spiffs`. L'historique des mesures n'est **pas** perdu à la mise à jour UI (voir [ADR-0007](adr/0007-table-partitions-custom.md) et [history.md](subsystems/history.md)).
+- **Partition `history` préservée** : l'upload filesystem OTA n'écrase que la partition `spiffs`. L'historique des mesures n'est **pas** perdu à la mise à jour UI (voir [ADR-0019](adr/0019-partition-app-1664k.md) et [history.md](subsystems/history.md)).
+- **Changement de table de partitions** : un nouveau layout (ex. v2 → v3 en v2.4.0) exige un **flash USB une fois** — l'OTA ne réécrit pas la table. Voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md#migration-layout-v2--v3--v240).
 
 ## Dépendances PlatformIO
 
@@ -200,7 +201,7 @@ Liste des libs déclarées dans `platformio.ini` (`lib_deps`) — voir le fichie
 | `OneWire` + `DallasTemperature` | Bus 1-Wire pour DS18B20 (eau + circuit) |
 | `RTClib` | DS3231 RTC |
 
-> **Libs supprimées en feature-021 (v2.0.0)** : `Adafruit ADS1X15` et `DFRobot_PH` ont été retirées des `lib_deps`. La chaîne pH/ORP est désormais entièrement portée par la mini-classe maison [`AtlasEzoSensor`](../src/atlas_ezo.h) qui pilote les modules Atlas EZO Embedded en I²C natif (`Wire`). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md). Cette suppression libère ~12 KB de flash mais l'ajout de la queue + des routes de calibration consomme environ autant — le build courant tient à 98.8 % flash (≈ 17 KB de marge), point d'attention pour les futures features.
+> **Libs supprimées en feature-021 (v2.0.0)** : `Adafruit ADS1X15` et `DFRobot_PH` ont été retirées des `lib_deps`. La chaîne pH/ORP est désormais entièrement portée par la mini-classe maison [`AtlasEzoSensor`](../src/atlas_ezo.h) qui pilote les modules Atlas EZO Embedded en I²C natif (`Wire`). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md). Cette suppression libère ~12 KB de flash mais l'ajout de la queue + des routes de calibration consomme environ autant — le build tenait alors à 98.8 % flash (layout v1). Depuis le layout v3 ([ADR-0019](adr/0019-partition-app-1664k.md)), l'occupation firmware est redescendue à ~83,8 % (marge ~270 KB).
 
 ## Bibliothèque de graphiques uPlot (frontend)
 
@@ -224,7 +225,7 @@ Puis `./build_fs.sh` et **vérification de parité en navigateur** (aucun test a
 
 ### Gain mesuré (feature-043)
 
-Suppression de `chart.umd.min.js` : payload FS 601 054 → 449 177 octets (**−148,3 KB**), soit ≈ 449 KB pour une partition `spiffs` de 832 KB.
+Suppression de `chart.umd.min.js` : payload FS 601 054 → 449 177 octets (**−148,3 KB**), soit ≈ 449 KB — gain qui a rendu possible la réduction de la partition `spiffs` à 576 KB au profit des slots app (layout v3, [ADR-0019](adr/0019-partition-app-1664k.md)).
 
 > **Options non reprises** : l'ancienne usine Chart.js `createLineChart` exposait des options **mortes** (`hideYAxis`, `showYAxisGrid`, `extraPlugins`, `annotation`, `backgroundColor`), inutilisées aux call-sites. L'usine uPlot ([`data/app.js`](../data/app.js)) ne les reprend **pas** — réduction de périmètre assumée (feature-043).
 

@@ -82,6 +82,34 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 
 ## Notes de migration
 
+### Migration layout v2 → v3 (v2.4.0) — depuis 2026-07-04
+
+⚠️ **Mise à jour par câble USB obligatoire, une seule fois.**
+
+La version 2.4.0 change la **table de partitions** (layout v3, [ADR-0019](adr/0019-partition-app-1664k.md)) : les slots firmware `app0`/`app1` passent de 1536 à **1664 KB** (+128 KB chacun), pris sur la partition `spiffs` qui passe de 832 à **576 KB** et se déplace à l'offset `0x350000`.
+
+**Pourquoi l'USB est obligatoire :** l'OTA écrit uniquement à l'intérieur des partitions existantes — il ne peut **pas** modifier la table de partitions ni le bootloader. Tenter un OTA firmware compilé pour le layout v3 sur un appareil encore en layout v2 est voué à l'échec. La migration se fait par câble série :
+
+```bash
+./deploy.sh all
+```
+
+Cette commande recompile firmware + filesystem, réécrit bootloader + table de partitions + firmware, puis flashe le FS au nouvel offset.
+
+> ⚠️ **NE PAS utiliser `./deploy.sh factory`** pour cette migration : il efface toute la flash, **y compris la NVS** (perte de la config, des calibrations, du WiFi, et régénération du mot de passe AP). `./deploy.sh all` suffit et préserve tout.
+
+**Ce qui est préservé** (partitions inchangées en offset et en taille) :
+
+- **Config NVS** : calibrations, identification des sondes, paramètres de régulation, WiFi, compteurs journaliers ;
+- **Historique des mesures** (partition `history` à `0x3E0000`) ;
+- **Coredump** (partition `coredump`).
+
+**Ce qui est réécrit :** le contenu de la partition `spiffs` (interface web) est re-flashé au nouvel offset — sans impact, il ne contient que l'UI.
+
+**Après la migration :** les mises à jour OTA (firmware et filesystem) refonctionnent normalement avec les nouvelles bornes. Aucune autre action requise.
+
+---
+
 ### Logs DEBUG désactivés par défaut — depuis 2026-04-30
 
 **Aucune action utilisateur requise.**
