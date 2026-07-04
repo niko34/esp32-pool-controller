@@ -9,7 +9,8 @@
     <link rel="icon" type="image/png" href="/favicon-32x32.png" sizes="32x32">
     <link rel="icon" type="image/png" href="/favicon-16x16.png" sizes="16x16">
 
-    <script src="/chart.umd.min.js"></script>
+    <script src="/uPlot.iife.min.js"></script>
+    <link rel="stylesheet" href="/uPlot.min.css" />
     <link rel="stylesheet" href="/app.css" />
     <script>
       // Vérifier l'authentification avant de charger l'app
@@ -276,7 +277,7 @@
                   <a href="#/ph" class="calibration-alert__btn">Configurer</a>
                 </div>
                 <div class="card__mini-chart">
-                  <canvas id="ph-mini-chart"></canvas>
+                  <div id="ph-mini-chart" class="chart-host"></div>
                 </div>
               </div>
             </div>
@@ -302,7 +303,7 @@
                   <a href="#/orp" class="calibration-alert__btn">Configurer</a>
                 </div>
                 <div class="card__mini-chart">
-                  <canvas id="orp-mini-chart"></canvas>
+                  <div id="orp-mini-chart" class="chart-host"></div>
                 </div>
               </div>
             </div>
@@ -322,7 +323,7 @@
                   <div class="compact-target">Mesure actuelle</div>
                 </div>
                 <div class="card__mini-chart">
-                  <canvas id="temp-mini-chart"></canvas>
+                  <div id="temp-mini-chart" class="chart-host"></div>
                 </div>
               </div>
             </div>
@@ -531,7 +532,7 @@
             </div>
             <div class="card__body">
               <div class="chart-container">
-                <canvas id="tempChart"></canvas>
+                <div id="tempChart" class="chart-host"></div>
               </div>
             </div>
           </div>
@@ -717,7 +718,7 @@
             </div>
             <div class="card__body">
               <div class="chart-container">
-                <canvas id="phChart"></canvas>
+                <div id="phChart" class="chart-host"></div>
               </div>
             </div>
           </div>
@@ -981,7 +982,7 @@
             </div>
             <div class="card__body">
               <div class="chart-container">
-                <canvas id="orpChart"></canvas>
+                <div id="orpChart" class="chart-host"></div>
               </div>
             </div>
           </div>
@@ -1816,7 +1817,7 @@
                     <button class="btn btn--warning" type="button" id="debug_wifi_pause_btn">Pauser WiFi 120 s</button>
                   </div>
                   <div id="debug_ph_chart_wrap" style="margin-top:16px;display:none">
-                    <canvas id="debug_ph_chart" height="220"></canvas>
+                    <div id="debug_ph_chart"></div>
                   </div>
                   <div id="debug_ph_stats" class="kv kv--compact" style="margin-top:12px;display:none">
                     <div class="kv__row"><span class="kv__k">pH brut min / max / Δ</span><span class="kv__v" id="debug_ph_stats_ph">—</span></div>
@@ -1967,7 +1968,7 @@
                     <strong>Interface utilisateur:</strong>
                     <ul style="margin: 8px 0; padding-left: 20px;">
                       <li>SPA vanilla JavaScript</li>
-                      <li><a href="https://github.com/chartjs/Chart.js" target="_blank">Chart.js v4.5.1</a> - Visualisation des données</li>
+                      <li><a href="https://github.com/leeoniya/uPlot" target="_blank">uPlot 1.6.32</a> - Visualisation des données</li>
                     </ul>
                   </div>
 

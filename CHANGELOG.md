@@ -1,5 +1,19 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.3.0] - 2026-07-04
+
+### Frontend
+
+- **Graphiques — migration Chart.js → uPlot (feature-043)** : la bibliothèque de graphiques passe de Chart.js v4.5.1 (`chart.umd.min.js`, ~208 KB, **supprimé**) à **uPlot 1.6.32** (`uPlot.iife.min.js` + `uPlot.min.css`, paquet npm `uplot@1.6.32` figé, committés dans `data/` — offline, sans bundler). **Rendu à parité stricte** sur les 7 graphiques (3 mini-charts dashboard avec coloration conditionnelle par segment et dégradé de remplissage, 3 historiques détail pH/ORP/Température avec bandes min/max, 1 debug oscillation multi-axes avec séries masquées par défaut) : labels X catégoriels (« Aujourd'hui », mois français, `HH:MM`, `-Ns`), tooltip, boutons de plage synchronisés, gel pendant calibration et polling incrémental 5 min conservés. **Payload FS réduit de −148,3 KB** (601 054 → 449 177 octets, ≈ 449 KB / partition `spiffs` 832 KB) — prépare le repartitionnement `app0`/`app1`. Les options mortes de l'ancienne usine `createLineChart` (`hideYAxis`, `showYAxisGrid`, `extraPlugins`, `annotation`, `backgroundColor`) ne sont pas reprises.
+
+### Documentation
+
+- Nouvel [ADR-0018](docs/adr/0018-migration-uplot.md) : uPlot au lieu de Chart.js (contrainte Flash/FS — alternatives Chart.js slim et statu quo écartées).
+- `docs/BUILD.md` : nouvelle section « Bibliothèque de graphiques uPlot » (provenance npm `uplot@1.6.32` figé, procédure de mise à jour manuelle, gain mesuré, options non reprises) + correction de la taille de la partition `spiffs` (832 KB, layout v2 — la mention 1088 KB était obsolète).
+- `docs/features/page-dashboard.md`, `page-ph.md`, `page-orp.md`, `page-temperature.md`, `page-settings.md` : mentions Chart.js remplacées par uPlot.
+
+---
+
 ## [2.2.11] - 2026-06-27
 
 ### Firmware

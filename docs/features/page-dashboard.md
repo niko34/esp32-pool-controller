@@ -17,7 +17,7 @@ La page est une **grille de cinq cartes** (classe `grid--status-cards`) :
 4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible, badge dosage actif, mini-graphique. Bandeau calibration. Lien vers `/orp`.
 5. **Carte Température** (`#dashboard-temperature-card`) — valeur courante en °C, mini-graphique. Lien vers `/temperature`.
 
-Chaque mini-graphique est un `<canvas>` Chart.js alimenté par l'historique des 3 derniers jours (`GET /get-history?range=3d`, points bruts + moyennes horaires selon l'ancienneté).
+Chaque mini-graphique est rendu par **uPlot** (usine `createMiniLineChart`, feature-043 — remplace Chart.js) dans un conteneur dédié, alimenté par l'historique des 3 derniers jours (`GET /get-history?range=3d`, points bruts + moyennes horaires selon l'ancienneté). La coloration de la courbe est **conditionnelle par segment** (vert dans la tolérance, interpolation continue vers le rouge au-delà, gris si donnée absente — `getMiniChartRGB`, app.js).
 
 Un **chip `Calibration nécessaire`** (`#calib-chip`) s'affiche en haut de page si pH **ou** ORP est flagué non calibré.
 
@@ -65,7 +65,8 @@ Aucune limite journalière ni temps de stabilisation n'est affiché sur le dashb
 ## Fichiers
 
 - [`data/index.html:162`](../../data/index.html:162) — structure HTML du dashboard
-- [`data/app.js`](../../data/app.js) — `latestSensorData`, `updateFiltrationBadges()`, rendu Chart.js
+- [`data/app.js`](../../data/app.js) — `latestSensorData`, `updateFiltrationBadges()`, rendu uPlot (`createMiniLineChart`)
+- [`data/uPlot.iife.min.js`](../../data/uPlot.iife.min.js), [`data/uPlot.min.css`](../../data/uPlot.min.css) — bibliothèque uPlot 1.6.32 (voir [BUILD.md](../BUILD.md#bibliothèque-de-graphiques-uplot-frontend))
 - [`data/app.css`](../../data/app.css) — classes `.card--status`, `.compact-value`, `.dosing-status`, `.sensor-badge`
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — `broadcastSensorData()` pousse les champs consommés ici
 - [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp) — `GET /data`, `GET /get-history`

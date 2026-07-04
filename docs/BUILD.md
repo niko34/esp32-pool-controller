@@ -20,7 +20,7 @@ Génère `.pio/build/esp32dev/firmware.bin`.
 
 Ce script :
 1. Minifie HTML / CSS / JS (via `minify.js`, sortie dans `data-build/`, ignoré par git) ;
-2. Construit `littlefs.bin` avec la **taille exacte de la partition `spiffs`** (1 114 112 octets = 1088 KB).
+2. Construit `littlefs.bin` avec la **taille exacte de la partition `spiffs`** (851 968 octets = 832 KB, layout v2 — voir [ADR-0015](adr/0015-partition-app-1.5mb.md)).
 
 ⚠️ **Ne pas utiliser `pio run -t buildfs`** : PlatformIO recalcule une taille incorrecte (128 KB), ce qui produit un `littlefs.bin` non conforme à la partition `spiffs`.
 
@@ -201,6 +201,32 @@ Liste des libs déclarées dans `platformio.ini` (`lib_deps`) — voir le fichie
 | `RTClib` | DS3231 RTC |
 
 > **Libs supprimées en feature-021 (v2.0.0)** : `Adafruit ADS1X15` et `DFRobot_PH` ont été retirées des `lib_deps`. La chaîne pH/ORP est désormais entièrement portée par la mini-classe maison [`AtlasEzoSensor`](../src/atlas_ezo.h) qui pilote les modules Atlas EZO Embedded en I²C natif (`Wire`). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md). Cette suppression libère ~12 KB de flash mais l'ajout de la queue + des routes de calibration consomme environ autant — le build courant tient à 98.8 % flash (≈ 17 KB de marge), point d'attention pour les futures features.
+
+## Bibliothèque de graphiques uPlot (frontend)
+
+Les 7 graphiques de l'UI (3 mini-charts du dashboard, 3 historiques détail pH / ORP / Température, 1 debug oscillation du panel Avancé) sont rendus par **uPlot** depuis feature-043, qui remplace Chart.js v4.5.1 (`chart.umd.min.js`, ~208 KB, **supprimé**). Voir [ADR-0018](adr/0018-migration-uplot.md).
+
+### Provenance et version
+
+- Paquet npm **`uplot@1.6.32`** — version **FIGÉE**, récupérée une fois puis committée. Aucune dépendance npm au build ni au runtime (offline-first, pas de CDN).
+- Fichiers committés dans `data/` : [`uPlot.iife.min.js`](../data/uPlot.iife.min.js) (~50 KB) et [`uPlot.min.css`](../data/uPlot.min.css) (~2 KB) — copies de `dist/uPlot.iife.min.js` et `dist/uPlot.min.css` du paquet.
+- Chargés par [`data/index.html`](../data/index.html) via `<script>` + `<link>` — 100 % vanilla, **aucune étape de build ajoutée** au déploiement (cohérent [ADR-0006](adr/0006-frontend-vanilla-js.md)).
+
+### Mise à jour manuelle (si nécessaire)
+
+```bash
+npm pack uplot@<version>     # télécharge uplot-<version>.tgz
+tar -xzf uplot-<version>.tgz
+cp package/dist/uPlot.iife.min.js package/dist/uPlot.min.css data/
+```
+
+Puis `./build_fs.sh` et **vérification de parité en navigateur** (aucun test automatisé frontend — dashboard, détail pH/ORP/Température, debug oscillation, console sans erreur).
+
+### Gain mesuré (feature-043)
+
+Suppression de `chart.umd.min.js` : payload FS 601 054 → 449 177 octets (**−148,3 KB**), soit ≈ 449 KB pour une partition `spiffs` de 832 KB.
+
+> **Options non reprises** : l'ancienne usine Chart.js `createLineChart` exposait des options **mortes** (`hideYAxis`, `showYAxisGrid`, `extraPlugins`, `annotation`, `backgroundColor`), inutilisées aux call-sites. L'usine uPlot ([`data/app.js`](../data/app.js)) ne les reprend **pas** — réduction de périmètre assumée (feature-043).
 
 ## Structure des fichiers de build
 

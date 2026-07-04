@@ -83,7 +83,7 @@ Page de configuration système. Structurée en **8 onglets segmentés** ([`data/
 
 Card `#card-debug-ph` du panel **Avancé**. Trace le ring buffer renvoyé par `GET /debug/ph_trace` (~25 min, 1 échantillon par cycle capteur) pour diagnostiquer une oscillation de la mesure pH et visualiser l'effet du lissage feature-025.
 
-**Graphique (Chart.js)** — deux courbes pH partageant le même axe `y` :
+**Graphique (uPlot — feature-043, ex-Chart.js)** — deux courbes pH partageant le même axe `y` :
 
 | Courbe | Source payload | Couleur |
 |--------|----------------|---------|

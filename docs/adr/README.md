@@ -34,6 +34,7 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0015](0015-partition-app-1.5mb.md) | Partition application 1.5 MB | Accepté |
 | [0016](0016-regulation-p-temporisee-vs-pid.md) | Régulation P temporisée par défaut (Kp seul, Ki=0, Kd=0) sur mesure filtrée | Accepté |
 | [0017](0017-logique-metier-pure-humble-object-testabilite.md) | Logique métier pure (Humble Object) séparée de la couche hardware pour testabilité native | Accepté |
+| [0018](0018-migration-uplot.md) | uPlot au lieu de Chart.js pour les graphiques de l'UI (contrainte Flash/FS) | Accepté |
 
 ## Template
 

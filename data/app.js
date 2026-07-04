@@ -416,81 +416,265 @@
     return `rgba(${r},${g},${b},${alpha ?? 1})`;
   }
 
-  function createMiniLineChart(canvasId, getTarget, getTolerance, formatValue) {
-    const canvas = document.getElementById(canvasId);
-    if (!canvas) return null;
-    const c2d = canvas.getContext('2d');
+  // ---------- Infrastructure uPlot (migration Chart.js → uPlot, feature-043) ----------
+  const UPLOT_FONT_STACK = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 
-    return new Chart(c2d, {
-      type: 'line',
-      data: {
-        labels: [],
-        datasets: [{
-          data: [],
-          tension: 0.4,
-          borderWidth: 1.5,
-          pointRadius: 0,
-          fill: true,
-          backgroundColor: (context) => {
-            const { ctx: c, chartArea, data } = context.chart;
-            if (!chartArea) return 'rgba(34,197,94,0.12)';
-            const vals = data.datasets[0]?.data ?? [];
-            let lastVal = null;
-            for (let i = vals.length - 1; i >= 0; i--) {
-              if (vals[i] != null && !isNaN(vals[i])) { lastVal = vals[i]; break; }
-            }
-            const [r, gv, bv] = getMiniChartRGB(lastVal, getTarget(), getTolerance());
-            const grad = c.createLinearGradient(0, chartArea.top, 0, chartArea.bottom);
-            grad.addColorStop(0, `rgba(${r},${gv},${bv},0.22)`);
-            grad.addColorStop(1, `rgba(${r},${gv},${bv},0.02)`);
-            return grad;
-          },
-          segment: {
-            borderColor: ctx => getMiniChartColor(
-              (ctx.p0.parsed.y + ctx.p1.parsed.y) / 2, getTarget(), getTolerance()
-            )
-          },
-          borderColor: '#22c55e'
-        }]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: false,
-        layout: { padding: { top: 4, left: 2, right: 2, bottom: 0 } },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            enabled: true,
-            displayColors: false,
-            backgroundColor: 'rgba(17,24,39,0.88)',
-            titleColor: 'rgba(156,163,175,1)',
-            bodyColor: '#f9fafb',
-            titleFont: { size: 10 },
-            bodyFont: { size: 13, weight: '700' },
-            padding: { x: 10, y: 6 },
-            cornerRadius: 8,
-            callbacks: {
-              title: ctx => ctx[0]?.label ?? '',
-              label: ctx => formatValue ? formatValue(ctx.parsed.y) : String(ctx.parsed.y)
-            }
-          }
+  // Incréments entiers pour l'axe X catégoriel (x = index → label), évite les ticks fractionnaires
+  const X_INT_INCRS = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
+
+  // Un seul ResizeObserver module-level pour tous les graphiques (uPlot ne se redimensionne pas seul)
+  const _uplotResizeMap = new Map(); // HTMLElement -> { u, fixedHeight }
+  const _uplotResizeObserver = (typeof ResizeObserver !== 'undefined')
+    ? new ResizeObserver(entries => {
+        for (const entry of entries) {
+          const rec = _uplotResizeMap.get(entry.target);
+          if (!rec) continue;
+          const w = entry.target.clientWidth;
+          const h = rec.fixedHeight ?? entry.target.clientHeight;
+          if (w > 0 && h > 0) rec.u.setSize({ width: w, height: h });
+        }
+      })
+    : null;
+
+  function observeChart(el, u, fixedHeight = null) {
+    _uplotResizeMap.set(el, { u, fixedHeight });
+    _uplotResizeObserver?.observe(el);
+  }
+
+  function unobserveChart(el) {
+    _uplotResizeMap.delete(el);
+    _uplotResizeObserver?.unobserve(el);
+  }
+
+  // Curseur uPlot : pas de crosshair ni de drag-zoom (parité Chart.js).
+  // pointsFilter(u, seriesIdx) → bool : limite le point de survol à certaines séries
+  // (uPlot attend un HTMLElement en retour de cursor.points.show, ou falsy pour masquer)
+  function makeUplotCursor(pointsFilter) {
+    const cursor = { x: false, y: false, drag: { x: false, y: false, setScale: false } };
+    if (pointsFilter) {
+      cursor.points = {
+        show: (u, seriesIdx) => {
+          if (!pointsFilter(u, seriesIdx)) return false;
+          // Réplique du point de survol par défaut d'uPlot (couleurs appliquées par uPlot)
+          const size = u.cursor.points.size(u, seriesIdx);
+          const pt = document.createElement('div');
+          pt.style.width = size + 'px';
+          pt.style.height = size + 'px';
+          pt.style.marginLeft = (-size / 2) + 'px';
+          pt.style.marginTop = (-size / 2) + 'px';
+          return pt;
+        }
+      };
+    }
+    return cursor;
+  }
+
+  // Plage X pour axe catégoriel : gère série vide et point unique
+  function xAxisRange(u, dataMin, dataMax) {
+    if (dataMin == null) return [0, 1];
+    return (dataMax - dataMin) < 1 ? [dataMin, dataMin + 1] : [dataMin, dataMax];
+  }
+
+  // Formatte les ticks X depuis le tableau de labels catégoriels (conservés tels quels)
+  function xLabelValues(getLabels) {
+    return (u, splits) => {
+      const labels = getLabels();
+      return splits.map(i => (Number.isInteger(i) ? (labels[i] ?? '') : ''));
+    };
+  }
+
+  // Plugin tooltip (uPlot n'a pas de tooltip riche natif)
+  // variant 'mini' : style des mini-charts dashboard ; défaut : style sobre type Chart.js
+  // title(u, idx) → string ; rows(u, idx) → [{ text, color? }]
+  function tooltipPlugin({ variant = 'default', title, rows }) {
+    let tt = null;
+    return {
+      hooks: {
+        init(u) {
+          tt = document.createElement('div');
+          tt.className = 'u-tooltip' + (variant === 'mini' ? ' u-tooltip--mini' : '');
+          tt.style.display = 'none';
+          u.over.appendChild(tt);
         },
-        scales: {
-          x: {
-            ticks: { maxTicksLimit: 4, maxRotation: 0, font: { size: 9 }, color: 'rgba(75,85,99,0.7)' },
-            grid: { display: false },
-            border: { display: false }
-          },
-          y: {
-            position: 'right',
-            ticks: { maxTicksLimit: 3, font: { size: 9 }, color: 'rgba(75,85,99,0.7)', padding: 2 },
-            grid: { color: 'rgba(0,0,0,0.06)', drawTicks: false },
-            border: { display: false }
+        setData(u) {
+          if (tt) tt.style.display = 'none';
+        },
+        setCursor(u) {
+          if (!tt) return;
+          const { idx, left, top } = u.cursor;
+          if (idx == null || left == null || left < 0 || top == null || top < 0) {
+            tt.style.display = 'none';
+            return;
           }
+          const lines = rows(u, idx);
+          if (!lines.length) { tt.style.display = 'none'; return; }
+          tt.textContent = '';
+          const titleText = title ? title(u, idx) : '';
+          if (titleText) {
+            const t = document.createElement('div');
+            t.className = 'u-tooltip__title';
+            t.textContent = titleText;
+            tt.appendChild(t);
+          }
+          lines.forEach(line => {
+            const row = document.createElement('div');
+            row.className = 'u-tooltip__row';
+            if (line.color) {
+              const swatch = document.createElement('span');
+              swatch.className = 'u-tooltip__swatch';
+              swatch.style.background = line.color;
+              row.appendChild(swatch);
+            }
+            row.appendChild(document.createTextNode(line.text));
+            tt.appendChild(row);
+          });
+          tt.style.display = 'block';
+          // Position près du curseur, bornée aux limites du graphe
+          const ow = u.over.clientWidth, oh = u.over.clientHeight;
+          const tw = tt.offsetWidth, th = tt.offsetHeight;
+          let x = left + 12, y = top + 12;
+          if (x + tw > ow) x = left - tw - 12;
+          if (y + th > oh) y = top - th - 12;
+          x = Math.max(0, Math.min(x, ow - tw));
+          y = Math.max(0, Math.min(y, oh - th));
+          tt.style.transform = `translate(${x}px, ${y}px)`;
+        },
+        destroy() {
+          tt = null;
         }
       }
-    });
+    };
+  }
+
+  function createMiniLineChart(hostId, getTarget, getTolerance, formatValue) {
+    const host = document.getElementById(hostId);
+    if (!host || typeof uPlot === 'undefined') return null;
+
+    // État du graphique : labels catégoriels + valeurs + bornes Y de repli (série vide)
+    const st = { labels: [], values: [], yMin: null, yMax: null };
+
+    // Coloration conditionnelle par segment : gradient HORIZONTAL à hard stops,
+    // couleur du segment i = getMiniChartRGB(moyenne des 2 points) — formule Chart.js exacte
+    const strokeGradient = (u) => {
+      const xs = u.data[0], ys = u.data[1];
+      const n = xs.length;
+      if (n === 0) return getMiniChartColor(null, getTarget(), getTolerance());
+      if (n === 1) return getMiniChartColor(ys[0], getTarget(), getTolerance());
+      const x0 = u.valToPos(xs[0], 'x', true);
+      const x1 = u.valToPos(xs[n - 1], 'x', true);
+      const span = (x1 - x0) || 1;
+      const grad = u.ctx.createLinearGradient(x0, 0, x1, 0);
+      const clamp01 = v => Math.max(0, Math.min(1, v));
+      for (let i = 0; i < n - 1; i++) {
+        const color = getMiniChartColor((ys[i] + ys[i + 1]) / 2, getTarget(), getTolerance());
+        const p0 = clamp01((u.valToPos(xs[i], 'x', true) - x0) / span);
+        const p1 = clamp01((u.valToPos(xs[i + 1], 'x', true) - x0) / span);
+        grad.addColorStop(p0, color);
+        grad.addColorStop(p1, color);
+      }
+      return grad;
+    };
+
+    // Remplissage : dégradé VERTICAL alpha 0.22 → 0.02, couleur = dernière valeur non nulle
+    const fillGradient = (u) => {
+      const ys = u.data[1];
+      let lastVal = null;
+      for (let i = ys.length - 1; i >= 0; i--) {
+        if (ys[i] != null && !isNaN(ys[i])) { lastVal = ys[i]; break; }
+      }
+      const [r, g, b] = getMiniChartRGB(lastVal, getTarget(), getTolerance());
+      const grad = u.ctx.createLinearGradient(0, u.bbox.top, 0, u.bbox.top + u.bbox.height);
+      grad.addColorStop(0, `rgba(${r},${g},${b},0.22)`);
+      grad.addColorStop(1, `rgba(${r},${g},${b},0.02)`);
+      return grad;
+    };
+
+    const opts = {
+      width: Math.max(host.clientWidth, 50),
+      height: Math.max(host.clientHeight, 50),
+      padding: [4, 2, 0, 2],
+      legend: { show: false },
+      cursor: (() => {
+        const cursor = makeUplotCursor();
+        // Le stroke de la série est un CanvasGradient (inutilisable comme couleur CSS) :
+        // colorer le point de survol selon la valeur survolée
+        const ptColor = (u2) => {
+          const idx = u2.cursor.idx;
+          const v = idx != null ? u2.data[1][idx] : null;
+          return getMiniChartColor(v, getTarget(), getTolerance());
+        };
+        cursor.points = { stroke: ptColor, fill: ptColor };
+        return cursor;
+      })(),
+      scales: {
+        x: { time: false, range: xAxisRange },
+        y: {
+          range: (u, dataMin, dataMax) => {
+            if (st.yMin != null) return [st.yMin, st.yMax]; // repli : cible ± 4×tolérance
+            if (dataMin == null) return [0, 1];
+            return uPlot.rangeNum(dataMin, dataMax, 0.1, true);
+          }
+        }
+      },
+      axes: [
+        {
+          scale: 'x',
+          stroke: 'rgba(75,85,99,0.7)',
+          font: `9px ${UPLOT_FONT_STACK}`,
+          size: 16,
+          gap: 3,
+          grid: { show: false },
+          ticks: { show: false },
+          incrs: X_INT_INCRS,
+          space: (u, axisIdx, scaleMin, scaleMax, plotDim) => Math.max(50, plotDim / 3), // ~4 ticks max
+          values: xLabelValues(() => st.labels)
+        },
+        {
+          scale: 'y',
+          side: 1, // axe Y à droite
+          stroke: 'rgba(75,85,99,0.7)',
+          font: `9px ${UPLOT_FONT_STACK}`,
+          size: 30,
+          gap: 3,
+          grid: { stroke: 'rgba(0,0,0,0.06)', width: 1 },
+          ticks: { show: false },
+          space: 30 // ~3 ticks
+        }
+      ],
+      series: [
+        {},
+        {
+          scale: 'y',
+          width: 1.5,
+          paths: uPlot.paths.spline(),
+          points: { show: false },
+          stroke: strokeGradient,
+          fill: fillGradient
+        }
+      ],
+      plugins: [
+        tooltipPlugin({
+          variant: 'mini',
+          title: (u, idx) => st.labels[idx] ?? '',
+          rows: (u, idx) => {
+            const v = u.data[1][idx];
+            if (v == null || isNaN(v)) return [];
+            return [{ text: formatValue ? formatValue(v) : String(v) }];
+          }
+        })
+      ]
+    };
+
+    const u = new uPlot(opts, [[], []], host);
+    observeChart(host, u);
+
+    return {
+      u,
+      st,
+      render() {
+        u.setData([st.labels.map((_, i) => i), st.values]);
+      }
+    };
   }
 
   let lastMiniChartTimestamp = 0;
@@ -554,112 +738,172 @@
     }
   }
 
+  // Quand il n'y a pas de données, définir une plage Y sensée autour de la cible
+  function applyMiniChartFallbackScale(chart, target, tolerance) {
+    const hasData = chart.st.values.some(v => v != null && !isNaN(v));
+    if (!hasData && target != null && tolerance != null) {
+      chart.st.yMin = target - tolerance * 4;
+      chart.st.yMax = target + tolerance * 4;
+    } else {
+      chart.st.yMin = null;
+      chart.st.yMax = null;
+    }
+  }
+
   function appendMiniChart(chart, newLabels, newValues, target, tolerance) {
     if (!chart || !newLabels.length) return;
-    chart.data.labels.push(...newLabels);
-    chart.data.datasets[0].data.push(...newValues);
-    // Recalcule la couleur de fond basée sur la dernière valeur
-    const vals = chart.data.datasets[0].data;
-    const hasData = vals.some(v => v != null && !isNaN(v));
-    if (!hasData && target != null) {
-      chart.options.scales.y.min = target - tolerance * 4;
-      chart.options.scales.y.max = target + tolerance * 4;
-    } else {
-      chart.options.scales.y.min = undefined;
-      chart.options.scales.y.max = undefined;
-    }
-    chart.update('none');
+    chart.st.labels.push(...newLabels);
+    chart.st.values.push(...newValues);
+    applyMiniChartFallbackScale(chart, target, tolerance);
+    chart.render();
   }
 
   function updateMiniChart(chart, labels, values, target, tolerance) {
     if (!chart) return;
-    chart.data.labels = labels;
-    chart.data.datasets[0].data = values;
-    // Quand il n'y a pas de données, définir une plage Y sensée autour de la cible
-    const hasData = values.some(v => v != null && !isNaN(v));
-    if (!hasData && target != null && tolerance != null) {
-      chart.options.scales.y.min = target - tolerance * 4;
-      chart.options.scales.y.max = target + tolerance * 4;
-    } else {
-      chart.options.scales.y.min = undefined;
-      chart.options.scales.y.max = undefined;
-    }
-    chart.update('none');
+    chart.st.labels = labels;
+    chart.st.values = values;
+    applyMiniChartFallbackScale(chart, target, tolerance);
+    chart.render();
   }
 
-  function createLineChart(ctx, color, label, options = {}) {
-    const {
-      integerOnly = false,
-      yMin = null,
-      yMax = null,
-      annotation = null,
-      fill = true,
-      backgroundColor = null,
-      extraPlugins = [],
-      hideYAxis = false,
-      showYAxisGrid = true
-    } = options;
+  // Usine des graphiques détail (Température / pH / ORP)
+  // referenceLines : { max, min, axisMin, axisMax, zoneColor, lineColor } → lignes + zones
+  // hors plage (bandes uPlot) avec bornes Y dynamiques via calculateAxisLimits
+  function createLineChart(host, color, label, options = {}) {
+    if (!host || typeof uPlot === 'undefined') return null;
+    const { integerOnly = false, fill = true, referenceLines = null } = options;
 
-    const yAxisConfig = {
-      beginAtZero: false,
-      grid: {
-        color: 'rgba(0, 0, 0, 0.05)',
-        display: showYAxisGrid,
-        drawTicks: !hideYAxis
-      },
-      ticks: { color: '#4b5563' },
-      display: true
+    const hasBands = referenceLines != null;
+    const measureIdx = hasBands ? 5 : 1;
+    const st = {
+      labels: [],
+      values: [],
+      yMin: hasBands ? referenceLines.axisMin : null,
+      yMax: hasBands ? referenceLines.axisMax : null
     };
 
-    if (yMin !== null) yAxisConfig.min = yMin;
-    if (yMax !== null) yAxisConfig.max = yMax;
+    // Séries invisibles portant les bornes des zones hors plage
+    const boundLine = () => ({
+      scale: 'y',
+      stroke: 'transparent',
+      width: 0,
+      points: { show: false }
+    });
+    // Lignes de référence min/max
+    const refLine = () => ({
+      scale: 'y',
+      stroke: referenceLines.lineColor,
+      width: 2,
+      points: { show: false }
+    });
 
+    const measureSeries = {
+      label,
+      scale: 'y',
+      stroke: color,
+      width: 2,
+      paths: uPlot.paths.spline(),
+      // Points visibles rayon 3 (défaut Chart.js)
+      points: { show: true, size: 6, width: 1, stroke: color, fill: color + '20' }
+    };
+    if (fill) measureSeries.fill = color + '20';
+
+    const series = hasBands
+      ? [{}, boundLine(), refLine(), refLine(), boundLine(), measureSeries]
+      : [{}, measureSeries];
+
+    const yAxis = {
+      scale: 'y',
+      stroke: '#4b5563',
+      font: `12px ${UPLOT_FONT_STACK}`,
+      grid: { stroke: 'rgba(0,0,0,0.05)', width: 1 },
+      ticks: { stroke: 'rgba(0,0,0,0.05)', width: 1 }
+    };
     if (integerOnly) {
-      yAxisConfig.ticks.callback = function (value) {
-        if (Number.isInteger(value)) return value;
-      };
+      // Parité Chart.js : n'afficher que les ticks entiers
+      yAxis.values = (u, splits) => splits.map(v => (Number.isInteger(v) ? v : ''));
     }
 
-    if (hideYAxis) {
-      yAxisConfig.ticks.display = false;
-    }
-
-    const chartConfig = {
-      type: "line",
-      data: {
-        labels: [],
-        datasets: [
-          {
-            label,
-            data: [],
-            borderColor: color,
-            backgroundColor: backgroundColor ?? (color + '20'),
-            tension: 0.3,
-            borderWidth: 2,
-            fill,
-          },
-        ],
+    const opts = {
+      width: Math.max(host.clientWidth, 50),
+      height: Math.max(host.clientHeight, 50),
+      legend: { show: false },
+      cursor: makeUplotCursor((u, seriesIdx) => seriesIdx === measureIdx),
+      scales: {
+        x: { time: false, range: xAxisRange },
+        y: {
+          range: (u, dataMin, dataMax) => {
+            if (st.yMin != null) return [st.yMin, st.yMax];
+            if (dataMin == null) return [0, 1];
+            return uPlot.rangeNum(dataMin, dataMax, 0.1, true);
+          }
+        }
       },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: false,
-        scales: {
-          x: {
-            ticks: { maxRotation: 0, minRotation: 0, color: '#4b5563' },
-            grid: { color: 'rgba(0, 0, 0, 0.05)' }
-          },
-          y: yAxisConfig,
+      bands: hasBands
+        ? [
+            { series: [1, 2], fill: referenceLines.zoneColor }, // zone hors plage (haute)
+            { series: [3, 4], fill: referenceLines.zoneColor }  // zone hors plage (basse)
+          ]
+        : undefined,
+      axes: [
+        {
+          scale: 'x',
+          stroke: '#4b5563',
+          font: `12px ${UPLOT_FONT_STACK}`,
+          grid: { stroke: 'rgba(0,0,0,0.05)', width: 1 },
+          ticks: { stroke: 'rgba(0,0,0,0.05)', width: 1 },
+          incrs: X_INT_INCRS,
+          space: 70,
+          values: xLabelValues(() => st.labels)
         },
-        plugins: {
-          legend: { display: false },
-          annotation: annotation ? { annotations: annotation } : undefined
-        },
-      },
-      plugins: extraPlugins
+        yAxis
+      ],
+      series,
+      plugins: [
+        tooltipPlugin({
+          title: (u, idx) => st.labels[idx] ?? '',
+          rows: (u, idx) => {
+            const v = u.data[measureIdx][idx];
+            if (v == null || isNaN(v)) return [];
+            return [{ color, text: `${label}: ${v}` }];
+          }
+        })
+      ]
     };
 
-    return new Chart(ctx, chartConfig);
+    const initialData = hasBands ? [[], [], [], [], [], []] : [[], []];
+    const u = new uPlot(opts, initialData, host);
+    observeChart(host, u);
+
+    return {
+      u,
+      st,
+      // Reconstruit les données columnar + bornes Y dynamiques (les zones suivent)
+      render() {
+        const xs = st.labels.map((_, i) => i);
+        if (hasBands) {
+          const limits = calculateAxisLimits(st.values, referenceLines.axisMin, referenceLines.axisMax);
+          st.yMin = limits.min;
+          st.yMax = limits.max;
+          const constant = (v) => Array(xs.length).fill(v);
+          u.setData([
+            xs,
+            constant(limits.max),          // borne haute de la zone haute
+            constant(referenceLines.max),  // ligne max
+            constant(referenceLines.min),  // ligne min
+            constant(limits.min),          // borne basse de la zone basse
+            st.values
+          ]);
+        } else {
+          u.setData([xs, st.values]);
+        }
+      },
+      setPoints(labels, values) {
+        st.labels = labels;
+        st.values = values;
+        this.render();
+      }
+    };
   }
 
   function bindDetailCharts() {
@@ -676,142 +920,6 @@
         });
       });
     });
-  }
-
-  function buildPhReferenceDatasets() {
-    return [
-      {
-        label: 'Zone hors plage (haute)',
-        data: [],
-        backgroundColor: PH_ZONE_COLOR,
-        borderWidth: 0,
-        fill: '+1',
-        pointRadius: 0,
-        tension: 0,
-        order: 10
-      },
-      {
-        label: `pH Max (${PH_MAX.toFixed(1)})`,
-        data: [],
-        borderColor: PH_LINE_COLOR,
-        borderWidth: 2,
-        fill: false,
-        pointRadius: 0,
-        tension: 0,
-        order: 5
-      },
-      {
-        label: `pH Min (${PH_MIN.toFixed(1)})`,
-        data: [],
-        borderColor: PH_LINE_COLOR,
-        borderWidth: 2,
-        fill: false,
-        pointRadius: 0,
-        tension: 0,
-        order: 5
-      },
-      {
-        label: 'Zone hors plage (basse)',
-        data: [],
-        backgroundColor: PH_ZONE_COLOR,
-        borderWidth: 0,
-        fill: '-1',
-        pointRadius: 0,
-        tension: 0,
-        order: 10
-      }
-    ];
-  }
-
-  function ensurePhReferenceDatasets(chart) {
-    if (!chart) return;
-    if (chart.data.datasets.length === 1) {
-      chart.data.datasets.push(...buildPhReferenceDatasets());
-    }
-  }
-
-  function syncPhReferenceDatasets(chart) {
-    if (!chart || chart.data.datasets.length < 5) return;
-    const points = chart.data.labels.length;
-    const build = (value) => Array(points).fill(value);
-
-    const dataPoints = chart.data.datasets[0]?.data || [];
-    const limits = calculateAxisLimits(dataPoints, PH_AXIS_MIN_DEFAULT, PH_AXIS_MAX_DEFAULT);
-
-    chart.options.scales.y.min = limits.min;
-    chart.options.scales.y.max = limits.max;
-    chart.data.datasets[1].data = build(limits.max);
-    chart.data.datasets[2].data = build(PH_MAX);
-    chart.data.datasets[3].data = build(PH_MIN);
-    chart.data.datasets[4].data = build(limits.min);
-  }
-
-  function buildOrpReferenceDatasets() {
-    return [
-      {
-        label: 'Zone hors plage (haute)',
-        data: [],
-        backgroundColor: ORP_ZONE_COLOR,
-        borderWidth: 0,
-        fill: '+1',
-        pointRadius: 0,
-        tension: 0,
-        order: 10
-      },
-      {
-        label: `ORP Max (${ORP_MAX}mV)`,
-        data: [],
-        borderColor: ORP_LINE_COLOR,
-        borderWidth: 2,
-        fill: false,
-        pointRadius: 0,
-        tension: 0,
-        order: 5
-      },
-      {
-        label: `ORP Min (${ORP_MIN}mV)`,
-        data: [],
-        borderColor: ORP_LINE_COLOR,
-        borderWidth: 2,
-        fill: false,
-        pointRadius: 0,
-        tension: 0,
-        order: 5
-      },
-      {
-        label: 'Zone hors plage (basse)',
-        data: [],
-        backgroundColor: ORP_ZONE_COLOR,
-        borderWidth: 0,
-        fill: '-1',
-        pointRadius: 0,
-        tension: 0,
-        order: 10
-      }
-    ];
-  }
-
-  function ensureOrpReferenceDatasets(chart) {
-    if (!chart) return;
-    if (chart.data.datasets.length === 1) {
-      chart.data.datasets.push(...buildOrpReferenceDatasets());
-    }
-  }
-
-  function syncOrpReferenceDatasets(chart) {
-    if (!chart || chart.data.datasets.length < 5) return;
-    const points = chart.data.labels.length;
-    const build = (value) => Array(points).fill(value);
-
-    const dataPoints = chart.data.datasets[0]?.data || [];
-    const limits = calculateAxisLimits(dataPoints, ORP_AXIS_MIN_DEFAULT, ORP_AXIS_MAX_DEFAULT);
-
-    chart.options.scales.y.min = limits.min;
-    chart.options.scales.y.max = limits.max;
-    chart.data.datasets[1].data = build(limits.max);
-    chart.data.datasets[2].data = build(ORP_MAX);
-    chart.data.datasets[3].data = build(ORP_MIN);
-    chart.data.datasets[4].data = build(limits.min);
   }
 
   async function loadHistoricalData(range = 'all') {
@@ -866,27 +974,19 @@
       if (tempChart) {
         const labels = [], values = [];
         entries.forEach(e => { if (e.temperature != null) { labels.push(e.label); values.push(e.temperature); } });
-        tempChart.data.labels = labels;
-        tempChart.data.datasets[0].data = values;
-        tempChart.update('none');
+        tempChart.setPoints(labels, values);
       }
 
       if (phChart) {
         const labels = [], values = [];
         entries.forEach(e => { if (e.ph != null) { labels.push(e.label); values.push(e.ph); } });
-        phChart.data.labels = labels;
-        phChart.data.datasets[0].data = values;
-        syncPhReferenceDatasets(phChart);
-        phChart.update('none');
+        phChart.setPoints(labels, values);
       }
 
       if (orpChart) {
         const labels = [], values = [];
         entries.forEach(e => { if (e.orp != null) { labels.push(e.label); values.push(e.orp); } });
-        orpChart.data.labels = labels;
-        orpChart.data.datasets[0].data = values;
-        syncOrpReferenceDatasets(orpChart);
-        orpChart.update('none');
+        orpChart.setPoints(labels, values);
       }
 
       debugLog(`Loaded ${history.length} points → ${dayMap.size} jours agrégés (${range})`);
@@ -902,29 +1002,25 @@
 
     function updateChart(chart, value) {
       if (!chart || value == null || isNaN(value)) return;
-      const labels = chart.data.labels;
-      const values = chart.data.datasets[0].data;
+      const labels = chart.st.labels;
+      const values = chart.st.values;
       if (labels.length > 0 && labels[labels.length - 1] === todayLabel) {
         values[values.length - 1] = value;
       } else {
         labels.push(todayLabel);
         values.push(value);
       }
+      chart.render();
     }
 
     if (tempChart && sensorData.temperature != null) {
       updateChart(tempChart, sensorData.temperature);
-      tempChart.update('none');
     }
     if (!phCalibrationActive && phChart && sensorData.ph != null) {
       updateChart(phChart, Math.round(sensorData.ph * 10) / 10);
-      syncPhReferenceDatasets(phChart);
-      phChart.update('none');
     }
     if (!orpCalibrationActive && orpChart && sensorData.orp != null) {
       updateChart(orpChart, Math.round(sensorData.orp));
-      syncOrpReferenceDatasets(orpChart);
-      orpChart.update('none');
     }
   }
 
@@ -2194,23 +2290,9 @@
   }
 
   function clearHistoryCharts() {
-    if (tempChart) {
-      tempChart.data.labels = [];
-      tempChart.data.datasets[0].data = [];
-      tempChart.update("none");
-    }
-    if (phChart) {
-      phChart.data.labels = [];
-      phChart.data.datasets[0].data = [];
-      syncPhReferenceDatasets(phChart);
-      phChart.update("none");
-    }
-    if (orpChart) {
-      orpChart.data.labels = [];
-      orpChart.data.datasets[0].data = [];
-      syncOrpReferenceDatasets(orpChart);
-      orpChart.update("none");
-    }
+    [tempChart, phChart, orpChart].forEach(chart => {
+      if (chart) chart.setPoints([], []);
+    });
   }
 
   // ========== DOSAGE JOURNALIER ==========
@@ -5288,32 +5370,89 @@
       const orpData = samples.map(s => (typeof s.orp === "number") ? s.orp : null);
       const tData = samples.map(s => (typeof s.tempC === "number") ? s.tempC : null);
 
-      const ctx = document.getElementById("debug_ph_chart")?.getContext("2d");
-      if (!ctx) return;
-      if (debugPhChart) debugPhChart.destroy();
-      debugPhChart = new Chart(ctx, {
-        type: "line",
-        data: {
-          labels,
-          datasets: [
-            { label: "pH brut", data: phData, borderColor: "#1976d2", backgroundColor: "transparent", yAxisID: "y", tension: 0.1, pointRadius: 1.5, spanGaps: true },
-            { label: "pH lissé", data: phFilteredData, borderColor: "#ff9800", backgroundColor: "transparent", yAxisID: "y", tension: 0.1, pointRadius: 0, borderWidth: 2, spanGaps: true },
-            { label: "ORP (mV)", data: orpData, borderColor: "#d32f2f", backgroundColor: "transparent", yAxisID: "y1", tension: 0.1, pointRadius: 1.5, spanGaps: true, hidden: true },
-            { label: "T° envoyée (°C)", data: tData, borderColor: "#388e3c", backgroundColor: "transparent", yAxisID: "y2", tension: 0.1, pointRadius: 1.5, spanGaps: true, hidden: true },
-          ]
-        },
-        options: {
-          responsive: true,
-          interaction: { mode: "index", intersect: false },
-          scales: {
-            y:  { type: "linear", position: "left",  title: { display: true, text: "pH" } },
-            y1: { type: "linear", position: "right", title: { display: true, text: "ORP (mV)" }, grid: { drawOnChartArea: false } },
-            y2: { type: "linear", display: false }
-          },
-          plugins: { legend: { position: "top" } }
-        }
-      });
+      const host = document.getElementById("debug_ph_chart");
+      if (!host || typeof uPlot === 'undefined') return;
+      // Affiche le conteneur AVANT création pour que clientWidth soit mesurable
       if (wrap) wrap.style.display = "block";
+      if (debugPhChart) { unobserveChart(host); debugPhChart.destroy(); debugPhChart = null; }
+
+      const autoRange = (u, dataMin, dataMax) => {
+        if (dataMin == null) return [0, 1];
+        return uPlot.rangeNum(dataMin, dataMax, 0.1, true);
+      };
+      const dbgColors = ["#1976d2", "#ff9800", "#d32f2f", "#388e3c"];
+      const dbgSeries = (label2, colorIdx, scale, extra = {}) => ({
+        label: label2,
+        scale,
+        stroke: dbgColors[colorIdx],
+        width: 3, // défaut Chart.js (borderWidth: 3)
+        spanGaps: true,
+        paths: uPlot.paths.spline(),
+        points: { show: true, size: 4, width: 1, stroke: dbgColors[colorIdx], fill: "transparent" },
+        ...extra
+      });
+
+      debugPhChart = new uPlot({
+        width: Math.max(host.clientWidth, 300),
+        height: 220,
+        cursor: makeUplotCursor(),
+        legend: { show: true, live: false }, // toggle des séries par clic (ORP/T° masquées par défaut)
+        scales: {
+          x: { time: false, range: xAxisRange },
+          ph: { range: autoRange },
+          orp: { range: autoRange },
+          temp: { range: autoRange }
+        },
+        axes: [
+          {
+            scale: 'x',
+            stroke: '#666',
+            font: `12px ${UPLOT_FONT_STACK}`,
+            grid: { stroke: 'rgba(0,0,0,0.1)', width: 1 },
+            incrs: X_INT_INCRS,
+            values: (u, splits) => splits.map(i => (Number.isInteger(i) ? (labels[i] ?? '') : ''))
+          },
+          {
+            scale: 'ph',
+            side: 3, // gauche
+            label: 'pH',
+            stroke: '#666',
+            font: `12px ${UPLOT_FONT_STACK}`,
+            grid: { stroke: 'rgba(0,0,0,0.1)', width: 1 }
+          },
+          {
+            scale: 'orp',
+            side: 1, // droite
+            label: 'ORP (mV)',
+            stroke: '#666',
+            font: `12px ${UPLOT_FONT_STACK}`,
+            grid: { show: false }
+          }
+        ],
+        series: [
+          {},
+          dbgSeries("pH brut", 0, 'ph'),
+          dbgSeries("pH lissé", 1, 'ph', { width: 2, points: { show: false } }),
+          dbgSeries("ORP (mV)", 2, 'orp', { show: false }),
+          dbgSeries("T° envoyée (°C)", 3, 'temp', { show: false })
+        ],
+        plugins: [
+          tooltipPlugin({
+            title: (u, idx) => labels[idx] ?? '',
+            rows: (u, idx) => {
+              const out = [];
+              for (let si = 1; si < u.series.length; si++) {
+                if (!u.series[si].show) continue;
+                const v = u.data[si][idx];
+                if (v == null || isNaN(v)) continue;
+                out.push({ color: dbgColors[si - 1], text: `${u.series[si].label}: ${v}` });
+              }
+              return out;
+            }
+          })
+        ]
+      }, [labels.map((_, i) => i), phData, phFilteredData, orpData, tData], host);
+      observeChart(host, debugPhChart, 220);
 
       // Stats
       const phNum  = phData.filter(v => v !== null);
@@ -5362,7 +5501,12 @@
         const resp = await authFetch("/debug/ph_trace_clear", { method: "POST" });
         if (resp.ok) {
           showToast("Buffer vidé", "success");
-          if (debugPhChart) { debugPhChart.destroy(); debugPhChart = null; }
+          if (debugPhChart) {
+            const dbgHost = document.getElementById("debug_ph_chart");
+            if (dbgHost) unobserveChart(dbgHost);
+            debugPhChart.destroy();
+            debugPhChart = null;
+          }
           document.getElementById("debug_ph_chart_wrap").style.display = "none";
           document.getElementById("debug_ph_stats").style.display = "none";
           document.getElementById("debug_ph_count").textContent = "0";
@@ -5790,20 +5934,30 @@
     if (tempChartCanvas) tempChart = createLineChart(tempChartCanvas, "#4f8fff", "Température");
     if (phChartCanvas) {
       phChart = createLineChart(phChartCanvas, "#8b5cf6", "pH", {
-        yMin: PH_AXIS_MIN_DEFAULT,
-        yMax: PH_AXIS_MAX_DEFAULT,
-        fill: false
+        fill: false,
+        referenceLines: {
+          max: PH_MAX,
+          min: PH_MIN,
+          axisMin: PH_AXIS_MIN_DEFAULT,
+          axisMax: PH_AXIS_MAX_DEFAULT,
+          zoneColor: PH_ZONE_COLOR,
+          lineColor: PH_LINE_COLOR
+        }
       });
-      ensurePhReferenceDatasets(phChart);
     }
     if (orpChartCanvas) {
       orpChart = createLineChart(orpChartCanvas, "#10b981", "ORP", {
         integerOnly: true,
-        yMin: ORP_AXIS_MIN_DEFAULT,
-        yMax: ORP_AXIS_MAX_DEFAULT,
-        fill: false
+        fill: false,
+        referenceLines: {
+          max: ORP_MAX,
+          min: ORP_MIN,
+          axisMin: ORP_AXIS_MIN_DEFAULT,
+          axisMax: ORP_AXIS_MAX_DEFAULT,
+          zoneColor: ORP_ZONE_COLOR,
+          lineColor: ORP_LINE_COLOR
+        }
       });
-      ensureOrpReferenceDatasets(orpChart);
     }
 
     bindDetailCharts();

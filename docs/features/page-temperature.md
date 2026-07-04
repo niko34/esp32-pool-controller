@@ -16,7 +16,7 @@ En mode nominal, trois zones :
 1. **Bloc Statistiques** (`#temperature-card-stats`, sans titre) — **valeur de température courante** en grand (1 décimale, ex. `25.4 °C`), une rangée de chips contenant **un seul chip d'état de calibration** (`#temp-cal-chip`, non cliquable), et **sous la rangée** un bouton **« Calibrer la sonde »** (`#temp_cal_trigger_btn`) toujours accessible.
    - Il n'y a **pas de chip filtre/mesure** ni de chip sonde : la température n'a ni filtre médiane/EMA ni diagnostic de pente (contrairement à pH/ORP).
 2. **Carte Activation** (`#temperature-card-enable`) — toggle `temperature_enabled` pour masquer la fonctionnalité si aucune sonde n'est installée.
-3. **Carte Historique** (`#temperature-card-history`) — graphique Chart.js, plages `Tout` / `30j` / `7j` / `24h`.
+3. **Carte Historique** (`#temperature-card-history`) — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`.
 
 La **carte Calibration** (`#temperature-card-calibration`) **remplace** les cartes Activation + Historique pendant une session de calibration (le bloc Statistiques reste visible).
 

@@ -16,7 +16,7 @@ En mode nominal, quatre zones :
    - **Automatique** : pH cible + bouton Sauvegarder.
    - **Programmée** : volume quotidien en mL (borné par `max_ph_ml_per_day`) + bouton Sauvegarder.
    - **Manuelle** : bloc Injection manuelle (volume + bouton ▶ Injecter / ⏹ Stopper).
-3. **Carte Historique** — graphique Chart.js, plages `Tout` / `30j` / `7j` / `24h`.
+3. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`.
 4. **Carte Calibration** — **remplace** Régulation + Historique pendant une session de calibration. Écran **guidé par stepper** (feature-034) — voir [Workflow calibration](#workflow-calibration).
 
 Le bloc Statistiques reste visible **en permanence**, y compris pendant la calibration.
