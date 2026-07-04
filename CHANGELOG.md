@@ -1,5 +1,25 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.6.0] - 2026-07-04
+
+### Firmware
+
+- **Sécurité — injections manuelles gardées (feature-006)** : les injections manuelles (`POST /ph/inject/start`, `POST /orp/inject/start`) sont désormais soumises aux mêmes limites de sécurité chimique que la régulation automatique — limite journalière **prédictive** (cumul + volume demandé, avec reliquat dans le refus), limite horaire (**budget partagé** avec la régulation auto, [ADR-0020](docs/adr/0020-budget-horaire-dosage-unique.md) : le manuel n'était auparavant ni vérifié ni **compté**, permettant jusqu'à 2× le budget/heure), stabilisation post-calibration (par pompe), refus de double démarrage, cycles/jour et anti-rafale (ring **partagé** avec l'auto). Décision extraite en fonction pure testable `evaluateManualInject()` (`dosing_logic`, pattern ADR-0017 ; ordre des gardes et frontières `==` acceptées validés pool-chemistry ; 17 tests natifs dédiés, 135 au total, couverture `dosing_logic` 100 %). Tout refus retourne **409 JSON structuré** `{"error","message","seconds_remaining"?,"remaining_ml"?}` (8 codes) ; la garde filtration des routes de test `/pumpN/on` migre au même format. Les pompes test et commandes UART consomment aussi le budget horaire partagé. `inject/stop` reste un coupe-circuit jamais gardé.
+- **fix(limites)** : le drapeau « limite journalière atteinte » (`ph/orp_limit_reached` — badges UI, blocage du bouton d'injection, alarme UART, MQTT) était **verrouillé jusqu'à minuit** : augmenter la limite journalière en cours de journée débloquait bien le dosage réel (gardes en valeurs vives) mais l'UI restait bloquée sur « limite atteinte ». Le drapeau suit désormais la condition vive et se lève dès que `cumul < limite` (limite augmentée ou compteurs réinitialisés) — validé pool-chemistry (indicateur miroir, les gardes bloquantes étaient déjà vives).
+
+### Frontend
+
+- **Injection manuelle — refus détaillés dans l'UI (feature-006)** : toast rouge français par code de refus (reliquat affiché pour `daily_limit`, compte à rebours pour `stabilization_in_progress`) ; bouton « ▶ Injecter » **désactivé proactivement** avec raison en hint (`#ph|orp_inject_block_hint`) quand le blocage est connu côté client (limite journalière, stabilisation, filtration arrêtée). Le firmware reste l'autorité (WS déconnecté → bouton cliquable). Le bouton « ⏹ Arrêter » n'est jamais désactivé.
+
+### Documentation
+
+- Nouvel [ADR-0020](docs/adr/0020-budget-horaire-dosage-unique.md) : budget horaire de dosage unique partagé auto + manuel (alternative « compteur séparé » écartée ; prédicat safety-tracking → pompes test/UART comptent aussi).
+- `docs/API.md` : sections `/ph|orp/inject/start` réécrites — tableau des 8 codes de refus 409 JSON, note `/pumpN/on`.
+- `docs/features/page-ph.md`, `page-orp.md` : avertissements « limites volumétriques non gardées » retirés (obsolètes) ; gardes, toasts par code et blocage proactif du bouton documentés.
+- `docs/subsystems/pump-controller.md` : nouvelle section « Gardes des injections manuelles » (ordre des 9 gardes, frontières figées, budget horaire partagé, pending atomique, asymétrie stabilisation auto/manuel, note bypass UART `pump_test`).
+
+---
+
 ## [2.5.2] - 2026-07-04
 
 ### Fonctionnalités

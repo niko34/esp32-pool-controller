@@ -493,6 +493,8 @@ void UartCommands::actionPumpTest(JsonVariant data) {
     duty = constrain(data["duty"].as<int>(), 0, 255);
   }
   int idx = pumpNum - 1;
+  // BYPASS gardes chimiques (evaluateManualInject) — écran non déployé ;
+  // à guarder si l'écran est mis en service (feature-006 condition pool-chemistry #4)
   PumpController.setManualPump(idx, static_cast<uint8_t>(duty));
   uartProtocol.sendAck("run_action");
 }
@@ -507,6 +509,9 @@ void UartCommands::actionPumpStop(JsonVariant data) {
     uartProtocol.sendError("run_action", "pump_stop: pump must be 1 or 2");
     return;
   }
+  // BYPASS gardes chimiques (evaluateManualInject) — écran non déployé ;
+  // à guarder si l'écran est mis en service (feature-006 condition pool-chemistry #4)
+  // (duty=0 : le stop reste de toute façon un coupe-circuit jamais gardé, par design)
   PumpController.setManualPump(pumpNum - 1, 0);
   uartProtocol.sendAck("run_action");
 }

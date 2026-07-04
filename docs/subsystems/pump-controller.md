@@ -42,10 +42,18 @@ void armStabilizationTimer();                   // surcharge legacy : arme les 2
                                                 // avec mqttCfg.stabilizationDelayMin
 bool isStabilizationTimerActive(int pumpIndex) const;
 void clearStabilizationTimer();
-unsigned long getStabilizationRemainingS() const;
+unsigned long getStabilizationRemainingS() const;              // max des 2 pompes (UI WS)
+unsigned long getStabilizationRemainingS(int pumpIndex) const; // par pompe (feature-006)
 
 // Gate fail-closed (feature-021)
 bool canDose(int pumpIndex);                    // 0 = pH, 1 = ORP
+
+// Compteurs exposés aux gardes d'injection manuelle (feature-006) — lecture
+// SNAPSHOT sans mutex depuis les handlers web async (écriture loopTask only,
+// lectures 32 bits atomiques), pending manuel inclus
+unsigned int getCyclesToday(int pumpIndex) const;             // cycles jour auto + manuel
+int getRecentCycles(int pumpIndex, uint32_t windowMs) const;  // ring anti-rafale partagé
+void requestManualCycleRecord(int pumpIndex);                 // enregistrement atomique différé
 
 // Pause mélange hydraulique post-injection (feature-025)
 void notifyPhDose(uint32_t nowMs);              // arme la pause à l'arrêt d'une injection pH
@@ -218,26 +226,45 @@ Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontr
 
 **Testabilité native** : `computePidPure` est couverte à **100 % des lignes** par la suite Unity native (`test/test_native_dosing/`). Le temps et l'état étant injectés, chaque branche (gel intégrale, bornage `±integralMax`, plancher 0, bornage final min/max) est exercée sans matériel ni attente réelle.
 
-### Garde filtration sur l'injection manuelle (v2.1.2)
+### Gardes des injections manuelles (feature-006)
 
-`canDose()` couvre la régulation **automatique**. L'injection **manuelle** (routes `/ph/inject/start`, `/orp/inject/start`, `/pump1/on`, `/pump2/on`) ne passe pas par `canDose()` — elle a sa propre garde implémentée dans [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp), avec **le même critère** pour cohérence :
+`canDose()` couvre la régulation **automatique**. Depuis v2.6.0, les injections manuelles volumées (`/ph/inject/start`, `/orp/inject/start`) passent par leur propre décision **pure** `evaluateManualInject(const ManualInjectInputs&)` ([`src/dosing_logic.h`](../../src/dosing_logic.h)), appelée par la coquille `manualInjectGuardOrReject()` ([`src/web_routes_control.cpp`](../../src/web_routes_control.cpp)) qui collecte les entrées et formate le refus en **409 JSON** `{"error","message","seconds_remaining"?,"remaining_ml"?}` (codes documentés dans [API.md](../API.md#codes-de-refus-409-v260)). Ordre validé `pool-chemistry` (GO pré + post) — **ne pas réordonner** :
 
-```cpp
-mqttCfg.regulationMode == "continu" || filtration.isRunning()
-```
+| # | Garde | Refus si | Frontière figée |
+|---|-------|----------|-----------------|
+| 1 | Watchdog actif | wdt inactif sur `loopTask` | — |
+| 2 | Filtration | arrêtée (exemption mode `continu` résolue côté collecte) | — |
+| 3 | Stabilisation post-cal | fenêtre active **pour la pompe visée** | — |
+| 4 | Double démarrage | injection manuelle déjà active sur cette pompe | — |
+| 5 | Limite journalière **prédictive** | `cumul + volume demandé > max` (limite ≤ 0 = illimité) | `==` **acceptée** (strict `>`) ; `remaining_ml` renseigné dans le refus |
+| 6 | Limite horaire **prédictive** | `usedMs + durée demandée > limite` (limite 0 = illimité) | `==` acceptée (strict `>`) ; budget **partagé** avec l'auto ([ADR-0020](../adr/0020-budget-horaire-dosage-unique.md)) |
+| 7 | Cycles/jour | `cyclesToday >= maxCyclesPerDay` (compteur partagé auto + manuel) | `>=` (identique à l'auto) |
+| 8 | Anti-rafale 1 min | `>= 6` démarrages dans la fenêtre (ring partagé) | `>=` |
+| 9 | Anti-rafale 15 min | `>= 20` démarrages dans la fenêtre (ring partagé) | `>=` |
 
-Deux mitigations :
+**Volontairement absents** (le manuel est aveugle à la mesure — l'opérateur assume la décision chimique) : gardes NaN / filtre capteur / calibration / mode de régulation / pause mélange. Le volume/durée évalués sont **post-plafonnement** `kManualInjectMaxDurationS` (condition pool-chemistry #3 : on évalue ce qui sera vraiment injecté).
 
-1. **Refus en amont** — helper `injectionAllowedOrReject(req, tag)` retourne **HTTP 409** si la condition n'est pas remplie. Évite de démarrer une injection sans circulation d'eau (risque surdosage local zone retour).
-2. **Arrêt cyclique** — `updateManualInject()` (appelée chaque tour `loopTask`) interrompt l'injection si la filtration tombe pendant celle-ci. Latence < 100 ms. Émet un log `critical("[Injection] {pH|ORP} INTERROMPUE — filtration arrêtée (sécurité chimique)")` + alerte MQTT `ph_injection_aborted` ou `orp_injection_aborted` sur `{base}/alerts`.
+**Budget horaire partagé ([ADR-0020](../adr/0020-budget-horaire-dosage-unique.md))** : avant feature-006, le manuel ne contournait pas seulement la limite horaire — il n'était **pas compté** dans `usedMs` (jusqu'à 2× le budget/heure possible). Désormais `refreshDosingState(state, now, manualActive)` (privée, [`pump_controller.cpp:111`](../../src/pump_controller.cpp:111)) accumule `usedMs` si `state.active || manualActive`, avec pour prédicat manuel **celui du safety tracking** (`manualMode[i] && pumpDuty[i] > 0`) : injections manuelles web, **pompes test** (`/pumpN/on`, `/pumpN/duty/*`) et **commandes UART** consomment donc aussi le budget. OR unique sur un seul point d'accumulation → pas de double comptage.
 
-**Routes d'arrêt** (`/ph/inject/stop`, `/orp/inject/stop`, `/pump[12]/off`) : **inconditionnelles** — pouvoir arrêter en toute circonstance.
+**Enregistrement de cycle manuel (pending atomique)** : à l'acceptation, la route appelle `requestManualCycleRecord(pumpIndex)` (incrément `std::atomic<uint8_t> _manualCycleStartPending[2]`, thread-safe depuis `async_tcp`). Le pending est consommé **en tête de `update()`** ([`pump_controller.cpp:657`](../../src/pump_controller.cpp:657)), en `loopTask`, avant tout early-return : `recordDosingCycleStart()` (ring anti-rafale **partagé** avec l'auto) + `cyclesToday++` + flush NVS différé. Le ring et `cyclesToday` restent ainsi écrits par **une seule tâche** (pas de mutex). Les getters `getCyclesToday()` / `getRecentCycles()` **ajoutent le pending** non consommé : deux starts manuels rapprochés se voient mutuellement (fail-closed). Lectures snapshot sans mutex : compteurs écrits en `loopTask` uniquement, lectures 32 bits atomiques sur ESP32 (course bénigne : au pire une valeur en retard d'un tour de loop).
 
-**Pas de reprise automatique** après reprise filtration : choix produit explicite. L'injection est perdue, l'utilisateur doit relancer manuellement (toast UI explicite, voir [`docs/features/page-ph.md`](../features/page-ph.md) et [`docs/features/page-orp.md`](../features/page-orp.md)).
+**Asymétrie stabilisation assumée (condition pool-chemistry #5)** : la boucle **auto** suspend les **2 pompes** dès qu'une stabilisation est active (garde globale d'`update()`), alors que l'injection **manuelle** n'est bloquée que par la fenêtre de **sa** pompe (`getStabilizationRemainingS(pumpIndex)`) — les fenêtres sont indépendantes par sonde (cinétiques différentes, 5 min pH / 3 min ORP).
+
+**Garde watchdog et tâches** : les handlers AsyncWebServer tournent dans `async_tcp`, non abonnée à la TWDT — `esp_task_wdt_status(NULL)` y renverrait toujours NOT_FOUND. La garde interroge donc `esp_task_wdt_status(loopTaskHandle)` (la tâche qui exécute le dosage).
+
+**Routes de test `/pump1/on`, `/pump2/on`** : gardées **uniquement** sur la filtration (helper `injectionAllowedOrReject()`, pas de volume demandé → pas de garde volumétrique), désormais au **même format 409 JSON** (`filtration_off`). Leur temps de marche consomme le budget horaire partagé (cf. ci-dessus).
+
+> ⚠️ **Commande UART `pump_test` non gardée** : l'action `run_action/pump_test` du protocole écran ([`src/uart_commands.cpp:496`](../../src/uart_commands.cpp:496)) appelle `setManualPump()` **sans passer par `evaluateManualInject()`** — bypass assumé car l'écran LVGL n'est **pas déployé**. **À guarder si l'écran est mis en service** (condition pool-chemistry #4, feature-006). Son temps de marche consomme néanmoins le budget horaire partagé.
+
+**Arrêt cyclique (v2.1.2, conservé)** : `updateManualInject()` (appelée chaque tour `loopTask`) interrompt l'injection si la filtration tombe pendant celle-ci. Latence < 100 ms. Émet un log `critical("[Injection] {pH|ORP} INTERROMPUE — filtration arrêtée (sécurité chimique)")` + alerte MQTT `ph_injection_aborted` ou `orp_injection_aborted` sur `{base}/alerts`. **Pas de reprise automatique** : l'injection est perdue, l'utilisateur relance manuellement (toast UI explicite, voir [`docs/features/page-ph.md`](../features/page-ph.md) et [`docs/features/page-orp.md`](../features/page-orp.md)).
+
+**Routes d'arrêt** (`/ph/inject/stop`, `/orp/inject/stop`, `/pump[12]/off`) : **inconditionnelles** — pouvoir arrêter en toute circonstance, y compris pendant une stabilisation.
 
 **Bornage durée** : `duration` query param plafonné à `kManualInjectMaxDurationS = 600 s` (10 min, abaissé de 3600 s en v2.1.2). Justification `pool-chemistry` : 3600 s expose à un risque trop long si la filtration s'arrête en milieu de cycle ; 10 min couvrent les usages typiques.
 
-> Cohérence : la garde web reproduit **exactement** la condition #3 de `canDose()` (filtration en marche sauf mode `continu`). En mode `continu`, l'alimentation 12 V des pompes suit la filtration au niveau matériel — la garde firmware est inutile et casserait le cas d'usage.
+> Cohérence : la garde filtration reproduit **exactement** la condition #3 de `canDose()` (filtration en marche sauf mode `continu`). En mode `continu`, l'alimentation 12 V des pompes suit la filtration au niveau matériel — la garde firmware est inutile et casserait le cas d'usage.
+
+**Testabilité native** : `evaluateManualInject` est couverte par **17 tests** dédiés (`test/test_native_dosing/test_dosing_decision.cpp`, préfixe `test_F006_*` — 135 tests au total) : une cause de refus par test + nominal, reliquat, frontières `==` acceptées, limites 0/≤0 = illimité, ordre de priorité des gardes, partage du ring anti-rafale avec l'auto. `dosing_logic.cpp` reste à **100 % des lignes**.
 
 ### Ring buffer anti-rafale
 
@@ -389,7 +416,8 @@ Six conditions warning/critical sont signalées **une seule fois** à l'entrée 
 | [`sensors`](sensors.md) | Lecture **filtrée** `getPhFiltered()` / `getOrpFiltered()` pour l'erreur PID (+ `isPhFilterReady`/`isPhFilterUnstable` dans `canDose`). Brut `getPh()`/`getOrp()` pour logs uniquement (feature-025) |
 | [`mqtt_manager`](mqtt-manager.md) | Publication `ph_dosing`, `orp_dosing`, `ph_limit`, `orp_limit`, `ph/orp_mixing_delay_active` |
 | [`ota_manager`](ota-manager.md) | `setOtaInProgress(true)` arrête toutes les pompes |
-| [`web_routes_control`](web-server.md) | `/ph/inject/start`, `/orp/inject/start`, `/pump[12]/on` |
+| [`web_routes_control`](web-server.md) | `/ph/inject/start`, `/orp/inject/start`, `/pump[12]/on` — gardes feature-006 : lecture `getCyclesToday`/`getRecentCycles`/`getStabilizationRemainingS(i)`/`get*UsedMs`, enregistrement via `requestManualCycleRecord` |
+| [`uart_commands`](../../src/uart_commands.cpp) | `run_action/pump_test` → `setManualPump()` **sans garde** (écran non déployé — cf. [Gardes des injections manuelles](#gardes-des-injections-manuelles-feature-006)) |
 
 ## État persistant (NVS)
 
@@ -414,8 +442,8 @@ Flush différé : `_dailyCountersDirty` armé à chaque injection, écrit en NVS
 - [`src/config.h:141`](../../src/config.h:141) — `SafetyLimits`
 - [`src/constants.h:84`](../../src/constants.h:84) — `kPumpMinFlowMlPerMin`, `kPumpMaxFlowMlPerMin`
 - [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
-- [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036)
-- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036)
+- [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036) + gardes d'injection manuelle `evaluateManualInject` (feature-006)
+- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006)
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — entrée filtrée, anti-windup, pause mélange, zone morte
 - [feature-036](../../specs/features/done/feature-036-dosage-testable-decision-pure.md) — extraction de la décision de dosage en module pur testable
 - [feature-039](../../specs/features/done/feature-039-anti-rafale-rollover-testable.md) — extraction de l'anti-rafale + déclencheurs de rollover en logique pure testable

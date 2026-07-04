@@ -176,3 +176,69 @@ bool shouldRolloverByMillis(uint32_t dayStartMs, uint32_t now) {
   // frontière >= inclusive volontaire ; wrap millis uint32 (arithmétique non signée).
   return (now - dayStartMs) >= 86400000UL;
 }
+
+// =============================================================================
+// evaluateManualInject — gardes d'injection manuelle PURES (feature-006)
+// =============================================================================
+// ORDRE EXACT validé pool-chemistry (GO sous conditions, condition #1 :
+// watchdog EN PREMIER). NE PAS réordonner, NE PAS fusionner les gardes.
+ManualInjectDecision evaluateManualInject(const ManualInjectInputs& in) {
+  // Reliquat journalier informatif : plancher 0 (jamais négatif).
+  float remaining = in.maxDailyMl - in.dailyInjectedMl;
+  if (remaining < 0.0f) remaining = 0.0f;
+
+  // 1. Watchdog actif (règle absolue : aucun dosage sans watchdog).
+  if (!in.watchdogActive) {
+    return { false, ManualInjectRefusal::WatchdogInactive, 0.0f };
+  }
+
+  // 2. Filtration en marche (présence d'eau ; l'exemption mode continu est
+  // résolue côté collecte, avant l'appel).
+  if (!in.filtrationOk) {
+    return { false, ManualInjectRefusal::FiltrationOff, 0.0f };
+  }
+
+  // 3. Pas de stabilisation post-calibration en cours (par pompe).
+  if (in.stabilizationActive) {
+    return { false, ManualInjectRefusal::StabilizationActive, 0.0f };
+  }
+
+  // 4. Pas de double démarrage (une injection manuelle est déjà en cours).
+  if (in.alreadyInjecting) {
+    return { false, ManualInjectRefusal::AlreadyInjecting, 0.0f };
+  }
+
+  // 5. Limite journalière PRÉDICTIVE : refuser si le cumul + volume demandé
+  // DÉPASSERAIT la limite. Frontière `cumul + volume == max` ACCEPTÉE
+  // (STRICT >) — frontière figée pool-chemistry feature-006. maxDailyMl ≤ 0
+  // = illimité (pas de garde journalière).
+  if (in.maxDailyMl > 0.0f && (in.dailyInjectedMl + in.requestedMl > in.maxDailyMl)) {
+    return { false, ManualInjectRefusal::DailyLimit, remaining };
+  }
+
+  // 6. Limite horaire PRÉDICTIVE : mêmes conventions que l'auto (0 = illimité) ;
+  // frontière `usedMs + durée == limite` ACCEPTÉE (STRICT >) — figée
+  // pool-chemistry feature-006. Budget usedMs PARTAGÉ avec l'auto.
+  if (in.hourlyLimitMs > 0 && (in.usedMs + in.requestedDurationMs > in.hourlyLimitMs)) {
+    return { false, ManualInjectRefusal::HourlyLimit, 0.0f };
+  }
+
+  // 7. Anti-cycling journalier : frontière >= (à la limite → refus), identique
+  // à la garde 9 d'evaluateDose (compteur partagé auto + manuel).
+  if (in.cyclesToday >= in.maxCyclesPerDay) {
+    return { false, ManualInjectRefusal::MaxCyclesPerDay, 0.0f };
+  }
+
+  // 8. Anti-rafale fenêtre 1 min : frontière >= (identique à l'auto, ring partagé).
+  if (in.cyclesLastMin >= in.maxCyclesPerMin) {
+    return { false, ManualInjectRefusal::BurstPerMinute, 0.0f };
+  }
+
+  // 9. Anti-rafale fenêtre 15 min : frontière >= (identique à l'auto, ring partagé).
+  if (in.cyclesLast15Min >= in.maxCyclesPer15Min) {
+    return { false, ManualInjectRefusal::BurstPer15Min, 0.0f };
+  }
+
+  // Toutes les gardes sont passées : injection autorisée, reliquat renseigné.
+  return { true, ManualInjectRefusal::None, remaining };
+}

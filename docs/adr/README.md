@@ -36,6 +36,7 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0017](0017-logique-metier-pure-humble-object-testabilite.md) | Logique métier pure (Humble Object) séparée de la couche hardware pour testabilité native | Accepté |
 | [0018](0018-migration-uplot.md) | uPlot au lieu de Chart.js pour les graphiques de l'UI (contrainte Flash/FS) | Accepté |
 | [0019](0019-partition-app-1664k.md) | Partitions app à 1664 KB (layout v3, spiffs 576 KB) | Accepté |
+| [0020](0020-budget-horaire-dosage-unique.md) | Budget horaire de dosage unique, partagé auto + manuel | Accepté |
 
 ## Template
 

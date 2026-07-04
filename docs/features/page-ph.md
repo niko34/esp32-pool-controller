@@ -221,15 +221,27 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) pour
 - **Anti-rafale court terme** : ≤ 6 cycles/min ET ≤ 20 cycles/15 min (correctif Pass 3.5).
 - **Stabilisation post-cal pH** : 5 min (`kStabilizationDurationPhMs`) après chaque calibration EZO réussie. Le dosage est refusé pendant cette fenêtre (cond #3 pool-chemistry).
 - **Cumul journalier** : persisté en NVS, reset à minuit local — voir [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md).
-- ⚠️ **Injection manuelle — garde filtration uniquement (v2.1.2)** : le bloc Injection manuelle (et les endpoints `/ph/inject/*`) vérifie **uniquement** que la filtration est active (sauf mode `continu`). Refus HTTP 409 au démarrage si filtration arrêtée + arrêt cyclique automatique si la filtration s'arrête pendant l'injection. Voir [Comportement UI injection manuelle](#comportement-ui-injection-manuelle-v212) et [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md#garde-filtration-sur-linjection-manuelle-v212).
-- ⚠️ **Limites volumétriques toujours non gardées** : `canDose()`, la limite horaire (`ph_limit_minutes`), la limite journalière (`max_ph_ml_per_day`), le délai de stabilisation et le mode de régulation **ne sont pas vérifiés**. Le volume injecté est compté dans `ph_daily_ml` et peut le faire dépasser `max_ph_ml_per_day`. Responsabilité opérateur.
-- **Bornage durée** : `duration` plafonné à 600 s (10 min, `kManualInjectMaxDurationS`) au lieu de 3600 s avant v2.1.2.
+- ✅ **Injection manuelle gardée (v2.6.0, feature-006)** : `POST /ph/inject/start` passe par les gardes de `evaluateManualInject()` — dans l'ordre : watchdog, filtration (sauf mode `continu`), stabilisation post-cal **de la pompe pH**, double démarrage, **limite journalière prédictive** (`cumul + volume demandé > max_ph_ml_per_day` refusé ; frontière `==` acceptée), **limite horaire partagée avec l'auto** (`ph_limit_minutes`, [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md)), cycles/jour (20) et anti-rafale (6/min, 20/15 min — ring partagé avec l'auto). Refus = **409 JSON** `{"error","message","seconds_remaining"?,"remaining_ml"?}` — voir [Comportement UI injection manuelle](#comportement-ui-injection-manuelle-v260) et [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md#gardes-des-injections-manuelles-feature-006). Le mode de régulation et la mesure capteur ne sont volontairement **pas** vérifiés (le manuel est disponible dans tous les modes et aveugle à la mesure). Arrêt cyclique automatique conservé si la filtration s'arrête pendant l'injection. `POST /ph/inject/stop` n'est **jamais** gardé.
+- **Bornage durée** : `duration` plafonné à 600 s (10 min, `kManualInjectMaxDurationS`) au lieu de 3600 s avant v2.1.2. Les gardes évaluent le volume **post-plafonnement** (ce qui sera réellement injecté).
 
-### Comportement UI injection manuelle (v2.1.2)
+### Comportement UI injection manuelle (v2.6.0)
+
+**Blocage proactif** : à chaque push WS, `_updateInjectButtons()` → `getInjectBlockReason()` ([`data/app.js`](../../data/app.js)) désactive le bouton « ▶ Injecter » (`#ph_inject_btn`) et affiche la raison dans le hint `#ph_inject_block_hint` (+ `title`) quand un blocage est **déjà connu côté client** :
+
+| Blocage connu (ordre d'évaluation) | Hint affiché |
+|---|---|
+| `ph_limit_reached === true` | « Limite journalière atteinte — injection impossible jusqu'à minuit » |
+| `stabilization_remaining_s > 0` | « Stabilisation post-calibration en cours — réessayer dans N s/min » |
+| Filtration arrêtée en mode `pilote` | « Filtration arrêtée — injection impossible (sécurité chimique) » |
+
+Le firmware reste l'**autorité** : miroir best-effort seulement (WS déconnecté → bouton cliquable, le 409 tranche). Le bouton « ⏹ Arrêter » n'est **jamais** désactivé (coupe-circuit opérateur).
+
+**Toasts sur refus 409** (mapping `INJECT_REFUSAL_MESSAGES` par code `error`) :
 
 | Situation | Réaction UI |
 |-----------|-------------|
-| Clic « Injecter » avec filtration **arrêtée** (sauf mode `continu`) | Bouton restauré + toast rouge : « Injection refusée : la filtration doit être active avant d'injecter (sécurité chimique : pas de circulation = surdosage local). » |
+| 409 JSON (8 codes : `watchdog_inactive`, `filtration_off`, `stabilization_in_progress`, `already_injecting`, `daily_limit`, `hourly_limit`, `max_cycles`, `burst_limit`) | Bouton restauré + toast rouge français par code ; `daily_limit` ajoute « Reste disponible aujourd'hui : N mL » (`remaining_ml`), `stabilization_in_progress` ajoute « Réessayer dans N s/min » (`seconds_remaining`) |
+| 409 non JSON (firmware ancien / proxy) | Fallback : toast filtration (seule cause 409 de l'ancien format) |
 | Filtration **s'arrête en cours** d'injection | Toast rouge capté via WS log critical (`[Injection] pH INTERROMPUE`) : « Injection pH interrompue : la filtration s'est arrêtée. Relancez l'injection après reprise de la filtration. » |
 | Erreur HTTP autre (4xx/5xx) | Lecture du body texte affiché si court (< 200 chars), sinon message générique. |
 
@@ -269,7 +281,8 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) pour
 - [`src/sensors.h`](../../src/sensors.h), [`src/sensors.cpp`](../../src/sensors.cpp) — pilotage Atlas EZO pH + queue commandes
 - [`src/atlas_ezo.h`](../../src/atlas_ezo.h), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp) — mini-classe pilote EZO
 - [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) — endpoints `/calibrate_ph`, `/calibrate_clear`
-- [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — endpoints `/ph/inject/*`
+- [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — endpoints `/ph/inject/*` (coquille des gardes : collecte + 409 JSON, feature-006)
+- [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — `evaluateManualInject()` : gardes d'injection manuelle pures (feature-006)
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — diffusion `ph` (= filtré) + `phRaw/Median/Filtered/FilterReady/...` (feature-025)
 - [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — filtre médiane + EMA (feature-025)
 

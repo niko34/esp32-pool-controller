@@ -4862,6 +4862,44 @@
       hint.textContent = dur != null ? `≈ ${fmtInjectRemaining(dur)}` : "";
     };
 
+    // feature-006 : messages français des codes de refus 409 du firmware
+    const INJECT_REFUSAL_MESSAGES = {
+      watchdog_inactive: "Injection refusée : watchdog inactif (sécurité).",
+      filtration_off: "Injection refusée : la filtration doit être active avant d'injecter (sécurité chimique : pas de circulation = surdosage local).",
+      stabilization_in_progress: "Injection refusée : stabilisation post-calibration en cours.",
+      already_injecting: "Injection refusée : une injection manuelle est déjà en cours — l'arrêter avant d'en relancer une.",
+      daily_limit: "Injection refusée : limite journalière atteinte.",
+      hourly_limit: "Injection refusée : limite horaire d'injection atteinte — réessayer plus tard.",
+      max_cycles: "Injection refusée : nombre maximal de démarrages de pompe atteint pour aujourd'hui.",
+      burst_limit: "Injection refusée : trop de démarrages rapprochés (anti-rafale) — patienter avant de réessayer."
+    };
+
+    // feature-006 : raison de blocage CONNUE côté client (miroir best-effort des
+    // gardes firmware, pour désactiver le bouton de façon proactive). Le firmware
+    // reste l'autorité (409 sinon). Sans données (WS déconnecté), on ne bloque
+    // PAS : le bouton reste cliquable et le firmware tranche.
+    const getInjectBlockReason = (data, product) => {
+      if (!data) return "";
+      const config = window._config || {};
+      if (data[`${product}_limit_reached`] === true) {
+        return "Limite journalière atteinte — injection impossible jusqu'à minuit";
+      }
+      // Stabilisation PAR POMPE (miroir de la garde firmware) : une calibration
+      // ORP ne doit pas bloquer le bouton pH, et inversement. Fallback sur le
+      // champ global (max des 2) pour compat avec un firmware plus ancien.
+      const stabS = data[`${product}_stab_remaining_s`] ?? (data.stabilization_remaining_s || 0);
+      if (stabS > 0) {
+        return `Stabilisation post-calibration en cours — réessayer dans ${fmtInjectRemaining(stabS)}`;
+      }
+      const running = filtrationRunningOverride !== null
+        ? filtrationRunningOverride
+        : (data.filtration_running === true);
+      if ((config.regulation_mode || "pilote") === "pilote" && !running) {
+        return "Filtration arrêtée — injection impossible (sécurité chimique)";
+      }
+      return "";
+    };
+
     // Appelé à chaque push sensor_data pour mettre à jour les boutons
     window._updateInjectButtons = (data) => {
       const phInjecting = (data["ph_inject_remaining_s"] ?? 0) > 0;
@@ -4873,10 +4911,15 @@
         const remaining = data[`${product}_inject_remaining_s`] ?? 0;
         const btn = $(`#${product}_inject_btn`);
         const mlInput = $(`#${product}_inject_ml`);
+        const blockHint = $(`#${product}_inject_block_hint`);
         if (!btn) return;
 
         if (remaining > 0) {
           btn.textContent = `⏹ Arrêter — ${fmtInjectRemaining(remaining)}`;
+          // Le stop est un coupe-circuit opérateur : JAMAIS désactivé
+          btn.disabled = false;
+          btn.title = "";
+          if (blockHint) blockHint.textContent = "";
           if (mlInput) mlInput.disabled = true;
           // Décompte local entre deux pushes WebSocket (~5s)
           if (!injectInterval[product]) {
@@ -4907,6 +4950,12 @@
           }
           btn.textContent = "▶ Injecter";
           if (mlInput) mlInput.disabled = false;
+          // feature-006 : blocage proactif quand l'état connu l'exige (limite
+          // journalière, stabilisation, filtration arrêtée hors mode continu)
+          const blocked = getInjectBlockReason(data, product);
+          btn.disabled = !!blocked;
+          btn.title = blocked;
+          if (blockHint) blockHint.textContent = blocked;
         }
       });
 
@@ -4944,15 +4993,27 @@
         if (btn) btn.textContent = "▶ Injecter";
         if (mlInput) mlInput.disabled = false;
 
-        // Récupérer le message d'erreur du backend (text/plain) pour le toast
+        // feature-006 : le firmware renvoie un 409 JSON structuré
+        // {"error":"<code>","message":"<fr>","seconds_remaining"?,"remaining_ml"?}
+        // Fallback texte si la réponse n'est pas du JSON (firmware ancien / proxy).
         let errorMsg = "Erreur lors du démarrage de l'injection";
         if (resp) {
-          if (resp.status === 409) {
-            // Sécurité chimique : filtration arrêtée
+          const body = await resp.text().catch(() => "");
+          let err = null;
+          try { err = JSON.parse(body); } catch (_) { /* réponse non JSON */ }
+          if (err && (err.error || err.message)) {
+            errorMsg = INJECT_REFUSAL_MESSAGES[err.error] || err.message || errorMsg;
+            if (err.error === "stabilization_in_progress" && err.seconds_remaining > 0) {
+              errorMsg += ` Réessayer dans ${fmtInjectRemaining(err.seconds_remaining)}.`;
+            }
+            if (err.error === "daily_limit" && err.remaining_ml != null) {
+              errorMsg += ` Reste disponible aujourd'hui : ${Math.round(err.remaining_ml)} mL.`;
+            }
+          } else if (resp.status === 409) {
+            // Ancien format text/plain : seule cause 409 possible = filtration
             errorMsg = "Injection refusée : la filtration doit être active avant d'injecter (sécurité chimique : pas de circulation = surdosage local).";
-          } else {
-            const body = await resp.text().catch(() => "");
-            if (body && body.length < 200) errorMsg = body;
+          } else if (body && body.length < 200) {
+            errorMsg = body;
           }
         }
         showToast(errorMsg, "error");

@@ -141,15 +141,19 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md), not
 - **Limites** : `orp_limit_minutes` (défaut 10 min/h glissante) et `max_chlorine_ml_per_day` (défaut 500 mL/j).
 - **Anti-rafale court terme** : ≤ 6 cycles/min ET ≤ 20 cycles/15 min (correctif Pass 3.5).
 - **Stabilisation post-cal ORP** : 3 min (`kStabilizationDurationOrpMs`) après chaque calibration EZO réussie.
-- ⚠️ **Injection manuelle — garde filtration uniquement (v2.1.2)** : les endpoints `/orp/inject/*` vérifient **uniquement** que la filtration est active (sauf mode `continu`). Refus HTTP 409 au démarrage si filtration arrêtée + arrêt cyclique automatique si la filtration tombe pendant l'injection (alerte MQTT `orp_injection_aborted` sur `{base}/alerts`). Voir [Comportement UI injection manuelle](#comportement-ui-injection-manuelle-v212) et [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md#garde-filtration-sur-linjection-manuelle-v212).
-- ⚠️ **Limites volumétriques toujours non gardées** : `canDose()`, `orp_limit_minutes`, `max_chlorine_ml_per_day`, stabilisation et mode de régulation **ne sont pas vérifiés**. Le volume injecté est compté dans `orp_daily_ml`. Responsabilité opérateur.
-- **Bornage durée** : `duration` plafonné à 600 s (`kManualInjectMaxDurationS`) au lieu de 3600 s avant v2.1.2.
+- ✅ **Injection manuelle gardée (v2.6.0, feature-006)** : `POST /orp/inject/start` passe par les gardes de `evaluateManualInject()` — dans l'ordre : watchdog, filtration (sauf mode `continu`), stabilisation post-cal **de la pompe ORP**, double démarrage, **limite journalière prédictive** (`cumul + volume demandé > max_chlorine_ml_per_day` refusé ; frontière `==` acceptée), **limite horaire partagée avec l'auto** (`orp_limit_minutes`, [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md)), cycles/jour (20) et anti-rafale (6/min, 20/15 min — ring partagé avec l'auto). Refus = **409 JSON** `{"error","message","seconds_remaining"?,"remaining_ml"?}` — voir [Comportement UI injection manuelle](#comportement-ui-injection-manuelle-v260) et [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md#gardes-des-injections-manuelles-feature-006). Le mode de régulation et la mesure capteur ne sont volontairement **pas** vérifiés. Arrêt cyclique automatique conservé si la filtration tombe pendant l'injection (alerte MQTT `orp_injection_aborted` sur `{base}/alerts`). `POST /orp/inject/stop` n'est **jamais** gardé.
+- **Bornage durée** : `duration` plafonné à 600 s (`kManualInjectMaxDurationS`) au lieu de 3600 s avant v2.1.2. Les gardes évaluent le volume **post-plafonnement**.
 
-### Comportement UI injection manuelle (v2.1.2)
+### Comportement UI injection manuelle (v2.6.0)
+
+**Blocage proactif** : identique à la page pH (`_updateInjectButtons()` → `getInjectBlockReason()`) — bouton « ▶ Injecter » (`#orp_inject_btn`) désactivé + raison dans le hint `#orp_inject_block_hint` quand le blocage est connu côté client : `orp_limit_reached`, `stabilization_remaining_s > 0`, ou filtration arrêtée en mode `pilote`. Le firmware reste l'autorité (WS déconnecté → bouton cliquable, le 409 tranche). Le bouton « ⏹ Arrêter » n'est **jamais** désactivé.
+
+**Toasts sur refus 409** :
 
 | Situation | Réaction UI |
 |-----------|-------------|
-| Clic « Injecter » avec filtration **arrêtée** (sauf mode `continu`) | Bouton restauré + toast rouge : « Injection refusée : la filtration doit être active avant d'injecter (sécurité chimique : pas de circulation = surdosage local). » |
+| 409 JSON (8 codes : `watchdog_inactive`, `filtration_off`, `stabilization_in_progress`, `already_injecting`, `daily_limit`, `hourly_limit`, `max_cycles`, `burst_limit`) | Bouton restauré + toast rouge français par code ; `daily_limit` ajoute le reliquat (`remaining_ml`), `stabilization_in_progress` le compte à rebours (`seconds_remaining`) |
+| 409 non JSON (firmware ancien / proxy) | Fallback : toast filtration (seule cause 409 de l'ancien format) |
 | Filtration **s'arrête en cours** d'injection | Toast rouge capté via WS log critical (`[Injection] ORP INTERROMPUE`) : « Injection ORP/chlore interrompue : la filtration s'est arrêtée. Relancez l'injection après reprise de la filtration. » |
 | Erreur HTTP autre (4xx/5xx) | Lecture du body texte affiché si court (< 200 chars), sinon message générique. |
 
@@ -188,6 +192,8 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md), not
 - [`src/sensors.h`](../../src/sensors.h), [`src/sensors.cpp`](../../src/sensors.cpp) — pilotage Atlas EZO ORP
 - [`src/atlas_ezo.h`](../../src/atlas_ezo.h), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp)
 - [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) — endpoints `/calibrate_orp`, `/calibrate_clear`
+- [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — endpoints `/orp/inject/*` (coquille des gardes : collecte + 409 JSON, feature-006)
+- [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — `evaluateManualInject()` : gardes d'injection manuelle pures (feature-006)
 - [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) — validation `orp_regulation_mode` et `orp_daily_target_ml`
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — diffusion `orp` (= filtré) + `orpRaw/Median/Filtered/FilterReady/...` (feature-025)
 - [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — filtre médiane + EMA (feature-025)

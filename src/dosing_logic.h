@@ -147,4 +147,68 @@ bool shouldRolloverByDate(const char* currentDayDate, const char* todayStr);
 // frontière >= inclusive volontaire ; wrap millis uint32 (arithmétique non signée).
 bool shouldRolloverByMillis(uint32_t dayStartMs, uint32_t now);
 
+// =============================================================================
+// Injection manuelle gardée — décision PURE (feature-006)
+// =============================================================================
+// Gardes de sécurité appliquées à `POST /ph|orp/inject/start` UNIQUEMENT.
+// Les routes test `/pumpN/on` ne passent PAS par evaluateManualInject : elles
+// ne sont protégées que par la garde filtration ; seul le budget horaire
+// (usedMs, comptabilisé dans PumpController) couvre aussi ces pompes test.
+// Le manuel est volontairement AVEUGLE à la mesure (pas de garde NaN/filtre/
+// calibration/mode/mélange) : l'opérateur assume la décision chimique, mais ne
+// peut pas dépasser le budget (journalier, horaire, cycles, anti-rafale) ni
+// injecter sans eau / pendant une stabilisation post-calibration.
+// Ordre des gardes et frontières validés pool-chemistry feature-006 (GO sous
+// conditions) — NE PAS réordonner.
+
+// Cause de refus d'injection manuelle. None = injection autorisée.
+enum class ManualInjectRefusal {
+  None,
+  WatchdogInactive,     // watchdog inactif (règle absolue : aucun dosage sans watchdog)
+  FiltrationOff,        // filtration arrêtée (hors mode continu — exemption côté collecte)
+  StabilizationActive,  // stabilisation post-calibration en cours (par pompe)
+  AlreadyInjecting,     // une injection manuelle est déjà en cours (double start)
+  DailyLimit,           // cumul + volume demandé dépasserait la limite journalière
+  HourlyLimit,          // usedMs + durée demandée dépasserait la limite horaire
+  MaxCyclesPerDay,      // limite cycles/jour atteinte (compteur partagé avec l'auto)
+  BurstPerMinute,       // anti-rafale : fenêtre 1 min (ring partagé avec l'auto)
+  BurstPer15Min         // anti-rafale : fenêtre 15 min (ring partagé avec l'auto)
+};
+
+// Entrées POD collectées par la coquille (web_routes_control) AVANT l'appel.
+struct ManualInjectInputs {
+  bool watchdogActive;             // esp_task_wdt_status(NULL) == ESP_OK
+  bool filtrationOk;               // filtration.isRunning() OU mode continu
+  bool stabilizationActive;        // isStabilizationTimerActive(pumpIndex)
+  uint32_t stabilizationRemainingS;// secondes restantes (formatage 409 uniquement,
+                                   // non utilisé par la décision — recopié tel quel)
+  bool alreadyInjecting;           // injection manuelle déjà active sur cette pompe
+  float requestedMl;               // volume demandé (déjà borné ≤ 2000 mL côté route)
+  float dailyInjectedMl;           // cumul journalier (safetyLimits.daily*InjectedMl)
+  float maxDailyMl;                // limite journalière ; ≤ 0 = illimité
+  uint32_t usedMs;                 // budget horaire consommé (PARTAGÉ avec l'auto)
+  uint32_t hourlyLimitMs;          // limite horaire ; 0 = illimité (convention auto)
+  uint32_t requestedDurationMs;    // durée de l'injection demandée
+  unsigned int cyclesToday;        // cycles du jour (auto + manuel, pending inclus)
+  unsigned int maxCyclesPerDay;    // pumpProtection.maxCyclesPerDay
+  int cyclesLastMin;               // getRecentCycles(pumpIndex, 60000)
+  int maxCyclesPerMin;             // kMaxDosingCyclesPerMinute
+  int cyclesLast15Min;             // getRecentCycles(pumpIndex, 900000)
+  int maxCyclesPer15Min;           // kMaxDosingCyclesPer15Min
+};
+
+// Verdict : allowed=true ssi cause==None. remainingMl = reliquat journalier
+// (max(0, maxDailyMl - dailyInjectedMl)) renseigné pour DailyLimit ET pour le
+// cas autorisé ; 0 pour les autres causes de refus.
+struct ManualInjectDecision {
+  bool allowed;
+  ManualInjectRefusal cause;
+  float remainingMl;
+};
+
+// Évalue les gardes d'injection manuelle dans l'ORDRE EXACT validé
+// pool-chemistry (condition #1 : watchdog EN PREMIER). Première garde en
+// échec → cause correspondante. Fail-closed strict.
+ManualInjectDecision evaluateManualInject(const ManualInjectInputs& in);
+
 #endif // DOSING_LOGIC_H

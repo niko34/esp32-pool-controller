@@ -734,6 +734,325 @@ void test_F039_burst_scenario_combined(void) {
   TEST_ASSERT_TRUE(c15 >= kMaxPer15Min);      // >= seuil 20/15min → déclenché
 }
 
+// =============================================================================
+// feature-006 — evaluateManualInject : injection manuelle gardée (décision pure)
+// =============================================================================
+// On verrouille le COMPORTEMENT observable des gardes d'injection manuelle :
+// ordre EXACT validé pool-chemistry (watchdog EN PREMIER), frontières
+// prédictives STRICT > (daily/hourly), frontières >= (cycles/anti-rafale),
+// conventions « 0/≤0 = illimité », reliquat journalier remainingMl.
+// Valeurs de référence calquées sur les vraies valeurs du projet :
+//   maxDailyMl=300, hourlyLimitMs=300000 (5 min), maxCyclesPerDay=20,
+//   maxCyclesPerMin=6, maxCyclesPer15Min=20.
+
+// Helper : ManualInjectInputs « tout OK » → {allowed:true, None}.
+// Toute dérivation (casser UN champ) doit isoler une seule cause de refus.
+static ManualInjectInputs validManualInputs() {
+  ManualInjectInputs in;
+  in.watchdogActive = true;
+  in.filtrationOk = true;               // filtration ON (ou mode continu, résolu côté collecte)
+  in.stabilizationActive = false;
+  in.stabilizationRemainingS = 0;
+  in.alreadyInjecting = false;
+  in.requestedMl = 50.0f;               // 100 + 50 = 150 <= 300 → OK
+  in.dailyInjectedMl = 100.0f;
+  in.maxDailyMl = 300.0f;               // valeur réelle projet
+  in.usedMs = 60000UL;                  // 60000 + 60000 = 120000 <= 300000 → OK
+  in.hourlyLimitMs = 300000UL;          // 5 min (valeur réelle projet)
+  in.requestedDurationMs = 60000UL;     // 1 min demandée
+  in.cyclesToday = 3;
+  in.maxCyclesPerDay = 20u;             // pumpProtection.maxCyclesPerDay
+  in.cyclesLastMin = 0;
+  in.maxCyclesPerMin = 6;               // kMaxDosingCyclesPerMinute
+  in.cyclesLast15Min = 0;
+  in.maxCyclesPer15Min = 20;            // kMaxDosingCyclesPer15Min
+  return in;
+}
+
+// -----------------------------------------------------------------------------
+// (a) Cas nominal : tout OK → autorisé, cause None, reliquat renseigné.
+// -----------------------------------------------------------------------------
+void test_F006_nominal_allowed(void) {
+  ManualInjectInputs in = validManualInputs();
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_TRUE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::None, d.cause);
+  // Reliquat = maxDailyMl - dailyInjectedMl = 300 - 100 = 200.
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 200.0f, d.remainingMl);
+}
+
+// -----------------------------------------------------------------------------
+// (a) Une cause de refus par test : casser UN champ à la fois.
+// -----------------------------------------------------------------------------
+
+// Garde 1 — WatchdogInactive (règle absolue : aucun dosage sans watchdog).
+void test_F006_refusal_watchdog_inactive(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.watchdogActive = false;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::WatchdogInactive, d.cause);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 0.0f, d.remainingMl);
+}
+
+// Garde 2 — FiltrationOff (pas d'eau, hors exemption mode continu).
+void test_F006_refusal_filtration_off(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.filtrationOk = false;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::FiltrationOff, d.cause);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 0.0f, d.remainingMl);
+}
+
+// Garde 3 — StabilizationActive (stabilisation post-calibration en cours).
+void test_F006_refusal_stabilization_active(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.stabilizationActive = true;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::StabilizationActive, d.cause);
+}
+
+// Garde 4 — AlreadyInjecting (double start sur la même pompe).
+void test_F006_refusal_already_injecting(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.alreadyInjecting = true;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::AlreadyInjecting, d.cause);
+}
+
+// Garde 5 — DailyLimit PRÉDICTIVE (cumul + demandé > max).
+void test_F006_refusal_daily_limit(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.dailyInjectedMl = 280.0f;   // 280 + 50 = 330 > 300 → refus
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::DailyLimit, d.cause);
+  // Reliquat renseigné pour DailyLimit : 300 - 280 = 20.
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 20.0f, d.remainingMl);
+}
+
+// Garde 6 — HourlyLimit PRÉDICTIVE (usedMs + durée > limite).
+void test_F006_refusal_hourly_limit(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.usedMs = 290000UL;          // 290000 + 60000 = 350000 > 300000 → refus
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::HourlyLimit, d.cause);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 0.0f, d.remainingMl);
+}
+
+// Garde 7 — MaxCyclesPerDay (frontière >= : à la limite → refus, compteur
+// partagé auto + manuel).
+void test_F006_refusal_max_cycles_per_day(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.cyclesToday = in.maxCyclesPerDay;   // 20 >= 20 → refus
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::MaxCyclesPerDay, d.cause);
+}
+
+// Garde 8 — BurstPerMinute (frontière >=, ring partagé avec l'auto).
+void test_F006_refusal_burst_per_minute(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.cyclesLastMin = in.maxCyclesPerMin;   // 6 >= 6 → refus
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::BurstPerMinute, d.cause);
+}
+
+// Garde 9 — BurstPer15Min (frontière >=, ring partagé avec l'auto).
+void test_F006_refusal_burst_per_15min(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.cyclesLast15Min = in.maxCyclesPer15Min;   // 20 >= 20 → refus
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::BurstPer15Min, d.cause);
+}
+
+// -----------------------------------------------------------------------------
+// (b) Reliquat : à 290/300, demander 30 → refus DailyLimit avec remainingMl=10 ;
+//     demander exactement le reliquat (10) → accepté.
+// -----------------------------------------------------------------------------
+void test_F006_remaining_ml_on_daily_refusal(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.dailyInjectedMl = 290.0f;
+  in.maxDailyMl = 300.0f;
+  in.requestedMl = 30.0f;        // 290 + 30 = 320 > 300 → refus
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::DailyLimit, d.cause);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 10.0f, d.remainingMl);
+  // Demander exactement le reliquat → accepté (frontière == acceptée).
+  in.requestedMl = 10.0f;        // 290 + 10 = 300 == max → accepté
+  d = evaluateManualInject(in);
+  TEST_ASSERT_TRUE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::None, d.cause);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 10.0f, d.remainingMl);
+}
+
+// -----------------------------------------------------------------------------
+// (c) Frontières figées pool-chemistry feature-006 (STRICT > prédictif).
+// -----------------------------------------------------------------------------
+void test_F006_boundary_daily_exact_accepted(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.dailyInjectedMl = 250.0f;
+  in.requestedMl = 50.0f;        // 250 + 50 == 300 exactement
+  ManualInjectDecision d = evaluateManualInject(in);
+  // cumul + demandé == max → ACCEPTÉ — frontière validée pool-chemistry feature-006.
+  TEST_ASSERT_TRUE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::None, d.cause);
+  // +0.1 mL au-delà → refusé — frontière validée pool-chemistry feature-006.
+  in.requestedMl = 50.1f;        // 250 + 50.1 = 300.1 > 300
+  d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::DailyLimit, d.cause);
+}
+
+void test_F006_boundary_hourly_exact_accepted(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.usedMs = 240000UL;
+  in.requestedDurationMs = 60000UL;   // 240000 + 60000 == 300000 exactement
+  ManualInjectDecision d = evaluateManualInject(in);
+  // usedMs + durée == limite → ACCEPTÉ — frontière validée pool-chemistry feature-006.
+  TEST_ASSERT_TRUE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::None, d.cause);
+  // +1 ms au-delà → refusé — frontière validée pool-chemistry feature-006.
+  in.requestedDurationMs = 60001UL;   // 300001 > 300000
+  d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::HourlyLimit, d.cause);
+}
+
+void test_F006_boundary_zero_limits_unlimited(void) {
+  // maxDailyMl = 0 → garde journalière INACTIVE (convention ≤ 0 = illimité).
+  ManualInjectInputs in = validManualInputs();
+  in.maxDailyMl = 0.0f;
+  in.dailyInjectedMl = 5000.0f;   // cumul énorme, sans effet
+  in.requestedMl = 2000.0f;
+  ManualInjectDecision d = evaluateManualInject(in);
+  // accepté — frontière validée pool-chemistry feature-006 (maxDailyMl ≤ 0 = illimité).
+  TEST_ASSERT_TRUE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::None, d.cause);
+
+  // hourlyLimitMs = 0 → garde horaire INACTIVE (convention identique à l'auto).
+  in = validManualInputs();
+  in.hourlyLimitMs = 0UL;
+  in.usedMs = 99999999UL;         // budget énorme, sans effet
+  in.requestedDurationMs = 3600000UL;
+  d = evaluateManualInject(in);
+  // accepté — frontière validée pool-chemistry feature-006 (hourlyLimitMs = 0 = illimité).
+  TEST_ASSERT_TRUE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::None, d.cause);
+}
+
+// -----------------------------------------------------------------------------
+// (d) Ordre de priorité des gardes (échecs multiples simultanés) : la cause
+//     retournée est celle de la garde la plus prioritaire (ordre pool-chemistry).
+// -----------------------------------------------------------------------------
+void test_F006_guard_priority_order(void) {
+  // Paire 1 : watchdog inactif (1) + filtration off (2) → WatchdogInactive.
+  {
+    ManualInjectInputs in = validManualInputs();
+    in.watchdogActive = false;
+    in.filtrationOk = false;
+    ManualInjectDecision d = evaluateManualInject(in);
+    TEST_ASSERT_EQUAL(ManualInjectRefusal::WatchdogInactive, d.cause);
+  }
+  // Paire 2 : filtration off (2) + limite journalière (5) → FiltrationOff.
+  {
+    ManualInjectInputs in = validManualInputs();
+    in.filtrationOk = false;
+    in.dailyInjectedMl = 300.0f;   // 300 + 50 > 300
+    ManualInjectDecision d = evaluateManualInject(in);
+    TEST_ASSERT_EQUAL(ManualInjectRefusal::FiltrationOff, d.cause);
+  }
+  // Paire 3 : limite journalière (5) + anti-rafale minute (8) → DailyLimit.
+  {
+    ManualInjectInputs in = validManualInputs();
+    in.dailyInjectedMl = 300.0f;   // 300 + 50 > 300
+    in.cyclesLastMin = in.maxCyclesPerMin;
+    ManualInjectDecision d = evaluateManualInject(in);
+    TEST_ASSERT_EQUAL(ManualInjectRefusal::DailyLimit, d.cause);
+  }
+  // Trio bonus : stabilisation (3) + double start (4) + horaire (6) →
+  // StabilizationActive (la plus prioritaire des trois).
+  {
+    ManualInjectInputs in = validManualInputs();
+    in.stabilizationActive = true;
+    in.alreadyInjecting = true;
+    in.usedMs = 300000UL;          // 300000 + 60000 > 300000
+    ManualInjectDecision d = evaluateManualInject(in);
+    TEST_ASSERT_EQUAL(ManualInjectRefusal::StabilizationActive, d.cause);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// (e) AC3 — Partage anti-rafale AUTO/MANUEL via le ring buffer commun.
+// -----------------------------------------------------------------------------
+// La coquille enregistre chaque start MANUEL avec recordCycleTimestamp() dans le
+// MÊME ring buffer que l'auto (feature-039), et l'auto compte via
+// countCyclesInWindow(). On démontre ici qu'un start manuel enregistré dans le
+// ring devient immédiatement visible des gardes anti-rafale AUTO (et
+// réciproquement, puisque evaluateManualInject consomme les mêmes compteurs
+// cyclesLastMin/cyclesLast15Min issus de ce ring).
+void test_F006_manual_start_visible_in_shared_ring(void) {
+  uint32_t hist[20] = {0};
+  size_t idx = 0;
+  uint32_t now = 42000000UL;
+
+  // 5 cycles AUTO récents dans la dernière minute (sous le seuil 6/min).
+  for (int i = 0; i < 5; ++i) {
+    idx = recordCycleTimestamp(hist, idx, kHistorySize, now - (uint32_t)(i * 5000 + 5000));
+  }
+  TEST_ASSERT_EQUAL_INT(5, countCyclesInWindow(hist, kHistorySize, now, kWindow1Min));
+
+  // Un start MANUEL est enregistré dans le MÊME ring (comme le fait la coquille).
+  idx = recordCycleTimestamp(hist, idx, kHistorySize, now);
+
+  // Le comptage fenêtre 1 min voit maintenant 6 cycles : le start manuel est
+  // visible des gardes AUTO → l'anti-rafale 6/min se déclenche côté auto.
+  int cycles = countCyclesInWindow(hist, kHistorySize, now, kWindow1Min);
+  TEST_ASSERT_EQUAL_INT(6, cycles);
+  TEST_ASSERT_TRUE(cycles >= kMaxPerMinute);
+
+  // Boucle fermée : ces mêmes compteurs, réinjectés dans evaluateManualInject,
+  // bloquent aussi une 2e injection manuelle (BurstPerMinute).
+  ManualInjectInputs in = validManualInputs();
+  in.cyclesLastMin = cycles;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::BurstPerMinute, d.cause);
+}
+
+// -----------------------------------------------------------------------------
+// (f) StabilizationActive : la décision dépend UNIQUEMENT du booléen ;
+//     stabilizationRemainingS n'est qu'un détail de formatage (409) de la coquille.
+// -----------------------------------------------------------------------------
+void test_F006_stabilization_independent_of_remaining_seconds(void) {
+  // stabilizationActive=true + remainingS=0 → refus quand même.
+  ManualInjectInputs in = validManualInputs();
+  in.stabilizationActive = true;
+  in.stabilizationRemainingS = 0;
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::StabilizationActive, d.cause);
+  // stabilizationActive=true + remainingS énorme → même cause (pas d'effet).
+  in.stabilizationRemainingS = 999999UL;
+  d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::StabilizationActive, d.cause);
+  // stabilizationActive=false + remainingS non nul → AUTORISÉ (le champ seul
+  // ne bloque jamais : il est recopié tel quel pour le message 409).
+  in.stabilizationActive = false;
+  in.stabilizationRemainingS = 999999UL;
+  d = evaluateManualInject(in);
+  TEST_ASSERT_TRUE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::None, d.cause);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   // T2 — hystérésis de démarrage.
@@ -790,5 +1109,23 @@ int main(int, char **) {
   RUN_TEST(test_F039_rollover_by_millis);
   RUN_TEST(test_F039_rollover_by_millis_wrap);
   RUN_TEST(test_F039_burst_scenario_combined);
+  // feature-006 — evaluateManualInject (injection manuelle gardée).
+  RUN_TEST(test_F006_nominal_allowed);
+  RUN_TEST(test_F006_refusal_watchdog_inactive);
+  RUN_TEST(test_F006_refusal_filtration_off);
+  RUN_TEST(test_F006_refusal_stabilization_active);
+  RUN_TEST(test_F006_refusal_already_injecting);
+  RUN_TEST(test_F006_refusal_daily_limit);
+  RUN_TEST(test_F006_refusal_hourly_limit);
+  RUN_TEST(test_F006_refusal_max_cycles_per_day);
+  RUN_TEST(test_F006_refusal_burst_per_minute);
+  RUN_TEST(test_F006_refusal_burst_per_15min);
+  RUN_TEST(test_F006_remaining_ml_on_daily_refusal);
+  RUN_TEST(test_F006_boundary_daily_exact_accepted);
+  RUN_TEST(test_F006_boundary_hourly_exact_accepted);
+  RUN_TEST(test_F006_boundary_zero_limits_unlimited);
+  RUN_TEST(test_F006_guard_priority_order);
+  RUN_TEST(test_F006_manual_start_visible_in_shared_ring);
+  RUN_TEST(test_F006_stabilization_independent_of_remaining_seconds);
   return UNITY_END();
 }

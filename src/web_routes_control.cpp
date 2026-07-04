@@ -8,24 +8,134 @@
 #include "lighting.h"
 #include "logger.h"
 #include "mqtt_manager.h"
+#include "dosing_logic.h"
 #include <Arduino.h>
+#include <esp_task_wdt.h>
+
+// Handle de la loopTask Arduino (défini dans le core, cores/esp32/main.cpp).
+// Les handlers AsyncWebServer tournent dans la tâche async_tcp, qui n'est PAS
+// abonnée à la TWDT : esp_task_wdt_status(NULL) y renverrait toujours NOT_FOUND
+// (→ refus systématique). La garde watchdog porte sur la tâche qui exécute le
+// dosage (loopTask, abonnée via esp_task_wdt_add(NULL) dans setup()).
+extern TaskHandle_t loopTaskHandle;
 
 // =============================================================================
 // Sécurité chimique (pool-chemistry validation 2026-05-11)
 // =============================================================================
-// Toute injection manuelle volumée OU activation directe d'une pompe (test bench)
-// nécessite que la filtration soit active, SAUF en mode régulation "continu"
-// où l'alimentation du contrôleur suit la filtration de toute façon.
+// Toute activation directe d'une pompe (test bench /pumpN/on) nécessite que la
+// filtration soit active, SAUF en mode régulation "continu" où l'alimentation
+// du contrôleur suit la filtration de toute façon.
 // Sans circulation d'eau, l'acide/le chlore injecté reste local au point de
 // retour → surdosage massif dans une zone confinée → corrosion + risque sanitaire.
 // Cette garde est cohérente avec PumpController::canDose() qui applique la
 // même règle pour la régulation auto.
+// feature-006 : pour les injections volumées (/ph|orp/inject/start), cette garde
+// est absorbée par evaluateManualInject() (cause FiltrationOff) — ce helper ne
+// sert plus qu'aux routes de test de pompes. Réponse au format JSON structuré,
+// identique à celui des refus d'injection manuelle. Garde JAMAIS affaiblie.
 static bool injectionAllowedOrReject(AsyncWebServerRequest* req, const char* tag) {
   if (mqttCfg.regulationMode == "continu") return true;  // alim suit filtration
   if (filtration.isRunning()) return true;
   systemLogger.critical(String("[Sécurité] ") + tag +
                         " refusé : filtration arrêtée (sécurité chimique : pas de circulation = surdosage local)");
-  req->send(409, "text/plain", "filtration arrêtée — injection refusée pour sécurité chimique");
+  req->send(409, "application/json",
+            "{\"error\":\"filtration_off\",\"message\":\"Filtration arrêtée — injection refusée pour sécurité chimique (pas de circulation = surdosage local).\"}");
+  return false;
+}
+
+// =============================================================================
+// feature-006 : gardes d'injection manuelle (coquille de evaluateManualInject)
+// =============================================================================
+// Collecte les entrées (SNAPSHOT sans mutex — cf. pump_controller.h : compteurs
+// écrits en loopTask uniquement, lectures 32 bits atomiques, pending inclus),
+// appelle la décision PURE evaluateManualInject() (src/dosing_logic.*), et
+// formate le refus en 409 JSON structuré :
+//   {"error":"<code>","message":"<français>","seconds_remaining"?:N,"remaining_ml"?:N}
+// `isPh` : true = pH (index logique 0), false = ORP (index logique 1) — index des
+// compteurs/stabilisation du PumpController, PAS le n° de pompe physique.
+// `effectiveMl`/`durationS` : volume/durée POST-clamp kManualInjectMaxDurationS
+// (condition pool-chemistry #3 : évaluer ce qui sera VRAIMENT injecté).
+static bool manualInjectGuardOrReject(AsyncWebServerRequest* req, bool isPh,
+                                      float effectiveMl, int durationS) {
+  const int logicalIdx = isPh ? 0 : 1;
+
+  ManualInjectInputs in = {};
+  in.watchdogActive = (esp_task_wdt_status(loopTaskHandle) == ESP_OK);
+  in.filtrationOk = (mqttCfg.regulationMode == "continu") || filtration.isRunning();
+  unsigned long stabS = PumpController.getStabilizationRemainingS(logicalIdx);
+  in.stabilizationActive = (stabS > 0);
+  in.stabilizationRemainingS = (uint32_t)stabS;
+  in.alreadyInjecting = isPh ? manualInjectPh.active : manualInjectOrp.active;
+  in.requestedMl = effectiveMl;
+  in.dailyInjectedMl = isPh ? safetyLimits.dailyPhInjectedMl : safetyLimits.dailyOrpInjectedMl;
+  in.maxDailyMl = isPh ? safetyLimits.maxPhMinusMlPerDay : safetyLimits.maxChlorineMlPerDay;
+  in.usedMs = (uint32_t)(isPh ? PumpController.getPhUsedMs() : PumpController.getOrpUsedMs());
+  int limitMin = isPh ? mqttCfg.phInjectionLimitMinutes : mqttCfg.orpInjectionLimitMinutes;
+  in.hourlyLimitMs = (limitMin > 0) ? (uint32_t)limitMin * 60000UL : 0;  // 0 = illimité
+  in.requestedDurationMs = (uint32_t)durationS * 1000UL;
+  in.cyclesToday = PumpController.getCyclesToday(logicalIdx);
+  in.maxCyclesPerDay = pumpProtection.maxCyclesPerDay;
+  in.cyclesLastMin = PumpController.getRecentCycles(logicalIdx, 60000UL);
+  in.maxCyclesPerMin = kMaxDosingCyclesPerMinute;
+  in.cyclesLast15Min = PumpController.getRecentCycles(logicalIdx, 900000UL);
+  in.maxCyclesPer15Min = kMaxDosingCyclesPer15Min;
+
+  ManualInjectDecision d = evaluateManualInject(in);
+  if (d.allowed) return true;
+
+  // Mapping enum → code API + message français. BurstPerMinute et BurstPer15Min
+  // partagent le code "burst_limit" (même remède côté opérateur : patienter).
+  const char* code = "unknown";
+  String msg = "Injection refusée (cause inconnue).";
+  JsonDocument doc;
+  switch (d.cause) {
+    case ManualInjectRefusal::WatchdogInactive:
+      code = "watchdog_inactive";
+      msg = "Watchdog inactif — injection bloquée (sécurité).";
+      break;
+    case ManualInjectRefusal::FiltrationOff:
+      code = "filtration_off";
+      msg = "Filtration arrêtée — injection refusée pour sécurité chimique (pas de circulation = surdosage local).";
+      break;
+    case ManualInjectRefusal::StabilizationActive:
+      code = "stabilization_in_progress";
+      msg = "Stabilisation post-calibration en cours — réessayer dans " + String(in.stabilizationRemainingS) + " s.";
+      doc["seconds_remaining"] = in.stabilizationRemainingS;
+      break;
+    case ManualInjectRefusal::AlreadyInjecting:
+      code = "already_injecting";
+      msg = "Une injection manuelle est déjà en cours — l'arrêter avant d'en relancer une.";
+      break;
+    case ManualInjectRefusal::DailyLimit:
+      code = "daily_limit";
+      msg = "Limite journalière atteinte — reste disponible aujourd'hui : " + String((long)lroundf(d.remainingMl)) + " mL.";
+      doc["remaining_ml"] = (long)lroundf(d.remainingMl);
+      break;
+    case ManualInjectRefusal::HourlyLimit:
+      code = "hourly_limit";
+      msg = "Limite horaire d'injection atteinte — réessayer plus tard.";
+      break;
+    case ManualInjectRefusal::MaxCyclesPerDay:
+      code = "max_cycles";
+      msg = "Nombre maximal de démarrages de pompe atteint pour aujourd'hui.";
+      break;
+    case ManualInjectRefusal::BurstPerMinute:
+    case ManualInjectRefusal::BurstPer15Min:
+      code = "burst_limit";
+      msg = "Trop de démarrages rapprochés (anti-rafale) — patienter avant de réessayer.";
+      break;
+    case ManualInjectRefusal::None:
+      break;  // impossible (d.allowed == true traité plus haut)
+  }
+  doc["error"] = code;
+  doc["message"] = msg;
+
+  systemLogger.critical(String("[Sécurité] Injection ") + (isPh ? "pH" : "ORP") +
+                        " manuelle refusée : " + msg);
+
+  String out;
+  serializeJson(doc, out);
+  req->send(409, "application/json", out);
   return false;
 }
 
@@ -135,13 +245,17 @@ void setupControlRoutes(AsyncWebServer* server) {
   // Injection manuelle pH — démarre la pompe pH à la puissance configurée
   // Paramètre préféré : ?volume=N (mL, max 2000)
   // Fallback legacy : ?duration=N (secondes, borné à kManualInjectMaxDurationS)
-  // Sécurité chimique : démarrage refusé si filtration arrêtée (sauf mode continu).
+  // feature-006 : gardes de sécurité chimique via evaluateManualInject()
+  // (watchdog, filtration, stabilisation, double start, limites journalière/
+  // horaire, cycles/jour, anti-rafale) → 409 JSON structuré en cas de refus.
   server->on("/ph/inject/start", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
-    if (!injectionAllowedOrReject(req, "Injection pH")) return;
     int pumpIdx = mqttCfg.phPump - 1;
     uint8_t dutyPct = (pumpIdx == 0) ? mqttCfg.pump1MaxDutyPct : mqttCfg.pump2MaxDutyPct;
     float flow = calcInjectFlow(dutyPct, phPumpControl);
+    // Garde : sans débit configuré, volumeMl/flow = inf et effectiveMl = 0
+    // passerait trivialement la garde journalière → refus explicite.
+    if (flow <= 0.0f) { req->send(400, "text/plain", "débit pompe non configuré"); return; }
     float volumeMl = 0.0f;
     int durationS = 0;
     if (req->hasParam("volume")) {
@@ -156,6 +270,14 @@ void setupControlRoutes(AsyncWebServer* server) {
     }
     if (durationS < 1) durationS = 1;
     if (durationS > kManualInjectMaxDurationS) durationS = kManualInjectMaxDurationS;
+    // Volume effectif POST-clamp : si la durée a été plafonnée, le volume
+    // réellement injecté est flow×durée (condition pool-chemistry #3 : les
+    // gardes évaluent ce qui sera VRAIMENT injecté, pas la demande initiale).
+    float effectiveMl = flow * durationS / 60.0f;
+    if (!manualInjectGuardOrReject(req, /*isPh=*/true, effectiveMl, durationS)) return;
+    // Injection acceptée : enregistrer le démarrage de cycle MANUEL (ring
+    // anti-rafale + cyclesToday partagés avec l'auto, consommé en loopTask).
+    PumpController.requestManualCycleRecord(0);
     uint8_t duty = (uint8_t)((dutyPct * MAX_PWM_DUTY) / 100);
     PumpController.setManualPump(pumpIdx, duty);
     manualInjectPh.active = true;
@@ -178,13 +300,17 @@ void setupControlRoutes(AsyncWebServer* server) {
   // Injection manuelle ORP — démarre la pompe ORP à la puissance configurée
   // Paramètre préféré : ?volume=N (mL, max 2000)
   // Fallback legacy : ?duration=N (secondes, borné à kManualInjectMaxDurationS)
-  // Sécurité chimique : démarrage refusé si filtration arrêtée (sauf mode continu).
+  // feature-006 : gardes de sécurité chimique via evaluateManualInject()
+  // (watchdog, filtration, stabilisation, double start, limites journalière/
+  // horaire, cycles/jour, anti-rafale) → 409 JSON structuré en cas de refus.
   server->on("/orp/inject/start", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
-    if (!injectionAllowedOrReject(req, "Injection ORP")) return;
     int pumpIdx = mqttCfg.orpPump - 1;
     uint8_t dutyPct = (pumpIdx == 0) ? mqttCfg.pump1MaxDutyPct : mqttCfg.pump2MaxDutyPct;
     float flow = calcInjectFlow(dutyPct, orpPumpControl);
+    // Garde : sans débit configuré, volumeMl/flow = inf et effectiveMl = 0
+    // passerait trivialement la garde journalière → refus explicite.
+    if (flow <= 0.0f) { req->send(400, "text/plain", "débit pompe non configuré"); return; }
     float volumeMl = 0.0f;
     int durationS = 0;
     if (req->hasParam("volume")) {
@@ -199,6 +325,12 @@ void setupControlRoutes(AsyncWebServer* server) {
     }
     if (durationS < 1) durationS = 1;
     if (durationS > kManualInjectMaxDurationS) durationS = kManualInjectMaxDurationS;
+    // Volume effectif POST-clamp (condition pool-chemistry #3, cf. route pH).
+    float effectiveMl = flow * durationS / 60.0f;
+    if (!manualInjectGuardOrReject(req, /*isPh=*/false, effectiveMl, durationS)) return;
+    // Injection acceptée : enregistrer le démarrage de cycle MANUEL (ring
+    // anti-rafale + cyclesToday partagés avec l'auto, consommé en loopTask).
+    PumpController.requestManualCycleRecord(1);
     uint8_t duty = (uint8_t)((dutyPct * MAX_PWM_DUTY) / 100);
     PumpController.setManualPump(pumpIdx, duty);
     manualInjectOrp.active = true;

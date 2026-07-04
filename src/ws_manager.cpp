@@ -155,7 +155,8 @@ String WsManager::_buildSensorJson() const {
   // Buffer +64 octets vs version 1 sonde : champs temperature_circuit / sondes_identified / sondes_detected (feature-020)
   // feature-024 : +4 champs phSlope* (~80 octets) → bump à 1024.
   // feature-025 : +14 champs filtre pH/ORP + mixing/blocked (~300 octets) → bump à 1408.
-  StaticJson<1408> doc;
+  // feature-006 : +2 champs ph/orp_stab_remaining_s (~64 octets) → bump à 1472.
+  StaticJson<1472> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -238,6 +239,11 @@ String WsManager::_buildSensorJson() const {
   d["ph_used_ms"]         = PumpController.getPhUsedMs();
   d["orp_used_ms"]        = PumpController.getOrpUsedMs();
   d["stabilization_remaining_s"] = PumpController.getStabilizationRemainingS();
+  // feature-006 : stabilisation PAR POMPE LOGIQUE (0=pH, 1=ORP), miroir exact
+  // de la garde manuelle firmware (manualInjectGuardOrReject). Le champ global
+  // ci-dessus (max des 2) est conservé pour compat (badge global, ancien front).
+  d["ph_stab_remaining_s"]  = PumpController.getStabilizationRemainingS(0);
+  d["orp_stab_remaining_s"] = PumpController.getStabilizationRemainingS(1);
   d["ph_daily_ml"]        = safetyLimits.dailyPhInjectedMl;
   d["orp_daily_ml"]       = safetyLimits.dailyOrpInjectedMl;
   d["ph_limit_reached"]   = safetyLimits.phLimitReached;

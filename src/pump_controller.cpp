@@ -108,7 +108,7 @@ void PumpControllerClass::applyPumpDuty(int index, uint8_t duty) {
   ledcWrite(pumps[index].channel, duty);
 }
 
-void PumpControllerClass::refreshDosingState(DosingState& state, unsigned long now) {
+void PumpControllerClass::refreshDosingState(DosingState& state, unsigned long now, bool manualActive) {
   if (state.windowStart == 0) {
     state.windowStart = now;
     state.lastTimestamp = now;
@@ -120,8 +120,13 @@ void PumpControllerClass::refreshDosingState(DosingState& state, unsigned long n
     state.usedMs = 0;
   }
 
-  // Accumuler le temps d'injection
-  if (state.active) {
+  // Accumuler le temps d'injection.
+  // feature-006 (condition pool-chemistry #2) : le budget horaire usedMs est
+  // PARTAGÉ auto + manuel. `manualActive` couvre l'injection manuelle web, les
+  // pompes test et l'UART (prédicat du safety tracking : manualMode && duty>0).
+  // OR unique sur un seul point d'accumulation → PAS de double comptage possible
+  // (une seule addition de delta par tour, quel que soit le mode actif).
+  if (state.active || manualActive) {
     unsigned long delta = now - state.lastTimestamp;
     state.usedMs += delta;
     if (state.usedMs > 3600000UL) state.usedMs = 3600000UL;
@@ -256,6 +261,51 @@ unsigned long PumpControllerClass::getStabilizationRemainingS() const {
     if (rem > maxRem) maxRem = rem;
   }
   return maxRem;
+}
+
+// feature-006 : secondes restantes de stabilisation pour UNE pompe.
+// ASYMÉTRIE ASSUMÉE (condition pool-chemistry #5) : l'AUTO suspend les 2 pompes
+// dès qu'une stabilisation est active (garde globale d'update()), le MANUEL n'est
+// bloqué que par la fenêtre de SA pompe (fenêtres indépendantes par sonde,
+// kStabilizationDurationPhMs / kStabilizationDurationOrpMs).
+unsigned long PumpControllerClass::getStabilizationRemainingS(int pumpIndex) const {
+  if (pumpIndex < 0 || pumpIndex > 1) return 0;
+  uint32_t end = _stabilizationEndMs[pumpIndex];
+  if (end == 0) return 0;
+  unsigned long now = millis();
+  if (now >= end) return 0;
+  return (end - now) / 1000UL;
+}
+
+// =============================================================================
+// feature-006 — Compteurs exposés aux gardes d'injection manuelle
+// =============================================================================
+// Appelés depuis le handler web async (hors loopTask). Lecture SNAPSHOT sans
+// mutex : cyclesToday et le ring anti-rafale sont écrits en loopTask uniquement,
+// et une lecture 32 bits alignée est atomique sur ESP32 → course BÉNIGNE (au
+// pire une valeur en retard d'un tour de loop). Le pending atomique est AJOUTÉ
+// au résultat pour que deux starts manuels rapprochés (avant consommation par
+// update()) se voient mutuellement (fail-closed).
+
+unsigned int PumpControllerClass::getCyclesToday(int pumpIndex) const {
+  if (pumpIndex < 0 || pumpIndex > 1) return 0;
+  unsigned int cycles = (pumpIndex == 0) ? phDosingState.cyclesToday
+                                         : orpDosingState.cyclesToday;
+  return cycles + _manualCycleStartPending[pumpIndex].load();
+}
+
+int PumpControllerClass::getRecentCycles(int pumpIndex, uint32_t windowMs) const {
+  if (pumpIndex < 0 || pumpIndex > 1) return 0;
+  return countRecentDosingCycles(pumpIndex, windowMs) +
+         static_cast<int>(_manualCycleStartPending[pumpIndex].load());
+}
+
+// Demande d'enregistrement d'un démarrage de cycle MANUEL depuis un handler
+// async. Simple incrément atomique ; la matérialisation (ring anti-rafale +
+// cyclesToday + NVS dirty) est faite en tête d'update(), sur loopTask.
+void PumpControllerClass::requestManualCycleRecord(int pumpIndex) {
+  if (pumpIndex < 0 || pumpIndex > 1) return;
+  _manualCycleStartPending[pumpIndex].fetch_add(1);
 }
 
 // Logge la cause de refus uniquement à la transition (1 seule entrée par changement
@@ -536,6 +586,10 @@ bool PumpControllerClass::checkSafetyLimits(bool isPhPump) {
         safetyLimits.phLimitReached = true;
       }
       return false;
+    } else if (safetyLimits.phLimitReached) {
+      // Dé-latch : la condition n'est plus vraie (limite augmentée ou compteurs réinitialisés)
+      safetyLimits.phLimitReached = false;
+      systemLogger.info("Limite journalière pH levée (limite augmentée ou compteurs réinitialisés) — dosage à nouveau autorisé");
     }
   } else {
     if (safetyLimits.dailyOrpInjectedMl >= safetyLimits.maxChlorineMlPerDay) {
@@ -544,6 +598,10 @@ bool PumpControllerClass::checkSafetyLimits(bool isPhPump) {
         safetyLimits.orpLimitReached = true;
       }
       return false;
+    } else if (safetyLimits.orpLimitReached) {
+      // Dé-latch : la condition n'est plus vraie (limite augmentée ou compteurs réinitialisés)
+      safetyLimits.orpLimitReached = false;
+      systemLogger.info("Limite journalière chlore levée (limite augmentée ou compteurs réinitialisés) — dosage à nouveau autorisé");
     }
   }
 
@@ -599,14 +657,45 @@ void PumpControllerClass::update() {
   // à minuit même quand la filtration est arrêtée.
   tickDailyRollover();
 
+  // feature-006 : consommer les démarrages de cycle MANUELS demandés depuis les
+  // handlers web async (requestManualCycleRecord). Résolu ici, en loopTask, AVANT
+  // les branches de régulation : le ring anti-rafale et cyclesToday restent écrits
+  // par une SEULE tâche (pas de mutex). Placé avant tout early-return pour ne
+  // jamais laisser un pending bloqué.
+  for (int i = 0; i < 2; ++i) {
+    uint8_t pending = _manualCycleStartPending[i].exchange(0);
+    if (pending == 0) continue;
+    DosingState& st = (i == 0) ? phDosingState : orpDosingState;
+    // Même rollover 24 h que shouldStartDosing : sans lui, des cycles purement
+    // manuels (aucun passage par la branche auto) ne seraient jamais remis à zéro.
+    if (st.cyclesDayStart == 0 || now - st.cyclesDayStart >= 86400000UL) {
+      st.cyclesToday = 0;
+      st.cyclesDayStart = now;
+    }
+    for (uint8_t k = 0; k < pending; ++k) {
+      recordDosingCycleStart(i);  // ring anti-rafale PARTAGÉ avec l'auto
+      st.cyclesToday++;           // compteur cycles/jour PARTAGÉ avec l'auto
+    }
+    _dailyCountersDirty = true;   // flush NVS différé (30 s) des compteurs
+  }
+
   if (otaInProgress) {
     applyPumpDuty(0, 0);
     applyPumpDuty(1, 0);
     return;
   }
 
-  refreshDosingState(phDosingState, now);
-  refreshDosingState(orpDosingState, now);
+  // feature-006 (condition pool-chemistry #2) : le budget horaire usedMs est
+  // PARTAGÉ auto + manuel. Le prédicat manuel est CELUI du safety tracking
+  // (manualMode && duty>0, cf. plus bas) : injection manuelle web, pompes test
+  // ET commandes UART consomment ainsi le budget horaire. OR unique dans
+  // refreshDosingState → pas de double comptage.
+  int phBudgetIdx  = pumpIndexFromNumber(mqttCfg.phPump);
+  int orpBudgetIdx = pumpIndexFromNumber(mqttCfg.orpPump);
+  refreshDosingState(phDosingState, now,
+                     manualMode[phBudgetIdx] && pumpDuty[phBudgetIdx] > 0);
+  refreshDosingState(orpDosingState, now,
+                     manualMode[orpBudgetIdx] && pumpDuty[orpBudgetIdx] > 0);
 
   if (!sensors.isInitialized()) {
     phDosingState.active = false;

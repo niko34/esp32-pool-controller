@@ -55,7 +55,10 @@ private:
   PIDController orpPID;
 
   void applyPumpDuty(int index, uint8_t duty);
-  void refreshDosingState(DosingState& state, unsigned long now);
+  // feature-006 (condition pool-chemistry #2) : `manualActive` = une injection
+  // MANUELLE consomme aussi le budget horaire usedMs (budget PARTAGÉ auto+manuel).
+  // Accumulation si state.active || manualActive (OR unique → pas de double comptage).
+  void refreshDosingState(DosingState& state, unsigned long now, bool manualActive);
 
   // feature-025 : `deadband` = seuil de démarrage existant (phStartThreshold /
   // orpStartThreshold) ; `freezeIntegral` gèle l'accumulation intégrale (anti-windup
@@ -125,6 +128,13 @@ private:
   std::atomic<bool> _resetRequested{false};
   std::atomic<bool> _phPauseResetRequested{false};
 
+  // feature-006 : démarrages de cycle MANUELS demandés depuis les handlers web
+  // async (requestManualCycleRecord). Consommés en tête d'update() (loopTask,
+  // AVANT les branches de régulation) : recordDosingCycleStart + cyclesToday++
+  // + compteurs NVS dirty. Le ring anti-rafale et cyclesToday restent ainsi
+  // écrits par UNE seule tâche (pas de mutex). Index 0 = pH, 1 = ORP.
+  std::atomic<uint8_t> _manualCycleStartPending[2] = {{0}, {0}};
+
   // Persistance des compteurs journaliers en NVS
   static bool _dailyLoaded;          // Chargement différé effectué (attend NTP)
   static bool _dailyCountersDirty;   // Indique qu'une sauvegarde est en attente
@@ -180,6 +190,34 @@ public:
   // Retourne les secondes restantes de stabilisation max sur les 2 pompes
   // (0 si les deux sont expirés). Utilisé par l'UI WS pour afficher le compte à rebours.
   unsigned long getStabilizationRemainingS() const;
+
+  // feature-006 : secondes restantes de stabilisation pour UNE pompe (0 si expirée
+  // ou index invalide). ASYMÉTRIE ASSUMÉE (condition pool-chemistry #5) : la boucle
+  // AUTO suspend les 2 pompes dès qu'UNE stabilisation est active (garde globale
+  // d'update()), alors que l'injection MANUELLE n'est bloquée que par la fenêtre
+  // de SA pompe — les fenêtres sont indépendantes par sonde
+  // (kStabilizationDurationPhMs / kStabilizationDurationOrpMs, cinétiques différentes).
+  unsigned long getStabilizationRemainingS(int pumpIndex) const;
+
+  // ===== feature-006 : compteurs exposés aux gardes d'injection manuelle =====
+  // Appelés depuis le handler web async (hors loopTask). Lecture SNAPSHOT sans
+  // mutex : les compteurs sont écrits en loopTask uniquement et les lectures
+  // 32 bits sont atomiques sur ESP32 → course BÉNIGNE (au pire une valeur en
+  // retard d'un tour de loop). Les deux getters AJOUTENT le pending
+  // _manualCycleStartPending non encore consommé : deux starts manuels
+  // rapprochés se voient mutuellement (fail-closed).
+
+  // Cycles du jour (auto + manuel), pending manuel inclus. 0 si index invalide.
+  unsigned int getCyclesToday(int pumpIndex) const;
+
+  // Cycles dans la fenêtre glissante [now - windowMs, now] (ring anti-rafale
+  // PARTAGÉ avec l'auto), pending manuel inclus. 0 si index invalide.
+  int getRecentCycles(int pumpIndex, uint32_t windowMs) const;
+
+  // Demande l'enregistrement d'un démarrage de cycle MANUEL (thread-safe,
+  // appelable depuis un handler async). Consommé en tête d'update() :
+  // recordDosingCycleStart (ring anti-rafale partagé) + cyclesToday++ + NVS dirty.
+  void requestManualCycleRecord(int pumpIndex);
 
   // Vérifie si le dosage est autorisé pour la pompe `pumpIndex` (0 = pH, 1 = ORP).
   // Ordre des gardes (validé pool-chemistry feature-021) — fail-closed strict :
