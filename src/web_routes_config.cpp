@@ -617,6 +617,7 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   if (running) {
     doc["ota_partition"] = running->label;
     doc["ota_partition_size"] = running->size;
+    doc["sketch_size"] = ESP.getSketchSize();
   }
 
   // Système de fichiers

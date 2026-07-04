@@ -3850,6 +3850,15 @@
       $("#sys_free_heap").textContent = data.free_heap ? `${Math.round(data.free_heap / 1024)} KB` : "—";
       $("#sys_flash_size").textContent = data.flash_size ? `${Math.round(data.flash_size / (1024 * 1024))} MB` : "—";
 
+      if (data.sketch_size && data.ota_partition_size) {
+        const used = Math.round(data.sketch_size / 1024);
+        const total = Math.round(data.ota_partition_size / 1024);
+        const pct = Math.round((data.sketch_size / data.ota_partition_size) * 100);
+        $("#sys_app_usage").textContent = `${used} KB / ${total} KB (${pct}%)`;
+      } else {
+        $("#sys_app_usage").textContent = "—";
+      }
+
       if (data.fs_used_bytes && data.fs_total_bytes) {
         const used = Math.round(data.fs_used_bytes / 1024);
         const total = Math.round(data.fs_total_bytes / 1024);

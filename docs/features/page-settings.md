@@ -62,7 +62,8 @@ Page de configuration système. Structurée en **8 onglets segmentés** ([`data/
 > Toute modification de ces valeurs exige un nouveau build firmware + passage obligatoire par l'agent `pool-chemistry`.
 
 ### Système (`panel-system`)
-- **Card « Infos système »** en **première position** (déplacée depuis Avancé en v2.5.1, feature-046) : Firmware, Build, Uptime, Chip, CPU, Heap libre, Flash, FS, Wi-Fi RSSI, MAC — alimentée par `GET /get-system-info` (`loadSystemInfo()`, chargée au démarrage de la page) + bouton **Actualiser** (`#refresh_info_btn`). La version firmware s'affiche sur la ligne « Firmware » (`sys_firmware_version`, depuis `FIRMWARE_VERSION` dans [`version.h`](../../src/version.h)).
+- **Card « Infos système »** en **première position** (déplacée depuis Avancé en v2.5.1, feature-046) : Firmware, Build, Uptime, Chip, CPU, Heap libre, Flash, Firmware (flash), FS, Wi-Fi RSSI, MAC — alimentée par `GET /get-system-info` (`loadSystemInfo()`, chargée au démarrage de la page) + bouton **Actualiser** (`#refresh_info_btn`). La version firmware s'affiche sur la ligne « Firmware » (`sys_firmware_version`, depuis `FIRMWARE_VERSION` dans [`version.h`](../../src/version.h)).
+- **Ligne « Firmware (flash) »** (`#sys_app_usage`, ajoutée en v2.5.2, feature-047) : occupation de la partition app active au format `X KB / Y KB (Z%)` — taille du binaire (`sketch_size`, `ESP.getSketchSize()`) / taille de la partition OTA courante (`ota_partition_size`) — même format que la ligne FS. Affiche `—` si les champs sont absents (compatibilité ancien firmware). Rend visible la marge flash gagnée par le repartitionnement layout v3 ([ADR-0019](../adr/0019-partition-app-1664k.md)).
 - OTA GitHub : `/check-update` → info release, `/download-update` → téléchargement + flash.
 - OTA manuel : `POST /update` (multipart `.bin`).
 

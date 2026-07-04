@@ -1,5 +1,18 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.5.2] - 2026-07-04
+
+### Fonctionnalités
+
+- **Infos système — ligne « Firmware (flash) » (feature-047)** : la carte Infos système (Paramètres → Système) affiche l'occupation de la partition app active au format `X KB / Y KB (Z%)` (taille du binaire / taille de la partition OTA courante), au même format que la ligne FS. Rend visible la marge flash gagnée par le repartitionnement layout v3 ([ADR-0019](docs/adr/0019-partition-app-1664k.md)). Côté API, `GET /get-system-info` expose un nouveau champ `sketch_size` (octets, `ESP.getSketchSize()`) ; le champ `ota_partition_size` existait déjà. Affichage `—` si les champs sont absents (compatibilité ancien firmware).
+
+### Documentation
+
+- `docs/API.md` : champs `sketch_size` et `ota_partition_size` ajoutés à l'exemple de `/get-system-info`.
+- `docs/features/page-settings.md` : ligne « Firmware (flash) » documentée dans la carte Infos système.
+
+---
+
 ## [2.5.1] - 2026-07-04
 
 ### Fonctionnalités

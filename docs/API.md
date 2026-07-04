@@ -452,6 +452,8 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-system-info
   "heap_size": 327680,
   "flash_size": 4194304,
   "ota_partition": "app0",
+  "ota_partition_size": 1703936,
+  "sketch_size": 1427753,
   "fs_total_bytes": 1507328,
   "fs_used_bytes": 245760,
   "wifi_ssid": "MonWiFi",
@@ -464,6 +466,8 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-system-info
   "uptime_minutes": 0
 }
 ```
+
+> `sketch_size` (octets, `ESP.getSketchSize()`) et `ota_partition_size` (octets, taille de la partition app active) permettent de calculer l'occupation flash du firmware — affichée sur la ligne « Firmware (flash) » de la carte Infos système (v2.5.2). `sketch_size` ajouté en v2.5.2 (feature-047).
 
 ---
 
