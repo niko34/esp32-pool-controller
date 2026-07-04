@@ -17,7 +17,7 @@ La page est une **grille de cinq cartes** (classe `grid--status-cards`) :
 4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible, badge dosage actif, mini-graphique. Bandeau calibration. Lien vers `/orp`.
 5. **Carte Température** (`#dashboard-temperature-card`) — valeur courante en °C, mini-graphique. Lien vers `/temperature`.
 
-Chaque mini-graphique est un `<canvas>` Chart.js alimenté par l'historique horaire.
+Chaque mini-graphique est un `<canvas>` Chart.js alimenté par l'historique des 3 derniers jours (`GET /get-history?range=3d`, points bruts + moyennes horaires selon l'ancienneté).
 
 Un **chip `Calibration nécessaire`** (`#calib-chip`) s'affiche en haut de page si pH **ou** ORP est flagué non calibré.
 
@@ -39,7 +39,7 @@ La carte Filtration lit :
 La carte Éclairage lit :
 - `lighting_enabled`, `lighting_schedule_enabled`, `lighting_start`, `lighting_end`
 
-Les mini-graphiques consomment `GET /get-history?range=24h` au chargement puis se rafraîchissent via les updates WebSocket.
+Les mini-graphiques consomment `GET /get-history?range=3d` au chargement, puis se rafraîchissent par **polling HTTP incrémental toutes les 5 minutes** (`GET /get-history?range=3d&since=<dernier timestamp>`, ajout des nouveaux points en fin de série) — pas via WebSocket (`loadMiniChartData`, app.js).
 
 ## Actions
 

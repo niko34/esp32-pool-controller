@@ -16,7 +16,7 @@ En mode nominal, quatre zones :
    - **Automatique** : ORP cible (mV) + bouton Sauvegarder.
    - **Programmée** : volume quotidien de chlore en mL + bouton Sauvegarder.
    - **Manuelle** : bloc Injection manuelle.
-3. **Carte Historique** — graphique Chart.js, plages `Tout` / `30j` / `7j` / `24h`, zone ombrée 600–750 mV indiquant la plage de désinfection.
+3. **Carte Historique** — graphique Chart.js, plages `Tout` / `30j` / `7j` / `24h`, zone ombrée 600–800 mV (`ORP_MIN`/`ORP_MAX`, app.js) indiquant la plage de désinfection.
 4. **Carte Calibration** — **remplace** Régulation + Historique pendant une session. Écran **guidé par stepper** (feature-034), 1 seul point de calibration (architecture symétrique de la page pH) — voir [Workflow calibration](#workflow-calibration).
 
 Le bloc Statistiques reste visible en permanence.
