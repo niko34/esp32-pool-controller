@@ -128,7 +128,7 @@ void WebServerManager::setupRoutes() {
   setupOtaRoutes(server);
   setupCoredumpRoutes(server);
   setupSensorIdRoutes(server);  // feature-020 : identification 2 sondes DS18B20
-  setupDebugRoutes(server);     // debug temporaire feature-021 : trace pH + pause WiFi
+  setupDebugRoutes(server);     // ph_slope_refresh + sensor_filter_reset/state (levier sécurité feature-025)
 
   // WebSocket (push temps réel : capteurs toutes les 5s, config après save, logs en direct)
   wsManager.begin(server);

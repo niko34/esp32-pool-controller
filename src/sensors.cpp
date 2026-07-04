@@ -436,55 +436,6 @@ void SensorManager::_readEzoSensors(float tempC) {
       }
     }
   }
-
-  // Trace debug : on enregistre TOUJOURS (même si ph ou orp = NaN), pour visualiser
-  // les trous de lecture aussi clairement que les valeurs.
-  _recordPhDebugSample(_lastPh, _phFilter.filtered(), _lastOrp, tempC);
-}
-
-// =============================================================================
-// Trace debug pH (ring buffer en RAM)
-// =============================================================================
-
-void SensorManager::_recordPhDebugSample(float ph, float phFiltered, float orp, float tempC) {
-  PhDebugSample& s = _phDebugBuffer[_phDebugIdx];
-  s.ms         = millis();
-  s.ph         = ph;
-  s.phFiltered = phFiltered;
-  s.orp        = orp;
-  s.tempC      = tempC;
-  _phDebugIdx = (_phDebugIdx + 1) % kPhDebugBufferSize;
-  if (_phDebugCount < kPhDebugBufferSize) ++_phDebugCount;
-}
-
-size_t SensorManager::getPhDebugSampleCount() const {
-  return _phDebugCount;
-}
-
-void SensorManager::getPhDebugSamplesJson(JsonArray out) const {
-  // Parcours dans l'ordre chronologique (plus ancien d'abord).
-  // Si buffer plein : on commence à l'index actuel (= position du plus ancien).
-  // Sinon : on commence à 0.
-  size_t start = (_phDebugCount == kPhDebugBufferSize) ? _phDebugIdx : 0;
-  for (size_t i = 0; i < _phDebugCount; ++i) {
-    size_t idx = (start + i) % kPhDebugBufferSize;
-    const PhDebugSample& s = _phDebugBuffer[idx];
-    JsonObject o = out.add<JsonObject>();
-    o["t"] = s.ms;
-    if (!isnan(s.ph))         o["ph"]         = roundf(s.ph * 1000.0f) / 1000.0f;
-    else                      o["ph"]         = nullptr;
-    if (!isnan(s.phFiltered)) o["phFiltered"] = roundf(s.phFiltered * 1000.0f) / 1000.0f;
-    else                      o["phFiltered"] = nullptr;
-    if (!isnan(s.orp))   o["orp"]   = roundf(s.orp * 10.0f) / 10.0f;
-    else                 o["orp"]   = nullptr;
-    if (!isnan(s.tempC)) o["tempC"] = roundf(s.tempC * 10.0f) / 10.0f;
-    else                 o["tempC"] = nullptr;
-  }
-}
-
-void SensorManager::clearPhDebugBuffer() {
-  _phDebugIdx = 0;
-  _phDebugCount = 0;
 }
 
 // =============================================================================

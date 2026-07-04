@@ -133,7 +133,7 @@ bool AtlasEzoSensor::readSingle(float& out, float tempC) {
   //   - EZO ORP (0x62) : "R" lecture standard. Le module ORP ACCEPTE la commande
   //     "RT,<tempC>" (statut 1) mais NE RETOURNE PAS de payload (resp vide) car
   //     il n'a pas de compensation T° à faire — l'ORP est potentiométrique direct.
-  //     Confirmé empiriquement 2026-05-10 via /debug/ezo_command : RT,25.0 → status=1
+  //     Confirmé empiriquement 2026-05-10 (commande EZO manuelle) : RT,25.0 → status=1
   //     resp="", R → status=1 resp="-369.2". Le firmware attendait un payload qui
   //     ne venait jamais → fail streak → "bus I²C dégradé".
   //

@@ -2605,16 +2605,6 @@ input.is-computed:disabled {
   font-weight: 700;
 }
 
-/* Graphe debug oscillation : légende uPlot affichée EN HAUT (parité Chart.js) */
-#debug_ph_chart .uplot {
-  display: flex;
-  flex-direction: column;
-}
-
-#debug_ph_chart .u-legend {
-  order: -1;
-}
-
 .detail-chart-ranges {
   display: flex;
   gap: 4px;

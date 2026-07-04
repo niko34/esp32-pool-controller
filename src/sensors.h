@@ -153,25 +153,6 @@ public:
   // ou ORP valide est disponible (cohérent avec gestion fallback EZO débranché).
   bool isInitialized() const;
 
-  // ===== Trace debug pH (ring buffer en RAM, hors-spec, retirable) =====
-  // Capture chaque cycle EZO (pH + ORP + tempC envoyé). Sert au diagnostic d'oscillation.
-  // Buffer glissant ~25 min à kPhOrpSensorIntervalMs = 5 s.
-  struct PhDebugSample {
-    uint32_t ms;          // millis() au moment de la lecture
-    float    ph;          // pH brut Atlas EZO, NaN si lecture échouée
-    float    phFiltered;  // pH lissé (médiane + EMA, feature-025), NaN si filtre vide
-    float    orp;         // NaN si lecture échouée
-    float    tempC;       // T° envoyée à l'EZO pour compensation
-  };
-  static constexpr size_t kPhDebugBufferSize = 300;
-  // Sérialise les échantillons valides dans l'ordre chronologique (plus ancien d'abord).
-  size_t getPhDebugSampleCount() const;
-  // Remplit `out` avec les samples sous forme JSON `[{t, ph, phFiltered, orp, tempC}, ...]`.
-  // `out` doit déjà être un JsonArray dans un JsonDocument suffisamment grand.
-  void getPhDebugSamplesJson(JsonArray out) const;
-  // Vide le ring buffer (utile pour démarrer une fenêtre d'observation propre).
-  void clearPhDebugBuffer();
-
   // ===== API DS18B20 — Température (feature-020, inchangé) =====
   // Alias rétrocompat de la T° eau, avec fallback gracieux sur la 1ʳᵉ sonde
   // présente tant que l'identification utilisateur n'a pas été faite.
@@ -280,14 +261,8 @@ private:
   static constexpr UBaseType_t kEzoQueueLen = 4;
   QueueHandle_t _ezoQueue = nullptr;
 
-  // ===== Trace debug pH (ring buffer en RAM) =====
-  PhDebugSample _phDebugBuffer[kPhDebugBufferSize] = {};
-  size_t _phDebugIdx = 0;     // prochain slot d'écriture (modulo kPhDebugBufferSize)
-  size_t _phDebugCount = 0;   // nombre d'entrées valides (jusqu'à kPhDebugBufferSize)
-
   // ===== Helpers privés =====
   void _readEzoSensors(float tempC);   // Lecture pH puis ORP, mise à jour caches
-  void _recordPhDebugSample(float ph, float phFiltered, float orp, float tempC);
   void _readDs18b20s();                // Lecture multi-sondes DS18B20
   void _processEzoQueue();             // Dépile au plus 1 commande par cycle
   void _executeEzoCmd(const EzoCmdRequest& req);

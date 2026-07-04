@@ -205,7 +205,7 @@ Liste des libs déclarées dans `platformio.ini` (`lib_deps`) — voir le fichie
 
 ## Bibliothèque de graphiques uPlot (frontend)
 
-Les 7 graphiques de l'UI (3 mini-charts du dashboard, 3 historiques détail pH / ORP / Température, 1 debug oscillation du panel Avancé) sont rendus par **uPlot** depuis feature-043, qui remplace Chart.js v4.5.1 (`chart.umd.min.js`, ~208 KB, **supprimé**). Voir [ADR-0018](adr/0018-migration-uplot.md).
+Les 6 graphiques de l'UI (3 mini-charts du dashboard, 3 historiques détail pH / ORP / Température) sont rendus par **uPlot** depuis feature-043, qui remplace Chart.js v4.5.1 (`chart.umd.min.js`, ~208 KB, **supprimé**). Voir [ADR-0018](adr/0018-migration-uplot.md). Un 7ᵉ graphique (debug oscillation pH du panel Avancé) a été retiré en v2.5.0 (feature-045).
 
 ### Provenance et version
 
@@ -221,7 +221,7 @@ tar -xzf uplot-<version>.tgz
 cp package/dist/uPlot.iife.min.js package/dist/uPlot.min.css data/
 ```
 
-Puis `./build_fs.sh` et **vérification de parité en navigateur** (aucun test automatisé frontend — dashboard, détail pH/ORP/Température, debug oscillation, console sans erreur).
+Puis `./build_fs.sh` et **vérification de parité en navigateur** (aucun test automatisé frontend — dashboard, détail pH/ORP/Température, console sans erreur).
 
 ### Gain mesuré (feature-043)
 

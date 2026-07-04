@@ -1,5 +1,26 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.5.0] - 2026-07-04
+
+### Firmware
+
+- **Retrait des outils de diagnostic d'oscillation pH (feature-045)** : les trois outils ajoutés pour la campagne de diagnostic 2026-05/06, devenus inutiles en exploitation, sont supprimés :
+  - **Debug oscillation pH** : carte UI du panel Avancé + ring buffer 300 échantillons (~6 KB RAM) + routes `GET /debug/ph_trace` et `POST /debug/ph_trace_clear` ;
+  - **Pause WiFi** : routes `GET`/`POST /debug/wifi_pause` + mécanisme de pause associé ;
+  - **Diagnostic EZO** : carte UI + routes `POST /debug/ezo_command` et `POST /debug/ezo_factory`.
+
+  Les 5 routes répondent désormais **404**. Gains mesurés : **Flash −12 272 o**, **RAM statique −6 024 o**, **payload FS minifié −13 809 o**. Restent en place : `/debug/ph_slope_refresh`, `/debug/sensor_filter_reset`, `/debug/sensor_filter_state` (levier de sécurité feature-025) et les routes coredump.
+
+  > **Réintégration** : code récupérable via `git revert` du commit de la feature-045 ; état complet avec les outils figé au tag `v2.4.0`.
+
+### Documentation
+
+- `docs/API.md` : sections « Diagnostic Atlas EZO » et `ph_trace`/`ph_trace_clear` retirées, remplacées par une note « Routes de debug supprimées (v2.5.0) ».
+- `docs/features/page-settings.md` : cartes « Debug oscillation pH » et « Diagnostic EZO » retirées du panel Avancé (note de réintégration ajoutée).
+- `docs/BUILD.md` : décompte des graphiques uPlot ramené à 6 (le chart debug oscillation est retiré).
+
+---
+
 ## [2.4.0] - 2026-07-04
 
 ### Firmware

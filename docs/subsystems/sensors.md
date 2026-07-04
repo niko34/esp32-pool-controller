@@ -48,7 +48,7 @@ Encapsule la communication I²C avec un module EZO et le timing requis par le fi
 | EZO pH | `kEzoPhAddress = 0x63` | `RT,<tempC>` (1 décimale) | Compense la T° (équation de Nernst) ET retourne la valeur pH compensée en une seule transaction (`statut 1` + payload). |
 | EZO ORP | `kEzoOrpAddress = 0x62` | `R` | L'ORP est potentiométrique direct, sans compensation T° à effectuer. La commande `RT,<t>` est ACCEPTÉE par le module (`statut 1`) mais **NE RETOURNE PAS de payload**. |
 
-> **Bug historique fixé en v2.1.1** (commit `c0f2962`) : depuis feature-021, `RT,<temp>` était envoyé indistinctement aux deux modules. Sur l'ORP, la réponse vide était interprétée comme un échec → `_orpI2cFailStreak++` → bus I²C dégradé après `kEzoBusFailMaxConsecutive = 2` cycles → régulation ORP inhibée. Le commentaire originel prétendait à tort que « l'EZO ORP ignore RT et retourne la valeur ORP » — hypothèse non vérifiée empiriquement à l'époque, infirmée via `/debug/ezo_command` :
+> **Bug historique fixé en v2.1.1** (commit `c0f2962`) : depuis feature-021, `RT,<temp>` était envoyé indistinctement aux deux modules. Sur l'ORP, la réponse vide était interprétée comme un échec → `_orpI2cFailStreak++` → bus I²C dégradé après `kEzoBusFailMaxConsecutive = 2` cycles → régulation ORP inhibée. Le commentaire originel prétendait à tort que « l'EZO ORP ignore RT et retourne la valeur ORP » — hypothèse non vérifiée empiriquement à l'époque, infirmée via `/debug/ezo_command` (endpoint de diagnostic retiré en v2.5.0, feature-045) :
 >
 > - `0x62 cmd="RT,25.0"` → `status=1 resp=""` (vide)
 > - `0x62 cmd="R"` → `status=1 resp="-369.2"` (mV)
