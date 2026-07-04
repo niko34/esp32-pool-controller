@@ -3833,7 +3833,6 @@
       const data = await res.json();
 
       $("#sys_firmware_version").textContent = data.firmware_version || "—";
-      $("#sys_current_firmware_version").textContent = data.firmware_version || "—";
       $("#sys_build_date").textContent = data.build_date || "—";
 
       // Format uptime

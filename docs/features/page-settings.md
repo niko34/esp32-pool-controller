@@ -16,8 +16,8 @@ Page de configuration système. Structurée en **8 onglets segmentés** ([`data/
 | Heure | `panel-time` | NTP ou heure manuelle, timezone, serveur NTP |
 | Sécurité | `panel-security` | Changement mot de passe admin + CORS |
 | Régulation pH / ORP | `panel-regulation` | Mode pilote/continu, vitesse PID, limites horaires/journalières, délai stabilisation |
-| Système | `panel-system` | Version, OTA GitHub, OTA manuel, export/import historique, reboot, factory reset |
-| Avancé | `panel-dev` | Affectation pompes, puissance max, débit nominal, tests pompe, infos système, logs |
+| Système | `panel-system` | Infos système (runtime), OTA GitHub, OTA manuel, reboot, factory reset |
+| Avancé | `panel-dev` | Historique des mesures (export/import/purge CSV), affectation pompes, puissance max, débit nominal, tests pompe, diagnostic crash, logs |
 | À propos | `panel-about` | Liens projet + versions des libs — contenu statique |
 
 ## Données consommées (`GET /get-config` + WebSocket `/ws` + `GET /get-system-info`)
@@ -62,13 +62,16 @@ Page de configuration système. Structurée en **8 onglets segmentés** ([`data/
 > Toute modification de ces valeurs exige un nouveau build firmware + passage obligatoire par l'agent `pool-chemistry`.
 
 ### Système (`panel-system`)
-- Version locale : `sys_current_firmware_version` (depuis `FIRMWARE_VERSION` dans [`version.h`](../../src/version.h)).
+- **Card « Infos système »** en **première position** (déplacée depuis Avancé en v2.5.1, feature-046) : Firmware, Build, Uptime, Chip, CPU, Heap libre, Flash, FS, Wi-Fi RSSI, MAC — alimentée par `GET /get-system-info` (`loadSystemInfo()`, chargée au démarrage de la page) + bouton **Actualiser** (`#refresh_info_btn`). La version firmware s'affiche sur la ligne « Firmware » (`sys_firmware_version`, depuis `FIRMWARE_VERSION` dans [`version.h`](../../src/version.h)).
 - OTA GitHub : `/check-update` → info release, `/download-update` → téléchargement + flash.
 - OTA manuel : `POST /update` (multipart `.bin`).
-- Historique : `/get-history?range=all` (export CSV), `/history/import` (upload CSV), `/history/clear` (DELETE all).
-- Infos runtime : `GET /get-system-info` (uptime, heap, flash, mac, rssi, fs usage).
+
+> ℹ️ **Cartes retirées/déplacées en v2.5.1** (feature-046) :
+> - « Version du firmware » (`#sys_current_firmware_version`) supprimée, redondante avec la ligne « Firmware » d'Infos système.
+> - « Historique des mesures (température, pH, ORP) » déplacée vers l'onglet **Avancé** (1ʳᵉ position).
 
 ### Avancé (`panel-dev`)
+- **Card « Historique des mesures (température, pH, ORP) »** en **première position** (déplacée depuis Système en v2.5.1, feature-046, avant « Configuration des pompes ») : export CSV (`#history_export_btn` → `GET /get-history?range=all`), import CSV (`#history_import_file` + `#history_import_btn` → `POST /history/import`), suppression (`#history_clear_btn` → `POST /history/clear`). Handlers JS inchangés (sélection par id, indépendants de l'emplacement DOM).
 - `ph_pump` / `orp_pump` (1 ou 2) — affectation des deux pompes doseuses.
 - `pump1_max_duty` / `pump2_max_duty` — puissance max en régulation (%, défaut 50).
 - `pump_max_flow_ml_per_min` — débit nominal pour calcul volume injecté (défaut `kPumpMaxFlowMlPerMin = 90.0` [`constants.h`](../../src/constants.h)).
@@ -81,7 +84,7 @@ Page de configuration système. Structurée en **8 onglets segmentés** ([`data/
 
 #### Card Diagnostic crash
 
-Positionnée entre la card "Infos système" et la card "Logs" dans le panneau Avancé. Chargée au démarrage de la page via `GET /coredump/info`.
+Positionnée juste avant la card "Logs" dans le panneau Avancé (la card "Infos système" qui la précédait a été déplacée vers l'onglet Système en v2.5.1). Chargée au démarrage de la page via `GET /coredump/info`.
 
 **Contenu affiché :**
 

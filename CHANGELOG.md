@@ -1,5 +1,17 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.5.1] - 2026-07-04
+
+### Fonctionnalités
+
+- **Paramètres — réorganisation des onglets Système / Avancé (feature-046)** : la carte « Infos système » (Firmware, Build, Uptime, Chip, CPU, Heap libre, Flash, FS, Wi-Fi RSSI, MAC + bouton Actualiser) est **déplacée** de l'onglet Avancé vers la **première position** de l'onglet Système ; la carte « Version du firmware », redondante, est **supprimée** de l'onglet Système (la version reste visible sur la ligne « Firmware » d'Infos système) ; la carte « Historique des mesures (température, pH, ORP) » (export/import/suppression CSV) est **déplacée** de l'onglet Système vers la **première position** de l'onglet Avancé. Frontend uniquement — aucun changement backend (`GET /get-system-info`, `/get-history`, `/history/import`, `/history/clear` inchangés).
+
+### Documentation
+
+- `docs/features/page-settings.md` : contenu des onglets Système et Avancé mis à jour (Infos système en tête de Système, Historique des mesures en tête d'Avancé, position de la card Diagnostic crash dans Avancé).
+
+---
+
 ## [2.5.0] - 2026-07-04
 
 ### Firmware
