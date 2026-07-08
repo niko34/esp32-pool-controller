@@ -89,7 +89,7 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["pump_max_flow_ml_per_min"] = mqttCfg.pumpMaxFlowMlPerMin;
   doc["ph_limit_minutes"] = mqttCfg.phInjectionLimitMinutes;
   doc["orp_limit_minutes"] = mqttCfg.orpInjectionLimitMinutes;
-  doc["regulation_mode"] = mqttCfg.regulationMode;
+  doc["install_mode"] = installModeToString(mqttCfg.installMode);  // feature-056
   doc["stabilization_delay_min"] = mqttCfg.stabilizationDelayMin;
   doc["regulation_speed"] = mqttCfg.regulationSpeed;
   doc["ph_correction_type"] = mqttCfg.phCorrectionType;
@@ -97,8 +97,7 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["ntp_server"] = mqttCfg.ntpServer;
   doc["manual_time"] = mqttCfg.manualTimeIso;
   doc["timezone_id"] = mqttCfg.timezoneId;
-  doc["filtration_enabled"] = filtrationCfg.enabled;
-  doc["filtration_mode"] = filtrationCfg.mode;
+  doc["filtration_mode"] = filtrationCfg.mode;  // feature-056 : filtration_enabled → install_mode
   doc["filtration_start"] = filtrationCfg.start;
   doc["filtration_end"] = filtrationCfg.end;
   doc["filtration_running"] = filtration.isRunning();
@@ -331,10 +330,11 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
   if (!doc["ph_limit_minutes"].isNull()) mqttCfg.phInjectionLimitMinutes = constrain((int)doc["ph_limit_minutes"], 1, 60);
   if (!doc["orp_limit_minutes"].isNull()) mqttCfg.orpInjectionLimitMinutes = constrain((int)doc["orp_limit_minutes"], 1, 60);
-  if (!doc["regulation_mode"].isNull()) {
-    String mode = doc["regulation_mode"].as<String>();
-    if (mode == "continu" || mode == "pilote") {
-      mqttCfg.regulationMode = mode;
+  // feature-056 : mode d'installation (remplace regulation_mode + filtration_enabled).
+  if (!doc["install_mode"].isNull()) {
+    String im = doc["install_mode"].as<String>();
+    if (im == "managed" || im == "powered" || im == "external") {
+      mqttCfg.installMode = installModeFromString(im.c_str(), mqttCfg.installMode);
     }
   }
   if (!doc["stabilization_delay_min"].isNull()) {
@@ -402,7 +402,7 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
   if (!doc["timezone_id"].isNull()) mqttCfg.timezoneId = doc["timezone_id"].as<String>();
   bool filtrationConfigChanged = false;
-  if (!doc["filtration_enabled"].isNull()) { filtrationCfg.enabled = doc["filtration_enabled"]; filtrationConfigChanged = true; }
+  // feature-056 : filtration_enabled retiré (absorbé par install_mode).
   String prevFiltrationMode = filtrationCfg.mode;
   bool scheduleChanged = false;
   if (!doc["filtration_mode"].isNull()) { filtrationCfg.mode = doc["filtration_mode"].as<String>(); scheduleChanged = true; filtrationConfigChanged = true; }

@@ -110,8 +110,9 @@ void setup() {
   }
 
   PumpController.begin();
-  // En mode continu : armer le timer de stabilisation dès le boot
-  if (mqttCfg.regulationMode == "continu") {
+  // feature-056 : en mode « alimenté par la filtration » (Powered), l'eau est
+  // présumée présente dès le boot → armer le timer de stabilisation comme avant.
+  if (mqttCfg.installMode == InstallMode::PoweredByFiltration) {
     PumpController.armStabilizationTimer();
   }
   filtration.begin();

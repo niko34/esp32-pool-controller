@@ -29,8 +29,9 @@ void FiltrationManager::begin() {
   // Cela évite une coupure prolongée de la pompe de filtration au reboot :
   // sans ce calcul, le relais resterait LOW pendant tout le setup (WiFi inclus, jusqu'à ~18s)
   // avant que filtration.update() dans loop() ne le remette dans son état correct.
+  // feature-056 : le relais n'est piloté que dans le mode ManagedFiltration.
   bool initialState = false;
-  if (filtrationCfg.enabled) {
+  if (mqttCfg.installMode == InstallMode::ManagedFiltration) {
     String mode = filtrationCfg.mode;
     mode.toLowerCase();
     if (mode != "off") {
@@ -115,11 +116,23 @@ bool FiltrationManager::isMinutesInRange(int now, int start, int end) {
 }
 
 void FiltrationManager::update() {
-  // Si la fonction filtration est désactivée, arrêter le relais
-  if (!filtrationCfg.enabled) {
+  // feature-056 : le relais filtration n'est piloté QUE dans le mode
+  // « PoolController pilote la filtration » (ManagedFiltration). Dans les modes
+  // PoweredByFiltration / ExternalFiltration, le relais reste INERTE (jamais
+  // énergisé) et tout forçage (Boost / UI / MQTT) est SANS EFFET — signalé par un
+  // warning throttlé. Le timer de stabilisation lié à la filtration est de facto
+  // désactivé (le bloc d'arming ci-dessous n'est jamais atteint).
+  if (mqttCfg.installMode != InstallMode::ManagedFiltration) {
+    if (filtrationCfg.forceOn || filtrationCfg.forceOff || isBoostActive(time(nullptr))) {
+      static unsigned long sLastForceWarnMs = 0;
+      unsigned long nowMs = millis();
+      if (sLastForceWarnMs == 0 || nowMs - sLastForceWarnMs >= kMutexTimeoutWarnThrottleMs) {
+        systemLogger.warning("[Filtration] Forçage ignoré : relais non piloté dans ce mode d'installation");
+        sLastForceWarnMs = nowMs;
+      }
+    }
     if (state.running || relayState) {
       state.running = false;
-
       state.scheduleComputedThisCycle = false;
       state.startedAtMs = 0;
       if (relayState) {
@@ -180,18 +193,16 @@ void FiltrationManager::update() {
     state.startedAtMs = millis();
     state.scheduleComputedThisCycle = false;
     systemLogger.info("Démarrage filtration");
-    // En mode piloté : armer le timer de stabilisation au démarrage de la filtration.
-    // On n'arme le timer que si la filtration a été arrêtée suffisamment longtemps
-    // (durée >= délai de stabilisation) pour éviter les boucles sur un arrêt/redémarrage
-    // fugace (glitch, sauvegarde config, etc.).
-    if (mqttCfg.regulationMode == "pilote") {
-      unsigned long pauseMs = (state.lastStoppedAtMs == 0)
-                                ? 0xFFFFFFFFUL
-                                : (millis() - state.lastStoppedAtMs);
-      unsigned long stabilizationMs = (unsigned long)mqttCfg.stabilizationDelayMin * 60000UL;
-      if (pauseMs > stabilizationMs) {
-        PumpController.armStabilizationTimer();
-      }
+    // Mode ManagedFiltration (garanti ici) : armer le timer de stabilisation au
+    // démarrage de la filtration. On n'arme le timer que si la filtration a été
+    // arrêtée suffisamment longtemps (durée >= délai de stabilisation) pour éviter
+    // les boucles sur un arrêt/redémarrage fugace (glitch, sauvegarde config, etc.).
+    unsigned long pauseMs = (state.lastStoppedAtMs == 0)
+                              ? 0xFFFFFFFFUL
+                              : (millis() - state.lastStoppedAtMs);
+    unsigned long stabilizationMs = (unsigned long)mqttCfg.stabilizationDelayMin * 60000UL;
+    if (pauseMs > stabilizationMs) {
+      PumpController.armStabilizationTimer();
     }
   }
 
@@ -223,9 +234,7 @@ void FiltrationManager::update() {
     state.startedAtMs = 0;
     systemLogger.info("Arrêt filtration");
     state.lastStoppedAtMs = millis();
-    if (mqttCfg.regulationMode == "pilote") {
-      PumpController.clearStabilizationTimer();
-    }
+    PumpController.clearStabilizationTimer();
   } else {
     state.running = runTarget;
   }
@@ -241,4 +250,44 @@ void FiltrationManager::update() {
 
 void FiltrationManager::publishState() {
   mqttManager.publishFiltrationState();
+}
+
+// =============================================================================
+// feature-056 — état de la filtration externe (mode ExternalFiltration)
+// =============================================================================
+
+void FiltrationManager::setExternalState(bool running) {
+  // Horodatage AVANT la section critique ; log APRÈS (section critique minimale).
+  uint32_t now = (uint32_t)millis();
+  portENTER_CRITICAL(&_externalMux);
+  _externalOn = running;
+  _externalLastMs = now;
+  _externalKnown = true;
+  portEXIT_CRITICAL(&_externalMux);
+  systemLogger.info(String("[Filtration externe] État signalé : ") + (running ? "ON" : "OFF"));
+}
+
+void FiltrationManager::getExternalState(bool& on, uint32_t& lastMs, bool& known) const {
+  portENTER_CRITICAL(&_externalMux);
+  on = _externalOn;
+  lastMs = _externalLastMs;
+  known = _externalKnown;
+  portEXIT_CRITICAL(&_externalMux);
+}
+
+WaterPresence FiltrationManager::resolveWaterPresence() const {
+  WaterPresenceInputs in = {};
+  in.mode = mqttCfg.installMode;
+  in.filtrationCommandedOn = state.running;
+  // Copie minimale du triplet externe sous lock ; âge calculé HORS lock,
+  // wrap-safe (soustraction non signée, cohérente au passage 0xFFFFFFFF).
+  bool on = false, known = false;
+  uint32_t lastMs = 0;
+  getExternalState(on, lastMs, known);
+  uint32_t now = (uint32_t)millis();
+  in.externalSignalOn = on;
+  in.externalSignalKnown = known;
+  in.externalSignalAgeMs = known ? (now - lastMs) : 0;
+  in.externalStaleMs = kExternalFiltrationStaleMs;
+  return resolveWaterPresent(in);
 }

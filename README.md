@@ -15,6 +15,7 @@ Contrôleur automatique de piscine basé sur ESP32 :
 - **ORP (Redox)** : Mesure via module numérique Atlas Scientific **EZO ORP** (I²C)
 - **Température** : Deux sondes Dallas **DS18B20** (eau + circuit/boîtier), identification automatique des rôles sur le bus OneWire
 - **Historique** : Historique des mesures
+- **Mode d'installation** : Décrit le câblage réel du contrôleur et garantit qu'aucun produit n'est injecté sans circulation d'eau — *PoolController pilote la filtration* (sortie 12 V), *Alimenté par le circuit de filtration*, ou *Filtration externe signalée* (une domotique tierce signale l'état via HTTP/MQTT ; dosage suspendu sans signal récent)
 - **Filtration** : Programmation automatique en fonction de la température de l'eau, programmation horaire, manuel
 - **Eclairage** : Programmation horaire, manuel
 - **Régulation automatique de pH et ORP** : Injection de produit de correction (pH-, chlore liquide) par **régulation proportionnelle temporisée (P)** avec pause de mélange et contrôle de débit PWM. Les mesures sont **lissées** (médiane + EMA) avant d'alimenter la régulation. *(pH+ : option de configuration présente mais non gérée actuellement.)*

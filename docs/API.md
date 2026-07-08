@@ -351,7 +351,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "port": 1883,
   "topic": "pool/controller",
   "enabled": true,
-  "regulation_mode": "pilote",
+  "install_mode": "managed",
   "regulation_speed": "normal",
   "stabilization_delay_min": 5,
   "ph_correction_type": "ph_minus",
@@ -369,7 +369,6 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "time_use_ntp": true,
   "ntp_server": "pool.ntp.org",
   "timezone_id": "europe_paris",
-  "filtration_enabled": true,
   "filtration_mode": "auto",
   "filtration_start": "08:00",
   "filtration_end": "20:00",
@@ -397,7 +396,7 @@ Champs notables de la réponse :
 
 | Champ | Type | Description |
 |-------|------|-------------|
-| `regulation_mode` | string | `"pilote"` (suit la filtration) ou `"continu"` |
+| `install_mode` | string | **Mode d'installation** (feature-056, v2.19.0). `"managed"` (PoolController pilote la filtration : relais GPIO 26 piloté, programmation active, eau présente = filtration commandée ON), `"powered"` (contrôleur alimenté par le circuit de filtration : relais inerte, programmation masquée, eau présumée présente en permanence — ex-`continu`), `"external"` (filtration tierce signalée : relais inerte, eau présente seulement si dernier signal ON reçu < 180 s, sinon dosage suspendu). Remplace `regulation_mode` **et** `filtration_enabled`. Voir [ADR-0026](adr/0026-mode-installation.md). |
 | `regulation_speed` | string | `"slow"` / `"normal"` / `"fast"` — préréglages PID |
 | `stabilization_delay_min` | integer | Délai de stabilisation capteurs après démarrage filtration (0–60 min) |
 | `ph_limit_minutes` | integer | Durée max d'injection pH par fenêtre glissante d'1 h (minutes, 1–60) |
@@ -431,6 +430,14 @@ Champs notables de la réponse :
 |-------|------|------------|
 | `orp_regulation_mode` | string | Valeurs acceptées : `"automatic"`, `"scheduled"`, `"manual"`. Toute autre valeur est ignorée. Met à jour `orp_enabled` automatiquement. |
 | `orp_daily_target_ml` | integer | Doit être ≥ 0 et ≤ `max_orp_ml_per_day` (si configuré). Retourne HTTP 400 si la limite est dépassée. |
+
+**`POST /save-config` — mode d'installation :**
+
+| Champ | Type | Validation |
+|-------|------|------------|
+| `install_mode` | string | Valeurs acceptées : `"managed"`, `"powered"`, `"external"`. Toute autre valeur est ignorée (mode courant conservé). |
+
+> ⚠️ **Retirés en v2.19.0 (feature-056)** : les champs `regulation_mode` et `filtration_enabled` **n'existent plus** dans `/get-config` ni `/save-config`. Ils sont fusionnés dans `install_mode` (voir [ADR-0026](adr/0026-mode-installation.md)). La migration NVS est automatique — voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md).
 
 ---
 
@@ -686,6 +693,18 @@ Champs ajoutés en feature-011 (répartition scheduled, v2.8.0 — [ADR-0021](ad
 | `ph_scheduled_flow_ml_per_min` | float \| null | Débit moyen **planifié** restant du mode Programmée pH (mL/min, 1 décimale) = volume restant à injecter / minutes de filtration restantes (bornées à minuit). `null` si le mode pH n'est pas `scheduled`, hors plage de filtration, ou heure locale ESP32 invalide — l'UI affiche alors « — ». |
 | `orp_scheduled_flow_ml_per_min` | float \| null | Équivalent ORP (chlore). Mêmes conditions de nullité. |
 
+Champs ajoutés en feature-056 (mode d'installation, v2.19.0 — [ADR-0026](adr/0026-mode-installation.md)) :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `install_mode` | string | Mode d'installation actif : `"managed"` / `"powered"` / `"external"`. |
+| `water_present` | boolean | Présence d'eau résolue (`resolveWaterPresent`), **source unique** des gardes de dosage. `managed` → filtration commandée ON ; `powered` → toujours `true` ; `external` → signal ON récent (< 180 s). |
+| `filtration_state_source` | string | Origine de `water_present` : `"commanded"` (managed), `"powered"` (powered), `"external"` (external). |
+| `filtration_state_stale` | boolean | Mode `external` uniquement : `true` si un signal a déjà été reçu mais qu'il est périmé (> 180 s) → dosage suspendu (fail-safe). |
+| `filtration_ext_known` | boolean | Mode `external` : `true` dès qu'au moins un signal externe a été reçu depuis le boot (`false` = « aucun signal », fail-safe OFF). |
+| `filtration_ext_on` | boolean | Dernier état signalé par la filtration externe (`ON`/`OFF`). |
+| `filtration_ext_age_s` | integer | Âge en secondes du dernier signal externe (`0` si `filtration_ext_known` est `false`). |
+
 > Le WebSocket pousse la configuration complète à la connexion initiale ; les mises à jour suivantes sont différentielles (seuls les champs modifiés sont inclus).
 
 ---
@@ -819,6 +838,35 @@ Allume ou éteint l'éclairage (relais).
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/lighting/on
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/lighting/off
 ```
+
+---
+
+### POST /filtration/external-state — WRITE
+
+Signale au contrôleur l'état réel d'une **filtration externe** (feature-056, v2.19.0). N'a d'effet utile qu'en mode d'installation `external` : il alimente la garde « présence d'eau » du dosage. Handler **non bloquant**, **aucune persistance** (au boot, état inconnu → dosage suspendu, fail-safe OFF).
+
+Le paramètre `running` est accepté en **corps de formulaire** (`application/x-www-form-urlencoded`) OU en **query string** — valeurs acceptées : `true`/`false`/`1`/`0`/`on`/`off`. **Pas de corps JSON.**
+
+```bash
+# corps de formulaire
+curl -u admin:monmotdepasse -X POST -d "running=true" \
+  http://poolcontroller.local/filtration/external-state
+# ou query string
+curl -u admin:monmotdepasse -X POST \
+  "http://poolcontroller.local/filtration/external-state?running=false"
+```
+
+**Réponse 200**
+
+```json
+{ "external_state": true }
+```
+
+**Erreurs**
+- `400` : `{"error":"missing_param","message":"Paramètre 'running' requis (true/false)."}`
+- `401` : token manquant / invalide
+
+> Équivalent MQTT : publier `ON`/`OFF` sur `{base}/filtration_external_state/set` (voir [MQTT.md](MQTT.md)). Les deux canaux mettent à jour l'état de façon identique. Au-delà de `kExternalFiltrationStaleMs = 180 s` sans nouveau signal, l'état est considéré périmé → présence d'eau `false`. Voir [ADR-0026](adr/0026-mode-installation.md).
 
 ---
 

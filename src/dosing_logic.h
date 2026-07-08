@@ -23,12 +23,68 @@
 #include <math.h>
 #include <string.h>
 
+// =============================================================================
+// Mode d'installation (feature-056) — décrit le câblage réel et pilote de façon
+// cohérente : la présence d'eau (garde dosage), le pilotage du relais filtration
+// et l'horizon de répartition scheduled. Enum PUR partagé par config.h (aucun
+// Arduino.h ici). Sérialisation JSON/WS/UART STABLE (ne JAMAIS renuméroter) :
+//   ManagedFiltration   -> "managed"   (ancien "pilote" + filtrationCfg.enabled)
+//   PoweredByFiltration -> "powered"   (ancien "continu")
+//   ExternalFiltration  -> "external"  (NOUVEAU : filtration tierce signalée)
+// =============================================================================
+enum class InstallMode : uint8_t {
+  ManagedFiltration = 0,    // PoolController pilote le relais filtration
+  PoweredByFiltration = 1,  // PC alimenté par la phase filtration → eau présumée présente
+  ExternalFiltration = 2    // filtration tierce, état signalé via HTTP/MQTT (fail-safe OFF)
+};
+
+// Source retenue pour la présence d'eau (diagnostic / WS).
+enum class WaterSource : uint8_t {
+  FiltrationCommanded,  // Managed : état commandé par PoolController
+  PoweredAssumed,       // Powered : présumé par câblage
+  ExternalSignal        // External : dernier signal externe
+};
+
+// Entrées POD de la résolution « eau présente ? ». Tous les champs collectés par
+// la coquille (filtration.*) AVANT l'appel. age = (now - lastMs) non signé,
+// calculé wrap-safe dans la coquille (jamais ici).
+struct WaterPresenceInputs {
+  InstallMode mode;
+  bool filtrationCommandedOn;    // filtration.isRunning() (Managed)
+  bool externalSignalOn;         // dernier état signalé (External)
+  bool externalSignalKnown;      // au moins un signal reçu depuis le boot (External)
+  uint32_t externalSignalAgeMs;  // âge du dernier signal externe (now - lastMs)
+  uint32_t externalStaleMs;      // fraîcheur max tolérée (kExternalFiltrationStaleMs)
+};
+
+// Verdict de présence d'eau. `stale` : mode External, signal connu mais périmé.
+struct WaterPresence {
+  bool waterPresent;
+  WaterSource source;
+  bool stale;
+};
+
+// Résout la présence d'eau selon le mode d'installation. Fail-closed strict
+// (condition pool-chemistry #2 : doute = refus).
+//   Managed  → waterPresent = filtrationCommandedOn ;
+//   Powered  → waterPresent = true (eau présumée présente) ;
+//   External → waterPresent = externalSignalOn && externalSignalKnown &&
+//              externalSignalAgeMs <= externalStaleMs (on teste `known` AVANT
+//              l'âge), sinon false ;
+//   mode inconnu → false.
+WaterPresence resolveWaterPresent(const WaterPresenceInputs& in);
+
+// Migration de l'ancien schéma (regulationMode + filtrationCfg.enabled) vers
+// InstallMode : "continu" → PoweredByFiltration ; sinon → ManagedFiltration.
+// Ne produit JAMAIS ExternalFiltration (mode nouveau, jamais migré).
+InstallMode migrateInstallMode(const char* regMode, bool filtrationEnabled);
+
 // Cause de refus de dosage (énum pur). L'ordre suit exactement l'ordre des
 // gardes de canDose(). None = dosage autorisé.
 enum class DoseRefusal {
   None,
   WatchdogInactive,        // watchdog inactif
-  FiltrationOff,           // filtration arrêtée (hors mode continu)
+  FiltrationOff,           // pas de présence d'eau (resolveWaterPresent, selon le mode d'installation)
   ReadingNaN,              // lecture pH/ORP filtrée indisponible (NaN)
   FilterNotReady,          // filtre capteur non prêt (warmup / EZO injoignable)
   FilterUnstable,          // capteur instable (rejets consécutifs)
@@ -47,8 +103,8 @@ enum class DoseRefusal {
 // coquille canDose() depuis les globals AVANT l'appel à evaluateDose().
 struct DoseInputs {
   bool watchdogActive;          // esp_task_wdt_status(NULL) == ESP_OK
-  bool continuousMode;          // mqttCfg.regulationMode == "continu"
-  bool filtrationRunning;       // filtration.isRunning()
+  bool waterPresent;            // feature-056 : source UNIQUE resolveWaterPresent()
+                                // (Managed=commandé, Powered=présumé, External=signal frais)
   float reading;                // sensors.getPhFiltered() / getOrpFiltered()
   bool filterReady;             // isPhFilterReady() / isOrpFilterReady()
   bool filterUnstable;          // isPhFilterUnstable() / isOrpFilterUnstable()
@@ -178,7 +234,7 @@ enum class ManualInjectRefusal {
 // Entrées POD collectées par la coquille (web_routes_control) AVANT l'appel.
 struct ManualInjectInputs {
   bool watchdogActive;             // esp_task_wdt_status(NULL) == ESP_OK
-  bool filtrationOk;               // filtration.isRunning() OU mode continu
+  bool waterPresent;               // feature-056 : resolveWaterPresent() (source UNIQUE)
   bool stabilizationActive;        // isStabilizationTimerActive(pumpIndex)
   uint32_t stabilizationRemainingS;// secondes restantes (formatage 409 uniquement,
                                    // non utilisé par la décision — recopié tel quel)
@@ -238,7 +294,7 @@ ManualInjectDecision evaluateManualInject(const ManualInjectInputs& in);
 struct ScheduledDoseInputs {
   int nowMin;                  // minutes locales depuis minuit (heure valide requise)
   int horizonMinutes;          // minutes restantes de la plage (remainingRangeMinutes)
-                               // ou 1440-nowMin en mode continu ; <=0 → refus
+                               // ou 1440-nowMin hors mode Managed ; <=0 → refus
   int windowMinutes;           // taille de fenêtre (kScheduledWindowMinutes = 15)
   float dailyTargetMl;         // mqttCfg.ph/orpDailyTargetMl (cible utilisateur)
   float maxDailyMl;            // plafond sécurité (maxPhMlPerDay / maxChlorineMlPerDay) ; <=0 = sans plafond

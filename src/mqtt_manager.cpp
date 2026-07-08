@@ -185,6 +185,10 @@ void MqttManager::refreshTopics() {
   // feature-053 : Mode Boost (switch ON/OFF).
   topics.boostState                 = base + "/boost";
   topics.boostCommand               = base + "/boost/set";
+  // feature-056 : mode d'installation + signal filtration externe.
+  topics.installModeState           = base + "/install_mode";
+  topics.installModeCommand         = base + "/install_mode/set";
+  topics.filtrationExternalStateCommand = base + "/filtration_external_state/set";
 }
 
 // ============================================================================
@@ -344,6 +348,9 @@ void MqttManager::connectInTask() {
     mqtt.subscribe(topics.lightingStartCommand.c_str());
     mqtt.subscribe(topics.lightingEndCommand.c_str());
     mqtt.subscribe(topics.boostCommand.c_str());  // feature-053
+    // feature-056 : mode d'installation + signal filtration externe
+    mqtt.subscribe(topics.installModeCommand.c_str());
+    mqtt.subscribe(topics.filtrationExternalStateCommand.c_str());
 
     discoveryPublished = false;
     esp_task_wdt_reset();
@@ -615,6 +622,9 @@ void MqttManager::publishAllStatesInternal() {
   safePublish(topics.lightingEndState.c_str(), lightingCfg.endTime.c_str(), true);                      // feature-052
 
   safePublish(topics.boostState.c_str(), isBoostActive(time(nullptr)) ? "ON" : "OFF", true);  // feature-053
+
+  // feature-056 : mode d'installation (managed/powered/external, retain)
+  safePublish(topics.installModeState.c_str(), installModeToString(mqttCfg.installMode), true);
 
   safePublish(topics.phDosingState.c_str(),  PumpController.isPhDosing()  ? "ON" : "OFF", true);
   safePublish(topics.orpDosingState.c_str(), PumpController.isOrpDosing() ? "ON" : "OFF", true);
@@ -956,6 +966,8 @@ void MqttManager::messageCallback(char* topic, byte* payload, unsigned int lengt
   else if (topicStr == topics.lightingStartCommand)     cmd.type = InboundCmdType::LightingStart;
   else if (topicStr == topics.lightingEndCommand)       cmd.type = InboundCmdType::LightingEnd;
   else if (topicStr == topics.boostCommand)             cmd.type = InboundCmdType::Boost;
+  else if (topicStr == topics.installModeCommand)       cmd.type = InboundCmdType::InstallMode;
+  else if (topicStr == topics.filtrationExternalStateCommand)   cmd.type = InboundCmdType::FiltrationExternalState;
   else return;
 
   if (inQueue == nullptr) return;
@@ -1351,6 +1363,49 @@ void MqttManager::drainCommandQueue() {
         publishBoostState();
         break;
       }
+      case InboundCmdType::InstallMode: {
+        // feature-056 : mode d'installation (managed/powered/external). Miroir de la
+        // route /save-config : parse strict, écrit sous configMutex, persiste, republie.
+        payloadStr.toLowerCase();
+        InstallMode parsed = installModeFromString(payloadStr.c_str(), mqttCfg.installMode);
+        if (payloadStr != installModeToString(parsed)) {
+          systemLogger.warning("Mode d'installation invalide (MQTT): " + payloadStr);
+          enqueueOutbound(topics.installModeState, installModeToString(mqttCfg.installMode), true);
+          break;
+        }
+        if (xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+          static unsigned long sWarnInstallModeMs = 0;
+          warnConfigMutexTimeout(sWarnInstallModeMs, "cmd install_mode");
+          enqueueOutbound(topics.installModeState, installModeToString(mqttCfg.installMode), true);
+          break;
+        }
+        const bool changed = (mqttCfg.installMode != parsed);
+        if (changed) {
+          mqttCfg.installMode = parsed;
+          saveMqttConfig();
+        }
+        xSemaphoreGiveRecursive(configMutex);
+        if (changed) {
+          filtration.update();  // applique l'inertie du relais selon le nouveau mode
+          systemLogger.info("Mode d'installation changé (MQTT): " + payloadStr);
+        }
+        enqueueOutbound(topics.installModeState, installModeToString(mqttCfg.installMode), true);
+        break;
+      }
+      case InboundCmdType::FiltrationExternalState: {
+        // feature-056 : signal d'état de la filtration externe (mode ExternalFiltration).
+        // Même effet que POST /filtration/external-state. setExternalState est thread-safe
+        // (spinlock interne, horodatage millis()) — appel direct sûr depuis loopTask.
+        payloadStr.toUpperCase();
+        if (payloadStr == "ON") {
+          filtration.setExternalState(true);
+        } else if (payloadStr == "OFF") {
+          filtration.setExternalState(false);
+        } else {
+          systemLogger.warning("Signal filtration externe invalide (MQTT): " + payloadStr);
+        }
+        break;
+      }
     }
   }
 
@@ -1608,6 +1663,43 @@ void MqttManager::publishDiscovery() {
   doc["state_on"] = "ON";
   doc["state_off"] = "OFF";
   doc["icon"] = "mdi:rocket-launch";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-056 : Mode d'installation (select managed/powered/external). Libellés FR
+  // dans HA, protocole inchangé sur le fil (managed/powered/external) via
+  // value_template/command_template — même pattern que le select Mode Filtration.
+  topic = discoveryBase + "select/" + HA_DEVICE_ID + "_install_mode/config";
+  doc["name"] = "Mode d'installation";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_install_mode";
+  doc["state_topic"] = topics.installModeState;
+  doc["command_topic"] = topics.installModeCommand;
+  doc["icon"] = "mdi:pipe-valve";
+  {
+    JsonArray installOpts = doc["options"].to<JsonArray>();
+    installOpts.add("PoolController pilote");
+    installOpts.add("Alimenté par filtration");
+    installOpts.add("Filtration externe");
+  }
+  doc["value_template"] =
+    "{{ {'managed':'PoolController pilote','powered':'Alimenté par filtration','external':'Filtration externe'}.get(value, value) }}";
+  doc["command_template"] =
+    "{{ {'PoolController pilote':'managed','Alimenté par filtration':'powered','Filtration externe':'external'}[value] }}";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);  // publishConfig fait doc.clear() → pas de fuite value/command_template
+
+  // feature-056 : signal d'état de la filtration EXTERNE (mode ExternalFiltration).
+  // Switch optimiste (pas de state_topic → assumed_state) : permet à une automation
+  // HA de signaler l'état réel de la filtration tierce vers le contrôleur. Le
+  // contrôleur applique la garde « présence d'eau » sur ce signal (timeout fail-safe).
+  topic = discoveryBase + "switch/" + HA_DEVICE_ID + "_filtration_external/config";
+  doc["name"] = "Signal filtration externe";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_filtration_external";
+  doc["command_topic"] = topics.filtrationExternalStateCommand;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["optimistic"] = true;
+  doc["icon"] = "mdi:water-sync";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 

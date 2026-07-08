@@ -3390,3 +3390,89 @@ h1, h2, h3 {
   .cal-trigger-row { gap: 8px; }
   .cal-trigger-row .btn { width: 100%; }
 }
+
+/* feature-056 : mode d'installation — cartes radio empilées (calquées sur .callout) */
+.install-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.install-card {
+  display: flex;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1.5px solid var(--stroke);
+  background: var(--panel2);
+  cursor: pointer;
+  transition: border-color var(--transition-base), background var(--transition-base);
+}
+.install-card:hover {
+  border-color: var(--accent);
+}
+.install-card:has(.install-card__radio:checked) {
+  border-color: var(--accent);
+  background: rgba(79, 143, 255, 0.08);
+}
+.install-card__radio {
+  margin-top: 3px;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+.install-card:has(.install-card__radio:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.install-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.install-card__title {
+  font-weight: 600;
+}
+.install-card__wiring,
+.install-card__dosing {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.35;
+}
+
+/* feature-056 : bloc d'aide repliable du mode « Filtration externe signalée » */
+.tips {
+  margin-top: 12px;
+  border-top: 1px solid var(--stroke);
+  padding-top: 10px;
+}
+.tips > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.9rem;
+  list-style: revert;
+}
+.tips__body {
+  margin-top: 10px;
+}
+.tips__h {
+  margin: 12px 0 4px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.tips__code {
+  background: var(--panel2, rgba(127, 127, 127, 0.1));
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 0;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  white-space: pre;
+}
+.tips__code code {
+  background: none;
+  padding: 0;
+}

@@ -158,3 +158,19 @@ Valeurs lues via les getters `PumpController.isBoostActive()` / `getBoostUntilEp
 Ces deux booléens reflètent les **leviers réellement actifs** du Mode Boost et sont **calculés au vol** dans `_buildSensorJson()` à chaque cycle (indépendants de `boost_active`) : ils sont donc valides après une activation depuis Home Assistant **et** après un rechargement de page — contrairement aux booléens `filtration_extended` / `chlorine_boosted` de la seule réponse HTTP `POST /boost/start` (feature-054). L'UI (`updateBoostCard`, [page-dashboard.md](../features/page-dashboard.md#carte-boost-feature-053)) les utilise pour afficher une ligne « Effet » persistante quand le Boost est actif. Aucune logique de dosage n'est touchée.
 
 Buffer `_buildSensorJson()` bumpe de **1600 → 1664 octets**.
+
+## Champs `sensor_data` ajoutés en feature-056 (Mode d'installation, v2.19.0)
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `install_mode` | string | Mode d'installation actif : `"managed"` / `"powered"` / `"external"` (`installModeToString(mqttCfg.installMode)`). |
+| `water_present` | bool | Présence d'eau résolue par `filtration.resolveWaterPresence().waterPresent` — **source unique** consommée par toutes les gardes de dosage. `managed` → filtration commandée ON ; `powered` → toujours `true` ; `external` → dernier signal ON reçu il y a < `kExternalFiltrationStaleMs` (180 s). |
+| `filtration_state_source` | string | Origine de `water_present` : `"commanded"` (managed), `"powered"` (powered), `"external"` (external) — mappé depuis `WaterSource`. |
+| `filtration_state_stale` | bool | `WaterPresence.stale` : mode `external`, `true` si un signal a déjà été reçu mais est périmé (> 180 s) → dosage suspendu (fail-safe). |
+| `filtration_ext_known` | bool | Mode `external` : `true` dès qu'au moins un signal externe a été reçu depuis le boot. `false` = « aucun signal » (fail-safe OFF au boot). |
+| `filtration_ext_on` | bool | Dernier état signalé par la filtration externe (`ON`/`OFF`), lu via `filtration.getExternalState()`. |
+| `filtration_ext_age_s` | int | Âge en secondes du dernier signal externe (`0` si `filtration_ext_known == false`). |
+
+Ces champs sont **calculés au vol** dans `_buildSensorJson()` à chaque cycle. La présence d'eau vient d'un appel unique à `filtration.resolveWaterPresence()` (qui délègue à la fonction pure `resolveWaterPresent()`, [ADR-0026](../adr/0026-mode-installation.md)) ; le triplet `{on, lastMs, known}` du signal externe est lu sous portMUX via `getExternalState()`. Le champ `boost_filtration_extended` (feature-055) est désormais dérivé de `installMode == ManagedFiltration` (et non plus de `filtrationCfg.enabled`, retiré). Les champs `regulation_mode` / `filtration_enabled` ont disparu de la payload `config`.
+
+Buffer `_buildSensorJson()` bumpe de **1664 → 1920 octets**.

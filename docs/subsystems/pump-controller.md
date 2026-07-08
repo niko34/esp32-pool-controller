@@ -157,7 +157,7 @@ Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontr
 |---|-----------|----------|------------------|
 | 1 | **Index pompe valide** | `pumpIndex` ∉ {0, 1} | bug interne |
 | 2 | **Watchdog actif** | wdt non initialisé | sécurité hardware |
-| 3 | **Filtration en marche** | filtration arrêtée (sauf mode `continu`) | eau ne circule pas — risque bouchon doseuse |
+| 3 | **Présence d'eau** | `filtration.resolveWaterPresence().waterPresent == false` | eau ne circule pas — risque bouchon doseuse / injection en eau stagnante. **Source unique** selon le mode d'installation (feature-056, voir [Présence d'eau selon le mode d'installation](#présence-deau-selon-le-mode-dinstallation-feature-056)) |
 | 4 | **Lecture FILTRÉE non NaN** | `getPhFiltered()` ou `getOrpFiltered()` = NaN | feature-025 : le PID consomme le filtré ; NaN = warmup non amorcé / stale |
 | 4b | **Filtre prêt** (feature-025) | `!isPhFilterReady()` / `!isOrpFilterReady()` | warmup en cours, mesure trop ancienne (> 20 s), ou EZO injoignable — **fail-closed** |
 | 4c | **Capteur stable** (feature-025) | `isPhFilterUnstable()` / `isOrpFilterUnstable()` | ≥ 10 rejets consécutifs (EMI persistant) → on bloque plutôt que de lisser |
@@ -170,6 +170,20 @@ Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontr
 | 10 | **Anti-rafale court terme** (Pass 3.5) | > 6 cycles/min OU > 20 cycles/15 min | anti-emballement PID — voir [Ring buffer anti-rafale](#ring-buffer-anti-rafale) |
 
 > **Conditions #1, #2, #3, #5, #6** issues du checklist `pool-chemistry` validé en cadrage feature-021. **Condition #10** ajoutée en correctif Pass 3.5. **Conditions #4 (filtré), #4b, #4c, #6b** ajoutées en feature-025 — toutes **fail-closed** et **prioritaires** : elles s'ajoutent aux gardes existantes sans les contourner.
+
+## Présence d'eau selon le mode d'installation (feature-056)
+
+La garde #3 (« Présence d'eau ») ne teste plus `filtration.isRunning()` directement : elle consomme la **source unique** `filtration.resolveWaterPresence().waterPresent` ([ADR-0026](../adr/0026-mode-installation.md)). La même source alimente **tous** les chemins de dosage (régulation auto, injection manuelle `evaluateManualInject`, monitor d'injection en cours) — plus de logique de présence d'eau dupliquée par site.
+
+Cette valeur est résolue par la fonction **pure** `resolveWaterPresent(WaterPresenceInputs)` ([`src/dosing_logic.cpp`](../../src/dosing_logic.cpp), pattern Humble Object [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) selon le mode d'installation `InstallMode` (remplace `regulationMode` + `filtrationCfg.enabled`) — **fail-closed strict** :
+
+| Mode | Sérialisé | `waterPresent` | Ex-équivalent |
+|------|-----------|----------------|---------------|
+| `ManagedFiltration` | `managed` | `filtration.isRunning()` (état commandé) | `pilote` + `enabled=true` |
+| `PoweredByFiltration` | `powered` | `true` (eau présumée présente 24/7) | `continu` |
+| `ExternalFiltration` | `external` | signal externe `ON` **connu ET récent** (< `kExternalFiltrationStaleMs` = 180 s), sinon `false` (fail-safe OFF au boot et à l'expiration) | *nouveau* |
+
+**L'ordre des gardes est inchangé** ; seule la source du booléen change. La garde d'injection manuelle reproduit la même condition (`in.waterPresent = filtration.resolveWaterPresence().waterPresent`, [`web_routes_control.cpp:66`](../../src/web_routes_control.cpp:66)) — l'ancienne « exemption mode `continu` » est désormais absorbée par la résolution `powered` (toujours `true`). L'arrêt cyclique d'une injection en cours (`updateManualInject()`) s'appuie aussi sur cette source : en `external`, un signal `OFF` ou périmé pendant une injection volumée déclenche l'interruption CRITICAL.
 
 ## Décision de dosage : logique pure (`src/dosing_logic`) vs coquille hardware
 
@@ -197,7 +211,7 @@ Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontr
 | `DoseRefusal` | Garde `canDose` | Cause FR (réinjectée) |
 |---|---|---|
 | `WatchdogInactive` | #2 | watchdog inactif |
-| `FiltrationOff` | #3 | filtration arrêtée |
+| `FiltrationOff` | #3 | pas de présence d'eau (résolue par `resolveWaterPresent` selon le mode d'installation) |
 | `ReadingNaN` | #4 | lecture filtrée indisponible |
 | `FilterNotReady` | #4b | filtre non prêt |
 | `FilterUnstable` | #4c | capteur instable |
@@ -237,7 +251,7 @@ Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontr
 | # | Garde | Refus si | Frontière figée |
 |---|-------|----------|-----------------|
 | 1 | Watchdog actif | wdt inactif sur `loopTask` | — |
-| 2 | Filtration | arrêtée (exemption mode `continu` résolue côté collecte) | — |
+| 2 | Présence d'eau | `resolveWaterPresence().waterPresent == false` (feature-056 : `managed`→filtration commandée, `powered`→toujours vrai, `external`→signal récent) | — |
 | 3 | Stabilisation post-cal | fenêtre active **pour la pompe visée** | — |
 | 4 | Double démarrage | injection manuelle déjà active sur cette pompe | — |
 | 5 | Limite journalière **prédictive** | `cumul + volume demandé > max` (limite ≤ 0 = illimité) | `==` **acceptée** (strict `>`) ; `remaining_ml` renseigné dans le refus |
@@ -291,7 +305,7 @@ Le refus `daily_limit` ne subsiste que si le reliquat est **nul ou < 1 s de pomp
 
 **Bornage durée** : `duration` query param plafonné à `kManualInjectMaxDurationS = 600 s` (10 min, abaissé de 3600 s en v2.1.2). Justification `pool-chemistry` : 3600 s expose à un risque trop long si la filtration s'arrête en milieu de cycle ; 10 min couvrent les usages typiques.
 
-> Cohérence : la garde filtration reproduit **exactement** la condition #3 de `canDose()` (filtration en marche sauf mode `continu`). En mode `continu`, l'alimentation 12 V des pompes suit la filtration au niveau matériel — la garde firmware est inutile et casserait le cas d'usage.
+> Cohérence : la garde filtration reproduit **exactement** la condition #3 de `canDose()` — elle consomme la même source unique `filtration.resolveWaterPresence().waterPresent` (feature-056). En mode `powered` (ex-`continu`), l'alimentation 12 V des pompes suit la filtration au niveau matériel → présence d'eau présumée `true` en permanence ; en `external`, la présence dépend du signal récent (fail-safe OFF).
 
 **Testabilité native** : `evaluateManualInject` est couverte par **17 tests** dédiés (`test/test_native_dosing/test_dosing_decision.cpp`, préfixe `test_F006_*` — 135 tests au total) : une cause de refus par test + nominal, reliquat, frontières `==` acceptées, limites 0/≤0 = illimité, ordre de priorité des gardes, partage du ring anti-rafale avec l'auto. `dosing_logic.cpp` reste à **100 % des lignes**.
 
@@ -353,15 +367,15 @@ Après chaque injection, le bassin a besoin de temps pour s'homogénéiser avant
 |-----------------|----------|-------|
 | Calibration EZO pH réussie (`Cal,mid`, `Cal,low`, `Cal,clear`) | `armStabilizationTimer(0)` | `kStabilizationDurationPhMs = 5 min` |
 | Calibration EZO ORP réussie | `armStabilizationTimer(1)` | `kStabilizationDurationOrpMs = 3 min` |
-| Démarrage filtration en mode `pilote` (pause précédente > `stabilizationDelayMin`) | `armStabilizationTimer()` (legacy, sans index) | `mqttCfg.stabilizationDelayMin` × 60 s — applique aux 2 pompes |
-| Boot en mode `continu` | `armStabilizationTimer()` (legacy) | idem |
+| Démarrage filtration en mode `managed` (pause précédente > `stabilizationDelayMin`) | `armStabilizationTimer()` (legacy, sans index) | `mqttCfg.stabilizationDelayMin` × 60 s — applique aux 2 pompes |
+| Boot en mode `powered` | `armStabilizationTimer()` (legacy) | idem |
 | Passage de minuit (mitigation double quota) | `armStabilizationTimer()` (legacy) | idem |
 
 **Surcharge legacy `armStabilizationTimer()` (sans paramètre)** : conservée pour les sites « globaux » (filtration, boot continu, rollover minuit). Arme **les 2 pompes simultanément** avec `mqttCfg.stabilizationDelayMin × 60_000` ms.
 
-- **Démarrage filtration en mode `pilote`** : appel **conditionnel** — uniquement si `pauseMs > stabilizationMs`. Empêche le réarmement après un glitch très court (sauvegarde config, redémarrage relais involontaire). Au tout premier démarrage (`lastStoppedAtMs == 0`), la pause est considérée infinie → timer armé.
-- **Arrêt filtration en mode `pilote`** : `clearStabilizationTimer()` (efface les 2 pompes).
-- **Mode `continu`** : aucun appel automatique au démarrage filtration. Le timer peut être armé manuellement ou ignoré selon le besoin.
+- **Démarrage filtration en mode `managed`** : appel **conditionnel** — uniquement si `pauseMs > stabilizationMs`. Empêche le réarmement après un glitch très court (sauvegarde config, redémarrage relais involontaire). Au tout premier démarrage (`lastStoppedAtMs == 0`), la pause est considérée infinie → timer armé.
+- **Arrêt filtration en mode `managed`** : `clearStabilizationTimer()` (efface les 2 pompes).
+- **Modes `powered` / `external`** : le relais n'est pas piloté (feature-056), donc aucun appel automatique au démarrage/arrêt filtration. Le timer peut être armé manuellement (boot `powered`) ou ignoré selon le besoin.
 
 `stabilizationDelayMin` est **configurable via `/save-config`** (plage 0-60 min, défaut 5). Valeur 0 = stabilisation legacy désactivée — la stabilisation post-calibration EZO reste, elle, toujours active (5 min pH / 3 min ORP).
 
@@ -443,7 +457,7 @@ Logique pure (à chaque tick) :
 Côté coquille (`pump_controller.cpp`) :
 
 - **Heure locale** via `time()` + `kMinValidEpoch` : heure invalide → **aucune injection** (fail-closed historique), warning unique `[Scheduled] Heure locale indisponible — dosage pH programmé suspendu` (idem ORP).
-- **Horizon** : `remainingRangeMinutes(nowMin, start, end)` ([`src/schedule_logic.h`](../../src/schedule_logic.h)) — minutes restantes de la plage de filtration, **bornées à minuit** (reset des compteurs journaliers, [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md)). En mode `regulationMode == "continu"`, horizon = `1440 − nowMin` (le dosage hors plage reste permis — comportement continu préservé).
+- **Horizon** : `remainingRangeMinutes(nowMin, start, end)` ([`src/schedule_logic.h`](../../src/schedule_logic.h)) — minutes restantes de la plage de filtration, **bornées à minuit** (reset des compteurs journaliers, [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md)). **Hors mode d'installation `managed`** (feature-056 : `installMode != ManagedFiltration`), horizon = `1440 − nowMin` : le dosage hors plage reste permis (eau présumée 24/7 en `powered`, horizon plein en `external` borné par la garde présence d'eau). Comportement de l'ex-`continu` préservé.
 - **Ring anti-rafale consulté AVANT tout démarrage** (condition pool-chemistry n°1) : transition inactive → active refusée si `kMaxDosingCyclesPerMinute` (6/min) ou `kMaxDosingCyclesPer15Min` (20/15 min) atteint — mêmes seuils et fenêtres que `canDose`, ring **partagé** auto + manuel + scheduled. Chaque démarrage est enregistré via `recordDosingCycleStart()`.
 - **Exemption `cyclesToday` conservée** (arbitrage R4 validé pool-chemistry) : les démarrages scheduled n'incrémentent pas `maxCyclesPerDay`, car ils sont **bornés structurellement** (≤ 4/h par le cadencement 15 min) et gardés par le ring anti-rafale. Voir [ADR-0021](../adr/0021-repartition-scheduled.md).
 - **Débit effectif unique** (condition n°5) : la même variable `effectiveFlowMlPerMin` (`maxFlowMlPerMin × pumpNMaxDutyPct`) sert au bornage horaire, à la durée d'injection et au duty PWM.
@@ -555,7 +569,7 @@ Flush différé : `_dailyCountersDirty` armé à chaque injection, écrit en NVS
 - [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036) + gardes d'injection manuelle `evaluateManualInject` (feature-006) + répartition scheduled `evaluateScheduledDose` (feature-011)
 - [`src/schedule_logic.h`](../../src/schedule_logic.h), [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) — `remainingRangeMinutes` (horizon de répartition scheduled, feature-011)
-- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053)
+- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053), [ADR-0026](../adr/0026-mode-installation.md) (Mode d'installation — 3 archétypes de câblage + résolution unique de la présence d'eau, feature-056)
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — entrée filtrée, anti-windup, pause mélange, zone morte
 - [feature-036](../../specs/features/done/feature-036-dosage-testable-decision-pure.md) — extraction de la décision de dosage en module pur testable
 - [feature-039](../../specs/features/done/feature-039-anti-rafale-rollover-testable.md) — extraction de l'anti-rafale + déclencheurs de rollover en logique pure testable

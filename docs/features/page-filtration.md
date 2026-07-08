@@ -15,16 +15,17 @@ Un **forçage temporaire** (ON ou OFF) permet de déroger à la planification sa
 
 ## Structure
 
-- **Toggle « Gérer la filtration »** (`#filtration_enabled`) — active ou désactive la fonctionnalité dans son ensemble.
-- **Carte Contrôle manuel** (`#filtration-manual-card`) — boutons Démarrer / Arrêter. Le **badge d'état (Marche / Arrêt)** est placé à droite du titre dans le `card__head` (frère direct du `<h2>`, classes `pill ok` ou `pill bad`) — voir feature-001. La ligne « État actuel » du body, devenue redondante, a été supprimée.
-- **Carte Configuration** — sélecteur de mode, heure de début, heure de fin, bouton Sauvegarder.
+> ⚠️ **Visibilité conditionnée au mode d'installation** (feature-056, v2.19.0). La page n'est pleinement active qu'en mode d'installation **`managed`** (PoolController pilote la filtration). En **`powered`** (alimenté par le circuit de filtration) et **`external`** (filtration tierce signalée), la programmation et le contrôle du relais sont **masqués** : le PoolController ne pilote pas le relais, une note « filtration non pilotée par le PoolController » est affichée. Le mode se règle dans Paramètres → Installation (voir [page-settings.md](page-settings.md#installation-panel-install-feature-056) et [ADR-0026](../adr/0026-mode-installation.md)). L'ancien toggle « Gérer la filtration » (`#filtration_enabled`) est **supprimé** (fusionné dans `install_mode`).
+
+- **Carte Contrôle manuel** (`#filtration-manual-card`) — boutons Démarrer / Arrêter. Le **badge d'état (Marche / Arrêt)** est placé à droite du titre dans le `card__head` (frère direct du `<h2>`, classes `pill ok` ou `pill bad`) — voir feature-001. La ligne « État actuel » du body, devenue redondante, a été supprimée. Masquée hors mode `managed`.
+- **Carte Configuration** — sélecteur de mode, heure de début, heure de fin, bouton Sauvegarder. Masquée hors mode `managed`.
 
 Les autres cartes (graphe, statistiques) peuvent être ajoutées au fil du temps ; se référer à `#view-filtration` pour l'état courant.
 
 ## Données consommées (WebSocket `/ws`)
 
-- `filtration_enabled` (bool — fonctionnalité active)
-- `filtration_running` (bool — relais fermé)
+- `install_mode` (`managed` / `powered` / `external`) — pilote la visibilité de la page (feature-056). `filtration_enabled` **retiré**.
+- `filtration_running` (bool — relais fermé, pertinent en `managed`)
 - `filtration_mode` (`auto` / `manual` / `force` / `off`)
 - `filtration_start`, `filtration_end` (strings `HH:MM`)
 - `filtration_force_on`, `filtration_force_off` (bool — forçage temporaire)
@@ -35,7 +36,7 @@ Les autres cartes (graphe, statistiques) peuvent être ajoutées au fil du temps
 |--------|----------|------|
 | Démarrer manuellement | `POST /filtration/on` | WRITE |
 | Arrêter manuellement | `POST /filtration/off` | WRITE |
-| Sauvegarder mode/horaires | `POST /save-config` (champs `filtration_enabled`, `filtration_mode`, `filtration_start`, `filtration_end`) | CRITICAL |
+| Sauvegarder mode/horaires | `POST /save-config` (champs `filtration_mode`, `filtration_start`, `filtration_end` — `filtration_enabled` retiré, feature-056) | CRITICAL |
 
 La fonction `saveFiltration()` côté JS sauvegarde uniquement les champs filtration, indépendamment des autres saves (autosave dédié).
 
@@ -44,7 +45,8 @@ La fonction `saveFiltration()` côté JS sauvegarde uniquement les champs filtra
 - Mode `auto` : l'horaire est recalculé à chaque `computeAutoSchedule()` ([`filtration.cpp`](../../src/filtration.cpp)) en fonction de la température mesurée, avec une **deadband de 1°C** (`_lastScheduledTemp`) pour éviter les recalculs inutiles. Rafraîchissement possible après 5 min d'eau en circulation.
 - Mode `manual` : l'horaire est respecté tel qu'entré par l'utilisateur.
 - Mode `off` : le relais est forcé à LOW en permanence.
-- Interaction régulation : voir [page pH](page-ph.md), [page ORP](page-orp.md) et [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md). Le démarrage de la filtration arme le timer de stabilisation (voir `armStabilizationTimer()` dans [`pump_controller.h:112`](../../src/pump_controller.h:112)).
+- **Relais piloté uniquement en mode d'installation `managed`** (feature-056) : en `powered` / `external`, `filtration.update()` retourne de façon anticipée, aucune commande relais, timer de stabilisation au démarrage filtration non armé.
+- Interaction régulation : voir [page pH](page-ph.md), [page ORP](page-orp.md) et [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md). En mode `managed`, le démarrage de la filtration arme le timer de stabilisation (voir `armStabilizationTimer()` dans [`pump_controller.h:112`](../../src/pump_controller.h:112)).
 
 ## Interaction MQTT / Home Assistant
 
@@ -74,4 +76,5 @@ Voir [`docs/MQTT.md`](../MQTT.md) pour l'auto-discovery complet.
 ## Documentation liée
 
 - [docs/subsystems/filtration.md](../subsystems/filtration.md) — règles de comportement et interaction filtration ↔ régulation.
-- [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) — gardes (`canDose()` requiert `filtrationActive`).
+- [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) — gardes (`canDose()` requiert la présence d'eau `resolveWaterPresence()`).
+- [ADR-0026](../adr/0026-mode-installation.md) — mode d'installation (3 archétypes de câblage) + résolution de la présence d'eau.

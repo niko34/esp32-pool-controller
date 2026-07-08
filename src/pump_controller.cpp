@@ -367,9 +367,9 @@ bool PumpControllerClass::canDose(int pumpIndex) {
   // 1. Watchdog actif. esp_task_wdt_status(NULL) == ESP_OK si la tâche courante
   // est inscrite au watchdog, ESP_ERR_NOT_FOUND sinon.
   in.watchdogActive = (esp_task_wdt_status(NULL) == ESP_OK);
-  // 2. Filtration (mode continu accepté sans relais filtration ON).
-  in.continuousMode = (mqttCfg.regulationMode == "continu");
-  in.filtrationRunning = filtration.isRunning();
+  // 2. Présence d'eau (feature-056) : source UNIQUE resolveWaterPresent() selon
+  // le mode d'installation (Managed=commandé, Powered=présumé, External=signal frais).
+  in.waterPresent = filtration.resolveWaterPresence().waterPresent;
   // 3. Lecture FILTRÉE (feature-025 : le PID auto consomme la mesure filtrée).
   in.reading = (pumpIndex == 0) ? sensors.getPhFiltered()
                                 : sensors.getOrpFiltered();
@@ -803,19 +803,20 @@ void PumpControllerClass::update() {
     return;
   }
 
-  // Garde structurelle "globale" : filtration + stabilisation post-cal + mode continu.
+  // Garde structurelle "globale" : présence d'eau + stabilisation post-cal.
   // Note importante : on ne peut pas appeler canDose(0/1) ici parce qu'il filtre AUSSI
   // sur le mode régulation (== "automatic"), or la branche `scheduled` doit pouvoir
   // tourner même quand le capteur est NaN (intentionnellement aveugle, cf. spec).
   // La garde "automatic + capteur valide + calibration" est appliquée plus bas dans
   // les branches dédiées (canDose(0) et canDose(1)) — défense en profondeur.
-  bool filtrationOk = (mqttCfg.regulationMode == "continu") || filtration.isRunning();
+  // feature-056 : source UNIQUE resolveWaterPresent() (Managed/Powered/External).
+  bool filtrationOk = filtration.resolveWaterPresence().waterPresent;
   bool stabilizationActive = isStabilizationTimerActive(0) ||
                              isStabilizationTimerActive(1);
   if (!filtrationOk || stabilizationActive) {
-    // Arrêter le dosage en cours si la filtration s'arrête / stabilisation active
+    // Arrêter le dosage en cours si l'eau n'est plus présente / stabilisation active
     if (phDosingState.active || orpDosingState.active) {
-      const char* reason = !filtrationOk ? "filtration arrêtée ou mode piloté"
+      const char* reason = !filtrationOk ? "eau absente (filtration arrêtée / signal externe périmé)"
                                          : "stabilisation post-cal en cours";
       systemLogger.info(String("Dosage suspendu (") + reason + ")");
       phDosingState.active = false;
@@ -1024,9 +1025,10 @@ void PumpControllerClass::update() {
 
         if (nowMin >= 0) {
           // Horizon de répartition : minutes restantes de la plage de filtration
-          // (bornées à minuit), ou fin de journée en mode continu (eau 24/7).
+          // (bornées à minuit), ou fin de journée hors mode Managed (eau 24/7 en
+          // Powered ; horizon plein en External, borné par la garde présence d'eau).
           int horizonMinutes;
-          if (mqttCfg.regulationMode == "continu") {
+          if (mqttCfg.installMode != InstallMode::ManagedFiltration) {
             horizonMinutes = 1440 - nowMin;
           } else {
             horizonMinutes = remainingRangeMinutes(nowMin,
@@ -1294,9 +1296,10 @@ void PumpControllerClass::update() {
 
         if (nowMin >= 0) {
           // Horizon de répartition : minutes restantes de la plage de filtration
-          // (bornées à minuit), ou fin de journée en mode continu (eau 24/7).
+          // (bornées à minuit), ou fin de journée hors mode Managed (eau 24/7 en
+          // Powered ; horizon plein en External, borné par la garde présence d'eau).
           int horizonMinutes;
-          if (mqttCfg.regulationMode == "continu") {
+          if (mqttCfg.installMode != InstallMode::ManagedFiltration) {
             horizonMinutes = 1440 - nowMin;
           } else {
             horizonMinutes = remainingRangeMinutes(nowMin,

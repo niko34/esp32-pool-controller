@@ -97,6 +97,32 @@ Depuis la v2.11.0, **toute image téléchargée depuis GitHub est vérifiée par
 
 ## Notes de migration
 
+### Mode d'installation (`install_mode`) — depuis v2.19.0 (2026-07-08)
+
+La v2.19.0 fusionne les anciens réglages `regulation_mode` (Continu / Piloté) **et** « Gérer la filtration » (`filtration_enabled`) en un **mode d'installation** unique à 3 valeurs (`managed` / `powered` / `external`), exposé dans le nouvel onglet **Paramètres → Installation** et dans l'assistant de premier lancement. Décision structurante : [ADR-0026](adr/0026-mode-installation.md).
+
+**Migration NVS automatique (one-shot, aucune action requise dans le cas nominal)** — à la première lecture de la config après mise à jour, si la clé `install_mode` est absente :
+
+| Ancien `reg_mode` | Nouveau `install_mode` |
+|-------------------|------------------------|
+| `pilote` (ou toute valeur ≠ `continu`) | `managed` |
+| `continu` | `powered` |
+
+`external` n'est **jamais** produit par migration : c'est un mode nouveau, à choisir explicitement.
+
+> ⚠️ **Cas de bord à vérifier — le relais de filtration peut changer de comportement.** La migration se base **uniquement** sur `reg_mode` et **ignore** l'ancien `filt_enabled`. Deux combinaisons héritées voient donc leur pilotage relais changer :
+>
+> | Ancienne config | Migre vers | Relais avant | Relais après |
+> |-----------------|-----------|--------------|--------------|
+> | `pilote` + « Gérer la filtration » **désactivé** | `managed` | inerte | **piloté** (GPIO 26) |
+> | `continu` + « Gérer la filtration » **activé** | `powered` | piloté | **inerte** |
+>
+> C'est **conforme à l'intention** (la combinaison « alimenté par la filtration » + « PoolController pilote la filtration » est un non-sens matériel — un contrôleur alimenté par la pompe ne peut pas la couper sans se couper lui-même). **Après mise à jour, vérifier dans Paramètres → Installation que le mode choisi correspond bien à votre câblage réel**, et le corriger si besoin (notamment si vous utilisez une filtration tierce → choisir `external`).
+
+**Mode `external` (filtration tierce)** : le contrôleur ne dose que si l'état réel de la filtration lui est signalé, via `POST /filtration/external-state?running=true|false` ou MQTT `{base}/filtration_external_state/set` (`ON`/`OFF`). **Sans signal depuis plus de 3 min** (ou au boot, aucun signal), l'eau est considérée absente et le dosage est **suspendu** (fail-safe). Prévoir une automatisation (Home Assistant, domotique) qui publie régulièrement cet état.
+
+`regulation_mode` et `filtration_enabled` disparaissent de `/get-config`, `/save-config`, du WebSocket et de l'UART. Les automatisations qui les lisaient doivent basculer sur `install_mode`.
+
 ### Migration layout v3 → v4 (v2.13.0) — depuis 2026-07-06
 
 ⚠️ **Mise à jour par câble USB obligatoire, une seule fois.**

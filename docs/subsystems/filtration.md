@@ -6,7 +6,9 @@
 
 ## Rôle
 
-Pilote le relais de la pompe de filtration. Trois modes coexistent : `auto` (horaire calculé selon température de l'eau), `manual` (horaire fixe), `off` (arrêt permanent). Un **forçage temporaire** (`force_on` / `force_off`) permet de déroger à la planification sans modifier la config ; il est perdu au redémarrage.
+Pilote le relais de la pompe de filtration. Trois modes de **planification** coexistent : `auto` (horaire calculé selon température de l'eau), `manual` (horaire fixe), `off` (arrêt permanent). Un **forçage temporaire** (`force_on` / `force_off`) permet de déroger à la planification sans modifier la config ; il est perdu au redémarrage.
+
+> ⚠️ **Le pilotage du relais est conditionné au mode d'installation** (feature-056, [ADR-0026](../adr/0026-mode-installation.md)). Le relais n'est piloté **que** si `mqttCfg.installMode == InstallMode::ManagedFiltration` (`managed`). En `powered` (contrôleur alimenté par le circuit de filtration) et `external` (filtration tierce), `update()` **retourne de façon anticipée** ([`filtration.cpp:125`](../../src/filtration.cpp:125)) : aucune commande relais, planification masquée côté UI. Voir [Mode d'installation et présence d'eau](#mode-dinstallation-et-présence-deau-feature-056).
 
 ## API publique
 
@@ -18,6 +20,11 @@ bool getRelayState() const;
 void computeAutoSchedule(); // recalcul horaire auto selon température
 void ensureTimesValid();
 void publishState();
+
+// feature-056 — mode d'installation ExternalFiltration
+void setExternalState(bool running);                              // signal externe (HTTP/MQTT) — non bloquant (portMUX)
+void getExternalState(bool& on, uint32_t& lastMs, bool& known) const;  // copie le triplet sous lock
+WaterPresence resolveWaterPresence() const;                        // SOURCE UNIQUE présence d'eau (toutes gardes de dosage)
 ```
 
 ## Algorithme auto
@@ -45,14 +52,42 @@ struct FiltrationRuntime {
 ## Interaction avec les autres composants
 
 - **`pump_controller`** :
-  - Démarrage filtration → `PumpController.armStabilizationTimer()` (timer configurable, défaut 5 min) → bloque les injections pendant la stabilisation.
+  - Démarrage filtration → `PumpController.armStabilizationTimer()` (timer configurable, défaut 5 min) → bloque les injections pendant la stabilisation. **Uniquement en mode `managed`** : en `powered` / `external` le relais n'est pas piloté, donc le timer de stabilisation au démarrage filtration n'est jamais armé (feature-056).
   - Arrêt filtration → `PumpController.clearStabilizationTimer()`.
-  - Mode `scheduled` : c'est le `pump_controller` qui vérifie `filtration.isRunning()` pour décider d'injecter.
+  - Présence d'eau : `pump_controller` consomme désormais `filtration.resolveWaterPresence().waterPresent` (**source unique**, feature-056), et non plus `filtration.isRunning()` directement. En mode `scheduled`, l'horizon de répartition vaut `1440 − nowMin` hors `managed` (voir [pump-controller.md](pump-controller.md#mode-scheduled)).
 - **`mqtt_manager`** : `publishFiltrationState()` publie `{base}/filtration_state` (`ON`/`OFF`) et `{base}/filtration_mode`.
 
 ## Gestion des horaires traversant minuit
 
 `isMinutesInRange(now, start, end)` tolère les plages `start > end` (ex. 22:00 → 06:00).
+
+## Mode d'installation et présence d'eau (feature-056)
+
+Le **mode d'installation** (`InstallMode`, [ADR-0026](../adr/0026-mode-installation.md)) décrit le câblage réel et pilote la présence d'eau, le relais et l'horizon de dosage. Il remplace les anciens `regulationMode` (`pilote`/`continu`) **et** `filtrationCfg.enabled` (fusion).
+
+### Résolution de la présence d'eau — source unique
+
+`resolveWaterPresence()` est la **source unique** consommée par toutes les gardes de dosage (`canDose`, injection manuelle, monitor d'injection en cours). La coquille collecte les entrées (mode, `state.running`, triplet externe lu sous lock, âge wrap-safe, `kExternalFiltrationStaleMs`) et délègue à la fonction **pure** `resolveWaterPresent(WaterPresenceInputs)` ([`src/dosing_logic.cpp`](../../src/dosing_logic.cpp), pattern Humble Object [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)). **Fail-closed strict** :
+
+| Mode | Sérialisé | Eau présente si… | Relais piloté |
+|------|-----------|------------------|---------------|
+| `ManagedFiltration` | `managed` | `filtration.isRunning()` (état commandé par PC) | oui (GPIO 26) |
+| `PoweredByFiltration` | `powered` | toujours `true` (PC vivant ⟺ eau) | non |
+| `ExternalFiltration` | `external` | `externalKnown && age ≤ 180 s && externalOn` | non |
+
+Mode inconnu → `false` (fail-closed).
+
+### État de la filtration externe (mode `external`)
+
+Le signal externe est stocké dans le triplet `{_externalOn, _externalLastMs, _externalKnown}`, protégé par un **portMUX** (`portENTER_CRITICAL` / `portEXIT_CRITICAL`) — écrivable sans risque depuis un handler HTTP (`POST /filtration/external-state`) ou un callback MQTT async (`{base}/filtration_external_state/set`), tous deux hors `loopTask`.
+
+- `setExternalState(bool)` : horodate (`millis()`) avant la section critique, écrit le triplet sous lock, logue après (`info` `[Filtration externe] État signalé : ON|OFF`). Le flag `_externalKnown` passe à `true` au premier signal.
+- `getExternalState(on, lastMs, known)` : copie minimale sous lock ; l'âge (`now − lastMs`, wrap-safe) est calculé **hors** lock par `resolveWaterPresence()`.
+- **Aucune persistance NVS** : au boot, `_externalKnown == false` → présence d'eau `false` (fail-safe OFF). Au-delà de `kExternalFiltrationStaleMs = 180 000 ms` (3 min) sans nouveau signal → périmé (`stale`) → présence d'eau `false`. C'est la condition de sécurité clé (pool-chemistry) qui évite l'injection dans une eau stagnante.
+
+### Migration
+
+`migrateInstallMode(regMode, filtrationEnabled)` (one-shot au boot, [`config.cpp`](../../src/config.cpp)) : `reg_mode == "continu"` → `powered`, sinon → `managed`. `external` n'est jamais produit par migration. **`filt_enabled` est ignoré** — voir le cas de bord relais dans [UPDATE_GUIDE.md](../UPDATE_GUIDE.md).
 
 ## Logique d'horaire pure (`schedule_logic`)
 
@@ -102,9 +137,10 @@ Module **générique** (pas spécifique filtration) : conçu pour être réutili
 |--------|----------|------|
 | Démarrer manuellement | `POST /filtration/on` | WRITE |
 | Arrêter manuellement | `POST /filtration/off` | WRITE |
-| Sauvegarder mode/horaires | `POST /save-config` | CRITICAL |
+| Signaler l'état d'une filtration externe | `POST /filtration/external-state?running=…` | WRITE |
+| Sauvegarder mode/horaires + `install_mode` | `POST /save-config` | CRITICAL |
 
-Voir [`web_routes_control.cpp`](../../src/web_routes_control.cpp).
+Voir [`web_routes_control.cpp`](../../src/web_routes_control.cpp). `POST /filtration/external-state` accepte `running` en corps de formulaire OU en query (pas de JSON) — voir [API.md](../API.md#post-filtrationexternal-state--write).
 
 ## Fichiers liés
 
@@ -112,6 +148,9 @@ Voir [`web_routes_control.cpp`](../../src/web_routes_control.cpp).
 - [`src/constants.h`](../../src/constants.h) — `kFiltrationRelayPin = 26` (PCB v2)
 - [`src/constants.h:78`](../../src/constants.h:78) — `kFiltrationPivotHour`
 - [`src/schedule_logic.h`](../../src/schedule_logic.h), [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) — logique d'horaire pure (feature-038), générique filtration/éclairage
+- [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — `InstallMode`, `resolveWaterPresent`, `migrateInstallMode` (feature-056)
+- [`src/constants.h`](../../src/constants.h) — `kExternalFiltrationStaleMs = 180000` (fraîcheur signal externe)
+- [ADR-0026](../adr/0026-mode-installation.md) — mode d'installation (3 archétypes) + résolution de la présence d'eau
 - [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md) — mapping GPIO PCB v2
 - [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) — logique métier pure (Humble Object) pour testabilité native
 - [page-filtration.md](../features/page-filtration.md) — UI correspondante

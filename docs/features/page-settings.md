@@ -5,22 +5,37 @@
 
 ## Rôle
 
-Page de configuration système. Structurée en **8 onglets segmentés** ([`data/index.html:1072`](../../data/index.html:1072)) qui pilotent chacun une zone distincte de la configuration firmware. Aucun onglet n'interagit directement avec les capteurs ou les pompes en production — tout passe par `POST /save-config` (CRITICAL) ou des endpoints dédiés.
+Page de configuration système. Structurée en **9 onglets segmentés** ([`data/index.html:1217`](../../data/index.html:1217)) qui pilotent chacun une zone distincte de la configuration firmware. Aucun onglet n'interagit directement avec les capteurs ou les pompes en production — tout passe par `POST /save-config` (CRITICAL) ou des endpoints dédiés.
 
-## Structure — 8 onglets
+## Structure — 9 onglets
 
 | Onglet | ID panel | Rôle |
 |--------|----------|------|
+| Installation | `panel-install` | **Mode d'installation** (câblage) : 3 cartes radio (feature-056). 1ᵉʳ onglet. |
 | Wi-Fi | `panel-wifi` | Statut SSID/IP/mDNS + lien vers l'assistant de reconfiguration |
 | MQTT | `panel-mqtt` | Activation + broker (host/port/topic/auth) |
 | Heure | `panel-time` | NTP ou heure manuelle, timezone, serveur NTP |
 | Sécurité | `panel-security` | Changement mot de passe admin |
-| Régulation pH / ORP | `panel-regulation` | Mode pilote/continu, vitesse PID, limites horaires/journalières, délai stabilisation |
+| Régulation pH / ORP | `panel-regulation` | Vitesse PID, limites horaires/journalières, délai stabilisation (mode pilote/continu **retiré** — fusionné dans l'onglet Installation, feature-056) |
 | Système | `panel-system` | Infos système (runtime), OTA GitHub, OTA manuel, reboot, factory reset |
 | Avancé | `panel-dev` | Historique des mesures (export/import/purge CSV), affectation pompes, puissance max, débit nominal, tests pompe, diagnostic crash, logs |
 | À propos | `panel-about` | Liens projet + versions des libs — contenu statique |
 
 ## Données consommées (`GET /get-config` + WebSocket `/ws` + `GET /get-system-info`)
+
+### Installation (`panel-install`, feature-056)
+
+Nouvelle section **en 1ᵉʳ onglet** (feature-056, v2.19.0). Un `radiogroup` (`name="install_mode"`) de **3 cartes radio** décrit le câblage réel et remplace l'ancien sélecteur mode pilote/continu **et** l'ancien toggle « Gérer la filtration » (fusion — voir [ADR-0026](../adr/0026-mode-installation.md)) :
+
+| Valeur | Carte | Câblage | Dosage autorisé si… |
+|--------|-------|---------|---------------------|
+| `managed` | PoolController pilote la filtration | alim permanente + sortie 12 V → contacteur | filtration commandée ON |
+| `powered` | Alimenté par le circuit de filtration | alim reliée à la phase de la pompe de filtration | en permanence (eau présumée présente) |
+| `external` | Filtration externe signalée | alim permanente, filtration tierce qui signale son état | signal ON **et** récent (< 3 min) |
+
+- Champ WS/config : `install_mode` (string). Sauvegarde via bouton dédié `#install_save_btn` → `POST /save-config`.
+- **Callout signal externe** (`#install-ext-status`, affiché uniquement en mode `external`) : pill `#install-ext-pill` (« Aucun signal » / « Marche » / « Arrêt » / « Périmé ») alimentée par les champs WS `filtration_ext_known` / `filtration_ext_on` / `filtration_ext_age_s` / `filtration_state_stale`. Rappelle les deux canaux de signalement (`POST /filtration/external-state`, MQTT `.../filtration_external_state/set`) et le fail-safe à 3 min.
+- **Aide intégrée** (`<details class="tips">` `#install-ext-tips`, dans le callout external) : bloc repliable montrant des exemples prêts à l'emploi pour signaler l'état de la filtration — commande HTTP `curl`, publication MQTT `mosquitto_pub`, et une automatisation Home Assistant complète (recopie de l'état d'une prise + republication toutes les minutes). `fillExternalTips()` (app.js) renseigne dynamiquement l'URL réelle (`location.host`) et le topic MQTT réel (`window._config.topic`, défaut `pool/sensors`).
 
 ### Wi-Fi (`panel-wifi`)
 - Depuis `GET /wifi/status` : `ssid`, `ip`, `mode` (STA/AP), `mdns_hostname`.
@@ -40,7 +55,8 @@ Page de configuration système. Structurée en **8 onglets segmentés** ([`data/
 > ℹ️ **Card CORS retirée en v2.11.2** (feature-028, [ADR-0023](../adr/0023-politique-cors-retrait.md)) : le mécanisme CORS a été entièrement supprimé (politique même-origine stricte). Le champ `#auth_cors_origins` et le bouton `#cors-save-btn` n'existent plus, et `auth_cors_origins` a disparu de `/get-config` / `/save-config`.
 
 ### Régulation (`panel-regulation`)
-- `regulation_mode` (`pilote` | `continu`) — détermine si la régulation suit la filtration ([`pump_controller.cpp`](../../src/pump_controller.cpp)).
+> ℹ️ **Mode pilote/continu retiré en v2.19.0 (feature-056)** : `regulation_mode` n'est plus dans cet onglet ni dans `/get-config`. Il est fusionné avec l'ancien toggle « Gérer la filtration » dans le **mode d'installation** (onglet Installation, `install_mode`). Voir [ADR-0026](../adr/0026-mode-installation.md).
+
 - `regulation_speed` (`slow` | `normal` | `fast`) — sélectionne le jeu de paramètres PID. Gains exacts détaillés dans [`docs/subsystems/pump-controller.md`](../subsystems/pump-controller.md#algorithme-résumé).
 - `ph_limit` / `orp_limit` (min/h) — mapping firmware : `ph_limit_minutes`, `orp_limit_minutes` (CHANGELOG 2026-04-24).
 - `ph_daily_limit` / `orp_daily_limit` (mL) — mapping : `max_ph_ml_per_day` / `max_chlorine_ml_per_day` ([`config.h:141`](../../src/config.h:141) `SafetyLimits`).
@@ -136,7 +152,8 @@ Toggles complémentaires :
 
 | Action | Endpoint | Auth |
 |--------|----------|------|
-| Sauvegarder config (tous champs sauf password) | `POST /save-config` | CRITICAL |
+| Sauvegarder config (tous champs sauf password, dont `install_mode`) | `POST /save-config` | CRITICAL |
+| Signaler l'état d'une filtration externe (mode `external`) | `POST /filtration/external-state?running=…` | WRITE |
 | Changer mot de passe admin | `POST /auth/change-password` (body `{current, new}`) | CRITICAL |
 | Scanner Wi-Fi | `POST /wifi/scan` | WRITE |
 | Déconnecter Wi-Fi | `POST /wifi/disconnect` | CRITICAL |
@@ -192,7 +209,7 @@ Le champ `mqtt_enabled` pilote directement la présence / l'absence du client MQ
 ## Fichiers
 
 - [`data/index.html:1065`](../../data/index.html:1065) — structure HTML (tabs + panels)
-- [`data/app.js`](../../data/app.js) — handlers des 8 onglets (`setupWifi`, `setupMqtt`, `setupTime`, `setupSecurity`, `setupRegulation`, `setupSystem`, `setupDev`)
+- [`data/app.js`](../../data/app.js) — handlers des 9 onglets (`setupInstall` (feature-056), `setupWifi`, `setupMqtt`, `setupTime`, `setupSecurity`, `setupRegulation`, `setupSystem`, `setupDev`)
 - [`src/config.h`](../../src/config.h) — structs `MqttConfig`, `AuthConfig`, `PumpControlParams`, `SafetyLimits`, `PumpProtection`
 - [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) — `/save-config`, `/reboot`, `/reboot-ap`, `/factory-reset`
 - [`src/web_routes_auth.cpp`](../../src/) / [`src/auth_manager.cpp`](../../src/) — endpoints `/auth/*`

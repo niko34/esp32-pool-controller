@@ -399,7 +399,7 @@
 
     if (routeObj.view === "/settings") {
       $("#view-settings")?.classList.add("is-active");
-      showSettingsPanel(routeObj.sub || "wifi");
+      showSettingsPanel(routeObj.sub || "install");
     } else {
       const viewId = `view-${routeObj.view.substring(1)}`;
       $(`#${viewId}`)?.classList.add("is-active");
@@ -1339,7 +1339,7 @@
   // Toggle visibility of feature content based on enable switch
   function updateFeatureVisibility(feature) {
     const switchMap = {
-      filtration: "filtration_enabled",
+      // feature-056 : la visibilité de la filtration est gérée par applyInstallMode() (mode d'installation)
       lighting: "lighting_feature_enabled",
       temperature: "temperature_enabled"
       // orp n'est plus un toggle binaire — la visibilité est gérée par updateOrpModeControls()
@@ -1499,7 +1499,6 @@
   // n'écrase accidentellement le mode de filtration en cours.
   function collectFiltrationConfig() {
     return {
-      filtration_enabled: $("#filtration_enabled")?.checked ?? true,
       filtration_mode: $("#filtration_mode")?.value || "auto",
       filtration_start: $("#filtration_start")?.value || "08:00",
       filtration_end: $("#filtration_end")?.value || "20:00",
@@ -1597,7 +1596,8 @@
     $("#orp_limit").value = typeof cfg.orp_limit_minutes === "number" ? cfg.orp_limit_minutes : 10;
     $("#ph_daily_limit").value = typeof cfg.max_ph_ml_per_day === "number" ? cfg.max_ph_ml_per_day : 300;
     $("#orp_daily_limit").value = typeof cfg.max_chlorine_ml_per_day === "number" ? cfg.max_chlorine_ml_per_day : 500;
-    $("#regulation_mode").value = cfg.regulation_mode || "pilote";
+    // feature-056 : mode d'installation (remplace regulation_mode + filtration_enabled)
+    applyInstallMode(cfg.install_mode || "managed");
     if ($("#stabilization_delay_min") && cfg.stabilization_delay_min != null) {
       $("#stabilization_delay_min").value = cfg.stabilization_delay_min;
     }
@@ -1615,7 +1615,6 @@
     updateTempCalChip();
 
     // Filtration
-    $("#filtration_enabled").checked = cfg.filtration_enabled !== false;
     if (!filtrationDirty) {
       // Ne pas écraser les modifications non sauvegardées de l'utilisateur
       if (cfg.filtration_mode) $("#filtration_mode").value = cfg.filtration_mode;
@@ -1628,7 +1627,6 @@
       }
     }
     updateFiltrationControls();
-    updateFeatureVisibility("filtration");
 
     // Éclairage — programmation (bug-ui-eclairage-refresh-ws : rafraîchissement
     // temps réel sur message WS config, miroir de la filtration ci-dessus).
@@ -1998,8 +1996,106 @@
 
   // ========== CARTES STATUS ==========
 
+  // feature-056 : applique le mode d'installation à l'UI (masquage conditionnel de la
+  // filtration). managed → filtration pilotée (widgets + programmation + nav visibles).
+  // powered/external → filtration non pilotée (widgets/programmation/nav masqués + note).
+  // external → bloc « État du signal filtration » visible.
+  function applyInstallMode(mode) {
+    const m = (mode === "powered" || mode === "external") ? mode : "managed";
+    const managed = m === "managed";
+
+    // Sélection du radio correspondant (sans déclencher d'événement)
+    const radio = document.querySelector(`input[name="install_mode"][value="${m}"]`);
+    if (radio) radio.checked = true;
+
+    const dashCard = $("#dashboard-filtration-card");
+    if (dashCard) dashCard.style.display = managed ? "" : "none";
+
+    const filtContent = $("#filtration-content");
+    if (filtContent) filtContent.style.display = managed ? "block" : "none";
+
+    const navFilt = $("#nav-filtration");
+    if (navFilt) navFilt.style.display = managed ? "" : "none";
+
+    const note = $("#filtration-unmanaged-note");
+    if (note) note.style.display = managed ? "none" : "";
+
+    const extStatus = $("#install-ext-status");
+    if (extStatus) extStatus.style.display = (m === "external") ? "" : "none";
+
+    if (m === "external") fillExternalTips();
+    updateExternalStatePill();
+  }
+
+  // feature-056 : renseigne le bloc d'aide external avec le host et le topic MQTT réels.
+  function fillExternalTips() {
+    const urlEl = $("#tips-http-url");
+    if (urlEl) urlEl.textContent = `${location.protocol}//${location.host}/filtration/external-state`;
+    const base = (window._config && window._config.topic)
+      || ($("#mqtt_topic") && $("#mqtt_topic").value)
+      || "pool/sensors";
+    const fullTopic = `${base}/filtration_external_state/set`;
+    document.querySelectorAll(".tips-topic").forEach((el) => { el.textContent = fullTopic; });
+  }
+
+  // feature-056 : pill reflétant l'état du signal filtration externe (mode external).
+  // Source : WS sensor_data (water_present / filtration_state_stale / filtration_ext_*).
+  function updateExternalStatePill() {
+    const pill = $("#install-ext-pill");
+    if (!pill) return;
+    const data = latestSensorData || {};
+    const known = data.filtration_ext_known === true;
+    const stale = data.filtration_state_stale === true;
+    const water = data.water_present === true;
+    const ageS = Number.isFinite(data.filtration_ext_age_s) ? data.filtration_ext_age_s : 0;
+
+    let text, cls;
+    if (!known) {
+      text = "Aucun signal"; cls = "mid";
+    } else if (stale) {
+      const mins = Math.max(1, Math.round(ageS / 60));
+      text = `Périmé · ${mins} min`; cls = "bad";
+    } else if (water) {
+      text = `Actif · ${ageS} s`; cls = "ok";
+    } else {
+      text = "Arrêtée"; cls = "mid";
+    }
+    pill.textContent = text;
+    pill.className = "pill " + cls;
+  }
+
+  // feature-056 : bindings du panneau Installation (radios + bouton Sauvegarder).
+  function bindInstallMode() {
+    document.querySelectorAll('input[name="install_mode"]').forEach((r) => {
+      r.addEventListener("change", () => {
+        if (r.checked) applyInstallMode(r.value);  // masquage immédiat, persistance au save
+      });
+    });
+    $("#install_save_btn")?.addEventListener("click", async () => {
+      const sel = document.querySelector('input[name="install_mode"]:checked');
+      const mode = sel ? sel.value : "managed";
+      const btn = $("#install_save_btn");
+      if (btn) btn.disabled = true;
+      const ok = await sendConfig({ install_mode: mode });
+      if (btn) btn.disabled = false;
+      if (ok) {
+        if (window._config) window._config.install_mode = mode;
+        applyInstallMode(mode);
+        updateStatusCards();
+        showToast("Mode d'installation enregistré", "success");
+        loadConfig();
+      } else {
+        showToast("Erreur lors de la sauvegarde", "error");
+      }
+    });
+  }
+
   function predictFiltrationRunning(cfg) {
-    if (!cfg || !cfg.filtration_enabled) return false;
+    // feature-056 : le relais n'est piloté qu'en mode « managed ». Dans les autres
+    // modes, la filtration n'est pas commandée par le PoolController → jamais ON.
+    if (!cfg) return false;
+    const im = cfg.install_mode || window._config?.install_mode;
+    if (im && im !== "managed") return false;
     const mode = (cfg.filtration_mode || '').toLowerCase();
     if (mode === 'off') return false;
     if (mode === 'manual' || mode === 'auto') {
@@ -2088,8 +2184,12 @@
       return m > 0 ? `Stabilisation : ${m} min ${String(s).padStart(2, '0')} s` : `Stabilisation : ${s} s`;
     }
 
-    const regulationMode = config.regulation_mode || "pilote";
-    if (regulationMode === "pilote" && !data.filtration_running) return "Filtration arrêtée";
+    // feature-056 : présence d'eau = source UNIQUE (résolue par le mode d'installation).
+    // Fallback sur filtration_running si le firmware ne pousse pas encore water_present.
+    const waterPresent = (data.water_present !== undefined) ? data.water_present : data.filtration_running;
+    if (waterPresent === false) {
+      return data.filtration_state_stale ? "Signal filtration périmé" : "Filtration arrêtée";
+    }
 
     if (sensor === "ph"  && data.ph_limit_reached)  return "Limite journalière atteinte";
     if (sensor === "orp" && data.orp_limit_reached)  return "Limite journalière atteinte";
@@ -2166,6 +2266,7 @@
 
   function updateStatusCards() {
     updateBoostCard();  // feature-053 : indépendant de latestSensorData
+    updateExternalStatePill();  // feature-056 : pill signal filtration externe
     if (!latestSensorData) return;
 
     const data = latestSensorData;
@@ -2657,7 +2758,7 @@
 
     if (startBtn) {
       startBtn.addEventListener('click', async () => {
-        const payload = { filtration_enabled: true, filtration_force_on: true, filtration_force_off: false };
+        const payload = { filtration_force_on: true, filtration_force_off: false };
         try {
           const result = await sendConfig(payload);
           if (result) {
@@ -5254,11 +5355,16 @@
       if (stabS > 0) {
         return `Stabilisation post-calibration en cours — réessayer dans ${fmtInjectRemaining(stabS)}`;
       }
+      // feature-056 : garde présence d'eau = source UNIQUE (data.water_present).
+      // Fallback filtration_running si champ absent (firmware plus ancien).
       const running = filtrationRunningOverride !== null
         ? filtrationRunningOverride
         : (data.filtration_running === true);
-      if ((config.regulation_mode || "pilote") === "pilote" && !running) {
-        return "Filtration arrêtée — injection impossible (sécurité chimique)";
+      const waterPresent = (data.water_present !== undefined) ? data.water_present : running;
+      if (waterPresent === false) {
+        return data.filtration_state_stale
+          ? "Signal filtration périmé — injection impossible (sécurité chimique)"
+          : "Filtration arrêtée — injection impossible (sécurité chimique)";
       }
       return "";
     };
@@ -5527,20 +5633,10 @@
       return sendConfig(cfg);
     };
 
-    // Filtration feature toggle — sauvegarde immédiate (interrupteur on/off)
-    $("#filtration_enabled")?.addEventListener("change", () => {
-      updateFeatureVisibility("filtration");
-      const cfg = collectFiltrationConfig();
-      sendConfig(cfg).then((ok) => {
-        if (ok) {
-          filtrationRunningOverride = predictFiltrationRunning(cfg);
-          updateDetailSections();
-          updateStatusCards();
-          loadConfig();
-          setTimeout(() => loadSensorData({ force: true, source: "filtration-save" }), 500);
-        }
-      });
-    });
+    // feature-056 : le toggle « Gérer la filtration » est remplacé par le mode
+    // d'installation (panel Installation). La visibilité filtration est pilotée
+    // par applyInstallMode().
+    bindInstallMode();
     // Programmation (mode, start, end) — pas d'auto-save, bouton Sauvegarder uniquement
     $("#filtration_mode")?.addEventListener("change", () => {
       filtrationDirty = true;
@@ -5639,7 +5735,7 @@
     // Onglet Régulation : initialisation segmented + save dédié
     initSegmented("regulation_speed");
     $("#regulation_save_btn")?.addEventListener("click", async () => {
-      const mode = $("#regulation_mode")?.value || "pilote";
+      // feature-056 : regulation_mode retiré (remplacé par le mode d'installation).
       const delay = parseInt($("#stabilization_delay_min")?.value ?? "5", 10);
       const speed = getSegmented("regulation_speed") || "normal";
       const phLimit = parseInt($("#ph_limit")?.value ?? "5", 10);
@@ -5647,7 +5743,6 @@
       const orpLimit = parseInt($("#orp_limit")?.value ?? "10", 10);
       const orpDaily = parseFloat($("#orp_daily_limit")?.value ?? "500");
       const ok = await sendConfig({
-        regulation_mode: mode,
         stabilization_delay_min: isNaN(delay) ? 5 : Math.min(60, Math.max(0, delay)),
         regulation_speed: speed,
         ph_limit_minutes:        isNaN(phLimit)  ? 5  : Math.min(60, Math.max(1, phLimit)),
@@ -6326,13 +6421,12 @@
     // Start filtration: force ON sans modifier la programmation
     if (startBtn) {
       startBtn.addEventListener("click", async () => {
-        const payload = { filtration_enabled: true, filtration_force_on: true, filtration_force_off: false };
+        const payload = { filtration_force_on: true, filtration_force_off: false };
         try {
           const result = await sendConfig(payload);
           if (result) {
             filtrationRunningOverride = true;
             updateFiltrationControls();
-            updateFeatureVisibility("filtration");
             updateFiltrationBadges();
             showToast("Filtration démarrée", "success");
             setTimeout(() => {

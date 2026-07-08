@@ -32,6 +32,24 @@ void initConfigMutexes() {
   }
 }
 
+// feature-056 : sérialisation STABLE du mode d'installation.
+const char* installModeToString(InstallMode mode) {
+  switch (mode) {
+    case InstallMode::PoweredByFiltration: return "powered";
+    case InstallMode::ExternalFiltration:  return "external";
+    case InstallMode::ManagedFiltration:
+    default:                                return "managed";
+  }
+}
+
+InstallMode installModeFromString(const char* s, InstallMode fallback) {
+  if (s == nullptr) return fallback;
+  if (strcmp(s, "managed") == 0)  return InstallMode::ManagedFiltration;
+  if (strcmp(s, "powered") == 0)  return InstallMode::PoweredByFiltration;
+  if (strcmp(s, "external") == 0) return InstallMode::ExternalFiltration;
+  return fallback;
+}
+
 const TimezoneInfo* findTimezoneById(const String& id) {
   for (const auto& tz : TIMEZONES) {
     if (id.equalsIgnoreCase(tz.id)) {
@@ -121,7 +139,8 @@ void saveMqttConfig() {
   prefs.putInt("orp_limit_min", mqttCfg.orpInjectionLimitMinutes);
   prefs.putString("orp_reg_mode", mqttCfg.orpRegulationMode);
   prefs.putInt("orp_daily_ml", mqttCfg.orpDailyTargetMl);
-  prefs.putString("reg_mode", mqttCfg.regulationMode);
+  // feature-056 : mode d'installation (remplace reg_mode + filt_enabled).
+  prefs.putString("install_mode", installModeToString(mqttCfg.installMode));
   prefs.putInt("stab_delay", mqttCfg.stabilizationDelayMin);
   prefs.putString("reg_speed", mqttCfg.regulationSpeed);
   prefs.putString("ph_corr_type", mqttCfg.phCorrectionType);
@@ -137,8 +156,7 @@ void saveMqttConfig() {
   prefs.putString("manual_time", mqttCfg.manualTimeIso);
   prefs.putString("timezone_id", mqttCfg.timezoneId);
 
-  // Filtration
-  prefs.putBool("filt_enabled", filtrationCfg.enabled);
+  // Filtration (feature-056 : filt_enabled absorbé par install_mode)
   prefs.putString("filt_mode", filtrationCfg.mode);
   prefs.putString("filt_start", filtrationCfg.start);
   prefs.putString("filt_end", filtrationCfg.end);
@@ -288,7 +306,27 @@ void loadMqttConfig() {
   }
   mqttCfg.orpEnabled = (mqttCfg.orpRegulationMode != "manual");
 
-  mqttCfg.regulationMode = prefs.getString("reg_mode", "pilote");
+  // feature-056 : mode d'installation. Clé "install_mode" présente → parse ;
+  // sinon migration one-shot depuis l'ancien schéma (reg_mode + filt_enabled)
+  // puis write-back (anciennes clés laissées inertes en NVS).
+  if (prefs.isKey("install_mode")) {
+    String im = prefs.getString("install_mode", "managed");
+    mqttCfg.installMode = installModeFromString(im.c_str(), InstallMode::ManagedFiltration);
+  } else {
+    String oldReg = prefs.getString("reg_mode", "pilote");
+    bool oldFiltEnabled = prefs.getBool("filt_enabled", true);
+    mqttCfg.installMode = migrateInstallMode(oldReg.c_str(), oldFiltEnabled);
+    prefs.end();  // réouverture en écriture pour le write-back one-shot
+    Preferences w;
+    if (w.begin("poolctrl", false)) {
+      w.putString("install_mode", installModeToString(mqttCfg.installMode));
+      w.end();
+      systemLogger.info("Migration NVS install_mode : reg_mode=" + oldReg +
+                        " filt_enabled=" + String(oldFiltEnabled ? 1 : 0) + " → " +
+                        String(installModeToString(mqttCfg.installMode)));
+    }
+    prefs.begin("poolctrl", true);
+  }
   mqttCfg.stabilizationDelayMin = prefs.getInt("stab_delay", 5);
   mqttCfg.regulationSpeed = prefs.getString("reg_speed", "normal");
   mqttCfg.phCorrectionType = prefs.getString("ph_corr_type", "ph_minus");
@@ -307,8 +345,7 @@ void loadMqttConfig() {
   mqttCfg.manualTimeIso = prefs.getString("manual_time", mqttCfg.manualTimeIso);
   mqttCfg.timezoneId = prefs.getString("timezone_id", mqttCfg.timezoneId);
 
-  // Filtration
-  filtrationCfg.enabled = prefs.getBool("filt_enabled", filtrationCfg.enabled);
+  // Filtration (feature-056 : filt_enabled absorbé par install_mode ci-dessus)
   filtrationCfg.mode = prefs.getString("filt_mode", filtrationCfg.mode);
   filtrationCfg.start = prefs.getString("filt_start", filtrationCfg.start);
   filtrationCfg.end = prefs.getString("filt_end", filtrationCfg.end);
@@ -559,7 +596,7 @@ void startBoost() {
   systemLogger.info("[Boost] Activé jusqu'au prochain minuit local (epoch " + String((long)midnight) + ")");
   // feature-054 : signaler les leviers inertes selon la config, pour que
   // l'utilisateur sache ce que le Boost fait réellement (couvre HTTP ET HA).
-  if (!filtrationCfg.enabled) {
+  if (mqttCfg.installMode != InstallMode::ManagedFiltration) {
     systemLogger.warning("[Boost] Filtration non gérée par PoolController — le Boost NE prolonge PAS la filtration");
   }
   if (mqttCfg.orpRegulationMode != "automatic") {

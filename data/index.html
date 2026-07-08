@@ -66,7 +66,7 @@
             <span class="nav__label">Tableau de bord</span>
           </a>
 
-          <a class="nav__item" href="#/filtration" data-route="/filtration">
+          <a class="nav__item" id="nav-filtration" href="#/filtration" data-route="/filtration">
             <span class="nav__icon" aria-hidden="true">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
@@ -377,18 +377,9 @@
             <p class="settingsHead__sub">Configuration de la pompe de filtration</p>
           </div>
 
-          <div class="card">
-            <div class="card__body">
-              <div class="row row--between">
-                <div>
-                  <p class="row__title" id="label-filtration-enabled">Gérer la filtration</p>
-                </div>
-                <label class="switch">
-                  <input type="checkbox" id="filtration_enabled" aria-labelledby="label-filtration-enabled" />
-                  <span class="switch__track"></span>
-                </label>
-              </div>
-            </div>
+          <!-- feature-056 : callout affiché quand la filtration n'est pas pilotée par le PoolController -->
+          <div class="callout callout--info" id="filtration-unmanaged-note" style="display:none;">
+            La filtration n'est pas pilotée par le PoolController dans ce mode d'installation.
           </div>
 
           <div id="filtration-content">
@@ -1224,7 +1215,8 @@
 
           <!-- Menu segmenté au-dessus des panels -->
           <div class="segmented" id="settings-segmented" role="tablist" aria-label="Navigation des paramètres">
-            <button id="tab-wifi" class="segmented__btn is-active" type="button" data-settings-tab="wifi" role="tab" aria-selected="true" aria-controls="panel-wifi">Wi-Fi</button>
+            <button id="tab-install" class="segmented__btn is-active" type="button" data-settings-tab="install" role="tab" aria-selected="true" aria-controls="panel-install">Installation</button>
+            <button id="tab-wifi" class="segmented__btn" type="button" data-settings-tab="wifi" role="tab" aria-selected="false" aria-controls="panel-wifi">Wi-Fi</button>
             <button id="tab-mqtt" class="segmented__btn" type="button" data-settings-tab="mqtt" role="tab" aria-selected="false" aria-controls="panel-mqtt">MQTT</button>
             <button id="tab-time" class="segmented__btn" type="button" data-settings-tab="time" role="tab" aria-selected="false" aria-controls="panel-time">Heure</button>
             <button id="tab-security" class="segmented__btn" type="button" data-settings-tab="security" role="tab" aria-selected="false" aria-controls="panel-security">Sécurité</button>
@@ -1235,8 +1227,107 @@
           </div>
 
           <div class="settingsPanels">
+            <!-- Installation Panel (feature-056) -->
+            <section class="panel is-active" data-settings-panel="install" id="panel-install" role="tabpanel" aria-labelledby="tab-install">
+              <div class="card">
+                <div class="card__head">
+                  <h2 class="card__title">Mode d'installation</h2>
+                </div>
+                <div class="card__body">
+                  <p class="muted small" style="margin-bottom: 14px;">
+                    Indiquez comment le PoolController est raccordé à la filtration. Ce réglage
+                    garantit qu'aucun produit n'est injecté sans circulation d'eau.
+                  </p>
+                  <div class="install-modes" role="radiogroup" aria-label="Mode d'installation">
+                    <label class="install-card">
+                      <input class="install-card__radio" type="radio" name="install_mode" value="managed" />
+                      <span class="install-card__body">
+                        <span class="install-card__title">PoolController pilote la filtration</span>
+                        <span class="install-card__wiring"><strong>Câblage :</strong> alimentation permanente + sortie 12 V vers contacteur.</span>
+                        <span class="install-card__dosing"><strong>Dosage :</strong> autorisé quand la filtration est commandée ON.</span>
+                      </span>
+                    </label>
+                    <label class="install-card">
+                      <input class="install-card__radio" type="radio" name="install_mode" value="powered" />
+                      <span class="install-card__body">
+                        <span class="install-card__title">Alimenté par le circuit de filtration</span>
+                        <span class="install-card__wiring"><strong>Câblage :</strong> alimentation reliée à la phase de la pompe de filtration.</span>
+                        <span class="install-card__dosing"><strong>Dosage :</strong> autorisé en permanence (eau présumée présente).</span>
+                      </span>
+                    </label>
+                    <label class="install-card">
+                      <input class="install-card__radio" type="radio" name="install_mode" value="external" />
+                      <span class="install-card__body">
+                        <span class="install-card__title">Filtration externe signalée</span>
+                        <span class="install-card__wiring"><strong>Câblage :</strong> alimentation permanente, filtration pilotée par un tiers qui signale son état.</span>
+                        <span class="install-card__dosing"><strong>Dosage :</strong> autorisé seulement si le signal est ON et récent.</span>
+                      </span>
+                    </label>
+                  </div>
+
+                  <div id="install-ext-status" class="callout callout--info" style="display:none; margin-top: 14px;">
+                    <div class="row row--between" style="align-items:center;">
+                      <span class="row__title">État du signal filtration</span>
+                      <span class="pill mid" id="install-ext-pill" role="status" aria-live="polite">Aucun signal</span>
+                    </div>
+                    <p class="muted small" style="margin-top: 8px;">
+                      Reçu via HTTP <code>POST /filtration/external-state</code> ou MQTT
+                      <code>.../filtration_external_state/set</code>. Sans signal depuis plus de 3 min,
+                      l'eau est considérée absente et le dosage est suspendu.
+                    </p>
+
+                    <details class="tips" id="install-ext-tips">
+                      <summary>Comment signaler l'état de la filtration&nbsp;?</summary>
+                      <div class="tips__body">
+                        <p class="muted small">
+                          Un système tiers (domotique) doit indiquer au PoolController quand la filtration
+                          tourne, via l'un de ces deux canaux. <strong>Republiez l'état régulièrement</strong>
+                          (≤&nbsp;60&nbsp;s)&nbsp;: sans nouveau signal pendant 3&nbsp;min, le dosage est suspendu par sécurité.
+                        </p>
+
+                        <h4 class="tips__h">API HTTP <span class="muted small">(authentification requise)</span></h4>
+                        <pre class="tips__code"><code>curl -u &lt;utilisateur&gt;:&lt;mot_de_passe&gt; -X POST \
+  <span id="tips-http-url">http://poolcontroller.local/filtration/external-state</span> \
+  -d "running=true"     # filtration démarrée
+# -d "running=false"   → filtration éteinte</code></pre>
+
+                        <h4 class="tips__h">MQTT</h4>
+                        <pre class="tips__code"><code># Publier ON (démarrée) ou OFF (éteinte), sans retain
+mosquitto_pub -t "<span class="tips-topic">pool/sensors/filtration_external_state/set</span>" -m "ON"</code></pre>
+
+                        <h4 class="tips__h">Depuis Home Assistant</h4>
+                        <p class="muted small">
+                          Automatisation qui recopie l'état de la pompe (ex.&nbsp;prise connectée) et le
+                          republie à chaque changement <em>et</em> toutes les minutes&nbsp;:
+                        </p>
+                        <pre class="tips__code"><code>alias: Signaler la filtration au PoolController
+trigger:
+  - platform: state
+    entity_id: switch.pompe_filtration
+  - platform: time_pattern
+    minutes: "/1"
+action:
+  - service: mqtt.publish
+    data:
+      topic: <span class="tips-topic">pool/sensors/filtration_external_state/set</span>
+      payload: "{{ 'ON' if is_state('switch.pompe_filtration','on') else 'OFF' }}"</code></pre>
+                        <p class="muted small">
+                          L'interrupteur Home Assistant «&nbsp;Signal filtration externe&nbsp;» (auto-discovery)
+                          permet aussi un envoi manuel ponctuel.
+                        </p>
+                      </div>
+                    </details>
+                  </div>
+
+                  <div class="detail-actions" style="margin-top: 16px;">
+                    <button class="btn btn--primary" id="install_save_btn" type="button">Sauvegarder</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
             <!-- Wi-Fi Panel -->
-            <section class="panel is-active" data-settings-panel="wifi" id="panel-wifi" role="tabpanel" aria-labelledby="tab-wifi">
+            <section class="panel" data-settings-panel="wifi" id="panel-wifi" role="tabpanel" aria-labelledby="tab-wifi">
               <!-- Zone de notification WiFi -->
               <div id="wifi-notification" class="wifi-notification hidden"></div>
 
@@ -1445,18 +1536,6 @@
                 </div>
                 <div class="card__body">
                   <label class="field">
-                    <span class="field__label">Fonctionnement</span>
-                    <select id="regulation_mode">
-                      <option value="pilote">Piloté (suit la filtration)</option>
-                      <option value="continu">Continu (alimentation liée)</option>
-                    </select>
-                  </label>
-                  <div class="muted small" style="margin-top: 8px;">
-                    <strong>Piloté</strong> : régulation pH et ORP active uniquement pendant la filtration, contrôlée par le PoolController<br>
-                    <strong>Continu</strong> : régulation permanente (alimenter le contrôleur via le circuit filtration)
-                  </div>
-
-                  <label class="field" style="margin-top: 16px;">
                     <span class="field__label">Vitesse de correction</span>
                     <div class="segmented" id="regulation_speed" role="group" aria-label="Vitesse de correction">
                       <button class="segmented__btn" type="button" data-value="slow">Lente</button>

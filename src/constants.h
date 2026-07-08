@@ -227,6 +227,10 @@ constexpr float    kTempFrozenEpsilonC = 0.03f; // < ½ LSB DS18B20 12 bits (0.0
 // Pivot horaire pour calcul durée filtration
 constexpr float kFiltrationPivotHour = 13.0f;             // 13h - Pivot pour calcul durée selon température
 
+// feature-056 : mode d'installation « Filtration externe signalée ». Fraîcheur
+// max du dernier signal d'état (HTTP/MQTT) avant fail-safe OFF (dosage refusé).
+constexpr uint32_t kExternalFiltrationStaleMs = 180000UL;  // 3 min — fraîcheur max signal filtration externe (fail-safe OFF au-delà)
+
 // ============================================================================
 // PUMP CONSTANTS - Paramètres pompes doseuses
 // ============================================================================

@@ -23,9 +23,10 @@ extern TaskHandle_t loopTaskHandle;
 // =============================================================================
 // Sécurité chimique (pool-chemistry validation 2026-05-11)
 // =============================================================================
-// Toute activation directe d'une pompe (test bench /pumpN/on) nécessite que la
-// filtration soit active, SAUF en mode régulation "continu" où l'alimentation
-// du contrôleur suit la filtration de toute façon.
+// Toute activation directe d'une pompe (test bench /pumpN/on) nécessite la
+// présence d'eau (resolveWaterPresence().waterPresent) : filtration commandée ON
+// en mode d'installation "managed", présumée en "powered", signalée récente en
+// "external" (feature-056).
 // Sans circulation d'eau, l'acide/le chlore injecté reste local au point de
 // retour → surdosage massif dans une zone confinée → corrosion + risque sanitaire.
 // Cette garde est cohérente avec PumpController::canDose() qui applique la
@@ -35,8 +36,8 @@ extern TaskHandle_t loopTaskHandle;
 // sert plus qu'aux routes de test de pompes. Réponse au format JSON structuré,
 // identique à celui des refus d'injection manuelle. Garde JAMAIS affaiblie.
 static bool injectionAllowedOrReject(AsyncWebServerRequest* req, const char* tag) {
-  if (mqttCfg.regulationMode == "continu") return true;  // alim suit filtration
-  if (filtration.isRunning()) return true;
+  // feature-056 : source UNIQUE resolveWaterPresent() (Managed/Powered/External).
+  if (filtration.resolveWaterPresence().waterPresent) return true;
   systemLogger.critical(String("[Sécurité] ") + tag +
                         " refusé : filtration arrêtée (sécurité chimique : pas de circulation = surdosage local)");
   req->send(409, "application/json",
@@ -62,7 +63,7 @@ static bool manualInjectGuardOrReject(AsyncWebServerRequest* req, bool isPh,
 
   ManualInjectInputs in = {};
   in.watchdogActive = (esp_task_wdt_status(loopTaskHandle) == ESP_OK);
-  in.filtrationOk = (mqttCfg.regulationMode == "continu") || filtration.isRunning();
+  in.waterPresent = filtration.resolveWaterPresence().waterPresent;  // feature-056 : source UNIQUE
   unsigned long stabS = PumpController.getStabilizationRemainingS(logicalIdx);
   in.stabilizationActive = (stabS > 0);
   in.stabilizationRemainingS = (uint32_t)stabS;
@@ -165,9 +166,11 @@ int manualInjectRemainingS(const ManualInjectState& s) {
 }
 
 // Sécurité chimique : vérifie qu'une injection volumée doit continuer.
-// Garde filtration cohérente avec canDose() côté régulation auto.
+// feature-056 (condition pool-chemistry #7) : re-sourcé sur resolveWaterPresent()
+// → une injection manuelle volumée en cours est interrompue (CRITICAL) si l'eau
+// est perdue, y compris quand le signal externe (mode External) devient périmé.
 static bool filtrationOkForInjection() {
-  return mqttCfg.regulationMode == "continu" || filtration.isRunning();
+  return filtration.resolveWaterPresence().waterPresent;
 }
 
 void updateManualInject() {
@@ -234,9 +237,9 @@ void updateManualInject() {
 
 void setupControlRoutes(AsyncWebServer* server) {
   // Routes pour test manuel des pompes - PROTÉGÉES
-  // Sécurité chimique (pool-chemistry validation 2026-05-11) : démarrage refusé
-  // si la filtration n'est pas active (sauf mode "continu" où l'alim suit la
-  // filtration). Pas de bornage de durée ici (test bench) — l'utilisateur doit
+  // Sécurité chimique (pool-chemistry validation 2026-05-11, feature-056) :
+  // démarrage refusé sans présence d'eau (resolveWaterPresence().waterPresent,
+  // selon le mode d'installation). Pas de bornage de durée ici (test bench) — l'utilisateur doit
   // arrêter manuellement via /pumpN/off OU passer par /ph/inject/start qui borne.
   server->on("/pump1/on", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
@@ -482,7 +485,7 @@ void setupControlRoutes(AsyncWebServer* server) {
     wsManager.requestConfigBroadcast(); // resync UI web (pattern bug-sync)
     // feature-054 : indiquer à l'UI quels leviers sont réellement actifs
     // (filtration prolongée seulement si gérée ; chlore relevé seulement si ORP automatic).
-    const bool filtrationExtended = filtrationCfg.enabled;
+    const bool filtrationExtended = (mqttCfg.installMode == InstallMode::ManagedFiltration);  // feature-056
     const bool chlorineBoosted = (mqttCfg.orpRegulationMode == "automatic");
     String out = String("{\"boost_active\":true,\"boost_until\":") +
                  String((long)boostState.untilEpoch) +
@@ -497,6 +500,29 @@ void setupControlRoutes(AsyncWebServer* server) {
     mqttManager.publishBoostState();
     wsManager.requestConfigBroadcast();
     req->send(200, "application/json", "{\"boost_active\":false,\"boost_until\":0}");
+  });
+
+  // feature-056 : signal d'état de la filtration EXTERNE (mode ExternalFiltration).
+  // Handler NON bloquant : setExternalState écrit le triplet {on,lastMs,known} sous
+  // spinlock (horodatage millis() interne), aucune persistance NVS (condition
+  // pool-chemistry #3 : boot toujours OFF/known=false → fail-safe). Le paramètre
+  // `running` est accepté en corps de formulaire OU en query (true/false/1/0/on/off).
+  server->on("/filtration/external-state", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+    auto* p = req->getParam("running", true);   // corps (form-urlencoded)
+    if (!p) p = req->getParam("running");        // fallback query string
+    if (!p) {
+      req->send(400, "application/json",
+                "{\"error\":\"missing_param\",\"message\":\"Paramètre 'running' requis (true/false).\"}");
+      return;
+    }
+    String v = p->value();
+    v.toLowerCase();
+    bool running = (v == "true" || v == "1" || v == "on");
+    filtration.setExternalState(running);
+    wsManager.requestConfigBroadcast();  // resync UI (pattern bug-sync)
+    req->send(200, "application/json",
+              String("{\"external_state\":") + (running ? "true" : "false") + "}");
   });
 }
 

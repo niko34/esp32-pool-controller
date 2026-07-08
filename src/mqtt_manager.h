@@ -88,6 +88,10 @@ struct MqttTopics {
   String rebootCommand;             // Commande redémarrage (bouton HA)
   String boostState;                // feature-053 : état Mode Boost (ON/OFF, retain)
   String boostCommand;              // feature-053 : .../boost/set (ON/OFF)
+  // feature-056 : mode d'installation + signal filtration externe
+  String installModeState;          // Mode d'installation publié (managed/powered/external, retain)
+  String installModeCommand;        // .../install_mode/set (managed/powered/external)
+  String filtrationExternalStateCommand;  // .../filtration_external_state/set (ON/OFF, NON-retain) → setExternalState (signal filtration externe)
 };
 
 // Architecture producer/consumer (cf. ADR-0011) :
@@ -271,6 +275,8 @@ enum class InboundCmdType : uint8_t {
   LightingStart,     // payload = "20:00" (HH:MM — feature-052)
   LightingEnd,       // payload = "23:00" (HH:MM — feature-052)
   Boost,             // payload = "ON"|"OFF" (feature-053 : Mode Boost)
+  FiltrationExternalState,  // payload = "ON"|"OFF" (feature-056 : signal filtration externe)
+  InstallMode,       // payload = "managed"|"powered"|"external" (feature-056)
 };
 
 struct InboundCmd {

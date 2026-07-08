@@ -161,13 +161,12 @@ void UartCommands::handleGetConfig() {
   d["orp_enabled"] = mqttCfg.orpEnabled;
   d["ph_pump"] = mqttCfg.phPump;
   d["orp_pump"] = mqttCfg.orpPump;
-  d["regulation_mode"] = mqttCfg.regulationMode;
+  d["install_mode"] = installModeToString(mqttCfg.installMode);  // feature-056
   d["ph_correction_type"] = mqttCfg.phCorrectionType;
   d["ph_injection_limit_min"] = mqttCfg.phInjectionLimitMinutes;
   d["orp_injection_limit_min"] = mqttCfg.orpInjectionLimitMinutes;
 
-  // Filtration
-  d["filtration_enabled"] = filtrationCfg.enabled;
+  // Filtration (feature-056 : filtration_enabled → install_mode)
   d["filtration_mode"] = filtrationCfg.mode;
   d["filtration_start"] = filtrationCfg.start;
   d["filtration_end"] = filtrationCfg.end;
@@ -311,13 +310,13 @@ void UartCommands::handleSetConfig(JsonVariant data) {
     mqttCfg.orpEnabled = data["orp_enabled"].as<bool>();
     changed = true;
   }
-  if (data["regulation_mode"].is<const char*>()) {
-    String v = data["regulation_mode"].as<String>();
-    if (v == "continu" || v == "pilote") {
-      mqttCfg.regulationMode = v;
+  if (data["install_mode"].is<const char*>()) {
+    String v = data["install_mode"].as<String>();
+    if (v == "managed" || v == "powered" || v == "external") {
+      mqttCfg.installMode = installModeFromString(v.c_str(), mqttCfg.installMode);
       changed = true;
     } else {
-      if (errorMsg.isEmpty()) errorMsg = "regulation_mode invalide";
+      if (errorMsg.isEmpty()) errorMsg = "install_mode invalide";
     }
   }
   if (data["ph_correction_type"].is<const char*>()) {
@@ -340,10 +339,7 @@ void UartCommands::handleSetConfig(JsonVariant data) {
       if (errorMsg.isEmpty()) errorMsg = "filtration_mode invalide";
     }
   }
-  if (data["filtration_enabled"].is<bool>()) {
-    filtrationCfg.enabled = data["filtration_enabled"].as<bool>();
-    changed = true;
-  }
+  // feature-056 : filtration_enabled retiré (absorbé par install_mode).
   if (data["filtration_start"].is<const char*>()) {
     filtrationCfg.start = data["filtration_start"].as<String>();
     changed = true;

@@ -32,8 +32,7 @@ static const unsigned int kMaxCyclesPerDay = 20u;
 static DoseInputs validInputs() {
   DoseInputs in;
   in.watchdogActive = true;
-  in.continuousMode = false;
-  in.filtrationRunning = true;
+  in.waterPresent = true;       // feature-056 : présence d'eau résolue en amont
   in.reading = 7.2f;            // lecture pH valide (non NaN)
   in.filterReady = true;
   in.filterUnstable = false;
@@ -112,11 +111,10 @@ void test_T4_min_injection_lock_against_v225_bug(void) {
 // T5-T17 (AC5) — evaluateDose : une cause de refus par test
 // =============================================================================
 
-// T5 — FiltrationOff (filtration arrêtée, hors mode continu).
+// T5 — FiltrationOff (présence d'eau non résolue → dosage refusé).
 void test_T5_refusal_filtration_off(void) {
   DoseInputs in = validInputs();
-  in.filtrationRunning = false;
-  in.continuousMode = false;
+  in.waterPresent = false;
   DoseDecision d = evaluateDose(in);
   TEST_ASSERT_FALSE(d.allowed);
   TEST_ASSERT_EQUAL(DoseRefusal::FiltrationOff, d.cause);
@@ -256,18 +254,18 @@ void test_T17b_refusal_watchdog_inactive(void) {
 // =============================================================================
 // La cause retournée est celle de la garde la plus prioritaire (1→15).
 void test_T18_guard_priority_order(void) {
-  // Paire 1 : watchdog inactif (1) + filtration off (2) → WatchdogInactive.
+  // Paire 1 : watchdog inactif (1) + eau absente (2) → WatchdogInactive.
   {
     DoseInputs in = validInputs();
     in.watchdogActive = false;
-    in.filtrationRunning = false;
+    in.waterPresent = false;
     DoseDecision d = evaluateDose(in);
     TEST_ASSERT_EQUAL(DoseRefusal::WatchdogInactive, d.cause);
   }
-  // Paire 2 : filtration off (2) + NaN (3) → FiltrationOff.
+  // Paire 2 : eau absente (2) + NaN (3) → FiltrationOff.
   {
     DoseInputs in = validInputs();
-    in.filtrationRunning = false;
+    in.waterPresent = false;
     in.reading = NAN;
     DoseDecision d = evaluateDose(in);
     TEST_ASSERT_EQUAL(DoseRefusal::FiltrationOff, d.cause);
@@ -300,9 +298,8 @@ void test_T19_nominal_all_ok_allowed(void) {
   DoseDecision d = evaluateDose(in);
   TEST_ASSERT_TRUE(d.allowed);
   TEST_ASSERT_EQUAL(DoseRefusal::None, d.cause);
-  // Cas nominal en mode continu (filtration off autorisée car eau 24/7).
-  in.continuousMode = true;
-  in.filtrationRunning = false;
+  // Cas nominal avec eau présumée (mode Powered/External frais → waterPresent).
+  in.waterPresent = true;
   d = evaluateDose(in);
   TEST_ASSERT_TRUE(d.allowed);
   TEST_ASSERT_EQUAL(DoseRefusal::None, d.cause);
@@ -750,7 +747,7 @@ void test_F039_burst_scenario_combined(void) {
 static ManualInjectInputs validManualInputs() {
   ManualInjectInputs in;
   in.watchdogActive = true;
-  in.filtrationOk = true;               // filtration ON (ou mode continu, résolu côté collecte)
+  in.waterPresent = true;               // feature-056 : présence d'eau résolue en amont
   in.stabilizationActive = false;
   in.stabilizationRemainingS = 0;
   in.alreadyInjecting = false;
@@ -795,10 +792,10 @@ void test_F006_refusal_watchdog_inactive(void) {
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 0.0f, d.remainingMl);
 }
 
-// Garde 2 — FiltrationOff (pas d'eau, hors exemption mode continu).
+// Garde 2 — FiltrationOff (présence d'eau non résolue → injection refusée).
 void test_F006_refusal_filtration_off(void) {
   ManualInjectInputs in = validManualInputs();
-  in.filtrationOk = false;
+  in.waterPresent = false;
   ManualInjectDecision d = evaluateManualInject(in);
   TEST_ASSERT_FALSE(d.allowed);
   TEST_ASSERT_EQUAL(ManualInjectRefusal::FiltrationOff, d.cause);
@@ -953,18 +950,18 @@ void test_F006_boundary_zero_limits_unlimited(void) {
 //     retournée est celle de la garde la plus prioritaire (ordre pool-chemistry).
 // -----------------------------------------------------------------------------
 void test_F006_guard_priority_order(void) {
-  // Paire 1 : watchdog inactif (1) + filtration off (2) → WatchdogInactive.
+  // Paire 1 : watchdog inactif (1) + eau absente (2) → WatchdogInactive.
   {
     ManualInjectInputs in = validManualInputs();
     in.watchdogActive = false;
-    in.filtrationOk = false;
+    in.waterPresent = false;
     ManualInjectDecision d = evaluateManualInject(in);
     TEST_ASSERT_EQUAL(ManualInjectRefusal::WatchdogInactive, d.cause);
   }
-  // Paire 2 : filtration off (2) + limite journalière (5) → FiltrationOff.
+  // Paire 2 : eau absente (2) + limite journalière (5) → FiltrationOff.
   {
     ManualInjectInputs in = validManualInputs();
-    in.filtrationOk = false;
+    in.waterPresent = false;
     in.dailyInjectedMl = 300.0f;   // 300 + 50 > 300
     ManualInjectDecision d = evaluateManualInject(in);
     TEST_ASSERT_EQUAL(ManualInjectRefusal::FiltrationOff, d.cause);

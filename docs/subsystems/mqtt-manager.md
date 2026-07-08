@@ -103,6 +103,8 @@ Structure complète dans [`MqttTopics`](../../src/mqtt_manager.h). Résumé :
 {base}/reboot/set                                 (feature-050 : redémarrage différé propre)
 {base}/ph_remaining_ml, {base}/ph_stock_low
 {base}/orp_remaining_ml, {base}/orp_stock_low
+{base}/install_mode, {base}/install_mode/set          (feature-056 : mode d'installation managed/powered/external, retain, select HA)
+{base}/filtration_external_state/set                            (feature-056 : signal filtration externe ON/OFF, NON-retain → setExternalState)
 {base}/filtration_state, {base}/filtration/set
 {base}/filtration_mode, {base}/filtration_mode/set
 {base}/filtration_start, {base}/filtration_start/set   (feature-051 : heure début HH:MM, retain, éditable HA)
@@ -130,7 +132,7 @@ Publiés depuis `publishCalibrationStatusInternal()` (exécutée par `mqttTask`)
 
 ## Auto-discovery Home Assistant
 
-`publishDiscovery()` publie les messages `retain=true` sur `homeassistant/.../config` pour déclarer automatiquement les entités (17 à l'origine, **44 à ce jour** au fil des features — dont les 2 `select` de mode de régulation pH/ORP ajoutés en feature-009 v2.7.0, les 2 `binary_sensor` `device_class: problem` « Capteur pH/ORP — problème » ajoutés en feature-022 v2.10.0, les 5 entités feature-050 v2.14.0 : 2 `sensor` cumuls journaliers, 2 `number` volumes quotidiens, 1 `button` « Redémarrer », les 2 `text` éditables « Filtration début » / « Filtration fin » de feature-051 v2.16.0, et les 3 entités feature-052 v2.17.0 : 1 `select` « Mode Éclairage » (Programmation/Désactivé — `switch` à l'origine, migré en `select` en bug-ha-eclairage-select v2.17.2, avec publication d'un config vide sur l'ancien topic `switch/{id}_lighting_schedule` pour retirer l'orphelin) + 2 `text` « Éclairage début » / « Éclairage fin »). **Exécutée uniquement depuis `mqttTask`** lors d'une connexion réussie (lambda interne, pas appelable de l'extérieur). Publié **une seule fois** par session (`discoveryPublished` guard).
+`publishDiscovery()` publie les messages `retain=true` sur `homeassistant/.../config` pour déclarer automatiquement les entités (17 à l'origine, **46 à ce jour** au fil des features — dont le `select` « Mode d'installation » et le `switch` optimiste « Signal filtration externe » de feature-056 v2.19.0, les 2 `select` de mode de régulation pH/ORP ajoutés en feature-009 v2.7.0, les 2 `binary_sensor` `device_class: problem` « Capteur pH/ORP — problème » ajoutés en feature-022 v2.10.0, les 5 entités feature-050 v2.14.0 : 2 `sensor` cumuls journaliers, 2 `number` volumes quotidiens, 1 `button` « Redémarrer », les 2 `text` éditables « Filtration début » / « Filtration fin » de feature-051 v2.16.0, et les 3 entités feature-052 v2.17.0 : 1 `select` « Mode Éclairage » (Programmation/Désactivé — `switch` à l'origine, migré en `select` en bug-ha-eclairage-select v2.17.2, avec publication d'un config vide sur l'ancien topic `switch/{id}_lighting_schedule` pour retirer l'orphelin) + 2 `text` « Éclairage début » / « Éclairage fin »). **Exécutée uniquement depuis `mqttTask`** lors d'une connexion réussie (lambda interne, pas appelable de l'extérieur). Publié **une seule fois** par session (`discoveryPublished` guard).
 
 ### Select « Mode Filtration » — templates d'affichage (bug-ha-filtration-mode-labels, v2.15.0)
 
@@ -164,6 +166,15 @@ Même technique que les selects filtration/éclairage, appliquée aux 2 blocs di
 - `command_template` : `{{ {'Automatique':'automatic','Programmée':'scheduled','Manuelle':'manual'}[value] }}` — retraduit le libellé choisi vers la valeur brute envoyée sur `.../set`.
 
 **Wire inchangé** : `publishAllStatesInternal()` publie toujours le mode brut sur `ph_regulation_mode`/`orp_regulation_mode`, et les handlers `drainCommandQueue` (cases `PhRegulationMode` / `OrpRegulationMode`) valident toujours l'enum brut `automatic`/`scheduled`/`manual`. Les templates sont le seul point de traduction, entièrement côté HA, et ne fuient pas vers les blocs discovery suivants (`doc.clear()` en fin de `publishConfig()`).
+
+### Mode d'installation + signal filtration externe (feature-056, v2.19.0)
+
+Deux nouvelles entités, décision structurante [ADR-0026](../adr/0026-mode-installation.md) :
+
+- **`select` « Mode d'installation »** (`select/{id}_install_mode/config`, `icon: mdi:pipe-valve`) : état sur `{base}/install_mode` (retain), commande sur `{base}/install_mode/set`. Options FR **PoolController pilote / Alimenté par filtration / Filtration externe** avec `value_template`/`command_template` (même technique que les autres selects) ; **le fil reste `managed`/`powered`/`external`**. L'état est publié à chaque connexion et à chaque changement (`safePublish(topics.installModeState, ...)`). Handler `drainCommandQueue` case `InboundCmdType::InstallMode` : parse via `installModeFromString`, valeur hors enum → resync HA sur l'état réel ; changement effectif → écrit `mqttCfg.installMode` sous `configMutex`, persiste, republie l'état + broadcast WS config.
+- **`switch` « Signal filtration externe »** (`switch/{id}_filtration_external/config`, `icon: mdi:water-sync`) : **optimiste** (`optimistic: true`, **pas** de `state_topic`), commande sur `{base}/filtration_external_state/set` (`payload_on: ON` / `payload_off: OFF`). Le contrôleur ne republie pas cet état — c'est un **signal entrant**. Le handler `drainCommandQueue` (case `FiltrationState`) appelle `filtration.setExternalState(true|false)` — même effet que `POST /filtration/external-state`. Utile **uniquement** en mode `external` ; le contrôleur applique le timeout de fraîcheur (180 s) et le fail-safe OFF.
+
+Le `select/{id}_install_mode` est **souscrit** au connect (`mqtt.subscribe(topics.installModeCommand)`) ; `filtration_external_state/set` l'est via la souscription des topics de commande.
 
 ## Intervalles
 

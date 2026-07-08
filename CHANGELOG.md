@@ -1,5 +1,25 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.19.0] - 2026-07-08
+
+### Ajouté
+
+- **Mode d'installation (feature-056)** : nouveau réglage unique décrivant le câblage réel du PoolController, dans une section « Installation » dédiée (1er onglet des Paramètres) et une étape de l'assistant de 1ᵉʳ lancement. Trois choix :
+  - **PoolController pilote la filtration** — alimentation permanente + sortie 12 V vers contacteur ; le contrôleur commande le relais, la programmation de filtration est active, le dosage est autorisé quand la filtration commandée est en marche.
+  - **Alimenté par le circuit de filtration** — le contrôleur est alimenté en même temps que la pompe ; il ne pilote pas le relais et l'eau est présumée présente en permanence.
+  - **Filtration externe signalée** *(nouveau cas)* — le contrôleur est alimenté en permanence et une domotique tierce lui signale l'état de la filtration via `POST /filtration/external-state` ou MQTT `.../filtration_external_state/set`. Sans signal « en marche » récent (au-delà de 3 min), l'eau est considérée absente et **le dosage est suspendu** (sécurité).
+- Signalement de l'état de la filtration externe depuis Home Assistant (interrupteur) et sélection du mode d'installation (liste déroulante, libellés en français).
+- **Aide intégrée au mode « Filtration externe signalée »** : bloc repliable dans les Paramètres avec des exemples prêts à l'emploi (commande HTTP `curl`, publication MQTT, automatisation Home Assistant), renseignés automatiquement avec l'adresse et le topic MQTT réels du contrôleur.
+
+### Modifié
+
+- La garde de sécurité « présence d'eau » du dosage repose désormais sur une résolution unique selon le mode d'installation (comportement inchangé pour les installations existantes, migration automatique).
+- Le mode d'installation remplace et fusionne les anciens réglages « Fonctionnement Piloté/Continu » (section Régulation pH/ORP) et « filtration gérée par le PoolController ».
+
+### Migration
+
+- Mise à jour automatique de la configuration : « Piloté » → *PoolController pilote la filtration*, « Continu » → *Alimenté par le circuit de filtration*. Aucune action requise. Voir `docs/UPDATE_GUIDE.md` pour les cas de câblage particuliers.
+
 ## [2.18.3] - 2026-07-07
 
 ### Corrigé

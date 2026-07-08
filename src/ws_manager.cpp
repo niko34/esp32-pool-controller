@@ -160,7 +160,9 @@ String WsManager::_buildSensorJson() const {
   // feature-011 : +2 champs ph/orp_scheduled_flow_ml_per_min (~80 octets) → bump à 1536.
   // feature-053 : +2 champs boost_active/boost_until (~48 octets) → bump à 1600.
   // feature-055 : +2 booléens boost_filtration_extended/boost_chlorine_boosted → bump à 1664.
-  StaticJson<1664> doc;
+  // feature-056 : +install_mode/water_present/filtration_state_source/_stale +
+  //   filtration_ext_known/_on/_age_s (~200 octets) → bump à 1920.
+  StaticJson<1920> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -282,8 +284,34 @@ String WsManager::_buildSensorJson() const {
     d["boost_active"] = isBoostActive(nowEpoch);
     d["boost_until"]  = (long)boostState.untilEpoch;
     // feature-055 : leviers réellement actifs du Boost (affichage persistant du widget)
-    d["boost_filtration_extended"] = filtrationCfg.enabled;
+    // feature-056 : filtration prolongée seulement si PC gère la filtration (Managed).
+    d["boost_filtration_extended"] = (mqttCfg.installMode == InstallMode::ManagedFiltration);
     d["boost_chlorine_boosted"]    = (mqttCfg.orpRegulationMode == "automatic");
+  }
+
+  // feature-056 : présence d'eau résolue (source UNIQUE) + mode d'installation.
+  // Hooks pour l'UI (source/fraîcheur du signal filtration) — champs affinables
+  // par web-ui-developer.
+  {
+    WaterPresence wp = filtration.resolveWaterPresence();
+    d["install_mode"]  = installModeToString(mqttCfg.installMode);
+    d["water_present"] = wp.waterPresent;
+    d["filtration_state_stale"] = wp.stale;
+    const char* src = "commanded";
+    switch (wp.source) {
+      case WaterSource::FiltrationCommanded: src = "commanded"; break;
+      case WaterSource::PoweredAssumed:      src = "powered";   break;
+      case WaterSource::ExternalSignal:      src = "external";  break;
+    }
+    d["filtration_state_source"] = src;
+    // feature-056 : détail du signal externe pour la pill UI (mode external) —
+    // distingue « Arrêtée » (OFF connu) de « Aucun signal » (boot) et donne l'âge.
+    bool extOn = false, extKnown = false;
+    uint32_t extLastMs = 0;
+    filtration.getExternalState(extOn, extLastMs, extKnown);
+    d["filtration_ext_known"] = extKnown;
+    d["filtration_ext_on"]    = extOn;
+    d["filtration_ext_age_s"] = extKnown ? (uint32_t)(((uint32_t)millis() - extLastMs) / 1000UL) : 0;
   }
 
   d["time_synced"]   = (time(nullptr) >= kMinValidEpoch);
@@ -298,7 +326,7 @@ String WsManager::_buildSensorJson() const {
   // +80 octets feature-024 (phSlopeAcid/Base/Zero/AgeMs)
   // +300 octets feature-025 (filtre pH/ORP + mixing/blocked)
   // +80 octets feature-011 (ph/orp_scheduled_flow_ml_per_min)
-  out.reserve(1280);
+  out.reserve(1600);
   serializeJson(doc, out);
   return out;
 }
@@ -333,14 +361,13 @@ String WsManager::_buildConfigJson() const {
   d["pump2_max_duty_pct"] = mqttCfg.pump2MaxDutyPct;
   d["ph_limit_minutes"] = mqttCfg.phInjectionLimitMinutes;
   d["orp_limit_minutes"] = mqttCfg.orpInjectionLimitMinutes;
-  d["regulation_mode"]  = mqttCfg.regulationMode;
+  d["install_mode"]     = installModeToString(mqttCfg.installMode);  // feature-056
   d["ph_correction_type"] = mqttCfg.phCorrectionType;
   d["time_use_ntp"]     = mqttCfg.timeUseNtp;
   d["ntp_server"]       = mqttCfg.ntpServer;
   d["manual_time"]      = mqttCfg.manualTimeIso;
   d["timezone_id"]      = mqttCfg.timezoneId;
-  d["filtration_enabled"] = filtrationCfg.enabled;
-  d["filtration_mode"]  = filtrationCfg.mode;
+  d["filtration_mode"]  = filtrationCfg.mode;  // feature-056 : filtration_enabled → install_mode
   d["filtration_start"] = filtrationCfg.start;
   d["filtration_end"]   = filtrationCfg.end;
   d["filtration_running"] = filtration.isRunning();

@@ -42,6 +42,7 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0023](0023-politique-cors-retrait.md) | Retrait complet du mécanisme CORS : politique même-origine stricte | Accepté |
 | [0024](0024-partitions-layout-v4.md) | Partitions app à 1792 KB (layout v4, spiffs 320 KB) | Accepté |
 | [0025](0025-mode-boost.md) | Mode Boost : surcouche temporaire « valeurs effectives » + relèvement borné de la limite chlore | Accepté |
+| [0026](0026-mode-installation.md) | Mode d'installation : 3 archétypes de câblage et résolution unique de la présence d'eau | Accepté |
 
 ## Template
 

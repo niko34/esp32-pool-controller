@@ -667,6 +667,28 @@
     .password-toggle:hover {
       color: #333;
     }
+
+    /* feature-056 : cartes radio « Type d'installation » */
+    .install-card {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+      padding: 12px 14px;
+      margin-bottom: 10px;
+      border: 1.5px solid #d5dae3;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: border-color 0.2s ease, background 0.2s ease;
+    }
+    .install-card:hover { border-color: #2563eb; }
+    .install-card:has(input:checked) {
+      border-color: #2563eb;
+      background: rgba(37, 99, 235, 0.08);
+    }
+    .install-card input { width: auto; margin-top: 3px; accent-color: #2563eb; }
+    .install-card-body { display: flex; flex-direction: column; gap: 4px; }
+    .install-card-title { font-weight: 600; color: #1f2937; }
+    .install-card-desc { font-size: 0.85rem; color: #4b5563; line-height: 1.35; }
   </style>
 </head>
 <body>
@@ -690,6 +712,10 @@
       </div>
       <div class="step" data-step="3">
         <div class="step-number">3</div>
+        <div class="step-label">Installation</div>
+      </div>
+      <div class="step" data-step="4">
+        <div class="step-number">4</div>
         <div class="step-label">Heure</div>
       </div>
     </div>
@@ -833,8 +859,44 @@
         </div>
       </div>
 
-      <!-- Step 3: Time -->
+      <!-- Step 3: Installation (feature-056) -->
       <div class="step-content" data-step="3">
+        <div class="step-title">Type d'installation</div>
+        <div class="step-description">
+          Indiquez comment le PoolController est raccordé à la filtration. Ce réglage garantit
+          qu'aucun produit n'est injecté sans circulation d'eau.
+        </div>
+
+        <div class="field" role="radiogroup" aria-label="Mode d'installation">
+          <label class="install-card">
+            <input type="radio" name="install_mode" value="managed" checked>
+            <span class="install-card-body">
+              <span class="install-card-title">PoolController pilote la filtration</span>
+              <span class="install-card-desc"><strong>Câblage :</strong> alimentation permanente + sortie 12 V vers contacteur.</span>
+              <span class="install-card-desc"><strong>Dosage :</strong> autorisé quand la filtration est commandée ON.</span>
+            </span>
+          </label>
+          <label class="install-card">
+            <input type="radio" name="install_mode" value="powered">
+            <span class="install-card-body">
+              <span class="install-card-title">Alimenté par le circuit de filtration</span>
+              <span class="install-card-desc"><strong>Câblage :</strong> alimentation reliée à la phase de la pompe de filtration.</span>
+              <span class="install-card-desc"><strong>Dosage :</strong> autorisé en permanence (eau présumée présente).</span>
+            </span>
+          </label>
+          <label class="install-card">
+            <input type="radio" name="install_mode" value="external">
+            <span class="install-card-body">
+              <span class="install-card-title">Filtration externe signalée</span>
+              <span class="install-card-desc"><strong>Câblage :</strong> alimentation permanente, filtration pilotée par un tiers qui signale son état.</span>
+              <span class="install-card-desc"><strong>Dosage :</strong> autorisé seulement si le signal est ON et récent.</span>
+            </span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Step 4: Time -->
+      <div class="step-content" data-step="4">
         <div class="step-title">Configuration de l'heure</div>
         <div class="step-description">
           Configurez l'heure de votre PoolController pour les fonctionnalités programmables.
@@ -953,17 +1015,17 @@
         }
       });
 
-      // Update progress bar (2026 style with CSS variable)
-      const progress = ((currentStep - 1) / 2) * 100;
+      // Update progress bar (2026 style with CSS variable) — feature-056 : 4 étapes
+      const progress = ((currentStep - 1) / 3) * 100;
       const progressBar = document.getElementById('stepperProgress');
       if (progressBar) {
         progressBar.style.setProperty('--progress', `${progress}%`);
       }
 
-      // Update buttons
+      // Update buttons (feature-056 : Heure = dernière étape 4)
       prevBtn.classList.toggle('hidden', currentStep === 1);
-      nextBtn.classList.toggle('hidden', currentStep === 3);
-      finishBtn.classList.toggle('hidden', currentStep !== 3);
+      nextBtn.classList.toggle('hidden', currentStep === 4);
+      finishBtn.classList.toggle('hidden', currentStep !== 4);
 
       // Aligner les boutons à droite sur l'étape 1
       const wizardActions = document.querySelector('.wizard-actions');
@@ -1174,6 +1236,27 @@
       }
     }
 
+    // feature-056 : type d'installation (managed/powered/external). Persiste via
+    // /save-config → propagé au firmware (et à l'écran LVGL via set_config UART).
+    async function saveStepInstall() {
+      const sel = document.querySelector('input[name="install_mode"]:checked');
+      const mode = sel ? sel.value : 'managed';
+      try {
+        const response = await authFetch('/save-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ install_mode: mode })
+        });
+        if (!response.ok) {
+          throw new Error("Erreur lors de la sauvegarde du mode d'installation");
+        }
+        return true;
+      } catch (error) {
+        showError(error.message);
+        return false;
+      }
+    }
+
     async function saveStep3() {
       const timeMode = document.getElementById('timeMode').value;
 
@@ -1308,6 +1391,12 @@
             setButtonLoading(nextBtn, false);
             return;
           }
+        } else if (currentStep === 3) {
+          // feature-056 : type d'installation
+          if (!await saveStepInstall()) {
+            setButtonLoading(nextBtn, false);
+            return;
+          }
         }
 
         currentStep++;
@@ -1322,8 +1411,8 @@
         showError('Une erreur est survenue');
       }
 
-      // Update time mode availability based on WiFi config
-      if (currentStep === 3) {
+      // Update time mode availability based on WiFi config (feature-056 : Heure = étape 4)
+      if (currentStep === 4) {
         const timeMode = document.getElementById('timeMode');
         const ntpDisabledInfo = document.getElementById('ntpDisabledInfo');
         if (!wifiConfigured) {

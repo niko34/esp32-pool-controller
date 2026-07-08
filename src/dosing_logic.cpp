@@ -1,6 +1,51 @@
 #include "dosing_logic.h"
 
 // =============================================================================
+// resolveWaterPresent — présence d'eau PURE (feature-056)
+// =============================================================================
+// Garde de sécurité chimique NON négociable : décide si le dosage est autorisé
+// selon le mode d'installation. Fail-closed strict (condition pool-chemistry
+// #2 : doute = refus — mode inconnu, signal externe inconnu, signal périmé →
+// waterPresent = false). Testable en natif (aucun accès matériel).
+WaterPresence resolveWaterPresent(const WaterPresenceInputs& in) {
+  switch (in.mode) {
+    case InstallMode::ManagedFiltration:
+      // Eau présente ssi PoolController commande la filtration ON.
+      return { in.filtrationCommandedOn, WaterSource::FiltrationCommanded, false };
+
+    case InstallMode::PoweredByFiltration:
+      // PC alimenté par la phase filtration : vivant ⟺ eau circule.
+      return { true, WaterSource::PoweredAssumed, false };
+
+    case InstallMode::ExternalFiltration: {
+      // On teste la CONNAISSANCE du signal AVANT son âge : un signal jamais reçu
+      // (boot) n'a pas d'âge signifiant → refus (fail-safe OFF).
+      if (!in.externalSignalKnown) {
+        return { false, WaterSource::ExternalSignal, false };
+      }
+      bool fresh = (in.externalSignalAgeMs <= in.externalStaleMs);
+      // Périmé = connu mais trop ancien (signalé `stale` pour l'UI/diagnostic).
+      bool stale = !fresh;
+      bool present = in.externalSignalOn && fresh;
+      return { present, WaterSource::ExternalSignal, stale };
+    }
+  }
+  // Mode inconnu → fail-closed.
+  return { false, WaterSource::ExternalSignal, false };
+}
+
+// Migration ancien schéma → InstallMode. filtrationEnabled est absorbé : la
+// distinction « PC gère la filtration » ne crée jamais à elle seule le mode
+// External (mode nouveau, choisi explicitement par l'installateur).
+InstallMode migrateInstallMode(const char* regMode, bool filtrationEnabled) {
+  (void)filtrationEnabled;
+  if (regMode != nullptr && strcmp(regMode, "continu") == 0) {
+    return InstallMode::PoweredByFiltration;
+  }
+  return InstallMode::ManagedFiltration;
+}
+
+// =============================================================================
 // evaluateDose — décision PURE, ordre des gardes 2→15 identique à canDose().
 // =============================================================================
 // IMPORTANT (pool-chemistry, feature-036) : NE PAS réordonner, NE PAS fusionner,
@@ -12,8 +57,10 @@ DoseDecision evaluateDose(const DoseInputs& in) {
     return { false, DoseRefusal::WatchdogInactive };
   }
 
-  // 2. Filtration en marche (sauf mode continu : eau alimentée 24/7).
-  if (!in.continuousMode && !in.filtrationRunning) {
+  // 2. Présence d'eau (feature-056) : source UNIQUE resolveWaterPresent(), qui
+  // encapsule les 3 modes d'installation (Managed=commandé, Powered=présumé,
+  // External=signal frais). Doute = refus (fail-closed strict).
+  if (!in.waterPresent) {
     return { false, DoseRefusal::FiltrationOff };
   }
 
@@ -192,9 +239,9 @@ ManualInjectDecision evaluateManualInject(const ManualInjectInputs& in) {
     return { false, ManualInjectRefusal::WatchdogInactive, 0.0f };
   }
 
-  // 2. Filtration en marche (présence d'eau ; l'exemption mode continu est
-  // résolue côté collecte, avant l'appel).
-  if (!in.filtrationOk) {
+  // 2. Présence d'eau (feature-056) : source UNIQUE resolveWaterPresent(),
+  // résolue côté collecte selon le mode d'installation. Doute = refus.
+  if (!in.waterPresent) {
     return { false, ManualInjectRefusal::FiltrationOff, 0.0f };
   }
 

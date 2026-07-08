@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include "dosing_logic.h"  // feature-056 : enum InstallMode (logique pure partagée)
 
 // ==== Configuration des canaux PWM pompes ====
 // MOSFET IRLZ44N - PWM sur Gate, pins définis dans constants.h (PCB v2)
@@ -42,7 +43,11 @@ struct MqttConfig {
   float pumpMaxFlowMlPerMin = 90.0f; // Débit maximal pompes (ml/min)
   int phInjectionLimitMinutes = 5;    // Max 5 min d'injection par fenêtre d'1h
   int orpInjectionLimitMinutes = 10;  // Max 10 min d'injection par fenêtre d'1h
-  String regulationMode = "pilote";  // "continu" ou "pilote"
+  // feature-056 : mode d'installation (remplace regulationMode ET
+  // filtrationCfg.enabled). Décrit le câblage réel et pilote la présence d'eau,
+  // le relais filtration et l'horizon de répartition. Défaut = Managed (ancien
+  // "pilote" + filtration gérée).
+  InstallMode installMode = InstallMode::ManagedFiltration;
   int stabilizationDelayMin = 5;     // Délai de stabilisation avant dosage (minutes)
   String regulationSpeed = "normal"; // Vitesse de correction PID : "slow", "normal", "fast"
   String phCorrectionType = "ph_minus";  // "ph_minus" (acide) ou "ph_plus" (base)
@@ -69,7 +74,8 @@ struct MqttConfig {
 };
 
 struct FiltrationConfig {
-  bool enabled = true;  // Fonction filtration activée/désactivée
+  // feature-056 : le champ `enabled` a été absorbé par mqttCfg.installMode
+  // (relais piloté ssi installMode == ManagedFiltration).
   String mode = "auto"; // auto, manual, off
   String start = "08:00";
   String end = "20:00";
@@ -162,6 +168,10 @@ static const TimezoneInfo TIMEZONES[] = {
   {"asia_tokyo", "Asia/Tokyo (UTC+9)", "JST-9"},
   {"australia_sydney", "Australia/Sydney (UTC+10/UTC+11)", "AEST-10AEDT,M10.1.0/02:00:00,M4.1.0/03:00:00"}
 };
+
+// feature-056 : sérialisation STABLE du mode d'installation (JSON/WS/UART/NVS).
+const char* installModeToString(InstallMode mode);
+InstallMode installModeFromString(const char* s, InstallMode fallback);
 
 const TimezoneInfo* findTimezoneById(const String& id);
 const TimezoneInfo* defaultTimezone();
