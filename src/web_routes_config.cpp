@@ -60,8 +60,9 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // On utilise checkTokenAuth/checkBasicAuth directement pour ne pas bloquer avec sendAuthRequired()
   bool isAuthenticated = authManager.checkTokenAuth(request) || authManager.checkBasicAuth(request);
 
-  // Buffer statique : ~53 champs (configs MQTT, pH, ORP, calibration, WiFi, etc.) = 2048 bytes
-  StaticJson<2048> doc;
+  // Buffer statique : ~55 champs (configs MQTT, pH, ORP, calibration, WiFi, boost, etc.)
+  // feature-053 : +2 champs boost_active/boost_until → marge portée à 2304.
+  StaticJson<2304> doc;
   doc["server"] = mqttCfg.server;
   doc["port"] = mqttCfg.port;
   doc["topic"] = mqttCfg.topic;
@@ -130,7 +131,7 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
 
   doc["wifi_mode"] = mode == WIFI_MODE_AP ? "AP" : (mode == WIFI_MODE_APSTA ? "AP+STA" : "STA");
   doc["mdns_host"] = kMdnsFullHost;
-  doc["max_ph_ml_per_day"] = safetyLimits.maxPhMinusMlPerDay;
+  doc["max_ph_ml_per_day"] = safetyLimits.maxPhMlPerDay;
   doc["max_chlorine_ml_per_day"] = safetyLimits.maxChlorineMlPerDay;
   // feature-021 : Calibration capteurs Atlas EZO — stockée dans le module
   // (NVS interne EZO), exposée ici via le cache Cal,?.
@@ -157,12 +158,10 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
     // Utilisateur authentifié : montrer password et token masqués (indication qu'ils existent)
     doc["auth_password"] = authCfg.adminPassword.length() > 0 ? "******" : "";
     doc["auth_token"] = authCfg.apiToken.length() > 8 ? (authCfg.apiToken.substring(0, 8) + "...") : "";
-    doc["auth_cors_origins"] = authCfg.corsAllowedOrigins; // Montrer la config CORS complète
   } else {
     // Utilisateur non authentifié : ne pas révéler si credentials sont configurés
     doc["auth_password"] = "******";
     doc["auth_token"] = "********...";
-    doc["auth_cors_origins"] = ""; // Masquer la config CORS
   }
 
   // Suivi volumes produits
@@ -181,6 +180,10 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
 
   // Heure actuelle (pour l'affichage dans la configuration)
   doc["time_current"] = getCurrentTimeISO();
+
+  // feature-053 : Mode Boost (état effectif + epoch d'expiration, 0 si inactif).
+  doc["boost_active"] = isBoostActive(time(nullptr));
+  doc["boost_until"] = (long)boostState.untilEpoch;
 
   sendJsonResponse(request, doc);
 }
@@ -283,8 +286,8 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["ph_daily_target_ml"].isNull()) {
     int dailyMl = doc["ph_daily_target_ml"].as<int>();
     if (dailyMl < 0) dailyMl = 0;
-    if (safetyLimits.maxPhMinusMlPerDay > 0.0f &&
-        dailyMl > static_cast<int>(safetyLimits.maxPhMinusMlPerDay)) {
+    if (safetyLimits.maxPhMlPerDay > 0.0f &&
+        dailyMl > static_cast<int>(safetyLimits.maxPhMlPerDay)) {
       xSemaphoreGiveRecursive(configMutex);
       request->send(400, "application/json",
         "{\"error\":\"ph_daily_target_ml d\\u00e9passe la limite journali\\u00e8re\"}");
@@ -420,7 +423,7 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     if (filtrationCfg.forceOff) filtrationCfg.forceOn = false;
     filtrationConfigChanged = true;
   }
-  if (!doc["max_ph_ml_per_day"].isNull()) safetyLimits.maxPhMinusMlPerDay = doc["max_ph_ml_per_day"];
+  if (!doc["max_ph_ml_per_day"].isNull()) safetyLimits.maxPhMlPerDay = doc["max_ph_ml_per_day"];
   if (!doc["max_chlorine_ml_per_day"].isNull()) safetyLimits.maxChlorineMlPerDay = doc["max_chlorine_ml_per_day"];
   if (!doc["lighting_feature_enabled"].isNull()) lightingCfg.featureEnabled = doc["lighting_feature_enabled"];
   if (!doc["lighting_enabled"].isNull()) lightingCfg.enabled = doc["lighting_enabled"];
@@ -462,12 +465,6 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
       authManager.setPassword(authCfg.adminPassword);
       systemLogger.info("Mot de passe administrateur modifié");
     }
-  }
-
-  // Configuration CORS
-  if (!doc["auth_cors_origins"].isNull()) {
-    authCfg.corsAllowedOrigins = doc["auth_cors_origins"].as<String>();
-    systemLogger.info("Configuration CORS mise à jour: " + authCfg.corsAllowedOrigins);
   }
 
   // Options de développement

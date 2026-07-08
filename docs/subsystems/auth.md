@@ -18,9 +18,32 @@ enum class RouteProtection {
 ## Mécanismes supportés
 
 1. **HTTP Basic Auth** (`checkBasicAuth`) — header `Authorization: Basic base64(user:password)`.
-2. **API Token** (`checkTokenAuth`) — header `Authorization: Bearer <token>` ou query `?token=...`.
+2. **API Token** (`checkTokenAuth`) — header `X-Auth-Token: <token>` uniquement (le query param `?token=...` est refusé, voir Cas limites).
 
 Les routes CRITICAL exigent Basic Auth (pas le token), les routes WRITE acceptent l'un ou l'autre.
+
+## Comparaison de token à temps constant (v2.11.2, feature-028)
+
+⚠️ **Règle absolue : jamais de `==` / `!=` direct sur le token API.** Une comparaison `String` classique court-circuite au premier octet différent, rendant le temps de réponse dépendant du préfixe correct — canal temporel sur le contrôle d'accès central.
+
+Toute vérification passe par la comparaison à temps constant :
+
+```cpp
+// auth.cpp — interne
+static bool constantTimeEquals(const String& a, const String& b);
+
+// auth.h — API publique pour les autres modules (WebSocket notamment)
+bool AuthManager::secureTokenEquals(const String& candidate) const;
+```
+
+- **Longueur vérifiée d'abord** (retour anticipé acceptable : la longueur du token n'est pas secrète — format fixe, 32 caractères hexadécimaux).
+- Puis comparaison de **tous** les octets sans court-circuit : accumulation des différences par `diff |= a[i] ^ b[i]`, verdict sur `diff == 0`.
+
+Deux consommateurs :
+1. **Auth HTTP** — `checkTokenAuth()` ([`auth.cpp:126`](../../src/auth.cpp)) sur le header `X-Auth-Token`.
+2. **Auth WebSocket** — `WsManager::_onData()` ([`ws_manager.cpp:114`](../../src/ws_manager.cpp)) via `authManager.secureTokenEquals(token)` sur le message `{"type":"auth","token":"..."}`. Historiquement le WS comparait le token en `!=` (court-circuit) — corrigé en v2.11.2 via l'API publique.
+
+Le code mort de debug (`maskedReceived` / `maskedExpected`) a été supprimé au passage ; seul le masquage volontaire des 8 premiers caractères pour les logs de génération subsiste (le token n'est **jamais** loggué en clair).
 
 ## Rate limiting
 
@@ -80,7 +103,8 @@ Le mot de passe est hashé (voir `setPassword()` dans [`auth.cpp`](../../src/aut
 - **Auth désactivée** (`authEnabled = false`) : toutes les routes sont accessibles sans creds — déconseillé, mais possible pour debug local.
 - **Token perdu** : l'utilisateur doit `POST /auth/regenerate-token` (Basic Auth).
 - **Rate limit atteint** : réponse 429, pas de décompte de la requête elle-même.
-- **CORS** : géré séparément dans [`web_server.cpp`](../../src/web_server.cpp) via `AuthConfig.corsOrigins`.
+- **Token en query param** (`?token=...`) : **refusé** — seul le header `X-Auth-Token` est accepté (fuite via logs, historique navigateur, Referer).
+- **CORS** : mécanisme **retiré** en v2.11.2 — politique même-origine stricte, voir [ADR-0023](../adr/0023-politique-cors-retrait.md).
 
 ## Fichiers liés
 

@@ -29,7 +29,8 @@ publishAllStates() / publishDiagnostic()
 drainCommandQueue()                                     │
   ← inQueue (16 entrées) ←──────────────────────────────┘
   → applique sous configMutex
-    (filtration, lighting, ph_target, orp_target)
+    (filtration, lighting, ph_target, orp_target,
+     ph/orp_regulation_mode)
 ```
 
 ### Règles d'or
@@ -54,7 +55,7 @@ bool isConnected();                 // Lecture atomique (std::atomic<bool>) — 
 void publishSensorState(const String& topic, const String& payload, bool retain = true);
 void publishAllStates();            // = pose un flag atomique ; mqttTask snapshot+publish
 void publishFiltrationState();
-void publishLightingState();
+void publishLightingState();        // enrichie feature-052 : lighting_state + lighting_schedule + lighting_start + lighting_end
 void publishDosingState();
 void publishProductState();        // snapshot productCfg sous configMutex avant enqueue
 void publishTargetState();         // snapshot mqttCfg sous configMutex avant enqueue
@@ -96,13 +97,22 @@ Structure complète dans [`MqttTopics`](../../src/mqtt_manager.h). Résumé :
 {base}/temperature
 {base}/ph, {base}/ph_target, {base}/ph_target/set, {base}/ph_dosing, {base}/ph_limit
 {base}/orp, {base}/orp_target, {base}/orp_target/set, {base}/orp_dosing, {base}/orp_limit
-{base}/ph_regulation_mode, {base}/ph_daily_target_ml
-{base}/orp_regulation_mode, {base}/orp_daily_target_ml
+{base}/ph_regulation_mode, {base}/ph_regulation_mode/set, {base}/ph_daily_target_ml, {base}/ph_daily_target_ml/set
+{base}/orp_regulation_mode, {base}/orp_regulation_mode/set, {base}/orp_daily_target_ml, {base}/orp_daily_target_ml/set
+{base}/ph_daily_ml, {base}/orp_daily_ml           (feature-050 : cumuls journaliers injectés, retain, dédup 10 s)
+{base}/reboot/set                                 (feature-050 : redémarrage différé propre)
 {base}/ph_remaining_ml, {base}/ph_stock_low
 {base}/orp_remaining_ml, {base}/orp_stock_low
 {base}/filtration_state, {base}/filtration/set
 {base}/filtration_mode, {base}/filtration_mode/set
+{base}/filtration_start, {base}/filtration_start/set   (feature-051 : heure début HH:MM, retain, éditable HA)
+{base}/filtration_end, {base}/filtration_end/set       (feature-051 : heure fin HH:MM)
 {base}/lighting_state, {base}/lighting/set
+{base}/lighting_schedule, {base}/lighting_schedule/set (feature-052 : programmation ON/OFF, retain)
+{base}/lighting_start, {base}/lighting_start/set       (feature-052 : heure début HH:MM, retain)
+{base}/lighting_end, {base}/lighting_end/set           (feature-052 : heure fin HH:MM)
+{base}/ph_sensor_problem, {base}/orp_sensor_problem   (feature-022 : ON = stale OU figé)
+{base}/alerts/calibration_required, {base}/alerts/sensor_stale, {base}/alerts/sensor_frozen
 {base}/status                 (LWT : "online" / "offline")
 {base}/alerts
 {base}/logs
@@ -111,9 +121,49 @@ Structure complète dans [`MqttTopics`](../../src/mqtt_manager.h). Résumé :
 
 Voir [`docs/MQTT.md`](../MQTT.md) pour la liste exhaustive avec les entités HA correspondantes.
 
+### États problème capteur + alerte `sensor_frozen` (feature-022, v2.10.0)
+
+Publiés depuis `publishCalibrationStatusInternal()` (exécutée par `mqttTask`) :
+
+- **`{base}/alerts/sensor_frozen`** (retain, edge-triggered) : JSON `{"type":"sensor_frozen","phFrozen":<bool>,"orpFrozen":<bool>,"timestamp":<ms>}` à la transition **figé** d'au moins un capteur pH/ORP (`sensors.isPhSensorFrozen()` / `isOrpSensorFrozen()`), payload **vide** au clear. Calquée sur le bloc `sensor_stale` (cache `_lastSensorFrozen`). La **température figée** (warning-only) n'y figure pas — sévérité différente, aucun impact dosage.
+- **`{base}/ph_sensor_problem`** / **`{base}/orp_sensor_problem`** (retain) : synthèse binaire `ON`/`OFF` **par capteur**, `ON` si stale **OU** figé — directement consommable par un `binary_sensor` HA sans parser les JSON d'alerte. Publication **dédupliquée** par les caches `_lastPhSensorProblem` / `_lastOrpSensorProblem` (`int8_t`, `-1` = jamais publié → force la 1ʳᵉ publication ; lus/écrits uniquement depuis `mqttTask`). Log `info` à chaque bascule.
+
 ## Auto-discovery Home Assistant
 
-`publishDiscovery()` publie 17 messages `retain=true` sur `homeassistant/.../config` pour déclarer automatiquement les entités. **Exécutée uniquement depuis `mqttTask`** lors d'une connexion réussie (lambda interne, pas appelable de l'extérieur). Publié **une seule fois** par session (`discoveryPublished` guard).
+`publishDiscovery()` publie les messages `retain=true` sur `homeassistant/.../config` pour déclarer automatiquement les entités (17 à l'origine, **44 à ce jour** au fil des features — dont les 2 `select` de mode de régulation pH/ORP ajoutés en feature-009 v2.7.0, les 2 `binary_sensor` `device_class: problem` « Capteur pH/ORP — problème » ajoutés en feature-022 v2.10.0, les 5 entités feature-050 v2.14.0 : 2 `sensor` cumuls journaliers, 2 `number` volumes quotidiens, 1 `button` « Redémarrer », les 2 `text` éditables « Filtration début » / « Filtration fin » de feature-051 v2.16.0, et les 3 entités feature-052 v2.17.0 : 1 `select` « Mode Éclairage » (Programmation/Désactivé — `switch` à l'origine, migré en `select` en bug-ha-eclairage-select v2.17.2, avec publication d'un config vide sur l'ancien topic `switch/{id}_lighting_schedule` pour retirer l'orphelin) + 2 `text` « Éclairage début » / « Éclairage fin »). **Exécutée uniquement depuis `mqttTask`** lors d'une connexion réussie (lambda interne, pas appelable de l'extérieur). Publié **une seule fois** par session (`discoveryPublished` guard).
+
+### Select « Mode Filtration » — templates d'affichage (bug-ha-filtration-mode-labels, v2.15.0)
+
+Le bloc discovery `select/{id}_filtration_mode/config` porte deux templates Jinja qui **traduisent uniquement l'affichage côté HA**, sans toucher au protocole sur le fil :
+
+- `options` : `Auto` / `Programmation` / `Manuel` / `Désactivé` (libellés français, alignés sur l'UI web).
+- `value_template` : `{{ {'auto':'Auto','manual':'Programmation','force':'Manuel','off':'Désactivé'}.get(value, value) }}` — mappe l'état brut publié sur `filtration_mode` vers le libellé. Le `.get(value, value)` renvoie l'état brut tel quel si inattendu → pas de casse d'affichage.
+- `command_template` : `{{ {'Auto':'auto','Programmation':'manual','Manuel':'force','Désactivé':'off'}[value] }}` — retraduit le libellé choisi dans HA vers la valeur brute envoyée sur `.../set`.
+
+**Wire inchangé** : `publishFiltrationState()` publie toujours `filtrationCfg.mode` brut, et le handler `drainCommandQueue` (case `FiltrationMode`) valide toujours `auto`/`manual`/`force`/`off` brut. Les templates sont donc le **seul** point de traduction, entièrement côté HA. Ces templates ne fuient pas vers les blocs discovery suivants (`ph`/`orp_regulation_mode`) car `publishConfig()` appelle `doc.clear()` en fin de publication. Sémantique : `manual` = « Programmation » (créneau à heures fixées), `force` = « Manuel » (ON/OFF sans planning).
+
+### Select « Mode Éclairage » — templates d'affichage (bug-ha-eclairage-select, v2.17.2)
+
+Même technique appliquée à la programmation horaire de l'éclairage, initialement exposée en `switch` ON/OFF (feature-052) puis migrée en `select` `select/{id}_lighting_schedule/config` pour cohérence visuelle avec le select « Mode Filtration » :
+
+- `name` : « Mode Éclairage » ; `unique_id` conservé (`{id}_lighting_schedule`) ; `icon: mdi:calendar-clock`.
+- `options` : `Programmation` / `Désactivé`.
+- `value_template` : `{{ {'ON':'Programmation','OFF':'Désactivé'}.get(value, value) }}`.
+- `command_template` : `{{ {'Programmation':'ON','Désactivé':'OFF'}[value] }}`.
+
+**Wire inchangé** : `publishLightingState()` publie toujours `ON`/`OFF` sur `lighting_schedule`, le booléen `lightingCfg.scheduleEnabled` et le handler `drainCommandQueue` (case `LightingSchedule`, reçoit toujours ON/OFF via `command_template`) sont **inchangés**. Les templates ne fuient pas (via `doc.clear()` de `publishConfig()`).
+
+**Migration** : juste avant de publier le nouveau `select`, `publishDiscovery()` publie un payload retain **vide** sur l'ancien topic `homeassistant/switch/{id}_lighting_schedule/config` (`safePublish(..., "", true)`) pour retirer le `switch` orphelin de HA. Ligne transitoire — supprimable une fois tous les devices migrés.
+
+### Selects « Mode Régulation pH » / « Mode Régulation ORP » — templates d'affichage (bug-ha-regulation-mode-labels, v2.17.3)
+
+Même technique que les selects filtration/éclairage, appliquée aux 2 blocs discovery `select/{id}_ph_regulation_mode/config` et `select/{id}_orp_regulation_mode/config` (feature-009). Ils exposaient jusque-là les valeurs brutes anglaises `automatic`/`scheduled`/`manual` ; ils affichent désormais les libellés français de l'UI web :
+
+- `options` : `Automatique` / `Programmée` / `Manuelle` (libellés UI web exacts).
+- `value_template` : `{{ {'automatic':'Automatique','scheduled':'Programmée','manual':'Manuelle'}.get(value, value) }}` — mappe l'état brut publié vers le libellé (`.get(value, value)` → un état inattendu passe sans casser l'affichage).
+- `command_template` : `{{ {'Automatique':'automatic','Programmée':'scheduled','Manuelle':'manual'}[value] }}` — retraduit le libellé choisi vers la valeur brute envoyée sur `.../set`.
+
+**Wire inchangé** : `publishAllStatesInternal()` publie toujours le mode brut sur `ph_regulation_mode`/`orp_regulation_mode`, et les handlers `drainCommandQueue` (cases `PhRegulationMode` / `OrpRegulationMode`) valident toujours l'enum brut `automatic`/`scheduled`/`manual`. Les templates sont le seul point de traduction, entièrement côté HA, et ne fuient pas vers les blocs discovery suivants (`doc.clear()` en fin de `publishConfig()`).
 
 ## Intervalles
 
@@ -217,7 +267,7 @@ Depuis IT4 (cf. ADR-0011 « Évolutions »), **les `esp_task_wdt_reset()` granul
 | 2 | `connectInTask()` juste avant `mqtt.connect()` | Borne le SYN TCP + handshake CONNACK |
 | 3 | `connectInTask()` juste après `mqtt.connect()` | Borne le pire cas connect/CONNACK même quand `connect()` retourne `false` (broker injoignable, retransmits SYN cumulés) |
 | 4 | Branche `if (connected)` après reconnexion réussie | Avant `subscribe()` et `publishDiscovery()` |
-| 5 | `safePublish()` (wrapper, ~ligne 270) | Reset **avant chaque** appel `mqtt.publish()` — couvre les **24 call sites** : `drainOutQueue`, `publishAllStatesInternal` (20 publishes), lambda `publishConfig` de `publishDiscovery`, `publishDiagnosticInternal`, status `online` au connect |
+| 5 | `safePublish()` (wrapper, ~ligne 270) | Reset **avant chaque** appel `mqtt.publish()` — couvre les **24 call sites** : `drainOutQueue`, `publishAllStatesInternal` (23 publishes), lambda `publishConfig` de `publishDiscovery`, `publishDiagnosticInternal`, status `online` au connect |
 
 ### Cadence garantie
 
@@ -251,7 +301,7 @@ if (fd >= 0) {
 
 **Pourquoi pas `O_NONBLOCK` total (approche IT4) ?** Le keepalive applicatif PubSubClient envoie un `PINGREQ` de 2 octets toutes les 60 s via `_client->write(buf, 2)` **sans vérifier le retour** ; `lastOutActivity` est mis à jour et `pingOutstanding = true` même si le `write` a retourné 0. En `O_NONBLOCK`, si le send buffer TCP était plein à cet instant précis (publish concurrent, retransmission, latence pic), `lwip_send()` renvoyait `EAGAIN` instantanément et **les 2 octets du PINGREQ ne partaient jamais**. Mosquitto ne recevait alors plus aucun paquet pendant `keepalive × 1.5 = 90 s` et coupait la session avec `disconnected: exceeded timeout` — observé en production avec une fréquence non systématique mais récurrente après le déploiement IT4. Le mode `SO_SNDTIMEO` à 500 ms laisse au PINGREQ le temps réel de partir (latence typique < 100 ms), tout en bornant le pire cas d'un publish massif bien en deçà du watchdog 30 s.
 
-**Pire cas borné** : un `publishDiscovery()` (17 publishes enchaînés) sur réseau saturé pourrait théoriquement consommer 17 × 500 ms = 8.5 s. Toujours sous le watchdog 30 s avec une marge confortable, et en pratique très éloigné du nominal (les publishes individuels < 50 ms).
+**Pire cas borné** : un `publishDiscovery()` (20 publishes enchaînés) sur réseau saturé pourrait théoriquement consommer 20 × 500 ms = 10 s. Toujours sous le watchdog 30 s avec une marge confortable, et en pratique très éloigné du nominal (les publishes individuels < 50 ms).
 
 ### Wrapper `safePublish()`
 
@@ -283,9 +333,9 @@ Tous les `mqtt.publish(...)` directs dans `mqttTask` ont été remplacés par `s
 |---|---|
 | `connectInTask()` — status `online` au connect | LWT `online` après handshake réussi |
 | `drainOutQueue()` | Consomme `outQueue` (alertes, status, logs, états relais asynchrones) |
-| `publishAllStatesInternal()` | **20 publishes** des états périodiques (température, pH, ORP, targets, dosing, mode régulation, daily, remaining, stock_low, filtration, lighting) |
+| `publishAllStatesInternal()` | **23 publishes** des états périodiques (température, pH, ORP, targets, dosing, mode régulation, daily, remaining, stock_low, filtration, lighting + `lighting_schedule`/`lighting_start`/`lighting_end` feature-052) |
 | `publishDiagnosticInternal()` | Snapshot diagnostic (heap, RSSI, uptime, hwm, etc.) |
-| `publishDiscovery()` lambda `publishConfig` | **17 publishes** d'auto-discovery HA `homeassistant/.../config` |
+| `publishDiscovery()` lambda `publishConfig` | **20 publishes** d'auto-discovery HA `homeassistant/.../config` (+ 1 `safePublish` retain vide pour retirer l'ancien switch `lighting_schedule`, v2.17.2) |
 
 Les `esp_task_wdt_reset()` IT3 et les bail-out `if (!mqtt.connected()) return;` IT3 répartis dans `publishAllStatesInternal()` et la lambda `publishConfig` ont été **supprimés** : ils sont devenus redondants avec le wrapper et alourdissaient la lecture (~50 lignes supprimées).
 
@@ -408,7 +458,7 @@ Le rôle fonctionnel est identique (réduire la durée totale d'une salve dégra
 
 `messageCallback()` s'exécute dans `mqttTask` (via `mqtt.loop()`). Il **ne fait rien d'autre** que :
 
-1. Identifier le topic reçu et déterminer le `InboundCmdType` correspondant (`FiltrationMode`, `FiltrationOnOff`, `Lighting`, `PhTarget`, `OrpTarget`).
+1. Identifier le topic reçu et déterminer le `InboundCmdType` correspondant (`FiltrationMode`, `FiltrationOnOff`, `Lighting`, `PhTarget`, `OrpTarget`, `PhRegulationMode`, `OrpRegulationMode` — les 2 depuis feature-009 — plus `PhDailyTarget`, `OrpDailyTarget`, `Reboot` depuis feature-050, `FiltrationStart`, `FiltrationEnd` depuis feature-051, et `LightingSchedule`, `LightingStart`, `LightingEnd` depuis feature-052).
 2. Copier le payload (≤ 64 octets) dans une struct `InboundCmd`.
 3. `xQueueSend(inQueue, &cmd, 0)` — non-bloquant. Si la queue est saturée, un WARN est loggé et la commande est abandonnée.
 
@@ -417,13 +467,96 @@ L'application réelle se fait dans `drainCommandQueue()`, **appelé depuis `loop
 - Applique sous `configMutex` (`saveMqttConfig()`, mise à jour `mqttCfg`/`filtrationCfg`).
 - Appelle `publishXxx()` pour publier le nouvel état (qui ré-enfile dans `outQueue` → `mqttTask` → broker).
 
+### Notification UI temps réel — broadcast WS `config` (bug-sync-ws-config-mqtt, v2.14.1)
+
+Une commande HA qui modifie une config exposée dans `/get-config` (consignes pH/ORP, modes de régulation, volumes quotidiens, mode filtration, éclairage) doit aussi **notifier les clients WebSocket connectés**, faute de quoi l'UI web ne se met à jour qu'au rechargement de page.
+
+Depuis v2.14.1, `drainCommandQueue()` positionne un flag local `needConfigBroadcast` pour toute commande traitée **sauf `Reboot`**, et appelle **une seule fois en fin de drain** `wsManager.requestConfigBroadcast()` (`#include "ws_manager.h"`). Le point de sortie de la boucle de pop est unifié (`break` au lieu de `return` sur file vide) pour garantir un broadcast unique quel que soit le chemin.
+
+- **Même effet que `POST /save-config`** : ce dernier reste l'autre déclencheur du message WS `config` (voir [ws-manager.md](ws-manager.md#format-des-messages-push)). Le chemin MQTT en devient le second.
+- **Sûr côté concurrence** : `drainCommandQueue()` s'exécute sur `loopTask`, comme la consommation du flag `_pendingConfigBroadcast` de `ws_manager` — poser le flag est une simple écriture booléenne.
+- **Idempotent** : le flag WS est coalescé, le message `config` part au prochain cycle WS (≤ 5 s). Le broadcast est posé même sur une commande **rejetée** (payload invalide, valeur refusée par la limite vive) — sans effet notable puisque la config n'a alors pas changé et que le snapshot renvoyé reste cohérent.
+
 | Topic reçu | Action `loopTask` (sous configMutex) |
 |---|---|
 | `{base}/filtration_mode/set` | `filtrationCfg.mode = "auto"|"manual"|"force"|"off"` + `filtration.computeAutoSchedule()` si auto + `saveMqttConfig()` + `publishFiltrationState()` |
 | `{base}/filtration/set` | `filtrationCfg.forceOn/forceOff` ; `filtration.update()` republie après changement réel du relais |
 | `{base}/lighting/set` | `lighting.setManualOn/Off()` + `publishLightingState()` |
+| `{base}/lighting_schedule/set` | Validation `ON`/`OFF` (insensible casse ; invalide → `warning` + resync HA). Sous `configMutex` **si changement** : `lightingCfg.scheduleEnabled = (payload == "ON")` + `saveMqttConfig()`. Hors mutex : `lighting.update()` + `publishLightingState()` (feature-052) |
+| `{base}/lighting_start/set` | Validation `HH:MM` (`timeStringToMinutes` < 0 → ignoré + `warning` + resync HA, **avant** prise mutex). Sous `configMutex` **si changement** : `lightingCfg.startTime = payload` + `saveMqttConfig()`. Hors mutex : `lighting.update()` + `publishLightingState()` (feature-052) |
+| `{base}/lighting_end/set` | symétrique (`lightingCfg.endTime`) — case groupée avec `LightingStart` (sélection via `bool isStart` + référence `String&`) |
 | `{base}/ph_target/set` | `mqttCfg.phTarget = value` (clamp 6.0–8.5) + `saveMqttConfig()` + `publishTargetState()` |
 | `{base}/orp_target/set` | `mqttCfg.orpTarget = value` (clamp 400–900 mV) + `saveMqttConfig()` + `publishTargetState()` |
+| `{base}/ph_regulation_mode/set` | `mqttCfg.phRegulationMode = "automatic"\|"scheduled"\|"manual"` + miroir `phEnabled = (mode != "manual")` + `saveMqttConfig()` **si changement réel** + `publishTargetState()` — voir détail ci-dessous (feature-009) |
+| `{base}/orp_regulation_mode/set` | symétrique ORP (`orpRegulationMode`, miroir `orpEnabled`) |
+| `{base}/ph_daily_target_ml/set` | `mqttCfg.phDailyTargetMl = value` (payload numérique, clamp négatif → 0, **REFUS si > `maxPhMlPerDay` vive**) + `saveMqttConfig()` **si changement** + `publishTargetState()`. Invalide/refusé → `warning` + resync HA (feature-050) |
+| `{base}/orp_daily_target_ml/set` | symétrique chlore (`orpDailyTargetMl`, REFUS si > `maxChlorineMlPerDay` vive) |
+| `{base}/reboot/set` | Pose `_rebootPending = true` + `_rebootRequestedAtMs = millis()` — **aucun restart immédiat** (feature-050) |
+| `{base}/filtration_start/set` | Validation `HH:MM` (`timeStringToMinutes` < 0 → ignoré + `warning` + resync HA, **avant** prise mutex). Sous `configMutex` **si changement** : `filtrationCfg.start = payload` + efface `forceOn`/`forceOff` + `saveMqttConfig()`. Hors mutex : `filtration.update()` (applique/recalcule) + `publishFiltrationState()` (feature-051) |
+| `{base}/filtration_end/set` | symétrique (`filtrationCfg.end`) — case groupée avec `FiltrationStart` (sélection via `bool isStart` + référence `String&`) |
+| `{base}/boost/set` | `ON` → `startBoost()` (refusé si heure non synchronisée) ; `OFF` → `stopBoost()` ; `publishBoostState()`. Surcouche temporaire non destructive auto-expirant à minuit (feature-053) |
+
+### Handler modes de régulation pH/ORP (feature-009, v2.7.0)
+
+Cases `InboundCmdType::PhRegulationMode` / `OrpRegulationMode` de `drainCommandQueue()` (exécutées par `loopTask`) :
+
+1. **Validation stricte** de l'enum : `payload.toLowerCase()` puis comparaison exacte à `automatic` / `scheduled` / `manual` (normalisation de casse cohérente avec le select mode filtration).
+2. Sous `configMutex` : calcul du flag `changed` (comparaison à la valeur courante), et **uniquement si changement réel** — écriture `mqttCfg.phRegulationMode` + **miroir** `mqttCfg.phEnabled = (mode != "manual")` ([ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), voie strictement identique au handler `POST /save-config` de l'UI web) + `saveMqttConfig()`. Pas d'écriture NVS sur commande no-op.
+3. Hors section critique : `publishTargetState()` **inconditionnel** (feedback HA immédiat, y compris si la valeur reçue était déjà active), puis log `info` « Mode régulation pH changé (MQTT): ... » **uniquement si changement**.
+4. **Valeur invalide** : log `warning` « Mode régulation pH invalide (MQTT): ... » + aucun effet (pas d'écriture, pas de republish).
+
+Un changement de mode pendant une injection en cours ne l'interrompt pas : l'injection se termine naturellement et le nouveau mode prend effet au cycle de régulation suivant (validé pool-chemistry — mêmes gardes `canDose()` que la voie UI web).
+
+### Handlers volume quotidien + reboot (feature-050, v2.14.0)
+
+**`PhDailyTarget` / `OrpDailyTarget`** (pattern `PhTarget`, sous `configMutex`) :
+
+1. `isNumericPayload()` faux → `warning` « Volume quotidien pH/Chlore invalide (MQTT) » + abandon.
+2. `payloadStr.toInt()`, clamp négatif → 0 (0 = désactivé).
+3. Prise `configMutex` bornée (`kConfigMutexTimeoutMs`) : timeout → commande abandonnée (rien modifié avant le take) + `publishTargetState()` de resync.
+4. **Condition pool-chemistry** : la valeur est comparée à la **limite journalière VIVE** lue au moment du drain (`safetyLimits.maxPhMlPerDay` / `maxChlorineMlPerDay`). Si `> maxMl` (et `maxMl > 0`) → `configMutex` relâché, `warning` « ... refusé (MQTT): X mL > limite journalière Y mL », `publishTargetState()` (resync HA sur la valeur réelle), pas d'écriture.
+5. Sinon écriture `mqttCfg.*DailyTargetMl` + `saveMqttConfig()` **uniquement si changement réel**, puis `publishTargetState()` inconditionnel + log `info` si changement.
+
+La borne discovery HA (2000 mL) est indépendante de cette garde : le refus effectif est porté par la limite vive, pas par la borne du widget `number`.
+
+**`Reboot`** : tout payload accepté (le bouton HA envoie `PRESS`). Le handler ne redémarre **pas** directement — il pose `_rebootPending = true` + `_rebootRequestedAtMs = millis()` et loggue `warning` « Redémarrage demandé via MQTT/HA ». Le **flag est consommé en tête de `drainCommandQueue()`** (avant la boucle de pop), au prochain tour de `loopTask` : après `kRestartApModeDelayMs`, `shutdownForRestart()` (flush `status=offline` + arrêt `mqttTask`, cf. ADR-0011) puis `ESP.restart()`. C'est la même séquence différée propre que la route `POST /reboot` — jamais de `ESP.restart()` depuis `mqttTask` ni au moment du drain de la commande.
+
+### Handler heures de filtration (feature-051, v2.16.0)
+
+Cases `InboundCmdType::FiltrationStart` / `FiltrationEnd` de `drainCommandQueue()` (groupées, même corps ; distinction via `const bool isStart` + référence `String& target = isStart ? filtrationCfg.start : filtrationCfg.end`) :
+
+1. **Validation format** `HH:MM` via `timeStringToMinutes(payload)` (module `schedule_logic`) : `< 0` → `warning` « Heure filtration début/fin invalide (MQTT) » + `publishFiltrationState()` (resync HA sur la valeur réelle) + abandon — **avant** toute prise de mutex (aucun `Give` à apparier). Rejette payload vide, `25:00`, `8:5`, `7h30`.
+2. Prise `configMutex` bornée (`kConfigMutexTimeoutMs`) : timeout → `warnConfigMutexTimeout` + `publishFiltrationState()` de resync + abandon (rien modifié avant le take).
+3. Sous mutex, **uniquement si changement réel** (`target != payload`) : écriture de la cible + **efface les overrides** `forceOn`/`forceOff` (le planning reprend effet immédiatement, comme `/save-config` quand le planning change) + `saveMqttConfig()` + log `info`.
+4. `Give` du mutex, puis **hors section critique** : `filtration.update()` (applique le nouveau planning, recalcule si mode auto) + `publishFiltrationState()` inconditionnel (feedback HA).
+
+`filtration.update()` est appelé **hors mutex** mais depuis `loopTask` — la même task qui l'appelle déjà dans `loop()` : aucun appel concurrent possible (pas de risque de double-entrée). En mode **Auto**, `update()` recalcule les heures selon la température → l'état republié reflète la valeur réelle (une saisie HA en auto est consultative). Aucun chemin de dosage touché.
+
+### Handler planning éclairage (feature-052, v2.17.0)
+
+Miroir du handler heures de filtration, appliqué à l'éclairage. Trois cases de `drainCommandQueue()` (exécutées par `loopTask`) :
+
+- **`InboundCmdType::LightingSchedule`** : validation `ON`/`OFF` (comparaison insensible à la casse) → `< invalide` : `warning` « Programmation éclairage invalide (MQTT) » + `publishLightingState()` (resync HA) + abandon **avant** prise mutex. Sinon, sous `configMutex` borné et **uniquement si changement** : `lightingCfg.scheduleEnabled = (payload == "ON")` + `saveMqttConfig()`. Hors mutex : `lighting.update()` + `publishLightingState()`.
+- **`InboundCmdType::LightingStart` / `LightingEnd`** : groupées (même corps, distinction via `const bool isStart` + référence `String& target`). Validation `HH:MM` via `timeStringToMinutes(payload)` : `< 0` → `warning` + `publishLightingState()` + abandon avant mutex. Sinon, sous `configMutex` **si changement** : écriture de `lightingCfg.startTime`/`endTime` + `saveMqttConfig()`. Hors mutex : `lighting.update()` (applique le planning) + `publishLightingState()`.
+
+Le booléen `scheduleEnabled` est **conservé** (pas de stringification, cf. feature-028) : depuis v2.17.2 l'entité HA est un `select` « Mode Éclairage » dont les templates traduisent Programmation/Désactivé ↔ ON/OFF (le handler reçoit toujours ON/OFF, inchangé — voir la section « Select Mode Éclairage » ci-dessus). `lighting.update()` est appelé hors mutex depuis `loopTask` (aucune double-entrée). Aucun chemin de dosage touché. Le broadcast WS config propage le changement à l'UI web (voir section bug-sync ci-dessus).
+
+## Timeouts `configMutex` bornés (feature-027, v2.11.1)
+
+Les **9 prises de `configMutex`** de `mqtt_manager.cpp` (historiquement en `portMAX_DELAY`) sont bornées par `kConfigMutexTimeoutMs = 1000 ms` (`xSemaphoreTakeRecursive`, [`constants.h`](../../src/constants.h)). Chaque timeout émet un `WARN` `[MQTT] <site>: timeout mutex config — opération sautée` **throttlé à 1/min/site** (`kMutexTimeoutWarnThrottleMs`).
+
+Politique d'échec par site :
+
+| Site (×9) | Tâche | Sur timeout |
+|---|---|---|
+| `publishProductState()` | `mqttTask` | Snapshot sauté — republication naturelle au prochain cycle (topics retain) |
+| `publishTargetState()` | `mqttTask` | Idem |
+| `publishAllStatesInternal()` — bloc product/target | `mqttTask` | **Snapshot atomique ou rien** : seul ce bloc de 10 publishes est sauté, les publishes précédents restent envoyés et les suivants (calibration, etc.) s'exécutent |
+| `drainCommandQueue()` — handlers commande HA (`filtration_mode`, `filtration_onoff`, `ph_target`, `orp_target`, `ph_regulation_mode`, `orp_regulation_mode`, `ph_daily_target_ml`, `orp_daily_target_ml`, `filtration_start`, `filtration_end`, `lighting_schedule`, `lighting_start`, `lighting_end`) | `loopTask` | **Commande HA abandonnée complètement** (rien n'a été modifié avant le take — pas d'état partiel) + **resync immédiat** : republication de l'état réel via `publishFiltrationState()`, `publishLightingState()` ou `publishTargetState()` pour que l'entité HA revienne à la valeur effective au lieu de rester sur la valeur optimiste du toggle |
+
+> ℹ️ **Pattern accepté (revue feature-027)** : le resync `publishFiltrationState()` lit `filtrationCfg.mode` (une `String`) **sans mutex** — c'est le comportement historique de cette méthode (appelée depuis plusieurs sites sans verrou), inchangé par la feature. Le risque théorique (lecture d'une `String` en cours d'écriture) est consigné comme accepté, pas introduit ici.
+
+Le comportement nominal (mutex libre) est strictement inchangé. Côté `config.cpp`, les 2 prises symétriques (`saveMqttConfig`, `saveProductConfig`) sont bornées de la même façon : `saveMqttConfig` en échec signale `error` (config RAM appliquée mais non persistée en NVS), `saveProductConfig` en échec **ne clear pas le dirty flag** (`productConfigDirty`) → retry naturel au prochain passage.
 
 ## LWT / Status
 

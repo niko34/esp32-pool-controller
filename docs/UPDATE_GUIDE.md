@@ -80,7 +80,54 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 
 ---
 
+## Vérification d'intégrité SHA-256 — depuis v2.11.0
+
+Depuis la v2.11.0, **toute image téléchargée depuis GitHub est vérifiée par empreinte SHA-256 avant d'être activée** ([ADR-0022](adr/0022-verification-integrite-ota.md)). L'empreinte de référence est le champ `digest` publié par GitHub pour chaque asset de release — aucune manipulation supplémentaire n'est requise pour un OTA nominal.
+
+**Cas d'un échec de vérification (image tronquée ou corrompue, coupure WiFi pendant le téléchargement) :**
+
+- **Firmware** : le flash est refusé **avant activation** — la carte reste sur la version actuelle, aucun redémarrage sur l'image suspecte. Message d'erreur explicite dans l'UI, log `CRITICAL` dans la page Logs. Relancer simplement l'installation.
+- **Filesystem** : la partition de l'interface web contient une image suspecte — **pas de redémarrage automatique**, le firmware reste intact et bootable. **Réinstaller le filesystem** (relancer la mise à jour GitHub, ou `./deploy.sh ota-fs` / `./deploy.sh fs`). Tant que ce n'est pas fait, l'interface web peut être partiellement indisponible (le firmware et la régulation continuent de fonctionner).
+
+**Cas d'une release sans empreinte (anciennes releases) :** le bouton **Installer** est **désactivé** avec le message « Cette release ne fournit pas d'empreinte d'intégrité — installation refusée (sécurité). » (comportement fail-closed voulu). Utiliser l'upload manuel ou `deploy.sh` pour installer une telle release.
+
+**Upload manuel (`/update`, interface web ou curl) :** l'empreinte SHA-256 de l'image reçue est toujours calculée et loggée. Il est possible de fournir l'empreinte attendue via le champ POST optionnel `sha256` (voir [docs/API.md](API.md#post-update--critical)) — en cas de différence, le flash est refusé. Sans empreinte fournie, le flash reste autorisé (vous êtes physiquement présent). Un seul upload à la fois : un second upload lancé pendant qu'un premier est en cours est refusé (`409`).
+
+---
+
 ## Notes de migration
+
+### Migration layout v3 → v4 (v2.13.0) — depuis 2026-07-06
+
+⚠️ **Mise à jour par câble USB obligatoire, une seule fois.**
+
+La version 2.13.0 change la **table de partitions** (layout v4, [ADR-0024](adr/0024-partitions-layout-v4.md)) : les slots firmware `app0`/`app1` passent de 1664 à **1792 KB** (+128 KB chacun), pris sur la partition `spiffs` qui passe de 576 à **320 KB** et se déplace à l'offset `0x390000` — rendu possible par la pré-compression gzip des assets (feature-048, payload FS 155 KB).
+
+**Pourquoi l'USB est obligatoire :** l'OTA écrit uniquement à l'intérieur des partitions existantes — il ne peut **pas** modifier la table de partitions ni le bootloader. La migration se fait par câble série :
+
+```bash
+./deploy.sh all
+```
+
+Cette commande recompile firmware + filesystem, réécrit bootloader + table de partitions + firmware, puis flashe le FS au nouvel offset.
+
+> ⛔ **Interdiction : ne JAMAIS pousser le firmware ou le filesystem v4 par OTA sur un appareil encore en table v3.** L'OTA ne change pas la table : elle resterait v3 même après « réussite » apparente. En particulier, une image FS construite pour 320 KB montée sur la partition `spiffs` de 576 KB présente des **métadonnées LittleFS discordantes** (taille d'image ≠ taille de partition) — interface web indisponible ou corrompue. La release 2.13.0 s'installe exclusivement par USB (`./deploy.sh all`).
+
+> ⚠️ **NE PAS utiliser `./deploy.sh factory`** pour cette migration : il efface toute la flash, **y compris la NVS** (perte de la config, des calibrations, du WiFi, et régénération du mot de passe AP). `./deploy.sh all` suffit et préserve tout.
+
+**Ce qui est préservé** (partitions inchangées en offset et en taille) :
+
+- **Config NVS** : calibrations, identification des sondes, paramètres de régulation, WiFi, compteurs journaliers ;
+- **Historique des mesures** (partition `history` à `0x3E0000`) ;
+- **Coredump** (partition `coredump`).
+
+**Vérifications post-flash** (Paramètres → Système → Infos système) :
+
+- ligne **FS** : taille de partition **~320 KB** (occupation ≈48 %) ;
+- **historique présent** : les graphiques du dashboard affichent les mesures antérieures à la migration ;
+- les mises à jour OTA (firmware et filesystem) refonctionnent normalement avec les nouvelles bornes.
+
+---
 
 ### Migration layout v2 → v3 (v2.4.0) — depuis 2026-07-04
 
@@ -213,6 +260,8 @@ Aucune action requise. Le firmware effectue la migration à la première lecture
 | Problème | Solution |
 |----------|----------|
 | Update Failed | Vérifier la connexion WiFi et réessayer |
+| « Échec de la vérification d'intégrité » | Image tronquée/corrompue refusée par sécurité — relancer l'installation (si c'était le filesystem, le réinstaller) |
+| Bouton Installer grisé « pas d'empreinte d'intégrité » | Release GitHub sans champ `digest` — installer via upload manuel ou `deploy.sh` |
 | ESP32 ne redémarre pas | Utiliser le bouton RESET ou débrancher |
 | Interface inaccessible | `./deploy.sh fs` (USB) |
 | Authentification refusée | Vérifier le mot de passe ou utiliser `POOL_PASSWORD=...` |

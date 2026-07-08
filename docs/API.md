@@ -28,6 +28,14 @@ Le token API est généré automatiquement au premier démarrage. Il est visible
 | WRITE  | Authentification requise |
 | CRITICAL | Authentification requise — opérations sensibles |
 
+### Politique d'origine — pas de CORS
+
+Le contrôleur applique une **politique même-origine stricte** ([ADR-0023](adr/0023-politique-cors-retrait.md), v2.11.2) : aucun en-tête `Access-Control-Allow-*` n'est émis, aucun preflight `OPTIONS` n'est traité. L'UI est servie par l'ESP32 lui-même — un navigateur ne peut pas appeler cette API depuis une page hébergée sur une autre origine. Les clients non-navigateur (`curl`, scripts, intégrations serveur) ne sont pas concernés. Pour une intégration cross-origin navigateur, passer par un reverse proxy.
+
+Détails techniques :
+- La comparaison du token API est à **temps constant** (HTTP et WebSocket) — voir [docs/subsystems/auth.md](subsystems/auth.md).
+- Le token n'est accepté **que** via le header `X-Auth-Token` (jamais en query param `?token=...`).
+
 ### Recommandations de sécurité
 
 - Utiliser un réseau WiFi sécurisé
@@ -377,7 +385,9 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "max_chlorine_ml_per_day": 1000,
   "time_current": "2026-03-28T14:30:45",
   "sensor_logs_enabled": false,
-  "debug_logs_enabled": false
+  "debug_logs_enabled": false,
+  "boost_active": false,
+  "boost_until": 0
 }
 ```
 
@@ -405,6 +415,8 @@ Champs notables de la réponse :
 | `orp_cal_valid` | boolean | `true` si une calibration ORP a déjà été enregistrée (date non vide) |
 | `sensor_logs_enabled` | boolean | Verbosité des logs capteurs (default `false`). Modifiable via Paramètres → Avancé → « Log des sondes ». |
 | `debug_logs_enabled` | boolean | Active la production des logs de niveau `DEBUG` côté firmware (default `false`). Quand `false`, `Logger::debug()` court-circuite immédiatement (early return). Les niveaux `INFO`/`WARN`/`ERROR`/`CRITICAL` ne sont pas affectés. Modifiable via Paramètres → Avancé → « Logs DEBUG activés ». Persisté en NVS sous la clé `debug_logs`. Effet immédiat, pas de redémarrage requis. |
+| `boost_active` | boolean | Mode Boost actif (feature-053, v2.18.0). `true` tant que la surchloration temporaire du jour est en cours. Piloté par `POST /boost/start` \| `/boost/stop` (jamais par `/save-config`). Persisté en NVS (survit à un reboot dans la journée), expire automatiquement au prochain minuit local. Voir [ADR-0025](adr/0025-mode-boost.md). |
+| `boost_until` | integer (epoch) | Instant d'expiration du Boost (epoch UNIX, prochain minuit local). `0` si le Boost est inactif. Permet à l'UI d'afficher l'heure de fin. |
 
 **`POST /save-config` — champs pH spécifiques :**
 
@@ -667,6 +679,13 @@ Champs ajoutés en feature-025 (lissage mesures + régulation P temporisée) :
 | `phDoseBlockedReason` | string \| null | Dernière cause de refus de `canDose(0)` (ex `"filtre capteur non prêt (warmup / EZO injoignable)"`, `"pause mélange en cours"`). `null` si dosage autorisé. |
 | `orpDoseBlockedReason` | string \| null | Équivalent ORP. |
 
+Champs ajoutés en feature-011 (répartition scheduled, v2.8.0 — [ADR-0021](adr/0021-repartition-scheduled.md)) :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `ph_scheduled_flow_ml_per_min` | float \| null | Débit moyen **planifié** restant du mode Programmée pH (mL/min, 1 décimale) = volume restant à injecter / minutes de filtration restantes (bornées à minuit). `null` si le mode pH n'est pas `scheduled`, hors plage de filtration, ou heure locale ESP32 invalide — l'UI affiche alors « — ». |
+| `orp_scheduled_flow_ml_per_min` | float \| null | Équivalent ORP (chlore). Mêmes conditions de nullité. |
+
 > Le WebSocket pousse la configuration complète à la connexion initiale ; les mises à jour suivantes sont différentielles (seuls les champs modifiés sont inclus).
 
 ---
@@ -718,6 +737,8 @@ Démarre une injection manuelle pH à la puissance configurée (`pump1_max_duty_
 > ✅ **Injection manuelle gardée (v2.6.0, feature-006)** : le démarrage passe par les gardes de sécurité chimique de `evaluateManualInject()` ([`src/dosing_logic.h`](../src/dosing_logic.h)) — watchdog, filtration, stabilisation post-calibration, double démarrage, limite journalière **prédictive** (cumul + volume demandé), limite horaire (budget **partagé** avec la régulation auto, [ADR-0020](adr/0020-budget-horaire-dosage-unique.md)), cycles/jour et anti-rafale (ring partagé avec l'auto). Tout refus retourne **`409 Conflict`** avec un corps **JSON structuré** (voir [tableau des codes](#codes-de-refus-409-v260)). Le mode de régulation n'est volontairement **pas** vérifié (le manuel est disponible dans tous les modes), ni la mesure capteur (le manuel est aveugle à la mesure — assumé).
 >
 > Si la filtration s'arrête **pendant** l'injection, celle-ci est interrompue automatiquement (< 100 ms après détection) et une alerte MQTT `ph_injection_aborted` est publiée sur `{base}/alerts`. Pas de reprise automatique : l'utilisateur doit relancer manuellement après reprise filtration. `POST /ph/inject/stop` n'est **jamais** gardé (coupe-circuit opérateur).
+>
+> ✅ **Écrêtage automatique au reliquat journalier (v2.9.2)** : si le volume demandé (ou équivalent au `duration` legacy) **dépasse le reliquat** du quota journalier (`max_ph_ml_per_day − cumul`), la demande n'est plus refusée mais **écrêtée au reliquat** — durée recalculée arrondie **vers le bas** (le volume effectif ne re-déborde jamais la limite), log `info` `[Injection] pH : volume écrêté de X à Y mL (reliquat journalier)`, réponse `200 OK` normale. En fin naturelle, le crédit plancher (v2.9.1) porte le cumul **exactement à la limite** → latch `ph_limit_reached` + badge « Limite journalière atteinte ». Le refus `daily_limit` ne subsiste que si le reliquat est **nul ou < 1 s de pompe**. Cas double-clamp (reliquat > 10 min de pompe) : le plafond `kManualInjectMaxDurationS` gagne et le crédit retombe sur le volume effectif. Détail : [docs/subsystems/pump-controller.md](subsystems/pump-controller.md).
 
 Paramètres (querystring, exclusifs) :
 
@@ -749,7 +770,7 @@ Format du corps (`application/json`) :
 | `filtration_off` | Filtration arrêtée et `regulationMode != "continu"` | — |
 | `stabilization_in_progress` | Stabilisation post-calibration en cours **pour la pompe visée** | `seconds_remaining` (int) |
 | `already_injecting` | Une injection manuelle est déjà en cours sur cette pompe (double start) | — |
-| `daily_limit` | `cumul journalier + volume demandé > max_*_ml_per_day` (prédictif ; frontière `==` **acceptée** ; limite ≤ 0 = illimité) | `remaining_ml` (int, reliquat journalier arrondi) |
+| `daily_limit` | Reliquat journalier **nul ou < 1 s de pompe** (sinon la demande est **écrêtée** au reliquat et acceptée — v2.9.2 ; frontière `==` **acceptée** ; limite ≤ 0 = illimité) | `remaining_ml` (int, reliquat arrondi **vers le bas** depuis v2.9.2 — le message ne promet jamais plus que disponible) |
 | `hourly_limit` | `usedMs + durée demandée > *_limit_minutes × 60000` (budget **partagé** auto + manuel ; frontière `==` acceptée ; limite 0 = illimité) | — |
 | `max_cycles` | Cycles/jour atteints (`maxCyclesPerDay = 20`, compteur partagé auto + manuel) | — |
 | `burst_limit` | Anti-rafale : ≥ 6 démarrages/min OU ≥ 20 démarrages/15 min (ring partagé auto + manuel) | — |
@@ -772,7 +793,7 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/ph/inject/stop
 
 Identique à `/ph/inject/start` pour la pompe ORP (`orp_pump`). Mêmes paramètres et contraintes.
 
-> ✅ **Injection manuelle gardée (v2.6.0, feature-006)** : mêmes gardes et même format de refus **`409` JSON** que `/ph/inject/start` — voir [tableau des codes](#codes-de-refus-409-v260). Limites appliquées côté ORP : `max_chlorine_ml_per_day` (journalière prédictive), `orp_limit_minutes` (horaire partagée avec l'auto), cycles/jour et anti-rafale (compteurs partagés), stabilisation post-cal ORP. Arrêt cyclique automatique si la filtration tombe en cours d'injection, alerte MQTT `orp_injection_aborted` publiée sur `{base}/alerts`. Bornage `duration` à 600 s (idem `/ph/inject/start`). `POST /orp/inject/stop` jamais gardé.
+> ✅ **Injection manuelle gardée (v2.6.0, feature-006)** : mêmes gardes et même format de refus **`409` JSON** que `/ph/inject/start` — voir [tableau des codes](#codes-de-refus-409-v260). Limites appliquées côté ORP : `max_chlorine_ml_per_day` (journalière prédictive), `orp_limit_minutes` (horaire partagée avec l'auto), cycles/jour et anti-rafale (compteurs partagés), stabilisation post-cal ORP. Arrêt cyclique automatique si la filtration tombe en cours d'injection, alerte MQTT `orp_injection_aborted` publiée sur `{base}/alerts`. Bornage `duration` à 600 s (idem `/ph/inject/start`). **Écrêtage automatique au reliquat journalier (v2.9.2)** symétrique à la route pH (log `[Injection] ORP : volume écrêté de X à Y mL (reliquat journalier)`). `POST /orp/inject/stop` jamais gardé.
 
 ```bash
 curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/orp/inject/start?volume=50"
@@ -797,6 +818,53 @@ Allume ou éteint l'éclairage (relais).
 ```bash
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/lighting/on
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/lighting/off
+```
+
+---
+
+### POST /boost/start — WRITE
+
+Active le **Mode Boost** (feature-053, v2.18.0) : surchloration temporaire du jour, auto-expirant au prochain minuit local. Tant qu'il est actif : filtration forcée en marche + cible ORP effective relevée (`min(orp_target + 60, 850)` mV) + limite journalière chlore effective relevée (`min(max_chlorine_ml_per_day × 1,5, 1000)` mL). **L'effet chlore ne s'applique qu'en mode de régulation ORP `automatic`** ; en Manuel / Programmé, seule la filtration s'étend. Aucun autre garde-fou n'est relâché. Voir [ADR-0025](adr/0025-mode-boost.md).
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/boost/start
+```
+
+**Réponse 200** :
+
+```json
+{ "success": true, "boost_active": true, "boost_until": 1751846400, "filtration_extended": true, "chlorine_boosted": true }
+```
+
+Champs additifs v2.18.1 (feature-054) — indiquent quels leviers du Boost s'appliquent réellement selon la config :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `filtration_extended` | boolean | `true` si la filtration est gérée par PoolController (`filtration_enabled`) → le Boost prolonge effectivement la filtration. `false` si filtration non gérée (levier inerte : le forçage Boost n'est jamais atteint). |
+| `chlorine_boosted` | boolean | `true` si `orp_regulation_mode == "automatic"` → le Boost relève effectivement la cible/limite chlore. `false` en Manuel / Programmé (levier inerte : le chlore n'est pas relevé). |
+
+Quand un levier est inerte, `startBoost()` logue en plus un `warning` (couvre l'activation HTTP **et** MQTT/HA — voir [pump-controller.md §Mode Boost](subsystems/pump-controller.md#mode-boost-feature-053)). L'activation n'est jamais bloquée (on informe, on n'empêche pas).
+
+**Erreur 409** — heure non synchronisée : sans horloge valide, l'expiration à minuit ne peut être calculée, l'activation est refusée (pas de boost « sans fin »).
+
+```json
+{ "error": "time_not_synced", "message": "Heure non synchronisée — Boost indisponible." }
+```
+
+---
+
+### POST /boost/stop — WRITE
+
+Désactive le Mode Boost immédiatement. Retour intégral au comportement normal (cible ORP, limite journalière et filtration selon la configuration). Inconditionnel (jamais refusé).
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/boost/stop
+```
+
+**Réponse 200** :
+
+```json
+{ "success": true, "boost_active": false }
 ```
 
 ---
@@ -913,7 +981,18 @@ curl -u admin:monmotdepasse -X POST \
 
 > ⚠️ `update_type` doit être envoyé **avant** le fichier dans le multipart.
 
+**Champ POST optionnel `sha256`** (v2.11.0, [ADR-0022](adr/0022-verification-integrite-ota.md)) : empreinte SHA-256 attendue de l'image, avec ou sans préfixe `sha256:`. Si elle est fournie et ne correspond pas à l'empreinte calculée du flux reçu (ou si elle est malformée), le flash est **refusé** (`Update.abort()`, corps `FAIL`, log `CRITICAL`). Sans ce champ, l'empreinte calculée est simplement **loggée** (`info`) — flash autorisé (upload manuel, utilisateur présent).
+
+```bash
+curl -u admin:monmotdepasse -X POST \
+  -F "update_type=firmware" -F "sha256=sha256:<64 hex>" \
+  -F "update=@.pio/build/esp32dev/firmware.bin" \
+  http://poolcontroller.local/update
+```
+
 Réponse : `200 OK` (corps `OK`) ou `200 OK` (corps `FAIL`).
+
+**`409 Conflict`** (v2.11.0) : un upload est déjà en cours (une seule session d'upload à la fois — verrou anti-concurrence). Corps : `Upload refusé: une mise à jour OTA est déjà en cours`. Si le client d'un upload en cours se déconnecte, la session est annulée automatiquement et un nouvel upload redevient possible.
 
 L'ESP32 redémarre automatiquement après une mise à jour réussie.
 
@@ -933,23 +1012,46 @@ curl -u admin:monmotdepasse http://poolcontroller.local/check-update
   "latest_version": "1.0.4",
   "update_available": true,
   "firmware_url": "https://github.com/.../firmware.bin",
-  "filesystem_url": "https://github.com/.../littlefs.bin"
+  "filesystem_url": "https://github.com/.../littlefs.bin",
+  "firmware_digest": "sha256:ab12…",
+  "filesystem_digest": "sha256:cd34…"
 }
 ```
+
+Champs additifs v2.11.0 : `firmware_digest` / `filesystem_digest` — empreintes SHA-256 des assets (champ `digest` de l'API GitHub, format `sha256:<64 hex>`, chaîne vide si la release ne le fournit pas). L'UI les relaie en paramètre `digest=` de `/download-update` et **désactive le bouton Installer** si l'une des deux est vide (fail-closed).
 
 ---
 
 ### POST /download-update — CRITICAL
 
-Télécharge et installe une mise à jour depuis une URL GitHub.
+Télécharge et installe une mise à jour depuis une URL GitHub, avec vérification d'intégrité SHA-256 **obligatoire** (v2.11.0, [ADR-0022](adr/0022-verification-integrite-ota.md)).
 
 ```bash
-curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
-  -d '{"url":"https://github.com/.../firmware.bin"}' \
+curl -u admin:monmotdepasse -X POST \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "url=https://github.com/.../firmware.bin&digest=sha256:<64 hex>&restart=true" \
   http://poolcontroller.local/download-update
 ```
 
 > Seuls les hôtes `github.com`, `api.github.com` et `objects.githubusercontent.com` sont autorisés.
+
+Paramètres POST :
+
+| Paramètre | Requis | Description |
+|---|---|---|
+| `url` | oui | URL de l'asset (`firmware.bin` ou `littlefs.bin`, hôtes whitelistés) |
+| `digest` | **oui** (v2.11.0) | Empreinte SHA-256 attendue, format `sha256:<64 hex>` (relayée depuis `/check-update`) |
+| `restart` | non | `false` pour ne pas redémarrer après une installation filesystem réussie |
+
+Erreurs d'intégrité (fail-closed) :
+
+| Code | `error` | Cas |
+|---|---|---|
+| `400` | `integrity_digest_missing` | Paramètre `digest` absent — refus **avant** toute connexion |
+| `400` | `integrity_digest_invalid` | Empreinte malformée (format attendu `sha256:<64 hex>`) |
+| `422` | `integrity_mismatch` | Empreinte calculée du flux ≠ empreinte attendue (image corrompue ou tronquée, coupure WiFi incluse). Corps : `{"error","expected","computed","message"}`. **Firmware** : `Update.abort()` avant activation — version courante conservée. **Filesystem** : pas de redémarrage, partition FS à réinstaller (firmware intact). |
+
+Chaque refus émet un log `CRITICAL` avec empreintes attendue/calculée.
 
 ---
 

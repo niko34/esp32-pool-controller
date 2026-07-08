@@ -216,6 +216,41 @@
               </div>
             </div>
 
+            <!-- Carte Boost (feature-053) -->
+            <div class="card card--status" id="dashboard-boost-card">
+              <div class="card__status-header">
+                <div class="card__status-icon card__status-icon--transparent">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91 0z"/>
+                    <path d="M12 15l-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/>
+                    <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
+                    <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
+                  </svg>
+                </div>
+                <div class="card__status-info">
+                  <div class="card__status-label">Boost</div>
+                  <div class="card__status-state">
+                    <span class="state-badge state-badge--off" id="detail-boost-status">Inactif</span>
+                  </div>
+                </div>
+              </div>
+              <div class="card__body">
+                <div class="detail-row">
+                  <div class="detail-label">Expiration</div>
+                  <div class="detail-value" id="detail-boost-until">—</div>
+                </div>
+                <div class="detail-row" id="detail-boost-effect-row" style="display:none;">
+                  <div class="detail-label">Effet</div>
+                  <div class="detail-value" id="detail-boost-effect">—</div>
+                </div>
+                <p class="field__hint" id="detail-boost-hint" style="margin:0 0 10px;">Surchloration renforcée jusqu'à minuit (filtration prolongée + cible ORP relevée).</p>
+                <div class="detail-actions">
+                  <button class="btn btn--primary" id="detail-boost-start">Activer</button>
+                  <button class="btn btn--danger" id="detail-boost-stop" style="display:none;">Arrêter</button>
+                </div>
+              </div>
+            </div>
+
             <!-- Carte Éclairage -->
             <div class="card card--status" id="dashboard-lighting-card">
               <div class="card__status-header">
@@ -450,29 +485,29 @@
               </div>
               <div class="card__body">
                 <label class="field">
-                  <span class="field__label">Mode de programmation</span>
+                  <span class="field__label">Mode d'éclairage</span>
                   <select id="lighting_schedule_mode">
-                    <option value="disabled">Désactivée</option>
-                    <option value="enabled">Activée</option>
+                    <option value="enabled">Programmation</option>
+                    <option value="disabled">Désactivé</option>
                   </select>
                 </label>
 
-                <div id="lighting-schedule-settings" style="display:none;">
+                <div id="lighting-schedule-settings" class="grid grid--2" style="display:none;">
                   <label class="field">
-                    <span class="field__label">Heure de début</span>
+                    <span class="field__label">Début</span>
                     <input type="time" id="lighting_start_time" value="20:00" />
                   </label>
 
                   <label class="field">
-                    <span class="field__label">Heure de fin</span>
+                    <span class="field__label">Fin</span>
                     <input type="time" id="lighting_end_time" value="23:00" />
                   </label>
-
-                  <div class="hint">
-                    L'éclairage s'allumera automatiquement entre l'heure de début et l'heure de fin.
-                  </div>
                 </div>
-                <div class="detail-actions">
+
+                <div class="hint">
+                  En mode Programmation, l'éclairage s'allume automatiquement entre l'heure de début et l'heure de fin.
+                </div>
+                <div class="row row--gap" style="margin-top:16px;">
                   <button class="btn btn--primary" type="button" id="lighting_save_btn">Sauvegarder</button>
                 </div>
               </div>
@@ -679,6 +714,8 @@
                   </div>
                   <span class="field__hint muted small" id="ph_daily_target_hint"></span>
                 </label>
+                <p class="muted small" id="ph_scheduled_flow_line" style="margin:10px 0 0">Débit calculé : <span id="ph_scheduled_flow_value">—</span></p>
+                <p class="muted small" style="margin:4px 0 0">Le volume non injecté avant minuit est perdu (pas de report au lendemain).</p>
                 <div class="detail-actions" style="margin-top:12px">
                   <button class="btn btn--primary" type="button" id="ph_scheduled_save_btn">Sauvegarder</button>
                 </div>
@@ -942,6 +979,8 @@
                   </div>
                   <span class="field__hint muted small" id="orp_daily_target_hint"></span>
                 </label>
+                <p class="muted small" id="orp_scheduled_flow_line" style="margin:10px 0 0">Débit calculé : <span id="orp_scheduled_flow_value">—</span></p>
+                <p class="muted small" style="margin:4px 0 0">Le volume non injecté avant minuit est perdu (pas de report au lendemain).</p>
                 <div class="detail-actions" style="margin-top:12px">
                   <button class="btn btn--primary" type="button" id="orp_scheduled_save_btn">Sauvegarder</button>
                 </div>
@@ -1396,31 +1435,6 @@
                 </div>
               </div>
 
-              <div class="card">
-                <div class="card__head">
-                  <h2 class="card__title">CORS (Cross-Origin Resource Sharing)</h2>
-                </div>
-                <div class="card__body">
-                  <label class="field">
-                    <span class="field__label">Origines autorisées</span>
-                    <input type="text" id="auth_cors_origins" placeholder="Vide = désactivé, * = tous, ou liste séparée par virgules" />
-                  </label>
-
-                  <div class="hint">
-                    <strong>Configuration CORS:</strong>
-                    <ul style="margin: 8px 0; padding-left: 20px; list-style: disc;">
-                      <li><strong>Vide</strong>: CORS désactivé (recommandé pour usage local uniquement)</li>
-                      <li><strong>*</strong>: Accepter toutes les origines (moins sécurisé)</li>
-                      <li><strong>Liste blanche</strong>: Ex: <code>http://homeassistant.local:8123, https://exemple.com</code></li>
-                    </ul>
-                    Nécessite un redémarrage de l'ESP32 pour être appliqué.
-                  </div>
-
-                  <div class="row row--gap" style="margin-top: 16px;">
-                    <button class="btn btn--primary" id="cors-save-btn">Sauvegarder</button>
-                  </div>
-                </div>
-              </div>
             </section>
 
             <!-- Regulation Panel -->
@@ -1598,7 +1612,7 @@
                 </div>
                 <div class="card__body">
                   <div class="hint">
-                    Redémarrer pour appliquer certaines modifications (CORS, etc.) ou résoudre des problèmes.
+                    Redémarrer pour appliquer certaines modifications ou résoudre des problèmes.
                   </div>
 
                   <div class="row row--gap" style="margin-top: 16px;">
@@ -1877,7 +1891,7 @@
                       <li><a href="https://github.com/terser/html-minifier-terser" target="_blank">html-minifier-terser v7.2.0</a> - Minification HTML</li>
                       <li><a href="https://github.com/terser/terser" target="_blank">Terser v5.44.1</a> - Minification JavaScript</li>
                       <li><a href="https://github.com/clean-css/clean-css" target="_blank">clean-css v5.3.3</a> - Minification CSS</li>
-                      <li><a href="https://playwright.dev" target="_blank">Playwright v1.58.0</a> - Tests E2E</li>
+                      <li><a href="https://www.throwtheswitch.org/unity" target="_blank">Unity (PlatformIO)</a> - Tests natifs de la logique pure (185 tests, CI GitHub Actions)</li>
                     </ul>
                   </div>
 
@@ -1889,11 +1903,16 @@
                       <li><a href="https://github.com/alanswx/ESPAsyncWiFiManager" target="_blank">ESPAsyncWiFiManager v0.31</a> - Configuration WiFi</li>
                       <li><a href="https://github.com/bblanchon/ArduinoJson" target="_blank">ArduinoJson v7.4.2</a> - Sérialisation JSON</li>
                       <li><a href="https://github.com/knolleary/pubsubclient" target="_blank">PubSubClient v2.8</a> - Client MQTT</li>
-                      <li><a href="https://github.com/DFRobot/DFRobot_PH" target="_blank">DFRobot_PH v1.0.0</a> - Capteur pH</li>
-                      <li><a href="https://github.com/adafruit/Adafruit_ADS1X15" target="_blank">Adafruit ADS1X15 v2.6.0</a> - ADC 16-bit</li>
                       <li><a href="https://github.com/milesburton/Arduino-Temperature-Control-Library" target="_blank">DallasTemperature v3.11.0</a> - DS18B20</li>
                       <li><a href="https://github.com/PaulStoffregen/OneWire" target="_blank">OneWire v2.3.8</a> - Protocole 1-Wire</li>
                       <li><a href="https://github.com/adafruit/RTClib" target="_blank">RTClib v2.1.4</a> - Horloge temps réel</li>
+                    </ul>
+                  </div>
+
+                  <div style="margin-top: 16px;">
+                    <strong>Mesure pH / ORP:</strong>
+                    <ul style="margin: 8px 0; padding-left: 20px;">
+                      <li><a href="https://atlas-scientific.com" target="_blank">Modules Atlas Scientific EZO</a> - pH et ORP, pilotés en I²C natif (aucune bibliothèque externe)</li>
                     </ul>
                   </div>
                 </div>
@@ -1908,5 +1927,15 @@
       </main>
       </div><!-- app-body -->
     </div>
+
+    <!-- Modale de confirmation générique (feature-031) -->
+    <dialog id="confirm-modal" class="probe-modal confirm-modal" aria-labelledby="confirm-modal-title">
+      <h3 id="confirm-modal-title" class="probe-modal__title">Confirmation</h3>
+      <p id="confirm-modal-message" class="confirm-modal__message"></p>
+      <div class="probe-modal__actions">
+        <button class="btn btn--ghost" type="button" id="confirm-modal-cancel">Annuler</button>
+        <button class="btn btn--primary" type="button" id="confirm-modal-ok">Confirmer</button>
+      </div>
+    </dialog>
   </body>
 </html>

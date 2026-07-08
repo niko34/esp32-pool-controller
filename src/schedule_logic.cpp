@@ -43,6 +43,23 @@ bool isMinutesInRange(int now, int start, int end, bool equalMeansAlways) {
   return now >= start || now < end;
 }
 
+int remainingRangeMinutes(int nowMin, int startMin, int endMin) {
+  // Réutilise isMinutesInRange (equalMeansAlways=false) : couvre start/end==-1,
+  // start==end (plage invalide) et le cas hors plage → 0 (feature-011).
+  if (!isMinutesInRange(nowMin, startMin, endMin)) return 0;
+  if (startMin < endMin) {
+    return endMin - nowMin;
+  }
+  // Plage à cheval sur minuit (start > end, garanti par isMinutesInRange).
+  if (nowMin >= startMin) {
+    // Partie du soir : horizon BORNÉ À MINUIT (les compteurs journaliers se
+    // réinitialisent à minuit — la répartition ne franchit jamais la frontière).
+    return 1440 - nowMin;
+  }
+  // Partie du matin (nowMin < endMin).
+  return endMin - nowMin;
+}
+
 ScheduleWindow computeAutoWindow(float tempC, float pivotHour) {
   if (tempC < 0) tempC = 0;
   float durationHours = tempC / 2.0f;
@@ -70,9 +87,14 @@ ScheduleWindow computeAutoWindow(float tempC, float pivotHour) {
   return { toMinutes(startHour), toMinutes(endHour) };
 }
 
-bool decideFiltrationRun(const char* mode, bool forceOn, bool forceOff,
+bool decideFiltrationRun(bool boostForce, const char* mode, bool forceOn, bool forceOff,
                          bool haveTime, int nowMin, int startMin, int endMin,
                          bool currentlyRunning) {
+  // feature-053 : le Mode Boost force la filtration en marche (turnover maximal),
+  // priorité MAXIMALE avant forceOn/forceOff/horaire.
+  if (boostForce) {
+    return true;
+  }
   if (forceOn) {
     return true;
   } else if (forceOff) {

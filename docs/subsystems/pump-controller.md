@@ -55,6 +55,10 @@ unsigned int getCyclesToday(int pumpIndex) const;             // cycles jour aut
 int getRecentCycles(int pumpIndex, uint32_t windowMs) const;  // ring anti-rafale partagé
 void requestManualCycleRecord(int pumpIndex);                 // enregistrement atomique différé
 
+// Crédit plancher fin d'injection manuelle volumée (v2.9.1) — loopTask only,
+// appelé par updateManualInject() à la fin NATURELLE uniquement
+void creditManualInjectionFloor(int idx, float startCumulMl, float creditMl);
+
 // Pause mélange hydraulique post-injection (feature-025)
 void notifyPhDose(uint32_t nowMs);              // arme la pause à l'arrêt d'une injection pH
 void notifyOrpDose(uint32_t nowMs);
@@ -128,7 +132,7 @@ Ordre par cycle :
    - `maxCyclesPerDay = 20` — démarrages comptés dans une fenêtre 24 h glissante.
 5. **Limites de sécurité** ([`config.h:141`](../../src/config.h:141) `SafetyLimits`) :
    - Horaire : `ph_limit_minutes` / `orp_limit_minutes` dans une fenêtre glissante de 1 h (`windowStart` / `usedMs` dans `DosingState`). **Non reflétée dans l'UI** (pas de badge dédié à date).
-   - Journalière : `maxPhMinusMlPerDay = 300`, `maxChlorineMlPerDay = 500`.
+   - Journalière : `maxPhMlPerDay = 300`, `maxChlorineMlPerDay = 500`.
 6. **Cumul journalier persisté** : `dailyPhInjectedMl` / `dailyOrpInjectedMl`, persistés en NVS, reset à minuit local (détection via `currentDayDate[9]`). Voir [Reset journalier](#reset-journalier) et [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md).
 
 ## Reset journalier
@@ -260,6 +264,31 @@ Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontr
 
 **Routes d'arrêt** (`/ph/inject/stop`, `/orp/inject/stop`, `/pump[12]/off`) : **inconditionnelles** — pouvoir arrêter en toute circonstance, y compris pendant une stabilisation.
 
+**Crédit plancher à la fin naturelle (v2.9.1)** : le cumul journalier de sécurité (`dailyPhInjectedMl` / `dailyOrpInjectedMl`) est alimenté par **intégration débit × temps** (`updateSafetyTracking`), qui perd systématiquement quelques dixièmes de mL aux bornes d'une injection manuelle volumée : arrondi de `durationS` à la seconde entière, tranche entre le démarrage réel (handler async) et le premier tick de comptage, et surtout **dernière tranche jamais comptée** (`updateManualInject()` coupe la pompe à l'expiration → au tick suivant le delta final est jeté). La garde d'acceptation raisonnant, elle, en **volume exact** (garde #5, frontière `==` acceptée), demander exactement le reliquat du quota (limite 50 mL, injection 50 mL) laissait le cumul à 49,x → `ph/orp_limit_reached` jamais latché, badge dashboard « Cumul 98 % » figé.
+
+Correctif : à l'acceptation, la route mémorise dans `ManualInjectState` le cumul au départ (`startCumulMl`) et le volume promis post-plafonnement (`creditMl = effectiveMl`) ([`web_routes_control.cpp:335`](../../src/web_routes_control.cpp:335)). À la **fin naturelle** (expiration de `durationMs`), `updateManualInject()` appelle `creditManualInjectionFloor(idx, startCumulMl, creditMl)` ([`pump_controller.cpp:675`](../../src/pump_controller.cpp:675)) qui **planche** le registre de sécurité :
+
+- cas nominal : `daily = max(daily, startCumulMl + creditMl)` ;
+- **rollover minuit pendant l'injection** (détecté par `daily < startCumulMl`) : `daily = max(daily, creditMl)` — le volume **entier** est crédité au jour nouveau (choix conservateur, sur-compte possible).
+
+| Chemin d'arrêt | Crédit plancher |
+|---|---|
+| Fin naturelle (expiration de durée, cas 1 d'`updateManualInject`) | ✅ oui |
+| Stop manuel (`/ph\|orp/inject/stop`) | ❌ non — l'intégration réelle fait foi (injecté moins → compté moins) |
+| Interruption filtration (arrêt sécurité chimique) | ❌ non — idem |
+
+- **Propriété fail-safe (validée pool-chemistry)** : le registre de sécurité **ne sous-compte jamais** un volume promis et injecté en entier ; il peut **sur-compter de quelques dixièmes de mL** (conservateur — la limite journalière se déclenche au plus tôt, jamais au plus tard).
+- **Suivi produit NON planché** : `productCfg.phTotalInjectedMl` / `orpTotalInjectedMl` (stock) restent sur l'intégration réelle → peuvent **sous-estimer légèrement la consommation** (dérive cumulative possible sur les fractions de mL au fil des injections manuelles). Assumé : le stock est un indicateur, pas un registre de sécurité.
+- Exécution en `loopTask` uniquement (mêmes règles d'accès aux compteurs qu'`updateSafetyTracking` : écrivain unique, pas de mutex) ; ajustement effectif → `_dailyCountersDirty` armé (flush NVS différé).
+- **Logs `info`** : `[Sécurité] Compteur journalier pH|ORP ajusté de X à Y mL (crédit fin d'injection manuelle)` (émis seulement si un ajustement a réellement eu lieu) ; le log de fin de durée mentionne désormais le cumul crédité : `[Injection] pH|ORP arrêtée automatiquement (fin de durée) — cumul crédité à X mL`.
+
+**Écrêtage au reliquat journalier (v2.9.2)** : les routes `/ph|orp/inject/start` ([`web_routes_control.cpp:297`](../../src/web_routes_control.cpp:297) et [`:392`](../../src/web_routes_control.cpp:392)) n'opposent plus le refus `daily_limit` quand la demande dépasse le reliquat (`max*MlPerDay − daily*InjectedMl`) : la demande est **écrêtée au reliquat** — durée recalculée arrondie **vers le bas** (`floor` volontaire : le volume effectif ne re-déborde jamais la limite), log `info` `[Injection] pH|ORP : volume écrêté de X à Y mL (reliquat journalier)`. Interaction avec le crédit plancher ci-dessus :
+
+- **écrêtage sans re-plafonnement durée** : `creditMl = remaining` (reliquat **entier**, pas `effectiveMl`) → à la fin naturelle, le plancher porte le cumul **exactement à la limite** → latch `ph/orp_limit_reached` + badge « Limite journalière atteinte ». Sur-compte borné à < 1 s de débit (conservateur, cohérent avec la propriété fail-safe v2.9.1) ;
+- **double-clamp** (reliquat > 10 min de pompe) : le plafond `kManualInjectMaxDurationS` gagne → `creditMl = effectiveMl` — le crédit n'excède **jamais** ce qui a pu être réellement injecté.
+
+Le refus `daily_limit` ne subsiste que si le reliquat est **nul ou < 1 s de pompe** ; son message et son champ `remaining_ml` arrondissent désormais **vers le bas** (`floorf`, plus jamais de « reste 11 mL » qui refuse 11). La garde pure `evaluateManualInject()` est **inchangée** (frontière `==` toujours verrouillée par test natif) : l'écrêtage est fait en amont dans le handler, symétrique pH/ORP et identique pour le chemin legacy `?duration=`.
+
 **Bornage durée** : `duration` query param plafonné à `kManualInjectMaxDurationS = 600 s` (10 min, abaissé de 3600 s en v2.1.2). Justification `pool-chemistry` : 3600 s expose à un risque trop long si la filtration s'arrête en milieu de cycle ; 10 min couvrent les usages typiques.
 
 > Cohérence : la garde filtration reproduit **exactement** la condition #3 de `canDose()` (filtration en marche sauf mode `continu`). En mode `continu`, l'alimentation 12 V des pompes suit la filtration au niveau matériel — la garde firmware est inutile et casserait le cas d'usage.
@@ -386,35 +415,117 @@ duty = MIN_ACTIVE_DUTY + round( ((flow − minFlow) / (maxFlow − minFlow)) × 
 | Injection manuelle — durée max (v2.1.2) | `kManualInjectMaxDurationS` | 600 s (10 min) | [`constants.h`](../../src/constants.h) |
 | Pause mélange pH (feature-025) | `kPhMixingDelayMs` | 900 000 ms (15 min) | [`constants.h`](../../src/constants.h) |
 | Pause mélange ORP (feature-025) | `kOrpMixingDelayMs` | 1 200 000 ms (20 min) | [`constants.h`](../../src/constants.h) |
+| Répartition scheduled — fenêtre (feature-011) | `kScheduledWindowMinutes` | 15 min | [`constants.h`](../../src/constants.h) |
+| Boost — delta cible ORP (feature-053) | `kBoostOrpDeltaMv` | +60 mV | [`constants.h`](../../src/constants.h) |
+| Boost — plafond cible ORP (feature-053) | `kBoostOrpCeilingMv` | 850 mV (< alerte `orp_abnormal` 900) | [`constants.h`](../../src/constants.h) |
+| Boost — facteur limite journalière chlore (feature-053) | `kBoostDailyFactor` | 1,5× | [`constants.h`](../../src/constants.h) |
+| Boost — plafond dur limite journalière chlore (feature-053) | `kBoostDailyHardCapMl` | 1000 mL | [`constants.h`](../../src/constants.h) |
 
 > Une refonte est prévue pour rendre une partie de ces paramètres modifiables via un mode expert UI (cf. spec en cours).
 
 ## Mode `scheduled`
 
-Injecte jusqu'à `phDailyTargetMl` / `orpDailyTargetMl` **pendant la filtration**, **aveugle à la mesure capteur**. Le volume à injecter est réparti sur les plages de filtration. Borné par `ph_limit_minutes`, `max_ph_ml_per_day`, et `maxCyclesPerDay`. Voir [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md).
+Injecte jusqu'à `phDailyTargetMl` / `orpDailyTargetMl` **pendant la filtration**, **aveugle à la mesure capteur** ([ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md)). Depuis la **v2.8.0 (feature-011)**, le volume quotidien n'est plus injecté d'un bloc : il est **réparti par fenêtres de 15 min** sur l'horizon de filtration restant, borné à minuit ([ADR-0021](../adr/0021-repartition-scheduled.md)).
+
+### Algorithme de répartition (feature-011, v2.8.0)
+
+**Architecture Humble Object** ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) : la décision vit dans la fonction **pure** `evaluateScheduledDose(ScheduledDoseInputs) -> ScheduledDoseDecision` ([`src/dosing_logic.h`](../../src/dosing_logic.h)) ; les branches scheduled pH et ORP de `update()` sont des **coquilles symétriques** (collecte des entrées + application du verdict).
+
+Logique pure (à chaque tick) :
+
+1. **Fenêtre absolue alignée horloge murale** : `windowIndex = nowMin / kScheduledWindowMinutes` (0..95) — idempotent après reboot, pas de dérive de phase.
+2. **À l'entrée d'une nouvelle fenêtre**, recalcul depuis l'état courant : `remaining = min(dailyTargetMl, maxDailyMl) − dailyInjectedMl` (injections manuelles incluses), `nWin = horizonMinutes / 15` (plancher 1), volume de fenêtre `v = remaining / nWin`. Le recalcul par fenêtre absorbe **automatiquement** changement de cible, injection manuelle, retard subi (limite horaire) et redémarrage ESP32.
+3. **Bornage budget horaire partagé** ([ADR-0020](../adr/0020-budget-horaire-dosage-unique.md)) : `v` est plafonné par `(hourlyLimitMs − usedMs)` converti en mL via le débit effectif ; l'excédent se reporte aux fenêtres suivantes.
+4. **Report anti short-cycling** : si la durée d'injection de `v` est < `minInjectionTimeMs` (30 s, `pumpProtection`), `v = 0` pour cette fenêtre — le volume se reporte naturellement (moins de fenêtres restantes → doses plus longues). Effet visible avec une **pompe rapide et une petite cible** : les premières fenêtres sont reportées, les injections démarrent quand l'horizon se resserre.
+5. **Snapshot `stopTargetMl = dailyInjectedMl + v`** figé à l'entrée de fenêtre ; `doseNow` réévalué **à chaque tick** contre `min(stopTargetMl, cible effective)` — une baisse de cible ou de plafond mi-fenêtre arrête l'injection immédiatement.
+6. **Fail-closed** : watchdog inactif, horizon ≤ 0, débit effectif ≤ 0 ou fenêtre ≤ 0 → refus (`{false, -1, 0, NAN}`), débit planifié `NAN`.
+
+Côté coquille (`pump_controller.cpp`) :
+
+- **Heure locale** via `time()` + `kMinValidEpoch` : heure invalide → **aucune injection** (fail-closed historique), warning unique `[Scheduled] Heure locale indisponible — dosage pH programmé suspendu` (idem ORP).
+- **Horizon** : `remainingRangeMinutes(nowMin, start, end)` ([`src/schedule_logic.h`](../../src/schedule_logic.h)) — minutes restantes de la plage de filtration, **bornées à minuit** (reset des compteurs journaliers, [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md)). En mode `regulationMode == "continu"`, horizon = `1440 − nowMin` (le dosage hors plage reste permis — comportement continu préservé).
+- **Ring anti-rafale consulté AVANT tout démarrage** (condition pool-chemistry n°1) : transition inactive → active refusée si `kMaxDosingCyclesPerMinute` (6/min) ou `kMaxDosingCyclesPer15Min` (20/15 min) atteint — mêmes seuils et fenêtres que `canDose`, ring **partagé** auto + manuel + scheduled. Chaque démarrage est enregistré via `recordDosingCycleStart()`.
+- **Exemption `cyclesToday` conservée** (arbitrage R4 validé pool-chemistry) : les démarrages scheduled n'incrémentent pas `maxCyclesPerDay`, car ils sont **bornés structurellement** (≤ 4/h par le cadencement 15 min) et gardés par le ring anti-rafale. Voir [ADR-0021](../adr/0021-repartition-scheduled.md).
+- **Débit effectif unique** (condition n°5) : la même variable `effectiveFlowMlPerMin` (`maxFlowMlPerMin × pumpNMaxDutyPct`) sert au bornage horaire, à la durée d'injection et au duty PWM.
+- **Plafonnement `maxPhMlPerDay` / `maxChlorineMlPerDay`** et logs existants conservés ; reset PID anti-windup conservé.
+- **Reliquat à minuit** : `tickDailyRollover()` logge en `info` le volume non injecté (`[Scheduled] Reliquat pH perdu au passage de minuit : X mL non injectés`) puis réarme les fenêtres (`_*SchedWindowIdx = -1`). **Pas de rattrapage J+1** (décision produit, ADR-0021).
+- **Diagnostic WS** : accesseurs publics `getPhScheduledPlannedFlow()` / `getOrpScheduledPlannedFlow()` (débit moyen planifié restant `remaining / horizon`, mL/min ; `NAN` hors scheduled / hors plage / heure invalide) → champs WS `ph/orp_scheduled_flow_ml_per_min` (`null` si `NAN`).
+
+**Tests natifs** : 12 tests `evaluateScheduledDose` ([`test/test_native_dosing/test_dosing_decision.cpp`](../../test/test_native_dosing/test_dosing_decision.cpp)) + 5 tests `remainingRangeMinutes` ([`test/test_native_schedule/test_schedule_logic.cpp`](../../test/test_native_schedule/test_schedule_logic.cpp)) — 152 tests au total.
 
 ### Warnings edge-triggered
 
-Six conditions warning/critical sont signalées **une seule fois** à l'entrée dans l'état problématique, puis un INFO de recovery quand la condition disparaît. Sans cela, chaque itération de `update()` (~100 Hz) émettait le même log → centaines de lignes par seconde, partition `history` saturée en quelques minutes.
+Les conditions warning/critical sont signalées **une seule fois** à l'entrée dans l'état problématique, puis un INFO de recovery quand la condition disparaît. Sans cela, chaque itération de `update()` (~100 Hz) émettait le même log → centaines de lignes par seconde, partition `history` saturée en quelques minutes.
 
 | Branche | Message warning/critical | Message recovery (INFO) |
 |---------|--------------------------|-------------------------|
 | pH | `[Scheduled] Capteur pH hors plage (X) — dosage programmé maintenu` | `[Scheduled] Capteur pH revenu dans la plage normale` |
-| pH | `[Scheduled] phDailyTargetMl (X mL) dépasse maxPhMinusMlPerDay (Y mL) — plafonné` | (reset silencieux du flag) |
+| pH | `[Scheduled] phDailyTargetMl (X mL) dépasse maxPhMlPerDay (Y mL) — plafonné` | (reset silencieux du flag) |
 | pH | `[Scheduled] Débit pompe pH non configuré (0 mL/min) — dosage bloqué` | (reset silencieux du flag) |
+| pH | `[Scheduled] Heure locale indisponible — dosage pH programmé suspendu` (feature-011) | (reset silencieux du flag) |
+| pH | `[Scheduled] Volume de fenêtre pH tronqué par le budget horaire (X mL → Y mL) — report aux fenêtres suivantes` (feature-011) | (reset silencieux du flag) |
 | ORP | `[Scheduled ORP] Capteur ORP hors plage (XmV) — dosage programmé maintenu` | `[Scheduled ORP] Capteur ORP revenu dans la plage normale` |
 | ORP | `[Scheduled ORP] orpDailyTargetMl (X mL) dépasse maxChlorineMlPerDay (Y mL) — plafonné` | (reset silencieux du flag) |
 | ORP | `[Scheduled ORP] Débit pompe ORP non configuré (0 mL/min) — dosage bloqué` | (reset silencieux du flag) |
+| ORP | `[Scheduled ORP] Heure locale indisponible — dosage ORP programmé suspendu` (feature-011) | (reset silencieux du flag) |
+| ORP | `[Scheduled ORP] Volume de fenêtre ORP tronqué par le budget horaire (X mL → Y mL) — report aux fenêtres suivantes` (feature-011) | (reset silencieux du flag) |
 
-**Pattern** : variable `static bool xxxLogged` locale à la branche, mise à `true` au premier signalement, remise à `false` quand la condition redevient normale (ce qui ré-arme le warning si l'état repart en faute).
+**Pattern** : variable `static bool xxxLogged` locale à la branche, mise à `true` au premier signalement, remise à `false` quand la condition redevient normale (ce qui ré-arme le warning si l'état repart en faute). Le démarrage différé par l'anti-rafale scheduled est loggé en `info` (edge-triggered aussi).
+
+## Mode Boost (feature-053)
+
+Le **Mode Boost** est une **surcouche temporaire non destructive** permettant d'assainir davantage la piscine pour la journée après une forte fréquentation. Il **ne modifie jamais la config persistée** (cible, limites, mode) : il expose des **valeurs *effectives*** consommées par la régulation et la filtration. Décision structurante et bornes de sécurité : [ADR-0025](../adr/0025-mode-boost.md) (validé `pool-chemistry` GO pré + post).
+
+### État & persistance
+
+- `boostState` = `{ bool active; time_t untilEpoch; }` persisté en **NVS dédié** (namespace `poolctrl`) → survit à un reboot dans la journée.
+- **Activation refusée sans heure synchronisée** : `untilEpoch` = **prochain minuit local**, incalculable sans horloge valide → l'activation retourne `409 time_not_synced` (route HTTP) ou ignore la commande MQTT (pas de boost « sans fin »).
+- Getters publics : `isBoostActive()`, `getBoostUntilEpoch()`. Pilotage : `startBoost()` / `stopBoost()` (routes `POST /boost/start` \| `/boost/stop`, commande HA `{base}/boost/set`).
+
+### Expiration au rollover minuit
+
+`tickBoostExpiry()` est appelée **avant** le reset des compteurs journaliers, **dans les 2 branches** de `tickDailyRollover()` (NTP/RTC synchronisé ET fallback `millis()`) : à minuit local, si le boost est actif il est désactivé (log `info`) et l'état republié (WS + MQTT). Au **boot**, si `now >= untilEpoch` le boost est inactif ; sinon il reprend. Le budget est donc **trivialement borné à un seul jour calendaire** (jamais à cheval sur deux fenêtres de compteur journalier).
+
+### Trois effets tant que `isBoostActive()`
+
+1. **Filtration forcée en marche** via un chemin de forçage **dédié** `boostForce`, prioritaire dans `decideFiltrationRun` ([`src/filtration.cpp`](../../src/filtration.cpp)), **indépendant** du `forceOn` utilisateur et de son `kForceTimeoutMs`. Dérivé de `isBoostActive()` → **ré-appliqué automatiquement au boot** sans dépendre d'un timer.
+2. **Cible ORP effective** : `getEffectiveOrpTarget() = min(orpTarget + kBoostOrpDeltaMv, kBoostOrpCeilingMv)` (60 mV / plafond 850 mV, sous l'alerte `orp_abnormal` > 900). **Jamais abaissée.** La régulation ORP **automatique** existante injecte naturellement vers cette cible — **aucun nouveau chemin d'injection**.
+3. **Limite journalière chlore effective** : `getEffectiveMaxChlorine() = min(maxChlorineMlPerDay × kBoostDailyFactor, kBoostDailyHardCapMl)` (×1,5 / plafond dur 1000 mL).
+
+### Gate mode `automatic` (logique pure)
+
+L'effet **chlore** (points 2 et 3) est **strictement gaté au mode de régulation ORP `automatic`** : les fonctions pures `effectiveOrpTargetPure(...)` / `effectiveMaxChlorinePure(...)` ([`src/dosing_logic.h`](../../src/dosing_logic.h), patron [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) ne relèvent cible et limite que si `mode == automatic`. En mode **Manuel** ou **Programmé**, le Boost n'étend **que la filtration** (point 1) ; l'**injection manuelle reste bornée à la limite normale**.
+
+### Signalement des leviers inertes (feature-054, v2.18.1)
+
+Chacun des deux leviers du Boost peut être **inerte** selon la config :
+
+| Levier | Condition d'effet | Inerte si |
+|--------|-------------------|-----------|
+| Filtration prolongée | `filtrationCfg.enabled` (filtration gérée par PoolController) | Filtration non gérée → le forçage `boostForce` n'est jamais atteint (retour anticipé dans `filtration.update()`) |
+| Chlore relevé | `orpRegulationMode == "automatic"` | Mode ORP Manuel / Programmé → cible et limite non relevées (gate ci-dessus) |
+
+`startBoost()` ([`src/config.cpp`](../../src/config.cpp)) émet, après activation, un log `warning` par levier inerte — ce qui **couvre les activations HTTP ET MQTT/HA** (canal unique) :
+- `!filtrationCfg.enabled` → « Filtration non gérée par PoolController — le Boost ne prolonge PAS la filtration ».
+- `orpRegulationMode != "automatic"` → « Régulation ORP non automatique — le Boost ne relève PAS le chlore ».
+
+La route `POST /boost/start` expose en parallèle ces deux états dans sa réponse 200 (`filtration_extended`, `chlorine_boosted`) pour que l'UI affiche un toast adaptatif ([API.md](../API.md#post-booststart--write), [page-dashboard.md](../features/page-dashboard.md#carte-boost-feature-053)). **Purement informatif** : aucun chemin de dosage ni aucune garde n'est modifié, l'activation n'est jamais bloquée.
+
+### Garde-fous inchangés
+
+**Tous les autres garde-fous restent intacts** : limite horaire, temps min d'injection (`minInjectionTimeMs`), anti-rafale (ring partagé), garde « injection uniquement si filtration active », watchdog. Le Boost ne fait que déplacer cible + plafond journalier consommés par `canDose()` / la régulation auto existante ; il **n'ouvre aucun chemin de dosage** et ne contourne aucune garde de `evaluateDose`.
+
+### Testabilité native
+
+`effectiveOrpTargetPure` / `effectiveMaxChlorinePure` (bornage + gate mode) sont couvertes par la suite Unity native (**+14 tests boost**, 199 tests au total) : plafonds, non-abaissement, gate `automatic` vs Manuel/Programmé, arithmétique du delta et du facteur. Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
 
 ## Interaction avec les autres composants
 
 | Composant | Interaction |
 |-----------|-------------|
-| [`filtration`](filtration.md) | Démarrage filtration → `armStabilizationTimer()` ; arrêt filtration → `clearStabilizationTimer()` |
+| [`filtration`](filtration.md) | Démarrage filtration → `armStabilizationTimer()` ; arrêt filtration → `clearStabilizationTimer()`. **Boost** : `boostForce` prioritaire dans `decideFiltrationRun` force la marche tant que `isBoostActive()` (feature-053) |
 | [`sensors`](sensors.md) | Lecture **filtrée** `getPhFiltered()` / `getOrpFiltered()` pour l'erreur PID (+ `isPhFilterReady`/`isPhFilterUnstable` dans `canDose`). Brut `getPh()`/`getOrp()` pour logs uniquement (feature-025) |
-| [`mqtt_manager`](mqtt-manager.md) | Publication `ph_dosing`, `orp_dosing`, `ph_limit`, `orp_limit`, `ph/orp_mixing_delay_active` |
+| [`mqtt_manager`](mqtt-manager.md) | Publication `ph_dosing`, `orp_dosing`, `ph_limit`, `orp_limit`, `ph/orp_mixing_delay_active`, `boost` (switch HA « Boost », feature-053) ; commande `{base}/boost/set` |
 | [`ota_manager`](ota-manager.md) | `setOtaInProgress(true)` arrête toutes les pompes |
 | [`web_routes_control`](web-server.md) | `/ph/inject/start`, `/orp/inject/start`, `/pump[12]/on` — gardes feature-006 : lecture `getCyclesToday`/`getRecentCycles`/`getStabilizationRemainingS(i)`/`get*UsedMs`, enregistrement via `requestManualCycleRecord` |
 | [`uart_commands`](../../src/uart_commands.cpp) | `run_action/pump_test` → `setManualPump()` **sans garde** (écran non déployé — cf. [Gardes des injections manuelles](#gardes-des-injections-manuelles-feature-006)) |
@@ -442,9 +553,11 @@ Flush différé : `_dailyCountersDirty` armé à chaque injection, écrit en NVS
 - [`src/config.h:141`](../../src/config.h:141) — `SafetyLimits`
 - [`src/constants.h:84`](../../src/constants.h:84) — `kPumpMinFlowMlPerMin`, `kPumpMaxFlowMlPerMin`
 - [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
-- [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036) + gardes d'injection manuelle `evaluateManualInject` (feature-006)
-- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006)
+- [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036) + gardes d'injection manuelle `evaluateManualInject` (feature-006) + répartition scheduled `evaluateScheduledDose` (feature-011)
+- [`src/schedule_logic.h`](../../src/schedule_logic.h), [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) — `remainingRangeMinutes` (horizon de répartition scheduled, feature-011)
+- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053)
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — entrée filtrée, anti-windup, pause mélange, zone morte
 - [feature-036](../../specs/features/done/feature-036-dosage-testable-decision-pure.md) — extraction de la décision de dosage en module pur testable
 - [feature-039](../../specs/features/done/feature-039-anti-rafale-rollover-testable.md) — extraction de l'anti-rafale + déclencheurs de rollover en logique pure testable
+- [feature-011](../../specs/features/doing/feature-011-repartition-24h-programmee.md) — répartition du volume quotidien scheduled par fenêtres de 15 min
 - [page-ph.md](../features/page-ph.md), [page-orp.md](../features/page-orp.md) — UI consommatrices

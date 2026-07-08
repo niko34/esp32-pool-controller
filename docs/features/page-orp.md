@@ -14,7 +14,7 @@ En mode nominal, quatre zones :
 1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP **filtrée** courante en grand (mV) + **ligne brute discrète** « brut · médiane · maj » + **rangée de chips** : chip d'état filtre cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) et **chip d'état de calibration** (cf. [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)) + dosage du jour (barre de progression, borne `max_orp_ml_per_day`).
 2. **Carte Régulation ORP** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs :
    - **Automatique** : ORP cible (mV) + bouton Sauvegarder.
-   - **Programmée** : volume quotidien de chlore en mL + bouton Sauvegarder.
+   - **Programmée** : volume quotidien de chlore en mL + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#orp_scheduled_flow_line` / `#orp_scheduled_flow_value`, alimentée par le champ WS `orp_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
    - **Manuelle** : bloc Injection manuelle.
 3. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`, zone ombrée 600–800 mV (`ORP_MIN`/`ORP_MAX`, app.js) indiquant la plage de désinfection.
 4. **Carte Calibration** — **remplace** Régulation + Historique pendant une session. Écran **guidé par stepper** (feature-034), 1 seul point de calibration (architecture symétrique de la page pH) — voir [Workflow calibration](#workflow-calibration).
@@ -108,6 +108,7 @@ La carte `#orp-card-calibration` présente un **stepper** (`<ol class="calibrati
 **Calibration** : `orpCalPoints` (`-1..1`) — voir [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)
 **Dosage** : `orp_dosing`, `orp_used_ms`, `orp_daily_ml`, `orp_limit_reached`
 **Mode** : `orp_regulation_mode`, `orp_daily_target_ml`, `orp_enabled` (miroir — voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
+**Répartition scheduled (feature-011, v2.8.0)** : `orp_scheduled_flow_ml_per_min` (float 1 décimale, mL/min — débit moyen planifié restant ; `null` hors mode `scheduled`, hors plage de filtration ou heure ESP32 invalide → l'UI affiche « — »)
 **Config** : `orp_target`, `max_orp_ml_per_day` (= `max_chlorine_ml_per_day`)
 **Injection manuelle** : `orp_inject_remaining_s`
 **Stabilisation** : `stabilization_remaining_s`
@@ -137,11 +138,12 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md), not
 
 - **Mode `automatic`** : PID vers `orp_target`, actif uniquement pendant filtration (mode `pilote`), bloqué pendant stabilisation. **Inhibé tant que `orpCalPoints < 1`** (calibration EZO incomplète).
 - **Mode `scheduled`** : injecte jusqu'à `orp_daily_target_ml` pendant filtration, **intentionnellement aveugle à la valeur ORP mesurée**. Voir [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md).
+  - ✅ **Répartition 24 h (v2.8.0, feature-011,** [ADR-0021](../adr/0021-repartition-scheduled.md)**)** : le volume quotidien de chlore n'est plus injecté d'un bloc mais **réparti par fenêtres de 15 min** sur la plage de filtration restante, **bornée à minuit**. Le volume de fenêtre (`restant / fenêtres restantes`, recalculé à chaque fenêtre — donc auto-corrigé après changement de cible, injection manuelle ou reboot) est borné par le **budget horaire partagé** (`orp_limit_minutes`, [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md)) et **reporté** à la fenêtre suivante si l'injection correspondante durerait moins de 30 s (anti short-cycling). **Pas de rattrapage J+1** : le reliquat non injecté à minuit est perdu (log `info`). Heure ESP32 invalide → dosage suspendu. **Nuance pompe rapide** : avec un débit élevé (ex. 60 mL/min) et une petite cible, les premières fenêtres sont reportées (volume < équivalent 30 s) — les injections démarrent quand l'horizon se resserre ; c'est le fonctionnement voulu du report.
 - **Mode `manual`** : seule l'injection manuelle est autorisée.
 - **Limites** : `orp_limit_minutes` (défaut 10 min/h glissante) et `max_chlorine_ml_per_day` (défaut 500 mL/j).
 - **Anti-rafale court terme** : ≤ 6 cycles/min ET ≤ 20 cycles/15 min (correctif Pass 3.5).
 - **Stabilisation post-cal ORP** : 3 min (`kStabilizationDurationOrpMs`) après chaque calibration EZO réussie.
-- ✅ **Injection manuelle gardée (v2.6.0, feature-006)** : `POST /orp/inject/start` passe par les gardes de `evaluateManualInject()` — dans l'ordre : watchdog, filtration (sauf mode `continu`), stabilisation post-cal **de la pompe ORP**, double démarrage, **limite journalière prédictive** (`cumul + volume demandé > max_chlorine_ml_per_day` refusé ; frontière `==` acceptée), **limite horaire partagée avec l'auto** (`orp_limit_minutes`, [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md)), cycles/jour (20) et anti-rafale (6/min, 20/15 min — ring partagé avec l'auto). Refus = **409 JSON** `{"error","message","seconds_remaining"?,"remaining_ml"?}` — voir [Comportement UI injection manuelle](#comportement-ui-injection-manuelle-v260) et [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md#gardes-des-injections-manuelles-feature-006). Le mode de régulation et la mesure capteur ne sont volontairement **pas** vérifiés. Arrêt cyclique automatique conservé si la filtration tombe pendant l'injection (alerte MQTT `orp_injection_aborted` sur `{base}/alerts`). `POST /orp/inject/stop` n'est **jamais** gardé.
+- ✅ **Injection manuelle gardée (v2.6.0, feature-006)** : `POST /orp/inject/start` passe par les gardes de `evaluateManualInject()` — dans l'ordre : watchdog, filtration (sauf mode `continu`), stabilisation post-cal **de la pompe ORP**, double démarrage, **limite journalière prédictive** (frontière `==` acceptée ; depuis la **v2.9.2**, une demande supérieure au reliquat est **écrêtée automatiquement au reliquat** au lieu d'être refusée — le refus `daily_limit` ne subsiste que si le reliquat est nul ou < 1 s de pompe, avec `remaining_ml` arrondi vers le bas), **limite horaire partagée avec l'auto** (`orp_limit_minutes`, [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md)), cycles/jour (20) et anti-rafale (6/min, 20/15 min — ring partagé avec l'auto). Refus = **409 JSON** `{"error","message","seconds_remaining"?,"remaining_ml"?}` — voir [Comportement UI injection manuelle](#comportement-ui-injection-manuelle-v260) et [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md#gardes-des-injections-manuelles-feature-006). Le mode de régulation et la mesure capteur ne sont volontairement **pas** vérifiés. Arrêt cyclique automatique conservé si la filtration tombe pendant l'injection (alerte MQTT `orp_injection_aborted` sur `{base}/alerts`). `POST /orp/inject/stop` n'est **jamais** gardé.
 - **Bornage durée** : `duration` plafonné à 600 s (`kManualInjectMaxDurationS`) au lieu de 3600 s avant v2.1.2. Les gardes évaluent le volume **post-plafonnement**.
 
 ### Comportement UI injection manuelle (v2.6.0)
@@ -179,9 +181,12 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md), not
 | `binary_sensor.*_orp_filter_ready` | `{base}/orp_filter_ready` (feature-025) | — |
 | `sensor.*_orp_cal_points` | `{base}/orp_cal_points` (`-1..1`) | — |
 | `number.*_orp_target` | `{base}/orp_target` | `{base}/orp_target/set` |
+| `select.*_orp_regulation_mode` | `{base}/orp_regulation_mode` | `{base}/orp_regulation_mode/set` (feature-009, v2.7.0) |
 | `binary_sensor.*_orp_dosing` | `{base}/orp_dosing` | — |
 | `binary_sensor.*_orp_limit` | `{base}/orp_limit` | — |
 | (alerte) | `{base}/alerts/calibration_required` | — |
+
+> **Mode de régulation commandable depuis HA (feature-009, v2.7.0)** : l'entité `select.*_orp_regulation_mode` (options `automatic` / `scheduled` / `manual`) permet de changer le mode depuis Home Assistant, par la **même voie** que le sélecteur de la carte Régulation (miroir `orp_enabled`, [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), persistance NVS). La **carte Régulation de l'UI web reste la source principale** ; un changement initié par HA se reflète dans l'UI via les canaux existants (broadcast WS `orp_regulation_mode` + `/get-config`) — aucun code UI ajouté. Valeur hors enum → ignorée + log `warning`. Un changement pendant une injection en cours ne l'interrompt pas : le nouveau mode prend effet au cycle de régulation suivant. Voir [docs/MQTT.md](../MQTT.md#entités-ajoutées-en-feature-009-modes-de-régulation-commandables-v270).
 
 ## Fichiers
 
@@ -209,3 +214,4 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md), not
 - [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md) — enum à 3 valeurs et booléen miroir `orp_enabled`.
 - [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md) — persistance NVS du cumul journalier.
 - [ADR-0014](../adr/0014-migration-atlas-ezo.md) — migration Atlas EZO (supersedes ADR-0001).
+- [ADR-0021](../adr/0021-repartition-scheduled.md) — répartition scheduled par fenêtres de 15 min (feature-011, v2.8.0).

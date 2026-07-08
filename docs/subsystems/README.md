@@ -37,7 +37,7 @@ Quand un composant change, la fiche correspondante dans `subsystems/` doit être
 
 ### Infrastructure
 
-- [web-server.md](web-server.md) — AsyncWebServer, routing, CORS, reboot différé
+- [web-server.md](web-server.md) — AsyncWebServer, routing, en-têtes de sécurité, reboot différé
 - [auth.md](auth.md) — auth admin + API token + rate limiting
 - [history.md](history.md) — historique 3 granularités, partition dédiée, import/export CSV
 - [ota-manager.md](ota-manager.md) — mise à jour firmware + filesystem, partitions double-bank

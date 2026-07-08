@@ -1,6 +1,6 @@
 # Guide de compilation et déploiement
 
-Guide **opérationnel** : quelles commandes lancer pour compiler et déployer. Pour la structure des partitions et le pourquoi du layout courant (v3), voir [ADR-0019](adr/0019-partition-app-1664k.md) et la source de vérité [`partitions.csv`](../partitions.csv).
+Guide **opérationnel** : quelles commandes lancer pour compiler et déployer. Pour la structure des partitions et le pourquoi du layout courant (v4), voir [ADR-0024](adr/0024-partitions-layout-v4.md) et la source de vérité [`partitions.csv`](../partitions.csv).
 
 ## Compilation
 
@@ -19,10 +19,20 @@ Génère `.pio/build/esp32dev/firmware.bin`.
 ```
 
 Ce script :
-1. Minifie HTML / CSS / JS (via `minify.js`, sortie dans `data-build/`, ignoré par git) ;
-2. Construit `littlefs.bin` avec la **taille exacte de la partition `spiffs`** (589 824 octets = 576 KB, layout v3 — voir [ADR-0019](adr/0019-partition-app-1664k.md)).
+1. Minifie HTML / CSS / JS **puis pré-compresse en gzip** (via `minify.js`, sortie dans `data-build/`, ignoré par git) ;
+2. Construit `littlefs.bin` avec la **taille exacte de la partition `spiffs`** (327 680 octets = 320 KB, layout v4 — voir [ADR-0024](adr/0024-partitions-layout-v4.md)).
 
 ⚠️ **Ne pas utiliser `pio run -t buildfs`** : PlatformIO recalcule une taille incorrecte (128 KB), ce qui produit un `littlefs.bin` non conforme à la partition `spiffs`.
+
+### Pré-compression gzip des assets (feature-048, v2.12.1)
+
+Après minification, `minify.js` gzippe (zlib **niveau 9**) chaque fichier texte (`.js`, `.html`, `.css`) et n'écrit dans `data-build/` **que la variante `.gz`** (ex. `app.js` → `app.js.gz`). Les images et icônes sont copiées telles quelles, sans compression. ESPAsyncWebServer résout nativement `<fichier>.gz` et sert avec `Content-Encoding: gzip` — aucun changement firmware requis (voir [subsystems/web-server.md](subsystems/web-server.md#assets-statiques-pré-compressés-gzip)).
+
+**Gain mesuré** : payload FS **443 → 155 KB** (occupation partition `spiffs` 78 % → 27 % du layout v3 de l'époque ; ≈48 % de la partition 320 KB du layout v4), chargement des pages ~4× plus rapide (le débit de l'ESP32 est le facteur limitant sur mobile). Ce gain est ce qui a rendu possible la réduction de `spiffs` à 320 KB au profit des slots app ([ADR-0024](adr/0024-partitions-layout-v4.md)).
+
+Règles :
+- ⚠️ **Ne jamais placer de fichier texte non compressé dans `data-build/`** : le dossier est entièrement régénéré par `minify.js` à chaque build — tout ajout d'asset texte se fait dans `data/`, le pipeline produit le `.gz`.
+- **Caveat `curl`** : un `curl` brut sur un fichier statique reçoit l'octet-stream gzip (le navigateur, lui, décompresse de façon transparente). Utiliser `curl --compressed http://<ip>/app.js`. Les routes API/JSON ne sont **pas** concernées (réponses générées, jamais compressées).
 
 ### Tout en une commande
 
@@ -184,8 +194,8 @@ Voir aussi [ADR-0009](adr/0009-partition-coredump.md) pour la décision architec
 
 - **`pio run -t buildfs`** : ne génère pas un `littlefs.bin` de la bonne taille → utiliser `./build_fs.sh`.
 - **`pio run -t uploadfs`** : reconstruit le filesystem à la mauvaise taille avant upload → utiliser `./deploy.sh fs` ou `./deploy.sh ota-fs`.
-- **Partition `history` préservée** : l'upload filesystem OTA n'écrase que la partition `spiffs`. L'historique des mesures n'est **pas** perdu à la mise à jour UI (voir [ADR-0019](adr/0019-partition-app-1664k.md) et [history.md](subsystems/history.md)).
-- **Changement de table de partitions** : un nouveau layout (ex. v2 → v3 en v2.4.0) exige un **flash USB une fois** — l'OTA ne réécrit pas la table. Voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md#migration-layout-v2--v3--v240).
+- **Partition `history` préservée** : l'upload filesystem OTA n'écrase que la partition `spiffs`. L'historique des mesures n'est **pas** perdu à la mise à jour UI (voir [ADR-0024](adr/0024-partitions-layout-v4.md) et [history.md](subsystems/history.md)).
+- **Changement de table de partitions** : un nouveau layout (ex. v3 → v4 en v2.13.0) exige un **flash USB une fois** — l'OTA ne réécrit pas la table, et une image FS v4 (320 KB) ne doit **jamais** être poussée en OTA sur un appareil en table v3. Voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md#migration-layout-v3--v4-v2130--depuis-2026-07-06).
 
 ## Dépendances PlatformIO
 
@@ -201,7 +211,7 @@ Liste des libs déclarées dans `platformio.ini` (`lib_deps`) — voir le fichie
 | `OneWire` + `DallasTemperature` | Bus 1-Wire pour DS18B20 (eau + circuit) |
 | `RTClib` | DS3231 RTC |
 
-> **Libs supprimées en feature-021 (v2.0.0)** : `Adafruit ADS1X15` et `DFRobot_PH` ont été retirées des `lib_deps`. La chaîne pH/ORP est désormais entièrement portée par la mini-classe maison [`AtlasEzoSensor`](../src/atlas_ezo.h) qui pilote les modules Atlas EZO Embedded en I²C natif (`Wire`). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md). Cette suppression libère ~12 KB de flash mais l'ajout de la queue + des routes de calibration consomme environ autant — le build tenait alors à 98.8 % flash (layout v1). Depuis le layout v3 ([ADR-0019](adr/0019-partition-app-1664k.md)), l'occupation firmware est redescendue à ~83,8 % (marge ~270 KB).
+> **Libs supprimées en feature-021 (v2.0.0)** : `Adafruit ADS1X15` et `DFRobot_PH` ont été retirées des `lib_deps`. La chaîne pH/ORP est désormais entièrement portée par la mini-classe maison [`AtlasEzoSensor`](../src/atlas_ezo.h) qui pilote les modules Atlas EZO Embedded en I²C natif (`Wire`). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md). Cette suppression libère ~12 KB de flash mais l'ajout de la queue + des routes de calibration consomme environ autant — le build tenait alors à 98.8 % flash (layout v1). Depuis le layout v4 ([ADR-0024](adr/0024-partitions-layout-v4.md), slots app 1792 KB), l'occupation firmware est redescendue à ~78,5 % (marge ~392 KB).
 
 ## Bibliothèque de graphiques uPlot (frontend)
 
@@ -235,11 +245,11 @@ Suppression de `chart.umd.min.js` : payload FS 601 054 → 449 177 octets (**−
 - [`platformio.ini`](../platformio.ini) — plateforme, libs, flags de compilation.
 - [`build_all.sh`](../build_all.sh) — firmware + filesystem en une commande.
 - [`build_fs.sh`](../build_fs.sh) — filesystem uniquement (minification + taille correcte).
-- [`minify.js`](../minify.js) — minification HTML / CSS / JS.
+- [`minify.js`](../minify.js) — minification HTML / CSS / JS + pré-compression gzip niveau 9 (seule la variante `.gz` est embarquée).
 - [`deploy.sh`](../deploy.sh) — wrapper unique pour upload USB ou OTA ; archive l'ELF à chaque build firmware.
 - [`ota_update.sh`](../ota_update.sh) — utilitaire OTA bas niveau (appelé par `deploy.sh`).
 - [`tools/decode_coredump.sh`](../tools/decode_coredump.sh) — décodage d'un coredump avec `xtensa-esp32-elf-gdb`.
 - `data/` — sources UI (HTML / CSS / JS / images).
-- `data-build/` — UI minifiée (généré automatiquement, ignoré par git).
+- `data-build/` — UI minifiée + gzippée (généré automatiquement, ignoré par git).
 - `.pio/build/esp32dev/` — artéfacts de build (`firmware.bin`, `firmware.elf`, `littlefs.bin`).
 - `builds/` — archives ELF horodatées (généré automatiquement, ignoré par git).

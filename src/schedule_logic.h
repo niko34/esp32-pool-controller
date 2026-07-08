@@ -48,6 +48,20 @@ int timeStringToMinutes(const char* hhmm);
 // equalMeansAlways=false par défaut → comportement filtration inchangé.
 bool isMinutesInRange(int now, int start, int end, bool equalMeansAlways = false);
 
+// Minutes restantes de la plage courante [start, end), BORNÉES À MINUIT
+// (feature-011, répartition scheduled). Règles :
+//   - hors plage ou plage invalide → 0 : la garde délègue à isMinutesInRange
+//     (equalMeansAlways=false), qui renvoie déjà false pour start==-1, end==-1
+//     ou start==end (plage invalide filtration) ;
+//   - start<end (plage simple) → end - nowMin ;
+//   - start>end (plage à cheval sur minuit) :
+//       * nowMin >= start (partie du soir) → 1440 - nowMin, BORNÉ À MINUIT :
+//         les compteurs journaliers se réinitialisent à minuit, l'horizon de
+//         répartition ne le franchit donc jamais ;
+//       * nowMin < end (partie du matin) → end - nowMin.
+// Résultat toujours >= 1 quand nowMin est dans la plage (fin exclusive).
+int remainingRangeMinutes(int nowMin, int startMin, int endMin);
+
 // Créneau horaire en minutes depuis minuit (planning auto).
 struct ScheduleWindow {
   int startMin;
@@ -67,8 +81,10 @@ struct ScheduleWindow {
 ScheduleWindow computeAutoWindow(float tempC, float pivotHour);
 
 // Décision marche/arrêt de filtration (extrait pur de la décision de update()).
-// Reproduit EXACTEMENT :
-//   - forceOn → true
+// Reproduit EXACTEMENT, avec le Mode Boost (feature-053) en priorité MAXIMALE :
+//   - boostForce → true (turnover maximal pendant le Boost, chemin DÉDIÉ
+//     indépendant du forceOn utilisateur et de son timeout)
+//   - sinon forceOn → true
 //   - sinon forceOff → false
 //   - sinon (mode=="manual" || mode=="auto") →
 //       haveTime ? isMinutesInRange(nowMin, startMin, endMin) : currentlyRunning
@@ -76,7 +92,7 @@ ScheduleWindow computeAutoWindow(float tempC, float pivotHour);
 // CONDITION pool-chemistry : quand haveTime=false sans forçage, renvoie
 // currentlyRunning tel quel (pas de faux start/stop pendant OTA / perte RTC).
 // `mode` doit arriver en minuscules (la coquille applique toLowerCase avant).
-bool decideFiltrationRun(const char* mode, bool forceOn, bool forceOff,
+bool decideFiltrationRun(bool boostForce, const char* mode, bool forceOn, bool forceOff,
                          bool haveTime, int nowMin, int startMin, int endMin,
                          bool currentlyRunning);
 

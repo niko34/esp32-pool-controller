@@ -60,14 +60,17 @@ struct FiltrationRuntime {
 
 Module **générique** (pas spécifique filtration) : conçu pour être réutilisé par l'éclairage ou tout autre planning horaire ultérieur.
 
-### Les quatre fonctions pures
+### Les fonctions pures
 
-| Fonction | Rôle | Sémantique préservée |
-|----------|------|----------------------|
+| Fonction | Rôle | Sémantique |
+|----------|------|------------|
 | `int timeStringToMinutes(const char* hhmm)` | Parse `"HH:MM"` → minutes depuis minuit | longueur < 5 ou `[2] != ':'` → `-1` ; `hh` hors `[0,23]` ou `mm` hors `[0,59]` → `-1` ; sinon `hh*60+mm` |
 | `bool isMinutesInRange(int now, int start, int end, bool equalMeansAlways = false)` | Appartenance à `[start, end)` | `start`/`end` à `-1` → `false` (garde **avant** le test `start==end`) ; `start==end` → `equalMeansAlways` (filtration `false`, éclairage `true` — voir feature-040) ; `start<end` → `now>=start && now<end` ; `start>end` (wrap minuit) → `now>=start \|\| now<end` |
 | `ScheduleWindow computeAutoWindow(float tempC, float pivotHour)` | Créneau auto selon température | `tempC<0` ramené à 0 ; `durationHours = tempC/2` borné `[1,24]` ; centré sur `pivotHour` (`start = pivot - duration/2`, `end = start + duration`) ; **wrap des deux bornes dans `[0,24)`** ; conversion heure→minutes avec arrondi/carry identique à l'origine |
 | `bool decideFiltrationRun(mode, forceOn, forceOff, haveTime, nowMin, startMin, endMin, currentlyRunning)` | Décision marche/arrêt | priorités **`forceOn` > `forceOff` > plage horaire** ; `mode` (en minuscules) `manual`/`auto` → `isMinutesInRange(...)` si `haveTime`, sinon **conserve `currentlyRunning`** ; autre mode → `false` |
+| `int remainingRangeMinutes(int nowMin, int startMin, int endMin)` (feature-011, v2.8.0) | Minutes restantes de la plage courante, **bornées à minuit** | hors plage ou plage invalide (`-1`, `start==end`) → `0` (délègue la garde à `isMinutesInRange`) ; `start<end` → `end − nowMin` ; plage à cheval sur minuit : partie du soir (`nowMin >= start`) → `1440 − nowMin` (**borné à minuit** : les compteurs journaliers se réinitialisent à minuit, l'horizon de répartition ne le franchit jamais), partie du matin (`nowMin < end`) → `end − nowMin` ; toujours ≥ 1 quand `nowMin` est dans la plage (fin exclusive) |
+
+> `remainingRangeMinutes` sert d'**horizon de répartition** au mode `scheduled` des pompes doseuses ([ADR-0021](../adr/0021-repartition-scheduled.md), [pump-controller.md §Mode scheduled](pump-controller.md#mode-scheduled)) — la coquille `filtration.cpp` n'est **pas** modifiée par feature-011.
 
 ### Décision et temps indisponible
 
@@ -83,7 +86,7 @@ Module **générique** (pas spécifique filtration) : conçu pour être réutili
 
 ### Testabilité native
 
-`schedule_logic.cpp` est couvert à **100 % des lignes** par la suite Unity native (19 tests dédiés, **70 tests au total**). Le temps, la température et l'état courant étant injectés en paramètres, chaque branche (parsing invalide, wrap minuit, durée bornée, priorités de forçage, conservation d'état sans heure) est exercée sans matériel ni attente réelle. Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
+`schedule_logic.cpp` est couvert à **100 % des lignes** par la suite Unity native (19 tests dédiés, **70 tests au total** à la feature-038). Le temps, la température et l'état courant étant injectés en paramètres, chaque branche (parsing invalide, wrap minuit, durée bornée, priorités de forçage, conservation d'état sans heure) est exercée sans matériel ni attente réelle. feature-011 ajoute **5 tests `remainingRangeMinutes`** ([`test/test_native_schedule/test_schedule_logic.cpp`](../../test/test_native_schedule/test_schedule_logic.cpp)) — 152 tests au total en v2.8.0. Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
 
 > ⚠️ **Invariant** : toute évolution future de la décision d'horaire **passe par `schedule_logic`** et doit conserver l'équivalence stricte verrouillée par les tests natifs.
 

@@ -19,8 +19,18 @@ struct MqttTopics {
   String filtrationModeState;
   String filtrationModeCommand;
   String filtrationCommand;    // ON/OFF switch command
+  String filtrationStartState;    // feature-051 : heure début (HH:MM)
+  String filtrationEndState;      // feature-051 : heure fin (HH:MM)
+  String filtrationStartCommand;  // feature-051 : .../filtration_start/set
+  String filtrationEndCommand;    // feature-051 : .../filtration_end/set
   String lightingState;        // État éclairage
   String lightingCommand;      // ON/OFF switch command
+  String lightingScheduleState;    // feature-052 : programmation éclairage (ON/OFF)
+  String lightingScheduleCommand;  // feature-052 : .../lighting_schedule/set
+  String lightingStartState;       // feature-052 : heure début éclairage (HH:MM)
+  String lightingEndState;         // feature-052 : heure fin éclairage (HH:MM)
+  String lightingStartCommand;     // feature-052 : .../lighting_start/set
+  String lightingEndCommand;       // feature-052 : .../lighting_end/set
   String phDosageState;
   String orpDosageState;
   String phDosingState;        // Pompe pH active (ON/OFF)
@@ -39,12 +49,17 @@ struct MqttTopics {
   String phDailyTargetMlState;     // Volume quotidien pH programmée (mL)
   String orpRegulationModeState;   // Mode de régulation ORP (automatic/scheduled/manual)
   String orpDailyTargetMlState;    // Volume quotidien ORP programmée (mL)
+  String phRegulationModeCommand;  // feature-009 : commande mode régulation pH
+  String orpRegulationModeCommand; // feature-009 : commande mode régulation ORP
   String alertsTopic;
   String logsTopic;
   String statusTopic;          // LWT et status
   String diagnosticTopic;      // Diagnostic détaillé
   String alertsCalibrationTopic;  // feature-021 : alerte calibration EZO requise (retain)
   String alertsSensorStaleTopic;  // feature-021 : alerte capteur stale > kSensorStaleTimeoutMs
+  String alertsSensorFrozenTopic; // feature-022 : alerte capteur pH/ORP figé (variance nulle, retain)
+  String phSensorProblemState;    // feature-022 : problème capteur pH (stale OU figé, ON/OFF retain)
+  String orpSensorProblemState;   // feature-022 : problème capteur ORP (stale OU figé, ON/OFF retain)
   String phCalPointsState;        // feature-021 : nb points calibration pH (Cal,?)
   String orpCalPointsState;       // feature-021 : nb points calibration ORP (Cal,?)
   String phSlopeAcidState;        // feature-024 : % pente acide pH (Slope,?)
@@ -65,6 +80,14 @@ struct MqttTopics {
   String orpRejectedCountState;
   String phMixingDelayActiveState;  // ON/OFF pause mélange pH
   String orpMixingDelayActiveState; // ON/OFF pause mélange ORP
+  // feature-050 : cumuls journaliers injectés + commandes volume quotidien + reboot
+  String phDailyMlState;            // Cumul pH injecté aujourd'hui (mL, retain)
+  String orpDailyMlState;           // Cumul ORP injecté aujourd'hui (mL, retain)
+  String phDailyTargetMlCommand;    // Commande volume quotidien pH (mode programmée)
+  String orpDailyTargetMlCommand;   // Commande volume quotidien ORP (mode programmée)
+  String rebootCommand;             // Commande redémarrage (bouton HA)
+  String boostState;                // feature-053 : état Mode Boost (ON/OFF, retain)
+  String boostCommand;              // feature-053 : .../boost/set (ON/OFF)
 };
 
 // Architecture producer/consumer (cf. ADR-0011) :
@@ -110,6 +133,13 @@ private:
   uint32_t droppedSinceLastWarn = 0;
   unsigned long lastDropWarnMs = 0;
 
+  // feature-050 : redémarrage différé demandé via MQTT/HA. Flag posé ET consommé
+  // UNIQUEMENT depuis loopTask (drainCommandQueue) — même séquence propre que la
+  // route POST /reboot : délai kRestartApModeDelayMs, puis shutdownForRestart()
+  // (flush status=offline) et ESP.restart(). Jamais de restart direct au drain.
+  bool _rebootPending = false;
+  unsigned long _rebootRequestedAtMs = 0;
+
   void publishDiscovery();
   void refreshTopics();
 
@@ -118,6 +148,13 @@ private:
   int  _lastPhCalPoints  = -2;  // -2 = jamais publié, -1..3 = valeurs réelles
   int  _lastOrpCalPoints = -2;
   bool _lastSensorStale  = false; // Cache pour alerte sensor_stale (NaN sur pH OU ORP)
+  bool _lastSensorFrozen = false; // feature-022 : cache alerte sensor_frozen (pH OU ORP figé)
+
+  // feature-022 : caches dédup des états binaires {base}/ph_sensor_problem et
+  // {base}/orp_sensor_problem. -1 = jamais publié (force la 1ʳᵉ publication),
+  // 0 = OFF, 1 = ON. Lus/écrits uniquement depuis mqttTask.
+  int8_t _lastPhSensorProblem  = -1;
+  int8_t _lastOrpSensorProblem = -1;
 
   // feature-024 : caches pour publication edge-triggered des 3 topics pente.
   // Sentinelle NaN = "jamais publié" — la 1ʳᵉ query Slope,? réussie déclenchera
@@ -130,7 +167,9 @@ private:
   // feature-025 : caches anti-spam pour les topics filtre pH/ORP. On ne republie
   // un topic retain que si la valeur (déjà arrondie) a changé. Lus/écrits uniquement
   // depuis mqttTask. Sentinelle vide = "jamais publié".
-  String _lastFilterPub[14];
+  // feature-050 : slots 14/15 réservés aux cumuls journaliers ph_daily_ml/orp_daily_ml.
+  static constexpr int kDedupCacheSlots = 16;
+  String _lastFilterPub[kDedupCacheSlots];
   // Publie `payload` sur `topic` uniquement si différent du dernier publié (slot `cacheIdx`).
   void safePublishDedup(int cacheIdx, const char* topic, const String& payload);
   // Publie l'ensemble des topics de la chaîne de filtrage (edge-triggered).
@@ -183,6 +222,7 @@ public:
   void publishFiltrationState();
   void publishLightingState();
   void publishDosingState();
+  void publishBoostState();  // feature-053 : état Mode Boost (ON/OFF, retain)
   void publishProductState();
   void publishTargetState();
   void publishAlert(const String& alertType, const String& message);
@@ -220,6 +260,17 @@ enum class InboundCmdType : uint8_t {
   Lighting,          // payload = "ON"|"OFF"
   PhTarget,          // payload = "7.2"
   OrpTarget,         // payload = "650"
+  PhRegulationMode,  // payload = "automatic"|"scheduled"|"manual" (feature-009)
+  OrpRegulationMode, // payload = "automatic"|"scheduled"|"manual" (feature-009)
+  PhDailyTarget,     // payload = "150" (mL, entier — feature-050)
+  OrpDailyTarget,    // payload = "500" (mL, entier — feature-050)
+  Reboot,            // payload = "PRESS" (tout payload accepté — feature-050)
+  FiltrationStart,   // payload = "08:00" (HH:MM — feature-051)
+  FiltrationEnd,     // payload = "20:00" (HH:MM — feature-051)
+  LightingSchedule,  // payload = "ON"|"OFF" (feature-052)
+  LightingStart,     // payload = "20:00" (HH:MM — feature-052)
+  LightingEnd,       // payload = "23:00" (HH:MM — feature-052)
+  Boost,             // payload = "ON"|"OFF" (feature-053 : Mode Boost)
 };
 
 struct InboundCmd {

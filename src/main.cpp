@@ -73,6 +73,9 @@ void setup() {
   // Chargement configuration
   loadMqttConfig();
   loadProductConfig();
+  // feature-053 : restaure l'état du Mode Boost (survit à un reboot dans la
+  // journée ; expiré au chargement si minuit dépassé et heure valide).
+  loadBoostState();
 
   // Initialisation UART écran (après chargement config pour respecter screenEnabled)
   if (authCfg.screenEnabled) {
@@ -557,22 +560,27 @@ void checkSystemHealth() {
   static bool lastPhLimitReached = false;
   static bool lastOrpLimitReached = false;
 
-  if (safetyLimits.phLimitReached) {
-    mqttManager.publishAlert("ph_limit", "Limite journalière pH- atteinte");
-    if (!lastPhLimitReached && authCfg.screenEnabled) {
+  // Alerte MQTT + alarme écran à la TRANSITION uniquement (v2.10.1 : publishAlert
+  // était appelé sans condition → une alerte + un log WARN par health check de 60 s
+  // tant que la limite restait latchée). L'état permanent pour HA est porté par le
+  // binary_sensor ph_limit (retain) — l'alerte est un événement de transition.
+  if (safetyLimits.phLimitReached && !lastPhLimitReached) {
+    const char* phLabel = (mqttCfg.phCorrectionType == "ph_plus") ? "pH+" : "pH-";
+    mqttManager.publishAlert("ph_limit", String("Limite journalière ") + phLabel + " atteinte");
+    if (authCfg.screenEnabled) {
       uartProtocol.sendAlarmRaised("PH_LIMIT", "Limite journalière pH atteinte");
     }
-  } else if (lastPhLimitReached && authCfg.screenEnabled) {
+  } else if (!safetyLimits.phLimitReached && lastPhLimitReached && authCfg.screenEnabled) {
     uartProtocol.sendAlarmCleared("PH_LIMIT");
   }
   lastPhLimitReached = safetyLimits.phLimitReached;
 
-  if (safetyLimits.orpLimitReached) {
+  if (safetyLimits.orpLimitReached && !lastOrpLimitReached) {
     mqttManager.publishAlert("orp_limit", "Limite journalière chlore atteinte");
-    if (!lastOrpLimitReached && authCfg.screenEnabled) {
+    if (authCfg.screenEnabled) {
       uartProtocol.sendAlarmRaised("ORP_LIMIT", "Limite journalière ORP/chlore atteinte");
     }
-  } else if (lastOrpLimitReached && authCfg.screenEnabled) {
+  } else if (!safetyLimits.orpLimitReached && lastOrpLimitReached && authCfg.screenEnabled) {
     uartProtocol.sendAlarmCleared("ORP_LIMIT");
   }
   lastOrpLimitReached = safetyLimits.orpLimitReached;

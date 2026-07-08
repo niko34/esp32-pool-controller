@@ -5,6 +5,28 @@
 
 AuthManager authManager;
 
+// SÉCURITÉ: Comparaison à temps constant (feature-028).
+// L'opérateur == sur String court-circuite au premier octet différent, ce qui
+// rend le temps de réponse dépendant du préfixe correct du token fourni
+// (attaque temporelle sur le contrôle d'accès central). Ici, on compare
+// TOUS les octets sans court-circuit en accumulant les différences par OR.
+// La vérification de longueur en amont est acceptable : la longueur du token
+// n'est pas secrète (format fixe, 32 caractères hexadécimaux).
+static bool constantTimeEquals(const String& a, const String& b) {
+  if (a.length() != b.length()) {
+    return false;
+  }
+  uint8_t diff = 0;
+  for (unsigned int i = 0; i < a.length(); i++) {
+    diff |= static_cast<uint8_t>(a[i]) ^ static_cast<uint8_t>(b[i]);
+  }
+  return diff == 0;
+}
+
+bool AuthManager::secureTokenEquals(const String& candidate) const {
+  return constantTimeEquals(candidate, apiToken);
+}
+
 AuthManager::AuthManager() {}
 
 void AuthManager::begin() {
@@ -100,12 +122,8 @@ bool AuthManager::checkTokenAuth(AsyncWebServerRequest* req) {
   if (req->hasHeader("X-Auth-Token")) {
     const AsyncWebHeader* header = req->getHeader("X-Auth-Token");
 
-    // DEBUG: Logger pour diagnostic
-    String receivedToken = header->value();
-    String maskedReceived = receivedToken.length() > 8 ? (receivedToken.substring(0, 8) + "...") : "***";
-    String maskedExpected = apiToken.length() > 8 ? (apiToken.substring(0, 8) + "...") : "***";
-    
-    if (header->value() == apiToken) {
+    // SÉCURITÉ: comparaison à temps constant (pas de court-circuit dépendant du contenu)
+    if (constantTimeEquals(header->value(), apiToken)) {
       return true;
     }
   } else {

@@ -60,7 +60,8 @@ public:
   std::vector<DataPoint> getLastDay();
   std::vector<DataPoint> getAllData();
   bool importData(const std::vector<DataPoint>& dataPoints);
-  void clearHistory();
+  // feature-027 : retourne false si le mutex n'a pas pu être pris (historique occupé)
+  bool clearHistory();
 };
 
 extern HistoryManager history;

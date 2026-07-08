@@ -98,6 +98,17 @@ public:
   bool isOrpFilterUnstable() const;
   uint8_t getOrpRejectedCount() const;
 
+  // ===== feature-022 Passe 2 : détection capteur figé (variance nulle) =====
+  // true si kSensorFrozenSamples lectures ACCEPTÉES consécutives sont contenues
+  // dans une bande < ½ LSB (kSensorFrozenEpsilonPh/Orp). Un capteur figé rend
+  // is*FilterReady() = false → dosage bloqué par la garde FilterNotReady existante.
+  bool isPhSensorFrozen() const;
+  bool isOrpSensorFrozen() const;
+  // true si kTempFrozenSamples lectures DS18B20 valides de la sonde "eau" sont
+  // contenues dans une bande < kTempFrozenEpsilonC. Warning-only : AUCUN impact
+  // dosage (effets réels : compensation EZO pH + planning auto filtration).
+  bool isTemperatureFrozen() const;
+
   // Reset manuel des filtres (appelé après calibration EZO réussie, ou debug).
   // Repasse le filtre en warmup → dosage auto bloqué jusqu'à kSensorFilterWarmupSamples
   // mesures valides.
@@ -214,11 +225,23 @@ private:
   SensorFilter _phFilter{SensorFilter::Config{
       kPhFilterMin, kPhFilterMax, kPhFilterMaxStep, kPhEmaAlpha,
       kSensorFilterMedianWindow, kSensorFilterWarmupSamples,
-      kSensorFilterMaxConsecutiveRejects, kSensorFilterMaxAgeMs}};
+      kSensorFilterMaxConsecutiveRejects, kSensorFilterMaxAgeMs,
+      kSensorFrozenSamples, kSensorFrozenEpsilonPh}};
   SensorFilter _orpFilter{SensorFilter::Config{
       kOrpFilterMin, kOrpFilterMax, kOrpFilterMaxStep, kOrpEmaAlpha,
       kSensorFilterMedianWindow, kSensorFilterWarmupSamples,
-      kSensorFilterMaxConsecutiveRejects, kSensorFilterMaxAgeMs}};
+      kSensorFilterMaxConsecutiveRejects, kSensorFilterMaxAgeMs,
+      kSensorFrozenSamples, kSensorFrozenEpsilonOrp}};
+
+  // ===== feature-022 Passe 2 : détecteur figé dédié température =====
+  // Alimenté par les lectures DS18B20 VALIDES (brutes, NON arrondies) de la
+  // sonde "eau" dans _readDs18b20s(). 900 lectures à 2 s = 30 min.
+  FrozenDetector _waterTempFrozen{kTempFrozenSamples, kTempFrozenEpsilonC};
+
+  // Flags edge-triggered pour les logs SENSOR_FROZEN (une seule transition loggée)
+  bool _phFrozenLogged = false;
+  bool _orpFrozenLogged = false;
+  bool _tempFrozenLogged = false;
 
   // Compteurs d'échecs I²C consécutifs (pool-chemistry condition #5)
   int _phI2cFailStreak = 0;
@@ -267,6 +290,7 @@ private:
   void _processEzoQueue();             // Dépile au plus 1 commande par cycle
   void _executeEzoCmd(const EzoCmdRequest& req);
   void _checkStaleAndLog();            // Détection stale → log critical (1 fois)
+  void _checkFrozenAndLog();           // feature-022 : logs SENSOR_FROZEN edge-triggered
 
   // Helpers DS18B20 (feature-020) — inchangés
   void _loadSondeIdentificationFromNvs();

@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const { minify: minifyHTML } = require('html-minifier-terser');
 const { minify: minifyJS } = require('terser');
 const CleanCSS = require('clean-css');
@@ -57,6 +58,20 @@ function getFileSize(filePath) {
   }
 }
 
+/**
+ * Feature-048 : pré-compression gzip des fichiers texte.
+ * Écrit `<destPath>.gz` (zlib niveau 9) et NE conserve PAS la variante non
+ * compressée : ESPAsyncWebServer résout nativement `<fichier>.gz` et sert
+ * avec `Content-Encoding: gzip` (serveStatic + request->send(fs, path)).
+ * Retourne la taille du fichier .gz écrit.
+ */
+function writeGzip(destPath, content) {
+  const buf = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
+  const gz = zlib.gzipSync(buf, { level: 9 });
+  fs.writeFileSync(destPath + '.gz', gz);
+  return gz.length;
+}
+
 function copyDirectory(src, dest) {
   if (!fs.existsSync(dest)) {
     fs.mkdirSync(dest, { recursive: true });
@@ -92,20 +107,16 @@ async function processFile(srcPath, destPath) {
 
       const minified = await minifyHTML(content, htmlMinifierOptions);
       const minifiedSize = minified.length;
+      const gzSize = writeGzip(destPath, minified);
 
-      fs.writeFileSync(destPath, minified, 'utf8');
+      const reduction = ((originalSize - gzSize) / originalSize) * 100;
+      console.log(`  ${relPath}: ${originalSize.toLocaleString()} → ${minifiedSize.toLocaleString()} → gz ${gzSize.toLocaleString()} bytes (-${reduction.toFixed(1)}%)`);
 
-      const reduction = ((originalSize - minifiedSize) / originalSize) * 100;
-      if (reduction > 1) {
-        console.log(`  ${relPath}: ${originalSize.toLocaleString()} → ${minifiedSize.toLocaleString()} bytes (-${reduction.toFixed(1)}%)`);
-      }
-
-      return { original: originalSize, minified: minifiedSize };
+      return { original: originalSize, minified: gzSize };
     } catch (error) {
       console.error(`Erreur lors de la minification de ${srcPath}:`, error.message);
-      fs.copyFileSync(srcPath, destPath);
-      const size = getFileSize(srcPath);
-      return { original: size, minified: size };
+      const gzSize = writeGzip(destPath, fs.readFileSync(srcPath));
+      return { original: getFileSize(srcPath), minified: gzSize };
     }
   }
 
@@ -118,20 +129,16 @@ async function processFile(srcPath, destPath) {
       const result = await minifyJS(content, terserOptions);
       const minified = result.code;
       const minifiedSize = minified.length;
+      const gzSize = writeGzip(destPath, minified);
 
-      fs.writeFileSync(destPath, minified, 'utf8');
+      const reduction = ((originalSize - gzSize) / originalSize) * 100;
+      console.log(`  ${relPath}: ${originalSize.toLocaleString()} → ${minifiedSize.toLocaleString()} → gz ${gzSize.toLocaleString()} bytes (-${reduction.toFixed(1)}%)`);
 
-      const reduction = ((originalSize - minifiedSize) / originalSize) * 100;
-      if (reduction > 1) {
-        console.log(`  ${relPath}: ${originalSize.toLocaleString()} → ${minifiedSize.toLocaleString()} bytes (-${reduction.toFixed(1)}%)`);
-      }
-
-      return { original: originalSize, minified: minifiedSize };
+      return { original: originalSize, minified: gzSize };
     } catch (error) {
       console.error(`Erreur lors de la minification de ${srcPath}:`, error.message);
-      fs.copyFileSync(srcPath, destPath);
-      const size = getFileSize(srcPath);
-      return { original: size, minified: size };
+      const gzSize = writeGzip(destPath, fs.readFileSync(srcPath));
+      return { original: getFileSize(srcPath), minified: gzSize };
     }
   }
 
@@ -149,24 +156,20 @@ async function processFile(srcPath, destPath) {
 
       const minified = output.styles;
       const minifiedSize = minified.length;
+      const gzSize = writeGzip(destPath, minified);
 
-      fs.writeFileSync(destPath, minified, 'utf8');
+      const reduction = ((originalSize - gzSize) / originalSize) * 100;
+      console.log(`  ${relPath}: ${originalSize.toLocaleString()} → ${minifiedSize.toLocaleString()} → gz ${gzSize.toLocaleString()} bytes (-${reduction.toFixed(1)}%)`);
 
-      const reduction = ((originalSize - minifiedSize) / originalSize) * 100;
-      if (reduction > 1) {
-        console.log(`  ${relPath}: ${originalSize.toLocaleString()} → ${minifiedSize.toLocaleString()} bytes (-${reduction.toFixed(1)}%)`);
-      }
-
-      return { original: originalSize, minified: minifiedSize };
+      return { original: originalSize, minified: gzSize };
     } catch (error) {
       console.error(`Erreur lors de la minification de ${srcPath}:`, error.message);
-      fs.copyFileSync(srcPath, destPath);
-      const size = getFileSize(srcPath);
-      return { original: size, minified: size };
+      const gzSize = writeGzip(destPath, fs.readFileSync(srcPath));
+      return { original: getFileSize(srcPath), minified: gzSize };
     }
   }
 
-  // Pour les autres fichiers (images, etc.), copier tel quel
+  // Pour les autres fichiers (images, icônes), copier tel quel (pas de gzip)
   fs.copyFileSync(srcPath, destPath);
   const size = getFileSize(srcPath);
   return { original: size, minified: size };

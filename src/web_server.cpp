@@ -36,78 +36,9 @@ void WebServerManager::begin(AsyncWebServer* webServer, DNSServer* dnsServer) {
   systemLogger.info("Serveur Web démarré sur le port 80");
 }
 
-void WebServerManager::setCorsHeaders(AsyncWebServerRequest* req) {
-  // CORS restrictif avec liste blanche configurable
-  // Si corsAllowedOrigins est vide ou "*", utiliser le wildcard (moins sécurisé mais simple)
-  if (authCfg.corsAllowedOrigins.isEmpty()) {
-    return; // Pas de CORS
-  }
-
-  if (authCfg.corsAllowedOrigins == "*") {
-    // Wildcard - accepter toutes les origines (moins sécurisé)
-    return; // Géré par DefaultHeaders
-  }
-
-  // Récupérer l'origin de la requête
-  if (!req->hasHeader("Origin")) {
-    return; // Pas d'origin header, pas besoin de CORS
-  }
-
-  String origin = req->getHeader("Origin")->value();
-
-  // Vérifier si l'origin est dans la liste blanche (séparée par virgules)
-  bool allowed = false;
-  int startPos = 0;
-  while (startPos < authCfg.corsAllowedOrigins.length()) {
-    int commaPos = authCfg.corsAllowedOrigins.indexOf(',', startPos);
-    if (commaPos == -1) commaPos = authCfg.corsAllowedOrigins.length();
-
-    String allowedOrigin = authCfg.corsAllowedOrigins.substring(startPos, commaPos);
-    allowedOrigin.trim();
-
-    if (origin == allowedOrigin) {
-      allowed = true;
-      break;
-    }
-
-    startPos = commaPos + 1;
-  }
-
-  // Si l'origin n'est pas autorisée, ne rien faire (CORS bloquera la requête côté navigateur)
-  if (!allowed) {
-    systemLogger.warning("CORS: Origin non autorisée: " + origin);
-  }
-}
-
 void WebServerManager::setupRoutes() {
-  // CORS: Configurer les headers selon authCfg.corsAllowedOrigins
-  // Si vide : pas de CORS
-  // Si "*" : wildcard (tous autorisés - moins sécurisé)
-  // Sinon : liste blanche (vérification par setCorsHeaders dans chaque route)
-
-  if (!authCfg.corsAllowedOrigins.isEmpty()) {
-    if (authCfg.corsAllowedOrigins == "*") {
-      // Mode wildcard (moins sécurisé mais compatible avec tout)
-      DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
-      systemLogger.warning("CORS: Mode wildcard activé (*) - Moins sécurisé !");
-    } else {
-      // Mode liste blanche - on autorise toutes les origines configurées
-      // Note: Avec ESPAsyncWebServer, on ne peut pas facilement faire du CORS dynamique par requête
-      // On utilise donc le premier origin de la liste comme fallback
-      int firstComma = authCfg.corsAllowedOrigins.indexOf(',');
-      String firstOrigin = (firstComma > 0)
-        ? authCfg.corsAllowedOrigins.substring(0, firstComma)
-        : authCfg.corsAllowedOrigins;
-      firstOrigin.trim();
-      DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", firstOrigin);
-      systemLogger.info("CORS: Origines autorisées: " + authCfg.corsAllowedOrigins);
-    }
-
-    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type, X-Auth-Token, Authorization");
-  } else {
-    systemLogger.info("CORS désactivé (pas d'origines configurées)");
-  }
+  // Pas de CORS : politique même-origine stricte (feature-028, option B).
+  // L'UI est servie par l'ESP32 lui-même (offline first), aucun accès cross-origin supporté.
 
   // En-têtes de sécurité globaux (ajoutés à toutes les réponses)
   DefaultHeaders::Instance().addHeader("Content-Security-Policy",
@@ -181,15 +112,9 @@ void WebServerManager::setupRoutes() {
       return false;
     });
 
-  // Handler global pour CORS preflight, routes dynamiques et 404
+  // Handler global pour routes dynamiques et 404
   // IMPORTANT: Doit être déclaré en DERNIER pour ne pas intercepter les autres routes
   server->onNotFound([](AsyncWebServerRequest *req) {
-    // Gérer CORS preflight OPTIONS
-    if (req->method() == HTTP_OPTIONS) {
-      req->send(200);
-      return;
-    }
-
     // Essayer les routes dynamiques des pompes
     if (handleDynamicPumpRoutes(req)) {
       return;

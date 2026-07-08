@@ -473,6 +473,178 @@ void test_caseI_fourth_resync_shifts_timestamps_fifo(void) {
   TEST_ASSERT_TRUE(f.unstable());
 }
 
+// =============================================================================
+// Détection capteur figé — FrozenDetector + intégration SensorFilter (feature-022)
+// =============================================================================
+// Config pH avec détection ACTIVÉE (constants.h réels) :
+//   frozenSamples = kSensorFrozenSamples (30), frozenEpsilon = kSensorFrozenEpsilonPh (0.0005).
+// Les configs phCfg()/orpCfg() existantes (init positionnelle courte) laissent
+// frozenSamples/frozenEpsilon à 0 → détection DÉSACTIVÉE (non-régression, cas N).
+
+static SensorFilter::Config frozenPhCfg() {
+  SensorFilter::Config cfg = phCfg();
+  cfg.frozenSamples = kSensorFrozenSamples;    // 30
+  cfg.frozenEpsilon = kSensorFrozenEpsilonPh;  // 0.0005
+  return cfg;
+}
+
+// --- Verrou de régression : valeurs des constantes frozen ---------------------
+void test_frozen_constants_values(void) {
+  TEST_ASSERT_EQUAL_UINT16(30, kSensorFrozenSamples);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.0005f, kSensorFrozenEpsilonPh);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, 0.05f, kSensorFrozenEpsilonOrp);
+}
+
+// --- Cas (a) : 30 lectures strictement identiques → frozen ET ready false ----
+void test_frozen_30_identical_readings_blocks_ready(void) {
+  SensorFilter f(frozenPhCfg());
+  uint32_t t = 0;
+  // 29 premières lectures identiques : pas encore figé (fenêtre non pleine).
+  for (int i = 0; i < 29; ++i) {
+    TEST_ASSERT_TRUE(f.addSample(7.00f, t));
+    TEST_ASSERT_FALSE(f.frozen());
+    t += 1000;
+  }
+  // Post-warmup (5 valides) et pas encore figé → prêt.
+  TEST_ASSERT_TRUE(f.ready(t));
+  // 30e lecture identique → figé, et ready() retombe false (fail-closed).
+  TEST_ASSERT_TRUE(f.addSample(7.00f, t));
+  TEST_ASSERT_TRUE_MESSAGE(f.frozen(), "30 lectures identiques doivent declarer le capteur fige");
+  TEST_ASSERT_FALSE_MESSAGE(f.ready(t), "ready() doit etre false quand le capteur est fige");
+}
+
+// --- Cas (b) : 29 identiques + 1 excursion de 1 LSB (0.001) → jamais figé ----
+void test_frozen_one_lsb_toggle_breaks_run(void) {
+  SensorFilter f(frozenPhCfg());
+  uint32_t t = 0;
+  // 29 identiques (run = 29).
+  for (int i = 0; i < 29; ++i) { f.addSample(7.000f, t); t += 1000; }
+  TEST_ASSERT_FALSE(f.frozen());
+  // Excursion de 1 LSB EZO pH (0.001 > epsilon 0.0005) → le run se ré-ancre.
+  TEST_ASSERT_TRUE(f.addSample(7.001f, t));
+  t += 1000;
+  TEST_ASSERT_FALSE_MESSAGE(f.frozen(), "un toggle de 1 LSB doit casser le run");
+  // 29 lectures de plus sur la nouvelle valeur : run = 30 seulement au 30e post-ancrage.
+  for (int i = 0; i < 28; ++i) {
+    f.addSample(7.001f, t);
+    t += 1000;
+    TEST_ASSERT_FALSE(f.frozen());  // run max = 29 (ré-ancré) : jamais figé
+  }
+  TEST_ASSERT_TRUE(f.ready(t));
+}
+
+// --- Cas (c) : fenêtre non pleine (29 identiques) → pas figé ------------------
+void test_frozen_window_not_full_29_samples(void) {
+  SensorFilter f(frozenPhCfg());
+  uint32_t t = 0;
+  for (int i = 0; i < 29; ++i) { f.addSample(7.00f, t); t += 1000; }
+  TEST_ASSERT_FALSE(f.frozen());
+  TEST_ASSERT_TRUE(f.ready(t));
+}
+
+// --- Cas (d) : sortie d'état — 1 lecture vivante → frozen false + ready true
+//     AU MÊME TICK (pas de re-warmup) ------------------------------------------
+void test_frozen_exit_immediate_no_rewarmup(void) {
+  SensorFilter f(frozenPhCfg());
+  uint32_t t = 0;
+  for (int i = 0; i < 30; ++i) { f.addSample(7.00f, t); t += 1000; }
+  TEST_ASSERT_TRUE(f.frozen());
+  TEST_ASSERT_FALSE(f.ready(t));
+  // Lecture valide hors bande (0.01 > epsilon, mais << maxStep → acceptée).
+  TEST_ASSERT_TRUE(f.addSample(7.01f, t));
+  TEST_ASSERT_FALSE_MESSAGE(f.frozen(), "sortie immediate des la 1re lecture vivante");
+  TEST_ASSERT_TRUE_MESSAGE(f.ready(t), "ready() doit redevenir true au meme tick (pas de re-warmup)");
+}
+
+// --- Cas (e) : rafale de rejets pendant l'état figé → frozen PERSISTE ---------
+// (pool-chemistry condition #4 : les rejets n'alimentent pas le détecteur)
+void test_frozen_persists_through_reject_burst(void) {
+  SensorFilter f(frozenPhCfg());
+  uint32_t t = 0;
+  for (int i = 0; i < 30; ++i) { f.addSample(7.00f, t); t += 1000; }
+  TEST_ASSERT_TRUE(f.frozen());
+  // Rafale de 9 rejets (< kSensorFilterResyncRejects 12 : pas de re-sync) :
+  // 3 NaN, 3 hors plage, 3 sauts excessifs. Frozen doit persister à chaque tick.
+  for (int i = 0; i < 3; ++i) {
+    TEST_ASSERT_FALSE(f.addSample(NAN, t));      t += 1000;
+    TEST_ASSERT_TRUE(f.frozen());
+    TEST_ASSERT_FALSE(f.addSample(15.0f, t));    t += 1000;  // > maxValue 14
+    TEST_ASSERT_TRUE(f.frozen());
+    TEST_ASSERT_FALSE(f.addSample(8.0f, t));     t += 1000;  // saut +1.0 > maxStep 0.15
+    TEST_ASSERT_TRUE_MESSAGE(f.frozen(), "frozen doit persister pendant une rafale de rejets");
+  }
+  TEST_ASSERT_FALSE(f.ready(t));
+}
+
+// --- Cas (f) : reset() → frozen false ------------------------------------------
+void test_frozen_cleared_by_reset(void) {
+  SensorFilter f(frozenPhCfg());
+  uint32_t t = 0;
+  for (int i = 0; i < 30; ++i) { f.addSample(7.00f, t); t += 1000; }
+  TEST_ASSERT_TRUE(f.frozen());
+  f.reset();
+  TEST_ASSERT_FALSE_MESSAGE(f.frozen(), "reset() doit lever l'etat fige");
+  // Et le run repart de zéro : 29 lectures identiques ne suffisent pas.
+  for (int i = 0; i < 29; ++i) { f.addSample(7.00f, t); t += 1000; }
+  TEST_ASSERT_FALSE(f.frozen());
+}
+
+// --- Cas (g) : borne — étendue exactement == epsilon → run CASSÉ (strict <) ---
+// FrozenDetector unitaire avec valeurs exactement représentables en float32
+// (0.5, 100.0, 100.5, 100.25) pour éviter tout artefact d'arrondi.
+void test_frozen_detector_extent_equal_epsilon_breaks_run(void) {
+  FrozenDetector d(2, 0.5f);
+  d.addSample(100.0f);   // ancre (run = 1)
+  d.addSample(100.5f);   // étendue == 0.5 == epsilon → PAS < epsilon → ré-ancrage
+  TEST_ASSERT_FALSE_MESSAGE(d.frozen(), "etendue == epsilon doit casser le run (comparaison stricte <)");
+  // Contre-épreuve : étendue 0.25 < 0.5 → run = 2 → figé.
+  FrozenDetector d2(2, 0.5f);
+  d2.addSample(100.0f);
+  d2.addSample(100.25f);
+  TEST_ASSERT_TRUE(d2.frozen());
+}
+
+// --- Cas (h) : non-régression — config existante (frozen désactivé, champs 0) -
+// Avec phCfg() (init positionnelle courte : frozenSamples=0), même 100 lectures
+// strictement identiques ne doivent JAMAIS déclarer le capteur figé, et ready()
+// reste true : le comportement des 21 tests existants est préservé.
+void test_frozen_disabled_with_legacy_config(void) {
+  SensorFilter f(phCfg());  // frozenSamples/frozenEpsilon value-initialisés à 0
+  uint32_t t = 0;
+  for (int i = 0; i < 100; ++i) {
+    TEST_ASSERT_TRUE(f.addSample(7.00f, t));
+    TEST_ASSERT_FALSE(f.frozen());
+    t += 1000;
+  }
+  TEST_ASSERT_TRUE(f.ready(t));
+}
+
+// --- Cas (i1) : FrozenDetector samples=0 → jamais figé -------------------------
+void test_frozen_detector_samples_zero_never_frozen(void) {
+  FrozenDetector d(0, 0.0005f);
+  for (int i = 0; i < 1000; ++i) d.addSample(7.00f);
+  TEST_ASSERT_FALSE_MESSAGE(d.frozen(), "samples=0 doit desactiver la detection");
+}
+
+// --- Cas (i2) : saturation du compteur — > 65535 échantillons sans overflow ---
+// Si _runCount wrappait (uint16_t), frozen() retomberait false autour de 65536.
+// On injecte 70000 échantillons identiques et on vérifie que frozen() reste true
+// en continu au-delà du point de wrap.
+void test_frozen_detector_run_count_saturates_no_overflow(void) {
+  FrozenDetector d(30, 0.5f);
+  for (int i = 0; i < 70000; ++i) {
+    d.addSample(100.0f);
+    if (i >= 29) {
+      // Dès le 30e échantillon et pour TOUJOURS (y compris après 65535).
+      TEST_ASSERT_TRUE_MESSAGE(d.frozen(), "le compteur doit saturer, pas wrapper");
+    }
+  }
+  TEST_ASSERT_TRUE(d.frozen());
+  // reset() unitaire du détecteur.
+  d.reset();
+  TEST_ASSERT_FALSE(d.frozen());
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_warmup_not_ready_until_5_valid_samples);
@@ -498,5 +670,17 @@ int main(int, char **) {
   RUN_TEST(test_caseG_raw_reflects_last_sample_even_if_rejected);
   RUN_TEST(test_caseH_rejected_median_even_window);
   RUN_TEST(test_caseI_fourth_resync_shifts_timestamps_fifo);
+  // Détection capteur figé (feature-022 Passe 2).
+  RUN_TEST(test_frozen_constants_values);
+  RUN_TEST(test_frozen_30_identical_readings_blocks_ready);
+  RUN_TEST(test_frozen_one_lsb_toggle_breaks_run);
+  RUN_TEST(test_frozen_window_not_full_29_samples);
+  RUN_TEST(test_frozen_exit_immediate_no_rewarmup);
+  RUN_TEST(test_frozen_persists_through_reject_burst);
+  RUN_TEST(test_frozen_cleared_by_reset);
+  RUN_TEST(test_frozen_detector_extent_equal_epsilon_breaks_run);
+  RUN_TEST(test_frozen_disabled_with_legacy_config);
+  RUN_TEST(test_frozen_detector_samples_zero_never_frozen);
+  RUN_TEST(test_frozen_detector_run_count_saturates_no_overflow);
   return UNITY_END();
 }

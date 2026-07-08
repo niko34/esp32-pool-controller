@@ -31,6 +31,31 @@ Quand une spec `specs/features/` est terminée et déplacée en `done/`, le fich
 | [Produits](page-dosages.md) | `/dosages` | Suivi des bidons pH et chlore, alertes stock faible |
 | [Paramètres](page-settings.md) | `/settings` | WiFi, MQTT, heure, sécurité, régulation avancée, système |
 
+## Composants transverses
+
+### `confirmDialog` — modale de confirmation générique (v2.12.0, feature-031)
+
+Helper réutilisable dans [`data/app.js:242`](../../data/app.js) remplaçant tous les `confirm()` natifs :
+
+```js
+const ok = await confirmDialog({
+  title: 'Effacer les logs ?',
+  message: 'Vide la RAM et supprime le fichier persistant côté ESP32.',
+  confirmLabel: 'Effacer',   // défaut : 'Confirmer'
+  cancelLabel: 'Annuler',    // défaut : 'Annuler'
+  danger: true               // bouton rouge (btn--danger) pour action irréversible
+});
+if (!ok) return; // refus = défaut sûr, l'action n'est jamais exécutée
+```
+
+- **Retour** : `Promise<boolean>` — `true` uniquement sur clic « Confirmer ». Annuler, `Escape`, clic backdrop, réentrance (modale déjà ouverte) ou échec d'ouverture ⇒ `false`.
+- **Markup** : `<dialog id="confirm-modal">` statique dans `index.html`, style `probe-modal` (cohérent avec les modales sonde/filtre).
+- **Accessibilité** : focus initial sur **Annuler** (action sûre par défaut), `aria-labelledby`, fermeture `Escape`/backdrop.
+- **Anti-XSS** : titre et message injectés via `textContent` uniquement (jamais `innerHTML`) ; les `\n\n` sont rendus par `white-space: pre-line`.
+- **Fallback** : navigateur sans `<dialog>` → `window.confirm(message)` natif (une confirmation de sécurité n'est **jamais** supprimée).
+
+**Règle** : toute nouvelle action destructive de l'UI **doit** passer par `confirmDialog` (variante `danger: true` si irréversible) — jamais `confirm()` natif. Les messages informatifs passent par `showToast(message, type)`.
+
 ## Conventions
 
 - Toutes les pages sont des sections `<section class="view" id="view-XXX">` dans un seul [`data/index.html`](../../data/index.html) (voir [ADR-0006](../adr/0006-frontend-vanilla-js.md)).

@@ -9,6 +9,12 @@ struct ManualInjectState {
   unsigned long startMs = 0;
   unsigned long durationMs = 0;
   float requestedVolumeMl = 0.0f; // Volume demandé (0 si non renseigné)
+  // Crédit plancher fin d'injection (bug sous-compte v2.9.1) :
+  // startCumulMl = cumul journalier au démarrage accepté ; creditMl = volume
+  // effectif promis (0 = pas de crédit dû). Consommés à la fin NATURELLE
+  // uniquement (jamais sur stop manuel / interruption filtration).
+  float startCumulMl = 0.0f;
+  float creditMl = 0.0f;
 };
 
 extern ManualInjectState manualInjectPh;

@@ -84,6 +84,12 @@ uint8_t getOrpRejectedCount()  const;
 void resetPhFilter();                // Reset filtre (warmup) — appelé après calibration pH
 void resetOrpFilter();               // Reset filtre (warmup) — appelé après calibration ORP
 
+// feature-022 — détection capteur figé (variance nulle). Un capteur figé rend
+// is*FilterReady() = false → dosage bloqué par la garde FilterNotReady existante.
+bool isPhSensorFrozen()  const;      // 30 lectures acceptées dans une bande < kSensorFrozenEpsilonPh
+bool isOrpSensorFrozen() const;      // idem, bande < kSensorFrozenEpsilonOrp
+bool isTemperatureFrozen() const;    // sonde eau DS18B20 — warning-only, AUCUN impact dosage
+
 // Statut calibration EZO — version live (lecture I²C bloquante ~900 ms, diagnostic)
 int getPhCalibrationPoints();           // -1 = injoignable, 0..3 sinon
 int getOrpCalibrationPoints();          // -1 = injoignable, 0..1 sinon
@@ -134,6 +140,7 @@ void  resetSondeIdentification();
    - **Séquence atomique** sous mutex tenu : `RT,<temp>` + delay 600 ms + `R` + delay 900 ms + parse. Le mutex est **conservé pendant tout le délai** (condition #6 pool-chemistry — empêche qu'une lecture DS3231 s'intercale entre `RT` et `R`).
    - Mise à jour `_lastPh` / `_lastPhMs` (atomique champ par champ sur Xtensa LX6).
 4. **Stale check** (`_checkStaleAndLog`) : log `critical` une seule fois quand une lecture passe `> kSensorStaleTimeoutMs = 20000 ms` (transition).
+5. **Frozen check** (`_checkFrozenAndLog`, feature-022) : logs `[SENSOR_FROZEN]` edge-triggered — `critical` pH/ORP (dosage inhibé), `warning` température (aucun impact dosage), `info` à la levée. Voir [Détection capteur figé](#détection-capteur-figé--feature-022).
 
 ## Cache calibration EZO (`_phCalCachedPoints` / `_orpCalCachedPoints`)
 
@@ -200,8 +207,9 @@ Module dédié **déterministe et testable hors matériel** ([`src/sensor_filter
 | `bool addSample(float raw, uint32_t nowMs)` | Soumet une brute. Retourne `true` si **acceptée** (filtre alimenté), `false` si rejetée |
 | `void reset()` | Réinitialise warmup, buffers et compteurs |
 | `float raw() / median() / filtered()` | Dernière brute / médiane courante / valeur EMA (NaN tant que non amorcé) |
-| `bool ready(uint32_t nowMs)` | `true` ssi warmup atteint **ET** dernière mesure valide récente (`< maxAgeMs`) |
+| `bool ready(uint32_t nowMs)` | `true` ssi warmup atteint **ET** dernière mesure valide récente (`< maxAgeMs`) **ET** non figé (feature-022) |
 | `bool unstable()` | `true` si `consecutiveRejects >= maxConsecutiveRejects` **OU** latch anti-boucle posé |
+| `bool frozen()` | `true` si `frozenSamples` échantillons acceptés consécutifs tiennent dans une bande < `frozenEpsilon` (feature-022, via `FrozenDetector` composé) |
 | `uint8_t rejectedCount() / consecutiveRejects()` | Compteur glissant 8 bits (sature à 255) / rejets consécutifs courants |
 | `uint8_t resyncCount()` | Nb de re-sync dans la fenêtre glissante courante (anti latch-up) |
 | `bool unstableLatched()` | `true` si le latch anti-boucle EMI est posé — persistant jusqu'à `reset()` |
@@ -220,6 +228,7 @@ Une mesure **n'alimente pas** le filtre (mais la brute reste lisible) si :
 - **warmup** : tant que `< kSensorFilterWarmupSamples` (= 5) mesures valides reçues → `ready() = false`. **Aucun dosage** tant que non prêt.
 - **ready** : warmup atteint ET dernière mesure valide `< kSensorFilterMaxAgeMs` (= 20 s). Au-delà (EZO injoignable) → `ready()` repasse `false` → dosage fail-closed.
 - **unstable** : `>= kSensorFilterMaxConsecutiveRejects` (= 10) rejets consécutifs → capteur déclaré instable, dosage bloqué (on bloque plutôt que de lisser un défaut EMI persistant). Cet état est **transitoire** : il s'éteint dès qu'une mesure est acceptée. À ne pas confondre avec le **latch anti-boucle** ci-dessous, qui est persistant.
+- **frozen** (feature-022) : `kSensorFrozenSamples` (= 30) lectures acceptées consécutives dans une bande < epsilon → `ready()` repasse `false` → dosage fail-closed via la garde `FilterNotReady` existante. Sortie **immédiate sans re-warmup** dès une lecture vivante. Voir [Détection capteur figé](#détection-capteur-figé--feature-022).
 
 ### Re-synchronisation (anti latch-up)
 
@@ -278,6 +287,44 @@ Le filtre repasse en **warmup** → dosage de la sonde concernée bloqué jusqu'
 
 `POST /debug/sensor_filter_reset` réinitialise **les deux** filtres (warmup) — c'est aussi le **seul** moyen, avec une calibration réussie, de **lever le latch anti-boucle** (`unstableLatched()`). `GET /debug/sensor_filter_state` retourne l'état JSON brut (raw/median/filtered/ready/unstable/rejected par capteur). Voir [API.md](../API.md).
 
+## Détection capteur figé — feature-022
+
+Un module EZO peut répondre sans erreur I²C mais retourner indéfiniment la **même valeur** (électronique interne figée, sonde HS côté BNC). La panne franche (NaN / stale / bus dégradé) est couverte ailleurs ; ici on détecte la **variance nulle** : N lectures **acceptées** consécutives contenues dans une bande < epsilon → capteur figé.
+
+### Classe pure `FrozenDetector`
+
+Définie dans [`src/sensor_filter.h`](../../src/sensor_filter.h) (logique pure, testée en natif — pattern [ADR-0017](../adr/0017-logique-pure-testable.md)). Algorithme « **run ancré** » en **O(1)** mémoire et CPU — pas de fenêtre glissante stockée :
+
+- Le run courant est décrit par 3 champs : `runMin` / `runMax` (bornes observées) et `runCount` (longueur, saturé à `UINT16_MAX`).
+- Chaque échantillon qui garde `(newMax − newMin) < epsilon` **étend les bornes** et allonge le run.
+- Dès qu'une lecture sort de la bande, le run est **ré-ancré sur cette lecture** (`runMin = runMax = x`, `runCount = 1`) → **sortie immédiate de l'état figé, sans re-warmup**.
+- `frozen()` = `runCount >= samples` ; `samples = 0` désactive la détection (compat init positionnelle courte de `SensorFilter::Config` dans les tests).
+
+| Instance | Alimentée par | N (`samples`) | epsilon | Effet si figé |
+|---|---|---:|---:|---|
+| `_phFilter` (composé dans `SensorFilter`) | lectures brutes **acceptées** par le filtre pH | `kSensorFrozenSamples` = 30 (≈ 2,5 min à 5 s) | `kSensorFrozenEpsilonPh` = 0.0005 (½ LSB EZO pH, résolution 0.001) | `ready()` = false → **dosage pH bloqué fail-closed** |
+| `_orpFilter` (idem) | lectures brutes acceptées par le filtre ORP | 30 | `kSensorFrozenEpsilonOrp` = 0.05 mV (½ LSB EZO ORP, résolution 0.1) | dosage ORP bloqué fail-closed |
+| `_waterTempFrozen` (dédié, dans `SensorManager`) | lectures DS18B20 **valides** de la sonde « eau » (valeur **brute**, non arrondie au 0.1 °C) | `kTempFrozenSamples` = 900 (≈ 30 min à 2 s) | `kTempFrozenEpsilonC` = 0.03 °C (< ½ LSB DS18B20 12 bits = 0.0625/2) | **warning-only** — AUCUN impact dosage/filtration (effets réels : compensation EZO pH + planning auto filtration sur valeur figée) |
+
+### Choix d'epsilon = ½ LSB (validation pool-chemistry)
+
+Un capteur **vivant** bruite d'au moins ±1 LSB (quantification + bruit sonde + bruit thermique). Avec epsilon = ½ LSB, un simple toggle de 1 LSB — même en arithmétique float32 — **casse le run** : aucune eau réelle, même parfaitement stable, ne peut être déclarée figée tant que la dernière décimale bouge.
+
+> **Consigne terrain** : en cas de faux positifs, **durcir N** (allonger la fenêtre), ne **JAMAIS élargir epsilon** — un epsilon plus large capturerait le bruit LSB d'un capteur vivant et transformerait la stabilité réelle de l'eau en faux positif.
+
+### Intégration fail-closed dans `SensorFilter`
+
+- Le détecteur est alimenté **uniquement par les bruts ACCEPTÉS** dans `addSample()` : les rejets (NaN / hors plage / saut) ne l'alimentent jamais → l'état figé **persiste pendant une rafale de rejets** (pas d'échappatoire par le bruit EMI).
+- `frozen()` ⇒ `ready() == false` ⇒ garde `FilterNotReady` existante de `evaluateDose()` — **aucune modification de l'ordre des gardes verrouillé**, pas de nouvelle valeur d'enum `DoseRefusal`.
+- `SensorFilter::reset()` (calibration réussie, reset manuel) réinitialise aussi le détecteur.
+- La sortie de l'état figé est **immédiate** (une seule lecture vivante suffit) et **sans re-warmup** : la valeur figée était par définition stable, le filtre est resté cohérent.
+
+### Observabilité
+
+- **Logs edge-triggered `[SENSOR_FROZEN]`** (`_checkFrozenAndLog()`, une seule ligne par transition) : `critical` pH/ORP (mentionne « régulation auto inhibée (filtre non prêt) » — c'est CE log qui porte le diagnostic, la garde mutualisée `FilterNotReady` ne dit pas la cause), `warning` température, `info` à la levée.
+- **MQTT** : alerte `{base}/alerts/sensor_frozen` (JSON retain, clear payload vide, pH/ORP uniquement) + états binaires `{base}/ph|orp_sensor_problem` (`ON` = stale OU figé) avec discovery HA `binary_sensor` `device_class: problem` — voir [MQTT.md](../MQTT.md#topics-et-entités-ajoutés-en-feature-022-problème-capteur-phorp-v2100).
+- **Getters lock-free** : `isPhSensorFrozen()` / `isOrpSensorFrozen()` / `isTemperatureFrozen()` (simple comparaison d'entiers 16 bits, même contrat de concurrence que `is*FilterUnstable()`).
+
 ## Constantes clés
 
 | Constante | Valeur | Usage |
@@ -303,6 +350,10 @@ Le filtre repasse en **warmup** → dosage de la sonde concernée bloqué jusqu'
 | `kSensorFilterMaxResyncPerWindow` | `3` | Re-sync max sur la fenêtre → latch instable persistant |
 | `kSensorFilterResyncWindowMs` | `600000` ms (10 min) | Fenêtre glissante anti-boucle EMI |
 | `kSensorFilterMaxAgeMs` | `20000` ms | Âge max dernière mesure valide pour `ready()` |
+| `kSensorFrozenSamples` | `30` | Lectures acceptées consécutives dans la bande → figé (≈ 2,5 min à 5 s — feature-022) |
+| `kSensorFrozenEpsilonPh` | `0.0005` pH | Bande figé pH = ½ LSB EZO (résolution 0.001) |
+| `kSensorFrozenEpsilonOrp` | `0.05` mV | Bande figé ORP = ½ LSB EZO (résolution 0.1) |
+| `kTempFrozenSamples` / `kTempFrozenEpsilonC` | `900` / `0.03` °C | Figé T° eau (≈ 30 min à 2 s, < ½ LSB DS18B20) — warning-only |
 
 Toutes définies dans [`src/constants.h`](../../src/constants.h).
 
@@ -388,7 +439,7 @@ Logs et alertes MQTT émis **aux transitions uniquement** (entrée et sortie de 
 
 - [`pump_controller`](pump-controller.md) : le PID consomme **uniquement** `getPhFiltered()` / `getOrpFiltered()` (feature-025) et exige `isPhFilterReady()` / `isOrpFilterReady()` (+ `!isPhFilterUnstable()`) dans `canDose(int)`. `getPh()`/`getOrp()` restent disponibles pour les logs et l'affichage brut. Vérifie aussi `getPhCalibrationPointsCached()` / `getOrpCalibrationPointsCached()` (conditions #1, #2, #5).
 - [`ws_manager`](ws-manager.md) : `broadcastSensorData()` publie `ph`/`orp` (= valeur **filtrée**, fallback brut si filtre non amorcé), `temperature`, `temperature_circuit`, `phCalPoints`, `orpCalPoints`, `phSlopeAcid/Base/Zero/AgeMs` toutes les 5 s. feature-025 : champs supplémentaires `ph/orpRaw|Median|Filtered`, `ph/orpFilterReady`, `ph/orpFilterUnstable`, `ph/orpRejectedCount`, `ph/orpMixingDelayActive`, `ph/orpDoseBlockedReason`.
-- [`mqtt_manager`](mqtt-manager.md) : publie `{base}/ph` / `{base}/orp` (= **filtré**), `{base}/temperature`, `{base}/temperature_circuit`, `{base}/ph_cal_points`, `{base}/orp_cal_points` toutes les 10 s (`kMqttPublishIntervalMs`). 3 topics `{base}/ph_slope_*` edge-triggered. feature-025 : topics `{base}/ph|orp_raw|median|filtered|filter_ready|filter_unstable|rejected_count` + `{base}/ph|orp_mixing_delay_active` (retain). Alertes edge-triggered `{base}/alerts/calibration_required` et `{base}/alerts/sensor_stale`.
+- [`mqtt_manager`](mqtt-manager.md) : publie `{base}/ph` / `{base}/orp` (= **filtré**), `{base}/temperature`, `{base}/temperature_circuit`, `{base}/ph_cal_points`, `{base}/orp_cal_points` toutes les 10 s (`kMqttPublishIntervalMs`). 3 topics `{base}/ph_slope_*` edge-triggered. feature-025 : topics `{base}/ph|orp_raw|median|filtered|filter_ready|filter_unstable|rejected_count` + `{base}/ph|orp_mixing_delay_active` (retain). Alertes edge-triggered `{base}/alerts/calibration_required`, `{base}/alerts/sensor_stale` et `{base}/alerts/sensor_frozen` + états binaires dédupliqués `{base}/ph|orp_sensor_problem` (feature-022).
 - [`history`](history.md) : snapshot des valeurs courantes toutes les 5 min.
 
 ## Multi-sondes DS18B20 — PCB v2 (feature-020)
@@ -441,3 +492,4 @@ Si une sonde est remplacée physiquement (adresse ROM différente), le scan au b
 - [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) — régulation P temporisée sur mesure filtrée (feature-025)
 - [feature-021](../../specs/features/done/feature-021-migration-atlas-ezo.md) — spec d'origine
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — filtrage mesures + adaptation régulation
+- feature-022 (`specs/features/`) — détection capteur figé `FrozenDetector` + observabilité HA (v2.10.0)

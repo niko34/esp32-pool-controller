@@ -110,6 +110,55 @@ void test_range_lighting_midnight_window(void) {
 }
 
 // -----------------------------------------------------------------------------
+// feature-011 — remainingRangeMinutes : horizon de répartition scheduled,
+// BORNÉ À MINUIT (les compteurs journaliers se réinitialisent à minuit).
+// -----------------------------------------------------------------------------
+void test_F011_remaining_simple_range(void) {
+  // Plage simple 10:00-14:00 = [600, 840).
+  TEST_ASSERT_EQUAL_INT(180, remainingRangeMinutes(660, 600, 840));  // 11:00 → 180
+  TEST_ASSERT_EQUAL_INT(120, remainingRangeMinutes(720, 600, 840));  // 12:00 → 120
+}
+
+void test_F011_remaining_out_of_range_zero(void) {
+  // Hors plage (avant le début / après la fin) → 0.
+  TEST_ASSERT_EQUAL_INT(0, remainingRangeMinutes(599, 600, 840));   // juste avant
+  TEST_ASSERT_EQUAL_INT(0, remainingRangeMinutes(900, 600, 840));   // bien après
+  TEST_ASSERT_EQUAL_INT(0, remainingRangeMinutes(0, 600, 840));     // minuit
+}
+
+void test_F011_remaining_midnight_range(void) {
+  // Plage à cheval sur minuit 22:00-06:00 = [1320, 360).
+  // Partie du soir : horizon BORNÉ À MINUIT (jamais end - now modulo 1440).
+  TEST_ASSERT_EQUAL_INT(60, remainingRangeMinutes(1380, 1320, 360));  // 23:00 → 60
+  TEST_ASSERT_EQUAL_INT(120, remainingRangeMinutes(1320, 1320, 360)); // 22:00 → 120
+  // Partie du matin : horizon = end - now.
+  TEST_ASSERT_EQUAL_INT(180, remainingRangeMinutes(180, 1320, 360));  // 03:00 → 180
+  TEST_ASSERT_EQUAL_INT(360, remainingRangeMinutes(0, 1320, 360));    // 00:00 → 360
+  // Milieu de journée, hors plage → 0.
+  TEST_ASSERT_EQUAL_INT(0, remainingRangeMinutes(720, 1320, 360));
+}
+
+void test_F011_remaining_invalid_zero(void) {
+  // Bornes invalides (-1) → 0 (délégué à isMinutesInRange).
+  TEST_ASSERT_EQUAL_INT(0, remainingRangeMinutes(660, -1, 840));
+  TEST_ASSERT_EQUAL_INT(0, remainingRangeMinutes(660, 600, -1));
+  TEST_ASSERT_EQUAL_INT(0, remainingRangeMinutes(660, -1, -1));
+  // start == end → plage invalide filtration (equalMeansAlways=false) → 0.
+  TEST_ASSERT_EQUAL_INT(0, remainingRangeMinutes(660, 600, 600));
+}
+
+void test_F011_remaining_boundaries(void) {
+  // Plage simple [600, 840) : frontières exactes.
+  TEST_ASSERT_EQUAL_INT(240, remainingRangeMinutes(600, 600, 840));  // now==start
+  TEST_ASSERT_EQUAL_INT(1, remainingRangeMinutes(839, 600, 840));    // now==end-1 → >= 1
+  TEST_ASSERT_EQUAL_INT(0, remainingRangeMinutes(840, 600, 840));    // now==end (exclusive)
+  // Plage à cheval [1320, 360) : frontières du matin et veille de minuit.
+  TEST_ASSERT_EQUAL_INT(1, remainingRangeMinutes(1439, 1320, 360));  // 23:59 → 1 (borné minuit)
+  TEST_ASSERT_EQUAL_INT(1, remainingRangeMinutes(359, 1320, 360));   // end-1 → 1
+  TEST_ASSERT_EQUAL_INT(0, remainingRangeMinutes(360, 1320, 360));   // end exclu
+}
+
+// -----------------------------------------------------------------------------
 // AC4 — computeAutoWindow (pivot = 13.0)
 // -----------------------------------------------------------------------------
 void test_auto_window_floor_one_hour_temp_zero(void) {
@@ -160,34 +209,60 @@ void test_auto_window_temp_50_capped_24h(void) {
 // -----------------------------------------------------------------------------
 void test_decide_force_on_has_priority(void) {
   // forceOn=true l'emporte sur tout, même forceOff=true
-  TEST_ASSERT_TRUE(decideFiltrationRun("auto", true, true, true, 720, 480, 1080, false));
-  TEST_ASSERT_TRUE(decideFiltrationRun("off", true, false, false, 0, -1, -1, false));
+  TEST_ASSERT_TRUE(decideFiltrationRun(false, "auto", true, true, true, 720, 480, 1080, false));
+  TEST_ASSERT_TRUE(decideFiltrationRun(false, "off", true, false, false, 0, -1, -1, false));
 }
 
 void test_decide_force_off_without_force_on(void) {
-  TEST_ASSERT_FALSE(decideFiltrationRun("auto", false, true, true, 720, 480, 1080, true));
+  TEST_ASSERT_FALSE(decideFiltrationRun(false, "auto", false, true, true, 720, 480, 1080, true));
 }
 
 void test_decide_auto_follows_range_when_have_time(void) {
   // dans la plage → marche ; hors plage → arrêt
-  TEST_ASSERT_TRUE(decideFiltrationRun("auto", false, false, true, 720, 480, 1080, false));
-  TEST_ASSERT_FALSE(decideFiltrationRun("auto", false, false, true, 1200, 480, 1080, true));
+  TEST_ASSERT_TRUE(decideFiltrationRun(false, "auto", false, false, true, 720, 480, 1080, false));
+  TEST_ASSERT_FALSE(decideFiltrationRun(false, "auto", false, false, true, 1200, 480, 1080, true));
 }
 
 void test_decide_manual_follows_range_when_have_time(void) {
-  TEST_ASSERT_TRUE(decideFiltrationRun("manual", false, false, true, 720, 480, 1080, false));
-  TEST_ASSERT_FALSE(decideFiltrationRun("manual", false, false, true, 1200, 480, 1080, true));
+  TEST_ASSERT_TRUE(decideFiltrationRun(false, "manual", false, false, true, 720, 480, 1080, false));
+  TEST_ASSERT_FALSE(decideFiltrationRun(false, "manual", false, false, true, 1200, 480, 1080, true));
 }
 
 void test_decide_no_time_keeps_current_state(void) {
   // haveTime=false sans forçage → renvoie currentlyRunning tel quel
-  TEST_ASSERT_TRUE(decideFiltrationRun("auto", false, false, false, 720, 480, 1080, true));
-  TEST_ASSERT_FALSE(decideFiltrationRun("auto", false, false, false, 720, 480, 1080, false));
+  TEST_ASSERT_TRUE(decideFiltrationRun(false, "auto", false, false, false, 720, 480, 1080, true));
+  TEST_ASSERT_FALSE(decideFiltrationRun(false, "auto", false, false, false, 720, 480, 1080, false));
 }
 
 void test_decide_off_or_unknown_mode_is_false(void) {
-  TEST_ASSERT_FALSE(decideFiltrationRun("off", false, false, true, 720, 480, 1080, true));
-  TEST_ASSERT_FALSE(decideFiltrationRun("bogus", false, false, true, 720, 480, 1080, true));
+  TEST_ASSERT_FALSE(decideFiltrationRun(false, "off", false, false, true, 720, 480, 1080, true));
+  TEST_ASSERT_FALSE(decideFiltrationRun(false, "bogus", false, false, true, 720, 480, 1080, true));
+}
+
+// -----------------------------------------------------------------------------
+// feature-053 — decideFiltrationRun : boostForce en priorité MAXIMALE.
+// boostForce=true → toujours true, quels que soient forceOff/mode/horaire/RTC
+// (turnover maximal pendant le Boost, prioritaire sur forceOff).
+// -----------------------------------------------------------------------------
+void test_F053_boost_force_beats_force_off(void) {
+  // forceOff=true + hors plage + mode off → boostForce l'emporte quand même.
+  TEST_ASSERT_TRUE(decideFiltrationRun(true, "off", false, true, true, 1200, 480, 1080, false));
+}
+
+void test_F053_boost_force_beats_everything(void) {
+  // Toutes combinaisons défavorables : mode inconnu, pas d'heure, hors plage,
+  // forceOff, currentlyRunning=false → boostForce force la marche.
+  TEST_ASSERT_TRUE(decideFiltrationRun(true, "bogus", false, true, false, 0, -1, -1, false));
+  TEST_ASSERT_TRUE(decideFiltrationRun(true, "auto", false, true, true, 1200, 480, 1080, false));
+  TEST_ASSERT_TRUE(decideFiltrationRun(true, "manual", true, true, false, 720, -1, -1, false));
+}
+
+void test_F053_boost_force_false_no_regression(void) {
+  // boostForce=false → comportement strictement identique à avant feature-053.
+  // Dans la plage auto → marche ; hors plage → arrêt ; forceOff → arrêt.
+  TEST_ASSERT_TRUE(decideFiltrationRun(false, "auto", false, false, true, 720, 480, 1080, false));
+  TEST_ASSERT_FALSE(decideFiltrationRun(false, "auto", false, false, true, 1200, 480, 1080, true));
+  TEST_ASSERT_FALSE(decideFiltrationRun(false, "auto", false, true, true, 720, 480, 1080, true));
 }
 
 // -----------------------------------------------------------------------------
@@ -245,6 +320,13 @@ int main(int /*argc*/, char** /*argv*/) {
   RUN_TEST(test_range_lighting_simple_window);
   RUN_TEST(test_range_lighting_midnight_window);
 
+  // feature-011 — remainingRangeMinutes (horizon scheduled borné à minuit)
+  RUN_TEST(test_F011_remaining_simple_range);
+  RUN_TEST(test_F011_remaining_out_of_range_zero);
+  RUN_TEST(test_F011_remaining_midnight_range);
+  RUN_TEST(test_F011_remaining_invalid_zero);
+  RUN_TEST(test_F011_remaining_boundaries);
+
   // AC4
   RUN_TEST(test_auto_window_floor_one_hour_temp_zero);
   RUN_TEST(test_auto_window_floor_one_hour_temp_negative);
@@ -260,6 +342,11 @@ int main(int /*argc*/, char** /*argv*/) {
   RUN_TEST(test_decide_manual_follows_range_when_have_time);
   RUN_TEST(test_decide_no_time_keeps_current_state);
   RUN_TEST(test_decide_off_or_unknown_mode_is_false);
+
+  // feature-053 — decideFiltrationRun boostForce (priorité maximale)
+  RUN_TEST(test_F053_boost_force_beats_force_off);
+  RUN_TEST(test_F053_boost_force_beats_everything);
+  RUN_TEST(test_F053_boost_force_false_no_regression);
 
   // feature-040 AC1/AC4 — decideLightingOn
   RUN_TEST(test_lighting_manual_override_returns_enabled_flag);

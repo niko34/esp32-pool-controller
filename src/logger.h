@@ -30,6 +30,8 @@ private:
   bool bufferFull = false;
   std::function<void(const LogEntry&)> _logCallback = nullptr;
   SemaphoreHandle_t _mutex = nullptr;
+  // feature-027 : compteur d'entrées perdues sur timeout mutex (diagnostic, best-effort)
+  uint32_t _droppedLogs = 0;
 
   // Persistance sur LittleFS (partition history)
   fs::FS* _persistFs = nullptr;

@@ -181,7 +181,7 @@ void UartCommands::handleGetConfig() {
   d["lighting_end_time"] = lightingCfg.endTime;
 
   // Limites de sécurité
-  d["max_ph_ml_per_day"] = safetyLimits.maxPhMinusMlPerDay;
+  d["max_ph_ml_per_day"] = safetyLimits.maxPhMlPerDay;
   d["max_chlorine_ml_per_day"] = safetyLimits.maxChlorineMlPerDay;
 
   // Temps / NTP
@@ -380,7 +380,7 @@ void UartCommands::handleSetConfig(JsonVariant data) {
   if (data["max_ph_ml_per_day"].is<float>() || data["max_ph_ml_per_day"].is<int>()) {
     float v = data["max_ph_ml_per_day"].as<float>();
     if (v > 0.0f) {
-      safetyLimits.maxPhMinusMlPerDay = v;
+      safetyLimits.maxPhMlPerDay = v;
       changed = true;
     } else {
       if (errorMsg.isEmpty()) errorMsg = "max_ph_ml_per_day doit être > 0";

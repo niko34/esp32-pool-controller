@@ -14,7 +14,7 @@ Page de configuration système. Structurée en **8 onglets segmentés** ([`data/
 | Wi-Fi | `panel-wifi` | Statut SSID/IP/mDNS + lien vers l'assistant de reconfiguration |
 | MQTT | `panel-mqtt` | Activation + broker (host/port/topic/auth) |
 | Heure | `panel-time` | NTP ou heure manuelle, timezone, serveur NTP |
-| Sécurité | `panel-security` | Changement mot de passe admin + CORS |
+| Sécurité | `panel-security` | Changement mot de passe admin |
 | Régulation pH / ORP | `panel-regulation` | Mode pilote/continu, vitesse PID, limites horaires/journalières, délai stabilisation |
 | Système | `panel-system` | Infos système (runtime), OTA GitHub, OTA manuel, reboot, factory reset |
 | Avancé | `panel-dev` | Historique des mesures (export/import/purge CSV), affectation pompes, puissance max, débit nominal, tests pompe, diagnostic crash, logs |
@@ -36,7 +36,8 @@ Page de configuration système. Structurée en **8 onglets segmentés** ([`data/
 
 ### Sécurité (`panel-security`)
 - Password admin : endpoint dédié `/auth/change-password` (ne passe **pas** par `/save-config`).
-- CORS : `auth_cors_origins` (string vide / `*` / liste) — persisté par `/save-config` et **nécessite un reboot**.
+
+> ℹ️ **Card CORS retirée en v2.11.2** (feature-028, [ADR-0023](../adr/0023-politique-cors-retrait.md)) : le mécanisme CORS a été entièrement supprimé (politique même-origine stricte). Le champ `#auth_cors_origins` et le bouton `#cors-save-btn` n'existent plus, et `auth_cors_origins` a disparu de `/get-config` / `/save-config`.
 
 ### Régulation (`panel-regulation`)
 - `regulation_mode` (`pilote` | `continu`) — détermine si la régulation suit la filtration ([`pump_controller.cpp`](../../src/pump_controller.cpp)).
@@ -102,7 +103,7 @@ Positionnée juste avant la card "Logs" dans le panneau Avancé (la card "Infos 
 |--------|----------|-------------|
 | Actualiser | `GET /coredump/info` | Toujours |
 | Télécharger | `GET /coredump/download` → téléchargement de `coredump.bin` | Coredump disponible |
-| Effacer | `DELETE /coredump` avec dialogue de confirmation | Coredump disponible |
+| Effacer | `DELETE /coredump` avec confirmation via `confirmDialog` (variante danger) | Coredump disponible |
 
 **Workflow de décodage (hint affiché dans la card) :**
 
@@ -123,7 +124,7 @@ Liste défilante des derniers logs poussés via WebSocket + filtres par niveau (
 | Actualiser | ghost | Force un rechargement complet via `GET /get-logs` |
 | Effacer (écran) | ghost | Vide **uniquement la vue navigateur locale** (`#logs_content`, `allLogEntries`, `lastLogTimestamp`). Les logs côté ESP32 sont intacts ; un rechargement les fait réapparaître. Tooltip : *« Vide uniquement la vue actuelle, les logs restent côté ESP32 »*. |
 | Télécharger | ghost | Téléchargement de `pool_logs.txt` via `GET /download-logs` |
-| Effacer (firmware) | **danger (rouge)** | Dialogue `confirm()` natif puis `DELETE /logs` (cf. [`docs/API.md`](../API.md#delete-logs--write)). Vide RAM + buffer pending + supprime `/system.log` côté ESP32, vide aussi la vue locale, toast de succès `Logs effacés (RAM + fichier)`. Tooltip : *« Vide la mémoire et supprime le fichier persistant côté ESP32 »*. |
+| Effacer (firmware) | **danger (rouge)** | Confirmation via `confirmDialog` (variante danger) puis `DELETE /logs` (cf. [`docs/API.md`](../API.md#delete-logs--write)). Vide RAM + buffer pending + supprime `/system.log` côté ESP32, vide aussi la vue locale, toast de succès `Logs effacés (RAM + fichier)`. Tooltip : *« Vide la mémoire et supprime le fichier persistant côté ESP32 »*. |
 
 Toggles complémentaires :
 - `Auto (5s)` — rafraîchissement automatique
@@ -158,13 +159,22 @@ Toggles complémentaires :
 
 Auth = le niveau minimum requis, voir [`docs/API.md`](../API.md).
 
+## Confirmations et retours utilisateur (v2.12.0, feature-031)
+
+Plus aucun dialogue natif `alert()` / `confirm()` sur cette page (ni ailleurs dans l'UI) :
+
+- **Messages informatifs** (succès de sauvegarde, erreurs réseau, import/export…) → toasts `showToast` (types `error` / `success` / `info`).
+- **Actions destructives ou sensibles** → modale maison `confirmDialog` (voir [`docs/features/README.md#composants-transverses`](README.md#composants-transverses)), en **variante danger (bouton rouge)** pour les actions irréversibles : purge historique, effacement logs firmware, effacement coredump, déconnexion Wi-Fi, redémarrage, réinitialisation des sondes, reset usine.
+- **Reset usine** : la **double confirmation** est conservée — deux modales enchaînées (« Réinitialiser » puis « Tout effacer »), un refus à n'importe quelle étape annule tout.
+- Les emojis ⚠ ont été retirés des messages de confirmation : la variante danger (rouge) porte la sévérité.
+
 ## Règles firmware
 
-- **Reboot obligatoire** pour appliquer : CORS, bascule Wi-Fi STA ↔ AP, changement de timezone (nouvel env TZ).
+- **Reboot obligatoire** pour appliquer : bascule Wi-Fi STA ↔ AP, changement de timezone (nouvel env TZ).
 - **Factory reset** ([`web_routes_config.cpp`](../../src/web_routes_config.cpp) `/factory-reset`) : efface NVS + config LittleFS + calibrations, redémarre en mode AP `PoolControllerAP` sur `192.168.4.1`.
 - **OTA** : partition active préservée, partitions app0/app1 = 1408 KB chacune, historique isolé sur une partition dédiée `history` 64 KB, coredump sur partition dédiée 64 KB — voir [ADR-0009](../adr/0009-partition-coredump.md) et [`partitions.csv`](../../partitions.csv).
 - **Mot de passe** : hashé par `hashPassword()` avec salt ([`auth_*.cpp`](../../src/)), stocké en NVS, jamais renvoyé par l'API.
-- **CORS** : chaîne vide = désactivé ; `*` = wildcard ; liste = origines autorisées séparées par `,`.
+- **Pas de CORS** : politique même-origine stricte depuis v2.11.2 ([ADR-0023](../adr/0023-politique-cors-retrait.md)).
 
 ## Cas limites
 

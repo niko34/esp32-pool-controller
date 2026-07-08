@@ -8,6 +8,7 @@
 #include "lighting.h"
 #include "logger.h"
 #include "mqtt_manager.h"
+#include "ws_manager.h"
 #include "dosing_logic.h"
 #include <Arduino.h>
 #include <esp_task_wdt.h>
@@ -68,7 +69,7 @@ static bool manualInjectGuardOrReject(AsyncWebServerRequest* req, bool isPh,
   in.alreadyInjecting = isPh ? manualInjectPh.active : manualInjectOrp.active;
   in.requestedMl = effectiveMl;
   in.dailyInjectedMl = isPh ? safetyLimits.dailyPhInjectedMl : safetyLimits.dailyOrpInjectedMl;
-  in.maxDailyMl = isPh ? safetyLimits.maxPhMinusMlPerDay : safetyLimits.maxChlorineMlPerDay;
+  in.maxDailyMl = isPh ? safetyLimits.maxPhMlPerDay : safetyLimits.maxChlorineMlPerDay;
   in.usedMs = (uint32_t)(isPh ? PumpController.getPhUsedMs() : PumpController.getOrpUsedMs());
   int limitMin = isPh ? mqttCfg.phInjectionLimitMinutes : mqttCfg.orpInjectionLimitMinutes;
   in.hourlyLimitMs = (limitMin > 0) ? (uint32_t)limitMin * 60000UL : 0;  // 0 = illimité
@@ -106,11 +107,17 @@ static bool manualInjectGuardOrReject(AsyncWebServerRequest* req, bool isPh,
       code = "already_injecting";
       msg = "Une injection manuelle est déjà en cours — l'arrêter avant d'en relancer une.";
       break;
-    case ManualInjectRefusal::DailyLimit:
+    case ManualInjectRefusal::DailyLimit: {
+      // Reliquat arrondi VERS LE BAS (floorf, jamais lroundf) : le message ne
+      // doit jamais promettre plus que ce que la garde acceptera (v2.9.2 —
+      // lroundf affichait « reste 11 mL » pour un reliquat réel de 10,6).
+      long remainingFloor = (long)floorf(d.remainingMl);
+      if (remainingFloor < 0) remainingFloor = 0;
       code = "daily_limit";
-      msg = "Limite journalière atteinte — reste disponible aujourd'hui : " + String((long)lroundf(d.remainingMl)) + " mL.";
-      doc["remaining_ml"] = (long)lroundf(d.remainingMl);
+      msg = "Limite journalière atteinte — reste disponible aujourd'hui : " + String(remainingFloor) + " mL.";
+      doc["remaining_ml"] = remainingFloor;
       break;
+    }
     case ManualInjectRefusal::HourlyLimit:
       code = "hourly_limit";
       msg = "Limite horaire d'injection atteinte — réessayer plus tard.";
@@ -173,7 +180,14 @@ void updateManualInject() {
       PumpController.setManualPump(mqttCfg.phPump - 1, 0);
       manualInjectPh.active = false;
       manualInjectPh.requestedVolumeMl = 0.0f;
-      systemLogger.info("[Injection] pH arrêtée automatiquement (fin de durée)");
+      // Fin NATURELLE : crédit plancher du volume promis (bug sous-compte
+      // v2.9.1 — l'intégration débit×temps perd la dernière tranche).
+      PumpController.creditManualInjectionFloor(0, manualInjectPh.startCumulMl,
+                                                manualInjectPh.creditMl);
+      manualInjectPh.startCumulMl = 0.0f;
+      manualInjectPh.creditMl = 0.0f;
+      systemLogger.info("[Injection] pH arrêtée automatiquement (fin de durée) — cumul crédité à " +
+                        String(safetyLimits.dailyPhInjectedMl, 1) + " mL");
     }
     // 2. Arrêt sécurité chimique : filtration arrêtée pendant l'injection
     //    (pool-chemistry condition #1 : pas de circulation = surdosage local)
@@ -181,6 +195,9 @@ void updateManualInject() {
       PumpController.setManualPump(mqttCfg.phPump - 1, 0);
       manualInjectPh.active = false;
       manualInjectPh.requestedVolumeMl = 0.0f;
+      // Arrêt ANTICIPÉ : pas de crédit (l'intégration réelle fait foi) — hygiène.
+      manualInjectPh.startCumulMl = 0.0f;
+      manualInjectPh.creditMl = 0.0f;
       systemLogger.critical("[Injection] pH INTERROMPUE — filtration arrêtée (sécurité chimique)");
       mqttManager.publishAlert("ph_injection_aborted",
                                "Injection pH interrompue : filtration arrêtée pendant l'injection. Relancer manuellement après reprise filtration.");
@@ -193,12 +210,21 @@ void updateManualInject() {
       PumpController.setManualPump(mqttCfg.orpPump - 1, 0);
       manualInjectOrp.active = false;
       manualInjectOrp.requestedVolumeMl = 0.0f;
-      systemLogger.info("[Injection] ORP arrêtée automatiquement (fin de durée)");
+      // Fin NATURELLE : crédit plancher du volume promis (cf. cas pH).
+      PumpController.creditManualInjectionFloor(1, manualInjectOrp.startCumulMl,
+                                                manualInjectOrp.creditMl);
+      manualInjectOrp.startCumulMl = 0.0f;
+      manualInjectOrp.creditMl = 0.0f;
+      systemLogger.info("[Injection] ORP arrêtée automatiquement (fin de durée) — cumul crédité à " +
+                        String(safetyLimits.dailyOrpInjectedMl, 1) + " mL");
     }
     else if (!filtrationOkForInjection()) {
       PumpController.setManualPump(mqttCfg.orpPump - 1, 0);
       manualInjectOrp.active = false;
       manualInjectOrp.requestedVolumeMl = 0.0f;
+      // Arrêt ANTICIPÉ : pas de crédit (l'intégration réelle fait foi) — hygiène.
+      manualInjectOrp.startCumulMl = 0.0f;
+      manualInjectOrp.creditMl = 0.0f;
       systemLogger.critical("[Injection] ORP INTERROMPUE — filtration arrêtée (sécurité chimique)");
       mqttManager.publishAlert("orp_injection_aborted",
                                "Injection ORP/chlore interrompue : filtration arrêtée pendant l'injection. Relancer manuellement après reprise filtration.");
@@ -269,6 +295,29 @@ void setupControlRoutes(AsyncWebServer* server) {
       req->send(400, "text/plain", "parametre volume manquant"); return;
     }
     if (durationS < 1) durationS = 1;
+    // Écrêtage au reliquat journalier (bug v2.9.2) : si la demande dépasse ce
+    // qui reste disponible aujourd'hui, on la ramène au reliquat au lieu de
+    // laisser la garde refuser (« reste 11 mL » puis refus de 11 mL). Durée
+    // arrondie VERS LE BAS (floor volontaire) : le volume effectif ne doit
+    // jamais re-déborder la limite. Si le reliquat est trop petit pour 1 s de
+    // pompe, on n'écrête PAS → la garde refuse daily_limit comme avant.
+    bool clamped = false;
+    int clampedDurationS = 0;
+    float remaining = 0.0f;
+    if (safetyLimits.maxPhMlPerDay > 0) {
+      remaining = safetyLimits.maxPhMlPerDay - safetyLimits.dailyPhInjectedMl;
+      if (volumeMl > remaining && remaining > 0.0f) {
+        int clampedS = (int)((remaining / flow) * 60.0f);  // FLOOR volontaire
+        if (clampedS >= 1) {
+          systemLogger.info("[Injection] pH : volume écrêté de " + String(volumeMl, 1) +
+                            " à " + String(remaining, 1) + " mL (reliquat journalier)");
+          durationS = clampedS;
+          clampedDurationS = clampedS;
+          volumeMl = remaining;
+          clamped = true;
+        }
+      }
+    }
     if (durationS > kManualInjectMaxDurationS) durationS = kManualInjectMaxDurationS;
     // Volume effectif POST-clamp : si la durée a été plafonnée, le volume
     // réellement injecté est flow×durée (condition pool-chemistry #3 : les
@@ -284,7 +333,21 @@ void setupControlRoutes(AsyncWebServer* server) {
     manualInjectPh.startMs = millis();
     manualInjectPh.durationMs = (unsigned long)durationS * 1000UL;
     manualInjectPh.requestedVolumeMl = volumeMl;
-    systemLogger.info("[Injection] pH démarrée " + String(durationS) + "s pour " + String(volumeMl, 0) + "mL (débit=" + String(flow, 1) + "mL/min, pompe " + String(mqttCfg.phPump) + ")");
+    // Crédit plancher (bug sous-compte v2.9.1) : mémoriser le cumul au départ
+    // et le volume promis. Écritures float 32 bits depuis le handler async,
+    // lues ensuite en loopTask — même pattern bénin que startMs/durationMs.
+    manualInjectPh.startCumulMl = safetyLimits.dailyPhInjectedMl;
+    // Crédit de fin d'injection :
+    // - écrêté au reliquat SANS re-plafonnement par kManualInjectMaxDurationS
+    //   → créditer le reliquat ENTIER : le plancher porte le cumul exactement
+    //   à la limite journalière → latch *_limit_reached + badge. Sur-compte
+    //   borné à < 1 s de débit (floor de la durée), conservateur — validé spec.
+    // - re-plafonné par kManualInjectMaxDurationS (reliquat > 10 min de pompe)
+    //   → le volume réellement injecté est effectiveMl < remaining : le crédit
+    //   ne doit JAMAIS excéder ce qui a pu être injecté → effectiveMl.
+    manualInjectPh.creditMl =
+        (clamped && durationS == clampedDurationS) ? remaining : effectiveMl;
+    systemLogger.info("[Injection] pH démarrée " + String(durationS) + "s pour " + String(volumeMl, 1) + "mL (débit=" + String(flow, 1) + "mL/min, pompe " + String(mqttCfg.phPump) + ")");
     req->send(200, "text/plain", "OK");
   });
 
@@ -293,6 +356,9 @@ void setupControlRoutes(AsyncWebServer* server) {
     int pumpIdx = mqttCfg.phPump - 1;
     PumpController.setManualPump(pumpIdx, 0);
     manualInjectPh.active = false;
+    // Arrêt anticipé : pas de crédit plancher (intégration réelle) — hygiène.
+    manualInjectPh.startCumulMl = 0.0f;
+    manualInjectPh.creditMl = 0.0f;
     systemLogger.info("[Injection] pH arrêtée manuellement");
     req->send(200, "text/plain", "OK");
   });
@@ -324,6 +390,26 @@ void setupControlRoutes(AsyncWebServer* server) {
       req->send(400, "text/plain", "parametre volume manquant"); return;
     }
     if (durationS < 1) durationS = 1;
+    // Écrêtage au reliquat journalier (bug v2.9.2, cf. route pH) : durée FLOOR
+    // pour ne jamais re-déborder ; reliquat < 1 s de pompe → pas d'écrêtage,
+    // la garde refuse daily_limit comme avant.
+    bool clamped = false;
+    int clampedDurationS = 0;
+    float remaining = 0.0f;
+    if (safetyLimits.maxChlorineMlPerDay > 0) {
+      remaining = safetyLimits.maxChlorineMlPerDay - safetyLimits.dailyOrpInjectedMl;
+      if (volumeMl > remaining && remaining > 0.0f) {
+        int clampedS = (int)((remaining / flow) * 60.0f);  // FLOOR volontaire
+        if (clampedS >= 1) {
+          systemLogger.info("[Injection] ORP : volume écrêté de " + String(volumeMl, 1) +
+                            " à " + String(remaining, 1) + " mL (reliquat journalier)");
+          durationS = clampedS;
+          clampedDurationS = clampedS;
+          volumeMl = remaining;
+          clamped = true;
+        }
+      }
+    }
     if (durationS > kManualInjectMaxDurationS) durationS = kManualInjectMaxDurationS;
     // Volume effectif POST-clamp (condition pool-chemistry #3, cf. route pH).
     float effectiveMl = flow * durationS / 60.0f;
@@ -337,7 +423,16 @@ void setupControlRoutes(AsyncWebServer* server) {
     manualInjectOrp.startMs = millis();
     manualInjectOrp.durationMs = (unsigned long)durationS * 1000UL;
     manualInjectOrp.requestedVolumeMl = volumeMl;
-    systemLogger.info("[Injection] ORP démarrée " + String(durationS) + "s pour " + String(volumeMl, 0) + "mL (débit=" + String(flow, 1) + "mL/min, pompe " + String(mqttCfg.orpPump) + ")");
+    // Crédit plancher (bug sous-compte v2.9.1) : cf. route pH — pattern
+    // d'écriture async → lecture loopTask identique à startMs/durationMs.
+    manualInjectOrp.startCumulMl = safetyLimits.dailyOrpInjectedMl;
+    // Crédit de fin d'injection (cf. route pH) : reliquat ENTIER si écrêté
+    // sans re-plafonnement durée (latch exact de la limite, sur-compte < 1 s
+    // de débit, conservateur) ; sinon effectiveMl — le crédit ne doit JAMAIS
+    // excéder ce qui a pu être réellement injecté.
+    manualInjectOrp.creditMl =
+        (clamped && durationS == clampedDurationS) ? remaining : effectiveMl;
+    systemLogger.info("[Injection] ORP démarrée " + String(durationS) + "s pour " + String(volumeMl, 1) + "mL (débit=" + String(flow, 1) + "mL/min, pompe " + String(mqttCfg.orpPump) + ")");
     req->send(200, "text/plain", "OK");
   });
 
@@ -346,6 +441,9 @@ void setupControlRoutes(AsyncWebServer* server) {
     int pumpIdx = mqttCfg.orpPump - 1;
     PumpController.setManualPump(pumpIdx, 0);
     manualInjectOrp.active = false;
+    // Arrêt anticipé : pas de crédit plancher (intégration réelle) — hygiène.
+    manualInjectOrp.startCumulMl = 0.0f;
+    manualInjectOrp.creditMl = 0.0f;
     systemLogger.info("[Injection] ORP arrêtée manuellement");
     req->send(200, "text/plain", "OK");
   });
@@ -363,6 +461,42 @@ void setupControlRoutes(AsyncWebServer* server) {
     lighting.setManualOff();
     saveMqttConfig();
     req->send(200, "text/plain", "OK");
+  });
+
+  // feature-053 : Mode Boost (surchloration temporaire du jour, auto-off à minuit).
+  // start/stopBoost prennent configMutex en interne (saveBoostState) et ne font que
+  // time()/mktime + une petite écriture NVS dédiée — même profil que les routes de
+  // contrôle existantes (lighting/on → saveMqttConfig écrit aussi depuis le handler
+  // async). Appel direct, cohérent avec le pattern dominant des routes de contrôle.
+  // startBoost REFUSE si l'heure n'est pas synchronisée → on renvoie alors 409.
+  server->on("/boost/start", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+    startBoost();
+    if (!boostState.active) {
+      // Refus fail-closed : heure non synchronisée (expiration minuit indéterminable).
+      req->send(409, "application/json",
+                "{\"error\":\"time_not_synced\",\"message\":\"Boost impossible : horloge non synchronisée (expiration à minuit indéterminable).\"}");
+      return;
+    }
+    mqttManager.publishBoostState();   // reflète immédiatement l'état sur HA
+    wsManager.requestConfigBroadcast(); // resync UI web (pattern bug-sync)
+    // feature-054 : indiquer à l'UI quels leviers sont réellement actifs
+    // (filtration prolongée seulement si gérée ; chlore relevé seulement si ORP automatic).
+    const bool filtrationExtended = filtrationCfg.enabled;
+    const bool chlorineBoosted = (mqttCfg.orpRegulationMode == "automatic");
+    String out = String("{\"boost_active\":true,\"boost_until\":") +
+                 String((long)boostState.untilEpoch) +
+                 ",\"filtration_extended\":" + (filtrationExtended ? "true" : "false") +
+                 ",\"chlorine_boosted\":" + (chlorineBoosted ? "true" : "false") + "}";
+    req->send(200, "application/json", out);
+  });
+
+  server->on("/boost/stop", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+    stopBoost();
+    mqttManager.publishBoostState();
+    wsManager.requestConfigBroadcast();
+    req->send(200, "application/json", "{\"boost_active\":false,\"boost_until\":0}");
   });
 }
 

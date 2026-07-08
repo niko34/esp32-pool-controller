@@ -29,34 +29,41 @@ void Logger::log(LogLevel level, const String& message) {
   // si le callback tente lui-même de logger.
   std::function<void(const LogEntry&)> cb = nullptr;
 
-  if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
-  if (logs.size() < MAX_LOGS) {
-    logs.push_back(entry);
+  // feature-027 : prise bornée. Timeout → entrée perdue (politique silencieuse :
+  // JAMAIS de systemLogger dans les chemins d'échec — récursion). Serial reste exécuté.
+  const bool locked = (_mutex == nullptr) ||
+                      (xSemaphoreTake(_mutex, pdMS_TO_TICKS(kLoggerMutexTimeoutMs)) == pdTRUE);
+  if (locked) {
+    if (logs.size() < MAX_LOGS) {
+      logs.push_back(entry);
+    } else {
+      logs[currentIndex] = entry;
+      currentIndex = (currentIndex + 1) % MAX_LOGS;
+      bufferFull = true;
+    }
+    cb = _logCallback;
+
+    // Bufferiser pour la persistance (hors DEBUG)
+    if (_persistEnabled && level != LogLevel::DEBUG) {
+      char timeBuf[20] = "????-??-??T??:??:??";
+      time_t now = time(nullptr);
+      if (now > 1609459200L) {
+        struct tm t;
+        localtime_r(&now, &t);
+        strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%dT%H:%M:%S", &t);
+      }
+      String line = String(timeBuf) + " " + getLevelString(level) + " " + message + "\n";
+      // Capacité fixe : supprimer la plus ancienne plutôt que de réallouer (évite std::bad_alloc)
+      if (_persistBuffer.size() >= kMaxPersistBufferEntries) {
+        _persistBuffer.erase(_persistBuffer.begin());
+      }
+      _persistBuffer.push_back(line);
+    }
+
+    if (_mutex) xSemaphoreGive(_mutex);
   } else {
-    logs[currentIndex] = entry;
-    currentIndex = (currentIndex + 1) % MAX_LOGS;
-    bufferFull = true;
+    _droppedLogs++;  // Entrée perdue (buffer RAM + persistance)
   }
-  cb = _logCallback;
-
-  // Bufferiser pour la persistance (hors DEBUG)
-  if (_persistEnabled && level != LogLevel::DEBUG) {
-    char timeBuf[20] = "????-??-??T??:??:??";
-    time_t now = time(nullptr);
-    if (now > 1609459200L) {
-      struct tm t;
-      localtime_r(&now, &t);
-      strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%dT%H:%M:%S", &t);
-    }
-    String line = String(timeBuf) + " " + getLevelString(level) + " " + message + "\n";
-    // Capacité fixe : supprimer la plus ancienne plutôt que de réallouer (évite std::bad_alloc)
-    if (_persistBuffer.size() >= kMaxPersistBufferEntries) {
-      _persistBuffer.erase(_persistBuffer.begin());
-    }
-    _persistBuffer.push_back(line);
-  }
-
-  if (_mutex) xSemaphoreGive(_mutex);
 
   // Push WebSocket temps réel (si callback enregistré) — hors mutex
   if (cb) cb(entry);
@@ -108,7 +115,10 @@ String Logger::getLevelString(LogLevel level) {
 std::vector<LogEntry> Logger::getRecentLogs(size_t count) {
   std::vector<LogEntry> result;
 
-  if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
+  // feature-027 : timeout → vecteur vide (silencieux)
+  if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(kLoggerMutexTimeoutMs)) != pdTRUE) {
+    return result;
+  }
 
   if (!bufferFull) {
     // Buffer pas encore plein, retourner les derniers n éléments
@@ -132,7 +142,11 @@ std::vector<LogEntry> Logger::getRecentLogs(size_t count) {
 }
 
 void Logger::clear() {
-  if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
+  // feature-027 : timeout → no-op silencieux (rien n'est perdu : l'utilisateur
+  // peut simplement re-cliquer — _droppedLogs ne compte que les entrées perdues)
+  if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(kLoggerMutexTimeoutMs)) != pdTRUE) {
+    return;
+  }
   logs.clear();
   currentIndex = 0;
   bufferFull = false;
@@ -141,7 +155,11 @@ void Logger::clear() {
 
 void Logger::clearAll() {
   // Vider RAM + buffer pending sous mutex
-  if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
+  // feature-027 : timeout → return AVANT toute modif (ne pas supprimer le fichier
+  // si la RAM n'a pas été vidée)
+  if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(kLoggerMutexTimeoutMs)) != pdTRUE) {
+    return;
+  }
   logs.clear();
   currentIndex = 0;
   bufferFull = false;
@@ -156,7 +174,10 @@ void Logger::clearAll() {
 }
 
 size_t Logger::getLogCount() {
-  if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
+  // feature-027 : timeout → 0 (silencieux)
+  if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(kLoggerMutexTimeoutMs)) != pdTRUE) {
+    return 0;
+  }
   size_t count = bufferFull ? MAX_LOGS : logs.size();
   if (_mutex) xSemaphoreGive(_mutex);
   return count;
@@ -200,8 +221,11 @@ void Logger::flushToDisk() {
   if (!_persistEnabled || !_persistFs) return;
 
   // Échanger le buffer sous mutex pour libérer rapidement
+  // feature-027 : timeout → return SANS toucher _lastFlushMs (retente au tour suivant)
   std::vector<String> toWrite;
-  if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
+  if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(kLoggerMutexTimeoutMs)) != pdTRUE) {
+    return;
+  }
   toWrite.swap(_persistBuffer);
   if (_mutex) xSemaphoreGive(_mutex);
 
@@ -216,7 +240,13 @@ void Logger::flushToDisk() {
   if (!f) {
     Serial.println("[LOGGER] ERREUR: impossible d'ouvrir /system.log pour écriture");
     // Remettre le buffer si l'écriture échoue
-    if (_mutex) xSemaphoreTake(_mutex, portMAX_DELAY);
+    // feature-027 : JAMAIS de réinsertion sans mutex — timeout → lignes perdues proprement
+    if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(kLoggerMutexTimeoutMs)) != pdTRUE) {
+      _droppedLogs += toWrite.size();
+      Serial.printf("[LOGGER] Timeout mutex — %u ligne(s) de log perdue(s)\n",
+                    (unsigned)toWrite.size());
+      return;
+    }
     _persistBuffer.insert(_persistBuffer.begin(), toWrite.begin(), toWrite.end());
     if (_mutex) xSemaphoreGive(_mutex);
     return;

@@ -110,7 +110,8 @@ void WsManager::_onData(AsyncWebSocketClient* client, uint8_t* data, size_t len)
   if (doc["type"] != "auth") return;
 
   String token = doc["token"] | "";
-  if (authCfg.enabled && token != authCfg.apiToken) {
+  // feature-028 : comparaison à temps constant (même exigence que l'auth HTTP)
+  if (authCfg.enabled && !authManager.secureTokenEquals(token)) {
     systemLogger.warning("[WS] Token rejeté");
     client->close();
     return;
@@ -156,7 +157,10 @@ String WsManager::_buildSensorJson() const {
   // feature-024 : +4 champs phSlope* (~80 octets) → bump à 1024.
   // feature-025 : +14 champs filtre pH/ORP + mixing/blocked (~300 octets) → bump à 1408.
   // feature-006 : +2 champs ph/orp_stab_remaining_s (~64 octets) → bump à 1472.
-  StaticJson<1472> doc;
+  // feature-011 : +2 champs ph/orp_scheduled_flow_ml_per_min (~80 octets) → bump à 1536.
+  // feature-053 : +2 champs boost_active/boost_until (~48 octets) → bump à 1600.
+  // feature-055 : +2 booléens boost_filtration_extended/boost_chlorine_boosted → bump à 1664.
+  StaticJson<1664> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -244,6 +248,13 @@ String WsManager::_buildSensorJson() const {
   // ci-dessus (max des 2) est conservé pour compat (badge global, ancien front).
   d["ph_stab_remaining_s"]  = PumpController.getStabilizationRemainingS(0);
   d["orp_stab_remaining_s"] = PumpController.getStabilizationRemainingS(1);
+  // feature-011 : débit moyen planifié en mode "Programmée" (mL/min sur la plage de
+  // filtration restante). NAN firmware = hors mode scheduled / hors plage / heure
+  // invalide → null explicite côté WS (l'UI affiche "—").
+  float phSchedFlow  = PumpController.getPhScheduledPlannedFlow();
+  float orpSchedFlow = PumpController.getOrpScheduledPlannedFlow();
+  if (!isnan(phSchedFlow))  d["ph_scheduled_flow_ml_per_min"]  = round(phSchedFlow * 10.0f) / 10.0f;  else d["ph_scheduled_flow_ml_per_min"]  = nullptr;
+  if (!isnan(orpSchedFlow)) d["orp_scheduled_flow_ml_per_min"] = round(orpSchedFlow * 10.0f) / 10.0f; else d["orp_scheduled_flow_ml_per_min"] = nullptr;
   d["ph_daily_ml"]        = safetyLimits.dailyPhInjectedMl;
   d["orp_daily_ml"]       = safetyLimits.dailyOrpInjectedMl;
   d["ph_limit_reached"]   = safetyLimits.phLimitReached;
@@ -264,6 +275,17 @@ String WsManager::_buildSensorJson() const {
 
   d["lighting_enabled"] = lighting.isOn();  // état réel du relais, pas lightingCfg.enabled
 
+  // feature-053 : Mode Boost — état effectif (isBoostActive expire à minuit) + epoch
+  // d'expiration (0 si inactif). Le client calcule le temps restant.
+  {
+    time_t nowEpoch = time(nullptr);
+    d["boost_active"] = isBoostActive(nowEpoch);
+    d["boost_until"]  = (long)boostState.untilEpoch;
+    // feature-055 : leviers réellement actifs du Boost (affichage persistant du widget)
+    d["boost_filtration_extended"] = filtrationCfg.enabled;
+    d["boost_chlorine_boosted"]    = (mqttCfg.orpRegulationMode == "automatic");
+  }
+
   d["time_synced"]   = (time(nullptr) >= kMinValidEpoch);
   d["uptime_ms"]     = millis();
   d["reset_reason"]  = getResetReason();
@@ -275,13 +297,15 @@ String WsManager::_buildSensorJson() const {
   // +64 octets feature-020 (temperature_circuit + sondes_identified + sondes_detected)
   // +80 octets feature-024 (phSlopeAcid/Base/Zero/AgeMs)
   // +300 octets feature-025 (filtre pH/ORP + mixing/blocked)
-  out.reserve(1200);
+  // +80 octets feature-011 (ph/orp_scheduled_flow_ml_per_min)
+  out.reserve(1280);
   serializeJson(doc, out);
   return out;
 }
 
 String WsManager::_buildConfigJson() const {
-  StaticJson<2048> doc;
+  // feature-053 : +2 champs boost_active/boost_until → marge portée à 2304.
+  StaticJson<2304> doc;
   doc["type"] = "config";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -336,7 +360,7 @@ String WsManager::_buildConfigJson() const {
   d["wifi_ip"]          = ip;
   d["wifi_mode"]        = mode == WIFI_MODE_AP ? "AP" : (mode == WIFI_MODE_APSTA ? "AP+STA" : "STA");
   d["mdns_host"]        = kMdnsFullHost;
-  d["max_ph_ml_per_day"]      = safetyLimits.maxPhMinusMlPerDay;
+  d["max_ph_ml_per_day"]      = safetyLimits.maxPhMlPerDay;
   d["max_chlorine_ml_per_day"]= safetyLimits.maxChlorineMlPerDay;
   // feature-021 : statut calibration EZO depuis le cache Cal,? (lecture sans I²C).
   // ph_cal_valid = au moins 1 point calibré ; les détails (mid/low) sont dans phCalPoints.
@@ -351,8 +375,10 @@ String WsManager::_buildConfigJson() const {
   d["debug_logs_enabled"]  = authCfg.debugLogsEnabled;
   d["auth_password"]       = authCfg.adminPassword.length() > 0 ? "******" : "";
   d["auth_token"]          = authCfg.apiToken.length() > 8 ? (authCfg.apiToken.substring(0, 8) + "...") : "";
-  d["auth_cors_origins"]   = authCfg.corsAllowedOrigins;
   d["time_current"]        = getCurrentTimeISO();
+  // feature-053 : Mode Boost (état effectif + epoch d'expiration, 0 si inactif).
+  d["boost_active"]        = isBoostActive(time(nullptr));
+  d["boost_until"]         = (long)boostState.untilEpoch;
 
   String out;
   out.reserve(2048);

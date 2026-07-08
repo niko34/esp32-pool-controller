@@ -53,6 +53,9 @@ public:
   void setApiToken(const String& token);
   String getApiToken() const { return apiToken; }
   void regenerateApiToken();
+  // feature-028 : comparaison à temps constant avec le token API — à utiliser
+  // pour TOUTE vérification de token (HTTP et WebSocket), jamais == / !=.
+  bool secureTokenEquals(const String& candidate) const;
   String getApPassword() const;
 
   // Gestion premier démarrage

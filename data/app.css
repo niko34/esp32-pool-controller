@@ -3340,6 +3340,17 @@ h1, h2, h3 {
 }
 .probe-modal__actions .btn { min-height: 40px; padding: 8px 14px; }
 
+/* ---------- feature-031 : modale de confirmation générique ---------- */
+.confirm-modal__message {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-line; /* conserve les \n\n injectés via textContent */
+}
+/* Dérogation : cibles tactiles 44px sur les boutons de confirmation */
+.confirm-modal .probe-modal__actions .btn { min-height: 44px; }
+
 /* ---------- feature-025 : ligne brute discrète + chips jumeaux ---------- */
 /* Ligne sous la valeur filtrée : "brut X · médiane Y · maj Zs" */
 .filter-sub {

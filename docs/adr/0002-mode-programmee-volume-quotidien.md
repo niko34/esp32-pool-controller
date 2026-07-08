@@ -4,6 +4,8 @@
 - **Date** : 2026-04 (CHANGELOG [Unreleased])
 - **Doc(s) liée(s)** : [page-ph.md](../features/page-ph.md), [page-orp.md](../features/page-orp.md), [pump-controller.md](../subsystems/pump-controller.md)
 
+> **Note (2026-07-05)** : cet ADR fixe l'**expression** de la demande (volume quotidien en mL). La **répartition** de ce volume sur la journée (fenêtres de 15 min, report anti short-cycling, pas de rattrapage J+1) est décidée par [ADR-0021](0021-repartition-scheduled.md) — feature-011, v2.8.0.
+
 ## Contexte
 
 Le firmware supporte deux régulations chimiques : pH et ORP (chlore). Certains utilisateurs ne veulent **pas** d'asservissement PID sur la valeur mesurée — parce que la sonde est en bout de course, parce qu'ils n'ont pas installé la sonde ORP, ou simplement parce qu'ils préfèrent une logique de dosage par habitude. Il fallait donc un « mode programmé » tiers entre l'automatique PID et le manuel pur.

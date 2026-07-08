@@ -91,7 +91,6 @@ struct AuthConfig {
   String adminPassword = "admin"; // Mot de passe administrateur (HTTP Basic Auth)
   String apiToken = "";           // Token API pour intégrations (généré au boot si vide)
   String apPassword = "";         // Mot de passe réseau WiFi AP (généré au premier boot si vide)
-  String corsAllowedOrigins = ""; // Origines CORS autorisées (séparées par virgules, vide = désactivé)
   bool forceWifiConfig = false;   // Forcer l'affichage du bouton Wi-Fi sur l'écran login
   bool wizardCompleted = false;   // Wizard de configuration initiale complété (persiste au redémarrage)
   bool disableApOnBoot = false;   // Désactiver le mode AP au prochain redémarrage (pour transition WiFi)
@@ -119,7 +118,7 @@ struct ProductConfig {
 };
 
 struct SafetyLimits {
-  float maxPhMinusMlPerDay = 300.0f;
+  float maxPhMlPerDay = 300.0f;
   float maxChlorineMlPerDay = 500.0f;
   float dailyPhInjectedMl = 0.0f;
   float dailyOrpInjectedMl = 0.0f;
@@ -137,6 +136,15 @@ struct PumpProtection {
   float orpStartThreshold = 15.0f;               // Démarre dosage si erreur ORP > 15mV (feature-025 : deadband effectif ORP ±15 mV)
   float orpStopThreshold = 2.0f;                 // Continue dosage si erreur ORP > 2mV
   unsigned int maxCyclesPerDay = 20;             // Max 20 démarrages par jour
+};
+
+// feature-053 : état du Mode Boost (surchloration temporaire du jour).
+// Surcouche NON destructive : ne modifie PAS la config de régulation. Persisté
+// en NVS dédié (saveBoostState/loadBoostState) pour survivre à un reboot dans
+// la journée ; auto-expirant au prochain minuit local (tickBoostExpiry).
+struct BoostState {
+  bool active = false;      // Boost actif
+  time_t untilEpoch = 0;    // Instant d'expiration (prochain minuit local)
 };
 
 struct TimezoneInfo {
@@ -172,11 +180,30 @@ extern SafetyLimits safetyLimits;
 extern PumpProtection pumpProtection;
 extern ProductConfig productCfg;
 extern bool productConfigDirty;
+extern BoostState boostState;
 
 void saveProductConfig();
 void loadProductConfig();
 void saveDailyCounters();
 void loadDailyCounters();
+
+// ==== Mode Boost (feature-053) ====
+// Persistance NVS DÉDIÉE (namespace poolctrl, clés boost_active/boost_until) —
+// PAS via saveMqttConfig, pour éviter l'usure NVS d'une réécriture complète.
+void saveBoostState();
+void loadBoostState();  // À appeler au boot ; si expiré au chargement → inactif.
+// Active le boost jusqu'au prochain minuit local. REFUSE si l'heure n'est pas
+// synchronisée (time() < kMinValidEpoch, condition pool-chemistry #4) : sans
+// heure valide, l'expiration à minuit ne peut être calculée.
+void startBoost();
+// Désactive le boost et persiste immédiatement.
+void stopBoost();
+// True si le boost est actif à l'instant `now`. Si `now` < kMinValidEpoch
+// (heure non synchro) → renvoie boostState.active SANS expirer (condition #4).
+bool isBoostActive(time_t now);
+// Expire le boost au passage de minuit. À appeler EN TÊTE de tickDailyRollover,
+// AVANT tout reset de compteur (condition pool-chemistry #3).
+void tickBoostExpiry(time_t now);
 
 // ==== Mutex pour protection concurrence ====
 // Protège l'accès aux configurations partagées entre loop() et handlers async

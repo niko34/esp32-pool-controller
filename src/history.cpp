@@ -42,6 +42,16 @@ void saveClockPrefs(unsigned long epoch) {
   }
 }
 
+// feature-027 : warn throttlé (max 1/min par site — lastWarnMs = statique locale du site)
+// sur timeout de prise du mutex historique.
+void warnHistoryMutexTimeout(unsigned long& lastWarnMs, const char* site) {
+  unsigned long nowMs = millis();
+  if (lastWarnMs == 0 || nowMs - lastWarnMs >= kMutexTimeoutWarnThrottleMs) {
+    systemLogger.warning(String("[History] ") + site + ": timeout mutex — opération sautée");
+    lastWarnMs = nowMs;
+  }
+}
+
 unsigned long getCurrentEpoch(bool* synced, bool* estimated) {
   time_t nowEpoch = time(nullptr);
   if (isTimeValid(nowEpoch)) {
@@ -159,18 +169,28 @@ void HistoryManager::update() {
 
   // Enregistrer un point toutes les 5 minutes
   if (now - lastRecord >= RECORD_INTERVAL) {
-    xSemaphoreTake(_mutex, portMAX_DELAY);
-    recordDataPoint();
-    xSemaphoreGive(_mutex);
-    lastRecord = now;
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(kHistoryMutexTimeoutMs)) == pdTRUE) {
+      recordDataPoint();
+      xSemaphoreGive(_mutex);
+      lastRecord = now;
+    } else {
+      // feature-027 : point sauté, lastRecord NON avancé → retry au tour suivant
+      static unsigned long sWarnRecordMs = 0;
+      warnHistoryMutexTimeout(sWarnRecordMs, "recordDataPoint");
+    }
   }
 
   // Consolidation + sauvegarde toutes les 5 min (consolidateData appelle saveToFile en interne)
   if (now - lastSave >= SAVE_INTERVAL) {
-    xSemaphoreTake(_mutex, portMAX_DELAY);
-    consolidateData();
-    xSemaphoreGive(_mutex);
-    lastSave = now;
+    if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(kHistoryMutexTimeoutMs)) == pdTRUE) {
+      consolidateData();
+      xSemaphoreGive(_mutex);
+      lastSave = now;
+    } else {
+      // feature-027 : consolidation sautée, lastSave NON avancé → retry au tour suivant
+      static unsigned long sWarnSaveMs = 0;
+      warnHistoryMutexTimeout(sWarnSaveMs, "consolidateData");
+    }
   }
 }
 
@@ -369,7 +389,12 @@ std::vector<DataPoint> HistoryManager::getLastHours(int hours) {
   bool estimated = false;
   unsigned long nowEpoch = getCurrentEpoch(&synced, &estimated);
 
-  xSemaphoreTake(_mutex, portMAX_DELAY);
+  // feature-027 : timeout → vecteur vide (le client réessaiera)
+  if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(kHistoryMutexTimeoutMs)) != pdTRUE) {
+    static unsigned long sWarnGetHoursMs = 0;
+    warnHistoryMutexTimeout(sWarnGetHoursMs, "getLastHours");
+    return result;
+  }
 
   if (memoryBuffer.empty()) {
     xSemaphoreGive(_mutex);
@@ -409,7 +434,12 @@ std::vector<DataPoint> HistoryManager::getLastDay() {
 }
 
 std::vector<DataPoint> HistoryManager::getAllData() {
-  xSemaphoreTake(_mutex, portMAX_DELAY);
+  // feature-027 : timeout → vecteur vide
+  if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(kHistoryMutexTimeoutMs)) != pdTRUE) {
+    static unsigned long sWarnGetAllMs = 0;
+    warnHistoryMutexTimeout(sWarnGetAllMs, "getAllData");
+    return std::vector<DataPoint>();
+  }
   std::vector<DataPoint> copy = memoryBuffer;
   xSemaphoreGive(_mutex);
   return copy;
@@ -419,7 +449,12 @@ bool HistoryManager::importData(const std::vector<DataPoint>& dataPoints) {
   if (!historyEnabled) return false;
   if (dataPoints.empty()) return false;
 
-  xSemaphoreTake(_mutex, portMAX_DELAY);
+  // feature-027 : timeout → return false AVANT toute modif (la route teste le retour)
+  if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(kHistoryMutexTimeoutMs)) != pdTRUE) {
+    static unsigned long sWarnImportMs = 0;
+    warnHistoryMutexTimeout(sWarnImportMs, "importData");
+    return false;
+  }
   memoryBuffer = dataPoints;
   std::sort(memoryBuffer.begin(), memoryBuffer.end(),
     [](const DataPoint& a, const DataPoint& b) {
@@ -658,11 +693,17 @@ void HistoryManager::consolidateData() {
   saveToFile();
 }
 
-void HistoryManager::clearHistory() {
-  if (!historyEnabled) return;
-  xSemaphoreTake(_mutex, portMAX_DELAY);
+bool HistoryManager::clearHistory() {
+  if (!historyEnabled) return false;
+  // feature-027 : timeout → return false SANS supprimer le fichier (RAM non vidée)
+  if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(kHistoryMutexTimeoutMs)) != pdTRUE) {
+    static unsigned long sWarnClearMs = 0;
+    warnHistoryMutexTimeout(sWarnClearMs, "clearHistory");
+    return false;
+  }
   memoryBuffer.clear();
   xSemaphoreGive(_mutex);
   historyStore->remove(historyFilePath);
   systemLogger.warning("Historique effacé");
+  return true;
 }

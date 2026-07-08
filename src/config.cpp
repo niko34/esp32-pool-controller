@@ -15,6 +15,7 @@ SafetyLimits safetyLimits;
 PumpProtection pumpProtection;
 ProductConfig productCfg;
 bool productConfigDirty = false;
+BoostState boostState;
 
 // Mutex pour protection concurrence
 SemaphoreHandle_t configMutex = nullptr;
@@ -76,7 +77,17 @@ void sanitizePumpSelection() {
 }
 
 void saveMqttConfig() {
-  if (configMutex) xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
+  // feature-027 : prise bornée (miroir de saveDailyCounters). Timeout → config RAM
+  // appliquée mais persistance NVS perdue — signalé en error (throttlé 1/min).
+  if (configMutex && xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+    static unsigned long sLastErrMs = 0;
+    unsigned long nowMs = millis();
+    if (sLastErrMs == 0 || nowMs - sLastErrMs >= kMutexTimeoutWarnThrottleMs) {
+      systemLogger.error("[Config] saveMqttConfig: mutex timeout — config non persistée (RAM appliquée)");
+      sLastErrMs = nowMs;
+    }
+    return;
+  }
   Preferences prefs;
   if (!prefs.begin("poolctrl", false)) {
     systemLogger.error("Échec ouverture NVS pour sauvegarde");
@@ -149,7 +160,6 @@ void saveMqttConfig() {
   prefs.putString("auth_password", authCfg.adminPassword);
   prefs.putString("auth_token", authCfg.apiToken);
   prefs.putString("auth_ap_pwd", authCfg.apPassword);
-  prefs.putString("auth_cors", authCfg.corsAllowedOrigins);
   prefs.putBool("sensor_logs", authCfg.sensorLogsEnabled);
   prefs.putBool("debug_logs", authCfg.debugLogsEnabled);
   prefs.putBool("screen_enabled", authCfg.screenEnabled);
@@ -160,7 +170,7 @@ void saveMqttConfig() {
   prefs.putFloat("pump_max_flow", mqttCfg.pumpMaxFlowMlPerMin);
 
   // Limites de sécurité
-  prefs.putFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
+  prefs.putFloat("max_ph_ml", safetyLimits.maxPhMlPerDay);
   prefs.putFloat("max_cl_ml", safetyLimits.maxChlorineMlPerDay);
 
   prefs.end();
@@ -320,7 +330,6 @@ void loadMqttConfig() {
   authCfg.adminPassword = prefs.getString("auth_password", authCfg.adminPassword);
   authCfg.apiToken = prefs.getString("auth_token", authCfg.apiToken);
   authCfg.apPassword = prefs.getString("auth_ap_pwd", authCfg.apPassword);
-  authCfg.corsAllowedOrigins = prefs.getString("auth_cors", authCfg.corsAllowedOrigins);
   authCfg.sensorLogsEnabled = prefs.getBool("sensor_logs", false);
   authCfg.debugLogsEnabled = prefs.getBool("debug_logs", false);
   authCfg.screenEnabled = prefs.getBool("screen_enabled", false);
@@ -333,7 +342,7 @@ void loadMqttConfig() {
   orpPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
 
   // Limites de sécurité
-  safetyLimits.maxPhMinusMlPerDay = prefs.getFloat("max_ph_ml", safetyLimits.maxPhMinusMlPerDay);
+  safetyLimits.maxPhMlPerDay = prefs.getFloat("max_ph_ml", safetyLimits.maxPhMlPerDay);
   safetyLimits.maxChlorineMlPerDay = prefs.getFloat("max_cl_ml", safetyLimits.maxChlorineMlPerDay);
 
   prefs.end();
@@ -346,7 +355,17 @@ void loadMqttConfig() {
 }
 
 void saveProductConfig() {
-  if (configMutex) xSemaphoreTakeRecursive(configMutex, portMAX_DELAY);
+  // feature-027 : prise bornée. Timeout → return SANS clear productConfigDirty
+  // (retry naturel au prochain passage) + warn throttlé 1/min.
+  if (configMutex && xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+    static unsigned long sLastWarnMs = 0;
+    unsigned long nowMs = millis();
+    if (sLastWarnMs == 0 || nowMs - sLastWarnMs >= kMutexTimeoutWarnThrottleMs) {
+      systemLogger.warning("[Config] saveProductConfig: mutex timeout — sauvegarde reportée");
+      sLastWarnMs = nowMs;
+    }
+    return;
+  }
   Preferences prefs;
   if (!prefs.begin("pool_prod", false)) {
     systemLogger.error("Échec ouverture NVS produits");
@@ -435,9 +454,9 @@ void loadDailyCounters() {
   // Validation des valeurs lues
   if (phMl < 0.0f) phMl = 0.0f;
   if (orpMl < 0.0f) orpMl = 0.0f;
-  if (phMl > safetyLimits.maxPhMinusMlPerDay * 1.1f) {
+  if (phMl > safetyLimits.maxPhMlPerDay * 1.1f) {
     systemLogger.critical("[Config] NVS ph_daily_ml hors plage: " + String(phMl, 0) + " mL — remis à limite");
-    phMl = safetyLimits.maxPhMinusMlPerDay;
+    phMl = safetyLimits.maxPhMlPerDay;
   }
   if (orpMl > safetyLimits.maxChlorineMlPerDay * 1.1f) {
     systemLogger.critical("[Config] NVS orp_daily_ml hors plage: " + String(orpMl, 0) + " mL — remis à limite");
@@ -467,5 +486,111 @@ void loadDailyCounters() {
     safetyLimits.dailyOrpInjectedMl = orpMl;
     strlcpy(safetyLimits.currentDayDate, savedDate.c_str(), sizeof(safetyLimits.currentDayDate));
     systemLogger.info("[Config] Heure non synchro — compteurs restaurés conservativement");
+  }
+}
+
+// =============================================================================
+// Mode Boost (feature-053) — surchloration temporaire du jour
+// =============================================================================
+// Persistance NVS DÉDIÉE (namespace poolctrl, clés boost_active/boost_until) —
+// écriture ciblée pour éviter l'usure NVS d'une réécriture complète de la config.
+
+void saveBoostState() {
+  // Prise de mutex bornée (miroir de saveDailyCounters).
+  if (configMutex && xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+    systemLogger.warning("[Config] saveBoostState: mutex timeout — état boost non persisté");
+    return;
+  }
+  Preferences prefs;
+  if (!prefs.begin("poolctrl", false)) {
+    systemLogger.error("Échec ouverture NVS pour état boost");
+    if (configMutex) xSemaphoreGiveRecursive(configMutex);
+    return;
+  }
+  prefs.putBool("boost_active", boostState.active);
+  prefs.putLong64("boost_until", (int64_t)boostState.untilEpoch);
+  prefs.end();
+  if (configMutex) xSemaphoreGiveRecursive(configMutex);
+}
+
+void loadBoostState() {
+  Preferences prefs;
+  if (!prefs.begin("poolctrl", true)) {
+    return;  // Pas de config, boost inactif par défaut
+  }
+  boostState.active = prefs.getBool("boost_active", false);
+  boostState.untilEpoch = (time_t)prefs.getLong64("boost_until", 0);
+  prefs.end();
+
+  // Si expiré au chargement (heure valide et minuit déjà passé) → inactif.
+  time_t now = time(nullptr);
+  if (boostState.active && now >= kMinValidEpoch && now >= boostState.untilEpoch) {
+    boostState.active = false;
+    systemLogger.info("[Boost] État chargé expiré (minuit dépassé) — boost inactif");
+  } else if (boostState.active) {
+    systemLogger.info("[Boost] État restauré : boost actif jusqu'à epoch " + String((long)boostState.untilEpoch));
+  }
+}
+
+void startBoost() {
+  time_t now = time(nullptr);
+  // Condition pool-chemistry #4 : sans heure synchronisée, l'expiration à minuit
+  // ne peut être calculée → refus (fail-closed).
+  if (now < kMinValidEpoch) {
+    systemLogger.warning("[Boost] Activation refusée : heure non synchronisée (expiration minuit indéterminable)");
+    return;
+  }
+  // Calcul du prochain minuit local (l'environnement TZ est appliqué par applyTimezoneEnv).
+  struct tm timeinfo;
+  localtime_r(&now, &timeinfo);
+  timeinfo.tm_hour = 0;
+  timeinfo.tm_min = 0;
+  timeinfo.tm_sec = 0;
+  timeinfo.tm_mday += 1;  // Minuit du jour suivant
+  timeinfo.tm_isdst = -1; // Laisse mktime résoudre l'heure d'été
+  time_t midnight = mktime(&timeinfo);
+
+  // Écrire untilEpoch AVANT active : un lecteur concurrent (loopTask) voyant
+  // active=true a alors toujours un untilEpoch valide (cohérence sans mutex sur
+  // les champs — la paire bool+time_t est alignée, R/W atomiques Xtensa).
+  boostState.untilEpoch = midnight;
+  boostState.active = true;
+  saveBoostState();
+  systemLogger.info("[Boost] Activé jusqu'au prochain minuit local (epoch " + String((long)midnight) + ")");
+  // feature-054 : signaler les leviers inertes selon la config, pour que
+  // l'utilisateur sache ce que le Boost fait réellement (couvre HTTP ET HA).
+  if (!filtrationCfg.enabled) {
+    systemLogger.warning("[Boost] Filtration non gérée par PoolController — le Boost NE prolonge PAS la filtration");
+  }
+  if (mqttCfg.orpRegulationMode != "automatic") {
+    systemLogger.warning("[Boost] Régulation ORP non automatique — le Boost NE relève PAS le chlore (seule la filtration est prolongée, si gérée)");
+  }
+}
+
+void stopBoost() {
+  boostState.active = false;
+  boostState.untilEpoch = 0;
+  saveBoostState();
+  systemLogger.info("[Boost] Désactivé");
+}
+
+bool isBoostActive(time_t now) {
+  // Condition pool-chemistry #4 : heure non synchronisée → ne pas expirer,
+  // renvoyer l'état persisté tel quel (on ne peut pas comparer à untilEpoch).
+  if (now < kMinValidEpoch) {
+    return boostState.active;
+  }
+  return boostState.active && now < boostState.untilEpoch;
+}
+
+void tickBoostExpiry(time_t now) {
+  // Expire le boost au passage de minuit. Appelé EN TÊTE de tickDailyRollover,
+  // AVANT tout reset de compteur (condition pool-chemistry #3). Ne fait rien si
+  // l'heure n'est pas valide (condition #4 : pas d'expiration sans heure fiable).
+  if (boostState.active && now >= kMinValidEpoch && now >= boostState.untilEpoch) {
+    boostState.active = false;
+    boostState.untilEpoch = 0;
+    saveBoostState();
+    systemLogger.info("[Boost] Expiré au passage de minuit — retour au comportement normal");
   }
 }

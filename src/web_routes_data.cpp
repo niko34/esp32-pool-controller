@@ -388,7 +388,11 @@ void setupDataRoutes(AsyncWebServer* server) {
 
   server->on("/history/clear", HTTP_POST, [](AsyncWebServerRequest* request) {
     REQUIRE_AUTH(request, RouteProtection::WRITE);
-    history.clearHistory();
+    // feature-027 : clearHistory() peut échouer si le mutex historique est occupé
+    if (!history.clearHistory()) {
+      sendErrorResponse(request, 503, "Historique occupé — réessayer");
+      return;
+    }
 
     JsonDocument doc;
     doc["status"] = "success";

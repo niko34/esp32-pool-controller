@@ -1053,6 +1053,410 @@ void test_F006_stabilization_independent_of_remaining_seconds(void) {
   TEST_ASSERT_EQUAL(ManualInjectRefusal::None, d.cause);
 }
 
+// =============================================================================
+// feature-011 — evaluateScheduledDose : répartition 24 h programmée (décision pure)
+// =============================================================================
+// On verrouille le COMPORTEMENT observable de la répartition « scheduled » :
+// volume de fenêtre recalculé à CHAQUE nouvelle fenêtre depuis l'état courant
+// (auto-correcteur), report anti short-cycling, écrêtage budget horaire
+// (ADR-0020, budget PARTAGÉ), gardes fail-closed (conditions pool-chemistry
+// n°2/3/4/5), conservation de stopTargetMl dans une même fenêtre.
+// Valeurs de référence de la spec : cible 300 mL/jour, horizon 240 min (4 h de
+// filtration restante), fenêtres de 15 min (kScheduledWindowMinutes), débit
+// effectif 60 mL/min.
+
+// Helper : ScheduledDoseInputs nominal de la spec → première fenêtre du plan.
+// NB : minInjectionTimeMs=5000 par défaut pour que le v nominal (18,75 mL soit
+// 18,75 s à 60 mL/min) ne soit PAS reporté ; le report anti short-cycling avec
+// la valeur prod (30 s) est testé séparément (test_F011_report_sous_30s...).
+static ScheduledDoseInputs validScheduledInputs() {
+  ScheduledDoseInputs in;
+  in.nowMin = 600;                 // 10:00 → fenêtre absolue 600/15 = 40
+  in.horizonMinutes = 240;         // 4 h de plage restantes
+  in.windowMinutes = 15;           // kScheduledWindowMinutes
+  in.dailyTargetMl = 300.0f;       // cible utilisateur de la spec
+  in.maxDailyMl = 500.0f;          // plafond sécurité AU-DESSUS de la cible
+  in.dailyInjectedMl = 0.0f;
+  in.effectiveFlowMlPerMin = 60.0f;// débit UNIQUE (condition n°5)
+  in.usedMs = 0UL;
+  in.hourlyLimitMs = 0UL;          // illimité par défaut (convention auto)
+  in.minInjectionTimeMs = 5000UL;  // cf. NB ci-dessus
+  in.watchdogActive = true;
+  in.prevWindowIndex = -1;         // aucun tick précédent → recalcul forcé
+  in.prevStopTargetMl = 0.0f;
+  return in;
+}
+
+// -----------------------------------------------------------------------------
+// (1) Cas nominal spec : 300 mL sur 240 min → 16 fenêtres de 18,75 mL.
+// -----------------------------------------------------------------------------
+void test_F011_nominal_repartition_16_fenetres(void) {
+  ScheduledDoseInputs in = validScheduledInputs();
+  ScheduledDoseDecision d = evaluateScheduledDose(in);
+  // nWin = 240/15 = 16 → v = 300/16 = 18,75 mL pour la fenêtre courante.
+  TEST_ASSERT_TRUE(d.doseNow);
+  TEST_ASSERT_EQUAL_INT(40, d.windowIndex);                       // 600/15
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 18.75f, d.stopTargetMl);    // injecté + 18,75
+  // Débit moyen planifié (diagnostic WS) : 300 mL / 240 min = 1,25 mL/min.
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 1.25f, d.plannedFlowMlPerMin);
+}
+
+// -----------------------------------------------------------------------------
+// (2) Report anti short-cycling : v/débit < 30 s → v=0 (rien CETTE fenêtre),
+//     le volume se reporte ; fenêtre ultérieure (horizon réduit) → v plus gros
+//     qui repasse la barre des 30 s.
+// -----------------------------------------------------------------------------
+void test_F011_report_sous_30s_puis_fenetre_suivante(void) {
+  ScheduledDoseInputs in = validScheduledInputs();
+  in.minInjectionTimeMs = 30000UL;   // valeur prod (30 s)
+  in.dailyInjectedMl = 50.0f;        // remaining = 250 → v = 250/16 = 15,625 mL
+  // 15,625 mL à 60 mL/min = 15 625 ms < 30 000 → report : v=0.
+  ScheduledDoseDecision d = evaluateScheduledDose(in);
+  TEST_ASSERT_FALSE(d.doseNow);
+  TEST_ASSERT_EQUAL_INT(40, d.windowIndex);
+  // stopTarget = dailyInjectedMl (aucun volume planifié cette fenêtre).
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 50.0f, d.stopTargetMl);
+  // Le plan reste actif (remaining > 0) : plannedFlow = 250/240.
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 250.0f / 240.0f, d.plannedFlowMlPerMin);
+
+  // Fenêtre ultérieure, horizon réduit (12:00, 120 min restantes) : le volume
+  // reporté se concentre → nWin = 8 → v = 250/8 = 31,25 mL = 31 250 ms >= 30 s.
+  in.nowMin = 720;
+  in.horizonMinutes = 120;
+  in.prevWindowIndex = d.windowIndex;
+  in.prevStopTargetMl = d.stopTargetMl;
+  ScheduledDoseDecision d2 = evaluateScheduledDose(in);
+  TEST_ASSERT_TRUE(d2.doseNow);
+  TEST_ASSERT_EQUAL_INT(48, d2.windowIndex);                       // 720/15
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 81.25f, d2.stopTargetMl);    // 50 + 31,25
+  // v plus gros qu'à la fenêtre reportée : 31,25 > 15,625.
+  TEST_ASSERT_TRUE((d2.stopTargetMl - in.dailyInjectedMl) > 15.625f);
+}
+
+// -----------------------------------------------------------------------------
+// (3) Budget horaire (ADR-0020, budget PARTAGÉ) : écrêtage de v au budget
+//     restant converti en mL, et frontière usedMs == hourlyLimitMs EXACTE.
+// -----------------------------------------------------------------------------
+void test_F011_budget_horaire_ecretage(void) {
+  ScheduledDoseInputs in = validScheduledInputs();
+  in.hourlyLimitMs = 300000UL;   // 5 min de budget horaire
+  in.usedMs = 290000UL;          // reste 10 000 ms → 10 mL à 60 mL/min
+  // v nominal 18,75 mL > budget 10 mL → écrêté à 10 mL.
+  ScheduledDoseDecision d = evaluateScheduledDose(in);
+  TEST_ASSERT_TRUE(d.doseNow);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 10.0f, d.stopTargetMl);   // injecté(0) + 10
+}
+
+void test_F011_budget_horaire_frontiere_exacte(void) {
+  ScheduledDoseInputs in = validScheduledInputs();
+  in.minInjectionTimeMs = 0UL;   // isole la frontière horaire du report 30 s
+  in.hourlyLimitMs = 300000UL;
+
+  // usedMs == hourlyLimitMs EXACTEMENT → budget 0 → v=0, pas d'injection.
+  in.usedMs = 300000UL;
+  ScheduledDoseDecision d = evaluateScheduledDose(in);
+  TEST_ASSERT_FALSE(d.doseNow);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 0.0f, d.stopTargetMl);    // = injecté (0)
+  // PAS un refus fail-closed : la fenêtre reste valide (l'excédent se reporte).
+  TEST_ASSERT_EQUAL_INT(40, d.windowIndex);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 1.25f, d.plannedFlowMlPerMin);
+
+  // usedMs == hourlyLimitMs - 1 → budget strictement positif → v > 0 → dose.
+  in.usedMs = 299999UL;
+  d = evaluateScheduledDose(in);
+  TEST_ASSERT_TRUE(d.doseNow);
+  TEST_ASSERT_TRUE(d.stopTargetMl > 0.0f);
+}
+
+// -----------------------------------------------------------------------------
+// (4) Auto-correcteur : changement de cible à midi (300 → 500 mL, 150 injectés)
+//     → nouveau v = restant / nWin restantes, recalculé à la nouvelle fenêtre.
+// -----------------------------------------------------------------------------
+void test_F011_changement_cible_midi(void) {
+  ScheduledDoseInputs in = validScheduledInputs();
+  in.nowMin = 720;               // midi → fenêtre 48 (nouvelle : prev = 47)
+  in.horizonMinutes = 210;       // 3 h 30 restantes → nWin = 14
+  in.dailyTargetMl = 500.0f;     // cible relevée en cours de journée
+  in.dailyInjectedMl = 150.0f;   // déjà injecté sous l'ancienne cible
+  in.prevWindowIndex = 47;
+  in.prevStopTargetMl = 150.0f;
+  ScheduledDoseDecision d = evaluateScheduledDose(in);
+  // remaining = 500 - 150 = 350 → v = 350/14 = 25 mL.
+  TEST_ASSERT_TRUE(d.doseNow);
+  TEST_ASSERT_EQUAL_INT(48, d.windowIndex);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 175.0f, d.stopTargetMl);   // 150 + 25
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 350.0f / 210.0f, d.plannedFlowMlPerMin);
+}
+
+// -----------------------------------------------------------------------------
+// (5a) Injection manuelle entre fenêtres : dailyInjectedMl (cumul auto+manuel)
+//      augmente → le v de la fenêtre suivante est RÉDUIT (auto-correcteur).
+// -----------------------------------------------------------------------------
+void test_F011_injection_manuelle_reduit_fenetre_suivante(void) {
+  // Fenêtre 40 : v = 300/16 = 18,75 mL (nominal).
+  ScheduledDoseInputs in = validScheduledInputs();
+  ScheduledDoseDecision d1 = evaluateScheduledDose(in);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 18.75f, d1.stopTargetMl);
+
+  // Fenêtre 41 : le cumul intègre 18,75 (auto) + 60 (MANUEL) = 78,75 mL.
+  in.nowMin = 615;
+  in.horizonMinutes = 225;       // nWin = 15
+  in.dailyInjectedMl = 78.75f;
+  in.prevWindowIndex = d1.windowIndex;
+  in.prevStopTargetMl = d1.stopTargetMl;
+  ScheduledDoseDecision d2 = evaluateScheduledDose(in);
+  // remaining = 300 - 78,75 = 221,25 → v = 221,25/15 = 14,75 mL.
+  float v2 = d2.stopTargetMl - in.dailyInjectedMl;
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 14.75f, v2);
+  // Sans l'injection manuelle (cumul 18,75), v aurait été 281,25/15 = 18,75 :
+  // le manuel réduit bien la dose suivante.
+  TEST_ASSERT_TRUE(v2 < 18.75f);
+}
+
+// -----------------------------------------------------------------------------
+// (5b) Condition n°3 pool-chemistry : baisse de la cible SOUS le cumul injecté
+//      EN COURS de fenêtre (même windowIndex) → doseNow=false IMMÉDIAT via
+//      min(stopTargetMl, cible effective), sans attendre la fenêtre suivante.
+// -----------------------------------------------------------------------------
+void test_F011_baisse_cible_sous_injecte_stop_immediat(void) {
+  ScheduledDoseInputs in = validScheduledInputs();
+  in.prevWindowIndex = 40;       // MÊME fenêtre (600/15 = 40) → pas de recalcul
+  in.prevStopTargetMl = 200.0f;  // cible d'arrêt fixée à l'entrée de fenêtre
+  in.dailyInjectedMl = 150.0f;   // cumul courant, sous prevStopTargetMl
+  in.dailyTargetMl = 100.0f;     // cible ABAISSÉE sous le cumul injecté
+  ScheduledDoseDecision d = evaluateScheduledDose(in);
+  // stopCap = min(200, 100) = 100 ; 150 < 100 faux → arrêt immédiat.
+  TEST_ASSERT_FALSE(d.doseNow);
+  // stopTargetMl conservé (même fenêtre) — la protection vient du cap, pas
+  // d'un recalcul de fenêtre.
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 200.0f, d.stopTargetMl);
+  // remaining clampé >= 0 (condition n°3) → plus rien à injecter → NAN.
+  TEST_ASSERT_TRUE(isnan(d.plannedFlowMlPerMin));
+}
+
+// -----------------------------------------------------------------------------
+// (6) Plafond sécurité : maxDailyMl < dailyTargetMl → cible effective = plafond.
+// -----------------------------------------------------------------------------
+void test_F011_plafond_max_daily(void) {
+  ScheduledDoseInputs in = validScheduledInputs();
+  in.dailyTargetMl = 500.0f;
+  in.maxDailyMl = 300.0f;        // plafond SOUS la cible utilisateur
+  ScheduledDoseDecision d = evaluateScheduledDose(in);
+  // effective = 300 → v = 300/16 = 18,75 (et non 500/16 = 31,25).
+  TEST_ASSERT_TRUE(d.doseNow);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 18.75f, d.stopTargetMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 300.0f / 240.0f, d.plannedFlowMlPerMin);
+
+  // Cumul == plafond → plus rien à injecter, même si la cible est plus haute.
+  in.dailyInjectedMl = 300.0f;
+  ScheduledDoseDecision d2 = evaluateScheduledDose(in);
+  TEST_ASSERT_FALSE(d2.doseNow);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 300.0f, d2.stopTargetMl);  // injecté + 0
+  TEST_ASSERT_TRUE(isnan(d2.plannedFlowMlPerMin));
+}
+
+// -----------------------------------------------------------------------------
+// (7) Gardes fail-closed (conditions n°2 et n°4) : refus = {false, -1, 0, NAN}.
+// -----------------------------------------------------------------------------
+static void assertScheduledRefusal(const ScheduledDoseDecision& d) {
+  TEST_ASSERT_FALSE(d.doseNow);
+  TEST_ASSERT_EQUAL_INT(-1, d.windowIndex);   // force le recalcul au retour en plage
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 0.0f, d.stopTargetMl);
+  TEST_ASSERT_TRUE(isnan(d.plannedFlowMlPerMin));
+}
+
+void test_F011_gardes_fail_closed(void) {
+  // Watchdog inactif (condition n°4 : vérifié DANS la fonction pure).
+  {
+    ScheduledDoseInputs in = validScheduledInputs();
+    in.watchdogActive = false;
+    assertScheduledRefusal(evaluateScheduledDose(in));
+  }
+  // Horizon nul (hors plage) — condition n°2 : JAMAIS nWin=1 via max(1,0).
+  {
+    ScheduledDoseInputs in = validScheduledInputs();
+    in.horizonMinutes = 0;
+    assertScheduledRefusal(evaluateScheduledDose(in));
+  }
+  // Horizon négatif → même refus.
+  {
+    ScheduledDoseInputs in = validScheduledInputs();
+    in.horizonMinutes = -5;
+    assertScheduledRefusal(evaluateScheduledDose(in));
+  }
+  // Débit effectif non configuré (0) → refus (division/durée impossibles).
+  {
+    ScheduledDoseInputs in = validScheduledInputs();
+    in.effectiveFlowMlPerMin = 0.0f;
+    assertScheduledRefusal(evaluateScheduledDose(in));
+  }
+  // Débit négatif → même refus.
+  {
+    ScheduledDoseInputs in = validScheduledInputs();
+    in.effectiveFlowMlPerMin = -1.0f;
+    assertScheduledRefusal(evaluateScheduledDose(in));
+  }
+  // windowMinutes = 0 → refus (garde défensive anti division par zéro).
+  {
+    ScheduledDoseInputs in = validScheduledInputs();
+    in.windowMinutes = 0;
+    assertScheduledRefusal(evaluateScheduledDose(in));
+  }
+}
+
+// Horizon d'1 minute en toute fin de journée (23:59) : plancher nWin=1 sain,
+// pas de division par zéro, tout le restant planifié sur l'unique fenêtre.
+void test_F011_horizon_une_minute_fin_de_journee(void) {
+  ScheduledDoseInputs in = validScheduledInputs();
+  in.nowMin = 1439;              // 23:59
+  in.horizonMinutes = 1;         // borné à minuit
+  ScheduledDoseDecision d = evaluateScheduledDose(in);
+  // nWin = 1/15 = 0 → plancher 1 (horizon > 0 garanti) → v = 300 mL.
+  TEST_ASSERT_TRUE(d.doseNow);
+  TEST_ASSERT_EQUAL_INT(95, d.windowIndex);                      // 1439/15
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 300.0f, d.stopTargetMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 300.0f, d.plannedFlowMlPerMin);  // 300/1
+}
+
+// -----------------------------------------------------------------------------
+// (8) Même fenêtre (prevWindowIndex == windowIndex) : stopTargetMl CONSERVÉ,
+//     aucun recalcul — le cumul progresse vers la cible d'arrêt figée.
+// -----------------------------------------------------------------------------
+void test_F011_meme_fenetre_conserve_stop_target(void) {
+  ScheduledDoseInputs in = validScheduledInputs();
+  in.prevWindowIndex = 40;         // == 600/15 → même fenêtre
+  in.prevStopTargetMl = 123.45f;   // valeur arbitraire ≠ de tout recalcul possible
+  in.dailyInjectedMl = 100.0f;
+  ScheduledDoseDecision d = evaluateScheduledDose(in);
+  TEST_ASSERT_EQUAL_INT(40, d.windowIndex);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 123.45f, d.stopTargetMl);  // conservé tel quel
+  TEST_ASSERT_TRUE(d.doseNow);                                   // 100 < 123,45
+
+  // Cumul atteint la cible d'arrêt → arrêt (frontière STRICT < : égalité = stop).
+  in.dailyInjectedMl = 123.45f;
+  d = evaluateScheduledDose(in);
+  TEST_ASSERT_FALSE(d.doseNow);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 123.45f, d.stopTargetMl);
+}
+
+// -----------------------------------------------------------------------------
+// (9) plannedFlowMlPerMin (diagnostic WS) : remaining/horizon si restant > 0,
+//     NAN sinon (quota atteint ou dépassé).
+// -----------------------------------------------------------------------------
+void test_F011_planned_flow_diagnostic(void) {
+  // Restant partiel : (300 - 60) / 240 = 1,0 mL/min.
+  ScheduledDoseInputs in = validScheduledInputs();
+  in.dailyInjectedMl = 60.0f;
+  ScheduledDoseDecision d = evaluateScheduledDose(in);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 1.0f, d.plannedFlowMlPerMin);
+
+  // Quota exactement atteint → NAN.
+  in.dailyInjectedMl = 300.0f;
+  d = evaluateScheduledDose(in);
+  TEST_ASSERT_TRUE(isnan(d.plannedFlowMlPerMin));
+
+  // Quota dépassé (remaining clampé à 0) → NAN aussi.
+  in.dailyInjectedMl = 350.0f;
+  d = evaluateScheduledDose(in);
+  TEST_ASSERT_TRUE(isnan(d.plannedFlowMlPerMin));
+  TEST_ASSERT_FALSE(d.doseNow);
+}
+
+// =============================================================================
+// feature-053 — Mode Boost : cible ORP et limite chlore effectives PURES
+// =============================================================================
+// Constantes de référence (constants.h) :
+//   kBoostOrpDeltaMv = 60, kBoostOrpCeilingMv = 850,
+//   kBoostDailyFactor = 1.5, kBoostDailyHardCapMl = 1000.
+// L'effet boost est STRICTEMENT réservé au mode ORP "automatic".
+static const float kBoostOrpDeltaMv = 60.0f;
+static const float kBoostOrpCeilingMv = 850.0f;
+static const float kBoostDailyFactor = 1.5f;
+static const float kBoostDailyHardCapMl = 1000.0f;
+
+// -----------------------------------------------------------------------------
+// effectiveOrpTargetPure
+// -----------------------------------------------------------------------------
+void test_F053_orp_boost_off_target_unchanged(void) {
+  // Boost inactif → cible inchangée (même si mode automatic).
+  float t = effectiveOrpTargetPure(720.0f, false, true,
+                                   kBoostOrpDeltaMv, kBoostOrpCeilingMv);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 720.0f, t);
+}
+
+void test_F053_orp_boost_on_automatic_adds_delta(void) {
+  // Boost actif + automatic → cible + 60 mV (sous le plafond).
+  float t = effectiveOrpTargetPure(720.0f, true, true,
+                                   kBoostOrpDeltaMv, kBoostOrpCeilingMv);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 780.0f, t);
+}
+
+void test_F053_orp_boost_ceiling_caps(void) {
+  // 820 + 60 = 880 → plafonné à 850.
+  float t = effectiveOrpTargetPure(820.0f, true, true,
+                                   kBoostOrpDeltaMv, kBoostOrpCeilingMv);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 850.0f, t);
+}
+
+void test_F053_orp_target_above_ceiling_never_lowered(void) {
+  // Cible déjà > plafond (880) → RESTE 880, jamais abaissée (condition #5).
+  float t = effectiveOrpTargetPure(880.0f, true, true,
+                                   kBoostOrpDeltaMv, kBoostOrpCeilingMv);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 880.0f, t);
+}
+
+void test_F053_orp_boost_on_non_automatic_unchanged(void) {
+  // Boost actif mais mode NON automatic → cible inchangée (condition #1).
+  float t = effectiveOrpTargetPure(720.0f, true, false,
+                                   kBoostOrpDeltaMv, kBoostOrpCeilingMv);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 720.0f, t);
+}
+
+void test_F053_orp_boundary_exact_ceiling(void) {
+  // Frontière : 790 + 60 = 850 exact (= plafond) → 850.
+  float t = effectiveOrpTargetPure(790.0f, true, true,
+                                   kBoostOrpDeltaMv, kBoostOrpCeilingMv);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 850.0f, t);
+}
+
+// -----------------------------------------------------------------------------
+// effectiveMaxChlorinePure
+// -----------------------------------------------------------------------------
+void test_F053_chlorine_boost_off_unchanged(void) {
+  // Boost inactif → limite inchangée (même si mode automatic).
+  float m = effectiveMaxChlorinePure(500.0f, false, true,
+                                     kBoostDailyFactor, kBoostDailyHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 500.0f, m);
+}
+
+void test_F053_chlorine_boost_on_automatic_x_factor(void) {
+  // Boost actif + automatic → limite × 1.5 (500 → 750, sous le hard cap).
+  float m = effectiveMaxChlorinePure(500.0f, true, true,
+                                     kBoostDailyFactor, kBoostDailyHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 750.0f, m);
+}
+
+void test_F053_chlorine_hard_cap(void) {
+  // 800 × 1.5 = 1200 → plafonné en dur à 1000 (condition #1).
+  float m = effectiveMaxChlorinePure(800.0f, true, true,
+                                     kBoostDailyFactor, kBoostDailyHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 1000.0f, m);
+}
+
+void test_F053_chlorine_boost_on_non_automatic_unchanged(void) {
+  // Boost actif mais mode NON automatic → limite inchangée (condition #1).
+  float m = effectiveMaxChlorinePure(500.0f, true, false,
+                                     kBoostDailyFactor, kBoostDailyHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 500.0f, m);
+}
+
+void test_F053_chlorine_boundary_near_hard_cap(void) {
+  // Frontière : 667 × 1.5 = 1000,5 → plafonné à 1000 (juste au-dessus du cap).
+  float m = effectiveMaxChlorinePure(667.0f, true, true,
+                                     kBoostDailyFactor, kBoostDailyHardCapMl);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 1000.0f, m);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   // T2 — hystérésis de démarrage.
@@ -1127,5 +1531,31 @@ int main(int, char **) {
   RUN_TEST(test_F006_guard_priority_order);
   RUN_TEST(test_F006_manual_start_visible_in_shared_ring);
   RUN_TEST(test_F006_stabilization_independent_of_remaining_seconds);
+  // feature-011 — evaluateScheduledDose (répartition 24 h programmée).
+  RUN_TEST(test_F011_nominal_repartition_16_fenetres);
+  RUN_TEST(test_F011_report_sous_30s_puis_fenetre_suivante);
+  RUN_TEST(test_F011_budget_horaire_ecretage);
+  RUN_TEST(test_F011_budget_horaire_frontiere_exacte);
+  RUN_TEST(test_F011_changement_cible_midi);
+  RUN_TEST(test_F011_injection_manuelle_reduit_fenetre_suivante);
+  RUN_TEST(test_F011_baisse_cible_sous_injecte_stop_immediat);
+  RUN_TEST(test_F011_plafond_max_daily);
+  RUN_TEST(test_F011_gardes_fail_closed);
+  RUN_TEST(test_F011_horizon_une_minute_fin_de_journee);
+  RUN_TEST(test_F011_meme_fenetre_conserve_stop_target);
+  RUN_TEST(test_F011_planned_flow_diagnostic);
+  // feature-053 — Mode Boost : cible ORP effective.
+  RUN_TEST(test_F053_orp_boost_off_target_unchanged);
+  RUN_TEST(test_F053_orp_boost_on_automatic_adds_delta);
+  RUN_TEST(test_F053_orp_boost_ceiling_caps);
+  RUN_TEST(test_F053_orp_target_above_ceiling_never_lowered);
+  RUN_TEST(test_F053_orp_boost_on_non_automatic_unchanged);
+  RUN_TEST(test_F053_orp_boundary_exact_ceiling);
+  // feature-053 — Mode Boost : limite chlore effective.
+  RUN_TEST(test_F053_chlorine_boost_off_unchanged);
+  RUN_TEST(test_F053_chlorine_boost_on_automatic_x_factor);
+  RUN_TEST(test_F053_chlorine_hard_cap);
+  RUN_TEST(test_F053_chlorine_boost_on_non_automatic_unchanged);
+  RUN_TEST(test_F053_chlorine_boundary_near_hard_cap);
   return UNITY_END();
 }

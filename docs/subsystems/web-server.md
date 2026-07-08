@@ -7,7 +7,7 @@
 
 ## Rôle
 
-Orchestre le serveur HTTP asynchrone. Déclare toutes les routes REST (en déléguant leur implémentation aux modules `web_routes_*`), gère les CORS headers, les requêtes de reboot différé, et l'agrégation des gros payloads POST chunkés.
+Orchestre le serveur HTTP asynchrone. Déclare toutes les routes REST (en déléguant leur implémentation aux modules `web_routes_*`), pose les en-têtes de sécurité globaux, gère les requêtes de reboot différé et l'agrégation des gros payloads POST chunkés.
 
 ## API publique
 
@@ -33,6 +33,24 @@ Les routes sont réparties par domaine fonctionnel dans des fichiers séparés :
 
 Toutes les routes sont enregistrées dans `setupRoutes()` via des fonctions `register_*_routes(AsyncWebServer*)` déclarées dans les headers `web_routes_*.h`.
 
+## Assets statiques pré-compressés (gzip)
+
+Depuis v2.12.1 (feature-048), le filesystem n'embarque **que la variante `.gz`** des fichiers texte (`app.js.gz`, `index.html.gz`, `app.css.gz`, `uPlot.iife.min.js.gz`, `wizard.html.gz`, `wifi.html.gz`, `login.html.gz`, `uPlot.min.css.gz`) — produite par `minify.js` (zlib niveau 9, voir [BUILD.md](../BUILD.md#pré-compression-gzip-des-assets-feature-048-v2121)). Les images/icônes restent non compressées.
+
+**Aucun code firmware n'a été modifié** : ESPAsyncWebServer v3.6.0 résout nativement `<chemin>.gz` sur les **deux** mécanismes de serving utilisés :
+
+| Chemin de serving | Utilisé par | Résolution `.gz` (source lib) |
+|---|---|---|
+| `serveStatic("/", LittleFS, "/")` ([`web_server.cpp:100`](../../src/web_server.cpp)) | CSS, JS, images (filtre par extension) | `AsyncStaticWebHandler` teste `path + ".gz"` si le fichier nu est absent — `WebHandlers.cpp:150-178` |
+| `request->send(LittleFS, path, "text/html")` | Routes HTML explicites `/`, `/index.html`, `/wizard.html`, `/login.html`, `/wifi.html` (portail captif inclus) | `AsyncFileResponse` bascule sur `path + ".gz"` et pose `Content-Encoding: gzip` — `WebResponses.cpp:642-644` |
+
+Dans les deux cas la réponse porte `Content-Encoding: gzip` et le `Content-Type` reste déduit du chemin **demandé** (sans `.gz`).
+
+Notes :
+- Les routes API/JSON ne sont pas concernées (réponses générées à la volée, jamais compressées).
+- Un `curl` brut sur un asset statique reçoit l'octet-stream gzip → `curl --compressed`. Tous les navigateurs décompressent de façon transparente.
+- Gain : payload FS 443 → 155 KB, chargement des pages ~4× plus rapide.
+
 ## Niveaux d'auth
 
 Chaque handler commence par :
@@ -45,14 +63,16 @@ Voir [auth.md](auth.md) pour les 3 niveaux (`NONE`, `WRITE`, `CRITICAL`) et [doc
 
 Le serveur supporte les POST multi-chunks pour les payloads dépassant la MTU. `configBuffers` (std::map indexé par `AsyncWebServerRequest*`) accumule les fragments ; `configErrors` signale si un chunk a échoué. Une fois toute la requête reçue, le JSON final est parsé avec `kMaxConfigSizeBytes = 16384` ([`constants.h:45`](../../src/constants.h:45)).
 
-## CORS
+## Politique d'origine — pas de CORS (v2.11.2, [ADR-0023](../adr/0023-politique-cors-retrait.md))
 
-`setCorsHeaders(req)` ajoute `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`, `Access-Control-Allow-Headers` selon `authCfg.corsOrigins` :
-- Vide → CORS désactivé (pas d'en-têtes).
-- `*` → wildcard (moins sécurisé).
-- Liste (séparée par `,`) → match strict.
+Le mécanisme CORS a été **entièrement retiré** : politique **même-origine stricte**. L'UI est servie par l'ESP32 lui-même (offline first), aucun accès cross-origin navigateur n'est supporté. Aucun en-tête `Access-Control-Allow-*` n'est émis, aucun preflight `OPTIONS` n'est traité, plus aucun champ de configuration associé (`auth_cors_origins` supprimé de `/get-config`, `/save-config` et de l'UI).
 
-Un reboot est nécessaire pour appliquer une modification de CORS (voir [page-settings.md](../features/page-settings.md)).
+En-têtes de sécurité **globaux** posés dans `setupRoutes()` via `DefaultHeaders` :
+- `Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:`
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: SAMEORIGIN`
+
+Toute intégration cross-origin future passe par un reverse proxy ou rouvre l'[ADR-0023](../adr/0023-politique-cors-retrait.md).
 
 ## Reboot différé
 

@@ -135,6 +135,19 @@ private:
   // écrits par UNE seule tâche (pas de mutex). Index 0 = pH, 1 = ORP.
   std::atomic<uint8_t> _manualCycleStartPending[2] = {{0}, {0}};
 
+  // feature-011 : état de la répartition scheduled par fenêtres de 15 min
+  // (kScheduledWindowMinutes). windowIdx = fenêtre courante (nowMin/15, -1 =
+  // aucune → recalcul forcé) ; stopTargetMl = cumul journalier cible d'arrêt
+  // de la fenêtre courante ; plannedFlow = débit moyen planifié restant
+  // (diagnostic WS ; NAN hors mode scheduled / hors plage / heure invalide).
+  // Écrits/lus en loopTask uniquement (cohérent avec _stabilizationEndMs).
+  int _phSchedWindowIdx = -1;
+  float _phSchedStopTargetMl = 0.0f;
+  float _phSchedPlannedFlow = NAN;
+  int _orpSchedWindowIdx = -1;
+  float _orpSchedStopTargetMl = 0.0f;
+  float _orpSchedPlannedFlow = NAN;
+
   // Persistance des compteurs journaliers en NVS
   static bool _dailyLoaded;          // Chargement différé effectué (attend NTP)
   static bool _dailyCountersDirty;   // Indique qu'une sauvegarde est en attente
@@ -155,6 +168,14 @@ public:
   bool isOrpDosing() const { return orpDosingState.active; }
   unsigned long getPhUsedMs() const { return phDosingState.usedMs; }
   unsigned long getOrpUsedMs() const { return orpDosingState.usedMs; }
+
+  // ===== feature-053 : valeurs ORP EFFECTIVES (surcouche Mode Boost) =====
+  // Surcouche NON destructive : renvoie la cible / limite journalière consommées
+  // par la régulation. Effet STRICTEMENT réservé au mode ORP "automatic" et au
+  // boost actif (isBoostActive) ; sinon renvoie la valeur normale de config.
+  // Consommées par la régulation ORP automatic ET exposées à l'UI/WS/MQTT.
+  float getEffectiveOrpTarget() const;
+  float getEffectiveMaxChlorineMlPerDay() const;
 
   // Applique les paramètres PID selon mqttCfg.regulationSpeed
   void applyRegulationSpeed();
@@ -219,6 +240,15 @@ public:
   // recordDosingCycleStart (ring anti-rafale partagé) + cyclesToday++ + NVS dirty.
   void requestManualCycleRecord(int pumpIndex);
 
+  // Crédit plancher du registre journalier à la fin NATURELLE d'une injection
+  // manuelle volumée (bug sous-compte v2.9.1). `idx` logique : 0 = pH, 1 = ORP.
+  // À appeler en loopTask uniquement (updateManualInject).
+  // Propriété : le registre de sécurité ne sous-compte jamais un volume promis
+  // injecté en entier ; peut sur-compter de quelques dixièmes de mL
+  // (conservateur) ; jamais appelé sur arrêt anticipé (stop manuel /
+  // interruption filtration : l'intégration réelle fait foi).
+  void creditManualInjectionFloor(int idx, float startCumulMl, float creditMl);
+
   // Vérifie si le dosage est autorisé pour la pompe `pumpIndex` (0 = pH, 1 = ORP).
   // Ordre des gardes (validé pool-chemistry feature-021) — fail-closed strict :
   //   1. Watchdog actif
@@ -250,6 +280,13 @@ public:
   // Chaîne vide si dosage autorisé, sinon la dernière cause de refus de canDose().
   String getPhDoseBlockedReason() const { return _lastRefusalCause[0]; }
   String getOrpDoseBlockedReason() const { return _lastRefusalCause[1]; }
+
+  // ===== feature-011 : débit moyen planifié du mode scheduled (mL/min) =====
+  // Débit moyen restant de la répartition (remaining / horizonMinutes).
+  // NAN hors mode scheduled, hors plage de filtration, ou heure locale invalide
+  // (le WS traduit NAN en null). Rafraîchi à chaque tour d'update() (loopTask).
+  float getPhScheduledPlannedFlow() const { return _phSchedPlannedFlow; }
+  float getOrpScheduledPlannedFlow() const { return _orpSchedPlannedFlow; }
 
   // Test manuel des pompes (à utiliser avec précaution)
   void setManualPump(int pumpIndex, uint8_t duty);

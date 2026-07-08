@@ -5,10 +5,42 @@
 #include "logger.h"  // systemLogger (module indépendant, pas de dépendance circulaire)
 
 // =============================================================================
+// FrozenDetector — implémentation (feature-022 Passe 2)
+// =============================================================================
+
+void FrozenDetector::addSample(float x) {
+  if (_samples == 0) return;  // Détection désactivée
+  if (isnan(x)) return;       // Sécurité : n'alimente jamais le run avec NaN
+
+  if (_runCount == 0) {
+    // Premier échantillon depuis reset() : ancre le run.
+    _runMin = x;
+    _runMax = x;
+    _runCount = 1;
+    return;
+  }
+
+  const float newMin = (x < _runMin) ? x : _runMin;
+  const float newMax = (x > _runMax) ? x : _runMax;
+  if ((newMax - newMin) < _epsilon) {
+    // Échantillon dans la bande : étend les bornes, allonge le run.
+    _runMin = newMin;
+    _runMax = newMax;
+    if (_runCount < UINT16_MAX) ++_runCount;
+  } else {
+    // Hors bande : le capteur vit → sortie IMMÉDIATE, ré-ancrage du run sur x.
+    _runMin = x;
+    _runMax = x;
+    _runCount = 1;
+  }
+}
+
+// =============================================================================
 // SensorFilter — implémentation (feature-025)
 // =============================================================================
 
-SensorFilter::SensorFilter(const Config& config) : _cfg(config) {
+SensorFilter::SensorFilter(const Config& config)
+    : _cfg(config), _frozenDetector(config.frozenSamples, config.frozenEpsilon) {
   // Borne la fenêtre médiane à la capacité physique du buffer (sécurité).
   if (_cfg.medianWindow == 0) _cfg.medianWindow = 1;
   if (_cfg.medianWindow > kSensorFilterMedianWindow) {
@@ -36,6 +68,9 @@ void SensorFilter::reset() {
   for (uint8_t i = 0; i < kSensorFilterMaxResyncPerWindow; ++i) _resyncTimestamps[i] = 0;
   _resyncCount = 0;
   _unstableLatched = false;
+
+  // feature-022 : réinitialise aussi le détecteur figé (pool-chemistry condition #2).
+  _frozenDetector.reset();
 }
 
 bool SensorFilter::addSample(float raw, uint32_t nowMs) {
@@ -131,6 +166,11 @@ bool SensorFilter::addSample(float raw, uint32_t nowMs) {
   // ----- Mesure acceptée : alimentation du filtre -----
   _consecutiveRejects = 0;
 
+  // 0) feature-022 : détection capteur figé — alimentée UNIQUEMENT par les bruts
+  //    ACCEPTÉS (les rejets ci-dessus n'y passent jamais → frozen PERSISTE pendant
+  //    une rafale de rejets, pool-chemistry condition #4).
+  _frozenDetector.addSample(raw);
+
   // 1) Buffer circulaire pour la médiane.
   _buffer[_bufIdx] = raw;
   _bufIdx = (_bufIdx + 1) % _cfg.medianWindow;
@@ -203,12 +243,17 @@ float SensorFilter::median() const { return _computeMedian(); }
 float SensorFilter::filtered() const { return _filtered; }
 
 bool SensorFilter::ready(uint32_t nowMs) const {
-  // Warmup atteint ET au moins une mesure valide ET mesure récente.
+  // Warmup atteint ET au moins une mesure valide ET mesure récente ET non figé.
   if (_validCount < _cfg.warmupSamples) return false;
   if (!_hasValid) return false;
   if (ageMs(nowMs) > _cfg.maxAgeMs) return false;
+  // feature-022 : capteur figé → non prêt (fail-closed via la garde FilterNotReady
+  // existante de evaluateDose — pas de nouvelle valeur DoseRefusal).
+  if (_frozenDetector.frozen()) return false;
   return true;
 }
+
+bool SensorFilter::frozen() const { return _frozenDetector.frozen(); }
 
 bool SensorFilter::unstable() const {
   // Instable si trop de rejets consécutifs OU latch anti-boucle EMI posé.

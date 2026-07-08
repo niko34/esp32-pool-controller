@@ -1,6 +1,14 @@
 # ADR-0019 — Partitions app à 1664 KB (layout v3)
 
-- **Statut** : Accepté
+> **Statut : Superseded by [ADR-0024](0024-partitions-layout-v4.md)** (2026-07-06)
+> Le layout v3 (app 1664 KB / spiffs 576 KB) est remplacé par le **layout v4**
+> (app 1792 KB / spiffs 320 KB), rendu possible par la pré-compression gzip des
+> assets (feature-048, payload FS 155 KB) qui laissait la partition `spiffs`
+> occupée à 27 %. `nvs`, `history` et `coredump` restent inchangés.
+> Voir feature-049 et [ADR-0024](0024-partitions-layout-v4.md).
+> Contenu ci-dessous conservé à titre historique.
+
+- **Statut** : Superseded by [ADR-0024](0024-partitions-layout-v4.md)
 - **Date** : 2026-07-04
 - **Décideurs** : Nicolas Philippe
 - **Spec(s) liée(s)** : feature-044 (déclencheur), feature-043 (prérequis — migration uPlot), feature-024 (origine du layout v2)

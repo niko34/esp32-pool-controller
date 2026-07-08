@@ -207,6 +207,9 @@ void SensorManager::update() {
   // 3) Détection de stale (log critical une fois à la transition)
   _checkStaleAndLog();
 
+  // 3bis) feature-022 : détection capteur figé (logs edge-triggered)
+  _checkFrozenAndLog();
+
   // 4) Traitement d'au plus 1 commande EZO de la queue (calibration ~1-2 s)
   _processEzoQueue();
 
@@ -266,6 +269,14 @@ void SensorManager::_readDs18b20s() {
         if (valid) {
           _sondes[i].lastTempRaw = roundf(measuredTemp * 10.0f) / 10.0f;
           anyValidRead = true;
+          // feature-022 : alimente le détecteur figé T° eau avec la valeur BRUTE
+          // (non arrondie au 0.1 °C — l'epsilon 0.03 °C est < ½ LSB DS18B20 0.0625,
+          // le bruit de quantification d'une sonde vivante doit casser le run).
+          // Seules les lectures VALIDES alimentent le détecteur (frozen persiste
+          // pendant une rafale de lectures invalides — cohérent condition #4).
+          if (_sondes[i].role == SondeRole::Water) {
+            _waterTempFrozen.addSample(measuredTemp);
+          }
         } else {
           _sondes[i].lastTempRaw = NAN;
           if (authCfg.sensorLogsEnabled) {
@@ -465,6 +476,58 @@ void SensorManager::_checkStaleAndLog() {
 }
 
 // =============================================================================
+// feature-022 Passe 2 — Détection capteur figé : logs edge-triggered
+// =============================================================================
+// Nommage explicite [SENSOR_FROZEN] (pool-chemistry condition #3) : la garde
+// mutualisée FilterNotReady qui bloque le dosage ne dit pas la cause — c'est
+// CE log qui porte le diagnostic. critical pour pH/ORP (dosage inhibé),
+// warning pour la température (aucun impact dosage). Log info à la levée.
+
+void SensorManager::_checkFrozenAndLog() {
+  // pH — transition vers figé → critical, levée → info
+  const bool phFrozen = _phFilter.frozen();
+  if (phFrozen && !_phFrozenLogged) {
+    systemLogger.critical("[SENSOR_FROZEN] Capteur pH figé : " +
+                          String(kSensorFrozenSamples) + " lectures dans une bande < " +
+                          String(kSensorFrozenEpsilonPh, 4) + " autour de " +
+                          String(_phFilter.raw(), 3) +
+                          " — régulation pH auto inhibée (filtre non prêt)");
+    _phFrozenLogged = true;
+  } else if (!phFrozen && _phFrozenLogged) {
+    systemLogger.info("[SENSOR_FROZEN] Capteur pH à nouveau vivant — détection figée levée");
+    _phFrozenLogged = false;
+  }
+
+  // ORP — idem
+  const bool orpFrozen = _orpFilter.frozen();
+  if (orpFrozen && !_orpFrozenLogged) {
+    systemLogger.critical("[SENSOR_FROZEN] Capteur ORP figé : " +
+                          String(kSensorFrozenSamples) + " lectures dans une bande < " +
+                          String(kSensorFrozenEpsilonOrp, 2) + " mV autour de " +
+                          String(_orpFilter.raw(), 1) + " mV" +
+                          " — régulation ORP auto inhibée (filtre non prêt)");
+    _orpFrozenLogged = true;
+  } else if (!orpFrozen && _orpFrozenLogged) {
+    systemLogger.info("[SENSOR_FROZEN] Capteur ORP à nouveau vivant — détection figée levée");
+    _orpFrozenLogged = false;
+  }
+
+  // Température eau — warning-only (aucun impact dosage)
+  const bool tempFrozen = _waterTempFrozen.frozen();
+  if (tempFrozen && !_tempFrozenLogged) {
+    systemLogger.warning("[SENSOR_FROZEN] Sonde T° eau figée : " +
+                         String(kTempFrozenSamples) + " lectures dans une bande < " +
+                         String(kTempFrozenEpsilonC, 2) + " °C autour de " +
+                         String(getWaterTemperatureRaw(), 1) + " °C" +
+                         " — compensation pH et planning filtration sur valeur figée");
+    _tempFrozenLogged = true;
+  } else if (!tempFrozen && _tempFrozenLogged) {
+    systemLogger.info("[SENSOR_FROZEN] Sonde T° eau à nouveau vivante — détection figée levée");
+    _tempFrozenLogged = false;
+  }
+}
+
+// =============================================================================
 // Queue de commandes EZO — exécution asynchrone (depuis update() dans loopTask)
 // =============================================================================
 
@@ -630,6 +693,12 @@ float SensorManager::getOrpFiltered() const { return _orpFilter.filtered(); }
 bool SensorManager::isOrpFilterReady() const { return _orpFilter.ready(millis()); }
 bool SensorManager::isOrpFilterUnstable() const { return _orpFilter.unstable(); }
 uint8_t SensorManager::getOrpRejectedCount() const { return _orpFilter.rejectedCount(); }
+
+// feature-022 Passe 2 — getters capteur figé (lock-free : simple comparaison
+// d'entiers 16 bits, même contrat de concurrence que is*FilterUnstable()).
+bool SensorManager::isPhSensorFrozen() const { return _phFilter.frozen(); }
+bool SensorManager::isOrpSensorFrozen() const { return _orpFilter.frozen(); }
+bool SensorManager::isTemperatureFrozen() const { return _waterTempFrozen.frozen(); }
 
 void SensorManager::resetPhFilter() {
   _phFilter.reset();

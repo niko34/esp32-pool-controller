@@ -69,6 +69,10 @@ constexpr unsigned long kRestartApModeDelayMs = 1000;     // 1s - Attente avant 
 // Timeouts mutex
 constexpr unsigned long kI2cMutexTimeoutMs = 2000;        // 2s - Timeout acquisition mutex I2C
 constexpr unsigned long kConfigMutexTimeoutMs = 1000;     // 1s - Timeout acquisition mutex config
+// feature-027 : bornage des prises de mutex (plus aucun portMAX_DELAY applicatif)
+constexpr unsigned long kHistoryMutexTimeoutMs = 2000;    // 2s - Pire détenteur : consolidation + saveToFile LittleFS (~1-1,5 s)
+constexpr unsigned long kLoggerMutexTimeoutMs = 100;      // 100ms - Sections critiques RAM pures (buffer circulaire logs)
+constexpr unsigned long kMutexTimeoutWarnThrottleMs = 60000; // 60s - Max 1 warn/min/site sur timeout mutex (statique locale par site)
 
 // Sécurité - Factory reset bouton
 constexpr unsigned long kFactoryResetButtonHoldMs = 10000; // 10s - Maintien bouton pour factory reset
@@ -189,6 +193,34 @@ constexpr unsigned long kPhMixingDelayMs         = 900000UL;  // 15 min — paus
 constexpr unsigned long kOrpMixingDelayMs        = 1200000UL; // 20 min — pause mélange ORP
 
 // ============================================================================
+// SENSOR FROZEN DETECTION — Détection capteur figé (feature-022 Passe 2)
+// ============================================================================
+// Un module EZO peut répondre sans erreur I²C mais retourner indéfiniment la
+// MÊME valeur (électronique interne figée, sonde HS côté BNC...). La panne
+// franche (NaN / stale / bus dégradé) est déjà couverte ailleurs ; ici on
+// détecte la variance nulle : N lectures ACCEPTÉES consécutives contenues dans
+// une bande < epsilon → capteur figé → ready() = false → dosage bloqué
+// (garde FilterNotReady existante, fail-closed).
+//
+// Choix d'epsilon = ½ LSB du capteur (validation pool-chemistry, condition #1) :
+//   Un capteur VIVANT bruite d'au moins ±1 LSB (quantification + bruit sonde +
+//   bruit thermique). Avec epsilon = ½ LSB, un simple toggle de 1 LSB — même en
+//   arithmétique float32 — CASSE le run : aucune eau réelle, même parfaitement
+//   stable, ne peut être déclarée figée tant que la dernière décimale bouge.
+//   Consigne terrain : en cas de faux positifs, DURCIR N (allonger la fenêtre),
+//   ne JAMAIS élargir epsilon.
+constexpr uint16_t kSensorFrozenSamples    = 30;      // 30 lectures valides à 5 s = 2,5 min
+constexpr float    kSensorFrozenEpsilonPh  = 0.0005f; // ½ LSB EZO pH (résolution 0.001 pH)
+constexpr float    kSensorFrozenEpsilonOrp = 0.05f;   // ½ LSB EZO ORP (résolution 0.1 mV)
+// Température : DS18B20 12 bits, LSB = 0.0625 °C → epsilon 0.03 < ½ LSB.
+// Fenêtre longue (900 lectures à 2 s = 30 min) : l'eau d'un bassin varie
+// lentement, mais jamais à 0.0625 °C près sur 30 min avec la sonde immergée.
+// Warning-only : aucun impact dosage (effets réels limités à la compensation
+// EZO pH et au planning auto de filtration).
+constexpr uint16_t kTempFrozenSamples  = 900;   // 900 lectures valides à 2 s = 30 min
+constexpr float    kTempFrozenEpsilonC = 0.03f; // < ½ LSB DS18B20 12 bits (0.0625/2)
+
+// ============================================================================
 // FILTRATION CONSTANTS - Paramètres filtration
 // ============================================================================
 
@@ -224,6 +256,54 @@ constexpr unsigned long kStabilizationDurationOrpMs = 180000UL;  // 3 min — OR
 constexpr uint8_t kMaxDosingCyclesPerMinute = 6;     // 1 cycle / 10s max
 constexpr uint8_t kMaxDosingCyclesPer15Min  = 20;    // anti-emballement PID
 constexpr size_t  kDosingCycleHistorySize   = 20;    // ring buffer (couvre 15min)
+
+// Répartition du volume quotidien du mode "scheduled" (feature-011).
+// Le volume restant est réparti uniformément par fenêtres de 15 min sur
+// l'horizon de filtration restant, borné à minuit (les compteurs journaliers
+// se réinitialisent à minuit). Décision pure : evaluateScheduledDose()
+// (src/dosing_logic.*) ; horizon : remainingRangeMinutes() (src/schedule_logic.*).
+constexpr int kScheduledWindowMinutes = 15;  // Fenêtre de répartition scheduled (windowIndex = nowMin / 15)
+
+// ============================================================================
+// BOOST CONSTANTS - Mode Boost / surchloration temporaire (feature-053)
+// ============================================================================
+// Surcouche temporaire NON destructive activable d'un geste, auto-expirant au
+// prochain minuit local. N'a d'effet chimique que si la régulation ORP est en
+// mode "automatic" (cible + limite journalière). Bornes FIGÉES par pool-chemistry
+// (feature-053, double passage) — ne JAMAIS élargir sans nouveau passage.
+
+// +60 mV sur la cible ORP : relève sensiblement le résidu chloré (effet réel)
+// tout en restant dans la plage physiologique d'une eau baignable une fois le
+// pic redescendu. Marge choisie prudente vs. la borne dure ORP.
+constexpr float kBoostOrpDeltaMv = 60.0f;
+
+// Plafond ABSOLU de la cible ORP effective boostée : 850 mV (PAS 900). Le code
+// lève l'alerte orpAbnormal dès orp > 900 mV ; plafonner la cible à 850 laisse
+// une marge de sécurité de 50 mV avant cette alerte et évite de piloter vers un
+// ORP jugé anormal.
+constexpr float kBoostOrpCeilingMv = 850.0f;
+
+// ×1,5 sur la limite journalière chlore pendant le boost : donne un budget réel
+// de surchloration sur la journée sans multiplier le risque de surdosage. Effet
+// borné en dur par kBoostDailyHardCapMl ci-dessous.
+constexpr float kBoostDailyFactor = 1.5f;
+
+// Plafond dur ABSOLU de la limite journalière chlore effective boostée : 1000 mL.
+// Quel que soit maxChlorineMlPerDay × facteur, la limite effective ne dépasse
+// jamais cette valeur — garde-fou anti-surdosage même si l'utilisateur a une
+// limite normale déjà élevée.
+constexpr float kBoostDailyHardCapMl = 1000.0f;
+
+// ============================================================================
+// OTA INTEGRITY CONSTANTS - Vérification d'intégrité SHA-256 (feature-026)
+// ============================================================================
+
+// Empreinte SHA-256 : 32 octets = 64 caractères hexadécimaux.
+// Les buffers d'affichage doivent faire kOtaSha256HexLen + 1 (terminateur).
+constexpr size_t kOtaSha256HexLen = 64;
+
+// Préfixe des digests d'assets GitHub (champ `digest` de l'API releases).
+constexpr const char* kOtaSha256Prefix = "sha256:";
 
 // ============================================================================
 // NETWORK CONSTANTS - Paramètres réseau

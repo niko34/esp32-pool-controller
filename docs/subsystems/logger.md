@@ -78,6 +78,26 @@ Mutex FreeRTOS (`_mutex`) protège :
 - `logs` vector (lecture/écriture concurrente entre tâches et handlers web)
 - `_persistBuffer` (flush concurrent)
 
+### Timeouts mutex bornés (feature-027, v2.11.1)
+
+Les **7 prises de mutex** du logger sont bornées par `kLoggerMutexTimeoutMs = 100 ms` ([`constants.h`](../../src/constants.h)) — valeur courte car toutes les sections critiques du logger sont en **RAM pure** (buffer circulaire, `_persistBuffer`), jamais d'I/O sous mutex.
+
+**Politique silencieuse anti-récursion** : les chemins d'échec du logger n'appellent **JAMAIS** `systemLogger` (un log qui échoue à logger son propre échec = récursion). Seul un `Serial.printf` de secours existe sur le chemin de réinsertion de `flushToDisk()`.
+
+Politique d'échec par site :
+
+| Site | Sur timeout |
+|---|---|
+| `log()` | Entrée perdue (RAM + persistance) + `_droppedLogs++`. Le push WS n'a pas lieu (callback non capturé) |
+| `getRecentLogs()` | Vecteur vide (le client réessaiera) |
+| `clear()` | No-op — rien n'est perdu, l'utilisateur peut re-cliquer. **Ne compte pas dans `_droppedLogs`** (corrigé post-revue : le compteur ne trace que des *entrées* perdues) |
+| `clearAll()` | Return **avant** toute modification — le fichier `/system.log` n'est pas supprimé si la RAM n'a pas pu être vidée (pas d'état incohérent) |
+| `getLogCount()` | Retourne `0` |
+| `flushToDisk()` — swap du buffer | Return **sans toucher `_lastFlushMs`** → retente naturellement au prochain `update()` |
+| `flushToDisk()` — réinsertion après échec d'écriture fichier | Lignes perdues proprement (`_droppedLogs += n`) + message `Serial` — jamais de réinsertion sans mutex |
+
+**`_droppedLogs`** (`uint32_t`, membre privé) : compteur diagnostic des entrées perdues sur timeout. Il est **volontairement write-only** — aucun endpoint, aucun topic MQTT, aucun getter ne l'expose (mineure consignée en revue, assumée) : l'exposer créerait une API pour un événement qui ne doit jamais se produire en nominal ; il reste lisible au debugger / dans un coredump si un diagnostic de contention devient nécessaire.
+
 ## Endpoint HTTP
 
 | Action | Endpoint | Auth |

@@ -21,7 +21,6 @@ private:
   std::map<AsyncWebServerRequest*, bool> configErrors;
 
   void setupRoutes();
-  void setCorsHeaders(AsyncWebServerRequest* req);
 
 public:
   WebServerManager();

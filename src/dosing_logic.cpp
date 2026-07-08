@@ -242,3 +242,107 @@ ManualInjectDecision evaluateManualInject(const ManualInjectInputs& in) {
   // Toutes les gardes sont passées : injection autorisée, reliquat renseigné.
   return { true, ManualInjectRefusal::None, remaining };
 }
+
+// =============================================================================
+// evaluateScheduledDose — répartition scheduled PURE (feature-011)
+// =============================================================================
+// Conditions pool-chemistry n°2/3/4/5 documentées dans dosing_logic.h.
+// NE PAS réordonner les gardes ni relâcher les clamps.
+ScheduledDoseDecision evaluateScheduledDose(const ScheduledDoseInputs& in) {
+  // Fail-closed (condition n°4 watchdog ; condition n°2 horizon) : watchdog
+  // inactif, hors plage / horizon nul, débit non configuré, ou fenêtre invalide
+  // (garde défensive anti division par zéro) → aucune injection.
+  // windowIndex=-1 force le recalcul du volume au retour en plage.
+  if (!in.watchdogActive || in.horizonMinutes <= 0 ||
+      in.effectiveFlowMlPerMin <= 0.0f || in.windowMinutes <= 0) {
+    return { false, -1, 0.0f, NAN };
+  }
+
+  // Cible journalière effective : plafonnée par la limite de sécurité (si > 0).
+  float effective = in.dailyTargetMl;
+  if (in.maxDailyMl > 0.0f && effective > in.maxDailyMl) {
+    effective = in.maxDailyMl;
+  }
+
+  // Volume restant à répartir sur la journée (clamp >= 0 — condition n°3).
+  float remaining = effective - in.dailyInjectedMl;
+  if (remaining < 0.0f) remaining = 0.0f;
+
+  // Index de fenêtre absolu dans la journée (0..95 pour des fenêtres de 15 min).
+  int windowIndex = in.nowMin / in.windowMinutes;
+
+  float stopTargetMl;
+  if (windowIndex != in.prevWindowIndex) {
+    // Nouvelle fenêtre : recalcul du volume de fenêtre depuis l'état courant.
+    // floor volontaire ; plancher nWin >= 1 SÛR : horizonMinutes > 0 est garanti
+    // par la garde d'entrée (condition n°2 — jamais nWin=1 via max(1,0)).
+    int nWin = in.horizonMinutes / in.windowMinutes;
+    if (nWin < 1) nWin = 1;
+    float v = remaining / static_cast<float>(nWin);
+
+    // Borne budget horaire (ADR-0020, budget PARTAGÉ auto+manuel+test+UART) :
+    // le volume de fenêtre est converti en temps via le débit effectif ;
+    // l'excédent se reporte mécaniquement aux fenêtres suivantes.
+    if (in.hourlyLimitMs > 0) {
+      float budgetMl = (in.usedMs >= in.hourlyLimitMs)
+          ? 0.0f
+          : (static_cast<float>(in.hourlyLimitMs - in.usedMs) / 60000.0f) *
+                in.effectiveFlowMlPerMin;
+      if (v > budgetMl) v = budgetMl;
+    }
+    if (v < 0.0f) v = 0.0f;  // clamp >= 0 (condition n°3)
+
+    // Report anti short-cycling : si la durée d'injection correspondante est
+    // < minInjectionTimeMs, rien dans CETTE fenêtre — le volume se reporte
+    // (remaining inchangé, moins de fenêtres restantes → doses plus longues).
+    if (v > 0.0f &&
+        (v / in.effectiveFlowMlPerMin) * 60000.0f <
+            static_cast<float>(in.minInjectionTimeMs)) {
+      v = 0.0f;
+    }
+    stopTargetMl = in.dailyInjectedMl + v;
+  } else {
+    // Même fenêtre : la cible d'arrêt cumulée reste celle calculée à l'entrée
+    // de la fenêtre (le cumul progresse vers elle pendant l'injection).
+    stopTargetMl = in.prevStopTargetMl;
+  }
+
+  // Débit moyen planifié restant (diagnostic WS) : NAN quand plus rien à
+  // injecter (quota atteint). horizonMinutes > 0 garanti par la garde d'entrée.
+  float plannedFlow = (remaining > 0.0f)
+      ? remaining / static_cast<float>(in.horizonMinutes)
+      : NAN;
+
+  // Condition n°3 : doseNow réévalué à CHAQUE tick contre
+  // min(stopTargetMl, effective) — une baisse de cible ou de plafond en cours
+  // de fenêtre arrête l'injection immédiatement, sans attendre la fenêtre
+  // suivante.
+  float stopCap = (stopTargetMl < effective) ? stopTargetMl : effective;
+  bool doseNow = in.dailyInjectedMl < stopCap;
+
+  return { doseNow, windowIndex, stopTargetMl, plannedFlow };
+}
+
+// =============================================================================
+// Mode Boost — valeurs effectives PURES (feature-053)
+// =============================================================================
+// Effet STRICTEMENT réservé au mode ORP "automatic" (condition pool-chemistry #1).
+float effectiveOrpTargetPure(float orpTarget, bool boostActive, bool orpModeAutomatic,
+                             float deltaMv, float ceilingMv) {
+  if (!boostActive || !orpModeAutomatic) {
+    return orpTarget;
+  }
+  // fminf plafonne la cible relevée ; le max() garantit que la cible n'est
+  // JAMAIS abaissée si elle dépasse déjà le plafond (condition #5).
+  float raised = fminf(orpTarget + deltaMv, ceilingMv);
+  return orpTarget > raised ? orpTarget : raised;
+}
+
+float effectiveMaxChlorinePure(float maxChlorine, bool boostActive, bool orpModeAutomatic,
+                               float factor, float hardCapMl) {
+  if (!boostActive || !orpModeAutomatic) {
+    return maxChlorine;
+  }
+  // Limite journalière relevée × facteur, bornée en dur (condition #1).
+  return fminf(maxChlorine * factor, hardCapMl);
+}

@@ -58,7 +58,7 @@ struct DoseInputs {
   bool mixingActive;            // isPhMixingDelayActive / isOrpMixingDelayActive
   bool modeAutomatic;           // phRegulationMode / orpRegulationMode == "automatic"
   float dailyInjectedMl;        // safetyLimits.dailyPhInjectedMl / dailyOrpInjectedMl
-  float maxDailyMl;             // maxPhMinusMlPerDay / maxChlorineMlPerDay
+  float maxDailyMl;             // maxPhMlPerDay / maxChlorineMlPerDay
   unsigned long usedMs;         // phDosingState.usedMs / orpDosingState.usedMs
   unsigned long hourlyLimitMs;  // limitMin*60000 ; 0 = pas de limite horaire
   unsigned int cyclesToday;     // phDosingState.cyclesToday / orpDosingState.cyclesToday
@@ -210,5 +210,80 @@ struct ManualInjectDecision {
 // pool-chemistry (condition #1 : watchdog EN PREMIER). Première garde en
 // échec → cause correspondante. Fail-closed strict.
 ManualInjectDecision evaluateManualInject(const ManualInjectInputs& in);
+
+// =============================================================================
+// Répartition scheduled — décision PURE (feature-011)
+// =============================================================================
+// Répartit le volume quotidien du mode "scheduled" (pH/ORP) par fenêtres de
+// `windowMinutes` (kScheduledWindowMinutes = 15 en prod) sur l'horizon de
+// filtration restant, borné à minuit. Le volume de fenêtre est RECALCULÉ à
+// chaque nouvelle fenêtre depuis l'état courant (auto-correcteur : changement
+// de cible en cours de journée, injection manuelle comptée dans
+// dailyInjectedMl, retard subi par la limite horaire, redémarrage ESP32).
+// Fail-closed strict.
+//
+// Conditions pool-chemistry feature-011 (bloquantes — NE PAS altérer) :
+//   n°2 : horizonMinutes <= 0 → aucune injection (le plancher nWin >= 1 ne
+//         s'applique qu'à un horizon strictement positif, jamais via max(1,0)) ;
+//   n°3 : doseNow réévalué à CHAQUE tick contre min(stopTargetMl, cible
+//         effective) — une baisse de cible/plafond en cours de fenêtre arrête
+//         l'injection immédiatement ; remaining et v clampés >= 0 ;
+//   n°4 : watchdogActive transmis en entrée et vérifié DANS la fonction pure ;
+//   n°5 : le MÊME effectiveFlowMlPerMin sert au bornage horaire, à la durée
+//         d'injection et au duty (la coquille fournit une seule variable).
+// (Condition n°1 — consultation du ring anti-rafale avant tout démarrage —
+// appliquée par la coquille pump_controller, qui possède le ring.)
+
+// Entrées POD collectées par la coquille pump_controller AVANT l'appel.
+struct ScheduledDoseInputs {
+  int nowMin;                  // minutes locales depuis minuit (heure valide requise)
+  int horizonMinutes;          // minutes restantes de la plage (remainingRangeMinutes)
+                               // ou 1440-nowMin en mode continu ; <=0 → refus
+  int windowMinutes;           // taille de fenêtre (kScheduledWindowMinutes = 15)
+  float dailyTargetMl;         // mqttCfg.ph/orpDailyTargetMl (cible utilisateur)
+  float maxDailyMl;            // plafond sécurité (maxPhMlPerDay / maxChlorineMlPerDay) ; <=0 = sans plafond
+  float dailyInjectedMl;       // cumul journalier (auto + manuel, safetyLimits)
+  float effectiveFlowMlPerMin; // débit effectif pompe (UNIQUE — condition n°5)
+  uint32_t usedMs;             // budget horaire consommé (PARTAGÉ, ADR-0020)
+  uint32_t hourlyLimitMs;      // limite horaire ; 0 = illimité (convention auto)
+  uint32_t minInjectionTimeMs; // durée min d'injection (anti short-cycling, 30 s)
+  bool watchdogActive;         // esp_task_wdt_status(NULL) == ESP_OK (condition n°4)
+  int prevWindowIndex;         // index de fenêtre du tick précédent (-1 = aucun)
+  float prevStopTargetMl;      // cible d'arrêt cumulée de la fenêtre courante
+};
+
+// Verdict de répartition. En refus fail-closed (watchdog/horizon/débit) :
+// { false, -1, 0, NAN } — windowIndex=-1 force le recalcul au retour en plage.
+struct ScheduledDoseDecision {
+  bool doseNow;              // vrai ssi dailyInjectedMl < min(stopTargetMl, cible effective)
+  int windowIndex;           // nowMin / windowMinutes (fenêtre absolue du jour)
+  float stopTargetMl;        // cumul journalier cible d'arrêt de la fenêtre courante
+  float plannedFlowMlPerMin; // débit moyen planifié restant (diagnostic WS) ; NAN si rien à injecter
+};
+
+// Décision de répartition scheduled (voir bloc de doc ci-dessus).
+ScheduledDoseDecision evaluateScheduledDose(const ScheduledDoseInputs& in);
+
+// =============================================================================
+// Mode Boost — cible ORP et limite journalière effectives PURES (feature-053)
+// =============================================================================
+// Surcouche NON destructive : ces fonctions renvoient les valeurs *effectives*
+// consommées par la régulation ORP quand le Boost est actif, sans jamais
+// modifier la config persistée. L'effet chimique est STRICTEMENT réservé au mode
+// ORP "automatic" (paramètre orpModeAutomatic) — le mode scheduled/manual ne voit
+// JAMAIS la valeur boostée (condition pool-chemistry #1).
+
+// Cible ORP effective (mV). Si boost actif ET mode automatic :
+//   max(orpTarget, fminf(orpTarget + deltaMv, ceilingMv))
+// Le max() protège une cible déjà supérieure au plafond : la cible n'est JAMAIS
+// abaissée par le boost (condition pool-chemistry #5). Sinon → orpTarget inchangé.
+float effectiveOrpTargetPure(float orpTarget, bool boostActive, bool orpModeAutomatic,
+                             float deltaMv, float ceilingMv);
+
+// Limite journalière chlore effective (mL). Si boost actif ET mode automatic :
+//   fminf(maxChlorine * factor, hardCapMl)  (borné en dur, condition #1)
+// Sinon → maxChlorine inchangée.
+float effectiveMaxChlorinePure(float maxChlorine, bool boostActive, bool orpModeAutomatic,
+                               float factor, float hardCapMl);
 
 #endif // DOSING_LOGIC_H

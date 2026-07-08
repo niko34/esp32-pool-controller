@@ -26,7 +26,8 @@ bool hasClients() const;
   - Changement d'état filtration (démarrage / arrêt)
   - Démarrage / arrêt injection pH ou ORP
   - Changement de mode (régulation / filtration / lighting)
-  - Sauvegarde config
+  - Sauvegarde config (`POST /save-config`)
+  - Commande HA modifiant la config via MQTT (`drainCommandQueue`, v2.14.1)
   - Nouveau log (callback `systemLogger.setLogCallback()`)
 
 ## Authentification
@@ -37,6 +38,8 @@ Le WebSocket exige un token valide. Architecture :
 3. `_authenticatedClients` (std::set<uint32_t>) garde les client IDs validés.
 4. Les messages des clients non-authentifiés sont ignorés.
 
+⚠️ La vérification du token dans `_onData()` passe par `authManager.secureTokenEquals()` — **comparaison à temps constant**, même exigence que l'auth HTTP (v2.11.2, feature-028 ; jamais de `==` / `!=` direct sur le token, voir [auth.md](auth.md#comparaison-de-token-à-temps-constant-v2112-feature-028)). Token rejeté → log `[WS] Token rejeté` + fermeture de la connexion.
+
 Voir [`ws_manager.cpp`](../../src/ws_manager.cpp) `_onClientConnect()` et `_onData()`.
 
 ## Format des messages push
@@ -45,6 +48,10 @@ JSON avec un champ `type` :
 - `type: "sensor_data"` → payload identique à `/data` (voir [docs/API.md](../API.md))
 - `type: "config"` → payload identique à `/get-config`
 - `type: "log"` → `{timestamp, level, message}`
+
+> **Déclencheurs du message `config`** — le broadcast `config` (via le flag `_pendingConfigBroadcast` posé par `requestConfigBroadcast()`, consommé sur `loopTask`) a **deux** origines :
+> 1. `POST /save-config` (`web_routes_config.cpp`) — sauvegarde de la config depuis l'UI web.
+> 2. `MqttManager::drainCommandQueue()` (v2.14.1, bug-sync-ws-config-mqtt) — après application d'une commande HA modifiant la config (hors `Reboot`), pour que l'UI web reflète sous ≤ 5 s un changement fait depuis Home Assistant sans reload. Voir [mqtt-manager.md](mqtt-manager.md#notification-ui-temps-réel--broadcast-ws-config-bug-sync-ws-config-mqtt-v2141).
 
 ### Champs notables de `sensor_data`
 
@@ -120,3 +127,34 @@ Les champs `sondes_identified` et `sondes_detected` pilotent la chip de notifica
 Ces champs sont le miroir exact de la garde firmware **par pompe** (`manualInjectGuardOrReject` → `getStabilizationRemainingS(0/1)`) : l'UI désactive le bouton « Injecter » d'un produit uniquement si **sa** pompe est en stabilisation (une calibration ORP ne bloque pas le bouton pH, et inversement). Le champ global `stabilization_remaining_s` (max des 2 pompes) est **conservé** pour compatibilité (badge global, anciens clients) ; `data/app.js` `getInjectBlockReason()` retombe dessus si les champs par pompe sont absents (ancien firmware).
 
 Buffer `_buildSensorJson()` bumpe de **1408 → 1472 octets**.
+
+## Champs `sensor_data` ajoutés en feature-011 (répartition scheduled, v2.8.0)
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `ph_scheduled_flow_ml_per_min` | float \| null | Débit moyen **planifié** restant du mode Programmée pH (mL/min, arrondi 1 décimale) = volume restant / minutes de filtration restantes (bornées à minuit). `NAN` firmware → `null` explicite (hors mode `scheduled`, hors plage de filtration, heure locale invalide) — l'UI affiche « — ». |
+| `orp_scheduled_flow_ml_per_min` | float \| null | Équivalent ORP (chlore). |
+
+Valeurs lues via `PumpController.getPhScheduledPlannedFlow()` / `getOrpScheduledPlannedFlow()` (rafraîchies à chaque tour d'`update()` en loopTask). Voir [pump-controller.md §Mode scheduled](pump-controller.md#mode-scheduled) et [ADR-0021](../adr/0021-repartition-scheduled.md).
+
+Buffer `_buildSensorJson()` bumpe de **1472 → 1536 octets** (+ `out.reserve` 1200 → 1280).
+
+## Champs `sensor_data` ajoutés en feature-053 (Mode Boost, v2.18.0)
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `boost_active` | bool | `true` tant que le **Mode Boost** (surchloration temporaire du jour) est actif. Retombe automatiquement à `false` au prochain minuit local (expiration côté firmware) → l'UI voit la fin du boost sous ≤ 5 s sans reload. |
+| `boost_until` | int (epoch) | Instant d'expiration du Boost (epoch UNIX, prochain minuit local). `0` si le Boost est inactif. Permet à l'UI (carte Boost du dashboard) d'afficher l'heure de fin. |
+
+Valeurs lues via les getters `PumpController.isBoostActive()` / `getBoostUntilEpoch()`. Un changement d'état (activation via `POST /boost/start`, désactivation via `/boost/stop` ou commande HA `{base}/boost/set`, **ou expiration à minuit**) déclenche un push WS immédiat. Voir [pump-controller.md §Mode Boost](pump-controller.md#mode-boost-feature-053), [features/page-dashboard.md](../features/page-dashboard.md#carte-boost-feature-053) et [ADR-0025](../adr/0025-mode-boost.md).
+
+## Champs `sensor_data` ajoutés en feature-055 (effet Boost persistant, v2.18.2)
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `boost_filtration_extended` | bool | `true` ssi la filtration est gérée par PoolController (= `filtrationCfg.enabled`) : le levier « filtration prolongée » du Boost s'applique effectivement. |
+| `boost_chlorine_boosted` | bool | `true` ssi la régulation ORP est en mode `automatic` (= `orpRegulationMode == "automatic"`) : le levier « surchloration » (cible/limite chlore relevées) s'applique effectivement. |
+
+Ces deux booléens reflètent les **leviers réellement actifs** du Mode Boost et sont **calculés au vol** dans `_buildSensorJson()` à chaque cycle (indépendants de `boost_active`) : ils sont donc valides après une activation depuis Home Assistant **et** après un rechargement de page — contrairement aux booléens `filtration_extended` / `chlorine_boosted` de la seule réponse HTTP `POST /boost/start` (feature-054). L'UI (`updateBoostCard`, [page-dashboard.md](../features/page-dashboard.md#carte-boost-feature-053)) les utilise pour afficher une ligne « Effet » persistante quand le Boost est actif. Aucune logique de dosage n'est touchée.
+
+Buffer `_buildSensorJson()` bumpe de **1600 → 1664 octets**.

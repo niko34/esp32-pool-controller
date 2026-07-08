@@ -234,6 +234,75 @@
     }, 3000);
   }
 
+  // ---------- Modale de confirmation générique (feature-031) ----------
+  // Remplace confirm() natif par une <dialog> stylée (#confirm-modal).
+  // Retourne Promise<boolean> : true si confirmé, false sinon (Annuler / Escape / backdrop).
+  let _confirmDialogState = null; // { resolve, confirmed } quand la modale est ouverte
+
+  function confirmDialog({ title, message, confirmLabel = 'Confirmer', cancelLabel = 'Annuler', danger = false } = {}) {
+    const modal = $("#confirm-modal");
+    if (!modal || typeof modal.showModal !== 'function') {
+      // Fallback navigateur sans <dialog> : on ne supprime JAMAIS une confirmation
+      // de sécurité → window.confirm() natif.
+      return Promise.resolve(window.confirm(message));
+    }
+    // Réentrance : une confirmation est déjà ouverte → refus immédiat
+    if (modal.open || _confirmDialogState) return Promise.resolve(false);
+
+    return new Promise((resolve) => {
+      _confirmDialogState = { resolve, confirmed: false };
+
+      const titleEl = $("#confirm-modal-title");
+      const messageEl = $("#confirm-modal-message");
+      const okBtn = $("#confirm-modal-ok");
+      const cancelBtn = $("#confirm-modal-cancel");
+      if (titleEl) titleEl.textContent = title || 'Confirmation';
+      // textContent uniquement (jamais innerHTML) — les \n\n sont rendus via
+      // white-space: pre-line (CSS .confirm-modal__message)
+      if (messageEl) messageEl.textContent = message || '';
+      if (okBtn) {
+        okBtn.textContent = confirmLabel;
+        okBtn.classList.toggle('btn--danger', danger);
+        okBtn.classList.toggle('btn--primary', !danger);
+      }
+      if (cancelBtn) cancelBtn.textContent = cancelLabel;
+
+      try {
+        modal.showModal();
+      } catch (e) {
+        // Refus sûr : l'action protégée n'est PAS exécutée si la modale ne s'ouvre pas
+        console.error('[confirm-modal] showModal:', e);
+        _confirmDialogState = null;
+        resolve(false);
+        return;
+      }
+      // Focus initial TOUJOURS sur Annuler (action sûre par défaut)
+      if (cancelBtn) cancelBtn.focus();
+    });
+  }
+
+  // Listeners bindés UNE seule fois au démarrage
+  function bindConfirmModal() {
+    const modal = $("#confirm-modal");
+    if (!modal || typeof modal.showModal !== 'function') return; // fallback géré dans confirmDialog()
+
+    $("#confirm-modal-ok")?.addEventListener('click', () => {
+      if (_confirmDialogState) _confirmDialogState.confirmed = true;
+      modal.close();
+    });
+    $("#confirm-modal-cancel")?.addEventListener('click', () => modal.close());
+    // Backdrop : clic en dehors du contenu du dialog
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) modal.close();
+    });
+    // Toute fermeture (bouton, Escape → cancel/close, backdrop) résout la promesse
+    modal.addEventListener('close', () => {
+      const state = _confirmDialogState;
+      _confirmDialogState = null;
+      if (state) state.resolve(!!state.confirmed);
+    });
+  }
+
   // ---------- Auth Helper ----------
   function authFetch(url, options = {}) {
     const token = sessionStorage.getItem('authToken');
@@ -1561,6 +1630,19 @@
     updateFiltrationControls();
     updateFeatureVisibility("filtration");
 
+    // Éclairage — programmation (bug-ui-eclairage-refresh-ws : rafraîchissement
+    // temps réel sur message WS config, miroir de la filtration ci-dessus).
+    if (!lightingDirty) {
+      const lightMode = $("#lighting_schedule_mode");
+      if (lightMode && cfg.lighting_schedule_enabled !== undefined) {
+        lightMode.value = cfg.lighting_schedule_enabled ? "enabled" : "disabled";
+        const lightSettings = $("#lighting-schedule-settings");
+        if (lightSettings) lightSettings.style.display = cfg.lighting_schedule_enabled ? "" : "none";
+      }
+      if (cfg.lighting_start_time) $("#lighting_start_time").value = cfg.lighting_start_time;
+      if (cfg.lighting_end_time) $("#lighting_end_time").value = cfg.lighting_end_time;
+    }
+
     // Time
     const timeActiveId = document.activeElement?.id || "";
     const timeEditing = ["time_use_ntp", "time_ntp_server", "time_timezone", "time_value"].includes(timeActiveId);
@@ -1598,9 +1680,6 @@
 
     updatePhControls();
     updateOrpControls();
-
-    // Security panel
-    $("#auth_cors_origins").value = cfg.auth_cors_origins || "";
 
     // Development panel
     if ($("#sensor_logs_enabled")) {
@@ -1663,8 +1742,41 @@
   let sensorDataRetryTimer = null;
   let filtrationRunningOverride = null; // Valeur optimiste après sauvegarde, null = utiliser /data
   let filtrationDirty = false; // Modifications non sauvegardées dans la section Programmation
+  let lightingDirty = false;   // Idem pour la section Programmation éclairage (bug-ui-eclairage-refresh-ws)
 
   // ========== BADGES CAPTEURS ==========
+
+  // Règle de composition du badge multi-états (feature-012 N2).
+  // Chaque état candidat est décrit par { priority, variant, text } :
+  //   priority 0 = capteur indisponible (danger) — feature-022 (valeur null/NaN)
+  //   priority 1 = hors plage (danger)
+  //   priority 2 = limite journalière atteinte
+  //   priority 3 = cumul journalier ≥ 75 %
+  //   priority 4 = stock faible
+  // - MAXIMUM 2 segments affichés, séparés par « · » : au-delà de 2 candidats,
+  //   on garde les 2 plus prioritaires (priority la plus faible d'abord).
+  // - Variant du badge : 'danger' si au moins un segment retenu est danger,
+  //   sinon 'warning' (danger > warning).
+  function composeSensorBadge(candidates) {
+    if (!candidates.length) return { variant: null, text: '' };
+    const kept = [...candidates].sort((a, b) => a.priority - b.priority).slice(0, 2);
+    const variant = kept.some(s => s.variant === 'danger') ? 'danger' : 'warning';
+    return { variant, text: kept.map(s => s.text).join(' · ') };
+  }
+
+  // Segment « Cumul XX % » (feature-012 N1) : affiché à partir de 75 % du
+  // quota journalier (seuil aligné sur updateDailyDoseDisplay), masqué quand
+  // la limite est atteinte (le segment « Limite journalière atteinte » prend
+  // le relais) ou quand la limite n'est pas configurée.
+  function dailyCumulSegment(dailyMl, maxMl, limitReached) {
+    if (limitReached) return null;
+    if (dailyMl == null || isNaN(dailyMl)) return null;
+    if (!maxMl || maxMl <= 0) return null;
+    // Même arithmétique que updateDailyDoseDisplay (arrondi des entrées, plafond 100 %)
+    const pct = Math.min(100, Math.round((Math.round(dailyMl) / Math.round(maxMl)) * 100));
+    if (pct < 75) return null;
+    return { priority: 3, variant: 'warning', text: `Cumul ${pct} %` };
+  }
 
   function updateSensorBadges() {
     function setBadge(id, variant, text) {
@@ -1681,57 +1793,77 @@
       el.style.display = '';
     }
 
-    // Badge pH
-    let phVariant = null, phText = '';
+    // Badge pH — liste de candidats, composés par composeSensorBadge()
+    const phSegments = [];
+    // feature-022 : capteur indisponible (valeur null ou NaN). Le test
+    // latestSensorData !== null évite le faux positif au boot : updateSensorBadges
+    // est appelé depuis loadConfig avant le 1er message WS.
+    if (latestSensorData !== null && (latestSensorData.ph == null || isNaN(latestSensorData.ph))) {
+      phSegments.push({ priority: 0, variant: 'danger', text: 'Capteur indisponible' });
+    }
     if (latestSensorData?.ph != null && !isNaN(latestSensorData.ph)) {
       const ph = latestSensorData.ph;
       const phTarget = window._config?.ph_target ?? 7.2;
       const phLow = +(phTarget - 0.2).toFixed(1);
       const phHigh = +(phTarget + 0.2).toFixed(1);
       if (ph < phLow || ph > phHigh) {
-        phVariant = 'danger';
-        phText = ph < phLow ? `Trop bas (${ph.toFixed(1)})` : `Trop élevé (${ph.toFixed(1)})`;
+        phSegments.push({ priority: 1, variant: 'danger',
+          text: ph < phLow ? `Trop bas (${ph.toFixed(1)})` : `Trop élevé (${ph.toFixed(1)})` });
       }
     }
-    if (!phVariant && latestSensorData?.ph_limit_reached) {
-      phVariant = 'warning';
-      phText = 'Limite journalière atteinte';
+    if (latestSensorData?.ph_limit_reached) {
+      phSegments.push({ priority: 2, variant: 'warning', text: 'Limite journalière atteinte' });
+    }
+    { const cumul = dailyCumulSegment(
+        latestSensorData?.ph_daily_ml,
+        window._config?.max_ph_ml_per_day ?? 0,
+        latestSensorData?.ph_limit_reached === true);
+      if (cumul) phSegments.push(cumul);
     }
     { const rem = latestSensorData?.ph_remaining_ml;
       const thr = latestSensorData?.ph_alert_threshold_ml;
       if (rem != null && thr != null && rem <= thr && thr > 0) {
-        const stockText = `Stock faible (${(rem / 1000).toFixed(1)} L)`;
-        if (!phVariant) { phVariant = 'warning'; phText = stockText; }
-        else phText += ` · ${stockText}`;
+        phSegments.push({ priority: 4, variant: 'warning',
+          text: `Stock faible (${(rem / 1000).toFixed(1)} L)` });
       }
     }
-    setBadge('ph-sensor-badge', phVariant, phText);
+    const phBadge = composeSensorBadge(phSegments);
+    setBadge('ph-sensor-badge', phBadge.variant, phBadge.text);
 
-    // Badge ORP
-    let orpVariant = null, orpText = '';
+    // Badge ORP — mêmes règles de composition
+    const orpSegments = [];
+    // feature-022 : capteur indisponible (cf. commentaire du bloc pH ci-dessus)
+    if (latestSensorData !== null && (latestSensorData.orp == null || isNaN(latestSensorData.orp))) {
+      orpSegments.push({ priority: 0, variant: 'danger', text: 'Capteur indisponible' });
+    }
     if (latestSensorData?.orp != null && !isNaN(latestSensorData.orp)) {
       const orp = Math.round(latestSensorData.orp);
       const orpTarget = window._config?.orp_target ?? 650;
       const orpLow = Math.round(orpTarget - 150);
       const orpHigh = Math.round(orpTarget + 150);
       if (orp < orpLow || orp > orpHigh) {
-        orpVariant = 'danger';
-        orpText = orp < orpLow ? `Trop bas (${orp} mV)` : `Trop élevé (${orp} mV)`;
+        orpSegments.push({ priority: 1, variant: 'danger',
+          text: orp < orpLow ? `Trop bas (${orp} mV)` : `Trop élevé (${orp} mV)` });
       }
     }
-    if (!orpVariant && latestSensorData?.orp_limit_reached) {
-      orpVariant = 'warning';
-      orpText = 'Limite journalière atteinte';
+    if (latestSensorData?.orp_limit_reached) {
+      orpSegments.push({ priority: 2, variant: 'warning', text: 'Limite journalière atteinte' });
+    }
+    { const cumul = dailyCumulSegment(
+        latestSensorData?.orp_daily_ml,
+        window._config?.max_chlorine_ml_per_day ?? 0,
+        latestSensorData?.orp_limit_reached === true);
+      if (cumul) orpSegments.push(cumul);
     }
     { const rem = latestSensorData?.orp_remaining_ml;
       const thr = latestSensorData?.orp_alert_threshold_ml;
       if (rem != null && thr != null && rem <= thr && thr > 0) {
-        const stockText = `Stock faible (${(rem / 1000).toFixed(1)} L)`;
-        if (!orpVariant) { orpVariant = 'warning'; orpText = stockText; }
-        else orpText += ` · ${stockText}`;
+        orpSegments.push({ priority: 4, variant: 'warning',
+          text: `Stock faible (${(rem / 1000).toFixed(1)} L)` });
       }
     }
-    setBadge('orp-sensor-badge', orpVariant, orpText);
+    const orpBadge = composeSensorBadge(orpSegments);
+    setBadge('orp-sensor-badge', orpBadge.variant, orpBadge.text);
   }
 
   // ========== ÉCRAN PRODUITS ==========
@@ -1945,7 +2077,11 @@
     const enabled = sensor === "ph" ? config.ph_enabled : config.orp_enabled;
     if (!enabled) return "Régulation désactivée";
 
-    const remainS = data.stabilization_remaining_s || 0;
+    // feature-012 N3 : stabilisation PAR POMPE (champs feature-006) — une
+    // calibration ORP ne doit pas afficher « Stabilisation » sur la carte pH,
+    // et inversement. Fallback sur le champ global (max des 2) pour compat
+    // avec un firmware plus ancien qui ne pousserait pas les champs par pompe.
+    const remainS = data[`${sensor}_stab_remaining_s`] ?? (data.stabilization_remaining_s || 0);
     if (remainS > 0) {
       const m = Math.floor(remainS / 60);
       const s = remainS % 60;
@@ -1965,7 +2101,71 @@
     return "";  // Pas d'erreur identifiée (pause anti-cycling ou valeur OK)
   }
 
+  // feature-053 : carte Boost du tableau de bord. Consomme boost_active/boost_until
+  // du WS sensor_data (fallback window._config, alimenté par le broadcast config).
+  // Ne dépend PAS de latestSensorData → appelée avant l'early-return d'updateStatusCards.
+  function updateBoostCard() {
+    const badge = $("#detail-boost-status");
+    if (!badge) return;
+    const untilEl = $("#detail-boost-until");
+    const startBtn = $("#detail-boost-start");
+    const stopBtn = $("#detail-boost-stop");
+    const data = latestSensorData || {};
+    const cfg = window._config || {};
+    const active = (data.boost_active != null) ? !!data.boost_active : !!cfg.boost_active;
+    const until = (data.boost_until != null) ? data.boost_until : cfg.boost_until;
+    const effectRow = $("#detail-boost-effect-row");
+    const effectEl = $("#detail-boost-effect");
+    const hintEl = $("#detail-boost-hint");
+    // feature-055 : leviers réellement actifs (défaut true si champ absent, rétrocompat).
+    // Champs toujours émis par le WS, valides même Boost inactif → hint prospectif honnête.
+    const filtExt = data.boost_filtration_extended !== false;
+    const chlorBoost = data.boost_chlorine_boosted !== false;
+    let effectText, noEffect = false;
+    if (filtExt && chlorBoost)      effectText = "Filtration prolongée + surchloration";
+    else if (!filtExt && chlorBoost) effectText = "Surchloration seule";
+    else if (filtExt && !chlorBoost) effectText = "Filtration prolongée seule";
+    else { effectText = "Sans effet (filtration non gérée, ORP non automatique)"; noEffect = true; }
+    if (active) {
+      if (untilEl) {
+        if (Number.isFinite(until) && until > 0) {
+          const d = new Date(until * 1000);
+          const p = (n) => String(n).padStart(2, "0");
+          untilEl.textContent = `${p(d.getDate())}/${p(d.getMonth() + 1)} à ${p(d.getHours())}:${p(d.getMinutes())}`;
+        } else {
+          untilEl.textContent = "prochain minuit";
+        }
+      }
+      badge.textContent = "Actif";
+      badge.className = noEffect ? "state-badge state-badge--warn" : "state-badge state-badge--ok";
+      if (effectEl) effectEl.textContent = effectText;
+      if (effectRow) effectRow.style.display = "";
+      // La ligne « Effet » fait foi quand actif : masquer le hint statique pour éviter la contradiction.
+      if (hintEl) hintEl.style.display = "none";
+      if (startBtn) startBtn.style.display = "none";
+      if (stopBtn) stopBtn.style.display = "";
+    } else {
+      badge.textContent = "Inactif";
+      badge.className = "state-badge state-badge--off";
+      if (untilEl) untilEl.textContent = "—";
+      if (effectRow) effectRow.style.display = "none";
+      // Hint prospectif : décrit ce que fera réellement l'activation selon la config courante.
+      if (hintEl) {
+        let hintText;
+        if (filtExt && chlorBoost)       hintText = "À l'activation : filtration prolongée + cible ORP relevée jusqu'à minuit.";
+        else if (!filtExt && chlorBoost) hintText = "À l'activation : cible ORP relevée jusqu'à minuit (filtration non gérée par le contrôleur).";
+        else if (filtExt && !chlorBoost) hintText = "À l'activation : filtration prolongée jusqu'à minuit (régulation ORP non automatique, chlore non relevé).";
+        else                             hintText = "À l'activation : aucun effet (filtration non gérée par le contrôleur et régulation ORP non automatique).";
+        hintEl.textContent = hintText;
+        hintEl.style.display = "";
+      }
+      if (startBtn) startBtn.style.display = "";
+      if (stopBtn) stopBtn.style.display = "none";
+    }
+  }
+
   function updateStatusCards() {
+    updateBoostCard();  // feature-053 : indépendant de latestSensorData
     if (!latestSensorData) return;
 
     const data = latestSensorData;
@@ -2212,7 +2412,7 @@
         document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 1000);
       } catch (err) {
-        alert(`Erreur export historique: ${err.message || err}`);
+        showToast(`Erreur export historique : ${err.message || err}`, "error");
       } finally {
         exportBtn.disabled = false;
       }
@@ -2224,7 +2424,12 @@
 
     importBtn?.addEventListener("click", async () => {
       if (!(importInput.files && importInput.files.length)) return;
-      if (!confirm("Importer ce fichier va remplacer l'historique actuel. Continuer ?")) return;
+      if (!(await confirmDialog({
+        title: "Importer l'historique",
+        message: "Importer ce fichier va remplacer l'historique actuel.",
+        confirmLabel: "Importer",
+        danger: true
+      }))) return;
 
       importBtn.disabled = true;
       importInput.disabled = true;
@@ -2233,7 +2438,7 @@
         const text = await importInput.files[0].text();
         const points = parseHistoryCsv(text);
         if (!points.length) {
-          alert("Aucune donnée valide trouvée dans le fichier.");
+          showToast("Aucune donnée valide trouvée dans le fichier.", "error");
           return;
         }
 
@@ -2251,11 +2456,11 @@
           throw new Error(response?.error || "Import impossible");
         }
         response = await res.json();
-        alert(`Import terminé (${response?.count || points.length} points).`);
+        showToast(`Import terminé (${response?.count || points.length} points).`, "success");
         importInput.value = "";
         if (importBtn) importBtn.disabled = true;
       } catch (err) {
-        alert(`Erreur import historique: ${err.message || err}`);
+        showToast(`Erreur import historique : ${err.message || err}`, "error");
       } finally {
         importBtn.disabled = !(importInput.files && importInput.files.length);
         importInput.disabled = false;
@@ -2263,7 +2468,12 @@
     });
 
     clearBtn?.addEventListener("click", async () => {
-      if (!confirm("Supprimer l'historique enregistré ? Cette action est irréversible.")) return;
+      if (!(await confirmDialog({
+        title: "Supprimer l'historique",
+        message: "Supprimer l'historique enregistré ?\n\nCette action est irréversible.",
+        confirmLabel: "Supprimer",
+        danger: true
+      }))) return;
       clearBtn.disabled = true;
       try {
         const res = await authFetch("/history/clear", { method: "POST" });
@@ -2275,9 +2485,9 @@
           throw new Error(errJson?.error || "Suppression impossible");
         }
         clearHistoryCharts();
-        alert("Historique supprimé.");
+        showToast("Historique supprimé.", "success");
       } catch (err) {
-        alert(`Erreur suppression historique: ${err.message || err}`);
+        showToast(`Erreur suppression historique : ${err.message || err}`, "error");
       } finally {
         clearBtn.disabled = false;
       }
@@ -2353,6 +2563,30 @@
     }
   }
 
+  // feature-011 : ligne « Débit calculé » des blocs Programmée (pH/ORP).
+  // Valeur poussée par WS (ph/orp_scheduled_flow_ml_per_min) : float en mL/min,
+  // ou null hors mode scheduled / hors plage de filtration / heure invalide.
+  // La visibilité est déjà gérée par les blocs #xx-params-scheduled (mode Programmée
+  // uniquement) — ici on ne fait que rafraîchir le texte à chaque push sensor_data.
+  // NB : pas de « sur Y h restantes » côté client — l'heure du navigateur peut
+  // différer de celle de l'ESP32, on n'affiche que le débit (source firmware).
+  function updateScheduledFlowDisplay() {
+    const data = latestSensorData || {};
+    [["ph", "ph_scheduled_flow_ml_per_min"], ["orp", "orp_scheduled_flow_ml_per_min"]].forEach(([prefix, key]) => {
+      const valueEl = $(`#${prefix}_scheduled_flow_value`);
+      if (!valueEl) return;
+      const lineEl = $(`#${prefix}_scheduled_flow_line`);
+      const v = data[key];
+      if (typeof v === "number" && !isNaN(v)) {
+        valueEl.textContent = v.toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " mL/min";
+        if (lineEl) lineEl.removeAttribute("title");
+      } else {
+        valueEl.textContent = "—";
+        if (lineEl) lineEl.title = "Hors plage de filtration ou données indisponibles";
+      }
+    });
+  }
+
   // ========== SECTIONS DÉTAILLÉES ==========
   function updateDetailSections() {
     const config = window._config || {};
@@ -2381,6 +2615,9 @@
     // Dosage journalier pH et ORP
     updateDailyDoseDisplay('ph');
     updateDailyDoseDisplay('orp');
+
+    // feature-011 : débit moyen calculé en mode Programmée (push WS)
+    updateScheduledFlowDisplay();
 
     // Boutons Démarrer/Arrêter du tableau de bord : grisés en mode Désactivé
     const isOff = (config.filtration_mode || '').toLowerCase() === 'off';
@@ -2497,6 +2734,68 @@
           }
         } catch (e) {
           console.error('Erreur extinction éclairage:', e);
+          showToast("Erreur de connexion", "error");
+        }
+      });
+    }
+
+    // Boutons Boost (feature-053)
+    const boostStartBtn = $("#detail-boost-start");
+    const boostStopBtn = $("#detail-boost-stop");
+
+    if (boostStartBtn) {
+      boostStartBtn.addEventListener('click', async () => {
+        try {
+          const response = await authFetch("/boost/start", { method: "POST" });
+          if (response.ok) {
+            const r = await response.json().catch(() => ({}));
+            if (latestSensorData) {
+              latestSensorData.boost_active = true;
+              if (r.boost_until != null) latestSensorData.boost_until = r.boost_until;
+              // feature-055 : affichage immédiat des leviers (avant le prochain WS ~5 s)
+              if (r.filtration_extended != null) latestSensorData.boost_filtration_extended = r.filtration_extended;
+              if (r.chlorine_boosted != null) latestSensorData.boost_chlorine_boosted = r.chlorine_boosted;
+            }
+            updateBoostCard();
+            // feature-054 : toast adaptatif selon les leviers réellement actifs
+            // (renvoyés par le firmware, source de vérité).
+            const filtExt = r.filtration_extended !== false;   // défaut true si absent (rétrocompat)
+            const chlorBoost = r.chlorine_boosted !== false;
+            if (filtExt && chlorBoost) {
+              showToast("Boost activé — vérifiez le taux de chlore avant la baignade.", "info");
+            } else if (!filtExt && chlorBoost) {
+              showToast("Boost activé (surchloration seule) : la filtration n'est pas gérée par PoolController. Vérifiez le taux de chlore avant la baignade.", "info");
+            } else if (filtExt && !chlorBoost) {
+              showToast("Boost activé (filtration prolongée seule) : la régulation ORP n'est pas en mode Automatique, le chlore n'est pas relevé.", "warning");
+            } else {
+              showToast("Boost sans effet : filtration non gérée et régulation ORP non automatique.", "warning");
+            }
+          } else if (response.status === 409) {
+            const r = await response.json().catch(() => ({}));
+            showToast(r.message || "Boost impossible (horloge non synchronisée).", "error");
+          } else {
+            showToast("Erreur lors de l'activation du Boost", "error");
+          }
+        } catch (e) {
+          console.error('Erreur activation boost:', e);
+          showToast("Erreur de connexion", "error");
+        }
+      });
+    }
+
+    if (boostStopBtn) {
+      boostStopBtn.addEventListener('click', async () => {
+        try {
+          const response = await authFetch("/boost/stop", { method: "POST" });
+          if (response.ok) {
+            if (latestSensorData) { latestSensorData.boost_active = false; latestSensorData.boost_until = 0; }
+            updateBoostCard();
+            showToast("Boost désactivé", "success");
+          } else {
+            showToast("Erreur lors de l'arrêt du Boost", "error");
+          }
+        } catch (e) {
+          console.error('Erreur arrêt boost:', e);
           showToast("Erreur de connexion", "error");
         }
       });
@@ -3163,13 +3462,15 @@
       hideTempCalibrationCard();
     });
 
-    cancelBtn?.addEventListener("click", () => {
-      if (confirm("Annuler la calibration en cours ?")) {
-        tempCalibrationStep = 0;
-        if (refInput) refInput.value = "";
-        updateTempCalibrationSteps();
-        loadConfig();
-      }
+    cancelBtn?.addEventListener("click", async () => {
+      if (!(await confirmDialog({
+        title: "Annuler la calibration",
+        message: "Annuler la calibration en cours ?"
+      }))) return;
+      tempCalibrationStep = 0;
+      if (refInput) refInput.value = "";
+      updateTempCalibrationSteps();
+      loadConfig();
     });
 
     startBtn?.addEventListener("click", async () => {
@@ -3183,7 +3484,7 @@
       } else if (tempCalibrationStep === 2) {
         const referenceValue = parseFloat(refInput.value);
         if (isNaN(referenceValue) || referenceValue < -10 || referenceValue > 50) {
-          alert("Température de référence invalide (-10 à 50 °C)");
+          showToast("Température de référence invalide (-10 à 50 °C)", "error");
           return;
         }
         tempCalibrationStep = 3;
@@ -3191,14 +3492,14 @@
       } else if (tempCalibrationStep === 3) {
         const referenceValue = parseFloat(refInput.value);
         if (isNaN(referenceValue) || referenceValue < -10 || referenceValue > 50) {
-          alert("Température de référence invalide (-10 à 50 °C)");
+          showToast("Température de référence invalide (-10 à 50 °C)", "error");
           tempCalibrationStep = 2;
           updateTempCalibrationSteps();
           return;
         }
 
         if (!latestSensorData || isNaN(latestSensorData.temperature) || latestSensorData.temperature == null) {
-          alert("Aucune donnée capteur disponible (/data).");
+          showToast("Aucune donnée capteur disponible (/data).", "error");
           return;
         }
 
@@ -3268,7 +3569,7 @@
             await loadSensorData();
           }, 2000);
         } catch (err) {
-          alert("Erreur calibration température:\n" + err.message);
+          showToast("Erreur calibration température : " + err.message, "error");
           tempCalibrationStep = 0;
           updateTempCalibrationSteps();
         } finally {
@@ -3901,6 +4202,22 @@
   // GitHub update
   let latestRelease = null;
 
+  // Traduit les erreurs d'intégrité OTA (feature-026) en message français.
+  // Retourne null si l'erreur n'est pas liée à l'intégrité.
+  function integrityErrorMessage(errJson, isFs) {
+    const code = errJson?.error;
+    if (code === "integrity_digest_missing" || code === "integrity_digest_invalid") {
+      return "Empreinte d'intégrité absente ou invalide — mise à jour refusée par sécurité.";
+    }
+    if (code === "integrity_mismatch") {
+      return (
+        "Échec de la vérification d'intégrité — image refusée, version actuelle conservée." +
+        (isFs ? " Réinstallez le filesystem." : "")
+      );
+    }
+    return null;
+  }
+
   function bindGithubUpdate() {
     const checkBtn = $("#check_update_btn");
     const installBtn = $("#install_update_btn");
@@ -3909,12 +4226,15 @@
     const progress = $("#github_update_progress");
     const bar = $("#github_update_progress_bar");
     const status = $("#github_update_status");
+    const barWrap = bar ? bar.parentElement : null;
 
     checkBtn?.addEventListener("click", async () => {
       checkBtn.disabled = true;
       checkBtn.textContent = "Vérification…";
       if (info) info.style.display = "none";
       if (installBtn) installBtn.disabled = true;
+      if (progress) progress.style.display = "none";
+      if (barWrap) barWrap.style.display = "";
 
       try {
         const res = await authFetch("/check-update");
@@ -3946,7 +4266,16 @@
           $("#release_name").textContent = data.release_name || "-";
           $("#release_date").textContent = data.published_at ? new Date(data.published_at).toLocaleString("fr-FR") : "-";
           $("#release_notes").textContent = data.release_notes || "Aucune note";
-          installBtn.disabled = !data.firmware_url;
+          // Fail-closed (feature-026) : sans empreinte d'intégrité, installation refusée
+          if (!data.firmware_digest || !data.filesystem_digest) {
+            installBtn.disabled = true;
+            if (progress) progress.style.display = "block";
+            if (barWrap) barWrap.style.display = "none";
+            status.textContent =
+              "Cette release ne fournit pas d'empreinte d'intégrité — installation refusée (sécurité).";
+          } else {
+            installBtn.disabled = !data.firmware_url;
+          }
         } else {
           $("#update_available_msg").style.display = "none";
           $("#no_update_msg").style.display = "block";
@@ -3957,9 +4286,9 @@
       } catch (e) {
         const msg = String(e?.message || "");
         if (msg.includes("System time not synchronized")) {
-          alert("Heure non synchronisée.\nActive le NTP ou règle l'heure dans les réglages avant de vérifier les mises à jour.");
+          showToast("Heure non synchronisée — active le NTP ou règle l'heure avant de vérifier les mises à jour.", "error");
         } else {
-          alert("Erreur vérification mise à jour.\n" + (msg || "Vérifie la connexion Internet de l'ESP32."));
+          showToast("Erreur vérification mise à jour : " + (msg || "vérifie la connexion Internet de l'ESP32."), "error");
         }
       } finally {
         checkBtn.textContent = "Vérifier";
@@ -3969,15 +4298,19 @@
 
     installBtn?.addEventListener("click", async () => {
       if (!latestRelease || !latestRelease.firmware_url || !latestRelease.filesystem_url) {
-        alert("Aucune mise à jour disponible.");
+        showToast("Aucune mise à jour disponible.", "info");
+        return;
+      }
+      if (!latestRelease.firmware_digest || !latestRelease.filesystem_digest) {
+        showToast("Cette release ne fournit pas d'empreinte d'intégrité — installation refusée (sécurité).", "error");
         return;
       }
 
-      if (
-        !confirm(
-          `⚠️ ATTENTION\n\nInstaller ${latestRelease.latest_version}\n\n• Filesystem puis firmware\n• Ne pas couper l'alimentation\n\nContinuer ?`
-        )
-      ) {
+      if (!(await confirmDialog({
+        title: "Installer la mise à jour",
+        message: `Installer ${latestRelease.latest_version}\n\n• Filesystem puis firmware\n• Ne pas couper l'alimentation`,
+        confirmLabel: "Installer"
+      }))) {
         return;
       }
 
@@ -3985,6 +4318,7 @@
       installBtn.disabled = true;
 
       progress.style.display = "block";
+      if (barWrap) barWrap.style.display = "";
       bar.style.width = "0%";
       bar.textContent = "0%";
       status.textContent = "1/2 Filesystem : téléchargement…";
@@ -4003,7 +4337,10 @@
         const fsRes = await authFetch("/download-update", {
           method: "POST",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: "url=" + encodeURIComponent(latestRelease.filesystem_url) + "&restart=false",
+          body:
+            "url=" + encodeURIComponent(latestRelease.filesystem_url) +
+            "&digest=" + encodeURIComponent(latestRelease.filesystem_digest) +
+            "&restart=false",
         });
 
         clearInterval(t);
@@ -4016,8 +4353,13 @@
           try {
             fsJson = await fsRes.json();
           } catch (_) {}
-          const errMsg = fsJson?.error || "Erreur téléchargement filesystem";
-          throw new Error(errMsg);
+          const integrityMsg = integrityErrorMessage(fsJson, true);
+          if (integrityMsg) {
+            const err = new Error(integrityMsg);
+            err.integrity = true;
+            throw err;
+          }
+          throw new Error(fsJson?.error || "Erreur téléchargement filesystem");
         }
         fsJson = await fsRes.json();
         if (fsJson.status !== "success") throw new Error("Erreur installation filesystem");
@@ -4041,7 +4383,10 @@
           const fwRes = await authFetch("/download-update", {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
-            body: "url=" + encodeURIComponent(latestRelease.firmware_url) + "&restart=true",
+            body:
+              "url=" + encodeURIComponent(latestRelease.firmware_url) +
+              "&digest=" + encodeURIComponent(latestRelease.firmware_digest) +
+              "&restart=true",
           });
 
           clearInterval(t);
@@ -4051,8 +4396,13 @@
             try {
               fwJson = await fwRes.json();
             } catch (_) {}
-            const errMsg = fwJson?.error || "Erreur téléchargement firmware";
-            throw new Error(errMsg);
+            const integrityMsg = integrityErrorMessage(fwJson, false);
+            if (integrityMsg) {
+              const err = new Error(integrityMsg);
+              err.integrity = true;
+              throw err;
+            }
+            throw new Error(fwJson?.error || "Erreur téléchargement firmware");
           }
           fwJson = await fwRes.json();
           fwSuccess = fwJson.status === "success";
@@ -4061,8 +4411,8 @@
           // Network error is expected when ESP32 restarts after firmware install
           // If we got here after filesystem was OK, assume firmware install succeeded
           const errMsg = String(fwErr?.message || "");
-          if (errMsg.includes("System time not synchronized")) {
-            throw fwErr; // Re-throw time sync errors
+          if (errMsg.includes("System time not synchronized") || fwErr?.integrity) {
+            throw fwErr; // Re-throw time sync and integrity errors
           }
           // For network errors (fetch failed), assume success since ESP32 restarted
           fwSuccess = true;
@@ -4089,10 +4439,12 @@
         }
       } catch (e) {
         const msg = String(e?.message || "");
-        if (msg.includes("System time not synchronized")) {
-          alert("Heure non synchronisée.\nActive le NTP ou règle l'heure dans les réglages avant de lancer la mise à jour.");
+        if (e?.integrity) {
+          status.textContent = "✗ " + msg;
+        } else if (msg.includes("System time not synchronized")) {
+          showToast("Heure non synchronisée — active le NTP ou règle l'heure avant de lancer la mise à jour.", "error");
         } else {
-          alert("Erreur mise à jour:\n" + e.message);
+          showToast("Erreur mise à jour : " + e.message, "error");
         }
         checkBtn.disabled = false;
       }
@@ -4475,7 +4827,12 @@
     const resetBtn = $("#sondes-reset-btn");
     if (resetBtn) {
       resetBtn.addEventListener("click", async () => {
-        if (!confirm("Réinitialiser l'identification des deux sondes ?\n\nVous devrez les ré-identifier ensuite.")) return;
+        if (!(await confirmDialog({
+          title: "Réinitialiser les sondes",
+          message: "Réinitialiser l'identification des deux sondes ?\n\nVous devrez les ré-identifier ensuite.",
+          confirmLabel: "Réinitialiser",
+          danger: true
+        }))) return;
         try {
           const resp = await authFetch("/sensors/onewire/reset", {
             method: "POST",
@@ -4516,7 +4873,12 @@
     });
 
     $("#clear_logs_firmware_btn")?.addEventListener("click", async () => {
-      if (!confirm("Effacer tous les logs côté ESP32 ?\n\nLa mémoire RAM ET le fichier persistant seront vidés.\nCette action est irréversible.")) return;
+      if (!(await confirmDialog({
+        title: "Effacer les logs",
+        message: "Effacer tous les logs côté ESP32 ?\n\nLa mémoire RAM ET le fichier persistant seront vidés.\nCette action est irréversible.",
+        confirmLabel: "Effacer",
+        danger: true
+      }))) return;
       try {
         const resp = await authFetch("/logs", { method: "DELETE" });
         if (!resp.ok) { showToast("Erreur lors de l'effacement", "error"); return; }
@@ -4618,7 +4980,7 @@
         setButtonState(savedLabel, false, true, "success");
         setTimeout(() => setButtonState(defaultLabel, false, true, "default"), 2000);
       } else {
-        alert("Erreur lors de la sauvegarde MQTT.");
+        showToast("Erreur lors de la sauvegarde MQTT.", "error");
         setButtonState("Erreur", false, true, "error");
         setTimeout(() => setButtonState(defaultLabel, false, false, "default"), 2000);
       }
@@ -4648,6 +5010,7 @@
       };
       const ok = await sendConfig(cfg);
       if (ok) {
+        lightingDirty = false;  // bug-ui-eclairage-refresh-ws : édition sauvegardée
         loadConfig();
         setBtn("Sauvegarde réussie", false, true, "success");
         setTimeout(() => setBtn(defaultLabel, false, true, "default"), 2000);
@@ -5200,11 +5563,14 @@
 
     // Lighting schedule — sauvegarde manuelle via bouton
     $("#lighting_schedule_mode")?.addEventListener("change", () => {
+      lightingDirty = true;  // bug-ui-eclairage-refresh-ws : ne pas écraser une édition en cours
       const scheduleSettings = $("#lighting-schedule-settings");
       if (scheduleSettings) {
-        scheduleSettings.style.display = $("#lighting_schedule_mode").value === "enabled" ? "block" : "none";
+        scheduleSettings.style.display = $("#lighting_schedule_mode").value === "enabled" ? "" : "none";
       }
     });
+    $("#lighting_start_time")?.addEventListener("change", () => { lightingDirty = true; });
+    $("#lighting_end_time")?.addEventListener("change", () => { lightingDirty = true; });
     bindLightingManualSave();
 
     // pH / ORP regulation — sauvegarde immédiate sur le sélecteur de mode
@@ -5400,7 +5766,12 @@
     });
 
     $("#coredump_erase_btn")?.addEventListener("click", async () => {
-      if (!confirm("Effacer le coredump ?\n\nL'analyse du crash actuel sera définitivement perdue.")) return;
+      if (!(await confirmDialog({
+        title: "Effacer le coredump",
+        message: "Effacer le coredump ?\n\nL'analyse du crash actuel sera définitivement perdue.",
+        confirmLabel: "Effacer",
+        danger: true
+      }))) return;
       try {
         const resp = await authFetch("/coredump", { method: "DELETE" });
         if (!resp.ok) { showToast("Erreur lors de l'effacement", "error"); return; }
@@ -5417,19 +5788,26 @@
     });
 
     // Logout button
-    $("#logout-btn")?.addEventListener("click", (e) => {
+    $("#logout-btn")?.addEventListener("click", async (e) => {
       e.preventDefault();
-      if (confirm("Voulez-vous vraiment vous déconnecter ?")) {
-        // Clear session storage
-        sessionStorage.removeItem('authToken');
-        // Redirect to login page
-        window.location.href = '/login.html';
-      }
+      if (!(await confirmDialog({
+        title: "Déconnexion",
+        message: "Voulez-vous vraiment vous déconnecter ?",
+        confirmLabel: "Se déconnecter"
+      }))) return;
+      // Clear session storage
+      sessionStorage.removeItem('authToken');
+      // Redirect to login page
+      window.location.href = '/login.html';
     });
 
     // Reboot button
     $("#reboot_btn")?.addEventListener("click", async () => {
-      if (!confirm("Voulez-vous vraiment redémarrer ?\n\nL'appareil sera indisponible pendant environ 10 secondes.")) {
+      if (!(await confirmDialog({
+        title: "Redémarrer",
+        message: "Voulez-vous vraiment redémarrer ?\n\nL'appareil sera indisponible pendant environ 10 secondes.",
+        confirmLabel: "Redémarrer"
+      }))) {
         return;
       }
 
@@ -5439,25 +5817,35 @@
         });
 
         if (res.ok) {
-          alert("Redémarrage en cours...\n\nVeuillez patienter environ 10 secondes puis actualiser la page.");
+          showToast("Redémarrage en cours — patientez environ 10 secondes puis actualisez la page.", "info");
           // Désactiver le bouton pour éviter les clics multiples
           $("#reboot_btn").disabled = true;
           $("#reboot_btn").textContent = "Redémarrage en cours...";
         } else {
-          alert("Erreur lors du redémarrage de l'ESP32");
+          showToast("Erreur lors du redémarrage de l'ESP32", "error");
         }
       } catch (error) {
-        alert("Erreur de connexion: " + error.message);
+        showToast("Erreur de connexion : " + error.message, "error");
       }
     });
 
     // Factory reset button
     $("#factory_reset_btn")?.addEventListener("click", async () => {
-      if (!confirm("Réinitialisation du système\n\n⚠ Cette action est irréversible.\n\nToutes les données seront supprimées :\n- Configuration (pH, ORP, MQTT, Wi-Fi…)\n- Calibrations\n- Historique des produits\n\nLe système redémarrera sur l'assistant de configuration.\n\nConfirmer la réinitialisation ?")) {
+      if (!(await confirmDialog({
+        title: "Réinitialisation du système",
+        message: "Cette action est irréversible.\n\nToutes les données seront supprimées :\n- Configuration (pH, ORP, MQTT, Wi-Fi…)\n- Calibrations\n- Historique des produits\n\nLe système redémarrera sur l'assistant de configuration.",
+        confirmLabel: "Réinitialiser",
+        danger: true
+      }))) {
         return;
       }
       // Double confirmation
-      if (!confirm("Dernière confirmation.\n\nVoulez-vous vraiment effacer toutes les données ?")) {
+      if (!(await confirmDialog({
+        title: "Dernière confirmation",
+        message: "Voulez-vous vraiment effacer toutes les données ?",
+        confirmLabel: "Tout effacer",
+        danger: true
+      }))) {
         return;
       }
       try {
@@ -5466,14 +5854,14 @@
         btn.textContent = "Réinitialisation…";
         const res = await authFetch("/factory-reset", { method: "POST" });
         if (res.ok) {
-          alert("Réinitialisation effectuée.\n\nL'appareil redémarre. Connectez-vous au réseau Wi-Fi de l'ESP32 pour accéder à l'assistant de configuration.");
+          showToast("Réinitialisation effectuée — l'appareil redémarre. Connectez-vous au Wi-Fi de l'ESP32 pour l'assistant de configuration.", "success");
         } else {
-          alert("Erreur lors de la réinitialisation.");
+          showToast("Erreur lors de la réinitialisation.", "error");
           btn.disabled = false;
           btn.textContent = "Réinitialiser";
         }
       } catch {
-        alert("Erreur de connexion.");
+        showToast("Erreur de connexion.", "error");
         const btn = $("#factory_reset_btn");
         if (btn) { btn.disabled = false; btn.textContent = "Réinitialiser"; }
       }
@@ -5482,30 +5870,6 @@
 
   // ---------- Security bindings ----------
   function bindSecurity() {
-    trackDirtyState("#cors-save-btn", ["auth_cors_origins"]);
-    // Save CORS configuration (bouton manuel)
-    const corsBtn = $("#cors-save-btn");
-    const setCorsBtnState = (label, status) => {
-      if (!corsBtn) return;
-      corsBtn.disabled = status === "saving" || status === "clean";
-      corsBtn.classList.remove("btn--primary", "btn--ok", "btn--danger");
-      if (status === "success") corsBtn.classList.add("btn--ok");
-      else if (status === "error") corsBtn.classList.add("btn--danger");
-      else corsBtn.classList.add("btn--primary");
-      corsBtn.textContent = label;
-    };
-    corsBtn?.addEventListener("click", async () => {
-      setCorsBtnState("Sauvegarde...", "saving");
-      const ok = await sendConfig({ auth_cors_origins: $("#auth_cors_origins").value.trim() });
-      if (ok) {
-        setCorsBtnState("Sauvegarde réussie", "success");
-        setTimeout(() => setCorsBtnState("Sauvegarder", "clean"), 2000);
-      } else {
-        setCorsBtnState("Erreur", "error");
-        setTimeout(() => setCorsBtnState("Sauvegarder", "default"), 2000);
-      }
-    });
-
     // Password validation helper
     function checkPasswordStrength(password) {
       const rules = {
@@ -5589,7 +5953,7 @@
 
       // Validation: current password required
       if (!currentPassword) {
-        alert("Veuillez saisir votre mot de passe actuel.");
+        showToast("Veuillez saisir votre mot de passe actuel.", "error");
         return;
       }
 
@@ -5601,23 +5965,27 @@
         if (!rules.length) missing.push('8 caractères minimum');
         if (!rules.number) missing.push('1 chiffre');
         if (!rules.special) missing.push('1 caractère spécial');
-        alert(`Le nouveau mot de passe doit contenir: ${missing.join(', ')}`);
+        showToast(`Le nouveau mot de passe doit contenir : ${missing.join(', ')}`, "error");
         return;
       }
 
       // Validation: passwords match
       if (newPassword !== confirmPassword) {
-        alert("Les nouveaux mots de passe ne correspondent pas.");
+        showToast("Les nouveaux mots de passe ne correspondent pas.", "error");
         return;
       }
 
       // Validation: new password must be different
       if (currentPassword === newPassword) {
-        alert("Le nouveau mot de passe doit être différent du mot de passe actuel.");
+        showToast("Le nouveau mot de passe doit être différent du mot de passe actuel.", "error");
         return;
       }
 
-      if (!confirm("Voulez-vous vraiment modifier le mot de passe administrateur ?")) {
+      if (!(await confirmDialog({
+        title: "Modifier le mot de passe",
+        message: "Voulez-vous vraiment modifier le mot de passe administrateur ?",
+        confirmLabel: "Modifier"
+      }))) {
         return;
       }
 
@@ -5635,9 +6003,9 @@
         if (!res.ok) {
           const error = await res.json().catch(() => ({}));
           if (res.status === 401) {
-            alert("L'ancien mot de passe est incorrect.");
+            showToast("L'ancien mot de passe est incorrect.", "error");
           } else {
-            alert("Erreur: " + (error.error || "Échec du changement de mot de passe"));
+            showToast("Erreur : " + (error.error || "Échec du changement de mot de passe"), "error");
           }
           return;
         }
@@ -5649,14 +6017,14 @@
           sessionStorage.setItem('authToken', data.token);
         }
 
-        alert("Mot de passe modifié avec succès !");
+        showToast("Mot de passe modifié avec succès !", "success");
         // Clear all password fields and reset validation UI
         $("#auth_current_password").value = "";
         $("#auth_password").value = "";
         $("#auth_password_confirm").value = "";
         updatePasswordFeedback();
       } catch (error) {
-        alert("Erreur de connexion: " + error.message);
+        showToast("Erreur de connexion : " + error.message, "error");
       }
     });
   }
@@ -5732,6 +6100,7 @@
     bindDetailCharts();
 
     bindUI();
+    bindConfirmModal();
     bindHistoryBackup();
     bindDetailActions();
     bindAutosave();
@@ -5932,7 +6301,7 @@
 
       if (scheduleMode && config.lighting_schedule_enabled !== undefined) {
         scheduleMode.value = config.lighting_schedule_enabled ? "enabled" : "disabled";
-        scheduleSettings.style.display = config.lighting_schedule_enabled ? "block" : "none";
+        scheduleSettings.style.display = config.lighting_schedule_enabled ? "" : "none";
       }
 
       if (config.lighting_start_time) {

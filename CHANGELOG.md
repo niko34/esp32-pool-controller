@@ -1,5 +1,377 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.18.3] - 2026-07-07
+
+### Corrigé
+
+- **Mode Boost — texte d'aide incohérent** : la description sous le widget Boost promettait toujours « filtration prolongée + cible ORP relevée », même quand l'effet réel affiché était « Surchloration seule » (filtration non gérée par le contrôleur) ou « Filtration prolongée seule » (ORP non automatique). Le texte est désormais cohérent : masqué quand le Boost est actif (la ligne « Effet » fait foi), et **prospectif honnête** quand inactif (« À l'activation : … ») en fonction de la configuration réelle. Purement UI, aucun impact sur le dosage.
+
+---
+
+## [2.18.2] - 2026-07-07
+
+### Amélioré
+
+- **Mode Boost — indication d'effet persistante (feature-055, finition feature-053/054)** : le widget Boost du tableau de bord affiche désormais **en permanence** les leviers réellement actifs — « Filtration prolongée + surchloration », « Surchloration seule », « Filtration prolongée seule », ou « Sans effet » (badge orange) —, complément persistant du toast fugace de la feature-054. L'info reste visible **après une activation depuis Home Assistant** et **après un rechargement de page**, via deux nouveaux champs WebSocket `boost_filtration_extended` (= filtration gérée par PoolController) et `boost_chlorine_boosted` (= régulation ORP en mode Automatique) calculés au vol. Affichage immédiat au clic Activer (mapping de la réponse `POST /boost/start`). **Purement informatif** : aucune logique de dosage ni de filtration modifiée.
+
+### Documentation
+
+- `docs/subsystems/ws-manager.md` : champs WS `boost_filtration_extended` / `boost_chlorine_boosted` (calculés au vol, buffer 1600 → 1664).
+- `docs/features/page-dashboard.md` : ligne « Effet » persistante du widget Boost (4 libellés + badge `--warn`).
+
+---
+
+## [2.18.1] - 2026-07-07
+
+### Amélioré
+
+- **Mode Boost — signalement des leviers inertes (feature-054, finition feature-053)** : à l'activation, le Boost indique désormais quels leviers s'appliquent réellement selon la config. Si la filtration n'est pas gérée par PoolController (`filtration_enabled = false`), la filtration n'est pas prolongée ; si la régulation ORP n'est pas en mode Automatique, le chlore n'est pas relevé. Deux canaux d'information : (1) `startBoost()` logue un `warning` par levier inerte — couvre l'activation HTTP **et** MQTT/Home Assistant ; (2) la réponse 200 de `POST /boost/start` renvoie `filtration_extended` et `chlorine_boosted`, à partir desquels le dashboard affiche un **toast adaptatif** (nominal « vérifiez le taux de chlore », surchloration seule, filtration prolongée seule, ou « Boost sans effet »). **Purement informatif** : aucune logique de dosage, de garde ni de filtration n'est modifiée ; l'activation n'est jamais bloquée.
+
+### Documentation
+
+- `docs/API.md` : réponse 200 de `POST /boost/start` complétée avec `filtration_extended` / `chlorine_boosted` + note sur le log `warning`.
+- `docs/features/page-dashboard.md` : tableau des 4 cas du toast adaptatif du Boost.
+- `docs/subsystems/pump-controller.md` : section « Signalement des leviers inertes » (conditions d'effet de chaque levier, warnings `startBoost()`).
+
+---
+
+## [2.18.0] - 2026-07-06
+
+### Fonctionnalités
+
+- **Mode Boost — surchloration temporaire du jour (feature-053)** : après une forte fréquentation, un geste active le Mode Boost pour assainir davantage la piscine **pour la journée** : filtration prolongée (forçage dédié) + cible ORP relevée (`+60 mV`, plafonnée à 850 mV sous l'alerte). Surcouche **non destructive** (la config n'est jamais modifiée) auto-expirant au prochain minuit local. Pilotable depuis le dashboard (carte Boost avec expiration + toast « vérifier le taux de chlore avant baignade ») et depuis Home Assistant (switch « Boost »). L'activation est refusée si l'heure n'est pas synchronisée.
+
+### Firmware
+
+- **Régulation ORP — valeurs effectives boostées (feature-053)** : tant que le Boost est actif et **uniquement en mode de régulation ORP `automatic`**, la cible ORP effective = `min(orp_target + 60, 850)` mV et la limite journalière chlore effective = `min(max_chlorine_ml_per_day × 1,5, 1000)` mL — **bornes de sécurité dédiées figées par pool-chemistry**, jamais abaissées. En Manuel / Programmé, seule la filtration s'étend ; l'injection manuelle reste bornée à la limite normale. **Tous les autres garde-fous sont inchangés** (limite horaire, temps min d'injection, anti-rafale, injection si filtration active, watchdog) : le Boost n'ouvre aucun chemin de dosage. Décision structurante formalisée en [ADR-0025](docs/adr/0025-mode-boost.md).
+- **Persistance** : état `boostState` (`active` + `untilEpoch`) persisté en NVS dédié (namespace `poolctrl`) → survit à un reboot dans la journée ; expiration honorée avant le reset des compteurs journaliers dans les deux branches de `tickDailyRollover()`.
+- **MQTT / Home Assistant** : switch « Boost » (topic retain `{base}/boost` + commande `{base}/boost/set`, payload `ON`/`OFF`). L'état retombe automatiquement sur `OFF` à minuit. Activation refusée sans heure synchronisée (commande ignorée + resync HA).
+- **Web / API** : routes `POST /boost/start` (auth WRITE, `409 time_not_synced` si horloge non synchronisée) et `POST /boost/stop` ; champs `boost_active` / `boost_until` (epoch) dans `/get-config` et le WebSocket.
+
+### Documentation
+
+- **[ADR-0025](docs/adr/0025-mode-boost.md)** créé (Accepté) : surcouche temporaire « valeurs effectives » + relèvement borné de la limite chlore, 4 bornes de sécurité et leur justification, alternatives écartées (mutation de config, relèvement non borné, durée fixe en heures, switch de mode), conséquences (edge boost court le soir, heure synchronisée requise, vérification chimique à la charge de l'utilisateur). Indexé dans `docs/adr/README.md`.
+- `docs/MQTT.md` : topic `{base}/boost` + commande `{base}/boost/set`, entité discovery `switch` « Boost », section feature-053 dédiée.
+- `docs/API.md` : routes `POST /boost/start` \| `/boost/stop`, champs `boost_active` / `boost_until` de `/get-config`.
+- `docs/subsystems/ws-manager.md` : champs WS `boost_active` (bool) + `boost_until` (epoch).
+- `docs/subsystems/pump-controller.md` : section Mode Boost (état, cible/limite effectives, expiration minuit, gate mode automatic), 4 constantes ajoutées au récapitulatif.
+- `docs/features/page-dashboard.md` : carte Boost (activation, expiration, rappel baignade).
+
+---
+
+## [2.17.3] - 2026-07-06
+
+### Firmware
+
+- **Home Assistant — modes de régulation pH/ORP affichés en français (bug-ha-regulation-mode-labels)** : les selects « Mode Régulation pH » et « Mode Régulation ORP » exposaient dans HA les valeurs brutes anglaises `automatic`/`scheduled`/`manual` (feature-009), alors que l'UI web affiche « Automatique » / « Programmée » / « Manuelle ». Les deux selects affichent désormais ces libellés français via `value_template` / `command_template`, même technique que les modes filtration et éclairage. **Le protocole MQTT sur le fil reste strictement `automatic`/`scheduled`/`manual`** (topics d'état et handlers `PhRegulationMode`/`OrpRegulationMode` inchangés) : aucune automatisation Home Assistant existante n'est cassée.
+
+### Documentation
+
+- `docs/MQTT.md` : options des entités discovery pH/ORP passées aux libellés français, note dédiée aux templates, mise à jour de la note « Mode Filtration » (les selects de régulation ne sont plus en anglais).
+- `docs/subsystems/mqtt-manager.md` : section « Selects Mode Régulation pH/ORP » (`value_template`/`command_template`, wire inchangé).
+
+---
+
+## [2.17.2] - 2026-07-06
+
+### Firmware
+
+- **Home Assistant — mode de programmation éclairage en liste déroulante (bug-ha-eclairage-select, finition feature-052)** : la programmation horaire de l'éclairage, jusque-là exposée en `switch` ON/OFF, est désormais un `select` **« Mode Éclairage »** avec les options **« Programmation »** / **« Désactivé »**, aligné sur le select « Mode Filtration ». Même technique que les libellés filtration : `value_template` / `command_template` traduisent l'affichage HA, le protocole sur le fil reste strictement `ON`/`OFF`. Le booléen `scheduleEnabled` et le handler `LightingSchedule` sont inchangés. Migration : un payload retain vide est publié sur l'ancien topic `homeassistant/switch/{id}_lighting_schedule/config` pour retirer le switch orphelin de HA.
+
+### Documentation
+
+- `docs/MQTT.md` : entité éclairage passée de `switch` à `select` « Mode Éclairage » (tableau discovery, section feature-052, note dédiée aux templates et au nettoyage de l'ancien switch).
+- `docs/subsystems/mqtt-manager.md` : section « Select Mode Éclairage », migration de l'orphelin, mise à jour du handler et des compteurs.
+
+---
+
+## [2.17.1] - 2026-07-06
+
+### Corrigé
+
+- **Éclairage — rafraîchissement temps réel des champs de programmation (bug-ui-eclairage-refresh-ws, finition feature-052)** : l'écran Éclairage rafraîchit désormais ses champs de programmation (mode, heures début/fin) en temps réel lors d'un changement depuis Home Assistant, comme l'écran Filtration. Auparavant, `loadConfig()` (message WS `config`) repeuplait les champs filtration mais pas éclairage : il fallait quitter/revenir sur l'écran pour voir la valeur à jour. Correctif UI uniquement (`data/app.js`, miroir du mécanisme `filtrationDirty`) ; une saisie éclairage en cours n'est pas écrasée par un message WS. Aucun firmware modifié.
+
+---
+
+## [2.17.0] - 2026-07-06
+
+### Fonctionnalités
+
+- **Éclairage — section Programmation uniformisée avec la filtration (feature-052)** : la carte Programmation de la page Éclairage adopte les mêmes libellés que la filtration — select **« Mode d'éclairage »** avec options **« Programmation »** / **« Désactivé »**, heures **Début** / **Fin** en grille 2 colonnes. Les valeurs sous-jacentes (booléen `lighting_schedule_enabled`) et le backend sont inchangés ; seuls les libellés affichés changent. Le contrôle manuel (Allumer / Éteindre) reste indépendant.
+
+### Firmware
+
+- **Home Assistant — planning éclairage pilotable (feature-052)** : l'activation de la programmation et les heures de l'éclairage sont désormais exposées à Home Assistant, en miroir de la filtration (feature-051). Nouvelle entité `switch` « Programmation éclairage » (topic retain `{base}/lighting_schedule` + commande `.../set`, payload `ON`/`OFF` → booléen `scheduleEnabled`) et 2 entités `text` « Éclairage début » / « Éclairage fin » (`{base}/lighting_start` / `{base}/lighting_end` + `.../set`, format `HH:MM`). Validation `ON`/`OFF` et `HH:MM` (invalide → ignoré + `warning` + resync HA) ; changement persisté en NVS, appliqué via `lighting.update()`, et reflété dans l'UI web sous ≤ 5 s (broadcast WS `config`). `publishLightingState()` enrichie et publiée au cycle périodique. Le booléen `scheduleEnabled` est conservé côté firmware (pas de stringification, cf. feature-028). Aucun chemin de dosage touché.
+
+### Documentation
+
+- `docs/MQTT.md` : 3 topics d'état + 3 commandes `/set` éclairage, 3 entités discovery (1 `switch` + 2 `text` `HH:MM`), section feature-052 dédiée, compte discovery total mis à jour.
+- `docs/subsystems/mqtt-manager.md` : `InboundCmdType` `LightingSchedule`/`LightingStart`/`LightingEnd`, handler planning éclairage, `publishLightingState()` enrichie, compteurs de publish (états 23 / discovery 20) et compte discovery (44).
+- `docs/features/page-lighting.md` : nouveau libellé « Mode d'éclairage », options Programmation/Désactivé, exposition HA du planning, indépendance du contrôle manuel.
+
+---
+
+## [2.16.0] - 2026-07-06
+
+### Firmware
+
+- **Home Assistant — heures de filtration modifiables (feature-051)** : les heures de début et de fin du créneau de filtration sont désormais exposées à Home Assistant en 2 entités `text` **éditables** (« Filtration début » / « Filtration fin »), complétant le select « Mode Filtration ». Nouveaux topics retain `{base}/filtration_start` / `{base}/filtration_end` (état, format `HH:MM`) et commandes `{base}/filtration_start/set` / `{base}/filtration_end/set`. La saisie est validée `HH:MM` (format invalide → ignoré + `warning` + resync HA sur la valeur réelle) ; le changement efface les overrides marche/arrêt forcés, applique le planning immédiatement, persiste en NVS et se reflète dans l'UI web sous ≤ 5 s (broadcast WS). **Effet réel en mode Programmation** : en mode **Auto**, les heures sont recalculées par la température (une saisie HA est alors consultative et auto-corrigée). Aucun chemin de dosage touché.
+
+### Documentation
+
+- `docs/MQTT.md` : 2 topics d'état + 2 commandes filtration_start/end, 2 entités discovery `text` (pattern `HH:MM`), section feature-051 dédiée, sémantique Programmation/Auto, compte discovery mis à jour (41).
+- `docs/subsystems/mqtt-manager.md` : `InboundCmdType` `FiltrationStart`/`FiltrationEnd`, handler groupé (validation `HH:MM` avant mutex, efface overrides, `filtration.update()` hors mutex sur `loopTask`), `publishFiltrationState()` enrichi (4 topics).
+
+---
+
+## [2.15.0] - 2026-07-06
+
+### Firmware
+
+- **Home Assistant — libellés du mode filtration en français et non ambigus (bug-ha-filtration-mode-labels)** : le select « Mode Filtration » exposait dans HA les valeurs brutes `auto`/`manual`/`force`/`off`, alors que l'UI web affiche « Auto / Programmation / Manuel / Désactivé ». Au-delà de l'écart de langue, c'était trompeur : `manual` correspond à « Programmation » (créneau à heures fixées) et `force` à « Manuel » (contrôle ON/OFF sans planning) — l'inverse de l'intuition. Le select HA affiche désormais les **libellés français** via `value_template` (état brut → libellé) et `command_template` (libellé → valeur brute). **Le protocole MQTT sur le fil reste strictement `auto`/`manual`/`force`/`off`** (topic d'état et handler de commande inchangés) : aucune automatisation Home Assistant existante n'est cassée. Les selects de régulation pH/ORP restent en valeurs anglaises (non trompeuses).
+
+### Documentation
+
+- `docs/MQTT.md` : sémantique des 4 modes filtration détaillée sur les topics d'état/commande, note dédiée sur les templates d'affichage du select (libellés français côté HA, wire inchangé).
+- `docs/subsystems/mqtt-manager.md` : nouvelle section sur les `value_template`/`command_template` du select `filtration_mode` (traduction affichage uniquement, `doc.clear()` anti-fuite, handler brut inchangé).
+
+---
+
+## [2.14.1] - 2026-07-06
+
+### Firmware
+
+- **MQTT / UI temps réel — synchronisation WebSocket (bug-sync-ws-config-mqtt)** : quand la configuration est changée depuis Home Assistant (consignes pH/ORP, modes de régulation, volumes quotidiens, mode filtration, éclairage), l'UI web se met désormais à jour automatiquement sous ≤ 5 s **sans recharger la page**. Auparavant, seul le chemin HTTP `POST /save-config` déclenchait le broadcast WebSocket `config` ; les commandes reçues par MQTT modifiaient bien la config (persistée + republiée sur le broker) mais ne notifiaient jamais les clients WS connectés. Correctif : `MqttManager::drainCommandQueue()` appelle `wsManager.requestConfigBroadcast()` une fois en fin de drain dès qu'au moins une commande (hors `Reboot`) a été traitée — le message `config` part au prochain cycle WS. Broadcast unique et idempotent (coalescé), aucun contrat modifié.
+
+### Documentation
+
+- `docs/subsystems/mqtt-manager.md` : `drainCommandQueue()` déclenche un broadcast WS `config` après une commande modifiant la config (cohérence UI temps réel, même effet que `POST /save-config`).
+- `docs/subsystems/ws-manager.md` : le chemin MQTT (`drainCommandQueue`) documenté comme second déclencheur du message `config`.
+
+---
+
+## [2.14.0] - 2026-07-06
+
+### Firmware
+
+- **MQTT / Home Assistant — complétude de couverture (feature-050)** : issu d'un audit web/API vs MQTT/HA (périmètre « rentable »). Ajout de 5 entités auto-discovery HA. **Cumuls journaliers de dosage exposés** : nouveaux topics retain `{base}/ph_daily_ml` et `{base}/orp_daily_ml` (cumul injecté en mL, dédup au cycle 10 s, retombe à 0 à minuit) + 2 `sensor` HA « Dosage pH/Chlore aujourd'hui » (`state_class: measurement`). **Volumes quotidiens programmés commandables** : les topics `{base}/ph_daily_target_ml` / `{base}/orp_daily_target_ml` deviennent commandables via `.../set` + 2 `number` HA « Volume quotidien pH/Chlore » (min 0 / max 2000 / step 10 mL) — payload non numérique ignoré + `warning`, clamp négatif → 0, **REFUS si valeur > limite journalière VIVE** (`maxPhMlPerDay` / `maxChlorineMlPerDay`) + resync HA (condition pool-chemistry), persistance NVS. **Bouton Redémarrer** : topic `{base}/reboot/set` + `button` HA `device_class: restart` — redémarrage différé propre (flush MQTT `offline` puis restart, même séquence que `POST /reboot`).
+
+### Documentation
+
+- `docs/MQTT.md` : nouveaux topics d'état et de commande, 5 entités discovery (compte total 39), section feature-050 détaillée, et **nouvelle section « Exclusions volontaires »** documentant comme une politique assumée ce qui n'est délibérément pas exposé en MQTT/HA (injections manuelles, limites de sécurité, calibration/OTA/factory-reset/Wi-Fi/auth, transients d'affichage, historique).
+- `docs/subsystems/mqtt-manager.md` : `InboundCmdType` `PhDailyTarget`/`OrpDailyTarget`/`Reboot`, handlers volume quotidien (garde limite vive) et reboot différé (flag consommé en tête de drain), compte discovery mis à jour.
+
+---
+
+## [2.13.0] - 2026-07-06
+
+### Firmware
+
+- **Infrastructure — repartitionnement flash, layout v4 (feature-049)** : les slots firmware `app0`/`app1` passent de 1664 à **1792 KB** (+128 KB chacun), pris sur la partition `spiffs` réduite de 576 à **320 KB** (offset déplacé à `0x390000`) — rendu possible par la pré-compression gzip (feature-048, payload FS 155 KB, soit 48 % de la nouvelle partition). Occupation firmware ≈**78,5 %** (marge par slot 264 → ~392 KB). Partitions `nvs`, `history` et `coredump` strictement inchangées : **config, historique et coredump préservés**. ⚠️ **Mise à jour par câble USB requise une seule fois** (`./deploy.sh all`) — l'OTA ne peut pas réécrire la table de partitions ; **ne jamais pousser le FS v4 en OTA sur un appareil en table v3** ; ne pas utiliser `./deploy.sh factory` (efface la NVS). L'OTA redevient normal ensuite. Quatuor aligné : `partitions.csv`, `platformio.ini` (`filesystem_size = 327680`), `build_fs.sh` (`-s 327680`), `deploy.sh` (`LITTLEFS_OFFSET=0x390000`, contrôle de taille 327680 avec reconstruction automatique d'une image de mauvaise taille).
+
+### Documentation
+
+- Nouvel [ADR-0024](docs/adr/0024-partitions-layout-v4.md) : partitions app à 1792 KB (layout v4) — contexte (gzip feature-048 → `spiffs` occupée à 27 %), alternatives écartées (statu quo — marge suffisante aujourd'hui mais flash USB groupable avec la release ; +64 KB — demi-mesure ; reprendre `history` — données à préserver), conséquences (flash USB unique, interdiction FS v4 en OTA sur table v3, granularité 64 KB des slots). [ADR-0019](docs/adr/0019-partition-app-1664k.md) marqué « Superseded by ADR-0024 ».
+- `docs/UPDATE_GUIDE.md` : nouvelle note « Migration layout v3 → v4 (v2.13.0) » — procédure USB, interdiction explicite de l'OTA v4-sur-v3 (métadonnées LittleFS discordantes), vérifications post-flash (Infos système : FS ~320 KB, historique présent).
+- `docs/BUILD.md` : taille filesystem 327 680 o = 320 KB (layout v4, ADR-0024), occupation firmware actualisée (~78,5 %, marge ~392 KB).
+
+---
+
+## [2.12.1] - 2026-07-06
+
+### Frontend
+
+- **Performance — assets web pré-compressés gzip (feature-048)** : `minify.js` gzippe (zlib niveau 9) tous les fichiers texte (`.js`, `.html`, `.css`) après minification — seule la variante `.gz` est embarquée dans le filesystem, images/icônes inchangées. ESPAsyncWebServer sert nativement ces fichiers avec `Content-Encoding: gzip` sur tous les chemins (routes HTML explicites, `serveStatic`, portail captif) — **aucune modification firmware**. Payload FS **443 → 155 KB** (partition `spiffs` 78 % → 27 %), **chargement des pages ~4× plus rapide** (le débit de l'ESP32 est le facteur limitant sur mobile). Routes API/JSON non concernées ; un `curl` brut sur un asset statique reçoit du gzip (utiliser `--compressed`).
+
+### Documentation
+
+- `docs/BUILD.md` : étape gzip du pipeline FS (`minify.js` → `data-build/` `.gz` → `build_fs.sh`), règle « jamais de fichier texte non compressé dans `data-build/` », caveat `curl --compressed`.
+- `docs/subsystems/web-server.md` : mécanisme de résolution `.gz` d'ESPAsyncWebServer sur les deux chemins de serving (références lib vérifiées).
+
+---
+
+## [2.12.0] - 2026-07-06
+
+### Frontend
+
+- **UX — remplacement des 43 dialogues natifs (feature-031)** : plus aucun `alert()` / `confirm()` dans l'UI. Les **31 `alert()`** informatifs passent par les toasts `showToast` existants (mapping `error`/`success`/`info` selon le contexte) ; les **12 `confirm()`** (actions destructives : purge historique, effacement logs/coredump, déconnexion Wi-Fi, redémarrage, reset sondes, reset usine…) passent par une nouvelle **modale de confirmation maison** `confirmDialog({title, message, confirmLabel, cancelLabel, danger}) → Promise<boolean>` — `<dialog id="confirm-modal">` statique (pattern `probe-modal`), focus initial sur **Annuler**, fermeture `Escape`/backdrop = annulation, réentrance refusée, contenu injecté en `textContent` (anti-XSS), fallback `window.confirm` si `<dialog>` indisponible, **variante danger (bouton rouge)** pour les 7 actions irréversibles. Refus = défaut sûr sur les 12 flux async convertis (revue site par site). Le **reset usine conserve sa double confirmation** (« Réinitialiser » puis « Tout effacer »). Emojis ⚠ retirés des messages — le rouge porte la sévérité.
+- **Page « À propos » mise à jour** : retrait des crédits obsolètes DFRobot_PH et Adafruit ADS1X15 (matériel remplacé par les modules Atlas Scientific EZO en I²C natif depuis la feature-021) et de Playwright (jamais utilisé) ; ajout des modules EZO et des tests natifs Unity (185 tests, CI).
+
+### Documentation
+
+- `docs/features/README.md` : nouvelle section « Composants transverses » — API du helper `confirmDialog`, règle « toute action destructive passe par `confirmDialog` ».
+- `docs/features/page-settings.md` : confirmations via modale maison (logs, coredump, reset usine à double confirmation).
+
+---
+
+## [2.11.2] - 2026-07-06
+
+### Firmware
+
+- **Sécurité — comparaison de token à temps constant (feature-028)** : le token API n'est plus comparé via `==`/`!=` sur `String` (court-circuit au premier octet différent → canal temporel sur le contrôle d'accès central). Nouvelle comparaison `constantTimeEquals` (`auth.cpp`) : longueur vérifiée d'abord (non secrète — format fixe 32 hexa), puis accumulation XOR/OR de **tous** les octets sans court-circuit. Appliquée à l'auth **HTTP** (`checkTokenAuth`) ET à l'auth **WebSocket** via la nouvelle API publique `AuthManager::secureTokenEquals()` — la revue de code a relevé que le WS comparait encore le token en `!=` (corrigé avant merge). Plus aucune comparaison directe du token dans le code. Code mort de debug (`maskedReceived`/`maskedExpected`) supprimé. Protections préservées : refus du token en query param, token jamais loggué en clair.
+- **Sécurité — retrait complet du mécanisme CORS ([ADR-0023](docs/adr/0023-politique-cors-retrait.md))** : le CORS était partiellement implémenté et trompeur (seul le **premier** origin de la liste était posé, statiquement, sans validation par requête — le multi-origines configuré était silencieusement ignoré). Décision : **politique même-origine stricte** (l'UI est servie par l'ESP32, offline first). Retirés : bloc `DefaultHeaders` CORS + `setCorsHeaders` (code mort), champ `AuthConfig::corsAllowedOrigins` + persistance NVS (valeur existante orpheline, pas de migration), champ `auth_cors_origins` de `/get-config`/`/save-config` et du message WebSocket `config`, preflight `HTTP_OPTIONS`. En-têtes CSP / `X-Content-Type-Options` / `X-Frame-Options` conservés. Toute intégration cross-origin future : reverse proxy ou nouvel ADR.
+
+### Frontend
+
+- **Page Paramètres → Sécurité** : card CORS supprimée (champ `#auth_cors_origins` + bouton `#cors-save-btn`) — mécanisme retiré côté firmware.
+
+### Documentation
+
+- Nouvel [ADR-0023](docs/adr/0023-politique-cors-retrait.md) : retrait complet du CORS, politique même-origine stricte (alternatives écartées : réparation multi-origines par requête — ESPAsyncWebServer s'y prête mal, besoin inexistant ; origin unique assumé — mécanisme conservé sans besoin réel).
+- `docs/subsystems/auth.md` : section « Comparaison de token à temps constant » + règle « jamais `==`/`!=` sur le token » ; `docs/subsystems/ws-manager.md`, `docs/subsystems/web-server.md`, `docs/features/page-settings.md`, `docs/API.md` : politique même-origine documentée, mentions CORS retirées.
+
+---
+
+## [2.11.1] - 2026-07-06
+
+### Firmware
+
+- **Fiabilité — plus aucune attente infinie de mutex (feature-027)** : les **24 prises de mutex** encore en `portMAX_DELAY` (mqtt_manager ×9, logger ×7, history ×6, config ×2) sont désormais **bornées** — la `loopTask` ne peut plus être figée jusqu'au reset watchdog (30 s) par une contention (ex. mutex tenu pendant une I/O LittleFS lente). Dégradation gracieuse par site, comportement nominal strictement inchangé :
+  - **Logger** (`kLoggerMutexTimeoutMs = 100 ms`) : politique **silencieuse anti-récursion** (jamais de `systemLogger` dans les chemins d'échec) — entrée perdue comptée dans le compteur diagnostic interne `_droppedLogs`, lectures → résultat vide, `clearAll()`/`flushToDisk()` abandonnent **avant** toute modification (pas d'état incohérent).
+  - **Historique** (`kHistoryMutexTimeoutMs = 2000 ms`, dimensionné sur consolidation + `saveToFile` ~1–1,5 s) : point/consolidation sautés avec **retry naturel** (`lastRecord`/`lastSave` non avancés), lectures → vecteur vide, `clearHistory()` devient `bool` — la route `POST /history/clear` répond **`503` « Historique occupé — réessayer »** en cas d'échec.
+  - **Config** (`kConfigMutexTimeoutMs`, récursif) : `saveMqttConfig` → `error` (config RAM appliquée, persistance NVS perdue) ; `saveProductConfig` → dirty flag conservé → retry au prochain passage.
+  - **MQTT** : snapshots de publication sautés (republication naturelle au prochain cycle, topics retain) ; commande HA reçue → **abandon complet** (aucun état partiel) + **resync immédiat** de l'entité HA sur l'état réel (`publishFiltrationState()`/`publishTargetState()`).
+  - Warns de timeout **throttlés à 1/min/site** (`kMutexTimeoutWarnThrottleMs = 60000`). Audit `grep portMAX_DELAY src/` à blanc. Revue de concurrence complète (Approved), 185/185 tests natifs verts.
+
+### Documentation
+
+- `docs/subsystems/logger.md`, `docs/subsystems/history.md`, `docs/subsystems/mqtt-manager.md` : stratégie de timeout mutex et politique d'échec par site (dont `_droppedLogs` write-only volontaire et pattern accepté de lecture sans mutex dans le resync filtration).
+
+---
+
+## [2.11.0] - 2026-07-06
+
+### Firmware
+
+- **Sécurité — vérification d'intégrité SHA-256 avant flash OTA (feature-026, [ADR-0022](docs/adr/0022-verification-integrite-ota.md))** : la règle de sécurité #6 (« toujours vérifier la signature/CRC avant flash ») est désormais satisfaite. L'empreinte SHA-256 de chaque flux OTA est calculée **au fil de l'eau** (`OtaStreamHasher`, mbedtls accéléré matériellement, non bloquant pour AsyncWebServer) et comparée à l'empreinte de référence — le champ `digest` (`sha256:<64hex>`) publié par l'API GitHub Releases pour chaque asset (présence vérifiée sur la release réelle v2.5.2, zéro changement du process de release). **Chemin GitHub fail-closed strict** : `/check-update` relaie les champs additifs `firmware_digest`/`filesystem_digest`, l'UI les repasse en paramètre `digest=` **requis** de `/download-update` (même modèle de menace que l'URL déjà relayée : whitelist d'hôtes + auth CRITICAL). Digest absent → `400 integrity_digest_missing` (refus avant toute connexion) ; malformé → `400 integrity_digest_invalid` ; mismatch (image corrompue/tronquée, coupure WiFi incluse) → **firmware** : `Update.abort()` avant tout `end()` — l'image n'est **jamais activée**, version courante conservée ; **filesystem** : `422` sans restart, remontage LittleFS best-effort, réinstallation FS requise (firmware intact et bootable). **Upload manuel `/update`** : empreinte toujours calculée et **loggée** ; champ POST `sha256` optionnel (mismatch ou valeur malformée → flash refusé) — fail-open documenté, l'utilisateur est physiquement présent. ArduinoOTA/espota inchangé (déjà protégé par le MD5 du protocole). Tout refus émet un log `CRITICAL` avec empreintes attendue/calculée. Logique pure `ota_integrity_logic` (parse, comparaison **temps constant**, formatage — pattern ADR-0017), **22 tests natifs ajoutés** (185/185 verts).
+- **Corrigé — verrou anti-upload concurrent sur `/update`** : deux uploads simultanés corrompaient l'état statique du handler (hasher, empreinte attendue, progression). Une seule session propriétaire à la fois (`g_uploadOwner`) : le 2ᵉ client reçoit **`409`** ; déconnexion du client en cours de transfert → `Update.abort()` + réarmement du dosage (`setOtaInProgress(false)`) + libération du verrou ; owner périmé repris si `!Update.isRunning()`.
+- **Corrigé — progression entre deux uploads (AC5)** : le throttle de log de progression (`static lastLog`) n'était pas réinitialisé entre deux uploads sans reboot — désormais remis à zéro à chaque début d'upload.
+- **Corrigé — pompes inhibées après échec `Update.begin()`** : `setOtaInProgress(true)` n'était pas réarmé sur ce chemin d'échec — les pompes doseuses restaient coupées jusqu'au reboot. Appariement `setOtaInProgress` garanti sur tous les chemins terminaux (relevé en revue).
+
+### Frontend
+
+- **Page Mise à jour — fail-closed visible (feature-026)** : bouton **Installer désactivé** avec message explicite si la release GitHub ne fournit pas d'empreinte d'intégrité ; messages d'erreur français distincts sur refus (`Empreinte d'intégrité absente ou invalide…`, `Échec de la vérification d'intégrité — image refusée, version actuelle conservée.` + invite à réinstaller le filesystem le cas échéant) ; le digest est transmis automatiquement à `/download-update`.
+
+### Documentation
+
+- Nouvel [ADR-0022](docs/adr/0022-verification-integrite-ota.md) : SHA-256 comparé au digest de l'API GitHub, fail-closed chemin GitHub, empreinte loggée + param optionnel en upload manuel, transit du digest par l'UI (alternatives écartées : `Update.setMD5` — ne couvre pas le flux FS écrit via `esp_partition_write` ; re-fetch API côté firmware — double le pic RAM TLS ; signature asymétrique — feature ultérieure ; relecture flash post-write — redondante). Conséquences assumées : anciennes releases sans digest refusées par l'UI ; usure flash sur digest faux (image écrite avant refus).
+- `docs/subsystems/ota-manager.md` : politique d'intégrité par chemin, verrou anti-upload concurrent, appariement `setOtaInProgress`, constantes `kOtaSha256HexLen`/`kOtaSha256Prefix`, logs CRITICAL.
+- `docs/API.md` : champs `firmware_digest`/`filesystem_digest` de `/check-update`, param `digest=` requis de `/download-update` (erreurs 400/422), param `sha256` optionnel et `409` de `/update`.
+- `docs/UPDATE_GUIDE.md` : section « Vérification d'intégrité SHA-256 » (cas mismatch firmware/FS, release sans digest, upload manuel) + dépannage.
+
+---
+
+## [2.10.1] - 2026-07-06
+
+### Firmware
+
+- **Corrigé — alerte « limite journalière atteinte » répétée toutes les 60 s** : après le latch de la limite journalière pH ou ORP, le health check de `main.cpp` (60 s) republiait l'alerte MQTT `ph_limit`/`orp_limit` (topic `{base}/alerts`, non-retained) et son log `WARN` **à chaque cycle**, indéfiniment. L'alerte n'est désormais émise qu'à la **transition** vers la limite atteinte (edge-trigger, même flag que l'alarme écran UART) — une seule ligne WARN par épisode. L'état permanent pour Home Assistant reste porté par le binary_sensor `{base}/ph_limit` / `{base}/orp_limit` (retain, inchangé). Après un reboot avec limite déjà latchée : une alerte unique au premier health check (~60 s), voulu. Alarme écran UART : comportement identique.
+- **Corrigé — libellé pH codé en dur** : le message d'alerte disait « Limite journalière pH- atteinte » même en configuration pH+. Libellé désormais dynamique (« pH+ » / « pH- » selon `phCorrectionType`, même règle que le log CRIT de `pump_controller`). Libellé ORP (« chlore ») inchangé, toujours exact.
+
+### Documentation
+
+- `docs/MQTT.md` : sémantique de transition des alertes `ph_limit`/`orp_limit` précisée (événement non-retained vs binary_sensor retain, libellé dynamique).
+
+---
+
+## [2.10.0] - 2026-07-05
+
+### Firmware
+
+- **Sécurité — détection capteur pH/ORP figé (feature-022 re-scopée, P2.1/P2.2)** : un module EZO qui répond sans erreur I²C mais retourne indéfiniment la **même valeur** (variance nulle — électronique figée, sonde HS côté BNC) est désormais détecté : nouvelle classe pure `FrozenDetector` (« run ancré » O(1) : bornes `runMin`/`runMax` + longueur de run, ré-ancrage dès qu'une lecture sort de la bande) composée dans `SensorFilter` et alimentée **uniquement par les lectures brutes acceptées** (l'état figé persiste pendant une rafale de rejets). Figé = **30 lectures valides** dans une bande < epsilon (`kSensorFrozenSamples` = 30 ≈ 2,5 min ; `kSensorFrozenEpsilonPh` = 0.0005 = ½ LSB EZO pH ; `kSensorFrozenEpsilonOrp` = 0.05 mV = ½ LSB EZO ORP — un capteur vivant bruite ≥ ±1 LSB, un toggle de 1 LSB casse le run, validé pool-chemistry). Figé ⇒ `ready()` = false ⇒ **dosage bloqué fail-closed** par la garde `FilterNotReady` existante (aucune modification des gardes verrouillées) ; **sortie immédiate sans re-warmup** dès une lecture vivante. Log `critical` edge-triggered `[SENSOR_FROZEN]` (+ `info` à la levée) et alerte MQTT retain `{base}/alerts/sensor_frozen` (JSON, clear payload vide). Consigne terrain : en cas de faux positifs, **durcir N, jamais élargir epsilon**.
+- **Température figée warning-only (P2.3)** : `FrozenDetector` dédié à la sonde DS18B20 « eau » (N = 900 ≈ 30 min à 2 s, epsilon 0.03 °C < ½ LSB 12 bits, alimenté par les valeurs brutes non arrondies) — log `warning` seulement, **aucun impact dosage/filtration** (effets réels : compensation EZO pH + planning auto filtration), hors alerte MQTT `sensor_frozen`.
+- **MQTT/HA — états problème capteur (P1.1)** : 2 nouveaux topics state retain `{base}/ph_sensor_problem` / `{base}/orp_sensor_problem` (`ON` = capteur **stale OU figé**, `OFF` sinon, publication dédupliquée) + 2 entités auto-discovery `binary_sensor` `device_class: problem` (« Capteur pH — problème » / « Capteur ORP — problème », `unique_id: poolcontroller_ph|orp_sensor_problem`) — l'indisponibilité capteur devient visible dans HA sans parser les JSON d'alerte.
+- 11 tests natifs ajoutés (FrozenDetector + intégration SensorFilter), 163/163 verts. Validé pool-chemistry (GO, 4 conditions levées).
+
+### Frontend
+
+- **Dashboard — segment « Capteur indisponible » (P1.2)** : nouveau segment **danger, priorité 0 (la plus haute)** dans le badge multi-états des cartes pH/ORP, piloté par les valeurs `ph`/`orp` `null` du WS (capteur stale ou figé) — aucun champ WS nouveau. Garde anti-faux-positif au boot (aucun segment tant qu'aucun message WS reçu). Échelle des priorités désormais : 0 = capteur indisponible, 1 = hors plage, 2 = limite journalière, 3 = cumul ≥ 75 %, 4 = stock faible (toujours max 2 segments affichés).
+
+### Documentation
+
+- `docs/MQTT.md` : nouvelle section feature-022 (2 topics `*_sensor_problem` + 2 entités discovery + alerte `alerts/sensor_frozen` ajoutée au tableau des alertes dédiées).
+- `docs/subsystems/sensors.md` : nouvelle section « Détection capteur figé » (FrozenDetector, run ancré, ½ LSB, intégration `ready()`, sortie immédiate, température warning-only, consigne durcir-N) ; API, états du filtre et constantes complétés.
+- `docs/subsystems/mqtt-manager.md` : blocs de publication problème capteur / sensor_frozen, caches de dédup, discovery 32 → 34 entités.
+- `docs/features/page-dashboard.md` : segment « Capteur indisponible » + échelle de priorités 0-4.
+
+Écartés explicitement (documentés dans la spec) : compteurs de refus par cause, refresh périodique du cache cal_points, topics `dose_refusal`, ring RAM injections.
+
+---
+
+## [2.9.2] - 2026-07-05
+
+### Firmware
+
+- **Corrigé — écrêtage au reliquat pour l'injection manuelle** : demander une injection manuelle supérieure au reliquat du quota journalier (ex. limite 50 mL, cumul réel 39,4 affiché « 39 », demande de 11 mL) était refusée avec un message contradictoire « reste disponible aujourd'hui : 11 mL » (`lroundf` arrondissait le reliquat au plus proche alors que la garde raisonnait en volume exact). Désormais, `/ph|orp/inject/start` **écrête automatiquement la demande au reliquat** (durée recalculée arrondie **vers le bas** : le volume effectif ne re-déborde jamais la limite) au lieu de refuser — nouveau log info « [Injection] pH|ORP : volume écrêté de X à Y mL (reliquat journalier) ». En fin naturelle, le crédit plancher (v2.9.1) porte le cumul **exactement à la limite** → latch `ph/orp_limit_reached` + badge « Limite journalière atteinte ». Le refus `daily_limit` ne subsiste que si le reliquat est **nul ou < 1 s de pompe**, et son message/champ `remaining_ml` arrondissent désormais **vers le bas** (`floorf` — plus jamais de promesse intenable). Cas double-clamp (reliquat > 10 min de pompe) : le plafond `kManualInjectMaxDurationS` gagne, crédit = volume effectif. Garde pure `evaluateManualInject()` inchangée ; symétrie pH/ORP + chemin legacy `?duration=` ; logs de démarrage d'injection à 1 décimale (reco cosmétique code-reviewer). Validé pool-chemistry (GO), 152/152 tests natifs verts.
+
+### Documentation
+
+- `docs/API.md` : écrêtage automatique au reliquat documenté sur `/ph|orp/inject/start` ; sémantique **floor** du `remaining_ml` du 409 `daily_limit`.
+- `docs/subsystems/pump-controller.md` : section « Crédit plancher » complétée (écrêtage → `creditMl = reliquat` entier ; double-clamp → `effectiveMl`).
+- `docs/features/page-ph.md`, `page-orp.md` : mention de l'écrêtage automatique dans la garde journalière prédictive.
+
+---
+
+## [2.9.1] - 2026-07-05
+
+### Firmware
+
+- **Corrigé — sous-compte du cumul journalier en fin d'injection manuelle volumée** : demander exactement le reliquat du quota journalier (ex. limite 50 mL, injection 50 mL — frontière `==` acceptée depuis feature-006) laissait le cumul de sécurité à 49,x mL : l'intégration débit × temps perdait la dernière tranche (pompe coupée avant le tick de comptage suivant) et l'arrondi à la seconde → `ph/orp_limit_reached` jamais latché, badge dashboard « Cumul 98 % » figé au lieu de « Limite journalière atteinte ». À la **fin naturelle** d'une injection manuelle volumée, le compteur journalier de sécurité est désormais **planché au volume promis** (`creditManualInjectionFloor` : `daily = max(daily, startCumul + effectiveMl)` ; rollover minuit pendant l'injection → volume entier crédité au jour nouveau, conservateur). **Jamais de crédit sur arrêt anticipé** (stop manuel `/inject/stop`, interruption filtration) : l'intégration réelle fait foi. Propriété validée pool-chemistry (GO) : le registre de sécurité **ne sous-compte jamais** (sur-compte possible de quelques dixièmes de mL) ; le suivi produit (stock) reste sur l'intégration réelle (légère sous-estimation cumulative possible, assumée). Nouveau log info « [Sécurité] Compteur journalier pH|ORP ajusté de X à Y mL (crédit fin d'injection manuelle) ». Symétrie pH/ORP. 152/152 tests natifs verts.
+
+### Documentation
+
+- `docs/subsystems/pump-controller.md` : nouvelle section « Crédit plancher à la fin naturelle » (propriété fail-safe, tableau des 3 chemins d'arrêt, rollover minuit, suivi produit non planché et dérive de stock, nouveaux logs) ; `creditManualInjectionFloor` ajoutée à l'API publique.
+
+---
+
+## [2.9.0] - 2026-07-05
+
+### Frontend
+
+- **Dashboard — badge multi-états des cartes pH/ORP (feature-012, périmètre réduit sur avis ux-ui-designer)** : nouveau segment **« Cumul XX % »** (warning) affiché à partir de **75 %** du quota journalier (même arithmétique que la barre des pages /ph et /orp : arrondi des entrées, plafond 100 %), masqué quand la limite est atteinte (le segment « Limite journalière atteinte » prend le relais), quand la limite n'est pas configurée ou données indisponibles. Règle de composition **formalisée** (`composeSensorBadge`) : priorité hors plage (danger) > limite atteinte > cumul ≥ 75 % > stock faible, **maximum 2 segments** (troncature aux 2 plus prioritaires), variant `danger` si un segment danger retenu sinon `warning`. Changement visible : « hors plage + limite atteinte » simultanés affichent désormais **les 2 segments** (avant : seul « hors plage »). 100 % UI (`data/app.js`), aucun changement firmware.
+- **Dashboard — stabilisation par pompe (feature-012)** : le statut « Stabilisation : X min YY s » des cartes pH/ORP consomme les champs **par pompe** `ph/orp_stab_remaining_s` (feature-006, repli sur le champ global pour les firmwares plus anciens) — chaque carte affiche la stabilisation de **sa** pompe (une calibration ORP n'affiche plus « Stabilisation » sur la carte pH, et inversement).
+
+### Documentation
+
+- `docs/features/page-dashboard.md` : nouvelles sections « Badge multi-états des cartes pH/ORP » (4 segments, priorité, max 2, seuil 75 %) et « Statut dosage et stabilisation par pompe » ; champs WS consommés complétés.
+
+---
+
+## [2.8.0] - 2026-07-05
+
+### Firmware
+
+- **Régulation — répartition 24 h du mode Programmée (feature-011)** : le volume quotidien du mode `scheduled` (pH et ORP) n'est plus injecté d'un bloc en début de filtration (pic de concentration localisé) mais **réparti par fenêtres de 15 min** alignées sur l'horloge (`kScheduledWindowMinutes`) sur la plage de filtration restante, **bornée à minuit** ([ADR-0021](docs/adr/0021-repartition-scheduled.md)). Le volume de fenêtre (`restant / fenêtres restantes`, recalculé à chaque fenêtre — auto-corrigé après changement de cible, injection manuelle comptée dans le cumul, retard subi ou reboot) est borné par le **budget horaire partagé** ([ADR-0020](docs/adr/0020-budget-horaire-dosage-unique.md), warning edge-triggered si tronqué) et **reporté** si l'injection durerait moins de 30 s (`minInjectionTimeMs`, anti short-cycling — avec une pompe rapide et une petite cible, les premières fenêtres sont reportées et les injections démarrent quand l'horizon se resserre : comportement voulu). **Pas de rattrapage J+1** : le reliquat non injecté à minuit est perdu (log `info` dans `tickDailyRollover`). Décision extraite en fonction pure testable `evaluateScheduledDose()` (`dosing_logic`, pattern ADR-0017) + helper pur `remainingRangeMinutes()` (`schedule_logic`) ; fail-closed strict (watchdog inactif, heure locale invalide, horizon ou débit nuls → aucune injection, warning unique). Le **ring anti-rafale partagé est consulté avant tout démarrage** (6/min, 20/15 min, mêmes seuils que `canDose`) ; l'exemption `cyclesToday` de la branche scheduled est **conservée et documentée** (démarrages bornés structurellement ≤ 4/h par le cadencement — arbitrage R4 validé pool-chemistry). Mode filtration `continu` : horizon = fin de journée (le dosage hors plage reste permis). Validé pool-chemistry (GO, 5 conditions levées) ; **17 tests natifs ajoutés** (12 `evaluateScheduledDose` + 5 `remainingRangeMinutes`), 152/152 verts.
+- **WebSocket** : nouveaux champs `ph_scheduled_flow_ml_per_min` / `orp_scheduled_flow_ml_per_min` (float 1 décimale = débit moyen planifié restant ; `null` hors mode scheduled / hors plage / heure invalide). Buffer `sensor_data` 1472 → 1536 octets.
+
+### Frontend
+
+- **Cartes Régulation pH/ORP — bloc Programmée (feature-011)** : nouvelle ligne « Débit calculé : X,X mL/min » (« — » avec infobulle « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Pas d'affichage « sur Y h restantes » (l'horloge du navigateur peut différer de celle de l'ESP32).
+
+### Documentation
+
+- Nouvel [ADR-0021](docs/adr/0021-repartition-scheduled.md) : répartition scheduled par fenêtres de 15 min alignées horloge (snapshot `stopTargetMl`, report < 30 s, pas de rattrapage J+1, exemption `cyclesToday`, horizon minuit en continu ; alternatives écartées : PID slow imbriqué, fenêtres relatives au début de plage, rattrapage J+1, fenêtre 30 min, limite de cycles dédiée, recalcul continu sans snapshot). Note de renvoi ajoutée dans [ADR-0002](docs/adr/0002-mode-programmee-volume-quotidien.md).
+- `docs/subsystems/pump-controller.md` : §Mode scheduled réécrit (algorithme pur + coquille, ring consulté, exemption `cyclesToday` justifiée, nouveaux logs edge-triggered, `kScheduledWindowMinutes`, accesseurs `get*ScheduledPlannedFlow`).
+- `docs/subsystems/filtration.md` : `remainingRangeMinutes` ajouté au tableau des fonctions pures de `schedule_logic`.
+- `docs/features/page-ph.md`, `page-orp.md` : mode Programmée détaillé (répartition, report, budget horaire, reliquat, nuance pompe rapide) + ligne « Débit calculé » et hint.
+- `docs/API.md`, `docs/subsystems/ws-manager.md` : champs WS `ph/orp_scheduled_flow_ml_per_min`.
+
+---
+
+## [2.7.0] - 2026-07-04
+
+### Firmware
+
+- **MQTT/HA — modes de régulation commandables (feature-009)** : deux nouvelles entités Home Assistant `select` (« Mode Régulation pH », « Mode Régulation ORP », options `automatic` / `scheduled` / `manual`) permettent de changer `ph_regulation_mode` / `orp_regulation_mode` depuis HA (automatisations d'hivernage, absence longue, dashboards). Nouveaux topics de commande `{base}/ph_regulation_mode/set` et `{base}/orp_regulation_mode/set` (non retain, souscrits à la connexion) ; les topics state existants sont **inchangés** (retain, rétrocompat dashboards HA). Validation stricte de l'enum (insensible à la casse ; valeur invalide → ignorée + log `warning`), application dans `drainCommandQueue()` (loopTask, sous `configMutex`) par la **même voie que l'UI web** — miroir `ph/orp_enabled` ([ADR-0004](docs/adr/0004-mode-regulation-enum-3-valeurs.md)) — avec persistance NVS et log `info` uniquement si changement réel, puis republication immédiate de l'état (feedback HA). Un changement pendant une injection en cours ne l'interrompt pas : le nouveau mode prend effet au cycle de régulation suivant (validé pool-chemistry). L'UI web reste la source principale et reflète un changement initié par HA via les canaux existants (WS + `/get-config`) — aucun code UI ajouté.
+
+### Documentation
+
+- `docs/MQTT.md` : 2 entités `select` mode de régulation (discovery, state/command topics, options) + topics de commande ajoutés aux tableaux ; nouvelle section de détail feature-009.
+- `docs/features/page-ph.md`, `page-orp.md` : tableau « Interaction MQTT » complété — mode commandable depuis HA, UI web source principale, reflet via WS.
+- `docs/subsystems/mqtt-manager.md` : nouveaux `InboundCmdType::PhRegulationMode` / `OrpRegulationMode`, comportement du handler (validation, miroir ADR-0004, persistance conditionnelle, feedback `publishTargetState()`, logs), cas valeur invalide.
+
+---
+
 ## [2.6.0] - 2026-07-04
 
 ### Firmware

@@ -166,7 +166,10 @@ void FiltrationManager::update() {
   int endMin = timeStringToMinutes(filtrationCfg.end);
 
   // Décision marche/arrêt (logique pure). `mode` est déjà en minuscules.
-  bool runTarget = decideFiltrationRun(mode.c_str(), filtrationCfg.forceOn,
+  // feature-053 : le Mode Boost force la filtration (turnover maximal) via un
+  // chemin DÉDIÉ, prioritaire et indépendant du forceOn/kForceTimeoutMs.
+  bool boostForce = isBoostActive(time(nullptr));
+  bool runTarget = decideFiltrationRun(boostForce, mode.c_str(), filtrationCfg.forceOn,
                                        filtrationCfg.forceOff, haveTime,
                                        nowMinutes, startMin, endMin,
                                        state.running);

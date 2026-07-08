@@ -6,6 +6,7 @@
 #include "filtration.h"
 #include "uart_protocol.h"
 #include "dosing_logic.h"
+#include "schedule_logic.h"
 #include <esp_task_wdt.h>
 #include <time.h>
 
@@ -88,7 +89,7 @@ void PumpControllerClass::begin() {
   systemLogger.info("Config pH: cible=" + String(mqttCfg.phTarget, 2) +
     " seuil=" + String(pumpProtection.phStartThreshold, 2) +
     " limite=" + String(mqttCfg.phInjectionLimitMinutes) + "min/h" +
-    " max=" + String(safetyLimits.maxPhMinusMlPerDay, 0) + "mL/j");
+    " max=" + String(safetyLimits.maxPhMlPerDay, 0) + "mL/j");
   systemLogger.info("Config ORP: cible=" + String(mqttCfg.orpTarget, 0) + "mV" +
     " seuil=" + String(pumpProtection.orpStartThreshold, 0) + "mV" +
     " limite=" + String(mqttCfg.orpInjectionLimitMinutes) + "min/h" +
@@ -392,8 +393,10 @@ bool PumpControllerClass::canDose(int pumpIndex) {
   // 7. Limite journalière.
   in.dailyInjectedMl = (pumpIndex == 0) ? safetyLimits.dailyPhInjectedMl
                                         : safetyLimits.dailyOrpInjectedMl;
-  in.maxDailyMl = (pumpIndex == 0) ? safetyLimits.maxPhMinusMlPerDay
-                                   : safetyLimits.maxChlorineMlPerDay;
+  // feature-053 : la limite journalière ORP est la valeur EFFECTIVE (boostée si
+  // Mode Boost actif ET orpMode==automatic ; sinon normale — le getter self-gate).
+  in.maxDailyMl = (pumpIndex == 0) ? safetyLimits.maxPhMlPerDay
+                                   : getEffectiveMaxChlorineMlPerDay();
   // 8. Limite horaire (0 = pas de limite).
   in.usedMs = (pumpIndex == 0) ? phDosingState.usedMs : orpDosingState.usedMs;
   in.hourlyLimitMs = (limitMin > 0) ? (unsigned long)limitMin * 60000UL : 0UL;
@@ -529,11 +532,68 @@ uint8_t PumpControllerClass::flowToDuty(const PumpControlParams& params, float f
   return duty;
 }
 
+// feature-053 : cible ORP effective (surcouche Mode Boost). Délègue à la logique
+// pure ; l'effet est réservé au mode ORP "automatic" ET au boost actif.
+float PumpControllerClass::getEffectiveOrpTarget() const {
+  bool boost = isBoostActive(time(nullptr));
+  bool autoMode = (mqttCfg.orpRegulationMode == "automatic");
+  return effectiveOrpTargetPure(mqttCfg.orpTarget, boost, autoMode,
+                                kBoostOrpDeltaMv, kBoostOrpCeilingMv);
+}
+
+// feature-053 : limite journalière chlore effective (surcouche Mode Boost).
+// Le mode scheduled/manual voit toujours la limite NORMALE (le pur gère le gate
+// via autoMode — condition pool-chemistry #1).
+float PumpControllerClass::getEffectiveMaxChlorineMlPerDay() const {
+  bool boost = isBoostActive(time(nullptr));
+  bool autoMode = (mqttCfg.orpRegulationMode == "automatic");
+  return effectiveMaxChlorinePure(safetyLimits.maxChlorineMlPerDay, boost, autoMode,
+                                  kBoostDailyFactor, kBoostDailyHardCapMl);
+}
+
 // Reset journalier des compteurs ml + flags limite — appelé depuis update() avant canDose()
 // pour que la réinitialisation à minuit se produise même quand la filtration est arrêtée.
 // Sans cela, le compteur affichait la valeur de la veille tant que la filtration n'avait pas tourné.
 void PumpControllerClass::tickDailyRollover() {
   unsigned long now = millis();
+
+  // feature-053 (condition pool-chemistry #3) : expirer le boost au passage de
+  // minuit AVANT tout reset de compteur, dans les DEUX branches de rollover.
+  tickBoostExpiry(time(nullptr));
+
+  // feature-011 (A6) : au passage de minuit, tracer le reliquat scheduled non
+  // injecté (pas de rattrapage J+1 — décision produit : le reliquat est PERDU)
+  // et réarmer la répartition (_*SchedWindowIdx=-1 → recalcul du volume à la
+  // première fenêtre du nouveau jour). Appelé AVANT le reset des compteurs
+  // dans les deux chemins de rollover (date NTP et fallback 24 h millis).
+  auto resetScheduledSplit = [this]() {
+    if (mqttCfg.phRegulationMode == "scheduled" && mqttCfg.phDailyTargetMl > 0) {
+      float eff = static_cast<float>(mqttCfg.phDailyTargetMl);
+      if (safetyLimits.maxPhMlPerDay > 0.0f && eff > safetyLimits.maxPhMlPerDay) {
+        eff = safetyLimits.maxPhMlPerDay;
+      }
+      if (safetyLimits.dailyPhInjectedMl < eff) {
+        systemLogger.info("[Scheduled] Reliquat pH perdu au passage de minuit : " +
+          String(eff - safetyLimits.dailyPhInjectedMl, 0) + "mL non injectés (" +
+          String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(eff, 0) + "mL)");
+      }
+    }
+    if (mqttCfg.orpRegulationMode == "scheduled" && mqttCfg.orpDailyTargetMl > 0) {
+      float eff = static_cast<float>(mqttCfg.orpDailyTargetMl);
+      if (safetyLimits.maxChlorineMlPerDay > 0.0f && eff > safetyLimits.maxChlorineMlPerDay) {
+        eff = safetyLimits.maxChlorineMlPerDay;
+      }
+      if (safetyLimits.dailyOrpInjectedMl < eff) {
+        systemLogger.info("[Scheduled ORP] Reliquat ORP perdu au passage de minuit : " +
+          String(eff - safetyLimits.dailyOrpInjectedMl, 0) + "mL non injectés (" +
+          String(safetyLimits.dailyOrpInjectedMl, 0) + "/" + String(eff, 0) + "mL)");
+      }
+    }
+    _phSchedWindowIdx = -1;
+    _phSchedStopTargetMl = 0.0f;
+    _orpSchedWindowIdx = -1;
+    _orpSchedStopTargetMl = 0.0f;
+  };
 
   time_t epochNow = time(nullptr);
   if (epochNow >= kMinValidEpoch) {
@@ -543,8 +603,9 @@ void PumpControllerClass::tickDailyRollover() {
     strftime(todayStr, sizeof(todayStr), "%Y%m%d", &timeinfo);
     if (shouldRolloverByDate(safetyLimits.currentDayDate, todayStr)) {
       systemLogger.info("Reset journalier (minuit local) — pH=" +
-        String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(safetyLimits.maxPhMinusMlPerDay, 0) +
+        String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(safetyLimits.maxPhMlPerDay, 0) +
         " mL, ORP=" + String(safetyLimits.dailyOrpInjectedMl, 0) + "/" + String(safetyLimits.maxChlorineMlPerDay, 0) + " mL");
+      resetScheduledSplit();  // feature-011 : reliquat scheduled + réarmement fenêtres
       safetyLimits.dailyPhInjectedMl  = 0;
       safetyLimits.dailyOrpInjectedMl = 0;
       safetyLimits.phLimitReached     = false;
@@ -565,6 +626,7 @@ void PumpControllerClass::tickDailyRollover() {
       safetyLimits.dayStartTimestamp = now;
     }
     if (shouldRolloverByMillis((uint32_t)safetyLimits.dayStartTimestamp, (uint32_t)now)) {
+      resetScheduledSplit();  // feature-011 : reliquat scheduled + réarmement fenêtres
       safetyLimits.dailyPhInjectedMl  = 0;
       safetyLimits.dailyOrpInjectedMl = 0;
       safetyLimits.phLimitReached     = false;
@@ -579,7 +641,7 @@ void PumpControllerClass::tickDailyRollover() {
 
 bool PumpControllerClass::checkSafetyLimits(bool isPhPump) {
   if (isPhPump) {
-    if (safetyLimits.dailyPhInjectedMl >= safetyLimits.maxPhMinusMlPerDay) {
+    if (safetyLimits.dailyPhInjectedMl >= safetyLimits.maxPhMlPerDay) {
       if (!safetyLimits.phLimitReached) {
         String corrType = (mqttCfg.phCorrectionType == "ph_plus") ? "pH+" : "pH-";
         systemLogger.critical("LIMITE JOURNALIÈRE " + corrType + " ATTEINTE: " + String(safetyLimits.dailyPhInjectedMl) + " ml");
@@ -592,7 +654,11 @@ bool PumpControllerClass::checkSafetyLimits(bool isPhPump) {
       systemLogger.info("Limite journalière pH levée (limite augmentée ou compteurs réinitialisés) — dosage à nouveau autorisé");
     }
   } else {
-    if (safetyLimits.dailyOrpInjectedMl >= safetyLimits.maxChlorineMlPerDay) {
+    // feature-053 : plafond journalier EFFECTIF (boosté si Mode Boost actif ET
+    // orpMode==automatic ; le getter renvoie la limite normale sinon → le mode
+    // scheduled/manual ne voit JAMAIS la valeur boostée, condition #1).
+    float maxCl = getEffectiveMaxChlorineMlPerDay();
+    if (safetyLimits.dailyOrpInjectedMl >= maxCl) {
       if (!safetyLimits.orpLimitReached) {
         systemLogger.critical("LIMITE JOURNALIÈRE CHLORE ATTEINTE: " + String(safetyLimits.dailyOrpInjectedMl) + " ml");
         safetyLimits.orpLimitReached = true;
@@ -629,8 +695,39 @@ void PumpControllerClass::updateSafetyTracking(bool isPhPump, float flowMlPerMin
   _dailyCountersDirty = true;
 }
 
+// Crédit plancher fin d'injection manuelle volumée (bug sous-compte v2.9.1).
+// Exécuté en loopTask (via updateManualInject) : mêmes règles d'accès aux
+// compteurs que updateSafetyTracking (pas de mutex, écrivain unique).
+// NE touche PAS au suivi produit productCfg.*TotalInjectedMl : le suivi de
+// stock reste sur l'intégration réelle débit×temps ; seul le registre de
+// SÉCURITÉ journalier est planché (fail-safe chimique, jamais de sous-compte).
+void PumpControllerClass::creditManualInjectionFloor(int idx, float startCumulMl, float creditMl) {
+  if (creditMl <= 0.0f) return;  // 0 = pas de crédit dû
+  float& daily = (idx == 0) ? safetyLimits.dailyPhInjectedMl
+                            : safetyLimits.dailyOrpInjectedMl;
+  // Rollover minuit pendant l'injection (daily < startCumulMl) : crédit du
+  // volume ENTIER au jour nouveau — choix conservateur (sur-compte possible).
+  float floorMl = (daily < startCumulMl) ? creditMl : (startCumulMl + creditMl);
+  if (daily < floorMl) {
+    systemLogger.info(String("[Sécurité] Compteur journalier ") + (idx == 0 ? "pH" : "ORP") +
+                      " ajusté de " + String(daily, 1) + " à " + String(floorMl, 1) +
+                      " mL (crédit fin d'injection manuelle)");
+    daily = floorMl;
+    _dailyCountersDirty = true;  // flush NVS différé (30 s)
+  }
+}
+
 void PumpControllerClass::update() {
   unsigned long now = millis();
+
+  // feature-011 : par défaut le débit planifié scheduled est indéfini (NAN →
+  // null côté WS). Seule la branche scheduled le renseigne, quand elle
+  // s'exécute avec une heure valide et un horizon > 0. Toute sortie anticipée
+  // (OTA, capteurs non initialisés, filtration arrêtée, changement de mode,
+  // limite horaire/journalière) le laisse donc à NAN. Les index de fenêtre
+  // (_*SchedWindowIdx), eux, persistent entre les tours.
+  _phSchedPlannedFlow = NAN;
+  _orpSchedPlannedFlow = NAN;
 
   // Résoudre les demandes de reset issues de tâches externes (web handlers)
   // Exécuté ici, sur la tâche loop, pour éviter toute race inter-core
@@ -837,7 +934,7 @@ void PumpControllerClass::update() {
         float volumeMl = (lastFlow * runTime) / 60.0f;
         systemLogger.info("Arrêt dosage pH (auto): durée=" + String(runTime) + "s" +
           " vol≈" + String(volumeMl, 1) + "mL" +
-          " total jour=" + String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(safetyLimits.maxPhMinusMlPerDay, 0) + "mL");
+          " total jour=" + String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(safetyLimits.maxPhMlPerDay, 0) + "mL");
       }
 
       // Reset PID si erreur négative (pH hors plage de correction)
@@ -858,12 +955,16 @@ void PumpControllerClass::update() {
       }
     }
   } else if (phMode == "scheduled" && phLimitOk && phSafetyOk && mqttCfg.phDailyTargetMl > 0) {
-    // Mode Programmée : intentionnellement aveugle à la valeur mesurée du pH.
-    // L'utilisateur a choisi un volume quotidien fixe indépendamment de la mesure ;
-    // un capteur déréglé ou en cours de remplacement ne doit pas bloquer l'injection.
-    // Seules les gardes volumétriques (phLimitOk, phSafetyOk, maxPhMinusMlPerDay)
-    // et structurelles (canDose(), débit configuré) s'appliquent.
+    // Mode Programmée (feature-011) : répartition du volume quotidien par
+    // fenêtres de kScheduledWindowMinutes (15 min) sur l'horizon de filtration
+    // restant, borné à minuit. Intentionnellement aveugle à la valeur mesurée
+    // du pH : l'utilisateur a choisi un volume quotidien fixe indépendamment de
+    // la mesure ; un capteur déréglé ne doit pas bloquer l'injection. Seules
+    // les gardes volumétriques (phLimitOk, phSafetyOk, maxPhMlPerDay) et
+    // structurelles (débit configuré, heure valide, anti-rafale) s'appliquent.
     // phTarget n'est pas utilisé dans cette branche et ne doit pas l'être.
+    // COQUILLE : collecte des entrées + application ; la décision est déléguée
+    // à evaluateScheduledDose() (dosing_logic, pur, testable en natif).
     {
       float currentPh = sensors.getPh();
       static bool phOutOfRangeLogged = false;
@@ -876,19 +977,23 @@ void PumpControllerClass::update() {
         systemLogger.info("[Scheduled] Capteur pH revenu dans la plage normale");
         phOutOfRangeLogged = false;
       }
-      // Plafonner à la limite journalière de sécurité
+      // Log "plafonné" conservé en coquille — le plafonnement lui-même est
+      // AUSSI appliqué dans evaluateScheduledDose (via maxDailyMl) ;
+      // effectiveDailyMl ne sert plus ici qu'aux logs.
       float effectiveDailyMl = static_cast<float>(mqttCfg.phDailyTargetMl);
       static bool phCappedLogged = false;
-      if (safetyLimits.maxPhMinusMlPerDay > 0.0f && effectiveDailyMl > safetyLimits.maxPhMinusMlPerDay) {
+      if (safetyLimits.maxPhMlPerDay > 0.0f && effectiveDailyMl > safetyLimits.maxPhMlPerDay) {
         if (!phCappedLogged) {
           systemLogger.warning("[Scheduled] phDailyTargetMl (" + String(mqttCfg.phDailyTargetMl) +
-            "mL) dépasse maxPhMinusMlPerDay (" + String(safetyLimits.maxPhMinusMlPerDay, 0) + "mL) — plafonné");
+            "mL) dépasse maxPhMlPerDay (" + String(safetyLimits.maxPhMlPerDay, 0) + "mL) — plafonné");
           phCappedLogged = true;
         }
-        effectiveDailyMl = safetyLimits.maxPhMinusMlPerDay;
+        effectiveDailyMl = safetyLimits.maxPhMlPerDay;
       } else {
         phCappedLogged = false;
       }
+      // Débit effectif : UNE SEULE variable pour le bornage horaire, la durée
+      // d'injection et le duty (condition pool-chemistry n°5).
       float effectiveFlowMlPerMin = phPumpControl.maxFlowMlPerMin *
                                     (static_cast<float>(mqttCfg.pump1MaxDutyPct) / 100.0f);
       if (effectiveFlowMlPerMin < phPumpControl.minFlowMlPerMin)
@@ -901,27 +1006,134 @@ void PumpControllerClass::update() {
         }
       } else {
         phZeroFlowLogged = false;
-        // Injecter si le quota journalier n'est pas atteint (la limite horaire phLimitOk est déjà vérifiée en condition d'entrée)
-        bool shouldDose = safetyLimits.dailyPhInjectedMl < effectiveDailyMl;
-        if (shouldDose && !phDosingState.active) {
-          phDosingState.lastStartTime = now;
-          // Anti-rafale Pass 3.5 : la branche scheduled n'incrémente pas cyclesToday,
-          // mais elle peut redémarrer plusieurs fois en cas de quota approchant la
-          // limite — on enregistre quand même chaque start pour cohérence.
-          recordDosingCycleStart(0);
-          systemLogger.info("[Scheduled] Démarrage dosage pH : quota=" + String(static_cast<int>(effectiveDailyMl)) +
-            "mL, injecté=" + String(safetyLimits.dailyPhInjectedMl, 0) + "mL");
-        } else if (!shouldDose && phDosingState.active) {
-          phDosingState.lastStopTime = now;
-          systemLogger.info("[Scheduled] Quota journalier pH atteint (" +
-            String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(static_cast<int>(effectiveDailyMl)) +
-            "mL) — dosage suspendu jusqu'à demain");
+
+        // Heure locale (même pattern que tickDailyRollover) : heure invalide →
+        // aucune injection (fail-closed, comportement historique), warning UNE fois.
+        int nowMin = -1;
+        time_t epochNow = time(nullptr);
+        static bool phNoTimeLogged = false;
+        if (epochNow >= kMinValidEpoch) {
+          struct tm timeinfo;
+          localtime_r(&epochNow, &timeinfo);
+          nowMin = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+          phNoTimeLogged = false;
+        } else if (!phNoTimeLogged) {
+          systemLogger.warning("[Scheduled] Heure locale indisponible — dosage pH programmé suspendu");
+          phNoTimeLogged = true;
         }
-        if (shouldDose) {
-          int index = pumpIndexFromNumber(mqttCfg.phPump);
-          uint8_t duty = flowToDuty(phPumpControl, effectiveFlowMlPerMin);
-          if (duty > desiredDuty[index]) desiredDuty[index] = duty;
-          if (duty > 0) { phActive = true; phFlow = effectiveFlowMlPerMin; }
+
+        if (nowMin >= 0) {
+          // Horizon de répartition : minutes restantes de la plage de filtration
+          // (bornées à minuit), ou fin de journée en mode continu (eau 24/7).
+          int horizonMinutes;
+          if (mqttCfg.regulationMode == "continu") {
+            horizonMinutes = 1440 - nowMin;
+          } else {
+            horizonMinutes = remainingRangeMinutes(nowMin,
+                timeStringToMinutes(filtrationCfg.start.c_str()),
+                timeStringToMinutes(filtrationCfg.end.c_str()));
+          }
+
+          ScheduledDoseInputs sin;
+          sin.nowMin = nowMin;
+          sin.horizonMinutes = horizonMinutes;
+          sin.windowMinutes = kScheduledWindowMinutes;
+          sin.dailyTargetMl = static_cast<float>(mqttCfg.phDailyTargetMl);
+          sin.maxDailyMl = safetyLimits.maxPhMlPerDay;
+          sin.dailyInjectedMl = safetyLimits.dailyPhInjectedMl;
+          sin.effectiveFlowMlPerMin = effectiveFlowMlPerMin;
+          sin.usedMs = (uint32_t)phDosingState.usedMs;
+          sin.hourlyLimitMs = (uint32_t)phLimitMs;
+          sin.minInjectionTimeMs = (uint32_t)pumpProtection.minInjectionTimeMs;
+          sin.watchdogActive = (esp_task_wdt_status(NULL) == ESP_OK);
+          sin.prevWindowIndex = _phSchedWindowIdx;
+          sin.prevStopTargetMl = _phSchedStopTargetMl;
+
+          ScheduledDoseDecision dec = evaluateScheduledDose(sin);
+
+          // Recommandation pool-chemistry : warning edge-triggered quand le
+          // volume de fenêtre est tronqué par le budget horaire restant (le
+          // recalcul n'a lieu qu'à l'entrée d'une nouvelle fenêtre).
+          static bool phBudgetTruncLogged = false;
+          if (dec.windowIndex >= 0 && dec.windowIndex != _phSchedWindowIdx &&
+              horizonMinutes > 0 && phLimitMs > 0) {
+            int nWin = horizonMinutes / kScheduledWindowMinutes;
+            if (nWin < 1) nWin = 1;
+            float remainingMl = effectiveDailyMl - safetyLimits.dailyPhInjectedMl;
+            if (remainingMl < 0.0f) remainingMl = 0.0f;
+            float vRaw = remainingMl / static_cast<float>(nWin);
+            float budgetMl = (phDosingState.usedMs >= phLimitMs) ? 0.0f
+                : (static_cast<float>(phLimitMs - phDosingState.usedMs) / 60000.0f) *
+                      effectiveFlowMlPerMin;
+            if (vRaw > budgetMl + 0.01f) {
+              if (!phBudgetTruncLogged) {
+                systemLogger.warning("[Scheduled] Volume de fenêtre pH tronqué par le budget horaire (" +
+                  String(vRaw, 1) + "mL → " + String(budgetMl, 1) + "mL) — report aux fenêtres suivantes");
+                phBudgetTruncLogged = true;
+              }
+            } else {
+              phBudgetTruncLogged = false;
+            }
+          }
+
+          // Condition pool-chemistry n°1 : consulter le ring anti-rafale AVANT
+          // tout DÉMARRAGE (transition inactive → active). Mêmes fenêtres et
+          // seuils que canDose() (ring PARTAGÉ auto + manuel + scheduled).
+          bool wantDose = dec.doseNow;
+          static bool phSchedBurstLogged = false;
+          if (wantDose && !phDosingState.active) {
+            int cyclesLastMin = countRecentDosingCycles(0, 60000);
+            int cyclesLast15Min = countRecentDosingCycles(0, 900000);
+            if (cyclesLastMin >= kMaxDosingCyclesPerMinute ||
+                cyclesLast15Min >= kMaxDosingCyclesPer15Min) {
+              if (!phSchedBurstLogged) {
+                systemLogger.info("[Scheduled] Démarrage pH différé (anti-rafale : " +
+                  String(cyclesLastMin) + " cycles/1min, " +
+                  String(cyclesLast15Min) + " cycles/15min)");
+                phSchedBurstLogged = true;
+              }
+              wantDose = false;
+            } else {
+              phSchedBurstLogged = false;
+            }
+          }
+
+          if (wantDose && !phDosingState.active) {
+            phDosingState.lastStartTime = now;
+            // Exemption cyclesToday CONSERVÉE (R4, arbitrage pool-chemistry) :
+            // le cadencement structurel (1 démarrage / fenêtre 15 min) + le
+            // ring anti-rafale bornent déjà les démarrages. On enregistre
+            // quand même chaque start dans le ring pour cohérence.
+            recordDosingCycleStart(0);
+            systemLogger.info("[Scheduled] Démarrage dosage pH : fenêtre n°" + String(dec.windowIndex) +
+              ", volume fenêtre=" + String(dec.stopTargetMl - safetyLimits.dailyPhInjectedMl, 1) +
+              "mL, injecté=" + String(safetyLimits.dailyPhInjectedMl, 0) + "/" +
+              String(effectiveDailyMl, 0) + "mL");
+          } else if (!wantDose && phDosingState.active) {
+            phDosingState.lastStopTime = now;
+            if (safetyLimits.dailyPhInjectedMl >= effectiveDailyMl) {
+              systemLogger.info("[Scheduled] Quota journalier pH atteint (" +
+                String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(effectiveDailyMl, 0) +
+                "mL) — dosage suspendu jusqu'à demain");
+            } else {
+              systemLogger.info("[Scheduled] Arrêt dosage pH : fenêtre n°" + String(dec.windowIndex) +
+                " terminée (injecté=" + String(safetyLimits.dailyPhInjectedMl, 0) + "/" +
+                String(effectiveDailyMl, 0) + "mL) — reprise à la prochaine fenêtre");
+            }
+          }
+
+          if (wantDose) {
+            int index = pumpIndexFromNumber(mqttCfg.phPump);
+            // Condition n°5 : MÊME effectiveFlowMlPerMin pour le duty que pour
+            // le bornage horaire et la durée (cohérence volume/temps).
+            uint8_t duty = flowToDuty(phPumpControl, effectiveFlowMlPerMin);
+            if (duty > desiredDuty[index]) desiredDuty[index] = duty;
+            if (duty > 0) { phActive = true; phFlow = effectiveFlowMlPerMin; }
+          }
+
+          _phSchedWindowIdx = dec.windowIndex;
+          _phSchedStopTargetMl = dec.stopTargetMl;
+          _phSchedPlannedFlow = dec.plannedFlowMlPerMin;
         }
       }
     }
@@ -939,8 +1151,12 @@ void PumpControllerClass::update() {
     float orpValue = sensors.getOrpFiltered();
     float effectiveOrp = orpValue;
 
+    // feature-053 : la régulation vise la cible ORP EFFECTIVE (relevée par le
+    // Mode Boost si actif ; sinon identique à mqttCfg.orpTarget).
+    float orpTargetEff = getEffectiveOrpTarget();
+
     // Erreur positive = ORP trop bas → injecter du chlore pour monter l'ORP
-    float error = mqttCfg.orpTarget - effectiveOrp;
+    float error = orpTargetEff - effectiveOrp;
 
     // Déterminer si on doit doser (avec protection anti-cycling)
     bool shouldDose = false;
@@ -959,7 +1175,7 @@ void PumpControllerClass::update() {
         // Anti-rafale Pass 3.5 : timestamp de start pour les fenêtres glissantes.
         recordDosingCycleStart(1);
         systemLogger.info("Démarrage dosage ORP (auto): ORP=" + String(sensors.getOrpFiltered(), 0) + "mV" +
-          " cible=" + String(mqttCfg.orpTarget, 0) + "mV" +
+          " cible=" + String(orpTargetEff, 0) + "mV" +
           " erreur=" + String(error, 0) + "mV" +
           " (cycle " + String(orpDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
       }
@@ -1009,12 +1225,16 @@ void PumpControllerClass::update() {
       }
     }
   } else if (orpMode == "scheduled" && orpLimitOk && orpSafetyOk && mqttCfg.orpDailyTargetMl > 0) {
-    // Mode Programmée : intentionnellement aveugle à la valeur mesurée de l'ORP.
-    // L'utilisateur a choisi un volume quotidien fixe de chlore indépendamment de la mesure ;
-    // un capteur déréglé ou en cours de remplacement ne doit pas bloquer l'injection.
-    // Seules les gardes volumétriques (orpLimitOk, orpSafetyOk, maxChlorineMlPerDay)
-    // et structurelles (canDose(), débit configuré) s'appliquent.
-    // orpTarget n'est pas utilisé dans cette branche et ne doit pas l'être.
+    // Mode Programmée (feature-011) : répartition du volume quotidien par
+    // fenêtres de kScheduledWindowMinutes (15 min) sur l'horizon de filtration
+    // restant, borné à minuit. Intentionnellement aveugle à la valeur mesurée
+    // de l'ORP : l'utilisateur a choisi un volume quotidien fixe de chlore
+    // indépendamment de la mesure ; un capteur déréglé ne doit pas bloquer
+    // l'injection. Seules les gardes volumétriques (orpLimitOk, orpSafetyOk,
+    // maxChlorineMlPerDay) et structurelles (débit configuré, heure valide,
+    // anti-rafale) s'appliquent. orpTarget n'est pas utilisé dans cette branche
+    // et ne doit pas l'être. COQUILLE symétrique de la branche pH : collecte
+    // des entrées + application ; décision déléguée à evaluateScheduledDose().
     {
       float currentOrp = sensors.getOrp();
       static bool orpOutOfRangeLogged = false;
@@ -1027,7 +1247,9 @@ void PumpControllerClass::update() {
         systemLogger.info("[Scheduled ORP] Capteur ORP revenu dans la plage normale");
         orpOutOfRangeLogged = false;
       }
-      // Plafonner à la limite journalière de sécurité
+      // Log "plafonné" conservé en coquille — le plafonnement lui-même est
+      // AUSSI appliqué dans evaluateScheduledDose (via maxDailyMl) ;
+      // effectiveDailyMl ne sert plus ici qu'aux logs.
       float effectiveDailyMl = static_cast<float>(mqttCfg.orpDailyTargetMl);
       static bool orpCappedLogged = false;
       if (safetyLimits.maxChlorineMlPerDay > 0.0f && effectiveDailyMl > safetyLimits.maxChlorineMlPerDay) {
@@ -1040,6 +1262,8 @@ void PumpControllerClass::update() {
       } else {
         orpCappedLogged = false;
       }
+      // Débit effectif : UNE SEULE variable pour le bornage horaire, la durée
+      // d'injection et le duty (condition pool-chemistry n°5).
       float effectiveFlowMlPerMin = orpPumpControl.maxFlowMlPerMin *
                                     (static_cast<float>(mqttCfg.pump2MaxDutyPct) / 100.0f);
       if (effectiveFlowMlPerMin < orpPumpControl.minFlowMlPerMin)
@@ -1052,25 +1276,134 @@ void PumpControllerClass::update() {
         }
       } else {
         orpZeroFlowLogged = false;
-        // Injecter si le quota journalier n'est pas atteint (la limite horaire orpLimitOk est déjà vérifiée en condition d'entrée)
-        bool shouldDose = safetyLimits.dailyOrpInjectedMl < effectiveDailyMl;
-        if (shouldDose && !orpDosingState.active) {
-          orpDosingState.lastStartTime = now;
-          // Anti-rafale Pass 3.5 : enregistre le start pour les fenêtres glissantes.
-          recordDosingCycleStart(1);
-          systemLogger.info("[Scheduled ORP] Démarrage dosage ORP : quota=" + String(static_cast<int>(effectiveDailyMl)) +
-            "mL, injecté=" + String(safetyLimits.dailyOrpInjectedMl, 0) + "mL");
-        } else if (!shouldDose && orpDosingState.active) {
-          orpDosingState.lastStopTime = now;
-          systemLogger.info("[Scheduled ORP] Quota journalier ORP atteint (" +
-            String(safetyLimits.dailyOrpInjectedMl, 0) + "/" + String(static_cast<int>(effectiveDailyMl)) +
-            "mL) — dosage suspendu jusqu'à demain");
+
+        // Heure locale (même pattern que tickDailyRollover) : heure invalide →
+        // aucune injection (fail-closed, comportement historique), warning UNE fois.
+        int nowMin = -1;
+        time_t epochNow = time(nullptr);
+        static bool orpNoTimeLogged = false;
+        if (epochNow >= kMinValidEpoch) {
+          struct tm timeinfo;
+          localtime_r(&epochNow, &timeinfo);
+          nowMin = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+          orpNoTimeLogged = false;
+        } else if (!orpNoTimeLogged) {
+          systemLogger.warning("[Scheduled ORP] Heure locale indisponible — dosage ORP programmé suspendu");
+          orpNoTimeLogged = true;
         }
-        if (shouldDose) {
-          int index = pumpIndexFromNumber(mqttCfg.orpPump);
-          uint8_t duty = flowToDuty(orpPumpControl, effectiveFlowMlPerMin);
-          if (duty > desiredDuty[index]) desiredDuty[index] = duty;
-          if (duty > 0) { orpActive = true; orpFlow = effectiveFlowMlPerMin; }
+
+        if (nowMin >= 0) {
+          // Horizon de répartition : minutes restantes de la plage de filtration
+          // (bornées à minuit), ou fin de journée en mode continu (eau 24/7).
+          int horizonMinutes;
+          if (mqttCfg.regulationMode == "continu") {
+            horizonMinutes = 1440 - nowMin;
+          } else {
+            horizonMinutes = remainingRangeMinutes(nowMin,
+                timeStringToMinutes(filtrationCfg.start.c_str()),
+                timeStringToMinutes(filtrationCfg.end.c_str()));
+          }
+
+          ScheduledDoseInputs sin;
+          sin.nowMin = nowMin;
+          sin.horizonMinutes = horizonMinutes;
+          sin.windowMinutes = kScheduledWindowMinutes;
+          sin.dailyTargetMl = static_cast<float>(mqttCfg.orpDailyTargetMl);
+          sin.maxDailyMl = safetyLimits.maxChlorineMlPerDay;
+          sin.dailyInjectedMl = safetyLimits.dailyOrpInjectedMl;
+          sin.effectiveFlowMlPerMin = effectiveFlowMlPerMin;
+          sin.usedMs = (uint32_t)orpDosingState.usedMs;
+          sin.hourlyLimitMs = (uint32_t)orpLimitMs;
+          sin.minInjectionTimeMs = (uint32_t)pumpProtection.minInjectionTimeMs;
+          sin.watchdogActive = (esp_task_wdt_status(NULL) == ESP_OK);
+          sin.prevWindowIndex = _orpSchedWindowIdx;
+          sin.prevStopTargetMl = _orpSchedStopTargetMl;
+
+          ScheduledDoseDecision dec = evaluateScheduledDose(sin);
+
+          // Recommandation pool-chemistry : warning edge-triggered quand le
+          // volume de fenêtre est tronqué par le budget horaire restant (le
+          // recalcul n'a lieu qu'à l'entrée d'une nouvelle fenêtre).
+          static bool orpBudgetTruncLogged = false;
+          if (dec.windowIndex >= 0 && dec.windowIndex != _orpSchedWindowIdx &&
+              horizonMinutes > 0 && orpLimitMs > 0) {
+            int nWin = horizonMinutes / kScheduledWindowMinutes;
+            if (nWin < 1) nWin = 1;
+            float remainingMl = effectiveDailyMl - safetyLimits.dailyOrpInjectedMl;
+            if (remainingMl < 0.0f) remainingMl = 0.0f;
+            float vRaw = remainingMl / static_cast<float>(nWin);
+            float budgetMl = (orpDosingState.usedMs >= orpLimitMs) ? 0.0f
+                : (static_cast<float>(orpLimitMs - orpDosingState.usedMs) / 60000.0f) *
+                      effectiveFlowMlPerMin;
+            if (vRaw > budgetMl + 0.01f) {
+              if (!orpBudgetTruncLogged) {
+                systemLogger.warning("[Scheduled ORP] Volume de fenêtre ORP tronqué par le budget horaire (" +
+                  String(vRaw, 1) + "mL → " + String(budgetMl, 1) + "mL) — report aux fenêtres suivantes");
+                orpBudgetTruncLogged = true;
+              }
+            } else {
+              orpBudgetTruncLogged = false;
+            }
+          }
+
+          // Condition pool-chemistry n°1 : consulter le ring anti-rafale AVANT
+          // tout DÉMARRAGE (transition inactive → active). Mêmes fenêtres et
+          // seuils que canDose() (ring PARTAGÉ auto + manuel + scheduled).
+          bool wantDose = dec.doseNow;
+          static bool orpSchedBurstLogged = false;
+          if (wantDose && !orpDosingState.active) {
+            int cyclesLastMin = countRecentDosingCycles(1, 60000);
+            int cyclesLast15Min = countRecentDosingCycles(1, 900000);
+            if (cyclesLastMin >= kMaxDosingCyclesPerMinute ||
+                cyclesLast15Min >= kMaxDosingCyclesPer15Min) {
+              if (!orpSchedBurstLogged) {
+                systemLogger.info("[Scheduled ORP] Démarrage ORP différé (anti-rafale : " +
+                  String(cyclesLastMin) + " cycles/1min, " +
+                  String(cyclesLast15Min) + " cycles/15min)");
+                orpSchedBurstLogged = true;
+              }
+              wantDose = false;
+            } else {
+              orpSchedBurstLogged = false;
+            }
+          }
+
+          if (wantDose && !orpDosingState.active) {
+            orpDosingState.lastStartTime = now;
+            // Exemption cyclesToday CONSERVÉE (R4, arbitrage pool-chemistry) :
+            // le cadencement structurel (1 démarrage / fenêtre 15 min) + le
+            // ring anti-rafale bornent déjà les démarrages. On enregistre
+            // quand même chaque start dans le ring pour cohérence.
+            recordDosingCycleStart(1);
+            systemLogger.info("[Scheduled ORP] Démarrage dosage ORP : fenêtre n°" + String(dec.windowIndex) +
+              ", volume fenêtre=" + String(dec.stopTargetMl - safetyLimits.dailyOrpInjectedMl, 1) +
+              "mL, injecté=" + String(safetyLimits.dailyOrpInjectedMl, 0) + "/" +
+              String(effectiveDailyMl, 0) + "mL");
+          } else if (!wantDose && orpDosingState.active) {
+            orpDosingState.lastStopTime = now;
+            if (safetyLimits.dailyOrpInjectedMl >= effectiveDailyMl) {
+              systemLogger.info("[Scheduled ORP] Quota journalier ORP atteint (" +
+                String(safetyLimits.dailyOrpInjectedMl, 0) + "/" + String(effectiveDailyMl, 0) +
+                "mL) — dosage suspendu jusqu'à demain");
+            } else {
+              systemLogger.info("[Scheduled ORP] Arrêt dosage ORP : fenêtre n°" + String(dec.windowIndex) +
+                " terminée (injecté=" + String(safetyLimits.dailyOrpInjectedMl, 0) + "/" +
+                String(effectiveDailyMl, 0) + "mL) — reprise à la prochaine fenêtre");
+            }
+          }
+
+          if (wantDose) {
+            int index = pumpIndexFromNumber(mqttCfg.orpPump);
+            // Condition n°5 : MÊME effectiveFlowMlPerMin pour le duty que pour
+            // le bornage horaire et la durée (cohérence volume/temps).
+            uint8_t duty = flowToDuty(orpPumpControl, effectiveFlowMlPerMin);
+            if (duty > desiredDuty[index]) desiredDuty[index] = duty;
+            if (duty > 0) { orpActive = true; orpFlow = effectiveFlowMlPerMin; }
+          }
+
+          _orpSchedWindowIdx = dec.windowIndex;
+          _orpSchedStopTargetMl = dec.stopTargetMl;
+          _orpSchedPlannedFlow = dec.plannedFlowMlPerMin;
         }
       }
     }

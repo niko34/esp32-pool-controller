@@ -64,7 +64,7 @@ std::vector<DataPoint> getLastHours(int hours);
 std::vector<DataPoint> getLastDay();
 std::vector<DataPoint> getAllData();
 bool importData(const std::vector<DataPoint>& dataPoints);
-void clearHistory();
+bool clearHistory();   // false si le mutex n'a pas pu être pris (historique occupé) — v2.11.1
 ```
 
 ## Endpoints HTTP
@@ -77,9 +77,28 @@ void clearHistory();
 
 Voir [`web_routes_data.cpp:303`](../../src/web_routes_data.cpp:303). Colonnes CSV : `datetime, ph, orp, temperature, filtration, dosing, granularity`.
 
+`POST /history/clear` répond **`503` « Historique occupé — réessayer »** si `clearHistory()` retourne `false` (mutex non obtenu dans le délai — voir section Concurrence).
+
 ## Concurrence
 
 Un mutex FreeRTOS (`_mutex`, `SemaphoreHandle_t`) protège `memoryBuffer` contre les accès simultanés entre la tâche de loop et les handlers web asynchrones.
+
+### Timeouts mutex bornés (feature-027, v2.11.1)
+
+Les **6 prises de mutex** de `history.cpp` sont bornées par `kHistoryMutexTimeoutMs = 2000 ms` ([`constants.h`](../../src/constants.h)) — dimensionné sur le **pire détenteur légitime** : la consolidation + `saveToFile()` LittleFS (~1–1,5 s mesuré). Chaque timeout émet un `WARN` `[History] <site>: timeout mutex — opération sautée` **throttlé à 1/min/site** (`kMutexTimeoutWarnThrottleMs = 60000`, statique locale par site).
+
+Politique d'échec par site :
+
+| Site | Sur timeout |
+|---|---|
+| `update()` → `recordDataPoint()` | Point sauté, **`lastRecord` NON avancé** → retry naturel au tour de loop suivant (pas de trou de 5 min) |
+| `update()` → `consolidateData()` | Consolidation sautée, **`lastSave` NON avancé** → retry naturel au tour suivant |
+| `getLastHours()` | Vecteur vide (le client HTTP réessaiera). ⚠️ Un handler `async_tcp` peut désormais attendre **au plus 2 s** sur ce chemin — contre une attente *infinie* avant v2.11.1 (relevé en revue, amélioration nette) |
+| `getAllData()` | Vecteur vide |
+| `importData()` | `false` **avant toute modification** de `memoryBuffer` — la route teste le retour |
+| `clearHistory()` | `false` **sans supprimer le fichier** (la RAM n'a pas été vidée → pas d'état incohérent) ; la route répond `503` |
+
+Comportement nominal (mutex libre) strictement inchangé.
 
 ## Partition dédiée
 
