@@ -318,8 +318,8 @@ constexpr uint16_t kHttpServerPort = 80;                  // Port serveur HTTP
 constexpr uint16_t kMdnsHttpPort = 80;                    // Port mDNS pour HTTP
 
 // mDNS
-constexpr const char* kMdnsHostname = "poolcontroller2";       // Nom d'hôte mDNS (sans suffixe)
-constexpr const char* kMdnsFullHost = "poolcontroller2.local"; // FQDN mDNS (utilisé par UI/HTTP/WS pour les liens)
+constexpr const char* kMdnsHostname = "poolcontroller";       // Nom d'hôte mDNS (sans suffixe)
+constexpr const char* kMdnsFullHost = "poolcontroller.local"; // FQDN mDNS (utilisé par UI/HTTP/WS pour les liens)
 
 // Wi-Fi
 constexpr uint32_t kWifiConnectTimeoutMs = 15000;          // Timeout connexion Wi-Fi (ms)
