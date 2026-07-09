@@ -1,5 +1,16 @@
 # Changelog - ESP32 Pool Controller
 
+## [2.19.1] - 2026-07-09
+
+### Ajouté
+
+- **Pause mélange visible sur le tableau de bord** : le widget pH/ORP affiche désormais la **pause mélange hydraulique** post-injection (« Pause mélange : X min YY s »), au même titre que la stabilisation. Auparavant ce délai (20 min ORP / 15 min pH) n'apparaissait que dans le modal « État filtre », ce qui donnait l'impression d'un dosage bloqué sans explication. Nouveaux champs WebSocket `ph_mix_remaining_s` / `orp_mix_remaining_s`.
+
+### Documentation
+
+- `docs/subsystems/pump-controller.md` : nouvelle section « Cycle de régulation : chronologie stabilisation + pause mélange » (diagramme temporel + cadence de régulation ~1 injection / 20 min en ORP).
+- Échos utilisateur dans `docs/features/page-orp.md`, `page-ph.md`, `page-dashboard.md`.
+
 ## [2.19.0] - 2026-07-08
 
 ### Ajouté

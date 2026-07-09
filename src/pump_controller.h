@@ -275,6 +275,8 @@ public:
   void notifyOrpDose(uint32_t nowMs);
   bool isPhMixingDelayActive(uint32_t nowMs) const;
   bool isOrpMixingDelayActive(uint32_t nowMs) const;
+  // Secondes restantes de pause mélange par pompe ([0]=pH, [1]=ORP) — observabilité UI.
+  unsigned long getMixingRemainingS(int pumpIndex) const;
 
   // ===== feature-025 : raison de blocage dosage exposée au WS =====
   // Chaîne vide si dosage autorisé, sinon la dernière cause de refus de canDose().

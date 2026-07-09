@@ -53,17 +53,21 @@ Chaque carte pH et ORP porte un badge composé (`composeSensorBadge()`, app.js �
 
 Le statut `#ph-dosing-status` / `#orp-dosing-status` de chaque carte (`getDosingStopReason()`, app.js) affiche notamment « Stabilisation : X min YY s » pendant la stabilisation post-calibration. Depuis v2.9.0, il consomme les champs **par pompe** `ph_stab_remaining_s` / `orp_stab_remaining_s` (feature-006) avec repli sur le champ global `stabilization_remaining_s` (compatibilité firmware plus ancien) : chaque carte affiche la stabilisation de **sa** pompe — une calibration ORP n'affiche plus « Stabilisation » sur la carte pH, et inversement.
 
+Depuis **v2.19.1**, le statut affiche aussi la **pause mélange hydraulique** post-injection (« Pause mélange : X min YY s ») via `ph_mix_remaining_s` / `orp_mix_remaining_s` (repli sur le booléen `ph/orp MixingDelayActive` → « Pause mélange en cours » sans compte à rebours). Avant cette version, la pause mélange n'était visible que dans le modal « État filtre » des pages pH/ORP, d'où une impression de dosage bloqué sans explication sur le tableau de bord. Ordre d'affichage dans `getDosingStopReason()` : régulation désactivée → stabilisation → **pause mélange** → présence d'eau → limites.
+
 ## Données consommées (WebSocket `/ws`)
 
 La carte pH lit :
 - `ph`, `ph_target`, `ph_dosing`, `ph_cal_valid`
 - Badge multi-états : `ph_limit_reached`, `ph_daily_ml`, `ph_remaining_ml`, `ph_alert_threshold_ml` (+ `max_ph_ml_per_day` de la config)
 - Stabilisation : `ph_stab_remaining_s` (repli `stabilization_remaining_s`)
+- Pause mélange : `ph_mix_remaining_s` (repli booléen `phMixingDelayActive`)
 
 La carte ORP lit :
 - `orp`, `orp_target`, `orp_dosing`, `orp_cal_valid`
 - Badge multi-états : `orp_limit_reached`, `orp_daily_ml`, `orp_remaining_ml`, `orp_alert_threshold_ml` (+ `max_chlorine_ml_per_day` de la config)
 - Stabilisation : `orp_stab_remaining_s` (repli `stabilization_remaining_s`)
+- Pause mélange : `orp_mix_remaining_s` (repli booléen `orpMixingDelayActive`)
 
 La carte Température lit :
 - `temperature`

@@ -2184,6 +2184,17 @@
       return m > 0 ? `Stabilisation : ${m} min ${String(s).padStart(2, '0')} s` : `Stabilisation : ${s} s`;
     }
 
+    // Pause mélange hydraulique post-injection (feature-025) : rendue visible sur le
+    // widget (v2.19.1). Compte à rebours via *_mix_remaining_s ; repli sur le booléen
+    // *MixingDelayActive (firmware plus ancien, sans temps restant).
+    const mixS = data[`${sensor}_mix_remaining_s`] || 0;
+    if (mixS > 0) {
+      const m = Math.floor(mixS / 60);
+      const s = mixS % 60;
+      return m > 0 ? `Pause mélange : ${m} min ${String(s).padStart(2, '0')} s` : `Pause mélange : ${s} s`;
+    }
+    if (data[`${sensor}MixingDelayActive`] === true) return "Pause mélange en cours";
+
     // feature-056 : présence d'eau = source UNIQUE (résolue par le mode d'installation).
     // Fallback sur filtration_running si le firmware ne pousse pas encore water_present.
     const waterPresent = (data.water_present !== undefined) ? data.water_present : data.filtration_running;

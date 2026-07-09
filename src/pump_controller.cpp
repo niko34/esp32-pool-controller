@@ -252,6 +252,16 @@ bool PumpControllerClass::isOrpMixingDelayActive(uint32_t nowMs) const {
   return (int32_t)(_mixingEndMs[1] - nowMs) > 0;
 }
 
+// Secondes restantes de pause mélange pour UNE pompe ([0]=pH, [1]=ORP), 0 si
+// inactive. Observabilité UI (feature-025 : affichage widget). Wrap-safe millis().
+unsigned long PumpControllerClass::getMixingRemainingS(int pumpIndex) const {
+  if (pumpIndex < 0 || pumpIndex > 1) return 0;
+  if (_mixingEndMs[pumpIndex] == 0) return 0;
+  uint32_t now = (uint32_t)millis();
+  int32_t rem = (int32_t)(_mixingEndMs[pumpIndex] - now);
+  return rem > 0 ? (unsigned long)rem / 1000UL : 0;
+}
+
 unsigned long PumpControllerClass::getStabilizationRemainingS() const {
   unsigned long now = millis();
   unsigned long maxRem = 0;

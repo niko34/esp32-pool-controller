@@ -379,6 +379,28 @@ Après chaque injection, le bassin a besoin de temps pour s'homogénéiser avant
 
 `stabilizationDelayMin` est **configurable via `/save-config`** (plage 0-60 min, défaut 5). Valeur 0 = stabilisation legacy désactivée — la stabilisation post-calibration EZO reste, elle, toujours active (5 min pH / 3 min ORP).
 
+## Cycle de régulation : chronologie stabilisation + pause mélange
+
+Les deux temporisations ci-dessus jouent à des moments **différents** et sont deux gates **indépendantes** (`OR`) de `canDose()`. Vue d'ensemble pour la régulation `automatic` (exemple ORP, mode d'installation `managed`) :
+
+```
+T0            Filtration démarre        → stabilisation armée (stabilizationDelayMin, défaut 5 min)   [dosage bloqué]
+T0 + 5 min    Stabilisation terminée    → si |erreur| > seuil de démarrage (orpStartThreshold, 15 mV),
+                                           une injection démarre
+  injection   dure ≥ minInjectionTimeMs (30 s) et continue tant que |erreur| > seuil d'arrêt (2 mV) ;
+              s'arrête quand la cible est ~atteinte (ou budget horaire épuisé)
+  à l'arrêt   → pause mélange armée (kOrpMixingDelayMs = 20 min ; pH = 15 min)                        [dosage bloqué]
+T + 20 min    Pause mélange terminée    → nouvelle mesure → réinjection si toujours hors cible
+              → boucle : [injection] → [pause mélange 20 min] → [mesure] → [injection] → …
+```
+
+Points clés :
+- **Stabilisation** = sas de (re)démarrage, **ponctuel** : rejoué uniquement sur un événement d'armement (démarrage filtration `managed`, boot `powered`, minuit, calibration). Ne se répète pas tant que la filtration tourne.
+- **Pause mélange** = sas **récurrent**, armé à l'arrêt de **chaque** injection ; il rythme la régulation.
+- **Cadence résultante** : la régulation ORP est plafonnée à **~1 injection / 20 min** (pH : ~1 / 15 min). C'est délibéré — la réponse de la sonde ORP et l'homogénéisation du chlore sont lentes ; réinjecter avant serait un surdosage.
+- Les deux peuvent coïncider (ex. filtration qui redémarre juste après une dose) : `canDose()` attend que **les deux** soient levées.
+- **Observabilité (v2.19.1)** : le temps restant est poussé au WS — stabilisation `ph/orp_stab_remaining_s`, pause mélange `ph/orp_mix_remaining_s` (getter `getMixingRemainingS(pumpIndex)`) — et affiché sur le widget du tableau de bord (« Stabilisation : … » / « Pause mélange : … »).
+
 ## Conversion duty ↔ débit
 
 Implémentée dans [`pump_controller.cpp:227`](../../src/pump_controller.cpp:227) (`dutyToFlow`) et [`pump_controller.cpp:233`](../../src/pump_controller.cpp:233) (`flowToDuty`) :

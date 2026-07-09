@@ -123,6 +123,8 @@ Les champs `sondes_identified` et `sondes_detected` pilotent la chip de notifica
 |-------|------|-------------|
 | `ph_stab_remaining_s` | uint | Secondes restantes de stabilisation post-calibration pour la pompe **pH** (index logique 0) |
 | `orp_stab_remaining_s` | uint | Secondes restantes de stabilisation post-calibration pour la pompe **ORP** (index logique 1) |
+| `ph_mix_remaining_s` | uint | Secondes restantes de **pause mélange** hydraulique post-injection pour la pompe **pH** (v2.19.1, `getMixingRemainingS(0)`) |
+| `orp_mix_remaining_s` | uint | Secondes restantes de **pause mélange** hydraulique post-injection pour la pompe **ORP** (v2.19.1, `getMixingRemainingS(1)`) |
 
 Ces champs sont le miroir exact de la garde firmware **par pompe** (`manualInjectGuardOrReject` → `getStabilizationRemainingS(0/1)`) : l'UI désactive le bouton « Injecter » d'un produit uniquement si **sa** pompe est en stabilisation (une calibration ORP ne bloque pas le bouton pH, et inversement). Le champ global `stabilization_remaining_s` (max des 2 pompes) est **conservé** pour compatibilité (badge global, anciens clients) ; `data/app.js` `getInjectBlockReason()` retombe dessus si les champs par pompe sont absents (ancien firmware).
 

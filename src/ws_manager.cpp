@@ -162,7 +162,8 @@ String WsManager::_buildSensorJson() const {
   // feature-055 : +2 booléens boost_filtration_extended/boost_chlorine_boosted → bump à 1664.
   // feature-056 : +install_mode/water_present/filtration_state_source/_stale +
   //   filtration_ext_known/_on/_age_s (~200 octets) → bump à 1920.
-  StaticJson<1920> doc;
+  // v2.19.1 : +ph/orp_mix_remaining_s (~64 octets, observabilité pause mélange) → bump à 2048.
+  StaticJson<2048> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -207,6 +208,9 @@ String WsManager::_buildSensorJson() const {
   uint32_t nowMs = millis();
   d["phMixingDelayActive"]  = PumpController.isPhMixingDelayActive(nowMs);
   d["orpMixingDelayActive"] = PumpController.isOrpMixingDelayActive(nowMs);
+  // Secondes restantes de pause mélange par pompe (observabilité widget dashboard).
+  d["ph_mix_remaining_s"]  = PumpController.getMixingRemainingS(0);
+  d["orp_mix_remaining_s"] = PumpController.getMixingRemainingS(1);
   String phBlocked  = PumpController.getPhDoseBlockedReason();
   String orpBlocked = PumpController.getOrpDoseBlockedReason();
   if (phBlocked.length() > 0)  d["phDoseBlockedReason"]  = phBlocked;  else d["phDoseBlockedReason"]  = nullptr;
