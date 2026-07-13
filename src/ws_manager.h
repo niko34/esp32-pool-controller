@@ -21,6 +21,7 @@ public:
   void requestConfigBroadcast();
 
   bool hasClients() const;
+  size_t clientCount() const;  // Nombre de clients WS connectés (diagnostic)
 
 private:
   AsyncWebSocket* _ws = nullptr;

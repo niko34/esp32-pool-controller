@@ -1,5 +1,81 @@
 # Changelog - ESP32 Pool Controller
 
+> ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
+
+## [2.8.2] - 2026-07-13
+
+### Corrigé
+
+- **Crash de l'endpoint `/logs`** : la lecture des logs (`/get-logs`, `/download-logs`) plantait par `std::bad_alloc` (PANIC → reboot) sous fragmentation du tas — l'appareil devenait alors injoignable en HTTP alors que MQTT continuait de fonctionner. Cause : `Logger::getRecentLogs()` deep-copiait tout le buffer (avec ses `String`) dans un `std::vector<LogEntry>`, `operator new` levant une exception non rattrapée. La méthode est **supprimée** et remplacée par `Logger::forEachRecentLog()` (itération **en place sous mutex, sans copie**) ; les handlers sont réécrits en **réponse flux** (`beginResponseStream`, dont le buffer grandit par `realloc` — ne lève jamais). Diagnostiqué via coredump.
+- **Garde mémoire basse** : nouvelle constante `kMinHeapForLogsResponse` (24 Ko) ; si le plus gros bloc contigu libre est en dessous, `/get-logs` et `/download-logs` renvoient **503** (`{"error":"low_memory"}` / message texte) sans tenter d'allocation.
+
+### Retiré
+
+- **Log de diagnostic `[Diag]`** périodique (introduit temporairement en 2.8.1) — sa raison d'être (diagnostic du crash `/logs`) est levée. La ré-annonce mDNS sur changement d'IP (2.8.1) et le getter `WsManager::clientCount()` sont **conservés**.
+
+### Documentation
+
+- `docs/API.md` : code 503 `low_memory`, comportement flux et limitation de troncature de `/get-logs` et `/download-logs`.
+- `docs/subsystems/logger.md` : `forEachRecentLog` (contrat mutex / itération sans copie), garde heap, fix `bad_alloc` ; retrait de la doc du log `[Diag]`.
+
+---
+
+## [2.8.1] - 2026-07-12
+
+### Corrigé
+
+- **mDNS périmé après roaming** : `poolcontroller.local` est désormais ré-annoncé sur **tout changement d'IP** (événement WiFi `STA_GOT_IP`, drapeau consommé dans `loopTask`), y compris lors d'un roaming CPL/mesh **sans** perte de WiFi. Avant, la ré-annonce n'avait lieu que sur reconnexion manuelle → l'appareil pouvait être injoignable en HTTP (IP périmée annoncée) alors que MQTT continuait de fonctionner. Une déconnexion invalide l'IP mémorisée. Log INFO `mDNS ré-annoncé sur <IP> (<raison>)`.
+- **Divergence valeur pH/ORP MQTT vs tableau de bord** : les topics MQTT `{base}/ph` et `{base}/orp` publiaient la valeur **brute** alors que le tableau de bord affiche la valeur **filtrée** (lissée) — écart visible sous bruit de mesure (ex. pH 6.39 sur MQTT vs 7.3 dans l'app). Les deux publient désormais la **valeur filtrée identique** (repli sur le brut au démarrage tant que le filtre n'est pas amorcé). Les valeurs brutes restent disponibles sur `{base}/ph_raw` et `{base}/orp_raw`.
+
+### Ajouté
+
+- **Diagnostic** : log INFO périodique (toutes les 60 s) `[Diag] heap=NNNNN min=NNNNN IP=x.x.x.x wsClients=N` (heap libre, min free heap, IP courante, nombre de clients WebSocket) pour diagnostiquer une panne « web injoignable » en distinguant roaming réseau et fuite heap. **Temporaire** — à retirer une fois la cause tranchée. Nouveau getter `WsManager::clientCount()`.
+
+### Documentation
+
+- `docs/subsystems/logger.md` : documentation du log `[Diag]` (format, but, périodicité, caractère temporaire) et de la ré-annonce mDNS sur changement d'IP.
+
+---
+
+## [2.8.0] - 2026-07-11
+
+### Firmware
+
+- **Filtre de mesure pH/ORP recalé sur la tendance centrale (feature-058)** : le filtre (entrée du PID) ne **colle** plus au haut ou au bas d'une oscillation soutenue et ne **gèle** plus sur une valeur trompeuse. Nouvelle chaîne : rejet des **vraies aberrations uniquement** (NaN / hors-plage / spike dur isolé) → **médiane sur fenêtre longue** (13 échantillons ≈ 65 s) → EMA (α pH 0,10 / ORP 0,08). La valeur filtrée est **recalculée en continu**, jamais figée.
+- **Inhibition de la régulation conservée mais découplée** : `isPhFilterUnstable()` / `isOrpFilterUnstable()` bloquent toujours le dosage sous bruit extrême via un **drapeau de dispersion** (amplitude `max−min` de la fenêtre > cap, OU latch EMI soutenu, OU rejets consécutifs), sans jamais fausser ni figer la valeur publiée. Invariant iso-sécurité préservé (valeur ∈ [min, max], jamais tirée vers la consigne).
+- **Latence +15 s** (fenêtre médiane 7 → 13) — négligeable devant la pause mélange hydraulique post-injection. Module `sensor_filter.*` rendu 100 % pur (testé en natif, 218 tests).
+- Suppression de la mécanique re-sync / saut-max / warmup à seuil court (constantes `kSensorFilterMedianWindow`, `kPhFilterMaxStep`/`kOrpFilterMaxStep`, `kSensorFilterWarmupSamples`, `kSensorFilterResyncRejects`, `kSensorFilterMaxResyncPerWindow`, `kSensorFilterResyncWindowMs` retirées).
+
+> ℹ️ Ce filtre livre une valeur **honnête et centrée** malgré le bruit ; le **vrai correctif de la source du bruit reste matériel** (isolation / pompe), traité séparément.
+
+### Documentation
+
+- `docs/adr/0027-filtre-tendance-centrale.md` : nouvel ADR (successeur de la stratégie feature-025) — estimateur central robuste + découplage valeur/latch, alternatives écartées, invariant iso-sécurité.
+- `docs/subsystems/sensors.md` : section filtrage réécrite (chaîne, contrat `filtered()`, dispersion/latch découplés, paramètres, latence).
+- `docs/API.md`, `docs/features/page-ph.md`, `docs/features/page-orp.md` : références aux constantes supprimées corrigées.
+
+---
+
+## [2.7.0] - 2026-07-11
+
+### Ajouté
+
+- **Trace des signaux capteurs brut / lissé (feature-057)** : nouvelle card « Signaux capteurs (brut / lissé) » dans les réglages **Avancé**, avec 2 graphes haute cadence (pH brut vs lissé, ORP brut vs lissé), stats min/max/Δ, compteur d'échantillons et boutons « Recharger la trace » / « Vider le buffer ». Permet de diagnostiquer visuellement le **bruit** ou une **oscillation** de la chaîne de mesure. Les données proviennent d'un ring buffer firmware de 300 échantillons (~7,2 Ko RAM) alimenté à chaque cycle capteur (~5 s) — bien plus fidèle que l'échantillonnage WebSocket. La trace est chargée à l'activation de l'onglet (pas de polling), et le buffer est volatil (perdu au reboot).
+- Réintroduction **fidèle** (et **étendue à l'ORP**) de l'outil « Debug oscillation pH » retiré en v2.5.0 (feature-045). Les outils « pause WiFi » et « diagnostic EZO » **ne sont pas** réintroduits.
+
+### Firmware
+
+- **Capteurs** : ring buffer de trace `SensorManager` (`kSensorTraceBufferSize = 300`), enregistrement lock-free en fin de `_readEzoSensors()` — aucune transaction I²C ajoutée, watchdog non impacté.
+- Nouveaux endpoints `GET /debug/sensor_trace` (dump JSON non bloquant, streamé) et `POST /debug/sensor_trace_clear`.
+
+### Documentation
+
+- `docs/API.md` : documentation des routes `/debug/sensor_trace` et `/debug/sensor_trace_clear`.
+- `docs/features/page-settings.md` : card « Signaux capteurs (brut / lissé) » de l'onglet Avancé.
+- `docs/subsystems/sensors.md` : section « Trace des signaux capteurs » (ring buffer, coût RAM, contrat lock-free).
+
+---
+
 ## [2.19.1] - 2026-07-09
 
 ### Ajouté

@@ -58,7 +58,17 @@ public:
   void setLogCallback(std::function<void(const LogEntry&)> cb) { _logCallback = cb; }
 
   String getLevelString(LogLevel level);
-  std::vector<LogEntry> getRecentLogs(size_t count = 50);
+
+  // v2.8.2 : itération sous mutex SANS copie (remplace getRecentLogs qui copiait
+  // tout le buffer dans un std::vector<LogEntry> — copie profonde des String →
+  // std::bad_alloc → abort sous fragmentation du tas). Le visiteur est appelé une
+  // fois par entrée récente (dans l'ordre chronologique), sous le mutex du logger.
+  // Filtre optionnel : n'appelle le visiteur que pour les entrées dont le timestamp
+  // est strictement supérieur à sinceTimestamp (0 = pas de filtre).
+  // CONTRAINTE : le visiteur ne doit faire QUE des écritures mémoire rapides — pas
+  // d'I/O bloquante, pas de yield — car il s'exécute sous le mutex (scope minimal).
+  void forEachRecentLog(size_t count, unsigned long sinceTimestamp,
+                        const std::function<void(const LogEntry&)>& visitor) const;
   void clear();        // Vide uniquement le buffer RAM circulaire
   void clearAll();     // Vide RAM + buffer pending + supprime /system.log sur le FS persistant
   size_t getLogCount();

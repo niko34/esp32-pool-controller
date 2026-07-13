@@ -970,6 +970,85 @@
     };
   }
 
+  // Graphe uPlot à 2 séries pour la trace des signaux capteurs (feature-057).
+  // Axe X numérique (secondes relatives). Les null créent des trous (uPlot les gère).
+  // seriesDefs : [{ label, color }, ...]
+  function createTraceChart(host, seriesDefs) {
+    if (!host || typeof uPlot === 'undefined') return null;
+    const st = { xs: [] };
+
+    const series = [{}];
+    seriesDefs.forEach(sd => {
+      series.push({
+        label: sd.label,
+        scale: 'y',
+        stroke: sd.color,
+        width: 2,
+        paths: uPlot.paths.spline(),
+        points: { show: false }
+      });
+    });
+
+    const gridStroke = 'rgba(0,0,0,0.05)';
+    const opts = {
+      width: Math.max(host.clientWidth, 50),
+      height: Math.max(host.clientHeight, 50),
+      legend: { show: false },
+      cursor: makeUplotCursor((u, seriesIdx) => seriesIdx > 0),
+      scales: {
+        x: { time: false },
+        y: {
+          range: (u, dataMin, dataMax) => {
+            if (dataMin == null) return [0, 1];
+            return uPlot.rangeNum(dataMin, dataMax, 0.1, true);
+          }
+        }
+      },
+      axes: [
+        {
+          scale: 'x',
+          stroke: '#4b5563',
+          font: `12px ${UPLOT_FONT_STACK}`,
+          grid: { stroke: gridStroke, width: 1 },
+          ticks: { stroke: gridStroke, width: 1 },
+          space: 60,
+          values: (u, splits) => splits.map(v => (v != null ? `${v}s` : ''))
+        },
+        {
+          scale: 'y',
+          stroke: '#4b5563',
+          font: `12px ${UPLOT_FONT_STACK}`,
+          grid: { stroke: gridStroke, width: 1 },
+          ticks: { stroke: gridStroke, width: 1 }
+        }
+      ],
+      series,
+      plugins: [
+        tooltipPlugin({
+          title: (u, idx) => (st.xs[idx] != null ? `${st.xs[idx]} s` : ''),
+          rows: (u, idx) => seriesDefs.map((sd, si) => {
+            const v = u.data[si + 1][idx];
+            if (v == null || isNaN(v)) return null;
+            return { color: sd.color, text: `${sd.label}: ${v}` };
+          }).filter(Boolean)
+        })
+      ]
+    };
+
+    const initialData = [[], ...seriesDefs.map(() => [])];
+    const u = new uPlot(opts, initialData, host);
+    observeChart(host, u);
+
+    return {
+      u,
+      st,
+      setData(xs, seriesData) {
+        st.xs = xs;
+        u.setData([xs, ...seriesData]);
+      }
+    };
+  }
+
   function bindDetailCharts() {
     document.querySelectorAll('.detail-chart-ranges').forEach(container => {
       container.querySelectorAll('.range-btn').forEach(btn => {
@@ -4974,6 +5053,136 @@
     onRouteChange();
   }
 
+  // ========== TRACE SIGNAUX CAPTEURS (feature-057) ==========
+  // Charge /debug/sensor_trace à l'activation de l'onglet Avancé et sur clic
+  // « Recharger ». Pas de polling permanent. 2 graphes uPlot (pH, ORP), stats
+  // min/max/Δ calculées en ignorant les null.
+  let _tracePhChart = null;
+  let _traceOrpChart = null;
+  let _traceLoading = false;
+
+  function _initTraceCharts() {
+    if (_tracePhChart || typeof uPlot === "undefined") return;
+    const phHost = $("#trace_ph_chart");
+    const orpHost = $("#trace_orp_chart");
+    if (phHost) {
+      _tracePhChart = createTraceChart(phHost, [
+        { label: "pH brut", color: "#a78bfa" },
+        { label: "pH lissé", color: "#7c3aed" }
+      ]);
+    }
+    if (orpHost) {
+      _traceOrpChart = createTraceChart(orpHost, [
+        { label: "ORP brut", color: "#34d399" },
+        { label: "ORP lissé", color: "#059669" }
+      ]);
+    }
+  }
+
+  function _traceMinMax(arr) {
+    let mn = null, mx = null;
+    for (const v of arr) {
+      if (v == null || isNaN(v)) continue;
+      if (mn == null || v < mn) mn = v;
+      if (mx == null || v > mx) mx = v;
+    }
+    return { min: mn, max: mx };
+  }
+
+  function _setTraceStat(id, arr, decimals, withDelta = true) {
+    const el = $(id);
+    if (!el) return;
+    const { min, max } = _traceMinMax(arr);
+    if (min == null || max == null) {
+      el.textContent = "—";
+      return;
+    }
+    let txt = `min ${min.toFixed(decimals)} · max ${max.toFixed(decimals)}`;
+    if (withDelta) txt += ` · Δ ${(max - min).toFixed(decimals)}`;
+    el.textContent = txt;
+  }
+
+  async function loadSensorTrace() {
+    if (_traceLoading) return;
+    _traceLoading = true;
+    const status = $("#trace_status");
+    const charts = $("#trace_charts");
+    const countEl = $("#trace_count");
+    try {
+      const res = await authFetch("/debug/sensor_trace");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const samples = Array.isArray(json.samples) ? json.samples : [];
+
+      if (countEl) countEl.textContent = String(samples.length);
+
+      if (samples.length === 0) {
+        if (status) { status.textContent = "Aucune donnée dans le buffer."; status.hidden = false; }
+        if (charts) charts.hidden = true;
+        return;
+      }
+
+      _initTraceCharts();
+
+      const num = (v) => (v == null || isNaN(v)) ? null : v;
+      const t0 = samples[0].t ?? 0;
+      // Secondes relatives, arrondies à 0,1 s
+      const xs = samples.map(s => Math.round((((s.t ?? 0) - t0) / 100)) / 10);
+      const phRaw = samples.map(s => num(s.phRaw));
+      const phFilt = samples.map(s => num(s.phFiltered));
+      const orpRaw = samples.map(s => num(s.orpRaw));
+      const orpFilt = samples.map(s => num(s.orpFiltered));
+      const temp = samples.map(s => num(s.tempEau));
+
+      _tracePhChart?.setData(xs, [phRaw, phFilt]);
+      _traceOrpChart?.setData(xs, [orpRaw, orpFilt]);
+
+      _setTraceStat("#trace_stats_ph_raw", phRaw, 2);
+      _setTraceStat("#trace_stats_ph_filtered", phFilt, 2);
+      _setTraceStat("#trace_stats_orp_raw", orpRaw, 1);
+      _setTraceStat("#trace_stats_orp_filtered", orpFilt, 1);
+      _setTraceStat("#trace_stats_temp", temp, 1, false);
+
+      if (status) status.hidden = true;
+      if (charts) charts.hidden = false;
+    } catch (e) {
+      console.error("[trace] load failed:", e);
+      if (status) { status.textContent = "Trace indisponible (appareil injoignable)."; status.hidden = false; }
+      if (charts) charts.hidden = true;
+    } finally {
+      _traceLoading = false;
+    }
+  }
+
+  function bindSensorTrace() {
+    $("#trace_reload_btn")?.addEventListener("click", () => loadSensorTrace());
+
+    $("#trace_clear_btn")?.addEventListener("click", async () => {
+      if (!(await confirmDialog({
+        title: "Vider le buffer",
+        message: "Vider le buffer de trace des signaux capteurs ?\n\nLes données enregistrées seront perdues.",
+        confirmLabel: "Vider",
+        danger: true
+      }))) return;
+      try {
+        const res = await authFetch("/debug/sensor_trace_clear", { method: "POST" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        showToast("Buffer vidé", "success");
+        await loadSensorTrace();
+      } catch (e) {
+        console.error("[trace] clear failed:", e);
+        showToast("Échec du vidage du buffer", "error");
+      }
+    });
+
+    // Chargement à l'activation de l'onglet Avancé uniquement (pas de polling permanent)
+    const onRouteChange = () => {
+      if (_isPanelDevActive()) loadSensorTrace();
+    };
+    window.addEventListener("hashchange", onRouteChange);
+    onRouteChange();
+  }
+
   function bindLogs() {
     $("#refresh_logs_btn")?.addEventListener("click", () => loadLogs(true, false));
 
@@ -6226,6 +6435,7 @@
     bindManualUpdate();
     bindLogs();
     bindSondesOnewire();
+    bindSensorTrace();
 
     // Reconnexion immédiate lors du retour sur la page (iPad/mobile : après déverrouillage)
     document.addEventListener('visibilitychange', () => {

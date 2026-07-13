@@ -110,8 +110,9 @@ public:
   bool isTemperatureFrozen() const;
 
   // Reset manuel des filtres (appelé après calibration EZO réussie, ou debug).
-  // Repasse le filtre en warmup → dosage auto bloqué jusqu'à kSensorFilterWarmupSamples
-  // mesures valides.
+  // Repasse le filtre en warmup → dosage auto bloqué tant que la fenêtre centrale
+  // (kSensorFilterCentralWindow mesures valides) n'est pas de nouveau pleine.
+  // Lève aussi le latch EMI (feature-058).
   void resetPhFilter();
   void resetOrpFilter();
 
@@ -163,6 +164,36 @@ public:
   // True si au moins un EZO a répondu au boot ET qu'au moins une lecture pH
   // ou ORP valide est disponible (cohérent avec gestion fallback EZO débranché).
   bool isInitialized() const;
+
+  // ===== Trace capteur (ring buffer RAM, feature-057) =====
+  // Capture chaque cycle EZO (pH brut + pH lissé + ORP brut + ORP lissé + T° eau).
+  // Sert au diagnostic d'oscillation / de lissage (comparaison brut vs filtré).
+  // Buffer glissant ~25 min à kPhOrpSensorIntervalMs = 5 s.
+  //
+  // Concurrence (MÊME contrat que le cache EZO `_lastPh`/`_lastOrp`) :
+  //   - Écrit UNIQUEMENT par loopTask (core 1) via _recordSensorTrace(), à la fin
+  //     de _readEzoSensors().
+  //   - Lu par un handler AsyncTCP (core 0) via appendSensorTraceJson().
+  //   - AUCUN mutex : les champs sont des scalaires alignés. Pire cas = un handler
+  //     lit 1 échantillon partiellement mis à jour pendant l'écriture (valeurs
+  //     mixées d'un cycle) OU rate le tout dernier échantillon. Pour un outil de
+  //     diagnostic non temps-réel, cette incohérence ponctuelle est acceptable.
+  struct SensorTraceSample {
+    uint32_t ms;          // millis() au moment de la lecture
+    float    phRaw;       // pH brut Atlas EZO (NaN si lecture échouée)
+    float    phFiltered;  // pH lissé (médiane + EMA, feature-025 ; NaN si filtre vide)
+    float    orpRaw;      // ORP brut Atlas EZO (NaN si lecture échouée)
+    float    orpFiltered; // ORP lissé (NaN si filtre vide)
+    float    tempEau;     // T° eau calibrée envoyée à l'EZO pour compensation (NaN si sonde absente)
+  };
+  // Nombre d'échantillons valides actuellement dans le ring buffer.
+  size_t getSensorTraceCount() const;
+  // Ajoute les échantillons (ordre chronologique, plus ancien d'abord) à `out`.
+  // `out` doit être un JsonArray d'un JsonDocument déjà alloué et suffisamment grand.
+  // Sérialise NaN → null. Arrondis : pH ×1000, ORP ×10, T° ×10.
+  void appendSensorTraceJson(JsonArray out) const;
+  // Vide le ring buffer (démarre une fenêtre d'observation propre).
+  void clearSensorTrace();
 
   // ===== API DS18B20 — Température (feature-020, inchangé) =====
   // Alias rétrocompat de la T° eau, avec fallback gracieux sur la 1ʳᵉ sonde
@@ -222,15 +253,19 @@ private:
   // Alimentés dans _readEzoSensors() à chaque lecture EZO valide (contexte loopTask).
   // Lus par les getters get*Filtered()/is*FilterReady() depuis loopTask uniquement
   // (pump_controller, ws_manager côté loop). Pas de mutex : cf. contrat SensorFilter.
+  // feature-058 : fenêtre médiane LONGUE + dispersion (drapeau découplé de la valeur).
+  // Ordre positionnel = SensorFilter::Config :
+  //   minValue, maxValue, spikeReject, emaAlpha, centralWindow,
+  //   maxConsecutiveRejects, maxAgeMs, maxDispersion, frozenSamples, frozenEpsilon.
   SensorFilter _phFilter{SensorFilter::Config{
-      kPhFilterMin, kPhFilterMax, kPhFilterMaxStep, kPhEmaAlpha,
-      kSensorFilterMedianWindow, kSensorFilterWarmupSamples,
-      kSensorFilterMaxConsecutiveRejects, kSensorFilterMaxAgeMs,
+      kPhFilterMin, kPhFilterMax, kPhFilterSpikeReject, kPhEmaAlpha,
+      kSensorFilterCentralWindow, kSensorFilterMaxConsecutiveRejects,
+      kSensorFilterMaxAgeMs, kPhFilterMaxDispersion,
       kSensorFrozenSamples, kSensorFrozenEpsilonPh}};
   SensorFilter _orpFilter{SensorFilter::Config{
-      kOrpFilterMin, kOrpFilterMax, kOrpFilterMaxStep, kOrpEmaAlpha,
-      kSensorFilterMedianWindow, kSensorFilterWarmupSamples,
-      kSensorFilterMaxConsecutiveRejects, kSensorFilterMaxAgeMs,
+      kOrpFilterMin, kOrpFilterMax, kOrpFilterSpikeReject, kOrpEmaAlpha,
+      kSensorFilterCentralWindow, kSensorFilterMaxConsecutiveRejects,
+      kSensorFilterMaxAgeMs, kOrpFilterMaxDispersion,
       kSensorFrozenSamples, kSensorFrozenEpsilonOrp}};
 
   // ===== feature-022 Passe 2 : détecteur figé dédié température =====
@@ -284,8 +319,17 @@ private:
   static constexpr UBaseType_t kEzoQueueLen = 4;
   QueueHandle_t _ezoQueue = nullptr;
 
+  // ===== Trace capteur (ring buffer RAM, feature-057) =====
+  // Voir contrat de concurrence dans la section publique SensorTraceSample.
+  SensorTraceSample _traceBuffer[kSensorTraceBufferSize];
+  size_t _traceIdx = 0;    // Prochaine position d'écriture
+  size_t _traceCount = 0;  // Nombre d'échantillons valides (≤ kSensorTraceBufferSize)
+
   // ===== Helpers privés =====
   void _readEzoSensors(float tempC);   // Lecture pH puis ORP, mise à jour caches
+  // Enregistre un échantillon de trace (appelé en fin de _readEzoSensors, loopTask).
+  void _recordSensorTrace(float phRaw, float phFiltered,
+                          float orpRaw, float orpFiltered, float tempEau);
   void _readDs18b20s();                // Lecture multi-sondes DS18B20
   void _processEzoQueue();             // Dépile au plus 1 commande par cycle
   void _executeEzoCmd(const EzoCmdRequest& req);

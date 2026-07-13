@@ -112,6 +112,11 @@ float getPhSlopeZero()  const;          // mV décalage zéro (NaN si firmware E
 uint32_t getPhSlopeAgeMs() const;       // ms depuis dernière query OK (UINT32_MAX si jamais)
 bool enqueuePhSlopeQuery();             // force un refresh — dédoublonné
 
+// feature-057 — ring buffer de trace haute cadence (pH/ORP brut + lissé, T°)
+size_t getSensorTraceCount() const;        // 0..kSensorTraceBufferSize
+void appendSensorTraceJson(JsonArray out) const;  // sérialise ancien → récent (null si NaN)
+void clearSensorTrace();                   // vide le buffer
+
 // Diagnostic global
 bool isInitialized() const;             // true si au moins un EZO a répondu + 1 lecture valide
 
@@ -178,78 +183,81 @@ Conséquences :
 - Logger `critical` 1× à la **transition** vers stale (flag `_phStaleLogged` / `_orpStaleLogged`).
 - Alerte MQTT `pool/alerts/sensor_stale` publiée edge-triggered (cf. [docs/MQTT.md](../MQTT.md)).
 
-## Filtrage des mesures pH/ORP — feature-025
+## Filtrage des mesures pH/ORP — feature-025 → feature-058
 
-Lissage logiciel **robuste** des mesures EZO pour réduire l'impact des fluctuations ponctuelles (bruit secteur, EMI, couplage 12 V) sur l'affichage, MQTT/HA et **surtout la régulation**. Les valeurs **brutes restent exposées** pour diagnostic ; les valeurs **filtrées deviennent la référence** pour l'UI principale, MQTT et le PID.
+Lissage logiciel **robuste** des mesures EZO pour livrer une valeur représentative de la **tendance centrale** du signal, entrée de l'affichage, MQTT/HA et **surtout de la régulation** (PID). Les valeurs **brutes restent exposées** pour diagnostic ; les valeurs **filtrées sont la référence** pour l'UI principale, MQTT et le PID.
+
+> **Refonte feature-058 ([ADR-0027](../adr/0027-filtre-tendance-centrale.md))** — La chaîne d'origine (rejet de saut `maxStep` → médiane(7) → EMA + re-sync anti latch-up) **collait** au haut ou au bas d'une oscillation soutenue (le rejet de saut traitait les transitions comme aberrantes → n'intégrait qu'un côté de l'enveloppe), et pouvait **figer** la valeur sur un nombre trompeur via le latch. Elle est remplacée par un **estimateur de tendance centrale** dont la valeur est **découplée** du drapeau d'instabilité. La cause racine du bruit reste **matérielle** ; ce filtre livre en attendant une valeur **honnête et centrée**, plus sûre qu'une valeur collée ou gelée.
 
 ### Chaîne de filtrage
 
 ```text
 mesure brute Atlas EZO
-  → rejet aberrant (NaN / hors plage plausible / saut > maxStep)
-  → médiane glissante (fenêtre 7)
+  → rejet des VRAIES aberrations uniquement :
+      NaN  /  hors plage plausible  /  spike DUR isolé (|raw − médiane| > spikeReject)
+  → médiane sur fenêtre LONGUE (13 échantillons ≈ 65 s, > 1 période d'oscillation)
   → EMA (moyenne exponentielle lente : alpha pH 0.10 / ORP 0.08)
-  → valeur filtrée → UI / MQTT / PID
+  → valeur filtrée (tendance centrale, JAMAIS figée) → UI / MQTT / PID
 ```
 
+L'**oscillation légitime soutenue n'est plus rejetée** : elle alimente le filtre, la médiane longue la moyenne sur ≥ 1 période → valeur **centrée**. Seule la vraie aberration (spike dur isolé, NaN, hors-plage) est écartée.
+
 À chaque lecture EZO valide (`_readEzoSensors`), `SensorManager` soumet la brute au filtre du capteur via `SensorFilter::addSample(raw, nowMs)`. La brute est **toujours** mémorisée (`getPhRaw()`/`getOrpRaw()` = `getPh()`/`getOrp()`), même si le filtre la rejette.
+
+### Contrat `filtered()` — jamais figée
+
+`filtered()` renvoie **toujours** l'EMA de la médiane-longue **recalculée en continu** : c'est l'estimateur central **courant**. Elle n'est **jamais figée**, **jamais ré-amorcée** en cours de route par une instabilité. Elle vaut `NaN` **uniquement** tant que la fenêtre centrale n'est pas **pleine** (warmup, C2). Invariant iso-sécurité : `filtered() ∈ [min, max]` de la fenêtre observée, **jamais** tirée vers la consigne.
+
+Le **drapeau** `unstable()` (inhibition de la régulation) est **découplé** de la valeur — il ne modifie jamais `filtered()`.
 
 ### Classe `SensorFilter`
 
 Module dédié **déterministe et testable hors matériel** ([`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp)). Une instance par capteur dans `SensorManager` (`_phFilter`, `_orpFilter`).
 
-- **Zéro allocation dynamique** : buffer médian FIXE `float[kSensorFilterMedianWindow]` (= 7).
+- **Zéro allocation dynamique** : buffer médian FIXE `float[kSensorFilterCentralWindowMax]` (capacité physique 16, fenêtre logique `kSensorFilterCentralWindow` = 13).
 - **Mono-contexte** : écrit par `addSample()` (loopTask), lu par les getters. Pas de mutex interne — l'appelant respecte le contrat mono-thread, comme `_lastPh`/`_lastOrp`.
-- **Pas de membre statique** : couvert par les tests unitaires (`test/`).
+- **Pas de membre statique** : module **100 % pur**, couvert par les tests natifs (`test/test_native_sensor_filter/`).
 
 | Méthode | Effet |
 |---------|-------|
-| `bool addSample(float raw, uint32_t nowMs)` | Soumet une brute. Retourne `true` si **acceptée** (filtre alimenté), `false` si rejetée |
-| `void reset()` | Réinitialise warmup, buffers et compteurs |
-| `float raw() / median() / filtered()` | Dernière brute / médiane courante / valeur EMA (NaN tant que non amorcé) |
-| `bool ready(uint32_t nowMs)` | `true` ssi warmup atteint **ET** dernière mesure valide récente (`< maxAgeMs`) **ET** non figé (feature-022) |
-| `bool unstable()` | `true` si `consecutiveRejects >= maxConsecutiveRejects` **OU** latch anti-boucle posé |
+| `bool addSample(float raw, uint32_t nowMs)` | Soumet une brute. Retourne `true` si **acceptée** (filtre alimenté), `false` si rejetée (NaN / hors-plage / spike dur isolé) |
+| `void reset()` | Réinitialise warmup, buffers, compteurs **et le latch EMI** |
+| `float raw() / median() / filtered()` | Dernière brute / médiane courante / EMA (estimateur central courant, NaN tant que la fenêtre n'est pas pleine) |
+| `float dispersion()` | Amplitude (`max − min`) de la fenêtre brute **pleine** (NaN sinon). Diagnostic + moteur du drapeau d'instabilité |
+| `bool ready(uint32_t nowMs)` | `true` ssi fenêtre centrale **pleine** **ET** dernière mesure valide récente (`< maxAgeMs`) **ET** non figé (feature-022) |
+| `bool unstable()` | `true` si **dispersion > cap** (fenêtre pleine) **OU** **latch EMI** posé **OU** `consecutiveRejects >= maxConsecutiveRejects` |
 | `bool frozen()` | `true` si `frozenSamples` échantillons acceptés consécutifs tiennent dans une bande < `frozenEpsilon` (feature-022, via `FrozenDetector` composé) |
-| `uint8_t rejectedCount() / consecutiveRejects()` | Compteur glissant 8 bits (sature à 255) / rejets consécutifs courants |
-| `uint8_t resyncCount()` | Nb de re-sync dans la fenêtre glissante courante (anti latch-up) |
-| `bool unstableLatched()` | `true` si le latch anti-boucle EMI est posé — persistant jusqu'à `reset()` |
+| `uint8_t rejectedCount() / consecutiveRejects()` | Compteur glissant 8 bits (sature à 255) / rejets NaN/hors-plage consécutifs courants |
+| `bool unstableLatched()` | `true` si le latch EMI (dispersion soutenue) est posé — persistant jusqu'à `reset()` |
 | `uint32_t ageMs(uint32_t nowMs)` | Âge de la dernière mesure acceptée (`UINT32_MAX` si aucune) |
 
-### Logique de rejet
+### Logique de rejet — vraies aberrations uniquement
 
 Une mesure **n'alimente pas** le filtre (mais la brute reste lisible) si :
 
-- elle vaut `NaN` (lecture stale / bus I²C dégradé via `getPh()`/`getOrp()` qui renvoient déjà NaN) ;
-- elle sort de `[minValue, maxValue]` (plage plausible) ;
-- `|raw − filtered| > maxStep` — **sauf pendant le warmup** (le filtre doit pouvoir converger vers une valeur initiale même éloignée).
+- elle vaut `NaN` (lecture stale / bus I²C dégradé via `getPh()`/`getOrp()` qui renvoient déjà NaN) → incrémente `consecutiveRejects` ;
+- elle sort de `[minValue, maxValue]` (plage plausible) → incrémente `consecutiveRejects` ;
+- **spike DUR isolé** : `|raw − médiane| > spikeReject` (`kPhFilterSpikeReject` = 1.0 pH / `kOrpFilterSpikeReject` = 300 mV) → l'échantillon est **écarté**, **exclu** du calcul de dispersion, **ne compte PAS** comme instabilité (n'incrémente pas `consecutiveRejects`) et **ne met pas à jour** `lastValid` → l'âge grandit. Un spike **répété** maintient donc le filtre non alimenté → âge > maxAge → non prêt → dosage fail-closed (invariant feature-022 préservé).
+
+Le seuil `spikeReject` est **très au-dessus** de l'amplitude d'oscillation légitime : il ne rejette que l'aberration franche, jamais une transition d'oscillation soutenue (qui, elle, doit alimenter la médiane).
 
 ### États du filtre
 
-- **warmup** : tant que `< kSensorFilterWarmupSamples` (= 5) mesures valides reçues → `ready() = false`. **Aucun dosage** tant que non prêt.
-- **ready** : warmup atteint ET dernière mesure valide `< kSensorFilterMaxAgeMs` (= 20 s). Au-delà (EZO injoignable) → `ready()` repasse `false` → dosage fail-closed.
-- **unstable** : `>= kSensorFilterMaxConsecutiveRejects` (= 10) rejets consécutifs → capteur déclaré instable, dosage bloqué (on bloque plutôt que de lisser un défaut EMI persistant). Cet état est **transitoire** : il s'éteint dès qu'une mesure est acceptée. À ne pas confondre avec le **latch anti-boucle** ci-dessous, qui est persistant.
+- **warmup** : tant que la fenêtre centrale n'est pas **pleine** (`< kSensorFilterCentralWindow` = 13 échantillons acceptés) → `filtered() = NaN`, `ready() = false`. **Aucun dosage** tant que non prêt.
+- **ready** : fenêtre pleine ET dernière mesure valide `< kSensorFilterMaxAgeMs` (= 20 s). Au-delà (EZO injoignable) → `ready()` repasse `false` → dosage fail-closed.
+- **unstable** (drapeau d'inhibition, **découplé** de la valeur — ne fige jamais `filtered()`) : `true` si l'un de ces trois signaux est posé :
+  - **(a) dispersion > cap** : l'amplitude `max − min` de la fenêtre brute **pleine** dépasse `kPhFilterMaxDispersion` (= 0.5 pH) / `kOrpFilterMaxDispersion` (= 100 mV) → oscillation de niveau EMI. Les caps sont maintenus **sous** l'amplitude EMI observée (feature-057) pour préserver l'inhibition existante — **ne pas assouplir** ;
+  - **(b) latch EMI** : dispersion > cap **soutenue** (`kSensorFilterDispersionLatchCycles` = 3 fenêtres pleines consécutives en dépassement) → latch collant `unstableLatched()`, levé **uniquement** par `reset()`/recalibration ;
+  - **(c) rejets consécutifs** : `>= kSensorFilterMaxConsecutiveRejects` (= 10) rejets NaN/hors-plage consécutifs. État transitoire, s'éteint dès qu'une mesure est acceptée.
 - **frozen** (feature-022) : `kSensorFrozenSamples` (= 30) lectures acceptées consécutives dans une bande < epsilon → `ready()` repasse `false` → dosage fail-closed via la garde `FilterNotReady` existante. Sortie **immédiate sans re-warmup** dès une lecture vivante. Voir [Détection capteur figé](#détection-capteur-figé--feature-022).
 
-### Re-synchronisation (anti latch-up)
+### Latch EMI (persistance de l'inhibition)
 
-> **Bug corrigé** : un saut réel **et durable** au-delà de `maxStep` figeait la valeur filtrée à vie. Cas terrain : sonde plongée en solution de calibration (~4.871) pendant le warmup, puis retour à la vraie valeur en bassin → toutes les mesures suivantes rejetées comme « saut excessif » → `filtered` figé indéfiniment → **dosage bloqué en permanence**.
+Un bruit de niveau EMI **soutenu** (dispersion > cap sur `kSensorFilterDispersionLatchCycles` = 3 fenêtres pleines consécutives) pose un latch **collant** :
 
-Le filtre distingue désormais un **pic isolé** d'un **vrai changement durable** :
-
-- Chaque rejet pour « saut excessif » incrémente `consecutiveRejects` et mémorise le brut rejeté dans un mini-buffer FIXE (`_rejBuffer`, réutilise la capacité physique `kSensorFilterMedianWindow` → aucune allocation).
-- Après `kSensorFilterResyncRejects` (= **12**, ≈ 60 s à 5 s/cycle, feature-033) rejets consécutifs sur saut excessif, le filtre conclut à un **changement réel** : il se **ré-amorce sur la MÉDIANE des derniers bruts rejetés** (et non sur l'échantillon courant, pour ignorer un éventuel pic final) puis **repart en warmup** → `ready()` repasse `false` → **dosage bloqué pendant le re-warmup** (invariant fail-closed préservé).
-- Un **pic isolé** (`< 12` cycles avant retour dans la bande `maxStep`) reste simplement rejeté, sans jamais toucher `filtered`.
-- Chaque re-sync logue un `warning` (ancienne valeur filtrée + médiane d'amorçage).
-
-`kSensorFilterResyncRejects` (= 12) reste **strictement supérieur** à `kSensorFilterMaxConsecutiveRejects` (= 10) : un capteur réellement bruité est donc déclaré `unstable()` (et le dosage bloqué) **avant** qu'une re-sync ne se déclenche (invariant 12 > 10 préservé).
-
-### Anti-boucle latché
-
-Un capteur qui re-synchronise en boucle n'observe pas un vrai changement mais un **défaut EMI**. Garde-fou :
-
-- Les timestamps des re-sync sont conservés dans une **fenêtre glissante** `kSensorFilterResyncWindowMs` (= **600 000 ms** = 10 min).
-- Si `>= kSensorFilterMaxResyncPerWindow` (= **3**) re-sync surviennent dans cette fenêtre, le capteur est déclaré instable de façon **LATCHÉE** : `unstable()` reste `true` (via `unstableLatched()`) **jusqu'à un `reset()` explicite**, indépendamment des mesures suivantes. Le dosage reste bloqué.
-- L'activation du latch logue un `critical`.
+- `unstable()` reste `true` (via `unstableLatched()`) **indépendamment des mesures suivantes** → dosage bloqué.
+- Le latch distingue un **pic de dispersion ponctuel** (inhibition transitoire, s'éteint dès que la fenêtre repasse sous le cap) d'un **défaut EMI persistant** (latch collant).
+- **La valeur `filtered()` reste publiée et recalculée** pendant tout l'état latché : le latch inhibe le **dosage**, il ne fige **pas** la valeur (contrat feature-058).
 
 Le latch est levé **uniquement** par `reset()`, déclenché par :
 - `POST /debug/sensor_filter_reset` (reset manuel des deux filtres) ;
@@ -257,22 +265,23 @@ Le latch est levé **uniquement** par `reset()`, déclenché par :
 
 > Le reset filtre + warmup post-calibration est **mode-indépendant** : il est déclenché par le **succès de la commande EZO** dans `_processEzoQueue()`, sans aucune condition sur le mode de régulation (`automatic` / `scheduled` / `manual`). L'élargissement de l'accès à la calibration dans tous les modes (feature-034, purement frontend) ne modifie donc pas ce comportement firmware.
 
-Getters associés : `resyncCount()` (re-sync dans la fenêtre courante) et `unstableLatched()` (état du latch).
+Getter associé : `unstableLatched()` (état du latch EMI).
 
-### Paramètres (centralisés dans [`constants.h`](../../src/constants.h))
+### Paramètres (centralisés dans [`constants.h`](../../src/constants.h), bloc feature-058)
 
 | Paramètre | pH | ORP |
 |---|---:|---:|
-| Fenêtre médiane (`kSensorFilterMedianWindow`) | 7 | 7 |
+| Fenêtre médiane logique (`kSensorFilterCentralWindow`) | 13 | 13 |
+| Capacité physique buffer (`kSensorFilterCentralWindowMax`) | 16 | 16 |
 | EMA alpha | `kPhEmaAlpha` = 0.10 | `kOrpEmaAlpha` = 0.08 |
-| Saut max rejet | `kPhFilterMaxStep` = 0.15 pH | `kOrpFilterMaxStep` = 50 mV |
+| Spike dur isolé écarté | `kPhFilterSpikeReject` = 1.0 pH | `kOrpFilterSpikeReject` = 300 mV |
+| Cap dispersion → instable | `kPhFilterMaxDispersion` = 0.5 pH | `kOrpFilterMaxDispersion` = 100 mV |
 | Plage plausible | `kPhFilterMin/Max` = 0.0 – 14.0 | `kOrpFilterMin/Max` = -1000 – +1500 mV |
-| Warmup (`kSensorFilterWarmupSamples`) | 5 | 5 |
 | Rejets consécutifs → instable (`kSensorFilterMaxConsecutiveRejects`) | 10 | 10 |
-| Rejets consécutifs → re-sync (`kSensorFilterResyncRejects`) | 12 | 12 |
-| Re-sync max avant latch (`kSensorFilterMaxResyncPerWindow`) | 3 | 3 |
-| Fenêtre anti-boucle (`kSensorFilterResyncWindowMs`) | 600 000 ms | 600 000 ms |
+| Fenêtres en dépassement → latch EMI (`kSensorFilterDispersionLatchCycles`) | 3 | 3 |
 | Âge max ready (`kSensorFilterMaxAgeMs`) | 20 000 ms | 20 000 ms |
+
+> **Latence** : la fenêtre médiane passe de 7 à 13 échantillons → retard médian ≈ 30 s (à 5 s/échantillon), soit **+15 s** vs l'ancien filtre. Négligeable devant la **pause mélange hydraulique** post-injection (15–20 min) ; pH/ORP varient lentement.
 
 ### Reset après calibration
 
@@ -281,11 +290,49 @@ Une calibration change la fonction de transfert de la sonde → la valeur filtr�
 - **pH** (`mid` / `low` / `clear`) → `resetPhFilter()` ;
 - **ORP** (`cal` / `clear`) → `resetOrpFilter()`.
 
-Le filtre repasse en **warmup** → dosage de la sonde concernée bloqué jusqu'à `kSensorFilterWarmupSamples` nouvelles mesures valides (cumulé avec le timer de stabilisation post-cal `kStabilizationDuration*Ms`, gates indépendantes).
+Le filtre repasse en **warmup** → dosage de la sonde concernée bloqué jusqu'à ce que la **fenêtre centrale soit de nouveau pleine** (`kSensorFilterCentralWindow` = 13 nouvelles mesures valides ; cumulé avec le timer de stabilisation post-cal `kStabilizationDuration*Ms`, gates indépendantes).
 
 ### Reset manuel / diagnostic
 
-`POST /debug/sensor_filter_reset` réinitialise **les deux** filtres (warmup) — c'est aussi le **seul** moyen, avec une calibration réussie, de **lever le latch anti-boucle** (`unstableLatched()`). `GET /debug/sensor_filter_state` retourne l'état JSON brut (raw/median/filtered/ready/unstable/rejected par capteur). Voir [API.md](../API.md).
+`POST /debug/sensor_filter_reset` réinitialise **les deux** filtres (warmup) — c'est aussi le **seul** moyen, avec une calibration réussie, de **lever le latch EMI** (`unstableLatched()`). `GET /debug/sensor_filter_state` retourne l'état JSON brut (raw/median/filtered/ready/unstable/rejected par capteur). Voir [API.md](../API.md).
+
+## Trace des signaux capteurs — feature-057
+
+Ring buffer de trace **haute cadence** des signaux capteurs (pH & ORP, brut **et** lissé), réintroduction fidèle de l'outil retiré en feature-045 (v2.5.0) et **étendue à l'ORP**. Objectif : diagnostiquer bruit / oscillation de la chaîne de mesure en comparant brut vs lissé sur une fenêtre continue, à cadence bien supérieure à l'échantillonnage WS. Alimente la card « Signaux capteurs » de l'onglet Avancé ([page-settings.md](../features/page-settings.md#card-signaux-capteurs-brut--lissé-feature-057)) et les routes `GET /debug/sensor_trace` / `POST /debug/sensor_trace_clear` ([API.md](../API.md#trace-des-signaux-capteurs-feature-057-v270)).
+
+### Structure et coût mémoire
+
+```cpp
+struct SensorTraceSample {
+  uint32_t ms;          // millis() à l'enregistrement
+  float    phRaw;       // pH brut Atlas EZO (NaN si lecture échouée)
+  float    phFiltered;  // pH lissé (médiane + EMA ; NaN si filtre vide)
+  float    orpRaw;      // ORP brut (NaN si lecture échouée)
+  float    orpFiltered; // ORP lissé (NaN si filtre vide)
+  float    tempEau;     // T° eau envoyée à l'EZO pour compensation (NaN si sonde absente)
+};
+SensorTraceSample _traceBuffer[kSensorTraceBufferSize];  // 300 × 24 octets ≈ 7,2 Ko RAM
+```
+
+- `kSensorTraceBufferSize = 300` ([`constants.h`](../../src/constants.h)) → ~7,2 Ko RAM statique (occupation vérifiée : RAM 19,2 %, Flash 80,3 % au build v2.7.0).
+- **Volatil** : perdu au reboot (comme l'original — pas de persistance, hors périmètre).
+- Les NaN sont **enregistrés tels quels** (filtre non amorcé, EZO injoignable) et exposés en `null` côté JSON → trou dans la courbe, pas de crash.
+
+### Enregistrement
+
+`_recordSensorTrace(phRaw, phFiltered, orpRaw, orpFiltered, tempEau)` est appelée à la **fin de `_readEzoSensors()`** (donc une fois par cycle capteur, `kPhOrpSensorIntervalMs` ≈ 5 s). L'enregistrement **n'ajoute aucune transaction I²C** : il consomme les valeurs déjà en cache. Watchdog non impacté.
+
+### API publique associée
+
+| Méthode | Effet |
+|---------|-------|
+| `size_t getSensorTraceCount() const` | Nombre d'échantillons présents (0..300). |
+| `void appendSensorTraceJson(JsonArray out) const` | Sérialise le buffer (ancien → récent) : `t` (ms), `phRaw`/`phFiltered` (arrondi ×1000), `orpRaw`/`orpFiltered` (×10), `tempEau` (×10) ; `null` si NaN. |
+| `void clearSensorTrace()` | Vide le buffer (`_traceCount = 0`). |
+
+### Contrat de concurrence — lock-free
+
+Même modèle que `_lastPh`/`_lastOrp` : **un seul producteur** (`loopTask` core 1 via `_recordSensorTrace()`), **un seul type de lecteur** (handler AsyncTCP core 0 via `appendSensorTraceJson()` / `getSensorTraceCount()`). Aucun mutex : l'écriture d'un échantillon puis l'incrément de `_traceCount` sont des écritures atomiques 32 bits sur Xtensa LX6 ; le lecteur ne voit au pire qu'un échantillon de moins (jamais de valeur déchirée). Handler HTTP non bloquant (< 50 ms), sérialisation en flux (`beginResponseStream`) sans allocation dans la loop.
 
 ## Détection capteur figé — feature-022
 
@@ -340,20 +387,20 @@ Un capteur **vivant** bruite d'au moins ±1 LSB (quantification + bruit sonde + 
 | `kTempSensorIntervalMs` | `2000` ms | Période lecture DS18B20 |
 | `kI2cMutexTimeoutMs` | `2000` ms | Timeout d'acquisition mutex I²C |
 | `kPhSlopeQueryIntervalMs` | `86_400_000` ms (24 h) | Re-query auto `Slope,?` (feature-024) |
-| `kSensorFilterMedianWindow` | `7` | Fenêtre médiane (feature-025, buffer FIXE) |
+| `kSensorFilterCentralWindow` | `13` | Fenêtre médiane logique longue (feature-058, retard ≈30 s) |
+| `kSensorFilterCentralWindowMax` | `16` | Capacité physique buffer médian FIXE |
 | `kPhEmaAlpha` / `kOrpEmaAlpha` | `0.10` / `0.08` | Coefficient EMA (lissage lent) |
-| `kPhFilterMaxStep` / `kOrpFilterMaxStep` | `0.15` pH / `50` mV | Saut max → rejet |
+| `kPhFilterSpikeReject` / `kOrpFilterSpikeReject` | `1.0` pH / `300` mV | Spike DUR isolé (`|raw − médiane|`) → écarté (feature-058) |
+| `kPhFilterMaxDispersion` / `kOrpFilterMaxDispersion` | `0.5` pH / `100` mV | Cap dispersion fenêtre pleine → instable (feature-058) |
 | `kPhFilterMin/Max` / `kOrpFilterMin/Max` | `0/14` pH / `-1000/1500` mV | Plage plausible |
-| `kSensorFilterWarmupSamples` | `5` | Mesures valides avant `ready()` |
-| `kSensorFilterMaxConsecutiveRejects` | `10` | Rejets consécutifs → instable (transitoire) |
-| `kSensorFilterResyncRejects` | `12` | Rejets consécutifs → re-sync (≈60 s, feature-033), strictement > seuil instable |
-| `kSensorFilterMaxResyncPerWindow` | `3` | Re-sync max sur la fenêtre → latch instable persistant |
-| `kSensorFilterResyncWindowMs` | `600000` ms (10 min) | Fenêtre glissante anti-boucle EMI |
+| `kSensorFilterMaxConsecutiveRejects` | `10` | Rejets NaN/hors-plage consécutifs → instable (transitoire) |
+| `kSensorFilterDispersionLatchCycles` | `3` | Fenêtres pleines en dépassement de dispersion → latch EMI persistant |
 | `kSensorFilterMaxAgeMs` | `20000` ms | Âge max dernière mesure valide pour `ready()` |
 | `kSensorFrozenSamples` | `30` | Lectures acceptées consécutives dans la bande → figé (≈ 2,5 min à 5 s — feature-022) |
 | `kSensorFrozenEpsilonPh` | `0.0005` pH | Bande figé pH = ½ LSB EZO (résolution 0.001) |
 | `kSensorFrozenEpsilonOrp` | `0.05` mV | Bande figé ORP = ½ LSB EZO (résolution 0.1) |
 | `kTempFrozenSamples` / `kTempFrozenEpsilonC` | `900` / `0.03` °C | Figé T° eau (≈ 30 min à 2 s, < ½ LSB DS18B20) — warning-only |
+| `kSensorTraceBufferSize` | `300` | Taille ring buffer trace signaux (~7,2 Ko RAM, feature-057) |
 
 Toutes définies dans [`src/constants.h`](../../src/constants.h).
 
@@ -362,6 +409,7 @@ Toutes définies dans [`src/constants.h`](../../src/constants.h).
 - `update()` : tourne dans `loopTask` (core 1). Seul producteur des caches `_lastPh`, `_lastOrp`, `_phCalCachedPoints`, `_orpCalCachedPoints`.
 - `getPh()` / `getOrp()` / `getPhCalibrationPointsCached()` : lectures atomiques (float / int 32 bits alignés sur Xtensa LX6 → instructions L32I single-cycle). Pas de mutex applicatif.
 - `enqueue*()` : producteurs depuis n'importe quel core / contexte (handler HTTP core 0, UART core 1, …). FreeRTOS queue est ISR-safe.
+- Ring buffer de trace (feature-057) : seul producteur `loopTask` (`_recordSensorTrace`), lecteur handler AsyncTCP core 0 (`appendSensorTraceJson` / `getSensorTraceCount`). Lock-free (écritures atomiques 32 bits), voir [Trace des signaux capteurs](#trace-des-signaux-capteurs--feature-057).
 - Mutex `i2cMutex` : acquis par `_readEzoSensors`, `_processEzoQueue`, `AtlasEzoSensor::readSingle/calibrate/clearCalibration/queryCalPoints/readInfo`, et **également par les autres consommateurs I²C** (DS3231 dans `rtc_manager`).
 
 ## Cas limites
@@ -484,6 +532,7 @@ Si une sonde est remplacée physiquement (adresse ROM différente), le scan au b
 - [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — filtre médiane + EMA (feature-025)
 - [`src/atlas_ezo.h`](../../src/atlas_ezo.h), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp)
 - [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) — routes refondues `/calibrate_ph`, `/calibrate_orp`, `/calibrate_clear`
+- [`src/web_routes_debug.cpp`](../../src/web_routes_debug.cpp) — routes `/debug/sensor_trace` (GET) + `/debug/sensor_trace_clear` (POST) (feature-057)
 - [`src/web_routes_sensor_id.cpp`](../../src/web_routes_sensor_id.cpp) — routes feature-020 inchangées
 - [`src/constants.h`](../../src/constants.h) — toutes les constantes EZO + DS18B20
 - [ADR-0014](../adr/0014-migration-atlas-ezo.md) — migration Atlas EZO (supersedes ADR-0001)

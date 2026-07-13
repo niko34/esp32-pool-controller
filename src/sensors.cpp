@@ -447,6 +447,61 @@ void SensorManager::_readEzoSensors(float tempC) {
       }
     }
   }
+
+  // Trace capteur (feature-057) : on enregistre TOUJOURS (même si pH ou ORP = NaN),
+  // pour visualiser les trous de lecture aussi clairement que les valeurs.
+  // Contexte loopTask, non bloquant, aucun accès I²C ajouté.
+  _recordSensorTrace(_lastPh, _phFilter.filtered(),
+                     _lastOrp, _orpFilter.filtered(), tempC);
+}
+
+// =============================================================================
+// Trace capteur (ring buffer RAM, feature-057)
+// =============================================================================
+
+void SensorManager::_recordSensorTrace(float phRaw, float phFiltered,
+                                       float orpRaw, float orpFiltered,
+                                       float tempEau) {
+  SensorTraceSample& s = _traceBuffer[_traceIdx];
+  s.ms          = millis();
+  s.phRaw       = phRaw;
+  s.phFiltered  = phFiltered;
+  s.orpRaw      = orpRaw;
+  s.orpFiltered = orpFiltered;
+  s.tempEau     = tempEau;
+  _traceIdx = (_traceIdx + 1) % kSensorTraceBufferSize;
+  if (_traceCount < kSensorTraceBufferSize) ++_traceCount;
+}
+
+size_t SensorManager::getSensorTraceCount() const {
+  return _traceCount;
+}
+
+void SensorManager::appendSensorTraceJson(JsonArray out) const {
+  // Parcours dans l'ordre chronologique (plus ancien d'abord).
+  // Buffer plein : on démarre à _traceIdx (= position du plus ancien). Sinon : 0.
+  size_t start = (_traceCount == kSensorTraceBufferSize) ? _traceIdx : 0;
+  for (size_t i = 0; i < _traceCount; ++i) {
+    size_t idx = (start + i) % kSensorTraceBufferSize;
+    const SensorTraceSample& s = _traceBuffer[idx];
+    JsonObject o = out.add<JsonObject>();
+    o["t"] = s.ms;
+    if (!isnan(s.phRaw))       o["phRaw"]       = roundf(s.phRaw * 1000.0f) / 1000.0f;
+    else                       o["phRaw"]       = nullptr;
+    if (!isnan(s.phFiltered))  o["phFiltered"]  = roundf(s.phFiltered * 1000.0f) / 1000.0f;
+    else                       o["phFiltered"]  = nullptr;
+    if (!isnan(s.orpRaw))      o["orpRaw"]      = roundf(s.orpRaw * 10.0f) / 10.0f;
+    else                       o["orpRaw"]      = nullptr;
+    if (!isnan(s.orpFiltered)) o["orpFiltered"] = roundf(s.orpFiltered * 10.0f) / 10.0f;
+    else                       o["orpFiltered"] = nullptr;
+    if (!isnan(s.tempEau))     o["tempEau"]     = roundf(s.tempEau * 10.0f) / 10.0f;
+    else                       o["tempEau"]     = nullptr;
+  }
+}
+
+void SensorManager::clearSensorTrace() {
+  _traceIdx = 0;
+  _traceCount = 0;
 }
 
 // =============================================================================

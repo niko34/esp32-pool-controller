@@ -19,7 +19,11 @@ void error(const String& message);
 void critical(const String& message);
 
 void setLogCallback(std::function<void(const LogEntry&)>);  // push WS temps réel
-std::vector<LogEntry> getRecentLogs(size_t count = 50);
+
+// Itération en place des logs récents, SANS copie (v2.8.2)
+void forEachRecentLog(size_t count, uint32_t sinceTimestamp,
+                      const std::function<void(const LogEntry&)>& visitor);
+
 void clear();      // vide uniquement le buffer RAM circulaire
 void clearAll();   // vide RAM + _persistBuffer + supprime /system.log et /system.log.tmp
 size_t getLogCount();
@@ -58,6 +62,27 @@ Le filtre UI `#log_level_debug` de la page Logs reste indépendant : il filtre l
 
 `kMaxLogEntries = 200` ([`constants.h:46`](../../src/constants.h:46)). Stocké dans un `std::vector<LogEntry>` préalloué. Index circulaire `currentIndex`, flag `bufferFull` pour savoir si le buffer a fait au moins un tour.
 
+## Lecture des logs récents — `forEachRecentLog` (v2.8.2)
+
+```cpp
+void forEachRecentLog(size_t count, uint32_t sinceTimestamp,
+                      const std::function<void(const LogEntry&)>& visitor);
+```
+
+Itère les `count` entrées les plus récentes (dont le `timestamp > sinceTimestamp`) **en place, sous mutex, sans copie**. Le `visitor` est appelé pour chaque entrée dans l'ordre chronologique, avec une **référence const** sur l'entrée stockée dans le buffer circulaire — aucune allocation, aucun `std::vector<LogEntry>` intermédiaire.
+
+**Contrat mutex** : le `_mutex` est tenu pendant toute l'itération. Le `visitor` s'exécute donc **sous mutex** ; il doit rester court et ne **jamais** rappeler `systemLogger` (risque de deadlock / récursion). Les handlers HTTP `handleGetLogs` / `handleDownloadLogs` écrivent directement dans un `AsyncResponseStream` depuis le visitor.
+
+### Contexte : correctif du crash `/logs` (`std::bad_alloc`)
+
+Cette méthode **remplace** l'ancienne `std::vector<LogEntry> getRecentLogs(size_t)`. L'ancienne API **deep-copiait** tout le buffer (y compris les `String`) dans un vecteur retourné par valeur : sous fragmentation du tas, `operator new` levait `std::bad_alloc`, non rattrapée → `abort()` → PANIC → reboot. L'appareil devenait injoignable en HTTP alors que MQTT continuait de fonctionner (diagnostiqué via coredump). En itérant sans copie et en streamant la réponse, `forEachRecentLog` supprime cette allocation massive.
+
+### Garde heap `kMinHeapForLogsResponse`
+
+Constante `kMinHeapForLogsResponse = 24576` (24 Ko, [`constants.h`](../../src/constants.h)). Avant de servir `/get-logs` ou `/download-logs`, les handlers vérifient `heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT)` (plus gros bloc contigu libre) ; s'il est en dessous du seuil, ils renvoient **503** (`{"error":"low_memory"}` en JSON pour `/get-logs`, message texte pour `/download-logs`) sans tenter la moindre allocation.
+
+> ⚠️ **Limitation connue** : `/download-logs` peut **tronquer** l'export (jamais planter) si le tas est très fragmenté et que le buffer de flux ne peut plus grandir. Amélioration *chunked* prévue ultérieurement.
+
 ## Persistance sur LittleFS (partition history)
 
 Activable via `setPersistenceFs(LittleFS*)` après montage de la partition `history`. Paramètres :
@@ -89,7 +114,7 @@ Politique d'échec par site :
 | Site | Sur timeout |
 |---|---|
 | `log()` | Entrée perdue (RAM + persistance) + `_droppedLogs++`. Le push WS n'a pas lieu (callback non capturé) |
-| `getRecentLogs()` | Vecteur vide (le client réessaiera) |
+| `forEachRecentLog()` | Aucune itération (le `visitor` n'est pas appelé — le client réessaiera) |
 | `clear()` | No-op — rien n'est perdu, l'utilisateur peut re-cliquer. **Ne compte pas dans `_droppedLogs`** (corrigé post-revue : le compteur ne trace que des *entrées* perdues) |
 | `clearAll()` | Return **avant** toute modification — le fichier `/system.log` n'est pas supprimé si la RAM n'a pas pu être vidée (pas d'état incohérent) |
 | `getLogCount()` | Retourne `0` |
@@ -137,6 +162,19 @@ Le `reason=N` du message `WiFi déconnecté` correspond aux constantes `WIFI_REA
 | 200, 201, 202 | `BEACON_TIMEOUT`, `NO_AP_FOUND`, `AUTH_FAIL` | RSSI faible / AP perdu |
 
 Liste complète : [`esp_wifi_types.h`](https://github.com/espressif/esp-idf/blob/master/components/esp_wifi/include/esp_wifi_types.h).
+
+### Ré-annonce mDNS sur changement d'IP
+
+Depuis la v2.8.1, `poolcontroller.local` est ré-annoncé sur **tout changement d'IP**, pas seulement lors d'une reconnexion manuelle. Le handler `ARDUINO_EVENT_WIFI_STA_GOT_IP` compare la nouvelle IP à la dernière annoncée (`mdnsLastAnnouncedIp`) ; si elle diffère, il pose le drapeau `mdnsReannounceRequested`. Ce drapeau est consommé dans `checkSystemHealth()` (contexte `loopTask`, car MDNS/lwIP n'est pas thread-safe vis-à-vis de la tâche événements WiFi), qui exécute `MDNS.end()` + `begin()` + `addService(http)`. Une déconnexion (`STA_DISCONNECTED`) invalide l'IP mémorisée.
+
+Ceci couvre le **roaming CPL/mesh sans perte de WiFi** : auparavant, la ré-annonce n'avait lieu que sur reconnexion, si bien que `poolcontroller.local` pouvait pointer vers une IP périmée (appareil injoignable en HTTP alors que MQTT continuait de fonctionner).
+
+| Message | Niveau | Quand |
+|---|---|---|
+| `mDNS ré-annoncé sur x.x.x.x (changement d'IP)` | INFO | Après ré-annonce effective dans `checkSystemHealth()` |
+| `Échec ré-annonce mDNS` | WARN | `MDNS.begin()` a échoué lors de la ré-annonce |
+
+> Le getter `WsManager::clientCount()` (introduit en v2.8.1) reste disponible. Le log de diagnostic périodique `[Diag]` qui l'utilisait a été **retiré en v2.8.2** (temporaire, il avait servi au diagnostic du crash `/logs`).
 
 ## Logs MQTT
 

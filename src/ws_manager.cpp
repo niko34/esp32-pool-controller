@@ -80,6 +80,10 @@ bool WsManager::hasClients() const {
   return _ws && _ws->count() > 0;
 }
 
+size_t WsManager::clientCount() const {
+  return _ws ? _ws->count() : 0;
+}
+
 // =============================================================================
 // Événements WebSocket
 // =============================================================================

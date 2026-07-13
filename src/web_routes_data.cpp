@@ -12,6 +12,7 @@
 #include "json_compat.h"
 #include <AsyncJson.h>
 #include <time.h>
+#include <esp_heap_caps.h>
 
 namespace {
 bool isTimeValid(time_t t) {
@@ -115,10 +116,13 @@ static void handleGetData(AsyncWebServerRequest* request) {
 static void handleDownloadLogs(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
-  auto logs = systemLogger.getRecentLogs(kMaxLogEntries);
-
-  String output;
-  output.reserve(logs.size() * 100 + 1024);
+  // v2.8.2 : garde heap — sous forte fragmentation, refuser proprement (503) plutôt
+  // que de construire une réponse volumineuse (cf. crash /logs std::bad_alloc).
+  if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < kMinHeapForLogsResponse) {
+    request->send(503, "text/plain; charset=utf-8",
+                  "Mémoire insuffisante — réessayez plus tard\n");
+    return;
+  }
 
   // Calculer l'epoch de démarrage pour reconstruire les timestamps absolus
   time_t nowEpoch = time(nullptr);
@@ -126,69 +130,71 @@ static void handleDownloadLogs(AsyncWebServerRequest* request) {
   bool hasAbsoluteTime = (nowEpoch > 1609459200L);
   long bootEpoch = hasAbsoluteTime ? (long)(nowEpoch - nowMs / 1000) : 0;
 
+  // v2.8.2 : réponse en flux (plus de grosse String contiguë). Le StreamString sous-
+  // jacent grandit par realloc (pas d'operator new → aucun std::bad_alloc / abort).
+  AsyncResponseStream* res = request->beginResponseStream("text/plain; charset=utf-8");
+  res->addHeader("Content-Disposition", "attachment; filename=\"pool_logs.txt\"");
+  res->addHeader("Cache-Control", "no-cache");
+
   // En-tête
-  output += "# Pool Controller — Journal système\n";
+  res->print("# Pool Controller — Journal système\n");
   if (hasAbsoluteTime) {
     char exportTime[24];
     struct tm t;
     localtime_r(&nowEpoch, &t);
     strftime(exportTime, sizeof(exportTime), "%Y-%m-%d %H:%M:%S", &t);
-    output += "# Exporté le : ";
-    output += exportTime;
+    res->print("# Exporté le : ");
+    res->print(exportTime);
   } else {
-    output += "# Exporté le boot+";
-    output += String(nowMs / 1000);
-    output += "s (heure non synchronisée)";
+    res->print("# Exporté le boot+");
+    res->print(nowMs / 1000);
+    res->print("s (heure non synchronisée)");
   }
-  output += "\n# Format: [YYYY-MM-DD HH:MM:SS] NIVEAU : message\n";
+  res->print("\n# Format: [YYYY-MM-DD HH:MM:SS] NIVEAU : message\n");
 
-  // ---- Logs persistants (boots précédents) ----
+  // ---- Logs persistants (boots précédents) — copie par blocs, hors mutex logger ----
   fs::FS* pfs = systemLogger.getPersistenceFs();
   if (pfs) {
     File f = pfs->open("/system.log", "r");
     if (f && f.size() > 0) {
-      output += "\n# === Historique persistant ===\n";
+      res->print("\n# === Historique persistant ===\n");
+      uint8_t buf[256];
       while (f.available()) {
-        output += f.readStringUntil('\n');
-        output += "\n";
-        // Éviter de dépasser la RAM : flush par blocs de 8KB
-        if (output.length() > 8192) {
-          // On continue d'accumuler — la String gère la réallocation
-          // Sur ESP32 avec 300KB+ de heap libre c'est acceptable
-        }
+        size_t n = f.read(buf, sizeof(buf));
+        if (n > 0) res->write(buf, n);
       }
       f.close();
-      output += "# === Fin historique persistant ===\n";
+      res->print("# === Fin historique persistant ===\n");
+    } else if (f) {
+      f.close();
     }
   }
 
-  // ---- Logs RAM (session courante) ----
-  output += "\n# === Session courante ===\n";
-  for (const auto& entry : logs) {
-    char timeBuf[24];
-    if (hasAbsoluteTime) {
-      time_t entryEpoch = bootEpoch + (long)(entry.timestamp / 1000);
-      struct tm t;
-      localtime_r(&entryEpoch, &t);
-      strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &t);
-    } else {
-      unsigned long totalSec = entry.timestamp / 1000;
-      snprintf(timeBuf, sizeof(timeBuf), "+%02lu:%02lu:%02lu",
-               totalSec / 3600, (totalSec % 3600) / 60, totalSec % 60);
-    }
-    output += "[";
-    output += timeBuf;
-    output += "] ";
-    output += systemLogger.getLevelString(entry.level);
-    output += " : ";
-    output += entry.message;
-    output += "\n";
-  }
+  // ---- Logs RAM (session courante) — flux via visiteur (aucune copie) ----
+  res->print("\n# === Session courante ===\n");
+  systemLogger.forEachRecentLog(kMaxLogEntries, 0,
+    [res, hasAbsoluteTime, bootEpoch](const LogEntry& entry) {
+      char timeBuf[24];
+      if (hasAbsoluteTime) {
+        time_t entryEpoch = bootEpoch + (long)(entry.timestamp / 1000);
+        struct tm t;
+        localtime_r(&entryEpoch, &t);
+        strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &t);
+      } else {
+        unsigned long totalSec = entry.timestamp / 1000;
+        snprintf(timeBuf, sizeof(timeBuf), "+%02lu:%02lu:%02lu",
+                 totalSec / 3600, (totalSec % 3600) / 60, totalSec % 60);
+      }
+      res->print("[");
+      res->print(timeBuf);
+      res->print("] ");
+      res->print(systemLogger.getLevelString(entry.level));
+      res->print(" : ");
+      res->print(entry.message);
+      res->print("\n");
+    });
 
-  AsyncWebServerResponse* resp = request->beginResponse(200, "text/plain; charset=utf-8", output);
-  resp->addHeader("Content-Disposition", "attachment; filename=\"pool_logs.txt\"");
-  resp->addHeader("Cache-Control", "no-cache");
-  request->send(resp);
+  request->send(res);
 }
 
 static void handleGetLogs(AsyncWebServerRequest* request) {
@@ -201,46 +207,51 @@ static void handleGetLogs(AsyncWebServerRequest* request) {
     sinceTimestamp = sinceParam.toInt();
   }
 
-  auto logs = systemLogger.getRecentLogs(kMaxLogEntries);
+  // v2.8.2 : garde heap — sous forte fragmentation du tas, refuser proprement (503)
+  // au lieu de tenter une allocation. C'est le site du crash historique : l'ancien
+  // getRecentLogs() copiait tout le buffer dans un std::vector<LogEntry> (operator new
+  // → std::bad_alloc → abort). On itère désormais sans copie + réponse en flux.
+  if (heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < kMinHeapForLogsResponse) {
+    request->send(503, "application/json", "{\"error\":\"low_memory\"}");
+    return;
+  }
 
-  // Sérialisation manuelle pour éviter la limite du JsonDocument avec 200 entrées
-  String json;
-  json.reserve(logs.size() * 120 + 32);
-  json = "{\"uptime_ms\":";
-  json += String(millis());
-  json += ",\"logs\":[";
+  // Réponse en flux : plus de std::vector copié, plus de String géante contiguë.
+  // Le StreamString grandit par realloc (jamais operator new → jamais d'abort).
+  AsyncResponseStream* res = request->beginResponseStream("application/json");
+  res->print("{\"uptime_ms\":");
+  res->print(millis());
+  res->print(",\"logs\":[");
 
   bool first = true;
-  for (const auto& entry : logs) {
-    if (sinceTimestamp > 0 && entry.timestamp <= sinceTimestamp) continue;
+  systemLogger.forEachRecentLog(kMaxLogEntries, sinceTimestamp,
+    [res, &first](const LogEntry& entry) {
+      if (!first) res->print(',');
+      first = false;
 
-    if (!first) json += ",";
-    first = false;
+      res->print("{\"timestamp\":");
+      res->print(entry.timestamp);
+      res->print(",\"level\":\"");
+      res->print(systemLogger.getLevelString(entry.level));
+      res->print("\",\"message\":\"");
 
-    // Échapper le message pour JSON (tous les caractères problématiques)
-    String escaped;
-    escaped.reserve(entry.message.length() + 8);
-    for (char c : entry.message) {
-      if      (c == '\\') escaped += "\\\\";
-      else if (c == '"')  escaped += "\\\"";
-      else if (c == '\n') escaped += "\\n";
-      else if (c == '\r') { /* skip */ }
-      else if (c == '\t') escaped += "\\t";
-      else if ((uint8_t)c < 0x20) { /* skip autres ctrl */ }
-      else escaped += c;
-    }
+      // Échappement JSON écrit directement dans le flux (aucune String temporaire
+      // allouée sous le mutex logger — écritures mémoire rapides uniquement).
+      for (char c : entry.message) {
+        if      (c == '\\') res->print("\\\\");
+        else if (c == '"')  res->print("\\\"");
+        else if (c == '\n') res->print("\\n");
+        else if (c == '\r') { /* skip */ }
+        else if (c == '\t') res->print("\\t");
+        else if ((uint8_t)c < 0x20) { /* skip autres ctrl */ }
+        else res->write((uint8_t)c);
+      }
 
-    json += "{\"timestamp\":";
-    json += String(entry.timestamp);
-    json += ",\"level\":\"";
-    json += systemLogger.getLevelString(entry.level);
-    json += "\",\"message\":\"";
-    json += escaped;
-    json += "\"}";
-  }
-  json += "]}";
+      res->print("\"}");
+    });
 
-  request->send(200, "application/json", json);
+  res->print("]}");
+  request->send(res);
 }
 
 static void handleGetHistory(AsyncWebServerRequest* request) {

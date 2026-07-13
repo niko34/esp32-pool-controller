@@ -17,6 +17,7 @@ void broadcastSensorData();            // push immédiat, toutes données
 void broadcastConfig();                // push immédiat, config actuelle
 void broadcastLog(const LogEntry&);    // push un log
 bool hasClients() const;
+size_t clientCount() const;            // nb clients connectés (diagnostic, v2.8.1)
 ```
 
 ## Timing

@@ -20,6 +20,7 @@
 #include "web_server.h"
 #include "web_routes_config.h"
 #include "web_routes_control.h"
+#include "ws_manager.h"
 #include "history.h"
 #include "version.h"
 #include "rtc_manager.h"
@@ -33,12 +34,25 @@ unsigned long lastMqttPublish = 0;
 wifi_mode_t currentWifiMode = WIFI_MODE_NULL;
 bool ntpSyncedOnce = false;  // Flag pour éviter sync RTC multiple
 
+// mDNS : IP de la dernière annonce. Sert à détecter un changement d'IP (roaming
+// CPL/mesh sans perte de WiFi) afin de ré-annoncer mDNS et de ne jamais publier une
+// IP périmée sur poolcontroller.local.
+// Race bénigne assumée : écrit par reannounceMdns() (loopTask) et lu/écrit par le
+// handler d'événement WiFi (tâche event). Accès 32 bits aligné = atomique sur Xtensa
+// (pas de tearing) ; le pire cas est une ré-annonce parasite/manquée, auto-corrigée
+// au tick suivant. Le signal fiable passe par le drapeau `volatile` ci-dessous.
+IPAddress mdnsLastAnnouncedIp;
+// Drapeau posé par le handler d'événement WiFi (hors loopTask), consommé dans
+// checkSystemHealth() : la ré-annonce mDNS réelle se fait dans le contexte loopTask.
+volatile bool mdnsReannounceRequested = false;
+
 // Déclaration des fonctions
 bool setupWiFi();
 void resetWiFiSettings();
 void applyTimeConfig();
 void checkSystemHealth();
 void onNtpTimeSync();
+void reannounceMdns(const char* reason);
 
 void setup() {
   Serial.begin(115200);
@@ -128,6 +142,7 @@ void setup() {
       systemLogger.error("Échec démarrage mDNS");
     } else {
       MDNS.addService("http", "tcp", kMdnsHttpPort);
+      mdnsLastAnnouncedIp = WiFi.localIP();  // Mémorise l'IP annoncée (détection roaming)
       systemLogger.info(String("mDNS: ") + kMdnsFullHost + " disponible");
     }
 
@@ -304,15 +319,30 @@ bool setupWiFi() {
       case ARDUINO_EVENT_WIFI_STA_DISCONNECTED: {
         uint8_t reason = info.wifi_sta_disconnected.reason;
         systemLogger.warning("WiFi déconnecté (reason=" + String(reason) + ")");
+        // Invalide l'IP mDNS mémorisée : le service mDNS ne survit pas à une
+        // déconnexion WiFi sur ESP32. Le prochain GOT_IP déclenchera donc une
+        // ré-annonce, même si l'AP réattribue exactement la même IP.
+        mdnsLastAnnouncedIp = IPAddress();
         break;
       }
       case ARDUINO_EVENT_WIFI_STA_CONNECTED:
         systemLogger.info("WiFi associé à l'AP");
         break;
-      case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-        systemLogger.info("WiFi IP obtenue: " + WiFi.localIP().toString() +
+      case ARDUINO_EVENT_WIFI_STA_GOT_IP: {
+        IPAddress newIp = WiFi.localIP();
+        systemLogger.info("WiFi IP obtenue: " + newIp.toString() +
                           " RSSI=" + String(WiFi.RSSI()) + "dBm");
+        // Roaming CPL/mesh : l'ESP32 peut changer d'IP sans que WiFi.isConnected()
+        // ne passe à false. Si l'IP a réellement changé (ou a été invalidée par une
+        // déconnexion), on demande une ré-annonce mDNS. On ne fait QUE poser un
+        // drapeau : ce handler tourne sur la tâche événements WiFi et MDNS/lwIP n'est
+        // pas thread-safe vis-à-vis du serveur web async. Le travail réel a lieu dans
+        // checkSystemHealth() (contexte loopTask).
+        if (newIp != mdnsLastAnnouncedIp) {
+          mdnsReannounceRequested = true;
+        }
         break;
+      }
       case ARDUINO_EVENT_WIFI_STA_LOST_IP:
         systemLogger.warning("WiFi IP perdue");
         break;
@@ -492,12 +522,37 @@ void applyTimeConfig() {
   }
 }
 
+// Ré-annonce le service mDNS (MDNS.end + begin + addService HTTP), en réutilisant
+// exactement la séquence d'enregistrement de l'init (setup). À appeler UNIQUEMENT
+// depuis la loop (contexte loopTask) : MDNS/lwIP n'est pas thread-safe vis-à-vis du
+// serveur web async ni du handler d'événements WiFi.
+void reannounceMdns(const char* reason) {
+  MDNS.end();
+  if (MDNS.begin(kMdnsHostname)) {
+    MDNS.addService("http", "tcp", kMdnsHttpPort);
+    mdnsLastAnnouncedIp = WiFi.localIP();
+    systemLogger.info("mDNS ré-annoncé sur " + mdnsLastAnnouncedIp.toString() +
+                      " (" + String(reason) + ")");
+  } else {
+    systemLogger.warning("Échec ré-annonce mDNS");
+  }
+}
+
 void checkSystemHealth() {
   // Vérifier l'état général du système
   size_t freeHeap = ESP.getFreeHeap();
   if (freeHeap < kMinFreeHeapBytes) {
     systemLogger.critical("Mémoire faible: " + String(freeHeap) + " bytes");
     mqttManager.publishAlert("low_memory", "Free heap: " + String(freeHeap) + " bytes");
+  }
+
+  // Ré-annonce mDNS demandée par le handler d'événement WiFi (changement d'IP suite à
+  // un roaming CPL/mesh, ou reconnexion après déconnexion). Exécutée ici, dans le
+  // contexte loopTask, pour éviter tout accès mDNS concurrent. Découplé du compteur
+  // wifiReconnectAttempts : couvre aussi le roaming sans perte de connexion.
+  if (mdnsReannounceRequested && WiFi.isConnected()) {
+    mdnsReannounceRequested = false;
+    reannounceMdns("changement d'IP");
   }
 
   // Vérifier connexion WiFi et activer AP en secours si nécessaire
@@ -535,14 +590,10 @@ void checkSystemHealth() {
       systemLogger.info("WiFi reconnecté avec succès");
       wifiReconnectAttempts = 0;
       lastWifiCheckTime = 0;
-      // Redémarrer mDNS : le service ne survit pas à une déconnexion WiFi sur ESP32
-      MDNS.end();
-      if (MDNS.begin(kMdnsHostname)) {
-        MDNS.addService("http", "tcp", kMdnsHttpPort);
-        systemLogger.info(String("mDNS relancé: ") + kMdnsFullHost);
-      } else {
-        systemLogger.warning("Échec relance mDNS après reconnexion WiFi");
-      }
+      // La ré-annonce mDNS n'est plus faite ici : le handler d'événement
+      // ARDUINO_EVENT_WIFI_STA_GOT_IP pose mdnsReannounceRequested (après
+      // invalidation sur DISCONNECTED), et la ré-annonce est exécutée en tête
+      // de checkSystemHealth(). Cela couvre aussi le roaming sans perte de WiFi.
     }
     // Désactiver l'AP secours si le WiFi est de nouveau connecté
     if (mode == WIFI_MODE_APSTA) {

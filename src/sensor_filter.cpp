@@ -1,8 +1,6 @@
 #include "sensor_filter.h"
 
-#include <math.h>
-
-#include "logger.h"  // systemLogger (module indépendant, pas de dépendance circulaire)
+#include <math.h>  // NAN, isnan, fabsf — header C uniquement (module PUR, ADR-0017)
 
 // =============================================================================
 // FrozenDetector — implémentation (feature-022 Passe 2)
@@ -36,21 +34,21 @@ void FrozenDetector::addSample(float x) {
 }
 
 // =============================================================================
-// SensorFilter — implémentation (feature-025)
+// SensorFilter — implémentation (feature-025 → feature-058)
 // =============================================================================
 
 SensorFilter::SensorFilter(const Config& config)
     : _cfg(config), _frozenDetector(config.frozenSamples, config.frozenEpsilon) {
-  // Borne la fenêtre médiane à la capacité physique du buffer (sécurité).
-  if (_cfg.medianWindow == 0) _cfg.medianWindow = 1;
-  if (_cfg.medianWindow > kSensorFilterMedianWindow) {
-    _cfg.medianWindow = kSensorFilterMedianWindow;
+  // Borne la fenêtre médiane longue à la capacité physique du buffer (sécurité).
+  if (_cfg.centralWindow == 0) _cfg.centralWindow = 1;
+  if (_cfg.centralWindow > kSensorFilterCentralWindowMax) {
+    _cfg.centralWindow = kSensorFilterCentralWindowMax;
   }
   reset();
 }
 
 void SensorFilter::reset() {
-  for (uint8_t i = 0; i < kSensorFilterMedianWindow; ++i) _buffer[i] = NAN;
+  for (uint8_t i = 0; i < kSensorFilterCentralWindowMax; ++i) _buffer[i] = NAN;
   _bufIdx = 0;
   _bufCount = 0;
   _raw = NAN;
@@ -61,12 +59,8 @@ void SensorFilter::reset() {
   _lastValidMs = 0;
   _hasValid = false;
 
-  // Re-sync : mini-buffer de bruts rejetés + état anti-boucle latché.
-  for (uint8_t i = 0; i < kSensorFilterMedianWindow; ++i) _rejBuffer[i] = NAN;
-  _rejIdx = 0;
-  _rejCount = 0;
-  for (uint8_t i = 0; i < kSensorFilterMaxResyncPerWindow; ++i) _resyncTimestamps[i] = 0;
-  _resyncCount = 0;
+  // Latch EMI (feature-058) : compteur de fenêtres en dépassement + latch collant.
+  _dispersionBreachStreak = 0;
   _unstableLatched = false;
 
   // feature-022 : réinitialise aussi le détecteur figé (pool-chemistry condition #2).
@@ -76,89 +70,31 @@ void SensorFilter::reset() {
 bool SensorFilter::addSample(float raw, uint32_t nowMs) {
   _raw = raw;
 
-  // En warmup tant que le nombre de mesures valides n'a pas atteint le seuil.
-  // Pendant le warmup, on n'applique PAS la garde de saut (maxStep) : le filtre
-  // doit pouvoir converger vers une valeur initiale éloignée de l'état par défaut.
-  const bool warmingUp = (_validCount < _cfg.warmupSamples);
-
-  // ----- Rejet : NaN -----
+  // ----- Rejet : NaN (compte comme instabilité) -----
   if (isnan(raw)) {
     if (_rejectedCount < 255) ++_rejectedCount;
     if (_consecutiveRejects < 255) ++_consecutiveRejects;
     return false;
   }
 
-  // ----- Rejet : hors plage plausible -----
+  // ----- Rejet : hors plage plausible (compte comme instabilité) -----
   if (raw < _cfg.minValue || raw > _cfg.maxValue) {
     if (_rejectedCount < 255) ++_rejectedCount;
     if (_consecutiveRejects < 255) ++_consecutiveRejects;
     return false;
   }
 
-  // ----- Rejet : saut instantané excessif (hors warmup) -----
-  if (!warmingUp && !isnan(_filtered)) {
-    if (fabsf(raw - _filtered) > _cfg.maxStep) {
-      if (_rejectedCount < 255) ++_rejectedCount;  // cumulatif diagnostic, jamais remis à 0 par re-sync
-      if (_consecutiveRejects < 255) ++_consecutiveRejects;
-
-      // Mémorise ce brut rejeté (mini-buffer circulaire) pour l'amorçage de re-sync.
-      _rejBuffer[_rejIdx] = raw;
-      _rejIdx = (_rejIdx + 1) % _cfg.medianWindow;
-      if (_rejCount < _cfg.medianWindow) ++_rejCount;
-
-      // Saut DURABLE : au-delà du seuil de re-sync, on conclut à un vrai changement
-      // (et non un pic isolé) et on ré-amorce le filtre. Ré-amorçage sur la MÉDIANE
-      // des derniers bruts rejetés afin d'ignorer un éventuel pic final.
-      if (_consecutiveRejects >= kSensorFilterResyncRejects) {
-        const float seed = _computeRejectedMedian();
-        const float oldFiltered = _filtered;
-
-        // Comptabilise la re-sync sur la fenêtre glissante (anti-boucle EMI).
-        // Purge les timestamps trop anciens (> kSensorFilterResyncWindowMs).
-        uint8_t kept = 0;
-        for (uint8_t i = 0; i < _resyncCount; ++i) {
-          if ((uint32_t)(nowMs - _resyncTimestamps[i]) <= kSensorFilterResyncWindowMs) {
-            _resyncTimestamps[kept++] = _resyncTimestamps[i];
-          }
-        }
-        _resyncCount = kept;
-        if (_resyncCount < kSensorFilterMaxResyncPerWindow) {
-          _resyncTimestamps[_resyncCount++] = nowMs;
-        } else {
-          // Décale (FIFO) pour conserver le timestamp courant dans la fenêtre.
-          for (uint8_t i = 1; i < kSensorFilterMaxResyncPerWindow; ++i) {
-            _resyncTimestamps[i - 1] = _resyncTimestamps[i];
-          }
-          _resyncTimestamps[kSensorFilterMaxResyncPerWindow - 1] = nowMs;
-        }
-
-        // Ré-amorçage : retour warmup autour de la médiane des bruts rejetés.
-        for (uint8_t i = 0; i < kSensorFilterMedianWindow; ++i) _buffer[i] = NAN;
-        _bufIdx = 0;
-        _bufCount = 0;
-        _filtered = NAN;
-        _validCount = 0;          // → repasse en warmup (les cycles suivants ignorent maxStep)
-        _consecutiveRejects = 0;  // reset des consécutifs, mais _rejectedCount conservé
-        // Le mini-buffer de rejetés est purgé : il a servi à l'amorçage.
-        for (uint8_t i = 0; i < kSensorFilterMedianWindow; ++i) _rejBuffer[i] = NAN;
-        _rejIdx = 0;
-        _rejCount = 0;
-
-        systemLogger.warning(String("[SensorFilter] re-sync : changement durable détecté, ") +
-                             "ancienne valeur=" + String(oldFiltered, 3) +
-                             " → médiane d'amorçage=" + String(seed, 3) +
-                             " (re-sync " + String(_resyncCount) + "/" +
-                             String(kSensorFilterMaxResyncPerWindow) + " dans la fenêtre)");
-
-        // Anti-boucle latché : trop de re-sync dans la fenêtre → défaut EMI probable.
-        if (_resyncCount >= kSensorFilterMaxResyncPerWindow) {
-          _unstableLatched = true;
-          systemLogger.critical(String("[SensorFilter] latch instable : ") +
-                                String(_resyncCount) + " re-sync en " +
-                                String(kSensorFilterResyncWindowMs / 1000) +
-                                " s (EMI suspecté) — dosage bloqué jusqu'à reset/calibration");
-        }
-      }
+  // ----- Rejet : spike DUR isolé (vraie aberration, feature-058) -----
+  // |raw − médiane| > spikeReject : point unique franchement hors de la fenêtre.
+  // ÉCARTÉ (n'alimente pas le buffer → EXCLU du calcul de dispersion), NE compte
+  // PAS comme instabilité (n'incrémente pas consecutiveRejects) et NE met PAS à
+  // jour lastValid → l'âge grandit : un spike répété rend le filtre non prêt (C4).
+  // Contrairement à l'ancien rejet de « saut » maxStep, ce seuil est LARGE : il
+  // ne rejette QUE l'aberration franche, jamais l'oscillation légitime soutenue.
+  if (_bufCount > 0) {
+    const float med = _computeMedian();
+    if (!isnan(med) && fabsf(raw - med) > _cfg.spikeReject) {
+      if (_rejectedCount < 255) ++_rejectedCount;  // diagnostic seulement
       return false;
     }
   }
@@ -166,22 +102,43 @@ bool SensorFilter::addSample(float raw, uint32_t nowMs) {
   // ----- Mesure acceptée : alimentation du filtre -----
   _consecutiveRejects = 0;
 
-  // 0) feature-022 : détection capteur figé — alimentée UNIQUEMENT par les bruts
-  //    ACCEPTÉS (les rejets ci-dessus n'y passent jamais → frozen PERSISTE pendant
-  //    une rafale de rejets, pool-chemistry condition #4).
+  // feature-022 : détection capteur figé — alimentée UNIQUEMENT par les bruts
+  // ACCEPTÉS (les rejets ci-dessus n'y passent jamais → frozen PERSISTE pendant
+  // une rafale de rejets, pool-chemistry condition #4).
   _frozenDetector.addSample(raw);
 
-  // 1) Buffer circulaire pour la médiane.
+  // Buffer circulaire pour la médiane longue (base du calcul de dispersion).
   _buffer[_bufIdx] = raw;
-  _bufIdx = (_bufIdx + 1) % _cfg.medianWindow;
-  if (_bufCount < _cfg.medianWindow) ++_bufCount;
+  _bufIdx = (_bufIdx + 1) % _cfg.centralWindow;
+  if (_bufCount < _cfg.centralWindow) ++_bufCount;
 
-  // 2) EMA sur la médiane courante (la médiane absorbe déjà un pic isolé).
-  float med = _computeMedian();
-  if (isnan(_filtered)) {
-    _filtered = med;  // amorçage à la 1ʳᵉ médiane disponible
-  } else {
-    _filtered = _cfg.emaAlpha * med + (1.0f - _cfg.emaAlpha) * _filtered;
+  // filtered() = EMA(médiane longue) UNIQUEMENT quand la fenêtre est PLEINE (C2) :
+  // une fenêtre demi-pleine sous-estimerait la dispersion (→ jugement d'instabilité
+  // trop laxiste) et sortirait une valeur exploitable prématurée (→ dosage
+  // prématuré interdit). NaN tant que la fenêtre n'est pas pleine. La valeur n'est
+  // JAMAIS figée ni ré-amorcée par une instabilité (C5) : elle suit toujours la
+  // médiane longue recalculée.
+  if (_bufCount >= _cfg.centralWindow) {
+    const float med = _computeMedian();
+    if (isnan(_filtered)) {
+      _filtered = med;  // amorçage à la 1ʳᵉ fenêtre pleine
+    } else {
+      _filtered = _cfg.emaAlpha * med + (1.0f - _cfg.emaAlpha) * _filtered;
+    }
+
+    // Dispersion de la fenêtre PLEINE (brut accepté) → latch EMI si dépassement
+    // SOUTENU (N fenêtres consécutives). Un pic de dispersion ponctuel inhibe déjà
+    // la régulation via unstable() sans latcher ; seul un bruit EMI persistant
+    // pose le latch collant (levé uniquement par reset()/recalibration).
+    const float disp = _computeDispersion();
+    if (!isnan(disp) && disp > _cfg.maxDispersion) {
+      if (_dispersionBreachStreak < 255) ++_dispersionBreachStreak;
+      if (_dispersionBreachStreak >= kSensorFilterDispersionLatchCycles) {
+        _unstableLatched = true;
+      }
+    } else {
+      _dispersionBreachStreak = 0;
+    }
   }
 
   if (_validCount < 255) ++_validCount;
@@ -194,8 +151,8 @@ float SensorFilter::_computeMedian() const {
   if (_bufCount == 0) return NAN;
 
   // Copie locale (sur la pile) des échantillons valides puis tri par insertion.
-  // Capacité bornée par kSensorFilterMedianWindow → aucune alloc dynamique.
-  float tmp[kSensorFilterMedianWindow];
+  // Capacité bornée par kSensorFilterCentralWindowMax → aucune alloc dynamique.
+  float tmp[kSensorFilterCentralWindowMax];
   for (uint8_t i = 0; i < _bufCount; ++i) tmp[i] = _buffer[i];
 
   for (uint8_t i = 1; i < _bufCount; ++i) {
@@ -214,26 +171,19 @@ float SensorFilter::_computeMedian() const {
   return 0.5f * (tmp[_bufCount / 2 - 1] + tmp[_bufCount / 2]);
 }
 
-float SensorFilter::_computeRejectedMedian() const {
-  if (_rejCount == 0) return _raw;  // fallback : échantillon courant si aucun rejeté mémorisé
+float SensorFilter::_computeDispersion() const {
+  // C2 : la dispersion n'est jugée que sur une fenêtre PLEINE. Un buffer partiel
+  // sous-estimerait max−min → risque de juger "stable" un signal bruité → dosage
+  // prématuré interdit. NaN tant que la fenêtre n'est pas pleine.
+  if (_bufCount < _cfg.centralWindow) return NAN;
 
-  float tmp[kSensorFilterMedianWindow];
-  for (uint8_t i = 0; i < _rejCount; ++i) tmp[i] = _rejBuffer[i];
-
-  for (uint8_t i = 1; i < _rejCount; ++i) {
-    float key = tmp[i];
-    int j = (int)i - 1;
-    while (j >= 0 && tmp[j] > key) {
-      tmp[j + 1] = tmp[j];
-      --j;
-    }
-    tmp[j + 1] = key;
+  float mn = _buffer[0];
+  float mx = _buffer[0];
+  for (uint8_t i = 1; i < _bufCount; ++i) {
+    if (_buffer[i] < mn) mn = _buffer[i];
+    if (_buffer[i] > mx) mx = _buffer[i];
   }
-
-  if (_rejCount & 1) {
-    return tmp[_rejCount / 2];
-  }
-  return 0.5f * (tmp[_rejCount / 2 - 1] + tmp[_rejCount / 2]);
+  return mx - mn;
 }
 
 float SensorFilter::raw() const { return _raw; }
@@ -242,9 +192,12 @@ float SensorFilter::median() const { return _computeMedian(); }
 
 float SensorFilter::filtered() const { return _filtered; }
 
+float SensorFilter::dispersion() const { return _computeDispersion(); }
+
 bool SensorFilter::ready(uint32_t nowMs) const {
-  // Warmup atteint ET au moins une mesure valide ET mesure récente ET non figé.
-  if (_validCount < _cfg.warmupSamples) return false;
+  // C2 : fenêtre centrale PLEINE requise (valeur exploitable) ET mesure récente
+  // ET non figé. Tant que la fenêtre n'est pas pleine → filtered() = NaN.
+  if (_bufCount < _cfg.centralWindow) return false;
   if (!_hasValid) return false;
   if (ageMs(nowMs) > _cfg.maxAgeMs) return false;
   // feature-022 : capteur figé → non prêt (fail-closed via la garde FilterNotReady
@@ -256,15 +209,20 @@ bool SensorFilter::ready(uint32_t nowMs) const {
 bool SensorFilter::frozen() const { return _frozenDetector.frozen(); }
 
 bool SensorFilter::unstable() const {
-  // Instable si trop de rejets consécutifs OU latch anti-boucle EMI posé.
-  return (_consecutiveRejects >= _cfg.maxConsecutiveRejects) || _unstableLatched;
+  // DRAPEAU d'inhibition dosage — DÉCOUPLÉ de la valeur filtrée (C3/C5) :
+  //   (b) latch EMI collant (bruit soutenu) ;
+  //   (c) rejets NaN/hors-plage consécutifs (capteur qui débite du garbage) ;
+  //   (a) dispersion de la fenêtre PLEINE > cap (oscillation de niveau EMI, C1).
+  if (_unstableLatched) return true;
+  if (_consecutiveRejects >= _cfg.maxConsecutiveRejects) return true;
+  const float disp = _computeDispersion();
+  if (!isnan(disp) && disp > _cfg.maxDispersion) return true;
+  return false;
 }
 
 uint8_t SensorFilter::rejectedCount() const { return _rejectedCount; }
 
 uint8_t SensorFilter::consecutiveRejects() const { return _consecutiveRejects; }
-
-uint8_t SensorFilter::resyncCount() const { return _resyncCount; }
 
 bool SensorFilter::unstableLatched() const { return _unstableLatched; }
 

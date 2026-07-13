@@ -588,8 +588,14 @@ void MqttManager::publishAllStatesInternal() {
   // Capteurs : lectures atomiques côté firmware (float scalaires)
   float t = sensors.getTemperature();
   float tCircuit = sensors.getCircuitTemperature();   // feature-020
-  float ph = sensors.getPh();
-  float orp = sensors.getOrp();
+  // feature-025 : les topics /ph et /orp publient la valeur FILTRÉE (identique au
+  // tableau de bord / WebSocket), PAS le brut. Le brut reste exposé sur /ph_raw et
+  // /orp_raw. Fallback sur le brut au warmup (filtré = NaN) — même logique que
+  // ws_manager::_buildSensorJson (phVal/orpVal). Corrige la divergence UI vs MQTT.
+  float phFiltered  = sensors.getPhFiltered();
+  float orpFiltered = sensors.getOrpFiltered();
+  float ph  = !isnan(phFiltered)  ? phFiltered  : sensors.getPhRaw();
+  float orp = !isnan(orpFiltered) ? orpFiltered : sensors.getOrpRaw();
 
   // Tous les publish passent par safePublish() : reset wdt + check connected interne.
   // Plus besoin de garde-fous intermédiaires ni de wdt reset explicites — voir IT4 / ADR-0011.

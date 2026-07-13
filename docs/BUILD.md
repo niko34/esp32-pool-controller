@@ -54,7 +54,7 @@ PlatformIO compile **un binaire par dossier `test/test_*`** ; `pio test -e nativ
 
 | Dossier | Couvre | Source testée |
 |---------|--------|---------------|
-| `test/test_native_sensor_filter/` | filtrage médiane + EMA, warmup, rejets (feature-025) | `src/sensor_filter.cpp` |
+| `test/test_native_sensor_filter/` | tendance centrale (médiane longue + EMA), rejet aberrations, dispersion/latch, capteur figé (feature-025 → feature-058) | `src/sensor_filter.cpp` |
 | `test/test_native_dosing/` | décision de dosage (`evaluateDose`, hystérésis start/stop, non-régression pause-mélange) (feature-036) | `src/dosing_logic.cpp` |
 
 Le `build_src_filter` de l'env `native` inclut les deux modules purs :

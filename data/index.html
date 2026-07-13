@@ -1842,6 +1842,57 @@ action:
                 </div>
               </div>
 
+              <div class="card" id="card-sensor-trace">
+                <div class="card__head">
+                  <h2 class="card__title">Signaux capteurs (brut / lissé)</h2>
+                  <span class="pill" id="trace_count" role="status" aria-live="polite">0</span>
+                </div>
+                <div class="card__body">
+                  <div class="muted small" style="margin-bottom:12px;">
+                    Trace haute cadence des signaux pH et ORP (un point par cycle capteur),
+                    pour diagnostiquer bruit et oscillation. Le buffer est volatil : il est
+                    perdu au redémarrage de l'appareil.
+                  </div>
+
+                  <div class="row row--gap" style="margin-bottom:12px;">
+                    <button class="btn btn--secondary" type="button" id="trace_reload_btn">Recharger la trace</button>
+                    <button class="btn btn--danger" type="button" id="trace_clear_btn">Vider le buffer</button>
+                  </div>
+
+                  <div class="muted small" id="trace_status" hidden>Aucune donnée dans le buffer.</div>
+
+                  <div id="trace_charts" hidden>
+                    <div class="trace-block">
+                      <div class="trace-legend">
+                        <span class="trace-legend__item"><span class="trace-legend__swatch" style="background:#a78bfa"></span>pH brut</span>
+                        <span class="trace-legend__item"><span class="trace-legend__swatch" style="background:#7c3aed"></span>pH lissé</span>
+                      </div>
+                      <div class="chart-container trace-chart">
+                        <div id="trace_ph_chart" class="chart-host"></div>
+                      </div>
+                    </div>
+
+                    <div class="trace-block">
+                      <div class="trace-legend">
+                        <span class="trace-legend__item"><span class="trace-legend__swatch" style="background:#34d399"></span>ORP brut</span>
+                        <span class="trace-legend__item"><span class="trace-legend__swatch" style="background:#059669"></span>ORP lissé</span>
+                      </div>
+                      <div class="chart-container trace-chart">
+                        <div id="trace_orp_chart" class="chart-host"></div>
+                      </div>
+                    </div>
+
+                    <div class="kv kv--compact" style="margin-top:16px;">
+                      <div class="kv__row"><span class="kv__k">pH brut</span><span class="kv__v" id="trace_stats_ph_raw">—</span></div>
+                      <div class="kv__row"><span class="kv__k">pH lissé</span><span class="kv__v" id="trace_stats_ph_filtered">—</span></div>
+                      <div class="kv__row"><span class="kv__k">ORP brut</span><span class="kv__v" id="trace_stats_orp_raw">—</span></div>
+                      <div class="kv__row"><span class="kv__k">ORP lissé</span><span class="kv__v" id="trace_stats_orp_filtered">—</span></div>
+                      <div class="kv__row"><span class="kv__k">T° eau</span><span class="kv__v" id="trace_stats_temp">—</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div class="card" style="display:none">
                 <div class="card__head">
                   <h2 class="card__title">Écran LVGL</h2>

@@ -8,6 +8,8 @@
 // - POST /debug/ph_slope_refresh     : force une re-query Slope,? sur l'EZO pH (feature-024)
 // - POST /debug/sensor_filter_reset  : repasse les filtres pH/ORP en warmup (feature-025)
 // - GET  /debug/sensor_filter_state  : état brut JSON des filtres pH/ORP (feature-025)
+// - GET  /debug/sensor_trace         : dump ring buffer trace capteur brut+lissé (feature-057)
+// - POST /debug/sensor_trace_clear   : vide le ring buffer de trace capteur (feature-057)
 void setupDebugRoutes(AsyncWebServer* server);
 
 #endif // WEB_ROUTES_DEBUG_H

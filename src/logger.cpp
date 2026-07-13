@@ -112,33 +112,36 @@ String Logger::getLevelString(LogLevel level) {
   }
 }
 
-std::vector<LogEntry> Logger::getRecentLogs(size_t count) {
-  std::vector<LogEntry> result;
+void Logger::forEachRecentLog(size_t count, unsigned long sinceTimestamp,
+                              const std::function<void(const LogEntry&)>& visitor) const {
+  if (!visitor) return;
 
-  // feature-027 : timeout → vecteur vide (silencieux)
+  // feature-027 : timeout → aucune itération (silencieux, l'appelant peut réessayer)
   if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(kLoggerMutexTimeoutMs)) != pdTRUE) {
-    return result;
+    return;
   }
 
+  // v2.8.2 : parcours EN PLACE, aucune copie. Le visiteur reçoit une référence
+  // const sur chaque entrée et ne fait que des écritures mémoire rapides (contrat).
   if (!bufferFull) {
-    // Buffer pas encore plein, retourner les derniers n éléments
+    // Buffer pas encore plein : les dernières n entrées
     size_t start = logs.size() > count ? logs.size() - count : 0;
     for (size_t i = start; i < logs.size(); i++) {
-      result.push_back(logs[i]);
+      const LogEntry& e = logs[i];
+      if (sinceTimestamp == 0 || e.timestamp > sinceTimestamp) visitor(e);
     }
   } else {
     // Buffer circulaire plein
     size_t itemsToReturn = count < MAX_LOGS ? count : MAX_LOGS;
     size_t startIndex = (currentIndex + MAX_LOGS - itemsToReturn) % MAX_LOGS;
-
     for (size_t i = 0; i < itemsToReturn; i++) {
       size_t idx = (startIndex + i) % MAX_LOGS;
-      result.push_back(logs[idx]);
+      const LogEntry& e = logs[idx];
+      if (sinceTimestamp == 0 || e.timestamp > sinceTimestamp) visitor(e);
     }
   }
 
   if (_mutex) xSemaphoreGive(_mutex);
-  return result;
 }
 
 void Logger::clear() {

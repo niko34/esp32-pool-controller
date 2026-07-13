@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
+#include "constants.h"
 #include "logger.h"
 #include "sensors.h"
 
@@ -12,6 +13,31 @@
 
 void setupDebugRoutes(AsyncWebServer* server) {
   if (server == nullptr) return;
+
+  // ---------- GET /debug/sensor_trace ----------
+  // feature-057 : dump du ring buffer de trace capteur (pH/ORP brut + lissé, T°).
+  // Non bloquant (< 50 ms) : lecture lock-free du buffer (contrat SensorTraceSample),
+  // JSON borné (~300 objets) sérialisé en flux via beginResponseStream + JsonDocument
+  // local au handler (PAS d'allocation dans la loop).
+  server->on("/debug/sensor_trace", HTTP_GET, [](AsyncWebServerRequest* req) {
+    AsyncResponseStream* res = req->beginResponseStream("application/json");
+    JsonDocument doc;
+    doc["count"]       = sensors.getSensorTraceCount();
+    doc["interval_ms"] = (uint32_t)kPhOrpSensorIntervalMs;
+    doc["now"]         = (uint32_t)millis();
+    JsonArray arr = doc["samples"].to<JsonArray>();
+    sensors.appendSensorTraceJson(arr);
+    serializeJson(doc, *res);
+    req->send(res);
+  });
+
+  // ---------- POST /debug/sensor_trace_clear ----------
+  // feature-057 : vide le ring buffer de trace (démarre une fenêtre propre).
+  server->on("/debug/sensor_trace_clear", HTTP_POST, [](AsyncWebServerRequest* req) {
+    sensors.clearSensorTrace();
+    systemLogger.info("[Debug] Trace capteur vidée");
+    req->send(200, "application/json", "{\"success\":true}");
+  });
 
   // ---------- POST /debug/ph_slope_refresh ----------
   // feature-024 : force une re-query Slope,? sur l'EZO pH (utile pour valider
@@ -28,7 +54,8 @@ void setupDebugRoutes(AsyncWebServer* server) {
 
   // ---------- POST /debug/sensor_filter_reset ----------
   // feature-025 : reset des filtres pH/ORP (médiane + EMA). Repasse les 2 filtres
-  // en warmup → dosage auto bloqué jusqu'à kSensorFilterWarmupSamples mesures valides.
+  // en warmup → dosage auto bloqué tant que la fenêtre centrale (kSensorFilterCentralWindow)
+  // n'est pas de nouveau pleine ; lève aussi le latch EMI (feature-058).
   // Utile après un débranchement EZO, un test, ou une recalibration manuelle.
   server->on("/debug/sensor_filter_reset", HTTP_POST, [](AsyncWebServerRequest* req) {
     sensors.resetPhFilter();

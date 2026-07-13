@@ -95,10 +95,43 @@ Nouvelle section **en 1ᵉʳ onglet** (feature-056, v2.19.0). Un `radiogroup` (`
 - `pump_max_flow_ml_per_min` — débit nominal pour calcul volume injecté (défaut `kPumpMaxFlowMlPerMin = 90.0` [`constants.h`](../../src/constants.h)).
 - Tests pompe : `POST /pump1/on`, `/pump1/off`, `/pump2/on`, `/pump2/off` — arrêt auto après 10 s côté firmware.
 - `sensor_logs_enabled` (bool) — verbosité logs capteurs pour diagnostic.
+- **Card "Signaux capteurs (brut / lissé)"** (feature-057, v2.7.0) — voir section dédiée ci-dessous.
 - **Card "Diagnostic crash"** — voir section dédiée ci-dessous.
 - **Card "Logs"** — voir section dédiée ci-dessous.
 
 > ℹ️ **Cartes retirées en v2.5.0** (feature-045) : « Debug oscillation pH » et « Diagnostic EZO », ajoutées pour la campagne de diagnostic d'oscillation pH (2026-05/06). Code récupérable via `git revert` du commit de la feature-045 ; état complet figé au tag `v2.4.0`.
+>
+> **Réintroduction partielle en v2.7.0** (feature-057) : la trace des signaux est de retour sous la card « Signaux capteurs (brut / lissé) » (ci-dessous), **fidèle** (haute cadence) et **étendue à l'ORP**. « Diagnostic EZO » et « pause WiFi » restent retirés.
+
+#### Card Signaux capteurs (brut / lissé) — feature-057
+
+Réintroduction **fidèle** (haute cadence) de l'ancienne card « Debug oscillation pH » (retirée en v2.5.0), **étendue au pH ET à l'ORP**. Permet de diagnostiquer visuellement le **bruit** ou une **oscillation** de la chaîne de mesure en comparant, sur une fenêtre temporelle continue, la valeur **brute** Atlas EZO à la valeur **lissée** (médiane + EMA, feature-025).
+
+Les données proviennent d'un **ring buffer firmware volatil** de 300 échantillons alimenté à chaque cycle capteur (~5 s), et non du WebSocket — la fidélité de la trace est donc garantie sur toute la fenêtre (voir [`docs/subsystems/sensors.md#trace-des-signaux-capteurs--feature-057`](../subsystems/sensors.md#trace-des-signaux-capteurs--feature-057)). Le buffer est **perdu au reboot**.
+
+**Chargement paresseux** : la trace n'est récupérée qu'à l'**activation de l'onglet Avancé** (pas de polling permanent) via `GET /debug/sensor_trace`.
+
+**Contenu affiché :**
+
+| Élément | Description |
+|---------|-------------|
+| Compteur | « Échantillons : N » (N = `count`, 0..300). |
+| Graphe pH | 2 séries uPlot : pH **brut** vs pH **lissé**. |
+| Graphe ORP | 2 séries uPlot : ORP **brut** vs ORP **lissé** (mV). |
+| Stats min / max / Δ | Par série : pH brut, pH lissé, ORP brut, ORP lissé (+ T° min/max). |
+
+**Boutons :**
+
+| Bouton | Endpoint | Action |
+|--------|----------|--------|
+| Recharger la trace | `GET /debug/sensor_trace` | Récupère l'état courant du buffer et redessine les graphes. |
+| Vider le buffer | `POST /debug/sensor_trace_clear` | Réinitialise le ring buffer firmware puis les graphes (fenêtre d'observation propre). |
+
+**Cas limites :**
+- Valeurs `null`/NaN (filtre non amorcé, EZO injoignable) → **trou dans la courbe**, pas de crash.
+- Buffer vide → message « aucune donnée », graphes masqués.
+
+Voir [`docs/API.md#trace-des-signaux-capteurs-feature-057-v270`](../API.md#trace-des-signaux-capteurs-feature-057-v270) pour le format JSON.
 
 #### Card Diagnostic crash
 
@@ -173,6 +206,8 @@ Toggles complémentaires :
 | Effacer coredump | `DELETE /coredump` | WRITE |
 | Effacer logs (firmware) | `DELETE /logs` | WRITE |
 | Télécharger logs | `GET /download-logs` | WRITE |
+| Recharger la trace signaux capteurs | `GET /debug/sensor_trace` | pas d'auth (`/debug/*`) |
+| Vider la trace signaux capteurs | `POST /debug/sensor_trace_clear` | pas d'auth (`/debug/*`) |
 
 Auth = le niveau minimum requis, voir [`docs/API.md`](../API.md).
 

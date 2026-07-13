@@ -2,6 +2,7 @@
 #define CONSTANTS_H
 
 #include <stdint.h>
+#include <time.h>  // time_t (kMinValidEpoch) — self-contained : ne dépend plus d'Arduino.h en amont
 
 // =============================================================================
 // GPIO PIN ASSIGNMENTS - PCB v2
@@ -111,6 +112,14 @@ constexpr size_t kMaxDailyDataPoints = 75;                // 75 jours de moyenne
 // Seuils mémoire
 constexpr size_t kMinFreeHeapBytes = 10000;               // Seuil critique mémoire disponible
 
+// Garde heap pour les réponses volumineuses des journaux (/get-logs, /download-logs).
+// v2.8.2 : sous forte fragmentation du tas (gros bloc contigu trop petit), la
+// construction de la réponse peut échouer. On refuse alors proprement (503) plutôt
+// que de tenter une allocation qui dégraderait la réponse. Comparé au plus gros
+// bloc contigu libre (heap_caps_get_largest_free_block), pas au heap total.
+// Couvre le pire cas /get-logs (~200 entrées × ~120 o ≈ 24 Ko) + marge TCP.
+constexpr size_t kMinHeapForLogsResponse = 24576;         // 24KB - Bloc contigu min pour servir les logs
+
 // ============================================================================
 // SENSOR CONSTANTS - Paramètres capteurs
 // ============================================================================
@@ -153,38 +162,64 @@ constexpr int      kEzoBusFailMaxConsecutive  = 2;        // 2 échecs consécut
 constexpr unsigned long kPhSlopeQueryIntervalMs = 86400000UL; // 24h - re-query Slope,? auto (feature-024 pente sonde pH)
 
 // ============================================================================
-// SENSOR FILTER CONSTANTS - Lissage mesures pH/ORP (feature-025)
+// SENSOR FILTER CONSTANTS - Lissage mesures pH/ORP (feature-025 → feature-058)
 // ============================================================================
-// Chaîne de filtrage : rejet aberrant → médiane courte → EMA lente.
+// Chaîne de filtrage (feature-058, tendance centrale) :
+//   brut → rejet vraie aberration (NaN / hors-plage / spike DUR isolé)
+//        → médiane sur fenêtre LONGUE → EMA lente.
+// La valeur filtrée = estimateur central COURANT, jamais figée (feature-058) :
+//   l'oscillation légitime soutenue n'est PLUS rejetée (fini le rejet de « saut »
+//   maxStep qui écartait un côté de l'enveloppe et faisait coller/geler la valeur).
+// L'instabilité (inhibition dosage) est DÉCOUPLÉE de la valeur : elle est pilotée
+// par la DISPERSION de la fenêtre brute acceptée (max−min), le latch EMI et les
+// rejets consécutifs — voir SensorFilter::unstable().
 // Centralisé ici pour ajustement terrain. Buffer FIXE (pas d'alloc dynamique).
-// Validation pool-chemistry feature-025 (conditions non négociables).
+// Validation pool-chemistry feature-058 (conditions C1..C6 non négociables).
 
-constexpr uint8_t kSensorFilterMedianWindow      = 7;        // Taille buffer médian (impair, FIXE)
+// --- Fenêtre médiane LONGUE (tendance centrale) ---
+// Capacité physique du buffer (dimensionne float _buffer[]). FIXE, jamais dépassée.
+constexpr uint8_t kSensorFilterCentralWindowMax  = 16;       // Capacité physique buffer médian (FIXE)
+// Fenêtre logique effective (identique pH et ORP). À 5 s/échantillon, retard médian
+// ≈ (13/2)×5 ≈ 30 s, soit +15 s vs l'ancienne fenêtre de 7 (C6). Latence tolérée :
+// pH/ORP varient lentement → réponse plus lente mais plus prudente (ne chasse pas le bruit).
+constexpr uint8_t kSensorFilterCentralWindow     = 13;       // Fenêtre médiane logique (retard ≈30 s, +15 s vs v1)
+
 constexpr float   kPhEmaAlpha                    = 0.10f;    // Coefficient EMA pH (lissage lent)
 constexpr float   kOrpEmaAlpha                   = 0.08f;    // Coefficient EMA ORP (lissage lent)
-constexpr float   kPhFilterMaxStep               = 0.15f;    // Saut max pH/lecture (rejet au-delà)
-constexpr float   kOrpFilterMaxStep              = 50.0f;    // Saut max ORP/lecture (mV, rejet au-delà)
 constexpr float   kPhFilterMin                   = 0.0f;     // Plage plausible pH min
 constexpr float   kPhFilterMax                   = 14.0f;    // Plage plausible pH max
 constexpr float   kOrpFilterMin                  = -1000.0f; // Plage plausible ORP min (mV)
 constexpr float   kOrpFilterMax                  = 1500.0f;  // Plage plausible ORP max (mV)
-constexpr uint8_t kSensorFilterWarmupSamples     = 5;        // Mesures valides avant filtre prêt
-constexpr uint8_t kSensorFilterMaxConsecutiveRejects = 10;   // Rejets consécutifs → capteur instable
-// Re-synchronisation : un changement réel et DURABLE (> maxStep maintenu) ne doit pas
-// figer le filtre indéfiniment. Au-delà de ce seuil de rejets consécutifs, on conclut
-// à un vrai changement et on ré-amorce le filtre sur la médiane des derniers bruts rejetés.
-// 12 cycles × 5 s/cycle ≈ 60 s. STRICTEMENT > kSensorFilterMaxConsecutiveRejects (10, seuil "instable")
-// ET > kSensorFilterMedianWindow (7) pour garantir un mini-buffer de rejets plein → médiane d'amorçage fiable.
-// Le dosage est de toute façon bloqué dès 10 rejets (unstable) puis pendant le re-warmup (ready=false).
-constexpr uint8_t  kSensorFilterResyncRejects     = 12;      // Rejets consécutifs → re-sync (≈60 s, feature-033)
-// Anti-boucle : un capteur qui re-sync en boucle = défaut EMI, pas un vrai changement.
-// Au-delà de ce nombre de re-sync sur la fenêtre glissante → latch "instable" jusqu'à reset().
-constexpr uint8_t  kSensorFilterMaxResyncPerWindow = 3;      // Re-sync max avant latch instable
-constexpr uint32_t kSensorFilterResyncWindowMs    = 600000;  // 10 min — fenêtre glissante anti-boucle
+constexpr uint8_t kSensorFilterMaxConsecutiveRejects = 10;   // Rejets NaN/hors-plage consécutifs → instable
+
+// --- Dispersion (drapeau d'instabilité, C1/C3) ---
+// Si (max − min) de la fenêtre brute ACCEPTÉE et PLEINE dépasse ce cap → unstable().
+// Caps maintenus SOUS l'amplitude EMI observée (feature-057) pour préserver
+// l'inhibition actuelle de la régulation (C1) — ne PAS assouplir.
+constexpr float   kPhFilterMaxDispersion         = 0.5f;     // pH : dispersion fenêtre → instable
+constexpr float   kOrpFilterMaxDispersion        = 100.0f;   // mV : dispersion fenêtre → instable
+
+// --- Spike DUR isolé (vraie aberration, C3) ---
+// Un point unique tel que |brut − médiane| dépasse ce seuil est ÉCARTÉ (n'alimente
+// pas le buffer, donc EXCLU du calcul de dispersion) et ne compte PAS comme instabilité.
+// Bien au-dessus de l'amplitude d'oscillation légitime : ne rejette que l'aberration franche.
+constexpr float   kPhFilterSpikeReject           = 1.0f;     // pH : spike dur isolé écarté
+constexpr float   kOrpFilterSpikeReject          = 300.0f;   // mV : spike dur isolé écarté
+
+// --- Latch EMI (persistance de l'inhibition) ---
+// Un bruit de niveau EMI SOUTENU (dispersion > cap sur N fenêtres pleines consécutives)
+// pose un latch "instable" collant, levé UNIQUEMENT par reset()/recalibration. Distingue
+// un pic de dispersion ponctuel (inhibition transitoire) d'un défaut EMI persistant.
+constexpr uint8_t kSensorFilterDispersionLatchCycles = 3;    // Fenêtres en dépassement avant latch EMI
 // Âge max de la dernière mesure valide pour que le filtre soit considéré "prêt".
 // Au-delà, ready() repasse false (mesure trop ancienne → fail-closed dosage).
 // 4 × kPhOrpSensorIntervalMs (5 s) = 20 s, cohérent avec kSensorStaleTimeoutMs.
 constexpr uint32_t kSensorFilterMaxAgeMs         = 20000;    // 20 s
+
+// Trace capteur (ring buffer RAM, feature-057) : chaque cycle EZO enregistre un
+// échantillon (pH brut/lissé, ORP brut/lissé, T° eau). 300 × 24 o ≈ 7 Ko.
+// Fenêtre glissante ≈ 25 min à kPhOrpSensorIntervalMs (5 s). Diagnostic pur.
+constexpr size_t kSensorTraceBufferSize          = 300;
 
 // Pause mélange hydraulique après injection (pool-chemistry feature-025).
 // Distincte du timer post-calibration (_stabilizationEndMs). Gates indépendantes (OR).

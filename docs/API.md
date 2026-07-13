@@ -293,6 +293,10 @@ curl -u admin:monmotdepasse "http://poolcontroller.local/get-logs?since=14400000
 
 > `timestamp` est exprimé en millisecondes depuis le démarrage de l'ESP32 (`millis()`).
 
+**Réponse en flux** : la réponse est construite via `beginResponseStream` (buffer redimensionné par `realloc`, ne lève jamais d'exception), sans copie du buffer de logs en RAM.
+
+**Réponse 503** (`{"error":"low_memory"}`) : si le plus gros bloc contigu libre du tas (`heap_caps_get_largest_free_block`) est en dessous de `kMinHeapForLogsResponse` (24 Ko), l'endpoint refuse de servir la réponse plutôt que de risquer une allocation qui échouerait. Garde introduite en v2.8.2 pour empêcher un crash `std::bad_alloc` sous fragmentation du tas.
+
 ---
 
 ### GET /download-logs — WRITE
@@ -314,6 +318,12 @@ curl -u admin:monmotdepasse http://poolcontroller.local/download-logs -o pool_lo
 ```
 
 > Les logs enrichis incluent les événements de dosage (démarrage, arrêt, paramètres) ainsi que les alertes de limites horaires/journalières.
+
+**Réponse en flux** : export construit via `beginResponseStream`, sans copie préalable du buffer.
+
+**Réponse 503** (message texte) : servie si le plus gros bloc libre est sous `kMinHeapForLogsResponse` (24 Ko), même garde heap que `/get-logs`.
+
+> ⚠️ **Limitation connue** : sous tas très fragmenté, `/download-logs` peut **tronquer** l'export (jamais planter) si le buffer de flux ne peut plus grandir. Une version *chunked* (envoi par tranches) est prévue ultérieurement pour lever cette limite.
 
 ---
 
@@ -1286,7 +1296,7 @@ L'UI page `/ph` (chip d'état sonde) utilise cet endpoint via le bouton « Rafra
 
 ### `POST /debug/sensor_filter_reset` — pas d'auth (cohérent avec autres `/debug/*`)
 
-Réinitialise **les deux** filtres pH et ORP (médiane + EMA). Les filtres repassent en **warmup** → le dosage automatique est bloqué jusqu'à ce que chaque filtre ait reçu `kSensorFilterWarmupSamples` (= 5) nouvelles mesures valides. Utile après un débranchement EZO, un test, ou une recalibration manuelle hors workflow.
+Réinitialise **les deux** filtres pH et ORP (médiane longue + EMA) et **lève le latch EMI**. Les filtres repassent en **warmup** → le dosage automatique est bloqué jusqu'à ce que chaque filtre ait de nouveau une **fenêtre centrale pleine** (`kSensorFilterCentralWindow` = 13 nouvelles mesures valides, ≈ 65 s à 5 s/cycle) avant de produire une valeur exploitable. Utile après un débranchement EZO, un test, ou une recalibration manuelle hors workflow.
 
 ```bash
 curl -X POST http://poolcontroller.local/debug/sensor_filter_reset
@@ -1317,14 +1327,66 @@ curl http://poolcontroller.local/debug/sensor_filter_state
 
 Les champs `raw` / `median` / `filtered` valent `null` si la mesure est indisponible. Voir [feature-025](../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) et [`docs/subsystems/sensors.md`](subsystems/sensors.md#reset-manuel--diagnostic).
 
+## Trace des signaux capteurs (feature-057, v2.7.0)
+
+Réintroduction **fidèle** (haute cadence) de la trace des signaux capteurs retirée en v2.5.0 (feature-045), **étendue à l'ORP** (l'original ne couvrait que le pH). Un ring buffer firmware de `kSensorTraceBufferSize = 300` échantillons enregistre les valeurs brutes **et** lissées à **chaque cycle capteur** (~5 s), cadence bien supérieure aux 5 s du WebSocket sur toute la fenêtre. Buffer **volatil** (perdu au reboot). Détail firmware : [`docs/subsystems/sensors.md`](subsystems/sensors.md#trace-des-signaux-capteurs--feature-057).
+
+### `GET /debug/sensor_trace` — pas d'auth (cohérent avec autres `/debug/*`)
+
+Dump JSON du ring buffer, du plus ancien au plus récent. Handler **non bloquant** (< 50 ms) : lecture lock-free du buffer, sérialisation en flux (`beginResponseStream`), aucune allocation dans la loop.
+
+```bash
+curl http://poolcontroller.local/debug/sensor_trace
+```
+
+**Réponse 200**
+
+```json
+{
+  "count": 300,
+  "interval_ms": 5000,
+  "now": 3600000,
+  "samples": [
+    { "t": 3595000, "phRaw": 7.241, "phFiltered": 7.234, "orpRaw": 722.0, "orpFiltered": 720.0, "tempEau": 24.5 },
+    { "t": 3600000, "phRaw": 7.238, "phFiltered": 7.235, "orpRaw": 721.0, "orpFiltered": 720.0, "tempEau": 24.5 }
+  ]
+}
+```
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `count` | integer | Nombre d'échantillons présents (0..300). |
+| `interval_ms` | integer | Période nominale d'enregistrement (`kPhOrpSensorIntervalMs`, ~5000 ms). |
+| `now` | integer | `millis()` courant — permet à l'UI de reconstruire l'axe temps relatif (`t − now`). |
+| `samples[].t` | integer | Timestamp de l'échantillon en ms (`millis()` au moment de l'enregistrement). |
+| `samples[].phRaw` / `phFiltered` | float \| null | pH brut / lissé (arrondi ×1000). `null` si NaN (lecture échouée / filtre non amorcé). |
+| `samples[].orpRaw` / `orpFiltered` | float \| null | ORP brut / lissé en mV (arrondi ×10). `null` si NaN. |
+| `samples[].tempEau` | float \| null | T° eau envoyée à l'EZO pour compensation (°C, arrondi ×10). `null` si sonde absente. |
+
+Usage : diagnostiquer le **bruit** ou une **oscillation** de la chaîne de mesure en comparant brut vs lissé sur une fenêtre continue, depuis l'onglet **Avancé** (voir [`docs/features/page-settings.md`](features/page-settings.md#card-signaux-capteurs-brut--lissé-feature-057)).
+
+### `POST /debug/sensor_trace_clear` — pas d'auth (cohérent avec autres `/debug/*`)
+
+Vide le ring buffer (démarre une fenêtre d'observation propre).
+
+```bash
+curl -X POST http://poolcontroller.local/debug/sensor_trace_clear
+```
+
+**Réponse 200**
+
+```json
+{ "success": true }
+```
+
 ---
 
 ## Routes de debug supprimées (v2.5.0, feature-045)
 
 Les routes suivantes, ajoutées pour la campagne de diagnostic d'oscillation pH (2026-05/06), ont été retirées et répondent désormais **404** :
 
-- `GET /debug/ph_trace` et `POST /debug/ph_trace_clear` (trace ring buffer pH)
-- `GET /debug/wifi_pause` et `POST /debug/wifi_pause` (pause WiFi temporaire)
-- `POST /debug/ezo_command` et `POST /debug/ezo_factory` (diagnostic Atlas EZO)
+- `GET /debug/ph_trace` et `POST /debug/ph_trace_clear` (trace ring buffer pH) — **réintroduites en v2.7.0** sous `GET /debug/sensor_trace` + `POST /debug/sensor_trace_clear` (pH **et** ORP ; voir section ci-dessus).
+- `GET /debug/wifi_pause` et `POST /debug/wifi_pause` (pause WiFi temporaire) — **non réintroduites**.
+- `POST /debug/ezo_command` et `POST /debug/ezo_factory` (diagnostic Atlas EZO) — **non réintroduites**.
 
 Le code est récupérable via `git revert` du commit de la feature-045 ; l'état complet avec ces outils est figé au tag `v2.4.0`. Voir [feature-045](../specs/features/done/feature-045-retrait-outils-debug.md).

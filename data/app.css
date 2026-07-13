@@ -2549,6 +2549,49 @@ input.is-computed:disabled {
   height: calc(100% - 8px);
 }
 
+/* Trace signaux capteurs (feature-057) — onglet Avancé */
+.trace-block {
+  margin-bottom: 16px;
+}
+
+.trace-block .chart-container.trace-chart {
+  min-height: 200px;
+  height: 200px;
+  padding: 8px 16px;
+  position: relative;
+  overflow: hidden;
+}
+
+.trace-block .chart-container.trace-chart .chart-host {
+  position: absolute;
+  top: 8px;
+  left: 16px;
+  width: calc(100% - 32px);
+  height: calc(100% - 8px);
+}
+
+.trace-legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--muted, #6b7280);
+}
+
+.trace-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.trace-legend__swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
 /* ========== GRAPHIQUES uPlot ========== */
 /* Tooltip custom (uPlot n'a pas de tooltip natif) — style sobre type Chart.js */
 .u-tooltip {
