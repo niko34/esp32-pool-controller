@@ -5,6 +5,7 @@
 
 #include "constants.h"
 #include "logger.h"
+#include "sensor_trace_page.h"
 #include "sensors.h"
 
 // =============================================================================
@@ -16,17 +17,48 @@ void setupDebugRoutes(AsyncWebServer* server) {
 
   // ---------- GET /debug/sensor_trace ----------
   // feature-057 : dump du ring buffer de trace capteur (pH/ORP brut + lissé, T°).
-  // Non bloquant (< 50 ms) : lecture lock-free du buffer (contrat SensorTraceSample),
-  // JSON borné (~300 objets) sérialisé en flux via beginResponseStream + JsonDocument
-  // local au handler (PAS d'allocation dans la loop).
+  // PAGINÉ (bug-crash-sensor-trace-badalloc) : ?offset=N&count=M, M borné par
+  // kSensorTraceMaxSamplesPerPage (~3,5 Ko/page) — jamais ~20 Ko contigus dans
+  // le cbuf d'AsyncResponseStream (std::bad_alloc → abort() sur heap fragmenté).
+  // Réponse : count (total buffer), offset (effectif clampé), returned (n de la
+  // page), interval_ms, now, samples. Le glissement du ring buffer entre deux
+  // pages est toléré (diagnostic, contrat lock-free SensorTraceSample).
+  // Non bloquant (< 50 ms) : lecture lock-free, 50 objets max/page.
   server->on("/debug/sensor_trace", HTTP_GET, [](AsyncWebServerRequest* req) {
-    AsyncResponseStream* res = req->beginResponseStream("application/json");
+    size_t offset = 0;
+    size_t count  = kSensorTraceMaxSamplesPerPage;
+    if (req->hasParam("offset")) {
+      offset = (size_t)req->getParam("offset")->value().toInt();
+    }
+    if (req->hasParam("count")) {
+      long c = req->getParam("count")->value().toInt();
+      if (c > 0) count = (size_t)c;  // 0 ou invalide → défaut (page max)
+    }
+    size_t total = sensors.getSensorTraceCount();
+    TracePageBounds page =
+        computeTracePage(total, offset, count, kSensorTraceMaxSamplesPerPage);
+
+    // ORDRE IMPÉRATIF : doc → measureJson → garde heap → beginResponseStream.
     JsonDocument doc;
-    doc["count"]       = sensors.getSensorTraceCount();
+    doc["count"]       = total;
+    doc["offset"]      = page.offset;
+    doc["returned"]    = page.n;
     doc["interval_ms"] = (uint32_t)kPhOrpSensorIntervalMs;
     doc["now"]         = (uint32_t)millis();
     JsonArray arr = doc["samples"].to<JsonArray>();
-    sensors.appendSensorTraceJson(arr);
+    sensors.appendSensorTraceJson(arr, page.offset, page.n);
+
+    // Garde-fou défensif : si même une page ne tient pas dans le plus gros
+    // bloc libre (+ marge), 503 propre au lieu d'un bad_alloc → reboot.
+    size_t sz = measureJson(doc);
+    if (sz + kSensorTraceHeapMarginBytes > ESP.getMaxAllocHeap()) {
+      req->send(503, "application/json",
+                "{\"error\":\"heap fragmenté, réessayez\"}");
+      return;
+    }
+    // Pré-dimensionné : une seule allocation du cbuf, pas de resize() en cours
+    // de sérialisation.
+    AsyncResponseStream* res = req->beginResponseStream("application/json", sz);
     serializeJson(doc, *res);
     req->send(res);
   });

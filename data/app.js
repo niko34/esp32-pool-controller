@@ -5117,10 +5117,28 @@
     const charts = $("#trace_charts");
     const countEl = $("#trace_count");
     try {
-      const res = await authFetch("/debug/sensor_trace");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      const samples = Array.isArray(json.samples) ? json.samples : [];
+      // Route paginée (bug-crash-sensor-trace-badalloc) : on agrège les pages
+      // séquentiellement jusqu'à couvrir `count` (total buffer). Borne dure de
+      // 12 itérations (300 échantillons / 50 par page = 6 en nominal).
+      const samples = [];
+      let offset = 0;
+      for (let i = 0; i < 12; i++) {
+        const res = await authFetch(`/debug/sensor_trace?offset=${offset}`);
+        if (res.status === 503) {
+          if (status) { status.textContent = "Mémoire fragmentée, réessayez."; status.hidden = false; }
+          if (charts) charts.hidden = true;
+          return;
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        const page = Array.isArray(json.samples) ? json.samples : [];
+        samples.push(...page);
+        const returned = Number(json.returned ?? page.length);
+        const total = Number(json.count ?? 0);
+        if (returned === 0 || total === 0) break;  // buffer vide ou fin de page
+        offset += returned;
+        if (offset >= total) break;                // trace complète
+      }
 
       if (countEl) countEl.textContent = String(samples.length);
 

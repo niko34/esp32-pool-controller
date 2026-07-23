@@ -111,6 +111,8 @@ Les données proviennent d'un **ring buffer firmware volatil** de 300 échantill
 
 **Chargement paresseux** : la trace n'est récupérée qu'à l'**activation de l'onglet Avancé** (pas de polling permanent) via `GET /debug/sensor_trace`.
 
+**Pagination transparente (v2.10.1, bug-crash-sensor-trace-badalloc)** : la route est paginée (50 échantillons max/page — l'ancienne réponse unique de ~20 Ko pouvait provoquer un `std::bad_alloc` → reboot sur heap fragmenté). `loadSensorTrace()` ([`data/app.js`](../../data/app.js)) agrège les pages **séquentiellement** (`?offset=N`, enchaînement via les champs `count`/`returned`, borne dure de **12 itérations** — 6 en nominal pour 300 échantillons) avant de tracer les courbes ; rendu et comportement **inchangés** vus de l'utilisateur. Si le firmware répond **503** (heap trop fragmenté même pour une page), la card affiche « **Mémoire fragmentée, réessayez.** » et masque les graphes.
+
 **Contenu affiché :**
 
 | Élément | Description |
@@ -124,12 +126,13 @@ Les données proviennent d'un **ring buffer firmware volatil** de 300 échantill
 
 | Bouton | Endpoint | Action |
 |--------|----------|--------|
-| Recharger la trace | `GET /debug/sensor_trace` | Récupère l'état courant du buffer et redessine les graphes. |
+| Recharger la trace | `GET /debug/sensor_trace` (paginé) | Récupère l'état courant du buffer (agrégation des pages) et redessine les graphes. |
 | Vider le buffer | `POST /debug/sensor_trace_clear` | Réinitialise le ring buffer firmware puis les graphes (fenêtre d'observation propre). |
 
 **Cas limites :**
 - Valeurs `null`/NaN (filtre non amorcé, EZO injoignable) → **trou dans la courbe**, pas de crash.
 - Buffer vide → message « aucune donnée », graphes masqués.
+- Réponse **503** (heap fragmenté, v2.10.1) → message « Mémoire fragmentée, réessayez. », graphes masqués — plus jamais de reboot de l'appareil.
 
 Voir [`docs/API.md#trace-des-signaux-capteurs-feature-057-v270`](../API.md#trace-des-signaux-capteurs-feature-057-v270) pour le format JSON.
 

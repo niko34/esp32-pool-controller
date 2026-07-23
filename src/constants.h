@@ -253,6 +253,14 @@ constexpr uint32_t kSensorFilterMaxAgeMs         = 20000;    // 20 s
 // échantillon (pH brut/lissé, ORP brut/lissé, T° eau). 300 × 24 o ≈ 7 Ko.
 // Fenêtre glissante ≈ 25 min à kPhOrpSensorIntervalMs (5 s). Diagnostic pur.
 constexpr size_t kSensorTraceBufferSize          = 300;
+// Pagination de GET /debug/sensor_trace (bug-crash-sensor-trace-badalloc) :
+// 50 échantillons/page ≈ 3,5 Ko de JSON — jamais d'allocation contiguë > ~4 Ko
+// dans AsyncResponseStream (le heap fragmenté peut descendre sous 8 Ko, ADR-0029).
+constexpr size_t kSensorTraceMaxSamplesPerPage   = 50;
+// Marge de sécurité entre la taille mesurée de la réponse (measureJson) et le
+// plus gros bloc libre (ESP.getMaxAllocHeap()) : en dessous → 503 propre au
+// lieu d'un std::bad_alloc → abort() sur la tâche async_tcp.
+constexpr size_t kSensorTraceHeapMarginBytes     = 4096;
 
 // Pause mélange hydraulique après injection (pool-chemistry feature-025).
 // Distincte du timer post-calibration (_stabilizationEndMs). Gates indépendantes (OR).

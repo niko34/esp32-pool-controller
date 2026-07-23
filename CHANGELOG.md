@@ -2,6 +2,28 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.10.1] - 2026-07-23
+
+### Corrigé
+
+- **Crash/reboot à l'ouverture de l'onglet Avancé sur heap fragmenté** : `GET /debug/sensor_trace` sérialisait les **300 échantillons** du ring buffer de trace en une seule réponse (~20 Ko JSON) dans le `cbuf` **contigu** d'`AsyncResponseStream` — sur heap fragmenté (le plus gros bloc libre peut descendre sous 8 Ko, cf. ADR-0029, dont le seuil d'auto-guérison ne protégeait pas cette allocation de ~20 Ko), `std::bad_alloc` non rattrapé sur la tâche `async_tcp` → `abort()` → **reboot**, déclenché involontairement depuis le navigateur à chaque activation de l'onglet Avancé. Diagnostic établi par **décodage GDB du coredump** du 2026-07-23 (v2.10.0). Correctif :
+  - **Route paginée** : `GET /debug/sensor_trace?offset=N&count=M`, page bornée à `kSensorTraceMaxSamplesPerPage = 50` (~3,5 Ko), défauts sûrs sans paramètres (première page), **clamp silencieux** hors bornes (jamais de 400 — calcul pur `computeTracePage()` dans `src/sensor_trace_page.h`), réponse enrichie (`count` total, `offset` effectif, `returned`).
+  - **Garde heap** : `measureJson` + marge `kSensorTraceHeapMarginBytes = 4096` comparés à `ESP.getMaxAllocHeap()` → **503** `{"error":"heap fragmenté, réessayez"}` au lieu d'un crash, même pour une page ; stream **pré-dimensionné** (une seule allocation exacte, zéro `resize()`).
+  - **UI onglet Avancé** : agrégation **transparente** des pages avant tracé (borne dure 12 itérations), message français sur 503 (« Mémoire fragmentée, réessayez. ») — rendu inchangé vu de l'utilisateur.
+  - Contrat **lock-free** du ring buffer inchangé (`SensorManager::appendSensorTraceJson(JsonArray, offset, count)`) ; glissement du ring toléré entre deux pages (~1 échantillon max, route de diagnostic). Aucun chemin de dosage touché.
+
+### Ajouté
+
+- **Nouvelle suite de tests native** `test_native_trace_page` : 16 tests du clamp pur de pagination (`sensor_trace_page.h`, pattern ADR-0017 — invariants `offset ≤ total`, `n ≤ max`, `offset + n ≤ total` pour tout input, y compris `SIZE_MAX`) — **332 tests natifs au total**.
+
+### Documentation
+
+- `docs/API.md` : contrat paginé complet de `GET /debug/sensor_trace` (paramètres, défauts, clamp, champs de réponse, 503, note sur le glissement du ring).
+- `docs/subsystems/sensors.md` : signature paginée `appendSensorTraceJson`, section « Pagination », constantes `kSensorTraceMaxSamplesPerPage` / `kSensorTraceHeapMarginBytes`, renvoi vers `sensor_trace_page.h`.
+- `docs/features/page-settings.md` : pagination transparente + message 503 sur la card « Signaux capteurs ». Pas d'ADR : correctif local suivant un pattern existant (logique pure ADR-0017, garde heap ADR-0029), aucune alternative structurante verrouillée.
+
+---
+
 ## [2.10.0] - 2026-07-22
 
 ### Corrigé

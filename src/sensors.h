@@ -188,10 +188,14 @@ public:
   };
   // Nombre d'échantillons valides actuellement dans le ring buffer.
   size_t getSensorTraceCount() const;
-  // Ajoute les échantillons (ordre chronologique, plus ancien d'abord) à `out`.
-  // `out` doit être un JsonArray d'un JsonDocument déjà alloué et suffisamment grand.
-  // Sérialise NaN → null. Arrondis : pH ×1000, ORP ×10, T° ×10.
-  void appendSensorTraceJson(JsonArray out) const;
+  // Ajoute une PAGE d'échantillons (ordre chronologique, plus ancien d'abord)
+  // à `out` : les échantillons [offset, offset+count) — offset 0 = le plus
+  // ancien. L'appelant (web_routes_debug.cpp) clamp via computeTracePage() ;
+  // un re-clamp défensif interne borne quand même sur le snapshot local de
+  // _traceCount (le buffer peut avoir glissé). `out` doit être un JsonArray
+  // d'un JsonDocument déjà alloué. Sérialise NaN → null. Arrondis : pH ×1000,
+  // ORP ×10, T° ×10.
+  void appendSensorTraceJson(JsonArray out, size_t offset, size_t count) const;
   // Vide le ring buffer (démarre une fenêtre d'observation propre).
   void clearSensorTrace();
 

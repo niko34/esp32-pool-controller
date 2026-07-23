@@ -496,11 +496,21 @@ size_t SensorManager::getSensorTraceCount() const {
   return _traceCount;
 }
 
-void SensorManager::appendSensorTraceJson(JsonArray out) const {
+void SensorManager::appendSensorTraceJson(JsonArray out, size_t offset,
+                                          size_t count) const {
+  // Snapshot local en tête : _traceCount/_traceIdx peuvent être écrits par la
+  // loop pendant l'itération (contrat lock-free, cf. sensors.h). On fige les
+  // bornes une fois — pire cas : la page rate le tout dernier échantillon.
+  size_t total = _traceCount;
+  size_t idx0  = _traceIdx;
+  // Re-clamp défensif : l'appelant passe des bornes déjà clampées
+  // (computeTracePage), mais le buffer peut avoir glissé entre-temps.
+  if (offset > total) offset = total;
+  if (count > total - offset) count = total - offset;
   // Parcours dans l'ordre chronologique (plus ancien d'abord).
-  // Buffer plein : on démarre à _traceIdx (= position du plus ancien). Sinon : 0.
-  size_t start = (_traceCount == kSensorTraceBufferSize) ? _traceIdx : 0;
-  for (size_t i = 0; i < _traceCount; ++i) {
+  // Buffer plein : le plus ancien est à idx0. Sinon : 0.
+  size_t start = (total == kSensorTraceBufferSize) ? idx0 : 0;
+  for (size_t i = offset; i < offset + count; ++i) {
     size_t idx = (start + i) % kSensorTraceBufferSize;
     const SensorTraceSample& s = _traceBuffer[idx];
     JsonObject o = out.add<JsonObject>();

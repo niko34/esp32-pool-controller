@@ -114,7 +114,8 @@ bool enqueuePhSlopeQuery();             // force un refresh — dédoublonné
 
 // feature-057 — ring buffer de trace haute cadence (pH/ORP brut + lissé, T°)
 size_t getSensorTraceCount() const;        // 0..kSensorTraceBufferSize
-void appendSensorTraceJson(JsonArray out) const;  // sérialise ancien → récent (null si NaN)
+void appendSensorTraceJson(JsonArray out,
+                           size_t offset, size_t count) const;  // sérialise une PAGE ancien → récent (null si NaN)
 void clearSensorTrace();                   // vide le buffer
 
 // Diagnostic global
@@ -343,12 +344,18 @@ SensorTraceSample _traceBuffer[kSensorTraceBufferSize];  // 300 × 24 octets ≈
 | Méthode | Effet |
 |---------|-------|
 | `size_t getSensorTraceCount() const` | Nombre d'échantillons présents (0..300). |
-| `void appendSensorTraceJson(JsonArray out) const` | Sérialise le buffer (ancien → récent) : `t` (ms), `phRaw`/`phFiltered` (arrondi ×1000), `orpRaw`/`orpFiltered` (×10), `tempEau` (×10) ; `null` si NaN. |
+| `void appendSensorTraceJson(JsonArray out, size_t offset, size_t count) const` | Sérialise une **page** du buffer (ordre chronologique, `offset` 0 = le plus ancien) : les échantillons `[offset, offset+count)` — `t` (ms), `phRaw`/`phFiltered` (arrondi ×1000), `orpRaw`/`orpFiltered` (×10), `tempEau` (×10) ; `null` si NaN. Signature paginée depuis v2.10.1 (bug-crash-sensor-trace-badalloc). |
 | `void clearSensorTrace()` | Vide le buffer (`_traceCount = 0`). |
+
+### Pagination — bug-crash-sensor-trace-badalloc (v2.10.1)
+
+La route `GET /debug/sensor_trace` sérialisait les 300 échantillons dans un seul `AsyncResponseStream` (~20 Ko contigus dans son `cbuf`) → `std::bad_alloc` non rattrapé → `abort()` → reboot sur heap fragmenté (coredump v2.10.0, 2026-07-23). Elle est désormais **paginée** (`?offset=N&count=M`, page bornée à `kSensorTraceMaxSamplesPerPage = 50` ≈ 3,5 Ko) avec **garde heap** (`measureJson` + `kSensorTraceHeapMarginBytes = 4096` vs `ESP.getMaxAllocHeap()` → `503` propre) et stream **pré-dimensionné** (une seule allocation exacte, zéro `resize()`).
+
+Le clamp des bornes de page est un calcul **pur header-only** dans [`src/sensor_trace_page.h`](../../src/sensor_trace_page.h) (`computeTracePage()`, invariants `offset ≤ total`, `n ≤ max`, `offset + n ≤ total` pour tout input — testé en natif, suite `test_native_trace_page`, 16 tests, pattern [ADR-0017](../adr/0017-logique-pure-testable.md)). `appendSensorTraceJson()` applique en plus un **re-clamp défensif interne** sur son snapshot local de `_traceCount` (le buffer peut avoir glissé entre le clamp de la route et la lecture). Contrat complet de la route : [API.md](../API.md#get-debugsensor_trace--pas-dauth-cohérent-avec-autres-debug).
 
 ### Contrat de concurrence — lock-free
 
-Même modèle que `_lastPh`/`_lastOrp` : **un seul producteur** (`loopTask` core 1 via `_recordSensorTrace()`), **un seul type de lecteur** (handler AsyncTCP core 0 via `appendSensorTraceJson()` / `getSensorTraceCount()`). Aucun mutex : l'écriture d'un échantillon puis l'incrément de `_traceCount` sont des écritures atomiques 32 bits sur Xtensa LX6 ; le lecteur ne voit au pire qu'un échantillon de moins (jamais de valeur déchirée). Handler HTTP non bloquant (< 50 ms), sérialisation en flux (`beginResponseStream`) sans allocation dans la loop.
+Même modèle que `_lastPh`/`_lastOrp` : **un seul producteur** (`loopTask` core 1 via `_recordSensorTrace()`), **un seul type de lecteur** (handler AsyncTCP core 0 via `appendSensorTraceJson()` / `getSensorTraceCount()`). Aucun mutex : l'écriture d'un échantillon puis l'incrément de `_traceCount` sont des écritures atomiques 32 bits sur Xtensa LX6 ; le lecteur ne voit au pire qu'un échantillon de moins (jamais de valeur déchirée). La pagination (v2.10.1) **n'introduit aucun verrou** : le glissement du ring entre deux pages (~1 échantillon max) est toléré (route de diagnostic). Handler HTTP non bloquant (< 50 ms), réponse pré-dimensionnée (`beginResponseStream(type, taille)`) sans allocation dans la loop.
 
 ## Détection capteur figé — feature-022
 
@@ -418,6 +425,8 @@ Un capteur **vivant** bruite d'au moins ±1 LSB (quantification + bruit sonde + 
 | `kSensorFrozenEpsilonOrp` | `0.05` mV | Bande figé ORP = ½ LSB EZO (résolution 0.1) |
 | `kTempFrozenSamples` / `kTempFrozenEpsilonC` | `900` / `0.03` °C | Figé T° eau (≈ 30 min à 2 s, < ½ LSB DS18B20) — warning-only |
 | `kSensorTraceBufferSize` | `300` | Taille ring buffer trace signaux (~7,2 Ko RAM, feature-057) |
+| `kSensorTraceMaxSamplesPerPage` | `50` | Borne d'une page de `GET /debug/sensor_trace` (~3,5 Ko JSON — v2.10.1) |
+| `kSensorTraceHeapMarginBytes` | `4096` | Marge entre `measureJson` et `ESP.getMaxAllocHeap()` → 503 au lieu de `bad_alloc` (v2.10.1) |
 
 Toutes définies dans [`src/constants.h`](../../src/constants.h).
 
@@ -549,7 +558,8 @@ Si une sonde est remplacée physiquement (adresse ROM différente), le scan au b
 - [`src/sensor_filter.h`](../../src/sensor_filter.h), [`src/sensor_filter.cpp`](../../src/sensor_filter.cpp) — filtre médiane + EMA (feature-025)
 - [`src/atlas_ezo.h`](../../src/atlas_ezo.h), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp)
 - [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) — routes refondues `/calibrate_ph`, `/calibrate_orp`, `/calibrate_clear`
-- [`src/web_routes_debug.cpp`](../../src/web_routes_debug.cpp) — routes `/debug/sensor_trace` (GET) + `/debug/sensor_trace_clear` (POST) (feature-057)
+- [`src/web_routes_debug.cpp`](../../src/web_routes_debug.cpp) — routes `/debug/sensor_trace` (GET, paginée v2.10.1) + `/debug/sensor_trace_clear` (POST) (feature-057)
+- [`src/sensor_trace_page.h`](../../src/sensor_trace_page.h) — clamp pur header-only `computeTracePage()` (pagination v2.10.1, testé en natif `test/test_native_trace_page/`)
 - [`src/web_routes_sensor_id.cpp`](../../src/web_routes_sensor_id.cpp) — routes feature-020 inchangées
 - [`src/constants.h`](../../src/constants.h) — toutes les constantes EZO + DS18B20
 - [ADR-0014](../adr/0014-migration-atlas-ezo.md) — migration Atlas EZO (supersedes ADR-0001)

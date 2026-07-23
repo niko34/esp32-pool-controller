@@ -1333,17 +1333,33 @@ Réintroduction **fidèle** (haute cadence) de la trace des signaux capteurs ret
 
 ### `GET /debug/sensor_trace` — pas d'auth (cohérent avec autres `/debug/*`)
 
-Dump JSON du ring buffer, du plus ancien au plus récent. Handler **non bloquant** (< 50 ms) : lecture lock-free du buffer, sérialisation en flux (`beginResponseStream`), aucune allocation dans la loop.
+Dump JSON **paginé** du ring buffer, du plus ancien au plus récent. Handler **non bloquant** (< 50 ms) : lecture lock-free du buffer, réponse pré-dimensionnée (`beginResponseStream(type, taille)` — une seule allocation exacte, aucun `resize()` en cours de sérialisation), aucune allocation dans la loop.
+
+> ⚠️ **Pagination obligatoire depuis la v2.10.1** (bug-crash-sensor-trace-badalloc) : la route sérialisait auparavant les 300 échantillons en une seule réponse (~20 Ko contigus dans le `cbuf` d'`AsyncResponseStream`) — sur heap fragmenté (cf. [ADR-0029](adr/0029-auto-guerison-heap.md), le plus gros bloc libre peut descendre sous 8 Ko), l'allocation levait un `std::bad_alloc` non rattrapé sur la tâche `async_tcp` → `abort()` → **reboot** (coredump v2.10.0 du 2026-07-23, déclenché par l'ouverture de l'onglet Avancé). Chaque page est désormais bornée à `kSensorTraceMaxSamplesPerPage = 50` échantillons (~3,5 Ko).
 
 ```bash
-curl http://poolcontroller.local/debug/sensor_trace
+curl "http://poolcontroller.local/debug/sensor_trace?offset=0&count=50"
 ```
+
+**Paramètres de query** (optionnels — sans paramètre, la route retourne la **première page**) :
+
+| Paramètre | Défaut | Description |
+|-----------|--------|-------------|
+| `offset` | `0` | Index du premier échantillon (chronologique, 0 = le plus ancien). |
+| `count` | `kSensorTraceMaxSamplesPerPage` (50) | Nombre d'échantillons demandés. `0` ou valeur invalide → défaut. |
+
+**Clamp silencieux** (jamais de `400`, calcul pur `computeTracePage()` dans [`src/sensor_trace_page.h`](../src/sensor_trace_page.h)) :
+- `offset > count total` → page vide (`returned: 0`) ;
+- `count > 50` → borné à 50 ;
+- `offset + count` déborde → tronqué aux échantillons restants. Invariants garantis quel que soit l'input : `offset ≤ total`, `returned ≤ 50`, `offset + returned ≤ total`.
 
 **Réponse 200**
 
 ```json
 {
   "count": 300,
+  "offset": 0,
+  "returned": 50,
   "interval_ms": 5000,
   "now": 3600000,
   "samples": [
@@ -1355,7 +1371,9 @@ curl http://poolcontroller.local/debug/sensor_trace
 
 | Champ | Type | Description |
 |-------|------|-------------|
-| `count` | integer | Nombre d'échantillons présents (0..300). |
+| `count` | integer | Nombre **total** d'échantillons présents dans le buffer (0..300) — permet au client d'enchaîner les pages. |
+| `offset` | integer | Offset **effectif** de la page (après clamp). |
+| `returned` | integer | Nombre d'échantillons dans `samples` (0..50). |
 | `interval_ms` | integer | Période nominale d'enregistrement (`kPhOrpSensorIntervalMs`, ~5000 ms). |
 | `now` | integer | `millis()` courant — permet à l'UI de reconstruire l'axe temps relatif (`t − now`). |
 | `samples[].t` | integer | Timestamp de l'échantillon en ms (`millis()` au moment de l'enregistrement). |
@@ -1363,7 +1381,13 @@ curl http://poolcontroller.local/debug/sensor_trace
 | `samples[].orpRaw` / `orpFiltered` | float \| null | ORP brut / lissé en mV (arrondi ×10). `null` si NaN. |
 | `samples[].tempEau` | float \| null | T° eau envoyée à l'EZO pour compensation (°C, arrondi ×10). `null` si sonde absente. |
 
-Usage : diagnostiquer le **bruit** ou une **oscillation** de la chaîne de mesure en comparant brut vs lissé sur une fenêtre continue, depuis l'onglet **Avancé** (voir [`docs/features/page-settings.md`](features/page-settings.md#card-signaux-capteurs-brut--lissé-feature-057)).
+**Erreurs**
+
+- `503` `{"error":"heap fragmenté, réessayez"}` — garde-fou défensif : si la taille mesurée de la page (`measureJson`) + marge (`kSensorTraceHeapMarginBytes = 4096`) dépasse le plus gros bloc libre (`ESP.getMaxAllocHeap()`), la route répond proprement au lieu de crasher. Réessayer plus tard (l'auto-guérison heap, ADR-0029, finit par restaurer la situation).
+
+> ℹ️ **Glissement du ring entre deux pages** : le buffer continue d'avancer (~1 échantillon toutes les 5 s) pendant qu'un client enchaîne les pages — les bornes ne sont pas ancrées sur un identifiant d'échantillon, un décalage d'~1 échantillon entre pages est donc possible et **toléré** (route de diagnostic, contrat lock-free `SensorTraceSample` inchangé).
+
+Usage : diagnostiquer le **bruit** ou une **oscillation** de la chaîne de mesure en comparant brut vs lissé sur une fenêtre continue, depuis l'onglet **Avancé** — l'UI agrège les pages de façon transparente (voir [`docs/features/page-settings.md`](features/page-settings.md#card-signaux-capteurs-brut--lissé-feature-057)).
 
 ### `POST /debug/sensor_trace_clear` — pas d'auth (cohérent avec autres `/debug/*`)
 
