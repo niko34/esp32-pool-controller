@@ -40,15 +40,19 @@ D'où **deux** gardes complémentaires, chacune sur sa vraie métrique :
 
 Historique des modes de défaillance « appareil injoignable » (5 traités) : `std::bad_alloc` sur `/logs` (2.8.2, PANIC) → assert lwIP WebSocket (2.9.0, [ADR-0028](../adr/0028-migration-fork-esp32async.md), PANIC) → fragmentation du tas sans crash (2.9.1, [ADR-0029](../adr/0029-auto-guerison-heap.md), gel heap) → gel de la pile lwIP avec heap sain (2.9.2, [ADR-0030](../adr/0030-watchdog-connectivite.md), gel réseau) → **boot-loop sur partition history corrompue** (2.10.0, [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md), panic à chaque boot avant WiFi).
 
-## Instrumentation du tas (v2.9.1)
+## Instrumentation du tas (v2.9.1 — trace INFO désactivée en 2.10.2)
 
-À **chaque** tick, sans dépendre d'aucun toggle de logs :
+À **chaque** tick, `maxAllocHeap = ESP.getMaxAllocHeap()` est **échantillonné** — cet échantillonnage reste actif en 2.10.2 : il alimente la décision d'auto-guérison (debounce) et le flush one-shot ci-dessous.
+
+La trace INFO périodique persistée :
 
 ```
 Heap: libre=<getFreeHeap> maxBloc=<getMaxAllocHeap> minLibre=<getMinFreeHeap>
 ```
 
-INFO persisté — permet de voir la fragmentation (`maxBloc` s'effondre alors que `libre` reste correct). Au **premier** franchissement à la baisse de `kLowHeapWarnBytes = 20 Ko` (plus gros bloc), un WARN est émis **et** un `flushToDisk()` **one-shot** capture la descente sur disque même si le redémarrage n'est jamais atteint. Le déclencheur est **ré-armé** dès que `maxBloc` repasse au-dessus du seuil ([`main.cpp:657`](../../src/main.cpp:657)).
+(émise toutes les `kHeapLogIntervalMs = 5 min`, ou sur chute de `maxBloc` > `kHeapLogDropBytes = 8 Ko` depuis la dernière émission — elle visualisait la fragmentation : `maxBloc` s'effondre alors que `libre` reste correct) est **désactivée depuis la v2.10.2** : le bloc d'émission est **mis en commentaire** dans `checkSystemHealth()` ([`main.cpp:782`](../../src/main.cpp:782)), pour ne plus consommer le journal 64 Ko avec de la télémétrie de routine. Pour ré-instrumenter (diagnostic d'un nouvel épisode de fragmentation), **décommenter le bloc** — le commentaire sur place documente la marche à suivre.
+
+**Restent actifs (inchangés)** : au **premier** franchissement à la baisse de `kLowHeapWarnBytes = 20 Ko` (plus gros bloc), un WARN est émis **et** un `flushToDisk()` **one-shot** capture la descente sur disque même si le redémarrage n'est jamais atteint. Le déclencheur est **ré-armé** dès que `maxBloc` repasse au-dessus du seuil ([`main.cpp:803`](../../src/main.cpp:803)). L'alerte CRIT « Mémoire faible » (heap **total** sous `kMinFreeHeapBytes`) et le DEBUG « Health check OK » sont également conservés.
 
 ## Machine à états auto-guérison / maintenance
 

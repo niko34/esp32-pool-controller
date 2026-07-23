@@ -192,14 +192,14 @@ Ceci couvre le **roaming CPL/mesh sans perte de WiFi** : auparavant, la ré-anno
 | `Échec ré-annonce mDNS` | WARN | `MDNS.begin()` a échoué lors de la ré-annonce |
 | `Ré-annonce mDNS débouncée (IP=x.x.x.x)` | DEBUG | Oscillation d'IP ignorée (IP inchangée ou intervalle < 30 s) |
 
-### Instrumentation du tas (v2.9.1)
+### Instrumentation du tas (v2.9.1 — trace INFO désactivée en 2.10.2)
 
-`checkSystemHealth()` émet à **chaque** tick (60 s), **sans** dépendre d'un toggle de logs, une trace persistée du tas :
+`checkSystemHealth()` échantillonne le tas à **chaque** tick (60 s) pour l'auto-guérison (échantillonnage toujours actif) :
 
 | Message | Niveau | Quand |
 |---|---|---|
-| `Heap: libre=<n> maxBloc=<n> minLibre=<n>` | INFO | Chaque tick — visualise la fragmentation (`maxBloc` s'effondre alors que `libre` reste correct) |
-| `Heap fragmenté sous seuil d'alerte: maxBloc=<n> bytes` | WARN | Premier franchissement à la baisse de `kLowHeapWarnBytes` (20 Ko), suivi d'un `flushToDisk()` **one-shot** |
+| `Heap: libre=<n> maxBloc=<n> minLibre=<n>` | INFO | **Désactivé depuis 2.10.2** — bloc mis en commentaire dans `checkSystemHealth()` (`main.cpp:782`), ré-activable en le décommentant. Émettait toutes les `kHeapLogIntervalMs` (5 min) ou sur chute de `maxBloc` > `kHeapLogDropBytes` (8 Ko) |
+| `Heap fragmenté sous seuil d'alerte: maxBloc=<n> bytes` | WARN | **Inchangé** — premier franchissement à la baisse de `kLowHeapWarnBytes` (20 Ko), suivi d'un `flushToDisk()` **one-shot** |
 
 Le flush one-shot capture la descente sur disque même si le redémarrage d'auto-guérison n'est jamais atteint ; il est ré-armé quand `maxBloc` repasse au-dessus du seuil. Mécanisme complet (auto-guérison / mode maintenance) : [system-health.md](system-health.md).
 

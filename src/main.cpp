@@ -779,19 +779,24 @@ void checkSystemHealth() {
   // sans noyer le journal (~1440 lignes/j sinon). Voir la fragmentation : maxBloc
   // s'effondre pendant que libre reste correct.
   uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
-  unsigned long heapNow = millis();
-  static unsigned long lastHeapLogMs = 0;
-  static uint32_t lastHeapLogMaxBloc = UINT32_MAX;
-  bool heapDroppedSignificantly =
-      (maxAllocHeap + kHeapLogDropBytes < lastHeapLogMaxBloc);  // baisse > seuil (pas d'underflow)
-  if (lastHeapLogMs == 0 || (heapNow - lastHeapLogMs >= kHeapLogIntervalMs) ||
-      heapDroppedSignificantly) {
-    systemLogger.info("Heap: libre=" + String(ESP.getFreeHeap()) +
-                      " maxBloc=" + String(maxAllocHeap) +
-                      " minLibre=" + String(ESP.getMinFreeHeap()));
-    lastHeapLogMs = heapNow;
-    lastHeapLogMaxBloc = maxAllocHeap;
-  }
+  // Trace INFO périodique désactivée (2026-07-23, demande utilisateur) : la tendance
+  // heap est suffisamment couverte par les alertes ci-dessous et l'auto-guérison.
+  // Décommenter ce bloc pour ré-instrumenter (émission toutes les kHeapLogIntervalMs
+  // ou sur chute > kHeapLogDropBytes). L'échantillonnage de maxAllocHeap ci-dessus
+  // reste ACTIF : il alimente la décision auto-heal et le flush one-shot.
+  // unsigned long heapNow = millis();
+  // static unsigned long lastHeapLogMs = 0;
+  // static uint32_t lastHeapLogMaxBloc = UINT32_MAX;
+  // bool heapDroppedSignificantly =
+  //     (maxAllocHeap + kHeapLogDropBytes < lastHeapLogMaxBloc);  // baisse > seuil (pas d'underflow)
+  // if (lastHeapLogMs == 0 || (heapNow - lastHeapLogMs >= kHeapLogIntervalMs) ||
+  //     heapDroppedSignificantly) {
+  //   systemLogger.info("Heap: libre=" + String(ESP.getFreeHeap()) +
+  //                     " maxBloc=" + String(maxAllocHeap) +
+  //                     " minLibre=" + String(ESP.getMinFreeHeap()));
+  //   lastHeapLogMs = heapNow;
+  //   lastHeapLogMaxBloc = maxAllocHeap;
+  // }
 
   // Flush disque one-shot au 1er franchissement à la baisse du seuil d'alerte : capture
   // la descente même si le restart n'est pas atteint. Ré-armé quand ça repasse au-dessus.

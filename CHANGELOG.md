@@ -2,6 +2,18 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.10.2] - 2026-07-23
+
+### Modifié
+
+- **Trace heap périodique retirée du journal** : la trace INFO `Heap: libre=… maxBloc=… minLibre=…` (instrumentation v2.9.1, émise toutes les 5 min ou sur chute significative de `maxBloc`) n'est plus émise — réduction du bruit : le journal persisté de 64 Ko ne stocke plus cette télémétrie de routine. Le bloc d'émission est **mis en commentaire** dans `checkSystemHealth()` (`src/main.cpp`), ré-activable en le décommentant pour un futur diagnostic. **Détection et alertes inchangées** : l'échantillonnage de `maxAllocHeap` alimente toujours l'auto-guérison (ADR-0029) et le flush one-shot ; le WARN « Heap fragmenté sous seuil d'alerte » et le CRIT « Mémoire faible » restent actifs.
+
+### Documentation
+
+- `docs/subsystems/system-health.md` et `docs/subsystems/logger.md` : trace INFO heap marquée désactivée (2.10.2) avec procédure de ré-activation ; détection/alertes documentées comme inchangées.
+
+---
+
 ## [2.10.1] - 2026-07-23
 
 ### Corrigé
