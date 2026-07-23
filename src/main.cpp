@@ -933,7 +933,14 @@ void checkSystemHealth() {
 
     // Première tentative ou si 30 secondes se sont écoulées depuis la dernière tentative
     if (lastWifiCheckTime == 0 || (now - lastWifiCheckTime >= 30000)) {
-      systemLogger.warning("WiFi déconnecté, tentative de reconnexion (" + String(wifiReconnectAttempts + 1) + "/3)");
+      // Le compteur (n/3) n'a de sens qu'en mode STA (il arme la bascule AP secours).
+      // En AP+STA le secours est déjà actif et les tentatives continuent indéfiniment :
+      // afficher un compteur non borné (« 47/3 ») serait faux.
+      if (mode == WIFI_MODE_APSTA) {
+        systemLogger.warning("WiFi déconnecté, tentative de reconnexion STA (AP secours actif)");
+      } else {
+        systemLogger.warning("WiFi déconnecté, tentative de reconnexion (" + String(wifiReconnectAttempts + 1) + "/3)");
+      }
       WiFi.disconnect(false);  // Libère la stack WiFi sans effacer les credentials
       WiFi.reconnect();
       lastWifiCheckTime = now;

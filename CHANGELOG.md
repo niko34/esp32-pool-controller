@@ -2,6 +2,14 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.10.3] - 2026-07-23
+
+### Corrigé
+
+- **Libellé de log de reconnexion WiFi en mode AP secours** : en AP+STA, le log périodique (30 s) affichait « tentative de reconnexion (n/3) » avec un compteur jamais réinitialisé (ex. « 2881/3 » après une journée) ; le message devient « WiFi déconnecté, tentative de reconnexion STA (AP secours actif) » sans compteur — le « (n/3) » reste affiché uniquement en mode STA, où il arme réellement la bascule AP secours au 3ᵉ échec (`src/main.cpp`, aucune logique modifiée).
+
+---
+
 ## [2.10.2] - 2026-07-23
 
 ### Modifié
