@@ -26,6 +26,9 @@
 #include "rtc_manager.h"
 #include "uart_transport.h"
 #include "uart_protocol.h"
+#include "self_heal_logic.h"
+#include "net_health_logic.h"
+#include "ping/ping_sock.h"  // esp_ping : sonde ICMP passerelle (watchdog connectivité v2.9.2)
 
 // Variables globales
 DNSServer dns;
@@ -45,6 +48,41 @@ IPAddress mdnsLastAnnouncedIp;
 // Drapeau posé par le handler d'événement WiFi (hors loopTask), consommé dans
 // checkSystemHealth() : la ré-annonce mDNS réelle se fait dans le contexte loopTask.
 volatile bool mdnsReannounceRequested = false;
+// Debounce ré-annonce mDNS (v2.9.1) : dernier instant (millis) d'une ré-annonce
+// EFFECTIVE, pour ignorer les oscillations d'IP du double NAT CPL. 0 = jamais.
+unsigned long lastMdnsReannounceMs = 0;
+
+// ===== Auto-guérison mémoire (v2.9.1) =====
+// Compteur de reboots auto-guérison conservé en RAM RTC : survit à ESP.restart()
+// (pas à un power-on / brownout). Un marqueur de validité distingue le premier boot
+// (RAM RTC non initialisée) d'un reboot logiciel. La fenêtre (ancrée au 1er reboot,
+// tumbling) est bornée sur l'epoch (millis() est remis à zéro à chaque restart).
+constexpr uint32_t kAutoHealRtcMagic = 0xA5C0FFEEu;
+RTC_NOINIT_ATTR uint32_t rtcAutoHealMagic;
+RTC_NOINIT_ATTR uint8_t  rtcAutoHealRebootCount;
+RTC_NOINIT_ATTR uint32_t rtcAutoHealWindowStartEpoch;  // epoch (s) du 1er reboot de la fenêtre
+// Mode maintenance (RAM) : posé après kAutoHealMaxReboots reboots dans la fenêtre.
+// DÉSACTIVE tout auto-reboot ultérieur et inhibe le dosage (via PumpController).
+// L'appareil reste joignable (web/MQTT) pour diagnostic. Effacé au prochain boot.
+bool maintenanceMode = false;
+
+// ===== Watchdog de connectivité (v2.9.2) =====
+// Dernier signe de vie réseau (millis). Signal PRIMAIRE : le callback ICMP
+// on_ping_success de la sonde esp_ping vers la passerelle. Signaux SECONDAIRES (défense
+// en profondeur, via notifyNetworkActivity()) : activité HTTP/WS effectivement servie,
+// publication MQTT ACK par le broker, resync NTP réussie. But : ne rebooter QUE sur
+// silence réseau TOTAL (vrai wedge lwIP). HYPOTHÈSE ASSUMÉE : si le réseau est
+// totalement muet longtemps (aucun client web/WS, MQTT off, ICMP passerelle filtré),
+// le watchdog reboote — comportement voulu, on ne peut pas distinguer ce cas d'un vrai
+// gel de la pile. volatile : écrit par le thread esp_ping, la tâche serveur web async,
+// la tâche MQTT et loopTask ; lu dans checkSystemHealth() (loopTask). Accès 32 bits
+// aligné = atomique sur Xtensa (pas de tearing).
+volatile unsigned long lastNetworkOkMs = 0;
+// Session ICMP persistante (esp_ping) et passerelle sondée. UNE seule session infinie
+// (count=0, cadence interne kNetworkProbeIntervalMs) → aucune fuite si la pile lwIP se
+// fige. Recréée uniquement si la passerelle change (roaming subnet). nullptr = absente.
+static esp_ping_handle_t netPingHandle = nullptr;
+static IPAddress netProbeGateway;
 
 // Déclaration des fonctions
 bool setupWiFi();
@@ -52,7 +90,13 @@ void resetWiFiSettings();
 void applyTimeConfig();
 void checkSystemHealth();
 void onNtpTimeSync();
+void notifyNetworkActivity();
 void reannounceMdns(const char* reason);
+void initAutoHealRtcState();
+void performFailSafeRestart(const char* reason, const char* alertType, const String& alertMsg);
+void performAutoHealRestart(uint32_t maxAllocHeap);
+void enterMaintenanceMode();
+void ensureNetworkProbe();
 
 void setup() {
   Serial.begin(115200);
@@ -123,6 +167,10 @@ void setup() {
     }
   }
 
+  // Auto-guérison (v2.9.1) : initialise le compteur de reboots en RAM RTC. Placé
+  // APRÈS l'application de l'heure RTC pour que la fenêtre epoch soit fiable.
+  initAutoHealRtcState();
+
   PumpController.begin();
   // feature-056 : en mode « alimenté par la filtration » (Powered), l'eau est
   // présumée présente dès le boot → armer le timer de stabilisation comme avant.
@@ -148,6 +196,15 @@ void setup() {
 
     // Initialisation MQTT
     mqttManager.begin();
+
+    // feature-059 : alerte différée du disjoncteur de boot-loop history. La
+    // décision et l'effacement ont eu lieu dans history.begin() (avant WiFi/MQTT,
+    // outQueue inexistante à ce stade) → on publie ici, après mqttManager.begin().
+    if (history.partitionWasAutoErased()) {
+      mqttManager.publishAlert("history_partition_reset",
+        "Partition historique corrompue effacée automatiquement (boot-loop détecté) — l'historique repart de zéro");
+    }
+
     applyTimeConfig();
 
     // Connexion MQTT initiale gérée par mqttTask au 1er tour de taskLoop() — voir ADR-0011.
@@ -486,8 +543,18 @@ void resetWiFiSettings() {
   systemLogger.info("Factory reset complet - Redémarrage nécessaire");
 }
 
+// Point d'entrée public (v2.9.2) : signale une activité réseau réussie depuis
+// n'importe quel module (MQTT ACK, requête HTTP/WS servie, resync NTP). Rafraîchit
+// l'horloge de stall du watchdog de connectivité pour ne rebooter que sur silence
+// réseau TOTAL. Écriture 32 bits atomique (voir lastNetworkOkMs) : sûr multi-tâches.
+void notifyNetworkActivity() {
+  lastNetworkOkMs = millis();
+}
+
 // Callback appelé quand NTP se synchronise
 void onNtpTimeSync() {
+  // Signal réseau secondaire : une resync NTP prouve que la pile UDP/DNS répond.
+  notifyNetworkActivity();
   if (!ntpSyncedOnce) {
     ntpSyncedOnce = true;
     systemLogger.info("NTP synchronisé avec succès");
@@ -538,6 +605,164 @@ void reannounceMdns(const char* reason) {
   }
 }
 
+// Initialise l'état d'auto-guérison en RAM RTC (v2.9.1). Au 1er boot (RAM RTC non
+// initialisée : marqueur absent) le compteur repart à zéro. Sur un reboot logiciel,
+// on purge le compteur si la fenêtre a expiré (dernier reboot > fenêtre), ce qui
+// autorise à nouveau l'auto-guérison après une période saine.
+//
+// SÉMANTIQUE DE LA FENÊTRE (tumbling, PAS glissante) : elle est ANCRÉE à l'epoch du
+// 1er reboot de la série (rtcAutoHealWindowStartEpoch, posé une seule fois dans
+// performAutoHealRestart quand le compteur vaut 0) et compte kAutoHealRebootWindowMs
+// à partir de ce point fixe. Elle n'est PAS ré-armée à chaque reboot.
+//
+// FAIL-SAFE VOULU : la purge exige un epoch valide (nowEpoch >= kMinValidEpoch). Si
+// l'heure n'est JAMAIS valide (RTC non réglée ET pas de NTP), la fenêtre n'est jamais
+// purgée → le compteur ne redescend pas → on bascule PLUS TÔT en mode maintenance
+// (auto-guérison désactivée, dosage suspendu). C'est le comportement conservateur
+// souhaité : sans référence temporelle fiable, mieux vaut arrêter d'enchaîner les
+// reboots que risquer une boucle.
+void initAutoHealRtcState() {
+  if (rtcAutoHealMagic != kAutoHealRtcMagic) {
+    // Premier boot après power-on / brownout : RAM RTC non fiable → tout à zéro.
+    rtcAutoHealMagic = kAutoHealRtcMagic;
+    rtcAutoHealRebootCount = 0;
+    rtcAutoHealWindowStartEpoch = 0;
+    systemLogger.info("Auto-guérison : état initialisé (premier boot)");
+    return;
+  }
+
+  // Reboot logiciel : compteur conservé, purgé si la fenêtre (ancrée au 1er reboot)
+  // a expiré. Purge conditionnée à un epoch valide — cf. fail-safe ci-dessus.
+  time_t nowEpoch = time(nullptr);
+  if (rtcAutoHealRebootCount > 0 && nowEpoch >= kMinValidEpoch &&
+      rtcAutoHealWindowStartEpoch != 0) {
+    uint32_t elapsedS = (uint32_t)nowEpoch - rtcAutoHealWindowStartEpoch;
+    if (elapsedS > (kAutoHealRebootWindowMs / 1000UL)) {
+      systemLogger.info("Auto-guérison : fenêtre expirée (" + String(elapsedS) +
+                        "s), compteur reboots réinitialisé");
+      rtcAutoHealRebootCount = 0;
+      rtcAutoHealWindowStartEpoch = 0;
+    }
+  }
+  if (rtcAutoHealRebootCount > 0) {
+    systemLogger.warning("Auto-guérison : " + String(rtcAutoHealRebootCount) +
+                         " reboot(s) auto récent(s) dans la fenêtre courante");
+  }
+}
+
+// Redémarrage propre fail-safe (v2.9.2). SÉQUENCE EXACTE imposée par pool-chemistry
+// (condition C1) — NE PAS réordonner ni modifier le contenu. Ne retourne jamais.
+// Générique : utilisée par l'auto-guérison heap ET par le watchdog de connectivité,
+// avec un motif/type d'alerte propre à chaque appelant.
+void performFailSafeRestart(const char* reason, const char* alertType,
+                            const String& alertMsg) {
+  // 1. Coupe les 2 pompes immédiatement (sécurité chimique avant tout).
+  PumpController.stopAll();
+  // 2. Persiste les compteurs journaliers de dosage (perte ~0 mL au reboot).
+  saveDailyCounters();
+  // 3. Incrémente le compteur RTC et ancre la fenêtre (tumbling) au 1er reboot.
+  if (rtcAutoHealRebootCount == 0) {
+    time_t nowEpoch = time(nullptr);
+    rtcAutoHealWindowStartEpoch = (nowEpoch >= kMinValidEpoch) ? (uint32_t)nowEpoch : 0;
+  }
+  rtcAutoHealRebootCount++;
+  // 4. Log critique (persisté).
+  systemLogger.critical(reason);
+  // 5. Alerte MQTT si joignable — tolère l'échec, ne bloque pas.
+  mqttManager.publishAlert(alertType, alertMsg);
+  // 6. Flush disque — tolère un échec silencieux si le heap est trop bas.
+  systemLogger.flushToDisk();
+  // 7. Redémarrage.
+  ESP.restart();
+}
+
+// Redémarrage propre sur heap critique (v2.9.1). Conserve le message/alerte d'origine
+// et délègue la séquence C1 à performFailSafeRestart(). Ne retourne jamais.
+void performAutoHealRestart(uint32_t maxAllocHeap) {
+  String reason = "Auto-guérison : heap critique (fragmentation), "
+                  "redémarrage propre — maxBloc=" + String(maxAllocHeap) + " bytes";
+  performFailSafeRestart(reason.c_str(), "auto_reboot",
+      "Redémarrage auto-guérison (heap critique), maxBloc=" + String(maxAllocHeap));
+}
+
+// Callback ICMP (v2.9.2) : invoqué par le thread interne esp_ping à chaque écho reçu
+// de la passerelle → signe de vie réseau PRIMAIRE, indépendant de MQTT. Exécuté hors
+// loopTask : ne fait QUE poser l'horodatage (accès 32 bits atomique).
+static void onNetPingSuccess(esp_ping_handle_t /*hdl*/, void* /*args*/) {
+  lastNetworkOkMs = millis();
+}
+
+// (Re)démarre la sonde ICMP persistante vers la passerelle (v2.9.2). Idempotent :
+// ne fait rien si la session existe déjà pour la passerelle courante. Recrée proprement
+// (stop + delete) si la passerelle a changé (roaming subnet) pour éviter toute fuite.
+// À appeler UNIQUEMENT depuis checkSystemHealth() (contexte loopTask), WiFi associé.
+void ensureNetworkProbe() {
+  if (!WiFi.isConnected()) return;
+  IPAddress gw = WiFi.gatewayIP();
+  if (gw == IPAddress((uint32_t)0)) return;  // passerelle pas encore connue (DHCP)
+  if (netPingHandle != nullptr && gw == netProbeGateway) return;  // déjà en place
+
+  // Passerelle changée ou session absente : on repart d'une session propre.
+  if (netPingHandle != nullptr) {
+    esp_ping_stop(netPingHandle);
+    esp_ping_delete_session(netPingHandle);
+    netPingHandle = nullptr;
+  }
+
+  ip_addr_t target;
+  IP_ADDR4(&target, gw[0], gw[1], gw[2], gw[3]);
+
+  esp_ping_config_t cfg = ESP_PING_DEFAULT_CONFIG();
+  cfg.target_addr = target;
+  cfg.count = ESP_PING_COUNT_INFINITE;       // session persistante (aucune recréation)
+  cfg.interval_ms = kNetworkProbeIntervalMs; // cadence interne de la sonde
+  cfg.timeout_ms = kNetworkProbeTimeoutMs;
+
+  esp_ping_callbacks_t cbs = {};
+  cbs.cb_args = nullptr;
+  cbs.on_ping_success = onNetPingSuccess;
+  cbs.on_ping_timeout = nullptr;  // le stall est mesuré par l'absence de succès
+  cbs.on_ping_end = nullptr;
+
+  // Warning one-shot (v2.9.2) : ré-armé à chaque succès, émis une seule fois par
+  // épisode d'échec pour ne pas noyer le journal à chaque tick (cf. flush heap one-shot).
+  static bool probeStartWarnArmed = true;
+  if (esp_ping_new_session(&cfg, &cbs, &netPingHandle) == ESP_OK &&
+      esp_ping_start(netPingHandle) == ESP_OK) {
+    netProbeGateway = gw;
+    // Réarme l'horloge de stall au démarrage de la sonde pour ne pas compter le temps
+    // écoulé avant son existence.
+    lastNetworkOkMs = millis();
+    probeStartWarnArmed = true;
+    systemLogger.info("Sonde ICMP passerelle démarrée vers " + gw.toString());
+  } else {
+    if (netPingHandle != nullptr) {
+      esp_ping_delete_session(netPingHandle);
+      netPingHandle = nullptr;
+    }
+    if (probeStartWarnArmed) {
+      systemLogger.warning("Échec démarrage sonde ICMP passerelle");
+      probeStartWarnArmed = false;
+    }
+  }
+}
+
+// Bascule en mode maintenance (v2.9.1). Condition pool-chemistry (C2) : après trop
+// de reboots auto dans la fenêtre, on N'ENCHAÎNE PLUS de reboot. On coupe et inhibe
+// le dosage, on alerte, et on RESTE joignable pour diagnostic (pas de restart).
+void enterMaintenanceMode() {
+  if (maintenanceMode) return;  // idempotent
+  maintenanceMode = true;
+  PumpController.stopAll();
+  PumpController.setMaintenanceInhibit(true);  // inhibe tout dosage ultérieur
+  systemLogger.critical("Mode maintenance : " + String(rtcAutoHealRebootCount) +
+      " reboots auto en " + String(kAutoHealRebootWindowMs / 60000UL) +
+      " min — auto-guérison désactivée, dosage suspendu");
+  mqttManager.publishAlert("maintenance_mode",
+      "Auto-guérison désactivée après " + String(rtcAutoHealRebootCount) +
+      " reboots — dosage suspendu");
+}
+
 void checkSystemHealth() {
   // Vérifier l'état général du système
   size_t freeHeap = ESP.getFreeHeap();
@@ -546,13 +771,151 @@ void checkSystemHealth() {
     mqttManager.publishAlert("low_memory", "Free heap: " + String(freeHeap) + " bytes");
   }
 
+  // ===== Instrumentation heap (v2.9.1) =====
+  // maxBloc est ÉCHANTILLONNÉ à CHAQUE tick (requis pour la décision auto-heal et le
+  // debounce), mais la trace INFO persistée (SANS le gate sensorLogsEnabled) n'est
+  // ÉMISE que toutes les kHeapLogIntervalMs OU lors d'une chute significative
+  // (> kHeapLogDropBytes depuis la dernière émission) → capture la tendance/descente
+  // sans noyer le journal (~1440 lignes/j sinon). Voir la fragmentation : maxBloc
+  // s'effondre pendant que libre reste correct.
+  uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
+  unsigned long heapNow = millis();
+  static unsigned long lastHeapLogMs = 0;
+  static uint32_t lastHeapLogMaxBloc = UINT32_MAX;
+  bool heapDroppedSignificantly =
+      (maxAllocHeap + kHeapLogDropBytes < lastHeapLogMaxBloc);  // baisse > seuil (pas d'underflow)
+  if (lastHeapLogMs == 0 || (heapNow - lastHeapLogMs >= kHeapLogIntervalMs) ||
+      heapDroppedSignificantly) {
+    systemLogger.info("Heap: libre=" + String(ESP.getFreeHeap()) +
+                      " maxBloc=" + String(maxAllocHeap) +
+                      " minLibre=" + String(ESP.getMinFreeHeap()));
+    lastHeapLogMs = heapNow;
+    lastHeapLogMaxBloc = maxAllocHeap;
+  }
+
+  // Flush disque one-shot au 1er franchissement à la baisse du seuil d'alerte : capture
+  // la descente même si le restart n'est pas atteint. Ré-armé quand ça repasse au-dessus.
+  static bool lowHeapFlushArmed = true;
+  if (maxAllocHeap < kLowHeapWarnBytes) {
+    if (lowHeapFlushArmed) {
+      systemLogger.warning("Heap fragmenté sous seuil d'alerte: maxBloc=" + String(maxAllocHeap) + " bytes");
+      systemLogger.flushToDisk();
+      lowHeapFlushArmed = false;
+    }
+  } else {
+    lowHeapFlushArmed = true;
+  }
+
+  // ===== Auto-guérison mémoire (v2.9.1) =====
+  // Maintient le compteur de ticks consécutifs sous le seuil de restart, puis délègue
+  // la décision au module pur evaluateSelfHeal(). Aucun effet en mode maintenance.
+  static uint8_t consecutiveBelow = 0;
+  if (maxAllocHeap < kRestartMaxAllocHeapBytes) {
+    if (consecutiveBelow < 255) consecutiveBelow++;
+  } else {
+    consecutiveBelow = 0;
+  }
+
+  // Garde OTA (v2.9.2) : ne rien évaluer pendant un flash — un pic de fragmentation ou
+  // un stall transitoire ne doit JAMAIS déclencher un reboot au milieu d'une OTA.
+  if (!maintenanceMode && !PumpController.isOtaInProgress()) {
+    SelfHealInputs shIn;
+    shIn.maxAllocHeap = maxAllocHeap;
+    shIn.restartThreshold = kRestartMaxAllocHeapBytes;
+    shIn.consecutiveBelow = consecutiveBelow;
+    shIn.debounceChecks = kAutoHealDebounceChecks;
+    shIn.uptimeMs = (uint32_t)millis();
+    shIn.minUptimeMs = kAutoHealMinUptimeMs;
+    shIn.rebootCountInWindow = rtcAutoHealRebootCount;
+    shIn.maxReboots = kAutoHealMaxReboots;
+
+    SelfHealDecision decision = evaluateSelfHeal(shIn);
+    if (decision == SelfHealDecision::Restart) {
+      performAutoHealRestart(maxAllocHeap);  // ne retourne pas (ESP.restart)
+    } else if (decision == SelfHealDecision::EnterMaintenance) {
+      enterMaintenanceMode();
+    }
+  }
+
+  // ===== Watchdog de connectivité (v2.9.2) =====
+  // La pile lwIP peut se figer (thread tcpip NON surveillé par le WDT) : web/mDNS/ICMP
+  // morts alors que loopTask tourne et que le heap est SAIN → ni le WDT ni l'auto-guérison
+  // heap ne l'attrapent (gel du 2026-07-15, maxBloc ~37 Ko). Signe de vie PRIMAIRE : une
+  // sonde ICMP active vers la passerelle (indépendante de MQTT). Décision au module pur.
+  static bool softRecoverAttempted = false;
+  if (WiFi.isConnected()) {
+    ensureNetworkProbe();  // (re)démarre la sonde ICMP persistante (idempotent)
+  } else {
+    // WiFi absent : gel de l'horloge de stall (la perte WiFi est traitée plus bas par la
+    // logique de reconnexion/AP secours, pas par ce watchdog) + réarmement du palier soft.
+    lastNetworkOkMs = millis();
+    softRecoverAttempted = false;
+  }
+
+  // Garde OTA (v2.9.2) : idem bloc heap — aucun reboot/soft-recover pendant un flash.
+  if (!maintenanceMode && !PumpController.isOtaInProgress()) {
+    uint32_t msSinceNetOk = (uint32_t)(millis() - lastNetworkOkMs);
+    // Réseau redevenu sain : réarme le palier soft pour un futur épisode.
+    if (msSinceNetOk < kNetworkStallSoftMs) softRecoverAttempted = false;
+
+    NetHealthInputs nhIn;
+    nhIn.wifiAssociated = WiFi.isConnected();
+    nhIn.msSinceLastNetOk = msSinceNetOk;
+    nhIn.softStallMs = kNetworkStallSoftMs;
+    nhIn.hardStallMs = kNetworkStallRebootMs;
+    nhIn.softRecoverAttempted = softRecoverAttempted;
+    nhIn.uptimeMs = (uint32_t)millis();
+    nhIn.minUptimeMs = kAutoHealMinUptimeMs;
+    nhIn.rebootCountInWindow = rtcAutoHealRebootCount;
+    nhIn.maxReboots = kAutoHealMaxReboots;
+
+    NetHealthDecision netDecision = evaluateNetHealth(nhIn);
+    if (netDecision == NetHealthDecision::Restart) {
+      performFailSafeRestart(
+          "Watchdog connectivité : pile réseau figée, redémarrage propre",
+          "network_stall_reboot",
+          "Pile réseau muette " + String(msSinceNetOk / 1000UL) +
+          "s (maxBloc sain) — redémarrage");  // ne retourne pas (ESP.restart)
+    } else if (netDecision == NetHealthDecision::EnterMaintenance) {
+      enterMaintenanceMode();
+    } else if (netDecision == NetHealthDecision::SoftRecover) {
+      systemLogger.warning("Watchdog connectivité : pile muette " +
+          String(msSinceNetOk / 1000UL) + "s — reconnexion WiFi (récupération soft)");
+      WiFi.disconnect(false);
+      WiFi.reconnect();
+      softRecoverAttempted = true;
+      mqttManager.publishAlert("network_soft_recover",
+          "Pile réseau muette — reconnexion WiFi tentée");
+    }
+  }
+
   // Ré-annonce mDNS demandée par le handler d'événement WiFi (changement d'IP suite à
   // un roaming CPL/mesh, ou reconnexion après déconnexion). Exécutée ici, dans le
   // contexte loopTask, pour éviter tout accès mDNS concurrent. Découplé du compteur
   // wifiReconnectAttempts : couvre aussi le roaming sans perte de connexion.
   if (mdnsReannounceRequested && WiFi.isConnected()) {
-    mdnsReannounceRequested = false;
-    reannounceMdns("changement d'IP");
+    // Debounce (v2.9.1) : ne ré-annoncer que si l'IP a RÉELLEMENT changé ET si
+    // l'intervalle mini est écoulé — ignore les oscillations transitoires d'IP du
+    // double NAT CPL qui provoquaient un churn MDNS.end()/begin() coûteux.
+    IPAddress currentIp = WiFi.localIP();
+    unsigned long nowMs = millis();
+    if (currentIp == mdnsLastAnnouncedIp) {
+      // Aucun changement réel d'IP : requête parasite (oscillation retombée) →
+      // rien à ré-annoncer, on consomme le drapeau.
+      mdnsReannounceRequested = false;
+    } else if (lastMdnsReannounceMs == 0 ||
+               nowMs - lastMdnsReannounceMs > kMdnsReannounceMinIntervalMs) {
+      // IP réellement nouvelle ET intervalle mini écoulé : ré-annonce effective.
+      // Le drapeau n'est consommé qu'APRÈS exécution.
+      reannounceMdns("changement d'IP");
+      lastMdnsReannounceMs = nowMs;
+      mdnsReannounceRequested = false;
+    } else {
+      // IP nouvelle mais dans l'intervalle de debounce : on NE consomme PAS le
+      // drapeau → la ré-annonce se fera au prochain tick une fois l'intervalle
+      // écoulé, sans dépendre d'un futur événement WiFi.
+      systemLogger.debug("Ré-annonce mDNS différée (debounce, IP=" + currentIp.toString() + ")");
+    }
   }
 
   // Vérifier connexion WiFi et activer AP en secours si nécessaire

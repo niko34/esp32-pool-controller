@@ -97,7 +97,12 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 
 ## Dépendances
 
-- [ESPAsyncWebServer](https://github.com/me-no-dev/ESPAsyncWebServer) v3.6.0 — classe `AsyncWebSocket`.
+- [ESPAsyncWebServer](https://github.com/ESP32Async/ESPAsyncWebServer) **v3.11.2** (fork ESP32Async) — classe `AsyncWebSocket`.
+- [AsyncTCP](https://github.com/ESP32Async/AsyncTCP) **v3.4.10** (fork ESP32Async) — couche TCP asynchrone sous-jacente.
+
+> **Fork ESP32Async — pourquoi (v2.9.0)** : le projet consommait auparavant les libs **originales** `me-no-dev` (`AsyncTCP` / `ESPAsyncWebServer`) via des dépôts Git **non épinglés**, aujourd'hui non maintenus. Un coredump a mis en évidence un **crash récurrent** (`panic → reboot`, appareil injoignable) déclenché au **timeout/close d'un client WebSocket** :
+> `AsyncWebSocketClient::_onTimeout` → `AsyncClient::close()` → `_tcp_recved(pcb, len corrompu)` → `tcp_recved` (lwIP) → **assert `new_rcv_ann_wnd <= 0xffff`** (`tcp_update_rcv_ann_wnd`, `lwip/src/core/tcp.c`) → panic.
+> C'est un **bug de course connu** des libs me-no-dev. La migration vers le fork maintenu **ESP32Async**, avec **versions épinglées** (`AsyncTCP@3.4.10`, `ESPAsyncWebServer@3.11.2`), corrige le mode de défaillance **sans changement de code applicatif** (fork rétrocompatible). Plateforme inchangée (`espressif32@6.9.0`, core 2.0.x / IDF 4.4). Voir [ADR-0028](../adr/0028-migration-fork-esp32async.md). C'est la 2ᵉ cause de crash de la pile web traitée par coredump ; la 1ʳᵉ (`std::bad_alloc` sur `/logs`) l'a été en 2.8.2.
 
 ## Fichiers liés
 

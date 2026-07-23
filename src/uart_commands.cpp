@@ -489,6 +489,13 @@ void UartCommands::actionPumpTest(JsonVariant data) {
     duty = constrain(data["duty"].as<int>(), 0, 255);
   }
   int idx = pumpNum - 1;
+  // Auto-guérison v2.9.1 (condition pool-chemistry C2) : refuser explicitement en
+  // mode maintenance AVANT setManualPump (sinon un faux ACK serait renvoyé à l'écran
+  // alors que la garde de setManualPump ignore silencieusement la commande).
+  if (PumpController.isMaintenanceInhibited()) {
+    uartProtocol.sendError("run_action", "pump_test: mode maintenance actif — dosage suspendu");
+    return;
+  }
   // BYPASS gardes chimiques (evaluateManualInject) — écran non déployé ;
   // à guarder si l'écran est mis en service (feature-006 condition pool-chemistry #4)
   PumpController.setManualPump(idx, static_cast<uint8_t>(duty));

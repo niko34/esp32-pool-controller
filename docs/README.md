@@ -32,6 +32,7 @@ docs/
 │   ├── ota-manager.md
 │   ├── auth.md
 │   ├── logger.md
+│   ├── system-health.md
 │   └── web-server.md
 │
 ├── adr/                 ← Architecture Decision Records (immuables)
@@ -57,7 +58,9 @@ docs/
 │   ├── 0018-migration-uplot.md
 │   ├── 0019-partition-app-1664k.md
 │   ├── 0020-budget-horaire-dosage-unique.md
-│   └── 0021-repartition-scheduled.md
+│   ├── 0021-repartition-scheduled.md
+│   ├── 0029-auto-guerison-heap.md
+│   └── 0030-watchdog-connectivite.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

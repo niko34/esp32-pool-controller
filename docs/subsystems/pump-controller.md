@@ -26,6 +26,10 @@ void begin();
 void update();          // appelé dans loop()
 void stopAll();
 void setOtaInProgress(bool);
+
+// Mode maintenance auto-guérison (v2.9.1) — inhibe/réarme TOUT dosage
+void setMaintenanceInhibit(bool);   // true → dosage suspendu toutes voies
+bool isMaintenanceInhibited() const;
 bool isPhDosing() const;
 bool isOrpDosing() const;
 unsigned long getPhUsedMs() const;
@@ -85,10 +89,27 @@ Ordre par cycle :
 2. Chargement différé des cumuls NVS : `_dailyLoaded` reste à `false` tant que NTP/RTC n'a pas synchronisé une date valide (sinon on chargerait sur une date 1970 fantôme).
 3. **`tickDailyRollover()`** — bascule date / reset des compteurs journaliers. Appelé **avant** `canDose()` pour que le passage à minuit soit honoré même si la filtration est arrêtée. Voir [Reset journalier](#reset-journalier) ci-dessous.
 4. **Court-circuit OTA** : `otaInProgress` actif → `applyPumpDuty(0,0)` + `applyPumpDuty(1,0)` puis `return`. Pompes coupées tant que l'OTA dure.
+4bis. **Court-circuit maintenance** (v2.9.1) : `maintenanceInhibit` actif → `applyPumpDuty(0,0)` + `applyPumpDuty(1,0)` puis `return`. Gate identique à l'OTA, placée **avant** toute évaluation de dosage ([`pump_controller.cpp:798`](../../src/pump_controller.cpp:798)). Voir [Mode maintenance auto-guérison](#mode-maintenance-auto-guérison-v291).
 5. Refresh des fenêtres glissantes 1 h (`refreshDosingState`).
 6. Court-circuit capteurs : `!sensors.isInitialized()` → arrêt pompes.
 7. Gate `canDose()` (cf. ci-dessous) → arrêt pompes si non autorisé (mais respecte `manualMode[i]` pour ne pas couper un test développeur en cours).
 8. Pour pH puis ORP : calcul de l'erreur, anti-cycling start/stop, PID, conversion duty via `flowToDuty()`, `applyPumpDuty()`.
+
+## Mode maintenance auto-guérison (v2.9.1)
+
+Piloté par la santé système ([system-health.md](system-health.md), [ADR-0029](../adr/0029-auto-guerison-heap.md)) : après trop de redémarrages d'auto-guérison dans la fenêtre glissante, `main.cpp` appelle `PumpController.setMaintenanceInhibit(true)` pour **suspendre entièrement le dosage** en restant joignable pour diagnostic.
+
+Le flag `maintenanceInhibit` ([`pump_controller.h:53`](../../src/pump_controller.h:53)) ferme **toutes** les voies de dosage, à deux endroits complémentaires :
+
+| Voie | Point de fermeture |
+|---|---|
+| Régulation **auto** + **scheduled** | Court-circuit en tête d'`update()` ([`pump_controller.cpp:798`](../../src/pump_controller.cpp:798)) — pompes forcées à 0 chaque cycle |
+| Injection **manuelle web** (`/ph\|orp/inject/start`) | Refus **409** `maintenance_mode` dans `manualInjectGuardOrReject()` ([`web_routes_control.cpp:67`](../../src/web_routes_control.cpp:67)), **avant** d'armer `manualInject*.active` (sinon `creditManualInjectionFloor()` créditerait un volume jamais versé) |
+| Test web (`/pumpN/on`, `/pumpN/duty/*`), **manuel UART** `pump_test` | `setManualPump()` — point de passage **unique** de toute activation manuelle directe — court-circuité ([`pump_controller.cpp:1574`](../../src/pump_controller.cpp:1574)) : sans cette garde, `setManualPump()` énergiserait la pompe via `ledcWrite()` depuis la tâche web/UART jusqu'au prochain `update()`. La commande UART vérifie aussi `isMaintenanceInhibited()` en amont ([`uart_commands.cpp:495`](../../src/uart_commands.cpp:495)) |
+
+> ⚠️ **Condition pool-chemistry C2** : l'inhibition doit couvrir **auto + scheduled + manuel web + manuel UART + test**. Fermer `update()` seul ne suffit pas — `setManualPump()` active la pompe **immédiatement** hors cycle `update()`, d'où la garde dédiée à ce point de passage unique.
+
+Le flag ne se lève **qu'au redémarrage** du contrôleur (le mode maintenance est un état terminal jusqu'au reboot manuel). Logs : `warning` throttlé une fois par boot sur refus de commande manuelle ; `critical` à l'entrée en maintenance (côté `main.cpp`).
 
 ## Algorithme (résumé)
 

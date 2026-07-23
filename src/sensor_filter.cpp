@@ -61,6 +61,7 @@ void SensorFilter::reset() {
 
   // Latch EMI (feature-058) : compteur de fenêtres en dépassement + latch collant.
   _dispersionBreachStreak = 0;
+  _dispersionCleanStreak = 0;  // v2.8.4 : streak d'auto-levée
   _unstableLatched = false;
 
   // feature-022 : réinitialise aussi le détecteur figé (pool-chemistry condition #2).
@@ -74,6 +75,7 @@ bool SensorFilter::addSample(float raw, uint32_t nowMs) {
   if (isnan(raw)) {
     if (_rejectedCount < 255) ++_rejectedCount;
     if (_consecutiveRejects < 255) ++_consecutiveRejects;
+    _dispersionCleanStreak = 0;  // pool-chemistry : tout rejet casse la streak d'auto-levée
     return false;
   }
 
@@ -81,6 +83,7 @@ bool SensorFilter::addSample(float raw, uint32_t nowMs) {
   if (raw < _cfg.minValue || raw > _cfg.maxValue) {
     if (_rejectedCount < 255) ++_rejectedCount;
     if (_consecutiveRejects < 255) ++_consecutiveRejects;
+    _dispersionCleanStreak = 0;  // pool-chemistry : tout rejet casse la streak d'auto-levée
     return false;
   }
 
@@ -95,6 +98,11 @@ bool SensorFilter::addSample(float raw, uint32_t nowMs) {
     const float med = _computeMedian();
     if (!isnan(med) && fabsf(raw - med) > _cfg.spikeReject) {
       if (_rejectedCount < 255) ++_rejectedCount;  // diagnostic seulement
+      // pool-chemistry (CONDITION BLOQUANTE) : un spike dur est EXCLU du buffer donc
+      // invisible à la dispersion. Sans ce reset, un capteur crachant des spikes
+      // accumulerait la clean streak (dispersion propre entre deux spikes) et
+      // lèverait le latch à tort → on casse la streak sur tout spike écarté.
+      _dispersionCleanStreak = 0;
       return false;
     }
   }
@@ -133,11 +141,28 @@ bool SensorFilter::addSample(float raw, uint32_t nowMs) {
     const float disp = _computeDispersion();
     if (!isnan(disp) && disp > _cfg.maxDispersion) {
       if (_dispersionBreachStreak < 255) ++_dispersionBreachStreak;
+      _dispersionCleanStreak = 0;  // fenêtre en dépassement → streak propre cassée
       if (_dispersionBreachStreak >= kSensorFilterDispersionLatchCycles) {
         _unstableLatched = true;
       }
     } else {
+      // Fenêtre PLEINE et PROPRE (disp <= cap) : on atteint ce bloc uniquement après
+      // une mesure ACCEPTÉE (les rejets NaN/hors-plage/spike ont return avant, en
+      // remettant _dispersionCleanStreak=0) → la streak ne compte QUE des fenêtres
+      // pleines sans aucun rejet (pool-chemistry, anti-flapping).
       _dispersionBreachStreak = 0;
+      if (_dispersionCleanStreak < 255) ++_dispersionCleanStreak;
+
+      // Auto-levée du latch EMI collant (feature v2.8.4) : après N fenêtres propres
+      // consécutives, le bruit EMI est jugé résorbé → on relâche le latch. Asymétrie
+      // voulue (rapide à poser, lent à lever). La journalisation « latch EMI levé »
+      // est déléguée à la coquille (SensorManager) qui détecte la transition
+      // unstableLatched() true→false : le module reste 100 % pur (pas d'Arduino.h /
+      // String / logger ici, ADR-0017) et ne peut donc pas logger lui-même.
+      if (_unstableLatched &&
+          _dispersionCleanStreak >= kSensorFilterLatchClearCycles) {
+        _unstableLatched = false;
+      }
     }
   }
 
@@ -225,6 +250,8 @@ uint8_t SensorFilter::rejectedCount() const { return _rejectedCount; }
 uint8_t SensorFilter::consecutiveRejects() const { return _consecutiveRejects; }
 
 bool SensorFilter::unstableLatched() const { return _unstableLatched; }
+
+uint8_t SensorFilter::dispersionCleanStreak() const { return _dispersionCleanStreak; }
 
 uint32_t SensorFilter::ageMs(uint32_t nowMs) const {
   if (!_hasValid) return UINT32_MAX;

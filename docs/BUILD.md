@@ -203,13 +203,15 @@ Liste des libs déclarées dans `platformio.ini` (`lib_deps`) — voir le fichie
 
 | Lib | Usage |
 |-----|-------|
-| `AsyncTCP` | TCP asynchrone (base de ESPAsyncWebServer) |
-| `ESPAsyncWebServer` | Serveur HTTP / WebSocket non bloquant |
-| `ESPAsyncWiFiManager` | Wizard Wi-Fi premier boot |
+| `ESP32Async/AsyncTCP@3.4.10` | TCP asynchrone (base de ESPAsyncWebServer) — fork maintenu, version épinglée |
+| `ESP32Async/ESPAsyncWebServer@3.11.2` | Serveur HTTP / WebSocket non bloquant — fork maintenu, version épinglée |
+| `ESPAsyncWiFiManager` | Wizard Wi-Fi premier boot (dépendance conservée ; portail Wi-Fi géré nativement par le projet) |
 | `ArduinoJson` (v7) | Sérialisation JSON |
 | `PubSubClient` | Client MQTT |
 | `OneWire` + `DallasTemperature` | Bus 1-Wire pour DS18B20 (eau + circuit) |
 | `RTClib` | DS3231 RTC |
+
+> **Migration fork ESP32Async (v2.9.0)** : `AsyncTCP` et `ESPAsyncWebServer` proviennent désormais du fork **maintenu** `ESP32Async` (ex-`mathieucarbou`), en **versions épinglées** (`@3.4.10` / `@3.11.2`), et non plus des dépôts Git `me-no-dev` non figés (abandonnés). Ce changement corrige un crash de course (assert lwIP au close/timeout d'un client WebSocket) diagnostiqué par coredump, **sans modification du code applicatif**, plateforme inchangée (`espressif32@6.9.0`, core 2.0.x / IDF 4.4). Un seul `AsyncTCP` et un seul `ESPAsyncWebServer` dans l'arbre de deps (aucun duplicata `me-no-dev` transitif). Voir [ADR-0028](adr/0028-migration-fork-esp32async.md).
 
 > **Libs supprimées en feature-021 (v2.0.0)** : `Adafruit ADS1X15` et `DFRobot_PH` ont été retirées des `lib_deps`. La chaîne pH/ORP est désormais entièrement portée par la mini-classe maison [`AtlasEzoSensor`](../src/atlas_ezo.h) qui pilote les modules Atlas EZO Embedded en I²C natif (`Wire`). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md). Cette suppression libère ~12 KB de flash mais l'ajout de la queue + des routes de calibration consomme environ autant — le build tenait alors à 98.8 % flash (layout v1). Depuis le layout v4 ([ADR-0024](adr/0024-partitions-layout-v4.md), slots app 1792 KB), l'occupation firmware est redescendue à ~78,5 % (marge ~392 KB).
 

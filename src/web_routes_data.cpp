@@ -14,6 +14,11 @@
 #include <time.h>
 #include <esp_heap_caps.h>
 
+// Signal réseau secondaire (v2.9.2, défini dans main.cpp) : /data est polled toutes
+// les ~30 s par l'appli web → une requête servie prouve la pile HTTP vivante et
+// rafraîchit le watchdog de connectivité (jamais de reboot pendant une session active).
+void notifyNetworkActivity();
+
 namespace {
 bool isTimeValid(time_t t) {
   return t >= kMinValidEpoch;
@@ -22,6 +27,7 @@ bool isTimeValid(time_t t) {
 
 static void handleGetData(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
+  notifyNetworkActivity();
   // Buffer statique pour éviter la fragmentation du heap
   // Taille estimée : ~16 champs × 30 bytes + overhead (feature-020 ajoute 3 champs)
   // feature-025 : +14 champs filtre pH/ORP → bump du buffer.

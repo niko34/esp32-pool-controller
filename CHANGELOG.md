@@ -2,6 +2,125 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.10.0] - 2026-07-22
+
+### Corrigé
+
+- **Boot-loop sur partition history corrompue nécessitant une récupération USB** : une corruption des métadonnées littlefs de la partition `history` provoquait un **panic CPU non rattrapable** (`IntegerDivideByZero` dans `lfs_alloc`) à la **première écriture** dans `/system.log` — LittleFS monte un filesystem corrompu **sans erreur** puis panique à l'écriture, et le garde-fou `.fscheck` existant (2 octets, stockés *inline*) n'exerçait jamais le chemin fautif. Le crash survenant **avant la montée du WiFi**, l'appareil bouclait indéfiniment : incident réel du 2026-07-22 (v2.9.2), **appareil injoignable pendant 1 semaine**, récupéré manuellement en USB (`esptool erase_region 0x3E0000 0x10000`). **5ᵉ mode de défaillance « appareil injoignable » traité** (après 2.8.2, 2.9.0, 2.9.1 et 2.9.2).
+- **Lignes série entrelacées entre tâches** : l'émission console du logger passait par 4 `Serial.print` séparés hors mutex — deux tâches (mqttTask core 0 / loopTask core 1) pouvaient entrelacer préfixe et message (observé sur bench). La ligne est désormais composée dans un buffer pile (`kLoggerConsoleLineMax = 512`) et émise en **un seul `Serial.write` atomique** (troncature avec fin de ligne garantie). Format inchangé. Le « spam » de 6 286 lignes `sensor_problem → ON` observé le même jour a été démontré être un **rejeu matériel du FIFO UART0** (bench), pas un défaut logiciel — le dédup MQTT est correct et inchangé (investigation complète : `specs/features/todo/bug-spam-sensor-problem-serial.md`).
+- **Course use-after-free potentielle sur les topics MQTT lors des reconnexions** (bug latent, découvert par analyse statique pendant l'investigation ci-dessus) : à **chaque tentative de connexion** au broker, `refreshTopics()` réassignait les ~90 `String` de topics depuis mqttTask, pendant que loopTask pouvait lire ces mêmes topics en enfilant un message sortant — une réassignation de `String` libère/réalloue son buffer, un lecteur concurrent pouvait donc déréférencer un pointeur libéré (topic corrompu publié, corruption heap silencieuse, crash apériodique — d'autant plus probable que le broker flappe). `refreshTopics()` lit désormais la config sous mutex, **ne reconstruit que si le préfixe a réellement changé** (early-return sinon), et la reconstruction comme la lecture cross-task sont sérialisées par un nouveau `topicsMutex` (timeout → message droppé + WARN throttlé, l'état retain est republié au cycle 10 s suivant). **Bénéfice collatéral** : plus **aucune** réallocation de topics sur reconnexion sans changement de config — supprime le churn heap de ~90 `String` toutes les 5 s sur broker instable. Le changement de préfixe MQTT à chaud reste fonctionnel (appliqué à la reconnexion qui suit le save). Aucun chemin de dosage touché.
+
+### Ajouté
+
+- **Auto-guérison de la partition history (disjoncteur de boot-loop)** : l'appareil **se répare désormais tout seul** quand la partition `history` est corrompue au point de faire paniquer littlefs au boot. Détection **inter-boot** : un compteur `crash_cnt` (NVS, namespace `hist_meta`) est posé juste avant le montage et remis à zéro après init complète ; si le boot précédent a crashé pendant cette fenêtre **2 fois consécutives** (`kHistoryInitCrashThreshold`), la partition est **effacée automatiquement** avant remontage (log CRIT), puis le boot se termine normalement — l'historique repart de zéro, l'appareil reste joignable (**disponibilité > données**, trade-off assumé). Seuls les resets « crash » comptent (panic, watchdogs) ; POWERON, reset logiciel/OTA et **brownout** (cause électrique, pas FS) réarment sans compter. Indépendant du budget anti-boucle `kAutoHealMaxReboots` et du mode maintenance : le disjoncteur **ne redémarre jamais**, il répare puis laisse booter.
+- **Alerte MQTT `history_partition_reset`** : publiée (différée, après l'init MQTT) quand la partition a été effacée automatiquement — l'effacement est traçable dans HA.
+- **Nouvelle suite de tests native** `test_native_history_guard` : 24 tests de la logique pure du disjoncteur (`history_guard_logic`, pattern ADR-0017).
+- **Nouvelle suite de tests native** `test_native_mqtt_topics` : 27 tests de la normalisation pure du préfixe de topics MQTT (`mqtt_topics_logic`, extraite de `refreshTopics()` pour le correctif de course ci-dessus — trim, `/` finaux, fallback `pool/sensors`, troncature) — **316 tests natifs au total**.
+
+### Documentation
+
+- `docs/adr/0031-disjoncteur-bootloop-history.md` : **nouvel ADR** (détection inter-boot NVS + effacement au seuil de 2 ; alternatives écartées : test d'écriture élargi — impossible face à une exception CPU non rattrapable, validation du superblock — fragile aux internals littlefs, RAM RTC — effacée au power-on alors que la corruption FS y survit ; trade-off disponibilité > historique).
+- `docs/subsystems/system-health.md` : 3ᵉ volet d'auto-guérison (disjoncteur history : machine drapeau/compteur NVS, mapping des reset reasons, alerte différée, récupération manuelle de secours).
+- `docs/MQTT.md` : alerte `history_partition_reset`.
+- `docs/subsystems/logger.md` : nouvelle section « Émission console » (write unique atomique) + note sur les logs pré-persistance (le CRIT du disjoncteur n'atteint jamais `/system.log`).
+- `docs/adr/README.md` : index complété (ADR-0030, absent de l'index depuis la v2.9.2, et ADR-0031).
+- `docs/subsystems/mqtt-manager.md` : nouvelle section « Reconstruction des topics — `refreshTopics()` + `topicsMutex` » (contrat de concurrence : writer unique mqttTask, lecture cross-task `enqueueOutbound()` seule, `configMutex`/`topicsMutex` jamais imbriqués, mutex non-récursif ; guard no-op ; module pur `mqtt_topics_logic` ; mode dégradé sur timeout) + note sur le changement de préfixe à chaud dans la section feature-018. Pas d'ADR : correctif local dans le modèle producer/consumer existant (ADR-0011), aucune alternative structurante verrouillée.
+
+---
+
+## [2.9.2] - 2026-07-15
+
+### Corrigé
+
+- **Gel de la pile réseau nécessitant une coupure secteur** : après l'auto-guérison mémoire (2.9.1), un **nouveau** gel « appareil injoignable » est survenu — mais cette fois **avec un tas parfaitement sain** (plus gros bloc contigu ≈ 37 Ko, jamais proche du seuil de 8 Ko). Diagnostic : c'est la **pile réseau lwIP elle-même qui se fige** (serveur web, mDNS et même le ping ICMP tous morts) alors que le WiFi reste **associé**. Le thread `tcpip`/lwIP n'est **pas** surveillé par le watchdog matériel, et `loopTask`/`mqttTask` continuaient de tourner → ni la TWDT, ni l'auto-guérison mémoire (2.9.1) ne pouvaient l'attraper. C'est le cousin « en gel » du crash `tcp_recved` corrigé par la migration fork (2.9.0). **4ᵉ mode de défaillance « appareil injoignable » traité.**
+
+### Ajouté
+
+- **Auto-guérison réseau (watchdog de connectivité)** : l'appareil **se répare désormais tout seul** aussi quand c'est la **pile réseau** qui se fige, et plus seulement la mémoire — **plus besoin de couper le secteur**. Une **sonde ICMP active** pinge la passerelle toutes les 30 s (`kNetworkProbeIntervalMs`, timeout 2 s) : un echo reply prouve que toute la pile réseau (réception → lwIP → émission) fonctionne. Ce signe de vie est **indépendant de MQTT** (qui peut être désactivé). Réponse **graduée** : si le WiFi est associé mais la pile muette depuis **2 min** (`kNetworkStallSoftMs`), une **reconnexion WiFi** est tentée (`WiFi.disconnect()/reconnect()`, alerte MQTT `network_soft_recover`) ; si le gel persiste **5 min** (`kNetworkStallRebootMs`), un **redémarrage propre fail-safe** a lieu (mêmes garanties que l'auto-guérison mémoire : pompes coupées, cumuls sauvegardés, puis reboot ; alerte MQTT `network_stall_reboot`).
+- **Anti-faux-positif** : la décision est **verrouillée** sur l'état du WiFi. Une coupure WiFi légitime, un broker MQTT en panne ou un reboot de la box **ne déclenchent rien** — l'horloge de gel est gelée tant que le WiFi n'est pas associé. Seul un vrai gel de la pile *alors que le WiFi tient* déclenche une action.
+- **Budget anti-boucle partagé** : les deux auto-guérisons (mémoire + réseau) partagent le **même compteur** de reboots (3 max sur 15 min, `kAutoHealMaxReboots`). Après 3 reboots cumulés (heap et/ou réseau), l'appareil bascule en **mode maintenance** (pompes OFF, dosage inhibé, joignable) au lieu d'enchaîner. Conséquence assumée : un épisode combinant fragmentation mémoire **et** gel réseau bascule en maintenance plus tôt (comportement conservateur volontaire).
+
+> ⚠️ **Correctif de containment, pas de cause racine** : le blocage réside dans AsyncTCP/lwIP (piste racine identifiée : churn WebSocket/HTTP), à traiter ultérieurement. Le watchdog de connectivité sort l'appareil du gel automatiquement en attendant.
+
+### Documentation
+
+- `docs/adr/0030-watchdog-connectivite.md` : ADR de la décision (sonde ICMP vers la passerelle plutôt que dépendance MQTT, réponse graduée soft→hard, budget anti-boucle partagé avec l'auto-guérison mémoire ; alternatives écartées).
+- `docs/subsystems/system-health.md` : extension avec le watchdog de connectivité (sonde ICMP passerelle, machine à états `net_health`, réponse graduée soft→hard, budget partagé heap+réseau, refactor `performFailSafeRestart`, module pur `net_health_logic`, constantes).
+- `docs/MQTT.md` : alertes `network_soft_recover` et `network_stall_reboot`.
+
+---
+
+## [2.9.1] - 2026-07-15
+
+### Corrigé
+
+- **Gel récurrent nécessitant une coupure secteur** : l'appareil pouvait se **figer** (web injoignable, écriture des logs arrêtée) tout en restant sous tension — seule une coupure/remise sous tension le débloquait. Contrairement aux crashes précédents (`std::bad_alloc` sur `/logs` en 2.8.2, assert lwIP WebSocket en 2.9.0), il n'y avait **ni panic, ni coredump, ni reboot automatique** : les tâches surveillées par le watchdog (loop, MQTT) restaient vivantes, donc le chien de garde ne se déclenchait jamais. Cause diagnostiquée : **épuisement / fragmentation du tas** — le plus gros bloc contigu libre s'effondre alors que le heap total reste correct, ce qui asphyxie le serveur web et la persistance des logs. Amplifié par un WiFi instable (double NAT via prise CPL → IP qui saute), qui rejouait `MDNS.end/begin` à chaque oscillation d'adresse et accélérait la fuite mémoire. **3ᵉ mode de défaillance « appareil injoignable » traité.**
+- **Ré-annonce mDNS en boucle sur réseau instable** : `poolcontroller.local` n'est plus ré-annoncé à chaque oscillation d'IP. La ré-annonce est **debouncée** (au plus une fois toutes les 30 s, `kMdnsReannounceMinIntervalMs`) et n'a lieu que si l'IP a **réellement** changé, ce qui supprime le churn `MDNS.end/begin` en roaming CPL/mesh.
+
+### Ajouté
+
+- **Auto-guérison mémoire** : l'appareil **se répare désormais tout seul** en cas de fragmentation critique du tas. Quand le plus gros bloc contigu libre reste sous 8 Ko (`kRestartMaxAllocHeapBytes`) pendant 3 vérifications de santé consécutives (≈ 3 min) et après au moins 3 min de fonctionnement, il effectue un **redémarrage propre** : coupure des pompes, sauvegarde des cumuls journaliers de dosage (anti-sur-dosage), log critique, alerte MQTT `auto_reboot`, puis reboot. Plus besoin de couper le secteur à la main.
+- **Mode maintenance anti-boucle** : si l'auto-guérison redémarre **3 fois** (`kAutoHealMaxReboots`) dans une fenêtre glissante de 15 min (compteur en RAM RTC survivant au reboot), l'appareil **cesse d'enchaîner les reboots** et bascule en mode maintenance : pompes coupées, **dosage inhibé sur toutes les voies** (auto, programmé, manuel web, manuel écran/UART, test), auto-guérison désactivée, alerte MQTT `maintenance_mode`. L'appareil **reste joignable** pour diagnostic. Sortie du mode maintenance : redémarrage manuel du contrôleur.
+- **Instrumentation du tas** : à chaque vérification de santé (60 s), une ligne INFO persistée `Heap: libre=… maxBloc=… minLibre=…` permet de visualiser la fragmentation. Un flush disque **one-shot** est déclenché au premier franchissement à la baisse du seuil d'alerte (`kLowHeapWarnBytes` = 20 Ko) pour capturer la descente même si le redémarrage n'est pas atteint.
+
+### Documentation
+
+- `docs/adr/0029-auto-guerison-heap.md` : ADR de la décision (auto-reboot sur fragmentation du tas + mode maintenance anti-boucle plutôt que subir le gel ; alternatives écartées ; dépendance au réglage réseau et au pulldown de gate MOSFET).
+- `docs/subsystems/system-health.md` : nouvelle fiche (santé système, instrumentation heap, machine à états auto-guérison / maintenance, module pur `self_heal_logic`, debounce mDNS, constantes).
+- `docs/subsystems/pump-controller.md` : `setMaintenanceInhibit()` / `isMaintenanceInhibited()` et inhibition du dosage en mode maintenance.
+- `docs/subsystems/logger.md` : instrumentation heap et flush one-shot dans `checkSystemHealth()`, debounce de la ré-annonce mDNS.
+- `docs/MQTT.md` : alertes `auto_reboot` et `maintenance_mode`.
+
+---
+
+## [2.9.0] - 2026-07-14
+
+### Corrigé
+
+- **Crash / reboots liés aux clients WebSocket** : l'appareil pouvait redémarrer de façon récurrente (`panic → reboot`) et devenir **injoignable** en HTTP/WebSocket jusqu'au redémarrage, notamment lors de la **fermeture ou du timeout d'un client WebSocket** (onglet fermé, WiFi qui décroche, client inactif). Un coredump a identifié un **bug de course connu** des bibliothèques web asynchrones **originales** (`me-no-dev`, non maintenues) : un assert de la pile réseau lwIP au moment du `close()`. C'est la **2ᵉ cause de crash de la pile web** diagnostiquée par coredump après le `std::bad_alloc` sur `/logs` corrigé en 2.8.2.
+
+### Modifié
+
+- **Migration vers le fork maintenu ESP32Async** (ex-mathieucarbou), avec **versions épinglées** : `AsyncTCP@3.4.10` et `ESPAsyncWebServer@3.11.2` (avant : dépôts Git `me-no-dev` non figés). Le fork corrige le bug de course à la source et rend le build reproductible. **Aucun changement de comportement fonctionnel** côté utilisateur (API, UI, MQTT, OTA inchangés) : seule la stabilité s'améliore. Plateforme figée inchangée (`espressif32@6.9.0`). `ESPAsyncWiFiManager` conservé (le portail WiFi est géré nativement par le projet).
+
+### Documentation
+
+- `docs/adr/0028-migration-fork-esp32async.md` : ADR de la décision (migration + épinglage des versions, alternatives écartées, dette de suivi des releases ESP32Async).
+- `docs/subsystems/ws-manager.md` : dépendance au fork ESP32Async (versions), mode de défaillance historique (assert lwIP au close/timeout WS) et sa correction.
+
+---
+
+## [2.8.5] - 2026-07-13
+
+### Amélioré
+
+- **Statut de dosage — cause anti-cycling visible** : le widget pH/ORP affichait un statut **vide** quand le dosage était bloqué par une garde anti-cycling (**cycles/jour** atteint, **anti-rafale**), ce qui était ambigu (« ça n'injecte pas et rien n'est indiqué »). Le statut remonte désormais la **cause de refus du firmware** (`ph/orp_DoseBlockedReason`, déjà diffusée) : « Limite cycles/jour atteinte — reprise à minuit », « Anti-rafale — patienter… ». Un statut vide signifie maintenant sans ambiguïté que la mesure est **dans l'hystérésis** (rien à doser). Purement UI.
+
+---
+
+## [2.8.4] - 2026-07-13
+
+### Amélioré
+
+- **Latch d'instabilité EMI pH/ORP auto-levé** : le drapeau qui marque un capteur `unstable` (inhibant la régulation) quand la dispersion de la fenêtre de mesure dépasse le seuil sur 3 fenêtres consécutives (bruit EMI soutenu) était **collant** — seul un `reset()` (reboot ou `POST /debug/sensor_filter_reset`) ou une calibration le levait. Il s'auto-lève désormais après **12 fenêtres pleines propres consécutives** (`kSensorFilterLatchClearCycles`), soit ≈ 2 min de signal réellement propre (60 s + purge de la fenêtre médiane). Répond au cas « **ORP marqué instable alors que l'oscillation est retombée** » sans nécessiter de reset manuel après un burst passé. Asymétrie voulue : rapide à poser (≈ 15 s), lent à lever (anti-flapping).
+- **Anti-flapping garanti** : la « clean streak » qui pilote l'auto-levée n'est incrémentée que sur une fenêtre **pleine et sans aucune perturbation** ; **tout** rejet (spike dur isolé, NaN, hors-plage) **ou** tout dépassement de dispersion la remet à 0. Un capteur qui crache des spikes ne peut donc jamais lever le latch à tort. `reset()` reste la levée manuelle immédiate ; les inhibitions indépendantes (`unstable()` sur dispersion courante, rejets consécutifs, ready/frozen) sont inchangées.
+- **Logs de transition** (`SensorManager`) : `warning` « Filtre pH/ORP : latch EMI posé… » à la pose, `info` « … latch EMI levé (signal stable)… » à l'auto-levée (une ligne par transition, par capteur).
+
+### Documentation
+
+- `docs/subsystems/sensors.md` : auto-levée du latch EMI (`kSensorFilterLatchClearCycles`, clean streak, logs de transition), accesseur `dispersionCleanStreak()`.
+- `docs/adr/0027-filtre-tendance-centrale.md` : note sur l'évolution du latch (auto-levée, dans le cadre de l'ADR).
+
+---
+
+## [2.8.3] - 2026-07-13
+
+### Corrigé
+
+- **Injection manuelle — estimation de durée trompeuse** : le champ d'injection affichait la durée brute pour le volume demandé (ex. « ≈ 35 min » pour 1 L) sans tenir compte du **plafond de 10 min par injection** (`kManualInjectMaxDurationS`) appliqué par le firmware. L'estimation reflète désormais le plafond : au-delà du volume délivrable en une injection, elle affiche la durée réelle (10 min) **et** le volume effectif (« plafonné à ~N mL par injection, répéter pour le reste »). Purement UI ; le plafond de sécurité est inchangé.
+
+---
+
 ## [2.8.2] - 2026-07-13
 
 ### Corrigé

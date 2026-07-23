@@ -25,6 +25,8 @@ On remplace la stratégie « rejet de saut → colle à l'enveloppe » par un **
 
 L'oscillation **légitime soutenue** n'est plus rejetée : elle alimente le filtre et la médiane longue la moyenne sur ≥ 1 période → valeur centrée. Seule la **vraie aberration** (spike dur isolé, NaN, hors-plage) est écartée.
 
+> **Note (v2.8.4, évolution paramétrique dans le cadre de cet ADR)** — le latch EMI (b) n'est plus « levé uniquement par `reset()` » : il s'**auto-lève** après `kSensorFilterLatchClearCycles` (= 12) fenêtres pleines **propres** consécutives (≈ 2 min de signal réellement propre), la clean streak étant remise à 0 par tout rejet ou tout dépassement de dispersion (anti-flapping). `reset()`/recalibration reste la levée manuelle immédiate. L'invariant iso-sécurité et le découplage valeur/drapeau sont inchangés. Détail : [`docs/subsystems/sensors.md`](../subsystems/sensors.md#auto-levée-après-signal-propre-soutenu-v284).
+
 Paramètres arbitrés par pool-chemistry (dans `constants.h`) : `kSensorFilterCentralWindow=13` (buffer physique 16), `kPhFilterMaxDispersion=0,5` / `kOrpFilterMaxDispersion=100`, `kPhFilterSpikeReject=1,0` / `kOrpFilterSpikeReject=300`, `kSensorFilterDispersionLatchCycles=3`, α EMA inchangés, `kSensorFilterMaxConsecutiveRejects=10` conservé.
 
 ## Alternatives considérées

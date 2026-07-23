@@ -59,6 +59,17 @@ static bool injectionAllowedOrReject(AsyncWebServerRequest* req, const char* tag
 // (condition pool-chemistry #3 : évaluer ce qui sera VRAIMENT injecté).
 static bool manualInjectGuardOrReject(AsyncWebServerRequest* req, bool isPh,
                                       float effectiveMl, int durationS) {
+  // Auto-guérison v2.9.1 (condition pool-chemistry C2) : en mode maintenance, le
+  // dosage est suspendu. On refuse le démarrage ICI, AVANT que le handler n'arme
+  // manualInject*.active, sinon creditManualInjectionFloor() créditerait à échéance
+  // un volume « promis » alors qu'aucun produit n'a coulé (sur-comptage du registre
+  // journalier). Point commun aux deux handlers /ph|orp/inject/start.
+  if (PumpController.isMaintenanceInhibited()) {
+    req->send(409, "application/json",
+              "{\"error\":\"maintenance_mode\",\"message\":\"Mode maintenance actif (trop de redémarrages auto) — dosage suspendu. Redémarrez le contrôleur pour réactiver.\"}");
+    return false;
+  }
+
   const int logicalIdx = isPh ? 0 : 1;
 
   ManualInjectInputs in = {};

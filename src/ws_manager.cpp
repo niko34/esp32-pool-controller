@@ -14,6 +14,11 @@
 #include "auth.h"
 #include "json_compat.h"
 
+// Signal réseau secondaire (v2.9.2, défini dans main.cpp) : une connexion ou un
+// message WS reçu prouve qu'un client web est actif → rafraîchit le watchdog de
+// connectivité pour ne jamais rebooter pendant une utilisation active de l'appli.
+void notifyNetworkActivity();
+
 static const char* getResetReason() {
   switch (esp_reset_reason()) {
     case ESP_RST_POWERON:   return "POWER_ON";
@@ -91,8 +96,10 @@ size_t WsManager::clientCount() const {
 void WsManager::_onEvent(AsyncWebSocket* ws, AsyncWebSocketClient* client,
                           AwsEventType type, void* arg, uint8_t* data, size_t len) {
   if (type == WS_EVT_CONNECT) {
+    notifyNetworkActivity();  // client actif : signal réseau secondaire
     _onClientConnect(client, reinterpret_cast<AsyncWebServerRequest*>(arg));
   } else if (type == WS_EVT_DATA) {
+    notifyNetworkActivity();  // trafic WS entrant : signal réseau secondaire
     _onData(client, data, len);
   } else if (type == WS_EVT_DISCONNECT) {
     _authenticatedClients.erase(client->id());

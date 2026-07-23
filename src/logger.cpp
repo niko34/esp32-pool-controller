@@ -73,11 +73,22 @@ void Logger::log(LogLevel level, const String& message) {
     flushToDisk();
   }
 
-  // Affichage série avec préfixe niveau
-  Serial.print("[");
-  Serial.print(getLevelString(level));
-  Serial.print("] ");
-  Serial.println(message);
+  // Affichage série avec préfixe niveau — ligne complète en UNE écriture :
+  // chaque write HAL est atomique (UART_MUTEX_LOCK) mais une séquence de print
+  // peut s'entrelacer entre tâches (fragments tronqués observés, bug-spam-sensor-problem-serial).
+  // Buffer pile : la console doit rester fonctionnelle même sous heap critique.
+  char consoleLine[kLoggerConsoleLineMax];
+  int written = snprintf(consoleLine, sizeof(consoleLine), "[%s] %s\r\n",
+                         getLevelString(level).c_str(), message.c_str());
+  if (written > 0) {
+    size_t lineLen = static_cast<size_t>(written);
+    if (lineLen >= sizeof(consoleLine)) {  // tronqué : garantir la fin de ligne
+      consoleLine[sizeof(consoleLine) - 3] = '\r';
+      consoleLine[sizeof(consoleLine) - 2] = '\n';
+      lineLen = sizeof(consoleLine) - 1;
+    }
+    Serial.write(reinterpret_cast<const uint8_t*>(consoleLine), lineLen);
+  }
 }
 
 void Logger::debug(const String& message) {

@@ -9,6 +9,7 @@
 #include "pump_controller.h"
 #include "ws_manager.h"  // feature bug-sync-ws-config : notifier l'UI d'un changement config via MQTT
 #include "schedule_logic.h"  // feature-051 : validation HH:MM (timeStringToMinutes)
+#include "mqtt_topics_logic.h"  // bug-race-refreshtopics-uaf : normalisation pure du préfixe
 #include <ArduinoJson.h>
 #include <esp_task_wdt.h>
 #include <WiFi.h>
@@ -19,6 +20,10 @@ using mqtt_internal::OutboundMsg;
 using mqtt_internal::InboundCmd;
 using mqtt_internal::InboundCmdType;
 
+// Signal réseau secondaire (v2.9.2, défini dans main.cpp) : un publish ACK par le
+// broker prouve que la pile TCP est vivante → rafraîchit le watchdog de connectivité.
+void notifyNetworkActivity();
+
 namespace {
 // feature-027 : warn throttlé (max 1/min par site — lastWarnMs = statique locale du site)
 // sur timeout de prise du configMutex.
@@ -27,6 +32,18 @@ void warnConfigMutexTimeout(unsigned long& lastWarnMs, const char* site) {
   if (lastWarnMs == 0 || nowMs - lastWarnMs >= kMutexTimeoutWarnThrottleMs) {
     systemLogger.warning(String("[MQTT] ") + site + ": timeout mutex config — opération sautée");
     lastWarnMs = nowMs;
+  }
+}
+
+// bug-race-refreshtopics-uaf : warn throttlé sur timeout de prise du topicsMutex
+// (même pattern que warnConfigMutexTimeout). DIFFÉRENCE VOLONTAIRE : lastWarnMs est
+// posé AVANT le log — enqueueOutbound() peut être ré-entré via le chemin de log
+// (publishLog → enqueueOutbound) et la ré-entrance doit tomber dans le throttle.
+void warnTopicsMutexTimeout(unsigned long& lastWarnMs, const char* site) {
+  unsigned long nowMs = millis();
+  if (lastWarnMs == 0 || nowMs - lastWarnMs >= kMutexTimeoutWarnThrottleMs) {
+    lastWarnMs = nowMs;
+    systemLogger.warning(String("[MQTT] ") + site + ": timeout mutex topics — opération sautée");
   }
 }
 
@@ -63,6 +80,15 @@ void MqttManager::begin() {
   mqtt.setKeepAlive(60);     // Mosquitto applique 1.5×keepalive = 90s de tolérance
   mqtt.setBufferSize(1024);
   wifiClient.setTimeout(kMqttClientConnectTimeoutSec);  // unité = secondes (cf. constants.h)
+
+  // bug-race-refreshtopics-uaf : topicsMutex créé AVANT le premier refreshTopics()
+  // et avant la création de mqttTask (aucun lecteur concurrent possible sans lui).
+  topicsMutex = xSemaphoreCreateMutex();
+  if (topicsMutex == nullptr) {
+    systemLogger.critical("MQTT: échec création topicsMutex");
+    return;
+  }
+
   refreshTopics();
 
   // Création des queues — allouées une fois, jamais libérées (cycle de vie = vie du firmware)
@@ -95,11 +121,40 @@ void MqttManager::begin() {
 }
 
 void MqttManager::refreshTopics() {
-  String base = mqttCfg.topic;
-  base.trim();
-  if (base.length() == 0) base = "pool/sensors";
-  while (base.endsWith("/")) base.remove(base.length() - 1);
-  if (base.length() == 0) base = "pool/sensors";
+  // bug-race-refreshtopics-uaf : snapshot du préfixe sous configMutex —
+  // mqttCfg.topic peut être réécrit concurremment par loopTask (sauvegarde config).
+  // Échec → return : on retentera à la prochaine tentative de connexion.
+  String raw;
+  {
+    static unsigned long lastWarnMs = 0;
+    if (xSemaphoreTake(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+      warnConfigMutexTimeout(lastWarnMs, "refreshTopics");
+      return;
+    }
+    raw = mqttCfg.topic;
+    xSemaphoreGive(configMutex);
+  }
+
+  // Normalisation pure (trim, '/' finaux, fallback "pool/sensors") — testable en natif.
+  char normalized[mqtt_internal::kMaxTopicLen];
+  normalizeMqttBase(raw.c_str(), normalized, sizeof(normalized));
+  String base(normalized);
+
+  // Early-return : cas de très loin le plus fréquent (reconnexion sans changement
+  // de préfixe) — aucune réassignation des ~90 String, donc aucun risque de course.
+  // topics.base n'est écrit que par cette fonction (mqttTask) : lecture safe ici.
+  if (base == topics.base) return;
+
+  // Rebuild sous topicsMutex — jamais imbriqué avec configMutex (relâché ci-dessus).
+  // AUCUN log/enqueue dans la section critique (mutex non-récursif, cf. mqtt_manager.h).
+  {
+    static unsigned long lastWarnMs = 0;
+    if (topicsMutex == nullptr ||
+        xSemaphoreTake(topicsMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+      warnTopicsMutexTimeout(lastWarnMs, "refreshTopics");
+      return;
+    }
+  }
 
   topics.base = base;
   topics.temperatureState = base + "/temperature";
@@ -189,6 +244,12 @@ void MqttManager::refreshTopics() {
   topics.installModeState           = base + "/install_mode";
   topics.installModeCommand         = base + "/install_mode/set";
   topics.filtrationExternalStateCommand = base + "/filtration_external_state/set";
+
+  xSemaphoreGive(topicsMutex);
+
+  // Log HORS section critique : le chemin de log peut déclencher publishLog →
+  // enqueueOutbound, qui prend topicsMutex (non-récursif → deadlock sinon).
+  systemLogger.info("Topics MQTT reconstruits (préfixe : " + base + ")");
 }
 
 // ============================================================================
@@ -377,7 +438,10 @@ void MqttManager::connectInTask() {
 bool MqttManager::safePublish(const char* topic, const char* payload, bool retain) {
   esp_task_wdt_reset();
   if (!mqtt.connected()) return false;
-  return mqtt.publish(topic, payload, retain);
+  bool ok = mqtt.publish(topic, payload, retain);
+  // Un publish réussi = broker joignable = pile réseau vivante (signal secondaire).
+  if (ok) notifyNetworkActivity();
+  return ok;
 }
 
 void MqttManager::drainOutQueue() {
@@ -439,9 +503,23 @@ void MqttManager::disconnect() {
 void MqttManager::enqueueOutbound(const String& topic, const String& payload, bool retain) {
   if (outQueue == nullptr || topic.length() == 0) return;
   OutboundMsg msg;
-  // Tronque si dépassement (les payloads MQTT sont bornés à kMaxPayloadLen=384).
-  // En pratique aucun topic ne dépasse ~80c, aucun payload ~300c (publishDiagnostic).
-  strlcpy(msg.topic,   topic.c_str(),   sizeof(msg.topic));
+  // Tronque si dépassement (bornes réelles : kMaxTopicLen=64, kMaxPayloadLen=128 —
+  // cf. mqtt_internal dans mqtt_manager.h). En pratique aucun topic applicatif ne
+  // dépasse ~50c ; le JSON diagnostic (~400c) ne passe pas par outQueue.
+  // bug-race-refreshtopics-uaf : `topic` référence le plus souvent un membre de
+  // `topics` que refreshTopics() (mqttTask) peut réassigner pendant qu'on copie
+  // depuis loopTask → copie du topic sous topicsMutex. Le payload est un String
+  // local à l'appelant : pas de course, copie hors mutex.
+  {
+    static unsigned long lastWarnMs = 0;
+    if (topicsMutex == nullptr ||
+        xSemaphoreTake(topicsMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+      warnTopicsMutexTimeout(lastWarnMs, "enqueueOutbound");
+      return;  // drop — l'état sera republié au prochain publishAllStates (10s)
+    }
+    strlcpy(msg.topic, topic.c_str(), sizeof(msg.topic));
+    xSemaphoreGive(topicsMutex);
+  }
   strlcpy(msg.payload, payload.c_str(), sizeof(msg.payload));
   msg.retain = retain;
 

@@ -2288,7 +2288,13 @@
     const limitMin  = sensor === "ph" ? (config.ph_limit_minutes || 0) : (config.orp_limit_minutes || 0);
     if (limitMin > 0 && usedMs >= limitMin * 60000) return "Limite de durée atteinte";
 
-    return "";  // Pas d'erreur identifiée (pause anti-cycling ou valeur OK)
+    // v2.8.5 : remonter la cause de refus firmware non couverte ci-dessus
+    // (anti-cycling cycles/jour, anti-rafale…). Vide en cas 2 « valeur OK »
+    // (canDose ne refuse pas → *DoseBlockedReason vide) → statut reste vide.
+    const blocked = _doseBlockReasonFr(data[`${sensor}DoseBlockedReason`]);
+    if (blocked) return blocked;
+
+    return "";  // Pas de refus firmware : valeur dans l'hystérésis (rien à doser)
   }
 
   // feature-053 : carte Boost du tableau de bord. Consomme boost_active/boost_until
@@ -3280,6 +3286,8 @@
     if (s.includes('unstab') || s.includes('instab')) return 'Capteur instable';
     if (s.includes('mix') || s.includes('mélange') || s.includes('melange')) return 'Mélange en cours';
     if (s.includes('ezo') || s.includes('indispo')) return 'EZO indisponible';
+    if (s.includes('cycle')) return 'Limite cycles/jour atteinte — reprise à minuit';
+    if (s.includes('rafale') || s.includes('burst')) return 'Anti-rafale — patienter avant la prochaine injection';
     return r; // déjà rédigé en clair côté firmware
   }
 
@@ -5535,15 +5543,28 @@
       return Math.max(1, Math.round((volumeMl / flow) * 60));
     };
 
-    // Met à jour le hint "≈ Xmin" sous le champ volume
+    // Miroir de kManualInjectMaxDurationS (constants.h) : une injection manuelle
+    // est plafonnée à 10 min côté firmware. Au-delà, le volume demandé est écrêté.
+    const MAX_INJECT_DURATION_S = 600;
+
+    // Met à jour le hint "≈ Xmin" sous le champ volume. Reflète le plafond de
+    // durée : si le volume demandé dépasse ce qu'une injection peut délivrer,
+    // afficher la durée/volume RÉELS (plafonnés) + inviter à répéter.
     const updateInjectHint = (product) => {
       const mlInput = $(`#${product}_inject_ml`);
       const hint = $(`#${product}_inject_hint`);
       if (!mlInput || !hint) return;
       const vol = parseFloat(mlInput.value);
       if (!vol || vol <= 0) { hint.textContent = ""; return; }
-      const dur = calcInjectDurationS(product, vol);
-      hint.textContent = dur != null ? `≈ ${fmtInjectRemaining(dur)}` : "";
+      const rawDur = calcInjectDurationS(product, vol);
+      if (rawDur == null) { hint.textContent = ""; return; }
+      if (rawDur > MAX_INJECT_DURATION_S) {
+        // Volume > max par injection : durée écrêtée à 10 min, volume effectif proportionnel.
+        const effMl = Math.round(vol * MAX_INJECT_DURATION_S / rawDur);
+        hint.textContent = `≈ ${fmtInjectRemaining(MAX_INJECT_DURATION_S)} — plafonné à ~${effMl} mL par injection (répéter pour le reste)`;
+      } else {
+        hint.textContent = `≈ ${fmtInjectRemaining(rawDur)}`;
+      }
     };
 
     // feature-006 : messages français des codes de refus 409 du firmware

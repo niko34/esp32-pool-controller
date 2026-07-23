@@ -59,7 +59,10 @@ void test_constants_values(void) {
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 1.0f, kPhFilterSpikeReject);
   TEST_ASSERT_FLOAT_WITHIN(1e-4f, 300.0f, kOrpFilterSpikeReject);
   TEST_ASSERT_EQUAL_UINT8(3, kSensorFilterDispersionLatchCycles);
+  TEST_ASSERT_EQUAL_UINT8(12, kSensorFilterLatchClearCycles);  // v2.8.4 auto-levée
   TEST_ASSERT_EQUAL_UINT8(10, kSensorFilterMaxConsecutiveRejects);
+  // Asymétrie voulue : rapide à poser (3), lent à lever (12).
+  TEST_ASSERT_GREATER_THAN_UINT8(kSensorFilterDispersionLatchCycles, kSensorFilterLatchClearCycles);
   // Invariant : la fenêtre logique ne dépasse jamais la capacité physique.
   TEST_ASSERT_LESS_OR_EQUAL_UINT8(kSensorFilterCentralWindowMax, kSensorFilterCentralWindow);
 }
@@ -299,32 +302,161 @@ void test_unstable_after_consecutive_rejects(void) {
 void test_value_keeps_moving_despite_latch(void) {
   SensorFilter f(phCfg());
   uint32_t t = 0;
-  // Oscillation > cap jusqu'au latch collant.
+  // Oscillation > cap jusqu'au latch collant (centre ~7.5).
   for (int i = 0; i < 25; ++i) { f.addSample((i % 2 == 0) ? 7.2f : 7.8f, t); t += 1000; }
   TEST_ASSERT_TRUE(f.unstableLatched());
   float centered = f.filtered();  // ~7.5
-  // Malgré le latch, on pousse un nouveau palier à 8.0 (saut 0.5 < spike 1.0).
-  for (int i = 0; i < 30; ++i) { f.addSample(8.00f, t); t += 1000; }
-  TEST_ASSERT_TRUE_MESSAGE(f.unstableLatched(), "le latch reste pose (collant)");
+  // Nouveau palier oscillant CENTRÉ sur 8.0 (7.7/8.3, amplitude 0.6 > cap 0.5) : le
+  // signal reste bruité → la dispersion demeure > cap → PAS d'auto-levée (v2.8.4),
+  // MAIS filtered() suit la remontée du centre (VALEUR découplée du DRAPEAU).
+  for (int i = 0; i < 60; ++i) { f.addSample((i % 2 == 0) ? 7.7f : 8.3f, t); t += 1000; }
+  TEST_ASSERT_TRUE_MESSAGE(f.unstableLatched(), "signal encore bruite => latch reste pose");
   TEST_ASSERT_TRUE_MESSAGE(f.filtered() > centered + 0.20f,
       "filtered doit suivre le nouveau palier, PAS rester figee sur latch");
-  TEST_ASSERT_FLOAT_WITHIN(0.10f, 8.00f, f.filtered());
+  TEST_ASSERT_FLOAT_WITHIN(0.15f, 8.00f, f.filtered());
 }
 
-// --- Le latch dispersion est COLLANT : levé uniquement par reset() ------------
-void test_dispersion_latch_sticky_until_reset(void) {
+// --- Pas d'auto-levée tant que le bruit EMI PERSISTE ; reset() force la levée --
+// (v2.8.4 : le latch n'est plus collant à vie — il s'auto-lève après N fenêtres
+// PROPRES — mais tant que la dispersion reste > cap, la clean streak ne monte
+// jamais → aucune levée intempestive. Non-régression du chemin reset().)
+void test_latch_persists_while_noise_persists(void) {
   SensorFilter f(phCfg());
   uint32_t t = 0;
   for (int i = 0; i < 25; ++i) { f.addSample((i % 2 == 0) ? 7.2f : 7.8f, t); t += 1000; }
   TEST_ASSERT_TRUE(f.unstableLatched());
-  // 40 mesures parfaitement stables : dispersion retombe à 0, MAIS latch persiste.
-  for (int i = 0; i < 40; ++i) { f.addSample(7.50f, t); t += 1000; }
-  TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, f.dispersion());
-  TEST_ASSERT_TRUE_MESSAGE(f.unstableLatched(), "latch persiste malgre dispersion nulle");
+  // Bruit maintenu (amplitude > cap) sur 60 fenêtres : la clean streak reste à 0.
+  for (int i = 0; i < 60; ++i) { f.addSample((i % 2 == 0) ? 7.2f : 7.8f, t); t += 1000; }
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, f.dispersionCleanStreak(),
+      "bruit persistant => clean streak jamais accumulee");
+  TEST_ASSERT_TRUE_MESSAGE(f.unstableLatched(), "pas d'auto-levee tant que le bruit persiste");
   TEST_ASSERT_TRUE(f.unstable());
-  // Seul reset() lève le latch.
+  // reset() force la levée immédiate.
   f.reset();
   TEST_ASSERT_FALSE(f.unstableLatched());
+  TEST_ASSERT_FALSE(f.unstable());
+}
+
+// =============================================================================
+// Auto-levée du latch EMI (feature v2.8.4)
+// =============================================================================
+// Contrat pool-chemistry : latch posé rapide (3 fenêtres en dépassement), levé
+// lent (kSensorFilterLatchClearCycles=12 fenêtres PLEINES PROPRES consécutives —
+// dispersion <= cap ET AUCUN rejet). TOUT rejet (NaN / hors-plage / spike dur)
+// OU toute fenêtre en dépassement remet la clean streak à 0 (anti-flapping).
+
+// Pose le latch EMI par oscillation pH 7.2/7.8 (amplitude 0.6 > cap 0.5).
+// Borne de sécurité 40 échantillons ; met à jour t (référence).
+static void setPhLatch(SensorFilter& f, uint32_t& t) {
+  for (int i = 0; i < 40 && !f.unstableLatched(); ++i) {
+    f.addSample((i % 2 == 0) ? 7.2f : 7.8f, t);
+    t += 1000;
+  }
+}
+
+// Injecte un signal stable 7.50 jusqu'à ce que la clean streak atteigne `target`
+// (bornée à 100 itérations : purge de la fenêtre de 13 + montée de la streak).
+static void injectCleanUntilStreak(SensorFilter& f, uint32_t& t, uint8_t target) {
+  int guard = 0;
+  while (f.dispersionCleanStreak() < target && guard < 100) {
+    f.addSample(7.50f, t);
+    t += 1000;
+    ++guard;
+  }
+}
+
+// --- 1) Set puis auto-levée après exactement 12 fenêtres propres --------------
+void test_latch_auto_clears_after_clean_windows(void) {
+  SensorFilter f(phCfg());
+  uint32_t t = 0;
+  setPhLatch(f, t);
+  TEST_ASSERT_TRUE_MESSAGE(f.unstable(), "oscillation > cap => unstable");
+  TEST_ASSERT_TRUE_MESSAGE(f.unstableLatched(), "3 fenetres en depassement => latch pose");
+
+  // La fenêtre de 13 doit d'abord se purger des valeurs d'oscillation avant que la
+  // dispersion retombe <= cap ; la clean streak ne compte qu'ensuite.
+  injectCleanUntilStreak(f, t, kSensorFilterLatchClearCycles - 1);  // 11
+  TEST_ASSERT_EQUAL_UINT8(kSensorFilterLatchClearCycles - 1, f.dispersionCleanStreak());
+  TEST_ASSERT_TRUE_MESSAGE(f.unstableLatched(), "11 fenetres propres => pas encore leve");
+
+  // 12ᵉ fenêtre propre consécutive → auto-levée.
+  TEST_ASSERT_TRUE(f.addSample(7.50f, t)); t += 1000;
+  TEST_ASSERT_FALSE_MESSAGE(f.unstableLatched(), "12 fenetres propres => latch auto-leve");
+  TEST_ASSERT_FALSE_MESSAGE(f.unstable(), "latch leve + dispersion nulle => stable");
+}
+
+// --- 2) Anti-flap : un spike dur au 11ᵉ propre remet la streak à 0 ------------
+void test_latch_clear_streak_reset_by_hard_spike(void) {
+  SensorFilter f(phCfg());
+  uint32_t t = 0;
+  setPhLatch(f, t);
+  TEST_ASSERT_TRUE(f.unstableLatched());
+
+  injectCleanUntilStreak(f, t, 11);
+  TEST_ASSERT_EQUAL_UINT8(11, f.dispersionCleanStreak());
+  TEST_ASSERT_TRUE(f.unstableLatched());
+
+  // Spike DUR (|9.50 − médiane ~7.50| = 2.0 > spike 1.0) → écarté, casse la streak.
+  TEST_ASSERT_FALSE(f.addSample(9.50f, t)); t += 1000;
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, f.dispersionCleanStreak(),
+      "un spike dur ecarte doit remettre la clean streak a 0");
+  TEST_ASSERT_TRUE_MESSAGE(f.unstableLatched(), "latch toujours pose apres spike");
+
+  // Le buffer est resté propre (spike non intégré) : il faut de nouveau 12 propres.
+  injectCleanUntilStreak(f, t, 11);
+  TEST_ASSERT_TRUE_MESSAGE(f.unstableLatched(), "11 propres apres spike => encore pose");
+  TEST_ASSERT_TRUE(f.addSample(7.50f, t)); t += 1000;
+  TEST_ASSERT_FALSE_MESSAGE(f.unstableLatched(), "12 propres consecutives apres spike => leve");
+}
+
+// --- 3) NaN / hors-plage pendant la streak → remise à 0 (latch conservé) ------
+void test_latch_clear_streak_reset_by_nan_and_out_of_range(void) {
+  SensorFilter f(phCfg());
+  uint32_t t = 0;
+  setPhLatch(f, t);
+
+  injectCleanUntilStreak(f, t, 5);
+  TEST_ASSERT_EQUAL_UINT8(5, f.dispersionCleanStreak());
+  TEST_ASSERT_FALSE(f.addSample(NAN, t)); t += 1000;
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, f.dispersionCleanStreak(), "NaN casse la streak");
+  TEST_ASSERT_TRUE_MESSAGE(f.unstableLatched(), "latch conserve apres NaN");
+
+  injectCleanUntilStreak(f, t, 5);
+  TEST_ASSERT_EQUAL_UINT8(5, f.dispersionCleanStreak());
+  TEST_ASSERT_FALSE(f.addSample(20.0f, t)); t += 1000;  // > maxValue 14
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, f.dispersionCleanStreak(), "hors-plage casse la streak");
+  TEST_ASSERT_TRUE_MESSAGE(f.unstableLatched(), "latch conserve apres hors-plage");
+}
+
+// --- 4) Fenêtre non pleine → aucun incrément de clean streak ------------------
+void test_clean_streak_only_counts_full_windows(void) {
+  SensorFilter f(phCfg());
+  uint32_t t = 0;
+  // Fenêtre de 13 en cours de remplissage : pas de dispersion → pas d'incrément.
+  for (int i = 0; i < 12; ++i) {
+    TEST_ASSERT_TRUE(f.addSample(7.50f, t));
+    t += 1000;
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, f.dispersionCleanStreak(),
+        "aucun increment sur fenetre non pleine");
+    TEST_ASSERT_FALSE(f.unstableLatched());
+  }
+  // 13ᵉ → fenêtre pleine et propre → streak = 1.
+  TEST_ASSERT_TRUE(f.addSample(7.50f, t)); t += 1000;
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, f.dispersionCleanStreak(),
+      "premiere fenetre pleine propre => streak 1");
+}
+
+// --- 5) reset() = levée immédiate + clean streak à 0 --------------------------
+void test_latch_cleared_immediately_by_reset(void) {
+  SensorFilter f(phCfg());
+  uint32_t t = 0;
+  setPhLatch(f, t);
+  injectCleanUntilStreak(f, t, 4);  // streak partielle en cours
+  TEST_ASSERT_TRUE(f.unstableLatched());
+  TEST_ASSERT_EQUAL_UINT8(4, f.dispersionCleanStreak());
+  f.reset();
+  TEST_ASSERT_FALSE_MESSAGE(f.unstableLatched(), "reset() leve le latch immediatement");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, f.dispersionCleanStreak(), "reset() remet la clean streak a 0");
   TEST_ASSERT_FALSE(f.unstable());
 }
 
@@ -595,7 +727,13 @@ int main(int, char **) {
   RUN_TEST(test_unstable_after_consecutive_rejects);
   // Découplage valeur / drapeau.
   RUN_TEST(test_value_keeps_moving_despite_latch);
-  RUN_TEST(test_dispersion_latch_sticky_until_reset);
+  RUN_TEST(test_latch_persists_while_noise_persists);
+  // Auto-levée du latch EMI (v2.8.4).
+  RUN_TEST(test_latch_auto_clears_after_clean_windows);
+  RUN_TEST(test_latch_clear_streak_reset_by_hard_spike);
+  RUN_TEST(test_latch_clear_streak_reset_by_nan_and_out_of_range);
+  RUN_TEST(test_clean_streak_only_counts_full_windows);
+  RUN_TEST(test_latch_cleared_immediately_by_reset);
   // ORP.
   RUN_TEST(test_symmetric_oscillation_converges_to_center_orp);
   RUN_TEST(test_oscillation_over_cap_unstable_but_centered_orp);

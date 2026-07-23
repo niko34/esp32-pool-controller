@@ -41,6 +41,9 @@ private:
   const unsigned long RECORD_INTERVAL = 300000; // 5 minutes
   const unsigned long SAVE_INTERVAL = 300000; // 5 minutes
   bool historyEnabled = true;
+  // feature-059 : partition effacée par le disjoncteur de boot-loop pendant begin()
+  // (consommé par setup() pour publier l'alerte MQTT différée history_partition_reset).
+  bool _partitionAutoErased = false;
   bool legacyHistoryPending = false;
   unsigned long legacyMaxTimestamp = 0;
   bool _preNtpPending = false;  // Points enregistrés avant sync NTP (timestamps uptime provisoires)
@@ -62,6 +65,9 @@ public:
   bool importData(const std::vector<DataPoint>& dataPoints);
   // feature-027 : retourne false si le mutex n'a pas pu être pris (historique occupé)
   bool clearHistory();
+  // feature-059 : true si le disjoncteur de boot-loop a effacé la partition
+  // history pendant begin() (alerte MQTT publiée ensuite depuis setup()).
+  bool partitionWasAutoErased() const { return _partitionAutoErased; }
 };
 
 extern HistoryManager history;

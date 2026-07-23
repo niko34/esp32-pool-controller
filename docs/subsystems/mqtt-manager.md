@@ -123,6 +123,27 @@ Structure complète dans [`MqttTopics`](../../src/mqtt_manager.h). Résumé :
 
 Voir [`docs/MQTT.md`](../MQTT.md) pour la liste exhaustive avec les entités HA correspondantes.
 
+### Reconstruction des topics — `refreshTopics()` + `topicsMutex` (bug-race-refreshtopics-uaf, v2.10.0)
+
+Les ~90 membres `String` de la struct `topics` sont construits par `MqttManager::refreshTopics()`, appelée depuis `begin()` (avant la création de `mqttTask` — aucun lecteur concurrent possible) puis depuis `connectInTask()` à **chaque tentative de connexion**. Historiquement, cette fonction réassignait les ~90 `String` à chaque appel, pendant que `loopTask` pouvait lire `topics.*` via `enqueueOutbound()` — une réassignation de `String` Arduino libère/réalloue son buffer interne, donc un lecteur concurrent pouvait déréférencer un pointeur libéré (**use-after-free**, corruption heap silencieuse). Elle lisait aussi `mqttCfg.topic` sans `configMutex`. Correctif v2.10.0 en trois volets :
+
+1. **Module pur `mqtt_topics_logic`** ([`src/mqtt_topics_logic.h`](../../src/mqtt_topics_logic.h), [`.cpp`](../../src/mqtt_topics_logic.cpp)) : la normalisation du préfixe (`normalizeMqttBase()` — trim des blancs, suppression des `/` finaux y compris multiples, fallback `kMqttDefaultBase = "pool/sensors"` si vide) est extraite en logique pure sur buffers C (pattern ADR-0017, comme `net_health_logic`/`dosing_logic`), **comportement historique conservé à l'identique** (pas de re-trim après suppression des `/` : `"pool /"` → `"pool "`). Testée en natif : suite `test_native_mqtt_topics` (27 tests).
+2. **`refreshTopics()` séquencé** : (a) snapshot de `mqttCfg.topic` sous `configMutex` borné (`kConfigMutexTimeoutMs` ; timeout → warn throttlé + return, retenté à la prochaine tentative de connexion), mutex **relâché avant toute suite** ; (b) normalisation pure ; (c) **early-return si le préfixe normalisé est identique à `topics.base`** — cas de très loin le plus fréquent (reconnexions sans changement de config) : **aucune réassignation**, donc aucune fenêtre de course, et suppression du churn heap de ~90 `String` toutes les 5 s sur broker instable ; (d) sinon rebuild complet sous `topicsMutex`, log `info` « Topics MQTT reconstruits » émis **hors** section critique.
+3. **`enqueueOutbound()` protégé** : la copie du topic (`strlcpy` du `c_str()` — l'unique point de déréférencement cross-task de `topics.*`) se fait **sous `topicsMutex`**. Le payload, `String` local à l'appelant, est copié hors mutex.
+
+**Contrat de concurrence `topicsMutex`** (documenté dans [`src/mqtt_manager.h`](../../src/mqtt_manager.h)) :
+
+| Règle | Détail |
+|---|---|
+| **Writer unique** | `refreshTopics()` — exécutée par `mqttTask` (+ `begin()` avant la création de la tâche). Le guard no-op lit `topics.base` sans mutex : safe, même tâche que le writer |
+| **Lecture cross-task protégée** | `enqueueOutbound()` uniquement (appelable depuis `loopTask`). Tous les autres lecteurs de `topics.*` (subscribe, discovery, publishAllStatesInternal…) s'exécutent dans `mqttTask` |
+| **Ordre des mutex** | `configMutex` puis `topicsMutex`, **jamais imbriqués** : le snapshot config est relâché avant la prise du mutex topics |
+| **Mutex NON-récursif** | ne jamais logger ni enqueuer un message en le tenant — `publishLog → enqueueOutbound` reprendrait `topicsMutex` → deadlock. D'où le log de rebuild hors section critique |
+
+**Mode dégradé** (timeout `topicsMutex`, 1000 ms) : `enqueueOutbound()` **droppe le message** (les états retain sont republiés au prochain `publishAllStates`, cadence 10 s) ; `refreshTopics()` abandonne le rebuild (retenté à la prochaine tentative de connexion). Chaque timeout émet un `WARN` `[MQTT] <site>: timeout mutex topics — opération sautée` via `warnTopicsMutexTimeout()`, throttlé à 1/min/site — avec une **différence volontaire** vs `warnConfigMutexTimeout()` : le timestamp de throttle est posé **avant** le log, car le chemin de log peut ré-entrer `enqueueOutbound()` (`publishLog`) et la ré-entrance doit tomber dans le throttle.
+
+**Changement de préfixe à chaud** : inchangé fonctionnellement. `POST /save-config` avec un `topic` modifié déclenche `requestReconnect()` (cf. section feature-018 plus bas) → au prochain `connectInTask()`, `refreshTopics()` détecte le nouveau préfixe normalisé (`base != topics.base`) et reconstruit — le guard no-op ne court-circuite que les reconnexions **sans** changement.
+
 ### États problème capteur + alerte `sensor_frozen` (feature-022, v2.10.0)
 
 Publiés depuis `publishCalibrationStatusInternal()` (exécutée par `mqttTask`) :
@@ -227,6 +248,8 @@ Mécanique dans le handler :
 **Bénéfice** : un save de paramètres non-MQTT (modes de régulation pH/ORP, NTP, toggle DEBUG, écran LVGL, calibrations, etc.) **ne provoque plus** de cycle disconnect/reconnect, donc plus de republication des 17 messages auto-discovery HA, plus de transition transitoire « Déconnecté » sur le badge UI Paramètres → MQTT (voir [`docs/features/page-settings.md`](../features/page-settings.md)). En contrepartie, un save où l'utilisateur retape la même valeur MQTT (sans changement effectif) ne déclenche pas non plus de reconnect — comportement cohérent.
 
 Cas `enabled` true → false : `requestReconnect()` est bien appelé (changement détecté). `connectInTask()` n'agit pas tant que `enabled` reste off, mais la session existante est fermée proprement par la prochaine itération de `taskLoop()`.
+
+Cas `topic` (base topic) modifié : c'est ce `requestReconnect()` qui matérialise le changement — au prochain `connectInTask()`, `refreshTopics()` compare le préfixe normalisé à `topics.base` et reconstruit les topics (voir section « Reconstruction des topics » plus haut). Le guard no-op de v2.10.0 ne court-circuite que les reconnexions **sans** changement de préfixe.
 
 ### Connexion initiale au boot
 
@@ -617,6 +640,7 @@ Si le log `WARN: MQTT outQueue saturée — N message(s) abandonné(s)` apparaî
 ## Fichiers liés
 
 - [`src/mqtt_manager.h`](../../src/mqtt_manager.h), [`src/mqtt_manager.cpp`](../../src/mqtt_manager.cpp)
+- [`src/mqtt_topics_logic.h`](../../src/mqtt_topics_logic.h), [`src/mqtt_topics_logic.cpp`](../../src/mqtt_topics_logic.cpp) — normalisation pure du préfixe de topics (ADR-0017), testée par `test/test_native_mqtt_topics/`
 - [`src/config.h`](../../src/config.h) — struct `MqttConfig`
 - [`src/constants.h`](../../src/constants.h) — paramètres `kMqttTask*`, `kMqttOutQueueLength`, etc.
 - [`src/main.cpp`](../../src/main.cpp) — `mqttManager.update()` (no-op) et `drainCommandQueue()` dans `loop()`

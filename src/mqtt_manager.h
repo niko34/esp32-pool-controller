@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <atomic>
 
@@ -113,6 +114,15 @@ private:
   PubSubClient mqtt;
 
   MqttTopics topics;
+  // bug-race-refreshtopics-uaf : protège `topics` contre la course inter-tâches
+  // (réassignation de String = free/realloc du buffer → UAF chez un lecteur).
+  // CONTRAT : l'UNIQUE writer est refreshTopics() (mqttTask, + begin() avant la
+  // création de la tâche) ; la SEULE lecture cross-task à protéger est la copie
+  // du topic dans enqueueOutbound() (appelable depuis loopTask). Tous les autres
+  // lecteurs de topics.* s'exécutent dans mqttTask (même tâche que le writer).
+  // Mutex NON-récursif : ne jamais logger ni enqueuer un message en le tenant
+  // (publishLog → enqueueOutbound reprendrait ce mutex → deadlock).
+  SemaphoreHandle_t topicsMutex = nullptr;
   bool discoveryPublished = false;
 
   // Reconnect/backoff — accédés UNIQUEMENT depuis mqttTask

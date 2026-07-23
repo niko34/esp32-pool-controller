@@ -44,6 +44,10 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0025](0025-mode-boost.md) | Mode Boost : surcouche temporaire « valeurs effectives » + relèvement borné de la limite chlore | Accepté |
 | [0026](0026-mode-installation.md) | Mode d'installation : 3 archétypes de câblage et résolution unique de la présence d'eau | Accepté |
 | [0027](0027-filtre-tendance-centrale.md) | Filtre pH/ORP recalé sur la tendance centrale (estimateur robuste + découplage valeur/latch) | Accepté |
+| [0028](0028-migration-fork-esp32async.md) | Migration vers le fork maintenu ESP32Async (AsyncTCP / ESPAsyncWebServer) avec versions épinglées | Accepté |
+| [0029](0029-auto-guerison-heap.md) | Auto-guérison sur fragmentation du tas (redémarrage propre) + mode maintenance anti-boucle | Accepté |
+| [0030](0030-watchdog-connectivite.md) | Watchdog de connectivité (sonde ICMP passerelle + réponse graduée) | Accepté |
+| [0031](0031-disjoncteur-bootloop-history.md) | Disjoncteur de boot-loop sur l'init de la partition history (détection inter-boot NVS + effacement au seuil) | Accepté |
 
 ## Template
 

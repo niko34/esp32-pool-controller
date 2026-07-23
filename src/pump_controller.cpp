@@ -792,6 +792,15 @@ void PumpControllerClass::update() {
     return;
   }
 
+  // Auto-guérison v2.9.1 (condition pool-chemistry C2) : mode maintenance →
+  // dosage entièrement suspendu (auto, manuel ET scheduled), pompes forcées à 0
+  // à chaque cycle. Gate identique à OTA, placée AVANT toute évaluation de dosage.
+  if (maintenanceInhibit) {
+    applyPumpDuty(0, 0);
+    applyPumpDuty(1, 0);
+    return;
+  }
+
   // feature-006 (condition pool-chemistry #2) : le budget horaire usedMs est
   // PARTAGÉ auto + manuel. Le prédicat manuel est CELUI du safety tracking
   // (manualMode && duty>0, cf. plus bas) : injection manuelle web, pompes test
@@ -1556,6 +1565,21 @@ void PumpControllerClass::resetDosingStates() {
 }
 
 void PumpControllerClass::setManualPump(int pumpIndex, uint8_t duty) {
+  // Auto-guérison v2.9.1 (condition pool-chemistry C2) : setManualPump est le point
+  // de passage UNIQUE de TOUTE activation manuelle directe (routes web pumpN/on,
+  // inject/start, commandes UART pump_test). En mode maintenance, cette voie pilote
+  // sinon ledcWrite() immédiatement depuis la tâche web/UART et énergiserait la pompe
+  // jusqu'au prochain update(). On la ferme AVANT tout accès manualMode/applyPumpDuty.
+  // Log throttlé (une fois par boot ; le mode maintenance ne se lève qu'au reboot).
+  if (maintenanceInhibit) {
+    static bool refusalLogged = false;
+    if (!refusalLogged) {
+      systemLogger.warning("Commande manuelle pompe ignorée : mode maintenance actif (dosage suspendu)");
+      refusalLogged = true;
+    }
+    return;
+  }
+
   if (pumpIndex < 0 || pumpIndex >= 2) {
     systemLogger.error("Index de pompe invalide: " + String(pumpIndex));
     return;

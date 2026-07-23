@@ -93,9 +93,24 @@ Activable via `setPersistenceFs(LittleFS*)` après montage de la partition `hist
 
 Le tampon `_persistBuffer` (std::vector<String>) accumule entre deux flushes. Sa capacité est **bornée à 100 entrées** (`kMaxPersistBufferEntries`) et pré-allouée dans le constructeur (`reserve(kMaxPersistBufferEntries)`) pour éviter les `std::bad_alloc` en cas de heap fragmenté en production. Les entrées au-delà de 100 sont silencieusement ignorées (les logs restent dans le buffer RAM circulaire).
 
+**Logs pré-persistance** : tant que `setPersistenceFs()` n'a pas été appelé (`_persistEnabled == false`), les entrées ne sont **pas** accumulées pour `/system.log` — elles partent en buffer RAM + console uniquement. C'est notamment le cas des logs du **disjoncteur de boot-loop history** (v2.10.0), qui s'exécute dans `HistoryManager::begin()` **avant** l'activation de la persistance (c'est précisément elle qu'il protège) : le CRIT « partition effacée automatiquement » est visible dans la page Logs (RAM) et sur la série, mais jamais dans `/system.log`. Voir [system-health.md](system-health.md#disjoncteur-de-boot-loop-de-linit-history-v2100).
+
 ## Push WebSocket
 
 `setLogCallback(cb)` permet à `ws_manager` de s'abonner. À chaque `log()`, le callback est invoqué **immédiatement** avec l'entrée, ce qui déclenche un push WS `{type: "log", timestamp, level, message}`.
+
+## Émission console
+
+Chaque `log()` se termine par l'émission de la ligne sur la série (UART0), format `[NIVEAU] message` + CRLF — **inchangé** depuis toujours côté contenu.
+
+**Depuis la v2.10.0** (correctif `bug-spam-sensor-problem-serial`), la ligne est composée dans un **buffer pile** (`kLoggerConsoleLineMax = 512`, [`constants.h`](../../src/constants.h)) puis émise en **un seul** `Serial.write()` :
+
+- L'ancienne implémentation faisait **4 `Serial.print` séparés, hors mutex** : chaque `print` est atomique au niveau HAL (`UART_MUTEX_LOCK`), mais la **séquence** pouvait s'entrelacer entre tâches (mqttTask core 0 / loopTask core 1) — lignes mélangées à granularité ligne, observé sur bench.
+- Un `write` unique étant atomique au HAL, l'entrelacement inter-tâches est supprimé **sans mutex supplémentaire** ni risque de blocage.
+- **Troncature** : si la ligne dépasse 512 octets, elle est tronquée avec **fin de ligne CRLF garantie** (les 2 derniers octets émis sont toujours `\r\n`).
+- **Buffer pile** (pas de heap) : la console reste fonctionnelle même sous heap critique.
+
+> Les troncatures **intra-chaîne** et répétitions de fragments observées lors de l'incident du 2026-07-22 relevaient, elles, d'un **rejeu matériel/driver du FIFO TX UART0** (bench, ESP32 hors PCB) — pas d'un défaut logiciel. Analyse complète : `specs/features/todo/bug-spam-sensor-problem-serial.md`.
 
 ## Concurrence
 
@@ -169,10 +184,24 @@ Depuis la v2.8.1, `poolcontroller.local` est ré-annoncé sur **tout changement 
 
 Ceci couvre le **roaming CPL/mesh sans perte de WiFi** : auparavant, la ré-annonce n'avait lieu que sur reconnexion, si bien que `poolcontroller.local` pouvait pointer vers une IP périmée (appareil injoignable en HTTP alors que MQTT continuait de fonctionner).
 
+**Debounce (v2.9.1)** : la ré-annonce n'est exécutée que si l'IP a **réellement** changé (`currentIp != mdnsLastAnnouncedIp`) **et** au plus une fois toutes les `kMdnsReannounceMinIntervalMs = 30 s`. Objectif : supprimer le churn `MDNS.end()/begin()` provoqué par les oscillations d'IP du **double NAT CPL**, qui était coûteux et **accélérait la fragmentation du tas** (cf. gel 2.9.1, [system-health.md](system-health.md)). Les oscillations ignorées sont tracées en DEBUG.
+
 | Message | Niveau | Quand |
 |---|---|---|
 | `mDNS ré-annoncé sur x.x.x.x (changement d'IP)` | INFO | Après ré-annonce effective dans `checkSystemHealth()` |
 | `Échec ré-annonce mDNS` | WARN | `MDNS.begin()` a échoué lors de la ré-annonce |
+| `Ré-annonce mDNS débouncée (IP=x.x.x.x)` | DEBUG | Oscillation d'IP ignorée (IP inchangée ou intervalle < 30 s) |
+
+### Instrumentation du tas (v2.9.1)
+
+`checkSystemHealth()` émet à **chaque** tick (60 s), **sans** dépendre d'un toggle de logs, une trace persistée du tas :
+
+| Message | Niveau | Quand |
+|---|---|---|
+| `Heap: libre=<n> maxBloc=<n> minLibre=<n>` | INFO | Chaque tick — visualise la fragmentation (`maxBloc` s'effondre alors que `libre` reste correct) |
+| `Heap fragmenté sous seuil d'alerte: maxBloc=<n> bytes` | WARN | Premier franchissement à la baisse de `kLowHeapWarnBytes` (20 Ko), suivi d'un `flushToDisk()` **one-shot** |
+
+Le flush one-shot capture la descente sur disque même si le redémarrage d'auto-guérison n'est jamais atteint ; il est ré-armé quand `maxBloc` repasse au-dessus du seuil. Mécanisme complet (auto-guérison / mode maintenance) : [system-health.md](system-health.md).
 
 > Le getter `WsManager::clientCount()` (introduit en v2.8.1) reste disponible. Le log de diagnostic périodique `[Diag]` qui l'utilisait a été **retiré en v2.8.2** (temporaire, il avait servi au diagnostic du crash `/logs`).
 

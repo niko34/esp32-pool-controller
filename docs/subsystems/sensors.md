@@ -228,7 +228,8 @@ Module dédié **déterministe et testable hors matériel** ([`src/sensor_filter
 | `bool unstable()` | `true` si **dispersion > cap** (fenêtre pleine) **OU** **latch EMI** posé **OU** `consecutiveRejects >= maxConsecutiveRejects` |
 | `bool frozen()` | `true` si `frozenSamples` échantillons acceptés consécutifs tiennent dans une bande < `frozenEpsilon` (feature-022, via `FrozenDetector` composé) |
 | `uint8_t rejectedCount() / consecutiveRejects()` | Compteur glissant 8 bits (sature à 255) / rejets NaN/hors-plage consécutifs courants |
-| `bool unstableLatched()` | `true` si le latch EMI (dispersion soutenue) est posé — persistant jusqu'à `reset()` |
+| `bool unstableLatched()` | `true` si le latch EMI (dispersion soutenue) est posé — auto-levé après `kSensorFilterLatchClearCycles` fenêtres pleines propres consécutives, ou immédiatement par `reset()` (v2.8.4) |
+| `uint8_t dispersionCleanStreak()` | Fenêtres pleines **propres** consécutives (disp ≤ cap ET zéro rejet). Compteur qui pilote l'auto-levée du latch EMI ; remis à 0 par tout rejet ou tout dépassement de dispersion (diagnostic, v2.8.4) |
 | `uint32_t ageMs(uint32_t nowMs)` | Âge de la dernière mesure acceptée (`UINT32_MAX` si aucune) |
 
 ### Logique de rejet — vraies aberrations uniquement
@@ -247,7 +248,7 @@ Le seuil `spikeReject` est **très au-dessus** de l'amplitude d'oscillation lég
 - **ready** : fenêtre pleine ET dernière mesure valide `< kSensorFilterMaxAgeMs` (= 20 s). Au-delà (EZO injoignable) → `ready()` repasse `false` → dosage fail-closed.
 - **unstable** (drapeau d'inhibition, **découplé** de la valeur — ne fige jamais `filtered()`) : `true` si l'un de ces trois signaux est posé :
   - **(a) dispersion > cap** : l'amplitude `max − min` de la fenêtre brute **pleine** dépasse `kPhFilterMaxDispersion` (= 0.5 pH) / `kOrpFilterMaxDispersion` (= 100 mV) → oscillation de niveau EMI. Les caps sont maintenus **sous** l'amplitude EMI observée (feature-057) pour préserver l'inhibition existante — **ne pas assouplir** ;
-  - **(b) latch EMI** : dispersion > cap **soutenue** (`kSensorFilterDispersionLatchCycles` = 3 fenêtres pleines consécutives en dépassement) → latch collant `unstableLatched()`, levé **uniquement** par `reset()`/recalibration ;
+  - **(b) latch EMI** : dispersion > cap **soutenue** (`kSensorFilterDispersionLatchCycles` = 3 fenêtres pleines consécutives en dépassement) → latch collant `unstableLatched()`. Auto-levé après `kSensorFilterLatchClearCycles` = 12 fenêtres pleines **propres** consécutives (≈ 2 min de signal réellement propre, v2.8.4) ou immédiatement par `reset()`/recalibration ;
   - **(c) rejets consécutifs** : `>= kSensorFilterMaxConsecutiveRejects` (= 10) rejets NaN/hors-plage consécutifs. État transitoire, s'éteint dès qu'une mesure est acceptée.
 - **frozen** (feature-022) : `kSensorFrozenSamples` (= 30) lectures acceptées consécutives dans une bande < epsilon → `ready()` repasse `false` → dosage fail-closed via la garde `FilterNotReady` existante. Sortie **immédiate sans re-warmup** dès une lecture vivante. Voir [Détection capteur figé](#détection-capteur-figé--feature-022).
 
@@ -259,13 +260,28 @@ Un bruit de niveau EMI **soutenu** (dispersion > cap sur `kSensorFilterDispersio
 - Le latch distingue un **pic de dispersion ponctuel** (inhibition transitoire, s'éteint dès que la fenêtre repasse sous le cap) d'un **défaut EMI persistant** (latch collant).
 - **La valeur `filtered()` reste publiée et recalculée** pendant tout l'état latché : le latch inhibe le **dosage**, il ne fige **pas** la valeur (contrat feature-058).
 
-Le latch est levé **uniquement** par `reset()`, déclenché par :
+#### Auto-levée après signal propre soutenu (v2.8.4)
+
+Le latch n'est **plus purement collant** : il s'auto-lève après un retour au calme durable, sans intervention. Asymétrie **voulue** — rapide à poser (3 fenêtres ≈ 15 s, défaut EMI), lent à lever (~2 min de signal réellement propre, anti-flapping) :
+
+- Compteur `dispersionCleanStreak()` : nombre de fenêtres pleines **propres** consécutives. Une fenêtre est « propre » ssi sa dispersion `max − min` reste **sous le cap** ET qu'aucun échantillon n'a été rejeté sur cette fenêtre.
+- **Incrément uniquement sur fenêtre PLEINE et propre.** Un rejet (NaN / hors-plage / spike dur isolé) fait `return` avant l'évaluation de dispersion en **remettant la streak à 0** ; tout dépassement de dispersion la remet aussi à 0. → la streak ne compte **que** des fenêtres sans aucune perturbation. Un capteur qui crache des spikes ne peut donc **jamais** lever le latch à tort.
+- Auto-levée dès `dispersionCleanStreak() >= kSensorFilterLatchClearCycles` (= 12). 12 fenêtres ≈ 60 s auxquelles s'ajoute la purge de la fenêtre médiane (~13 échantillons ≈ 65 s) → **≈ 2 min de signal réellement propre** avant reprise du dosage.
+
+`reset()` reste la **levée manuelle immédiate** (sans attendre la streak), déclenché par :
 - `POST /debug/sensor_filter_reset` (reset manuel des deux filtres) ;
 - une **calibration pH/ORP réussie** (`resetPhFilter()` / `resetOrpFilter()`).
 
 > Le reset filtre + warmup post-calibration est **mode-indépendant** : il est déclenché par le **succès de la commande EZO** dans `_processEzoQueue()`, sans aucune condition sur le mode de régulation (`automatic` / `scheduled` / `manual`). L'élargissement de l'accès à la calibration dans tous les modes (feature-034, purement frontend) ne modifie donc pas ce comportement firmware.
 
-Getter associé : `unstableLatched()` (état du latch EMI).
+#### Logs de transition (`SensorManager`)
+
+Le module `SensorFilter` est **100 % pur** (pas de logger, ADR-0017) : c'est la coquille `SensorManager` qui détecte la transition de `unstableLatched()` et journalise (une ligne par transition, par capteur) :
+
+- **Pose** — `warning` : `Filtre pH : latch EMI posé (oscillation soutenue > seuil) — dosage inhibé` (idem `Filtre ORP : …`).
+- **Auto-levée** — `info` : `Filtre pH : latch EMI levé (signal stable) — dosage à nouveau possible si mesure OK` (idem ORP).
+
+Getters associés : `unstableLatched()` (état du latch EMI), `dispersionCleanStreak()` (progression vers l'auto-levée).
 
 ### Paramètres (centralisés dans [`constants.h`](../../src/constants.h), bloc feature-058)
 
@@ -294,7 +310,7 @@ Le filtre repasse en **warmup** → dosage de la sonde concernée bloqué jusqu'
 
 ### Reset manuel / diagnostic
 
-`POST /debug/sensor_filter_reset` réinitialise **les deux** filtres (warmup) — c'est aussi le **seul** moyen, avec une calibration réussie, de **lever le latch EMI** (`unstableLatched()`). `GET /debug/sensor_filter_state` retourne l'état JSON brut (raw/median/filtered/ready/unstable/rejected par capteur). Voir [API.md](../API.md).
+`POST /debug/sensor_filter_reset` réinitialise **les deux** filtres (warmup) — c'est la **levée manuelle immédiate** du latch EMI (`unstableLatched()`), en complément de l'auto-levée après ~2 min de signal propre (v2.8.4) et de la levée sur calibration réussie. `GET /debug/sensor_filter_state` retourne l'état JSON brut (raw/median/filtered/ready/unstable/rejected par capteur). Voir [API.md](../API.md).
 
 ## Trace des signaux capteurs — feature-057
 
@@ -394,7 +410,8 @@ Un capteur **vivant** bruite d'au moins ±1 LSB (quantification + bruit sonde + 
 | `kPhFilterMaxDispersion` / `kOrpFilterMaxDispersion` | `0.5` pH / `100` mV | Cap dispersion fenêtre pleine → instable (feature-058) |
 | `kPhFilterMin/Max` / `kOrpFilterMin/Max` | `0/14` pH / `-1000/1500` mV | Plage plausible |
 | `kSensorFilterMaxConsecutiveRejects` | `10` | Rejets NaN/hors-plage consécutifs → instable (transitoire) |
-| `kSensorFilterDispersionLatchCycles` | `3` | Fenêtres pleines en dépassement de dispersion → latch EMI persistant |
+| `kSensorFilterDispersionLatchCycles` | `3` | Fenêtres pleines en dépassement de dispersion → latch EMI (≈ 15 s pour poser) |
+| `kSensorFilterLatchClearCycles` | `12` | Fenêtres pleines propres consécutives → auto-levée du latch EMI (≈ 2 min effectif avec purge médiane, v2.8.4) |
 | `kSensorFilterMaxAgeMs` | `20000` ms | Âge max dernière mesure valide pour `ready()` |
 | `kSensorFrozenSamples` | `30` | Lectures acceptées consécutives dans la bande → figé (≈ 2,5 min à 5 s — feature-022) |
 | `kSensorFrozenEpsilonPh` | `0.0005` pH | Bande figé pH = ½ LSB EZO (résolution 0.001) |

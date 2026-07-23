@@ -348,7 +348,17 @@ void SensorManager::_readEzoSensors(float tempC) {
     // feature-025 : alimenter le filtre pH (médiane + EMA + rejet pics).
     // En cas de fail-streak I²C ci-dessous, on N'alimente PAS → le filtre devient
     // non prêt par âge (kSensorFilterMaxAgeMs) et canDose() bloque (fail-closed).
-    _phFilter.addSample(ph, (uint32_t)now);
+    // v2.8.4 : journaliser la transition du latch EMI (le module pur ne peut pas
+    // logger). Pose = bruit soutenu ; levée = signal stable N fenêtres (auto).
+    {
+      bool wasLatched = _phFilter.unstableLatched();
+      _phFilter.addSample(ph, (uint32_t)now);
+      bool nowLatched = _phFilter.unstableLatched();
+      if (nowLatched && !wasLatched)
+        systemLogger.warning("Filtre pH : latch EMI posé (oscillation soutenue > seuil) — dosage inhibé");
+      else if (!nowLatched && wasLatched)
+        systemLogger.info("Filtre pH : latch EMI levé (signal stable) — dosage à nouveau possible si mesure OK");
+    }
     _phStaleLogged = false;
     _phI2cDegradedLogged = false;
     _ezoEverResponded = true;
@@ -408,7 +418,16 @@ void SensorManager::_readEzoSensors(float tempC) {
     _lastOrpMs = now;
     _orpI2cFailStreak = 0;
     // feature-025 : alimenter le filtre ORP (cf. commentaire pH ci-dessus).
-    _orpFilter.addSample(orp, (uint32_t)now);
+    // v2.8.4 : transition du latch EMI ORP (cf. pH ci-dessus).
+    {
+      bool wasLatched = _orpFilter.unstableLatched();
+      _orpFilter.addSample(orp, (uint32_t)now);
+      bool nowLatched = _orpFilter.unstableLatched();
+      if (nowLatched && !wasLatched)
+        systemLogger.warning("Filtre ORP : latch EMI posé (oscillation soutenue > seuil) — dosage inhibé");
+      else if (!nowLatched && wasLatched)
+        systemLogger.info("Filtre ORP : latch EMI levé (signal stable) — dosage à nouveau possible si mesure OK");
+    }
     _orpStaleLogged = false;
     _orpI2cDegradedLogged = false;
     _ezoEverResponded = true;

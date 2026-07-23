@@ -42,6 +42,7 @@ Quand un composant change, la fiche correspondante dans `subsystems/` doit être
 - [history.md](history.md) — historique 3 granularités, partition dédiée, import/export CSV
 - [ota-manager.md](ota-manager.md) — mise à jour firmware + filesystem, partitions double-bank
 - [logger.md](logger.md) — buffer circulaire RAM + persistance LittleFS + push WS
+- [system-health.md](system-health.md) — santé système, instrumentation heap, auto-guérison mémoire (reboot propre) + mode maintenance anti-boucle
 
 ## Conventions
 

@@ -73,6 +73,7 @@ constexpr unsigned long kConfigMutexTimeoutMs = 1000;     // 1s - Timeout acquis
 // feature-027 : bornage des prises de mutex (plus aucun portMAX_DELAY applicatif)
 constexpr unsigned long kHistoryMutexTimeoutMs = 2000;    // 2s - Pire détenteur : consolidation + saveToFile LittleFS (~1-1,5 s)
 constexpr unsigned long kLoggerMutexTimeoutMs = 100;      // 100ms - Sections critiques RAM pures (buffer circulaire logs)
+constexpr size_t kLoggerConsoleLineMax = 512;             // Buffer pile d'émission console (1 ligne = 1 Serial.write atomique)
 constexpr unsigned long kMutexTimeoutWarnThrottleMs = 60000; // 60s - Max 1 warn/min/site sur timeout mutex (statique locale par site)
 
 // Sécurité - Factory reset bouton
@@ -110,7 +111,31 @@ constexpr size_t kMaxHourlyDataPoints = 168;              // 7 jours de moyennes
 constexpr size_t kMaxDailyDataPoints = 75;                // 75 jours de moyennes journalières
 
 // Seuils mémoire
-constexpr size_t kMinFreeHeapBytes = 10000;               // Seuil critique mémoire disponible
+constexpr size_t kMinFreeHeapBytes = 10000;               // Seuil critique mémoire disponible (alerte « Mémoire faible » — INCHANGÉ)
+
+// Auto-guérison mémoire (v2.9.1) — redémarrage propre sur fragmentation du tas.
+// Le gel observé (web mort + logging arrêté, loopTask vivant) est causé par un plus
+// gros bloc contigu qui s'effondre alors que le heap total reste correct.
+// kRestartMaxAllocHeapBytes est comparé à ESP.getMaxAllocHeap() (plus gros bloc), et
+// est DISTINCT de kMinFreeHeapBytes (alerte sur heap total, conservée telle quelle).
+constexpr uint32_t kRestartMaxAllocHeapBytes = 8192;      // Plus gros bloc contigu < seuil → restart auto-guérison
+constexpr uint32_t kLowHeapWarnBytes = 20000;             // Plus gros bloc < seuil → WARN + flush disque one-shot
+constexpr unsigned long kHeapLogIntervalMs = 300000;      // 5min - cadence mini de la trace INFO « Heap: … » (anti-spam journal)
+constexpr uint32_t kHeapLogDropBytes = 8192;              // Émet aussi la trace Heap si maxBloc chute de + de 8 Ko depuis la dernière émission
+
+constexpr uint8_t  kAutoHealDebounceChecks = 3;           // Ticks consécutifs sous seuil avant restart (anti oscillation)
+constexpr uint32_t kAutoHealMinUptimeMs = 180000;         // 3 min - uptime minimal avant tout restart auto
+constexpr uint8_t  kAutoHealMaxReboots = 3;               // Plafond de reboots auto dans la fenêtre → mode maintenance
+constexpr uint32_t kAutoHealRebootWindowMs = 900000;      // 15 min - fenêtre anti-boucle (tumbling, ancrée au 1er reboot)
+
+// Disjoncteur de boot-loop de l'init history (v2.10.0, feature-059) : un drapeau
+// NVS (crash_cnt, namespace hist_meta) est posé avant le montage de la partition
+// history et levé après init complète. Si le boot précédent a crashé pendant
+// cette fenêtre kHistoryInitCrashThreshold fois consécutives, la partition est
+// effacée avant remontage (corruption littlefs → panic non rattrapable à la 1ʳᵉ
+// écriture). Indépendant de kAutoHealMaxReboots et du mode maintenance.
+constexpr uint8_t kHistoryInitCrashThreshold = 2;             // Crashs consécutifs pendant l'init → effacement partition history
+constexpr const char* kHistoryCrashCountNvsKey = "crash_cnt"; // Clé NVS du compteur (namespace hist_meta, clé part_sz intacte)
 
 // Garde heap pour les réponses volumineuses des journaux (/get-logs, /download-logs).
 // v2.8.2 : sous forte fragmentation du tas (gros bloc contigu trop petit), la
@@ -211,6 +236,14 @@ constexpr float   kOrpFilterSpikeReject          = 300.0f;   // mV : spike dur i
 // pose un latch "instable" collant, levé UNIQUEMENT par reset()/recalibration. Distingue
 // un pic de dispersion ponctuel (inhibition transitoire) d'un défaut EMI persistant.
 constexpr uint8_t kSensorFilterDispersionLatchCycles = 3;    // Fenêtres en dépassement avant latch EMI
+// Auto-levée du latch EMI (feature v2.8.4) : nombre de fenêtres PLEINES consécutives
+// PROPRES (disp <= cap ET zéro rejet) requis avant de relâcher le latch collant.
+// 12 fenêtres ≈ 60 s ; + la purge de la fenêtre médiane (~13 échantillons ≈ 65 s)
+// → ≈ 2 min de signal propre avant reprise du dosage. Asymétrie VOULUE vs
+// kSensorFilterDispersionLatchCycles=3 : rapide à poser (défaut EMI), lent à lever
+// (anti-flapping — N < 6 rouvrirait le dosage sur une accalmie transitoire d'EMI).
+// Même N pour pH et ORP.
+constexpr uint8_t kSensorFilterLatchClearCycles  = 12;      // Fenêtres propres avant auto-levée latch EMI
 // Âge max de la dernière mesure valide pour que le filtre soit considéré "prêt".
 // Au-delà, ready() repasse false (mesure trop ancienne → fail-closed dosage).
 // 4 × kPhOrpSensorIntervalMs (5 s) = 20 s, cohérent avec kSensorStaleTimeoutMs.
@@ -355,9 +388,23 @@ constexpr uint16_t kMdnsHttpPort = 80;                    // Port mDNS pour HTTP
 // mDNS
 constexpr const char* kMdnsHostname = "poolcontroller";       // Nom d'hôte mDNS (sans suffixe)
 constexpr const char* kMdnsFullHost = "poolcontroller.local"; // FQDN mDNS (utilisé par UI/HTTP/WS pour les liens)
+// Debounce ré-annonce mDNS (v2.9.1) : en double NAT CPL, l'IP peut osciller et
+// déclencher un churn MDNS.end()/begin() coûteux à chaque changement. On borne la
+// fréquence de ré-annonce pour ignorer les oscillations transitoires.
+constexpr unsigned long kMdnsReannounceMinIntervalMs = 30000; // 30s - intervalle mini entre 2 ré-annonces mDNS
 
 // Wi-Fi
 constexpr uint32_t kWifiConnectTimeoutMs = 15000;          // Timeout connexion Wi-Fi (ms)
+
+// Watchdog de connectivité (v2.9.2) : sonde ICMP active vers la passerelle pour
+// détecter un gel de la pile lwIP (web/mDNS/ping ICMP morts alors que le WiFi reste
+// associé, heap sain) que le watchdog de tâche ne voit pas (thread tcpip lwIP non
+// surveillé). Indépendant de MQTT (souvent désactivé) : le signal de vie vient du
+// ping ICMP passerelle (+ succès NTP en défense en profondeur).
+constexpr uint32_t kNetworkProbeIntervalMs = 30000;   // 30s - cadence sonde ICMP passerelle
+constexpr uint32_t kNetworkStallSoftMs     = 120000;  // 2 min - stall → soft recover (reconnexion WiFi)
+constexpr uint32_t kNetworkStallRebootMs   = 300000;  // 5 min - stall → reboot fail-safe
+constexpr uint32_t kNetworkProbeTimeoutMs  = 2000;    // 2s - timeout echo ICMP
 
 // ============================================================================
 // TIME CONSTANTS - Valeurs temporelles de référence

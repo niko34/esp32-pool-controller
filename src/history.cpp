@@ -1,5 +1,6 @@
 #include "history.h"
 #include "history_logic.h"
+#include "history_guard_logic.h"
 #include "constants.h"
 #include "logger.h"
 #include "sensors.h"
@@ -11,6 +12,7 @@
 #include <time.h>
 #include <Preferences.h>
 #include <esp_partition.h>
+#include <esp_system.h>
 
 HistoryManager history;
 
@@ -52,6 +54,46 @@ void warnHistoryMutexTimeout(unsigned long& lastWarnMs, const char* site) {
   }
 }
 
+// feature-059 : mappe esp_reset_reason() (ESP-IDF, impur) vers l'enum pur du
+// disjoncteur de boot-loop (history_guard_logic, testable en natif).
+HistoryResetKind mapResetReason(esp_reset_reason_t reason) {
+  switch (reason) {
+    case ESP_RST_POWERON:   return HistoryResetKind::PowerOn;
+    case ESP_RST_SW:        return HistoryResetKind::Software;
+    case ESP_RST_EXT:       return HistoryResetKind::External;
+    case ESP_RST_BROWNOUT:  return HistoryResetKind::Brownout;
+    case ESP_RST_DEEPSLEEP: return HistoryResetKind::DeepSleep;
+    case ESP_RST_PANIC:     return HistoryResetKind::Panic;
+    case ESP_RST_INT_WDT:   return HistoryResetKind::IntWdt;
+    case ESP_RST_TASK_WDT:  return HistoryResetKind::TaskWdt;
+    case ESP_RST_WDT:       return HistoryResetKind::OtherWdt;
+    default:                return HistoryResetKind::Other;
+  }
+}
+
+// feature-059 : lit le compteur de crashs d'init (drapeau du disjoncteur) en NVS.
+// NVS indisponible (ou namespace absent au 1er boot) → 0 = pas de drapeau,
+// dégradation silencieuse vers le comportement historique.
+uint8_t readHistoryCrashCount() {
+  Preferences prefs;
+  uint8_t value = 0;
+  if (prefs.begin("hist_meta", true)) {
+    value = prefs.getUChar(kHistoryCrashCountNvsKey, 0);
+    prefs.end();
+  }
+  return value;
+}
+
+// feature-059 : écrit le compteur de crashs d'init en NVS (pose : valeur > 0,
+// levée : 0). Échec NVS → silencieux, jamais de blocage du boot.
+void writeHistoryCrashCount(uint8_t value) {
+  Preferences prefs;
+  if (prefs.begin("hist_meta", false)) {
+    prefs.putUChar(kHistoryCrashCountNvsKey, value);
+    prefs.end();
+  }
+}
+
 unsigned long getCurrentEpoch(bool* synced, bool* estimated) {
   time_t nowEpoch = time(nullptr);
   if (isTimeValid(nowEpoch)) {
@@ -76,6 +118,54 @@ unsigned long getCurrentEpoch(bool* synced, bool* estimated) {
 
 void HistoryManager::begin() {
   _mutex = xSemaphoreCreateMutex();
+
+  // feature-059 : disjoncteur de boot-loop de l'init history.
+  // Une corruption littlefs peut provoquer une exception CPU non récupérable
+  // (IntegerDivideByZero dans lfs_alloc) à la 1ʳᵉ écriture → boot-loop avant la
+  // montée du WiFi. Détection inter-boot : compteur crash_cnt (NVS hist_meta)
+  // posé juste avant le montage, remis à 0 sur TOUTES les sorties de begin().
+  // Si le boot précédent a crashé pendant cette fenêtre kHistoryInitCrashThreshold
+  // fois consécutives → effacement de la partition avant remontage. Indépendant
+  // du budget kAutoHealMaxReboots et du mode maintenance (agit avant, en amont).
+  uint8_t guardCountToWrite = 1;  // Proceed / ErasePartition → réarmement à 1
+  {
+    HistoryGuardInputs guardIn;
+    guardIn.crashCount = readHistoryCrashCount();
+    guardIn.resetWasCrash = isCrashResetKind(mapResetReason(esp_reset_reason()));
+    guardIn.eraseThreshold = kHistoryInitCrashThreshold;
+
+    switch (evaluateHistoryGuard(guardIn)) {
+      case HistoryGuardDecision::ErasePartition: {
+        // Seuil atteint : effacer la partition AVANT montage (le montage qui
+        // suit reformatera proprement). La persistance des logs n'est pas
+        // encore active ici → le CRIT part en RAM/Serial, c'est suffisant.
+        const esp_partition_t* histPart = esp_partition_find_first(
+          ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "history");
+        if (histPart) {
+          if (esp_partition_erase_range(histPart, 0, histPart->size) == ESP_OK) {
+            _partitionAutoErased = true;
+            systemLogger.critical(String("Boot-loop détecté : ") + guardIn.crashCount +
+                                  " crashs consécutifs pendant l'init history — partition effacée automatiquement, l'historique repart de zéro");
+          } else {
+            systemLogger.critical(String("Boot-loop détecté : ") + guardIn.crashCount +
+                                  " crashs consécutifs pendant l'init history — échec de l'effacement de la partition");
+          }
+        }
+        break;
+      }
+      case HistoryGuardDecision::CountCrash:
+        // Crash pendant l'init précédente, sous le seuil : on compte et on retente.
+        guardCountToWrite = guardIn.crashCount + 1;
+        systemLogger.warning(String("Crash détecté pendant l'init history précédente (") +
+                             guardIn.crashCount + "/" + kHistoryInitCrashThreshold +
+                             ") — nouvelle tentative de montage");
+        break;
+      case HistoryGuardDecision::Proceed:
+      default:
+        // Pas de drapeau, ou reset propre (POWERON/SW/EXT/...) → réarmement silencieux.
+        break;
+    }
+  }
 
   // Effacer la partition si sa taille a changé depuis le dernier boot (ex: partition réduite).
   // LittleFS monte sans erreur sur un filesystem corrompu puis plante (division par zéro)
@@ -103,6 +193,13 @@ void HistoryManager::begin() {
       }
     }
   }
+
+  // feature-059 : pose du drapeau « init history en cours » juste avant le
+  // montage. La fenêtre de détection couvre montage + .fscheck +
+  // setPersistenceFs + loadFromFile ; le drapeau est levé (crash_cnt=0) sur
+  // toutes les sorties de begin(). Un panic ailleurs dans le firmware ne peut
+  // donc jamais déclencher l'effacement.
+  writeHistoryCrashCount(guardCountToWrite);
 
   if (historyFs.begin(true, "/history", 5, "history")) {
     historyStore = &historyFs;
@@ -144,6 +241,7 @@ void HistoryManager::begin() {
       if (!historyFs.begin(true, "/history", 5, "history")) {
         systemLogger.error("Échec remontage partition history après reformatage");
         historyEnabled = false;
+        writeHistoryCrashCount(0);  // feature-059 : sortie propre → levée du drapeau
         return;
       }
       systemLogger.info("Partition history reformatée et remontée");
@@ -155,11 +253,15 @@ void HistoryManager::begin() {
     systemLogger.error("Partition historique absente ou échec montage — logs persistants et historique désactivés");
     Serial.println("[HISTORY] ERREUR CRITIQUE: partition 'history' introuvable ou corrompue");
     historyEnabled = false;
+    writeHistoryCrashCount(0);  // feature-059 : sortie propre → levée du drapeau
     return;
   }
 
   loadClockPrefs();
   loadFromFile();
+
+  // feature-059 : init complète sans crash → levée du drapeau (crash_cnt=0).
+  writeHistoryCrashCount(0);
   systemLogger.info("Gestionnaire d'historique initialisé");
 }
 

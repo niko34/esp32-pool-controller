@@ -46,7 +46,14 @@ private:
   PumpDriver pumps[2];
   uint8_t pumpDuty[2] = {0, 0};
   bool manualMode[2] = {false, false};  // Mode test manuel par pompe
-  bool otaInProgress = false;
+  // volatile : écrit par loopTask, lu aussi en contexte web async / OTA.
+  volatile bool otaInProgress = false;
+  // Auto-guérison v2.9.1 (condition pool-chemistry C2) : quand true, tout dosage
+  // (auto, manuel, scheduled) est inhibé dans update(). Posé UNIQUEMENT par le mode
+  // maintenance de main.cpp (trop de reboots auto) ; reste actif jusqu'au prochain boot.
+  // volatile : écrit par loopTask (setMaintenanceInhibit), lu en contexte web async /
+  // UART (setManualPump, isMaintenanceInhibited) → garantit la visibilité inter-tâches.
+  volatile bool maintenanceInhibit = false;
 
   DosingState phDosingState;
   DosingState orpDosingState;
@@ -162,6 +169,15 @@ public:
   void update();
   void stopAll();
   void setOtaInProgress(bool inProgress);
+  // Lecture seule du flag OTA (v2.9.2) : consommé par checkSystemHealth() pour
+  // inhiber les watchdogs heap/connectivité pendant un flash (évite tout reboot
+  // parasite au milieu d'une OTA). Ne touche PAS la logique de dosage.
+  bool isOtaInProgress() const { return otaInProgress; }
+  // Auto-guérison v2.9.1 (condition pool-chemistry C2) : inhibe/réarme tout dosage.
+  // En mode maintenance, main.cpp appelle setMaintenanceInhibit(true) : update()
+  // coupe alors les 2 pompes à chaque cycle tant que le flag est actif.
+  void setMaintenanceInhibit(bool inhibit) { maintenanceInhibit = inhibit; }
+  bool isMaintenanceInhibited() const { return maintenanceInhibit; }
 
   // Getters pour l'état
   bool isPhDosing() const { return phDosingState.active; }

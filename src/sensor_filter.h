@@ -145,7 +145,8 @@ public:
   bool frozen() const;      // Capteur figé : N échantillons acceptés dans une bande < epsilon (feature-022)
   uint8_t rejectedCount() const;        // Compteur glissant (8 bits, sature à 255)
   uint8_t consecutiveRejects() const;   // Rejets NaN/hors-plage consécutifs courants
-  bool unstableLatched() const;         // Latch EMI posé (jusqu'à reset())
+  bool unstableLatched() const;         // Latch EMI posé (jusqu'à auto-levée ou reset())
+  uint8_t dispersionCleanStreak() const;// Fenêtres pleines propres consécutives (diagnostic auto-levée latch)
   uint32_t ageMs(uint32_t nowMs) const; // Âge dernière mesure valide (UINT32_MAX si aucune)
 
 private:
@@ -170,7 +171,13 @@ private:
   // Compteur de fenêtres PLEINES consécutives en dépassement de dispersion.
   // Au-delà de kSensorFilterDispersionLatchCycles → _unstableLatched (collant).
   uint8_t _dispersionBreachStreak = 0;
-  bool _unstableLatched = false;  // Latch EMI, levé uniquement par reset()
+  // Compteur de fenêtres PLEINES consécutives PROPRES (disp <= cap ET zéro rejet).
+  // Au-delà de kSensorFilterLatchClearCycles → auto-levée du latch EMI collant
+  // (feature v2.8.4). Remis à 0 sur TOUT rejet (NaN / hors-plage / spike) ET sur
+  // toute fenêtre en dépassement → anti-flapping : fenêtre pleine ET zéro rejet
+  // pendant TOUTE la streak.
+  uint8_t _dispersionCleanStreak = 0;
+  bool _unstableLatched = false;  // Latch EMI, posé par bruit soutenu, auto-levé après N fenêtres propres ou reset()
 
   // --- Détection capteur figé (feature-022 Passe 2) ---
   // Alimenté UNIQUEMENT par les échantillons bruts ACCEPTÉS dans addSample()
