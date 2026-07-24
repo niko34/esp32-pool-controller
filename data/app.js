@@ -4737,45 +4737,57 @@
 
   async function loadLogs(scroll = true, incremental = false) {
     try {
-      // En mode incrémental, envoyer le dernier timestamp au backend
-      let url = "/get-logs";
-      if (incremental && lastLogTimestamp > 0) {
-        url += `?since=${lastLogTimestamp}`;
-      }
+      // Pagination transparente (bug-crash-getlogs-badalloc) : /get-logs renvoie
+      // des pages bornées (~30 entrées) + un flag `truncated`. On boucle avec
+      // ?since=<dernier timestamp reçu> tant que truncated === true. Gardes
+      // anti-boucle : max 8 itérations ET curseur strictement croissant.
+      // Les modes complet et incrémental partagent la même boucle (seul le
+      // curseur de départ diffère).
+      let cursor = (incremental && lastLogTimestamp > 0) ? lastLogTimestamp : 0;
+      let collected = [];
+      let uptimeMs = null;
+      for (let i = 0; i < 8; i++) {
+        const url = cursor > 0 ? `/get-logs?since=${cursor}` : "/get-logs";
+        const res = await authFetch(url);
+        const data = await res.json();
+        if (uptimeMs == null && data.uptime_ms != null) uptimeMs = data.uptime_ms;
 
-      const res = await authFetch(url);
-      const data = await res.json();
+        const lines = Array.isArray(data) ? data : data.logs || [];
+        collected = collected.concat(lines);
+
+        let maxTs = cursor;
+        lines.forEach(entry => {
+          const ts = typeof entry === 'string' ? 0 : (entry.timestamp || 0);
+          if (ts > maxTs) maxTs = ts;
+        });
+
+        if (data.truncated !== true) break;   // dernière page atteinte
+        if (maxTs <= cursor) break;           // curseur figé → jamais de boucle infinie
+        cursor = maxTs;
+      }
 
       // Initialiser _bootEpochMs depuis uptime_ms si pas encore connu via WebSocket
-      if (_bootEpochMs == null && data.uptime_ms != null) {
-        _bootEpochMs = Date.now() - data.uptime_ms;
+      if (_bootEpochMs == null && uptimeMs != null) {
+        _bootEpochMs = Date.now() - uptimeMs;
       }
-
-      const lines = Array.isArray(data) ? data : data.logs || [];
 
       if (incremental) {
         // En mode incrémental, ajouter les nouveaux logs reçus
-        if (lines.length > 0) {
-          allLogEntries = [...allLogEntries, ...lines];
+        if (collected.length > 0) {
+          allLogEntries = [...allLogEntries, ...collected];
           if (allLogEntries.length > 500) allLogEntries = allLogEntries.slice(-500);
-
-          // Mettre à jour le dernier timestamp
-          lines.forEach(entry => {
-            const ts = typeof entry === 'string' ? 0 : (entry.timestamp || 0);
-            if (ts > lastLogTimestamp) lastLogTimestamp = ts;
-          });
         }
       } else {
         // En mode complet, remplacer tous les logs
-        allLogEntries = lines;
-
-        // Mettre à jour le dernier timestamp
+        allLogEntries = collected;
         lastLogTimestamp = 0;
-        lines.forEach(entry => {
-          const ts = typeof entry === 'string' ? 0 : (entry.timestamp || 0);
-          if (ts > lastLogTimestamp) lastLogTimestamp = ts;
-        });
       }
+
+      // Mettre à jour le dernier timestamp
+      collected.forEach(entry => {
+        const ts = typeof entry === 'string' ? 0 : (entry.timestamp || 0);
+        if (ts > lastLogTimestamp) lastLogTimestamp = ts;
+      });
 
       renderLogs(scroll);
     } catch (e) {

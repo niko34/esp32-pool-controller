@@ -20,9 +20,13 @@ void critical(const String& message);
 
 void setLogCallback(std::function<void(const LogEntry&)>);  // push WS temps réel
 
-// Itération en place des logs récents, SANS copie (v2.8.2)
-void forEachRecentLog(size_t count, uint32_t sinceTimestamp,
-                      const std::function<void(const LogEntry&)>& visitor);
+// Itération en place des logs récents, SANS copie (v2.8.2) ; le visiteur
+// retourne false pour arrêter l'itération (v2.10.4 — pagination /get-logs)
+void forEachRecentLog(size_t count, unsigned long sinceTimestamp,
+                      const std::function<bool(const LogEntry&)>& visitor) const;
+
+// Copie UNE entrée sous mutex, best-effort (v2.10.4 — export chunked /download-logs)
+bool getLogEntryByIndex(size_t chronoIdx, LogEntry& out) const;
 
 void clear();      // vide uniquement le buffer RAM circulaire
 void clearAll();   // vide RAM + _persistBuffer + supprime /system.log et /system.log.tmp
@@ -62,26 +66,39 @@ Le filtre UI `#log_level_debug` de la page Logs reste indépendant : il filtre l
 
 `kMaxLogEntries = 200` ([`constants.h:46`](../../src/constants.h:46)). Stocké dans un `std::vector<LogEntry>` préalloué. Index circulaire `currentIndex`, flag `bufferFull` pour savoir si le buffer a fait au moins un tour.
 
-## Lecture des logs récents — `forEachRecentLog` (v2.8.2)
+## Lecture des logs récents — `forEachRecentLog` (v2.8.2, visiteur `bool` en v2.10.4)
 
 ```cpp
-void forEachRecentLog(size_t count, uint32_t sinceTimestamp,
-                      const std::function<void(const LogEntry&)>& visitor);
+void forEachRecentLog(size_t count, unsigned long sinceTimestamp,
+                      const std::function<bool(const LogEntry&)>& visitor) const;
 ```
 
-Itère les `count` entrées les plus récentes (dont le `timestamp > sinceTimestamp`) **en place, sous mutex, sans copie**. Le `visitor` est appelé pour chaque entrée dans l'ordre chronologique, avec une **référence const** sur l'entrée stockée dans le buffer circulaire — aucune allocation, aucun `std::vector<LogEntry>` intermédiaire.
+Itère les `count` entrées les plus récentes (dont le `timestamp > sinceTimestamp`, `0` = pas de filtre) **en place, sous mutex, sans copie**. Le `visitor` est appelé pour chaque entrée dans l'ordre chronologique, avec une **référence const** sur l'entrée stockée dans le buffer circulaire — aucune allocation interne, aucun `std::vector<LogEntry>` intermédiaire.
 
-**Contrat mutex** : le `_mutex` est tenu pendant toute l'itération. Le `visitor` s'exécute donc **sous mutex** ; il doit rester court et ne **jamais** rappeler `systemLogger` (risque de deadlock / récursion). Les handlers HTTP `handleGetLogs` / `handleDownloadLogs` écrivent directement dans un `AsyncResponseStream` depuis le visitor.
+**Retour du visiteur (v2.10.4, bug-crash-getlogs-badalloc)** : `false` = **arrêt anticipé** de l'itération. C'est le mécanisme de pagination de `/get-logs` : la page complète est construite en **une seule prise de mutex** (jamais de double passage), l'arrêt survient quand la page est pleine (règles d'admission : [`src/logs_page.h`](../../src/logs_page.h)).
+
+**Contrat mutex** : le `_mutex` est tenu pendant toute l'itération. Le `visitor` s'exécute donc **sous mutex** ; il ne doit faire que des écritures mémoire rapides — **allocations BORNÉES tolérées** (ex. le `JsonDocument` d'une page ≤ ~4 Ko de `/get-logs`), pas d'I/O bloquante, pas de yield, et ne **jamais** rappeler `systemLogger` (risque de deadlock / récursion).
 
 ### Contexte : correctif du crash `/logs` (`std::bad_alloc`)
 
 Cette méthode **remplace** l'ancienne `std::vector<LogEntry> getRecentLogs(size_t)`. L'ancienne API **deep-copiait** tout le buffer (y compris les `String`) dans un vecteur retourné par valeur : sous fragmentation du tas, `operator new` levait `std::bad_alloc`, non rattrapée → `abort()` → PANIC → reboot. L'appareil devenait injoignable en HTTP alors que MQTT continuait de fonctionner (diagnostiqué via coredump). En itérant sans copie et en streamant la réponse, `forEachRecentLog` supprime cette allocation massive.
 
-### Garde heap `kMinHeapForLogsResponse`
+### Gardes heap des routes logs (v2.10.4, [ADR-0032](../adr/0032-reponses-http-bornees.md))
 
-Constante `kMinHeapForLogsResponse = 24576` (24 Ko, [`constants.h`](../../src/constants.h)). Avant de servir `/get-logs` ou `/download-logs`, les handlers vérifient `heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT)` (plus gros bloc contigu libre) ; s'il est en dessous du seuil, ils renvoient **503** (`{"error":"low_memory"}` en JSON pour `/get-logs`, message texte pour `/download-logs`) sans tenter la moindre allocation.
+La constante `kMinHeapForLogsResponse` (24 Ko, v2.8.2) est **supprimée** : un seuil FIXE indépendant de la taille réelle de la réponse ne protégeait pas (2 coredumps `bad_alloc` → `abort`, 2026-07-23 `/debug/sensor_trace` et 2026-07-24 `/get-logs` — le commentaire v2.8.2 « le stream grandit par realloc, jamais d'abort » était faux : le `cbuf` d'`AsyncResponseStream` est un `new char[]` throwant). Remplacée par :
 
-> ⚠️ **Limitation connue** : `/download-logs` peut **tronquer** l'export (jamais planter) si le tas est très fragmenté et que le buffer de flux ne peut plus grandir. Amélioration *chunked* prévue ultérieurement.
+- **`/get-logs`** : page bornée (30 entrées, hard cap 60), `measureJson()` de la page réelle + marge `kHttpHeapMarginBytes` (4 Ko) comparés à `ESP.getMaxAllocHeap()` → **503** `{"error":"heap fragmenté, réessayez"}` ou stream **pré-dimensionné exact**.
+- **`/download-logs`** : flux **chunked zéro-RAM** (aucune garde nécessaire — rien de proportionnel à l'export n'est alloué), voir `getLogEntryByIndex` ci-dessous.
+
+Contrats détaillés : [`docs/API.md`](../API.md#get-get-logs--write).
+
+## Copie unitaire — `getLogEntryByIndex` (v2.10.4)
+
+```cpp
+bool getLogEntryByIndex(size_t chronoIdx, LogEntry& out) const;
+```
+
+Copie **UNE** entrée sous mutex (`chronoIdx` chronologique, `0` = la plus ancienne). Retourne `false` si l'index dépasse le nombre d'entrées **OU** sur timeout mutex (`kLoggerMutexTimeoutMs`) — les deux cas sont indistinguables pour l'appelant : contrat **best-effort** assumé. Consommée par le callback chunked de `/download-logs` (une entrée par itération, une seule `String` copiée à la fois) ; le ring peut tourner entre deux chunks (doublon/saut tolérés — export de diagnostic). Le report de ligne entre deux chunks est géré par le module pur [`src/logs_export_chunk.h`](../../src/logs_export_chunk.h) (`LogLineCarry<kLogExportLineMaxBytes>` / `emitCarry`, garantie de progression — jamais `0` avant la vraie fin ; lignes > 256 o tronquées « … »).
 
 ## Persistance sur LittleFS (partition history)
 
@@ -120,7 +137,7 @@ Mutex FreeRTOS (`_mutex`) protège :
 
 ### Timeouts mutex bornés (feature-027, v2.11.1)
 
-Les **7 prises de mutex** du logger sont bornées par `kLoggerMutexTimeoutMs = 100 ms` ([`constants.h`](../../src/constants.h)) — valeur courte car toutes les sections critiques du logger sont en **RAM pure** (buffer circulaire, `_persistBuffer`), jamais d'I/O sous mutex.
+Les **8 prises de mutex** du logger (7 depuis feature-027, +1 avec `getLogEntryByIndex` en v2.10.4) sont bornées par `kLoggerMutexTimeoutMs = 100 ms` ([`constants.h`](../../src/constants.h)) — valeur courte car toutes les sections critiques du logger sont en **RAM pure** (buffer circulaire, `_persistBuffer`), jamais d'I/O sous mutex.
 
 **Politique silencieuse anti-récursion** : les chemins d'échec du logger n'appellent **JAMAIS** `systemLogger` (un log qui échoue à logger son propre échec = récursion). Seul un `Serial.printf` de secours existe sur le chemin de réinsertion de `flushToDisk()`.
 
@@ -130,6 +147,7 @@ Politique d'échec par site :
 |---|---|
 | `log()` | Entrée perdue (RAM + persistance) + `_droppedLogs++`. Le push WS n'a pas lieu (callback non capturé) |
 | `forEachRecentLog()` | Aucune itération (le `visitor` n'est pas appelé — le client réessaiera) |
+| `getLogEntryByIndex()` | Retourne `false` — l'export chunked `/download-logs` termine sa section RAM sans erreur (best-effort) |
 | `clear()` | No-op — rien n'est perdu, l'utilisateur peut re-cliquer. **Ne compte pas dans `_droppedLogs`** (corrigé post-revue : le compteur ne trace que des *entrées* perdues) |
 | `clearAll()` | Return **avant** toute modification — le fichier `/system.log` n'est pas supprimé si la RAM n'a pas pu être vidée (pas d'état incohérent) |
 | `getLogCount()` | Retourne `0` |
@@ -142,8 +160,8 @@ Politique d'échec par site :
 
 | Action | Endpoint | Auth |
 |--------|----------|------|
-| Lire les logs récents | `GET /get-logs` | READ |
-| Télécharger les logs persistés | `GET /download-logs` | READ |
+| Lire les logs récents (paginé v2.10.4 — `?since=`, `truncated`) | `GET /get-logs` | WRITE |
+| Télécharger les logs (fichier persistant + RAM, flux chunked v2.10.4) | `GET /download-logs` | WRITE |
 | Effacer les logs côté ESP32 (RAM + fichier persistant) | `DELETE /logs` | WRITE |
 
 `DELETE /logs` invoque `systemLogger.clearAll()` puis émet un INFO `Logs effacés (RAM + fichier persistant)` pour tracer l'action. Réponse JSON : `{"success": true}`.

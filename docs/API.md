@@ -249,6 +249,8 @@ Paramètre `range` : `24h` (défaut), `3d`, `7d`, `30d`, `all`.
 
 Paramètre optionnel `?since=TIMESTAMP` pour récupération incrémentale.
 
+**Réponse 503** (`{"error":"heap fragmenté, réessayez"}`) possible depuis la v2.10.4 ([ADR-0032](adr/0032-reponses-http-bornees.md)) : la réponse est concaténée dans une `String` **pré-réservée au pire cas** (`points × kHistoryPointJsonMaxBytes (128) + 128` octets — pire cas d'un point mesuré à 113-120 o) ; le retour `bool` de `String::reserve()` est le test du bloc contigu — s'il échoue, 503 propre plutôt qu'un crash `bad_alloc` ou un JSON tronqué silencieux.
+
 ---
 
 ### POST /history/clear — CRITICAL
@@ -275,7 +277,7 @@ curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
 
 ### GET /get-logs — WRITE
 
-Retourne les 200 derniers logs système. Paramètre optionnel `?since=TIMESTAMP` pour récupération incrémentale (ne retourne que les entrées postérieures à ce timestamp).
+Retourne les logs système par **pages bornées** (v2.10.4, [ADR-0032](adr/0032-reponses-http-bornees.md)). Paramètre optionnel `?since=TIMESTAMP` : ne retourne que les entrées dont le timestamp est **strictement supérieur** — c'est à la fois le curseur de pagination et le mécanisme de récupération incrémentale.
 
 ```bash
 curl -u admin:monmotdepasse http://poolcontroller.local/get-logs
@@ -284,18 +286,24 @@ curl -u admin:monmotdepasse "http://poolcontroller.local/get-logs?since=14400000
 
 ```json
 {
+  "uptime_ms": 18000000,
   "logs": [
     { "timestamp": 14400000, "level": "INFO", "message": "Capteurs initialisés" },
     { "timestamp": 14405000, "level": "WARNING", "message": "pH hors limites: 7.8" }
-  ]
+  ],
+  "truncated": false
 }
 ```
 
 > `timestamp` est exprimé en millisecondes depuis le démarrage de l'ESP32 (`millis()`).
 
-**Réponse en flux** : la réponse est construite via `beginResponseStream` (buffer redimensionné par `realloc`, ne lève jamais d'exception), sans copie du buffer de logs en RAM.
+**Pagination** (v2.10.4) :
 
-**Réponse 503** (`{"error":"low_memory"}`) : si le plus gros bloc contigu libre du tas (`heap_caps_get_largest_free_block`) est en dessous de `kMinHeapForLogsResponse` (24 Ko), l'endpoint refuse de servir la réponse plutôt que de risquer une allocation qui échouerait. Garde introduite en v2.8.2 pour empêcher un crash `std::bad_alloc` sous fragmentation du tas.
+- Page de **30 entrées** (`kLogsMaxEntriesPerPage`, ~4 Ko de JSON au pire), extensible jusqu'au **plafond dur de 60** (`kLogsPageHardCap`) **uniquement** pour inclure la queue d'entrées partageant la même milliseconde que la dernière entrée incluse — le curseur `?since=` étant strictement supérieur, les exclure les perdrait définitivement entre deux pages (règles d'admission : [`src/logs_page.h`](../src/logs_page.h)).
+- `truncated: true` → il reste des entrées au-delà de cette page ; le client reboucle avec `?since=<timestamp de la dernière entrée reçue>` jusqu'à `truncated: false`. Un client ancien qui ignore `truncated` reste fonctionnel (il voit simplement la première page).
+- Le document JSON de la page est construit en **une seule passe sous le mutex logger**, l'échappement est délégué à `serializeJson` (l'échappement manuel a été supprimé).
+
+**Réponse 503** (`{"error":"heap fragmenté, réessayez"}`) : la taille **réelle** de la page (`measureJson`) + `kHttpHeapMarginBytes` (4 Ko) est comparée au plus gros bloc contigu libre (`ESP.getMaxAllocHeap()`) **avant** toute allocation ; sinon le stream est pré-dimensionné exactement (aucun `resize()`). Remplace la garde v2.8.2 à seuil fixe `kMinHeapForLogsResponse` (24 Ko), supprimée — un seuil constant indépendant de la taille réelle de la réponse ne protégeait pas (2 coredumps, 2026-07-23 et 2026-07-24).
 
 ---
 
@@ -309,21 +317,25 @@ curl -u admin:monmotdepasse http://poolcontroller.local/download-logs -o pool_lo
 
 ```
 # Pool Controller — Journal système
-# Exporté le boot+3600s | Entrées: 42
-# Format: [+Xs] NIVEAU : message
+# Exporté le : 2026-07-24 09:41:00
+# Format: [YYYY-MM-DD HH:MM:SS] NIVEAU : message
 
-[+01:00:00] INFO : Démarrage dosage pH: pH=7.85 cible=7.20 erreur=+0.65
-[+01:00:45] INFO : Arrêt dosage pH: durée=45s vol≈3.5mL total jour=3.5/300mL — pause 30min
-[+01:31:00] INFO : Démarrage dosage pH: pH=7.78 cible=7.20 erreur=+0.58
+# === Historique persistant ===
+[2026-07-23 08:12:04] INFO : Démarrage dosage pH: pH=7.85 cible=7.20 erreur=+0.65
+# === Fin historique persistant ===
+
+# === Session courante ===
+[2026-07-24 09:31:00] INFO : Démarrage dosage pH: pH=7.78 cible=7.20 erreur=+0.58
 ```
 
-> Les logs enrichis incluent les événements de dosage (démarrage, arrêt, paramètres) ainsi que les alertes de limites horaires/journalières.
+> Heure non synchronisée → timestamps relatifs `[+HH:MM:SS]` depuis le boot. Les logs enrichis incluent les événements de dosage (démarrage, arrêt, paramètres) ainsi que les alertes de limites horaires/journalières.
 
-**Réponse en flux** : export construit via `beginResponseStream`, sans copie préalable du buffer.
+**Réponse en flux chunked, zéro accumulation RAM** (v2.10.4, [ADR-0032](adr/0032-reponses-http-bornees.md)) : l'export est produit par une machine à états (`beginChunkedResponse`, patron `/coredump/download`) qui remplit directement le buffer TCP borné — d'abord le fichier persistant `/system.log` (lu par blocs), puis les entrées du buffer RAM (copiées une à une sous mutex via `Logger::getLogEntryByIndex`). Aucune garde heap n'est nécessaire (rien de proportionnel à la taille de l'export n'est alloué) : **plus de réponse 503** sur cette route.
 
-**Réponse 503** (message texte) : servie si le plus gros bloc libre est sous `kMinHeapForLogsResponse` (24 Ko), même garde heap que `/get-logs`.
+Limites assumées de l'export (best-effort, route de diagnostic) :
 
-> ⚠️ **Limitation connue** : sous tas très fragmenté, `/download-logs` peut **tronquer** l'export (jamais planter) si le buffer de flux ne peut plus grandir. Une version *chunked* (envoi par tranches) est prévue ultérieurement pour lever cette limite.
+- Lignes formatées > **256 octets** (`kLogExportLineMaxBytes`) tronquées avec suffixe « … ».
+- Le ring RAM peut tourner entre deux chunks (doublon ou saut d'entrée possibles) ; un timeout du mutex logger termine la section RAM sans erreur.
 
 ---
 
@@ -1077,6 +1089,8 @@ curl -u admin:monmotdepasse http://poolcontroller.local/check-update
 ```
 
 Champs additifs v2.11.0 : `firmware_digest` / `filesystem_digest` — empreintes SHA-256 des assets (champ `digest` de l'API GitHub, format `sha256:<64 hex>`, chaîne vide si la release ne le fournit pas). L'UI les relaie en paramètre `digest=` de `/download-update` et **désactive le bouton Installer** si l'une des deux est vide (fail-closed).
+
+La réponse contient aussi `release_name`, `published_at` et `release_notes` (corps de la release GitHub). Depuis la v2.10.4 ([ADR-0032](adr/0032-reponses-http-bornees.md)), `release_notes` est **tronqué à 2048 caractères** (`kOtaReleaseNotesMaxChars`) avec suffixe « … » : le corps d'une release n'est pas borné côté GitHub, la troncature borne la réponse HTTP construite en RAM.
 
 ---
 

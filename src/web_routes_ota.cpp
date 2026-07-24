@@ -385,7 +385,13 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   response["filesystem_digest"] = filesystemDigest;
   response["release_name"] = doc["name"];
   response["published_at"] = doc["published_at"];
-  response["release_notes"] = doc["body"];
+  // bug-crash-getlogs-badalloc (audit) : le corps de release GitHub n'est pas
+  // borné → tronquer pour borner la réponse construite en RAM.
+  String releaseNotes = doc["body"].as<String>();
+  if (releaseNotes.length() > kOtaReleaseNotesMaxChars) {
+    releaseNotes = releaseNotes.substring(0, kOtaReleaseNotesMaxChars) + "…";
+  }
+  response["release_notes"] = releaseNotes;
 
   String json;
   serializeJson(response, json);

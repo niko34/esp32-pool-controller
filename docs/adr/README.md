@@ -48,6 +48,7 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0029](0029-auto-guerison-heap.md) | Auto-guérison sur fragmentation du tas (redémarrage propre) + mode maintenance anti-boucle | Accepté |
 | [0030](0030-watchdog-connectivite.md) | Watchdog de connectivité (sonde ICMP passerelle + réponse graduée) | Accepté |
 | [0031](0031-disjoncteur-bootloop-history.md) | Disjoncteur de boot-loop sur l'init de la partition history (détection inter-boot NVS + effacement au seuil) | Accepté |
+| [0032](0032-reponses-http-bornees.md) | Réponses HTTP bornées : pagination, chunked ou allocation unique testée — gardes à seuil fixe interdites | Accepté |
 
 ## Template
 

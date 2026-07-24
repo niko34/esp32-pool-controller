@@ -171,11 +171,13 @@ Voir [`docs/API.md#diagnostic-crash-coredump`](../API.md#diagnostic-crash-coredu
 
 Liste défilante des derniers logs poussés via WebSocket + filtres par niveau (DEBUG/INFO/WARN/ERROR/CRITICAL). Quatre boutons dans la barre d'action :
 
+**Chargement paginé transparent (v2.10.4, [ADR-0032](../adr/0032-reponses-http-bornees.md))** : `/get-logs` renvoie des pages bornées (~30 entrées) avec un flag `truncated` ; `loadLogs()` boucle avec `?since=<dernier timestamp reçu>` tant que `truncated === true` — gardes anti-boucle : **max 8 itérations** et curseur strictement croissant. Le rendu est identique vu de l'utilisateur (journal complet). Les modes complet et incrémental (auto-refresh 5 s) partagent la même boucle, seul le curseur de départ diffère ; l'absence du flag `truncated` (ancienne API) est traitée comme dernière page (compatibilité). Si le firmware répond **503** (`heap fragmenté, réessayez`), la boucle s'arrête sur les pages déjà reçues, sans message dédié ; une erreur réseau affiche « Erreur chargement logs. ».
+
 | Bouton | Style | Action |
 |--------|-------|--------|
-| Actualiser | ghost | Force un rechargement complet via `GET /get-logs` |
+| Actualiser | ghost | Force un rechargement complet via `GET /get-logs` (boucle de pagination ci-dessus) |
 | Effacer (écran) | ghost | Vide **uniquement la vue navigateur locale** (`#logs_content`, `allLogEntries`, `lastLogTimestamp`). Les logs côté ESP32 sont intacts ; un rechargement les fait réapparaître. Tooltip : *« Vide uniquement la vue actuelle, les logs restent côté ESP32 »*. |
-| Télécharger | ghost | Téléchargement de `pool_logs.txt` via `GET /download-logs` |
+| Télécharger | ghost | Téléchargement de `pool_logs.txt` via `GET /download-logs` (flux chunked v2.10.4 — lignes > 256 o tronquées « … », cf. [`docs/API.md`](../API.md#get-download-logs--write)) |
 | Effacer (firmware) | **danger (rouge)** | Confirmation via `confirmDialog` (variante danger) puis `DELETE /logs` (cf. [`docs/API.md`](../API.md#delete-logs--write)). Vide RAM + buffer pending + supprime `/system.log` côté ESP32, vide aussi la vue locale, toast de succès `Logs effacés (RAM + fichier)`. Tooltip : *« Vide la mémoire et supprime le fichier persistant côté ESP32 »*. |
 
 Toggles complémentaires :

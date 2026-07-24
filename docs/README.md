@@ -59,8 +59,17 @@ docs/
 │   ├── 0019-partition-app-1664k.md
 │   ├── 0020-budget-horaire-dosage-unique.md
 │   ├── 0021-repartition-scheduled.md
+│   ├── 0022-verification-integrite-ota.md
+│   ├── 0023-politique-cors-retrait.md
+│   ├── 0024-partitions-layout-v4.md
+│   ├── 0025-mode-boost.md
+│   ├── 0026-mode-installation.md
+│   ├── 0027-filtre-tendance-centrale.md
+│   ├── 0028-migration-fork-esp32async.md
 │   ├── 0029-auto-guerison-heap.md
-│   └── 0030-watchdog-connectivite.md
+│   ├── 0030-watchdog-connectivite.md
+│   ├── 0031-disjoncteur-bootloop-history.md
+│   └── 0032-reponses-http-bornees.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

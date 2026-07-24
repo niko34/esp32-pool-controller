@@ -2,6 +2,30 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.10.4] - 2026-07-24
+
+### Corrigé
+
+- **Crash/reboot au chargement du journal sur heap fragmenté** : `GET /get-logs` sérialisait jusqu'à 200 entrées de log (20-40 Ko) dans le `cbuf` **contigu** d'`AsyncResponseStream` (`resize()` = `new char[]` throwant) → `std::bad_alloc` non rattrapé sur la tâche `async_tcp` → `abort()` → **reboot**. **2ᵉ occurrence de la classe en 2 jours** (coredump du 2026-07-24, décodé GDB — même signature que `/debug/sensor_trace`, corrigé en 2.10.1) : la garde v2.8.2 à seuil heap FIXE (`kMinHeapForLogsResponse` = 24 Ko, indépendant de la taille réelle) et son commentaire « realloc, jamais d'abort » sont **invalidés**. Correctif **systémique** après audit exhaustif des routes à réponse bufferisée (toutes les autres prouvées bornées), règle générale gravée dans l'**ADR-0032** :
+  - **`/get-logs` paginé** : curseur `?since=` réutilisé, page de 30 entrées (hard cap 60 — la queue d'entrées partageant la même milliseconde que la dernière incluse est embarquée, sinon le curseur strictement supérieur les perdrait entre deux pages), champ `truncated` dans la réponse (`{uptime_ms, logs[], truncated}`), page construite en **une passe sous le mutex logger**, `measureJson` + marge `kHttpHeapMarginBytes` (4 Ko) vs `ESP.getMaxAllocHeap()` → **503** propre ou stream **pré-dimensionné exact**. Échappement manuel supprimé (délégué à `serializeJson`). **UI** : boucle de pagination transparente dans `loadLogs()` (max 8 itérations, curseur strictement croissant, compatible ancienne API sans `truncated`).
+  - **`/download-logs` en flux chunked zéro-RAM** (patron `/coredump/download`) : fichier `/system.log` lu par blocs puis entrées RAM une à une (nouveau `Logger::getLogEntryByIndex`, best-effort sur timeout mutex), report de ligne entre chunks via module pur `logs_export_chunk.h` (garantie de progression), lignes > 256 o tronquées « … ». Garde heap supprimée (inutile en chunked) — plus de 503 ni de troncature d'export sous heap fragmenté.
+  - **`/get-history`** : `String::reserve(points × kHistoryPointJsonMaxBytes(128) + 128)` dont le retour `bool` EST le test du bloc contigu — échec → **503** (jamais de JSON tronqué silencieux). Pire cas du point JSON **mesuré** (113-120 o, constante 96 → 128 post-revue).
+  - **`/check-update`** : release notes GitHub (non bornées) tronquées à `kOtaReleaseNotesMaxChars` (2048) + « … ».
+  - `Logger::forEachRecentLog` : le visiteur retourne un `bool` (`false` = arrêt anticipé — une page = une prise de mutex) ; `kMinHeapForLogsResponse` **supprimée**, `kHttpHeapMarginBytes` (4096) généralisée (alias `kSensorTraceHeapMarginBytes` conservé) ; commentaires mensongers v2.8.2 corrigés. Aucun chemin de dosage touché.
+
+### Ajouté
+
+- **2 nouvelles suites de tests natives** : `test_native_logs_page` (admission de page pure `logs_page.h`) et `test_native_logs_export` (report de ligne `logs_export_chunk.h`) — **21 tests**, modules purs pattern ADR-0017, **353 tests natifs au total**.
+
+### Documentation
+
+- `docs/adr/0032-reponses-http-bornees.md` : **nouvel ADR** — toute réponse HTTP pouvant dépasser ~4 Ko doit être (a) paginée + pré-dimensionnée exactement, (b) chunked sans accumulation RAM, ou (c) allocation unique testée (`reserve` bool) avec 503 propre ; **gardes à seuil heap fixe interdites**. Tableau d'audit des routes (corrigées + prouvées sûres), 3 patrons de référence.
+- `docs/API.md` : contrats mis à jour — `/get-logs` (pagination, `truncated`, 503), `/download-logs` (chunked, limites best-effort), `/get-history` (503 possible), `/check-update` (`release_notes` tronqué).
+- `docs/subsystems/logger.md` : signatures `forEachRecentLog` (visiteur `bool`) et `getLogEntryByIndex` (best-effort), section gardes heap réécrite (suppression `kMinHeapForLogsResponse`).
+- `docs/features/page-settings.md` : chargement paginé transparent de la card Logs + export chunked.
+
+---
+
 ## [2.10.3] - 2026-07-23
 
 ### Corrigé

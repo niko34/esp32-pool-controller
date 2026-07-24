@@ -124,7 +124,7 @@ String Logger::getLevelString(LogLevel level) {
 }
 
 void Logger::forEachRecentLog(size_t count, unsigned long sinceTimestamp,
-                              const std::function<void(const LogEntry&)>& visitor) const {
+                              const std::function<bool(const LogEntry&)>& visitor) const {
   if (!visitor) return;
 
   // feature-027 : timeout → aucune itération (silencieux, l'appelant peut réessayer)
@@ -134,12 +134,15 @@ void Logger::forEachRecentLog(size_t count, unsigned long sinceTimestamp,
 
   // v2.8.2 : parcours EN PLACE, aucune copie. Le visiteur reçoit une référence
   // const sur chaque entrée et ne fait que des écritures mémoire rapides (contrat).
+  // bug-crash-getlogs-badalloc : visiteur → false = arrêt anticipé (pagination).
   if (!bufferFull) {
     // Buffer pas encore plein : les dernières n entrées
     size_t start = logs.size() > count ? logs.size() - count : 0;
     for (size_t i = start; i < logs.size(); i++) {
       const LogEntry& e = logs[i];
-      if (sinceTimestamp == 0 || e.timestamp > sinceTimestamp) visitor(e);
+      if (sinceTimestamp == 0 || e.timestamp > sinceTimestamp) {
+        if (!visitor(e)) break;
+      }
     }
   } else {
     // Buffer circulaire plein
@@ -148,11 +151,32 @@ void Logger::forEachRecentLog(size_t count, unsigned long sinceTimestamp,
     for (size_t i = 0; i < itemsToReturn; i++) {
       size_t idx = (startIndex + i) % MAX_LOGS;
       const LogEntry& e = logs[idx];
-      if (sinceTimestamp == 0 || e.timestamp > sinceTimestamp) visitor(e);
+      if (sinceTimestamp == 0 || e.timestamp > sinceTimestamp) {
+        if (!visitor(e)) break;
+      }
     }
   }
 
   if (_mutex) xSemaphoreGive(_mutex);
+}
+
+bool Logger::getLogEntryByIndex(size_t chronoIdx, LogEntry& out) const {
+  // bug-crash-getlogs-badalloc : copie d'UNE seule entrée (petite String) sous
+  // mutex — jamais de copie du buffer entier. Timeout → false (best-effort).
+  if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(kLoggerMutexTimeoutMs)) != pdTRUE) {
+    return false;
+  }
+  bool ok = false;
+  size_t total = bufferFull ? MAX_LOGS : logs.size();
+  if (chronoIdx < total) {
+    // Index chronologique 0 = la plus ancienne. Buffer plein : currentIndex est
+    // la prochaine position d'écriture, donc aussi l'entrée la plus ancienne.
+    size_t idx = bufferFull ? (currentIndex + chronoIdx) % MAX_LOGS : chronoIdx;
+    out = logs[idx];
+    ok = true;
+  }
+  if (_mutex) xSemaphoreGive(_mutex);
+  return ok;
 }
 
 void Logger::clear() {

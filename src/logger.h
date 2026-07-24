@@ -65,10 +65,21 @@ public:
   // fois par entrée récente (dans l'ordre chronologique), sous le mutex du logger.
   // Filtre optionnel : n'appelle le visiteur que pour les entrées dont le timestamp
   // est strictement supérieur à sinceTimestamp (0 = pas de filtre).
-  // CONTRAINTE : le visiteur ne doit faire QUE des écritures mémoire rapides — pas
+  // bug-crash-getlogs-badalloc : le visiteur retourne un bool — false = arrêt
+  // anticipé de l'itération (pagination /get-logs : une seule prise de mutex
+  // par page, jamais de double passage).
+  // CONTRAINTE : le visiteur ne doit faire QUE des écritures mémoire rapides
+  // (allocations BORNÉES tolérées, ex. JsonDocument d'une page ≤ ~4 Ko) — pas
   // d'I/O bloquante, pas de yield — car il s'exécute sous le mutex (scope minimal).
   void forEachRecentLog(size_t count, unsigned long sinceTimestamp,
-                        const std::function<void(const LogEntry&)>& visitor) const;
+                        const std::function<bool(const LogEntry&)>& visitor) const;
+
+  // bug-crash-getlogs-badalloc : copie UNE entrée sous mutex (index chronologique,
+  // 0 = la plus ancienne). Retourne false si idx >= nombre d'entrées OU sur
+  // timeout mutex (kLoggerMutexTimeoutMs) — indistinguables pour l'appelant
+  // (export best-effort). Utilisé par le callback chunked de /download-logs :
+  // le ring peut tourner entre deux appels (doublon/saut tolérés, diagnostic).
+  bool getLogEntryByIndex(size_t chronoIdx, LogEntry& out) const;
   void clear();        // Vide uniquement le buffer RAM circulaire
   void clearAll();     // Vide RAM + buffer pending + supprime /system.log sur le FS persistant
   size_t getLogCount();

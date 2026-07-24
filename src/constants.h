@@ -137,13 +137,39 @@ constexpr uint32_t kAutoHealRebootWindowMs = 900000;      // 15 min - fenêtre a
 constexpr uint8_t kHistoryInitCrashThreshold = 2;             // Crashs consécutifs pendant l'init → effacement partition history
 constexpr const char* kHistoryCrashCountNvsKey = "crash_cnt"; // Clé NVS du compteur (namespace hist_meta, clé part_sz intacte)
 
-// Garde heap pour les réponses volumineuses des journaux (/get-logs, /download-logs).
-// v2.8.2 : sous forte fragmentation du tas (gros bloc contigu trop petit), la
-// construction de la réponse peut échouer. On refuse alors proprement (503) plutôt
-// que de tenter une allocation qui dégraderait la réponse. Comparé au plus gros
-// bloc contigu libre (heap_caps_get_largest_free_block), pas au heap total.
-// Couvre le pire cas /get-logs (~200 entrées × ~120 o ≈ 24 Ko) + marge TCP.
-constexpr size_t kMinHeapForLogsResponse = 24576;         // 24KB - Bloc contigu min pour servir les logs
+// Marge commune des gardes heap HTTP (pattern v2.10.1, généralisé par
+// bug-crash-getlogs-badalloc) : la taille RÉELLE de la réponse (measureJson /
+// String::reserve) + cette marge doit tenir dans le plus gros bloc contigu libre
+// (ESP.getMaxAllocHeap()), sinon 503 propre — jamais de std::bad_alloc → abort().
+// Remplace l'ancien seuil FIXE kMinHeapForLogsResponse (24 Ko), indépendant de la
+// taille réelle de la réponse, donc insuffisant (2 coredumps le prouvent).
+constexpr size_t kHttpHeapMarginBytes = 4096;
+
+// Pagination de GET /get-logs (bug-crash-getlogs-badalloc) : page souple de 30
+// entrées (~4 Ko de JSON au pire), extensible jusqu'au plafond dur UNIQUEMENT pour
+// une queue d'entrées partageant la même milliseconde que la dernière incluse —
+// le curseur ?since= étant strictement supérieur, les exclure les perdrait
+// définitivement entre deux pages (règles d'admission : logs_page.h).
+constexpr size_t kLogsMaxEntriesPerPage = 30;             // Limite souple (taille de page visée)
+constexpr size_t kLogsPageHardCap = 60;                   // Plafond dur (coupe même une queue même-ms)
+
+// Export /download-logs en flux chunked : longueur max d'une ligne formatée
+// (horodatage + niveau + message — tronquée avec « … » au-delà). Passée en
+// paramètre template à LogLineCarry<N> (logs_export_chunk.h, header pur).
+constexpr size_t kLogExportLineMaxBytes = 256;
+
+// Pire cas d'un point JSON de /get-history : mesuré 113-120 o sur le format
+// réel (clés fixes 82 o + valeurs : timestamp 10, ph 4, orp 4, temp 4, 2 bools,
+// granularity) — revue v2.10.4. Sert à pré-dimensionner la String de réponse :
+// le bool de String::reserve() EST le test du bloc contigu (échec → 503) et le
+// reserve doit COUVRIR le pire cas, sinon réallocation en cours de concaténation
+// et garde contournée.
+constexpr size_t kHistoryPointJsonMaxBytes = 128;
+
+// Release notes GitHub relayées telles quelles par /check-update : le corps de
+// release n'est pas borné côté GitHub → tronquer (suffixe « … ») pour borner la
+// réponse HTTP construite en RAM.
+constexpr size_t kOtaReleaseNotesMaxChars = 2048;
 
 // ============================================================================
 // SENSOR CONSTANTS - Paramètres capteurs
@@ -260,7 +286,9 @@ constexpr size_t kSensorTraceMaxSamplesPerPage   = 50;
 // Marge de sécurité entre la taille mesurée de la réponse (measureJson) et le
 // plus gros bloc libre (ESP.getMaxAllocHeap()) : en dessous → 503 propre au
 // lieu d'un std::bad_alloc → abort() sur la tâche async_tcp.
-constexpr size_t kSensorTraceHeapMarginBytes     = 4096;
+// Alias historique (v2.10.1) de la marge commune kHttpHeapMarginBytes — même
+// valeur, zéro diff comportemental (bug-crash-getlogs-badalloc).
+constexpr size_t kSensorTraceHeapMarginBytes     = kHttpHeapMarginBytes;
 
 // Pause mélange hydraulique après injection (pool-chemistry feature-025).
 // Distincte du timer post-calibration (_stabilizationEndMs). Gates indépendantes (OR).
