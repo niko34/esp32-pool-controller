@@ -198,6 +198,48 @@ void test_reboots_one_below_max_still_restart(void) {
   TEST_ASSERT_EQUAL(SelfHealDecision::Restart, evaluateSelfHeal(in));
 }
 
+// =============================================================================
+// 7. heapSampleIntervalMs — cadence d'échantillonnage adaptative
+//    (bug-badalloc-ws-broadcast). Frontière figée par le code :
+//    maxAllocHeap < warnThreshold → fast ; >= (== inclus) → normal.
+// =============================================================================
+
+// Valeurs de référence (indicatives, comme kThreshold ci-dessus).
+static const uint32_t kWarnThreshold  = 20000UL;  // kLowHeapWarnBytes (indicatif)
+static const uint32_t kNormalInterval = 60000UL;  // kHealthCheckIntervalMs (indicatif)
+static const uint32_t kFastInterval   = 5000UL;   // kHeapCheckFastIntervalMs (indicatif)
+
+// Au-dessus du seuil d'alerte → cadence normale.
+void test_heap_interval_above_threshold_normal(void) {
+  TEST_ASSERT_EQUAL_UINT32(kNormalInterval,
+      heapSampleIntervalMs(kWarnThreshold + 1, kWarnThreshold, kNormalInterval, kFastInterval));
+}
+
+// En dessous du seuil d'alerte → cadence rapprochée.
+void test_heap_interval_below_threshold_fast(void) {
+  TEST_ASSERT_EQUAL_UINT32(kFastInterval,
+      heapSampleIntervalMs(kWarnThreshold - 1, kWarnThreshold, kNormalInterval, kFastInterval));
+}
+
+// Frontière : maxAllocHeap == warnThreshold → PAS sous le seuil (< strict) → normal.
+void test_heap_interval_boundary_equals_threshold_normal(void) {
+  TEST_ASSERT_EQUAL_UINT32(kNormalInterval,
+      heapSampleIntervalMs(kWarnThreshold, kWarnThreshold, kNormalInterval, kFastInterval));
+}
+
+// Extrême bas : maxAllocHeap == 0 (heap effondré) → fast.
+void test_heap_interval_zero_fast(void) {
+  TEST_ASSERT_EQUAL_UINT32(kFastInterval,
+      heapSampleIntervalMs(0, kWarnThreshold, kNormalInterval, kFastInterval));
+}
+
+// Extrême haut / sentinelle « pas encore d'échantillon » (UINT32_MAX) → normal
+// (verrouille le premier intervalle du timer dans loop()).
+void test_heap_interval_uint32_max_normal(void) {
+  TEST_ASSERT_EQUAL_UINT32(kNormalInterval,
+      heapSampleIntervalMs(UINT32_MAX, kWarnThreshold, kNormalInterval, kFastInterval));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   // 1. Heap OK
@@ -223,5 +265,11 @@ int main(int, char**) {
   RUN_TEST(test_boundary_reboots_equals_max_maintenance);
   RUN_TEST(test_boundary_reboots_one_below_max_no_maintenance);
   RUN_TEST(test_reboots_one_below_max_still_restart);
+  // 7. heapSampleIntervalMs (cadence adaptative)
+  RUN_TEST(test_heap_interval_above_threshold_normal);
+  RUN_TEST(test_heap_interval_below_threshold_fast);
+  RUN_TEST(test_heap_interval_boundary_equals_threshold_normal);
+  RUN_TEST(test_heap_interval_zero_fast);
+  RUN_TEST(test_heap_interval_uint32_max_normal);
   return UNITY_END();
 }

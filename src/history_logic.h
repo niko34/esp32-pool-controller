@@ -2,14 +2,16 @@
 #define HISTORY_LOGIC_H
 
 // Module pur de math scalaire pour l'agrégation de l'historique.
-// Headers C uniquement (<stdint.h>/<math.h>) : testable en natif sans libc++.
+// Headers C uniquement (<stdint.h>/<stddef.h>/<math.h>) : testable en natif sans libc++.
 // PAS de <vector>/<map>/<cstdint>/Arduino/FreeRTOS ici.
 //
 // INVARIANT : characterization refactor. Ces fonctions reproduisent EXACTEMENT
 // la math inline historique de consolidateData() (frontières strictes,
 // divisions entières, wrap uint32). NE PAS "corriger" ces comportements.
+// (Exception : historySaveAdmit, logique NOUVELLE — bug-nospc-partition-history.)
 
 #include <stdint.h>
+#include <stddef.h>
 #include <math.h>
 
 // Tronque un timestamp au début de son bucket temporel.
@@ -32,5 +34,13 @@ bool isMajority(int trueCount, int total);
 
 // « Au moins un » : count > 0.
 bool anyTrue(int count);
+
+// bug-nospc-partition-history : admission d'une écriture de /history.json.
+// Vrai si l'écriture peut être admise : freeBytes + oldFileBytes >= jsonBytes + marginBytes
+// (oldFileBytes = octets bruts de l'ancien fichier, supprimé avant réécriture ;
+// sous-estime les blocs réellement récupérés (arrondi bloc) → conservateur).
+// Anti-overflow : aucune addition — consommation par soustractions gardées,
+// correct jusqu'à SIZE_MAX sur chaque paramètre.
+bool historySaveAdmit(size_t freeBytes, size_t oldFileBytes, size_t jsonBytes, size_t marginBytes);
 
 #endif // HISTORY_LOGIC_H

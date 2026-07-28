@@ -47,6 +47,9 @@ private:
   bool legacyHistoryPending = false;
   unsigned long legacyMaxTimestamp = 0;
   bool _preNtpPending = false;  // Points enregistrés avant sync NTP (timestamps uptime provisoires)
+  // bug-nospc : epoch du dernier saveToFile réussi (0 si horloge non synchro).
+  // Tenu en RAM ; persisté en NVS (last_ok) UNIQUEMENT sur échec de save — usure NVS.
+  unsigned long _lastOkEpoch = 0;
 
   void saveToFile();
   void loadFromFile();

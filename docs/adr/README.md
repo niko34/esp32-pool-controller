@@ -49,6 +49,7 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0030](0030-watchdog-connectivite.md) | Watchdog de connectivité (sonde ICMP passerelle + réponse graduée) | Accepté |
 | [0031](0031-disjoncteur-bootloop-history.md) | Disjoncteur de boot-loop sur l'init de la partition history (détection inter-boot NVS + effacement au seuil) | Accepté |
 | [0032](0032-reponses-http-bornees.md) | Réponses HTTP bornées : pagination, chunked ou allocation unique testée — gardes à seuil fixe interdites | Accepté |
+| [0033](0033-budget-espace-partition-history.md) | Budget d'espace garanti sur la partition history (garde d'admission + remove-avant-write + plafonds log réduits) | Accepté |
 
 ## Template
 

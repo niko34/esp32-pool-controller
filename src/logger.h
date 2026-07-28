@@ -40,8 +40,8 @@ private:
   unsigned long _lastFlushMs = 0;
   static constexpr unsigned long kFlushIntervalMs = 600000UL;   // 10 min (flush immédiat sur ERROR/CRITICAL)
   static constexpr size_t kMaxPersistBufferEntries = 100;       // Capacité fixe, pré-allouée dans le constructeur
-  static constexpr size_t kMaxLogFileBytes = 16384;             // 16KB (réduit pour tenir dans la partition history 64KB)
-  static constexpr size_t kRotateKeepBytes = 12288;             // Garde les 12 derniers KB
+  static constexpr size_t kMaxLogFileBytes = 8192;              // 8KB - budget partition history 64KB : pire cas log 2-3 blocs au lieu de 4-5 (ADR-0033)
+  static constexpr size_t kRotateKeepBytes = 6144;              // Garde les 6 derniers KB à la rotation (ADR-0033)
 
 public:
   Logger();  // Constructeur pour pré-allouer le buffer

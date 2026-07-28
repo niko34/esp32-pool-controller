@@ -55,6 +55,34 @@ void WsManager::update() {
   if (!_ws) return;
   _ws->cleanupClients(4);  // Max 4 clients WS simultanés pour préserver les sockets lwIP
 
+  // Récolte des clients gelés (churn-heap Q1) : déléguée au FORK, pas de boucle
+  // manuelle ici. Revue 2.11.1 : itérer getClients() depuis loopTask est un UB —
+  // _handleDisconnect (async_tcp) érase la liste sous le verrou PRIVÉ du fork,
+  // inaccessible côté appelant. À la place : -DWS_MAX_QUEUED_MESSAGES=5
+  // (platformio.ini) + setCloseClientOnQueueFull(true) à la connexion → le fork
+  // ferme lui-même, sous SON verrou, tout client dont la file atteint 5 trames
+  // (~25 s de snapshots non consommés = client gelé ; 32 par défaut = ~58 Ko
+  // épinglés). L'état capteurs étant idempotent, aucune perte fonctionnelle.
+
+  // Warn throttlé des pushes sautés par la garde heap (bug-badalloc-ws-broadcast).
+  // Émis ICI (loopTask) et UNIQUEMENT ici — jamais dans _heapAllowsPush() (invariant
+  // anti-récursion). Placé AVANT le return « aucun client » pour tracer aussi les
+  // sauts survenus juste avant une déconnexion des clients.
+  {
+    uint32_t skipped = _skippedPushes.load(std::memory_order_relaxed);
+    unsigned long now = millis();
+    if (skipped > _lastWarnedSkipped &&
+        (_lastSkipWarnMs == 0 || now - _lastSkipWarnMs >= kWsSkipWarnThrottleMs)) {
+      systemLogger.warning(String(skipped - _lastWarnedSkipped) +
+          " pushes WS sautés (heap fragmenté, maxBloc=" +
+          String(ESP.getMaxAllocHeap()) + " o)");
+      // Capturé AVANT le warn : si ce warn est lui-même sauté par broadcastLog
+      // (futur callback logger), l'incrément sera compté au prochain warn.
+      _lastWarnedSkipped = skipped;
+      _lastSkipWarnMs = now;
+    }
+  }
+
   if (_authenticatedClients.empty()) return;
 
   if (_pendingInitialPush) {
@@ -89,6 +117,24 @@ size_t WsManager::clientCount() const {
   return _ws ? _ws->count() : 0;
 }
 
+uint32_t WsManager::skippedPushCount() const {
+  return _skippedPushes.load(std::memory_order_relaxed);
+}
+
+// Garde heap commune des 3 broadcasts (bug-badalloc-ws-broadcast) : textAll() alloue
+// un shared buffer (makeSharedBuffer, fork ESPAsyncWebServer) SANS rattraper
+// std::bad_alloc → abort() (coredump 2026-07-28, payload 1777 o, maxBloc < ~1,8 Ko).
+// Si le plus gros bloc contigu est sous kWsPushMinAllocBytes, on saute le push : l'UI
+// rate un cycle de 5 s (sans coût UX) et le débounce auto-guérison se joue.
+// INVARIANT : ce helper ne logge JAMAIS — chaîne de ré-entrance sinon :
+// logger → callback (futur) → broadcastLog → _heapAllowsPush → log → récursion.
+// Le warn vit EXCLUSIVEMENT dans update() (throttlé kWsSkipWarnThrottleMs).
+bool WsManager::_heapAllowsPush() {
+  if (ESP.getMaxAllocHeap() >= kWsPushMinAllocBytes) return true;
+  _skippedPushes.fetch_add(1, std::memory_order_relaxed);
+  return false;
+}
+
 // =============================================================================
 // Événements WebSocket
 // =============================================================================
@@ -107,6 +153,19 @@ void WsManager::_onEvent(AsyncWebSocket* ws, AsyncWebSocketClient* client,
 }
 
 void WsManager::_onClientConnect(AsyncWebSocketClient* client, AsyncWebServerRequest* request) {
+  // Anti-zombie (churn-heap Q1/Q2) : un client qui n'ACK plus retient ses buffers
+  // de trames connexion ouverte (générateur n°1 du churn heap). Deux mécanismes
+  // complémentaires, tous deux exécutés par le fork sous SON verrou :
+  // - file d'envoi bornée à WS_MAX_QUEUED_MESSAGES=5 (platformio.ini) +
+  //   setCloseClientOnQueueFull(true) → client actif-mais-gelé fermé à saturation ;
+  // - PING auto toutes les kWsKeepAlivePeriodS s (fork : keepAlivePeriod(uint16_t
+  //   secondes), ×1000 en interne). Nuance revue 2.11.1 : le fork n'envoie le PING
+  //   que si la file du client est VIDE → ne récolte que les zombies inactifs
+  //   (aucun push en attente) ; les zombies sous flux de pushes sont couverts par
+  //   la saturation de file ci-dessus.
+  client->setCloseClientOnQueueFull(true);
+  client->keepAlivePeriod(kWsKeepAlivePeriodS);
+
   if (!authCfg.enabled) {
     // Pas d'auth : client immédiatement autorisé
     _authenticatedClients.insert(client->id());
@@ -137,16 +196,19 @@ void WsManager::_onData(AsyncWebSocketClient* client, uint8_t* data, size_t len)
 
 void WsManager::broadcastSensorData() {
   if (!_ws || _ws->count() == 0) return;
+  if (!_heapAllowsPush()) return;  // Garde AVANT la construction du JSON (bug-badalloc-ws-broadcast)
   _ws->textAll(_buildSensorJson());
 }
 
 void WsManager::broadcastConfig() {
   if (!_ws || _ws->count() == 0) return;
+  if (!_heapAllowsPush()) return;  // Garde AVANT la construction du JSON (bug-badalloc-ws-broadcast)
   _ws->textAll(_buildConfigJson());
 }
 
 void WsManager::broadcastLog(const LogEntry& entry) {
   if (!_ws || _ws->count() == 0) return;
+  if (!_heapAllowsPush()) return;  // Garde AVANT la construction du JSON (bug-badalloc-ws-broadcast)
   StaticJson<192> doc;
   doc["type"] = "log";
   JsonObject d = doc["data"].to<JsonObject>();
@@ -337,11 +399,10 @@ String WsManager::_buildSensorJson() const {
   d["mqtt_connected"] = mqttManager.isConnected();
 
   String out;
-  // +64 octets feature-020 (temperature_circuit + sondes_identified + sondes_detected)
-  // +80 octets feature-024 (phSlopeAcid/Base/Zero/AgeMs)
-  // +300 octets feature-025 (filtre pH/ORP + mixing/blocked)
-  // +80 octets feature-011 (ph/orp_scheduled_flow_ml_per_min)
-  out.reserve(1600);
+  // churn-heap Q3 : reserve aligné sur la taille RÉELLE du payload (1777 o mesuré,
+  // coredump 2026-07-28) + marge — l'ancien reserve(1600) provoquait ~6 réallocations
+  // String par push (toutes les 5 s), gros contributeur au churn heap.
+  out.reserve(kWsSensorJsonReserveBytes);
   serializeJson(doc, out);
   return out;
 }

@@ -1941,6 +1941,15 @@
     }
     const orpBadge = composeSensorBadge(orpSegments);
     setBadge('orp-sensor-badge', orpBadge.variant, orpBadge.text);
+
+    // Badge Température — seul segment : capteur indisponible (bug-ui-valeurs-figees),
+    // calqué sur les blocs pH/ORP ci-dessus (même garde anti-faux-positif au boot).
+    const tempSegments = [];
+    if (latestSensorData !== null && (latestSensorData.temperature == null || isNaN(latestSensorData.temperature))) {
+      tempSegments.push({ priority: 0, variant: 'danger', text: 'Capteur indisponible' });
+    }
+    const tempBadge = composeSensorBadge(tempSegments);
+    setBadge('temperature-sensor-badge', tempBadge.variant, tempBadge.text);
   }
 
   // ========== ÉCRAN PRODUITS ==========
@@ -2372,9 +2381,13 @@
     // Les cartes de filtration et éclairage compactes ont été supprimées et fusionnées avec les cartes détaillées
 
     // === pH COMPACT ===
+    // bug-ui-valeurs-figees : valeur null/NaN → « -- » explicite (jamais de skip,
+    // sinon l'ancienne valeur reste figée quand le capteur devient indisponible).
     const compactPh = $("#compact-ph");
-    if (compactPh && data.ph != null) {
-      compactPh.textContent = (Math.round(data.ph * 10) / 10).toFixed(1);
+    if (compactPh) {
+      compactPh.textContent = (data.ph != null && !isNaN(data.ph))
+        ? (Math.round(data.ph * 10) / 10).toFixed(1)
+        : "--";
     }
 
     const compactPhTarget = $("#compact-ph-target");
@@ -2386,8 +2399,9 @@
 
     // === ORP COMPACT ===
     const compactOrp = $("#compact-orp");
-    if (compactOrp && data.orp != null) {
-      compactOrp.innerHTML = Math.round(data.orp) + '<span class="compact-unit">mV</span>';
+    if (compactOrp) {
+      const orpText = (data.orp != null && !isNaN(data.orp)) ? String(Math.round(data.orp)) : "--";
+      compactOrp.innerHTML = orpText + '<span class="compact-unit">mV</span>';
     }
 
     const compactOrpTarget = $("#compact-orp-target");
@@ -2402,8 +2416,11 @@
 
     // === TEMPÉRATURE COMPACT ===
     const compactTemperature = $("#compact-temperature");
-    if (compactTemperature && data.temperature != null) {
-      compactTemperature.innerHTML = (Math.round(data.temperature * 10) / 10).toFixed(1) + '<span class="compact-unit">°C</span>';
+    if (compactTemperature) {
+      const tempText = (data.temperature != null && !isNaN(data.temperature))
+        ? (Math.round(data.temperature * 10) / 10).toFixed(1)
+        : "--";
+      compactTemperature.innerHTML = tempText + '<span class="compact-unit">°C</span>';
     }
   }
 
@@ -3011,14 +3028,18 @@
       mTime.textContent = ts.toLocaleTimeString();
     }
 
-    if (mTemp && json.temperature != null && !isNaN(json.temperature)) {
-      mTemp.textContent = json.temperature.toFixed(1);
+    // bug-ui-valeurs-figees : valeur null/NaN → « -- » explicite (jamais de skip)
+    if (mTemp) {
+      mTemp.textContent = (json.temperature != null && !isNaN(json.temperature))
+        ? json.temperature.toFixed(1) : "--";
     }
-    if (mPh && json.ph != null && !isNaN(json.ph)) {
-      mPh.textContent = (Math.round(json.ph * 10) / 10).toFixed(1);
+    if (mPh) {
+      mPh.textContent = (json.ph != null && !isNaN(json.ph))
+        ? (Math.round(json.ph * 10) / 10).toFixed(1) : "--";
     }
-    if (mOrp && json.orp != null && !isNaN(json.orp)) {
-      mOrp.textContent = String(Math.round(json.orp));
+    if (mOrp) {
+      mOrp.textContent = (json.orp != null && !isNaN(json.orp))
+        ? String(Math.round(json.orp)) : "--";
     }
   }
 

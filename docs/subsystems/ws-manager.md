@@ -6,19 +6,41 @@
 
 ## Rôle
 
-Bus de diffusion temps réel vers tous les clients UI connectés. Push **toutes les 5 s** des données capteur + config + logs. Remplace le polling HTTP. Voir [ADR-0005](../adr/0005-websocket-push-sans-polling.md).
+Bus de diffusion temps réel vers tous les clients UI connectés. Push **toutes les 5 s** des données capteur + config. Remplace le polling HTTP. Voir [ADR-0005](../adr/0005-websocket-push-sans-polling.md).
 
 ## API publique
 
 ```cpp
 void begin(AsyncWebServer* server);
-void update();                         // cleanup + push capteurs 5s
+void update();                         // cleanup + push capteurs 5s + warn throttlé pushes sautés
 void broadcastSensorData();            // push immédiat, toutes données
 void broadcastConfig();                // push immédiat, config actuelle
-void broadcastLog(const LogEntry&);    // push un log
+void broadcastLog(const LogEntry&);    // push un log — CODE MORT, voir ci-dessous
 bool hasClients() const;
 size_t clientCount() const;            // nb clients connectés (diagnostic, v2.8.1)
+uint32_t skippedPushCount() const;     // cumul des pushes sautés par la garde heap (diagnostic, v2.11.1)
 ```
+
+> ⚠️ **Code mort — `broadcastLog()` / `Logger::setLogCallback()`** (constat investigation churn-heap, 2026-07-28) : le hook `systemLogger.setLogCallback()` ([`src/logger.h:58`](../../src/logger.h)) n'a **aucun appelant** depuis son introduction en 2.7.0 (commit `aedd007` — ajouté sans jamais être branché). `broadcastLog()` n'est donc **jamais exécuté** : aucun message `type: "log"` n'est émis, le handler UI correspondant (`data/app.js`) ne reçoit rien, et la page Journal utilise le polling HTTP `/get-logs`. La purge (ou le branchement volontaire avec garde anti-récursion) est **reportée** à un futur cycle — en attendant, `broadcastLog()` porte quand même la garde heap v2.11.1 par cohérence.
+
+## Garde heap des broadcasts (v2.11.1, bug-badalloc-ws-broadcast)
+
+Coredump 2026-07-28 (v2.11.0) : `AsyncWebSocket::textAll()` alloue un buffer partagé (`makeSharedBuffer`, `make_shared<vector<uint8_t>>`) **sans rattraper** `std::bad_alloc` → sur tas fragmenté (plus gros bloc < ~1,8 Ko), `abort()` et reboot brutal. Correctif — extension de la philosophie [ADR-0032](../adr/0032-reponses-http-bornees.md#extension-2026-07-28--émissions-websocket-v2111) à la voie WS :
+
+- `_heapAllowsPush()` est appelé en tête des **3** broadcasts (`broadcastSensorData`, `broadcastConfig`, `broadcastLog`), **avant** toute construction de JSON : si `ESP.getMaxAllocHeap() < kWsPushMinAllocBytes` (**8192** o, aligné sur le seuil de restart auto-guérison `kRestartMaxAllocHeapBytes`), le push est **sauté** — l'UI rate un cycle de 5 s, sans conséquence, et le débounce de l'auto-guérison ([ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111)) se joue.
+- Chaque saut incrémente `_skippedPushes` (**atomic relaxed**, pattern `connectedAtomic`), exposé par `skippedPushCount()` (diagnostic).
+- **INVARIANT anti-ré-entrance : `_heapAllowsPush()` ne logge JAMAIS.** Chaîne de récursion sinon : `logger` → callback (futur branchement) → `broadcastLog` → `_heapAllowsPush` → log → récursion. Le WARN « N pushes WS sautés (heap fragmenté, maxBloc=…) » est émis **exclusivement depuis `update()`** (contexte `loopTask`), throttlé à `kWsSkipWarnThrottleMs` (**30 s**), et placé **avant** le court-circuit « aucun client » pour tracer aussi les sauts survenus juste avant une déconnexion.
+
+## Récolte des clients zombies (v2.11.1, investigation churn-heap §G1)
+
+Générateur n°1 identifié de la fragmentation : un client WS **zombie** (téléphone verrouillé, fenêtre TCP gelée) conserve connexion ouverte une file d'envoi de jusqu'à **32 buffers ~1,8 Ko** (défaut fork) = **~58 Ko épinglés** en blocs dispersés — queue pleine en ~160 s au rythme d'un push / 5 s. Deux mécanismes complémentaires, appliqués à la connexion (`_onClientConnect`) :
+
+- **File bornée + fermeture à saturation** : `-DWS_MAX_QUEUED_MESSAGES=5` ([`platformio.ini`](../../platformio.ini)) + `client->setCloseClientOnQueueFull(true)` → le **fork ferme lui-même** le client dont la file atteint 5 trames (~25 s de snapshots non consommés = client gelé), **sous SON verrou**. La boucle manuelle initiale (itérer `getClients()` depuis `update()` et fermer sur `queueLen()`) a été **rejetée en revue** : `_handleDisconnect` (tâche `async_tcp`) érase la liste sous le verrou **privé** du fork, inaccessible côté appelant → itération concurrente = UB. L'état capteurs étant idempotent (chaque push est un snapshot complet), aucune perte fonctionnelle.
+- **Keepalive** : `client->keepAlivePeriod(kWsKeepAlivePeriodS)` (**30 s**, unité : secondes — ×1000 en interne par le fork) → PING automatique, les zombies meurent par timeout ACK. **Nuance** (revue 2.11.1) : le fork n'envoie le PING que si la file du client est **vide** → le keepalive ne récolte que les zombies **inactifs** (aucun push en attente) ; les zombies sous flux de pushes sont couverts par la saturation de file ci-dessus.
+
+## Pré-dimensionnement du JSON `sensor_data` (v2.11.1, churn-heap Q3)
+
+`_buildSensorJson()` : `out.reserve(kWsSensorJsonReserveBytes)` = **2048** (était 1600, sous-dimensionné depuis la croissance du payload — **1777 o mesurés** au coredump) → supprime ~6 réallocations de String par push (toutes les 5 s).
 
 ## Timing
 
@@ -29,7 +51,8 @@ size_t clientCount() const;            // nb clients connectés (diagnostic, v2.
   - Changement de mode (régulation / filtration / lighting)
   - Sauvegarde config (`POST /save-config`)
   - Commande HA modifiant la config via MQTT (`drainCommandQueue`, v2.14.1)
-  - Nouveau log (callback `systemLogger.setLogCallback()`)
+
+> Le push « nouveau log » (callback `systemLogger.setLogCallback()` → `broadcastLog`) n'a **jamais été branché** — code mort, voir l'encadré de la section API publique.
 
 ## Authentification
 
@@ -48,7 +71,7 @@ Voir [`ws_manager.cpp`](../../src/ws_manager.cpp) `_onClientConnect()` et `_onDa
 JSON avec un champ `type` :
 - `type: "sensor_data"` → payload identique à `/data` (voir [docs/API.md](../API.md))
 - `type: "config"` → payload identique à `/get-config`
-- `type: "log"` → `{timestamp, level, message}`
+- `type: "log"` → `{timestamp, level, message}` — **jamais émis en pratique** (`broadcastLog` = code mort, cf. section API publique)
 
 > **Déclencheurs du message `config`** — le broadcast `config` (via le flag `_pendingConfigBroadcast` posé par `requestConfigBroadcast()`, consommé sur `loopTask`) a **deux** origines :
 > 1. `POST /save-config` (`web_routes_config.cpp`) — sauvegarde de la config depuis l'UI web.
@@ -57,6 +80,8 @@ JSON avec un champ `type` :
 ### Champs notables de `sensor_data`
 
 Au-delà des mesures capteur (pH, ORP, température…) et des états de contrôle (filtration, dosage, éclairage), la payload `sensor_data` transporte aussi quelques champs d'observabilité :
+
+> **Contrat mesures capteur `null`** : `ph`, `orp` et `temperature` sont publiés `null` quand la valeur firmware est NaN (sonde absente, lecture stale, bus dégradé — même contrat que `GET /data`). **Représentation UI** (v2.10.5) : toute valeur `null` s'affiche « `--` » sur tous les sites d'affichage numérique (jamais de conservation de la dernière valeur) et déclenche le segment « Capteur indisponible » du badge de carte (pH/ORP : feature-022 ; température : `#temperature-sensor-badge`). Voir [page-dashboard.md](../features/page-dashboard.md#convention-----quand-un-capteur-est-indisponible-v2105).
 
 | Champ | Type | Source | Notes |
 |-------|------|--------|-------|
@@ -91,9 +116,9 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 ## Cas limites
 
 - **Pas de client connecté** : `broadcastSensorData()` ne fait rien (gain CPU). `hasClients()` court-circuite la construction JSON.
-- **Client déconnecté sans close** : nettoyé par `AsyncWebSocket::cleanupClients()` appelé dans `update()`.
-- **Push pendant write en cours** : `AsyncWebSocket` gère la file d'attente, pas de blocage du loop.
-- **Heap bas** (`< kMinFreeHeapBytes = 10000`) : le push continue mais les logs WARN peuvent être générés (voir `logger.cpp`).
+- **Client déconnecté sans close** : nettoyé par `AsyncWebSocket::cleanupClients()` appelé dans `update()` ; depuis v2.11.1, aussi récolté par saturation de file (fermeture par le fork) ou timeout de PING keepalive.
+- **Push pendant write en cours** : `AsyncWebSocket` gère la file d'attente (bornée à 5 trames depuis v2.11.1), pas de blocage du loop.
+- **Heap fragmenté** (plus gros bloc `< kWsPushMinAllocBytes = 8192`) : pushes **sautés** (garde v2.11.1), compteur `skippedPushCount()` + WARN throttlé 30 s dans `update()`.
 
 ## Dépendances
 
@@ -108,8 +133,10 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 
 - [`src/ws_manager.h`](../../src/ws_manager.h), [`src/ws_manager.cpp`](../../src/ws_manager.cpp)
 - [`src/web_server.cpp`](../../src/web_server.cpp) — instanciation du serveur
-- [`src/logger.h:55`](../../src/logger.h:55) — `setLogCallback()`
-- [ADR-0005](../adr/0005-websocket-push-sans-polling.md)
+- [`src/logger.h:58`](../../src/logger.h) — `setLogCallback()` (**code mort**, jamais branché — cf. section API publique)
+- [`src/constants.h`](../../src/constants.h) — `kWsPushMinAllocBytes`, `kWsSkipWarnThrottleMs`, `kWsKeepAlivePeriodS`, `kWsSensorJsonReserveBytes`
+- [`platformio.ini`](../../platformio.ini) — `-DWS_MAX_QUEUED_MESSAGES=5`
+- [ADR-0005](../adr/0005-websocket-push-sans-polling.md), [ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111), [ADR-0032 §Extension](../adr/0032-reponses-http-bornees.md#extension-2026-07-28--émissions-websocket-v2111)
 
 ## Champs `sensor_data` ajoutés en feature-020 (PCB v2)
 

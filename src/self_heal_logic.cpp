@@ -26,3 +26,10 @@ SelfHealDecision evaluateSelfHeal(const SelfHealInputs& in) {
   // 3. Fonctionnement normal.
   return SelfHealDecision::Continue;
 }
+
+uint32_t heapSampleIntervalMs(uint32_t maxAllocHeap, uint32_t warnThreshold,
+                              uint32_t normalIntervalMs, uint32_t fastIntervalMs) {
+  // Sous le seuil d'alerte : échantillonnage rapproché pour que le débounce se joue
+  // vite ; au-dessus (frontière == incluse) : cadence normale (aucun coût CPU inutile).
+  return (maxAllocHeap < warnThreshold) ? fastIntervalMs : normalIntervalMs;
+}

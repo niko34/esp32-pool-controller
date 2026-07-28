@@ -13,6 +13,8 @@
 #include <Preferences.h>
 #include <esp_partition.h>
 #include <esp_system.h>
+#include <esp_task_wdt.h>
+#include <esp_rom_crc.h>
 
 HistoryManager history;
 
@@ -94,6 +96,75 @@ void writeHistoryCrashCount(uint8_t value) {
   }
 }
 
+// bug-nospc-partition-history (A1) : préservation de preuve AVANT l'effacement
+// du disjoncteur. Dump hex des blocs 0-1 de la partition (8 Ko = superblocks +
+// métadonnées littlefs) sur Serial + empreinte courte (CRC32 par bloc + 16
+// premiers octets) en NVS hist_meta. Discrimine H1 (chaîne de métadonnées
+// pleine) vs H2 (superblock CRC-valide insensé) vs H3 (paire déchirée).
+// DÉROGATION systemLogger → Serial.printf direct : la persistance des logs
+// n'est PAS encore active à ce stade du boot, et il est interdit d'écrire sur
+// le FS en cours d'autopsie (un ERROR déclencherait un flush disque).
+// AUCUNE écriture sur la partition history ici (lecture seule + NVS).
+// Durée ≈ 2,4 s à 115200 bauds → esp_task_wdt_reset() toutes les 64 lignes
+// (WDT actif depuis main.cpp).
+void dumpHistoryPartitionEvidence(const esp_partition_t* part) {
+  constexpr size_t kDumpBytes    = 8192;  // blocs 0-1 littlefs (2 × 4096 o)
+  constexpr size_t kBlockBytes   = 4096;
+  constexpr size_t kChunkBytes   = 256;   // tampon de lecture SUR PILE
+  constexpr size_t kBytesPerLine = 32;
+  constexpr size_t kHeadBytes    = 16;    // empreinte courte NVS (début bloc 0)
+
+  uint8_t chunk[kChunkBytes];
+  uint8_t head[kHeadBytes] = {0};
+  uint32_t crc0 = 0;
+  uint32_t crc1 = 0;
+  size_t lineCount = 0;
+
+  Serial.printf("[HISTDUMP] BEGIN size=%u\n", (unsigned)kDumpBytes);
+  for (size_t offset = 0; offset < kDumpBytes; offset += kChunkBytes) {
+    if (esp_partition_read(part, offset, chunk, kChunkBytes) != ESP_OK) {
+      Serial.printf("[HISTDUMP] ERREUR lecture offset 0x%04X\n", (unsigned)offset);
+      break;
+    }
+    if (offset == 0) memcpy(head, chunk, kHeadBytes);
+    // CRC32 ROM accumulé par bloc de 4096 o pendant la lecture
+    if (offset < kBlockBytes) crc0 = esp_rom_crc32_le(crc0, chunk, kChunkBytes);
+    else                      crc1 = esp_rom_crc32_le(crc1, chunk, kChunkBytes);
+
+    for (size_t l = 0; l < kChunkBytes; l += kBytesPerLine) {
+      char hex[kBytesPerLine * 3 + 1];
+      for (size_t i = 0; i < kBytesPerLine; i++) {
+        snprintf(&hex[i * 3], 4, "%02X ", chunk[l + i]);
+      }
+      Serial.printf("[HISTDUMP] 0x%04X: %s\n", (unsigned)(offset + l), hex);
+      if ((++lineCount % 64) == 0) esp_task_wdt_reset();
+    }
+  }
+  Serial.printf("[HISTDUMP] END crc0=0x%08X crc1=0x%08X\n", crc0, crc1);
+
+  // Empreinte courte en NVS : récupérable après reboot même sans capture Serial.
+  // Échec NVS silencieux — la preuve principale est déjà partie sur Serial.
+  Preferences prefs;
+  if (prefs.begin("hist_meta", false)) {
+    prefs.putUInt(kHistoryDumpCrc0NvsKey, crc0);
+    prefs.putUInt(kHistoryDumpCrc1NvsKey, crc1);
+    prefs.putBytes(kHistoryDumpHeadNvsKey, head, kHeadBytes);
+    prefs.end();
+  }
+}
+
+// bug-nospc (A2/A3) : trace NVS d'un save refusé ou échoué — compteur cumulé
+// nospc_cnt + epoch RAM du dernier save réussi (last_ok). Écrit UNIQUEMENT sur
+// échec, jamais à chaque save réussi (usure NVS). Échec NVS silencieux.
+void recordHistorySaveFailureNvs(unsigned long lastOkEpoch) {
+  Preferences prefs;
+  if (prefs.begin("hist_meta", false)) {
+    prefs.putUInt(kHistoryNospcCountNvsKey, prefs.getUInt(kHistoryNospcCountNvsKey, 0) + 1);
+    prefs.putUInt(kHistoryLastOkEpochNvsKey, (uint32_t)lastOkEpoch);
+    prefs.end();
+  }
+}
+
 unsigned long getCurrentEpoch(bool* synced, bool* estimated) {
   time_t nowEpoch = time(nullptr);
   if (isTimeValid(nowEpoch)) {
@@ -142,6 +213,8 @@ void HistoryManager::begin() {
         const esp_partition_t* histPart = esp_partition_find_first(
           ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "history");
         if (histPart) {
+          // bug-nospc (A1) : préserver la preuve AVANT destruction (discrimination H1/H2/H3).
+          dumpHistoryPartitionEvidence(histPart);
           if (esp_partition_erase_range(histPart, 0, histPart->size) == ESP_OK) {
             _partitionAutoErased = true;
             systemLogger.critical(String("Boot-loop détecté : ") + guardIn.crashCount +
@@ -362,12 +435,10 @@ void HistoryManager::recordDataPoint() {
 
 void HistoryManager::saveToFile() {
   if (!historyEnabled) return;
-  File f = historyStore->open(historyFilePath, "w");
-  if (!f) {
-    systemLogger.error("Impossible de sauvegarder l'historique");
-    return;
-  }
 
+  // bug-nospc-partition-history (A2+A3) : construire et MESURER le JSON avant
+  // de toucher au FS — l'ancien code ouvrait "w" d'entrée, ce qui tronquait
+  // l'ancien fichier avant toute vérification d'espace.
   JsonDocument doc;
   JsonArray data = doc["data"].to<JsonArray>();
 
@@ -382,12 +453,91 @@ void HistoryManager::saveToFile() {
     obj["d"] = point.phDosing || point.orpDosing;
     obj["g"] = static_cast<uint8_t>(point.granularity);
   }
+  const size_t jsonSize = measureJson(doc);
 
-  if (serializeJson(doc, f) == 0) {
-    systemLogger.error("Échec sérialisation historique");
+  // Espace libre + taille de l'ancien fichier (0 si absent). historyStore
+  // pointe toujours sur un fs::LittleFSFS (partition dédiée après begin(),
+  // sinon le LittleFS principal) — totalBytes()/usedBytes() y sont exposés.
+  fs::LittleFSFS* lfs = (historyStore == &historyFs) ? &historyFs : &LittleFS;
+  const size_t freeBytes = lfs->totalBytes() - lfs->usedBytes();
+  size_t oldSize = 0;
+  {
+    File old = historyStore->open(historyFilePath, "r");
+    if (old) {
+      oldSize = old.size();
+      old.close();
+    }
   }
 
+  // Garde d'espace (A2) : refuser AVANT de toucher à l'ancien fichier — mieux
+  // vaut un historique périmé de 5 min qu'un fichier tronqué. Retentative
+  // naturelle au prochain cycle SAVE_INTERVAL.
+  if (!historySaveAdmit(freeBytes, oldSize, jsonSize, kHistorySaveSpaceMarginBytes)) {
+    // A6 : WARNING (jamais ERROR) — un ERROR déclencherait un flush disque
+    // immédiat sur le FS déjà plein toutes les 5 min (flush-storm).
+    static unsigned long sWarnFullMs = 0;
+    unsigned long nowMs = millis();
+    if (sWarnFullMs == 0 || nowMs - sWarnFullMs >= kHistorySaveWarnThrottleMs) {
+      systemLogger.warning("Partition history pleine : save sauté (libre=" + String(freeBytes) +
+                           ", requis=" + String(jsonSize + kHistorySaveSpaceMarginBytes) +
+                           ") — nouvelle tentative dans 5 min");
+      sWarnFullMs = nowMs;
+    }
+    recordHistorySaveFailureNvs(_lastOkEpoch);
+    return;
+  }
+
+  // Admis : remove AVANT réécriture — l'ancien et le nouveau fichier ne
+  // coexistent plus, le pic copy-on-write est divisé par 2. Trade-off ADR-0033 :
+  // un crash dans la fenêtre remove→write perd l'historique (borné par le
+  // disjoncteur feature-059 et la cadence 5 min).
+  historyStore->remove(historyFilePath);
+
+  File f = historyStore->open(historyFilePath, "w");
+  if (!f) {
+    static unsigned long sWarnOpenMs = 0;
+    unsigned long nowMs = millis();
+    if (sWarnOpenMs == 0 || nowMs - sWarnOpenMs >= kHistorySaveWarnThrottleMs) {
+      systemLogger.warning("Impossible d'ouvrir /history.json en écriture — save sauté");
+      sWarnOpenMs = nowMs;
+    }
+    recordHistorySaveFailureNvs(_lastOkEpoch);
+    return;
+  }
+
+  const size_t written = serializeJson(doc, f);
   f.close();
+
+  // Détection d'écriture partielle (A3) : le retour de serializeJson doit être
+  // EXACTEMENT la taille mesurée (fs::File n'expose pas d'état d'erreur fiable
+  // après un write LittleFS court — la comparaison suffit). Échec → jamais de
+  // fichier partiel silencieux sur le FS.
+  if (written != jsonSize) {
+    historyStore->remove(historyFilePath);
+    static unsigned long sWarnPartialMs = 0;
+    unsigned long nowMs = millis();
+    if (sWarnPartialMs == 0 || nowMs - sWarnPartialMs >= kHistorySaveWarnThrottleMs) {
+      systemLogger.warning("Écriture partielle de l'historique (" + String(written) + "/" +
+                           String(jsonSize) + " octets) — fichier supprimé, nouvelle tentative dans 5 min");
+      sWarnPartialMs = nowMs;
+    }
+    recordHistorySaveFailureNvs(_lastOkEpoch);
+    return;
+  }
+
+  // Succès : epoch RAM du dernier save OK (persisté en NVS uniquement sur échec).
+  time_t nowEpoch = time(nullptr);
+  _lastOkEpoch = isTimeValid(nowEpoch) ? static_cast<unsigned long>(nowEpoch) : 0;
+
+  // Instrumentation (A5) : occupation FS, throttlée (même période que les warn).
+  static unsigned long sInfoUsageMs = 0;
+  unsigned long nowMs = millis();
+  if (sInfoUsageMs == 0 || nowMs - sInfoUsageMs >= kHistorySaveWarnThrottleMs) {
+    systemLogger.info("Partition history : " + String(lfs->usedBytes()) + "/" +
+                      String(lfs->totalBytes()) + " octets utilisés");
+    sInfoUsageMs = nowMs;
+  }
+
   systemLogger.debug("Historique sauvegardé (" + String(data.size()) + " points)");
 }
 

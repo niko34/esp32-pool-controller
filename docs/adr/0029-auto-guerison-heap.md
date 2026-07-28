@@ -64,6 +64,19 @@ En complément, la ré-annonce mDNS est **debouncée** : au plus une fois toutes
 - Le mode maintenance doit **inhiber toutes les voies de dosage** (auto, scheduled, manuel web, manuel UART, test) via le point unique `PumpController.setMaintenanceInhibit()` et rester **joignable** (pas de restart en maintenance).
 - La logique de décision reste **pure** (`self_heal_logic`, [ADR-0017](0017-logique-metier-pure-humble-object-testabilite.md)) : toute évolution des seuils/priorités passe par ce module et ses tests natifs.
 
+## Amendement 2026-07-28 — échantillonnage adaptatif (v2.11.1)
+
+**Motivation** : coredump du 2026-07-28 (v2.11.0) — `std::bad_alloc` non rattrapé dans `AsyncWebSocket::textAll` (broadcast WS capteurs, payload 1 777 o) alors que le plus gros bloc libre était tombé **sous ~1,8 Ko**. L'effondrement s'est joué **entre deux ticks de 60 s** : avec un échantillonnage fixe, le débounce (`kAutoHealDebounceChecks` = 3 ticks) exige **~180 s** de confirmation — un effondrement rapide **gagne systématiquement la course** contre l'auto-guérison, qui ne peut jamais se déclencher.
+
+**Décision d'amendement** : la cadence d'échantillonnage du plus gros bloc devient **adaptative** —
+
+- le bloc heap (échantillonnage `maxAllocHeap`, flush one-shot, débounce, décision `evaluateSelfHeal`) est **extrait** de `checkSystemHealth()` vers `checkHeapHealth()` ([`src/main.cpp`](../../src/main.cpp)), appelée sur un **timer propre** dans `loop()` (déplacement à diff logique nul, une seule ligne ajoutée : export de l'échantillon) ;
+- la période de ce timer est calculée par la fonction **pure** `heapSampleIntervalMs()` (module `self_heal_logic`, [ADR-0017](0017-logique-metier-pure-humble-object-testabilite.md), +5 tests natifs) : **60 s** en régime sain (`kHealthCheckIntervalMs`), **5 s** (`kHeapCheckFastIntervalMs`) dès que `maxAllocHeap < kLowHeapWarnBytes` (20 Ko) → le débounce de 3 ticks confirme un heap critique en **~15 s au lieu de ~180 s**.
+
+**Invariants strictement conservés** : seuils (`kRestartMaxAllocHeapBytes`, `kLowHeapWarnBytes`), débounce `kAutoHealDebounceChecks`, uptime minimal `kAutoHealMinUptimeMs`, budget partagé `kAutoHealMaxReboots` / fenêtre `kAutoHealRebootWindowMs`, mode maintenance, garde OTA, séquence fail-safe C1. Seule la **fréquence d'observation** change — la logique de décision est inchangée. L'alerte heap **total** (`kMinFreeHeapBytes`, `low_memory`) reste dans `checkSystemHealth()` à 60 s (métrique distincte, cf. « Ce que ça verrouille »).
+
+Complément du même lot (côté générateur du crash) : garde heap des broadcasts WS + récolte des clients zombies — voir [ADR-0032 §Extension](0032-reponses-http-bornees.md#extension-2026-07-28--émissions-websocket-v2111) et [subsystems/ws-manager.md](../subsystems/ws-manager.md).
+
 ## Références
 
 - Code : [`src/self_heal_logic.h`](../../src/self_heal_logic.h) / [`src/self_heal_logic.cpp`](../../src/self_heal_logic.cpp), [`src/main.cpp`](../../src/main.cpp) (`checkSystemHealth`, `performAutoHealRestart`, `enterMaintenanceMode`, `initAutoHealRtcState`), [`src/pump_controller.h`](../../src/pump_controller.h) (`setMaintenanceInhibit` / `isMaintenanceInhibited`), [`src/constants.h`](../../src/constants.h) (`kRestartMaxAllocHeapBytes`, `kLowHeapWarnBytes`, `kAutoHealDebounceChecks`, `kAutoHealMinUptimeMs`, `kAutoHealMaxReboots`, `kAutoHealRebootWindowMs`, `kMdnsReannounceMinIntervalMs`)

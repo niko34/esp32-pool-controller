@@ -8,11 +8,14 @@
 //   - finalizeMean    (AC3, count==0 → NaN)
 //   - isMajority      (AC4, division entière stricte)
 //   - anyTrue         (AC4)
+//   - historySaveAdmit (AC5, bug-nospc-partition-history : garde d'espace,
+//     frontière large, anti-overflow SIZE_MAX)
 // via l'API publique, pas l'implémentation interne.
 // =============================================================================
 
 #include <unity.h>
 #include <math.h>    // C header uniquement (libc++ <cmath> indisponible sur l'hôte)
+#include <stdint.h>  // SIZE_MAX
 #include "history_logic.h"
 
 void setUp(void) {}
@@ -111,6 +114,53 @@ void test_anyTrue_five_true(void) {
   TEST_ASSERT_TRUE(anyTrue(5));
 }
 
+// -----------------------------------------------------------------------------
+// AC5 — historySaveAdmit (bug-nospc-partition-history)
+// Sémantique : free + old >= json + marge → admis (frontière LARGE).
+// -----------------------------------------------------------------------------
+void test_saveAdmit_exact_boundary_admitted(void) {
+  // 10000 + 20000 == 22000 + 8000 → admis (égalité exacte)
+  TEST_ASSERT_TRUE(historySaveAdmit(10000, 20000, 22000, 8000));
+}
+void test_saveAdmit_one_byte_short_refused(void) {
+  // 10000 + 20000 < 22001 + 8000 → refusé à 1 octet près
+  TEST_ASSERT_FALSE(historySaveAdmit(10000, 20000, 22001, 8000));
+}
+void test_saveAdmit_one_byte_spare_admitted(void) {
+  // 10001 + 20000 > 22000 + 8000 → admis
+  TEST_ASSERT_TRUE(historySaveAdmit(10001, 20000, 22000, 8000));
+}
+void test_saveAdmit_no_old_file_admitted(void) {
+  // Ancien fichier absent (old=0) : le libre seul doit couvrir json + marge
+  TEST_ASSERT_TRUE(historySaveAdmit(30000, 0, 22000, 8000));
+}
+void test_saveAdmit_no_old_file_refused(void) {
+  TEST_ASSERT_FALSE(historySaveAdmit(29999, 0, 22000, 8000));
+}
+void test_saveAdmit_zero_margin(void) {
+  // Marge 0 : json seul décide (frontière large)
+  TEST_ASSERT_TRUE(historySaveAdmit(22000, 0, 22000, 0));
+  TEST_ASSERT_FALSE(historySaveAdmit(21999, 0, 22000, 0));
+}
+void test_saveAdmit_all_zero_admitted(void) {
+  // Rien à écrire, rien de requis → admis (0 + 0 >= 0 + 0)
+  TEST_ASSERT_TRUE(historySaveAdmit(0, 0, 0, 0));
+}
+void test_saveAdmit_overflow_required_side(void) {
+  // json + marge déborderait size_t en addition naïve : SIZE_MAX + SIZE_MAX.
+  // Disponible nul → refus (une addition débordante donnerait requis ≈ 0 → admis à tort).
+  TEST_ASSERT_FALSE(historySaveAdmit(0, 0, SIZE_MAX, SIZE_MAX));
+}
+void test_saveAdmit_overflow_available_side(void) {
+  // free + old déborderait size_t : SIZE_MAX + SIZE_MAX couvre SIZE_MAX + SIZE_MAX → admis.
+  TEST_ASSERT_TRUE(historySaveAdmit(SIZE_MAX, SIZE_MAX, SIZE_MAX, SIZE_MAX));
+}
+void test_saveAdmit_size_max_exact(void) {
+  // Disponible SIZE_MAX exactement requis SIZE_MAX → admis ; +1 de marge → refusé.
+  TEST_ASSERT_TRUE(historySaveAdmit(SIZE_MAX, 0, SIZE_MAX, 0));
+  TEST_ASSERT_FALSE(historySaveAdmit(SIZE_MAX, 0, SIZE_MAX, 1));
+}
+
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
@@ -148,6 +198,18 @@ int main(int argc, char** argv) {
   RUN_TEST(test_anyTrue_zero_false);
   RUN_TEST(test_anyTrue_one_true);
   RUN_TEST(test_anyTrue_five_true);
+
+  // AC5 — historySaveAdmit
+  RUN_TEST(test_saveAdmit_exact_boundary_admitted);
+  RUN_TEST(test_saveAdmit_one_byte_short_refused);
+  RUN_TEST(test_saveAdmit_one_byte_spare_admitted);
+  RUN_TEST(test_saveAdmit_no_old_file_admitted);
+  RUN_TEST(test_saveAdmit_no_old_file_refused);
+  RUN_TEST(test_saveAdmit_zero_margin);
+  RUN_TEST(test_saveAdmit_all_zero_admitted);
+  RUN_TEST(test_saveAdmit_overflow_required_side);
+  RUN_TEST(test_saveAdmit_overflow_available_side);
+  RUN_TEST(test_saveAdmit_size_max_exact);
 
   return UNITY_END();
 }

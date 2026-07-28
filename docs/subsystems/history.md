@@ -45,14 +45,33 @@ Depuis **feature-041** (*characterization refactor*), la math **scalaire** d'agr
 | `finalizeMean(sum, count)` | Moyenne `sum/count` | `count == 0` → **`NaN`** (le point est ignoré par la coquille) |
 | `isMajority(trueCount, total)` | Majorité stricte `trueCount > total/2` | Division **entière** : `2/4` → `false`, `3/4` → `true`, `3/5` → `true` |
 | `anyTrue(count)` | « Au moins un » : `count > 0` | — |
+| `historySaveAdmit(freeBytes, oldFileBytes, jsonBytes, marginBytes)` | Admission d'une écriture de `/history.json` : vrai si `libre + taille de l'ancien fichier ≥ JSON + marge` ([ADR-0033](../adr/0033-budget-espace-partition-history.md), v2.11.0) | Frontière **large** (égalité exacte → admis). Anti-overflow : soustractions gardées, aucune addition — correct jusqu'à `SIZE_MAX` sur chaque paramètre. **Logique NOUVELLE** (pas de contrainte characterization) |
 
-Les deux passes de `consolidateData()` (raw → horaire, horaire → quotidien) **délèguent** à ces fonctions. *Characterization refactor* : la math reproduit **exactement** l'ancien comportement inline (frontières strictes, divisions entières, wrap `uint32`) — **aucun changement de comportement**. Ne pas « corriger » ces frontières.
+Les deux passes de `consolidateData()` (raw → horaire, horaire → quotidien) **délèguent** à ces fonctions. *Characterization refactor* : la math reproduit **exactement** l'ancien comportement inline (frontières strictes, divisions entières, wrap `uint32`) — **aucun changement de comportement**. Ne pas « corriger » ces frontières (exception : `historySaveAdmit`, logique nouvelle).
 
-> ⚠️ **Limite de testabilité** : seule la math scalaire est couverte en natif. Le **regroupement** par bucket (`std::map`/`std::vector`), l'accumulation des sommes/compteurs et la **persistance** (`saveToFile`) restent dans la coquille `consolidateData()` et **hors tests natifs** (contrainte libc++ absente de l'environnement natif). 25 tests Unity natifs ; `history_logic.cpp` couvert à **100 % des lignes**.
+> ⚠️ **Limite de testabilité** : seule la math scalaire est couverte en natif. Le **regroupement** par bucket (`std::map`/`std::vector`), l'accumulation des sommes/compteurs et la **persistance** (`saveToFile`) restent dans la coquille `consolidateData()` et **hors tests natifs** (contrainte libc++ absente de l'environnement natif). 35 tests Unity natifs (dont 10 pour `historySaveAdmit`) ; `history_logic.cpp` couvert à **100 % des lignes**.
 
 ## Pré-NTP handling
 
 Si un snapshot est pris **avant** que l'heure soit synchronisée (timestamp uptime < `kMinValidEpoch`), il est marqué via `_preNtpPending = true`. Dès la synchro NTP réussie, `_applyPreNtpCorrection(ntpEpoch, uptimeSec)` re-date les points en calculant `epoch = ntpEpoch − (uptimeSec − pointUptime)`.
+
+## Sauvegarde `saveToFile()` — garde d'espace (v2.11.0, [ADR-0033](../adr/0033-budget-espace-partition-history.md))
+
+Cause racine des 2 « corruptions » de juillet 2026 : **saturation structurelle** de la partition (pire cas 19-22 blocs demandés vs 16) déclenchant un div/0 `lfs_alloc` sur FS plein — bug littlefs amont ([#1063](https://github.com/littlefs-project/littlefs/issues/1063), [esp_littlefs #183](https://github.com/joltwallet/esp_littlefs/issues/183)), version figée par `espressif32@6.9.0`. Depuis la v2.11.0, `saveToFile()` suit la séquence **mesure → garde → remove → écriture → vérification** (l'ancien code ouvrait `"w"` d'entrée, tronquant l'ancien fichier avant toute vérification) :
+
+1. **Mesure** : le JSON est construit en RAM et mesuré (`measureJson`) **avant** de toucher au FS.
+2. **Garde d'admission** : `historySaveAdmit(libre, tailleAncienFichier, tailleJson, kHistorySaveSpaceMarginBytes = 8192)` (module pur `history_logic`). **Refus** → save sauté, **l'ancien fichier reste intact** (mieux vaut un historique périmé de 5 min qu'un fichier tronqué), retentative naturelle au cycle suivant.
+3. **`remove()` de l'ancien fichier AVANT réécriture** : divise le pic copy-on-write par 2 (ancien + nouveau ne coexistent plus). Trade-off acté : un crash dans la fenêtre remove→write perd l'historique persisté — borné par la cadence 5 min et couvert par le disjoncteur ([ADR-0031](../adr/0031-disjoncteur-bootloop-history.md)).
+4. **Vérification d'écriture partielle** : le retour de `serializeJson` doit être **exactement** la taille mesurée ; sinon le fichier partiel est **supprimé** (jamais de JSON tronqué silencieux).
+
+**Chemins d'échec (refus, échec d'`open`, écriture partielle)** — tous identiques :
+
+- log **WARNING** (jamais ERROR/CRITICAL : un ERROR déclencherait un flush disque immédiat sur le FS déjà plein toutes les 5 min — anti-flush-storm), **throttlé à 1/h** (`kHistorySaveWarnThrottleMs`, statique par site) ;
+- `recordHistorySaveFailureNvs()` : incrément du compteur cumulé `nospc_cnt` + persistance de `last_ok` (epoch du dernier save réussi, tenu en RAM `_lastOkEpoch`) en NVS `hist_meta`. Écriture NVS **uniquement sur échec**, jamais à chaque save réussi (usure NVS).
+
+Sur save réussi : `_lastOkEpoch` mis à jour en RAM + INFO d'occupation FS `Partition history : used/total octets utilisés`, throttlé 1/h.
+
+**Budget pire cas résultant** (avant : 2 méta + 12 history COW ×2 + 5 log + 3 tmp = **22 blocs > 16**) : 2 méta + 6 history + 3 log (≤ 8 Ko) + 2 tmp (6 Ko) = **13 blocs ≤ 16, marge 3 blocs**. Les plafonds log réduits font partie du budget — voir [logger.md](logger.md#persistance-sur-littlefs-partition-history). ⚠️ Toute nouvelle écriture sur cette partition doit passer par la garde ou démontrer le respect du budget.
 
 ## API publique
 

@@ -128,6 +128,39 @@ constexpr uint32_t kAutoHealMinUptimeMs = 180000;         // 3 min - uptime mini
 constexpr uint8_t  kAutoHealMaxReboots = 3;               // Plafond de reboots auto dans la fenêtre → mode maintenance
 constexpr uint32_t kAutoHealRebootWindowMs = 900000;      // 15 min - fenêtre anti-boucle (tumbling, ancrée au 1er reboot)
 
+// Échantillonnage heap adaptatif (bug-badalloc-ws-broadcast) : quand maxBloc passe
+// sous kLowHeapWarnBytes, la cadence de checkHeapHealth() passe de
+// kHealthCheckIntervalMs (60 s) à cette valeur → le débounce (3 ticks) confirme un
+// heap critique en ~15 s au lieu de 180 s, avant que le crash ne gagne la course.
+constexpr uint32_t kHeapCheckFastIntervalMs = 5000;       // 5s - cadence rapprochée sous seuil d'alerte
+
+// Garde heap des broadcasts WebSocket (bug-badalloc-ws-broadcast) : textAll() alloue
+// un shared buffer (makeSharedBuffer) SANS rattraper std::bad_alloc → abort(). Sous
+// ce seuil de plus gros bloc contigu, le push est SAUTÉ (l'UI rate un cycle de 5 s,
+// sans coût UX) et le débounce auto-guérison se joue. Dérivation : payload max ~2 Ko
+// (sensor_data) + String temporaire de construction (~2 Ko) + copies internes
+// AsyncWebSocket + marge TOCTOU (le heap peut encore baisser entre le check et
+// l'alloc) → 8192, aligné sur kRestartMaxAllocHeapBytes : sous ce niveau l'appareil
+// est de toute façon en zone de restart auto-guérison.
+constexpr uint32_t kWsPushMinAllocBytes = 8192;           // Plus gros bloc < seuil → push WS sauté
+constexpr uint32_t kWsSkipWarnThrottleMs = 30000;         // 30s - throttle du warn « pushes WS sautés »
+
+// Récolte des clients WS zombies (investigation churn-heap §G1/G2) : un client qui
+// n'ACK plus conserve une file jusqu'à 32 buffers ~1,8 Ko connexion ouverte —
+// générateur n°1 du churn heap. L'état capteurs étant idempotent (chaque push est un
+// snapshot complet), un client qui n'a pas consommé 4 snapshots (~20 s) est gelé →
+// fermeture. En complément : keepalive PING auto pour que les zombies meurent par
+// timeout ACK, et setCloseClientOnQueueFull(true) (fermeture par le fork à la
+// saturation de sa file interne).
+// (Récolte des clients gelés : bornée côté fork via -DWS_MAX_QUEUED_MESSAGES=5,
+// platformio.ini + setCloseClientOnQueueFull — pas de constante applicative.)
+constexpr uint16_t kWsKeepAlivePeriodS = 30;              // 30s - période PING auto (keepAlivePeriod, unité: secondes)
+
+// Pré-dimensionnement de la String du payload sensor_data (churn-heap Q3) : payload
+// mesuré 1777 o (coredump 2026-07-28) + marge de croissance → 2048. L'ancien
+// reserve(1600) était sous-dimensionné : ~6 réallocations par push (toutes les 5 s).
+constexpr size_t kWsSensorJsonReserveBytes = 2048;        // reserve() du JSON sensor_data (payload 1777 o mesuré)
+
 // Disjoncteur de boot-loop de l'init history (v2.10.0, feature-059) : un drapeau
 // NVS (crash_cnt, namespace hist_meta) est posé avant le montage de la partition
 // history et levé après init complète. Si le boot précédent a crashé pendant
@@ -136,6 +169,23 @@ constexpr uint32_t kAutoHealRebootWindowMs = 900000;      // 15 min - fenêtre a
 // écriture). Indépendant de kAutoHealMaxReboots et du mode maintenance.
 constexpr uint8_t kHistoryInitCrashThreshold = 2;             // Crashs consécutifs pendant l'init → effacement partition history
 constexpr const char* kHistoryCrashCountNvsKey = "crash_cnt"; // Clé NVS du compteur (namespace hist_meta, clé part_sz intacte)
+
+// Garde d'espace de saveToFile (bug-nospc-partition-history, ADR-0033) : le pire
+// cas d'occupation de la partition 64 Ko (réécriture copy-on-write de
+// /history.json + /system.log + .tmp de rotation + métadonnées) dépassait la
+// capacité → NOSPC structurel puis div/0 littlefs (bug amont, issue #1063).
+// L'ancien fichier est supprimé AVANT réécriture (divise le pic COW par 2) et
+// l'admission compare libre + taille de l'ancien fichier à taille JSON + marge
+// (historySaveAdmit, module pur).
+constexpr size_t kHistorySaveSpaceMarginBytes = 8192;           // 2 blocs de 4096 o : compaction métadonnées near-full + arrondi bloc
+constexpr unsigned long kHistorySaveWarnThrottleMs = 3600000UL; // 1 h - throttle des warn « partition pleine » et de l'INFO occupation FS
+
+// Clés NVS du diagnostic NOSPC + dump de preuve (namespace hist_meta existant) :
+constexpr const char* kHistoryNospcCountNvsKey  = "nospc_cnt"; // Compteur cumulé de saves refusés/échoués (uint32)
+constexpr const char* kHistoryLastOkEpochNvsKey = "last_ok";   // Epoch du dernier save réussi (écrit sur échec UNIQUEMENT — usure NVS)
+constexpr const char* kHistoryDumpCrc0NvsKey    = "dmp_crc0";  // CRC32 du bloc 0 dumpé par le disjoncteur (A1)
+constexpr const char* kHistoryDumpCrc1NvsKey    = "dmp_crc1";  // CRC32 du bloc 1 dumpé par le disjoncteur (A1)
+constexpr const char* kHistoryDumpHeadNvsKey    = "dmp_head";  // Blob : 16 premiers octets du bloc 0 (A1)
 
 // Marge commune des gardes heap HTTP (pattern v2.10.1, généralisé par
 // bug-crash-getlogs-badalloc) : la taille RÉELLE de la réponse (measureJson /

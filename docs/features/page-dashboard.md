@@ -15,7 +15,7 @@ La page est une **grille de six cartes** (classe `grid--status-cards`) :
 2. **Carte Éclairage** (`#dashboard-lighting-card`) — état, mode (programmation on/off), horaires, boutons Allumer / Éteindre. Lien vers `/lighting`.
 3. **Carte pH** (`#dashboard-ph-card`) — valeur pH courante, cible, badge dosage actif, mini-graphique. Bandeau « Calibration requise » si la sonde n'a jamais été calibrée. Lien vers `/ph`.
 4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible, badge dosage actif, mini-graphique. Bandeau calibration. Lien vers `/orp`.
-5. **Carte Température** (`#dashboard-temperature-card`) — valeur courante en °C, mini-graphique. Lien vers `/temperature`.
+5. **Carte Température** (`#dashboard-temperature-card`) — valeur courante en °C, badge « Capteur indisponible » (`#temperature-sensor-badge`, v2.10.5), mini-graphique. Lien vers `/temperature`.
 6. **Carte Boost** (`#dashboard-boost-card`) — activation / désactivation du Mode Boost, heure d'expiration quand il est actif (feature-053, v2.18.0, voir [Carte Boost](#carte-boost-feature-053)).
 
 Chaque mini-graphique est rendu par **uPlot** (usine `createMiniLineChart`, feature-043 — remplace Chart.js) dans un conteneur dédié, alimenté par l'historique des 3 derniers jours (`GET /get-history?range=3d`, points bruts + moyennes horaires selon l'ancienneté). La coloration de la courbe est **conditionnelle par segment** (vert dans la tolérance, interpolation continue vers le rouge au-delà, gris si donnée absente — `getMiniChartRGB`, app.js).
@@ -48,6 +48,26 @@ Chaque carte pH et ORP porte un badge composé (`composeSensorBadge()`, app.js �
 **Segment « Cumul XX % »** :
 - Affiché à partir de **75 %** du quota journalier (`ph_daily_ml / max_ph_ml_per_day`, `orp_daily_ml / max_chlorine_ml_per_day`), même arithmétique que la barre de cumul des pages `/ph` et `/orp` (arrondi des entrées, pourcentage plafonné à 100).
 - Masqué quand la limite est atteinte (le segment « Limite journalière atteinte » prend le relais, pas de redondance), quand la limite n'est pas configurée (quota ≤ 0), ou quand les données sont indisponibles.
+
+## Badge « Capteur indisponible » de la carte Température (`#temperature-sensor-badge`, v2.10.5)
+
+La carte Température porte un badge à segment unique **« Capteur indisponible »** (variant `danger`), calqué sur le segment de priorité 0 des badges pH/ORP (feature-022) :
+
+- Affiché quand `temperature` est `null` ou NaN dans le WS (sonde DS18B20 débranchée, non identifiée ou en erreur).
+- Même **garde anti-faux-positif au boot** : le badge n'est produit que si `latestSensorData !== null` (au moins un message WS reçu).
+- Masqué dès que la valeur redevient valide (retour du capteur → disparition au prochain push WS, sans reload).
+
+Pas de multi-états ici : la température n'a ni dosage, ni limites, ni calibration — un seul segment suffit.
+
+## Convention « `--` » quand un capteur est indisponible (v2.10.5)
+
+Toute valeur capteur `null`/NaN s'affiche « **`--`** » sur **tous** les sites d'affichage numérique — jamais de conservation silencieuse de la dernière valeur connue (bug corrigé en v2.10.5 : le pattern « skip si null » figeait indéfiniment l'ancienne valeur à l'écran quand une sonde était débranchée) :
+
+- **Métriques du tableau de bord** (`updateDashboardMetrics`, app.js) : `#m-temp`, `#m-ph`, `#m-orp` ;
+- **Widgets compacts** : `#compact-ph`, `#compact-orp`, `#compact-temperature` — l'unité est conservée dans la structure (ex. `--<span class="compact-unit">°C</span>`) pour ne pas casser la mise en page ;
+- **Sections détaillées** des cartes.
+
+Cette convention est celle déjà utilisée par les pages Réglages/Calibration. **Exceptions volontaires** : les graphiques et mini-graphiques continuent de **sauter** les points `null` (trous dans les courbes — comportement correct, inchangé). Retour du capteur → les valeurs réapparaissent automatiquement au prochain push WS (≤ 1 cycle de rafraîchissement).
 
 ## Statut dosage et stabilisation par pompe
 
@@ -133,7 +153,8 @@ La fonction `updateFiltrationBadges()` côté JS met à jour simultanément `#de
 ## Cas limites
 
 - **WebSocket déconnecté** : les valeurs affichent `--`. Les mini-graphiques conservent la dernière série.
-- **Capteur pH ou ORP en erreur** : segment « Capteur indisponible » (danger, priorité 0) dans le badge multi-états (voir [Badge multi-états](#badge-multi-états-des-cartes-ph--orp-ph-sensor-badge-orp-sensor-badge)), valeur `--`.
+- **Capteur pH ou ORP en erreur** : segment « Capteur indisponible » (danger, priorité 0) dans le badge multi-états (voir [Badge multi-états](#badge-multi-états-des-cartes-ph--orp-ph-sensor-badge-orp-sensor-badge)), valeur `--` (voir [Convention « `--` »](#convention-----quand-un-capteur-est-indisponible-v2105)).
+- **Sonde de température en erreur** (v2.10.5) : badge « Capteur indisponible » (`#temperature-sensor-badge`), valeur `--` partout où la température s'affiche.
 - **Sonde non calibrée** : bandeau `calibration-alert` + chip global en haut de page.
 - **Dosage en cours** : badge `dosing-status` affiché dans la carte concernée.
 
@@ -152,3 +173,4 @@ Le détail complet du cumul journalier (barre de progression, mL consommés / qu
 
 - `feature-012-badges-dashboard-cumul-stabilisation` — segment « Cumul XX % », règle de composition du badge multi-états (max 2 segments), stabilisation par pompe (v2.9.0, périmètre réduit sur avis UX)
 - `feature-022-observabilite-dosage` — segment « Capteur indisponible » (priorité 0, danger) piloté par `ph`/`orp` null dans le WS, garde anti-faux-positif au boot (v2.10.0)
+- `bug-ui-valeurs-figees-capteur-absent` — convention « `--` » généralisée à tous les sites d'affichage numérique (fin du pattern « skip si null ») + badge « Capteur indisponible » température (v2.10.5)

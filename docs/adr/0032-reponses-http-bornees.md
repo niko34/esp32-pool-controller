@@ -81,6 +81,15 @@ Routes prouvées **SÛRES** (borne structurelle, aucune modification) :
 - **Interdiction des gardes heap à seuil fixe** : la garde compare toujours la taille **réelle** (mesurée ou pire-cas réservé) au bloc contigu disponible.
 - `kHttpHeapMarginBytes` (4096) est la marge unique partagée (alias `kSensorTraceHeapMarginBytes` conservé pour l'historique v2.10.1).
 
+## Extension 2026-07-28 — émissions WebSocket (v2.11.1)
+
+Le coredump du 2026-07-28 (`bad_alloc` dans `AsyncWebSocket::textAll` → `makeSharedBuffer`) a montré que la **voie WebSocket** relevait de la même classe de défaillance que les routes HTTP auditées ici : une allocation throwante non rattrapée sur un tas fragmenté, déclenchée par une simple émission vers le navigateur. La philosophie de cet ADR est étendue aux **émissions WS** :
+
+- **Garde côté appelant, jamais dans la lib** : chaque broadcast (`broadcastSensorData` / `broadcastConfig` / `broadcastLog`) passe par `_heapAllowsPush()` **avant** toute construction de JSON — bloc contigu < `kWsPushMinAllocBytes` (8192) → push **sauté** (l'UI rate un cycle de 5 s, sans coût UX). Nuance vs l'interdiction des seuils fixes du présent ADR : elle vise les réponses dont la taille **dépend des données** ; les payloads WS sont **structurellement bornés** (`StaticJson<2048>` + `reserve(kWsSensorJsonReserveBytes)`), un seuil constant couvrant payload + copies internes + marge TOCTOU est donc légitime — et il est aligné sur `kRestartMaxAllocHeapBytes` (sous ce niveau, l'appareil est de toute façon en zone de restart auto-guérison, [ADR-0029 §Amendement](0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111)).
+- **Buffers de file bornés** : la file d'envoi par client passe de 32 (défaut fork, ~58 Ko épinglables par client zombie) à **5 trames** (`-DWS_MAX_QUEUED_MESSAGES=5`, `platformio.ini`) + `setCloseClientOnQueueFull(true)` — le coût mémoire d'un client WS redevient **lisible et borné**, comme celui d'une route HTTP auditée.
+
+Détails d'implémentation et invariants (anti-ré-entrance du log, récolte des zombies) : [subsystems/ws-manager.md](../subsystems/ws-manager.md).
+
 ## Références
 
 - Code : `src/web_routes_data.cpp` (`handleGetLogs`, `handleDownloadLogs`, `handleGetHistory`), `src/web_routes_ota.cpp` (`handleCheckUpdate`), `src/logs_page.h`, `src/logs_export_chunk.h`, `src/logger.h` (`forEachRecentLog` visiteur `bool`, `getLogEntryByIndex`), `src/constants.h` (`kHttpHeapMarginBytes`, `kLogsMaxEntriesPerPage`, `kLogsPageHardCap`, `kLogExportLineMaxBytes`, `kHistoryPointJsonMaxBytes`, `kOtaReleaseNotesMaxChars`)

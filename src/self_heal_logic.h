@@ -47,4 +47,12 @@ struct SelfHealInputs {
 //   3. sinon → Continue.
 SelfHealDecision evaluateSelfHeal(const SelfHealInputs& in);
 
+// Cadence d'échantillonnage heap adaptative (bug-badalloc-ws-broadcast) : rapproche
+// les ticks sous le seuil d'alerte pour que le débounce (kAutoHealDebounceChecks = 3
+// ticks) confirme en ~15 s au lieu de 180 s — sinon un effondrement rapide du plus
+// gros bloc gagne la course contre l'auto-guérison (coredump 2026-07-28).
+// Frontière : maxAllocHeap < warnThreshold → fast ; >= → normal.
+uint32_t heapSampleIntervalMs(uint32_t maxAllocHeap, uint32_t warnThreshold,
+                              uint32_t normalIntervalMs, uint32_t fastIntervalMs);
+
 #endif // SELF_HEAL_LOGIC_H

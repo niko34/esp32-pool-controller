@@ -65,6 +65,11 @@ RTC_NOINIT_ATTR uint32_t rtcAutoHealWindowStartEpoch;  // epoch (s) du 1er reboo
 // DÉSACTIVE tout auto-reboot ultérieur et inhibe le dosage (via PumpController).
 // L'appareil reste joignable (web/MQTT) pour diagnostic. Effacé au prochain boot.
 bool maintenanceMode = false;
+// Dernier échantillon de maxBloc (bug-badalloc-ws-broadcast) : écrit par
+// checkHeapHealth(), lu par loop() pour calculer la cadence adaptative via
+// heapSampleIntervalMs(). Sentinelle UINT32_MAX = pas encore d'échantillon →
+// premier intervalle = kHealthCheckIntervalMs (cadence normale).
+static uint32_t lastHeapMaxAllocSample = UINT32_MAX;
 
 // ===== Watchdog de connectivité (v2.9.2) =====
 // Dernier signe de vie réseau (millis). Signal PRIMAIRE : le callback ICMP
@@ -89,6 +94,7 @@ bool setupWiFi();
 void resetWiFiSettings();
 void applyTimeConfig();
 void checkSystemHealth();
+void checkHeapHealth();
 void onNtpTimeSync();
 void notifyNetworkActivity();
 void reannounceMdns(const char* reason);
@@ -314,6 +320,19 @@ void loop() {
     checkSystemHealth();
     lastHealthCheck = now;
     esp_task_wdt_reset();
+  }
+
+  // Auto-guérison heap sur timer PROPRE à cadence adaptative (bug-badalloc-ws-broadcast) :
+  // 60 s en régime sain, kHeapCheckFastIntervalMs (5 s) dès que maxBloc passe sous
+  // kLowHeapWarnBytes → le débounce (3 ticks) confirme en ~15 s au lieu de 180 s.
+  // Premier passage : lastHeapMaxAllocSample = UINT32_MAX (sentinelle) → cadence normale.
+  static unsigned long lastHeapCheckMs = 0;
+  if (now - lastHeapCheckMs >= heapSampleIntervalMs(lastHeapMaxAllocSample,
+                                                    kLowHeapWarnBytes,
+                                                    kHealthCheckIntervalMs,
+                                                    kHeapCheckFastIntervalMs)) {
+    checkHeapHealth();
+    lastHeapCheckMs = now;
   }
 
   // Vérification sync NTP et mise à jour RTC
@@ -763,14 +782,15 @@ void enterMaintenanceMode() {
       " reboots — dosage suspendu");
 }
 
-void checkSystemHealth() {
-  // Vérifier l'état général du système
-  size_t freeHeap = ESP.getFreeHeap();
-  if (freeHeap < kMinFreeHeapBytes) {
-    systemLogger.critical("Mémoire faible: " + String(freeHeap) + " bytes");
-    mqttManager.publishAlert("low_memory", "Free heap: " + String(freeHeap) + " bytes");
-  }
-
+// Surveillance heap + auto-guérison (bug-badalloc-ws-broadcast) : bloc extrait de
+// checkSystemHealth() pour tourner sur un timer PROPRE à cadence adaptative (cf.
+// heapSampleIntervalMs dans loop()). SOURCE UNIQUE de ESP.getMaxAllocHeap() et de
+// consecutiveBelow — checkSystemHealth() ne les touche plus (l'alerte kMinFreeHeapBytes
+// porte sur freeHeap, métrique différente, et reste à 60 s). AUCUNE publication MQTT
+// périodique ici (seules les alertes des chemins restart/maintenance).
+// Invariants ADR-0029 conservés À L'IDENTIQUE : débounce kAutoHealDebounceChecks,
+// budget kAutoHealMaxReboots, kAutoHealMinUptimeMs, mode maintenance, garde OTA.
+void checkHeapHealth() {
   // ===== Instrumentation heap (v2.9.1) =====
   // maxBloc est ÉCHANTILLONNÉ à CHAQUE tick (requis pour la décision auto-heal et le
   // debounce), mais la trace INFO persistée (SANS le gate sensorLogsEnabled) n'est
@@ -779,6 +799,9 @@ void checkSystemHealth() {
   // sans noyer le journal (~1440 lignes/j sinon). Voir la fragmentation : maxBloc
   // s'effondre pendant que libre reste correct.
   uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
+  // Export de l'échantillon pour la cadence adaptative du timer dans loop()
+  // (bug-badalloc-ws-broadcast) — seule ligne ajoutée au bloc déplacé.
+  lastHeapMaxAllocSample = maxAllocHeap;
   // Trace INFO périodique désactivée (2026-07-23, demande utilisateur) : la tendance
   // heap est suffisamment couverte par les alertes ci-dessous et l'auto-guérison.
   // Décommenter ce bloc pour ré-instrumenter (émission toutes les kHeapLogIntervalMs
@@ -841,6 +864,27 @@ void checkSystemHealth() {
       enterMaintenanceMode();
     }
   }
+}
+
+void checkSystemHealth() {
+  // Vérifier l'état général du système. NOTE (bug-badalloc-ws-broadcast) : l'alerte
+  // ci-dessous porte sur le heap TOTAL libre (ESP.getFreeHeap), métrique DISTINCTE
+  // du plus gros bloc contigu — l'échantillonnage de maxAllocHeap et l'auto-guérison
+  // vivent désormais dans checkHeapHealth() (timer adaptatif, source unique).
+  // churn-heap Q4 : émission sur TRANSITION uniquement (pattern edge, comme
+  // lastPhLimitReached) — avant, le CRITICAL (+ flush disque immédiat) et l'alerte
+  // MQTT étaient RÉ-ÉMIS à chaque tick de 60 s tant que le heap restait sous le
+  // seuil. Une alerte à l'entrée sous le seuil, une INFO au retour au-dessus.
+  size_t freeHeap = ESP.getFreeHeap();
+  static bool lastBelowMinFreeHeap = false;
+  bool belowMinFreeHeap = (freeHeap < kMinFreeHeapBytes);
+  if (belowMinFreeHeap && !lastBelowMinFreeHeap) {
+    systemLogger.critical("Mémoire faible: " + String(freeHeap) + " bytes");
+    mqttManager.publishAlert("low_memory", "Free heap: " + String(freeHeap) + " bytes");
+  } else if (!belowMinFreeHeap && lastBelowMinFreeHeap) {
+    systemLogger.info("Mémoire rétablie: " + String(freeHeap) + " bytes");
+  }
+  lastBelowMinFreeHeap = belowMinFreeHeap;
 
   // ===== Watchdog de connectivité (v2.9.2) =====
   // La pile lwIP peut se figer (thread tcpip NON surveillé par le WDT) : web/mDNS/ICMP

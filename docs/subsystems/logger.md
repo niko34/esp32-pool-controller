@@ -105,8 +105,10 @@ Copie **UNE** entrée sous mutex (`chronoIdx` chronologique, `0` = la plus ancie
 Activable via `setPersistenceFs(LittleFS*)` après montage de la partition `history`. Paramètres :
 - Flush périodique : **10 min** (`kFlushIntervalMs = 600000`) — le flush immédiat sur ERROR/CRITICAL et le coredump couvrent les crashes.
 - **Flush immédiat** sur `ERROR` et `CRITICAL` : `flushToDisk()` est appelé directement sans attendre l'intervalle périodique.
-- Taille max du fichier : **16 KB** (`kMaxLogFileBytes`) — réduit depuis 32 KB pour respecter le budget de la partition `history` (64 KB).
-- Rotation : quand le fichier dépasse 16 KB, tronqué aux **12 derniers KB** (`kRotateKeepBytes = 12288`).
+- Taille max du fichier : **8 KB** (`kMaxLogFileBytes = 8192`) — réduit de 16 → 8 KB en v2.11.0 ([ADR-0033](../adr/0033-budget-espace-partition-history.md)) pour tenir le budget d'espace garanti de la partition `history` (64 KB, pire cas log 2-3 blocs au lieu de 4-5). Historique : 32 → 16 KB antérieurement.
+- Rotation : quand le fichier dépasse 8 KB, tronqué aux **6 derniers KB** (`kRotateKeepBytes = 6144`, était 12288) — le `.tmp` de rotation ne pèse plus que 2 blocs.
+
+> ⚠️ Ces deux plafonds **font partie du budget d'espace** de la partition `history` (pire cas 13/16 blocs, [ADR-0033](../adr/0033-budget-espace-partition-history.md)) : ne pas les ré-augmenter sans recalculer le budget.
 
 Le tampon `_persistBuffer` (std::vector<String>) accumule entre deux flushes. Sa capacité est **bornée à 100 entrées** (`kMaxPersistBufferEntries`) et pré-allouée dans le constructeur (`reserve(kMaxPersistBufferEntries)`) pour éviter les `std::bad_alloc` en cas de heap fragmenté en production. Les entrées au-delà de 100 sont silencieusement ignorées (les logs restent dans le buffer RAM circulaire).
 

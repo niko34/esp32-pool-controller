@@ -2,6 +2,52 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.11.1] - 2026-07-28
+
+### Corrigé
+
+- **Crash/reboot `bad_alloc` dans les broadcasts WebSocket sur heap fragmenté** (coredump du 2026-07-28, v2.11.0, décodé GDB) : `AsyncWebSocket::textAll()` alloue son buffer de trame (`makeSharedBuffer`) **sans rattraper** `std::bad_alloc` → plus gros bloc libre < ~1,8 Ko = `abort()` et reboot brutal (sans arrêt ordonné des pompes ni sauvegarde des cumuls). Correctif : **garde heap** `_heapAllowsPush()` en tête des 3 broadcasts, **avant** toute construction de JSON — plus gros bloc < `kWsPushMinAllocBytes` (8 Ko, aligné sur le seuil de restart auto-guérison) → push **sauté** (l'UI rate un cycle de 5 s, sans conséquence), compteur atomique de pushes sautés (`skippedPushCount()`) + WARN throttlé 30 s émis uniquement depuis `update()` (invariant anti-ré-entrance : le helper ne logge jamais). Extension de la philosophie ADR-0032 (réponses bornées) à la voie WebSocket.
+- **Clients WebSocket zombies qui épinglaient la mémoire** (cause n°1 identifiée par l'investigation churn-heap) : un client qui n'ACK plus (téléphone verrouillé, WiFi en veille) conservait connexion ouverte une file de **32 buffers ~1,8 Ko** (~58 Ko épinglés en blocs dispersés) — de quoi effondrer le plus gros bloc en 2-3 min, plus vite que la fenêtre 60 s de l'auto-guérison. Correctifs : file d'envoi par client bornée à **5 trames** (`-DWS_MAX_QUEUED_MESSAGES=5`) + `setCloseClientOnQueueFull(true)` — le fork ferme lui-même le client saturé **sous son verrou** (la boucle manuelle sur `getClients()` a été rejetée en revue : itération sans verrou = UB face à l'érase concurrent d'`async_tcp`) ; + PING keepalive 30 s (ne couvre que les zombies inactifs, le PING n'étant envoyé que file vide — la saturation couvre les autres). En complément : `reserve` du JSON `sensor_data` 1600 → **2048** (`kWsSensorJsonReserveBytes`, payload mesuré 1777 o) — supprime ~6 réallocations de String par push.
+
+### Modifié
+
+- **L'auto-guérison heap réagit en ~15 s au lieu de ~3 min** : le bloc heap de `checkSystemHealth()` est extrait vers `checkHeapHealth()`, sur un timer propre à **cadence adaptative** (fonction pure `heapSampleIntervalMs()`, `self_heal_logic`) — 60 s en régime sain, **5 s** dès que le plus gros bloc passe sous le seuil d'alerte (20 Ko) → le débounce (3 ticks) confirme avant que le crash ne gagne la course. Invariants ADR-0029 strictement conservés (seuils, débounce, budget de reboots, mode maintenance, garde OTA) ; **+5 tests natifs** (368 au total).
+- **Alerte `low_memory` (heap total) émise sur transition** au lieu d'être ré-émise à chaque tick de 60 s (chaque CRITICAL re-flushait le disque) : une alerte à l'entrée sous le seuil, une INFO « Mémoire rétablie » au retour au-dessus. Limite assumée : alerte MQTT non-retained, un abonné hors ligne pendant la transition rate l'épisode (borné par l'INFO de rétablissement).
+
+### Documentation
+
+- `docs/adr/0029-auto-guerison-heap.md` : **amendement** « échantillonnage adaptatif » (pas de nouvel ADR — la décision est inchangée, seule la fréquence d'observation évolue).
+- `docs/adr/0032-reponses-http-bornees.md` : **extension** aux émissions WebSocket (garde côté appelant, buffers de file bornés).
+- `docs/subsystems/ws-manager.md` : garde heap, récolte des zombies, `skippedPushCount()` ; **code mort signalé** : `broadcastLog()`/`setLogCallback()` jamais branchés depuis 2.7.0 (aucun message WS `type:"log"` n'a jamais été émis — purge reportée).
+- `docs/subsystems/system-health.md` : `checkHeapHealth()` séparée, cadence adaptative, alerte `low_memory` en transition.
+
+---
+
+## [2.11.0] - 2026-07-27
+
+### Corrigé
+
+- **Cause racine des « corruptions » récurrentes de la partition historique** (2 incidents en 14 jours, boot-loop `IntegerDivideByZero` dans littlefs) : ce n'était pas une corruption mais une **saturation structurelle d'espace** — au pire moment, la réécriture copy-on-write de `/history.json` (ancien + nouveau fichiers coexistants) plus le journal et son fichier de rotation demandaient **19-22 blocs sur les 16 que compte la partition de 64 Ko**. Le manque d'espace déclenchait alors un bug littlefs amont répertorié (division par zéro dans `lfs_alloc` sur système de fichiers plein — [littlefs #1063](https://github.com/littlefs-project/littlefs/issues/1063)), non corrigeable localement (version figée par la plateforme). Correctif structurel (**ADR-0033**) : `saveToFile` mesure désormais le JSON, vérifie l'espace disponible (garde pure `historySaveAdmit`, marge de 2 blocs), **supprime l'ancien fichier avant d'écrire** (pic copy-on-write divisé par deux) et **vérifie l'écriture** (un fichier partiel est supprimé, jamais laissé sur le disque) ; en cas d'espace insuffisant, le save est sauté proprement (ancien fichier préservé, nouvelle tentative 5 min plus tard) — l'ancien code tronquait l'historique dès l'ouverture, avant toute vérification. Les plafonds du journal passent de 16/12 Ko à **8/6 Ko**. **Nouveau pire cas : 13 blocs sur 16, marge garantie de 3 blocs** — la partition ne peut structurellement plus se remplir.
+- **Anti-tempête de flush** : les échecs de sauvegarde de l'historique sont journalisés en WARNING throttlé (1/h) au lieu d'ERROR — un ERROR déclenchait un flush disque immédiat… sur le système de fichiers déjà plein, toutes les 5 minutes.
+
+### Ajouté
+
+- **Préservation de preuve dans le disjoncteur de boot-loop** (feature-059) : avant l'effacement automatique de la partition, les 2 premiers blocs (8 Ko de métadonnées littlefs) sont dumpés en hexadécimal sur le port série (`[HISTDUMP]`, ~2,4 s, watchdog rafraîchi) et une empreinte courte (CRC32 des 2 blocs + 16 premiers octets) est conservée en NVS — de quoi discriminer, si une occurrence survenait encore, la saturation d'une éventuelle corruption mémoire persistée (hypothèse résiduelle de l'investigation).
+- **Instrumentation de la persistance** : occupation de la partition journalisée (throttlée 1/h), compteur de saves refusés (`nospc_cnt`) et horodatage du dernier save réussi en NVS (écrits uniquement sur échec, pour préserver la flash NVS).
+
+### Documentation
+
+- `docs/adr/0033-budget-espace-partition-history.md` : budget d'espace chiffré avant/après, trade-off remove-avant-write (fenêtre de perte bornée à 5 min, couverte par le disjoncteur) vs write-tmp-puis-rename écarté (pic ×3), bug amont documenté.
+- `docs/subsystems/system-health.md` (préservation de preuve), `docs/subsystems/history.md` (garde d'espace, instrumentation), `docs/subsystems/logger.md` (nouveaux plafonds 8/6 Ko).
+
+## [2.10.5] - 2026-07-27
+
+### Corrigé
+
+- **Valeurs pH/ORP/température figées à l'écran quand un capteur devient indisponible** : sonde débranchée → le firmware invalide la lecture (NaN) et publie `null` (`/data` + WebSocket), mais l'UI conservait indéfiniment la **dernière valeur connue** (pattern « skip si null ») sur le tableau de bord et les widgets compacts, sans aucune indication d'indisponibilité. Désormais, **convention unique** : toute valeur capteur `null` s'affiche « `--` » sur **tous** les sites d'affichage numérique — métriques du tableau de bord (`#m-temp`, `#m-ph`, `#m-orp`), widgets compacts (`#compact-ph`, `#compact-orp`, `#compact-temperature`, unité conservée), sections détaillées — alignée sur les pages Réglages/Calibration qui faisaient déjà le bon geste. En complément, la carte **Température** gagne le badge « **Capteur indisponible** » (`#temperature-sensor-badge`), calqué sur les badges pH/ORP de la feature-022 (même garde anti-faux-positif au boot : aucun badge avant le premier message WS). Capteur rebranché → l'affichage reprend automatiquement, sans recharger la page. Graphiques et pages Réglages inchangés (sauter les `null` y est correct : trous dans les courbes). Frontend uniquement (`data/app.js`, `data/index.html`), aucun fichier firmware touché.
+
+---
+
 ## [2.10.4] - 2026-07-24
 
 ### Corrigé

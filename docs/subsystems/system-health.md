@@ -22,7 +22,12 @@ Responsabilités :
 4. **Disjoncteur de boot-loop history** : effacement automatique de la partition `history` après 2 crashs consécutifs pendant sa fenêtre d'init.
 5. **Mode maintenance** anti-boucle : au-delà d'un plafond de reboots **partagé** (heap + réseau), on cesse d'enchaîner et on dégrade proprement en restant joignable.
 
-`checkSystemHealth()` est appelée depuis `loop()` toutes les `kHealthCheckIntervalMs = 60 s` ([`main.cpp:299`](../../src/main.cpp:299)), en contexte `loopTask`. Elle porte **les deux watchdogs runtime** (heap + réseau) ; le disjoncteur history, lui, s'exécute **une seule fois au boot**, dans `HistoryManager::begin()`.
+Deux fonctions distinctes portent les watchdogs runtime depuis `loop()`, en contexte `loopTask` :
+
+- **`checkHeapHealth()`** (v2.11.1, extraite de `checkSystemHealth()` — [ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111)) — porte **tout le volet heap** (échantillonnage `maxAllocHeap`, flush one-shot, débounce, décision auto-guérison) sur un **timer propre à cadence adaptative** : 60 s en régime sain, `kHeapCheckFastIntervalMs = 5 s` dès que le plus gros bloc passe sous `kLowHeapWarnBytes` (voir [section dédiée](#cadence-adaptative-du-watchdog-heap-v2111)).
+- **`checkSystemHealth()`** — toutes les `kHealthCheckIntervalMs = 60 s` : alerte heap **total** (`low_memory`, en **transition** depuis v2.11.1), watchdog de **connectivité**, ré-annonce mDNS debouncée.
+
+Le disjoncteur history, lui, s'exécute **une seule fois au boot**, dans `HistoryManager::begin()`.
 
 ## Pourquoi deux gardes dédiées
 
@@ -40,9 +45,17 @@ D'où **deux** gardes complémentaires, chacune sur sa vraie métrique :
 
 Historique des modes de défaillance « appareil injoignable » (5 traités) : `std::bad_alloc` sur `/logs` (2.8.2, PANIC) → assert lwIP WebSocket (2.9.0, [ADR-0028](../adr/0028-migration-fork-esp32async.md), PANIC) → fragmentation du tas sans crash (2.9.1, [ADR-0029](../adr/0029-auto-guerison-heap.md), gel heap) → gel de la pile lwIP avec heap sain (2.9.2, [ADR-0030](../adr/0030-watchdog-connectivite.md), gel réseau) → **boot-loop sur partition history corrompue** (2.10.0, [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md), panic à chaque boot avant WiFi).
 
-## Instrumentation du tas (v2.9.1 — trace INFO désactivée en 2.10.2)
+## Cadence adaptative du watchdog heap (v2.11.1)
 
-À **chaque** tick, `maxAllocHeap = ESP.getMaxAllocHeap()` est **échantillonné** — cet échantillonnage reste actif en 2.10.2 : il alimente la décision d'auto-guérison (debounce) et le flush one-shot ci-dessous.
+Coredump 2026-07-28 (v2.11.0, `bad_alloc` dans un broadcast WS) : le plus gros bloc peut s'effondrer sous ~2 Ko **entre deux ticks de 60 s** — à cadence fixe, le débounce (3 ticks = **~180 s**) ne confirme jamais avant le crash. Correctif ([ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111)) :
+
+- Le bloc heap est **extrait** de `checkSystemHealth()` vers `checkHeapHealth()` ([`main.cpp:793`](../../src/main.cpp)) — déplacement à **diff logique nul** (une seule ligne ajoutée : export de l'échantillon `lastHeapMaxAllocSample` ; sentinelle `UINT32_MAX` avant le premier échantillon → cadence normale au boot). `checkHeapHealth()` est la **source unique** de `ESP.getMaxAllocHeap()` et du compteur `consecutiveBelow`.
+- Son timer dans `loop()` ([`main.cpp:329`](../../src/main.cpp)) est cadencé par la fonction **pure** `heapSampleIntervalMs(maxAllocHeap, warnThreshold, normalMs, fastMs)` (`self_heal_logic`, +5 tests natifs) : **60 s** (`kHealthCheckIntervalMs`) si `maxAllocHeap ≥ kLowHeapWarnBytes`, **5 s** (`kHeapCheckFastIntervalMs`) en dessous → le débounce `kAutoHealDebounceChecks` (3 ticks) confirme un heap critique en **~15 s au lieu de ~180 s**.
+- **Invariants ADR-0029 inchangés** : seuils, débounce, uptime minimal, budget partagé, mode maintenance, garde OTA — seule la fréquence d'observation change.
+
+## Instrumentation du tas (v2.9.1 — trace INFO désactivée en 2.10.2, portée par `checkHeapHealth()` depuis 2.11.1)
+
+À **chaque** tick, `maxAllocHeap = ESP.getMaxAllocHeap()` est **échantillonné** — cet échantillonnage reste actif : il alimente la décision d'auto-guérison (debounce), le flush one-shot ci-dessous et, depuis v2.11.1, la cadence adaptative du timer.
 
 La trace INFO périodique persistée :
 
@@ -50,9 +63,15 @@ La trace INFO périodique persistée :
 Heap: libre=<getFreeHeap> maxBloc=<getMaxAllocHeap> minLibre=<getMinFreeHeap>
 ```
 
-(émise toutes les `kHeapLogIntervalMs = 5 min`, ou sur chute de `maxBloc` > `kHeapLogDropBytes = 8 Ko` depuis la dernière émission — elle visualisait la fragmentation : `maxBloc` s'effondre alors que `libre` reste correct) est **désactivée depuis la v2.10.2** : le bloc d'émission est **mis en commentaire** dans `checkSystemHealth()` ([`main.cpp:782`](../../src/main.cpp:782)), pour ne plus consommer le journal 64 Ko avec de la télémétrie de routine. Pour ré-instrumenter (diagnostic d'un nouvel épisode de fragmentation), **décommenter le bloc** — le commentaire sur place documente la marche à suivre.
+(émise toutes les `kHeapLogIntervalMs = 5 min`, ou sur chute de `maxBloc` > `kHeapLogDropBytes = 8 Ko` depuis la dernière émission — elle visualisait la fragmentation : `maxBloc` s'effondre alors que `libre` reste correct) est **désactivée depuis la v2.10.2** : le bloc d'émission est **mis en commentaire** dans `checkHeapHealth()` ([`main.cpp:805`](../../src/main.cpp)), pour ne plus consommer le journal 64 Ko avec de la télémétrie de routine. Pour ré-instrumenter (diagnostic d'un nouvel épisode de fragmentation), **décommenter le bloc** — le commentaire sur place documente la marche à suivre.
 
-**Restent actifs (inchangés)** : au **premier** franchissement à la baisse de `kLowHeapWarnBytes = 20 Ko` (plus gros bloc), un WARN est émis **et** un `flushToDisk()` **one-shot** capture la descente sur disque même si le redémarrage n'est jamais atteint. Le déclencheur est **ré-armé** dès que `maxBloc` repasse au-dessus du seuil ([`main.cpp:803`](../../src/main.cpp:803)). L'alerte CRIT « Mémoire faible » (heap **total** sous `kMinFreeHeapBytes`) et le DEBUG « Health check OK » sont également conservés.
+**Restent actifs** : au **premier** franchissement à la baisse de `kLowHeapWarnBytes = 20 Ko` (plus gros bloc), un WARN est émis **et** un `flushToDisk()` **one-shot** capture la descente sur disque même si le redémarrage n'est jamais atteint. Le déclencheur est **ré-armé** dès que `maxBloc` repasse au-dessus du seuil ([`main.cpp:826`](../../src/main.cpp)).
+
+### Alerte `low_memory` en transition (v2.11.1, churn-heap Q4)
+
+L'alerte heap **total** (CRIT « Mémoire faible » + MQTT `low_memory`, seuil `kMinFreeHeapBytes`, restée dans `checkSystemHealth()` à 60 s) est passée d'une **ré-émission à chaque tick** tant que le heap restait sous le seuil (chaque CRITICAL déclenchant un `flushToDisk()` immédiat — re-flush disque toutes les 60 s au pire moment) à une émission **sur transition** uniquement (pattern edge, [`main.cpp:879`](../../src/main.cpp)) : une alerte CRIT + MQTT à l'**entrée** sous le seuil, une INFO « Mémoire rétablie » au **retour** au-dessus.
+
+> ⚠️ **Limite assumée (revue 2.11.1)** : `publishAlert()` publie en **non-retained** — un abonné MQTT hors ligne au moment de la transition **rate l'épisode** (il n'y a plus de ré-émission périodique pour le rattraper). Le risque est borné par l'INFO de rétablissement (l'épisode est encadré dans le journal) et par le fait qu'un heap total durablement bas finit en auto-guérison, qui émet ses propres alertes.
 
 ## Machine à états auto-guérison / maintenance
 
@@ -132,9 +151,17 @@ SelfHealDecision evaluateSelfHeal(const SelfHealInputs& in);
 2. `uptimeMs >= minUptimeMs` **ET** `maxAllocHeap < restartThreshold` **ET** `consecutiveBelow >= debounceChecks` → `Restart`.
 3. sinon → `Continue`.
 
-Le compteur `consecutiveBelow` (statique dans `checkSystemHealth`) est incrémenté tant que `maxBloc < seuil`, remis à 0 sinon. Aucune décision n'est évaluée en mode maintenance (`if (!maintenanceMode)`, [`main.cpp:678`](../../src/main.cpp:678)).
+Le compteur `consecutiveBelow` (statique dans `checkHeapHealth` depuis v2.11.1) est incrémenté tant que `maxBloc < seuil`, remis à 0 sinon. Aucune décision n'est évaluée en mode maintenance ni pendant une OTA (`if (!maintenanceMode && !isOtaInProgress())`, [`main.cpp:849`](../../src/main.cpp)).
 
-**Tests** : 17 tests natifs dédiés (seuils, debounce, uptime minimal, plafond de reboots, priorité maintenance). Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
+Le module expose aussi la **cadence d'échantillonnage adaptative** (v2.11.1) :
+
+```cpp
+// 60 s en régime sain, 5 s sous le seuil d'alerte (frontière : maxAllocHeap < warnThreshold)
+uint32_t heapSampleIntervalMs(uint32_t maxAllocHeap, uint32_t warnThreshold,
+                              uint32_t normalIntervalMs, uint32_t fastIntervalMs);
+```
+
+**Tests** : 22 tests natifs dédiés (seuils, debounce, uptime minimal, plafond de reboots, priorité maintenance, +5 sur `heapSampleIntervalMs` : frontière du seuil, extrêmes 0/`UINT32_MAX`). Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
 
 ## Watchdog de connectivité (v2.9.2)
 
@@ -242,6 +269,15 @@ Le drapeau est un compteur `crash_cnt` dans le namespace NVS `hist_meta` (déjà
                                           « x/2 — nouvelle tentative », montage)
 ```
 
+### Préservation de preuve avant effacement (v2.11.0)
+
+Depuis la v2.11.0 (spec `bug-nospc-partition-history`, [ADR-0033](../adr/0033-budget-espace-partition-history.md)), la branche `ErasePartition` **préserve la preuve AVANT** `esp_partition_erase_range` via `dumpHistoryPartitionEvidence()` ([`src/history.cpp`](../../src/history.cpp)) :
+
+- **Dump hex Serial** des blocs 0-1 de la partition (8 Ko = superblocs + métadonnées littlefs), lignes préfixées `[HISTDUMP]` (`BEGIN size=` … `0xNNNN: <32 octets hex>` … `END crc0= crc1=`). Durée ≈ 2,4 s à 115200 bauds → `esp_task_wdt_reset()` toutes les 64 lignes. **Dérogation assumée** au principe « jamais de `Serial.printf` pour des logs applicatifs » : la persistance des logs n'est pas encore active à ce stade du boot, et il est interdit d'écrire sur le FS en cours d'autopsie (un `ERROR` déclencherait un flush disque). Lecture seule sur la partition.
+- **Empreinte courte en NVS** `hist_meta`, récupérable après reboot même sans capture Serial : CRC32 de chaque bloc (`dmp_crc0`, `dmp_crc1`) + 16 premiers octets du bloc 0 (`dmp_head`). Échec NVS silencieux (la preuve principale est déjà partie sur Serial).
+
+**Rôle : discriminant H1/H2/H3** de l'investigation `investigation-corruption-recurrente-history` pour une éventuelle prochaine occurrence du div/0 : chaîne de métadonnées pleine/incohérente = H1 (saturation — cause racine traitée par l'ADR-0033), superblock à CRC valide mais contenu insensé = H2 (corruption RAM `lfs_t` persistée, hypothèse résiduelle), paire de métadonnées déchirée = H3 (écriture interrompue).
+
 ### Mapping des causes de reset
 
 `esp_reset_reason()` est mappé vers l'enum pur `HistoryResetKind` par la coquille (`mapResetReason()`, [`src/history.cpp`](../../src/history.cpp)) :
@@ -307,11 +343,12 @@ Sinon, un `debug(...)` « Ré-annonce mDNS débouncée » trace l'oscillation ig
 
 | Constante | Valeur | Rôle |
 |---|---|---|
-| `kHealthCheckIntervalMs` | `60000` (60 s) | Période d'appel de `checkSystemHealth()` |
-| `kMinFreeHeapBytes` | `10000` (10 Ko) | Seuil heap **total** → alerte `low_memory` (**inchangé**, distinct de l'auto-guérison) |
-| `kLowHeapWarnBytes` | `20000` (20 Ko) | Plus gros bloc sous ce seuil → WARN + flush one-shot |
+| `kHealthCheckIntervalMs` | `60000` (60 s) | Période d'appel de `checkSystemHealth()` + cadence **nominale** de `checkHeapHealth()` |
+| `kHeapCheckFastIntervalMs` | `5000` (5 s) | Cadence **rapprochée** de `checkHeapHealth()` quand `maxBloc < kLowHeapWarnBytes` (v2.11.1) |
+| `kMinFreeHeapBytes` | `10000` (10 Ko) | Seuil heap **total** → alerte `low_memory` en **transition** (distinct de l'auto-guérison) |
+| `kLowHeapWarnBytes` | `20000` (20 Ko) | Plus gros bloc sous ce seuil → WARN + flush one-shot + bascule en cadence rapprochée |
 | `kRestartMaxAllocHeapBytes` | `8192` (8 Ko) | Plus gros bloc sous ce seuil → candidat au restart |
-| `kAutoHealDebounceChecks` | `3` | Ticks consécutifs sous seuil avant restart (anti-oscillation, ≈ 3 min) |
+| `kAutoHealDebounceChecks` | `3` | Ticks consécutifs sous seuil avant restart (anti-oscillation ; ≈ 3 min à cadence nominale, **≈ 15 s** en cadence rapprochée) |
 | `kAutoHealMinUptimeMs` | `180000` (3 min) | Uptime minimal avant tout restart auto |
 | `kAutoHealMaxReboots` | `3` | Plafond de reboots dans la fenêtre → mode maintenance (**partagé heap + réseau**) |
 | `kAutoHealRebootWindowMs` | `900000` (15 min) | Fenêtre glissante anti-boucle de reboot (partagée) |
@@ -322,6 +359,7 @@ Sinon, un `debug(...)` « Ré-annonce mDNS débouncée » trace l'oscillation ig
 | `kMdnsReannounceMinIntervalMs` | `30000` (30 s) | Intervalle mini entre 2 ré-annonces mDNS |
 | `kHistoryInitCrashThreshold` | `2` | Crashs consécutifs pendant l'init history → effacement de la partition (**hors** budget `kAutoHealMaxReboots`) |
 | `kHistoryCrashCountNvsKey` | `"crash_cnt"` | Clé NVS du compteur du disjoncteur (namespace `hist_meta`, clé `part_sz` intacte) |
+| `kHistoryDumpCrc0NvsKey` / `kHistoryDumpCrc1NvsKey` / `kHistoryDumpHeadNvsKey` | `"dmp_crc0"` / `"dmp_crc1"` / `"dmp_head"` | Empreinte de la preuve `[HISTDUMP]` (CRC32 blocs 0-1 + 16 premiers octets, namespace `hist_meta`, v2.11.0) |
 
 ## Alertes MQTT émises
 
@@ -331,7 +369,7 @@ Sinon, un `debug(...)` « Ré-annonce mDNS débouncée » trace l'oscillation ig
 | `network_soft_recover` | Pile réseau muette ≥ 2 min, WiFi associé → reconnexion WiFi tentée (watchdog connectivité, 1×/épisode) |
 | `network_stall_reboot` | Juste avant le redémarrage propre pour **gel réseau** confirmé ≥ 5 min (watchdog connectivité) |
 | `maintenance_mode` | Bascule en mode maintenance (plafond de reboots **partagé** atteint) |
-| `low_memory` | Heap **total** sous `kMinFreeHeapBytes` (garde existante, conservée) |
+| `low_memory` | **Entrée** du heap **total** sous `kMinFreeHeapBytes` (émission sur **transition** depuis v2.11.1 — non-retained : un abonné hors ligne à cet instant rate l'épisode ; INFO « Mémoire rétablie » au retour au-dessus, journal uniquement) |
 | `history_partition_reset` | Partition history effacée automatiquement par le disjoncteur de boot-loop — publication **différée** depuis `setup()` après `mqttManager.begin()` (v2.10.0) |
 
 Voir [MQTT.md](../MQTT.md#alertes).
