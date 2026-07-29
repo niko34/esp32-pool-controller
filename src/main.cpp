@@ -22,6 +22,7 @@
 #include "web_routes_control.h"
 #include "ws_manager.h"
 #include "history.h"
+#include "measure_validity.h"
 #include "version.h"
 #include "rtc_manager.h"
 #include "uart_transport.h"
@@ -237,6 +238,7 @@ void loop() {
   webServer.update();
   mqttManager.update();              // No-op depuis ADR-0011 (mqttTask gère tout)
   mqttManager.drainCommandQueue();   // Applique les commandes HA reçues sous configMutex
+  measureValidity.update();          // feature-061 : validité pH/ORP — AVANT history (le point 5 min lit le cache)
   history.update();
   systemLogger.update();
   updateManualInject();

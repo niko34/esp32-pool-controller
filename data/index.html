@@ -648,6 +648,8 @@
                 <button class="btn btn--secondary" type="button" id="ph_cal_trigger_btn">Calibrer la sonde</button>
                 <span class="muted small" id="ph_cal_hint"></span>
               </div>
+              <!-- feature-061 : état mesure (filtration arrêtée / stabilisation) -->
+              <div class="sensor-badge" id="ph-page-badge" role="status" style="display:none;"></div>
             </div>
             <div class="ph-stats__col">
               <div class="daily-dose" id="daily-dose-ph" aria-label="Dosage pH du jour">
@@ -916,6 +918,8 @@
                 <button class="btn btn--secondary" type="button" id="orp_cal_trigger_btn">Calibrer la sonde</button>
                 <span class="muted small" id="orp_cal_hint"></span>
               </div>
+              <!-- feature-061 : état mesure (filtration arrêtée / stabilisation) -->
+              <div class="sensor-badge" id="orp-page-badge" role="status" style="display:none;"></div>
             </div>
             <div class="orp-stats__col">
               <div class="daily-dose" id="daily-dose-orp" aria-label="Dosage ORP du jour">

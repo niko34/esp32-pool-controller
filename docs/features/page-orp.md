@@ -23,6 +23,18 @@ Le bloc Statistiques reste visible en permanence.
 
 > **Calibration accessible dans tous les modes (feature-034)** : le bouton « Calibrer la sonde » (`#orp_cal_trigger_btn`) est désormais affiché et fonctionnel en **automatique, programmée et manuelle**. Depuis l'itération 3, ce bouton est placé **sous la rangée de chips** du bloc Statistiques (et non plus en bas de la carte de régulation dans `#orp-calibration-info`, supprimé). La session de calibration ne modifie pas `orp_regulation_mode` : à la fermeture, on **revient au mode précédemment sélectionné**.
 
+## Badge d'état mesure (`#orp-page-badge`, feature-061, v2.13.0)
+
+Sous le bouton « Calibrer la sonde » du bloc Statistiques, un badge (`role="status"`, masqué par défaut) affiche l'**état de validité de la mesure** — symétrique du badge `#ph-page-badge` de la page pH, alimenté par les **seuls segments d'état mesure** (`measureStateSegments('orp', …)`, app.js) :
+
+| Condition | Libellé exact | Variant |
+|---|---|---|
+| `water_present === false` (arrêt franc) | `Filtration arrêtée` | `info` (bleu — état normal, attendre) |
+| `water_present === false` + `filtration_state_stale` | `Signal filtration périmé` | `warning` (ambré — anomalie du signal externe) |
+| `water_present === true` + `measures_valid === false` | `Stabilisation : ~N min` (arrondi minute sup ; `< 1 min` sous 60 s) | `info` (bleu) |
+
+Pendant ces états, la **valeur ORP « actuelle » affiche `--`** (le badge explique pourquoi) et les points ne sont **plus historisés** (trous dans le graphique). Les lectures live de la **calibration** (`#cal-orp-readout`) et de la ligne brute `#orp-filter-sub` ne sont **pas** gatées. Détails et rétrocompat : [page-dashboard.md](page-dashboard.md#mesures-phorp-non-représentatives--filtration-arrêtée--stabilisation-feature-061-v2130) ; côté firmware : [measure-validity.md](../subsystems/measure-validity.md).
+
 ## Affichage mesure filtrée / brute (feature-025)
 
 La valeur affichée **en grand** est l'ORP **filtré** (`orpFiltered`, médiane + EMA), également utilisé par la régulation. La ligne discrète `#orp-filter-sub` (`_renderFilterSub('orp', json)`) affiche :
@@ -112,6 +124,7 @@ La carte `#orp-card-calibration` présente un **stepper** (`<ol class="calibrati
 **Config** : `orp_target`, `max_orp_ml_per_day` (= `max_chlorine_ml_per_day`)
 **Injection manuelle** : `orp_inject_remaining_s`
 **Stabilisation** : `stabilization_remaining_s`
+**Validité mesure (feature-061, v2.13.0)** : `water_present`, `measures_valid`, `measures_stab_remaining_s`, `filtration_state_stale` — badge `#orp-page-badge` + valeur `--` quand la mesure n'est pas représentative (voir [Badge d'état mesure](#badge-détat-mesure-orp-page-badge-feature-061-v2130))
 
 > Champs **supprimés** depuis feature-021 : `orp_raw`, `orp_voltage_mv`, `orp_calibration_offset`, `orp_calibration_slope`, `orp_calibration_reference`, `orp_calibration_temp`, `orp_calibration_date` (calibration mémorisée dans le module EZO, pas en NVS ESP32). Le champ `orp_cal_valid` est conservé en miroir pour rétrocompat HA (`true` ssi `orpCalPoints >= 1`).
 
@@ -164,6 +177,7 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md), not
 
 ## Cas limites
 
+- **Filtration arrêtée / purge post-reprise (feature-061)** : valeur ORP « actuelle » à `--`, badge `#orp-page-badge` bleu « Filtration arrêtée » ou « Stabilisation : ~N min », trous dans le graphique d'historique. Ligne brute et calibration non gatées.
 - **EZO ORP injoignable** : chip rouge « EZO ORP injoignable » sur la carte Régulation.
 - **Lecture ORP stale > 20 s** : valeur en `is-stale` + alerte MQTT `pool/alerts/sensor_stale`. Régulation auto inhibée.
 - **Recalibration sur un capteur déjà à `orpCalPoints == 1`** : fallback succès UI après 5 s (le compteur EZO ne change pas, le polling de transition échoue → on bascule sur un succès optimiste).

@@ -28,6 +28,7 @@ Quand un composant change, la fiche correspondante dans `subsystems/` doit être
 ### Capteurs & temps
 
 - [sensors.md](sensors.md) — ADS1115 (pH/ORP) + DS18B20 (température), calibration
+- [measure-validity.md](measure-validity.md) — validité des mesures pH/ORP (eau qui circule + purge post-reprise), verdict caché consommé par l'historique et l'UI
 - [rtc-manager.md](rtc-manager.md) — DS3231 + hiérarchie NTP / RTC / NVS+uptime
 
 ### Communication

@@ -2290,6 +2290,12 @@ input.is-computed:disabled {
   border-color: rgba(255, 193, 7, 0.3);
   color: #78350f; /* ratio ~7.2:1 sur fond jaune clair — AA ✓ */
 }
+/* feature-061 : état normal informatif (filtration arrêtée, stabilisation) ≠ anomalie */
+.sensor-badge--info {
+  background: var(--accent-light);
+  border-color: rgba(37, 99, 235, 0.3);
+  color: #1e40af; /* ratio ~7.7:1 sur fond bleu clair — AA ✓ */
+}
 .sensor-badge__link {
   font-size: 12px;
   font-weight: 600;

@@ -15,7 +15,7 @@ La page est une **grille de six cartes** (classe `grid--status-cards`) :
 2. **Carte Éclairage** (`#dashboard-lighting-card`) — état, mode (programmation on/off), horaires, boutons Allumer / Éteindre. Lien vers `/lighting`.
 3. **Carte pH** (`#dashboard-ph-card`) — valeur pH courante, cible, badge dosage actif, mini-graphique. Bandeau « Calibration requise » si la sonde n'a jamais été calibrée. Lien vers `/ph`.
 4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible, badge dosage actif, mini-graphique. Bandeau calibration. Lien vers `/orp`.
-5. **Carte Température** (`#dashboard-temperature-card`) — valeur courante en °C, badge « Capteur indisponible » (`#temperature-sensor-badge`, v2.10.5), mini-graphique. Lien vers `/temperature`.
+5. **Carte Température** (`#dashboard-temperature-card`) — valeur courante en °C, badge `#temperature-sensor-badge` (« Capteur indisponible » v2.10.5 + segments d'état mesure feature-061 itération 2), mini-graphique. Lien vers `/temperature`.
 6. **Carte Boost** (`#dashboard-boost-card`) — activation / désactivation du Mode Boost, heure d'expiration quand il est actif (feature-053, v2.18.0, voir [Carte Boost](#carte-boost-feature-053)).
 
 Chaque mini-graphique est rendu par **uPlot** (usine `createMiniLineChart`, feature-043 — remplace Chart.js) dans un conteneur dédié, alimenté par l'historique des 3 derniers jours (`GET /get-history?range=3d`, points bruts + moyennes horaires selon l'ancienneté). La coloration de la courbe est **conditionnelle par segment** (vert dans la tolérance, interpolation continue vers le rouge au-delà, gris si donnée absente — `getMiniChartRGB`, app.js).
@@ -28,15 +28,18 @@ Chaque carte pH et ORP porte un badge composé (`composeSensorBadge()`, app.js �
 
 | Priorité | Segment | Variant | Condition |
 |---|---|---|---|
-| 0 | `Capteur indisponible` | `danger` | valeur `ph` / `orp` `null` ou NaN dans le WS (capteur stale ou figé — feature-022, v2.10.0) |
-| 1 | `Trop bas (X)` / `Trop élevé (X)` | `danger` | valeur hors plage (cible ± 0,2 pH / ± 150 mV) |
+| 0 | `Capteur indisponible` | `danger` | valeur `ph` / `orp` `null` ou NaN dans le WS (capteur stale ou figé — feature-022, v2.10.0) — **gaté par `measures_valid`** (feature-061, voir ci-dessous) |
+| 1 | `Filtration arrêtée` | `info` | `water_present === false` sans staleness (feature-061, v2.13.0 — voir [section dédiée](#mesures-phorp-non-représentatives--filtration-arrêtée--stabilisation-feature-061-v2130)) |
+| 1 | `Signal filtration périmé` | `warning` | `water_present === false` et `filtration_state_stale === true` (feature-061) |
+| 1 | `Stabilisation : ~N min` | `info` | `water_present === true` et `measures_valid === false` (purge post-reprise, feature-061) |
+| 1 | `Trop bas (X)` / `Trop élevé (X)` | `danger` | valeur hors plage (cible ± 0,2 pH / ± 150 mV) — **gaté par `measures_valid`** (feature-061) |
 | 2 | `Limite journalière atteinte` | `warning` | `ph_limit_reached` / `orp_limit_reached` |
 | 3 | `Cumul XX %` | `warning` | cumul journalier ≥ 75 % du quota |
 | 4 | `Stock faible (X,X L)` | `warning` | `*_remaining_ml` ≤ `*_alert_threshold_ml` (seuil > 0) |
 
 **Règle de composition** :
 - **Maximum 2 segments** affichés simultanément, séparés par « · ». Au-delà de deux candidats, seuls les **deux plus prioritaires** sont retenus (ex. « hors plage + limite atteinte + stock faible » → `Trop élevé (7.8) · Limite journalière atteinte`, le stock est tronqué).
-- Variant du badge : `danger` si au moins un segment danger est retenu, sinon `warning`.
+- Variant du badge : hiérarchie **`danger` > `warning` > `info`** (feature-061 — avant : `danger` sinon `warning`). La variante `info` (`.sensor-badge--info`, fond bleu) signale un **état normal informatif** — « attendre », par opposition au rouge « agir ».
 - « Hors plage » et « Limite journalière atteinte » simultanés affichent désormais **les deux segments** (avant v2.9.0 : seul « hors plage » était visible).
 
 **Segment « Capteur indisponible »** (feature-022, v2.10.0) :
@@ -44,20 +47,21 @@ Chaque carte pH et ORP porte un badge composé (`composeSensorBadge()`, app.js �
 - Piloté par les **signaux WS existants** (`ph` / `orp` à `null` quand le firmware ne dispose plus d'une valeur valide — stale ou figé) : aucun champ WS nouveau.
 - **Garde anti-faux-positif au boot** : le segment n'est produit que si `latestSensorData !== null` (au moins un message WS reçu) — `updateSensorBadges()` étant aussi appelé depuis `loadConfig()` avant le premier push WS.
 - « Capteur indisponible » et « hors plage » sont mutuellement exclusifs (une valeur `null` n'est pas comparable à la cible).
+- **Garde anti-faux-positif « mesures invalides » (feature-061)** : le segment n'est produit que si `measuresAreValid(latestSensorData)` — on ne peut pas juger une sonde (ni une valeur hors plage) quand l'eau ne circule pas. Filtration arrêtée → seul le segment d'état mesure s'affiche, jamais un faux « Capteur indisponible » rouge.
 
 **Segment « Cumul XX % »** :
 - Affiché à partir de **75 %** du quota journalier (`ph_daily_ml / max_ph_ml_per_day`, `orp_daily_ml / max_chlorine_ml_per_day`), même arithmétique que la barre de cumul des pages `/ph` et `/orp` (arrondi des entrées, pourcentage plafonné à 100).
 - Masqué quand la limite est atteinte (le segment « Limite journalière atteinte » prend le relais, pas de redondance), quand la limite n'est pas configurée (quota ≤ 0), ou quand les données sont indisponibles.
 
-## Badge « Capteur indisponible » de la carte Température (`#temperature-sensor-badge`, v2.10.5)
+## Badge de la carte Température (`#temperature-sensor-badge`, v2.10.5, étendu feature-061 itération 2)
 
-La carte Température porte un badge à segment unique **« Capteur indisponible »** (variant `danger`), calqué sur le segment de priorité 0 des badges pH/ORP (feature-022) :
+La carte Température porte un badge calqué sur les badges pH/ORP :
 
-- Affiché quand `temperature` est `null` ou NaN dans le WS (sonde DS18B20 débranchée, non identifiée ou en erreur).
-- Même **garde anti-faux-positif au boot** : le badge n'est produit que si `latestSensorData !== null` (au moins un message WS reçu).
-- Masqué dès que la valeur redevient valide (retour du capteur → disparition au prochain push WS, sans reload).
+- **« Capteur indisponible »** (variant `danger`, v2.10.5) : affiché quand `temperature` est `null` ou NaN dans le WS (sonde DS18B20 débranchée, non identifiée ou en erreur). Même **garde anti-faux-positif au boot** (badge produit uniquement si `latestSensorData !== null`) et, depuis l'itération 2 de feature-061, même **garde anti-faux-positif « mesures invalides »** que pH/ORP (segment gaté par `measuresAreValid()` — on ne juge pas la sonde quand l'eau ne circule pas).
+- **Segments d'état mesure** (feature-061 itération 2) : mêmes états que pH/ORP via `measureStateSegments()` — « Filtration arrêtée » (info bleu), « Signal filtration périmé » (warning), « Stabilisation : ~N min » (info). Voir la [section dédiée](#mesures-phorp-non-représentatives--filtration-arrêtée--stabilisation-feature-061-v2130).
+- Masqué dès que la valeur redevient valide (disparition au prochain push WS, sans reload).
 
-Pas de multi-états ici : la température n'a ni dosage, ni limites, ni calibration — un seul segment suffit.
+Pas de segments dosage/limites/calibration ici : la température n'a ni dosage, ni limites, ni calibration.
 
 ## Convention « `--` » quand un capteur est indisponible (v2.10.5)
 
@@ -67,9 +71,29 @@ Toute valeur capteur `null`/NaN s'affiche « **`--`** » sur **tous** les sites 
 - **Widgets compacts** : `#compact-ph`, `#compact-orp`, `#compact-temperature` — l'unité est conservée dans la structure (ex. `--<span class="compact-unit">°C</span>`) pour ne pas casser la mise en page ;
 - **Sections détaillées** des cartes.
 
-Cette convention est celle déjà utilisée par les pages Réglages/Calibration. **Exceptions volontaires** : les graphiques et mini-graphiques continuent de **sauter** les points `null` (trous dans les courbes — comportement correct, inchangé). Retour du capteur → les valeurs réapparaissent automatiquement au prochain push WS (≤ 1 cycle de rafraîchissement).
+Cette convention est celle déjà utilisée par les pages Réglages/Calibration. **Exceptions volontaires** : les graphiques et mini-graphiques affichent des **trous** sur les points `null` (comportement correct — depuis feature-061 les `null` sont poussés dans la série pour que uPlot lève le crayon, au lieu d'être filtrés). Retour du capteur → les valeurs réapparaissent automatiquement au prochain push WS (≤ 1 cycle de rafraîchissement).
 
-## Statut dosage et stabilisation par pompe
+**Extension feature-061 (v2.13.0)** : la convention « `--` » s'applique aussi quand la mesure est **présente mais non représentative** (`measures_valid === false` — filtration arrêtée ou purge post-reprise). La distinction est portée par le badge : bleu « Filtration arrêtée » / « Stabilisation » (état normal) vs rouge « Capteur indisponible » (anomalie).
+
+## Mesures pH/ORP non représentatives — filtration arrêtée / stabilisation (feature-061, v2.13.0)
+
+Les sondes pH/ORP étant montées dans le circuit de filtration, **filtration arrêtée = eau stagnante** : la valeur lue dérive localement et ne reflète plus le bassin. Depuis l'**itération 2** de feature-061, la **température** est traitée à l'identique (sonde DS18B20 dans la canalisation → dérive vers la température ambiante du local à l'arrêt) — même drapeau `measures_valid`, mêmes badges, mêmes trous dans les courbes. Le firmware publie le verdict (`measures_valid`, voir [measure-validity.md](../subsystems/measure-validity.md)) ; l'UI l'applique :
+
+**Segments d'état mesure** (`measureStateSegments()`, app.js — partagés dashboard / pages pH-ORP / carte et compact température, priorité 1, variant selon le cas) :
+
+| Condition | Segment (libellé exact) | Variant | Sens |
+|---|---|---|---|
+| `water_present === false`, pas de staleness | `Filtration arrêtée` | `info` (bleu) | État **normal** — attendre la reprise, rien à faire |
+| `water_present === false` et `filtration_state_stale === true` | `Signal filtration périmé` | `warning` (ambré) | Anomalie du signal externe — vérifier le câblage/l'émetteur |
+| `water_present === true` et `measures_valid === false` | `Stabilisation : ~N min` (arrondi minute **sup** ; `Stabilisation : < 1 min` sous 60 s) | `info` (bleu) | Purge de la chambre de mesure en cours — attendre |
+
+- **Nouvelle variante CSS `.sensor-badge--info`** (fond bleu `--accent-light`, texte `#1e40af`, contraste AA) : distingue visuellement l'**état normal** (bleu = attendre) de l'**anomalie** (rouge « Capteur indisponible » = agir).
+- Le compte à rebours « Stabilisation : ~N min » est **recalculé à chaque push WS** (`measures_stab_remaining_s`, décrémenté côté firmware) — aucun tick JS.
+- **Valeurs « `--` »** : `#compact-ph` / `#compact-orp` / `#compact-temperature` (et les valeurs des pages pH/ORP, la carte température) affichent `--` quand `measuresAreValid()` est faux — la ligne « Cible » reste affichée.
+- **Trous dans les courbes** : les points d'historique avec pH/ORP/température `null` sont **poussés `null`** dans les séries uPlot (lever de crayon = trou visible), y compris sur le chemin incrémental (`appendMiniChart`) et sur l'agrégation par jour (un jour sans mesure valide reste dans la série avec `null`, au lieu d'être sauté). La série température a rejoint ce comportement en itération 2 (mini-charts + page historique) — elle en était exclue en itération 1. Le point « Aujourd'hui » injecté depuis le temps réel n'est pas alimenté par une mesure invalide (la dernière mesure valide du jour reste).
+- **Dé-duplication avec le statut dosage** (`dedupDosingReason()`, app.js) : quand le badge affiche déjà « Filtration arrêtée » / « Signal filtration périmé », le motif équivalent du `dosing-status` est masqué — le badge fait foi. Les autres motifs (stabilisation pompe, pause mélange, limites…) sont inchangés.
+- **Rétrocompat** : champs absents (firmware < 2.13.0) → `measuresAreValid()` retourne `true`, rien ne change ; pas de badge avant le premier message WS (pas de faux positif au boot).
+- Périmètre : la page **Calibration** et l'onglet **Avancé** ne sont **pas** gatés (lectures live nécessaires — sonde hors de l'eau / diagnostic). MQTT/HA inchangé.
 
 Le statut `#ph-dosing-status` / `#orp-dosing-status` de chaque carte (`getDosingStopReason()`, app.js) affiche notamment « Stabilisation : X min YY s » pendant la stabilisation post-calibration. Depuis v2.9.0, il consomme les champs **par pompe** `ph_stab_remaining_s` / `orp_stab_remaining_s` (feature-006) avec repli sur le champ global `stabilization_remaining_s` (compatibilité firmware plus ancien) : chaque carte affiche la stabilisation de **sa** pompe — une calibration ORP n'affiche plus « Stabilisation » sur la carte pH, et inversement.
 
@@ -89,8 +113,12 @@ La carte ORP lit :
 - Stabilisation : `orp_stab_remaining_s` (repli `stabilization_remaining_s`)
 - Pause mélange : `orp_mix_remaining_s` (repli booléen `orpMixingDelayActive`)
 
+Les cartes pH et ORP lisent aussi (feature-061) :
+- `water_present`, `measures_valid`, `measures_stab_remaining_s`, `filtration_state_stale` — segments d'état mesure + gate « Capteur indisponible » / « hors plage » + valeurs « `--` »
+
 La carte Température lit :
 - `temperature`
+- `water_present`, `measures_valid`, `measures_stab_remaining_s`, `filtration_state_stale` — segments d'état mesure + gate « Capteur indisponible » + valeur « `--` » (feature-061, itération 2)
 
 La carte Filtration lit :
 - `filtration_running`, `filtration_mode`, `filtration_start`, `filtration_end`
@@ -155,8 +183,9 @@ La fonction `updateFiltrationBadges()` côté JS met à jour simultanément `#de
 - **WebSocket déconnecté** : les valeurs affichent `--`. Les mini-graphiques conservent la dernière série.
 - **Capteur pH ou ORP en erreur** : segment « Capteur indisponible » (danger, priorité 0) dans le badge multi-états (voir [Badge multi-états](#badge-multi-états-des-cartes-ph--orp-ph-sensor-badge-orp-sensor-badge)), valeur `--` (voir [Convention « `--` »](#convention-----quand-un-capteur-est-indisponible-v2105)).
 - **Sonde de température en erreur** (v2.10.5) : badge « Capteur indisponible » (`#temperature-sensor-badge`), valeur `--` partout où la température s'affiche.
+- **Filtration arrêtée / purge post-reprise** (feature-061) : valeurs pH/ORP et — depuis l'itération 2 — température à `--`, badge bleu « Filtration arrêtée » ou « Stabilisation : ~N min » sur les trois cartes (voir [section dédiée](#mesures-phorp-non-représentatives--filtration-arrêtée--stabilisation-feature-061-v2130)).
 - **Sonde non calibrée** : bandeau `calibration-alert` + chip global en haut de page.
-- **Dosage en cours** : badge `dosing-status` affiché dans la carte concernée.
+- **Dosage en cours** : badge `dosing-status` affiché dans la carte concernée (motif filtration masqué si le badge capteur le porte déjà — dé-duplication feature-061).
 
 Le détail complet du cumul journalier (barre de progression, mL consommés / quota) reste sur les pages `/ph` et `/orp` ; le dashboard n'en montre que le segment « Cumul XX % » à partir de 75 %.
 
@@ -174,3 +203,4 @@ Le détail complet du cumul journalier (barre de progression, mL consommés / qu
 - `feature-012-badges-dashboard-cumul-stabilisation` — segment « Cumul XX % », règle de composition du badge multi-états (max 2 segments), stabilisation par pompe (v2.9.0, périmètre réduit sur avis UX)
 - `feature-022-observabilite-dosage` — segment « Capteur indisponible » (priorité 0, danger) piloté par `ph`/`orp` null dans le WS, garde anti-faux-positif au boot (v2.10.0)
 - `bug-ui-valeurs-figees-capteur-absent` — convention « `--` » généralisée à tous les sites d'affichage numérique (fin du pattern « skip si null ») + badge « Capteur indisponible » température (v2.10.5)
+- `feature-061-mesures-ph-orp-filtration-arretee` — mesures pH/ORP non représentatives sans circulation d'eau : badges info bleus, valeurs `--`, trous dans les courbes, dé-duplication dosing-status (v2.13.0) ; itération 2 : extension du même traitement à la température (carte/compact `--`, badges, courbe avec trous)

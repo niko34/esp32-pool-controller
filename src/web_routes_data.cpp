@@ -5,6 +5,7 @@
 #include "constants.h"
 #include "sensors.h"
 #include "filtration.h"
+#include "measure_validity.h"
 #include "pump_controller.h"
 #include "web_routes_control.h"
 #include "logger.h"
@@ -33,7 +34,8 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // Buffer statique pour éviter la fragmentation du heap
   // Taille estimée : ~16 champs × 30 bytes + overhead (feature-020 ajoute 3 champs)
   // feature-025 : +14 champs filtre pH/ORP → bump du buffer.
-  StaticJson<1152> doc;
+  // feature-061 : +3 champs validité mesures → bump du buffer.
+  StaticJson<1280> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
   // (médiane + EMA), alignée sur le WS. Le brut reste exposé séparément (phRaw/orpRaw).
@@ -99,6 +101,22 @@ static void handleGetData(AsyncWebServerRequest* request) {
   doc["sondes_detected"]   = sensors.getDetectedSondeCount();
 
   doc["filtration_running"] = filtration.isRunning();
+
+  // feature-061 : validité des mesures pH/ORP — lue depuis le CACHE de
+  // measure_validity (snapshot cohérent sous spinlock). NE JAMAIS appeler
+  // filtration.resolveWaterPresence() ici : callback en contexte async_tcp.
+  // NB : les champs live ph/orp/phRaw/... restent publiés tels quels (page
+  // calibration + onglet Avancé) — l'UI arbitre l'affichage via measures_valid.
+  {
+    bool wPresent = false, mValid = false;
+    uint32_t mRemainS = 0;
+    measureValidity.getSnapshot(wPresent, mValid, mRemainS);
+    doc["water_present"] = wPresent;
+    doc["measures_valid"] = mValid;
+    // Nom distinct de stabilization_remaining_s (WS = stabilisation post-
+    // calibration des pompes) : ici purge de la chambre de mesure.
+    doc["measures_stab_remaining_s"] = mRemainS;
+  }
   doc["ph_dosing"] = PumpController.isPhDosing();
   doc["orp_dosing"] = PumpController.isOrpDosing();
   doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;

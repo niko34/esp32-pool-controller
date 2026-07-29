@@ -5,6 +5,7 @@
 #include "logger.h"
 #include "sensors.h"
 #include "filtration.h"
+#include "measure_validity.h"
 #include "pump_controller.h"
 #include <ArduinoJson.h>
 #include <map>
@@ -405,6 +406,17 @@ void HistoryManager::recordDataPoint() {
   point.phDosing = PumpController.isPhDosing();
   point.orpDosing = PumpController.isOrpDosing();
   point.granularity = RAW;
+
+  // feature-061 (it. 2) : filtration arrêtée ou purge post-reprise en cours →
+  // les mesures pH/ORP/température ne représentent pas l'eau du bassin (la
+  // sonde en canalisation mesure l'ambiante du local à l'arrêt) : exclues du
+  // point (NaN → "null" à la sérialisation, ignorées par l'agrégation → trous
+  // dans les courbes). État filtration et flags dosage INCHANGÉS.
+  if (!measureValidity.measuresValid()) {
+    point.ph = NAN;
+    point.orp = NAN;
+    point.temperature = NAN;
+  }
 
   memoryBuffer.push_back(point);
 

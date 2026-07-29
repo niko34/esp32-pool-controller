@@ -51,6 +51,19 @@ Les deux passes de `consolidateData()` (raw → horaire, horaire → quotidien) 
 
 > ⚠️ **Limite de testabilité** : seule la math scalaire est couverte en natif. Le **regroupement** par bucket (`std::map`/`std::vector`), l'accumulation des sommes/compteurs et la **persistance** (`saveToFile`) restent dans la coquille `consolidateData()` et **hors tests natifs** (contrainte libc++ absente de l'environnement natif). 35 tests Unity natifs (dont 10 pour `historySaveAdmit`) ; `history_logic.cpp` couvert à **100 % des lignes**.
 
+## Exclusion des mesures pH/ORP/température sans circulation d'eau (feature-061, v2.13.0)
+
+`recordDataPoint()` force **`point.ph = NAN`, `point.orp = NAN` et `point.temperature = NAN`** (même bloc) quand `measureValidity.measuresValid()` est faux — c'est-à-dire quand l'eau ne circule pas (filtration arrêtée, signal externe périmé) **ou** pendant le **délai de purge** post-reprise (`stabilizationDelayMin`, défaut 5 min — l'eau stagnante de la chambre de mesure doit être chassée). Voir [measure-validity.md](measure-validity.md).
+
+> La température a rejoint pH/ORP en **itération 2** de feature-061 : la sonde DS18B20 est dans la canalisation → à l'arrêt, l'eau du tuyau dérive vers la température ambiante du local (plateaux nocturnes non représentatifs du bassin). Même drapeau `measures_valid`, pas de validité séparée.
+
+- Le NaN est sérialisé **`null`** dans `/history.json` et `/get-history` (contrat existant, identique à un capteur absent) → **trous dans les courbes** côté UI.
+- **État filtration et flags dosage restent enregistrés** tels quels (l'état filtration est nécessaire aux courbes).
+- **Agrégation** : les NaN sont ignorés par la consolidation (accumulation dans la coquille ; un bucket sans aucune valeur → `finalizeMean(sum, 0)` = NaN → point `null`). Un jour entièrement à l'arrêt produit un point `DAILY` avec pH/ORP/température `null`.
+- **Pas de purge rétroactive** : les points enregistrés avant la v2.13.0 pendant des arrêts de filtration restent dans l'historique tels quels — seuls les nouveaux points sont exclus.
+
+L'exclusion s'applique **au point enregistré** (dans `recordDataPoint()`), pas en post-traitement — `measureValidity.update()` est appelé dans la loop **avant** `history.update()`.
+
 ## Pré-NTP handling
 
 Si un snapshot est pris **avant** que l'heure soit synchronisée (timestamp uptime < `kMinValidEpoch`), il est marqué via `_preNtpPending = true`. Dès la synchro NTP réussie, `_applyPreNtpCorrection(ntpEpoch, uptimeSec)` re-date les points en calculant `epoch = ntpEpoch − (uptimeSec − pointUptime)`.

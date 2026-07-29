@@ -2,6 +2,23 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.13.0] - 2026-07-29
+
+### Ajouté
+
+- **Les mesures pH/ORP/température ne sont plus présentées comme valides ni historisées quand l'eau ne circule pas** (feature-061). Les sondes sont montées dans le circuit de filtration : filtration arrêtée = eau stagnante autour des sondes → valeurs dérivantes **non représentatives du bassin** (plateaux/dérives nocturnes qui polluaient les courbes). Désormais : valeurs pH/ORP/température à « `--` » sur le tableau de bord et les pages dédiées avec un **badge bleu informatif** « Filtration arrêtée » (nouvelle variante `info` — état normal « attendre », distinct du rouge « Capteur indisponible » = « agir » ; « Signal filtration périmé » en ambré si le signal externe est stale) ; points d'historique enregistrés avec pH/ORP/température `null` → **trous dans les courbes** (état filtration et flags dosage toujours enregistrés ; pas de purge rétroactive des anciens points). À la **reprise** de la filtration, un **délai de purge de 5 min** (réutilise `stabilizationDelayMin`, badge « Stabilisation : ~N min » recalculé à chaque push WS) laisse l'eau stagnante de la chambre de mesure se renouveler — délai complet appliqué aussi au boot avec eau présente (conservateur). Source de décision unique : nouveau module `measure_validity` (logique pure + coquille avec cache portMUX) branché sur `resolveWaterPresence()` (feature-056) ; champs nouveaux WS + `/data` : `measures_valid`, `measures_stab_remaining_s` (+ `water_present` ajouté à `/data`). Chaîne de mesure, calibration, onglet Avancé, dosage (déjà gardé sans eau) et MQTT/HA **inchangés**. +14 tests natifs (388 au total).
+  - **Itération 2 — extension à la température** : la sonde DS18B20 est dans la canalisation → à l'arrêt, l'eau du tuyau dérive vers la température ambiante du local (c'est la température du local qui était enregistrée, pas celle du bassin). Même drapeau `measures_valid` (pas de validité séparée : le délai de purge de 5 min est conservateur pour la température — l'eau du tuyau se renouvelle en < 1 min — mais une validité distincte ajouterait de la complexité pour un gain nul) ; carte/compact température à « `--` » + mêmes badges que pH/ORP ; `NAN` dans l'historique → trous dans la courbe température. Le **mode Auto de la filtration n'est pas impacté** (il lit `sensors.getTemperature()` en direct), MQTT/UART écran inchangés (live).
+
+### Documentation
+
+- `docs/subsystems/measure-validity.md` (**nouveau**) : règles de décision, contrat des 3 champs, concurrence (cache portMUX), logs ; itération 2 : périmètre étendu aux 3 mesures, justification « même drapeau », non-impact du mode Auto filtration.
+- `docs/subsystems/history.md` : exclusion pH/ORP — puis température (itération 2) — sans circulation (NaN → `null`, agrégation, pas de purge rétroactive).
+- `docs/subsystems/ws-manager.md` + `docs/API.md` : champs `measures_valid` / `measures_stab_remaining_s` / `water_present` (`/data`), note de repli HTTP (`/data` sans `filtration_state_stale` — asymétrie préexistante).
+- `docs/features/page-dashboard.md`, `page-ph.md`, `page-orp.md` : badges (libellés exacts, hiérarchie danger > warning > info), valeurs `--`, trous dans les courbes, dé-duplication dosing-status ; itération 2 : carte température (badge composé, `--`, courbe avec trous).
+- Pas d'ADR (confirmé architect) : politique de présentation/persistance sans contrainte structurante — la source unique de présence d'eau est déjà actée par l'ADR-0026, le pattern module pur + coquille par l'ADR-0017.
+
+---
+
 ## [2.12.0] - 2026-07-29
 
 ### Modifié

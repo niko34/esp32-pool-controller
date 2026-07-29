@@ -7,6 +7,7 @@
 #include "constants.h"
 #include "sensors.h"
 #include "filtration.h"
+#include "measure_validity.h"
 #include "pump_controller.h"
 #include "web_routes_control.h"
 #include "mqtt_manager.h"
@@ -236,7 +237,8 @@ String WsManager::_buildSensorJson() const {
   // feature-056 : +install_mode/water_present/filtration_state_source/_stale +
   //   filtration_ext_known/_on/_age_s (~200 octets) → bump à 1920.
   // v2.19.1 : +ph/orp_mix_remaining_s (~64 octets, observabilité pause mélange) → bump à 2048.
-  StaticJson<2048> doc;
+  // feature-061 : +measures_valid/measures_stab_remaining_s (~64 octets) → bump à 2112.
+  StaticJson<2112> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -389,6 +391,19 @@ String WsManager::_buildSensorJson() const {
     d["filtration_ext_known"] = extKnown;
     d["filtration_ext_on"]    = extOn;
     d["filtration_ext_age_s"] = extKnown ? (uint32_t)(((uint32_t)millis() - extLastMs) / 1000UL) : 0;
+  }
+
+  // feature-061 : validité des mesures pH/ORP (cache measure_validity, même
+  // source que /data). Les champs live ph/orp/phRaw/... restent publiés tels
+  // quels (calibration, onglet Avancé) — l'UI arbitre via measures_valid.
+  // NB : nom distinct de stabilization_remaining_s (stabilisation post-
+  // calibration des pompes, plus haut) : ici purge de la chambre de mesure.
+  {
+    bool mvWater = false, mvValid = false;
+    uint32_t mvRemainS = 0;
+    measureValidity.getSnapshot(mvWater, mvValid, mvRemainS);  // snapshot cohérent
+    d["measures_valid"] = mvValid;
+    d["measures_stab_remaining_s"] = mvRemainS;
   }
 
   d["time_synced"]   = (time(nullptr) >= kMinValidEpoch);

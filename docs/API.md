@@ -216,6 +216,9 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
   "orpFilterUnstable": false,
   "orpRejectedCount": 0,
   "filtration_running": true,
+  "water_present": true,
+  "measures_valid": true,
+  "measures_stab_remaining_s": 0,
   "ph_dosing": false,
   "orp_dosing": false,
   "ph_daily_ml": 45.2,
@@ -234,6 +237,16 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 > **feature-021** : `ph` est désormais publié avec **3 décimales** (vs 1 décimale en v1.x). Champs `phCalPoints` (`-1..3`) et `orpCalPoints` (`-1..1`) ajoutés. Champs **supprimés** de la réponse `/data` : `orp_raw`, `ph_raw`, `ph_voltage_mv`, `temperature_raw` (la notion de « valeur brute » n'a pas de sens côté Atlas EZO — la valeur est déjà calibrée par le module). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md).
 >
 > **feature-025** : `ph` / `orp` correspondent désormais à la valeur **filtrée** (médiane + EMA), avec fallback sur le brut tant que le filtre n'est pas amorcé. Champs `phRaw/phMedian/phFiltered/phFilterReady/phFilterUnstable/phRejectedCount` (+ équivalents `orp*`) ajoutés. Les champs flottants valent `null` si la mesure est indisponible (stale / non amorcé). Mêmes champs côté WS. Voir [`docs/subsystems/sensors.md`](subsystems/sensors.md#filtrage-des-mesures-phorp--feature-025).
+>
+> **feature-061 (v2.13.0)** : champs de **validité des mesures pH/ORP** ajoutés (mêmes champs côté WS `sensor_data`, même source : cache du singleton `measureValidity`) :
+>
+> | Champ | Type | Description |
+> |-------|------|-------------|
+> | `water_present` | boolean | Présence d'eau résolue (source unique feature-056 — déjà présent en WS, **ajouté à `/data`** ici). |
+> | `measures_valid` | boolean | `true` = mesures pH/ORP représentatives du bassin. `false` = eau absente **ou** délai de purge post-reprise en cours (`stabilizationDelayMin`, défaut 5 min). |
+> | `measures_stab_remaining_s` | integer | Secondes restantes de purge (arrondi seconde sup) ; `0` si valide ou eau absente. Nom **distinct** de `stabilization_remaining_s` (stabilisation post-calibration des pompes). |
+>
+> Les champs live `ph` / `orp` / `phRaw` / … restent publiés tels quels quand `measures_valid` est `false` (calibration et diagnostics intacts) — c'est le **client** qui arbitre l'affichage. ⚠️ **Repli HTTP** : `/data` n'expose pas `filtration_state_stale` (présent en WS uniquement) — un client en polling HTTP dégrade « Signal filtration périmé » en « Filtration arrêtée » (asymétrie préexistante, à harmoniser). Voir [`docs/subsystems/measure-validity.md`](subsystems/measure-validity.md).
 
 ---
 
@@ -248,6 +261,8 @@ curl -u admin:monmotdepasse "http://poolcontroller.local/get-history?range=24h"
 Paramètre `range` : `24h` (défaut), `3d`, `7d`, `30d`, `all`.
 
 Paramètre optionnel `?since=TIMESTAMP` pour récupération incrémentale.
+
+> **feature-061 (v2.13.0)** : les points enregistrés pendant un arrêt de filtration (ou pendant la purge post-reprise) ont `ph` et `orp` à **`null`** (contrat existant, identique à un capteur absent) — `temperature`, `filtration` et `dosing` restent renseignés. Voir [`docs/subsystems/history.md`](subsystems/history.md#exclusion-des-mesures-phorp-sans-circulation-deau-feature-061-v2130).
 
 **Réponse 503** (`{"error":"heap fragmenté, réessayez"}`) possible depuis la v2.10.4 ([ADR-0032](adr/0032-reponses-http-bornees.md)) : la réponse est concaténée dans une `String` **pré-réservée au pire cas** (`points × kHistoryPointJsonMaxBytes (128) + 128` octets — pire cas d'un point mesuré à 113-120 o) ; le retour `bool` de `String::reserve()` est le test du bloc contigu — s'il échoue, 503 propre plutôt qu'un crash `bad_alloc` ou un JSON tronqué silencieux.
 

@@ -23,6 +23,18 @@ Le bloc Statistiques reste visible **en permanence**, y compris pendant la calib
 
 > **Calibration accessible dans tous les modes (feature-034)** : le bouton « Calibrer la sonde » (`#ph_cal_trigger_btn`) est désormais affiché et fonctionnel quel que soit le mode de régulation — **automatique, programmée et manuelle**. Depuis l'itération 3, ce bouton est placé **sous la rangée de chips** du bloc Statistiques (et non plus en bas de la carte de régulation dans `#ph-calibration-info`, supprimé). La session de calibration ne modifie pas `ph_regulation_mode` : à la fermeture (`#ph_cal_close_btn`), on **revient au mode précédemment sélectionné** (aucune bascule forcée en automatique).
 
+## Badge d'état mesure (`#ph-page-badge`, feature-061, v2.13.0)
+
+Sous le bouton « Calibrer la sonde » du bloc Statistiques, un badge (`role="status"`, masqué par défaut) affiche l'**état de validité de la mesure** quand l'eau ne circule pas ou vient de reprendre. Il est alimenté par les **seuls segments d'état mesure** (`measureStateSegments('ph', …)`, app.js — pas les segments dosage/stock, déjà portés ailleurs sur la page) :
+
+| Condition | Libellé exact | Variant |
+|---|---|---|
+| `water_present === false` (arrêt franc) | `Filtration arrêtée` | `info` (bleu — état normal, attendre) |
+| `water_present === false` + `filtration_state_stale` | `Signal filtration périmé` | `warning` (ambré — anomalie du signal externe) |
+| `water_present === true` + `measures_valid === false` | `Stabilisation : ~N min` (arrondi minute sup ; `< 1 min` sous 60 s) | `info` (bleu) |
+
+Pendant ces états, la **valeur pH « actuelle » affiche `--`** (le badge explique pourquoi) et les points ne sont **plus historisés** (trous dans le graphique). Les lectures live de la **calibration** et de la ligne brute `#ph-filter-sub` ne sont **pas** gatées (diagnostic / sonde hors de l'eau). Détails et rétrocompat : [page-dashboard.md](page-dashboard.md#mesures-phorp-non-représentatives--filtration-arrêtée--stabilisation-feature-061-v2130) ; côté firmware : [measure-validity.md](../subsystems/measure-validity.md).
+
 ## Affichage mesure filtrée / brute (feature-025)
 
 La valeur affichée **en grand** dans le bloc Statistiques est la mesure **filtrée** (`phFiltered`, médiane + EMA). C'est aussi la valeur utilisée par la régulation. La fonction `_renderFilterSub('ph', json)` ([`data/app.js`](../../data/app.js)) rend une **ligne discrète** `#ph-filter-sub` :
@@ -191,6 +203,7 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 **Config** : `ph_target`, `ph_correction_type` (`ph_minus` / `ph_plus`), `max_ph_ml_per_day`
 **Injection manuelle** : `ph_inject_remaining_s`
 **Stabilisation** : `stabilization_remaining_s`
+**Validité mesure (feature-061, v2.13.0)** : `water_present`, `measures_valid`, `measures_stab_remaining_s`, `filtration_state_stale` — badge `#ph-page-badge` + valeur `--` quand la mesure n'est pas représentative (voir [Badge d'état mesure](#badge-détat-mesure-ph-page-badge-feature-061-v2130))
 
 > Champs **supprimés** depuis feature-021 : `ph_raw`, `ph_voltage_mv`, `ph_cal_valid` (remplacé par `phCalPoints`), `ph_calibration_date`, `ph_calibration_temp` (calibration mémorisée dans le module EZO, pas en NVS ESP32).
 
@@ -252,6 +265,7 @@ Le firmware reste l'**autorité** : miroir best-effort seulement (WS déconnect�
 
 ## Cas limites
 
+- **Filtration arrêtée / purge post-reprise (feature-061)** : valeur pH « actuelle » à `--`, badge `#ph-page-badge` bleu « Filtration arrêtée » ou « Stabilisation : ~N min », trous dans le graphique d'historique. Ligne brute et calibration non gatées.
 - **EZO pH injoignable** : chip rouge « EZO pH injoignable » sur la carte Régulation. Régulation auto inhibée (cond #5).
 - **Lecture pH stale > 20 s** : valeur du bloc Statistiques en `is-stale` (opacité 0.5). Régulation auto inhibée (cond #1) + alerte MQTT `pool/alerts/sensor_stale`.
 - **Calibration en cours et utilisateur clique 2× sur le même bouton** : queue à 4 slots accepte sans erreur les 4 premières mises en file. Au-delà : 503 + toast « Calibration en cours, réessayer dans 1 seconde ».

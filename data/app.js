@@ -770,18 +770,16 @@
       data.history.forEach(point => {
         if (point.timestamp > maxTs) maxTs = point.timestamp;
         const label = miniChartPointLabel(point.timestamp);
-        if (point.ph != null && !isNaN(point.ph)) {
-          phLabels.push(label);
-          phValues.push(Math.round(point.ph * 10) / 10);
-        }
-        if (point.orp != null && !isNaN(point.orp)) {
-          orpLabels.push(label);
-          orpValues.push(Math.round(point.orp));
-        }
-        if (point.temperature != null && !isNaN(point.temperature)) {
-          tempLabels.push(label);
-          tempValues.push(Math.round(point.temperature * 10) / 10);
-        }
+        // feature-061 : pH/ORP/température null (filtration arrêtée) → pousser null,
+        // pas filtrer : uPlot lève le crayon sur null (trou visible), y compris sur
+        // le chemin incrémental appendMiniChart. Température incluse en itération 2.
+        phLabels.push(label);
+        phValues.push((point.ph != null && !isNaN(point.ph)) ? Math.round(point.ph * 10) / 10 : null);
+        orpLabels.push(label);
+        orpValues.push((point.orp != null && !isNaN(point.orp)) ? Math.round(point.orp) : null);
+        tempLabels.push(label);
+        tempValues.push((point.temperature != null && !isNaN(point.temperature))
+          ? Math.round(point.temperature * 10) / 10 : null);
       });
 
       if (since === 0) {
@@ -1099,13 +1097,15 @@
       });
 
       // Si aujourd'hui absent de l'historique mais données temps réel disponibles, l'injecter
+      // feature-061 : mesures non représentatives (filtration arrêtée) → null (temp. incluse, it. 2)
       if (!dayMap.has(todayKey) && latestSensorData) {
         const s = latestSensorData;
+        const liveOk = measuresAreValid(s);
         dayMap.set(todayKey, {
           label: "Aujourd'hui",
-          ph: s.ph != null ? Math.round(s.ph * 10) / 10 : null,
-          orp: s.orp != null ? Math.round(s.orp) : null,
-          temperature: s.temperature ?? null
+          ph: (liveOk && s.ph != null) ? Math.round(s.ph * 10) / 10 : null,
+          orp: (liveOk && s.orp != null) ? Math.round(s.orp) : null,
+          temperature: (liveOk && s.temperature != null) ? s.temperature : null
         });
       }
 
@@ -1114,22 +1114,19 @@
         .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
         .map(([, e]) => e);
 
+      // feature-061 : jours sans aucune mesure valide (filtration arrêtée) → null
+      // conservé dans la série (trou uPlot) au lieu de sauter le jour.
+      // Itération 2 : la température suit le même mécanisme que pH/ORP.
       if (tempChart) {
-        const labels = [], values = [];
-        entries.forEach(e => { if (e.temperature != null) { labels.push(e.label); values.push(e.temperature); } });
-        tempChart.setPoints(labels, values);
+        tempChart.setPoints(entries.map(e => e.label), entries.map(e => e.temperature));
       }
 
       if (phChart) {
-        const labels = [], values = [];
-        entries.forEach(e => { if (e.ph != null) { labels.push(e.label); values.push(e.ph); } });
-        phChart.setPoints(labels, values);
+        phChart.setPoints(entries.map(e => e.label), entries.map(e => e.ph));
       }
 
       if (orpChart) {
-        const labels = [], values = [];
-        entries.forEach(e => { if (e.orp != null) { labels.push(e.label); values.push(e.orp); } });
-        orpChart.setPoints(labels, values);
+        orpChart.setPoints(entries.map(e => e.label), entries.map(e => e.orp));
       }
 
       debugLog(`Loaded ${history.length} points → ${dayMap.size} jours agrégés (${range})`);
@@ -1156,13 +1153,17 @@
       chart.render();
     }
 
-    if (tempChart && sensorData.temperature != null) {
+    // feature-061 : mesure live non représentative (filtration arrêtée / stabilisation)
+    // → ne pas pousser sur le point « Aujourd'hui » (la dernière mesure valide du jour reste).
+    // Itération 2 : température incluse.
+    const liveOk = measuresAreValid(sensorData);
+    if (liveOk && tempChart && sensorData.temperature != null) {
       updateChart(tempChart, sensorData.temperature);
     }
-    if (!phCalibrationActive && phChart && sensorData.ph != null) {
+    if (liveOk && !phCalibrationActive && phChart && sensorData.ph != null) {
       updateChart(phChart, Math.round(sensorData.ph * 10) / 10);
     }
-    if (!orpCalibrationActive && orpChart && sensorData.orp != null) {
+    if (liveOk && !orpCalibrationActive && orpChart && sensorData.orp != null) {
       updateChart(orpChart, Math.round(sensorData.orp));
     }
   }
@@ -1834,13 +1835,45 @@
   //   priority 4 = stock faible
   // - MAXIMUM 2 segments affichés, séparés par « · » : au-delà de 2 candidats,
   //   on garde les 2 plus prioritaires (priority la plus faible d'abord).
-  // - Variant du badge : 'danger' si au moins un segment retenu est danger,
-  //   sinon 'warning' (danger > warning).
+  // - Variant du badge : hiérarchie danger > warning > info (feature-061 :
+  //   'info' = état normal informatif, filtration arrêtée / stabilisation).
   function composeSensorBadge(candidates) {
     if (!candidates.length) return { variant: null, text: '' };
     const kept = [...candidates].sort((a, b) => a.priority - b.priority).slice(0, 2);
-    const variant = kept.some(s => s.variant === 'danger') ? 'danger' : 'warning';
+    const variant = kept.some(s => s.variant === 'danger') ? 'danger'
+      : kept.some(s => s.variant === 'warning') ? 'warning' : 'info';
     return { variant, text: kept.map(s => s.text).join(' · ') };
+  }
+
+  // feature-061 : validité des mesures pH/ORP côté firmware (filtration arrêtée
+  // ou purge de la chambre de mesure en cours). Champs absents (firmware plus
+  // ancien) → mesures considérées valides (rétrocompat, rien ne change).
+  function measuresAreValid(data) {
+    if (!data) return true;
+    if (data.water_present === false) return false;
+    if (data.measures_valid === false) return false;
+    return true;
+  }
+
+  // feature-061 : segments d'état mesure partagés dashboard / pages pH-ORP.
+  // Recalculés à chaque push WS (le firmware décrémente measures_stab_remaining_s),
+  // AUCUN tick JS seconde. `sensor` réservé pour d'éventuels textes différenciés.
+  function measureStateSegments(sensor, data) {
+    if (!data) return []; // boot : pas de faux positif avant le 1er message WS
+    if (data.water_present === false) {
+      // Signal externe périmé = anomalie (warning) ; arrêt franc = info
+      return data.filtration_state_stale
+        ? [{ priority: 1, variant: 'warning', text: 'Signal filtration périmé' }]
+        : [{ priority: 1, variant: 'info', text: 'Filtration arrêtée' }];
+    }
+    if (data.water_present === true && data.measures_valid === false) {
+      const s = data.measures_stab_remaining_s;
+      const text = (s != null && s >= 60)
+        ? `Stabilisation : ~${Math.ceil(s / 60)} min`
+        : 'Stabilisation : < 1 min';
+      return [{ priority: 1, variant: 'info', text }];
+    }
+    return [];
   }
 
   // Segment « Cumul XX % » (feature-012 N1) : affiché à partir de 75 % du
@@ -1872,15 +1905,21 @@
       el.style.display = '';
     }
 
+    // feature-061 : mesures invalides (filtration arrêtée / stabilisation) —
+    // gate les segments « Capteur indisponible » et « hors plage » (on ne peut
+    // pas juger une sonde ni une valeur quand l'eau ne circule pas).
+    const measuresOk = measuresAreValid(latestSensorData);
+
     // Badge pH — liste de candidats, composés par composeSensorBadge()
     const phSegments = [];
+    phSegments.push(...measureStateSegments('ph', latestSensorData));
     // feature-022 : capteur indisponible (valeur null ou NaN). Le test
     // latestSensorData !== null évite le faux positif au boot : updateSensorBadges
     // est appelé depuis loadConfig avant le 1er message WS.
-    if (latestSensorData !== null && (latestSensorData.ph == null || isNaN(latestSensorData.ph))) {
+    if (latestSensorData !== null && measuresOk && (latestSensorData.ph == null || isNaN(latestSensorData.ph))) {
       phSegments.push({ priority: 0, variant: 'danger', text: 'Capteur indisponible' });
     }
-    if (latestSensorData?.ph != null && !isNaN(latestSensorData.ph)) {
+    if (measuresOk && latestSensorData?.ph != null && !isNaN(latestSensorData.ph)) {
       const ph = latestSensorData.ph;
       const phTarget = window._config?.ph_target ?? 7.2;
       const phLow = +(phTarget - 0.2).toFixed(1);
@@ -1911,11 +1950,12 @@
 
     // Badge ORP — mêmes règles de composition
     const orpSegments = [];
+    orpSegments.push(...measureStateSegments('orp', latestSensorData));
     // feature-022 : capteur indisponible (cf. commentaire du bloc pH ci-dessus)
-    if (latestSensorData !== null && (latestSensorData.orp == null || isNaN(latestSensorData.orp))) {
+    if (latestSensorData !== null && measuresOk && (latestSensorData.orp == null || isNaN(latestSensorData.orp))) {
       orpSegments.push({ priority: 0, variant: 'danger', text: 'Capteur indisponible' });
     }
-    if (latestSensorData?.orp != null && !isNaN(latestSensorData.orp)) {
+    if (measuresOk && latestSensorData?.orp != null && !isNaN(latestSensorData.orp)) {
       const orp = Math.round(latestSensorData.orp);
       const orpTarget = window._config?.orp_target ?? 650;
       const orpLow = Math.round(orpTarget - 150);
@@ -1944,14 +1984,23 @@
     const orpBadge = composeSensorBadge(orpSegments);
     setBadge('orp-sensor-badge', orpBadge.variant, orpBadge.text);
 
-    // Badge Température — seul segment : capteur indisponible (bug-ui-valeurs-figees),
-    // calqué sur les blocs pH/ORP ci-dessus (même garde anti-faux-positif au boot).
+    // Badge Température — capteur indisponible (bug-ui-valeurs-figees) + segments
+    // d'état mesure (feature-061 it. 2), calqué sur les blocs pH/ORP ci-dessus
+    // (mêmes gardes anti-faux-positif : boot et mesures invalides).
     const tempSegments = [];
-    if (latestSensorData !== null && (latestSensorData.temperature == null || isNaN(latestSensorData.temperature))) {
+    tempSegments.push(...measureStateSegments('temperature', latestSensorData));
+    if (latestSensorData !== null && measuresOk && (latestSensorData.temperature == null || isNaN(latestSensorData.temperature))) {
       tempSegments.push({ priority: 0, variant: 'danger', text: 'Capteur indisponible' });
     }
     const tempBadge = composeSensorBadge(tempSegments);
     setBadge('temperature-sensor-badge', tempBadge.variant, tempBadge.text);
+
+    // feature-061 : badges des pages pH/ORP — alimentés par les SEULS segments
+    // d'état mesure (pas les segments dosage/stock, déjà portés ailleurs sur la page).
+    const phPageBadge = composeSensorBadge(measureStateSegments('ph', latestSensorData));
+    setBadge('ph-page-badge', phPageBadge.variant, phPageBadge.text);
+    const orpPageBadge = composeSensorBadge(measureStateSegments('orp', latestSensorData));
+    setBadge('orp-page-badge', orpPageBadge.variant, orpPageBadge.text);
   }
 
   // ========== ÉCRAN PRODUITS ==========
@@ -2308,6 +2357,19 @@
     return "";  // Pas de refus firmware : valeur dans l'hystérésis (rien à doser)
   }
 
+  // feature-061 : dé-duplication — quand le badge capteur affiche déjà
+  // « Filtration arrêtée » / « Signal filtration périmé » (water_present === false,
+  // segment garanti visible car priorité 1), masquer le motif équivalent du
+  // dosing-status : le badge fait foi. Les autres motifs restent inchangés.
+  // Fallback firmware ancien (water_present absent) : pas de badge → on garde le motif.
+  function dedupDosingReason(reason, data) {
+    if (data && data.water_present === false
+        && (reason === "Filtration arrêtée" || reason === "Signal filtration périmé")) {
+      return "";
+    }
+    return reason;
+  }
+
   // feature-053 : carte Boost du tableau de bord. Consomme boost_active/boost_until
   // du WS sensor_data (fallback window._config, alimenté par le broadcast config).
   // Ne dépend PAS de latestSensorData → appelée avant l'early-return d'updateStatusCards.
@@ -2382,12 +2444,16 @@
     // === FILTRATION ===
     // Les cartes de filtration et éclairage compactes ont été supprimées et fusionnées avec les cartes détaillées
 
+    // feature-061 : mesures non représentatives (filtration arrêtée / stabilisation)
+    // → « -- » sur les valeurs pH/ORP ; la ligne « Cible » reste affichée.
+    const measuresOk = measuresAreValid(data);
+
     // === pH COMPACT ===
     // bug-ui-valeurs-figees : valeur null/NaN → « -- » explicite (jamais de skip,
     // sinon l'ancienne valeur reste figée quand le capteur devient indisponible).
     const compactPh = $("#compact-ph");
     if (compactPh) {
-      compactPh.textContent = (data.ph != null && !isNaN(data.ph))
+      compactPh.textContent = (measuresOk && data.ph != null && !isNaN(data.ph))
         ? (Math.round(data.ph * 10) / 10).toFixed(1)
         : "--";
     }
@@ -2397,12 +2463,12 @@
       compactPhTarget.textContent = config.ph_target.toFixed(1);
     }
 
-    updateDosingStatus("ph",  !!data.ph_dosing,  getDosingStopReason(data, config, "ph"));
+    updateDosingStatus("ph",  !!data.ph_dosing,  dedupDosingReason(getDosingStopReason(data, config, "ph"), data));
 
     // === ORP COMPACT ===
     const compactOrp = $("#compact-orp");
     if (compactOrp) {
-      const orpText = (data.orp != null && !isNaN(data.orp)) ? String(Math.round(data.orp)) : "--";
+      const orpText = (measuresOk && data.orp != null && !isNaN(data.orp)) ? String(Math.round(data.orp)) : "--";
       compactOrp.innerHTML = orpText + '<span class="compact-unit">mV</span>';
     }
 
@@ -2411,15 +2477,16 @@
       compactOrpTarget.textContent = Math.round(config.orp_target);
     }
 
-    updateDosingStatus("orp", !!data.orp_dosing, getDosingStopReason(data, config, "orp"));
+    updateDosingStatus("orp", !!data.orp_dosing, dedupDosingReason(getDosingStopReason(data, config, "orp"), data));
 
     // === ÉCLAIRAGE ===
     if (data.lighting_enabled != null) updateLightingStatus(data.lighting_enabled);
 
     // === TEMPÉRATURE COMPACT ===
+    // feature-061 it. 2 : mesure non représentative (filtration arrêtée) → « -- »
     const compactTemperature = $("#compact-temperature");
     if (compactTemperature) {
-      const tempText = (data.temperature != null && !isNaN(data.temperature))
+      const tempText = (measuresOk && data.temperature != null && !isNaN(data.temperature))
         ? (Math.round(data.temperature * 10) / 10).toFixed(1)
         : "--";
       compactTemperature.innerHTML = tempText + '<span class="compact-unit">°C</span>';
@@ -3031,8 +3098,9 @@
     }
 
     // bug-ui-valeurs-figees : valeur null/NaN → « -- » explicite (jamais de skip)
+    // feature-061 it. 2 : température gatée par la validité des mesures
     if (mTemp) {
-      mTemp.textContent = (json.temperature != null && !isNaN(json.temperature))
+      mTemp.textContent = (measuresAreValid(json) && json.temperature != null && !isNaN(json.temperature))
         ? json.temperature.toFixed(1) : "--";
     }
     if (mPh) {
@@ -3471,7 +3539,10 @@
         const phCurrentLabel = $("#ph_current_label");
         if (phCurrentValue) {
           if (phCurrentLabel) phCurrentLabel.textContent = "Valeur pH actuelle";
-          if (json.ph != null && typeof json.ph === "number" && !isNaN(json.ph)) {
+          // feature-061 : mesure non représentative (filtration arrêtée / stabilisation)
+          // → « -- » (le badge #ph-page-badge explique pourquoi). Les lectures live de
+          // calibration/diagnostic (filter-sub, updateCalibrationReadouts) ne sont PAS gatées.
+          if (measuresAreValid(json) && json.ph != null && typeof json.ph === "number" && !isNaN(json.ph)) {
             // Arrondi à 1 décimale, cohérent avec le tableau de bord (updateDashboardMetrics).
             phCurrentValue.textContent = (Math.round(json.ph * 10) / 10).toFixed(1);
           } else {
@@ -3488,7 +3559,8 @@
         const orpCurrentLabel = $("#orp_current_label");
         if (orpCurrentValue) {
           if (orpCurrentLabel) orpCurrentLabel.textContent = "Valeur ORP actuelle";
-          if (json.orp != null && typeof json.orp === "number" && !isNaN(json.orp)) {
+          // feature-061 : cf. bloc pH ci-dessus
+          if (measuresAreValid(json) && json.orp != null && typeof json.orp === "number" && !isNaN(json.orp)) {
             orpCurrentValue.textContent = Math.round(json.orp) + " mV";
           } else {
             orpCurrentValue.textContent = "--";

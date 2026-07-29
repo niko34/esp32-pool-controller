@@ -209,3 +209,16 @@ Buffer `_buildSensorJson()` bumpe de **1600 → 1664 octets**.
 Ces champs sont **calculés au vol** dans `_buildSensorJson()` à chaque cycle. La présence d'eau vient d'un appel unique à `filtration.resolveWaterPresence()` (qui délègue à la fonction pure `resolveWaterPresent()`, [ADR-0026](../adr/0026-mode-installation.md)) ; le triplet `{on, lastMs, known}` du signal externe est lu sous portMUX via `getExternalState()`. Le champ `boost_filtration_extended` (feature-055) est désormais dérivé de `installMode == ManagedFiltration` (et non plus de `filtrationCfg.enabled`, retiré). Les champs `regulation_mode` / `filtration_enabled` ont disparu de la payload `config`.
 
 Buffer `_buildSensorJson()` bumpe de **1664 → 1920 octets**.
+
+## Champs `sensor_data` ajoutés en feature-061 (validité des mesures pH/ORP, v2.13.0)
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `measures_valid` | bool | `true` = les mesures pH/ORP sont **représentatives de l'eau du bassin**. `false` = eau absente (filtration arrêtée / signal externe périmé) **ou** délai de purge post-reprise en cours (`stabilizationDelayMin`, défaut 5 min). |
+| `measures_stab_remaining_s` | uint | Secondes restantes du délai de purge (arrondi seconde sup). `0` si valide **ou** eau absente. ⚠️ Nom volontairement **distinct** de `stabilization_remaining_s` (stabilisation post-**calibration des pompes**, feature-006) : ici il s'agit de la **purge de la chambre de mesure**. |
+
+Les deux champs sont lus depuis le **cache** du singleton `measureValidity` (`getSnapshot()`, snapshot cohérent sous spinlock — jamais d'appel direct à `resolveWaterPresence()` hors `loopTask`). Voir [measure-validity.md](measure-validity.md). Le champ `water_present` (feature-056, ci-dessus) complète le triptyque : l'UI combine `water_present` + `filtration_state_stale` + `measures_valid` + `measures_stab_remaining_s` pour les badges « Filtration arrêtée » / « Signal filtration périmé » / « Stabilisation : ~N min » ([page-dashboard.md](../features/page-dashboard.md#mesures-phorp-non-représentatives--filtration-arrêtée--stabilisation-feature-061-v2130)).
+
+**Les champs live `ph` / `orp` / `phRaw` / `orpRaw` / … restent publiés tels quels** quand les mesures sont invalides (page calibration et onglet Avancé intacts) — c'est l'UI qui arbitre l'affichage via `measures_valid`. Le compte à rebours est **recalculé côté firmware** et rafraîchi à chaque push (5 s) : l'UI n'a aucun tick JS.
+
+Buffer `_buildSensorJson()` bumpe de **2048 → 2112 octets** (l'étape intermédiaire 1920 → 2048 venait des champs `ph/orp_mix_remaining_s`, v2.19.1).
