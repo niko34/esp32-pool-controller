@@ -1,4 +1,5 @@
 #include "dosing_logic.h"
+#include "constants.h"  // kCyclesPerDayMin/Max (self-contained, natif-safe)
 
 // =============================================================================
 // resolveWaterPresent — présence d'eau PURE (feature-056)
@@ -146,6 +147,27 @@ bool shouldContinueDosingPure(float error, float stopThreshold,
   }
   // 2. Continuer si au-dessus du seuil d'arrêt (hystérésis).
   return error > stopThreshold;
+}
+
+// =============================================================================
+// Sanitization config (feature-060) — HORS des gardes de dosage
+// =============================================================================
+// Borne maxCyclesPerDay dans [kCyclesPerDayMin, kCyclesPerDayMax] (verdict
+// pool-chemistry 2026-07-29 : clamp serveur + chargement NVS). Ce n'est PAS
+// une garde de dosage : l'ordre des gardes 2→15 d'evaluateDose() est intouché.
+unsigned int clampCyclesPerDay(long requested, bool* wasClamped) {
+  unsigned int clamped;
+  if (requested < static_cast<long>(kCyclesPerDayMin)) {
+    clamped = kCyclesPerDayMin;
+  } else if (requested > static_cast<long>(kCyclesPerDayMax)) {
+    clamped = kCyclesPerDayMax;
+  } else {
+    clamped = static_cast<unsigned int>(requested);
+  }
+  if (wasClamped != nullptr) {
+    *wasClamped = (requested != static_cast<long>(clamped));
+  }
+  return clamped;
 }
 
 // Clamp maison : Arduino::constrain est une macro indisponible en natif.

@@ -147,6 +147,14 @@ bool shouldStartDosingPure(float error, float startThreshold,
 bool shouldContinueDosingPure(float error, float stopThreshold,
                               unsigned long runTimeMs, unsigned long minInjectionTimeMs);
 
+// =============================================================================
+// Sanitization config (feature-060) — HORS des gardes de dosage
+// =============================================================================
+// Sanitization config (PAS une garde de dosage) : borne maxCyclesPerDay dans
+// [kCyclesPerDayMin, kCyclesPerDayMax]. wasClamped (optionnel) → true si la
+// valeur demandée a été modifiée (les appelants loggent le warn).
+unsigned int clampCyclesPerDay(long requested, bool* wasClamped = nullptr);
+
 // Résultat pur d'un pas PID : débit final borné + nouvel état PID (intégrale,
 // dernière erreur) renvoyés explicitement, jamais lus/écrits en global.
 struct PidResult {

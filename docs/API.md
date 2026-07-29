@@ -388,6 +388,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "pump_max_flow_ml_per_min": 90,
   "ph_limit_minutes": 5,
   "orp_limit_minutes": 10,
+  "max_cycles_per_day": 48,
   "time_use_ntp": true,
   "ntp_server": "pool.ntp.org",
   "timezone_id": "europe_paris",
@@ -423,6 +424,7 @@ Champs notables de la réponse :
 | `stabilization_delay_min` | integer | Délai de stabilisation capteurs après démarrage filtration (0–60 min) |
 | `ph_limit_minutes` | integer | Durée max d'injection pH par fenêtre glissante d'1 h (minutes, 1–60) |
 | `orp_limit_minutes` | integer | Durée max d'injection ORP par fenêtre glissante d'1 h (minutes, 1–60) |
+| `max_cycles_per_day` | integer | Limite anti-cycling (garde 9, feature-060, v2.12.0) : démarrages de dosage max **par pompe et par jour**, compteur partagé régulation auto + injections manuelles. Défaut **48**. Bornes dures **10–60** clampées côté serveur (voir la table de validation `/save-config` ci-dessous). Persisté en NVS (`max_cycles_day`). |
 | `pump1_max_duty_pct` | integer | Puissance maximale pompe 1 en régulation (0–100 %) |
 | `pump2_max_duty_pct` | integer | Puissance maximale pompe 2 en régulation (0–100 %) |
 | `pump_max_flow_ml_per_min` | float | Débit nominal des pompes à 100 % de puissance (mL/min) |
@@ -458,6 +460,12 @@ Champs notables de la réponse :
 | Champ | Type | Validation |
 |-------|------|------------|
 | `install_mode` | string | Valeurs acceptées : `"managed"`, `"powered"`, `"external"`. Toute autre valeur est ignorée (mode courant conservé). |
+
+**`POST /save-config` — protection pompes (feature-060, v2.12.0) :**
+
+| Champ | Type | Validation |
+|-------|------|------------|
+| `max_cycles_per_day` | integer | Toute valeur hors bornes est **silencieusement clampée côté serveur** dans **[10, 60]** (`clampCyclesPerDay`, bornes `kCyclesPerDayMin` / `kCyclesPerDayMax` de [`constants.h`](../src/constants.h)) : la requête retourne 200, la valeur **clampée** est appliquée et persistée, et un `WARN` est journalisé (`max_cycles_per_day hors bornes : X → Y`). Le pré-clamp `min`/`max` du champ UI est purement indicatif — le serveur fait autorité. Toute modification effective est également journalisée en `WARN` (ancienne → nouvelle valeur). |
 
 > ⚠️ **Retirés en v2.19.0 (feature-056)** : les champs `regulation_mode` et `filtration_enabled` **n'existent plus** dans `/get-config` ni `/save-config`. Ils sont fusionnés dans `install_mode` (voir [ADR-0026](adr/0026-mode-installation.md)). La migration NVS est automatique — voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md).
 

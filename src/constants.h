@@ -415,6 +415,14 @@ constexpr uint8_t kMaxDosingCyclesPerMinute = 6;     // 1 cycle / 10s max
 constexpr uint8_t kMaxDosingCyclesPer15Min  = 20;    // anti-emballement PID
 constexpr size_t  kDosingCycleHistorySize   = 20;    // ring buffer (couvre 15min)
 
+// Bornes dures de la garde 9 anti-cycling (maxCyclesPerDay configurable,
+// feature-060 — verdict pool-chemistry 2026-07-29, GO sous conditions).
+// Appliquées par clamp CÔTÉ SERVEUR (route de config) ET au chargement NVS
+// via clampCyclesPerDay() (dosing_logic). Ne JAMAIS élargir sans nouveau
+// passage pool-chemistry.
+constexpr unsigned int kCyclesPerDayMin = 10;  // plancher : en dessous, la garde bloque un régime d'entretien sain
+constexpr unsigned int kCyclesPerDayMax = 60;  // plafond : sous la cadence physique ~70/j imposée par la pause mélange
+
 // Répartition du volume quotidien du mode "scheduled" (feature-011).
 // Le volume restant est réparti uniformément par fenêtres de 15 min sur
 // l'horizon de filtration restant, borné à minuit (les compteurs journaliers

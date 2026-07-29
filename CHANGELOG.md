@@ -2,6 +2,21 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.12.0] - 2026-07-29
+
+### Modifié
+
+- **Limite de cycles de dosage par jour (garde 9 anti-cycling) : défaut 20 → 48, et désormais réglable 10-60** (feature-060). Motivation : incident du 2026-07-29 — régulation ORP bloquée en début d'après-midi (« Limite cycles/jour atteinte — reprise à minuit ») avec seulement **104 mL** injectés. En régime d'entretien post-remontée du stabilisant, la régulation travaille par petites retouches (~5 mL/cycle, pause mélange 20 min) : un régime **sain** qui produit naturellement 20-40 cycles/jour et épuisait la limite de 20 — non fondée chimiquement, alors que l'ORP dérivant tout l'après-midi est lui-même un risque sanitaire. Nouveau défaut **48** (1 cycle/30 min moyen, sous le plafond physique ~70/j imposé par la pause mélange), exposé dans Paramètres → Régulation pH / ORP (champ « Cycles de dosage max / jour (par pompe) », `max_cycles_per_day` dans `/get-config` / `/save-config`). **Bornes dures 10-60** (`kCyclesPerDayMin`/`kCyclesPerDayMax`) **clampées côté serveur** (fonction pure `clampCyclesPerDay`) et au chargement NVS (clé `max_cycles_day`, migration ≤ 2.11.x automatique) ; warn journalisé sur valeur hors bornes et sur toute modification. Anti-rafale (6/min, 20/15 min), limites volumétriques/horaire et toutes les autres gardes **inchangées** ; le compteur du jour n'est pas remis à zéro à la modification. **Double validation `pool-chemistry` (2026-07-29)** : GO pré-design sous conditions (toutes implémentées) + GO sur re-validation du diff. +6 tests natifs (374 au total).
+
+### Documentation
+
+- `docs/subsystems/pump-controller.md` : nouvelle section « Limite de cycles/jour configurable » (fondement du défaut 48, bornes, double clamp serveur/NVS, warns de traçabilité, verdicts pool-chemistry).
+- `docs/API.md` : champ `max_cycles_per_day` (`/get-config`, table de validation `/save-config` — clamp silencieux 10-60 + warn).
+- `docs/features/page-settings.md` : nouveau champ de l'onglet Régulation pH / ORP ; `maxCyclesPerDay` retiré du tableau des paramètres non exposés.
+- Pas d'ADR : paramétrage borné d'une garde existante, décision et alternatives tracées dans la spec + verdicts pool-chemistry (précédent : feature-025, `orpStartThreshold`).
+
+---
+
 ## [2.11.1] - 2026-07-28
 
 ### Corrigé

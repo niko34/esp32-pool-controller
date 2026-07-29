@@ -60,6 +60,7 @@ Nouvelle section **en 1ᵉʳ onglet** (feature-056, v2.19.0). Un `radiogroup` (`
 - `regulation_speed` (`slow` | `normal` | `fast`) — sélectionne le jeu de paramètres PID. Gains exacts détaillés dans [`docs/subsystems/pump-controller.md`](../subsystems/pump-controller.md#algorithme-résumé).
 - `ph_limit` / `orp_limit` (min/h) — mapping firmware : `ph_limit_minutes`, `orp_limit_minutes` (CHANGELOG 2026-04-24).
 - `ph_daily_limit` / `orp_daily_limit` (mL) — mapping : `max_ph_ml_per_day` / `max_chlorine_ml_per_day` ([`config.h:141`](../../src/config.h:141) `SafetyLimits`).
+- `max_cycles_per_day` (feature-060, v2.12.0) — champ **« Cycles de dosage max / jour (par pompe) »** (`#max_cycles_per_day`, [`data/index.html:1573`](../../data/index.html:1573)) : garde anti-emballement (garde 9 anti-cycling), borne le nombre de démarrages de dosage par pompe et par jour. Défaut **48**, saisie **10–60** (`min`/`max` HTML + pré-clamp JS indicatifs — le **serveur clampe systématiquement** dans [10, 60] et journalise un warn, voir [`docs/API.md`](../API.md)). Aide contextuelle sous la grille : « garde anti-emballement — borne le nombre de démarrages de dosage par pompe et par jour (10-60). Le volume reste plafonné par les limites journalière et horaire. » Détails et fondement chimique : [`pump-controller.md`](../subsystems/pump-controller.md#limite-de-cyclesjour-configurable-garde-9-feature-060-v2120).
 - `stabilization_delay_min` — voir [`pump_controller.h`](../../src/pump_controller.h) `stabilizationDelayMs`.
 
 > ⚠️ **Paramètres de sécurité NON exposés dans l'UI** (en dur dans le firmware, décision volontaire — voir [docs/subsystems/pump-controller.md#paramètres-en-dur-récapitulatif](../subsystems/pump-controller.md#paramètres-en-dur-récapitulatif)) :
@@ -71,12 +72,13 @@ Nouvelle section **en 1ᵉʳ onglet** (feature-056, v2.19.0). Un `radiogroup` (`
 > | `phStartThreshold` / `phStopThreshold` | 0.05 / 0.01 | Hystérésis démarrage/arrêt pH |
 > | `orpStartThreshold` / `orpStopThreshold` | 10 / 2 mV | Hystérésis démarrage/arrêt ORP |
 > | `minInjectionTimeMs` | 30 000 ms | Durée minimale d'une injection (protection pompe) |
-> | `maxCyclesPerDay` | 20 | Nombre max de démarrages / 24 h glissantes |
 > | `MIN_ACTIVE_DUTY` | 80 | PWM minimum pour qu'une pompe tourne effectivement |
 > | `integralMax` | 50 | Anti-windup PID |
 > | `kPhMaxError` / `kOrpMaxError` | 1.0 / 200 mV | Normalisation erreur PID |
 >
 > Toute modification de ces valeurs exige un nouveau build firmware + passage obligatoire par l'agent `pool-chemistry`.
+>
+> ℹ️ `maxCyclesPerDay` a **quitté ce tableau en v2.12.0** (feature-060) : il est désormais exposé dans l'UI (champ « Cycles de dosage max / jour (par pompe) » ci-dessus), borné en dur [10-60] côté serveur — l'élargissement des bornes reste, lui, soumis à `pool-chemistry`.
 
 ### Système (`panel-system`)
 - **Card « Infos système »** en **première position** (déplacée depuis Avancé en v2.5.1, feature-046) : Firmware, Build, Uptime, Chip, CPU, Heap libre, Flash, Firmware (flash), FS, Wi-Fi RSSI, MAC — alimentée par `GET /get-system-info` (`loadSystemInfo()`, chargée au démarrage de la page) + bouton **Actualiser** (`#refresh_info_btn`). La version firmware s'affiche sur la ligne « Firmware » (`sys_firmware_version`, depuis `FIRMWARE_VERSION` dans [`version.h`](../../src/version.h)).

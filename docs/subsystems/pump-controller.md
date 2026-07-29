@@ -139,7 +139,7 @@ Le flag ne se lève **qu'au redémarrage** du contrôleur (le mode maintenance e
    > Le **cœur du calcul** (terme proportionnel, anti-windup, plancher 0, bornage final min/max) est extrait dans la fonction pure `computePidPure` testée en natif. `computePID` n'est plus qu'une coquille qui gère `dt`/`millis()` et l'état PID. Voir [Calcul proportionnel pur (`computePidPure`)](#calcul-proportionnel-pur-computepidpure).
 
    **Zone morte** : le paramètre `deadband` passé à `computePID()` est le **seuil de démarrage existant** (`phStartThreshold` / `orpStartThreshold`) — **un seul** deadband fait foi, aucun second seuil dupliqué. Si `|error| < deadband` → sortie forcée à 0 **et** intégrale figée.
-4. **Anti-cycling** ([`config.h:152`](../../src/config.h:152) `PumpProtection`) — **en dur, non configurables via UI** :
+4. **Anti-cycling** ([`config.h:152`](../../src/config.h:152) `PumpProtection`) — **en dur, non configurables via UI** (exception : `maxCyclesPerDay`, configurable borné depuis feature-060) :
    - `minInjectionTimeMs = 30000` — 30 s minimum par injection démarrée.
    - Hystérésis de seuils (démarrage / arrêt) :
 
@@ -150,7 +150,7 @@ Le flag ne se lève **qu'au redémarrage** du contrôleur (le mode maintenance e
 
    > feature-025 : `phStartThreshold` / `orpStartThreshold` servent désormais aussi de **zone morte PID** (passés comme `deadband` à `computePID`). ORP relevé de 10 → 15 mV pour élargir la zone morte (l'ORP étant plus bruité et dépendant du pH/T°/stabilisant).
 
-   - `maxCyclesPerDay = 20` — démarrages comptés dans une fenêtre 24 h glissante.
+   - `maxCyclesPerDay = 48` (défaut, feature-060 v2.12.0 — était 20) — démarrages comptés dans une fenêtre 24 h glissante. **Configurable** via `/save-config` (`max_cycles_per_day`), borné en dur [10-60] — voir [Limite de cycles/jour configurable](#limite-de-cyclesjour-configurable-garde-9-feature-060-v2120).
 5. **Limites de sécurité** ([`config.h:141`](../../src/config.h:141) `SafetyLimits`) :
    - Horaire : `ph_limit_minutes` / `orp_limit_minutes` dans une fenêtre glissante de 1 h (`windowStart` / `usedMs` dans `DosingState`). **Non reflétée dans l'UI** (pas de badge dédié à date).
    - Journalière : `maxPhMlPerDay = 300`, `maxChlorineMlPerDay = 500`.
@@ -340,7 +340,22 @@ Au prochain `canDose(pumpIndex)`, `countRecentDosingCycles(pumpIndex, windowMs)`
 
 Sites d'appel à `recordDosingCycleStart()` (4 au total) : démarrage cycle pH automatique, démarrage cycle pH scheduled, démarrage cycle ORP automatique, démarrage cycle ORP scheduled.
 
-> **Indépendant** des limites volumétriques (`ph_limit_minutes`, `max_ph_ml_per_day`) et de l'anti-cycling existant (`maxCyclesPerDay = 20` mesuré sur 24 h glissante). Couvre le cas d'un PID qui démarrerait 30 cycles très courts en 5 minutes (lectures bruitées sur sonde mal calibrée par exemple).
+> **Indépendant** des limites volumétriques (`ph_limit_minutes`, `max_ph_ml_per_day`) et de l'anti-cycling existant (`maxCyclesPerDay`, 48 par défaut — configurable 10-60, feature-060 — mesuré sur 24 h glissante). Couvre le cas d'un PID qui démarrerait 30 cycles très courts en 5 minutes (lectures bruitées sur sonde mal calibrée par exemple).
+
+## Limite de cycles/jour configurable (garde 9, feature-060, v2.12.0)
+
+La garde 9 anti-cycling (`cyclesToday >= maxCyclesPerDay` dans `evaluateDose` / `shouldStartDosingPure`, garde 7 côté `evaluateManualInject` — **même source** `pumpProtection.maxCyclesPerDay`, compteur partagé auto + manuel) n'est plus une valeur codée en dur :
+
+- **Défaut : 48** (était 20) — soit **1 cycle / 30 min en moyenne**. Fondement (verdict `pool-chemistry`) : un régime d'entretien **sain** par petites retouches (~5 mL/cycle, pause mélange 20 min) produit naturellement **20-40 cycles/jour** — la limite de 20, non fondée chimiquement, le bloquait en milieu de journée (incident du 2026-07-29 : régulation ORP arrêtée à 104 mL injectés, dérive ORP tout l'après-midi = risque sanitaire). Le chattering rapide reste couvert par l'anti-rafale (6/min, 20/15 min, en dur) et la pause mélange borne physiquement la cadence à **~70 démarrages/j** : la garde ne couvre plus que l'emballement lent (sonde mentant sous la cible), que 48 détecte toujours.
+- **Configurable** via `POST /save-config` (champ `max_cycles_per_day`), UI : Paramètres → Régulation pH / ORP (voir [page-settings.md](../features/page-settings.md#régulation-panel-regulation)).
+- **Bornes dures** : `kCyclesPerDayMin = 10` / `kCyclesPerDayMax = 60` ([`constants.h:423`](../../src/constants.h:423)) — **ne JAMAIS élargir sans nouveau verdict `pool-chemistry`** (60 reste sous la cadence physique ~70/j ; 10 est le plancher sous lequel la garde bloquerait un régime d'entretien sain).
+- **Clamp serveur systématique** via la fonction pure `clampCyclesPerDay(long requested, bool* wasClamped)` ([`dosing_logic.h:156`](../../src/dosing_logic.h:156)) — c'est une **sanitization de config, PAS une garde de dosage** (hors de l'ordre figé des gardes). Appliqué à **deux points d'entrée** : la route `/save-config` ([`web_routes_config.cpp:337`](../../src/web_routes_config.cpp:337) — le `min`/`max` HTML ne suffit pas) et le **chargement NVS** ([`config.cpp:389`](../../src/config.cpp:389) — valeur écrite par un firmware antérieur ou bidouillée).
+- **Persistance NVS** : clé `max_cycles_day` ([`config.cpp:193`](../../src/config.cpp:193)). Clé absente (migration depuis ≤ 2.11.x) → défaut 48.
+- **Traçabilité (2 `WARN`)** : `max_cycles_per_day hors bornes : X → Y` (valeur clampée, route ou NVS) et `Limite cycles/jour modifiée : ancienne → nouvelle` (toute modification effective).
+- **Effet immédiat** : le compteur `cyclesToday` en cours n'est **pas** remis à zéro à la modification — seule la borne de comparaison change (dans les deux sens).
+- **Inchangés** : exemption `cyclesToday` du mode `scheduled` ([ADR-0021](../adr/0021-repartition-scheduled.md)), anti-rafale, limites volumétriques/horaire, ordre des gardes, message UI « Limite cycles/jour atteinte — reprise à minuit ».
+
+> **Double validation `pool-chemistry` (2026-07-29)** : GO pré-design **sous conditions** (48, bornes 10-60, clamp serveur, logs — conditions toutes implémentées) + **GO** sur re-validation du diff d'implémentation. Voir [feature-060](../../specs/features/doing/feature-060-limite-cycles-configurable.md).
 
 ## Anti-rafale & rollover journalier (logique pure)
 
@@ -457,7 +472,7 @@ duty = MIN_ACTIVE_DUTY + round( ((flow − minFlow) / (maxFlow − minFlow)) × 
 | Anti-cycling — stop pH | `phStopThreshold` | 0.01 | [`config.h:156`](../../src/config.h:156) |
 | Anti-cycling — start ORP | `orpStartThreshold` | 10.0 mV | [`config.h:157`](../../src/config.h:157) |
 | Anti-cycling — stop ORP | `orpStopThreshold` | 2.0 mV | [`config.h:158`](../../src/config.h:158) |
-| Anti-cycling — cycles/jour | `maxCyclesPerDay` | 20 | [`config.h:159`](../../src/config.h:159) |
+| Anti-cycling — cycles/jour (**configurable 10-60**, feature-060) | `maxCyclesPerDay` | 48 (défaut) | [`config.h:144`](../../src/config.h:144), bornes [`constants.h:423`](../../src/constants.h:423) |
 | Deadband pH | `PH_DEADBAND` | 0.01 | [`config.h:25`](../../src/config.h:25) |
 | Deadband ORP | `ORP_DEADBAND` | 2.0 mV | [`config.h:26`](../../src/config.h:26) |
 | Pompe — duty min actif | `MIN_ACTIVE_DUTY` | 80 (sur 255) | [`config.h:28`](../../src/config.h:28) |

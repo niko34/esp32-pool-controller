@@ -1568,10 +1568,15 @@ action:
                       <span class="field__label">ORP — volume max / jour (ml)</span>
                       <input type="number" id="orp_daily_limit" min="0" step="10" value="500" style="width:120px;" />
                     </label>
+                    <label class="field">
+                      <span class="field__label">Cycles de dosage max / jour (par pompe)</span>
+                      <input type="number" id="max_cycles_per_day" min="10" max="60" step="1" value="48" style="width:120px;" />
+                    </label>
                   </div>
                   <div class="muted small" style="margin-top: 8px;">
                     <strong>Durée max / heure</strong> : temps total d'injection autorisé dans une fenêtre glissante d'1h — limite la durée d'un cycle et protège contre l'inertie (mélange lent dans un grand bassin).<br>
-                    <strong>Volume max / jour</strong> : seuil de sécurité absolu — le dosage s'arrête et une alerte est émise si ce volume est atteint.
+                    <strong>Volume max / jour</strong> : seuil de sécurité absolu — le dosage s'arrête et une alerte est émise si ce volume est atteint.<br>
+                    <strong>Cycles de dosage max / jour</strong> : garde anti-emballement — borne le nombre de démarrages de dosage par pompe et par jour (10-60). Le volume reste plafonné par les limites journalière et horaire.
                   </div>
 
                   <label class="field" style="margin-top: 16px;">

@@ -9,6 +9,7 @@
 #include "lighting.h"
 #include "mqtt_manager.h"
 #include "pump_controller.h"
+#include "dosing_logic.h"  // feature-060 : clampCyclesPerDay (clamp serveur obligatoire)
 #include "logger.h"
 #include "version.h"
 #include "json_compat.h"
@@ -89,6 +90,7 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["pump_max_flow_ml_per_min"] = mqttCfg.pumpMaxFlowMlPerMin;
   doc["ph_limit_minutes"] = mqttCfg.phInjectionLimitMinutes;
   doc["orp_limit_minutes"] = mqttCfg.orpInjectionLimitMinutes;
+  doc["max_cycles_per_day"] = pumpProtection.maxCyclesPerDay;  // feature-060 : garde 9 configurable (10-60)
   doc["install_mode"] = installModeToString(mqttCfg.installMode);  // feature-056
   doc["stabilization_delay_min"] = mqttCfg.stabilizationDelayMin;
   doc["regulation_speed"] = mqttCfg.regulationSpeed;
@@ -330,6 +332,22 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
   if (!doc["ph_limit_minutes"].isNull()) mqttCfg.phInjectionLimitMinutes = constrain((int)doc["ph_limit_minutes"], 1, 60);
   if (!doc["orp_limit_minutes"].isNull()) mqttCfg.orpInjectionLimitMinutes = constrain((int)doc["orp_limit_minutes"], 1, 60);
+  // feature-060 : garde 9 anti-cycling configurable. Clamp serveur OBLIGATOIRE
+  // via clampCyclesPerDay (verdict pool-chemistry) — le min/max HTML ne suffit pas.
+  if (!doc["max_cycles_per_day"].isNull()) {
+    long requestedCycles = doc["max_cycles_per_day"].as<long>();
+    bool cyclesClamped = false;
+    unsigned int effectiveCycles = clampCyclesPerDay(requestedCycles, &cyclesClamped);
+    if (cyclesClamped) {
+      systemLogger.warning("max_cycles_per_day hors bornes : " + String(requestedCycles) +
+                           " → " + String(effectiveCycles));
+    }
+    if (effectiveCycles != pumpProtection.maxCyclesPerDay) {
+      systemLogger.warning("Limite cycles/jour modifiée : " + String(pumpProtection.maxCyclesPerDay) +
+                           " → " + String(effectiveCycles));
+      pumpProtection.maxCyclesPerDay = effectiveCycles;
+    }
+  }
   // feature-056 : mode d'installation (remplace regulation_mode + filtration_enabled).
   if (!doc["install_mode"].isNull()) {
     String im = doc["install_mode"].as<String>();

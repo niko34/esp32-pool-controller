@@ -141,7 +141,9 @@ struct PumpProtection {
   float phStopThreshold = 0.01f;                 // Continue dosage si erreur pH > 0.01
   float orpStartThreshold = 15.0f;               // Démarre dosage si erreur ORP > 15mV (feature-025 : deadband effectif ORP ±15 mV)
   float orpStopThreshold = 2.0f;                 // Continue dosage si erreur ORP > 2mV
-  unsigned int maxCyclesPerDay = 20;             // Max 20 démarrages par jour
+  unsigned int maxCyclesPerDay = 48;             // Démarrages max/jour (feature-060) : défaut 48 = 1 cycle/30 min moyen,
+                                                 // au-dessus du régime d'entretien sain (20-40/j), sous le plafond physique
+                                                 // ~70/j imposé par la pause mélange. Configurable, borné [kCyclesPerDayMin, kCyclesPerDayMax].
 };
 
 // feature-053 : état du Mode Boost (surchloration temporaire du jour).

@@ -190,6 +190,7 @@ void saveMqttConfig() {
   // Limites de sécurité
   prefs.putFloat("max_ph_ml", safetyLimits.maxPhMlPerDay);
   prefs.putFloat("max_cl_ml", safetyLimits.maxChlorineMlPerDay);
+  prefs.putUInt("max_cycles_day", pumpProtection.maxCyclesPerDay);  // feature-060 : garde 9 configurable
 
   prefs.end();
   if (configMutex) xSemaphoreGiveRecursive(configMutex);
@@ -381,6 +382,17 @@ void loadMqttConfig() {
   // Limites de sécurité
   safetyLimits.maxPhMlPerDay = prefs.getFloat("max_ph_ml", safetyLimits.maxPhMlPerDay);
   safetyLimits.maxChlorineMlPerDay = prefs.getFloat("max_cl_ml", safetyLimits.maxChlorineMlPerDay);
+
+  // feature-060 : limite cycles/jour (garde 9). Clé absente ⇒ défaut struct (48),
+  // sans write-back de migration. Valeur NVS hors bornes (corrompue / firmware
+  // antérieur) ⇒ clampée [kCyclesPerDayMin, kCyclesPerDayMax] + warn.
+  uint32_t rawCyclesPerDay = prefs.getUInt("max_cycles_day", pumpProtection.maxCyclesPerDay);
+  bool cyclesClamped = false;
+  pumpProtection.maxCyclesPerDay = clampCyclesPerDay(static_cast<long>(rawCyclesPerDay), &cyclesClamped);
+  if (cyclesClamped) {
+    systemLogger.warning("max_cycles_day NVS hors bornes (" + String(rawCyclesPerDay) +
+                         ") — clampé à " + String(pumpProtection.maxCyclesPerDay));
+  }
 
   prefs.end();
 

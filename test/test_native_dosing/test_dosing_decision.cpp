@@ -1454,6 +1454,180 @@ void test_F053_chlorine_boundary_near_hard_cap(void) {
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 1000.0f, m);
 }
 
+// =============================================================================
+// feature-060 — Limite cycles/jour configurable : garde 9 avec maxCyclesPerDay
+// paramétré + sanitization clampCyclesPerDay (bornes kCyclesPerDayMin/Max)
+// =============================================================================
+// Verdict pool-chemistry 2026-07-29 (GO sous conditions) : défaut 48, bornes en
+// dur 10-60 (constants.h), clamp côté serveur. On verrouille ici :
+//   - la frontière >= de la garde 9 (auto) et de la garde MaxCyclesPerDay
+//     (manuel) avec la NOUVELLE valeur 48 (D1a/D1b) ;
+//   - le comportement de clampCyclesPerDay (hors bornes, bornes exactes,
+//     négatif) et son flag wasClamped (D1c/D1d) ;
+//   - la source PARTAGÉE auto+manuel : une même valeur de maxCyclesPerDay
+//     produit le même seuil de refus des deux côtés (D1e) ;
+//   - la non-régression d'ordre : un refus horaire ou pause mélange survient
+//     AVANT la garde 9 (D1f — voir note sur le compteur ci-dessous).
+static const unsigned int kNewMaxCyclesPerDay = 48u;  // nouveau défaut feature-060
+// NB : on ne peut pas inclure constants.h ici (collision avec les littéraux
+// F053 épinglés localement). Les bornes 10/60 de constants.h sont vérifiées
+// TRANSITIVEMENT : clampCyclesPerDay() consomme kCyclesPerDayMin/Max, donc les
+// asserts 5→10 / 100→60 / 10→10 / 60→60 ci-dessous échoueraient si les
+// constantes déviaient du verdict pool-chemistry.
+
+// D1a — garde 9 AUTO avec maxCyclesPerDay=48 : 48e démarrage (cyclesToday=47)
+// admis, 49e (cyclesToday=48) refusé CyclesPerDay (frontière >=).
+void test_F060_auto_guard9_47_allowed_48_refused(void) {
+  DoseInputs in = validInputs();
+  in.maxCyclesPerDay = kNewMaxCyclesPerDay;
+  in.cyclesToday = 47u;                       // 47 < 48 → admis
+  DoseDecision d = evaluateDose(in);
+  TEST_ASSERT_TRUE(d.allowed);
+  TEST_ASSERT_EQUAL(DoseRefusal::None, d.cause);
+
+  in.cyclesToday = 48u;                       // 48 >= 48 → refus
+  d = evaluateDose(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(DoseRefusal::CyclesPerDay, d.cause);
+  // Cohérence hystérésis de démarrage (même source maxCyclesPerDay) :
+  // 47 → démarrage possible, 48 → bloqué.
+  TEST_ASSERT_TRUE(shouldStartDosingPure(1.0f, kStartThreshold, 47u, kNewMaxCyclesPerDay));
+  TEST_ASSERT_FALSE(shouldStartDosingPure(1.0f, kStartThreshold, 48u, kNewMaxCyclesPerDay));
+}
+
+// D1b — garde MaxCyclesPerDay MANUELLE avec maxCyclesPerDay=48 : mêmes
+// frontières que l'auto (compteur cyclesToday PARTAGÉ auto+manuel).
+void test_F060_manual_guard_47_allowed_48_refused(void) {
+  ManualInjectInputs in = validManualInputs();
+  in.maxCyclesPerDay = kNewMaxCyclesPerDay;
+  in.cyclesToday = 47u;                       // 47 < 48 → admis
+  ManualInjectDecision d = evaluateManualInject(in);
+  TEST_ASSERT_TRUE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::None, d.cause);
+
+  in.cyclesToday = 48u;                       // 48 >= 48 → refus
+  d = evaluateManualInject(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::MaxCyclesPerDay, d.cause);
+}
+
+// D1c — clampCyclesPerDay : valeurs hors bornes clampées + wasClamped=true.
+void test_F060_clamp_out_of_bounds(void) {
+  bool clamped = false;
+  // Sous le plancher : 5 → 10.
+  TEST_ASSERT_EQUAL_UINT(10u, clampCyclesPerDay(5L, &clamped));
+  TEST_ASSERT_TRUE(clamped);
+  // Au-dessus du plafond : 100 → 60.
+  clamped = false;
+  TEST_ASSERT_EQUAL_UINT(60u, clampCyclesPerDay(100L, &clamped));
+  TEST_ASSERT_TRUE(clamped);
+  // Négatif : -1 → 10 (jamais de conversion signée hasardeuse).
+  clamped = false;
+  TEST_ASSERT_EQUAL_UINT(10u, clampCyclesPerDay(-1L, &clamped));
+  TEST_ASSERT_TRUE(clamped);
+  // wasClamped optionnel : nullptr toléré (pas de crash, même résultat).
+  TEST_ASSERT_EQUAL_UINT(60u, clampCyclesPerDay(100L));
+}
+
+// D1d — bornes exactes acceptées telles quelles, wasClamped=false.
+void test_F060_clamp_exact_bounds_untouched(void) {
+  bool clamped = true;
+  // Plancher exact : 10 → 10 sans clamp.
+  TEST_ASSERT_EQUAL_UINT(10u, clampCyclesPerDay(10L, &clamped));
+  TEST_ASSERT_FALSE(clamped);
+  // Plafond exact : 60 → 60 sans clamp.
+  clamped = true;
+  TEST_ASSERT_EQUAL_UINT(60u, clampCyclesPerDay(60L, &clamped));
+  TEST_ASSERT_FALSE(clamped);
+  // Défaut usine : 48 → 48 sans clamp.
+  clamped = true;
+  TEST_ASSERT_EQUAL_UINT(48u, clampCyclesPerDay(48L, &clamped));
+  TEST_ASSERT_FALSE(clamped);
+}
+
+// D1e — source PARTAGÉE : la MÊME valeur maxCyclesPerDay (issue d'un clamp
+// config, ex. 100 → 60) injectée dans les entrées AUTO et MANUELLES produit le
+// MÊME seuil de refus des deux côtés (test conjoint, aux deux frontières).
+void test_F060_shared_limit_same_threshold_auto_and_manual(void) {
+  bool wasClamped = false;
+  unsigned int limit = clampCyclesPerDay(100L, &wasClamped);  // → 60
+  TEST_ASSERT_TRUE(wasClamped);
+  TEST_ASSERT_EQUAL_UINT(60u, limit);
+
+  DoseInputs autoIn = validInputs();
+  ManualInjectInputs manIn = validManualInputs();
+  autoIn.maxCyclesPerDay = limit;
+  manIn.maxCyclesPerDay = limit;
+
+  // limit-1 : admis des DEUX côtés.
+  autoIn.cyclesToday = limit - 1u;
+  manIn.cyclesToday = limit - 1u;
+  DoseDecision da = evaluateDose(autoIn);
+  ManualInjectDecision dm = evaluateManualInject(manIn);
+  TEST_ASSERT_TRUE(da.allowed);
+  TEST_ASSERT_TRUE(dm.allowed);
+  TEST_ASSERT_EQUAL(da.allowed, dm.allowed);  // même verdict à la même frontière
+
+  // limit : refusé des DEUX côtés, causes homologues cycles/jour.
+  autoIn.cyclesToday = limit;
+  manIn.cyclesToday = limit;
+  da = evaluateDose(autoIn);
+  dm = evaluateManualInject(manIn);
+  TEST_ASSERT_FALSE(da.allowed);
+  TEST_ASSERT_FALSE(dm.allowed);
+  TEST_ASSERT_EQUAL(DoseRefusal::CyclesPerDay, da.cause);
+  TEST_ASSERT_EQUAL(ManualInjectRefusal::MaxCyclesPerDay, dm.cause);
+}
+
+// D1f — NON-RÉGRESSION « un refus ne consomme pas de cycle ».
+// L'incrément de cyclesToday vit dans la COQUILLE pump_controller (au start
+// effectif du cycle), pas dans la logique pure : evaluateDose/evaluateManualInject
+// prennent leurs entrées par const& et ne modifient AUCUN compteur — un refus ne
+// peut donc pas consommer de cycle ici par construction. Le chemin coquille
+// (incrément uniquement au démarrage réel) n'est PAS testable en natif (globals
+// ESP32/FreeRTOS) → couverture on-target via le plan de test manuel de la spec.
+// Ce qu'on verrouille en natif : les refus horaire et pause mélange surviennent
+// AVANT la garde 9 (le refus est attribué à la bonne garde, jamais à CyclesPerDay
+// tant que cyclesToday < max — donc aucun « cycle » n'est facturé à la garde 9).
+void test_F060_hourly_and_mixing_refusals_precede_guard9(void) {
+  // Pause mélange (5b) + compteur juste sous la limite → MixingActive.
+  {
+    DoseInputs in = validInputs();
+    in.maxCyclesPerDay = kNewMaxCyclesPerDay;
+    in.cyclesToday = 47u;
+    in.mixingActive = true;
+    DoseDecision d = evaluateDose(in);
+    TEST_ASSERT_FALSE(d.allowed);
+    TEST_ASSERT_EQUAL(DoseRefusal::MixingActive, d.cause);
+  }
+  // Limite horaire (8) + compteur juste sous la limite → HourlyLimit.
+  {
+    DoseInputs in = validInputs();
+    in.maxCyclesPerDay = kNewMaxCyclesPerDay;
+    in.cyclesToday = 47u;
+    in.usedMs = in.hourlyLimitMs;   // 600000 >= 600000 → garde 8
+    DoseDecision d = evaluateDose(in);
+    TEST_ASSERT_FALSE(d.allowed);
+    TEST_ASSERT_EQUAL(DoseRefusal::HourlyLimit, d.cause);
+  }
+  // Priorité quand la garde 9 est AUSSI en échec : mélange (5b) et horaire (8)
+  // priment sur CyclesPerDay (9) — ordre figé characterization feature-036.
+  {
+    DoseInputs in = validInputs();
+    in.maxCyclesPerDay = kNewMaxCyclesPerDay;
+    in.cyclesToday = 48u;           // garde 9 en échec aussi
+    in.mixingActive = true;
+    TEST_ASSERT_EQUAL(DoseRefusal::MixingActive, evaluateDose(in).cause);
+  }
+  {
+    DoseInputs in = validInputs();
+    in.maxCyclesPerDay = kNewMaxCyclesPerDay;
+    in.cyclesToday = 48u;
+    in.usedMs = in.hourlyLimitMs;
+    TEST_ASSERT_EQUAL(DoseRefusal::HourlyLimit, evaluateDose(in).cause);
+  }
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   // T2 — hystérésis de démarrage.
@@ -1554,5 +1728,12 @@ int main(int, char **) {
   RUN_TEST(test_F053_chlorine_hard_cap);
   RUN_TEST(test_F053_chlorine_boost_on_non_automatic_unchanged);
   RUN_TEST(test_F053_chlorine_boundary_near_hard_cap);
+  // feature-060 — limite cycles/jour configurable (garde 9 + clampCyclesPerDay).
+  RUN_TEST(test_F060_auto_guard9_47_allowed_48_refused);
+  RUN_TEST(test_F060_manual_guard_47_allowed_48_refused);
+  RUN_TEST(test_F060_clamp_out_of_bounds);
+  RUN_TEST(test_F060_clamp_exact_bounds_untouched);
+  RUN_TEST(test_F060_shared_limit_same_threshold_auto_and_manual);
+  RUN_TEST(test_F060_hourly_and_mixing_refusals_precede_guard9);
   return UNITY_END();
 }

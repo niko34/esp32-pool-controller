@@ -1675,6 +1675,8 @@
     $("#orp_limit").value = typeof cfg.orp_limit_minutes === "number" ? cfg.orp_limit_minutes : 10;
     $("#ph_daily_limit").value = typeof cfg.max_ph_ml_per_day === "number" ? cfg.max_ph_ml_per_day : 300;
     $("#orp_daily_limit").value = typeof cfg.max_chlorine_ml_per_day === "number" ? cfg.max_chlorine_ml_per_day : 500;
+    // feature-060 : garde anti-cycling configurable (clamp serveur 10-60, défaut 48)
+    if ($("#max_cycles_per_day")) $("#max_cycles_per_day").value = typeof cfg.max_cycles_per_day === "number" ? cfg.max_cycles_per_day : 48;
     // feature-056 : mode d'installation (remplace regulation_mode + filtration_enabled)
     applyInstallMode(cfg.install_mode || "managed");
     if ($("#stabilization_delay_min") && cfg.stabilization_delay_min != null) {
@@ -6034,6 +6036,7 @@
       const phDaily = parseFloat($("#ph_daily_limit")?.value ?? "300");
       const orpLimit = parseInt($("#orp_limit")?.value ?? "10", 10);
       const orpDaily = parseFloat($("#orp_daily_limit")?.value ?? "500");
+      const maxCycles = parseInt($("#max_cycles_per_day")?.value ?? "48", 10);
       const ok = await sendConfig({
         stabilization_delay_min: isNaN(delay) ? 5 : Math.min(60, Math.max(0, delay)),
         regulation_speed: speed,
@@ -6041,8 +6044,10 @@
         max_ph_ml_per_day:       isNaN(phDaily)  ? 300 : Math.max(0, phDaily),
         orp_limit_minutes:       isNaN(orpLimit) ? 10 : Math.min(60, Math.max(1, orpLimit)),
         max_chlorine_ml_per_day: isNaN(orpDaily) ? 500 : Math.max(0, orpDaily),
+        // feature-060 : pré-clamp UI indicatif — le serveur reste l'autorité (clampCyclesPerDay)
+        max_cycles_per_day:      isNaN(maxCycles) ? 48 : Math.min(60, Math.max(10, maxCycles)),
       });
-      if (ok) showToast("Enregistré", "success");
+      if (ok) { showToast("Enregistré", "success"); loadConfig(); }
       else showToast("Erreur lors de la sauvegarde", "error");
     });
 
