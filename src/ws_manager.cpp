@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <time.h>
 #include <esp_system.h>
+#include <new>  // std::bad_alloc (filet TOCTOU autour de textAll, bug-heap-toctou A1)
 #include "ws_manager.h"
 #include "web_helpers.h"
 #include "config.h"
@@ -36,6 +37,16 @@ static const char* getResetReason() {
 }
 
 WsManager wsManager;
+
+// Buffer STATIQUE de construction des trames WS sortantes (bug-heap-toctou A2,
+// pattern « réserver une fois, réutiliser toujours ») : alloué au link en .bss,
+// hors heap, zéro fragmentation — supprime la String temporaire par push (churn
+// G2 résiduel : ~2 Ko alloués/libérés toutes les 5 s).
+// INVARIANT BLOQUANT : ce buffer est réservé à loopTask (les 3 broadcasts sont
+// tous appelés depuis update()/loop aujourd'hui). Tout futur câblage MULTI-TÂCHE
+// de broadcastLog (ex. callback logger depuis async_tcp/mqttTask) devra utiliser
+// un buffer DÉDIÉ — jamais celui-ci, sous peine de trames entrelacées.
+static char sWsFrameBuf[kWsFrameBufBytes];
 
 // =============================================================================
 // begin / update
@@ -84,6 +95,22 @@ void WsManager::update() {
     }
   }
 
+  // Warn throttlé dédié des trames dépassant le buffer statique (bug-heap-toctou
+  // A2) : push sauté, JAMAIS tronqué — signale qu'il faut agrandir kWsFrameBufBytes.
+  // Même invariant anti-récursion : émis ICI (loopTask), jamais dans les broadcasts.
+  {
+    uint32_t oversized = _oversizedFrames.load(std::memory_order_relaxed);
+    unsigned long now = millis();
+    if (oversized > _lastWarnedOversized &&
+        (_lastOversizedWarnMs == 0 || now - _lastOversizedWarnMs >= kWsSkipWarnThrottleMs)) {
+      systemLogger.warning(String(oversized - _lastWarnedOversized) +
+          " trame(s) WS > " + String((unsigned)kWsFrameBufBytes) +
+          " o (buffer statique) — pushes sautés, agrandir kWsFrameBufBytes");
+      _lastWarnedOversized = oversized;
+      _lastOversizedWarnMs = now;
+    }
+  }
+
   if (_authenticatedClients.empty()) return;
 
   if (_pendingInitialPush) {
@@ -120,6 +147,10 @@ size_t WsManager::clientCount() const {
 
 uint32_t WsManager::skippedPushCount() const {
   return _skippedPushes.load(std::memory_order_relaxed);
+}
+
+uint32_t WsManager::oversizedFrameCount() const {
+  return _oversizedFrames.load(std::memory_order_relaxed);
 }
 
 // Garde heap commune des 3 broadcasts (bug-badalloc-ws-broadcast) : textAll() alloue
@@ -198,13 +229,38 @@ void WsManager::_onData(AsyncWebSocketClient* client, uint8_t* data, size_t len)
 void WsManager::broadcastSensorData() {
   if (!_ws || _ws->count() == 0) return;
   if (!_heapAllowsPush()) return;  // Garde AVANT la construction du JSON (bug-badalloc-ws-broadcast)
-  _ws->textAll(_buildSensorJson());
+  size_t len = _buildSensorJson(sWsFrameBuf, sizeof(sWsFrameBuf));
+  if (len == 0) {
+    // Trame > buffer statique : push sauté, jamais tronqué (warn throttlé dans update()).
+    _oversizedFrames.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  // Filet TOCTOU (bug-heap-toctou A1) : la garde heap peut être prise de vitesse
+  // (async_tcp consomme le bloc mesuré entre le check et l'alloc). L'exception
+  // std::bad_alloc part de makeSharedBuffer AVANT toute mutation de file dans le
+  // fork → catch propre = push sauté, compté dans _skippedPushes (warn throttlé
+  // existant d'update(), inchangé).
+  try {
+    _ws->textAll(sWsFrameBuf, len);
+  } catch (const std::bad_alloc&) {
+    _skippedPushes.fetch_add(1, std::memory_order_relaxed);
+  }
 }
 
 void WsManager::broadcastConfig() {
   if (!_ws || _ws->count() == 0) return;
   if (!_heapAllowsPush()) return;  // Garde AVANT la construction du JSON (bug-badalloc-ws-broadcast)
-  _ws->textAll(_buildConfigJson());
+  size_t len = _buildConfigJson(sWsFrameBuf, sizeof(sWsFrameBuf));
+  if (len == 0) {
+    _oversizedFrames.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  // Filet TOCTOU : voir broadcastSensorData (bad_alloc levé AVANT mutation de file).
+  try {
+    _ws->textAll(sWsFrameBuf, len);
+  } catch (const std::bad_alloc&) {
+    _skippedPushes.fetch_add(1, std::memory_order_relaxed);
+  }
 }
 
 void WsManager::broadcastLog(const LogEntry& entry) {
@@ -216,17 +272,26 @@ void WsManager::broadcastLog(const LogEntry& entry) {
   d["timestamp"] = entry.timestamp;
   d["level"] = systemLogger.getLevelString(entry.level);
   d["message"] = entry.message;
-  String out;
-  out.reserve(192);
-  serializeJson(doc, out);
-  _ws->textAll(out);
+  // Même buffer statique que les autres broadcasts (invariant loopTask — voir
+  // sWsFrameBuf : un futur câblage multi-tâche devra utiliser un buffer dédié).
+  if (measureJson(doc) + 1 > sizeof(sWsFrameBuf)) {
+    _oversizedFrames.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  size_t len = serializeJson(doc, sWsFrameBuf, sizeof(sWsFrameBuf));
+  // Filet TOCTOU : voir broadcastSensorData (bad_alloc levé AVANT mutation de file).
+  try {
+    _ws->textAll(sWsFrameBuf, len);
+  } catch (const std::bad_alloc&) {
+    _skippedPushes.fetch_add(1, std::memory_order_relaxed);
+  }
 }
 
 // =============================================================================
 // Construction JSON
 // =============================================================================
 
-String WsManager::_buildSensorJson() const {
+size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // Buffer +64 octets vs version 1 sonde : champs temperature_circuit / sondes_identified / sondes_detected (feature-020)
   // feature-024 : +4 champs phSlope* (~80 octets) → bump à 1024.
   // feature-025 : +14 champs filtre pH/ORP + mixing/blocked (~300 octets) → bump à 1408.
@@ -413,16 +478,14 @@ String WsManager::_buildSensorJson() const {
   // Lit connectedAtomic (atomic relaxed) — pas de mutex nécessaire (cf. feature-014 IT2).
   d["mqtt_connected"] = mqttManager.isConnected();
 
-  String out;
-  // churn-heap Q3 : reserve aligné sur la taille RÉELLE du payload (1777 o mesuré,
-  // coredump 2026-07-28) + marge — l'ancien reserve(1600) provoquait ~6 réallocations
-  // String par push (toutes les 5 s), gros contributeur au churn heap.
-  out.reserve(kWsSensorJsonReserveBytes);
-  serializeJson(doc, out);
-  return out;
+  // bug-heap-toctou A2 : sérialisation directe dans le buffer statique fourni —
+  // plus de String par push (churn G2). measureJson d'abord : si le JSON + NUL
+  // ne tient pas → 0, l'appelant saute le push (jamais de troncature).
+  if (measureJson(doc) + 1 > cap) return 0;
+  return serializeJson(doc, buf, cap);
 }
 
-String WsManager::_buildConfigJson() const {
+size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   // feature-053 : +2 champs boost_active/boost_until → marge portée à 2304.
   StaticJson<2304> doc;
   doc["type"] = "config";
@@ -498,8 +561,7 @@ String WsManager::_buildConfigJson() const {
   d["boost_active"]        = isBoostActive(time(nullptr));
   d["boost_until"]         = (long)boostState.untilEpoch;
 
-  String out;
-  out.reserve(2048);
-  serializeJson(doc, out);
-  return out;
+  // bug-heap-toctou A2 : même contrat que _buildSensorJson (0 = trame trop grande).
+  if (measureJson(doc) + 1 > cap) return 0;
+  return serializeJson(doc, buf, cap);
 }

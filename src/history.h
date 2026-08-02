@@ -65,6 +65,12 @@ public:
   std::vector<DataPoint> getLastHours(int hours);
   std::vector<DataPoint> getLastDay();
   std::vector<DataPoint> getAllData();
+  // bug-heap-toctou A3 : copie d'UN point sous mutex COURT (kHistoryPointReadTimeoutMs)
+  // pour le callback chunked de /get-history (tâche async_tcp — jamais le mutex tenu
+  // entre deux chunks). chronoIdx = index direct dans memoryBuffer (vecteur unique
+  // trié par timestamp). Retour false : fin de buffer (timedOut=false) OU timeout
+  // mutex (timedOut=true → l'appelant réessaie via RESPONSE_TRY_AGAIN).
+  bool getPointByIndex(size_t chronoIdx, DataPoint& out, bool& timedOut);
   bool importData(const std::vector<DataPoint>& dataPoints);
   // feature-027 : retourne false si le mutex n'a pas pu être pris (historique occupé)
   bool clearHistory();

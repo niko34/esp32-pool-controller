@@ -137,13 +137,22 @@ constexpr uint32_t kHeapCheckFastIntervalMs = 5000;       // 5s - cadence rappro
 // Garde heap des broadcasts WebSocket (bug-badalloc-ws-broadcast) : textAll() alloue
 // un shared buffer (makeSharedBuffer) SANS rattraper std::bad_alloc → abort(). Sous
 // ce seuil de plus gros bloc contigu, le push est SAUTÉ (l'UI rate un cycle de 5 s,
-// sans coût UX) et le débounce auto-guérison se joue. Dérivation : payload max ~2 Ko
-// (sensor_data) + String temporaire de construction (~2 Ko) + copies internes
-// AsyncWebSocket + marge TOCTOU (le heap peut encore baisser entre le check et
-// l'alloc) → 8192, aligné sur kRestartMaxAllocHeapBytes : sous ce niveau l'appareil
-// est de toute façon en zone de restart auto-guérison.
-constexpr uint32_t kWsPushMinAllocBytes = 8192;           // Plus gros bloc < seuil → push WS sauté
+// sans coût UX) et le débounce auto-guérison se joue.
+// bug-heap-toctou (coredump 30/07) : relevé 8192 → 16384 = marge 2× vs
+// kRestartMaxAllocHeapBytes (8192). L'ancien alignement des deux seuils créait une
+// zone grise 8-16 Ko où les pushes étaient autorisés ET l'auto-guérison ne s'armait
+// pas — le TOCTOU (async_tcp consomme le bloc mesuré entre le check et l'alloc de
+// textAll) suffisait alors à provoquer le bad_alloc. Avec 16384, les pushes
+// s'arrêtent AVANT la zone rouge et l'auto-guérison garde sa fenêtre d'action.
+constexpr uint32_t kWsPushMinAllocBytes = 16384;          // Plus gros bloc < seuil → push WS sauté
 constexpr uint32_t kWsSkipWarnThrottleMs = 30000;         // 30s - throttle du warn « pushes WS sautés »
+
+// Buffer STATIQUE (.bss) de construction des trames WS sortantes (bug-heap-toctou A2) :
+// « réserver une fois, réutiliser toujours » — remplace la String temporaire par push
+// (churn heap G2 résiduel : ~2 Ko alloués/libérés toutes les 5 s). Dimensionné pour le
+// plus gros payload (config ~2,3 Ko mesuré) + marge de croissance. Une trame qui ne
+// tient pas est SAUTÉE (jamais tronquée) et comptée (_oversizedFrames).
+constexpr size_t kWsFrameBufBytes = 3072;                 // Taille du buffer statique de trame WS
 
 // Récolte des clients WS zombies (investigation churn-heap §G1/G2) : un client qui
 // n'ACK plus conserve une file jusqu'à 32 buffers ~1,8 Ko connexion ouverte —
@@ -156,10 +165,8 @@ constexpr uint32_t kWsSkipWarnThrottleMs = 30000;         // 30s - throttle du w
 // platformio.ini + setCloseClientOnQueueFull — pas de constante applicative.)
 constexpr uint16_t kWsKeepAlivePeriodS = 30;              // 30s - période PING auto (keepAlivePeriod, unité: secondes)
 
-// Pré-dimensionnement de la String du payload sensor_data (churn-heap Q3) : payload
-// mesuré 1777 o (coredump 2026-07-28) + marge de croissance → 2048. L'ancien
-// reserve(1600) était sous-dimensionné : ~6 réallocations par push (toutes les 5 s).
-constexpr size_t kWsSensorJsonReserveBytes = 2048;        // reserve() du JSON sensor_data (payload 1777 o mesuré)
+// (kWsSensorJsonReserveBytes supprimé — bug-heap-toctou A2 : les trames WS sont
+// construites dans le buffer statique kWsFrameBufBytes, plus de String par push.)
 
 // Disjoncteur de boot-loop de l'init history (v2.10.0, feature-059) : un drapeau
 // NVS (crash_cnt, namespace hist_meta) est posé avant le montage de la partition
@@ -210,11 +217,27 @@ constexpr size_t kLogExportLineMaxBytes = 256;
 
 // Pire cas d'un point JSON de /get-history : mesuré 113-120 o sur le format
 // réel (clés fixes 82 o + valeurs : timestamp 10, ph 4, orp 4, temp 4, 2 bools,
-// granularity) — revue v2.10.4. Sert à pré-dimensionner la String de réponse :
-// le bool de String::reserve() EST le test du bloc contigu (échec → 503) et le
-// reserve doit COUVRIR le pire cas, sinon réallocation en cours de concaténation
-// et garde contournée.
+// granularity) — revue v2.10.4. bug-heap-toctou A3 : sert désormais de capacité
+// du carry (LogLineCarry<N>) de la réponse CHUNKED — un point (ou l'en-tête/pied
+// JSON) doit tenir dedans, jamais de JSON partiel émis.
 constexpr size_t kHistoryPointJsonMaxBytes = 128;
+
+// /get-history en chunked zéro-buffer (bug-heap-toctou A3, patron /download-logs) :
+// le callback tourne sur la tâche async_tcp — il copie UN point sous mutex court
+// par itération (patron Logger::getLogEntryByIndex). kHistoryMutexTimeoutMs (2 s)
+// y serait un déni de service réseau (async_tcp bloquée) → timeout dédié court.
+constexpr unsigned long kHistoryPointReadTimeoutMs = 25;  // 25ms - prise du mutex history DEPUIS le callback chunked
+// Nombre max de RESPONSE_TRY_AGAIN consécutifs sur timeout mutex avant de clore
+// la réponse PROPREMENT (pied JSON émis → document toujours valide, tronqué).
+constexpr uint16_t kHistoryChunkMaxRetries = 200;
+
+// Ring d'instrumentation heap en RAM RTC noinit (bug-heap-toctou A4) : cinétique
+// d'effondrement du heap dans les ~4 dernières minutes avant un reset anormal
+// (le tick santé 5-60 s la rate). 128 entrées × 8 o = 1 Ko RTC noinit ; encodage
+// pur dans heap_ring_logic.h, coquille impure dans heap_ring.cpp.
+constexpr size_t kHeapRingEntries = 128;                  // Capacité du ring (128 × 8 o = 1 Ko RTC noinit)
+constexpr unsigned long kHeapRingSampleIntervalMs = 2000; // 2s - cadence d'échantillonnage depuis loop()
+constexpr size_t kHeapRingDumpMaxEntries = 32;            // Entrées dumpées au boot post-crash (~64 s de cinétique)
 
 // Release notes GitHub relayées telles quelles par /check-update : le corps de
 // release n'est pas borné côté GitHub → tronquer (suffixe « … ») pour borner la

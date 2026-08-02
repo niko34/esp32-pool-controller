@@ -18,7 +18,8 @@ void broadcastConfig();                // push immédiat, config actuelle
 void broadcastLog(const LogEntry&);    // push un log — CODE MORT, voir ci-dessous
 bool hasClients() const;
 size_t clientCount() const;            // nb clients connectés (diagnostic, v2.8.1)
-uint32_t skippedPushCount() const;     // cumul des pushes sautés par la garde heap (diagnostic, v2.11.1)
+uint32_t skippedPushCount() const;     // cumul des pushes sautés : garde heap OU bad_alloc rattrapé (v2.11.1 / v2.14.0)
+uint32_t oversizedFrameCount() const;  // cumul des trames > kWsFrameBufBytes — pushes sautés, JAMAIS tronqués (v2.14.0)
 ```
 
 > ⚠️ **Code mort — `broadcastLog()` / `Logger::setLogCallback()`** (constat investigation churn-heap, 2026-07-28) : le hook `systemLogger.setLogCallback()` ([`src/logger.h:58`](../../src/logger.h)) n'a **aucun appelant** depuis son introduction en 2.7.0 (commit `aedd007` — ajouté sans jamais être branché). `broadcastLog()` n'est donc **jamais exécuté** : aucun message `type: "log"` n'est émis, le handler UI correspondant (`data/app.js`) ne reçoit rien, et la page Journal utilise le polling HTTP `/get-logs`. La purge (ou le branchement volontaire avec garde anti-récursion) est **reportée** à un futur cycle — en attendant, `broadcastLog()` porte quand même la garde heap v2.11.1 par cohérence.
@@ -27,9 +28,27 @@ uint32_t skippedPushCount() const;     // cumul des pushes sautés par la garde 
 
 Coredump 2026-07-28 (v2.11.0) : `AsyncWebSocket::textAll()` alloue un buffer partagé (`makeSharedBuffer`, `make_shared<vector<uint8_t>>`) **sans rattraper** `std::bad_alloc` → sur tas fragmenté (plus gros bloc < ~1,8 Ko), `abort()` et reboot brutal. Correctif — extension de la philosophie [ADR-0032](../adr/0032-reponses-http-bornees.md#extension-2026-07-28--émissions-websocket-v2111) à la voie WS :
 
-- `_heapAllowsPush()` est appelé en tête des **3** broadcasts (`broadcastSensorData`, `broadcastConfig`, `broadcastLog`), **avant** toute construction de JSON : si `ESP.getMaxAllocHeap() < kWsPushMinAllocBytes` (**8192** o, aligné sur le seuil de restart auto-guérison `kRestartMaxAllocHeapBytes`), le push est **sauté** — l'UI rate un cycle de 5 s, sans conséquence, et le débounce de l'auto-guérison ([ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111)) se joue.
+- `_heapAllowsPush()` est appelé en tête des **3** broadcasts (`broadcastSensorData`, `broadcastConfig`, `broadcastLog`), **avant** toute construction de JSON : si `ESP.getMaxAllocHeap() < kWsPushMinAllocBytes` (**16384** o depuis v2.14.0 — était 8192, voir la [section v2.14.0](#angle-mort-toctou-comblé--filet-bad_alloc--buffer-statique-v2140-bug-heap-toctou) ci-dessous), le push est **sauté** — l'UI rate un cycle de 5 s, sans conséquence, et le débounce de l'auto-guérison ([ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111)) se joue.
 - Chaque saut incrémente `_skippedPushes` (**atomic relaxed**, pattern `connectedAtomic`), exposé par `skippedPushCount()` (diagnostic).
 - **INVARIANT anti-ré-entrance : `_heapAllowsPush()` ne logge JAMAIS.** Chaîne de récursion sinon : `logger` → callback (futur branchement) → `broadcastLog` → `_heapAllowsPush` → log → récursion. Le WARN « N pushes WS sautés (heap fragmenté, maxBloc=…) » est émis **exclusivement depuis `update()`** (contexte `loopTask`), throttlé à `kWsSkipWarnThrottleMs` (**30 s**), et placé **avant** le court-circuit « aucun client » pour tracer aussi les sauts survenus juste avant une déconnexion.
+
+## Angle mort TOCTOU comblé + filet bad_alloc + buffer statique (v2.14.0, bug-heap-toctou)
+
+2ᵉ coredump `bad_alloc` dans `textAll` (30/07, v2.13.0) **malgré la garde v2.11.1** : la garde a été passée puis prise de vitesse. Trois durcissements complémentaires :
+
+### Garde relevée : 8192 → 16384 (fin de la zone grise)
+
+L'ancien seuil `kWsPushMinAllocBytes = 8192` était **égal** au seuil de restart auto-guérison `kRestartMaxAllocHeapBytes` (8192) → **zone grise 8-16 Ko** de maxBloc où les pushes restaient autorisés **et** l'auto-guérison ne s'armait pas. Dans cette zone, le TOCTOU (voir ci-dessous) suffisait à provoquer le crash. Le seuil passe à **16384** (marge 2× au-dessus du seuil de restart) : les pushes s'arrêtent **avant** la zone rouge, et l'auto-guérison garde sa fenêtre d'action. Voir [`constants.h`](../../src/constants.h) et [ADR-0032 §Extension 2026-07-30](../adr/0032-reponses-http-bornees.md#extension-2026-07-30--get-history-chunked-et-filet-ws-v2140).
+
+### Filet absolu : `try/catch (std::bad_alloc)` autour des 3 `textAll`
+
+La garde reste un **check-then-act** (TOCTOU) : entre `getMaxAllocHeap()` et l'allocation du buffer de trame par le fork, la tâche `async_tcp` peut consommer le bloc mesuré (réponse HTTP, page `/get-logs`…). Le filet : chaque `textAll` des 3 broadcasts est enveloppé dans un `try/catch (std::bad_alloc)`. C'est **sûr** car l'exception part de `makeSharedBuffer` (`make_shared<vector<uint8_t>>`) **avant toute mutation de file** dans le fork → catch propre = push sauté, compté dans `_skippedPushes` (même compteur que la garde, même WARN throttlé d'`update()`). **Toute course résiduelle = un push raté, plus jamais un `abort()`.**
+
+### Buffer statique de trame `.bss` — `sWsFrameBuf` (pattern « réserver une fois, réutiliser toujours »)
+
+Les trames WS sortantes sont construites dans un buffer **statique** `sWsFrameBuf[kWsFrameBufBytes]` (**3072** o, réservé au link en `.bss`, **hors heap**, zéro fragmentation) réutilisé à chaque push — **plus aucune String temporaire par push** (supprime le churn G2 résiduel : ~2 Ko alloués/libérés toutes les 5 s). `_buildSensorJson(buf, cap)` / `_buildConfigJson(buf, cap)` sérialisent directement dedans (`measureJson` d'abord : si le JSON + NUL ne tient pas → retour **0**, push **sauté**, jamais de troncature) ; `broadcastLog` utilise le même buffer avec le même contrat. Chaque dépassement incrémente `_oversizedFrames` (atomic relaxed, exposé par `oversizedFrameCount()`), avec un WARN throttlé **dédié** dans `update()` (« N trame(s) WS > 3072 o (buffer statique) — pushes sautés, agrandir kWsFrameBufBytes ») — même invariant anti-ré-entrance que le warn des pushes sautés. `kWsSensorJsonReserveBytes` est **supprimée** (plus de `reserve()` de String).
+
+> ⚠️ **INVARIANT BLOQUANT — `sWsFrameBuf` est réservé à `loopTask`.** Les 3 broadcasts sont tous appelés depuis `update()`/loop aujourd'hui. Tout futur câblage **multi-tâche** de `broadcastLog` (ex. callback logger depuis `async_tcp`/`mqttTask`) devra utiliser un buffer **dédié** — jamais celui-ci, sous peine de trames entrelacées. Voir le commentaire sur place ([`src/ws_manager.cpp`](../../src/ws_manager.cpp)).
 
 ## Récolte des clients zombies (v2.11.1, investigation churn-heap §G1)
 
@@ -38,9 +57,9 @@ Générateur n°1 identifié de la fragmentation : un client WS **zombie** (tél
 - **File bornée + fermeture à saturation** : `-DWS_MAX_QUEUED_MESSAGES=5` ([`platformio.ini`](../../platformio.ini)) + `client->setCloseClientOnQueueFull(true)` → le **fork ferme lui-même** le client dont la file atteint 5 trames (~25 s de snapshots non consommés = client gelé), **sous SON verrou**. La boucle manuelle initiale (itérer `getClients()` depuis `update()` et fermer sur `queueLen()`) a été **rejetée en revue** : `_handleDisconnect` (tâche `async_tcp`) érase la liste sous le verrou **privé** du fork, inaccessible côté appelant → itération concurrente = UB. L'état capteurs étant idempotent (chaque push est un snapshot complet), aucune perte fonctionnelle.
 - **Keepalive** : `client->keepAlivePeriod(kWsKeepAlivePeriodS)` (**30 s**, unité : secondes — ×1000 en interne par le fork) → PING automatique, les zombies meurent par timeout ACK. **Nuance** (revue 2.11.1) : le fork n'envoie le PING que si la file du client est **vide** → le keepalive ne récolte que les zombies **inactifs** (aucun push en attente) ; les zombies sous flux de pushes sont couverts par la saturation de file ci-dessus.
 
-## Pré-dimensionnement du JSON `sensor_data` (v2.11.1, churn-heap Q3)
+## ~~Pré-dimensionnement du JSON `sensor_data`~~ (v2.11.1, churn-heap Q3 — **obsolète depuis v2.14.0**)
 
-`_buildSensorJson()` : `out.reserve(kWsSensorJsonReserveBytes)` = **2048** (était 1600, sous-dimensionné depuis la croissance du payload — **1777 o mesurés** au coredump) → supprime ~6 réallocations de String par push (toutes les 5 s).
+Le `out.reserve(kWsSensorJsonReserveBytes = 2048)` de la String de `_buildSensorJson()` est **supprimé avec la String elle-même** : depuis v2.14.0 la trame est sérialisée directement dans le buffer statique `sWsFrameBuf` (voir la [section v2.14.0](#angle-mort-toctou-comblé--filet-bad_alloc--buffer-statique-v2140-bug-heap-toctou)).
 
 ## Timing
 
@@ -118,7 +137,8 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 - **Pas de client connecté** : `broadcastSensorData()` ne fait rien (gain CPU). `hasClients()` court-circuite la construction JSON.
 - **Client déconnecté sans close** : nettoyé par `AsyncWebSocket::cleanupClients()` appelé dans `update()` ; depuis v2.11.1, aussi récolté par saturation de file (fermeture par le fork) ou timeout de PING keepalive.
 - **Push pendant write en cours** : `AsyncWebSocket` gère la file d'attente (bornée à 5 trames depuis v2.11.1), pas de blocage du loop.
-- **Heap fragmenté** (plus gros bloc `< kWsPushMinAllocBytes = 8192`) : pushes **sautés** (garde v2.11.1), compteur `skippedPushCount()` + WARN throttlé 30 s dans `update()`.
+- **Heap fragmenté** (plus gros bloc `< kWsPushMinAllocBytes = 16384` depuis v2.14.0) : pushes **sautés** (garde v2.11.1), compteur `skippedPushCount()` + WARN throttlé 30 s dans `update()`. Course résiduelle (TOCTOU) : `std::bad_alloc` **rattrapé** autour de `textAll` → push sauté, même compteur, jamais d'`abort()` (v2.14.0).
+- **Trame plus grande que le buffer statique** (`kWsFrameBufBytes = 3072`) : push **sauté** (jamais tronqué), compteur `oversizedFrameCount()` + WARN throttlé dédié dans `update()` — signale qu'il faut agrandir la constante (v2.14.0).
 
 ## Dépendances
 
@@ -134,9 +154,9 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 - [`src/ws_manager.h`](../../src/ws_manager.h), [`src/ws_manager.cpp`](../../src/ws_manager.cpp)
 - [`src/web_server.cpp`](../../src/web_server.cpp) — instanciation du serveur
 - [`src/logger.h:58`](../../src/logger.h) — `setLogCallback()` (**code mort**, jamais branché — cf. section API publique)
-- [`src/constants.h`](../../src/constants.h) — `kWsPushMinAllocBytes`, `kWsSkipWarnThrottleMs`, `kWsKeepAlivePeriodS`, `kWsSensorJsonReserveBytes`
+- [`src/constants.h`](../../src/constants.h) — `kWsPushMinAllocBytes` (16384), `kWsFrameBufBytes` (3072), `kWsSkipWarnThrottleMs`, `kWsKeepAlivePeriodS` (`kWsSensorJsonReserveBytes` supprimée en v2.14.0)
 - [`platformio.ini`](../../platformio.ini) — `-DWS_MAX_QUEUED_MESSAGES=5`
-- [ADR-0005](../adr/0005-websocket-push-sans-polling.md), [ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111), [ADR-0032 §Extension](../adr/0032-reponses-http-bornees.md#extension-2026-07-28--émissions-websocket-v2111)
+- [ADR-0005](../adr/0005-websocket-push-sans-polling.md), [ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111), [ADR-0032 §Extensions](../adr/0032-reponses-http-bornees.md#extension-2026-07-28--émissions-websocket-v2111) (v2.11.1 et v2.14.0)
 
 ## Champs `sensor_data` ajoutés en feature-020 (PCB v2)
 

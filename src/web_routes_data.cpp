@@ -12,10 +12,12 @@
 #include "logs_page.h"
 #include "logs_export_chunk.h"
 #include "history.h"
+#include "history_export_chunk.h"
 #include "json_compat.h"
 #include <AsyncJson.h>
 #include <time.h>
 #include <memory>
+#include <stdarg.h>  // va_list (historyCarryLoadf)
 
 // Signal réseau secondaire (v2.9.2, défini dans main.cpp) : /data est polled toutes
 // les ~30 s par l'appli web → une requête servie prouve la pile HTTP vivante et
@@ -360,78 +362,141 @@ static void handleGetLogs(AsyncWebServerRequest* request) {
   request->send(res);
 }
 
+// État partagé de l'export chunked /get-history (bug-heap-toctou A3, patron
+// LogsDownloadState) : capturé en shared_ptr par le callback, détruit à la fin de
+// la réponse OU sur déconnexion client. Contrat JSON INCHANGÉ octet pour octet :
+// {"range":"…","count":0,"history":[…],"count":N} — la clé "count" est émise DEUX
+// fois (0 dans l'en-tête, valeur réelle dans le pied), comme l'ancienne route.
+struct HistoryDownloadState {
+  enum Phase : uint8_t { kHeader, kPoints, kFooter, kDone };
+  Phase phase = kHeader;
+  size_t idx = 0;             // Index chronologique dans memoryBuffer (vecteur trié unique)
+  unsigned long cutoff = 0;   // Borne basse ?range= (0 = tout) — historyRangeCutoff
+  unsigned long since = 0;    // Borne basse ?since= (0 = désactivé)
+  size_t count = 0;           // Points réellement émis (pied de réponse)
+  bool first = true;          // Virgule de séparation entre points
+  uint16_t retries = 0;       // Timeouts mutex consécutifs (borné kHistoryChunkMaxRetries)
+  String range;               // Écho du paramètre ?range= (en-tête)
+  LogLineCarry<kHistoryPointJsonMaxBytes> carry;  // Reliquat en-tête/point/pied entre deux chunks
+};
+
+// Charge une chaîne formatée bornée dans le carry (en-tête / pied de réponse).
+static void historyCarryLoadf(LogLineCarry<kHistoryPointJsonMaxBytes>& c,
+                              const char* fmt, ...) {
+  va_list args;
+  va_start(args, fmt);
+  int n = vsnprintf(c.line, sizeof(c.line), fmt, args);
+  va_end(args);
+  c.len = (n > 0) ? ((size_t)n < sizeof(c.line) ? (size_t)n : sizeof(c.line) - 1) : 0;
+  c.pos = 0;
+}
+
 static void handleGetHistory(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
   // Support paramètre optionnel ?range=24h|3d|7d|30d|all
-  String range = "all";
+  String rangeParam = "all";
   if (request->hasParam("range")) {
-    range = request->getParam("range")->value();
+    rangeParam = request->getParam("range")->value();
   }
+  // Revue 2.14.0 : seul le TOKEN RECONNU est échoé dans l'en-tête JSON (jamais
+  // la valeur brute — une valeur longue ou avec guillemet malformerait le JSON
+  // dans le carry borné). Valeur inconnue → traitée et échoée comme "all".
+  const char* range = "all";
+  int hours = 0;  // 0 = "all" (aucun filtre temporel)
+  if (rangeParam == "24h")      { range = "24h"; hours = 24; }
+  else if (rangeParam == "3d")  { range = "3d";  hours = 24 * 3; }
+  else if (rangeParam == "7d")  { range = "7d";  hours = 24 * 7; }
+  else if (rangeParam == "30d") { range = "30d"; hours = 24 * 30; }
 
-  // Support paramètre optionnel ?since=TIMESTAMP pour récupération incrémentale
-  unsigned long since = 0;
+  // bug-heap-toctou A3 : réponse CHUNKED zéro-buffer (patron /download-logs,
+  // ADR-0032 mécanisme b) — supprime la String contiguë ~40 Ko épinglée pendant
+  // tout le transfert (générateur de fond de la fragmentation, G3). Le filtre
+  // range/since est appliqué PAR POINT dans le callback ; chaque point est copié
+  // sous mutex COURT (history.getPointByIndex, 25 ms) — le mutex n'est JAMAIS
+  // tenu entre deux chunks. NOTE : migrateLegacyHistory n'est plus appelé sur ce
+  // chemin (l'ancien getLastHours le faisait) — couvert par update()/load/import.
+  // Epoch : time(nullptr) si valide, sinon 0 → cutoff 0 = tout renvoyer (l'estimation
+  // lastKnownEpoch de getLastHours n'est pas accessible ici ; superset toléré).
+  auto st = std::make_shared<HistoryDownloadState>();
+  st->range = range;
+  time_t nowT = time(nullptr);
+  st->cutoff = historyRangeCutoff(hours, isTimeValid(nowT) ? (unsigned long)nowT : 0);
   if (request->hasParam("since")) {
-    since = request->getParam("since")->value().toInt();
+    st->since = request->getParam("since")->value().toInt();
   }
 
-  std::vector<DataPoint> data;
-
-  if (range == "24h") {
-    data = history.getLastHours(24);
-  } else if (range == "3d") {
-    data = history.getLastHours(24 * 3);
-  } else if (range == "7d") {
-    data = history.getLastHours(24 * 7);
-  } else if (range == "30d") {
-    data = history.getLastHours(24 * 30);
-  } else {
-    data = history.getAllData();
-  }
-
-  // Sérialisation manuelle pour éviter la limite mémoire du JsonDocument
-  // avec plusieurs centaines de points (360 horaires + 75 journaliers).
-  // bug-crash-getlogs-badalloc : le retour bool de reserve() EST le test du bloc
-  // contigu — échec = pas de bloc assez grand pour la réponse pire-cas → 503
-  // propre (aucune réallocation possible pendant la concaténation ensuite).
-  String json;
-  if (!json.reserve(data.size() * kHistoryPointJsonMaxBytes + 128)) {
-    request->send(503, "application/json", "{\"error\":\"heap fragmenté, réessayez\"}");
-    return;
-  }
-  json = "{\"range\":\"";
-  json += range;
-  json += "\",\"count\":0,\"history\":[";
-
-  size_t count = 0;
-  bool first = true;
-  for (const auto& point : data) {
-    if (since > 0 && point.timestamp <= since) continue;
-    if (!first) json += ",";
-    first = false;
-    count++;
-
-    json += "{\"timestamp\":";
-    json += String(point.timestamp);
-    json += ",\"ph\":";
-    json += (!isfinite(point.ph))  ? "null" : String(round(point.ph * 10.0f) / 10.0f, 1);
-    json += ",\"orp\":";
-    json += (!isfinite(point.orp)) ? "null" : String((int)round(point.orp));
-    json += ",\"temperature\":";
-    json += (!isfinite(point.temperature)) ? "null" : String(round(point.temperature * 10.0f) / 10.0f, 1);
-    json += ",\"filtration\":";
-    json += point.filtrationActive ? "true" : "false";
-    json += ",\"dosing\":";
-    json += (point.phDosing || point.orpDosing) ? "true" : "false";
-    json += ",\"granularity\":";
-    json += String(static_cast<uint8_t>(point.granularity));
-    json += "}";
-  }
-  json += "],\"count\":";
-  json += String(count);
-  json += "}";
-
-  sendRawJsonResponse(request, json);
+  AsyncWebServerResponse* res = request->beginChunkedResponse(
+    "application/json",
+    [st](uint8_t* buf, size_t maxLen, size_t /*index*/) -> size_t {
+      // Machine à états : chaque appel émet au plus maxLen octets. Retourne 0
+      // UNIQUEMENT en phase kDone (0 = fin de réponse pour AsyncWebServer) ;
+      // timeout mutex sans octet émis → RESPONSE_TRY_AGAIN (réessai différé).
+      size_t total = 0;
+      while (total < maxLen && st->phase != HistoryDownloadState::kDone) {
+        // 1) Vider d'abord le reliquat en cours (garantie de progression)
+        if (st->carry.pos < st->carry.len) {
+          total += emitCarry(st->carry, buf + total, maxLen - total);
+          continue;  // re-tester la place restante
+        }
+        // 2) Carry épuisé : produire le contenu suivant selon la phase
+        switch (st->phase) {
+          case HistoryDownloadState::kHeader:
+            historyCarryLoadf(st->carry, "{\"range\":\"%s\",\"count\":0,\"history\":[",
+                              st->range.c_str());
+            st->phase = HistoryDownloadState::kPoints;
+            break;
+          case HistoryDownloadState::kPoints: {
+            DataPoint p;
+            bool timedOut = false;
+            if (history.getPointByIndex(st->idx, p, timedOut)) {
+              st->idx++;
+              st->retries = 0;
+              // Filtres appliqués par point (identiques à l'ancienne route :
+              // getLastHours filtrait timestamp >= cutoff, puis since exclusif).
+              if (p.timestamp < st->cutoff) break;
+              if (st->since > 0 && p.timestamp <= st->since) break;
+              size_t n = formatHistoryPointJson(
+                  st->carry.line, sizeof(st->carry.line), p.timestamp, p.ph, p.orp,
+                  p.temperature, p.filtrationActive, p.phDosing || p.orpDosing,
+                  static_cast<uint8_t>(p.granularity), st->first);
+              if (n > 0) {
+                st->carry.len = n;
+                st->carry.pos = 0;
+                st->first = false;
+                st->count++;
+              }
+              // n == 0 : point plus long que kHistoryPointJsonMaxBytes (impossible
+              // sur le format réel, ~120 o max) → sauté, jamais de JSON partiel.
+              break;
+            }
+            if (timedOut) {
+              // Mutex history occupé (consolidation/save en cours). Borné : au-delà
+              // de kHistoryChunkMaxRetries, clôture PROPRE (pied émis → JSON valide).
+              if (++st->retries >= kHistoryChunkMaxRetries) {
+                st->phase = HistoryDownloadState::kFooter;
+                break;
+              }
+              if (total > 0) return total;   // émettre le progrès déjà accumulé
+              return RESPONSE_TRY_AGAIN;     // rien à émettre : réessai différé
+            }
+            st->phase = HistoryDownloadState::kFooter;  // fin du buffer
+            break;
+          }
+          case HistoryDownloadState::kFooter:
+            historyCarryLoadf(st->carry, "],\"count\":%u}", (unsigned)st->count);
+            st->phase = HistoryDownloadState::kDone;
+            break;
+          default:
+            st->phase = HistoryDownloadState::kDone;
+            break;
+        }
+      }
+      return total;
+    });
+  // Aucun header additionnel : l'ancienne route (sendRawJsonResponse) n'en posait
+  // pas — seul le Transfer-Encoding change (chunked, transparent pour fetch()).
+  request->send(res);
 }
 
 void setupDataRoutes(AsyncWebServer* server) {

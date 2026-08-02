@@ -258,13 +258,23 @@ Retourne l'historique des mesures.
 curl -u admin:monmotdepasse "http://poolcontroller.local/get-history?range=24h"
 ```
 
-Paramètre `range` : `24h` (défaut), `3d`, `7d`, `30d`, `all`.
+Paramètre `range` : `24h` (défaut), `3d`, `7d`, `30d`, `all`. Une valeur **inconnue** est traitée comme `all` — et depuis la v2.14.0, seul le **token reconnu** est échoé dans le champ `range` de la réponse (jamais la valeur brute du client, qui pourrait malformer le JSON).
 
 Paramètre optionnel `?since=TIMESTAMP` pour récupération incrémentale.
 
-> **feature-061 (v2.13.0)** : les points enregistrés pendant un arrêt de filtration (ou pendant la purge post-reprise) ont `ph` et `orp` à **`null`** (contrat existant, identique à un capteur absent) — `temperature`, `filtration` et `dosing` restent renseignés. Voir [`docs/subsystems/history.md`](subsystems/history.md#exclusion-des-mesures-phorp-sans-circulation-deau-feature-061-v2130).
+**Format de réponse** (inchangé octet pour octet depuis les versions antérieures) :
 
-**Réponse 503** (`{"error":"heap fragmenté, réessayez"}`) possible depuis la v2.10.4 ([ADR-0032](adr/0032-reponses-http-bornees.md)) : la réponse est concaténée dans une `String` **pré-réservée au pire cas** (`points × kHistoryPointJsonMaxBytes (128) + 128` octets — pire cas d'un point mesuré à 113-120 o) ; le retour `bool` de `String::reserve()` est le test du bloc contigu — s'il échoue, 503 propre plutôt qu'un crash `bad_alloc` ou un JSON tronqué silencieux.
+```json
+{"range":"24h","count":0,"history":[{"timestamp":1753860000,"ph":7.2,"orp":650,"temperature":24.6,"filtration":true,"dosing":false,"granularity":0}, "…"],"count":123}
+```
+
+> ⚠️ La clé `count` apparaît **deux fois** : `0` dans l'en-tête, la valeur réelle dans le pied. Bizarrerie historique **conservée volontairement** pour compatibilité (les parseurs JSON gardent la dernière occurrence).
+
+> **feature-061 (v2.13.0)** : les points enregistrés pendant un arrêt de filtration (ou pendant la purge post-reprise) ont `ph` et `orp` à **`null`** (contrat existant, identique à un capteur absent) — `temperature`, `filtration` et `dosing` restent renseignés. Voir [`docs/subsystems/history.md`](subsystems/history.md#exclusion-des-mesures-phorptempérature-sans-circulation-deau-feature-061-v2130).
+
+**Transfert chunked (v2.14.0, [ADR-0032 §Extension 2026-07-30](adr/0032-reponses-http-bornees.md#extension-2026-07-30--get-history-chunked-et-filet-ws-v2140))** : la réponse est émise en `Transfer-Encoding: chunked` (mécanisme (b), patron `/download-logs`) — plus aucune `String` contiguë ~40 Ko épinglée pendant le transfert, et le **503** « heap fragmenté » de la v2.10.4 **n'existe plus sur cette route** (aucune garde heap nécessaire en chunked). Transparent pour `fetch()`/curl : contrat JSON identique.
+
+Comportement **sous contention** (consolidation/sauvegarde de l'historique en cours, ~1,5 s toutes les 5 min) : chaque point est copié sous un mutex **court** (25 ms) ; si le mutex est occupé, le serveur diffère le chunk (`RESPONSE_TRY_AGAIN`) — la réponse peut simplement **prendre plus longtemps**, elle n'est **jamais tronquée syntaxiquement**. Cas extrême (mutex occupé en continu au-delà de ~200 tentatives consécutives, soit une tolérance très supérieure à la durée d'une consolidation) : la réponse est **close proprement** (pied `],"count":N}` émis) → JSON **toujours valide**, avec moins de points que disponibles. Le buffer d'historique pouvant glisser entre deux chunks (consolidation), un doublon ou un saut de point est toléré (best-effort, même politique que `/download-logs`).
 
 ---
 

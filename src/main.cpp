@@ -29,6 +29,7 @@
 #include "uart_protocol.h"
 #include "self_heal_logic.h"
 #include "net_health_logic.h"
+#include "heap_ring.h"
 #include "ping/ping_sock.h"  // esp_ping : sonde ICMP passerelle (watchdog connectivité v2.9.2)
 
 // Variables globales
@@ -188,6 +189,12 @@ void setup() {
   lighting.begin();
   history.begin();
 
+  // Ring heap RTC noinit (bug-heap-toctou A4) : dump de la cinétique heap du boot
+  // précédent si le reset n'est pas un POWERON. Placé APRÈS systemLogger.begin()
+  // et le montage des FS (history.begin() a activé la persistance des logs → un
+  // flush éventuel fonctionne), AVANT le WiFi (trace disponible au plus tôt).
+  heapRingDumpIfCrash();
+
   // Configuration WiFi
   bool wifiConnected = setupWiFi();
 
@@ -335,6 +342,15 @@ void loop() {
                                                     kHeapCheckFastIntervalMs)) {
     checkHeapHealth();
     lastHeapCheckMs = now;
+  }
+
+  // Ring heap RTC noinit (bug-heap-toctou A4) : échantillon toutes les
+  // kHeapRingSampleIntervalMs (2 s) — cinétique fine d'effondrement du heap,
+  // dumpée au boot suivant si reset anormal (heapRingDumpIfCrash).
+  static unsigned long lastHeapRingSampleMs = 0;
+  if (now - lastHeapRingSampleMs >= kHeapRingSampleIntervalMs) {
+    heapRingSample();
+    lastHeapRingSampleMs = now;
   }
 
   // Vérification sync NTP et mise à jour RTC

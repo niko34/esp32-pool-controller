@@ -2,6 +2,32 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.14.0] - 2026-07-30
+
+### Corrigé
+
+- **Crash WS récurrent : l'angle mort de la garde heap v2.11.1 est comblé** (2ᵉ coredump `bad_alloc` dans `textAll`, 30/07, v2.13.0 — garde **passée** puis prise de vitesse). Deux failles fermées : (1) **TOCTOU** — entre le contrôle `getMaxAllocHeap()` et l'allocation du buffer de trame, la tâche `async_tcp` peut consommer le bloc mesuré → `try/catch (std::bad_alloc)` autour des 3 `textAll` (filet absolu : l'exception part de `makeSharedBuffer` **avant** toute mutation de file du fork → toute course résiduelle = push sauté compté dans `skippedPushCount()`, plus jamais d'`abort()`) ; (2) **seuils adjacents** — la garde WS (8192) était **égale** au seuil de restart auto-guérison (8192), créant une zone grise 8-16 Ko où les pushes passaient sans que l'auto-guérison s'arme → `kWsPushMinAllocBytes` relevé à **16384** (marge 2×) : les pushes s'arrêtent avant la zone rouge, l'auto-guérison garde sa fenêtre d'action.
+
+### Modifié
+
+- **`/get-history` passe en flux chunked zéro-buffer** (ADR-0032 mécanisme (b), patron `/download-logs`) : supprime **la plus grosse allocation contiguë du firmware** — la `String` ~40 Ko épinglée pendant tout le transfert à chaque ouverture du dashboard (générateur de fond G3 de l'audit churn-heap du 24/07, différé « si récidive » — récidive constatée). Chaque point est copié sous mutex **court** (25 ms, `getPointByIndex`) ; contention (consolidation en cours) → `RESPONSE_TRY_AGAIN` borné (~200 retries consécutifs, reset après succès — tolère ~100 s vs ~1,5 s de pire consolidation), au-delà : clôture **propre** (JSON toujours valide, moins de points — jamais tronqué syntaxiquement). **Contrat JSON octet pour octet inchangé** (y compris la clé `count` émise deux fois — bizarrerie historique conservée pour compat) ; le 503 « heap fragmenté » disparaît de cette route ; UI intouchée (`data/` inchangé, chunked transparent pour `fetch()`). Post-revue : seul le token `range` **reconnu** est échoé dans l'en-tête JSON (valeur inconnue → traitée et échoée `all`).
+
+### Ajouté
+
+- **Buffer statique de trame WS** (`sWsFrameBuf`, `kWsFrameBufBytes = 3072`, réservé au link en `.bss` **hors heap** — pattern « réserver une fois, réutiliser toujours ») : plus aucune `String` temporaire par push (churn G2 résiduel : ~2 Ko alloués/libérés toutes les 5 s). Trame trop grande → push **sauté** (jamais tronqué) + compteur `oversizedFrameCount()` + WARN throttlé dédié. Invariant documenté : buffer réservé à `loopTask`. `kWsSensorJsonReserveBytes` supprimée.
+- **Télémétrie heap post-crash** : ring de 128 entrées × 8 o en RAM RTC noinit (1032 o vérifiés à l'ELF, magic `0xB10C4EA9` distinct de l'anti-boucle auto-guérison), échantillonné toutes les **2 s** depuis la loop (uptime, maxBloc, heap libre, clients WS, delta de pushes sautés). Au boot après un reset ≠ POWERON, les **32 dernières entrées (~64 s de cinétique d'effondrement)** sont dumpées dans le journal (~8 lignes) puis le magic est invalidé. Limites assumées : dump aussi sur reboot volontaire (`SW_RESET` inclut OTA/manuel — bruit accepté, trié par le motif en en-tête) ; lignes en RAM/Serial flushées ensuite (perdues si re-crash immédiat).
+- **2 nouvelles suites de tests natives** : `test_native_history_export` (cutoff `range` + format point JSON purs) et `test_native_heap_ring` (encodage 8 o, index du ring, âges modulaires) — **+27 tests, 415 au total**.
+
+### Documentation
+
+- `docs/adr/0032-reponses-http-bornees.md` : **extension 2026-07-30** — `/get-history` migre du patron (c) au patron (b), tableau d'audit soldé (G3 traité) ; durcissement WS (seuil 16384, catch, buffer statique) ; pas de nouvel ADR (application des mécanismes déjà actés).
+- `docs/subsystems/ws-manager.md` : garde 16384 (zone grise), filet `bad_alloc`, buffer statique + invariant `loopTask`, `oversizedFrameCount()`.
+- `docs/API.md` : `/get-history` chunked (contrat inchangé, comportement sous contention, double clé `count` documentée, fin du 503).
+- `docs/subsystems/history.md` : `getPointByIndex` (25 ms), export chunked, glissement toléré, note `migrateLegacyHistory`.
+- `docs/subsystems/system-health.md` : ring de télémétrie heap (format, cadence, dump, invalidation du magic, limites).
+
+---
+
 ## [2.13.0] - 2026-07-29
 
 ### Ajouté

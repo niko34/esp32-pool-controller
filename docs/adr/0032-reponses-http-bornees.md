@@ -45,7 +45,7 @@ Routes corrigées ou bornées par cette spec :
 |---|---|---|
 | `GET /get-logs` | (a) paginée | Page 30 entrées (hard cap 60, queue même-ms incluse), `measureJson` + garde + stream pré-dimensionné |
 | `GET /download-logs` | (b) chunked | Machine à états fichier → RAM, report de ligne `logs_export_chunk.h`, zéro accumulation |
-| `GET /get-history` | (c) reserve testé | `reserve(points × kHistoryPointJsonMaxBytes(128) + 128)`, échec → 503 |
+| `GET /get-history` | (c) reserve testé → **(b) chunked depuis v2.14.0** | `reserve(points × kHistoryPointJsonMaxBytes(128) + 128)`, échec → 503 — *supersedé par l'[Extension 2026-07-30](#extension-2026-07-30--get-history-chunked-et-filet-ws-v2140)* |
 | `GET /check-update` | bornage amont | Release notes GitHub tronquées à `kOtaReleaseNotesMaxChars` (2048) + « … » |
 
 Patrons de référence préexistants : `GET /debug/sensor_trace` (patron (a), v2.10.1) ; `GET /coredump/download` (patron (b)).
@@ -89,6 +89,15 @@ Le coredump du 2026-07-28 (`bad_alloc` dans `AsyncWebSocket::textAll` → `makeS
 - **Buffers de file bornés** : la file d'envoi par client passe de 32 (défaut fork, ~58 Ko épinglables par client zombie) à **5 trames** (`-DWS_MAX_QUEUED_MESSAGES=5`, `platformio.ini`) + `setCloseClientOnQueueFull(true)` — le coût mémoire d'un client WS redevient **lisible et borné**, comme celui d'une route HTTP auditée.
 
 Détails d'implémentation et invariants (anti-ré-entrance du log, récolte des zombies) : [subsystems/ws-manager.md](../subsystems/ws-manager.md).
+
+## Extension 2026-07-30 — `/get-history` chunked et filet WS (v2.14.0)
+
+2ᵉ coredump `bad_alloc` dans un broadcast WS (30/07, v2.13.0) **malgré** l'extension v2.11.1 : la garde à seuil fixe est un check-then-act (TOCTOU), et le générateur de fond **G3** de l'audit churn-heap du 24/07 (différé « si récidive ») était toujours actif. Récidive → application complète de l'ADR (spec `bug-heap-toctou-ws-et-gethistory-chunked`) :
+
+- **`/get-history` migre du patron (c) au patron (b)** — chunked zéro-buffer, patron `/download-logs` : la `String` contiguë ~40 Ko épinglée à chaque ouverture du dashboard disparaît (**la plus grosse allocation contiguë du firmware**), le 503 « heap fragmenté » n'existe plus sur cette route. Copie d'un point sous mutex court (25 ms) + `RESPONSE_TRY_AGAIN` borné ; contrat JSON octet pour octet inchangé. **Le tableau d'audit est soldé : G3 traité, plus aucune route au patron (c) avec un pire cas > 4 Ko dépendant des données.** Détails : [subsystems/history.md](../subsystems/history.md#export-chunked-get-history-v2140-bug-heap-toctou-a3).
+- **Voie WS durcie en profondeur** (complète l'extension v2.11.1) : seuil `kWsPushMinAllocBytes` 8192 → **16384** (l'alignement sur `kRestartMaxAllocHeapBytes` créait une zone grise 8-16 Ko où les pushes passaient sans que l'auto-guérison s'arme) ; **`try/catch (std::bad_alloc)`** autour des 3 `textAll` (filet absolu : l'exception part de `makeSharedBuffer` avant toute mutation de file du fork → push sauté, jamais d'`abort()`) ; trames construites dans un **buffer statique `.bss`** (`kWsFrameBufBytes = 3072`) — la mention « `StaticJson<2048>` + `reserve(kWsSensorJsonReserveBytes)` » de l'extension v2.11.1 est **caduque** (constante supprimée). Détails : [subsystems/ws-manager.md](../subsystems/ws-manager.md#angle-mort-toctou-comblé--filet-bad_alloc--buffer-statique-v2140-bug-heap-toctou).
+
+Nuance vs l'alternative « `try/catch` » **rejetée** par cet ADR pour les routes HTTP : elle reste rejetée côté HTTP (l'exception du `cbuf` laisse un état incohérent). Côté WS, le catch est **sûr et légitime** car il enveloppe une émission atomique dont l'allocation précède toute mutation d'état — il complète la garde, il ne la remplace pas.
 
 ## Références
 

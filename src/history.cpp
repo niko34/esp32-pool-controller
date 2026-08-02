@@ -709,6 +709,32 @@ std::vector<DataPoint> HistoryManager::getAllData() {
   return copy;
 }
 
+bool HistoryManager::getPointByIndex(size_t chronoIdx, DataPoint& out, bool& timedOut) {
+  // bug-heap-toctou A3 : patron Logger::getLogEntryByIndex — copie d'UN point
+  // (struct POD, aucune allocation) sous mutex, jamais de copie du buffer entier.
+  // Timeout COURT (kHistoryPointReadTimeoutMs = 25 ms) : ce chemin est appelé
+  // depuis le callback chunked de /get-history (tâche async_tcp) — y attendre
+  // kHistoryMutexTimeoutMs (2 s, pire détenteur : consolidation + save LittleFS)
+  // serait un déni de service réseau. timedOut distingue le timeout (réessai via
+  // RESPONSE_TRY_AGAIN) de la fin de buffer (clôture propre de la réponse).
+  timedOut = false;
+  if (_mutex == nullptr ||
+      xSemaphoreTake(_mutex, pdMS_TO_TICKS(kHistoryPointReadTimeoutMs)) != pdTRUE) {
+    timedOut = true;
+    return false;
+  }
+  bool ok = false;
+  if (chronoIdx < memoryBuffer.size()) {
+    // memoryBuffer = UN vecteur unique trié par timestamp → l'index chronologique
+    // est l'index direct. Glissement toléré entre deux chunks (précédent
+    // sensor_trace) : une consolidation peut réordonner/retirer des points.
+    out = memoryBuffer[chronoIdx];
+    ok = true;
+  }
+  xSemaphoreGive(_mutex);
+  return ok;
+}
+
 bool HistoryManager::importData(const std::vector<DataPoint>& dataPoints) {
   if (!historyEnabled) return false;
   if (dataPoints.empty()) return false;

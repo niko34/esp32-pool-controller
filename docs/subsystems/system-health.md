@@ -73,6 +73,24 @@ L'alerte heap **total** (CRIT « Mémoire faible » + MQTT `low_memory`, seuil `
 
 > ⚠️ **Limite assumée (revue 2.11.1)** : `publishAlert()` publie en **non-retained** — un abonné MQTT hors ligne au moment de la transition **rate l'épisode** (il n'y a plus de ré-émission périodique pour le rattraper). Le risque est borné par l'INFO de rétablissement (l'épisode est encadré dans le journal) et par le fait qu'un heap total durablement bas finit en auto-guérison, qui émet ses propres alertes.
 
+## Ring de télémétrie heap en RAM RTC noinit (v2.14.0, bug-heap-toctou A4)
+
+Le tick santé (5-60 s) rate la **cinétique d'effondrement** du heap (quelques secondes entre « sain » et `bad_alloc`). Depuis la v2.14.0, un ring d'instrumentation en **RAM RTC noinit** (survit à `ESP.restart()`/panic/WDT, **pas** au power-on) capture cette cinétique et la restitue dans le journal au boot suivant. Module pur [`src/heap_ring_logic.h`](../../src/heap_ring_logic.h) (encodage + arithmétique d'index, testé en natif) + coquille impure [`src/heap_ring.cpp`](../../src/heap_ring.cpp).
+
+- **Budget** : magic (4 o) + tête/remplissage (2+2 o) + ring `kHeapRingEntries = 128` × 8 o = **1032 o** RTC noinit (vérifié à l'ELF). Magic `0xB10C4EA9`, **distinct** de `kAutoHealRtcMagic` (`0xA5C0FFEE`, compteur anti-boucle) — les deux états RTC sont indépendants.
+- **Échantillonnage** : `heapRingSample()` depuis `loop()` toutes les `kHeapRingSampleIntervalMs = 2 s`. Format d'une entrée (8 o, little-endian, quantifié) : uptime s (u16, modulo ~18,2 h), maxBloc ÷ 64 (u16), heap libre ÷ 256 (u16), clients WS (u8, saturé 255), **delta** de pushes WS sautés depuis l'échantillon précédent (u8, saturé 255).
+- **Dump au boot** — `heapRingDumpIfCrash()`, appelé dans `setup()` après `history.begin()` (persistance des logs active) et **avant** le WiFi : si le magic est valide **et** que `esp_reset_reason() != POWERON`, les `kHeapRingDumpMaxEntries = 32` dernières entrées (**~64 s de cinétique**) sont émises dans le journal — un WARN d'en-tête `Cinétique heap avant reset (<motif>) : N échantillon(s), pas ~2 s (t-0s = dernier avant reset)` puis des INFO compactes, 4 entrées par ligne (**8 lignes** pour 32 entrées), de la plus ancienne à la plus récente :
+
+  ```
+  t-62s maxB=18624 free=94208 ws=2 skip=0 | t-60s maxB=12800 free=93952 ws=2 skip=1 | …
+  ```
+
+- **Invalidation du magic** : le magic est invalidé **dans tous les cas** au boot (dump émis ou non) — le ring appartient au boot précédent ; il est **ré-armé** au 1ᵉʳ `heapRingSample()` du boot courant. Bornes insensées (RAM RTC corrompue) → dump abandonné / ring réinitialisé.
+
+> ⚠️ **Deux limites assumées** :
+> 1. `ESP_RST_SW` inclut les reboots **volontaires** (OTA, reboot manuel, factory reset) → le dump est émis aussi dans ces cas — bruit accepté (8 lignes par reboot volontaire), le motif en en-tête (`SW_RESET` vs `PANIC`/`WATCHDOG`) permet de trier.
+> 2. Les 8 lignes partent en **RAM + Serial** au moment du dump et ne sont **flushées sur disque que plus tard** (flush périodique / ERROR) — un **re-crash immédiat** après le boot peut les perdre. La cinétique du re-crash lui-même sera de toute façon recapturée par le ring.
+
 ## Machine à états auto-guérison / maintenance
 
 ```
@@ -360,6 +378,9 @@ Sinon, un `debug(...)` « Ré-annonce mDNS débouncée » trace l'oscillation ig
 | `kHistoryInitCrashThreshold` | `2` | Crashs consécutifs pendant l'init history → effacement de la partition (**hors** budget `kAutoHealMaxReboots`) |
 | `kHistoryCrashCountNvsKey` | `"crash_cnt"` | Clé NVS du compteur du disjoncteur (namespace `hist_meta`, clé `part_sz` intacte) |
 | `kHistoryDumpCrc0NvsKey` / `kHistoryDumpCrc1NvsKey` / `kHistoryDumpHeadNvsKey` | `"dmp_crc0"` / `"dmp_crc1"` / `"dmp_head"` | Empreinte de la preuve `[HISTDUMP]` (CRC32 blocs 0-1 + 16 premiers octets, namespace `hist_meta`, v2.11.0) |
+| `kHeapRingEntries` | `128` | Capacité du ring de télémétrie heap (128 × 8 o = 1 Ko RTC noinit, v2.14.0) |
+| `kHeapRingSampleIntervalMs` | `2000` (2 s) | Cadence d'échantillonnage du ring depuis `loop()` |
+| `kHeapRingDumpMaxEntries` | `32` | Entrées dumpées au boot post-reset anormal (~64 s de cinétique, ~8 lignes) |
 
 ## Alertes MQTT émises
 
@@ -392,6 +413,7 @@ Voir [MQTT.md](../MQTT.md#alertes).
 - [`src/self_heal_logic.h`](../../src/self_heal_logic.h) / [`.cpp`](../../src/self_heal_logic.cpp) — décision pure watchdog **heap**
 - [`src/net_health_logic.h`](../../src/net_health_logic.h) / [`.cpp`](../../src/net_health_logic.cpp) — décision pure watchdog **connectivité**
 - [`src/history_guard_logic.h`](../../src/history_guard_logic.h) / [`.cpp`](../../src/history_guard_logic.cpp) — décision pure disjoncteur **boot-loop history**
+- [`src/heap_ring_logic.h`](../../src/heap_ring_logic.h) / [`src/heap_ring.h`](../../src/heap_ring.h) / [`src/heap_ring.cpp`](../../src/heap_ring.cpp) — ring de **télémétrie heap** RTC noinit (v2.14.0, tests `test/test_native_heap_ring/`)
 - [`src/main.cpp`](../../src/main.cpp) — coquille impure (collecte ICMP/heap + effets, `performFailSafeRestart`, alerte différée `history_partition_reset`)
 - [`src/history.cpp`](../../src/history.cpp) — coquille impure du disjoncteur (NVS `hist_meta`, `esp_reset_reason`, `esp_partition_erase_range`)
 - [`src/pump_controller.h`](../../src/pump_controller.h) — `setMaintenanceInhibit()` / `isMaintenanceInhibited()`

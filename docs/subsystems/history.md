@@ -95,9 +95,25 @@ void recordDataPoint();
 std::vector<DataPoint> getLastHours(int hours);
 std::vector<DataPoint> getLastDay();
 std::vector<DataPoint> getAllData();
+// v2.14.0 (bug-heap-toctou A3) : copie d'UN point sous mutex COURT (25 ms) pour le
+// callback chunked de /get-history. false = fin de buffer (timedOut=false) OU
+// timeout mutex (timedOut=true → l'appelant réessaie via RESPONSE_TRY_AGAIN).
+bool getPointByIndex(size_t chronoIdx, DataPoint& out, bool& timedOut);
 bool importData(const std::vector<DataPoint>& dataPoints);
 bool clearHistory();   // false si le mutex n'a pas pu être pris (historique occupé) — v2.11.1
 ```
+
+## Export chunked `/get-history` (v2.14.0, bug-heap-toctou A3)
+
+Jusqu'en v2.13.x, `/get-history` copiait **tout** le buffer (`getLastHours`/`getAllData`) puis concaténait la réponse dans une `String` contiguë pré-réservée (~40 Ko épinglés pendant tout le transfert à chaque ouverture du dashboard) — **générateur de fond n°3 (G3)** de la fragmentation heap identifié par l'investigation churn-heap du 24/07. Depuis la v2.14.0, la route est **chunked zéro-buffer** ([ADR-0032 §Extension 2026-07-30](../adr/0032-reponses-http-bornees.md#extension-2026-07-30--get-history-chunked-et-filet-ws-v2140), patron `/download-logs`) :
+
+- **`getPointByIndex(chronoIdx, out, timedOut)`** : copie d'**un seul** point (struct POD, aucune allocation) sous le mutex history avec un timeout **dédié court** `kHistoryPointReadTimeoutMs = 25 ms` — le timeout standard `kHistoryMutexTimeoutMs` (2 s) serait un déni de service réseau depuis la tâche `async_tcp`. Le mutex n'est **jamais tenu entre deux chunks**. `memoryBuffer` étant un vecteur unique trié par timestamp, l'index chronologique est l'index direct.
+- **Filtres `range`/`since` appliqués par point** dans le callback (fonction pure `historyRangeCutoff`, sémantique exacte de l'ancien `getLastHours`) ; formatage d'un point par la fonction pure `formatHistoryPointJson` ([`src/history_export_chunk.h`](../../src/history_export_chunk.h)) — format JSON **octet pour octet identique** à l'ancienne concaténation (y compris la clé `count` émise deux fois, voir [API.md](../API.md#get-get-history--write)).
+- **Contention** : timeout mutex → `RESPONSE_TRY_AGAIN` (réessai différé par AsyncWebServer), compteur de retries **consécutifs** remis à zéro à chaque succès — borné à `kHistoryChunkMaxRetries = 200` (tolère ~100 s de contention continue, vs ~1,5 s pour la pire consolidation + save), au-delà : clôture **propre** (pied JSON émis → document valide, moins de points).
+- **Glissement toléré** : une consolidation entre deux chunks peut réordonner/retirer des points (doublon/saut possibles) — même précédent best-effort que `sensor_trace` et `/download-logs`.
+- ⚠️ **Note** : `migrateLegacyHistory()` n'est **plus appelé** sur ce chemin (l'ancien `getLastHours` le déclenchait) — la migration legacy reste couverte par `update()`/`loadFromFile()`/`importData()`.
+
+Tests natifs : suite dédiée `test/test_native_history_export/` (cutoff `range`, format point, arrondis, NaN → `null`, virgules, capacité).
 
 ## Endpoints HTTP
 
@@ -129,6 +145,7 @@ Politique d'échec par site :
 | `getAllData()` | Vecteur vide |
 | `importData()` | `false` **avant toute modification** de `memoryBuffer` — la route teste le retour |
 | `clearHistory()` | `false` **sans supprimer le fichier** (la RAM n'a pas été vidée → pas d'état incohérent) ; la route répond `503` |
+| `getPointByIndex()` (v2.14.0) | ⚠️ Timeout **dédié court** `kHistoryPointReadTimeoutMs = 25 ms` (pas 2 s : appelé depuis le callback chunked sur `async_tcp`) — `timedOut=true`, le callback réessaie via `RESPONSE_TRY_AGAIN`. **Aucun warn** (contention attendue et gérée) |
 
 Comportement nominal (mutex libre) strictement inchangé.
 
@@ -190,6 +207,7 @@ Si **toute** étape échoue (`open` retourne null, `print` retourne ≠ 2 octets
 - [`src/constants.h:49`](../../src/constants.h:49) — limites (`kMaxHourlyDataPoints = 168`)
 - [`partitions.csv`](../../partitions.csv)
 - [`src/history_logic.h`](../../src/history_logic.h), [`src/history_logic.cpp`](../../src/history_logic.cpp) — math d'agrégation pure
+- [`src/history_export_chunk.h`](../../src/history_export_chunk.h) — logique pure de l'export chunked `/get-history` (v2.14.0) ; carry partagé avec [`src/logs_export_chunk.h`](../../src/logs_export_chunk.h)
 - [ADR-0009](../adr/0009-partition-coredump.md) — table de partitions courante
 - [ADR-0007](../adr/0007-table-partitions-custom.md) — supersedé
 - [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) — logique métier pure / Humble Object
