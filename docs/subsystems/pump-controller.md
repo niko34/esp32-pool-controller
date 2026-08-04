@@ -122,7 +122,21 @@ Nouveauté du chemin core 3 : contrairement à `ledcSetup()`, `ledcAttachChannel
 - **Inhibition par pompe** à deux points complémentaires : garde en **première ligne** d'`applyPumpDuty()` (avant le cache `pumpDuty` et toute mutation → `pumpDuty[i]` reste 0 à vie, aucun `ledcWriteChannel` sur canal non attaché) + refus dans `setManualPump()` (défense en profondeur, `warning` throttlé une fois par boot).
 - L'autre pompe reste pilotable (inhibition **par pompe**, pas globale).
 
-> ⚠️ **Exigence P1 pool-chemistry restante** : le CRITICAL local ne suffit pas en production — une alerte MQTT dédiée « pompe inutilisable » est **obligatoire avant toute bascule production core 3** (condition de la porte de bascule [ADR-0034](../adr/0034-migration-core3-idf5.md)).
+### Accesseur `isPumpUsable()` (feature-064, v2.16.0)
+
+```cpp
+bool isPumpUsable(int index) const;  // 0 = pH, 1 = ORP/chlore
+```
+
+Lecture seule **STRICTE** de l'utilisabilité de la pompe ([`pump_controller.h`](../../src/pump_controller.h), impl. [`pump_controller.cpp:123`](../../src/pump_controller.cpp:123)) — **aucun setter**, l'accesseur ne doit JAMAIS servir à réactiver une pompe (reboot requis pour réarmer). Sémantique **bi-core** :
+
+- **core 3** : reflète `pumpUsable[]` (échec `ledcAttachChannel` possible au boot) ;
+- **core 2** : retourne **toujours `true`** (le flag n'existe pas, l'échec d'attache non plus) ;
+- index hors bornes (≠ 0/1) → **`false`** (fail-closed).
+
+### Remontée MQTT `pump_unusable` (feature-064, v2.16.0 — exigence P1 livrée)
+
+✅ La **recommandation P1 pool-chemistry** (« le CRITICAL local ne suffit pas en production — alerte MQTT dédiée obligatoire avant toute bascule production core 3 », condition de la porte de bascule [ADR-0034](../adr/0034-migration-core3-idf5.md)) est **livrée** : `MqttManager::connectInTask()` lit `PumpController.isPumpUsable(i)` et publie une alerte `pump_unusable` **par pompe inutilisable**, **à chaque (re)connexion MQTT** (arbitrage Q1 : l'alerte est non-retained et l'état permanent jusqu'au reboot — un broker absent au boot ne la perd plus). Aucun chemin d'écriture nouveau vers `pumpUsable[]` ni vers les pompes. Voir [`docs/MQTT.md`](../MQTT.md#alertes) et [`mqtt-manager.md`](mqtt-manager.md). Ce chemin reste compilé uniquement côté core 3 pour le déclenchement (env de banc `esp32dev_core3`, BUILD-ONLY — jamais flashé).
 
 ## Algorithme (résumé)
 

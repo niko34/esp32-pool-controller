@@ -190,6 +190,15 @@ public:
   void setMaintenanceInhibit(bool inhibit) { maintenanceInhibit = inhibit; }
   bool isMaintenanceInhibited() const { return maintenanceInhibit; }
 
+  // feature-064 (ADR-0034, prescription pool-chemistry P1) : lecture seule
+  // STRICTE de l'utilisabilité de la pompe (0 = pH, 1 = ORP/chlore), posée une
+  // seule fois par begin() (feature-063). Ne doit JAMAIS servir à réactiver une
+  // pompe (aucun setter — reboot requis). Sémantique bi-core :
+  //   - core 3 : reflète pumpUsable[] (échec ledcAttachChannel possible au boot),
+  //   - core 2 : toujours true (pas de flag, l'échec d'attache n'existe pas).
+  // Index hors bornes → false (fail-closed).
+  bool isPumpUsable(int index) const;
+
   // Getters pour l'état
   bool isPhDosing() const { return phDosingState.active; }
   bool isOrpDosing() const { return orpDosingState.active; }

@@ -97,7 +97,7 @@ La bascule du contrôleur de production vers core 3 est une **décision utilisat
 
 - [ ] **Banc matériel L3 100 % vert** sur un 2ᵉ ESP32 (checklist remise à l'utilisateur — voir feature-063 § Notes d'implémentation) : PWM à l'oscilloscope + mesure au verre doseur (écart < 5 %), OTA **bi-directionnel** (le véhicule ET le retour), FS/NVS dans les deux sens, AP secours ESPAsyncWiFiManager explicite, tous sous-systèmes.
 - [ ] **Épinglage de la plateforme pioarduino sur une release TAGUÉE** (exigence de revue feature-063) : remplacer l'URL `stable` par l'URL d'une release versionnée, et re-vérifier le build avec les versions figées (référence au 2026-08-04 : pioarduino 55.3.37 / core 3.3.7 / IDF 5.5.0).
-- [ ] **Alerte MQTT dédiée « pompe inutilisable » OBLIGATOIRE** (exigence pool-chemistry P1) : le CRITICAL local ne suffit pas en production — l'échec d'attache LEDC doit remonter en alerte MQTT avant tout déploiement core 3.
+- [x] **Alerte MQTT dédiée « pompe inutilisable » OBLIGATOIRE** (exigence pool-chemistry P1) : le CRITICAL local ne suffit pas en production — l'échec d'attache LEDC doit remonter en alerte MQTT avant tout déploiement core 3. **LIVRÉ (feature-064, v2.16.0)** : alerte `pump_unusable` par pompe, re-publiée à chaque (re)connexion MQTT (arbitrage Q1, GO pool-chemistry).
 - [ ] **Fenêtre hors saison**, pompes débranchées à la bascule.
 - [ ] **Observation 14 jours** post-bascule.
 - [ ] **Binaires de retour arrière archivés + sha256** (dernière version core 2 déployée), procédure de retour OTA archivée.

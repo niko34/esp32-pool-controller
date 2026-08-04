@@ -117,6 +117,21 @@ void PumpControllerClass::begin() {
   systemLogger.info("Puissance: P1=" + String(mqttCfg.pump1MaxDutyPct) + "% P2=" + String(mqttCfg.pump2MaxDutyPct) + "%");
 }
 
+// feature-064 : accesseur LECTURE SEULE de l'utilisabilité pompe — sert
+// uniquement à la visibilité (alerte MQTT pump_unusable, ADR-0034). Ne réactive
+// JAMAIS une pompe : le flag est posé une seule fois dans begin(), reboot requis.
+bool PumpControllerClass::isPumpUsable(int index) const {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  // Core 3 : reflète le flag fail-closed posé par begin() en cas d'échec
+  // ledcAttachChannel(). Index hors bornes → false (fail-closed).
+  return (index == 0 || index == 1) && pumpUsable[index];
+#else
+  // Core 2 : ledcSetup/ledcAttachPin ne signalent pas d'échec — la pompe est
+  // toujours réputée utilisable (aucune alerte possible, comportement inchangé).
+  return index == 0 || index == 1;
+#endif
+}
+
 void PumpControllerClass::applyPumpDuty(int index, uint8_t duty) {
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
   // Prescription P1 (pool-chemistry, feature-063) : garde en PREMIÈRE ligne,

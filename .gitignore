@@ -12,6 +12,9 @@
 *.elf
 data-build/
 builds/
+# Générés par la plateforme pioarduino (env esp32dev_core3, IDF component manager)
+src/idf_component.yml
+src/idf_component.yml.orig
 
 # Couverture de tests (rapport gcovr, généré par ./tools/coverage.sh)
 coverage/

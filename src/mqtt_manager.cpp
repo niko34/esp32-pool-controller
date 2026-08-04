@@ -421,6 +421,29 @@ void MqttManager::connectInTask() {
     esp_task_wdt_reset();
     publishDiagnosticInternal();     // 1 publish JSON ~400c
     esp_task_wdt_reset();
+
+    // feature-064 / ADR-0034 (prescription pool-chemistry P1) : alerte
+    // pump_unusable re-publiée à CHAQUE (re)connexion MQTT — l'alerte n'est pas
+    // retained et l'état "pompe inutilisable" est permanent jusqu'au reboot
+    // (broker possiblement absent au boot : la 1ʳᵉ connexion couvre le boot,
+    // les reconnexions couvrent le reste). Lecture seule stricte du flag posé
+    // par PumpController.begin() (core 3 uniquement ; core 2 : jamais déclenché).
+    // publishAlert() passe par l'outQueue — pas de publish direct ici.
+    {
+      static const char* kPumpRoles[2] = {"pH", "Chlore/ORP"};
+      const uint8_t pumpPins[2] = {kPumpPhPin, kPumpOrpPin};
+      const int pumpChannels[2] = {PUMP1_CHANNEL, PUMP2_CHANNEL};
+      for (int i = 0; i < 2; ++i) {
+        if (!PumpController.isPumpUsable(i)) {
+          publishAlert("pump_unusable",
+                       "Pompe " + String(i + 1) + " (" + kPumpRoles[i] +
+                       ") HORS SERVICE : échec init PWM (GPIO=" +
+                       String(pumpPins[i]) + ", canal LEDC=" +
+                       String(pumpChannels[i]) +
+                       ") — aucune injection possible jusqu'au reboot");
+        }
+      }
+    }
   } else {
     constexpr unsigned long kMqttMaxReconnectDelayMs = 120000UL;
     _reconnectDelay = min(_reconnectDelay * 2, kMqttMaxReconnectDelayMs);

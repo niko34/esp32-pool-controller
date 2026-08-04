@@ -2,6 +2,21 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.16.0] - 2026-08-04
+
+### Firmware
+
+- **Alerte MQTT « pompe hors service »** (feature-064 — exigence pool-chemistry P1, condition de la porte de bascule core 3, ADR-0034) : si une pompe doseuse a échoué son init PWM au boot et a été mise en sécurité fail-closed (`pumpUsable`, feature-063 — **core Arduino 3 uniquement**, impossible en production actuelle core 2), une alerte `pump_unusable` est désormais publiée **par pompe**, en français (« Pompe 1 (pH) HORS SERVICE : échec init PWM (GPIO=25, canal LEDC=0) — aucune injection possible jusqu'au reboot »), sur le canal d'alertes existant `{base}/alerts`. Le CRITICAL local ne reste plus la seule remontée : Home Assistant voit la pompe hors service au lieu de « compter » des cycles sans injection réelle (dérive pH/ORP silencieuse). Re-publication **à chaque (re)connexion MQTT** (arbitrage Q1, décision pool-chemistry) : l'alerte est non-retained et l'état permanent jusqu'au reboot — un broker absent au boot ne la perd plus. Nouvel accesseur lecture seule stricte `PumpController.isPumpUsable(index)` (aucun setter, reboot requis pour réarmer ; core 2 : toujours utilisable). Aucun chemin d'injection modifié — visibilité uniquement (double GO pool-chemistry). Code dormant en production, actif sur le banc `esp32dev_core3` et après bascule.
+
+### Documentation
+
+- `docs/MQTT.md` : type d'alerte `pump_unusable` (condition, re-publication à chaque connexion, exemple de message, limitation HA assumée).
+- `docs/subsystems/pump-controller.md` : accesseur `isPumpUsable()` (sémantique bi-core, fail-closed hors bornes) + exigence P1 marquée livrée.
+- `docs/subsystems/mqtt-manager.md` : hook de re-publication dans `connectInTask()` (arbitrage Q1, outQueue, code dormant core 2).
+- `docs/adr/0034-migration-core3-idf5.md` : item « alerte MQTT pompe inutilisable » de la porte de bascule coché (livré feature-064).
+
+---
+
 ## [2.15.0] - 2026-08-04
 
 ### Firmware
