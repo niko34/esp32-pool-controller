@@ -40,7 +40,7 @@ La bascule se fera en **OTA-only** : le bootloader IDF 4.4 existant est conserv�
 
 ### Versions résolues au banc (2026-08-04)
 
-- **pioarduino** `55.3.37` (URL `stable` non épinglée — voir porte de bascule) ;
+- **pioarduino** `55.3.37` (URL `stable` non épinglée au moment du banc — épinglée le 2026-08-04 sur la release taguée `55.03.37`, voir porte de bascule) ;
 - **arduino-esp32 core** `3.3.7` ;
 - **ESP-IDF** `5.5.0` (littlefs **2.11.2** embarqué — le fix div/0 amont est présent, confirmant Q1 de l'étude).
 
@@ -81,7 +81,7 @@ La bascule se fera en **OTA-only** : le bootloader IDF 4.4 existant est conserv�
 - **ADR-0011 corrigé** (découverte collatérale de l'étude, correctif appliqué par feature-063) : les `-DCONFIG_LWIP_*` (feature-014) n'ont jamais été appliqués — lib lwIP précompilée (16 sockets / 12 retransmissions effectifs, avant comme après). Flags retirés des deux envs, note « effet fantôme » posée sur ADR-0011.
 - RAM +3,3 Ko (mesuré : 69 248 o en core 3).
 - Directives `#if` bi-core dans 3 fichiers (+1 include explicite) tant que le core 2 reste supporté.
-- La plateforme pioarduino du banc pointe l'URL `stable` **non épinglée** : dette acceptée pour un env BUILD-ONLY, **interdite pour la production** (voir porte).
+- La plateforme pioarduino du banc pointe l'URL `stable` **non épinglée** : dette acceptée pour un env BUILD-ONLY, **interdite pour la production** (voir porte). **Épinglée le 2026-08-04** sur la release taguée `55.03.37` (item de la porte livré — `stable` avait déjà dérivé vers 55.03.311).
 
 ### Ce que ça verrouille
 
@@ -96,7 +96,7 @@ La bascule se fera en **OTA-only** : le bootloader IDF 4.4 existant est conserv�
 La bascule du contrôleur de production vers core 3 est une **décision utilisateur séparée**, subordonnée à **TOUTES** les conditions suivantes :
 
 - [ ] **Banc matériel L3 100 % vert** sur un 2ᵉ ESP32 (checklist remise à l'utilisateur — voir feature-063 § Notes d'implémentation) : PWM à l'oscilloscope + mesure au verre doseur (écart < 5 %), OTA **bi-directionnel** (le véhicule ET le retour), FS/NVS dans les deux sens, AP secours ESPAsyncWiFiManager explicite, tous sous-systèmes.
-- [ ] **Épinglage de la plateforme pioarduino sur une release TAGUÉE** (exigence de revue feature-063) : remplacer l'URL `stable` par l'URL d'une release versionnée, et re-vérifier le build avec les versions figées (référence au 2026-08-04 : pioarduino 55.3.37 / core 3.3.7 / IDF 5.5.0).
+- [x] **Épinglage de la plateforme pioarduino sur une release TAGUÉE** (exigence de revue feature-063) : remplacer l'URL `stable` par l'URL d'une release versionnée, et re-vérifier le build avec les versions figées (référence au 2026-08-04 : pioarduino 55.3.37 / core 3.3.7 / IDF 5.5.0). **LIVRÉ (2026-08-04)** : `platformio.ini` pointe la release taguée **`55.03.37`** (= pioarduino 55.3.37 / core 3.3.7 / IDF 5.5.0, versions exactes validées au banc feature-063) ; build de re-vérification SUCCESS (Flash 92,3 % — 1 693 898 o, légère hausse vs la référence car le build inclut feature-064). **Dérive constatée** au moment de l'épinglage : l'URL `stable` pointait déjà **55.03.311** (core 3.3.11) — la dérive n'était pas théorique ; toute montée de version est désormais un choix explicite à re-valider au banc.
 - [x] **Alerte MQTT dédiée « pompe inutilisable » OBLIGATOIRE** (exigence pool-chemistry P1) : le CRITICAL local ne suffit pas en production — l'échec d'attache LEDC doit remonter en alerte MQTT avant tout déploiement core 3. **LIVRÉ (feature-064, v2.16.0)** : alerte `pump_unusable` par pompe, re-publiée à chaque (re)connexion MQTT (arbitrage Q1, GO pool-chemistry).
 - [ ] **Fenêtre hors saison**, pompes débranchées à la bascule.
 - [ ] **Observation 14 jours** post-bascule.

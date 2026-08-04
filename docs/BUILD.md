@@ -19,7 +19,7 @@ Depuis la phase code bi-core de la migration core 3 ([ADR-0034](adr/0034-migrati
 | Env | Plateforme | Rôle |
 |-----|-----------|------|
 | `esp32dev` *(défaut)* | `espressif32@6.9.0` (core Arduino 2.0.17 / IDF 4.4.7) | **Production** — c'est le binaire buildé par `pio run` et déployé par `deploy.sh` |
-| `esp32dev_core3` | pioarduino (core Arduino 3.x / IDF 5.x) | **Banc de compilation BUILD-ONLY** — vérifie que le code bi-core compile en core 3. **Jamais flashé** (pas d'`upload_port` ; la bascule production est une porte conditionnelle, voir [ADR-0034](adr/0034-migration-core3-idf5.md)) |
+| `esp32dev_core3` | pioarduino **release taguée `55.03.37`** (core Arduino 3.3.7 / IDF 5.5.0) | **Banc de compilation BUILD-ONLY** — vérifie que le code bi-core compile en core 3. **Jamais flashé** (pas d'`upload_port` ; la bascule production est une porte conditionnelle, voir [ADR-0034](adr/0034-migration-core3-idf5.md)) |
 
 ```bash
 pio run -e esp32dev_core3     # build du banc core 3 (aucun upload)
@@ -30,8 +30,8 @@ Le code source est identique pour les deux : les divergences d'API (LEDC, watchd
 **Pièges pioarduino** :
 
 - Utiliser le **pio du penv** : `~/.platformio/penv/bin/pio` (le pio système Python 3.12 échoue avec `ModuleNotFoundError: fatfs/littlefs`).
-- **Premier build** : lancer `pio pkg install -e esp32dev_core3` avant `pio run -e esp32dev_core3` (installation de la plateforme pioarduino).
-- La plateforme pointe l'URL `stable` **non épinglée** : versions résolues au 2026-08-04 — pioarduino 55.3.37, core arduino-esp32 **3.3.7**, IDF 5.5.0. Un **épinglage sur une release taguée est requis avant toute bascule production** (exigence de revue, [ADR-0034](adr/0034-migration-core3-idf5.md)).
+- **Premier build OU changement de version de la plateforme** : lancer `pio pkg install -e esp32dev_core3` avant `pio run -e esp32dev_core3` (installation/réinstallation de la plateforme pioarduino). Symptôme si oublié : la première invocation de `pio run -e esp32dev_core3` échoue avec `TypeError ... NoneType` (réinstallation du framework interrompue) — remède : `pio pkg install -e esp32dev_core3` puis relancer le build.
+- La plateforme est **épinglée sur la release taguée `55.03.37`** (2026-08-04) : pioarduino 55.3.37, core arduino-esp32 **3.3.7**, IDF 5.5.0 — les versions exactes validées au banc feature-063 (item de la porte de bascule [ADR-0034](adr/0034-migration-core3-idf5.md), désormais livré). **Toute montée de version de la plateforme est un choix explicite** qui exige une re-validation au banc — l'URL `stable`, utilisée avant l'épinglage, avait déjà dérivé vers 55.03.311 (core 3.3.11).
 
 ### Filesystem (LittleFS) seul
 
