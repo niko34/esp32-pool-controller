@@ -1123,7 +1123,13 @@ curl -u admin:monmotdepasse http://poolcontroller.local/check-update
 
 Champs additifs v2.11.0 : `firmware_digest` / `filesystem_digest` — empreintes SHA-256 des assets (champ `digest` de l'API GitHub, format `sha256:<64 hex>`, chaîne vide si la release ne le fournit pas). L'UI les relaie en paramètre `digest=` de `/download-update` et **désactive le bouton Installer** si l'une des deux est vide (fail-closed).
 
-La réponse contient aussi `release_name`, `published_at` et `release_notes` (corps de la release GitHub). Depuis la v2.10.4 ([ADR-0032](adr/0032-reponses-http-bornees.md)), `release_notes` est **tronqué à 2048 caractères** (`kOtaReleaseNotesMaxChars`) avec suffixe « … » : le corps d'une release n'est pas borné côté GitHub, la troncature borne la réponse HTTP construite en RAM.
+La réponse contient aussi `release_name`, `published_at` et `release_notes` (corps de la release GitHub). Depuis la v2.10.4 ([ADR-0032](adr/0032-reponses-http-bornees.md)), `release_notes` est **tronqué à 2048 caractères** (`kOtaReleaseNotesMaxChars`) avec suffixe « … » : le corps d'une release n'est pas borné côté GitHub, la troncature borne la réponse HTTP construite en RAM. Depuis la v2.16.1, la coupe respecte les **frontières UTF-8** (un accent/emoji coupé en deux produisait un JSON invalide côté navigateur).
+
+Depuis la v2.16.1 ([ADR-0032, extension 2026-08-04](adr/0032-reponses-http-bornees.md#extension-2026-08-04--check-update-parse-en-flux-entrant-v2161)), la réponse GitHub est parsée **en flux** (filtre limité aux champs consommés + budget mémoire `kOtaCheckJsonBudgetBytes` = 8192 o) au lieu d'être chargée entière en RAM. **Le contrat de la route est inchangé** (mêmes champs). Nouveau cas d'erreur :
+
+| Code | Corps | Cas |
+|---|---|---|
+| `500` | `{"error":"GitHub response too large"}` | Corps de release GitHub dépassant le budget JSON (8 Ko) — refus propre, pas de consommation mémoire non bornée |
 
 ---
 

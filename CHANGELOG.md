@@ -2,6 +2,25 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.16.1] - 2026-08-04
+
+### Corrigé
+
+- **La vérification de mise à jour (`/check-update`) ne tombe plus en erreur sur un appareil en fonctionnement prolongé** (constaté en production le 2026-08-04 sur un appareil 2.14.0 : « Erreur HTTP GitHub: -1 » systématique sur heap fragmenté — l'allocation du contexte TLS ~48 Ko échouait avant toute communication — puis « JSON parse error » juste après reboot). Cause : le handler violait le patron [ADR-0032](docs/adr/0032-reponses-http-bornees.md) côté flux **entrant** — la réponse GitHub (~10 Ko, croissante à chaque release) était chargée entière en RAM (`getString()`) puis parsée en document complet (pic ~35 Ko en plus de la session TLS). Correctif : parse **en flux** (`useHTTP10(true)` + `deserializeJson` sur `getStream()` avec filtre 7 champs) et `JsonDocument` sur allocateur **plafonné net** (`BudgetJsonAllocator`, budget `kOtaCheckJsonBudgetBytes` = 8192 o) → pic mémoire ~35 Ko → **≤ 8 Ko** (hors session TLS ~48 Ko, incompressible). Corps de release hors budget → `500` propre « GitHub response too large » + log dédié (chemin d'erreur distinct du « Erreur parsing JSON GitHub », qui porte désormais le détail de l'erreur). Réponse JSON de la route **inchangée** vue du frontend (mêmes champs).
+- **Les notes de release tronquées ne produisent plus de JSON invalide côté navigateur** : la coupe à `kOtaReleaseNotesMaxChars` (2048) respecte désormais les frontières UTF-8 (`utf8SafeCutLen`) — un caractère accentué ou un emoji coupé en deux au point de troncature rendait la réponse illisible (symptôme « réponse mal formée » de la 1ʳᵉ tentative post-reboot).
+
+### Ajouté
+
+- **Nouveau header pur `src/ota_check_logic.h`** (`AllocBudget` admit/release, `utf8SafeCutLen` — logique testable en natif, ADR-0017) + suite native `test/test_native_ota_check/` (**+13 tests, 428 au total**).
+
+### Documentation
+
+- `docs/adr/0032-reponses-http-bornees.md` : extension 2026-08-04 — le patron couvre désormais aussi les **réponses entrantes** d'API externes (parse en flux + budget dur), dernière ligne « bornage amont » du tableau d'audit soldée. Pas de nouvel ADR (application du patron existant).
+- `docs/API.md` : `/check-update` — contrat inchangé, nouveau cas d'erreur 500 « GitHub response too large », troncature UTF-8 sûre.
+- `docs/subsystems/ota-manager.md` : parse en flux borné de la réponse GitHub Releases.
+
+---
+
 ## [2.16.0] - 2026-08-04
 
 ### Firmware

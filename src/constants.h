@@ -244,6 +244,14 @@ constexpr size_t kHeapRingDumpMaxEntries = 32;            // Entrées dumpées a
 // réponse HTTP construite en RAM.
 constexpr size_t kOtaReleaseNotesMaxChars = 2048;
 
+// Budget NET d'allocations du JsonDocument de /check-update (allocateur
+// plafonné avec crédit à la libération, bug-checkupdate-heap-tls / ADR-0032).
+// La réponse GitHub est parsée en flux avec filtre (7 champs retenus) : pic
+// NET ~5-6 Ko pour une release normale (corps ≤ ~2,5 Ko + doublement transitoire
+// du buffer de chaîne + pool de variants ~1 Ko) ; 8 Ko couvre large. Au-delà →
+// NoMemory → 500 propre au lieu d'une consommation non bornée.
+constexpr size_t kOtaCheckJsonBudgetBytes = 8192;
+
 // ============================================================================
 // SENSOR CONSTANTS - Paramètres capteurs
 // ============================================================================

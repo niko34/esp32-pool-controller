@@ -8,6 +8,7 @@
 #include "github_root_ca.h"
 #include "ota_integrity.h"
 #include "ota_integrity_logic.h"
+#include "ota_check_logic.h"
 // Migration core 3 (feature-063) : include EXPLICITE de WiFiClient.h — sur
 // core 2 il arrive transitivement via HTTPClient.h, plus sur core 3 (où
 // WiFiClient est un alias de NetworkClient). Sans effet binaire en core 2.
@@ -282,6 +283,70 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
   }
 }
 
+// Allocateur ArduinoJson plafonné (bug-checkupdate-heap-tls, ADR-0032) : borne
+// NETTE dure sur le JsonDocument de /check-update. Chaque bloc est préfixé d'un
+// en-tête portant sa taille pour créditer le budget à la libération et au
+// rétrécissement (revue 2.16.1 : ArduinoJson double ses buffers de chaîne
+// pendant le parse puis les rétrécit — un comptage monotone facturerait ~4× la
+// taille utile ; et un realloc de RÉTRÉCISSEMENT ne doit JAMAIS être refusé,
+// StringBuilder::save() le suppose infaillible). malloc/realloc (jamais new[])
+// → un refus produit nullptr, qu'ArduinoJson convertit en NoMemory — aucun
+// std::bad_alloc possible sur ce chemin.
+class BudgetJsonAllocator : public ArduinoJson::Allocator {
+ public:
+  explicit BudgetJsonAllocator(size_t capBytes) : _budget(capBytes) {}
+
+  void* allocate(size_t size) override {
+    if (!_budget.admit(size)) return nullptr;
+    void* raw = malloc(size + kHeaderBytes);
+    if (raw == nullptr) {
+      _budget.release(size);
+      return nullptr;
+    }
+    *static_cast<size_t*>(raw) = size;
+    return static_cast<char*>(raw) + kHeaderBytes;
+  }
+
+  void deallocate(void* ptr) override {
+    if (ptr == nullptr) return;
+    void* raw = static_cast<char*>(ptr) - kHeaderBytes;
+    _budget.release(*static_cast<size_t*>(raw));
+    free(raw);
+  }
+
+  void* reallocate(void* ptr, size_t newSize) override {
+    if (ptr == nullptr) return allocate(newSize);
+    void* raw = static_cast<char*>(ptr) - kHeaderBytes;
+    const size_t oldSize = *static_cast<size_t*>(raw);
+    if (newSize > oldSize) {
+      // Croissance : seul le DELTA est facturé — refus possible (NoMemory).
+      if (!_budget.admit(newSize - oldSize)) return nullptr;
+    } else {
+      // Rétrécissement : crédit immédiat, jamais de refus budgétaire.
+      _budget.release(oldSize - newSize);
+    }
+    void* newRaw = realloc(raw, newSize + kHeaderBytes);
+    if (newRaw == nullptr) {
+      // Bloc d'origine intact (sémantique realloc) : défaire l'écriture budget.
+      if (newSize > oldSize) {
+        _budget.release(newSize - oldSize);
+      } else {
+        _budget.admit(oldSize - newSize);  // re-facture ce qui vient d'être crédité
+      }
+      return nullptr;
+    }
+    *static_cast<size_t*>(newRaw) = newSize;
+    return static_cast<char*>(newRaw) + kHeaderBytes;
+  }
+
+ private:
+  // En-tête aligné : préserve l'alignement max du pointeur rendu à ArduinoJson.
+  static constexpr size_t kHeaderBytes =
+      alignof(max_align_t) > sizeof(size_t) ? alignof(max_align_t)
+                                            : sizeof(size_t);
+  AllocBudget _budget;
+};
+
 static void handleCheckUpdate(AsyncWebServerRequest* request) {
   systemLogger.info("Vérification des mises à jour GitHub...");
 
@@ -303,6 +368,10 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   }
 
   https.addHeader("User-Agent", "ESP32-Pool-Controller");
+  // bug-checkupdate-heap-tls (ADR-0032) : HTTP/1.0 interdit le Transfer-Encoding
+  // chunked (patron ArduinoJson officiel) → getStream() livre le corps brut,
+  // parsable en flux sans le stocker entier.
+  https.useHTTP10(true);
 
   int httpCode = https.GET();
 
@@ -333,16 +402,37 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
     return;
   }
 
-  String payload = https.getString();
+  // bug-checkupdate-heap-tls (ADR-0032) : la réponse GitHub (~10 Ko, croît à
+  // chaque release) n'est PLUS chargée entière en RAM (l'ancien getString() +
+  // parse complet culminait à ~35 Ko en plus des ~48 Ko de la session TLS →
+  // échec systématique sur heap fragmenté). Parse EN FLUX avec filtre : seuls
+  // les champs réellement consommés sont retenus.
+  JsonDocument filter;
+  filter["tag_name"] = true;
+  filter["name"] = true;
+  filter["published_at"] = true;
+  filter["body"] = true;
+  filter["assets"][0]["name"] = true;
+  filter["assets"][0]["browser_download_url"] = true;
+  filter["assets"][0]["digest"] = true;
+
+  BudgetJsonAllocator budgetAlloc(kOtaCheckJsonBudgetBytes);
+  JsonDocument doc(&budgetAlloc);
+  DeserializationError error = deserializeJson(
+      doc, https.getStream(), DeserializationOption::Filter(filter));
   https.end();
 
-  // Parser la réponse JSON
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, payload);
-
   if (error) {
-    systemLogger.error("Erreur parsing JSON GitHub");
-    sendErrorResponse(request, 500, "JSON parse error");
+    if (error == DeserializationError::NoMemory) {
+      // Budget kOtaCheckJsonBudgetBytes dépassé (corps de release anormalement
+      // gros) ou heap réellement épuisé : refus propre, pas de crash.
+      systemLogger.error("Réponse GitHub hors budget JSON /check-update (" +
+                         String(kOtaCheckJsonBudgetBytes) + " o)");
+      sendErrorResponse(request, 500, "GitHub response too large");
+    } else {
+      systemLogger.error("Erreur parsing JSON GitHub: " + String(error.c_str()));
+      sendErrorResponse(request, 500, "JSON parse error");
+    }
     return;
   }
 
@@ -391,9 +481,14 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   response["published_at"] = doc["published_at"];
   // bug-crash-getlogs-badalloc (audit) : le corps de release GitHub n'est pas
   // borné → tronquer pour borner la réponse construite en RAM.
+  // bug-checkupdate-heap-tls : coupe sur une frontière UTF-8 (les notes en
+  // français contiennent accents/emojis — couper un caractère multi-octets en
+  // deux produisait un JSON invalide côté navigateur).
   String releaseNotes = doc["body"].as<String>();
   if (releaseNotes.length() > kOtaReleaseNotesMaxChars) {
-    releaseNotes = releaseNotes.substring(0, kOtaReleaseNotesMaxChars) + "…";
+    size_t cut = utf8SafeCutLen(releaseNotes.c_str(), releaseNotes.length(),
+                                kOtaReleaseNotesMaxChars);
+    releaseNotes = releaseNotes.substring(0, cut) + "…";
   }
   response["release_notes"] = releaseNotes;
 

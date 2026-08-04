@@ -37,7 +37,7 @@ bool isEnabled() const;
 
 ## Flow OTA HTTP (UI → firmware)
 
-1. Client appelle `GET /check-update` → le firmware interroge l'API GitHub Releases pour comparer la version courante (`FIRMWARE_VERSION` dans [`version.h`](../../src/version.h)) à la dernière release. La réponse relaie aussi les empreintes SHA-256 des assets (`firmware_digest` / `filesystem_digest`, champ `digest` de l'API GitHub).
+1. Client appelle `GET /check-update` → le firmware interroge l'API GitHub Releases pour comparer la version courante (`FIRMWARE_VERSION` dans [`version.h`](../../src/version.h)) à la dernière release. La réponse relaie aussi les empreintes SHA-256 des assets (`firmware_digest` / `filesystem_digest`, champ `digest` de l'API GitHub). Depuis la v2.16.1 ([ADR-0032, extension 2026-08-04](../adr/0032-reponses-http-bornees.md#extension-2026-08-04--check-update-parse-en-flux-entrant-v2161)), la réponse GitHub (~10 Ko, croissante à chaque release) est parsée **en flux** (`useHTTP10(true)` + filtre 7 champs) sur un `JsonDocument` à allocateur **plafonné net** (`BudgetJsonAllocator`, `kOtaCheckJsonBudgetBytes` = 8192 o) — pic mémoire du handler ≤ 8 Ko hors session TLS (~48 Ko incompressible) ; corps hors budget → `500` « GitHub response too large » + log dédié. Les notes de release sont tronquées à `kOtaReleaseNotesMaxChars` (2048) sur **frontière UTF-8** (`utf8SafeCutLen`, [`ota_check_logic.h`](../../src/ota_check_logic.h)).
 2. Client appelle `POST /download-update` avec l'URL **et le paramètre `digest=` (requis, fail-closed)**.
 3. Le firmware télécharge le `.bin` via HTTPS depuis `github.com` (certificat racine embarqué dans [`github_root_ca.h`](../../src/github_root_ca.h)), en calculant le SHA-256 du flux au fil de l'eau.
 4. Vérification d'intégrité (voir ci-dessous), puis flash validé dans la partition inactive (Update API ESP32) ou partition `spiffs`.
@@ -100,6 +100,7 @@ L'historique est **préservé** pendant une OTA filesystem car il vit sur une pa
 - [`src/ota_manager.h`](../../src/ota_manager.h), [`src/ota_manager.cpp`](../../src/ota_manager.cpp)
 - [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp) — routes `/update`, `/check-update`, `/download-update`
 - [`src/ota_integrity.h`](../../src/ota_integrity.h) / [`src/ota_integrity_logic.h`](../../src/ota_integrity_logic.h) — vérification d'intégrité SHA-256
+- [`src/ota_check_logic.h`](../../src/ota_check_logic.h) — logique pure `/check-update` (`AllocBudget`, `utf8SafeCutLen` — 13 tests natifs `test/test_native_ota_check/`)
 - [`src/github_root_ca.h`](../../src/github_root_ca.h) — certificat racine ISRG Root X1
 - [`partitions.csv`](../../partitions.csv)
 - [docs/UPDATE_GUIDE.md](../UPDATE_GUIDE.md)

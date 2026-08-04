@@ -46,7 +46,7 @@ Routes corrigées ou bornées par cette spec :
 | `GET /get-logs` | (a) paginée | Page 30 entrées (hard cap 60, queue même-ms incluse), `measureJson` + garde + stream pré-dimensionné |
 | `GET /download-logs` | (b) chunked | Machine à états fichier → RAM, report de ligne `logs_export_chunk.h`, zéro accumulation |
 | `GET /get-history` | (c) reserve testé → **(b) chunked depuis v2.14.0** | `reserve(points × kHistoryPointJsonMaxBytes(128) + 128)`, échec → 503 — *supersedé par l'[Extension 2026-07-30](#extension-2026-07-30--get-history-chunked-et-filet-ws-v2140)* |
-| `GET /check-update` | bornage amont | Release notes GitHub tronquées à `kOtaReleaseNotesMaxChars` (2048) + « … » |
+| `GET /check-update` | bornage amont → **flux entrant borné depuis v2.16.1** | Release notes GitHub tronquées à `kOtaReleaseNotesMaxChars` (2048) + « … » — *complété par l'[Extension 2026-08-04](#extension-2026-08-04--check-update-parse-en-flux-entrant-v2161)* (le corps GitHub REÇU restait chargé entier en RAM) |
 
 Patrons de référence préexistants : `GET /debug/sensor_trace` (patron (a), v2.10.1) ; `GET /coredump/download` (patron (b)).
 
@@ -99,9 +99,22 @@ Détails d'implémentation et invariants (anti-ré-entrance du log, récolte des
 
 Nuance vs l'alternative « `try/catch` » **rejetée** par cet ADR pour les routes HTTP : elle reste rejetée côté HTTP (l'exception du `cbuf` laisse un état incohérent). Côté WS, le catch est **sûr et légitime** car il enveloppe une émission atomique dont l'allocation précède toute mutation d'état — il complète la garde, il ne la remplace pas.
 
+## Extension 2026-08-04 — `/check-update` parse en flux entrant (v2.16.1)
+
+Incident production du 2026-08-04 (appareil 2.14.0, fonctionnement prolongé) : « Erreur HTTP GitHub: -1 » systématique sur heap fragmenté (l'allocation du contexte TLS ~48 Ko échoue avant toute communication) et « JSON parse error » juste après reboot. Il a montré que la décision du 2026-07-24 avait un angle mort : elle bornait les réponses **sortantes** construites en RAM, et le « bornage amont » v2.10.4 de `/check-update` ne bornait que ce qui était *relayé* au navigateur — pas ce qui était **reçu** de GitHub. `https.getString()` chargeait la réponse entière (10 236 o mesurés pour la release v2.16.0, croissante à chaque release — corps de release jusqu'à 125 000 caractères côté GitHub), puis `deserializeJson` construisait le document complet (~2-3× l'entrée) : pic transitoire ~85-95 Ko avec la session TLS, exigeant de gros blocs contigus. **Le patron est étendu aux réponses ENTRANTES d'API externes** (spec `bug-checkupdate-heap-tls`) :
+
+- **Parse en flux avec filtre** : `https.useHTTP10(true)` (pas de Transfer-Encoding chunked — patron ArduinoJson officiel) + `deserializeJson(doc, https.getStream(), DeserializationOption::Filter(filter))`, filtre limité aux 7 champs consommés (`tag_name`, `name`, `published_at`, `body`, `assets[].name/browser_download_url/digest`). Le corps n'est plus jamais stocké entier.
+- **Budget dur NET** : `JsonDocument` sur allocateur plafonné `BudgetJsonAllocator` (`kOtaCheckJsonBudgetBytes = 8192`, `constants.h`) — en-tête de taille par bloc pour **créditer** le budget à la libération et au rétrécissement (ArduinoJson double ses buffers de chaîne pendant le parse puis les rétrécit : un comptage monotone facturerait ~4× la taille utile, et un realloc de rétrécissement ne doit jamais être refusé) ; `malloc`/`realloc`, jamais `new[]` → un refus produit `NoMemory`, jamais `std::bad_alloc`. Dépassement → **500** propre « GitHub response too large » + log dédié « Réponse GitHub hors budget JSON /check-update » (distinct du parse invalide, qui logue désormais le détail de l'erreur).
+- **Troncature UTF-8 sûre** : la coupe brute `substring(0, 2048)` des release notes pouvait sectionner un caractère multi-octets (accents/emojis des notes en français) → JSON invalide côté navigateur. `utf8SafeCutLen` coupe sur une frontière de caractère.
+- Logique pure testable en natif ([ADR-0017](0017-logique-metier-pure-humble-object-testabilite.md)) : `src/ota_check_logic.h` (`AllocBudget`, `utf8SafeCutLen`), 13 tests `test/test_native_ota_check/`.
+
+Pic mémoire du handler : ~35 Ko → **≤ 8 Ko**, hors session TLS (~48 Ko, incompressible avec `WiFiClientSecure` — hors périmètre, assumé).
+
+Verrouillage additionnel : **tout corps de réponse d'API externe dont la taille dépend de données distantes doit être parsé en flux avec budget — un `getString()` sur un tel corps est un défaut de revue**, symétrique de la règle sur les réponses sortantes.
+
 ## Références
 
-- Code : `src/web_routes_data.cpp` (`handleGetLogs`, `handleDownloadLogs`, `handleGetHistory`), `src/web_routes_ota.cpp` (`handleCheckUpdate`), `src/logs_page.h`, `src/logs_export_chunk.h`, `src/logger.h` (`forEachRecentLog` visiteur `bool`, `getLogEntryByIndex`), `src/constants.h` (`kHttpHeapMarginBytes`, `kLogsMaxEntriesPerPage`, `kLogsPageHardCap`, `kLogExportLineMaxBytes`, `kHistoryPointJsonMaxBytes`, `kOtaReleaseNotesMaxChars`)
+- Code : `src/web_routes_data.cpp` (`handleGetLogs`, `handleDownloadLogs`, `handleGetHistory`), `src/web_routes_ota.cpp` (`handleCheckUpdate`, `BudgetJsonAllocator`), `src/ota_check_logic.h` (`AllocBudget`, `utf8SafeCutLen`), `src/logs_page.h`, `src/logs_export_chunk.h`, `src/logger.h` (`forEachRecentLog` visiteur `bool`, `getLogEntryByIndex`), `src/constants.h` (`kHttpHeapMarginBytes`, `kLogsMaxEntriesPerPage`, `kLogsPageHardCap`, `kLogExportLineMaxBytes`, `kHistoryPointJsonMaxBytes`, `kOtaReleaseNotesMaxChars`, `kOtaCheckJsonBudgetBytes`)
 - Spec : `specs/features/doing/bug-crash-getlogs-badalloc-audit-routes.md`
 - ADR liés : [ADR-0029](0029-auto-guerison-heap.md) (fragmentation du tas, auto-guérison), [ADR-0017](0017-logique-metier-pure-humble-object-testabilite.md) (modules purs testables en natif)
 - Doc externe : [`docs/API.md`](../API.md) (contrats `/get-logs`, `/download-logs`, `/get-history`, `/check-update`), [`docs/subsystems/logger.md`](../subsystems/logger.md)
