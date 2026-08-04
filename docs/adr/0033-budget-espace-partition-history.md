@@ -2,6 +2,8 @@
 
 - **Statut** : Accepté
 - **Date** : 2026-07-27
+
+> ℹ️ **Note (2026-08-04, feature-063 / [ADR-0034](0034-migration-core3-idf5.md)) — défense CONSERVÉE (décision utilisateur 2026-08-03)** : le déclencheur amont (bug littlefs div/0 sur FS plein) est **corrigé sous IDF 5** (littlefs 2.11.2). Après la bascule core 3, le budget d'espace garanti devient une **défense dormante** — il reste en place, il n'est **PAS retiré**.
 - **Décideurs** : Nicolas Philippe (architect), debugger (investigation NOSPC), embedded-developer
 - **Spec(s) liée(s)** : bug-nospc-partition-history, investigation-corruption-recurrente-history
 

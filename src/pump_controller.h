@@ -55,6 +55,17 @@ private:
   // UART (setManualPump, isMaintenanceInhibited) → garantit la visibilité inter-tâches.
   volatile bool maintenanceInhibit = false;
 
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  // Migration core 3 (feature-063, prescription P1 pool-chemistry) : pompe
+  // utilisable. Passé à false UNIQUEMENT dans begin() (chemin core 3) si
+  // ledcAttachChannel() échoue — écrit AVANT le démarrage web/UART, jamais
+  // réarmé à chaud (reboot requis). Fail-closed : applyPumpDuty() refuse toute
+  // mutation d'une pompe inutilisable (pumpDuty reste 0 à vie).
+  // volatile : écrit par loopTask (begin), lu en contexte web async / UART
+  // (setManualPump → applyPumpDuty) — patron identique à maintenanceInhibit.
+  volatile bool pumpUsable[2] = {true, true};
+#endif
+
   DosingState phDosingState;
   DosingState orpDosingState;
 

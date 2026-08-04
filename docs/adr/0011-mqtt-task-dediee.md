@@ -2,6 +2,8 @@
 
 - **Statut** : Accepté
 - **Date** : 2026-04-27
+
+> ⚠️ **Note corrective « effet fantôme » (2026-08-04, feature-063 / [ADR-0034](0034-migration-core3-idf5.md))** : les build flags `-DCONFIG_LWIP_MAX_SOCKETS=24` (feature-014) et `-DCONFIG_LWIP_TCP_MAXRTX=5` (F6, itération 3 ci-dessous) **n'ont JAMAIS été appliqués** — la lib lwIP est **précompilée** dans le core Arduino, ces `-D` ne sont lus par aucun fichier compilé du projet. Le comportement réseau réel a donc toujours été celui des valeurs par défaut : **16 sockets / 12 retransmissions** (~75 s avant abandon de socket, et non ~10 s comme documenté en IT3 — la protection effective de `mqttTask` repose sur les mécanismes des itérations 4-5 : socket bornée `SO_SNDTIMEO` + `safePublish()`). Les deux flags ont été **retirés** de `platformio.ini` par feature-063 (retrait sans effet binaire, prouvé à l'octet près). Le comportement réseau documenté par F6 n'a jamais été le comportement réel.
 - **Décideurs** : Nicolas Philippe
 - **Spec(s) liée(s)** : [`feature-014-mqtt-task-dediee`](../../specs/features/done/feature-014-mqtt-task-dediee.md)
 

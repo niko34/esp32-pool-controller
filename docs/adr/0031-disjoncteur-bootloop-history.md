@@ -2,6 +2,8 @@
 
 - **Statut** : Accepté
 - **Date** : 2026-07-22
+
+> ℹ️ **Note (2026-08-04, feature-063 / [ADR-0034](0034-migration-core3-idf5.md)) — défense CONSERVÉE (décision utilisateur 2026-08-03)** : le déclencheur amont (bug littlefs div/0 dans `lfs_alloc`) est **corrigé sous IDF 5** (littlefs 2.11.2). Après la bascule core 3, ce disjoncteur devient une **défense dormante** — il reste en place, il n'est **PAS retiré**.
 - **Décideurs** : Nicolas Philippe (architect), debugger (diagnostic du boot-loop), embedded-developer
 - **Spec(s) liée(s)** : feature-059-disjoncteur-bootloop-history
 

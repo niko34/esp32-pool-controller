@@ -2,6 +2,24 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.15.0] - 2026-08-04
+
+### Firmware
+
+- **Code bi-core core 2 / core 3** (feature-063, exécution de l'étude feature-062) : le firmware compile désormais à l'identique sur core Arduino 2.0.17 (production) ET core Arduino 3.x / ESP-IDF 5.x, via gardes `#if ESP_ARDUINO_VERSION_MAJOR >= 3` dans 3 fichiers — LEDC pompes doseuses (`ledcAttachChannel`/`ledcWriteChannel`, 20 kHz/8 bits/canaux strictement identiques, échec d'attache → CRITICAL + pompe inutilisable fail-closed `pumpUsable`, double GO `pool-chemistry`), watchdog (`esp_task_wdt_config_t` + `esp_task_wdt_reconfigure`), mbedtls sha256 (macros de compat 2.28/3.x) ; + include explicite `WiFiClient.h` dans `web_routes_ota.cpp` (include transitif disparu en core 3). **Le comportement production est strictement inchangé — prouvé à l'octet près** (binaire core 2 identique à la baseline, delta ±16 octets = artefact `__TIME__`) ; 415/415 tests natifs.
+- **Nouvel environnement de banc `esp32dev_core3`** (pioarduino, BUILD-ONLY — jamais flashé) : compile SUCCESS avec le fork ESP32Async épinglé 3.4.10/3.11.2 (compatibilité core 3 désormais **prouvée**) — Flash 1 693 142 o = 92,27 % d'app0 (marge 141 866 o), RAM 69 248 o, versions résolues pioarduino 55.3.37 / core 3.3.7 / IDF 5.5.0. `default_envs = esp32dev` et `deploy.sh` inchangés ; la bascule production reste une porte conditionnelle (ADR-0034).
+- **Retrait des flags lwIP inopérants** `-DCONFIG_LWIP_MAX_SOCKETS=24` / `-DCONFIG_LWIP_TCP_MAXRTX=5` de `platformio.ini` : flags « fantômes » jamais appliqués (lwIP précompilé dans le core — 16 sockets / 12 retransmissions effectifs depuis toujours). Retrait sans effet binaire, prouvé.
+
+### Documentation
+
+- `docs/adr/0034-migration-core3-idf5.md` (**nouveau** — ex-DRAFT numéroté et accepté) : décision de migration en deux phases, résultats réels du banc, check-list de la porte de bascule production (banc matériel L3, épinglage pioarduino sur release taguée, alerte MQTT pompe inutilisable, hors saison, 14 j, binaires archivés + sha256).
+- `docs/adr/0011-mqtt-task-dediee.md` : note corrective « effet fantôme » (les flags lwIP n'ont jamais été appliqués — le comportement réseau réel n'a jamais été celui documenté en IT3).
+- `docs/adr/0031-*.md` / `docs/adr/0033-*.md` : notes « défense CONSERVÉE » (déclencheur littlefs div/0 corrigé sous IDF 5 → défenses dormantes après bascule, PAS retirées — décision utilisateur du 2026-08-03).
+- `docs/BUILD.md` : section « Les deux environnements firmware » + pièges pioarduino (pio du penv, `pio pkg install`, épinglage requis).
+- `docs/subsystems/pump-controller.md` : section « Mise en sécurité `pumpUsable` » (chemin core 3 uniquement).
+
+---
+
 ## [2.14.0] - 2026-07-30
 
 ### Corrigé

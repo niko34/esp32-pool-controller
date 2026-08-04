@@ -111,6 +111,19 @@ Le flag `maintenanceInhibit` ([`pump_controller.h:53`](../../src/pump_controller
 
 Le flag ne se lève **qu'au redémarrage** du contrôleur (le mode maintenance est un état terminal jusqu'au reboot manuel). Logs : `warning` throttlé une fois par boot sur refus de commande manuelle ; `critical` à l'entrée en maintenance (côté `main.cpp`).
 
+## Mise en sécurité `pumpUsable` (chemin core 3 uniquement — feature-063, v2.15.0)
+
+Le PWM des pompes est **bi-core** depuis feature-063 ([ADR-0034](../adr/0034-migration-core3-idf5.md)) : sous garde `#if ESP_ARDUINO_VERSION_MAJOR >= 3`, `begin()` utilise `ledcAttachChannel(pin, PUMP_PWM_FREQ, PUMP_PWM_RES_BITS, channel)` / `ledcWriteChannel()` — canaux 0/1 explicites, **20 kHz / 8 bits STRICTEMENT identiques** au core 2 (le duty ne change pas d'échelle). En core 2 (production actuelle), le chemin `ledcSetup`/`ledcAttachPin`/`ledcWrite` est **inchangé, à l'octet près**.
+
+Nouveauté du chemin core 3 : contrairement à `ledcSetup()`, `ledcAttachChannel()` **retourne un bool**. Prescription **P1 pool-chemistry** (GO sous conditions, toutes implémentées) — échec d'attache = **pompe inutilisable, fail-closed** :
+
+- `pumpUsable[i]` (`volatile bool`, [`pump_controller.h`](../../src/pump_controller.h) — patron identique à `maintenanceInhibit`) passé à `false` **uniquement** dans `begin()` sur échec d'attache, **jamais réarmé à chaud** (reboot requis). Log **CRITICAL** « pompe déclarée INUTILISABLE jusqu'au reboot ».
+- Le GPIO est **tenu LOW** (le `pinMode(OUTPUT)` + `digitalWrite(LOW)` précèdent la tentative d'attache) — pompe physiquement arrêtée.
+- **Inhibition par pompe** à deux points complémentaires : garde en **première ligne** d'`applyPumpDuty()` (avant le cache `pumpDuty` et toute mutation → `pumpDuty[i]` reste 0 à vie, aucun `ledcWriteChannel` sur canal non attaché) + refus dans `setManualPump()` (défense en profondeur, `warning` throttlé une fois par boot).
+- L'autre pompe reste pilotable (inhibition **par pompe**, pas globale).
+
+> ⚠️ **Exigence P1 pool-chemistry restante** : le CRITICAL local ne suffit pas en production — une alerte MQTT dédiée « pompe inutilisable » est **obligatoire avant toute bascule production core 3** (condition de la porte de bascule [ADR-0034](../adr/0034-migration-core3-idf5.md)).
+
 ## Algorithme (résumé)
 
 1. **Gate `canDose(int pumpIndex)`** — fail-closed strict (feature-021, validé pool-chemistry). Voir [Garde-fous `canDose`](#garde-fous-candose) ci-dessous pour la liste complète des 10 conditions évaluées dans l'ordre.

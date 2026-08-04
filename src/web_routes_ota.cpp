@@ -8,6 +8,10 @@
 #include "github_root_ca.h"
 #include "ota_integrity.h"
 #include "ota_integrity_logic.h"
+// Migration core 3 (feature-063) : include EXPLICITE de WiFiClient.h — sur
+// core 2 il arrive transitivement via HTTPClient.h, plus sur core 3 (où
+// WiFiClient est un alias de NetworkClient). Sans effet binaire en core 2.
+#include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Update.h>

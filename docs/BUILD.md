@@ -12,6 +12,27 @@ pio run
 
 Génère `.pio/build/esp32dev/firmware.bin`.
 
+### Les deux environnements firmware (feature-063, v2.15.0)
+
+Depuis la phase code bi-core de la migration core 3 ([ADR-0034](adr/0034-migration-core3-idf5.md)), `platformio.ini` déclare **deux** environnements ESP32 :
+
+| Env | Plateforme | Rôle |
+|-----|-----------|------|
+| `esp32dev` *(défaut)* | `espressif32@6.9.0` (core Arduino 2.0.17 / IDF 4.4.7) | **Production** — c'est le binaire buildé par `pio run` et déployé par `deploy.sh` |
+| `esp32dev_core3` | pioarduino (core Arduino 3.x / IDF 5.x) | **Banc de compilation BUILD-ONLY** — vérifie que le code bi-core compile en core 3. **Jamais flashé** (pas d'`upload_port` ; la bascule production est une porte conditionnelle, voir [ADR-0034](adr/0034-migration-core3-idf5.md)) |
+
+```bash
+pio run -e esp32dev_core3     # build du banc core 3 (aucun upload)
+```
+
+Le code source est identique pour les deux : les divergences d'API (LEDC, watchdog, mbedtls) sont sous gardes `#if ESP_ARDUINO_VERSION_MAJOR >= 3` dans 3 fichiers (`pump_controller.cpp`, `main.cpp`, `ota_integrity.cpp`).
+
+**Pièges pioarduino** :
+
+- Utiliser le **pio du penv** : `~/.platformio/penv/bin/pio` (le pio système Python 3.12 échoue avec `ModuleNotFoundError: fatfs/littlefs`).
+- **Premier build** : lancer `pio pkg install -e esp32dev_core3` avant `pio run -e esp32dev_core3` (installation de la plateforme pioarduino).
+- La plateforme pointe l'URL `stable` **non épinglée** : versions résolues au 2026-08-04 — pioarduino 55.3.37, core arduino-esp32 **3.3.7**, IDF 5.5.0. Un **épinglage sur une release taguée est requis avant toute bascule production** (exigence de revue, [ADR-0034](adr/0034-migration-core3-idf5.md)).
+
 ### Filesystem (LittleFS) seul
 
 ```bash
