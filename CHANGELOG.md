@@ -2,6 +2,28 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.18.0] - 2026-08-08
+
+### Firmware
+
+- **Support PSRAM — module WROVER-E** (feature-066) : `-DBOARD_HAS_PSRAM` (+ `-mfix-esp32-psram-cache-issue` / `-mfix-esp32-psram-cache-strategy=memw`, alignés sur les libs précompilées) activé sur les **deux envs** (`esp32dev` core 2 production, `esp32dev_core3` banc core 3). **Binaire unique** WROOM/WROVER : sur un module sans PSRAM, l'init échoue proprement et le firmware continue à l'identique (dégradation gracieuse, validée sur les deux cores).
+- **Log de boot PSRAM** : `PSRAM : X Mo détectés (les allocations > 4 Ko y sont placées automatiquement)` ou `PSRAM absente — RAM interne seule (module WROOM)`.
+- **Infos système** : champs `psram_size` / `psram_free` ajoutés à `GET /get-system-info` (0 = absente).
+- **Levier TLS core 3** : sur module **WROVER-E**, la vérification/installation de mises à jour GitHub (`/check-update`, TLS sortant) **refonctionnera sous core 3** — les allocations > 4 Ko partent automatiquement en PSRAM (`SPIRAM_USE_MALLOC` précompilé), levant la limitation acceptée en v2.16.2 (spec `bug-checkupdate-tls-core3`). Validation à réception du module (procédure de swap : spec feature-066). Builds bi-core + 428 tests natifs verts.
+
+### Fonctionnalités
+
+- **Ligne « PSRAM » dans la card Infos système** (Paramètres → Système) : `libre / totale KB libres` sur module WROVER, « absente » sur module WROOM.
+
+### Documentation
+
+- `docs/API.md` : champs `psram_size` / `psram_free` documentés sur `/get-system-info`.
+- `docs/BUILD.md` : flags PSRAM des deux envs (justification `-mfix-*` / libs précompilées).
+- `docs/adr/0034-migration-core3-idf5.md` : note additive — levier PSRAM implémenté côté firmware, en attente du module pour validation. Pas de nouvel ADR (mise en œuvre du levier déjà consigné dans ADR-0034).
+- `docs/features/page-settings.md` : ligne PSRAM de la card Infos système.
+
+---
+
 ## [2.17.1] - 2026-08-08
 
 ### Firmware

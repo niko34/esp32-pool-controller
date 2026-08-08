@@ -621,6 +621,9 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   doc["chip_revision"] = ESP.getChipRevision();
   doc["cpu_freq_mhz"] = ESP.getCpuFreqMHz();
   doc["free_heap"] = ESP.getFreeHeap();
+  // feature-066 : PSRAM (0 = absente, module WROOM — l'UI affiche « absente »)
+  doc["psram_size"] = ESP.getPsramSize();
+  doc["psram_free"] = ESP.getFreePsram();
   doc["heap_size"] = ESP.getHeapSize();
   doc["flash_size"] = ESP.getFlashChipSize();
   doc["flash_speed"] = ESP.getFlashChipSpeed();

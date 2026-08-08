@@ -96,6 +96,12 @@ La bascule se fera en **OTA-only** : le bootloader IDF 4.4 existant est conserv�
 >
 > Le support écran externe LVGL/UART2 a été **entièrement retiré** (feature-065) : plus aucun périphérique sur les GPIO 16/17 — le **prérequis matériel du levier WROVER-E ci-dessus est levé**. Gain flash collatéral : marge app0 core 3 **92,3 % → 90,9 %** (1 667 566 o) ; core 2 : 80,7 % (1 481 445 o).
 
+> **Note additive 2026-08-08 — levier PSRAM implémenté côté firmware (feature-066, v2.18.0) — en attente du module pour validation**
+>
+> Le volet **logiciel** du levier WROVER-E est livré : flags PSRAM (`-DBOARD_HAS_PSRAM` + `-mfix-esp32-psram-cache-*`, alignés sur les libs précompilées) sur les **deux envs**, log de boot (détectée avec taille / absente), champs `psram_size`/`psram_free` dans `/get-system-info` et ligne PSRAM dans l'UI Infos système. **Binaire unique** WROOM/WROVER (dégradation gracieuse sur module sans PSRAM, validée sur les deux cores — builds bi-core + 428 tests natifs verts). Aucun placement explicite : `SPIRAM_USE_MALLOC` (précompilé, seuil 4096) suffit — les allocations > 4 Ko (dont les buffers TLS) partent automatiquement en PSRAM.
+>
+> La **validation matérielle** (log PSRAM détectée, `/check-update` fonctionnel sous core 3 = test décisif du levier) se fera à réception du module ESP32-DevKitC-VE commandé le 2026-08-08, selon la **procédure de swap** consignée dans la spec `specs/features/doing/feature-066-support-psram-wrover.md` (flash établi core 2 → OTA core 3 → test check-update → swap PCB → re-saisie config → verre doseur de contrôle ; l'ancien WROOM flashé = retour arrière matériel).
+
 ### Ce que ça verrouille
 
 - pioarduino devient la plateforme de build cible du contrôleur (alignement avec le projet écran) ; l'accès au sdkconfig complet exige de payer le plan B.

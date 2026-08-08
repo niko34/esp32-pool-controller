@@ -33,6 +33,21 @@ Le code source est identique pour les deux : les divergences d'API (LEDC, watchd
 - **Premier build OU changement de version de la plateforme** : lancer `pio pkg install -e esp32dev_core3` avant `pio run -e esp32dev_core3` (installation/réinstallation de la plateforme pioarduino). Symptôme si oublié : la première invocation de `pio run -e esp32dev_core3` échoue avec `TypeError ... NoneType` (réinstallation du framework interrompue) — remède : `pio pkg install -e esp32dev_core3` puis relancer le build.
 - La plateforme est **épinglée sur la release taguée `55.03.37`** (2026-08-04) : pioarduino 55.3.37, core arduino-esp32 **3.3.7**, IDF 5.5.0 — les versions exactes validées au banc feature-063 (item de la porte de bascule [ADR-0034](adr/0034-migration-core3-idf5.md), désormais livré). **Toute montée de version de la plateforme est un choix explicite** qui exige une re-validation au banc — l'URL `stable`, utilisée avant l'épinglage, avait déjà dérivé vers 55.03.311 (core 3.3.11).
 
+### Support PSRAM — module WROVER-E (feature-066, v2.18.0)
+
+Les **deux envs** (`esp32dev` et `esp32dev_core3`) portent depuis v2.18.0 les flags PSRAM :
+
+```ini
+-DBOARD_HAS_PSRAM
+-mfix-esp32-psram-cache-issue
+-mfix-esp32-psram-cache-strategy=memw
+```
+
+- `-DBOARD_HAS_PSRAM` : active l'init PSRAM au démarrage (avant `setup()`). Sur un module **sans** PSRAM (WROOM), l'init échoue **proprement** et le firmware continue à l'identique — **binaire unique** WROOM/WROVER, dégradation gracieuse validée sur les deux cores.
+- Les deux `-mfix-esp32-psram-cache-issue` / `-mfix-esp32-psram-cache-strategy=memw` sont **obligatoires avec `BOARD_HAS_PSRAM`** : ils alignent la génération de code de **nos** sources sur les **libs précompilées** du core, qui sont buildées avec le workaround silicium PSRAM (`CONFIG_SPIRAM_CACHE_WORKAROUND=y`, stratégie MEMW) — même combinaison que les cartes WROVER officielles. Sans eux, mélange de code compilé avec/sans workaround → corruptions aléatoires.
+- Aucun placement explicite d'allocations : `SPIRAM_USE_MALLOC` (précompilé, seuil 4096) envoie **automatiquement** les allocations > 4 Ko en PSRAM quand elle est présente. C'est le levier qui restaure le TLS sortant sous core 3 (voir [ADR-0034](adr/0034-migration-core3-idf5.md), note du 2026-08-08).
+- Visibilité runtime : log de boot (« PSRAM : X Mo détectés » / « PSRAM absente ») + champs `psram_size` / `psram_free` de `/get-system-info` ([API.md](API.md)).
+
 ### Filesystem (LittleFS) seul
 
 ```bash

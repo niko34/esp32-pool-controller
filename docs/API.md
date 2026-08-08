@@ -526,6 +526,8 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-system-info
   "cpu_freq_mhz": 240,
   "free_heap": 123456,
   "heap_size": 327680,
+  "psram_size": 8388608,
+  "psram_free": 8257536,
   "flash_size": 4194304,
   "ota_partition": "app0",
   "ota_partition_size": 1703936,
@@ -544,6 +546,8 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-system-info
 ```
 
 > `sketch_size` (octets, `ESP.getSketchSize()`) et `ota_partition_size` (octets, taille de la partition app active) permettent de calculer l'occupation flash du firmware — affichée sur la ligne « Firmware (flash) » de la carte Infos système (v2.5.2). `sketch_size` ajouté en v2.5.2 (feature-047).
+>
+> `psram_size` / `psram_free` (octets, `ESP.getPsramSize()` / `ESP.getFreePsram()`, ajoutés en v2.18.0, feature-066) : PSRAM du module (WROVER-E). **`psram_size = 0` signifie PSRAM absente** (module WROOM) — l'UI affiche alors « absente » sur la ligne PSRAM de la card Infos système.
 
 ---
 

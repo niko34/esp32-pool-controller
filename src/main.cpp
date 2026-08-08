@@ -111,6 +111,15 @@ void setup() {
   systemLogger.begin();  // Initialise le mutex avant tout accès multi-core
   systemLogger.info("=== Démarrage ESP32 Pool Controller v" + String(FIRMWARE_VERSION) + " ===");
   systemLogger.info("Build: " + String(FIRMWARE_BUILD_DATE) + " " + String(FIRMWARE_BUILD_TIME));
+  // feature-066 : détection PSRAM (module WROVER-E). psramFound() est fiable
+  // ici : l'init a lieu avant setup() (BOARD_HAS_PSRAM) et échoue proprement
+  // sur un module WROOM sans PSRAM (binaire unique, dégradation gracieuse).
+  if (psramFound()) {
+    systemLogger.info("PSRAM : " + String(ESP.getPsramSize() / 1048576) +
+                      " Mo détectés (les allocations > 4 Ko y sont placées automatiquement)");
+  } else {
+    systemLogger.info("PSRAM absente — RAM interne seule (module WROOM)");
+  }
 
   // Initialisation GPIO bouton factory reset et LED intégrée
   // PCB v2 (feature-019) : bouton factory reset sur GPIO35 (input-only,

@@ -4438,6 +4438,12 @@
       $("#sys_chip_model").textContent = data.chip_model || "—";
       $("#sys_cpu_freq").textContent = data.cpu_freq_mhz ? `${data.cpu_freq_mhz} MHz` : "—";
       $("#sys_free_heap").textContent = data.free_heap ? `${Math.round(data.free_heap / 1024)} KB` : "—";
+      // feature-066 : PSRAM (module WROVER) — psram_size = 0 sur module WROOM
+      if ($("#sys_psram")) {
+        $("#sys_psram").textContent = data.psram_size
+          ? `${Math.round(data.psram_free / 1024)} / ${Math.round(data.psram_size / 1024)} KB libres`
+          : "absente";
+      }
       $("#sys_flash_size").textContent = data.flash_size ? `${Math.round(data.flash_size / (1024 * 1024))} MB` : "—";
 
       if (data.sketch_size && data.ota_partition_size) {
