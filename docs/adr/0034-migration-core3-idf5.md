@@ -83,6 +83,15 @@ La bascule se fera en **OTA-only** : le bootloader IDF 4.4 existant est conserv�
 - Directives `#if` bi-core dans 3 fichiers (+1 include explicite) tant que le core 2 reste supporté.
 - La plateforme pioarduino du banc pointe l'URL `stable` **non épinglée** : dette acceptée pour un env BUILD-ONLY, **interdite pour la production** (voir porte). **Épinglée le 2026-08-04** sur la release taguée `55.03.37` (item de la porte livré — `stable` avait déjà dérivé vers 55.03.311).
 
+> **Note additive 2026-08-08 — régression TLS sortant sous core 3 sur ESP32 classique (limitation ACCEPTÉE)**
+>
+> Constatée en fenêtre d'observation core 3 sur l'appareil de production (spec `bug-checkupdate-tls-core3`, v2.16.2) : **`/check-update` et « Installer depuis GitHub » — tout TLS sortant — sont inopérants sous core 3**, y compris sur heap fraîche après reboot, alors que le même code réussissait en core 2.
+>
+> - **Cause racine démontrée** : l'empreinte statique d'IDF 5 sur ESP32 classique (sans PSRAM) réduit le plus gros bloc heap contigu à **~43-47 Ko dès le boot** — insuffisant pour une session TLS sortante (~50 Ko en pointe : 2×16 Ko de buffers symétriques + structures + X509). Les allocations refusées en plein handshake remontent en erreurs mbedtls déguisées (`X509 - Allocation of memory failed`, voire `Certificate verification failed`). GitHub, les certificats embarqués et la crypto matérielle sont **hors de cause** (validation X509 rejouée sur l'ESP32 : rc=0, flags=0). Le remède upstream, les **buffers TLS dynamiques** (`CONFIG_MBEDTLS_DYNAMIC_BUFFER`), n'est activé que sur la branche master du lib-builder (futur core majeur) — **absent des 3.3.x**, pas de fix logiciel sans libs custom.
+> - **Décision (utilisateur, 2026-08-08)** : régression **acceptée**. L'échec est **propre** (500 + log heap/mbedtls détaillé, livrés en v2.16.2), aucun crash ; contournement opérationnel : OTA par **upload manuel** des binaires de release (`/update`, flux déjà utilisé). Le TLS **entrant** n'existe pas sur ce projet (serveur web en HTTP local) — seul le canal GitHub est touché.
+> - **Levier documenté** : module **ESP32-DevKitC-VE (WROVER-E, +8 Mo PSRAM)** — la config core 3 place déjà les allocations > 4 Ko en PSRAM (`SPIRAM_USE_MALLOC=y`, seuil 4096) → session TLS restaurée + marge heap pour tout le système. **Prérequis** : libérer les GPIO 16/17 (consommés par la PSRAM sur WROVER) → retrait du code écran UART (feature-065 à venir).
+> - Ce point s'ajoute à la pesée de la porte de bascule ci-dessous : tant que le matériel reste un WROOM sans PSRAM, basculer en core 3 = perdre la vérification/installation de mises à jour via GitHub.
+
 ### Ce que ça verrouille
 
 - pioarduino devient la plateforme de build cible du contrôleur (alignement avec le projet écran) ; l'accès au sdkconfig complet exige de payer le plan B.
@@ -104,7 +113,7 @@ La bascule du contrôleur de production vers core 3 est une **décision utilisat
 
 ## Références
 
-- Specs : `specs/features/done/feature-062-etude-migration-core3-idf5.md` (étude, inventaire, checklist L3), `specs/features/doing/feature-063-execution-migration-core3.md` (exécution, résultats réels)
+- Specs : `specs/features/done/feature-062-etude-migration-core3-idf5.md` (étude, inventaire, checklist L3), `specs/features/doing/feature-063-execution-migration-core3.md` (exécution, résultats réels), `specs/features/done/bug-checkupdate-tls-core3.md` (régression TLS sortant — investigation, preuves, décision d'acceptation, note additive 2026-08-08)
 - Code : [`src/pump_controller.cpp`](../../src/pump_controller.cpp) / [`.h`](../../src/pump_controller.h) (LEDC bi-core + `pumpUsable`), [`src/main.cpp`](../../src/main.cpp) (WDT `esp_task_wdt_reconfigure`), [`src/ota_integrity.cpp`](../../src/ota_integrity.cpp) (macros compat mbedtls), [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp) (include `WiFiClient.h`), [`platformio.ini`](../../platformio.ini) (`[env:esp32dev_core3]`, retrait flags lwIP)
 - ADR liés : [ADR-0011](0011-mqtt-task-dediee.md) (flags lwIP fantômes — note corrective), [ADR-0028](0028-migration-fork-esp32async.md) (fork ESP32Async), [ADR-0030](0030-watchdog-connectivite.md) (wedge lwIP), [ADR-0031](0031-disjoncteur-bootloop-history.md) / [ADR-0033](0033-budget-espace-partition-history.md) (défenses conservées — notes)
 - Docs : [BUILD.md](../BUILD.md) (les deux envs, pièges pioarduino), [subsystems/pump-controller.md](../subsystems/pump-controller.md) (mise en sécurité `pumpUsable`)

@@ -1131,6 +1131,10 @@ Depuis la v2.16.1 ([ADR-0032, extension 2026-08-04](adr/0032-reponses-http-borne
 |---|---|---|
 | `500` | `{"error":"GitHub response too large"}` | Corps de release GitHub dépassant le budget JSON (8 Ko) — refus propre, pas de consommation mémoire non bornée |
 
+**Diagnostics (v2.16.2)** : chaque appel logge l'état heap **avant** l'ouverture de la session TLS (« heap libre=… o, plus gros bloc=… o ») ; un échec côté client (code HTTP négatif) logge le détail mbedtls (`lastError`, message + code) et le libellé `errorToString` au lieu d'un « -1 » muet.
+
+> ⚠️ **Limitation connue — core Arduino 3 uniquement** (banc `esp32dev_core3`, pas la production core 2) : le plus gros bloc heap contigu (~45 Ko au boot) ne suffit pas à la session TLS sortante (~50 Ko) → cette route (et `/download-update` vers GitHub) répond `500` de façon systématique, échec propre sans crash. Limitation acceptée ([ADR-0034, note 2026-08-08](adr/0034-migration-core3-idf5.md)) ; contournement : OTA par upload manuel (`/update`).
+
 ---
 
 ### POST /download-update — CRITICAL

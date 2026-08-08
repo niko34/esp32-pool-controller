@@ -348,7 +348,12 @@ class BudgetJsonAllocator : public ArduinoJson::Allocator {
 };
 
 static void handleCheckUpdate(AsyncWebServerRequest* request) {
-  systemLogger.info("Vérification des mises à jour GitHub...");
+  // bug-checkupdate-tls-core3 : l'échec observé est un manque de mémoire
+  // pendant le handshake (X509 alloc failed) — tracer l'état heap AVANT la
+  // session TLS pour distinguer épuisement total / fragmentation (maxAlloc).
+  systemLogger.info("Vérification des mises à jour GitHub... (heap libre=" +
+                    String(ESP.getFreeHeap()) + " o, plus gros bloc=" +
+                    String(ESP.getMaxAllocHeap()) + " o)");
 
   WiFiClientSecure client;
   if (!ensureTimeForTls(request)) {
@@ -376,7 +381,18 @@ static void handleCheckUpdate(AsyncWebServerRequest* request) {
   int httpCode = https.GET();
 
   if (httpCode != HTTP_CODE_OK) {
-    systemLogger.error("Erreur HTTP GitHub: " + String(httpCode));
+    String errorDetail = "";
+    if (httpCode < 0) {
+      // bug-checkupdate-tls-core3 : un code négatif = échec côté client
+      // (TLS/socket) — remonter le détail mbedtls au lieu d'un -1 muet.
+      char tlsErr[128] = {0};
+      int tlsCode = client.lastError(tlsErr, sizeof(tlsErr));
+      if (tlsCode != 0) {
+        errorDetail = String(" — TLS: ") + tlsErr + " (" + String(tlsCode) + ")";
+      }
+      errorDetail += String(" [") + HTTPClient::errorToString(httpCode) + "]";
+    }
+    systemLogger.error("Erreur HTTP GitHub: " + String(httpCode) + errorDetail);
     https.end();
 
     // Cas spécial : 404 signifie qu'aucune release n'existe

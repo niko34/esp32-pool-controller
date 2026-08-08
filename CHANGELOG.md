@@ -2,6 +2,27 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.16.2] - 2026-08-08
+
+### ⚠️ Limitation connue — core Arduino 3 uniquement (banc, pas la production)
+
+- **Sous core 3 / IDF 5, « Vérifier les mises à jour » et « Installer depuis GitHub » sont inopérants** (tout TLS **sortant** depuis l'ESP32) — limitation **acceptée** (décision utilisateur 2026-08-08, spec `bug-checkupdate-tls-core3`). Cause démontrée (pas supposée) : l'empreinte statique d'IDF 5 sur ESP32 classique laisse un plus gros bloc heap contigu de ~43-47 Ko **dès le boot**, insuffisant pour une session TLS sortante (~50 Ko en pointe) — les allocations refusées pendant le handshake remontent en erreurs mbedtls trompeuses (« X509 alloc failed », « certificate verification failed »). GitHub, les certificats embarqués et la crypto matérielle sont hors de cause (validation X509 rejouée sur l'ESP32 lui-même : rc=0). Le remède upstream (`CONFIG_MBEDTLS_DYNAMIC_BUFFER`) n'existe pas dans les cores 3.3.x. **L'échec est propre** : `500` + log détaillé, aucun crash, le reste du firmware n'est pas affecté. **Contournement** : mise à jour OTA par **upload manuel** des binaires de release (`/update`, flux déjà utilisé). **Levier futur** : module WROVER-E (+8 Mo PSRAM) — la config core 3 place déjà les allocations > 4 Ko en PSRAM (seuil 4096, `SPIRAM_USE_MALLOC`) → TLS restauré ; prérequis : libérer les GPIO 16/17 (retrait du code écran UART, feature-065 à venir). La production (core 2) n'est pas concernée.
+
+### Modifié
+
+- **Certificats racines GitHub (`github_root_ca.h`) : les racines USERTrust RSA/ECC passent en variantes auto-signées** (exp. 2038) — les variantes cross-signées par AAA Certificate Services sont retirées (hygiène et pérennité de la chaîne de confiance ; ce n'était pas la cause du bug). Empreintes SHA-256 vérifiées contre les racines officielles Sectigo, sources consignées dans le header. ISRG Root X1 (assets CDN) inchangée.
+
+### Ajouté
+
+- **Diagnostics `/check-update` enrichis** : état heap loggé à chaque vérification (« heap libre=… o, plus gros bloc=… o » **avant** l'ouverture de la session TLS — distingue épuisement total et fragmentation) ; en cas d'échec côté client (code HTTP négatif), le log porte désormais le **détail mbedtls** (`client.lastError()`, message + code) et le libellé `HTTPClient::errorToString()` au lieu d'un « Erreur HTTP GitHub: -1 » muet.
+
+### Documentation
+
+- `docs/adr/0034-migration-core3-idf5.md` : note additive 2026-08-08 — régression TLS sortant sur ESP32 classique ajoutée aux conséquences négatives (acceptation, contournement, levier WROVER-E). Pas de nouvel ADR (conséquence de la migration déjà actée).
+- `docs/API.md` / `docs/subsystems/ota-manager.md` : limitation core 3 et nouveaux diagnostics documentés sur `/check-update`.
+
+---
+
 ## [2.16.1] - 2026-08-04
 
 ### Corrigé
