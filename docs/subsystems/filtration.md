@@ -117,7 +117,7 @@ Module **générique** (pas spécifique filtration) : conçu pour être réutili
 
 ### Coquille `filtration.cpp`
 
-`begin()`, `update()` et `computeAutoSchedule()` deviennent des **coquilles minces** : elles collectent les entrées (heure RTC, `millis()`, config NVS, température), délèguent aux fonctions pures, puis appliquent les effets de bord. Restent **exclusivement dans la coquille** : lecture RTC/heure système, `millis()`, persistance NVS, **deadband 1 °C**, **timeout 4 h**, temporisation de stabilisation, commande relais (`digitalWrite`), `publishState()` et événements UART. La garde « présence d'eau » (`canDose()` exige `filtration.isRunning()`) est **strictement préservée**.
+`begin()`, `update()` et `computeAutoSchedule()` deviennent des **coquilles minces** : elles collectent les entrées (heure RTC, `millis()`, config NVS, température), délèguent aux fonctions pures, puis appliquent les effets de bord. Restent **exclusivement dans la coquille** : lecture RTC/heure système, `millis()`, persistance NVS, **deadband 1 °C**, **timeout 4 h**, temporisation de stabilisation, commande relais (`digitalWrite`) et `publishState()`. La garde « présence d'eau » (`canDose()` exige `filtration.isRunning()`) est **strictement préservée**.
 
 ### Testabilité native
 

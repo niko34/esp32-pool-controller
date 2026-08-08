@@ -2,6 +2,24 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.17.0] - 2026-08-08
+
+### Firmware
+
+- **Retrait complet du support écran externe LVGL / UART2** (feature-065) : l'écran déporté (ESP32 dédié, liaison UART2 sur GPIO 16/17) était un essai **jamais mis en production**. Suppression des trois couches `uart_transport` / `uart_protocol` / `uart_commands` (~1 000 lignes) et de toutes les émissions d'événements dispersées (`main.cpp`, `pump_controller.cpp`, `filtration.cpp`, `sensors.cpp`, `web_routes_calibration.cpp`). **Aucun changement de contrat** HTTP / WebSocket / MQTT — retrait pur, régulation et gardes de sécurité chimique strictement identiques (double GO pool-chemistry, 428/428 tests natifs).
+- **Sécurité chimique — fermeture du bypass `pump_test` UART** : la commande écran `run_action/pump_test` appelait `setManualPump()` **sans passer par les gardes** `evaluateManualInject()` (bypass assumé « écran non déployé », condition pool-chemistry #4 de la feature-006). Cette voie non gardée disparaît avec `uart_commands` : toutes les activations manuelles restantes passent par les gardes web.
+- **Gains flash** : core 2 (production) **−35,3 Ko** (1 481 445 o, 80,7 % d'app0) ; core 3 (banc) **−30,0 Ko** (1 667 566 o, marge app0 92,3 % → **90,9 %**).
+- **GPIO 16/17 libérés** — prérequis matériel du module **WROVER-E (+8 Mo PSRAM)** levé (levier TLS core 3, cf. ADR-0034 et limitation connue v2.16.2).
+- **Toggle « Écran LVGL » de Paramètres → Avancé** : la card (déjà masquée) et le champ `screen_enabled` sont **conservés mais inertes** — la valeur reste persistée en config sans aucun effet. Retrait éventuel via une spec de suivi.
+
+### Documentation
+
+- Purge des mentions écran/UART dans `README.md`, `docs/MQTT.md`, `docs/subsystems/` (pump-controller, sensors, filtration, mqtt-manager, measure-validity) ; avertissement « `pump_test` non gardée » de `docs/subsystems/pump-controller.md` historicisé (bypass FERMÉ en v2.17.0).
+- `docs/features/page-settings.md` : card « Écran LVGL » documentée comme masquée / toggle inerte.
+- `docs/adr/0034-migration-core3-idf5.md` : note additive — GPIO 16/17 libérés, prérequis WROVER-E levé, nouvelle marge app0 core 3. Pas de nouvel ADR (retrait de code mort, décision portée par la spec + ADR-0034).
+
+---
+
 ## [2.16.2] - 2026-08-08
 
 ### ⚠️ Limitation connue — core Arduino 3 uniquement (banc, pas la production)

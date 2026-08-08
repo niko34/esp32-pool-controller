@@ -102,7 +102,7 @@ struct AuthConfig {
   bool disableApOnBoot = false;   // Désactiver le mode AP au prochain redémarrage (pour transition WiFi)
   bool sensorLogsEnabled = false; // Logs détaillés des sondes (pH, ORP, Temp) activés/désactivés
   bool debugLogsEnabled = false;  // Logs DEBUG (firmware + UI) activés/désactivés
-  bool screenEnabled = false;     // Écran LVGL externe (ESP32 dédié via UART2) activé/désactivé
+  bool screenEnabled = false;     // Champ hérité — support écran externe retiré en v2.17.0 (feature-065), conservé pour compatibilité de config
 };
 
 struct PumpControlParams {

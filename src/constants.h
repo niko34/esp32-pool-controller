@@ -10,9 +10,6 @@
 // Mapping matériel pour le circuit imprimé v2. Voir feature-019 et
 // docs/adr/0012-pcb-v2-gpio-mapping.md.
 // Bascule unidirectionnelle : ce code n'est plus compatible avec le PCB v1.
-//
-// Note : kUart2RxPin (16) et kUart2TxPin (17) sont définis dans
-// src/uart_transport.h — ne pas dupliquer ici.
 
 // Pins actifs
 constexpr uint8_t kBuiltinLedPin           = 2;   // LED bleue interne (status)

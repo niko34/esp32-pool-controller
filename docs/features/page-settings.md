@@ -100,6 +100,7 @@ Nouvelle section **en 1ᵉʳ onglet** (feature-056, v2.19.0). Un `radiogroup` (`
 - **Card "Signaux capteurs (brut / lissé)"** (feature-057, v2.7.0) — voir section dédiée ci-dessous.
 - **Card "Diagnostic crash"** — voir section dédiée ci-dessous.
 - **Card "Logs"** — voir section dédiée ci-dessous.
+- **Card « Écran LVGL » (masquée, toggle inerte depuis v2.17.0)** : la card existe toujours dans le DOM ([`data/index.html`](../../data/index.html), `style="display:none"`) et le champ `screen_enabled` est toujours lu/envoyé par `save()` ([`data/app.js`](../../data/app.js)), mais le support de l'écran externe UART2 a été **entièrement retiré du firmware** en v2.17.0 (feature-065) : la valeur est persistée en config sans **aucun effet**. Retrait du champ/toggle : spec de suivi éventuelle.
 
 > ℹ️ **Cartes retirées en v2.5.0** (feature-045) : « Debug oscillation pH » et « Diagnostic EZO », ajoutées pour la campagne de diagnostic d'oscillation pH (2026-05/06). Code récupérable via `git revert` du commit de la feature-045 ; état complet figé au tag `v2.4.0`.
 >

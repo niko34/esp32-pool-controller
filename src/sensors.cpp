@@ -820,7 +820,7 @@ bool SensorManager::isInitialized() const {
 }
 
 // =============================================================================
-// Enqueue de commandes — appelé par handlers async (Pass 4) ou UART (uart_commands)
+// Enqueue de commandes — appelé par les handlers async (Pass 4)
 // =============================================================================
 
 bool SensorManager::enqueueCalibratePhMid() {

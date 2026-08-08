@@ -318,7 +318,7 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
 - **`kicad/`** - Schémas électroniques KiCad
 - **`docs/`** - Documentation technique complémentaire
 - **`screenshots/`** - Captures d'écran de l'interface
-- **`tools/`** - Scripts utilitaires (ex: test UART)
+- **`tools/`** - Scripts utilitaires (couverture de tests, déploiement)
 - **`logo/`** - Fichiers logo du projet
 
 ## 📄 Licence

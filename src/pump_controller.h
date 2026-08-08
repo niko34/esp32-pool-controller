@@ -51,17 +51,17 @@ private:
   // Auto-guérison v2.9.1 (condition pool-chemistry C2) : quand true, tout dosage
   // (auto, manuel, scheduled) est inhibé dans update(). Posé UNIQUEMENT par le mode
   // maintenance de main.cpp (trop de reboots auto) ; reste actif jusqu'au prochain boot.
-  // volatile : écrit par loopTask (setMaintenanceInhibit), lu en contexte web async /
-  // UART (setManualPump, isMaintenanceInhibited) → garantit la visibilité inter-tâches.
+  // volatile : écrit par loopTask (setMaintenanceInhibit), lu en contexte web async
+  // (setManualPump, isMaintenanceInhibited) → garantit la visibilité inter-tâches.
   volatile bool maintenanceInhibit = false;
 
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
   // Migration core 3 (feature-063, prescription P1 pool-chemistry) : pompe
   // utilisable. Passé à false UNIQUEMENT dans begin() (chemin core 3) si
-  // ledcAttachChannel() échoue — écrit AVANT le démarrage web/UART, jamais
+  // ledcAttachChannel() échoue — écrit AVANT le démarrage du serveur web, jamais
   // réarmé à chaud (reboot requis). Fail-closed : applyPumpDuty() refuse toute
   // mutation d'une pompe inutilisable (pumpDuty reste 0 à vie).
-  // volatile : écrit par loopTask (begin), lu en contexte web async / UART
+  // volatile : écrit par loopTask (begin), lu en contexte web async
   // (setManualPump → applyPumpDuty) — patron identique à maintenanceInhibit.
   volatile bool pumpUsable[2] = {true, true};
 #endif

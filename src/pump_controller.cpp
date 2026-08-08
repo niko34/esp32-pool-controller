@@ -4,7 +4,6 @@
 #include "logger.h"
 #include "sensors.h"
 #include "filtration.h"
-#include "uart_protocol.h"
 #include "dosing_logic.h"
 #include "schedule_logic.h"
 #include <esp_task_wdt.h>
@@ -170,8 +169,8 @@ void PumpControllerClass::refreshDosingState(DosingState& state, unsigned long n
 
   // Accumuler le temps d'injection.
   // feature-006 (condition pool-chemistry #2) : le budget horaire usedMs est
-  // PARTAGÉ auto + manuel. `manualActive` couvre l'injection manuelle web, les
-  // pompes test et l'UART (prédicat du safety tracking : manualMode && duty>0).
+  // PARTAGÉ auto + manuel. `manualActive` couvre l'injection manuelle web et les
+  // pompes test (prédicat du safety tracking : manualMode && duty>0).
   // OR unique sur un seul point d'accumulation → PAS de double comptage possible
   // (une seule addition de delta par tour, quel que soit le mode actif).
   if (state.active || manualActive) {
@@ -850,8 +849,8 @@ void PumpControllerClass::update() {
 
   // feature-006 (condition pool-chemistry #2) : le budget horaire usedMs est
   // PARTAGÉ auto + manuel. Le prédicat manuel est CELUI du safety tracking
-  // (manualMode && duty>0, cf. plus bas) : injection manuelle web, pompes test
-  // ET commandes UART consomment ainsi le budget horaire. OR unique dans
+  // (manualMode && duty>0, cf. plus bas) : injection manuelle web et pompes test
+  // consomment ainsi le budget horaire. OR unique dans
   // refreshDosingState → pas de double comptage.
   int phBudgetIdx  = pumpIndexFromNumber(mqttCfg.phPump);
   int orpBudgetIdx = pumpIndexFromNumber(mqttCfg.orpPump);
@@ -1558,11 +1557,6 @@ void PumpControllerClass::update() {
     _lastDailySaveMs = now;
   }
 
-  // Envoyer un événement UART si l'état de dosage a changé
-  if (phDosingState.active != phActive || orpDosingState.active != orpActive) {
-    if (authCfg.screenEnabled) uartProtocol.sendDosingEvent(phActive, orpActive);
-  }
-
   phDosingState.active = phActive;
   orpDosingState.active = orpActive;
 }
@@ -1614,8 +1608,8 @@ void PumpControllerClass::resetDosingStates() {
 void PumpControllerClass::setManualPump(int pumpIndex, uint8_t duty) {
   // Auto-guérison v2.9.1 (condition pool-chemistry C2) : setManualPump est le point
   // de passage UNIQUE de TOUTE activation manuelle directe (routes web pumpN/on,
-  // inject/start, commandes UART pump_test). En mode maintenance, cette voie pilote
-  // sinon ledcWrite() immédiatement depuis la tâche web/UART et énergiserait la pompe
+  // inject/start). En mode maintenance, cette voie pilote
+  // sinon ledcWrite() immédiatement depuis la tâche web et énergiserait la pompe
   // jusqu'au prochain update(). On la ferme AVANT tout accès manualMode/applyPumpDuty.
   // Log throttlé (une fois par boot ; le mode maintenance ne se lève qu'au reboot).
   if (maintenanceInhibit) {

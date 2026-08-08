@@ -480,7 +480,7 @@ Cette section documente ce qui **n'est délibérément PAS exposé** en MQTT / H
 
 | Non exposé | Pourquoi |
 |-----------|----------|
-| **Injections manuelles** (déclenchement direct d'un dosage pH/chlore) | Sécurité chimique : aucun dosage ne doit pouvoir être déclenché par une automatisation sans supervision humaine. Une injection reste une action locale (UI web / écran), sous présence de l'opérateur. |
+| **Injections manuelles** (déclenchement direct d'un dosage pH/chlore) | Sécurité chimique : aucun dosage ne doit pouvoir être déclenché par une automatisation sans supervision humaine. Une injection reste une action locale (UI web), sous présence de l'opérateur. |
 | **Limites journalières / horaires de dosage** (configurables) | Ce sont des **garde-fous**, pas des préférences d'usage. Les rendre commandables à distance affaiblirait la barrière de sécurité qu'ils constituent (une automatisation HA pourrait relever le plafond avant de doser). Exposition écartée dès la feature-013. |
 | **Calibration EZO pH/ORP** | Requiert la présence physique (solutions étalon, sonde plongée). Action non automatisable à distance. |
 | **OTA / mise à jour firmware** | Flux supervisé interactivement, avec vérification CRC/signature. Pas de déclenchement fire-and-forget. |

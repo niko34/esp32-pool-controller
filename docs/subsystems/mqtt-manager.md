@@ -258,7 +258,7 @@ Mécanique dans le handler :
 4. Si `mqttChanged == true` → `mqttManager.requestReconnect()` + log INFO `"MQTT reconnect demandé (config MQTT modifiée)"`.
 5. Sinon → aucun appel, aucun log (la session MQTT continue intact).
 
-**Bénéfice** : un save de paramètres non-MQTT (modes de régulation pH/ORP, NTP, toggle DEBUG, écran LVGL, calibrations, etc.) **ne provoque plus** de cycle disconnect/reconnect, donc plus de republication des 17 messages auto-discovery HA, plus de transition transitoire « Déconnecté » sur le badge UI Paramètres → MQTT (voir [`docs/features/page-settings.md`](../features/page-settings.md)). En contrepartie, un save où l'utilisateur retape la même valeur MQTT (sans changement effectif) ne déclenche pas non plus de reconnect — comportement cohérent.
+**Bénéfice** : un save de paramètres non-MQTT (modes de régulation pH/ORP, NTP, toggle DEBUG, calibrations, etc.) **ne provoque plus** de cycle disconnect/reconnect, donc plus de republication des 17 messages auto-discovery HA, plus de transition transitoire « Déconnecté » sur le badge UI Paramètres → MQTT (voir [`docs/features/page-settings.md`](../features/page-settings.md)). En contrepartie, un save où l'utilisateur retape la même valeur MQTT (sans changement effectif) ne déclenche pas non plus de reconnect — comportement cohérent.
 
 Cas `enabled` true → false : `requestReconnect()` est bien appelé (changement détecté). `connectInTask()` n'agit pas tant que `enabled` reste off, mais la session existante est fermée proprement par la prochaine itération de `taskLoop()`.
 

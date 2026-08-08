@@ -25,8 +25,6 @@
 #include "measure_validity.h"
 #include "version.h"
 #include "rtc_manager.h"
-#include "uart_transport.h"
-#include "uart_protocol.h"
 #include "self_heal_logic.h"
 #include "net_health_logic.h"
 #include "heap_ring.h"
@@ -157,12 +155,6 @@ void setup() {
   // journée ; expiré au chargement si minuit dépassé et heure valide).
   loadBoostState();
 
-  // Initialisation UART écran (après chargement config pour respecter screenEnabled)
-  if (authCfg.screenEnabled) {
-    uartTransport.begin();
-    systemLogger.info("Écran LVGL activé — UART2 initialisé");
-  }
-
   // Initialisation authentification (après chargement config)
   authManager.setEnabled(authCfg.enabled);
   authManager.setPassword(authCfg.adminPassword);
@@ -263,7 +255,6 @@ void loop() {
   history.update();
   systemLogger.update();
   updateManualInject();
-  if (authCfg.screenEnabled) uartTransport.update();
 
   // Lecture capteurs à chaque loop (les capteurs gèrent leur propre throttling interne)
   // DS18B20 : machine à états non-bloquante (request → wait → read) toutes les 2s
@@ -1063,28 +1054,18 @@ void checkSystemHealth() {
   static bool lastPhLimitReached = false;
   static bool lastOrpLimitReached = false;
 
-  // Alerte MQTT + alarme écran à la TRANSITION uniquement (v2.10.1 : publishAlert
+  // Alerte MQTT à la TRANSITION uniquement (v2.10.1 : publishAlert
   // était appelé sans condition → une alerte + un log WARN par health check de 60 s
   // tant que la limite restait latchée). L'état permanent pour HA est porté par le
   // binary_sensor ph_limit (retain) — l'alerte est un événement de transition.
   if (safetyLimits.phLimitReached && !lastPhLimitReached) {
     const char* phLabel = (mqttCfg.phCorrectionType == "ph_plus") ? "pH+" : "pH-";
     mqttManager.publishAlert("ph_limit", String("Limite journalière ") + phLabel + " atteinte");
-    if (authCfg.screenEnabled) {
-      uartProtocol.sendAlarmRaised("PH_LIMIT", "Limite journalière pH atteinte");
-    }
-  } else if (!safetyLimits.phLimitReached && lastPhLimitReached && authCfg.screenEnabled) {
-    uartProtocol.sendAlarmCleared("PH_LIMIT");
   }
   lastPhLimitReached = safetyLimits.phLimitReached;
 
   if (safetyLimits.orpLimitReached && !lastOrpLimitReached) {
     mqttManager.publishAlert("orp_limit", "Limite journalière chlore atteinte");
-    if (authCfg.screenEnabled) {
-      uartProtocol.sendAlarmRaised("ORP_LIMIT", "Limite journalière ORP/chlore atteinte");
-    }
-  } else if (!safetyLimits.orpLimitReached && lastOrpLimitReached && authCfg.screenEnabled) {
-    uartProtocol.sendAlarmCleared("ORP_LIMIT");
   }
   lastOrpLimitReached = safetyLimits.orpLimitReached;
 

@@ -5,7 +5,6 @@
 #include "auth.h"
 #include "sensors.h"
 #include "json_compat.h"
-#include "uart_protocol.h"
 
 // =============================================================================
 // Routes de calibration capteurs Atlas EZO (feature-021 — Pass 4a)
@@ -16,20 +15,6 @@
 // L'UI observe l'avancement via les champs WS phCalPoints / orpCalPoints
 // rafraîchis à chaque cycle (cf. ws_manager.cpp).
 // =============================================================================
-
-namespace {
-
-// Diffuse l'event de fin de calibration sur l'écran LVGL si activé.
-// Note : l'event est envoyé immédiatement à la mise en queue (ack rapide), pas à
-// la fin de l'exécution I²C. L'écran observe la transition via les champs
-// phCalPoints / orpCalPoints publiés en parallèle.
-void notifyScreenCalibrationQueued(const char* sensor) {
-  if (authCfg.screenEnabled) {
-    uartProtocol.sendEventStr("event", "calibration_queued", "sensor", sensor);
-  }
-}
-
-}  // namespace
 
 void setupCalibrationRoutes(AsyncWebServer* server) {
   // ===========================================================================
@@ -68,10 +53,8 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
         bool ok = false;
         if (strcmp(step, "mid") == 0) {
           ok = sensors.enqueueCalibratePhMid();
-          if (ok) notifyScreenCalibrationQueued("ph_mid");
         } else if (strcmp(step, "low") == 0) {
           ok = sensors.enqueueCalibratePhLow();
-          if (ok) notifyScreenCalibrationQueued("ph_low");
         } else {
           sendErrorResponse(req, 400, "step must be 'mid' or 'low'");
           return;
@@ -124,7 +107,6 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
           sendErrorResponse(req, 503, "calibration queue saturée — réessayer dans 1s");
           return;
         }
-        notifyScreenCalibrationQueued("orp");
 
         StaticJson<128> resp;
         resp["success"] = true;

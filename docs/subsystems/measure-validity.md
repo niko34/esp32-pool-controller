@@ -16,7 +16,7 @@ Le verdict est consommé par :
 
 **La chaîne de mesure interne ne change PAS** : les sondes continuent d'être lues, filtrées et publiées (les champs live `ph`/`orp`/`temperature`/`phRaw`/… restent présents dans les payloads — page calibration et onglet Avancé intacts). Seuls la **présentation** et la **persistance historique** changent. MQTT/HA : **hors périmètre**, inchangé.
 
-**Mode Auto de la filtration non impacté** : le calcul de durée lit `sensors.getTemperature()` **en direct** (`filtration.cpp`), jamais le verdict de validité — par construction du pattern (la chaîne interne est intacte), l'extension température ne change rien à la filtration. Idem MQTT et écran UART (live).
+**Mode Auto de la filtration non impacté** : le calcul de durée lit `sensors.getTemperature()` **en direct** (`filtration.cpp`), jamais le verdict de validité — par construction du pattern (la chaîne interne est intacte), l'extension température ne change rien à la filtration. Idem MQTT (live).
 
 ## Architecture (Humble Object, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md))
 

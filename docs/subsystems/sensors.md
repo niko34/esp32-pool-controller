@@ -2,7 +2,7 @@
 
 - **Fichiers** : [`src/sensors.h`](../../src/sensors.h), [`src/sensors.cpp`](../../src/sensors.cpp), [`src/atlas_ezo.h`](../../src/atlas_ezo.h), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp)
 - **Singleton** : `extern SensorManager sensors;`
-- **Responsabilité** : lecture pH (Atlas EZO 0x63), ORP (Atlas EZO 0x62), température eau + circuit (DS18B20 multi-sondes) ; calibration EZO en interne ; exposition des valeurs et de l'état de calibration aux consommateurs (PID, WS, MQTT, UART, HTTP).
+- **Responsabilité** : lecture pH (Atlas EZO 0x63), ORP (Atlas EZO 0x62), température eau + circuit (DS18B20 multi-sondes) ; calibration EZO en interne ; exposition des valeurs et de l'état de calibration aux consommateurs (PID, WS, MQTT, HTTP).
 
 > **PCB v2, firmware ≥ 2.0.0** — la chaîne analogique ADS1115 + `DFRobot_PH` a été supprimée (cf. [ADR-0014](../adr/0014-migration-atlas-ezo.md), [feature-021](../../specs/features/done/feature-021-migration-atlas-ezo.md)).
 
@@ -162,7 +162,7 @@ Les chemins chauds (PID 100 Hz, broadcast WS 5 s, MQTT 10 s) ne peuvent pas tol�
 ## Queue FreeRTOS `_ezoQueue`
 
 - **Capacité** : `kEzoQueueLen = 4` slots (`QueueHandle_t`).
-- **Producteurs** : routes HTTP `/calibrate_*`, commandes UART écran, futurs handlers (boot wizard).
+- **Producteurs** : routes HTTP `/calibrate_*`, futurs handlers (boot wizard). *(Les commandes UART de l'écran externe, autre producteur historique, ont disparu en v2.17.0 — feature-065.)*
 - **Consommateur** : `loopTask` via `_processEzoQueue()` — dépile **au plus 1 commande par cycle** pour limiter la durée d'occupation du bus.
 - **Saturation** : `enqueue*()` retourne `false`. La route HTTP renvoie `503 calibration queue saturée — réessayer dans 1s`.
 - **Acquittement** : la mise en queue est l'ack de la route HTTP (`{success:true, queued:true}`). L'UI observe l'avancement via les champs WS `phCalPoints` / `orpCalPoints` rafraîchis automatiquement après chaque calibration.
@@ -434,7 +434,7 @@ Toutes définies dans [`src/constants.h`](../../src/constants.h).
 
 - `update()` : tourne dans `loopTask` (core 1). Seul producteur des caches `_lastPh`, `_lastOrp`, `_phCalCachedPoints`, `_orpCalCachedPoints`.
 - `getPh()` / `getOrp()` / `getPhCalibrationPointsCached()` : lectures atomiques (float / int 32 bits alignés sur Xtensa LX6 → instructions L32I single-cycle). Pas de mutex applicatif.
-- `enqueue*()` : producteurs depuis n'importe quel core / contexte (handler HTTP core 0, UART core 1, …). FreeRTOS queue est ISR-safe.
+- `enqueue*()` : producteurs depuis n'importe quel core / contexte (handler HTTP core 0, futurs producteurs core 1, …). FreeRTOS queue est ISR-safe.
 - Ring buffer de trace (feature-057) : seul producteur `loopTask` (`_recordSensorTrace`), lecteur handler AsyncTCP core 0 (`appendSensorTraceJson` / `getSensorTraceCount`). Lock-free (écritures atomiques 32 bits), voir [Trace des signaux capteurs](#trace-des-signaux-capteurs--feature-057).
 - Mutex `i2cMutex` : acquis par `_readEzoSensors`, `_processEzoQueue`, `AtlasEzoSensor::readSingle/calibrate/clearCalibration/queryCalPoints/readInfo`, et **également par les autres consommateurs I²C** (DS3231 dans `rtc_manager`).
 

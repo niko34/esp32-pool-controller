@@ -92,6 +92,10 @@ La bascule se fera en **OTA-only** : le bootloader IDF 4.4 existant est conserv�
 > - **Levier documenté** : module **ESP32-DevKitC-VE (WROVER-E, +8 Mo PSRAM)** — la config core 3 place déjà les allocations > 4 Ko en PSRAM (`SPIRAM_USE_MALLOC=y`, seuil 4096) → session TLS restaurée + marge heap pour tout le système. **Prérequis** : libérer les GPIO 16/17 (consommés par la PSRAM sur WROVER) → retrait du code écran UART (feature-065 à venir).
 > - Ce point s'ajoute à la pesée de la porte de bascule ci-dessous : tant que le matériel reste un WROOM sans PSRAM, basculer en core 3 = perdre la vérification/installation de mises à jour via GitHub.
 
+> **Note additive 2026-08-08 — GPIO 16/17 libérés (feature-065, v2.17.0)**
+>
+> Le support écran externe LVGL/UART2 a été **entièrement retiré** (feature-065) : plus aucun périphérique sur les GPIO 16/17 — le **prérequis matériel du levier WROVER-E ci-dessus est levé**. Gain flash collatéral : marge app0 core 3 **92,3 % → 90,9 %** (1 667 566 o) ; core 2 : 80,7 % (1 481 445 o).
+
 ### Ce que ça verrouille
 
 - pioarduino devient la plateforme de build cible du contrôleur (alignement avec le projet écran) ; l'accès au sdkconfig complet exige de payer le plan B.

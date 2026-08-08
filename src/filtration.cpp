@@ -4,7 +4,6 @@
 #include "logger.h"
 #include "sensors.h"
 #include "mqtt_manager.h"
-#include "uart_protocol.h"
 #include "pump_controller.h"
 #include "schedule_logic.h"
 #include <time.h>
@@ -244,7 +243,6 @@ void FiltrationManager::update() {
     digitalWrite(kFiltrationRelayPin, relayShouldBeOn ? HIGH : LOW);
     relayState = relayShouldBeOn;
     publishState();
-    if (authCfg.screenEnabled) uartProtocol.sendEventBool("event", "filtration_changed", "running", relayState);
   }
 }
 
