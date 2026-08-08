@@ -2,6 +2,19 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.17.1] - 2026-08-08
+
+### Firmware
+
+- **Suppression du réglage « Écran LVGL » devenu sans objet** (suivi de feature-065 / v2.17.0) : card retirée de Paramètres → Avancé (elle était déjà masquée), champ `screen_enabled` retiré du contrat `/get-config` / `/save-config` (un client legacy qui l'envoie encore est ignoré sans erreur), clé NVS plus écrite ni lue (clé orpheline inoffensive sur les appareils existants), champ `authCfg.screenEnabled` supprimé.
+
+### Documentation
+
+- `docs/API.md` : note de compatibilité — `screen_enabled` retiré, champ legacy ignoré depuis v2.17.1.
+- `docs/features/page-settings.md` : card « Écran LVGL » documentée comme supprimée.
+
+---
+
 ## [2.17.0] - 2026-08-08
 
 ### Firmware

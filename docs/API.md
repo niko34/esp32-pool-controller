@@ -494,6 +494,8 @@ Champs notables de la réponse :
 
 > ⚠️ **Retirés en v2.19.0 (feature-056)** : les champs `regulation_mode` et `filtration_enabled` **n'existent plus** dans `/get-config` ni `/save-config`. Ils sont fusionnés dans `install_mode` (voir [ADR-0026](adr/0026-mode-installation.md)). La migration NVS est automatique — voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md).
 
+> ⚠️ **Retiré en v2.17.1** : le champ `screen_enabled` **n'existe plus** dans `/get-config` ni `/save-config` (retrait du réglage devenu sans objet après la suppression du support écran LVGL en v2.17.0, feature-065). Compatibilité legacy : un client qui envoie encore `screen_enabled` dans `/save-config` est **ignoré silencieusement** (aucune erreur, les autres champs sont traités normalement). La clé NVS associée n'est plus écrite ni lue (clé orpheline inoffensive sur les appareils existants).
+
 ---
 
 ### POST /save-config — CRITICAL

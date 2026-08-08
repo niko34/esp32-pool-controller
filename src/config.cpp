@@ -180,7 +180,8 @@ void saveMqttConfig() {
   prefs.putString("auth_ap_pwd", authCfg.apPassword);
   prefs.putBool("sensor_logs", authCfg.sensorLogsEnabled);
   prefs.putBool("debug_logs", authCfg.debugLogsEnabled);
-  prefs.putBool("screen_enabled", authCfg.screenEnabled);
+  // v2.17.1 : la clé NVS "screen_enabled" n'est plus écrite ni lue (support
+  // écran retiré) — la clé résiduelle des appareils existants est inoffensive.
 
   // Puissance maximale des pompes
   prefs.putUChar("pump1_max_duty", mqttCfg.pump1MaxDutyPct);
@@ -370,7 +371,6 @@ void loadMqttConfig() {
   authCfg.apPassword = prefs.getString("auth_ap_pwd", authCfg.apPassword);
   authCfg.sensorLogsEnabled = prefs.getBool("sensor_logs", false);
   authCfg.debugLogsEnabled = prefs.getBool("debug_logs", false);
-  authCfg.screenEnabled = prefs.getBool("screen_enabled", false);
 
   // Puissance maximale des pompes
   mqttCfg.pump1MaxDutyPct = prefs.getUChar("pump1_max_duty", mqttCfg.pump1MaxDutyPct);

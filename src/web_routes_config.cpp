@@ -152,7 +152,6 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // Options de développement
   doc["sensor_logs_enabled"] = authCfg.sensorLogsEnabled;
   doc["debug_logs_enabled"] = authCfg.debugLogsEnabled;
-  doc["screen_enabled"] = authCfg.screenEnabled;
 
   // SÉCURITÉ: Masquer les credentials si non authentifié
   if (isAuthenticated) {
@@ -494,10 +493,9 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     authCfg.debugLogsEnabled = doc["debug_logs_enabled"];
     systemLogger.info(String("Logs DEBUG: ") + (authCfg.debugLogsEnabled ? "activés" : "désactivés"));
   }
-  if (!doc["screen_enabled"].isNull()) {
-    authCfg.screenEnabled = doc["screen_enabled"];
-    systemLogger.info(String("Écran LVGL: ") + (authCfg.screenEnabled ? "activé" : "désactivé"));
-  }
+  // refactor-retrait-toggle-ecran (v2.17.1) : champ screen_enabled retiré du
+  // contrat /get-config//set-config — un client legacy qui l'envoie encore est
+  // simplement ignoré (aucune erreur).
 
   // Note: Le token API n'est pas modifiable via /save-config
   // Il doit être regénéré via une route dédiée pour éviter les modifications accidentelles
