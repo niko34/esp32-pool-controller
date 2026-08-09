@@ -2,6 +2,24 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.18.1] - 2026-08-09
+
+### Firmware
+
+- **Les graphiques (dashboard, écrans pH/ORP) s'affichent à nouveau** (bug `bug-history-doublons-troncature`, constaté en production les 08-09/08 : `/get-history` renvoyait un JSON tronqué → `SyntaxError` côté navigateur → courbes vides). Deux causes racines corrigées :
+  - **Agrégats horaires/journaliers dupliqués** : la consolidation créait un agrégat partiel à chaque passage pour le même créneau (jusqu'à 12 doublons/heure au même timestamp) — elle ne convertit désormais un créneau que lorsqu'il est **complet** (un seul agrégat par heure/jour, de meilleure qualité), et les agrégats dupliqués d'un même créneau sont **fusionnés** à la consolidation, au chargement et à l'import.
+  - **Réponse `/get-history` tronquée sous contention** : sur timeout du mutex history sans octet en vol, le callback chunked renvoyait `RESPONSE_TRY_AGAIN` que la lib ne re-sonde qu'à l'ack TCP suivant — sans rien en vol, silence → timeout TCP → JSON tronqué sans pied ; il émet désormais **un espace** (légal entre deux éléments JSON) qui maintient le flux vivant, la borne `kHistoryChunkMaxRetries` (clôture propre avec pied) est conservée.
+- **Assainissement automatique au premier boot** : les doublons déjà persistés par les versions ≤ 2.18.0 sont fusionnés au chargement de `/history.json` (moyennes équipondérées, **sans effacement de l'historique**) — log INFO `Historique : N agrégats dupliqués fusionnés`.
+- **Capacité RAW étendue à 8 h** : `kMaxRawDataPoints` 72 → 96 — nécessaire pour que les points survivent jusqu'à la complétude de leur créneau (~7 h). Budget partition history ([ADR-0033](docs/adr/0033-budget-espace-partition-history.md)) : pire cas 13 → 14 blocs / 16, garde `historySaveAdmit` inchangée. Builds bi-core verts, 436 tests natifs (+8).
+
+### Documentation
+
+- `docs/adr/0033-budget-espace-partition-history.md` : note additive — budget pire cas recalculé 14/16 blocs (`kMaxRawDataPoints` 96). Pas de nouvel ADR (application de mécanismes existants).
+- `docs/subsystems/history.md` : consolidation par créneau complet, déduplication (3 points d'appel), capacité RAW 8 h ; **suivi connu** documenté — les agrégats journaliers ne se forment jamais (rétention horaire 7 j < âge de consolidation 15 j, affamage préexistant hors lot).
+- `docs/API.md` : des espaces peuvent apparaître dans le flux `/get-history` sous contention (maintien de flux, sans effet pour `JSON.parse`).
+
+---
+
 ## [2.18.0] - 2026-08-08
 
 ### Firmware

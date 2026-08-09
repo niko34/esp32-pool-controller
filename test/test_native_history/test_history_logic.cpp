@@ -161,6 +161,71 @@ void test_saveAdmit_size_max_exact(void) {
   TEST_ASSERT_FALSE(historySaveAdmit(SIZE_MAX, 0, SIZE_MAX, 1));
 }
 
+
+// ---------------------------------------------------------------------------
+// bug-history-doublons-troncature — historyBucketConsolidable
+// ---------------------------------------------------------------------------
+// RAW_MAX_AGE = 6h = 21600 s ; bucket horaire = 3600 s.
+
+void test_bucketConsolidable_partial_hour_refused(void) {
+  // now = 10:00:00 + 6h : le bucket 04:00 court jusqu'à 04:59:59 — sa dernière
+  // seconde a EXACTEMENT 6h+1s-3600... cas parlant : bucket dont seule une
+  // partie des points dépasse 6h. now tel que bucketStart+3599 a 6h pile →
+  // frontière stricte : NON consolidable.
+  uint32_t bucketStart = 100000;
+  uint32_t now = bucketStart + 3599 + 21600;  // dernière seconde : âge == maxAge
+  TEST_ASSERT_FALSE(historyBucketConsolidable(now, bucketStart, 3600, 21600));
+}
+
+void test_bucketConsolidable_complete_hour_admitted(void) {
+  uint32_t bucketStart = 100000;
+  uint32_t now = bucketStart + 3599 + 21601;  // dernière seconde : âge > maxAge
+  TEST_ASSERT_TRUE(historyBucketConsolidable(now, bucketStart, 3600, 21600));
+}
+
+void test_bucketConsolidable_first_second_old_but_bucket_partial(void) {
+  // Le PREMIER point de l'heure a plus de 6h, mais pas la fin de l'heure →
+  // l'ancien prédicat par point aurait consolidé (créant l'agrégat partiel),
+  // le nouveau refuse — c'est LE cas du bug des doublons.
+  uint32_t bucketStart = 100000;
+  uint32_t now = bucketStart + 21601;  // début : 6h+1s ; fin : 6h+1s-3599 → trop jeune
+  TEST_ASSERT_TRUE(isOlderThan(now, bucketStart, 21600));          // ancien : oui
+  TEST_ASSERT_FALSE(historyBucketConsolidable(now, bucketStart, 3600, 21600));  // nouveau : non
+}
+
+void test_bucketConsolidable_zero_len_falls_back_to_start(void) {
+  uint32_t bucketStart = 100000;
+  TEST_ASSERT_TRUE(historyBucketConsolidable(bucketStart + 21601, bucketStart, 0, 21600));
+  TEST_ASSERT_FALSE(historyBucketConsolidable(bucketStart + 21600, bucketStart, 0, 21600));
+}
+
+void test_bucketConsolidable_daily_bucket(void) {
+  // HOURLY_MAX_AGE = 15 j = 1296000 s ; bucket jour = 86400 s.
+  uint32_t bucketStart = 1000000;
+  uint32_t lastSecond = bucketStart + 86399;
+  TEST_ASSERT_FALSE(historyBucketConsolidable(lastSecond + 1296000, bucketStart, 86400, 1296000));
+  TEST_ASSERT_TRUE(historyBucketConsolidable(lastSecond + 1296001, bucketStart, 86400, 1296000));
+}
+
+// ---------------------------------------------------------------------------
+// bug-history-doublons-troncature — historyMergeMeanFinite
+// ---------------------------------------------------------------------------
+
+void test_mergeMean_both_finite_average(void) {
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 7.15f, historyMergeMeanFinite(7.1f, 7.2f));
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 565.5f, historyMergeMeanFinite(550.0f, 581.0f));
+}
+
+void test_mergeMean_one_finite_keeps_it(void) {
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 7.1f, historyMergeMeanFinite(7.1f, NAN));
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 7.2f, historyMergeMeanFinite(NAN, 7.2f));
+}
+
+void test_mergeMean_none_finite_nan(void) {
+  TEST_ASSERT_TRUE(isnan(historyMergeMeanFinite(NAN, NAN)));
+  TEST_ASSERT_TRUE(isnan(historyMergeMeanFinite(INFINITY, NAN)));
+}
+
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
@@ -210,6 +275,16 @@ int main(int argc, char** argv) {
   RUN_TEST(test_saveAdmit_overflow_required_side);
   RUN_TEST(test_saveAdmit_overflow_available_side);
   RUN_TEST(test_saveAdmit_size_max_exact);
+
+  // bug-history-doublons-troncature
+  RUN_TEST(test_bucketConsolidable_partial_hour_refused);
+  RUN_TEST(test_bucketConsolidable_complete_hour_admitted);
+  RUN_TEST(test_bucketConsolidable_first_second_old_but_bucket_partial);
+  RUN_TEST(test_bucketConsolidable_zero_len_falls_back_to_start);
+  RUN_TEST(test_bucketConsolidable_daily_bucket);
+  RUN_TEST(test_mergeMean_both_finite_average);
+  RUN_TEST(test_mergeMean_one_finite_keeps_it);
+  RUN_TEST(test_mergeMean_none_finite_nan);
 
   return UNITY_END();
 }

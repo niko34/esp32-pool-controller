@@ -4,6 +4,8 @@
 - **Date** : 2026-07-27
 
 > ℹ️ **Note (2026-08-04, feature-063 / [ADR-0034](0034-migration-core3-idf5.md)) — défense CONSERVÉE (décision utilisateur 2026-08-03)** : le déclencheur amont (bug littlefs div/0 sur FS plein) est **corrigé sous IDF 5** (littlefs 2.11.2). Après la bascule core 3, le budget d'espace garanti devient une **défense dormante** — il reste en place, il n'est **PAS retiré**.
+
+> ℹ️ **Note (2026-08-09, bug-history-doublons-troncature, v2.18.1) — budget pire cas recalculé 14/16 blocs** : `kMaxRawDataPoints` passe de 72 à **96** (8 h de points bruts). Raison : la consolidation ne convertit plus que les créneaux horaires **complets** (correctif des agrégats dupliqués) — un point RAW doit survivre jusqu'à ~7 h (fin de son heure + `RAW_MAX_AGE` 6 h) ; à 72 points (6 h pile), l'éviction par capacité affamait l'agrégation horaire. Impact : +24 points ≈ **+2 Ko** sur `/history.json` ≈ +1 bloc dans le pic copy-on-write → pire cas **14 blocs ≤ 16, marge 2 blocs**. La garde d'admission `historySaveAdmit` est **inchangée** et reste le filet. Le verrou « recalculer le budget avant de grossir un fichier » a été appliqué : c'est ce recalcul.
 - **Décideurs** : Nicolas Philippe (architect), debugger (investigation NOSPC), embedded-developer
 - **Spec(s) liée(s)** : bug-nospc-partition-history, investigation-corruption-recurrente-history
 

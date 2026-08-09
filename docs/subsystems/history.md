@@ -6,15 +6,15 @@
 
 ## Rôle
 
-Enregistre des snapshots des valeurs (pH, ORP, température, filtration active, dosing pH/ORP) toutes les 5 minutes. Consolide progressivement les données anciennes pour garder un historique utilisable sur **~82 jours** (7 jours de données horaires + 75 jours de données journalières) sans saturer la flash.
+Enregistre des snapshots des valeurs (pH, ORP, température, filtration active, dosing pH/ORP) toutes les 5 minutes. Consolide progressivement les données anciennes pour garder un historique utilisable sur **~82 jours** (7 jours de données horaires + 75 jours de données journalières) sans saturer la flash. ⚠️ Objectif théorique : l'étage journalier est actuellement affamé — voir le *Suivi connu* de la section [Consolidation par créneau complet](#consolidation-par-créneau-complet--déduplication-v2181-bug-history-doublons-troncature).
 
 ## Granularités
 
 ```cpp
 enum Granularity : uint8_t {
-  RAW    = 0,   // 5 min, gardés 6h    → 72 points max  (kMaxRawDataPoints)
-  HOURLY = 1,   // moyenne 1h, gardée 7j → 168 points max (kMaxHourlyDataPoints)
-  DAILY  = 2    // moyenne 1j, gardée 75j → 75 points max  (kMaxDailyDataPoints)
+  RAW    = 0,   // 5 min, gardés ~7h (créneau complet) → 96 points max = 8h (kMaxRawDataPoints, v2.18.1)
+  HOURLY = 1,   // moyenne 1h → 168 points max = 7j (kMaxHourlyDataPoints) ; HOURLY_MAX_AGE = 15j (⚠️ voir Suivi connu)
+  DAILY  = 2    // moyenne 1j, gardée 90j (DAILY_MAX_AGE) → 75 points max (kMaxDailyDataPoints)
 };
 ```
 
@@ -23,10 +23,11 @@ Voir [`constants.h:49`](../../src/constants.h:49) et [`history.h:30`](../../src/
 ## Cycle de vie d'un point
 
 1. `recordDataPoint()` toutes les **5 min** (`RECORD_INTERVAL = 300000`) — ajout `RAW` dans `memoryBuffer`.
-2. `consolidateData()` toutes les **5 min** (`SAVE_INTERVAL = 300000`) :
-   - Points `RAW` plus anciens que 6 h → agrégés en moyenne horaire (`HOURLY`).
-   - Points `HOURLY` plus anciens que 7 j → agrégés en moyenne journalière (`DAILY`).
-   - Points `DAILY` plus anciens que 75 j → supprimés.
+2. `consolidateData()` toutes les **5 min** (`SAVE_INTERVAL = 300000`) — depuis la v2.18.1, par **créneau complet** (voir section dédiée ci-dessous) :
+   - Créneaux horaires `RAW` **complets** (dernière seconde de l'heure plus ancienne que `RAW_MAX_AGE` = 6 h, soit ~7 h après le début de l'heure) → **un** agrégat horaire (`HOURLY`).
+   - Créneaux journaliers `HOURLY` **complets** (dernière seconde du jour plus ancienne que `HOURLY_MAX_AGE` = 15 j) → **un** agrégat journalier (`DAILY`). ⚠️ Voir *Suivi connu* : ce chemin est actuellement affamé.
+   - Points `DAILY` plus anciens que 90 j (`DAILY_MAX_AGE`) → supprimés.
+   - Après tri : `dedupAggregatedPoints()` (fusion des agrégats dupliqués de même créneau — ceinture-bretelles).
    - Appelle **`saveToFile()` en interne** à la fin du cycle de consolidation. Ne pas rappeler `saveToFile()` séparément depuis `update()` — c'est exactement le bug qui causait deux écritures flash + deux logs `Historique sauvegardé` toutes les 5 min.
 3. Au boot : `loadFromFile()` restaure `memoryBuffer` depuis le fichier.
 
@@ -46,10 +47,32 @@ Depuis **feature-041** (*characterization refactor*), la math **scalaire** d'agr
 | `isMajority(trueCount, total)` | Majorité stricte `trueCount > total/2` | Division **entière** : `2/4` → `false`, `3/4` → `true`, `3/5` → `true` |
 | `anyTrue(count)` | « Au moins un » : `count > 0` | — |
 | `historySaveAdmit(freeBytes, oldFileBytes, jsonBytes, marginBytes)` | Admission d'une écriture de `/history.json` : vrai si `libre + taille de l'ancien fichier ≥ JSON + marge` ([ADR-0033](../adr/0033-budget-espace-partition-history.md), v2.11.0) | Frontière **large** (égalité exacte → admis). Anti-overflow : soustractions gardées, aucune addition — correct jusqu'à `SIZE_MAX` sur chaque paramètre. **Logique NOUVELLE** (pas de contrainte characterization) |
+| `historyBucketConsolidable(now, bucketStart, bucketLen, maxAgeSeconds)` | Créneau consolidable si **complet et ancien** : sa **dernière seconde** (`bucketStart + bucketLen − 1`) dépasse `maxAge` (v2.18.1, bug-history-doublons-troncature A1) | Même convention stricte qu'`isOlderThan` (`== maxAge` → `false`). `bucketLen == 0` → prédicat sur `bucketStart` seul (défensif). **Logique NOUVELLE** |
+| `historyMergeMeanFinite(a, b)` | Fusion **équipondérée** de deux valeurs d'un même champ lors de la déduplication : fini+fini → moyenne, un seul fini → lui, aucun → `NaN` (v2.18.1, A2) | Équipondéré car les effectifs d'origine ne sont pas stockés (approximation assumée pour les doublons hérités ≤ 2.18.0). **Logique NOUVELLE** |
 
 Les deux passes de `consolidateData()` (raw → horaire, horaire → quotidien) **délèguent** à ces fonctions. *Characterization refactor* : la math reproduit **exactement** l'ancien comportement inline (frontières strictes, divisions entières, wrap `uint32`) — **aucun changement de comportement**. Ne pas « corriger » ces frontières (exception : `historySaveAdmit`, logique nouvelle).
 
-> ⚠️ **Limite de testabilité** : seule la math scalaire est couverte en natif. Le **regroupement** par bucket (`std::map`/`std::vector`), l'accumulation des sommes/compteurs et la **persistance** (`saveToFile`) restent dans la coquille `consolidateData()` et **hors tests natifs** (contrainte libc++ absente de l'environnement natif). 35 tests Unity natifs (dont 10 pour `historySaveAdmit`) ; `history_logic.cpp` couvert à **100 % des lignes**.
+> ⚠️ **Limite de testabilité** : seule la math scalaire est couverte en natif. Le **regroupement** par bucket (`std::map`/`std::vector`), l'accumulation des sommes/compteurs, la boucle de fusion `dedupAggregatedPoints()` et la **persistance** (`saveToFile`) restent dans la coquille `history.cpp` et **hors tests natifs** (contrainte libc++ absente de l'environnement natif). 43 tests Unity natifs (dont 10 pour `historySaveAdmit`, 8 pour `historyBucketConsolidable`/`historyMergeMeanFinite`) ; `history_logic.cpp` couvert à **100 % des lignes**.
+
+## Consolidation par créneau complet + déduplication (v2.18.1, bug-history-doublons-troncature)
+
+Jusqu'en v2.18.0, la consolidation appliquait le prédicat d'âge **par point** : les points d'une même heure franchissant `RAW_MAX_AGE` **progressivement** (un toutes les 5 min), chaque passage de consolidation créait un agrégat partiel supplémentaire au même timestamp — jusqu'à **12 doublons/heure** (idem HOURLY→DAILY), persistés dans `/history.json`, gonflant le buffer et rallongeant les consolidations (mutex tenu plus longtemps → contention sur `/get-history`).
+
+**A1 — Créneau complet** : un créneau (heure ou jour) n'est converti que lorsque sa **dernière seconde** dépasse l'âge limite (`historyBucketConsolidable`, prédicat pur). Le prédicat est appliqué **à l'identique** au groupement ET à la suppression des points sources (sinon perte ou re-conversion). Résultat : **un seul** agrégat par créneau, calculé sur le créneau entier.
+
+- Conséquence temporelle : un point RAW enregistré à `h:00` n'est agrégé que lorsque `h:59:59` dépasse `RAW_MAX_AGE` (6 h) — soit **~7 h** après le début de l'heure (contre 6 h par point avant). C'est ce qui impose `kMaxRawDataPoints = 96` (8 h) : à 72 (6 h pile), l'éviction par capacité supprimait les points RAW **avant** la complétude de leur créneau (affamage de l'agrégation horaire). Impact budget partition : +2 Ko de fichier, pire cas 14/16 blocs — note additive du 2026-08-09 dans [ADR-0033](../adr/0033-budget-espace-partition-history.md), garde `historySaveAdmit` inchangée.
+
+**A2 — Déduplication/fusion** (`dedupAggregatedPoints()`, privée) : fusionne les agrégats de même `(timestamp, granularité ≠ RAW)` dans `memoryBuffer` — champs moyennés équipondérés (`historyMergeMeanFinite` : fini+fini → moyenne, un seul fini → lui, sinon NaN), booléens en **OR**. Pré-requis : buffer trié par timestamp (le tri n'étant pas stable, la recherche du doublon balaie toute la **plage d'ex æquo** de même timestamp). **Trois points d'appel** :
+
+| Site | Rôle |
+|---|---|
+| `consolidateData()` (après tri) | Ceinture-bretelles derrière A1 + rattrapage d'un éventuel import |
+| `loadFromFile()` (après tri défensif) | **Assainit en une fois, au premier boot**, les doublons persistés par les versions ≤ 2.18.0 — sans effacement d'historique |
+| `importData()` (après tri) | Un CSV exporté d'une version ≤ 2.18.0 peut porter des doublons |
+
+Quand des doublons sont fusionnés : log INFO `Historique : N agrégats dupliqués fusionnés`. La fusion équipondérée est une **approximation assumée** pour les doublons hérités (les effectifs d'origine ne sont pas stockés) — hors périmètre de correction, cf. spec.
+
+> ⚠️ **Suivi connu (préexistant, hors lot — à traiter dans une spec future)** : `kMaxHourlyDataPoints` (168 points = **7 j**) < `HOURLY_MAX_AGE` (**15 j**) — les points HOURLY sont évincés par capacité **avant** d'atteindre l'âge de consolidation en DAILY : **les agrégats journaliers ne se forment jamais** (affamage structurel du 3ᵉ étage, antérieur à la v2.18.1). La rétention effective est donc ~7 j de données horaires (+ d'éventuels points DAILY historiques).
 
 ## Exclusion des mesures pH/ORP/température sans circulation d'eau (feature-061, v2.13.0)
 
@@ -97,7 +120,8 @@ std::vector<DataPoint> getLastDay();
 std::vector<DataPoint> getAllData();
 // v2.14.0 (bug-heap-toctou A3) : copie d'UN point sous mutex COURT (25 ms) pour le
 // callback chunked de /get-history. false = fin de buffer (timedOut=false) OU
-// timeout mutex (timedOut=true → l'appelant réessaie via RESPONSE_TRY_AGAIN).
+// timeout mutex (timedOut=true → l'appelant émet un espace de maintien de flux
+// et réessaie au rappel suivant — v2.18.1, bug-history-doublons-troncature B1).
 bool getPointByIndex(size_t chronoIdx, DataPoint& out, bool& timedOut);
 bool importData(const std::vector<DataPoint>& dataPoints);
 bool clearHistory();   // false si le mutex n'a pas pu être pris (historique occupé) — v2.11.1
@@ -109,7 +133,7 @@ Jusqu'en v2.13.x, `/get-history` copiait **tout** le buffer (`getLastHours`/`get
 
 - **`getPointByIndex(chronoIdx, out, timedOut)`** : copie d'**un seul** point (struct POD, aucune allocation) sous le mutex history avec un timeout **dédié court** `kHistoryPointReadTimeoutMs = 25 ms` — le timeout standard `kHistoryMutexTimeoutMs` (2 s) serait un déni de service réseau depuis la tâche `async_tcp`. Le mutex n'est **jamais tenu entre deux chunks**. `memoryBuffer` étant un vecteur unique trié par timestamp, l'index chronologique est l'index direct.
 - **Filtres `range`/`since` appliqués par point** dans le callback (fonction pure `historyRangeCutoff`, sémantique exacte de l'ancien `getLastHours`) ; formatage d'un point par la fonction pure `formatHistoryPointJson` ([`src/history_export_chunk.h`](../../src/history_export_chunk.h)) — format JSON **octet pour octet identique** à l'ancienne concaténation (y compris la clé `count` émise deux fois, voir [API.md](../API.md#get-get-history--write)).
-- **Contention** : timeout mutex → `RESPONSE_TRY_AGAIN` (réessai différé par AsyncWebServer), compteur de retries **consécutifs** remis à zéro à chaque succès — borné à `kHistoryChunkMaxRetries = 200` (tolère ~100 s de contention continue, vs ~1,5 s pour la pire consolidation + save), au-delà : clôture **propre** (pied JSON émis → document valide, moins de points).
+- **Contention** (comportement v2.18.1, bug-history-doublons-troncature B1) : timeout mutex sans octet en vol → le callback émet **UN espace** (légal entre deux éléments JSON) qui maintient le flux TCP vivant, le réessai se fait au rappel suivant ; s'il y a déjà des octets accumulés, ils sont émis tels quels. ⚠️ **Jamais `RESPONSE_TRY_AGAIN`** : la lib (fork 3.11.2, `WebResponses.cpp:454`) ne re-sonde le callback qu'à l'**ack TCP suivant** — sans octet en vol, aucun ack ne vient : silence → timeout TCP → connexion close → **JSON tronqué sans pied** (bug constaté en production 08/2026, graphiques vides). Compteur de retries **consécutifs** remis à zéro à chaque succès — borné à `kHistoryChunkMaxRetries = 200` (tolère ~100 s de contention continue, vs ~1,5 s pour la pire consolidation + save), au-delà : clôture **propre** (pied JSON émis → document valide, moins de points).
 - **Glissement toléré** : une consolidation entre deux chunks peut réordonner/retirer des points (doublon/saut possibles) — même précédent best-effort que `sensor_trace` et `/download-logs`.
 - ⚠️ **Note** : `migrateLegacyHistory()` n'est **plus appelé** sur ce chemin (l'ancien `getLastHours` le déclenchait) — la migration legacy reste couverte par `update()`/`loadFromFile()`/`importData()`.
 
@@ -145,7 +169,7 @@ Politique d'échec par site :
 | `getAllData()` | Vecteur vide |
 | `importData()` | `false` **avant toute modification** de `memoryBuffer` — la route teste le retour |
 | `clearHistory()` | `false` **sans supprimer le fichier** (la RAM n'a pas été vidée → pas d'état incohérent) ; la route répond `503` |
-| `getPointByIndex()` (v2.14.0) | ⚠️ Timeout **dédié court** `kHistoryPointReadTimeoutMs = 25 ms` (pas 2 s : appelé depuis le callback chunked sur `async_tcp`) — `timedOut=true`, le callback réessaie via `RESPONSE_TRY_AGAIN`. **Aucun warn** (contention attendue et gérée) |
+| `getPointByIndex()` (v2.14.0) | ⚠️ Timeout **dédié court** `kHistoryPointReadTimeoutMs = 25 ms` (pas 2 s : appelé depuis le callback chunked sur `async_tcp`) — `timedOut=true`, le callback émet un **espace de maintien de flux** et réessaie au rappel suivant (v2.18.1, plus jamais `RESPONSE_TRY_AGAIN`). **Aucun warn** (contention attendue et gérée) |
 
 Comportement nominal (mutex libre) strictement inchangé.
 

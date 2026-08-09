@@ -43,4 +43,19 @@ bool anyTrue(int count);
 // correct jusqu'à SIZE_MAX sur chaque paramètre.
 bool historySaveAdmit(size_t freeBytes, size_t oldFileBytes, size_t jsonBytes, size_t marginBytes);
 
+// bug-history-doublons-troncature (A1) : un bucket n'est consolidable que
+// lorsqu'il est COMPLET et ancien — sa DERNIÈRE seconde (bucketStart+len-1)
+// dépasse maxAge. Évite l'agrégat partiel par passage de consolidation (les
+// points d'une même heure franchissent le seuil progressivement → jusqu'à
+// 12 doublons/heure avant ce correctif). bucketLen==0 → prédicat sur
+// bucketStart seul (défensif).
+bool historyBucketConsolidable(uint32_t now, uint32_t bucketStart,
+                               uint32_t bucketLen, uint32_t maxAgeSeconds);
+
+// bug-history-doublons-troncature (A2) : fusion équipondérée de deux valeurs
+// de même champ lors de la déduplication d'agrégats du même bucket :
+// fini+fini → moyenne, un seul fini → lui, aucun → NAN. Équipondéré car les
+// effectifs d'origine ne sont pas stockés (approximation assumée, cf. spec).
+float historyMergeMeanFinite(float a, float b);
+
 #endif // HISTORY_LOGIC_H

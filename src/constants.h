@@ -103,7 +103,13 @@ constexpr size_t kMaxConfigSizeBytes = 16384;             // 16KB - Taille max c
 constexpr size_t kMaxLogEntries = 200;                    // Nombre max d'entrées logs
 
 // Historique de données
-constexpr size_t kMaxRawDataPoints = 72;                  // 6h de données brutes (intervalle 5min)
+// 8h de données brutes (intervalle 5 min). 96 et non 72 (= 6h pile) depuis
+// bug-history-doublons-troncature (revue 2.18.1) : la consolidation par créneau
+// COMPLET exige qu'un point survive jusqu'à ~7h (fin de son heure + RAW_MAX_AGE
+// 6h) — à 72, l'éviction affamait l'agrégation horaire. Impact budget partition
+// (ADR-0033) : +24 points ≈ +2 Ko ≈ 1 bloc (pire cas 14/16, garde
+// historySaveAdmit inchangée en filet).
+constexpr size_t kMaxRawDataPoints = 96;
 constexpr size_t kMaxHourlyDataPoints = 168;              // 7 jours de moyennes horaires (64KB partition)
 constexpr size_t kMaxDailyDataPoints = 75;                // 75 jours de moyennes journalières
 

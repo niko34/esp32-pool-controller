@@ -431,7 +431,8 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
     [st](uint8_t* buf, size_t maxLen, size_t /*index*/) -> size_t {
       // Machine à états : chaque appel émet au plus maxLen octets. Retourne 0
       // UNIQUEMENT en phase kDone (0 = fin de réponse pour AsyncWebServer) ;
-      // timeout mutex sans octet émis → RESPONSE_TRY_AGAIN (réessai différé).
+      // timeout mutex sans octet émis → UN ESPACE (maintien de flux, cf. B1
+      // plus bas — jamais RESPONSE_TRY_AGAIN, qui affame le flux TCP).
       size_t total = 0;
       while (total < maxLen && st->phase != HistoryDownloadState::kDone) {
         // 1) Vider d'abord le reliquat en cours (garantie de progression)
@@ -478,7 +479,16 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
                 break;
               }
               if (total > 0) return total;   // émettre le progrès déjà accumulé
-              return RESPONSE_TRY_AGAIN;     // rien à émettre : réessai différé
+              // bug-history-doublons-troncature (B1) : ne JAMAIS renvoyer
+              // RESPONSE_TRY_AGAIN sans octet en vol — la lib ne re-sonde le
+              // callback qu'à l'ack TCP suivant ; sans rien en vol, silence →
+              // timeout TCP → connexion close → JSON tronqué sans pied (bug
+              // constaté en production). Un ESPACE est légal entre deux
+              // éléments JSON : il maintient le flux vivant et le réessai se
+              // fait au rappel suivant (la borne kHistoryChunkMaxRetries
+              // ci-dessus garantit toujours la clôture propre par le pied).
+              buf[0] = ' ';
+              return 1;
             }
             st->phase = HistoryDownloadState::kFooter;  // fin du buffer
             break;

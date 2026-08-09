@@ -50,3 +50,20 @@ bool historySaveAdmit(size_t freeBytes, size_t oldFileBytes, size_t jsonBytes, s
   return consumeBudget(freePool, oldPool, jsonBytes) &&
          consumeBudget(freePool, oldPool, marginBytes);
 }
+
+// Bucket complet et ancien : sa dernière seconde dépasse maxAge. Même
+// convention stricte qu'isOlderThan (== maxAge → false).
+bool historyBucketConsolidable(uint32_t now, uint32_t bucketStart,
+                               uint32_t bucketLen, uint32_t maxAgeSeconds) {
+  uint32_t lastSecond = (bucketLen == 0) ? bucketStart : bucketStart + bucketLen - 1;
+  return isOlderThan(now, lastSecond, maxAgeSeconds);
+}
+
+// Fusion équipondérée : fini+fini → moyenne, un seul fini → lui, aucun → NAN.
+float historyMergeMeanFinite(float a, float b) {
+  bool fa = isfinite(a), fb = isfinite(b);
+  if (fa && fb) return (a + b) / 2.0f;
+  if (fa) return a;
+  if (fb) return b;
+  return NAN;
+}

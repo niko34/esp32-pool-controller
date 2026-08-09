@@ -607,6 +607,15 @@ void HistoryManager::loadFromFile() {
     }
   }
 
+  // bug-history-doublons-troncature (A2) : tri défensif (fichier normalement
+  // déjà trié) puis fusion — assainit EN UNE FOIS les agrégats dupliqués
+  // persistés par les versions ≤ 2.18.0 (jusqu'à ~12 doublons/heure).
+  std::sort(memoryBuffer.begin(), memoryBuffer.end(),
+    [](const DataPoint& a, const DataPoint& b) {
+      return a.timestamp < b.timestamp;
+    });
+  dedupAggregatedPoints();
+
   systemLogger.info("Historique chargé (" + String(memoryBuffer.size()) + " points)");
 }
 
@@ -750,6 +759,9 @@ bool HistoryManager::importData(const std::vector<DataPoint>& dataPoints) {
     [](const DataPoint& a, const DataPoint& b) {
       return a.timestamp < b.timestamp;
     });
+  // bug-history-doublons-troncature (A2) : un import peut porter des doublons
+  // (export d'une version ≤ 2.18.0) — même fusion qu'au chargement.
+  dedupAggregatedPoints();
 
   legacyHistoryPending = false;
   legacyMaxTimestamp = 0;
@@ -798,9 +810,13 @@ void HistoryManager::consolidateData() {
 
   for (const auto& point : memoryBuffer) {
     if (point.granularity == RAW) {
-      if (isOlderThan((uint32_t)now, (uint32_t)point.timestamp, (uint32_t)RAW_MAX_AGE)) {
-        // Grouper par heure (arrondir timestamp à l'heure)
-        unsigned long hourTimestamp = bucketTimestamp((uint32_t)point.timestamp, kSecondsPerHour);
+      // bug-history-doublons-troncature (A1) : ne consolider que les créneaux
+      // COMPLETS (dernière seconde de l'heure > RAW_MAX_AGE). L'ancien prédicat
+      // par point convertissait chaque heure en tranches successives au fil des
+      // passages (jusqu'à 12 agrégats/heure au même timestamp).
+      unsigned long hourTimestamp = bucketTimestamp((uint32_t)point.timestamp, kSecondsPerHour);
+      if (historyBucketConsolidable((uint32_t)now, (uint32_t)hourTimestamp,
+                                    (uint32_t)kSecondsPerHour, (uint32_t)RAW_MAX_AGE)) {
         hourlyGroups[hourTimestamp].push_back(point);
       }
     }
@@ -849,11 +865,15 @@ void HistoryManager::consolidateData() {
     }
   }
 
-  // Supprimer les points RAW qui ont été convertis en horaires
+  // Supprimer les points RAW qui ont été convertis en horaires — MÊME prédicat
+  // que le groupement ci-dessus (créneau complet), sinon perte ou re-conversion.
   memoryBuffer.erase(
     std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
       [now](const DataPoint& p) {
-        return p.granularity == RAW && isOlderThan((uint32_t)now, (uint32_t)p.timestamp, (uint32_t)RAW_MAX_AGE);
+        if (p.granularity != RAW) return false;
+        unsigned long hourTs = bucketTimestamp((uint32_t)p.timestamp, kSecondsPerHour);
+        return historyBucketConsolidable((uint32_t)now, (uint32_t)hourTs,
+                                         (uint32_t)kSecondsPerHour, (uint32_t)RAW_MAX_AGE);
       }),
     memoryBuffer.end()
   );
@@ -867,9 +887,11 @@ void HistoryManager::consolidateData() {
 
   for (const auto& point : memoryBuffer) {
     if (point.granularity == HOURLY) {
-      if (isOlderThan((uint32_t)now, (uint32_t)point.timestamp, (uint32_t)HOURLY_MAX_AGE)) {
-        // Grouper par jour (arrondir timestamp au jour)
-        unsigned long dayTimestamp = bucketTimestamp((uint32_t)point.timestamp, 86400UL);
+      // bug-history-doublons-troncature (A1) : créneau JOUR complet uniquement
+      // (même logique que RAW→HOURLY ci-dessus).
+      unsigned long dayTimestamp = bucketTimestamp((uint32_t)point.timestamp, 86400UL);
+      if (historyBucketConsolidable((uint32_t)now, (uint32_t)dayTimestamp,
+                                    86400UL, (uint32_t)HOURLY_MAX_AGE)) {
         dailyGroups[dayTimestamp].push_back(point);
       }
     }
@@ -918,11 +940,15 @@ void HistoryManager::consolidateData() {
     }
   }
 
-  // Supprimer les points HOURLY qui ont été convertis en journaliers
+  // Supprimer les points HOURLY qui ont été convertis en journaliers — MÊME
+  // prédicat que le groupement (créneau jour complet).
   memoryBuffer.erase(
     std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
       [now](const DataPoint& p) {
-        return p.granularity == HOURLY && isOlderThan((uint32_t)now, (uint32_t)p.timestamp, (uint32_t)HOURLY_MAX_AGE);
+        if (p.granularity != HOURLY) return false;
+        unsigned long dayTs = bucketTimestamp((uint32_t)p.timestamp, 86400UL);
+        return historyBucketConsolidable((uint32_t)now, (uint32_t)dayTs,
+                                         86400UL, (uint32_t)HOURLY_MAX_AGE);
       }),
     memoryBuffer.end()
   );
@@ -979,8 +1005,52 @@ void HistoryManager::consolidateData() {
       return a.timestamp < b.timestamp;
     });
 
+  // bug-history-doublons-troncature (A2) : fusion des agrégats du même créneau
+  // (ceinture-bretelles derrière A1 — et rattrapage d'un éventuel import).
+  dedupAggregatedPoints();
+
   systemLogger.debug("Consolidation terminée: " + String(memoryBuffer.size()) + " points");
   saveToFile();
+}
+
+// Fusionne les agrégats adjacents de même (timestamp, granularité ≠ RAW).
+// Buffer supposé trié par timestamp. Fusion équipondérée champ à champ
+// (historyMergeMeanFinite), booléens en OR — approximation assumée pour les
+// doublons hérités des versions ≤ 2.18.0 (effectifs d'origine non stockés).
+void HistoryManager::dedupAggregatedPoints() {
+  if (memoryBuffer.size() < 2) return;
+  size_t before = memoryBuffer.size();
+  std::vector<DataPoint> out;
+  out.reserve(memoryBuffer.size());
+  for (const auto& p : memoryBuffer) {
+    // Recherche du doublon dans la PLAGE d'ex æquo (même timestamp) déjà émise :
+    // le tri n'est que par timestamp (non stable), un point d'une autre
+    // granularité peut s'intercaler entre deux doublons du même créneau.
+    DataPoint* dup = nullptr;
+    if (p.granularity != RAW) {
+      for (size_t j = out.size(); j > 0 && out[j - 1].timestamp == p.timestamp; --j) {
+        if (out[j - 1].granularity == p.granularity) {
+          dup = &out[j - 1];
+          break;
+        }
+      }
+    }
+    if (dup != nullptr) {
+      dup->ph = historyMergeMeanFinite(dup->ph, p.ph);
+      dup->orp = historyMergeMeanFinite(dup->orp, p.orp);
+      dup->temperature = historyMergeMeanFinite(dup->temperature, p.temperature);
+      dup->filtrationActive = dup->filtrationActive || p.filtrationActive;
+      dup->phDosing = dup->phDosing || p.phDosing;
+      dup->orpDosing = dup->orpDosing || p.orpDosing;
+      continue;
+    }
+    out.push_back(p);
+  }
+  if (out.size() != before) {
+    systemLogger.info("Historique : " + String((unsigned)(before - out.size())) +
+                      " agrégats dupliqués fusionnés");
+    memoryBuffer.swap(out);
+  }
 }
 
 bool HistoryManager::clearHistory() {

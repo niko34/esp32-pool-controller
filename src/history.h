@@ -27,7 +27,7 @@ struct DataPoint {
 class HistoryManager {
 private:
   // Limites de stockage
-  static const size_t MAX_RAW_POINTS = kMaxRawDataPoints;      // 6h de données brutes (5 min)
+  static const size_t MAX_RAW_POINTS = kMaxRawDataPoints;      // 8h de données brutes (5 min, cf. constants.h)
   static const size_t MAX_HOURLY_POINTS = kMaxHourlyDataPoints;  // 15 jours de moyennes horaires
   static const size_t MAX_DAILY_POINTS = kMaxDailyDataPoints;    // 75 jours de moyennes journalières
   static const unsigned long RAW_MAX_AGE = 21600UL;        // 6 heures (en secondes)
@@ -54,6 +54,12 @@ private:
   void saveToFile();
   void loadFromFile();
   void consolidateData();
+  // bug-history-doublons-troncature (A2) : fusionne les agrégats ADJACENTS de
+  // même (timestamp, granularité ≠ RAW) dans memoryBuffer — champs moyennés
+  // équipondérés (historyMergeMeanFinite), booléens en OR. PRÉ-REQUIS : buffer
+  // trié par timestamp (appelé après chaque std::sort). Assainit aussi, au
+  // chargement, les doublons persistés par les versions ≤ 2.18.0.
+  void dedupAggregatedPoints();
   void migrateLegacyHistory(unsigned long nowEpoch);
   void _applyPreNtpCorrection(unsigned long ntpEpoch, unsigned long uptimeSec);
 
@@ -69,7 +75,8 @@ public:
   // pour le callback chunked de /get-history (tâche async_tcp — jamais le mutex tenu
   // entre deux chunks). chronoIdx = index direct dans memoryBuffer (vecteur unique
   // trié par timestamp). Retour false : fin de buffer (timedOut=false) OU timeout
-  // mutex (timedOut=true → l'appelant réessaie via RESPONSE_TRY_AGAIN).
+  // mutex (timedOut=true → l'appelant émet un espace de maintien de flux et
+  // réessaie au rappel suivant, cf. bug-history-doublons-troncature B1).
   bool getPointByIndex(size_t chronoIdx, DataPoint& out, bool& timedOut);
   bool importData(const std::vector<DataPoint>& dataPoints);
   // feature-027 : retourne false si le mutex n'a pas pu être pris (historique occupé)
