@@ -370,12 +370,26 @@ static void handleGetLogs(AsyncWebServerRequest* request) {
 struct HistoryDownloadState {
   enum Phase : uint8_t { kHeader, kPoints, kFooter, kDone };
   Phase phase = kHeader;
-  size_t idx = 0;             // Index chronologique dans memoryBuffer (vecteur trié unique)
+  size_t idx = 0;             // Index dans l'instantané `pts`
   unsigned long cutoff = 0;   // Borne basse ?range= (0 = tout) — historyRangeCutoff
   unsigned long since = 0;    // Borne basse ?since= (0 = désactivé)
   size_t count = 0;           // Points réellement émis (pied de réponse)
   bool first = true;          // Virgule de séparation entre points
-  uint16_t retries = 0;       // Timeouts mutex consécutifs (borné kHistoryChunkMaxRetries)
+
+  // bug-history-doublons-troncature (itération 2) : INSTANTANÉ des points, copié
+  // en UNE prise de mutex à l'ouverture de la requête. Le callback chunked ne
+  // touche plus jamais le mutex → plus de timeouts en cours de flux (les
+  // micro-chunks de maintien d'un octet interagissaient mal avec la couche
+  // d'envoi de la lib : pied perdu, JSON tronqué — démontré en production),
+  // plus de glissement d'index pendant une consolidation. Coût borné :
+  // ≤ 339 points × sizeof(DataPoint) ≈ 11 Ko, libérés à la fin de la réponse
+  // (l'ancienne route épinglait ~40 Ko de String non bornée — cf. ADR-0032).
+  std::vector<DataPoint> pts;
+  // Comptabilité d'émission, loggée en DEBUG à la clôture — instrumentation
+  // née du diagnostic de la cause C (pied jamais émis) et conservée : c'est
+  // elle qui permet de confronter l'émis serveur aux octets reçus client.
+  size_t sentBytes = 0;
+  bool endLogged = false;
   String range;               // Écho du paramètre ?range= (en-tête)
   LogLineCarry<kHistoryPointJsonMaxBytes> carry;  // Reliquat en-tête/point/pied entre deux chunks
 };
@@ -409,12 +423,11 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
   else if (rangeParam == "7d")  { range = "7d";  hours = 24 * 7; }
   else if (rangeParam == "30d") { range = "30d"; hours = 24 * 30; }
 
-  // bug-heap-toctou A3 : réponse CHUNKED zéro-buffer (patron /download-logs,
-  // ADR-0032 mécanisme b) — supprime la String contiguë ~40 Ko épinglée pendant
-  // tout le transfert (générateur de fond de la fragmentation, G3). Le filtre
-  // range/since est appliqué PAR POINT dans le callback ; chaque point est copié
-  // sous mutex COURT (history.getPointByIndex, 25 ms) — le mutex n'est JAMAIS
-  // tenu entre deux chunks. NOTE : migrateLegacyHistory n'est plus appelé sur ce
+  // Réponse CHUNKED (bug-heap-toctou A3, ADR-0032 mécanisme b) streamée depuis
+  // un INSTANTANÉ filtré copié en UNE prise de mutex (snapshotFiltered, cf.
+  // bug-history-doublons-troncature itération 2) : ~11 Ko bornés libérés en fin
+  // de réponse, contre ~40 Ko de String non bornée avant v2.14. Le callback ne
+  // prend AUCUN mutex. NOTE : migrateLegacyHistory n'est plus appelé sur ce
   // chemin (l'ancien getLastHours le faisait) — couvert par update()/load/import.
   // Epoch : time(nullptr) si valide, sinon 0 → cutoff 0 = tout renvoyer (l'estimation
   // lastKnownEpoch de getLastHours n'est pas accessible ici ; superset toléré).
@@ -426,15 +439,31 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
     st->since = request->getParam("since")->value().toInt();
   }
 
+  // bug-history-doublons-troncature (itération 2) : instantané filtré en UNE
+  // prise de mutex — le callback ne verrouille plus rien ensuite (cf. état).
+  if (!history.snapshotFiltered(st->pts, st->cutoff, st->since)) {
+    request->send(503, "application/json",
+                  "{\"error\":\"historique occupé, réessayez\"}");
+    return;
+  }
+
   AsyncWebServerResponse* res = request->beginChunkedResponse(
     "application/json",
     [st](uint8_t* buf, size_t maxLen, size_t /*index*/) -> size_t {
-      // Machine à états : chaque appel émet au plus maxLen octets. Retourne 0
-      // UNIQUEMENT en phase kDone (0 = fin de réponse pour AsyncWebServer) ;
-      // timeout mutex sans octet émis → UN ESPACE (maintien de flux, cf. B1
-      // plus bas — jamais RESPONSE_TRY_AGAIN, qui affame le flux TCP).
+      // Machine à états : chaque appel émet au plus maxLen octets, depuis
+      // l'instantané st->pts (aucun mutex, aucun timeout possible). Retourne 0
+      // UNIQUEMENT quand carry vide ET phase kDone (fin de réponse).
       size_t total = 0;
-      while (total < maxLen && st->phase != HistoryDownloadState::kDone) {
+      // bug-history-doublons-troncature (cause racine C, v2.14.0) : la boucle
+      // doit continuer tant que le carry n'est pas vide MÊME en phase kDone —
+      // le cas kFooter charge le pied dans le carry ET passe en kDone dans la
+      // même itération ; avec l'ancienne condition (phase != kDone seul), la
+      // boucle sortait AVANT d'émettre le carry : le pied ],"count":N} n'était
+      // JAMAIS envoyé → JSON tronqué sur TOUTES les réponses depuis v2.14.0
+      // (prouvé au flux brut : chunks = exactement l'émis SANS pied).
+      while (total < maxLen &&
+             (st->carry.pos < st->carry.len ||
+              st->phase != HistoryDownloadState::kDone)) {
         // 1) Vider d'abord le reliquat en cours (garantie de progression)
         if (st->carry.pos < st->carry.len) {
           total += emitCarry(st->carry, buf + total, maxLen - total);
@@ -448,15 +477,11 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
             st->phase = HistoryDownloadState::kPoints;
             break;
           case HistoryDownloadState::kPoints: {
-            DataPoint p;
-            bool timedOut = false;
-            if (history.getPointByIndex(st->idx, p, timedOut)) {
+            // Streaming depuis l'INSTANTANÉ (filtres déjà appliqués à la copie) :
+            // aucun mutex, aucun timeout, aucun glissement d'index possible.
+            if (st->idx < st->pts.size()) {
+              const DataPoint& p = st->pts[st->idx];
               st->idx++;
-              st->retries = 0;
-              // Filtres appliqués par point (identiques à l'ancienne route :
-              // getLastHours filtrait timestamp >= cutoff, puis since exclusif).
-              if (p.timestamp < st->cutoff) break;
-              if (st->since > 0 && p.timestamp <= st->since) break;
               size_t n = formatHistoryPointJson(
                   st->carry.line, sizeof(st->carry.line), p.timestamp, p.ph, p.orp,
                   p.temperature, p.filtrationActive, p.phDosing || p.orpDosing,
@@ -471,26 +496,7 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
               // sur le format réel, ~120 o max) → sauté, jamais de JSON partiel.
               break;
             }
-            if (timedOut) {
-              // Mutex history occupé (consolidation/save en cours). Borné : au-delà
-              // de kHistoryChunkMaxRetries, clôture PROPRE (pied émis → JSON valide).
-              if (++st->retries >= kHistoryChunkMaxRetries) {
-                st->phase = HistoryDownloadState::kFooter;
-                break;
-              }
-              if (total > 0) return total;   // émettre le progrès déjà accumulé
-              // bug-history-doublons-troncature (B1) : ne JAMAIS renvoyer
-              // RESPONSE_TRY_AGAIN sans octet en vol — la lib ne re-sonde le
-              // callback qu'à l'ack TCP suivant ; sans rien en vol, silence →
-              // timeout TCP → connexion close → JSON tronqué sans pied (bug
-              // constaté en production). Un ESPACE est légal entre deux
-              // éléments JSON : il maintient le flux vivant et le réessai se
-              // fait au rappel suivant (la borne kHistoryChunkMaxRetries
-              // ci-dessus garantit toujours la clôture propre par le pied).
-              buf[0] = ' ';
-              return 1;
-            }
-            st->phase = HistoryDownloadState::kFooter;  // fin du buffer
+            st->phase = HistoryDownloadState::kFooter;  // fin de l'instantané
             break;
           }
           case HistoryDownloadState::kFooter:
@@ -501,6 +507,17 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
             st->phase = HistoryDownloadState::kDone;
             break;
         }
+      }
+      // Trace de clôture (DEBUG) : l'émis réel de la machine à états, à
+      // confronter aux octets reçus côté client en cas de doute.
+      st->sentBytes += total;
+      if (st->phase == HistoryDownloadState::kDone &&
+          st->carry.pos >= st->carry.len && !st->endLogged) {
+        st->endLogged = true;
+        systemLogger.debug("get-history clos: emis=" + String((unsigned)st->sentBytes) +
+                           " o, points=" + String((unsigned)st->count) +
+                           ", idx=" + String((unsigned)st->idx) +
+                           ", dernierAppel=" + String((unsigned)total) + " o");
       }
       return total;
     });

@@ -71,13 +71,16 @@ public:
   std::vector<DataPoint> getLastHours(int hours);
   std::vector<DataPoint> getLastDay();
   std::vector<DataPoint> getAllData();
-  // bug-heap-toctou A3 : copie d'UN point sous mutex COURT (kHistoryPointReadTimeoutMs)
-  // pour le callback chunked de /get-history (tâche async_tcp — jamais le mutex tenu
-  // entre deux chunks). chronoIdx = index direct dans memoryBuffer (vecteur unique
-  // trié par timestamp). Retour false : fin de buffer (timedOut=false) OU timeout
-  // mutex (timedOut=true → l'appelant émet un espace de maintien de flux et
-  // réessaie au rappel suivant, cf. bug-history-doublons-troncature B1).
-  bool getPointByIndex(size_t chronoIdx, DataPoint& out, bool& timedOut);
+  // bug-history-doublons-troncature (itération 2) : INSTANTANÉ filtré du buffer
+  // en UNE prise de mutex (kHistorySnapshotTimeoutMs) — remplace l'accès point
+  // par point de /get-history (getPointByIndex), dont les timeouts en cours de
+  // flux provoquaient des réponses tronquées (interaction micro-chunks/lib).
+  // Copie les points avec timestamp >= cutoff (0 = tous) et > since (0 =
+  // désactivé) dans `out` (vidé d'abord). Coût borné : ≤ kMaxRawDataPoints +
+  // kMaxHourlyDataPoints + kMaxDailyDataPoints points (~11 Ko). Retour false :
+  // mutex indisponible (l'appelant répond 503, cas rare).
+  bool snapshotFiltered(std::vector<DataPoint>& out, unsigned long cutoff,
+                        unsigned long since);
   bool importData(const std::vector<DataPoint>& dataPoints);
   // feature-027 : retourne false si le mutex n'a pas pu être pris (historique occupé)
   bool clearHistory();

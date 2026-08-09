@@ -274,9 +274,17 @@ Paramètre optionnel `?since=TIMESTAMP` pour récupération incrémentale.
 
 **Transfert chunked (v2.14.0, [ADR-0032 §Extension 2026-07-30](adr/0032-reponses-http-bornees.md#extension-2026-07-30--get-history-chunked-et-filet-ws-v2140))** : la réponse est émise en `Transfer-Encoding: chunked` (mécanisme (b), patron `/download-logs`) — plus aucune `String` contiguë ~40 Ko épinglée pendant le transfert, et le **503** « heap fragmenté » de la v2.10.4 **n'existe plus sur cette route** (aucune garde heap nécessaire en chunked). Transparent pour `fetch()`/curl : contrat JSON identique.
 
-Comportement **sous contention** (consolidation/sauvegarde de l'historique en cours, ~1,5 s toutes les 5 min) : chaque point est copié sous un mutex **court** (25 ms) ; si le mutex est occupé, le serveur émet un **espace de maintien de flux** (v2.18.1) — la réponse peut simplement **prendre plus longtemps**, elle n'est **jamais tronquée syntaxiquement**. Cas extrême (mutex occupé en continu au-delà de ~200 tentatives consécutives, soit une tolérance très supérieure à la durée d'une consolidation) : la réponse est **close proprement** (pied `],"count":N}` émis) → JSON **toujours valide**, avec moins de points que disponibles. Le buffer d'historique pouvant glisser entre deux chunks (consolidation), un doublon ou un saut de point est toléré (best-effort, même politique que `/download-logs`).
+**Instantané sous mutex unique (v2.18.2)** : le serveur copie un **instantané filtré** de l'historique en **une seule** prise de mutex (100 ms) à l'ouverture de la requête, puis streame **sans verrou**. Une réponse `200` est donc un JSON **complet et cohérent** (aucun glissement de buffer possible : l'instantané est figé, ~11 Ko transitoires libérés en fin de réponse).
 
-> ℹ️ **Espaces dans le flux (v2.18.1, bug-history-doublons-troncature B1)** : sous contention, des **espaces** peuvent apparaître dans le corps entre deux éléments JSON — c'est du whitespace **légal** en JSON, sans aucun effet pour `JSON.parse()` / `resp.json()` / `python3 -m json.tool`. Ils remplacent l'ancien `RESPONSE_TRY_AGAIN` qui, émis sans octet en vol, affamait le flux TCP (aucun ack → silence → timeout TCP → **JSON tronqué sans pied**, bug constaté en production 08/2026 — graphiques vides). Seule contrainte pour un client exotique : ne pas supposer le corps exempt de whitespace entre les tokens.
+**Erreur `503` (rare)** : si le mutex est occupé au moment de la requête (consolidation/sauvegarde de l'historique en cours, ~1,5 s toutes les 5 min) :
+
+```json
+{"error":"historique occupé, réessayez"}
+```
+
+Le client réessaie simplement (le dashboard re-sollicite la route au refresh suivant).
+
+> ℹ️ **Note historique** : entre la v2.14.0 et la v2.18.1, **toutes** les réponses `/get-history` étaient tronquées (pied `],"count":N}` jamais émis — bug de machine à états corrigé en v2.18.2). La note v2.18.1 sur les « espaces de maintien de flux sous contention » relevait d'un diagnostic **erroné** ; ce mécanisme a été retiré en v2.18.2 — le corps ne contient plus de whitespace entre les tokens.
 
 ---
 

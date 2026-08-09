@@ -2,7 +2,25 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.18.2] - 2026-08-09
+
+### Firmware
+
+- **Les graphiques s'affichent réellement cette fois** (suite et **fin** de `bug-history-doublons-troncature`). La vraie cause racine de la troncature de `/get-history` — démontrée au flux chunked brut sur l'appareil — est une **erreur de machine à états présente depuis la v2.14.0** (déployée le 05/08) : le cas `kFooter` chargeait le pied `],"count":N}` dans le tampon de report ET passait en phase `kDone` dans la **même itération**, or la condition de boucle sortait avant d'émettre le tampon → **le pied n'était JAMAIS envoyé** → JSON invalide sur **toutes** les réponses → graphiques morts depuis le déploiement v2.14. Fix : la boucle continue tant que le tampon de report n'est pas vide, **même en `kDone`**. Validé sur l'appareil (pied présent, JSON valide).
+- **Refactor de l'export `/get-history`** : instantané filtré copié en **une seule** prise de mutex à l'ouverture de la requête (`snapshotFiltered`, timeout `kHistorySnapshotTimeoutMs` = 100 ms ; refus rare → **`503` `{"error":"historique occupé, réessayez"}`**), puis streaming **sans aucun mutex**. Le mécanisme timeout/espaces/`RESPONSE_TRY_AGAIN` introduit en v2.18.1 est **définitivement supprimé** (`getPointByIndex`, `kHistoryPointReadTimeoutMs`, `kHistoryChunkMaxRetries` retirés) — il traitait un symptôme mal diagnostiqué (cf. note sur l'entrée [2.18.1] ci-dessous). Coût borné : ~11 Ko transitoires, libérés en fin de réponse ; plus aucun glissement de buffer possible (instantané figé). Trace de clôture conservée en **DEBUG** (`get-history clos: emis=… o, points=…`). Builds bi-core + 436 tests natifs verts.
+
+### Documentation
+
+- Note corrective ajoutée sur l'entrée **[2.18.1]** ci-dessous : sa « cause B » (espaces de maintien de flux) était un diagnostic erroné.
+- `docs/subsystems/history.md` : section export chunked réécrite (`snapshotFiltered`, cause racine C documentée) ; encadré **dette** — extraire la machine à états chunked en logique pure testable (ADR-0017) avec test « le flux se termine par le pied », dont l'absence a laissé passer le bug 5 jours et 2 revues.
+- `docs/API.md` : `/get-history` — note « espaces sous contention » retirée (fausse), `503` rare documenté.
+- Pas de nouvel ADR (application/correction de mécanismes existants).
+
+---
+
 ## [2.18.1] - 2026-08-09
+
+> ⚠️ **Note corrective (v2.18.2)** : le second diagnostic de cette entrée (« Réponse `/get-history` tronquée sous contention » / `RESPONSE_TRY_AGAIN` / espaces de maintien de flux) était **erroné** — la troncature venait d'un pied JSON jamais émis par la machine à états (cause racine corrigée en 2.18.2, présente depuis v2.14.0). Le mécanisme espaces/retries a été **retiré** en 2.18.2. Les deux autres corrections de cette entrée (doublons d'agrégats, capacité RAW) restent valides.
 
 ### Firmware
 

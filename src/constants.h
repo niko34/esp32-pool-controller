@@ -225,14 +225,13 @@ constexpr size_t kLogExportLineMaxBytes = 256;
 // JSON) doit tenir dedans, jamais de JSON partiel émis.
 constexpr size_t kHistoryPointJsonMaxBytes = 128;
 
-// /get-history en chunked zéro-buffer (bug-heap-toctou A3, patron /download-logs) :
-// le callback tourne sur la tâche async_tcp — il copie UN point sous mutex court
-// par itération (patron Logger::getLogEntryByIndex). kHistoryMutexTimeoutMs (2 s)
-// y serait un déni de service réseau (async_tcp bloquée) → timeout dédié court.
-constexpr unsigned long kHistoryPointReadTimeoutMs = 25;  // 25ms - prise du mutex history DEPUIS le callback chunked
-// Nombre max de RESPONSE_TRY_AGAIN consécutifs sur timeout mutex avant de clore
-// la réponse PROPREMENT (pied JSON émis → document toujours valide, tronqué).
-constexpr uint16_t kHistoryChunkMaxRetries = 200;
+// /get-history (bug-history-doublons-troncature, itération 2) : instantané
+// filtré du buffer copié en UNE prise de mutex à l'ouverture de la requête
+// (handler HTTP, tâche async_tcp). Timeout court : un 503 rare vaut mieux que
+// 2 s d'async_tcp bloquée sur une consolidation. Remplace l'accès point par
+// point sous mutex (kHistoryPointReadTimeoutMs/kHistoryChunkMaxRetries retirés)
+// dont les timeouts en cours de flux tronquaient la réponse.
+constexpr unsigned long kHistorySnapshotTimeoutMs = 100;
 
 // Ring d'instrumentation heap en RAM RTC noinit (bug-heap-toctou A4) : cinétique
 // d'effondrement du heap dans les ~4 dernières minutes avant un reset anormal

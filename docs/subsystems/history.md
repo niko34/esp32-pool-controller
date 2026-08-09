@@ -118,26 +118,30 @@ void recordDataPoint();
 std::vector<DataPoint> getLastHours(int hours);
 std::vector<DataPoint> getLastDay();
 std::vector<DataPoint> getAllData();
-// v2.14.0 (bug-heap-toctou A3) : copie d'UN point sous mutex COURT (25 ms) pour le
-// callback chunked de /get-history. false = fin de buffer (timedOut=false) OU
-// timeout mutex (timedOut=true → l'appelant émet un espace de maintien de flux
-// et réessaie au rappel suivant — v2.18.1, bug-history-doublons-troncature B1).
-bool getPointByIndex(size_t chronoIdx, DataPoint& out, bool& timedOut);
+// v2.18.2 (bug-history-doublons-troncature it.2) : instantané FILTRÉ du buffer
+// (timestamp >= cutoff, > since ; 0 = désactivé) copié en UNE prise de mutex
+// (kHistorySnapshotTimeoutMs = 100 ms) pour la réponse chunked /get-history —
+// le callback ne prend ensuite AUCUN mutex. Coût borné ~11 Ko, libéré en fin
+// de réponse. false = mutex indisponible (rare) → la route répond 503.
+bool snapshotFiltered(std::vector<DataPoint>& out, unsigned long cutoff, unsigned long since);
 bool importData(const std::vector<DataPoint>& dataPoints);
 bool clearHistory();   // false si le mutex n'a pas pu être pris (historique occupé) — v2.11.1
 ```
 
-## Export chunked `/get-history` (v2.14.0, bug-heap-toctou A3)
+## Export chunked `/get-history` (v2.14.0, refondu v2.18.2)
 
-Jusqu'en v2.13.x, `/get-history` copiait **tout** le buffer (`getLastHours`/`getAllData`) puis concaténait la réponse dans une `String` contiguë pré-réservée (~40 Ko épinglés pendant tout le transfert à chaque ouverture du dashboard) — **générateur de fond n°3 (G3)** de la fragmentation heap identifié par l'investigation churn-heap du 24/07. Depuis la v2.14.0, la route est **chunked zéro-buffer** ([ADR-0032 §Extension 2026-07-30](../adr/0032-reponses-http-bornees.md#extension-2026-07-30--get-history-chunked-et-filet-ws-v2140), patron `/download-logs`) :
+Jusqu'en v2.13.x, `/get-history` copiait **tout** le buffer (`getLastHours`/`getAllData`) puis concaténait la réponse dans une `String` contiguë pré-réservée (~40 Ko épinglés pendant tout le transfert à chaque ouverture du dashboard) — **générateur de fond n°3 (G3)** de la fragmentation heap identifié par l'investigation churn-heap du 24/07. Depuis la v2.14.0, la route est **chunked** ([ADR-0032 §Extension 2026-07-30](../adr/0032-reponses-http-bornees.md#extension-2026-07-30--get-history-chunked-et-filet-ws-v2140), patron `/download-logs`) ; depuis la v2.18.2, elle streame depuis un **instantané figé** :
 
-- **`getPointByIndex(chronoIdx, out, timedOut)`** : copie d'**un seul** point (struct POD, aucune allocation) sous le mutex history avec un timeout **dédié court** `kHistoryPointReadTimeoutMs = 25 ms` — le timeout standard `kHistoryMutexTimeoutMs` (2 s) serait un déni de service réseau depuis la tâche `async_tcp`. Le mutex n'est **jamais tenu entre deux chunks**. `memoryBuffer` étant un vecteur unique trié par timestamp, l'index chronologique est l'index direct.
-- **Filtres `range`/`since` appliqués par point** dans le callback (fonction pure `historyRangeCutoff`, sémantique exacte de l'ancien `getLastHours`) ; formatage d'un point par la fonction pure `formatHistoryPointJson` ([`src/history_export_chunk.h`](../../src/history_export_chunk.h)) — format JSON **octet pour octet identique** à l'ancienne concaténation (y compris la clé `count` émise deux fois, voir [API.md](../API.md#get-get-history--write)).
-- **Contention** (comportement v2.18.1, bug-history-doublons-troncature B1) : timeout mutex sans octet en vol → le callback émet **UN espace** (légal entre deux éléments JSON) qui maintient le flux TCP vivant, le réessai se fait au rappel suivant ; s'il y a déjà des octets accumulés, ils sont émis tels quels. ⚠️ **Jamais `RESPONSE_TRY_AGAIN`** : la lib (fork 3.11.2, `WebResponses.cpp:454`) ne re-sonde le callback qu'à l'**ack TCP suivant** — sans octet en vol, aucun ack ne vient : silence → timeout TCP → connexion close → **JSON tronqué sans pied** (bug constaté en production 08/2026, graphiques vides). Compteur de retries **consécutifs** remis à zéro à chaque succès — borné à `kHistoryChunkMaxRetries = 200` (tolère ~100 s de contention continue, vs ~1,5 s pour la pire consolidation + save), au-delà : clôture **propre** (pied JSON émis → document valide, moins de points).
-- **Glissement toléré** : une consolidation entre deux chunks peut réordonner/retirer des points (doublon/saut possibles) — même précédent best-effort que `sensor_trace` et `/download-logs`.
+- **`snapshotFiltered(out, cutoff, since)`** (v2.18.2) : copie de l'instantané **filtré** du buffer en **UNE** prise de mutex à l'ouverture de la requête — timeout dédié court `kHistorySnapshotTimeoutMs = 100 ms` (le timeout standard 2 s bloquerait la tâche `async_tcp`). Refus (rare) → la route répond **`503` `{"error":"historique occupé, réessayez"}`**. Coût borné : ≤ `kMaxRawDataPoints + kMaxHourlyDataPoints + kMaxDailyDataPoints` points ≈ **11 Ko transitoires**, libérés en fin de réponse. Le callback chunked ne prend ensuite **aucun mutex** : aucun timeout, aucun glissement d'index possible (l'instantané est immuable → plus de doublon/saut best-effort).
+- **Filtres `range`/`since` appliqués à la copie** (fonction pure `historyRangeCutoff`, sémantique exacte de l'ancien `getLastHours`) ; formatage d'un point par la fonction pure `formatHistoryPointJson` ([`src/history_export_chunk.h`](../../src/history_export_chunk.h)) — format JSON **octet pour octet identique** à l'ancienne concaténation (y compris la clé `count` émise deux fois, voir [API.md](../API.md#get-get-history--write)).
+- **Cause racine C — pied jamais émis (bug v2.14.0 → v2.18.1, corrigé v2.18.2)** : dans la machine à états du callback, le cas `kFooter` chargeait le pied `],"count":N}` dans le tampon de report (carry) **et** passait en phase `kDone` dans la **même itération** ; or la condition de boucle (`phase != kDone` seul) sortait **avant** d'émettre le carry → le pied n'était **JAMAIS envoyé** → JSON invalide sur **toutes** les réponses → graphiques morts depuis le déploiement v2.14 (05/08). Démontré au flux chunked brut sur l'appareil (chunks reçus = exactement l'émis, sans pied). **Fix** : la boucle continue tant que le carry n'est pas vide, **même en `kDone`** ([`src/web_routes_data.cpp:464`](../../src/web_routes_data.cpp)). Validé sur l'appareil (pied présent, JSON valide).
+- ⚠️ **Diagnostic v2.18.1 invalidé** : la théorie « troncature par `RESPONSE_TRY_AGAIN`/timeout mutex en cours de flux » (correctif « espace de maintien de flux ») était **fausse** — le mécanisme complet a été **retiré** en v2.18.2 (`getPointByIndex`, `kHistoryPointReadTimeoutMs`, `kHistoryChunkMaxRetries` supprimés) ; plus aucun espace n'est émis dans le corps.
+- **Trace de clôture (DEBUG)** : à la fin du flux, `get-history clos: emis=N o, points=N, idx=N, dernierAppel=N o` — l'émis réel de la machine à états, à confronter aux octets reçus côté client en cas de doute.
 - ⚠️ **Note** : `migrateLegacyHistory()` n'est **plus appelé** sur ce chemin (l'ancien `getLastHours` le déclenchait) — la migration legacy reste couverte par `update()`/`loadFromFile()`/`importData()`.
 
 Tests natifs : suite dédiée `test/test_native_history_export/` (cutoff `range`, format point, arrondis, NaN → `null`, virgules, capacité).
+
+> 📋 **Dette (recommandation de revue v2.18.2)** : extraire la **machine à états chunked** de `web_routes_data.cpp` en logique pure testable en natif ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)), avec au minimum un test « **le flux se termine par le pied `],"count":N}`** ». C'est précisément l'absence de ce test qui a laissé le bug du pied jamais émis passer **5 jours en production et 2 revues de code** (seules les fonctions de formatage étaient couvertes, pas la boucle d'émission).
 
 ## Endpoints HTTP
 
@@ -169,7 +173,7 @@ Politique d'échec par site :
 | `getAllData()` | Vecteur vide |
 | `importData()` | `false` **avant toute modification** de `memoryBuffer` — la route teste le retour |
 | `clearHistory()` | `false` **sans supprimer le fichier** (la RAM n'a pas été vidée → pas d'état incohérent) ; la route répond `503` |
-| `getPointByIndex()` (v2.14.0) | ⚠️ Timeout **dédié court** `kHistoryPointReadTimeoutMs = 25 ms` (pas 2 s : appelé depuis le callback chunked sur `async_tcp`) — `timedOut=true`, le callback émet un **espace de maintien de flux** et réessaie au rappel suivant (v2.18.1, plus jamais `RESPONSE_TRY_AGAIN`). **Aucun warn** (contention attendue et gérée) |
+| `snapshotFiltered()` (v2.18.2) | ⚠️ Timeout **dédié court** `kHistorySnapshotTimeoutMs = 100 ms` (pas 2 s : appelé depuis le handler HTTP sur `async_tcp`) — retour `false`, la route `/get-history` répond **`503` « historique occupé, réessayez »** (rare : la fenêtre de contention est la consolidation + save, ~1,5 s toutes les 5 min). **Aucun warn** (contention attendue et gérée). Le callback chunked, lui, ne prend **aucun** mutex |
 
 Comportement nominal (mutex libre) strictement inchangé.
 

@@ -718,30 +718,28 @@ std::vector<DataPoint> HistoryManager::getAllData() {
   return copy;
 }
 
-bool HistoryManager::getPointByIndex(size_t chronoIdx, DataPoint& out, bool& timedOut) {
-  // bug-heap-toctou A3 : patron Logger::getLogEntryByIndex — copie d'UN point
-  // (struct POD, aucune allocation) sous mutex, jamais de copie du buffer entier.
-  // Timeout COURT (kHistoryPointReadTimeoutMs = 25 ms) : ce chemin est appelé
-  // depuis le callback chunked de /get-history (tâche async_tcp) — y attendre
-  // kHistoryMutexTimeoutMs (2 s, pire détenteur : consolidation + save LittleFS)
-  // serait un déni de service réseau. timedOut distingue le timeout (réessai via
-  // RESPONSE_TRY_AGAIN) de la fin de buffer (clôture propre de la réponse).
-  timedOut = false;
+bool HistoryManager::snapshotFiltered(std::vector<DataPoint>& out,
+                                      unsigned long cutoff, unsigned long since) {
+  // bug-history-doublons-troncature (itération 2) : copie filtrée du buffer en
+  // UNE prise de mutex — le callback chunked de /get-history streame ensuite
+  // depuis cette copie sans jamais reprendre le mutex (l'accès point par point
+  // sous timeout court produisait des réponses tronquées, démontré en prod).
+  // Timeout kHistorySnapshotTimeoutMs (100 ms) : appelé depuis le handler HTTP
+  // (tâche async_tcp) AVANT le début de la réponse — un refus rare vaut mieux
+  // qu'un blocage de 2 s sur la consolidation.
+  out.clear();
   if (_mutex == nullptr ||
-      xSemaphoreTake(_mutex, pdMS_TO_TICKS(kHistoryPointReadTimeoutMs)) != pdTRUE) {
-    timedOut = true;
+      xSemaphoreTake(_mutex, pdMS_TO_TICKS(kHistorySnapshotTimeoutMs)) != pdTRUE) {
     return false;
   }
-  bool ok = false;
-  if (chronoIdx < memoryBuffer.size()) {
-    // memoryBuffer = UN vecteur unique trié par timestamp → l'index chronologique
-    // est l'index direct. Glissement toléré entre deux chunks (précédent
-    // sensor_trace) : une consolidation peut réordonner/retirer des points.
-    out = memoryBuffer[chronoIdx];
-    ok = true;
+  out.reserve(memoryBuffer.size());
+  for (const auto& p : memoryBuffer) {
+    if (p.timestamp < cutoff) continue;
+    if (since > 0 && p.timestamp <= since) continue;
+    out.push_back(p);
   }
   xSemaphoreGive(_mutex);
-  return ok;
+  return true;
 }
 
 bool HistoryManager::importData(const std::vector<DataPoint>& dataPoints) {
