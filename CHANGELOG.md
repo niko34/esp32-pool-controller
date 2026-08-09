@@ -2,6 +2,19 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.18.3] - 2026-08-09
+
+### Fonctionnalités
+
+- **Les graphiques s'affichent correctement sur mobile** (`bug-minicharts-ecretes-mobile`) : sur iPhone, les mini-graphiques du dashboard et les graphiques des écrans détail étaient étirés puis écrêtés en bas de leur carte (axe Y collé au bord). Cause : une règle CSS morte héritée de Chart.js (`canvas { height: 240px !important }` sous 980 px) écrasait la hauteur posée par uPlot — d'où le rendu parfait sur ordinateur. Règles mortes supprimées et `ResizeObserver` existant durci (debounce 100 ms, garde de dimensions, re-synchronisation initiale ; la rotation portrait/paysage est couverte). Frontend uniquement (`data/app.css`, `data/app.js`), aucun changement firmware.
+
+### Documentation
+
+- `docs/features/page-dashboard.md` : comportement responsive des graphiques uPlot documenté (ResizeObserver partagé, interdiction de dimensionner les canvas uPlot en CSS).
+- Pas de nouvel ADR (bug d'affichage pur, aucune décision structurante).
+
+---
+
 ## [2.18.2] - 2026-08-09
 
 ### Firmware

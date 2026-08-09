@@ -1869,10 +1869,9 @@ input.is-computed:disabled {
   .grid--cards { grid-template-columns: 1fr; }
   .grid--status-cards { grid-template-columns: 1fr; }
   .grid--charts { grid-template-columns: 1fr; }
-  canvas { height: 240px !important; }
-  .chartAreaWrapper { height: 240px; padding-left: 64px; }
-  .chartWrapper { height: 240px; }
-  .chartYAxisOverlay { width: 64px; }
+  /* Note : ne PAS forcer la hauteur des <canvas> ici (vestige Chart.js supprimé) —
+     un `canvas { height … !important }` écraserait la taille inline posée par uPlot
+     et étirerait les mini-charts hors de leur carte (bug iPhone, v2.18.3). */
 }
 
 /* ========== ALERTES ========== */

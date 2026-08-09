@@ -20,6 +20,8 @@ La page est une **grille de six cartes** (classe `grid--status-cards`) :
 
 Chaque mini-graphique est rendu par **uPlot** (usine `createMiniLineChart`, feature-043 — remplace Chart.js) dans un conteneur dédié, alimenté par l'historique des 3 derniers jours (`GET /get-history?range=3d`, points bruts + moyennes horaires selon l'ancienneté). La coloration de la courbe est **conditionnelle par segment** (vert dans la tolérance, interpolation continue vers le rouge au-delà, gris si donnée absente — `getMiniChartRGB`, app.js).
 
+**Responsive / mobile (v2.18.3)** : la hauteur des graphiques uPlot (mini-charts ~88 px, écrans détail 220 px) est posée en **styles inline** par uPlot et resynchronisée par le `ResizeObserver` partagé (`observeChart`, app.js) — debounce 100 ms, `setSize` uniquement si les dimensions sont > 0 et ont réellement changé, re-synchronisation initiale au premier passage (couvre un conteneur aux dimensions provisoires au moment de la création), rotation portrait/paysage incluse. ⚠️ **Ne jamais dimensionner un `canvas` uPlot en CSS** : une règle morte héritée de Chart.js (`canvas { height: 240px !important }` sous 980 px, `data/app.css`) étirait puis écrêtait les graphiques sur iPhone — supprimée en v2.18.3 (un commentaire de garde marque l'emplacement dans `app.css`).
+
 Un **chip `Calibration nécessaire`** (`#calib-chip`) s'affiche en haut de page si pH **ou** ORP est flagué non calibré.
 
 ## Badge multi-états des cartes pH / ORP (`#ph-sensor-badge`, `#orp-sensor-badge`)
@@ -203,4 +205,5 @@ Le détail complet du cumul journalier (barre de progression, mL consommés / qu
 - `feature-012-badges-dashboard-cumul-stabilisation` — segment « Cumul XX % », règle de composition du badge multi-états (max 2 segments), stabilisation par pompe (v2.9.0, périmètre réduit sur avis UX)
 - `feature-022-observabilite-dosage` — segment « Capteur indisponible » (priorité 0, danger) piloté par `ph`/`orp` null dans le WS, garde anti-faux-positif au boot (v2.10.0)
 - `bug-ui-valeurs-figees-capteur-absent` — convention « `--` » généralisée à tous les sites d'affichage numérique (fin du pattern « skip si null ») + badge « Capteur indisponible » température (v2.10.5)
+- `bug-minicharts-ecretes-mobile` — graphiques étirés/écrêtés sur iPhone : règle CSS morte Chart.js supprimée, `ResizeObserver` durci (v2.18.3, voir note « Responsive / mobile » dans [Structure](#structure))
 - `feature-061-mesures-ph-orp-filtration-arretee` — mesures pH/ORP non représentatives sans circulation d'eau : badges info bleus, valeurs `--`, trous dans les courbes, dé-duplication dosing-status (v2.13.0) ; itération 2 : extension du même traitement à la température (carte/compact `--`, badges, courbe avec trous)

@@ -491,23 +491,53 @@
   // Incréments entiers pour l'axe X catégoriel (x = index → label), évite les ticks fractionnaires
   const X_INT_INCRS = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000];
 
-  // Un seul ResizeObserver module-level pour tous les graphiques (uPlot ne se redimensionne pas seul)
-  const _uplotResizeMap = new Map(); // HTMLElement -> uPlot
+  // Un seul ResizeObserver module-level pour tous les graphiques (uPlot ne se redimensionne pas seul).
+  // Re-mesure débouncée (~100 ms) : Safari iOS déclenche des rafales de reflows
+  // (barre d'URL, rotation) et setSize() re-rend tout le graphe. setSize() n'est
+  // appelé que si les dimensions sont > 0 et ont réellement changé.
+  const UPLOT_RESIZE_DEBOUNCE_MS = 100;
+  const _uplotResizeMap = new Map(); // HTMLElement -> { u, timer, w, h }
+
+  function _applyChartSize(el) {
+    const entry = _uplotResizeMap.get(el);
+    if (!entry) return;
+    entry.timer = null;
+    const w = el.clientWidth;
+    const h = el.clientHeight;
+    if (w > 0 && h > 0 && (w !== entry.w || h !== entry.h)) {
+      entry.w = w;
+      entry.h = h;
+      entry.u.setSize({ width: w, height: h });
+    }
+  }
+
   const _uplotResizeObserver = (typeof ResizeObserver !== 'undefined')
     ? new ResizeObserver(entries => {
-        for (const entry of entries) {
-          const u = _uplotResizeMap.get(entry.target);
-          if (!u) continue;
-          const w = entry.target.clientWidth;
-          const h = entry.target.clientHeight;
-          if (w > 0 && h > 0) u.setSize({ width: w, height: h });
+        for (const e of entries) {
+          const entry = _uplotResizeMap.get(e.target);
+          if (!entry) continue;
+          if (entry.timer) clearTimeout(entry.timer);
+          entry.timer = setTimeout(() => _applyChartSize(e.target), UPLOT_RESIZE_DEBOUNCE_MS);
         }
       })
     : null;
 
+  // w/h initialisés à 0 : le premier callback de l'observer (émis dès observe())
+  // re-synchronise la taille réelle, corrigeant le repli Math.max(…, 50) si le
+  // conteneur avait une taille nulle/provisoire à la création.
   function observeChart(el, u) {
-    _uplotResizeMap.set(el, u);
+    _uplotResizeMap.set(el, { u, timer: null, w: 0, h: 0 });
     _uplotResizeObserver?.observe(el);
+  }
+
+  // À appeler avant u.destroy() si un graphe venait à être recréé (aucun site
+  // aujourd'hui : les graphes vivent toute la session — SPA sans démontage).
+  function unobserveChart(el) {
+    const entry = _uplotResizeMap.get(el);
+    if (!entry) return;
+    if (entry.timer) clearTimeout(entry.timer);
+    _uplotResizeMap.delete(el);
+    _uplotResizeObserver?.unobserve(el);
   }
 
   // Curseur uPlot : pas de crosshair ni de drag-zoom (parité Chart.js).
