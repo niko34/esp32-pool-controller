@@ -2,6 +2,27 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.18.4] - 2026-08-10
+
+### Firmware
+
+- **Plus d'agrégat fantôme daté du futur dans l'historique** (`bug-points-futurs-et-ux-courbes`, constaté en production le 10/08 : un point « moyenne journalière » daté du jour courant — normalement impossible — polluait le bord droit des courbes). Cause : des points horodatés dans le **futur** (excursion d'horloge pendant les reboots des essais des 8-9/08) paraissaient vieux de ~136 ans par wrap `uint32` du prédicat d'âge → consolidation immédiate en agrégat journalier daté du futur. Deux gardes : les prédicats d'âge deviennent **future-safe** (`historyIsExpired` pour la purge 90 j, `historyBucketConsolidable` durcie — un point/créneau futur n'est plus jamais « ancien » ; logique pure, l'invariant de wrap d'`isOlderThan` reste inchangé) ; au chargement de `/history.json`, les points horodatés au-delà de `now + 1 h` (`kHistoryFutureToleranceSeconds`) sont **purgés** quand l'horloge est disponible (log INFO du nombre purgé) — le point fantôme disparaît au premier boot. Builds bi-core + 441 tests natifs (+5) verts.
+- **Widget Éclairage de l'accueil** : la ligne « Horaires » est masquée quand la programmation est désactivée (elle affichait des horaires inertes sous un mode « Programmation désactivée »).
+
+### Fonctionnalités
+
+- **Tooltip des courbes toujours daté et typé** : le survol d'un point affiche désormais systématiquement la date ET l'heure (`jj/mm hh:mm` — plus d'heure seule pour « aujourd'hui ») ainsi que le type de point (« mesure », « moyenne horaire », « moyenne journalière ») — mini-graphiques du tableau de bord ET écrans détail. Lève l'ambiguïté des étiquettes courtes de l'axe X (inchangées).
+- **Mini-graphiques de l'accueil sur 24 h** (au lieu de 3 jours) : lecture directe de la journée écoulée ; les écrans détail conservent leurs plages (`24h`/`7j`/`30j`/`Tout`).
+- **Les arrêts de filtration se voient sur les courbes** : plus de 90 min entre deux points consécutifs → la courbe est coupée (trou), y compris lors du rafraîchissement incrémental des mini-graphiques ; sur les écrans détail (1 point/jour), un jour calendaire entièrement absent crée le même trou.
+
+### Documentation
+
+- `docs/subsystems/history.md` : garde anti-futur des prédicats d'âge + purge des points futurs au chargement documentées.
+- `docs/features/page-dashboard.md` : mini-graphiques 24 h, tooltip daté/typé, coupures de courbe aux arrêts.
+- Pas de nouvel ADR (correctif de robustesse + UX, aucune décision structurante).
+
+---
+
 ## [2.18.3] - 2026-08-09
 
 ### Fonctionnalités

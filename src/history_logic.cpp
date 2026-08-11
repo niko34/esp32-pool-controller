@@ -56,6 +56,10 @@ bool historySaveAdmit(size_t freeBytes, size_t oldFileBytes, size_t jsonBytes, s
 bool historyBucketConsolidable(uint32_t now, uint32_t bucketStart,
                                uint32_t bucketLen, uint32_t maxAgeSeconds) {
   uint32_t lastSecond = (bucketLen == 0) ? bucketStart : bucketStart + bucketLen - 1;
+  // Future-safe (bug-points-futurs) : un bucket dont la fin est dans le futur
+  // n'est jamais consolidable — sans cette garde, le wrap uint32 le rendrait
+  // instantanément « très ancien » (agrégat fantôme daté du futur).
+  if (lastSecond > now) return false;
   return isOlderThan(now, lastSecond, maxAgeSeconds);
 }
 
@@ -66,4 +70,10 @@ float historyMergeMeanFinite(float a, float b) {
   if (fa) return a;
   if (fb) return b;
   return NAN;
+}
+
+// Ancienneté future-safe : un point futur n'est jamais « expiré ».
+bool historyIsExpired(uint32_t now, uint32_t ts, uint32_t maxAgeSeconds) {
+  if (ts > now) return false;
+  return isOlderThan(now, ts, maxAgeSeconds);
 }

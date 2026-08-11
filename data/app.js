@@ -640,12 +640,35 @@
     };
   }
 
+  // Espacement max entre 2 points consécutifs (90 min) avant coupure de courbe :
+  // au-delà (arrêt de filtration, coupure de courant), une entrée null est insérée
+  // dans la série → uPlot lève le crayon (même convention que les mesures invalides)
+  const CHART_GAP_SECONDS = 5400;
+
+  // Type de point selon la granularité fournie par /get-history
+  // (0 = mesure brute 5 min, 1 = moyenne horaire, 2 = moyenne journalière)
+  const GRANULARITY_LABELS = ['mesure', 'moyenne horaire', 'moyenne journalière'];
+
+  function granularityLabel(g) {
+    return (g != null && GRANULARITY_LABELS[g] != null) ? GRANULARITY_LABELS[g] : '';
+  }
+
+  // Titre de tooltip exhaustif : date + heure TOUJOURS (jj/mm hh:mm) —
+  // les étiquettes de l'axe X, elles, restent courtes (heure seule si aujourd'hui)
+  function tooltipDateTime(timestamp) {
+    if (timestamp == null) return '';
+    const d = new Date(timestamp * 1000);
+    return d.toLocaleDateString([], { day: '2-digit', month: '2-digit' }) + ' '
+      + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+
   function createMiniLineChart(hostId, getTarget, getTolerance, formatValue) {
     const host = document.getElementById(hostId);
     if (!host || typeof uPlot === 'undefined') return null;
 
-    // État du graphique : labels catégoriels + valeurs + bornes Y de repli (série vide)
-    const st = { labels: [], values: [], yMin: null, yMax: null };
+    // État du graphique : labels catégoriels + valeurs + timestamps/granularités
+    // (tableaux parallèles, pour le tooltip) + bornes Y de repli (série vide)
+    const st = { labels: [], values: [], ts: [], gran: [], yMin: null, yMax: null };
 
     // Coloration conditionnelle par segment : gradient HORIZONTAL à hard stops,
     // couleur du segment i = getMiniChartRGB(moyenne des 2 points) — formule Chart.js exacte
@@ -749,11 +772,14 @@
       plugins: [
         tooltipPlugin({
           variant: 'mini',
-          title: (u, idx) => st.labels[idx] ?? '',
+          title: (u, idx) => tooltipDateTime(st.ts[idx]) || (st.labels[idx] ?? ''),
           rows: (u, idx) => {
             const v = u.data[1][idx];
             if (v == null || isNaN(v)) return [];
-            return [{ text: formatValue ? formatValue(v) : String(v) }];
+            const lines = [{ text: formatValue ? formatValue(v) : String(v) }];
+            const type = granularityLabel(st.gran[idx]);
+            if (type) lines.push({ text: type });
+            return lines;
           }
         })
       ]
@@ -785,43 +811,53 @@
   async function loadMiniChartData(since = 0) {
     try {
       const url = since > 0
-        ? `/get-history?range=3d&since=${since}`
-        : '/get-history?range=3d';
+        ? `/get-history?range=24h&since=${since}`
+        : '/get-history?range=24h';
       const resp = await authFetch(url);
       if (!resp.ok) return;
       const data = await resp.json();
       if (!data.history) return;
 
-      const phLabels = [], phValues = [];
-      const orpLabels = [], orpValues = [];
-      const tempLabels = [], tempValues = [];
+      // Tableaux parallèles partagés par les 3 mini-charts (mêmes points sources) ;
+      // updateMiniChart/appendMiniChart copient pour que chaque graphe reste indépendant
+      const labels = [], ts = [], gran = [];
+      const phValues = [], orpValues = [], tempValues = [];
       let maxTs = since;
+      // Coupure de courbe : sur le chemin incrémental, le « point précédent » du
+      // premier nouveau point est le dernier point déjà affiché — un arrêt entre
+      // l'existant et le nouveau crée aussi un trou
+      let prevTs = (since > 0 && lastMiniChartTimestamp > 0) ? lastMiniChartTimestamp : null;
 
       data.history.forEach(point => {
         if (point.timestamp > maxTs) maxTs = point.timestamp;
-        const label = miniChartPointLabel(point.timestamp);
+        // Espacement > 90 min avec le point précédent → entrée null (uPlot lève le crayon)
+        if (prevTs != null && point.timestamp - prevTs > CHART_GAP_SECONDS) {
+          labels.push(''); ts.push(null); gran.push(null);
+          phValues.push(null); orpValues.push(null); tempValues.push(null);
+        }
+        prevTs = point.timestamp;
         // feature-061 : pH/ORP/température null (filtration arrêtée) → pousser null,
         // pas filtrer : uPlot lève le crayon sur null (trou visible), y compris sur
         // le chemin incrémental appendMiniChart. Température incluse en itération 2.
-        phLabels.push(label);
+        labels.push(miniChartPointLabel(point.timestamp));
+        ts.push(point.timestamp);
+        gran.push(point.granularity ?? 0);
         phValues.push((point.ph != null && !isNaN(point.ph)) ? Math.round(point.ph * 10) / 10 : null);
-        orpLabels.push(label);
         orpValues.push((point.orp != null && !isNaN(point.orp)) ? Math.round(point.orp) : null);
-        tempLabels.push(label);
         tempValues.push((point.temperature != null && !isNaN(point.temperature))
           ? Math.round(point.temperature * 10) / 10 : null);
       });
 
       if (since === 0) {
         // Chargement initial : remplace toutes les données
-        updateMiniChart(phMiniChart, phLabels, phValues, window._config?.ph_target ?? 7.2, 0.2);
-        updateMiniChart(orpMiniChart, orpLabels, orpValues, window._config?.orp_target ?? 700, 50);
-        updateMiniChart(tempMiniChart, tempLabels, tempValues, 26, 8);
+        updateMiniChart(phMiniChart, labels, phValues, ts, gran, window._config?.ph_target ?? 7.2, 0.2);
+        updateMiniChart(orpMiniChart, labels, orpValues, ts, gran, window._config?.orp_target ?? 700, 50);
+        updateMiniChart(tempMiniChart, labels, tempValues, ts, gran, 26, 8);
       } else {
         // Mise à jour incrémentale : ajoute les nouveaux points
-        appendMiniChart(phMiniChart, phLabels, phValues, window._config?.ph_target ?? 7.2, 0.2);
-        appendMiniChart(orpMiniChart, orpLabels, orpValues, window._config?.orp_target ?? 700, 50);
-        appendMiniChart(tempMiniChart, tempLabels, tempValues, 26, 8);
+        appendMiniChart(phMiniChart, labels, phValues, ts, gran, window._config?.ph_target ?? 7.2, 0.2);
+        appendMiniChart(orpMiniChart, labels, orpValues, ts, gran, window._config?.orp_target ?? 700, 50);
+        appendMiniChart(tempMiniChart, labels, tempValues, ts, gran, 26, 8);
       }
 
       if (maxTs > lastMiniChartTimestamp) lastMiniChartTimestamp = maxTs;
@@ -842,18 +878,24 @@
     }
   }
 
-  function appendMiniChart(chart, newLabels, newValues, target, tolerance) {
+  function appendMiniChart(chart, newLabels, newValues, newTs, newGran, target, tolerance) {
     if (!chart || !newLabels.length) return;
     chart.st.labels.push(...newLabels);
     chart.st.values.push(...newValues);
+    chart.st.ts.push(...newTs);
+    chart.st.gran.push(...newGran);
     applyMiniChartFallbackScale(chart, target, tolerance);
     chart.render();
   }
 
-  function updateMiniChart(chart, labels, values, target, tolerance) {
+  function updateMiniChart(chart, labels, values, ts, gran, target, tolerance) {
     if (!chart) return;
-    chart.st.labels = labels;
+    // slice() : labels/ts/gran sont partagés entre les 3 mini-charts — chaque
+    // graphe doit posséder sa propre copie (appendMiniChart mute st.* par push)
+    chart.st.labels = labels.slice();
     chart.st.values = values;
+    chart.st.ts = ts.slice();
+    chart.st.gran = gran.slice();
     applyMiniChartFallbackScale(chart, target, tolerance);
     chart.render();
   }
@@ -870,6 +912,8 @@
     const st = {
       labels: [],
       values: [],
+      ts: [],   // timestamp du dernier point contribuant à chaque entrée (tooltip)
+      gran: [], // granularité de ce point (0/1/2)
       yMin: hasBands ? referenceLines.axisMin : null,
       yMax: hasBands ? referenceLines.axisMax : null
     };
@@ -953,11 +997,14 @@
       series,
       plugins: [
         tooltipPlugin({
-          title: (u, idx) => st.labels[idx] ?? '',
+          title: (u, idx) => tooltipDateTime(st.ts[idx]) || (st.labels[idx] ?? ''),
           rows: (u, idx) => {
             const v = u.data[measureIdx][idx];
             if (v == null || isNaN(v)) return [];
-            return [{ color, text: `${label}: ${v}` }];
+            const lines = [{ color, text: `${label}: ${v}` }];
+            const type = granularityLabel(st.gran[idx]);
+            if (type) lines.push({ text: type });
+            return lines;
           }
         })
       ]
@@ -990,9 +1037,13 @@
           u.setData([xs, st.values]);
         }
       },
-      setPoints(labels, values) {
+      // ts/gran optionnels (tableaux parallèles pour le tooltip) : les appels
+      // existants sans ces arguments (ex. clearHistoryCharts) restent valides
+      setPoints(labels, values, ts, gran) {
         st.labels = labels;
         st.values = values;
+        st.ts = ts || labels.map(() => null);
+        st.gran = gran || labels.map(() => null);
         this.render();
       }
     };
@@ -1109,6 +1160,13 @@
       const todayKey = `${nowD.getFullYear()}-${String(nowD.getMonth()+1).padStart(2,'0')}-${String(nowD.getDate()).padStart(2,'0')}`;
       const dayMap = new Map();
 
+      // Entrée journalière vierge : valeurs + timestamp/granularité PAR capteur
+      // (le tooltip de chaque graphe affiche la date/heure du point qui a fourni SA valeur)
+      const emptyDay = (label) => ({
+        label, ph: null, orp: null, temperature: null,
+        phTs: null, phG: null, orpTs: null, orpG: null, tempTs: null, tempG: null
+      });
+
       history.forEach(point => {
         const d = new Date(point.timestamp * 1000);
         if (isNaN(d.getTime())) return;
@@ -1118,12 +1176,25 @@
           const label = isToday
             ? "Aujourd'hui"
             : `${d.getDate()} ${MOIS_FR[d.getMonth()]}`;
-          dayMap.set(key, { label, ph: null, orp: null, temperature: null });
+          dayMap.set(key, emptyDay(label));
         }
         const entry = dayMap.get(key);
-        if (point.ph != null && !isNaN(point.ph)) entry.ph = Math.round(point.ph * 10) / 10;
-        if (point.orp != null && !isNaN(point.orp)) entry.orp = Math.round(point.orp);
-        if (point.temperature != null && !isNaN(point.temperature)) entry.temperature = point.temperature;
+        const g = point.granularity ?? 0;
+        if (point.ph != null && !isNaN(point.ph)) {
+          entry.ph = Math.round(point.ph * 10) / 10;
+          entry.phTs = point.timestamp;
+          entry.phG = g;
+        }
+        if (point.orp != null && !isNaN(point.orp)) {
+          entry.orp = Math.round(point.orp);
+          entry.orpTs = point.timestamp;
+          entry.orpG = g;
+        }
+        if (point.temperature != null && !isNaN(point.temperature)) {
+          entry.temperature = point.temperature;
+          entry.tempTs = point.timestamp;
+          entry.tempG = g;
+        }
       });
 
       // Si aujourd'hui absent de l'historique mais données temps réel disponibles, l'injecter
@@ -1131,32 +1202,65 @@
       if (!dayMap.has(todayKey) && latestSensorData) {
         const s = latestSensorData;
         const liveOk = measuresAreValid(s);
-        dayMap.set(todayKey, {
-          label: "Aujourd'hui",
-          ph: (liveOk && s.ph != null) ? Math.round(s.ph * 10) / 10 : null,
-          orp: (liveOk && s.orp != null) ? Math.round(s.orp) : null,
-          temperature: (liveOk && s.temperature != null) ? s.temperature : null
-        });
+        const liveTs = Math.floor(Date.now() / 1000);
+        const entry = emptyDay("Aujourd'hui");
+        if (liveOk && s.ph != null) {
+          entry.ph = Math.round(s.ph * 10) / 10;
+          entry.phTs = liveTs;
+          entry.phG = 0;
+        }
+        if (liveOk && s.orp != null) {
+          entry.orp = Math.round(s.orp);
+          entry.orpTs = liveTs;
+          entry.orpG = 0;
+        }
+        if (liveOk && s.temperature != null) {
+          entry.temperature = s.temperature;
+          entry.tempTs = liveTs;
+          entry.tempG = 0;
+        }
+        dayMap.set(todayKey, entry);
       }
 
       // Trier par date croissante — tri lexicographique direct sur YYYY-MM-DD
-      const entries = [...dayMap.entries()]
-        .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-        .map(([, e]) => e);
+      const sortedDays = [...dayMap.entries()]
+        .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+
+      // Coupure de courbe sur les écrans détaillés (résolution : 1 point/jour) :
+      // le seuil brut de 90 min (CHART_GAP_SECONDS) est inapplicable ici — deux
+      // jours consécutifs sont toujours espacés de ~24 h. L'équivalent : un jour
+      // calendaire entièrement absent entre deux jours présents → entrée null
+      // insérée (uPlot lève le crayon, l'arrêt prolongé se voit).
+      const dayKeyToUtc = (key) => {
+        const [y, m, d] = key.split('-').map(Number);
+        return Date.UTC(y, m - 1, d);
+      };
+      const entries = [];
+      let prevKey = null;
+      sortedDays.forEach(([key, e]) => {
+        if (prevKey != null && (dayKeyToUtc(key) - dayKeyToUtc(prevKey)) > 86400000) {
+          entries.push(emptyDay(''));
+        }
+        prevKey = key;
+        entries.push(e);
+      });
 
       // feature-061 : jours sans aucune mesure valide (filtration arrêtée) → null
       // conservé dans la série (trou uPlot) au lieu de sauter le jour.
       // Itération 2 : la température suit le même mécanisme que pH/ORP.
       if (tempChart) {
-        tempChart.setPoints(entries.map(e => e.label), entries.map(e => e.temperature));
+        tempChart.setPoints(entries.map(e => e.label), entries.map(e => e.temperature),
+          entries.map(e => e.tempTs), entries.map(e => e.tempG));
       }
 
       if (phChart) {
-        phChart.setPoints(entries.map(e => e.label), entries.map(e => e.ph));
+        phChart.setPoints(entries.map(e => e.label), entries.map(e => e.ph),
+          entries.map(e => e.phTs), entries.map(e => e.phG));
       }
 
       if (orpChart) {
-        orpChart.setPoints(entries.map(e => e.label), entries.map(e => e.orp));
+        orpChart.setPoints(entries.map(e => e.label), entries.map(e => e.orp),
+          entries.map(e => e.orpTs), entries.map(e => e.orpG));
       }
 
       debugLog(`Loaded ${history.length} points → ${dayMap.size} jours agrégés (${range})`);
@@ -1172,13 +1276,18 @@
 
     function updateChart(chart, value) {
       if (!chart || value == null || isNaN(value)) return;
-      const labels = chart.st.labels;
-      const values = chart.st.values;
-      if (labels.length > 0 && labels[labels.length - 1] === todayLabel) {
-        values[values.length - 1] = value;
+      const st = chart.st;
+      // Tenir ts/gran parallèles aux labels : point live = mesure datée de maintenant
+      const nowTs = Math.floor(Date.now() / 1000);
+      if (st.labels.length > 0 && st.labels[st.labels.length - 1] === todayLabel) {
+        st.values[st.values.length - 1] = value;
+        st.ts[st.ts.length - 1] = nowTs;
+        st.gran[st.gran.length - 1] = 0;
       } else {
-        labels.push(todayLabel);
-        values.push(value);
+        st.labels.push(todayLabel);
+        st.values.push(value);
+        st.ts.push(nowTs);
+        st.gran.push(0);
       }
       chart.render();
     }
@@ -2952,9 +3061,17 @@
 
     const detailLightingSchedule = $("#detail-lighting-schedule");
     if (detailLightingSchedule) {
-      const startTime = config.lighting_start_time || '20:00';
-      const endTime = config.lighting_end_time || '23:00';
-      detailLightingSchedule.textContent = startTime + ' - ' + endTime;
+      // Programmation désactivée → la ligne Horaires est masquée (afficher des
+      // horaires inertes contredisait le mode affiché juste au-dessus).
+      const schedRow = detailLightingSchedule.closest('.detail-row');
+      if (config.lighting_schedule_enabled) {
+        const startTime = config.lighting_start_time || '20:00';
+        const endTime = config.lighting_end_time || '23:00';
+        detailLightingSchedule.textContent = startTime + ' - ' + endTime;
+        if (schedRow) schedRow.style.display = '';
+      } else if (schedRow) {
+        schedRow.style.display = 'none';
+      }
     }
   }
 
@@ -6660,7 +6777,7 @@
     await loadHistoricalData('all').catch(() => {});
     historyPerf?.end();
 
-    // Chargement initial des mini charts (3 jours)
+    // Chargement initial des mini charts (24 h)
     loadMiniChartData(0).catch(() => {});
     // Polling incrémental toutes les 5 minutes
     setInterval(() => {

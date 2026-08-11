@@ -233,6 +233,11 @@ constexpr size_t kHistoryPointJsonMaxBytes = 128;
 // dont les timeouts en cours de flux tronquaient la réponse.
 constexpr unsigned long kHistorySnapshotTimeoutMs = 100;
 
+// bug-points-futurs : tolérance au-delà de « maintenant » avant de considérer
+// un timestamp comme impossible (purgé au chargement). 1 h absorbe un décalage
+// d'horloge bénin sans laisser passer les excursions franches.
+constexpr unsigned long kHistoryFutureToleranceSeconds = 3600;
+
 // Ring d'instrumentation heap en RAM RTC noinit (bug-heap-toctou A4) : cinétique
 // d'effondrement du heap dans les ~4 dernières minutes avant un reset anormal
 // (le tick santé 5-60 s la rate). 128 entrées × 8 o = 1 Ko RTC noinit ; encodage

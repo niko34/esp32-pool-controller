@@ -226,6 +226,42 @@ void test_mergeMean_none_finite_nan(void) {
   TEST_ASSERT_TRUE(isnan(historyMergeMeanFinite(INFINITY, NAN)));
 }
 
+
+// ---------------------------------------------------------------------------
+// bug-points-futurs — historyIsExpired (future-safe) + bucket futur
+// ---------------------------------------------------------------------------
+
+void test_isExpired_past_old_true(void) {
+  TEST_ASSERT_TRUE(historyIsExpired(1000000, 100000, 100));
+}
+
+void test_isExpired_past_recent_false(void) {
+  TEST_ASSERT_FALSE(historyIsExpired(1000000, 999990, 100));
+}
+
+void test_isExpired_future_false(void) {
+  // LE cas du bug : ts > now → le wrap uint32 rendait le point « très ancien ».
+  // isOlderThan (invariant conservé) dit true ; historyIsExpired doit dire false.
+  uint32_t now = 1786300000, tsFutur = now + 7200;
+  TEST_ASSERT_TRUE(isOlderThan(now, tsFutur, 7776000));       // wrap : « vieux »
+  TEST_ASSERT_FALSE(historyIsExpired(now, tsFutur, 7776000)); // garde : non expiré
+}
+
+void test_isExpired_boundary_now_equals_ts(void) {
+  TEST_ASSERT_FALSE(historyIsExpired(1000000, 1000000, 100)); // âge 0 ≤ maxAge
+}
+
+void test_bucketConsolidable_future_bucket_refused(void) {
+  // Bucket horaire dont la fin est dans le futur → jamais consolidable,
+  // même si le wrap le ferait paraître ancien.
+  uint32_t now = 1786300000;
+  uint32_t bucketFutur = now + 3600;
+  TEST_ASSERT_FALSE(historyBucketConsolidable(now, bucketFutur, 3600, 21600));
+  // Bucket en cours (commencé, pas fini) : refusé aussi.
+  uint32_t bucketEnCours = (now / 3600) * 3600;
+  TEST_ASSERT_FALSE(historyBucketConsolidable(now, bucketEnCours, 3600, 21600));
+}
+
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
@@ -285,6 +321,13 @@ int main(int argc, char** argv) {
   RUN_TEST(test_mergeMean_both_finite_average);
   RUN_TEST(test_mergeMean_one_finite_keeps_it);
   RUN_TEST(test_mergeMean_none_finite_nan);
+
+  // bug-points-futurs
+  RUN_TEST(test_isExpired_past_old_true);
+  RUN_TEST(test_isExpired_past_recent_false);
+  RUN_TEST(test_isExpired_future_false);
+  RUN_TEST(test_isExpired_boundary_now_equals_ts);
+  RUN_TEST(test_bucketConsolidable_future_bucket_refused);
 
   return UNITY_END();
 }

@@ -58,4 +58,12 @@ bool historyBucketConsolidable(uint32_t now, uint32_t bucketStart,
 // effectifs d'origine ne sont pas stockés (approximation assumée, cf. spec).
 float historyMergeMeanFinite(float a, float b);
 
+// bug-points-futurs-et-ux-courbes : ancienneté FUTURE-SAFE. Un point horodaté
+// dans le futur (ts > now — excursion d'horloge) ne doit JAMAIS être considéré
+// comme ancien : le wrap uint32 d'isOlderThan (invariant documenté, conservé)
+// le ferait paraître vieux de ~136 ans → purge 90 j ou consolidation immédiate
+// en agrégat daté du futur (constaté en production le 2026-08-10 : journalier
+// fantôme g2 daté du jour courant).
+bool historyIsExpired(uint32_t now, uint32_t ts, uint32_t maxAgeSeconds);
+
 #endif // HISTORY_LOGIC_H

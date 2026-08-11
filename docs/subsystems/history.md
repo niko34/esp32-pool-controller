@@ -26,10 +26,10 @@ Voir [`constants.h:49`](../../src/constants.h:49) et [`history.h:30`](../../src/
 2. `consolidateData()` toutes les **5 min** (`SAVE_INTERVAL = 300000`) — depuis la v2.18.1, par **créneau complet** (voir section dédiée ci-dessous) :
    - Créneaux horaires `RAW` **complets** (dernière seconde de l'heure plus ancienne que `RAW_MAX_AGE` = 6 h, soit ~7 h après le début de l'heure) → **un** agrégat horaire (`HOURLY`).
    - Créneaux journaliers `HOURLY` **complets** (dernière seconde du jour plus ancienne que `HOURLY_MAX_AGE` = 15 j) → **un** agrégat journalier (`DAILY`). ⚠️ Voir *Suivi connu* : ce chemin est actuellement affamé.
-   - Points `DAILY` plus anciens que 90 j (`DAILY_MAX_AGE`) → supprimés.
+   - Points `DAILY` plus anciens que 90 j (`DAILY_MAX_AGE`) → supprimés (prédicat **future-safe** `historyIsExpired` depuis v2.18.4 — un point horodaté dans le futur n'est jamais purgé comme « ancien »).
    - Après tri : `dedupAggregatedPoints()` (fusion des agrégats dupliqués de même créneau — ceinture-bretelles).
    - Appelle **`saveToFile()` en interne** à la fin du cycle de consolidation. Ne pas rappeler `saveToFile()` séparément depuis `update()` — c'est exactement le bug qui causait deux écritures flash + deux logs `Historique sauvegardé` toutes les 5 min.
-3. Au boot : `loadFromFile()` restaure `memoryBuffer` depuis le fichier.
+3. Au boot : `loadFromFile()` restaure `memoryBuffer` depuis le fichier — avec, depuis la v2.18.4, **purge des points horodatés dans le futur** (voir [Garde anti-futur](#garde-anti-futur--purge-des-points-futurs-v2184-bug-points-futurs-et-ux-courbes)).
 
 > Niveau de log : la trace `Consolidation terminée: N points` est en **DEBUG** (n'apparaît pas dans la persistance par défaut, niveau `INFO` minimum sur le fichier). Le marqueur antérieur `DEBUG: Début consolidation historique` a été supprimé.
 
@@ -47,12 +47,13 @@ Depuis **feature-041** (*characterization refactor*), la math **scalaire** d'agr
 | `isMajority(trueCount, total)` | Majorité stricte `trueCount > total/2` | Division **entière** : `2/4` → `false`, `3/4` → `true`, `3/5` → `true` |
 | `anyTrue(count)` | « Au moins un » : `count > 0` | — |
 | `historySaveAdmit(freeBytes, oldFileBytes, jsonBytes, marginBytes)` | Admission d'une écriture de `/history.json` : vrai si `libre + taille de l'ancien fichier ≥ JSON + marge` ([ADR-0033](../adr/0033-budget-espace-partition-history.md), v2.11.0) | Frontière **large** (égalité exacte → admis). Anti-overflow : soustractions gardées, aucune addition — correct jusqu'à `SIZE_MAX` sur chaque paramètre. **Logique NOUVELLE** (pas de contrainte characterization) |
-| `historyBucketConsolidable(now, bucketStart, bucketLen, maxAgeSeconds)` | Créneau consolidable si **complet et ancien** : sa **dernière seconde** (`bucketStart + bucketLen − 1`) dépasse `maxAge` (v2.18.1, bug-history-doublons-troncature A1) | Même convention stricte qu'`isOlderThan` (`== maxAge` → `false`). `bucketLen == 0` → prédicat sur `bucketStart` seul (défensif). **Logique NOUVELLE** |
+| `historyBucketConsolidable(now, bucketStart, bucketLen, maxAgeSeconds)` | Créneau consolidable si **complet et ancien** : sa **dernière seconde** (`bucketStart + bucketLen − 1`) dépasse `maxAge` (v2.18.1, bug-history-doublons-troncature A1) | Même convention stricte qu'`isOlderThan` (`== maxAge` → `false`). `bucketLen == 0` → prédicat sur `bucketStart` seul (défensif). **Durcie v2.18.4** : dernière seconde dans le futur (`> now`) → **jamais consolidable** (voir [Garde anti-futur](#garde-anti-futur--purge-des-points-futurs-v2184-bug-points-futurs-et-ux-courbes)). **Logique NOUVELLE** |
 | `historyMergeMeanFinite(a, b)` | Fusion **équipondérée** de deux valeurs d'un même champ lors de la déduplication : fini+fini → moyenne, un seul fini → lui, aucun → `NaN` (v2.18.1, A2) | Équipondéré car les effectifs d'origine ne sont pas stockés (approximation assumée pour les doublons hérités ≤ 2.18.0). **Logique NOUVELLE** |
+| `historyIsExpired(now, ts, maxAgeSeconds)` | Ancienneté **future-safe** : `ts <= now && isOlderThan(...)` — un point horodaté dans le futur n'est **jamais** « expiré » (v2.18.4, bug-points-futurs-et-ux-courbes) | Utilisée par la purge 90 j de `consolidateData()`. L'invariant de wrap d'`isOlderThan` (documenté, verrouillé par tests) reste inchangé — la garde est posée **au-dessus**. **Logique NOUVELLE** |
 
 Les deux passes de `consolidateData()` (raw → horaire, horaire → quotidien) **délèguent** à ces fonctions. *Characterization refactor* : la math reproduit **exactement** l'ancien comportement inline (frontières strictes, divisions entières, wrap `uint32`) — **aucun changement de comportement**. Ne pas « corriger » ces frontières (exception : `historySaveAdmit`, logique nouvelle).
 
-> ⚠️ **Limite de testabilité** : seule la math scalaire est couverte en natif. Le **regroupement** par bucket (`std::map`/`std::vector`), l'accumulation des sommes/compteurs, la boucle de fusion `dedupAggregatedPoints()` et la **persistance** (`saveToFile`) restent dans la coquille `history.cpp` et **hors tests natifs** (contrainte libc++ absente de l'environnement natif). 43 tests Unity natifs (dont 10 pour `historySaveAdmit`, 8 pour `historyBucketConsolidable`/`historyMergeMeanFinite`) ; `history_logic.cpp` couvert à **100 % des lignes**.
+> ⚠️ **Limite de testabilité** : seule la math scalaire est couverte en natif. Le **regroupement** par bucket (`std::map`/`std::vector`), l'accumulation des sommes/compteurs, la boucle de fusion `dedupAggregatedPoints()` et la **persistance** (`saveToFile`) restent dans la coquille `history.cpp` et **hors tests natifs** (contrainte libc++ absente de l'environnement natif). 48 tests Unity natifs (dont 10 pour `historySaveAdmit`, 8 pour `historyBucketConsolidable`/`historyMergeMeanFinite`, 5 pour la garde anti-futur — `historyIsExpired` passé/futur/frontières + bucket futur/en cours refusé) ; `history_logic.cpp` couvert à **100 % des lignes**.
 
 ## Consolidation par créneau complet + déduplication (v2.18.1, bug-history-doublons-troncature)
 
@@ -73,6 +74,17 @@ Jusqu'en v2.18.0, la consolidation appliquait le prédicat d'âge **par point** 
 Quand des doublons sont fusionnés : log INFO `Historique : N agrégats dupliqués fusionnés`. La fusion équipondérée est une **approximation assumée** pour les doublons hérités (les effectifs d'origine ne sont pas stockés) — hors périmètre de correction, cf. spec.
 
 > ⚠️ **Suivi connu (préexistant, hors lot — à traiter dans une spec future)** : `kMaxHourlyDataPoints` (168 points = **7 j**) < `HOURLY_MAX_AGE` (**15 j**) — les points HOURLY sont évincés par capacité **avant** d'atteindre l'âge de consolidation en DAILY : **les agrégats journaliers ne se forment jamais** (affamage structurel du 3ᵉ étage, antérieur à la v2.18.1). La rétention effective est donc ~7 j de données horaires (+ d'éventuels points DAILY historiques).
+
+## Garde anti-futur + purge des points futurs (v2.18.4, bug-points-futurs-et-ux-courbes)
+
+**Anomalie de production (2026-08-10)** : `/get-history` contenait un agrégat **journalier** daté du créneau du jour courant — doublement impossible (l'affamage DAILY documenté ci-dessus empêche leur formation, et un journalier du jour courant ne devrait naître que 15 j plus tard). Mécanisme : des points horodatés dans le **futur** (excursion d'horloge pendant une session de reboots) + wrap `uint32` d'`isOlderThan` (un point futur paraît vieux de ~136 ans) → consolidation immédiate HOURLY→DAILY avec un bucket futur. Le point fantôme polluait le bord droit des courbes.
+
+Deux gardes, complémentaires :
+
+1. **Prédicats d'âge future-safe** (`history_logic`, pur + tests) : la purge 90 j utilise `historyIsExpired(now, ts, maxAge)` = `ts <= now && isOlderThan(...)` ; `historyBucketConsolidable` est durcie de même (dernière seconde du bucket dans le futur → **jamais** consolidable). L'invariant de wrap d'`isOlderThan` lui-même est **inchangé** (documenté, verrouillé par tests — cf. tableau ci-dessus) : la garde est posée au-dessus, pas dedans.
+2. **Assainissement au chargement** (`loadFromFile()`, après tri/dédup) : purge des points `ts > now + kHistoryFutureToleranceSeconds` (**3600 s** — absorbe un décalage d'horloge bénin sans laisser passer les excursions franches, [`constants.h`](../../src/constants.h)), **uniquement si l'horloge est disponible** (`getCurrentEpoch() > 0` — RTC/NTP ; sans heure, on ne juge pas). Log **INFO** `Historique : N point(s) horodaté(s) dans le futur purgé(s)` — le point fantôme disparaît au premier boot.
+
+> La garde 1 empêche la **formation** de nouveaux agrégats fantômes (même si des points futurs entrent dans le buffer) ; la garde 2 **assainit** ceux déjà persistés. Les points futurs encore présents en RAM entre deux boots ne sont plus ni purgés ni consolidés — ils redeviennent des points normaux quand l'horloge les rattrape.
 
 ## Exclusion des mesures pH/ORP/température sans circulation d'eau (feature-061, v2.13.0)
 

@@ -616,6 +616,29 @@ void HistoryManager::loadFromFile() {
     });
   dedupAggregatedPoints();
 
+  // bug-points-futurs : purge des points horodatés dans le futur (impossibles
+  // par construction — excursion d'horloge pendant une session de reboots ;
+  // constaté en prod : agrégat journalier fantôme daté du jour courant).
+  // Uniquement si l'horloge est disponible (RTC/NTP) — now==0 : on ne juge pas.
+  {
+    bool synced = false;
+    bool estimated = false;
+    unsigned long nowEpoch = getCurrentEpoch(&synced, &estimated);
+    if (nowEpoch > 0) {
+      size_t before = memoryBuffer.size();
+      unsigned long horizon = nowEpoch + kHistoryFutureToleranceSeconds;
+      memoryBuffer.erase(
+        std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
+          [horizon](const DataPoint& p) { return p.timestamp > horizon; }),
+        memoryBuffer.end()
+      );
+      if (memoryBuffer.size() != before) {
+        systemLogger.info("Historique : " + String((unsigned)(before - memoryBuffer.size())) +
+                          " point(s) horodaté(s) dans le futur purgé(s)");
+      }
+    }
+  }
+
   systemLogger.info("Historique chargé (" + String(memoryBuffer.size()) + " points)");
 }
 
@@ -791,11 +814,13 @@ void HistoryManager::consolidateData() {
       _applyPreNtpCorrection(now, millis() / kMillisToSeconds);
     }
   }
-  // 1. Supprimer les données trop anciennes (> 90 jours)
+  // 1. Supprimer les données trop anciennes (> 90 jours) — future-safe
+  // (bug-points-futurs) : un point horodaté dans le futur n'est PAS « ancien »
+  // (le wrap uint32 le purgeait silencieusement).
   memoryBuffer.erase(
     std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
       [now](const DataPoint& p) {
-        return isOlderThan((uint32_t)now, (uint32_t)p.timestamp, (uint32_t)DAILY_MAX_AGE);
+        return historyIsExpired((uint32_t)now, (uint32_t)p.timestamp, (uint32_t)DAILY_MAX_AGE);
       }),
     memoryBuffer.end()
   );
