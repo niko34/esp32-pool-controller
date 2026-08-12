@@ -1147,7 +1147,17 @@ Depuis la v2.16.1 ([ADR-0032, extension 2026-08-04](adr/0032-reponses-http-borne
 |---|---|---|
 | `500` | `{"error":"GitHub response too large"}` | Corps de release GitHub dépassant le budget JSON (8 Ko) — refus propre, pas de consommation mémoire non bornée |
 
-**Diagnostics (v2.16.2)** : chaque appel logge l'état heap **avant** l'ouverture de la session TLS (« heap libre=… o, plus gros bloc=… o ») ; un échec côté client (code HTTP négatif) logge le détail mbedtls (`lastError`, message + code) et le libellé `errorToString` au lieu d'un « -1 » muet.
+**Diagnostics (v2.16.2)** : chaque appel logge l'état heap **avant** l'ouverture de la session TLS (« heap libre=… o, plus gros bloc=… o ») ; un échec côté client (code HTTP négatif) logge le détail mbedtls (`lastError`, message + code) et le libellé `errorToString` au lieu d'un « -1 » muet. Depuis la v2.18.5, le log INFO nominal inclut aussi l'**IP du client** (attribution des appels TLS — le crash OOM du 11/08 avait un profil TLS compatible mais l'appelant était invérifiable).
+
+**Garde mémoire bicritère (v2.18.5)** : avant la création de `WiFiClientSecure`, la route évalue le prédicat pur partagé `oomTlsGateOk` ([subsystems/oom-guard.md](subsystems/oom-guard.md)) — une session TLS GitHub coûte ~58 Ko répartis. Refus immédiat si heap libre < `kCheckUpdateMinFreeHeapBytes` (65 536 o) **OU** plus gros bloc contigu < `kCheckUpdateMinMaxAllocBytes` (20 480 o) :
+
+| Code | Corps | Cas |
+|---|---|---|
+| `503` | `{"error":"Mémoire insuffisante pour TLS, réessayez"}` | Heap dégradé (l'un des deux critères manque) — remplace l'échec lent et aléatoire en plein handshake (BIGNUM alloc) par un refus rapide et honnête |
+
+Chaque refus émet un **WARN** avec les deux mesures et leurs seuils (« heap libre=… o (min 65536), plus gros bloc=… o (min 20480) ») et l'**IP du client**.
+
+> **Note WROVER/PSRAM** : sur module PSRAM (WROVER-E), les buffers mbedTLS > 4 Ko partent automatiquement en PSRAM (`SPIRAM_USE_MALLOC`, seuil 4096) — les seuils de la garde sont dimensionnés pour la RAM interne d'un WROOM et deviennent **conservateurs** sur WROVER : à réévaluer si la production migre sur module PSRAM.
 
 > ⚠️ **Limitation connue — core Arduino 3 uniquement** (banc `esp32dev_core3`, pas la production core 2) : le plus gros bloc heap contigu (~45 Ko au boot) ne suffit pas à la session TLS sortante (~50 Ko) → cette route (et `/download-update` vers GitHub) répond `500` de façon systématique, échec propre sans crash. Limitation acceptée ([ADR-0034, note 2026-08-08](adr/0034-migration-core3-idf5.md)) ; contournement : OTA par upload manuel (`/update`).
 

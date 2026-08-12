@@ -246,6 +246,43 @@ constexpr size_t kHeapRingEntries = 128;                  // Capacité du ring (
 constexpr unsigned long kHeapRingSampleIntervalMs = 2000; // 2s - cadence d'échantillonnage depuis loop()
 constexpr size_t kHeapRingDumpMaxEntries = 32;            // Entrées dumpées au boot post-crash (~64 s de cinétique)
 
+// ============================================================================
+// PARACHUTE OOM GLOBAL (bug-oom-accept-http-durcissement, crash du 11/08/2026)
+// ============================================================================
+// Coredump du 11/08 : std::bad_alloc non rattrapé dans async_tcp (operator
+// new(356) à l'accept HTTP) → std::terminate → abort. Le parachute pré-alloue
+// une réserve d'urgence au plus TÔT du setup (avant toute fragmentation) ; le
+// std::set_new_handler la libère à la première famine → le new en cours est
+// RE-TENTÉ et réussit (contrat new_handler) au lieu d'aborter. Logique pure :
+// oom_guard_logic.h ; glue Arduino : oom_guard.{h,cpp}.
+
+// Taille de la réserve d'urgence. 12 Ko : très au-dessus des petites allocs
+// vitales (accept HTTP ~356 o, trames WS, String logs) et assez gros pour
+// laisser à l'auto-guérison (kRestartMaxAllocHeapBytes, débounce ~15 s) le
+// temps de déclencher un reboot PROPRE pendant la famine.
+constexpr size_t kOomReserveBytes = 12288;
+
+// Hystérésis de réarmement : la réserve est libérée quand maxBloc est ≈ épuisé
+// (échec d'un new), mais n'est RE-allouée que lorsque le plus gros bloc contigu
+// repasse au-dessus de 32 Ko — bien au-dessus de kLowHeapWarnBytes (20 Ko) pour
+// ne pas osciller libération/réallocation autour du seuil de famine.
+constexpr uint32_t kOomRearmMinMaxAllocBytes = 32768;
+constexpr unsigned long kOomRearmCheckIntervalMs = 10000;  // 10 s - cadence lente du réarmement (loop)
+
+// Throttle du WARN différé « allocation heap échouée » (callback diagnostic
+// heap_caps_register_failed_alloc_callback, mode flag-seul — drainé par loop).
+constexpr unsigned long kOomFailWarnThrottleMs = 30000;    // 30 s - max 1 WARN par fenêtre
+
+// Garde BICRITÈRE de /check-update (AVANT la création de WiFiClientSecure) :
+// la session TLS GitHub coûte ~58 Ko répartis (2×16 Ko de buffers I/O + parse
+// X509 + budget JSON 8 Ko) → exige heap TOTAL suffisant ET un plus gros bloc
+// contigu décent (mesuré le 11/08 : sur heap dégradé, échec BIGNUM en 0,14 s ;
+// sur heap reposé, GitHub atteint). Refus 503 rapide et honnête sinon.
+// NOTE WROVER/PSRAM : les buffers mbedTLS > 4 Ko partent en PSRAM — seuils à
+// réévaluer si la production migre sur module PSRAM (voir doc).
+constexpr uint32_t kCheckUpdateMinFreeHeapBytes = 65536;   // Heap libre total minimal pour tenter TLS
+constexpr uint32_t kCheckUpdateMinMaxAllocBytes = 20480;   // Plus gros bloc contigu minimal pour tenter TLS
+
 // Release notes GitHub relayées telles quelles par /check-update : le corps de
 // release n'est pas borné côté GitHub → tronquer (suffixe « … ») pour borner la
 // réponse HTTP construite en RAM.

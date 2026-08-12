@@ -33,6 +33,7 @@ docs/
 │   ├── auth.md
 │   ├── logger.md
 │   ├── system-health.md
+│   ├── oom-guard.md
 │   └── web-server.md
 │
 ├── adr/                 ← Architecture Decision Records (immuables)
@@ -69,7 +70,10 @@ docs/
 │   ├── 0029-auto-guerison-heap.md
 │   ├── 0030-watchdog-connectivite.md
 │   ├── 0031-disjoncteur-bootloop-history.md
-│   └── 0032-reponses-http-bornees.md
+│   ├── 0032-reponses-http-bornees.md
+│   ├── 0033-budget-espace-partition-history.md
+│   ├── 0034-migration-core3-idf5.md
+│   └── 0035-parachute-oom-new-handler.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

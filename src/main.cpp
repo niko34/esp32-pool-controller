@@ -28,6 +28,7 @@
 #include "self_heal_logic.h"
 #include "net_health_logic.h"
 #include "heap_ring.h"
+#include "oom_guard.h"
 #include "ping/ping_sock.h"  // esp_ping : sonde ICMP passerelle (watchdog connectivité v2.9.2)
 
 // Variables globales
@@ -105,11 +106,23 @@ void enterMaintenanceMode();
 void ensureNetworkProbe();
 
 void setup() {
+  // Parachute OOM (bug-oom-accept-http-durcissement, crash du 11/08) : réserve
+  // d'urgence allouée AU PLUS TÔT — avant Serial/logger/FS — pour prendre un
+  // bloc contigu avant toute fragmentation. N'émet aucun log (drainé en loop).
+  initOomGuard();
+
   Serial.begin(115200);
   delay(kSerialInitDelayMs);
 
   systemLogger.begin();  // Initialise le mutex avant tout accès multi-core
   systemLogger.info("=== Démarrage ESP32 Pool Controller v" + String(FIRMWARE_VERSION) + " ===");
+  if (oomGuardReserveArmed()) {
+    systemLogger.info("Parachute OOM armé : réserve d'urgence de " +
+                      String(kOomReserveBytes) + " o pré-allouée");
+  } else {
+    // Improbable au boot : malloc initial refusé — la loop réarmera (hystérésis).
+    systemLogger.warning("Parachute OOM : réserve non allouée au boot — armement différé en loop");
+  }
   systemLogger.info("Build: " + String(FIRMWARE_BUILD_DATE) + " " + String(FIRMWARE_BUILD_TIME));
   // feature-066 : détection PSRAM (module WROVER-E). psramFound() est fiable
   // ici : l'init a lieu avant setup() (BOARD_HAS_PSRAM) et échoue proprement
@@ -366,6 +379,11 @@ void loop() {
     heapRingSample();
     lastHeapRingSampleMs = now;
   }
+
+  // Parachute OOM (bug-oom-accept-http-durcissement) : émission différée des
+  // logs posés par le new_handler/callback heap_caps + réarmement de la réserve
+  // (hystérésis kOomRearmMinMaxAllocBytes, cadence interne 10 s).
+  oomGuardLoopTick();
 
   // Vérification sync NTP et mise à jour RTC
   if (!ntpSyncedOnce && mqttCfg.timeUseNtp && WiFi.isConnected()) {

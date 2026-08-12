@@ -2,6 +2,24 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.18.5] - 2026-08-12
+
+### Firmware
+
+- **Parachute OOM global** (`bug-oom-accept-http-durcissement`, [ADR-0035](docs/adr/0035-parachute-oom-new-handler.md)) : crash de production le 11/08 au soir — `std::bad_alloc` non rattrapé dans `async_tcp` (`new AsyncWebServerRequest`, 356 o, à l'**acceptation d'une connexion HTTP**) après un effondrement du heap de ~60 Ko en ~5 s. L'investigation mesurée a **réfuté** les hypothèses save historique / clients TCP gelés / rafale de page ; la cause du pic reste **non attribuée** (candidat restant documenté dans la spec : buffers RX du driver WiFi en tempête/réassociation — corrèle avec le socket MQTT gelé au crash). Le durcissement est donc **trigger-agnostique** : réserve d'urgence de 12 Ko pré-allouée au plus tôt du boot + `std::set_new_handler` qui la libère à la première famine (le `new` en cours est re-tenté et **réussit** au lieu d'aborter), log CRITICAL différé one-shot par épisode, réarmement à hystérésis (maxBloc ≥ 32 Ko, tick 10 s, critère pointeur — course handler/réarmement fermée en revue), callback IDF diagnostic flag-seul (compte les échecs `malloc` C, WARN throttlé 30 s). Réserve épuisée → comportement d'avant (bad_alloc, coredump en filet ultime) ; le containment de fond reste l'auto-guérison [ADR-0029](docs/adr/0029-auto-guerison-heap.md). Voir [docs/subsystems/oom-guard.md](docs/subsystems/oom-guard.md).
+- **Garde mémoire sur `/check-update`** : refus **503** `{"error":"Mémoire insuffisante pour TLS, réessayez"}` AVANT la session TLS (~58 Ko) si heap libre < 65 536 o OU plus gros bloc < 20 480 o — remplace l'échec lent et aléatoire en plein handshake. Le WARN de refus et le log INFO nominal incluent désormais l'**IP du client** (le crash du 11/08 avait un profil TLS compatible mais l'appelant était invérifiable). Note : seuils conservateurs sur module WROVER/PSRAM (buffers mbedTLS > 4 Ko en PSRAM), à réévaluer.
+- **Dump du ring heap enrichi** : le WARN d'en-tête « Cinétique heap avant reset » inclut l'uptime absolu du dernier échantillon (mod 65 536 s) et la valeur brute d'`esp_reset_reason` — corrélation temporelle a posteriori avec journal et coredumps.
+- **Purge des fichiers ressuscités par OneDrive** : `src/uart_{commands,protocol,transport}.{cpp,h}`, `src/debug_tls_verify.h`, `tools/uart_test.py` (retirés en v2.17.0, réapparus par sync) — le linker les élaguait déjà (`--gc-sections`) ; delta flash net du durcissement ≈ +3,1 Ko. Builds bi-core verts (flash 82,9 % core 2 / 92,6 % core 3), **459 tests natifs** (+18, `test_native_oom_guard`).
+
+### Documentation
+
+- Nouveau [docs/subsystems/oom-guard.md](docs/subsystems/oom-guard.md) : réserve, contrat du handler, réarmement, limites.
+- **Nouvel [ADR-0035](docs/adr/0035-parachute-oom-new-handler.md)** — parachute OOM hybride (comportement global d'allocation invisible au point d'appel ; callback IDF seul écarté comme mécanisme principal, retenu en complément flag-seul ; les seuils de garde dépendent de la réserve).
+- `docs/API.md` : 503 bicritère de `/check-update` + IP client + note WROVER/PSRAM.
+- `docs/subsystems/system-health.md` : ligne de dump du ring enrichie ; renvoi vers oom-guard.
+
+---
+
 ## [2.18.4] - 2026-08-10
 
 ### Firmware

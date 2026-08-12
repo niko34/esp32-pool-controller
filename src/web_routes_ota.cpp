@@ -9,6 +9,9 @@
 #include "ota_integrity.h"
 #include "ota_integrity_logic.h"
 #include "ota_check_logic.h"
+// bug-oom-accept-http-durcissement : prédicat pur oomTlsGateOk() partagé avec
+// le parachute OOM (garde bicritère heap avant la session TLS de /check-update).
+#include "oom_guard_logic.h"
 // Migration core 3 (feature-063) : include EXPLICITE de WiFiClient.h — sur
 // core 2 il arrive transitivement via HTTPClient.h, plus sur core 3 (où
 // WiFiClient est un alias de NetworkClient). Sans effet binaire en core 2.
@@ -348,12 +351,34 @@ class BudgetJsonAllocator : public ArduinoJson::Allocator {
 };
 
 static void handleCheckUpdate(AsyncWebServerRequest* request) {
+  // bug-oom-accept-http-durcissement : IP client dans les logs (le crash du
+  // 11/08 avait un profil TLS compatible mais l'appelant était invérifiable).
+  String clientIp = request->client()->remoteIP().toString();
+  uint32_t freeHeap = ESP.getFreeHeap();
+  uint32_t maxAlloc = ESP.getMaxAllocHeap();
+
+  // Garde BICRITÈRE avant la création de WiFiClientSecure (prédicat pur
+  // partagé oomTlsGateOk) : la session TLS GitHub coûte ~58 Ko répartis —
+  // sur heap dégradé, l'échec était lent et aléatoire (BIGNUM alloc en cours
+  // de handshake). Refus 503 rapide et honnête à la place.
+  if (!oomTlsGateOk(freeHeap, maxAlloc, kCheckUpdateMinFreeHeapBytes,
+                    kCheckUpdateMinMaxAllocBytes)) {
+    systemLogger.warning("/check-update refusé (mémoire insuffisante pour TLS) : heap libre=" +
+                         String(freeHeap) + " o (min " +
+                         String(kCheckUpdateMinFreeHeapBytes) + "), plus gros bloc=" +
+                         String(maxAlloc) + " o (min " +
+                         String(kCheckUpdateMinMaxAllocBytes) + "), client=" + clientIp);
+    request->send(503, "application/json",
+                  "{\"error\":\"Mémoire insuffisante pour TLS, réessayez\"}");
+    return;
+  }
+
   // bug-checkupdate-tls-core3 : l'échec observé est un manque de mémoire
   // pendant le handshake (X509 alloc failed) — tracer l'état heap AVANT la
   // session TLS pour distinguer épuisement total / fragmentation (maxAlloc).
   systemLogger.info("Vérification des mises à jour GitHub... (heap libre=" +
-                    String(ESP.getFreeHeap()) + " o, plus gros bloc=" +
-                    String(ESP.getMaxAllocHeap()) + " o)");
+                    String(freeHeap) + " o, plus gros bloc=" +
+                    String(maxAlloc) + " o, client=" + clientIp + ")");
 
   WiFiClientSecure client;
   if (!ensureTimeForTls(request)) {

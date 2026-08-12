@@ -79,7 +79,7 @@ Le tick santé (5-60 s) rate la **cinétique d'effondrement** du heap (quelques 
 
 - **Budget** : magic (4 o) + tête/remplissage (2+2 o) + ring `kHeapRingEntries = 128` × 8 o = **1032 o** RTC noinit (vérifié à l'ELF). Magic `0xB10C4EA9`, **distinct** de `kAutoHealRtcMagic` (`0xA5C0FFEE`, compteur anti-boucle) — les deux états RTC sont indépendants.
 - **Échantillonnage** : `heapRingSample()` depuis `loop()` toutes les `kHeapRingSampleIntervalMs = 2 s`. Format d'une entrée (8 o, little-endian, quantifié) : uptime s (u16, modulo ~18,2 h), maxBloc ÷ 64 (u16), heap libre ÷ 256 (u16), clients WS (u8, saturé 255), **delta** de pushes WS sautés depuis l'échantillon précédent (u8, saturé 255).
-- **Dump au boot** — `heapRingDumpIfCrash()`, appelé dans `setup()` après `history.begin()` (persistance des logs active) et **avant** le WiFi : si le magic est valide **et** que `esp_reset_reason() != POWERON`, les `kHeapRingDumpMaxEntries = 32` dernières entrées (**~64 s de cinétique**) sont émises dans le journal — un WARN d'en-tête `Cinétique heap avant reset (<motif>) : N échantillon(s), pas ~2 s (t-0s = dernier avant reset)` puis des INFO compactes, 4 entrées par ligne (**8 lignes** pour 32 entrées), de la plus ancienne à la plus récente :
+- **Dump au boot** — `heapRingDumpIfCrash()`, appelé dans `setup()` après `history.begin()` (persistance des logs active) et **avant** le WiFi : si le magic est valide **et** que `esp_reset_reason() != POWERON`, les `kHeapRingDumpMaxEntries = 32` dernières entrées (**~64 s de cinétique**) sont émises dans le journal — un WARN d'en-tête `Cinétique heap avant reset (<motif>, reset_reason=<valeur brute>) : N échantillon(s), pas ~2 s (t-0s = dernier avant reset, uptime=<u> s mod 65536)` puis des INFO compactes, 4 entrées par ligne (**8 lignes** pour 32 entrées), de la plus ancienne à la plus récente. Le WARN est **enrichi depuis la v2.18.5** (spec `bug-oom-accept-http-durcissement`) de deux champs : la valeur **brute** d'`esp_reset_reason()` (en plus du libellé court) et l'**uptime absolu** du dernier échantillon avant reset (modulo 65 536 s ≈ 18,2 h — quantum d'encodage du ring) — pour la corrélation temporelle a posteriori avec le journal persistant et les coredumps :
 
   ```
   t-62s maxB=18624 free=94208 ws=2 skip=0 | t-60s maxB=12800 free=93952 ws=2 skip=1 | …
@@ -417,6 +417,7 @@ Voir [MQTT.md](../MQTT.md#alertes).
 - [`src/main.cpp`](../../src/main.cpp) — coquille impure (collecte ICMP/heap + effets, `performFailSafeRestart`, alerte différée `history_partition_reset`)
 - [`src/history.cpp`](../../src/history.cpp) — coquille impure du disjoncteur (NVS `hist_meta`, `esp_reset_reason`, `esp_partition_erase_range`)
 - [`src/pump_controller.h`](../../src/pump_controller.h) — `setMaintenanceInhibit()` / `isMaintenanceInhibited()`
+- [oom-guard.md](oom-guard.md) — parachute OOM global (v2.18.5, [ADR-0035](../adr/0035-parachute-oom-new-handler.md)) : absorbe l'échec ponctuel d'un `new` (bad_alloc → abort) que les watchdogs ci-dessus ne voient qu'après coup — l'auto-guérison reste le containment de fond
 - [ADR-0029](../adr/0029-auto-guerison-heap.md) — auto-guérison mémoire
 - [ADR-0030](../adr/0030-watchdog-connectivite.md) — watchdog de connectivité
 - [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) — disjoncteur de boot-loop history

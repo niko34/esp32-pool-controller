@@ -87,11 +87,17 @@ void heapRingDumpIfCrash() {
       &sHeapRingData[heapRingIndexOfLast(head, n, kHeapRingEntries, n - 1) *
                      kHeapRingEntryBytes]);
 
+  // bug-oom-accept-http-durcissement (A7) : uptime ABSOLU du dernier
+  // échantillon avant reset (modulo 65536 s ≈ 18,2 h — quantum d'encodage du
+  // ring) + valeur brute esp_reset_reason — corrélation temporelle a posteriori
+  // avec le journal persistant et les coredumps.
   systemLogger.warning("Cinétique heap avant reset (" +
-                       String(heapRingResetLabel(reason)) + ") : " + String(n) +
+                       String(heapRingResetLabel(reason)) + ", reset_reason=" +
+                       String((int)reason) + ") : " + String(n) +
                        " échantillon(s), pas ~" +
                        String(kHeapRingSampleIntervalMs / 1000UL) +
-                       " s (t-0s = dernier avant reset)");
+                       " s (t-0s = dernier avant reset, uptime=" +
+                       String(newest.uptimeS) + " s mod 65536)");
 
   // Format compact, 4 entrées par ligne (~8 lignes pour 32 entrées), de la plus
   // ancienne à la plus récente : « t-XXXs maxB=… free=… ws=… skip=… ».
