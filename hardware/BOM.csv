@@ -32,7 +32,7 @@ U6;1;DS18B20+;;https://www.tme.eu/fr/details/ds18b20+/transmetteurs-de-temperatu
 ;1;Module RTC DS3231;;https://fr.aliexpress.com/item/1005010435328928.html?spm=a2g0o.order_list.order_list_main.34.7ec85e5b39HBjO&gatewayAdapt=glo2fra
 ;0;module ADC ADS1115;;
 ;1;Finder 22.32.0.012.4340;Si contrôle filtration : Contacteur rail DIN 12V / 220V 25A;
-;1;Finder 22.32.0.012.4340;Si contrôle filtration : Contacteur rail DIN 12V / 220V 25A;
+;1;Finder 22.32.0.012.4340;Si contrôle éclairage : Contacteur rail DIN 12V / 220V 25A;
 ;2;Pompe PŽristaltique 12V  90ml/min 12V-S10B avec tuyau en BPT PharMed (plus simple ˆ trouver que tuyau Norprene ou Santoprne);;https://fr.aliexpress.com/item/1005008568962671.html?spm=a2g0o.order_list.order_list_main.110.25855e5b3NTOSc&gatewayAdapt=glo2fra
 ;1;Si tuyau pompe pas en Pharmed : tuyau Pharmed ˆ la coupe;;https://fr.aliexpress.com/item/1005005939700189.html?spm=a2g0o.order_list.order_list_main.11.25855e5b3NTOSc&gatewayAdapt=glo2fra
 ;2;Raccord ou clapet anti-retour en PVDF vers tuyau injection 4x6. Taille 1/8'';;https://fr.aliexpress.com/item/32721015040.html?spm=a2g0o.order_list.order_list_main.5.25855e5b3NTOSc&gatewayAdapt=glo2fra
