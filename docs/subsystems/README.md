@@ -44,7 +44,7 @@ Quand un composant change, la fiche correspondante dans `subsystems/` doit être
 - [ota-manager.md](ota-manager.md) — mise à jour firmware + filesystem, partitions double-bank
 - [logger.md](logger.md) — buffer circulaire RAM + persistance LittleFS + push WS
 - [system-health.md](system-health.md) — santé système, instrumentation heap, auto-guérison mémoire (reboot propre) + mode maintenance anti-boucle
-- [oom-guard.md](oom-guard.md) — parachute OOM global : réserve d'urgence + `std::set_new_handler` + garde bicritère TLS (v2.18.5, ADR-0035)
+- [oom-guard.md](oom-guard.md) — parachute OOM global : réserve d'urgence + `std::set_new_handler` + garde TLS sortante à motifs (PSRAM libre + heap, v2.18.6, ADR-0035/ADR-0036)
 
 ## Conventions
 

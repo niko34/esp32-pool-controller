@@ -21,6 +21,8 @@ Le firmware installe un **parachute OOM hybride** (module `oom_guard`, logique p
 
 En corollaire, une **garde bicritère** protège `/check-update` **avant** la session TLS (~58 Ko) : refus 503 si heap libre < 65 536 o OU maxBloc < 20 480 o (prédicat pur partagé `oomTlsGateOk`).
 
+> **Note additive 2026-08-13 (v2.18.6)** — le corollaire ci-dessus est **complété et durci** par [ADR-0036](0036-psram-requise-mise-a-jour-en-ligne.md) : la mesure terrain du 12/08 a montré que le bicritère seul laissait passer le régime NORMAL d'un WROOM (free=87 708 / maxBloc=34 804) puis affamait le tas jusqu'à refuser une allocation de 100 o. Le prédicat `oomTlsGateOk` (booléen) est **remplacé** par `oomTlsGateReason(...)` (motifs `kOomTlsGateOk` / `kOomTlsGateNoPsram` / `kOomTlsGateLowMemory`), qui exige d'abord `kOtaTlsMinPsramBytes` = 1 Mo de **PSRAM libre** (fail-closed) et s'applique **aussi** à `/download-update`. Les deux seuils heap et l'ensemble de la décision de cet ADR (réserve, handler, réarmement, callback flag-seul) restent **inchangés**.
+
 ## Alternatives considérées
 
 - **Callback IDF seul** (`heap_caps_register_failed_alloc_callback`) (rejetée comme mécanisme principal, **retenue en complément flag-seul**) — le callback est purement informatif : il n'offre **aucun contrat de re-tentative** de l'allocation (l'échec suit son cours, le `new` lève quand même `bad_alloc`). Il apporte en revanche ce que le new_handler ne voit pas : les échecs des `malloc` C internes.

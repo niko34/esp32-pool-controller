@@ -214,6 +214,15 @@
   }
 
   // ---------- Toast ----------
+  // Durée d'affichage adaptée à la longueur du message : les messages courts
+  // ("Sauvegardé", "Filtration démarrée"…) gardent les 3 s historiques
+  // (≤ 75 caractères), les messages longs sur 2-3 lignes (ex. refus de mise à
+  // jour en ligne sans PSRAM, ~220 caractères) restent affichés le temps
+  // d'être lus (~40 ms/caractère ≈ 250 mots/min), plafonné à 9 s.
+  const kToastMinDurationMs = 3000;
+  const kToastMaxDurationMs = 9000;
+  const kToastMsPerChar = 40;
+
   function showToast(message, type = 'info') {
     const toast = document.createElement('div');
     toast.className = `toast toast--${type}`;
@@ -228,10 +237,14 @@
     }
     toast.setAttribute('aria-atomic', 'true');
     document.body.appendChild(toast);
+    const duration = Math.min(
+      kToastMaxDurationMs,
+      Math.max(kToastMinDurationMs, String(message || '').length * kToastMsPerChar)
+    );
     setTimeout(() => {
       toast.style.opacity = '0';
       setTimeout(() => toast.remove(), 300);
-    }, 3000);
+    }, duration);
   }
 
   // ---------- Modale de confirmation générique (feature-031) ----------
@@ -4591,6 +4604,8 @@
           ? `${Math.round(data.psram_free / 1024)} / ${Math.round(data.psram_size / 1024)} KB libres`
           : "absente";
       }
+      // Sans PSRAM : mise à jour en ligne (TLS GitHub) impossible → carte neutralisée
+      applyOnlineUpdateAvailability(data.psram_size);
       $("#sys_flash_size").textContent = data.flash_size ? `${Math.round(data.flash_size / (1024 * 1024))} MB` : "—";
 
       if (data.sketch_size && data.ota_partition_size) {
@@ -4660,6 +4675,38 @@
     return null;
   }
 
+  // Codes machine des refus 503 de la garde TLS sortante (/check-update,
+  // /download-update). Contrat firmware ↔ front : on teste TOUJOURS le code,
+  // jamais le texte du message (qui reste libre d'évoluer côté firmware).
+  const OTA_CODE_PSRAM_REQUIRED = "psram_required"; // PSRAM ABSENTE → permanent
+  const OTA_CODE_PSRAM_LOW = "psram_low";           // PSRAM saturée → temporaire
+  const OTA_CODE_TLS_LOW_MEMORY = "tls_low_memory"; // heap dégradé → temporaire
+
+  // La mise à jour en ligne exige de la PSRAM (session TLS GitHub, cf. garde
+  // firmware 503 code=psram_required). Sur un module qui en est dépourvu,
+  // l'indisponibilité est PERMANENTE : on neutralise la carte « Mise à jour en
+  // ligne (GitHub) » dès la lecture de /get-system-info plutôt que de laisser
+  // l'utilisateur buter sur un refus. Le toast reste le filet de sécurité si la
+  // requête part quand même. Les refus TEMPORAIRES (psram_low, tls_low_memory)
+  // ne neutralisent rien : l'utilisateur doit pouvoir réessayer.
+  let onlineUpdateBlocked = false;
+
+  function applyOnlineUpdateAvailability(psramSize) {
+    if (typeof psramSize !== "number") return; // info absente : on ne touche à rien
+    const blocked = psramSize === 0;
+    const notice = $("#online_update_unavailable");
+    const checkBtn = $("#check_update_btn");
+    const installBtn = $("#install_update_btn");
+    if (notice) notice.style.display = blocked ? "block" : "none";
+    if (blocked) {
+      if (checkBtn) checkBtn.disabled = true;
+      if (installBtn) installBtn.disabled = true;
+    } else if (onlineUpdateBlocked && checkBtn) {
+      checkBtn.disabled = false; // matériel compatible : on lève un blocage précédent
+    }
+    onlineUpdateBlocked = blocked;
+  }
+
   function bindGithubUpdate() {
     const checkBtn = $("#check_update_btn");
     const installBtn = $("#install_update_btn");
@@ -4686,7 +4733,9 @@
             data = await res.json();
           } catch (_) {}
           const errMsg = data?.error || "Erreur vérification";
-          throw new Error(errMsg);
+          const err = new Error(errMsg);
+          err.code = data?.code; // ex. "psram_required" (503) — contrat machine
+          throw err;
         }
         data = await res.json();
         latestRelease = data;
@@ -4727,14 +4776,28 @@
         }
       } catch (e) {
         const msg = String(e?.message || "");
-        if (msg.includes("System time not synchronized")) {
+        if (e?.code === OTA_CODE_PSRAM_REQUIRED) {
+          // Indisponibilité matérielle permanente, pas une panne : message du
+          // firmware TEL QUEL, sans préfixe "Erreur", en tonalité informative.
+          // Le code garantit désormais l'ABSENCE de PSRAM → neutralisation OK.
+          applyOnlineUpdateAvailability(0);
+          showToast(msg, "info");
+        } else if (e?.code === OTA_CODE_PSRAM_LOW || e?.code === OTA_CODE_TLS_LOW_MEMORY) {
+          // Indisponibilité TEMPORAIRE (PSRAM saturée ou heap dégradé) : on
+          // informe sans neutraliser la carte ni afficher le callout « pas de
+          // PSRAM ». L'état réel vient de /get-system-info, pas d'une valeur
+          // inventée ici.
+          showToast(msg || "Mise à jour en ligne momentanément indisponible, réessayez.", "info");
+          loadSystemInfo();
+        } else if (msg.includes("System time not synchronized")) {
           showToast("Heure non synchronisée — active le NTP ou règle l'heure avant de vérifier les mises à jour.", "error");
         } else {
           showToast("Erreur vérification mise à jour : " + (msg || "vérifie la connexion Internet de l'ESP32."), "error");
         }
       } finally {
         checkBtn.textContent = "Vérifier";
-        checkBtn.disabled = false;
+        // Reste désactivé si le matériel ne permet pas la mise à jour en ligne.
+        checkBtn.disabled = onlineUpdateBlocked;
       }
     });
 
@@ -4799,9 +4862,15 @@
           if (integrityMsg) {
             const err = new Error(integrityMsg);
             err.integrity = true;
+            err.httpStatus = fsRes.status;
             throw err;
           }
-          throw new Error(fsJson?.error || "Erreur téléchargement filesystem");
+          // httpStatus marque une réponse serveur (4xx/5xx) : le firmware a répondu,
+          // ce n'est pas une coupure réseau. Voir l'étape 2 pour l'usage.
+          const err = new Error(fsJson?.error || "Erreur téléchargement filesystem");
+          err.httpStatus = fsRes.status;
+          err.code = fsJson?.code; // ex. "psram_required" (503)
+          throw err;
         }
         fsJson = await fsRes.json();
         if (fsJson.status !== "success") throw new Error("Erreur installation filesystem");
@@ -4842,21 +4911,30 @@
             if (integrityMsg) {
               const err = new Error(integrityMsg);
               err.integrity = true;
+              err.httpStatus = fwRes.status;
               throw err;
             }
-            throw new Error(fwJson?.error || "Erreur téléchargement firmware");
+            const err = new Error(fwJson?.error || "Erreur téléchargement firmware");
+            err.httpStatus = fwRes.status;
+            err.code = fwJson?.code; // ex. "psram_required" (503)
+            throw err;
           }
           fwJson = await fwRes.json();
           fwSuccess = fwJson.status === "success";
         } catch (fwErr) {
           clearInterval(t);
-          // Network error is expected when ESP32 restarts after firmware install
-          // If we got here after filesystem was OK, assume firmware install succeeded
           const errMsg = String(fwErr?.message || "");
+          // Le firmware a RÉPONDU (4xx/5xx, ex. 503 psram_required ou mémoire
+          // insuffisante) : l'image n'a pas été installée, ce n'est pas un
+          // redémarrage. On propage l'erreur au lieu d'annoncer un succès.
+          if (fwErr?.httpStatus !== undefined) {
+            throw fwErr;
+          }
           if (errMsg.includes("System time not synchronized") || fwErr?.integrity) {
             throw fwErr; // Re-throw time sync and integrity errors
           }
-          // For network errors (fetch failed), assume success since ESP32 restarted
+          // Coupure réseau pure (fetch rejeté, aucune réponse) : attendue quand
+          // l'ESP32 redémarre après le flash → on considère l'installation OK.
           fwSuccess = true;
         }
 
@@ -4881,14 +4959,29 @@
         }
       } catch (e) {
         const msg = String(e?.message || "");
-        if (e?.integrity) {
+        if (e?.code === OTA_CODE_PSRAM_REQUIRED) {
+          // Matériel sans PSRAM : indisponibilité normale, pas un échec de mise
+          // à jour → message firmware tel quel, sans préfixe, tonalité neutre.
+          applyOnlineUpdateAvailability(0);
+          if (barWrap) barWrap.style.display = "none";
+          status.textContent = msg;
+          showToast(msg, "info");
+        } else if (e?.code === OTA_CODE_PSRAM_LOW || e?.code === OTA_CODE_TLS_LOW_MEMORY) {
+          // Refus TEMPORAIRE : on n'affirme pas l'absence de PSRAM et on laisse
+          // le bouton réutilisable (le finally/`onlineUpdateBlocked` inchangé).
+          const info = msg || "Mise à jour en ligne momentanément indisponible, réessayez.";
+          if (barWrap) barWrap.style.display = "none";
+          status.textContent = info;
+          showToast(info, "info");
+          loadSystemInfo();
+        } else if (e?.integrity) {
           status.textContent = "✗ " + msg;
         } else if (msg.includes("System time not synchronized")) {
           showToast("Heure non synchronisée — active le NTP ou règle l'heure avant de lancer la mise à jour.", "error");
         } else {
           showToast("Erreur mise à jour : " + e.message, "error");
         }
-        checkBtn.disabled = false;
+        checkBtn.disabled = onlineUpdateBlocked;
       }
     });
   }

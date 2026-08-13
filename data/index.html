@@ -1634,6 +1634,13 @@ action:
                   <h2 class="card__title">Mise à jour en ligne (GitHub)</h2>
                 </div>
                 <div class="card__body">
+                  <div id="online_update_unavailable" class="callout callout--warn" role="status" aria-live="polite" style="display:none;">
+                    <strong>Mise à jour en ligne indisponible sur ce matériel.</strong>
+                    Votre matériel ne dispose pas d'une mémoire PSRAM (module ESP32-DevKitC-VE
+                    nécessaire), indispensable à la connexion sécurisée avec GitHub.
+                    Utilisez la carte « Mise à jour manuelle » ci-dessous.
+                  </div>
+
                   <div id="github_update_info" class="callout callout--info" style="display:none;">
                     <div><strong>Version actuelle :</strong> <span id="current_version">-</span></div>
                     <div><strong>Dernière version :</strong> <span id="latest_version">-</span></div>

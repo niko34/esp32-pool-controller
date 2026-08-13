@@ -6,12 +6,12 @@
 
 ## Méthodes de mise à jour
 
-| Méthode | Compile | USB requis | WiFi requis |
-|---------|:-------:|:----------:|:-----------:|
-| `deploy.sh [firmware\|fs\|all]` | ✅ | ✅ | ❌ |
-| `deploy.sh [ota-firmware\|ota-fs\|ota-all]` | ✅ | ❌ | ✅ |
-| Interface web (OTA) | ❌ | ❌ | ✅ |
-| Mise à jour automatique GitHub | ❌ | ❌ | ✅ |
+| Méthode | Compile | USB requis | WiFi requis | PSRAM requise |
+|---------|:-------:|:----------:|:-----------:|:-------------:|
+| `deploy.sh [firmware\|fs\|all]` | ✅ | ✅ | ❌ | ❌ |
+| `deploy.sh [ota-firmware\|ota-fs\|ota-all]` | ✅ | ❌ | ✅ | ❌ |
+| Interface web (OTA) | ❌ | ❌ | ✅ | ❌ |
+| Mise à jour automatique GitHub | ❌ | ❌ | ✅ | ✅ *(voir ci-dessous)* |
 
 ---
 
@@ -77,6 +77,56 @@ L'interface web peut vérifier et télécharger automatiquement la dernière ver
 3. Si une nouvelle version est disponible, cliquer sur **Mettre à jour** — télécharge et installe automatiquement
 
 > Le contrôleur se connecte directement à GitHub en HTTPS. Aucun USB, aucune manipulation de fichiers.
+
+> ⚠️ **Module avec PSRAM requis — sans PSRAM, la méthode est ACTIVEMENT REFUSÉE
+> (depuis la v2.18.6)** : la session TLS vers GitHub réclame plusieurs blocs de
+> mémoire contigus d'environ 16 Ko. Sur un module **sans PSRAM** (WROOM-32), la RAM
+> interne ne les fournit plus de façon fiable après le démarrage — pire, la
+> tentative *affamait* la mémoire au point de mettre tout le contrôleur en risque de
+> redémarrage pendant environ une seconde (mesuré en production le 12/08/2026).
+>
+> Les **deux étapes** sont désormais refusées immédiatement, sans qu'aucune connexion
+> ne soit ouverte : **« Vérifier les mises à jour »** (`/check-update`) **et**
+> **« Mettre à jour »** (`/download-update`). Un refus n'a **aucun effet de bord** :
+> rien n'est effacé, la version installée reste intacte.
+>
+> **Trois situations distinctes** (v2.18.7) — le message affiché indique laquelle :
+>
+> | Ce que vous lisez | Ce que ça veut dire | Que faire |
+> |---|---|---|
+> | « La mise à jour en ligne n'est pas disponible. Votre matériel ne dispose pas d'une mémoire PSRAM (module ESP32-DevKitC-VE nécessaire). Utilisez la mise à jour manuelle. » | **Définitif** : votre module n'a physiquement pas de PSRAM (WROOM-32). Réessayer ne changera rien. | Mise à jour **manuelle** (ci-dessous), ou remplacer le module par un ESP32-DevKitC-VE / WROVER-E |
+> | « La mise à jour en ligne est momentanément indisponible : la mémoire PSRAM est saturée. Réessayez dans quelques minutes ou utilisez la mise à jour manuelle. » | **Temporaire** : le module a bien de la PSRAM, mais il en reste moins de 1 Mo de libre à cet instant. | **Réessayer** dans quelques minutes (un redémarrage du contrôleur libère la PSRAM), sinon mise à jour manuelle |
+> | « Mémoire insuffisante pour TLS, réessayez » | **Temporaire** : la mémoire interne du contrôleur est momentanément fragmentée/chargée. | **Réessayer** un peu plus tard, sinon mise à jour manuelle |
+>
+> Dans les trois cas la réponse est un **503** affiché en toast **informatif** (ce n'est
+> pas une panne du contrôleur). Codes machine correspondants, pour un client HTTP :
+> `psram_required`, `psram_low`, `tls_low_memory`. Journal : `WARN /check-update refusé
+> (PSRAM libre absente/insuffisante) : PSRAM libre=0 o (min 1048576), …` — les logs
+> restent techniques, destinés au diagnostic.
+>
+> **Depuis la v2.18.7, l'indisponibilité permanente est annoncée AVANT tout clic** : à
+> l'ouverture de **Paramètres > Système**, l'interface lit la PSRAM du module et, si
+> elle est **absente**, **grise le bouton « Vérifier »** et affiche une explication
+> permanente dans la carte « Mise à jour en ligne (GitHub) » qui renvoie vers la carte
+> « Mise à jour manuelle ». Il n'est donc plus nécessaire de déclencher un refus pour
+> savoir que la méthode n'est pas disponible ; le toast ne subsiste que comme filet de
+> sécurité. Les deux refus **temporaires** ne grisent rien : le bouton reste
+> utilisable pour réessayer.
+>
+> **Repli commun aux trois cas** — utiliser la **mise à jour manuelle par upload**
+> (section précédente : Paramètres > Système, `firmware.bin` / `littlefs.bin`) ou
+> `./deploy.sh ota-firmware` / `./deploy.sh ota-fs`. Ces méthodes n'ouvrent **aucune
+> session TLS sortante** et fonctionnent quel que soit le module. Les binaires de
+> chaque release restent téléchargeables depuis GitHub sur un ordinateur.
+>
+> Le module du BOM PCB v2 (**ESP32-DevKitC-VE / WROVER-E, 8 Mo de PSRAM**) place ces
+> allocations en PSRAM et rend la mise à jour en ligne disponible. Détail de la garde
+> et des seuils : [ADR-0036](adr/0036-psram-requise-mise-a-jour-en-ligne.md),
+> [docs/API.md](API.md#garde-tls-sortante-psram-libre--heap-v2186).
+>
+> Si le message affiché est « **Mémoire insuffisante pour TLS, réessayez** » (sans
+> mention de PSRAM), il s'agit d'un refus **temporaire** sur module PSRAM : la mémoire
+> était momentanément dégradée, réessayer plus tard suffit.
 
 ---
 

@@ -12,15 +12,21 @@
 //     (>= : à maxBloc == 32768 exactement, on réarme) ;
 //   - cycle complet échec→réarmement→échec→réarmement (pas d'oscillation
 //     d'états, log one-shot rejoué à chaque nouvel épisode) ;
-//   - oomTlsGateOk : garde bicritère TLS partagée avec /check-update
-//     (web_routes_ota.cpp) — 4 quadrants + limites exactes, avec les VALEURS
-//     RÉELLES kCheckUpdateMinFreeHeapBytes / kCheckUpdateMinMaxAllocBytes.
+//   - oomTlsGateReason : garde TLS sortante partagée par /check-update et
+//     /download-update (web_routes_ota.cpp) — motif PSRAM LIBRE (fail-closed,
+//     évalué en premier) puis 4 quadrants heap + limites exactes, avec les
+//     VALEURS RÉELLES kOtaTlsMinPsramBytes / kCheckUpdateMin* ;
+//   - non-régression bug-garde-tls-trop-permissive-sans-psram (v2.18.6) : les
+//     mesures TERRAIN du 12/08 sur WROOM sans PSRAM (free=87708 o,
+//     maxBloc=34804 o) que la v2.18.5 laissait passer doivent être REFUSÉES,
+//     avec priorité du motif PSRAM sur le motif mémoire ; idem pour une PSRAM
+//     installée mais SATURÉE (revue v2.18.6 : le critère est la PSRAM LIBRE).
 // =============================================================================
 
 #include <unity.h>
 #include <stdint.h>
 #include "oom_guard_logic.h"
-#include "constants.h"  // kOomRearmMinMaxAllocBytes, kCheckUpdateMin* (valeurs réelles)
+#include "constants.h"  // kOomRearmMinMaxAllocBytes, kOtaTlsMinPsramBytes, kCheckUpdateMin*
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -195,69 +201,261 @@ void test_depleted_path_then_rearm_recovers_handler(void) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. oomTlsGateOk — garde bicritère /check-update (4 quadrants + limites)
+// 5. oomTlsGateReason — garde TLS sortante (PSRAM libre + bicritère heap)
 // ---------------------------------------------------------------------------
-// Valeurs RÉELLES de production : kCheckUpdateMinFreeHeapBytes = 65536,
-// kCheckUpdateMinMaxAllocBytes = 20480 (constants.h). Seuils INCLUSIFS (>=).
+// Valeurs RÉELLES de production : kOtaTlsMinPsramBytes = 1048576,
+// kCheckUpdateMinFreeHeapBytes = 65536, kCheckUpdateMinMaxAllocBytes = 20480
+// (constants.h). Seuils INCLUSIFS (>=). PSRAM LIBRE évaluée EN PREMIER : les cas
+// de refus heap doivent donc fournir une PSRAM libre conforme pour être atteints.
+// Le 1er paramètre est la PSRAM **LIBRE** (ESP.getFreePsram() côté route), pas
+// la taille installée : une PSRAM installée mais saturée ne protège de rien.
+static const uint32_t kPsramWroverFreeBytes = 4194304u;  // ~4 Mo LIBRES sur un WROVER-E au repos
 
 void test_tls_gate_ok_both_criteria_above(void) {
-  TEST_ASSERT_TRUE(oomTlsGateOk(kCheckUpdateMinFreeHeapBytes + 1,
-                                kCheckUpdateMinMaxAllocBytes + 1,
-                                kCheckUpdateMinFreeHeapBytes,
-                                kCheckUpdateMinMaxAllocBytes));
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateOk,
+                          oomTlsGateReason(kPsramWroverFreeBytes,
+                                           kCheckUpdateMinFreeHeapBytes + 1,
+                                           kCheckUpdateMinMaxAllocBytes + 1,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
 }
 
 void test_tls_gate_refuses_low_free_heap_only(void) {
-  // Quadrant : free bas / maxBloc haut → refus (heap total insuffisant)
-  TEST_ASSERT_FALSE(oomTlsGateOk(kCheckUpdateMinFreeHeapBytes - 1,
-                                 kCheckUpdateMinMaxAllocBytes + 10000,
-                                 kCheckUpdateMinFreeHeapBytes,
-                                 kCheckUpdateMinMaxAllocBytes));
+  // Quadrant : free bas / maxBloc haut → refus mémoire (heap total insuffisant)
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateLowMemory,
+                          oomTlsGateReason(kPsramWroverFreeBytes,
+                                           kCheckUpdateMinFreeHeapBytes - 1,
+                                           kCheckUpdateMinMaxAllocBytes + 10000,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
 }
 
 void test_tls_gate_refuses_low_max_alloc_only(void) {
-  // Quadrant : free haut / maxBloc bas → refus (fragmentation)
-  TEST_ASSERT_FALSE(oomTlsGateOk(kCheckUpdateMinFreeHeapBytes + 100000,
-                                 kCheckUpdateMinMaxAllocBytes - 1,
-                                 kCheckUpdateMinFreeHeapBytes,
-                                 kCheckUpdateMinMaxAllocBytes));
+  // Quadrant : free haut / maxBloc bas → refus mémoire (fragmentation)
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateLowMemory,
+                          oomTlsGateReason(kPsramWroverFreeBytes,
+                                           kCheckUpdateMinFreeHeapBytes + 100000,
+                                           kCheckUpdateMinMaxAllocBytes - 1,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
 }
 
 void test_tls_gate_refuses_both_low(void) {
-  TEST_ASSERT_FALSE(oomTlsGateOk(kCheckUpdateMinFreeHeapBytes - 1,
-                                 kCheckUpdateMinMaxAllocBytes - 1,
-                                 kCheckUpdateMinFreeHeapBytes,
-                                 kCheckUpdateMinMaxAllocBytes));
-  TEST_ASSERT_FALSE(oomTlsGateOk(0, 0, kCheckUpdateMinFreeHeapBytes,
-                                 kCheckUpdateMinMaxAllocBytes));
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateLowMemory,
+                          oomTlsGateReason(kPsramWroverFreeBytes,
+                                           kCheckUpdateMinFreeHeapBytes - 1,
+                                           kCheckUpdateMinMaxAllocBytes - 1,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateLowMemory,
+                          oomTlsGateReason(kPsramWroverFreeBytes, 0, 0,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
 }
 
 void test_tls_gate_exact_thresholds_pass(void) {
   // Limites exactes : 65536 / 20480 → PASSE (>= inclusif sur les deux critères)
-  TEST_ASSERT_TRUE(oomTlsGateOk(kCheckUpdateMinFreeHeapBytes,
-                                kCheckUpdateMinMaxAllocBytes,
-                                kCheckUpdateMinFreeHeapBytes,
-                                kCheckUpdateMinMaxAllocBytes));
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateOk,
+                          oomTlsGateReason(kPsramWroverFreeBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
   // Un critère exactement à la limite, l'autre au-dessus → passe aussi
-  TEST_ASSERT_TRUE(oomTlsGateOk(kCheckUpdateMinFreeHeapBytes,
-                                kCheckUpdateMinMaxAllocBytes + 1,
-                                kCheckUpdateMinFreeHeapBytes,
-                                kCheckUpdateMinMaxAllocBytes));
-  TEST_ASSERT_TRUE(oomTlsGateOk(kCheckUpdateMinFreeHeapBytes + 1,
-                                kCheckUpdateMinMaxAllocBytes,
-                                kCheckUpdateMinFreeHeapBytes,
-                                kCheckUpdateMinMaxAllocBytes));
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateOk,
+                          oomTlsGateReason(kPsramWroverFreeBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes + 1,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateOk,
+                          oomTlsGateReason(kPsramWroverFreeBytes,
+                                           kCheckUpdateMinFreeHeapBytes + 1,
+                                           kCheckUpdateMinMaxAllocBytes,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+  // PSRAM exactement au seuil → passe aussi (>= inclusif sur les trois critères)
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateOk,
+                          oomTlsGateReason(kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
 }
 
 void test_tls_gate_real_constant_values(void) {
   // Verrouille les valeurs réelles (T2) : si un futur commit change les seuils
   // de constants.h sans mettre à jour la doc/les tests, ce test casse.
+  TEST_ASSERT_EQUAL_UINT32(1048576u, kOtaTlsMinPsramBytes);
   TEST_ASSERT_EQUAL_UINT32(65536u, kCheckUpdateMinFreeHeapBytes);
   TEST_ASSERT_EQUAL_UINT32(20480u, kCheckUpdateMinMaxAllocBytes);
   TEST_ASSERT_EQUAL_UINT32(32768u, kOomRearmMinMaxAllocBytes);
   // Scénario réaliste du crash du 11/08 : heap ~48 Ko, maxBloc ~12 Ko → refus
-  TEST_ASSERT_FALSE(oomTlsGateOk(49152, 12288, kCheckUpdateMinFreeHeapBytes,
-                                 kCheckUpdateMinMaxAllocBytes));
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateLowMemory,
+                          oomTlsGateReason(kPsramWroverFreeBytes, 49152, 12288,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+  // Mesure terrain du 12/08 (WROOM sans PSRAM, v2.18.5) : free=87708 o et
+  // maxBloc=34804 o passaient l'ancienne garde → désormais refus PSRAM.
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateNoPsram,
+                          oomTlsGateReason(0, 87708, 34804,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+}
+
+// ---------------------------------------------------------------------------
+// 6. oomTlsGateReason — critère PSRAM fail-closed (v2.18.6, non-régression)
+// ---------------------------------------------------------------------------
+// Le bug : la v2.18.5 n'évaluait QUE le bicritère heap, donc un WROOM sans
+// PSRAM en régime normal passait la garde puis affamait le tas pendant le
+// handshake (fenêtre de crash bad_alloc ~1 s). Le refus PSRAM doit être
+// INDÉPENDANT de l'état du heap et PRIORITAIRE sur le motif mémoire.
+
+void test_tls_gate_field_measurement_20260812_now_refused(void) {
+  // Chiffres EXACTS mesurés en production le 12/08 (WROOM-32 sans PSRAM,
+  // core 3, v2.18.5) : la garde bicritère les acceptait (87708 >= 65536 et
+  // 34804 >= 20480) → tentative TLS vouée à l'échec. Doit désormais être
+  // refusée avec le motif matériel.
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateNoPsram,
+                          oomTlsGateReason(0, 87708, 34804,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+}
+
+void test_tls_gate_no_psram_refused_even_with_luxurious_heap(void) {
+  // Heap largement au-dessus des deux seuils : le refus ne dépend PAS du heap.
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateNoPsram,
+                          oomTlsGateReason(0, 200000, 100000,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+  // Cas extrême : heap "infini" mais toujours pas de PSRAM
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateNoPsram,
+                          oomTlsGateReason(0, 0xFFFFFFFFu, 0xFFFFFFFFu,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+}
+
+void test_tls_gate_psram_reason_wins_over_low_memory(void) {
+  // PSRAM absente ET heap dégradé : le motif rendu doit être NoPsram (refus
+  // DÉFINITIF orientant vers l'upload manuel), pas LowMemory (qui invite à
+  // réessayer une opération de toute façon impossible sur ce matériel).
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateNoPsram,
+                          oomTlsGateReason(0,
+                                           kCheckUpdateMinFreeHeapBytes - 1,
+                                           kCheckUpdateMinMaxAllocBytes - 1,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateNoPsram,
+                          oomTlsGateReason(0, 0, 0,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+}
+
+void test_tls_gate_insufficient_psram_is_refused(void) {
+  // PSRAM libre présente mais trop faible (512 Ko < 1 Mo requis) : mbedTLS ne
+  // trouverait pas ses blocs de ~16 Ko → même refus matériel que PSRAM=0.
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateNoPsram,
+                          oomTlsGateReason(524288u, 200000, 100000,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+}
+
+void test_tls_gate_saturated_psram_is_refused(void) {
+  // Revue v2.18.6 : WROVER-E avec 4 Mo INSTALLÉS mais quasi SATURÉS (256 Ko
+  // libres) et heap interne parfaitement sain. Passer getPsramSize() aurait
+  // ouvert la garde (4 Mo >= 1 Mo, valeur constante et jamais décroissante) et
+  // mbedTLS serait retombé sur la RAM interne — le régime de crash de v2.18.5.
+  // Avec getFreePsram(), 262144 < 1048576 → refus matériel.
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateNoPsram,
+                          oomTlsGateReason(262144u, 200000, 100000,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+}
+
+void test_tls_gate_psram_threshold_is_inclusive(void) {
+  // Limite exacte : 1048576 o → PAS de refus PSRAM (>= inclusif)...
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateOk,
+                          oomTlsGateReason(kOtaTlsMinPsramBytes, 200000, 100000,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+  // ...et à la limite exacte avec heap dégradé, le motif basculé est bien le
+  // motif MÉMOIRE (donc le critère PSRAM a été franchi, pas contourné).
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateLowMemory,
+                          oomTlsGateReason(kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes - 1,
+                                           kCheckUpdateMinMaxAllocBytes,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+  // Un octet sous le seuil → refus PSRAM
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateNoPsram,
+                          oomTlsGateReason(kOtaTlsMinPsramBytes - 1, 200000, 100000,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+}
+
+void test_tls_gate_with_psram_preserves_v2185_behaviour(void) {
+  // Contraste direct avec le cas terrain : MÊMES mesures heap, mais sur un
+  // module PSRAM → autorisé (le comportement bicritère v2.18.5 est intact).
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateOk,
+                          oomTlsGateReason(kPsramWroverFreeBytes, 87708, 34804,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+  // Les 4 quadrants heap, PSRAM conforme : haut/haut = OK, les 3 autres = mémoire
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateOk,
+                          oomTlsGateReason(kPsramWroverFreeBytes, 200000, 100000,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateLowMemory,
+                          oomTlsGateReason(kPsramWroverFreeBytes, 200000,
+                                           kCheckUpdateMinMaxAllocBytes - 1,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateLowMemory,
+                          oomTlsGateReason(kPsramWroverFreeBytes,
+                                           kCheckUpdateMinFreeHeapBytes - 1,
+                                           100000,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateLowMemory,
+                          oomTlsGateReason(kPsramWroverFreeBytes,
+                                           kCheckUpdateMinFreeHeapBytes - 1,
+                                           kCheckUpdateMinMaxAllocBytes - 1,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
+  // Limites exactes des deux critères heap avec PSRAM conforme → OK (inclusif)
+  TEST_ASSERT_EQUAL_UINT8(kOomTlsGateOk,
+                          oomTlsGateReason(kPsramWroverFreeBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes,
+                                           kOtaTlsMinPsramBytes,
+                                           kCheckUpdateMinFreeHeapBytes,
+                                           kCheckUpdateMinMaxAllocBytes));
 }
 
 // ---------------------------------------------------------------------------
@@ -282,5 +480,12 @@ int main(int, char**) {
   RUN_TEST(test_tls_gate_refuses_low_max_alloc_only);
   RUN_TEST(test_tls_gate_exact_thresholds_pass);
   RUN_TEST(test_tls_gate_real_constant_values);
+  RUN_TEST(test_tls_gate_field_measurement_20260812_now_refused);
+  RUN_TEST(test_tls_gate_no_psram_refused_even_with_luxurious_heap);
+  RUN_TEST(test_tls_gate_psram_reason_wins_over_low_memory);
+  RUN_TEST(test_tls_gate_insufficient_psram_is_refused);
+  RUN_TEST(test_tls_gate_saturated_psram_is_refused);
+  RUN_TEST(test_tls_gate_psram_threshold_is_inclusive);
+  RUN_TEST(test_tls_gate_with_psram_preserves_v2185_behaviour);
   return UNITY_END();
 }

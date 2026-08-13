@@ -557,7 +557,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-system-info
 
 > `sketch_size` (octets, `ESP.getSketchSize()`) et `ota_partition_size` (octets, taille de la partition app active) permettent de calculer l'occupation flash du firmware — affichée sur la ligne « Firmware (flash) » de la carte Infos système (v2.5.2). `sketch_size` ajouté en v2.5.2 (feature-047).
 >
-> `psram_size` / `psram_free` (octets, `ESP.getPsramSize()` / `ESP.getFreePsram()`, ajoutés en v2.18.0, feature-066) : PSRAM du module (WROVER-E). **`psram_size = 0` signifie PSRAM absente** (module WROOM) — l'UI affiche alors « absente » sur la ligne PSRAM de la card Infos système.
+> `psram_size` / `psram_free` (octets, `ESP.getPsramSize()` / `ESP.getFreePsram()`, ajoutés en v2.18.0, feature-066) : PSRAM du module (WROVER-E). **`psram_size = 0` signifie PSRAM absente** (module WROOM) — l'UI affiche alors « absente » sur la ligne PSRAM de la card Infos système. Depuis la v2.18.7, `psram_size === 0` sert aussi de **condition d'indisponibilité de la mise à jour en ligne** côté interface (bouton « Vérifier » neutralisé + explication permanente dans la carte GitHub, voir [features/page-settings.md](features/page-settings.md)) ; si le champ est **absent** de la réponse, l'UI ne modifie rien (compatibilité ascendante).
 
 ---
 
@@ -1147,19 +1147,44 @@ Depuis la v2.16.1 ([ADR-0032, extension 2026-08-04](adr/0032-reponses-http-borne
 |---|---|---|
 | `500` | `{"error":"GitHub response too large"}` | Corps de release GitHub dépassant le budget JSON (8 Ko) — refus propre, pas de consommation mémoire non bornée |
 
-**Diagnostics (v2.16.2)** : chaque appel logge l'état heap **avant** l'ouverture de la session TLS (« heap libre=… o, plus gros bloc=… o ») ; un échec côté client (code HTTP négatif) logge le détail mbedtls (`lastError`, message + code) et le libellé `errorToString` au lieu d'un « -1 » muet. Depuis la v2.18.5, le log INFO nominal inclut aussi l'**IP du client** (attribution des appels TLS — le crash OOM du 11/08 avait un profil TLS compatible mais l'appelant était invérifiable).
+**Diagnostics (v2.16.2)** : chaque appel logge l'état heap **avant** l'ouverture de la session TLS ; un échec côté client (code HTTP négatif) logge le détail mbedtls (`lastError`, message + code) et le libellé `errorToString` au lieu d'un « -1 » muet. Depuis la v2.18.5, le log INFO nominal inclut aussi l'**IP du client** (attribution des appels TLS — le crash OOM du 11/08 avait un profil TLS compatible mais l'appelant était invérifiable) ; depuis la v2.18.6 il inclut la **PSRAM libre**, qui conditionne l'autorisation :
 
-**Garde mémoire bicritère (v2.18.5)** : avant la création de `WiFiClientSecure`, la route évalue le prédicat pur partagé `oomTlsGateOk` ([subsystems/oom-guard.md](subsystems/oom-guard.md)) — une session TLS GitHub coûte ~58 Ko répartis. Refus immédiat si heap libre < `kCheckUpdateMinFreeHeapBytes` (65 536 o) **OU** plus gros bloc contigu < `kCheckUpdateMinMaxAllocBytes` (20 480 o) :
+```
+INFO  Vérification des mises à jour GitHub... (PSRAM libre=… o, heap libre=… o, plus gros bloc=… o, client=192.168.1.15)
+```
 
-| Code | Corps | Cas |
-|---|---|---|
-| `503` | `{"error":"Mémoire insuffisante pour TLS, réessayez"}` | Heap dégradé (l'un des deux critères manque) — remplace l'échec lent et aléatoire en plein handshake (BIGNUM alloc) par un refus rapide et honnête |
+<a id="garde-tls-sortante-psram-libre--heap-v2186"></a>
 
-Chaque refus émet un **WARN** avec les deux mesures et leurs seuils (« heap libre=… o (min 65536), plus gros bloc=… o (min 20480) ») et l'**IP du client**.
+#### Garde TLS sortante — PSRAM libre + heap (v2.18.6, [ADR-0036](adr/0036-psram-requise-mise-a-jour-en-ligne.md))
 
-> **Note WROVER/PSRAM** : sur module PSRAM (WROVER-E), les buffers mbedTLS > 4 Ko partent automatiquement en PSRAM (`SPIRAM_USE_MALLOC`, seuil 4096) — les seuils de la garde sont dimensionnés pour la RAM interne d'un WROOM et deviennent **conservateurs** sur WROVER : à réévaluer si la production migre sur module PSRAM.
+Avant la création de `WiFiClientSecure`, la route évalue le prédicat pur partagé `oomTlsGateReason()` ([subsystems/oom-guard.md](subsystems/oom-guard.md)), qui retourne un **motif** (il remplace le booléen `oomTlsGateOk` de la v2.18.5). Deux critères, évalués **dans cet ordre** :
 
-> ⚠️ **Limitation connue — core Arduino 3 uniquement** (banc `esp32dev_core3`, pas la production core 2) : le plus gros bloc heap contigu (~45 Ko au boot) ne suffit pas à la session TLS sortante (~50 Ko) → cette route (et `/download-update` vers GitHub) répond `500` de façon systématique, échec propre sans crash. Limitation acceptée ([ADR-0034, note 2026-08-08](adr/0034-migration-core3-idf5.md)) ; contournement : OTA par upload manuel (`/update`).
+1. **PSRAM libre** (`ESP.getFreePsram()`) < `kOtaTlsMinPsramBytes` (1 048 576 o = 1 Mo) → refus. Le critère porte sur la PSRAM **LIBRE**, pas sur la taille installée : une PSRAM saturée ferait retomber mbedTLS sur la RAM interne, exactement le régime de crash.
+2. Sinon, bicritère heap **inchangé** : heap libre < `kCheckUpdateMinFreeHeapBytes` (65 536 o) **OU** plus gros bloc contigu < `kCheckUpdateMinMaxAllocBytes` (20 480 o) → refus **temporaire**.
+
+**Trois refus possibles** (v2.18.7), tous en `503 application/json` et produits par le **helper partagé** `refuseIfTlsGateClosed` — donc **identiques au caractère près sur `/check-update` et `/download-update`** :
+
+| `code` | Condition | Nature | `error` (texte utilisateur) | Effet interface |
+|---|---|---|---|---|
+| `psram_required` | PSRAM **absente** (`ESP.getFreePsram() == 0`) | **Permanent** (matériel) | « La mise à jour en ligne n'est pas disponible. Votre matériel ne dispose pas d'une mémoire PSRAM (module ESP32-DevKitC-VE nécessaire). Utilisez la mise à jour manuelle. » | Bouton **neutralisé** + callout permanent dans la carte GitHub ; repli : [upload de fichier](#post-update--critical) ou `deploy.sh ota-firmware` |
+| `psram_low` | PSRAM présente mais **libre < 1 Mo** | **Temporaire**, réessayable | « La mise à jour en ligne est momentanément indisponible : la mémoire PSRAM est saturée. Réessayez dans quelques minutes ou utilisez la mise à jour manuelle. » | Toast **informatif**, bouton **non** neutralisé, rafraîchissement de l'état via `/get-system-info` |
+| `tls_low_memory` | heap libre < `kCheckUpdateMinFreeHeapBytes` **OU** maxBloc < `kCheckUpdateMinMaxAllocBytes` (motif `kOomTlsGateLowMemory`) | **Temporaire**, réessayable | « Mémoire insuffisante pour TLS, réessayez » (texte inchangé depuis la v2.18.5) | Toast **informatif**, bouton **non** neutralisé, rafraîchissement via `/get-system-info` |
+
+La discrimination `psram_required` / `psram_low` est faite **par la route** (simple test de nullité de la PSRAM libre déjà mesurée, aucun seuil dupliqué) : le prédicat pur `oomTlsGateReason()` regroupe les deux sous le motif `kOomTlsGateNoPsram` ([subsystems/oom-guard.md](subsystems/oom-guard.md#garde-tls-sortante-partagée--oomtlsgatereason-v2186)).
+
+> ⚠️ **Le champ `code` est le seul contrat machine** : il est présent sur les **trois** refus (depuis la v2.18.7 — auparavant seul le refus PSRAM en portait un) et c'est le discriminant stable pour un client. Le champ `error` est un **texte destiné à l'utilisateur** et **peut être reformulé sans préavis ni changement de version majeure** — il l'a été en v2.18.7 (formulation neutre, vocabulaire aligné sur la carte « Mise à jour manuelle » de l'interface). Ne jamais tester le contenu de `error` : tester `code`. Un client doit traiter `psram_required` comme **définitif** et `psram_low` / `tls_low_memory` comme **réessayables**. Le statut `503` et la valeur `psram_required` sont, eux, inchangés depuis la v2.18.6.
+
+Les **logs** du firmware (WARN de refus, INFO nominal) restent volontairement techniques : ils sont destinés au diagnostic, pas à l'utilisateur, et ne suivent donc pas les reformulations du champ `error`.
+
+Chaque refus émet un **WARN** auto-explicatif : motif, PSRAM libre, les deux mesures heap, leurs trois seuils et l'**IP du client** :
+
+```
+WARN  /check-update refusé (PSRAM libre absente/insuffisante) : PSRAM libre=0 o (min 1048576), heap libre=87708 o (min 65536), plus gros bloc=34804 o (min 20480), client=192.168.1.15
+```
+
+> ⚠️ **Mise à jour en ligne indisponible sans PSRAM** (rectifie la note « limitation core Arduino 3 » des versions antérieures — l'attribution correcte, établie par la mesure terrain du 2026-08-12, est l'**absence de PSRAM**, pas le core Arduino) : sur un module **WROOM** (sans PSRAM), la session TLS GitHub réclame plusieurs blocs contigus d'environ 16 Ko que la RAM interne ne fournit plus de façon fiable après quelques minutes de fonctionnement. Le handshake échouait **après** avoir affamé le tas (allocation de 100 o refusée alors que 87 Ko restaient libres = fenêtre du crash `bad_alloc` du 11/08). Depuis la v2.18.6, `/check-update` **et** `/download-update` répondent donc `503 psram_required` **immédiatement**, sans ouvrir de session. Le module du BOM PCB v2 (**ESP32-DevKitC-VE / WROVER-E, 8 Mo de PSRAM**) place ces allocations en PSRAM.
+
+> **Note seuils** : `kOtaTlsMinPsramBytes` = 1 Mo n'a **jamais été mesuré sur WROVER réel** (valeur volontairement large, la session TLS y consomme surtout de la PSRAM) — à confirmer à la mise en service du premier module PSRAM. Les seuils heap restent dimensionnés pour la RAM interne d'un WROOM, réserve du parachute OOM déduite ([ADR-0035](adr/0035-parachute-oom-new-handler.md)).
 
 ---
 
@@ -1193,6 +1218,18 @@ Erreurs d'intégrité (fail-closed) :
 | `422` | `integrity_mismatch` | Empreinte calculée du flux ≠ empreinte attendue (image corrompue ou tronquée, coupure WiFi incluse). Corps : `{"error","expected","computed","message"}`. **Firmware** : `Update.abort()` avant activation — version courante conservée. **Filesystem** : pas de redémarrage, partition FS à réinstaller (firmware intact). |
 
 Chaque refus émet un log `CRITICAL` avec empreintes attendue/calculée.
+
+**Garde TLS sortante (v2.18.6)** — cette route ouvre la **même** session TLS que `/check-update` et n'avait, jusqu'à la v2.18.5, **aucune garde mémoire** : un `POST` direct contournait celle de `/check-update`, avec un flash à la clé. Elle applique désormais le **même prédicat** `oomTlsGateReason()` ([détail des critères et des corps de réponse](#garde-tls-sortante-psram-libre--heap-v2186), [ADR-0036](adr/0036-psram-requise-mise-a-jour-en-ligne.md)) :
+
+| Code | `code` | Cas |
+|---|---|---|
+| `503` | `psram_required` | Module **sans** PSRAM — indisponibilité **permanente**, utiliser la **mise à jour manuelle** |
+| `503` | `psram_low` | PSRAM présente mais **saturée** (< 1 Mo libre) — **réessayable** |
+| `503` | `tls_low_memory` | Heap interne momentanément dégradé — **réessayable** |
+
+Les corps des **trois** refus sont produits par le **même helper** (`refuseIfTlsGateClosed`) que ceux de `/check-update` : les deux routes renvoient donc, au caractère près, les mêmes textes et les mêmes valeurs de `code` — voir le [tableau détaillé plus haut](#garde-tls-sortante-psram-libre--heap-v2186). Là encore, seul `code` fait contrat ; le champ `error` est un texte utilisateur reformulable.
+
+**Position de la garde** (importante) : après la validation `url` / allowlist / `digest` (une requête malformée reste un `400`/`403`) et **avant** `WiFiClientSecure`, `setOtaInProgress()`, `LittleFS.end()` et tout effacement de partition — un refus n'a donc **aucun effet de bord** : pompes non gelées, filesystem non démonté, aucune partition touchée. Le WARN de refus est identique à celui de `/check-update`, préfixé `/download-update`.
 
 ---
 

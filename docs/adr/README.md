@@ -52,6 +52,7 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0033](0033-budget-espace-partition-history.md) | Budget d'espace garanti sur la partition history (garde d'admission + remove-avant-write + plafonds log réduits) | Accepté |
 | [0034](0034-migration-core3-idf5.md) | Migration core Arduino 3.x / ESP-IDF 5.x via pioarduino (code bi-core exécuté ; bascule production conditionnelle) | Accepté |
 | [0035](0035-parachute-oom-new-handler.md) | Parachute OOM global : `std::set_new_handler` + réserve d'urgence libérable + callback IDF flag-seul | Accepté |
+| [0036](0036-psram-requise-mise-a-jour-en-ligne.md) | PSRAM libre requise pour toute session TLS sortante (mise à jour en ligne GitHub) | Accepté |
 
 ## Template
 

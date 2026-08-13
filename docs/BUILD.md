@@ -33,6 +33,13 @@ Le code source est identique pour les deux : les divergences d'API (LEDC, watchd
 - **Premier build OU changement de version de la plateforme** : lancer `pio pkg install -e esp32dev_core3` avant `pio run -e esp32dev_core3` (installation/réinstallation de la plateforme pioarduino). Symptôme si oublié : la première invocation de `pio run -e esp32dev_core3` échoue avec `TypeError ... NoneType` (réinstallation du framework interrompue) — remède : `pio pkg install -e esp32dev_core3` puis relancer le build.
 - La plateforme est **épinglée sur la release taguée `55.03.37`** (2026-08-04) : pioarduino 55.3.37, core arduino-esp32 **3.3.7**, IDF 5.5.0 — les versions exactes validées au banc feature-063 (item de la porte de bascule [ADR-0034](adr/0034-migration-core3-idf5.md), désormais livré). **Toute montée de version de la plateforme est un choix explicite** qui exige une re-validation au banc — l'URL `stable`, utilisée avant l'épinglage, avait déjà dérivé vers 55.03.311 (core 3.3.11).
 
+> ℹ️ **Cible matérielle** : le BOM du PCB v2 spécifie un **ESP32-DevKitC-VE**
+> (module WROVER-E, **8 Mo de PSRAM**) — voir la section PSRAM ci-dessous. Les deux
+> envs produisent un **binaire unique** qui tourne sur WROVER-E comme sur WROOM-32 ;
+> la PSRAM est requise pour la fiabilité de la mise à jour en ligne (TLS GitHub).
+> L'**ESP32-S3 n'est pas supporté** (architecture Xtensa LX7 : aucun de ces envs ne
+> produit un binaire S3, brochage incompatible avec le PCB v2).
+
 ### Support PSRAM — module WROVER-E (feature-066, v2.18.0)
 
 Les **deux envs** (`esp32dev` et `esp32dev_core3`) portent depuis v2.18.0 les flags PSRAM :

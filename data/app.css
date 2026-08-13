@@ -3009,6 +3009,7 @@ input.is-computed:disabled {
   bottom: 24px;
   left: 50%;
   transform: translateX(-50%);
+  box-sizing: border-box;
   padding: 12px 24px;
   border-radius: 8px;
   color: #fff;
@@ -3017,12 +3018,21 @@ input.is-computed:disabled {
   z-index: 9999;
   opacity: 1;
   transition: opacity 0.3s ease;
-  white-space: nowrap;
+  /* Les messages longs (ex. refus de mise à jour en ligne sans PSRAM, ~220
+     caractères) doivent revenir à la ligne au lieu de déborder du viewport.
+     La largeur reste en shrink-to-fit : les toasts courts gardent leur
+     apparence compacte d'origine. */
+  max-width: min(92vw, 560px);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+  line-height: 1.4;
   box-shadow: 0 4px 12px rgba(0,0,0,0.2);
 }
 .toast--success { background: #166534; } /* ratio blanc/fond ~5.9 AA */
 .toast--error   { background: #991b1b; } /* ratio blanc/fond ~6.5 AA */
 .toast--info    { background: #1e40af; } /* ratio blanc/fond ~7.1 AA */
+.toast--warning { background: #92400e; } /* ratio blanc/fond ~6.6 AA */
 
 /* ========== SKIP LINK (contournement) ========== */
 .skip-link {

@@ -273,13 +273,32 @@ constexpr unsigned long kOomRearmCheckIntervalMs = 10000;  // 10 s - cadence len
 // heap_caps_register_failed_alloc_callback, mode flag-seul — drainé par loop).
 constexpr unsigned long kOomFailWarnThrottleMs = 30000;    // 30 s - max 1 WARN par fenêtre
 
-// Garde BICRITÈRE de /check-update (AVANT la création de WiFiClientSecure) :
-// la session TLS GitHub coûte ~58 Ko répartis (2×16 Ko de buffers I/O + parse
-// X509 + budget JSON 8 Ko) → exige heap TOTAL suffisant ET un plus gros bloc
-// contigu décent (mesuré le 11/08 : sur heap dégradé, échec BIGNUM en 0,14 s ;
-// sur heap reposé, GitHub atteint). Refus 503 rapide et honnête sinon.
-// NOTE WROVER/PSRAM : les buffers mbedTLS > 4 Ko partent en PSRAM — seuils à
-// réévaluer si la production migre sur module PSRAM (voir doc).
+// Garde des sessions TLS sortantes GitHub (/check-update, /download-update),
+// évaluée AVANT la création de WiFiClientSecure — prédicat pur oomTlsGateReason.
+//
+// CRITÈRE 1 (fail-closed) : PSRAM LIBRE requise — la mesure passée au prédicat
+// est ESP.getFreePsram(), PAS ESP.getPsramSize() (taille installée, constante et
+// jamais décroissante : une PSRAM saturée ouvrirait la garde alors que mbedTLS
+// retomberait sur la RAM interne). Mesure terrain du 12/08/2026 sur WROOM-32
+// sans PSRAM en v2.18.5 : free=87708 o et maxBloc=34804 o PASSAIENT la garde
+// bicritère, puis le handshake mbedTLS (qui réclame plusieurs blocs contigus
+// d'environ 16 Ko) fragmentait le tas jusqu'à faire échouer une allocation de
+// 100 o — soit la fenêtre exacte du crash bad_alloc du 11/08. Sans PSRAM cet
+// état est le régime NORMAL après quelques minutes : la mise à jour en ligne est
+// refusée d'emblée (BOM PCB v2 = WROVER-E : 8 Mo de PSRAM installés, ~4 Mo
+// adressables par la fenêtre de cache), l'upload manuel de fichier reste
+// disponible. Seuil à 1 Mo de LIBRE : large sur les ~4 Mo utilisables
+// (avec SPIRAM_USE_MALLOC les allocations > 4 Ko y partent), rejette 0, une
+// PSRAM résiduelle inutilisable ET une PSRAM saturée.
+// NOTE : valeur JAMAIS mesurée sur WROVER réel — à confirmer à la mise en
+// service (relever le getFreePsram() nominal avant de figer ce seuil).
+constexpr uint32_t kOtaTlsMinPsramBytes = 1048576;         // 1 Mo - PSRAM LIBRE minimale pour tenter TLS sortant
+// CRITÈRE 2 : bicritère heap historique (ADR-0032) — la session TLS GitHub coûte
+// ~58 Ko répartis (2×16 Ko de buffers I/O + parse X509 + budget JSON 8 Ko) →
+// exige heap TOTAL suffisant ET un plus gros bloc contigu décent. Valeurs
+// INCHANGÉES depuis la v2.18.5 : elles n'ont plus à porter seules la protection
+// (le critère PSRAM le fait) — à RE-MESURER au swap WROVER, où les buffers
+// mbedTLS > 4 Ko partent en PSRAM.
 constexpr uint32_t kCheckUpdateMinFreeHeapBytes = 65536;   // Heap libre total minimal pour tenter TLS
 constexpr uint32_t kCheckUpdateMinMaxAllocBytes = 20480;   // Plus gros bloc contigu minimal pour tenter TLS
 

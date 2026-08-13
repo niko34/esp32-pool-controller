@@ -85,6 +85,20 @@ Nouvelle section **en 1ᵉʳ onglet** (feature-056, v2.19.0). Un `radiogroup` (`
 - **Ligne « PSRAM »** (`#sys_psram`, ajoutée en v2.18.0, feature-066) : PSRAM du module (WROVER-E) au format `libre / totale KB libres` (champs `psram_size` / `psram_free` de `/get-system-info`, voir [API.md](../API.md)) ; affiche **« absente »** si `psram_size = 0` (module WROOM) et `—` tant que la réponse n'est pas chargée.
 - **Ligne « Firmware (flash) »** (`#sys_app_usage`, ajoutée en v2.5.2, feature-047) : occupation de la partition app active au format `X KB / Y KB (Z%)` — taille du binaire (`sketch_size`, `ESP.getSketchSize()`) / taille de la partition OTA courante (`ota_partition_size`) — même format que la ligne FS. Affiche `—` si les champs sont absents (compatibilité ancien firmware). Rend visible la marge flash gagnée par le repartitionnement layout v3 ([ADR-0019](../adr/0019-partition-app-1664k.md)).
 - OTA GitHub : `/check-update` → info release, `/download-update` → téléchargement + flash.
+  - **Sur module sans PSRAM (WROOM), les deux boutons sont refusés côté firmware** (v2.18.6, [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md)) : `503` immédiat avec `code: "psram_required"`, aucun effet de bord, aucune session TLS ouverte. Le repli est l'OTA manuel ci-dessous. Deux autres refus `503` existent, **temporaires** : `psram_low` (PSRAM présente mais saturée) et `tls_low_memory` (heap dégradé). Voir [API.md](../API.md#garde-tls-sortante-psram-libre--heap-v2186) et [UPDATE_GUIDE.md](../UPDATE_GUIDE.md).
+  - **État « mise à jour en ligne indisponible » de la carte (v2.18.7)** — l'indisponibilité **permanente** est rendue visible **avant** tout clic, plutôt que découverte au refus :
+    - Déclencheur : `applyOnlineUpdateAvailability(psramSize)`, appelée par `loadSystemInfo()` avec le champ `psram_size` de `GET /get-system-info`. Neutralisation **uniquement** si `psram_size === 0` ; si le champ est **absent** (ancien firmware), la fonction ne touche à rien (compatibilité ascendante).
+    - Effets dans la carte « Mise à jour en ligne (GitHub) » : callout permanent `#online_update_unavailable` (classe `callout--warn`, `role="status"` + `aria-live="polite"` pour que son apparition soit annoncée aux lecteurs d'écran sans interrompre la navigation ; markup statique dans [`data/index.html`](../../data/index.html), masqué par défaut) affiché en tête de carte — il explique l'absence de PSRAM (module ESP32-DevKitC-VE nécessaire) et **renvoie explicitement vers la carte « Mise à jour manuelle »** située en dessous ; boutons **« Vérifier »** (`#check_update_btn`) et **« Mettre à jour »** (`#install_update_btn`) **désactivés**.
+    - Persistance : le flag interne `onlineUpdateBlocked` est réappliqué dans les blocs `finally` des deux boutons, de sorte qu'un cycle de requête ne réactive jamais « Vérifier » sur un matériel incompatible. Si la lecture suivante de `/get-system-info` annonce de la PSRAM, un blocage précédent est levé.
+    - **Discrimination des trois refus par le champ `code`, jamais par le texte** (v2.18.7) : le front lit `err.code` (propagé sur l'objet `Error` depuis le corps JSON) et le compare aux constantes `OTA_CODE_PSRAM_REQUIRED` / `OTA_CODE_PSRAM_LOW` / `OTA_CODE_TLS_LOW_MEMORY`. Le message `error` du firmware reste libre d'évoluer sans casser l'UI.
+
+      | `code` reçu | Callout + boutons | Toast | Suite |
+      |---|---|---|---|
+      | `psram_required` | callout affiché, boutons **neutralisés** (`applyOnlineUpdateAvailability(0)`) | message firmware **tel quel, sans préfixe**, type `info` | — |
+      | `psram_low` | **inchangés** — l'utilisateur peut réessayer | message firmware, type `info` | `loadSystemInfo()` : l'état réel de la carte provient de `/get-system-info` (source de vérité), jamais d'une valeur inventée par le front |
+      | `tls_low_memory` | **inchangés** | message firmware, type `info` | `loadSystemInfo()` |
+
+    - Filet de sécurité : si une requête part malgré la neutralisation, le `503 psram_required` est affiché **tel quel, sans préfixe** et en toast de type `info` (v2.18.7) — plus de « Erreur vérification mise à jour : », plus de tonalité d'échec, puisqu'il s'agit d'une caractéristique matérielle et non d'une panne. Même traitement sur le bouton d'installation, qui affiche en plus le message dans la ligne d'état de la carte (`#github_update_status`) et masque la barre de progression ; pour les deux refus temporaires, la ligne d'état porte le message et le bouton reste utilisable.
 - OTA manuel : `POST /update` (multipart `.bin`).
 
 > ℹ️ **Cartes retirées/déplacées en v2.5.1** (feature-046) :
@@ -224,7 +238,7 @@ Auth = le niveau minimum requis, voir [`docs/API.md`](../API.md).
 
 Plus aucun dialogue natif `alert()` / `confirm()` sur cette page (ni ailleurs dans l'UI) :
 
-- **Messages informatifs** (succès de sauvegarde, erreurs réseau, import/export…) → toasts `showToast` (types `error` / `success` / `info`).
+- **Messages informatifs** (succès de sauvegarde, erreurs réseau, import/export…) → toasts `showToast` (types `error` / `success` / `info` / `warning` — ce dernier stylé depuis la v2.18.6 ; durée adaptative et retour à la ligne, voir [composants transverses](README.md#showtoastmessage-type--notification-éphémère)).
 - **Actions destructives ou sensibles** → modale maison `confirmDialog` (voir [`docs/features/README.md#composants-transverses`](README.md#composants-transverses)), en **variante danger (bouton rouge)** pour les actions irréversibles : purge historique, effacement logs firmware, effacement coredump, déconnexion Wi-Fi, redémarrage, réinitialisation des sondes, reset usine.
 - **Reset usine** : la **double confirmation** est conservée — deux modales enchaînées (« Réinitialiser » puis « Tout effacer »), un refus à n'importe quelle étape annule tout.
 - Les emojis ⚠ ont été retirés des messages de confirmation : la variante danger (rouge) porte la sévérité.

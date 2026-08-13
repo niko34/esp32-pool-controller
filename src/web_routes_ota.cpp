@@ -9,8 +9,9 @@
 #include "ota_integrity.h"
 #include "ota_integrity_logic.h"
 #include "ota_check_logic.h"
-// bug-oom-accept-http-durcissement : prédicat pur oomTlsGateOk() partagé avec
-// le parachute OOM (garde bicritère heap avant la session TLS de /check-update).
+// bug-oom-accept-http-durcissement / bug-garde-tls-trop-permissive-sans-psram :
+// prédicat pur oomTlsGateReason() partagé avec le parachute OOM (garde PSRAM
+// LIBRE + heap avant toute session TLS sortante : /check-update, /download-update).
 #include "oom_guard_logic.h"
 // Migration core 3 (feature-063) : include EXPLICITE de WiFiClient.h — sur
 // core 2 il arrive transitivement via HTTPClient.h, plus sur core 3 (où
@@ -350,33 +351,94 @@ class BudgetJsonAllocator : public ArduinoJson::Allocator {
   AllocBudget _budget;
 };
 
+// Garde commune des sessions TLS sortantes GitHub (/check-update,
+// /download-update) — bug-garde-tls-trop-permissive-sans-psram : mesure PSRAM
+// LIBRE + heap, délègue la DÉCISION au prédicat pur oomTlsGateReason (aucune
+// comparaison de seuil ici) et répond 503 avec le motif. Retourne true si la
+// requête a été refusée : l'appelant doit sortir IMMÉDIATEMENT, sans aucun
+// effet de bord.
+static bool refuseIfTlsGateClosed(AsyncWebServerRequest* request, const char* routeName,
+                                  const String& clientIp, uint32_t psramFreeBytes,
+                                  uint32_t freeHeap, uint32_t maxAlloc) {
+  const uint8_t reason = oomTlsGateReason(psramFreeBytes, freeHeap, maxAlloc,
+                                          kOtaTlsMinPsramBytes,
+                                          kCheckUpdateMinFreeHeapBytes,
+                                          kCheckUpdateMinMaxAllocBytes);
+  if (reason == kOomTlsGateOk) {
+    return false;
+  }
+
+  // WARN enrichi : motif + PSRAM LIBRE + les deux mesures heap avec leurs seuils
+  // + IP (traçabilité on-target : le refus doit être auto-explicatif dans le log).
+  const char* reasonLabel = (reason == kOomTlsGateNoPsram)
+                                ? "PSRAM libre absente/insuffisante"
+                                : "mémoire insuffisante pour TLS";
+  systemLogger.warning(String(routeName) + " refusé (" + reasonLabel + ") : PSRAM libre=" +
+                       String(psramFreeBytes) + " o (min " + String(kOtaTlsMinPsramBytes) +
+                       "), heap libre=" + String(freeHeap) + " o (min " +
+                       String(kCheckUpdateMinFreeHeapBytes) + "), plus gros bloc=" +
+                       String(maxAlloc) + " o (min " +
+                       String(kCheckUpdateMinMaxAllocBytes) + "), client=" + clientIp);
+
+  if (reason == kOomTlsGateNoPsram) {
+    // Le prédicat pur regroupe sous kOomTlsGateNoPsram deux situations
+    // PHYSIQUEMENT différentes ; la route les discrimine ici à partir de la
+    // mesure qu'elle a déjà en main (aucun seuil dupliqué : simple test de
+    // nullité) pour que le front ne mente pas à l'utilisateur.
+    if (psramFreeBytes == 0) {
+      // PSRAM ABSENTE (module WROOM) → indisponibilité PERMANENTE, matérielle.
+      // Message destiné à l'UTILISATEUR : ce n'est pas une panne mais une
+      // caractéristique matérielle → formulation neutre, vocabulaire aligné sur
+      // les cartes de la page Système ("Mise à jour manuelle").
+      // Le champ "code" reste le contrat machine (front + tests) : ne pas le changer.
+      request->send(503, "application/json",
+                    "{\"error\":\"La mise à jour en ligne n'est pas disponible. Votre matériel "
+                    "ne dispose pas d'une mémoire PSRAM (module ESP32-DevKitC-VE nécessaire). "
+                    "Utilisez la mise à jour manuelle.\",\"code\":\"psram_required\"}");
+    } else {
+      // PSRAM PRÉSENTE mais libre sous le seuil (WROVER momentanément saturé) →
+      // indisponibilité TEMPORAIRE, réessayable : ne jamais affirmer l'absence
+      // de PSRAM, et ne pas neutraliser durablement la mise à jour en ligne.
+      request->send(503, "application/json",
+                    "{\"error\":\"La mise à jour en ligne est momentanément indisponible : la "
+                    "mémoire PSRAM est saturée. Réessayez dans quelques minutes ou utilisez la "
+                    "mise à jour manuelle.\",\"code\":\"psram_low\"}");
+    }
+  } else {
+    // Refus temporaire (heap dégradé) : code machine explicite pour que le front
+    // n'ait pas à reconnaître le TEXTE (qui doit rester libre d'évoluer).
+    request->send(503, "application/json",
+                  "{\"error\":\"Mémoire insuffisante pour TLS, réessayez\","
+                  "\"code\":\"tls_low_memory\"}");
+  }
+  return true;
+}
+
 static void handleCheckUpdate(AsyncWebServerRequest* request) {
   // bug-oom-accept-http-durcissement : IP client dans les logs (le crash du
   // 11/08 avait un profil TLS compatible mais l'appelant était invérifiable).
   String clientIp = request->client()->remoteIP().toString();
+  // PSRAM LIBRE (getFreePsram) et non installée (getPsramSize, constante) :
+  // une PSRAM saturée ne protège de rien, mbedTLS retomberait sur le tas interne.
+  uint32_t psramFreeBytes = ESP.getFreePsram();
   uint32_t freeHeap = ESP.getFreeHeap();
   uint32_t maxAlloc = ESP.getMaxAllocHeap();
 
-  // Garde BICRITÈRE avant la création de WiFiClientSecure (prédicat pur
-  // partagé oomTlsGateOk) : la session TLS GitHub coûte ~58 Ko répartis —
-  // sur heap dégradé, l'échec était lent et aléatoire (BIGNUM alloc en cours
-  // de handshake). Refus 503 rapide et honnête à la place.
-  if (!oomTlsGateOk(freeHeap, maxAlloc, kCheckUpdateMinFreeHeapBytes,
-                    kCheckUpdateMinMaxAllocBytes)) {
-    systemLogger.warning("/check-update refusé (mémoire insuffisante pour TLS) : heap libre=" +
-                         String(freeHeap) + " o (min " +
-                         String(kCheckUpdateMinFreeHeapBytes) + "), plus gros bloc=" +
-                         String(maxAlloc) + " o (min " +
-                         String(kCheckUpdateMinMaxAllocBytes) + "), client=" + clientIp);
-    request->send(503, "application/json",
-                  "{\"error\":\"Mémoire insuffisante pour TLS, réessayez\"}");
+  // Garde PSRAM libre + heap AVANT la création de WiFiClientSecure : sans PSRAM
+  // le handshake est voué à l'échec après avoir affamé le tas (~1 s de fenêtre
+  // de crash) ; sur heap dégradé l'échec était lent et aléatoire (BIGNUM alloc
+  // en cours de handshake). Refus 503 rapide et honnête à la place.
+  if (refuseIfTlsGateClosed(request, "/check-update", clientIp, psramFreeBytes,
+                            freeHeap, maxAlloc)) {
     return;
   }
 
   // bug-checkupdate-tls-core3 : l'échec observé est un manque de mémoire
   // pendant le handshake (X509 alloc failed) — tracer l'état heap AVANT la
   // session TLS pour distinguer épuisement total / fragmentation (maxAlloc).
-  systemLogger.info("Vérification des mises à jour GitHub... (heap libre=" +
+  // PSRAM libre tracée aussi : elle conditionne désormais l'autorisation.
+  systemLogger.info("Vérification des mises à jour GitHub... (PSRAM libre=" +
+                    String(psramFreeBytes) + " o, heap libre=" +
                     String(freeHeap) + " o, plus gros bloc=" +
                     String(maxAlloc) + " o, client=" + clientIp + ")");
 
@@ -586,6 +648,22 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
     request->send(400, "application/json",
       "{\"error\":\"integrity_digest_invalid\",\"message\":\"Empreinte SHA-256 invalide : téléchargement refusé (format attendu sha256:<64 hex>)\"}");
     return;
+  }
+
+  // Garde PSRAM libre + heap avant la session TLS sortante
+  // (bug-garde-tls-trop-permissive-sans-psram) : MÊME garde que /check-update.
+  // Position volontaire — après url/allowlist/digest (donc une requête mal
+  // formée reste un 400/403), mais AVANT WiFiClientSecure, setOtaInProgress(),
+  // LittleFS.end() et tout esp_partition_erase_range() : un refus n'a AUCUN
+  // effet de bord (pas de pompes gelées, pas de FS démonté, rien d'effacé).
+  {
+    String clientIp = request->client()->remoteIP().toString();
+    // getFreePsram() (libre) et non getPsramSize() (installée) — cf. /check-update.
+    if (refuseIfTlsGateClosed(request, "/download-update", clientIp,
+                              ESP.getFreePsram(), ESP.getFreeHeap(),
+                              ESP.getMaxAllocHeap())) {
+      return;
+    }
   }
 
   // Paramètre optionnel pour contrôler le redémarrage

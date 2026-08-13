@@ -16,13 +16,20 @@
 //   - décision du handler à l'échec d'allocation (libérer / se désenregistrer) ;
 //   - décision de réarmement (hystérésis kOomRearmMinMaxAllocBytes) ;
 //   - one-shot du log CRITICAL différé (drainé depuis la loop) ;
-//   - prédicat de garde bicritère TLS, PARTAGÉ avec /check-update
-//     (web_routes_ota.cpp) — aucune logique dupliquée.
+//   - prédicat de garde TLS sortante (PSRAM LIBRE + heap), PARTAGÉ par
+//     /check-update et /download-update (web_routes_ota.cpp) — aucune logique
+//     dupliquée.
 // La coquille impure (malloc/free, std::set_new_handler, std::atomic,
 // heap_caps_register_failed_alloc_callback, systemLogger) vit dans oom_guard.cpp.
 //
-// CONTRAINTE : pas d'Arduino.h, pas de FreeRTOS — <stdint.h> uniquement,
-// fonctions inline (header-only, rien à ajouter au build natif).
+// CONTRAINTE : pas d'Arduino.h, pas de FreeRTOS, pas d'ESP.* — <stdint.h>
+// uniquement, fonctions inline (header-only, rien à ajouter au build natif).
+// La PSRAM LIBRE est donc MESURÉE par la route (ESP.getFreePsram()) et passée
+// en paramètre, jamais lue ici. C'est bien la PSRAM LIBRE, et non la taille
+// installée (ESP.getPsramSize(), constante et jamais décroissante) : avec
+// SPIRAM_USE_MALLOC les allocations > 4 Ko partent en PSRAM, donc une PSRAM
+// installée mais SATURÉE ne protège de rien — mbedTLS retomberait sur le heap
+// interne, exactement le régime que la v2.18.5 a prouvé insuffisant.
 // =============================================================================
 
 #include <stdint.h>
@@ -83,12 +90,44 @@ inline bool oomShouldLogRelease(uint32_t releaseCount, uint32_t loggedCount) {
   return releaseCount != loggedCount;
 }
 
-// Prédicat de garde BICRITÈRE avant une session TLS (partagé : /check-update).
-// La session TLS GitHub coûte ~58 Ko répartis → exige heap TOTAL suffisant ET
-// un plus gros bloc contigu décent. Refus si l'UN des deux critères manque.
-inline bool oomTlsGateOk(uint32_t freeHeapBytes, uint32_t maxAllocBytes,
-                         uint32_t minFreeBytes, uint32_t minMaxAllocBytes) {
-  return freeHeapBytes >= minFreeBytes && maxAllocBytes >= minMaxAllocBytes;
+// Motifs de refus de la garde TLS sortante (retour de oomTlsGateReason).
+enum : uint8_t {
+  kOomTlsGateOk = 0,        // Session TLS autorisée
+  kOomTlsGateNoPsram = 1,   // PSRAM libre absente/insuffisante (module sans PSRAM
+                            // ou PSRAM saturée) → refus matériel
+  kOomTlsGateLowMemory = 2, // PSRAM libre suffisante mais heap momentanément dégradé → réessayable
+};
+
+// Prédicat de garde avant TOUTE session TLS sortante (partagé : /check-update,
+// /download-update). Renvoie un MOTIF (pas un booléen) : l'appelant doit
+// distinguer un refus définitif (matériel) d'un refus temporaire (mémoire).
+//
+// 1) PSRAM LIBRE d'abord, FAIL-CLOSED (bug-garde-tls-trop-permissive-sans-psram) :
+//    mbedTLS réclame plusieurs blocs contigus d'environ 16 Ko. Sans PSRAM, le
+//    régime NORMAL d'un WROOM après quelques minutes (mesuré en v2.18.5 :
+//    free=87708 o, maxBloc=34804 o) PASSAIT la garde bicritère puis affamait le
+//    tas jusqu'à refuser une allocation de 100 o pendant le handshake — la
+//    fenêtre exacte du crash bad_alloc du 11/08/2026. Relever le seuil maxBloc
+//    (48-50 Ko) ne serait pas une protection : le parachute OOM réserve 12 Ko,
+//    donc le maxBloc nominal d'un WROOM tombe de ~49 à ~37 Ko ; un tel seuil ne
+//    passerait QUE parachute DÉSARMÉ, c'est-à-dire précisément quand le filet
+//    anti-bad_alloc est absent. D'où : PSRAM requise, sinon upload manuel.
+//    Le critère porte sur la PSRAM LIBRE (`psramFreeBytes`), pas sur la taille
+//    installée : cette dernière est constante et ne décroît jamais, donc un
+//    module PSRAM saturé (tout consommé par SPIRAM_USE_MALLOC) ouvrirait quand
+//    même la garde alors que mbedTLS retomberait sur la RAM interne — le régime
+//    de crash exact. Sur un module de 4 Mo, exiger 1 Mo LIBRE couvre à la fois
+//    l'absence de PSRAM et sa saturation.
+// 2) Ensuite seulement, le bicritère heap historique (ADR-0032) : heap TOTAL
+//    suffisant ET plus gros bloc contigu décent. Seuils INCLUSIFS (>=).
+inline uint8_t oomTlsGateReason(uint32_t psramFreeBytes, uint32_t freeHeapBytes,
+                                uint32_t maxAllocBytes, uint32_t minPsramBytes,
+                                uint32_t minFreeBytes, uint32_t minMaxAllocBytes) {
+  if (psramFreeBytes < minPsramBytes) return kOomTlsGateNoPsram;
+  if (freeHeapBytes < minFreeBytes || maxAllocBytes < minMaxAllocBytes) {
+    return kOomTlsGateLowMemory;
+  }
+  return kOomTlsGateOk;
 }
 
 #endif  // OOM_GUARD_LOGIC_H

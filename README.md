@@ -33,6 +33,28 @@ Contrôleur automatique de piscine basé sur ESP32 :
 
 ## 📋 Matériel Requis
 
+### Module ESP32 — ⚠️ PSRAM requise
+
+Utiliser un **ESP32-DevKitC-VE** (module **WROVER-E**, ESP32 classique **avec 8 Mo de PSRAM**) — cf. [BOM](hardware/BOM.csv), repère U2.
+
+> ⚠️ **Pourquoi la PSRAM est nécessaire** : la **mise à jour en ligne depuis GitHub**
+> (onglet Système → « Vérifier les mises à jour ») ouvre une session TLS qui réclame
+> plusieurs blocs de mémoire contigus d'environ 16 Ko. Sur un module **sans PSRAM**
+> (WROOM-32), la RAM interne ne les fournit plus de façon fiable une fois le système
+> démarré : la vérification échoue de manière intermittente (`BIGNUM - Memory
+> allocation failed`). Avec la PSRAM, ces allocations y sont placées automatiquement
+> (seuil 4 Ko) et la fonction redevient fiable.
+>
+> Le firmware **fonctionne** sur un WROOM-32 sans PSRAM (binaire unique, détection
+> automatique au démarrage, dégradation gracieuse — depuis la v2.18.0) : régulation,
+> interface web, MQTT et **mise à jour manuelle par upload de fichier** restent
+> pleinement opérationnels. Seule la vérification/installation automatique depuis
+> GitHub est concernée.
+>
+> Modules déconseillés : l'**ESP32-S3** n'est pas supporté (architecture différente,
+> brochage incompatible avec le PCB v2 — les GPIO 22 et 25 utilisés par l'I²C et la
+> pompe pH n'y existent pas).
+
 ### PCB
 
 Les fichiers pour la partie électronique sont disponibles dans le dossier [`hardware/`](hardware/) :

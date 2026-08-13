@@ -111,6 +111,8 @@ Incident production du 2026-08-04 (appareil 2.14.0, fonctionnement prolongé) : 
 
 Pic mémoire du handler : ~35 Ko → **≤ 8 Ko**, hors session TLS (~48 Ko, incompressible avec `WiFiClientSecure` — hors périmètre, assumé).
 
+> **Note additive 2026-08-13 (v2.18.6)** : la session TLS laissée « hors périmètre, assumée » ci-dessus n'est plus assumée sans condition — [ADR-0036](0036-psram-requise-mise-a-jour-en-ligne.md) exige désormais 1 Mo de **PSRAM libre** avant toute session TLS sortante (`/check-update` **et** `/download-update`), sur la base d'une mesure terrain (WROOM : handshake voué à l'échec après avoir affamé le tas). Le bornage des réponses entrantes/sortantes décidé ici reste **inchangé** : il s'applique en aval, une fois la garde franchie.
+
 Verrouillage additionnel : **tout corps de réponse d'API externe dont la taille dépend de données distantes doit être parsé en flux avec budget — un `getString()` sur un tel corps est un défaut de revue**, symétrique de la règle sur les réponses sortantes.
 
 ## Références
