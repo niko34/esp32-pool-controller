@@ -104,6 +104,7 @@ void performFailSafeRestart(const char* reason, const char* alertType, const Str
 void performAutoHealRestart(uint32_t maxAllocHeap);
 void enterMaintenanceMode();
 void ensureNetworkProbe();
+void handleHeapCorruptionDetected();
 
 void setup() {
   // Parachute OOM (bug-oom-accept-http-durcissement, crash du 11/08) : réserve
@@ -116,12 +117,20 @@ void setup() {
 
   systemLogger.begin();  // Initialise le mutex avant tout accès multi-core
   systemLogger.info("=== Démarrage ESP32 Pool Controller v" + String(FIRMWARE_VERSION) + " ===");
-  if (oomGuardReserveArmed()) {
+  // Armement à deux paliers (v2.18.8) : la taille RÉELLEMENT armée est
+  // journalisée avec le maxBloc du moment (le palier de repli signale un tas
+  // déjà contraint au boot).
+  size_t oomArmedBytes = oomGuardReserveArmedBytes();
+  if (oomArmedBytes > 0) {
     systemLogger.info("Parachute OOM armé : réserve d'urgence de " +
-                      String(kOomReserveBytes) + " o pré-allouée");
+                      String(oomArmedBytes) + " o (" +
+                      String(oomArmedBytes >= kOomReserveBytes ? "palier nominal"
+                                                              : "palier de repli") +
+                      ") pré-allouée, maxBloc=" + String(ESP.getMaxAllocHeap()) + " o");
   } else {
-    // Improbable au boot : malloc initial refusé — la loop réarmera (hystérésis).
-    systemLogger.warning("Parachute OOM : réserve non allouée au boot — armement différé en loop");
+    // Improbable au boot : les deux mallocs refusés — la loop réarmera (hystérésis).
+    systemLogger.warning("Parachute OOM : réserve non allouée au boot (nominal ET repli refusés) "
+                         "— armement différé en loop");
   }
   systemLogger.info("Build: " + String(FIRMWARE_BUILD_DATE) + " " + String(FIRMWARE_BUILD_TIME));
   // feature-066 : détection PSRAM (module WROVER-E). psramFound() est fiable
@@ -223,6 +232,14 @@ void setup() {
   // flush éventuel fonctionne), AVANT le WiFi (trace disponible au plus tôt).
   heapRingDumpIfCrash();
 
+  // Post-mortem d'allocation RTC noinit (bug-parachute-oom-jamais-rearme) :
+  // état du tas AU MOMENT EXACT du dernier échec d'allocation du boot précédent
+  // + verdict (famine / suspicion de corruption). Placé juste APRÈS le dump de
+  // l'anneau : les deux traces se lisent ensemble (l'anneau donne la cinétique,
+  // le post-mortem le point d'échec). Lit l'instantané pris par initOomGuard(),
+  // qui a déjà invalidé la zone RTC pour le boot courant.
+  oomPostMortemDumpIfBoot();
+
   // Configuration WiFi
   bool wifiConnected = setupWiFi();
 
@@ -297,6 +314,23 @@ void loop() {
 
   // Contrôle pompes dosage
   PumpController.update();
+
+  // Contrôle d'intégrité du tas (bug-parachute-oom-jamais-rearme) — PLACÉ APRÈS
+  // PumpController.update() (condition pool-chemistry C2 : jamais entre
+  // filtration.update() et PumpController.update(), qui doivent voir le même
+  // tour). Gardes CUMULATIVES fail-closed avant tout parcours du tas : pas en
+  // mode maintenance, pas pendant une OTA, aucun dosage auto, aucune injection
+  // manuelle, AUCUNE pompe énergisée (isAnyPumpEnergized couvre le test manuel
+  // armé depuis la tâche web, invisible de isPh/isOrpDosing), et uptime minimal.
+  if (!maintenanceMode && !PumpController.isOtaInProgress() &&
+      !PumpController.isPhDosing() && !PumpController.isOrpDosing() &&
+      !manualInjectPh.active && !manualInjectOrp.active &&
+      !PumpController.isAnyPumpEnergized() &&
+      now >= kAutoHealMinUptimeMs) {
+    if (oomGuardIntegrityTick()) {
+      handleHeapCorruptionDetected();  // peut ne pas retourner (redémarrage propre)
+    }
+  }
 
   // Détection appui long bouton factory reset (10s) en cours de fonctionnement.
   // PCB v2 (feature-019) : bouton actif bas, pull-up externe 10 kΩ vers 3V3.
@@ -382,7 +416,8 @@ void loop() {
 
   // Parachute OOM (bug-oom-accept-http-durcissement) : émission différée des
   // logs posés par le new_handler/callback heap_caps + réarmement de la réserve
-  // (hystérésis kOomRearmMinMaxAllocBytes, cadence interne 10 s).
+  // à deux paliers (nominal ≥ kOomRearmMinMaxAllocBytes, repli
+  // ≥ kOomFallbackRearmMinMaxAllocBytes ; cadence interne 10 s).
   oomGuardLoopTick();
 
   // Vérification sync NTP et mise à jour RTC
@@ -830,6 +865,47 @@ void enterMaintenanceMode() {
   mqttManager.publishAlert("maintenance_mode",
       "Auto-guérison désactivée après " + String(rtcAutoHealRebootCount) +
       " reboots — dosage suspendu");
+}
+
+// Chemin « corruption du tas détectée » (bug-parachute-oom-jamais-rearme,
+// condition pool-chemistry C4). Appelé UNE SEULE FOIS : oomGuardIntegrityTick()
+// désactive définitivement le contrôle après une détection.
+// SÉQUENCE IMPOSÉE — ne pas réordonner :
+//   1. sécurité chimique AVANT TOUT (coupe des 2 pompes + inhibition du dosage) ;
+//   2. CRITICAL one-shot + flush disque (la trace doit survivre à un abort) ;
+//   3. alerte MQTT heap_corruption (tolère l'échec) ;
+//   4. sortie par le chemin PROPRE EXISTANT : performFailSafeRestart() tant que
+//      le plafond de reboots de la fenêtre n'est pas atteint, sinon mode
+//      maintenance (appareil joignable, dosage suspendu).
+// JAMAIS d'ESP.restart() nu : un tas corrompu impose de couper le dosage avant
+// toute autre action, et de persister les compteurs journaliers (fait par
+// performFailSafeRestart).
+void handleHeapCorruptionDetected() {
+  // Sécurité chimique d'abord (condition pool-chemistry C4) : dosage coupé et
+  // inhibé AVANT toute autre action, y compris dans la branche « maintenance ».
+  PumpController.stopAll();
+  PumpController.setMaintenanceInhibit(true);
+
+  if (rtcAutoHealRebootCount < kAutoHealMaxReboots) {
+    // performFailSafeRestart réalise déjà la séquence complète (stopAll,
+    // persistance des compteurs, CRITICAL, alerte MQTT, flush, restart) : on ne
+    // la double PAS ici (revue v2.18.8 : un seul arrêt, une seule alerte).
+    performFailSafeRestart(
+        "Corruption du tas DÉTECTÉE (heap_caps_check_integrity_all) — "
+        "dosage coupé et inhibé, redémarrage propre",
+        "heap_corruption",
+        "Corruption du tas détectée — dosage suspendu, redémarrage propre");  // ne retourne pas
+  }
+
+  // Plafond de reboots atteint : on n'enchaîne pas, on reste en maintenance —
+  // c'est ici (et seulement ici) qu'il faut journaliser et alerter nous-mêmes.
+  systemLogger.critical("Corruption du tas DÉTECTÉE (heap_caps_check_integrity_all) "
+                        "— dosage coupé et inhibé, plafond de redémarrages atteint : "
+                        "passage en mode maintenance");
+  systemLogger.flushToDisk();
+  mqttManager.publishAlert("heap_corruption",
+      "Corruption du tas détectée — dosage suspendu, mode maintenance (plafond de redémarrages)");
+  enterMaintenanceMode();
 }
 
 // Surveillance heap + auto-guérison (bug-badalloc-ws-broadcast) : bloc extrait de

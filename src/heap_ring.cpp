@@ -1,10 +1,13 @@
 #include <Arduino.h>
 #include <esp_system.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>  // xTaskGetTickCount — même horloge que le chemin d'échec OOM
 #include "heap_ring.h"
 #include "heap_ring_logic.h"
 #include "constants.h"
 #include "logger.h"
 #include "ws_manager.h"
+#include "oom_guard.h"  // oomGuardNoteHeapSample (miroir du dernier échantillon)
 
 // =============================================================================
 // Stockage RTC noinit (bug-heap-toctou A4)
@@ -54,14 +57,34 @@ void heapRingSample() {
   uint32_t delta = skipped - sLastSkippedPushes;
   sLastSkippedPushes = skipped;
 
+  // Mesures faites UNE SEULE FOIS ici : elles alimentent l'anneau ET le miroir
+  // du post-mortem OOM (bug-parachute-oom-jamais-rearme). ESP.getMaxAllocHeap()
+  // s'exécute interruptions coupées → on ne l'appelle pas plus souvent, et la
+  // cadence de 2 s reste INCHANGÉE (accélérer l'échantillonnage injecterait de
+  // la gigue dans le phénomène mesuré).
+  uint32_t uptimeS = (uint32_t)(millis() / 1000UL);
+  uint32_t maxAllocBytes = ESP.getMaxAllocHeap();
+  uint32_t freeHeapBytes = ESP.getFreeHeap();
+
   heapRingEncode(&sHeapRingData[(size_t)sHeapRingHead * kHeapRingEntryBytes],
-                 (uint32_t)(millis() / 1000UL),
-                 ESP.getMaxAllocHeap(),
-                 ESP.getFreeHeap(),
+                 uptimeS,
+                 maxAllocBytes,
+                 freeHeapBytes,
                  (uint32_t)wsManager.clientCount(),
                  delta);
   sHeapRingHead = (uint16_t)heapRingNextHead(sHeapRingHead, kHeapRingEntries);
   if (sHeapRingFilled < kHeapRingEntries) sHeapRingFilled++;
+
+  // Miroir atomique consommé par le chemin d'échec d'allocation (qui n'a PAS le
+  // droit de mesurer le tas lui-même : le verrou du composant heap est détenu
+  // par l'allocateur quand le callback est appelé).
+  // HORLOGE : on passe l'uptime en TICKS FreeRTOS, PAS millis() (revue v2.18.8).
+  // Le chemin d'échec ne peut lire que xTaskGetTickCount() (aucun verrou) ; deux
+  // sources différentes dériveraient de quelques secondes et feraient sous-flouer
+  // le calcul d'âge sur 16 bits au dump (« t-65530 s »). L'anneau lui-même reste
+  // horodaté en millis(), qui n'est comparé qu'à lui-même.
+  uint32_t uptimeTickS = (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
+  oomGuardNoteHeapSample(uptimeTickS, freeHeapBytes, maxAllocBytes);
 }
 
 void heapRingDumpIfCrash() {

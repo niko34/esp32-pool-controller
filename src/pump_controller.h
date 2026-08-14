@@ -202,6 +202,18 @@ public:
   // Getters pour l'état
   bool isPhDosing() const { return phDosingState.active; }
   bool isOrpDosing() const { return orpDosingState.active; }
+
+  // bug-parachute-oom-jamais-rearme (condition pool-chemistry C1) : LECTURE
+  // SEULE STRICTE — true dès qu'une pompe est énergisée (PWM > 0), QUELLE QUE
+  // SOIT l'origine. isPhDosing()/isOrpDosing() ne reflètent QUE la régulation
+  // AUTO : une injection manuelle ou un test pompe est armé par setManualPump()
+  // depuis la tâche web et ne met JAMAIS phDosingState.active à true. Ce getter
+  // sert de garde CUMULATIVE au contrôle d'intégrité du tas (main.cpp) et
+  // n'influence AUCUNE décision de dosage (aucun setter associé).
+  // Course bénigne assumée : pumpDuty[] est écrit par loopTask et par la tâche
+  // web (setManualPump) ; la lecture d'un octet est atomique sur Xtensa, le pire
+  // cas est un contrôle d'intégrité différé d'un tour de loop (fail-closed).
+  bool isAnyPumpEnergized() const { return pumpDuty[0] > 0 || pumpDuty[1] > 0; }
   unsigned long getPhUsedMs() const { return phDosingState.usedMs; }
   unsigned long getOrpUsedMs() const { return orpDosingState.usedMs; }
 

@@ -264,14 +264,73 @@ constexpr size_t kOomReserveBytes = 12288;
 
 // Hystérésis de réarmement : la réserve est libérée quand maxBloc est ≈ épuisé
 // (échec d'un new), mais n'est RE-allouée que lorsque le plus gros bloc contigu
-// repasse au-dessus de 32 Ko — bien au-dessus de kLowHeapWarnBytes (20 Ko) pour
-// ne pas osciller libération/réallocation autour du seuil de famine.
-constexpr uint32_t kOomRearmMinMaxAllocBytes = 32768;
+// repasse au-dessus de ce seuil, pour ne pas osciller libération/réallocation
+// autour du seuil de famine.
+//
+// bug-parachute-oom-jamais-rearme (2ᵉ crash du 13/08/2026, uptime 12,9 h) :
+// ERREUR DE CALIBRAGE de la v2.18.5 — le seuil valait 32768 o alors que le plus
+// gros bloc contigu de CET appareil en régime établi vaut 27-30 Ko (mesures
+// terrain : 29 684 o à 33 min d'uptime, 27 584 o à 12,9 h). Le seuil était donc
+// AU-DESSUS du régime normal : une fois la réserve consommée, elle n'était
+// JAMAIS ré-allouée et le handler restait désenregistré → parachute one-shot en
+// pratique, ce qui a laissé passer le bad_alloc de 156 o du 13/08 (tas pourtant
+// comptabilisé sain : free=81 408 o, maxB=27 584 o).
+// Nouvelle valeur = 2 × kOomReserveBytes : atteignable dans le régime réel tout
+// en gardant une marge d'un bloc entier au-dessus de la taille à allouer.
+//
+// ÉCHELLE COMPLÈTE des seuils « plus gros bloc contigu » (ordre croissant) :
+//    8 192 o (kRestartMaxAllocHeapBytes)      → reboot d'auto-guérison
+//   12 288 o (kOomFallbackRearmMinMaxAllocBytes) → réarmement de la réserve de REPLI
+//   16 384 o (kWsPushMinAllocBytes)           → pushes WS sautés
+//   20 000 o (kLowHeapWarnBytes)              → WARN heap + flush disque one-shot
+//   24 576 o (kOomRearmMinMaxAllocBytes)      → réarmement de la réserve NOMINALE
+constexpr uint32_t kOomRearmMinMaxAllocBytes = 24576;
 constexpr unsigned long kOomRearmCheckIntervalMs = 10000;  // 10 s - cadence lente du réarmement (loop)
+
+// Réserve de REPLI (2ᵉ palier) : si le bloc nominal de 12 Ko n'est pas allouable,
+// le parachute s'arme quand même avec un bloc plus petit — « toujours armé »
+// vaut mieux que « jamais réarmé » (défaut n°1 du 13/08). 2 Ko couvrent
+// largement les petites allocations vitales observées dans les deux crashs
+// (accept HTTP 356 o, AsyncFileResponse 156 o, __cxa_allocate_exception 100 o).
+// Le surclassement repli → nominal est fait par la loop dès que maxBloc repasse
+// au-dessus de kOomRearmMinMaxAllocBytes ; JAMAIS l'inverse (pas d'oscillation).
+constexpr size_t kOomFallbackReserveBytes = 2048;
+constexpr uint32_t kOomFallbackRearmMinMaxAllocBytes = 12288;
 
 // Throttle du WARN différé « allocation heap échouée » (callback diagnostic
 // heap_caps_register_failed_alloc_callback, mode flag-seul — drainé par loop).
 constexpr unsigned long kOomFailWarnThrottleMs = 30000;    // 30 s - max 1 WARN par fenêtre
+
+// ---------------------------------------------------------------------------
+// Post-mortem d'allocation en RAM RTC + verdict (bug-parachute-oom-jamais-rearme)
+// ---------------------------------------------------------------------------
+// Départage les deux hypothèses laissées ouvertes par le crash du 13/08 :
+//   (a) consommateur très rapide dans l'angle mort de 2 s de l'anneau heap,
+//   (b) corruption du tas (comptabilité saine mais l'allocateur refuse 156 o).
+// Règle du verdict (oomPostMortemVerdict, module pur) : une famine capable de
+// refuser une PETITE allocation refuse TOUT — donc beaucoup d'échecs et une
+// comptabilité écroulée. À l'inverse, 1-2 échecs isolés avec un plus gros bloc
+// annoncé au moins kOomCorruptionSaneBlockRatio × la taille demandée est
+// incohérent avec une famine → suspicion de corruption.
+constexpr uint32_t kOomCorruptionMaxFails = 8;        // Au-delà : famine (l'allocateur refuse en série)
+constexpr uint32_t kOomCorruptionSaneBlockRatio = 4;  // maxBloc ≥ 4 × taille demandée = comptabilité saine
+// Fenêtre de RAFALE (revue v2.18.8) : le compteur d'échecs est cumulé sur tout
+// le boot. Sans borne temporelle, quelques échecs bénins étalés sur des heures
+// concluraient « famine » sur le scénario même que ce verdict doit trancher
+// (13/08 : 2 échecs, tas sain). Une vraie famine refuse tout en quelques
+// secondes — 60 s couvre largement l'épisode du 11/08 (~14 s).
+constexpr uint16_t kOomCorruptionBurstSpanS = 60;     // Échecs nombreux ET resserrés → famine
+
+// Contrôle d'intégrité périodique du tas (heap_caps_check_integrity_all) —
+// détecteur direct de l'hypothèse (b). Cadence LENTE (5 min) : le parcours de
+// tous les blocs coûte du temps CPU et prend les verrous de l'allocateur.
+// AUTOLIMITATION (condition pool-chemistry C3) : WARN au-delà de
+// kHeapIntegrityWarnDurationUs, désactivation DÉFINITIVE (+ WARN one-shot)
+// au-delà de kHeapIntegrityMaxDurationUs — le contrôle ne doit jamais devenir
+// lui-même une source de gigue pour la régulation ni pour le watchdog.
+constexpr unsigned long kHeapIntegrityCheckIntervalMs = 300000; // 5 min - cadence du contrôle d'intégrité
+constexpr uint32_t kHeapIntegrityMaxDurationUs = 20000;         // 20 ms - au-delà : contrôle désactivé définitivement
+constexpr uint32_t kHeapIntegrityWarnDurationUs = 5000;         // 5 ms - au-delà : WARN (contrôle conservé)
 
 // Garde des sessions TLS sortantes GitHub (/check-update, /download-update),
 // évaluée AVANT la création de WiFiClientSecure — prédicat pur oomTlsGateReason.

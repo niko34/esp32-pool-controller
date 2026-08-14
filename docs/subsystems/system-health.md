@@ -2,7 +2,7 @@
 
 - **Fichiers** : [`src/main.cpp`](../../src/main.cpp) (`checkSystemHealth`, `performFailSafeRestart`, `performAutoHealRestart`, `enterMaintenanceMode`, `initAutoHealRtcState`, `ensureNetworkProbe`, `onNetPingSuccess`), [`src/self_heal_logic.h`](../../src/self_heal_logic.h) / [`.cpp`](../../src/self_heal_logic.cpp), [`src/net_health_logic.h`](../../src/net_health_logic.h) / [`.cpp`](../../src/net_health_logic.cpp), [`src/history_guard_logic.h`](../../src/history_guard_logic.h) / [`.cpp`](../../src/history_guard_logic.cpp) (+ coquille dans [`src/history.cpp`](../../src/history.cpp))
 - **Pas de singleton** : logique portée par des fonctions libres de `main.cpp` + trois modules purs `self_heal_logic` (heap), `net_health_logic` (connectivité) et `history_guard_logic` (disjoncteur de boot-loop history).
-- **Décisions architecturales** : [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison mémoire), [ADR-0030](../adr/0030-watchdog-connectivite.md) (watchdog de connectivité), [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) (disjoncteur de boot-loop history).
+- **Décisions architecturales** : [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison mémoire), [ADR-0030](../adr/0030-watchdog-connectivite.md) (watchdog de connectivité), [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) (disjoncteur de boot-loop history), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité périodique du tas, v2.18.8).
 
 ## Rôle
 
@@ -77,7 +77,7 @@ L'alerte heap **total** (CRIT « Mémoire faible » + MQTT `low_memory`, seuil `
 
 Le tick santé (5-60 s) rate la **cinétique d'effondrement** du heap (quelques secondes entre « sain » et `bad_alloc`). Depuis la v2.14.0, un ring d'instrumentation en **RAM RTC noinit** (survit à `ESP.restart()`/panic/WDT, **pas** au power-on) capture cette cinétique et la restitue dans le journal au boot suivant. Module pur [`src/heap_ring_logic.h`](../../src/heap_ring_logic.h) (encodage + arithmétique d'index, testé en natif) + coquille impure [`src/heap_ring.cpp`](../../src/heap_ring.cpp).
 
-- **Budget** : magic (4 o) + tête/remplissage (2+2 o) + ring `kHeapRingEntries = 128` × 8 o = **1032 o** RTC noinit (vérifié à l'ELF). Magic `0xB10C4EA9`, **distinct** de `kAutoHealRtcMagic` (`0xA5C0FFEE`, compteur anti-boucle) — les deux états RTC sont indépendants.
+- **Budget** : magic (4 o) + tête/remplissage (2+2 o) + ring `kHeapRingEntries = 128` × 8 o = **1032 o** RTC noinit (vérifié à l'ELF). Magic `0xB10C4EA9`, **distinct** de `kAutoHealRtcMagic` (`0xA5C0FFEE`, compteur anti-boucle) et de `kOomPostMortemMagic` (`0xF00DFA11`, post-mortem d'allocation, v2.18.8) — les trois états RTC sont indépendants (voir [budget consolidé](#budget-ram-rtc-noinit-consolidé-3-zones)).
 - **Échantillonnage** : `heapRingSample()` depuis `loop()` toutes les `kHeapRingSampleIntervalMs = 2 s`. Format d'une entrée (8 o, little-endian, quantifié) : uptime s (u16, modulo ~18,2 h), maxBloc ÷ 64 (u16), heap libre ÷ 256 (u16), clients WS (u8, saturé 255), **delta** de pushes WS sautés depuis l'échantillon précédent (u8, saturé 255).
 - **Dump au boot** — `heapRingDumpIfCrash()`, appelé dans `setup()` après `history.begin()` (persistance des logs active) et **avant** le WiFi : si le magic est valide **et** que `esp_reset_reason() != POWERON`, les `kHeapRingDumpMaxEntries = 32` dernières entrées (**~64 s de cinétique**) sont émises dans le journal — un WARN d'en-tête `Cinétique heap avant reset (<motif>, reset_reason=<valeur brute>) : N échantillon(s), pas ~2 s (t-0s = dernier avant reset, uptime=<u> s mod 65536)` puis des INFO compactes, 4 entrées par ligne (**8 lignes** pour 32 entrées), de la plus ancienne à la plus récente. Le WARN est **enrichi depuis la v2.18.5** (spec `bug-oom-accept-http-durcissement`) de deux champs : la valeur **brute** d'`esp_reset_reason()` (en plus du libellé court) et l'**uptime absolu** du dernier échantillon avant reset (modulo 65 536 s ≈ 18,2 h — quantum d'encodage du ring) — pour la corrélation temporelle a posteriori avec le journal persistant et les coredumps :
 
@@ -90,6 +90,68 @@ Le tick santé (5-60 s) rate la **cinétique d'effondrement** du heap (quelques 
 > ⚠️ **Deux limites assumées** :
 > 1. `ESP_RST_SW` inclut les reboots **volontaires** (OTA, reboot manuel, factory reset) → le dump est émis aussi dans ces cas — bruit accepté (8 lignes par reboot volontaire), le motif en en-tête (`SW_RESET` vs `PANIC`/`WATCHDOG`) permet de trier.
 > 2. Les 8 lignes partent en **RAM + Serial** au moment du dump et ne sont **flushées sur disque que plus tard** (flush périodique / ERROR) — un **re-crash immédiat** après le boot peut les perdre. La cinétique du re-crash lui-même sera de toute façon recapturée par le ring.
+
+### Deux dumps consécutifs au boot depuis la v2.18.8
+
+`setup()` appelle **`oomPostMortemDumpIfBoot()` juste après `heapRingDumpIfCrash()`** : les deux traces se lisent ensemble — l'anneau donne la **cinétique** (~64 s avant le reset, pas de 2 s), le post-mortem donne le **point d'échec exact** (taille demandée, `caps`, uptime, état du tas comptabilisé, drapeaux, verdict). Format, champs et limites : [oom-guard.md](oom-guard.md#post-mortem-dallocation-en-ram-rtc-noinit-v2188).
+
+Depuis la v2.18.8, `heapRingSample()` mesure `ESP.getMaxAllocHeap()` / `ESP.getFreeHeap()` **une seule fois** par échantillon et alimente **à la fois** l'anneau et le miroir atomique consommé par le chemin d'échec d'allocation (`oomGuardNoteHeapSample()`). La **cadence de 2 s est inchangée** : accélérer l'échantillonnage injecterait de la gigue dans le phénomène mesuré (ces appels s'exécutent interruptions coupées), pour zéro pouvoir discriminant ([ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md)).
+
+## Budget RAM RTC noinit consolidé (3 zones)
+
+La RAM RTC « slow » noinit survit à `ESP.restart()`, aux panics et au watchdog — **pas** au power-on. Trois zones **indépendantes**, chacune avec son propre magic :
+
+| Zone | Magic | Taille | Rôle | Fichier |
+|---|---|---|---|---|
+| Compteur anti-boucle auto-guérison | `0xA5C0FFEE` (`kAutoHealRtcMagic`) | **9 o** | `rtcAutoHealRebootCount` + ancre de fenêtre glissante | [`main.cpp`](../../src/main.cpp) |
+| Anneau de télémétrie heap | `0xB10C4EA9` | **1032 o** | 128 × 8 o + tête/remplissage + magic (cinétique pré-crash) | [`heap_ring.cpp`](../../src/heap_ring.cpp) |
+| Post-mortem d'allocation | `0xF00DFA11` (`kOomPostMortemMagic`) | **32 o** | État au moment exact d'un échec d'allocation + drapeaux + verdict (v2.18.8) | [`oom_guard.cpp`](../../src/oom_guard.cpp) |
+
+**Total : 1073 o sur 8192 disponibles** (≈ 13 %). Les magics sont volontairement distincts : une zone corrompue n'invalide jamais les deux autres.
+
+## Contrôle d'intégrité périodique du tas (v2.18.8)
+
+Détecteur **direct** de la corruption du tas — l'hypothèse laissée ouverte par le crash du 13/08 (la comptabilité annonçait 81 Ko libres et 27,5 Ko de plus gros bloc pendant que l'allocateur refusait 156 octets). Mécanisme : `oomGuardIntegrityTick()` ([`oom_guard.cpp`](../../src/oom_guard.cpp)) ; **appel et gardes** : `loop()` ([`main.cpp`](../../src/main.cpp)).
+
+### Cadence, durée et autolimitation
+
+- `heap_caps_check_integrity_all()` toutes les `kHeapIntegrityCheckIntervalMs` = **5 min** (premier passage dès que l'appelant est éligible).
+- **Durée attendue : 1-3 ms.** Le framework est compilé avec `CONFIG_HEAP_POISONING_LIGHT` : le contrôle **parcourt les blocs** (en-têtes, chaînage, canaris) et ne scanne **pas** la mémoire octet par octet.
+- La durée est **mesurée à chaque passage** (`esp_timer_get_time`). La **1ʳᵉ durée est journalisée en INFO** : `Contrôle d'intégrité du tas : 1er passage en <n> µs (cadence 300 s, plafond 20000 µs)`.
+- **WARN** au-delà de `kHeapIntegrityWarnDurationUs` = 5 ms (contrôle conservé).
+- **Désactivation DÉFINITIVE** (+ WARN one-shot) au-delà de `kHeapIntegrityMaxDurationUs` = 20 ms : le contrôle ne doit jamais devenir lui-même une source de gigue.
+- Le parcours s'exécute **interruptions coupées** et prend les verrous de l'allocateur : **aucun `esp_task_wdt_reset()` à l'intérieur** — il est appelé **juste après**.
+
+### Les 8 gardes de sécurité chimique (exigence `pool-chemistry`)
+
+Le contrôle est appelé **après `PumpController.update()`** en fin de `loop()` — jamais entre `filtration.update()` et `PumpController.update()`, qui doivent voir le même tour. Il n'est **JAMAIS** exécuté si l'une de ces conditions n'est pas remplie (gardes **cumulatives, fail-closed**) :
+
+| # | Garde | Source |
+|---|---|---|
+| 1 | Pas en **mode maintenance** | `maintenanceMode` |
+| 2 | Pas d'**OTA en cours** | `PumpController.isOtaInProgress()` |
+| 3 | Aucun **dosage pH** | `PumpController.isPhDosing()` |
+| 4 | Aucun **dosage ORP** | `PumpController.isOrpDosing()` |
+| 5 | Aucune **injection manuelle pH** | `manualInjectPh.active` |
+| 6 | Aucune **injection manuelle ORP** | `manualInjectOrp.active` |
+| 7 | **Aucune pompe énergisée** | `PumpController.isAnyPumpEnergized()` (**nouveau**, v2.18.8) |
+| 8 | **Uptime** ≥ `kAutoHealMinUptimeMs` (3 min) | `millis()` |
+
+La garde 7 est un **accesseur en lecture seule** ajouté à [`pump_controller.h`](../../src/pump_controller.h), fondé sur les **rapports cycliques PWM réels** (`pumpDuty[]`) : les indicateurs de dosage ne couvraient **que la régulation automatique** — une **injection manuelle** ou un **test de pompe** armé depuis la tâche web passait au travers. Aucun setter associé : cet accesseur n'influence **aucune** décision de dosage. Course bénigne assumée (lecture d'un octet, atomique sur Xtensa) : le pire cas est un contrôle **différé d'un tour de loop** — fail-closed.
+
+**Retard maximal admissible** établi par `pool-chemistry` : **65 ms** (tolérance de 0,1 mL à 90 mL/min). Le plafond retenu est **20 ms** = **0,03 mL** — et, pompes à l'arrêt, ce retard n'affecte de toute façon aucun volume injecté.
+
+### Action en cas de corruption détectée
+
+`oomGuardIntegrityTick()` retourne `true` **une seule fois** (tout contrôle ultérieur est définitivement désactivé) ; `handleHeapCorruptionDetected()` ([`main.cpp`](../../src/main.cpp)) exécute alors une séquence **imposée, à ne pas réordonner** :
+
+1. `PumpController.stopAll()` + `PumpController.setMaintenanceInhibit(true)` — **sécurité chimique avant tout**, y compris dans la branche « maintenance » ;
+2. si le plafond de reboots de la fenêtre n'est pas atteint → **`performFailSafeRestart()`** avec l'alerte MQTT **`heap_corruption`** : la séquence propre existante (coupure des pompes, persistance des cumuls journaliers, CRITICAL, alerte, flush, restart) n'est **pas doublée** ici ;
+3. sinon (plafond `kAutoHealMaxReboots` atteint) → CRITICAL + `flushToDisk()` + alerte MQTT **`heap_corruption`** (message « mode maintenance ») + `enterMaintenanceMode()` : l'appareil reste **joignable**, dosage suspendu.
+
+**Jamais d'`ESP.restart()` nu** : un tas corrompu impose de couper le dosage et de persister les cumuls avant toute autre action.
+
+Le résultat du contrôle est aussi consigné dans les **drapeaux du post-mortem RTC** (bit 3 « intégrité échouée », bit 4 « jamais exécutée ») — écrits en RTC **uniquement en cas d'échec**, pour que l'information survive au redémarrage propre qui suit.
 
 ## Machine à états auto-guérison / maintenance
 
@@ -381,6 +443,9 @@ Sinon, un `debug(...)` « Ré-annonce mDNS débouncée » trace l'oscillation ig
 | `kHeapRingEntries` | `128` | Capacité du ring de télémétrie heap (128 × 8 o = 1 Ko RTC noinit, v2.14.0) |
 | `kHeapRingSampleIntervalMs` | `2000` (2 s) | Cadence d'échantillonnage du ring depuis `loop()` |
 | `kHeapRingDumpMaxEntries` | `32` | Entrées dumpées au boot post-reset anormal (~64 s de cinétique, ~8 lignes) |
+| `kHeapIntegrityCheckIntervalMs` | `300000` (5 min) | Cadence du contrôle d'intégrité du tas (v2.18.8, sous les 8 gardes chimiques) |
+| `kHeapIntegrityWarnDurationUs` | `5000` (5 ms) | Durée au-delà de laquelle un WARN est émis (contrôle conservé) |
+| `kHeapIntegrityMaxDurationUs` | `20000` (20 ms) | Durée au-delà de laquelle le contrôle est **désactivé définitivement** |
 
 ## Alertes MQTT émises
 
@@ -392,6 +457,7 @@ Sinon, un `debug(...)` « Ré-annonce mDNS débouncée » trace l'oscillation ig
 | `maintenance_mode` | Bascule en mode maintenance (plafond de reboots **partagé** atteint) |
 | `low_memory` | **Entrée** du heap **total** sous `kMinFreeHeapBytes` (émission sur **transition** depuis v2.11.1 — non-retained : un abonné hors ligne à cet instant rate l'épisode ; INFO « Mémoire rétablie » au retour au-dessus, journal uniquement) |
 | `history_partition_reset` | Partition history effacée automatiquement par le disjoncteur de boot-loop — publication **différée** depuis `setup()` après `mqttManager.begin()` (v2.10.0) |
+| `heap_corruption` | **Corruption du tas détectée** par `heap_caps_check_integrity_all()` (v2.18.8) — **type unique** publié par les **deux** branches : redémarrage propre (`performFailSafeRestart`) et, si le plafond de reboots est atteint, mode maintenance. Dosage coupé et inhibé avant la publication. |
 
 Voir [MQTT.md](../MQTT.md#alertes).
 
@@ -407,6 +473,8 @@ Voir [MQTT.md](../MQTT.md#alertes).
 - **NVS indisponible au boot** : le disjoncteur history dégrade silencieusement (compteur lu à 0 → `Proceed`) — jamais de blocage du boot.
 - **Échec de l'effacement de la partition** (`esp_partition_erase_range != ESP_OK`) : log CRIT « échec de l'effacement », pas d'alerte MQTT (flag non posé), le montage est tenté quand même.
 - **Crash non-FS pendant la fenêtre d'init history** : 2 occurrences consécutives effacent l'historique à tort — trade-off assumé ([ADR-0031](../adr/0031-disjoncteur-bootloop-history.md)).
+- **Dosage permanent ou pompe énergisée en continu** : le contrôle d'intégrité du tas n'est **jamais** exécuté tant qu'une des 8 gardes est fermée (fail-closed) — la détection de corruption est **différée**, jamais forcée. Le bit 4 « intégrité jamais exécutée » du post-mortem le signale au boot suivant.
+- **Contrôle d'intégrité trop long** (> `kHeapIntegrityMaxDurationUs`) : désactivation **définitive** jusqu'au reboot, avec WARN one-shot — le contrôle ne devient jamais lui-même une source de gigue.
 
 ## Fichiers liés
 
@@ -417,7 +485,9 @@ Voir [MQTT.md](../MQTT.md#alertes).
 - [`src/main.cpp`](../../src/main.cpp) — coquille impure (collecte ICMP/heap + effets, `performFailSafeRestart`, alerte différée `history_partition_reset`)
 - [`src/history.cpp`](../../src/history.cpp) — coquille impure du disjoncteur (NVS `hist_meta`, `esp_reset_reason`, `esp_partition_erase_range`)
 - [`src/pump_controller.h`](../../src/pump_controller.h) — `setMaintenanceInhibit()` / `isMaintenanceInhibited()`
+- [`src/oom_guard.cpp`](../../src/oom_guard.cpp) — post-mortem d'allocation RTC (3ᵉ zone noinit) + `oomGuardIntegrityTick()` (mécanisme du contrôle d'intégrité ; **les gardes sont dans `main.cpp`**)
 - [oom-guard.md](oom-guard.md) — parachute OOM global (v2.18.5, [ADR-0035](../adr/0035-parachute-oom-new-handler.md)) : absorbe l'échec ponctuel d'un `new` (bad_alloc → abort) que les watchdogs ci-dessus ne voient qu'après coup — l'auto-guérison reste le containment de fond
 - [ADR-0029](../adr/0029-auto-guerison-heap.md) — auto-guérison mémoire
 - [ADR-0030](../adr/0030-watchdog-connectivite.md) — watchdog de connectivité
 - [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) — disjoncteur de boot-loop history
+- [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) — post-mortem d'allocation RTC + contrôle d'intégrité périodique du tas (alternatives écartées : échantillonnage rapproché du tas, poisoning comprehensive, `ESP.restart()` nu)
