@@ -2,6 +2,23 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.18.9] - 2026-08-14
+
+> 🔄 **Mise à jour du filesystem obligatoire** : ce cycle ne modifie que l'interface web (`data/app.js`). Mettre à jour le **firmware seul ne change rien** — il faut reconstruire et reflasher le filesystem : `./build_fs.sh` puis `./deploy.sh fs` (USB) ou `./deploy.sh ota-fs` (WiFi). Pensez à vider le cache du navigateur si l'ancien affichage persiste.
+
+### Fonctionnalités
+
+- **Mini-graphiques de l'accueil limités à la journée en cours** (`ux-minicharts-journee-en-cours`, demande utilisateur) : les courbes pH, ORP et Température des cartes du tableau de bord affichaient une fenêtre **glissante de 24 h**, donc une partie de la veille en tête de courbe — difficile de lire « où en est-on aujourd'hui ». Elles ne montrent désormais que les points postérieurs à **minuit local**. Le filtrage est fait **côté navigateur** : la requête reste `GET /get-history?range=24h`, **aucun changement de contrat HTTP ni de firmware** ([docs/API.md](docs/API.md) inchangé).
+- **Passage de minuit géré tout seul** : le jour civil affiché est mémorisé ; au premier rafraîchissement suivant le changement de date (cadence 5 min), le polling incrémental (`?since=`) laisse place à un **rechargement complet** qui remplace la série. Les points de la veille disparaissent **sans action de l'utilisateur ni rechargement de la page**.
+- **Conséquence assumée** : en début de journée les courbes sont **courtes, voire vides entre minuit et le premier relevé**. C'est le comportement demandé, pas un défaut — le repli d'échelle existant (cadre cible ± tolérance) garde un graphique lisible tant qu'aucun point n'est disponible.
+- **Inchangé** : les graphiques des écrans détail pH / ORP / Température conservent leurs plages (`Tout` / `30j` / `7j` / `24h`) ; l'infobulle reste **datée et typée** (`jj/mm hh:mm` + mesure / moyenne horaire / moyenne journalière, acquis v2.18.4) ; les **coupures de courbe** aux arrêts de filtration (> 90 min) fonctionnent à l'identique — le filtrage à minuit est appliqué **avant** leur calcul, pour qu'aucun faux trou n'apparaisse en tête de journée.
+
+### Documentation
+
+- `docs/features/page-dashboard.md` : nouvelle section « Plage des mini-graphiques : journée en cours », mécanisme de passage de minuit, cas « début de journée », rappel du reflash du filesystem ; mentions résiduelles des « 24 dernières heures » corrigées.
+
+---
+
 ## [2.18.8] - 2026-08-14
 
 > ⚠️ **À lire honnêtement** : ce cycle **n'explique pas** le crash du 13/08. Il corrige deux défauts de l'instrumentation — dont le fait que **le parachute OOM livré en 2.18.5 était inopérant après son premier déclenchement** — et met en place de quoi **trancher** la cause à la prochaine occurrence. La cause racine reste **inconnue**.

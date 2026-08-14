@@ -811,6 +811,16 @@
   }
 
   let lastMiniChartTimestamp = 0;
+  // Minuit local (en secondes) du jour affiché par les mini-graphiques : sert à
+  // détecter le passage de minuit entre deux rafraîchissements incrémentaux
+  let miniChartDayStart = 0;
+
+  // Minuit local du jour courant, en secondes epoch
+  function startOfTodaySeconds() {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return Math.floor(d.getTime() / 1000);
+  }
 
   function miniChartPointLabel(timestamp) {
     const ts = new Date(timestamp * 1000);
@@ -823,6 +833,17 @@
 
   async function loadMiniChartData(since = 0) {
     try {
+      // Les mini-graphiques n'affichent que la journée en cours : tout point
+      // antérieur à minuit local est écarté côté navigateur (la requête reste
+      // range=24h, aucun changement de contrat HTTP)
+      const dayStart = startOfTodaySeconds();
+      if (dayStart !== miniChartDayStart) {
+        // Premier appel ou passage de minuit : rechargement complet (remplacement)
+        // pour que les points de la veille disparaissent sans action utilisateur
+        miniChartDayStart = dayStart;
+        lastMiniChartTimestamp = 0;
+        since = 0;
+      }
       const url = since > 0
         ? `/get-history?range=24h&since=${since}`
         : '/get-history?range=24h';
@@ -839,9 +860,12 @@
       // Coupure de courbe : sur le chemin incrémental, le « point précédent » du
       // premier nouveau point est le dernier point déjà affiché — un arrêt entre
       // l'existant et le nouveau crée aussi un trou
-      let prevTs = (since > 0 && lastMiniChartTimestamp > 0) ? lastMiniChartTimestamp : null;
+      let prevTs = (since > 0 && lastMiniChartTimestamp >= dayStart) ? lastMiniChartTimestamp : null;
 
       data.history.forEach(point => {
+        // Filtrage AVANT le calcul des coupures : sinon le premier point du jour
+        // créerait un faux trou avec le dernier point de la veille
+        if (point.timestamp < dayStart) return;
         if (point.timestamp > maxTs) maxTs = point.timestamp;
         // Espacement > 90 min avec le point précédent → entrée null (uPlot lève le crayon)
         if (prevTs != null && point.timestamp - prevTs > CHART_GAP_SECONDS) {
@@ -6870,7 +6894,7 @@
     await loadHistoricalData('all').catch(() => {});
     historyPerf?.end();
 
-    // Chargement initial des mini charts (24 h)
+    // Chargement initial des mini charts (journée en cours, depuis minuit local)
     loadMiniChartData(0).catch(() => {});
     // Polling incrémental toutes les 5 minutes
     setInterval(() => {
