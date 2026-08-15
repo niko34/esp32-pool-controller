@@ -8,6 +8,7 @@
 #include "logger.h"
 #include "ws_manager.h"
 #include "oom_guard.h"  // oomGuardNoteHeapSample (miroir du dernier échantillon)
+#include "heap_metrics.h"  // mesure 8 bits = mémoire réellement allouable (v2.19.0)
 
 // =============================================================================
 // Stockage RTC noinit (bug-heap-toctou A4)
@@ -15,7 +16,15 @@
 // Magic DISTINCT de kAutoHealRtcMagic (0xA5C0FFEE, main.cpp) : les deux états
 // RTC noinit sont indépendants (compteur de reboots vs ring d'instrumentation).
 // Budget RTC noinit : 4 (magic) + 2 + 2 (tête/remplissage) + 1024 (ring) = 1032 o.
-static constexpr uint32_t kHeapRingRtcMagic = 0xB10C4EA9u;
+//
+// MAGIC BUMPÉ EN v2.19.0 (0xB10C4EA9 → 0xB10C4EAA) : depuis cette version, les
+// entrées de l'anneau contiennent la mesure 8 bits (mémoire réellement
+// allouable) et non plus la mesure « interne totale » (IRAM 32 bits comprise).
+// Une trame écrite par un firmware 2.18.x et relue ici serait affichée avec les
+// nouveaux libellés (« maxB8= », « free8= ») alors qu'elle porte l'ANCIENNE
+// métrique : un chiffre faux et crédible. Perdre la cinétique du boot de
+// bascule est acceptable ; afficher une valeur trompeuse ne l'est pas.
+static constexpr uint32_t kHeapRingRtcMagic = 0xB10C4EAAu;
 
 RTC_NOINIT_ATTR static uint32_t sHeapRingMagic;
 RTC_NOINIT_ATTR static uint16_t sHeapRingHead;    // Prochaine position d'écriture
@@ -58,13 +67,17 @@ void heapRingSample() {
   sLastSkippedPushes = skipped;
 
   // Mesures faites UNE SEULE FOIS ici : elles alimentent l'anneau ET le miroir
-  // du post-mortem OOM (bug-parachute-oom-jamais-rearme). ESP.getMaxAllocHeap()
-  // s'exécute interruptions coupées → on ne l'appelle pas plus souvent, et la
-  // cadence de 2 s reste INCHANGÉE (accélérer l'échantillonnage injecterait de
-  // la gigue dans le phénomène mesuré).
+  // du post-mortem OOM (bug-parachute-oom-jamais-rearme). La mesure s'exécute
+  // interruptions coupées → on ne l'appelle pas plus souvent, et la cadence de
+  // 2 s reste INCHANGÉE (accélérer l'échantillonnage injecterait de la gigue
+  // dans le phénomène mesuré).
+  //
+  // v2.19.0 : source basculée sur la métrique 8 bits (heap_metrics.h) = la
+  // mémoire qu'un malloc/new peut réellement obtenir. Purement OBSERVATIONNEL
+  // ici — aucune décision de reboot ne dépend de l'anneau ni du miroir.
   uint32_t uptimeS = (uint32_t)(millis() / 1000UL);
-  uint32_t maxAllocBytes = ESP.getMaxAllocHeap();
-  uint32_t freeHeapBytes = ESP.getFreeHeap();
+  uint32_t maxAllocBytes = heapLargestFreeBlock8Bit();
+  uint32_t freeHeapBytes = heapFree8Bit();
 
   heapRingEncode(&sHeapRingData[(size_t)sHeapRingHead * kHeapRingEntryBytes],
                  uptimeS,
@@ -85,6 +98,14 @@ void heapRingSample() {
   // horodaté en millis(), qui n'est comparé qu'à lui-même.
   uint32_t uptimeTickS = (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
   oomGuardNoteHeapSample(uptimeTickS, freeHeapBytes, maxAllocBytes);
+
+  // Suivi des CREUX à la cadence de 2 s (revue v2.19.0) : ce sont eux qui
+  // calibreront les seuils de 2.19.1. Les échantillonner plus rarement (60 s du
+  // contrôle de santé, 5 min de la trace) raterait des creux qui ne durent que
+  // quelques secondes et donnerait un minimum trop optimiste — donc un seuil
+  // d'auto-guérison trop haut, qui redémarrerait l'appareil en régime normal.
+  // Valeur DÉJÀ mesurée ci-dessus : aucune mesure supplémentaire.
+  heapNoteMaxAlloc8Sample(maxAllocBytes);
 }
 
 void heapRingDumpIfCrash() {
@@ -123,7 +144,10 @@ void heapRingDumpIfCrash() {
                        String(newest.uptimeS) + " s mod 65536)");
 
   // Format compact, 4 entrées par ligne (~8 lignes pour 32 entrées), de la plus
-  // ancienne à la plus récente : « t-XXXs maxB=… free=… ws=… skip=… ».
+  // ancienne à la plus récente : « t-XXXs maxB8=… free8=… ws=… skip=… ».
+  // Libellés suffixés « 8 » depuis v2.19.0 : le journal doit être auto-descriptif
+  // pour qu'on ne confonde jamais, en relisant d'anciens logs, la mesure 8 bits
+  // (réellement allouable) avec l'ancienne mesure « interne totale ».
   char line[224];
   size_t lineLen = 0;
   for (size_t i = 0; i < n; i++) {
@@ -131,7 +155,7 @@ void heapRingDumpIfCrash() {
         &sHeapRingData[heapRingIndexOfLast(head, n, kHeapRingEntries, i) *
                        kHeapRingEntryBytes]);
     int w = snprintf(line + lineLen, sizeof(line) - lineLen,
-                     "%st-%us maxB=%u free=%u ws=%u skip=%u",
+                     "%st-%us maxB8=%u free8=%u ws=%u skip=%u",
                      (lineLen > 0) ? " | " : "",
                      (unsigned)heapRingAgeS(newest.uptimeS, f.uptimeS),
                      (unsigned)f.maxAllocBytes, (unsigned)f.freeHeapBytes,

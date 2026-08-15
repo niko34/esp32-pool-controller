@@ -535,6 +535,9 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-system-info
   "chip_model": "ESP32-D0WDQ6",
   "cpu_freq_mhz": 240,
   "free_heap": 123456,
+  "free_heap_8bit": 52384,
+  "max_alloc_8bit": 17420,
+  "max_alloc_internal": 27584,
   "heap_size": 327680,
   "psram_size": 8388608,
   "psram_free": 8257536,
@@ -554,6 +557,23 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-system-info
   "uptime_minutes": 0
 }
 ```
+
+#### Champs mémoire — deux familles à ne pas confondre (v2.19.0)
+
+Trois champs **additifs** ont été ajoutés en v2.19.0 ([ADR-0038](adr/0038-metrique-memoire-allouable-8-bits.md)). Les champs existants (`free_heap`, `heap_size`) conservent **exactement** leur sémantique d'origine : aucun client existant n'est cassé.
+
+| Champ | Source | Signification |
+|---|---|---|
+| `free_heap` | `ESP.getFreeHeap()` = `heap_caps_get_free_size(MALLOC_CAP_INTERNAL)` | **Mesure brute historique.** Pool interne **total**, IRAM accessible en 32 bits comprise → **surestime** la mémoire disponible |
+| `free_heap_8bit` | `heap_caps_get_free_size(MALLOC_CAP_INTERNAL \| MALLOC_CAP_8BIT)` | **Mémoire réellement allouable** par un `malloc()` / `new` |
+| `max_alloc_8bit` | `heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL \| MALLOC_CAP_8BIT)` | **Plus gros bloc contigu réellement allouable** — la grandeur qui décide si un `new` de 356 o passe ou non |
+| `max_alloc_internal` | `ESP.getMaxAllocHeap()` | Plus gros bloc du pool interne **total** (mesure brute) — publié pour rendre l'**écart** visible |
+
+**Pourquoi les deux familles sont publiées** : `MALLOC_CAP_INTERNAL` inclut de l'IRAM qui n'est accessible qu'en accès 32 bits alignés et qu'aucune allocation ordinaire ne peut utiliser. Sur l'appareil de référence, `max_alloc_internal` est resté **figé à ~27 584 o pendant des jours** (reliquat d'IRAM) pendant que des allocations de 92 octets échouaient réellement. L'écart `max_alloc_internal − max_alloc_8bit` **chiffre ce piège** ; le publier évite qu'il se referme lors d'un futur cycle.
+
+**Pour un intégrateur** : superviser `free_heap_8bit` et surtout `max_alloc_8bit`. `free_heap` ne doit **jamais** servir de critère d'alarme.
+
+**Compatibilité** : les trois champs sont absents d'un firmware **≤ 2.18.9** — un client doit traiter leur absence comme « information indisponible » et retomber sur `free_heap` (c'est ce que fait l'interface web). Budget JSON mesuré avec `measureJson()` sur des valeurs pires cas : **716 octets sur 1024** (628 avant l'ajout), aucune marge à revoir.
 
 > `sketch_size` (octets, `ESP.getSketchSize()`) et `ota_partition_size` (octets, taille de la partition app active) permettent de calculer l'occupation flash du firmware — affichée sur la ligne « Firmware (flash) » de la carte Infos système (v2.5.2). `sketch_size` ajouté en v2.5.2 (feature-047).
 >

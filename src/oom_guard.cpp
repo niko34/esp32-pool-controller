@@ -31,8 +31,8 @@ static std::atomic<uint32_t> sOomFailedAllocLastSize{0};      // Taille demandé
 // =============================================================================
 // Post-mortem d'allocation en RAM RTC noinit (bug-parachute-oom-jamais-rearme)
 // =============================================================================
-// TROISIÈME zone RTC noinit du projet, magic PROPRE (0xF00DFA11, cf.
-// kOomPostMortemMagic) — distinct de l'anneau heap (0xB10C4EA9, heap_ring.cpp)
+// TROISIÈME zone RTC noinit du projet, magic PROPRE (0xF00DFA12 depuis v2.19.0,
+// cf. kOomPostMortemMagic) — distinct de l'anneau heap (0xB10C4EAA, heap_ring.cpp)
 // et de l'auto-guérison (0xA5C0FFEE, main.cpp). Budget RAM RTC noinit total :
 // auto-heal 9 o + anneau 1032 o + post-mortem 32 o = 1073 o sur 8192 disponibles.
 //
@@ -293,7 +293,7 @@ void oomPostMortemDumpIfBoot() {
   char line[288];
   snprintf(line, sizeof(line),
            "Post-mortem OOM : échecs=%u sur %u s (1er %u o, dernier %u o "
-           "caps=0x%04X, uptime=%u s), tas comptabilisé t-%us free=%u maxB=%u, "
+           "caps=0x%04X, uptime=%u s), tas comptabilisé t-%us free8=%u maxB8=%u, "
            "réserve=%s, handler=%s, intégrité=%s → verdict %s",
            (unsigned)f.failCount,
            (unsigned)(uint16_t)(f.lastUptimeS - f.firstUptimeS),

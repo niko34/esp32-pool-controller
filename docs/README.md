@@ -75,7 +75,8 @@ docs/
 │   ├── 0034-migration-core3-idf5.md
 │   ├── 0035-parachute-oom-new-handler.md
 │   ├── 0036-psram-requise-mise-a-jour-en-ligne.md
-│   └── 0037-postmortem-oom-et-integrite-tas.md
+│   ├── 0037-postmortem-oom-et-integrite-tas.md
+│   └── 0038-metrique-memoire-allouable-8-bits.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

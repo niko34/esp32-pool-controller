@@ -2,7 +2,9 @@
 
 - **Fichiers** : [`src/oom_guard_logic.h`](../../src/oom_guard_logic.h) (logique pure, header-only), [`src/oom_guard.h`](../../src/oom_guard.h) / [`src/oom_guard.cpp`](../../src/oom_guard.cpp) (coquille Arduino), [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp) (garde TLS sortante partagée `/check-update` + `/download-update`)
 - **Pas de singleton** : fonctions libres (`initOomGuard()`, `oomGuardLoopTick()`, `oomGuardReserveArmed()`, `oomGuardReserveArmedBytes()`, `oomGuardNoteHeapSample()`, `oomPostMortemDumpIfBoot()`, `oomGuardIntegrityTick()`, `oomGuardNoteIntegrityResult()`) + fonctions pures inline.
-- **Décisions architecturales** : [ADR-0035](../adr/0035-parachute-oom-new-handler.md) (parachute OOM), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité du tas, v2.18.8), [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md) (PSRAM libre requise pour toute session TLS sortante), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure testable), [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison heap = containment de fond).
+- **Décisions architecturales** : [ADR-0035](../adr/0035-parachute-oom-new-handler.md) (parachute OOM), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md) (PSRAM libre requise pour toute session TLS sortante), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure testable), [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison heap = containment de fond).
+
+> ⚠️ **v2.19.0 — état transitoire ASSUMÉ, à lire avant tout le reste.** L'anneau de cinétique et le miroir qui alimente le post-mortem mesurent désormais la **mémoire réellement allouable** (pool `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`, helper [`heap_metrics.h`](../../src/heap_metrics.h)), alors que **les seuils du parachute et de la garde TLS continuent de lire l'ancienne mesure brute** (`ESP.getMaxAllocHeap()`, qui inclut de l'IRAM 32 bits inutilisable). **Cette incohérence est volontaire et temporaire** : la v2.19.0 ne fait que **mesurer** (risque nul, comportement de l'appareil strictement inchangé) ; le recalibrage des seuils et la bascule des gardes sont livrés en **v2.19.1**, après ≥ 24 h de relevés on-target. Toutes les valeurs de seuil citées dans cette page (24 576, 12 288, 20 480, 65 536…) ont été **calibrées sur la métrique fausse** et sont donc **à refaire** — leur **ordre relatif** garde son sens, pas leurs valeurs absolues. Détail et justification du découpage : [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md).
 
 ## Rôle
 
@@ -75,6 +77,8 @@ Ces cinq seuils sont **interdépendants** : ils décrivent une dégradation ordo
 | 20 000 o | `kLowHeapWarnBytes` | WARN heap + flush disque one-shot |
 | 24 576 o | `kOomRearmMinMaxAllocBytes` | Réarmement de la réserve **nominale** (12 Ko) |
 
+> ⚠️ **Ces cinq valeurs sont à refaire (v2.19.1).** Elles ont toutes été calibrées contre `ESP.getMaxAllocHeap()`, c'est-à-dire contre un chiffre **surestimé** ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)). En v2.19.0 elles sont **inchangées** et les gardes les comparent encore à la mesure brute : le comportement de l'appareil ne bouge pas. Le recalibrage interviendra après ≥ 24 h de relevés `minMaxBloc8` on-target, avec l'invariant d'ordre `restart < rearmOom ≤ kWsPushMinAllocBytes < kLowHeapWarnBytes < min(maxBloc8 sur 24 h)` et la règle `kRestartMaxAllocHeapBytes = clamp(0,40 × min(maxBloc8) ; 8192 ; 16384)`, débounce maintenu à 3. Les gardes basculeront **dans l'ordre du risque croissant** — pushes WS et gardes HTTP/TLS d'abord, **auto-guérison en dernier**.
+
 Ceinture supplémentaire v2.18.8 : le handler remet la taille à 0 **avant** d'extraire le pointeur ; lire « pointeur vivant + taille 0 » dans cette fenêtre ferait passer une réserve nominale pour non armée et autoriserait un déclassement — la loop suppose donc le palier nominal dans ce cas.
 
 **Critère de réarmement = ABSENCE DE RÉSERVE (pointeur nul), pas l'état** — durcissement de revue v2.18.5 : si le handler consomme la nouvelle réserve entre l'`exchange` du réarmement et le `store(Armed)`, l'état peut afficher `Armed` avec une réserve nulle ; fonder `oomShouldRearm` sur le pointeur garantit la convergence au tick suivant. L'`exchange` à la ré-allocation (libération d'une réserve résiduelle théorique) ferme le double-free/fuite en ceinture-bretelles.
@@ -110,21 +114,23 @@ Défaut n°2 du crash du 13/08 : le CRITICAL « Réserve OOM consommée » est �
 
 Conséquence : le post-mortem ne mesure **jamais** le tas. Sa seule source « free / maxBloc » est un **miroir atomique du dernier échantillon de l'anneau heap** (`oomGuardNoteHeapSample()`, alimenté par `heapRingSample()`) : valeurs **déjà mesurées** à la cadence inchangée de `kHeapRingSampleIntervalMs` = 2 s, pré-encodées pour que le chemin d'échec n'ait qu'un unique store aligné à faire. **Aucun parcours de tas supplémentaire** n'est introduit. L'horloge du chemin d'échec est `xTaskGetTickCount()` (simple lecture de `xTickCount`, sans verrou) — le miroir est horodaté avec **la même** horloge pour que le calcul d'âge reste juste.
 
-### Format de la zone — 32 octets, magic `0xF00DFA11`
+### Format de la zone — 32 octets, magic `0xF00DFA12` (bumpé en v2.19.0)
 
-3ᵉ zone RTC noinit du projet, magic **distinct** de l'anneau heap (`0xB10C4EA9`) et de l'auto-guérison (`0xA5C0FFEE`). Vue comme 8 mots de 32 bits **alignés** ; les chemins d'échec n'y font que des **stores bruts**.
+3ᵉ zone RTC noinit du projet, magic **distinct** de l'anneau heap (`0xB10C4EAA`) et de l'auto-guérison (`0xA5C0FFEE`). Vue comme 8 mots de 32 bits **alignés** ; les chemins d'échec n'y font que des **stores bruts**.
+
+> **Pourquoi le magic a été bumpé** (`0xF00DFA11` → `0xF00DFA12`, et `0xB10C4EA9` → `0xB10C4EAA` pour l'anneau, [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)) : depuis la v2.19.0, les champs « ring » de cette zone portent la mesure **8 bits**. Une zone écrite par un firmware **2.18.x** contient l'ancienne métrique (IRAM 32 bits comprise) ; la relire avec les nouveaux libellés (`free8=`, `maxB8=`) afficherait un chiffre **faux et crédible**. Conséquence assumée : **le post-mortem et la cinétique du boot de bascule 2.18.x → 2.19.0 sont perdus**. Perdre une trace est acceptable, afficher une valeur trompeuse ne l'est pas. Les quatre magics `0xA5C0FFEE`, `0xB10C4EA9`, `0xB10C4EAA`, `0xF00DFA11`, `0xF00DFA12` sont désormais **tous réservés** — aucun ne doit être réemployé.
 
 | Offset | Champ | Description |
 |---|---|---|
-| 0-3 | `magic` | `kOomPostMortemMagic` (`0xF00DFA11`), écrit **en dernier** à l'initialisation |
+| 0-3 | `magic` | `kOomPostMortemMagic` (`0xF00DFA12` depuis v2.19.0), écrit **en dernier** à l'initialisation |
 | 4-7 | `failCount` | Échecs d'allocation cumulés du boot |
 | 8-11 | `firstSize` | Taille demandée au 1ᵉʳ échec (octets) |
 | 12-15 | `lastSize` | Taille demandée au dernier échec |
 | 16-19 | `lastCaps` | Masque `heap_caps` du dernier échec |
 | 20-21 | `firstUptimeS` | Uptime (s) du 1ᵉʳ échec, **modulo 65 536** |
 | 22-23 | `lastUptimeS` | Uptime (s) du dernier échec, modulo 65 536 |
-| 24-25 | `ringFree >> 8` | Heap libre du dernier échantillon d'anneau (quantum 256 o) |
-| 26-27 | `ringMaxB >> 6` | Plus gros bloc du même échantillon (quantum 64 o) |
+| 24-25 | `ringFree >> 8` | Heap libre **8 bits** du dernier échantillon d'anneau (quantum 256 o) — mesure brute avant v2.19.0 |
+| 26-27 | `ringMaxB >> 6` | Plus gros bloc **8 bits** du même échantillon (quantum 64 o) — mesure brute avant v2.19.0 |
 | 28-29 | `ringUptimeS` | Uptime (s) de cet échantillon → **âge** = `lastUptimeS − ringUptimeS` |
 | 30 | `flags` | Drapeaux (ci-dessous) |
 | 31 | `releaseCount` | Épisodes de libération de la réserve (saturé à 255) |
@@ -154,15 +160,19 @@ Il n'y a **pas** de variable RTC séparée : le drapeau **est** cet octet. Il es
 
 Sur le cas du 13/08, la règle conclut donc `SUSPICION CORRUPTION` : 156 o refusés avec `maxB = 27 584` annoncé, soit **176×** la taille demandée.
 
+> ⚠️ **Ce verdict était faux, et on sait pourquoi depuis le 15/08** ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)). Le `maxB = 27 584` sur lequel il repose venait de `ESP.getMaxAllocHeap()`, qui compte l'**IRAM 32 bits inutilisable** : c'était un reliquat d'IRAM figé, pas de la mémoire allouable. La comptabilité n'était donc pas « saine », elle était **fausse** — il n'y a jamais eu de corruption (l'intégrité du tas est vérifiée OK toutes les 5 min), la **famine 8 bits était réelle**. Depuis la v2.19.0, le miroir qui alimente ces champs porte la mesure 8 bits : **la règle du verdict, inchangée, redevient exploitable**. Ses paramètres (`kOomCorruptionMaxFails`, `kOomCorruptionBurstSpanS`, `kOomCorruptionSaneBlockRatio`) seront réévalués avec les relevés on-target de la 2.19.1.
+
 ### Ligne de dump au boot
 
 `oomPostMortemDumpIfBoot()` est appelée dans `setup()` **juste après** `heapRingDumpIfCrash()` : les deux traces se lisent ensemble (l'anneau donne la **cinétique**, le post-mortem le **point d'échec**). Elle lit l'**instantané** pris par `initOomGuard()` (la zone RTC, elle, a déjà été invalidée et appartient au boot courant). Rien n'est émis si la zone est invalide, ou si elle ne contient ni échec ni corruption. Une **ligne unique**, construite dans un tampon de pile (aucune allocation) :
 
 ```
 Post-mortem OOM : échecs=2 sur 41 s (1er 100 o, dernier 156 o caps=0x0404, uptime=46512 s),
-tas comptabilisé t-2s free=81408 maxB=27584, réserve=nominale consommée, handler=désenregistré,
+tas comptabilisé t-2s free8=81408 maxB8=27584, réserve=nominale consommée, handler=désenregistré,
 intégrité=jamais exécutée → verdict SUSPICION CORRUPTION
 ```
+
+> **Libellés suffixés `8` depuis la v2.19.0** (`free8=`, `maxB8=`, idem dans le dump de l'anneau) : le journal doit être **auto-descriptif**, pour qu'en relisant d'anciens logs on ne confonde jamais la mesure 8 bits (réellement allouable) avec l'ancienne mesure « interne totale ». Un log portant `free=` / `maxB=` vient d'un firmware **≤ 2.18.9** et contient la métrique surestimée.
 
 Niveau : **CRITICAL** si le verdict est `SUSPICION CORRUPTION` ou si le bit « intégrité échouée » est posé (information décisive, persistée), **WARN** sinon — même politique que le dump de l'anneau. Libellés : `réserve` = `intacte` / `nominale consommée` / `repli consommée` / `nominale+repli consommées` ; `handler` = `actif` / `désenregistré` ; `intégrité` = `OK` / `ÉCHEC` / `jamais exécutée`.
 
@@ -216,7 +226,8 @@ Chaque refus émet un WARN auto-explicatif : motif, PSRAM libre, les deux mesure
 - **Seuls les `new` C++ sont couverts** par la re-tentative : les `malloc` internes (lwIP, mbedTLS, drivers) échouent toujours en `NULL` — le callback IDF ne fait que les **compter** (diagnostic).
 - **Réserve épuisée** = retour exact au comportement d'avant le parachute (`bad_alloc` → coredump) — jamais pire.
 - La cause du pic de −60 Ko du 11/08 reste **non attribuée** (candidat principal : gonflement des buffers RX du driver WiFi pendant une tempête/réassociation) — l'attribution attend la récidive instrumentée (IP client, WARN heap_caps, ring enrichi).
-- **La cause racine du crash du 13/08 reste INCONNUE.** La v2.18.8 **instrumente**, elle ne répare pas : elle rétablit une protection qui était inopérante et met en place de quoi **trancher famine / corruption** à la prochaine occurrence. Les trois limites du post-mortem ci-dessus s'appliquent à cette trace.
+- ✅ **La cause racine est trouvée depuis le 15/08 (3ᵉ crash) : la métrique était fausse.** `ESP.getFreeHeap()` / `ESP.getMaxAllocHeap()` mesuraient un pool incluant l'IRAM 32 bits inutilisable ; la famine 8 bits était réelle et **aucune garde ne pouvait la voir** ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)). Ce qui reste inconnu, c'est **quel consommateur** épuise la mémoire 8 bits (phase 2 : `AsyncStaticWebHandler`, `LittleFS.begin(false)` limité à 10 fichiers ouverts, fuite éventuelle de `File`) — cette recherche n'avait aucun sens tant que l'instrument mentait.
+- **La cause racine du crash du 13/08 était réputée INCONNUE à la v2.18.8.** Cette version **instrumente**, elle ne répare pas : elle rétablit une protection qui était inopérante et met en place de quoi **trancher famine / corruption** à la prochaine occurrence. Les trois limites du post-mortem ci-dessus s'appliquent à cette trace.
 
 ## Constantes ([`constants.h`](../../src/constants.h))
 
@@ -247,8 +258,10 @@ Chaque refus émet un WARN auto-explicatif : motif, PSRAM libre, les deux mesure
 ## Fichiers liés
 
 - [`src/main.cpp`](../../src/main.cpp) — `initOomGuard()` en tête de `setup()`, `oomPostMortemDumpIfBoot()` après le dump de l'anneau, `oomGuardLoopTick()` et `oomGuardIntegrityTick()` (sous gardes chimiques) dans `loop()`, `handleHeapCorruptionDetected()`
-- [`src/heap_ring.cpp`](../../src/heap_ring.cpp) — source unique des mesures : alimente l'anneau **et** le miroir `oomGuardNoteHeapSample()` (cadence 2 s inchangée)
+- [`src/heap_metrics.h`](../../src/heap_metrics.h) / [`src/heap_metrics.cpp`](../../src/heap_metrics.cpp) — **source unique** de la mesure « mémoire réellement allouable » (`heapFree8Bit()`, `heapLargestFreeBlock8Bit()`, `heapMetricsSnapshot()`), v2.19.0. **Interdit d'appel depuis `oomFailedAllocHook` et depuis le `new_handler`** (réentrance allocateur) — au même titre que tout `heap_caps_*`.
+- [`src/heap_ring.cpp`](../../src/heap_ring.cpp) — source unique des mesures : alimente l'anneau **et** le miroir `oomGuardNoteHeapSample()` (cadence 2 s inchangée ; mesure 8 bits depuis v2.19.0)
 - [system-health.md](system-health.md) — auto-guérison heap (containment de fond), ring de télémétrie (cinétique pré-crash), contrôle d'intégrité et gardes chimiques, budget RAM RTC noinit consolidé
 - [ADR-0035](../adr/0035-parachute-oom-new-handler.md) — décision et alternatives écartées (parachute)
 - [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) — post-mortem RTC + miroir de l'anneau + verdict + intégrité périodique + recalibrage du réarmement (v2.18.8)
 - [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md) — PSRAM libre requise pour toute session TLS sortante (alternatives écartées : seuil maxBloc relevé, tentative rattrapée, `/download-update` non gardée)
+- [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) — **cause racine des 3 crashs** : mesure 8 bits obligatoire dans les gardes, helper centralisé, double exposition, découpage mesure (2.19.0) puis bascule (2.19.1), bump des deux magics RTC

@@ -650,12 +650,14 @@ void test_postmortem_wire_format_is_little_endian_32_bytes(void) {
   // E3 — le format est un CONTRAT (la zone est écrite par mots u32 bruts depuis
   // le chemin d'échec, cf. oom_guard.cpp) : offsets et boutisme verrouillés.
   TEST_ASSERT_EQUAL_UINT32(32u, kOomPostMortemBytes);
-  TEST_ASSERT_EQUAL_HEX32(0xF00DFA11u, kOomPostMortemMagic);
+  // v2.19.0 : magic bumpé (0xF00DFA11 → 0xF00DFA12) — bascule de la métrique
+  // « ring » vers la mesure 8 bits, une zone 2.18.x ne doit plus être décodée.
+  TEST_ASSERT_EQUAL_HEX32(0xF00DFA12u, kOomPostMortemMagic);
   uint8_t raw[kOomPostMortemBytes];
   OomPostMortemFields f = makeFields();
   f.lastCaps = 0x11223344u;
   oomPostMortemEncode(raw, f);
-  TEST_ASSERT_EQUAL_HEX8(0x11, raw[0]);  // magic LE : 11 FA 0D F0
+  TEST_ASSERT_EQUAL_HEX8(0x12, raw[0]);  // magic LE : 12 FA 0D F0
   TEST_ASSERT_EQUAL_HEX8(0xFA, raw[1]);
   TEST_ASSERT_EQUAL_HEX8(0x0D, raw[2]);
   TEST_ASSERT_EQUAL_HEX8(0xF0, raw[3]);

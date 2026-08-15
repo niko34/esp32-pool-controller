@@ -2,7 +2,9 @@
 
 - **Fichiers** : [`src/main.cpp`](../../src/main.cpp) (`checkSystemHealth`, `performFailSafeRestart`, `performAutoHealRestart`, `enterMaintenanceMode`, `initAutoHealRtcState`, `ensureNetworkProbe`, `onNetPingSuccess`), [`src/self_heal_logic.h`](../../src/self_heal_logic.h) / [`.cpp`](../../src/self_heal_logic.cpp), [`src/net_health_logic.h`](../../src/net_health_logic.h) / [`.cpp`](../../src/net_health_logic.cpp), [`src/history_guard_logic.h`](../../src/history_guard_logic.h) / [`.cpp`](../../src/history_guard_logic.cpp) (+ coquille dans [`src/history.cpp`](../../src/history.cpp))
 - **Pas de singleton** : logique portée par des fonctions libres de `main.cpp` + trois modules purs `self_heal_logic` (heap), `net_health_logic` (connectivité) et `history_guard_logic` (disjoncteur de boot-loop history).
-- **Décisions architecturales** : [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison mémoire), [ADR-0030](../adr/0030-watchdog-connectivite.md) (watchdog de connectivité), [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) (disjoncteur de boot-loop history), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité périodique du tas, v2.18.8).
+- **Décisions architecturales** : [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison mémoire), [ADR-0030](../adr/0030-watchdog-connectivite.md) (watchdog de connectivité), [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) (disjoncteur de boot-loop history), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité périodique du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0).
+
+> ⚠️ **v2.19.0 — l'auto-guérison heap N'EST PAS ENCORE BASCULÉE sur la bonne métrique.** [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) a établi que `ESP.getMaxAllocHeap()` mesure `MALLOC_CAP_INTERNAL`, pool qui **inclut l'IRAM accessible en 32 bits seulement**, inutilisable par un `malloc()`/`new`. Sur l'appareil de production, cet indicateur est resté **figé à ~27 584 o pendant des jours et à travers les redémarrages** : le seuil `kRestartMaxAllocHeapBytes` = 8 192 o **n'a jamais pu être franchi**, donc **le watchdog heap décrit dans cette page n'a jamais déclenché un seul redémarrage depuis sa création**. La v2.19.0 se contente de **mesurer** : elle ajoute la [trace de calibrage](#trace-de-calibrage-des-seuils-mémoire-v2190) et bascule l'anneau/le post-mortem sur la mesure 8 bits (observationnel), **sans toucher un seul seuil ni une seule garde** — comportement de l'appareil strictement inchangé. Le recalibrage et la bascule arrivent en **v2.19.1**, après ≥ 24 h de relevés on-target, l'auto-guérison **en dernier**.
 
 ## Rôle
 
@@ -40,7 +42,7 @@ Le disjoncteur history, lui, s'exécute **une seule fois au boot**, dans `Histor
 
 D'où **deux** gardes complémentaires, chacune sur sa vraie métrique :
 
-- **Heap** : `ESP.getMaxAllocHeap()` (plus gros bloc contigu libre), **distinct** de l'alerte heap total.
+- **Heap** : `ESP.getMaxAllocHeap()` (plus gros bloc contigu libre), **distinct** de l'alerte heap total. ⚠️ **Bonne grandeur, mauvais pool** : cette fonction interroge `MALLOC_CAP_INTERNAL`, IRAM 32 bits comprise — la garde doit lire `heapLargestFreeBlock8Bit()` ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)), ce qui sera fait en **v2.19.1**.
 - **Connectivité** : sonde ICMP active vers la passerelle (le réseau répond-il de bout en bout ?), **indépendante de MQTT**.
 
 Historique des modes de défaillance « appareil injoignable » (5 traités) : `std::bad_alloc` sur `/logs` (2.8.2, PANIC) → assert lwIP WebSocket (2.9.0, [ADR-0028](../adr/0028-migration-fork-esp32async.md), PANIC) → fragmentation du tas sans crash (2.9.1, [ADR-0029](../adr/0029-auto-guerison-heap.md), gel heap) → gel de la pile lwIP avec heap sain (2.9.2, [ADR-0030](../adr/0030-watchdog-connectivite.md), gel réseau) → **boot-loop sur partition history corrompue** (2.10.0, [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md), panic à chaque boot avant WiFi).
@@ -73,17 +75,43 @@ L'alerte heap **total** (CRIT « Mémoire faible » + MQTT `low_memory`, seuil `
 
 > ⚠️ **Limite assumée (revue 2.11.1)** : `publishAlert()` publie en **non-retained** — un abonné MQTT hors ligne au moment de la transition **rate l'épisode** (il n'y a plus de ré-émission périodique pour le rattraper). Le risque est borné par l'INFO de rétablissement (l'épisode est encadré dans le journal) et par le fait qu'un heap total durablement bas finit en auto-guérison, qui émet ses propres alertes.
 
+## Trace de calibrage des seuils mémoire (v2.19.0)
+
+Trace **INFO persistée**, émise par `checkHeapHealth()` toutes les `kHeapLogIntervalMs = 5 min` (elle **ne remplace pas** la trace « Heap: … » historique, restée en commentaire depuis la 2.10.2 — elle a une autre finalité). Elle donne **les deux familles de mesures côte à côte**, en octets bruts, sans arrondi :
+
+```
+Heap 8bits: libre8=52384 maxBloc8=17420 minMaxBloc8=11264 | interne: libre=67584 maxBloc=27584 (octets)
+```
+
+| Champ | Signification |
+|---|---|
+| `libre8` | Mémoire libre **réellement allouable** — `heap_caps_get_free_size(MALLOC_CAP_INTERNAL \| MALLOC_CAP_8BIT)` |
+| `maxBloc8` | Plus gros bloc contigu **réellement allouable** (la grandeur qui compte pour un `new` de 356 o) |
+| `minMaxBloc8` | **Minimum de `maxBloc8` depuis le boot** — c'est LA valeur qui servira à recalibrer les seuils |
+| `libre` / `maxBloc` | Mesure **brute historique** (`ESP.getFreeHeap()` / `ESP.getMaxAllocHeap()`, pool `MALLOC_CAP_INTERNAL`, **IRAM 32 bits comprise**) — conservée pour rendre l'**écart** mesurable |
+
+Deux points de mise en œuvre à connaître :
+
+- **Le minimum glissant n'est pas échantillonné à la cadence de la trace.** `minMaxBloc8` est mis à jour à **chaque tick** de `checkHeapHealth()` (60 s en régime sain, `kHeapCheckFastIntervalMs` = 5 s sous seuil d'alerte), pas toutes les 5 min : un creux transitoire entre deux traces serait sinon **invisible**, et c'est précisément le creux qui dimensionne le seuil de redémarrage.
+- **Aucune décision ne dépend de cette trace.** C'est un instrument de calibrage, pas une garde. Les seuils comparés plus bas (`kRestartMaxAllocHeapBytes`, `kLowHeapWarnBytes`) lisent toujours la mesure **brute** en v2.19.0.
+
+> ⚠️ **Ne pas confondre les deux colonnes en lisant le journal.** Un écart d'une dizaine de kilo-octets entre `maxBloc8` et `maxBloc` est **normal** : c'est le reliquat d'IRAM 32 bits que l'ancienne métrique comptait à tort. Un `maxBloc` figé à la même valeur pendant des heures ou à travers un redémarrage n'est **pas** un signe de stabilité, c'est la signature du piège ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)).
+
+**Ce qu'il faut relever on-target** (prérequis à la v2.19.1) : `minMaxBloc8` sur **au moins 24 h** d'uptime continu, plus les valeurs `libre8` / `maxBloc8` observées **en régime chargé** (chargement de l'interface, export d'historique, session OTA, plusieurs clients WebSocket). Le seuil d'auto-guérison en découlera par `clamp(0,40 × min(maxBloc8) ; 8192 ; 16384)`, débounce maintenu à 3, avec l'invariant d'ordre `restart < rearmOom ≤ kWsPushMinAllocBytes < kLowHeapWarnBytes < min(maxBloc8 sur 24 h)`.
+
 ## Ring de télémétrie heap en RAM RTC noinit (v2.14.0, bug-heap-toctou A4)
 
 Le tick santé (5-60 s) rate la **cinétique d'effondrement** du heap (quelques secondes entre « sain » et `bad_alloc`). Depuis la v2.14.0, un ring d'instrumentation en **RAM RTC noinit** (survit à `ESP.restart()`/panic/WDT, **pas** au power-on) capture cette cinétique et la restitue dans le journal au boot suivant. Module pur [`src/heap_ring_logic.h`](../../src/heap_ring_logic.h) (encodage + arithmétique d'index, testé en natif) + coquille impure [`src/heap_ring.cpp`](../../src/heap_ring.cpp).
 
-- **Budget** : magic (4 o) + tête/remplissage (2+2 o) + ring `kHeapRingEntries = 128` × 8 o = **1032 o** RTC noinit (vérifié à l'ELF). Magic `0xB10C4EA9`, **distinct** de `kAutoHealRtcMagic` (`0xA5C0FFEE`, compteur anti-boucle) et de `kOomPostMortemMagic` (`0xF00DFA11`, post-mortem d'allocation, v2.18.8) — les trois états RTC sont indépendants (voir [budget consolidé](#budget-ram-rtc-noinit-consolidé-3-zones)).
+- **Budget** : magic (4 o) + tête/remplissage (2+2 o) + ring `kHeapRingEntries = 128` × 8 o = **1032 o** RTC noinit (vérifié à l'ELF). Magic `0xB10C4EAA` (**bumpé en v2.19.0**, était `0xB10C4EA9`), **distinct** de `kAutoHealRtcMagic` (`0xA5C0FFEE`, compteur anti-boucle) et de `kOomPostMortemMagic` (`0xF00DFA12`, **bumpé en v2.19.0**, post-mortem d'allocation) — les trois états RTC sont indépendants (voir [budget consolidé](#budget-ram-rtc-noinit-consolidé-3-zones)).
 - **Échantillonnage** : `heapRingSample()` depuis `loop()` toutes les `kHeapRingSampleIntervalMs = 2 s`. Format d'une entrée (8 o, little-endian, quantifié) : uptime s (u16, modulo ~18,2 h), maxBloc ÷ 64 (u16), heap libre ÷ 256 (u16), clients WS (u8, saturé 255), **delta** de pushes WS sautés depuis l'échantillon précédent (u8, saturé 255).
 - **Dump au boot** — `heapRingDumpIfCrash()`, appelé dans `setup()` après `history.begin()` (persistance des logs active) et **avant** le WiFi : si le magic est valide **et** que `esp_reset_reason() != POWERON`, les `kHeapRingDumpMaxEntries = 32` dernières entrées (**~64 s de cinétique**) sont émises dans le journal — un WARN d'en-tête `Cinétique heap avant reset (<motif>, reset_reason=<valeur brute>) : N échantillon(s), pas ~2 s (t-0s = dernier avant reset, uptime=<u> s mod 65536)` puis des INFO compactes, 4 entrées par ligne (**8 lignes** pour 32 entrées), de la plus ancienne à la plus récente. Le WARN est **enrichi depuis la v2.18.5** (spec `bug-oom-accept-http-durcissement`) de deux champs : la valeur **brute** d'`esp_reset_reason()` (en plus du libellé court) et l'**uptime absolu** du dernier échantillon avant reset (modulo 65 536 s ≈ 18,2 h — quantum d'encodage du ring) — pour la corrélation temporelle a posteriori avec le journal persistant et les coredumps :
 
   ```
-  t-62s maxB=18624 free=94208 ws=2 skip=0 | t-60s maxB=12800 free=93952 ws=2 skip=1 | …
+  t-62s maxB8=18624 free8=94208 ws=2 skip=0 | t-60s maxB8=12800 free8=93952 ws=2 skip=1 | …
   ```
+
+  > **Libellés `maxB8=` / `free8=` depuis la v2.19.0** : l'anneau enregistre la mesure **8 bits** (mémoire réellement allouable, [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)). Un dump portant `maxB=` / `free=` provient d'un firmware **≤ 2.18.9** et contient la métrique surestimée. Le **magic a été bumpé en conséquence** : la cinétique du boot de bascule 2.18.x → 2.19.0 est **perdue**, ce qui est préférable à l'affichage d'un chiffre faux et crédible. Ce changement est **purement observationnel** — aucune décision de redémarrage ne dépend de l'anneau.
 
 - **Invalidation du magic** : le magic est invalidé **dans tous les cas** au boot (dump émis ou non) — le ring appartient au boot précédent ; il est **ré-armé** au 1ᵉʳ `heapRingSample()` du boot courant. Bornes insensées (RAM RTC corrompue) → dump abandonné / ring réinitialisé.
 
@@ -95,7 +123,7 @@ Le tick santé (5-60 s) rate la **cinétique d'effondrement** du heap (quelques 
 
 `setup()` appelle **`oomPostMortemDumpIfBoot()` juste après `heapRingDumpIfCrash()`** : les deux traces se lisent ensemble — l'anneau donne la **cinétique** (~64 s avant le reset, pas de 2 s), le post-mortem donne le **point d'échec exact** (taille demandée, `caps`, uptime, état du tas comptabilisé, drapeaux, verdict). Format, champs et limites : [oom-guard.md](oom-guard.md#post-mortem-dallocation-en-ram-rtc-noinit-v2188).
 
-Depuis la v2.18.8, `heapRingSample()` mesure `ESP.getMaxAllocHeap()` / `ESP.getFreeHeap()` **une seule fois** par échantillon et alimente **à la fois** l'anneau et le miroir atomique consommé par le chemin d'échec d'allocation (`oomGuardNoteHeapSample()`). La **cadence de 2 s est inchangée** : accélérer l'échantillonnage injecterait de la gigue dans le phénomène mesuré (ces appels s'exécutent interruptions coupées), pour zéro pouvoir discriminant ([ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md)).
+Depuis la v2.18.8, `heapRingSample()` prend la mesure **une seule fois** par échantillon et alimente **à la fois** l'anneau et le miroir atomique consommé par le chemin d'échec d'allocation (`oomGuardNoteHeapSample()`) — depuis la **v2.19.0**, cette mesure est celle du helper [`heap_metrics.h`](../../src/heap_metrics.h) (`heapLargestFreeBlock8Bit()` / `heapFree8Bit()`) et non plus `ESP.getMaxAllocHeap()` / `ESP.getFreeHeap()`. La **cadence de 2 s est inchangée** : accélérer l'échantillonnage injecterait de la gigue dans le phénomène mesuré (ces appels s'exécutent interruptions coupées), pour zéro pouvoir discriminant ([ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md)).
 
 ## Budget RAM RTC noinit consolidé (3 zones)
 
@@ -104,10 +132,12 @@ La RAM RTC « slow » noinit survit à `ESP.restart()`, aux panics et au watchdo
 | Zone | Magic | Taille | Rôle | Fichier |
 |---|---|---|---|---|
 | Compteur anti-boucle auto-guérison | `0xA5C0FFEE` (`kAutoHealRtcMagic`) | **9 o** | `rtcAutoHealRebootCount` + ancre de fenêtre glissante | [`main.cpp`](../../src/main.cpp) |
-| Anneau de télémétrie heap | `0xB10C4EA9` | **1032 o** | 128 × 8 o + tête/remplissage + magic (cinétique pré-crash) | [`heap_ring.cpp`](../../src/heap_ring.cpp) |
-| Post-mortem d'allocation | `0xF00DFA11` (`kOomPostMortemMagic`) | **32 o** | État au moment exact d'un échec d'allocation + drapeaux + verdict (v2.18.8) | [`oom_guard.cpp`](../../src/oom_guard.cpp) |
+| Anneau de télémétrie heap | `0xB10C4EAA` (v2.19.0 ; était `0xB10C4EA9`) | **1032 o** | 128 × 8 o + tête/remplissage + magic (cinétique pré-crash) | [`heap_ring.cpp`](../../src/heap_ring.cpp) |
+| Post-mortem d'allocation | `0xF00DFA12` (`kOomPostMortemMagic`, v2.19.0 ; était `0xF00DFA11`) | **32 o** | État au moment exact d'un échec d'allocation + drapeaux + verdict (v2.18.8) | [`oom_guard.cpp`](../../src/oom_guard.cpp) |
 
-**Total : 1073 o sur 8192 disponibles** (≈ 13 %). Les magics sont volontairement distincts : une zone corrompue n'invalide jamais les deux autres.
+**Total : 1073 o sur 8192 disponibles** (≈ 13 %) — **inchangé en v2.19.0** : les deux magics ont été bumpés, aucune zone n'a grossi et aucune 4ᵉ zone n'a été créée. Les magics sont volontairement distincts : une zone corrompue n'invalide jamais les deux autres.
+
+> **Règle posée par [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)** : **tout changement de la métrique stockée dans une zone RTC noinit impose un bump de son magic.** Relire une trame écrite par un firmware antérieur avec une nouvelle grille de lecture produirait un chiffre faux **et crédible** — pire qu'une trace absente. Les valeurs `0xA5C0FFEE`, `0xB10C4EA9`, `0xB10C4EAA`, `0xF00DFA11` et `0xF00DFA12` sont désormais **toutes réservées**, y compris les anciennes.
 
 ## Contrôle d'intégrité périodique du tas (v2.18.8)
 
@@ -446,6 +476,9 @@ Sinon, un `debug(...)` « Ré-annonce mDNS débouncée » trace l'oscillation ig
 | `kHeapIntegrityCheckIntervalMs` | `300000` (5 min) | Cadence du contrôle d'intégrité du tas (v2.18.8, sous les 8 gardes chimiques) |
 | `kHeapIntegrityWarnDurationUs` | `5000` (5 ms) | Durée au-delà de laquelle un WARN est émis (contrôle conservé) |
 | `kHeapIntegrityMaxDurationUs` | `20000` (20 ms) | Durée au-delà de laquelle le contrôle est **désactivé définitivement** |
+| `kHeapLogIntervalMs` | `300000` (5 min) | Cadence de la [trace de calibrage](#trace-de-calibrage-des-seuils-mémoire-v2190) « Heap 8bits: … » (v2.19.0) — et de l'ancienne trace « Heap: … », restée en commentaire depuis la 2.10.2 |
+
+> ⚠️ **Aucune de ces constantes n'a été modifiée en v2.19.0.** `kLowHeapWarnBytes` et `kRestartMaxAllocHeapBytes` sont toujours comparées à la mesure **brute** (`ESP.getMaxAllocHeap()`) et ont été **calibrées sur cette mesure fausse** — d'où un seuil de redémarrage jamais atteignable. Leur recalibrage sur `maxBloc8` est livré en **v2.19.1** ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)).
 
 ## Alertes MQTT émises
 
@@ -482,7 +515,8 @@ Voir [MQTT.md](../MQTT.md#alertes).
 - [`src/net_health_logic.h`](../../src/net_health_logic.h) / [`.cpp`](../../src/net_health_logic.cpp) — décision pure watchdog **connectivité**
 - [`src/history_guard_logic.h`](../../src/history_guard_logic.h) / [`.cpp`](../../src/history_guard_logic.cpp) — décision pure disjoncteur **boot-loop history**
 - [`src/heap_ring_logic.h`](../../src/heap_ring_logic.h) / [`src/heap_ring.h`](../../src/heap_ring.h) / [`src/heap_ring.cpp`](../../src/heap_ring.cpp) — ring de **télémétrie heap** RTC noinit (v2.14.0, tests `test/test_native_heap_ring/`)
-- [`src/main.cpp`](../../src/main.cpp) — coquille impure (collecte ICMP/heap + effets, `performFailSafeRestart`, alerte différée `history_partition_reset`)
+- [`src/heap_metrics.h`](../../src/heap_metrics.h) / [`src/heap_metrics.cpp`](../../src/heap_metrics.cpp) — **source unique** de la mesure « mémoire réellement allouable » (v2.19.0, [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md))
+- [`src/main.cpp`](../../src/main.cpp) — coquille impure (collecte ICMP/heap + effets, `checkHeapHealth` et sa trace de calibrage v2.19.0, `performFailSafeRestart`, alerte différée `history_partition_reset`)
 - [`src/history.cpp`](../../src/history.cpp) — coquille impure du disjoncteur (NVS `hist_meta`, `esp_reset_reason`, `esp_partition_erase_range`)
 - [`src/pump_controller.h`](../../src/pump_controller.h) — `setMaintenanceInhibit()` / `isMaintenanceInhibited()`
 - [`src/oom_guard.cpp`](../../src/oom_guard.cpp) — post-mortem d'allocation RTC (3ᵉ zone noinit) + `oomGuardIntegrityTick()` (mécanisme du contrôle d'intégrité ; **les gardes sont dans `main.cpp`**)
@@ -491,3 +525,4 @@ Voir [MQTT.md](../MQTT.md#alertes).
 - [ADR-0030](../adr/0030-watchdog-connectivite.md) — watchdog de connectivité
 - [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) — disjoncteur de boot-loop history
 - [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) — post-mortem d'allocation RTC + contrôle d'intégrité périodique du tas (alternatives écartées : échantillonnage rapproché du tas, poisoning comprehensive, `ESP.restart()` nu)
+- [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) — **cause racine des 3 crashs** : la métrique heap incluait l'IRAM 32 bits, le seuil d'auto-guérison n'a jamais pu être franchi ; mesure 8 bits obligatoire dans les gardes, découpage mesure (2.19.0) / bascule (2.19.1)

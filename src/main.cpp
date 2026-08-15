@@ -28,6 +28,7 @@
 #include "self_heal_logic.h"
 #include "net_health_logic.h"
 #include "heap_ring.h"
+#include "heap_metrics.h"  // mesure 8 bits (mémoire réellement allouable) — trace de calibrage v2.19.0
 #include "oom_guard.h"
 #include "ping/ping_sock.h"  // esp_ping : sonde ICMP passerelle (watchdog connectivité v2.9.2)
 
@@ -946,6 +947,49 @@ void checkHeapHealth() {
   //   lastHeapLogMs = heapNow;
   //   lastHeapLogMaxBloc = maxAllocHeap;
   // }
+
+  // ===== Trace de calibrage des seuils mémoire (v2.19.0) =====
+  // bug-metrique-heap-inclut-iram-32bits : les seuils actuels ont été fixés sur
+  // ESP.getMaxAllocHeap(), qui compte AUSSI l'IRAM 32 bits inutilisable par un
+  // malloc/new (cf. heap_metrics.h). Cette trace donne les DEUX familles de
+  // valeurs pour rendre l'écart mesurable ON-TARGET ; c'est elle qui servira à
+  // recalibrer les seuils en 2.19.1. Valeurs BRUTES en octets, aucun arrondi.
+  // AUCUNE décision n'en dépend : les gardes ci-dessous restent INCHANGÉES
+  // (elles basculeront sur la métrique 8 bits en 2.19.1, une fois les vraies
+  // valeurs relevées).
+  //
+  // Le suivi des CREUX est alimenté par heapRingSample() (cadence 2 s, valeurs
+  // déjà mesurées) et NON ici : à la cadence de checkHeapHealth() (60 s, et la
+  // cadence rapide ne s'arme jamais puisqu'elle dépend de l'ANCIENNE métrique,
+  // figée à ~27,5 Ko), on raterait des creux qui ne durent que quelques
+  // secondes — le minimum serait trop optimiste et le seuil d'auto-guérison
+  // calibré dessus déclencherait des redémarrages en régime normal (revue).
+  // Deux minima sont tracés : depuis le BOOT (pire cas absolu, sature après le
+  // premier creux profond) et sur la FENÊTRE écoulée depuis la trace précédente
+  // (montre si les creux s'aggravent au fil des heures).
+  unsigned long heap8Now = millis();
+  static unsigned long lastHeap8LogMs = 0;
+  if (lastHeap8LogMs == 0 || (heap8Now - lastHeap8LogMs >= kHeapLogIntervalMs)) {
+    lastHeap8LogMs = heap8Now;
+    HeapMetrics m = heapMetricsSnapshot();
+    uint32_t minBoot = heapMinMaxAlloc8SinceBoot();
+    uint32_t minWindow = heapTakeMinMaxAlloc8Window();
+    // snprintf sur tampon de PILE, pas de concaténation de String (revue) :
+    // cette trace décrit une pénurie mémoire et peut donc s'émettre PENDANT
+    // une pénurie — construire des String ici allouerait précisément quand
+    // l'allocation échoue (c'est ainsi qu'un message d'erreur a tué le
+    // contrôleur le 15/08 : log → console → mutex → abort).
+    // « ws= » donne le contexte de charge (clients temps réel connectés), qui
+    // distingue régime chargé et régime calme au moment du calibrage.
+    char ligne[192];
+    snprintf(ligne, sizeof(ligne),
+             "Heap 8bits: libre8=%u maxBloc8=%u minMaxBloc8_boot=%u "
+             "minMaxBloc8_fenetre=%u ws=%u | interne: libre=%u maxBloc=%u (octets)",
+             (unsigned)m.free8, (unsigned)m.maxAlloc8, (unsigned)minBoot,
+             (unsigned)minWindow, (unsigned)wsManager.clientCount(),
+             (unsigned)m.freeInternal, (unsigned)m.maxAllocInternal);
+    systemLogger.info(ligne);
+  }
 
   // Flush disque one-shot au 1er franchissement à la baisse du seuil d'alerte : capture
   // la descente même si le restart n'est pas atteint. Ré-armé quand ça repasse au-dessus.

@@ -33,6 +33,12 @@ En complément, la ré-annonce mDNS est **debouncée** : au plus une fois toutes
 
 **Reboot = pompes OFF = état fail-safe** (validé pool-chemistry). Le redémarrage n'ouvre aucune fenêtre de dosage : les pompes sont coupées avant le reboot, et l'état sûr au boot est garanti par un **pulldown de gate MOSFET (10 kΩ, GPIO25 pH / GPIO33 ORP) confirmé présent sur le PCB v2** (cf. Conséquences).
 
+> **Note additive 2026-08-15 (v2.19.0) — le seuil d'auto-guérison a été calibré sur une métrique FAUSSE, ce filet n'a jamais pu se déclencher**
+>
+> [ADR-0038](0038-metrique-memoire-allouable-8-bits.md) établit que `ESP.getMaxAllocHeap()` mesure `MALLOC_CAP_INTERNAL`, pool qui **englobe l'IRAM accessible en 32 bits seulement** — inutilisable par un `malloc()`/`new` ordinaire. Sur l'appareil de production, cet indicateur est resté **figé à ~27 584 o pendant des jours et à travers les redémarrages** (reliquat d'IRAM constant) pendant que des allocations de 92 à 2 872 o échouaient réellement. Conséquence : le seuil `kRestartMaxAllocHeapBytes` = 8 192 o **n'a jamais pu être franchi**, donc **l'auto-guérison décidée par cet ADR n'a jamais fonctionné une seule fois**. La **décision** de cet ADR (surveiller le plus gros bloc contigu, débounce, séquence fail-safe C1, mode maintenance C2, budget anti-boucle) reste **entièrement valide** — c'est la **grandeur mesurée** qui était fausse, pas le mécanisme.
+>
+> La v2.19.0 **ne corrige rien ici** : elle mesure. Le seuil et la garde restent **inchangés** ; le recalibrage sur la métrique 8 bits est livré en **v2.19.1**, après ≥ 24 h de relevés on-target, selon la règle validée par le gate de sécurité chimique `kRestartMaxAllocHeapBytes = clamp(0,40 × min(maxBloc8 sur 24 h) ; 8192 ; 16384)`, **débounce maintenu à 3**. L'auto-guérison basculera **en dernier** (c'est la seule garde qui redémarre l'appareil). Le gate a également **refusé** de différer un redémarrage pendant une injection en cours : le PWM des pompes est matériel, une boucle figée laisserait la pompe énergisée — différer transformerait une dose tronquée en surdosage potentiel.
+
 ## Alternatives considérées
 
 - **Option A (rejetée) — Ne rien faire / subir le gel.** Statu quo : l'utilisateur coupe le secteur à la main à chaque occurrence. Inacceptable pour un appareil censé fonctionner sans surveillance, et dangereux (régulation à l'arrêt pendant une durée indéterminée sans alerte).

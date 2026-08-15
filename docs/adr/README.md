@@ -54,6 +54,7 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0035](0035-parachute-oom-new-handler.md) | Parachute OOM global : `std::set_new_handler` + réserve d'urgence libérable + callback IDF flag-seul | Accepté |
 | [0036](0036-psram-requise-mise-a-jour-en-ligne.md) | PSRAM libre requise pour toute session TLS sortante (mise à jour en ligne GitHub) | Accepté |
 | [0037](0037-postmortem-oom-et-integrite-tas.md) | Post-mortem d'allocation en RAM RTC + contrôle d'intégrité périodique du tas | Accepté |
+| [0038](0038-metrique-memoire-allouable-8-bits.md) | La mémoire se mesure sur le pool 8 bits réellement allouable, jamais sur `MALLOC_CAP_INTERNAL` | Accepté |
 
 ## Template
 

@@ -1468,6 +1468,16 @@ input.is-computed:disabled {
   font-weight: 800;
 }
 
+/* Note secondaire sous une valeur (ex. mémoire brute vs réellement allouable) */
+.kv__note {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
 /* 2026 Key-Value Compact Grid - pour Settings/Config */
 /* Layout resserré : labels proches des valeurs, pas étirés sur toute la largeur */
 .kv--compact {

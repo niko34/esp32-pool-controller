@@ -4621,7 +4621,35 @@
 
       $("#sys_chip_model").textContent = data.chip_model || "—";
       $("#sys_cpu_freq").textContent = data.cpu_freq_mhz ? `${data.cpu_freq_mhz} MHz` : "—";
-      $("#sys_free_heap").textContent = data.free_heap ? `${Math.round(data.free_heap / 1024)} KB` : "—";
+      // v2.19.0 : la seule mémoire qui compte est celle réellement allouable
+      // (pool 8 bits). `free_heap` (mesure brute historique) englobe une zone
+      // technique — IRAM accessible en 32 bits seulement — qu'aucune allocation
+      // ordinaire ne peut utiliser : elle passe en note secondaire.
+      const heapKb = (v) => (Number.isFinite(v) ? `${Math.round(v / 1024)} KB` : null);
+      const heapUsableFree = heapKb(data.free_heap_8bit);
+      const heapUsableBlock = heapKb(data.max_alloc_8bit);
+      const heapRawFree = heapKb(data.free_heap);
+      const heapEl = $("#sys_free_heap");
+      const heapNoteEl = $("#sys_heap_raw");
+      if (heapEl) {
+        if (heapUsableFree) {
+          heapEl.textContent = heapUsableBlock
+            ? `${heapUsableFree} · plus gros bloc : ${heapUsableBlock}`
+            : heapUsableFree;
+        } else {
+          // Firmware antérieur à 2.19.0 : seule la mesure brute existe
+          heapEl.textContent = heapRawFree || "—";
+        }
+      }
+      if (heapNoteEl) {
+        // Note affichée uniquement quand les deux mesures sont disponibles :
+        // sinon la comparaison n'a pas de sens (et surtout, pas de "undefined")
+        const showHeapNote = Boolean(heapUsableFree && heapRawFree);
+        heapNoteEl.textContent = showHeapNote
+          ? `Mesure brute : ${heapRawFree}, dont une zone technique inutilisable pour les allocations courantes.`
+          : "";
+        heapNoteEl.style.display = showHeapNote ? "" : "none";
+      }
       // feature-066 : PSRAM (module WROVER) — psram_size = 0 sur module WROOM
       if ($("#sys_psram")) {
         $("#sys_psram").textContent = data.psram_size

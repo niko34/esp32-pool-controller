@@ -1614,7 +1614,13 @@ action:
                     <div class="kv__row"><span class="kv__k">Uptime</span><span class="kv__v" id="sys_uptime">—</span></div>
                     <div class="kv__row"><span class="kv__k">Chip</span><span class="kv__v" id="sys_chip_model">—</span></div>
                     <div class="kv__row"><span class="kv__k">CPU</span><span class="kv__v" id="sys_cpu_freq">—</span></div>
-                    <div class="kv__row"><span class="kv__k">Heap libre</span><span class="kv__v" id="sys_free_heap">—</span></div>
+                    <div class="kv__row">
+                      <span class="kv__k">Mémoire utilisable</span>
+                      <span class="kv__v">
+                        <span id="sys_free_heap">—</span>
+                        <small class="kv__note" id="sys_heap_raw" style="display:none;"></small>
+                      </span>
+                    </div>
                     <div class="kv__row"><span class="kv__k">PSRAM</span><span class="kv__v" id="sys_psram">—</span></div>
                     <div class="kv__row"><span class="kv__k">Flash</span><span class="kv__v" id="sys_flash_size">—</span></div>
                     <div class="kv__row"><span class="kv__k">Firmware (flash)</span><span class="kv__v" id="sys_app_usage">—</span></div>

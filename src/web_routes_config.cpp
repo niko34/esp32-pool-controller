@@ -13,6 +13,7 @@
 #include "logger.h"
 #include "version.h"
 #include "json_compat.h"
+#include "heap_metrics.h"  // v2.19.0 : mémoire RÉELLEMENT allouable (8 bits) exposée par /get-system-info
 #include "rtc_manager.h"
 #include <sys/time.h>
 #include <WiFi.h>
@@ -608,7 +609,15 @@ static void handleRebootAp(AsyncWebServerRequest* request);  // Forward declarat
 static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
-  // Buffer statique : ~24 champs (version, chip, memory, WiFi, uptime) = 1024 bytes
+  // 29 champs (version, chip, mémoire, WiFi, uptime). Charge utile mesurée avec
+  // measureJson() sur des valeurs pires cas (compteurs 32 bits saturés, SSID de
+  // 32 caractères) : 716 octets, contre 628 avant les trois champs mémoire
+  // v2.19.0.
+  // PRÉCISION (revue v2.19.0) : en ArduinoJson 7, StaticJson<N> n'est plus qu'un
+  // JsonDocument à capacité ÉLASTIQUE — le N ne borne rien et aucune troncature
+  // silencieuse n'est possible. Le chiffre ci-dessus documente donc la taille de
+  // la RÉPONSE (utile pour le budget réseau et la garde heap en amont), pas un
+  // remplissage de tampon. Ne pas le lire comme « 716 sur 1024 ».
   StaticJson<1024> doc;
 
   // Version firmware
@@ -621,6 +630,20 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   doc["chip_revision"] = ESP.getChipRevision();
   doc["cpu_freq_mhz"] = ESP.getCpuFreqMHz();
   doc["free_heap"] = ESP.getFreeHeap();
+
+  // v2.19.0 (bug-metrique-heap-inclut-iram-32bits) : `free_heap` ci-dessus vaut
+  // heap_caps_get_free_size(MALLOC_CAP_INTERNAL) — pool qui englobe l'IRAM
+  // accessible en 32 bits SEULEMENT, donc inutilisable par un malloc()/new
+  // ordinaire. On expose EN PLUS la métrique 8 bits, seule représentative de la
+  // mémoire réellement allouable, ainsi que le plus gros bloc des deux familles :
+  // l'écart entre `max_alloc_8bit` et `max_alloc_internal` chiffre le piège.
+  // Ajout PUREMENT ADDITIF : `free_heap` et `heap_size` gardent leur sémantique
+  // d'origine (aucune rupture pour un client existant).
+  const HeapMetrics heap = heapMetricsSnapshot();
+  doc["free_heap_8bit"] = heap.free8;
+  doc["max_alloc_8bit"] = heap.maxAlloc8;
+  doc["max_alloc_internal"] = heap.maxAllocInternal;
+
   // feature-066 : PSRAM (0 = absente, module WROOM — l'UI affiche « absente »)
   doc["psram_size"] = ESP.getPsramSize();
   doc["psram_free"] = ESP.getFreePsram();

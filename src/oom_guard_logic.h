@@ -130,15 +130,15 @@ inline bool oomShouldLogRelease(uint32_t releaseCount, uint32_t loggedCount) {
 // oom_guard.cpp), et on le dumpe au boot suivant.
 //
 // FORMAT DE LA ZONE (32 octets, little-endian) :
-//   [0..3]   u32 magic          — kOomPostMortemMagic (0xF00DFA11)
+//   [0..3]   u32 magic          — kOomPostMortemMagic (0xF00DFA12)
 //   [4..7]   u32 failCount      — échecs d'allocation cumulés du boot
 //   [8..11]  u32 firstSize      — taille demandée au 1er échec (octets)
 //   [12..15] u32 lastSize       — taille demandée au dernier échec (octets)
 //   [16..19] u32 lastCaps       — masque heap_caps du dernier échec
 //   [20..21] u16 firstUptimeS   — uptime (s) du 1er échec, modulo 65536
 //   [22..23] u16 lastUptimeS    — uptime (s) du dernier échec, modulo 65536
-//   [24..25] u16 ringFree >> 8  — heap libre du dernier échantillon de l'anneau (quantum 256 o)
-//   [26..27] u16 ringMaxB >> 6  — plus gros bloc du dernier échantillon (quantum 64 o)
+//   [24..25] u16 ringFree >> 8  — heap libre 8 bits du dernier échantillon de l'anneau (quantum 256 o)
+//   [26..27] u16 ringMaxB >> 6  — plus gros bloc 8 bits du dernier échantillon (quantum 64 o)
 //   [28..29] u16 ringUptimeS    — uptime (s) de cet échantillon (→ âge = last - ring)
 //   [30]     u8  flags          — bits kOomPmFlag* (réserve consommée, handler, intégrité)
 //   [31]     u8  releaseCount   — épisodes de libération de la réserve (saturé 255)
@@ -146,7 +146,13 @@ inline bool oomShouldLogRelease(uint32_t releaseCount, uint32_t loggedCount) {
 // (valeurs DÉJÀ mesurées à la cadence 2 s) : le chemin d'échec ne mesure JAMAIS
 // le tas lui-même (interdiction absolue de réentrer dans l'allocateur).
 
-constexpr uint32_t kOomPostMortemMagic = 0xF00DFA11u;  // DISTINCT de l'anneau (0xB10C4EA9) et de l'auto-heal (0xA5C0FFEE)
+// MAGIC BUMPÉ EN v2.19.0 (0xF00DFA11 → 0xF00DFA12) : les champs « ring » de la
+// zone portent désormais la mesure 8 bits (mémoire réellement allouable). Une
+// zone écrite par un firmware 2.18.x contient l'ANCIENNE métrique (IRAM 32 bits
+// comprise) ; la relire avec les nouveaux libellés (« free8= », « maxB8= »)
+// afficherait un chiffre faux et crédible. Perdre le post-mortem du boot de
+// bascule est acceptable ; afficher une valeur trompeuse ne l'est pas.
+constexpr uint32_t kOomPostMortemMagic = 0xF00DFA12u;  // DISTINCT de l'anneau (0xB10C4EAA) et de l'auto-heal (0xA5C0FFEE)
 constexpr uint32_t kOomPostMortemBytes = 32;           // Taille de la zone RTC noinit
 
 // Drapeaux (octet 30) — posés au plus tôt pour survivre à un abort immédiat.
