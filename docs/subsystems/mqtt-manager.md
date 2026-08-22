@@ -114,6 +114,7 @@ Structure complète dans [`MqttTopics`](../../src/mqtt_manager.h). Résumé :
 {base}/lighting_start, {base}/lighting_start/set       (feature-052 : heure début HH:MM, retain)
 {base}/lighting_end, {base}/lighting_end/set           (feature-052 : heure fin HH:MM)
 {base}/ph_sensor_problem, {base}/orp_sensor_problem   (feature-022 : ON = stale OU figé)
+{base}/ph_filter_stuck, {base}/orp_filter_stuck       (v2.20.3 : ON = filtre non prêt > 5 min, filtration active)
 {base}/alerts/calibration_required, {base}/alerts/sensor_stale, {base}/alerts/sensor_frozen
 {base}/status                 (LWT : "online" / "offline")
 {base}/alerts
@@ -151,6 +152,20 @@ Publiés depuis `publishCalibrationStatusInternal()` (exécutée par `mqttTask`)
 - **`{base}/alerts/sensor_frozen`** (retain, edge-triggered) : JSON `{"type":"sensor_frozen","phFrozen":<bool>,"orpFrozen":<bool>,"timestamp":<ms>}` à la transition **figé** d'au moins un capteur pH/ORP (`sensors.isPhSensorFrozen()` / `isOrpSensorFrozen()`), payload **vide** au clear. Calquée sur le bloc `sensor_stale` (cache `_lastSensorFrozen`). La **température figée** (warning-only) n'y figure pas — sévérité différente, aucun impact dosage.
 - **`{base}/ph_sensor_problem`** / **`{base}/orp_sensor_problem`** (retain) : synthèse binaire `ON`/`OFF` **par capteur**, `ON` si stale **OU** figé — directement consommable par un `binary_sensor` HA sans parser les JSON d'alerte. Publication **dédupliquée** par les caches `_lastPhSensorProblem` / `_lastOrpSensorProblem` (`int8_t`, `-1` = jamais publié → force la 1ʳᵉ publication ; lus/écrits uniquement depuis `mqttTask`). Log `info` à chaque bascule.
 
+### États « filtre bloqué » `ph_filter_stuck` / `orp_filter_stuck` (v2.20.3)
+
+Publiés depuis `publishAllStatesInternal()` (contexte `mqttTask`), en **retain**, via `safePublishDedup()` sur les **slots 16 et 17** — deux slots ajoutés au tableau de déduplication existant :
+
+```cpp
+safePublishDedup(16, topics.phFilterStuckState.c_str(),  sensors.isPhFilterNotReadyAlarm()  ? "ON" : "OFF");
+safePublishDedup(17, topics.orpFilterStuckState.c_str(), sensors.isOrpFilterNotReadyAlarm() ? "ON" : "OFF");
+```
+
+- Membres de topic : `MqttTopics::phFilterStuckState` / `orpFilterStuckState`, construits dans `refreshTopics()` (`base + "/ph_filter_stuck"`).
+- Source : les accesseurs **lecture seule** `sensors.isPhFilterNotReadyAlarm()` / `isOrpFilterNotReadyAlarm()` — l'hystérésis (5 min de blocage continu, purge et circulation arrêtée exclues) est **entièrement côté `SensorManager`**, `mqtt_manager` ne fait que refléter le drapeau. Aucune logique dupliquée.
+- Déduplication ⇒ un seul message par bascule, première publication forcée après connexion. Retain ⇒ HA retrouve l'état après reboot.
+- Deux familles d'alertes JSON accompagnent ces états sur `{base}/alerts` : `ph/orp_filter_not_ready` (pose + répétition 30 min, émise par `SensorManager`) et `ph/orp_filter_rearm_denied` (refus de ré-amorçage, une fois par épisode). Voir [`sensors.md`](sensors.md#alarme--filtre-non-prêt-durablement--v2203) et [`docs/MQTT.md`](../MQTT.md#topics-et-entités-ajoutés-en-v2203-filtre-de-mesure-bloqué).
+
 ### Alerte `pump_unusable` re-publiée à chaque connexion (feature-064, v2.16.0)
 
 Hook dans `connectInTask()` ([`mqtt_manager.cpp:432`](../../src/mqtt_manager.cpp:432)), **branche connectée uniquement**, juste après `publishDiagnosticInternal()` : pour chaque pompe (0 = pH, 1 = ORP/chlore), si `PumpController.isPumpUsable(i)` retourne `false` (flag fail-closed `pumpUsable[]` posé au boot sur échec `ledcAttachChannel` — **core 3 uniquement**, feature-063), une alerte `publishAlert("pump_unusable", ...)` est émise avec pompe / rôle / GPIO / canal LEDC en français.
@@ -160,13 +175,13 @@ Points clés :
 - **Re-publication à CHAQUE (re)connexion MQTT** (arbitrage Q1, décision pool-chemistry P1) et non one-shot au boot (patron `history_partition_reset` écarté) : `publishAlert` est **non-retained** et l'état « pompe inutilisable » est **permanent jusqu'au reboot** — un broker absent au boot ne perd plus l'alerte (la 1ʳᵉ connexion couvre le boot, les reconnexions couvrent le reste). Aucun bloc dans `main.cpp`. Limitation résiduelle assumée : un HA qui redémarre sans reconnexion de l'ESP32 ne revoit pas l'alerte.
 - **Lecture seule stricte** du flag via l'accesseur `isPumpUsable()` (pas d'accès direct à `pumpUsable[]`, aucun setter) — voir [`pump-controller.md`](pump-controller.md#accesseur-ispumpusable-feature-064-v2160).
 - `publishAlert()` passe par l'**outQueue** existante — pas de publish direct dans `connectInTask()`, pas de mécanique nouvelle.
-- **Code dormant en production actuelle** (core 2 : `isPumpUsable()` retourne toujours `true`) — actif sur le banc `esp32dev_core3` et après la bascule ([ADR-0034](../adr/0034-migration-core3-idf5.md), exigence de la porte de bascule désormais livrée).
+- **Chemin ACTIF en production depuis la v2.20.4** : le core 3 est l'environnement par défaut ([ADR-0042](../adr/0042-core3-environnement-par-defaut.md)), donc `isPumpUsable()` peut réellement retourner `false` et l'alerte peut réellement partir. Il n'était dormant que tant que la production tournait en core 2 (où `isPumpUsable()` retournait toujours `true`) — c'était précisément l'exigence pool-chemistry de la porte de bascule ([ADR-0034](../adr/0034-migration-core3-idf5.md)). Reste dormant en repli `PIO_ENV=esp32dev`.
 
 Format du message et exemple : voir [`docs/MQTT.md`](../MQTT.md#alertes).
 
 ## Auto-discovery Home Assistant
 
-`publishDiscovery()` publie les messages `retain=true` sur `homeassistant/.../config` pour déclarer automatiquement les entités (17 à l'origine, **46 à ce jour** au fil des features — dont le `select` « Mode d'installation » et le `switch` optimiste « Signal filtration externe » de feature-056 v2.19.0, les 2 `select` de mode de régulation pH/ORP ajoutés en feature-009 v2.7.0, les 2 `binary_sensor` `device_class: problem` « Capteur pH/ORP — problème » ajoutés en feature-022 v2.10.0, les 5 entités feature-050 v2.14.0 : 2 `sensor` cumuls journaliers, 2 `number` volumes quotidiens, 1 `button` « Redémarrer », les 2 `text` éditables « Filtration début » / « Filtration fin » de feature-051 v2.16.0, et les 3 entités feature-052 v2.17.0 : 1 `select` « Mode Éclairage » (Programmation/Désactivé — `switch` à l'origine, migré en `select` en bug-ha-eclairage-select v2.17.2, avec publication d'un config vide sur l'ancien topic `switch/{id}_lighting_schedule` pour retirer l'orphelin) + 2 `text` « Éclairage début » / « Éclairage fin »). **Exécutée uniquement depuis `mqttTask`** lors d'une connexion réussie (lambda interne, pas appelable de l'extérieur). Publié **une seule fois** par session (`discoveryPublished` guard).
+`publishDiscovery()` publie les messages `retain=true` sur `homeassistant/.../config` pour déclarer automatiquement les entités (17 à l'origine, **48 à ce jour** au fil des features — dont les 2 `binary_sensor` `device_class: problem` « Filtre pH/ORP Bloqué » ajoutés en v2.20.3, le `select` « Mode d'installation » et le `switch` optimiste « Signal filtration externe » de feature-056 v2.19.0, les 2 `select` de mode de régulation pH/ORP ajoutés en feature-009 v2.7.0, les 2 `binary_sensor` `device_class: problem` « Capteur pH/ORP — problème » ajoutés en feature-022 v2.10.0, les 5 entités feature-050 v2.14.0 : 2 `sensor` cumuls journaliers, 2 `number` volumes quotidiens, 1 `button` « Redémarrer », les 2 `text` éditables « Filtration début » / « Filtration fin » de feature-051 v2.16.0, et les 3 entités feature-052 v2.17.0 : 1 `select` « Mode Éclairage » (Programmation/Désactivé — `switch` à l'origine, migré en `select` en bug-ha-eclairage-select v2.17.2, avec publication d'un config vide sur l'ancien topic `switch/{id}_lighting_schedule` pour retirer l'orphelin) + 2 `text` « Éclairage début » / « Éclairage fin »). **Exécutée uniquement depuis `mqttTask`** lors d'une connexion réussie (lambda interne, pas appelable de l'extérieur). Publié **une seule fois** par session (`discoveryPublished` guard).
 
 ### Select « Mode Filtration » — templates d'affichage (bug-ha-filtration-mode-labels, v2.15.0)
 

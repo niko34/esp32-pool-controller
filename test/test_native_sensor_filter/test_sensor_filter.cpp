@@ -43,6 +43,45 @@ static SensorFilter::Config orpCfg() {
       -1000.0f, 1500.0f, 300.0f, 0.08f, 13, 10, 20000, 100.0f};
 }
 
+// -----------------------------------------------------------------------------
+// v2.20.3 — configs AVEC sortie de secours ARMÉE (bug-filtre-ph-verrouille)
+// -----------------------------------------------------------------------------
+// ATTENTION : les configs ci-dessus (init agrégat courte) laissent rearmCoherence
+// à 0, ce qui DÉSACTIVE la sortie de secours (rétrocompatibilité voulue). Tout
+// test du correctif DOIT donc renseigner explicitement les 3 champs de fin, sinon
+// il exercerait un filtre où le correctif est INERTE et passerait au vert pour une
+// mauvaise raison. Ces helpers reprennent les valeurs de production (constants.h,
+// arbitrage pool-chemistry) : cohérence 0,20 pH / 40 mV, bande admissible
+// [6,50 ; 8,20] pH et [300 ; 950] mV.
+static SensorFilter::Config phCfgRearm() {
+  SensorFilter::Config cfg = phCfg();
+  cfg.rearmCoherence = kPhFilterRearmCoherence;
+  cfg.rearmMin = kPhFilterRearmMin;
+  cfg.rearmMax = kPhFilterRearmMax;
+  return cfg;
+}
+
+static SensorFilter::Config orpCfgRearm() {
+  SensorFilter::Config cfg = orpCfg();
+  cfg.rearmCoherence = kOrpFilterRearmCoherence;
+  cfg.rearmMin = kOrpFilterRearmMin;
+  cfg.rearmMax = kOrpFilterRearmMax;
+  return cfg;
+}
+
+// Cadence de lecture réelle des EZO (5 s) : rend les bornes de TEMPS assertables.
+static const uint32_t kDt = 5000;
+
+// Ouvre la porte d'alimentation comme en production : front montant d'eau, puis
+// plancher de gel interne kSensorFilterGateFloorMs écoulé. Draine le drapeau de
+// ré-amorçage émis par cette première ouverture.
+static void openGate(SensorFilter& f, uint32_t& t) {
+  f.setContext(true, true, t);              // front montant → plancher armé
+  t += kSensorFilterGateFloorMs;
+  f.setContext(true, true, t);              // plancher écoulé → porte ouverte
+  f.rearmedSinceLastPoll();
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -259,20 +298,52 @@ void test_garbage_burst_never_ready_ph(void) {
   TEST_ASSERT_TRUE(isnan(f.filtered()));
 }
 
-// --- T4b : spikes DURS répétés après stabilisation → âge grandit → non-ready --
+// --- T4b : spikes DURS répétés mais INCOHÉRENTS → âge grandit → non-ready -----
+//
+// RÉARBITRÉ en v2.20.3 (spec bug-filtre-ph-verrouille-par-rejet-de-spike-sans-issue).
+// La version d'origine injectait 26 spikes **identiques** à 9,50 et exigeait que le
+// filtre reste non prêt indéfiniment : elle encodait très exactement le défaut que
+// l'on corrige. 26 rejets identiques sont PARFAITEMENT COHÉRENTS entre eux, donc
+// ils décrivent une NOUVELLE valeur de la grandeur, pas du bruit — c'est la
+// situation qui a laissé le bassin sans aucune régulation ≥ 3 h en production.
+// La décision `pool-chemistry` de la sortie de secours (kSensorFilterSpikeRearmCount
+// = 12 rejets consécutifs contenus dans une bande <= rearmCoherence) rend cette
+// exigence CADUQUE : elle est donc réécrite, PAS supprimée ni affaiblie.
+//
+// Ce que le cas « reste non prêt » doit désormais prouver : des spikes MUTUELLEMENT
+// INCOHÉRENTS (du vrai bruit) ne doivent JAMAIS ouvrir la sortie de secours, et le
+// filtre doit rester fail-closed par vieillissement, exactement comme avant.
+// La contrepartie (spikes cohérents ⇒ ré-amorçage BORNÉ) est couverte par
+// test_incident_replay_sustained_step_recovers_bounded_ph.
+//
+// Choix des valeurs : médiane 6,60 ; spikes alternés 7,70 / 8,00. Les deux sont
+// > spikeReject (1,0) de la médiane ET dans la bande admissible [6,50 ; 8,20] :
+// la SEULE chose qui empêche le ré-amorçage est leur incohérence mutuelle
+// (0,30 > 0,20). rearmDenied() == 0 le prouve — la garde de bande n'est même
+// jamais consultée, la série n'atteignant jamais 12.
+// Config phCfgRearm() (et non phCfg()) : avec rearmCoherence = 0 la sortie de
+// secours serait INERTE et ce test passerait pour une mauvaise raison.
 void test_repeated_spikes_age_out_not_ready(void) {
-  SensorFilter f(phCfg());
+  SensorFilter f(phCfgRearm());
   uint32_t t = 0;
-  for (int i = 0; i < 15; ++i) { f.addSample(7.00f, t); t += 1000; }
+  for (int i = 0; i < 15; ++i) { f.addSample(6.60f, t); t += 1000; }
   uint32_t lastValid = t - 1000;  // 14000
   TEST_ASSERT_TRUE(f.ready(lastValid));
   float before = f.filtered();
-  // Spikes durs (9.5) : écartés, ne rafraîchissent PAS lastValid → l'âge grandit.
-  for (uint32_t ts = 15000; ts <= 40000; ts += 1000) {
-    TEST_ASSERT_FALSE(f.addSample(9.50f, ts));
+  // Spikes durs INCOHÉRENTS : écartés, ne rafraîchissent PAS lastValid → âge ↗.
+  int n = 0;
+  for (uint32_t ts = 15000; ts <= 40000; ts += 1000, ++n) {
+    TEST_ASSERT_FALSE(f.addSample((n % 2 == 0) ? 7.70f : 8.00f, ts));
   }
+  TEST_ASSERT_GREATER_THAN_INT_MESSAGE(kSensorFilterSpikeRearmCount, n,
+      "le scenario doit depasser N=12 rejets, sinon il ne prouve rien");
+  TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(),
+      "des spikes incoherents ne doivent JAMAIS ouvrir la sortie de secours");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, f.rearmDenied(),
+      "serie jamais complete => aucune garde consultee, aucun refus a alarmer");
   TEST_ASSERT_EQUAL_UINT8(0, f.consecutiveRejects());  // le spike ne compte pas
   TEST_ASSERT_EQUAL_FLOAT(before, f.filtered());       // valeur inchangée
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 6.60f, f.median()); // médiane inchangée
   // Âge = 40000 − 14000 = 26000 > maxAgeMs 20000 → dosage fail-closed.
   TEST_ASSERT_FALSE_MESSAGE(f.ready(40000), "spikes repetes => stale => non pret");
 }
@@ -703,6 +774,679 @@ void test_frozen_detector_run_count_saturates_no_overflow(void) {
   TEST_ASSERT_FALSE(d.frozen());
 }
 
+// =============================================================================
+// v2.20.3 — PORTE D'ALIMENTATION + SORTIE DE SECOURS
+// (spec bug-filtre-ph-verrouille-par-rejet-de-spike-sans-issue)
+// =============================================================================
+// Rappel du défaut corrigé : la médiane ne pouvant évoluer QUE via des
+// échantillons acceptés, un échelon LÉGITIME durable au-delà de spikeReject
+// verrouillait le filtre à vie (ready() = false ⇒ dosage pH ET chlore à l'arrêt,
+// ≥ 3 h en production, seul reset() en sortait).
+//
+// TOUS les tests de cette section utilisent phCfgRearm()/orpCfgRearm() : avec une
+// init agrégat courte (rearmCoherence = 0) la sortie de secours est INERTE.
+
+// --- T1 (CRITÈRE D'ACCEPTATION CENTRAL) : rejeu de l'incident de production ----
+// Valeurs réelles relevées sur /debug/sensor_filter_state (firmware 2.20.0) :
+// médiane interne 4,793 (offset ADR-0039 déduit) face à un brut 6,957 → écart
+// 2,164 pH, très au-dessus de kPhFilterSpikeReject = 1,0.
+// Ce qui est asserté est la BORNE de récupération, pas seulement l'état final :
+// 12 rejets cohérents (sortie de secours) + 13 échantillons de warmup = 25.
+void test_incident_replay_sustained_step_recovers_bounded_ph(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+
+  // 1) Médiane établie à 4,79 (eau stagnante acide près du point d'injection).
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(4.79f, t)); t += kDt; }
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.79f, f.median());
+  TEST_ASSERT_TRUE(f.ready(t - kDt));
+
+  // 2) Échelon SOUTENU à 6,96 : chaque échantillon est écarté comme « spike dur »…
+  //    jusqu'à ce que la sortie de secours constate qu'ils décrivent tous la MÊME
+  //    nouvelle valeur.
+  const int kBound = (int)kSensorFilterSpikeRearmCount + (int)kSensorFilterCentralWindow;
+  int samples = 0;
+  bool recovered = false;
+  for (int i = 0; i < 200; ++i) {
+    f.addSample(6.96f, t);
+    ++samples;
+    // Critère de récupération : prêt ET l'estimateur SUIT la nouvelle valeur.
+    // ready() seul ne suffirait pas — pendant les premiers rejets le filtre reste
+    // « prêt » sur la médiane PÉRIMÉE 4,79 tant que maxAgeMs (20 s) n'est pas
+    // écoulé. C'est le comportement antérieur, inchangé, et c'est précisément ce
+    // qui rendait l'incident indolore vu du drapeau de disponibilité.
+    if (f.ready(t) && fabsf(f.filtered() - 6.96f) <= 0.05f) { recovered = true; break; }
+    if (samples == (int)kSensorFilterSpikeRearmCount) {
+      // Au 12ᵉ rejet, la sortie de secours vient de vider l'estimateur : le filtre
+      // est explicitement NON PRÊT (warmup) → dosage fail-closed pendant la reprise.
+      TEST_ASSERT_TRUE_MESSAGE(isnan(f.filtered()),
+          "re-amorcage au 12e rejet => estimateur vide, dosage fail-closed");
+      TEST_ASSERT_FALSE_MESSAGE(f.ready(t), "warmup en cours => non pret");
+    }
+    t += kDt;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(recovered,
+      "le filtre DOIT redevenir pret ET suivre : le verrouillage a vie est le bug corrige");
+  TEST_ASSERT_LESS_OR_EQUAL_INT_MESSAGE(kBound, samples,
+      "recuperation BORNEE : 12 rejets coherents + 13 echantillons de warmup");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(25, samples,
+      "borne exacte attendue (verrou de regression sur le cout de la reprise)");
+
+  // 3) Et il SUIT désormais la grandeur : la médiane de stagnation est oubliée.
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, 6.96f, f.filtered(),
+      "apres re-amorcage le filtre suit la valeur reelle");
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 6.96f, f.median());
+  TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(),
+      "un re-amorcage a bien eu lieu (drapeau a journaliser par la coquille)");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, f.rearmDenied(), "aucune garde n'a refuse");
+}
+
+// --- T1 miroir ORP : même piège, logique partagée (spikeReject 300 mV) --------
+void test_incident_replay_sustained_step_recovers_bounded_orp(void) {
+  SensorFilter f(orpCfgRearm());
+  uint32_t t = 0;
+  // Médiane figée à 250 mV (eau stagnante), échelon soutenu à 620 mV : écart
+  // 370 mV > 300 mV → verrouillage sans le correctif.
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(250.0f, t)); t += kDt; }
+  TEST_ASSERT_TRUE(f.ready(t - kDt));
+
+  const int kBound = (int)kSensorFilterSpikeRearmCount + (int)kSensorFilterCentralWindow;
+  int samples = 0;
+  bool recovered = false;
+  for (int i = 0; i < 200; ++i) {
+    f.addSample(620.0f, t);
+    ++samples;
+    if (f.ready(t) && fabsf(f.filtered() - 620.0f) <= 5.0f) { recovered = true; break; }
+    t += kDt;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(recovered, "filtre ORP : meme sortie de secours");
+  TEST_ASSERT_LESS_OR_EQUAL_INT_MESSAGE(kBound, samples, "recuperation ORP bornee");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(25, samples, "borne exacte ORP : 12 rejets + 13 warmup");
+  TEST_ASSERT_FLOAT_WITHIN(1.0f, 620.0f, f.filtered());
+}
+
+// --- T2 : transition purge → valide, la médiane de stagnation ne fait PAS -----
+//     autorité sur les mesures représentatives suivantes.
+void test_stagnation_median_never_authoritative_ph(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  openGate(f, t);
+
+  // Régime établi, eau en circulation : filtre convergé sur 6,80.
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(6.80f, t)); t += kDt; }
+  TEST_ASSERT_TRUE(f.ready(t - kDt));
+  const float medBefore = f.median();
+
+  // Arrêt de filtration : la coquille ferme la porte (eau absente).
+  f.setContext(false, true, t);
+  TEST_ASSERT_TRUE_MESSAGE(f.gateClosed(), "eau absente => porte fermee");
+
+  // 40 échantillons d'eau STAGNANTE très acide (4,79) : AUCUN ne doit entrer.
+  for (int i = 0; i < 40; ++i) {
+    TEST_ASSERT_FALSE_MESSAGE(f.addSample(4.79f, t),
+        "porte fermee => aucune ingestion de mesure non representative");
+    t += kDt;
+    f.setContext(false, true, t);
+  }
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(medBefore, f.median(),
+      "la stagnation ne deplace PAS la mediane (elle n'existe pas pour le filtre)");
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(4.79f, f.raw(),
+      "le brut reste publie pour le diagnostic, meme porte fermee");
+  TEST_ASSERT_FALSE_MESSAGE(f.ready(t), "porte fermee => age ↗ => dosage fail-closed");
+
+  // Reprise de circulation : eau présente mais mesures NON représentatives (purge).
+  f.setContext(true, false, t);
+  TEST_ASSERT_TRUE_MESSAGE(f.gateClosed(), "purge en cours => porte encore fermee");
+  t += 300000;  // 5 min de stabilisation (réglage utilisateur)
+
+  // Fin de stabilisation : la porte s'ouvre ET ré-amorce l'estimateur.
+  f.setContext(true, true, t);
+  TEST_ASSERT_FALSE_MESSAGE(f.gateClosed(), "mesures representatives => porte ouverte");
+  TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(), "reouverture => re-amorcage");
+  TEST_ASSERT_TRUE_MESSAGE(isnan(f.filtered()), "estimateur re-amorce => warmup complet");
+
+  // Les mesures représentatives valent 8,10, soit |8,10 − 6,80| = 1,30 > spikeReject :
+  // sans le ré-amorçage elles seraient rejetées UNE À UNE par la médiane d'avant
+  // l'arrêt. Ici elles sont acceptées d'emblée, warmup 13 échantillons.
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(8.10f, t)); t += kDt; }
+  TEST_ASSERT_TRUE(f.ready(t - kDt));
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 8.10f, f.filtered());
+}
+
+// --- T2 miroir ORP ------------------------------------------------------------
+void test_stagnation_median_never_authoritative_orp(void) {
+  SensorFilter f(orpCfgRearm());
+  uint32_t t = 0;
+  openGate(f, t);
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(700.0f, t)); t += kDt; }
+  TEST_ASSERT_TRUE(f.ready(t - kDt));
+
+  f.setContext(false, true, t);
+  for (int i = 0; i < 40; ++i) {
+    TEST_ASSERT_FALSE(f.addSample(250.0f, t));  // stagnation
+    t += kDt;
+    f.setContext(false, true, t);
+  }
+  TEST_ASSERT_FLOAT_WITHIN(1.0f, 700.0f, f.median());
+
+  f.setContext(true, false, t);
+  t += 300000;
+  f.setContext(true, true, t);
+  TEST_ASSERT_TRUE(f.rearmedSinceLastPoll());
+  // |350 − 700| = 350 mV > 300 mV : rejeté à vie sans ré-amorçage.
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(350.0f, t)); t += kDt; }
+  TEST_ASSERT_TRUE(f.ready(t - kDt));
+  TEST_ASSERT_FLOAT_WITHIN(1.0f, 350.0f, f.filtered());
+}
+
+// --- T3 : non-régression feature-058 — une aberration ISOLÉE reste rejetée ----
+//     et n'ouvre JAMAIS la sortie de secours (une mesure acceptée casse la série).
+void test_isolated_spikes_never_rearm_ph(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  for (int i = 0; i < 13; ++i) { f.addSample(7.00f, t); t += kDt; }
+  const float before = f.filtered();
+
+  // 30 aberrations isolées, chacune encadrée par une mesure saine.
+  for (int i = 0; i < 30; ++i) {
+    TEST_ASSERT_FALSE_MESSAGE(f.addSample(8.30f, t), "aberration isolee => rejetee");
+    t += kDt;
+    TEST_ASSERT_TRUE(f.addSample(7.00f, t));
+    t += kDt;
+  }
+  TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(),
+      "aberrations isolees => AUCUN re-amorcage (feature-058 preservee)");
+  TEST_ASSERT_EQUAL_UINT8(0, f.rearmDenied());
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, before, f.filtered(),
+      "la valeur filtree reste celle du signal sain");
+  TEST_ASSERT_TRUE_MESSAGE(f.ready(t - kDt), "le filtre reste disponible");
+}
+
+// --- T3 miroir ORP ------------------------------------------------------------
+void test_isolated_spikes_never_rearm_orp(void) {
+  SensorFilter f(orpCfgRearm());
+  uint32_t t = 0;
+  for (int i = 0; i < 13; ++i) { f.addSample(680.0f, t); t += kDt; }
+  for (int i = 0; i < 30; ++i) {
+    TEST_ASSERT_FALSE(f.addSample(1050.0f, t));  // |1050−680| = 370 > 300
+    t += kDt;
+    TEST_ASSERT_TRUE(f.addSample(680.0f, t));
+    t += kDt;
+  }
+  TEST_ASSERT_FALSE(f.rearmedSinceLastPoll());
+  TEST_ASSERT_EQUAL_UINT8(0, f.rearmDenied());
+  TEST_ASSERT_FLOAT_WITHIN(2.0f, 680.0f, f.filtered());
+}
+
+// --- T5 (GARANTIE P8) : le ré-amorçage ne MASQUE PAS une sonde HS -------------
+// Une sonde figée sur une valeur plausible et éloignée de la médiane produit 12
+// rejets parfaitement cohérents → elle OBTIENT son ré-amorçage. Ce qui doit alors
+// la rattraper est le détecteur figé (feature-022), que rearm() ne touche pas :
+// frozen() se re-déclenche en 30 échantillons acceptés (150 s à 5 s de cadence).
+static SensorFilter::Config frozenPhCfgRearm() {
+  SensorFilter::Config cfg = phCfgRearm();
+  cfg.frozenSamples = kSensorFrozenSamples;    // 30
+  cfg.frozenEpsilon = kSensorFrozenEpsilonPh;  // 0.0005
+  return cfg;
+}
+
+void test_rearm_does_not_mask_frozen_probe(void) {
+  SensorFilter f(frozenPhCfgRearm());
+  uint32_t t = 0;
+  // Signal VIVANT autour de 6,60 (toggle 1 LSB → le détecteur figé ne se pose pas).
+  for (int i = 0; i < 13; ++i) {
+    TEST_ASSERT_TRUE(f.addSample((i % 2) ? 6.601f : 6.600f, t));
+    t += kDt;
+  }
+  TEST_ASSERT_TRUE(f.ready(t - kDt));
+  TEST_ASSERT_FALSE(f.frozen());
+
+  // La sonde se fige à 7,80 : cohérent (amplitude nulle), dans la bande admissible,
+  // et |7,80 − 6,60| = 1,20 > spikeReject → 12 rejets puis ré-amorçage accordé.
+  for (int i = 0; i < (int)kSensorFilterSpikeRearmCount; ++i) {
+    TEST_ASSERT_FALSE(f.addSample(7.80f, t));
+    t += kDt;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(),
+      "serie coherente et plausible => re-amorcage (on ne peut pas distinguer ici)");
+  const uint32_t tRearm = t;
+
+  // …mais le détecteur figé, INTACT, la rattrape en 30 échantillons acceptés.
+  int accepted = 0;
+  bool frozenAgain = false;
+  for (int i = 0; i < 100; ++i) {
+    TEST_ASSERT_TRUE(f.addSample(7.80f, t));
+    ++accepted;
+    if (f.frozen()) { frozenAgain = true; break; }
+    t += kDt;
+  }
+  TEST_ASSERT_TRUE_MESSAGE(frozenAgain,
+      "une sonde HS DOIT etre re-detectee apres re-amorcage (garantie P8)");
+  TEST_ASSERT_LESS_OR_EQUAL_INT_MESSAGE((int)kSensorFrozenSamples, accepted,
+      "re-detection en 30 echantillons au plus");
+  TEST_ASSERT_LESS_OR_EQUAL_UINT32_MESSAGE(150000UL, t - tRearm,
+      "re-detection en 150 s au plus a la cadence de 5 s");
+  TEST_ASSERT_FALSE_MESSAGE(f.ready(t),
+      "sonde figee => non pret => dosage fail-closed, le re-amorcage n'a rien blanchi");
+}
+
+// --- T8a : borne basse — 11 rejets cohérents ne déclenchent RIEN --------------
+void test_eleven_coherent_rejects_do_not_rearm(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  for (int i = 0; i < 13; ++i) { f.addSample(4.79f, t); t += kDt; }
+  for (int i = 0; i < (int)kSensorFilterSpikeRearmCount - 1; ++i) {
+    TEST_ASSERT_FALSE(f.addSample(6.96f, t));
+    t += kDt;
+  }
+  TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(), "11 < N=12 => rien");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.001f, 4.79f, f.median(), "mediane encore intacte");
+  TEST_ASSERT_EQUAL_UINT8(0, f.rearmDenied());
+  // Le 12ᵉ, et seulement lui, déclenche.
+  TEST_ASSERT_FALSE(f.addSample(6.96f, t));
+  TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(), "12e rejet coherent => re-amorcage");
+  TEST_ASSERT_TRUE_MESSAGE(isnan(f.median()), "buffer vide apres re-amorcage");
+}
+
+// --- T8b : un spike INCOHÉRENT remet le compteur de série à 0 -----------------
+void test_incoherent_spike_resets_coherent_streak(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  for (int i = 0; i < 13; ++i) { f.addSample(4.79f, t); t += kDt; }
+  for (int i = 0; i < 11; ++i) { TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt; }
+  // Intrus incohérent (|9,50 − 6,96| = 2,54 > 0,20) → la série se ré-ancre sur lui.
+  TEST_ASSERT_FALSE(f.addSample(9.50f, t)); t += kDt;
+  TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(),
+      "le 12e echantillon incoherent ne doit PAS declencher");
+  // 11 nouveaux rejets cohérents : si le compteur n'avait pas été remis à 0, on
+  // aurait déjà ré-amorcé.
+  for (int i = 0; i < 11; ++i) { TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt; }
+  TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(),
+      "compteur remis a 0 par l'intrus => 11 coherents ne suffisent pas");
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.79f, f.median());
+  TEST_ASSERT_FALSE(f.addSample(6.96f, t));
+  TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(), "12e coherent => re-amorcage");
+}
+
+// --- T8c : 2ᵉ ré-amorçage dans les 30 min REFUSÉ (rearmDenied == 1) -----------
+void test_second_rearm_within_cooldown_denied(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  for (int i = 0; i < 13; ++i) { f.addSample(4.79f, t); t += kDt; }
+  for (int i = 0; i < 12; ++i) { f.addSample(6.96f, t); t += kDt; }   // ré-amorçage #1
+  TEST_ASSERT_TRUE(f.rearmedSinceLastPoll());
+  const uint32_t rearmMs = t - kDt;
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(6.96f, t)); t += kDt; }
+  TEST_ASSERT_TRUE(f.ready(t - kDt));
+
+  // 2ᵉ échelon cohérent ET dans la bande (8,10 ; |8,10 − 6,96| = 1,14 > 1,0),
+  // moins de 30 min après le premier ré-amorçage.
+  for (int i = 0; i < 12; ++i) { TEST_ASSERT_FALSE(f.addSample(8.10f, t)); t += kDt; }
+  TEST_ASSERT_TRUE_MESSAGE((t - rearmMs) < kSensorFilterRearmCooldownMs,
+      "le scenario doit rester dans la fenetre de cooldown");
+  TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(), "2e re-amorcage < 30 min => refuse");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1, f.rearmDenied(), "motif collant = cooldown");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f, 6.96f, f.median(), "mediane inchangee (refus)");
+  TEST_ASSERT_FALSE_MESSAGE(f.ready(t),
+      "refus => filtre non pret => dosage fail-closed, la coquille DOIT alarmer");
+
+  // Cooldown écoulé : la même évidence est alors acceptée.
+  t += kSensorFilterRearmCooldownMs;
+  for (int i = 0; i < 12; ++i) { TEST_ASSERT_FALSE(f.addSample(8.10f, t)); t += kDt; }
+  TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(), "cooldown ecoule => autorise");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, f.rearmDenied(), "rearm() efface le motif de refus");
+}
+
+// --- T8d : cible HORS BANDE admissible → jamais de ré-amorçage (fail-closed) --
+void test_rearm_denied_out_of_admissible_band(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  for (int i = 0; i < 13; ++i) { f.addSample(7.00f, t); t += kDt; }
+  // Sonde qui part à 9,50 : parfaitement cohérente, mais hors [6,50 ; 8,20] → une
+  // telle valeur n'est pas un etat de bassin plausible.
+  for (int i = 0; i < 12; ++i) { TEST_ASSERT_FALSE(f.addSample(9.50f, t)); t += kDt; }
+  TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(),
+      "hors bande => JAMAIS de re-amorcage (une sonde HS n'impose pas sa valeur)");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, f.rearmDenied(), "motif collant = hors bande");
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 7.00f, f.median());
+  TEST_ASSERT_FALSE_MESSAGE(f.ready(t), "fail-closed maintenu");
+  // Insister ne débloque rien : 36 rejets de plus, toujours refusé.
+  for (int i = 0; i < 36; ++i) { TEST_ASSERT_FALSE(f.addSample(9.50f, t)); t += kDt; }
+  TEST_ASSERT_FALSE(f.rearmedSinceLastPoll());
+  TEST_ASSERT_EQUAL_UINT8(2, f.rearmDenied());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 7.00f, f.median());
+}
+
+// --- T9 : stabilizationDelayMin = 0 → le plancher interne de 60 s protège quand ---
+//     même (verdict P7 : le gel est piloté par waterPresent, pas par le réglage).
+void test_gate_floor_applies_with_zero_stabilization_delay(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  openGate(f, t);
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(6.80f, t)); t += kDt; }
+  TEST_ASSERT_TRUE(f.ready(t - kDt));
+
+  // Arrêt de filtration.
+  f.setContext(false, true, t);
+  for (int i = 0; i < 20; ++i) {
+    TEST_ASSERT_FALSE(f.addSample(4.79f, t));
+    t += kDt;
+    f.setContext(false, true, t);
+  }
+
+  // Reprise : délai de stabilisation utilisateur = 0 → measuresValid vaut true DÈS
+  // le front montant. Le plancher interne doit malgré tout tenir la porte fermée.
+  const uint32_t resume = t;
+  f.setContext(true, true, resume);
+  TEST_ASSERT_TRUE_MESSAGE(f.gateClosed(),
+      "plancher interne de 60 s applique meme avec stabilisation = 0");
+  TEST_ASSERT_FALSE_MESSAGE(f.addSample(4.79f, resume),
+      "l'eau de purge n'entre pas davantage");
+
+  const uint32_t justBefore = resume + kSensorFilterGateFloorMs - 1000;
+  f.setContext(true, true, justBefore);
+  TEST_ASSERT_TRUE_MESSAGE(f.gateClosed(), "encore ferme a 59 s");
+  TEST_ASSERT_FALSE(f.addSample(4.79f, justBefore));
+
+  t = resume + kSensorFilterGateFloorMs;
+  f.setContext(true, true, t);
+  TEST_ASSERT_FALSE_MESSAGE(f.gateClosed(), "porte ouverte a 60 s");
+  TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(), "ouverture => re-amorcage");
+  // La médiane de stagnation n'a jamais existé : 8,10 (écart 1,30 avec l'ancienne
+  // médiane 6,80) est suivi sans aucun rejet.
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(8.10f, t)); t += kDt; }
+  TEST_ASSERT_TRUE(f.ready(t - kDt));
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 8.10f, f.filtered());
+}
+
+// =============================================================================
+// Arbitrages tranchés par le gate pool-chemistry (v2.20.3)
+// =============================================================================
+// Ces tests étaient des tests de CARACTÉRISATION : ils verrouillaient le
+// comportement observé afin de le porter au gate. Le gate a statué sur les 4
+// points — (a) et (c) et (d) ont changé le code de production, (b) est confirmé
+// tel quel. Chaque test ci-dessous atteste désormais la décision RETENUE et
+// rappelle en commentaire quelle décision l'a rendu caduc.
+
+// --- (1) rearm() REMET rejectedCount à 0, et publie la valeur d'avant ---------
+// ARBITRAGE (gate pool-chemistry v2.20.3, point (a)) : ce test attestait
+// l'inverse — « rearm() conserve rejectedCount » — et le gate l'a rendu caduc.
+// Motif retenu : /debug/sensor_filter_state affichait encore rejected=255 après
+// un ré-amorçage RÉUSSI, l'exploitant ne distinguait donc pas un filtre RÉPARÉ
+// d'un filtre encore VERROUILLÉ. La valeur d'avant n'est pas perdue : elle est
+// publiée par rejectedBeforeRearm(), que la coquille journalise pour tracer
+// l'ampleur du verrouillage levé.
+void test_rearm_resets_rejected_count_and_publishes_previous(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, f.rejectedBeforeRearm(),
+      "aucun re-amorcage encore survenu => rien a reporter");
+  for (int i = 0; i < 13; ++i) { f.addSample(4.79f, t); t += kDt; }
+  for (int i = 0; i < 12; ++i) { f.addSample(6.96f, t); t += kDt; }
+  TEST_ASSERT_TRUE(f.rearmedSinceLastPoll());
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, f.rejectedCount(),
+      "re-amorcage reussi => compteur remis a zero (filtre repare, pas verrouille)");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(12, f.rejectedBeforeRearm(),
+      "la valeur d'avant reste lisible pour le journal de re-amorcage");
+  // Le compteur repart bien de zéro : un rejet postérieur le remet à 1, il ne
+  // reprend pas là où il s'était arrêté.
+  TEST_ASSERT_FALSE(f.addSample(NAN, t));
+  TEST_ASSERT_EQUAL_UINT8(1, f.rejectedCount());
+  // reset() (le « gros marteau ») remet évidemment le compteur à zéro lui aussi.
+  f.reset();
+  TEST_ASSERT_EQUAL_UINT8(0, f.rejectedCount());
+}
+
+// --- (2) reset() efface le cooldown → ré-amorçage immédiat possible -----------
+// Cohérent : reset() vide déjà le buffer, donc la sonde impose de toute façon sa
+// valeur aux 13 échantillons suivants ; conserver le cooldown ne protégerait rien.
+void test_reset_clears_rearm_cooldown(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  for (int i = 0; i < 13; ++i) { f.addSample(4.79f, t); t += kDt; }
+  for (int i = 0; i < 12; ++i) { f.addSample(6.96f, t); t += kDt; }   // ré-amorçage #1
+  TEST_ASSERT_TRUE(f.rearmedSinceLastPoll());
+
+  f.reset();  // action manuelle (calibration / reprise UI)
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(4.79f, t)); t += kDt; }
+  for (int i = 0; i < 12; ++i) { TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt; }
+  TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(),
+      "reset() remet le cooldown a neuf : 2e re-amorcage autorise sans attendre 30 min");
+  TEST_ASSERT_EQUAL_UINT8(0, f.rearmDenied());
+}
+
+// --- (3) la garde de bande juge le CENTRE de la série, pas le dernier brut ----
+// ARBITRAGE (gate pool-chemistry v2.20.3, point (c)) : ce test attestait que
+// seule la 12ᵉ valeur brute était confrontée à [rearmMin ; rearmMax], ce qui
+// laissait fuir hors bande une série entière pourvu que son DERNIER échantillon
+// rentre dans la bande. Le gate a tranché pour le centre (_spikeMin+_spikeMax)/2 :
+// même disponibilité, fuite hors bande divisée par deux (rearmCoherence/2 au lieu
+// de rearmCoherence). Les deux cas ci-dessous sont volontairement SYMÉTRIQUES :
+// ils ne peuvent PAS être satisfaits tous les deux par la règle « dernier brut ».
+void test_band_guard_checks_series_center_not_last_reject(void) {
+  // Cas A — centre HORS bande, dernier brut DANS la bande => REFUS.
+  // Série [8,20 ; 8,35] : centre 8,275 > 8,20 = rearmMax, alors que le 12ᵉ brut
+  // (8,20) est pile sur la borne haute. L'ancienne règle aurait ré-amorcé.
+  {
+    SensorFilter f(phCfgRearm());
+    uint32_t t = 0;
+    for (int i = 0; i < 13; ++i) { f.addSample(7.00f, t); t += kDt; }
+    for (int i = 0; i < 11; ++i) { TEST_ASSERT_FALSE(f.addSample(8.35f, t)); t += kDt; }
+    TEST_ASSERT_FALSE(f.addSample(8.20f, t));
+    TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(),
+        "centre 8,275 hors bande => refus, meme si le 12e brut (8,20) y est");
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(2, f.rearmDenied(), "motif collant = hors bande");
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.001f, 7.00f, f.median(), "mediane intacte (refus)");
+  }
+  // Cas B — centre DANS la bande, dernier brut HORS bande => ACCORD.
+  // Série [8,10 ; 8,25] : centre 8,175 <= 8,20, alors que le 12ᵉ brut (8,25) est
+  // hors bande. L'ancienne règle aurait refusé. Preuve que c'est bien le centre,
+  // et non le dernier brut, qui décide.
+  {
+    SensorFilter f(phCfgRearm());
+    uint32_t t = 0;
+    for (int i = 0; i < 13; ++i) { f.addSample(7.00f, t); t += kDt; }
+    for (int i = 0; i < 11; ++i) { TEST_ASSERT_FALSE(f.addSample(8.10f, t)); t += kDt; }
+    TEST_ASSERT_FALSE(f.addSample(8.25f, t));
+    TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(),
+        "centre 8,175 dans la bande => re-amorcage, meme si le 12e brut (8,25) n'y est pas");
+    TEST_ASSERT_EQUAL_UINT8(0, f.rearmDenied());
+    TEST_ASSERT_TRUE_MESSAGE(isnan(f.median()), "buffer vide apres re-amorcage");
+  }
+}
+
+// =============================================================================
+// (4) Tolérance aux TROUS de lecture dans une série de rejets cohérents
+// =============================================================================
+// ARBITRAGE (gate pool-chemistry v2.20.3, point (d), BLOQUANT) : ces tests
+// attestaient qu'un NaN (ou un hors-plage) remettait la série à zéro, présenté
+// comme un choix de sûreté « évidence CONTINUE ». Le gate l'a rendu caduc :
+// « perdre toute régulation par un trou de lecture est inacceptable » — une sonde
+// ratant un cycle sur douze pendant un échelon LÉGITIME ne ré-amorçait jamais,
+// c'est-à-dire que l'incident d'origine n'était pas corrigé.
+// Règle chiffrée retenue, exercée par les 5 tests qui suivent :
+//   * un trou n'incrémente PAS la série, mais ne la remet PAS à zéro ;
+//   * au plus 2 trous par série ; JAMAIS 2 consécutifs ;
+//   * le 3ᵉ trou ou 2 trous consécutifs remettent la série à zéro ;
+//   * un échantillon ACCEPTÉ remet toujours la série à zéro (inchangé).
+// NB : tous ces tests utilisent phCfgRearm() — avec phCfg() la sortie de secours
+// serait INERTE (rearmCoherence = 0) et ils passeraient pour une mauvaise raison.
+
+// Amorce un filtre pH sur 13 mesures acceptées à 4,79 (médiane 4,79). Les rejets
+// de spike qui suivent se font à 6,96 : |6,96 − 4,79| = 2,17 > spikeReject 1,0,
+// et 6,96 est dans la bande admissible [6,50 ; 8,20] → seule la longueur de la
+// série décide du ré-amorçage.
+static void primeAt479(SensorFilter& f, uint32_t& t) {
+  for (int i = 0; i < 13; ++i) { f.addSample(4.79f, t); t += kDt; }
+}
+
+// --- (4a) un trou ISOLÉ ne casse plus la série --------------------------------
+void test_isolated_gap_does_not_break_coherent_reject_streak(void) {
+  // Variante NaN : l'EZO reste muet un cycle.
+  {
+    SensorFilter f(phCfgRearm());
+    uint32_t t = 0;
+    primeAt479(f, t);
+    for (int i = 0; i < 11; ++i) { TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt; }
+    TEST_ASSERT_FALSE(f.addSample(NAN, t)); t += kDt;
+    TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(),
+        "le trou ne compte pas comme 12e rejet");
+    TEST_ASSERT_FALSE(f.addSample(6.96f, t));
+    TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(),
+        "la serie a SURVECU au trou : le 12e rejet REEL re-amorce");
+  }
+  // Variante hors plage plausible : lecture aberrante (< minValue) un cycle.
+  {
+    SensorFilter f(phCfgRearm());
+    uint32_t t = 0;
+    primeAt479(f, t);
+    for (int i = 0; i < 11; ++i) { TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt; }
+    TEST_ASSERT_FALSE(f.addSample(-5.0f, t)); t += kDt;   // hors [0 ; 14]
+    TEST_ASSERT_FALSE(f.rearmedSinceLastPoll());
+    TEST_ASSERT_FALSE(f.addSample(6.96f, t));
+    TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(),
+        "un hors-plage est un trou au meme titre qu'un NaN");
+  }
+}
+
+// --- (4b) 1 trou puis 11 rejets cohérents → ré-amorce -------------------------
+// Scénario nommément exigé par le gate : le trou survient TÔT dans la série (dès
+// le 2ᵉ cycle) et les 11 rejets qui suivent la mènent à son terme (12 rejets
+// RÉELS au total). Sans la tolérance, ce cas ne ré-amorçait jamais.
+void test_one_gap_then_eleven_rejects_rearms(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  primeAt479(f, t);
+  TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt;   // rejet #1 : série amorcée
+  TEST_ASSERT_FALSE(f.addSample(NAN, t)); t += kDt;     // trou isolé
+  for (int i = 0; i < 10; ++i) {
+    TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt;
+    TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(),
+        "11 rejets reels au plus => pas encore de re-amorcage");
+  }
+  TEST_ASSERT_FALSE(f.addSample(6.96f, t));            // rejet réel #12
+  TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(),
+      "12 rejets REELS malgre un trou => re-amorcage (exigence bloquante du gate)");
+  TEST_ASSERT_EQUAL_UINT8(0, f.rearmDenied());
+  TEST_ASSERT_TRUE_MESSAGE(isnan(f.median()), "buffer vide apres re-amorcage");
+}
+
+// --- (4c) 3 trous NON consécutifs → série remise à zéro, refus ----------------
+void test_three_gaps_in_series_deny_rearm(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  primeAt479(f, t);
+  // R,G,R,G,R,G : le 3ᵉ trou dépasse le budget (2) → série remise à zéro.
+  for (int i = 0; i < 3; ++i) {
+    TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt;
+    TEST_ASSERT_FALSE(f.addSample(NAN, t));   t += kDt;
+  }
+  // 11 rejets cohérents APRÈS la remise à zéro. Si les 3 rejets d'avant avaient
+  // été conservés, on aurait ré-amorcé au cours de cette boucle.
+  for (int i = 0; i < 11; ++i) { TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt; }
+  TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(),
+      "3e trou => serie remise a zero => 11 rejets ne suffisent pas");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, f.rearmDenied(),
+      "serie jamais complete => aucune garde consultee, aucun refus a alarmer");
+  TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.001f, 4.79f, f.median(), "mediane intacte");
+  // Le 12ᵉ de la NOUVELLE série, lui, ré-amorce : le compte a bien repris de zéro.
+  TEST_ASSERT_FALSE(f.addSample(6.96f, t));
+  TEST_ASSERT_TRUE(f.rearmedSinceLastPoll());
+}
+
+// --- (4d) 2 trous CONSÉCUTIFS → série remise à zéro, refus --------------------
+// Deux cycles muets d'affilée : l'évidence n'est plus continue, on refuse même si
+// le budget de trous (2) n'est pas dépassé.
+void test_two_consecutive_gaps_deny_rearm(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  primeAt479(f, t);
+  for (int i = 0; i < 11; ++i) { TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt; }
+  TEST_ASSERT_FALSE(f.addSample(NAN, t)); t += kDt;   // trou 1 (toléré)
+  TEST_ASSERT_FALSE(f.addSample(NAN, t)); t += kDt;   // trou 2 CONSÉCUTIF → RAZ
+  for (int i = 0; i < 11; ++i) { TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt; }
+  TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(),
+      "2 trous consecutifs => serie remise a zero => 11 rejets ne suffisent pas");
+  TEST_ASSERT_EQUAL_UINT8(0, f.rearmDenied());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.79f, f.median());
+  TEST_ASSERT_FALSE(f.addSample(6.96f, t));
+  TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(), "12e de la nouvelle serie => re-amorcage");
+}
+
+// --- (4e) non-régression : un échantillon ACCEPTÉ remet toujours la série à 0 --
+// La tolérance ne concerne QUE les trous. Une mesure acceptée prouve que la
+// médiane courante fait encore autorité → les rejets d'avant ne décrivent plus
+// un échelon soutenu et ne doivent pas se cumuler avec ceux d'après.
+void test_accepted_sample_resets_reject_series(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  primeAt479(f, t);
+  for (int i = 0; i < 11; ++i) { TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt; }
+  TEST_ASSERT_TRUE_MESSAGE(f.addSample(4.80f, t), "proche de la mediane => ACCEPTE");
+  t += kDt;
+  for (int i = 0; i < 11; ++i) { TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt; }
+  TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(),
+      "un echantillon accepte remet la serie a zero : 22 rejets ne se cumulent pas");
+  TEST_ASSERT_EQUAL_UINT8(0, f.rearmDenied());
+  TEST_ASSERT_FALSE(f.addSample(6.96f, t));
+  TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(), "12e de la nouvelle serie => re-amorcage");
+}
+
+// --- (4f) non-régression : un trou ne fait PAS avancer le compte de la série ---
+// 11 rejets + 1 trou != 12 rejets. La tolérance PRÉSERVE l'évidence acquise, elle
+// n'en FABRIQUE pas : seuls des rejets réels comptent vers kSensorFilterSpikeRearmCount.
+void test_gap_does_not_advance_spike_count(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  primeAt479(f, t);
+  for (int i = 0; i < 11; ++i) { TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt; }
+  TEST_ASSERT_FALSE(f.addSample(NAN, t)); t += kDt;     // trou #1 : ne compte pas
+  TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(), "11 rejets + 1 trou != 12");
+  TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt;   // rejet réel #12
+  TEST_ASSERT_TRUE(f.rearmedSinceLastPoll());
+  // Cas extrême : QUE des trous, jamais de rejet réel → aucune série, aucun
+  // ré-amorçage possible (une sonde muette n'impose rien).
+  SensorFilter g(phCfgRearm());
+  uint32_t u = 0;
+  primeAt479(g, u);
+  for (int i = 0; i < 60; ++i) { TEST_ASSERT_FALSE(g.addSample(NAN, u)); u += kDt; }
+  TEST_ASSERT_FALSE_MESSAGE(g.rearmedSinceLastPoll(),
+      "que des trous => aucune evidence => jamais de re-amorcage");
+  TEST_ASSERT_EQUAL_UINT8(0, g.rearmDenied());
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.79f, g.median());
+}
+
+// --- Verrou de régression sur les constantes du correctif ---------------------
+void test_rearm_constants_values(void) {
+  TEST_ASSERT_EQUAL_UINT8(12, kSensorFilterSpikeRearmCount);
+  TEST_ASSERT_EQUAL_UINT32(1800000UL, kSensorFilterRearmCooldownMs);   // 30 min
+  TEST_ASSERT_EQUAL_UINT32(60000UL, kSensorFilterGateFloorMs);         // 60 s
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.20f, kPhFilterRearmCoherence);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 40.0f, kOrpFilterRearmCoherence);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 6.50f, kPhFilterRearmMin);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 8.20f, kPhFilterRearmMax);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 300.0f, kOrpFilterRearmMin);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, 950.0f, kOrpFilterRearmMax);
+  // La sortie de secours doit rester PLUS LENTE que le warmup n'est long : sinon
+  // elle chasserait le bruit plus vite que le filtre ne se stabilise.
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT8(kSensorFilterCentralWindow - 1,
+                                     kSensorFilterSpikeRearmCount);
+}
+
+// --- Non-régression : sans les 3 champs, la sortie de secours est INERTE -------
+// (rétrocompatibilité des init agrégées courtes — c'est ce qui permet aux tests
+// historiques de rester valides.)
+void test_rearm_disabled_with_legacy_config(void) {
+  SensorFilter f(phCfg());  // rearmCoherence value-initialisé à 0
+  uint32_t t = 0;
+  for (int i = 0; i < 13; ++i) { f.addSample(4.79f, t); t += kDt; }
+  for (int i = 0; i < 60; ++i) { TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt; }
+  TEST_ASSERT_FALSE_MESSAGE(f.rearmedSinceLastPoll(),
+      "rearmCoherence = 0 => sortie de secours desactivee (comportement anterieur)");
+  TEST_ASSERT_FLOAT_WITHIN(0.001f, 4.79f, f.median());
+  TEST_ASSERT_FALSE(f.ready(t));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   // Verrou constantes.
@@ -755,5 +1499,31 @@ int main(int, char **) {
   RUN_TEST(test_frozen_disabled_with_legacy_config);
   RUN_TEST(test_frozen_detector_samples_zero_never_frozen);
   RUN_TEST(test_frozen_detector_run_count_saturates_no_overflow);
+  // v2.20.3 — porte d'alimentation + sortie de secours.
+  RUN_TEST(test_rearm_constants_values);
+  RUN_TEST(test_incident_replay_sustained_step_recovers_bounded_ph);   // T1 (central)
+  RUN_TEST(test_incident_replay_sustained_step_recovers_bounded_orp);  // T7
+  RUN_TEST(test_stagnation_median_never_authoritative_ph);             // T2
+  RUN_TEST(test_stagnation_median_never_authoritative_orp);            // T7
+  RUN_TEST(test_isolated_spikes_never_rearm_ph);                       // T3
+  RUN_TEST(test_isolated_spikes_never_rearm_orp);                      // T7
+  RUN_TEST(test_rearm_does_not_mask_frozen_probe);                     // T5 (P8)
+  RUN_TEST(test_eleven_coherent_rejects_do_not_rearm);                 // T8a
+  RUN_TEST(test_incoherent_spike_resets_coherent_streak);              // T8b
+  RUN_TEST(test_second_rearm_within_cooldown_denied);                  // T8c
+  RUN_TEST(test_rearm_denied_out_of_admissible_band);                  // T8d
+  RUN_TEST(test_gate_floor_applies_with_zero_stabilization_delay);     // T9
+  RUN_TEST(test_rearm_disabled_with_legacy_config);
+  // Arbitrages tranchés par le gate pool-chemistry (v2.20.3).
+  RUN_TEST(test_rearm_resets_rejected_count_and_publishes_previous);    // (a)
+  RUN_TEST(test_reset_clears_rearm_cooldown);                          // (b) confirmé
+  RUN_TEST(test_band_guard_checks_series_center_not_last_reject);      // (c)
+  // (d) tolérance aux trous de lecture — condition BLOQUANTE du gate.
+  RUN_TEST(test_isolated_gap_does_not_break_coherent_reject_streak);   // 4a
+  RUN_TEST(test_one_gap_then_eleven_rejects_rearms);                   // 4b
+  RUN_TEST(test_three_gaps_in_series_deny_rearm);                      // 4c
+  RUN_TEST(test_two_consecutive_gaps_deny_rearm);                      // 4d
+  RUN_TEST(test_accepted_sample_resets_reject_series);                 // 4e
+  RUN_TEST(test_gap_does_not_advance_spike_count);                     // 4f
   return UNITY_END();
 }

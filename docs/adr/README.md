@@ -50,11 +50,15 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0031](0031-disjoncteur-bootloop-history.md) | Disjoncteur de boot-loop sur l'init de la partition history (détection inter-boot NVS + effacement au seuil) | Accepté |
 | [0032](0032-reponses-http-bornees.md) | Réponses HTTP bornées : pagination, chunked ou allocation unique testée — gardes à seuil fixe interdites | Accepté |
 | [0033](0033-budget-espace-partition-history.md) | Budget d'espace garanti sur la partition history (garde d'admission + remove-avant-write + plafonds log réduits) | Accepté |
-| [0034](0034-migration-core3-idf5.md) | Migration core Arduino 3.x / ESP-IDF 5.x via pioarduino (code bi-core exécuté ; bascule production conditionnelle) | Accepté |
+| [0034](0034-migration-core3-idf5.md) | Migration core Arduino 3.x / ESP-IDF 5.x via pioarduino (code bi-core exécuté ; porte de bascule **franchie** par ADR-0042) | Accepté |
 | [0035](0035-parachute-oom-new-handler.md) | Parachute OOM global : `std::set_new_handler` + réserve d'urgence libérable + callback IDF flag-seul | Accepté |
 | [0036](0036-psram-requise-mise-a-jour-en-ligne.md) | PSRAM libre requise pour toute session TLS sortante (mise à jour en ligne GitHub) | Accepté |
 | [0037](0037-postmortem-oom-et-integrite-tas.md) | Post-mortem d'allocation en RAM RTC + contrôle d'intégrité périodique du tas | Accepté |
 | [0038](0038-metrique-memoire-allouable-8-bits.md) | La mémoire se mesure sur le pool 8 bits réellement allouable, jamais sur `MALLOC_CAP_INTERNAL` | Accepté |
+| [0039](0039-offset-ph-applique-en-sortie-des-accesseurs.md) | Offset logiciel de mesure pH appliqué en sortie des accesseurs (filtre sur le brut, règle `*Raw`) | Accepté |
+| [0040](0040-pas-de-calibrage-sur-fragmentation-pathologique.md) | On ne calibre pas des seuils sur une fragmentation pathologique (régime bi-métrique assumé) | Accepté |
+| [0041](0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md) | Autorité des mesures non représentatives et sortie de secours du filtre de tendance centrale | Accepté |
+| [0042](0042-core3-environnement-par-defaut.md) | Le core Arduino 3.x / IDF 5 devient l'environnement par défaut (bootloader ET application) | Accepté |
 
 ## Template
 

@@ -90,7 +90,16 @@ Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dos
 
 3. **Compiler et déployer**
 
-   **Via USB** (obligatoire pour la première installation — bootloader et table de partitions) :
+   L'environnement de build par défaut est **`esp32dev_core3`** (core Arduino 3.x / ESP-IDF 5 via pioarduino) — bootloader **et** application, depuis la v2.20.4 ([ADR-0042](docs/adr/0042-core3-environnement-par-defaut.md)). Le core 2 reste disponible en repli explicite via `PIO_ENV` :
+
+   ```bash
+   pio run                              # core 3 (défaut)
+   PIO_ENV=esp32dev ./deploy.sh all     # repli core 2
+   ```
+
+   ⚠️ Alterner entre les deux environnements exige un `pio pkg install -e <env>` : les deux plateformes partagent le nom de paquet du framework et s'écrasent mutuellement (voir [BUILD.md](docs/BUILD.md#les-deux-environnements-firmware)).
+
+   **Via USB** (obligatoire pour la première installation, et pour tout changement de bootloader ou de table de partitions) :
    ```bash
    ./deploy.sh all       # Compile et upload firmware + filesystem
    ./deploy.sh firmware  # Firmware uniquement
@@ -122,7 +131,7 @@ Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dos
      [INFO] AP Password: XXXXXXXX
      [INFO] IP AP: 192.168.4.1
      ```
-   - Ouvrir le moniteur série **avant** d'alimenter l'appareil : `pio device monitor -b 115200`
+   - Le flash USB (`./deploy.sh all`) **enchaîne le moniteur série** : l'ouverture du port redémarre l'ESP32, le boot est donc capté depuis sa première ligne, sans manœuvre particulière
    - Coller le mot de passe sur une étiquette sur le boîtier
    - Se connecter au réseau `PoolControllerAP` avec ce mot de passe et accéder à l'assistant de configuration http://192.168.4.1
 
@@ -131,12 +140,14 @@ Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dos
    > GET http://poolcontroller.local/auth/ap-password
    > ```
 
-   > **Forcer la génération d'un nouveau mot de passe AP** (ex : fabrication d'un nouvel appareil, remplacement d'étiquette) : utiliser l'option `factory` qui efface toute la flash avant de flasher.
+   > **Forcer la génération d'un nouveau mot de passe AP** (ex : fabrication d'un nouvel appareil, remplacement d'étiquette) : utiliser l'option `factory`, qui efface la flash, réinstalle, ré-efface la NVS **en dernier**, puis **ouvre le moniteur série automatiquement**. Le mot de passe s'affiche dans les premières lignes de boot — inutile d'ouvrir un moniteur à la main, et inutile de le lancer *avant* d'alimenter l'appareil.
    > ```bash
    > ./deploy.sh factory
-   > pio device monitor -b 115200   # ouvrir avant d'alimenter l'appareil
    > ```
-   > ⚠️ Efface **toute** la flash (firmware, filesystem, NVS, historique). À n'utiliser que sur un appareil qu'on réinitialise complètement.
+   > ```
+   > === MOT DE PASSE AP WIFI: XXXXXXXX ===
+   > ```
+   > ⚠️ Efface **toute** la flash (firmware, filesystem, NVS, historique). À n'utiliser que sur un appareil qu'on réinitialise complètement. Voir [UPDATE_GUIDE.md](docs/UPDATE_GUIDE.md#récupérer-le-mot-de-passe-wifi-ap).
 
 2. **Accès interface web**
    - `http://poolcontroller.local` si réseau wifi configuré, sinon se connecter au réseau AP PoolControllerAP et utiliser l'adresse http://192.168.4.1
@@ -298,6 +309,8 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
   - `./deploy.sh ota-all` - Compile et envoie OTA (WiFi) firmware + filesystem
   - `./deploy.sh ota-firmware` - Compile et envoie OTA firmware uniquement
   - `./deploy.sh ota-fs` - Compile et envoie OTA filesystem uniquement
+  - Les modes **USB** détectent le port série (surcharge : `PORT=/dev/cu.usbserial-10 ./deploy.sh all`) et **enchaînent le moniteur série** — `NO_MONITOR=1` pour s'en passer
+  - L'environnement PlatformIO utilisé est celui de `PIO_ENV` (défaut `esp32dev_core3`, repli `PIO_ENV=esp32dev`)
 
 - **`build_fs.sh`** - Construction du filesystem LittleFS
   - Minifie automatiquement HTML/CSS/JS
@@ -316,7 +329,8 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
 
 - **`platformio.ini`** - Configuration PlatformIO
   - Définit les dépendances, ports, partitions
-  - Port série: `/dev/cu.usbserial-0001` (à adapter)
+  - `default_envs = esp32dev_core3` (core Arduino 3.x / IDF 5) ; `esp32dev` = repli core 2, `native` = tests unitaires
+  - Port série: détecté par `deploy.sh` (surcharge `PORT=...`)
 
 - **`partitions.csv`** - Table de partitions ESP32 4MB (layout v2, [ADR-0015](docs/adr/0015-partition-app-1.5mb.md))
   - 2× slots OTA app0/app1 (1.5 MB / 1536 KB chacun)

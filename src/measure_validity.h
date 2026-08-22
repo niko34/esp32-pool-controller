@@ -44,6 +44,11 @@ private:
   bool _lastWaterPresent = false;  // dernier état d'eau vu (front montant au boot si eau présente)
   uint32_t _waterRiseMs = 0;       // millis() du dernier front montant ; 0 = jamais (sentinelle)
   bool _wasStabilizing = false;    // purge en cours au tick précédent (log de fin)
+  // v2.20.3 (lot E) — instrumentation : bruts pH/ORP mémorisés au front montant
+  // d'eau, comparés aux bruts de fin de purge (delta journalisé). Sert à trancher
+  // a posteriori l'origine des excursions de mesure à la reprise de circulation.
+  float _phRawAtRise = NAN;
+  float _orpRawAtRise = NAN;
 
   // --- Cache des sorties (partagé loopTask / async_tcp) ---
   mutable portMUX_TYPE _mux = portMUX_INITIALIZER_UNLOCKED;

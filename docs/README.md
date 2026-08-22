@@ -76,7 +76,11 @@ docs/
 │   ├── 0035-parachute-oom-new-handler.md
 │   ├── 0036-psram-requise-mise-a-jour-en-ligne.md
 │   ├── 0037-postmortem-oom-et-integrite-tas.md
-│   └── 0038-metrique-memoire-allouable-8-bits.md
+│   ├── 0038-metrique-memoire-allouable-8-bits.md
+│   ├── 0039-offset-ph-applique-en-sortie-des-accesseurs.md
+│   ├── 0040-pas-de-calibrage-sur-fragmentation-pathologique.md
+│   ├── 0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md
+│   └── 0042-core3-environnement-par-defaut.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

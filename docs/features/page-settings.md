@@ -103,7 +103,31 @@ Nouvelle section **en 1ᵉʳ onglet** (feature-056, v2.19.0). Un `radiogroup` (`
       | `tls_low_memory` | **inchangés** | message firmware, type `info` | `loadSystemInfo()` |
 
     - Filet de sécurité : si une requête part malgré la neutralisation, le `503 psram_required` est affiché **tel quel, sans préfixe** et en toast de type `info` (v2.18.7) — plus de « Erreur vérification mise à jour : », plus de tonalité d'échec, puisqu'il s'agit d'une caractéristique matérielle et non d'une panne. Même traitement sur le bouton d'installation, qui affiche en plus le message dans la ligne d'état de la carte (`#github_update_status`) et masque la barre de progression ; pour les deux refus temporaires, la ligne d'état porte le message et le bouton reste utilisable.
-- OTA manuel : `POST /update` (multipart `.bin`).
+- OTA manuel : `POST /update` (multipart `.bin`) — voir la card ci-dessous.
+
+#### Card « Mise à jour manuelle » (v2.20.1)
+
+Champs : `#update_file` (input `accept=".bin"`), `#update_type` (`<select>` Firmware / Système de fichiers), `#update_btn`, `#update_progress` + `#update_progress_bar`, `#update_status`.
+
+**Déduction automatique du type à la sélection du fichier** — le `<select>` valait `firmware` par défaut et y **revenait à chaque rechargement de page**, donc juste après un flash de firmware réussi (qui redémarre l'appareil et recharge l'interface). Envoyer `littlefs.bin` dans la foulée partait avec le type `firmware`, et l'échec était indéchiffrable. Depuis la v2.20.1 :
+
+- `detectUpdateType(name)` ([`data/app.js`](../../data/app.js)) déduit `filesystem` / `firmware` / `null` du **nom** du fichier. Le nom est testé pour `littlefs`, `spiffs`, `filesystem`, et `fs.bin` **ancré** sur un séparateur (`^`, `.`, `-`, `_`) — sans cet ancrage, `refs.bin` ou `defs.bin` seraient classés « système de fichiers » et le type serait pré-réglé silencieusement à tort. C'est le **miroir** de `kFsSuffixes` dans [`src/ota_type_logic.h`](../../src/ota_type_logic.h) : toute évolution de la règle touche les **deux** côtés.
+- Le `<select>` est **pré-réglé** sur le type déduit — jamais verrouillé, l'utilisateur peut toujours le changer.
+- Le type **n'est pas persisté** entre deux visites : mémoriser le dernier type utilisé recréerait exactement le même piège, dans l'autre sens.
+
+**Notice `#update_type_notice`** (`callout`, `role="status"` + `aria-live="polite"`, masquée par défaut) :
+
+| Situation | Classe | Message |
+|---|---|---|
+| Type déduit == type sélectionné | `callout--info` | « Type réglé sur « … » d'après le nom du fichier (…). Modifiable si besoin. » |
+| Type déduit ≠ type sélectionné | `callout--warn` | « Le type sélectionné (« … ») ne correspond pas au nom du fichier (…). Une image envoyée avec le mauvais type échoue, ou écrit dans la mauvaise partition. » |
+| Nom non concluant (aucun `null`) | — | notice **masquée** : indéterminé = silence total, aucune supposition affichée |
+
+`display:block` est posé **avant** l'écriture du texte, dans une frame séparée (`requestAnimationFrame`) : la région live doit exister dans l'arbre d'accessibilité avant sa mutation, sinon rien n'est annoncé.
+
+**Confirmation au clic, franchissable** — si l'incohérence est **maintenue** au moment d'envoyer, un `confirmDialog` (« Type de mise à jour incohérent », boutons **Envoyer quand même** / **Annuler**, style `danger`) demande validation. **Jamais de blocage dur** : un clic suffit à passer outre, et une annulation sort sans modifier aucun état. Le cas d'usage légitime existe (image renommée, binaire de test).
+
+**Affichage de la cause d'échec** — la réponse `FAIL: <cause>` du serveur est désormais affichée dans `#update_status` (`parseUpdateFailure()` : retire le préfixe `FAIL:`, borne à 200 caractères, retombe sur « erreur HTTP … — voir le Journal » si le corps est vide). La ligne prend la classe `is-error`, la barre passe en `error`, et les trois contrôles sont réactivés pour permettre une nouvelle tentative. Le succès reste conditionné à `status === 200` **et** corps exactement `OK`. Voir [API.md](../API.md#reponses-post-update-v2201).
 
 > ℹ️ **Cartes retirées/déplacées en v2.5.1** (feature-046) :
 > - « Version du firmware » (`#sys_current_firmware_version`) supprimée, redondante avec la ligne « Firmware » d'Infos système.

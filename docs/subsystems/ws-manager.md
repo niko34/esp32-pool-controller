@@ -242,3 +242,30 @@ Les deux champs sont lus depuis le **cache** du singleton `measureValidity` (`ge
 **Les champs live `ph` / `orp` / `phRaw` / `orpRaw` / … restent publiés tels quels** quand les mesures sont invalides (page calibration et onglet Avancé intacts) — c'est l'UI qui arbitre l'affichage via `measures_valid`. Le compte à rebours est **recalculé côté firmware** et rafraîchi à chaque push (5 s) : l'UI n'a aucun tick JS.
 
 Buffer `_buildSensorJson()` bumpe de **2048 → 2112 octets** (l'étape intermédiaire 1920 → 2048 venait des champs `ph/orp_mix_remaining_s`, v2.19.1).
+
+## Champs `sensor_data` ajoutés en v2.20.3 (alarme filtre bloqué)
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `phFilterAlarm` | bool | `true` quand le filtre pH est resté **non prêt > 5 min** (`kSensorFilterNotReadyAlarmMs`) **alors que** la filtration tournait **et** que les mesures étaient déclarées représentatives → plus **aucune** régulation pH, ni chlore (fail-closed feature-067 sur pH brut indisponible). |
+| `orpFilterAlarm` | bool | Symétrique ORP. |
+
+Source : `sensors.isPhFilterNotReadyAlarm()` / `isOrpFilterNotReadyAlarm()` — simple reflet d'un drapeau, toute l'hystérésis est côté `SensorManager`. **Mêmes champs et mêmes valeurs dans `GET /data`** (aucune asymétrie WS/HTTP ici, contrairement à `filtration_state_stale`).
+
+⚠️ **Distinction à ne pas perdre** : `phFilterReady = false` est **banal** (warmup, purge, plusieurs fois par jour) ; `phFilterAlarm = true` est une **anomalie durable**. La purge de la chambre de mesure, le warmup et la filtration à l'arrêt ne l'arment jamais. C'est ce champ que consomment le chip d'état filtre (label « Régulation à l'arrêt », prioritaire sur tous les autres états, y compris « EZO indisponible ») et la bannière du tableau de bord.
+
+**Budget de payload** : `_buildSensorJson()` passe de **2112 → 2176 octets**. Décompte exact des octets sérialisés ajoutés (pire cas, la valeur `false` étant la plus longue) : `"phFilterAlarm":false,` = 22 o, `"orpFilterAlarm":false,` = 23 o, soit **45 o**. `StaticJson` dimensionne le **pool ArduinoJson** (nœuds), pas la chaîne : 2 nœuds booléens ≈ 32 o, clés non copiées (littéraux). Marge de 64 o retenue pour couvrir pool **et** alignement. `sWsFrameBuf` reste vérifié indépendamment par la garde `measureJson(doc) + 1 > sizeof(sWsFrameBuf)`. Côté `/data`, buffer porté de **1280 → 1344** octets.
+
+Voir [sensors.md](sensors.md#alarme--filtre-non-prêt-durablement--v2203), [page-ph.md](../features/page-ph.md#bouton--réarmer-le-filtre-ph--v2203) et [page-dashboard.md](../features/page-dashboard.md#bannière--régulation-à-larrêt--v2203).
+
+## Champ `config` ajouté en feature-067 (offset logiciel pH, v2.20.0)
+
+| Champ | Type | Message | Description |
+|-------|------|---------|-------------|
+| `ph_offset` | float | **`config`** (pas `sensor_data`) | Offset logiciel de mesure pH, tel que persisté en NVS. Plage `[−0.50, +0.50]`, défaut `0`. `pH corrigé = pH brut EZO + ph_offset`. Miroir exact de `GET /get-config` — c'est un **paramètre**, pas une mesure : il n'a rien à faire dans le push temps réel 5 s. |
+
+Émis par `_buildConfigJson()` ([`ws_manager.cpp`](../../src/ws_manager.cpp)) depuis `mqttCfg.phOffset`. Le broadcast `config` est déclenché par `POST /save-config` : l'UI voit donc la nouvelle valeur **sans reload**, et le champ de saisie `#ph_offset` est re-synchronisé — **sauf s'il a le focus**, pour ne pas écraser une saisie en cours ([page-ph.md](../features/page-ph.md#carte--correction-de-la-mesure-ph--feature-067-v2200)).
+
+**Aucun champ `sensor_data` n'est ajouté.** En revanche la **valeur** de trois champs existants intègre désormais l'offset — `ph`, `phMedian`, `phFiltered` sont **corrigés**, `phRaw` reste **brut EZO** (règle : seuls les champs `*Raw` sont bruts, [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)). Le repli de warmup de `ph` passe par la valeur **corrigée**, jamais par le brut : on ne mélange jamais brut et corrigé sur un même champ.
+
+Marge du buffer `_buildConfigJson()` portée à **2368 octets** (+1 champ ≈ 24 octets).

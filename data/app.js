@@ -1462,6 +1462,26 @@
       .catch(() => false);
   }
 
+  // feature-067 : variante de sendConfig() qui REMONTE le message d'erreur du
+  // serveur. /save-config peut refuser une valeur (HTTP 400 + {"error":"..."}) —
+  // il ne faut jamais laisser croire à l'utilisateur que c'est enregistré.
+  async function sendConfigDetailed(data) {
+    try {
+      const res = await authFetch("/save-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (res.ok) return { ok: true, error: "" };
+      let msg = "";
+      try { const j = await res.json(); msg = (j && j.error) ? String(j.error) : ""; } catch (e) { /* corps non JSON */ }
+      return { ok: false, error: msg || `Enregistrement refusé (HTTP ${res.status}).` };
+    } catch (e) {
+      // Hors ligne / contrôleur injoignable : surtout ne pas afficher « réussi ».
+      return { ok: false, error: "Contrôleur injoignable — modification non enregistrée." };
+    }
+  }
+
   function updateMqttStatusIndicator(enabled, mqttConnected) {
     const pill = $("#mqtt_status_pill");
     if (!pill) return;
@@ -1663,6 +1683,117 @@
     updatePhModeControls();
   }
 
+  // ---------- feature-067 : offset logiciel de mesure pH ----------
+  // pH corrigé = pH brut EZO + offset. Bornes alignées sur le firmware
+  // (kPhOffsetMin / kPhOffsetMax dans src/constants.h) — la validation qui FAIT FOI
+  // reste côté serveur (refus HTTP 400), ces bornes ne servent qu'au confort de saisie.
+  const PH_OFFSET_MIN = -0.50;
+  const PH_OFFSET_MAX = 0.50;
+  const PH_OFFSET_WARN1 = 0.15;  // palier 1 : avertissement de décalage de régulation
+  const PH_OFFSET_WARN2 = 0.30;  // palier 2 : offset élevé, recalibration recommandée
+
+  // Offset actuellement appliqué par le firmware (config, pas le champ de saisie).
+  function _phOffsetValue() {
+    const v = window._config?.ph_offset;
+    return (typeof v === "number" && isFinite(v)) ? v : 0;
+  }
+
+  // Formatage français : virgule décimale, 2 décimales, signe explicite si demandé.
+  function _fmtPh(v, signed) {
+    const s = Math.abs(v).toFixed(2).replace(".", ",");
+    if (signed) return (v < 0 ? "−" : "+") + s;
+    return (v < 0 ? "−" : "") + s;
+  }
+
+  // Avertissements imposés par la revue de sécurité chimique. Calculés sur la
+  // valeur EN COURS DE SAISIE (pas sur la config enregistrée) : l'utilisateur doit
+  // être prévenu AVANT d'enregistrer.
+  function renderPhOffsetWarning() {
+    const box = $("#ph_offset_warning");
+    if (!box) return;
+    const raw = $("#ph_offset")?.value;
+    const off = parseFloat(raw);
+    if (raw === "" || !isFinite(off) || Math.abs(off) < PH_OFFSET_WARN1) {
+      box.style.display = "none";
+      box.textContent = "";
+      return;
+    }
+    // Consigne réelle de l'utilisateur : champ de saisie s'il est renseigné,
+    // sinon valeur enregistrée, sinon 7,20 (défaut projet).
+    const fieldTarget = parseFloat($("#ph_target")?.value);
+    const cfgTarget = window._config?.ph_target;
+    const target = isFinite(fieldTarget) ? fieldTarget
+                 : ((typeof cfgTarget === "number" && isFinite(cfgTarget)) ? cfgTarget : 7.2);
+    const regulated = target - off;
+    if (Math.abs(off) >= PH_OFFSET_WARN2) {
+      // Le plancher annoncé doit être CELUI QUE LE FIRMWARE APPLIQUERA : il passe
+      // au palier large STRICTEMENT au-dessus du seuil (|offset| > 0,30), alors
+      // que cet avertissement s'affiche DÈS 0,30. À exactement 0,30, le plancher
+      // reste donc 6,80 — annoncer 6,90 serait faux (revue).
+      const floor = Math.abs(off) > PH_OFFSET_WARN2 ? "6,90" : "6,80";
+      box.textContent = `Offset élevé (${_fmtPh(off, true)} pH). La régulation visera un pH mesuré brut de `
+        + `${_fmtPh(regulated, false)}. Au-delà de 0,30, la sonde doit être recalibrée plutôt que compensée. `
+        + `Le dosage d'acide sera bloqué sous ${floor} de pH BRUT (valeur de la sonde, avant correction).`;
+    } else {
+      box.textContent = `Attention : cet offset décale la régulation. Avec une consigne de `
+        + `${_fmtPh(target, false)} et cet offset, le système régulera l'eau à un pH réel de `
+        + `${_fmtPh(regulated, false)}. Un offset erroné entraîne un surdosage d'acide et une eau agressive. `
+        + `Vérifiez votre mesure de référence avant d'enregistrer.`;
+    }
+    box.style.display = "";
+  }
+
+  function bindPhOffsetSave() {
+    const input = $("#ph_offset");
+    const btn = $("#ph_offset_save_btn");
+    const errEl = $("#ph_offset_error");
+    if (!input || !btn) return;
+
+    const setBtn = (label, spinner, disabled, status) => {
+      btn.disabled = disabled;
+      btn.classList.remove("btn--primary", "btn--ok", "btn--danger");
+      btn.classList.add(status === "success" ? "btn--ok" : status === "error" ? "btn--danger" : "btn--primary");
+      btn.innerHTML = spinner ? `<span class="btn__spinner"></span><span>${label}</span>` : label;
+    };
+    const showErr = (msg) => {
+      if (!errEl) return;
+      if (msg) { errEl.textContent = msg; errEl.style.display = ""; }
+      else { errEl.textContent = ""; errEl.style.display = "none"; }
+    };
+
+    trackDirtyState("#ph_offset_save_btn", ["ph_offset"]);
+    input.addEventListener("input", () => { showErr(""); renderPhOffsetWarning(); });
+    input.addEventListener("change", renderPhOffsetWarning);
+
+    btn.addEventListener("click", async () => {
+      if (btn.disabled) return;
+      const value = parseFloat(input.value);
+      if (input.value === "" || !isFinite(value)) {
+        showErr("Saisissez une valeur numérique entre −0,50 et +0,50 (0,00 = aucune correction).");
+        return;
+      }
+      // Pré-contrôle local (confort) ; le serveur refait la validation et fait foi.
+      if (value < PH_OFFSET_MIN || value > PH_OFFSET_MAX) {
+        showErr("Offset pH invalide : la valeur doit être comprise entre −0,50 et +0,50 pH.");
+        return;
+      }
+      showErr("");
+      setBtn("Sauvegarde...", true, true, "default");
+      const res = await sendConfigDetailed({ ph_offset: Math.round(value * 100) / 100 });
+      if (res.ok) {
+        setBtn("Sauvegarde réussie", false, true, "success");
+        loadConfig();
+        setTimeout(() => setBtn("Sauvegarder", false, true, "default"), 2000);
+      } else {
+        // Refus serveur : afficher le message tel quel, ne JAMAIS laisser croire
+        // que la valeur est enregistrée (le champ conserve la saisie fautive).
+        showErr(res.error);
+        setBtn("Erreur", false, false, "error");
+        setTimeout(() => setBtn("Sauvegarder", false, false, "default"), 2000);
+      }
+    });
+  }
+
   function updateOrpModeControls() {
     const mode = getSegmented("orp_regulation_mode") || "automatic";
     const params = $("#orp-regulation-params");      // sous-bloc Automatique
@@ -1817,8 +1948,19 @@
     $("#ph_target").value = typeof cfg.ph_target === "number" ? cfg.ph_target : 7.2;
     $("#orp_target").value = typeof cfg.orp_target === "number" ? cfg.orp_target : 650;
 
+    // feature-067 : offset de mesure pH. Ne jamais écraser une saisie en cours
+    // (la config est aussi poussée par le WebSocket toutes les quelques secondes).
+    const phOffsetEl = $("#ph_offset");
+    if (phOffsetEl && document.activeElement !== phOffsetEl) {
+      const phOff = (typeof cfg.ph_offset === "number" && isFinite(cfg.ph_offset)) ? cfg.ph_offset : 0;
+      phOffsetEl.value = phOff.toFixed(2);
+    }
+    renderPhOffsetWarning();
+
     setSegmented("ph_regulation_mode", cfg.ph_regulation_mode || "automatic");
     updatePhModeControls();
+    // v2.20.3 (C5) : trace persistée d'une bascule AUTOMATIQUE en mode manuel
+    renderPhAutoManualBanner(cfg);
     if ($("#ph_daily_target_ml") && cfg.ph_daily_target_ml != null)
       $("#ph_daily_target_ml").value = cfg.ph_daily_target_ml;
     const maxMl = typeof cfg.max_ph_ml_per_day === "number" ? cfg.max_ph_ml_per_day : 0;
@@ -3532,6 +3674,13 @@
   // que si le compteur a augmenté récemment (fenêtre FILTER_REJECT_WINDOW_MS).
   function _classifyFilterState(json, prefix, st) {
     const raw = json?.[prefix + 'Raw'];
+    // v2.20.3 (D5) : l'alarme firmware « filtre non prêt durablement » prime sur
+    // TOUT le reste, y compris sur « EZO indisponible ». Elle signifie qu'il n'y a
+    // plus AUCUNE régulation depuis > 5 min alors que la filtration tourne — c'est
+    // le seul état que l'utilisateur doit voir immédiatement.
+    if (json?.[prefix + 'FilterAlarm'] === true) {
+      return { cls: 'bad', label: 'Régulation à l’arrêt' };
+    }
     if (!_filterRawIsValid(raw)) return { cls: 'unknown', label: 'EZO indisponible' };
     if (json?.[prefix + 'FilterUnstable'] === true) return { cls: 'bad', label: 'Capteur instable' };
     if (json?.[prefix + 'FilterReady'] === false) return { cls: 'warn', label: 'Stabilisation…' };
@@ -3573,6 +3722,18 @@
     const blockedEl = $(`#${prefix}-fm-blocked`);
 
     rawEl.textContent = _fmtFilterVal(prefix, json?.[prefix + 'Raw']);
+    // feature-067 : diagnostic pH — brut EZO, offset appliqué, corrigé (brut + offset).
+    // Médiane et valeur filtrée sont déjà corrigées côté firmware.
+    if (prefix === 'ph') {
+      const off = _phOffsetValue();
+      const offEl = $('#ph-fm-offset');
+      const corEl = $('#ph-fm-corrected');
+      if (offEl) offEl.textContent = (off >= 0 ? '+' : '') + off.toFixed(2);
+      if (corEl) {
+        const raw = json?.phRaw;
+        corEl.textContent = _filterRawIsValid(raw) ? Number(raw + off).toFixed(2) : '--';
+      }
+    }
     if (medEl) medEl.textContent = _fmtFilterVal(prefix, json?.[prefix + 'Median']);
     if (filEl) filEl.textContent = _fmtFilterVal(prefix, json?.[prefix + 'Filtered']);
     if (rejEl) { const r = json?.[prefix + 'RejectedCount']; rejEl.textContent = (typeof r === 'number') ? String(r) : '--'; }
@@ -3619,10 +3780,123 @@
     if (modal && modal.open) _renderFilterModalValues(prefix, json);
   }
 
+  // ---- v2.20.3 (D5) : bannière tableau de bord « régulation à l'arrêt » ----
+  // Alimentée par les drapeaux firmware ph/orpFilterAlarm (/data + WebSocket).
+  // Le firmware ne les arme QUE si la filtration tourne, que les mesures sont
+  // représentatives et que le filtre reste non prêt > 5 min : aucun affichage
+  // pendant une purge, un warmup ou une filtration à l'arrêt.
+  function updateRegulationAlert(json) {
+    const box = $("#regul-alert");
+    if (!box) return;
+    const phAlarm = json?.phFilterAlarm === true;
+    const orpAlarm = json?.orpFilterAlarm === true;
+    if (!phAlarm && !orpAlarm) { box.hidden = true; return; }
+
+    const titleEl = $("#regul-alert-title");
+    const textEl = $("#regul-alert-text");
+    const cta = $("#regul-alert-cta");
+    let quoi, cible;
+    if (phAlarm && orpAlarm) { quoi = "pH et chlore"; cible = "#/ph"; }
+    else if (phAlarm)        { quoi = "pH"; cible = "#/ph"; }
+    else                     { quoi = "chlore"; cible = "#/orp"; }
+    if (titleEl) titleEl.textContent = `Régulation ${quoi} à l’arrêt`;
+    if (textEl) {
+      textEl.textContent =
+        `Le filtre de mesure est bloqué depuis plus de 5 minutes alors que la ` +
+        `filtration tourne : aucun dosage ${quoi} n’est effectué. ` +
+        `Ouvrez l’état du filtre pour diagnostiquer et le réarmer si besoin.`;
+    }
+    if (cta) cta.setAttribute('href', cible);
+    box.hidden = false;
+  }
+
+  // ---- v2.20.3 (C5) : encart « bascule automatique pH → manuel » (page pH) ----
+  // Trace PERSISTÉE côté firmware (ph_auto_manual_epoch / _reason dans /get-config).
+  // Elle survit au redémarrage et au ring buffer du journal ; elle disparaît dès
+  // que l'utilisateur choisit lui-même un mode de régulation.
+  function renderPhAutoManualBanner(cfg) {
+    const box = $("#ph-auto-manual-banner");
+    if (!box) return;
+    const reason = (cfg && typeof cfg.ph_auto_manual_reason === 'string')
+      ? cfg.ph_auto_manual_reason.trim() : '';
+    const epoch = (cfg && typeof cfg.ph_auto_manual_epoch === 'number')
+      ? cfg.ph_auto_manual_epoch : 0;
+    if (!reason && !epoch) { box.hidden = true; return; }
+
+    let quand = "date inconnue (horloge non synchronisée au moment de la bascule)";
+    if (epoch > 0) {
+      try {
+        quand = new Date(epoch * 1000).toLocaleString('fr-FR');
+      } catch (e) { quand = String(epoch); }
+    }
+    const textEl = $("#ph-auto-manual-text");
+    if (textEl) {
+      textEl.textContent =
+        `Le ${quand}, l’appareil a basculé la régulation pH en mode manuel par ` +
+        `sécurité. Cause : ${reason || 'non renseignée'}. ` +
+        `Choisissez un mode ci-dessous pour acquitter cette alerte.`;
+    }
+    box.hidden = false;
+  }
+
+  // ---- v2.20.3 (D3) : réarmement manuel d'un filtre depuis son modal ----
+  // Confirmation EXPLICITE exigée par pool-chemistry (P6) : l'utilisateur doit
+  // être informé que la détection de sonde figée sera effacée.
+  async function requestFilterReset(prefix) {
+    const nom = prefix === 'ph' ? 'pH' : 'ORP';
+    const ok = await confirmDialog({
+      title: `Réarmer le filtre ${nom} ?`,
+      message:
+        `Cette action vide la fenêtre de mesure du filtre ${nom} et le fait ` +
+        `repartir de zéro : le dosage automatique ${nom} restera bloqué environ ` +
+        `une minute, le temps du réamorçage.\n\n` +
+        `⚠ La détection de sonde figée et l’alarme de bruit électrique en cours ` +
+        `seront EFFACÉES. Si la sonde est réellement défectueuse, le défaut sera ` +
+        `de nouveau masqué et devra être re-détecté.\n\n` +
+        `Un seul réarmement est autorisé par capteur toutes les 10 minutes.`,
+      confirmLabel: 'Réarmer',
+      cancelLabel: 'Annuler',
+      danger: true,
+    });
+    if (!ok) return;
+
+    const btn = $(`#${prefix}-filter-reset`);
+    if (btn) { btn.disabled = true; btn.textContent = 'Réarmement…'; }
+    try {
+      const res = await authFetch(`/reset-sensor-filter?sensor=${prefix}`, { method: 'POST' });
+      if (res.status === 429) {
+        let wait = 0;
+        try { wait = (await res.json())?.retry_after_s || 0; } catch (e) { /* corps vide */ }
+        showToast(
+          wait > 0
+            ? `Réarmement refusé : réessayez dans ${Math.ceil(wait / 60)} min.`
+            : `Réarmement refusé : un seul par capteur toutes les 10 minutes.`,
+          'error');
+        return;
+      }
+      if (res.status === 401 || res.status === 403) {
+        showToast("Réarmement refusé : droits administrateur requis.", 'error');
+        return;
+      }
+      if (!res.ok) { showToast(`Échec du réarmement du filtre ${nom}.`, 'error'); return; }
+      showToast(`Filtre ${nom} en cours de réarmement (~1 min avant reprise du dosage).`, 'success');
+      const modal = $(`#${prefix}-filter-modal`);
+      if (modal && modal.open) modal.close();
+    } catch (e) {
+      // Hors ligne / ESP32 injoignable : l'UI ne doit jamais rester figée.
+      console.error(`[${prefix}-filter] reset:`, e);
+      showToast("Contrôleur injoignable — réarmement non envoyé.", 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = `Réarmer le filtre ${nom}`; }
+    }
+  }
+
   function bindFilterChip(prefix) {
     const chip = $(`#${prefix}-filter-chip`);
     const modal = $(`#${prefix}-filter-modal`);
     const closeBtn = $(`#${prefix}-filter-close`);
+    const resetBtn = $(`#${prefix}-filter-reset`);
+    if (resetBtn) resetBtn.addEventListener('click', () => requestFilterReset(prefix));
     if (!chip || !modal) return;
 
     if (typeof modal.showModal !== 'function') {
@@ -3747,6 +4021,8 @@
         }
         // Chip d'état filtre ORP (feature-025)
         updateFilterChip('orp', json);
+        // v2.20.3 (D5) : bannière tableau de bord « régulation à l'arrêt »
+        updateRegulationAlert(json);
 
         const tempCurrentValue = $("#temp_current_value");
         const tempCurrentLabel = $("#temp_current_label");
@@ -4089,8 +4365,9 @@
   function renderCalibrationStatus() {
     const phPts = (latestSensorData?.phCalPoints != null) ? latestSensorData.phCalPoints : null;
     const orpPts = (latestSensorData?.orpCalPoints != null) ? latestSensorData.orpCalPoints : null;
-    const phRaw = (typeof latestSensorData?.phRaw === "number" && !isNaN(latestSensorData.phRaw)) ? latestSensorData.phRaw
-                : (typeof latestSensorData?.ph === "number" && !isNaN(latestSensorData.ph)) ? latestSensorData.ph : null;
+    // feature-067 : la calibration EZO travaille EXCLUSIVEMENT sur le brut — plus
+    // aucun repli sur `ph` (qui porte désormais la valeur corrigée par l'offset).
+    const phRaw = (typeof latestSensorData?.phRaw === "number" && !isNaN(latestSensorData.phRaw)) ? latestSensorData.phRaw : null;
     const orpRaw = (typeof latestSensorData?.orpRaw === "number" && !isNaN(latestSensorData.orpRaw)) ? latestSensorData.orpRaw
                  : (typeof latestSensorData?.orp === "number" && !isNaN(latestSensorData.orp)) ? latestSensorData.orp : null;
 
@@ -4181,8 +4458,10 @@
     // affiche un LISSAGE LÉGER dédié calibration : la médiane des ~5 dernières mesures
     // brutes (sans rejet, sans latch) → suit immédiatement la solution tout en gommant
     // le jitter. Repli sur le brut si la fenêtre est vide.
-    const phRaw = (typeof json.phRaw === "number" && !isNaN(json.phRaw)) ? json.phRaw
-                : (typeof json.ph === "number" && !isNaN(json.ph)) ? json.ph : null;
+    // feature-067 : INVARIANT — l'écran de calibration EZO n'affiche QUE le brut
+    // (`phRaw`). Le repli sur `json.ph` a été retiré : ce champ porte maintenant la
+    // valeur corrigée par l'offset logiciel, qui fausserait la lecture d'étalon.
+    const phRaw = (typeof json.phRaw === "number" && !isNaN(json.phRaw)) ? json.phRaw : null;
     const orpRaw = (typeof json.orpRaw === "number" && !isNaN(json.orpRaw)) ? json.orpRaw
                  : (typeof json.orp === "number" && !isNaN(json.orp)) ? json.orp : null;
 
@@ -5039,17 +5318,125 @@
   }
 
   // Manual update (/update)
+
+  // Libellés des types, alignés sur les <option> de #update_type
+  const UPDATE_TYPE_LABELS = {
+    firmware: "Firmware (.bin)",
+    filesystem: "Système de fichiers (.bin)",
+  };
+
+  // Déduit le type d'image du NOM du fichier. Retourne "firmware",
+  // "filesystem" ou null (indéterminé → aucune supposition affichée).
+  // ORDRE IMPOSÉ : filesystem testé EN PREMIER. Le nom nu `littlefs.bin`
+  // produit par build_fs.sh doit matcher — c'était le trou qui a permis
+  // d'envoyer une image FS déclarée « firmware » (bug 2.20.1).
+  function detectUpdateType(name) {
+    const n = String(name || "").toLowerCase();
+    if (!n) return null;
+    // `fs.bin` doit être ANCRÉ : un simple endsWith classerait `refs.bin`,
+    // `defs.bin` ou `mytoolfs.bin` en filesystem et pré-réglerait le type
+    // silencieusement. Miroir de kFsSuffixes dans src/ota_type_logic.h :
+    // toute évolution touche les DEUX côtés.
+    if (n.includes("littlefs") || n.includes("spiffs") || n.includes("filesystem") ||
+        /(?:^|[.\-_])fs\.bin$/.test(n)) {
+      return "filesystem";
+    }
+    if (n.includes("firmware")) return "firmware";
+    return null;
+  }
+
+  // Extrait la cause lisible d'un corps de réponse d'échec ("FAIL: <cause>").
+  function parseUpdateFailure(responseText, httpStatus) {
+    let cause = String(responseText || "").trim();
+    cause = cause.replace(/^FAIL\s*:?\s*/i, "").trim();
+    if (cause.length > 200) cause = cause.slice(0, 200);
+    if (!cause) {
+      cause = httpStatus ? `erreur HTTP ${httpStatus} — voir le Journal` : "cause inconnue — voir le Journal";
+    }
+    return cause;
+  }
+
   function bindManualUpdate() {
     const file = $("#update_file");
     const btn = $("#update_btn");
     const type = $("#update_type");
+    const notice = $("#update_type_notice");
+
+    // Type déduit du fichier courant (null = indéterminé ou aucun fichier)
+    let detectedType = null;
+
+    // Rendu de la notice. display:block est posé AVANT l'écriture du texte,
+    // dans une frame séparée : la région live doit exister dans l'arbre
+    // d'accessibilité avant sa mutation, sinon rien n'est annoncé.
+    function showNotice(kind, text) {
+      if (!notice) return;
+      notice.className = kind === "warn" ? "callout callout--warn" : "callout callout--info";
+      notice.style.display = "block";
+      requestAnimationFrame(() => {
+        notice.textContent = text;
+      });
+    }
+
+    function hideNotice() {
+      if (!notice) return;
+      notice.textContent = "";
+      notice.style.display = "none";
+    }
+
+    function fileName() {
+      return file && file.files && file.files.length ? file.files[0].name : "";
+    }
+
+    function typeLabel(value) {
+      return UPDATE_TYPE_LABELS[value] || value;
+    }
+
+    // Met la notice à jour selon la cohérence courante fichier ↔ type.
+    function refreshNotice() {
+      const name = fileName();
+      if (!name || !detectedType) {
+        hideNotice();  // Indéterminé = silence total
+        return;
+      }
+      if (detectedType === type.value) {
+        showNotice("info",
+          `Type réglé sur « ${typeLabel(type.value)} » d'après le nom du fichier (${name}). Modifiable si besoin.`);
+      } else {
+        showNotice("warn",
+          `Le type sélectionné (« ${typeLabel(type.value)} ») ne correspond pas au nom du fichier (${name}). ` +
+          `Une image envoyée avec le mauvais type échoue, ou écrit dans la mauvaise partition.`);
+      }
+    }
 
     file?.addEventListener("change", () => {
       btn.disabled = !(file.files && file.files.length);
+      detectedType = detectUpdateType(fileName());
+      if (!detectedType) {
+        hideNotice();
+        return;
+      }
+      type.value = detectedType;  // Pré-réglage, toujours modifiable
+      refreshNotice();
     });
 
-    btn?.addEventListener("click", () => {
+    type?.addEventListener("change", refreshNotice);
+
+    btn?.addEventListener("click", async () => {
       if (!(file.files && file.files.length)) return;
+
+      // Garde-fou SOUPLE : jamais de blocage dur, un clic suffit à passer outre.
+      if (detectedType && detectedType !== type.value) {
+        const ok = await confirmDialog({
+          title: "Type de mise à jour incohérent",
+          message: `Le fichier « ${fileName()} » ressemble à une image « ${typeLabel(detectedType)} ».\n\n` +
+                   `Vous avez sélectionné le type « ${typeLabel(type.value)} ».\n\n` +
+                   `Envoyer quand même ?`,
+          confirmLabel: "Envoyer quand même",
+          cancelLabel: "Annuler",
+          danger: true,
+        });
+        if (!ok) return;  // Sortie silencieuse, aucun état modifié
+      }
 
       const formData = new FormData();
       formData.append("update_type", type.value);
@@ -5062,6 +5449,9 @@
       progressWrap.style.display = "block";
       bar.style.width = "0%";
       bar.textContent = "0%";
+      bar.classList.remove("error");
+      bar.setAttribute("aria-valuenow", "0");
+      status.classList.remove("is-error");  // Purge l'échec précédent
       status.textContent = "Préparation…";
 
       btn.disabled = true;
@@ -5069,20 +5459,28 @@
       type.disabled = true;
 
       const xhr = new XMLHttpRequest();
-      let uploadCompleted = false;
+      let lastAnnounced = -1;  // Dernier palier de 10 % annoncé
 
       xhr.upload.addEventListener("progress", (e) => {
         if (!e.lengthComputable) return;
         const percent = Math.round((e.loaded / e.total) * 100);
         bar.style.width = percent + "%";
         bar.textContent = percent + "%";
-        status.textContent = percent < 100 ? `Envoi: ${percent}%` : "Envoi terminé, application en cours…";
+        bar.setAttribute("aria-valuenow", String(percent));
+        // #update_status est une région aria-live polite : n'écrire que par pas
+        // de 10 %, sinon le lecteur d'écran est saturé d'annonces.
+        const step = percent >= 100 ? 100 : Math.floor(percent / 10) * 10;
+        if (step !== lastAnnounced) {
+          lastAnnounced = step;
+          status.textContent = percent < 100 ? `Envoi: ${step}%` : "Envoi terminé, application en cours…";
+        }
       });
 
       xhr.addEventListener("load", () => {
         if (xhr.status === 200 && xhr.responseText.trim() === "OK") {
           bar.style.width = "100%";
           bar.textContent = "100%";
+          bar.setAttribute("aria-valuenow", "100");
           let countdown = 30;
           const updateCountdown = () => {
             status.textContent = `✓ Mise à jour réussie. Rechargement dans ${countdown}s…`;
@@ -5097,8 +5495,9 @@
         } else {
           bar.style.width = "100%";
           bar.classList.add("error");
-          const msg = xhr.responseText.trim() || `Erreur HTTP ${xhr.status}`;
-          status.textContent = `✗ Échec de la mise à jour: ${msg}`;
+          bar.setAttribute("aria-valuenow", "100");
+          status.textContent = "✗ Échec : " + parseUpdateFailure(xhr.responseText, xhr.status);
+          status.classList.add("is-error");
           btn.disabled = false;
           file.disabled = false;
           type.disabled = false;
@@ -5107,6 +5506,7 @@
 
       xhr.addEventListener("error", () => {
         status.textContent = "✗ Erreur réseau";
+        status.classList.add("is-error");
         btn.disabled = false;
         file.disabled = false;
         type.disabled = false;
@@ -6391,6 +6791,9 @@
     ["orp_target", "orp_limit", "orp_daily_limit"].forEach((id) => $(`#${id}`)?.addEventListener("change", () => updateOrpControls()));
     bindRegulationSave("ph",  "#ph_regulation_save_btn");
     bindRegulationSave("orp", "#orp_regulation_save_btn");
+    bindPhOffsetSave();  // feature-067 : carte « Correction de la mesure pH »
+    // La consigne pH entre dans le calcul de l'avertissement d'offset → resynchroniser.
+    $("#ph_target")?.addEventListener("input", renderPhOffsetWarning);
     // Onglet Régulation : initialisation segmented + save dédié
     initSegmented("regulation_speed");
     $("#regulation_save_btn")?.addEventListener("click", async () => {

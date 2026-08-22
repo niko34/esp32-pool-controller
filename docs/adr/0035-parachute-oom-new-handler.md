@@ -58,6 +58,21 @@ En corollaire, une **garde bicritère** protège `/check-update` **avant** la se
 - Le new_handler est un **point global unique** : tout futur mécanisme OOM (pools dédiés, seconde réserve) doit composer avec lui, pas le remplacer silencieusement.
 - Le chemin handler reste **interdit d'allocation/log/mutex** — toute évolution du module doit préserver ce contrat (logs différés via la loop uniquement).
 
+## Note additive — 2026-08-15 (v2.20.2) : invariant de ré-inscription du handler
+
+> Ajout **additif** ne modifiant aucune décision ci-dessus : il **précise une contrainte de mise en œuvre** du mécanisme décidé ici, révélée par un défaut de production.
+
+Le contrat « le handler se désinscrit quand la réserve est épuisée » (état `Depleted`, ci-dessus) suppose que **quelqu'un le ré-inscrive**. Ce n'était pas le cas : l'unique `std::set_new_handler(oomNewHandler)` du tick vivait en **fin de fonction**, donc derrière le `return` de la branche d'échec de réarmement. Passé la 2ᵉ famine, **plus aucun chemin ne rétablissait le handler** : l'appareil tournait sans filet ~2 h après chaque boot. Quatre crashs `abort()` sur la tâche `async_tcp` en découlent.
+
+Deux invariants deviennent **obligatoires** pour toute évolution du module :
+
+1. **La (ré)inscription est faite en TÊTE de `oomGuardLoopTick()`, avant tout `return`**, et **ne dépend PAS du miroir** `sHandlerRegistered` — `std::set_new_handler` est idempotent. Si elle était gardée par le miroir, une course avec `oomNewHandler` sur `async_tcp` pouvait laisser « handler nul + miroir `true` », état **dont plus aucun chemin ne sort**.
+2. **Le miroir est posé AVANT `set_new_handler`, sur les trois sites d'inscription.** Le seul état atteignable en cas d'entrelacement devient « miroir `false` / handler présent », **auto-réparé** au tick suivant ; l'état inverse est rendu **inatteignable**.
+
+Condition **C1** du gate `pool-chemistry`, également contractuelle : **jamais de handler sans réserve armée** — un handler sans réserve ne libère rien et masquerait l'état réel.
+
+Le miroir est exposé en lecture seule par `oomGuardHandlerRegistered()` → champ `oom_handler_registered` de `/get-system-info` : sans témoin, l'absence de parachute est **indétectable** autrement que par le journal, lequel s'écrasait alors en 25-35 min.
+
 ## Références
 
 - Code : [`src/oom_guard_logic.h`](../../src/oom_guard_logic.h), [`src/oom_guard.h`](../../src/oom_guard.h) / [`src/oom_guard.cpp`](../../src/oom_guard.cpp), [`src/main.cpp`](../../src/main.cpp) (init + tick), [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp) (garde 503), [`src/constants.h`](../../src/constants.h) (6 constantes `kOom*` / `kCheckUpdateMin*`)

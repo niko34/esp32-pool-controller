@@ -62,6 +62,25 @@ Skew assumé (conservateur) : un consommateur peut voir un `water_present` frais
 | `measures_valid` | bool | `true` = mesures pH/ORP/température représentatives du bassin (drapeau unique pour les 3 mesures — itération 2). `false` = eau absente **ou** purge post-reprise en cours. `false` au boot tant qu'`update()` n'a pas tourné (conservateur). |
 | `measures_stab_remaining_s` | uint | Secondes restantes de purge (arrondi seconde sup). `0` si valide **ou** eau absente. ⚠️ Nom **distinct** de `stabilization_remaining_s` (stabilisation post-calibration des **pompes**) : ici, purge de la **chambre de mesure**. |
 
+## Consommateurs du verdict `valid`
+
+| Consommateur | Usage |
+|---|---|
+| `history` | exclusion des points pH/ORP/température du point 5 min |
+| UI (WS + `/data`) | badges « Filtration arrêtée » / « Stabilisation : ~N min » |
+| `pump_controller` | suspension de l'injection pendant la purge |
+| **`sensor_filter` (v2.20.3)** | **porte d'alimentation** des filtres pH/ORP — voir ci-dessous |
+
+### Nouveau consommateur : la porte d'alimentation des filtres (v2.20.3)
+
+Jusqu'en v2.20.2, le verdict `valid` suspendait l'**injection** mais pas l'**ingestion** : les filtres pH/ORP continuaient d'avaler les mesures de stagnation, leur médiane convergeait vers la valeur de l'eau immobile, puis cette médiane acquérait **autorité** sur les mesures représentatives suivantes — qu'elle rejetait une à une comme aberrantes. Résultat : verrouillage définitif du filtre pH et perte totale de régulation pH **et** chlore (incident du 2026-08-16, ≥ 3 h).
+
+`SensorManager::_updateFilterGates()` lit désormais le **cache** (`getSnapshot()`, jamais `filtration.resolveWaterPresence()`) et le transmet aux deux filtres via `SensorFilter::setContext(waterPresent, measuresValid, nowMs)`, **avant** `addSample()` à chaque cycle de lecture. Porte fermée ⇒ l'échantillon n'entre ni dans le buffer, ni dans le détecteur de sonde figée, ni dans aucun compteur ; réouverture ⇒ ré-amorçage de l'estimateur.
+
+L'information nécessaire **existait déjà** et était publiée : le correctif consiste à la **consommer**, pas à la produire. Détail du mécanisme : [sensors.md](sensors.md#porte-dalimentation-du-filtre-v2203) · décision : [ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md).
+
+> ⚠️ Le plancher de gel de 60 s (`kSensorFilterGateFloorMs`) appliqué par le filtre après tout front montant d'eau est **indépendant** de `stabilizationDelayMin` : il couvre le cas où l'utilisateur a réglé le délai de purge à `0`. `measure_validity` n'est pas modifié sur ce point.
+
 ## Comportement au boot
 
 Eau présente au premier `update()` → front montant armé au boot → **délai de purge complet appliqué** (conservateur : on ignore depuis quand l'eau circule ni ce qui a stagné pendant l'extinction).
@@ -71,9 +90,24 @@ Eau présente au premier `update()` → front montant armé au boot → **délai
 | Événement | Niveau | Message |
 |---|---|---|
 | Front montant d'eau (purge > 0) | INFO | `Reprise circulation — stabilisation des mesures pH/ORP N min` |
+| Front montant d'eau (purge > 0), v2.20.3 | INFO | `[STAB] Bruts à la reprise : pH=6.957 ORP=556.0 mV (eau stagnante)` |
 | Fin de purge (transition purge → valide uniquement) | INFO | `Stabilisation terminée — mesures pH/ORP de nouveau représentatives` |
+| Fin de purge, v2.20.3 | INFO | `[STAB] Bruts en fin de purge : pH=7.210 (delta +0.253) ORP=612.0 mV (delta +56.0)` |
 
 Une retombée d'eau **pendant** la purge n'émet rien.
+
+### Instrumentation des bruts au front montant d'eau (v2.20.3)
+
+`measure_validity` mémorise les **bruts EZO** (`sensors.getPhRaw()` / `getOrpRaw()`, donc **sans** offset pH — [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)) à l'instant du front montant, puis journalise en fin de purge les nouveaux bruts **et le delta**.
+
+But : **trancher a posteriori l'origine des excursions de mesure à la reprise de circulation**, question laissée **ouverte** par le cycle v2.20.3 :
+
+- delta pH **fortement positif** (eau stagnante nettement plus acide que le bassin) ⇒ confirme l'hypothèse de **stagnation acide** dans la chambre de mesure, au voisinage du point d'injection ;
+- delta **quasi nul avec une valeur aberrante** ⇒ oriente vers une **défaillance de sonde**, à instruire séparément.
+
+Formatage NaN-safe : une mesure absente s'écrit `n/a`, **jamais** `nan` ni `0.00` (qui se confondrait avec une vraie valeur dans le journal). Le delta vaut `n/a` si l'une des deux bornes manque.
+
+> ⚠️ Ce module inclut désormais `sensors.h` (lecture seule de deux accesseurs scalaires, contexte `loopTask`). C'est le seul couplage ajouté ; la logique **pure** de `measure_validity_logic` reste intacte et sans dépendance.
 
 ## Cas limites
 

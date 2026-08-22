@@ -22,13 +22,28 @@ Tous les topics utilisent le préfixe configurable (ex: `pool/sensors`). Les val
 | Topic | Payload | Description |
 |-------|---------|-------------|
 | `{base}/temperature` | `24.5` | Température de l'eau (°C) |
-| `{base}/ph` | `7.234` | Valeur pH **filtrée** (médiane + EMA) depuis 2.2.0 — fallback brut si filtre non amorcé (**3 décimales** depuis 2.0.0 — voir [ADR-0014](adr/0014-migration-atlas-ezo.md)). Topics brut/médiane séparés ci-dessous (feature-025). |
+| `{base}/ph` | `7.234` | Valeur pH **filtrée et CORRIGÉE** (médiane + EMA + offset logiciel `ph_offset` depuis 2.20.0) — repli sur le pH courant **corrigé** si le filtre n'est pas amorcé, jamais sur le brut (**3 décimales** depuis 2.0.0 — voir [ADR-0014](adr/0014-migration-atlas-ezo.md)). Topics brut/médiane séparés ci-dessous (feature-025). |
 | `{base}/orp` | `720` | Valeur ORP **filtrée** (mV) depuis 2.2.0 — fallback brut si filtre non amorcé |
 | `{base}/ph_cal_points` | `2` | Points de calibration EZO pH (entier `-1..3`, `-1` = EZO injoignable). Retain. Voir [feature-021](../specs/features/done/feature-021-migration-atlas-ezo.md). |
 | `{base}/orp_cal_points` | `1` | Points de calibration EZO ORP (entier `-1..1`, `-1` = EZO injoignable). Retain. |
 | `{base}/ph_slope_acid` | `99.7` | Pente acide sonde pH EZO en % (1 décimale). Retain. Edge-triggered ([feature-024](../specs/features/done/feature-024-pente-sonde-ph.md)). |
 | `{base}/ph_slope_base` | `100.3` | Pente base sonde pH EZO en % (1 décimale). Retain. Edge-triggered. |
 | `{base}/ph_slope_zero` | `-0.89` | Décalage zéro sonde pH EZO en mV (2 décimales). Retain. Non publié si firmware EZO ancien. |
+
+> **Sémantique brut / corrigé du pH (feature-067, v2.20.0)** — l'offset logiciel `ph_offset` (`pH corrigé = pH brut EZO + ph_offset`) n'a provoqué **aucun renommage d'entité, aucun nouveau topic, aucune suppression**. Seule la **valeur** de deux topics existants change :
+>
+> | Topic | `unique_id` HA | Contenu | Offset appliqué ? |
+> |-------|----------------|---------|-------------------|
+> | `{base}/ph` | `poolcontroller_ph` | pH filtré **corrigé** — valeur « vraie » du bassin | ✅ oui |
+> | `{base}/ph_filtered` | `poolcontroller_ph_filtered` | pH lissé **corrigé** — valeur consommée par la régulation | ✅ oui |
+> | `{base}/ph_median` | *(pas d'entité HA)* | médiane **corrigée** | ✅ oui |
+> | `{base}/ph_raw` | `poolcontroller_ph_raw` | pH **brut Atlas EZO**, jamais corrigé | ❌ non |
+>
+> ⚠️ **Conséquence côté Home Assistant** : `sensor.*_ph` et `sensor.*_ph_filtered` gardent leur `entity_id` et leur historique, mais **changent de valeur** le jour où un offset non nul est enregistré → une **marche** apparaît dans les graphiques HA. C'est le comportement voulu ([ADR-0039](adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)) : renommer les entités aurait cassé toutes les automatisations et tous les dashboards existants pour un simple décalage de mesure. Pour comparer brut et corrigé, superposer `sensor.*_ph_raw` et `sensor.*_ph`.
+>
+> **Aucune entité `ph_offset` n'est publiée** : l'offset est un paramètre de configuration, exposé par `GET /get-config` et le message WebSocket `config`, pas une mesure. En créer une entité HA aurait ajouté un point de commande sur l'**entrée de la régulation chimique** hors du chemin validé. La valeur de l'offset apparaît dans les messages d'alerte `ph_abnormal`, `ph_raw_floor` et `orp_ph_raw_inhibit` (voir [Alertes](#alertes)).
+>
+> Le test de vivacité du capteur (`phStale` de l'alerte `{base}/alerts/sensor_stale`) consomme le **brut** : un offset ne peut ni masquer ni provoquer une détection de sonde muette.
 
 ### Filtration
 
@@ -137,7 +152,7 @@ Topic : `{base}/alerts` — QoS 0, sans rétention.
 |------|-----------|
 | `ph_limit` | Limite journalière de dosage pH atteinte — émise **une seule fois, à la transition** vers la limite (v2.10.1 ; avant : répétée à chaque health check de 60 s). Événement non-retained : l'**état permanent** pour HA est porté par le binary_sensor `{base}/ph_limit` (retain). Libellé dynamique « pH+ » / « pH- » selon le produit configuré (`phCorrectionType`). Après un reboot avec limite déjà latchée : une alerte unique au premier health check (~60 s), comportement voulu. |
 | `orp_limit` | Limite journalière de dosage ORP atteinte — même sémantique de transition que `ph_limit` (v2.10.1) ; état permanent : binary_sensor `{base}/orp_limit` (retain). |
-| `ph_abnormal` | pH < 5.0 ou pH > 9.0 |
+| `ph_abnormal` | pH **corrigé** < 5.0 ou > 9.0. Depuis la v2.20.0 le message cite **toujours** le brut et l'offset : `pH=5.30 (brut=4.90, offset=0.40)` — sans quoi on ne peut pas distinguer une sonde à la dérive d'un offset mal saisi. |
 | `orp_abnormal` | ORP < 400 mV ou ORP > 900 mV |
 | `temp_abnormal` | Température < 5°C ou > 40°C |
 | `low_memory` | Heap **total** disponible sous le seuil (`kMinFreeHeapBytes = 10 Ko`) |
@@ -149,7 +164,11 @@ Topic : `{base}/alerts` — QoS 0, sans rétention.
 | `network_stall_reboot` | **Watchdog de connectivité (v2.9.2)** : gel de la pile réseau confirmé **depuis `kNetworkStallRebootMs = 5 min`** (WiFi associé mais pile muette, la reconnexion douce n'a pas suffi). Déclenche un **redémarrage propre fail-safe** (même séquence que `auto_reboot` : pompes coupées → cumuls sauvegardés → reboot). Émise **juste avant** le reboot, best-effort. Le reboot compte dans le **budget anti-boucle partagé** (`kAutoHealMaxReboots`) → peut mener à `maintenance_mode`. |
 | `history_partition_reset` | **Disjoncteur de boot-loop history (v2.10.0)** : la partition `history` a été **effacée automatiquement** au boot après `kHistoryInitCrashThreshold = 2` crashs consécutifs pendant sa fenêtre d'init (corruption littlefs → panic non rattrapable à la 1ʳᵉ écriture). Événement de **transition** (retain=false, comme `network_stall_reboot` / `auto_reboot`), publié de manière **différée** depuis `setup()` après `mqttManager.begin()` (l'effacement a lieu avant WiFi/MQTT). Message : `Partition historique corrompue effacée automatiquement (boot-loop détecté) — l'historique repart de zéro`. Voir [`docs/subsystems/system-health.md`](subsystems/system-health.md) et [ADR-0031](adr/0031-disjoncteur-bootloop-history.md). |
 | `heap_corruption` | **Corruption du tas détectée (v2.18.8, [ADR-0037](adr/0037-postmortem-oom-et-integrite-tas.md))** : le contrôle d'intégrité périodique (`heap_caps_check_integrity_all()`, toutes les 5 min, uniquement pompes à l'arrêt et hors OTA/maintenance) a échoué. **Type unique** publié par les **deux** branches de sortie : (1) **redémarrage propre** via `performFailSafeRestart()` — message `Corruption du tas détectée — dosage suspendu, redémarrage propre` ; (2) **mode maintenance** quand le plafond `kAutoHealMaxReboots` est atteint — message `Corruption du tas détectée — dosage suspendu, mode maintenance (plafond de redémarrages)`. Dans les deux cas, les pompes sont **coupées et le dosage inhibé AVANT** la publication. Événement non-retained, best-effort (l'action a lieu même si la publication échoue) ; le reboot compte dans le **budget anti-boucle partagé**. Voir [`docs/subsystems/system-health.md`](subsystems/system-health.md#contrôle-dintégrité-périodique-du-tas-v2188). |
-| `pump_unusable` | **Pompe doseuse hors service (feature-064, v2.16.0 — exigence pool-chemistry P1, porte de bascule [ADR-0034](adr/0034-migration-core3-idf5.md))** : une pompe a échoué son attache PWM au boot (`ledcAttachChannel`, **core Arduino 3 uniquement** — impossible en production actuelle core 2, code dormant actif sur le banc `esp32dev_core3` et après bascule) et a été mise en sécurité fail-closed (`pumpUsable`, feature-063) : **aucune injection possible jusqu'au reboot**. Une alerte **par pompe** inutilisable, **re-publiée à CHAQUE (re)connexion MQTT** (arbitrage Q1, décision pool-chemistry P1) et non pas one-shot au boot : l'alerte n'étant **pas retained** et l'état étant **permanent jusqu'au reboot**, un broker absent au boot ne la perd plus — la 1ʳᵉ connexion couvre le boot, les reconnexions couvrent le reste. Limitation résiduelle assumée : un HA qui redémarre **sans** reconnexion de l'ESP32 ne revoit pas l'alerte. Message : `Pompe 1 (pH) HORS SERVICE : échec init PWM (GPIO=25, canal LEDC=0) — aucune injection possible jusqu'au reboot` (idem `Pompe 2 (Chlore/ORP)`, GPIO=33, canal 1). Voir [`docs/subsystems/pump-controller.md`](subsystems/pump-controller.md) et [`docs/subsystems/mqtt-manager.md`](subsystems/mqtt-manager.md). |
+| `ph_raw_floor` | **Plancher de sécurité acide sur le pH BRUT (feature-067, v2.20.0)** : le pH **brut filtré** (sans offset) est passé sous le plancher applicable — `6.80` si \|`ph_offset`\| ≤ 0,30, `6.90` au-delà. **Toute injection d'acide est refusée** tant que la condition dure, quelle que soit la valeur corrigée. Alerte **edge-triggered** (une seule fois à la transition), non-retained, accompagnée d'un log `CRITICAL`. Message : `pH brut 6.72 sous le plancher de sécurité 6.80 (offset=0.40) — injection d'acide refusée`. Un **second** message de même type est émis si **3 refus surviennent dans une fenêtre glissante de 24 h** : `3 refus de plancher pH en 24 h — sonde pH à recalibrer ou remplacer ; régulation pH basculée en manuel` (bascule fail-closed **persistée** en NVS). Le retour au-dessus du plancher est journalisé en `INFO`, sans alerte. Filet **inerte à offset nul** et sans objet en correction basique (`ph_plus`). Voir [`docs/subsystems/pump-controller.md`](subsystems/pump-controller.md#filets-de-sécurité-sur-le-ph-brut-feature-067-v2200). |
+| `orp_ph_raw_inhibit` | **Inhibition du dosage chlore sur pH brut élevé (feature-067, v2.20.0)** : le pH **brut filtré** dépasse `7.60` — à ce pH la fraction d'acide hypochloreux (HClO, forme active du chlore) s'effondre, l'ORP mesuré chute à concentration de chlore constante et la régulation ORP compenserait en **surdosant**. Le dosage ORP est suspendu tant que la condition dure. Alerte **edge-triggered**, non-retained, log `CRITICAL`. Message : `pH brut 7.68 > 7.60 (offset=-0.20) — chlore peu actif à ce pH : dosage ORP suspendu (faire baisser le pH)`. Le correctif est de **faire baisser le pH**, pas de relever la consigne ORP. ⚠️ Le cas « pH brut **indisponible** » (sonde muette / filtre non amorcé) suspend **aussi** le dosage chlore **automatique** (fail-closed) mais est journalisé en `INFO` **sans alerte MQTT** — situation transitoire normale au démarrage. Le dosage **programmé** reste aveugle à la mesure, par conception. |
+| `ph_filter_not_ready` / `orp_filter_not_ready` | **Filtre de mesure bloqué (v2.20.3)** : le filtre est resté **non prêt plus de 5 min** (`kSensorFilterNotReadyAlarmMs`) alors que la filtration tournait **et** que les mesures étaient déclarées représentatives → il n'y a plus **aucune** régulation sur ce paramètre (et plus de chloration non plus si c'est le pH qui est bloqué, par fail-closed). Publiée à la **pose** avec un log `CRITICAL`, **répétée toutes les 30 min** (`kSensorFilterNotReadyRepeatMs`) tant que la panne dure ; la **levée** est journalisée en `INFO`, sans alerte. Message : `Filtre pH NON PRÊT depuis 7 min alors que la filtration tourne et que les mesures sont représentatives — régulation pH À L'ARRÊT (cause probable : fenêtre de mesure non remplie, rejets=255). Vérifier la sonde ; réinitialisation du filtre possible depuis l'interface.` La purge de la chambre de mesure et la circulation arrêtée ne l'arment **jamais**. L'état permanent pour HA est porté par le binary_sensor `{base}/ph_filter_stuck` (retain). Voir [`docs/subsystems/sensors.md`](subsystems/sensors.md#alarme--filtre-non-prêt-durablement--v2203). |
+| `ph_filter_rearm_denied` / `orp_filter_rearm_denied` | **Ré-amorçage de filtre REFUSÉ (v2.20.3)** : la sortie de secours du filtre (12 rejets cohérents) a été **bloquée par une garde de sécurité** — cooldown de 30 min non écoulé, ou valeur hors bande admissible (pH brut [6,50 ; 8,20] / ORP [300 ; 950]). Le filtre **reste** non prêt, donc la régulation reste à l'arrêt : c'est le signal d'une sonde probablement défaillante, pas d'un échelon légitime. Alerte **edge-triggered** (une fois par épisode, le motif de refus étant collant), log `CRITICAL`. Message : `Filtre pH : ré-amorçage REFUSÉ (valeur hors bande admissible) sur brut 4.793 — le filtre reste NON PRÊT, régulation pH à l'arrêt : vérifier la sonde`. Voir [`docs/subsystems/sensors.md`](subsystems/sensors.md#sortie-de-secours-sur-rejets-cohérents-v2203). |
+| `pump_unusable` | **Pompe doseuse hors service (feature-064, v2.16.0 — exigence pool-chemistry P1, porte de bascule [ADR-0034](adr/0034-migration-core3-idf5.md))** : une pompe a échoué son attache PWM au boot (`ledcAttachChannel`, **core Arduino 3 uniquement** — donc **réellement armée en production depuis la v2.20.4**, le core 3 étant l'environnement par défaut, [ADR-0042](adr/0042-core3-environnement-par-defaut.md) ; dormante en repli core 2) et a été mise en sécurité fail-closed (`pumpUsable`, feature-063) : **aucune injection possible jusqu'au reboot**. Une alerte **par pompe** inutilisable, **re-publiée à CHAQUE (re)connexion MQTT** (arbitrage Q1, décision pool-chemistry P1) et non pas one-shot au boot : l'alerte n'étant **pas retained** et l'état étant **permanent jusqu'au reboot**, un broker absent au boot ne la perd plus — la 1ʳᵉ connexion couvre le boot, les reconnexions couvrent le reste. Limitation résiduelle assumée : un HA qui redémarre **sans** reconnexion de l'ESP32 ne revoit pas l'alerte. Message : `Pompe 1 (pH) HORS SERVICE : échec init PWM (GPIO=25, canal LEDC=0) — aucune injection possible jusqu'au reboot` (idem `Pompe 2 (Chlore/ORP)`, GPIO=33, canal 1). Voir [`docs/subsystems/pump-controller.md`](subsystems/pump-controller.md) et [`docs/subsystems/mqtt-manager.md`](subsystems/mqtt-manager.md). |
 
 ### Alertes dédiées (feature-021 / feature-022, retain, edge-triggered)
 
@@ -297,9 +316,9 @@ Lissage logiciel des mesures (médiane 7 + EMA). Le topic `{base}/ph` / `{base}/
 
 | Topic | Payload | Description |
 |-------|---------|-------------|
-| `{base}/ph_raw` | `7.46` | Dernière mesure pH **brute** Atlas (diagnostic EMI, 3 décimales) |
-| `{base}/ph_median` | `7.43` | Médiane glissante pH (fenêtre 7) |
-| `{base}/ph_filtered` | `7.43` | Mesure pH **filtrée** (EMA) — valeur de régulation |
+| `{base}/ph_raw` | `7.46` | Dernière mesure pH **brute** Atlas, **sans offset** (diagnostic EMI, 3 décimales) |
+| `{base}/ph_median` | `7.43` | Médiane glissante pH — **corrigée** depuis 2.20.0 |
+| `{base}/ph_filtered` | `7.43` | Mesure pH **filtrée** (EMA) — **corrigée** depuis 2.20.0, valeur de régulation |
 | `{base}/ph_filter_ready` | `ON`/`OFF` | Filtre pH prêt (warmup terminé + mesure récente) |
 | `{base}/ph_filter_unstable` | `ON`/`OFF` | Capteur pH instable (trop de rejets consécutifs) |
 | `{base}/ph_rejected_count` | `3` | Nombre de mesures pH rejetées (glissant, 0..255) |
@@ -375,6 +394,33 @@ Calquée sur `alerts/sensor_stale` (retain, edge-triggered, clear = payload vide
 ```
 
 Un capteur figé (30 lectures acceptées dans une bande < ½ LSB, ≈ 2,5 min) rend le filtre non prêt → **dosage automatique bloqué fail-closed** (garde `FilterNotReady` existante). La **température figée** (détection warning-only, aucun impact dosage) n'apparaît **ni** dans cette alerte **ni** dans les états `*_sensor_problem`. Détails firmware : [`docs/subsystems/sensors.md`](subsystems/sensors.md#détection-capteur-figé--feature-022).
+
+## Topics et entités ajoutés en v2.20.3 (filtre de mesure bloqué)
+
+Un filtre pH ou ORP durablement non prêt = plus **aucune** régulation sur ce paramètre. L'incident du 2026-08-16 a duré ≥ 3 h sans qu'aucun signal ne parte : ces deux topics comblent ce trou d'observabilité.
+
+### `{base}/ph_filter_stuck` / `{base}/orp_filter_stuck`
+
+**Direction** : ESP32 → broker (**retain = true**)
+
+| Topic | Payload | Condition |
+|-------|---------|-----------|
+| `{base}/ph_filter_stuck` | `ON` / `OFF` | `ON` si le filtre pH est resté **non prêt > 5 min** (`kSensorFilterNotReadyAlarmMs`) **alors que** la filtration tournait **et** que les mesures étaient déclarées représentatives. `OFF` sinon. |
+| `{base}/orp_filter_stuck` | `ON` / `OFF` | Symétrique ORP. |
+
+- Miroir exact des champs `phFilterAlarm` / `orpFilterAlarm` de `GET /data` et du WebSocket (`sensors.isPhFilterNotReadyAlarm()`).
+- ⚠️ **Ne pas confondre** avec `{base}/ph_filter_ready` (feature-025), qui bascule à `OFF` à **chaque** warmup ou purge, donc plusieurs fois par jour en fonctionnement normal. `ph_filter_stuck` ne s'arme que sur une **anomalie durable** : purge de la chambre de mesure, warmup et filtration à l'arrêt ne le déclenchent **jamais**. C'est ce topic, et pas `filter_ready`, qu'il faut câbler dans une automation d'alerte.
+- Publication **dédoublonnée** (`safePublishDedup`, slots 16/17) : émis au changement d'état seulement, première publication forcée après connexion. Retain → HA retrouve l'état après un reboot du contrôleur ou de HA.
+- Reprise : `POST /reset-sensor-filter?sensor=ph|orp` (interface web) — volontairement **non exposé** en MQTT, cf. [Exclusions volontaires](#exclusions-volontaires-politique-mqttha).
+
+### Auto-discovery HA (v2.20.3)
+
+| Entité | Type | Topic d'état | `unique_id` | Détails |
+|--------|------|--------------|-------------|---------|
+| Piscine Filtre pH Bloqué | `binary_sensor` | `{base}/ph_filter_stuck` | `poolcontroller_ph_filter_stuck` | `device_class: problem`, `payload_on: ON`, `payload_off: OFF`, `icon: mdi:filter-remove` |
+| Piscine Filtre ORP Bloqué | `binary_sensor` | `{base}/orp_filter_stuck` | `poolcontroller_orp_filter_stuck` | `device_class: problem`, mêmes payloads/icône |
+
+Publié à `homeassistant/binary_sensor/poolcontroller_ph_filter_stuck/config` (resp. `_orp_…`) au démarrage. **Entités nouvelles** : l'auto-discovery des entités existantes est inchangée. Alertes JSON associées sur `{base}/alerts` : `ph_filter_not_ready` / `orp_filter_not_ready` et `ph_filter_rearm_denied` / `orp_filter_rearm_denied` (cf. [Alertes](#alertes)).
 
 ## Topics et entités ajoutés en feature-050 (complétude MQTT/HA, v2.14.0)
 
@@ -490,4 +536,5 @@ Cette section documente ce qui **n'est délibérément PAS exposé** en MQTT / H
 | **Authentification (token, mot de passe)** | Secret ; jamais transporté ni modifiable via MQTT. |
 | **Pompes en mode test** | Actionnement direct des pompes pour maintenance — présence physique requise, potentiellement destructif (dosage à sec). |
 | **Transients d'affichage** : délai de stabilisation restant, `inject_remaining`, **cause de blocage dosage** | États de transition à durée de vie très courte, pertinents seulement pour l'UI temps réel (WebSocket). La cause de blocage dosage a été explicitement écartée en feature-022, sur besoin constaté (bruit pour HA, pas de valeur d'automatisation). |
+| **Réarmement d'un filtre de mesure** (`POST /reset-sensor-filter`, v2.20.3) | Action **destructrice pour le diagnostic** : elle efface la détection de sonde figée et le latch EMI. Exposée en MQTT, une automation pourrait la déclencher en boucle et masquer indéfiniment une sonde défaillante. L'**état** est publié (`{base}/ph_filter_stuck`), la **commande** reste locale, sous auth administrateur et cooldown de 10 min. |
 | **Historique** (brut / horaire / quotidien) | Home Assistant dispose de son propre recorder / long-term statistics qui agrège les `state_class: measurement` déjà publiés. Dupliquer l'historique firmware vers MQTT serait redondant. |

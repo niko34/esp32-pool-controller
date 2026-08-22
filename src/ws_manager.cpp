@@ -303,7 +303,16 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   //   filtration_ext_known/_on/_age_s (~200 octets) → bump à 1920.
   // v2.19.1 : +ph/orp_mix_remaining_s (~64 octets, observabilité pause mélange) → bump à 2048.
   // feature-061 : +measures_valid/measures_stab_remaining_s (~64 octets) → bump à 2112.
-  StaticJson<2112> doc;
+  // v2.20.3 (C2) : +2 booléens d'alarme filtre. DÉCOMPTE EXACT des octets
+  // SÉRIALISÉS ajoutés (pire cas, valeur `false` — la plus longue) :
+  //   "phFilterAlarm":false,   → 1+13+1+1+5+1 = 22 octets
+  //   "orpFilterAlarm":false,  → 1+14+1+1+5+1 = 23 octets
+  //   total = 45 octets. StaticJson dimensionne le POOL ArduinoJson (nœuds), pas
+  //   la chaîne : 2 nœuds booléens supplémentaires ≈ 2 × 16 = 32 o de pool + les
+  //   clés (littéraux, non copiés). Marge de 64 o retenue pour couvrir les deux
+  //   (pool ET alignement) → bump 2112 → 2176. sWsFrameBuf est vérifié
+  //   indépendamment par le garde `measureJson(doc) + 1 > sizeof(sWsFrameBuf)`.
+  StaticJson<2176> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -315,15 +324,19 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // Le brut reste exposé séparément via phRaw/orpRaw pour diagnostic EMI. Si le filtre n'est
   // pas encore amorcé (NaN filtré), on retombe sur le brut pour ne pas afficher "--" au boot.
   // Lectures cachées en variables locales pour éviter une race entre le check `isnan` et le `round`.
+  // feature-067 : côté pH, phRaw est le BRUT EZO (sans offset) — il n'alimente QUE
+  // le champ de diagnostic `phRaw`. Le champ `ph` porte toujours une valeur CORRIGÉE
+  // (filtrée-corrigée, ou getPh() au warmup) : on ne mélange jamais brut et corrigé
+  // sur une même grandeur affichée.
   float orpRaw = sensors.getOrpRaw();
-  float phRaw  = sensors.getPhRaw();
+  float phRaw  = sensors.getPhRaw();          // BRUT EZO (diagnostic)
   float orpFiltered = sensors.getOrpFiltered();
-  float phFiltered  = sensors.getPhFiltered();
+  float phFiltered  = sensors.getPhFiltered();  // lissé CORRIGÉ
   float orpMedian = sensors.getOrpMedian();
-  float phMedian  = sensors.getPhMedian();
-  // Valeur principale = filtrée si disponible, sinon brut (warmup), sinon null.
+  float phMedian  = sensors.getPhMedian();      // médiane CORRIGÉE
+  // Valeur principale = filtrée si disponible, sinon dernière mesure (warmup), sinon null.
   float orpVal = !isnan(orpFiltered) ? orpFiltered : orpRaw;
-  float phVal  = !isnan(phFiltered)  ? phFiltered  : phRaw;
+  float phVal  = !isnan(phFiltered)  ? phFiltered  : sensors.getPh();  // corrigé dans les 2 cas
   float tVal   = sensors.getTemperature();
   // T° eau brute (sans offset utilisateur) : exposée pour permettre à l'UI de calibration
   // de calculer un nouvel offset à partir d'une référence externe sans dépendre de la
@@ -338,12 +351,16 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   d["phFilterReady"]    = sensors.isPhFilterReady();
   d["phFilterUnstable"] = sensors.isPhFilterUnstable();
   d["phRejectedCount"]  = sensors.getPhRejectedCount();
+  // v2.20.3 (C2) : alarme « filtre non prêt durablement » — cf. bump du buffer
+  // en tête de fonction pour le décompte exact des octets ajoutés.
+  d["phFilterAlarm"]    = sensors.isPhFilterNotReadyAlarm();
   if (!isnan(orpRaw))      d["orpRaw"] = round(orpRaw);                          else d["orpRaw"] = nullptr;
   if (!isnan(orpMedian))   d["orpMedian"] = round(orpMedian);                    else d["orpMedian"] = nullptr;
   if (!isnan(orpFiltered)) d["orpFiltered"] = round(orpFiltered);               else d["orpFiltered"] = nullptr;
   d["orpFilterReady"]    = sensors.isOrpFilterReady();
   d["orpFilterUnstable"] = sensors.isOrpFilterUnstable();
   d["orpRejectedCount"]  = sensors.getOrpRejectedCount();
+  d["orpFilterAlarm"]    = sensors.isOrpFilterNotReadyAlarm();  // v2.20.3 (C2)
   // Pause mélange hydraulique active (post-injection) + raison de blocage dosage.
   uint32_t nowMs = millis();
   d["phMixingDelayActive"]  = PumpController.isPhMixingDelayActive(nowMs);
@@ -487,7 +504,8 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
 
 size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   // feature-053 : +2 champs boost_active/boost_until → marge portée à 2304.
-  StaticJson<2304> doc;
+  // feature-067 : +1 champ ph_offset (~24 octets) → marge portée à 2368.
+  StaticJson<2368> doc;
   doc["type"] = "config";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -548,6 +566,8 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   d["ph_cal_valid"]     = sensors.getPhCalibrationPointsCached() >= 1;
   d["ph_cal_points"]    = sensors.getPhCalibrationPointsCached();
   d["orp_cal_points"]   = sensors.getOrpCalibrationPointsCached();
+  // feature-067 : offset logiciel de mesure pH (distinct de la calibration EZO).
+  d["ph_offset"]        = mqttCfg.phOffset;
   d["temp_calibration_offset"]   = mqttCfg.tempCalibrationOffset;
   d["temp_calibration_date"]     = mqttCfg.tempCalibrationDate;
   d["temperature_enabled"]       = mqttCfg.temperatureEnabled;

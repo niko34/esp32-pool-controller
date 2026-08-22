@@ -75,21 +75,45 @@ public:
   // ===== API capteurs Atlas EZO (pH / ORP) =====
   // NaN si lecture stale (dernière lecture valide > kSensorStaleTimeoutMs).
   // Atomique (float aligné, ESP32 Xtensa).
+  // feature-067 : valeur CORRIGÉE (brut EZO + mqttCfg.phOffset) — cf. contrat ci-dessous.
   float getPh() const;
   // NaN si lecture stale (dernière lecture valide > kSensorStaleTimeoutMs).
   float getOrp() const;
 
   // ===== feature-025 : chaîne de filtrage pH/ORP (médiane + EMA + rejet pics) =====
-  // getPh()/getOrp() restent VOLONTAIREMENT bruts (rétrocompat affichage/MQTT/scheduled).
   // Le PID auto consomme getPhFiltered()/getOrpFiltered() et exige isPhFilterReady()/
   // isOrpFilterReady() avant tout dosage (fail-closed warmup / EZO injoignable / instable).
   // Tous les getters sont lock-free (lecture dans le SEUL contexte loopTask, comme _lastPh).
-  float getPhRaw() const;             // Dernière brute pH (= getPh() brut, NaN si stale)
-  float getPhMedian() const;          // Médiane courante pH (NaN si pas de donnée)
-  float getPhFiltered() const;        // pH filtré EMA — valeur PID (NaN si non amorcé)
+  //
+  // ===== feature-067 — CONTRAT OFFSET pH (règle mnémotechnique) =====
+  //   ⇒ SEULS les accesseurs suffixés `*Raw` renvoient du BRUT capteur.
+  // Tous les autres accesseurs pH renvoient la valeur CORRIGÉE
+  // (brut + mqttCfg.phOffset, cf. src/ph_offset.h) : getPh(), getPhMedian(),
+  // getPhFiltered(). L'offset est appliqué EN SORTIE — le filtre pH travaille
+  // toujours sur le brut (latch EMI et seuils de rejet inchangés) et un
+  // changement d'offset est visible IMMÉDIATEMENT, sans purge de la fenêtre.
+  // NaN in → NaN out : l'offset ne fabrique jamais une mesure.
+  float getPhRaw() const;             // Dernière brute pH EZO, SANS offset (NaN si stale)
+  float getPhMedian() const;          // Médiane courante pH CORRIGÉE (NaN si pas de donnée)
+  float getPhFiltered() const;        // pH filtré EMA CORRIGÉ — valeur PID (NaN si non amorcé)
+  // pH filtré EMA BRUT (SANS offset). Réservé aux filets de sécurité chimique
+  // qui doivent raisonner sur la mesure réelle du capteur, indépendamment d'un
+  // offset éventuellement erroné (planchers de dosage pool-chemistry,
+  // kPhRawDosingFloor / kPhRawDosingFloorWide / kPhRawOrpInhibit).
+  float getPhFilteredRaw() const;
   bool isPhFilterReady() const;       // true après warmup + dernière mesure valide récente
   bool isPhFilterUnstable() const;    // true si trop de rejets consécutifs
   uint8_t getPhRejectedCount() const; // Compteur glissant de rejets pH
+
+  // ===== feature-067 : offset logiciel pH =====
+  // Recharge la copie locale `_phOffset` depuis `mqttCfg.phOffset` et journalise
+  // le changement. À appeler au boot (begin()) et après TOUT enregistrement de la
+  // configuration (route HTTP, commande MQTT) — la prise en compte est immédiate.
+  // Contexte : loopTask ou handler async (écriture d'un float aligné = atomique).
+  // Une valeur hors bornes est neutralisée à 0.00 (fail-safe, cf. isPhOffsetValid).
+  void refreshPhOffsetCache();
+  // Offset actuellement APPLIQUÉ aux mesures (copie locale, pas la config).
+  float getPhOffset() const { return _phOffset; }
 
   float getOrpRaw() const;
   float getOrpMedian() const;
@@ -113,8 +137,37 @@ public:
   // Repasse le filtre en warmup → dosage auto bloqué tant que la fenêtre centrale
   // (kSensorFilterCentralWindow mesures valides) n'est pas de nouveau pleine.
   // Lève aussi le latch EMI (feature-058).
+  // ⚠️ CONTEXTE loopTask UNIQUEMENT (contrat SensorFilter, sensor_filter.h) : ces
+  // méthodes écrivent dans le filtre. Depuis un handler async (route HTTP), MQTT
+  // ou toute autre tâche → utiliser requestFilterReset().
   void resetPhFilter();
   void resetOrpFilter();
+
+  // Demande de réinitialisation DIFFÉRÉE, par capteur (v2.20.3). Pose un drapeau
+  // `volatile` consommé en TÊTE de update() (contexte loopTask) — même pattern que
+  // enqueuePhSlopeQuery() pour les commandes EZO. Appelable depuis N'IMPORTE QUEL
+  // contexte (async_tcp, mqttTask). Retourne false si aucun filtre n'est demandé.
+  // Sélectif : réparer le pH ne sacrifie plus le filtre ORP sain.
+  // `origin` : libellé de provenance journalisé (D4). DOIT être un littéral de
+  // chaîne / une constante statique — seul le POINTEUR est mémorisé (aucune
+  // copie, aucune allocation dans un contexte async).
+  bool requestFilterReset(bool ph, bool orp, const char* origin = "inconnue");
+
+  // Latch EMI posé sur le filtre (feature-058). Exposé pour la journalisation de
+  // l'état DÉTRUIT par une réinitialisation manuelle (verdict pool-chemistry P6).
+  bool isPhFilterLatched() const { return _phFilter.unstableLatched(); }
+  bool isOrpFilterLatched() const { return _orpFilter.unstableLatched(); }
+
+  // ===== v2.20.3 (C1) : alarme « filtre non prêt durablement » =====
+  // true quand le filtre est resté NON PRÊT pendant plus de
+  // kSensorFilterNotReadyAlarmMs alors que la filtration tournait ET que les
+  // mesures étaient déclarées REPRÉSENTATIVES — c'est-à-dire quand il n'y a plus
+  // AUCUNE régulation sur ce paramètre sans raison légitime. La purge de la
+  // chambre de mesure (measuresValid == false) et l'arrêt de circulation ne sont
+  // JAMAIS comptés : ce sont des états normaux qui bloquent le dosage par
+  // conception. Consommé par /data, le WebSocket, MQTT et l'UI.
+  bool isPhFilterNotReadyAlarm() const { return _phNotReadyAlarmed; }
+  bool isOrpFilterNotReadyAlarm() const { return _orpNotReadyAlarmed; }
 
   // Nombre de points de calibration mémorisés dans l'EZO.
   // -1 si module injoignable (erreur I²C ou bus indisponible),
@@ -166,8 +219,11 @@ public:
   bool isInitialized() const;
 
   // ===== Trace capteur (ring buffer RAM, feature-057) =====
-  // Capture chaque cycle EZO (pH brut + pH lissé + ORP brut + ORP lissé + T° eau).
-  // Sert au diagnostic d'oscillation / de lissage (comparaison brut vs filtré).
+  // Capture chaque cycle EZO (pH brut + pH corrigé + pH lissé + ORP brut + ORP
+  // lissé + T° eau). Sert au diagnostic d'oscillation / de lissage (comparaison
+  // brut vs filtré) et, depuis feature-067, à distinguer ce qui vient de l'EZO
+  // de ce qui vient de l'offset logiciel : les champs pH de la trace sont
+  // TOUJOURS bruts (membres internes), sauf `phCorrected`.
   // Buffer glissant ~25 min à kPhOrpSensorIntervalMs = 5 s.
   //
   // Concurrence (MÊME contrat que le cache EZO `_lastPh`/`_lastOrp`) :
@@ -180,8 +236,9 @@ public:
   //     diagnostic non temps-réel, cette incohérence ponctuelle est acceptable.
   struct SensorTraceSample {
     uint32_t ms;          // millis() au moment de la lecture
-    float    phRaw;       // pH brut Atlas EZO (NaN si lecture échouée)
-    float    phFiltered;  // pH lissé (médiane + EMA, feature-025 ; NaN si filtre vide)
+    float    phRaw;       // pH brut Atlas EZO, SANS offset (NaN si lecture échouée)
+    float    phCorrected; // feature-067 : pH brut + offset logiciel (NaN si brut NaN)
+    float    phFiltered;  // pH lissé BRUT (médiane + EMA, feature-025 ; NaN si filtre vide)
     float    orpRaw;      // ORP brut Atlas EZO (NaN si lecture échouée)
     float    orpFiltered; // ORP lissé (NaN si filtre vide)
     float    tempEau;     // T° eau calibrée envoyée à l'EZO pour compensation (NaN si sonde absente)
@@ -253,6 +310,13 @@ private:
   uint32_t _lastPhMs = 0;
   uint32_t _lastOrpMs = 0;
 
+  // feature-067 : COPIE locale de mqttCfg.phOffset, rafraîchie à l'enregistrement
+  // de la config (refreshPhOffsetCache). Lue dans les getters CHAUDS (loopTask +
+  // handlers async/MQTT) : jamais de xSemaphoreTake dans un getter — la copie est
+  // un float 32 bits aligné, donc lecture/écriture atomique sur Xtensa LX6
+  // (même contrat que _lastPh). Toujours dans [kPhOffsetMin, kPhOffsetMax].
+  float _phOffset = 0.0f;
+
   // ===== feature-025 : filtres pH / ORP =====
   // Alimentés dans _readEzoSensors() à chaque lecture EZO valide (contexte loopTask).
   // Lus par les getters get*Filtered()/is*FilterReady() depuis loopTask uniquement
@@ -260,17 +324,20 @@ private:
   // feature-058 : fenêtre médiane LONGUE + dispersion (drapeau découplé de la valeur).
   // Ordre positionnel = SensorFilter::Config :
   //   minValue, maxValue, spikeReject, emaAlpha, centralWindow,
-  //   maxConsecutiveRejects, maxAgeMs, maxDispersion, frozenSamples, frozenEpsilon.
+  //   maxConsecutiveRejects, maxAgeMs, maxDispersion, frozenSamples, frozenEpsilon,
+  //   rearmCoherence, rearmMin, rearmMax (v2.20.3 : sortie de secours).
   SensorFilter _phFilter{SensorFilter::Config{
       kPhFilterMin, kPhFilterMax, kPhFilterSpikeReject, kPhEmaAlpha,
       kSensorFilterCentralWindow, kSensorFilterMaxConsecutiveRejects,
       kSensorFilterMaxAgeMs, kPhFilterMaxDispersion,
-      kSensorFrozenSamples, kSensorFrozenEpsilonPh}};
+      kSensorFrozenSamples, kSensorFrozenEpsilonPh,
+      kPhFilterRearmCoherence, kPhFilterRearmMin, kPhFilterRearmMax}};
   SensorFilter _orpFilter{SensorFilter::Config{
       kOrpFilterMin, kOrpFilterMax, kOrpFilterSpikeReject, kOrpEmaAlpha,
       kSensorFilterCentralWindow, kSensorFilterMaxConsecutiveRejects,
       kSensorFilterMaxAgeMs, kOrpFilterMaxDispersion,
-      kSensorFrozenSamples, kSensorFrozenEpsilonOrp}};
+      kSensorFrozenSamples, kSensorFrozenEpsilonOrp,
+      kOrpFilterRearmCoherence, kOrpFilterRearmMin, kOrpFilterRearmMax}};
 
   // ===== feature-022 Passe 2 : détecteur figé dédié température =====
   // Alimenté par les lectures DS18B20 VALIDES (brutes, NON arrondies) de la
@@ -281,6 +348,35 @@ private:
   bool _phFrozenLogged = false;
   bool _orpFrozenLogged = false;
   bool _tempFrozenLogged = false;
+
+  // v2.20.3 — flags edge-triggered des refus de ré-amorçage (le module pur ne peut
+  // pas logger : rearmDenied() est COLLANT, la coquille ne journalise qu'à la
+  // transition et réarme son flag quand le motif retombe à 0).
+  bool _phRearmDeniedLogged = false;
+  bool _orpRearmDeniedLogged = false;
+
+  // v2.20.3 — demandes de reset différées (posées hors loopTask, consommées en
+  // tête de update()). `volatile` : écrites par une autre tâche, lues par loopTask.
+  volatile bool _phFilterResetRequested = false;
+  volatile bool _orpFilterResetRequested = false;
+  // Origine de la demande (D4). Pointeur vers un littéral statique uniquement :
+  // pas de String (allocation) ni de copie depuis un contexte async_tcp.
+  const char* volatile _phResetOrigin = "inconnue";
+  const char* volatile _orpResetOrigin = "inconnue";
+
+  // v2.20.3 (C1) — alarme « filtre non prêt durablement », PAR CAPTEUR.
+  // `_xxNotReadySinceMs` = millis() du début de l'épisode continu (0 = pas
+  // d'épisode en cours ; toute interruption — filtration coupée, purge, filtre
+  // redevenu prêt — remet le compteur à 0, l'épisode doit être CONTINU).
+  // `_xxNotReadyAlarmed` = alarme posée (edge-triggered : un seul critical à la
+  // pose, une répétition toutes les kSensorFilterNotReadyRepeatMs, un info à la
+  // levée). `_xxNotReadyLastAlarmMs` cadence la répétition.
+  uint32_t _phNotReadySinceMs = 0;
+  uint32_t _orpNotReadySinceMs = 0;
+  bool _phNotReadyAlarmed = false;
+  bool _orpNotReadyAlarmed = false;
+  uint32_t _phNotReadyLastAlarmMs = 0;
+  uint32_t _orpNotReadyLastAlarmMs = 0;
 
   // Compteurs d'échecs I²C consécutifs (pool-chemistry condition #5)
   int _phI2cFailStreak = 0;
@@ -332,13 +428,31 @@ private:
   // ===== Helpers privés =====
   void _readEzoSensors(float tempC);   // Lecture pH puis ORP, mise à jour caches
   // Enregistre un échantillon de trace (appelé en fin de _readEzoSensors, loopTask).
-  void _recordSensorTrace(float phRaw, float phFiltered,
+  // feature-067 : `phCorrected` = brut + offset (NaN si brut NaN) ; `phRaw` et
+  // `phFiltered` restent BRUTS (membres internes, jamais corrigés).
+  void _recordSensorTrace(float phRaw, float phCorrected, float phFiltered,
                           float orpRaw, float orpFiltered, float tempEau);
   void _readDs18b20s();                // Lecture multi-sondes DS18B20
   void _processEzoQueue();             // Dépile au plus 1 commande par cycle
   void _executeEzoCmd(const EzoCmdRequest& req);
   void _checkStaleAndLog();            // Détection stale → log critical (1 fois)
   void _checkFrozenAndLog();           // feature-022 : logs SENSOR_FROZEN edge-triggered
+  // v2.20.3 : applique le contexte de représentativité aux DEUX filtres (porte
+  // d'alimentation) et journalise les transitions gel / réouverture.
+  void _updateFilterGates(uint32_t nowMs);
+  // v2.20.3 : journalise le ré-amorçage (warning) ou son REFUS (critical + alerte
+  // MQTT) pour un filtre donné. `isPh` sélectionne le filtre et les libellés.
+  void _checkRearmAndLog(bool isPh);
+  // v2.20.3 (C1) : arme/désarme l'alarme « filtre non prêt durablement » pour les
+  // DEUX capteurs (lit le snapshot measure_validity une seule fois).
+  void _checkFilterNotReadyAlarm(uint32_t nowMs);
+  // Machine d'état d'un capteur. `blocked` = « aucune régulation possible sans
+  // raison légitime » (eau présente + mesures représentatives + filtre non prêt).
+  void _evalNotReadyAlarm(bool isPh, bool blocked, uint32_t nowMs);
+  // v2.20.3 (D4) : exécute une réinitialisation DEMANDÉE et journalise l'état
+  // DÉTRUIT (médiane avant/après, rejets, latch EMI, sonde figée). Contexte
+  // loopTask exclusivement (appelé en tête de update()).
+  void _executeRequestedReset(bool isPh, const char* origin);
 
   // Helpers DS18B20 (feature-020) — inchangés
   void _loadSondeIdentificationFromNvs();

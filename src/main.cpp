@@ -967,9 +967,17 @@ void checkHeapHealth() {
   // Deux minima sont tracés : depuis le BOOT (pire cas absolu, sature après le
   // premier creux profond) et sur la FENÊTRE écoulée depuis la trace précédente
   // (montre si les creux s'aggravent au fil des heures).
+  //
+  // v2.20.2 (bloc C) : cadence 5 min → kHeap8LogIntervalMs (30 min) et ligne
+  // RACCOURCIE — la partie « interne: » a été RETIRÉE. Elle était figée (27 636 o
+  // de reliquat d'IRAM 32 bits, identique à chaque relevé pendant 5 h) : elle a
+  // servi une fois à PROUVER l'écart entre les deux métriques (ADR-0038), la
+  // preuve est faite et consignée. La conserver coûtait ~70 o par ligne sur un
+  // journal persistant de 8 Ko, dont la rétention était tombée à ~30 min — c'est
+  // ce qui a détruit le post-mortem du crash du 15/08.
   unsigned long heap8Now = millis();
   static unsigned long lastHeap8LogMs = 0;
-  if (lastHeap8LogMs == 0 || (heap8Now - lastHeap8LogMs >= kHeapLogIntervalMs)) {
+  if (lastHeap8LogMs == 0 || (heap8Now - lastHeap8LogMs >= kHeap8LogIntervalMs)) {
     lastHeap8LogMs = heap8Now;
     HeapMetrics m = heapMetricsSnapshot();
     uint32_t minBoot = heapMinMaxAlloc8SinceBoot();
@@ -981,13 +989,11 @@ void checkHeapHealth() {
     // contrôleur le 15/08 : log → console → mutex → abort).
     // « ws= » donne le contexte de charge (clients temps réel connectés), qui
     // distingue régime chargé et régime calme au moment du calibrage.
-    char ligne[192];
+    char ligne[128];
     snprintf(ligne, sizeof(ligne),
-             "Heap 8bits: libre8=%u maxBloc8=%u minMaxBloc8_boot=%u "
-             "minMaxBloc8_fenetre=%u ws=%u | interne: libre=%u maxBloc=%u (octets)",
+             "Heap 8bits: libre8=%u maxBloc8=%u minBoot=%u minFen=%u ws=%u",
              (unsigned)m.free8, (unsigned)m.maxAlloc8, (unsigned)minBoot,
-             (unsigned)minWindow, (unsigned)wsManager.clientCount(),
-             (unsigned)m.freeInternal, (unsigned)m.maxAllocInternal);
+             (unsigned)minWindow, (unsigned)wsManager.clientCount());
     systemLogger.info(ligne);
   }
 
@@ -1217,7 +1223,12 @@ void checkSystemHealth() {
   lastOrpLimitReached = safetyLimits.orpLimitReached;
 
   // Vérifier valeurs capteurs aberrantes — log et alerte MQTT à la transition seulement
-  float ph = sensors.getPh();
+  // feature-067 : la détection porte sur le pH CORRIGÉ (valeur "vraie" du bassin),
+  // mais le message cite TOUJOURS le brut EZO et l'offset appliqué — sans quoi on
+  // ne peut pas distinguer une sonde à la dérive d'un offset mal saisi.
+  float ph = sensors.getPh();        // corrigé (brut + offset)
+  float phRaw = sensors.getPhRaw();  // brut EZO
+  float phOffset = sensors.getPhOffset();
   float orp = sensors.getOrp();
   float temp = sensors.getTemperature();
 
@@ -1230,10 +1241,18 @@ void checkSystemHealth() {
   bool tempAbnormal = (!isnan(temp) && (temp < 5.0f || temp > 40.0f));
 
   if (phAbnormal && !lastPhAbnormal) {
-    if (authCfg.sensorLogsEnabled) systemLogger.warning("Valeur pH anormale: " + String(ph));
-    mqttManager.publishAlert("ph_abnormal", "pH=" + String(ph));
+    // Message unique corrigé + brut + offset (feature-067) : réutilisé tel quel
+    // par le log et par l'alerte MQTT.
+    const String phDetail = "pH=" + String(ph, 2) + " (brut=" +
+                            (isnan(phRaw) ? String("NaN") : String(phRaw, 2)) +
+                            ", offset=" + String(phOffset, 2) + ")";
+    if (authCfg.sensorLogsEnabled) systemLogger.warning("Valeur pH anormale: " + phDetail);
+    mqttManager.publishAlert("ph_abnormal", phDetail);
   } else if (!phAbnormal && lastPhAbnormal) {
-    if (authCfg.sensorLogsEnabled) systemLogger.info("Valeur pH revenue à la normale: " + String(ph, 2));
+    if (authCfg.sensorLogsEnabled)
+      systemLogger.info("Valeur pH revenue à la normale: " + String(ph, 2) + " (brut=" +
+                        (isnan(phRaw) ? String("NaN") : String(phRaw, 2)) +
+                        ", offset=" + String(phOffset, 2) + ")");
   }
   lastPhAbnormal = phAbnormal;
 

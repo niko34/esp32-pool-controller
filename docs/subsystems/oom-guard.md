@@ -1,10 +1,12 @@
 # Subsystem — `oom-guard` (parachute OOM global)
 
 - **Fichiers** : [`src/oom_guard_logic.h`](../../src/oom_guard_logic.h) (logique pure, header-only), [`src/oom_guard.h`](../../src/oom_guard.h) / [`src/oom_guard.cpp`](../../src/oom_guard.cpp) (coquille Arduino), [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp) (garde TLS sortante partagée `/check-update` + `/download-update`)
-- **Pas de singleton** : fonctions libres (`initOomGuard()`, `oomGuardLoopTick()`, `oomGuardReserveArmed()`, `oomGuardReserveArmedBytes()`, `oomGuardNoteHeapSample()`, `oomPostMortemDumpIfBoot()`, `oomGuardIntegrityTick()`, `oomGuardNoteIntegrityResult()`) + fonctions pures inline.
-- **Décisions architecturales** : [ADR-0035](../adr/0035-parachute-oom-new-handler.md) (parachute OOM), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md) (PSRAM libre requise pour toute session TLS sortante), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure testable), [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison heap = containment de fond).
+- **Pas de singleton** : fonctions libres (`initOomGuard()`, `oomGuardLoopTick()`, `oomGuardReserveArmed()`, `oomGuardReserveArmedBytes()`, `oomGuardHandlerRegistered()`, `oomGuardNoteHeapSample()`, `oomPostMortemDumpIfBoot()`, `oomGuardIntegrityTick()`, `oomGuardNoteIntegrityResult()`) + fonctions pures inline.
+- **Décisions architecturales** : [ADR-0035](../adr/0035-parachute-oom-new-handler.md) (parachute OOM), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md) (**régime bi-métrique assumé**, v2.20.2), [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md) (PSRAM libre requise pour toute session TLS sortante), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure testable), [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison heap = containment de fond).
 
-> ⚠️ **v2.19.0 — état transitoire ASSUMÉ, à lire avant tout le reste.** L'anneau de cinétique et le miroir qui alimente le post-mortem mesurent désormais la **mémoire réellement allouable** (pool `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`, helper [`heap_metrics.h`](../../src/heap_metrics.h)), alors que **les seuils du parachute et de la garde TLS continuent de lire l'ancienne mesure brute** (`ESP.getMaxAllocHeap()`, qui inclut de l'IRAM 32 bits inutilisable). **Cette incohérence est volontaire et temporaire** : la v2.19.0 ne fait que **mesurer** (risque nul, comportement de l'appareil strictement inchangé) ; le recalibrage des seuils et la bascule des gardes sont livrés en **v2.19.1**, après ≥ 24 h de relevés on-target. Toutes les valeurs de seuil citées dans cette page (24 576, 12 288, 20 480, 65 536…) ont été **calibrées sur la métrique fausse** et sont donc **à refaire** — leur **ordre relatif** garde son sens, pas leurs valeurs absolues. Détail et justification du découpage : [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md).
+> ⚠️ **v2.20.2 — régime BI-MÉTRIQUE assumé, à lire avant tout le reste.** L'anneau de cinétique, le miroir du post-mortem **et les deux paliers de réarmement du parachute** lisent la **mémoire réellement allouable** (pool `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`, helper [`heap_metrics.h`](../../src/heap_metrics.h)). **Toutes les autres gardes lisent encore la mesure brute** `ESP.getMaxAllocHeap()` / `ESP.getFreeHeap()` : `kRestartMaxAllocHeapBytes`, `kHttpHeapMarginBytes`, `kWsPushMinAllocBytes`, `kLowHeapWarnBytes`, `kCheckUpdateMinFreeHeapBytes`, `kCheckUpdateMinMaxAllocBytes`. Ce n'est **pas un oubli** : le gate `pool-chemistry` a rendu un **NO GO explicite** sur leur bascule ([ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)). Les basculer aux valeurs actuelles rendrait le **mode maintenance — donc la suspension du dosage — atteignable en régime normal** (`kRestartMaxAllocHeapBytes` = 8 192 o alors que le minimum 8 bits observé vaut **3 060 o**), casserait l'interface web (marge HTTP 4 096 o ≈ `maxBloc8` courant 4 596 o → 503 quasi permanents), les pushes WebSocket (16 384 > 4 596) et la mise à jour en ligne (65 536 > `libre8` 46 480). Les valeurs de ces seuils restent donc **à refaire**, après **≥ 24 h de relevés propres sous 2.20.2** : spec de suivi `specs/features/todo/bug-bascule-gardes-8bits-recalibrage.md`.
+
+> ⚠️ **La règle de recalibrage publiée dans [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) est INAPPLICABLE en l'état.** `kRestartMaxAllocHeapBytes = clamp(0,40 × min24h ; 8192 ; 16384)` supposait un `min24h` de plusieurs dizaines de kilo-octets. Avec `minMaxBloc8_boot = 3 060` o, `0,40 × 3 060 = 1 224` est **écrêté au plancher 8 192**, soit un seuil de redémarrage **au-dessus du minimum observé en fonctionnement normal** : redémarrages en boucle, puis mode maintenance au 3ᵉ, en quelques minutes. Voir [ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md).
 
 ## Rôle
 
@@ -38,9 +40,38 @@ Le new_handler est appelé par libstdc++ quand le `malloc` interne d'`operator n
 
 Le log CRITICAL « **Réserve OOM consommée** (épisode n°N) » est émis en **DIFFÉRÉ** depuis la loop, **one-shot par épisode** (comparaison de compteurs monotones, `oomShouldLogRelease`), avec maxBloc/libre au moment du drain. Pas de `flushToDisk()` dans ce chemin (une écriture LittleFS en pleine famine aggraverait la pression) — la persistance est couverte par le flush one-shot de `checkHeapHealth()` (`kLowHeapWarnBytes`).
 
-### Réarmement — deux paliers, 24 Ko / 12 Ko, tick 10 s (recalibré en v2.18.8)
+### Ré-inscription du `new_handler` — filet d'urgence en TÊTE de tick (v2.20.2)
 
-`oomGuardLoopTick()` (appelé depuis `loop()`) re-alloue la réserve à cadence lente (`kOomRearmCheckIntervalMs` = 10 s). Le ré-enregistrement du handler est inconditionnel (idempotent — couvre l'état `Depleted`), et le succès est journalisé en INFO (« Parachute OOM réarmé » / « Parachute OOM surclassé », avec le palier obtenu et le `maxBloc`).
+**Le parachute était mort ~2 h après chaque boot.** Le `std::set_new_handler(oomNewHandler)` du tick vivait en **fin** de fonction, donc **derrière le `return` de la branche d'échec de réarmement**. Or le handler **se désinscrit lui-même** à la 2ᵉ famine (état `Depleted`). Passé ce point, tout tick qui échouait à réarmer sortait avant la ligne de ré-inscription : plus aucun chemin ne rétablissait le handler, et l'appareil tournait **sans filet anti-`bad_alloc`** jusqu'au redémarrage. C'est la cause directe des **4 crashs `abort()` sur la tâche `async_tcp`** (`ESPAsyncWebServer` fait des `new` **lançants** à l'accept HTTP et par trame WS).
+
+La (ré)inscription est désormais faite **en tête de `oomGuardLoopTick()`, avant tout `return`**, sous la seule condition **C1** du gate `pool-chemistry` : *jamais de handler sans réserve armée* (un handler sans réserve ne libère rien — il ne ferait que retarder d'un tour le `bad_alloc` en masquant l'état réel). Prédicat pur : `oomShouldRegisterHandler(reservePresent, handlerRegistered)`.
+
+#### Pourquoi la ré-inscription ne dépend PAS du miroir
+
+`sHandlerRegistered` est un **miroir atomique** (libstdc++ n'offre aucun moyen de lire le handler courant sans l'écraser). La ré-inscription est appelée **à chaque tick tant qu'une réserve est armée**, **sans** être gardée par `!sHandlerRegistered` — et c'est **délibéré** :
+
+- gardée par le miroir, une course avec `oomNewHandler` sur `async_tcp` pouvait laisser l'état **« handler nul + miroir `true` »**, dont **plus aucun chemin ne sort** : parachute mort jusqu'au reboot **et** champ `oom_handler_registered` **menteur** ;
+- `std::set_new_handler` est **idempotent** : le rappeler toutes les 10 s coûte un store et **ferme la fenêtre**.
+
+Le miroir ne sert donc plus qu'au **log one-shot de transition** (`Parachute OOM : new_handler ré-inscrit (réserve de N o armée)`, émis sur la transition seule, jamais à chaque tick) et au **diagnostic** (`oomGuardHandlerRegistered()` → champ `oom_handler_registered` de [`/get-system-info`](../API.md#get-get-system-info--write)).
+
+#### Invariant d'ordre — miroir AVANT inscription, sur les TROIS sites
+
+Les trois sites qui inscrivent le handler (`initOomGuard()`, filet d'urgence en tête de tick, fin de réarmement réussi) posent le miroir **AVANT** `set_new_handler`. Conséquence : **le seul état atteignable en cas d'entrelacement est « miroir `false` / handler présent »**, qui est **auto-réparé** au tick suivant (le log de transition sera simplement ré-émis une fois). L'état inverse, « miroir `true` / handler nul », est rendu **inatteignable**.
+
+Dans l'ordre inverse, l'entrelacement suivant était possible : le tick appelle `set_new_handler()` → `async_tcp` consomme la réserve (1ʳᵉ famine) puis désinscrit le handler (2ᵉ famine, miroir → `false`) → le tick fait `exchange(true)`. Résultat : handler nul, réserve nulle, **miroir `true`**. Au tick suivant, `reservePresent` est faux : rien ne ré-inscrit, et le mensonge dure jusqu'à un réarmement réussi — c'est-à-dire **indéfiniment dans le régime de famine que l'on cherche justement à diagnostiquer**.
+
+### Réarmement — deux paliers, tick 10 s, sur la mesure 8 bits (recalibré en v2.20.2)
+
+`oomGuardLoopTick()` (appelé depuis `loop()`) re-alloue la réserve à cadence lente (`kOomRearmCheckIntervalMs` = 10 s). Le ré-enregistrement du handler après un réarmement réussi est **conservé** en ceinture (idempotent) — il évite d'attendre le tick suivant quand la réserve vient d'être armée dans ce même tick. Le succès est journalisé en INFO (« Parachute OOM réarmé » / « Parachute OOM surclassé », avec le palier obtenu et `maxBloc8`).
+
+**Depuis la v2.20.2, le critère lu est `heapLargestFreeBlock8Bit()`**, plus `ESP.getMaxAllocHeap()`. L'ancienne mesure renvoyait **27 636 o FIGÉS** (reliquat d'IRAM 32 bits, [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)) alors que le plus gros bloc réellement allouable valait **4 596 o** : la condition `27 636 ≥ 24 576` était **toujours vraie**, le tick retentait donc un `malloc(12288)` voué à l'échec **toutes les 10 s** — soit exactement les **3 « échecs d'allocation » par fenêtre de 30 s** observés en production. La garde fabriquait ~100 % de son propre signal d'alarme.
+
+#### Exclusion des échecs AUTO-INFLIGÉS
+
+Sur les **1 025** échecs d'allocation comptés le 15/08, **~100 %** étaient ce `malloc` de réarmement. `oomFailedAllocHook` interroge donc un drapeau `sSelfAllocInFlight` (prédicat pur `oomShouldCountFailure`) posé par la loop **autour du seul `malloc` de réarmement**, et ne comptabilise ni ne post-mortemise ces échecs.
+
+> **Limite assumée** : le drapeau est **global**, pas par tâche. Un échec **réel** survenant sur l'autre cœur pendant la fenêtre (quelques microsecondes toutes les 10 s) ne serait pas comptabilisé. Compromis très favorable face au bruit supprimé.
 
 #### Pourquoi le seuil est passé de 32 768 à 24 576 o
 
@@ -55,29 +86,39 @@ Le seuil était donc **au-dessus du régime normal de l'appareil** : une fois la
 
 Nouvelle valeur : `kOomRearmMinMaxAllocBytes = 24576` = **2 × `kOomReserveBytes`** — atteignable dans le régime réel, tout en gardant une marge d'un bloc entier au-dessus de la taille à allouer (pas d'oscillation libération/réallocation autour du seuil de famine).
 
-#### Palier de repli — 2 Ko dès 12 Ko de plus gros bloc
+#### Palier de repli — 1 Ko dès 2 Ko de plus gros bloc **8 bits** (recalibré v2.20.2)
 
-« Mieux vaut un petit parachute qu'aucun parachute. » Si le bloc **nominal** de 12 Ko n'est pas allouable, le guard s'arme quand même avec `kOomFallbackReserveBytes = 2048` o dès que `maxBloc ≥ kOomFallbackRearmMinMaxAllocBytes = 12 288` o. 2 Ko couvrent **8×** le duo fautif du 13/08 (156 o `AsyncFileResponse` + 100 o `__cxa_allocate_exception`) et largement l'accept HTTP de 356 o du 11/08.
+« Mieux vaut un petit parachute qu'aucun parachute. » Si le bloc **nominal** de 12 Ko n'est pas allouable, le guard s'arme quand même avec `kOomFallbackReserveBytes` o dès que `maxBloc8 ≥ kOomFallbackRearmMinMaxAllocBytes`. 1 Ko couvre encore **4×** le duo fautif du 13/08 (156 o `AsyncFileResponse` + 100 o `__cxa_allocate_exception`) et près de **3×** l'accept HTTP de 356 o du 11/08.
+
+Les deux valeurs ont été **recalibrées** parce que le tick lit désormais la mesure 8 bits : seuil **12 288 → 2 048**, taille **2 048 → 1 024**. Régime 8 bits réel mesuré sur 5 h : `maxBloc8 ∈ [4 084 ; 9 204]`, `minMaxBloc8_boot = 3 060`. Invariant **C2** imposé par le gate `pool-chemistry` et vérifié dans [`constants.h`](../../src/constants.h) :
+
+| # | Contrainte | Vérification |
+|---|---|---|
+| a | seuil de réarmement < pire creux observé depuis le boot | `2 048 < 3 060` → le palier de repli reste armable même au creux (aucun trou de protection) |
+| b | taille allouée ≤ moitié du seuil | `1 024 ≤ 2 048 / 2` → allouer la réserve ne peut pas à soi seul faire retomber le tas sous son propre seuil de réarmement |
+| c | seuil ≤ minimum du régime établi | `2 048 ≤ 4 084` → armable en pratique |
+
+`kOomRearmMinMaxAllocBytes` **reste à 24 576** : le palier nominal devient **délibérément inatteignable** dans le régime fragmenté actuel — donc **plus aucun `malloc(12288)` répété toutes les 10 s** — mais le réarmement nominal **repart automatiquement** si la fragmentation disparaît. C'est un seuil laissé volontairement haut, pas un oubli de recalibrage.
 
 Règle de transition (fonction pure `oomRearmTargetBytes`) :
 
-- **surclassement** repli → nominal **autorisé** : dès que `maxBloc ≥ 24 576`, la réserve de 2 Ko est remplacée par 12 Ko (l'ancienne est libérée par l'`exchange`) ;
+- **surclassement** repli → nominal **autorisé** : dès que `maxBloc8 ≥ 24 576`, la réserve de 1 Ko est remplacée par 12 Ko (l'ancienne est libérée par l'`exchange`) ;
 - **déclassement** nominal → repli **INTERDIT** : jamais d'oscillation ni de dégradation silencieuse ;
 - réserve déjà au palier nominal → aucune action.
 
-#### Échelle complète des seuils « plus gros bloc contigu »
+#### Échelle des seuils « plus gros bloc contigu » — DEUX MÉTRIQUES depuis la v2.20.2
 
-Ces cinq seuils sont **interdépendants** : ils décrivent une dégradation ordonnée du tas et ne se modifient pas isolément ([ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md)).
+Ces seuils décrivent une dégradation ordonnée du tas et ne se modifient pas isolément ([ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md)). ⚠️ **Ils ne sont plus tous exprimés dans la même métrique** — les comparer entre eux n'a donc plus de sens tant que la bascule n'est pas faite ([ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)).
 
-| Seuil | Constante | Effet |
-|---|---|---|
-| 8 192 o | `kRestartMaxAllocHeapBytes` | Reboot d'auto-guérison ([ADR-0029](../adr/0029-auto-guerison-heap.md)) |
-| 12 288 o | `kOomFallbackRearmMinMaxAllocBytes` | Réarmement de la réserve de **repli** (2 Ko) |
-| 16 384 o | `kWsPushMinAllocBytes` | Pushes WebSocket sautés |
-| 20 000 o | `kLowHeapWarnBytes` | WARN heap + flush disque one-shot |
-| 24 576 o | `kOomRearmMinMaxAllocBytes` | Réarmement de la réserve **nominale** (12 Ko) |
+| Métrique lue | Seuil | Constante | Effet |
+|---|---|---|---|
+| **8 bits** | 2 048 o | `kOomFallbackRearmMinMaxAllocBytes` | Réarmement de la réserve de **repli** (1 Ko) |
+| **8 bits** | 24 576 o | `kOomRearmMinMaxAllocBytes` | Réarmement de la réserve **nominale** (12 Ko) — inatteignable en régime fragmenté, par construction |
+| brute | 8 192 o | `kRestartMaxAllocHeapBytes` | Reboot d'auto-guérison ([ADR-0029](../adr/0029-auto-guerison-heap.md)) |
+| brute | 16 384 o | `kWsPushMinAllocBytes` | Pushes WebSocket sautés |
+| brute | 20 000 o | `kLowHeapWarnBytes` | WARN heap + flush disque one-shot |
 
-> ⚠️ **Ces cinq valeurs sont à refaire (v2.19.1).** Elles ont toutes été calibrées contre `ESP.getMaxAllocHeap()`, c'est-à-dire contre un chiffre **surestimé** ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)). En v2.19.0 elles sont **inchangées** et les gardes les comparent encore à la mesure brute : le comportement de l'appareil ne bouge pas. Le recalibrage interviendra après ≥ 24 h de relevés `minMaxBloc8` on-target, avec l'invariant d'ordre `restart < rearmOom ≤ kWsPushMinAllocBytes < kLowHeapWarnBytes < min(maxBloc8 sur 24 h)` et la règle `kRestartMaxAllocHeapBytes = clamp(0,40 × min(maxBloc8) ; 8192 ; 16384)`, débounce maintenu à 3. Les gardes basculeront **dans l'ordre du risque croissant** — pushes WS et gardes HTTP/TLS d'abord, **auto-guérison en dernier**.
+> ⚠️ **Les seuils « brute » sont à refaire, et le gate `pool-chemistry` a explicitement REFUSÉ de les basculer en v2.20.2** ([ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)). Motifs : (1) la règle `clamp(0,40 × min24h ; 8192 ; 16384)` d'[ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) est **inapplicable** avec `min = 3 060` (plancher 8 192 > minimum observé → reboots en boucle → **mode maintenance = dosage suspendu**) ; (2) les basculer aux valeurs actuelles casserait l'UI, les pushes WS et la mise à jour en ligne ; (3) **les mesures elles-mêmes sont invalidées** — ~100 % du signal d'échec était fabriqué par la garde de réarmement. Recalibrage uniquement après **≥ 24 h de relevés propres post-2.20.2** et identification du fragmenteur. L'ordre de bascule reste **le risque croissant** : pushes WS et gardes HTTP/TLS d'abord, **auto-guérison en dernier**.
 
 Ceinture supplémentaire v2.18.8 : le handler remet la taille à 0 **avant** d'extraire le pointeur ; lire « pointeur vivant + taille 0 » dans cette fenêtre ferait passer une réserve nominale pour non armée et autoriserait un déclassement — la loop suppose donc le palier nominal dans ce cas.
 
@@ -90,7 +131,7 @@ Ceinture supplémentaire v2.18.8 : le handler remet la taille à 0 **avant** d'e
  [ Armed ] ────────────────────────────────────────────► [ Released ]
      ▲          free(réserve) + épisode++ (le new re-tenté réussit)         │
      │                                                                      │
-     │  réserve ABSENTE ET maxBloc ≥ 24 Ko (nominal) ou ≥ 12 Ko (repli)    │
+     │  réserve ABSENTE ET maxBloc8 ≥ 24 Ko (nominal) ou ≥ 2 Ko (repli)     │
      │  — tick 10 s, surclassement repli → nominal autorisé                 │
      ├──────────────────────────────────────────────────────────────────────┤
      │                                                                      ▼
@@ -102,7 +143,30 @@ Ceinture supplémentaire v2.18.8 : le handler remet la taille à 0 **avant** d'e
 
 ### Callback IDF diagnostic (`heap_caps_register_failed_alloc_callback`) — flag-seul
 
-**Complément d'attribution** : appelé depuis l'**intérieur de l'allocateur** à CHAQUE échec d'allocation — y compris les **`malloc` C que le new_handler ne voit pas** (lwIP, mbedTLS, drivers). Mode **flag-seul** : le callback ne fait que poser taille demandée + compteur atomiques (pas de free, pas de log) ; la loop draine en WARN « Allocation heap échouée ×N (dernière taille demandée=…) » **throttlé** `kOomFailWarnThrottleMs` = 30 s. Depuis la v2.18.8, il écrit **en plus** le post-mortem RTC ci-dessous (stores bruts uniquement).
+**Complément d'attribution** : appelé depuis l'**intérieur de l'allocateur** à CHAQUE échec d'allocation — y compris les **`malloc` C que le new_handler ne voit pas** (lwIP, mbedTLS, drivers). Mode **flag-seul** : le callback ne fait que poser des atomiques (pas de free, pas de log) ; la loop draine en WARN. Depuis la v2.18.8, il écrit **en plus** le post-mortem RTC ci-dessous (stores bruts uniquement).
+
+#### Capture de l'appelant — `function_name` + `caps` (v2.20.2)
+
+L'IDF passe au callback un `function_name` que le firmware **jetait** (`(void)function_name;`). C'est pourtant la **seule voie** vers l'identification du fragmenteur, resté non identifié après trois cycles. Il est désormais capturé, avec le masque `caps` :
+
+- `function_name` est un **littéral de `.rodata`** (immortel, jamais libéré) → on publie le **pointeur** dans un `std::atomic<const char*>`, **jamais une copie** : un `strncpy` coûterait une écriture non triviale **sous le verrou du tas** et autoriserait une lecture déchirée depuis la loop, pour aucun gain ;
+- les deux valeurs sont **drainées et journalisées depuis le tick**, **JAMAIS depuis le hook** (verrou du composant heap détenu — cf. contrainte structurante ci-dessous).
+
+Le **post-mortem RTC n'est PAS agrandi** pour les accueillir : la zone de 32 octets est pleine, et l'étendre imposerait un nouveau bump de magic (donc la perte d'une trace) pour une information déjà présente dans le journal.
+
+#### Backoff du WARN d'échec — restaurer la fenêtre forensique (v2.20.2)
+
+Le throttle **fixe** de 30 s (`kOomFailWarnThrottleMs`, supprimé) produisait **~120 WARN/h** — ~90 % la même ligne — et faisait tourner le journal persistant de 8 Ko en **25-35 min**. **C'est ce flot qui a détruit le post-mortem du crash du 15/08 (16:43) avant qu'il puisse être lu.**
+
+Le délai est désormais **croissant** (fonction pure `oomFailWarnNextDelayMs`) : **immédiat** (1ᵉʳ échec d'un épisode) → **30 s** → **5 min** → **30 min** (saturation). Après `kOomFailWarnDelayResetMs` = **1 h sans nouvel échec**, l'épisode est réputé clos et le palier **revient à l'initial** — le prochain incident est signalé sans délai résiduel de 30 min.
+
+Condition **C4** du gate : **aucune `String` supplémentaire par échec** — la ligne est construite en **un seul `snprintf` sur tampon de pile** (le seul temporaire restant est celui qu'impose l'API du logger).
+
+```
+WARN  Alloc heap échouée x3 (dernière=4096 o caps=0x0404 appelant=lwip_alloc, cumul=1028)
+```
+
+Effet mesuré sur la **rétention du journal persistant** : voir [logger.md](logger.md#rétention-réelle-du-journal-persistant-v2202).
 
 ## Post-mortem d'allocation en RAM RTC noinit (v2.18.8)
 
@@ -234,11 +298,14 @@ Chaque refus émet un WARN auto-explicatif : motif, PSRAM libre, les deux mesure
 | Constante | Valeur | Rôle |
 |---|---|---|
 | `kOomReserveBytes` | `12288` (12 Ko) | Réserve d'urgence **nominale** (≈ 34 allocs vitales de 356 o ; 1,5× le seuil auto-guérison 8 192 o) |
-| `kOomRearmMinMaxAllocBytes` | `24576` (24 Ko) | Hystérésis : maxBloc minimal pour ré-allouer la réserve nominale — **recalibré en v2.18.8** (était 32 768, au-dessus du régime réel 27-30 Ko → parachute jamais réarmé) ; = 2 × `kOomReserveBytes` |
-| `kOomFallbackReserveBytes` | `2048` (2 Ko) | Réserve de **repli** quand le nominal n'est pas allouable (v2.18.8) |
-| `kOomFallbackRearmMinMaxAllocBytes` | `12288` (12 Ko) | maxBloc minimal pour armer le palier de repli (v2.18.8) |
+| `kOomRearmMinMaxAllocBytes` | `24576` (24 Ko) | Hystérésis : **`maxBloc8`** minimal pour ré-allouer la réserve nominale. **Inchangé en v2.20.2, volontairement** : inatteignable dans le régime fragmenté actuel (donc plus aucun `malloc(12288)` répété), mais le réarmement nominal repart seul si la fragmentation disparaît |
+| `kOomFallbackReserveBytes` | `1024` (1 Ko) | Réserve de **repli** quand le nominal n'est pas allouable — **2048 → 1024 en v2.20.2** (invariant C2-b : `1024 ≤ 2048/2`) |
+| `kOomFallbackRearmMinMaxAllocBytes` | `2048` (2 Ko) | **`maxBloc8`** minimal pour armer le palier de repli — **12288 → 2048 en v2.20.2** (invariant C2-a : `2048 < 3060` = pire creux observé) |
 | `kOomRearmCheckIntervalMs` | `10000` (10 s) | Cadence du contrôle de réarmement dans la loop |
-| `kOomFailWarnThrottleMs` | `30000` (30 s) | Max 1 WARN « allocation heap échouée » par fenêtre |
+| `kOomFailWarnDelayInitialMs` | `30000` (30 s) | Backoff du WARN d'échec — 1ᵉʳ palier (v2.20.2, remplace `kOomFailWarnThrottleMs`) |
+| `kOomFailWarnDelayMidMs` | `300000` (5 min) | Backoff — 2ᵉ palier |
+| `kOomFailWarnDelayMaxMs` | `1800000` (30 min) | Backoff — palier de **saturation** |
+| `kOomFailWarnDelayResetMs` | `3600000` (1 h) | Sans nouvel échec pendant ce délai → retour au palier initial |
 | `kOomCorruptionMaxFails` | `8` | Au-delà (comparaison **stricte**) **et** en rafale → verdict `FAMINE MÉMOIRE` (v2.18.8) |
 | `kOomCorruptionBurstSpanS` | `60` (60 s) | Fenêtre de **rafale** du verdict : span entre 1ᵉʳ et dernier échec (v2.18.8) |
 | `kOomCorruptionSaneBlockRatio` | `4` | maxBloc ≥ 4 × taille demandée = comptabilité **saine** → `SUSPICION CORRUPTION` (v2.18.8) |
@@ -253,7 +320,7 @@ Chaque refus émet un WARN auto-explicatif : motif, PSRAM libre, les deux mesure
 
 ## Tests
 
-66 tests natifs dédiés (`test/test_native_oom_guard/`, **+41 en v2.18.8**) : machine à états du handler (libération / désenregistrement), hystérésis et critère pointeur du réarmement (course handler/réarmement incluse), **paliers nominal/repli** de `oomRearmTargetBytes` (surclassement autorisé, déclassement interdit, tas trop dégradé), one-shot du log par épisode, **encodage/décodage/validité/span** du post-mortem (aller-retour, saturations, repliement des uptimes sur 16 bits), **verdict** (frontière stricte de `kOomCorruptionMaxFails`, fenêtre de rafale, ratio de comptabilité saine, cas indéterminés), cadence et autolimitation du contrôle d'intégrité, garde `oomTlsGateReason` — motifs et **priorité PSRAM sur heap**, PSRAM saturée, frontières inclusives des trois seuils — **507 tests au total**.
+82 tests natifs dédiés (`test/test_native_oom_guard/`, **+16 en v2.20.2** : `oomShouldRegisterHandler` sous condition C1, escalade et saturation de `oomFailWarnNextDelayMs`, exclusion `oomShouldCountFailure`, paliers de repli recalibrés) : machine à états du handler (libération / désenregistrement), hystérésis et critère pointeur du réarmement (course handler/réarmement incluse), **paliers nominal/repli** de `oomRearmTargetBytes` (surclassement autorisé, déclassement interdit, tas trop dégradé), one-shot du log par épisode, **encodage/décodage/validité/span** du post-mortem (aller-retour, saturations, repliement des uptimes sur 16 bits), **verdict** (frontière stricte de `kOomCorruptionMaxFails`, fenêtre de rafale, ratio de comptabilité saine, cas indéterminés), cadence et autolimitation du contrôle d'intégrité, garde `oomTlsGateReason` — motifs et **priorité PSRAM sur heap**, PSRAM saturée, frontières inclusives des trois seuils — **582 tests au total**.
 
 ## Fichiers liés
 
@@ -265,3 +332,4 @@ Chaque refus émet un WARN auto-explicatif : motif, PSRAM libre, les deux mesure
 - [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) — post-mortem RTC + miroir de l'anneau + verdict + intégrité périodique + recalibrage du réarmement (v2.18.8)
 - [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md) — PSRAM libre requise pour toute session TLS sortante (alternatives écartées : seuil maxBloc relevé, tentative rattrapée, `/download-update` non gardée)
 - [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) — **cause racine des 3 crashs** : mesure 8 bits obligatoire dans les gardes, helper centralisé, double exposition, découpage mesure (2.19.0) puis bascule (2.19.1), bump des deux magics RTC
+- [ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md) — **on ne calibre pas des seuils sur une fragmentation pathologique** : régime bi-métrique assumé (seuls les paliers de réarmement passent en 8 bits), règle de recalibrage d'ADR-0038 déclarée inapplicable, mesures du 15/08 invalidées

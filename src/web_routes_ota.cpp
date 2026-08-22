@@ -9,6 +9,11 @@
 #include "ota_integrity.h"
 #include "ota_integrity_logic.h"
 #include "ota_check_logic.h"
+// bug-echec-ota-indechiffrable-et-noyade-du-journal (2.20.1) : pré-contrôle pur
+// du couple « type demandé ↔ octet magique reçu » + détection du type par nom
+// de fichier (le nom nu `littlefs.bin` produit par build_fs.sh n'était reconnu
+// par aucun des suffixes historiques).
+#include "ota_type_logic.h"
 // bug-oom-accept-http-durcissement / bug-garde-tls-trop-permissive-sans-psram :
 // prédicat pur oomTlsGateReason() partagé avec le parachute OOM (garde PSRAM
 // LIBRE + heap avant toute session TLS sortante : /check-update, /download-update).
@@ -104,12 +109,125 @@ static bool g_uploadHasExpected = false;        // Param sha256 fourni ET valide
 static bool g_uploadDigestInvalid = false;      // Param sha256 fourni mais malformé → refus au final
 static AsyncWebServerRequest* g_uploadOwner = nullptr;  // Requête propriétaire de la session d'upload
 
+// --- 2.20.1 : diagnostic d'échec (bug « journal noyé / cause écrasée ») ------
+// g_uploadErrorLogged : un échec d'upload ne doit produire QU'UNE ligne de
+// journal. Après Update.abort(), Update.write() retourne 0 à chaque chunk
+// restant : sans ce garde-fou, une seule tentative ratée écrivait ~200 lignes
+// identiques et vidait entièrement l'anneau (kMaxLogEntries = 200), effaçant
+// les lignes qui désignaient le coupable.
+static bool g_uploadErrorLogged = false;
+// Verdict HTTP mémorisé pour la requête d'upload (consommé par le lambda de
+// réponse via takeOtaUploadVerdict) : le handler d'upload ne peut pas répondre
+// lui-même, mais c'est lui seul qui connaît la CAUSE de l'échec.
+static AsyncWebServerRequest* g_uploadVerdictOwner = nullptr;
+static int g_uploadVerdictStatus = 0;
+static String g_uploadVerdictBody;
+// true entre le LittleFS.end() réussi et le remontage : indique que le
+// filesystem est démonté DE NOTRE FAIT et doit être remonté sur tout chemin
+// terminal (sinon l'UI n'est plus servie jusqu'au prochain reboot).
+static bool g_uploadFsUnmounted = false;
+// Type de la session en cours : `cmd` est une locale du bloc index==0 qui ne
+// survit pas d'un chunk à l'autre, alors que le site d'écriture (chunk N) doit
+// pouvoir nommer le type dans son message d'erreur.
+static bool g_uploadIsFilesystem = false;
+
+// CONCURRENCE — aucun mutex ici, et c'est VOULU : handleOtaUpdate, le lambda de
+// réponse de /update et le callback onDisconnect s'exécutent TOUS sur la même
+// tâche AsyncTCP, séquentiellement. Ajouter un verrou n'apporterait rien et
+// risquerait d'introduire une attente sur une tâche qui n'est pas abonnée au
+// watchdog. Ne pas « corriger » ce point en revue.
+
 // Marque une requête comme rejetée (upload concurrent) via _tempObject :
 // marqueur par requête, libéré automatiquement par free() dans le destructeur
 // d'AsyncWebServerRequest — pas de fuite même si le client déconnecte.
 static void markUploadRejected(AsyncWebServerRequest* request) {
   if (request->_tempObject == nullptr) {
     request->_tempObject = malloc(1);
+  }
+}
+
+// Mémorise le corps de réponse à servir pour CETTE requête d'upload.
+// Le pointeur n'est stocké que comme IDENTITÉ : il n'est jamais déréférencé
+// (il peut être pendant si le client s'est déconnecté entre-temps).
+static void setOtaUploadVerdict(AsyncWebServerRequest* request, int status, const String& body) {
+  g_uploadVerdictOwner = request;
+  g_uploadVerdictStatus = status;
+  g_uploadVerdictBody = body;
+}
+
+/**
+ * @brief Récupère et CONSOMME le verdict HTTP mémorisé pour cette requête.
+ *
+ * Appelé par le lambda de réponse de /update. Le pointeur mémorisé n'est
+ * jamais déréférencé, uniquement comparé.
+ *
+ * @param request Requête qui s'apprête à répondre.
+ * @param status  [out] Code HTTP à servir (renseigné seulement si true).
+ * @param body    [out] Corps à servir (renseigné seulement si true).
+ * @return true si un verdict était mémorisé POUR CETTE requête (slot libéré).
+ */
+static bool takeOtaUploadVerdict(AsyncWebServerRequest* request, int& status, String& body) {
+  if (request == nullptr || g_uploadVerdictOwner != request) {
+    return false;
+  }
+  status = g_uploadVerdictStatus;
+  body = g_uploadVerdictBody;
+  g_uploadVerdictOwner = nullptr;   // Consommé : une seule réponse par verdict
+  g_uploadVerdictStatus = 0;
+  g_uploadVerdictBody = String();
+  return true;
+}
+
+/**
+ * @brief Journalise la cause d'un échec d'upload UNE SEULE FOIS et mémorise la
+ *        réponse HTTP correspondante.
+ *
+ * @param request  Requête d'upload concernée.
+ * @param status   Code HTTP à servir (400 = image/paramètre refusé, 500 = échec flash).
+ * @param cause    Cause en clair, en français, déjà enrichie de l'errorString capturé.
+ * @param critical true pour journaliser en CRITICAL (refus d'intégrité).
+ */
+static void failOtaUpload(AsyncWebServerRequest* request, int status, const String& cause,
+                          bool critical = false) {
+  if (!g_uploadErrorLogged) {
+    g_uploadErrorLogged = true;
+    if (critical) {
+      systemLogger.critical("Mise à jour OTA refusée : " + cause);
+    } else {
+      systemLogger.error("Échec mise à jour OTA : " + cause);
+    }
+  }
+  setOtaUploadVerdict(request, status, "FAIL: " + cause);
+}
+
+/**
+ * @brief Remonte le filesystem s'il a été démonté par la session d'upload.
+ *
+ * No-op si le FS n'a pas été démonté par nous (mise à jour firmware : il n'a
+ * jamais été touché). JAMAIS LittleFS.begin(true) : un formatage détruirait
+ * l'UI encore servie aux clients connectés.
+ *
+ * @param afterFailure true (défaut) si l'on remonte après une mise à jour FS
+ *        INTERROMPUE — le contenu de la partition est alors potentiellement
+ *        incohérent, ce qui justifie une alerte. false après un flash FS réussi.
+ */
+static void remountUploadFsIfNeeded(bool afterFailure = true) {
+  if (!g_uploadFsUnmounted) {
+    return;
+  }
+  // Drapeau remis à false quel que soit le résultat : une seule tentative de
+  // remontage par session, pas de boucle de montage sur image corrompue.
+  g_uploadFsUnmounted = false;
+  if (LittleFS.begin(false)) {
+    if (afterFailure) {
+      systemLogger.critical("Filesystem remonté après une mise à jour FS interrompue : "
+                            "contenu potentiellement incohérent, relancer la mise à jour");
+    } else {
+      systemLogger.info("Filesystem remonté après la mise à jour");
+    }
+  } else {
+    systemLogger.warning("Impossible de remonter le filesystem après la mise à jour "
+                         "— redémarrage requis");
   }
 }
 
@@ -130,6 +248,80 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
       // active à protéger, on reprend la main.
       systemLogger.warning("Upload OTA: session propriétaire périmée détectée, reprise par la nouvelle requête");
     }
+
+    // Réinitialisation ANTICIPÉE du garde-fou anti-flood : le refus de type
+    // ci-dessous doit pouvoir journaliser sa cause même si la tentative
+    // PRÉCÉDENTE s'était soldée par une erreur (le bloc de réinitialisation
+    // complet, lui, n'intervient qu'après la prise de propriété).
+    g_uploadErrorLogged = false;
+
+    // ---- Détermination du type AVANT le moindre effet de bord (2.20.1) -----
+    // Déplacé ici depuis l'après-Update.begin() : le pré-contrôle de l'octet
+    // magique doit pouvoir refuser l'image AVANT setOtaInProgress(true),
+    // AVANT LittleFS.end() et AVANT Update.begin().
+    int cmd = U_FLASH; // Par défaut: firmware
+
+    // Priorité 1: Utiliser le paramètre update_type du formulaire si disponible
+    if (request->hasParam("update_type", true)) {
+      String updateType = request->getParam("update_type", true)->value();
+      if (updateType == "filesystem") {
+        cmd = U_SPIFFS;
+        systemLogger.info("Type de mise à jour: Filesystem (paramètre formulaire)");
+      } else {
+        systemLogger.info("Type de mise à jour: Firmware (paramètre formulaire)");
+      }
+    }
+    // Priorité 2: Détecter par le nom de fichier si pas de paramètre.
+    // inferOtaKindFromFilename reconnaît désormais le nom NU `littlefs.bin`
+    // (produit par build_fs.sh), que les anciens suffixes rataient.
+    else if (inferOtaKindFromFilename(filename.c_str()) == OtaImageKind::kFilesystem) {
+      cmd = U_SPIFFS;
+      systemLogger.info("Type de mise à jour: Filesystem (détection nom fichier)");
+    } else {
+      systemLogger.info("Type de mise à jour: Firmware (détection nom fichier)");
+    }
+
+    // ---- Pré-contrôle de l'octet magique (2.20.1) --------------------------
+    // Une image filesystem envoyée en type « firmware » était refusée par
+    // UpdateClass::_writeBuffer() APRÈS coup, avec une cause écrasée par
+    // abort() et un journal noyé. On la refuse ici, sans aucun effet de bord.
+    // Voir la réserve bloquante de src/ota_type_logic.h : équivalence acquise
+    // tant que Update.setupCrypt() n'est jamais appelé.
+    if (len >= 1) {
+      const OtaTypeVerdict verdict = checkOtaFirstByte(cmd == U_FLASH, data[0]);
+      if (verdict == OtaTypeVerdict::kRejectNotFirmware) {
+        char magicHex[5];
+        snprintf(magicHex, sizeof(magicHex), "0x%02X", data[0]);
+        // Refus AVANT `g_uploadOwner = request` (pas d'owner fantôme) et avant
+        // toute inhibition des pompes / démontage du filesystem.
+        // markUploadRejected : sans marqueur par requête, Update.hasError()
+        // serait faux → réponse "OK" et REDÉMARRAGE PARASITE.
+        markUploadRejected(request);
+        failOtaUpload(request, 400,
+                      String("l'image reçue n'est pas un firmware ESP32 (octet magique ") +
+                          magicHex + " au lieu de 0xE9) — type « Système de fichiers » attendu ?");
+        // Ce chemin sort AVANT la prise de propriété, donc avant l'onDisconnect
+        // de session : sans ce nettoyage dédié, un client qui coupe avant de
+        // lire la réponse laisserait g_uploadVerdictOwner pendant, et un futur
+        // AsyncWebServerRequest réalloué à la même adresse consommerait ce
+        // verdict. Le pointeur est UNIQUEMENT comparé, jamais déréférencé.
+        request->onDisconnect([request]() {
+          if (g_uploadVerdictOwner == request) {
+            g_uploadVerdictOwner = nullptr;
+            g_uploadVerdictStatus = 0;
+            g_uploadVerdictBody = String();
+          }
+        });
+        return;
+      }
+      if (verdict == OtaTypeVerdict::kWarnLooksLikeFirmware) {
+        // Jamais de refus dans ce sens : LittleFS n'a pas de magique fiable à
+        // l'offset 0, un 0xE9 fortuit y est possible → on avertit et on poursuit.
+        systemLogger.warning("Mise à jour « Système de fichiers » : l'image reçue commence par "
+                             "l'octet magique firmware 0xE9 — vérifier le type sélectionné");
+      }
+    }
+
     g_uploadOwner = request;
 
     // Si le client déconnecte en plein transfert, le bloc final n'arrive
@@ -141,20 +333,43 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
         if (Update.isRunning()) {
           Update.abort();
         }
+        // ORDRE IMPOSÉ : libérer le dosage AVANT tout montage LittleFS.
         PumpController.setOtaInProgress(false);
+        remountUploadFsIfNeeded();
         g_uploadOwner = nullptr;
+      }
+      // Nettoyage HORS du garde ci-dessus : un échec survenu APRÈS la prise de
+      // propriété a déjà remis g_uploadOwner à nullptr tout en laissant un
+      // verdict en attente. Si le client se déconnecte avant de le lire, ce
+      // slot resterait un pointeur pendant. Comparaison seule, jamais de
+      // déréférencement.
+      if (g_uploadVerdictOwner == request) {
+        g_uploadVerdictOwner = nullptr;
+        g_uploadVerdictStatus = 0;
+        g_uploadVerdictBody = String();
       }
     });
 
-    systemLogger.info("Début mise à jour OTA: " + filename);
-    PumpController.setOtaInProgress(true);
-
     // Réinitialiser TOUT l'état statique de l'upload (AC5 : deux tentatives
-    // successives sans reboot ne doivent partager aucun état).
+    // successives sans reboot ne doivent partager aucun état). Remonté avant
+    // les effets de bord pour qu'aucun résidu de la tentative précédente
+    // (empreinte, verdict, garde anti-flood) ne survive.
+    // NOTE : g_uploadFsUnmounted n'est VOLONTAIREMENT pas remis à false ici —
+    // il reflète l'état réel du montage, pas l'état de la session ; le forcer
+    // à false laisserait un filesystem démonté pour de bon si un chemin
+    // terminal avait été raté.
     g_uploadLastLog = 0;
     g_uploadHasExpected = false;
     g_uploadDigestInvalid = false;
+    g_uploadErrorLogged = false;
+    g_uploadVerdictOwner = nullptr;
+    g_uploadVerdictStatus = 0;
+    g_uploadVerdictBody = String();
+    g_uploadIsFilesystem = (cmd == U_SPIFFS);
     g_uploadHasher.begin();
+
+    systemLogger.info("Début mise à jour OTA: " + filename);
+    PumpController.setOtaInProgress(true);
 
     // Param POST `sha256` OPTIONNEL (upload manuel : l'utilisateur est
     // physiquement présent). Accepté avec ou sans préfixe "sha256:".
@@ -174,40 +389,24 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
       }
     }
 
-    // Déterminer le type de mise à jour
-    int cmd = U_FLASH; // Par défaut: firmware
-
-    // Priorité 1: Utiliser le paramètre update_type du formulaire si disponible
-    if (request->hasParam("update_type", true)) {
-      String updateType = request->getParam("update_type", true)->value();
-      if (updateType == "filesystem") {
-        cmd = U_SPIFFS;
-        systemLogger.info("Type de mise à jour: Filesystem (paramètre formulaire)");
-      } else {
-        systemLogger.info("Type de mise à jour: Firmware (paramètre formulaire)");
-      }
-    }
-    // Priorité 2: Détecter par le nom de fichier si pas de paramètre
-    else if (filename.endsWith(".littlefs.bin") || filename.endsWith(".spiffs.bin") || filename.endsWith(".fs.bin")) {
-      cmd = U_SPIFFS;
-      systemLogger.info("Type de mise à jour: Filesystem (détection nom fichier)");
-    } else {
-      systemLogger.info("Type de mise à jour: Firmware (détection nom fichier)");
-    }
-
     // Démonter LittleFS avant la mise à jour du filesystem
     if (cmd == U_SPIFFS) {
       LittleFS.end();
+      g_uploadFsUnmounted = true;  // Doit être remonté sur tout chemin terminal
       systemLogger.info("LittleFS démonté pour mise à jour manuelle");
     }
 
     // Démarrer la mise à jour
     if (!Update.begin(UPDATE_SIZE_UNKNOWN, cmd)) {
-      Update.printError(Serial);
-      systemLogger.error("Erreur démarrage OTA: " + String(Update.errorString()));
+      // errorString() capturé AVANT toute autre opération sur Update.
+      const String beginError = String(Update.errorString());
+      failOtaUpload(request, 500,
+                    String("démarrage de la mise à jour impossible (") + beginError + ")");
       // Chemin terminal : réarmer le dosage (sinon pompes inhibées jusqu'au
-      // reboot — le final est sauté par la garde owner) et libérer le verrou.
+      // reboot — le final est sauté par la garde owner) puis remonter le FS.
+      // ORDRE IMPOSÉ : setOtaInProgress(false) AVANT LittleFS.begin().
       PumpController.setOtaInProgress(false);
+      remountUploadFsIfNeeded();
       g_uploadOwner = nullptr;
       return;  // Arrêter immédiatement — Update.write() échouerait en cascade sinon
     }
@@ -226,9 +425,23 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     g_uploadHasher.update(data, len);
 
     if (Update.write(data, len) != len) {
-      Update.printError(Serial);
-      systemLogger.error("Erreur écriture OTA");
+      // CAUSE CAPTURÉE AVANT abort() : _abort(UPDATE_ERROR_ABORT) remplace le
+      // code d'erreur réel (MAGIC_BYTE, ERASE, WRITE, SPACE…) — après abort()
+      // la vraie cause est perdue à jamais, y compris pour la finalisation.
+      const String writeError = String(Update.errorString());
       Update.abort();
+      failOtaUpload(request, 500,
+                    String("échec d'écriture de l'image ") +
+                        (g_uploadIsFilesystem ? "« Système de fichiers »" : "« Firmware »") +
+                        " (" + writeError + ")");
+      // Chemin TERMINAL : on relâche la session ici. Sans cela, Update.write()
+      // retournerait 0 sur chacun des chunks restants et re-journaliserait la
+      // même erreur ~200 fois, vidant tout l'anneau du journal.
+      // ORDRE IMPOSÉ : setOtaInProgress(false) AVANT LittleFS.begin().
+      PumpController.setOtaInProgress(false);
+      remountUploadFsIfNeeded();
+      g_uploadOwner = nullptr;
+      return;
     } else {
       // Log progression toutes les 100KB (g_uploadLastLog réinitialisé à index==0)
       if (index - g_uploadLastLog >= 102400) {
@@ -252,9 +465,14 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     // Param sha256 fourni mais malformé → refus explicite (fail-closed).
     // Update.abort() garantit hasError() == true → réponse "FAIL" au client.
     if (g_uploadDigestInvalid) {
-      systemLogger.critical("Intégrité OTA: flash refusé (empreinte sha256 fournie invalide)");
       Update.abort();
+      failOtaUpload(request, 400,
+                    "empreinte SHA-256 fournie invalide — flash refusé", true);
+      // ORDRE IMPOSÉ : setOtaInProgress(false) AVANT LittleFS.begin().
+      // Le remontage est un no-op si la mise à jour visait le firmware
+      // (le filesystem n'a alors jamais été démonté).
       PumpController.setOtaInProgress(false);
+      remountUploadFsIfNeeded();
       g_uploadOwner = nullptr;  // Chemin terminal : libérer le verrou
       return;
     }
@@ -264,24 +482,36 @@ static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filena
     if (g_uploadHasExpected && !sha256Equal(computed, g_uploadExpected)) {
       char expectedHex[kOtaSha256HexLen + 1];
       sha256ToHex(g_uploadExpected, expectedHex, sizeof(expectedHex));
-      systemLogger.critical("Intégrité OTA: empreinte SHA-256 non conforme (attendue " +
-                            String(expectedHex) + ", calculée " + String(computedHex) +
-                            ") — flash refusé");
       Update.abort();
+      failOtaUpload(request, 400,
+                    String("empreinte SHA-256 non conforme (attendue ") + expectedHex +
+                        ", calculée " + computedHex + ") — flash refusé",
+                    true);
+      // ORDRE IMPOSÉ : setOtaInProgress(false) AVANT LittleFS.begin().
       PumpController.setOtaInProgress(false);
+      remountUploadFsIfNeeded();
       g_uploadOwner = nullptr;  // Chemin terminal : libérer le verrou
       return;
     }
 
     if (Update.end(true)) {
       systemLogger.info("Mise à jour OTA réussie. Redémarrage...");
+      // Aucun verdict mémorisé sur le chemin nominal : le lambda de réponse
+      // sert "OK" (corps INCHANGÉ, data/app.js en dépend) et planifie le reboot.
       if (g_restartRequested == nullptr || g_restartRequestedTime == nullptr) {
+        // Pas de reboot planifié : réarmer le dosage AVANT de remonter le
+        // filesystem fraîchement flashé (image saine → pas d'alerte).
         PumpController.setOtaInProgress(false);
+        remountUploadFsIfNeeded(false);
       }
     } else {
-      Update.printError(Serial);
-      systemLogger.error("Erreur finalisation OTA: " + String(Update.errorString()));
+      // errorString() capturé avant tout autre appel sur Update.
+      const String endError = String(Update.errorString());
+      failOtaUpload(request, 500,
+                    String("finalisation de la mise à jour impossible (") + endError + ")");
+      // ORDRE IMPOSÉ : setOtaInProgress(false) AVANT LittleFS.begin().
       PumpController.setOtaInProgress(false);
+      remountUploadFsIfNeeded();
     }
     g_uploadOwner = nullptr;  // Chemin terminal (succès ou échec) : libérer le verrou
   }
@@ -818,13 +1048,17 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
       systemLogger.critical("Intégrité OTA FS: empreinte SHA-256 non conforme (attendue " +
                             String(expectedHex) + ", calculée " + String(computedHex) +
                             ") — redémarrage annulé");
+      // ORDRE IMPOSÉ (gate pool-chemistry 2.20.1) : réarmer le dosage AVANT le
+      // montage. La tâche AsyncTCP n'est PAS abonnée au watchdog — un montage
+      // long ou un panic lfs_alloc sur image corrompue laisserait sinon les
+      // pompes inhibées sans reboot possible.
+      PumpController.setOtaInProgress(false);  // Appariement du setOtaInProgress(true)
       // Remontage best-effort : la partition contient une image corrompue,
       // LittleFS échouera probablement (l'UI restera servie depuis le cache
       // navigateur jusqu'à un nouvel OTA FS réussi).
       if (!LittleFS.begin(false)) {
         systemLogger.warning("Impossible de remonter LittleFS après échec d'intégrité");
       }
-      PumpController.setOtaInProgress(false);  // Appariement du setOtaInProgress(true)
       sendIntegrityMismatch(request, expectedHex, computedHex,
         "Empreinte SHA-256 non conforme : image filesystem corrompue ou tronquée, redémarrage annulé");
       return;  // PAS de restart demandé
@@ -870,11 +1104,15 @@ static void handleDownloadUpdate(AsyncWebServerRequest* request) {
         if (c > 0) {
           hasher.update(buff, c);  // Hachage incrémental du flux (feature-026)
           if (Update.write(buff, c) != (size_t)c) {
-            systemLogger.error("Erreur écriture OTA");
+            // CAUSE CAPTURÉE AVANT abort() : abort() écrase le code réel par
+            // UPDATE_ERROR_ABORT et la cause serait définitivement perdue.
+            const String writeError = String(Update.errorString());
             Update.abort();
+            systemLogger.error("Échec d'écriture de l'image firmware téléchargée (" +
+                               writeError + ") — mise à jour interrompue");
             http.end();
             PumpController.setOtaInProgress(false);
-            sendErrorResponse(request, 500, "OTA write failed");
+            sendErrorResponse(request, 500, "OTA write failed: " + writeError);
             return;
           }
           written += c;
@@ -959,22 +1197,37 @@ void setupOtaRoutes(AsyncWebServer* server) {
     [](AsyncWebServerRequest *req) {
       REQUIRE_AUTH(req, RouteProtection::CRITICAL);
 
-      // Requête rejetée pour upload concurrent (marqueur posé par
-      // markUploadRejected) : réponse d'erreur dédiée — Update.hasError()
-      // reflète la session de l'AUTRE upload et donnerait un faux "OK".
-      if (req->_tempObject != nullptr) {
-        AsyncWebServerResponse *response = req->beginResponse(409, "text/plain",
-          "Upload refusé: une mise à jour OTA est déjà en cours");
-        response->addHeader("Connection", "close");
-        req->send(response);
-        return;
+      int status = 200;
+      String body = "OK";
+
+      // ORDRE IMPOSÉ (2.20.1) — le verdict mémorisé PASSE AVANT tout le reste.
+      // 1) Un refus de type (pré-contrôle de l'octet magique) n'a JAMAIS appelé
+      //    Update.begin() : Update.hasError() vaut false et le repli répondrait
+      //    « OK » + redémarrage parasite sur un appareil qui n'a rien flashé.
+      // 2) Ce chemin de refus pose aussi markUploadRejected() : sans ce test en
+      //    premier, la branche 409 répondrait « une mise à jour OTA est déjà en
+      //    cours », texte faux pour un refus de type.
+      if (!takeOtaUploadVerdict(req, status, body)) {
+        // Requête rejetée pour upload concurrent (marqueur posé par
+        // markUploadRejected) : réponse d'erreur dédiée — Update.hasError()
+        // reflète la session de l'AUTRE upload et donnerait un faux "OK".
+        if (req->_tempObject != nullptr) {
+          status = 409;
+          body = "Upload refusé: une mise à jour OTA est déjà en cours";
+        } else if (Update.hasError()) {
+          // Échec sans verdict mémorisé (chemin résiduel) : au moins ne pas
+          // mentir sur le code HTTP.
+          status = 500;
+          body = String("FAIL: échec de la mise à jour (") + Update.errorString() + ")";
+        }
+        // Sinon : chemin nominal INCHANGÉ → 200 / corps exactement "OK".
       }
 
-      bool success = !Update.hasError();
-      AsyncWebServerResponse *response = req->beginResponse(200, "text/plain", success ? "OK" : "FAIL");
+      AsyncWebServerResponse *response = req->beginResponse(status, "text/plain", body);
       response->addHeader("Connection", "close");
       req->send(response);
-      if (success && g_restartRequested != nullptr && g_restartRequestedTime != nullptr) {
+      // Redémarrage planifié UNIQUEMENT sur succès réel.
+      if (status == 200 && g_restartRequested != nullptr && g_restartRequestedTime != nullptr) {
         // Planifier le redémarrage dans update() pour ne pas bloquer
         *g_restartRequested = true;
         *g_restartRequestedTime = millis();

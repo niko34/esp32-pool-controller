@@ -7,6 +7,7 @@
 #include "filtration.h"
 #include "lighting.h"
 #include "logger.h"
+#include "sensors.h"   // v2.20.3 (D1) : requestFilterReset() — reset filtre différé
 #include "mqtt_manager.h"
 #include "ws_manager.h"
 #include "dosing_logic.h"
@@ -511,6 +512,63 @@ void setupControlRoutes(AsyncWebServer* server) {
     mqttManager.publishBoostState();
     wsManager.requestConfigBroadcast();
     req->send(200, "application/json", "{\"boost_active\":false,\"boost_until\":0}");
+  });
+
+  // ---------- POST /reset-sensor-filter?sensor=ph|orp ----------
+  // v2.20.3 (D1, bug-filtre-ph-verrouille) : réinitialisation manuelle du filtre
+  // pH ou ORP, hors des routes de debug. Sortie de secours utilisateur quand le
+  // filtre reste verrouillé (incident 2026-08-16 : la SEULE porte de sortie était
+  // POST /debug/sensor_filter_reset, absente de l'interface, et elle sacrifiait
+  // aussi le filtre ORP sain).
+  //
+  // Gardes (verdict pool-chemistry P6) :
+  //   - auth ADMIN (RouteProtection::CRITICAL) : un reset relance un warmup et
+  //     efface la détection de sonde figée + le latch EMI ;
+  //   - SÉLECTIF par capteur : réparer le pH ne touche jamais l'ORP ;
+  //   - 1 reset par capteur par kSensorFilterUiResetMinIntervalMs (10 min) → 429 ;
+  //   - AUCUN accès direct au filtre depuis ce handler : requestFilterReset()
+  //     pose un drapeau `volatile` consommé en tête de SensorManager::update(),
+  //     dans le SEUL contexte loopTask autorisé à écrire dans un SensorFilter
+  //     (contrat sensor_filter.h). Le journal de l'état détruit (D4) est émis
+  //     là-bas, au moment de l'exécution réelle.
+  server->on("/reset-sensor-filter", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::CRITICAL);
+    auto* p = req->getParam("sensor", true);   // corps (form-urlencoded)
+    if (!p) p = req->getParam("sensor");        // fallback query string
+    String sensorName = p ? p->value() : String();
+    sensorName.toLowerCase();
+    const bool isPh  = (sensorName == "ph");
+    const bool isOrp = (sensorName == "orp");
+    if (!isPh && !isOrp) {
+      req->send(400, "application/json",
+                "{\"error\":\"invalid_sensor\",\"message\":\"Param\\u00e8tre 'sensor' "
+                "requis : ph ou orp.\"}");
+      return;
+    }
+
+    // Anti-abus : compteurs statiques (handlers async sérialisés sur la tâche
+    // async_tcp — pas de course entre deux requêtes). 0 = jamais réinitialisé.
+    static uint32_t sLastResetMs[2] = {0, 0};
+    const uint8_t idx = isPh ? 0 : 1;
+    const uint32_t nowMs = (uint32_t)millis();
+    if (sLastResetMs[idx] != 0 &&
+        (nowMs - sLastResetMs[idx]) < kSensorFilterUiResetMinIntervalMs) {
+      const uint32_t waitS =
+          (kSensorFilterUiResetMinIntervalMs - (nowMs - sLastResetMs[idx])) / 1000UL;
+      req->send(429, "application/json",
+                String("{\"error\":\"too_soon\",\"retry_after_s\":") + waitS +
+                    ",\"message\":\"Un seul r\\u00e9armement par capteur toutes les 10 "
+                    "minutes (le filtre doit d'abord se r\\u00e9amorcer).\"}");
+      return;
+    }
+
+    if (!sensors.requestFilterReset(isPh, isOrp, "interface web")) {
+      req->send(500, "application/json", "{\"error\":\"queue_failed\"}");
+      return;
+    }
+    sLastResetMs[idx] = (nowMs != 0) ? nowMs : 1;  // 0 = sentinelle « jamais »
+    req->send(200, "application/json",
+              String("{\"queued\":true,\"sensor\":\"") + (isPh ? "ph" : "orp") + "\"}");
   });
 
   // feature-056 : signal d'état de la filtration EXTERNE (mode ExternalFiltration).

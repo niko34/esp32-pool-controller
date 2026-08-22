@@ -79,6 +79,12 @@ struct MqttTopics {
   String orpFilterReadyState;
   String orpFilterUnstableState;
   String orpRejectedCountState;
+  // v2.20.3 (C3) : alarme « filtre non prêt durablement » (≥ 5 min avec eau et
+  // mesures représentatives) = régulation À L'ARRÊT. Distinct de *_filter_ready,
+  // qui passe légitimement à OFF à chaque warmup : ce topic-ci ne s'allume QUE
+  // sur une panne. ON/OFF retain, device_class `problem` côté HA.
+  String phFilterStuckState;
+  String orpFilterStuckState;
   String phMixingDelayActiveState;  // ON/OFF pause mélange pH
   String orpMixingDelayActiveState; // ON/OFF pause mélange ORP
   // feature-050 : cumuls journaliers injectés + commandes volume quotidien + reboot
@@ -182,7 +188,8 @@ private:
   // un topic retain que si la valeur (déjà arrondie) a changé. Lus/écrits uniquement
   // depuis mqttTask. Sentinelle vide = "jamais publié".
   // feature-050 : slots 14/15 réservés aux cumuls journaliers ph_daily_ml/orp_daily_ml.
-  static constexpr int kDedupCacheSlots = 16;
+  // v2.20.3 : +2 slots (16/17) pour ph/orp_filter_stuck.
+  static constexpr int kDedupCacheSlots = 18;
   String _lastFilterPub[kDedupCacheSlots];
   // Publie `payload` sur `topic` uniquement si différent du dernier publié (slot `cacheIdx`).
   void safePublishDedup(int cacheIdx, const char* topic, const String& payload);

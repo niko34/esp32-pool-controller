@@ -44,13 +44,54 @@
 //     l'appelant respecte ce contrat (cf. SensorManager).
 //
 // Logique de rejet — une mesure n'alimente PAS le filtre si :
+//   - la PORTE est fermée (cf. setContext ci-dessous) : sortie en tête, l'échantillon
+//     est mémorisé pour le diagnostic mais ne touche NI le buffer, NI le détecteur
+//     figé, NI les compteurs ;
 //   - NaN → rejet, incrémente consecutiveRejects (signal d'instabilité) ;
 //   - hors [minValue, maxValue] → idem ;
 //   - spike DUR isolé : |raw − médiane| > spikeReject → ÉCARTÉ, EXCLU avant le
 //     calcul de dispersion, NE compte PAS comme instabilité (n'incrémente pas
 //     consecutiveRejects), NE met PAS à jour lastValid → l'âge grandit (C4).
-//   Un spike répété maintient donc le filtre non-alimenté → âge > maxAge → non
-//   prêt → dosage fail-closed (C4, invariant feature-022 préservé).
+//     Un spike ISOLÉ maintient le filtre non-alimenté → âge > maxAge → non prêt →
+//     dosage fail-closed (C4, invariant feature-022 préservé).
+//
+// PORTE D'ALIMENTATION + SORTIE DE SECOURS (v2.20.3, bug-filtre-ph-verrouille) :
+//   L'ancien contrat présentait le verrouillage sur spike répété comme un
+//   fail-closed VOLONTAIRE. C'était le bug : la médiane ne peut évoluer QUE si des
+//   échantillons entrent dans le buffer, donc dès que la grandeur VRAIE s'éloigne
+//   durablement de plus de spikeReject de la médiane courante, chaque échantillon
+//   suivant est rejeté à son tour et la médiane est figée POUR TOUJOURS (incident
+//   de production : dosage pH ET chlore à l'arrêt ≥ 3 h, seul reset() en sortait).
+//   Le mécanisme n'avait jamais été pensé pour un ÉCHELON LÉGITIME de la grandeur.
+//   Deux ajouts, tous deux dans ce module PUR pour rester testables (ADR-0017) :
+//
+//   (1) setContext(waterPresent, measuresValid, nowMs) — PORTE d'alimentation.
+//       Le filtre n'ingère plus les échantillons que le système lui-même a
+//       déclarés NON REPRÉSENTATIFS (eau à l'arrêt, purge de la chambre de mesure
+//       en cours) : sans cela, la médiane converge vers la valeur de l'eau
+//       STAGNANTE, puis acquiert autorité sur les échantillons représentatifs
+//       suivants qu'elle rejette un à un. Porte FERMÉE si !waterPresent ||
+//       !measuresValid, plus un plancher de gel de kSensorFilterGateFloorMs après
+//       tout front montant d'eau. À la réouverture (fermé → ouvert) le filtre est
+//       RÉ-AMORCÉ : la médiane d'avant la fermeture n'a aucune autorité sur les
+//       mesures représentatives qui suivent.
+//
+//   (2) Sortie de secours sur rejets de spike SOUTENUS ET COHÉRENTS. Au bout de
+//       kSensorFilterSpikeRearmCount rejets consécutifs contenus dans une bande
+//       <= rearmCoherence (donc décrivant une NOUVELLE valeur, pas du bruit), le
+//       filtre cesse de croire sa médiane et se ré-amorce — sous TROIS gardes
+//       cumulatives (pool-chemistry) : cooldown kSensorFilterRearmCooldownMs
+//       depuis le dernier ré-amorçage, valeur dans [rearmMin, rearmMax], et
+//       cohérence de la série. Si une garde refuse → rearmDenied() != 0 (collant,
+//       à journaliser en critical par la coquille) et le filtre RESTE fail-closed :
+//       une sonde réellement HS ne ré-amorce jamais. Les échantillons rejetés sont
+//       JETÉS, jamais ré-injectés dans le buffer (garantie : aucune valeur
+//       aberrante n'entre par cette porte).
+//
+//   rearm() ≠ reset() : rearm() ne touche NI le détecteur figé (feature-022) NI le
+//   latch EMI (feature-058) → on ne masque jamais une sonde figée ou une ambiance
+//   EMI en re-convergeant. Une init agrégat sans les 3 champs de fin
+//   (rearmCoherence = 0) DÉSACTIVE la sortie de secours (rétrocompatible).
 //
 // ready()      = fenêtre centrale PLEINE (>= centralWindow échantillons acceptés,
 //                C2) ET dernière mesure récente (< maxAgeMs) ET non figé (frozen()).
@@ -124,6 +165,13 @@ public:
     // (gnu++11 côté ESP32 : la struct doit rester un agrégat).
     uint16_t frozenSamples;          // N échantillons acceptés dans la bande → figé (0 = off)
     float frozenEpsilon;             // Largeur de bande (½ LSB capteur)
+    // v2.20.3 (sortie de secours) : MÊME contrainte de position que ci-dessus —
+    // champs en FIN de struct pour préserver toutes les initialisations agrégées
+    // existantes (une init plus courte laisse rearmCoherence = 0 → sortie de
+    // secours DÉSACTIVÉE, comportement strictement antérieur).
+    float rearmCoherence;            // Amplitude max de la série rejetée (0 = sortie de secours off)
+    float rearmMin;                  // Borne basse de la bande admissible pour ré-amorcer
+    float rearmMax;                  // Borne haute de la bande admissible pour ré-amorcer
   };
 
   explicit SensorFilter(const Config& config);
@@ -131,6 +179,33 @@ public:
   // Soumet une mesure brute. Retourne true si elle a été ACCEPTÉE (filtre alimenté),
   // false si rejetée (NaN / hors plage / spike dur isolé). nowMs = millis() de la lecture.
   bool addSample(float raw, uint32_t nowMs);
+
+  // PORTE d'alimentation (v2.20.3) — à appeler AVANT addSample(), à chaque cycle
+  // de lecture, avec le verdict de représentativité des mesures (measure_validity).
+  // Ferme la porte si !waterPresent || !measuresValid, et maintient la fermeture
+  // pendant kSensorFilterGateFloorMs après tout front montant d'eau. La transition
+  // fermé → ouvert déclenche rearm() : la médiane construite avant/pendant la
+  // stagnation ne fait JAMAIS autorité sur les mesures représentatives suivantes.
+  void setContext(bool waterPresent, bool measuresValid, uint32_t nowMs);
+
+  // Ré-amorce l'ESTIMATEUR (buffer, EMA, streak de dispersion propre) sans toucher
+  // au détecteur figé ni au latch EMI — c'est ce qui la distingue de reset() et ce
+  // qui garantit qu'on ne masque pas une sonde HS en re-convergeant.
+  void rearm();
+
+  // true si la porte est fermée : addSample() sort en tête (aucune alimentation).
+  bool gateClosed() const;
+
+  // Consomme le drapeau « un ré-amorçage a eu lieu depuis le dernier appel ».
+  // Destiné à la journalisation edge-triggered par la coquille (module pur : ni
+  // logger ni String ici, ADR-0017 — même pattern que le latch EMI).
+  bool rearmedSinceLastPoll();
+
+  // Motif du DERNIER refus de ré-amorçage (collant jusqu'au prochain ré-amorçage
+  // ou reset) : 0 = aucun, 1 = cooldown non écoulé, 2 = valeur hors bande
+  // admissible. Un refus = le filtre reste non prêt → dosage fail-closed : la
+  // coquille DOIT l'alarmer.
+  uint8_t rearmDenied() const;
 
   // Réinitialise complètement le filtre (warmup, buffers, compteurs, latch).
   void reset();
@@ -144,6 +219,10 @@ public:
   bool unstable() const;    // Drapeau d'inhibition : dispersion > cap OU latch EMI OU rejets consécutifs
   bool frozen() const;      // Capteur figé : N échantillons acceptés dans une bande < epsilon (feature-022)
   uint8_t rejectedCount() const;        // Compteur glissant (8 bits, sature à 255)
+  // Valeur de rejectedCount() juste avant le dernier rearm() — le compteur étant
+  // remis à zéro par le ré-amorçage, c'est ce qu'il faut journaliser pour tracer
+  // l'ampleur du verrouillage qui vient d'être levé.
+  uint8_t rejectedBeforeRearm() const { return _rejectedBeforeRearm; }
   uint8_t consecutiveRejects() const;   // Rejets NaN/hors-plage consécutifs courants
   bool unstableLatched() const;         // Latch EMI posé (jusqu'à auto-levée ou reset())
   uint8_t dispersionCleanStreak() const;// Fenêtres pleines propres consécutives (diagnostic auto-levée latch)
@@ -183,6 +262,32 @@ private:
   // Alimenté UNIQUEMENT par les échantillons bruts ACCEPTÉS dans addSample()
   // (condition #4 : les rejets ne l'alimentent pas → frozen persiste).
   FrozenDetector _frozenDetector;
+
+  // --- Porte d'alimentation (v2.20.3) ---
+  // _gateClosed = false par défaut : un appelant qui n'utilise PAS setContext()
+  // (tests natifs existants) conserve le comportement antérieur, porte ouverte.
+  bool _gateClosed = false;
+  bool _lastWaterPresent = false;   // Pour le front montant d'eau
+  bool _gateFloorArmed = false;     // Plancher de gel en cours après front montant
+  uint32_t _gateFloorUntilMs = 0;   // Fin du plancher de gel (millis, wrap-safe)
+
+  // --- Sortie de secours sur rejets cohérents (v2.20.3) ---
+  uint8_t _spikeCount = 0;          // Longueur de la série de rejets COHÉRENTS courante
+  float _spikeMin = NAN;            // Borne basse de la série rejetée
+  float _spikeMax = NAN;            // Borne haute de la série rejetée
+  // Tolérance aux TROUS de lecture (NaN / hors plage) dans une série de rejets
+  // cohérents — condition BLOQUANTE du gate pool-chemistry (v2.20.3). Sans elle,
+  // une sonde ratant un cycle sur douze pendant un échelon légitime ne
+  // ré-amorcerait JAMAIS : soit exactement l'incident qu'on corrige.
+  // Règle chiffrée par le gate : au plus 2 trous par série, JAMAIS 2 consécutifs.
+  uint8_t _spikeGaps = 0;           // Trous tolérés déjà consommés par la série
+  bool _lastWasGap = false;         // Le dernier échantillon de la série était un trou
+  uint8_t _rejectedBeforeRearm = 0; // rejectedCount() juste avant le dernier rearm()
+  void _noteSpikeSeriesGap();       // Applique la règle de tolérance ci-dessus
+  uint32_t _lastRearmMs = 0;        // millis() du dernier ré-amorçage par sortie de secours
+  bool _hasRearmed = false;         // false = jamais ré-amorcé (cooldown inapplicable)
+  bool _rearmedFlag = false;        // Drapeau drainé par rearmedSinceLastPoll()
+  uint8_t _rearmDenied = 0;         // 0 aucun / 1 cooldown / 2 hors bande (collant)
 
   // Calcule la médiane des _bufCount premiers échantillons par tri sur copie locale.
   float _computeMedian() const;

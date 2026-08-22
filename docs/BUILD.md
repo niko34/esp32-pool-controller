@@ -10,28 +10,75 @@ Guide **opérationnel** : quelles commandes lancer pour compiler et déployer. P
 pio run
 ```
 
-Génère `.pio/build/esp32dev/firmware.bin`.
+Génère `.pio/build/esp32dev_core3/firmware.bin` (env par défaut depuis la v2.20.4 — voir ci-dessous).
 
-### Les deux environnements firmware (feature-063, v2.15.0)
+### Les deux environnements firmware
 
-Depuis la phase code bi-core de la migration core 3 ([ADR-0034](adr/0034-migration-core3-idf5.md)), `platformio.ini` déclare **deux** environnements ESP32 :
+`platformio.ini` déclare **deux** environnements ESP32. Depuis la **v2.20.4**, le core 3 est l'environnement **de production**, bootloader inclus ([ADR-0042](adr/0042-core3-environnement-par-defaut.md) — la porte de bascule laissée ouverte par [ADR-0034](adr/0034-migration-core3-idf5.md) est franchie) :
 
 | Env | Plateforme | Rôle |
 |-----|-----------|------|
-| `esp32dev` *(défaut)* | `espressif32@6.9.0` (core Arduino 2.0.17 / IDF 4.4.7) | **Production** — c'est le binaire buildé par `pio run` et déployé par `deploy.sh` |
-| `esp32dev_core3` | pioarduino **release taguée `55.03.37`** (core Arduino 3.3.7 / IDF 5.5.0) | **Banc de compilation BUILD-ONLY** — vérifie que le code bi-core compile en core 3. **Jamais flashé** (pas d'`upload_port` ; la bascule production est une porte conditionnelle, voir [ADR-0034](adr/0034-migration-core3-idf5.md)) |
+| `esp32dev_core3` *(défaut)* | pioarduino **release taguée `55.03.37`** (core Arduino 3.3.7 / IDF 5.5.0) | **Production** — `default_envs`, c'est le binaire buildé par `pio run` et déployé par `deploy.sh` (bootloader **et** application) |
+| `esp32dev` | `espressif32@6.9.0` (core Arduino 2.0.17 / IDF 4.4.7) | **Repli explicite** — conservé compilable et déployable, mais jamais sélectionné implicitement |
 
 ```bash
-pio run -e esp32dev_core3     # build du banc core 3 (aucun upload)
+pio run                              # core 3 (défaut)
+pio run -e esp32dev                  # repli core 2
+PIO_ENV=esp32dev ./deploy.sh all     # déploiement complet en repli core 2
 ```
 
-Le code source est identique pour les deux : les divergences d'API (LEDC, watchdog, mbedtls) sont sous gardes `#if ESP_ARDUINO_VERSION_MAJOR >= 3` dans 3 fichiers (`pump_controller.cpp`, `main.cpp`, `ota_integrity.cpp`).
+Le code source est identique pour les deux : les divergences d'API (LEDC, watchdog, mbedtls) sont sous gardes `#if ESP_ARDUINO_VERSION_MAJOR >= 3` dans 3 fichiers (`pump_controller.cpp`, `main.cpp`, `ota_integrity.cpp`). Ces gardes restent obligatoires tant que l'env de repli est maintenu.
 
-**Pièges pioarduino** :
+> ⚠️ **Changer de bootloader exige un flash USB.** L'OTA n'écrit que l'application : une image core 3 démarre parfaitement sur un bootloader core 2 (montage qui a tourné plusieurs semaines en production). Le passage du **bootloader** en core 3 s'est donc fait par `./deploy.sh all` en USB, et le filet de repli d'autrefois (repointer `otadata` : `erase_region 0xE000 0x2000`) **n'existe plus** — voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md#changer-de-bootloader--flash-usb-obligatoire-core-3-par-défaut-v2204).
+
+#### `PIO_ENV` — sélection d'environnement pour tout l'outillage
+
+Les scripts ne dépendent **plus** du `default_envs` de `platformio.ini` ni de chemins `.pio/build/esp32dev/` codés en dur : ils lisent une **variable unique `PIO_ENV`** (défaut `esp32dev_core3`, surchargeable) :
+
+| Script | Usage de `PIO_ENV` |
+|---|---|
+| [`deploy.sh`](../deploy.sh) | `BUILD_DIR=".pio/build/$PIO_ENV"` ; `-e "$PIO_ENV"` passé explicitement à `pio run`, `pio run -t upload` et `pio device monitor`. Exporte `PIO_ENV` et `BUILD_DIR` pour `build_fs.sh` |
+| [`build_fs.sh`](../build_fs.sh) | écrit `littlefs.bin` dans `$BUILD_DIR` (le FS est indépendant du core, mais il doit atterrir là où le déploiement le cherche) |
+| [`ota_update.sh`](../ota_update.sh) | `FIRMWARE_PATH` / `FILESYSTEM_PATH` dérivés de `PIO_ENV` (toujours surchargeables individuellement) |
+| [`build_all.sh`](../build_all.sh) | idem `deploy.sh` |
+| [`tools/decode_coredump.sh`](../tools/decode_coredump.sh) | ELF par défaut dérivé de `PIO_ENV` |
+
+**Pourquoi `decode_coredump.sh` suit `PIO_ENV`** — motif de sûreté, pas de confort : un ELF core 2 confronté à un dump core 3 ne produit pas d'erreur franche, il produit une pile de **noms de fonctions plausibles et FAUX**. C'est exactement ce qui a rendu le coredump de production du 15/08 inexploitable.
+
+#### ⚠️ Conflit de paquet entre les deux plateformes — à lire avant de jongler
+
+Les deux plateformes installent leur framework sous le **même nom de paquet** `framework-arduinoespressif32` (`3.20017.x` pour le core 2, `3.3.7` pour le core 3), donc dans le **même répertoire** : **elles s'écrasent mutuellement**. Un build core 2 détruit le framework core 3, et réciproquement.
+
+Symptôme — échec **immédiat** (~2 s, avant toute compilation) :
+
+```
+TypeError: expected str, bytes or os.PathLike object, not NoneType
+  ... platforms/espressif32/builder/frameworks/arduino.py
+```
+
+`FRAMEWORK_DIR` vaut `None` : le paquet attendu n'est plus là. **Ce n'est pas aléatoire** — c'est systématiquement un build de l'autre env qui vient de passer (ce défaut a été pris pour un aléa pendant tout un cycle de travail, les échecs étant contournés par simple relance). Remède :
+
+```bash
+pio pkg install -e esp32dev_core3    # ou -e esp32dev, selon l'env qu'on veut builder
+```
+
+Puis relancer le build. Même remède pour un **premier build** ou un **changement de version de plateforme**.
+
+**Autres pièges pioarduino** :
 
 - Utiliser le **pio du penv** : `~/.platformio/penv/bin/pio` (le pio système Python 3.12 échoue avec `ModuleNotFoundError: fatfs/littlefs`).
-- **Premier build OU changement de version de la plateforme** : lancer `pio pkg install -e esp32dev_core3` avant `pio run -e esp32dev_core3` (installation/réinstallation de la plateforme pioarduino). Symptôme si oublié : la première invocation de `pio run -e esp32dev_core3` échoue avec `TypeError ... NoneType` (réinstallation du framework interrompue) — remède : `pio pkg install -e esp32dev_core3` puis relancer le build.
-- La plateforme est **épinglée sur la release taguée `55.03.37`** (2026-08-04) : pioarduino 55.3.37, core arduino-esp32 **3.3.7**, IDF 5.5.0 — les versions exactes validées au banc feature-063 (item de la porte de bascule [ADR-0034](adr/0034-migration-core3-idf5.md), désormais livré). **Toute montée de version de la plateforme est un choix explicite** qui exige une re-validation au banc — l'URL `stable`, utilisée avant l'épinglage, avait déjà dérivé vers 55.03.311 (core 3.3.11).
+- La plateforme est **épinglée sur la release taguée `55.03.37`** (2026-08-04) : pioarduino 55.3.37, core arduino-esp32 **3.3.7**, IDF 5.5.0 — les versions exactes validées au banc feature-063. Depuis la bascule, cet épinglage est un **contrat de production** : **toute montée de version est un choix explicite** exigeant une re-validation au banc avant flash — l'URL `stable`, utilisée avant l'épinglage, avait déjà dérivé vers 55.03.311 (core 3.3.11).
+
+#### Marge flash après bascule
+
+| Env | Occupation app0 (1 835 008 o) |
+|---|---|
+| `esp32dev_core3` *(production)* | **1 730 053 o = 94,3 %** — marge ≈ **102 Ko** |
+| `esp32dev` *(repli)* | ≈ **84,5 %** |
+
+Le plafond de vigilance de 95 % (fixé par feature-063) est presque atteint : **à surveiller à chaque nouvelle fonctionnalité**.
+
+> ℹ️ **CI non impactée** : [`.github/workflows/tests-natifs.yml`](../.github/workflows/tests-natifs.yml) ne construit que l'env `native`.
 
 > ℹ️ **Cible matérielle** : le BOM du PCB v2 spécifie un **ESP32-DevKitC-VE**
 > (module WROVER-E, **8 Mo de PSRAM**) — voir la section PSRAM ci-dessous. Les deux
@@ -80,10 +127,11 @@ Règles :
 ### Tout en une commande
 
 ```bash
-./build_all.sh
+./build_all.sh                       # env par défaut (esp32dev_core3)
+PIO_ENV=esp32dev ./build_all.sh      # repli core 2
 ```
 
-Enchaîne `pio run` puis `build_fs.sh`.
+Enchaîne `pio run -e "$PIO_ENV"` puis `build_fs.sh` (qui écrit le `littlefs.bin` dans `.pio/build/$PIO_ENV/`).
 
 ## Tests natifs (hors matériel)
 
@@ -133,6 +181,12 @@ Le script [`deploy.sh`](../deploy.sh) est l'entrée unique pour tous les modes d
 ./deploy.sh
 ```
 
+Il builde et flashe l'environnement désigné par `PIO_ENV` (défaut `esp32dev_core3`) — voir [`PIO_ENV`](#pio_env--sélection-denvironnement-pour-tout-loutillage) :
+
+```bash
+PIO_ENV=esp32dev ./deploy.sh all     # repli core 2 (firmware + FS)
+```
+
 ### Modes USB (câble série)
 
 | Commande | Action |
@@ -140,7 +194,51 @@ Le script [`deploy.sh`](../deploy.sh) est l'entrée unique pour tous les modes d
 | `./deploy.sh firmware` | Compile + upload firmware uniquement |
 | `./deploy.sh fs` | Build + upload filesystem uniquement |
 | `./deploy.sh all` *(défaut)* | Firmware + filesystem |
-| `./deploy.sh factory` | Efface toute la flash, puis upload complet. **Génère un nouveau mot de passe WiFi AP** (NVS effacée) |
+| `./deploy.sh factory` | Efface toute la flash, upload complet, puis **ré-efface la NVS en dernier**. **Génère un nouveau mot de passe WiFi AP**, affiché dans le moniteur enchaîné |
+
+#### Moniteur série enchaîné
+
+Les **quatre** modes USB lancent `pio device monitor` à la fin de l'upload. Ce n'est pas un confort : l'ouverture du port bascule **DTR/RTS**, ce qui **redémarre l'ESP32** — le boot est donc capté **depuis sa première ligne**. Un moniteur lancé à la main dans un second terminal arrive toujours trop tard et manque les lignes qui ne sont émises qu'une fois (mot de passe AP, cause de reset, init des sondes).
+
+```bash
+NO_MONITOR=1 ./deploy.sh all    # ne pas enchaîner le moniteur (script non interactif, CI)
+```
+
+Sortir par `Ctrl+C` n'est **pas** une erreur de déploiement (le code de retour 130 est absorbé).
+
+#### Port série détecté, pas codé en dur
+
+Le port n'est plus figé sur `/dev/cu.usbserial-0001` : l'upload échouait dès qu'on branchait un autre module (un adaptateur neuf n'énumère pas sous le même nom). Ordre de résolution :
+
+1. variable d'environnement `PORT` ;
+2. `/dev/cu.usbserial-0001` s'il existe (port historique) ;
+3. premier port `usbserial` / `wchusbserial` / `SLAB_USBtoUART` détecté.
+
+```bash
+PORT=/dev/cu.usbserial-10 ./deploy.sh all    # forcer le port
+```
+
+Si aucun port n'est trouvé, `deploy.sh` **s'arrête avant toute compilation** en listant les `/dev/cu.*` disponibles — plutôt que d'échouer après 2 min de build.
+
+> ⚠️ `pio run -t upload` reçoit désormais explicitement `--upload-port "$PORT"`. Sans ce paramètre, PlatformIO retombe sur l'`upload_port` de [`platformio.ini`](../platformio.ini) et **ignore le port détecté** : l'upload échoue alors que le module est bien branché, ailleurs.
+
+#### Ordre du mode `factory` (et pourquoi il compte)
+
+`factory` efface la flash, uploade firmware + filesystem, **puis ré-efface la seule partition `nvs`** (`0x9000` / `0x5000`) avec `--after no_reset`, avant d'enchaîner le moniteur.
+
+La raison : `upload_firmware` et `upload_filesystem` **redémarrent la puce**. Avec l'effacement NVS placé en tête (comportement précédent), le boot qui générait et affichait le mot de passe AP avait donc déjà eu lieu — sans personne pour le lire. Or [`auth.cpp`](../src/auth.cpp) ne journalise ce mot de passe qu'à sa **génération** (condition `apPassword.isEmpty()`) ; ensuite, seul le démarrage de l'AP le réaffiche, et uniquement tant que l'assistant n'est pas complété ([`main.cpp`](../src/main.cpp), `isFirstBootDetected()`). Le `--after no_reset` laisse le reset au moniteur, qui capte donc les lignes :
+
+```
+=== MOT DE PASSE AP WIFI: XXXXXXXX ===
+```
+
+C'est la **seule occasion de le lire** — le noter sur une étiquette. Voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md#récupérer-le-mot-de-passe-wifi-ap).
+
+#### Compatibilité esptool 4 / 5
+
+Le paquet `tool-esptoolpy` est **partagé** entre les environnements PlatformIO et **chacun impose sa version** (`esp32dev` → 4.5.1, `esp32dev_core3` → 5.1.2) : la version installée bascule **au gré du dernier build lancé**. Or esptool 5 a renommé sous-commandes et valeurs d'options en tirets (`erase-region`, `--after no-reset`) là où la 4.x utilise des underscores (`erase_region`, `--after no_reset`).
+
+`deploy.sh` **sonde `--help`** et choisit l'orthographe correspondante, au lieu de supposer une version. Conséquence pratique : alterner les envs ne casse pas le déploiement — contrairement au **framework**, lui aussi partagé mais qui, lui, exige un `pio pkg install` (voir [Conflit de paquet](#-conflit-de-paquet-entre-les-deux-plateformes--à-lire-avant-de-jongler)).
 
 ### Modes OTA (WiFi)
 
@@ -158,19 +256,34 @@ Les modes OTA utilisent par défaut `poolcontroller.local` (mDNS). Pour cibler u
 
 Voir aussi [UPDATE_GUIDE.md](UPDATE_GUIDE.md) pour la procédure détaillée.
 
-## Archivage automatique du firmware ELF
+## Archivage automatique des artefacts de build (v2.20.2)
 
-À chaque compilation réussie du firmware (commandes `firmware`, `all`, `factory`, `ota-firmware`, `ota-all`), `deploy.sh` archive le fichier `.pio/build/esp32dev/firmware.elf` dans le dossier `builds/` :
+L'archivage est branché **au niveau du build**, plus au niveau du script de déploiement : [`tools/archive_build.py`](../tools/archive_build.py) est déclaré en `extra_scripts = post:` sur les **deux envs matériels** (`esp32dev` et `esp32dev_core3`) dans [`platformio.ini`](../platformio.ini). **Chaque `pio run` réussi** archive donc `firmware.elf` **et** `firmware.bin` :
 
 ```
-builds/firmware_20260427_143022.elf
-builds/firmware_20260427_082810.elf
-...
+builds/2.20.2/esp32dev/firmware_20260815_211804.elf
+builds/2.20.2/esp32dev/firmware_20260815_211804.bin
+builds/2.20.2/esp32dev_core3/firmware_20260815_212339.elf
+builds/2.20.2/esp32dev_core3/firmware_20260815_212339.bin
 ```
 
-- **Rétention** : 10 archives au maximum — les plus anciennes sont supprimées automatiquement.
-- **Dossier `builds/`** : exclu de git (`.gitignore`), local uniquement.
-- **Pourquoi** : le décodage d'un coredump exige l'ELF **exact** qui tournait au moment du crash. Sans archive, si un reflash a eu lieu entre le crash et l'analyse, `esp_coredump` échoue avec une erreur SHA mismatch.
+| Élément | Règle |
+|---|---|
+| Nommage | `firmware_<AAAAMMJJ_HHMMSS>.{elf,bin}` — l'horodatage en tête rend l'**ordre lexicographique = ordre chronologique** (le tri ne dépend donc pas de la `mtime`, que `shutil.copy2` recopie de la source) |
+| Cloisonnement | `builds/<VERSION>/<PIOENV>/` — la version est lue dans [`src/version.h`](../src/version.h) |
+| Rétention | **5 archives par version ET par environnement**, par extension |
+| Robustesse | Le script **ne fait jamais échouer un build** : toute erreur est affichée et ignorée |
+| Dossier `builds/` | Exclu de git (`.gitignore`), local uniquement |
+
+**Pourquoi ELF *et* BIN** : le décodage d'un coredump exige l'ELF **exact** du firmware qui tournait (il porte les symboles) ; le BIN identifie l'image **effectivement flashée** et permet de rejouer un déploiement à l'identique.
+
+**Pourquoi le cloisonnement par environnement est indispensable** : `esp32dev` et `esp32dev_core3` produisent des binaires **différents sous la même version**. Rangés ensemble, une série de 5 builds core 2 aurait **évincé l'ELF core 3 réellement déployé** — c'est-à-dire reconduit exactement la panne forensique décrite ci-dessous.
+
+> ⚠️ **Pourquoi ce mécanisme a été déplacé** : `deploy.sh` archivait bien l'ELF, mais **`pio run` lancé directement et `./ota_update.sh` ne passent pas par lui** — et ce sont les chemins réellement utilisés au quotidien. Résultat : le dernier ELF présent dans `builds/` datait du **02/08**, et le coredump du crash de production du **15/08** a été **inexploitable** — `esp-coredump` refuse de décoder avec `coredump SHA256 ≠ app SHA256`.
+
+> ℹ️ **`deploy.sh` n'archive plus rien** : sa fonction `archive_elf()` a été **supprimée**. Elle déversait des ELF non versionnés **à plat** dans `builds/`, en doublon du hook — un doublon qui repolluait le dossier après chaque ménage, et qui ne couvrait de toute façon qu'un seul des trois chemins de build. Le hook post-build est désormais le mécanisme **unique**.
+
+> ℹ️ **Limite connue** : la liste affichée automatiquement par [`tools/decode_coredump.sh`](../tools/decode_coredump.sh) en cas de SHA mismatch ne parcourt que `builds/firmware_*.elf` (le niveau **plat**, désormais alimenté par plus rien — il ne contient que les archives héritées d'avant la v2.20.2). En pratique, retrouver l'ELF avec `ls builds/*/*/` et le passer **en 2ᵉ argument** du script.
 
 ## Décodage d'un coredump
 
@@ -205,6 +318,8 @@ curl -H "X-Auth-Token: <token>" \
 ./tools/decode_coredump.sh coredump.bin
 ```
 
+L'ELF par défaut est `.pio/build/$PIO_ENV/firmware.elf` — donc celui de l'env **réellement déployé**. ⚠️ Décoder un dump core 3 avec un ELF core 2 (ou l'inverse) **n'échoue pas franchement** : cela produit des noms de fonctions plausibles et **faux**. Si le dump vient d'un appareil en repli core 2, préfixer : `PIO_ENV=esp32dev ./tools/decode_coredump.sh coredump.bin`.
+
 Un deuxième argument optionnel permet de spécifier l'ELF à utiliser (utile si l'ELF courant ne correspond pas au firmware crashé) :
 
 ```bash
@@ -235,6 +350,8 @@ Voir aussi [ADR-0009](adr/0009-partition-coredump.md) pour la décision architec
 
 ## Pièges connus
 
+- **Alternance entre les deux envs** : le paquet `framework-arduinoespressif32` est **partagé** — un build core 2 détruit le framework core 3 et réciproquement. Symptôme : `TypeError ... NoneType` en ~2 s. Remède : `pio pkg install -e <env>`. Voir [Conflit de paquet](#-conflit-de-paquet-entre-les-deux-plateformes--à-lire-avant-de-jongler).
+- **Changement de bootloader** : l'OTA n'écrit que l'application — passer le bootloader d'un core à l'autre exige un **flash USB** (`./deploy.sh all`). Voir [ADR-0042](adr/0042-core3-environnement-par-defaut.md).
 - **`pio run -t buildfs`** : ne génère pas un `littlefs.bin` de la bonne taille → utiliser `./build_fs.sh`.
 - **`pio run -t uploadfs`** : reconstruit le filesystem à la mauvaise taille avant upload → utiliser `./deploy.sh fs` ou `./deploy.sh ota-fs`.
 - **Partition `history` préservée** : l'upload filesystem OTA n'écrase que la partition `spiffs`. L'historique des mesures n'est **pas** perdu à la mise à jour UI (voir [ADR-0024](adr/0024-partitions-layout-v4.md) et [history.md](subsystems/history.md)).
@@ -287,14 +404,15 @@ Suppression de `chart.umd.min.js` : payload FS 601 054 → 449 177 octets (**−
 ## Structure des fichiers de build
 
 - [`partitions.csv`](../partitions.csv) — source de vérité pour les offsets et tailles.
-- [`platformio.ini`](../platformio.ini) — plateforme, libs, flags de compilation.
-- [`build_all.sh`](../build_all.sh) — firmware + filesystem en une commande.
-- [`build_fs.sh`](../build_fs.sh) — filesystem uniquement (minification + taille correcte).
+- [`platformio.ini`](../platformio.ini) — plateforme, libs, flags de compilation ; `default_envs = esp32dev_core3` ([ADR-0042](adr/0042-core3-environnement-par-defaut.md)).
+- [`build_all.sh`](../build_all.sh) — firmware + filesystem en une commande (env = `PIO_ENV`).
+- [`build_fs.sh`](../build_fs.sh) — filesystem uniquement (minification + taille correcte) ; sortie dans `$BUILD_DIR` = `.pio/build/$PIO_ENV/`.
 - [`minify.js`](../minify.js) — minification HTML / CSS / JS + pré-compression gzip niveau 9 (seule la variante `.gz` est embarquée).
-- [`deploy.sh`](../deploy.sh) — wrapper unique pour upload USB ou OTA ; archive l'ELF à chaque build firmware.
+- [`deploy.sh`](../deploy.sh) — wrapper unique pour upload USB ou OTA ; sélectionne l'env via `PIO_ENV`, détecte le port série, enchaîne le moniteur après un flash USB (`NO_MONITOR=1` pour s'en passer). N'archive plus les artefacts (c'est le hook post-build).
+- [`tools/archive_build.py`](../tools/archive_build.py) — `extra_scripts = post:` des envs matériels ; archive `firmware.elf` **et** `firmware.bin` à chaque `pio run` sous `builds/<VERSION>/<PIOENV>/`.
 - [`ota_update.sh`](../ota_update.sh) — utilitaire OTA bas niveau (appelé par `deploy.sh`).
 - [`tools/decode_coredump.sh`](../tools/decode_coredump.sh) — décodage d'un coredump avec `xtensa-esp32-elf-gdb`.
 - `data/` — sources UI (HTML / CSS / JS / images).
 - `data-build/` — UI minifiée + gzippée (généré automatiquement, ignoré par git).
-- `.pio/build/esp32dev/` — artéfacts de build (`firmware.bin`, `firmware.elf`, `littlefs.bin`).
-- `builds/` — archives ELF horodatées (généré automatiquement, ignoré par git).
+- `.pio/build/$PIO_ENV/` — artéfacts de build (`firmware.bin`, `firmware.elf`, `littlefs.bin`) ; par défaut `.pio/build/esp32dev_core3/`.
+- `builds/` — archives horodatées (généré automatiquement, ignoré par git) : `<VERSION>/<PIOENV>/firmware_*.{elf,bin}` (`tools/archive_build.py`). D'éventuels `firmware_*.elf` **à plat** sont des reliquats de l'ancien archivage `deploy.sh`, supprimé.

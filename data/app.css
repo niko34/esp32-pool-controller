@@ -1314,6 +1314,16 @@ input.is-computed:disabled {
   background: rgba(52, 199, 89, 0.12);
 }
 
+/* Mise à jour manuelle (2.20.1) — l'échec doit se lire d'un coup d'œil, et la
+   cause renvoyée par le firmware peut contenir un nom de fichier très long. */
+#update_status.is-error {
+  color: var(--danger);
+}
+
+#update_type_notice {
+  overflow-wrap: anywhere;
+}
+
 /* 2026 Readout - refined device UI */
 .readout {
   border-radius: 16px;
@@ -3407,6 +3417,61 @@ h1, h2, h3 {
   margin-top: 14px;
 }
 .probe-modal__actions .btn { min-height: 40px; padding: 8px 14px; }
+/* v2.20.3 (D3) : note explicative au-dessus du bouton de réarmement de filtre */
+.probe-modal__hint {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+/* v2.20.3 : les actions du modal filtre passent sur 2 lignes si nécessaire */
+.probe-modal__actions { flex-wrap: wrap; }
+
+/* ---------- v2.20.3 (C5/D5) : bannière « régulation à l'arrêt » ---------- */
+/* Surface UI des alarmes firmware ph/orpFilterAlarm (tableau de bord) et de la
+   bascule automatique pH → manuel (page pH). Rouge franc : elle ne s'affiche
+   QUE lorsqu'il n'y a réellement plus de régulation. */
+.regul-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border-radius: var(--card-radius);
+  border: 1px solid rgba(185, 28, 28, 0.35);
+  background: rgba(185, 28, 28, 0.08);
+  color: var(--danger);
+  box-shadow: var(--shadow-sm);
+}
+.regul-alert[hidden] { display: none !important; }
+.regul-alert--inline { margin-bottom: 16px; }
+.regul-alert__dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--danger);
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+.regul-alert__body { flex: 1 1 auto; min-width: 0; }
+.regul-alert__title {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+}
+.regul-alert__text {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+.regul-alert__cta { flex: 0 0 auto; align-self: center; }
+@media (max-width: 480px) {
+  .regul-alert { flex-wrap: wrap; }
+  .regul-alert__cta { width: 100%; margin-top: 8px; }
+}
 
 /* ---------- feature-031 : modale de confirmation générique ---------- */
 .confirm-modal__message {

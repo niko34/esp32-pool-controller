@@ -209,12 +209,14 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
   "phFilterReady": true,
   "phFilterUnstable": false,
   "phRejectedCount": 0,
+  "phFilterAlarm": false,
   "orpRaw": 722,
   "orpMedian": 720,
   "orpFiltered": 720,
   "orpFilterReady": true,
   "orpFilterUnstable": false,
   "orpRejectedCount": 0,
+  "orpFilterAlarm": false,
   "filtration_running": true,
   "water_present": true,
   "measures_valid": true,
@@ -246,6 +248,26 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 > | `measures_valid` | boolean | `true` = mesures pH/ORP représentatives du bassin. `false` = eau absente **ou** délai de purge post-reprise en cours (`stabilizationDelayMin`, défaut 5 min). |
 > | `measures_stab_remaining_s` | integer | Secondes restantes de purge (arrondi seconde sup) ; `0` si valide ou eau absente. Nom **distinct** de `stabilization_remaining_s` (stabilisation post-calibration des pompes). |
 >
+> **feature-067 (v2.20.0) — sémantique brut / corrigé des valeurs pH.** Aucun champ n'est ajouté ni renommé dans `/data`, mais la **valeur** de trois d'entre eux intègre désormais l'offset logiciel `ph_offset` :
+>
+> | Champ | Contenu | Offset appliqué ? |
+> |-------|---------|-------------------|
+> | `ph` | pH filtré **corrigé** (repli sur le pH courant corrigé tant que le filtre n'est pas amorcé — jamais sur le brut) | ✅ oui |
+> | `phMedian` | médiane glissante **corrigée** | ✅ oui |
+> | `phFiltered` | pH lissé (médiane + EMA) **corrigé** | ✅ oui |
+> | `phRaw` | dernière mesure **brute Atlas EZO** | ❌ non |
+>
+> Règle mnémotechnique côté firmware comme côté JSON : **seuls les champs suffixés `Raw` sont bruts**. Le filtre pH continue de travailler sur le signal brut (latch EMI et seuils de rejet inchangés) ; l'offset est appliqué **en sortie**, donc un changement est visible immédiatement. `NaN` en entrée ⇒ `null` en sortie : l'offset ne fabrique jamais une mesure. Voir [ADR-0039](adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) et [`docs/subsystems/sensors.md`](subsystems/sensors.md#offset-logiciel-de-mesure-ph--feature-067).
+
+> **v2.20.3 — alarme « filtre bloqué »** (mêmes champs côté WS `sensor_data`, mêmes valeurs) :
+>
+> | Champ | Type | Description |
+> |-------|------|-------------|
+> | `phFilterAlarm` | boolean | `true` quand le filtre pH est resté **non prêt plus de 5 min** (`kSensorFilterNotReadyAlarmMs`) **alors que** la filtration tournait **et** que les mesures étaient déclarées représentatives → plus **aucune** régulation pH (ni chlore, par fail-closed sur pH brut). Une purge de la chambre de mesure (`measures_valid = false`), un warmup ou une filtration à l'arrêt ne l'arment **jamais**. |
+> | `orpFilterAlarm` | boolean | Idem pour le filtre ORP. |
+>
+> Ces drapeaux sont **edge-triggered côté firmware** (un `critical` + une alerte MQTT à la pose, répétition toutes les 30 min, `info` à la levée) et pilotent le chip d'état filtre + la bannière « Régulation à l'arrêt » du tableau de bord. Reprise : [`POST /reset-sensor-filter`](#post-reset-sensor-filter--critical). Buffer `/data` porté de 1280 à **1344** octets. Voir [`docs/subsystems/sensors.md`](subsystems/sensors.md#alarme--filtre-non-prêt-durablement--v2203).
+
 > Les champs live `ph` / `orp` / `phRaw` / … restent publiés tels quels quand `measures_valid` est `false` (calibration et diagnostics intacts) — c'est le **client** qui arbitre l'affichage. ⚠️ **Repli HTTP** : `/data` n'expose pas `filtration_state_stale` (présent en WS uniquement) — un client en polling HTTP dégrade « Signal filtration périmé » en « Filtration arrêtée » (asymétrie préexistante, à harmoniser). Voir [`docs/subsystems/measure-validity.md`](subsystems/measure-validity.md).
 
 ---
@@ -443,6 +465,9 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "time_current": "2026-03-28T14:30:45",
   "sensor_logs_enabled": false,
   "debug_logs_enabled": false,
+  "ph_offset": 0,
+  "ph_auto_manual_epoch": 0,
+  "ph_auto_manual_reason": "",
   "boost_active": false,
   "boost_until": 0
 }
@@ -475,6 +500,13 @@ Champs notables de la réponse :
 | `debug_logs_enabled` | boolean | Active la production des logs de niveau `DEBUG` côté firmware (default `false`). Quand `false`, `Logger::debug()` court-circuite immédiatement (early return). Les niveaux `INFO`/`WARN`/`ERROR`/`CRITICAL` ne sont pas affectés. Modifiable via Paramètres → Avancé → « Logs DEBUG activés ». Persisté en NVS sous la clé `debug_logs`. Effet immédiat, pas de redémarrage requis. |
 | `boost_active` | boolean | Mode Boost actif (feature-053, v2.18.0). `true` tant que la surchloration temporaire du jour est en cours. Piloté par `POST /boost/start` \| `/boost/stop` (jamais par `/save-config`). Persisté en NVS (survit à un reboot dans la journée), expire automatiquement au prochain minuit local. Voir [ADR-0025](adr/0025-mode-boost.md). |
 | `boost_until` | integer (epoch) | Instant d'expiration du Boost (epoch UNIX, prochain minuit local). `0` si le Boost est inactif. Permet à l'UI d'afficher l'heure de fin. |
+| `ph_auto_manual_epoch` | integer (epoch) | **v2.20.3** — Instant (epoch UNIX) de la dernière **bascule automatique** de la régulation pH en mode `manual` par le filet de sécurité « refus de plancher acide répétés » (feature-067). `0` = aucune bascule en attente d'acquittement. Vaut `0` si l'horloge n'était pas synchronisée au moment de la bascule (la `reason` reste renseignée). Persisté en NVS (`ph_am_epoch`). **Lecture seule** : jamais accepté en écriture par `/save-config`. |
+| `ph_auto_manual_reason` | string | **v2.20.3** — Cause en clair (français) de cette bascule, ex. `"3 refus de plancher pH en 24 h — sonde pH à recalibrer ou remplacer ; régulation pH basculée en manuel"`. Chaîne vide si `ph_auto_manual_epoch` vaut `0`. Persisté en NVS (`ph_am_reason`). |
+
+> **Trace de bascule automatique pH (v2.20.3)** — le journal système est un ring buffer : après quelques heures il ne restait **aucune** trace de l'escalade de sécurité, et il devenait impossible de dire si le mode `manual` venait du firmware ou d'une action humaine (incident du 2026-08-16). Les deux champs ci-dessus sont donc **persistés en NVS**, dans la **même transaction** que le mode lui-même.
+>
+> **Acquittement** : la trace est effacée dès qu'un `POST /save-config` (ou une commande MQTT) provoque un **changement réel** du champ `ph_regulation_mode`. Renvoyer le mode courant à l'identique — ce que fait l'interface à chaque sauvegarde des réglages — **n'acquitte rien**. Clés NVS absentes sur un appareil mis à jour ⇒ `0` / `""` : rétrocompatible. Voir [`docs/subsystems/pump-controller.md`](subsystems/pump-controller.md#persistance-de-la-bascule-automatique-en-manuel-v2203).
+| `ph_offset` | float | **Offset logiciel de mesure pH** (feature-067, v2.20.0). `pH corrigé = pH brut EZO + ph_offset`. Plage **[−0.50, +0.50]**, pas de 0,01, défaut **0** (inerte). Persisté en NVS (clé `ph_offset`). **Ne touche jamais la calibration interne du module Atlas EZO** : c'est une correction en aval de la lecture, destinée à compenser un écart d'implantation de la sonde. Voir [ADR-0039](adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md). |
 
 **`POST /save-config` — champs pH spécifiques :**
 
@@ -482,6 +514,17 @@ Champs notables de la réponse :
 |-------|------|------------|
 | `ph_regulation_mode` | string | Valeurs acceptées : `"automatic"`, `"scheduled"`, `"manual"`. Toute autre valeur est ignorée. Met à jour `ph_enabled` automatiquement. |
 | `ph_daily_target_ml` | integer | Doit être ≥ 0 et ≤ `max_ph_ml_per_day` (si configuré). Retourne HTTP 400 si la limite est dépassée. |
+| `ph_offset` | float | Doit être dans **[−0.50, +0.50]** (`kPhOffsetMin` / `kPhOffsetMax` de [`constants.h`](../src/constants.h)). Hors plage → **HTTP 400**, **aucun** champ de la requête n'est appliqué. Champ **absent** ou **non numérique** → paramètre inchangé (patron des autres champs). Prise en compte **immédiate** (pas de reboot, pas d'attente de la fenêtre de lissage). Chaque changement effectif est journalisé en `INFO` : `Offset pH modifié: ancien=X.XX nouveau=Y.YY`. |
+
+**Corps de la réponse 400 (`ph_offset` hors plage)** :
+
+```json
+{"error":"Offset pH invalide : la valeur doit être comprise entre -0.50 et +0.50 pH"}
+```
+
+> ⚠️ **Exception assumée au patron `/save-config`** : `ph_offset` est le **premier** champ de cette route à **refuser** la requête plutôt qu'à écrêter silencieusement la valeur (cf. `max_cycles_per_day`, clampé). Un offset écrêté serait un **mensonge de mesure** : l'utilisateur croirait avoir enregistré ±0,80 alors que la régulation appliquerait ±0,50. L'incohérence de style est délibérée.
+>
+> Effets de bord volontairement **absents** : enregistrer un offset ne réinitialise **aucun** compteur de dosage (cycles du jour, cumul journalier, pause anti-cycling). Sinon des enregistrements répétés permettraient de contourner les limites journalières. Un enregistrement pendant une injection en cours ne l'interrompt pas : le nouvel offset s'applique au prochain cycle d'évaluation.
 
 **`POST /save-config` — champs ORP spécifiques :**
 
@@ -538,6 +581,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-system-info
   "free_heap_8bit": 52384,
   "max_alloc_8bit": 17420,
   "max_alloc_internal": 27584,
+  "oom_handler_registered": true,
   "heap_size": 327680,
   "psram_size": 8388608,
   "psram_free": 8257536,
@@ -573,7 +617,19 @@ Trois champs **additifs** ont été ajoutés en v2.19.0 ([ADR-0038](adr/0038-met
 
 **Pour un intégrateur** : superviser `free_heap_8bit` et surtout `max_alloc_8bit`. `free_heap` ne doit **jamais** servir de critère d'alarme.
 
-**Compatibilité** : les trois champs sont absents d'un firmware **≤ 2.18.9** — un client doit traiter leur absence comme « information indisponible » et retomber sur `free_heap` (c'est ce que fait l'interface web). Budget JSON mesuré avec `measureJson()` sur des valeurs pires cas : **716 octets sur 1024** (628 avant l'ajout), aucune marge à revoir.
+**Compatibilité** : les trois champs sont absents d'un firmware **≤ 2.18.9** — un client doit traiter leur absence comme « information indisponible » et retomber sur `free_heap` (c'est ce que fait l'interface web). Budget JSON mesuré avec `measureJson()` sur des valeurs pires cas : **716 octets** (628 avant l'ajout).
+
+#### `oom_handler_registered` — témoin du parachute OOM (v2.20.2, additif)
+
+| Champ | Type | Signification |
+|---|---|---|
+| `oom_handler_registered` | booléen | `true` si le `std::set_new_handler` du [parachute OOM](subsystems/oom-guard.md) est **actuellement inscrit** |
+
+**Pourquoi ce champ existe** : le `new_handler` **se désinscrit lui-même** quand la réserve d'urgence est déjà consommée, et jusqu'à la v2.20.2 sa ré-inscription se trouvait derrière un `return`. L'appareil de production tournait donc **sans filet anti-`bad_alloc` ~2 h après chaque boot, sans que rien ne le signale** — c'est la cause directe de quatre crashs `abort()` sur la tâche `async_tcp`. Le journal, lui, s'écrasait en 25-35 min : il ne pouvait pas servir de témoin.
+
+- **Lecture attendue en régime sain** : `true`. Un `false` **persistant** signifie que le parachute est absent **et** qu'aucune réserve n'est armée (la ré-inscription est conditionnée à la présence d'une réserve) — donc que le tas est durablement dégradé.
+- **Coût** : lecture d'un miroir atomique — ni allocation, ni log, ni parcours de tas.
+- **Ajout purement additif** : budget JSON `/get-system-info` mesuré à **748 octets** pires cas (716 avant). Absent d'un firmware ≤ 2.20.1 → traiter l'absence comme « information indisponible ».
 
 > `sketch_size` (octets, `ESP.getSketchSize()`) et `ota_partition_size` (octets, taille de la partition app active) permettent de calculer l'occupation flash du firmware — affichée sur la ligne « Firmware (flash) » de la carte Infos système (v2.5.2). `sketch_size` ajouté en v2.5.2 (feature-047).
 >
@@ -772,6 +828,7 @@ Champs ajoutés en feature-025 (lissage mesures + régulation P temporisée) :
 | `orpRaw` / `orpMedian` / `orpFiltered` | float \| null | Équivalents ORP (mV, sans décimale). |
 | `orpFilterReady` / `orpFilterUnstable` | boolean | Équivalents ORP. |
 | `orpRejectedCount` | integer | Équivalent ORP. |
+| `phFilterAlarm` / `orpFilterAlarm` | boolean | **v2.20.3** — `true` quand le filtre est resté non prêt > 5 min alors que la filtration tournait **et** que les mesures étaient représentatives → plus aucune régulation. Jamais armé pendant une purge, un warmup ou une filtration à l'arrêt. Voir [`ws-manager.md`](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2203-alarme-filtre-bloqué). |
 | `phMixingDelayActive` | boolean | `true` pendant la pause mélange hydraulique pH (15 min après injection). |
 | `orpMixingDelayActive` | boolean | `true` pendant la pause mélange hydraulique ORP (20 min après injection). |
 | `phDoseBlockedReason` | string \| null | Dernière cause de refus de `canDose(0)` (ex `"filtre capteur non prêt (warmup / EZO injoignable)"`, `"pause mélange en cours"`). `null` si dosage autorisé. |
@@ -1008,6 +1065,39 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/boost/stop
 
 ---
 
+### POST /reset-sensor-filter — CRITICAL
+
+Réarmement **manuel** du filtre de mesure d'un capteur, **hors des routes de debug** (v2.20.3). C'est la sortie de secours exposée à l'utilisateur quand un filtre reste bloqué en `ready = false` : dans ce cas il n'y a plus **aucune** régulation sur le paramètre concerné (et, côté pH, plus de régulation chlore non plus — le dosage ORP est fail-closed sur pH brut indisponible).
+
+Le filtre visé est vidé (médiane + EMA), le latch EMI est levé et la **détection de sonde figée est effacée** : le filtre repart en warmup complet (≈ 13 mesures, ~65 s) pendant lequel le dosage automatique reste bloqué.
+
+**Authentification** : `RouteProtection::CRITICAL` (administrateur)
+
+**Paramètre** `sensor` (corps `form-urlencoded` **ou** query string) : `ph` ou `orp`. **Obligatoire** — pas de valeur par défaut : réparer le pH ne doit jamais sacrifier un filtre ORP sain.
+
+```bash
+curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/reset-sensor-filter?sensor=ph"
+```
+
+**Réponse 200**
+
+```json
+{ "queued": true, "sensor": "ph" }
+```
+
+`queued` = **accepté**, pas exécuté : le handler n'écrit jamais dans le filtre (contexte `async_tcp`), il pose une demande consommée en tête de `SensorManager::update()` — reset effectif au prochain tour de boucle (< 100 ms), avec journalisation de l'état détruit.
+
+**Erreurs**
+
+- `400` : `{"error":"invalid_sensor"}` — paramètre `sensor` absent ou différent de `ph`/`orp`
+- `401` / `403` : authentification CRITICAL manquante ou insuffisante
+- `429` : `{"error":"too_soon","retry_after_s":<s>,"message":"…"}` — **un seul réarmement par capteur toutes les 10 minutes** (`kSensorFilterUiResetMinIntervalMs`). Le cooldown est par capteur : un `429` sur le pH n'empêche pas un réarmement ORP.
+- `500` : `{"error":"queue_failed"}` — aucun filtre demandé (ne devrait pas survenir)
+
+Voir [`docs/subsystems/sensors.md`](subsystems/sensors.md#réarmement-manuel-par-capteur-v2203) et [`docs/features/page-ph.md`](features/page-ph.md#bouton--réarmer-le-filtre-ph--v2203).
+
+---
+
 ## Calibration (Atlas EZO — feature-021)
 
 Toutes les routes de calibration retournent **immédiatement** (`< 1 ms`) en mettant la commande dans la queue FreeRTOS de `SensorManager`. La commande s'exécute dans `loopTask` en ~900 ms (transaction I²C bloquante avec le module EZO). L'UI observe l'avancement via les champs WS `phCalPoints` / `orpCalPoints` rafraîchis automatiquement.
@@ -1109,12 +1199,12 @@ Met à jour le firmware ou le filesystem via multipart/form-data.
 ```bash
 # Firmware
 curl -u admin:monmotdepasse -X POST \
-  -F "update_type=firmware" -F "update=@.pio/build/esp32dev/firmware.bin" \
+  -F "update_type=firmware" -F "update=@.pio/build/esp32dev_core3/firmware.bin" \
   http://poolcontroller.local/update
 
 # Filesystem
 curl -u admin:monmotdepasse -X POST \
-  -F "update_type=filesystem" -F "update=@.pio/build/esp32dev/littlefs.bin" \
+  -F "update_type=filesystem" -F "update=@.pio/build/esp32dev_core3/littlefs.bin" \
   http://poolcontroller.local/update
 ```
 
@@ -1125,15 +1215,39 @@ curl -u admin:monmotdepasse -X POST \
 ```bash
 curl -u admin:monmotdepasse -X POST \
   -F "update_type=firmware" -F "sha256=sha256:<64 hex>" \
-  -F "update=@.pio/build/esp32dev/firmware.bin" \
+  -F "update=@.pio/build/esp32dev_core3/firmware.bin" \
   http://poolcontroller.local/update
 ```
 
-Réponse : `200 OK` (corps `OK`) ou `200 OK` (corps `FAIL`).
+<a id="reponses-post-update-v2201"></a>
 
-**`409 Conflict`** (v2.11.0) : un upload est déjà en cours (une seule session d'upload à la fois — verrou anti-concurrence). Corps : `Upload refusé: une mise à jour OTA est déjà en cours`. Si le client d'un upload en cours se déconnecte, la session est annulée automatiquement et un nouvel upload redevient possible.
+#### Réponses (v2.20.1)
 
-L'ESP32 redémarre automatiquement après une mise à jour réussie.
+> ⚠️ **Changement de contrat** : jusqu'à la v2.20.0 incluse, **tout** échec était servi en `200 OK` avec un corps `FAIL`. Un client qui testait le code HTTP voyait donc un succès. Depuis la v2.20.1, le code HTTP porte le verdict.
+
+| Cas | Statut | Corps |
+|---|---|---|
+| Succès | `200` | `OK` **exactement** — inchangé (le front et `ota_update.sh` en dépendent) |
+| Upload concurrent | `409` | `Upload refusé: une mise à jour OTA est déjà en cours` — inchangé |
+| Refus de type (octet magique) | `400` | `FAIL: <cause>` |
+| `sha256` malformé, ou empreinte non conforme | `400` | `FAIL: <cause>` |
+| Échec `begin` / écriture / finalisation | `500` | `FAIL: <cause> (<errorString>)` |
+
+> ⚠️ **Le contrat machine est le code HTTP** — même règle que pour [`/check-update`](#garde-tls-sortante-psram-libre--heap-v2186). Le **texte** de la cause après `FAIL: ` est destiné à l'**utilisateur** (français, affiché tel quel dans l'interface) et **peut être reformulé sans préavis**. Ne jamais le parser : tester le statut. Le seul contenu de corps stable est le `OK` du succès.
+
+**Refus de type — pré-contrôle de l'octet magique** (v2.20.1) : si `update_type=firmware` et que le **premier octet reçu** n'est pas `0xE9` (`ESP_IMAGE_HEADER_MAGIC`), l'image est refusée en `400` **avant tout effet de bord** — avant l'inhibition des pompes doseuses, avant le démontage de LittleFS, avant `Update.begin()`. Corps type :
+
+```
+FAIL: l'image reçue n'est pas un firmware ESP32 (octet magique 0xE1 au lieu de 0xE9) — type « Système de fichiers » attendu ?
+```
+
+L'ensemble des images **acceptées** est **inchangé** : ce contrôle est équivalent à celui qu'`UpdateClass::_writeBuffer()` appliquait déjà, il ne fait que le déplacer en amont pour produire une cause exploitable. Le cas **inverse** (image d'allure firmware déclarée `filesystem`) n'est **pas** refusé : il émet un `WARN` et poursuit — LittleFS n'a pas d'octet magique fiable à l'offset 0, un refus produirait des faux positifs. Voir [subsystems/ota-manager.md](subsystems/ota-manager.md#politique-de-refus--asymetrie-assumee-v2201).
+
+**Une seule ligne de journal par session** (v2.20.1) : un échec d'upload produit **exactement une** entrée (`ERROR` ou `CRITICAL` pour un refus d'intégrité) nommant la cause réelle. Auparavant, chaque chunk restant re-journalisait la même erreur (~200 lignes) et vidait tout l'anneau de journal.
+
+**Détection du type par nom de fichier** (repli quand `update_type` est absent) : reconnaît `littlefs.bin`, `spiffs.bin`, `filesystem.bin`, `fs.bin` ainsi que leurs variantes préfixées (`v2.20.1.littlefs.bin`, `pool-fs.bin`), insensible à la casse. Le nom **nu** `littlefs.bin` produit par `build_fs.sh` est reconnu depuis la v2.20.1 (l'ancienne règle exigeait un point devant). Tout autre `.bin` est présumé firmware. Logique pure [`src/ota_type_logic.h`](../src/ota_type_logic.h), 29 tests natifs (`test/test_native_ota_type/`).
+
+L'ESP32 redémarre automatiquement après une mise à jour réussie — **uniquement** sur un `200`/`OK` réel (un refus de type ne déclenche aucun redémarrage).
 
 ---
 
@@ -1434,19 +1548,36 @@ curl -X POST http://poolcontroller.local/debug/ph_slope_refresh
 
 L'UI page `/ph` (chip d'état sonde) utilise cet endpoint via le bouton « Rafraîchir » du modal détails. La nouvelle valeur arrive dans le payload WS dès que le handler EZO traite la commande (~1-2 s côté `loopTask`). Voir [feature-024](../specs/features/done/feature-024-pente-sonde-ph.md) et [`docs/features/page-ph.md`](features/page-ph.md#chip-détat-sonde-feature-024).
 
-### `POST /debug/sensor_filter_reset` — pas d'auth (cohérent avec autres `/debug/*`)
+### `POST /debug/sensor_filter_reset?sensor=ph|orp` — CRITICAL (⚠️ **changement en v2.20.3**)
 
-Réinitialise **les deux** filtres pH et ORP (médiane longue + EMA) et **lève le latch EMI**. Les filtres repassent en **warmup** → le dosage automatique est bloqué jusqu'à ce que chaque filtre ait de nouveau une **fenêtre centrale pleine** (`kSensorFilterCentralWindow` = 13 nouvelles mesures valides, ≈ 65 s à 5 s/cycle) avant de produire une valeur exploitable. Utile après un débranchement EZO, un test, ou une recalibration manuelle hors workflow.
+> ⚠️ **Cette route n'est plus ouverte.** Jusqu'en v2.20.2 elle était accessible **sans authentification**, comme les autres `/debug/*`. Elle effectue exactement la même action destructrice que [`POST /reset-sensor-filter`](#post-reset-sensor-filter--critical) (effacement de la détection de sonde figée et du latch EMI) et contournait donc toutes les gardes posées sur celle-ci : elle exige désormais `RouteProtection::CRITICAL`. Les routes `/debug/*` voisines (`ph_slope_refresh`, `sensor_filter_state`, `sensor_trace`, `sensor_trace_clear`) restent **sans auth**.
+
+Réinitialise un filtre (médiane longue + EMA) et **lève le latch EMI**. Le filtre repasse en **warmup** → le dosage automatique est bloqué jusqu'à ce que la **fenêtre centrale** soit de nouveau pleine (`kSensorFilterCentralWindow` = 13 nouvelles mesures valides, ≈ 65 s à 5 s/cycle) avant de produire une valeur exploitable. Utile après un débranchement EZO, un test, ou une recalibration manuelle hors workflow.
+
+**Paramètre** (corps `form-urlencoded` **ou** query string) :
+
+| `sensor` | Effet |
+|---|---|
+| `ph` | filtre **pH seul** (v2.20.3) |
+| `orp` | filtre **ORP seul** (v2.20.3) |
+| *absent* | **les deux** filtres — comportement historique, réponse inchangée |
+| autre valeur | `400 {"error":"invalid_sensor"}` |
+
+La sélectivité est un correctif : lors du déblocage en production du 2026-08-16, cette route a sacrifié le filtre ORP qui était parfaitement sain.
 
 ```bash
-curl -X POST http://poolcontroller.local/debug/sensor_filter_reset
+curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/debug/sensor_filter_reset?sensor=ph"
 ```
 
 **Réponse 200**
 
 ```json
-{ "success": true, "reset": ["ph", "orp"] }
+{ "success": true, "queued": true, "reset": ["ph"] }
 ```
+
+**Sémantique `queued`** : la réponse signifie **acceptée**, pas **exécutée**. Le handler ne touche jamais le filtre (contexte `async_tcp`) : il pose un drapeau consommé en tête de `SensorManager::update()`, donc le reset a lieu au **prochain tour de boucle** (< 100 ms). L'état détruit (médiane avant/après, rejets, latch, sonde figée) est journalisé à ce moment-là, en `warning` — ou en `critical` si une détection de sonde figée vient d'être effacée.
+
+**Erreurs** : `400` (`sensor` invalide) · `401`/`403` (auth CRITICAL manquante).
 
 ### `GET /debug/sensor_filter_state` — pas d'auth (cohérent avec autres `/debug/*`)
 
@@ -1503,8 +1634,8 @@ curl "http://poolcontroller.local/debug/sensor_trace?offset=0&count=50"
   "interval_ms": 5000,
   "now": 3600000,
   "samples": [
-    { "t": 3595000, "phRaw": 7.241, "phFiltered": 7.234, "orpRaw": 722.0, "orpFiltered": 720.0, "tempEau": 24.5 },
-    { "t": 3600000, "phRaw": 7.238, "phFiltered": 7.235, "orpRaw": 721.0, "orpFiltered": 720.0, "tempEau": 24.5 }
+    { "t": 3595000, "phRaw": 7.241, "phCorrected": 7.191, "phFiltered": 7.234, "orpRaw": 722.0, "orpFiltered": 720.0, "tempEau": 24.5 },
+    { "t": 3600000, "phRaw": 7.238, "phCorrected": 7.188, "phFiltered": 7.235, "orpRaw": 721.0, "orpFiltered": 720.0, "tempEau": 24.5 }
   ]
 }
 ```
@@ -1517,9 +1648,12 @@ curl "http://poolcontroller.local/debug/sensor_trace?offset=0&count=50"
 | `interval_ms` | integer | Période nominale d'enregistrement (`kPhOrpSensorIntervalMs`, ~5000 ms). |
 | `now` | integer | `millis()` courant — permet à l'UI de reconstruire l'axe temps relatif (`t − now`). |
 | `samples[].t` | integer | Timestamp de l'échantillon en ms (`millis()` au moment de l'enregistrement). |
-| `samples[].phRaw` / `phFiltered` | float \| null | pH brut / lissé (arrondi ×1000). `null` si NaN (lecture échouée / filtre non amorcé). |
+| `samples[].phRaw` / `phFiltered` | float \| null | pH brut / lissé, **tous deux SANS offset** (mesure capteur telle quelle, arrondi ×1000). `null` si NaN (lecture échouée / filtre non amorcé). |
+| `samples[].phCorrected` | float \| null | **feature-067 (v2.20.0)** — pH brut **+ offset logiciel** (`ph_offset`, arrondi ×1000). `null` si le brut est NaN (l'offset ne fabrique jamais une mesure). À offset nul, égal à `phRaw`. |
 | `samples[].orpRaw` / `orpFiltered` | float \| null | ORP brut / lissé en mV (arrondi ×10). `null` si NaN. |
 | `samples[].tempEau` | float \| null | T° eau envoyée à l'EZO pour compensation (°C, arrondi ×10). `null` si sonde absente. |
+
+> ⚠️ **Exception à la règle « seuls les `*Raw` sont bruts »** : dans cette trace de **diagnostic**, `phFiltered` est la sortie du filtre **sans offset** (le filtre travaille sur le brut, [ADR-0039](adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)). Seul `phCorrected` porte l'offset. L'objectif est de pouvoir dire à tout instant **ce qui vient de l'EZO** et **ce qui vient de la correction**. Ailleurs (`/data`, WebSocket, MQTT), `phFiltered` est **corrigé**. Coût mémoire : le champ ajouté porte l'échantillon à 28 octets (buffer ≈ 8,4 Ko RAM) et une page de 50 échantillons à ≈ 4,5 Ko de JSON.
 
 **Erreurs**
 

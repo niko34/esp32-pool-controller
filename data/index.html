@@ -177,6 +177,19 @@
             Sondes de température à identifier
           </button>
 
+          <!-- v2.20.3 (D5) : alerte « régulation à l'arrêt » — un filtre pH ou ORP
+               resté non prêt > 5 min alors que la filtration tourne. L'incident du
+               2026-08-16 est resté invisible 3 h : cette bannière est la surface
+               tableau de bord de l'alarme firmware (ph/orpFilterAlarm). -->
+          <div class="regul-alert" id="regul-alert" role="alert" hidden>
+            <span class="regul-alert__dot" aria-hidden="true"></span>
+            <div class="regul-alert__body">
+              <strong class="regul-alert__title" id="regul-alert-title">Régulation à l'arrêt</strong>
+              <span class="regul-alert__text" id="regul-alert-text"></span>
+            </div>
+            <a class="btn btn--secondary regul-alert__cta" id="regul-alert-cta" href="#/ph">Diagnostiquer</a>
+          </div>
+
 
           <!-- Cartes principales -->
           <div class="grid grid--status-cards">
@@ -674,6 +687,17 @@
               <h2 class="card__title">Régulation pH</h2>
             </div>
             <div class="card__body">
+              <!-- v2.20.3 (C5) : bascule AUTOMATIQUE de la régulation pH en manuel
+                   (escalade de sécurité). Persistée en NVS → survit au redémarrage
+                   et au ring buffer du journal. Disparaît dès que l'utilisateur
+                   choisit lui-même un mode. -->
+              <div class="regul-alert regul-alert--inline" id="ph-auto-manual-banner" role="alert" hidden>
+                <span class="regul-alert__dot" aria-hidden="true"></span>
+                <div class="regul-alert__body">
+                  <strong class="regul-alert__title">Bascule automatique en mode manuel</strong>
+                  <span class="regul-alert__text" id="ph-auto-manual-text"></span>
+                </div>
+              </div>
               <div class="segmented" id="ph_regulation_mode" style="margin-bottom:16px">
                 <button class="segmented__btn is-active" data-value="automatic">Automatique</button>
                 <button class="segmented__btn" data-value="scheduled">Programmée</button>
@@ -735,6 +759,35 @@
                 <p id="ph_inject_block_hint" class="muted small" style="margin:6px 0 0"></p>
               </div>
 
+            </div>
+          </div>
+
+          <!-- feature-067 : offset logiciel de mesure pH. Toujours visible (quel que
+               soit le mode de régulation) car il corrige la MESURE, pas la régulation.
+               Distinct de la calibration EZO, qui reste dans la carte dédiée. -->
+          <div class="card" id="ph-card-offset">
+            <div class="card__head">
+              <h2 class="card__title">Correction de la mesure pH</h2>
+            </div>
+            <div class="card__body">
+              <label class="field" style="max-width:220px">
+                <span class="field__label">Offset pH</span>
+                <input type="number" id="ph_offset" min="-0.50" max="0.50" step="0.01"
+                       inputmode="decimal" placeholder="0.00" />
+              </label>
+              <p class="muted small" id="ph_offset_help" style="margin:8px 0 0">
+                Correction logicielle de la mesure pH. Ne remplace pas la calibration du module EZO :
+                à n'utiliser que pour compenser un écart lié à l'implantation de la sonde, après
+                comparaison avec une mesure de référence (trousse DPD ou photomètre).
+                pH corrigé = pH brut + offset.
+              </p>
+              <div class="callout callout--warn" id="ph_offset_warning" role="status" aria-live="polite"
+                   style="display:none;margin-top:12px"></div>
+              <p class="small" id="ph_offset_error" role="alert"
+                 style="display:none;margin:10px 0 0;color:var(--danger)"></p>
+              <div class="detail-actions" style="margin-top:12px">
+                <button class="btn btn--primary" type="button" id="ph_offset_save_btn">Sauvegarder</button>
+              </div>
             </div>
           </div>
 
@@ -852,15 +905,24 @@
           <dialog id="ph-filter-modal" class="probe-modal" aria-labelledby="ph-filter-modal-title">
             <h3 id="ph-filter-modal-title" class="probe-modal__title">État filtre pH</h3>
             <div class="probe-modal__row">
-              <span class="probe-modal__label">Valeur brute</span>
+              <span class="probe-modal__label">Valeur brute (EZO)</span>
               <span class="probe-modal__value" id="ph-fm-raw">--</span>
             </div>
+            <!-- feature-067 : offset logiciel + valeur corrigée (diagnostic) -->
             <div class="probe-modal__row">
-              <span class="probe-modal__label">Médiane</span>
+              <span class="probe-modal__label">Offset appliqué</span>
+              <span class="probe-modal__value" id="ph-fm-offset">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Valeur corrigée</span>
+              <span class="probe-modal__value" id="ph-fm-corrected">--</span>
+            </div>
+            <div class="probe-modal__row">
+              <span class="probe-modal__label">Médiane (corrigée)</span>
               <span class="probe-modal__value" id="ph-fm-median">--</span>
             </div>
             <div class="probe-modal__row">
-              <span class="probe-modal__label">Valeur filtrée</span>
+              <span class="probe-modal__label">Valeur filtrée (corrigée)</span>
               <span class="probe-modal__value" id="ph-fm-filtered">--</span>
             </div>
             <div class="probe-modal__row">
@@ -879,7 +941,13 @@
               <span class="probe-modal__label">Dosage bloqué</span>
               <span class="probe-modal__value" id="ph-fm-blocked">--</span>
             </div>
+            <!-- v2.20.3 (D3) : réarmement manuel du filtre pH (auth admin, 1/10 min) -->
+            <p class="probe-modal__hint" id="ph-fm-reset-hint">
+              Si le filtre reste bloqué, le réarmement vide la fenêtre de mesure et
+              repart de zéro (environ 1 minute avant reprise du dosage).
+            </p>
             <div class="probe-modal__actions">
+              <button class="btn btn--danger" type="button" id="ph-filter-reset">Réarmer le filtre pH</button>
               <button class="btn" type="button" id="ph-filter-close" autofocus>Fermer</button>
             </div>
           </dialog>
@@ -1116,7 +1184,13 @@
               <span class="probe-modal__label">Dosage bloqué</span>
               <span class="probe-modal__value" id="orp-fm-blocked">--</span>
             </div>
+            <!-- v2.20.3 (D3) : réarmement manuel du filtre ORP (auth admin, 1/10 min) -->
+            <p class="probe-modal__hint" id="orp-fm-reset-hint">
+              Si le filtre reste bloqué, le réarmement vide la fenêtre de mesure et
+              repart de zéro (environ 1 minute avant reprise du dosage).
+            </p>
             <div class="probe-modal__actions">
+              <button class="btn btn--danger" type="button" id="orp-filter-reset">Réarmer le filtre ORP</button>
               <button class="btn" type="button" id="orp-filter-close" autofocus>Fermer</button>
             </div>
           </dialog>
@@ -1696,11 +1770,13 @@ action:
                     <input type="file" id="update_file" accept=".bin" />
                   </label>
 
+                  <div id="update_type_notice" class="callout" role="status" aria-live="polite" style="display:none;"></div>
+
                   <div id="update_progress" style="display:none;">
                     <div class="progress">
-                      <div class="progress__bar" id="update_progress_bar">0%</div>
+                      <div class="progress__bar" id="update_progress_bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">0%</div>
                     </div>
-                    <div class="muted small" id="update_status">Préparation…</div>
+                    <div class="muted small" id="update_status" role="status">Préparation…</div>
                   </div>
 
                   <div class="row row--gap">

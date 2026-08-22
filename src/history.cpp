@@ -399,6 +399,8 @@ void HistoryManager::recordDataPoint() {
 
   DataPoint point;
   point.timestamp = nowEpoch;
+  // feature-067 : getPh() renvoie le pH CORRIGÉ (brut + offset) — c'est la valeur
+  // "vraie" du bassin, donc celle qui doit être historisée.
   point.ph = sensors.getPh();
   point.orp = sensors.getOrp();
   point.temperature = sensors.getTemperature();

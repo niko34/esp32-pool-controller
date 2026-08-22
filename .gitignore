@@ -48,3 +48,7 @@ kicad v3/
 
 # FreeCAD (stored separately)
 freecad/
+
+# Exports de diagnostic tirés de l'appareil (journal, logs) — jamais versionnés
+pool_logs.txt
+syslog*.txt

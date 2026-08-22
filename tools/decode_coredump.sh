@@ -11,7 +11,10 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 CORE="${1:-coredump.bin}"
-ELF="${2:-$PROJECT_DIR/.pio/build/esp32dev/firmware.elf}"
+# L'ELF DOIT correspondre EXACTEMENT au firmware qui a crashé : un ELF core 2
+# sur un dump core 3 produit des noms de fonctions plausibles et FAUX.
+PIO_ENV="${PIO_ENV:-esp32dev_core3}"
+ELF="${2:-$PROJECT_DIR/.pio/build/$PIO_ENV/firmware.elf}"
 
 if [ ! -f "$CORE" ]; then
   echo "ERREUR: fichier coredump '$CORE' introuvable"

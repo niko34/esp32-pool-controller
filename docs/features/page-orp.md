@@ -51,6 +51,7 @@ Chip cliquable `#orp-filter-chip` reflétant l'état du filtre ORP. Classificati
 
 | Condition (ordre) | Label | Classe / couleur |
 |---|---|---|
+| **`orpFilterAlarm === true`** (v2.20.3) | **« Régulation à l'arrêt »** | `bad` (rouge) |
 | `orpRaw` invalide | « EZO indisponible » | `unknown` (gris) |
 | `orpFilterUnstable === true` | « Capteur instable » | `bad` (rouge) |
 | `orpFilterReady === false` | « Stabilisation… » | `warn` (ambré) |
@@ -58,6 +59,18 @@ Chip cliquable `#orp-filter-chip` reflétant l'état du filtre ORP. Classificati
 | sinon | « Mesure stable » | `good` (vert) |
 
 Clic → `<dialog id="orp-filter-modal">` (`État filtre ORP`) : brut, médiane, filtré, **Pics rejetés**, âge, **Filtre prêt**, et raison de blocage dosage conditionnelle (`orpDoseBlockedReason`, ou « Mélange en cours » si `orpMixingDelayActive`). La pause mélange ORP est plus longue (20 min vs 15 min pour le pH).
+
+> **v2.20.3** — `orpFilterAlarm` prime sur tout le reste, y compris sur « EZO indisponible » : le filtre ORP est resté non prêt > 5 min alors que la filtration tournait et que les mesures étaient représentatives, donc **plus aucune chloration**. Le firmware ne l'arme jamais pendant une purge, un warmup ou une filtration à l'arrêt.
+
+### Bouton « Réarmer le filtre ORP » (v2.20.3)
+
+`<button id="orp-filter-reset" class="btn btn--danger">` au pied du modal « État filtre ORP ». Le filtre ORP partage la logique de `SensorFilter` avec le pH : il est donc exposé **au même piège de verrouillage** sur rejet de spike (`kOrpFilterSpikeReject` = 300 mV) et dispose des mêmes correctifs (porte d'alimentation, sortie de secours, alarme).
+
+Comportement identique à la page pH ([détail](page-ph.md#bouton--réarmer-le-filtre-ph--v2203)), avec `sensor=orp` :
+
+- confirmation explicite (`danger: true`) rappelant que la **détection de sonde figée** et l'alarme de bruit électrique **seront effacées**, et que le dosage restera bloqué ~1 min ;
+- `POST /reset-sensor-filter?sensor=orp`, auth **CRITICAL**, **1 réarmement/10 min** par capteur (`429` avec `retry_after_s`) ;
+- le cooldown est **par capteur** : réarmer le pH ne consomme pas le crédit de l'ORP, et réparer le pH ne réinitialise plus un filtre ORP sain (ce qui arrivait avec l'ancienne route de debug).
 
 ## Chip d'état de calibration (feature-034)
 
@@ -116,7 +129,7 @@ La carte `#orp-card-calibration` présente un **stepper** (`<ol class="calibrati
 ## Données consommées (WebSocket `/ws`)
 
 **Mesure** : `orp` (= valeur **filtrée**, entier mV) ; `orpRaw`, `orpMedian`, `orpFiltered` (feature-025)
-**État filtre** : `orpFilterReady`, `orpFilterUnstable`, `orpRejectedCount`, `orpMixingDelayActive`, `orpDoseBlockedReason` (feature-025) — voir [Chip d'état filtre](#chip-détat-filtre-feature-025)
+**État filtre** : `orpFilterReady`, `orpFilterUnstable`, `orpRejectedCount`, `orpMixingDelayActive`, `orpDoseBlockedReason` (feature-025), `orpFilterAlarm` (v2.20.3) — voir [Chip d'état filtre](#chip-détat-filtre-feature-025)
 **Calibration** : `orpCalPoints` (`-1..1`) — voir [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)
 **Dosage** : `orp_dosing`, `orp_used_ms`, `orp_daily_ml`, `orp_limit_reached`
 **Mode** : `orp_regulation_mode`, `orp_daily_target_ml`, `orp_enabled` (miroir — voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
@@ -137,6 +150,7 @@ La carte `#orp-card-calibration` présente un **stepper** (`<ol class="calibrati
 | Injection manuelle stop | `POST /orp/inject/stop` | — | WRITE |
 | Calibration EZO ORP | `POST /calibrate_orp` | `{"reference": <mV float>}` | WRITE |
 | Effacer calibration EZO | `POST /calibrate_clear` | `{"sensor":"orp"}` | WRITE |
+| **Réarmer le filtre ORP (v2.20.3)** | `POST /reset-sensor-filter?sensor=orp` | querystring | **CRITICAL** (1×/10 min → `429`) |
 
 > Avant feature-021 : la calibration ORP se faisait entièrement côté UI client (calcul offset/slope, persistance via `POST /save-config` avec `orp_calibration_*`) — voir [ADR-0003](../adr/0003-calibration-orp-cote-client.md). Cette voie est **supersédée** par la calibration interne au module Atlas EZO ORP. ADR-0003 reste applicable historiquement (PCB v1).
 

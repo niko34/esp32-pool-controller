@@ -25,8 +25,12 @@
 // La coquille impure (malloc/free, std::set_new_handler, std::atomic,
 // heap_caps_register_failed_alloc_callback, systemLogger) vit dans oom_guard.cpp.
 //
-// CONTRAINTE : pas d'Arduino.h, pas de FreeRTOS, pas d'ESP.* — <stdint.h>
-// uniquement, fonctions inline (header-only, rien à ajouter au build natif).
+// CONTRAINTE : pas d'Arduino.h, pas de FreeRTOS, pas d'ESP.* — <stdint.h> et
+// "constants.h" (lui-même auto-suffisant : <stdint.h> + <time.h>, aucune
+// dépendance Arduino) uniquement, fonctions inline (header-only, rien à ajouter
+// au build natif). constants.h est tiré depuis la v2.20.2 pour les PALIERS du
+// backoff du WARN d'échec (oomFailWarnNextDelayMs), dont la signature imposée ne
+// prend pas les seuils en paramètres.
 // La PSRAM LIBRE est donc MESURÉE par la route (ESP.getFreePsram()) et passée
 // en paramètre, jamais lue ici. C'est bien la PSRAM LIBRE, et non la taille
 // installée (ESP.getPsramSize(), constante et jamais décroissante) : avec
@@ -36,6 +40,8 @@
 // =============================================================================
 
 #include <stdint.h>
+
+#include "constants.h"  // Paliers kOomFailWarnDelay*Ms (backoff du WARN d'échec)
 
 // États du parachute (stockés côté impur dans un std::atomic<uint8_t>).
 enum : uint8_t {
@@ -117,6 +123,57 @@ inline uint32_t oomRearmTargetBytes(uint32_t armedBytes, uint32_t maxAllocBytes,
 // compteur déjà journalisé — les compteurs ne décroissent jamais).
 inline bool oomShouldLogRelease(uint32_t releaseCount, uint32_t loggedCount) {
   return releaseCount != loggedCount;
+}
+
+// ---------------------------------------------------------------------------
+// FILET D'URGENCE : ré-inscription du new_handler (v2.20.2, bloc A)
+// ---------------------------------------------------------------------------
+// Défaut PROUVÉ le 15/08/2026 : le `std::set_new_handler(oomNewHandler)` de la
+// coquille se trouvait en FIN de oomGuardLoopTick(), donc APRÈS le `return` de la
+// branche d'échec de réarmement. Or le handler se DÉSINSCRIT lui-même à la 2ᵉ
+// famine (état Depleted) : passé ce point, plus aucun chemin ne le ré-inscrivait
+// et le parachute était mort ~2 h après le boot. La ré-inscription est désormais
+// faite en TÊTE du tick, avant tout `return`.
+//
+// Condition C1 du gate pool-chemistry : on ne ré-inscrit QUE si une réserve est
+// effectivement armée. Un handler sans réserve ne peut rien libérer — il ne
+// ferait que retarder d'un tour le bad_alloc, en masquant l'état réel.
+inline bool oomShouldRegisterHandler(bool reservePresent, bool handlerRegistered) {
+  return reservePresent && !handlerRegistered;
+}
+
+// ---------------------------------------------------------------------------
+// BACKOFF du WARN « allocation heap échouée » (v2.20.2, bloc C)
+// ---------------------------------------------------------------------------
+// Défaut n°3 du 15/08 : throttle FIXE de 30 s → ~120 WARN/h → le journal
+// persistant (kMaxLogFileBytes = 8 Ko) tournait en 25-35 min et détruisait le
+// post-mortem du crash avant qu'il puisse être lu. Le backoff élargit la fenêtre
+// forensique à > 12 h sans jamais faire taire complètement le signal :
+//   30 s → 5 min → 30 min (saturation).
+// Retourne le délai à appliquer APRÈS l'émission dont le délai courant était
+// `currentDelayMs` (0 = jamais émis → palier initial). Le RETOUR au palier
+// initial après une heure sans nouvel échec (kOomFailWarnDelayResetMs) est du
+// ressort de l'appelant, qui seul dispose d'une horloge.
+inline uint32_t oomFailWarnNextDelayMs(uint32_t currentDelayMs) {
+  if (currentDelayMs < (uint32_t)kOomFailWarnDelayInitialMs) {
+    return (uint32_t)kOomFailWarnDelayInitialMs;
+  }
+  if (currentDelayMs < (uint32_t)kOomFailWarnDelayMidMs) {
+    return (uint32_t)kOomFailWarnDelayMidMs;
+  }
+  return (uint32_t)kOomFailWarnDelayMaxMs;  // saturation
+}
+
+// ---------------------------------------------------------------------------
+// Échecs AUTO-INFLIGÉS (v2.20.2, bloc E1)
+// ---------------------------------------------------------------------------
+// Mesure du 15/08 : sur 1025 échecs d'allocation comptés, ~100 % étaient le
+// `malloc(target)` du réarmement du parachute lui-même, qui visait un palier
+// inatteignable en régime fragmenté. Compter ces échecs revenait à s'alarmer de
+// son propre bruit — et saturait le journal. L'appelant pose un drapeau autour du
+// SEUL malloc de réarmement ; le hook l'interroge pour ne rien comptabiliser.
+inline bool oomShouldCountFailure(bool selfAllocInFlight) {
+  return !selfAllocInFlight;
 }
 
 // ===========================================================================

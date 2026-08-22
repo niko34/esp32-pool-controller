@@ -21,6 +21,18 @@
 //     maxBloc=34804 o) que la v2.18.5 laissait passer doivent être REFUSÉES,
 //     avec priorité du motif PSRAM sur le motif mémoire ; idem pour une PSRAM
 //     installée mais SATURÉE (revue v2.18.6 : le critère est la PSRAM LIBRE).
+// v2.20.2 (bug-famine-8bits) — trois fonctions pures ajoutées, plus le
+// recalibrage du palier de repli :
+//   - oomShouldRegisterHandler : filet d'urgence du new_handler, avec la
+//     condition C1 du gate pool-chemistry (réserve absente → PAS de
+//     ré-inscription) et l'idempotence (pas d'INFO à chaque tick) ;
+//   - oomFailWarnNextDelayMs : backoff 30 s → 5 min → 30 min du WARN d'échec
+//     (restauration de la fenêtre forensique du journal persistant) ;
+//   - oomShouldCountFailure : exclusion des échecs AUTO-INFLIGÉS par le malloc
+//     de réarmement (~100 % des 1025 échecs comptés le 15/08) ;
+//   - oomRearmTargetBytes : les seuils du palier de repli sont désormais
+//     exprimés dans la métrique 8 BITS (ADR-0038) — les assertions de calibrage
+//     de v2.18.8 ont été mises à jour et adossées aux invariants du gate.
 // =============================================================================
 
 #include <unity.h>
@@ -488,12 +500,77 @@ void test_rearm_real_constant_values_v2188(void) {
   // Verrouille l'échelle des seuils : tout futur changement casse ici.
   TEST_ASSERT_EQUAL_UINT32(12288u, (uint32_t)kOomReserveBytes);
   TEST_ASSERT_EQUAL_UINT32(24576u, kOomRearmMinMaxAllocBytes);
-  TEST_ASSERT_EQUAL_UINT32(2048u, (uint32_t)kOomFallbackReserveBytes);
-  TEST_ASSERT_EQUAL_UINT32(12288u, kOomFallbackRearmMinMaxAllocBytes);
+  // RECALIBRAGE v2.20.2 (bug-famine-8bits, bloc E1) : les DEUX valeurs du palier
+  // de repli ont changé — 2048 → 1024 (taille) et 12288 → 2048 (seuil). Les
+  // valeurs de v2.18.8 verrouillées ici étaient calées sur ESP.getMaxAllocHeap(),
+  // dont ADR-0038 a prouvé qu'elle compte l'IRAM 32 bits inutilisable par
+  // malloc/new (figée à 27 636 o) ; le tick de réarmement lit désormais
+  // heapLargestFreeBlock8Bit(), dont le régime réel mesuré sur 5 h vaut
+  // maxBloc8 ∈ [4 084 ; 9 204]. Un seuil de repli à 12 288 dans CETTE métrique
+  // n'aurait plus jamais été atteint : parachute définitivement désarmé.
+  // Les assertions ci-dessous sont donc mises à jour DÉLIBÉRÉMENT (l'ancien
+  // contrat de calibrage est caduc, ce n'est pas une régression de logique) ;
+  // les invariants qui les justifient sont testés juste en dessous.
+  TEST_ASSERT_EQUAL_UINT32(1024u, (uint32_t)kOomFallbackReserveBytes);
+  TEST_ASSERT_EQUAL_UINT32(2048u, kOomFallbackRearmMinMaxAllocBytes);
   // Le palier de repli DOIT être strictement en dessous du nominal (sinon un
   // seul palier utile, et le surclassement n'a plus de sens).
   TEST_ASSERT_TRUE(kOomFallbackRearmMinMaxAllocBytes < kOomRearmMinMaxAllocBytes);
   TEST_ASSERT_TRUE((uint32_t)kOomFallbackReserveBytes < (uint32_t)kOomReserveBytes);
+}
+
+// Mesures 8 bits ON-TARGET du 15/08/2026 (firmware 2.20.0 core 3, 5 h) — ce sont
+// elles qui fondent le recalibrage, et non plus la métrique brute.
+static const uint32_t kField8MinMaxBlocSinceBoot = 3060u;   // pire creux observé
+static const uint32_t kField8MaxBlocLow          = 4084u;   // plus bas relevé en régime
+static const uint32_t kField8MaxBlocTypical      = 4596u;   // valeur la plus fréquente
+static const uint32_t kField8MaxBlocHigh         = 9204u;   // meilleur relevé
+
+void test_rearm_fallback_tier_respects_chemistry_gate_invariants_v2202(void) {
+  // Invariant C2 imposé par le gate pool-chemistry, verrouillé ici pour qu'aucun
+  // recalibrage futur ne puisse le rompre en silence :
+  //   (a) le seuil de réarmement du repli reste SOUS le pire creux observé depuis
+  //       le boot → aucun trou de protection, le parachute reste armable même au
+  //       plus mauvais moment mesuré ;
+  TEST_ASSERT_TRUE(kOomFallbackRearmMinMaxAllocBytes < kField8MinMaxBlocSinceBoot);
+  //   (b) la taille allouée tient dans la MOITIÉ du seuil → armer la réserve ne
+  //       peut pas, à soi seul, faire retomber le tas sous son propre seuil de
+  //       réarmement (pas d'auto-sabotage, pas d'oscillation) ;
+  TEST_ASSERT_TRUE((uint32_t)kOomFallbackReserveBytes <=
+                   kOomFallbackRearmMinMaxAllocBytes / 2u);
+  //   (c) le seuil est atteignable en pratique dans le régime 8 bits mesuré.
+  TEST_ASSERT_TRUE(kOomFallbackRearmMinMaxAllocBytes <= kField8MaxBlocLow);
+  // La réserve de repli couvre les petites allocations vitales des trois crashs
+  // (accept HTTP 356 o, AsyncFileResponse 156 o, exception C++ 100 o).
+  TEST_ASSERT_TRUE((uint32_t)kOomFallbackReserveBytes >= 356u);
+}
+
+void test_rearm_arms_fallback_across_whole_measured_8bit_regime(void) {
+  // Toute la plage 8 bits MESURÉE doit armer le parachute (aucun trou), du pire
+  // creux au meilleur relevé — c'est ce que la calibration v2.18.8 ne faisait
+  // plus une fois la mesure passée en 8 bits (12 288 > 9 204 = jamais armé).
+  const uint32_t regime[] = {kField8MinMaxBlocSinceBoot, kField8MaxBlocLow,
+                             kField8MaxBlocTypical, kField8MaxBlocHigh};
+  for (unsigned i = 0; i < sizeof(regime) / sizeof(regime[0]); i++) {
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFallbackReserveBytes,
+                             rearmTarget(0u, regime[i]));
+    // ...et JAMAIS le palier nominal : c'est ce qui supprime le malloc(12288)
+    // retenté toutes les 10 s, qui fabriquait ~100 % des 1025 échecs comptés.
+    TEST_ASSERT_NOT_EQUAL_UINT32((uint32_t)kOomReserveBytes,
+                                 rearmTarget(0u, regime[i]));
+  }
+}
+
+void test_rearm_never_downgrades_nominal_in_8bit_regime(void) {
+  // Non-régression de l'invariant historique avec les NOUVELLES valeurs : une
+  // réserve nominale déjà armée n'est jamais déclassée vers le repli, y compris
+  // aux creux 8 bits réels (qui sont désormais au-dessus du seuil de repli).
+  const uint32_t regime[] = {0u, kOomFallbackRearmMinMaxAllocBytes,
+                             kField8MinMaxBlocSinceBoot, kField8MaxBlocLow,
+                             kField8MaxBlocTypical, kField8MaxBlocHigh};
+  for (unsigned i = 0; i < sizeof(regime) / sizeof(regime[0]); i++) {
+    TEST_ASSERT_EQUAL_UINT32(0u, rearmTarget((uint32_t)kOomReserveBytes, regime[i]));
+  }
 }
 
 void test_rearm_field_maxblock_27584_at_12h9_arms_nominal(void) {
@@ -591,16 +668,24 @@ void test_rearm_two_tier_full_scenario_after_famine(void) {
   uint32_t armed = (uint32_t)kOomReserveBytes;
   armed = 0u;  // le handler a consommé la réserve (pointeur nul = seule autorité)
 
-  TEST_ASSERT_EQUAL_UINT32(0u, rearmTarget(armed, 9000u));       // tas à sec : rien
-  uint32_t t = rearmTarget(armed, 14000u);                        // tas partiel : repli
+  // v2.20.2 : les valeurs de tas de ce scénario sont RÉÉCHELONNÉES. Elles étaient
+  // exprimées en métrique brute (9 000 = « tas à sec », 14 000 = « tas partiel »),
+  // or le tick lit désormais heapLargestFreeBlock8Bit() où 9 000 est au contraire
+  // le MEILLEUR relevé de terrain (9 204). Avec le seuil de repli à 2 048, 9 000
+  // arme donc le repli — ce n'est pas une régression mais le changement d'échelle
+  // décidé au bloc E1. Les bornes sont désormais SYMBOLIQUES (dérivées des
+  // constantes) ou tirées des mesures 8 bits réelles, pour ne plus se périmer.
+  TEST_ASSERT_EQUAL_UINT32(0u, rearmTarget(armed, kOomFallbackRearmMinMaxAllocBytes - 1u));  // tas à sec : rien
+  uint32_t t = rearmTarget(armed, kField8MaxBlocTypical);          // régime 8 bits réel : repli
   TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFallbackReserveBytes, t);
   armed = t;
-  TEST_ASSERT_EQUAL_UINT32(0u, rearmTarget(armed, 14000u));       // stable, pas d'oscillation
-  t = rearmTarget(armed, 27584u);                                 // régime réel : surclassement
+  TEST_ASSERT_EQUAL_UINT32(0u, rearmTarget(armed, kField8MaxBlocTypical));  // stable, pas d'oscillation
+  t = rearmTarget(armed, 27584u);                                 // défragmentation : surclassement
   TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomReserveBytes, t);
   armed = t;
   TEST_ASSERT_EQUAL_UINT32(0u, rearmTarget(armed, 27584u));       // stable
-  TEST_ASSERT_EQUAL_UINT32(0u, rearmTarget(armed, 9000u));        // pas de déclassement
+  TEST_ASSERT_EQUAL_UINT32(0u, rearmTarget(armed, kField8MaxBlocTypical));  // pas de déclassement
+  TEST_ASSERT_EQUAL_UINT32(0u, rearmTarget(armed, 0u));           // ni même tas à zéro
 }
 
 // ===========================================================================
@@ -1107,6 +1192,219 @@ void test_integrity_real_constant_values(void) {
   TEST_ASSERT_TRUE(kHeapIntegrityWarnDurationUs < kHeapIntegrityMaxDurationUs);
 }
 
+// ===========================================================================
+// 11. oomShouldRegisterHandler — FILET D'URGENCE du new_handler (v2.20.2, A)
+// ===========================================================================
+// Défaut PROUVÉ le 15/08/2026 : l'unique std::set_new_handler(oomNewHandler)
+// vivait en FIN de oomGuardLoopTick(), donc APRÈS le `return` de la branche
+// d'échec de réarmement. Le handler se désinscrivant LUI-MÊME à la 2ᵉ famine,
+// plus aucun chemin ne le ré-inscrivait : parachute mort ~2 h après le boot.
+
+void test_register_handler_refused_when_reserve_absent(void) {
+  // CONDITION C1 du gate pool-chemistry — cas OBLIGATOIRE : sans réserve armée,
+  // on NE ré-inscrit PAS. Un handler sans réserve n'a rien à libérer ; il ne
+  // ferait que retarder d'un tour le bad_alloc en masquant l'état réel.
+  TEST_ASSERT_FALSE(oomShouldRegisterHandler(false, false));
+  // Même sans réserve, si le handler est (encore) inscrit, rien à faire non plus.
+  TEST_ASSERT_FALSE(oomShouldRegisterHandler(false, true));
+}
+
+void test_register_handler_when_reserve_armed_and_handler_absent(void) {
+  // Le seul cas qui déclenche : réserve armée + handler absent (état Depleted
+  // après la 2ᵉ famine, puis réarmement réussi).
+  TEST_ASSERT_TRUE(oomShouldRegisterHandler(true, false));
+}
+
+void test_register_handler_is_idempotent(void) {
+  // Déjà inscrit avec réserve : NON — sinon l'INFO « new_handler ré-inscrit »
+  // serait émise à chaque tick (10 s) et re-saturerait le journal persistant,
+  // le défaut même que ce cycle corrige.
+  TEST_ASSERT_FALSE(oomShouldRegisterHandler(true, true));
+  // Idempotence sur une longue série de ticks sans changement d'état.
+  for (int tick = 0; tick < 100; tick++) {
+    TEST_ASSERT_FALSE(oomShouldRegisterHandler(true, true));
+  }
+}
+
+void test_register_handler_full_scenario_of_20260815_bug(void) {
+  // Scénario complet du bug, rejoué : boot armé → 1ʳᵉ famine (réserve libérée,
+  // handler CONSERVÉ) → 2ᵉ famine (handler DÉSINSCRIT, plus de réserve) →
+  // le tick ne ré-inscrit pas tant que rien n'est armé → réarmement → filet.
+  bool reserve = true, handler = true;
+  TEST_ASSERT_FALSE(oomShouldRegisterHandler(reserve, handler));  // régime nominal
+
+  OomHandlerAction a1 = oomOnAllocFailed(true);                   // 1ʳᵉ famine
+  reserve = false;                                                // réserve libérée
+  handler = handler && !a1.unregisterHandler;                     // toujours inscrit
+  TEST_ASSERT_TRUE(handler);
+  TEST_ASSERT_FALSE(oomShouldRegisterHandler(reserve, handler));
+
+  OomHandlerAction a2 = oomOnAllocFailed(false);                  // 2ᵉ famine
+  handler = handler && !a2.unregisterHandler;                     // se désinscrit
+  TEST_ASSERT_FALSE(handler);
+  // ICI vivait le bug : réserve absente ET handler absent. La ré-inscription
+  // reste REFUSÉE (C1) — c'est le réarmement qui doit rétablir la protection.
+  TEST_ASSERT_FALSE(oomShouldRegisterHandler(reserve, handler));
+
+  // Réarmement effectif dans le régime 8 bits réel → réserve de repli armée.
+  uint32_t target = rearmTarget(0u, kField8MaxBlocTypical);
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFallbackReserveBytes, target);
+  reserve = true;
+  TEST_ASSERT_TRUE(oomShouldRegisterHandler(reserve, handler));   // le filet joue
+  handler = true;                                                 // la coquille inscrit
+  TEST_ASSERT_FALSE(oomShouldRegisterHandler(reserve, handler));  // une seule fois
+
+  // NOTE DE PORTÉE (contre-revue 2.20.2) : ce scénario modélise le prédicat pur
+  // et l'usage qu'en fait initOomGuard(). Il ne décrit PLUS le tick, qui
+  // n'interroge délibérément plus le miroir : il appelle set_new_handler() à
+  // chaque passage tant qu'une réserve est armée (set_new_handler est
+  // idempotent), justement pour que la vivacité du parachute ne dépende JAMAIS
+  // d'un miroir susceptible de se désynchroniser. Le miroir n'y sert qu'à
+  // n'émettre l'INFO qu'une fois et à alimenter oom_handler_registered.
+}
+
+// ===========================================================================
+// 12. oomFailWarnNextDelayMs — BACKOFF du WARN d'échec (v2.20.2, C)
+// ===========================================================================
+// 30 s fixes → ~120 WARN/h → rétention du journal persistant de 25-35 min : le
+// post-mortem du crash du 15/08 a été détruit par notre propre journalisation.
+
+void test_fail_warn_backoff_first_emission_uses_initial_delay(void) {
+  // Convention : 0 = jamais émis → palier INITIAL (le signal reste immédiat).
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayInitialMs,
+                           oomFailWarnNextDelayMs(0u));
+  // Toute valeur résiduelle sous le palier initial se recale sur l'initial.
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayInitialMs,
+                           oomFailWarnNextDelayMs(1u));
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayInitialMs,
+                           oomFailWarnNextDelayMs((uint32_t)kOomFailWarnDelayInitialMs - 1u));
+}
+
+void test_fail_warn_backoff_escalates_30s_5min_30min(void) {
+  // Progression imposée par la spec : 30 s → 5 min → 30 min.
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayMidMs,
+                           oomFailWarnNextDelayMs((uint32_t)kOomFailWarnDelayInitialMs));
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayMaxMs,
+                           oomFailWarnNextDelayMs((uint32_t)kOomFailWarnDelayMidMs));
+  // Bornes : le palier suivant est décidé sur « strictement inférieur à ».
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayMidMs,
+                           oomFailWarnNextDelayMs((uint32_t)kOomFailWarnDelayInitialMs + 1u));
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayMidMs,
+                           oomFailWarnNextDelayMs((uint32_t)kOomFailWarnDelayMidMs - 1u));
+}
+
+void test_fail_warn_backoff_saturates_at_last_tier(void) {
+  // Saturation : le WARN n'est JAMAIS complètement éteint (pas de délai infini,
+  // pas de désactivation) — il plafonne au dernier palier.
+  uint32_t d = (uint32_t)kOomFailWarnDelayMaxMs;
+  for (int i = 0; i < 50; i++) {
+    d = oomFailWarnNextDelayMs(d);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayMaxMs, d);
+  }
+  // Valeur aberrante au-delà du plafond (état corrompu) : ramenée au plafond.
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayMaxMs,
+                           oomFailWarnNextDelayMs(0xFFFFFFFFu));
+}
+
+void test_fail_warn_backoff_sequence_from_scratch_is_monotonic(void) {
+  // Séquence complète telle que la vit la loop : 3 émissions suffisent à
+  // atteindre la saturation, et la suite est monotone non décroissante.
+  uint32_t d = 0u;  // jamais émis
+  d = oomFailWarnNextDelayMs(d);
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayInitialMs, d);
+  uint32_t previous = d;
+  d = oomFailWarnNextDelayMs(d);
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayMidMs, d);
+  TEST_ASSERT_TRUE(d > previous);
+  previous = d;
+  d = oomFailWarnNextDelayMs(d);
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayMaxMs, d);
+  TEST_ASSERT_TRUE(d > previous);
+  for (int i = 0; i < 20; i++) {
+    previous = d;
+    d = oomFailWarnNextDelayMs(d);
+    TEST_ASSERT_TRUE(d >= previous);
+  }
+}
+
+void test_fail_warn_backoff_reset_restarts_at_initial_tier(void) {
+  // Remise au palier initial : la RÈGLE RETENUE est que l'horloge appartient à
+  // l'appelant (kOomFailWarnDelayResetMs = 1 h sans nouvel échec → la coquille
+  // repose sFailWarnDelayMs au palier initial et remet sLastFailWarnMs à 0).
+  // La fonction pure doit donc, depuis cet état remis à zéro, redonner la
+  // séquence complète — aucun délai résiduel de 30 min ne survit à un épisode.
+  uint32_t d = (uint32_t)kOomFailWarnDelayMaxMs;   // épisode précédent saturé
+  d = (uint32_t)kOomFailWarnDelayInitialMs;        // remise par l'appelant
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayMidMs, oomFailWarnNextDelayMs(d));
+  // Et depuis l'état « jamais émis » (sLastFailWarnMs == 0), palier initial.
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFailWarnDelayInitialMs, oomFailWarnNextDelayMs(0u));
+}
+
+void test_fail_warn_backoff_real_constant_values(void) {
+  TEST_ASSERT_EQUAL_UINT32(30000u, (uint32_t)kOomFailWarnDelayInitialMs);
+  TEST_ASSERT_EQUAL_UINT32(300000u, (uint32_t)kOomFailWarnDelayMidMs);
+  TEST_ASSERT_EQUAL_UINT32(1800000u, (uint32_t)kOomFailWarnDelayMaxMs);
+  TEST_ASSERT_EQUAL_UINT32(3600000u, (uint32_t)kOomFailWarnDelayResetMs);
+  // Paliers STRICTEMENT croissants, sinon l'escalade est un no-op silencieux.
+  TEST_ASSERT_TRUE(kOomFailWarnDelayInitialMs < kOomFailWarnDelayMidMs);
+  TEST_ASSERT_TRUE(kOomFailWarnDelayMidMs < kOomFailWarnDelayMaxMs);
+  // La remise doit être PLUS LONGUE que le palier de saturation : sinon un
+  // épisode continu serait remis à zéro entre deux WARN et l'escalade
+  // n'atteindrait jamais son effet (retour au régime 120 WARN/h).
+  TEST_ASSERT_TRUE(kOomFailWarnDelayResetMs > kOomFailWarnDelayMaxMs);
+  // BUDGET JOURNAL (critère de la spec : rétention > 12 h). Au palier de
+  // saturation, le WARN coûte au plus 3 600 000 / 1 800 000 = 2 lignes/h ; avec
+  // la trace « Heap 8bits » ramenée elle aussi à 30 min (2 lignes/h) et une
+  // ligne persistée de ~116 o, le journal de 8 Ko (rotation à 6 Ko) tient
+  // largement au-delà de 12 h. On verrouille ici la borne de cadence.
+  const uint32_t kLignesParHeureMax = 3600000u / (uint32_t)kOomFailWarnDelayMaxMs;
+  TEST_ASSERT_TRUE(kLignesParHeureMax <= 2u);
+}
+
+// ===========================================================================
+// 13. oomShouldCountFailure — exclusion des échecs AUTO-INFLIGÉS (v2.20.2, E1)
+// ===========================================================================
+// Sur les 1025 échecs comptés le 15/08, ~100 % étaient le malloc(12288) du
+// réarmement du parachute lui-même, visant un palier inatteignable en régime
+// fragmenté : la garde s'alarmait de son propre bruit et saturait le journal.
+
+void test_count_failure_true_for_genuine_failure(void) {
+  // Aucune allocation auto-infligée en cours → l'échec est RÉEL, il compte
+  // (post-mortem RTC + compteur + WARN d'attribution).
+  TEST_ASSERT_TRUE(oomShouldCountFailure(false));
+}
+
+void test_count_failure_false_while_self_alloc_in_flight(void) {
+  // Drapeau posé autour du SEUL malloc de réarmement → échec ignoré.
+  TEST_ASSERT_FALSE(oomShouldCountFailure(true));
+}
+
+void test_count_failure_window_is_closed_after_self_alloc(void) {
+  // Le drapeau est retiré IMMÉDIATEMENT après le malloc, y compris en cas
+  // d'échec : la fenêtre d'aveuglement ne doit pas fuir sur les ticks suivants.
+  bool selfAlloc = false;
+  TEST_ASSERT_TRUE(oomShouldCountFailure(selfAlloc));   // avant
+  selfAlloc = true;
+  TEST_ASSERT_FALSE(oomShouldCountFailure(selfAlloc));  // pendant le malloc(target)
+  selfAlloc = false;
+  TEST_ASSERT_TRUE(oomShouldCountFailure(selfAlloc));   // après (échec réel recompté)
+}
+
+void test_count_failure_suppresses_the_1025_self_inflicted_of_20260815(void) {
+  // Rejeu quantitatif : 3 tentatives de réarmement par fenêtre de 30 s, toutes
+  // en échec (c'est le « ×3 » observé toutes les 30 s pendant des heures). Avec
+  // le drapeau, AUCUNE n'est comptée ; un unique échec réel intercalé, lui, l'est.
+  uint32_t comptes = 0;
+  for (int fenetre = 0; fenetre < 400; fenetre++) {     // ~3 h 20 de ticks
+    for (int tentative = 0; tentative < 3; tentative++) {
+      if (oomShouldCountFailure(true)) comptes++;       // malloc de réarmement
+    }
+  }
+  TEST_ASSERT_EQUAL_UINT32(0u, comptes);
+  if (oomShouldCountFailure(false)) comptes++;          // vrai échec (async_tcp)
+  TEST_ASSERT_EQUAL_UINT32(1u, comptes);
+}
+
 // ---------------------------------------------------------------------------
 
 int main(int, char**) {
@@ -1138,6 +1436,9 @@ int main(int, char**) {
   RUN_TEST(test_tls_gate_with_psram_preserves_v2185_behaviour);
   // v2.18.8 — réarmement à deux paliers
   RUN_TEST(test_rearm_real_constant_values_v2188);
+  RUN_TEST(test_rearm_fallback_tier_respects_chemistry_gate_invariants_v2202);
+  RUN_TEST(test_rearm_arms_fallback_across_whole_measured_8bit_regime);
+  RUN_TEST(test_rearm_never_downgrades_nominal_in_8bit_regime);
   RUN_TEST(test_rearm_field_maxblock_27584_at_12h9_arms_nominal);
   RUN_TEST(test_rearm_field_maxblock_29684_at_33min_arms_nominal);
   RUN_TEST(test_rearm_nothing_when_heap_below_fallback_threshold);
@@ -1182,5 +1483,22 @@ int main(int, char**) {
   RUN_TEST(test_integrity_denies_next_run_above_ceiling);
   RUN_TEST(test_integrity_disable_is_permanent_across_ticks);
   RUN_TEST(test_integrity_real_constant_values);
+
+  RUN_TEST(test_register_handler_refused_when_reserve_absent);
+  RUN_TEST(test_register_handler_when_reserve_armed_and_handler_absent);
+  RUN_TEST(test_register_handler_is_idempotent);
+  RUN_TEST(test_register_handler_full_scenario_of_20260815_bug);
+
+  RUN_TEST(test_fail_warn_backoff_first_emission_uses_initial_delay);
+  RUN_TEST(test_fail_warn_backoff_escalates_30s_5min_30min);
+  RUN_TEST(test_fail_warn_backoff_saturates_at_last_tier);
+  RUN_TEST(test_fail_warn_backoff_sequence_from_scratch_is_monotonic);
+  RUN_TEST(test_fail_warn_backoff_reset_restarts_at_initial_tier);
+  RUN_TEST(test_fail_warn_backoff_real_constant_values);
+
+  RUN_TEST(test_count_failure_true_for_genuine_failure);
+  RUN_TEST(test_count_failure_false_while_self_alloc_in_flight);
+  RUN_TEST(test_count_failure_window_is_closed_after_self_alloc);
+  RUN_TEST(test_count_failure_suppresses_the_1025_self_inflicted_of_20260815);
   return UNITY_END();
 }

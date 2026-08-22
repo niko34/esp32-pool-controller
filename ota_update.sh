@@ -19,8 +19,18 @@ TYPE="${1:-both}"
 ESP32_HOST="${2:-poolcontroller.local}"
 UPDATE_URL="http://$ESP32_HOST/update"
 
-FIRMWARE_PATH=".pio/build/esp32dev/firmware.bin"
-FILESYSTEM_PATH=".pio/build/esp32dev/littlefs.bin"
+# Environnement déployé : core 3 par défaut depuis v2.20.4 (ADR-0042). Repli :
+#   PIO_ENV=esp32dev ./ota_update.sh firmware <hôte>
+# Chemins surchargeables individuellement si besoin (FIRMWARE_PATH / FILESYSTEM_PATH).
+#
+# RAPPEL UTILE : l'OTA n'écrit QUE l'application, jamais le bootloader. Une image
+# core 3 démarre donc parfaitement sur un bootloader core 2 — c'est le montage qui
+# a tourné en production pendant des semaines. Corollaire : passer au bootloader
+# core 3 exige un flash USB (./deploy.sh), l'OTA n'y suffit pas.
+# Le filesystem est indépendant du core : inutile de le renvoyer pour un changement de core.
+PIO_ENV="${PIO_ENV:-esp32dev_core3}"
+FIRMWARE_PATH="${FIRMWARE_PATH:-.pio/build/$PIO_ENV/firmware.bin}"
+FILESYSTEM_PATH="${FILESYSTEM_PATH:-.pio/build/$PIO_ENV/littlefs.bin}"
 
 # Couleurs
 GREEN='\033[0;32m'
@@ -63,14 +73,25 @@ update_file() {
     http_code=$(echo "$response" | tail -1)
     body=$(echo "$response" | sed '$d')
 
-    if [ "$http_code" = "200" ] && echo "$body" | grep -q "OK"; then
+    # Test STRICT : HTTP 200 ET corps exactement "OK".
+    # L'ancien `grep -q "OK"` n'était pas ancré : depuis 2.20.1 le corps d'échec
+    # est une phrase française "FAIL: <cause>" qui peut contenir "OK" (ex. le
+    # nom du fichier envoyé) → faux succès silencieux.
+    body_trimmed=$(printf '%s' "$body" | tr -d '[:space:]')
+
+    if [ "$http_code" = "200" ] && [ "$body_trimmed" = "OK" ]; then
         echo -e "${GREEN}✅ $name mis à jour${NC}"
         return 0
     elif [ "$http_code" = "401" ]; then
         echo -e "${RED}❌ Authentification refusée (mot de passe incorrect ?)${NC}"
         return 1
     else
-        echo -e "${RED}❌ Erreur lors de la mise à jour de $name (HTTP $http_code : $body)${NC}"
+        echo -e "${RED}❌ Échec de la mise à jour de $name (HTTP $http_code)${NC}"
+        if [ -n "$body" ]; then
+            echo -e "${RED}   Réponse du contrôleur : $body${NC}"
+        else
+            echo -e "${RED}   Réponse vide — consulter le Journal du contrôleur${NC}"
+        fi
         return 1
     fi
 }

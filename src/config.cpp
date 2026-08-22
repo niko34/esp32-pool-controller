@@ -1,6 +1,7 @@
 #include "config.h"
 #include "constants.h"
 #include "logger.h"
+#include "ph_offset.h"  // feature-067 : isPhOffsetValid() (logique pure)
 #include <Preferences.h>
 #include <time.h>
 
@@ -94,6 +95,30 @@ void sanitizePumpSelection() {
   mqttCfg.orpPump = sanitizePumpNumber(mqttCfg.orpPump, 2);
 }
 
+// =============================================================================
+// v2.20.3 (C4) — trace de la bascule AUTOMATIQUE de la régulation pH en manuel
+// =============================================================================
+// Ces deux helpers ne persistent RIEN par eux-mêmes : ils mutent la config en
+// RAM, l'appelant enchaîne sur saveMqttConfig() (déjà présent sur les deux
+// chemins concernés). Cela évite une écriture NVS supplémentaire et garantit
+// que la trace et le mode partent dans la MÊME transaction.
+void setPhAutoManualTrace(const String& reason) {
+  const time_t now = time(nullptr);
+  // Heure non synchronisée au moment de la bascule : on garde la raison (qui
+  // porte l'essentiel du diagnostic) et on laisse l'epoch à 0 → l'UI affiche
+  // « date inconnue » plutôt qu'une date de 1970 trompeuse.
+  mqttCfg.phAutoManualEpoch = (now >= kMinValidEpoch) ? (uint32_t)now : 0;
+  mqttCfg.phAutoManualReason = reason;
+}
+
+void clearPhAutoManualTrace() {
+  if (mqttCfg.phAutoManualEpoch == 0 && mqttCfg.phAutoManualReason.length() == 0) return;
+  systemLogger.info("[Config] Bascule automatique pH → manuel acquittée par "
+                    "l'utilisateur (trace effacée) : " + mqttCfg.phAutoManualReason);
+  mqttCfg.phAutoManualEpoch = 0;
+  mqttCfg.phAutoManualReason = "";
+}
+
 void saveMqttConfig() {
   // feature-027 : prise bornée (miroir de saveDailyCounters). Timeout → config RAM
   // appliquée mais persistance NVS perdue — signalé en error (throttlé 1/min).
@@ -128,6 +153,11 @@ void saveMqttConfig() {
   prefs.putInt("ph_limit_min", mqttCfg.phInjectionLimitMinutes);
   prefs.putString("ph_reg_mode", mqttCfg.phRegulationMode);
   prefs.putInt("ph_daily_ml", mqttCfg.phDailyTargetMl);
+  // v2.20.3 (C4) : trace persistée de la bascule AUTOMATIQUE pH → manual.
+  // Clés ≤ 15 caractères (contrainte NVS). Absentes sur une config existante →
+  // relues à 0 / "" (aucune bascule enregistrée) : rétrocompatible.
+  prefs.putULong("ph_am_epoch", mqttCfg.phAutoManualEpoch);
+  prefs.putString("ph_am_reason", mqttCfg.phAutoManualReason);
 
   // feature-021 (Pass 4a) : calibration pH/ORP entièrement gérée par les modules
   // Atlas EZO (NVS interne au module). Aucune clé NVS pH/ORP côté ESP32.
@@ -149,6 +179,9 @@ void saveMqttConfig() {
   prefs.putFloat("temp_cal_off", mqttCfg.tempCalibrationOffset);
   prefs.putString("temp_cal_date", mqttCfg.tempCalibrationDate);
   prefs.putBool("temp_enabled", mqttCfg.temperatureEnabled);
+
+  // feature-067 : offset logiciel de mesure pH (clé ≤ 15 caractères)
+  prefs.putFloat("ph_offset", mqttCfg.phOffset);
 
   // Temps
   prefs.putBool("time_use_ntp", mqttCfg.timeUseNtp);
@@ -249,6 +282,21 @@ void loadMqttConfig() {
   }
   mqttCfg.phEnabled = (mqttCfg.phRegulationMode != "manual");
 
+  // v2.20.3 (C4) : trace de la bascule automatique pH → manual. Clés absentes
+  // (config antérieure à 2.20.3) → 0 / "" = aucune bascule enregistrée.
+  // Cohérence défensive : la trace n'a de sens QUE si le mode est réellement
+  // `manual` — sinon on la purge en RAM (un write-back aurait lieu au prochain
+  // saveMqttConfig, inutile de forcer une écriture NVS au boot).
+  mqttCfg.phAutoManualEpoch  = prefs.getULong("ph_am_epoch", 0);
+  mqttCfg.phAutoManualReason = prefs.getString("ph_am_reason", "");
+  if (mqttCfg.phRegulationMode != "manual") {
+    mqttCfg.phAutoManualEpoch = 0;
+    mqttCfg.phAutoManualReason = "";
+  } else if (mqttCfg.phAutoManualEpoch != 0 || mqttCfg.phAutoManualReason.length() > 0) {
+    systemLogger.critical("[Config] Régulation pH en MANUEL suite à une bascule "
+                          "automatique non acquittée : " + mqttCfg.phAutoManualReason);
+  }
+
   // feature-021 (Pass 4a) : purge silencieuse des anciennes clés de calibration
   // pH/ORP. La calibration est désormais entièrement stockée dans les modules
   // Atlas EZO (commandes Cal,? / Cal,mid / Cal,low / Cal,<ref>).
@@ -340,6 +388,17 @@ void loadMqttConfig() {
   mqttCfg.tempCalibrationOffset = prefs.getFloat("temp_cal_off", 0.0f);
   mqttCfg.tempCalibrationDate = prefs.getString("temp_cal_date", "");
   mqttCfg.temperatureEnabled = prefs.getBool("temp_enabled", mqttCfg.temperatureEnabled);
+
+  // feature-067 : offset logiciel de mesure pH. Défaut 0.00 si clé absente
+  // (appareils existants). Garde fail-safe : une valeur NVS hors bornes
+  // (corruption, ancienne plage plus large) est neutralisée à 0.00 plutôt
+  // qu'appliquée — un offset aberrant décale la consigne EFFECTIVE de dosage.
+  mqttCfg.phOffset = prefs.getFloat("ph_offset", 0.0f);
+  if (!isPhOffsetValid(mqttCfg.phOffset)) {
+    systemLogger.warning("[Config] Offset pH NVS hors bornes (" +
+                         String(mqttCfg.phOffset, 2) + ") — remis à 0.00");
+    mqttCfg.phOffset = 0.0f;
+  }
 
   // Temps
   mqttCfg.timeUseNtp = prefs.getBool("time_use_ntp", mqttCfg.timeUseNtp);

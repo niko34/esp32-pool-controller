@@ -6,6 +6,8 @@
 #include "filtration.h"
 #include "dosing_logic.h"
 #include "schedule_logic.h"
+#include "mqtt_manager.h"  // feature-067 : alertes MQTT des planchers pH bruts
+#include "measure_validity.h"  // v2.20.3 (C6) : distinguer purge en cours et capteur muet
 #include <esp_task_wdt.h>
 #include <time.h>
 
@@ -379,6 +381,184 @@ void PumpControllerClass::logRefusalOnce(int pumpIndex, const String& cause) {
 void PumpControllerClass::resetRefusalLogState(int pumpIndex) {
   if (pumpIndex < 0 || pumpIndex > 1) return;
   _lastRefusalCause[pumpIndex] = "";
+}
+
+// =============================================================================
+// feature-067 — Filets de sécurité sur le pH BRUT (conditions pool-chemistry)
+// =============================================================================
+// L'offset logiciel pH (feature-067) déplace l'entrée de la régulation : un
+// offset erroné fait réguler le bassin à un pH réel différent de la consigne.
+// Ces deux gardes travaillent donc sur sensors.getPhFilteredRaw() — la mesure
+// capteur SANS offset — et restent valides même si l'offset est faux.
+// Appelées EN AMONT de canDose() dans update() (loopTask) : quand elles bloquent,
+// canDose() n'est pas évalué et `_lastRefusalCause` porte la cause du plancher.
+
+// Condition #2 + #7 : plancher dur d'injection d'acide.
+bool PumpControllerClass::isPhRawFloorBlocking() {
+  // Produit basique (pH+) : aucune acidification possible → plancher sans objet.
+  if (mqttCfg.phCorrectionType == "ph_plus") {
+    _phRawFloorActive = false;
+    return false;
+  }
+  const float phRaw = sensors.getPhFilteredRaw();
+  // Mesure indisponible : les gardes NaN existantes (canDose / filtre non prêt)
+  // traitent déjà le cas — ne pas ajouter de refus fantôme ni compter un refus.
+  if (isnan(phRaw)) {
+    _phRawFloorActive = false;
+    return false;
+  }
+  const float offset = sensors.getPhOffset();
+  // Palier élargi quand l'offset est large : l'incertitude sur le pH réel croît
+  // avec |offset|, la marge de sécurité doit croître avec elle.
+  const float floorPh = (fabsf(offset) > kPhOffsetWideThreshold)
+                            ? kPhRawDosingFloorWide
+                            : kPhRawDosingFloor;
+  if (phRaw >= floorPh) {
+    if (_phRawFloorActive) {
+      systemLogger.info("[Dosage pH] pH brut remonté à " + String(phRaw, 2) +
+                        " (plancher " + String(floorPh, 2) + ") — injection d'acide de nouveau possible");
+      _phRawFloorActive = false;
+    }
+    return false;
+  }
+
+  // --- Sous le plancher : refus, log critical + alerte MQTT à la TRANSITION ---
+  if (!_phRawFloorActive) {
+    _phRawFloorActive = true;
+    const String msg = "pH brut " + String(phRaw, 2) + " sous le plancher de sécurité " +
+                       String(floorPh, 2) + " (offset=" + String(offset, 2) +
+                       ") — injection d'acide refusée";
+    systemLogger.critical("[Dosage pH] " + msg);
+    mqttManager.publishAlert("ph_raw_floor", msg);
+    // Cause exposée au WS (canDose n'est pas appelé tant que le plancher bloque).
+    _lastRefusalCause[0] = "pH brut sous plancher de sécurité (" + String(phRaw, 2) +
+                           " < " + String(floorPh, 2) + ")";
+
+    // Condition #7 : compteur de refus sur fenêtre glissante de 24 h.
+    const uint32_t nowMs = (uint32_t)millis();
+    if (_phRawFloorRefusals == 0 ||
+        (nowMs - _phRawFloorWindowStart) >= kPhRawFloorRefusalWindowMs) {
+      _phRawFloorWindowStart = nowMs;
+      _phRawFloorRefusals = 0;
+    }
+    if (_phRawFloorRefusals < 255) _phRawFloorRefusals++;
+    if (_phRawFloorRefusals >= kPhRawFloorRefusalMax &&
+        mqttCfg.phRegulationMode != "manual") {
+      // Répétition = sonde morte ou offset saisi à l'envers, pas un incident
+      // ponctuel : on ferme la régulation pH (fail-closed) et on le dit.
+      mqttCfg.phRegulationMode = "manual";
+      // INVARIANT DU PROJET (revue) : `ph_enabled` est le miroir de « mode !=
+      // manual » (ws_manager.cpp, web_routes_config.cpp, mqtt_manager.cpp). Le
+      // laisser à true ici persisterait en NVS un état incohérent : l'UI et Home
+      // Assistant afficheraient la régulation pH ACTIVE après un basculement de
+      // sécurité, exactement quand il faut que l'utilisateur voie qu'elle ne
+      // l'est plus.
+      mqttCfg.phEnabled = false;
+      const String alert = String(kPhRawFloorRefusalMax) +
+                           " refus de plancher pH en 24 h — sonde pH à recalibrer ou "
+                           "remplacer ; régulation pH basculée en manuel";
+      // v2.20.3 (C4) : PERSISTER la cause de la bascule AVANT saveMqttConfig(),
+      // pour qu'elle parte dans la même transaction NVS que le mode lui-même.
+      // Le journal système est un ring buffer : après quelques heures il ne reste
+      // AUCUNE trace de l'escalade (incident 2026-08-16 — impossible de dire si
+      // le mode `manual` venait de l'escalade ou d'une action humaine).
+      setPhAutoManualTrace(alert);
+      saveMqttConfig();
+      systemLogger.critical("[Dosage pH] " + alert);
+      mqttManager.publishAlert("ph_raw_floor", alert);
+      _lastRefusalCause[0] = "régulation pH basculée en manuel (refus plancher répétés)";
+    }
+  }
+  return true;
+}
+
+// Condition #3 : inhibition du dosage ORP sur pH brut élevé.
+// `requireKnownPh` = true pour la régulation AUTOMATIQUE (fail-closed sur pH
+// inconnu), false pour le dosage PROGRAMMÉ (comportement historique préservé).
+//
+// POURQUOI LE FAIL-CLOSED EN AUTO (pool-chemistry P2, correctif bloquant) :
+// `canDose(1)` ne consulte JAMAIS le pH — ce filet est donc l'UNIQUE garde du
+// couplage pH/chlore. Si la sonde pH est morte alors que l'eau est réellement
+// au-dessus de 7,60, le chlore y est peu actif (fraction HClO effondrée) et
+// l'asservissement ORP compenserait en surdosant. Un pH inconnu doit donc
+// suspendre la chloration automatique, pas la laisser courir à l'aveugle.
+bool PumpControllerClass::isOrpInhibitedByPhRaw(bool requireKnownPh) {
+  const float phRaw = sensors.getPhFilteredRaw();
+
+  if (isnan(phRaw)) {
+    if (!requireKnownPh) {
+      // Dosage programmé : aveugle à la mesure par conception, on ne change rien.
+      _orpPhRawInhibitActive = false;
+      _orpPhRawInhibitKind = 0;
+      return false;
+    }
+    // Auto : pH inconnu → inhibition. Journalisé en INFO (situation transitoire
+    // normale au démarrage ou pendant un warmup de filtre), le CRITICAL reste
+    // réservé à un vrai franchissement de seuil.
+    //
+    // v2.20.3 (C6) : le système sait DÉJÀ pourquoi le pH est indisponible quand
+    // c'est lui qui l'a décidé. Si `measure_validity` déclare les mesures non
+    // représentatives (purge de la chambre de mesure après une reprise de
+    // circulation), on le dit ainsi — annoncer un « capteur muet » à CHAQUE
+    // reprise de filtration transforme un état normal en fausse alerte et noie
+    // le vrai défaut (incident 2026-08-16 : ce log est le seul indice qui a été
+    // émis pendant les 3 h sans régulation, et il était trompeur).
+    if (!_orpPhRawInhibitActive) {
+      _orpPhRawInhibitActive = true;
+      bool waterPresent = false, measuresValid = false;
+      uint32_t remainingS = 0;
+      measureValidity.getSnapshot(waterPresent, measuresValid, remainingS);
+      if (!measuresValid) {
+        _orpPhRawInhibitKind = 2;
+        systemLogger.info("[Dosage ORP] Stabilisation des mesures en cours — dosage "
+                          "chlore automatique suspendu (reprise automatique dès que "
+                          "les mesures sont de nouveau représentatives)");
+        _lastRefusalCause[1] = "stabilisation des mesures — dosage chlore suspendu";
+      } else {
+        _orpPhRawInhibitKind = 1;
+        systemLogger.info("[Dosage ORP] pH brut indisponible (capteur muet ou filtre "
+                          "non amorcé) — dosage chlore automatique suspendu par sécurité");
+        _lastRefusalCause[1] = "pH brut indisponible — dosage chlore suspendu";
+      }
+    }
+    return true;
+  }
+
+  if (phRaw <= kPhRawOrpInhibit) {
+    if (_orpPhRawInhibitActive) {
+      // v2.20.3 (C6) : le message de levée doit refléter la cause réellement
+      // journalisée à la pose, sinon « redescendu à 7,10 » sort après un simple
+      // warmup où le pH n'était jamais monté.
+      if (_orpPhRawInhibitKind == 2) {
+        systemLogger.info("[Dosage ORP] Stabilisation terminée, pH brut de nouveau "
+                          "mesuré (" + String(phRaw, 2) +
+                          ") — dosage chlore de nouveau possible");
+      } else if (_orpPhRawInhibitKind == 1) {
+        systemLogger.info("[Dosage ORP] pH brut de nouveau disponible (" +
+                          String(phRaw, 2) + ") — dosage chlore de nouveau possible");
+      } else {
+        systemLogger.info("[Dosage ORP] pH brut redescendu à " + String(phRaw, 2) +
+                          " — dosage chlore de nouveau possible");
+      }
+    }
+    _orpPhRawInhibitActive = false;
+    _orpPhRawInhibitKind = 0;
+    return false;
+  }
+
+  if (!_orpPhRawInhibitActive) {
+    _orpPhRawInhibitActive = true;
+    _orpPhRawInhibitKind = 0;  // v2.20.3 (C6) : vrai franchissement de seuil
+    const String msg = "pH brut " + String(phRaw, 2) + " > " + String(kPhRawOrpInhibit, 2) +
+                       " (offset=" + String(sensors.getPhOffset(), 2) +
+                       ") — chlore peu actif à ce pH : dosage ORP suspendu (faire baisser le pH)";
+    systemLogger.critical("[Dosage ORP] " + msg);
+    mqttManager.publishAlert("orp_ph_raw_inhibit", msg);
+    // Cause exposée au WS (canDose(1) n'est pas appelé tant que l'inhibition dure).
+    _lastRefusalCause[1] = "pH brut trop élevé (" + String(phRaw, 2) +
+                           ") — dosage chlore suspendu";
+  }
+  return true;
 }
 
 // Ring buffer anti-rafale (pool-chemistry Pass 3.5).
@@ -935,8 +1115,11 @@ void PumpControllerClass::update() {
   // Contrôle pH — branche automatique gardée en profondeur par canDose(0).
   // canDose(0) vérifie watchdog, filtration, stale/NaN, calibration, stabilisation,
   // mode automatic, limites journalière/horaire, anti-cycling.
+  // feature-067 (pool-chemistry #2) : isPhRawFloorBlocking() est évalué AVANT
+  // canDose(0) — quand le plancher bloque, aucune évaluation de dosage n'a lieu
+  // et la cause de refus exposée au WS est celle du plancher.
   const String& phMode = mqttCfg.phRegulationMode;
-  if (phMode == "automatic" && phLimitOk && phSafetyOk && canDose(0)) {
+  if (phMode == "automatic" && phLimitOk && phSafetyOk && !isPhRawFloorBlocking() && canDose(0)) {
     // feature-025 : le PID auto consomme la mesure FILTRÉE (médiane + EMA).
     // canDose(0) a déjà garanti isPhFilterReady() && !isPhFilterUnstable() → non NaN.
     float phValue = sensors.getPhFiltered();
@@ -1020,7 +1203,11 @@ void PumpControllerClass::update() {
         phFlow = flow;
       }
     }
-  } else if (phMode == "scheduled" && phLimitOk && phSafetyOk && mqttCfg.phDailyTargetMl > 0) {
+  } else if (phMode == "scheduled" && phLimitOk && phSafetyOk &&
+             mqttCfg.phDailyTargetMl > 0 && !isPhRawFloorBlocking()) {
+    // feature-067 (pool-chemistry #2) : le mode Programmée est aveugle à la
+    // mesure PAR CONCEPTION, mais le plancher acide s'y applique QUAND MÊME —
+    // c'est un filet de sécurité chimique, pas une boucle de régulation.
     // Mode Programmée (feature-011) : répartition du volume quotidien par
     // fenêtres de kScheduledWindowMinutes (15 min) sur l'horizon de filtration
     // restant, borné à minuit. Intentionnellement aveugle à la valeur mesurée
@@ -1211,8 +1398,10 @@ void PumpControllerClass::update() {
   }
 
   // Contrôle ORP — dispatch sur orpRegulationMode, gardé en profondeur par canDose(1).
+  // feature-067 (pool-chemistry #3) : inhibition ORP sur pH BRUT élevé, évaluée
+  // AVANT canDose(1) (même patron que le plancher acide côté pH).
   const String& orpMode = mqttCfg.orpRegulationMode;
-  if (orpMode == "automatic" && orpLimitOk && orpSafetyOk && canDose(1)) {
+  if (orpMode == "automatic" && orpLimitOk && orpSafetyOk && !isOrpInhibitedByPhRaw(true) && canDose(1)) {
     // feature-025 : le PID auto consomme la mesure FILTRÉE (médiane + EMA).
     // canDose(1) a déjà garanti isOrpFilterReady() && !isOrpFilterUnstable() → non NaN.
     float orpValue = sensors.getOrpFiltered();
@@ -1291,7 +1480,11 @@ void PumpControllerClass::update() {
         orpFlow = flow;
       }
     }
-  } else if (orpMode == "scheduled" && orpLimitOk && orpSafetyOk && mqttCfg.orpDailyTargetMl > 0) {
+  } else if (orpMode == "scheduled" && orpLimitOk && orpSafetyOk &&
+             mqttCfg.orpDailyTargetMl > 0 && !isOrpInhibitedByPhRaw(false)) {
+    // feature-067 (pool-chemistry #3) : l'inhibition sur pH brut élevé s'applique
+    // AUSSI au mode Programmée — injecter du chlore à pH > 7,6 est inefficace et
+    // conduit au surdosage (filet de sécurité, pas régulation sur la mesure).
     // Mode Programmée (feature-011) : répartition du volume quotidien par
     // fenêtres de kScheduledWindowMinutes (15 min) sur l'horizon de filtration
     // restant, borné à minuit. Intentionnellement aveugle à la valeur mesurée

@@ -71,6 +71,28 @@ struct MqttConfig {
   float tempCalibrationOffset = 0.0f; // Offset de calibration température (°C)
   String tempCalibrationDate = "";    // Date de calibration température (ISO 8601)
   bool temperatureEnabled = true;     // Fonction température activée/désactivée
+
+  // v2.20.3 (bug-filtre-ph-verrouille, C4) : TRACE PERSISTÉE de la bascule
+  // AUTOMATIQUE de la régulation pH en `manual` (escalade feature-067 : N refus
+  // de plancher acide en 24 h). Sans cette trace, l'incident du 2026-08-16 était
+  // INDIAGNOSTICABLE : le mode était sur `manual` sans qu'aucun journal résiduel
+  // ne permette de dire si c'était l'escalade automatique ou une action humaine.
+  //   * phAutoManualEpoch  : epoch UNIX de la bascule (0 = aucune bascille auto
+  //     en cours ; c'est aussi le défaut sur une NVS existante sans la clé →
+  //     rétrocompatible, lecture d'un firmware antérieur inchangée).
+  //   * phAutoManualReason : cause en clair (français), vide si epoch == 0.
+  // Posés par pump_controller au moment de la bascule, EFFACÉS dès que
+  // l'utilisateur reprend la main sur le mode (route HTTP ou commande MQTT).
+  // INVARIANT INCHANGÉ : `phEnabled` reste le miroir de `phRegulationMode != "manual"`.
+  uint32_t phAutoManualEpoch = 0;     // 0 = pas de bascule automatique enregistrée
+  String phAutoManualReason = "";     // Cause de la bascule (vide si epoch == 0)
+
+  // feature-067 : offset logiciel de mesure pH (unités pH, borné
+  // [kPhOffsetMin, kPhOffsetMax]). Formule : pH_corrigé = pH_brut_EZO + phOffset.
+  // Appliqué EN SORTIE des accesseurs de SensorManager (cf. src/ph_offset.h) —
+  // la calibration électrochimique du module Atlas EZO n'est PAS touchée.
+  // Toute écriture doit être suivie de sensors.refreshPhOffsetCache().
+  float phOffset = 0.0f;              // Offset de mesure pH (défaut 0.00 = inerte)
 };
 
 struct FiltrationConfig {
@@ -226,6 +248,16 @@ extern SemaphoreHandle_t i2cMutex;
 void initConfigMutexes();  // Initialise les mutex (à appeler dans setup())
 void saveMqttConfig();
 void loadMqttConfig();
+
+// v2.20.3 (C4) — trace de la bascule AUTOMATIQUE pH → manual.
+// setPhAutoManualTrace() : à appeler JUSTE AVANT saveMqttConfig() par le chemin
+// d'escalade (pump_controller) ; l'epoch vaut 0 si l'heure n'est pas synchronisée
+// (la raison reste alors journalisée et exposée, seule la date manque).
+// clearPhAutoManualTrace() : à appeler dès qu'un HUMAIN reprend la main sur
+// `ph_regulation_mode` (route HTTP /save-config, commande MQTT) — la trace ne
+// décrit que la DERNIÈRE bascule automatique non acquittée.
+void setPhAutoManualTrace(const String& reason);
+void clearPhAutoManualTrace();
 void applyMqttConfig();
 void sanitizePumpSelection();
 int sanitizePumpNumber(int pumpNumber, int defaultValue);

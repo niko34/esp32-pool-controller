@@ -1,6 +1,6 @@
 # Guide de Mise à Jour
 
-> ⚠️ **Première installation obligatoire via USB** : le bootloader et la table de partitions personnalisée (`partitions.csv`) ne peuvent être flashés que via USB. Une fois cette installation initiale effectuée, toutes les mises à jour suivantes peuvent se faire en OTA (WiFi).
+> ⚠️ **Première installation obligatoire via USB** : le bootloader et la table de partitions personnalisée (`partitions.csv`) ne peuvent être flashés que via USB. Une fois cette installation initiale effectuée, toutes les mises à jour suivantes peuvent se faire en OTA (WiFi) — **sauf un changement de bootloader ou de table de partitions**, qui repasse par l'USB (voir [Changer de bootloader](#changer-de-bootloader--flash-usb-obligatoire-core-3-par-défaut-v2204)).
 
 ---
 
@@ -29,10 +29,52 @@ Utile pour la première installation ou si l'ESP32 n'est pas accessible sur le r
 ./deploy.sh fs        # Filesystem uniquement
 ```
 
-Le port série est configuré dans `platformio.ini` (`upload_port`). Adapter selon le système :
-- macOS : `/dev/cu.usbserial-*`
-- Linux : `/dev/ttyUSB0` ou `/dev/ttyACM0`
-- Windows : `COM3`, `COM4`, etc.
+**Le port série est détecté automatiquement** : port historique `/dev/cu.usbserial-0001` s'il existe, sinon le premier port USB-série trouvé (`usbserial`, `wchusbserial`, `SLAB_USBtoUART`). Pour forcer un port précis (plusieurs modules branchés, adaptateur qui n'énumère pas sous le nom attendu) :
+
+```bash
+PORT=/dev/cu.usbserial-10 ./deploy.sh all
+```
+
+Si aucun port n'est détecté, le script s'arrête **avant de compiler** et liste les ports disponibles.
+
+**Le moniteur série est enchaîné après l'upload.** L'ouverture du port redémarre l'ESP32 (bascule DTR/RTS) : le boot est donc visible **depuis sa première ligne** — utile pour lire l'IP obtenue, la cause du dernier reset ou une erreur d'init de sonde. `Ctrl+C` pour quitter, ou pour ne pas l'enchaîner du tout :
+
+```bash
+NO_MONITOR=1 ./deploy.sh all
+```
+
+### Récupérer le mot de passe WiFi AP
+
+Le mot de passe du point d'accès `PoolControllerAP` est généré au premier boot puis stocké en NVS. Il est affiché en clair dans les logs **à sa génération**, puis à chaque démarrage de l'AP **tant que l'assistant de configuration n'est pas complété**. Une fois l'assistant terminé, les logs n'affichent plus que :
+
+```
+AP Password: [voir etiquette ou GET /auth/ap-password]
+```
+
+Autrement dit, sur un appareil déjà configuré, ouvrir `pio device monitor` et redémarrer **ne le fera jamais réapparaître**.
+
+Deux voies selon la situation :
+
+| Situation | Marche à suivre |
+|---|---|
+| L'appareil est **joignable** sur le réseau | `curl http://poolcontroller.local/auth/ap-password` (voir [API.md](API.md)) |
+| Étiquette perdue **et** appareil injoignable | `./deploy.sh factory` — régénère le mot de passe et l'affiche |
+
+```bash
+./deploy.sh factory
+```
+
+Le script demande confirmation, efface la flash, réinstalle firmware + filesystem, **ré-efface la NVS en dernier**, puis ouvre le moniteur. Le mot de passe s'affiche dans les premières lignes de boot :
+
+```
+=== MOT DE PASSE AP WIFI: XXXXXXXX ===
+```
+
+⚠️ **C'est la seule occasion de le lire** — le noter immédiatement sur une étiquette collée au boîtier.
+
+⚠️ `factory` efface **toute** la configuration : WiFi, MQTT, mot de passe admin, offset pH, calibrations pH/ORP, historique. À réserver à un appareil qu'on réinitialise volontairement. Pour une simple mise à jour, utiliser `./deploy.sh all`, qui préserve la NVS.
+
+> Détail du séquencement (et pourquoi la NVS est effacée en **dernier**) : voir [BUILD.md](BUILD.md#ordre-du-mode-factory-et-pourquoi-il-compte).
 
 ### Mode OTA — WiFi, pas d'USB
 
@@ -59,12 +101,61 @@ Par défaut, le script contacte l'ESP32 via mDNS (`poolcontroller.local`). Si le
 
 1. Compiler les fichiers avec `./build_all.sh`
 2. Accéder à http://poolcontroller.local
-3. Aller dans **Paramètres > Système**
+3. Aller dans **Paramètres > Système**, carte **Mise à jour manuelle**
 4. Sélectionner le fichier (`firmware.bin` ou `littlefs.bin`)
-5. Cliquer sur **Mettre à jour**
-6. Attendre le redémarrage automatique
+5. **Vérifier le type annoncé sous le sélecteur** — depuis la v2.20.1, le type est déduit
+   automatiquement du nom du fichier et le sélecteur est pré-réglé. Une notice bleue le
+   confirme (« Type réglé sur « Système de fichiers » d'après le nom du fichier
+   (littlefs.bin) »). Si vous changez le type et qu'il ne correspond plus au fichier, la
+   notice passe en **orange** et une confirmation est demandée au moment d'envoyer — vous
+   pouvez toujours passer outre en un clic, rien n'est bloqué.
+6. Cliquer sur **Mettre à jour**
+7. Attendre le redémarrage automatique
 
 > Si vous modifiez le code ET les fichiers web, faire 2 mises à jour séparées.
+
+> ⚠️ **Pourquoi cette vérification du type existe** : jusqu'à la v2.20.0, le sélecteur
+> revenait à « Firmware » à **chaque rechargement de page** — donc juste après un flash de
+> firmware réussi, qui redémarre l'appareil et recharge l'interface. Envoyer `littlefs.bin`
+> dans la foulée l'expédiait déclaré « firmware », et l'échec était **indéchiffrable**
+> (voir ci-dessous).
+
+### Lire un échec de mise à jour manuelle — depuis v2.20.1
+
+Un échec est désormais **nommé**, à deux endroits, avec le même texte :
+
+- **Dans l'interface**, sous la barre de progression (`Échec : …`), en rouge.
+- **Dans le Journal** (Paramètres > Avancé > Logs) : **une seule** ligne
+  `ERROR Échec mise à jour OTA : <cause>` (ou `CRITICAL Mise à jour OTA refusée : <cause>`
+  pour un refus d'intégrité).
+
+> ℹ️ **Le journal n'est plus noyé.** Avant la v2.20.1, une tentative ratée écrivait la
+> même ligne ~200 fois et **effaçait tout l'historique du journal** (anneau de 200 entrées),
+> y compris les lignes qui désignaient le coupable — et y compris les traces d'un tout autre
+> incident en cours d'analyse. Une tentative ratée écrit désormais **une** ligne.
+
+**Causes les plus fréquentes :**
+
+| Ce que vous lisez | Ce que ça veut dire | Que faire |
+|---|---|---|
+| « l'image reçue n'est pas un firmware ESP32 (octet magique 0x… au lieu de 0xE9) — type « Système de fichiers » attendu ? » | Vous avez envoyé une image **filesystem** déclarée **firmware** | Repasser le type sur **Système de fichiers** et renvoyer. **Aucun effet de bord** : rien n'a été écrit, les pompes n'ont pas été inhibées, l'appareil n'a pas redémarré. |
+| « démarrage de la mise à jour impossible (…) » | La partition cible refuse le flash (place insuffisante, image trop grosse) | Vérifier la taille du binaire ; pour le FS, utiliser `./build_fs.sh` (taille alignée sur la partition) |
+| « échec d'écriture de l'image … (…) » | Erreur de flash en cours de transfert | Relancer ; si cela se répète, passer par l'USB (`./deploy.sh fs` / `firmware`) |
+| « empreinte SHA-256 non conforme … » | L'image reçue ne correspond pas à l'empreinte fournie | Retélécharger le binaire, relancer |
+| « finalisation de la mise à jour impossible (…) » | Image incomplète ou tronquée à la clôture | Relancer le transfert |
+
+**Après un échec de mise à jour du *filesystem*** : le contrôleur **remonte** la partition
+automatiquement pour que l'interface web reste servie. Si vous voyez dans le journal
+`CRITICAL Filesystem remonté après une mise à jour FS interrompue : contenu potentiellement
+incohérent, relancer la mise à jour`, **relancez la mise à jour du filesystem** : une partie
+de l'ancienne image a pu être écrasée, l'interface peut être partiellement incohérente
+(pages anciennes et nouvelles mélangées). Le firmware et la régulation, eux, ne sont pas
+affectés. Si le message est `WARN Impossible de remonter le filesystem … — redémarrage
+requis`, redémarrer le contrôleur puis relancer la mise à jour.
+
+**En ligne de commande**, `./ota_update.sh` affiche le corps de la réponse en cas d'échec
+et ne considère un succès que sur un **HTTP 200 avec un corps exactement `OK`** (le test
+précédent, non ancré, laissait passer pour un succès tout corps contenant « OK »).
 
 ---
 
@@ -146,6 +237,37 @@ Depuis la v2.11.0, **toute image téléchargée depuis GitHub est vérifiée par
 ---
 
 ## Notes de migration
+
+### Changer de bootloader — flash USB obligatoire (core 3 par défaut, v2.20.4)
+
+Depuis la **v2.20.4**, l'environnement de build par défaut est le **core Arduino 3.x / ESP-IDF 5** (`esp32dev_core3`), **bootloader ET application** — voir [ADR-0042](adr/0042-core3-environnement-par-defaut.md).
+
+**Ce que l'OTA peut faire, et ce qu'il ne peut pas :**
+
+| Élément | OTA (WiFi) | Flash USB |
+|---|:---:|:---:|
+| Application (firmware) | ✅ | ✅ |
+| Filesystem (`littlefs.bin`) | ✅ | ✅ |
+| **Bootloader** | ❌ | ✅ |
+| Table de partitions | ❌ | ✅ |
+
+L'OTA n'écrit **que** l'application, à l'intérieur des partitions existantes. Une application core 3 démarre parfaitement sur un bootloader core 2 — ce montage a tourné **plusieurs semaines en production**. Mais passer le **bootloader** en core 3 exige un **câble série** :
+
+```bash
+./deploy.sh all      # réécrit bootloader + table de partitions + firmware, puis le FS
+```
+
+> ⚠️ **Ne pas utiliser `./deploy.sh factory`** : il efface toute la flash, NVS comprise (config, calibrations, WiFi, mot de passe AP régénéré). `./deploy.sh all` suffit et préserve tout.
+
+⚠️ **Le filet de repli a disparu.** Tant que le bootloader restait en IDF 4.4, une application core 3 défaillante se rattrapait **sans câble** en repointant `otadata` (`erase_region 0xE000 0x2000`), ce qui faisait redémarrer l'appareil sur le slot précédent. Avec un bootloader core 3, ce recours n'existe plus : **tout échec impose un flash USB**, donc un **accès physique** au boîtier. À prendre en compte avant d'intervenir sur un appareil difficile d'accès ou hors saison.
+
+**Retour arrière vers le core 2** (repli complet, USB requis) :
+
+```bash
+PIO_ENV=esp32dev ./deploy.sh all
+```
+
+> ℹ️ Config NVS, historique et coredump sont **préservés** dans les deux sens : la table de partitions ne change pas (layout v4 inchangé) et le format LittleFS reste compatible. Détails outillage : [BUILD.md](BUILD.md#les-deux-environnements-firmware).
 
 ### Mode d'installation (`install_mode`) — depuis v2.19.0 (2026-07-08)
 
@@ -342,6 +464,9 @@ Aucune action requise. Le firmware effectue la migration à la première lecture
 | Interface inaccessible | `./deploy.sh fs` (USB) |
 | Authentification refusée | Vérifier le mot de passe ou utiliser `POOL_PASSWORD=...` |
 | `poolcontroller.local` inaccessible | mDNS non supporté par le réseau — utiliser l'IP directe : `./ota_update.sh both 192.168.1.x motdepasse` |
+| « Aucun port série USB détecté » | Module non branché ou nom de port inattendu — le script liste les `/dev/cu.*` trouvés, relancer avec `PORT=/dev/cu.usbserial-XX ./deploy.sh all` |
+| Upload USB échoue alors que le module est branché | Un autre module occupe le port historique — forcer le bon : `PORT=... ./deploy.sh firmware` |
+| Mot de passe AP WiFi perdu | `curl http://poolcontroller.local/auth/ap-password`, ou `./deploy.sh factory` si l'appareil est injoignable (voir [ci-dessus](#récupérer-le-mot-de-passe-wifi-ap)) |
 
 ## Migration v2.0.0 — PCB v2
 

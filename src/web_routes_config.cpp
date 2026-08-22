@@ -10,10 +10,12 @@
 #include "mqtt_manager.h"
 #include "pump_controller.h"
 #include "dosing_logic.h"  // feature-060 : clampCyclesPerDay (clamp serveur obligatoire)
+#include "ph_offset.h"     // feature-067 : isPhOffsetValid (validation serveur de ph_offset)
 #include "logger.h"
 #include "version.h"
 #include "json_compat.h"
 #include "heap_metrics.h"  // v2.19.0 : mémoire RÉELLEMENT allouable (8 bits) exposée par /get-system-info
+#include "oom_guard.h"     // v2.20.2 : état d'inscription du new_handler exposé par /get-system-info
 #include "rtc_manager.h"
 #include <sys/time.h>
 #include <WiFi.h>
@@ -29,6 +31,16 @@ extern void applyTimeConfig();
 // Contexte pour les buffers de configuration (partagé avec web_server)
 static std::map<AsyncWebServerRequest*, std::vector<uint8_t>>* g_configBuffers = nullptr;
 static std::map<AsyncWebServerRequest*, bool>* g_configErrors = nullptr;
+
+// Message d'erreur SPÉCIFIQUE associé à une requête refusée (feature-067, revue).
+// POURQUOI : handleSaveConfig est le handler de CORPS ; il s'exécute AVANT le
+// handler de requête. Un `request->send(400, ...)` émis ici est ensuite ÉCRASÉ
+// par le `req->send(200, "OK")` du lambda de complétion — l'utilisateur verrait
+// « Sauvegarde réussie » alors que rien n'a été appliqué. La convention du
+// fichier est donc de POSER UN DRAPEAU et de laisser la complétion répondre ;
+// cette map préserve en plus le libellé précis (sans elle, on retomberait sur le
+// générique « Invalid JSON configuration », inexploitable pour l'utilisateur).
+static std::map<AsyncWebServerRequest*, String> g_configErrorMessages;
 
 // Variables globales pour la reconnexion WiFi asynchrone
 static bool g_wifiReconnectRequested = false;
@@ -64,7 +76,12 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
 
   // Buffer statique : ~55 champs (configs MQTT, pH, ORP, calibration, WiFi, boost, etc.)
   // feature-053 : +2 champs boost_active/boost_until → marge portée à 2304.
-  StaticJson<2304> doc;
+  // feature-067 : +1 champ ph_offset (~24 octets) → marge portée à 2368.
+  // v2.20.3 (C5) : +ph_auto_manual_epoch (~34 o) et +ph_auto_manual_reason
+  // (clé 24 o + raison bornée par le libellé firmware, ~140 o max) → +200 o
+  // → marge portée à 2624. La raison n'est JAMAIS saisie par l'utilisateur
+  // (littéral construit par pump_controller), sa longueur est donc bornée.
+  StaticJson<2624> doc;
   doc["server"] = mqttCfg.server;
   doc["port"] = mqttCfg.port;
   doc["topic"] = mqttCfg.topic;
@@ -142,6 +159,17 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["ph_cal_points"]  = sensors.getPhCalibrationPointsCached();
   doc["orp_cal_points"] = sensors.getOrpCalibrationPointsCached();
 
+  // feature-067 : offset logiciel de mesure pH (pH corrigé = pH brut EZO + offset).
+  // Ne remplace PAS la calibration EZO (ph_cal_points ci-dessus) — champ distinct.
+  doc["ph_offset"] = mqttCfg.phOffset;
+
+  // v2.20.3 (C5) : bascule AUTOMATIQUE de la régulation pH en manuel, persistée.
+  // `ph_auto_manual_epoch` == 0 → aucune bascule automatique en attente
+  // d'acquittement (cas de tous les appareils avant 2.20.3 : clé NVS absente).
+  // L'UI n'affiche l'encart que si epoch != 0 OU si la raison est non vide.
+  doc["ph_auto_manual_epoch"]  = mqttCfg.phAutoManualEpoch;
+  doc["ph_auto_manual_reason"] = mqttCfg.phAutoManualReason;
+
   // Données de calibration Température (offset utilisateur DS18B20)
   doc["temp_calibration_offset"] = mqttCfg.tempCalibrationOffset;
   doc["temp_calibration_date"] = mqttCfg.tempCalibrationDate;
@@ -202,9 +230,14 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     (*g_configErrors)[request] = false; // Pas d'erreur pour l'instant
 
     // Nettoyage si la connexion est abandonnée avant complétion (timeout, fermeture navigateur)
+    // g_configErrorMessages DOIT figurer ici (revue) : REQUIRE_AUTH rend la main
+    // AVANT la purge de la complétion, donc une requête non authentifiée portant
+    // un ph_offset invalide laisserait sinon un nœud + String jamais libérés —
+    // fuite non bornée et atteignable SANS authentification.
     request->onDisconnect([request]() {
       if (g_configBuffers) g_configBuffers->erase(request);
       if (g_configErrors) g_configErrors->erase(request);
+      g_configErrorMessages.erase(request);
     });
 
     // Vérifier la taille totale
@@ -279,9 +312,23 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   if (!doc["ph_regulation_mode"].isNull()) {
     String regMode = doc["ph_regulation_mode"].as<String>();
     if (regMode == "automatic" || regMode == "scheduled" || regMode == "manual") {
+      // REVUE 2.20.3 (bloquant n°1) : n'acquitter QUE sur un CHANGEMENT réel.
+      // L'interface renvoie systématiquement le mode courant dans le payload
+      // (data/app.js, getConfigPayload) : tester la seule PRÉSENCE de la clé
+      // faisait acquitter la bascule de sécurité à la moindre sauvegarde des
+      // réglages, effaçant la trace NVS et la bannière alors que la régulation
+      // reste en manuel — c'est-à-dire que le critère « la bascule est
+      // persistée » tombait sans que personne ne le voie. Même patron que MQTT.
+      const bool modeChanged = (regMode != mqttCfg.phRegulationMode);
       mqttCfg.phRegulationMode = regMode;
       mqttCfg.phEnabled = (regMode != "manual");
-      systemLogger.info("Mode régulation pH changé: " + regMode);
+      if (modeChanged) {
+        // Un HUMAIN reprend la main sur le mode → la trace de la dernière
+        // bascule AUTOMATIQUE est acquittée (elle ne décrit plus l'état
+        // courant). Persistée par le saveMqttConfig() de fin de handler.
+        clearPhAutoManualTrace();
+        systemLogger.info("Mode régulation pH changé: " + regMode);
+      }
     }
   }
   if (!doc["ph_daily_target_ml"].isNull()) {
@@ -458,6 +505,31 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   // (commande Cal,<ref>). Plus de champs orp_calibration_* à persister côté ESP32.
   // L'UI utilise POST /calibrate_orp + WS phCalPoints/orpCalPoints pour le suivi.
 
+  // feature-067 : offset logiciel de mesure pH (pH corrigé = pH brut EZO + offset).
+  // Validation SERVEUR obligatoire, refus HTTP 400 SANS écrêtage silencieux : un
+  // offset erroné décale l'entrée de la régulation et peut conduire à surdoser
+  // l'acide. Champ absent ou non numérique → paramètre inchangé (patron existant).
+  // La prise en compte est immédiate via sensors.refreshPhOffsetCache().
+  // INTERDIT ici : requestReset() / resetDosingStates() / resetPhPauseGuard() —
+  // ils remettraient à zéro cyclesToday ou lastStopTime, ce qui permettrait de
+  // contourner les limites journalières et la pause anti-cycling par simples
+  // enregistrements répétés. L'offset ne touche AUCUN compteur de dosage.
+  if (doc["ph_offset"].is<float>()) {
+    float requestedPhOffset = doc["ph_offset"].as<float>();
+    if (!isPhOffsetValid(requestedPhOffset)) {
+      xSemaphoreGiveRecursive(configMutex);
+      systemLogger.warning("Offset pH refusé (hors plage) : " + String(requestedPhOffset, 2));
+      // Drapeau + message : c'est le lambda de complétion qui répondra (voir le
+      // commentaire de g_configErrorMessages). Ne PAS répondre ni purger ici.
+      (*g_configErrors)[request] = true;
+      g_configErrorMessages[request] =
+        "{\"error\":\"Offset pH invalide : la valeur doit \\u00eatre comprise entre -0.50 et +0.50 pH\"}";
+      return;
+    }
+    mqttCfg.phOffset = requestedPhOffset;
+    sensors.refreshPhOffsetCache();  // journalise ancien/nouveau si changement
+  }
+
   // Données de calibration Température
   if (!doc["temp_calibration_offset"].isNull()) {
     mqttCfg.tempCalibrationOffset = doc["temp_calibration_offset"];
@@ -609,10 +681,10 @@ static void handleRebootAp(AsyncWebServerRequest* request);  // Forward declarat
 static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
-  // 29 champs (version, chip, mémoire, WiFi, uptime). Charge utile mesurée avec
+  // 30 champs (version, chip, mémoire, WiFi, uptime). Charge utile mesurée avec
   // measureJson() sur des valeurs pires cas (compteurs 32 bits saturés, SSID de
-  // 32 caractères) : 716 octets, contre 628 avant les trois champs mémoire
-  // v2.19.0.
+  // 32 caractères) : ~748 octets, contre 716 avant `oom_handler_registered`
+  // (v2.20.2) et 628 avant les trois champs mémoire v2.19.0.
   // PRÉCISION (revue v2.19.0) : en ArduinoJson 7, StaticJson<N> n'est plus qu'un
   // JsonDocument à capacité ÉLASTIQUE — le N ne borne rien et aucune troncature
   // silencieuse n'est possible. Le chiffre ci-dessus documente donc la taille de
@@ -643,6 +715,16 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   doc["free_heap_8bit"] = heap.free8;
   doc["max_alloc_8bit"] = heap.maxAlloc8;
   doc["max_alloc_internal"] = heap.maxAllocInternal;
+
+  // v2.20.2 (bug-famine-8bits-parachute-mort-et-gardes-aveugles) : le
+  // new_handler du parachute anti-bad_alloc se DÉSINSCRIT lui-même à la 2ᵉ
+  // famine, et sa ré-inscription se trouvait derrière un `return` — l'appareil
+  // de production tournait donc SANS filet ~2 h après le boot, sans que rien ne
+  // le signale (le journal, lui, s'écrasait en 25-35 min). Ce booléen est le
+  // témoin permanent, vérifiable on-target à tout instant et indépendant des
+  // logs. Lecture d'un miroir atomique : ni allocation, ni log, ni parcours de
+  // tas — sûr dans un handler AsyncWebServer. Ajout PUREMENT ADDITIF.
+  doc["oom_handler_registered"] = oomGuardHandlerRegistered();
 
   // feature-066 : PSRAM (0 = absente, module WROOM — l'UI affiche « absente »)
   doc["psram_size"] = ESP.getPsramSize();
@@ -844,6 +926,7 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
       REQUIRE_AUTH(req, RouteProtection::CRITICAL);
 
       if (g_configErrors == nullptr || g_configBuffers == nullptr) {
+        g_configErrorMessages.erase(req);  // pas de nœud orphelin sur ce chemin
         req->send(500, "text/plain", "Config context error");
         return;
       }
@@ -851,12 +934,22 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
       // Vérifier si une erreur s'est produite pendant le traitement
       bool hasError = (*g_configErrors)[req];
 
+      // Message spécifique éventuel (feature-067) : relevé AVANT la purge.
+      String errorBody;
+      auto itMsg = g_configErrorMessages.find(req);
+      if (itMsg != g_configErrorMessages.end()) errorBody = itMsg->second;
+
       // Nettoyer les buffers et états
       g_configBuffers->erase(req);
       g_configErrors->erase(req);
+      g_configErrorMessages.erase(req);
 
       if (hasError) {
-        req->send(400, "text/plain", "Invalid JSON configuration");
+        if (errorBody.length() > 0) {
+          req->send(400, "application/json", errorBody);
+        } else {
+          req->send(400, "text/plain", "Invalid JSON configuration");
+        }
       } else {
         req->send(200, "text/plain", "OK");
         // Exécuté en tâche AsyncTCP (~8 KB stack). _buildConfigJson() alloue

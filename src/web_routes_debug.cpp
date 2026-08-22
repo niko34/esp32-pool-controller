@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 
+#include "auth.h"       // REQUIRE_AUTH / RouteProtection (revue 2.20.3)
 #include "constants.h"
 #include "logger.h"
 #include "sensor_trace_page.h"
@@ -84,16 +85,57 @@ void setupDebugRoutes(AsyncWebServer* server) {
     }
   });
 
-  // ---------- POST /debug/sensor_filter_reset ----------
-  // feature-025 : reset des filtres pH/ORP (médiane + EMA). Repasse les 2 filtres
-  // en warmup → dosage auto bloqué tant que la fenêtre centrale (kSensorFilterCentralWindow)
-  // n'est pas de nouveau pleine ; lève aussi le latch EMI (feature-058).
-  // Utile après un débranchement EZO, un test, ou une recalibration manuelle.
+  // ---------- POST /debug/sensor_filter_reset[?sensor=ph|orp] ----------
+  // feature-025 : reset des filtres pH/ORP (médiane + EMA). Repasse le filtre
+  // visé en warmup → dosage auto bloqué tant que la fenêtre centrale
+  // (kSensorFilterCentralWindow) n'est pas de nouveau pleine ; lève aussi le
+  // latch EMI (feature-058).
+  //
+  // v2.20.3 (D2) — DEUX correctifs :
+  //   (a) SÉLECTIVITÉ : `?sensor=ph` ou `?sensor=orp` ne réinitialise QUE le
+  //       filtre demandé. Sans paramètre, les DEUX filtres sont réinitialisés
+  //       (compatibilité descendante stricte : même réponse `{"reset":["ph","orp"]}`
+  //       qu'avant). Lors du déblocage en production du 2026-08-16, cette route a
+  //       sacrifié le filtre ORP qui était parfaitement sain.
+  //   (b) CONCURRENCE : l'ancienne version appelait resetPhFilter()/resetOrpFilter()
+  //       DIRECTEMENT depuis le handler, donc depuis la tâche async_tcp — en
+  //       violation du contrat « écriture loopTask exclusive » de sensor_filter.h
+  //       (bug latent : écriture concurrente du buffer pendant un addSample()).
+  //       On passe désormais par requestFilterReset(), consommé en tête de
+  //       SensorManager::update(). La réponse devient donc « acceptée », pas
+  //       « exécutée » : le reset a lieu au prochain tour de loop (< 100 ms).
   server->on("/debug/sensor_filter_reset", HTTP_POST, [](AsyncWebServerRequest* req) {
-    sensors.resetPhFilter();
-    sensors.resetOrpFilter();
-    systemLogger.info("[Debug] Filtres pH/ORP réinitialisés (warmup)");
-    req->send(200, "application/json", "{\"success\":true,\"reset\":[\"ph\",\"orp\"]}");
+    // REVUE 2.20.3 (bloquant n°2) : cette route effectue EXACTEMENT la même
+    // action destructrice que /reset-sensor-filter (effacement de la détection
+    // de sonde figée et du latch EMI), mais elle était ouverte SANS
+    // authentification — elle contournait donc intégralement les gardes posées
+    // ce cycle sur l'autre route. Même protection des deux côtés.
+    REQUIRE_AUTH(req, RouteProtection::CRITICAL);
+
+    auto* p = req->getParam("sensor", true);
+    if (!p) p = req->getParam("sensor");
+    String sensorName = p ? p->value() : String();
+    sensorName.toLowerCase();
+
+    bool doPh = true, doOrp = true;   // défaut historique : les deux
+    if (sensorName == "ph")       { doPh = true;  doOrp = false; }
+    else if (sensorName == "orp") { doPh = false; doOrp = true;  }
+    else if (sensorName.length() > 0) {
+      req->send(400, "application/json",
+                "{\"error\":\"invalid_sensor\",\"message\":\"'sensor' doit valoir ph ou orp\"}");
+      return;
+    }
+
+    sensors.requestFilterReset(doPh, doOrp, "route de debug");
+    // Le détail de l'état détruit (médiane avant/après, rejets, latch, sonde
+    // figée) est journalisé par SensorManager au moment de l'exécution (D4).
+    String reset = "[";
+    if (doPh)  reset += "\"ph\"";
+    if (doPh && doOrp) reset += ",";
+    if (doOrp) reset += "\"orp\"";
+    reset += "]";
+    req->send(200, "application/json",
+              "{\"success\":true,\"queued\":true,\"reset\":" + reset + "}");
   });
 
   // ---------- GET /debug/sensor_filter_state ----------
@@ -102,9 +144,13 @@ void setupDebugRoutes(AsyncWebServer* server) {
   server->on("/debug/sensor_filter_state", HTTP_GET, [](AsyncWebServerRequest* req) {
     JsonDocument doc;
     JsonObject ph = doc["ph"].to<JsonObject>();
-    float phRaw = sensors.getPhRaw();
-    float phMed = sensors.getPhMedian();
-    float phFil = sensors.getPhFiltered();
+    // feature-067 : `raw` = BRUT EZO (sans offset — c'est LA valeur de diagnostic
+    // électrochimique) ; `median` et `filtered` sont CORRIGÉS (brut + offset), donc
+    // identiques à ce que consomme la régulation. L'offset appliqué est lisible via
+    // GET /get-config (champ ph_offset).
+    float phRaw = sensors.getPhRaw();       // BRUT
+    float phMed = sensors.getPhMedian();    // CORRIGÉ
+    float phFil = sensors.getPhFiltered();  // CORRIGÉ
     if (!isnan(phRaw)) ph["raw"] = round(phRaw * 1000.0f) / 1000.0f; else ph["raw"] = nullptr;
     if (!isnan(phMed)) ph["median"] = round(phMed * 1000.0f) / 1000.0f; else ph["median"] = nullptr;
     if (!isnan(phFil)) ph["filtered"] = round(phFil * 1000.0f) / 1000.0f; else ph["filtered"] = nullptr;

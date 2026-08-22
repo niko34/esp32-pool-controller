@@ -24,6 +24,25 @@ Chaque mini-graphique est rendu par **uPlot** (usine `createMiniLineChart`, feat
 
 Un **chip `Calibration nécessaire`** (`#calib-chip`) s'affiche en haut de page si pH **ou** ORP est flagué non calibré.
 
+## Bannière « Régulation à l'arrêt » (v2.20.3)
+
+`<div class="regul-alert" id="regul-alert" role="alert" hidden>` en tête de page, au-dessus de la grille de cartes. Rendue par `updateRegulationAlert(json)` à partir des drapeaux firmware `phFilterAlarm` / `orpFilterAlarm` (`GET /data` **et** WebSocket).
+
+Motivation : lors de l'incident du 2026-08-16, le bassin est resté **sans régulation pH ni chlore pendant ≥ 3 h** et rien ne le signalait — l'utilisateur ne l'a détecté que parce qu'une valeur affichée lui semblait incohérente.
+
+| Drapeaux | Titre | Cible du bouton « Diagnostiquer » |
+|---|---|---|
+| `phFilterAlarm` seul | « Régulation pH à l'arrêt » | `#/ph` |
+| `orpFilterAlarm` seul | « Régulation chlore à l'arrêt » | `#/orp` |
+| les deux | « Régulation pH et chlore à l'arrêt » | `#/ph` |
+| aucun | masquée (`hidden`) | — |
+
+Texte : `Le filtre de mesure est bloqué depuis plus de 5 minutes alors que la filtration tourne : aucun dosage <pH|chlore|pH et chlore> n'est effectué. Ouvrez l'état du filtre pour diagnostiquer et le réarmer si besoin.`
+
+Le firmware n'arme ces drapeaux que si la filtration tourne, que les mesures sont représentatives **et** que le filtre reste non prêt > 5 min : **aucun affichage** pendant une purge, un warmup ou une filtration à l'arrêt. La reprise se fait depuis le modal d'état filtre de la page concernée ([page-ph.md](page-ph.md#bouton--réarmer-le-filtre-ph--v2203), [page-orp.md](page-orp.md#bouton--réarmer-le-filtre-orp--v2203)).
+
+Une variante `regul-alert--inline` du même style est réutilisée dans la carte Régulation pH pour la bannière de bascule automatique en manuel.
+
 ## Plage des mini-graphiques : journée en cours (v2.18.9)
 
 Les mini-graphiques des cartes pH, ORP et Température n'affichent **que la journée en cours**, à partir de **minuit local**. Une fenêtre glissante de 24 h (comportement v2.18.4) faisait apparaître une portion de la veille en tête de courbe, ce qui brouillait la lecture « où en est-on aujourd'hui ».
@@ -139,6 +158,9 @@ La carte ORP lit :
 
 Les cartes pH et ORP lisent aussi (feature-061) :
 - `water_present`, `measures_valid`, `measures_stab_remaining_s`, `filtration_state_stale` — segments d'état mesure + gate « Capteur indisponible » / « hors plage » + valeurs « `--` »
+
+La bannière de tête lit (v2.20.3) :
+- `phFilterAlarm`, `orpFilterAlarm` — voir [Bannière « Régulation à l'arrêt »](#bannière--régulation-à-larrêt--v2203)
 
 La carte Température lit :
 - `temperature`

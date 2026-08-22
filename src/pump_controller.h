@@ -126,6 +126,48 @@ private:
   void logRefusalOnce(int pumpIndex, const String& cause);
   void resetRefusalLogState(int pumpIndex);
 
+  // ===== feature-067 : filets de sécurité sur le pH BRUT (pool-chemistry) =====
+  // Un offset logiciel pH erroné décale la consigne EFFECTIVE de régulation.
+  // Ces deux gardes raisonnent sur getPhFilteredRaw() (mesure capteur SANS
+  // offset), donc restent valides même si l'offset est faux. Inertes à offset 0.
+  // Appelées UNIQUEMENT depuis update() (loopTask) : état et logs sans mutex.
+
+  // Condition #2 : plancher dur d'injection d'acide. True → dosage pH REFUSÉ
+  // (branches automatique ET programmée). Palier kPhRawDosingFloor si
+  // |offset| <= kPhOffsetWideThreshold, kPhRawDosingFloorWide au-delà.
+  // Ne s'applique pas au produit basique (phCorrectionType == "ph_plus").
+  // Condition #7 : compte les refus sur 24 h glissantes → au-delà de
+  // kPhRawFloorRefusalMax, bascule la régulation pH en manuel (fail-closed).
+  bool isPhRawFloorBlocking();
+
+  // Condition #3 : inhibition du dosage ORP quand le pH BRUT dépasse
+  // kPhRawOrpInhibit (chlore peu actif → la régulation ORP surdoserait).
+  // True → dosage ORP SUSPENDU (branches automatique ET programmée).
+  //
+  // `requireKnownPh` (pool-chemistry P2) : true en régulation AUTOMATIQUE → un pH
+  // brut INDISPONIBLE (capteur muet, filtre non amorcé) inhibe aussi, car
+  // canDose(1) ne consulte jamais le pH : ce filet est l'unique garde du couplage
+  // pH/chlore, et doser à l'aveugle avec une eau possiblement au-dessus de 7,60
+  // reviendrait à surdoser. false pour le dosage PROGRAMMÉ, aveugle à la mesure
+  // par conception (comportement historique préservé, hors périmètre).
+  bool isOrpInhibitedByPhRaw(bool requireKnownPh);
+
+  // État edge-triggered des deux gardes ci-dessus (1 seul log critical + 1 seule
+  // alerte MQTT par transition) + compteur de refus sur fenêtre glissante 24 h.
+  bool     _phRawFloorActive = false;
+  bool     _orpPhRawInhibitActive = false;
+  // v2.20.3 (C6) : nature de l'inhibition ORP en cours, pour que le message de
+  // LEVÉE corresponde au message de POSE.
+  //   0 = pH brut trop élevé (seuil franchi)
+  //   1 = pH brut indisponible (capteur muet / filtre non amorcé) → anomalie
+  //   2 = mesures non représentatives (purge chambre de mesure) → état NORMAL
+  // Le cas 2 était auparavant journalisé comme le cas 1 : à chaque reprise de
+  // filtration l'appareil annonçait un « capteur muet » alarmant alors qu'il
+  // s'agissait de la stabilisation qu'il venait lui-même de déclencher.
+  uint8_t  _orpPhRawInhibitKind = 0;
+  uint8_t  _phRawFloorRefusals = 0;      // Refus dans la fenêtre courante
+  uint32_t _phRawFloorWindowStart = 0;   // millis() du 1er refus de la fenêtre
+
   // Ring buffer anti-rafale (pool-chemistry Pass 3.5) — timestamps de start
   // de cycle (millis) par pompe. Index circulaire, 0 = pH, 1 = ORP.
   // Capacité 20 entrées : couvre largement la fenêtre 15 min à raison de

@@ -1,6 +1,6 @@
 # ADR-0034 — Migration de plateforme : core Arduino 3.x / ESP-IDF 5.x via pioarduino
 
-- **Statut** : Accepté (phase **code bi-core** exécutée — feature-063). La **bascule production** reste une étape **CONDITIONNELLE** — voir « Porte de bascule production » ci-dessous.
+- **Statut** : Accepté (phase **code bi-core** exécutée — feature-063). ⚠️ La **porte de bascule production a été franchie le 2026-08-22** : voir [ADR-0042](0042-core3-environnement-par-defaut.md) (core 3 = environnement par défaut, bootloader inclus). Les clauses « BUILD-ONLY » et « retour arrière OTA-only » du présent ADR sont **caduques** — voir la note additive en fin de document.
 - **Date** : 2026-08-04 (projet DRAFT rédigé le 2026-08-03, étude feature-062)
 - **Décideurs** : Nicolas (décision d'exécution de la phase code) — étude feature-062, exécution feature-063
 - **Spec(s) liée(s)** : feature-062 (étude, done), feature-063 (exécution code bi-core, v2.15.0)
@@ -109,6 +109,16 @@ La bascule se fera en **OTA-only** : le bootloader IDF 4.4 existant est conserv�
 - Le contrat de compatibilité FS (lfs 2.1) et NVS entre les deux mondes doit être maintenu tant que le retour arrière est une option.
 - Les gardes bi-core `#if ESP_ARDUINO_VERSION_MAJOR >= 3` sont le **seul** mécanisme de divergence core 2/core 3 autorisé : pas de fork de fichier, pas de branche longue durée.
 - L'env `esp32dev_core3` reste **BUILD-ONLY** (jamais flashé sur la production) tant que la porte n'est pas franchie.
+
+> **Note additive 2026-08-22 — PORTE FRANCHIE : le core 3 devient l'environnement par défaut (v2.20.4, [ADR-0042](0042-core3-environnement-par-defaut.md))**
+>
+> La bascule production est **actée**, **bootloader ET application** : `default_envs = esp32dev_core3`, chaîne d'outillage alignée sur la variable unique `PIO_ENV`, `esp32dev` (core 2) conservé en **repli explicite**. Ce qui a rendu la porte franchissable : module **WROVER-E avec PSRAM** en place (verrou TLS levé, [ADR-0036](0036-psram-requise-mise-a-jour-en-ligne.md)), **accès USB** disponible, et une **image core 3 éprouvée en production** depuis plusieurs semaines (poussée en OTA, donc application core 3 sur bootloader core 2).
+>
+> Deux clauses du présent ADR sont désormais **caduques** :
+> - « L'env `esp32dev_core3` reste **BUILD-ONLY** (jamais flashé sur la production) » → c'est l'env de production.
+> - « Bascule et retour arrière **OTA-only** ; aucun reflash USB du bootloader » → le bootloader **est** passé en core 3 par flash USB, et le filet de repli `otadata` (`erase_region 0xE000 0x2000`) **n'existe plus** : un échec impose un flash USB, donc un accès physique.
+>
+> Marge flash mesurée à la bascule : **94,3 % d'app0** en core 3 (1 730 053 o / 1 835 008 o, marge ≈ 102 Ko) contre 84,5 % en core 2 — le plafond de vigilance de 95 % est presque atteint. Piège d'outillage consigné : les deux plateformes partagent le nom de paquet `framework-arduinoespressif32` et **s'écrasent mutuellement** (voir ADR-0042 et [BUILD.md](../BUILD.md)).
 
 ## Porte de bascule production (étape conditionnelle — check-list)
 

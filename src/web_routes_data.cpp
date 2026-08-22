@@ -37,19 +37,25 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // Taille estimée : ~16 champs × 30 bytes + overhead (feature-020 ajoute 3 champs)
   // feature-025 : +14 champs filtre pH/ORP → bump du buffer.
   // feature-061 : +3 champs validité mesures → bump du buffer.
-  StaticJson<1280> doc;
+  // v2.20.3 (C2) : +2 booléens ph/orpFilterAlarm.
+  //   "phFilterAlarm":false,  = 22 o  |  "orpFilterAlarm":false, = 23 o
+  //   → 45 o au pire, arrondi à 64 o de marge → bump 1280 → 1344.
+  StaticJson<1344> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
   // (médiane + EMA), alignée sur le WS. Le brut reste exposé séparément (phRaw/orpRaw).
   // Fallback sur le brut si le filtre n'est pas encore amorcé (warmup).
+  // feature-067 : `ph` = valeur CORRIGÉE (brut + offset logiciel), comme le WS et
+  // MQTT. `phRaw` reste le BRUT EZO (diagnostic), `phMedian`/`phFiltered` sont
+  // corrigés. Le repli de warmup passe par getPh() (corrigé), jamais par le brut.
   float orpRaw = sensors.getOrpRaw();
-  float phRaw  = sensors.getPhRaw();
+  float phRaw  = sensors.getPhRaw();      // BRUT EZO (sans offset)
   float orpMed = sensors.getOrpMedian();
-  float phMed  = sensors.getPhMedian();
+  float phMed  = sensors.getPhMedian();   // médiane CORRIGÉE
   float orpFil = sensors.getOrpFiltered();
-  float phFil  = sensors.getPhFiltered();
+  float phFil  = sensors.getPhFiltered(); // lissé CORRIGÉ
   float orpVal = !isnan(orpFil) ? orpFil : orpRaw;
-  float phVal  = !isnan(phFil)  ? phFil  : phRaw;
+  float phVal  = !isnan(phFil)  ? phFil  : sensors.getPh();
 
   // ORP (valeur courante = filtrée)
   if (!isnan(orpVal)) {
@@ -72,12 +78,17 @@ static void handleGetData(AsyncWebServerRequest* request) {
   doc["phFilterReady"]    = sensors.isPhFilterReady();
   doc["phFilterUnstable"] = sensors.isPhFilterUnstable();
   doc["phRejectedCount"]  = sensors.getPhRejectedCount();
+  // v2.20.3 (C2) : alarme « filtre non prêt durablement » (≥ 5 min alors que la
+  // filtration tourne ET que les mesures sont représentatives) = plus AUCUNE
+  // régulation. Exposée pour le chip d'état et la bannière du tableau de bord.
+  doc["phFilterAlarm"]    = sensors.isPhFilterNotReadyAlarm();
   if (!isnan(orpRaw)) doc["orpRaw"] = round(orpRaw); else doc["orpRaw"] = nullptr;
   if (!isnan(orpMed)) doc["orpMedian"] = round(orpMed); else doc["orpMedian"] = nullptr;
   if (!isnan(orpFil)) doc["orpFiltered"] = round(orpFil); else doc["orpFiltered"] = nullptr;
   doc["orpFilterReady"]    = sensors.isOrpFilterReady();
   doc["orpFilterUnstable"] = sensors.isOrpFilterUnstable();
   doc["orpRejectedCount"]  = sensors.getOrpRejectedCount();
+  doc["orpFilterAlarm"]    = sensors.isOrpFilterNotReadyAlarm();  // v2.20.3 (C2)
 
   // feature-034 : points de calibration EZO (déjà publiés en WS, mais ABSENTS de /data —
   // nécessaires au polling de calibration qui interroge /data activement, Safari mettant

@@ -54,9 +54,14 @@ Paramètres arbitrés par pool-chemistry (dans `constants.h`) : `kSensorFilterCe
 - Séparation stricte **valeur ≠ drapeau** : aucune instabilité ne doit refiger ou fausser `filtered()`.
 - Suppression définitive de la mécanique `maxStep` / re-sync / warmup à seuil court : constantes retirées (`kSensorFilterMedianWindow`, `kPhFilterMaxStep`/`kOrpFilterMaxStep`, `kSensorFilterWarmupSamples`, `kSensorFilterResyncRejects`, `kSensorFilterMaxResyncPerWindow`, `kSensorFilterResyncWindowMs`).
 
+---
+
+> **Note additive (2026-08-21, v2.20.3) — complété par [ADR-0041](0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md).** Le présent ADR reste **en vigueur** (rejet de spike, découplage valeur/latch, médiane longue : inchangés). En revanche la clause « un spike **répété** rend le filtre non prêt, fail-closed volontaire » s'est révélée être un **piège sans issue** en production : la médiane ne pouvant évoluer que par des échantillons acceptés, un **échelon légitime** durable supérieur à `spikeReject` verrouille la médiane **définitivement** (incident du 2026-08-16 : dosage pH **et** chlore à l'arrêt ≥ 3 h, sans alarme). ADR-0041 ajoute la **porte d'alimentation** (les mesures non représentatives n'entrent plus dans le filtre), une **sortie de secours gardée** sur rejets cohérents, et l'obligation d'**alarmer** toute perte durable de régulation. Aucune décision de cet ADR n'est annulée.
+
 ## Références
 
 - Code : `src/sensor_filter.h`, `src/sensor_filter.cpp`, `src/constants.h` (bloc feature-058)
+- Suite : [ADR-0041](0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md) — autorité des mesures non représentatives et sortie de secours du filtre (v2.20.3)
 - Spec : `specs/features/doing/feature-058-filtre-tendance-centrale.md`
 - Tests : `test/test_native_sensor_filter/` (218 tests natifs)
 - Doc : [`docs/subsystems/sensors.md`](../subsystems/sensors.md#filtrage-des-mesures-phorp--feature-025--feature-058), diagnostic [feature-057](../../specs/features/done/), ADR précédent implicite feature-025

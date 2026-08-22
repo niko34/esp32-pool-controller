@@ -5,6 +5,13 @@
 
 set -e  # Arrêter en cas d'erreur
 
+# Le filesystem est INDÉPENDANT du core, mais il doit être écrit là où le
+# déploiement le cherche. BUILD_DIR est exporté par deploy.sh ; en appel direct
+# on retombe sur l'environnement par défaut (core 3 depuis v2.20.4, ADR-0042).
+PIO_ENV="${PIO_ENV:-esp32dev_core3}"
+BUILD_DIR="${BUILD_DIR:-.pio/build/$PIO_ENV}"
+mkdir -p "$BUILD_DIR"
+
 echo "🔧 Minification des fichiers web..."
 node minify.js
 
@@ -15,11 +22,11 @@ echo "📦 Building LittleFS with size 327680 bytes (320KB)..."
   -s 327680 \
   -p 256 \
   -b 4096 \
-  .pio/build/esp32dev/littlefs.bin
+  "$BUILD_DIR/littlefs.bin"
 
 if [ $? -eq 0 ]; then
   echo "✅ LittleFS built successfully"
-  ls -lh .pio/build/esp32dev/littlefs.bin
+  ls -lh "$BUILD_DIR/littlefs.bin"
 else
   echo "❌ LittleFS build failed"
   exit 1

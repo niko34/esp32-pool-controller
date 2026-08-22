@@ -43,6 +43,21 @@ bool oomGuardReserveArmed();
 // de journaliser le palier obtenu (nominal ou repli) — lecture seule.
 size_t oomGuardReserveArmedBytes();
 
+/**
+ * @brief true si le std::set_new_handler du parachute est actuellement inscrit.
+ *
+ * Miroir atomique (v2.20.2, bloc A) : passe à false au moment exact où
+ * oomNewHandler se désinscrit (2ᵉ famine sans réserve), repasse à true dès que
+ * oomGuardLoopTick() le ré-inscrit — ce qui n'a lieu QUE si une réserve est armée
+ * (condition C1 du gate pool-chemistry : un handler sans réserve ne libère rien).
+ *
+ * Exposé pour le diagnostic (`/get-system-info`) : sans lui, l'appareil peut
+ * tourner des heures SANS filet anti-bad_alloc sans que rien ne le signale —
+ * exactement le régime des crashs des 13 et 15/08/2026. Lecture seule, sans log
+ * ni allocation.
+ */
+bool oomGuardHandlerRegistered();
+
 // Miroir atomique du dernier échantillon de l'anneau heap (heap_ring.cpp, cadence
 // kHeapRingSampleIntervalMs). Les valeurs passées sont celles DÉJÀ mesurées par
 // l'anneau : aucun parcours de tas supplémentaire. Ce miroir est la SEULE source

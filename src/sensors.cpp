@@ -7,6 +7,9 @@
 #include "config.h"
 #include "constants.h"
 #include "logger.h"
+#include "measure_validity.h"  // v2.20.3 : porte d'alimentation des filtres pH/ORP
+#include "mqtt_manager.h"      // v2.20.3 : publishAlert() sur refus de ré-amorçage
+#include "ph_offset.h"        // feature-067 : applyPhOffset() / isPhOffsetValid()
 #include "pump_controller.h"  // armStabilizationTimer() après calibration EZO
 
 SensorManager sensors;
@@ -85,6 +88,10 @@ SensorManager::~SensorManager() {
 // =============================================================================
 
 void SensorManager::begin() {
+  // feature-067 : charger l'offset pH persisté AVANT toute lecture (begin() est
+  // appelé après loadMqttConfig() dans setup()).
+  refreshPhOffsetCache();
+
   // Bus I²C partagé : DS3231 + EZO pH + EZO ORP (cf. constants.h kI2cSdaPin/kI2cSclPin)
   Wire.begin();
 
@@ -190,6 +197,18 @@ void SensorManager::begin() {
 // =============================================================================
 
 void SensorManager::update() {
+  // 0) v2.20.3 : consommation des demandes de reset différées (posées depuis un
+  //    handler async / MQTT via requestFilterReset()). Le reset s'exécute ici,
+  //    dans le SEUL contexte loopTask autorisé à écrire dans un SensorFilter.
+  if (_phFilterResetRequested) {
+    _phFilterResetRequested = false;
+    _executeRequestedReset(true, _phResetOrigin);
+  }
+  if (_orpFilterResetRequested) {
+    _orpFilterResetRequested = false;
+    _executeRequestedReset(false, _orpResetOrigin);
+  }
+
   // 1) Lecture DS18B20 (gère son propre timing de conversion)
   _readDs18b20s();
 
@@ -209,6 +228,11 @@ void SensorManager::update() {
 
   // 3bis) feature-022 : détection capteur figé (logs edge-triggered)
   _checkFrozenAndLog();
+
+  // 3ter) v2.20.3 (C1) : alarme « filtre non prêt durablement » — l'absence
+  // TOTALE de régulation ne doit jamais être silencieuse (incident 2026-08-16 :
+  // ≥ 3 h sans dosage pH NI chlore, détecté par hasard par l'utilisateur).
+  _checkFilterNotReadyAlarm((uint32_t)millis());
 
   // 4) Traitement d'au plus 1 commande EZO de la queue (calibration ~1-2 s)
   _processEzoQueue();
@@ -339,6 +363,11 @@ void SensorManager::_readDs18b20s() {
 void SensorManager::_readEzoSensors(float tempC) {
   unsigned long now = millis();
 
+  // v2.20.3 — PORTE d'alimentation des filtres : appliquée AVANT tout addSample()
+  // de ce cycle. Placée en tête (et non dans chaque branche de lecture réussie)
+  // pour que l'état de porte reste à jour même pendant une panne de bus I²C.
+  _updateFilterGates((uint32_t)now);
+
   // ----- pH -----
   float ph = NAN;
   if (_phEzo.readSingle(ph, tempC)) {
@@ -359,6 +388,8 @@ void SensorManager::_readEzoSensors(float tempC) {
       else if (!nowLatched && wasLatched)
         systemLogger.info("Filtre pH : latch EMI levé (signal stable) — dosage à nouveau possible si mesure OK");
     }
+    // v2.20.3 : sortie de secours — ré-amorçage effectif ou REFUSÉ (fail-closed).
+    _checkRearmAndLog(true);
     _phStaleLogged = false;
     _phI2cDegradedLogged = false;
     _ezoEverResponded = true;
@@ -428,6 +459,8 @@ void SensorManager::_readEzoSensors(float tempC) {
       else if (!nowLatched && wasLatched)
         systemLogger.info("Filtre ORP : latch EMI levé (signal stable) — dosage à nouveau possible si mesure OK");
     }
+    // v2.20.3 : sortie de secours — ré-amorçage effectif ou REFUSÉ (fail-closed).
+    _checkRearmAndLog(false);
     _orpStaleLogged = false;
     _orpI2cDegradedLogged = false;
     _ezoEverResponded = true;
@@ -470,20 +503,192 @@ void SensorManager::_readEzoSensors(float tempC) {
   // Trace capteur (feature-057) : on enregistre TOUJOURS (même si pH ou ORP = NaN),
   // pour visualiser les trous de lecture aussi clairement que les valeurs.
   // Contexte loopTask, non bloquant, aucun accès I²C ajouté.
-  _recordSensorTrace(_lastPh, _phFilter.filtered(),
+  // feature-067 : le pH brut ET le pH filtré consignés restent BRUTS (membres
+  // internes) ; seul phCorrected porte l'offset logiciel → la trace permet de
+  // dire à tout instant ce qui vient de l'EZO et ce qui vient de la correction.
+  _recordSensorTrace(_lastPh, applyPhOffset(_lastPh, _phOffset), _phFilter.filtered(),
                      _lastOrp, _orpFilter.filtered(), tempC);
+}
+
+// =============================================================================
+// v2.20.3 — Porte d'alimentation des filtres (bug-filtre-ph-verrouille)
+// =============================================================================
+// Le filtre ne doit PAS ingérer des échantillons que le système lui-même a
+// déclarés non représentatifs (eau à l'arrêt, purge de la chambre de mesure) :
+// sinon sa médiane converge vers la valeur de l'eau STAGNANTE puis acquiert
+// autorité sur les mesures représentatives suivantes, qu'elle rejette une à une
+// comme aberrantes → verrouillage définitif, plus aucune régulation.
+//
+// Le verdict vient de `measureValidity` (mis à jour dans loop() AVANT
+// sensors.update()) : on lit le CACHE sous spinlock, jamais filtration
+// directement. La journalisation est edge-triggered ici — le module pur ne peut
+// pas logger (ADR-0017), même pattern que le latch EMI.
+void SensorManager::_updateFilterGates(uint32_t nowMs) {
+  bool waterPresent = false;
+  bool measuresValid = false;
+  uint32_t remainingS = 0;
+  measureValidity.getSnapshot(waterPresent, measuresValid, remainingS);
+
+  const bool phWasClosed = _phFilter.gateClosed();
+  const bool orpWasClosed = _orpFilter.gateClosed();
+
+  _phFilter.setContext(waterPresent, measuresValid, nowMs);
+  _orpFilter.setContext(waterPresent, measuresValid, nowMs);
+
+  // Les deux filtres partagent le même contexte → une seule paire de logs.
+  const bool nowClosed = _phFilter.gateClosed();
+  if (nowClosed && !phWasClosed) {
+    systemLogger.info(
+        "Filtres pH/ORP : alimentation GELÉE — mesures non représentatives (" +
+        String(waterPresent ? "stabilisation en cours" : "circulation arrêtée") +
+        ") — dosage auto bloqué tant que la porte est fermée");
+  } else if (!nowClosed && phWasClosed) {
+    systemLogger.info(
+        "Filtres pH/ORP : alimentation REPRISE — mesures représentatives, filtres "
+        "ré-amorcés (warmup en cours, la médiane de stagnation est abandonnée)");
+  }
+  (void)orpWasClosed;  // même contexte que le pH — conservé pour la lisibilité
+
+  // Le ré-amorçage induit par la réouverture de la porte est LÉGITIME et déjà
+  // journalisé ci-dessus : on draine le drapeau pour que _checkRearmAndLog() ne
+  // l'attribue pas à tort à la sortie de secours sur rejets.
+  _phFilter.rearmedSinceLastPoll();
+  _orpFilter.rearmedSinceLastPoll();
+}
+
+// =============================================================================
+// v2.20.3 — Sortie de secours : journalisation du ré-amorçage / de son refus
+// =============================================================================
+// Un ré-amorçage est un événement de sécurité chimique (le filtre abandonne sa
+// médiane) → warning. Un REFUS est plus grave : le filtre RESTE verrouillé, donc
+// il n'y a plus AUCUNE régulation → critical + alerte MQTT visible, une seule
+// fois par épisode (rearmDenied() est collant).
+void SensorManager::_checkRearmAndLog(bool isPh) {
+  SensorFilter& filter = isPh ? _phFilter : _orpFilter;
+  bool& deniedLogged = isPh ? _phRearmDeniedLogged : _orpRearmDeniedLogged;
+  const char* label = isPh ? "pH" : "ORP";
+  const unsigned int decimals = isPh ? 3 : 1;
+
+  if (filter.rearmedSinceLastPoll()) {
+    systemLogger.warning(
+        "Filtre " + String(label) + " : RÉ-AMORÇAGE après " +
+        String(kSensorFilterSpikeRearmCount) +
+        " rejets cohérents autour de " + String(filter.raw(), decimals) +
+        " — la grandeur mesurée a franchement changé, la médiane figée est "
+        "abandonnée (warmup en cours, dosage auto bloqué)");
+  }
+
+  const uint8_t denied = filter.rearmDenied();
+  if (denied != 0 && !deniedLogged) {
+    const String motif =
+        (denied == 1)
+            ? String("délai anti-répétition de ") +
+                  String(kSensorFilterRearmCooldownMs / 60000UL) +
+                  " min non écoulé"
+            : String("valeur hors bande admissible");
+    const String msg =
+        "Filtre " + String(label) + " : ré-amorçage REFUSÉ (" + motif +
+        ") sur brut " + String(filter.raw(), decimals) +
+        " — le filtre reste NON PRÊT, régulation " + String(label) +
+        " à l'arrêt : vérifier la sonde";
+    systemLogger.critical(msg);
+    mqttManager.publishAlert(isPh ? "ph_filter_rearm_denied"
+                                  : "orp_filter_rearm_denied",
+                             msg);
+    deniedLogged = true;
+  } else if (denied == 0 && deniedLogged) {
+    deniedLogged = false;  // épisode terminé (ré-amorçage réussi ou reset)
+  }
+}
+
+// =============================================================================
+// v2.20.3 (C1) — Alarme « filtre non prêt durablement » (bug-filtre-ph-verrouille)
+// =============================================================================
+// Un filtre non prêt ALORS QUE la filtration tourne et que les mesures sont
+// déclarées représentatives = plus AUCUNE régulation sur ce paramètre. C'est
+// exactement l'état dans lequel l'installation est restée ≥ 3 h le 2026-08-16,
+// sans la moindre alarme. Verdict pool-chemistry P5 :
+//   - déclenchement après kSensorFilterNotReadyAlarmMs (5 min) CONTINUES ;
+//   - la purge de la chambre de mesure (measuresValid == false) et la
+//     circulation arrêtée ne comptent JAMAIS (états bloquants légitimes) ;
+//   - critical + alerte MQTT à la pose, répétition toutes les
+//     kSensorFilterNotReadyRepeatMs (30 min) tant que la panne dure, info à la
+//     levée. Edge-triggered de bout en bout : jamais de spam.
+void SensorManager::_checkFilterNotReadyAlarm(uint32_t nowMs) {
+  bool waterPresent = false;
+  bool measuresValid = false;
+  uint32_t remainingS = 0;
+  measureValidity.getSnapshot(waterPresent, measuresValid, remainingS);
+  const bool representative = waterPresent && measuresValid;
+
+  _evalNotReadyAlarm(true,  representative && !isPhFilterReady(),  nowMs);
+  _evalNotReadyAlarm(false, representative && !isOrpFilterReady(), nowMs);
+}
+
+void SensorManager::_evalNotReadyAlarm(bool isPh, bool blocked, uint32_t nowMs) {
+  uint32_t& since     = isPh ? _phNotReadySinceMs      : _orpNotReadySinceMs;
+  bool&     alarmed   = isPh ? _phNotReadyAlarmed      : _orpNotReadyAlarmed;
+  uint32_t& lastAlarm = isPh ? _phNotReadyLastAlarmMs  : _orpNotReadyLastAlarmMs;
+  const char* label   = isPh ? "pH" : "ORP";
+
+  if (!blocked) {
+    if (alarmed) {
+      alarmed = false;
+      systemLogger.info("Filtre " + String(label) +
+                        " : de nouveau PRÊT — régulation " + String(label) +
+                        " automatique réarmée (alerte levée)");
+    }
+    since = 0;  // l'épisode doit être CONTINU : toute interruption remet à zéro
+    return;
+  }
+
+  if (since == 0) {
+    // Sentinelle : `since == 0` signifie « pas d'épisode ». Au tout premier
+    // millis() (valeur 0 possible juste après boot), on décale d'1 ms pour ne
+    // pas confondre les deux — erreur d'horodatage bornée à 1 ms.
+    since = (nowMs != 0) ? nowMs : 1;
+    return;
+  }
+  if ((nowMs - since) < kSensorFilterNotReadyAlarmMs) return;
+  if (alarmed && (nowMs - lastAlarm) < kSensorFilterNotReadyRepeatMs) return;
+
+  const uint32_t minutes = (nowMs - since) / 60000UL;
+  String cause;
+  if (isPh) {
+    if (isPhSensorFrozen())            cause = "sonde figée";
+    else if (_phFilter.rearmDenied())  cause = "ré-amorçage refusé (sonde suspecte)";
+    else if (isPhFilterUnstable())     cause = "capteur instable (bruit/EMI)";
+    else                               cause = "fenêtre de mesure non remplie";
+  } else {
+    if (isOrpSensorFrozen())           cause = "sonde figée";
+    else if (_orpFilter.rearmDenied()) cause = "ré-amorçage refusé (sonde suspecte)";
+    else if (isOrpFilterUnstable())    cause = "capteur instable (bruit/EMI)";
+    else                               cause = "fenêtre de mesure non remplie";
+  }
+  const uint8_t rejected = isPh ? getPhRejectedCount() : getOrpRejectedCount();
+  const String msg =
+      "Filtre " + String(label) + " NON PRÊT depuis " + String(minutes) +
+      " min alors que la filtration tourne et que les mesures sont "
+      "représentatives — régulation " + String(label) +
+      " À L'ARRÊT (cause probable : " + cause + ", rejets=" + String(rejected) +
+      "). Vérifier la sonde ; réinitialisation du filtre possible depuis l'interface.";
+  systemLogger.critical(msg);
+  mqttManager.publishAlert(isPh ? "ph_filter_not_ready" : "orp_filter_not_ready", msg);
+  alarmed = true;
+  lastAlarm = nowMs;
 }
 
 // =============================================================================
 // Trace capteur (ring buffer RAM, feature-057)
 // =============================================================================
 
-void SensorManager::_recordSensorTrace(float phRaw, float phFiltered,
+void SensorManager::_recordSensorTrace(float phRaw, float phCorrected, float phFiltered,
                                        float orpRaw, float orpFiltered,
                                        float tempEau) {
   SensorTraceSample& s = _traceBuffer[_traceIdx];
   s.ms          = millis();
   s.phRaw       = phRaw;
+  s.phCorrected = phCorrected;
   s.phFiltered  = phFiltered;
   s.orpRaw      = orpRaw;
   s.orpFiltered = orpFiltered;
@@ -517,6 +722,9 @@ void SensorManager::appendSensorTraceJson(JsonArray out, size_t offset,
     o["t"] = s.ms;
     if (!isnan(s.phRaw))       o["phRaw"]       = roundf(s.phRaw * 1000.0f) / 1000.0f;
     else                       o["phRaw"]       = nullptr;
+    // feature-067 : pH corrigé (brut + offset) exposé À CÔTÉ du brut.
+    if (!isnan(s.phCorrected)) o["phCorrected"] = roundf(s.phCorrected * 1000.0f) / 1000.0f;
+    else                       o["phCorrected"] = nullptr;
     if (!isnan(s.phFiltered))  o["phFiltered"]  = roundf(s.phFiltered * 1000.0f) / 1000.0f;
     else                       o["phFiltered"]  = nullptr;
     if (!isnan(s.orpRaw))      o["orpRaw"]      = roundf(s.orpRaw * 10.0f) / 10.0f;
@@ -746,10 +954,11 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
 // Getters publics — pH / ORP (avec fenêtre stale)
 // =============================================================================
 
+// feature-067 : getPh() renvoie la valeur CORRIGÉE (brut + offset logiciel).
+// Le brut EZO reste accessible via getPhRaw() (règle : seuls les `*Raw` sont bruts).
+// NaN in → NaN out : la fenêtre stale est portée par getPhRaw().
 float SensorManager::getPh() const {
-  if (isnan(_lastPh)) return NAN;
-  if (millis() - _lastPhMs > kSensorStaleTimeoutMs) return NAN;
-  return _lastPh;
+  return applyPhOffset(getPhRaw(), _phOffset);
 }
 
 float SensorManager::getOrp() const {
@@ -761,12 +970,33 @@ float SensorManager::getOrp() const {
 // =============================================================================
 // feature-025 — Getters filtre pH / ORP (lock-free, contexte loopTask)
 // =============================================================================
-// getPhRaw()/getOrpRaw() retournent la même valeur brute que getPh()/getOrp()
-// (avec la même fenêtre stale) — exposés explicitement pour le diagnostic UI/MQTT.
+// getOrpRaw() retourne la même valeur brute que getOrp() (avec la même fenêtre
+// stale) — exposé explicitement pour le diagnostic UI/MQTT.
+//
+// feature-067 — côté pH, `*Raw` n'est PLUS un alias : getPhRaw() est la mesure
+// EZO SANS offset (même fenêtre stale que getPh()), getPhFilteredRaw() est la
+// sortie du filtre SANS offset. Les autres accesseurs pH sont CORRIGÉS.
 
-float SensorManager::getPhRaw() const { return getPh(); }
-float SensorManager::getPhMedian() const { return _phFilter.median(); }
-float SensorManager::getPhFiltered() const { return _phFilter.filtered(); }
+// Dernière mesure pH BRUTE (aucun offset), NaN si absente ou stale.
+// Source unique de la fenêtre stale pH : getPh() s'appuie dessus.
+float SensorManager::getPhRaw() const {
+  if (isnan(_lastPh)) return NAN;
+  if (millis() - _lastPhMs > kSensorStaleTimeoutMs) return NAN;
+  return _lastPh;
+}
+float SensorManager::getPhMedian() const { return applyPhOffset(_phFilter.median(), _phOffset); }
+float SensorManager::getPhFiltered() const { return applyPhOffset(_phFilter.filtered(), _phOffset); }
+// Filets de sécurité chimique uniquement (planchers pool-chemistry) : sortie du
+// filtre telle que produite par le capteur, insensible à un offset erroné.
+// GARDE D'ÂGE OBLIGATOIRE (pool-chemistry P2) : `_phFilter.filtered()` n'expire
+// JAMAIS de lui-même, seul `ready()` porte la fraîcheur. Sans cette garde, une
+// EMA périmée (EZO muet) pourrait déclencher un faux plancher et consommer le
+// compteur des 3 refus jusqu'à basculer la régulation en manuel sur une donnée
+// fantôme — ou, pire, masquer un vrai franchissement. NaN = « pH inconnu », que
+// chaque filet interprète selon sa propre logique fail-closed.
+float SensorManager::getPhFilteredRaw() const {
+  return _phFilter.ready(millis()) ? _phFilter.filtered() : NAN;
+}
 bool SensorManager::isPhFilterReady() const { return _phFilter.ready(millis()); }
 bool SensorManager::isPhFilterUnstable() const { return _phFilter.unstable(); }
 uint8_t SensorManager::getPhRejectedCount() const { return _phFilter.rejectedCount(); }
@@ -784,14 +1014,102 @@ bool SensorManager::isPhSensorFrozen() const { return _phFilter.frozen(); }
 bool SensorManager::isOrpSensorFrozen() const { return _orpFilter.frozen(); }
 bool SensorManager::isTemperatureFrozen() const { return _waterTempFrozen.frozen(); }
 
+// feature-067 — Rafraîchissement de la copie locale de l'offset pH.
+// Appelée au boot et après CHAQUE enregistrement de config : la prise en compte
+// est immédiate (l'offset est appliqué en sortie, pas dans la fenêtre de lissage).
+// Aucun mutex : écriture d'un float aligné (atomique Xtensa), cf. contrat sensors.h.
+void SensorManager::refreshPhOffsetCache() {
+  float requested = mqttCfg.phOffset;
+  // Fail-safe : une valeur hors bornes (ou NaN) ne doit jamais être appliquée à
+  // la mesure qui pilote la régulation — on neutralise à 0.00.
+  if (!isPhOffsetValid(requested)) {
+    systemLogger.warning("Offset pH hors bornes (" + String(requested, 2) +
+                         ") — offset appliqué remis à 0.00");
+    requested = 0.0f;
+  }
+  if (requested == _phOffset) return;  // rien à journaliser
+  // Journalisation exigée par pool-chemistry (condition #8) : traçabilité de
+  // tout changement d'entrée de la régulation pH.
+  systemLogger.info("Offset pH modifié: ancien=" + String(_phOffset, 2) +
+                    " nouveau=" + String(requested, 2));
+  _phOffset = requested;
+}
+
 void SensorManager::resetPhFilter() {
   _phFilter.reset();
+  // v2.20.3 (C1) : un reset relance un warmup légitime (~65 s) → on désarme
+  // l'alarme et on repart sur une fenêtre de kSensorFilterNotReadyAlarmMs
+  // complète. Sans cela l'alarme se reposerait immédiatement après chaque
+  // réparation, exactement au moment où l'utilisateur vient d'agir.
+  _phNotReadySinceMs = 0;
+  _phNotReadyAlarmed = false;
   systemLogger.info("Filtre pH réinitialisé — warmup en cours (dosage auto pH bloqué)");
 }
 
 void SensorManager::resetOrpFilter() {
   _orpFilter.reset();
+  _orpNotReadySinceMs = 0;   // idem pH (cf. commentaire ci-dessus)
+  _orpNotReadyAlarmed = false;
   systemLogger.info("Filtre ORP réinitialisé — warmup en cours (dosage auto ORP bloqué)");
+}
+
+// v2.20.3 — Demande DIFFÉRÉE de réinitialisation (appelable hors loopTask).
+// Les `volatile bool` sont des drapeaux idempotents : une double demande depuis
+// deux contextes ne produit qu'un seul reset. Aucun mutex nécessaire (écriture
+// d'un bool aligné, atomique sur Xtensa LX6 — même contrat que _lastPh).
+bool SensorManager::requestFilterReset(bool ph, bool orp, const char* origin) {
+  if (!ph && !orp) return false;
+  if (origin == nullptr) origin = "inconnue";
+  // Origine posée AVANT le drapeau : loopTask ne peut donc jamais lire une
+  // origine périmée pour une demande fraîche (ordre d'écriture significatif).
+  if (ph)  { _phResetOrigin = origin;  _phFilterResetRequested = true; }
+  if (orp) { _orpResetOrigin = origin; _orpFilterResetRequested = true; }
+  return true;
+}
+
+// =============================================================================
+// v2.20.3 (D4) — Exécution + journalisation d'une réinitialisation demandée
+// =============================================================================
+// Verdict pool-chemistry P6 : un reset manuel EFFACE la détection de sonde figée
+// (feature-022) et le latch EMI (feature-058). Il doit donc laisser une trace de
+// ce qu'il a détruit, sans quoi un utilisateur peut masquer une sonde HS à
+// répétition sans que rien ne le signale. `frozen()` vrai au moment du reset →
+// critical (on vient d'effacer un diagnostic matériel), sinon warning.
+void SensorManager::_executeRequestedReset(bool isPh, const char* origin) {
+  const char* label = isPh ? "pH" : "ORP";
+  const unsigned int decimals = isPh ? 3 : 1;
+
+  // --- État AVANT (celui qui va être détruit) ---
+  // Médianes lues via les accesseurs publics (donc CORRIGÉES côté pH, ADR-0039) :
+  // la trace doit correspondre à ce que l'utilisateur voyait dans l'interface.
+  const float medianBefore  = isPh ? getPhMedian() : getOrpMedian();
+  const uint8_t rejected    = isPh ? getPhRejectedCount() : getOrpRejectedCount();
+  const bool latched        = isPh ? isPhFilterLatched() : isOrpFilterLatched();
+  const bool frozenBefore   = isPh ? isPhSensorFrozen() : isOrpSensorFrozen();
+  const bool readyBefore    = isPh ? isPhFilterReady() : isOrpFilterReady();
+
+  if (isPh) resetPhFilter(); else resetOrpFilter();
+
+  // --- État APRÈS (le reset vide le buffer → médiane NaN, warmup) ---
+  const float medianAfter = isPh ? getPhMedian() : getOrpMedian();
+
+  String msg = "Filtre " + String(label) +
+               " : RÉINITIALISATION MANUELLE (origine : " + String(origin) +
+               ") — médiane " +
+               (isnan(medianBefore) ? String("--") : String(medianBefore, decimals)) +
+               " → " +
+               (isnan(medianAfter) ? String("--") : String(medianAfter, decimals)) +
+               ", rejets=" + String(rejected) +
+               ", latch EMI=" + String(latched ? "oui" : "non") +
+               ", prêt=" + String(readyBefore ? "oui" : "non") +
+               ", sonde figée=" + String(frozenBefore ? "OUI" : "non");
+  if (frozenBefore) {
+    systemLogger.critical(
+        msg + " — la DÉTECTION DE SONDE FIGÉE vient d'être effacée : si la sonde "
+              "est réellement HS, le défaut sera de nouveau masqué au prochain cycle");
+  } else {
+    systemLogger.warning(msg);
+  }
 }
 
 int SensorManager::getPhCalibrationPoints() {

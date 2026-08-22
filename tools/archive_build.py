@@ -1,0 +1,120 @@
+"""
+Archivage automatique des artefacts de build (bug-famine-8bits, bloc F, v2.20.2).
+
+POURQUOI
+--------
+Le coredump du crash de production du 15/08/2026 a été INEXPLOITABLE : décoder un
+coredump exige l'ELF EXACT du firmware qui tournait, or le dernier ELF présent
+dans `builds/` datait du 02/08. `deploy.sh` archive bien l'ELF (fonction
+archive_elf), mais `pio run` lancé directement et `./ota_update.sh` ne passent pas
+par lui — et ce sont les chemins réellement utilisés au quotidien.
+
+Ce script est branché en `extra_scripts = post:` sur les envs matériels : chaque
+`pio run` archive DÉSORMAIS l'ELF **et** le BIN (le BIN identifie l'image
+effectivement flashée, l'ELF porte les symboles) sous :
+
+    builds/<VERSION>/<ENV>/firmware_<AAAAMMJJ_HHMMSS>.{elf,bin}
+
+La version est lue dans `src/version.h` (FIRMWARE_VERSION) : les archives sont
+ainsi rangées par version, ce qui rend triviale la question « quel ELF correspond
+au firmware 2.20.2 qui a crashé ? ». Le sous-dossier d'environnement
+(`esp32dev` / `esp32dev_core3`) est indispensable : les deux envs produisent des
+binaires DIFFÉRENTS sous la même version, et l'ELF doit correspondre EXACTEMENT à
+l'image qui tournait.
+
+Rétention : les 5 archives les plus récentes PAR VERSION ET PAR ENVIRONNEMENT
+(l'ELF pèse ~10 Mo ; 5 suffisent à couvrir les itérations d'une même version sans
+saturer le dépôt). Les paires elf/bin sont retenues indépendamment.
+
+Le script ne fait JAMAIS échouer le build : toute erreur est signalée et ignorée.
+"""
+
+import os
+import re
+import shutil
+from datetime import datetime
+
+# Un fichier `firmware_*` NON horodaté fausserait le tri lexicographique de la
+# purge : on ne considère que le format produit ici (contre-revue 2.20.2).
+MOTIF_ARCHIVE = re.compile(r"^firmware_\d{8}_\d{6}\.[a-z]+$")
+
+Import("env")  # noqa: F821  (injecté par SCons/PlatformIO)
+
+# Nombre d'archives conservées par version et par extension.
+RETENTION_PER_VERSION = 5
+
+
+def _lire_version(project_dir):
+    """Extrait FIRMWARE_VERSION de src/version.h, ou 'inconnue' si illisible."""
+    chemin = os.path.join(project_dir, "src", "version.h")
+    try:
+        with open(chemin, "r", encoding="utf-8") as f:
+            m = re.search(r'#define\s+FIRMWARE_VERSION\s+"([^"]+)"', f.read())
+            if m:
+                return m.group(1)
+    except OSError:
+        pass
+    return "inconnue"
+
+
+def _purger(dossier, extension, garder):
+    """Ne conserve que les `garder` fichiers *.extension les plus récents.
+
+    Le dossier est déjà cloisonné PAR ENVIRONNEMENT (cf. archiver_build) : la
+    purge ne peut donc pas faire évincer l'ELF core3 déployé par une série de
+    builds core2. C'était le bloquant n°2 de la revue 2.20.2, et c'est très
+    exactement la perte forensique qu'on corrige.
+
+    Tri par NOM et non par date de modification : `shutil.copy2` recopie la mtime
+    de la source, si bien qu'un rebuild d'une révision plus ancienne pouvait
+    passer pour l'archive la plus récente. L'horodatage étant en tête du nom au
+    format AAAAMMJJ_HHMMSS, l'ordre lexicographique EST l'ordre chronologique.
+    """
+    fichiers = [
+        os.path.join(dossier, n)
+        for n in os.listdir(dossier)
+        if n.endswith(extension) and MOTIF_ARCHIVE.match(n)
+    ]
+    fichiers.sort(reverse=True)
+    for obsolete in fichiers[garder:]:
+        try:
+            os.remove(obsolete)
+        except OSError:
+            pass
+
+
+def archiver_build(source, target, env):  # noqa: ARG001 (signature imposée par SCons)
+    """Copie firmware.elf et firmware.bin dans builds/<VERSION>/ avec horodatage."""
+    try:
+        project_dir = env.subst("$PROJECT_DIR")
+        build_dir = env.subst("$BUILD_DIR")
+        version = _lire_version(project_dir)
+        # Cloisonnement PAR ENVIRONNEMENT (revue 2.20.2, bloquant n°2) : les deux
+        # envs matériels produisent des binaires DIFFÉRENTS sous la même version.
+        # Rangés ensemble, 5 builds core2 évinçaient l'ELF core3 réellement
+        # déployé — soit la panne forensique du 15/08 reconduite.
+        pioenv = env.subst("$PIOENV") or "env-inconnu"
+        dossier = os.path.join(project_dir, "builds", version, pioenv)
+        os.makedirs(dossier, exist_ok=True)
+
+        horodatage = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archives = []
+        for extension in (".elf", ".bin"):
+            source_path = os.path.join(build_dir, "firmware" + extension)
+            if not os.path.isfile(source_path):
+                continue
+            destination = os.path.join(dossier, "firmware_%s%s" % (horodatage, extension))
+            shutil.copy2(source_path, destination)
+            archives.append(os.path.basename(destination))
+            _purger(dossier, extension, RETENTION_PER_VERSION)
+
+        if archives:
+            print("Build archivé -> builds/%s/%s/{%s}" % (version, pioenv, ", ".join(archives)))
+        else:
+            print("Archivage build : aucun artefact trouvé dans %s" % build_dir)
+    except Exception as exc:  # noqa: BLE001 - ne JAMAIS casser le build pour un archivage
+        print("Archivage build ignoré (%s)" % exc)
+
+
+# Déclenché après la production de firmware.bin (dernière étape du build image).
+env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", archiver_build)  # noqa: F821

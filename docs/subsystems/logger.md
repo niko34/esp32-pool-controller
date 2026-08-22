@@ -110,6 +110,26 @@ Activable via `setPersistenceFs(LittleFS*)` après montage de la partition `hist
 
 > ⚠️ Ces deux plafonds **font partie du budget d'espace** de la partition `history` (pire cas 13/16 blocs, [ADR-0033](../adr/0033-budget-espace-partition-history.md)) : ne pas les ré-augmenter sans recalculer le budget.
 
+### Rétention réelle du journal persistant (v2.20.2)
+
+`kMaxLogFileBytes` et `kRotateKeepBytes` sont **inchangés** : la rétention ne se règle pas en agrandissant le fichier (le budget de la partition l'interdit), elle se règle en **réduisant le débit des émetteurs périodiques**. Le fichier oscillant entre 6 144 et 8 192 octets, la fenêtre couverte vaut `6144…8192 ÷ débit`.
+
+| | Débit des traces périodiques | Rétention réelle du fichier `/system.log` |
+|---|---|---|
+| **Avant** (2.20.0/2.20.1) | **≈ 14,1 Ko/h** | **26 à 34 minutes** |
+| **Après** (2.20.2) | **≈ 0,41 Ko/h** (−97 %) | **14,6 à 19,5 heures** |
+
+Ce n'est pas une optimisation de confort : **le post-mortem du crash de production du 15/08 (16:43) a été détruit par notre propre journalisation** avant d'avoir pu être lu. Deux émetteurs produisaient à eux seuls la quasi-totalité du flot, dont ~90 % la **même ligne**.
+
+Cadences des émetteurs périodiques qui écrivent dans `/system.log` :
+
+| Trace | Avant | Après | Où |
+|---|---|---|---|
+| `WARN Alloc heap échouée …` | throttle **fixe** 30 s (≈ 120 lignes/h) | **backoff** immédiat → 30 s → 5 min → 30 min, retour au palier initial après 1 h sans échec | [oom-guard.md](oom-guard.md#backoff-du-warn-déchec--restaurer-la-fenêtre-forensique-v2202) |
+| `INFO Heap 8bits: …` | 5 min, ligne longue (partie `interne:` incluse) | **30 min**, ligne raccourcie (`interne:` **retiré** — valeur figée, sans information) | [system-health.md](system-health.md#trace-de-calibrage-des-seuils-mémoire-v2190) |
+
+> **Règle générale** : avant d'ajouter une trace **périodique** persistée, chiffrer son débit en Ko/h et vérifier la rétention résultante. Une trace de 100 octets toutes les 30 s consomme **à elle seule** 12 Ko/h, soit plus que la taille totale du fichier — elle rend le journal inutilisable pour tout post-mortem.
+
 Le tampon `_persistBuffer` (std::vector<String>) accumule entre deux flushes. Sa capacité est **bornée à 100 entrées** (`kMaxPersistBufferEntries`) et pré-allouée dans le constructeur (`reserve(kMaxPersistBufferEntries)`) pour éviter les `std::bad_alloc` en cas de heap fragmenté en production. Les entrées au-delà de 100 sont silencieusement ignorées (les logs restent dans le buffer RAM circulaire).
 
 **Logs pré-persistance** : tant que `setPersistenceFs()` n'a pas été appelé (`_persistEnabled == false`), les entrées ne sont **pas** accumulées pour `/system.log` — elles partent en buffer RAM + console uniquement. C'est notamment le cas des logs du **disjoncteur de boot-loop history** (v2.10.0), qui s'exécute dans `HistoryManager::begin()` **avant** l'activation de la persistance (c'est précisément elle qu'il protège) : le CRIT « partition effacée automatiquement » est visible dans la page Logs (RAM) et sur la série, mais jamais dans `/system.log`. Voir [system-health.md](system-health.md#disjoncteur-de-boot-loop-de-linit-history-v2100).

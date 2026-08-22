@@ -94,6 +94,16 @@ Le gate a par ailleurs **refusé** de différer un redémarrage d'auto-guérison
 - **L'invariant d'ordre des seuils** (`restart < rearmOom ≤ wsPush < lowHeapWarn < min24h`) fait contrat : aucun de ces cinq seuils ne se modifie isolément, et toute modification passe par un relevé on-target.
 - **Un redémarrage d'auto-guérison ne sera jamais différé au motif qu'une injection est en cours** (gate `pool-chemistry`) : PWM matériel, risque de pompe laissée énergisée.
 
+## Note additive — 2026-08-15 (v2.20.2) : la règle de recalibrage est INAPPLICABLE, les mesures du 15/08 sont invalidées
+
+> Ajout **additif** ne modifiant aucune décision ci-dessus. Le diagnostic (la métrique était fausse) et le découpage mesure/bascule **restent valides**. Ce qui tombe, c'est la **formule de recalibrage** et le **jeu de mesures** censé l'alimenter. Décision de remplacement : [ADR-0040](0040-pas-de-calibrage-sur-fragmentation-pathologique.md).
+
+**1. La règle `kRestartMaxAllocHeapBytes = clamp(0,40 × min24h ; 8192 ; 16384)` ne doit plus être appliquée telle quelle.** Elle a été validée par le gate chimique **en supposant un `min24h` de plusieurs dizaines de kilo-octets**. Le relevé on-target donne `minMaxBloc8_boot = 3 060` o : `0,40 × 3 060 = 1 224` est **écrêté au plancher 8 192**, or `8 192 > 3 060`. Le seuil de redémarrage se retrouverait **au-dessus du minimum observé en fonctionnement normal** → redémarrages en boucle → **mode maintenance, c'est-à-dire dosage suspendu**, en quelques minutes. Toute réutilisation de cette formule exige une **re-dérivation** sur des relevés propres.
+
+**2. Les mesures du 15/08 sont invalidées comme base de calibrage.** Sur 1 025 échecs d'allocation comptés, **~100 %** étaient le `malloc(12288)` du réarmement du parachute lui-même, retenté toutes les 10 s parce qu'il lisait la métrique brute figée à 27 636. La garde fabriquait son propre signal d'alarme. Condition d'entrée d'un nouveau calibrage : **≥ 24 h de relevés sous 2.20.2** (signal débruité) **et** identification du fragmenteur.
+
+**3. La bascule prévue en « v2.19.1 » n'a eu lieu que partiellement.** Seuls les **deux paliers de réarmement du parachute** lisent la mesure 8 bits ; `kRestartMaxAllocHeapBytes`, `kHttpHeapMarginBytes`, `kWsPushMinAllocBytes`, `kLowHeapWarnBytes`, `kCheckUpdateMinFreeHeapBytes` et `kCheckUpdateMinMaxAllocBytes` restent sur la métrique brute par **NO GO explicite du gate `pool-chemistry`**. L'**invariant d'ordre** énoncé ci-dessus (`restart < rearmOom ≤ wsPush < lowHeapWarn < min24h`) est donc **momentanément sans signification** — ses membres ne sont plus homogènes. Il redevient contractuel à l'issue de la bascule complète.
+
 ## Références
 
 - Code : [`src/heap_metrics.h`](../../src/heap_metrics.h) / [`src/heap_metrics.cpp`](../../src/heap_metrics.cpp) (helper), [`src/heap_ring.cpp`](../../src/heap_ring.cpp) (anneau + miroir sur mesure 8 bits, magic bumpé), [`src/oom_guard_logic.h`](../../src/oom_guard_logic.h) / [`src/oom_guard.cpp`](../../src/oom_guard.cpp) (post-mortem, magic bumpé, libellés `free8=` / `maxB8=`), [`src/main.cpp`](../../src/main.cpp) (`checkHeapHealth` — trace de calibrage), [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) (`/get-system-info`), [`src/constants.h`](../../src/constants.h) (seuils **inchangés** en 2.19.0)

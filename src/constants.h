@@ -125,6 +125,11 @@ constexpr uint32_t kRestartMaxAllocHeapBytes = 8192;      // Plus gros bloc cont
 constexpr uint32_t kLowHeapWarnBytes = 20000;             // Plus gros bloc < seuil → WARN + flush disque one-shot
 constexpr unsigned long kHeapLogIntervalMs = 300000;      // 5min - cadence mini de la trace INFO « Heap: … » (anti-spam journal)
 constexpr uint32_t kHeapLogDropBytes = 8192;              // Émet aussi la trace Heap si maxBloc chute de + de 8 Ko depuis la dernière émission
+// Cadence PROPRE de la trace de calibrage « Heap 8bits: … » (checkHeapHealth).
+// v2.20.2 : 5 min → 30 min. À 5 min elle coûtait ~2,3 Ko/h sur un journal
+// persistant de 8 Ko et participait à ramener la rétention à ~30 min, ce qui a
+// détruit le post-mortem du crash du 15/08. À 30 min : ~0,24 Ko/h.
+constexpr unsigned long kHeap8LogIntervalMs = 1800000;    // 30min - cadence de la trace INFO « Heap 8bits: … »
 
 constexpr uint8_t  kAutoHealDebounceChecks = 3;           // Ticks consécutifs sous seuil avant restart (anti oscillation)
 constexpr uint32_t kAutoHealMinUptimeMs = 180000;         // 3 min - uptime minimal avant tout restart auto
@@ -278,28 +283,58 @@ constexpr size_t kOomReserveBytes = 12288;
 // Nouvelle valeur = 2 × kOomReserveBytes : atteignable dans le régime réel tout
 // en gardant une marge d'un bloc entier au-dessus de la taille à allouer.
 //
-// ÉCHELLE COMPLÈTE des seuils « plus gros bloc contigu » (ordre croissant) :
-//    8 192 o (kRestartMaxAllocHeapBytes)      → reboot d'auto-guérison
-//   12 288 o (kOomFallbackRearmMinMaxAllocBytes) → réarmement de la réserve de REPLI
-//   16 384 o (kWsPushMinAllocBytes)           → pushes WS sautés
-//   20 000 o (kLowHeapWarnBytes)              → WARN heap + flush disque one-shot
-//   24 576 o (kOomRearmMinMaxAllocBytes)      → réarmement de la réserve NOMINALE
+// ÉCHELLE COMPLÈTE des seuils « plus gros bloc contigu » (ordre croissant).
+// ATTENTION v2.20.2 : les seuils ne sont PLUS tous exprimés dans la même métrique.
+// Seul le réarmement du parachute a basculé sur la mesure 8 bits RÉELLE
+// (heapLargestFreeBlock8Bit) ; les autres restent sur la métrique BRUTE
+// ESP.getMaxAllocHeap() par décision NO GO explicite du gate pool-chemistry —
+// les basculer avec les seuils actuels rendrait le mode maintenance (= DOSAGE
+// SUSPENDU) atteignable en régime normal, puisque 8 192 > minMaxBloc8 = 3 060.
+//   [8 bits]    2 048 o (kOomFallbackRearmMinMaxAllocBytes) → réserve de REPLI
+//   [8 bits]   24 576 o (kOomRearmMinMaxAllocBytes)         → réserve NOMINALE
+//   [brute]     8 192 o (kRestartMaxAllocHeapBytes)         → reboot d'auto-guérison
+//   [brute]    16 384 o (kWsPushMinAllocBytes)              → pushes WS sautés
+//   [brute]    20 000 o (kLowHeapWarnBytes)                 → WARN heap + flush one-shot
 constexpr uint32_t kOomRearmMinMaxAllocBytes = 24576;
 constexpr unsigned long kOomRearmCheckIntervalMs = 10000;  // 10 s - cadence lente du réarmement (loop)
 
 // Réserve de REPLI (2ᵉ palier) : si le bloc nominal de 12 Ko n'est pas allouable,
 // le parachute s'arme quand même avec un bloc plus petit — « toujours armé »
-// vaut mieux que « jamais réarmé » (défaut n°1 du 13/08). 2 Ko couvrent
-// largement les petites allocations vitales observées dans les deux crashs
-// (accept HTTP 356 o, AsyncFileResponse 156 o, __cxa_allocate_exception 100 o).
+// vaut mieux que « jamais réarmé » (défaut n°1 du 13/08). Les petites allocations
+// vitales observées dans les trois crashs tiennent très largement dedans (accept
+// HTTP 356 o, AsyncFileResponse 156 o, __cxa_allocate_exception 100 o).
 // Le surclassement repli → nominal est fait par la loop dès que maxBloc repasse
 // au-dessus de kOomRearmMinMaxAllocBytes ; JAMAIS l'inverse (pas d'oscillation).
-constexpr size_t kOomFallbackReserveBytes = 2048;
-constexpr uint32_t kOomFallbackRearmMinMaxAllocBytes = 12288;
+//
+// RECALIBRAGE v2.20.2 (bug-famine-8bits, bloc E1) — seuil 12288 → 2048 et taille
+// 2048 → 1024. Les deux valeurs étaient calées sur ESP.getMaxAllocHeap() (FAUSSE :
+// IRAM 32 bits comprise, figée à 27 636 o) alors que le tick lit désormais
+// heapLargestFreeBlock8Bit(). Régime 8 bits RÉEL mesuré sur 5 h :
+// maxBloc8 ∈ [4 084 ; 9 204], minMaxBloc8_boot = 3 060.
+// INVARIANT C2 imposé par le gate pool-chemistry, vérifié ici :
+//   (a) seuil de réarmement 2 048 < 3 060  → le palier de repli reste armable même
+//       au pire creux observé depuis le boot (aucun trou de protection) ;
+//   (b) taille allouée 1 024 ≤ 2 048 / 2   → allouer la réserve ne peut pas à soi
+//       seul faire retomber le tas sous son propre seuil de réarmement ;
+//   (c) 2 048 ≤ 4 084 = min(maxBloc8 observé en régime) → armable en pratique.
+// kOomRearmMinMaxAllocBytes reste à 24 576 : DÉLIBÉRÉMENT inatteignable dans le
+// régime fragmenté actuel (donc plus aucun malloc(12288) répété toutes les 10 s),
+// mais le réarmement nominal automatique repart de lui-même si la fragmentation
+// disparaît.
+constexpr size_t kOomFallbackReserveBytes = 1024;
+constexpr uint32_t kOomFallbackRearmMinMaxAllocBytes = 2048;
 
-// Throttle du WARN différé « allocation heap échouée » (callback diagnostic
+// Backoff du WARN différé « allocation heap échouée » (callback diagnostic
 // heap_caps_register_failed_alloc_callback, mode flag-seul — drainé par loop).
-constexpr unsigned long kOomFailWarnThrottleMs = 30000;    // 30 s - max 1 WARN par fenêtre
+// v2.20.2 : remplace le throttle FIXE kOomFailWarnThrottleMs (30 s), qui produisait
+// ~120 WARN/h et faisait tourner le journal persistant (8 Ko) en 25-35 min — le
+// post-mortem du crash du 15/08 a été détruit par notre propre journalisation.
+// Escalade 30 s → 5 min → 30 min (saturation), retour au palier initial après une
+// heure sans nouvel échec. Logique pure : oomFailWarnNextDelayMs().
+constexpr unsigned long kOomFailWarnDelayInitialMs = 30000;    // 30 s - 1er palier (signal immédiat)
+constexpr unsigned long kOomFailWarnDelayMidMs = 300000;       // 5 min - 2e palier
+constexpr unsigned long kOomFailWarnDelayMaxMs = 1800000;      // 30 min - palier de saturation
+constexpr unsigned long kOomFailWarnDelayResetMs = 3600000;    // 1 h sans échec → retour au palier initial
 
 // ---------------------------------------------------------------------------
 // Post-mortem d'allocation en RAM RTC + verdict (bug-parachute-oom-jamais-rearme)
@@ -457,8 +492,55 @@ constexpr float   kOrpFilterMaxDispersion        = 100.0f;   // mV : dispersion 
 // Un point unique tel que |brut − médiane| dépasse ce seuil est ÉCARTÉ (n'alimente
 // pas le buffer, donc EXCLU du calcul de dispersion) et ne compte PAS comme instabilité.
 // Bien au-dessus de l'amplitude d'oscillation légitime : ne rejette que l'aberration franche.
+// MAINTENUS EN L'ÉTAT (verdict pool-chemistry P4, bug-filtre-ph-verrouille) : le
+// seuil de rejet n'est PAS la cause du verrouillage — c'était l'absence de sortie
+// de secours. L'élargir dégraderait la protection contre les vraies aberrations
+// (feature-058) sans rien résoudre. La sortie de secours ci-dessous suffit.
 constexpr float   kPhFilterSpikeReject           = 1.0f;     // pH : spike dur isolé écarté
 constexpr float   kOrpFilterSpikeReject          = 300.0f;   // mV : spike dur isolé écarté
+
+// --- Sortie de secours : ré-amorçage sur rejets de spike SOUTENUS ET COHÉRENTS ---
+// (bug-filtre-ph-verrouille-par-rejet-de-spike-sans-issue, v2.20.3)
+// Un échantillon rejeté comme spike n'alimente pas le buffer → la médiane ne peut
+// plus évoluer → tout échantillon suivant est rejeté à son tour : le filtre se
+// verrouille DÉFINITIVEMENT sur une médiane périmée (incident 2026-08-16, dosage
+// pH ET chlore à l'arrêt ≥ 3 h). Le critère qui distingue une aberration réelle
+// d'un échelon légitime de la grandeur mesurée est la COHÉRENCE MUTUELLE des
+// rejets : N rejets successifs proches les uns des autres décrivent une nouvelle
+// valeur, pas du bruit. Trois gardes cumulatives (pool-chemistry) encadrent le
+// ré-amorçage pour qu'une sonde réellement HS reste fail-closed.
+constexpr uint8_t  kSensorFilterSpikeRearmCount   = 12;        // Rejets cohérents consécutifs avant ré-amorçage (≈60 s à 5 s)
+constexpr uint32_t kSensorFilterRearmCooldownMs   = 1800000UL; // 30 min entre deux ré-amorçages (anti-chasse au bruit)
+// Plancher de gel de l'alimentation du filtre après un front montant d'eau : même
+// si la coquille déclare déjà les mesures représentatives (délai de stabilisation
+// utilisateur à 0), on ne laisse JAMAIS l'eau stagnante de la chambre de mesure
+// entrer dans le filtre pendant la première minute de circulation.
+constexpr uint32_t kSensorFilterGateFloorMs       = 60000UL;   // 60 s
+
+// Cohérence exigée entre les N rejets (amplitude max−min de la série rejetée).
+// Largement sous le seuil de spike : une série DISPERSÉE est du bruit, pas un échelon.
+constexpr float    kPhFilterRearmCoherence        = 0.20f;     // pH
+constexpr float    kOrpFilterRearmCoherence       = 40.0f;     // mV
+// Bande admissible de la nouvelle valeur cible : hors de cette bande, la mesure
+// n'est plus physiquement plausible pour un bassin → on REFUSE de ré-amorcer
+// (fail-closed : sonde suspecte), on alarme, et le dosage reste bloqué.
+// ATTENTION — ces bornes sont sur l'échelle BRUTE : le filtre travaille en amont
+// de l'offset logiciel, qui n'est appliqué qu'en sortie d'accesseur (ADR-0039).
+// La bande effective en pH CORRIGÉ est donc [6.50 + ph_offset, 8.20 + ph_offset].
+constexpr float    kPhFilterRearmMin              = 6.50f;     // pH BRUT
+constexpr float    kPhFilterRearmMax              = 8.20f;     // pH BRUT
+constexpr float    kOrpFilterRearmMin             = 300.0f;    // mV
+constexpr float    kOrpFilterRearmMax             = 950.0f;    // mV
+
+// --- Alarme « filtre non prêt durablement » (passe 2) ---
+// Un filtre non prêt alors que la filtration tourne = AUCUNE régulation. Au-delà
+// de ce délai → critical + alerte visible, répétée périodiquement tant que dure
+// la panne (l'absence totale de régulation ne doit jamais être silencieuse).
+constexpr uint32_t kSensorFilterNotReadyAlarmMs   = 300000UL;  // 5 min
+constexpr uint32_t kSensorFilterNotReadyRepeatMs  = 1800000UL; // 30 min
+// Anti-abus de la réinitialisation manuelle exposée hors debug (passe 2) : un
+// reset relance un warmup complet (dosage bloqué), il ne doit pas être spammé.
+constexpr uint32_t kSensorFilterUiResetMinIntervalMs = 600000UL; // 10 min
 
 // --- Latch EMI (persistance de l'inhibition) ---
 // Un bruit de niveau EMI SOUTENU (dispersion > cap sur N fenêtres pleines consécutives)
@@ -479,12 +561,15 @@ constexpr uint8_t kSensorFilterLatchClearCycles  = 12;      // Fenêtres propres
 constexpr uint32_t kSensorFilterMaxAgeMs         = 20000;    // 20 s
 
 // Trace capteur (ring buffer RAM, feature-057) : chaque cycle EZO enregistre un
-// échantillon (pH brut/lissé, ORP brut/lissé, T° eau). 300 × 24 o ≈ 7 Ko.
+// échantillon (pH brut/corrigé/lissé, ORP brut/lissé, T° eau).
+// feature-067 : +1 champ float (phCorrected) → 300 × 28 o ≈ 8,4 Ko (+1,2 Ko).
 // Fenêtre glissante ≈ 25 min à kPhOrpSensorIntervalMs (5 s). Diagnostic pur.
 constexpr size_t kSensorTraceBufferSize          = 300;
 // Pagination de GET /debug/sensor_trace (bug-crash-sensor-trace-badalloc) :
-// 50 échantillons/page ≈ 3,5 Ko de JSON — jamais d'allocation contiguë > ~4 Ko
-// dans AsyncResponseStream (le heap fragmenté peut descendre sous 8 Ko, ADR-0029).
+// 50 échantillons/page ≈ 4,5 Ko de JSON depuis feature-067 (champ phCorrected) —
+// pas d'allocation contiguë démesurée dans AsyncResponseStream (le heap
+// fragmenté peut descendre sous 8 Ko, ADR-0029) ; la garde measureJson +
+// kSensorTraceHeapMarginBytes reste le filet en cas de heap trop fragmenté.
 constexpr size_t kSensorTraceMaxSamplesPerPage   = 50;
 // Marge de sécurité entre la taille mesurée de la réponse (measureJson) et le
 // plus gros bloc libre (ESP.getMaxAllocHeap()) : en dessous → 503 propre au
@@ -492,6 +577,50 @@ constexpr size_t kSensorTraceMaxSamplesPerPage   = 50;
 // Alias historique (v2.10.1) de la marge commune kHttpHeapMarginBytes — même
 // valeur, zéro diff comportemental (bug-crash-getlogs-badalloc).
 constexpr size_t kSensorTraceHeapMarginBytes     = kHttpHeapMarginBytes;
+
+// ============================================================================
+// OFFSET LOGICIEL DE MESURE pH (feature-067)
+// ============================================================================
+// pH corrigé = pH brut EZO + phOffset, appliqué EN SORTIE des accesseurs
+// (cf. src/ph_offset.h). La calibration EZO n'est jamais touchée.
+
+// Bornes de l'offset — arbitrage utilisateur validé sous conditions par
+// pool-chemistry. Justification chimique : l'offset décale la consigne EFFECTIVE
+// (cible 7,20 avec offset +0,40 → l'eau réelle est régulée à 6,80). ±0,50 pH
+// couvre un décalage d'implantation de sonde ; au-delà, le défaut vient de la
+// sonde ou de la calibration EZO et l'écart pH régulé / pH réel devient
+// dangereux (corrosion côté bas, chlore inactif côté haut).
+constexpr float kPhOffsetMin = -0.50f;
+constexpr float kPhOffsetMax =  0.50f;
+
+// --- Plancher dur d'injection d'acide sur le pH filtré BRUT (pool-chemistry #2) ---
+// Filet de sécurité contre un offset POSITIF erroné : la régulation croit doser
+// vers 7,20 alors que l'eau réelle est déjà sous 6,90. Sous ~6,8 l'eau devient
+// agressive (attaque du liner, des joints, des parties métalliques et du filtre).
+// Sous le plancher applicable, TOUTE injection d'acide est refusée, quelle que
+// soit la valeur corrigée. Deux paliers : plus l'offset est large, plus la marge
+// doit être grande (l'incertitude sur le pH réel croît avec |offset|).
+// Inerte à offset 0 : à 6,80 brut la régulation acide n'a de toute façon rien à
+// corriger (cible usuelle 7,0-7,4).
+constexpr float kPhOffsetWideThreshold = 0.30f;  // Bascule de palier sur |offset|
+constexpr float kPhRawDosingFloor      = 6.80f;  // |offset| <= kPhOffsetWideThreshold
+constexpr float kPhRawDosingFloorWide  = 6.90f;  // |offset| >  kPhOffsetWideThreshold
+
+// --- Inhibition du dosage ORP sur pH brut élevé (pool-chemistry #3) ---
+// Filet de sécurité symétrique contre un offset NÉGATIF erroné : la régulation
+// laisse alors le pH réel monter. Au-dessus de ~7,6 la fraction d'acide
+// hypochloreux (HClO, forme active du chlore) s'effondre (< 25 %) : l'ORP mesuré
+// chute à concentration de chlore constante et la régulation ORP compense en
+// SURDOSANT le chlore. On suspend donc le dosage ORP tant que le pH filtré BRUT
+// dépasse ce seuil — le vrai correctif est de faire baisser le pH.
+constexpr float kPhRawOrpInhibit = 7.60f;
+
+// --- Compteur de refus plancher (pool-chemistry #7) ---
+// Un plancher qui se déclenche à répétition signe une sonde pH morte ou un
+// offset saisi à l'envers, pas un incident ponctuel : log critical explicite +
+// bascule fail-closed de la régulation pH en manuel.
+constexpr uint8_t  kPhRawFloorRefusalMax      = 3;           // Refus tolérés dans la fenêtre
+constexpr uint32_t kPhRawFloorRefusalWindowMs = 86400000UL;  // 24 h — fenêtre glissante
 
 // Pause mélange hydraulique après injection (pool-chemistry feature-025).
 // Distincte du timer post-calibration (_stabilizationEndMs). Gates indépendantes (OR).

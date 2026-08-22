@@ -77,27 +77,32 @@ L'alerte heap **total** (CRIT « Mémoire faible » + MQTT `low_memory`, seuil `
 
 ## Trace de calibrage des seuils mémoire (v2.19.0)
 
-Trace **INFO persistée**, émise par `checkHeapHealth()` toutes les `kHeapLogIntervalMs = 5 min` (elle **ne remplace pas** la trace « Heap: … » historique, restée en commentaire depuis la 2.10.2 — elle a une autre finalité). Elle donne **les deux familles de mesures côte à côte**, en octets bruts, sans arrondi :
+Trace **INFO persistée**, émise par `checkHeapHealth()` toutes les **`kHeap8LogIntervalMs` = 30 min** (`kHeapLogIntervalMs` = 5 min jusqu'à la v2.20.1 — voir l'encadré ci-dessous). Elle **ne remplace pas** la trace « Heap: … » historique, restée en commentaire depuis la 2.10.2 : elle a une autre finalité. Format depuis la v2.20.2, en octets bruts, sans arrondi :
 
 ```
-Heap 8bits: libre8=52384 maxBloc8=17420 minMaxBloc8=11264 | interne: libre=67584 maxBloc=27584 (octets)
+Heap 8bits: libre8=46088 maxBloc8=4596 minBoot=3060 minFen=3060 ws=1
 ```
 
 | Champ | Signification |
 |---|---|
 | `libre8` | Mémoire libre **réellement allouable** — `heap_caps_get_free_size(MALLOC_CAP_INTERNAL \| MALLOC_CAP_8BIT)` |
 | `maxBloc8` | Plus gros bloc contigu **réellement allouable** (la grandeur qui compte pour un `new` de 356 o) |
-| `minMaxBloc8` | **Minimum de `maxBloc8` depuis le boot** — c'est LA valeur qui servira à recalibrer les seuils |
-| `libre` / `maxBloc` | Mesure **brute historique** (`ESP.getFreeHeap()` / `ESP.getMaxAllocHeap()`, pool `MALLOC_CAP_INTERNAL`, **IRAM 32 bits comprise**) — conservée pour rendre l'**écart** mesurable |
+| `minBoot` | **Minimum de `maxBloc8` depuis le boot** — c'est LA valeur qui sert à recalibrer les seuils (anciennement `minMaxBloc8_boot`) |
+| `minFen` | Minimum de `maxBloc8` sur la **fenêtre** écoulée depuis la trace précédente : montre si les creux s'aggravent (anciennement `minMaxBloc8_fenetre`) |
+| `ws` | Clients WebSocket connectés — contexte de charge, distingue régime chargé et régime calme |
+
+> **v2.20.2 — cadence 5 min → 30 min et partie `interne:` RETIRÉE.** Les champs `interne: libre=… maxBloc=…` (mesure brute) étaient **figés** — `maxBloc = 27 636` à **chaque** relevé pendant 5 h. Ils ont servi **une fois**, à prouver l'écart entre les deux métriques ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)) ; la preuve est faite et consignée. Les conserver coûtait ~70 octets par ligne sur un journal persistant de 8 Ko dont la rétention était tombée à ~30 min — c'est ce qui a **détruit le post-mortem du crash du 15/08**. L'écart entre les deux familles reste consultable à tout instant via `/get-system-info` (`max_alloc_8bit` / `max_alloc_internal`). Bilan chiffré de la rétention : [logger.md](logger.md#rétention-réelle-du-journal-persistant-v2202).
 
 Deux points de mise en œuvre à connaître :
 
-- **Le minimum glissant n'est pas échantillonné à la cadence de la trace.** `minMaxBloc8` est mis à jour à **chaque tick** de `checkHeapHealth()` (60 s en régime sain, `kHeapCheckFastIntervalMs` = 5 s sous seuil d'alerte), pas toutes les 5 min : un creux transitoire entre deux traces serait sinon **invisible**, et c'est précisément le creux qui dimensionne le seuil de redémarrage.
-- **Aucune décision ne dépend de cette trace.** C'est un instrument de calibrage, pas une garde. Les seuils comparés plus bas (`kRestartMaxAllocHeapBytes`, `kLowHeapWarnBytes`) lisent toujours la mesure **brute** en v2.19.0.
+- **Le minimum glissant n'est pas échantillonné à la cadence de la trace.** `minBoot` / `minFen` sont mis à jour à **chaque tick** de `checkHeapHealth()` (60 s en régime sain, `kHeapCheckFastIntervalMs` = 5 s sous seuil d'alerte), pas toutes les 30 min : un creux transitoire entre deux traces serait sinon **invisible**, et c'est précisément le creux qui dimensionne le seuil de redémarrage.
+- **Aucune décision ne dépend de cette trace.** C'est un instrument de calibrage, pas une garde. Les seuils comparés plus bas (`kRestartMaxAllocHeapBytes`, `kLowHeapWarnBytes`) lisent toujours la mesure **brute** — y compris en v2.20.2, par décision explicite du gate `pool-chemistry` ([ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)). Seuls les **paliers de réarmement du parachute** ont basculé sur la mesure 8 bits.
 
 > ⚠️ **Ne pas confondre les deux colonnes en lisant le journal.** Un écart d'une dizaine de kilo-octets entre `maxBloc8` et `maxBloc` est **normal** : c'est le reliquat d'IRAM 32 bits que l'ancienne métrique comptait à tort. Un `maxBloc` figé à la même valeur pendant des heures ou à travers un redémarrage n'est **pas** un signe de stabilité, c'est la signature du piège ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)).
 
-**Ce qu'il faut relever on-target** (prérequis à la v2.19.1) : `minMaxBloc8` sur **au moins 24 h** d'uptime continu, plus les valeurs `libre8` / `maxBloc8` observées **en régime chargé** (chargement de l'interface, export d'historique, session OTA, plusieurs clients WebSocket). Le seuil d'auto-guérison en découlera par `clamp(0,40 × min(maxBloc8) ; 8192 ; 16384)`, débounce maintenu à 3, avec l'invariant d'ordre `restart < rearmOom ≤ kWsPushMinAllocBytes < kLowHeapWarnBytes < min(maxBloc8 sur 24 h)`.
+**Ce qu'il faut relever on-target** (prérequis à la bascule des gardes restantes) : `minBoot` sur **au moins 24 h** d'uptime continu **sous 2.20.2**, plus les valeurs `libre8` / `maxBloc8` observées **en régime chargé** (chargement de l'interface, export d'historique, session OTA, plusieurs clients WebSocket). L'invariant d'ordre `restart < rearmOom ≤ kWsPushMinAllocBytes < kLowHeapWarnBytes < min(maxBloc8 sur 24 h)` reste contractuel, débounce maintenu à 3.
+
+> ⚠️ **La règle `clamp(0,40 × min(maxBloc8) ; 8192 ; 16384)` d'[ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) est INAPPLICABLE** telle quelle : avec le `min` réellement mesuré (**3 060 o**), le plancher **8 192 se situe au-dessus du minimum observé en régime normal** → redémarrages en boucle → **mode maintenance = dosage suspendu**. De plus, les relevés du 15/08 sont **invalidés** (~100 % du signal d'échec était fabriqué par la garde de réarmement elle-même). Doctrine retenue : **on ne calibre pas des seuils sur une fragmentation pathologique** ([ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)). Suite du chantier : `specs/features/todo/bug-bascule-gardes-8bits-recalibrage.md`.
 
 ## Ring de télémétrie heap en RAM RTC noinit (v2.14.0, bug-heap-toctou A4)
 
@@ -476,7 +481,8 @@ Sinon, un `debug(...)` « Ré-annonce mDNS débouncée » trace l'oscillation ig
 | `kHeapIntegrityCheckIntervalMs` | `300000` (5 min) | Cadence du contrôle d'intégrité du tas (v2.18.8, sous les 8 gardes chimiques) |
 | `kHeapIntegrityWarnDurationUs` | `5000` (5 ms) | Durée au-delà de laquelle un WARN est émis (contrôle conservé) |
 | `kHeapIntegrityMaxDurationUs` | `20000` (20 ms) | Durée au-delà de laquelle le contrôle est **désactivé définitivement** |
-| `kHeapLogIntervalMs` | `300000` (5 min) | Cadence de la [trace de calibrage](#trace-de-calibrage-des-seuils-mémoire-v2190) « Heap 8bits: … » (v2.19.0) — et de l'ancienne trace « Heap: … », restée en commentaire depuis la 2.10.2 |
+| `kHeap8LogIntervalMs` | `1800000` (30 min) | Cadence de la [trace de calibrage](#trace-de-calibrage-des-seuils-mémoire-v2190) « Heap 8bits: … » — **était `kHeapLogIntervalMs` = 5 min jusqu'en 2.20.1** (rétention du journal ramenée à ~30 min) |
+| `kHeapLogIntervalMs` | `300000` (5 min) | Cadence de l'ancienne trace « Heap: … », restée en commentaire depuis la 2.10.2 |
 
 > ⚠️ **Aucune de ces constantes n'a été modifiée en v2.19.0.** `kLowHeapWarnBytes` et `kRestartMaxAllocHeapBytes` sont toujours comparées à la mesure **brute** (`ESP.getMaxAllocHeap()`) et ont été **calibrées sur cette mesure fausse** — d'où un seuil de redémarrage jamais atteignable. Leur recalibrage sur `maxBloc8` est livré en **v2.19.1** ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)).
 
