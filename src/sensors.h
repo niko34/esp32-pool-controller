@@ -105,6 +105,19 @@ public:
   bool isPhFilterUnstable() const;    // true si trop de rejets consécutifs
   uint8_t getPhRejectedCount() const; // Compteur glissant de rejets pH
 
+  // v2.20.6 : amplitude (max−min) de la fenêtre médiane PLEINE, NaN sinon.
+  // C'est la grandeur qui DÉCIDE du drapeau d'instabilité (comparée à
+  // kPhFilterMaxDispersion / kOrpFilterMaxDispersion, latch après
+  // kSensorFilterDispersionLatchCycles fenêtres consécutives en dépassement).
+  // Elle n'était exposée par AUCUNE route : on pilotait donc une inhibition de
+  // dosage sur une valeur que personne ne pouvait observer. Échelle BRUTE, mais
+  // une amplitude est de toute façon insensible à l'offset (constante additive).
+  float getPhDispersion() const;
+  float getOrpDispersion() const;
+  // Fenêtres pleines et propres consécutives : lisibilité de l'auto-levée du latch.
+  uint8_t getPhDispersionCleanStreak() const;
+  uint8_t getOrpDispersionCleanStreak() const;
+
   // ===== feature-067 : offset logiciel pH =====
   // Recharge la copie locale `_phOffset` depuis `mqttCfg.phOffset` et journalise
   // le changement. À appeler au boot (begin()) et après TOUT enregistrement de la

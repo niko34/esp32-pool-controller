@@ -85,6 +85,15 @@ float getOrpFiltered()  const;
 bool isOrpFilterReady()  const;
 bool isOrpFilterUnstable()  const;
 uint8_t getOrpRejectedCount()  const;
+
+// v2.20.6 — passerelles de diagnostic sur la dispersion (cf. « Observabilité de
+// la dispersion »). Amplitude (max−min) de la fenêtre médiane PLEINE, NaN sinon :
+// c'est la grandeur qui DÉCIDE du drapeau d'instabilité. Échelle brute (une
+// amplitude est insensible à l'offset pH).
+float getPhDispersion()  const;
+float getOrpDispersion() const;
+uint8_t getPhDispersionCleanStreak()  const;  // Progression vers l'auto-levée du latch
+uint8_t getOrpDispersionCleanStreak() const;
 void resetPhFilter();                // Reset filtre (warmup) — appelé après calibration pH
 void resetOrpFilter();               // Reset filtre (warmup) — appelé après calibration ORP
 
@@ -396,6 +405,27 @@ Le module `SensorFilter` est **100 % pur** (pas de logger, ADR-0017) : c'est la 
 
 Getters associés : `unstableLatched()` (état du latch EMI), `dispersionCleanStreak()` (progression vers l'auto-levée).
 
+### Observabilité de la dispersion (v2.20.6)
+
+La dispersion est le **moteur** des deux mécanismes ci-dessus (cap → `unstable`, dépassement soutenu → latch EMI), donc de l'**inhibition du dosage automatique**. Jusqu'en v2.20.5 elle n'était exposée par **aucune route** : l'inhibition était pilotée par une valeur que personne ne pouvait observer, ni depuis l'interface, ni depuis l'API. Conséquence concrète : pour évaluer la marge au seuil pendant une campagne de mesure, il fallait la **reconstruire de l'extérieur** par un minorant (crête-à-crête sur des relevés espacés de 30 s, alors que le critère porte sur 13 mesures à 5 s) — une incertitude qu'aucune analyse ne pouvait lever.
+
+Quatre champs par capteur sont désormais publiés par [`GET /debug/sensor_filter_state`](../API.md#get-debugsensor_filter_state--pas-dauth-cohérent-avec-autres-debug) (route toujours **sans auth**, lecture seule) :
+
+| Champ JSON | Source firmware | Rôle |
+|---|---|---|
+| `dispersion` | `getPhDispersion()` / `getOrpDispersion()` → `SensorFilter::dispersion()` | Amplitude `max − min` de la fenêtre pleine ; `null` si `NaN` |
+| `dispersion_max` | `kPhFilterMaxDispersion` / `kOrpFilterMaxDispersion` | Seuil (0,5 pH / 100 mV) — évite au client de connaître les constantes |
+| `latch_cycles` | `kSensorFilterDispersionLatchCycles` | Fenêtres consécutives en dépassement avant latch (3) |
+| `clean_streak` | `getPhDispersionCleanStreak()` / `getOrpDispersionCleanStreak()` | Progression vers l'auto-levée (12 requises) |
+
+Arrondi de sérialisation : **3 décimales** en pH, **1 décimale** en mV. Lecture **lock-free** (scalaires), cohérente avec le reste de la route.
+
+**Rattachement à la porte d'alimentation** — `dispersion` vaut `null` dès que la fenêtre n'est pas pleine, ce qui inclut le cas **porte fermée** ([Porte d'alimentation](#porte-dalimentation-du-filtre-v2203)) : `addSample()` sort en tête, le buffer reste vide, il n'y a **rien à mesurer**. Ce n'est pas un défaut, c'est le comportement voulu.
+
+> ⚠️ **Piège de lecture, à ne jamais confondre** : circulation arrêtée, `unstable = false` ne signifie **pas** « mesure stable » mais « **aucun jugement rendu**, faute de données ». La confusion conduit à déclarer saine une configuration qui n'a simplement jamais été évaluée — elle s'est produite en analyse. La seule lecture valide de l'instabilité est **filtration en marche + `dispersion` non nulle**.
+
+**Échelle** : la dispersion est calculée sur le buffer interne, en échelle **brute**. Une amplitude étant invariante par translation, elle est **insensible à `ph_offset`** — contrairement aux bornes de la sortie de secours (exprimées en brut, donc à décaler, cf. [Sortie de secours](#sortie-de-secours-sur-rejets-cohérents-v2203)) et contrairement à `median` / `filtered` de la même route, qui sont corrigés ([ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)).
+
 ### Paramètres (centralisés dans [`constants.h`](../../src/constants.h), bloc feature-058)
 
 | Paramètre | pH | ORP |
@@ -437,7 +467,7 @@ Le reset est **sélectif par capteur depuis la v2.20.3** — réparer le pH ne s
 |---|---|---|
 | `POST /reset-sensor-filter?sensor=ph\|orp` | **CRITICAL** | **un seul** capteur (paramètre obligatoire), cooldown 10 min/capteur → `429` |
 | `POST /debug/sensor_filter_reset?sensor=ph\|orp` | **CRITICAL** (⚠️ était sans auth ≤ v2.20.2) | un seul capteur ; **sans paramètre** = les deux (comportement historique) |
-| `GET /debug/sensor_filter_state` | pas d'auth | lecture seule (raw/median/filtered/ready/unstable/rejected par capteur) |
+| `GET /debug/sensor_filter_state` | pas d'auth | lecture seule (raw/median/filtered/ready/unstable/rejected par capteur ; **+ dispersion/dispersion_max/latch_cycles/clean_streak depuis la v2.20.6**) |
 
 Un reset reste la **levée manuelle immédiate** du latch EMI (`unstableLatched()`), en complément de l'auto-levée après ~2 min de signal propre (v2.8.4) et de la levée sur calibration réussie. Voir [API.md](../API.md#post-reset-sensor-filter--critical).
 

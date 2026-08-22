@@ -157,6 +157,18 @@ void setupDebugRoutes(AsyncWebServer* server) {
     ph["ready"] = sensors.isPhFilterReady();
     ph["unstable"] = sensors.isPhFilterUnstable();
     ph["rejected"] = sensors.getPhRejectedCount();
+    // v2.20.6 : `dispersion` est la grandeur qui DÉCIDE de `unstable` — amplitude
+    // (max−min) de la fenêtre médiane PLEINE, donc null pendant le warmup. Elle
+    // n'était exposée nulle part : on inhibait le dosage sur une valeur
+    // inobservable, et sa marge au seuil ne pouvait qu'être estimée de l'extérieur.
+    // Le seuil et le nombre de fenêtres avant latch sont publiés à côté pour que
+    // la marge soit lisible sans connaître les constantes du firmware.
+    float phDisp = sensors.getPhDispersion();
+    if (!isnan(phDisp)) ph["dispersion"] = roundf(phDisp * 1000.0f) / 1000.0f;
+    else                ph["dispersion"] = nullptr;
+    ph["dispersion_max"] = kPhFilterMaxDispersion;
+    ph["latch_cycles"] = kSensorFilterDispersionLatchCycles;
+    ph["clean_streak"] = sensors.getPhDispersionCleanStreak();
 
     JsonObject orp = doc["orp"].to<JsonObject>();
     float orpRaw = sensors.getOrpRaw();
@@ -168,6 +180,12 @@ void setupDebugRoutes(AsyncWebServer* server) {
     orp["ready"] = sensors.isOrpFilterReady();
     orp["unstable"] = sensors.isOrpFilterUnstable();
     orp["rejected"] = sensors.getOrpRejectedCount();
+    float orpDisp = sensors.getOrpDispersion();   // cf. commentaire côté pH
+    if (!isnan(orpDisp)) orp["dispersion"] = roundf(orpDisp * 10.0f) / 10.0f;
+    else                 orp["dispersion"] = nullptr;
+    orp["dispersion_max"] = kOrpFilterMaxDispersion;
+    orp["latch_cycles"] = kSensorFilterDispersionLatchCycles;
+    orp["clean_streak"] = sensors.getOrpDispersionCleanStreak();
 
     String out;
     serializeJson(doc, out);

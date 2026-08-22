@@ -1612,12 +1612,31 @@ curl http://poolcontroller.local/debug/sensor_filter_state
 
 ```json
 {
-  "ph":  { "raw": 7.241, "median": 7.236, "filtered": 7.234, "ready": true, "unstable": false, "rejected": 0 },
-  "orp": { "raw": 722, "median": 720, "filtered": 720, "ready": true, "unstable": false, "rejected": 0 }
+  "ph":  { "raw": 7.241, "median": 7.236, "filtered": 7.234, "ready": true, "unstable": false, "rejected": 0,
+           "dispersion": 0.043, "dispersion_max": 0.5, "latch_cycles": 3, "clean_streak": 12 },
+  "orp": { "raw": 722, "median": 720, "filtered": 720, "ready": true, "unstable": false, "rejected": 0,
+           "dispersion": 11.0, "dispersion_max": 100.0, "latch_cycles": 3, "clean_streak": 12 }
 }
 ```
 
 Les champs `raw` / `median` / `filtered` valent `null` si la mesure est indisponible. Voir [feature-025](../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) et [`docs/subsystems/sensors.md`](subsystems/sensors.md#reset-manuel--diagnostic).
+
+#### Marge d'instabilité (v2.20.6)
+
+| Champ | Type | Description |
+|---|---|---|
+| `dispersion` | float \| null | **Amplitude (`max − min`) de la fenêtre médiane PLEINE** — la grandeur qui **décide** du drapeau `unstable`, donc de l'inhibition du dosage automatique. `null` si la fenêtre n'est pas pleine (warmup, ou **porte d'alimentation fermée**). Arrondi à 3 décimales (pH) / 1 décimale (mV). |
+| `dispersion_max` | float | Seuil de dépassement : `kPhFilterMaxDispersion` = **0.5** pH, `kOrpFilterMaxDispersion` = **100** mV. |
+| `latch_cycles` | integer | Nombre de fenêtres pleines **consécutives** en dépassement avant pose du **latch EMI** (`kSensorFilterDispersionLatchCycles` = **3**, ≈ 15 s). |
+| `clean_streak` | integer | Fenêtres pleines **et propres** consécutives — progression vers l'**auto-levée** du latch (**12** nécessaires, `kSensorFilterLatchClearCycles`). |
+
+**Pourquoi ces champs existent** : `dispersion` pilotait l'inhibition du dosage sans être exposée par **aucune** route — ni interface, ni API. Pour évaluer la marge au seuil pendant une campagne de mesure, il fallait la **reconstruire de l'extérieur** par un minorant (crête-à-crête sur des relevés espacés de 30 s, alors que le critère porte sur 13 mesures à 5 s), avec une incertitude qu'aucune analyse ne pouvait lever. `dispersion_max` et `latch_cycles` sont publiés **à côté** de la valeur pour que la marge se lise sans connaître les constantes du firmware : `dispersion / dispersion_max` donne directement le taux d'occupation du seuil.
+
+> ⚠️ **`dispersion: null` avec la filtration arrêtée n'est pas un défaut.** La **porte d'alimentation** (v2.20.3, [ADR-0041](adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md)) gèle l'ingestion quand les mesures ne sont pas représentatives (log `Filtres pH/ORP : alimentation GELÉE — mesures non représentatives (circulation arrêtée)`). Fenêtre vide ⇒ pas de dispersion ⇒ pas de jugement d'instabilité.
+>
+> **Corollaire à ne pas confondre** : filtration arrêtée, `unstable: false` ne signifie **pas** « la mesure est stable ». Il signifie « **aucun jugement rendu**, faute de données ». Prendre le premier pour le second fait conclure à tort qu'une configuration est saine — c'est un piège de lecture réel, rencontré en analyse. Pour juger de la stabilité, n'exploiter cette route que **circulation en marche et `dispersion` non nulle**.
+
+**Échelle** : `dispersion` est une **amplitude** calculée sur le buffer interne en échelle **brute**. Une amplitude est de toute façon **insensible à l'offset pH** (constante additive : `max(x+c) − min(x+c) = max(x) − min(x)`), contrairement à `median` et `filtered` de la même route qui sont **corrigés** ([ADR-0039](adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)). Aucune correction à appliquer avant comparaison à `dispersion_max`.
 
 ## Trace des signaux capteurs (feature-057, v2.7.0)
 

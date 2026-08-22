@@ -2,6 +2,22 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.20.6] - 2026-08-22
+
+### API
+
+- **On peut enfin lire la valeur qui décide de l'arrêt du dosage automatique.** La route de diagnostic `GET /debug/sensor_filter_state` publie désormais, pour le pH comme pour le chlore, la **dispersion de la mesure** (`dispersion`) : l'écart entre la plus haute et la plus basse des 13 dernières mesures. C'est **cette** grandeur, et elle seule, qui fait basculer la mesure en « instable » et coupe la régulation — or elle n'était visible **nulle part**, ni dans l'interface ni dans l'API : l'appareil arrêtait de doser sur un critère que personne ne pouvait observer. Pour estimer la marge restante pendant une campagne de mesure, il fallait la reconstruire de l'extérieur à partir de relevés espacés de 30 s alors que le critère porte sur 13 mesures à 5 s — avec une incertitude impossible à lever.
+- Le **seuil** (`dispersion_max` : 0,5 pH / 100 mV), le nombre de fenêtres avant blocage durable (`latch_cycles` = 3) et la **progression vers le déblocage automatique** (`clean_streak`, 12 requises) sont publiés à côté de la valeur : la marge se lit directement, sans connaître les réglages internes du firmware.
+- ⚠️ **`dispersion` est vide (`null`) quand la filtration est arrêtée, et c'est normal** : depuis la 2.20.3, l'appareil refuse d'alimenter ses filtres avec des mesures prises dans de l'eau qui ne circule pas. Pas de mesures ⇒ pas de dispersion. **Corollaire important** : filtration arrêtée, un indicateur « instable = non » ne veut **pas** dire « la mesure est stable », il veut dire « **aucun verdict n'a été rendu** ». Confondre les deux fait conclure à tort qu'un réglage est sain. Ne juger de la stabilité que **circulation en marche**.
+
+### Documentation
+
+- `docs/API.md` : section `GET /debug/sensor_filter_state` — les quatre nouveaux champs, le cas `null` (porte d'alimentation), le corollaire sur `unstable`, et l'insensibilité de l'amplitude à l'offset pH. La route reste **sans authentification**.
+- `docs/subsystems/sensors.md` : nouvelle section « Observabilité de la dispersion (v2.20.6) » rattachée à la porte d'alimentation et au latch EMI ; les quatre passerelles `SensorManager` (`getPhDispersion()`, `getOrpDispersion()`, `getPhDispersionCleanStreak()`, `getOrpDispersionCleanStreak()`) ajoutées à l'API publique documentée.
+- Pas de nouvel ADR : exposition en lecture seule d'un diagnostic **déjà calculé**, aucun arbitrage, aucune contrainte nouvelle sur le reste du système.
+
+---
+
 ## [2.20.5] - 2026-08-22
 
 > ⚠️ **Ce correctif ne répare PAS la pompe qui semble ne pas tourner.** Ce symptôme a une autre cause, **non corrigée** à ce jour : pour une erreur de 0,8 pH, l'appareil commande à la pompe une puissance de **32 %**, à laquelle elle ne tourne que **par intermittence**, alors que son modèle interne la croit à 6,4 mL/min. Le compteur de produit monte donc sur de l'acide qui **ne sort pas du bidon**. La correction demande une **mesure au banc** du seuil de rotation réel de la pompe (pesée du volume recueilli) — la version 2.20.5 livre l'outil de cette mesure, pas la correction.

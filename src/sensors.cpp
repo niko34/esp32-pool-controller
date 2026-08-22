@@ -1001,6 +1001,16 @@ bool SensorManager::isPhFilterReady() const { return _phFilter.ready(millis()); 
 bool SensorManager::isPhFilterUnstable() const { return _phFilter.unstable(); }
 uint8_t SensorManager::getPhRejectedCount() const { return _phFilter.rejectedCount(); }
 
+// v2.20.6 : la grandeur qui décide du drapeau d'instabilité, enfin observable.
+float SensorManager::getPhDispersion() const { return _phFilter.dispersion(); }
+float SensorManager::getOrpDispersion() const { return _orpFilter.dispersion(); }
+uint8_t SensorManager::getPhDispersionCleanStreak() const {
+  return _phFilter.dispersionCleanStreak();
+}
+uint8_t SensorManager::getOrpDispersionCleanStreak() const {
+  return _orpFilter.dispersionCleanStreak();
+}
+
 float SensorManager::getOrpRaw() const { return getOrp(); }
 float SensorManager::getOrpMedian() const { return _orpFilter.median(); }
 float SensorManager::getOrpFiltered() const { return _orpFilter.filtered(); }
