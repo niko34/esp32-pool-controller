@@ -2,6 +2,34 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.20.5] - 2026-08-22
+
+> ⚠️ **Ce correctif ne répare PAS la pompe qui semble ne pas tourner.** Ce symptôme a une autre cause, **non corrigée** à ce jour : pour une erreur de 0,8 pH, l'appareil commande à la pompe une puissance de **32 %**, à laquelle elle ne tourne que **par intermittence**, alors que son modèle interne la croit à 6,4 mL/min. Le compteur de produit monte donc sur de l'acide qui **ne sort pas du bidon**. La correction demande une **mesure au banc** du seuil de rotation réel de la pompe (pesée du volume recueilli) — la version 2.20.5 livre l'outil de cette mesure, pas la correction.
+
+### Firmware
+
+- **Chaque cycle de dosage en était compté deux.** Au premier instant d'un cycle, le régulateur ne peut pas encore calculer de débit (l'écart de temps avec le cycle précédent, ~29 min, dépasse la limite de 10 s au-delà de laquelle un delta est jugé aberrant et rejeté). L'appareil comptait pourtant déjà un démarrage, puis en comptait un **second** à l'instant suivant, celui où la pompe démarrait vraiment. Conséquences visibles : **deux lignes « Démarrage dosage » à la même seconde** dans le journal, et surtout un **budget de cycles par jour qui valait réellement la moitié** de la valeur réglée — la régulation s'arrêtait donc à mi-journée bien avant la limite affichée. Désormais un cycle n'est compté que s'il a réellement démarré.
+- **Limite de cycles par jour : nouveau défaut 24 au lieu de 48.** Compte tenu du double comptage ci-dessus, l'enveloppe **réellement vécue** valait déjà 24 : corriger le comptage sans abaisser la limite aurait **doublé** le nombre d'injections quotidiennes réelles, sous couvert de correctif. 24 reste dans le régime d'entretien normal (20-40 cycles/jour).
+  > ⚠️ **Ce nouveau défaut ne s'applique pas aux appareils déjà en service** : la valeur est enregistrée dans l'appareil, une mise à jour ne l'écrase pas. Si la vôtre est à 48, **abaissez-la à la main** dans Paramètres → Régulation, sinon vous doublez le nombre d'injections quotidiennes par rapport à ce que vous viviez.
+- **Nouvel avertissement au journal « démarrage décidé mais aucun débit commandé »** (pH et chlore, au plus une ligne toutes les 5 min). Il signale une régulation **sans effet** : la décision de doser est prise, mais aucune puissance n'est envoyée à la pompe. Une occurrence isolée au démarrage d'un cycle est normale ; la même ligne **toutes les 5 minutes en continu** indique une anomalie. C'est le bruit involontaire de l'ancien comportement qui avait révélé le bug ci-dessus — sans cet avertissement, la situation serait devenue totalement silencieuse.
+
+### API
+
+- **Nouveau paramètre optionnel `?duty=N` sur `POST /pump1/on` et `POST /pump2/on`** (0-255, défaut 255 : sans le paramètre, le comportement est **strictement inchangé**). Il permet de faire tourner une pompe à puissance réduite depuis le test manuel, afin de **mesurer le seuil en dessous duquel elle s'arrête réellement** — mesure indispensable pour corriger le défaut décrit en tête d'entrée. Volontairement non borné par le plancher interne de 80/255 : sonder **sous** ce plancher est justement l'objet de la manœuvre. Le paramètre ne peut que **réduire** la puissance par rapport aux 255 déjà atteignables, et toutes les sécurités (authentification, présence d'eau, mode maintenance) restent appliquées en amont.
+
+### Documentation
+
+- `docs/API.md` : paramètre `?duty=N` des deux routes de test de pompe — bornes, motif, exemple de balayage au banc.
+- `docs/subsystems/pump-controller.md` : nouvelle section « Comptabilisation d'un démarrage de cycle : invariant » (pourquoi « cycle compté ⇔ cycle réellement démarré » est désormais **structurel** et non une garde ajoutée à côté) ; défaut `maxCyclesPerDay` à 24 et **piège de la persistance** (aucune migration, réglage manuel requis sur un appareil déjà provisionné) ; nouvel avertissement et son throttle ; encadré « limite connue, non corrigée » sur la conversion puissance ↔ débit.
+- `docs/subsystems/logger.md` : le nouvel avertissement chiffré dans le budget de rétention du journal persistant (régime nominal ≈ 0,36 Ko/h → rétention ≈ 8-10 h ; régime pathologique ≈ 4,3 Ko/h).
+- Pas de nouvel ADR : correction de bug locale, tranchée par le gate `pool-chemistry` dans le cadre existant. L'arbitrage structurant (proportionnel de **temps** vs recalibrage du modèle linéaire) fera l'objet d'un ADR **lorsqu'il sera implémenté**, après la mesure au banc.
+
+### Tests
+
+- 4 tests natifs ajoutés (**609 au total**) sur la logique pure de comptabilisation, dont le **rejeu du scénario réel** de production traversant la garde des 10 s.
+
+---
+
 ## [2.20.4] - 2026-08-22
 
 > ⚠️ **Bascule structurante : le core Arduino 3.x / ESP-IDF 5 devient l'environnement par défaut du projet — bootloader ET application.** Le **bootloader** ne se met **pas** à jour en OTA : cette bascule exige un **flash USB une fois** (`./deploy.sh all`). Voir [ADR-0042](docs/adr/0042-core3-environnement-par-defaut.md) et [UPDATE_GUIDE.md](docs/UPDATE_GUIDE.md#changer-de-bootloader--flash-usb-obligatoire-core-3-par-défaut-v2204).

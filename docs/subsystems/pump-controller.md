@@ -180,7 +180,7 @@ Lecture seule **STRICTE** de l'utilisabilité de la pompe ([`pump_controller.h`]
 
    > feature-025 : `phStartThreshold` / `orpStartThreshold` servent désormais aussi de **zone morte PID** (passés comme `deadband` à `computePID`). ORP relevé de 10 → 15 mV pour élargir la zone morte (l'ORP étant plus bruité et dépendant du pH/T°/stabilisant).
 
-   - `maxCyclesPerDay = 48` (défaut, feature-060 v2.12.0 — était 20) — démarrages comptés dans une fenêtre 24 h glissante. **Configurable** via `/save-config` (`max_cycles_per_day`), borné en dur [10-60] — voir [Limite de cycles/jour configurable](#limite-de-cyclesjour-configurable-garde-9-feature-060-v2120).
+   - `maxCyclesPerDay = 24` (défaut, **abaissé de 48 → 24 en v2.20.5**) — démarrages comptés dans une fenêtre 24 h glissante. **Configurable** via `/save-config` (`max_cycles_per_day`), borné en dur [10-60] — voir [Limite de cycles/jour configurable](#limite-de-cyclesjour-configurable-garde-9-feature-060-v2120).
 5. **Limites de sécurité** ([`config.h:141`](../../src/config.h:141) `SafetyLimits`) :
    - Horaire : `ph_limit_minutes` / `orp_limit_minutes` dans une fenêtre glissante de 1 h (`windowStart` / `usedMs` dans `DosingState`). **Non reflétée dans l'UI** (pas de badge dédié à date).
    - Journalière : `maxPhMlPerDay = 300`, `maxChlorineMlPerDay = 500`.
@@ -331,6 +331,7 @@ Cette valeur est résolue par la fonction **pure** `resolveWaterPresent(WaterPre
 - **`DoseDecision evaluateDose(const DoseInputs& in)`** — reproduit **exactement** l'ordre des gardes 2→15 de `canDose()` (la garde 1 « index pompe invalide » reste dans la coquille). Première garde en échec → cause correspondante ; sinon `{ true, None }`. **Fail-closed strict** conservé.
 - **`bool shouldStartDosingPure(error, startThreshold, cyclesToday, maxCyclesPerDay)`** — démarre ssi `cyclesToday < maxCyclesPerDay` ET `error > startThreshold`.
 - **`bool shouldContinueDosingPure(error, stopThreshold, runTimeMs, minInjectionTimeMs)`** — force la poursuite tant que `runTimeMs < minInjectionTimeMs` (30 s), puis poursuit ssi `error > stopThreshold`. Le **temps est injecté** → le minimum d'injection est testable sans attendre 30 s réelles.
+- **`CycleStartAccounting evaluateCycleStartAccounting(wasActive, startDecided, flowActive)`** (v2.20.5) — vrai ssi `!wasActive && startDecided && flowActive`. Verrouille l'invariant « cycle compté ⇔ cycle réellement démarré » : voir [Comptabilisation d'un démarrage de cycle](#comptabilisation-dun-démarrage-de-cycle--invariant-v2205).
 
 ### Causes de refus (énum ↔ String FR)
 
@@ -447,17 +448,73 @@ Au prochain `canDose(pumpIndex)`, `countRecentDosingCycles(pumpIndex, windowMs)`
 
 Sites d'appel à `recordDosingCycleStart()` (4 au total) : démarrage cycle pH automatique, démarrage cycle pH scheduled, démarrage cycle ORP automatique, démarrage cycle ORP scheduled.
 
-> **Indépendant** des limites volumétriques (`ph_limit_minutes`, `max_ph_ml_per_day`) et de l'anti-cycling existant (`maxCyclesPerDay`, 48 par défaut — configurable 10-60, feature-060 — mesuré sur 24 h glissante). Couvre le cas d'un PID qui démarrerait 30 cycles très courts en 5 minutes (lectures bruitées sur sonde mal calibrée par exemple).
+> **Indépendant** des limites volumétriques (`ph_limit_minutes`, `max_ph_ml_per_day`) et de l'anti-cycling existant (`maxCyclesPerDay`, 24 par défaut — configurable 10-60, feature-060 — mesuré sur 24 h glissante). Couvre le cas d'un PID qui démarrerait 30 cycles très courts en 5 minutes (lectures bruitées sur sonde mal calibrée par exemple).
+
+## Comptabilisation d'un démarrage de cycle : invariant (v2.20.5)
+
+> **INVARIANT** : dans les branches `automatic` (pH **et** ORP), **un cycle est comptabilisé si et seulement si un cycle a réellement démarré** — c'est-à-dire si un duty non nul a été commandé ce tour de boucle.
+
+Ce que « comptabiliser » englobe (les quatre effets sont indissociables) : `cyclesToday++`, l'entrée dans le **ring anti-rafale** (`recordDosingCycleStart`), la ligne `INFO Démarrage dosage …` et la pose de `lastStartTime`.
+
+### Le défaut corrigé (double comptage)
+
+`computePID()` rend **0** quand `dt > 10 s` (garde anti-delta-aberrant, [`pump_controller.cpp:732`](../../src/pump_controller.cpp:732)) et n'est appelé **que** lorsque le dosage est décidé. Or il s'écoule ~29 min entre deux cycles (pause mélange + anti-cycling) : le **premier tour de chaque cycle rend donc toujours un débit nul**.
+
+L'ancien code comptabilisait sur la seule **décision** de doser, alors que `active` ne se latchait que sur un débit effectif. Enchaînement :
+
+1. tour *n* — `shouldStartDosing` dit oui → cycle **compté**, débit 0, `active` **non** latché ;
+2. tour *n+1* — l'état est toujours « arrêté » → on repasse par `shouldStartDosing` → **second** cycle compté, cette fois avec du débit.
+
+Conséquences observées en production : **deux** lignes « Démarrage dosage » à la même seconde, **deux** entrées dans le ring anti-rafale, et un budget cycles/jour valant réellement **la moitié** de sa valeur configurée.
+
+```
+[17:39:21] Démarrage dosage pH (auto): pH=8.05 cible=7.20 erreur=0.854 (cycle 3/48)
+[17:39:21] Démarrage dosage pH (auto): pH=8.05 cible=7.20 erreur=0.854 (cycle 4/48)
+```
+
+### Pourquoi l'invariant est structurel
+
+La comptabilisation a été **déplacée après** le calcul du débit et conditionnée au **même prédicat** que le latch de `active` (`phActive` / `orpActive`). Ce n'est pas une garde ajoutée à côté du latch, qui pourrait en diverger : c'est le **même booléen** qui décide des deux. Un double comptage redeviendrait donc possible **seulement** si l'on remettait un comptage en amont du calcul de débit.
+
+`computePID` et `pid.lastTime` sont **intacts** : **aucun `dt` n'est synthétisé** (prescription **P5** du gate `pool-chemistry`). Amorcer artificiellement `lastTime` à l'entrée du cycle serait un piège latent le jour où `ki` deviendrait non nul (un `dt` inventé fabriquerait de l'intégrale). C'est la comptabilité qui attend le débit, jamais le PID qu'on force.
+
+Le premier tour « à vide » de chaque cycle **subsiste** donc : il coûte un tour de boucle, aucun produit et aucun cycle.
+
+### Logique pure
+
+```cpp
+struct CycleStartAccounting { bool countCycleStart; };
+
+CycleStartAccounting evaluateCycleStartAccounting(bool wasActive, bool startDecided,
+                                                 bool flowActive);
+```
+
+[`src/dosing_logic.h`](../../src/dosing_logic.h) — `countCycleStart = !wasActive && startDecided && flowActive`. Couverte par **4 tests natifs** dédiés dans `test/test_native_dosing/`, dont le **rejeu du scénario réel** traversant la garde des 10 s (609 tests natifs au total).
+
+### `WARN` « démarrage décidé mais aucun débit commandé »
+
+Corollaire du correctif : avant lui, une régulation qui décidait de doser **sans jamais produire de débit** réémettait une ligne de démarrage à chaque tour — un bruit involontaire, mais **c'est lui qui a révélé le bug**. La situation serait désormais totalement silencieuse. Elle est donc rendue explicite :
+
+| | |
+|---|---|
+| Niveau | `WARNING` |
+| Message | `[Dosage pH] démarrage décidé mais AUCUN débit commandé — régulation sans effet (boucle trop lente, ou consigne sous le plancher de duty). Erreur=<e>` (symétrique ORP, erreur en mV) |
+| Throttle | `kDosingNoFlowWarnIntervalMs = 300000` ms (**5 min**), compteur **indépendant** par grandeur ([`constants.h:706`](../../src/constants.h:706)) |
+| Condition | `startDecided && !active` |
+
+⚠️ **Comment le lire.** Le premier tour de chaque cycle remplissant cette condition par construction (voir ci-dessus), **une occurrence isolée au démarrage d'un cycle est normale**. Ce qui est anormal, c'est une occurrence **toutes les 5 min en continu** : la régulation décide alors de doser sans que rien ne sorte (boucle trop lente pour repasser sous les 10 s, ou consigne de débit sous le plancher de duty). Le throttle de 5 min est délibéré — il évite de réintroduire l'inondation du journal corrigée en v2.20.2 (voir [logger.md](logger.md#rétention-réelle-du-journal-persistant-v2202)).
 
 ## Limite de cycles/jour configurable (garde 9, feature-060, v2.12.0)
 
 La garde 9 anti-cycling (`cyclesToday >= maxCyclesPerDay` dans `evaluateDose` / `shouldStartDosingPure`, garde 7 côté `evaluateManualInject` — **même source** `pumpProtection.maxCyclesPerDay`, compteur partagé auto + manuel) n'est plus une valeur codée en dur :
 
-- **Défaut : 48** (était 20) — soit **1 cycle / 30 min en moyenne**. Fondement (verdict `pool-chemistry`) : un régime d'entretien **sain** par petites retouches (~5 mL/cycle, pause mélange 20 min) produit naturellement **20-40 cycles/jour** — la limite de 20, non fondée chimiquement, le bloquait en milieu de journée (incident du 2026-07-29 : régulation ORP arrêtée à 104 mL injectés, dérive ORP tout l'après-midi = risque sanitaire). Le chattering rapide reste couvert par l'anti-rafale (6/min, 20/15 min, en dur) et la pause mélange borne physiquement la cadence à **~70 démarrages/j** : la garde ne couvre plus que l'emballement lent (sonde mentant sous la cible), que 48 détecte toujours.
+- **Défaut : 24** (v2.20.5 — était 48 depuis feature-060, 20 avant). Fondement historique du 48 (verdict `pool-chemistry` 2026-07-29) : un régime d'entretien **sain** par petites retouches (~5 mL/cycle, pause mélange 20 min) produit naturellement **20-40 cycles/jour** — la limite de 20, non fondée chimiquement, le bloquait en milieu de journée (incident du 2026-07-29 : régulation ORP arrêtée à 104 mL injectés, dérive ORP tout l'après-midi = risque sanitaire). Le chattering rapide reste couvert par l'anti-rafale (6/min, 20/15 min, en dur) et la pause mélange borne physiquement la cadence à **~70 démarrages/j** : la garde ne couvre que l'emballement lent (sonde mentant sous la cible).
+- **Pourquoi 48 → 24 (condition P5 du gate `pool-chemistry`, v2.20.5)** : à cause du [double comptage de cycle](#comptabilisation-dun-démarrage-de-cycle--invariant-v2205), l'enveloppe **réellement vécue** valait déjà **24**. Corriger le comptage sans abaisser la limite aurait **doublé** le nombre d'injections quotidiennes réelles — sous couvert de correctif de bug, et sans qu'aucune décision chimique ne l'ait validé. 24 reste dans le régime d'entretien sain (20-40/j) et dans les bornes dures `[10, 60]`.
+- ⚠️ **PIÈGE — ce défaut n'est qu'un repli, il ne migre rien.** `max_cycles_day` étant **persisté en NVS**, un appareil déjà provisionné **conserve sa valeur au flash** : passer à la v2.20.5 ne fait donc **pas** descendre un 48 enregistré vers 24. Aucune migration n'a été écrite (l'écriture d'un défaut par-dessus un choix utilisateur serait pire). Le nouveau défaut ne s'applique qu'aux appareils **sans** la clé NVS (première mise en service, `factory`). Sur l'appareil de production, la valeur a été portée à 24 **à la main via `/save-config`** (vérifié : 48 → 24, autres limites inchangées) ; **tout autre appareil déjà provisionné doit être réglé manuellement** dans Paramètres → Régulation.
 - **Configurable** via `POST /save-config` (champ `max_cycles_per_day`), UI : Paramètres → Régulation pH / ORP (voir [page-settings.md](../features/page-settings.md#régulation-panel-regulation)).
 - **Bornes dures** : `kCyclesPerDayMin = 10` / `kCyclesPerDayMax = 60` ([`constants.h:423`](../../src/constants.h:423)) — **ne JAMAIS élargir sans nouveau verdict `pool-chemistry`** (60 reste sous la cadence physique ~70/j ; 10 est le plancher sous lequel la garde bloquerait un régime d'entretien sain).
 - **Clamp serveur systématique** via la fonction pure `clampCyclesPerDay(long requested, bool* wasClamped)` ([`dosing_logic.h:156`](../../src/dosing_logic.h:156)) — c'est une **sanitization de config, PAS une garde de dosage** (hors de l'ordre figé des gardes). Appliqué à **deux points d'entrée** : la route `/save-config` ([`web_routes_config.cpp:337`](../../src/web_routes_config.cpp:337) — le `min`/`max` HTML ne suffit pas) et le **chargement NVS** ([`config.cpp:389`](../../src/config.cpp:389) — valeur écrite par un firmware antérieur ou bidouillée).
-- **Persistance NVS** : clé `max_cycles_day` ([`config.cpp:193`](../../src/config.cpp:193)). Clé absente (migration depuis ≤ 2.11.x) → défaut 48.
+- **Persistance NVS** : clé `max_cycles_day` ([`config.cpp:193`](../../src/config.cpp:193)). Clé absente (migration depuis ≤ 2.11.x) → défaut de la struct, soit **24** depuis la v2.20.5 (48 avant).
 - **Traçabilité (2 `WARN`)** : `max_cycles_per_day hors bornes : X → Y` (valeur clampée, route ou NVS) et `Limite cycles/jour modifiée : ancienne → nouvelle` (toute modification effective).
 - **Effet immédiat** : le compteur `cyclesToday` en cours n'est **pas** remis à zéro à la modification — seule la borne de comparaison change (dans les deux sens).
 - **Inchangés** : exemption `cyclesToday` du mode `scheduled` ([ADR-0021](../adr/0021-repartition-scheduled.md)), anti-rafale, limites volumétriques/horaire, ordre des gardes, message UI « Limite cycles/jour atteinte — reprise à minuit ».
@@ -563,6 +620,10 @@ duty = MIN_ACTIVE_DUTY + round( ((flow − minFlow) / (maxFlow − minFlow)) × 
 
 `flowToDuty` clampe `flow` à `[minFlow, maxFlow]` avant calcul. `flow ≤ 0` → duty 0.
 
+> ⚠️ **Limite connue, NON corrigée à ce jour (v2.20.5) : ce modèle n'est pas caractérisé sur le matériel réel.** Une pompe péristaltique n'a pas un débit proportionnel au rapport cyclique en bas de plage — sous un certain seuil elle cale, et autour de ce seuil son débit est erratique ; le modèle linéaire ci-dessus suppose l'inverse. En pratique le régulateur commande **82/255** (~32 %) pour une erreur de 0,8 pH — deux counts au-dessus de `MIN_ACTIVE_DUTY` — valeur à laquelle la pompe ne tourne **que par intermittence**, alors que le modèle la crédite de **6,4 mL/min**. La comptabilité intégrant le **débit commandé** et jamais un débit mesuré, `ph_daily_ml` monte alors sur de l'acide qui ne sort pas du bidon (vérifié on-target : 479 mL comptés en 75 min actives = exactement `dutyToFlow(82)`).
+>
+> Le paramètre [`?duty=N` de `POST /pumpN/on`](../API.md#post-pump1on-pump1off--write) (v2.20.5) est l'outil de la mesure au banc qui permettra de fixer `MIN_ACTIVE_DUTY`, `kPumpMinFlowMlPerMin` et `pump_max_flow_ml_per_min` sur les vraies valeurs. Option retenue par le gate `pool-chemistry` : proportionnel de **temps** à un duty franc mesuré + plancher de refus sous le pouls minimal — **pas** un simple recalibrage du modèle linéaire. Voir [`specs/features/todo/bug-dosage-fantome-duty-non-calibre.md`](../../specs/features/todo/bug-dosage-fantome-duty-non-calibre.md).
+
 ## Paramètres en dur (récapitulatif)
 
 | Catégorie | Constante | Valeur | Source |
@@ -579,7 +640,8 @@ duty = MIN_ACTIVE_DUTY + round( ((flow − minFlow) / (maxFlow − minFlow)) × 
 | Anti-cycling — stop pH | `phStopThreshold` | 0.01 | [`config.h:156`](../../src/config.h:156) |
 | Anti-cycling — start ORP | `orpStartThreshold` | 10.0 mV | [`config.h:157`](../../src/config.h:157) |
 | Anti-cycling — stop ORP | `orpStopThreshold` | 2.0 mV | [`config.h:158`](../../src/config.h:158) |
-| Anti-cycling — cycles/jour (**configurable 10-60**, feature-060) | `maxCyclesPerDay` | 48 (défaut) | [`config.h:144`](../../src/config.h:144), bornes [`constants.h:423`](../../src/constants.h:423) |
+| Anti-cycling — cycles/jour (**configurable 10-60**, feature-060) | `maxCyclesPerDay` | **24** (défaut, était 48 — v2.20.5) | [`config.h:165`](../../src/config.h:165), bornes [`constants.h:423`](../../src/constants.h:423) |
+| Dosage — throttle du `WARN` « aucun débit commandé » (v2.20.5) | `kDosingNoFlowWarnIntervalMs` | 300 000 ms (5 min) | [`constants.h:706`](../../src/constants.h:706) |
 | Deadband pH | `PH_DEADBAND` | 0.01 | [`config.h:25`](../../src/config.h:25) |
 | Deadband ORP | `ORP_DEADBAND` | 2.0 mV | [`config.h:26`](../../src/config.h:26) |
 | Pompe — duty min actif | `MIN_ACTIVE_DUTY` | 80 (sur 255) | [`config.h:28`](../../src/config.h:28) |
@@ -740,4 +802,5 @@ Hors compteurs journaliers, la **trace de bascule automatique pH** est persisté
 - [feature-036](../../specs/features/done/feature-036-dosage-testable-decision-pure.md) — extraction de la décision de dosage en module pur testable
 - [feature-039](../../specs/features/done/feature-039-anti-rafale-rollover-testable.md) — extraction de l'anti-rafale + déclencheurs de rollover en logique pure testable
 - [feature-011](../../specs/features/doing/feature-011-repartition-24h-programmee.md) — répartition du volume quotidien scheduled par fenêtres de 15 min
+- [bug-dosage-fantome-duty-non-calibre](../../specs/features/todo/bug-dosage-fantome-duty-non-calibre.md) — **spec ouverte** : défaut n°2 (double comptage) livré en v2.20.5 ; défaut n°1 (duty non caractérisé) en attente de mesure au banc
 - [page-ph.md](../features/page-ph.md), [page-orp.md](../features/page-orp.md) — UI consommatrices

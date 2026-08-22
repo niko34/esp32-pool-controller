@@ -162,9 +162,15 @@ struct PumpProtection {
   float phStopThreshold = 0.01f;                 // Continue dosage si erreur pH > 0.01
   float orpStartThreshold = 15.0f;               // Démarre dosage si erreur ORP > 15mV (feature-025 : deadband effectif ORP ±15 mV)
   float orpStopThreshold = 2.0f;                 // Continue dosage si erreur ORP > 2mV
-  unsigned int maxCyclesPerDay = 48;             // Démarrages max/jour (feature-060) : défaut 48 = 1 cycle/30 min moyen,
-                                                 // au-dessus du régime d'entretien sain (20-40/j), sous le plafond physique
-                                                 // ~70/j imposé par la pause mélange. Configurable, borné [kCyclesPerDayMin, kCyclesPerDayMax].
+  unsigned int maxCyclesPerDay = 24;             // Démarrages max/jour (feature-060). Configurable, borné
+                                                 // [kCyclesPerDayMin, kCyclesPerDayMax].
+                                                 // 48 → 24 en v2.20.5, condition P5 du gate pool-chemistry :
+                                                 // le double comptage de cycle (premier tick à débit nul, cf.
+                                                 // bug-dosage-fantome-duty-non-calibre) faisait que l'enveloppe
+                                                 // RÉELLEMENT vécue valait la moitié de la valeur configurée, soit 24.
+                                                 // Corriger le comptage sans abaisser cette limite aurait DOUBLÉ le
+                                                 // nombre d'injections quotidiennes sous couvert de correctif.
+                                                 // 24 reste dans le régime d'entretien sain (20-40/j).
 };
 
 // feature-053 : état du Mode Boost (surchloration temporaire du jour).

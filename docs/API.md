@@ -445,7 +445,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "pump_max_flow_ml_per_min": 90,
   "ph_limit_minutes": 5,
   "orp_limit_minutes": 10,
-  "max_cycles_per_day": 48,
+  "max_cycles_per_day": 24,
   "time_use_ntp": true,
   "ntp_server": "pool.ntp.org",
   "timezone_id": "europe_paris",
@@ -484,7 +484,7 @@ Champs notables de la réponse :
 | `stabilization_delay_min` | integer | Délai de stabilisation capteurs après démarrage filtration (0–60 min) |
 | `ph_limit_minutes` | integer | Durée max d'injection pH par fenêtre glissante d'1 h (minutes, 1–60) |
 | `orp_limit_minutes` | integer | Durée max d'injection ORP par fenêtre glissante d'1 h (minutes, 1–60) |
-| `max_cycles_per_day` | integer | Limite anti-cycling (garde 9, feature-060, v2.12.0) : démarrages de dosage max **par pompe et par jour**, compteur partagé régulation auto + injections manuelles. Défaut **48**. Bornes dures **10–60** clampées côté serveur (voir la table de validation `/save-config` ci-dessous). Persisté en NVS (`max_cycles_day`). |
+| `max_cycles_per_day` | integer | Limite anti-cycling (garde 9, feature-060, v2.12.0) : démarrages de dosage max **par pompe et par jour**, compteur partagé régulation auto + injections manuelles. Défaut **24** (était 48 — abaissé en v2.20.5, cf. [pump-controller.md](subsystems/pump-controller.md#limite-de-cyclesjour-configurable-garde-9-feature-060-v2120)). Bornes dures **10–60** clampées côté serveur (voir la table de validation `/save-config` ci-dessous). Persisté en NVS (`max_cycles_day`) — le nouveau défaut **ne s'applique donc pas** à un appareil déjà provisionné, aucune migration n'écrase la valeur enregistrée. |
 | `pump1_max_duty_pct` | integer | Puissance maximale pompe 1 en régulation (0–100 %) |
 | `pump2_max_duty_pct` | integer | Puissance maximale pompe 2 en régulation (0–100 %) |
 | `pump_max_flow_ml_per_min` | float | Débit nominal des pompes à 100 % de puissance (mL/min) |
@@ -868,6 +868,25 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/on
 curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/off
 ```
 
+**Paramètre optionnel (v2.20.5)**
+
+| Paramètre | Type | Défaut | Description |
+|---|---|---|---|
+| `duty` | entier | `255` (`MAX_PWM_DUTY`) | Rapport cyclique PWM appliqué à la pompe, borné `[0, 255]`. `duty=0` équivaut à `/pump1/off`. Accepté en query-string ou en corps de formulaire. |
+
+```bash
+# Balayage du seuil de rotation réel : 96/255 pendant 120 s
+curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/pump1/on?duty=96"
+sleep 120
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/off
+```
+
+> **Motif** : ce paramètre sert à **caractériser au banc** le duty en dessous duquel la pompe cesse réellement de tourner. Le régulateur commande des duty au ras de `MIN_ACTIVE_DUTY` (82/255 pour une erreur de 0,8 pH) où la pompe ne tourne que par intermittence, alors que le modèle `duty ↔ débit` la croit à 6,4 mL/min — le volume est donc compté sur un produit qui ne sort pas. Voir [pump-controller.md — Conversion duty ↔ débit](subsystems/pump-controller.md#conversion-duty--débit).
+>
+> ⚠️ Il n'est **volontairement pas** borné par `MIN_ACTIVE_DUTY` (80) : sonder **sous** le plancher est précisément l'objet de la mesure. Sûreté : le paramètre ne peut que **réduire** la puissance par rapport au 255 déjà atteignable sans lui, et **toutes** les gardes restent en amont (auth `WRITE`, présence d'eau, inhibition maintenance). Sans le paramètre, le comportement est **strictement inchangé**.
+>
+> Journal : `[Test] Pompe 1 démarrée en mode manuel (duty=N)`.
+
 > ⚠️ **Garde filtration (v2.1.2)** : `/pump1/on` retourne **`409 Conflict`** si la filtration est arrêtée et que `regulationMode != "continu"`. `/pump1/off` reste inconditionnel (pouvoir arrêter en toute circonstance).
 >
 > **v2.6.0** : le corps du 409 passe du texte brut au **JSON structuré** `{"error":"filtration_off","message":"…"}` — même format que les refus de `/ph/inject/start` (voir [tableau des codes](#codes-de-refus-409-v260)). Les routes de test `/pumpN/on` ne vérifient **que** la filtration (pas les limites volumétriques : pas de volume demandé), mais le temps de marche **consomme le budget horaire partagé** ([ADR-0020](adr/0020-budget-horaire-dosage-unique.md)).
@@ -884,6 +903,8 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump2/off
 ```
 
 > ⚠️ **Garde filtration (v2.1.2)** : mêmes règles que `/pump1/on` ci-dessus.
+>
+> **Paramètre optionnel `?duty=N` (v2.20.5)** : identique à `/pump1/on` — borné `[0, 255]`, défaut `255`, pas de plancher `MIN_ACTIVE_DUTY`, comportement inchangé sans le paramètre. Journal : `[Test] Pompe 2 démarrée en mode manuel (duty=N)`.
 
 ---
 

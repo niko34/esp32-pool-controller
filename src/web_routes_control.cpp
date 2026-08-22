@@ -36,6 +36,25 @@ extern TaskHandle_t loopTaskHandle;
 // est absorbée par evaluateManualInject() (cause FiltrationOff) — ce helper ne
 // sert plus qu'aux routes de test de pompes. Réponse au format JSON structuré,
 // identique à celui des refus d'injection manuelle. Garde JAMAIS affaiblie.
+// -----------------------------------------------------------------------------
+
+// Lit le paramètre optionnel ?duty=N des routes de TEST de pompe (/pumpN/on).
+// Défaut MAX_PWM_DUTY : comportement historique strictement inchangé sans le paramètre.
+// Borné à [0, MAX_PWM_DUTY] et volontairement PAS borné par MIN_ACTIVE_DUTY — le but est
+// justement de sonder SOUS le plancher pour trouver où la pompe cesse de tourner
+// (bug-dosage-fantome-duty-non-calibre : le régulateur commande 82/255 pour une erreur de
+// 0,8 pH, valeur où la pompe ne tourne que par intermittence alors que le modèle
+// duty↔débit la croit à 6,4 ml/min).
+static uint8_t readTestDutyParam(AsyncWebServerRequest* req) {
+  const AsyncWebParameter* p = req->getParam("duty", true);
+  if (p == nullptr) p = req->getParam("duty");
+  if (p == nullptr) return MAX_PWM_DUTY;
+  long v = p->value().toInt();
+  if (v < 0) v = 0;
+  if (v > (long)MAX_PWM_DUTY) v = MAX_PWM_DUTY;
+  return (uint8_t)v;
+}
+
 static bool injectionAllowedOrReject(AsyncWebServerRequest* req, const char* tag) {
   // feature-056 : source UNIQUE resolveWaterPresent() (Managed/Powered/External).
   if (filtration.resolveWaterPresence().waterPresent) return true;
@@ -253,11 +272,20 @@ void setupControlRoutes(AsyncWebServer* server) {
   // démarrage refusé sans présence d'eau (resolveWaterPresence().waterPresent,
   // selon le mode d'installation). Pas de bornage de durée ici (test bench) — l'utilisateur doit
   // arrêter manuellement via /pumpN/off OU passer par /ph/inject/start qui borne.
+  // Paramètre OPTIONNEL ?duty=N (0-255), défaut MAX_PWM_DUTY : sert à CARACTÉRISER
+  // le seuil de rotation réel de la pompe. Motif (bug-dosage-fantome-duty-non-calibre) :
+  // le régulateur commande des duty au ras de MIN_ACTIVE_DUTY (82/255 pour une erreur
+  // de 0,8 pH) où la pompe ne tourne que par intermittence, alors que le modèle
+  // duty↔débit la croit à 6,4 ml/min. Sans balayage possible depuis l'interface, la
+  // valeur du plancher ne pourrait être que devinée.
+  // Sûreté : ce paramètre ne peut que RÉDUIRE la puissance par rapport au 255 déjà
+  // atteignable sans lui, et toutes les gardes d'injection restent en amont.
   server->on("/pump1/on", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
     if (!injectionAllowedOrReject(req, "Test pompe 1")) return;
-    PumpController.setManualPump(0, MAX_PWM_DUTY);
-    systemLogger.info("[Test] Pompe 1 démarrée en mode manuel");
+    uint8_t duty = readTestDutyParam(req);
+    PumpController.setManualPump(0, duty);
+    systemLogger.info("[Test] Pompe 1 démarrée en mode manuel (duty=" + String(duty) + ")");
     req->send(200, "text/plain", "OK");
   });
 
@@ -271,8 +299,9 @@ void setupControlRoutes(AsyncWebServer* server) {
   server->on("/pump2/on", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
     if (!injectionAllowedOrReject(req, "Test pompe 2")) return;
-    PumpController.setManualPump(1, MAX_PWM_DUTY);
-    systemLogger.info("[Test] Pompe 2 démarrée en mode manuel");
+    uint8_t duty = readTestDutyParam(req);   // cf. commentaire de /pump1/on
+    PumpController.setManualPump(1, duty);
+    systemLogger.info("[Test] Pompe 2 démarrée en mode manuel (duty=" + String(duty) + ")");
     req->send(200, "text/plain", "OK");
   });
 

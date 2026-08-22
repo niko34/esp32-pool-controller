@@ -697,6 +697,20 @@ constexpr uint8_t kMaxDosingCyclesPerMinute = 6;     // 1 cycle / 10s max
 constexpr uint8_t kMaxDosingCyclesPer15Min  = 20;    // anti-emballement PID
 constexpr size_t  kDosingCycleHistorySize   = 20;    // ring buffer (couvre 15min)
 
+// Cadence du WARN « démarrage décidé mais aucun débit commandé » (v2.20.5).
+// Décrit une régulation SANS EFFET : la décision est prise, aucun duty ne sort.
+// Avant le correctif du double comptage, ce cas produisait un log de démarrage à
+// chaque tour — bruit involontaire qui a révélé le bug ; il serait désormais
+// silencieux. 5 min : assez rare pour ne pas noyer le journal (cf. l'inondation
+// corrigée en 2.20.2), assez fréquent pour être vu dans la journée.
+constexpr unsigned long kDosingNoFlowWarnIntervalMs = 300000UL;  // 5 min
+// Nombre de tours CONSÉCUTIFS « décision de doser sans débit » avant d'alerter.
+// Indispensable : le premier tick d'un cycle est nul par construction (garde
+// dt > 10 s de computePID), donc alerter dès le 1er tour produirait un WARN par
+// cycle, soit ~24/jour en fonctionnement SAIN. En régime normal la série vaut 1,
+// le tour suivant commandant un débit.
+constexpr uint16_t kDosingNoFlowWarnStreak = 5;
+
 // Bornes dures de la garde 9 anti-cycling (maxCyclesPerDay configurable,
 // feature-060 — verdict pool-chemistry 2026-07-29, GO sous conditions).
 // Appliquées par clamp CÔTÉ SERVEUR (route de config) ET au chargement NVS

@@ -130,6 +130,15 @@ Cadences des émetteurs périodiques qui écrivent dans `/system.log` :
 
 > **Règle générale** : avant d'ajouter une trace **périodique** persistée, chiffrer son débit en Ko/h et vérifier la rétention résultante. Une trace de 100 octets toutes les 30 s consomme **à elle seule** 12 Ko/h, soit plus que la taille totale du fichier — elle rend le journal inutilisable pour tout post-mortem.
 
+**Émetteur conditionnel ajouté en v2.20.5** — `WARN [Dosage pH|ORP] démarrage décidé mais AUCUN débit commandé …`, throttle **5 min** par grandeur (`kDosingNoFlowWarnIntervalMs`), ligne ≈ 180 octets :
+
+| Régime | Débit ajouté | Effet sur la rétention |
+|---|---|---|
+| Nominal (une occurrence au démarrage de chaque cycle, ~24 cycles/j par grandeur) | **≈ 0,36 Ko/h** | 14,6-19,5 h → **≈ 8-10 h** |
+| Pathologique (régulation décidée en continu sans débit, pH **et** ORP saturant le throttle) | **≈ 4,3 Ko/h** | **≈ 1,4-1,9 h** |
+
+Le régime pathologique est **le seul cas où ce WARN doit être vu en rafale** ; il consomme alors la rétention, mais c'est précisément la fenêtre où on veut la trace. Le régime nominal reste sous le plafond du budget. Détail du sens du message : [pump-controller.md](pump-controller.md#warn--démarrage-décidé-mais-aucun-débit-commandé-).
+
 Le tampon `_persistBuffer` (std::vector<String>) accumule entre deux flushes. Sa capacité est **bornée à 100 entrées** (`kMaxPersistBufferEntries`) et pré-allouée dans le constructeur (`reserve(kMaxPersistBufferEntries)`) pour éviter les `std::bad_alloc` en cas de heap fragmenté en production. Les entrées au-delà de 100 sont silencieusement ignorées (les logs restent dans le buffer RAM circulaire).
 
 **Logs pré-persistance** : tant que `setPersistenceFs()` n'a pas été appelé (`_persistEnabled == false`), les entrées ne sont **pas** accumulées pour `/system.log` — elles partent en buffer RAM + console uniquement. C'est notamment le cas des logs du **disjoncteur de boot-loop history** (v2.10.0), qui s'exécute dans `HistoryManager::begin()` **avant** l'activation de la persistance (c'est précisément elle qu'il protège) : le CRIT « partition effacée automatiquement » est visible dans la page Logs (RAM) et sur la série, mais jamais dans `/system.log`. Voir [system-health.md](system-health.md#disjoncteur-de-boot-loop-de-linit-history-v2100).

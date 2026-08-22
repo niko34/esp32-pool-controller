@@ -148,6 +148,40 @@ bool shouldContinueDosingPure(float error, float stopThreshold,
                               unsigned long runTimeMs, unsigned long minInjectionTimeMs);
 
 // =============================================================================
+// Comptabilisation d'un démarrage de cycle — PURE (bug-dosage-fantome, défaut n°2)
+// =============================================================================
+// Seule sortie utile d'un tour de régulation automatique : faut-il comptabiliser
+// un démarrage de cycle ?
+//
+// Un champ `latchActive` a existé ici et a été RETIRÉ (revue 2.20.5) : il valait
+// trivialement `flowActive`, la production ne le lisait pas (elle latche sur son
+// propre `phActive`/`orpActive`), et seul le test s'en servait. Un test qui
+// s'appuie sur un champ mort en production donne l'illusion de couvrir le latch
+// tout en pouvant en diverger silencieusement.
+struct CycleStartAccounting {
+  bool countCycleStart;  // cyclesToday++, ring anti-rafale, log « Démarrage dosage »
+};
+
+// INVARIANT VERROUILLÉ (bug-dosage-fantome, défaut n°2, prescription
+// pool-chemistry P5) : un cycle est comptabilisé sur le MÊME prédicat que celui
+// qui latche `active` — donc « cycle compté ⇔ cycle réellement démarré ».
+//
+// Pourquoi : computePID rend TOUJOURS 0 au premier tour d'un cycle quand le
+// cycle précédent est loin (dt > 10 s → delta jugé aberrant, rejeté). L'ancien
+// code comptabilisait sur la seule DÉCISION de doser : `active` ne se latchait
+// pas (débit nul), le tour suivant repassait par shouldStartDosing et comptait un
+// SECOND cycle — d'où deux lignes de journal, deux entrées dans le ring
+// anti-rafale et un budget cycles/jour réellement divisé par deux.
+// On ne synthétise DÉLIBÉRÉMENT aucun dt (piège latent si ki devenait non nul) :
+// c'est la comptabilisation qui attend le débit, pas le PID qu'on force.
+//
+//   wasActive    : DosingState.active à l'entrée du tour
+//   startDecided : shouldStartDosing a dit oui CE tour (faux si déjà actif)
+//   flowActive   : un duty non nul a réellement été commandé ce tour
+CycleStartAccounting evaluateCycleStartAccounting(bool wasActive, bool startDecided,
+                                                  bool flowActive);
+
+// =============================================================================
 // Sanitization config (feature-060) — HORS des gardes de dosage
 // =============================================================================
 // Sanitization config (PAS une garde de dosage) : borne maxCyclesPerDay dans

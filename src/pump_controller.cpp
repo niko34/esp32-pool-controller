@@ -1137,27 +1137,19 @@ void PumpControllerClass::update() {
 
     // Déterminer si on doit doser (avec protection anti-cycling)
     bool shouldDose = false;
+    // bug-dosage-fantome (défaut n°2) : la DÉCISION reste ici, la
+    // COMPTABILISATION du cycle est différée après le calcul du débit (bloc
+    // « comptabilisation différée » plus bas).
+    const bool phWasActiveTick = phDosingState.active;
 
-    if (phDosingState.active) {
+    if (phWasActiveTick) {
       // Déjà en cours : vérifier si on continue
       shouldDose = shouldContinueDosing(error, pumpProtection.phStopThreshold, phDosingState, now);
     } else {
       // Arrêté : vérifier si on démarre
       shouldDose = shouldStartDosing(error, pumpProtection.phStartThreshold, phDosingState, now);
-
-      if (shouldDose) {
-        // Démarrage d'un nouveau cycle
-        phDosingState.lastStartTime = now;
-        phDosingState.cyclesToday++;
-        // Anti-rafale Pass 3.5 : on enregistre le timestamp de start dans le
-        // ring buffer pour les fenêtres glissantes 1 min / 15 min (cf. canDose()).
-        recordDosingCycleStart(0);
-        systemLogger.info("Démarrage dosage pH (auto): pH=" + String(sensors.getPhFiltered(), 2) +
-          " cible=" + String(mqttCfg.phTarget, 2) +
-          " erreur=" + String(error, 3) +
-          " (cycle " + String(phDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
-      }
     }
+    const bool phStartDecided = !phWasActiveTick && shouldDose;
 
     float flow = 0.0f;
     if (shouldDose) {
@@ -1202,6 +1194,57 @@ void PumpControllerClass::update() {
         phActive = true;
         phFlow = flow;
       }
+    }
+
+    // --- Comptabilisation différée du démarrage de cycle (bug-dosage-fantome,
+    // défaut n°2) ---
+    // Le premier tour d'un cycle rend un débit NUL quand le cycle précédent est
+    // loin (computePID rejette dt > 10 s). Comptabiliser sur la seule décision
+    // faisait donc : cycle compté mais `active` non latché → le tour suivant
+    // repassait par shouldStartDosing et comptait un SECOND cycle (2 lignes de
+    // journal, 2 entrées dans le ring anti-rafale, budget cycles/jour de moitié).
+    // On comptabilise ici, sur le MÊME prédicat que le latch de `active`
+    // (phActive), donc « un cycle compté ⇔ un cycle réellement démarré ».
+    // Prescription pool-chemistry P5 : ne PAS synthétiser de dt.
+    // SIGNAL À NE PAS PERDRE (revue 2.20.5) : avant ce correctif, une régulation
+    // qui décidait de doser sans jamais produire de débit émettait un log de
+    // démarrage à CHAQUE tour — bruit involontaire, mais c'est lui qui a révélé
+    // le bug. Désormais elle serait totalement silencieuse.
+    //
+    // ATTENTION au piège que ce garde-fou a lui-même introduit : « décision sans
+    // débit » est le cas NORMAL au premier tick d'un cycle (computePID rend 0 tant
+    // que dt > 10 s). Alerter dessus produirait un avertissement à chaque cycle,
+    // soit ~24/jour en fonctionnement sain — c'est-à-dire l'inondation du journal
+    // corrigée en 2.20.2. On n'alerte donc que si la situation PERSISTE sur
+    // plusieurs tours consécutifs, ce qui n'arrive pas en régime normal (le tour
+    // suivant produit un débit).
+    static uint16_t phNoFlowStreak = 0;
+    static unsigned long phNoFlowWarnMs = 0;
+    if (phStartDecided && !phActive) {
+      if (phNoFlowStreak < 0xFFFF) ++phNoFlowStreak;
+      if (phNoFlowStreak >= kDosingNoFlowWarnStreak &&
+          (phNoFlowWarnMs == 0 || now - phNoFlowWarnMs >= kDosingNoFlowWarnIntervalMs)) {
+        phNoFlowWarnMs = now;
+        systemLogger.warning(
+            "[Dosage pH] décision de doser SANS débit commandé depuis " +
+            String(phNoFlowStreak) + " tours — régulation sans effet (boucle trop "
+            "lente, ou consigne sous le plancher de duty). Erreur=" + String(error, 3));
+      }
+    } else if (phActive) {
+      phNoFlowStreak = 0;  // un débit a bien été commandé : rien à signaler
+    }
+
+    if (evaluateCycleStartAccounting(phWasActiveTick, phStartDecided, phActive)
+            .countCycleStart) {
+      phDosingState.lastStartTime = now;
+      phDosingState.cyclesToday++;
+      // Anti-rafale Pass 3.5 : on enregistre le timestamp de start dans le
+      // ring buffer pour les fenêtres glissantes 1 min / 15 min (cf. canDose()).
+      recordDosingCycleStart(0);
+      systemLogger.info("Démarrage dosage pH (auto): pH=" + String(sensors.getPhFiltered(), 2) +
+        " cible=" + String(mqttCfg.phTarget, 2) +
+        " erreur=" + String(error, 3) +
+        " (cycle " + String(phDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
     }
   } else if (phMode == "scheduled" && phLimitOk && phSafetyOk &&
              mqttCfg.phDailyTargetMl > 0 && !isPhRawFloorBlocking()) {
@@ -1416,26 +1459,18 @@ void PumpControllerClass::update() {
 
     // Déterminer si on doit doser (avec protection anti-cycling)
     bool shouldDose = false;
+    // bug-dosage-fantome (défaut n°2) : symétrique du pH — la DÉCISION reste
+    // ici, la COMPTABILISATION du cycle attend un débit réellement non nul.
+    const bool orpWasActiveTick = orpDosingState.active;
 
-    if (orpDosingState.active) {
+    if (orpWasActiveTick) {
       // Déjà en cours : vérifier si on continue
       shouldDose = shouldContinueDosing(error, pumpProtection.orpStopThreshold, orpDosingState, now);
     } else {
       // Arrêté : vérifier si on démarre
       shouldDose = shouldStartDosing(error, pumpProtection.orpStartThreshold, orpDosingState, now);
-
-      if (shouldDose) {
-        // Démarrage d'un nouveau cycle
-        orpDosingState.lastStartTime = now;
-        orpDosingState.cyclesToday++;
-        // Anti-rafale Pass 3.5 : timestamp de start pour les fenêtres glissantes.
-        recordDosingCycleStart(1);
-        systemLogger.info("Démarrage dosage ORP (auto): ORP=" + String(sensors.getOrpFiltered(), 0) + "mV" +
-          " cible=" + String(orpTargetEff, 0) + "mV" +
-          " erreur=" + String(error, 0) + "mV" +
-          " (cycle " + String(orpDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
-      }
     }
+    const bool orpStartDecided = !orpWasActiveTick && shouldDose;
 
     float flow = 0.0f;
     if (shouldDose) {
@@ -1479,6 +1514,40 @@ void PumpControllerClass::update() {
         orpActive = true;
         orpFlow = flow;
       }
+    }
+
+    // --- Comptabilisation différée du démarrage de cycle (bug-dosage-fantome,
+    // défaut n°2) --- Voir le commentaire détaillé de la branche pH : même
+    // invariant (cycle compté ⇔ cycle latché actif), aucun dt synthétisé.
+    // Symétrique du WARN de la branche pH — y compris la garde de PERSISTANCE :
+    // « décision sans débit » est normal au premier tick, alerter dessus
+    // inonderait le journal. Voir le commentaire détaillé côté pH.
+    static uint16_t orpNoFlowStreak = 0;
+    static unsigned long orpNoFlowWarnMs = 0;
+    if (orpStartDecided && !orpActive) {
+      if (orpNoFlowStreak < 0xFFFF) ++orpNoFlowStreak;
+      if (orpNoFlowStreak >= kDosingNoFlowWarnStreak &&
+          (orpNoFlowWarnMs == 0 || now - orpNoFlowWarnMs >= kDosingNoFlowWarnIntervalMs)) {
+        orpNoFlowWarnMs = now;
+        systemLogger.warning(
+            "[Dosage ORP] décision de doser SANS débit commandé depuis " +
+            String(orpNoFlowStreak) + " tours — régulation sans effet (boucle trop "
+            "lente, ou consigne sous le plancher de duty). Erreur=" + String(error, 1) + " mV");
+      }
+    } else if (orpActive) {
+      orpNoFlowStreak = 0;
+    }
+
+    if (evaluateCycleStartAccounting(orpWasActiveTick, orpStartDecided, orpActive)
+            .countCycleStart) {
+      orpDosingState.lastStartTime = now;
+      orpDosingState.cyclesToday++;
+      // Anti-rafale Pass 3.5 : timestamp de start pour les fenêtres glissantes.
+      recordDosingCycleStart(1);
+      systemLogger.info("Démarrage dosage ORP (auto): ORP=" + String(sensors.getOrpFiltered(), 0) + "mV" +
+        " cible=" + String(orpTargetEff, 0) + "mV" +
+        " erreur=" + String(error, 0) + "mV" +
+        " (cycle " + String(orpDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
     }
   } else if (orpMode == "scheduled" && orpLimitOk && orpSafetyOk &&
              mqttCfg.orpDailyTargetMl > 0 && !isOrpInhibitedByPhRaw(false)) {

@@ -149,6 +149,15 @@ bool shouldContinueDosingPure(float error, float stopThreshold,
   return error > stopThreshold;
 }
 
+CycleStartAccounting evaluateCycleStartAccounting(bool wasActive, bool startDecided,
+                                                  bool flowActive) {
+  CycleStartAccounting out;
+  // Un cycle n'est comptabilisé qu'à la transition inactive → actif EFFECTIF :
+  // même prédicat que le latch, donc jamais deux comptages pour un démarrage.
+  out.countCycleStart = !wasActive && startDecided && flowActive;
+  return out;
+}
+
 // =============================================================================
 // Sanitization config (feature-060) — HORS des gardes de dosage
 // =============================================================================

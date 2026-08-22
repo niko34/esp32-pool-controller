@@ -1628,6 +1628,200 @@ void test_F060_hourly_and_mixing_refusals_precede_guard9(void) {
   }
 }
 
+// =============================================================================
+// bug-dosage-fantome (défaut n°2) — comptabilisation d'un démarrage de cycle
+// =============================================================================
+// Rejoue le SÉQUENCEMENT réel d'un tour de régulation automatique de
+// PumpControllerClass::update() pour une pompe :
+//   1. décision  : shouldStartDosingPure / shouldContinueDosingPure ;
+//   2. débit     : garde temporelle de computePID (dt <= 0 ou dt > 10 s → 0,
+//                  reproduite ici comme dans la coquille) + computePidPure ;
+//   3. comptage  : evaluateCycleStartAccounting (cyclesToday, ring anti-rafale,
+//                  latch de `active`).
+// Le défaut : ~29 min séparent deux cycles, donc le PREMIER tour de chaque cycle
+// rend toujours un débit nul (dt aberrant rejeté). L'ancien code comptabilisait
+// le cycle sur la seule décision → `active` non latché → second comptage au tour
+// suivant (2 lignes de journal, 2 entrées anti-rafale, budget cycles/jour de
+// moitié). Ces tests verrouillent : UN démarrage réel = UN cycle comptabilisé.
+
+static const float kSimKp = 8.0f;              // Kp pH « normal » (P temporisée)
+static const float kSimMinFlow = 5.2f;         // kPumpMinFlowMlPerMin
+static const float kSimMaxFlow = 90.0f;        // kPumpMaxFlowMlPerMin
+static const float kSimIntegralMax = 100.0f;
+
+struct DosingTickSim {
+  bool active;                 // DosingState.active
+  unsigned int cyclesToday;    // DosingState.cyclesToday
+  int ringEntries;             // nombre d'appels à recordDosingCycleStart()
+  int startLogs;               // nombre de lignes « Démarrage dosage » émises
+  unsigned long lastStartMs;   // DosingState.lastStartTime
+  unsigned long pidLastTimeMs; // PIDController.lastTime (0 = jamais appelé)
+  float pidIntegral;
+  float pidLastError;
+};
+
+static void simInit(DosingTickSim& s) {
+  s.active = false;
+  s.cyclesToday = 0u;
+  s.ringEntries = 0;
+  s.startLogs = 0;
+  s.lastStartMs = 0UL;
+  s.pidLastTimeMs = 0UL;
+  s.pidIntegral = 0.0f;
+  s.pidLastError = 0.0f;
+}
+
+// Un tour de update() ; renvoie le débit commandé (mL/min, 0 = pompe à l'arrêt).
+static float simTick(DosingTickSim& s, float error, unsigned long nowMs) {
+  const bool wasActive = s.active;
+  const bool shouldDose =
+      wasActive ? shouldContinueDosingPure(error, kStopThreshold,
+                                           nowMs - s.lastStartMs, kMinInjectionMs)
+                : shouldStartDosingPure(error, kStartThreshold, s.cyclesToday,
+                                        kMaxCyclesPerDay);
+  const bool startDecided = !wasActive && shouldDose;
+
+  // --- Débit : coquille computePID (gestion du temps) + cœur pur ---
+  float flow = 0.0f;
+  if (shouldDose) {
+    if (s.pidLastTimeMs == 0UL) {
+      s.pidLastTimeMs = nowMs;      // première invocation → débit nul
+      s.pidLastError = error;
+    } else {
+      float dt = (float)(nowMs - s.pidLastTimeMs) / 1000.0f;
+      if (dt <= 0.0f || dt > 10.0f) {
+        s.pidLastTimeMs = nowMs;    // delta aberrant → débit nul (le défaut n°2)
+      } else {
+        PidResult r = computePidPure(kSimKp, 0.0f, 0.0f, error, s.pidLastError,
+                                     s.pidIntegral, dt, kSimIntegralMax,
+                                     kStartThreshold, kSimMinFlow, kSimMaxFlow,
+                                     false);
+        s.pidIntegral = r.integral;
+        s.pidLastError = r.lastError;
+        s.pidLastTimeMs = nowMs;
+        flow = r.flow;
+      }
+    }
+  }
+
+  // --- Comptabilisation différée + latch de `active` ---
+  CycleStartAccounting acc =
+      evaluateCycleStartAccounting(wasActive, startDecided, flow > 0.0f);
+  if (acc.countCycleStart) {
+    s.lastStartMs = nowMs;
+    s.cyclesToday++;
+    s.ringEntries++;
+    s.startLogs++;
+  }
+  // Latch sur le débit réellement commandé, exactement comme la production latche
+  // sur phActive/orpActive : le test ne doit pas dépendre d'un champ que la
+  // production ne lit pas (cf. retrait de `latchActive`, revue 2.20.5).
+  s.active = (flow > 0.0f);
+  return flow;
+}
+
+// Table de vérité de la fonction pure : le comptage suit EXACTEMENT le latch.
+void test_BUG2_accounting_pure_truth_table(void) {
+  // Démarrage décidé mais débit nul → aucun comptage, `active` non latché.
+  CycleStartAccounting a = evaluateCycleStartAccounting(false, true, false);
+  TEST_ASSERT_FALSE(a.countCycleStart);
+  // Démarrage décidé ET débit non nul → comptage unique, `active` latché.
+  a = evaluateCycleStartAccounting(false, true, true);
+  TEST_ASSERT_TRUE(a.countCycleStart);
+  // Cycle déjà actif (poursuite) → jamais de comptage, quel que soit le débit.
+  a = evaluateCycleStartAccounting(true, false, true);
+  TEST_ASSERT_FALSE(a.countCycleStart);
+  a = evaluateCycleStartAccounting(true, false, false);
+  TEST_ASSERT_FALSE(a.countCycleStart);
+  // Aucun démarrage décidé, aucun débit → état inchangé.
+  a = evaluateCycleStartAccounting(false, false, false);
+  TEST_ASSERT_FALSE(a.countCycleStart);
+}
+
+// Scénario du bug : premier tour à débit nul, puis tour à débit non nul.
+// Attendu : UN SEUL cycle comptabilisé, UNE SEULE entrée anti-rafale.
+void test_BUG2_first_tick_zero_flow_counts_one_cycle(void) {
+  DosingTickSim s;
+  simInit(s);
+  const float error = 0.85f;        // pH 8,05 pour une cible 7,20 (trace on-target)
+  unsigned long t = 1000000UL;
+
+  // Tour 1 : le PID n'a pas d'instant de référence → débit nul.
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, simTick(s, error, t));
+  TEST_ASSERT_FALSE(s.active);
+  TEST_ASSERT_EQUAL_UINT(0u, s.cyclesToday);   // aucun cycle consommé à vide
+  TEST_ASSERT_EQUAL_INT(0, s.ringEntries);
+  TEST_ASSERT_EQUAL_INT(0, s.startLogs);
+
+  // Tour 2, 1 s plus tard : débit non nul → le cycle est comptabilisé, une fois.
+  t += 1000UL;
+  TEST_ASSERT_TRUE(simTick(s, error, t) > 0.0f);
+  TEST_ASSERT_TRUE(s.active);
+  TEST_ASSERT_EQUAL_UINT(1u, s.cyclesToday);
+  TEST_ASSERT_EQUAL_INT(1, s.ringEntries);
+  TEST_ASSERT_EQUAL_INT(1, s.startLogs);       // une seule ligne de journal
+
+  // Tours de poursuite : aucun comptage supplémentaire.
+  for (int i = 0; i < 10; ++i) {
+    t += 1000UL;
+    TEST_ASSERT_TRUE(simTick(s, error, t) > 0.0f);
+  }
+  TEST_ASSERT_EQUAL_UINT(1u, s.cyclesToday);
+  TEST_ASSERT_EQUAL_INT(1, s.ringEntries);
+  TEST_ASSERT_EQUAL_INT(1, s.startLogs);
+}
+
+// Non-régression : deux cycles légitimement espacés (~29 min) comptent DEUX
+// cycles — y compris avec le tour à débit nul en tête de chaque cycle.
+void test_BUG2_two_spaced_cycles_count_two(void) {
+  DosingTickSim s;
+  simInit(s);
+  unsigned long t = 1000000UL;
+  const float errHigh = 0.85f;
+
+  // --- Cycle 1 ---
+  simTick(s, errHigh, t);                 // débit nul (première invocation PID)
+  t += 1000UL;
+  simTick(s, errHigh, t);                 // démarrage effectif
+  TEST_ASSERT_EQUAL_UINT(1u, s.cyclesToday);
+  for (int i = 0; i < 35; ++i) {           // dépasser le temps min d'injection
+    t += 1000UL;
+    simTick(s, errHigh, t);
+  }
+  // Erreur retombée sous le seuil d'arrêt → fin du cycle 1.
+  t += 1000UL;
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, simTick(s, 0.0f, t));
+  TEST_ASSERT_FALSE(s.active);
+  TEST_ASSERT_EQUAL_UINT(1u, s.cyclesToday);
+
+  // --- 29 min plus tard : cycle 2 (dt aberrant au premier tour) ---
+  t += 29UL * 60UL * 1000UL;
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, simTick(s, errHigh, t));  // dt > 10 s → débit nul
+  TEST_ASSERT_EQUAL_UINT(1u, s.cyclesToday);              // pas de comptage à vide
+  t += 1000UL;
+  TEST_ASSERT_TRUE(simTick(s, errHigh, t) > 0.0f);
+  TEST_ASSERT_TRUE(s.active);
+  TEST_ASSERT_EQUAL_UINT(2u, s.cyclesToday);              // DEUX cycles, pas trois
+  TEST_ASSERT_EQUAL_INT(2, s.ringEntries);
+  TEST_ASSERT_EQUAL_INT(2, s.startLogs);
+}
+
+// Un démarrage décidé alors que l'erreur retombe avant le premier débit non nul
+// ne doit consommer AUCUN cycle (ni entrée anti-rafale) : la pompe n'a jamais
+// tourné.
+void test_BUG2_aborted_start_consumes_no_cycle(void) {
+  DosingTickSim s;
+  simInit(s);
+  unsigned long t = 1000000UL;
+  simTick(s, 0.85f, t);        // décision de démarrer, débit nul
+  t += 1000UL;
+  simTick(s, 0.0f, t);         // erreur retombée sous le seuil → pas de démarrage
+  TEST_ASSERT_FALSE(s.active);
+  TEST_ASSERT_EQUAL_UINT(0u, s.cyclesToday);
+  TEST_ASSERT_EQUAL_INT(0, s.ringEntries);
+  TEST_ASSERT_EQUAL_INT(0, s.startLogs);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   // T2 — hystérésis de démarrage.
@@ -1735,5 +1929,10 @@ int main(int, char **) {
   RUN_TEST(test_F060_clamp_exact_bounds_untouched);
   RUN_TEST(test_F060_shared_limit_same_threshold_auto_and_manual);
   RUN_TEST(test_F060_hourly_and_mixing_refusals_precede_guard9);
+  // bug-dosage-fantome (défaut n°2) — comptabilisation d'un démarrage de cycle.
+  RUN_TEST(test_BUG2_accounting_pure_truth_table);
+  RUN_TEST(test_BUG2_first_tick_zero_flow_counts_one_cycle);
+  RUN_TEST(test_BUG2_two_spaced_cycles_count_two);
+  RUN_TEST(test_BUG2_aborted_start_consumes_no_cycle);
   return UNITY_END();
 }
