@@ -164,18 +164,29 @@ Sous la valeur pH dans le bloc Statistiques, un **chip cliquable** affiche en pe
 
 Source : champs WS `phSlopeAcid`, `phSlopeBase`, `phSlopeZero`, `phSlopeAgeMs`, `phCalPoints`. Les seuils sont **dans `data/app.js`** (constantes `PH_PROBE_*` + fonction `classifyPhProbe()`) — modifier sans reflasher le firmware.
 
+> **v2.21.2 (parité de transport)** : les 4 champs `phSlope*` sont désormais **aussi dans `GET /data`** (mêmes règles null/arrondi que le WS) — un client sans WebSocket voit la pente via le poll `/data`, voir [API.md](../API.md#get-data--write).
+
 > **feature-034 — chip unique sonde + calibration** : ce chip est désormais l'**unique** indicateur « sonde + calibration » du bloc Statistiques pH (le chip de calibration séparé `#ph-cal-chip` a été supprimé). Pour `phCalPoints < 2`, il affiche l'**état de calibration** ; pour `≥ 2`, il affiche le **diagnostic de pente** (santé sonde).
 
 | `phCalPoints` | min(acide, base) | \|zéro\| (mV) | Variante CSS | Libellé | Couleur |
 |---|---|---|---|---|---|
-| `null` ou `< 0` | — | — | `chip--probe-unknown` | « EZO indisponible » | gris |
+| `null` ou `< 0` | — | — | `chip--probe-unknown` | « Sonde pH : lecture en cours… » | gris |
 | `0` | — | — | `chip--probe-bad` | « Calibration requise » | rouge |
 | `1` | — | — | `chip--probe-warn` | « Calibration 1/2 » | ambré |
-| `≥ 2` | NaN / `null` | — | `chip--probe-unknown` | « Pente non disponible » | gris |
+| `≥ 2` | NaN / `null` **et** `phSlopeAgeMs` `null` (jamais lu) | — | `chip--probe-unknown` | « Pente en cours de lecture… » | gris |
+| `≥ 2` | NaN / `null` **et** `phSlopeAgeMs` non-`null` (pente invalidée) | — | `chip--probe-warn` | « Pente non disponible » | ambré |
 | `≥ 2` | `≥ 95 %` | `≤ 15` | `chip--probe-good` | « Sonde excellente · 98 % » | vert (`var(--success)`) |
 | `≥ 2` | `90–95 %` | `≤ 30` | `chip--probe-warn` | « Sonde correcte · 92 % » | ambré clair (`var(--warn)`) |
 | `≥ 2` | `85–90 %` | `≤ 30` | `chip--probe-warn2` | « Sonde usée · 87 % » | ambré (`var(--warn)`) |
 | `≥ 2` | `< 85 %` OU `> 30` | — | `chip--probe-bad` | « Sonde à remplacer · 81 % » | rouge (`var(--danger)`, point pulsant) |
+
+> **v2.21.2 (bug-slope-boot-perdue) — 3 états au lieu du fourre-tout « EZO indisponible » / « Pente non disponible »** :
+>
+> 1. **« Sonde pH : lecture en cours… »** (`calPoints` `null`/`< 0`, classe neutre) — transitoire de boot : le cache calibration vaut `-1` les toutes premières secondes. Aucun champ de `/data` ou du WS ne distingue ce transitoire d'un vrai mutisme EZO (les deux donnent `calPoints -1` et `ph null`) → choix architect : **un seul libellé**, adouci (l'ancien « EZO indisponible » était trompeur). Un vrai mutisme finit de toute façon en log `EZO pH` au journal + valeurs pH figées à « -- ».
+> 2. **« Pente en cours de lecture… »** (`phSlopeAgeMs` `null`, classe neutre, **pas** warning) — la pente n'a **jamais** été lue depuis le boot. État transitoire attendu : le firmware **retente automatiquement** la `Slope,?` de boot ([sensors.md](../subsystems/sensors.md#retentative-bornée-de-la-slope-de-boot--v2212)) → se résout en **< 2 min**.
+> 3. **« Pente non disponible »** (`phSlope*` `null` **mais** `phSlopeAgeMs` non-`null`, classe `warn`) — la pente a déjà été lue **puis invalidée** après échecs répétés (`kEzoBusFailMaxConsecutive`) : **erreur réelle**, seul état d'échec des trois.
+>
+> Les états sonde excellente / correcte / usée / à remplacer et calibration requise / 1-2 sont inchangés.
 
 ### État stale (âge > 36 h)
 
@@ -199,7 +210,7 @@ Si `dialog.showModal` est absent (vieux navigateur), le chip est rendu non cliqu
 ### Cas particuliers
 
 - **WebSocket déconnecté** : le chip ne change pas immédiatement (dernière classification mémorisée par `latestSensorData`). À la reconnexion, l'UI re-classifie sur le payload reçu.
-- **EZO pH débranché en runtime** : après 2 échecs consécutifs (`kEzoBusFailMaxConsecutive`), les 4 champs WS passent à `null` → chip gris « Pente non disponible » — pas de crash, pas de toast.
+- **EZO pH débranché en runtime** : après 2 échecs consécutifs (`kEzoBusFailMaxConsecutive`), les champs `phSlope*` passent à `null` mais `phSlopeAgeMs` reste connu (`_phSlopeQueriedMs` non remis à zéro) → chip ambré « Pente non disponible » (erreur réelle, v2.21.2) — pas de crash, pas de toast.
 - **Refresh en cours et payload WS qui apporte une nouvelle valeur** : si `phSlopeAgeMs < 60 s`, l'état refresh est résolu en succès (toast).
 
 ## État de calibration & bouton « Calibrer la sonde » (feature-034)

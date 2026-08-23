@@ -11,6 +11,7 @@
 #include "mqtt_manager.h"      // v2.20.3 : publishAlert() sur refus de ré-amorçage
 #include "ph_offset.h"        // feature-067 : applyPhOffset() / isPhOffsetValid()
 #include "pump_controller.h"  // armStabilizationTimer() après calibration EZO
+#include "slope_retry_logic.h"  // v2.21.2 : shouldRetryBootSlope() (logique pure)
 
 SensorManager sensors;
 
@@ -155,6 +156,9 @@ void SensorManager::begin() {
   if (_phEzo.readInfo(fwInfo)) {
     systemLogger.info("EZO pH détecté : " + fwInfo);
     _ezoEverResponded = true;
+    // v2.21.2 : gate C2 des retentatives Slope,? de boot — jamais de retry
+    // sans module détecté (chaque tentative bloque loopTask ~900 ms).
+    _phEzoDetected = true;
     // feature-024 : 1ʳᵉ query Slope,? différée via la queue EZO.
     // Sera traitée au prochain tick _processEzoQueue() — n'allonge pas le boot.
     enqueuePhSlopeQuery();
@@ -251,6 +255,36 @@ void SensorManager::update() {
       nowAfterQueue >= _phSlopeQueriedMs &&  // garde anti-underflow
       (nowAfterQueue - _phSlopeQueriedMs) >= kPhSlopeQueryIntervalMs) {
     enqueuePhSlopeQuery();
+  }
+
+  // 5bis) v2.21.2 (bug-slope-boot-perdue) : retentative BORNÉE de la Slope,?
+  // de boot tant qu'AUCUNE pente n'a jamais été lue (_phSlopeQueriedMs == 0 —
+  // le cycle 24 h ci-dessus est inopérant dans cet état). Décision pure dans
+  // slope_retry_logic.h : gates C1 (borne dure) et C2 (module détecté) inclus.
+  if (shouldRetryBootSlope(_phSlopeQueriedMs, _phSlopeQueryPending, _phEzoDetected,
+                           _phSlopeBootAttempts, kPhSlopeBootRetryMaxAttempts,
+                           _phSlopeBootLastAttemptMs, (uint32_t)nowAfterQueue,
+                           kPhSlopeBootRetryIntervalMs)) {
+    // Gate C1 (pool-chemistry) : décompter la tentative AVANT l'enqueue, MÊME
+    // si la file est pleine — borne dure de kPhSlopeBootRetryMaxAttempts
+    // transactions I²C (~900 ms de loopTask chacune), compteur JAMAIS réarmé.
+    _phSlopeBootAttempts++;
+    _phSlopeBootLastAttemptMs = (uint32_t)nowAfterQueue;
+    bool queued = enqueuePhSlopeQuery();
+    systemLogger.info("EZO pH : Slope,? de boot retentée (" +
+                      String(_phSlopeBootAttempts) + "/" +
+                      String(kPhSlopeBootRetryMaxAttempts) +
+                      (queued ? ")" : ") — file EZO pleine, tentative décomptée"));
+  } else if (_phSlopeQueriedMs == 0 && !_phSlopeQueryPending && _phEzoDetected &&
+             _phSlopeBootAttempts >= kPhSlopeBootRetryMaxAttempts &&
+             !_phSlopeBootExhaustedLogged) {
+    // Warning UNIQUE à l'épuisement : les kPhSlopeBootRetryMaxAttempts
+    // retentatives ont toutes été consommées sans qu'une pente soit jamais lue.
+    _phSlopeBootExhaustedLogged = true;
+    systemLogger.warning("EZO pH : pente toujours jamais lue après " +
+                         String(kPhSlopeBootRetryMaxAttempts) +
+                         " retentatives de boot — abandon (cycle 24 h inopérant, "
+                         "utiliser POST /debug/ph_slope_refresh)");
   }
 }
 
@@ -933,6 +967,16 @@ void SensorManager::_executeEzoCmd(const EzoCmdRequest& req) {
                           (isnan(info.zeroOffsetMv) ? String("N/A")
                                                     : String(info.zeroOffsetMv, 2) + "mV"));
       } else {
+        // v2.21.2 (bug-slope-boot-perdue) : un échec alors qu'AUCUNE pente n'a
+        // jamais été lue depuis le boot doit se voir au journal dès la PREMIÈRE
+        // occurrence (avant : échec isolé MUET, streak=1 < kEzoBusFailMaxConsecutive).
+        // UNE seule ligne (flag jamais réarmé) — les retentatives sont déjà
+        // journalisées en info par update().
+        if (_phSlopeQueriedMs == 0 && !_phSlopeBootFirstFailLogged) {
+          _phSlopeBootFirstFailLogged = true;
+          systemLogger.warning("EZO pH slope : échec de la Slope,? de boot "
+                               "(aucune pente jamais lue) — retentative automatique");
+        }
         _phSlopeFailStreak++;
         if (_phSlopeFailStreak >= kEzoBusFailMaxConsecutive) {
           // Cohérence avec _phCalCachedPoints : invalider à NaN après seuil.

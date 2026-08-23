@@ -2,6 +2,27 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.21.2] - 2026-08-23
+
+### Firmware
+
+- **La puce sonde pH n'affiche plus « EZO indisponible » puis « Pente non disponible » à tort pendant ~20 min après un redémarrage** (bug-slope-boot-perdue-et-data-incomplet). Cause racine : la requête `Slope,?` enfilée au boot pouvait échouer **en silence** (statut EZO 255/NoData ou parasite pendant l'init du module — un échec isolé n'était jamais journalisé) et n'était **jamais retentée** avant le cycle 24 h. Le firmware retente désormais automatiquement, borné et sécurisé (visa `pool-chemistry` GO) : 5 tentatives max (borne dure, jamais réarmée — chaque `Slope,?` bloque `loopTask` ~900 ms), 30 s d'intervalle, jamais sans module EZO détecté. Logique pure `src/slope_retry_logic.h` (ADR-0017), 15 tests natifs (640/640 au total). **L'état se résout seul en < 2 min**, sans action manuelle.
+- **Journal** : un échec de `Slope,?` alors qu'aucune pente n'a jamais été lue produit un **warning dès la première occurrence** (one-shot) ; chaque retentative est tracée en info (`n/5`) ; warning unique à l'épuisement des 5 tentatives ; les statuts EZO hors protocole (≠ 1/2/254/255) sont désormais journalisés avec leur valeur (avant : totalement muets, diagnostic impossible).
+
+### API
+
+- `GET /data` expose les 4 champs de pente sonde pH `phSlopeAcid` / `phSlopeBase` / `phSlopeZero` / `phSlopeAgeMs` — **parité de transport** avec la trame WS qui les portait déjà depuis feature-024 (mêmes règles null/arrondi, lecture cache, zéro I²C). Un client sans WebSocket voit enfin la santé de sonde. Buffer `/data` : 1792 → 1920 octets.
+
+### Fonctionnalités
+
+- **Libellés transitoires honnêtes sur la puce sonde pH** : « Sonde pH : lecture en cours… » (premières secondes après boot, remplace le trompeur « EZO indisponible ») et « Pente en cours de lecture… » (pente jamais lue, se résout seul en < 2 min) sont des états **neutres** ; « Pente non disponible » (ambré) est réservé à l'erreur réelle — pente lue puis invalidée après échecs répétés. États sonde usée/à remplacer/calibration inchangés.
+
+### Documentation
+
+- `docs/subsystems/sensors.md` (mécanisme de retentative de boot, nouveaux logs, cause racine), `docs/API.md` (4 champs `/data`), `docs/features/page-ph.md` (les 3 états de la puce) mis à jour. Aucun ADR : fix + patterns existants (ADR-0017), aucun critère de déclenchement rempli.
+
+---
+
 ## [2.21.1] - 2026-08-23
 
 ### Fonctionnalités

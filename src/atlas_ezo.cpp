@@ -96,8 +96,13 @@ int AtlasEzoSensor::_readResponseLocked(char* buf, size_t bufLen, uint32_t delay
       systemLogger.warning(String(_name) + " : statut 2 (commande échouée)");
       return -1;
     default:
-      // Boot du module ou réponse parasite : on ignore silencieusement,
-      // l'appel suivant aura généralement un statut valide.
+      // Boot du module ou réponse parasite : statut hors protocole (≠ 1/2/254/255).
+      // v2.21.2 (bug-slope-boot-perdue) : journalisé AVEC la valeur — un échec
+      // isolé (ex. Slope,? de boot consommée pendant l'init du module) était
+      // totalement muet et rendait le diagnostic impossible. Le cas 255/NoData
+      // reste muet (chemin nominal, traité ci-dessus).
+      systemLogger.warning(String(_name) + " : statut EZO inattendu (" +
+                           String(status) + ") — réponse ignorée");
       return -1;
   }
 }

@@ -678,6 +678,8 @@ Un capteur **vivant** bruite d'au moins ±1 LSB (quantification + bruit sonde + 
 | `kTempSensorIntervalMs` | `2000` ms | Période lecture DS18B20 |
 | `kI2cMutexTimeoutMs` | `2000` ms | Timeout d'acquisition mutex I²C |
 | `kPhSlopeQueryIntervalMs` | `86_400_000` ms (24 h) | Re-query auto `Slope,?` (feature-024) |
+| `kPhSlopeBootRetryIntervalMs` | `30_000` ms | Intervalle entre retentatives `Slope,?` de boot (v2.21.2) |
+| `kPhSlopeBootRetryMaxAttempts` | `5` | Borne DURE de retentatives de boot, jamais réarmée (gate C1 pool-chemistry) |
 | `kSensorFilterCentralWindow` | `13` | Fenêtre médiane logique longue (feature-058, retard ≈30 s) |
 | `kSensorFilterCentralWindowMax` | `16` | Capacité physique buffer médian FIXE |
 | `kPhEmaAlpha` / `kOrpEmaAlpha` | `0.10` / `0.08` | Coefficient EMA (lissage lent) |
@@ -741,15 +743,42 @@ Envoie `Slope,?` sous mutex I²C tenu pour toute la séquence (cmd + delay `kEzo
 | `_phSlopeQueriedMs` | `uint32_t` | `millis()` de la dernière query OK ; `0` = jamais lu |
 | `_phSlopeQueryPending` | `bool` | Anti-doublon enqueue — levé par le handler dès le début du traitement |
 | `_phSlopeFailStreak` | `int` | Compteur d'échecs ; ≥ `kEzoBusFailMaxConsecutive` → cache invalidé à NaN (cohérent avec `_phCalCachedPoints`) |
+| `_phEzoDetected` | `bool` | Gate C2 (v2.21.2) : `readInfo()` pH OK au boot — jamais de retentative sans module détecté |
+| `_phSlopeBootAttempts` | `uint8_t` | Retentatives de boot décomptées — **jamais remis à zéro** (gate C1) |
+| `_phSlopeBootLastAttemptMs` | `uint32_t` | `millis()` de la dernière retentative de boot |
+| `_phSlopeBootFirstFailLogged` / `_phSlopeBootExhaustedLogged` | `bool` | Flags one-shot des 2 warnings de boot (jamais réarmés) |
 
 ### Politique de refresh
 
-1. **Au boot** : 1 query enfilée après init EZO (1ʳᵉ valeur disponible dans les ~30 s).
+1. **Au boot** : 1 query enfilée après init EZO (1ʳᵉ valeur disponible dans les ~30 s) — **retentée automatiquement en cas d'échec** depuis la v2.21.2 (cf. [Retentative bornée de boot](#retentative-bornée-de-la-slope-de-boot--v2212)).
 2. **Après chaque calibration pH réussie** (mid / low / clear) : re-query enfilée automatiquement par `_processEzoQueue()` pour rafraîchir l'info dans les ~5 s.
 3. **Automatique 24 h** : `update()` enfile une re-query si `(nowAfterQueue - _phSlopeQueriedMs) >= kPhSlopeQueryIntervalMs` ET `!_phSlopeQueryPending`.
 4. **À la demande** : `POST /debug/ph_slope_refresh` (cf. [API.md](../API.md)) → `enqueuePhSlopeQuery()`.
 
 > **Garde anti-underflow `nowAfterQueue`** (commit `933f17c`, v2.1.1) : le `now` lu en début de `SensorManager::update()` est **figé** avant `_processEzoQueue()` qui peut bloquer ~900 ms sur une transaction I²C. Si le handler `QueryPhSlope` met `_phSlopeQueriedMs = millis()` à un instant postérieur, alors `now < _phSlopeQueriedMs` → soustraction `uint32_t` underflow → ~4,3 milliards → toujours ≥ 86 400 000 → ré-enqueue immédiat à chaque cycle `update()` → spam de `Slope,?` à ~1/s, monopolisation du mutex I²C, EZO ORP perturbé. Le firmware recalcule donc `nowAfterQueue = millis()` après `_processEzoQueue()` ET ajoute la garde explicite `nowAfterQueue >= _phSlopeQueriedMs` avant la soustraction.
+
+### Retentative bornée de la `Slope,?` de boot — v2.21.2
+
+**Cause racine** (bug-slope-boot-perdue-et-data-incomplet, diagnostic on-target) : la `Slope,?` enfilée au boot pouvait échouer **en silence** — statut EZO 255/NoData ou parasite pendant l'init du module, seuls chemins de `atlas_ezo.cpp` sans aucun log, et échec isolé (streak = 1 < `kEzoBusFailMaxConsecutive`) donc jamais journalisé. Elle n'était ensuite **jamais retentée** avant le cycle 24 h, car le re-enqueue exigeait `_phSlopeQueriedMs != 0` → « Pente non disponible » pendant ~20 min et plus après chaque reboot.
+
+**Mécanisme** : décision **pure** dans [`src/slope_retry_logic.h`](../../src/slope_retry_logic.h) (`shouldRetryBootSlope()`, pattern ADR-0017, 15 tests natifs), consommée en fin d'`update()`. Retentative enfilée **seulement si TOUTES** ces conditions tiennent :
+
+- `_phSlopeQueriedMs == 0` — aucune pente **jamais** lue (dès la 1ʳᵉ réussite, le cycle 24 h prend le relais) ;
+- `!_phSlopeQueryPending` — anti-doublon ;
+- `_phEzoDetected` — **gate C2** (pool-chemistry) : jamais de retry sans module EZO pH détecté au boot (chaque `Slope,?` bloque `loopTask` ~900 ms) ;
+- `_phSlopeBootAttempts < kPhSlopeBootRetryMaxAttempts` (= 5) — **gate C1** : borne DURE de transactions ; le compteur est incrémenté **avant** l'enqueue (même si la file est pleine) et **jamais remis à zéro** ;
+- cadencement : 1ʳᵉ retentative immédiate, puis `kPhSlopeBootRetryIntervalMs` (= 30 s) entre chaque.
+
+> **Garde anti-underflow** (encodée dans la logique pure — même bug historique que le cycle 24 h, cf. blockquote ci-dessus) : si `nowMs < lastAttemptMs`, la soustraction non signée validerait l'intervalle à tort → refus et attente du cycle suivant. Choix **conservateur** documenté : un wrap de `millis()` légitime (~49 j, hors fenêtre de boot) est également refusé.
+
+**Logs associés** (tous préfixés `EZO pH`) :
+
+| Événement | Niveau | Format | Cadence |
+|---|---|---|---|
+| 1ᵉʳ échec d'une `Slope,?` alors qu'aucune pente n'a jamais été lue | `warning` | `EZO pH slope : échec de la Slope,? de boot (aucune pente jamais lue) — retentative automatique` | **one-shot** (flag jamais réarmé) |
+| Retentative enfilée | `info` | `EZO pH : Slope,? de boot retentée (n/5)` — suffixe ` — file EZO pleine, tentative décomptée` si l'enqueue a échoué | 1 par retentative (5 max) |
+| Épuisement des 5 retentatives sans pente lue | `warning` | `EZO pH : pente toujours jamais lue après 5 retentatives de boot — abandon (cycle 24 h inopérant, utiliser POST /debug/ph_slope_refresh)` | **one-shot** |
+| Statut EZO hors protocole (≠ 1/2/254/255) sur **toute** commande | `warning` | `<nom> : statut EZO inattendu (<valeur>) — réponse ignorée` (`atlas_ezo.cpp`) | à chaque occurrence ; le cas 255/NoData reste muet (chemin nominal) |
 
 ### Dédoublonnage `_phSlopeQueryPending`
 
@@ -762,6 +791,7 @@ Si `_phSlopeFailStreak >= kEzoBusFailMaxConsecutive` (= `2`), les 3 valeurs pass
 ### Publication
 
 - **WebSocket** (`sensor_data`, toutes les 5 s) : 4 champs `phSlopeAcid` (1 décimale), `phSlopeBase` (1 décimale), `phSlopeZero` (2 décimales), `phSlopeAgeMs`. `null` si NaN ou jamais lu — voir [API.md](../API.md#ws-ws--write).
+- **`GET /data`** (v2.21.2 — parité de transport) : les 4 **mêmes** champs, mêmes règles null/arrondi, lecture cache uniquement (zéro I²C dans le chemin async). Un client sans WS (poll seul) voit désormais la santé de sonde — voir [API.md](../API.md#get-data--write).
 - **MQTT** : 3 topics retain `{base}/ph_slope_acid|base|zero` publiés **edge-triggered** (uniquement si la valeur arrondie a changé). 3 sensors auto-discovery HA — voir [MQTT.md](../MQTT.md).
 
 > Évaluation des seuils (vert / ambré / rouge / gris) faite **côté UI** ([page-ph.md](../features/page-ph.md#chip-détat-sonde-feature-024)) — permet d'ajuster sans reflasher.

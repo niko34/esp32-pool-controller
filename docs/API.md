@@ -203,6 +203,10 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
   "temperature_circuit": 28.1,
   "phCalPoints": 2,
   "orpCalPoints": 1,
+  "phSlopeAcid": 101.0,
+  "phSlopeBase": 100.0,
+  "phSlopeZero": -1.03,
+  "phSlopeAgeMs": 42000,
   "phRaw": 7.241,
   "phMedian": 7.236,
   "phFiltered": 7.234,
@@ -266,6 +270,8 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 > | `ph_pulse_phase_ms` / `orp_pulse_phase_ms` | uint32 | Position **relative** dans la période, clampée `[0..pulse_period_ms]` — jamais un `millis()` absolu (le client l'ancre sur sa propre horloge). `0` si session inactive. **Pompe alimentée ⇔ `phase < pulse_ms`.** |
 >
 > Getters `PumpController` lecture seule, fail-closed sur index invalide — aucun chemin de dosage touché. Buffer `/data` porté de 1536 à **1792** octets. Consommateur : statut dosage des cartes pH/ORP du tableau de bord ([page-dashboard.md](features/page-dashboard.md#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211)).
+>
+> **v2.21.2 (bug-slope-boot-perdue) — pente sonde pH, parité de transport** : les 4 champs `phSlopeAcid` / `phSlopeBase` / `phSlopeZero` / `phSlopeAgeMs` sont **ajoutés à `/data`**. La trame WS `sensor_data` les portait **déjà** depuis feature-024 — c'est `/data` qui rattrape : un client sans WS (poll seul) ne pouvait jamais afficher la santé de sonde. Mêmes règles que le WS (voir le tableau feature-024 de la section [WS /ws](#ws-ws--write)) : pentes arrondies à **1 décimale**, zéro à **2 décimales** (mV), `null` si jamais lu ou invalidé (NaN) ; `phSlopeAgeMs` `null` si aucune `Slope,?` n'a jamais réussi. Lecture **cache uniquement** (zéro I²C dans le chemin async). Buffer `/data` porté de 1792 à **1920** octets.
 >
 > **feature-021** : `ph` est désormais publié avec **3 décimales** (vs 1 décimale en v1.x). Champs `phCalPoints` (`-1..3`) et `orpCalPoints` (`-1..1`) ajoutés. Champs **supprimés** de la réponse `/data` : `orp_raw`, `ph_raw`, `ph_voltage_mv`, `temperature_raw` (la notion de « valeur brute » n'a pas de sens côté Atlas EZO — la valeur est déjà calibrée par le module). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md).
 >
@@ -854,7 +860,7 @@ Champs ajoutés en feature-021 (calibration EZO) :
 | `phCalPoints` | integer | Points de calibration EZO pH. `-1` = module injoignable / bus dégradé, `0` = non calibré, `1` = mid seul, `2` = mid + low (calibration nominale), `3` = mid + low + high. La régulation pH automatique est inhibée tant que la valeur est `< 2`. |
 | `orpCalPoints` | integer | Points de calibration EZO ORP. `-1` = module injoignable, `0` = non calibré, `1` = calibré (Atlas ORP n'a qu'un seul point de calibration). La régulation ORP automatique est inhibée tant que la valeur est `< 1`. |
 
-Champs ajoutés en feature-024 (pente sonde pH) :
+Champs ajoutés en feature-024 (pente sonde pH) — depuis la v2.21.2, les 4 mêmes champs (mêmes règles) sont aussi dans [`GET /data`](#get-data--write) :
 
 | Champ | Type | Description |
 |-------|------|-------------|

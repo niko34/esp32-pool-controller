@@ -428,6 +428,18 @@ private:
   bool _phSlopeQueryPending = false;  // anti-doublon enqueue → handler lève le flag
   int _phSlopeFailStreak = 0;         // ≥ kEzoBusFailMaxConsecutive → invalider cache à NaN
 
+  // v2.21.2 (bug-slope-boot-perdue) : retentative bornée de la Slope,? de boot.
+  // Décision pure dans slope_retry_logic.h (shouldRetryBootSlope), consommée en
+  // fin d'update(). `_phSlopeBootAttempts` est incrémenté à CHAQUE tentative,
+  // MÊME si l'enqueue échoue, et n'est JAMAIS remis à zéro (gate C1 pool-chemistry :
+  // borne dure de kPhSlopeBootRetryMaxAttempts transactions I²C ~900 ms).
+  bool _phEzoDetected = false;             // Gate C2 : readInfo() pH OK au boot
+  uint8_t _phSlopeBootAttempts = 0;        // Retentatives décomptées (jamais réarmé)
+  uint32_t _phSlopeBootLastAttemptMs = 0;  // millis() de la dernière retentative
+  // Flags one-shot de journalisation (jamais réarmés) :
+  bool _phSlopeBootFirstFailLogged = false;  // warning au 1ᵉʳ échec sans pente jamais lue
+  bool _phSlopeBootExhaustedLogged = false;  // warning UNIQUE à l'épuisement des retentatives
+
   // ===== Queue FreeRTOS pour commandes longues =====
   static constexpr UBaseType_t kEzoQueueLen = 4;
   QueueHandle_t _ezoQueue = nullptr;

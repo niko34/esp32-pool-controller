@@ -453,6 +453,12 @@ constexpr uint32_t kEzoRtDelayMs              = 600;      // Délai après comma
 constexpr uint32_t kSensorStaleTimeoutMs      = 20000;    // 20 s : timeout lecture pH/ORP stale (pool-chemistry condition #1)
 constexpr int      kEzoBusFailMaxConsecutive  = 2;        // 2 échecs consécutifs I²C → blocage dosage (pool-chemistry condition #5)
 constexpr unsigned long kPhSlopeQueryIntervalMs = 86400000UL; // 24h - re-query Slope,? auto (feature-024 pente sonde pH)
+// v2.21.2 (bug-slope-boot-perdue) : la Slope,? de boot échouait EN SILENCE
+// (échec isolé jamais journalisé) et n'était JAMAIS retentée avant le cycle
+// 24 h → « Pente non disponible » pendant ~20 min après chaque reboot.
+// Retentative auto tant que _phSlopeQueriedMs == 0, bornée (cf. slope_retry_logic.h).
+constexpr unsigned long kPhSlopeBootRetryIntervalMs = 30000UL; // 30 s entre retentatives Slope,? de boot
+constexpr uint8_t kPhSlopeBootRetryMaxAttempts = 5;            // Borne DURE (gate C1 pool-chemistry) : 5 transactions max, jamais réarmé
 
 // ============================================================================
 // SENSOR FILTER CONSTANTS - Lissage mesures pH/ORP (feature-025 → feature-058)

@@ -45,7 +45,11 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // Itération 3 (bug-dosage-fantome, défaut n°3) : +7 champs calendrier
   // d'impulsion (~169 o sérialisés au pire + 7 nœuds de pool ≈ 112 o)
   // → bump 1536 → 1792.
-  StaticJson<1792> doc;
+  // bug-slope-boot-perdue (B1) : +4 champs pente sonde pH (parité WS)
+  // "phSlopeAcid":101.5, + "phSlopeBase":100.5, + "phSlopeZero":-12.34, +
+  // "phSlopeAgeMs":4294967294, ≈ 87 o au pire ; clés const char* liées (non
+  // copiées dans le pool), 4 nœuds ≈ 64 o → bump 1792 → 1920.
+  StaticJson<1920> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
   // (médiane + EMA), alignée sur le WS. Le brut reste exposé séparément (phRaw/orpRaw).
@@ -100,6 +104,23 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // le WebSocket en pause sur un onglet non focalisé).
   doc["phCalPoints"]  = sensors.getPhCalibrationPointsCached();
   doc["orpCalPoints"] = sensors.getOrpCalibrationPointsCached();
+
+  // bug-slope-boot-perdue (B1) : pente sonde pH — parité de transport avec la
+  // trame WS (ws_manager.cpp, feature-024). Lecture CACHE uniquement, ZÉRO I²C
+  // dans ce chemin (contexte async_tcp). Mêmes règles que le WS :
+  // pentes arrondies à 1 décimale (résolution EZO), zéro à 2 décimales (mV),
+  // null si jamais lu OU invalidé (NaN) ; ageMs null si jamais lu (UINT32_MAX).
+  {
+    float slopeAcid = sensors.getPhSlopeAcid();
+    float slopeBase = sensors.getPhSlopeBase();
+    float slopeZero = sensors.getPhSlopeZero();
+    if (!isnan(slopeAcid)) doc["phSlopeAcid"] = round(slopeAcid * 10.0f) / 10.0f;   else doc["phSlopeAcid"] = nullptr;
+    if (!isnan(slopeBase)) doc["phSlopeBase"] = round(slopeBase * 10.0f) / 10.0f;   else doc["phSlopeBase"] = nullptr;
+    if (!isnan(slopeZero)) doc["phSlopeZero"] = round(slopeZero * 100.0f) / 100.0f; else doc["phSlopeZero"] = nullptr;
+    uint32_t slopeAge = sensors.getPhSlopeAgeMs();
+    if (slopeAge == UINT32_MAX) doc["phSlopeAgeMs"] = nullptr;
+    else                        doc["phSlopeAgeMs"] = slopeAge;
+  }
 
   // Température (offset utilisateur appliqué dans getTemperature())
   if (!isnan(sensors.getTemperature())) {

@@ -3561,11 +3561,24 @@
 
   // Classification de la sonde pH selon les seuils livrés par ux-ui-designer.
   // feature-034 : chip unique « sonde + calibration ».
-  //   calPoints null/<0 → EZO indisponible ; 0 → calibration requise ;
+  //   calPoints null/<0 → lecture en cours ; 0 → calibration requise ;
   //   1 → calibration 1/2 ; >=2 → diagnostic de pente (santé sonde).
+  // bug-slope-boot-perdue (C1/C2) : trois états distincts au lieu du
+  // fourre-tout « EZO indisponible » / « Pente non disponible » :
+  //   1. calPoints null/<0  → transitoire de boot (cache -1 les premières
+  //      secondes). Aucun champ de /data ou du WS ne distingue ce transitoire
+  //      d'un vrai mutisme EZO (les deux donnent calPoints -1 et ph null) →
+  //      choix architect : UN SEUL libellé, adouci en « Sonde pH : lecture en
+  //      cours… », classe neutre. Un vrai mutisme finit de toute façon en
+  //      « EZO pH » au journal + valeurs pH figées à « -- ».
+  //   2. ageMs null (pente JAMAIS lue depuis le boot) et calPoints >= 2 →
+  //      « Pente en cours de lecture… », classe neutre (PAS warning) : le
+  //      firmware retente désormais automatiquement, résolu en < 2 min.
+  //   3. phSlope* null MAIS ageMs non-null → pente invalidée après échecs
+  //      répétés : vrai état d'erreur → « Pente non disponible », classe warn.
   function classifyPhProbe({ acid, base, zero, calPoints, ageMs }) {
     if (calPoints == null || calPoints < 0) {
-      return { cls: 'unknown', label: 'EZO indisponible' };
+      return { cls: 'unknown', label: 'Sonde pH : lecture en cours…' };
     }
     if (calPoints === 0) {
       return { cls: 'bad', label: 'Calibration requise' };
@@ -3576,7 +3589,14 @@
     const acidNum = (acid == null || isNaN(acid)) ? null : Number(acid);
     const baseNum = (base == null || isNaN(base)) ? null : Number(base);
     if (acidNum == null || baseNum == null) {
-      return { cls: 'unknown', label: 'Pente non disponible' };
+      // Âge connu = la pente a déjà été lue au moins une fois PUIS invalidée
+      // (échecs répétés) → erreur réelle. Sinon : simple attente de la
+      // première lecture de boot (le firmware la retente tout seul).
+      const ageKnown = (ageMs != null && Number(ageMs) < PH_SLOPE_NEVER);
+      if (!ageKnown) {
+        return { cls: 'unknown', label: 'Pente en cours de lecture…' };
+      }
+      return { cls: 'warn', label: 'Pente non disponible' };
     }
     const min = Math.min(acidNum, baseNum);
     const zeroAbs = (zero == null || isNaN(zero)) ? 0 : Math.abs(Number(zero));
