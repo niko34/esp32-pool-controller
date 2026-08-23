@@ -53,6 +53,56 @@ PulsePlan planPulse(float meanFlowMlPerMin, float ampFlowMlPerMin,
   return {false, pulseMs};
 }
 
+PulseCarryPlan planPulseWithCarry(float meanFlowMlPerMin, float ampFlowMlPerMin,
+                                  float flow255MlPerMin, uint32_t periodMs,
+                                  uint32_t minPulseMs, uint32_t kickMs,
+                                  float carryMl) {
+  // Régime ≥ plancher : délégation STRICTE à planPulse (comportement INCHANGÉ).
+  // F2 : le régime proportionnel reprend ses droits → cumul ABANDONNÉ (une
+  // demande servie en direct ne doit laisser aucune dette derrière elle).
+  PulsePlan base = planPulse(meanFlowMlPerMin, ampFlowMlPerMin, periodMs, minPulseMs);
+  if (!base.refused) return {false, base.pulseMs, false, 0.0f};
+
+  // planPulse a refusé : distinguer les entrées INVALIDES (refus fail-closed,
+  // reset de l'accumulateur — F1 : une demande disparue ne laisse pas de dette)
+  // du seuil C (demande vivante et calculable, mais sous le pouls minimal).
+  if (!isfinite(meanFlowMlPerMin) || meanFlowMlPerMin <= 0.0f ||
+      !isfinite(ampFlowMlPerMin) || ampFlowMlPerMin <= 0.0f || periodMs == 0) {
+    return {true, 0, false, 0.0f};
+  }
+
+  // V_pouls de référence KICK-INCLUS (décision gate n°1) : volume RÉEL d'une
+  // impulsion minimale (kick à flow255 + plateau à ampFlow), utilisé pour le
+  // SEUIL de tir ET le DÉCRÉMENT — jamais le nominal ampFlow × minPulseMs.
+  float vPulseMl = pulseDeltaVolumeMl(0, kickMs, 0, minPulseMs,
+                                      flow255MlPerMin, ampFlowMlPerMin);
+  if (!isfinite(vPulseMl) || vPulseMl <= 0.0f) {
+    return {true, 0, false, 0.0f};  // référence incalculable → fail-closed
+  }
+
+  // Reset défensif de l'accumulateur d'entrée : non fini, négatif, ou déjà ≥
+  // V_pouls (violation de l'invariant de sortie) → on repart de zéro plutôt
+  // que de porter une dette suspecte (jamais de rafale de rattrapage).
+  if (!isfinite(carryMl) || carryMl < 0.0f || carryMl >= vPulseMl) carryMl = 0.0f;
+
+  // Accumulation : volume demandé sur la période (mL = mL/min × ms ÷ 60000).
+  carryMl += meanFlowMlPerMin * (float)periodMs / 60000.0f;
+
+  // Tir dès que le cumul ATTEINT V_pouls (égalité incluse) : UNE impulsion
+  // minimale part cette période (jamais deux — F3), le résidu est conservé.
+  if (carryMl >= vPulseMl) {
+    carryMl -= vPulseMl;
+    // Invariant de sortie carryMl < V_pouls : garanti tant que flow255 ≥
+    // ampFlow (l'incrément d'une période sous-plancher est alors < V_pouls) ;
+    // si une calibration atypique le casse, écrêtage fail-closed à zéro.
+    if (carryMl >= vPulseMl) carryMl = 0.0f;
+    return {false, minPulseMs, true, carryMl};
+  }
+  // Sous le seuil : période d'ACCUMULATION — pas d'impulsion (pulseMs = 0,
+  // pompe OFF via tickPulse), la séance reste OUVERTE côté appelant.
+  return {false, 0, false, carryMl};
+}
+
 PulseTick tickPulse(const PulseState& st, uint32_t nowMs, uint32_t periodMs,
                     uint32_t pulseMs, uint32_t kickMs) {
   PulseState n = st;

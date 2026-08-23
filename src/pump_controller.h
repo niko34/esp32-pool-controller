@@ -214,6 +214,17 @@ private:
   bool _pulseSession[2] = {false, false}; // session de dosage en cours (auto OU scheduled)
   unsigned long _sessionOnMs[2] = {0, 0}; // temps POMPE-ON cumulé de la session (garde temps min)
   float _sessionVolMl[2] = {0.0f, 0.0f};  // volume crédité de la session (log d'arrêt)
+  // feature-073 : accumulateur de dosage SOUS le pouls minimal (ex-seuil C),
+  // par CHIMIE ([0]=pH, [1]=ORP). _pulseCarryMl = volume demandé cumulé (mL),
+  // borné structurellement à < V_pouls (volume kick-inclus d'une impulsion
+  // minimale — invariant de planPulseWithCarry). NON persistant : reset VOULU
+  // au reboot, à l'ouverture ET à la fermeture de séance, et sur tout refus
+  // (gate, entrées invalides, retour ≥ plancher). _carryPulseLogged = premier
+  // tir d'accumulateur de la séance déjà journalisé (anti-spam, log A3).
+  // Écrits/lus en loopTask UNIQUEMENT (seul écrivain, patron _stabilizationEndMs
+  // — aucun mutex requis).
+  float _pulseCarryMl[2] = {0.0f, 0.0f};
+  bool _carryPulseLogged[2] = {false, false};
   // Comptabilité par delta de tick : état pompe au tour PRÉCÉDENT (le volume du
   // delta [t0, now] est celui de la commande posée à t0, attribution arrière).
   bool _acctPumpOn[2] = {false, false};   // pompe alimentée au tour précédent

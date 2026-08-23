@@ -1,6 +1,6 @@
 # ADR-0043 — Dosage en proportionnel de temps à amplitude calibrée (fail-closed, sans interpolation)
 
-- **Statut** : Accepté
+- **Statut** : Accepté — **seuil C amendé par [ADR-0046](0046-accumulateur-demande-sous-pouls-minimal.md)** (2026-08-23, v2.22.0) : la demande sous le pouls minimal n'est plus refusée mais **accumulée** jusqu'à valoir une impulsion minimale réelle. Le reste de la décision (proportionnel de temps, amplitude calibrée, kick, fail-closed sans interpolation) est inchangé.
 - **Date** : 2026-08-23
 - **Décideurs** : gate `pool-chemistry` (verdicts 2026-08-22 et 2026-08-23), utilisateur (amendement amplitude), architect
 - **Spec(s) liée(s)** : [bug-dosage-fantome-duty-non-calibre](../../specs/features/todo/bug-dosage-fantome-duty-non-calibre.md) (itération 2, v2.21.0)

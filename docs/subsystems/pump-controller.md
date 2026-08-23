@@ -83,7 +83,7 @@ bool isOrpPumpFlowUncharacterized() const;              // raccourci par CHIMIE 
 // Calendrier d'impulsion exposé à l'UI/WS (itération 3, v2.21.1 — lecture seule,
 // AUCUN setter, aucun effet dosage). Index par CHIMIE (chem 0 = pH, 1 = ORP).
 bool isPulseSessionActive(int chem) const;         // séance ouverte (auto OU scheduled) ; false si index invalide
-uint32_t getPulseMs(int chem) const;               // durée du pouls planifié (ms), 0 = deadband ; 0 si index invalide
+uint32_t getPulseMs(int chem) const;               // durée du pouls planifié (ms), 0 = période sans pouls (accumulation) ; 0 si index invalide
 uint32_t getPulsePhaseMs(int chem, uint32_t nowMs) const;  // position dans la période, clampée [0..kPulsePeriodMs] ; 0 si session inactive
 
 void setManualPump(int pumpIndex, uint8_t duty);  // test manuel
@@ -106,7 +106,7 @@ Ordre par cycle :
 5. Refresh des fenêtres glissantes 1 h (`refreshDosingState`).
 6. Court-circuit capteurs : `!sensors.isInitialized()` → arrêt pompes.
 7. Gate `canDose()` (cf. ci-dessous) → arrêt pompes si non autorisé (mais respecte `manualMode[i]` pour ne pas couper un test développeur en cours).
-8. Pour pH puis ORP : calcul de l'erreur, anti-cycling start/stop, PID (demande de débit **moyen**), puis ordonnanceur d'impulsions (`evaluatePulseGate` → `planPulse` → `tickPulse`, [Dosage en proportionnel de temps](#dosage-en-proportionnel-de-temps-itération-2-v2210)), `applyPumpDuty()` (255 pendant le kick, amplitude calibrée sinon). *(`flowToDuty()`/`dutyToFlow()` supprimés en v2.21.0, [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md).)*
+8. Pour pH puis ORP : calcul de l'erreur, anti-cycling start/stop, PID (demande de débit **moyen**), puis ordonnanceur d'impulsions (`evaluatePulseGate` → `planPulseWithCarry` (v2.22.0, [accumulateur sous-plancher](#accumulateur-sous-le-pouls-minimal-feature-073-v2220)) → `tickPulse`, [Dosage en proportionnel de temps](#dosage-en-proportionnel-de-temps-itération-2-v2210)), `applyPumpDuty()` (255 pendant le kick, amplitude calibrée sinon). *(`flowToDuty()`/`dutyToFlow()` supprimés en v2.21.0, [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md).)*
 
 ## Mode maintenance auto-guérison (v2.9.1)
 
@@ -513,9 +513,9 @@ Corollaire du correctif : avant lui, une régulation qui décidait de doser **sa
 | Niveau | `WARNING` |
 | Message | `[Dosage pH] décision de doser SANS débit commandé depuis <n> tours — régulation sans effet (boucle trop lente, ou consigne sous le plancher de duty). Erreur=<e>` (symétrique ORP, erreur en mV) |
 | Throttle | streak ≥ `kDosingNoFlowWarnStreak = 5` tours consécutifs **ET** `kDosingNoFlowWarnIntervalMs = 300000` ms (**5 min**), compteurs **indépendants** par grandeur ([`constants.h`](../../src/constants.h)) |
-| Condition | `startDecided && !active` **et** (v2.21.0) ni refus de **seuil C** ni refus de **gate de caractérisation** |
+| Condition | `startDecided && !active` **et** ni refus de **plan** (v2.22.0 : entrées invalides fail-closed uniquement) ni refus de **gate de caractérisation** |
 
-⚠️ **Comment le lire.** Le premier tour de chaque cycle remplissant la condition de base par construction (voir ci-dessus), le streak de 5 tours filtre le régime sain (série de 1 en nominal). Ce qui est anormal, c'est une occurrence **toutes les 5 min en continu** : la régulation décide alors de doser sans que rien ne sorte. Depuis la v2.21.0, deux états **normaux et persistants** ne nourrissent **pas** le streak (sinon inondation type 2.20.2) : le refus de **seuil C** (deadband — l'erreur ne justifie pas encore un pouls ≥ 5 s, info throttlé dédié) et le refus de **gate** (pompe non caractérisée / amplitude sous plancher — critical throttlé dédié). Le WARN reste réservé aux vrais cas anormaux (PID muet plusieurs tours). Voir [logger.md](logger.md#rétention-réelle-du-journal-persistant-v2202).
+⚠️ **Comment le lire.** Le premier tour de chaque cycle remplissant la condition de base par construction (voir ci-dessus), le streak de 5 tours filtre le régime sain (série de 1 en nominal). Ce qui est anormal, c'est une occurrence **toutes les 5 min en continu** : la régulation décide alors de doser sans que rien ne sorte. Deux états ne nourrissent **pas** le streak (sinon inondation type 2.20.2) : le refus de **plan** (v2.22.0 : entrées invalides fail-closed, déjà silencieux par conception — l'ex-refus de seuil C n'existe plus, le régime sous-plancher maintient la séance ouverte, `phActive`/`orpActive` restent `true`, et ne passe donc **jamais** ici) et le refus de **gate** (pompe non caractérisée / amplitude sous plancher — critical throttlé dédié). Le WARN reste réservé aux vrais cas anormaux (PID muet plusieurs tours). Voir [logger.md](logger.md#rétention-réelle-du-journal-persistant-v2202).
 
 ## Limite de cycles/jour configurable (garde 9, feature-060, v2.12.0)
 
@@ -628,9 +628,14 @@ demande PID (mL/min moyen)
   ├─ evaluatePulseGate(ampDuty, calibratedDuty, ampFlow, MIN_ACTIVE_DUTY)
   │    ≠ None → REFUS (critical throttlé 30 min, badge UI) — fin de session
   │
-  ├─ planPulse(demande, ampFlow, 60 s, 5 s)  — à l'entrée de session et à chaque
-  │    frontière de période
-  │    refused (seuil C : pouls < 5 s) → REFUS (info throttlé 30 min) — deadband normal
+  ├─ planPulseWithCarry(demande, ampFlow, flow255, 60 s, 5 s, 400 ms, carry)
+  │    — à l'entrée de séance et à chaque frontière de période (v2.22.0)
+  │    demande ≥ plancher → pouls proportionnel (planPulse INCHANGÉ, bit-identique),
+  │      accumulateur abandonné (F2)
+  │    demande vivante SOUS le plancher (ex-seuil C) → ACCUMULATION : pouls = 0,
+  │      séance MAINTENUE, cumul += demande × période ; cumul ≥ V_pouls (volume
+  │      réel kick-inclus) → UNE impulsion de 5 s, résidu conservé (F3)
+  │    refused (entrées invalides) → fail-closed, accumulateur remis à zéro (F1)
   │
   └─ tickPulse(...) chaque tour :
        pouls : [ kick 400 ms à duty 255 ][ plateau à l'amplitude ]……… repos ………
@@ -652,11 +657,54 @@ demande PID (mL/min moyen)
 | Débit pesé implausible (NaN, ≤ 0, > `kPulseFlowMaxMlPerMin = 200`) | `FlowUncharacterized` | idem |
 | **Amplitude ≠ duty calibré** (le débit n'est mesuré qu'à l'amplitude pesée) | `FlowUncharacterized` | idem |
 | Amplitude < `MIN_ACTIVE_DUTY` | `AmplitudeBelowMinActive` | `CRITICAL` throttlé 30 min (B2) |
-| Demande < débit_amplitude × 5/60 (pouls < 5 s) | `BelowMinPulse` (verdict de `planPulse`) | `INFO` throttlé 30 min (seuil C, deadband normal) |
+| Demande < débit_amplitude × 5/60 (pouls < 5 s) | **plus un refus depuis la v2.22.0** — demande **accumulée** ([accumulateur sous-plancher](#accumulateur-sous-le-pouls-minimal-feature-073-v2220), [ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md)) | `INFO` au premier tir d'accumulateur de la séance |
 
 **AUCUNE interpolation nulle part** : les deux seuls débits connus sont la pesée à l'amplitude (`pumpN_pulse_flow_ml_per_min`) et la pesée à 255 (`kPump1Flow255MlPerMin = 61` / `kPump2Flow255MlPerMin = 67`, [`constants.h`](../../src/constants.h) — +10 % d'écart tube entre deux pompes identiques, d'où la calibration **par pompe**). L'état est exposé à l'UI/WS : `isPumpFlowUncharacterized(pumpIndex)` (+ raccourcis par chimie `isPhPumpFlowUncharacterized()` / `isOrpPumpFlowUncharacterized()`) → badge « Débit non caractérisé — pesée requise » et champs `/data` `ph/orp_pump_flow_uncharacterized`, `ph/orp_pump_amplitude_duty`.
 
 **Persistance NVS** : `p1_cal_duty` / `p1_pulse_flow` / `p2_cal_duty` / `p2_pulse_flow`. L'ancienne clé partagée `pump_max_flow` est **supprimée SANS conversion** (purgée au premier `saveMqttConfig()`) : c'est le modèle faux qu'on retire. Une valeur NVS implausible est neutralisée à 0 (non caractérisé) au chargement, avec `warning`.
+
+### Accumulateur sous le pouls minimal (feature-073, v2.22.0)
+
+> **[ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md)** — amende le **seuil C** de l'ADR-0043. Le refus créait une **zone morte** (< débit_amplitude × 5/60 ÷ kp) : stagnation terrain du pH à **~cible + 0,26** constatée le 23/08 (kp = 8). La demande sous le plancher est désormais **cumulée**, jamais refusée.
+
+Logique pure dans `planPulseWithCarry` ([`src/pulse_dosing_logic.h`](../../src/pulse_dosing_logic.h)) :
+
+```cpp
+struct PulseCarryPlan {
+  bool refused;       // true = entrées invalides, ne pas injecter (fail-closed)
+  uint32_t pulseMs;   // durée du pouls (0 = accumulation en cours, pompe OFF)
+  bool carryFired;    // true = pouls déclenché PAR l'accumulateur (= minPulseMs)
+  float carryMl;      // accumulateur en sortie (recopié par la coquille)
+};
+PulseCarryPlan planPulseWithCarry(float meanFlowMlPerMin, float ampFlowMlPerMin,
+                                  float flow255MlPerMin, uint32_t periodMs,
+                                  uint32_t minPulseMs, uint32_t kickMs,
+                                  float carryMl);
+```
+
+Sémantique par régime (une fois par frontière de période) :
+
+- **Demande ≥ plancher** : délégation **stricte** à `planPulse` — comportement **bit-identique** (vérifié en natif sur 255 demandes) — et accumulateur **abandonné** (**F2** : fusionner reviendrait à compter deux fois la même erreur).
+- **Demande vivante sous le plancher** (ex-seuil C) : `carryMl += demande × période / 60000` (mL), **séance MAINTENUE** (`phActive`/`orpActive` restent `true`, pompe OFF via `tickPulse` — l'UI affiche « Dosage en attente : Ns », calendrier ADR-0045 inchangé). Dès que le cumul **atteint** (égalité incluse) **V_pouls**, **UNE** impulsion de `kPulseMinMs` (5 s) exactement part (**F3**), le **résidu est conservé** — jamais deux pouls par période, invariant de sortie `carryMl < V_pouls`.
+- **V_pouls = volume RÉEL kick-inclus** (décision gate n°1) : `pulseDeltaVolumeMl(0, kPulseKickMs, 0, kPulseMinMs, flow255, ampFlow)` — seuil ET décrément ; le nominal `ampFlow × 5 s` sous-estimerait de **+10-12 %** (sur-livraison systématique). Le `flow255` est celui de la **pompe affectée** (`pumpFlow255(pumpIdx)`).
+- **Entrées invalides** (demande nulle/non finie, ampFlow invalide, période 0) ou `carryMl` d'entrée suspect (non fini, négatif, ≥ V_pouls) : refus / écrêtage **fail-closed** à zéro (**F1** : une demande disparue ne laisse pas de dette ; jamais de rafale de rattrapage).
+
+Ordre de grandeur : 0,7 mL/min (amplitude 25, flow255 61 → V_pouls ≈ 2,32 mL) → une impulsion de 5 s toutes les **3-4 périodes**, volume restitué exact à **±5 %** (test natif `test_F073_scenario_long_*`).
+
+**Coquille** (`pump_controller.{h,cpp}`) : `_pulseCarryMl[2]` / `_carryPulseLogged[2]` par **chimie** ([0] = pH, [1] = ORP), écrits/lus en loopTask uniquement (patron `_stabilizationEndMs`, aucun mutex). L'ouverture de séance est faite **AVANT** le plan (la séance s'ouvre aussi en régime d'accumulation — décision gate n°2 : une **seule** séance, jamais une par pouls, sinon ~480 séances/j auto-bloquantes par `maxCyclesPerDay`).
+
+**Resets exhaustifs** (jamais de dette suspecte) :
+
+| Événement | Effet |
+|---|---|
+| Ouverture / reprise de séance | cumul = 0 (décision gate n°3 : aucune dette héritée) + flag de log réarmé |
+| Fermeture de séance — **inconditionnelle à chaque tick sans `flow > 0`** : demande nulle, refus de gate / `canDose`, limite atteinte, suspension (OTA, filtration…) | cumul = 0 + flag de log réarmé |
+| Reboot | **non persistant** — perte bornée < V_pouls (≈ 2,3 mL), voulu |
+| Entrées invalides / cumul d'entrée ≥ V_pouls | reset défensif fail-closed dans la logique pure |
+
+**Aucun passe-droit** : le tir d'accumulateur est un pouls **normal** — chemin standard `tickPulse`, `usedMs` pompe-ON (ADR-0044), volume crédité par `pulseDeltaVolumeMl`, toutes les gardes réévaluées à chaque tour en amont.
+
+**Log (A3)** : `INFO [Dosage pH|ORP] Dosage par accumulation : impulsion minimale de 5 s (X mL cumulés, résidu Y mL)` — **un par séance** (premier tir, `_carryPulseLogged`), les suivants silencieux (le log d'arrêt de séance résume le volume). Remplace l'`INFO` « injection différée (seuil C) », **supprimé**. *Limite connue (revue)* : le « X mL cumulés » peut être légèrement faux si l'écrêtage défensif a joué — cosmétique, le volume **crédité** reste exact.
 
 ### Comptabilité du volume (P4)
 
@@ -671,7 +719,7 @@ Remplace `updateSafetyTracking(flow, delta)` par `creditInjectedVolume(isPhPump,
 ### Sessions, cycles, budget horaire
 
 - **Cycle = session** : `cyclesToday`, le ring anti-rafale et la ligne `Démarrage dosage` comptent la **session** (invariant v2.20.5 conservé) — les impulsions internes n'incrémentent **rien**.
-- La **pause mélange** s'arme en **fin de session** (y compris fin par seuil C ou gate), jamais entre deux pouls.
+- La **pause mélange** s'arme en **fin de session** (y compris fin par gate ou entrées de plan invalides), jamais entre deux pouls ni entre deux périodes d'accumulation (v2.22.0 — la séance reste ouverte sous le plancher).
 - **Limite horaire (`usedMs`) et temps minimum d'injection : temps POMPE-ON** ([ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md), validé gate) — `refreshDosingState(state, now, pumpOn)` accumule quand la pompe est physiquement alimentée (pouls, manuel, test), et `shouldContinueDosing(error, stopThreshold, sessionOnMs)` raisonne sur le temps pompe-ON cumulé de la session (`_sessionOnMs`). Sémantique chimique : « minutes où le produit coule ».
 - Log d'arrêt de session : `Arrêt dosage pH (auto): session=Xs pompe-ON=Ys vol≈Z mL total jour=…` (symétrique ORP).
 
@@ -680,7 +728,7 @@ Remplace `updateSafetyTracking(flow, delta)` par `creditInjectedVolume(isPhPump,
 Trois getters **lecture seule** ([ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md)) exposent l'état du train d'impulsions à l'UI/WS, par **chimie** (chem 0 = pH, 1 = ORP) :
 
 - `isPulseSessionActive(chem)` — séance de dosage ouverte (auto **ou** scheduled) = `_pulseSession[chem]`. C'est l'état « commandé » (ce que disent déjà `isPhDosing()`/`isOrpDosing()` côté auto).
-- `getPulseMs(chem)` — durée du pouls **planifié** pour la période courante (`_pulseMs[chem]`). `0` = deadband (période sans pouls, seuil C).
+- `getPulseMs(chem)` — durée du pouls **planifié** pour la période courante (`_pulseMs[chem]`). `0` = période sans pouls (v2.22.0 : régime d'**accumulation** sous le plancher — l'UI affiche « Dosage en attente : Ns », aucun champ nouveau).
 - `getPulsePhaseMs(chem, nowMs)` — position dans la période : `nowMs − periodStartMs` en arithmétique uint32 **non signée** (wrap-safe au rollover de `millis()`), **clampée [0..`kPulsePeriodMs`]**, **relative** (jamais un `millis()` absolu — le client l'ancre sur sa propre horloge). `0` si session inactive. **Pompe alimentée ⇔ `phase < pulse_ms`.**
 
 Garanties : **aucun setter associé**, aucun chemin de décision de dosage traversé ; gardes d'index **fail-closed** (`chem` hors [0..1] → `false`/`0`). **Course bénigne assumée** (patron `isAnyPumpEnergized`/`getPumpAmplitudeDuty`) : `_pulseSession`/`_pulseMs`/`_pulseState` sont écrits par loopTask et lus depuis le contexte web async — lectures 8/32 bits atomiques sur Xtensa, pire cas un instantané en retard d'un tour de loop. Consommateurs : `GET /data` et push WS `sensor_data` (7 champs `pulse_*`, [ws-manager.md](ws-manager.md#champs-sensor_data-ajoutés-en-v2211--calendrier-dimpulsion-adr-0045)) → statut dosage des cartes pH/ORP ([page-dashboard.md](../features/page-dashboard.md#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211)).
@@ -716,13 +764,13 @@ Plus jamais de durée déduite du modèle linéaire (`calcInjectFlow` supprimé)
 | Pompe — plancher de rotation (**98 en v2.21.0** : Dmin mesuré 82 + 16 counts marge P2) | `MIN_ACTIVE_DUTY` | 98 (sur 255) | [`config.h`](../../src/config.h) |
 | Pompe — duty max | `MAX_PWM_DUTY` | 255 (8 bits) | [`config.h:27`](../../src/config.h:27) |
 | Impulsions — période fixe (B3, v2.21.0) | `kPulsePeriodMs` | 60 000 ms (1 min) | [`constants.h`](../../src/constants.h) |
-| Impulsions — pouls minimal (B3, seuil C) | `kPulseMinMs` | 5 000 ms (5 s) | [`constants.h`](../../src/constants.h) |
+| Impulsions — pouls minimal (B3 ; durée exacte du tir d'accumulateur, v2.22.0) | `kPulseMinMs` | 5 000 ms (5 s) | [`constants.h`](../../src/constants.h) |
 | Impulsions — kick de décollage à 255 | `kPulseKickMs` | 400 ms | [`constants.h`](../../src/constants.h) |
 | Pompe 1 — débit **pesé** à 255 (2026-08-23) | `kPump1Flow255MlPerMin` | 61,0 mL/min | [`constants.h`](../../src/constants.h) |
 | Pompe 2 — débit **pesé** à 255 (2026-08-23) | `kPump2Flow255MlPerMin` | 67,0 mL/min | [`constants.h`](../../src/constants.h) |
 | Amplitude — plancher du réglage `pumpN_max_duty_pct` | `kPumpAmpMinPct` | 40 % (≈ 102 counts) | [`constants.h`](../../src/constants.h) |
 | Calibration — plausibilité du débit pesé | `kPulseFlowMaxMlPerMin` | 200 mL/min | [`constants.h`](../../src/constants.h) |
-| Impulsions — throttle des logs de refus (gate critical / seuil C info) | `kPulseRefusalLogIntervalMs` | 1 800 000 ms (30 min) | [`constants.h`](../../src/constants.h) |
+| Impulsions — throttle des logs de refus de gate (critical ; l'info seuil C est supprimé en v2.22.0) | `kPulseRefusalLogIntervalMs` | 1 800 000 ms (30 min) | [`constants.h`](../../src/constants.h) |
 | Stabilisation post-cal pH (feature-021) | `kStabilizationDurationPhMs` | 300 000 ms (5 min) | [`constants.h`](../../src/constants.h) |
 | Stabilisation post-cal ORP (feature-021) | `kStabilizationDurationOrpMs` | 180 000 ms (3 min) | [`constants.h`](../../src/constants.h) |
 | Anti-rafale — fenêtre 1 min (Pass 3.5) | `kMaxDosingCyclesPerMinute` | 6 | [`constants.h`](../../src/constants.h) |
@@ -869,7 +917,7 @@ Hors compteurs journaliers, la **trace de bascule automatique pH** est persisté
 - [`src/config.h:152`](../../src/config.h:152) — `PumpProtection`
 - [`src/config.h:141`](../../src/config.h:141) — `SafetyLimits`
 - [`src/constants.h`](../../src/constants.h) — `kPulsePeriodMs`, `kPulseMinMs`, `kPulseKickMs`, `kPump1Flow255MlPerMin`, `kPump2Flow255MlPerMin`, `kPumpAmpMinPct`, `kPulseFlowMaxMlPerMin`, `kPulseRefusalLogIntervalMs` (v2.21.0)
-- [`src/pulse_dosing_logic.h`](../../src/pulse_dosing_logic.h), [`src/pulse_dosing_logic.cpp`](../../src/pulse_dosing_logic.cpp) — ordonnanceur d'impulsions pur (gate, plan, tick, volume — v2.21.0)
+- [`src/pulse_dosing_logic.h`](../../src/pulse_dosing_logic.h), [`src/pulse_dosing_logic.cpp`](../../src/pulse_dosing_logic.cpp) — ordonnanceur d'impulsions pur (gate, plan, tick, volume — v2.21.0 ; accumulateur sous-plancher `planPulseWithCarry` — v2.22.0)
 - [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036) + gardes d'injection manuelle `evaluateManualInject` (feature-006) + répartition scheduled `evaluateScheduledDose` (feature-011)
 - [`src/schedule_logic.h`](../../src/schedule_logic.h), [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) — `remainingRangeMinutes` (horizon de répartition scheduled, feature-011)

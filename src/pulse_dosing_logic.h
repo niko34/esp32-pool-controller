@@ -69,6 +69,46 @@ struct PulsePlan {
 PulsePlan planPulse(float meanFlowMlPerMin, float ampFlowMlPerMin,
                     uint32_t periodMs, uint32_t minPulseMs);
 
+// =============================================================================
+// feature-073 — Accumulateur de dosage sous le pouls minimal (amende le seuil C
+// de l'ADR-0043 : la demande sous le plancher n'est plus REFUSÉE, elle est
+// CUMULÉE de période en période jusqu'à valoir une impulsion minimale réelle).
+// =============================================================================
+// Plan d'une période AVEC accumulateur (entrée/sortie : carryMl, possédé par la
+// coquille, un par produit, non persistant).
+//
+// Sémantique par régime :
+//   * demande ≥ plancher (planPulse ne refuse pas) : délégation STRICTE à
+//     planPulse — comportement INCHANGÉ — et carryMl remis à 0 (F2 : le régime
+//     proportionnel reprend ses droits, le cumul est abandonné) ;
+//   * demande vivante mais SOUS le plancher (ex-seuil C) : le volume demandé
+//     sur la période (meanFlow × periodMs / 60000) est ajouté à carryMl ; dès
+//     que le cumul ATTEINT (égalité incluse) le volume RÉEL d'une impulsion
+//     minimale V_pouls, UNE impulsion de minPulseMs part (pulseMs = minPulseMs,
+//     carryFired = true), le résidu est conservé — jamais deux pouls par
+//     période (F3), invariant de sortie : carryMl < V_pouls ;
+//   * V_pouls est KICK-INCLUS (décision gate n°1) : pulseDeltaVolumeMl(0,
+//     kickMs, 0, minPulseMs, flow255, ampFlow) — le volume qu'un pouls minimal
+//     délivre VRAIMENT, jamais le nominal ampFlow × minPulseMs ;
+//   * entrées invalides (demande nulle/non finie, ampFlow invalide, période 0)
+//     ou carryMl d'entrée suspect (non fini, négatif, ≥ V_pouls) → refus /
+//     reset défensif fail-closed : l'accumulateur ne porte jamais de dette
+//     douteuse (aucune rafale de rattrapage possible).
+//
+// refused = false avec pulseMs = 0 signifie « période d'ACCUMULATION » : la
+// séance reste ouverte côté appelant, la pompe reste OFF via tickPulse.
+// PURE (ADR-0017) : stdint/math uniquement, testable en natif.
+struct PulseCarryPlan {
+  bool refused;       // true = entrées invalides, ne pas injecter (fail-closed)
+  uint32_t pulseMs;   // durée du pouls (0 = accumulation en cours, pompe OFF)
+  bool carryFired;    // true = pouls déclenché PAR l'accumulateur (minPulseMs)
+  float carryMl;      // accumulateur en sortie (à recopier par la coquille)
+};
+PulseCarryPlan planPulseWithCarry(float meanFlowMlPerMin, float ampFlowMlPerMin,
+                                  float flow255MlPerMin, uint32_t periodMs,
+                                  uint32_t minPulseMs, uint32_t kickMs,
+                                  float carryMl);
+
 // État persistant du train d'impulsions (possédé par la coquille, un par pompe).
 // Amorçage d'une session : { nowMs, nowMs, true } (le pouls démarre immédiatement).
 struct PulseState {

@@ -2096,6 +2096,265 @@ void test_PULSE_tick_pouls_plus_court_que_kick(void) {
   TEST_ASSERT_FALSE(tk.pumpOn);     // reste OFF jusqu'à la prochaine période
 }
 
+// =============================================================================
+// feature-073 — planPulseWithCarry : accumulateur de dosage sous le pouls
+// minimal (amende le seuil C de l'ADR-0043).
+// =============================================================================
+// Décisions gate verrouillées ici :
+//   n°1 — V_pouls de référence KICK-INCLUS : TOUJOURS dérivé de
+//         pulseDeltaVolumeMl(0, kickMs, 0, minPulseMs, flow255, ampFlow),
+//         jamais recalculé à la main dans les assertions ;
+//   F1  — entrées invalides → refus fail-closed ET carryMl = 0 ;
+//   F2  — retour ≥ plancher → carry ABANDONNÉ, délégation bit-identique à
+//         planPulse ;
+//   F3  — tir dès cumul ≥ V_pouls (égalité INCLUSE), résidu conservé,
+//         invariant de sortie carryMl < V_pouls, structurellement ≤ 1 tir
+//         par période (1 appel = 1 période).
+
+// Constantes du scénario de référence du gate (0,7 ml/min @ amplitude 25).
+static const float kCFAmpFlow = 25.0f;   // débit mesuré à l'amplitude calibrée
+static const float kCFFlow255 = 61.0f;   // débit mesuré à 255 (kick)
+
+// V_pouls de référence kick-inclus — LA fonction de référence (décision n°1).
+static float carryVPulseMl(void) {
+  return pulseDeltaVolumeMl(0u, kTKickMs, 0u, kTMinPulseMs, kCFFlow255, kCFAmpFlow);
+}
+
+// Incrément de cumul d'une période, MÊME formule flottante que l'implémentation
+// (mL = mL/min × ms ÷ 60000) pour des assertions d'exactitude bit à bit.
+static float carryIncMl(float meanFlow) {
+  return meanFlow * (float)kTPeriodMs / 60000.0f;
+}
+
+// --- (a) Cumul exact : chaque appel sous-plancher ajoute demande×période/60000 -
+void test_F073_cumul_exact_par_periode(void) {
+  const float vP = carryVPulseMl();
+  TEST_ASSERT_TRUE(vP > 0.0f);
+  float carry = 0.0f;
+  // 0,7 ml/min : trois périodes d'accumulation pure (3 × 0,7 = 2,1 < V_pouls).
+  for (int i = 1; i <= 3; ++i) {
+    PulseCarryPlan p = planPulseWithCarry(0.7f, kCFAmpFlow, kCFFlow255,
+                                          kTPeriodMs, kTMinPulseMs, kTKickMs, carry);
+    TEST_ASSERT_FALSE(p.refused);
+    TEST_ASSERT_EQUAL_UINT32(0u, p.pulseMs);   // période d'accumulation, pompe OFF
+    TEST_ASSERT_FALSE(p.carryFired);
+    // Exactitude : même arithmétique float que l'implémentation, comparaison stricte.
+    float expected = carry + carryIncMl(0.7f);
+    TEST_ASSERT_EQUAL_FLOAT(expected, p.carryMl);
+    carry = p.carryMl;
+  }
+  TEST_ASSERT_TRUE(carry < vP);  // invariant de sortie
+}
+
+// --- (b) Déclenchement à l'ÉGALITÉ exacte cumul == V_pouls ---------------------
+// Construction : inc = 0,5 ml (exactement représentable via 0,5 ml/min ×
+// 60000/60000) et carryIn = V_pouls − 0,5 ; (vP − 0,5) + 0,5 == vP en float
+// (0,5 est une puissance de 2, la soustraction est exacte autour de 2 ml).
+void test_F073_tir_a_egalite_exacte(void) {
+  const float vP = carryVPulseMl();
+  const float inc = carryIncMl(0.5f);
+  TEST_ASSERT_EQUAL_FLOAT(0.5f, inc);          // pré-condition de la construction
+  const float carryIn = vP - 0.5f;
+  TEST_ASSERT_EQUAL_FLOAT(vP, carryIn + inc);  // l'égalité EST atteinte en float
+  PulseCarryPlan p = planPulseWithCarry(0.5f, kCFAmpFlow, kCFFlow255,
+                                        kTPeriodMs, kTMinPulseMs, kTKickMs, carryIn);
+  TEST_ASSERT_FALSE(p.refused);
+  TEST_ASSERT_TRUE(p.carryFired);                        // égalité INCLUSE → tir
+  TEST_ASSERT_EQUAL_UINT32(kTMinPulseMs, p.pulseMs);     // pouls minimal EXACTEMENT
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, p.carryMl);              // vP − vP = 0, résidu nul
+}
+
+// --- (c) Résidu conservé après tir + invariant carryMl < V_pouls à CHAQUE appel
+void test_F073_residu_conserve_et_invariant_sortie(void) {
+  const float vP = carryVPulseMl();
+  // Tir avec dépassement : carryIn + inc > V_pouls → résidu = (carryIn+inc)−vP,
+  // même ordre d'opérations flottantes que l'implémentation.
+  const float carryIn = vP - 0.25f;
+  const float meanFlow = 0.7f;
+  PulseCarryPlan p = planPulseWithCarry(meanFlow, kCFAmpFlow, kCFFlow255,
+                                        kTPeriodMs, kTMinPulseMs, kTKickMs, carryIn);
+  TEST_ASSERT_TRUE(p.carryFired);
+  TEST_ASSERT_EQUAL_UINT32(kTMinPulseMs, p.pulseMs);
+  float expectedResidue = (carryIn + carryIncMl(meanFlow)) - vP;
+  TEST_ASSERT_EQUAL_FLOAT(expectedResidue, p.carryMl);
+  TEST_ASSERT_TRUE(p.carryMl > 0.0f);   // le résidu n'est PAS perdu
+  TEST_ASSERT_TRUE(p.carryMl < vP);     // invariant de sortie
+
+  // Invariant balayé : 200 périodes chaînées à demandes sous-plancher variées,
+  // carryMl < V_pouls en sortie de CHAQUE appel, tir = minPulseMs exactement.
+  float carry = 0.0f;
+  for (int i = 0; i < 200; ++i) {
+    float demand = 0.1f + 1.9f * (float)(i % 11) / 10.0f;  // 0,1 → 2,0 ml/min
+    PulseCarryPlan q = planPulseWithCarry(demand, kCFAmpFlow, kCFFlow255,
+                                          kTPeriodMs, kTMinPulseMs, kTKickMs, carry);
+    TEST_ASSERT_FALSE(q.refused);
+    TEST_ASSERT_TRUE(q.carryMl >= 0.0f);
+    TEST_ASSERT_TRUE(q.carryMl < vP);                      // invariant de sortie
+    if (q.carryFired) {
+      TEST_ASSERT_EQUAL_UINT32(kTMinPulseMs, q.pulseMs);
+    } else {
+      TEST_ASSERT_EQUAL_UINT32(0u, q.pulseMs);
+    }
+    carry = q.carryMl;
+  }
+}
+
+// --- (d) Scénario long du gate : 0,7 ml/min @ amp 25 / f255 61, 60 périodes ----
+// V_pouls kick-inclus = (61×400 + 25×4600)/60000 ≈ 2,3233 ml > 2,0833 nominal →
+// cadence dérivée de la FORMULE : intervalle moyen V_pouls/0,7 ≈ 3,32 périodes
+// (tirs espacés de 3 OU 4 périodes — PAS le « toutes les 3 » de la spec initiale,
+// corrigé au gate). Critère ±5 % sur le VOLUME RESTITUÉ moyen.
+void test_F073_scenario_long_0_7_ml_min_volume_et_cadence(void) {
+  const float vP = carryVPulseMl();
+  const int nPeriods = 60;
+  const float demand = 0.7f;
+  float carry = 0.0f;
+  int fires = 0;
+  int lastFirePeriod = -1;
+  float delivered = 0.0f;
+  for (int i = 0; i < nPeriods; ++i) {
+    PulseCarryPlan p = planPulseWithCarry(demand, kCFAmpFlow, kCFFlow255,
+                                          kTPeriodMs, kTMinPulseMs, kTKickMs, carry);
+    TEST_ASSERT_FALSE(p.refused);
+    TEST_ASSERT_TRUE(p.carryMl < vP);  // invariant à chaque période
+    if (p.carryFired) {
+      ++fires;
+      TEST_ASSERT_EQUAL_UINT32(kTMinPulseMs, p.pulseMs);
+      // Volume RÉELLEMENT restitué par ce tir : Σ pulseDeltaVolumeMl (réf. gate).
+      delivered += pulseDeltaVolumeMl(0u, kTKickMs, 0u, kTMinPulseMs,
+                                      kCFFlow255, kCFAmpFlow);
+      // Cadence conforme à la formule : intervalle ∈ {3, 4} périodes
+      // (⌈vP/0,7⌉ et ⌊vP/0,7⌋+1) — jamais 2 tirs rapprochés.
+      if (lastFirePeriod >= 0) {
+        int gap = i - lastFirePeriod;
+        TEST_ASSERT_TRUE(gap >= 3);
+        TEST_ASSERT_TRUE(gap <= 4);
+      } else {
+        TEST_ASSERT_EQUAL_INT(3, i);  // premier tir à la 4e période (indice 3)
+      }
+      lastFirePeriod = i;
+    } else {
+      TEST_ASSERT_EQUAL_UINT32(0u, p.pulseMs);  // jamais de pouls hors tir
+    }
+    carry = p.carryMl;
+  }
+  // Nombre de tirs dérivé de la formule : ⌊demande×N / V_pouls⌋ = ⌊42/2,3233⌋ = 18.
+  const float totalDemandMl = demand * (float)nPeriods;  // 42 ml sur 60 min
+  TEST_ASSERT_EQUAL_INT((int)(totalDemandMl / vP), fires);
+  // Critère d'acceptation : volume restitué moyen = demande à ±5 %.
+  TEST_ASSERT_TRUE(delivered >= totalDemandMl * 0.95f);
+  TEST_ASSERT_TRUE(delivered <= totalDemandMl * 1.05f);
+}
+
+// --- (e) F2 : retour ≥ plancher avec carry non nul → délégation bit-identique --
+void test_F073_F2_retour_plancher_delegation_bit_identique(void) {
+  const float vP = carryVPulseMl();
+  const float carryIn = 0.75f * vP;  // dette accumulée non nulle
+  // Demande franchement au-dessus du plancher (2,0833 ml/min à amp 25).
+  const float demand = 6.4f;
+  PulsePlan base = planPulse(demand, kCFAmpFlow, kTPeriodMs, kTMinPulseMs);
+  TEST_ASSERT_FALSE(base.refused);   // pré-condition : régime proportionnel
+  PulseCarryPlan p = planPulseWithCarry(demand, kCFAmpFlow, kCFFlow255,
+                                        kTPeriodMs, kTMinPulseMs, kTKickMs, carryIn);
+  // Champ à champ identique à planPulse, carry ABANDONNÉ (pas fusionné).
+  TEST_ASSERT_EQUAL(base.refused, p.refused);
+  TEST_ASSERT_EQUAL_UINT32(base.pulseMs, p.pulseMs);
+  TEST_ASSERT_FALSE(p.carryFired);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, p.carryMl);
+  // Fraction ≥ 100 % (demande ≥ ampFlow) : pouls = période entière, carry abandonné.
+  p = planPulseWithCarry(30.0f, kCFAmpFlow, kCFFlow255,
+                         kTPeriodMs, kTMinPulseMs, kTKickMs, carryIn);
+  TEST_ASSERT_FALSE(p.refused);
+  TEST_ASSERT_EQUAL_UINT32(kTPeriodMs, p.pulseMs);
+  TEST_ASSERT_FALSE(p.carryFired);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, p.carryMl);
+}
+
+// --- (f) F1 : entrées invalides → refus fail-closed, carryMl = 0 ---------------
+void test_F073_entrees_invalides_fail_closed(void) {
+  const float dette = 1.5f;  // dette préexistante : elle doit DISPARAÎTRE
+  // Demande morte ou non finie.
+  const float badMean[] = {0.0f, -1.0f, NAN, INFINITY};
+  for (float m : badMean) {
+    PulseCarryPlan p = planPulseWithCarry(m, kCFAmpFlow, kCFFlow255,
+                                          kTPeriodMs, kTMinPulseMs, kTKickMs, dette);
+    TEST_ASSERT_TRUE(p.refused);
+    TEST_ASSERT_EQUAL_UINT32(0u, p.pulseMs);
+    TEST_ASSERT_FALSE(p.carryFired);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, p.carryMl);  // F1 : la dette ne survit pas
+  }
+  // ampFlow ≤ 0 ou non fini (NaN/±inf refusés par la même garde que planPulse).
+  const float badAmp[] = {0.0f, -5.0f, NAN, INFINITY};
+  for (float a : badAmp) {
+    PulseCarryPlan p = planPulseWithCarry(0.7f, a, kCFFlow255,
+                                          kTPeriodMs, kTMinPulseMs, kTKickMs, dette);
+    TEST_ASSERT_TRUE(p.refused);
+    TEST_ASSERT_EQUAL_UINT32(0u, p.pulseMs);
+    TEST_ASSERT_FALSE(p.carryFired);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, p.carryMl);  // F1 : la dette ne survit pas
+  }
+  // Période nulle.
+  PulseCarryPlan p = planPulseWithCarry(0.7f, kCFAmpFlow, kCFFlow255,
+                                        0u, kTMinPulseMs, kTKickMs, dette);
+  TEST_ASSERT_TRUE(p.refused);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, p.carryMl);
+}
+
+// --- (f bis) Carry d'entrée suspect (NaN, négatif, ≥ V_pouls) → reset défensif -
+// Le plan repart de ZÉRO (résultat identique à carryIn = 0) : jamais de rafale
+// de rattrapage sur une dette douteuse.
+void test_F073_carry_entree_suspect_reset_defensif(void) {
+  const float vP = carryVPulseMl();
+  const float demand = 0.7f;
+  PulseCarryPlan ref = planPulseWithCarry(demand, kCFAmpFlow, kCFFlow255,
+                                          kTPeriodMs, kTMinPulseMs, kTKickMs, 0.0f);
+  const float badCarry[] = {NAN, -0.5f, vP, 10.0f * vP, INFINITY};
+  for (float c : badCarry) {
+    PulseCarryPlan p = planPulseWithCarry(demand, kCFAmpFlow, kCFFlow255,
+                                          kTPeriodMs, kTMinPulseMs, kTKickMs, c);
+    TEST_ASSERT_EQUAL(ref.refused, p.refused);
+    TEST_ASSERT_EQUAL_UINT32(ref.pulseMs, p.pulseMs);   // pas de tir volé
+    TEST_ASSERT_EQUAL(ref.carryFired, p.carryFired);    // (0,7 < vP : pas de tir)
+    TEST_ASSERT_EQUAL_FLOAT(ref.carryMl, p.carryMl);    // reparti de zéro
+  }
+}
+
+// --- (g) Domaine de pulseMs : jamais entre 1 et minPulseMs−1 sous le plancher --
+void test_F073_pulse_jamais_hors_domaine(void) {
+  const float vP = carryVPulseMl();
+  // Balayage sous-plancher (demandes 0,05 → 2,05 ml/min) × carries variés :
+  // pulseMs ∈ {0, minPulseMs} STRICTEMENT — jamais un pouls court intermédiaire.
+  for (int d = 1; d <= 41; ++d) {
+    float demand = 0.05f * (float)d;  // < plancher 2,083 ml/min
+    for (int c = 0; c <= 9; ++c) {
+      float carry = vP * (float)c / 10.0f;  // 0 → 0,9 × V_pouls (entrées valides)
+      PulseCarryPlan p = planPulseWithCarry(demand, kCFAmpFlow, kCFFlow255,
+                                            kTPeriodMs, kTMinPulseMs, kTKickMs, carry);
+      TEST_ASSERT_FALSE(p.refused);
+      TEST_ASSERT_TRUE(p.pulseMs == 0u || p.pulseMs == kTMinPulseMs);
+      TEST_ASSERT_EQUAL(p.pulseMs == kTMinPulseMs, p.carryFired);
+    }
+  }
+}
+
+// --- (h) Régime ≥ plancher : balayage [plancher..ampFlow+] ≡ planPulse bit à bit
+void test_F073_regime_normal_balayage_identique_planPulse(void) {
+  const float vP = carryVPulseMl();
+  // 2,09 (juste au-dessus du plancher 2,0831 arrondi inclus) → 27,5 (> ampFlow).
+  for (int d = 0; d <= 254; ++d) {
+    float demand = 2.09f + 0.1f * (float)d;
+    PulsePlan base = planPulse(demand, kCFAmpFlow, kTPeriodMs, kTMinPulseMs);
+    if (base.refused) continue;  // on ne teste ICI que le régime proportionnel
+    PulseCarryPlan p = planPulseWithCarry(demand, kCFAmpFlow, kCFFlow255,
+                                          kTPeriodMs, kTMinPulseMs, kTKickMs,
+                                          0.5f * vP);  // carry non nul : abandonné
+    TEST_ASSERT_EQUAL(base.refused, p.refused);
+    TEST_ASSERT_EQUAL_UINT32(base.pulseMs, p.pulseMs);  // bit-identique
+    TEST_ASSERT_FALSE(p.carryFired);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, p.carryMl);
+  }
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   // T2 — hystérésis de démarrage.
@@ -2226,5 +2485,16 @@ int main(int, char **) {
   RUN_TEST(test_PULSE_delta_volume_segments_purs);
   RUN_TEST(test_PULSE_tick_pouls_egale_periode_pompe_continue);
   RUN_TEST(test_PULSE_tick_pouls_plus_court_que_kick);
+
+  // feature-073 — accumulateur de dosage sous le pouls minimal.
+  RUN_TEST(test_F073_cumul_exact_par_periode);
+  RUN_TEST(test_F073_tir_a_egalite_exacte);
+  RUN_TEST(test_F073_residu_conserve_et_invariant_sortie);
+  RUN_TEST(test_F073_scenario_long_0_7_ml_min_volume_et_cadence);
+  RUN_TEST(test_F073_F2_retour_plancher_delegation_bit_identique);
+  RUN_TEST(test_F073_entrees_invalides_fail_closed);
+  RUN_TEST(test_F073_carry_entree_suspect_reset_defensif);
+  RUN_TEST(test_F073_pulse_jamais_hors_domaine);
+  RUN_TEST(test_F073_regime_normal_balayage_identique_planPulse);
   return UNITY_END();
 }

@@ -83,7 +83,8 @@ docs/
 │   ├── 0042-core3-environnement-par-defaut.md
 │   ├── 0043-dosage-proportionnel-de-temps-amplitude-calibree.md
 │   ├── 0044-budget-horaire-et-temps-min-en-temps-pompe-on.md
-│   └── 0045-etat-impulsion-expose-en-calendrier.md
+│   ├── 0045-etat-impulsion-expose-en-calendrier.md
+│   └── 0046-accumulateur-demande-sous-pouls-minimal.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

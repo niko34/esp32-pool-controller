@@ -2,6 +2,22 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.22.0] - 2026-08-23
+
+### Firmware
+
+- **Le pH atteint désormais réellement la consigne au lieu de stagner à ~0,26 au-dessus** (feature-073, [ADR-0046](docs/adr/0046-accumulateur-demande-sous-pouls-minimal.md) — amende le seuil C de l'ADR-0043 ; gate `pool-chemistry` : GO sous 5 conditions + GO en contre-visite). Le refus des demandes sous le pouls minimal de 5 s créait une **zone morte** : la régulation s'arrêtait dès que `kp × erreur` passait sous ~2,1 mL/min (stagnation constatée en production le 23/08). Sous les faibles demandes, la pompe **tire désormais une impulsion de 5 s toutes les quelques minutes au lieu de ne rien faire** : la demande est cumulée de période en période (accumulateur borné, par produit pH/ORP) et, dès que le cumul vaut le volume **réel kick-inclus** d'une impulsion minimale (~2,3 mL — le nominal aurait sur-livré de +10-12 %), un pouls de 5 s exactement part par le chemin standard, résidu conservé. Exemple : 0,7 mL/min → une impulsion de 5 s toutes les 3-4 min, volume restitué exact à ±5 %.
+- **Sécurité inchangée** : le pouls d'accumulateur n'a **aucun passe-droit** — toutes les gardes (présence d'eau, limites journalières/horaires, cycles, calibration) restent évaluées avant chaque tir, le volume est crédité sur les débits pesés, jamais plus d'une impulsion par période ni d'impulsion < 5 s. L'accumulateur est remis à zéro à l'ouverture et à la fermeture de séance, au reboot (non persistant), et sur toute demande disparue (aucune dette sans demande vivante) ; au retour d'une demande ≥ plancher, le cumul est abandonné et le comportement redevient **bit-identique** à la v2.21 (vérifié en natif sur 255 demandes).
+- **Journal** : nouveau log `INFO Dosage par accumulation : impulsion minimale de 5 s (X mL cumulés, résidu Y mL)` — un par séance ; l'ancien `INFO … injection différée (seuil C)` est supprimé.
+- **Aucun changement d'interface** : l'état existant « Dosage en attente : Ns » couvre déjà l'attente entre deux impulsions d'accumulateur (calendrier ADR-0045 inchangé, zéro modification web).
+
+### Documentation
+
+- **[ADR-0046](docs/adr/0046-accumulateur-demande-sous-pouls-minimal.md)** : accumulateur de demande sous le pouls minimal — contexte terrain, alternatives écartées (conserver le refus, période 120 s refusée par l'utilisateur, kp plus fort, V_pouls nominal, séance par pouls, fusion, persistance), les 5 conditions du gate et F1/F2/F3 motivées. Note d'amendement croisée dans l'ADR-0043.
+- `docs/subsystems/pump-controller.md` (section accumulateur : `planPulseWithCarry`/`PulseCarryPlan`, resets, invariants, log) et `docs/subsystems/logger.md` (émetteur seuil C supprimé, nouveau log par séance) mis à jour. 9 tests natifs `test_F073_*` (649/649 au total).
+
+---
+
 ## [2.21.2] - 2026-08-23
 
 ### Firmware

@@ -1250,7 +1250,9 @@ void PumpControllerClass::update() {
     const uint8_t phAmpDuty = getPumpAmplitudeDuty(phPumpIdx);
     const float phAmpFlow = pumpPulseFlow(phPumpIdx);  // débit MESURÉ à l'amplitude
     bool phGateRefused = false;  // pompe non caractérisée / amplitude sous plancher
-    bool phPlanRefused = false;  // seuil C : consigne sous le pouls minimal
+    // feature-073 : refus du PLAN = entrées invalides uniquement (fail-closed) —
+    // la consigne sous le pouls minimal est désormais ACCUMULÉE, plus refusée.
+    bool phPlanRefused = false;
 
     if (shouldDose) {
       // Garde de caractérisation AVANT tout calcul : une pompe jamais pesée
@@ -1286,8 +1288,9 @@ void PumpControllerClass::update() {
       // ≥ débit d'amplitude → toute accumulation serait du windup).
       bool phSaturated = (phPID.kp * error >= phAmpFlow);
       // computePID renvoie le débit FINAL borné [0, ampFlow] — itération 2 : le
-      // plancher minFlow (clamp vers le haut du modèle linéaire) est SUPPRIMÉ,
-      // c'est le seuil C de planPulse qui joue le rôle de deadband bas.
+      // plancher minFlow (clamp vers le haut du modèle linéaire) est SUPPRIMÉ ;
+      // feature-073 : sous le pouls minimal la demande est servie par
+      // l'ACCUMULATEUR de planPulseWithCarry (plus de deadband de refus).
       flow = computePID(phPID, error, now,
                         pumpProtection.phStartThreshold, phSaturated,
                         0.0f, phAmpFlow);
@@ -1308,32 +1311,53 @@ void PumpControllerClass::update() {
       bool newPeriod = !_pulseSession[0] ||
                        (now32 - _pulseState[0].periodStartMs) >= kPulsePeriodMs;
       if (newPeriod) {
-        PulsePlan plan = planPulse(flow, phAmpFlow, kPulsePeriodMs, kPulseMinMs);
+        // Ouverture / reprise de séance AVANT le plan (feature-073) : la séance
+        // s'ouvre AUSSI en régime d'accumulation (demande vivante sous le
+        // plancher — décision gate n°2 : une seule séance, jamais une par pouls)
+        // et l'accumulateur repart de zéro à chaque ouverture (décision n°3 :
+        // aucune dette héritée). `phStartDecided` couvre aussi la reprise après
+        // une suspension hors-branche (filtration/OTA) qui aurait laissé un
+        // drapeau de session périmé — les compteurs repartent alors de zéro.
+        if (!_pulseSession[0] || phStartDecided) {
+          _pulseSession[0] = true;
+          _sessionOnMs[0] = 0;
+          _sessionVolMl[0] = 0.0f;
+          _pulseState[0] = {now32, now32, true};
+          _pulseCarryMl[0] = 0.0f;
+          _carryPulseLogged[0] = false;
+        }
+        // feature-073 : sous le plancher (ex-refus seuil C), la demande est
+        // CUMULÉE de période en période ; dès que le cumul vaut le volume RÉEL
+        // d'un pouls minimal (kick inclus), une impulsion de kPulseMinMs part
+        // par le chemin STANDARD (tickPulse, usedMs, volume pesé — aucun
+        // passe-droit sur les gardes, réévaluées à chaque tour en amont).
+        // ≥ plancher : planPulse INTACT, accumulateur abandonné (F2).
+        PulseCarryPlan plan = planPulseWithCarry(
+            flow, phAmpFlow, pumpFlow255(phPumpIdx), kPulsePeriodMs,
+            kPulseMinMs, kPulseKickMs, _pulseCarryMl[0]);
+        _pulseCarryMl[0] = plan.carryMl;
         if (plan.refused) {
-          // Seuil C : la consigne exigerait un pouls < kPulseMinMs → deadband
-          // NORMAL (on attend que l'erreur grossisse). INFO throttlé, et ce
-          // refus ne nourrit PAS le streak no-flow (sinon inondation type 2.20.2).
+          // Entrées invalides (fail-closed, accumulateur remis à zéro par le
+          // plan) : pas d'impulsion, la séance se referme au tick — cas
+          // structurellement improbable ici (flow > 0 et ampFlow validé par la
+          // gate). Ne nourrit pas le streak no-flow (inondation type 2.20.2).
           phPlanRefused = true;
           flow = 0.0f;
-          static unsigned long phPulseInfoMs = 0;
-          if (phPulseInfoMs == 0 || now - phPulseInfoMs >= kPulseRefusalLogIntervalMs) {
-            phPulseInfoMs = now;
-            systemLogger.info("[Dosage pH] Consigne " + String(phPID.kp * error, 2) +
-              " mL/min sous le pouls minimal (" + String(kPulseMinMs / 1000UL) +
-              " s à " + String(phAmpFlow, 1) + " mL/min) — injection différée (seuil C)");
-          }
         } else {
-          // Démarrage de session : le premier pouls part immédiatement (kick).
-          // `phStartDecided` couvre aussi la reprise après une suspension
-          // hors-branche (filtration/OTA) qui aurait laissé un drapeau de
-          // session périmé — les compteurs de session repartent alors de zéro.
-          if (!_pulseSession[0] || phStartDecided) {
-            _pulseSession[0] = true;
-            _sessionOnMs[0] = 0;
-            _sessionVolMl[0] = 0.0f;
-            _pulseState[0] = {now32, now32, true};
-          }
+          // pulseMs == 0 = période d'ACCUMULATION : séance MAINTENUE (flow
+          // reste > 0, le latch phActive tient), pompe OFF via tickPulse.
           _pulseMs[0] = plan.pulseMs;
+          if (plan.carryFired && !_carryPulseLogged[0]) {
+            // A3 : PREMIER tir d'accumulateur de la séance seulement (les
+            // suivants sont silencieux — cadence régulière, le log d'arrêt de
+            // séance résume le volume total).
+            _carryPulseLogged[0] = true;
+            systemLogger.info("[Dosage pH] Dosage par accumulation : impulsion minimale de " +
+              String(kPulseMinMs / 1000UL) + " s (" +
+              String(plan.carryMl + pulseDeltaVolumeMl(0, kPulseKickMs, 0, kPulseMinMs,
+                                                       pumpFlow255(phPumpIdx), phAmpFlow), 1) +
+              " mL cumulés, résidu " + String(plan.carryMl, 1) + " mL)");
+          }
         }
       }
     }
@@ -1354,7 +1378,9 @@ void PumpControllerClass::update() {
       phFlow = flow;
     }
 
-    // --- Fin de session (erreur résorbée, gate, seuil C en cours de session…) ---
+    // --- Fin de session (erreur résorbée, gate, entrées de plan invalides…) ---
+    // feature-073 : une demande vivante sous le plancher ne ferme PLUS la
+    // séance (régime d'accumulation, pompe OFF entre les tirs).
     if (phWasActiveTick && !phActive) {
       phDosingState.lastStopTime = now;
       // feature-025 : pause mélange hydraulique armée à la FIN DE SESSION
@@ -1389,12 +1415,12 @@ void PumpControllerClass::update() {
     // corrigée en 2.20.2. On n'alerte donc que si la situation PERSISTE sur
     // plusieurs tours consécutifs, ce qui n'arrive pas en régime normal (le tour
     // suivant produit un débit).
-    // Itération 2 : un refus de seuil C (phPlanRefused) est un état NORMAL et
-    // PERSISTANT (deadband de refus — l'erreur ne justifie pas encore un pouls
-    // franc) : il ne doit PAS nourrir le streak, sinon un WARN « régulation sans
-    // effet » sortirait en boucle sur un régime sain (inondation type 2.20.2).
-    // Idem pour le refus de gate (phGateRefused) : il a déjà son critical dédié.
-    // Le streak reste réservé aux VRAIS cas anormaux (PID muet plusieurs tours).
+    // feature-073 : un refus de plan (phPlanRefused, entrées invalides) reste
+    // exclu du streak — fail-closed déjà silencieux par conception ; le régime
+    // sous-plancher, lui, laisse désormais phActive=true (accumulation) et ne
+    // passe donc jamais ici. Idem pour le refus de gate (phGateRefused) : il a
+    // déjà son critical dédié. Le streak reste réservé aux VRAIS cas anormaux
+    // (PID muet plusieurs tours).
     static uint16_t phNoFlowStreak = 0;
     static unsigned long phNoFlowWarnMs = 0;
     if (phStartDecided && !phActive && !phPlanRefused && !phGateRefused) {
@@ -1688,7 +1714,9 @@ void PumpControllerClass::update() {
     const uint8_t orpAmpDuty = getPumpAmplitudeDuty(orpPumpIdx);
     const float orpAmpFlow = pumpPulseFlow(orpPumpIdx);  // débit MESURÉ à l'amplitude
     bool orpGateRefused = false;  // pompe non caractérisée / amplitude sous plancher
-    bool orpPlanRefused = false;  // seuil C : consigne sous le pouls minimal
+    // feature-073 : refus du PLAN = entrées invalides uniquement (fail-closed) —
+    // la consigne sous le pouls minimal est désormais ACCUMULÉE, plus refusée.
+    bool orpPlanRefused = false;
 
     if (shouldDose) {
       // Garde de caractérisation AVANT tout calcul (fail-closed P4) — voir le
@@ -1720,7 +1748,8 @@ void PumpControllerClass::update() {
       // feature-025 (B6) : geler l'intégrale si la sortie sature.
       bool orpSaturated = (orpPID.kp * error >= orpAmpFlow);
       // computePID renvoie le débit FINAL borné [0, ampFlow] — plancher minFlow
-      // SUPPRIMÉ (le seuil C de planPulse joue le rôle de deadband bas).
+      // SUPPRIMÉ ; feature-073 : sous le pouls minimal la demande est servie
+      // par l'ACCUMULATEUR de planPulseWithCarry (plus de deadband de refus).
       flow = computePID(orpPID, error, now,
                         pumpProtection.orpStartThreshold, orpSaturated,
                         0.0f, orpAmpFlow);
@@ -1739,28 +1768,41 @@ void PumpControllerClass::update() {
       bool newPeriod = !_pulseSession[1] ||
                        (now32 - _pulseState[1].periodStartMs) >= kPulsePeriodMs;
       if (newPeriod) {
-        PulsePlan plan = planPulse(flow, orpAmpFlow, kPulsePeriodMs, kPulseMinMs);
+        // Ouverture / reprise de séance AVANT le plan (feature-073) — voir le
+        // commentaire détaillé de la branche pH : séance ouverte aussi en
+        // régime d'accumulation, accumulateur remis à zéro à l'ouverture ;
+        // orpStartDecided couvre la reprise après suspension hors-branche.
+        if (!_pulseSession[1] || orpStartDecided) {
+          _pulseSession[1] = true;
+          _sessionOnMs[1] = 0;
+          _sessionVolMl[1] = 0.0f;
+          _pulseState[1] = {now32, now32, true};
+          _pulseCarryMl[1] = 0.0f;
+          _carryPulseLogged[1] = false;
+        }
+        // feature-073 : accumulation sous le plancher (ex-seuil C), tir d'une
+        // impulsion minimale par le chemin STANDARD dès que le cumul vaut le
+        // volume kick-inclus d'un pouls min — voir la branche pH.
+        PulseCarryPlan plan = planPulseWithCarry(
+            flow, orpAmpFlow, pumpFlow255(orpPumpIdx), kPulsePeriodMs,
+            kPulseMinMs, kPulseKickMs, _pulseCarryMl[1]);
+        _pulseCarryMl[1] = plan.carryMl;
         if (plan.refused) {
-          // Seuil C : deadband NORMAL — INFO throttlé, ne nourrit PAS le streak.
+          // Entrées invalides (fail-closed) — ne nourrit pas le streak no-flow.
           orpPlanRefused = true;
           flow = 0.0f;
-          static unsigned long orpPulseInfoMs = 0;
-          if (orpPulseInfoMs == 0 || now - orpPulseInfoMs >= kPulseRefusalLogIntervalMs) {
-            orpPulseInfoMs = now;
-            systemLogger.info("[Dosage ORP] Consigne " + String(orpPID.kp * error, 2) +
-              " mL/min sous le pouls minimal (" + String(kPulseMinMs / 1000UL) +
-              " s à " + String(orpAmpFlow, 1) + " mL/min) — injection différée (seuil C)");
-          }
         } else {
-          // Démarrage de session (cf. branche pH : orpStartDecided couvre la
-          // reprise après suspension hors-branche, compteurs remis à zéro).
-          if (!_pulseSession[1] || orpStartDecided) {
-            _pulseSession[1] = true;
-            _sessionOnMs[1] = 0;
-            _sessionVolMl[1] = 0.0f;
-            _pulseState[1] = {now32, now32, true};
-          }
+          // pulseMs == 0 = période d'ACCUMULATION : séance maintenue, pompe OFF.
           _pulseMs[1] = plan.pulseMs;
+          if (plan.carryFired && !_carryPulseLogged[1]) {
+            // A3 : premier tir d'accumulateur de la séance seulement.
+            _carryPulseLogged[1] = true;
+            systemLogger.info("[Dosage ORP] Dosage par accumulation : impulsion minimale de " +
+              String(kPulseMinMs / 1000UL) + " s (" +
+              String(plan.carryMl + pulseDeltaVolumeMl(0, kPulseKickMs, 0, kPulseMinMs,
+                                                       pumpFlow255(orpPumpIdx), orpAmpFlow), 1) +
+              " mL cumulés, résidu " + String(plan.carryMl, 1) + " mL)");
+          }
         }
       }
     }
@@ -1795,8 +1837,9 @@ void PumpControllerClass::update() {
     // Symétrique du WARN de la branche pH — y compris la garde de PERSISTANCE :
     // « décision sans débit » est normal au premier tick, alerter dessus
     // inonderait le journal. Voir le commentaire détaillé côté pH.
-    // Itération 2 : les refus seuil C / gate ne nourrissent PAS le streak
-    // (états normaux ou déjà signalés) — voir le commentaire de la branche pH.
+    // feature-073 : les refus de plan (entrées invalides) / de gate ne
+    // nourrissent PAS le streak, et le régime sous-plancher laisse orpActive à
+    // true (accumulation) — voir le commentaire de la branche pH.
     static uint16_t orpNoFlowStreak = 0;
     static unsigned long orpNoFlowWarnMs = 0;
     if (orpStartDecided && !orpActive && !orpPlanRefused && !orpGateRefused) {
@@ -2060,8 +2103,19 @@ void PumpControllerClass::update() {
   // Fin de session hors branche (canDose refusé en cours de session, changement
   // de mode, limite atteinte…) : libérer l'état du train d'impulsions pour que
   // la prochaine session reparte proprement (kick + compteurs de session à 0).
-  if (!phActive) _pulseSession[0] = false;
-  if (!orpActive) _pulseSession[1] = false;
+  // feature-073 : l'accumulateur sous-plancher est PERDU à toute fermeture de
+  // séance (demande nulle, refus de gate/canDose, limite, suspension — voulu :
+  // une demande disparue ne laisse aucune dette), et le flag de log A3 réarmé.
+  if (!phActive) {
+    _pulseSession[0] = false;
+    _pulseCarryMl[0] = 0.0f;
+    _carryPulseLogged[0] = false;
+  }
+  if (!orpActive) {
+    _pulseSession[1] = false;
+    _pulseCarryMl[1] = 0.0f;
+    _carryPulseLogged[1] = false;
+  }
 
   // Comptabilité produit (itération 2, P4) : volume par delta de tick, calculé
   // par pulseDeltaVolumeMl (kick au débit 255 MESURÉ + plateau au débit CALIBRÉ,
