@@ -5,6 +5,7 @@
 #include <atomic>
 #include "config.h"
 #include "constants.h"
+#include "pulse_dosing_logic.h"  // itération 2 : proportionnel de temps (option B+C)
 
 struct PumpDriver {
   int pwmPin;    // Pin PWM Gate MOSFET (IRLZ44N)
@@ -73,10 +74,12 @@ private:
   PIDController orpPID;
 
   void applyPumpDuty(int index, uint8_t duty);
-  // feature-006 (condition pool-chemistry #2) : `manualActive` = une injection
-  // MANUELLE consomme aussi le budget horaire usedMs (budget PARTAGÉ auto+manuel).
-  // Accumulation si state.active || manualActive (OR unique → pas de double comptage).
-  void refreshDosingState(DosingState& state, unsigned long now, bool manualActive);
+  // feature-006 (condition pool-chemistry #2) : budget horaire usedMs PARTAGÉ
+  // auto + manuel. Itération 2 (bug-dosage-fantome) : le prédicat d'accumulation
+  // devient POMPE-ON (pompe physiquement alimentée — pouls auto, scheduled OU
+  // manuel), plus la session : entre deux pouls la pompe ne consomme pas le
+  // budget horaire. UN seul point d'accumulation → pas de double comptage.
+  void refreshDosingState(DosingState& state, unsigned long now, bool pumpOn);
 
   // feature-025 : `deadband` = seuil de démarrage existant (phStartThreshold /
   // orpStartThreshold) ; `freezeIntegral` gèle l'accumulation intégrale (anti-windup
@@ -89,19 +92,27 @@ private:
   float computePID(PIDController& pid, float error, unsigned long now,
                    float deadband, bool freezeIntegral,
                    float minFlow, float maxFlow);
-  float   dutyToFlow(const PumpControlParams& params, uint8_t duty);
-  uint8_t flowToDuty(const PumpControlParams& params, float flowMlPerMin);
+  // Itération 2 (bug-dosage-fantome) : dutyToFlow()/flowToDuty() SUPPRIMÉS —
+  // le modèle linéaire duty↔débit est mort (mesure au banc 2026-08-23). Le
+  // débit moyen est réalisé par proportionnel de TEMPS (pulse_dosing_logic).
 
   bool checkSafetyLimits(bool isPhPump);
   // Reset journalier (RTC/NTP local minuit, ou fallback millis() 24h).
   // Doit être appelé en permanence depuis update(), AVANT le check de filtration,
   // pour que les compteurs se réinitialisent même quand la filtration est arrêtée.
   void tickDailyRollover();
-  void updateSafetyTracking(bool isPhPump, float flowMlPerMin, unsigned long deltaMs);
+  // Crédite un VOLUME (mL) aux compteurs de sécurité journaliers + suivi produit.
+  // Remplace updateSafetyTracking(flow, delta) : le volume est désormais calculé
+  // en amont (pulseDeltaVolumeMl pour l'auto/scheduled, majorant pour le manuel).
+  void creditInjectedVolume(bool isPhPump, float volumeMl);
 
   // Fonctions anti-cycling
   bool shouldStartDosing(float error, float startThreshold, DosingState& state, unsigned long now);
-  bool shouldContinueDosing(float error, float stopThreshold, DosingState& state, unsigned long now);
+  // Itération 2 : la garde de temps minimum d'injection raisonne en temps
+  // POMPE-ON cumulé de la session (sessionOnMs), plus en temps mural depuis
+  // lastStartTime — cohérence avec le proportionnel de temps (flaggé pour
+  // contre-visite du gate pool-chemistry).
+  bool shouldContinueDosing(float error, float stopThreshold, unsigned long sessionOnMs);
 
   // Timer de stabilisation par pompe (index 0 = pH, 1 = ORP).
   // La cinétique chimique différente justifie une fenêtre indépendante par sonde
@@ -194,6 +205,28 @@ private:
   // + compteurs NVS dirty. Le ring anti-rafale et cyclesToday restent ainsi
   // écrits par UNE seule tâche (pas de mutex). Index 0 = pH, 1 = ORP.
   std::atomic<uint8_t> _manualCycleStartPending[2] = {{0}, {0}};
+
+  // ===== Itération 2 (bug-dosage-fantome, option B+C) : train d'impulsions ====
+  // Index par CHIMIE ([0]=pH, [1]=ORP). Écrits/lus en loopTask uniquement
+  // (cohérent avec _stabilizationEndMs — aucun mutex requis).
+  PulseState _pulseState[2] = {};        // état du train (période/pouls courant)
+  uint32_t _pulseMs[2] = {0, 0};         // durée du pouls planifié pour la période
+  bool _pulseSession[2] = {false, false}; // session de dosage en cours (auto OU scheduled)
+  unsigned long _sessionOnMs[2] = {0, 0}; // temps POMPE-ON cumulé de la session (garde temps min)
+  float _sessionVolMl[2] = {0.0f, 0.0f};  // volume crédité de la session (log d'arrêt)
+  // Comptabilité par delta de tick : état pompe au tour PRÉCÉDENT (le volume du
+  // delta [t0, now] est celui de la commande posée à t0, attribution arrière).
+  bool _acctPumpOn[2] = {false, false};   // pompe alimentée au tour précédent
+  bool _acctManual[2] = {false, false};   // ... via le mode manuel (crédit majorant)
+  uint8_t _acctManualDuty[2] = {0, 0};    // duty manuel du tour précédent (crédit exact si == calibré)
+
+  // Helpers de caractérisation — index de pompe PHYSIQUE (0 = pompe 1, 1 = pompe 2).
+  // Crédit du volume du delta [lastSafetyTimestamp, now] pour une chimie
+  // (chem 0 = pH, 1 = ORP) : pouls auto/scheduled → pulseDeltaVolumeMl (exact,
+  // kick au débit 255 mesuré + plateau au débit calibré) ; manuel → MAJORANT
+  // flow255, sauf duty == calibratedDuty → débit calibré. Jamais zéro sur une
+  // pompe alimentée (P4). Met aussi à jour _sessionOnMs/_sessionVolMl.
+  void accountPumpVolume(int chem, int physIdx, unsigned long now, bool manualActive);
 
   // feature-011 : état de la répartition scheduled par fenêtres de 15 min
   // (kScheduledWindowMinutes). windowIdx = fenêtre courante (nowMin/15, -1 =
@@ -379,6 +412,49 @@ public:
   // (le WS traduit NAN en null). Rafraîchi à chaque tour d'update() (loopTask).
   float getPhScheduledPlannedFlow() const { return _phSchedPlannedFlow; }
   float getOrpScheduledPlannedFlow() const { return _orpSchedPlannedFlow; }
+
+  // ===== Itération 2 : état de caractérisation exposé à l'UI/WS (agent web) ====
+  // Lecture SEULE, appelable depuis les handlers async (lit mqttCfg — octets et
+  // float 32 bits, lectures atomiques Xtensa, course bénigne d'un tour de loop).
+
+  // Amplitude courante du plateau d'impulsion pour la pompe PHYSIQUE
+  // (0 = pompe 1, 1 = pompe 2) : pumpNMaxDutyPct × 255 / 100. 0 si index invalide.
+  uint8_t getPumpAmplitudeDuty(int pumpIndex) const;
+
+  // True si la pompe PHYSIQUE ne peut PAS doser en connaissance de débit :
+  // jamais caractérisée (calibratedDuty == 0), débit implausible, amplitude
+  // différente du duty calibré, ou amplitude sous MIN_ACTIVE_DUTY (B2).
+  // = evaluatePulseGate(...) != None (le seuil C, lui, dépend de la demande).
+  // Index invalide → true (fail-closed). Sert au badge « débit non caractérisé ».
+  bool isPumpFlowUncharacterized(int pumpIndex) const;
+
+  // Raccourcis par CHIMIE (résolvent l'affectation mqttCfg.phPump/orpPump).
+  bool isPhPumpFlowUncharacterized() const {
+    return isPumpFlowUncharacterized(pumpIndexFromNumber(mqttCfg.phPump));
+  }
+  bool isOrpPumpFlowUncharacterized() const {
+    return isPumpFlowUncharacterized(pumpIndexFromNumber(mqttCfg.orpPump));
+  }
+
+  // ===== Itération 3 : calendrier d'impulsion exposé à l'UI/WS (LECTURE SEULE) =
+  // Index par CHIMIE (chem 0 = pH, 1 = ORP). AUCUN setter associé : ces getters
+  // n'influencent aucune décision de dosage, ils servent uniquement à distinguer
+  // à l'UI « session active » (commandé) vs « pompe alimentée » (pouls effectif).
+  // Course bénigne assumée (patron isAnyPumpEnergized/getPumpAmplitudeDuty) :
+  // _pulseSession/_pulseMs/_pulseState sont écrits par loopTask et lus ici en
+  // contexte web async (async_tcp) ; les lectures 8/32 bits sont atomiques sur
+  // Xtensa, le pire cas est un instantané en retard d'un tour de loop.
+
+  // Session de dosage en cours (auto OU scheduled) pour la chimie. false si index invalide.
+  bool isPulseSessionActive(int chem) const;
+
+  // Durée du pouls planifié pour la période courante (ms). 0 si index invalide.
+  uint32_t getPulseMs(int chem) const;
+
+  // Position dans la période d'impulsion : nowMs − periodStartMs (soustraction
+  // uint32 non signée, wrap-safe), clampée [0..kPulsePeriodMs]. 0 si session
+  // inactive ou index invalide.
+  uint32_t getPulsePhaseMs(int chem, uint32_t nowMs) const;
 
   // Test manuel des pompes (à utiliser avec précaution)
   void setManualPump(int pumpIndex, uint8_t duty);

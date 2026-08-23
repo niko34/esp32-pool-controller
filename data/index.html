@@ -1878,30 +1878,55 @@ action:
                     <div class="row row--between">
                       <div>
                         <div class="row__title">Puissance max — Pompe 1</div>
-                        <div class="muted small">En régulation&nbsp;: <span id="pump1_max_duty_value">50</span>%</div>
+                        <div class="muted small">En régulation&nbsp;: <span id="pump1_max_duty_value">50</span>% <span id="pump1_amp_duty"></span></div>
                       </div>
+                      <span class="state-badge state-badge--warn" id="pump1_uncal_badge" hidden>Débit non caractérisé — pesée requise</span>
                     </div>
-                    <input type="range" id="pump1_max_duty" min="0" max="100" step="5" value="50" aria-label="Puissance maximale Pompe 1 (%)" />
+                    <input type="range" id="pump1_max_duty" min="40" max="100" step="5" value="50" aria-label="Puissance maximale Pompe 1 (%, minimum 40)" />
+                    <div class="muted small" id="pump1_cal_current" style="margin-top:6px" hidden></div>
+                    <div class="grid grid--2" style="margin-top:8px">
+                      <label class="field">
+                        <span class="field__label">Duty calibré (102-255)</span>
+                        <input type="number" id="pump1_cal_duty" min="102" max="255" step="1" placeholder="ex. 127" aria-label="Duty calibré Pompe 1 (102 à 255)" />
+                      </label>
+                      <label class="field">
+                        <span class="field__label">Débit mesuré (ml/min)</span>
+                        <input type="number" id="pump1_cal_flow" min="0.1" max="200" step="0.1" placeholder="ex. 12.0" aria-label="Débit mesuré Pompe 1 (ml/min)" />
+                      </label>
+                    </div>
+                    <div class="row row--gap">
+                      <button class="btn btn--secondary" type="button" id="pump1_cal_save_btn">Enregistrer la pesée</button>
+                    </div>
                   </div>
 
                   <div class="pump">
                     <div class="row row--between">
                       <div>
                         <div class="row__title">Puissance max — Pompe 2</div>
-                        <div class="muted small">En régulation&nbsp;: <span id="pump2_max_duty_value">50</span>%</div>
+                        <div class="muted small">En régulation&nbsp;: <span id="pump2_max_duty_value">50</span>% <span id="pump2_amp_duty"></span></div>
                       </div>
+                      <span class="state-badge state-badge--warn" id="pump2_uncal_badge" hidden>Débit non caractérisé — pesée requise</span>
                     </div>
-                    <input type="range" id="pump2_max_duty" min="0" max="100" step="5" value="50" aria-label="Puissance maximale Pompe 2 (%)" />
-                  </div>
-
-                  <div class="kv" style="margin-top:16px">
-                    <label class="kv__k" for="pump_max_flow_ml_per_min">Débit nominal des pompes (ml/min)</label>
-                    <input class="kv__v input" type="number" id="pump_max_flow_ml_per_min" min="1" max="500" step="0.1" value="90" aria-label="Débit nominal des pompes (ml/min)" />
+                    <input type="range" id="pump2_max_duty" min="40" max="100" step="5" value="50" aria-label="Puissance maximale Pompe 2 (%, minimum 40)" />
+                    <div class="muted small" id="pump2_cal_current" style="margin-top:6px" hidden></div>
+                    <div class="grid grid--2" style="margin-top:8px">
+                      <label class="field">
+                        <span class="field__label">Duty calibré (102-255)</span>
+                        <input type="number" id="pump2_cal_duty" min="102" max="255" step="1" placeholder="ex. 127" aria-label="Duty calibré Pompe 2 (102 à 255)" />
+                      </label>
+                      <label class="field">
+                        <span class="field__label">Débit mesuré (ml/min)</span>
+                        <input type="number" id="pump2_cal_flow" min="0.1" max="200" step="0.1" placeholder="ex. 12.0" aria-label="Débit mesuré Pompe 2 (ml/min)" />
+                      </label>
+                    </div>
+                    <div class="row row--gap">
+                      <button class="btn btn--secondary" type="button" id="pump2_cal_save_btn">Enregistrer la pesée</button>
+                    </div>
                   </div>
 
                   <div class="hint">
-                    Affectation des pompes doseuses et puissance maximale en régulation pH/ORP.<br>
-                    Le débit nominal correspond aux caractéristiques physiques des pompes (fiche technique) à puissance maximale. Il est utilisé pour estimer les volumes injectés.
+                    Affectation des pompes doseuses et puissance maximale en régulation pH/ORP (minimum 40&nbsp;%&nbsp;: en dessous, la pompe cale).<br>
+                    Calibration par pesée&nbsp;: pesez le volume délivré en 120&nbsp;s au duty d'exploitation (eau claire), entrez duty et débit. Le duty d'exploitation est affiché à côté du pourcentage. Sans pesée enregistrée, le dosage automatique est refusé.
                   </div>
 
                   <div style="margin-top:16px">
@@ -1959,6 +1984,14 @@ action:
                     <button class="btn btn--danger" type="button" id="trace_clear_btn">Vider le buffer</button>
                   </div>
 
+                  <!-- Dispersion instantanée (route /debug/sensor_filter_state) : hors de
+                       #trace_charts pour rester visible même si le buffer de trace est vide,
+                       et survivre à une panne de la trace (requêtes indépendantes). -->
+                  <div class="kv kv--compact" style="margin-bottom:12px;">
+                    <div class="kv__row"><span class="kv__k">Dispersion pH</span><span class="kv__v" id="trace_disp_ph">—</span></div>
+                    <div class="kv__row"><span class="kv__k">Dispersion ORP</span><span class="kv__v" id="trace_disp_orp">—</span></div>
+                  </div>
+
                   <div class="muted small" id="trace_status" hidden>Aucune donnée dans le buffer.</div>
 
                   <div id="trace_charts" hidden>
@@ -1970,6 +2003,17 @@ action:
                       <div class="chart-container trace-chart">
                         <div id="trace_ph_chart" class="chart-host"></div>
                       </div>
+                      <!-- Courbe de dispersion (feature-072) : fenêtre glissante de 13,
+                           reconstruction indicative — trous = fenêtres écartées -->
+                      <div class="trace-dispersion" id="trace_disp_ph_block" hidden>
+                        <div class="trace-legend">
+                          <span class="trace-legend__item"><span class="trace-legend__swatch" style="background:#d97706"></span>Dispersion pH (indicatif)</span>
+                          <span class="trace-legend__item"><span class="trace-legend__swatch trace-legend__swatch--dash"></span>Seuil <span id="trace_disp_ph_seuil">0,50</span></span>
+                        </div>
+                        <div class="chart-container trace-chart trace-chart--dispersion">
+                          <div id="trace_disp_ph_chart" class="chart-host"></div>
+                        </div>
+                      </div>
                     </div>
 
                     <div class="trace-block">
@@ -1980,6 +2024,17 @@ action:
                       <div class="chart-container trace-chart">
                         <div id="trace_orp_chart" class="chart-host"></div>
                       </div>
+                      <!-- Courbe de dispersion (feature-072) : fenêtre glissante de 13,
+                           reconstruction indicative — trous = fenêtres écartées -->
+                      <div class="trace-dispersion" id="trace_disp_orp_block" hidden>
+                        <div class="trace-legend">
+                          <span class="trace-legend__item"><span class="trace-legend__swatch" style="background:#d97706"></span>Dispersion ORP (indicatif)</span>
+                          <span class="trace-legend__item"><span class="trace-legend__swatch trace-legend__swatch--dash"></span>Seuil <span id="trace_disp_orp_seuil">100 mV</span></span>
+                        </div>
+                        <div class="chart-container trace-chart trace-chart--dispersion">
+                          <div id="trace_disp_orp_chart" class="chart-host"></div>
+                        </div>
+                      </div>
                     </div>
 
                     <div class="kv kv--compact" style="margin-top:16px;">
@@ -1988,6 +2043,15 @@ action:
                       <div class="kv__row"><span class="kv__k">ORP brut</span><span class="kv__v" id="trace_stats_orp_raw">—</span></div>
                       <div class="kv__row"><span class="kv__k">ORP lissé</span><span class="kv__v" id="trace_stats_orp_filtered">—</span></div>
                       <div class="kv__row"><span class="kv__k">T° eau</span><span class="kv__v" id="trace_stats_temp">—</span></div>
+                      <div class="kv__row"><span class="kv__k">Dispersion trace pH (indicatif)</span><span class="kv__v" id="trace_disp_recon_ph">—</span></div>
+                      <div class="kv__row"><span class="kv__k">Dispersion trace ORP (indicatif)</span><span class="kv__v" id="trace_disp_recon_orp">—</span></div>
+                    </div>
+                    <div class="muted small" style="margin-top:8px;">
+                      Reconstruction sur la trace complète : la fenêtre du firmware est gelée
+                      quand la circulation est arrêtée (la trace, non). Hors régime établi,
+                      la valeur instantanée ci-dessus fait foi. Un trou dans la courbe de
+                      dispersion signale une fenêtre écartée (transitoire rejeté), pas une
+                      absence de mesure.
                     </div>
                   </div>
                 </div>

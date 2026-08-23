@@ -81,7 +81,9 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // (clé 24 o + raison bornée par le libellé firmware, ~140 o max) → +200 o
   // → marge portée à 2624. La raison n'est JAMAIS saisie par l'utilisateur
   // (littéral construit par pump_controller), sa longueur est donc bornée.
-  StaticJson<2624> doc;
+  // Itération 2 (bug-dosage-fantome) : +4 champs de caractérisation pompes
+  // (~130 o au pire) → marge portée à 2752.
+  StaticJson<2752> doc;
   doc["server"] = mqttCfg.server;
   doc["port"] = mqttCfg.port;
   doc["topic"] = mqttCfg.topic;
@@ -105,7 +107,14 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["orp_pump"] = mqttCfg.orpPump;
   doc["pump1_max_duty_pct"] = mqttCfg.pump1MaxDutyPct;
   doc["pump2_max_duty_pct"] = mqttCfg.pump2MaxDutyPct;
-  doc["pump_max_flow_ml_per_min"] = mqttCfg.pumpMaxFlowMlPerMin;
+  // Itération 2 (bug-dosage-fantome) : pump_max_flow_ml_per_min SUPPRIMÉ (modèle
+  // linéaire retiré). À la place : caractérisation MESURÉE par pompe (pesée au
+  // banc). calibrated_duty == 0 = pompe jamais caractérisée → tout dosage
+  // automatique/programmé REFUSÉ (fail-closed, cf. src/pulse_dosing_logic.h).
+  doc["pump1_calibrated_duty"] = mqttCfg.pump1CalibratedDuty;
+  doc["pump1_pulse_flow_ml_per_min"] = mqttCfg.pump1PulseFlowMlPerMin;
+  doc["pump2_calibrated_duty"] = mqttCfg.pump2CalibratedDuty;
+  doc["pump2_pulse_flow_ml_per_min"] = mqttCfg.pump2PulseFlowMlPerMin;
   doc["ph_limit_minutes"] = mqttCfg.phInjectionLimitMinutes;
   doc["orp_limit_minutes"] = mqttCfg.orpInjectionLimitMinutes;
   doc["max_cycles_per_day"] = pumpProtection.maxCyclesPerDay;  // feature-060 : garde 9 configurable (10-60)
@@ -370,12 +379,83 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
   if (!doc["ph_pump"].isNull()) mqttCfg.phPump = doc["ph_pump"];
   if (!doc["orp_pump"].isNull()) mqttCfg.orpPump = doc["orp_pump"];
-  if (!doc["pump1_max_duty_pct"].isNull()) mqttCfg.pump1MaxDutyPct = constrain((int)doc["pump1_max_duty_pct"], 0, 100);
-  if (!doc["pump2_max_duty_pct"].isNull()) mqttCfg.pump2MaxDutyPct = constrain((int)doc["pump2_max_duty_pct"], 0, 100);
-  if (!doc["pump_max_flow_ml_per_min"].isNull()) {
-    mqttCfg.pumpMaxFlowMlPerMin = constrain((float)doc["pump_max_flow_ml_per_min"], 1.0f, 500.0f);
-    phPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
-    orpPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
+  // Itération 2 (bug-dosage-fantome) : plancher kPumpAmpMinPct (40 %) — le duty
+  // du plateau d'impulsion ne doit JAMAIS redescendre sous le seuil de rotation
+  // (40 % × 255 ≈ 102 counts ≥ MIN_ACTIVE_DUTY = 98). Le min/max HTML ne suffit
+  // pas : clamp serveur obligatoire (même patron que max_cycles_per_day).
+  if (!doc["pump1_max_duty_pct"].isNull()) mqttCfg.pump1MaxDutyPct = constrain((int)doc["pump1_max_duty_pct"], (int)kPumpAmpMinPct, 100);
+  if (!doc["pump2_max_duty_pct"].isNull()) mqttCfg.pump2MaxDutyPct = constrain((int)doc["pump2_max_duty_pct"], (int)kPumpAmpMinPct, 100);
+  // Itération 2 (bug-dosage-fantome) : pump_max_flow_ml_per_min SUPPRIMÉ — la
+  // clé est IGNORÉE si un client l'envoie encore (rétrocompat, aucun champ cible).
+  // À la place : caractérisation MESURÉE par pompe (pesée au banc). Validation
+  // serveur SANS écrêtage silencieux (patron ph_offset) : écrêter une pesée
+  // fausserait la comptabilité de volume injecté — refus HTTP 400 explicite.
+  //   - pN_calibrated_duty ∈ {0} ∪ [102..255] (102 = kPumpAmpMinPct × 255 / 100,
+  //     plancher de rotation) ; 0 = EFFACER la calibration : le débit associé
+  //     est remis à 0 et la pompe redevient non caractérisée (dosage auto REFUSÉ,
+  //     fail-closed — cf. pulse_dosing_logic.h) ;
+  //   - pN_pulse_flow_ml_per_min ∈ ]0..kPulseFlowMaxMlPerMin] (plausibilité
+  //     d'une doseuse de piscine, même garde qu'au chargement NVS).
+  {
+    constexpr int kCalDutyMin = ((int)kPumpAmpMinPct * (int)MAX_PWM_DUTY) / 100;  // 102
+    struct PumpCalKeys {
+      const char* dutyKey;
+      const char* flowKey;
+      uint8_t* duty;
+      float* flow;
+      int num;
+    };
+    const PumpCalKeys pumps[2] = {
+      {"pump1_calibrated_duty", "pump1_pulse_flow_ml_per_min",
+       &mqttCfg.pump1CalibratedDuty, &mqttCfg.pump1PulseFlowMlPerMin, 1},
+      {"pump2_calibrated_duty", "pump2_pulse_flow_ml_per_min",
+       &mqttCfg.pump2CalibratedDuty, &mqttCfg.pump2PulseFlowMlPerMin, 2},
+    };
+    for (const PumpCalKeys& p : pumps) {
+      // duty == 0 dans la même requête = intention d'EFFACER : le débit envoyé
+      // conjointement (même à 0) est ignoré, l'effacement prime.
+      const bool clearing = !doc[p.dutyKey].isNull() && doc[p.dutyKey].as<int>() == 0;
+      bool flowChanged = false;
+      if (!clearing && !doc[p.flowKey].isNull()) {
+        float flow = doc[p.flowKey].as<float>();
+        if (!isfinite(flow) || flow <= 0.0f || flow > kPulseFlowMaxMlPerMin) {
+          xSemaphoreGiveRecursive(configMutex);
+          systemLogger.warning("Pesée pompe " + String(p.num) +
+                               " refusée : débit implausible " + String(flow, 1) + " ml/min");
+          (*g_configErrors)[request] = true;
+          g_configErrorMessages[request] =
+            "{\"error\":\"D\\u00e9bit mesur\\u00e9 invalide : la valeur doit \\u00eatre "
+            "sup\\u00e9rieure \\u00e0 0 et au plus 200 ml/min\"}";
+          return;
+        }
+        if (flow != *p.flow) flowChanged = true;
+        *p.flow = flow;
+      }
+      if (!doc[p.dutyKey].isNull()) {
+        int duty = doc[p.dutyKey].as<int>();
+        if (duty != 0 && (duty < kCalDutyMin || duty > (int)MAX_PWM_DUTY)) {
+          xSemaphoreGiveRecursive(configMutex);
+          systemLogger.warning("Pesée pompe " + String(p.num) +
+                               " refusée : duty calibré hors plage " + String(duty));
+          (*g_configErrors)[request] = true;
+          g_configErrorMessages[request] =
+            "{\"error\":\"Duty calibr\\u00e9 invalide : 0 (effacer la calibration) "
+            "ou une valeur entre 102 et 255\"}";
+          return;
+        }
+        if (duty == 0) {
+          if (*p.duty != 0) {
+            systemLogger.warning("Calibration pompe " + String(p.num) +
+                                 " effacée — pompe non caractérisée (dosage auto refusé)");
+          }
+          *p.flow = 0.0f;  // effacement : le débit pesé n'a plus de sens
+        } else if ((uint8_t)duty != *p.duty || flowChanged) {
+          systemLogger.info("Pesée pompe " + String(p.num) + " enregistrée : duty " +
+                            String(duty) + ", débit " + String(*p.flow, 1) + " ml/min");
+        }
+        *p.duty = (uint8_t)duty;
+      }
+    }
   }
   if (!doc["ph_limit_minutes"].isNull()) mqttCfg.phInjectionLimitMinutes = constrain((int)doc["ph_limit_minutes"], 1, 60);
   if (!doc["orp_limit_minutes"].isNull()) mqttCfg.orpInjectionLimitMinutes = constrain((int)doc["orp_limit_minutes"], 1, 60);

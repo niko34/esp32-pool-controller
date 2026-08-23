@@ -2,6 +2,86 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.21.1] - 2026-08-23
+
+### Fonctionnalités
+
+- **La carte pH/ORP du tableau de bord ne dit plus « Injection en cours » quand la pompe ne tourne pas** (bug-dosage-fantome, itération 3, défaut n°3, [ADR-0045](docs/adr/0045-etat-impulsion-expose-en-calendrier.md)). Avec le dosage en impulsions (v2.21.0), une séance alterne pouls et repos ; l'UI affichait « Injection en cours » pendant les repos — la conflation qui avait masqué le dosage fantôme d'origine. La carte montre désormais l'**état réel de la pompe** : « **Injection en cours** » (dot animé) uniquement quand la pompe est alimentée ; « **Prochaine impulsion : Ns** » (dot statique, compte à rebours) pendant les silences du train ; « **Dosage en attente : Ns** » quand la période ne contient aucun pouls (demande trop faible) ; « **Injection manuelle : Ns** » affichée distinctement du dosage automatique. Le compte à rebours est animé localement à la seconde et resynchronisé à chaque trame (±1-2 s) ; à l'échéance sans donnée fraîche il passe en « Prochaine impulsion… » — jamais de bascule optimiste vers « pompe qui tourne ».
+- **Bouton « Calibrer la sonde » pH harmonisé restrictif** : sa désactivation proactive inclut désormais la séance de dosage automatique (`ph_dosing`), comme l'ORP le faisait déjà (le clic était déjà bloqué ; le bouton reflète maintenant le verrou).
+
+### API
+
+- `GET /data` **et** push WebSocket `sensor_data` : **7 nouveaux champs identiques** de calendrier d'impulsion — `pulse_period_ms` (période du train, 60000 ms), `ph/orp_pulse_session` (séance ouverte, auto ou programmée), `ph/orp_pulse_ms` (durée d'impulsion planifiée, 0 = deadband), `ph/orp_pulse_phase_ms` (position **relative** dans la période, clampée [0..période]). Getters `PumpController` lecture seule (`isPulseSessionActive`, `getPulseMs`, `getPulsePhaseMs`), fail-closed sur index invalide, aucun chemin de dosage touché (visa `pool-chemistry` : GO). Buffers : `/data` 1536 → 1792 o, pool WS 2176 → 2432 o, `kWsFrameBufBytes` 3072 → **3584** o (trame mesurée ~2,2 Ko). Rétrocompat : champs absents → comportement historique de l'UI.
+
+### Documentation
+
+- **[ADR-0045](docs/adr/0045-etat-impulsion-expose-en-calendrier.md)** : état d'impulsion exposé en **calendrier** (période/pouls/phase) plutôt qu'en booléen instantané (aliasing à 5 s de push pour des impulsions de 5-60 s) ou en `/data` seul (30 s trop lent) ; animation client resynchronisée ; agrandissement contractuel du buffer WS.
+- `docs/subsystems/ws-manager.md` (contrat des 7 champs + buffer 3584), `docs/API.md`, `docs/features/page-dashboard.md` (tableau des 6 états, sémantique du dot, honnêteté du compte à rebours), `docs/features/page-ph.md` (verrou Calibrer harmonisé), `docs/subsystems/pump-controller.md` (les 3 getters) mis à jour.
+
+---
+
+## [2.21.0] - 2026-08-23
+
+> ⚠️ **ACTION REQUISE APRÈS MISE À JOUR — le dosage automatique et programmé est BLOQUÉ tant que la pesée des pompes n'est pas saisie.** C'est **voulu** (fail-closed, [ADR-0043](docs/adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)) : l'ancien modèle débit↔puissance était faux (prouvé au banc : ×1,9 de sous-estimation en bas, ×1,5 de surestimation en haut) et créditait de l'acide qui ne sortait pas du bidon. Aucune valeur héritée n'est convertie. Procédure par pompe : **peser le volume délivré en 120 s au duty d'exploitation** (affiché à côté du réglage « Puissance max », eau claire, balance au gramme), puis saisir duty + débit dans **Réglages → Avancé → Configuration des pompes → « Enregistrer la pesée »**. Tant que ce n'est pas fait : badge « Débit non caractérisé — pesée requise » + log `CRITICAL` throttlé, et les injections volumées tournent à pleine puissance (255, seul autre débit mesuré).
+
+### Firmware
+
+- **Régulation pH/ORP — dosage en proportionnel de temps** (bug-dosage-fantome, itération 2, défaut n°1 ; option (B)+(C) du gate `pool-chemistry`, GO en contre-visite) : la pompe ne tourne plus à un duty interpolé mais par **impulsions** — période fixe 60 s, pouls minimal 5 s, **kick de démarrage 400 ms à pleine puissance** (couple de décollage à froid) puis plateau à l'**amplitude** (= puissance max × 255/100). Le débit moyen demandé par le régulateur est réalisé par la fraction de temps de marche. Module pur `src/pulse_dosing_logic.{h,cpp}` (ADR-0017), **625 tests natifs verts**. **Conséquence terrain : le pH descendra réellement désormais** — l'ancien régime commandait une puissance à laquelle la pompe ne tournait que par intermittence.
+- **Calibration par pompe, fail-closed** : nouvelles clés `pumpN_calibrated_duty` (0 = non caractérisé) + `pumpN_pulse_flow_ml_per_min` (NVS `p1_cal_duty`/`p1_pulse_flow`/`p2_cal_duty`/`p2_pulse_flow`) ; ancienne clé partagée `pump_max_flow` **supprimée sans conversion**. Amplitude ≠ duty calibré ou pompe jamais pesée → dosage auto/programmé **refusé**. **Aucune interpolation nulle part** (`dutyToFlow`/`flowToDuty` et `kPumpMin/MaxFlowMlPerMin` supprimés). Calibration **par pompe** : +10 % d'écart mesuré entre deux pompes identiques (le tube commande).
+- **Comptabilité du volume sur débits mesurés** : pouls = 0,4 s × débit-255 pesé + reste × débit d'amplitude pesé (`pulseDeltaVolumeMl`, exact au jitter près — limite connue : sous-comptage ~0,1 mL/pouls à la transition kick→plateau) ; marche manuelle `?duty=N` créditée au **majorant** débit-255 sauf duty == calibré. Constantes de banc (2026-08-23) : Dmin = 82 → `MIN_ACTIVE_DUTY` 80 → **98** (marge P2) ; P1 61,0 / P2 67,0 mL/min à 255.
+- **Limite horaire et temps minimum d'injection comptés en temps POMPE-ON** ([ADR-0044](docs/adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md), validé gate) : `usedMs` et la garde des 30 s accumulent sur les impulsions (« minutes où le produit coule »), plus sur la session. Le cycle (`cyclesToday`, anti-rafale) reste compté **par session** ; la pause mélange s'arme en fin de session, y compris fin par deadband.
+- **Seuil C (deadband de refus)** : une demande exigeant un pouls < 5 s est refusée (log `INFO` throttlé 30 min) au lieu d'être réalisée par un pouls au débit non reproductible ; ne nourrit pas le WARN « régulation sans effet ».
+- **Injections volumées** (`/ph|orp/inject/start`) : duty **calibré** si l'amplitude y correspond, sinon **255 forcé** (durée exacte volume/débit pesé) ; état incohérent → **409 `flow_uncharacterized`**. Plus jamais de durée déduite du modèle linéaire.
+
+### API
+
+- `POST /save-config` accepte les 4 clés de calibration (validation stricte, **400 explicite** — patron `ph_offset`, jamais d'écrêtage d'une pesée) ; `pump_max_flow_ml_per_min` entrant **ignoré** (rétrocompat) ; `pumpN_max_duty_pct` clampé **[40..100]** (plancher de rotation).
+- `GET /get-config` expose les 4 clés ; `GET /data` expose `ph/orp_pump_flow_uncharacterized` + `ph/orp_pump_amplitude_duty`.
+
+### Fonctionnalités
+
+- **Réglages → Avancé** : formulaire de pesée par pompe (duty calibré + débit mesuré, « Pesée en vigueur »), badge « Débit non caractérisé — pesée requise », duty d'exploitation affiché à côté du pourcentage, slider « Puissance max » borné à **40 % minimum** (il ne descend plus en dessous — sous ce seuil la pompe cale). Champ « Débit nominal des pompes » supprimé.
+- **Recommandation de validation (P3 du gate)** : abaisser les limites pendant **3 jours** (`max_ph/orp_ml_per_day` → 300 mL, limites horaires → 6/12 min, cycles/jour → 12), comparer le compteur au niveau réel des bidons, puis restaurer.
+
+### Documentation
+
+- **[ADR-0043](docs/adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)** : arbitrage complet du modèle de commande (options A/B/C, NO GO initial sur A, re-arbitrage post-mesure — pourquoi (A)+(C) est une régulation morte —, amendement amplitude + kick, fail-closed sans interpolation).
+- **[ADR-0044](docs/adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md)** : bascule du budget horaire et du temps min en temps pompe-ON (changement de sens d'un invariant préexistant, ADR-0020).
+- `docs/subsystems/pump-controller.md` : section « Dosage en proportionnel de temps » (machine à états, gate, comptabilité, getters), purge du modèle linéaire ; `docs/API.md`, `docs/features/page-settings.md`, `docs/features/page-dosages.md`, `docs/subsystems/logger.md` (nouveaux logs throttlés) mis à jour.
+
+---
+
+## [2.20.8] - 2026-08-23
+
+### Fonctionnalités
+
+- **On voit désormais la trajectoire de la grandeur qui décide de l'inhibition du dosage.** Dans la carte « Signaux capteurs » (Réglages → Avancé), un sous-graphe sous chaque graphe brut/lissé (pH puis ORP) trace l'**évolution de la dispersion** (fenêtre glissante de 13 mesures, celle du drapeau `unstable`) sur toute la trace, en **valeur absolue** (pH / mV — pas de % du seuil, décision utilisateur). Courbe ambre à points visibles, identité visuelle propre, sur le **même axe X** que les graphes du dessus : un transitoire visible sur le brut se lit à la verticale sur la dispersion.
+- **La marge au seuil se lit graphiquement** : ligne de seuil en pointillé rouge (0,5 pH / 100 mV, légende « Seuil 0,50 » / « Seuil 100 mV »), et l'échelle Y inclut **toujours** le seuil — une courbe très basse montre la marge, jamais un zoom sur le bruit. Le seuil vient de `dispersion_max` (`GET /debug/sensor_filter_state`) si la route répond, sinon d'un repli local : la courbe s'affiche même route en panne (indépendance des deux chargements conservée, invariant 2.20.7).
+- **Les transitoires rejetés se voient : ce sont les trous.** Une fenêtre écartée (saut ≥ 1,0 pH / 300 mV, ou trou de mesure) laisse un **trou** dans la courbe, sans interpolation — la note de la carte le précise : *« Un trou dans la courbe de dispersion signale une fenêtre écartée (transitoire rejeté), pas une absence de mesure. »* Moins de 13 points de trace → bloc masqué, pas d'erreur. Statut « indicatif » hérité de la reconstruction 2.20.7, porté par la légende « Dispersion pH (indicatif) ».
+
+### Documentation
+
+- `docs/features/page-settings.md` : carte « Signaux capteurs » — nouvelle sous-section « Courbes d'évolution de la dispersion » (lecture du graphe, sémantique des trous, échelle incluant le seuil, source du seuil route/repli, statut indicatif).
+- Pas de nouvel ADR : décision « valeur absolue, pas de % » = décision utilisateur tracée dans la spec ; extension visible et réversible de `createTraceChart` ; arbitrage de placement purement visuel documenté dans page-settings.
+
+---
+
+## [2.20.7] - 2026-08-23
+
+### Fonctionnalités
+
+- **La carte « Signaux capteurs » (onglet Avancé) affiche enfin la grandeur qui décide de l'arrêt du dosage.** Deux nouvelles lignes « Dispersion pH » / « Dispersion ORP » montrent la dispersion **instantanée** publiée par `GET /debug/sensor_filter_state` (v2.20.6), au format « valeur / seuil », avec un état lisible : pill « **stable** » (verte) ou « **INSTABLE** » (rouge — l'inhibition du dosage est en cours). La valeur est directement comparable aux campagnes de mesure. Filtration arrêtée ou fenêtre en cours de remplissage : « — · pas de jugement (circulation arrêtée ou fenêtre en cours de remplissage) », **sans pill** — jamais « stable », car aucun verdict n'est rendu faute de données. Ces lignes s'affichent même buffer de trace vide, et une panne de la route les passe à « indisponible » sans toucher au reste de la carte.
+- **Le « Δ » des stats est renommé « Δ 25 min »** pour ne plus s'y méprendre : c'est un crête-à-crête sur **tout** le buffer (≈ 25 min), dérive lente comprise — jusqu'à 5× la dispersion réelle sur les mêmes données. C'est cette confusion (prendre ce Δ pour la grandeur du drapeau `unstable`) qui a motivé la fonctionnalité.
+- **Deux lignes « Dispersion trace (indicatif) »** reconstruisent la dispersion sur la trace affichée (fenêtre glissante de 13 points bruts, affichage médiane · max, fenêtres écartées si trou ou saut consécutif ≥ 1,0 pH / 300 mV ; tiret sous 13 points) pour comparaison avec les rapports de campagne. « Indicatif » car deux écarts assumés avec le firmware : sa fenêtre est gelée circulation arrêtée (la trace enregistre tout), et le rejet se fait sur sauts consécutifs et non sur l'écart à la médiane — hors régime établi, la valeur instantanée fait foi (note affichée dans la carte).
+
+### Documentation
+
+- `docs/features/page-settings.md` : carte « Signaux capteurs » — lignes dispersion, sémantique exacte du tiret, renommage du Δ, stats reconstruites et leurs deux limites de fidélité.
+- `docs/API.md` §`sensor_filter_state` : la carte « Signaux capteurs » référencée comme consommateur frontend de la route.
+- Pas de nouvel ADR : affichage en lecture seule d'un diagnostic existant, aucune contrainte nouvelle — la duplication JS des constantes de rejet est visible dans le code, commentée et réversible.
+
+---
+
 ## [2.20.6] - 2026-08-22
 
 ### API

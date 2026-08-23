@@ -1088,10 +1088,17 @@
 
   // Graphe uPlot à 2 séries pour la trace des signaux capteurs (feature-057).
   // Axe X numérique (secondes relatives). Les null créent des trous (uPlot les gère).
-  // seriesDefs : [{ label, color }, ...]
-  function createTraceChart(host, seriesDefs) {
+  // seriesDefs : [{ label, color }, ...] + options par série (feature-072,
+  // rétro-compatibles — défauts = comportement historique) :
+  //   width (défaut 2), dash (pointillés), linear (paths linéaires au lieu de
+  //   spline — obligatoire pour la dispersion : un point valide isolé entre
+  //   deux trous doit rester visible), points (point visible taille 4),
+  //   noTooltip (exclu du tooltip et du curseur), tooltip(v) → texte custom.
+  // opts.yInclude : seuil mutable TOUJOURS inclus dans l'échelle Y
+  // (jamais d'autorange qui zoomerait sous le seuil).
+  function createTraceChart(host, seriesDefs, opts = {}) {
     if (!host || typeof uPlot === 'undefined') return null;
-    const st = { xs: [] };
+    const st = { xs: [], yInclude: opts.yInclude ?? null };
 
     const series = [{}];
     seriesDefs.forEach(sd => {
@@ -1099,22 +1106,26 @@
         label: sd.label,
         scale: 'y',
         stroke: sd.color,
-        width: 2,
-        paths: uPlot.paths.spline(),
-        points: { show: false }
+        width: sd.width ?? 2,
+        dash: sd.dash,
+        paths: sd.linear ? uPlot.paths.linear() : uPlot.paths.spline(),
+        points: sd.points ? { show: true, size: 4 } : { show: false }
       });
     });
 
     const gridStroke = 'rgba(0,0,0,0.05)';
-    const opts = {
+    const uOpts = {
       width: Math.max(host.clientWidth, 50),
       height: Math.max(host.clientHeight, 50),
       legend: { show: false },
-      cursor: makeUplotCursor((u, seriesIdx) => seriesIdx > 0),
+      cursor: makeUplotCursor((u, seriesIdx) => seriesIdx > 0 && !seriesDefs[seriesIdx - 1].noTooltip),
       scales: {
         x: { time: false },
         y: {
           range: (u, dataMin, dataMax) => {
+            // Seuil mutable toujours dans le cadre : la marge sous le seuil
+            // se lit graphiquement même quand la courbe est très basse
+            if (st.yInclude != null) return [0, Math.max(dataMax ?? st.yInclude, st.yInclude) * 1.1];
             if (dataMin == null) return [0, 1];
             return uPlot.rangeNum(dataMin, dataMax, 0.1, true);
           }
@@ -1143,16 +1154,17 @@
         tooltipPlugin({
           title: (u, idx) => (st.xs[idx] != null ? `${st.xs[idx]} s` : ''),
           rows: (u, idx) => seriesDefs.map((sd, si) => {
+            if (sd.noTooltip) return null;
             const v = u.data[si + 1][idx];
             if (v == null || isNaN(v)) return null;
-            return { color: sd.color, text: `${sd.label}: ${v}` };
+            return { color: sd.color, text: sd.tooltip ? sd.tooltip(v) : `${sd.label}: ${v}` };
           }).filter(Boolean)
         })
       ]
     };
 
     const initialData = [[], ...seriesDefs.map(() => [])];
-    const u = new uPlot(opts, initialData, host);
+    const u = new uPlot(uOpts, initialData, host);
     observeChart(host, u);
 
     return {
@@ -1161,6 +1173,11 @@
       setData(xs, seriesData) {
         st.xs = xs;
         u.setData([xs, ...seriesData]);
+      },
+      // Change le seuil inclus dans l'échelle Y ; pris en compte au prochain
+      // setData (le range est une fonction, réévaluée à chaque setData)
+      setYInclude(v) {
+        st.yInclude = v;
       }
     };
   }
@@ -1350,6 +1367,12 @@
 
   // ---------- State ----------
   let latestSensorData = null;
+  // bug-dosage-fantome it.3 : ancre des décomptes du widget dosing-status.
+  // Snapshot IMMUABLE pris à la réception des données (push WS OU poll /data) :
+  // { atMs: Date.now(), ph/orp: { manualS, phaseMs } }. Les valeurs sont figées
+  // ici car injectInterval décrémente *_inject_remaining_s en place sur l'objet
+  // json — relire latestSensorData ferait décompter deux fois.
+  let dosingAnchor = null;
   let consecutiveFailures = 0; // Track consecutive fetch failures
 
   let cachedManualStart = "08:00";
@@ -1860,8 +1883,10 @@
       orp_enabled: (window._config?.orp_regulation_mode || "automatic") !== "manual",
       orp_daily_target_ml: parseInt($("#orp_daily_target_ml")?.value ?? "0", 10) || 0,
       orp_pump: isNaN(orpPumpValue) ? 2 : orpPumpValue,
-      pump1_max_duty_pct: isNaN(pump1MaxDutyPct) ? 50 : Math.min(100, Math.max(0, pump1MaxDutyPct)),
-      pump2_max_duty_pct: isNaN(pump2MaxDutyPct) ? 50 : Math.min(100, Math.max(0, pump2MaxDutyPct)),
+      // bug-dosage-fantome it.2 : plancher 40 % (miroir kPumpAmpMinPct — sous ce
+      // seuil la pompe cale ; le serveur re-clampe de toute façon).
+      pump1_max_duty_pct: isNaN(pump1MaxDutyPct) ? 50 : Math.min(100, Math.max(40, pump1MaxDutyPct)),
+      pump2_max_duty_pct: isNaN(pump2MaxDutyPct) ? 50 : Math.min(100, Math.max(40, pump2MaxDutyPct)),
       ph_limit_minutes: isNaN(phLimitValue) ? 5 : Math.min(60, Math.max(1, phLimitValue)),
       orp_limit_minutes: isNaN(orpLimitValue) ? 10 : Math.min(60, Math.max(1, orpLimitValue)),
       max_ph_ml_per_day: isNaN(phDailyLimitValue) ? 300 : phDailyLimitValue,
@@ -1983,11 +2008,17 @@
     $("#ph_pump").value = cfg.ph_pump === 2 ? "2" : "1";
     $("#orp_pump").value = cfg.orp_pump === 1 ? "1" : "2";
 
-    const p1max = typeof cfg.pump1_max_duty_pct === "number" ? cfg.pump1_max_duty_pct : 100;
-    const p2max = typeof cfg.pump2_max_duty_pct === "number" ? cfg.pump2_max_duty_pct : 100;
+    // bug-dosage-fantome it.2 : plancher 40 % (kPumpAmpMinPct) — une valeur plus
+    // basse héritée d'une ancienne config est relevée à l'affichage (le slider
+    // min=40 la clamperait silencieusement, l'affichage doit rester cohérent).
+    const clampDutyPct = (v) => Math.min(100, Math.max(40, v));
+    const p1max = clampDutyPct(typeof cfg.pump1_max_duty_pct === "number" ? cfg.pump1_max_duty_pct : 50);
+    const p2max = clampDutyPct(typeof cfg.pump2_max_duty_pct === "number" ? cfg.pump2_max_duty_pct : 50);
     if ($("#pump1_max_duty")) { $("#pump1_max_duty").value = p1max; $("#pump1_max_duty_value").textContent = String(p1max); }
     if ($("#pump2_max_duty")) { $("#pump2_max_duty").value = p2max; $("#pump2_max_duty_value").textContent = String(p2max); }
-    if ($("#pump_max_flow_ml_per_min")) $("#pump_max_flow_ml_per_min").value = typeof cfg.pump_max_flow_ml_per_min === "number" ? cfg.pump_max_flow_ml_per_min : 90;
+    // Caractérisation par pesée (remplace pump_max_flow_ml_per_min, supprimé du
+    // contrat /get-config//save-config) : champs + affichage de la pesée en vigueur.
+    updatePumpCalibrationDisplay(cfg);
 
     $("#ph_limit").value = typeof cfg.ph_limit_minutes === "number" ? cfg.ph_limit_minutes : 5;
     $("#orp_limit").value = typeof cfg.orp_limit_minutes === "number" ? cfg.orp_limit_minutes : 10;
@@ -2605,19 +2636,104 @@
     };
   }
 
+  // bug-dosage-fantome it.3 : le widget distingue « session active » (commandé)
+  // de « pompe alimentée » (pouls effectif). Décomptes recalculés depuis
+  // dosingAnchor (valeur ancrée + horloge locale), JAMAIS extrapolés au-delà de
+  // la fin de période : à l'échéance sans nouvelle donnée → ellipsis, jamais de
+  // bascule optimiste vers « Injection en cours », jamais 0 s ni négatif.
+  // UN SEUL setInterval 1 s partagé pH+ORP (pattern injectInterval), actif
+  // uniquement quand un état à décompte est affiché.
+  let dosingTickTimer = null;
+  const _dosingStatusArgs = { ph: null, orp: null };   // derniers args (re-rendu par le ticker)
+  const _dosingCountdownShown = { ph: false, orp: false };
+  const DOSING_NBSP = " ";  // espace insécable avant l'unité (« 42 s »)
+
+  const fmtDosingCountdown = (s) => {
+    if (s >= 60) {
+      const m = Math.floor(s / 60), sec = s % 60;
+      return `${m}${DOSING_NBSP}min ${String(sec).padStart(2, "0")}${DOSING_NBSP}s`;
+    }
+    return `${s}${DOSING_NBSP}s`;
+  };
+
+  function _dosingTick() {
+    ["ph", "orp"].forEach((s) => {
+      const a = _dosingStatusArgs[s];
+      if (a) updateDosingStatus(s, a.isActive, a.stopReason);
+    });
+  }
+
   function updateDosingStatus(sensor, isActive, stopReason) {
     const el = $(`#${sensor}-dosing-status`);
     if (!el) return;
-    if (isActive) {
-      el.innerHTML = '<span class="dosing-status__dot"></span>Injection en cours';
-      el.classList.add("is-visible", "is-active");
+    _dosingStatusArgs[sensor] = { isActive, stopReason };
+
+    const data = latestSensorData || {};
+    const anchor = dosingAnchor;
+    const elapsedMs = anchor ? Math.max(0, Date.now() - anchor.atMs) : 0;
+    const DOT = '<span class="dosing-status__dot" aria-hidden="true"></span>';
+    let countdownShown = false;
+
+    // Applique texte + classes en retirant les classes d'état inutilisées.
+    const show = (html, stateCls) => {
+      el.innerHTML = html;
+      el.classList.add("is-visible");
+      ["is-active", "is-waiting"].forEach((c) => el.classList.toggle(c, c === stateCls));
+    };
+
+    // Priorité 1 : injection MANUELLE minutée (valeur ancrée à la réception).
+    const manualBase = anchor ? anchor[sensor].manualS : (data[`${sensor}_inject_remaining_s`] ?? 0);
+    const manualS = manualBase - Math.floor(elapsedMs / 1000);
+    const session = data[`${sensor}_pulse_session`];
+    const periodMs = data.pulse_period_ms;
+    if (manualBase > 0 && manualS > 0) {
+      show(DOT + "Injection manuelle : " + fmtDosingCountdown(manualS), "is-active");
+      countdownShown = true;
+    } else if (session === true && Number.isFinite(periodMs) && periodMs > 0) {
+      // Priorités 2-4 : session d'impulsions (dosage en proportionnel de temps).
+      // Phase locale = phase ancrée + temps écoulé, clampée à la fin de période.
+      const pulseMs = data[`${sensor}_pulse_ms`] ?? 0;
+      const phaseMs = Math.min((anchor ? anchor[sensor].phaseMs : 0) + elapsedMs, periodMs);
+      const endS = Math.ceil((periodMs - phaseMs) / 1000);  // jamais 0 tant que phase < période
+      if (pulseMs > 0 && phaseMs < pulseMs) {
+        // Priorité 2 : pouls en cours — la pompe est réellement alimentée.
+        // Ticker maintenu ACTIF (revue it.3) : quand la phase ancrée atteint
+        // pulseMs, la bascule RESTRICTIVE vers « Prochaine impulsion » se fait
+        // localement, sans attendre la trame suivante. Le sens inverse
+        // (attente → injection) reste interdit sans donnée serveur.
+        show(DOT + "Injection en cours", "is-active");
+        countdownShown = true;
+      } else if (pulseMs > 0) {
+        // Priorité 3 : repos entre deux pouls — décompte jusqu'à la fin de période.
+        show(DOT + (endS > 0 ? "Prochaine impulsion : " + fmtDosingCountdown(endS)
+                             : "Prochaine impulsion…"), "is-waiting");
+        countdownShown = endS > 0;
+      } else {
+        // Priorité 4 : deadband — période sans pouls planifié (demande < pouls min).
+        show(DOT + (endS > 0 ? "Dosage en attente : " + fmtDosingCountdown(endS)
+                             : "Dosage en attente…"), "is-waiting");
+        countdownShown = endS > 0;
+      }
+    } else if (session === undefined && isActive) {
+      // Rétrocompat firmware sans champs pulse_* : comportement historique.
+      show(DOT + "Injection en cours", "is-active");
     } else if (stopReason) {
+      // Priorité 5 : motif d'arrêt (getDosingStopReason + dedupDosingReason).
       el.textContent = stopReason;
       el.classList.add("is-visible");
-      el.classList.remove("is-active");
+      el.classList.remove("is-active", "is-waiting");
     } else {
+      // Priorité 6 : rien à afficher.
       el.textContent = "";
-      el.classList.remove("is-visible", "is-active");
+      el.classList.remove("is-visible", "is-active", "is-waiting");
+    }
+
+    _dosingCountdownShown[sensor] = countdownShown;
+    if (_dosingCountdownShown.ph || _dosingCountdownShown.orp) {
+      if (!dosingTickTimer) dosingTickTimer = setInterval(_dosingTick, 1000);
+    } else if (dosingTickTimer) {
+      clearInterval(dosingTickTimer);
+      dosingTickTimer = null;
     }
   }
 
@@ -3954,6 +4070,14 @@
         }
 
         latestSensorData = json;
+        // bug-dosage-fantome it.3 : ancrage du calendrier d'impulsion sur
+        // l'horloge LOCALE (les phases firmware sont relatives au début de
+        // période, jamais un millis absolu). Voir la déclaration de dosingAnchor.
+        dosingAnchor = {
+          atMs: Date.now(),
+          ph:  { manualS: json.ph_inject_remaining_s  ?? 0, phaseMs: json.ph_pulse_phase_ms  ?? 0 },
+          orp: { manualS: json.orp_inject_remaining_s ?? 0, phaseMs: json.orp_pulse_phase_ms ?? 0 },
+        };
         document.querySelectorAll('.is-stale').forEach(el => el.classList.remove('is-stale'));
         updateFiltrationControls(); // Réévaluer la disponibilité du mode Auto après réception des données
 
@@ -3978,6 +4102,7 @@
         // Mettre à jour les badges et cartes status
         updateSensorBadges();
         updateStatusCards();
+        updatePumpCharacterizationBadges(json);  // badge « Débit non caractérisé »
         updateProductUI(json);
         _updateSondesChip();
         if (window._updateInjectButtons) window._updateInjectButtons(json);
@@ -4431,6 +4556,9 @@
     // calibration. Appliqué en dernier ici pour rester robuste quel que soit
     // l'ordre d'appel (renderCalibrationStatus vs _updateInjectButtons).
     // Ordre de priorité : injection > EZO injoignable > état calibration.
+    // bug-dosage-fantome it.3 : ce OU manuel/auto est un verrou fonctionnel
+    // voulu (pas de calibration pendant une injection, quelle qu'elle soit),
+    // pas de la conflation d'affichage — CONSERVÉ tel quel.
     const phInjecting = (latestSensorData?.ph_inject_remaining_s ?? 0) > 0
                       || (latestSensorData?.ph_dosing === true);
     const orpInjecting = (latestSensorData?.orp_inject_remaining_s ?? 0) > 0
@@ -4803,6 +4931,9 @@
     triggerBtn?.addEventListener("click", () => {
       if (phCalibrationActive) return;
       // feature-034 (B5) : garde injection pH (calqué sur le pattern ORP).
+      // bug-dosage-fantome it.3 : OU manuel/auto = verrou fonctionnel voulu
+      // (pas de calibration pendant une injection), pas de la conflation
+      // d'affichage — CONSERVÉ tel quel.
       const phInjecting = (latestSensorData?.ph_inject_remaining_s ?? 0) > 0
                         || (latestSensorData?.ph_dosing === true);
       if (phInjecting) { showToast("Calibration impossible pendant une injection pH", "error"); return; }
@@ -4833,6 +4964,9 @@
     const triggerBtn = $("#orp_cal_trigger_btn");
     triggerBtn?.addEventListener("click", () => {
       if (orpCalibrationActive) return;
+      // bug-dosage-fantome it.3 : OU manuel/auto = verrou fonctionnel voulu
+      // (pas de calibration pendant une injection), pas de la conflation
+      // d'affichage — CONSERVÉ tel quel.
       const orpInjecting = (latestSensorData?.orp_inject_remaining_s ?? 0) > 0
                         || (latestSensorData?.orp_dosing === true);
       if (orpInjecting) { showToast("Calibration impossible pendant une injection ORP", "error"); return; }
@@ -5867,7 +6001,22 @@
   // min/max/Δ calculées en ignorant les null.
   let _tracePhChart = null;
   let _traceOrpChart = null;
+  let _traceDispPhChart = null;
+  let _traceDispOrpChart = null;
   let _traceLoading = false;
+
+  // Seuils tracés sur les graphes de dispersion (feature-072) : dispersion_max
+  // de /debug/sensor_filter_state si chargée, sinon repli constantes JS —
+  // le tracé ne dépend jamais du succès du fetch route (invariant 071).
+  const _dispThresholds = { ph: null, orp: null };
+  const kPhDispersionSeuilFallback = 0.5;   // = kPhFilterMaxDispersion (constants.h)
+  const kOrpDispersionSeuilFallback = 100;  // = kOrpFilterMaxDispersion (constants.h)
+
+  function _dispSeuil(kind) {
+    return _dispThresholds[kind] ?? (kind === "ph" ? kPhDispersionSeuilFallback : kOrpDispersionSeuilFallback);
+  }
+
+  const _fmtVirgule = (v, decimals) => v.toFixed(decimals).replace(".", ",");
 
   function _initTraceCharts() {
     if (_tracePhChart || typeof uPlot === "undefined") return;
@@ -5884,6 +6033,25 @@
         { label: "ORP brut", color: "#34d399" },
         { label: "ORP lissé", color: "#059669" }
       ]);
+    }
+    // Graphes dispersion (feature-072) : tracé linéaire + points visibles
+    // (PAS de spline : un point valide isolé entre deux trous doit se voir),
+    // ligne de seuil pointillée exclue du tooltip, échelle Y incluant le seuil.
+    const dispPhHost = $("#trace_disp_ph_chart");
+    const dispOrpHost = $("#trace_disp_orp_chart");
+    if (dispPhHost) {
+      _traceDispPhChart = createTraceChart(dispPhHost, [
+        { label: "Dispersion pH", color: "#d97706", linear: true, points: true,
+          tooltip: (v) => `Dispersion : ${_fmtVirgule(v, 3)}` },
+        { label: "Seuil", color: "#dc2626", width: 1, dash: [6, 6], linear: true, noTooltip: true }
+      ], { yInclude: _dispSeuil("ph") });
+    }
+    if (dispOrpHost) {
+      _traceDispOrpChart = createTraceChart(dispOrpHost, [
+        { label: "Dispersion ORP", color: "#d97706", linear: true, points: true,
+          tooltip: (v) => `Dispersion : ${_fmtVirgule(v, 1)}` },
+        { label: "Seuil", color: "#dc2626", width: 1, dash: [6, 6], linear: true, noTooltip: true }
+      ], { yInclude: _dispSeuil("orp") });
     }
   }
 
@@ -5906,8 +6074,140 @@
       return;
     }
     let txt = `min ${min.toFixed(decimals)} · max ${max.toFixed(decimals)}`;
-    if (withDelta) txt += ` · Δ ${(max - min).toFixed(decimals)}`;
+    // « Δ 25 min » : crête-à-crête sur TOUT le buffer (~300 pts ≈ 25 min), dérive
+    // lente comprise — sans rapport avec la dispersion du drapeau unstable.
+    if (withDelta) txt += ` · Δ 25 min ${(max - min).toFixed(decimals)}`;
     el.textContent = txt;
+  }
+
+  // ---- Dispersion du drapeau `unstable` (feature-071) ----
+  // Valeur instantanée publiée par /debug/sensor_filter_state (v2.20.6) :
+  // amplitude max−min de la fenêtre médiane pleine, la grandeur qui décide
+  // de l'inhibition du dosage.
+  let _filterStateLoading = false;
+
+  function _setDispersionRow(id, st, decimals) {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = "";
+    // Piège docs/API.md §Marge d'instabilité : dispersion null + unstable=false
+    // signifie « aucun jugement rendu », PAS « stable ». On ne juge que si
+    // dispersion est un nombre.
+    if (!st || typeof st.dispersion !== "number") {
+      const note = document.createElement("span");
+      note.className = "muted";
+      note.textContent = "— · pas de jugement (circulation arrêtée ou fenêtre en cours de remplissage)";
+      el.appendChild(note);
+      return;
+    }
+    const seuil = (typeof st.dispersion_max === "number") ? ` / ${st.dispersion_max}` : "";
+    el.appendChild(document.createTextNode(`${st.dispersion.toFixed(decimals)}${seuil} `));
+    const pill = document.createElement("span");
+    pill.className = st.unstable ? "pill bad" : "pill ok";
+    pill.textContent = st.unstable ? "INSTABLE" : "stable";
+    el.appendChild(pill);
+  }
+
+  async function loadFilterState() {
+    if (_filterStateLoading) return;
+    _filterStateLoading = true;
+    try {
+      const res = await authFetch("/debug/sensor_filter_state");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      _setDispersionRow("#trace_disp_ph", json.ph, 3);
+      _setDispersionRow("#trace_disp_orp", json.orp, 1);
+      // Seuils des graphes de dispersion (feature-072) : mémorise dispersion_max
+      // et ré-applique au graphe déjà tracé (légende + échelle). Pas de
+      // chaînage avec loadSensorTrace : une panne de l'un n'affecte pas l'autre.
+      if (typeof json.ph?.dispersion_max === "number") _dispThresholds.ph = json.ph.dispersion_max;
+      if (typeof json.orp?.dispersion_max === "number") _dispThresholds.orp = json.orp.dispersion_max;
+      _applyDispThreshold("ph", _traceDispPhChart, "#trace_disp_ph_seuil", (v) => _fmtVirgule(v, 2));
+      _applyDispThreshold("orp", _traceDispOrpChart, "#trace_disp_orp_seuil", (v) => `${v} mV`);
+    } catch (e) {
+      console.error("[trace] filter state load failed:", e);
+      // Panne isolée : seules ces deux lignes se dégradent, le reste de la
+      // carte (trace, stats) reste fonctionnel.
+      for (const id of ["#trace_disp_ph", "#trace_disp_orp"]) {
+        const el = $(id);
+        if (el) el.textContent = "indisponible";
+      }
+    } finally {
+      _filterStateLoading = false;
+    }
+  }
+
+  // Reconstruction de la dispersion firmware sur la trace affichée (indicatif).
+  // Fenêtre glissante de 13 points = kSensorFilterCentralWindow (constants.h).
+  // Une fenêtre est écartée si elle contient un trou (null/NaN) ou un saut
+  // consécutif ≥ spikeReject : le firmware rejette ces pics AVANT la fenêtre
+  // médiane, la trace brute les contient encore. Précédent réel : sans ce
+  // filtre, faux max 5,425 sur un transitoire de redémarrage de filtration
+  // là où le firmware voyait 0,308.
+  function _traceDispersionStats(values, spikeReject) {
+    const kWindow = 13; // = kSensorFilterCentralWindow (firmware)
+    if (!Array.isArray(values) || values.length < kWindow) return null;
+    const dispersions = [];
+    // Série alignée sur values (feature-072) : series[i+12] = dispersion de la
+    // fenêtre [i, i+12] (point au temps du dernier échantillon), null pour les
+    // 12 premiers indices et les fenêtres écartées → mêmes xs que les graphes
+    // brut/lissé, et les trous restent des trous (transitoire rejeté).
+    const series = new Array(values.length).fill(null);
+    for (let i = 0; i + kWindow <= values.length; i++) {
+      let mn = Infinity, mx = -Infinity, valide = true;
+      for (let j = i; j < i + kWindow; j++) {
+        const v = values[j];
+        if (v == null || isNaN(v)) { valide = false; break; }
+        if (j > i && Math.abs(v - values[j - 1]) >= spikeReject) { valide = false; break; }
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+      }
+      if (valide) {
+        const d = mx - mn;
+        dispersions.push(d);
+        series[i + kWindow - 1] = d;
+      }
+    }
+    if (dispersions.length === 0) return null;
+    dispersions.sort((a, b) => a - b);
+    const mid = Math.floor(dispersions.length / 2);
+    const median = (dispersions.length % 2 === 1)
+      ? dispersions[mid]
+      : (dispersions[mid - 1] + dispersions[mid]) / 2;
+    return { median, max: dispersions[dispersions.length - 1], windows: dispersions.length, series };
+  }
+
+  function _setTraceDispRecon(id, stats, decimals) {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = stats
+      ? `médiane ${stats.median.toFixed(decimals)} · max ${stats.max.toFixed(decimals)}`
+      : "—";
+  }
+
+  // Alimente un graphe de dispersion (feature-072). stats null (< 13 points,
+  // ou aucune fenêtre valide) → bloc masqué, pas d'erreur. La ligne de seuil
+  // est une série constante alignée sur xs.
+  function _renderDispChart(chart, blockId, xs, stats, seuil) {
+    const block = $(blockId);
+    if (!block) return;
+    if (!chart || !stats) { block.hidden = true; return; }
+    chart.setYInclude(seuil);
+    chart.setData(xs, [stats.series, xs.map(() => seuil)]);
+    block.hidden = false;
+  }
+
+  // Ré-applique le seuil (route ou repli) : span de légende, puis échelle Y et
+  // ligne pointillée si le graphe est déjà tracé — u.data[1] (la dispersion)
+  // est conservée telle quelle.
+  function _applyDispThreshold(kind, chart, spanId, fmt) {
+    const seuil = _dispSeuil(kind);
+    const span = $(spanId);
+    if (span) span.textContent = fmt(seuil);
+    if (chart && chart.st.xs.length) {
+      chart.setYInclude(seuil);
+      chart.setData(chart.st.xs, [chart.u.data[1], chart.st.xs.map(() => seuil)]);
+    }
   }
 
   async function loadSensorTrace() {
@@ -5969,6 +6269,18 @@
       _setTraceStat("#trace_stats_orp_filtered", orpFilt, 1);
       _setTraceStat("#trace_stats_temp", temp, 1, false);
 
+      // Dispersion reconstruite sur la trace (fenêtre 13, seuils de rejet
+      // dupliqués du firmware : kPhFilterSpikeReject = 1.0 pH,
+      // kOrpFilterSpikeReject = 300 mV — constants.h).
+      const phDispStats = _traceDispersionStats(phRaw, 1.0);
+      const orpDispStats = _traceDispersionStats(orpRaw, 300.0);
+      _setTraceDispRecon("#trace_disp_recon_ph", phDispStats, 3);
+      _setTraceDispRecon("#trace_disp_recon_orp", orpDispStats, 1);
+
+      // Courbes de dispersion (feature-072) — même axe X que les graphes du dessus
+      _renderDispChart(_traceDispPhChart, "#trace_disp_ph_block", xs, phDispStats, _dispSeuil("ph"));
+      _renderDispChart(_traceDispOrpChart, "#trace_disp_orp_block", xs, orpDispStats, _dispSeuil("orp"));
+
       if (status) status.hidden = true;
       if (charts) charts.hidden = false;
     } catch (e) {
@@ -5981,7 +6293,10 @@
   }
 
   function bindSensorTrace() {
-    $("#trace_reload_btn")?.addEventListener("click", () => loadSensorTrace());
+    // loadFilterState() est volontairement une promesse séparée, jamais
+    // await-ée ni chaînée à loadSensorTrace() : une panne de l'une ne doit
+    // pas dégrader l'autre.
+    $("#trace_reload_btn")?.addEventListener("click", () => { loadSensorTrace(); loadFilterState(); });
 
     $("#trace_clear_btn")?.addEventListener("click", async () => {
       if (!(await confirmDialog({
@@ -6003,7 +6318,7 @@
 
     // Chargement à l'activation de l'onglet Avancé uniquement (pas de polling permanent)
     const onRouteChange = () => {
-      if (_isPanelDevActive()) loadSensorTrace();
+      if (_isPanelDevActive()) { loadSensorTrace(); loadFilterState(); }
     };
     window.addEventListener("hashchange", onRouteChange);
     onRouteChange();
@@ -6217,6 +6532,62 @@
     });
   }
 
+  // bug-dosage-fantome it.2 (W4c/d) : duty d'exploitation d'une pompe (miroir de
+  // getPumpAmplitudeDuty côté firmware : pct × 255 / 100, division entière).
+  // C'est à CE duty que la pesée doit être faite pour que la calibration serve.
+  function pumpAmplitudeDuty(pct) {
+    return Math.floor((pct * 255) / 100);
+  }
+
+  // Affichage de la caractérisation par pesée (W4c/d). Pré-remplit les champs
+  // duty/débit de chaque pompe — jamais pendant une saisie en cours, la config
+  // étant aussi poussée par le WebSocket (patron ph_offset) — et affiche la
+  // pesée en vigueur. Met aussi à jour le duty d'exploitation à côté du %.
+  function updatePumpCalibrationDisplay(cfg) {
+    [1, 2].forEach((n) => {
+      const calDuty = typeof cfg[`pump${n}_calibrated_duty`] === "number" ? cfg[`pump${n}_calibrated_duty`] : 0;
+      const calFlow = typeof cfg[`pump${n}_pulse_flow_ml_per_min`] === "number" ? cfg[`pump${n}_pulse_flow_ml_per_min`] : 0;
+      const dutyEl = $(`#pump${n}_cal_duty`);
+      const flowEl = $(`#pump${n}_cal_flow`);
+      // Calibration effacée (cal_duty=0) : VIDER les champs (retour aux
+      // placeholders) — sinon l'ancienne pesée périmée resterait affichée.
+      if (dutyEl && document.activeElement !== dutyEl) dutyEl.value = calDuty > 0 ? calDuty : "";
+      if (flowEl && document.activeElement !== flowEl) flowEl.value = calFlow > 0 ? calFlow : "";
+      const current = $(`#pump${n}_cal_current`);
+      if (current) {
+        current.hidden = false;
+        current.textContent = (calDuty > 0 && calFlow > 0)
+          ? `Pesée en vigueur : ${calFlow.toFixed(1)} ml/min à duty ${calDuty}`
+          : "Aucune pesée enregistrée — le dosage automatique est bloqué.";
+      }
+      const ampEl = $(`#pump${n}_amp_duty`);
+      const pctEl = $(`#pump${n}_max_duty`);
+      if (ampEl && pctEl) {
+        const pct = parseInt(pctEl.value, 10);
+        if (!isNaN(pct)) ampEl.textContent = `(duty ${pumpAmplitudeDuty(pct)})`;
+      }
+    });
+  }
+
+  // bug-dosage-fantome it.2 (W4b) : badge « Débit non caractérisé — pesée
+  // requise » par pompe PHYSIQUE. Les drapeaux de /data sont par CHIMIE — on
+  // les route vers la pompe affectée (ph_pump/orp_pump). Champs absents
+  // (payload WS sans ces clés, firmware plus ancien) → on conserve l'état
+  // affiché, pas de scintillement ni d'UI figée.
+  function updatePumpCharacterizationBadges(data) {
+    if (!data || data.ph_pump_flow_uncharacterized === undefined) return;
+    const cfg = window._config || {};
+    const phPump = cfg.ph_pump === 2 ? 2 : 1;
+    [1, 2].forEach((n) => {
+      const badge = $(`#pump${n}_uncal_badge`);
+      if (!badge) return;
+      const flag = (phPump === n)
+        ? data.ph_pump_flow_uncharacterized === true
+        : data.orp_pump_flow_uncharacterized === true;
+      badge.hidden = !flag;
+    });
+  }
+
   function bindPumpConfigSave() {
     trackDirtyState("#pump_config_save_btn", ["ph_pump", "orp_pump", "pump1_max_duty", "pump2_max_duty"]);
     const saveBtn = $("#pump_config_save_btn");
@@ -6238,11 +6609,18 @@
       }
     };
 
-    // Mise à jour de l'affichage des sliders en temps réel (sans sauvegarder)
+    // Mise à jour de l'affichage des sliders en temps réel (sans sauvegarder).
+    // Le duty d'exploitation (pct × 255 / 100) suit : c'est lui que la pesée
+    // doit viser pour que la calibration soit prise en compte.
     ["pump1_max_duty", "pump2_max_duty"].forEach((id) => {
       const slider = $(`#${id}`);
       const display = $(`#${id}_value`);
-      if (slider && display) slider.addEventListener("input", () => { display.textContent = slider.value; });
+      const ampDisplay = $(`#${id.replace("_max_duty", "_amp_duty")}`);
+      if (slider && display) slider.addEventListener("input", () => {
+        display.textContent = slider.value;
+        const pct = parseInt(slider.value, 10);
+        if (ampDisplay && !isNaN(pct)) ampDisplay.textContent = `(duty ${pumpAmplitudeDuty(pct)})`;
+      });
     });
 
     // Basculement automatique de la pompe ORP quand la pompe pH change (et vice-versa)
@@ -6259,13 +6637,23 @@
 
     saveBtn.addEventListener("click", async () => {
       if (saveBtn.disabled) return;
+      // Validation plancher 40 % (miroir kPumpAmpMinPct) : injoignable via le
+      // slider (min=40) mais bloqué explicitement si le DOM a été altéré —
+      // le serveur re-clampe de toute façon (jamais sous 40).
+      const rawP1 = parseInt($("#pump1_max_duty")?.value || "50", 10);
+      const rawP2 = parseInt($("#pump2_max_duty")?.value || "50", 10);
+      if (rawP1 < 40 || rawP2 < 40) {
+        showToast("Puissance max refusée : minimum 40 % (sous ce seuil la pompe doseuse cale).", "error");
+        return;
+      }
       setButtonState(savingLabel, true, true, "default");
       const cfg = {
         ph_pump:            parseInt($("#ph_pump")?.value || "1", 10),
         orp_pump:           parseInt($("#orp_pump")?.value || "2", 10),
-        pump1_max_duty_pct:       parseInt($("#pump1_max_duty")?.value || "100", 10),
-        pump2_max_duty_pct:       parseInt($("#pump2_max_duty")?.value || "100", 10),
-        pump_max_flow_ml_per_min: parseFloat($("#pump_max_flow_ml_per_min")?.value || "90"),
+        pump1_max_duty_pct: Math.min(100, isNaN(rawP1) ? 50 : rawP1),
+        pump2_max_duty_pct: Math.min(100, isNaN(rawP2) ? 50 : rawP2),
+        // pump_max_flow_ml_per_min : SUPPRIMÉ (bug-dosage-fantome it.2) — le
+        // débit vient désormais de la pesée par pompe (Enregistrer la pesée).
       };
       const ok = await sendConfig(cfg);
       if (ok) {
@@ -6275,6 +6663,47 @@
         setButtonState("Erreur", false, true, "error");
         setTimeout(() => setButtonState(defaultLabel, false, false, "default"), 2000);
       }
+    });
+
+    // bug-dosage-fantome it.2 (W4c) : enregistrement de la pesée par pompe.
+    // Validation miroir du serveur (duty ∈ [102..255], débit ∈ ]0..200]) ; le
+    // serveur reste l'autorité (refus HTTP 400 remonté par sendConfigDetailed).
+    [1, 2].forEach((n) => {
+      const calBtn = $(`#pump${n}_cal_save_btn`);
+      if (!calBtn) return;
+      calBtn.addEventListener("click", async () => {
+        if (calBtn.disabled) return;
+        const duty = parseInt($(`#pump${n}_cal_duty`)?.value || "", 10);
+        const flow = parseFloat(($(`#pump${n}_cal_flow`)?.value || "").replace(",", "."));
+        if (isNaN(duty) || duty < 102 || duty > 255) {
+          showToast("Duty calibré invalide : entre 102 et 255.", "error");
+          return;
+        }
+        if (isNaN(flow) || flow <= 0 || flow > 200) {
+          showToast("Débit mesuré invalide : supérieur à 0 et au plus 200 ml/min.", "error");
+          return;
+        }
+        const ampDuty = pumpAmplitudeDuty(parseInt($(`#pump${n}_max_duty`)?.value || "50", 10));
+        calBtn.disabled = true;
+        const payload = {};
+        payload[`pump${n}_calibrated_duty`] = duty;
+        payload[`pump${n}_pulse_flow_ml_per_min`] = flow;
+        const r = await sendConfigDetailed(payload);
+        calBtn.disabled = false;
+        if (r.ok) {
+          // Avertir si la pesée ne correspond pas au duty d'exploitation : la
+          // régulation resterait bloquée (amplitude ≠ duty calibré, fail-closed).
+          if (duty !== ampDuty) {
+            showToast(`Pesée pompe ${n} enregistrée, mais le duty calibré (${duty}) diffère du duty d'exploitation (${ampDuty}) : le dosage automatique restera refusé. Ajustez la puissance max ou refaites la pesée à ${ampDuty}.`, "warning");
+          } else {
+            showToast(`Pesée pompe ${n} enregistrée : ${flow.toFixed(1)} ml/min à duty ${duty}.`, "success");
+          }
+          setTimeout(loadConfig, 500);
+          setTimeout(() => loadSensorData({ force: true, source: "pump-cal" }), 800);
+        } else {
+          showToast(r.error || "Erreur lors de l'enregistrement de la pesée.", "error");
+        }
+      });
     });
 
     // Boutons test pompes
@@ -6345,19 +6774,24 @@
       return `${s}s`;
     };
 
-    // Calcule la durée d'injection (secondes) pour un volume donné (mL)
-    // Utilise les paramètres de pompe depuis window._config
+    // Calcule la durée d'injection (secondes) pour un volume donné (mL).
+    // bug-dosage-fantome it.2 (W3) : miroir best-effort de planManualInject
+    // (web_routes_control.cpp) — le modèle linéaire duty↔débit est mort, plus
+    // JAMAIS d'interpolation : amplitude == duty calibré → débit pesé ; sinon
+    // la pompe est forcée à 255 et le débit est celui mesuré à 255 (miroir de
+    // kPump1Flow255MlPerMin / kPump2Flow255MlPerMin). Le firmware fait autorité.
+    const FLOW_255_ML_PER_MIN = { 1: 61.0, 2: 67.0 };
     const calcInjectDurationS = (product, volumeMl) => {
       const cfg = window._config;
       if (!cfg) return null;
-      const pumpNum = product === "ph" ? cfg.ph_pump : cfg.orp_pump; // 1 ou 2
+      const pumpNum = (product === "ph" ? cfg.ph_pump : cfg.orp_pump) === 2 ? 2 : 1;
       const dutyPct = pumpNum === 1 ? (cfg.pump1_max_duty_pct ?? 50) : (cfg.pump2_max_duty_pct ?? 50);
-      const maxFlow = cfg.pump_max_flow_ml_per_min ?? 90;
-      const MIN_FLOW = 5.2, MAX_PWM = 255, MIN_DUTY = 80;
-      let duty = Math.floor((dutyPct * MAX_PWM) / 100);
-      if (duty < MIN_DUTY) duty = MIN_DUTY;
-      const normalized = (duty - MIN_DUTY) / (MAX_PWM - MIN_DUTY);
-      const flow = MIN_FLOW + normalized * (maxFlow - MIN_FLOW); // mL/min
+      const calDuty = pumpNum === 1 ? (cfg.pump1_calibrated_duty ?? 0) : (cfg.pump2_calibrated_duty ?? 0);
+      const calFlow = pumpNum === 1 ? (cfg.pump1_pulse_flow_ml_per_min ?? 0) : (cfg.pump2_pulse_flow_ml_per_min ?? 0);
+      const ampDuty = pumpAmplitudeDuty(dutyPct);
+      const flow = (calDuty > 0 && ampDuty === calDuty && calFlow > 0)
+        ? calFlow
+        : FLOW_255_ML_PER_MIN[pumpNum];
       return Math.max(1, Math.round((volumeMl / flow) * 60));
     };
 
@@ -6394,7 +6828,8 @@
       daily_limit: "Injection refusée : limite journalière atteinte.",
       hourly_limit: "Injection refusée : limite horaire d'injection atteinte — réessayer plus tard.",
       max_cycles: "Injection refusée : nombre maximal de démarrages de pompe atteint pour aujourd'hui.",
-      burst_limit: "Injection refusée : trop de démarrages rapprochés (anti-rafale) — patienter avant de réessayer."
+      burst_limit: "Injection refusée : trop de démarrages rapprochés (anti-rafale) — patienter avant de réessayer.",
+      flow_uncharacterized: "Injection refusée : débit de la pompe non caractérisé — effectuez la pesée (Réglages → Avancé → Configuration des pompes)."
     };
 
     // feature-006 : raison de blocage CONNUE côté client (miroir best-effort des
@@ -6430,7 +6865,11 @@
 
     // Appelé à chaque push sensor_data pour mettre à jour les boutons
     window._updateInjectButtons = (data) => {
-      const phInjecting = (data["ph_inject_remaining_s"] ?? 0) > 0;
+      // bug-dosage-fantome it.3 : harmonisation dans le sens RESTRICTIF — le
+      // verrou du bouton Calibrer inclut le dosage AUTO (ph_dosing) comme
+      // l'ORP le faisait déjà. Verrou fonctionnel voulu (pas de calibration
+      // pendant une injection), pas de la conflation d'affichage.
+      const phInjecting = (data["ph_inject_remaining_s"] ?? 0) > 0 || (data["ph_dosing"] === true);
       const orpInjecting = (data["orp_inject_remaining_s"] ?? 0) > 0 || (data["orp_dosing"] === true);
       const phCalBtn = $("#ph_cal_trigger_btn");
       const orpCalBtn = $("#orp_cal_trigger_btn");

@@ -80,7 +80,10 @@ docs/
 │   ├── 0039-offset-ph-applique-en-sortie-des-accesseurs.md
 │   ├── 0040-pas-de-calibrage-sur-fragmentation-pathologique.md
 │   ├── 0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md
-│   └── 0042-core3-environnement-par-defaut.md
+│   ├── 0042-core3-environnement-par-defaut.md
+│   ├── 0043-dosage-proportionnel-de-temps-amplitude-calibree.md
+│   ├── 0044-budget-horaire-et-temps-min-en-temps-pompe-on.md
+│   └── 0045-etat-impulsion-expose-en-calendrier.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

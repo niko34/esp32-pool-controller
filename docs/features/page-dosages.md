@@ -45,7 +45,7 @@ Voir [`config.h:129`](../../src/config.h:129) struct `ProductConfig` et [`ws_man
 
 Remarques :
 - Les volumes sont **stockés côté firmware en mL** ; l'UI les saisit et les affiche en L.
-- Le cumul `ph_total_injected_ml` / `orp_total_injected_ml` est incrémenté par [`pump_controller.cpp`](../../src/pump_controller.cpp) à chaque injection effectivement réalisée (durée × débit nominal `kPumpMaxFlowMlPerMin = 90.0`).
+- Le cumul `ph_total_injected_ml` / `orp_total_injected_ml` est incrémenté par [`pump_controller.cpp`](../../src/pump_controller.cpp) à chaque injection effectivement réalisée. **v2.21.0** ([ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)) : le volume est calculé sur les **débits mesurés** (pesée) — pouls auto/scheduled : kick 400 ms au débit-255 pesé + plateau au débit d'amplitude pesé (`pulseDeltaVolumeMl`) ; marche manuelle `?duty=N` : **majorant** débit-255, sauf duty == duty calibré. Une pompe **non caractérisée** (aucune pesée saisie) ne dose pas en auto/programmé, donc n'incrémente rien — le badge « Débit non caractérisé — pesée requise » l'explique côté Réglages. Fini le « débit nominal `kPumpMaxFlowMlPerMin = 90` » (constante supprimée, elle créditait de l'acide qui ne sortait pas du bidon).
 
 ## Règles firmware
 

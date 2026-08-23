@@ -17,7 +17,12 @@
 constexpr float PH_DEADBAND = 0.01f;      // Zone morte réduite : 7.2 à 7.21 (±0.01)
 constexpr float ORP_DEADBAND = 2.0f;      // Zone morte réduite : ±2mV
 constexpr uint8_t MAX_PWM_DUTY = (1 << PUMP_PWM_RES_BITS) - 1;
-constexpr uint8_t MIN_ACTIVE_DUTY = 80;
+// Plancher de rotation (bug-dosage-fantome itération 2) : Dmin MESURÉ au banc
+// le 2026-08-23 = 82 (plus petit duty à rotation continue et franche), + 16
+// counts de marge (prescription P2 du gate pool-chemistry — couple de décollage
+// à froid observé au terrain à 82). Toute amplitude sous ce plancher est
+// REFUSÉE (condition B2, PulseRefusal::AmplitudeBelowMinActive), jamais clampée.
+constexpr uint8_t MIN_ACTIVE_DUTY = 98;
 
 // ==== Home Assistant ====
 const char* const HA_DEVICE_ID = "poolcontroller";
@@ -38,9 +43,23 @@ struct MqttConfig {
   bool orpEnabled = false;
   int phPump = 1;
   int orpPump = 2;
-  uint8_t pump1MaxDutyPct = 50;    // Puissance maximale pompe 1 en régulation (0-100 %)
-  uint8_t pump2MaxDutyPct = 50;    // Puissance maximale pompe 2 en régulation (0-100 %)
-  float pumpMaxFlowMlPerMin = 90.0f; // Débit maximal pompes (ml/min)
+  // bug-dosage-fantome itération 2 (option B+C) : pumpNMaxDutyPct définit
+  // désormais l'AMPLITUDE du pouls (duty du plateau = pct × 255 / 100) — la
+  // pompe ne tourne qu'à cette amplitude, le débit moyen est réalisé par la
+  // fraction de temps de marche (proportionnel de temps, condition B1 : ce
+  // n'est plus un clamp PWM appliqué en sortie de régulation).
+  uint8_t pump1MaxDutyPct = 50;    // Amplitude pompe 1 (% → duty plateau, 50 % = 127)
+  uint8_t pump2MaxDutyPct = 50;    // Amplitude pompe 2 (% → duty plateau)
+  // Caractérisation MESURÉE des pompes (pesée au banc, procédure de la spec
+  // bug-dosage-fantome). calibratedDuty = duty auquel le débit a été pesé ;
+  // 0 = jamais caractérisé → TOUT dosage automatique/programmé REFUSÉ
+  // (fail-closed, PulseRefusal::FlowUncharacterized). PAS de conversion depuis
+  // l'ancien pumpMaxFlowMlPerMin (champ supprimé) : c'est le modèle linéaire
+  // faux qu'on retire, aucune valeur héritée n'est digne de confiance.
+  uint8_t pump1CalibratedDuty = 0;         // Duty calibré pompe 1 (0 = non caractérisé)
+  uint8_t pump2CalibratedDuty = 0;         // Duty calibré pompe 2 (0 = non caractérisé)
+  float pump1PulseFlowMlPerMin = 0.0f;     // Débit MESURÉ (ml/min) au duty calibré, pompe 1
+  float pump2PulseFlowMlPerMin = 0.0f;     // Débit MESURÉ (ml/min) au duty calibré, pompe 2
   int phInjectionLimitMinutes = 5;    // Max 5 min d'injection par fenêtre d'1h
   int orpInjectionLimitMinutes = 10;  // Max 10 min d'injection par fenêtre d'1h
   // feature-056 : mode d'installation (remplace regulationMode ET

@@ -160,7 +160,11 @@ constexpr uint32_t kWsSkipWarnThrottleMs = 30000;         // 30s - throttle du w
 // (churn heap G2 résiduel : ~2 Ko alloués/libérés toutes les 5 s). Dimensionné pour le
 // plus gros payload (config ~2,3 Ko mesuré) + marge de croissance. Une trame qui ne
 // tient pas est SAUTÉE (jamais tronquée) et comptée (_oversizedFrames).
-constexpr size_t kWsFrameBufBytes = 3072;                 // Taille du buffer statique de trame WS
+// Itération 3 (bug-dosage-fantome) : 3072 → 3584. La trame capteurs mesurait déjà
+// ~2,8 Ko et gagne +7 champs (calendrier d'impulsion pH/ORP) ; sans marge, les
+// pushes sauteraient SILENCIEUSEMENT (warn throttlé seulement). Coût : +512 o en
+// .bss statique — hors heap 8 bits, aucun impact sur la famine mémoire.
+constexpr size_t kWsFrameBufBytes = 3584;                 // Taille du buffer statique de trame WS
 
 // Récolte des clients WS zombies (investigation churn-heap §G1/G2) : un client qui
 // n'ACK plus conserve une file jusqu'à 32 buffers ~1,8 Ko connexion ouverte —
@@ -671,9 +675,41 @@ constexpr uint32_t kExternalFiltrationStaleMs = 180000UL;  // 3 min — fraîche
 // PUMP CONSTANTS - Paramètres pompes doseuses
 // ============================================================================
 
-// Débits pompes (ml/min) — à ajuster selon le modèle de pompe utilisé
-constexpr float kPumpMinFlowMlPerMin  =  5.2f;   // Débit minimal (duty minimum actif)
-constexpr float kPumpMaxFlowMlPerMin  = 90.0f;   // Débit maximal (duty 100%)
+// ---------------------------------------------------------------------------
+// Dosage en proportionnel de TEMPS (bug-dosage-fantome, itération 2 — option
+// B+C du gate pool-chemistry). Le modèle linéaire duty↔débit est SUPPRIMÉ
+// (kPumpMinFlowMlPerMin / kPumpMaxFlowMlPerMin retirés) : mesure au banc du
+// 2026-08-23 — à duty 82 le modèle créditait 6,4 ml/min pour 12,0 mesurés, à
+// 255 il supposait 90 ml/min pour 61,0 mesurés. Voir src/pulse_dosing_logic.h.
+// ---------------------------------------------------------------------------
+// Période fixe du train d'impulsions (condition B3 : période FIXE).
+constexpr uint32_t kPulsePeriodMs = 60000;   // 1 min — période d'impulsion
+// Pouls minimal (condition B3 : ≥ 5 s). Sous ce pouls, le débit n'est pas
+// reproductible (transitoires de démarrage dominants) → REFUS (seuil C).
+constexpr uint32_t kPulseMinMs = 5000;       // 5 s — pouls minimal
+// Kick de décollage : pleine puissance (duty 255) en tête de chaque pouls pour
+// vaincre le couple de démarrage à froid (symptôme terrain : rotation entretenue
+// OK à duty 82 mais NON-démarrage au même duty). Volume du kick comptabilisé au
+// débit mesuré à 255 (kPumpNFlow255MlPerMin).
+constexpr uint32_t kPulseKickMs = 400;       // 0,4 s — durée du kick à 255
+// Débits MESURÉS à duty 255 (pesées du 2026-08-23 : 61 g / 60 s pompe 1,
+// 67 g / 60 s pompe 2 — même modèle, +10 % d'écart tube, d'où la calibration
+// PAR pompe). Servent au crédit du kick ET de MAJORANT pour le mode manuel
+// ?duty=N (P4 : jamais créditer zéro sur une pompe alimentée — surestimer est
+// fail-safe).
+constexpr float kPump1Flow255MlPerMin = 61.0f;  // Pompe 1 (pH) — pesé à 255
+constexpr float kPump2Flow255MlPerMin = 67.0f;  // Pompe 2 (ORP) — pesé à 255
+// Plancher de l'amplitude en % (UI/config) : 40 % × 255 ≈ 102 counts, cohérent
+// avec MIN_ACTIVE_DUTY = 98 (Dmin mesuré 82 + 16 counts de marge P2).
+constexpr uint8_t kPumpAmpMinPct = 40;
+// Plausibilité du débit calibré saisi (pesée) : au-delà, valeur rejetée
+// (fail-closed FlowUncharacterized) — aucune doseuse de piscine ne débite plus.
+constexpr float kPulseFlowMaxMlPerMin = 200.0f;
+// Throttle des logs de refus de l'ordonnanceur d'impulsions : critical « pompe
+// non caractérisée / amplitude sous plancher » (état de config persistant) et
+// info « consigne sous le pouls minimal » (deadband normal). 30 min : visible
+// dans la journée sans faire tourner le journal persistant (leçon 2.20.2).
+constexpr unsigned long kPulseRefusalLogIntervalMs = 1800000UL;  // 30 min
 
 // Erreur max pour normalisation PID
 constexpr float kPhMaxError           =  1.0f;   // Erreur pH maximale (unités pH)

@@ -46,7 +46,7 @@ La garde reste un **check-then-act** (TOCTOU) : entre `getMaxAllocHeap()` et l'a
 
 ### Buffer statique de trame `.bss` — `sWsFrameBuf` (pattern « réserver une fois, réutiliser toujours »)
 
-Les trames WS sortantes sont construites dans un buffer **statique** `sWsFrameBuf[kWsFrameBufBytes]` (**3072** o, réservé au link en `.bss`, **hors heap**, zéro fragmentation) réutilisé à chaque push — **plus aucune String temporaire par push** (supprime le churn G2 résiduel : ~2 Ko alloués/libérés toutes les 5 s). `_buildSensorJson(buf, cap)` / `_buildConfigJson(buf, cap)` sérialisent directement dedans (`measureJson` d'abord : si le JSON + NUL ne tient pas → retour **0**, push **sauté**, jamais de troncature) ; `broadcastLog` utilise le même buffer avec le même contrat. Chaque dépassement incrémente `_oversizedFrames` (atomic relaxed, exposé par `oversizedFrameCount()`), avec un WARN throttlé **dédié** dans `update()` (« N trame(s) WS > 3072 o (buffer statique) — pushes sautés, agrandir kWsFrameBufBytes ») — même invariant anti-ré-entrance que le warn des pushes sautés. `kWsSensorJsonReserveBytes` est **supprimée** (plus de `reserve()` de String).
+Les trames WS sortantes sont construites dans un buffer **statique** `sWsFrameBuf[kWsFrameBufBytes]` (**3584** o depuis v2.21.1 — 3072 de v2.14.0 à v2.21.0 —, réservé au link en `.bss`, **hors heap**, zéro fragmentation) réutilisé à chaque push — **plus aucune String temporaire par push** (supprime le churn G2 résiduel : ~2 Ko alloués/libérés toutes les 5 s). `_buildSensorJson(buf, cap)` / `_buildConfigJson(buf, cap)` sérialisent directement dedans (`measureJson` d'abord : si le JSON + NUL ne tient pas → retour **0**, push **sauté**, jamais de troncature) ; `broadcastLog` utilise le même buffer avec le même contrat. Chaque dépassement incrémente `_oversizedFrames` (atomic relaxed, exposé par `oversizedFrameCount()`), avec un WARN throttlé **dédié** dans `update()` (« N trame(s) WS > `kWsFrameBufBytes` o (buffer statique) — pushes sautés, agrandir kWsFrameBufBytes ») — même invariant anti-ré-entrance que le warn des pushes sautés. `kWsSensorJsonReserveBytes` est **supprimée** (plus de `reserve()` de String).
 
 > ⚠️ **INVARIANT BLOQUANT — `sWsFrameBuf` est réservé à `loopTask`.** Les 3 broadcasts sont tous appelés depuis `update()`/loop aujourd'hui. Tout futur câblage **multi-tâche** de `broadcastLog` (ex. callback logger depuis `async_tcp`/`mqttTask`) devra utiliser un buffer **dédié** — jamais celui-ci, sous peine de trames entrelacées. Voir le commentaire sur place ([`src/ws_manager.cpp`](../../src/ws_manager.cpp)).
 
@@ -138,7 +138,7 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 - **Client déconnecté sans close** : nettoyé par `AsyncWebSocket::cleanupClients()` appelé dans `update()` ; depuis v2.11.1, aussi récolté par saturation de file (fermeture par le fork) ou timeout de PING keepalive.
 - **Push pendant write en cours** : `AsyncWebSocket` gère la file d'attente (bornée à 5 trames depuis v2.11.1), pas de blocage du loop.
 - **Heap fragmenté** (plus gros bloc `< kWsPushMinAllocBytes = 16384` depuis v2.14.0) : pushes **sautés** (garde v2.11.1), compteur `skippedPushCount()` + WARN throttlé 30 s dans `update()`. Course résiduelle (TOCTOU) : `std::bad_alloc` **rattrapé** autour de `textAll` → push sauté, même compteur, jamais d'`abort()` (v2.14.0).
-- **Trame plus grande que le buffer statique** (`kWsFrameBufBytes = 3072`) : push **sauté** (jamais tronqué), compteur `oversizedFrameCount()` + WARN throttlé dédié dans `update()` — signale qu'il faut agrandir la constante (v2.14.0).
+- **Trame plus grande que le buffer statique** (`kWsFrameBufBytes = 3584` depuis v2.21.1, était 3072) : push **sauté** (jamais tronqué), compteur `oversizedFrameCount()` + WARN throttlé dédié dans `update()` — signale qu'il faut agrandir la constante (v2.14.0).
 
 ## Dépendances
 
@@ -154,7 +154,7 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 - [`src/ws_manager.h`](../../src/ws_manager.h), [`src/ws_manager.cpp`](../../src/ws_manager.cpp)
 - [`src/web_server.cpp`](../../src/web_server.cpp) — instanciation du serveur
 - [`src/logger.h:58`](../../src/logger.h) — `setLogCallback()` (**code mort**, jamais branché — cf. section API publique)
-- [`src/constants.h`](../../src/constants.h) — `kWsPushMinAllocBytes` (16384), `kWsFrameBufBytes` (3072), `kWsSkipWarnThrottleMs`, `kWsKeepAlivePeriodS` (`kWsSensorJsonReserveBytes` supprimée en v2.14.0)
+- [`src/constants.h`](../../src/constants.h) — `kWsPushMinAllocBytes` (16384), `kWsFrameBufBytes` (3584 depuis v2.21.1), `kWsSkipWarnThrottleMs`, `kWsKeepAlivePeriodS` (`kWsSensorJsonReserveBytes` supprimée en v2.14.0)
 - [`platformio.ini`](../../platformio.ini) — `-DWS_MAX_QUEUED_MESSAGES=5`
 - [ADR-0005](../adr/0005-websocket-push-sans-polling.md), [ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111), [ADR-0032 §Extensions](../adr/0032-reponses-http-bornees.md#extension-2026-07-28--émissions-websocket-v2111) (v2.11.1 et v2.14.0)
 
@@ -269,3 +269,25 @@ Voir [sensors.md](sensors.md#alarme--filtre-non-prêt-durablement--v2203), [page
 **Aucun champ `sensor_data` n'est ajouté.** En revanche la **valeur** de trois champs existants intègre désormais l'offset — `ph`, `phMedian`, `phFiltered` sont **corrigés**, `phRaw` reste **brut EZO** (règle : seuls les champs `*Raw` sont bruts, [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)). Le repli de warmup de `ph` passe par la valeur **corrigée**, jamais par le brut : on ne mélange jamais brut et corrigé sur un même champ.
 
 Marge du buffer `_buildConfigJson()` portée à **2368 octets** (+1 champ ≈ 24 octets).
+
+## Champs `sensor_data` ajoutés en v2.21.1 — calendrier d'impulsion (ADR-0045)
+
+Itération 3 de bug-dosage-fantome (défaut n°3) : distinguer « **session de dosage ouverte** » (commandé — c'est ce que disent déjà `ph/orp_dosing`) de « **pompe alimentée maintenant** » (effectif — pouls en cours du [dosage en proportionnel de temps](pump-controller.md#dosage-en-proportionnel-de-temps-itération-2-v2210)). Le firmware expose la **géométrie du train d'impulsions**, le client anime localement entre deux trames ([ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md) — rejet du booléen instantané : aliasing à 5 s de push pour des impulsions de 5-60 s).
+
+| Champ | Type | Unité | Description |
+|-------|------|-------|-------------|
+| `pulse_period_ms` | uint32 | ms | Période **fixe** du train d'impulsions (= `kPulsePeriodMs` = 60000). Constante de contrat, publiée pour que le client ne la code pas en dur. |
+| `ph_pulse_session` | bool | — | Séance de dosage **ouverte** pour le pH (auto **OU** scheduled) — `PumpController.isPulseSessionActive(0)`. C'est l'état « commandé », pas la pompe. |
+| `orp_pulse_session` | bool | — | Idem ORP (`isPulseSessionActive(1)`). |
+| `ph_pulse_ms` | uint32 | ms | Durée d'impulsion **planifiée** pour la période courante (`getPulseMs(0)`). **`0` = deadband** : la période ne contient aucun pouls (demande sous le pouls minimal de 5 s, seuil C) — la session reste ouverte, la pompe ne tournera pas cette période. |
+| `orp_pulse_ms` | uint32 | ms | Idem ORP. |
+| `ph_pulse_phase_ms` | uint32 | ms | Position **RELATIVE** dans la période courante (`getPulsePhaseMs(0, nowMs)`), clampée **[0..`pulse_period_ms`]** — jamais un `millis()` absolu : le client l'ancre sur SA propre horloge à la réception (`dosingAnchor`, app.js). `0` si session inactive. **Pompe alimentée ⇔ `phase < pulse_ms`.** |
+| `orp_pulse_phase_ms` | uint32 | ms | Idem ORP. |
+
+- **Mêmes 7 champs, mêmes noms, mêmes valeurs dans `GET /data`** ([API.md](../API.md#get-data--write)) — contrat architect, aucune asymétrie WS/HTTP.
+- Getters `PumpController` **lecture seule** (aucun setter, aucun effet dosage) ; course bénigne assumée écriture loopTask / lecture async_tcp (lectures 8/32 bits atomiques sur Xtensa) ; index invalide → `false`/`0` (fail-closed). Voir [pump-controller.md](pump-controller.md#exposition-du-calendrier-dimpulsion-itération-3-v2211).
+- **Rétrocompat client** : champs absents (firmware < 2.21.1) → l'UI retombe sur le comportement historique (`ph/orp_dosing` seuls).
+
+**Budget de payload** : décompte au pire cas des octets sérialisés = **169 o** (7 champs, valeurs max `60000`/`false`) + pool ArduinoJson 7 nœuds ≈ 112 o → `_buildSensorJson()` bumpe de **2176 → 2432 octets**. **`kWsFrameBufBytes` passe de 3072 → 3584** (trame réelle mesurée ~2,2 Ko / 3584 — marge restaurée après plusieurs ajouts de champs successifs).
+
+Consommateur UI : statut dosage des cartes pH/ORP du tableau de bord — 6 priorités d'affichage, compte à rebours local resynchronisé à chaque trame ([page-dashboard.md](../features/page-dashboard.md#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211)).

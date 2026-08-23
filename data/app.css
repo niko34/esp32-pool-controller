@@ -1691,6 +1691,10 @@ input.is-computed:disabled {
   color: var(--warn);
 }
 
+/* Pill dans une valeur clé/valeur (ex. état stable/INSTABLE de la dispersion) :
+   version compacte pour ne pas gonfler la hauteur de ligne. */
+.kv__v .pill { padding: 2px 8px; }
+
 /* Pill placée juste à droite du titre dans .card__head : pas de retour ligne,
    collée au titre via flex-start (au lieu du space-between par défaut). */
 .card__head:has(.pill) {
@@ -2228,6 +2232,15 @@ input.is-computed:disabled {
   color: #4caf50;
   font-weight: 600;
 }
+/* bug-dosage-fantome it.3 : état d'attente (prochaine impulsion / deadband) — dot statique */
+.dosing-status.is-waiting {
+  color: var(--text-secondary);
+}
+.dosing-status.is-waiting .dosing-status__dot {
+  animation: none;
+  background: var(--text-secondary);
+  opacity: .55;
+}
 
 
 .calibration-alert {
@@ -2615,6 +2628,25 @@ input.is-computed:disabled {
   width: 12px;
   height: 12px;
   border-radius: 3px;
+}
+
+/* Courbes de dispersion (feature-072) — sous chaque graphe de signal */
+.trace-dispersion {
+  margin-top: 8px;
+}
+
+/* Sélecteur préfixé .trace-block .chart-container pour battre la règle
+   de hauteur générique .trace-block .chart-container.trace-chart (200px) */
+.trace-block .chart-container.trace-chart--dispersion {
+  min-height: 120px;
+  height: 120px;
+}
+
+.trace-legend__swatch--dash {
+  width: 16px;
+  height: 0;
+  border-top: 2px dashed #dc2626;
+  border-radius: 0;
 }
 
 /* ========== GRAPHIQUES uPlot ========== */

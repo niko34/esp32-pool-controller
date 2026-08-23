@@ -40,7 +40,12 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // v2.20.3 (C2) : +2 booléens ph/orpFilterAlarm.
   //   "phFilterAlarm":false,  = 22 o  |  "orpFilterAlarm":false, = 23 o
   //   → 45 o au pire, arrondi à 64 o de marge → bump 1280 → 1344.
-  StaticJson<1344> doc;
+  // Itération 2 (bug-dosage-fantome, W2) : +4 champs de caractérisation pompes
+  // (~134 o au pire) → bump 1344 → 1536.
+  // Itération 3 (bug-dosage-fantome, défaut n°3) : +7 champs calendrier
+  // d'impulsion (~169 o sérialisés au pire + 7 nœuds de pool ≈ 112 o)
+  // → bump 1536 → 1792.
+  StaticJson<1792> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
   // (médiane + EMA), alignée sur le WS. Le brut reste exposé séparément (phRaw/orpRaw).
@@ -132,6 +137,31 @@ static void handleGetData(AsyncWebServerRequest* request) {
   }
   doc["ph_dosing"] = PumpController.isPhDosing();
   doc["orp_dosing"] = PumpController.isOrpDosing();
+  // Itération 2 (bug-dosage-fantome, W2) : état de caractérisation par CHIMIE
+  // (les getters résolvent l'affectation mqttCfg.phPump/orpPump) + amplitude du
+  // plateau d'impulsion (duty commandé pendant un pouls). Alimente le badge
+  // « Débit non caractérisé — pesée requise » de l'UI. Getters lecture seule,
+  // sûrs en contexte async_tcp (cf. pump_controller.h).
+  doc["ph_pump_flow_uncharacterized"]  = PumpController.isPhPumpFlowUncharacterized();
+  doc["orp_pump_flow_uncharacterized"] = PumpController.isOrpPumpFlowUncharacterized();
+  doc["ph_pump_amplitude_duty"]  = PumpController.getPumpAmplitudeDuty(pumpIndexFromNumber(mqttCfg.phPump));
+  doc["orp_pump_amplitude_duty"] = PumpController.getPumpAmplitudeDuty(pumpIndexFromNumber(mqttCfg.orpPump));
+  // Itération 3 (bug-dosage-fantome, défaut n°3) : calendrier d'impulsion —
+  // distingue « session active » (ph/orp_dosing = commandé) de « pompe alimentée »
+  // (pouls effectif : phase < pulse_ms). Getters LECTURE SEULE (pump_controller.h,
+  // sûrs en contexte async_tcp). La phase est RELATIVE au début de période (jamais
+  // un millis absolu) : le client l'ancre sur SA propre horloge à la réception.
+  // Noms de champs IDENTIQUES au WS (_buildSensorJson) — contrat architect.
+  {
+    uint32_t pulseNowMs = millis();
+    doc["pulse_period_ms"]    = kPulsePeriodMs;
+    doc["ph_pulse_session"]   = PumpController.isPulseSessionActive(0);
+    doc["orp_pulse_session"]  = PumpController.isPulseSessionActive(1);
+    doc["ph_pulse_ms"]        = PumpController.getPulseMs(0);
+    doc["orp_pulse_ms"]       = PumpController.getPulseMs(1);
+    doc["ph_pulse_phase_ms"]  = PumpController.getPulsePhaseMs(0, pulseNowMs);
+    doc["orp_pulse_phase_ms"] = PumpController.getPulsePhaseMs(1, pulseNowMs);
+  }
   doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;
   doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;
   doc["ph_limit_reached"] = safetyLimits.phLimitReached;

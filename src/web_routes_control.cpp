@@ -178,12 +178,62 @@ static bool manualInjectGuardOrReject(AsyncWebServerRequest* req, bool isPh,
   return false;
 }
 
-// Calcule le débit effectif (mL/min) pour un maxDutyPct donné et les params de pompe
-static float calcInjectFlow(uint8_t maxDutyPct, const PumpControlParams& params) {
-  uint8_t duty = (uint8_t)((maxDutyPct * MAX_PWM_DUTY) / 100);
-  if (duty < MIN_ACTIVE_DUTY) duty = MIN_ACTIVE_DUTY;
-  float normalized = (float)(duty - MIN_ACTIVE_DUTY) / (float)(MAX_PWM_DUTY - MIN_ACTIVE_DUTY);
-  return params.minFlowMlPerMin + normalized * (params.maxFlowMlPerMin - params.minFlowMlPerMin);
+// =============================================================================
+// Itération 2 (bug-dosage-fantome, W3) : plan débit/duty d'une injection
+// manuelle VOLUMÉE. Le modèle linéaire duty↔débit est MORT (mesure au banc du
+// 2026-08-23 : ×1,9 de sous-estimation à duty 82, ×1,5 de surestimation à 255)
+// — plus JAMAIS d'interpolation. L'ancien calcInjectFlow estimait la durée sur
+// ce modèle réinitialisé → durée fausse, sur-injection physique possible.
+// Les deux SEULS points où le débit est CONNU :
+//   - amplitude configurée == duty calibré (pesée A) → débit pesé, duty calibré ;
+//   - sinon (pompe jamais caractérisée, ou amplitude ≠ pesée) → duty FORCÉ à
+//     255 et débit = kPumpNFlow255MlPerMin (pesée B) : durée volume/débit
+//     exacte, au lieu d'une durée devinée sur un débit fictif ;
+//   - état incohérent (duty calibré posé mais débit pesé invalide — normalement
+//     impossible : garde /save-config + assainissement NVS) → refus (ok=false),
+//     le handler répond 409 flow_uncharacterized.
+// =============================================================================
+struct ManualInjectPlan {
+  bool ok;             // false = aucun débit connu pour ce chemin → 409
+  float flowMlPerMin;  // débit CONNU au duty commandé
+  uint8_t duty;        // duty réellement commandé (calibré ou 255)
+};
+
+static ManualInjectPlan planManualInject(int pumpIdx) {
+  ManualInjectPlan plan = {false, 0.0f, 0};
+  if (pumpIdx != 0 && pumpIdx != 1) return plan;
+  const uint8_t calDuty  = (pumpIdx == 0) ? mqttCfg.pump1CalibratedDuty
+                                          : mqttCfg.pump2CalibratedDuty;
+  const float pulseFlow  = (pumpIdx == 0) ? mqttCfg.pump1PulseFlowMlPerMin
+                                          : mqttCfg.pump2PulseFlowMlPerMin;
+  const float flow255    = (pumpIdx == 0) ? kPump1Flow255MlPerMin
+                                          : kPump2Flow255MlPerMin;
+  const uint8_t ampDuty  = PumpController.getPumpAmplitudeDuty(pumpIdx);
+  if (calDuty != 0 && ampDuty == calDuty) {
+    // Ce chemin exige le débit pesé : sans pesée plausible → refus explicite,
+    // jamais de repli silencieux sur un débit deviné.
+    const bool flowValid = isfinite(pulseFlow) && pulseFlow > 0.0f &&
+                           pulseFlow <= kPulseFlowMaxMlPerMin;
+    if (!flowValid) return plan;
+    plan.ok = true;
+    plan.flowMlPerMin = pulseFlow;
+    plan.duty = calDuty;
+    return plan;
+  }
+  plan.ok = true;
+  plan.flowMlPerMin = flow255;
+  plan.duty = MAX_PWM_DUTY;
+  return plan;
+}
+
+// Refus 409 commun aux deux routes d'injection volumée quand aucun débit n'est
+// connu (planManualInject().ok == false). Code aligné sur PulseRefusal::
+// FlowUncharacterized côté régulation.
+static void sendFlowUncharacterized(AsyncWebServerRequest* req, const char* tag) {
+  systemLogger.critical(String("[Sécurité] ") + tag +
+                        " refusée : débit non caractérisé (pesée requise)");
+  req->send(409, "application/json",
+            "{\"error\":\"flow_uncharacterized\",\"message\":\"Débit de la pompe non caractérisé — effectuez la pesée (Réglages → Avancé → Configuration des pompes) avant une injection volumée.\"}");
 }
 
 ManualInjectState manualInjectPh;
@@ -312,7 +362,8 @@ void setupControlRoutes(AsyncWebServer* server) {
     req->send(200, "text/plain", "OK");
   });
 
-  // Injection manuelle pH — démarre la pompe pH à la puissance configurée
+  // Injection manuelle pH — démarre la pompe pH au duty CALIBRÉ (pesée) si
+  // l'amplitude configurée y correspond, sinon à 255 (seul autre débit connu).
   // Paramètre préféré : ?volume=N (mL, max 2000)
   // Fallback legacy : ?duration=N (secondes, borné à kManualInjectMaxDurationS)
   // feature-006 : gardes de sécurité chimique via evaluateManualInject()
@@ -321,11 +372,12 @@ void setupControlRoutes(AsyncWebServer* server) {
   server->on("/ph/inject/start", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
     int pumpIdx = mqttCfg.phPump - 1;
-    uint8_t dutyPct = (pumpIdx == 0) ? mqttCfg.pump1MaxDutyPct : mqttCfg.pump2MaxDutyPct;
-    float flow = calcInjectFlow(dutyPct, phPumpControl);
-    // Garde : sans débit configuré, volumeMl/flow = inf et effectiveMl = 0
-    // passerait trivialement la garde journalière → refus explicite.
-    if (flow <= 0.0f) { req->send(400, "text/plain", "débit pompe non configuré"); return; }
+    // W3 : débit/duty issus des SEULS points mesurés (pesée ou 255) — jamais
+    // d'interpolation. plan.ok garantit flow > 0 (les gardes volumeMl/flow et
+    // effectiveMl restent bien définies).
+    ManualInjectPlan plan = planManualInject(pumpIdx);
+    if (!plan.ok) { sendFlowUncharacterized(req, "Injection pH manuelle"); return; }
+    float flow = plan.flowMlPerMin;
     float volumeMl = 0.0f;
     int durationS = 0;
     if (req->hasParam("volume")) {
@@ -371,8 +423,7 @@ void setupControlRoutes(AsyncWebServer* server) {
     // Injection acceptée : enregistrer le démarrage de cycle MANUEL (ring
     // anti-rafale + cyclesToday partagés avec l'auto, consommé en loopTask).
     PumpController.requestManualCycleRecord(0);
-    uint8_t duty = (uint8_t)((dutyPct * MAX_PWM_DUTY) / 100);
-    PumpController.setManualPump(pumpIdx, duty);
+    PumpController.setManualPump(pumpIdx, plan.duty);
     manualInjectPh.active = true;
     manualInjectPh.startMs = millis();
     manualInjectPh.durationMs = (unsigned long)durationS * 1000UL;
@@ -391,7 +442,7 @@ void setupControlRoutes(AsyncWebServer* server) {
     //   ne doit JAMAIS excéder ce qui a pu être injecté → effectiveMl.
     manualInjectPh.creditMl =
         (clamped && durationS == clampedDurationS) ? remaining : effectiveMl;
-    systemLogger.info("[Injection] pH démarrée " + String(durationS) + "s pour " + String(volumeMl, 1) + "mL (débit=" + String(flow, 1) + "mL/min, pompe " + String(mqttCfg.phPump) + ")");
+    systemLogger.info("[Injection] pH démarrée " + String(durationS) + "s pour " + String(volumeMl, 1) + "mL (débit=" + String(flow, 1) + "mL/min, duty=" + String(plan.duty) + ", pompe " + String(mqttCfg.phPump) + ")");
     req->send(200, "text/plain", "OK");
   });
 
@@ -407,7 +458,8 @@ void setupControlRoutes(AsyncWebServer* server) {
     req->send(200, "text/plain", "OK");
   });
 
-  // Injection manuelle ORP — démarre la pompe ORP à la puissance configurée
+  // Injection manuelle ORP — démarre la pompe ORP au duty CALIBRÉ (pesée) si
+  // l'amplitude configurée y correspond, sinon à 255 (seul autre débit connu).
   // Paramètre préféré : ?volume=N (mL, max 2000)
   // Fallback legacy : ?duration=N (secondes, borné à kManualInjectMaxDurationS)
   // feature-006 : gardes de sécurité chimique via evaluateManualInject()
@@ -416,11 +468,10 @@ void setupControlRoutes(AsyncWebServer* server) {
   server->on("/orp/inject/start", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
     int pumpIdx = mqttCfg.orpPump - 1;
-    uint8_t dutyPct = (pumpIdx == 0) ? mqttCfg.pump1MaxDutyPct : mqttCfg.pump2MaxDutyPct;
-    float flow = calcInjectFlow(dutyPct, orpPumpControl);
-    // Garde : sans débit configuré, volumeMl/flow = inf et effectiveMl = 0
-    // passerait trivialement la garde journalière → refus explicite.
-    if (flow <= 0.0f) { req->send(400, "text/plain", "débit pompe non configuré"); return; }
+    // W3 : cf. route pH — débit/duty issus des seuls points mesurés.
+    ManualInjectPlan plan = planManualInject(pumpIdx);
+    if (!plan.ok) { sendFlowUncharacterized(req, "Injection ORP manuelle"); return; }
+    float flow = plan.flowMlPerMin;
     float volumeMl = 0.0f;
     int durationS = 0;
     if (req->hasParam("volume")) {
@@ -461,8 +512,7 @@ void setupControlRoutes(AsyncWebServer* server) {
     // Injection acceptée : enregistrer le démarrage de cycle MANUEL (ring
     // anti-rafale + cyclesToday partagés avec l'auto, consommé en loopTask).
     PumpController.requestManualCycleRecord(1);
-    uint8_t duty = (uint8_t)((dutyPct * MAX_PWM_DUTY) / 100);
-    PumpController.setManualPump(pumpIdx, duty);
+    PumpController.setManualPump(pumpIdx, plan.duty);
     manualInjectOrp.active = true;
     manualInjectOrp.startMs = millis();
     manualInjectOrp.durationMs = (unsigned long)durationS * 1000UL;
@@ -476,7 +526,7 @@ void setupControlRoutes(AsyncWebServer* server) {
     // excéder ce qui a pu être réellement injecté.
     manualInjectOrp.creditMl =
         (clamped && durationS == clampedDurationS) ? remaining : effectiveMl;
-    systemLogger.info("[Injection] ORP démarrée " + String(durationS) + "s pour " + String(volumeMl, 1) + "mL (débit=" + String(flow, 1) + "mL/min, pompe " + String(mqttCfg.orpPump) + ")");
+    systemLogger.info("[Injection] ORP démarrée " + String(durationS) + "s pour " + String(volumeMl, 1) + "mL (débit=" + String(flow, 1) + "mL/min, duty=" + String(plan.duty) + ", pompe " + String(mqttCfg.orpPump) + ")");
     req->send(200, "text/plain", "OK");
   });
 

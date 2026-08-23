@@ -220,7 +220,7 @@ Le **bouton de calibration** (`#ph_cal_trigger_btn`) est rendu **sous la rangée
 - On ne désactive le bouton que sur **preuve d'EZO injoignable** (`phCalPoints < 0`). Le garde « injection en cours » reste **prioritaire** et peut le désactiver indépendamment.
 - L'état de calibration ORP, lui, conserve son **chip dédié** `#orp-cal-chip` (l'ORP n'a pas de chip sonde) piloté par `setCalChip('orp', …)`.
 - ⚠️ Quand `phCalPoints == 1`, le chip ne distingue pas mid seul de low seul (l'EZO ne renvoie que le compteur via `Cal,?`). Risque résiduel mineur — l'utilisateur sait normalement quel point il vient d'effectuer.
-- **Garde injection prioritaire** : le bouton « Calibrer la sonde » est forcé **désactivé** pendant une injection pH en cours, indépendamment de l'état de calibration (cf. [Cas limites](#cas-limites)).
+- **Garde injection prioritaire** : le bouton « Calibrer la sonde » est forcé **désactivé** pendant une injection pH en cours, indépendamment de l'état de calibration (cf. [Cas limites](#cas-limites)). Depuis la **v2.21.1**, la désactivation proactive (`_updateInjectButtons`, à chaque push WS) inclut aussi la **séance de dosage automatique** (`ph_dosing === true`), comme l'ORP le faisait déjà — harmonisation dans le sens **restrictif**. C'est un **verrou fonctionnel voulu** (pas de calibration pendant une injection), distinct de la conflation d'affichage corrigée par l'itération 3 : le verrou couvre **toute la session** d'impulsions, y compris les repos entre deux pouls.
 
 ## Workflow calibration
 
@@ -362,7 +362,7 @@ Le firmware reste l'**autorité** : miroir best-effort seulement (WS déconnect�
 - **Reboot inattendu** : à la première réception WS après un reboot dont `reset_reason` ∈ {`WATCHDOG`, `BROWNOUT`, `PANIC`, `EXTERNAL`, `UNKNOWN`}, un toast d'alerte est affiché une seule fois par session.
 - **Limite journalière atteinte** : message « Limite atteinte — dosage suspendu jusqu'à minuit », barre en rouge.
 - **Pendant la calibration** : le bouton « Calibrer le point » de l'étape concernée affiche un spinner. Les autres actions UI restent disponibles.
-- **Injection pH en cours (feature-034)** : le clic sur « Calibrer » (`#ph_cal_trigger_btn`) est **bloqué** si une injection pH est active — condition `(ph_inject_remaining_s > 0) || (ph_dosing === true)`, toast « Calibration impossible pendant une injection pH ». Ce garde existait déjà côté ORP ; il est désormais ajouté côté pH (symétrie de sécurité).
+- **Injection pH en cours (feature-034)** : le clic sur « Calibrer » (`#ph_cal_trigger_btn`) est **bloqué** si une injection pH est active — condition `(ph_inject_remaining_s > 0) || (ph_dosing === true)`, toast « Calibration impossible pendant une injection pH ». Ce garde existait déjà côté ORP ; il est désormais ajouté côté pH (symétrie de sécurité). Depuis la **v2.21.1**, la **désactivation proactive** du bouton (`_updateInjectButtons`) applique la même condition (elle n'incluait pas `ph_dosing` avant — le clic était bloqué mais le bouton restait cliquable pendant une séance auto).
 
 ## Interaction MQTT
 

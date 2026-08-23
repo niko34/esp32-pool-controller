@@ -142,6 +142,29 @@ Le statut `#ph-dosing-status` / `#orp-dosing-status` de chaque carte (`getDosing
 
 Depuis **v2.19.1**, le statut affiche aussi la **pause mélange hydraulique** post-injection (« Pause mélange : X min YY s ») via `ph_mix_remaining_s` / `orp_mix_remaining_s` (repli sur le booléen `ph/orp MixingDelayActive` → « Pause mélange en cours » sans compte à rebours). Avant cette version, la pause mélange n'était visible que dans le modal « État filtre » des pages pH/ORP, d'où une impression de dosage bloqué sans explication sur le tableau de bord. Ordre d'affichage dans `getDosingStopReason()` : régulation désactivée → stabilisation → **pause mélange** → présence d'eau → limites.
 
+## Statut dosage des cartes pH/ORP — commandé vs effectif (v2.21.1)
+
+> Itération 3 de bug-dosage-fantome ([ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md)). Avant : `data/app.js` faisait un **OU** de `ph_dosing` (session — l'intention) et `ph_inject_remaining_s` (manuel minuté) → la carte affichait « Injection en cours » pendant les **repos** du train d'impulsions ([dosage en proportionnel de temps](../subsystems/pump-controller.md#dosage-en-proportionnel-de-temps-itération-2-v2210)), alors que la pompe ne tournait pas. C'est cette conflation qui a masqué le dosage fantôme d'origine.
+
+`updateDosingStatus(sensor, isActive, stopReason)` (app.js) rend le statut `#ph-dosing-status` / `#orp-dosing-status` selon **6 priorités décroissantes** :
+
+| # | Condition | Affichage | Dot | Classe |
+|---|-----------|-----------|-----|--------|
+| 1 | Injection **manuelle** minutée (`*_inject_remaining_s` ancré > 0) | « Injection manuelle : Ns » (compte à rebours) | animé | `is-active` |
+| 2 | Session ouverte **et** `phase < pulse_ms` — la pompe **TOURNE** | « Injection en cours » | animé | `is-active` |
+| 3 | Session ouverte, `pulse_ms > 0`, phase ≥ pulse_ms (repos entre deux pouls) | « Prochaine impulsion : Ns » (décompte jusqu'à la fin de période) ; à l'échéance sans nouvelle donnée → « Prochaine impulsion… » | **statique** | `is-waiting` |
+| 4 | Session ouverte, `pulse_ms == 0` (deadband — période sans pouls planifié) | « Dosage en attente : Ns » / « Dosage en attente… » | statique | `is-waiting` |
+| 5 | Motifs existants (`getDosingStopReason()` : Stabilisation, Pause mélange, limites…) | texte du motif | aucun | — |
+| 6 | Rien à afficher | vide (masqué) | — | — |
+
+**Sémantique du dot** : dot **présent** = une séance de dosage est ouverte ; dot **animé** (pulsation) = la pompe est réellement alimentée ; dot **statique** gris (`.is-waiting`, app.css) = silence **volontaire** du train d'impulsions — la distinction visuelle entre « commandé » et « effectif ».
+
+**Honnêteté du compte à rebours** : les phases firmware sont **relatives** au début de période — à chaque trame (WS 5 s ou `/data`), le client les **ancre** sur sa propre horloge (`dosingAnchor`, app.js) et anime à la seconde (un seul `setInterval` 1 s partagé pH+ORP, actif uniquement quand un décompte est affiché). Précision ±1-2 s (jitter de push + arrondi), resynchronisée à chaque trame. À l'échéance de la période **sans donnée fraîche** → ellipsis (« Prochaine impulsion… »), **jamais** de bascule optimiste vers « Injection en cours », jamais 0 s ni de valeur négative. La seule bascule locale autorisée est **RESTRICTIVE** : impulsion → attente quand la phase ancrée dépasse `pulse_ms` (la pompe s'est arrêtée localement, sans attendre la trame suivante) — le sens inverse exige une donnée serveur.
+
+**Rétrocompat** : champs `pulse_*` absents (firmware < 2.21.1) → comportement historique (`ph/orp_dosing` seul ⇒ « Injection en cours »).
+
+Champs consommés : `pulse_period_ms`, `ph/orp_pulse_session`, `ph/orp_pulse_ms`, `ph/orp_pulse_phase_ms` — contrat identique WS / `GET /data`, voir [ws-manager.md](../subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2211--calendrier-dimpulsion-adr-0045).
+
 ## Données consommées (WebSocket `/ws`)
 
 La carte pH lit :
@@ -149,12 +172,14 @@ La carte pH lit :
 - Badge multi-états : `ph_limit_reached`, `ph_daily_ml`, `ph_remaining_ml`, `ph_alert_threshold_ml` (+ `max_ph_ml_per_day` de la config)
 - Stabilisation : `ph_stab_remaining_s` (repli `stabilization_remaining_s`)
 - Pause mélange : `ph_mix_remaining_s` (repli booléen `phMixingDelayActive`)
+- Statut dosage v2.21.1 : `pulse_period_ms`, `ph_pulse_session`, `ph_pulse_ms`, `ph_pulse_phase_ms`, `ph_inject_remaining_s` (voir [section dédiée](#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211))
 
 La carte ORP lit :
 - `orp`, `orp_target`, `orp_dosing`, `orp_cal_valid`
 - Badge multi-états : `orp_limit_reached`, `orp_daily_ml`, `orp_remaining_ml`, `orp_alert_threshold_ml` (+ `max_chlorine_ml_per_day` de la config)
 - Stabilisation : `orp_stab_remaining_s` (repli `stabilization_remaining_s`)
 - Pause mélange : `orp_mix_remaining_s` (repli booléen `orpMixingDelayActive`)
+- Statut dosage v2.21.1 : `pulse_period_ms`, `orp_pulse_session`, `orp_pulse_ms`, `orp_pulse_phase_ms`, `orp_inject_remaining_s`
 
 Les cartes pH et ORP lisent aussi (feature-061) :
 - `water_present`, `measures_valid`, `measures_stab_remaining_s`, `filtration_state_stale` — segments d'état mesure + gate « Capteur indisponible » / « hors plage » + valeurs « `--` »
@@ -238,7 +263,7 @@ Le détail complet du cumul journalier (barre de progression, mL consommés / qu
 ## Fichiers
 
 - [`data/index.html:162`](../../data/index.html:162) — structure HTML du dashboard
-- [`data/app.js`](../../data/app.js) — `latestSensorData`, `updateFiltrationBadges()`, `composeSensorBadge()`, `dailyCumulSegment()`, `getDosingStopReason()`, rendu uPlot (`createMiniLineChart`)
+- [`data/app.js`](../../data/app.js) — `latestSensorData`, `updateFiltrationBadges()`, `composeSensorBadge()`, `dailyCumulSegment()`, `getDosingStopReason()`, `updateDosingStatus()` + `dosingAnchor` (v2.21.1), rendu uPlot (`createMiniLineChart`)
 - [`data/uPlot.iife.min.js`](../../data/uPlot.iife.min.js), [`data/uPlot.min.css`](../../data/uPlot.min.css) — bibliothèque uPlot 1.6.32 (voir [BUILD.md](../BUILD.md#bibliothèque-de-graphiques-uplot-frontend))
 - [`data/app.css`](../../data/app.css) — classes `.card--status`, `.compact-value`, `.dosing-status`, `.sensor-badge`
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — `broadcastSensorData()` pousse les champs consommés ici
@@ -252,4 +277,5 @@ Le détail complet du cumul journalier (barre de progression, mL consommés / qu
 - `bug-minicharts-ecretes-mobile` — graphiques étirés/écrêtés sur iPhone : règle CSS morte Chart.js supprimée, `ResizeObserver` durci (v2.18.3, voir note « Responsive / mobile » dans [Structure](#structure))
 - `feature-061-mesures-ph-orp-filtration-arretee` — mesures pH/ORP non représentatives sans circulation d'eau : badges info bleus, valeurs `--`, trous dans les courbes, dé-duplication dosing-status (v2.13.0) ; itération 2 : extension du même traitement à la température (carte/compact `--`, badges, courbe avec trous)
 - `ux-minicharts-journee-en-cours` — mini-graphiques de l'accueil limités à la **journée en cours** (minuit local) au lieu des 24 h glissantes, filtrage navigateur avant calcul des coupures, rechargement complet au passage de minuit (v2.18.9, voir [section dédiée](#plage-des-mini-graphiques--journée-en-cours-v2189))
+- `bug-dosage-fantome-duty-non-calibre` (itération 3) — statut dosage des cartes pH/ORP distinguant « commandé » (session) de « effectif » (pompe alimentée pendant un pouls) : 6 priorités d'affichage, compte à rebours de la prochaine impulsion ancré localement, dot animé/statique (v2.21.1, [ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md), voir [section dédiée](#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211))
 - `bug-points-futurs-et-ux-courbes` — tooltip toujours daté (`jj/mm hh:mm`) et typé (mesure / moyenne horaire / moyenne journalière), mini-graphiques sur 24 h (était 3 j — plage resserrée à la journée en cours en v2.18.9), coupure de courbe > 90 min entre deux points (arrêts de filtration visibles, incrémental inclus) et jour calendaire manquant sur les écrans détail (v2.18.4, voir [section dédiée](#tooltip-datétypé-et-coupures-de-courbe-v2184-bug-points-futurs-et-ux-courbes)) ; côté firmware : garde anti-futur de l'historique ([history.md](../subsystems/history.md#garde-anti-futur--purge-des-points-futurs-v2184-bug-points-futurs-et-ux-courbes))

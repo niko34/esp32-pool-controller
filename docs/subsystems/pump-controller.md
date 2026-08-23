@@ -73,6 +73,19 @@ bool isOrpMixingDelayActive(uint32_t nowMs) const;
 String getPhDoseBlockedReason() const;          // dernière cause de refus canDose(0)
 String getOrpDoseBlockedReason() const;         // dernière cause de refus canDose(1)
 
+// Caractérisation des pompes (itération 2, v2.21.0 — lecture seule, sûre depuis
+// les handlers async). Index PHYSIQUE (0 = pompe 1, 1 = pompe 2).
+uint8_t getPumpAmplitudeDuty(int pumpIndex) const;      // pumpNMaxDutyPct × 255/100
+bool isPumpFlowUncharacterized(int pumpIndex) const;    // evaluatePulseGate != None (fail-closed si index invalide)
+bool isPhPumpFlowUncharacterized() const;               // raccourci par CHIMIE (résout ph_pump)
+bool isOrpPumpFlowUncharacterized() const;              // raccourci par CHIMIE (résout orp_pump)
+
+// Calendrier d'impulsion exposé à l'UI/WS (itération 3, v2.21.1 — lecture seule,
+// AUCUN setter, aucun effet dosage). Index par CHIMIE (chem 0 = pH, 1 = ORP).
+bool isPulseSessionActive(int chem) const;         // séance ouverte (auto OU scheduled) ; false si index invalide
+uint32_t getPulseMs(int chem) const;               // durée du pouls planifié (ms), 0 = deadband ; 0 si index invalide
+uint32_t getPulsePhaseMs(int chem, uint32_t nowMs) const;  // position dans la période, clampée [0..kPulsePeriodMs] ; 0 si session inactive
+
 void setManualPump(int pumpIndex, uint8_t duty);  // test manuel
 ```
 
@@ -93,7 +106,7 @@ Ordre par cycle :
 5. Refresh des fenêtres glissantes 1 h (`refreshDosingState`).
 6. Court-circuit capteurs : `!sensors.isInitialized()` → arrêt pompes.
 7. Gate `canDose()` (cf. ci-dessous) → arrêt pompes si non autorisé (mais respecte `manualMode[i]` pour ne pas couper un test développeur en cours).
-8. Pour pH puis ORP : calcul de l'erreur, anti-cycling start/stop, PID, conversion duty via `flowToDuty()`, `applyPumpDuty()`.
+8. Pour pH puis ORP : calcul de l'erreur, anti-cycling start/stop, PID (demande de débit **moyen**), puis ordonnanceur d'impulsions (`evaluatePulseGate` → `planPulse` → `tickPulse`, [Dosage en proportionnel de temps](#dosage-en-proportionnel-de-temps-itération-2-v2210)), `applyPumpDuty()` (255 pendant le kick, amplitude calibrée sinon). *(`flowToDuty()`/`dutyToFlow()` supprimés en v2.21.0, [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md).)*
 
 ## Mode maintenance auto-guérison (v2.9.1)
 
@@ -391,7 +404,7 @@ Cette valeur est résolue par la fonction **pure** `resolveWaterPresent(WaterPre
 
 **Volontairement absents** (le manuel est aveugle à la mesure — l'opérateur assume la décision chimique) : gardes NaN / filtre capteur / calibration / mode de régulation / pause mélange. Le volume/durée évalués sont **post-plafonnement** `kManualInjectMaxDurationS` (condition pool-chemistry #3 : on évalue ce qui sera vraiment injecté).
 
-**Budget horaire partagé ([ADR-0020](../adr/0020-budget-horaire-dosage-unique.md))** : avant feature-006, le manuel ne contournait pas seulement la limite horaire — il n'était **pas compté** dans `usedMs` (jusqu'à 2× le budget/heure possible). Désormais `refreshDosingState(state, now, manualActive)` (privée, [`pump_controller.cpp:111`](../../src/pump_controller.cpp:111)) accumule `usedMs` si `state.active || manualActive`, avec pour prédicat manuel **celui du safety tracking** (`manualMode[i] && pumpDuty[i] > 0`) : injections manuelles web et **pompes test** (`/pumpN/on`, `/pumpN/duty/*`) consomment donc aussi le budget — toute future source d'activation passant par `setManualPump()` sera comptée par construction. OR unique sur un seul point d'accumulation → pas de double comptage.
+**Budget horaire partagé ([ADR-0020](../adr/0020-budget-horaire-dosage-unique.md))** : avant feature-006, le manuel ne contournait pas seulement la limite horaire — il n'était **pas compté** dans `usedMs` (jusqu'à 2× le budget/heure possible). Depuis la **v2.21.0** ([ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md)), `refreshDosingState(state, now, pumpOn)` (privée, [`pump_controller.cpp`](../../src/pump_controller.cpp)) accumule `usedMs` sur le prédicat **POMPE-ON** (pompe physiquement alimentée — pouls auto/scheduled, injection manuelle web, **pompes test** `/pumpN/on`) : entre deux pouls d'une session, le budget n'est **pas** consommé (« minutes où le produit coule », validé gate). Toute future source d'activation passant par `applyPumpDuty()` est comptée par construction. Point d'accumulation unique → pas de double comptage.
 
 **Enregistrement de cycle manuel (pending atomique)** : à l'acceptation, la route appelle `requestManualCycleRecord(pumpIndex)` (incrément `std::atomic<uint8_t> _manualCycleStartPending[2]`, thread-safe depuis `async_tcp`). Le pending est consommé **en tête de `update()`** ([`pump_controller.cpp:657`](../../src/pump_controller.cpp:657)), en `loopTask`, avant tout early-return : `recordDosingCycleStart()` (ring anti-rafale **partagé** avec l'auto) + `cyclesToday++` + flush NVS différé. Le ring et `cyclesToday` restent ainsi écrits par **une seule tâche** (pas de mutex). Les getters `getCyclesToday()` / `getRecentCycles()` **ajoutent le pending** non consommé : deux starts manuels rapprochés se voient mutuellement (fail-closed). Lectures snapshot sans mutex : compteurs écrits en `loopTask` uniquement, lectures 32 bits atomiques sur ESP32 (course bénigne : au pire une valeur en retard d'un tour de loop).
 
@@ -407,7 +420,7 @@ Cette valeur est résolue par la fonction **pure** `resolveWaterPresent(WaterPre
 
 **Routes d'arrêt** (`/ph/inject/stop`, `/orp/inject/stop`, `/pump[12]/off`) : **inconditionnelles** — pouvoir arrêter en toute circonstance, y compris pendant une stabilisation.
 
-**Crédit plancher à la fin naturelle (v2.9.1)** : le cumul journalier de sécurité (`dailyPhInjectedMl` / `dailyOrpInjectedMl`) est alimenté par **intégration débit × temps** (`updateSafetyTracking`), qui perd systématiquement quelques dixièmes de mL aux bornes d'une injection manuelle volumée : arrondi de `durationS` à la seconde entière, tranche entre le démarrage réel (handler async) et le premier tick de comptage, et surtout **dernière tranche jamais comptée** (`updateManualInject()` coupe la pompe à l'expiration → au tick suivant le delta final est jeté). La garde d'acceptation raisonnant, elle, en **volume exact** (garde #5, frontière `==` acceptée), demander exactement le reliquat du quota (limite 50 mL, injection 50 mL) laissait le cumul à 49,x → `ph/orp_limit_reached` jamais latché, badge dashboard « Cumul 98 % » figé.
+**Crédit plancher à la fin naturelle (v2.9.1)** : le cumul journalier de sécurité (`dailyPhInjectedMl` / `dailyOrpInjectedMl`) est alimenté par **intégration débit × temps** (`updateSafetyTracking` à l'époque — depuis v2.21.0 : `accountPumpVolume` + `creditInjectedVolume`, voir [Comptabilité du volume](#comptabilité-du-volume-p4)), qui perd systématiquement quelques dixièmes de mL aux bornes d'une injection manuelle volumée : arrondi de `durationS` à la seconde entière, tranche entre le démarrage réel (handler async) et le premier tick de comptage, et surtout **dernière tranche jamais comptée** (`updateManualInject()` coupe la pompe à l'expiration → au tick suivant le delta final est jeté). La garde d'acceptation raisonnant, elle, en **volume exact** (garde #5, frontière `==` acceptée), demander exactement le reliquat du quota (limite 50 mL, injection 50 mL) laissait le cumul à 49,x → `ph/orp_limit_reached` jamais latché, badge dashboard « Cumul 98 % » figé.
 
 Correctif : à l'acceptation, la route mémorise dans `ManualInjectState` le cumul au départ (`startCumulMl`) et le volume promis post-plafonnement (`creditMl = effectiveMl`) ([`web_routes_control.cpp:335`](../../src/web_routes_control.cpp:335)). À la **fin naturelle** (expiration de `durationMs`), `updateManualInject()` appelle `creditManualInjectionFloor(idx, startCumulMl, creditMl)` ([`pump_controller.cpp:675`](../../src/pump_controller.cpp:675)) qui **planche** le registre de sécurité :
 
@@ -422,7 +435,7 @@ Correctif : à l'acceptation, la route mémorise dans `ManualInjectState` le cum
 
 - **Propriété fail-safe (validée pool-chemistry)** : le registre de sécurité **ne sous-compte jamais** un volume promis et injecté en entier ; il peut **sur-compter de quelques dixièmes de mL** (conservateur — la limite journalière se déclenche au plus tôt, jamais au plus tard).
 - **Suivi produit NON planché** : `productCfg.phTotalInjectedMl` / `orpTotalInjectedMl` (stock) restent sur l'intégration réelle → peuvent **sous-estimer légèrement la consommation** (dérive cumulative possible sur les fractions de mL au fil des injections manuelles). Assumé : le stock est un indicateur, pas un registre de sécurité.
-- Exécution en `loopTask` uniquement (mêmes règles d'accès aux compteurs qu'`updateSafetyTracking` : écrivain unique, pas de mutex) ; ajustement effectif → `_dailyCountersDirty` armé (flush NVS différé).
+- Exécution en `loopTask` uniquement (mêmes règles d'accès aux compteurs que la comptabilité de volume : écrivain unique, pas de mutex) ; ajustement effectif → `_dailyCountersDirty` armé (flush NVS différé).
 - **Logs `info`** : `[Sécurité] Compteur journalier pH|ORP ajusté de X à Y mL (crédit fin d'injection manuelle)` (émis seulement si un ajustement a réellement eu lieu) ; le log de fin de durée mentionne désormais le cumul crédité : `[Injection] pH|ORP arrêtée automatiquement (fin de durée) — cumul crédité à X mL`.
 
 **Écrêtage au reliquat journalier (v2.9.2)** : les routes `/ph|orp/inject/start` ([`web_routes_control.cpp:297`](../../src/web_routes_control.cpp:297) et [`:392`](../../src/web_routes_control.cpp:392)) n'opposent plus le refus `daily_limit` quand la demande dépasse le reliquat (`max*MlPerDay − daily*InjectedMl`) : la demande est **écrêtée au reliquat** — durée recalculée arrondie **vers le bas** (`floor` volontaire : le volume effectif ne re-déborde jamais la limite), log `info` `[Injection] pH|ORP : volume écrêté de X à Y mL (reliquat journalier)`. Interaction avec le crédit plancher ci-dessus :
@@ -498,11 +511,11 @@ Corollaire du correctif : avant lui, une régulation qui décidait de doser **sa
 | | |
 |---|---|
 | Niveau | `WARNING` |
-| Message | `[Dosage pH] démarrage décidé mais AUCUN débit commandé — régulation sans effet (boucle trop lente, ou consigne sous le plancher de duty). Erreur=<e>` (symétrique ORP, erreur en mV) |
-| Throttle | `kDosingNoFlowWarnIntervalMs = 300000` ms (**5 min**), compteur **indépendant** par grandeur ([`constants.h:706`](../../src/constants.h:706)) |
-| Condition | `startDecided && !active` |
+| Message | `[Dosage pH] décision de doser SANS débit commandé depuis <n> tours — régulation sans effet (boucle trop lente, ou consigne sous le plancher de duty). Erreur=<e>` (symétrique ORP, erreur en mV) |
+| Throttle | streak ≥ `kDosingNoFlowWarnStreak = 5` tours consécutifs **ET** `kDosingNoFlowWarnIntervalMs = 300000` ms (**5 min**), compteurs **indépendants** par grandeur ([`constants.h`](../../src/constants.h)) |
+| Condition | `startDecided && !active` **et** (v2.21.0) ni refus de **seuil C** ni refus de **gate de caractérisation** |
 
-⚠️ **Comment le lire.** Le premier tour de chaque cycle remplissant cette condition par construction (voir ci-dessus), **une occurrence isolée au démarrage d'un cycle est normale**. Ce qui est anormal, c'est une occurrence **toutes les 5 min en continu** : la régulation décide alors de doser sans que rien ne sorte (boucle trop lente pour repasser sous les 10 s, ou consigne de débit sous le plancher de duty). Le throttle de 5 min est délibéré — il évite de réintroduire l'inondation du journal corrigée en v2.20.2 (voir [logger.md](logger.md#rétention-réelle-du-journal-persistant-v2202)).
+⚠️ **Comment le lire.** Le premier tour de chaque cycle remplissant la condition de base par construction (voir ci-dessus), le streak de 5 tours filtre le régime sain (série de 1 en nominal). Ce qui est anormal, c'est une occurrence **toutes les 5 min en continu** : la régulation décide alors de doser sans que rien ne sorte. Depuis la v2.21.0, deux états **normaux et persistants** ne nourrissent **pas** le streak (sinon inondation type 2.20.2) : le refus de **seuil C** (deadband — l'erreur ne justifie pas encore un pouls ≥ 5 s, info throttlé dédié) et le refus de **gate** (pompe non caractérisée / amplitude sous plancher — critical throttlé dédié). Le WARN reste réservé aux vrais cas anormaux (PID muet plusieurs tours). Voir [logger.md](logger.md#rétention-réelle-du-journal-persistant-v2202).
 
 ## Limite de cycles/jour configurable (garde 9, feature-060, v2.12.0)
 
@@ -519,7 +532,7 @@ La garde 9 anti-cycling (`cyclesToday >= maxCyclesPerDay` dans `evaluateDose` / 
 - **Effet immédiat** : le compteur `cyclesToday` en cours n'est **pas** remis à zéro à la modification — seule la borne de comparaison change (dans les deux sens).
 - **Inchangés** : exemption `cyclesToday` du mode `scheduled` ([ADR-0021](../adr/0021-repartition-scheduled.md)), anti-rafale, limites volumétriques/horaire, ordre des gardes, message UI « Limite cycles/jour atteinte — reprise à minuit ».
 
-> **Double validation `pool-chemistry` (2026-07-29)** : GO pré-design **sous conditions** (48, bornes 10-60, clamp serveur, logs — conditions toutes implémentées) + **GO** sur re-validation du diff d'implémentation. Voir [feature-060](../../specs/features/doing/feature-060-limite-cycles-configurable.md).
+> **Double validation `pool-chemistry` (2026-07-29)** : GO pré-design **sous conditions** (48, bornes 10-60, clamp serveur, logs — conditions toutes implémentées) + **GO** sur re-validation du diff d'implémentation. Voir [feature-060](../../specs/features/todo/feature-060-limite-cycles-configurable.md).
 
 ## Anti-rafale & rollover journalier (logique pure)
 
@@ -601,28 +614,84 @@ Points clés :
 - Les deux peuvent coïncider (ex. filtration qui redémarre juste après une dose) : `canDose()` attend que **les deux** soient levées.
 - **Observabilité (v2.19.1)** : le temps restant est poussé au WS — stabilisation `ph/orp_stab_remaining_s`, pause mélange `ph/orp_mix_remaining_s` (getter `getMixingRemainingS(pumpIndex)`) — et affiché sur le widget du tableau de bord (« Stabilisation : … » / « Pause mélange : … »).
 
-## Conversion duty ↔ débit
+## Dosage en proportionnel de temps (itération 2, v2.21.0)
 
-Implémentée dans [`pump_controller.cpp:227`](../../src/pump_controller.cpp:227) (`dutyToFlow`) et [`pump_controller.cpp:233`](../../src/pump_controller.cpp:233) (`flowToDuty`) :
+> **[ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)** — le modèle linéaire duty↔débit (`dutyToFlow`/`flowToDuty`, `kPumpMinFlowMlPerMin`/`kPumpMaxFlowMlPerMin`) est **SUPPRIMÉ**. Mesure au banc du 2026-08-23 : à duty 82 il créditait 6,4 mL/min pour **12,0 mesurés** (×1,9), à 255 il supposait 90 mL/min pour **61,0 mesurés** (×1,5). C'était la cause du **dosage fantôme** (volume compté sur de l'acide qui ne sortait pas — 479 mL fictifs en 75 min).
 
-- `MIN_ACTIVE_DUTY = 80` ([`config.h:28`](../../src/config.h:28)) — duty PWM minimum sous lequel la pompe ne tourne pas (vaincre couple statique).
-- `MAX_PWM_DUTY = 255` ([`config.h:27`](../../src/config.h:27)) — résolution PWM 8 bits.
-- `kPumpMinFlowMlPerMin = 5.2`, `kPumpMaxFlowMlPerMin = 90.0` ([`constants.h:85`](../../src/constants.h:85)) — débits par défaut, surchargés par `pumpMaxFlowMlPerMin` configuré.
+Le débit **moyen** demandé par la régulation est désormais réalisé par la **fraction du temps de marche** de la pompe, à une **amplitude unique dont le débit a été pesé**. Logique pure dans [`src/pulse_dosing_logic.{h,cpp}`](../../src/pulse_dosing_logic.h) ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md), testée en natif) ; `pump_controller.cpp` est la coquille (état `_pulseState`/`_pulseMs`/`_pulseSession` par chimie).
 
-Formule (interpolation linéaire) :
+### Machine à états (par chimie, [0] = pH, [1] = ORP)
 
 ```
-flow = minFlow + ((duty − MIN_ACTIVE_DUTY) / (MAX_PWM_DUTY − MIN_ACTIVE_DUTY)) × (maxFlow − minFlow)   si duty ≥ 80
-flow = 0                                                                                                   si duty <  80
-
-duty = MIN_ACTIVE_DUTY + round( ((flow − minFlow) / (maxFlow − minFlow)) × (MAX_PWM_DUTY − MIN_ACTIVE_DUTY) )
+demande PID (mL/min moyen)
+  │
+  ├─ evaluatePulseGate(ampDuty, calibratedDuty, ampFlow, MIN_ACTIVE_DUTY)
+  │    ≠ None → REFUS (critical throttlé 30 min, badge UI) — fin de session
+  │
+  ├─ planPulse(demande, ampFlow, 60 s, 5 s)  — à l'entrée de session et à chaque
+  │    frontière de période
+  │    refused (seuil C : pouls < 5 s) → REFUS (info throttlé 30 min) — deadband normal
+  │
+  └─ tickPulse(...) chaque tour :
+       pouls : [ kick 400 ms à duty 255 ][ plateau à l'amplitude ]……… repos ………
+       période fixe 60 s, réancrée à chaque frontière (dérive ≤ un tour de loop)
 ```
 
-`flowToDuty` clampe `flow` à `[minFlow, maxFlow]` avant calcul. `flow ≤ 0` → duty 0.
+- **Amplitude** = `pumpN_max_duty_pct × 255 / 100` (getter `getPumpAmplitudeDuty(pumpIndex)`). Le réglage garde sa sémantique PWM mais est borné **[40..100] %** (`kPumpAmpMinPct = 40` ⇒ 102 counts ≥ `MIN_ACTIVE_DUTY = 98`) — serveur (`/save-config`) **et** UI (slider `min=40`).
+- **Kick** : chaque pouls démarre par `kPulseKickMs = 400 ms` à duty 255 (couple de décollage à froid — symptôme terrain : rotation entretenue OK à 82, non-démarrage au même duty), puis retombe à l'amplitude.
+- **Condition B3** : période **fixe** `kPulsePeriodMs = 60 s`, pouls minimal `kPulseMinMs = 5 s`.
+- **Condition B2** : une amplitude sous `MIN_ACTIVE_DUTY = 98` (Dmin mesuré 82 + 16 counts de marge P2) → **refus + critical**, jamais un clamp silencieux.
 
-> ⚠️ **Limite connue, NON corrigée à ce jour (v2.20.5) : ce modèle n'est pas caractérisé sur le matériel réel.** Une pompe péristaltique n'a pas un débit proportionnel au rapport cyclique en bas de plage — sous un certain seuil elle cale, et autour de ce seuil son débit est erratique ; le modèle linéaire ci-dessus suppose l'inverse. En pratique le régulateur commande **82/255** (~32 %) pour une erreur de 0,8 pH — deux counts au-dessus de `MIN_ACTIVE_DUTY` — valeur à laquelle la pompe ne tourne **que par intermittence**, alors que le modèle la crédite de **6,4 mL/min**. La comptabilité intégrant le **débit commandé** et jamais un débit mesuré, `ph_daily_ml` monte alors sur de l'acide qui ne sort pas du bidon (vérifié on-target : 479 mL comptés en 75 min actives = exactement `dutyToFlow(82)`).
->
-> Le paramètre [`?duty=N` de `POST /pumpN/on`](../API.md#post-pump1on-pump1off--write) (v2.20.5) est l'outil de la mesure au banc qui permettra de fixer `MIN_ACTIVE_DUTY`, `kPumpMinFlowMlPerMin` et `pump_max_flow_ml_per_min` sur les vraies valeurs. Option retenue par le gate `pool-chemistry` : proportionnel de **temps** à un duty franc mesuré + plancher de refus sous le pouls minimal — **pas** un simple recalibrage du modèle linéaire. Voir [`specs/features/todo/bug-dosage-fantome-duty-non-calibre.md`](../../specs/features/todo/bug-dosage-fantome-duty-non-calibre.md).
+### Gate de caractérisation (fail-closed, P4)
+
+`evaluatePulseGate()` refuse tout dosage automatique **et** programmé si :
+
+| Cas | `PulseRefusal` | Log |
+|---|---|---|
+| `pumpN_calibrated_duty == 0` (pompe jamais pesée — **défaut usine et après mise à jour**) | `FlowUncharacterized` | `CRITICAL` throttlé 30 min |
+| Débit pesé implausible (NaN, ≤ 0, > `kPulseFlowMaxMlPerMin = 200`) | `FlowUncharacterized` | idem |
+| **Amplitude ≠ duty calibré** (le débit n'est mesuré qu'à l'amplitude pesée) | `FlowUncharacterized` | idem |
+| Amplitude < `MIN_ACTIVE_DUTY` | `AmplitudeBelowMinActive` | `CRITICAL` throttlé 30 min (B2) |
+| Demande < débit_amplitude × 5/60 (pouls < 5 s) | `BelowMinPulse` (verdict de `planPulse`) | `INFO` throttlé 30 min (seuil C, deadband normal) |
+
+**AUCUNE interpolation nulle part** : les deux seuls débits connus sont la pesée à l'amplitude (`pumpN_pulse_flow_ml_per_min`) et la pesée à 255 (`kPump1Flow255MlPerMin = 61` / `kPump2Flow255MlPerMin = 67`, [`constants.h`](../../src/constants.h) — +10 % d'écart tube entre deux pompes identiques, d'où la calibration **par pompe**). L'état est exposé à l'UI/WS : `isPumpFlowUncharacterized(pumpIndex)` (+ raccourcis par chimie `isPhPumpFlowUncharacterized()` / `isOrpPumpFlowUncharacterized()`) → badge « Débit non caractérisé — pesée requise » et champs `/data` `ph/orp_pump_flow_uncharacterized`, `ph/orp_pump_amplitude_duty`.
+
+**Persistance NVS** : `p1_cal_duty` / `p1_pulse_flow` / `p2_cal_duty` / `p2_pulse_flow`. L'ancienne clé partagée `pump_max_flow` est **supprimée SANS conversion** (purgée au premier `saveMqttConfig()`) : c'est le modèle faux qu'on retire. Une valeur NVS implausible est neutralisée à 0 (non caractérisé) au chargement, avec `warning`.
+
+### Comptabilité du volume (P4)
+
+`accountPumpVolume(chem, physIdx, now, manualActive)` crédite par **delta de tick** (attribution arrière — le volume du delta est celui de la commande posée au tour précédent) :
+
+- **Pouls auto/scheduled** : `pulseDeltaVolumeMl()` — la part du delta recouvrant le kick est créditée au **débit 255 mesuré**, le reste au **débit d'amplitude pesé**. Exact au jitter de loop près (seule la géométrie du pouls compte). *Limite connue* : la transition kick→plateau est vue au premier tick après 400 ms → sous-comptage ~0,1 mL/pouls, borné.
+- **Manuel `?duty=N`** : crédit au **MAJORANT** débit-255 (surestimer est fail-safe), **sauf** `duty == calibrated_duty` → débit pesé exact.
+- **Jamais zéro sur une pompe alimentée** (prescription P4).
+
+Remplace `updateSafetyTracking(flow, delta)` par `creditInjectedVolume(isPhPump, volumeMl)` : le volume est calculé en amont, plus jamais dérivé d'un débit de modèle.
+
+### Sessions, cycles, budget horaire
+
+- **Cycle = session** : `cyclesToday`, le ring anti-rafale et la ligne `Démarrage dosage` comptent la **session** (invariant v2.20.5 conservé) — les impulsions internes n'incrémentent **rien**.
+- La **pause mélange** s'arme en **fin de session** (y compris fin par seuil C ou gate), jamais entre deux pouls.
+- **Limite horaire (`usedMs`) et temps minimum d'injection : temps POMPE-ON** ([ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md), validé gate) — `refreshDosingState(state, now, pumpOn)` accumule quand la pompe est physiquement alimentée (pouls, manuel, test), et `shouldContinueDosing(error, stopThreshold, sessionOnMs)` raisonne sur le temps pompe-ON cumulé de la session (`_sessionOnMs`). Sémantique chimique : « minutes où le produit coule ».
+- Log d'arrêt de session : `Arrêt dosage pH (auto): session=Xs pompe-ON=Ys vol≈Z mL total jour=…` (symétrique ORP).
+
+### Exposition du calendrier d'impulsion (itération 3, v2.21.1)
+
+Trois getters **lecture seule** ([ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md)) exposent l'état du train d'impulsions à l'UI/WS, par **chimie** (chem 0 = pH, 1 = ORP) :
+
+- `isPulseSessionActive(chem)` — séance de dosage ouverte (auto **ou** scheduled) = `_pulseSession[chem]`. C'est l'état « commandé » (ce que disent déjà `isPhDosing()`/`isOrpDosing()` côté auto).
+- `getPulseMs(chem)` — durée du pouls **planifié** pour la période courante (`_pulseMs[chem]`). `0` = deadband (période sans pouls, seuil C).
+- `getPulsePhaseMs(chem, nowMs)` — position dans la période : `nowMs − periodStartMs` en arithmétique uint32 **non signée** (wrap-safe au rollover de `millis()`), **clampée [0..`kPulsePeriodMs`]**, **relative** (jamais un `millis()` absolu — le client l'ancre sur sa propre horloge). `0` si session inactive. **Pompe alimentée ⇔ `phase < pulse_ms`.**
+
+Garanties : **aucun setter associé**, aucun chemin de décision de dosage traversé ; gardes d'index **fail-closed** (`chem` hors [0..1] → `false`/`0`). **Course bénigne assumée** (patron `isAnyPumpEnergized`/`getPumpAmplitudeDuty`) : `_pulseSession`/`_pulseMs`/`_pulseState` sont écrits par loopTask et lus depuis le contexte web async — lectures 8/32 bits atomiques sur Xtensa, pire cas un instantané en retard d'un tour de loop. Consommateurs : `GET /data` et push WS `sensor_data` (7 champs `pulse_*`, [ws-manager.md](ws-manager.md#champs-sensor_data-ajoutés-en-v2211--calendrier-dimpulsion-adr-0045)) → statut dosage des cartes pH/ORP ([page-dashboard.md](../features/page-dashboard.md#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211)).
+
+### Injection manuelle volumée (`/ph|orp/inject/start`)
+
+Plus jamais de durée déduite du modèle linéaire (`calcInjectFlow` supprimé). `planManualInject()` ([`web_routes_control.cpp`](../../src/web_routes_control.cpp)) ne connaît que **deux points** :
+
+- amplitude configurée **== duty calibré** → duty calibré, débit pesé ;
+- sinon → duty **forcé à 255**, débit `kPumpNFlow255MlPerMin` (durée volume/débit exacte) ;
+- état incohérent (duty calibré posé mais débit pesé invalide) → **409 `flow_uncharacterized`** + `critical`. Voir [API.md](../API.md#codes-de-refus-409-v260).
 
 ## Paramètres en dur (récapitulatif)
 
@@ -644,10 +713,16 @@ duty = MIN_ACTIVE_DUTY + round( ((flow − minFlow) / (maxFlow − minFlow)) × 
 | Dosage — throttle du `WARN` « aucun débit commandé » (v2.20.5) | `kDosingNoFlowWarnIntervalMs` | 300 000 ms (5 min) | [`constants.h:706`](../../src/constants.h:706) |
 | Deadband pH | `PH_DEADBAND` | 0.01 | [`config.h:25`](../../src/config.h:25) |
 | Deadband ORP | `ORP_DEADBAND` | 2.0 mV | [`config.h:26`](../../src/config.h:26) |
-| Pompe — duty min actif | `MIN_ACTIVE_DUTY` | 80 (sur 255) | [`config.h:28`](../../src/config.h:28) |
+| Pompe — plancher de rotation (**98 en v2.21.0** : Dmin mesuré 82 + 16 counts marge P2) | `MIN_ACTIVE_DUTY` | 98 (sur 255) | [`config.h`](../../src/config.h) |
 | Pompe — duty max | `MAX_PWM_DUTY` | 255 (8 bits) | [`config.h:27`](../../src/config.h:27) |
-| Pompe — débit min | `kPumpMinFlowMlPerMin` | 5.2 mL/min | [`constants.h:85`](../../src/constants.h:85) |
-| Pompe — débit max | `kPumpMaxFlowMlPerMin` | 90.0 mL/min | [`constants.h:86`](../../src/constants.h:86) |
+| Impulsions — période fixe (B3, v2.21.0) | `kPulsePeriodMs` | 60 000 ms (1 min) | [`constants.h`](../../src/constants.h) |
+| Impulsions — pouls minimal (B3, seuil C) | `kPulseMinMs` | 5 000 ms (5 s) | [`constants.h`](../../src/constants.h) |
+| Impulsions — kick de décollage à 255 | `kPulseKickMs` | 400 ms | [`constants.h`](../../src/constants.h) |
+| Pompe 1 — débit **pesé** à 255 (2026-08-23) | `kPump1Flow255MlPerMin` | 61,0 mL/min | [`constants.h`](../../src/constants.h) |
+| Pompe 2 — débit **pesé** à 255 (2026-08-23) | `kPump2Flow255MlPerMin` | 67,0 mL/min | [`constants.h`](../../src/constants.h) |
+| Amplitude — plancher du réglage `pumpN_max_duty_pct` | `kPumpAmpMinPct` | 40 % (≈ 102 counts) | [`constants.h`](../../src/constants.h) |
+| Calibration — plausibilité du débit pesé | `kPulseFlowMaxMlPerMin` | 200 mL/min | [`constants.h`](../../src/constants.h) |
+| Impulsions — throttle des logs de refus (gate critical / seuil C info) | `kPulseRefusalLogIntervalMs` | 1 800 000 ms (30 min) | [`constants.h`](../../src/constants.h) |
 | Stabilisation post-cal pH (feature-021) | `kStabilizationDurationPhMs` | 300 000 ms (5 min) | [`constants.h`](../../src/constants.h) |
 | Stabilisation post-cal ORP (feature-021) | `kStabilizationDurationOrpMs` | 180 000 ms (3 min) | [`constants.h`](../../src/constants.h) |
 | Anti-rafale — fenêtre 1 min (Pass 3.5) | `kMaxDosingCyclesPerMinute` | 6 | [`constants.h`](../../src/constants.h) |
@@ -687,7 +762,7 @@ Côté coquille (`pump_controller.cpp`) :
 - **Horizon** : `remainingRangeMinutes(nowMin, start, end)` ([`src/schedule_logic.h`](../../src/schedule_logic.h)) — minutes restantes de la plage de filtration, **bornées à minuit** (reset des compteurs journaliers, [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md)). **Hors mode d'installation `managed`** (feature-056 : `installMode != ManagedFiltration`), horizon = `1440 − nowMin` : le dosage hors plage reste permis (eau présumée 24/7 en `powered`, horizon plein en `external` borné par la garde présence d'eau). Comportement de l'ex-`continu` préservé.
 - **Ring anti-rafale consulté AVANT tout démarrage** (condition pool-chemistry n°1) : transition inactive → active refusée si `kMaxDosingCyclesPerMinute` (6/min) ou `kMaxDosingCyclesPer15Min` (20/15 min) atteint — mêmes seuils et fenêtres que `canDose`, ring **partagé** auto + manuel + scheduled. Chaque démarrage est enregistré via `recordDosingCycleStart()`.
 - **Exemption `cyclesToday` conservée** (arbitrage R4 validé pool-chemistry) : les démarrages scheduled n'incrémentent pas `maxCyclesPerDay`, car ils sont **bornés structurellement** (≤ 4/h par le cadencement 15 min) et gardés par le ring anti-rafale. Voir [ADR-0021](../adr/0021-repartition-scheduled.md).
-- **Débit effectif unique** (condition n°5) : la même variable `effectiveFlowMlPerMin` (`maxFlowMlPerMin × pumpNMaxDutyPct`) sert au bornage horaire, à la durée d'injection et au duty PWM.
+- **Débit effectif unique** (condition n°5) : la même variable `effectiveFlowMlPerMin` sert au bornage horaire, à la durée d'injection et au duty. **v2.21.0** : c'est le **débit pesé à l'amplitude calibrée** (`pumpN_pulse_flow_ml_per_min`) — la branche scheduled dose **en continu à l'amplitude** (kick en démarrage de session) et passe par la **même gate de caractérisation** que l'auto : pompe non caractérisée → `CRITICAL [Scheduled] Pompe pH|ORP non caractérisée … — dosage programmé BLOQUÉ (pesée au banc requise)`, throttlé 30 min.
 - **Plafonnement `maxPhMlPerDay` / `maxChlorineMlPerDay`** et logs existants conservés ; reset PID anti-windup conservé.
 - **Reliquat à minuit** : `tickDailyRollover()` logge en `info` le volume non injecté (`[Scheduled] Reliquat pH perdu au passage de minuit : X mL non injectés`) puis réarme les fenêtres (`_*SchedWindowIdx = -1`). **Pas de rattrapage J+1** (décision produit, ADR-0021).
 - **Diagnostic WS** : accesseurs publics `getPhScheduledPlannedFlow()` / `getOrpScheduledPlannedFlow()` (débit moyen planifié restant `remaining / horizon`, mL/min ; `NAN` hors scheduled / hors plage / heure invalide) → champs WS `ph/orp_scheduled_flow_ml_per_min` (`null` si `NAN`).
@@ -793,14 +868,15 @@ Hors compteurs journaliers, la **trace de bascule automatique pH** est persisté
 - [`src/pump_controller.h`](../../src/pump_controller.h), [`src/pump_controller.cpp`](../../src/pump_controller.cpp)
 - [`src/config.h:152`](../../src/config.h:152) — `PumpProtection`
 - [`src/config.h:141`](../../src/config.h:141) — `SafetyLimits`
-- [`src/constants.h:84`](../../src/constants.h:84) — `kPumpMinFlowMlPerMin`, `kPumpMaxFlowMlPerMin`
+- [`src/constants.h`](../../src/constants.h) — `kPulsePeriodMs`, `kPulseMinMs`, `kPulseKickMs`, `kPump1Flow255MlPerMin`, `kPump2Flow255MlPerMin`, `kPumpAmpMinPct`, `kPulseFlowMaxMlPerMin`, `kPulseRefusalLogIntervalMs` (v2.21.0)
+- [`src/pulse_dosing_logic.h`](../../src/pulse_dosing_logic.h), [`src/pulse_dosing_logic.cpp`](../../src/pulse_dosing_logic.cpp) — ordonnanceur d'impulsions pur (gate, plan, tick, volume — v2.21.0)
 - [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036) + gardes d'injection manuelle `evaluateManualInject` (feature-006) + répartition scheduled `evaluateScheduledDose` (feature-011)
 - [`src/schedule_logic.h`](../../src/schedule_logic.h), [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) — `remainingRangeMinutes` (horizon de répartition scheduled, feature-011)
-- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053), [ADR-0026](../adr/0026-mode-installation.md) (Mode d'installation — 3 archétypes de câblage + résolution unique de la présence d'eau, feature-056), [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) (offset pH en sortie des accesseurs + filets sur le brut, feature-067)
+- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053), [ADR-0026](../adr/0026-mode-installation.md) (Mode d'installation — 3 archétypes de câblage + résolution unique de la présence d'eau, feature-056), [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) (offset pH en sortie des accesseurs + filets sur le brut, feature-067), [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md) (proportionnel de temps à amplitude calibrée, v2.21.0), [ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md) (budget horaire et temps min en temps pompe-ON, v2.21.0)
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — entrée filtrée, anti-windup, pause mélange, zone morte
 - [feature-036](../../specs/features/done/feature-036-dosage-testable-decision-pure.md) — extraction de la décision de dosage en module pur testable
 - [feature-039](../../specs/features/done/feature-039-anti-rafale-rollover-testable.md) — extraction de l'anti-rafale + déclencheurs de rollover en logique pure testable
-- [feature-011](../../specs/features/doing/feature-011-repartition-24h-programmee.md) — répartition du volume quotidien scheduled par fenêtres de 15 min
-- [bug-dosage-fantome-duty-non-calibre](../../specs/features/todo/bug-dosage-fantome-duty-non-calibre.md) — **spec ouverte** : défaut n°2 (double comptage) livré en v2.20.5 ; défaut n°1 (duty non caractérisé) en attente de mesure au banc
+- [feature-011](../../specs/features/todo/feature-011-repartition-24h-programmee.md) — répartition du volume quotidien scheduled par fenêtres de 15 min
+- [bug-dosage-fantome-duty-non-calibre](../../specs/features/todo/bug-dosage-fantome-duty-non-calibre.md) — **spec ouverte** : défaut n°2 (double comptage) livré en v2.20.5 ; défaut n°1 (modèle duty↔débit) livré en **v2.21.0** (proportionnel de temps, [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)/[ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md)) ; défaut n°3 (UI commandé/effectif) = itération 3 restante
 - [page-ph.md](../features/page-ph.md), [page-orp.md](../features/page-orp.md) — UI consommatrices

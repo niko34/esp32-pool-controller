@@ -10,8 +10,13 @@ MqttConfig mqttCfg;
 FiltrationConfig filtrationCfg;
 LightingConfig lightingCfg;
 AuthConfig authCfg;
-PumpControlParams phPumpControl  = {kPumpMinFlowMlPerMin, kPumpMaxFlowMlPerMin, kPhMaxError};
-PumpControlParams orpPumpControl = {kPumpMinFlowMlPerMin, kPumpMaxFlowMlPerMin, kOrpMaxError};
+// bug-dosage-fantome itération 2 : le modèle linéaire duty↔débit est retiré
+// (kPumpMinFlowMlPerMin / kPumpMaxFlowMlPerMin supprimés). Ces params ne
+// servent plus qu'à l'ESTIMATION de l'injection manuelle volumée
+// (web_routes_control, refonte prévue par l'agent web) : minFlow 0 (plus de
+// clamp vers le haut), maxFlow = débit MESURÉ à 255 de la pompe par défaut.
+PumpControlParams phPumpControl  = {0.0f, kPump1Flow255MlPerMin, kPhMaxError};
+PumpControlParams orpPumpControl = {0.0f, kPump2Flow255MlPerMin, kOrpMaxError};
 SafetyLimits safetyLimits;
 PumpProtection pumpProtection;
 ProductConfig productCfg;
@@ -216,10 +221,17 @@ void saveMqttConfig() {
   // v2.17.1 : la clé NVS "screen_enabled" n'est plus écrite ni lue (support
   // écran retiré) — la clé résiduelle des appareils existants est inoffensive.
 
-  // Puissance maximale des pompes
+  // Amplitude des pompes (itération 2 : % → duty du plateau d'impulsion)
   prefs.putUChar("pump1_max_duty", mqttCfg.pump1MaxDutyPct);
   prefs.putUChar("pump2_max_duty", mqttCfg.pump2MaxDutyPct);
-  prefs.putFloat("pump_max_flow", mqttCfg.pumpMaxFlowMlPerMin);
+  // Caractérisation mesurée (proportionnel de temps, option B+C). Clés ≤ 15 car.
+  prefs.putUChar("p1_cal_duty", mqttCfg.pump1CalibratedDuty);
+  prefs.putFloat("p1_pulse_flow", mqttCfg.pump1PulseFlowMlPerMin);
+  prefs.putUChar("p2_cal_duty", mqttCfg.pump2CalibratedDuty);
+  prefs.putFloat("p2_pulse_flow", mqttCfg.pump2PulseFlowMlPerMin);
+  // Purge de l'ancienne clé du modèle linéaire (pump_max_flow) à la première
+  // sauvegarde : AUCUNE conversion — c'est le modèle faux qu'on retire.
+  prefs.remove("pump_max_flow");
 
   // Limites de sécurité
   prefs.putFloat("max_ph_ml", safetyLimits.maxPhMlPerDay);
@@ -431,12 +443,33 @@ void loadMqttConfig() {
   authCfg.sensorLogsEnabled = prefs.getBool("sensor_logs", false);
   authCfg.debugLogsEnabled = prefs.getBool("debug_logs", false);
 
-  // Puissance maximale des pompes
+  // Amplitude des pompes (itération 2 : % → duty du plateau d'impulsion)
   mqttCfg.pump1MaxDutyPct = prefs.getUChar("pump1_max_duty", mqttCfg.pump1MaxDutyPct);
   mqttCfg.pump2MaxDutyPct = prefs.getUChar("pump2_max_duty", mqttCfg.pump2MaxDutyPct);
-  mqttCfg.pumpMaxFlowMlPerMin = prefs.getFloat("pump_max_flow", mqttCfg.pumpMaxFlowMlPerMin);
-  phPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
-  orpPumpControl.maxFlowMlPerMin = mqttCfg.pumpMaxFlowMlPerMin;
+  // Caractérisation mesurée des pompes. Clés absentes (appareil existant) →
+  // défauts 0 = NON CARACTÉRISÉ (fail-closed : dosage auto/programmé refusé
+  // tant que la pesée n'a pas été saisie). SURTOUT PAS de conversion depuis
+  // l'ancienne clé pump_max_flow (modèle linéaire faux, purgé au prochain save).
+  mqttCfg.pump1CalibratedDuty = prefs.getUChar("p1_cal_duty", 0);
+  mqttCfg.pump1PulseFlowMlPerMin = prefs.getFloat("p1_pulse_flow", 0.0f);
+  mqttCfg.pump2CalibratedDuty = prefs.getUChar("p2_cal_duty", 0);
+  mqttCfg.pump2PulseFlowMlPerMin = prefs.getFloat("p2_pulse_flow", 0.0f);
+  // Garde fail-closed : une valeur NVS implausible (corruption) est neutralisée
+  // à 0 (non caractérisé) plutôt qu'utilisée pour créditer un volume fictif.
+  if (!isfinite(mqttCfg.pump1PulseFlowMlPerMin) || mqttCfg.pump1PulseFlowMlPerMin < 0.0f ||
+      mqttCfg.pump1PulseFlowMlPerMin > kPulseFlowMaxMlPerMin) {
+    systemLogger.warning("[Config] p1_pulse_flow NVS implausible (" +
+                         String(mqttCfg.pump1PulseFlowMlPerMin, 1) + ") — pompe 1 non caractérisée");
+    mqttCfg.pump1PulseFlowMlPerMin = 0.0f;
+    mqttCfg.pump1CalibratedDuty = 0;
+  }
+  if (!isfinite(mqttCfg.pump2PulseFlowMlPerMin) || mqttCfg.pump2PulseFlowMlPerMin < 0.0f ||
+      mqttCfg.pump2PulseFlowMlPerMin > kPulseFlowMaxMlPerMin) {
+    systemLogger.warning("[Config] p2_pulse_flow NVS implausible (" +
+                         String(mqttCfg.pump2PulseFlowMlPerMin, 1) + ") — pompe 2 non caractérisée");
+    mqttCfg.pump2PulseFlowMlPerMin = 0.0f;
+    mqttCfg.pump2CalibratedDuty = 0;
+  }
 
   // Limites de sécurité
   safetyLimits.maxPhMlPerDay = prefs.getFloat("max_ph_ml", safetyLimits.maxPhMlPerDay);

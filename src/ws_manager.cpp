@@ -312,7 +312,14 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   //   clés (littéraux, non copiés). Marge de 64 o retenue pour couvrir les deux
   //   (pool ET alignement) → bump 2112 → 2176. sWsFrameBuf est vérifié
   //   indépendamment par le garde `measureJson(doc) + 1 > sizeof(sWsFrameBuf)`.
-  StaticJson<2176> doc;
+  // Itération 3 (bug-dosage-fantome, défaut n°3) : +7 champs calendrier
+  // d'impulsion. DÉCOMPTE des octets SÉRIALISÉS au pire cas :
+  //   "pulse_period_ms":60000,  = 24 o | "ph_pulse_session":false, = 25 o
+  //   "orp_pulse_session":false, = 26 o | "ph_pulse_ms":60000, = 20 o
+  //   "orp_pulse_ms":60000, = 21 o | "ph_pulse_phase_ms":60000, = 26 o
+  //   "orp_pulse_phase_ms":60000, = 27 o → total 169 o. Pool : 7 nœuds ≈ 112 o
+  //   (clés littérales non copiées). Bump 2176 → 2432 (marge alignement incluse).
+  StaticJson<2432> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -403,6 +410,19 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   d["filtration_force_off"] = filtrationCfg.forceOff;
   d["ph_dosing"]           = PumpController.isPhDosing();
   d["orp_dosing"]         = PumpController.isOrpDosing();
+  // Itération 3 (bug-dosage-fantome, défaut n°3) : calendrier d'impulsion —
+  // « session active » (ph/orp_dosing = commandé) vs « pompe alimentée » (pouls
+  // effectif : phase < pulse_ms). Getters lecture seule ; phase RELATIVE au début
+  // de période (le client l'ancre sur SA propre horloge à la réception). Noms de
+  // champs IDENTIQUES à /data (web_routes_data.cpp) — contrat architect.
+  // `nowMs` : variable locale déclarée plus haut dans cette fonction.
+  d["pulse_period_ms"]    = kPulsePeriodMs;
+  d["ph_pulse_session"]   = PumpController.isPulseSessionActive(0);
+  d["orp_pulse_session"]  = PumpController.isPulseSessionActive(1);
+  d["ph_pulse_ms"]        = PumpController.getPulseMs(0);
+  d["orp_pulse_ms"]       = PumpController.getPulseMs(1);
+  d["ph_pulse_phase_ms"]  = PumpController.getPulsePhaseMs(0, nowMs);
+  d["orp_pulse_phase_ms"] = PumpController.getPulsePhaseMs(1, nowMs);
   d["ph_used_ms"]         = PumpController.getPhUsedMs();
   d["orp_used_ms"]        = PumpController.getOrpUsedMs();
   d["stabilization_remaining_s"] = PumpController.getStabilizationRemainingS();

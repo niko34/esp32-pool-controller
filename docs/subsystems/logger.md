@@ -137,7 +137,17 @@ Cadences des émetteurs périodiques qui écrivent dans `/system.log` :
 | Nominal (une occurrence au démarrage de chaque cycle, ~24 cycles/j par grandeur) | **≈ 0,36 Ko/h** | 14,6-19,5 h → **≈ 8-10 h** |
 | Pathologique (régulation décidée en continu sans débit, pH **et** ORP saturant le throttle) | **≈ 4,3 Ko/h** | **≈ 1,4-1,9 h** |
 
-Le régime pathologique est **le seul cas où ce WARN doit être vu en rafale** ; il consomme alors la rétention, mais c'est précisément la fenêtre où on veut la trace. Le régime nominal reste sous le plafond du budget. Détail du sens du message : [pump-controller.md](pump-controller.md#warn--démarrage-décidé-mais-aucun-débit-commandé-).
+Le régime pathologique est **le seul cas où ce WARN doit être vu en rafale** ; il consomme alors la rétention, mais c'est précisément la fenêtre où on veut la trace. Le régime nominal reste sous le plafond du budget. Détail du sens du message : [pump-controller.md](pump-controller.md#warn--démarrage-décidé-mais-aucun-débit-commandé-). **Depuis la v2.21.0**, deux états normaux et persistants ne nourrissent plus ce WARN (ils ont leurs émetteurs dédiés ci-dessous) : le refus de **seuil C** et le refus de **gate de caractérisation** — sans cette exclusion, le WARN sortirait en boucle sur un régime sain (inondation type 2.20.2).
+
+**Émetteurs de l'ordonnanceur d'impulsions ajoutés en v2.21.0** ([ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)) — throttle commun `kPulseRefusalLogIntervalMs = 1 800 000` ms (**30 min**, compteur indépendant par branche et par grandeur) : ces refus décrivent des **états de configuration persistants** — 5 min les ferait tourner le journal, 30 min les rend visibles dans la journée (leçon 2.20.2) :
+
+| Niveau | Message (symétrique ORP ; variantes `[Scheduled]` / `[Scheduled ORP]` avec « dosage programmé BLOQUÉ ») | Sens |
+|---|---|---|
+| `CRITICAL` | `[Dosage pH] Pompe non caractérisée (duty calibré=X, amplitude=Y, débit=Z mL/min) — dosage automatique BLOQUÉ (pesée au banc requise)` | Gate de caractérisation fail-closed : aucune pesée saisie, débit implausible, ou amplitude ≠ duty calibré |
+| `CRITICAL` | `[Dosage pH] Amplitude pompe (Y/255) sous le plancher de rotation (98) — dosage automatique BLOQUÉ (relever la puissance pompe et recalibrer)` | Condition B2 : jamais dégrader en silence sous le seuil de rotation |
+| `INFO` | `[Dosage pH] Consigne X mL/min sous le pouls minimal (5 s à Z mL/min) — injection différée (seuil C)` | Deadband **normal** : l'erreur ne justifie pas encore un pouls ≥ 5 s |
+
+Émetteurs ponctuels associés (non throttlés, événementiels) : `INFO Pesée pompe N enregistrée : duty X, débit Y ml/min` / `WARN Calibration pompe N effacée — pompe non caractérisée (dosage auto refusé)` / `WARN Pesée pompe N refusée : …` (route `/save-config`) ; `WARN [Config] pN_pulse_flow NVS implausible (…) — pompe N non caractérisée` (assainissement au chargement) ; `CRITICAL [Sécurité] Injection pH|ORP manuelle refusée : débit non caractérisé (pesée requise)` (409 `flow_uncharacterized`) ; `INFO Arrêt dosage pH|ORP (auto): session=Xs pompe-ON=Ys vol≈Z mL total jour=…` (nouveau format du log d'arrêt de session).
 
 Le tampon `_persistBuffer` (std::vector<String>) accumule entre deux flushes. Sa capacité est **bornée à 100 entrées** (`kMaxPersistBufferEntries`) et pré-allouée dans le constructeur (`reserve(kMaxPersistBufferEntries)`) pour éviter les `std::bad_alloc` en cas de heap fragmenté en production. Les entrées au-delà de 100 sont silencieusement ignorées (les logs restent dans le buffer RAM circulaire).
 

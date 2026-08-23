@@ -17,6 +17,7 @@
 #include <unity.h>
 #include <math.h>  // C header uniquement (libc++ <cmath> indisponible sur l'hôte)
 #include "dosing_logic.h"
+#include "pulse_dosing_logic.h"  // itération 2 : proportionnel de temps (option B+C)
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -1645,8 +1646,12 @@ void test_F060_hourly_and_mixing_refusals_precede_guard9(void) {
 // moitié). Ces tests verrouillent : UN démarrage réel = UN cycle comptabilisé.
 
 static const float kSimKp = 8.0f;              // Kp pH « normal » (P temporisée)
-static const float kSimMinFlow = 5.2f;         // kPumpMinFlowMlPerMin
-static const float kSimMaxFlow = 90.0f;        // kPumpMaxFlowMlPerMin
+// Itération 2 (bug-dosage-fantome) : bornes du PID alignées sur la production —
+// le modèle linéaire est mort. minFlow = 0 (plus de clamp vers le haut, le
+// seuil C de planPulse joue le deadband bas) ; maxFlow = débit MESURÉ à
+// l'amplitude calibrée (24,7 ml/min interpolé à duty 127, pesée 2026-08-23).
+static const float kSimMinFlow = 0.0f;         // plancher minFlow supprimé
+static const float kSimMaxFlow = 24.7f;        // débit calibré à l'amplitude (127)
 static const float kSimIntegralMax = 100.0f;
 
 struct DosingTickSim {
@@ -1822,6 +1827,275 @@ void test_BUG2_aborted_start_consumes_no_cycle(void) {
   TEST_ASSERT_EQUAL_INT(0, s.startLogs);
 }
 
+// =============================================================================
+// Itération 2 (bug-dosage-fantome, option B+C) — proportionnel de temps
+// =============================================================================
+// Valeurs de référence : pompe 1 (pH) pesée le 2026-08-23 — 61,0 ml/min à 255 ;
+// hypothèse de recalibration à l'amplitude 127 (50 %) : 24,7 ml/min (interpolé).
+// Constantes prod : période 60 000 ms, pouls min 5 000 ms, kick 400 ms,
+// MIN_ACTIVE_DUTY 98 (Dmin 82 + 16 counts de marge P2).
+
+static const uint32_t kTPeriodMs = 60000;
+static const uint32_t kTMinPulseMs = 5000;
+static const uint32_t kTKickMs = 400;
+static const uint8_t  kTMinActiveDuty = 98;
+static const uint8_t  kTCalDuty = 127;   // amplitude 50 % = duty calibré
+static const float    kTAmpFlow = 24.7f; // débit mesuré à 127
+static const float    kTFlow255 = 61.0f; // débit mesuré à 255 (kick)
+
+// --- evaluatePulseGate : fail-closed de caractérisation --------------------
+void test_PULSE_gate_cal_duty_zero_refuses(void) {
+  // Défaut usine cal_duty = 0 → non caractérisé, quel que soit le reste.
+  TEST_ASSERT_EQUAL(PulseRefusal::FlowUncharacterized,
+                    evaluatePulseGate(127, 0, kTAmpFlow, kTMinActiveDuty));
+}
+
+void test_PULSE_gate_amplitude_differs_from_calibrated_refuses(void) {
+  // Le débit n'est mesuré QU'À l'amplitude calibrée : 160 ≠ 127 → refus.
+  TEST_ASSERT_EQUAL(PulseRefusal::FlowUncharacterized,
+                    evaluatePulseGate(160, kTCalDuty, kTAmpFlow, kTMinActiveDuty));
+  // Amplitude == calibrée et débit plausible → GO.
+  TEST_ASSERT_EQUAL(PulseRefusal::None,
+                    evaluatePulseGate(kTCalDuty, kTCalDuty, kTAmpFlow, kTMinActiveDuty));
+}
+
+void test_PULSE_gate_B2_amplitude_below_min_active(void) {
+  // Condition B2 : amplitude < 98 → refus EXPLICITE (jamais de dégradation
+  // silencieuse sous le seuil de rotation), même calibrée à cette valeur.
+  TEST_ASSERT_EQUAL(PulseRefusal::AmplitudeBelowMinActive,
+                    evaluatePulseGate(82, 82, 12.0f, kTMinActiveDuty));
+  TEST_ASSERT_EQUAL(PulseRefusal::AmplitudeBelowMinActive,
+                    evaluatePulseGate(97, 97, 12.0f, kTMinActiveDuty));
+  // Frontière : 98 == MIN_ACTIVE_DUTY passe (si calibré à 98).
+  TEST_ASSERT_EQUAL(PulseRefusal::None,
+                    evaluatePulseGate(98, 98, 13.0f, kTMinActiveDuty));
+}
+
+void test_PULSE_gate_implausible_flow_refuses(void) {
+  // Débit nul, négatif, NaN ou > kPulseFlowMaxMlPerMin (200) → non caractérisé.
+  TEST_ASSERT_EQUAL(PulseRefusal::FlowUncharacterized,
+                    evaluatePulseGate(kTCalDuty, kTCalDuty, 0.0f, kTMinActiveDuty));
+  TEST_ASSERT_EQUAL(PulseRefusal::FlowUncharacterized,
+                    evaluatePulseGate(kTCalDuty, kTCalDuty, -1.0f, kTMinActiveDuty));
+  TEST_ASSERT_EQUAL(PulseRefusal::FlowUncharacterized,
+                    evaluatePulseGate(kTCalDuty, kTCalDuty, NAN, kTMinActiveDuty));
+  TEST_ASSERT_EQUAL(PulseRefusal::FlowUncharacterized,
+                    evaluatePulseGate(kTCalDuty, kTCalDuty, 250.0f, kTMinActiveDuty));
+}
+
+// --- planPulse : seuil C exact ----------------------------------------------
+void test_PULSE_plan_seuil_C_exact(void) {
+  // Seuil C à l'amplitude 127 (24,7 ml/min) : pouls = 60 000 × mean / 24,7.
+  // À 2,1 ml/min → 5 101 ms ≥ 5 000 → ACCEPTÉ.
+  PulsePlan p = planPulse(2.1f, kTAmpFlow, kTPeriodMs, kTMinPulseMs);
+  TEST_ASSERT_FALSE(p.refused);
+  TEST_ASSERT_EQUAL_UINT32(5101u, p.pulseMs);
+  // À 2,0 ml/min → 4 858 ms < 5 000 → REFUSÉ (deadband seuil C), pulseMs = 0.
+  p = planPulse(2.0f, kTAmpFlow, kTPeriodMs, kTMinPulseMs);
+  TEST_ASSERT_TRUE(p.refused);
+  TEST_ASSERT_EQUAL_UINT32(0u, p.pulseMs);
+  // Entrées invalides → refus fail-closed.
+  TEST_ASSERT_TRUE(planPulse(0.0f, kTAmpFlow, kTPeriodMs, kTMinPulseMs).refused);
+  TEST_ASSERT_TRUE(planPulse(NAN, kTAmpFlow, kTPeriodMs, kTMinPulseMs).refused);
+  TEST_ASSERT_TRUE(planPulse(6.4f, 0.0f, kTPeriodMs, kTMinPulseMs).refused);
+}
+
+void test_PULSE_plan_fraction_100_pouls_egale_periode(void) {
+  // Demande ≥ débit d'amplitude → pompe continue : pouls = période entière.
+  PulsePlan p = planPulse(kTAmpFlow, kTAmpFlow, kTPeriodMs, kTMinPulseMs);
+  TEST_ASSERT_FALSE(p.refused);
+  TEST_ASSERT_EQUAL_UINT32(kTPeriodMs, p.pulseMs);
+  p = planPulse(90.0f, kTAmpFlow, kTPeriodMs, kTMinPulseMs);  // saturation franche
+  TEST_ASSERT_FALSE(p.refused);
+  TEST_ASSERT_EQUAL_UINT32(kTPeriodMs, p.pulseMs);
+}
+
+void test_PULSE_plan_scenario_terrain_6_4_sur_24_7(void) {
+  // Rejeu du scénario terrain : erreur 0,8 pH × Kp 8 = 6,4 ml/min demandés.
+  // 60 000 × 6,4 / 24,7 = 15 546,56 → arrondi 15 547 ms (~15,5 s de pouls/min).
+  PulsePlan p = planPulse(6.4f, kTAmpFlow, kTPeriodMs, kTMinPulseMs);
+  TEST_ASSERT_FALSE(p.refused);
+  TEST_ASSERT_EQUAL_UINT32(15547u, p.pulseMs);
+}
+
+// --- pulseDeltaVolumeMl : volume exact, indépendant du jitter ---------------
+void test_PULSE_delta_volume_a_cheval_sur_le_kick(void) {
+  // Delta [start, start+1000 ms] : 400 ms de kick à 61 ml/min + 600 ms de
+  // plateau à 24,7 → 61×400/60000 + 24,7×600/60000 = 0,40667 + 0,247 mL.
+  const uint32_t start = 100000u;
+  float v = pulseDeltaVolumeMl(start, kTKickMs, start, start + 1000u, kTFlow255, kTAmpFlow);
+  TEST_ASSERT_FLOAT_WITHIN(0.0005f, 0.65367f, v);
+  // Décomposition : kick seul puis plateau seul — la somme DOIT être identique
+  // (indépendance au découpage en ticks, donc au jitter de loop).
+  float vKick = pulseDeltaVolumeMl(start, kTKickMs, start, start + 400u, kTFlow255, kTAmpFlow);
+  float vPlat = pulseDeltaVolumeMl(start, kTKickMs, start + 400u, start + 1000u, kTFlow255, kTAmpFlow);
+  TEST_ASSERT_FLOAT_WITHIN(0.0005f, 0.40667f, vKick);
+  TEST_ASSERT_FLOAT_WITHIN(0.0005f, 0.247f, vPlat);
+  TEST_ASSERT_FLOAT_WITHIN(0.0001f, v, vKick + vPlat);
+  // Delta nul → volume nul.
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, pulseDeltaVolumeMl(start, kTKickMs, start, start, kTFlow255, kTAmpFlow));
+}
+
+// --- tickPulse : wrap millis (periodStart proche de UINT32_MAX) -------------
+void test_PULSE_tick_wrap_millis(void) {
+  const uint32_t startNearWrap = 0xFFFFF000u;  // 4 294 963 200 (wrap dans 4 096 ms)
+  const uint32_t pulseMs = 15547u;
+  PulseState st = {startNearWrap, startNearWrap, true};
+
+  // t = start + 200 ms : dans le kick.
+  PulseTick tk = tickPulse(st, startNearWrap + 200u, kTPeriodMs, pulseMs, kTKickMs);
+  TEST_ASSERT_TRUE(tk.pumpOn);
+  TEST_ASSERT_TRUE(tk.kickPhase);
+  // t = start + 400 ms : frontière du kick (exclusif) → plateau.
+  tk = tickPulse(tk.next, startNearWrap + 400u, kTPeriodMs, pulseMs, kTKickMs);
+  TEST_ASSERT_TRUE(tk.pumpOn);
+  TEST_ASSERT_FALSE(tk.kickPhase);
+  // t = start + 8 192 ms — APRÈS le wrap de millis (0x1000 + 0x1000) : toujours
+  // dans le pouls, l'arithmétique non signée doit rester cohérente.
+  tk = tickPulse(tk.next, startNearWrap + 8192u /* wrappe en 0x1000 */, kTPeriodMs, pulseMs, kTKickMs);
+  TEST_ASSERT_TRUE(tk.pumpOn);
+  TEST_ASSERT_FALSE(tk.kickPhase);
+  // t = start + pulseMs (post-wrap) : fin de pouls → pompe OFF.
+  tk = tickPulse(tk.next, startNearWrap + pulseMs, kTPeriodMs, pulseMs, kTKickMs);
+  TEST_ASSERT_FALSE(tk.pumpOn);
+  TEST_ASSERT_FALSE(tk.next.pulsing);
+  // t = start + 60 000 (post-wrap) : nouvelle période → nouveau pouls + kick.
+  tk = tickPulse(tk.next, startNearWrap + kTPeriodMs, kTPeriodMs, pulseMs, kTKickMs);
+  TEST_ASSERT_TRUE(tk.pumpOn);
+  TEST_ASSERT_TRUE(tk.kickPhase);
+  TEST_ASSERT_EQUAL_UINT32(startNearWrap + kTPeriodMs, tk.next.periodStartMs);
+}
+
+// --- Rejeu d'une période complète : ON-time et volume conformes au plan -----
+void test_PULSE_periode_complete_on_time_et_volume(void) {
+  // Simule la coquille : tick toutes les 100 ms sur une période, comptabilité
+  // par delta (attribution ARRIÈRE : crédit si la pompe était ON au tick
+  // précédent). Attendu : ON-time == pulseMs (à un tick près) et volume ==
+  // kick à 61 + plateau à 24,7 (le kick SUR-livre légèrement vs 6,4 demandé —
+  // surestimation fail-safe P4, jamais de sous-compte).
+  const uint32_t pulseMs = 15547u;
+  PulseState st = {0u, 0u, true};  // session amorcée à t=0
+  uint32_t onTimeMs = 0;
+  float volMl = 0.0f;
+  bool prevOn = false;
+  uint32_t prevT = 0;
+  for (uint32_t t = 0; t <= kTPeriodMs; t += 100u) {
+    if (prevOn) {
+      onTimeMs += (t - prevT);
+      volMl += pulseDeltaVolumeMl(st.pulseStartMs, kTKickMs, prevT, t, kTFlow255, kTAmpFlow);
+    }
+    PulseTick tk = tickPulse(st, t, kTPeriodMs, pulseMs, kTKickMs);
+    st = tk.next;
+    prevOn = tk.pumpOn;
+    prevT = t;
+  }
+  // ON-time : pulseMs arrondi au tick supérieur (la coquille coupe au tick suivant).
+  TEST_ASSERT_UINT32_WITHIN(100u, pulseMs, onTimeMs);
+  // Volume géométrique attendu : 61×0,4/60 + 24,7×15,147/60 = 0,4067 + 6,2355 mL.
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 6.642f, volMl);
+  // Jamais de sous-compte vs la demande de 6,4 mL/min sur 1 min (P4).
+  TEST_ASSERT_TRUE(volMl >= 6.4f);
+}
+
+// =============================================================================
+// Audit test-engineer (itération 2) — cas de bord complémentaires
+// =============================================================================
+
+// --- Seuil C : frontière FINE (encadrement à 0,01 mL/min près) ---------------
+// Seuil exact = ampFlow × minPulse / period = 24,7 × 5000 / 60000 = 2,0583 mL/min.
+// 2,05 → pouls 4 980 ms < 5 000 → REFUSÉ ; 2,06 → 5 004 ms ≥ 5 000 → ACCEPTÉ.
+void test_PULSE_plan_seuil_C_frontiere_fine(void) {
+  PulsePlan p = planPulse(2.05f, kTAmpFlow, kTPeriodMs, kTMinPulseMs);
+  TEST_ASSERT_TRUE(p.refused);
+  TEST_ASSERT_EQUAL_UINT32(0u, p.pulseMs);
+  p = planPulse(2.06f, kTAmpFlow, kTPeriodMs, kTMinPulseMs);
+  TEST_ASSERT_FALSE(p.refused);
+  TEST_ASSERT_EQUAL_UINT32(5004u, p.pulseMs);  // 60000 × 2,06 / 24,7 = 5004,05
+  // ampFlow négatif → refus fail-closed (garde d'entrée, symétrique de 0).
+  TEST_ASSERT_TRUE(planPulse(6.4f, -1.0f, kTPeriodMs, kTMinPulseMs).refused);
+}
+
+// --- Invariant : AUCUN plan accepté ne produit un pouls < minPulse ni > période.
+// Conséquence structurelle : le kick (400 ms) tient TOUJOURS dans un pouls
+// accepté (minPulse 5 000 ms >> 400 ms) — jamais de pouls tronqué au kick.
+void test_PULSE_plan_jamais_de_pouls_hors_bornes(void) {
+  const float means[] = {0.01f, 0.5f, 1.0f, 2.0f, 2.06f, 3.0f, 6.4f,
+                         12.0f, 20.0f, 24.69f, 24.7f, 30.0f, 90.0f};
+  for (float m : means) {
+    PulsePlan p = planPulse(m, kTAmpFlow, kTPeriodMs, kTMinPulseMs);
+    if (p.refused) {
+      TEST_ASSERT_EQUAL_UINT32(0u, p.pulseMs);  // refus = fail-closed strict
+    } else {
+      TEST_ASSERT_TRUE(p.pulseMs >= kTMinPulseMs);
+      TEST_ASSERT_TRUE(p.pulseMs <= kTPeriodMs);
+      TEST_ASSERT_TRUE(p.pulseMs >= kTKickMs);  // le kick tient toujours
+    }
+  }
+}
+
+// --- Gate : +inf refusé (complément du NaN déjà couvert) ----------------------
+void test_PULSE_gate_flow_infini_refuse(void) {
+  TEST_ASSERT_EQUAL(PulseRefusal::FlowUncharacterized,
+                    evaluatePulseGate(kTCalDuty, kTCalDuty, INFINITY, kTMinActiveDuty));
+}
+
+// --- pulseDeltaVolumeMl : delta ENTIÈREMENT dans le kick, ENTIÈREMENT plateau
+//     loin du kick, et t0 AVANT le pouls (hors contrat → plateau conservateur).
+void test_PULSE_delta_volume_segments_purs(void) {
+  const uint32_t start = 100000u;
+  // [start+100, start+300] : 200 ms entièrement DANS le kick →
+  // 61 × 200 / 60000 = 0,203333 mL.
+  float v = pulseDeltaVolumeMl(start, kTKickMs, start + 100u, start + 300u, kTFlow255, kTAmpFlow);
+  TEST_ASSERT_FLOAT_WITHIN(0.0005f, 0.20333f, v);
+  // [start+20000, start+21000] : 1000 ms entièrement PLATEAU (loin du kick) →
+  // 24,7 × 1000 / 60000 = 0,411667 mL.
+  v = pulseDeltaVolumeMl(start, kTKickMs, start + 20000u, start + 21000u, kTFlow255, kTAmpFlow);
+  TEST_ASSERT_FLOAT_WITHIN(0.0005f, 0.41167f, v);
+  // t0 AVANT pulseStart (hors contrat documenté) : r0 wrappe très grand → tout
+  // le delta est crédité PLATEAU — conservateur, JAMAIS zéro (P4) :
+  // 24,7 × 200 / 60000 = 0,082333 mL.
+  v = pulseDeltaVolumeMl(start, kTKickMs, start - 100u, start + 100u, kTFlow255, kTAmpFlow);
+  TEST_ASSERT_FLOAT_WITHIN(0.0005f, 0.08233f, v);
+  TEST_ASSERT_TRUE(v > 0.0f);
+}
+
+// --- tickPulse : pulseMs == periodMs EXACTEMENT (fraction 100 %) --------------
+// La pompe doit rester ON en CONTINU à travers la frontière de période (le
+// pouls EST la période) ; le kick se ré-arme à chaque nouvelle période.
+void test_PULSE_tick_pouls_egale_periode_pompe_continue(void) {
+  PulseState st = {0u, 0u, true};
+  const uint32_t pulseMs = kTPeriodMs;  // 60 000 == 60 000
+  // Balayage sur 2 périodes : ON à CHAQUE tick, aucun trou.
+  for (uint32_t t = 0; t <= 2u * kTPeriodMs; t += 500u) {
+    PulseTick tk = tickPulse(st, t, kTPeriodMs, pulseMs, kTKickMs);
+    TEST_ASSERT_TRUE(tk.pumpOn);
+    st = tk.next;
+  }
+  // Frontière exacte : à t = periodMs, nouvelle période ré-ancrée + kick ré-armé.
+  st = {0u, 0u, true};
+  PulseTick tk = tickPulse(st, kTPeriodMs, kTPeriodMs, pulseMs, kTKickMs);
+  TEST_ASSERT_TRUE(tk.pumpOn);
+  TEST_ASSERT_TRUE(tk.kickPhase);
+  TEST_ASSERT_EQUAL_UINT32(kTPeriodMs, tk.next.periodStartMs);
+}
+
+// --- tickPulse : pouls PLUS COURT que le kick (défensif) ----------------------
+// planPulse ne peut pas le produire (minPulse 5 s >> kick 0,4 s — verrouillé par
+// test_PULSE_plan_jamais_de_pouls_hors_bornes), mais tickPulse doit rester sain
+// si on le lui impose : ON en kick pendant tout le pouls, OFF dès pulseMs.
+void test_PULSE_tick_pouls_plus_court_que_kick(void) {
+  PulseState st = {0u, 0u, true};
+  const uint32_t pulseMs = 200u;  // < kickMs (400)
+  PulseTick tk = tickPulse(st, 100u, kTPeriodMs, pulseMs, kTKickMs);
+  TEST_ASSERT_TRUE(tk.pumpOn);
+  TEST_ASSERT_TRUE(tk.kickPhase);   // tout le pouls est en phase kick
+  tk = tickPulse(tk.next, 200u, kTPeriodMs, pulseMs, kTKickMs);
+  TEST_ASSERT_FALSE(tk.pumpOn);     // fin de pouls à 200 ms, pas à 400
+  TEST_ASSERT_FALSE(tk.next.pulsing);
+  tk = tickPulse(tk.next, 300u, kTPeriodMs, pulseMs, kTKickMs);
+  TEST_ASSERT_FALSE(tk.pumpOn);     // reste OFF jusqu'à la prochaine période
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   // T2 — hystérésis de démarrage.
@@ -1934,5 +2208,23 @@ int main(int, char **) {
   RUN_TEST(test_BUG2_first_tick_zero_flow_counts_one_cycle);
   RUN_TEST(test_BUG2_two_spaced_cycles_count_two);
   RUN_TEST(test_BUG2_aborted_start_consumes_no_cycle);
+  // bug-dosage-fantome itération 2 (défaut n°1) — proportionnel de temps (B+C).
+  RUN_TEST(test_PULSE_gate_cal_duty_zero_refuses);
+  RUN_TEST(test_PULSE_gate_amplitude_differs_from_calibrated_refuses);
+  RUN_TEST(test_PULSE_gate_B2_amplitude_below_min_active);
+  RUN_TEST(test_PULSE_gate_implausible_flow_refuses);
+  RUN_TEST(test_PULSE_plan_seuil_C_exact);
+  RUN_TEST(test_PULSE_plan_fraction_100_pouls_egale_periode);
+  RUN_TEST(test_PULSE_plan_scenario_terrain_6_4_sur_24_7);
+  RUN_TEST(test_PULSE_delta_volume_a_cheval_sur_le_kick);
+  RUN_TEST(test_PULSE_tick_wrap_millis);
+  RUN_TEST(test_PULSE_periode_complete_on_time_et_volume);
+  // Audit test-engineer (itération 2) — cas de bord complémentaires.
+  RUN_TEST(test_PULSE_plan_seuil_C_frontiere_fine);
+  RUN_TEST(test_PULSE_plan_jamais_de_pouls_hors_bornes);
+  RUN_TEST(test_PULSE_gate_flow_infini_refuse);
+  RUN_TEST(test_PULSE_delta_volume_segments_purs);
+  RUN_TEST(test_PULSE_tick_pouls_egale_periode_pompe_continue);
+  RUN_TEST(test_PULSE_tick_pouls_plus_court_que_kick);
   return UNITY_END();
 }

@@ -157,7 +157,7 @@ void PumpControllerClass::applyPumpDuty(int index, uint8_t duty) {
 #endif
 }
 
-void PumpControllerClass::refreshDosingState(DosingState& state, unsigned long now, bool manualActive) {
+void PumpControllerClass::refreshDosingState(DosingState& state, unsigned long now, bool pumpOn) {
   if (state.windowStart == 0) {
     state.windowStart = now;
     state.lastTimestamp = now;
@@ -170,12 +170,12 @@ void PumpControllerClass::refreshDosingState(DosingState& state, unsigned long n
   }
 
   // Accumuler le temps d'injection.
-  // feature-006 (condition pool-chemistry #2) : le budget horaire usedMs est
-  // PARTAGÉ auto + manuel. `manualActive` couvre l'injection manuelle web et les
-  // pompes test (prédicat du safety tracking : manualMode && duty>0).
-  // OR unique sur un seul point d'accumulation → PAS de double comptage possible
-  // (une seule addition de delta par tour, quel que soit le mode actif).
-  if (state.active || manualActive) {
+  // feature-006 (condition pool-chemistry #2) : budget horaire usedMs PARTAGÉ
+  // auto + manuel. Itération 2 (bug-dosage-fantome) : le prédicat est désormais
+  // POMPE-ON (pompe physiquement alimentée — pouls auto, scheduled OU manuel),
+  // plus la session : entre deux pouls, le budget horaire n'est pas consommé.
+  // UN seul point d'accumulation → PAS de double comptage possible.
+  if (pumpOn) {
     unsigned long delta = now - state.lastTimestamp;
     state.usedMs += delta;
     if (state.usedMs > 3600000UL) state.usedMs = 3600000UL;
@@ -208,15 +208,15 @@ bool PumpControllerClass::shouldStartDosing(float error, float startThreshold, D
                                pumpProtection.maxCyclesPerDay);
 }
 
-// COQUILLE (feature-036) : calcule runTimeMs (lastStartTime>0) puis délègue à
-// shouldContinueDosingPure(). Si lastStartTime==0, on neutralise la garde temps
-// minimum (runTimeMs = minInjectionTimeMs → `<` faux), comportement identique
-// à l'origine où le bloc temps minimum était entièrement sauté.
-bool PumpControllerClass::shouldContinueDosing(float error, float stopThreshold, DosingState& state, unsigned long now) {
-  unsigned long runTimeMs = (state.lastStartTime > 0)
-      ? (now - state.lastStartTime)
-      : pumpProtection.minInjectionTimeMs;
-  return shouldContinueDosingPure(error, stopThreshold, runTimeMs,
+// COQUILLE (feature-036) : délègue à shouldContinueDosingPure().
+// Itération 2 (bug-dosage-fantome) : la garde de temps minimum d'injection
+// raisonne en temps POMPE-ON cumulé de la session (_sessionOnMs), plus en temps
+// mural depuis lastStartTime — en proportionnel de temps, la pompe ne tourne
+// qu'une fraction de la session, le « temps minimum » doit compter du produit
+// réellement poussé. Flaggé pour contre-visite du gate pool-chemistry.
+bool PumpControllerClass::shouldContinueDosing(float error, float stopThreshold,
+                                               unsigned long sessionOnMs) {
+  return shouldContinueDosingPure(error, stopThreshold, sessionOnMs,
                                   pumpProtection.minInjectionTimeMs);
 }
 
@@ -747,25 +747,72 @@ float PumpControllerClass::computePID(PIDController& pid, float error, unsigned 
   return r.flow;
 }
 
-float PumpControllerClass::dutyToFlow(const PumpControlParams& params, uint8_t duty) {
-  if (duty < MIN_ACTIVE_DUTY) return 0.0f;
-  float normalized = (float)(duty - MIN_ACTIVE_DUTY) / (MAX_PWM_DUTY - MIN_ACTIVE_DUTY);
-  return params.minFlowMlPerMin + normalized * (params.maxFlowMlPerMin - params.minFlowMlPerMin);
+// =============================================================================
+// Itération 2 (bug-dosage-fantome, option B+C) — caractérisation des pompes
+// =============================================================================
+// dutyToFlow()/flowToDuty() SUPPRIMÉS : le modèle linéaire duty↔débit est mort
+// (mesure au banc 2026-08-23 : ×1,9 de sous-estimation à duty 82, ×1,5 de
+// surestimation à 255). Le débit moyen est réalisé par proportionnel de TEMPS
+// à une amplitude UNIQUE dont le débit a été MESURÉ (pulse_dosing_logic).
+
+// Helpers file-static — index de pompe PHYSIQUE (0 = pompe 1, 1 = pompe 2).
+static uint8_t pumpCalibratedDuty(int physIdx) {
+  return (physIdx == 0) ? mqttCfg.pump1CalibratedDuty : mqttCfg.pump2CalibratedDuty;
+}
+static float pumpPulseFlow(int physIdx) {
+  return (physIdx == 0) ? mqttCfg.pump1PulseFlowMlPerMin : mqttCfg.pump2PulseFlowMlPerMin;
+}
+static float pumpFlow255(int physIdx) {
+  return (physIdx == 0) ? kPump1Flow255MlPerMin : kPump2Flow255MlPerMin;
 }
 
-uint8_t PumpControllerClass::flowToDuty(const PumpControlParams& params, float flowMlPerMin) {
-  if (flowMlPerMin <= 0.0f) return 0;
-  if (flowMlPerMin < params.minFlowMlPerMin) flowMlPerMin = params.minFlowMlPerMin;
-  if (flowMlPerMin > params.maxFlowMlPerMin) flowMlPerMin = params.maxFlowMlPerMin;
+// Amplitude courante du plateau d'impulsion : pumpNMaxDutyPct × 255 / 100.
+uint8_t PumpControllerClass::getPumpAmplitudeDuty(int pumpIndex) const {
+  if (pumpIndex < 0 || pumpIndex > 1) return 0;
+  uint16_t pct = (pumpIndex == 0) ? mqttCfg.pump1MaxDutyPct : mqttCfg.pump2MaxDutyPct;
+  if (pct > 100) pct = 100;
+  return (uint8_t)((pct * MAX_PWM_DUTY) / 100);
+}
 
-  float normalized = (flowMlPerMin - params.minFlowMlPerMin) / (params.maxFlowMlPerMin - params.minFlowMlPerMin);
-  if (normalized < 0.0f) normalized = 0.0f;
-  if (normalized > 1.0f) normalized = 1.0f;
+// Badge « débit non caractérisé » (UI/WS) : reflète la garde de caractérisation
+// (evaluatePulseGate). Index invalide → true (fail-closed).
+bool PumpControllerClass::isPumpFlowUncharacterized(int pumpIndex) const {
+  if (pumpIndex < 0 || pumpIndex > 1) return true;
+  return evaluatePulseGate(getPumpAmplitudeDuty(pumpIndex),
+                           pumpCalibratedDuty(pumpIndex),
+                           pumpPulseFlow(pumpIndex),
+                           MIN_ACTIVE_DUTY) != PulseRefusal::None;
+}
 
-  uint8_t duty = MIN_ACTIVE_DUTY + static_cast<uint8_t>(roundf(normalized * (MAX_PWM_DUTY - MIN_ACTIVE_DUTY)));
-  if (duty > MAX_PWM_DUTY) duty = MAX_PWM_DUTY;
+// =============================================================================
+// Itération 3 — calendrier d'impulsion exposé à l'UI/WS (lecture seule)
+// =============================================================================
+// chem 0 = pH, 1 = ORP. Course bénigne assumée (patron isAnyPumpEnergized /
+// getPumpAmplitudeDuty) : les champs sont écrits par loopTask (update) et lus
+// ici en contexte web async ; lectures 8/32 bits atomiques sur Xtensa, pire cas
+// un instantané en retard d'un tour de loop. Aucun setter, aucun effet dosage.
 
-  return duty;
+// Session de dosage en cours (auto OU scheduled). false si index invalide.
+bool PumpControllerClass::isPulseSessionActive(int chem) const {
+  if (chem < 0 || chem > 1) return false;
+  return _pulseSession[chem];
+}
+
+// Durée du pouls planifié pour la période courante (ms). 0 si index invalide.
+uint32_t PumpControllerClass::getPulseMs(int chem) const {
+  if (chem < 0 || chem > 1) return 0;
+  return _pulseMs[chem];
+}
+
+// Position dans la période d'impulsion courante : nowMs − periodStartMs en
+// arithmétique uint32 NON SIGNÉE (wrap-safe au rollover de millis), clampée
+// [0..kPulsePeriodMs]. 0 si session inactive ou index invalide.
+uint32_t PumpControllerClass::getPulsePhaseMs(int chem, uint32_t nowMs) const {
+  if (chem < 0 || chem > 1) return 0;
+  if (!_pulseSession[chem]) return 0;
+  uint32_t phase = nowMs - _pulseState[chem].periodStartMs;
+  if (phase > kPulsePeriodMs) phase = kPulsePeriodMs;
+  return phase;
 }
 
 // feature-053 : cible ORP effective (surcouche Mode Boost). Délègue à la logique
@@ -910,25 +957,72 @@ bool PumpControllerClass::checkSafetyLimits(bool isPhPump) {
   return true;
 }
 
-void PumpControllerClass::updateSafetyTracking(bool isPhPump, float flowMlPerMin, unsigned long deltaMs) {
-  if (deltaMs == 0 || flowMlPerMin <= 0.0f) return;
-
-  float injectedMl = (flowMlPerMin / 60000.0f) * deltaMs;
+// Crédite un VOLUME (mL) aux compteurs de sécurité journaliers + suivi produit.
+// Itération 2 : remplace updateSafetyTracking(flow, delta) — le volume est
+// calculé en amont par accountPumpVolume (pulseDeltaVolumeMl exact pour les
+// pouls, majorant pour le manuel), plus jamais depuis le modèle linéaire.
+void PumpControllerClass::creditInjectedVolume(bool isPhPump, float volumeMl) {
+  if (!(volumeMl > 0.0f)) return;  // rejette aussi NaN (défensif)
 
   if (isPhPump) {
-    safetyLimits.dailyPhInjectedMl += injectedMl;
+    safetyLimits.dailyPhInjectedMl += volumeMl;
     if (productCfg.phTrackingEnabled) {
-      productCfg.phTotalInjectedMl += injectedMl;
+      productCfg.phTotalInjectedMl += volumeMl;
       productConfigDirty = true;
     }
   } else {
-    safetyLimits.dailyOrpInjectedMl += injectedMl;
+    safetyLimits.dailyOrpInjectedMl += volumeMl;
     if (productCfg.orpTrackingEnabled) {
-      productCfg.orpTotalInjectedMl += injectedMl;
+      productCfg.orpTotalInjectedMl += volumeMl;
       productConfigDirty = true;
     }
   }
   _dailyCountersDirty = true;
+}
+
+// Comptabilité par delta de tick (itération 2, P4). Attribution ARRIÈRE : le
+// volume du delta [lastSafetyTimestamp, now] est celui de la commande posée au
+// tour PRÉCÉDENT (_acctPumpOn/_acctManual) — la pompe garde son duty entre deux
+// ticks. Exactitude indépendante du jitter de loop : pulseDeltaVolumeMl intègre
+// la géométrie du pouls (kick à flow255 mesuré + plateau au débit calibré), pas
+// les instants d'échantillonnage. Manuel (?duty=N) : crédit au MAJORANT flow255
+// (surestimer est fail-safe), SAUF duty == calibratedDuty → débit mesuré.
+// Jamais zéro sur une pompe alimentée (P4).
+void PumpControllerClass::accountPumpVolume(int chem, int physIdx,
+                                            unsigned long now, bool manualActive) {
+  DosingState& st = (chem == 0) ? phDosingState : orpDosingState;
+
+  if (_acctPumpOn[chem] && st.lastSafetyTimestamp != 0) {
+    unsigned long deltaMs = now - st.lastSafetyTimestamp;
+    if (deltaMs > 0) {
+      float volMl;
+      if (_acctManual[chem]) {
+        uint8_t calDuty = pumpCalibratedDuty(physIdx);
+        float pulseFlow = pumpPulseFlow(physIdx);
+        float f = (calDuty != 0 && _acctManualDuty[chem] == calDuty && pulseFlow > 0.0f)
+                      ? pulseFlow          // duty calibré → débit MESURÉ
+                      : pumpFlow255(physIdx);  // sinon MAJORANT (fail-safe)
+        volMl = f * (float)deltaMs / 60000.0f;
+      } else {
+        volMl = pulseDeltaVolumeMl(_pulseState[chem].pulseStartMs, kPulseKickMs,
+                                   (uint32_t)st.lastSafetyTimestamp, (uint32_t)now,
+                                   pumpFlow255(physIdx), pumpPulseFlow(physIdx));
+        // Cumuls de session (log d'arrêt + garde temps minimum pompe-ON).
+        if (_pulseSession[chem]) {
+          _sessionVolMl[chem] += volMl;
+          _sessionOnMs[chem] += deltaMs;
+        }
+      }
+      creditInjectedVolume(chem == 0, volMl);
+    }
+  }
+
+  // État pour le PROCHAIN tour : pumpDuty reflète la commande appliquée CE tour.
+  bool onNow = (pumpDuty[physIdx] > 0);
+  st.lastSafetyTimestamp = onNow ? now : 0;
+  _acctPumpOn[chem] = onNow;
+  _acctManual[chem] = manualActive;
+  _acctManualDuty[chem] = manualActive ? pumpDuty[physIdx] : 0;
 }
 
 // Crédit plancher fin d'injection manuelle volumée (bug sous-compte v2.9.1).
@@ -1027,17 +1121,16 @@ void PumpControllerClass::update() {
     return;
   }
 
-  // feature-006 (condition pool-chemistry #2) : le budget horaire usedMs est
-  // PARTAGÉ auto + manuel. Le prédicat manuel est CELUI du safety tracking
-  // (manualMode && duty>0, cf. plus bas) : injection manuelle web et pompes test
-  // consomment ainsi le budget horaire. OR unique dans
-  // refreshDosingState → pas de double comptage.
+  // feature-006 (condition pool-chemistry #2) : budget horaire usedMs PARTAGÉ
+  // auto + manuel. Itération 2 (bug-dosage-fantome) : le prédicat devient
+  // POMPE-ON — pumpDuty reflète ici la commande appliquée au tour PRÉCÉDENT
+  // (attribution arrière du delta écoulé), toutes origines confondues (pouls
+  // auto, scheduled, manuel). Entre deux pouls d'une session, le budget horaire
+  // n'est PAS consommé.
   int phBudgetIdx  = pumpIndexFromNumber(mqttCfg.phPump);
   int orpBudgetIdx = pumpIndexFromNumber(mqttCfg.orpPump);
-  refreshDosingState(phDosingState, now,
-                     manualMode[phBudgetIdx] && pumpDuty[phBudgetIdx] > 0);
-  refreshDosingState(orpDosingState, now,
-                     manualMode[orpBudgetIdx] && pumpDuty[orpBudgetIdx] > 0);
+  refreshDosingState(phDosingState, now, pumpDuty[phBudgetIdx] > 0);
+  refreshDosingState(orpDosingState, now, pumpDuty[orpBudgetIdx] > 0);
 
   if (!sensors.isInitialized()) {
     phDosingState.active = false;
@@ -1143,41 +1236,62 @@ void PumpControllerClass::update() {
     const bool phWasActiveTick = phDosingState.active;
 
     if (phWasActiveTick) {
-      // Déjà en cours : vérifier si on continue
-      shouldDose = shouldContinueDosing(error, pumpProtection.phStopThreshold, phDosingState, now);
+      // Déjà en cours : vérifier si on continue. Itération 2 : la garde de
+      // temps minimum raisonne en temps POMPE-ON cumulé de la session.
+      shouldDose = shouldContinueDosing(error, pumpProtection.phStopThreshold, _sessionOnMs[0]);
     } else {
       // Arrêté : vérifier si on démarre
       shouldDose = shouldStartDosing(error, pumpProtection.phStartThreshold, phDosingState, now);
     }
     const bool phStartDecided = !phWasActiveTick && shouldDose;
 
-    float flow = 0.0f;
+    // --- Itération 2 (option B+C) : caractérisation de la pompe pH affectée ---
+    const int phPumpIdx = pumpIndexFromNumber(mqttCfg.phPump);
+    const uint8_t phAmpDuty = getPumpAmplitudeDuty(phPumpIdx);
+    const float phAmpFlow = pumpPulseFlow(phPumpIdx);  // débit MESURÉ à l'amplitude
+    bool phGateRefused = false;  // pompe non caractérisée / amplitude sous plancher
+    bool phPlanRefused = false;  // seuil C : consigne sous le pouls minimal
+
+    if (shouldDose) {
+      // Garde de caractérisation AVANT tout calcul : une pompe jamais pesée
+      // (cal_duty=0), un débit implausible ou une amplitude ≠ calibrée REFUSENT
+      // le dosage (fail-closed P4 : on ne crédite jamais un volume inconnu).
+      PulseRefusal gate = evaluatePulseGate(phAmpDuty, pumpCalibratedDuty(phPumpIdx),
+                                            phAmpFlow, MIN_ACTIVE_DUTY);
+      if (gate != PulseRefusal::None) {
+        phGateRefused = true;
+        shouldDose = false;  // termine aussi une éventuelle session en cours
+        // État de config persistant → critical THROTTLÉ (30 min), pas de spam.
+        static unsigned long phGateCritMs = 0;
+        if (phGateCritMs == 0 || now - phGateCritMs >= kPulseRefusalLogIntervalMs) {
+          phGateCritMs = now;
+          if (gate == PulseRefusal::AmplitudeBelowMinActive) {
+            // Condition B2 : jamais dégrader en silence sous le seuil de rotation.
+            systemLogger.critical("[Dosage pH] Amplitude pompe (" + String(phAmpDuty) +
+              "/255) sous le plancher de rotation (" + String(MIN_ACTIVE_DUTY) +
+              ") — dosage automatique BLOQUÉ (relever la puissance pompe et recalibrer)");
+          } else {
+            systemLogger.critical("[Dosage pH] Pompe non caractérisée (duty calibré=" +
+              String(pumpCalibratedDuty(phPumpIdx)) + ", amplitude=" + String(phAmpDuty) +
+              ", débit=" + String(phAmpFlow, 1) +
+              " mL/min) — dosage automatique BLOQUÉ (pesée au banc requise)");
+          }
+        }
+      }
+    }
+
+    float flow = 0.0f;  // demande de débit MOYEN (mL/min), réalisée par le pouls
     if (shouldDose) {
       // feature-025 (B6) : geler l'intégrale si la sortie sature (terme P seul
-      // ≥ débit max → toute accumulation serait du windup). deadband = seuil start.
-      bool phSaturated = (phPID.kp * error >= phPumpControl.maxFlowMlPerMin);
-      // Calcul PID — computePID renvoie le débit FINAL borné (feature-037 : le
-      // bornage [minFlow, maxFlow] est appliqué dans computePidPure, plus de
-      // constrain externe). minFlow évite flow=0 à la première invocation du PID.
+      // ≥ débit d'amplitude → toute accumulation serait du windup).
+      bool phSaturated = (phPID.kp * error >= phAmpFlow);
+      // computePID renvoie le débit FINAL borné [0, ampFlow] — itération 2 : le
+      // plancher minFlow (clamp vers le haut du modèle linéaire) est SUPPRIMÉ,
+      // c'est le seuil C de planPulse qui joue le rôle de deadband bas.
       flow = computePID(phPID, error, now,
                         pumpProtection.phStartThreshold, phSaturated,
-                        phPumpControl.minFlowMlPerMin, phPumpControl.maxFlowMlPerMin);
+                        0.0f, phAmpFlow);
     } else {
-      // Arrêt du dosage
-      if (phDosingState.active) {
-        phDosingState.lastStopTime = now;
-        // feature-025 : pause mélange hydraulique armée à l'ARRÊT de l'injection
-        // (homogénéisation post-dose), une fois la dose réellement versée.
-        notifyPhDose((uint32_t)now);
-        unsigned long runTime = (now - phDosingState.lastStartTime) / 1000;
-        // Estimer le volume depuis le duty PWM de la dernière itération active
-        float lastFlow = dutyToFlow(phPumpControl, pumpDuty[pumpIndexFromNumber(mqttCfg.phPump)]);
-        float volumeMl = (lastFlow * runTime) / 60.0f;
-        systemLogger.info("Arrêt dosage pH (auto): durée=" + String(runTime) + "s" +
-          " vol≈" + String(volumeMl, 1) + "mL" +
-          " total jour=" + String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(safetyLimits.maxPhMlPerDay, 0) + "mL");
-      }
-
       // Reset PID si erreur négative (pH hors plage de correction)
       if (error < -pumpProtection.phStopThreshold) {
         phPID.integral = 0.0f;
@@ -1186,14 +1300,71 @@ void PumpControllerClass::update() {
       }
     }
 
+    // --- Ordonnanceur d'impulsions (proportionnel de temps, pulse_dosing_logic) ---
+    const uint32_t now32 = (uint32_t)now;
     if (flow > 0.0f) {
-      int index = pumpIndexFromNumber(mqttCfg.phPump);
-      uint8_t duty = flowToDuty(phPumpControl, flow);
-      if (duty > desiredDuty[index]) desiredDuty[index] = duty;
-      if (duty > 0) {
-        phActive = true;
-        phFlow = flow;
+      // Plan par PÉRIODE : recalculé à l'entrée de session et à chaque frontière
+      // de période (la demande PID courante fixe la durée du prochain pouls).
+      bool newPeriod = !_pulseSession[0] ||
+                       (now32 - _pulseState[0].periodStartMs) >= kPulsePeriodMs;
+      if (newPeriod) {
+        PulsePlan plan = planPulse(flow, phAmpFlow, kPulsePeriodMs, kPulseMinMs);
+        if (plan.refused) {
+          // Seuil C : la consigne exigerait un pouls < kPulseMinMs → deadband
+          // NORMAL (on attend que l'erreur grossisse). INFO throttlé, et ce
+          // refus ne nourrit PAS le streak no-flow (sinon inondation type 2.20.2).
+          phPlanRefused = true;
+          flow = 0.0f;
+          static unsigned long phPulseInfoMs = 0;
+          if (phPulseInfoMs == 0 || now - phPulseInfoMs >= kPulseRefusalLogIntervalMs) {
+            phPulseInfoMs = now;
+            systemLogger.info("[Dosage pH] Consigne " + String(phPID.kp * error, 2) +
+              " mL/min sous le pouls minimal (" + String(kPulseMinMs / 1000UL) +
+              " s à " + String(phAmpFlow, 1) + " mL/min) — injection différée (seuil C)");
+          }
+        } else {
+          // Démarrage de session : le premier pouls part immédiatement (kick).
+          // `phStartDecided` couvre aussi la reprise après une suspension
+          // hors-branche (filtration/OTA) qui aurait laissé un drapeau de
+          // session périmé — les compteurs de session repartent alors de zéro.
+          if (!_pulseSession[0] || phStartDecided) {
+            _pulseSession[0] = true;
+            _sessionOnMs[0] = 0;
+            _sessionVolMl[0] = 0.0f;
+            _pulseState[0] = {now32, now32, true};
+          }
+          _pulseMs[0] = plan.pulseMs;
+        }
       }
+    }
+
+    if (flow > 0.0f && _pulseSession[0]) {
+      PulseTick tk = tickPulse(_pulseState[0], now32, kPulsePeriodMs,
+                               _pulseMs[0], kPulseKickMs);
+      _pulseState[0] = tk.next;
+      if (tk.pumpOn) {
+        // Kick à pleine puissance en tête de pouls (couple de décollage), puis
+        // plateau à l'amplitude CALIBRÉE — plus jamais de duty issu d'un modèle.
+        uint8_t duty = tk.kickPhase ? MAX_PWM_DUTY : phAmpDuty;
+        if (duty > desiredDuty[phPumpIdx]) desiredDuty[phPumpIdx] = duty;
+      }
+      // `active` = SESSION en cours (la pompe n'est alimentée que pendant les
+      // pouls) — les impulsions internes ne comptent ni cycle ni anti-rafale.
+      phActive = true;
+      phFlow = flow;
+    }
+
+    // --- Fin de session (erreur résorbée, gate, seuil C en cours de session…) ---
+    if (phWasActiveTick && !phActive) {
+      phDosingState.lastStopTime = now;
+      // feature-025 : pause mélange hydraulique armée à la FIN DE SESSION
+      // (homogénéisation post-dose) — jamais entre deux pouls d'une session.
+      notifyPhDose((uint32_t)now);
+      unsigned long runTime = (now - phDosingState.lastStartTime) / 1000;
+      systemLogger.info("Arrêt dosage pH (auto): session=" + String(runTime) + "s" +
+        " pompe-ON=" + String(_sessionOnMs[0] / 1000UL) + "s" +
+        " vol≈" + String(_sessionVolMl[0], 1) + "mL" +
+        " total jour=" + String(safetyLimits.dailyPhInjectedMl, 0) + "/" + String(safetyLimits.maxPhMlPerDay, 0) + "mL");
     }
 
     // --- Comptabilisation différée du démarrage de cycle (bug-dosage-fantome,
@@ -1218,9 +1389,15 @@ void PumpControllerClass::update() {
     // corrigée en 2.20.2. On n'alerte donc que si la situation PERSISTE sur
     // plusieurs tours consécutifs, ce qui n'arrive pas en régime normal (le tour
     // suivant produit un débit).
+    // Itération 2 : un refus de seuil C (phPlanRefused) est un état NORMAL et
+    // PERSISTANT (deadband de refus — l'erreur ne justifie pas encore un pouls
+    // franc) : il ne doit PAS nourrir le streak, sinon un WARN « régulation sans
+    // effet » sortirait en boucle sur un régime sain (inondation type 2.20.2).
+    // Idem pour le refus de gate (phGateRefused) : il a déjà son critical dédié.
+    // Le streak reste réservé aux VRAIS cas anormaux (PID muet plusieurs tours).
     static uint16_t phNoFlowStreak = 0;
     static unsigned long phNoFlowWarnMs = 0;
-    if (phStartDecided && !phActive) {
+    if (phStartDecided && !phActive && !phPlanRefused && !phGateRefused) {
       if (phNoFlowStreak < 0xFFFF) ++phNoFlowStreak;
       if (phNoFlowStreak >= kDosingNoFlowWarnStreak &&
           (phNoFlowWarnMs == 0 || now - phNoFlowWarnMs >= kDosingNoFlowWarnIntervalMs)) {
@@ -1288,14 +1465,34 @@ void PumpControllerClass::update() {
       } else {
         phCappedLogged = false;
       }
+      // Itération 2 (option B+C) : garde de caractérisation évaluée AVANT le
+      // critical « débit non configuré » existant (message sinon trompeur : le
+      // vrai problème est l'absence de pesée, pas une config à 0). Le mode
+      // Programmée dose désormais à l'amplitude CALIBRÉE en continu (kick au
+      // démarrage de session) : le débit effectif est le débit MESURÉ à cette
+      // amplitude — plus de modèle linéaire ni de clamp vers le haut (supprimés).
+      const int phSchedIdx = pumpIndexFromNumber(mqttCfg.phPump);
+      const uint8_t phSchedAmpDuty = getPumpAmplitudeDuty(phSchedIdx);
+      const float phSchedAmpFlow = pumpPulseFlow(phSchedIdx);
+      const bool phSchedBlocked =
+          evaluatePulseGate(phSchedAmpDuty, pumpCalibratedDuty(phSchedIdx),
+                            phSchedAmpFlow, MIN_ACTIVE_DUTY) != PulseRefusal::None;
       // Débit effectif : UNE SEULE variable pour le bornage horaire, la durée
       // d'injection et le duty (condition pool-chemistry n°5).
-      float effectiveFlowMlPerMin = phPumpControl.maxFlowMlPerMin *
-                                    (static_cast<float>(mqttCfg.pump1MaxDutyPct) / 100.0f);
-      if (effectiveFlowMlPerMin < phPumpControl.minFlowMlPerMin)
-        effectiveFlowMlPerMin = phPumpControl.minFlowMlPerMin;
+      float effectiveFlowMlPerMin = phSchedBlocked ? 0.0f : phSchedAmpFlow;
       static bool phZeroFlowLogged = false;
-      if (effectiveFlowMlPerMin <= 0.0f) {
+      if (phSchedBlocked) {
+        // État de config persistant → critical THROTTLÉ (30 min).
+        static unsigned long phSchedGateCritMs = 0;
+        if (phSchedGateCritMs == 0 || now - phSchedGateCritMs >= kPulseRefusalLogIntervalMs) {
+          phSchedGateCritMs = now;
+          systemLogger.critical("[Scheduled] Pompe pH non caractérisée (duty calibré=" +
+            String(pumpCalibratedDuty(phSchedIdx)) + ", amplitude=" + String(phSchedAmpDuty) +
+            ", débit=" + String(phSchedAmpFlow, 1) +
+            " mL/min) — dosage programmé BLOQUÉ (pesée au banc requise)");
+        }
+      } else if (effectiveFlowMlPerMin <= 0.0f) {
+        // Défensif : ne devrait plus arriver (la gate garantit un débit > 0).
         if (!phZeroFlowLogged) {
           systemLogger.critical("[Scheduled] Débit pompe pH non configuré (0 mL/min) — dosage bloqué");
           phZeroFlowLogged = true;
@@ -1420,12 +1617,25 @@ void PumpControllerClass::update() {
           }
 
           if (wantDose) {
-            int index = pumpIndexFromNumber(mqttCfg.phPump);
-            // Condition n°5 : MÊME effectiveFlowMlPerMin pour le duty que pour
-            // le bornage horaire et la durée (cohérence volume/temps).
-            uint8_t duty = flowToDuty(phPumpControl, effectiveFlowMlPerMin);
-            if (duty > desiredDuty[index]) desiredDuty[index] = duty;
-            if (duty > 0) { phActive = true; phFlow = effectiveFlowMlPerMin; }
+            // Itération 2 : amplitude CALIBRÉE en continu + kick au démarrage
+            // de session. La géométrie (pulseStartMs) est enregistrée pour que
+            // la comptabilité crédite le kick au débit 255 mesuré (exact).
+            // Condition n°5 préservée : effectiveFlowMlPerMin (= débit mesuré à
+            // l'amplitude) sert au bornage horaire, à la durée ET à la commande.
+            // `!active` couvre la reprise après une suspension hors-branche
+            // (drapeau de session périmé) : le kick repart et les compteurs
+            // de session sont remis à zéro.
+            if (!_pulseSession[0] || !phDosingState.active) {
+              _pulseSession[0] = true;
+              _sessionOnMs[0] = 0;
+              _sessionVolMl[0] = 0.0f;
+              _pulseState[0] = {(uint32_t)now, (uint32_t)now, true};
+            }
+            bool kick = ((uint32_t)now - _pulseState[0].pulseStartMs) < kPulseKickMs;
+            uint8_t duty = kick ? MAX_PWM_DUTY : phSchedAmpDuty;
+            if (duty > desiredDuty[phSchedIdx]) desiredDuty[phSchedIdx] = duty;
+            phActive = true;
+            phFlow = effectiveFlowMlPerMin;
           }
 
           _phSchedWindowIdx = dec.windowIndex;
@@ -1464,40 +1674,57 @@ void PumpControllerClass::update() {
     const bool orpWasActiveTick = orpDosingState.active;
 
     if (orpWasActiveTick) {
-      // Déjà en cours : vérifier si on continue
-      shouldDose = shouldContinueDosing(error, pumpProtection.orpStopThreshold, orpDosingState, now);
+      // Déjà en cours : vérifier si on continue. Itération 2 : garde de temps
+      // minimum en temps POMPE-ON cumulé de la session.
+      shouldDose = shouldContinueDosing(error, pumpProtection.orpStopThreshold, _sessionOnMs[1]);
     } else {
       // Arrêté : vérifier si on démarre
       shouldDose = shouldStartDosing(error, pumpProtection.orpStartThreshold, orpDosingState, now);
     }
     const bool orpStartDecided = !orpWasActiveTick && shouldDose;
 
-    float flow = 0.0f;
+    // --- Itération 2 (option B+C) : caractérisation de la pompe ORP affectée ---
+    const int orpPumpIdx = pumpIndexFromNumber(mqttCfg.orpPump);
+    const uint8_t orpAmpDuty = getPumpAmplitudeDuty(orpPumpIdx);
+    const float orpAmpFlow = pumpPulseFlow(orpPumpIdx);  // débit MESURÉ à l'amplitude
+    bool orpGateRefused = false;  // pompe non caractérisée / amplitude sous plancher
+    bool orpPlanRefused = false;  // seuil C : consigne sous le pouls minimal
+
     if (shouldDose) {
-      // feature-025 (B6) : geler l'intégrale si la sortie sature. deadband = seuil start.
-      bool orpSaturated = (orpPID.kp * error >= orpPumpControl.maxFlowMlPerMin);
-      // Calcul PID — computePID renvoie le débit FINAL borné (feature-037 : le
-      // bornage [minFlow, maxFlow] est appliqué dans computePidPure, plus de
-      // constrain externe). minFlow évite flow=0 à la première invocation du PID.
+      // Garde de caractérisation AVANT tout calcul (fail-closed P4) — voir le
+      // commentaire détaillé de la branche pH.
+      PulseRefusal gate = evaluatePulseGate(orpAmpDuty, pumpCalibratedDuty(orpPumpIdx),
+                                            orpAmpFlow, MIN_ACTIVE_DUTY);
+      if (gate != PulseRefusal::None) {
+        orpGateRefused = true;
+        shouldDose = false;
+        static unsigned long orpGateCritMs = 0;
+        if (orpGateCritMs == 0 || now - orpGateCritMs >= kPulseRefusalLogIntervalMs) {
+          orpGateCritMs = now;
+          if (gate == PulseRefusal::AmplitudeBelowMinActive) {
+            systemLogger.critical("[Dosage ORP] Amplitude pompe (" + String(orpAmpDuty) +
+              "/255) sous le plancher de rotation (" + String(MIN_ACTIVE_DUTY) +
+              ") — dosage automatique BLOQUÉ (relever la puissance pompe et recalibrer)");
+          } else {
+            systemLogger.critical("[Dosage ORP] Pompe non caractérisée (duty calibré=" +
+              String(pumpCalibratedDuty(orpPumpIdx)) + ", amplitude=" + String(orpAmpDuty) +
+              ", débit=" + String(orpAmpFlow, 1) +
+              " mL/min) — dosage automatique BLOQUÉ (pesée au banc requise)");
+          }
+        }
+      }
+    }
+
+    float flow = 0.0f;  // demande de débit MOYEN (mL/min), réalisée par le pouls
+    if (shouldDose) {
+      // feature-025 (B6) : geler l'intégrale si la sortie sature.
+      bool orpSaturated = (orpPID.kp * error >= orpAmpFlow);
+      // computePID renvoie le débit FINAL borné [0, ampFlow] — plancher minFlow
+      // SUPPRIMÉ (le seuil C de planPulse joue le rôle de deadband bas).
       flow = computePID(orpPID, error, now,
                         pumpProtection.orpStartThreshold, orpSaturated,
-                        orpPumpControl.minFlowMlPerMin, orpPumpControl.maxFlowMlPerMin);
+                        0.0f, orpAmpFlow);
     } else {
-      // Arrêt du dosage
-      if (orpDosingState.active) {
-        orpDosingState.lastStopTime = now;
-        // feature-025 : pause mélange hydraulique armée à l'ARRÊT de l'injection
-        // (homogénéisation post-dose), une fois la dose réellement versée.
-        notifyOrpDose((uint32_t)now);
-        unsigned long runTime = (now - orpDosingState.lastStartTime) / 1000;
-        // Estimer le volume depuis le duty PWM de la dernière itération active
-        float lastFlow = dutyToFlow(orpPumpControl, pumpDuty[pumpIndexFromNumber(mqttCfg.orpPump)]);
-        float volumeMl = (lastFlow * runTime) / 60.0f;
-        systemLogger.info("Arrêt dosage ORP (auto): durée=" + String(runTime) + "s" +
-          " vol≈" + String(volumeMl, 1) + "mL" +
-          " total jour=" + String(safetyLimits.dailyOrpInjectedMl, 0) + "/" + String(safetyLimits.maxChlorineMlPerDay, 0) + "mL");
-      }
-
       // Reset PID si erreur négative (ORP trop haut, au-dessus de la cible)
       if (error < -pumpProtection.orpStopThreshold) {
         orpPID.integral = 0.0f;
@@ -1506,14 +1733,60 @@ void PumpControllerClass::update() {
       }
     }
 
+    // --- Ordonnanceur d'impulsions (symétrique de la branche pH) ---
+    const uint32_t now32 = (uint32_t)now;
     if (flow > 0.0f) {
-      int index = pumpIndexFromNumber(mqttCfg.orpPump);
-      uint8_t duty = flowToDuty(orpPumpControl, flow);
-      if (duty > desiredDuty[index]) desiredDuty[index] = duty;
-      if (duty > 0) {
-        orpActive = true;
-        orpFlow = flow;
+      bool newPeriod = !_pulseSession[1] ||
+                       (now32 - _pulseState[1].periodStartMs) >= kPulsePeriodMs;
+      if (newPeriod) {
+        PulsePlan plan = planPulse(flow, orpAmpFlow, kPulsePeriodMs, kPulseMinMs);
+        if (plan.refused) {
+          // Seuil C : deadband NORMAL — INFO throttlé, ne nourrit PAS le streak.
+          orpPlanRefused = true;
+          flow = 0.0f;
+          static unsigned long orpPulseInfoMs = 0;
+          if (orpPulseInfoMs == 0 || now - orpPulseInfoMs >= kPulseRefusalLogIntervalMs) {
+            orpPulseInfoMs = now;
+            systemLogger.info("[Dosage ORP] Consigne " + String(orpPID.kp * error, 2) +
+              " mL/min sous le pouls minimal (" + String(kPulseMinMs / 1000UL) +
+              " s à " + String(orpAmpFlow, 1) + " mL/min) — injection différée (seuil C)");
+          }
+        } else {
+          // Démarrage de session (cf. branche pH : orpStartDecided couvre la
+          // reprise après suspension hors-branche, compteurs remis à zéro).
+          if (!_pulseSession[1] || orpStartDecided) {
+            _pulseSession[1] = true;
+            _sessionOnMs[1] = 0;
+            _sessionVolMl[1] = 0.0f;
+            _pulseState[1] = {now32, now32, true};
+          }
+          _pulseMs[1] = plan.pulseMs;
+        }
       }
+    }
+
+    if (flow > 0.0f && _pulseSession[1]) {
+      PulseTick tk = tickPulse(_pulseState[1], now32, kPulsePeriodMs,
+                               _pulseMs[1], kPulseKickMs);
+      _pulseState[1] = tk.next;
+      if (tk.pumpOn) {
+        uint8_t duty = tk.kickPhase ? MAX_PWM_DUTY : orpAmpDuty;
+        if (duty > desiredDuty[orpPumpIdx]) desiredDuty[orpPumpIdx] = duty;
+      }
+      orpActive = true;  // session en cours (pompe ON pendant les pouls seulement)
+      orpFlow = flow;
+    }
+
+    // --- Fin de session (symétrique de la branche pH) ---
+    if (orpWasActiveTick && !orpActive) {
+      orpDosingState.lastStopTime = now;
+      // feature-025 : pause mélange armée à la FIN DE SESSION, jamais entre pouls.
+      notifyOrpDose((uint32_t)now);
+      unsigned long runTime = (now - orpDosingState.lastStartTime) / 1000;
+      systemLogger.info("Arrêt dosage ORP (auto): session=" + String(runTime) + "s" +
+        " pompe-ON=" + String(_sessionOnMs[1] / 1000UL) + "s" +
+        " vol≈" + String(_sessionVolMl[1], 1) + "mL" +
+        " total jour=" + String(safetyLimits.dailyOrpInjectedMl, 0) + "/" + String(safetyLimits.maxChlorineMlPerDay, 0) + "mL");
     }
 
     // --- Comptabilisation différée du démarrage de cycle (bug-dosage-fantome,
@@ -1522,9 +1795,11 @@ void PumpControllerClass::update() {
     // Symétrique du WARN de la branche pH — y compris la garde de PERSISTANCE :
     // « décision sans débit » est normal au premier tick, alerter dessus
     // inonderait le journal. Voir le commentaire détaillé côté pH.
+    // Itération 2 : les refus seuil C / gate ne nourrissent PAS le streak
+    // (états normaux ou déjà signalés) — voir le commentaire de la branche pH.
     static uint16_t orpNoFlowStreak = 0;
     static unsigned long orpNoFlowWarnMs = 0;
-    if (orpStartDecided && !orpActive) {
+    if (orpStartDecided && !orpActive && !orpPlanRefused && !orpGateRefused) {
       if (orpNoFlowStreak < 0xFFFF) ++orpNoFlowStreak;
       if (orpNoFlowStreak >= kDosingNoFlowWarnStreak &&
           (orpNoFlowWarnMs == 0 || now - orpNoFlowWarnMs >= kDosingNoFlowWarnIntervalMs)) {
@@ -1591,14 +1866,30 @@ void PumpControllerClass::update() {
       } else {
         orpCappedLogged = false;
       }
+      // Itération 2 (option B+C) : garde de caractérisation AVANT le critical
+      // « débit non configuré » (voir la branche scheduled pH). Amplitude
+      // CALIBRÉE en continu + kick au démarrage, débit MESURÉ à l'amplitude.
+      const int orpSchedIdx = pumpIndexFromNumber(mqttCfg.orpPump);
+      const uint8_t orpSchedAmpDuty = getPumpAmplitudeDuty(orpSchedIdx);
+      const float orpSchedAmpFlow = pumpPulseFlow(orpSchedIdx);
+      const bool orpSchedBlocked =
+          evaluatePulseGate(orpSchedAmpDuty, pumpCalibratedDuty(orpSchedIdx),
+                            orpSchedAmpFlow, MIN_ACTIVE_DUTY) != PulseRefusal::None;
       // Débit effectif : UNE SEULE variable pour le bornage horaire, la durée
       // d'injection et le duty (condition pool-chemistry n°5).
-      float effectiveFlowMlPerMin = orpPumpControl.maxFlowMlPerMin *
-                                    (static_cast<float>(mqttCfg.pump2MaxDutyPct) / 100.0f);
-      if (effectiveFlowMlPerMin < orpPumpControl.minFlowMlPerMin)
-        effectiveFlowMlPerMin = orpPumpControl.minFlowMlPerMin;
+      float effectiveFlowMlPerMin = orpSchedBlocked ? 0.0f : orpSchedAmpFlow;
       static bool orpZeroFlowLogged = false;
-      if (effectiveFlowMlPerMin <= 0.0f) {
+      if (orpSchedBlocked) {
+        static unsigned long orpSchedGateCritMs = 0;
+        if (orpSchedGateCritMs == 0 || now - orpSchedGateCritMs >= kPulseRefusalLogIntervalMs) {
+          orpSchedGateCritMs = now;
+          systemLogger.critical("[Scheduled ORP] Pompe ORP non caractérisée (duty calibré=" +
+            String(pumpCalibratedDuty(orpSchedIdx)) + ", amplitude=" + String(orpSchedAmpDuty) +
+            ", débit=" + String(orpSchedAmpFlow, 1) +
+            " mL/min) — dosage programmé BLOQUÉ (pesée au banc requise)");
+        }
+      } else if (effectiveFlowMlPerMin <= 0.0f) {
+        // Défensif : ne devrait plus arriver (la gate garantit un débit > 0).
         if (!orpZeroFlowLogged) {
           systemLogger.critical("[Scheduled ORP] Débit pompe ORP non configuré (0 mL/min) — dosage bloqué");
           orpZeroFlowLogged = true;
@@ -1723,12 +2014,22 @@ void PumpControllerClass::update() {
           }
 
           if (wantDose) {
-            int index = pumpIndexFromNumber(mqttCfg.orpPump);
-            // Condition n°5 : MÊME effectiveFlowMlPerMin pour le duty que pour
-            // le bornage horaire et la durée (cohérence volume/temps).
-            uint8_t duty = flowToDuty(orpPumpControl, effectiveFlowMlPerMin);
-            if (duty > desiredDuty[index]) desiredDuty[index] = duty;
-            if (duty > 0) { orpActive = true; orpFlow = effectiveFlowMlPerMin; }
+            // Itération 2 : amplitude CALIBRÉE en continu + kick au démarrage
+            // de session (voir la branche scheduled pH). Condition n°5
+            // préservée : effectiveFlowMlPerMin = débit mesuré à l'amplitude.
+            // Cf. branche scheduled pH : `!active` couvre la reprise après
+            // suspension hors-branche (kick + compteurs de session à zéro).
+            if (!_pulseSession[1] || !orpDosingState.active) {
+              _pulseSession[1] = true;
+              _sessionOnMs[1] = 0;
+              _sessionVolMl[1] = 0.0f;
+              _pulseState[1] = {(uint32_t)now, (uint32_t)now, true};
+            }
+            bool kick = ((uint32_t)now - _pulseState[1].pulseStartMs) < kPulseKickMs;
+            uint8_t duty = kick ? MAX_PWM_DUTY : orpSchedAmpDuty;
+            if (duty > desiredDuty[orpSchedIdx]) desiredDuty[orpSchedIdx] = duty;
+            orpActive = true;
+            orpFlow = effectiveFlowMlPerMin;
           }
 
           _orpSchedWindowIdx = dec.windowIndex;
@@ -1743,11 +2044,11 @@ void PumpControllerClass::update() {
     orpPID.lastTime = 0;
   }
 
-  // Appliquer la puissance maximale configurée (ne s'applique pas au mode test manuel)
-  uint8_t maxDuty0 = (uint8_t)((mqttCfg.pump1MaxDutyPct * MAX_PWM_DUTY) / 100);
-  uint8_t maxDuty1 = (uint8_t)((mqttCfg.pump2MaxDutyPct * MAX_PWM_DUTY) / 100);
-  if (desiredDuty[0] > maxDuty0) desiredDuty[0] = maxDuty0;
-  if (desiredDuty[1] > maxDuty1) desiredDuty[1] = maxDuty1;
+  // Itération 2 (condition B1 du gate) : le clamp PWM final sur pumpNMaxDutyPct
+  // est SUPPRIMÉ — pumpNMaxDutyPct définit désormais directement l'AMPLITUDE du
+  // plateau (le plafond est structurel), et le kick de décollage (255, 400 ms)
+  // doit pouvoir passer : l'écrêter reproduirait le non-démarrage à froid.
+  // desiredDuty ne prend plus que trois valeurs : 0, amplitude calibrée, 255.
 
   // Appliquer les valeurs de duty (sauf pour les pompes en mode manuel)
   for (int i = 0; i < 2; ++i) {
@@ -1756,41 +2057,23 @@ void PumpControllerClass::update() {
     }
   }
 
-  // Mettre à jour le tracking de sécurité (ml injectés)
-  // Couvre à la fois la régulation automatique ET l'injection manuelle.
-  // IMPORTANT: ne pas utiliser lastTimestamp (mis à jour par refreshDosingState), sinon delta≈0.
+  // Fin de session hors branche (canDose refusé en cours de session, changement
+  // de mode, limite atteinte…) : libérer l'état du train d'impulsions pour que
+  // la prochaine session reparte proprement (kick + compteurs de session à 0).
+  if (!phActive) _pulseSession[0] = false;
+  if (!orpActive) _pulseSession[1] = false;
+
+  // Comptabilité produit (itération 2, P4) : volume par delta de tick, calculé
+  // par pulseDeltaVolumeMl (kick au débit 255 MESURÉ + plateau au débit CALIBRÉ,
+  // exact et indépendant du jitter de loop) pour l'auto/scheduled ; MAJORANT
+  // flow255 pour le manuel (?duty=N), sauf duty == calibratedDuty → débit
+  // mesuré. Jamais zéro sur une pompe alimentée.
   int phIdx  = pumpIndexFromNumber(mqttCfg.phPump);
   int orpIdx = pumpIndexFromNumber(mqttCfg.orpPump);
   bool phManualActive  = manualMode[phIdx]  && pumpDuty[phIdx]  > 0;
   bool orpManualActive = manualMode[orpIdx] && pumpDuty[orpIdx] > 0;
-
-  if (phActive || phManualActive) {
-    if (phDosingState.lastSafetyTimestamp == 0) {
-      phDosingState.lastSafetyTimestamp = now;
-    }
-    unsigned long delta = now - phDosingState.lastSafetyTimestamp;
-    float phEffectiveFlow = phManualActive
-      ? dutyToFlow(phPumpControl, pumpDuty[phIdx])
-      : dutyToFlow(phPumpControl, desiredDuty[phIdx]);
-    updateSafetyTracking(true, phEffectiveFlow, delta);
-    phDosingState.lastSafetyTimestamp = now;
-  } else {
-    phDosingState.lastSafetyTimestamp = 0;
-  }
-
-  if (orpActive || orpManualActive) {
-    if (orpDosingState.lastSafetyTimestamp == 0) {
-      orpDosingState.lastSafetyTimestamp = now;
-    }
-    unsigned long delta = now - orpDosingState.lastSafetyTimestamp;
-    float orpEffectiveFlow = orpManualActive
-      ? dutyToFlow(orpPumpControl, pumpDuty[orpIdx])
-      : dutyToFlow(orpPumpControl, desiredDuty[orpIdx]);
-    updateSafetyTracking(false, orpEffectiveFlow, delta);
-    orpDosingState.lastSafetyTimestamp = now;
-  } else {
-    orpDosingState.lastSafetyTimestamp = 0;
-  }
+  accountPumpVolume(0, phIdx, now, phManualActive);
+  accountPumpVolume(1, orpIdx, now, orpManualActive);
 
   // Sauvegarde NVS des compteurs journaliers
 
