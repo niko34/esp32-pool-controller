@@ -1877,56 +1877,58 @@ action:
                   <div class="pump" style="margin-top:16px">
                     <div class="row row--between">
                       <div>
-                        <div class="row__title">Puissance max — Pompe 1</div>
-                        <div class="muted small">En régulation&nbsp;: <span id="pump1_max_duty_value">50</span>% <span id="pump1_amp_duty"></span></div>
+                        <div class="row__title">Pompe 1</div>
+                        <!-- feature-074 : amplitude gelée — ligne lecture seule (le curseur est retiré) -->
+                        <div class="muted small pump-cal-info" id="pump1_cal_info">—</div>
                       </div>
-                      <span class="state-badge state-badge--warn" id="pump1_uncal_badge" hidden>Débit non caractérisé — pesée requise</span>
+                      <span class="state-badge state-badge--warn" id="pump1_uncal_badge" hidden>Débit non caractérisé — mesure requise</span>
                     </div>
-                    <input type="range" id="pump1_max_duty" min="40" max="100" step="5" value="50" aria-label="Puissance maximale Pompe 1 (%, minimum 40)" />
-                    <div class="muted small" id="pump1_cal_current" style="margin-top:6px" hidden></div>
-                    <div class="grid grid--2" style="margin-top:8px">
-                      <label class="field">
-                        <span class="field__label">Duty calibré (102-255)</span>
-                        <input type="number" id="pump1_cal_duty" min="102" max="255" step="1" placeholder="ex. 127" aria-label="Duty calibré Pompe 1 (102 à 255)" />
-                      </label>
-                      <label class="field">
-                        <span class="field__label">Débit mesuré (ml/min)</span>
-                        <input type="number" id="pump1_cal_flow" min="0.1" max="200" step="0.1" placeholder="ex. 12.0" aria-label="Débit mesuré Pompe 1 (ml/min)" />
-                      </label>
-                    </div>
+                    <!-- feature-075 : l'assistant guidé remplace la saisie directe comme action principale -->
                     <div class="row row--gap">
-                      <button class="btn btn--secondary" type="button" id="pump1_cal_save_btn">Enregistrer la pesée</button>
+                      <button class="btn btn--primary" type="button" id="pump1_measure_btn">Mesurer le débit</button>
+                    </div>
+                    <button class="linklike" type="button" id="pump1_adv_toggle" aria-expanded="false" aria-controls="pump1_adv">Saisie avancée</button>
+                    <div id="pump1_adv" hidden>
+                      <div class="grid grid--2" style="margin-top:8px">
+                        <label class="field">
+                          <span class="field__label">Débit mesuré (ml/min)</span>
+                          <input type="number" id="pump1_cal_flow" min="0.1" max="200" step="0.1" placeholder="ex. 28.0" aria-label="Débit mesuré Pompe 1 (ml/min)" />
+                        </label>
+                      </div>
+                      <div class="row row--gap">
+                        <button class="btn btn--secondary" type="button" id="pump1_cal_save_btn">Enregistrer</button>
+                      </div>
                     </div>
                   </div>
 
                   <div class="pump">
                     <div class="row row--between">
                       <div>
-                        <div class="row__title">Puissance max — Pompe 2</div>
-                        <div class="muted small">En régulation&nbsp;: <span id="pump2_max_duty_value">50</span>% <span id="pump2_amp_duty"></span></div>
+                        <div class="row__title">Pompe 2</div>
+                        <div class="muted small pump-cal-info" id="pump2_cal_info">—</div>
                       </div>
-                      <span class="state-badge state-badge--warn" id="pump2_uncal_badge" hidden>Débit non caractérisé — pesée requise</span>
-                    </div>
-                    <input type="range" id="pump2_max_duty" min="40" max="100" step="5" value="50" aria-label="Puissance maximale Pompe 2 (%, minimum 40)" />
-                    <div class="muted small" id="pump2_cal_current" style="margin-top:6px" hidden></div>
-                    <div class="grid grid--2" style="margin-top:8px">
-                      <label class="field">
-                        <span class="field__label">Duty calibré (102-255)</span>
-                        <input type="number" id="pump2_cal_duty" min="102" max="255" step="1" placeholder="ex. 127" aria-label="Duty calibré Pompe 2 (102 à 255)" />
-                      </label>
-                      <label class="field">
-                        <span class="field__label">Débit mesuré (ml/min)</span>
-                        <input type="number" id="pump2_cal_flow" min="0.1" max="200" step="0.1" placeholder="ex. 12.0" aria-label="Débit mesuré Pompe 2 (ml/min)" />
-                      </label>
+                      <span class="state-badge state-badge--warn" id="pump2_uncal_badge" hidden>Débit non caractérisé — mesure requise</span>
                     </div>
                     <div class="row row--gap">
-                      <button class="btn btn--secondary" type="button" id="pump2_cal_save_btn">Enregistrer la pesée</button>
+                      <button class="btn btn--primary" type="button" id="pump2_measure_btn">Mesurer le débit</button>
+                    </div>
+                    <button class="linklike" type="button" id="pump2_adv_toggle" aria-expanded="false" aria-controls="pump2_adv">Saisie avancée</button>
+                    <div id="pump2_adv" hidden>
+                      <div class="grid grid--2" style="margin-top:8px">
+                        <label class="field">
+                          <span class="field__label">Débit mesuré (ml/min)</span>
+                          <input type="number" id="pump2_cal_flow" min="0.1" max="200" step="0.1" placeholder="ex. 28.0" aria-label="Débit mesuré Pompe 2 (ml/min)" />
+                        </label>
+                      </div>
+                      <div class="row row--gap">
+                        <button class="btn btn--secondary" type="button" id="pump2_cal_save_btn">Enregistrer</button>
+                      </div>
                     </div>
                   </div>
 
                   <div class="hint">
-                    Affectation des pompes doseuses et puissance maximale en régulation pH/ORP (minimum 40&nbsp;%&nbsp;: en dessous, la pompe cale).<br>
-                    Calibration par pesée&nbsp;: pesez le volume délivré en 120&nbsp;s au duty d'exploitation (eau claire), entrez duty et débit. Le duty d'exploitation est affiché à côté du pourcentage. Sans pesée enregistrée, le dosage automatique est refusé.
+                    Affectation des pompes doseuses. L'amplitude d'impulsion est fixée en usine et le débit correspond à la valeur du modèle de pompe.<br>
+                    Mesure du débit (facultative)&nbsp;: pour affiner le dosage de CET appareil, lancez «&nbsp;Mesurer le débit&nbsp;» — l'assistant guide la purge à l'eau claire, la marche minutée et la saisie du volume. L'indication passe alors à «&nbsp;mesuré&nbsp;».
                   </div>
 
                   <div style="margin-top:16px">
@@ -2193,6 +2195,139 @@ action:
                 </div>
               </div>
             </section>
+          </div>
+
+          <!-- feature-075 : assistant de mesure du débit des pompes doseuses.
+               Carte UNIQUE paramétrée par pompe, plein écran : la classe
+               is-flow-wizard sur #view-settings masque .settingsHead,
+               #settings-segmented et .settingsPanels (pattern calibration pH). -->
+          <div class="card" id="pump-flow-wizard" hidden>
+            <div class="card__head">
+              <h2 class="card__title" id="flow-wizard-title">Mesure du débit — Pompe 1 (pH)</h2>
+            </div>
+            <div class="card__body">
+              <!-- Perte réseau pendant une marche : la minuterie SERVEUR arrête la pompe seule -->
+              <div class="callout callout--info" id="flow-wizard-offline" hidden>
+                Connexion perdue. La pompe s'arrêtera d'elle-même à la fin du temps.
+              </div>
+              <!-- Session expirée côté serveur (timeout 15 min) pendant que l'assistant est ouvert -->
+              <div class="callout callout--warn" id="flow-wizard-expired" hidden>
+                L'assistant a expiré (15&nbsp;min d'inactivité) — le dosage automatique est rétabli.
+                Reprenez depuis la purge.
+              </div>
+
+              <ol class="calibration-steps" id="flow-wizard-steps">
+                <li class="step is-active" data-step="0">
+                  <span class="step__number">1</span>
+                  <div class="step__content">
+                    <div class="step__title">Préparation</div>
+                    <div class="callout callout--warn">
+                      Ne mesurez jamais avec de l'acide ou du chlore&nbsp;: placez le tuyau
+                      d'aspiration dans un seau d'eau claire. La pompe est volumétrique —
+                      l'eau délivre le même débit que le produit.
+                    </div>
+                    <p class="muted small">
+                      Matériel&nbsp;: un seau d'eau claire et un récipient gradué.<br>
+                      Le dosage automatique est suspendu pendant la mesure et rétabli à la sortie.
+                      Les marches de pompe comptent dans le budget journalier de sécurité
+                      (<span id="flow-wizard-budget">quelques dizaines de mL</span>).
+                    </p>
+                    <button class="btn btn--secondary" type="button" id="flow-wizard-next-0">C'est fait, continuer →</button>
+                  </div>
+                </li>
+
+                <li class="step is-upcoming" data-step="1">
+                  <span class="step__number">2</span>
+                  <div class="step__content">
+                    <div class="step__title">Purge à l'eau claire</div>
+                    <p class="muted small">
+                      Le tuyau d'aspiration dans le seau d'eau claire, purgez&nbsp;: le produit
+                      résiduel part par le circuit d'injection normal.
+                    </p>
+                    <div class="readout cal-step-readout" id="flow-wizard-purge-readout" hidden>
+                      <span class="readout__label">Purge en cours</span>
+                      <div class="readout__value" id="flow-wizard-purge-countdown">--</div>
+                    </div>
+                    <div class="row row--gap">
+                      <button class="btn btn--primary" type="button" id="flow-wizard-purge-btn">Purger (60&nbsp;s)</button>
+                      <button class="btn btn--danger" type="button" id="flow-wizard-purge-stop-btn" hidden>⏹ Arrêter</button>
+                      <button class="btn btn--secondary" type="button" id="flow-wizard-next-1" hidden>Continuer →</button>
+                    </div>
+                    <button class="linklike" type="button" id="flow-wizard-repurge-btn" hidden>Purger à nouveau</button>
+                  </div>
+                </li>
+
+                <li class="step is-upcoming" data-step="2">
+                  <span class="step__number">3</span>
+                  <div class="step__content">
+                    <div class="step__title">Débranchement</div>
+                    <p class="muted small">
+                      Débranchez le tuyau d'injection et placez-le dans le récipient gradué.
+                    </p>
+                    <button class="btn btn--secondary" type="button" id="flow-wizard-next-2">C'est fait, continuer →</button>
+                  </div>
+                </li>
+
+                <li class="step is-upcoming" data-step="3">
+                  <span class="step__number">4</span>
+                  <div class="step__content">
+                    <div class="step__title">Mesure</div>
+                    <p class="muted small">
+                      La pompe tourne à son amplitude d'exploitation, le tuyau toujours dans
+                      le seau d'eau claire. Ne touchez à rien pendant le compte à rebours.
+                    </p>
+                    <div class="callout callout--warn" id="flow-wizard-measure-aborted" hidden>
+                      Mesure interrompue — la valeur ne serait pas fiable. Relancez une mesure complète.
+                    </div>
+                    <div class="readout cal-step-readout" id="flow-wizard-measure-readout" hidden>
+                      <span class="readout__label">Mesure en cours</span>
+                      <div class="readout__value" id="flow-wizard-measure-countdown">--</div>
+                    </div>
+                    <div class="row row--gap">
+                      <button class="btn btn--primary" type="button" id="flow-wizard-measure-btn">Lancer la mesure (120&nbsp;s)</button>
+                      <button class="btn btn--danger" type="button" id="flow-wizard-measure-stop-btn" hidden>⏹ Arrêter</button>
+                    </div>
+                  </div>
+                </li>
+
+                <li class="step is-upcoming" data-step="4">
+                  <span class="step__number">5</span>
+                  <div class="step__content">
+                    <div class="step__title">Volume recueilli</div>
+                    <label class="field">
+                      <span class="field__label">Quel volume lisez-vous&nbsp;? (ml)</span>
+                      <input type="text" inputmode="decimal" id="flow-wizard-volume" placeholder="ex. 56" aria-label="Volume recueilli (ml)" />
+                    </label>
+                    <div class="muted small" id="flow-wizard-conversion" aria-live="polite"></div>
+                    <div class="callout callout--warn" id="flow-wizard-plausibility" hidden>
+                      Valeur inhabituelle&nbsp;: on attend généralement 20 à 35&nbsp;ml/min.
+                      Vérifiez la lecture avant d'enregistrer.
+                    </div>
+                    <div class="row row--gap">
+                      <button class="btn btn--primary" type="button" id="flow-wizard-save-btn">Enregistrer le débit</button>
+                    </div>
+                  </div>
+                </li>
+
+                <li class="step is-upcoming" data-step="5">
+                  <span class="step__number">✓</span>
+                  <div class="step__content">
+                    <div class="step__title">Remontage</div>
+                    <p class="muted small" id="flow-wizard-done-text">
+                      Débit enregistré. Rebranchez le tuyau d'injection sur le point d'injection.
+                    </p>
+                    <p class="muted small">
+                      Les premières doses injecteront l'eau restée dans le tuyau (négligeable).
+                    </p>
+                    <button class="btn btn--primary" type="button" id="flow-wizard-finish-btn">Terminer</button>
+                  </div>
+                </li>
+              </ol>
+
+              <div class="row row--gap" style="margin-top:16px">
+                <button class="btn btn--ghost" type="button" id="flow-wizard-cancel-btn">Annuler</button>
+              </div>
+            </div>
           </div>
         </section>
 

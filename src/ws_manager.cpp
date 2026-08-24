@@ -525,7 +525,8 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
 size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   // feature-053 : +2 champs boost_active/boost_until → marge portée à 2304.
   // feature-067 : +1 champ ph_offset (~24 octets) → marge portée à 2368.
-  StaticJson<2368> doc;
+  // feature-074 : +6 champs caractérisation pompes (~194 o au pire) → 2560.
+  StaticJson<2560> doc;
   doc["type"] = "config";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -551,6 +552,16 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   d["orp_pump"]         = mqttCfg.orpPump;
   d["pump1_max_duty_pct"] = mqttCfg.pump1MaxDutyPct;
   d["pump2_max_duty_pct"] = mqttCfg.pump2MaxDutyPct;
+  // feature-074 : parité STRICTE avec /get-config (mêmes noms). Sans ces clés,
+  // la trame config WS écrasait l'affichage de la calibration côté UI : le
+  // frontend traitait « clé absente » comme « zéro » — même leçon que la
+  // parité /data des pentes (2.21.2). Absent = pas d'information, jamais 0.
+  d["pump1_calibrated_duty"]        = mqttCfg.pump1CalibratedDuty;
+  d["pump1_pulse_flow_ml_per_min"]  = mqttCfg.pump1PulseFlowMlPerMin;
+  d["pump2_calibrated_duty"]        = mqttCfg.pump2CalibratedDuty;
+  d["pump2_pulse_flow_ml_per_min"]  = mqttCfg.pump2PulseFlowMlPerMin;
+  d["pump1_flow_weighed"]           = mqttCfg.pump1FlowWeighed;
+  d["pump2_flow_weighed"]           = mqttCfg.pump2FlowWeighed;
   d["ph_limit_minutes"] = mqttCfg.phInjectionLimitMinutes;
   d["orp_limit_minutes"] = mqttCfg.orpInjectionLimitMinutes;
   d["install_mode"]     = installModeToString(mqttCfg.installMode);  // feature-056

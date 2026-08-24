@@ -84,7 +84,8 @@ docs/
 │   ├── 0043-dosage-proportionnel-de-temps-amplitude-calibree.md
 │   ├── 0044-budget-horaire-et-temps-min-en-temps-pompe-on.md
 │   ├── 0045-etat-impulsion-expose-en-calendrier.md
-│   └── 0046-accumulateur-demande-sous-pouls-minimal.md
+│   ├── 0046-accumulateur-demande-sous-pouls-minimal.md
+│   └── 0047-calibration-de-type-par-defaut-et-gel-amplitude.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

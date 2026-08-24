@@ -711,11 +711,46 @@ constexpr uint8_t kPumpAmpMinPct = 40;
 // Plausibilité du débit calibré saisi (pesée) : au-delà, valeur rejetée
 // (fail-closed FlowUncharacterized) — aucune doseuse de piscine ne débite plus.
 constexpr float kPulseFlowMaxMlPerMin = 200.0f;
+// feature-074 : CALIBRATION DE TYPE (défaut usine du modèle de pompe) — débit
+// (ml/min) au duty de type kPumpTypeCalDuty (= 127, amplitude 50 %). Contexte
+// flotte : tous les exemplaires embarquent le MÊME modèle de pompe péristaltique,
+// un appareil neuf doit doser dès le premier flash sans pesée individuelle.
+// Mesures de référence du 2026-08-23 (unité de référence) :
+//   - Pompe 1 : 12,0 ml/min @82 et 61,0 ml/min @255 → interpolation 24,7 @127 ;
+//   - Pompe 2 : 67,0 ml/min @255 → ~27,2 @127 (échelle 67/61) ;
+//   - Dispersion inter-unités constatée : ±10 % (61 vs 67 à 255, même modèle).
+// 28.0 est AU-DESSUS des deux interpolations : biais SÛR — surestimer le débit
+// ⇒ la pompe tourne MOINS longtemps (sous-dosage) ET les compteurs journaliers
+// créditent PLUS que le volume réel (sur-comptage, les limites mordent plus tôt).
+// À remplacer par la pesée de type à 127 (unité de référence) quand disponible.
+constexpr float kPumpTypePulseFlowMlPerMin = 28.0f;
 // Throttle des logs de refus de l'ordonnanceur d'impulsions : critical « pompe
 // non caractérisée / amplitude sous plancher » (état de config persistant) et
 // info « consigne sous le pouls minimal » (deadband normal). 30 min : visible
 // dans la journée sans faire tourner le journal persistant (leçon 2.20.2).
 constexpr unsigned long kPulseRefusalLogIntervalMs = 1800000UL;  // 30 min
+
+// ---------------------------------------------------------------------------
+// feature-075 : ASSISTANT DE MESURE DU DÉBIT des pompes (verdict gate
+// pool-chemistry feature-075). Marches pompe MINUTÉES CÔTÉ SERVEUR (l'arrêt ne
+// dépend jamais du navigateur) + suspension du dosage auto pendant l'assistant.
+// ---------------------------------------------------------------------------
+// Purge des tuyaux à l'eau claire : à duty 255 IMPÉRATIVEMENT — c'est le SEUL
+// duty dont le débit est connu d'usine (kPumpNFlow255MlPerMin), donc le seul
+// permettant de borner le volume de produit résiduel poussé au bassin.
+constexpr uint32_t kFlowAssistPurgeDurationS = 60;       // 60 s — purge à duty 255
+// Marche de mesure à l'amplitude EXACTE d'exploitation : 120 s (et non 60 s)
+// pour doubler le volume lu (~50 mL au lieu de ~25) et HALVER l'erreur de
+// lecture relative sur le récipient gradué.
+constexpr uint32_t kFlowAssistMeasureDurationS = 120;    // 120 s — mesure minutée
+// Purges max par session d'assistant : borne le volume total envoyé au bassin
+// et le temps de marche hors régulation (une purge qui n'amorce pas en 3
+// tentatives signale un problème matériel, pas un besoin de purge de plus).
+constexpr uint8_t kFlowAssistMaxPurgesPerSession = 3;
+// Timeout serveur de la SUSPENSION du dosage auto : un assistant abandonné
+// (onglet fermé, WiFi tombé) ne doit jamais laisser la régulation suspendue
+// indéfiniment. Réarmé à CHAQUE interaction de l'assistant (chaque requête).
+constexpr unsigned long kFlowAssistSuspendTimeoutMs = 900000UL;  // 15 min
 
 // Erreur max pour normalisation PID
 constexpr float kPhMaxError           =  1.0f;   // Erreur pH maximale (unités pH)

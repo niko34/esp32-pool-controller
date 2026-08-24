@@ -1121,6 +1121,25 @@ void PumpControllerClass::update() {
     return;
   }
 
+  // feature-075 : snapshot du flag de suspension « assistant de mesure du
+  // débit » (volatile, écrit par le handler web async) + log info ONE-SHOT à
+  // chaque transition (pose/levée). La fermeture effective passe par le chemin
+  // EXISTANT de la perte de filtration (garde structurelle plus bas) : états
+  // de dosage AUTO et SCHEDULED refermés (dosingState.active = false), pompes
+  // non-manuelles forcées à 0 ; le drapeau de session pouls périmé est absorbé
+  // à la reprise (« reprise après suspension hors-branche », compteurs de
+  // session remis à zéro). Le mode MANUEL — véhicule de l'assistant (purge et
+  // marche de mesure minutées) — reste pleinement fonctionnel.
+  const bool flowAssistSuspend = _flowAssistSuspend;
+  if (flowAssistSuspend != _flowAssistSuspendPrev) {
+    _flowAssistSuspendPrev = flowAssistSuspend;
+    if (flowAssistSuspend) {
+      systemLogger.info("Dosage automatique suspendu (assistant de mesure du débit)");
+    } else {
+      systemLogger.info("Dosage automatique rétabli (fin de l'assistant de mesure du débit)");
+    }
+  }
+
   // feature-006 (condition pool-chemistry #2) : budget horaire usedMs PARTAGÉ
   // auto + manuel. Itération 2 (bug-dosage-fantome) : le prédicat devient
   // POMPE-ON — pumpDuty reflète ici la commande appliquée au tour PRÉCÉDENT
@@ -1151,11 +1170,16 @@ void PumpControllerClass::update() {
   bool filtrationOk = filtration.resolveWaterPresence().waterPresent;
   bool stabilizationActive = isStabilizationTimerActive(0) ||
                              isStabilizationTimerActive(1);
-  if (!filtrationOk || stabilizationActive) {
-    // Arrêter le dosage en cours si l'eau n'est plus présente / stabilisation active
+  // feature-075 : la suspension « assistant de mesure du débit » emprunte ce
+  // MÊME chemin de fermeture (aucune duplication) — mêmes garanties que la
+  // perte de filtration : auto + scheduled refermés, manuel préservé.
+  if (!filtrationOk || stabilizationActive || flowAssistSuspend) {
+    // Arrêter le dosage en cours si l'eau n'est plus présente / stabilisation
+    // active / assistant de mesure du débit en cours
     if (phDosingState.active || orpDosingState.active) {
       const char* reason = !filtrationOk ? "eau absente (filtration arrêtée / signal externe périmé)"
-                                         : "stabilisation post-cal en cours";
+                         : stabilizationActive ? "stabilisation post-cal en cours"
+                                               : "assistant de mesure du débit";
       systemLogger.info(String("Dosage suspendu (") + reason + ")");
       phDosingState.active = false;
       orpDosingState.active = false;

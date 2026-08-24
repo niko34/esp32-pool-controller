@@ -1709,6 +1709,9 @@ input.is-computed:disabled {
 .small { font-size: 12px; }
 
 .pump { margin-bottom: 14px; }
+/* feature-074 : ligne lecture seule « Amplitude d'impulsion : X % — débit Y
+   ml/min (valeur usine|mesuré) » — texte secondaire discret, PAS un badge. */
+.pump-cal-info { margin-top: 2px; }
 .badgeLine { margin-top: 10px; font-weight: 850; }
 
 /* 2026 Calibration steps - refined */
@@ -3640,4 +3643,34 @@ h1, h2, h3 {
 .tips__code code {
   background: none;
   padding: 0;
+}
+
+/* ==========================================================================
+   feature-075 : assistant de mesure du débit des pompes doseuses
+   ========================================================================== */
+
+/* Bouton-lien discret réutilisable (« Saisie avancée », « Purger à nouveau ») */
+.linklike {
+  background: none;
+  border: none;
+  padding: 0;
+  margin-top: 8px;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.linklike:hover { color: var(--accent-hover); }
+.linklike:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Assistant plein écran : masque le reste de la page Paramètres
+   (pattern calibration pH — la carte #pump-flow-wizard reste seule visible) */
+#view-settings.is-flow-wizard .settingsHead,
+#view-settings.is-flow-wizard #settings-segmented,
+#view-settings.is-flow-wizard .settingsPanels {
+  display: none;
 }

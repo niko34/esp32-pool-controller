@@ -49,7 +49,9 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // "phSlopeAcid":101.5, + "phSlopeBase":100.5, + "phSlopeZero":-12.34, +
   // "phSlopeAgeMs":4294967294, ≈ 87 o au pire ; clés const char* liées (non
   // copiées dans le pool), 4 nœuds ≈ 64 o → bump 1792 → 1920.
-  StaticJson<1920> doc;
+  // feature-075 : +1 objet flow_assist (9 champs dont tableau flow255[2],
+  // ~165 o sérialisés au pire + 13 nœuds de pool ≈ 208 o) → bump 1920 → 2304.
+  StaticJson<2304> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
   // (médiane + EMA), alignée sur le WS. Le brut reste exposé séparément (phRaw/orpRaw).
@@ -189,6 +191,31 @@ static void handleGetData(AsyncWebServerRequest* request) {
   doc["orp_limit_reached"] = safetyLimits.orpLimitReached;
   doc["ph_inject_remaining_s"]  = manualInjectRemainingS(manualInjectPh);
   doc["orp_inject_remaining_s"] = manualInjectRemainingS(manualInjectOrp);
+
+  // feature-075 : session de l'assistant de mesure du débit — LECTURE SEULE,
+  // resynchronisation du compte à rebours client à l'échéance (pas de champ WS,
+  // aucun nouveau rythme réseau : l'UI n'interroge /data qu'aux échéances).
+  // Snapshot sans mutex (getFlowAssistStatus, patron manualInject*).
+  {
+    FlowAssistStatus fa = getFlowAssistStatus();
+    JsonObject faObj = doc["flow_assist"].to<JsonObject>();
+    faObj["active"]      = fa.active;
+    faObj["pump"]        = fa.pumpNumber;     // 1|2 (0 = aucune session)
+    faObj["phase"]       = fa.phase;          // "purge"|"measure"|"" (à l'arrêt)
+    faObj["remaining_s"] = fa.remainingS;
+    // Revue feature-075 : dernière marche interrompue par le SERVEUR (perte de
+    // filtration) — l'UI ne doit JAMAIS router une mesure avortée vers la
+    // saisie du volume (débit sous-estimé → sur-injection).
+    faObj["aborted"]     = fa.aborted;
+    faObj["purges_left"] = fa.purgesLeft;
+    faObj["purge_s"]     = kFlowAssistPurgeDurationS;    // durées servies : l'UI
+    faObj["measure_s"]   = kFlowAssistMeasureDurationS;  // paramètre ses libellés
+    // Débits majorants mesurés à duty 255 ([0] = pompe 1, [1] = pompe 2) —
+    // servis pour que l'UI annonce le coût budget SANS miroir en dur (revue).
+    JsonArray f255 = faObj["flow255"].to<JsonArray>();
+    f255.add(kPump1Flow255MlPerMin);
+    f255.add(kPump2Flow255MlPerMin);
+  }
 
   doc["ph_tracking_enabled"]  = productCfg.phTrackingEnabled;
   doc["ph_remaining_ml"]      = max(0.0f, productCfg.phContainerVolumeMl  - productCfg.phTotalInjectedMl);

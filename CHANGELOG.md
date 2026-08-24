@@ -2,6 +2,49 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.24.0] - 2026-08-24
+
+### Fonctionnalités
+
+- **Assistant guidé « Mesure du débit » des pompes doseuses** (feature-075 ; gate `pool-chemistry` : GO amont sous conditions + GO en contre-visite). Le formulaire nu de la feature-074 est remplacé par un assistant pas à pas en **6 étapes** (Préparation → Purge à l'eau claire → Débranchement → Mesure → Volume recueilli → Remontage), plein écran dans Réglages → Avancé (pattern de la calibration pH) : bouton « Mesurer le débit » par pompe, purge minutée (60 s, 3 max), marche de mesure à l'amplitude exacte d'exploitation (120 s), conversion volume lu → ml/min avec avertissement de vraisemblance (20-35 ml/min attendus), enregistrement par le chemin de la feature-074 (drapeau « mesuré » posé). Le coût budget de sécurité est annoncé dès l'étape 1 (chaque marche est créditée au débit majorant).
+- **Le mot « pesée » disparaît de l'interface** (grep `data/` vide) : « mesure du débit » partout, l'indication de provenance « pesé » devient « mesuré ». La saisie directe experte subsiste sous un dépliant discret « Saisie avancée ».
+- **Les pompes sont toujours arrêtées côté serveur** : purge et mesure sont minutées par le firmware (duty et durée jamais acceptés du client) — onglet fermé ou WiFi coupé, la pompe s'arrête seule à l'échéance. L'UI signale la perte de connexion et le bouton « Arrêter » reste toujours actif.
+- **Le dosage automatique est suspendu pendant l'assistant et rétabli automatiquement** à la sortie — ou par un timeout serveur de 15 min sans interaction (un assistant abandonné ne laisse jamais la régulation suspendue). Une mesure interrompue par le contrôleur (perte de filtration) n'est **jamais enregistrable** (drapeau `aborted` — un débit partiel sous-estimé provoquerait une sur-injection systématique).
+
+### Firmware
+
+- **3 nouvelles routes** `POST /flow-assist/start|stop|exit` (auth WRITE, params `pump`+`phase` seuls) : session « une pompe à la fois », **toutes** les gardes d'injection manuelle appliquées au volume majorant (`flow255 × durée`), refus 409 structurés (`assist_busy`, `purge_limit`, `already_injecting`, `invalid_amplitude` + codes des gardes manuelles). Véhicule d'exécution : le chemin `manualInject*` existant, aucune nouvelle mécanique de pompe.
+- **Sécurité chimique (P4)** : marche d'assistant interrompue (arrêt utilisateur, sortie, timeout, perte de filtration) → volume **crédité prorata au majorant** au registre journalier (sous suspension, l'intégration par tick est sautée — sans ce crédit, une pompe alimentée serait comptée zéro). Les injections manuelles classiques (`/ph|orp/inject/start`) sont **refusées (409 `assist_active`)** pendant la session (contre-visite gate). Anti-course `exit`/réconciliation : session fermée **avant** la levée de la suspension + re-pose fail-closed au tick.
+- **`GET /data`** : nouvel objet `flow_assist` (active, pump, phase, remaining_s, aborted, purges_left, purge_s, measure_s, flow255[2]) — resynchronisation du compte à rebours client, aucun nouveau rythme réseau (buffer 1920 → 2304 o).
+- **`PumpController`** : `setFlowAssistSuspend()`/`isFlowAssistSuspended()` — fermeture du dosage auto+programmé par la garde structurelle existante (chemin perte-filtration), mode manuel préservé, log one-shot par transition. Constantes `kFlowAssist*` ; logique pure `src/flow_assist_logic.h` (ADR-0017), 25 tests natifs (674/674 au total).
+
+### Documentation
+
+- `docs/API.md` (3 routes `/flow-assist/*`, objet `flow_assist` de `/data`, code 409 `assist_active`), `docs/features/page-settings.md` (déroulé des 6 étapes, cas limites, amendement du formulaire 074), `docs/subsystems/pump-controller.md` (section suspension : timeout, invariant exit, comptabilité P4, constantes), `docs/subsystems/logger.md` (nouveaux émetteurs événementiels) mis à jour. Aucun ADR : véhicule d'exécution imposé par le gate (chemin `manualInject*` existant), assemblage de mécanismes existants — aucun critère de déclenchement rempli.
+
+---
+
+## [2.23.0] - 2026-08-24
+
+### Firmware
+
+- **Un appareil neuf dose immédiatement, sur la valeur usine du modèle de pompe** (feature-074, [ADR-0047](docs/adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md) — amende le « pesée obligatoire, pas de valeur provisoire » de l'ADR-0043 ; gate `pool-chemistry` : GO amont sous conditions C1-C5 + GO en contre-visite). Contexte flotte (appareils fournis à des tiers, pompe péristaltique standardisée) : les défauts de calibration passent du fail-closed (0, dosage refusé jusqu'à pesée) à la **calibration de type** — duty 127 (`kPumpTypeCalDuty`, même expression entière que l'amplitude, verrouillé par `static_assert`) et débit 28,0 mL/min (`kPumpTypePulseFlowMlPerMin`, mesures de référence du 23/08, **biais sûr** : surestimer le débit ⇒ sous-dosage + compteurs majorants ; à remplacer par la pesée de type).
+- **Sémantique NVS** : clé absente (appareil vierge) → défaut de type ; clé **présente à 0** (effacement explicite ou appareil ≤ 2.22 jamais calibré) → **fail-closed conservé**, jamais de conversion silencieuse. Un appareil provisionné garde ses valeurs intactes au flash.
+- **Provenance du débit persistée** : nouveaux drapeaux `pumpN_flow_weighed` (NVS `p1/p2_flow_weighed`, purement informatifs — aucun gate de dosage ne s'y fie) ; la garde de plausibilité NVS rabat aussi `weighed = false` (une pesée corrompue n'en est plus une).
+- **Correctif on-target** : la trame `config` WebSocket ne portait pas les champs de calibration — le premier push (≤ 5 s) écrasait l'affichage avec « débit non caractérisé » alors que la calibration existait. Parité stricte `/get-config` ↔ trame WS rétablie (+6 champs, buffer `_buildConfigJson` 2368 → 2560 o) ET côté client, clé absente = pas d'information (early-return — même leçon que la parité `/data` des pentes en 2.21.2).
+
+### Fonctionnalités
+
+- **Le réglage de puissance des pompes disparaît des réglages** : l'amplitude d'impulsion est **figée à 50 %** (valeur usine) — les curseurs « Puissance max » sont retirés, remplacés par une ligne lecture seule « Amplitude d'impulsion : X % — débit Y ml/min (**valeur usine** \| **pesé**) ». Le champ `pumpN_max_duty_pct` reste modifiable **par API seule** (validation [40..100] conservée) et est purgé des payloads de save du frontend — plus jamais d'écrasement par un onglet périmé.
+- **Formulaire de pesée simplifié à un champ** : seul le débit mesuré (ml/min) est saisi (vide/0/NaN refusés) — le duty calibré est déduit par le serveur de l'amplitude courante et l'indication passe à « pesé ». La pesée devient **facultative** (raffinement de l'appareil) ; le badge d'alerte « Débit non caractérisé — pesée requise » est restreint au seul état encore fail-closed (calibration effacée / NVS hérité à 0).
+
+### Documentation
+
+- **[ADR-0047](docs/adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md)** : calibration de type par défaut pour la flotte + gel de l'amplitude — contexte produit, conditions C1-C5 du gate, alternatives écartées (fail-closed en flotte, valeur de type + limites réduites), résidus statués (duty explicite d'un vieux client pose `weighed=true` ; appareil 2.21/2.22 n'ayant jamais sauvegardé sa config = équivalent vierge). Note d'amendement croisée dans l'ADR-0043.
+- `docs/API.md` (drapeaux `pumpN_flow_weighed`, duty déduit, résidus rétrocompat `/save-config`), `docs/features/page-settings.md` (curseurs retirés, ligne lecture seule, formulaire à champ unique), `docs/subsystems/pump-controller.md` (section calibration de type, sémantique NVS) mis à jour. Tests natifs : 649/649 sans régression.
+
+---
+
 ## [2.22.0] - 2026-08-23
 
 ### Firmware

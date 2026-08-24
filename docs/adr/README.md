@@ -59,10 +59,11 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0040](0040-pas-de-calibrage-sur-fragmentation-pathologique.md) | On ne calibre pas des seuils sur une fragmentation pathologique (régime bi-métrique assumé) | Accepté |
 | [0041](0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md) | Autorité des mesures non représentatives et sortie de secours du filtre de tendance centrale | Accepté |
 | [0042](0042-core3-environnement-par-defaut.md) | Le core Arduino 3.x / IDF 5 devient l'environnement par défaut (bootloader ET application) | Accepté |
-| [0043](0043-dosage-proportionnel-de-temps-amplitude-calibree.md) | Dosage en proportionnel de temps à amplitude calibrée (fail-closed, sans interpolation) | Accepté (seuil C amendé par ADR-0046) |
+| [0043](0043-dosage-proportionnel-de-temps-amplitude-calibree.md) | Dosage en proportionnel de temps à amplitude calibrée (fail-closed, sans interpolation) | Accepté (seuil C amendé par ADR-0046, défauts de calibration amendés par ADR-0047) |
 | [0044](0044-budget-horaire-et-temps-min-en-temps-pompe-on.md) | Budget horaire et temps minimum d'injection comptés en temps POMPE-ON | Accepté |
 | [0045](0045-etat-impulsion-expose-en-calendrier.md) | État d'impulsion exposé en calendrier (période / pouls / phase), pas en booléen instantané | Accepté |
 | [0046](0046-accumulateur-demande-sous-pouls-minimal.md) | Accumulateur de demande sous le pouls minimal (amende le seuil C de l'ADR-0043) | Accepté |
+| [0047](0047-calibration-de-type-par-defaut-et-gel-amplitude.md) | Calibration de type par défaut pour la flotte + gel de l'amplitude d'impulsion (amende le fail-closed des défauts de l'ADR-0043) | Accepté |
 
 ## Template
 

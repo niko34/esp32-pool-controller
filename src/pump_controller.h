@@ -55,6 +55,20 @@ private:
   // volatile : écrit par loopTask (setMaintenanceInhibit), lu en contexte web async
   // (setManualPump, isMaintenanceInhibited) → garantit la visibilité inter-tâches.
   volatile bool maintenanceInhibit = false;
+  // feature-075 : suspension du dosage AUTOMATIQUE et PROGRAMMÉ pendant
+  // l'assistant de mesure du débit. Posé/levé par le handler web async
+  // (setFlowAssistSuspend) — y compris par le timeout serveur
+  // kFlowAssistSuspendTimeoutMs ; consommé par update() (loopTask) qui referme
+  // les états de dosage par le chemin existant de la perte de filtration.
+  // Le mode MANUEL (véhicule de l'assistant) reste pleinement fonctionnel.
+  // volatile : écrit en contexte web async, lu par loopTask — patron identique
+  // à maintenanceInhibit (visibilité inter-tâches ; l'écriture d'un octet est
+  // atomique sur Xtensa, course bénigne : prise en compte au pire différée
+  // d'un tour de loop, fail-closed côté suspension).
+  volatile bool _flowAssistSuspend = false;
+  // État précédent vu par update() : log info one-shot par TRANSITION
+  // (pose/levée), jamais de spam par tour. Écrit/lu en loopTask uniquement.
+  bool _flowAssistSuspendPrev = false;
 
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
   // Migration core 3 (feature-063, prescription P1 pool-chemistry) : pompe
@@ -275,6 +289,15 @@ public:
   // coupe alors les 2 pompes à chaque cycle tant que le flag est actif.
   void setMaintenanceInhibit(bool inhibit) { maintenanceInhibit = inhibit; }
   bool isMaintenanceInhibited() const { return maintenanceInhibit; }
+
+  // feature-075 : suspend/rétablit le dosage automatique ET programmé pendant
+  // l'assistant de mesure du débit (appelable depuis un handler web async —
+  // patron maintenanceInhibit). Contrairement au mode maintenance, la levée
+  // est immédiate (pas de reboot requis) et le mode MANUEL reste fonctionnel.
+  // update() referme les états de dosage par le chemin de la perte de
+  // filtration et journalise la pose/levée (log info one-shot par transition).
+  void setFlowAssistSuspend(bool suspend) { _flowAssistSuspend = suspend; }
+  bool isFlowAssistSuspended() const { return _flowAssistSuspend; }
 
   // feature-064 (ADR-0034, prescription pool-chemistry P1) : lecture seule
   // STRICTE de l'utilisabilité de la pompe (0 = pH, 1 = ORP/chlore), posée une

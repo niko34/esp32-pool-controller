@@ -5,6 +5,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include "dosing_logic.h"  // feature-056 : enum InstallMode (logique pure partagée)
+#include "constants.h"     // feature-074 : kPumpTypePulseFlowMlPerMin (calibration de type)
 
 // ==== Configuration des canaux PWM pompes ====
 // MOSFET IRLZ44N - PWM sur Gate, pins définis dans constants.h (PCB v2)
@@ -17,12 +18,27 @@
 constexpr float PH_DEADBAND = 0.01f;      // Zone morte réduite : 7.2 à 7.21 (±0.01)
 constexpr float ORP_DEADBAND = 2.0f;      // Zone morte réduite : ±2mV
 constexpr uint8_t MAX_PWM_DUTY = (1 << PUMP_PWM_RES_BITS) - 1;
+// feature-074 : amplitude d'impulsion par défaut (gelée à 50 % — l'UI ne la
+// modifie plus, le champ reste vivant côté API pour cas exceptionnel).
+constexpr uint8_t kPumpAmpDefaultPct = 50;
+// Duty de la calibration DE TYPE. Condition C2 du gate pool-chemistry : MÊME
+// expression ENTIÈRE que getPumpAmplitudeDuty ((pct * MAX_PWM_DUTY) / 100) pour
+// que l'égalité exacte amplitude == duty calibré du gate d'impulsion soit
+// garantie par construction (pas de divergence float/arrondi). = 127 à 50 %.
+constexpr uint8_t kPumpTypeCalDuty = (kPumpAmpDefaultPct * MAX_PWM_DUTY) / 100;
 // Plancher de rotation (bug-dosage-fantome itération 2) : Dmin MESURÉ au banc
 // le 2026-08-23 = 82 (plus petit duty à rotation continue et franche), + 16
 // counts de marge (prescription P2 du gate pool-chemistry — couple de décollage
 // à froid observé au terrain à 82). Toute amplitude sous ce plancher est
 // REFUSÉE (condition B2, PulseRefusal::AmplitudeBelowMinActive), jamais clampée.
 constexpr uint8_t MIN_ACTIVE_DUTY = 98;
+// Verrous compile-time (test-engineer, feature-074) : la calibration de type
+// vaut EXACTEMENT 127 (sinon l'égalité exacte du gate d'impulsion casserait au
+// premier flash d'un appareil vierge) et reste au-dessus du plancher de rotation.
+static_assert(kPumpTypeCalDuty == 127,
+              "kPumpTypeCalDuty doit valoir 127 (50 % de 255, division entiere)");
+static_assert(kPumpTypeCalDuty >= MIN_ACTIVE_DUTY,
+              "kPumpTypeCalDuty sous le plancher de rotation MIN_ACTIVE_DUTY");
 
 // ==== Home Assistant ====
 const char* const HA_DEVICE_ID = "poolcontroller";
@@ -48,18 +64,26 @@ struct MqttConfig {
   // pompe ne tourne qu'à cette amplitude, le débit moyen est réalisé par la
   // fraction de temps de marche (proportionnel de temps, condition B1 : ce
   // n'est plus un clamp PWM appliqué en sortie de régulation).
-  uint8_t pump1MaxDutyPct = 50;    // Amplitude pompe 1 (% → duty plateau, 50 % = 127)
-  uint8_t pump2MaxDutyPct = 50;    // Amplitude pompe 2 (% → duty plateau)
-  // Caractérisation MESURÉE des pompes (pesée au banc, procédure de la spec
-  // bug-dosage-fantome). calibratedDuty = duty auquel le débit a été pesé ;
-  // 0 = jamais caractérisé → TOUT dosage automatique/programmé REFUSÉ
-  // (fail-closed, PulseRefusal::FlowUncharacterized). PAS de conversion depuis
-  // l'ancien pumpMaxFlowMlPerMin (champ supprimé) : c'est le modèle linéaire
-  // faux qu'on retire, aucune valeur héritée n'est digne de confiance.
-  uint8_t pump1CalibratedDuty = 0;         // Duty calibré pompe 1 (0 = non caractérisé)
-  uint8_t pump2CalibratedDuty = 0;         // Duty calibré pompe 2 (0 = non caractérisé)
-  float pump1PulseFlowMlPerMin = 0.0f;     // Débit MESURÉ (ml/min) au duty calibré, pompe 1
-  float pump2PulseFlowMlPerMin = 0.0f;     // Débit MESURÉ (ml/min) au duty calibré, pompe 2
+  uint8_t pump1MaxDutyPct = kPumpAmpDefaultPct;  // Amplitude pompe 1 (% → duty plateau, 50 % = 127)
+  uint8_t pump2MaxDutyPct = kPumpAmpDefaultPct;  // Amplitude pompe 2 (% → duty plateau)
+  // Caractérisation des pompes. feature-074 (contexte flotte) : les défauts
+  // passent de « non caractérisé » (0, fail-closed) à la CALIBRATION DE TYPE
+  // (valeur usine du modèle de pompe, kPumpTypeCalDuty/kPumpTypePulseFlowMlPerMin)
+  // — un appareil NEUF dose dès le premier flash. calibratedDuty = duty auquel
+  // le débit s'applique ; 0 = effacement explicite / NVS héritée jamais calibrée
+  // → TOUT dosage automatique/programmé REFUSÉ (fail-closed,
+  // PulseRefusal::FlowUncharacterized) — cette machinerie 2.21.0 est conservée.
+  // La pesée individuelle (raffinement PAR pompe) reste possible et pose le
+  // drapeau pumpNFlowWeighed.
+  uint8_t pump1CalibratedDuty = kPumpTypeCalDuty;  // Duty calibré pompe 1 (0 = non caractérisé)
+  uint8_t pump2CalibratedDuty = kPumpTypeCalDuty;  // Duty calibré pompe 2 (0 = non caractérisé)
+  float pump1PulseFlowMlPerMin = kPumpTypePulseFlowMlPerMin;  // Débit (ml/min) au duty calibré, pompe 1
+  float pump2PulseFlowMlPerMin = kPumpTypePulseFlowMlPerMin;  // Débit (ml/min) au duty calibré, pompe 2
+  // feature-074 : distinction VALEUR USINE (calibration de type, false) /
+  // PESÉE INDIVIDUELLE (l'utilisateur a pesé CETTE pompe, true). Purement
+  // informatif (affichage « usine » / « pesé ») — ne participe à aucun gate.
+  bool pump1FlowWeighed = false;   // true = débit pompe 1 issu d'une pesée individuelle
+  bool pump2FlowWeighed = false;   // true = débit pompe 2 issu d'une pesée individuelle
   int phInjectionLimitMinutes = 5;    // Max 5 min d'injection par fenêtre d'1h
   int orpInjectionLimitMinutes = 10;  // Max 10 min d'injection par fenêtre d'1h
   // feature-056 : mode d'installation (remplace regulationMode ET

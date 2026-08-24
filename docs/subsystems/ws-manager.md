@@ -270,6 +270,22 @@ Voir [sensors.md](sensors.md#alarme--filtre-non-prêt-durablement--v2203), [page
 
 Marge du buffer `_buildConfigJson()` portée à **2368 octets** (+1 champ ≈ 24 octets).
 
+## Champs `config` ajoutés en v2.23.0 — caractérisation des pompes (feature-074, correctif on-target)
+
+**Bug on-target corrigé** : la trame `config` WS ne portait **pas** les champs de calibration des pompes — au premier push (≤ 5 s après `/save-config`), `updatePumpCalibrationDisplay()` traitait les clés absentes comme « zéro » et **écrasait** le pré-remplissage / la ligne lecture seule avec « débit non caractérisé » alors que la calibration existait. Correctif double :
+
+1. **Parité STRICTE `/get-config` ↔ trame `config`** — 6 champs ajoutés à `_buildConfigJson()` ([`ws_manager.cpp`](../../src/ws_manager.cpp)), mêmes noms que `/get-config` :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `pump1_calibrated_duty` / `pump2_calibrated_duty` | integer | Duty calibré (0 = fail-closed) — voir [API.md](../API.md#get-config--read) |
+| `pump1_pulse_flow_ml_per_min` / `pump2_pulse_flow_ml_per_min` | float | Débit au duty calibré (défaut de type 28,0, [ADR-0047](../adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md)) |
+| `pump1_flow_weighed` / `pump2_flow_weighed` | boolean | Provenance : `false` = valeur usine, `true` = pesée individuelle (informatif) |
+
+Marge du buffer `_buildConfigJson()` portée à **2560 octets** (+6 champs ≈ 194 o au pire) ; trame `config` réelle ≈ **2,56 Ko** pour `kWsFrameBufBytes = 3584` — marge OK.
+
+2. **Côté client, clé absente = pas d'information** — `updatePumpCalibrationDisplay()` fait un early-return si `pumpN_pulse_flow_ml_per_min` est `undefined` (payload d'un firmware plus ancien) : on ne touche à rien, **jamais** d'interprétation « absent = 0 ». Même leçon que la parité `/data` des pentes de sonde en 2.21.2 : tout champ affiché par l'UI doit exister sur **tous** les canaux qui poussent la config, et le client doit rester inerte quand il manque.
+
 ## Champs `sensor_data` ajoutés en v2.21.1 — calendrier d'impulsion (ADR-0045)
 
 Itération 3 de bug-dosage-fantome (défaut n°3) : distinguer « **session de dosage ouverte** » (commandé — c'est ce que disent déjà `ph/orp_dosing`) de « **pompe alimentée maintenant** » (effectif — pouls en cours du [dosage en proportionnel de temps](pump-controller.md#dosage-en-proportionnel-de-temps-itération-2-v2210)). Le firmware expose la **géométrie du train d'impulsions**, le client anime localement entre deux trames ([ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md) — rejet du booléen instantané : aliasing à 5 s de push pour des impulsions de 5-60 s).

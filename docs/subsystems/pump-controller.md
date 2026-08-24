@@ -30,6 +30,12 @@ void setOtaInProgress(bool);
 // Mode maintenance auto-guérison (v2.9.1) — inhibe/réarme TOUT dosage
 void setMaintenanceInhibit(bool);   // true → dosage suspendu toutes voies
 bool isMaintenanceInhibited() const;
+
+// Suspension « assistant de mesure du débit » (feature-075, v2.24.0) —
+// suspend le dosage AUTO + SCHEDULED (deux chimies), préserve le mode MANUEL
+// (véhicule de l'assistant). Écrit en contexte web async, consommé par update()
+void setFlowAssistSuspend(bool suspend);
+bool isFlowAssistSuspended() const;
 bool isPhDosing() const;
 bool isOrpDosing() const;
 unsigned long getPhUsedMs() const;
@@ -123,6 +129,43 @@ Le flag `maintenanceInhibit` ([`pump_controller.h:53`](../../src/pump_controller
 > ⚠️ **Condition pool-chemistry C2** : l'inhibition doit couvrir **auto + scheduled + manuel web + test** (et toute future source d'activation). Fermer `update()` seul ne suffit pas — `setManualPump()` active la pompe **immédiatement** hors cycle `update()`, d'où la garde dédiée à ce point de passage unique. *(Jusqu'en v2.16.x, la voie « manuel UART » de l'écran externe était couverte au même point ; elle a disparu avec le retrait de l'écran en v2.17.0, feature-065.)*
 
 Le flag ne se lève **qu'au redémarrage** du contrôleur (le mode maintenance est un état terminal jusqu'au reboot manuel). Logs : `warning` throttlé une fois par boot sur refus de commande manuelle ; `critical` à l'entrée en maintenance (côté `main.cpp`).
+
+## Suspension « assistant de mesure du débit » (feature-075, v2.24.0)
+
+Pendant une session de l'[assistant de mesure du débit](../features/page-settings.md#assistant--mesure-du-débit--feature-075-v2240) (routes [`/flow-assist/*`](../API.md#assistant-de-mesure-du-débit-des-pompes-feature-075-v2240)), le dosage **automatique et programmé** des **deux chimies** est suspendu — la pompe en assistant tourne à l'eau claire, tuyau potentiellement débranché : aucune régulation ne doit démarrer en parallèle.
+
+- **Flag** : `_flowAssistSuspend` (`volatile bool`, [`pump_controller.h`](../../src/pump_controller.h) — patron identique à `maintenanceInhibit`) posé/levé par `setFlowAssistSuspend()` depuis les handlers web async (et le tick de timeout en loopTask). Écriture d'un octet atomique sur Xtensa, course bénigne (prise en compte au pire différée d'un tour de loop), **fail-closed côté suspension**.
+- **Fermeture par la garde structurelle existante** ([`pump_controller.cpp`](../../src/pump_controller.cpp), branche `!filtrationOk || stabilizationActive || flowAssistSuspend`) — **aucune duplication de chemin** : mêmes garanties que la perte de filtration (états de dosage auto + scheduled refermés `dosingState.active = false`, pompes **non manuelles** forcées à 0, drapeau de session pouls périmé absorbé à la reprise). Le mode **MANUEL** — véhicule de l'assistant (purge/mesure via le chemin `manualInject*`) — reste pleinement fonctionnel.
+- **Log one-shot par transition** (jamais de spam par tour, état précédent `_flowAssistSuspendPrev` loopTask-only) : `INFO Dosage automatique suspendu (assistant de mesure du débit)` / `INFO Dosage automatique rétabli (fin de l'assistant de mesure du débit)`.
+
+### Timeout serveur et réconciliation fail-closed
+
+Un assistant abandonné (onglet fermé, WiFi tombé) ne laisse **jamais** la régulation suspendue : la session expire après `kFlowAssistSuspendTimeoutMs` = **15 min** sans requête `/flow-assist/*` (`lastTouchMs` réarmé à chaque requête, expiration wrap-safe — prédicat pur `isFlowAssistSessionExpired()`, [`src/flow_assist_logic.h`](../../src/flow_assist_logic.h)). Le tick (`updateManualInject()`, loopTask) arrête défensivement la marche éventuelle, lève la suspension et journalise `WARN [Assistant débit] Session expirée (15 min sans interaction) — dosage automatique rétabli`.
+
+Deux protections contre les courses timeout (loopTask) / handlers (async), relevées en revue :
+
+1. **Réconciliation fail-closed au tick** : une session active **exige** la suspension — si `sFlowAssist.active && !isFlowAssistSuspended()` (le `setFlowAssistSuspend(false)` du timeout a écrasé le `true` d'un `start` concurrent), la suspension est **re-posée**, idempotent. Fenêtre résiduelle ≈ 1 tour de loop, bénigne (aucun pouls significatif armable en un tour).
+2. **Invariant de `/flow-assist/exit` : session fermée AVANT la levée de la suspension.** Dans l'ordre inverse, la réconciliation (1) pourrait s'intercaler entre la levée et le reset, re-poser la suspension, puis le reset effacerait la session → **suspension collée définitivement** (le timeout exige `active`, plus rien ne la lèverait).
+
+### Comptabilité sous suspension (P4) et refus `assist_active`
+
+Sous suspension flow-assist, `update()` sort par le chemin perte-filtration **avant** `accountPumpVolume()` → la comptabilité **par tick** est sautée pendant toute la marche. Conséquences (condition gate 6 + anomalie P4 trouvée en revue) :
+
+- **Fin naturelle** : le crédit-plancher à échéance (`creditManualInjectionFloor`) est **LE** mécanisme de crédit — armé au `start` avec le volume **majorant** `flow255 × durée` (surestimer est fail-safe : le registre journalier ne sous-compte jamais, et `daily_limit` est évaluée sur ce majorant).
+- **Arrêt anticipé** (`stop`, `exit`, timeout — `flowAssistStopRun()`) : pompe coupée immédiatement, `creditMl` ramené au **majorant prorata** du temps écoulé puis `durationMs` raccourci à `elapsed` — la « fin naturelle » du prochain tour de loop exécute le crédit dans le seul contexte autorisé (ordre d'écriture voulu : `creditMl` **avant** `durationMs`, course bénigne).
+- **Interruption par perte de filtration** (`flowAssistCreditAbortedRun()`) : hors assistant, l'abandon historique ne crédite pas (l'intégration par tick a déjà compté) — **strictement inchangé**. Marche d'assistant : crédit **majorant prorata** appliqué directement (on est en loopTask), sinon le volume réellement pompé ne serait **jamais** inscrit (violation P4 : jamais zéro sur une pompe alimentée) + drapeau `aborted` posé pour que l'UI ne présente jamais une mesure partielle comme réussie.
+- **Injections manuelles classiques refusées** (`409 assist_active`, contre-visite gate) : `/ph|orp/inject/start` est fermé pendant la session — une injection classique sur l'**autre** chimie, interrompue par perte de filtration, serait créditée 0 (le crédit prorata ci-dessus est réservé aux marches d'assistant). Les routes de test `/pumpN/on?duty=` ne sont pas concernées (pas de crédit plancher).
+
+### Constantes (`kFlowAssist*`, [`constants.h`](../../src/constants.h))
+
+| Constante | Valeur | Rôle |
+|---|---|---|
+| `kFlowAssistPurgeDurationS` | 60 s | Durée de purge, à duty **255 impérativement** (seul débit connu d'usine → volume résiduel poussé au bassin bornable) |
+| `kFlowAssistMeasureDurationS` | 120 s | Marche de mesure à l'amplitude **exacte** d'exploitation — 120 s et non 60 s pour doubler le volume lu (~50 mL) et halver l'erreur de lecture relative |
+| `kFlowAssistMaxPurgesPerSession` | 3 | Borne le volume envoyé au bassin et le temps hors régulation (3 purges sans amorçage = problème matériel) |
+| `kFlowAssistSuspendTimeoutMs` | 900 000 ms (15 min) | Timeout de session/suspension, réarmé à chaque requête `/flow-assist/*` |
+
+Le verdict pur `canStartFlowAssistPhase()` (quota de purges, marche déjà en cours) et le prédicat d'expiration vivent dans le header **sans dépendance Arduino** [`src/flow_assist_logic.h`](../../src/flow_assist_logic.h) (pattern ADR-0017) — 25 tests natifs `test/test_native_flow_assist/`.
 
 ## Mise en sécurité `pumpUsable` (chemin core 3 — feature-063, v2.15.0 ; **actif en production depuis la v2.20.4**)
 
@@ -642,7 +685,7 @@ demande PID (mL/min moyen)
        période fixe 60 s, réancrée à chaque frontière (dérive ≤ un tour de loop)
 ```
 
-- **Amplitude** = `pumpN_max_duty_pct × 255 / 100` (getter `getPumpAmplitudeDuty(pumpIndex)`). Le réglage garde sa sémantique PWM mais est borné **[40..100] %** (`kPumpAmpMinPct = 40` ⇒ 102 counts ≥ `MIN_ACTIVE_DUTY = 98`) — serveur (`/save-config`) **et** UI (slider `min=40`).
+- **Amplitude** = `pumpN_max_duty_pct × 255 / 100` (getter `getPumpAmplitudeDuty(pumpIndex)`). Le réglage garde sa sémantique PWM, borné **[40..100] %** côté serveur (`kPumpAmpMinPct = 40` ⇒ 102 counts ≥ `MIN_ACTIVE_DUTY = 98`). **v2.23.0 ([ADR-0047](../adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md)) : amplitude GELÉE à 50 % (`kPumpAmpDefaultPct`)** — curseur UI retiré (ligne lecture seule à la place), le frontend n'envoie plus `pumpN_max_duty_pct` ; le champ API + validation [40..100] restent vivants pour cas exceptionnel.
 - **Kick** : chaque pouls démarre par `kPulseKickMs = 400 ms` à duty 255 (couple de décollage à froid — symptôme terrain : rotation entretenue OK à 82, non-démarrage au même duty), puis retombe à l'amplitude.
 - **Condition B3** : période **fixe** `kPulsePeriodMs = 60 s`, pouls minimal `kPulseMinMs = 5 s`.
 - **Condition B2** : une amplitude sous `MIN_ACTIVE_DUTY = 98` (Dmin mesuré 82 + 16 counts de marge P2) → **refus + critical**, jamais un clamp silencieux.
@@ -653,7 +696,7 @@ demande PID (mL/min moyen)
 
 | Cas | `PulseRefusal` | Log |
 |---|---|---|
-| `pumpN_calibrated_duty == 0` (pompe jamais pesée — **défaut usine et après mise à jour**) | `FlowUncharacterized` | `CRITICAL` throttlé 30 min |
+| `pumpN_calibrated_duty == 0` (**v2.23.0** : n'est plus le défaut usine — uniquement **effacement explicite** via API ou **clé NVS héritée présente à 0**, cf. [calibration de type](#calibration-de-type-par-défaut-feature-074-v2230)) | `FlowUncharacterized` | `CRITICAL` throttlé 30 min |
 | Débit pesé implausible (NaN, ≤ 0, > `kPulseFlowMaxMlPerMin = 200`) | `FlowUncharacterized` | idem |
 | **Amplitude ≠ duty calibré** (le débit n'est mesuré qu'à l'amplitude pesée) | `FlowUncharacterized` | idem |
 | Amplitude < `MIN_ACTIVE_DUTY` | `AmplitudeBelowMinActive` | `CRITICAL` throttlé 30 min (B2) |
@@ -661,7 +704,23 @@ demande PID (mL/min moyen)
 
 **AUCUNE interpolation nulle part** : les deux seuls débits connus sont la pesée à l'amplitude (`pumpN_pulse_flow_ml_per_min`) et la pesée à 255 (`kPump1Flow255MlPerMin = 61` / `kPump2Flow255MlPerMin = 67`, [`constants.h`](../../src/constants.h) — +10 % d'écart tube entre deux pompes identiques, d'où la calibration **par pompe**). L'état est exposé à l'UI/WS : `isPumpFlowUncharacterized(pumpIndex)` (+ raccourcis par chimie `isPhPumpFlowUncharacterized()` / `isOrpPumpFlowUncharacterized()`) → badge « Débit non caractérisé — pesée requise » et champs `/data` `ph/orp_pump_flow_uncharacterized`, `ph/orp_pump_amplitude_duty`.
 
-**Persistance NVS** : `p1_cal_duty` / `p1_pulse_flow` / `p2_cal_duty` / `p2_pulse_flow`. L'ancienne clé partagée `pump_max_flow` est **supprimée SANS conversion** (purgée au premier `saveMqttConfig()`) : c'est le modèle faux qu'on retire. Une valeur NVS implausible est neutralisée à 0 (non caractérisé) au chargement, avec `warning`.
+**Persistance NVS** : `p1_cal_duty` / `p1_pulse_flow` / `p2_cal_duty` / `p2_pulse_flow` + drapeaux `p1_flow_weighed` / `p2_flow_weighed` (v2.23.0). L'ancienne clé partagée `pump_max_flow` est **supprimée SANS conversion** (purgée au premier `saveMqttConfig()`) : c'est le modèle faux qu'on retire. Une valeur NVS implausible est neutralisée à 0 (non caractérisé) au chargement, avec `warning` — **et rabat aussi `weighed = false`** (une pesée corrompue n'en est plus une, condition C4).
+
+### Calibration de type par défaut (feature-074, v2.23.0)
+
+> **[ADR-0047](../adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md)** — amende le « pesée obligatoire, pas de valeur provisoire » de l'ADR-0043 (contexte flotte : appareils fournis à des tiers, même modèle de pompe partout — aucun tiers ne pèsera jamais). Gate `pool-chemistry` : GO amont sous conditions C1-C5 + GO en contre-visite.
+
+Les **défauts** de la struct `MqttConfig` passent de « non caractérisé » (0, fail-closed) à la **calibration de type** (valeur usine du modèle de pompe) :
+
+| Constante | Valeur | Rôle |
+|---|---|---|
+| `kPumpAmpDefaultPct` ([`config.h`](../../src/config.h)) | 50 % | Amplitude d'impulsion par défaut (gelée — UI retirée, champ API vivant) |
+| `kPumpTypeCalDuty` ([`config.h`](../../src/config.h)) | **127** | Duty de type = `(kPumpAmpDefaultPct × MAX_PWM_DUTY) / 100` — **même expression entière** que `getPumpAmplitudeDuty` (condition C2 : l'égalité exacte amplitude == duty calibré du gate est garantie **par construction**). Verrous `static_assert` : `== 127` et `≥ MIN_ACTIVE_DUTY`. |
+| `kPumpTypePulseFlowMlPerMin` ([`constants.h`](../../src/constants.h)) | **28,0 mL/min** | Débit de type au duty 127. Mesures de référence 2026-08-23 (interpolations 24,7 / ~27,2, dispersion inter-unités ±10 %) — **biais SÛR** : surestimer le débit ⇒ pompe ON moins longtemps (sous-dosage) + compteurs journaliers majorants. À remplacer par la **pesée de type à 127** sur l'unité de référence. |
+
+**Sémantique NVS (condition C1)** — clé **absente** (appareil vierge / jamais sauvegardé) → défaut de type, le dosage fonctionne au premier flash ; clé **présente à 0** (effacement explicite, ou appareil ≤ 2.22 jamais calibré ayant sauvegardé) → **0 lu tel quel, fail-closed conservé** — jamais de conversion silencieuse. Un appareil provisionné garde ses valeurs NVS intactes.
+
+**Drapeaux `pumpN_flow_weighed`** (`false` = valeur usine de type, `true` = pesée individuelle de CETTE pompe) : **purement informatifs** — alimentent l'indication « valeur usine / pesé » de l'UI, **aucun gate ne s'y fie** (condition C5). Posés par `/save-config` à toute pesée (débit seul → duty déduit de l'amplitude courante ; duty explicite d'un vieux client → aussi, résidu assumé) ; rabattus à `false` par l'effacement (`duty=0`) et par la garde de plausibilité NVS.
 
 ### Accumulateur sous le pouls minimal (feature-073, v2.22.0)
 
@@ -769,6 +828,9 @@ Plus jamais de durée déduite du modèle linéaire (`calcInjectFlow` supprimé)
 | Pompe 1 — débit **pesé** à 255 (2026-08-23) | `kPump1Flow255MlPerMin` | 61,0 mL/min | [`constants.h`](../../src/constants.h) |
 | Pompe 2 — débit **pesé** à 255 (2026-08-23) | `kPump2Flow255MlPerMin` | 67,0 mL/min | [`constants.h`](../../src/constants.h) |
 | Amplitude — plancher du réglage `pumpN_max_duty_pct` | `kPumpAmpMinPct` | 40 % (≈ 102 counts) | [`constants.h`](../../src/constants.h) |
+| Amplitude — défaut (gelée, v2.23.0) | `kPumpAmpDefaultPct` | 50 % | [`config.h`](../../src/config.h) |
+| Calibration de type — duty (v2.23.0, ADR-0047, static_assert == 127) | `kPumpTypeCalDuty` | 127 (= 50 % × 255, division entière) | [`config.h`](../../src/config.h) |
+| Calibration de type — débit au duty 127 (v2.23.0, biais sûr, à remplacer par la pesée de type) | `kPumpTypePulseFlowMlPerMin` | 28,0 mL/min | [`constants.h`](../../src/constants.h) |
 | Calibration — plausibilité du débit pesé | `kPulseFlowMaxMlPerMin` | 200 mL/min | [`constants.h`](../../src/constants.h) |
 | Impulsions — throttle des logs de refus de gate (critical ; l'info seuil C est supprimé en v2.22.0) | `kPulseRefusalLogIntervalMs` | 1 800 000 ms (30 min) | [`constants.h`](../../src/constants.h) |
 | Stabilisation post-cal pH (feature-021) | `kStabilizationDurationPhMs` | 300 000 ms (5 min) | [`constants.h`](../../src/constants.h) |
@@ -921,7 +983,7 @@ Hors compteurs journaliers, la **trace de bascule automatique pH** est persisté
 - [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036) + gardes d'injection manuelle `evaluateManualInject` (feature-006) + répartition scheduled `evaluateScheduledDose` (feature-011)
 - [`src/schedule_logic.h`](../../src/schedule_logic.h), [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) — `remainingRangeMinutes` (horizon de répartition scheduled, feature-011)
-- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053), [ADR-0026](../adr/0026-mode-installation.md) (Mode d'installation — 3 archétypes de câblage + résolution unique de la présence d'eau, feature-056), [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) (offset pH en sortie des accesseurs + filets sur le brut, feature-067), [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md) (proportionnel de temps à amplitude calibrée, v2.21.0), [ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md) (budget horaire et temps min en temps pompe-ON, v2.21.0)
+- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053), [ADR-0026](../adr/0026-mode-installation.md) (Mode d'installation — 3 archétypes de câblage + résolution unique de la présence d'eau, feature-056), [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) (offset pH en sortie des accesseurs + filets sur le brut, feature-067), [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md) (proportionnel de temps à amplitude calibrée, v2.21.0), [ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md) (budget horaire et temps min en temps pompe-ON, v2.21.0), [ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md) (accumulateur sous le pouls minimal, v2.22.0), [ADR-0047](../adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md) (calibration de type par défaut + gel de l'amplitude, v2.23.0)
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — entrée filtrée, anti-windup, pause mélange, zone morte
 - [feature-036](../../specs/features/done/feature-036-dosage-testable-decision-pure.md) — extraction de la décision de dosage en module pur testable
 - [feature-039](../../specs/features/done/feature-039-anti-rafale-rollover-testable.md) — extraction de l'anti-rafale + déclencheurs de rollover en logique pure testable

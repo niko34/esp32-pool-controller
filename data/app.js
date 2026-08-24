@@ -1845,8 +1845,6 @@
 
     const phPumpValue = parseInt($("#ph_pump")?.value || "1", 10);
     const orpPumpValue = parseInt($("#orp_pump")?.value || "2", 10);
-    const pump1MaxDutyPct = parseInt($("#pump1_max_duty")?.value || "100", 10);
-    const pump2MaxDutyPct = parseInt($("#pump2_max_duty")?.value || "100", 10);
 
     const phLimitValue = parseInt($("#ph_limit")?.value || "5", 10);
     const orpLimitValue = parseInt($("#orp_limit")?.value || "10", 10);
@@ -1883,10 +1881,9 @@
       orp_enabled: (window._config?.orp_regulation_mode || "automatic") !== "manual",
       orp_daily_target_ml: parseInt($("#orp_daily_target_ml")?.value ?? "0", 10) || 0,
       orp_pump: isNaN(orpPumpValue) ? 2 : orpPumpValue,
-      // bug-dosage-fantome it.2 : plancher 40 % (miroir kPumpAmpMinPct — sous ce
-      // seuil la pompe cale ; le serveur re-clampe de toute façon).
-      pump1_max_duty_pct: isNaN(pump1MaxDutyPct) ? 50 : Math.min(100, Math.max(40, pump1MaxDutyPct)),
-      pump2_max_duty_pct: isNaN(pump2MaxDutyPct) ? 50 : Math.min(100, Math.max(40, pump2MaxDutyPct)),
+      // feature-074 : pumpN_max_duty_pct VOLONTAIREMENT absent du payload —
+      // l'amplitude est gelée (UI retirée) et son omission immunise contre les
+      // sauvegardes d'onglets périmés qui écrasaient la valeur serveur.
       ph_limit_minutes: isNaN(phLimitValue) ? 5 : Math.min(60, Math.max(1, phLimitValue)),
       orp_limit_minutes: isNaN(orpLimitValue) ? 10 : Math.min(60, Math.max(1, orpLimitValue)),
       max_ph_ml_per_day: isNaN(phDailyLimitValue) ? 300 : phDailyLimitValue,
@@ -2008,16 +2005,9 @@
     $("#ph_pump").value = cfg.ph_pump === 2 ? "2" : "1";
     $("#orp_pump").value = cfg.orp_pump === 1 ? "1" : "2";
 
-    // bug-dosage-fantome it.2 : plancher 40 % (kPumpAmpMinPct) — une valeur plus
-    // basse héritée d'une ancienne config est relevée à l'affichage (le slider
-    // min=40 la clamperait silencieusement, l'affichage doit rester cohérent).
-    const clampDutyPct = (v) => Math.min(100, Math.max(40, v));
-    const p1max = clampDutyPct(typeof cfg.pump1_max_duty_pct === "number" ? cfg.pump1_max_duty_pct : 50);
-    const p2max = clampDutyPct(typeof cfg.pump2_max_duty_pct === "number" ? cfg.pump2_max_duty_pct : 50);
-    if ($("#pump1_max_duty")) { $("#pump1_max_duty").value = p1max; $("#pump1_max_duty_value").textContent = String(p1max); }
-    if ($("#pump2_max_duty")) { $("#pump2_max_duty").value = p2max; $("#pump2_max_duty_value").textContent = String(p2max); }
-    // Caractérisation par pesée (remplace pump_max_flow_ml_per_min, supprimé du
-    // contrat /get-config//save-config) : champs + affichage de la pesée en vigueur.
+    // feature-074 : amplitude gelée — plus de curseur. La ligne lecture seule
+    // (amplitude réelle + débit + provenance usine/mesuré) et le pré-remplissage
+    // du champ de saisie avancée sont gérés par updatePumpCalibrationDisplay.
     updatePumpCalibrationDisplay(cfg);
 
     $("#ph_limit").value = typeof cfg.ph_limit_minutes === "number" ? cfg.ph_limit_minutes : 5;
@@ -4126,6 +4116,9 @@
         updateProductUI(json);
         _updateSondesChip();
         if (window._updateInjectButtons) window._updateInjectButtons(json);
+        // feature-075 : expiration de session de l'assistant (champ flow_assist
+        // présent uniquement dans /data — les trames WS sont ignorées par le hook)
+        if (window._flowWizardOnData) window._flowWizardOnData(json);
 
         // Mettre à jour les sections détaillées
         updateDetailSections();
@@ -6554,46 +6547,50 @@
 
   // bug-dosage-fantome it.2 (W4c/d) : duty d'exploitation d'une pompe (miroir de
   // getPumpAmplitudeDuty côté firmware : pct × 255 / 100, division entière).
-  // C'est à CE duty que la pesée doit être faite pour que la calibration serve.
+  // C'est à CE duty que la mesure du débit doit être faite pour que la calibration serve.
   function pumpAmplitudeDuty(pct) {
     return Math.floor((pct * 255) / 100);
   }
 
-  // Affichage de la caractérisation par pesée (W4c/d). Pré-remplit les champs
-  // duty/débit de chaque pompe — jamais pendant une saisie en cours, la config
-  // étant aussi poussée par le WebSocket (patron ph_offset) — et affiche la
-  // pesée en vigueur. Met aussi à jour le duty d'exploitation à côté du %.
+  // feature-074 : ligne LECTURE SEULE par pompe (le curseur d'amplitude est
+  // retiré) — « Amplitude d'impulsion : X % — débit Y ml/min (valeur usine|mesuré) ».
+  // X = pumpN_max_duty_pct RÉEL de get-config (peut différer de 50 si hérité),
+  // provenance selon pumpN_flow_weighed. Pré-remplit aussi le champ unique de
+  // saisie avancée avec le débit courant — jamais pendant une saisie en cours,
+  // la config étant aussi poussée par le WebSocket (patron ph_offset).
   function updatePumpCalibrationDisplay(cfg) {
     [1, 2].forEach((n) => {
+      // PIÈGE (même leçon que la parité /data des pentes, 2.21.2) : la config
+      // arrive aussi par la trame WS, dont le contrat peut être en retard sur
+      // /get-config. Clé ABSENTE = pas d'information, JAMAIS « zéro » — sinon
+      // le premier push WS écrase le pré-remplissage et affiche « débit non
+      // caractérisé » alors que la calibration existe. On ne touche à rien.
+      if (cfg[`pump${n}_pulse_flow_ml_per_min`] === undefined) return;
       const calDuty = typeof cfg[`pump${n}_calibrated_duty`] === "number" ? cfg[`pump${n}_calibrated_duty`] : 0;
       const calFlow = typeof cfg[`pump${n}_pulse_flow_ml_per_min`] === "number" ? cfg[`pump${n}_pulse_flow_ml_per_min`] : 0;
-      const dutyEl = $(`#pump${n}_cal_duty`);
+      const ampPct = typeof cfg[`pump${n}_max_duty_pct`] === "number" ? cfg[`pump${n}_max_duty_pct`] : 50;
+      const weighed = cfg[`pump${n}_flow_weighed`] === true;
       const flowEl = $(`#pump${n}_cal_flow`);
-      // Calibration effacée (cal_duty=0) : VIDER les champs (retour aux
-      // placeholders) — sinon l'ancienne pesée périmée resterait affichée.
-      if (dutyEl && document.activeElement !== dutyEl) dutyEl.value = calDuty > 0 ? calDuty : "";
+      // Calibration effacée (cal_duty=0) : VIDER le champ (retour au
+      // placeholder) — sinon l'ancienne mesure périmée resterait affichée.
       if (flowEl && document.activeElement !== flowEl) flowEl.value = calFlow > 0 ? calFlow : "";
-      const current = $(`#pump${n}_cal_current`);
-      if (current) {
-        current.hidden = false;
-        current.textContent = (calDuty > 0 && calFlow > 0)
-          ? `Pesée en vigueur : ${calFlow.toFixed(1)} ml/min à duty ${calDuty}`
-          : "Aucune pesée enregistrée — le dosage automatique est bloqué.";
-      }
-      const ampEl = $(`#pump${n}_amp_duty`);
-      const pctEl = $(`#pump${n}_max_duty`);
-      if (ampEl && pctEl) {
-        const pct = parseInt(pctEl.value, 10);
-        if (!isNaN(pct)) ampEl.textContent = `(duty ${pumpAmplitudeDuty(pct)})`;
+      const info = $(`#pump${n}_cal_info`);
+      if (info) {
+        info.textContent = (calDuty > 0 && calFlow > 0)
+          ? `Amplitude d'impulsion : ${ampPct} % — débit ${calFlow.toFixed(1)} ml/min (${weighed ? "mesuré" : "valeur usine"})`
+          : `Amplitude d'impulsion : ${ampPct} % — débit non caractérisé`;
       }
     });
   }
 
-  // bug-dosage-fantome it.2 (W4b) : badge « Débit non caractérisé — pesée
+  // bug-dosage-fantome it.2 (W4b) : badge « Débit non caractérisé — mesure
   // requise » par pompe PHYSIQUE. Les drapeaux de /data sont par CHIMIE — on
   // les route vers la pompe affectée (ph_pump/orp_pump). Champs absents
   // (payload WS sans ces clés, firmware plus ancien) → on conserve l'état
   // affiché, pas de scintillement ni d'UI figée.
+  // feature-074 : ce badge est RESTREINT au cas cal_duty=0 (effacement explicite
+  // / NVS hérité, seul état encore fail-closed) — la distinction « valeur usine
+  // vs mesuré » relève de la ligne lecture seule, jamais de ce badge.
   function updatePumpCharacterizationBadges(data) {
     if (!data || data.ph_pump_flow_uncharacterized === undefined) return;
     const cfg = window._config || {};
@@ -6609,7 +6606,9 @@
   }
 
   function bindPumpConfigSave() {
-    trackDirtyState("#pump_config_save_btn", ["ph_pump", "orp_pump", "pump1_max_duty", "pump2_max_duty"]);
+    // feature-074 : plus de curseurs d'amplitude — seuls ph_pump/orp_pump
+    // rendent le formulaire « sale ».
+    trackDirtyState("#pump_config_save_btn", ["ph_pump", "orp_pump"]);
     const saveBtn = $("#pump_config_save_btn");
     if (!saveBtn) return;
     const defaultLabel = "Sauvegarder";
@@ -6629,20 +6628,6 @@
       }
     };
 
-    // Mise à jour de l'affichage des sliders en temps réel (sans sauvegarder).
-    // Le duty d'exploitation (pct × 255 / 100) suit : c'est lui que la pesée
-    // doit viser pour que la calibration soit prise en compte.
-    ["pump1_max_duty", "pump2_max_duty"].forEach((id) => {
-      const slider = $(`#${id}`);
-      const display = $(`#${id}_value`);
-      const ampDisplay = $(`#${id.replace("_max_duty", "_amp_duty")}`);
-      if (slider && display) slider.addEventListener("input", () => {
-        display.textContent = slider.value;
-        const pct = parseInt(slider.value, 10);
-        if (ampDisplay && !isNaN(pct)) ampDisplay.textContent = `(duty ${pumpAmplitudeDuty(pct)})`;
-      });
-    });
-
     // Basculement automatique de la pompe ORP quand la pompe pH change (et vice-versa)
     const phPumpSel  = $("#ph_pump");
     const orpPumpSel = $("#orp_pump");
@@ -6657,23 +6642,13 @@
 
     saveBtn.addEventListener("click", async () => {
       if (saveBtn.disabled) return;
-      // Validation plancher 40 % (miroir kPumpAmpMinPct) : injoignable via le
-      // slider (min=40) mais bloqué explicitement si le DOM a été altéré —
-      // le serveur re-clampe de toute façon (jamais sous 40).
-      const rawP1 = parseInt($("#pump1_max_duty")?.value || "50", 10);
-      const rawP2 = parseInt($("#pump2_max_duty")?.value || "50", 10);
-      if (rawP1 < 40 || rawP2 < 40) {
-        showToast("Puissance max refusée : minimum 40 % (sous ce seuil la pompe doseuse cale).", "error");
-        return;
-      }
       setButtonState(savingLabel, true, true, "default");
+      // feature-074 : pumpN_max_duty_pct VOLONTAIREMENT absent (amplitude gelée,
+      // immunité anti-onglets-périmés). pump_max_flow_ml_per_min : SUPPRIMÉ
+      // (bug-dosage-fantome it.2) — le débit vient de la mesure par pompe.
       const cfg = {
-        ph_pump:            parseInt($("#ph_pump")?.value || "1", 10),
-        orp_pump:           parseInt($("#orp_pump")?.value || "2", 10),
-        pump1_max_duty_pct: Math.min(100, isNaN(rawP1) ? 50 : rawP1),
-        pump2_max_duty_pct: Math.min(100, isNaN(rawP2) ? 50 : rawP2),
-        // pump_max_flow_ml_per_min : SUPPRIMÉ (bug-dosage-fantome it.2) — le
-        // débit vient désormais de la pesée par pompe (Enregistrer la pesée).
+        ph_pump:  parseInt($("#ph_pump")?.value || "1", 10),
+        orp_pump: parseInt($("#orp_pump")?.value || "2", 10),
       };
       const ok = await sendConfig(cfg);
       if (ok) {
@@ -6685,43 +6660,37 @@
       }
     });
 
-    // bug-dosage-fantome it.2 (W4c) : enregistrement de la pesée par pompe.
-    // Validation miroir du serveur (duty ∈ [102..255], débit ∈ ]0..200]) ; le
-    // serveur reste l'autorité (refus HTTP 400 remonté par sendConfigDetailed).
+    // feature-074 : enregistrement du débit mesuré par pompe (« saisie avancée »
+    // depuis feature-075) — champ UNIQUE « débit mesuré (ml/min) ». Le duty
+    // calibré n'est PLUS envoyé : le serveur le déduit de l'amplitude courante
+    // et pose le drapeau « mesuré ». Validation client miroir (débit ∈ ]0..200],
+    // vide/0/NaN refusés) ; le serveur reste l'autorité (refus HTTP 400 remonté
+    // par sendConfigDetailed). L'assistant guidé (bindFlowWizard) réutilise ce
+    // même chemin /save-config à l'étape « Volume recueilli ».
     [1, 2].forEach((n) => {
       const calBtn = $(`#pump${n}_cal_save_btn`);
       if (!calBtn) return;
       calBtn.addEventListener("click", async () => {
         if (calBtn.disabled) return;
-        const duty = parseInt($(`#pump${n}_cal_duty`)?.value || "", 10);
-        const flow = parseFloat(($(`#pump${n}_cal_flow`)?.value || "").replace(",", "."));
-        if (isNaN(duty) || duty < 102 || duty > 255) {
-          showToast("Duty calibré invalide : entre 102 et 255.", "error");
+        const flowRaw = ($(`#pump${n}_cal_flow`)?.value || "").trim();
+        const flow = parseFloat(flowRaw.replace(",", "."));
+        if (flowRaw === "" || isNaN(flow) || flow <= 0 || flow > 200) {
+          showToast("Débit mesuré invalide : saisir une valeur supérieure à 0 et au plus 200 ml/min.", "error");
           return;
         }
-        if (isNaN(flow) || flow <= 0 || flow > 200) {
-          showToast("Débit mesuré invalide : supérieur à 0 et au plus 200 ml/min.", "error");
-          return;
-        }
-        const ampDuty = pumpAmplitudeDuty(parseInt($(`#pump${n}_max_duty`)?.value || "50", 10));
         calBtn.disabled = true;
         const payload = {};
-        payload[`pump${n}_calibrated_duty`] = duty;
         payload[`pump${n}_pulse_flow_ml_per_min`] = flow;
         const r = await sendConfigDetailed(payload);
         calBtn.disabled = false;
         if (r.ok) {
-          // Avertir si la pesée ne correspond pas au duty d'exploitation : la
-          // régulation resterait bloquée (amplitude ≠ duty calibré, fail-closed).
-          if (duty !== ampDuty) {
-            showToast(`Pesée pompe ${n} enregistrée, mais le duty calibré (${duty}) diffère du duty d'exploitation (${ampDuty}) : le dosage automatique restera refusé. Ajustez la puissance max ou refaites la pesée à ${ampDuty}.`, "warning");
-          } else {
-            showToast(`Pesée pompe ${n} enregistrée : ${flow.toFixed(1)} ml/min à duty ${duty}.`, "success");
-          }
+          showToast(`Débit pompe ${n} enregistré : ${flow.toFixed(1)} ml/min.`, "success");
+          // Rafraîchit la ligne lecture seule depuis get-config : l'indication
+          // passe à « mesuré ».
           setTimeout(loadConfig, 500);
           setTimeout(() => loadSensorData({ force: true, source: "pump-cal" }), 800);
         } else {
-          showToast(r.error || "Erreur lors de l'enregistrement de la pesée.", "error");
+          showToast(r.error || "Erreur lors de l'enregistrement du débit.", "error");
         }
       });
     });
@@ -6797,7 +6766,7 @@
     // Calcule la durée d'injection (secondes) pour un volume donné (mL).
     // bug-dosage-fantome it.2 (W3) : miroir best-effort de planManualInject
     // (web_routes_control.cpp) — le modèle linéaire duty↔débit est mort, plus
-    // JAMAIS d'interpolation : amplitude == duty calibré → débit pesé ; sinon
+    // JAMAIS d'interpolation : amplitude == duty calibré → débit mesuré ; sinon
     // la pompe est forcée à 255 et le débit est celui mesuré à 255 (miroir de
     // kPump1Flow255MlPerMin / kPump2Flow255MlPerMin). Le firmware fait autorité.
     const FLOW_255_ML_PER_MIN = { 1: 61.0, 2: 67.0 };
@@ -6849,7 +6818,7 @@
       hourly_limit: "Injection refusée : limite horaire d'injection atteinte — réessayer plus tard.",
       max_cycles: "Injection refusée : nombre maximal de démarrages de pompe atteint pour aujourd'hui.",
       burst_limit: "Injection refusée : trop de démarrages rapprochés (anti-rafale) — patienter avant de réessayer.",
-      flow_uncharacterized: "Injection refusée : débit de la pompe non caractérisé — effectuez la pesée (Réglages → Avancé → Configuration des pompes)."
+      flow_uncharacterized: "Injection refusée : débit de la pompe non caractérisé — effectuez la mesure du débit (Réglages → Avancé → Configuration des pompes)."
     };
 
     // feature-006 : raison de blocage CONNUE côté client (miroir best-effort des
@@ -7019,6 +6988,442 @@
 
     $("#ph_inject_btn")?.addEventListener("click", () => startInject("ph"));
     $("#orp_inject_btn")?.addEventListener("click", () => startInject("orp"));
+  }
+
+  // ==========================================================================
+  // feature-075 : assistant de mesure du débit des pompes doseuses
+  // ==========================================================================
+  // Carte UNIQUE #pump-flow-wizard paramétrée par pompe, plein écran (classe
+  // is-flow-wizard sur #view-settings, pattern calibration pH). Les marches de
+  // pompe (purge/mesure) sont MINUTÉES SERVEUR (/flow-assist/start) : le compte
+  // à rebours ci-dessous est purement LOCAL, resynchronisé par UN GET /data à
+  // l'échéance (aucun nouveau rythme réseau). Perte réseau : la pompe s'arrête
+  // seule à la fin du temps (minuterie serveur) — l'UI le signale, le bouton
+  // Arrêter reste actif. beforeunload SEULEMENT pendant une marche.
+  function bindFlowWizard() {
+    const card = $("#pump-flow-wizard");
+    if (!card) return;
+
+    const wiz = {
+      pump: 0,            // 1|2
+      step: 0,
+      running: null,      // null | "purge" | "measure"
+      sessionActive: false,  // une session serveur a été ouverte (1er start réussi)
+      endAt: 0,           // échéance locale (Date.now)
+      timer: null,
+      purgesLeft: 3,
+      purgeS: 60,         // durées SERVIES (flow_assist.purge_s / measure_s)
+      measureS: 120,
+      measureDurationS: 120,  // durée réelle de la mesure achevée (conversion)
+    };
+
+    const steps = Array.from(card.querySelectorAll("#flow-wizard-steps > .step"));
+    const cancelBtn = $("#flow-wizard-cancel-btn");
+    const offlineNote = $("#flow-wizard-offline");
+    const expiredNote = $("#flow-wizard-expired");
+    const purgeBtn = $("#flow-wizard-purge-btn");
+    const purgeStopBtn = $("#flow-wizard-purge-stop-btn");
+    const purgeReadout = $("#flow-wizard-purge-readout");
+    const purgeCountdown = $("#flow-wizard-purge-countdown");
+    const repurgeBtn = $("#flow-wizard-repurge-btn");
+    const next1Btn = $("#flow-wizard-next-1");
+    const measureBtn = $("#flow-wizard-measure-btn");
+    const measureStopBtn = $("#flow-wizard-measure-stop-btn");
+    const measureReadout = $("#flow-wizard-measure-readout");
+    const measureCountdown = $("#flow-wizard-measure-countdown");
+    const measureAborted = $("#flow-wizard-measure-aborted");
+    const volumeInput = $("#flow-wizard-volume");
+    const conversionEl = $("#flow-wizard-conversion");
+    const plausibilityEl = $("#flow-wizard-plausibility");
+    const saveBtn = $("#flow-wizard-save-btn");
+
+    const fmtMSS = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+    // Messages français des refus 409 des routes /flow-assist/* (les codes des
+    // gardes d'injection manuelle sont partagés avec /ph|orp/inject/start).
+    const FLOW_ASSIST_REFUSALS = {
+      assist_busy: "Un assistant de mesure est déjà en cours sur l'autre pompe.",
+      purge_limit: "Quota de purges atteint (3 par session) — passez à la suite ou quittez l'assistant.",
+      already_injecting: "Une marche de pompe est déjà en cours — l'arrêter d'abord.",
+      invalid_amplitude: "Amplitude d'exploitation nulle — mesure impossible.",
+      filtration_off: "Marche refusée : la filtration doit être active (sécurité chimique).",
+      watchdog_inactive: "Marche refusée : watchdog inactif (sécurité).",
+      stabilization_in_progress: "Marche refusée : stabilisation post-calibration en cours.",
+      daily_limit: "Marche refusée : limite journalière de dosage atteinte (la mesure compte dans le budget de sécurité).",
+      hourly_limit: "Marche refusée : limite horaire d'injection atteinte — réessayer plus tard.",
+      max_cycles: "Marche refusée : nombre maximal de démarrages de pompe atteint pour aujourd'hui.",
+      burst_limit: "Marche refusée : trop de démarrages rapprochés (anti-rafale) — patienter.",
+      maintenance_mode: "Marche refusée : mode maintenance actif — dosage suspendu.",
+    };
+
+    const beforeUnload = (e) => { e.preventDefault(); e.returnValue = ""; };
+
+    function setEntryButtons(disabled) {
+      [1, 2].forEach((n) => {
+        const b = $(`#pump${n}_measure_btn`);
+        if (b) b.disabled = disabled;
+      });
+    }
+
+    function gotoStep(i) {
+      wiz.step = i;
+      steps.forEach((el, idx) => {
+        el.classList.remove("is-active", "is-completed", "is-upcoming");
+        if (idx < i) el.classList.add("is-completed");
+        else if (idx === i) el.classList.add("is-active");
+        else el.classList.add("is-upcoming");
+      });
+      // Annuler visible aux étapes 1-5 ; à l'étape finale, « Terminer » quitte.
+      if (cancelBtn) cancelBtn.hidden = (i === 5);
+      steps[i]?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+    }
+
+    function updateRepurgeUi() {
+      if (repurgeBtn) {
+        repurgeBtn.hidden = !(wiz.purgesLeft > 0);
+        repurgeBtn.textContent = `Purger à nouveau (${wiz.purgesLeft} restante${wiz.purgesLeft > 1 ? "s" : ""})`;
+      }
+    }
+
+    // ---------- Compte à rebours local (resynchro /data à l'échéance) ----------
+    function stopTimer() {
+      if (wiz.timer) { clearInterval(wiz.timer); wiz.timer = null; }
+    }
+
+    function tick() {
+      const remain = Math.max(0, Math.ceil((wiz.endAt - Date.now()) / 1000));
+      const out = wiz.running === "purge" ? purgeCountdown : measureCountdown;
+      if (out) out.textContent = fmtMSS(remain);
+      // Perte réseau (bannière app--offline posée par setNetStatus) : signaler
+      // que la minuterie SERVEUR arrêtera la pompe seule. Arrêter reste actif.
+      if (offlineNote) {
+        offlineNote.hidden = !document.querySelector(".app")?.classList.contains("app--offline");
+      }
+      if (remain <= 0) {
+        stopTimer();
+        verifyRunEnd(wiz.running);
+      }
+    }
+
+    function startTimer(durS) {
+      wiz.endAt = Date.now() + durS * 1000;
+      tick();
+      wiz.timer = setInterval(tick, 500);
+    }
+
+    // Échéance locale atteinte : VÉRIFICATION d'état serveur (un seul GET /data).
+    // Si le serveur annonce encore du temps (horloge client en avance), on se
+    // recale ; hors ligne, on considère la marche finie (le serveur a arrêté).
+    // Revue feature-075 : consomme flow_assist.aborted — une marche interrompue
+    // par le SERVEUR (perte de filtration) ne doit JAMAIS être présentée comme
+    // réussie : une mesure partielle mènerait à un débit SOUS-estimé enregistré
+    // → sur-injection systématique.
+    async function verifyRunEnd(phase) {
+      let fa = null;
+      try {
+        const d = await loadSensorData({ force: true, source: "flow-wizard" });
+        fa = d && d.flow_assist;
+      } catch (e) { /* hors ligne : la minuterie serveur a fait foi */ }
+      if (fa && fa.active && fa.phase === phase && fa.remaining_s > 0) {
+        startTimer(fa.remaining_s);
+        return;
+      }
+      const aborted = !!(fa && fa.aborted);
+      onRunEnded(phase, !aborted, aborted);
+    }
+
+    // `completed` : la marche est allée au bout ; `aborted` : interrompue par le
+    // SERVEUR (perte de filtration) — distinct de l'arrêt utilisateur (stopRun).
+    function onRunEnded(phase, completed, aborted = false) {
+      wiz.running = null;
+      stopTimer();
+      window.removeEventListener("beforeunload", beforeUnload);
+      if (offlineNote) offlineNote.hidden = true;
+      if (phase === "purge") {
+        if (purgeReadout) purgeReadout.hidden = true;
+        if (purgeStopBtn) purgeStopBtn.hidden = true;
+        if (aborted) {
+          // Purge avortée par le serveur : signalement + retour au bouton Purger.
+          showToast("Purge interrompue par le contrôleur (filtration arrêtée) — relancez la purge quand l'eau circule.", "error");
+          if (purgeBtn) {
+            purgeBtn.hidden = false;
+            purgeBtn.textContent = `Purger (${wiz.purgeS} s)`;
+          }
+          if (next1Btn) next1Btn.hidden = true;
+          if (repurgeBtn) repurgeBtn.hidden = true;
+          return;
+        }
+        if (purgeBtn) purgeBtn.hidden = true;
+        if (next1Btn) next1Btn.hidden = false;
+        updateRepurgeUi();
+      } else if (phase === "measure") {
+        if (measureReadout) measureReadout.hidden = true;
+        if (measureStopBtn) measureStopBtn.hidden = true;
+        if (completed && !aborted) {
+          if (measureAborted) measureAborted.hidden = true;
+          // wiz.measureDurationS = durée SERVIE au démarrage (réponse start)
+          updateConversion();
+          gotoStep(4);
+          setTimeout(() => volumeInput?.focus?.(), 300);
+        } else {
+          // Arrêt anticipé (utilisateur OU serveur) : valeur non fiable — relancer.
+          if (aborted) {
+            showToast("Mesure interrompue par le contrôleur (filtration arrêtée).", "error");
+          }
+          if (measureAborted) measureAborted.hidden = false;
+          if (measureBtn) {
+            measureBtn.hidden = false;
+            measureBtn.textContent = `Relancer la mesure (${wiz.measureS} s)`;
+          }
+        }
+      }
+    }
+
+    // ---------- Marches minutées serveur ----------
+    async function startPhase(phase) {
+      const btn = phase === "purge" ? purgeBtn : measureBtn;
+      if (btn) btn.disabled = true;
+      let resp = null;
+      try {
+        resp = await authFetch("/flow-assist/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: `pump=${wiz.pump}&phase=${phase}`,
+        });
+      } catch (e) { /* réseau : géré ci-dessous */ }
+      if (btn) btn.disabled = false;
+      if (!resp || !resp.ok) {
+        let msg = "Contrôleur injoignable — la pompe n'a pas démarré.";
+        if (resp) {
+          const err = await resp.json().catch(() => null);
+          msg = (err && (FLOW_ASSIST_REFUSALS[err.error] || err.message)) ||
+                `Démarrage refusé (HTTP ${resp.status}).`;
+        }
+        showToast(msg, "error");
+        return;
+      }
+      const j = await resp.json().catch(() => ({}));
+      const durS = (typeof j.duration_s === "number" && j.duration_s > 0)
+        ? j.duration_s
+        : (phase === "purge" ? wiz.purgeS : wiz.measureS);
+      if (typeof j.purges_left === "number") wiz.purgesLeft = j.purges_left;
+      wiz.running = phase;
+      wiz.sessionActive = true;  // session serveur ouverte (suivi d'expiration)
+      if (expiredNote) expiredNote.hidden = true;
+      window.addEventListener("beforeunload", beforeUnload);
+      if (phase === "purge") {
+        if (purgeBtn) purgeBtn.hidden = true;
+        if (repurgeBtn) repurgeBtn.hidden = true;
+        if (next1Btn) next1Btn.hidden = true;
+        if (purgeReadout) purgeReadout.hidden = false;
+        if (purgeStopBtn) purgeStopBtn.hidden = false;
+      } else {
+        wiz.measureDurationS = durS;
+        if (measureBtn) measureBtn.hidden = true;
+        if (measureAborted) measureAborted.hidden = true;
+        if (measureReadout) measureReadout.hidden = false;
+        if (measureStopBtn) measureStopBtn.hidden = false;
+      }
+      startTimer(durS);
+    }
+
+    // Coupe-circuit opérateur : JAMAIS désactivé. Même hors ligne on tente la
+    // requête ; en cas d'échec la minuterie serveur arrête de toute façon.
+    async function stopRun() {
+      const phase = wiz.running;
+      if (!phase) return;
+      stopTimer();
+      try { await authFetch("/flow-assist/stop", { method: "POST" }); } catch (e) { /* minuterie serveur */ }
+      onRunEnded(phase, false);
+    }
+
+    // ---------- Conversion volume → débit (étape 5) ----------
+    function readVolume() {
+      const raw = (volumeInput?.value || "").trim().replace(",", ".");
+      const v = parseFloat(raw);
+      return (raw !== "" && !isNaN(v) && v > 0) ? v : null;
+    }
+
+    function updateConversion() {
+      const vol = readVolume();
+      if (!conversionEl) return;
+      if (vol == null) {
+        conversionEl.textContent = "";
+        if (plausibilityEl) plausibilityEl.hidden = true;
+        return;
+      }
+      const flow = vol / (wiz.measureDurationS / 60);
+      conversionEl.textContent =
+        `${vol} ml en ${fmtMSS(wiz.measureDurationS)} → ≈ ${flow.toFixed(1)} ml/min`;
+      // Vraisemblance NON bloquante (attendu ~20-35 ml/min pour ces pompes).
+      if (plausibilityEl) plausibilityEl.hidden = (flow >= 20 && flow <= 35);
+    }
+
+    async function saveMeasuredFlow() {
+      // Filet (re-revue) : si la mesure a été interrompue par le SERVEUR alors
+      // que le client était hors ligne à l'échéance (verifyRunEnd passé par le
+      // catch sans connaître `aborted`), refuser la saisie — un débit partiel
+      // enregistré serait SOUS-estimé → sur-injection.
+      if (latestSensorData?.flow_assist?.aborted === true) {
+        showToast("Mesure interrompue par le contrôleur — la valeur ne serait pas fiable. Relancez la mesure.", "error");
+        if (measureAborted) measureAborted.hidden = false;
+        if (measureBtn) {
+          measureBtn.hidden = false;
+          measureBtn.textContent = `Relancer la mesure (${wiz.measureS} s)`;
+        }
+        gotoStep(3);
+        return;
+      }
+      const vol = readVolume();
+      if (vol == null) {
+        showToast("Volume invalide : saisissez le volume lu sur le récipient (ml).", "error");
+        return;
+      }
+      const flow = Math.round((vol / (wiz.measureDurationS / 60)) * 10) / 10;
+      if (flow <= 0 || flow > 200) {
+        showToast("Débit hors bornes (au plus 200 ml/min) — vérifiez la lecture.", "error");
+        return;
+      }
+      if (saveBtn) saveBtn.disabled = true;
+      // Chemin /save-config de la feature-074 : le serveur déduit le duty
+      // calibré de l'amplitude courante et pose le drapeau « mesuré ».
+      const payload = {};
+      payload[`pump${wiz.pump}_pulse_flow_ml_per_min`] = flow;
+      const r = await sendConfigDetailed(payload);
+      if (saveBtn) saveBtn.disabled = false;
+      if (!r.ok) {
+        showToast(r.error || "Erreur lors de l'enregistrement du débit.", "error");
+        return;
+      }
+      const doneText = $("#flow-wizard-done-text");
+      if (doneText) {
+        doneText.textContent =
+          `Débit enregistré : ${flow.toFixed(1)} ml/min (mesuré). Rebranchez le tuyau d'injection sur le point d'injection.`;
+      }
+      gotoStep(5);
+      setTimeout(loadConfig, 500);
+      setTimeout(() => loadSensorData({ force: true, source: "flow-wizard-save" }), 800);
+    }
+
+    // ---------- Ouverture / fermeture ----------
+    // Réinitialisation des états d'étapes (libellés paramétrés sur les durées
+    // servies) — factorisée : ouverture ET reprise après expiration de session.
+    function resetStepsUi() {
+      if (purgeBtn) { purgeBtn.hidden = false; purgeBtn.disabled = false; purgeBtn.textContent = `Purger (${wiz.purgeS} s)`; }
+      if (purgeStopBtn) purgeStopBtn.hidden = true;
+      if (purgeReadout) purgeReadout.hidden = true;
+      if (repurgeBtn) repurgeBtn.hidden = true;
+      if (next1Btn) next1Btn.hidden = true;
+      if (measureBtn) { measureBtn.hidden = false; measureBtn.disabled = false; measureBtn.textContent = `Lancer la mesure (${wiz.measureS} s)`; }
+      if (measureStopBtn) measureStopBtn.hidden = true;
+      if (measureReadout) measureReadout.hidden = true;
+      if (measureAborted) measureAborted.hidden = true;
+      if (volumeInput) volumeInput.value = "";
+      if (conversionEl) conversionEl.textContent = "";
+      if (plausibilityEl) plausibilityEl.hidden = true;
+      if (offlineNote) offlineNote.hidden = true;
+    }
+
+    function openFlowWizard(n) {
+      const cfg = window._config || {};
+      const phPump = cfg.ph_pump === 2 ? 2 : 1;
+      wiz.pump = n;
+      // Durées servies par /data si déjà connues (sinon miroirs par défaut)
+      const fa = latestSensorData?.flow_assist;
+      if (fa) {
+        if (fa.purge_s > 0) wiz.purgeS = fa.purge_s;
+        if (fa.measure_s > 0) wiz.measureS = fa.measure_s;
+      }
+      wiz.purgesLeft = (fa && fa.active && fa.pump === n && typeof fa.purges_left === "number")
+        ? fa.purges_left : 3;
+      wiz.measureDurationS = wiz.measureS;
+      wiz.running = null;
+      wiz.sessionActive = false;
+
+      const title = $("#flow-wizard-title");
+      if (title) title.textContent = `Mesure du débit — Pompe ${n} (${phPump === n ? "pH" : "Chlore"})`;
+      const budget = $("#flow-wizard-budget");
+      if (budget) {
+        // Débit majorant SERVI par /data (flow_assist.flow255[n-1]) — plus de
+        // miroir en dur (revue) ; repli générique si firmware plus ancien.
+        const f = (fa && Array.isArray(fa.flow255) && fa.flow255[n - 1] > 0)
+          ? fa.flow255[n - 1] : 61;
+        budget.textContent =
+          `≈ ${Math.ceil(f * wiz.purgeS / 60)} ml par purge, ≈ ${Math.ceil(f * wiz.measureS / 60)} ml pour la mesure`;
+      }
+      resetStepsUi();
+      if (expiredNote) expiredNote.hidden = true;
+
+      gotoStep(0);
+      card.hidden = false;
+      $("#view-settings")?.classList.add("is-flow-wizard");
+      setEntryButtons(true);  // une pompe à la fois : entrées neutralisées
+      card.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    }
+
+    function closeFlowWizard() {
+      stopTimer();
+      wiz.running = null;
+      wiz.sessionActive = false;
+      window.removeEventListener("beforeunload", beforeUnload);
+      card.hidden = true;
+      $("#view-settings")?.classList.remove("is-flow-wizard");
+      setEntryButtons(false);
+    }
+
+    // Revue feature-075 : détection de l'EXPIRATION de session côté serveur
+    // (timeout 15 min) pendant que l'assistant est ouvert. Appelé par
+    // loadSensorData sur chaque /data reçu (aucun nouveau rythme réseau).
+    // Hors marche (wiz.running) : l'échéance est gérée par verifyRunEnd.
+    // À l'étape finale (5), le débit est déjà enregistré — l'expiration ne
+    // change rien (« Terminer » reste un exit idempotent).
+    window._flowWizardOnData = (json) => {
+      const fa = json && json.flow_assist;
+      if (!fa || card.hidden || wiz.running || !wiz.sessionActive) return;
+      if (fa.active === false && wiz.step < 5) {
+        wiz.sessionActive = false;
+        resetStepsUi();
+        gotoStep(0);
+        if (expiredNote) expiredNote.hidden = false;
+      }
+    };
+
+    // Sortie : POST /flow-assist/exit (arrêt pompe + rétablissement du dosage
+    // auto côté serveur). Sans confirmation — l'action est réversible et le
+    // timeout serveur couvre de toute façon l'abandon.
+    async function exitWizard(toastMsg, toastType) {
+      try { await authFetch("/flow-assist/exit", { method: "POST" }); } catch (e) { /* timeout serveur en filet */ }
+      closeFlowWizard();
+      if (toastMsg) showToast(toastMsg, toastType);
+    }
+
+    // ---------- Liaisons ----------
+    [1, 2].forEach((n) => {
+      $(`#pump${n}_measure_btn`)?.addEventListener("click", () => openFlowWizard(n));
+      // « Saisie avancée » : dépliant discret du champ direct de la feature-074
+      const toggle = $(`#pump${n}_adv_toggle`);
+      const panel = $(`#pump${n}_adv`);
+      toggle?.addEventListener("click", () => {
+        const open = toggle.getAttribute("aria-expanded") === "true";
+        toggle.setAttribute("aria-expanded", String(!open));
+        if (panel) panel.hidden = open;
+      });
+    });
+
+    $("#flow-wizard-next-0")?.addEventListener("click", () => gotoStep(1));
+    next1Btn?.addEventListener("click", () => gotoStep(2));
+    $("#flow-wizard-next-2")?.addEventListener("click", () => gotoStep(3));
+    purgeBtn?.addEventListener("click", () => startPhase("purge"));
+    repurgeBtn?.addEventListener("click", () => startPhase("purge"));
+    purgeStopBtn?.addEventListener("click", stopRun);
+    measureBtn?.addEventListener("click", () => startPhase("measure"));
+    measureStopBtn?.addEventListener("click", stopRun);
+    volumeInput?.addEventListener("input", updateConversion);
+    saveBtn?.addEventListener("click", saveMeasuredFlow);
+    cancelBtn?.addEventListener("click", () =>
+      exitWizard("Mesure annulée — dosage automatique rétabli.", "info"));
+    $("#flow-wizard-finish-btn")?.addEventListener("click", () =>
+      exitWizard("Mesure du débit terminée — dosage automatique rétabli.", "success"));
   }
 
   function bindTimeManualSave() {
@@ -7732,6 +8137,7 @@
     bindMqttManualSave();
     bindFiltrationManualSave();
     bindPumpConfigSave();
+    bindFlowWizard();
     bindTimeManualSave();
     bindSecurity();
     bindGithubUpdate();

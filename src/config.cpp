@@ -229,6 +229,9 @@ void saveMqttConfig() {
   prefs.putFloat("p1_pulse_flow", mqttCfg.pump1PulseFlowMlPerMin);
   prefs.putUChar("p2_cal_duty", mqttCfg.pump2CalibratedDuty);
   prefs.putFloat("p2_pulse_flow", mqttCfg.pump2PulseFlowMlPerMin);
+  // feature-074 : drapeaux « pesée individuelle » (false = valeur usine de type)
+  prefs.putBool("p1_flow_weighed", mqttCfg.pump1FlowWeighed);
+  prefs.putBool("p2_flow_weighed", mqttCfg.pump2FlowWeighed);
   // Purge de l'ancienne clé du modèle linéaire (pump_max_flow) à la première
   // sauvegarde : AUCUNE conversion — c'est le modèle faux qu'on retire.
   prefs.remove("pump_max_flow");
@@ -446,22 +449,31 @@ void loadMqttConfig() {
   // Amplitude des pompes (itération 2 : % → duty du plateau d'impulsion)
   mqttCfg.pump1MaxDutyPct = prefs.getUChar("pump1_max_duty", mqttCfg.pump1MaxDutyPct);
   mqttCfg.pump2MaxDutyPct = prefs.getUChar("pump2_max_duty", mqttCfg.pump2MaxDutyPct);
-  // Caractérisation mesurée des pompes. Clés absentes (appareil existant) →
-  // défauts 0 = NON CARACTÉRISÉ (fail-closed : dosage auto/programmé refusé
-  // tant que la pesée n'a pas été saisie). SURTOUT PAS de conversion depuis
-  // l'ancienne clé pump_max_flow (modèle linéaire faux, purgé au prochain save).
-  mqttCfg.pump1CalibratedDuty = prefs.getUChar("p1_cal_duty", 0);
-  mqttCfg.pump1PulseFlowMlPerMin = prefs.getFloat("p1_pulse_flow", 0.0f);
-  mqttCfg.pump2CalibratedDuty = prefs.getUChar("p2_cal_duty", 0);
-  mqttCfg.pump2PulseFlowMlPerMin = prefs.getFloat("p2_pulse_flow", 0.0f);
+  // Caractérisation des pompes. feature-074 (condition C1) : clé ABSENTE
+  // (appareil neuf / NVS vierge) → CALIBRATION DE TYPE (kPumpTypeCalDuty /
+  // kPumpTypePulseFlowMlPerMin, valeur usine du modèle de pompe) — le dosage
+  // fonctionne au premier flash. Clé PRÉSENTE à 0 (effacement explicite ou
+  // appareil flashé avant 2.23.0 jamais calibré) → 0 est LU tel quel et reste
+  // fail-closed (pas de conversion silencieuse vers le défaut de type).
+  // SURTOUT PAS de conversion depuis l'ancienne clé pump_max_flow (modèle
+  // linéaire faux, purgé au prochain save).
+  mqttCfg.pump1CalibratedDuty = prefs.getUChar("p1_cal_duty", kPumpTypeCalDuty);
+  mqttCfg.pump1PulseFlowMlPerMin = prefs.getFloat("p1_pulse_flow", kPumpTypePulseFlowMlPerMin);
+  mqttCfg.pump2CalibratedDuty = prefs.getUChar("p2_cal_duty", kPumpTypeCalDuty);
+  mqttCfg.pump2PulseFlowMlPerMin = prefs.getFloat("p2_pulse_flow", kPumpTypePulseFlowMlPerMin);
+  // feature-074 : drapeau « pesée individuelle » (défaut false = valeur usine).
+  mqttCfg.pump1FlowWeighed = prefs.getBool("p1_flow_weighed", false);
+  mqttCfg.pump2FlowWeighed = prefs.getBool("p2_flow_weighed", false);
   // Garde fail-closed : une valeur NVS implausible (corruption) est neutralisée
   // à 0 (non caractérisé) plutôt qu'utilisée pour créditer un volume fictif.
+  // Le drapeau weighed est aussi rabattu : une pesée corrompue n'en est plus une.
   if (!isfinite(mqttCfg.pump1PulseFlowMlPerMin) || mqttCfg.pump1PulseFlowMlPerMin < 0.0f ||
       mqttCfg.pump1PulseFlowMlPerMin > kPulseFlowMaxMlPerMin) {
     systemLogger.warning("[Config] p1_pulse_flow NVS implausible (" +
                          String(mqttCfg.pump1PulseFlowMlPerMin, 1) + ") — pompe 1 non caractérisée");
     mqttCfg.pump1PulseFlowMlPerMin = 0.0f;
     mqttCfg.pump1CalibratedDuty = 0;
+    mqttCfg.pump1FlowWeighed = false;
   }
   if (!isfinite(mqttCfg.pump2PulseFlowMlPerMin) || mqttCfg.pump2PulseFlowMlPerMin < 0.0f ||
       mqttCfg.pump2PulseFlowMlPerMin > kPulseFlowMaxMlPerMin) {
@@ -469,6 +481,7 @@ void loadMqttConfig() {
                          String(mqttCfg.pump2PulseFlowMlPerMin, 1) + ") — pompe 2 non caractérisée");
     mqttCfg.pump2PulseFlowMlPerMin = 0.0f;
     mqttCfg.pump2CalibratedDuty = 0;
+    mqttCfg.pump2FlowWeighed = false;
   }
 
   // Limites de sécurité

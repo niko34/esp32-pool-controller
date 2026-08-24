@@ -150,6 +150,18 @@ Le régime pathologique est **le seul cas où ce WARN doit être vu en rafale** 
 
 Émetteurs ponctuels associés (non throttlés, événementiels) : `INFO Pesée pompe N enregistrée : duty X, débit Y ml/min` / `WARN Calibration pompe N effacée — pompe non caractérisée (dosage auto refusé)` / `WARN Pesée pompe N refusée : …` (route `/save-config`) ; `WARN [Config] pN_pulse_flow NVS implausible (…) — pompe N non caractérisée` (assainissement au chargement) ; `CRITICAL [Sécurité] Injection pH|ORP manuelle refusée : débit non caractérisé (pesée requise)` (409 `flow_uncharacterized`) ; `INFO Arrêt dosage pH|ORP (auto): session=Xs pompe-ON=Ys vol≈Z mL total jour=…` (nouveau format du log d'arrêt de session).
 
+**Émetteurs de l'assistant de mesure du débit ajoutés en v2.24.0 (feature-075)** — tous **événementiels, non throttlés**, conformes à la règle générale : aucun n'est périodique, leur débit est borné par l'interaction utilisateur (session limitée à 15 min + 3 purges max, ≤ ~10 lignes par session complète — impact rétention négligeable). La suspension du dosage est journalisée **one-shot par transition** (jamais par tour de loop — état précédent `_flowAssistSuspendPrev` loopTask-only) :
+
+| Niveau | Message | Émetteur |
+|---|---|---|
+| `INFO` | `Dosage automatique suspendu (assistant de mesure du débit)` / `Dosage automatique rétabli (fin de l'assistant …)` | transition du flag dans `PumpController::update()` |
+| `INFO` | `[Assistant débit] Session ouverte (pompe N) — dosage automatique suspendu` / `Session fermée (pompe N) — dosage automatique rétabli` | handlers `/flow-assist/start` / `/exit` |
+| `INFO` | `[Assistant débit] Purge\|Mesure démarrée : pompe N, X s, duty D, crédit majorant Y mL` | `/flow-assist/start` |
+| `INFO` | `[Assistant débit] Marche arrêtée par anticipation (pompe N, X s écoulées, crédit Y mL au majorant)` / `Marche interrompue (perte de filtration) — crédit Y mL au majorant (X s écoulées)` | arrêt anticipé / abandon serveur |
+| `WARN` | `[Assistant débit] Session expirée (15 min sans interaction) — dosage automatique rétabli` | timeout serveur (`updateManualInject`, loopTask) |
+
+Voir [pump-controller.md](pump-controller.md#suspension--assistant-de-mesure-du-débit--feature-075-v2240).
+
 Le tampon `_persistBuffer` (std::vector<String>) accumule entre deux flushes. Sa capacité est **bornée à 100 entrées** (`kMaxPersistBufferEntries`) et pré-allouée dans le constructeur (`reserve(kMaxPersistBufferEntries)`) pour éviter les `std::bad_alloc` en cas de heap fragmenté en production. Les entrées au-delà de 100 sont silencieusement ignorées (les logs restent dans le buffer RAM circulaire).
 
 **Logs pré-persistance** : tant que `setPersistenceFs()` n'a pas été appelé (`_persistEnabled == false`), les entrées ne sont **pas** accumulées pour `/system.log` — elles partent en buffer RAM + console uniquement. C'est notamment le cas des logs du **disjoncteur de boot-loop history** (v2.10.0), qui s'exécute dans `HistoryManager::begin()` **avant** l'activation de la persistance (c'est précisément elle qu'il protège) : le CRIT « partition effacée automatiquement » est visible dans la page Logs (RAM) et sur la série, mais jamais dans `/system.log`. Voir [system-health.md](system-health.md#disjoncteur-de-boot-loop-de-linit-history-v2100).

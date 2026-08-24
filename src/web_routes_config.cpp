@@ -83,7 +83,8 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // (littéral construit par pump_controller), sa longueur est donc bornée.
   // Itération 2 (bug-dosage-fantome) : +4 champs de caractérisation pompes
   // (~130 o au pire) → marge portée à 2752.
-  StaticJson<2752> doc;
+  // feature-074 : +2 drapeaux pumpN_flow_weighed (~56 o) → marge portée à 2816.
+  StaticJson<2816> doc;
   doc["server"] = mqttCfg.server;
   doc["port"] = mqttCfg.port;
   doc["topic"] = mqttCfg.topic;
@@ -115,6 +116,11 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["pump1_pulse_flow_ml_per_min"] = mqttCfg.pump1PulseFlowMlPerMin;
   doc["pump2_calibrated_duty"] = mqttCfg.pump2CalibratedDuty;
   doc["pump2_pulse_flow_ml_per_min"] = mqttCfg.pump2PulseFlowMlPerMin;
+  // feature-074 : provenance du débit — false = calibration de type (valeur
+  // usine du modèle de pompe), true = pesée individuelle de CETTE pompe.
+  // Sert à l'indication discrète « valeur usine / pesé » de l'UI.
+  doc["pump1_flow_weighed"] = mqttCfg.pump1FlowWeighed;
+  doc["pump2_flow_weighed"] = mqttCfg.pump2FlowWeighed;
   doc["ph_limit_minutes"] = mqttCfg.phInjectionLimitMinutes;
   doc["orp_limit_minutes"] = mqttCfg.orpInjectionLimitMinutes;
   doc["max_cycles_per_day"] = pumpProtection.maxCyclesPerDay;  // feature-060 : garde 9 configurable (10-60)
@@ -383,6 +389,10 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   // du plateau d'impulsion ne doit JAMAIS redescendre sous le seuil de rotation
   // (40 % × 255 ≈ 102 counts ≥ MIN_ACTIVE_DUTY = 98). Le min/max HTML ne suffit
   // pas : clamp serveur obligatoire (même patron que max_cycles_per_day).
+  // feature-074 : l'amplitude est GELÉE côté UI (curseur retiré, le frontend
+  // n'envoie plus ces clés) mais le champ API reste vivant + validé [40..100]
+  // pour les cas exceptionnels (précédent screen_enabled : surface UI retirée,
+  // contrat serveur conservé).
   if (!doc["pump1_max_duty_pct"].isNull()) mqttCfg.pump1MaxDutyPct = constrain((int)doc["pump1_max_duty_pct"], (int)kPumpAmpMinPct, 100);
   if (!doc["pump2_max_duty_pct"].isNull()) mqttCfg.pump2MaxDutyPct = constrain((int)doc["pump2_max_duty_pct"], (int)kPumpAmpMinPct, 100);
   // Itération 2 (bug-dosage-fantome) : pump_max_flow_ml_per_min SUPPRIMÉ — la
@@ -396,6 +406,12 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   //     fail-closed — cf. pulse_dosing_logic.h) ;
   //   - pN_pulse_flow_ml_per_min ∈ ]0..kPulseFlowMaxMlPerMin] (plausibilité
   //     d'une doseuse de piscine, même garde qu'au chargement NVS).
+  // feature-074 : le frontend n'envoie PLUS le duty — un débit valide reçu SANS
+  // clé duty est une pesée à l'amplitude COURANTE : le serveur déduit
+  // cal_duty = pumpNMaxDutyPct × MAX_PWM_DUTY / 100 (l'amplitude est traitée
+  // plus haut dans ce handler, donc à jour) et pose le drapeau weighed. Un duty
+  // explicite reste accepté (rétrocompat vieux client) et pose aussi weighed ;
+  // l'effacement (duty=0) remet flow=0 ET weighed=false.
   {
     constexpr int kCalDutyMin = ((int)kPumpAmpMinPct * (int)MAX_PWM_DUTY) / 100;  // 102
     struct PumpCalKeys {
@@ -403,19 +419,24 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
       const char* flowKey;
       uint8_t* duty;
       float* flow;
+      bool* weighed;
+      const uint8_t* maxDutyPct;
       int num;
     };
     const PumpCalKeys pumps[2] = {
       {"pump1_calibrated_duty", "pump1_pulse_flow_ml_per_min",
-       &mqttCfg.pump1CalibratedDuty, &mqttCfg.pump1PulseFlowMlPerMin, 1},
+       &mqttCfg.pump1CalibratedDuty, &mqttCfg.pump1PulseFlowMlPerMin,
+       &mqttCfg.pump1FlowWeighed, &mqttCfg.pump1MaxDutyPct, 1},
       {"pump2_calibrated_duty", "pump2_pulse_flow_ml_per_min",
-       &mqttCfg.pump2CalibratedDuty, &mqttCfg.pump2PulseFlowMlPerMin, 2},
+       &mqttCfg.pump2CalibratedDuty, &mqttCfg.pump2PulseFlowMlPerMin,
+       &mqttCfg.pump2FlowWeighed, &mqttCfg.pump2MaxDutyPct, 2},
     };
     for (const PumpCalKeys& p : pumps) {
       // duty == 0 dans la même requête = intention d'EFFACER : le débit envoyé
       // conjointement (même à 0) est ignoré, l'effacement prime.
       const bool clearing = !doc[p.dutyKey].isNull() && doc[p.dutyKey].as<int>() == 0;
       bool flowChanged = false;
+      bool flowSubmitted = false;
       if (!clearing && !doc[p.flowKey].isNull()) {
         float flow = doc[p.flowKey].as<float>();
         if (!isfinite(flow) || flow <= 0.0f || flow > kPulseFlowMaxMlPerMin) {
@@ -430,6 +451,7 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
         }
         if (flow != *p.flow) flowChanged = true;
         *p.flow = flow;
+        flowSubmitted = true;
       }
       if (!doc[p.dutyKey].isNull()) {
         int duty = doc[p.dutyKey].as<int>();
@@ -448,12 +470,28 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
             systemLogger.warning("Calibration pompe " + String(p.num) +
                                  " effacée — pompe non caractérisée (dosage auto refusé)");
           }
-          *p.flow = 0.0f;  // effacement : le débit pesé n'a plus de sens
+          *p.flow = 0.0f;   // effacement : le débit pesé n'a plus de sens
+          *p.weighed = false;  // feature-074 : plus de pesée en vigueur
         } else if ((uint8_t)duty != *p.duty || flowChanged) {
           systemLogger.info("Pesée pompe " + String(p.num) + " enregistrée : duty " +
                             String(duty) + ", débit " + String(*p.flow, 1) + " ml/min");
         }
         *p.duty = (uint8_t)duty;
+        if (duty != 0) *p.weighed = true;  // feature-074 : rétrocompat vieux client
+      } else if (flowSubmitted) {
+        // feature-074 : pesée « nouveau client » — le duty calibré est déduit
+        // de l'amplitude d'exploitation courante. pumpNMaxDutyPct ∈ [40..100]
+        // (clamp serveur plus haut) ⇒ duty déduit ∈ [102..255], toujours valide.
+        const uint8_t deducedDuty =
+            (uint8_t)(((int)*p.maxDutyPct * (int)MAX_PWM_DUTY) / 100);
+        if (deducedDuty != *p.duty || flowChanged) {
+          systemLogger.info("Pesée pompe " + String(p.num) + " enregistrée : duty " +
+                            String(deducedDuty) + " (déduit de l'amplitude " +
+                            String(*p.maxDutyPct) + " %), débit " +
+                            String(*p.flow, 1) + " ml/min");
+        }
+        *p.duty = deducedDuty;
+        *p.weighed = true;
       }
     }
   }

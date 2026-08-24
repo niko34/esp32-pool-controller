@@ -11,6 +11,7 @@
 #include "mqtt_manager.h"
 #include "ws_manager.h"
 #include "dosing_logic.h"
+#include "flow_assist_logic.h"
 #include <Arduino.h>
 #include <esp_task_wdt.h>
 
@@ -239,6 +240,141 @@ static void sendFlowUncharacterized(AsyncWebServerRequest* req, const char* tag)
 ManualInjectState manualInjectPh;
 ManualInjectState manualInjectOrp;
 
+// =============================================================================
+// feature-075 : session « assistant de mesure du débit » (une seule pompe à la
+// fois). État écrit par les handlers async (/flow-assist/*) et lu/écrit par le
+// tick de timeout en loopTask (updateManualInject) — course BÉNIGNE assumée
+// (patron manualInject* : champs 8/32 bits, écritures atomiques Xtensa, pire
+// cas une décision différée d'un tour de loop, fail-closed côté suspension :
+// le timeout serveur kFlowAssistSuspendTimeoutMs rétablit toujours le dosage).
+// Les durées/duty des marches sont FIXÉS SERVEUR (jamais acceptés du client) :
+//   - purge  : duty 255 (seul débit connu hors calibration), kFlowAssistPurgeDurationS ;
+//   - mesure : amplitude d'exploitation (getPumpAmplitudeDuty), kFlowAssistMeasureDurationS.
+// Le véhicule d'exécution est le chemin manualInject* existant (minuterie
+// serveur + crédit plancher à échéance) — AUCUNE nouvelle mécanique de pompe.
+// -----------------------------------------------------------------------------
+struct FlowAssistSession {
+  bool active = false;                          // session ouverte (suspension posée)
+  int pumpIdx = -1;                             // pompe PHYSIQUE (0/1)
+  FlowAssistPhase phase = FlowAssistPhase::kPurge;  // dernière phase lancée
+  bool runOwned = false;                        // la marche manualInject en cours est celle de l'assistant
+  bool aborted = false;                         // dernière marche interrompue par le SERVEUR (perte de filtration)
+  uint8_t purgesDone = 0;                       // purges consommées dans la session
+  uint32_t lastTouchMs = 0;                     // réarmé à CHAQUE requête /flow-assist/*
+};
+static FlowAssistSession sFlowAssist;
+
+// Chimie de la pompe PHYSIQUE en assistant (résout l'affectation mqttCfg.phPump).
+static bool flowAssistPumpIsPh(int pumpIdx) {
+  return pumpIdx == (mqttCfg.phPump - 1);
+}
+
+// Débit MAJORANT (mesuré à duty 255) de la pompe physique — base du crédit de
+// sécurité (surestimer est fail-safe, P4 : jamais zéro sur pompe alimentée).
+static float flowAssistFlow255(int pumpIdx) {
+  return (pumpIdx == 0) ? kPump1Flow255MlPerMin : kPump2Flow255MlPerMin;
+}
+
+// Arrêt ANTICIPÉ d'une marche d'assistant (stop utilisateur, exit, timeout).
+// Condition gate 6 (vérifiée sur le code) : sous suspension flow-assist,
+// PumpController::update() sort AVANT accountPumpVolume() (chemin perte-
+// filtration) → la comptabilité PAR TICK est sautée pendant toute la marche.
+// Le crédit-plancher à échéance (creditManualInjectionFloor, fin NATURELLE
+// dans updateManualInject) est donc LE mécanisme de crédit, et l'arrêt anticipé
+// « sans crédit » du chemin manualInject classique laisserait un volume NUL sur
+// une pompe qui a réellement tourné (violation P4). Adaptation : on coupe la
+// pompe ICI (arrêt immédiat), on RAMÈNE creditMl au majorant PRORATA du temps
+// écoulé (flow255 × elapsed — majorant exact pour la purge à 255, majorant
+// conservateur pour la mesure à amplitude ≤ 255), puis on raccourcit durationMs
+// à elapsed : la « fin naturelle » du prochain tour d'updateManualInject exécute
+// creditManualInjectionFloor en loopTask (seul contexte autorisé) et nettoie.
+// Ordre d'écriture VOULU : creditMl AVANT durationMs (le déclencheur) — si la
+// loop passe entre les deux, elle voit l'ancienne durée et créditera au tour
+// suivant avec le creditMl déjà proraté (course bénigne).
+static bool flowAssistStopRun() {
+  if (!sFlowAssist.runOwned || sFlowAssist.pumpIdx < 0) return false;
+  const bool isPh = flowAssistPumpIsPh(sFlowAssist.pumpIdx);
+  ManualInjectState& mi = isPh ? manualInjectPh : manualInjectOrp;
+  if (!mi.active) return false;
+  PumpController.setManualPump(sFlowAssist.pumpIdx, 0);  // coupure immédiate
+  unsigned long elapsedMs = millis() - mi.startMs;
+  if (elapsedMs > mi.durationMs) elapsedMs = mi.durationMs;
+  mi.creditMl = flowAssistFlow255(sFlowAssist.pumpIdx) * (float)elapsedMs / 60000.0f;
+  mi.durationMs = elapsedMs;  // échéance immédiate → crédit plancher au prochain tour de loop
+  systemLogger.info(String("[Assistant débit] Marche arrêtée par anticipation (pompe ") +
+                    String(sFlowAssist.pumpIdx + 1) + ", " + String(elapsedMs / 1000UL) +
+                    " s écoulées, crédit " + String(mi.creditMl, 1) + " mL au majorant)");
+  return true;
+}
+
+// feature-075 (P4, anomalie test-engineer) : crédit d'une marche d'ASSISTANT
+// interrompue par la PERTE DE FILTRATION. Hors assistant, l'abandon historique
+// ne crédite pas (« l'intégration réelle fait foi » : accountPumpVolume a déjà
+// compté chaque tick) — comportement STRICTEMENT inchangé. Mais sous suspension
+// flow-assist, la comptabilité par tick est SAUTÉE (PumpController::update()
+// sort par le chemin perte-filtration AVANT accountPumpVolume) : sans crédit
+// ici, le volume réellement pompé (jusqu'à flow255 × 2 min) ne serait JAMAIS
+// inscrit au registre journalier — violation P4 (jamais zéro sur une pompe
+// alimentée). Crédit au MAJORANT prorata (flow255 × temps écoulé), appliqué
+// DIRECTEMENT via creditManualInjectionFloor : on est en loopTask
+// (updateManualInject), le seul contexte autorisé — pas besoin du détour
+// « durationMs raccourci » de flowAssistStopRun (réservé aux handlers async).
+// À appeler AVANT la remise à zéro de startCumulMl/creditMl du chemin d'abandon.
+static void flowAssistCreditAbortedRun(bool isPh, const ManualInjectState& mi,
+                                       unsigned long now) {
+  if (!sFlowAssist.runOwned) return;                        // pas une marche d'assistant
+  if (flowAssistPumpIsPh(sFlowAssist.pumpIdx) != isPh) return;  // autre chimie
+  unsigned long elapsedMs = now - mi.startMs;
+  if (elapsedMs > mi.durationMs) elapsedMs = mi.durationMs;
+  const float creditMl =
+      flowAssistFlow255(sFlowAssist.pumpIdx) * (float)elapsedMs / 60000.0f;
+  PumpController.creditManualInjectionFloor(isPh ? 0 : 1, mi.startCumulMl, creditMl);
+  sFlowAssist.runOwned = false;  // marche close et créditée
+  // Revue feature-075 : signaler l'interruption SERVEUR à l'UI (/data). Sans ce
+  // drapeau, l'échéance du compte à rebours client routerait vers la saisie du
+  // volume avec une mesure PARTIELLE → débit sous-estimé → sur-injection.
+  sFlowAssist.aborted = true;
+  systemLogger.info("[Assistant débit] Marche interrompue (perte de filtration) — crédit " +
+                    String(creditMl, 1) + " mL au majorant (" +
+                    String(elapsedMs / 1000UL) + " s écoulées)");
+}
+
+// feature-075 (contre-visite gate, P4) : les injections manuelles CLASSIQUES
+// (/ph|orp/inject/start) sont REFUSÉES tant qu'une session d'assistant est
+// active. Motif : sous suspension flow-assist, l'intégration par tick est
+// sautée (update() sort avant accountPumpVolume) — une injection classique sur
+// l'AUTRE chimie, interrompue par perte de filtration, serait créditée 0
+// (flowAssistCreditAbortedRun rejette à juste titre les marches non-assistant).
+// Plutôt que généraliser le crédit prorata à des chemins qui n'en ont pas
+// besoin, on ferme la combinaison. Le test /pumpN/on?duty= n'est PAS concerné
+// (hors injection minutée, pas de crédit plancher). Retourne false + 409 si refus.
+static bool flowAssistAllowsManualInjectOrReject(AsyncWebServerRequest* req) {
+  if (!sFlowAssist.active) return true;
+  req->send(409, "application/json",
+            "{\"error\":\"assist_active\",\"message\":\"Mesure du débit en cours — réessayez après la fin de l'assistant.\"}");
+  return false;
+}
+
+FlowAssistStatus getFlowAssistStatus() {
+  FlowAssistStatus st;
+  st.purgesLeft = kFlowAssistMaxPurgesPerSession;
+  if (!sFlowAssist.active) return st;
+  st.active = true;
+  st.pumpNumber = sFlowAssist.pumpIdx + 1;
+  st.aborted = sFlowAssist.aborted;
+  st.purgesLeft = (sFlowAssist.purgesDone >= kFlowAssistMaxPurgesPerSession)
+                      ? 0 : (int)(kFlowAssistMaxPurgesPerSession - sFlowAssist.purgesDone);
+  if (sFlowAssist.runOwned) {
+    const ManualInjectState& mi = flowAssistPumpIsPh(sFlowAssist.pumpIdx)
+                                      ? manualInjectPh : manualInjectOrp;
+    if (mi.active) {
+      st.phase = (sFlowAssist.phase == FlowAssistPhase::kPurge) ? "purge" : "measure";
+      st.remainingS = manualInjectRemainingS(mi);
+    }
+  }
+  return st;
+}
+
 int manualInjectRemainingS(const ManualInjectState& s) {
   if (!s.active) return 0;
   unsigned long elapsed = millis() - s.startMs;
@@ -256,6 +392,46 @@ static bool filtrationOkForInjection() {
 
 void updateManualInject() {
   unsigned long now = millis();
+
+  // ========== feature-075 : timeout serveur de la session d'assistant ==========
+  // Un assistant abandonné (onglet fermé, WiFi coupé) ne laisse JAMAIS la
+  // régulation suspendue indéfiniment : expiration wrap-safe sur lastTouchMs,
+  // réarmé à chaque requête /flow-assist/*. En pratique aucune marche ne peut
+  // être en cours ici (durée max 120 s, très inférieure au timeout 15 min
+  // réarmé au démarrage de la marche) — l'arrêt
+  // est défensif : il raccourcit durationMs, et les blocs pH/ORP ci-dessous
+  // exécutent la fin naturelle (crédit plancher) dans ce MÊME appel.
+  if (sFlowAssist.active &&
+      isFlowAssistSessionExpired(sFlowAssist.lastTouchMs, (uint32_t)now,
+                                 kFlowAssistSuspendTimeoutMs)) {
+    flowAssistStopRun();
+    PumpController.setFlowAssistSuspend(false);
+    sFlowAssist = FlowAssistSession{};
+    systemLogger.warning("[Assistant débit] Session expirée (15 min sans interaction) — "
+                         "dosage automatique rétabli");
+  }
+
+  // feature-075 (revue, course timeout/start) : le bloc d'expiration ci-dessus
+  // (loopTask) et un /flow-assist/start concurrent (tâche async) peuvent
+  // s'entrelacer — le reset multi-champs de sFlowAssist n'est PAS atomique et
+  // le setFlowAssistSuspend(false) du timeout peut écraser le true que le
+  // handler vient de poser → session vivante SANS suspension (fail-open).
+  // Réconciliation IDEMPOTENTE : une session active exige la suspension. La
+  // fenêtre résiduelle (~1 tour de loop, ≈100 ms) est bénigne : la régulation
+  // ne peut pas armer de pouls significatif en un tour, et la suspension est
+  // rétablie ici au tour suivant (fail-closed).
+  if (sFlowAssist.active && !PumpController.isFlowAssistSuspended()) {
+    PumpController.setFlowAssistSuspend(true);
+  }
+
+  // feature-075 : la marche de l'assistant s'est terminée (fin naturelle,
+  // arrêt anticipé déjà traité, ou interruption filtration) → libérer
+  // l'attribution pour que /data ne rapporte plus de phase en cours.
+  if (sFlowAssist.runOwned) {
+    const ManualInjectState& s = flowAssistPumpIsPh(sFlowAssist.pumpIdx)
+                                     ? manualInjectPh : manualInjectOrp;
+    if (!s.active) sFlowAssist.runOwned = false;
+  }
 
   // ========== pH ==========
   if (manualInjectPh.active) {
@@ -280,6 +456,10 @@ void updateManualInject() {
       manualInjectPh.active = false;
       manualInjectPh.requestedVolumeMl = 0.0f;
       // Arrêt ANTICIPÉ : pas de crédit (l'intégration réelle fait foi) — hygiène.
+      // feature-075 (P4) : SAUF marche d'assistant — sous suspension flow-assist
+      // l'intégration par tick est sautée, crédit majorant prorata obligatoire
+      // (cf. flowAssistCreditAbortedRun ; sans effet hors assistant).
+      flowAssistCreditAbortedRun(/*isPh=*/true, manualInjectPh, now);
       manualInjectPh.startCumulMl = 0.0f;
       manualInjectPh.creditMl = 0.0f;
       systemLogger.critical("[Injection] pH INTERROMPUE — filtration arrêtée (sécurité chimique)");
@@ -307,6 +487,9 @@ void updateManualInject() {
       manualInjectOrp.active = false;
       manualInjectOrp.requestedVolumeMl = 0.0f;
       // Arrêt ANTICIPÉ : pas de crédit (l'intégration réelle fait foi) — hygiène.
+      // feature-075 (P4) : SAUF marche d'assistant — crédit majorant prorata
+      // (intégration par tick sautée sous suspension, cf. cas pH).
+      flowAssistCreditAbortedRun(/*isPh=*/false, manualInjectOrp, now);
       manualInjectOrp.startCumulMl = 0.0f;
       manualInjectOrp.creditMl = 0.0f;
       systemLogger.critical("[Injection] ORP INTERROMPUE — filtration arrêtée (sécurité chimique)");
@@ -371,6 +554,9 @@ void setupControlRoutes(AsyncWebServer* server) {
   // horaire, cycles/jour, anti-rafale) → 409 JSON structuré en cas de refus.
   server->on("/ph/inject/start", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
+    // feature-075 : refus PRÉCOCE (avant toute mutation) pendant l'assistant
+    // de mesure du débit — cf. flowAssistAllowsManualInjectOrReject (P4).
+    if (!flowAssistAllowsManualInjectOrReject(req)) return;
     int pumpIdx = mqttCfg.phPump - 1;
     // W3 : débit/duty issus des SEULS points mesurés (pesée ou 255) — jamais
     // d'interpolation. plan.ok garantit flow > 0 (les gardes volumeMl/flow et
@@ -467,6 +653,9 @@ void setupControlRoutes(AsyncWebServer* server) {
   // horaire, cycles/jour, anti-rafale) → 409 JSON structuré en cas de refus.
   server->on("/orp/inject/start", HTTP_POST, [](AsyncWebServerRequest *req) {
     REQUIRE_AUTH(req, RouteProtection::WRITE);
+    // feature-075 : refus PRÉCOCE (avant toute mutation) pendant l'assistant
+    // de mesure du débit — cf. flowAssistAllowsManualInjectOrReject (P4).
+    if (!flowAssistAllowsManualInjectOrReject(req)) return;
     int pumpIdx = mqttCfg.orpPump - 1;
     // W3 : cf. route pH — débit/duty issus des seuls points mesurés.
     ManualInjectPlan plan = planManualInject(pumpIdx);
@@ -671,6 +860,179 @@ void setupControlRoutes(AsyncWebServer* server) {
     wsManager.requestConfigBroadcast();  // resync UI (pattern bug-sync)
     req->send(200, "application/json",
               String("{\"external_state\":") + (running ? "true" : "false") + "}");
+  });
+
+  // ==========================================================================
+  // feature-075 : assistant de mesure du débit des pompes doseuses
+  // ==========================================================================
+  // POST /flow-assist/start?pump=1|2&phase=purge|measure (corps OU query)
+  // Ouvre/rejoint la session (une seule pompe à la fois), suspend le dosage
+  // automatique+programmé (setFlowAssistSuspend), et lance une marche MINUTÉE
+  // SERVEUR par le chemin manualInject* existant. Duty et durée FIXÉS SERVEUR,
+  // jamais acceptés du client (interdit brief) :
+  //   - purge  : duty 255 / kFlowAssistPurgeDurationS (eau claire → circuit normal) ;
+  //   - mesure : amplitude d'exploitation / kFlowAssistMeasureDurationS.
+  // TOUTES les gardes d'injection manuelle s'appliquent (manualInjectGuardOrReject :
+  // watchdog, présence d'eau, stabilisation, double start, limites journalière/
+  // horaire, cycles/jour, anti-rafale) avec le volume MAJORANT flow255 × durée —
+  // la marche est CRÉDITÉE au registre de sécurité (condition gate 6) par le
+  // crédit-plancher à échéance (creditManualInjectionFloor), seul mécanisme
+  // actif sous suspension (cf. flowAssistStopRun pour la démonstration).
+  server->on("/flow-assist/start", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+
+    // --- Paramètres (corps form-urlencoded, fallback query) ---
+    auto* pPump = req->getParam("pump", true);
+    if (!pPump) pPump = req->getParam("pump");
+    auto* pPhase = req->getParam("phase", true);
+    if (!pPhase) pPhase = req->getParam("phase");
+    const int pumpNum = pPump ? pPump->value().toInt() : 0;
+    String phaseStr = pPhase ? pPhase->value() : String();
+    phaseStr.toLowerCase();
+    const bool isPurge = (phaseStr == "purge");
+    if ((pumpNum != 1 && pumpNum != 2) || (!isPurge && phaseStr != "measure")) {
+      req->send(400, "application/json",
+                "{\"error\":\"invalid_param\",\"message\":\"Paramètres requis : pump=1|2 et phase=purge|measure.\"}");
+      return;
+    }
+    const int pumpIdx = pumpNum - 1;
+    const FlowAssistPhase phase = isPurge ? FlowAssistPhase::kPurge
+                                          : FlowAssistPhase::kMeasure;
+
+    // --- Verrou « une pompe à la fois » ---
+    if (sFlowAssist.active && sFlowAssist.pumpIdx != pumpIdx) {
+      req->send(409, "application/json",
+                "{\"error\":\"assist_busy\",\"message\":\"Un assistant de mesure est déjà en cours sur l'autre pompe.\"}");
+      return;
+    }
+    // Toute requête de l'assistant réarme le timeout de session — y compris un
+    // start REFUSÉ plus bas (l'utilisateur est manifestement devant l'écran).
+    if (sFlowAssist.active) sFlowAssist.lastTouchMs = (uint32_t)millis();
+
+    // --- Verdict pur (quota de purges, marche déjà en cours) ---
+    const bool isPh = flowAssistPumpIsPh(pumpIdx);
+    ManualInjectState& mi = isPh ? manualInjectPh : manualInjectOrp;
+    const uint8_t purgesDone = sFlowAssist.active ? sFlowAssist.purgesDone : 0;
+    FlowAssistRefusal verdict = canStartFlowAssistPhase(
+        phase, purgesDone, kFlowAssistMaxPurgesPerSession,
+        /*sessionActive=*/true /* start ouvre la session */, mi.active);
+    if (verdict == FlowAssistRefusal::kPumpBusy) {
+      req->send(409, "application/json",
+                "{\"error\":\"already_injecting\",\"message\":\"Une marche de pompe est déjà en cours — l'arrêter avant d'en relancer une.\"}");
+      return;
+    }
+    if (verdict == FlowAssistRefusal::kPurgeQuota) {
+      req->send(409, "application/json",
+                "{\"error\":\"purge_limit\",\"message\":\"Quota de purges de la session atteint (3) — passez à la suite ou quittez l'assistant.\"}");
+      return;
+    }
+
+    // --- Duty/durée FIXÉS SERVEUR ---
+    uint8_t duty;
+    uint32_t durS;
+    if (isPurge) {
+      duty = MAX_PWM_DUTY;                      // 255 : seul débit connu hors calibration
+      durS = kFlowAssistPurgeDurationS;
+    } else {
+      duty = PumpController.getPumpAmplitudeDuty(pumpIdx);  // amplitude EXACTE d'exploitation
+      durS = kFlowAssistMeasureDurationS;
+      if (duty == 0) {
+        req->send(409, "application/json",
+                  "{\"error\":\"invalid_amplitude\",\"message\":\"Amplitude d'exploitation nulle — mesure impossible.\"}");
+        return;
+      }
+    }
+
+    // --- Crédit de sécurité au MAJORANT (P4 : jamais zéro sur pompe alimentée).
+    // flow255 majore le débit réel à tout duty ≤ 255 : le registre journalier ne
+    // sous-compte jamais, et la garde daily_limit évalue ce majorant (le coût
+    // budget est annoncé à l'utilisateur en étape 1 de l'assistant). ---
+    const float creditMl = flowAssistFlow255(pumpIdx) * (float)durS / 60.0f;
+
+    // --- Gardes COMPLÈTES du chemin manuel (présence d'eau incluse) ---
+    if (!manualInjectGuardOrReject(req, isPh, creditMl, (int)durS)) return;
+
+    // --- Acceptée : cycle manuel comptabilisé, suspension posée, marche armée ---
+    PumpController.requestManualCycleRecord(isPh ? 0 : 1);
+    PumpController.setFlowAssistSuspend(true);
+    PumpController.setManualPump(pumpIdx, duty);
+    mi.active = true;
+    mi.startMs = millis();
+    mi.durationMs = (unsigned long)durS * 1000UL;
+    mi.requestedVolumeMl = creditMl;
+    // Crédit plancher à échéance (patron /ph|orp/inject/start) : cumul au départ
+    // + volume promis, consommés à la fin NATURELLE en loopTask. Sous suspension
+    // c'est LE mécanisme de crédit (comptabilité par tick sautée).
+    mi.startCumulMl = isPh ? safetyLimits.dailyPhInjectedMl
+                           : safetyLimits.dailyOrpInjectedMl;
+    mi.creditMl = creditMl;
+
+    if (!sFlowAssist.active) {
+      sFlowAssist.active = true;
+      sFlowAssist.pumpIdx = pumpIdx;
+      sFlowAssist.purgesDone = 0;
+      systemLogger.info("[Assistant débit] Session ouverte (pompe " + String(pumpNum) +
+                        ") — dosage automatique suspendu");
+    }
+    if (isPurge) sFlowAssist.purgesDone++;
+    sFlowAssist.phase = phase;
+    sFlowAssist.runOwned = true;
+    sFlowAssist.aborted = false;  // réarmement : nouvelle marche, ancien signalement caduc
+    sFlowAssist.lastTouchMs = (uint32_t)millis();
+
+    const int purgesLeft = (sFlowAssist.purgesDone >= kFlowAssistMaxPurgesPerSession)
+                               ? 0 : (int)(kFlowAssistMaxPurgesPerSession - sFlowAssist.purgesDone);
+    systemLogger.info(String("[Assistant débit] ") + (isPurge ? "Purge" : "Mesure") +
+                      " démarrée : pompe " + String(pumpNum) + ", " + String(durS) +
+                      " s, duty " + String(duty) + ", crédit majorant " +
+                      String(creditMl, 1) + " mL");
+    req->send(200, "application/json",
+              String("{\"duration_s\":") + String(durS) + ",\"phase\":\"" +
+              (isPurge ? "purge" : "measure") + "\",\"purges_left\":" +
+              String(purgesLeft) + "}");
+  });
+
+  // POST /flow-assist/stop : arrêt anticipé de la marche en cours (la SESSION
+  // est conservée — suspension maintenue, l'utilisateur reste dans l'assistant).
+  // Crédit prorata au majorant via flowAssistStopRun (P4, cf. commentaire).
+  server->on("/flow-assist/stop", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+    bool stopped = false;
+    if (sFlowAssist.active) {
+      sFlowAssist.lastTouchMs = (uint32_t)millis();
+      stopped = flowAssistStopRun();
+      if (stopped) sFlowAssist.runOwned = false;  // marche close (crédit déjà armé)
+    }
+    int purgesLeft = (int)kFlowAssistMaxPurgesPerSession;
+    if (sFlowAssist.active) {
+      purgesLeft = (sFlowAssist.purgesDone >= kFlowAssistMaxPurgesPerSession)
+                       ? 0 : (int)(kFlowAssistMaxPurgesPerSession - sFlowAssist.purgesDone);
+    }
+    req->send(200, "application/json",
+              String("{\"stopped\":") + (stopped ? "true" : "false") +
+              ",\"purges_left\":" + String(purgesLeft) + "}");
+  });
+
+  // POST /flow-assist/exit : arrêt de la marche éventuelle + LEVÉE de la
+  // suspension + fermeture de la session (sortie normale, Annuler, Terminer).
+  // Idempotent : sans session, ne fait que confirmer le rétablissement.
+  server->on("/flow-assist/exit", HTTP_POST, [](AsyncWebServerRequest *req) {
+    REQUIRE_AUTH(req, RouteProtection::WRITE);
+    if (sFlowAssist.active) {
+      flowAssistStopRun();  // crédit prorata armé, consommé en loopTask
+      systemLogger.info("[Assistant débit] Session fermée (pompe " +
+                        String(sFlowAssist.pumpIdx + 1) +
+                        ") — dosage automatique rétabli");
+    }
+    // INVARIANT (re-revue) : session fermée AVANT la levée de la suspension —
+    // la réconciliation fail-closed de updateManualInject (session active sans
+    // suspension → re-suspend) s'exécute en loopTask (autre cœur) : dans
+    // l'ordre inverse, elle pourrait s'intercaler entre la levée et le reset,
+    // re-poser la suspension, puis le reset effacerait la session → suspension
+    // collée définitivement (le timeout exige active, plus rien ne la lève).
+    sFlowAssist = FlowAssistSession{};
+    PumpController.setFlowAssistSuspend(false);
+    req->send(200, "application/json", "{\"exited\":true}");
   });
 }
 

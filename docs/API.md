@@ -242,6 +242,17 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
   "orp_daily_ml": 120.5,
   "ph_limit_reached": false,
   "orp_limit_reached": false,
+  "flow_assist": {
+    "active": false,
+    "pump": 0,
+    "phase": "",
+    "remaining_s": 0,
+    "aborted": false,
+    "purges_left": 3,
+    "purge_s": 60,
+    "measure_s": 120,
+    "flow255": [61.0, 67.0]
+  },
   "ph_tracking_enabled": true,
   "ph_remaining_ml": 1500,
   "ph_alert_threshold_ml": 500,
@@ -272,6 +283,19 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 > Getters `PumpController` lecture seule, fail-closed sur index invalide — aucun chemin de dosage touché. Buffer `/data` porté de 1536 à **1792** octets. Consommateur : statut dosage des cartes pH/ORP du tableau de bord ([page-dashboard.md](features/page-dashboard.md#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211)).
 >
 > **v2.21.2 (bug-slope-boot-perdue) — pente sonde pH, parité de transport** : les 4 champs `phSlopeAcid` / `phSlopeBase` / `phSlopeZero` / `phSlopeAgeMs` sont **ajoutés à `/data`**. La trame WS `sensor_data` les portait **déjà** depuis feature-024 — c'est `/data` qui rattrape : un client sans WS (poll seul) ne pouvait jamais afficher la santé de sonde. Mêmes règles que le WS (voir le tableau feature-024 de la section [WS /ws](#ws-ws--write)) : pentes arrondies à **1 décimale**, zéro à **2 décimales** (mV), `null` si jamais lu ou invalidé (NaN) ; `phSlopeAgeMs` `null` si aucune `Slope,?` n'a jamais réussi. Lecture **cache uniquement** (zéro I²C dans le chemin async). Buffer `/data` porté de 1792 à **1920** octets.
+>
+> **feature-075 (v2.24.0) — objet `flow_assist`** : instantané **lecture seule** de la session de l'[assistant de mesure du débit](#assistant-de-mesure-du-débit-des-pompes-feature-075-v2240) (pas de champ WS — l'UI n'interroge `/data` qu'aux échéances de ses comptes à rebours, aucun nouveau rythme réseau). Buffer `/data` porté de 1920 à **2304** octets.
+>
+> | Champ | Type | Description |
+> |-------|------|-------------|
+> | `active` | boolean | Session d'assistant ouverte → dosage automatique **suspendu** et injections manuelles classiques refusées (`409 assist_active`). |
+> | `pump` | integer | Pompe **physique** en assistant (1\|2), `0` si aucune session. |
+> | `phase` | string | Marche en cours : `"purge"` \| `"measure"`, `""` pompe à l'arrêt. |
+> | `remaining_s` | integer | Secondes restantes de la marche en cours (`0` sinon) — resynchronisation du compte à rebours client. |
+> | `aborted` | boolean | La **dernière** marche a été interrompue **par le serveur** (perte de filtration). L'UI ne doit **jamais** router une mesure avortée vers la saisie du volume (débit sous-estimé → sur-injection). Réarmé à `false` au `start` suivant. |
+> | `purges_left` | integer | Purges restantes dans la session (max 3, `kFlowAssistMaxPurgesPerSession`). |
+> | `purge_s` / `measure_s` | integer | Durées **servies** (60 s / 120 s) — l'UI paramètre ses libellés dessus, pas de miroir en dur. |
+> | `flow255` | array[2] | Débits **majorants** mesurés à duty 255 (ml/min, `[0]` = pompe 1, `[1]` = pompe 2) — permet à l'UI d'annoncer le coût budget des marches sans constante dupliquée. |
 >
 > **feature-021** : `ph` est désormais publié avec **3 décimales** (vs 1 décimale en v1.x). Champs `phCalPoints` (`-1..3`) et `orpCalPoints` (`-1..1`) ajoutés. Champs **supprimés** de la réponse `/data` : `orp_raw`, `ph_raw`, `ph_voltage_mv`, `temperature_raw` (la notion de « valeur brute » n'a pas de sens côté Atlas EZO — la valeur est déjà calibrée par le module). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md).
 >
@@ -480,9 +504,11 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "orp_pump": 2,
   "pump2_max_duty_pct": 50,
   "pump1_calibrated_duty": 127,
-  "pump1_pulse_flow_ml_per_min": 25.0,
+  "pump1_pulse_flow_ml_per_min": 28.0,
+  "pump1_flow_weighed": false,
   "pump2_calibrated_duty": 0,
   "pump2_pulse_flow_ml_per_min": 0,
+  "pump2_flow_weighed": false,
   "ph_limit_minutes": 5,
   "orp_limit_minutes": 10,
   "max_cycles_per_day": 24,
@@ -525,11 +551,12 @@ Champs notables de la réponse :
 | `ph_limit_minutes` | integer | Durée max d'injection pH par fenêtre glissante d'1 h (minutes, 1–60) |
 | `orp_limit_minutes` | integer | Durée max d'injection ORP par fenêtre glissante d'1 h (minutes, 1–60) |
 | `max_cycles_per_day` | integer | Limite anti-cycling (garde 9, feature-060, v2.12.0) : démarrages de dosage max **par pompe et par jour**, compteur partagé régulation auto + injections manuelles. Défaut **24** (était 48 — abaissé en v2.20.5, cf. [pump-controller.md](subsystems/pump-controller.md#limite-de-cyclesjour-configurable-garde-9-feature-060-v2120)). Bornes dures **10–60** clampées côté serveur (voir la table de validation `/save-config` ci-dessous). Persisté en NVS (`max_cycles_day`) — le nouveau défaut **ne s'applique donc pas** à un appareil déjà provisionné, aucune migration n'écrase la valeur enregistrée. |
-| `pump1_max_duty_pct` | integer | **v2.21.0** ([ADR-0043](adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)) : **amplitude** du plateau d'impulsion pompe 1 (duty commandé pendant un pouls = `pct × 255/100`), borné **[40–100] %** côté serveur (`kPumpAmpMinPct` — sous 40 % la pompe cale). N'est plus un clamp PWM appliqué en sortie de régulation. |
-| `pump2_max_duty_pct` | integer | Idem pompe 2, borné **[40–100] %**. |
-| `pump1_calibrated_duty` | integer | **v2.21.0** — duty auquel le débit de la pompe 1 a été **pesé** (`0` = jamais caractérisée → **dosage automatique/programmé REFUSÉ**, fail-closed). Persisté NVS `p1_cal_duty`. |
-| `pump1_pulse_flow_ml_per_min` | float | **v2.21.0** — débit **mesuré** (mL/min) au duty calibré, pompe 1 (pesée 120 s recommandée). Persisté NVS `p1_pulse_flow`. |
+| `pump1_max_duty_pct` | integer | **v2.21.0** ([ADR-0043](adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)) : **amplitude** du plateau d'impulsion pompe 1 (duty commandé pendant un pouls = `pct × 255/100`), borné **[40–100] %** côté serveur (`kPumpAmpMinPct` — sous 40 % la pompe cale). N'est plus un clamp PWM appliqué en sortie de régulation. **v2.23.0** ([ADR-0047](adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md)) : **gelé à 50 % côté UI** (curseur retiré, le frontend ne l'envoie plus) — modifiable **par API seule**. |
+| `pump2_max_duty_pct` | integer | Idem pompe 2. |
+| `pump1_calibrated_duty` | integer | **v2.21.0** — duty auquel le débit de la pompe 1 s'applique. **v2.23.0** : le défaut usine n'est plus `0` mais **127** (calibration de type, `kPumpTypeCalDuty`) — `0` ne subsiste que par **effacement explicite** ou **clé NVS héritée à 0** et reste fail-closed (**dosage automatique/programmé REFUSÉ**). Persisté NVS `p1_cal_duty` (clé absente = défaut de type). |
+| `pump1_pulse_flow_ml_per_min` | float | **v2.21.0** — débit (mL/min) au duty calibré, pompe 1. **v2.23.0** : défaut usine **28.0** (calibration de type, `kPumpTypePulseFlowMlPerMin`) ; une pesée individuelle (120 s recommandée) le remplace. Persisté NVS `p1_pulse_flow`. |
 | `pump2_calibrated_duty` / `pump2_pulse_flow_ml_per_min` | int / float | Idem pompe 2 (NVS `p2_cal_duty` / `p2_pulse_flow`). |
+| `pump1_flow_weighed` / `pump2_flow_weighed` | boolean | **v2.23.0** ([ADR-0047](adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md)) — provenance du débit : `false` = **valeur usine** (calibration de type du modèle de pompe), `true` = **pesée individuelle** de CETTE pompe. **Purement informatif** (indication « valeur usine / pesé » de l'UI) — aucun gate de dosage ne s'y fie. Persisté NVS `p1/p2_flow_weighed` ; rabattu à `false` par l'effacement et par la garde de plausibilité au chargement NVS. **Parité trame WS `config` (correctif on-target v2.23.0)** : les 6 champs de caractérisation (`pumpN_calibrated_duty`, `pumpN_pulse_flow_ml_per_min`, `pumpN_flow_weighed`) sont présents **à l'identique** dans la trame WebSocket `config` — ils en étaient absents à la livraison initiale et le premier push écrasait l'affichage de la calibration côté UI (clé absente interprétée comme zéro). Voir [ws-manager.md](subsystems/ws-manager.md#champs-config-ajoutés-en-v2230--caractérisation-des-pompes-feature-074-correctif-on-target). |
 | `ph_regulation_mode` | string | Mode de régulation pH : `"automatic"` (PID vers ph_target), `"scheduled"` (volume quotidien réparti sur 24 h), `"manual"` (aucune régulation automatique) |
 | `ph_daily_target_ml` | integer | Volume quotidien cible en mL pour le mode Programmée pH (0 = désactivé, borné par `max_ph_ml_per_day`) |
 | `ph_enabled` | boolean | Miroir dérivé de `ph_regulation_mode` : `true` si mode ≠ `"manual"`. Maintenu pour compatibilité MQTT / HA. |
@@ -587,17 +614,17 @@ Champs notables de la réponse :
 |-------|------|------------|
 | `max_cycles_per_day` | integer | Toute valeur hors bornes est **silencieusement clampée côté serveur** dans **[10, 60]** (`clampCyclesPerDay`, bornes `kCyclesPerDayMin` / `kCyclesPerDayMax` de [`constants.h`](../src/constants.h)) : la requête retourne 200, la valeur **clampée** est appliquée et persistée, et un `WARN` est journalisé (`max_cycles_per_day hors bornes : X → Y`). Le pré-clamp `min`/`max` du champ UI est purement indicatif — le serveur fait autorité. Toute modification effective est également journalisée en `WARN` (ancienne → nouvelle valeur). |
 
-**`POST /save-config` — calibration des pompes doseuses (v2.21.0, [ADR-0043](adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)) :**
+**`POST /save-config` — calibration des pompes doseuses (v2.21.0, [ADR-0043](adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md) ; sémantique v2.23.0, [ADR-0047](adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md)) :**
 
 | Champ | Type | Validation |
 |-------|------|------------|
-| `pump1_max_duty_pct` / `pump2_max_duty_pct` | integer | Clampés côté serveur dans **[40, 100]** (`kPumpAmpMinPct` — le plateau d'impulsion ne descend jamais sous le seuil de rotation ; le `min` HTML du slider ne suffit pas). |
-| `pump1_calibrated_duty` / `pump2_calibrated_duty` | integer | **`0`** (= effacer la calibration : le débit associé est remis à 0, la pompe redevient non caractérisée, dosage auto refusé) **ou [102–255]** (102 = 40 % × 255). Hors plage → **HTTP 400** explicite (patron `ph_offset` : **jamais d'écrêtage silencieux** — écrêter une pesée fausserait la comptabilité de volume). Corps : `{"error":"Duty calibré invalide : 0 (effacer la calibration) ou une valeur entre 102 et 255"}`. |
-| `pump1_pulse_flow_ml_per_min` / `pump2_pulse_flow_ml_per_min` | float | **]0 – 200]** mL/min (`kPulseFlowMaxMlPerMin`, plausibilité d'une doseuse de piscine — même garde qu'au chargement NVS). Hors plage / non fini → **HTTP 400** : `{"error":"Débit mesuré invalide : la valeur doit être supérieure à 0 et au plus 200 ml/min"}`. Ignoré si `pN_calibrated_duty: 0` est envoyé dans la même requête (l'effacement prime). |
+| `pump1_max_duty_pct` / `pump2_max_duty_pct` | integer | Clampés côté serveur dans **[40, 100]** (`kPumpAmpMinPct` — le plateau d'impulsion ne descend jamais sous le seuil de rotation). **Résidu rétrocompat v2.23.0** : le frontend embarqué **n'envoie plus** ces clés (amplitude gelée, curseur retiré, champ purgé des DEUX payloads de save — immunité anti-onglets-périmés), mais le serveur les accepte toujours d'un client périmé ou d'un appel API direct. |
+| `pump1_calibrated_duty` / `pump2_calibrated_duty` | integer | **`0`** (= effacer la calibration : le débit associé est remis à 0, `weighed` repasse à `false`, la pompe redevient non caractérisée, dosage auto refusé) **ou [102–255]** (102 = 40 % × 255). Hors plage → **HTTP 400** explicite (patron `ph_offset` : **jamais d'écrêtage silencieux** — écrêter une pesée fausserait la comptabilité de volume). Corps : `{"error":"Duty calibré invalide : 0 (effacer la calibration) ou une valeur entre 102 et 255"}`. **v2.23.0** : le frontend n'envoie plus cette clé (formulaire à champ unique) — **résidu rétrocompat** : un duty explicite non nul reste accepté (vieux client) et pose **aussi** `weighed = true` (assumé : le drapeau est informatif, aucun gate ne s'y fie). |
+| `pump1_pulse_flow_ml_per_min` / `pump2_pulse_flow_ml_per_min` | float | **]0 – 200]** mL/min (`kPulseFlowMaxMlPerMin`, plausibilité d'une doseuse de piscine — même garde qu'au chargement NVS). Hors plage / non fini → **HTTP 400** : `{"error":"Débit mesuré invalide : la valeur doit être supérieure à 0 et au plus 200 ml/min"}`. Ignoré si `pN_calibrated_duty: 0` est envoyé dans la même requête (l'effacement prime). **v2.23.0** : un débit valide reçu **SANS** clé duty est une **pesée à l'amplitude courante** — le serveur déduit `cal_duty = pumpN_max_duty_pct × 255 / 100` (∈ [102..255] par construction, l'amplitude étant clampée [40..100] plus haut dans le même handler) et pose `pumpN_flow_weighed = true`. |
 
-Chaque pesée acceptée est journalisée en `INFO` (`Pesée pompe N enregistrée : duty X, débit Y ml/min`), chaque effacement en `WARN` (`Calibration pompe N effacée — pompe non caractérisée (dosage auto refusé)`).
+Journal : pesée avec duty explicite → `INFO Pesée pompe N enregistrée : duty X, débit Y ml/min` ; pesée à duty déduit (v2.23.0) → `INFO Pesée pompe N enregistrée : duty X (déduit de l'amplitude P %), débit Y ml/min` ; effacement → `WARN Calibration pompe N effacée — pompe non caractérisée (dosage auto refusé)`.
 
-> ⚠️ **Retiré en v2.21.0** : le champ `pump_max_flow_ml_per_min` **n'existe plus** dans `/get-config` ni `/save-config` (suppression du modèle linéaire duty↔débit, [ADR-0043](adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)). Un client qui l'envoie encore est **ignoré silencieusement** (aucun champ cible). La clé NVS `pump_max_flow` est purgée à la première sauvegarde, **sans conversion** vers les nouvelles clés : aucune valeur issue du modèle faux n'est reprise — la pesée par pompe fait foi. Tant qu'aucune pesée n'est saisie, `pumpN_calibrated_duty` vaut `0` et **le dosage automatique/programmé de cette pompe est refusé** (badge « Débit non caractérisé — pesée requise » + `CRITICAL` throttlé).
+> ⚠️ **Retiré en v2.21.0** : le champ `pump_max_flow_ml_per_min` **n'existe plus** dans `/get-config` ni `/save-config` (suppression du modèle linéaire duty↔débit, [ADR-0043](adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)). Un client qui l'envoie encore est **ignoré silencieusement** (aucun champ cible). La clé NVS `pump_max_flow` est purgée à la première sauvegarde, **sans conversion** vers les nouvelles clés : aucune valeur issue du modèle faux n'est reprise. **v2.23.0 ([ADR-0047](adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md))** : un appareil **vierge** (clés NVS absentes) reçoit la **calibration de type** (127 / 28,0 mL/min) et dose au premier flash ; seul `pumpN_calibrated_duty` **présent à 0** (effacement explicite / NVS hérité jamais calibré) reste fail-closed — **dosage automatique/programmé refusé** (badge « Débit non caractérisé — pesée requise » + `CRITICAL` throttlé).
 
 > ⚠️ **Retirés en v2.19.0 (feature-056)** : les champs `regulation_mode` et `filtration_enabled` **n'existent plus** dans `/get-config` ni `/save-config`. Ils sont fusionnés dans `install_mode` (voir [ADR-0026](adr/0026-mode-installation.md)). La migration NVS est automatique — voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md).
 
@@ -1017,6 +1044,7 @@ Format du corps (`application/json`) :
 | `max_cycles` | Cycles/jour atteints (`maxCyclesPerDay = 20`, compteur partagé auto + manuel) | — |
 | `burst_limit` | Anti-rafale : ≥ 6 démarrages/min OU ≥ 20 démarrages/15 min (ring partagé auto + manuel) | — |
 | `flow_uncharacterized` | **v2.21.0** — aucun débit **connu** pour cette injection volumée : duty calibré posé mais débit pesé invalide (état incohérent, normalement impossible — gardes `/save-config` + assainissement NVS). Évalué **avant** les gardes `evaluateManualInject`. Message : « Débit de la pompe non caractérisé — effectuez la pesée (Réglages → Avancé → Configuration des pompes) avant une injection volumée. » Émet un `critical` `[Sécurité] Injection pH\|ORP manuelle refusée : débit non caractérisé (pesée requise)`. | — |
+| `assist_active` | **v2.24.0 (feature-075, contre-visite gate)** — une session de l'[assistant de mesure du débit](#assistant-de-mesure-du-débit-des-pompes-feature-075-v2240) est ouverte : les injections manuelles classiques sont refusées sur **les deux chimies** tant qu'elle dure. Motif : sous suspension flow-assist, l'intégration du volume par tick est sautée — une injection classique interrompue par perte de filtration serait créditée **0** au registre journalier (violation P4). Refus **précoce** (avant toute mutation, avant même `planManualInject`). Message : « Mesure du débit en cours — réessayez après la fin de l'assistant. » Les routes de test `/pumpN/on?duty=` ne sont **pas** concernées (pas de crédit plancher). | — |
 
 Le volume/durée évalués sont ceux **réellement injectés** (post-plafonnement `kManualInjectMaxDurationS`), pas la demande brute. Chaque refus émet un log `critical` `[Sécurité] Injection pH|ORP manuelle refusée : …`. Détail des gardes : [docs/subsystems/pump-controller.md](subsystems/pump-controller.md#gardes-des-injections-manuelles-feature-006).
 
@@ -1171,6 +1199,84 @@ curl -u admin:monmotdepasse -X POST "http://poolcontroller.local/reset-sensor-fi
 - `500` : `{"error":"queue_failed"}` — aucun filtre demandé (ne devrait pas survenir)
 
 Voir [`docs/subsystems/sensors.md`](subsystems/sensors.md#réarmement-manuel-par-capteur-v2203) et [`docs/features/page-ph.md`](features/page-ph.md#bouton--réarmer-le-filtre-ph--v2203).
+
+---
+
+## Assistant de mesure du débit des pompes (feature-075, v2.24.0)
+
+Trois routes servent l'assistant guidé « Mesure du débit » (Réglages → Avancé, voir [page-settings.md](features/page-settings.md#assistant--mesure-du-débit--feature-075-v2240)). Principes de sécurité **non négociables** :
+
+- **Minuterie côté serveur** : chaque marche de pompe (purge, mesure) est bornée par le firmware — si l'onglet se ferme ou le WiFi tombe, la pompe s'arrête seule à l'échéance. L'arrêt ne dépend **jamais** du navigateur.
+- **Duty et durée fixés serveur, jamais acceptés du client** : purge à duty **255** (seul débit connu hors calibration — borne le volume résiduel poussé au bassin) pendant `kFlowAssistPurgeDurationS` = 60 s ; mesure à l'**amplitude exacte d'exploitation** (`getPumpAmplitudeDuty`) pendant `kFlowAssistMeasureDurationS` = 120 s.
+- **Suspension du dosage automatique et programmé** (les deux chimies) pendant la session, rétablie à la sortie — avec **timeout serveur** `kFlowAssistSuspendTimeoutMs` = **15 min sans requête** (réconciliation fail-closed au tick, voir [pump-controller.md](subsystems/pump-controller.md#suspension--assistant-de-mesure-du-débit--feature-075-v2240)).
+- **Toutes les gardes d'injection manuelle s'appliquent** (`evaluateManualInject` : watchdog, présence d'eau, stabilisation, double start, limites journalière/horaire, cycles/jour, anti-rafale) avec le volume **majorant** `flow255 × durée`. La marche est **créditée** au registre journalier (crédit-plancher à échéance ; arrêt anticipé ou perte de filtration → crédit **prorata au majorant**, jamais zéro sur une pompe alimentée — P4). Chaque marche compte un cycle (`requestManualCycleRecord`).
+- **Une seule pompe en assistant à la fois** ; le véhicule d'exécution est le chemin `manualInject*` existant — aucune nouvelle mécanique de pompe.
+
+### POST /flow-assist/start — WRITE
+
+Ouvre (ou rejoint) la session d'assistant et lance une marche minutée serveur. Paramètres en corps `form-urlencoded` **ou** query string :
+
+| Paramètre | Valeurs | Rôle |
+|-----------|---------|------|
+| `pump` | `1` \| `2` | Pompe **physique** |
+| `phase` | `purge` \| `measure` | Type de marche (duty/durée déduits côté serveur — voir ci-dessus) |
+
+```bash
+curl -u admin:monmotdepasse -X POST -d "pump=1&phase=purge" \
+  http://poolcontroller.local/flow-assist/start
+```
+
+**Réponse 200**
+
+```json
+{ "duration_s": 60, "phase": "purge", "purges_left": 2 }
+```
+
+**Erreurs**
+
+- `400` : `{"error":"invalid_param"}` — `pump` ou `phase` absent/invalide
+- `401` : token manquant / invalide
+- `409` — corps JSON structuré `{"error":"…","message":"…"}` :
+
+| `error` | Déclencheur |
+|---------|-------------|
+| `assist_busy` | Une session est déjà ouverte sur **l'autre** pompe (une seule pompe à la fois) |
+| `purge_limit` | Quota de purges de la session atteint (`kFlowAssistMaxPurgesPerSession` = 3) |
+| `already_injecting` | Une marche de pompe est déjà en cours sur cette chimie |
+| `invalid_amplitude` | Amplitude d'exploitation nulle (`phase=measure` uniquement) — mesure impossible |
+| *(codes des gardes manuelles)* | `watchdog_inactive`, `filtration_off`, `stabilization_in_progress`, `daily_limit`, `hourly_limit`, `max_cycles`, `burst_limit`, `maintenance_mode` — mêmes codes que [`/ph/inject/start`](#codes-de-refus-409-v260), évalués sur le volume majorant |
+
+Chaque requête `/flow-assist/*` **réarme le timeout de session** (15 min). Un `start` accepté réarme aussi le drapeau `aborted` de `/data` à `false`.
+
+### POST /flow-assist/stop — WRITE
+
+Arrêt **anticipé** de la marche en cours (coupe-circuit opérateur — jamais gardé). La **session est conservée** : suspension du dosage maintenue, l'utilisateur reste dans l'assistant. Le volume est crédité **prorata au majorant** (`flow255 × temps écoulé`). Idempotent (aucune marche → `stopped: false`).
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/flow-assist/stop
+```
+
+**Réponse 200**
+
+```json
+{ "stopped": true, "purges_left": 2 }
+```
+
+### POST /flow-assist/exit — WRITE
+
+Sortie de l'assistant (Annuler, Terminer, sortie normale) : arrêt de la marche éventuelle (crédit prorata), **fermeture de la session puis levée de la suspension** — dans cet ordre, invariant anti-course (voir [pump-controller.md](subsystems/pump-controller.md#suspension--assistant-de-mesure-du-débit--feature-075-v2240)). Idempotent : sans session, ne fait que confirmer le rétablissement.
+
+```bash
+curl -u admin:monmotdepasse -X POST http://poolcontroller.local/flow-assist/exit
+```
+
+**Réponse 200**
+
+```json
+{ "exited": true }
+```
+
+> L'**état de la session** est exposé en lecture seule par l'objet [`flow_assist` de `GET /data`](#get-data--write) (phase, secondes restantes, purges restantes, drapeau `aborted`, durées et débits majorants servis). L'**enregistrement du débit mesuré** ne passe pas par ces routes : l'UI convertit le volume lu en ml/min et l'envoie par le chemin `POST /save-config` existant (clé `pumpN_pulse_flow_ml_per_min`, feature-074 — duty déduit côté serveur, drapeau « mesuré » posé).
 
 ---
 
