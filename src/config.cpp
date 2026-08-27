@@ -2,6 +2,7 @@
 #include "constants.h"
 #include "logger.h"
 #include "ph_offset.h"  // feature-067 : isPhOffsetValid() (logique pure)
+#include "ph_guard_logic.h"  // v2.25.0 : roundPhOffsetToStep() (logique pure)
 #include <Preferences.h>
 #include <time.h>
 
@@ -264,6 +265,62 @@ void loadMqttConfig() {
 
   // Régulation pH
   mqttCfg.phTarget = prefs.getFloat("ph_target", mqttCfg.phTarget);
+  // v2.25.0 — bornes de consigne pH appliquées AU CHARGEMENT (défense en
+  // profondeur : c'est ici qu'on détecte une NVS corrompue ou écrite par un
+  // firmware antérieur, le curseur de l'UI ne pouvant plus produire de valeur
+  // hors plage). Une installation existante peut porter en NVS une consigne hors
+  // [kPhTargetMin, kPhTargetMax] — firmware antérieur, ancienne commande MQTT qui
+  // clampait à 6,0-8,5, consigne héritée à 7,60 abaissée à 7,50 par cette
+  // refonte. On la CLAMPE et on la RÉÉCRIT immédiatement : une consigne trop
+  // basse conduit l'eau vers la zone corrosive, une consigne trop haute inhibe la
+  // régulation ORP en permanence (kPhOrpInhibit). Réécriture NVS tout de suite
+  // pour que l'anomalie ne resurgisse pas au prochain boot si aucune sauvegarde
+  // n'intervient d'ici là.
+  if (!isfinite(mqttCfg.phTarget) ||
+      mqttCfg.phTarget < kPhTargetMin || mqttCfg.phTarget > kPhTargetMax) {
+    const float rejected = mqttCfg.phTarget;
+    // Valeur non finie : on ne peut rien clamper de sensé → borne basse, qui est
+    // aussi la valeur par défaut de la structure.
+    mqttCfg.phTarget = isfinite(rejected)
+                           ? fminf(fmaxf(rejected, kPhTargetMin), kPhTargetMax)
+                           : kPhTargetMin;
+    const String clampMsg = "[Config] Consigne pH NVS hors plage (" +
+                            String(rejected, 2) + ") — ramenée à " +
+                            String(mqttCfg.phTarget, 2) + " (plage autorisée " +
+                            String(kPhTargetMin, 2) + " - " + String(kPhTargetMax, 2) +
+                            "). Vérifier le réglage de consigne pH.";
+    // Valeur finie hors plage = réglage hérité (typiquement 7,60 → 7,50) : c'est
+    // une migration attendue, pas un défaut. Valeur non finie = NVS réellement
+    // corrompue : là, on hurle.
+    if (isfinite(rejected)) {
+      systemLogger.warning(clampMsg);
+    } else {
+      systemLogger.critical(clampMsg);
+    }
+    prefs.end();
+    Preferences w;
+    if (w.begin("poolctrl", false)) {
+      w.putFloat("ph_target", mqttCfg.phTarget);
+      w.end();
+    } else {
+      systemLogger.critical("[Config] Réécriture NVS de la consigne pH impossible "
+                            "— clamp appliqué en RAM seulement (l'anomalie NVS "
+                            "reviendra au prochain boot)");
+    }
+    // Réouverture en lecture : son échec est SILENCIEUX par nature — tout le
+    // reste de loadMqttConfig() retomberait alors sur les défauts de structure
+    // (modes de régulation, limites de dosage, caractérisation des pompes…) sans
+    // que rien ne le signale. On continue malgré tout, car sortir ici sauterait
+    // sanitizePumpSelection() / ensureTimezoneValid() / applyTimezoneEnv() pour
+    // le MÊME jeu de défauts, en moins cohérent — mais on le dit fort.
+    if (!prefs.begin("poolctrl", true)) {
+      systemLogger.critical("[Config] Réouverture NVS en lecture ÉCHOUÉE après le "
+                            "clamp de la consigne pH — le reste de la configuration "
+                            "(régulation, limites de dosage, pompes) repart des "
+                            "VALEURS PAR DÉFAUT pour ce boot. Vérifier la NVS et "
+                            "redémarrer avant toute régulation automatique.");
+    }
+  }
   mqttCfg.phEnabled = prefs.getBool("ph_enabled", mqttCfg.phEnabled);
   mqttCfg.phPump = prefs.getInt("ph_pump", mqttCfg.phPump);
   // Migration NVS : ph_limit_sec (secondes) → ph_limit_min (minutes)
@@ -414,6 +471,25 @@ void loadMqttConfig() {
                          String(mqttCfg.phOffset, 2) + ") — remis à 0.00");
     mqttCfg.phOffset = 0.0f;
   }
+  // v2.25.0 — MIGRATION : l'offset devient un curseur au pas de kPhOffsetStep
+  // (0,1 pH). Une installation existante a pu enregistrer une valeur libre
+  // (0,47 saisie au clavier) : on l'arrondit au plus proche multiple du pas, ce
+  // qui déplace la correction de 0,05 pH au maximum, soit le bruit résiduel du
+  // filtre — aucun effet mesurable sur la régulation. Sans cet arrondi, le
+  // curseur afficherait une position qui ne correspond pas à la valeur appliquée.
+  // La réécriture NVS est DIFFÉRÉE après prefs.end() (voir plus bas) : rouvrir la
+  // partition en écriture au milieu de la lecture obligerait à refermer puis
+  // réouvrir `prefs`, dont l'échec silencieux ferait repartir tout le reste de la
+  // configuration sur les valeurs par défaut.
+  const float phOffsetRounded = roundPhOffsetToStep(mqttCfg.phOffset);
+  bool phOffsetNeedsRewrite = false;
+  if (phOffsetRounded != mqttCfg.phOffset) {
+    systemLogger.info("[Config] Migration offset pH au pas de " +
+                      String(kPhOffsetStep, 2) + " : " + String(mqttCfg.phOffset, 2) +
+                      " → " + String(phOffsetRounded, 2));
+    mqttCfg.phOffset = phOffsetRounded;
+    phOffsetNeedsRewrite = true;
+  }
 
   // Temps
   mqttCfg.timeUseNtp = prefs.getBool("time_use_ntp", mqttCfg.timeUseNtp);
@@ -500,6 +576,21 @@ void loadMqttConfig() {
   }
 
   prefs.end();
+
+  // v2.25.0 — réécriture différée de l'offset pH arrondi au pas (cf. plus haut).
+  // Faite APRÈS la fermeture du handle de lecture : aucune réouverture en lecture
+  // n'est nécessaire ensuite, donc aucun risque de repartir sur les défauts.
+  if (phOffsetNeedsRewrite) {
+    Preferences w;
+    if (w.begin("poolctrl", false)) {
+      w.putFloat("ph_offset", mqttCfg.phOffset);
+      w.end();
+    } else {
+      systemLogger.warning("[Config] Réécriture NVS de l'offset pH arrondi "
+                           "impossible — arrondi appliqué en RAM seulement "
+                           "(la migration sera rejouée au prochain boot)");
+    }
+  }
 
   sanitizePumpSelection();
   ensureTimezoneValid();

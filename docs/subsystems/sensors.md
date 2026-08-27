@@ -86,6 +86,13 @@ bool isOrpFilterReady()  const;
 bool isOrpFilterUnstable()  const;
 uint8_t getOrpRejectedCount()  const;
 
+// v2.25.1 — POURQUOI le filtre n'est pas prêt (observabilité, cf. « Prédicats
+// d'état du filtre »). État INTERNE composé par resolveFilterState() : priorité
+// pannes d'abord. Consommé par canDose() pour QUALIFIER la cause de refus,
+// JAMAIS pour décider du dosage. Ne jamais reconstruire depuis get*Raw().
+DoseFilterState getPhFilterState() const;
+DoseFilterState getOrpFilterState() const;
+
 // v2.20.6 — passerelles de diagnostic sur la dispersion (cf. « Observabilité de
 // la dispersion »). Amplitude (max−min) de la fenêtre médiane PLEINE, NaN sinon :
 // c'est la grandeur qui DÉCIDE du drapeau d'instabilité. Échelle brute (une
@@ -247,9 +254,11 @@ Module dédié **déterministe et testable hors matériel** ([`src/sensor_filter
 | `bool unstableLatched()` | `true` si le latch EMI (dispersion soutenue) est posé — auto-levé après `kSensorFilterLatchClearCycles` fenêtres pleines propres consécutives, ou immédiatement par `reset()` (v2.8.4) |
 | `uint8_t dispersionCleanStreak()` | Fenêtres pleines **propres** consécutives (disp ≤ cap ET zéro rejet). Compteur qui pilote l'auto-levée du latch EMI ; remis à 0 par tout rejet ou tout dépassement de dispersion (diagnostic, v2.8.4) |
 | `uint32_t ageMs(uint32_t nowMs)` | Âge de la dernière mesure acceptée (`UINT32_MAX` si aucune) |
-| `void setContext(bool waterPresent, bool measuresValid, uint32_t nowMs)` | **v2.20.3** — Porte d'alimentation : ferme le filtre aux mesures non représentatives (voir [Porte d'alimentation](#porte-dalimentation-du-filtre-v2203)) |
-| `void rearm()` | **v2.20.3** — Ré-amorce l'**estimateur seul** (buffer, EMA, clean streak) — **ne touche NI** le `FrozenDetector` **NI** le latch EMI (voir [rearm() distincte de reset()](#rearm-distincte-de-reset-v2203)) |
+| `void setContext(bool waterPresent, bool measuresValid, uint32_t nowMs)` | **v2.20.3** — Porte d'alimentation : ferme le filtre aux mesures non représentatives (voir [Porte d'alimentation](#porte-dalimentation-du-filtre-v2203)). **v2.25.1** : **désarme en tête** une grâce de ré-amorçage expirée — appelé toutes les 5 s **inconditionnellement**, y compris bus I²C mort |
+| `void rearm()` | **v2.20.3** — Ré-amorce l'**estimateur seul** (buffer, EMA, clean streak) — **ne touche NI** le `FrozenDetector` **NI** le latch EMI (voir [rearm() distincte de reset()](#rearm-distincte-de-reset-v2203)). **v2.25.1** : arme aussi une **grâce d'observabilité** sur `stale()` |
 | `bool gateClosed()` | **v2.20.3** — `true` si la porte est fermée : `addSample()` sort en tête, aucune alimentation |
+| `bool warmingUp()` | **v2.25.1** — Fenêtre centrale **incomplète** (`_bufCount < centralWindow`). Observabilité uniquement |
+| `bool stale(uint32_t nowMs)` | **v2.25.1** — Aucune mesure acceptée, **ou** âge > `maxAgeMs` — **sauf** pendant la grâce de ré-amorçage (intervalle fermé depuis l'armement, wrap-safe). Observabilité uniquement, **même frontière** que la garde d'âge de `ready()` |
 | `bool rearmedSinceLastPoll()` | **v2.20.3** — Drapeau consommé (edge-triggered) : un ré-amorçage a eu lieu depuis le dernier appel. Sert à la journalisation par la coquille (module pur : pas de logger, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) |
 | `uint8_t rearmDenied()` | **v2.20.3** — Motif du **dernier refus** de ré-amorçage, **collant** : `0` aucun, `1` cooldown non écoulé, `2` valeur hors bande admissible. Un refus ⇒ filtre non prêt ⇒ dosage fail-closed ⇒ la coquille **doit** alarmer |
 | `uint8_t rejectedBeforeRearm()` | **v2.20.3** — Valeur de `rejectedCount()` juste **avant** le dernier `rearm()`. Le ré-amorçage remet le compteur à 0 (sinon `/debug/sensor_filter_state` continuait d'afficher `rejected=255` sur un filtre réparé) : c'est cette valeur qu'il faut journaliser pour tracer l'ampleur du verrouillage levé |
@@ -359,6 +368,7 @@ Un rejet réel remet `_lastWasGap` à `false` : la continuité de l'évidence re
 | **`FrozenDetector`** (feature-022) | **intact** | réinitialisé |
 | **Latch EMI** (feature-058) | **intact** | levé |
 | Porte d'alimentation | inchangée | remise à l'état ouvert (recalculée au prochain `setContext()`) |
+| **Grâce « périmé »** (v2.25.1) | **armée** (`maxAgeMs` au plus, datée de `_lastSeenMs`) | **jamais armée**, et une grâce en cours est **désarmée** |
 
 **Pourquoi cette distinction existe** : re-converger ne doit **jamais blanchir un défaut de mesure**. Une sonde figée le reste jusqu'à fournir un échantillon hors bande ; une ambiance EMI soutenue continue d'inhiber le dosage. C'est la garantie explicite qu'on ne masque pas une sonde défaillante en réparant le filtre — d'autant que **l'origine de l'excursion à ~4,8 n'est toujours pas tranchée** (stagnation acide au point d'injection **ou** défaillance de sonde ; cf. l'instrumentation de [`measure_validity`](measure-validity.md#instrumentation-des-bruts-au-front-montant-deau-v2203)).
 
@@ -372,7 +382,58 @@ Conséquence voulue : après `rearm()`, `_bufCount = 0` ⇒ `ready() = false` pe
   - **(a) dispersion > cap** : l'amplitude `max − min` de la fenêtre brute **pleine** dépasse `kPhFilterMaxDispersion` (= 0.5 pH) / `kOrpFilterMaxDispersion` (= 100 mV) → oscillation de niveau EMI. Les caps sont maintenus **sous** l'amplitude EMI observée (feature-057) pour préserver l'inhibition existante — **ne pas assouplir** ;
   - **(b) latch EMI** : dispersion > cap **soutenue** (`kSensorFilterDispersionLatchCycles` = 3 fenêtres pleines consécutives en dépassement) → latch collant `unstableLatched()`. Auto-levé après `kSensorFilterLatchClearCycles` = 12 fenêtres pleines **propres** consécutives (≈ 2 min de signal réellement propre, v2.8.4) ou immédiatement par `reset()`/recalibration ;
   - **(c) rejets consécutifs** : `>= kSensorFilterMaxConsecutiveRejects` (= 10) rejets NaN/hors-plage consécutifs. État transitoire, s'éteint dès qu'une mesure est acceptée.
-- **frozen** (feature-022) : `kSensorFrozenSamples` (= 30) lectures acceptées consécutives dans une bande < epsilon → `ready()` repasse `false` → dosage fail-closed via la garde `FilterNotReady` existante. Sortie **immédiate sans re-warmup** dès une lecture vivante. Voir [Détection capteur figé](#détection-capteur-figé--feature-022).
+- **frozen** (feature-022) : `kSensorFrozenSamples` (= 30) lectures acceptées consécutives dans une bande < epsilon → `ready()` repasse `false` → dosage fail-closed via la garde #4b existante (cause exposée `FilterFrozen` depuis la v2.25.1, `FilterNotReady` avant). Sortie **immédiate sans re-warmup** dès une lecture vivante. Voir [Détection capteur figé](#détection-capteur-figé--feature-022).
+
+### Prédicats d'état du filtre (observabilité, v2.25.1)
+
+`ready()` est faux pour **quatre** raisons physiquement distinctes, dont deux sont des états d'attente normaux et deux des **pannes**. Jusqu'à la v2.25.1, la chaîne de refus de dosage les confondait dans un seul libellé (« warmup / EZO injoignable ») : une vraie panne d'EZO s'affichait « Stabilisation du filtre ». `SensorFilter` expose donc quatre prédicats `const`, **lecture seule, sans effet sur la décision** :
+
+| Prédicat | Vrai quand | Registre |
+|---|---|---|
+| `warmingUp()` | `_bufCount < centralWindow` (fenêtre de lissage incomplète) | attente normale |
+| `gateClosed()` | porte d'alimentation fermée : mesures déclarées **non représentatives** ([ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md)) | attente normale |
+| `stale(nowMs)` | aucune mesure acceptée, **ou** âge > `kSensorFilterMaxAgeMs` (20 s) — hors grâce de ré-amorçage | **panne** |
+| `frozen()` | capteur figé (`FrozenDetector`, feature-022) | **panne** |
+
+Composition par la fonction pure `resolveFilterState()` ([`dosing_logic.cpp`](../../src/dosing_logic.cpp)), **priorité pannes d'abord** : `frozen → gateClosed → stale → warmup → ready`. Exposition côté `SensorManager` :
+
+```cpp
+DoseFilterState getPhFilterState() const;   // lock-free, même contrat que isPhFilterReady()
+DoseFilterState getOrpFilterState() const;
+```
+
+> ⚠️ **Ne JAMAIS reconstruire ce diagnostic depuis `getPhRaw()` / `getOrpRaw()`.** Le cache brut est alimenté par **toute** lecture, y compris hors plage et y compris une valeur constante : il reste donc **frais** sur une sonde figée ou sur un EZO débitant du garbage. Un discriminant fondé sur sa fraîcheur — proposé lors du cadrage, **refusé par le gate `pool-chemistry`** — aurait classé une panne en « warmup ». C'est exactement le défaut que la v2.25.1 corrige. Voir [ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md).
+
+`stale()` partage **exactement** la frontière de la garde d'âge de `ready()` (`age > maxAgeMs`, `age == maxAgeMs` n'est pas périmé) : sinon la cause affichée et le verdict de dosage divergeraient sur un intervalle d'une lecture.
+
+#### Grâce de ré-amorçage sur `stale()`
+
+`rearm()` vide l'estimateur mais **ne fabrique pas de mesure** : `_hasValid` et `_lastValidMs` restent ceux d'avant, invariant qui rend `ready()` et `ageMs()` honnêtes. Conséquence non voulue de la priorité pannes-d'abord : juste après une réouverture de porte (démarrage de filtration, fin de purge), le filtre était simultanément `warmingUp` **et** `stale` → l'interface affichait une puce rouge **« Sonde muette »** sur une sonde parfaitement saine.
+
+Correctif : `rearm()` **mémorise que l'âge courant est imputable au ré-amorçage** — la datation n'est pas falsifiée. Règles :
+
+- **armement** : `rearm()` uniquement — les **deux** chemins réels de ré-amorçage (réouverture de porte dans `setContext()`, sortie de secours sur rejets cohérents dans `addSample()`). L'instant d'armement est `_lastSeenMs`, la dernière horloge vue par ces deux chemins, affectée en tête : il vaut donc exactement le `nowMs` du cycle en cours ;
+- **durée** : `kSensorFilterMaxAgeMs` (20 s) au plus, levée par la **première mesure acceptée** ;
+- **`stale()` seul lit ce drapeau.** `ready()`, `unstable()`, `ageMs()` et tout le chemin du verdict de dosage sont **inchangés au bit près** — la grâce est un mécanisme d'affichage, pas une tolérance de sécurité ;
+- `reset()` **n'arme rien** et **désarme** une grâce en cours : une sonde muette au **démarrage à froid** est annoncée **immédiatement**, sans le moindre délai de courtoisie. La grâce ne couvre que le cas où l'âge affiché est *imputable au ré-amorçage*, ce qui n'a aucun sens sur un filtre qui n'a jamais rien mesuré ;
+- retard résiduel assumé : une sonde réellement muette au moment précis d'un ré-amorçage est annoncée jusqu'à 20 s plus tard. Le retard est intrinsèque — on ne peut pas conclure avant d'avoir laissé sa chance à la première lecture qui suit.
+
+##### Deux protections cumulatives contre le repliement de `millis()`
+
+La **première écriture** de cette grâce portait le **troisième défaut de repliement du projet** (après la retentative de `Slope,?` en v2.21.2 et la comptabilité d'impulsions `tickPulse`). L'échéance n'était évaluée que dans `stale()`, qui est `const` : sur une sonde restée muette, le drapeau ne redescendait **jamais**, et la comparaison de deadline `(int32_t)(now − until) < 0` — juste au premier tour — **se retournait 2³¹ ms plus tard**. La panne était **masquée à nouveau pendant 24,8 jours**, l'appareil réaffichant « en stabilisation » sur une sonde morte. Atteignable : `millis()` se replie à 49,7 jours et l'appareil tourne en continu.
+
+Le correctif est **redondant par conception** :
+
+| # | Protection | Où | Ce qu'elle garantit seule |
+|---|---|---|---|
+| 1 | **Forme du prédicat** : intervalle fermé `[from, from + maxAgeMs[`, testé en `(nowMs − _staleGraceFromMs) < maxAgeMs` **non signé** — jamais de date de fin, jamais de comparaison signée à une échéance | `stale()` ([`sensor_filter.cpp`](../../src/sensor_filter.cpp)) | le prédicat est monotone en **durée écoulée**, pas en `now` : même un drapeau resté armé ne peut re-rentrer dans la grâce qu'au repliement **complet** de `millis()` (49,7 j, limite intrinsèque du projet) au lieu de 24,8 j |
+| 2 | **Désarmement effectif** : `_expireStaleGrace(nowMs)` remet `_staleGraceArmed` à `false`, appelée en **tête** de `setContext()` **et** de `addSample()` — les deux seuls chemins non-`const` recevant l'horloge | `sensor_filter.cpp` | `setContext()` est atteint **toutes les 5 s inconditionnellement** depuis `SensorManager::_updateFilterGates()`, **y compris bus I²C mort** (il ne lit aucun capteur) : la grâce expire donc pour de bon, même quand plus aucune mesure n'arrive |
+
+> ⚠️ **Les deux protections sont testées séparément** (`test_V2251_grace_expiree_ne_se_rearme_pas_apres_2exp31_ms` pour la forme du prédicat, `test_V2251_grace_desarmee_par_setContext_meme_sans_lecture` et `test_V2251_grace_desarmee_par_addSample_sonde_muette` pour le désarmement, `test_V2251_grace_traverse_le_repliement_de_millis` pour le franchissement). Une mutation supprimant l'une **laisse survivre** les tests de l'autre : c'est délibéré, personne ne doit pouvoir en retirer une au motif que l'autre suffit.
+
+La règle générale qui s'en dégage — **mémoriser l'instant d'armement et tester la durée écoulée, jamais une date de fin** — est consignée dans [ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md#pourquoi-la-forme-du-prédicat-compte-correctif-de-repliement-revue-v2251) et vaut pour tout code manipulant `millis()`.
+
+Une panne persistante est en outre remontée sur MQTT (`ph/orp_dose_sensor_fault`, 60 s de panne continue) — voir [pump-controller.md](pump-controller.md#alerte-de-panne-de-mesure-v2251).
 
 ### Latch EMI (persistance de l'inhibition)
 
@@ -811,7 +872,7 @@ Logs et alertes MQTT émis **aux transitions uniquement** (entrée et sortie de 
 ## Interaction avec les autres composants
 
 - [`pump_controller`](pump-controller.md) : le PID consomme **uniquement** `getPhFiltered()` / `getOrpFiltered()` (feature-025 ; **valeur corrigée** côté pH depuis feature-067) et exige `isPhFilterReady()` / `isOrpFilterReady()` (+ `!isPhFilterUnstable()`) dans `canDose(int)`. Les **filets de sécurité chimique** feature-067 consomment `getPhFilteredRaw()` (brut, avec garde d'âge) et `getPhOffset()`. `getPh()`/`getOrp()` restent disponibles pour les logs et l'affichage brut. Vérifie aussi `getPhCalibrationPointsCached()` / `getOrpCalibrationPointsCached()` (conditions #1, #2, #5).
-- [`ws_manager`](ws-manager.md) : `broadcastSensorData()` publie `ph`/`orp` (= valeur **filtrée**, fallback brut si filtre non amorcé), `temperature`, `temperature_circuit`, `phCalPoints`, `orpCalPoints`, `phSlopeAcid/Base/Zero/AgeMs` toutes les 5 s. feature-025 : champs supplémentaires `ph/orpRaw|Median|Filtered`, `ph/orpFilterReady`, `ph/orpFilterUnstable`, `ph/orpRejectedCount`, `ph/orpMixingDelayActive`, `ph/orpDoseBlockedReason`.
+- [`ws_manager`](ws-manager.md) : `broadcastSensorData()` publie `ph`/`orp` (= valeur **filtrée**, fallback brut si filtre non amorcé), `temperature`, `temperature_circuit`, `phCalPoints`, `orpCalPoints`, `phSlopeAcid/Base/Zero/AgeMs` toutes les 5 s. feature-025 : champs supplémentaires `ph/orpRaw|Median|Filtered`, `ph/orpFilterReady`, `ph/orpFilterUnstable`, `ph/orpRejectedCount`, `ph/orpMixingDelayActive`, `ph/orpDoseBlockedReason` ; v2.25.1 : `ph/orpDoseBlockedCode` (code machine de la cause de refus, parité `/data` ↔ WS).
 - [`mqtt_manager`](mqtt-manager.md) : publie `{base}/ph` / `{base}/orp` (= **filtré**), `{base}/temperature`, `{base}/temperature_circuit`, `{base}/ph_cal_points`, `{base}/orp_cal_points` toutes les 10 s (`kMqttPublishIntervalMs`). 3 topics `{base}/ph_slope_*` edge-triggered. feature-025 : topics `{base}/ph|orp_raw|median|filtered|filter_ready|filter_unstable|rejected_count` + `{base}/ph|orp_mixing_delay_active` (retain). Alertes edge-triggered `{base}/alerts/calibration_required`, `{base}/alerts/sensor_stale` et `{base}/alerts/sensor_frozen` + états binaires dédupliqués `{base}/ph|orp_sensor_problem` (feature-022).
 - [`history`](history.md) : snapshot des valeurs courantes toutes les 5 min.
 

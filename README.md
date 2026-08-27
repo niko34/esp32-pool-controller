@@ -231,7 +231,7 @@ Le contrôleur publie automatiquement sa configuration MQTT pour Home Assistant 
 | Select | Mode filtration | Sélection du mode (auto / manual / force / off) |
 | Switch | Filtration ON/OFF | Forçage marche/arrêt de la filtration |
 | Switch | Éclairage ON/OFF | Contrôle de l'éclairage |
-| Number | Consigne pH | Valeur cible pH (6.0 – 8.5, pas 0.1) |
+| Number | Consigne pH | Valeur cible pH (**7.2 – 7.5**, pas 0.1 — bornes resserrées en v2.25.0, [ADR-0048](docs/adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md)) |
 | Number | Consigne ORP | Valeur cible ORP en mV (400 – 900, pas 10) |
 
 ### Exemple Automation

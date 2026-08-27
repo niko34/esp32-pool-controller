@@ -79,24 +79,86 @@ WaterPresence resolveWaterPresent(const WaterPresenceInputs& in);
 // Ne produit JAMAIS ExternalFiltration (mode nouveau, jamais migré).
 InstallMode migrateInstallMode(const char* regMode, bool filtrationEnabled);
 
-// Cause de refus de dosage (énum pur). L'ordre suit exactement l'ordre des
-// gardes de canDose(). None = dosage autorisé.
-enum class DoseRefusal {
-  None,
-  WatchdogInactive,        // watchdog inactif
-  FiltrationOff,           // pas de présence d'eau (resolveWaterPresent, selon le mode d'installation)
-  ReadingNaN,              // lecture pH/ORP filtrée indisponible (NaN)
-  FilterNotReady,          // filtre capteur non prêt (warmup / EZO injoignable)
-  FilterUnstable,          // capteur instable (rejets consécutifs)
-  CalibrationInsufficient, // calibration insuffisante (cal=X, requis=Y)
-  StabilizationActive,     // stabilisation post-calibration en cours
-  MixingActive,            // pause mélange en cours
-  ModeNotAutomatic,        // mode régulation != automatic (X)
-  DailyLimit,              // limite journalière atteinte
-  HourlyLimit,             // limite horaire atteinte
-  CyclesPerDay,            // limite cycles/jour atteinte
-  BurstPerMinute,          // anti-rafale : N cycles dans la dernière minute
-  BurstPer15Min            // anti-rafale : N cycles dans les 15 dernières minutes
+// =============================================================================
+// État INTERNE du filtre capteur (v2.25.1) — discriminant des causes de refus
+// =============================================================================
+// SensorFilter::ready() est faux pour QUATRE raisons physiquement distinctes
+// (fenêtre incomplète, aucune mesure acceptée / trop ancienne, capteur figé,
+// porte d'alimentation fermée). La chaîne d'observabilité les confondait dans un
+// seul libellé « warmup / EZO injoignable » : une VRAIE panne de sonde était donc
+// présentée à l'utilisateur comme une stabilisation normale.
+//
+// Ce discriminant porte sur l'ÉTAT INTERNE DU FILTRE, jamais sur `getPhRaw()` :
+// le cache brut est alimenté par TOUTE lecture (y compris hors plage), et il
+// reste donc frais sur une sonde figée ou un EZO débitant du garbage — il
+// conclurait « warmup » sur une panne, soit exactement le défaut corrigé.
+//
+// Enum d'ENTRÉE (non sérialisé — seul DoseRefusal est un contrat de transport).
+enum class DoseFilterState : uint8_t {
+  Unknown = 0,     // état non collecté → AUCUNE attribution de cause (voir Note)
+  Ready = 1,       // filtre prêt (ready() == true)
+  Warmup = 2,      // fenêtre centrale incomplète (_bufCount < centralWindow)
+  Frozen = 3,      // capteur figé (frozen(), feature-022) — PANNE
+  Stale = 4,       // aucune mesure acceptée, ou dernière trop ancienne (ageMs > maxAgeMs) — PANNE
+  GateClosed = 5   // porte d'alimentation fermée : mesures déclarées NON représentatives
+};
+
+// Note (fail-closed d'OBSERVABILITÉ) : `Unknown` ne prétend RIEN. Un site de
+// collecte qui oublierait de renseigner l'état retombe sur les causes génériques
+// ReadingNaN / FilterNotReady, dont les libellés disent « cause indéterminée ».
+// Le pire cas est donc une cause imprécise, JAMAIS une panne matérielle
+// maquillée en état normal.
+
+// Compose l'état de filtre depuis les quatre primitives de SensorFilter.
+// PRIORITÉ (verrouillée ici, unique lieu de décision) : les PANNES d'abord, les
+// états normaux ensuite — un défaut ne doit jamais être masqué par un état
+// bénin concomitant :
+//   frozen → Frozen ; sinon gateClosed → GateClosed ; sinon stale → Stale ;
+//   sinon warmingUp → Warmup ; sinon Ready.
+// `gateClosed` passe AVANT `stale` : porte fermée, l'âge croît par conception
+// (aucun échantillon n'est ingéré) — l'annoncer « périmé » accuserait la sonde
+// d'un blocage voulu par le système.
+DoseFilterState resolveFilterState(bool frozen, bool gateClosed, bool stale,
+                                   bool warmingUp);
+
+// Cause de refus de dosage (énum pur). L'ordre des 15 premières valeurs suit
+// l'ordre des gardes de canDose() ; les suivantes sont des QUALIFICATIONS des
+// gardes 3 et 3b, ajoutées en v2.25.1.
+//
+// ⚠️ CONTRAT DE SÉRIALISATION (v2.25.1) : ces valeurs sont exposées telles
+// quelles par `phDoseBlockedCode` / `orpDoseBlockedCode` (/data + WebSocket) et
+// traduites par une table côté client. Valeurs FIXÉES EXPLICITEMENT :
+// ne JAMAIS renuméroter, ne JAMAIS insérer au milieu — toute nouvelle cause
+// s'AJOUTE À LA FIN. Un décalage ferait afficher une mauvaise cause, soit
+// précisément la classe de défaut que ce code corrige (précédent : InstallMode).
+// La complétude est verrouillée valeur par valeur par les static_assert de
+// pump_controller.cpp (switch énum → libellé français).
+enum class DoseRefusal : uint8_t {
+  None = 0,
+  WatchdogInactive = 1,        // watchdog inactif
+  FiltrationOff = 2,           // pas de présence d'eau (resolveWaterPresent, selon le mode d'installation)
+  ReadingNaN = 3,              // lecture filtrée NaN, état de filtre indéterminé
+  FilterNotReady = 4,          // filtre non prêt, état de filtre indéterminé
+  FilterUnstable = 5,          // capteur instable (rejets consécutifs)
+  CalibrationInsufficient = 6, // calibration insuffisante (cal=X, requis=Y)
+  StabilizationActive = 7,     // stabilisation post-calibration en cours
+  MixingActive = 8,            // pause mélange en cours
+  ModeNotAutomatic = 9,        // mode régulation != automatic (X)
+  DailyLimit = 10,             // limite journalière atteinte
+  HourlyLimit = 11,            // limite horaire atteinte
+  CyclesPerDay = 12,           // limite cycles/jour atteinte
+  BurstPerMinute = 13,         // anti-rafale : N cycles dans la dernière minute
+  BurstPer15Min = 14,          // anti-rafale : N cycles dans les 15 dernières minutes
+  // --- v2.25.1 : qualification de la garde 3 (lecture filtrée NaN) ------------
+  ReadingNaNWarmup = 15,       // fenêtre de lissage en cours de remplissage
+  ReadingNaNFrozen = 16,       // capteur figé (PANNE)
+  ReadingNaNStale = 17,        // aucune mesure acceptée / trop ancienne (PANNE)
+  ReadingNaNGateClosed = 18,   // mesures déclarées non représentatives (purge/eau à l'arrêt)
+  // --- v2.25.1 : qualification de la garde 3b (filtre non prêt) --------------
+  FilterWarmup = 19,           // fenêtre de lissage en cours de remplissage
+  FilterFrozen = 20,           // capteur figé (PANNE)
+  FilterStale = 21,            // aucune mesure acceptée / trop ancienne (PANNE)
+  FilterGateClosed = 22        // mesures déclarées non représentatives (purge/eau à l'arrêt)
 };
 
 // Entrées POD de la décision de dosage. Tous les champs sont collectés par la
@@ -107,6 +169,13 @@ struct DoseInputs {
                                 // (Managed=commandé, Powered=présumé, External=signal frais)
   float reading;                // sensors.getPhFiltered() / getOrpFiltered()
   bool filterReady;             // isPhFilterReady() / isOrpFilterReady()
+  // v2.25.1 — état interne du filtre, UNIQUEMENT pour QUALIFIER la cause de refus
+  // des gardes 3 et 3b (aucune condition ajoutée : le verdict ne le lit jamais).
+  // INITIALISEUR DE MEMBRE OBLIGATOIRE : `DoseInputs in;` (canDose) ne
+  // value-initialise PAS l'agrégat — sans ce défaut, un site de collecte ou une
+  // fixture de test lirait une valeur indéterminée. `Unknown` = aucune
+  // attribution de cause (fail-closed d'observabilité, cf. DoseFilterState).
+  DoseFilterState filterState = DoseFilterState::Unknown;
   bool filterUnstable;          // isPhFilterUnstable() / isOrpFilterUnstable()
   int calPoints;                // points de calibration cachés (-1 si EZO injoignable)
   int requiredPoints;           // 2 (pH) ou 1 (ORP)

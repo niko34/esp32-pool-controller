@@ -21,20 +21,27 @@
 //        (La suite test_native_sensor_filter reste inchangée : le module pur
 //        n'a aucune notion d'offset, ADR-0017.)
 //
-//   D3 — Invariants de CONSTANTES des filets de sécurité pH brut (planchers
-//        d'injection d'acide, inhibition ORP). La machine à états elle-même
-//        (PumpControllerClass::isPhRawFloorBlocking / isOrpInhibitedByPhRaw)
-//        n'est PAS pure — voir la note en fin de fichier.
+//   D3 — ARTICULATION offset ↔ seuils de sécurité (refonte v2.25.0) : les seuils
+//        chimiques portent sur le pH CORRIGÉ, les deux butées de dernier recours
+//        sur le pH BRUT. La machine à états elle-même
+//        (PumpControllerClass::isPhGuardBlocking / isOrpInhibitedByPh) n'est PAS
+//        pure — voir la note en fin de fichier. Les gardes pures elles-mêmes sont
+//        couvertes par test_native_ph_guard ; ici on ne teste QUE ce qui met
+//        l'offset en jeu.
 //
-// Chaîne de production reproduite (src/sensors.cpp) :
+// Chaîne de production reproduite (src/sensors.cpp + pump_controller.cpp) :
 //   EZO → _lastPh (brut) → _phFilter.addSample(brut) → filtered() (brut lissé)
-//       → getPhFiltered() = applyPhOffset(filtered(), offset)   [régulation]
-//       → getPhFilteredRaw() = filtered()                       [filets pH brut]
+//       → getPhFiltered() = applyPhOffset(filtered(), offset)   [/data, WS, MQTT]
+//       → getPhFilteredRaw() = filtered()                       [butées pH BRUT]
+//       → pump_controller RECALCULE applyPhOffset(getPhFilteredRaw(), offset)
+//         pour les seuils chimiques [pH CORRIGÉ]
 // =============================================================================
 
 #include <unity.h>
-#include <math.h>  // C header uniquement (libc++ <cmath> indisponible sur l'hôte)
+#include <math.h>   // C header uniquement (libc++ <cmath> indisponible sur l'hôte)
+#include <stdio.h>  // snprintf (messages des balayages D3)
 
+#include "ph_guard_logic.h"  // phGuardBlocksBelow / phGuardBlocksAbove (D3)
 #include "ph_offset.h"
 #include "sensor_filter.h"
 
@@ -401,93 +408,161 @@ void test_warmup_with_offset_still_exposes_nan(void) {
 }
 
 // =============================================================================
-// D3 — Invariants de constantes des filets de sécurité pH BRUT (feature-067)
+// D3 — Articulation offset ↔ seuils de sécurité (refonte v2.25.0)
 // =============================================================================
-// Ces gardes (pump_controller) raisonnent sur le pH BRUT lissé, donc restent
-// valides même si l'offset saisi est faux. Seuls les INVARIANTS de conception
-// des seuils sont testables en pur ici (voir note de couverture en fin de
-// fichier pour la machine à états).
+// Les seuils CHIMIQUES portent désormais sur le pH CORRIGÉ (une fois l'offset
+// appliqué, la valeur EST le pH de l'eau) ; les deux BUTÉES de dernier recours
+// portent sur le pH BRUT, pour rester valides quand l'offset est FAUX. Ce bloc
+// teste ce que l'offset change — les gardes elles-mêmes (hystérésis, NaN,
+// frontières) sont couvertes par test_native_ph_guard.
 
-void test_raw_floor_constants_are_coherent(void) {
-  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 6.80f, kPhRawDosingFloor);
-  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 6.90f, kPhRawDosingFloorWide);
-  // Palier ÉLARGI strictement plus prudent : plus l'offset est grand, plus
-  // l'incertitude sur le pH réel est grande → marge de sécurité plus haute.
-  TEST_ASSERT_TRUE_MESSAGE(kPhRawDosingFloorWide > kPhRawDosingFloor,
-                           "le palier large doit etre plus conservateur");
-  // Le seuil de bascule est DANS la plage d'offset autorisée : les deux paliers
-  // sont donc réellement atteignables (sinon l'un serait du code mort).
-  TEST_ASSERT_TRUE(kPhOffsetWideThreshold > 0.0f);
-  TEST_ASSERT_TRUE_MESSAGE(kPhOffsetWideThreshold < kPhOffsetMax,
-                           "sinon le palier large ne serait jamais selectionne");
-  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.30f, kPhOffsetWideThreshold);
-}
-
-// Choix du palier selon |offset| — règle de sélection (fabsf(offset) > seuil),
-// frontières incluses côté palier normal.
-void test_floor_tier_selection_by_absolute_offset(void) {
-  struct { float offset; float expected; } cases[] = {
-      {0.00f, kPhRawDosingFloor},
-      {0.29f, kPhRawDosingFloor},
-      {0.30f, kPhRawDosingFloor},      // frontière : > strict → palier normal
-      {-0.30f, kPhRawDosingFloor},     // le signe n'entre pas en compte
-      {0.31f, kPhRawDosingFloorWide},
-      {-0.31f, kPhRawDosingFloorWide},
-      {kPhOffsetMax, kPhRawDosingFloorWide},
-      {kPhOffsetMin, kPhRawDosingFloorWide},
-  };
-  for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
-    const float tier = (fabsf(cases[i].offset) > kPhOffsetWideThreshold)
-                           ? kPhRawDosingFloorWide
-                           : kPhRawDosingFloor;
-    TEST_ASSERT_FLOAT_WITHIN(1e-6f, cases[i].expected, tier);
+// Le seuil chimique porte sur le CORRIGÉ : le pH RÉEL protégé dans le bassin est
+// donc CONSTANT (6,70) par construction, et c'est la LECTURE BRUTE du seuil qui
+// se déplace de −offset. C'est l'inverse exact de l'ancien plancher asservi, qui
+// déplaçait le seuil pour garder le pH réel constant — même propriété chimique,
+// obtenue sans aucune arithmétique de seuil.
+void test_corrected_floor_protects_a_constant_real_ph(void) {
+  for (int i = -50; i <= 50; ++i) {
+    const float offset = (float)i * 0.01f;
+    // Lecture brute à laquelle le seuil corrigé se déclenche.
+    const float brutAuSeuil = kPhFloorCorrected - offset;
+    char msg[144];
+    snprintf(msg, sizeof(msg), "offset=%+.2f brut au seuil=%.4f",
+             (double)offset, (double)brutAuSeuil);
+    // PRÉ-CONDITION FLOTTANTE : l'aller-retour brut → corrigé doit être stable à
+    // beaucoup mieux que le centième, sinon les deux verdicts ci-dessous ne
+    // testeraient pas la frontière annoncée. (Erreur théorique ≈ 2 ulp ≈ 1e-6.)
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(1e-5f, kPhFloorCorrected,
+                                     applyPhOffset(brutAuSeuil, offset), msg);
+    // Un centième plus acide : blocage, quel que soit l'offset.
+    TEST_ASSERT_TRUE_MESSAGE(
+        phGuardBlocksBelow(applyPhOffset(brutAuSeuil - 0.01f, offset), kPhFloorCorrected, false), msg);
+    // Un centième moins acide : pas de blocage, quel que soit l'offset.
+    TEST_ASSERT_FALSE_MESSAGE(
+        phGuardBlocksBelow(applyPhOffset(brutAuSeuil + 0.01f, offset), kPhFloorCorrected, false), msg);
   }
 }
 
-// L'inhibition ORP se déclenche bien AU-DESSUS des planchers acide : les deux
-// filets encadrent une fenêtre de dosage non vide (sinon tout dosage serait mort).
-void test_orp_inhibit_threshold_is_above_acid_floors(void) {
-  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 7.60f, kPhRawOrpInhibit);
-  TEST_ASSERT_TRUE_MESSAGE(kPhRawOrpInhibit > kPhRawDosingFloorWide,
-                           "fenetre de dosage non vide entre plancher et inhibition ORP");
+// La butée BRUTE est dérivée de l'offset MAXIMAL : elle borne le dégât d'un
+// offset POSITIF saisi à tort, sans jamais mordre avant le seuil corrigé pour un
+// offset légitime (6,70 − 0,50 = 6,20). Une butée plus haute (6,40 avait été
+// proposée) rendrait le seuil corrigé inopérant à offset +0,50.
+void test_raw_hard_floor_is_derived_from_the_max_offset(void) {
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 6.20f, kPhFloorRawHard);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, kPhFloorCorrected - kPhOffsetMax, kPhFloorRawHard);
+  TEST_ASSERT_TRUE_MESSAGE(kPhFloorRawHard < kPhFloorCorrected,
+                           "la butee brute doit rester SOUS le seuil corrige");
+  // Symétrique côté haut : butée brute = inhibition ORP + offset max.
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 8.10f, kPhCeilingRawHard);
+  TEST_ASSERT_FLOAT_WITHIN(1e-4f, kPhOrpInhibit + kPhOffsetMax, kPhCeilingRawHard);
+  // EXIGENCE PIRE CAS côté haut, exact symétrique de celle du bas : la butée
+  // brute haute ne doit pas être SOUS le plafond corrigé ramené à l'offset le
+  // plus défavorable (le plus NÉGATIF, qui abaisse le corrigé à brut donné).
+  // Avec l'ancien plafond 7,70 l'exigence valait 8,20 et n'était PAS satisfaite ;
+  // depuis kPhHighMargin = 0,10 elle vaut 8,10 et l'est à l'ÉGALITÉ. La tolérance
+  // absorbe l'ulp entre deux expressions flottantes distinctes.
+  TEST_ASSERT_TRUE_MESSAGE(
+      kPhCeilingRawHard >= kPhCeilingCorrected - kPhOffsetMin - 1e-4f,
+      "butee brute haute sous le plafond corrige au pire offset : elle mordrait "
+      "la premiere et rendrait le plafond inoperant");
+  TEST_ASSERT_TRUE_MESSAGE(kPhCeilingCorrected > kPhFloorCorrected,
+                           "fenetre de dosage corrigee vide");
 }
 
-// Un offset extrême ne doit pas pouvoir masquer un pH brut dangereux : même à
-// l'offset maximal, le pH CORRIGÉ affiché reste dans une fenêtre où le plancher
-// brut (6.80/6.90) protège encore contre la sur-acidification.
-void test_max_offset_cannot_hide_dangerous_raw_ph(void) {
-  const float dangerousRaw = 6.79f;  // sous le plancher normal
-  const float displayed = applyPhOffset(dangerousRaw, kPhOffsetMax);
-  TEST_ASSERT_FLOAT_WITHIN(0.005f, 7.29f, displayed);
-  // Le filet, lui, regarde le BRUT : il bloque, quelle que soit la valeur affichée.
-  TEST_ASSERT_TRUE_MESSAGE(dangerousRaw < kPhRawDosingFloorWide,
-                           "le plancher doit bloquer sur le brut, pas sur l'affiche");
+// Un offset POSITIF saisi à tort (la sonde lit juste, l'utilisateur a saisi
+// +0,50 sans raison) rend le seuil corrigé trop permissif : l'eau réelle peut
+// descendre jusqu'à la BUTÉE BRUTE avant tout refus. C'est le compromis ASSUMÉ de
+// la refonte — la butée n'est plus un plancher chimique, mais la borne du dégât
+// qu'un offset menteur peut causer. On la verrouille explicitement : 6,20 brut,
+// jamais moins, quel que soit l'offset déclaré.
+void test_wrong_positive_offset_is_bounded_by_the_raw_hard_floor(void) {
+  const float offsets[] = {0.10f, 0.30f, kPhOffsetMax, 0.80f, 5.0f};
+  for (unsigned i = 0; i < sizeof(offsets) / sizeof(offsets[0]); ++i) {
+    const float offset = offsets[i];
+    char msg[144];
+    snprintf(msg, sizeof(msg), "offset menteur=%+.2f", (double)offset);
+    // Juste sous la butée : refus, quelle que soit la valeur AFFICHÉE (rassurante).
+    TEST_ASSERT_TRUE_MESSAGE(phGuardBlocksBelow(6.19f, kPhFloorRawHard, false), msg);
+    // Et la valeur affichée est bien, elle, trompeuse : c'est tout l'objet de la butée.
+    TEST_ASSERT_TRUE_MESSAGE(applyPhOffset(6.19f, offset) > kPhFloorCorrected - 0.51f, msg);
+  }
+  // Cas de référence : offset +0,50 menteur, eau réelle à 6,19. L'affichage
+  // annonce 6,69 (rassurant à un centième près du seuil) et c'est le BRUT qui
+  // tranche.
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, 6.69f, applyPhOffset(6.19f, kPhOffsetMax));
+  TEST_ASSERT_TRUE(phGuardBlocksBelow(6.19f, kPhFloorRawHard, false));
+}
+
+// Miroir : un offset NÉGATIF saisi à tort masquerait une eau réellement basique
+// (chlore inactif, régulation ORP qui surdose). La butée brute HAUTE la rattrape
+// à 8,10, quelle que soit la valeur corrigée affichée.
+void test_wrong_negative_offset_is_bounded_by_the_raw_hard_ceiling(void) {
+  const float brut = 8.15f;
+  const float affiche = applyPhOffset(brut, kPhOffsetMin);
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, 7.65f, affiche);
+  TEST_ASSERT_TRUE(phGuardBlocksAbove(brut, kPhCeilingRawHard, false));
+  // Aucun offset ne peut abaisser la butée : elle ne regarde QUE le brut.
+  TEST_ASSERT_TRUE(phGuardBlocksAbove(brut, kPhCeilingRawHard, false));
+  TEST_ASSERT_FALSE(phGuardBlocksAbove(8.05f, kPhCeilingRawHard, false));
+  // Depuis l'abaissement du plafond (kPhHighMargin 0,20 → 0,10), la valeur
+  // AFFICHÉE elle-même (7,65) refuse le pH+ : l'ancien plafond 7,70 l'autorisait
+  // encore, dans une eau où les deux gardes ORP suspendaient déjà le chlore.
+  TEST_ASSERT_TRUE_MESSAGE(phGuardBlocksAbove(affiche, kPhCeilingCorrected, false),
+                           "7,65 corrige doit refuser d'ALCALINISER");
+  TEST_ASSERT_TRUE(phGuardBlocksAbove(affiche, kPhOrpInhibit, false));
+}
+
+// La fenêtre de dosage est NON VIDE : entre le refus d'acidifier (6,70) et
+// l'inhibition ORP (7,60), toute la plage de consigne [7,20 ; 7,50] est libre,
+// quel que soit l'offset — sinon tout dosage serait mort-né.
+void test_dosing_window_is_never_empty_whatever_the_offset(void) {
+  for (int i = -50; i <= 50; ++i) {
+    const float offset = (float)i * 0.01f;
+    for (int c = 720; c <= 750; c += 10) {
+      const float consigne = (float)c * 0.01f;   // pH RÉEL visé
+      const float brut = consigne - offset;      // lecture capteur correspondante
+      const float corrige = applyPhOffset(brut, offset);
+      char msg[160];
+      snprintf(msg, sizeof(msg), "offset=%+.2f consigne=%.2f brut=%.4f",
+               (double)offset, (double)consigne, (double)brut);
+      TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksBelow(corrige, kPhFloorCorrected, false), msg);
+      TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksAbove(corrige, kPhOrpInhibit, false), msg);
+      // Le PLAFOND d'alcalinisation est désormais ALIGNÉ sur l'inhibition ORP
+      // (7,60) : la consigne haute 7,50 doit rester dosable en pH+ malgré cet
+      // abaissement, sinon un bassin à TAC bas ne pourrait plus être remonté.
+      TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksAbove(corrige, kPhCeilingCorrected, false), msg);
+      TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksBelow(brut, kPhFloorRawHard, false), msg);
+      TEST_ASSERT_FALSE_MESSAGE(phGuardBlocksAbove(brut, kPhCeilingRawHard, false), msg);
+    }
+  }
 }
 
 void test_refusal_counter_constants(void) {
-  TEST_ASSERT_EQUAL_UINT8(3, kPhRawFloorRefusalMax);
-  TEST_ASSERT_EQUAL_UINT32(86400000UL, kPhRawFloorRefusalWindowMs);  // 24 h
+  TEST_ASSERT_EQUAL_UINT8(3, kPhGuardRefusalMax);
+  TEST_ASSERT_EQUAL_UINT32(86400000UL, kPhGuardRefusalWindowMs);  // 24 h
   // La fenêtre doit rester représentable sur 32 bits en ms (arithmétique millis
   // wrap-safe) : 24 h << 49,7 jours.
-  TEST_ASSERT_TRUE(kPhRawFloorRefusalWindowMs < 4294967295UL);
+  TEST_ASSERT_TRUE(kPhGuardRefusalWindowMs < 4294967295UL);
 }
 
 // =============================================================================
 // NOTE DE COUVERTURE (D3) — ce qui n'est PAS testable ici
 // =============================================================================
-// PumpControllerClass::isPhRawFloorBlocking() et ::isOrpInhibitedByPhRaw()
+// PumpControllerClass::isPhGuardBlocking() et ::isOrpInhibitedByPh()
 // (src/pump_controller.cpp) ne sont PAS des fonctions pures : elles lisent des
-// membres d'état (_phRawFloorActive, _phRawFloorRefusals, _phRawFloorWindowStart,
-// _lastRefusalCause), des singletons (sensors, mqttCfg, mqttManager,
-// systemLogger), millis(), et écrivent la config (saveMqttConfig()). Les
-// extraire en pur supposerait un refactor de PumpControllerClass hors périmètre
-// feature-067 (et un passage pool-chemistry supplémentaire).
+// membres d'état (_phLowBlockActive, _phHighBlockActive, _phRawHardBlockActive,
+// _orpPhInhibitActive, _phGuardRefusals, _phGuardWindowStart, _lastRefusalCause),
+// des singletons (sensors, mqttCfg, mqttManager, systemLogger), millis(), et
+// écrivent la config (saveMqttConfig()). Les extraire en pur supposerait un
+// refactor de PumpControllerClass hors périmètre (et un passage pool-chemistry
+// supplémentaire).
 // Restent donc à couvrir par pool-chemistry + tests on-target :
-//   - transition d'état du plancher (log critical + alerte MQTT une seule fois),
-//   - remontée au-dessus du plancher (levée + log info),
-//   - fenêtre glissante 24 h et bascule en mode manuel au 3ᵉ refus,
-//   - court-circuit "ph_plus" (plancher acide sans objet),
-//   - câblage des 4 branches d'update() AVANT canDose().
+//   - transition d'état de chaque garde (log critical + alerte MQTT une seule fois),
+//   - retour dans le domaine sûr (levée + log info) avec la bonne cause,
+//   - fenêtre glissante 24 h et bascule en mode manuel au 3ᵉ refus AUTOMATIQUE,
+//   - mode Programmée : refus signalé (warn + alerte à débit limité), JAMAIS compté,
+//   - réarmement des drapeaux au changement de produit, compteur conservé,
+//   - câblage des branches d'update() AVANT canDose().
 // =============================================================================
 
 int main(int, char**) {
@@ -522,11 +597,12 @@ int main(int, char**) {
   RUN_TEST(test_spike_rejection_identical_with_offset);
   RUN_TEST(test_latch_unaffected_by_offset_change_mid_run);
   RUN_TEST(test_warmup_with_offset_still_exposes_nan);
-  // D3 — invariants des filets pH brut
-  RUN_TEST(test_raw_floor_constants_are_coherent);
-  RUN_TEST(test_floor_tier_selection_by_absolute_offset);
-  RUN_TEST(test_orp_inhibit_threshold_is_above_acid_floors);
-  RUN_TEST(test_max_offset_cannot_hide_dangerous_raw_ph);
+  // D3 — articulation offset / seuils de sécurité (v2.25.0)
+  RUN_TEST(test_corrected_floor_protects_a_constant_real_ph);
+  RUN_TEST(test_raw_hard_floor_is_derived_from_the_max_offset);
+  RUN_TEST(test_wrong_positive_offset_is_bounded_by_the_raw_hard_floor);
+  RUN_TEST(test_wrong_negative_offset_is_bounded_by_the_raw_hard_ceiling);
+  RUN_TEST(test_dosing_window_is_never_empty_whatever_the_offset);
   RUN_TEST(test_refusal_counter_constants);
   return UNITY_END();
 }

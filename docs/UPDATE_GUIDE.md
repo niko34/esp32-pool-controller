@@ -238,6 +238,60 @@ Depuis la v2.11.0, **toute image téléchargée depuis GitHub est vérifiée par
 
 ## Notes de migration
 
+### Deux nouvelles alertes de panne de sonde — depuis v2.25.1 (2026-08-27)
+
+**Aucune migration, aucune action requise.** Pas de changement de partition, de configuration NVS ni de format de données : la mise à jour est un simple flash firmware + filesystem.
+
+Deux points à connaître :
+
+1. **Deux types d'alerte MQTT sont ajoutés** : `ph_dose_sensor_fault` et `orp_dose_sensor_fault` (sévérité `warning`), émis **une fois par épisode** quand une sonde est **figée** ou **muette** depuis plus d'une minute et que la régulation correspondante est donc à l'arrêt. Aucun type existant n'est renommé ni supprimé. Une automation Home Assistant qui filtre les alertes par type peut les ajouter à sa liste — voir [docs/MQTT.md](MQTT.md#alertes).
+2. **Ce que l'interface affiche change**, sans qu'aucun comportement de dosage ne change. Avant la v2.25.1, l'interface annonçait « EZO indisponible » pendant les ~6 premières minutes suivant un démarrage (sonde saine, filtre en cours de stabilisation) et, plus grave, affichait « Stabilisation du filtre » sur une **vraie panne de module EZO**. Ces deux affichages disparaissent : les pannes (« Sonde figée », « Sonde muette ») et les états d'attente (« Stabilisation… », « Mesures non représentatives ») sont désormais dans deux registres visuels distincts. Voir [ADR-0049](adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md).
+
+> Firmware et filesystem doivent être mis à jour **ensemble** : l'interface consomme deux nouveaux champs (`phDoseBlockedCode` / `orpDoseBlockedCode`). Un filesystem à jour sur un firmware antérieur reste fonctionnel (il retombe sur l'affichage du texte servi par le firmware), mais ne bénéficie pas du correctif.
+
+### Consigne pH bornée à 7,20 – 7,50 et seuils de dosage refondus — depuis v2.25.0 (2026-08-27)
+
+La consigne pH n'accepte plus que des valeurs comprises entre **7,20** et **7,50**, par pas de **0,10**, dans l'interface web comme depuis Home Assistant, et **pour les deux types de produit** (pH− comme pH+).
+
+- **Borne basse 7,20** : sous 7,2 l'eau devient agressive pour le liner, les joints et les parties métalliques, elle est inconfortable et elle consomme le TAC.
+- **Borne haute 7,50, et non 7,60** : au-dessus de 7,60 la fraction de chlore actif tombe sous 25 %. À **7,60 pile**, la consigne atteindrait le seuil d'inhibition du chlore : la désinfection serait suspendue **en permanence** dès que la régulation tient sa consigne — une panne sanitaire silencieuse (l'eau paraît bien régulée, le désinfectant ne monte jamais).
+
+**Migration automatique, aucune action requise dans le cas nominal.** Au premier démarrage après mise à jour, une consigne enregistrée hors de cette plage est :
+
+1. **ramenée** à la borne la plus proche (7,20 ou 7,50) ;
+2. **journalisée** : `Consigne pH NVS hors plage (7.60) — clampée à 7.50 (plage autorisée 7.20 - 7.50).` ;
+3. **réécrite en NVS** immédiatement, pour que la correction survive au redémarrage suivant.
+
+> ⚠️ **Si votre bassin était régulé à 7,60**, la consigne effective **descend à 7,50** après mise à jour. C'est volontaire : à 7,60 le chlore aurait été inhibé en continu. Vérifier le réglage dans **pH → Régulation**.
+>
+> ⚠️ **Si votre bassin était régulé sous 7,2**, la consigne effective **remonte**. Si votre motivation était l'efficacité du chlore, agir plutôt sur le **TAC / stabilisant** — le gain d'acide hypochloreux entre 7,2 et 7,0 ne compense pas la corrosion permanente.
+
+Une valeur hors plage envoyée après la mise à jour est **refusée** (HTTP `400` sur `/save-config`, refus + resynchronisation sur MQTT), jamais écrêtée en silence. Dans la plage, une valeur non alignée sur le pas de 0,10 est alignée au plus proche. Le `number` « Consigne pH » de Home Assistant est réaligné automatiquement sur les nouvelles bornes ; son `unique_id` est inchangé, **l'entité et son historique sont conservés**.
+
+**L'offset pH passe à un pas de 0,10** (était 0,01) : une valeur enregistrée hors pas (0,47) est arrondie au plus proche (0,50) au premier démarrage. L'écart maximal introduit est de 0,05 pH, soit le bruit résiduel du filtre de mesure — aucun effet mesurable sur la régulation.
+
+#### Seuils de sécurité du dosage pH : fixes, et sur le pH affiché
+
+Les seuils qui refusent un dosage ne sont plus calculés en fonction de l'offset : ce sont désormais des **valeurs fixes**, portant sur le **pH affiché** (offset compris).
+
+| Situation | Seuil |
+|---|---:|
+| Refus d'injecter de l'acide (pH−) | sous **6,70** |
+| Refus d'injecter de la base (pH+) | au-dessus de **7,60** |
+| Suspension du dosage de chlore (pH trop haut) | au-dessus de **7,60** |
+| Avertissement d'eau acide, **sans blocage** | sous **7,00** |
+
+Deux **butées de dernier recours** restent sur la mesure brute du capteur (sans offset), pour le cas où l'offset serait mal réglé : **6,20** et **8,10**.
+
+Conséquences pour l'utilisateur :
+
+- **Les installations à offset pH non nul qui subissaient des refus de dosage à répétition retrouvent une régulation normale** — aucune action requise. Avec un offset de +0,50 et une consigne de 7,20, la régulation dispose de 0,50 pH de marge avant tout refus.
+- **Le dosage de pH+ est encadré pour la première fois** : si vous utilisez un produit basique, un refus peut désormais survenir au-dessus de 7,60 (auparavant aucun seuil ne s'appliquait).
+- ⚠️ **Deux alertes MQTT sont renommées** : `ph_raw_floor` devient **`ph_guard`** et `orp_ph_raw_inhibit` devient **`orp_ph_inhibit`**. Deux alertes sont ajoutées (`ph_low_warning`, `ph_guard_scheduled`) et une est supprimée (`ph_target_unreachable`). **Si vous avez une automation Home Assistant filtrant sur les anciens noms, mettez-la à jour.**
+- **Nouvel avertissement avant une injection manuelle qui contourne une sécurité** : quand une butée sur la mesure brute est active, un encart l'explique au-dessus du bouton et une confirmation est demandée. L'injection manuelle reste possible — c'est votre dernier recours — mais elle n'est plus silencieuse.
+
+Décision, alternatives écartées et compromis assumés : [ADR-0048](adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md).
+
 ### Changer de bootloader — flash USB obligatoire (core 3 par défaut, v2.20.4)
 
 Depuis la **v2.20.4**, l'environnement de build par défaut est le **core Arduino 3.x / ESP-IDF 5** (`esp32dev_core3`), **bootloader ET application** — voir [ADR-0042](adr/0042-core3-environnement-par-defaut.md).

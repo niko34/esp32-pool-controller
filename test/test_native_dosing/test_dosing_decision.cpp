@@ -16,8 +16,10 @@
 
 #include <unity.h>
 #include <math.h>  // C header uniquement (libc++ <cmath> indisponible sur l'hôte)
+#include <stdio.h>  // snprintf : diagnostic des balayages combinatoires
 #include "dosing_logic.h"
 #include "pulse_dosing_logic.h"  // itération 2 : proportionnel de temps (option B+C)
+#include "constants.h"           // kDoseSensorFaultAlertDelayMs (verrou de seuil)
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -1363,14 +1365,16 @@ void test_F011_planned_flow_diagnostic(void) {
 // =============================================================================
 // feature-053 — Mode Boost : cible ORP et limite chlore effectives PURES
 // =============================================================================
-// Constantes de référence (constants.h) :
-//   kBoostOrpDeltaMv = 60, kBoostOrpCeilingMv = 850,
-//   kBoostDailyFactor = 1.5, kBoostDailyHardCapMl = 1000.
+// Constantes de référence RECOPIÉES À LA MAIN depuis constants.h (valeurs
+// attendues : 60 / 850 / 1.5 / 1000). La recopie est VOLONTAIRE — c'est elle qui
+// fait le verrou : une dérive de constants.h doit faire échouer ces tests, pas
+// les suivre silencieusement. Préfixe `kRef` (v2.25.1) pour cohabiter avec
+// l'inclusion de constants.h ajoutée en tête de fichier.
 // L'effet boost est STRICTEMENT réservé au mode ORP "automatic".
-static const float kBoostOrpDeltaMv = 60.0f;
-static const float kBoostOrpCeilingMv = 850.0f;
-static const float kBoostDailyFactor = 1.5f;
-static const float kBoostDailyHardCapMl = 1000.0f;
+static const float kRefBoostOrpDeltaMv = 60.0f;
+static const float kRefBoostOrpCeilingMv = 850.0f;
+static const float kRefBoostDailyFactor = 1.5f;
+static const float kRefBoostDailyHardCapMl = 1000.0f;
 
 // -----------------------------------------------------------------------------
 // effectiveOrpTargetPure
@@ -1378,42 +1382,42 @@ static const float kBoostDailyHardCapMl = 1000.0f;
 void test_F053_orp_boost_off_target_unchanged(void) {
   // Boost inactif → cible inchangée (même si mode automatic).
   float t = effectiveOrpTargetPure(720.0f, false, true,
-                                   kBoostOrpDeltaMv, kBoostOrpCeilingMv);
+                                   kRefBoostOrpDeltaMv, kRefBoostOrpCeilingMv);
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 720.0f, t);
 }
 
 void test_F053_orp_boost_on_automatic_adds_delta(void) {
   // Boost actif + automatic → cible + 60 mV (sous le plafond).
   float t = effectiveOrpTargetPure(720.0f, true, true,
-                                   kBoostOrpDeltaMv, kBoostOrpCeilingMv);
+                                   kRefBoostOrpDeltaMv, kRefBoostOrpCeilingMv);
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 780.0f, t);
 }
 
 void test_F053_orp_boost_ceiling_caps(void) {
   // 820 + 60 = 880 → plafonné à 850.
   float t = effectiveOrpTargetPure(820.0f, true, true,
-                                   kBoostOrpDeltaMv, kBoostOrpCeilingMv);
+                                   kRefBoostOrpDeltaMv, kRefBoostOrpCeilingMv);
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 850.0f, t);
 }
 
 void test_F053_orp_target_above_ceiling_never_lowered(void) {
   // Cible déjà > plafond (880) → RESTE 880, jamais abaissée (condition #5).
   float t = effectiveOrpTargetPure(880.0f, true, true,
-                                   kBoostOrpDeltaMv, kBoostOrpCeilingMv);
+                                   kRefBoostOrpDeltaMv, kRefBoostOrpCeilingMv);
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 880.0f, t);
 }
 
 void test_F053_orp_boost_on_non_automatic_unchanged(void) {
   // Boost actif mais mode NON automatic → cible inchangée (condition #1).
   float t = effectiveOrpTargetPure(720.0f, true, false,
-                                   kBoostOrpDeltaMv, kBoostOrpCeilingMv);
+                                   kRefBoostOrpDeltaMv, kRefBoostOrpCeilingMv);
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 720.0f, t);
 }
 
 void test_F053_orp_boundary_exact_ceiling(void) {
   // Frontière : 790 + 60 = 850 exact (= plafond) → 850.
   float t = effectiveOrpTargetPure(790.0f, true, true,
-                                   kBoostOrpDeltaMv, kBoostOrpCeilingMv);
+                                   kRefBoostOrpDeltaMv, kRefBoostOrpCeilingMv);
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 850.0f, t);
 }
 
@@ -1423,35 +1427,35 @@ void test_F053_orp_boundary_exact_ceiling(void) {
 void test_F053_chlorine_boost_off_unchanged(void) {
   // Boost inactif → limite inchangée (même si mode automatic).
   float m = effectiveMaxChlorinePure(500.0f, false, true,
-                                     kBoostDailyFactor, kBoostDailyHardCapMl);
+                                     kRefBoostDailyFactor, kRefBoostDailyHardCapMl);
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 500.0f, m);
 }
 
 void test_F053_chlorine_boost_on_automatic_x_factor(void) {
   // Boost actif + automatic → limite × 1.5 (500 → 750, sous le hard cap).
   float m = effectiveMaxChlorinePure(500.0f, true, true,
-                                     kBoostDailyFactor, kBoostDailyHardCapMl);
+                                     kRefBoostDailyFactor, kRefBoostDailyHardCapMl);
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 750.0f, m);
 }
 
 void test_F053_chlorine_hard_cap(void) {
   // 800 × 1.5 = 1200 → plafonné en dur à 1000 (condition #1).
   float m = effectiveMaxChlorinePure(800.0f, true, true,
-                                     kBoostDailyFactor, kBoostDailyHardCapMl);
+                                     kRefBoostDailyFactor, kRefBoostDailyHardCapMl);
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 1000.0f, m);
 }
 
 void test_F053_chlorine_boost_on_non_automatic_unchanged(void) {
   // Boost actif mais mode NON automatic → limite inchangée (condition #1).
   float m = effectiveMaxChlorinePure(500.0f, true, false,
-                                     kBoostDailyFactor, kBoostDailyHardCapMl);
+                                     kRefBoostDailyFactor, kRefBoostDailyHardCapMl);
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 500.0f, m);
 }
 
 void test_F053_chlorine_boundary_near_hard_cap(void) {
   // Frontière : 667 × 1.5 = 1000,5 → plafonné à 1000 (juste au-dessus du cap).
   float m = effectiveMaxChlorinePure(667.0f, true, true,
-                                     kBoostDailyFactor, kBoostDailyHardCapMl);
+                                     kRefBoostDailyFactor, kRefBoostDailyHardCapMl);
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 1000.0f, m);
 }
 
@@ -2355,6 +2359,459 @@ void test_F073_regime_normal_balayage_identique_planPulse(void) {
   }
 }
 
+// =============================================================================
+// V2251 — Qualification des causes de refus par l'état interne du filtre
+// =============================================================================
+// Contexte du défaut corrigé : l'UI devinait la cause par sous-chaînes dans une
+// phrase française, et l'ancienne cause FilterNotReady conflatait « warmup » et
+// « EZO injoignable » — une VRAIE panne de sonde s'affichait donc comme une
+// stabilisation normale. Le firmware sert désormais un CODE machine.
+//
+// Ce que ces tests protègent, dans l'ordre d'importance :
+//   1. le VERDICT (`allowed`) est strictement inchangé, quel que soit
+//      `filterState` : le correctif ne renomme que la cause ;
+//   2. la priorité « pannes d'abord » de resolveFilterState() ;
+//   3. le contrat de sérialisation (valeurs numériques figées).
+
+// --- Oracle de verdict INDÉPENDANT DE L'ORDRE des gardes ---------------------
+// Conjonction pure des 14 conditions : ne reproduit NI l'ordre, NI la structure
+// de evaluateDose. Si l'implémentation ajoutait/retirait une condition (ce que le
+// correctif ne doit surtout pas faire), l'oracle divergerait.
+static bool allGuardsPassOracle(const DoseInputs& in) {
+  if (!in.watchdogActive) return false;
+  if (!in.waterPresent) return false;
+  if (isnan(in.reading)) return false;
+  if (!in.filterReady) return false;
+  if (in.filterUnstable) return false;
+  if (in.calPoints < in.requiredPoints) return false;
+  if (in.stabilizationActive) return false;
+  if (in.mixingActive) return false;
+  if (!in.modeAutomatic) return false;
+  if (in.dailyInjectedMl >= in.maxDailyMl) return false;
+  if (in.hourlyLimitMs > 0 && in.usedMs >= in.hourlyLimitMs) return false;
+  if (in.cyclesToday >= in.maxCyclesPerDay) return false;
+  if (in.cyclesLastMin >= in.maxCyclesPerMin) return false;
+  if (in.cyclesLast15Min >= in.maxCyclesPer15Min) return false;
+  return true;
+}
+
+// Les 6 valeurs de DoseFilterState (l'énum d'entrée, non sérialisé).
+static const DoseFilterState kAllFilterStates[6] = {
+    DoseFilterState::Unknown, DoseFilterState::Ready,  DoseFilterState::Warmup,
+    DoseFilterState::Frozen,  DoseFilterState::Stale,  DoseFilterState::GateClosed};
+
+// Cause ATTENDUE pour l'état `st`, dérivée de la cause de référence obtenue avec
+// filterState = Unknown : seules les deux familles qualifiables changent de nom.
+static DoseRefusal expectedQualified(DoseRefusal ref, DoseFilterState st) {
+  if (ref == DoseRefusal::ReadingNaN) {
+    switch (st) {
+      case DoseFilterState::Warmup:     return DoseRefusal::ReadingNaNWarmup;
+      case DoseFilterState::Frozen:     return DoseRefusal::ReadingNaNFrozen;
+      case DoseFilterState::Stale:      return DoseRefusal::ReadingNaNStale;
+      case DoseFilterState::GateClosed: return DoseRefusal::ReadingNaNGateClosed;
+      default:                          return DoseRefusal::ReadingNaN;
+    }
+  }
+  if (ref == DoseRefusal::FilterNotReady) {
+    switch (st) {
+      case DoseFilterState::Warmup:     return DoseRefusal::FilterWarmup;
+      case DoseFilterState::Frozen:     return DoseRefusal::FilterFrozen;
+      case DoseFilterState::Stale:      return DoseRefusal::FilterStale;
+      case DoseFilterState::GateClosed: return DoseRefusal::FilterGateClosed;
+      default:                          return DoseRefusal::FilterNotReady;
+    }
+  }
+  return ref;  // toutes les autres causes IGNORENT filterState
+}
+
+// --- Pré-condition d'égalité flottante --------------------------------------
+// Le balayage ci-dessous casse les gardes journalière/horaire EN S'APPUYANT sur
+// les frontières `>=` à égalité exacte. Si les valeurs choisies n'étaient pas
+// représentables en float32, la garde ne se déclencherait pas et le balayage
+// passerait au vert en n'exerçant JAMAIS ces branches. On le vérifie AVANT.
+void test_V2251_precondition_frontieres_flottantes_exactes(void) {
+  const float kMaxDaily = 500.0f;
+  const float kAtLimit = 500.0f;
+  TEST_ASSERT_TRUE_MESSAGE(kAtLimit == kMaxDaily,
+      "500.0f doit etre exactement representable, sinon la garde DailyLimit "
+      "n'est jamais exercee par le balayage");
+  DoseInputs in = validInputs();
+  in.maxDailyMl = kMaxDaily;
+  in.dailyInjectedMl = kAtLimit;
+  TEST_ASSERT_EQUAL_MESSAGE(DoseRefusal::DailyLimit, evaluateDose(in).cause,
+      "frontiere journaliere >= reellement atteinte a egalite");
+  in = validInputs();
+  in.hourlyLimitMs = 600000UL;
+  in.usedMs = 600000UL;
+  TEST_ASSERT_EQUAL_MESSAGE(DoseRefusal::HourlyLimit, evaluateDose(in).cause,
+      "frontiere horaire >= reellement atteinte a egalite");
+}
+
+// --- (1) NON-RÉGRESSION DU VERDICT — balayage 2^14 × 6 états -----------------
+// Pour chacune des 16 384 combinaisons de gardes passantes/échouantes, et pour
+// chacun des 6 états de filtre :
+//   * `allowed` == oracle indépendant (le verdict ne dépend JAMAIS de
+//     filterState : aucune condition ajoutée ni retirée par le correctif) ;
+//   * `allowed` == (cause == None) (cohérence interne du verdict) ;
+//   * la cause est celle du cas Unknown, SAUF pour les deux familles
+//     qualifiables — donc aucune garde n'a changé de rang.
+void test_V2251_verdict_invariant_balayage_exhaustif(void) {
+  static char msg[192];
+  uint32_t causesSeen = 0;  // bitmask des DoseRefusal observés (23 valeurs)
+  for (uint32_t mask = 0; mask < (1u << 14); ++mask) {
+    DoseInputs base = validInputs();
+    base.watchdogActive     =  (mask & (1u << 0)) == 0 ? true : false;
+    base.waterPresent       =  (mask & (1u << 1)) == 0 ? true : false;
+    base.reading            =  (mask & (1u << 2)) == 0 ? 7.2f : NAN;
+    base.filterReady        =  (mask & (1u << 3)) == 0 ? true : false;
+    base.filterUnstable     =  (mask & (1u << 4)) == 0 ? false : true;
+    base.calPoints          =  (mask & (1u << 5)) == 0 ? 2 : 1;   // requis 2
+    base.stabilizationActive = (mask & (1u << 6)) == 0 ? false : true;
+    base.mixingActive       =  (mask & (1u << 7)) == 0 ? false : true;
+    base.modeAutomatic      =  (mask & (1u << 8)) == 0 ? true : false;
+    base.dailyInjectedMl    =  (mask & (1u << 9)) == 0 ? 100.0f : 500.0f;  // max 500
+    base.usedMs             =  (mask & (1u << 10)) == 0 ? 60000UL : 600000UL;
+    base.cyclesToday        =  (mask & (1u << 11)) == 0 ? 3u : kMaxCyclesPerDay;
+    base.cyclesLastMin      =  (mask & (1u << 12)) == 0 ? 0 : 3;   // max 3
+    base.cyclesLast15Min    =  (mask & (1u << 13)) == 0 ? 0 : 8;   // max 8
+
+    const bool expectedAllowed = allGuardsPassOracle(base);
+
+    DoseInputs ref = base;
+    ref.filterState = DoseFilterState::Unknown;
+    const DoseRefusal refCause = evaluateDose(ref).cause;
+
+    for (int s = 0; s < 6; ++s) {
+      DoseInputs in = base;
+      in.filterState = kAllFilterStates[s];
+      DoseDecision d = evaluateDose(in);
+      causesSeen |= (1u << (uint32_t)d.cause);
+
+      if (d.allowed != expectedAllowed) {
+        snprintf(msg, sizeof(msg),
+                 "mask=%u etat=%d : verdict %d attendu %d (le correctif ne doit "
+                 "changer AUCUNE decision de dosage)",
+                 mask, s, (int)d.allowed, (int)expectedAllowed);
+        TEST_FAIL_MESSAGE(msg);
+      }
+      if (d.allowed != (d.cause == DoseRefusal::None)) {
+        snprintf(msg, sizeof(msg), "mask=%u etat=%d : allowed incoherent avec cause=%d",
+                 mask, s, (int)d.cause);
+        TEST_FAIL_MESSAGE(msg);
+      }
+      const DoseRefusal want = expectedQualified(refCause, kAllFilterStates[s]);
+      if (d.cause != want) {
+        snprintf(msg, sizeof(msg),
+                 "mask=%u etat=%d : cause=%d attendue=%d (rang de garde ou "
+                 "qualification incorrect)",
+                 mask, s, (int)d.cause, (int)want);
+        TEST_FAIL_MESSAGE(msg);
+      }
+    }
+  }
+  // Le balayage doit atteindre les 23 codes : aucun n'est mort, aucun n'est
+  // inatteignable (une cause inatteignable = une table UI jamais validée).
+  for (int c = 0; c <= 22; ++c) {
+    snprintf(msg, sizeof(msg), "code %d jamais atteint par le balayage", c);
+    TEST_ASSERT_TRUE_MESSAGE((causesSeen & (1u << (uint32_t)c)) != 0, msg);
+  }
+}
+
+// --- (2) resolveFilterState : états simples, chacun atteignable UNE fois -----
+void test_V2251_resolve_filter_state_etats_simples(void) {
+  // Aucun drapeau → Ready.
+  TEST_ASSERT_EQUAL(DoseFilterState::Ready,
+                    resolveFilterState(false, false, false, false));
+  // Un seul drapeau à la fois → l'état correspondant, exactement une fois.
+  TEST_ASSERT_EQUAL(DoseFilterState::Frozen,
+                    resolveFilterState(true, false, false, false));
+  TEST_ASSERT_EQUAL(DoseFilterState::GateClosed,
+                    resolveFilterState(false, true, false, false));
+  TEST_ASSERT_EQUAL(DoseFilterState::Stale,
+                    resolveFilterState(false, false, true, false));
+  TEST_ASSERT_EQUAL(DoseFilterState::Warmup,
+                    resolveFilterState(false, false, false, true));
+  // Unknown n'est JAMAIS produit par la composition (c'est un défaut d'entrée).
+  for (int m = 0; m < 16; ++m) {
+    DoseFilterState st = resolveFilterState((m & 1) != 0, (m & 2) != 0,
+                                            (m & 4) != 0, (m & 8) != 0);
+    TEST_ASSERT_NOT_EQUAL_MESSAGE(DoseFilterState::Unknown, st,
+        "resolveFilterState ne doit jamais rendre Unknown");
+  }
+}
+
+// --- (2 bis) Priorité PANNES D'ABORD, y compris en simultané -----------------
+// Cas critique (celui qui a réfuté le premier discriminant proposé) : une sonde
+// FIGÉE répond, donc la lecture brute paraît fraîche et la fenêtre se remplit —
+// l'état composé doit rester Frozen, JAMAIS Warmup.
+void test_V2251_resolve_filter_state_priorite_pannes_dabord(void) {
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Frozen,
+      resolveFilterState(true, false, false, true),
+      "sonde figee + fenetre en remplissage => Frozen (une panne ne doit jamais "
+      "etre maquillee en stabilisation normale)");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Frozen,
+      resolveFilterState(true, false, true, false), "figee + perimee => Frozen");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Frozen,
+      resolveFilterState(true, true, false, false), "figee + porte fermee => Frozen");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Frozen,
+      resolveFilterState(true, true, true, true), "les 4 => Frozen (panne la plus grave)");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::GateClosed,
+      resolveFilterState(false, true, true, false),
+      "porte fermee + perime => GateClosed (l'age croit PAR CONCEPTION porte "
+      "fermee : accuser la sonde serait faux)");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::GateClosed,
+      resolveFilterState(false, true, false, true), "porte fermee + warmup => GateClosed");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::GateClosed,
+      resolveFilterState(false, true, true, true), "porte fermee + perime + warmup => GateClosed");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Stale,
+      resolveFilterState(false, false, true, true),
+      "perime + warmup => Stale (sonde muette depuis le boot : panne d'abord)");
+}
+
+// --- (2 ter) Balayage exhaustif des 16 combinaisons -------------------------
+// Table attendue indépendante : Frozen > GateClosed > Stale > Warmup > Ready.
+// Vérifie aussi que les 5 états sont TOUS atteignables.
+void test_V2251_resolve_filter_state_balayage_16_combinaisons(void) {
+  bool seen[6] = {false, false, false, false, false, false};
+  for (int m = 0; m < 16; ++m) {
+    const bool frozen = (m & 1) != 0;
+    const bool gate = (m & 2) != 0;
+    const bool stale = (m & 4) != 0;
+    const bool warm = (m & 8) != 0;
+    DoseFilterState want = DoseFilterState::Ready;
+    if (frozen) want = DoseFilterState::Frozen;
+    else if (gate) want = DoseFilterState::GateClosed;
+    else if (stale) want = DoseFilterState::Stale;
+    else if (warm) want = DoseFilterState::Warmup;
+    DoseFilterState got = resolveFilterState(frozen, gate, stale, warm);
+    TEST_ASSERT_EQUAL(want, got);
+    seen[(int)got] = true;
+  }
+  TEST_ASSERT_TRUE(seen[(int)DoseFilterState::Ready]);
+  TEST_ASSERT_TRUE(seen[(int)DoseFilterState::Warmup]);
+  TEST_ASSERT_TRUE(seen[(int)DoseFilterState::Frozen]);
+  TEST_ASSERT_TRUE(seen[(int)DoseFilterState::Stale]);
+  TEST_ASSERT_TRUE(seen[(int)DoseFilterState::GateClosed]);
+  TEST_ASSERT_FALSE(seen[(int)DoseFilterState::Unknown]);
+}
+
+// --- Qualification de la garde 3 (lecture NaN) -------------------------------
+void test_V2251_qualification_reading_nan_par_etat(void) {
+  const DoseFilterState states[4] = {
+      DoseFilterState::Warmup, DoseFilterState::Frozen,
+      DoseFilterState::Stale, DoseFilterState::GateClosed};
+  const DoseRefusal wants[4] = {
+      DoseRefusal::ReadingNaNWarmup, DoseRefusal::ReadingNaNFrozen,
+      DoseRefusal::ReadingNaNStale, DoseRefusal::ReadingNaNGateClosed};
+  for (int i = 0; i < 4; ++i) {
+    DoseInputs in = validInputs();
+    in.reading = NAN;
+    in.filterState = states[i];
+    DoseDecision d = evaluateDose(in);
+    TEST_ASSERT_FALSE(d.allowed);
+    TEST_ASSERT_EQUAL(wants[i], d.cause);
+  }
+  // Unknown / Ready (état incohérent avec le refus) → cause GÉNÉRIQUE : on
+  // n'invente jamais une cause bénigne à partir d'un état non collecté.
+  DoseInputs in = validInputs();
+  in.reading = NAN;
+  in.filterState = DoseFilterState::Unknown;
+  TEST_ASSERT_EQUAL(DoseRefusal::ReadingNaN, evaluateDose(in).cause);
+  in.filterState = DoseFilterState::Ready;
+  TEST_ASSERT_EQUAL(DoseRefusal::ReadingNaN, evaluateDose(in).cause);
+}
+
+// --- Qualification de la garde 3b (filtre non prêt) --------------------------
+void test_V2251_qualification_filter_not_ready_par_etat(void) {
+  const DoseFilterState states[4] = {
+      DoseFilterState::Warmup, DoseFilterState::Frozen,
+      DoseFilterState::Stale, DoseFilterState::GateClosed};
+  const DoseRefusal wants[4] = {
+      DoseRefusal::FilterWarmup, DoseRefusal::FilterFrozen,
+      DoseRefusal::FilterStale, DoseRefusal::FilterGateClosed};
+  for (int i = 0; i < 4; ++i) {
+    DoseInputs in = validInputs();
+    in.filterReady = false;
+    in.filterState = states[i];
+    DoseDecision d = evaluateDose(in);
+    TEST_ASSERT_FALSE(d.allowed);
+    TEST_ASSERT_EQUAL(wants[i], d.cause);
+  }
+  DoseInputs in = validInputs();
+  in.filterReady = false;
+  in.filterState = DoseFilterState::Unknown;
+  TEST_ASSERT_EQUAL(DoseRefusal::FilterNotReady, evaluateDose(in).cause);
+  in.filterState = DoseFilterState::Ready;
+  TEST_ASSERT_EQUAL(DoseRefusal::FilterNotReady, evaluateDose(in).cause);
+}
+
+// --- Scénario de production : panne EZO annoncée comme panne, pas comme warmup
+void test_V2251_panne_ezo_nest_plus_annoncee_comme_stabilisation(void) {
+  // Sonde figée (répond, valeur constante) : la fenêtre est pleine et fraîche,
+  // mais ready() est faux. Avant le correctif : « warmup / EZO injoignable ».
+  DoseInputs in = validInputs();
+  in.filterReady = false;
+  in.filterState = resolveFilterState(/*frozen*/ true, /*gate*/ false,
+                                      /*stale*/ false, /*warmingUp*/ false);
+  DoseDecision d = evaluateDose(in);
+  TEST_ASSERT_FALSE(d.allowed);
+  TEST_ASSERT_EQUAL_MESSAGE(DoseRefusal::FilterFrozen, d.cause,
+      "une vraie panne de sonde ne doit PLUS partager son code avec le warmup");
+  TEST_ASSERT_NOT_EQUAL(DoseRefusal::FilterWarmup, d.cause);
+
+  // Symétrique : warmup légitime au boot → code de warmup, jamais un code de panne.
+  in.filterState = resolveFilterState(false, false, false, true);
+  d = evaluateDose(in);
+  TEST_ASSERT_EQUAL(DoseRefusal::FilterWarmup, d.cause);
+  TEST_ASSERT_NOT_EQUAL(DoseRefusal::FilterFrozen, d.cause);
+  TEST_ASSERT_NOT_EQUAL(DoseRefusal::FilterStale, d.cause);
+}
+
+// --- Initialiseur fail-closed d'observabilité -------------------------------
+void test_V2251_filter_state_defaut_est_unknown(void) {
+  DoseInputs in;  // agrégat NON value-initialisé : seul filterState a un défaut
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Unknown, in.filterState,
+      "sans initialiseur de membre, un site de collecte lirait une valeur "
+      "indeterminee et pourrait afficher une cause fausse");
+  // validInputs() ne renseigne PAS filterState → les tests historiques (T6/T7/T18)
+  // exercent bien les causes génériques : c'est ce qui les rend inchangés.
+  DoseInputs v = validInputs();
+  TEST_ASSERT_EQUAL(DoseFilterState::Unknown, v.filterState);
+}
+
+// --- (4) Contrat de sérialisation : valeurs numériques FIGÉES ----------------
+// Les codes partent sur /data et le WebSocket, et sont traduits par une table
+// côté client. Une renumérotation décalerait la table et réafficherait une
+// mauvaise cause — exactement la classe de défaut corrigée en v2.25.1.
+// Baseline vérifiée sur `git show 15a10de:src/dosing_logic.h` (0→14 implicites).
+void test_V2251_contrat_serialisation_codes_0_a_14_inchanges(void) {
+  TEST_ASSERT_EQUAL_INT(0, (int)DoseRefusal::None);
+  TEST_ASSERT_EQUAL_INT(1, (int)DoseRefusal::WatchdogInactive);
+  TEST_ASSERT_EQUAL_INT(2, (int)DoseRefusal::FiltrationOff);
+  TEST_ASSERT_EQUAL_INT(3, (int)DoseRefusal::ReadingNaN);
+  TEST_ASSERT_EQUAL_INT(4, (int)DoseRefusal::FilterNotReady);
+  TEST_ASSERT_EQUAL_INT(5, (int)DoseRefusal::FilterUnstable);
+  TEST_ASSERT_EQUAL_INT(6, (int)DoseRefusal::CalibrationInsufficient);
+  TEST_ASSERT_EQUAL_INT(7, (int)DoseRefusal::StabilizationActive);
+  TEST_ASSERT_EQUAL_INT(8, (int)DoseRefusal::MixingActive);
+  TEST_ASSERT_EQUAL_INT(9, (int)DoseRefusal::ModeNotAutomatic);
+  TEST_ASSERT_EQUAL_INT(10, (int)DoseRefusal::DailyLimit);
+  TEST_ASSERT_EQUAL_INT(11, (int)DoseRefusal::HourlyLimit);
+  TEST_ASSERT_EQUAL_INT(12, (int)DoseRefusal::CyclesPerDay);
+  TEST_ASSERT_EQUAL_INT(13, (int)DoseRefusal::BurstPerMinute);
+  TEST_ASSERT_EQUAL_INT(14, (int)DoseRefusal::BurstPer15Min);
+}
+
+void test_V2251_contrat_serialisation_nouveaux_codes_15_a_22(void) {
+  TEST_ASSERT_EQUAL_INT(15, (int)DoseRefusal::ReadingNaNWarmup);
+  TEST_ASSERT_EQUAL_INT(16, (int)DoseRefusal::ReadingNaNFrozen);
+  TEST_ASSERT_EQUAL_INT(17, (int)DoseRefusal::ReadingNaNStale);
+  TEST_ASSERT_EQUAL_INT(18, (int)DoseRefusal::ReadingNaNGateClosed);
+  TEST_ASSERT_EQUAL_INT(19, (int)DoseRefusal::FilterWarmup);
+  TEST_ASSERT_EQUAL_INT(20, (int)DoseRefusal::FilterFrozen);
+  TEST_ASSERT_EQUAL_INT(21, (int)DoseRefusal::FilterStale);
+  TEST_ASSERT_EQUAL_INT(22, (int)DoseRefusal::FilterGateClosed);
+  // Les nouveaux codes sont AJOUTÉS EN FIN : tous > BurstPer15Min (14), et le
+  // bloc est contigu (aucun trou, aucune insertion au milieu).
+  TEST_ASSERT_TRUE((int)DoseRefusal::ReadingNaNWarmup >
+                   (int)DoseRefusal::BurstPer15Min);
+  // DoseFilterState est un enum d'ENTRÉE : ses valeurs ne sont pas transportées,
+  // mais elles indexent les tables locales ci-dessus — on les verrouille aussi.
+  TEST_ASSERT_EQUAL_INT(0, (int)DoseFilterState::Unknown);
+  TEST_ASSERT_EQUAL_INT(1, (int)DoseFilterState::Ready);
+  TEST_ASSERT_EQUAL_INT(2, (int)DoseFilterState::Warmup);
+  TEST_ASSERT_EQUAL_INT(3, (int)DoseFilterState::Frozen);
+  TEST_ASSERT_EQUAL_INT(4, (int)DoseFilterState::Stale);
+  TEST_ASSERT_EQUAL_INT(5, (int)DoseFilterState::GateClosed);
+}
+
+// =============================================================================
+// ÉPISODE de panne de mesure (revue v2.25.1) — couverture PARTIELLE, délimitée
+// =============================================================================
+// PÉRIMÈTRE DE CE TEST — à lire avant de le croire complet.
+// La machine d'état de l'épisode (`_sensorFaultActive` / `_sensorFaultSinceMs` /
+// `_sensorFaultAlerted`, fenêtre kDoseSensorFaultAlertDelayMs) vit dans
+// PumpControllerClass::logRefusalOnce() : elle dépend de millis(), systemLogger et
+// mqttManager, donc elle N'EST PAS testable en env:native, et la dupliquer ici
+// produirait un test en trompe-l'œil (on testerait la copie, pas le code livré).
+// Ce test couvre ce qui EST pur : les ENTRÉES de cette machine, c'est-à-dire
+//   (a) la PRÉMISSE du défaut corrigé — une panne de mesure CONTINUE peut faire
+//       varier le code de refus (20 ↔ 21), ce qui redatait la fenêtre ;
+//   (b) la FRONTIÈRE de classification — quels codes sont des pannes et quels
+//       codes n'en sont pas (une erreur ici enverrait l'alerte sur un warmup, ou
+//       la retiendrait sur une panne) ;
+//   (c) la valeur de la temporisation.
+// La chronologie (redatation, alerte unique, clôture d'épisode) reste couverte
+// UNIQUEMENT par les scénarios d'intégration manuels du rapport de test.
+void test_V2251_episode_premisse_codes_de_panne_alternent_a_panne_continue(void) {
+  // Un seul et même épisode : la mesure est en panne de bout en bout, seule la
+  // NATURE de la panne change (EZO agonisant : figé, puis plus aucune mesure
+  // acceptée, puis figé de nouveau). Chaque phase produit un code DIFFÉRENT.
+  DoseInputs in = validInputs();
+  in.filterReady = false;
+
+  in.filterState = resolveFilterState(/*frozen*/ true, /*gate*/ false,
+                                      /*stale*/ false, /*warmingUp*/ false);
+  const DoseRefusal phase1 = evaluateDose(in).cause;
+
+  in.filterState = resolveFilterState(/*frozen*/ false, /*gate*/ false,
+                                      /*stale*/ true, /*warmingUp*/ false);
+  const DoseRefusal phase2 = evaluateDose(in).cause;
+
+  in.filterState = resolveFilterState(true, false, false, false);
+  const DoseRefusal phase3 = evaluateDose(in).cause;
+
+  TEST_ASSERT_EQUAL(DoseRefusal::FilterFrozen, phase1);
+  TEST_ASSERT_EQUAL(DoseRefusal::FilterStale, phase2);
+  TEST_ASSERT_EQUAL(DoseRefusal::FilterFrozen, phase3);
+  TEST_ASSERT_TRUE_MESSAGE(phase1 != phase2,
+      "PREMISSE du defaut corrige : une panne CONTINUE change de code => une "
+      "fenetre redatee sur tout changement de code n'expirait jamais");
+  TEST_ASSERT_EQUAL_MESSAGE(phase1, phase3,
+      "le retour a la nature initiale ne doit pas etre pris pour un nouvel episode");
+
+  // La même alternance existe sur la famille « lecture NaN » (garde 3) : l'épisode
+  // doit rester ouvert quand la panne bascule ENTRE les deux familles.
+  in.filterReady = true;
+  in.reading = NAN;
+  in.filterState = resolveFilterState(true, false, false, false);
+  TEST_ASSERT_EQUAL(DoseRefusal::ReadingNaNFrozen, evaluateDose(in).cause);
+  in.filterState = resolveFilterState(false, false, true, false);
+  TEST_ASSERT_EQUAL(DoseRefusal::ReadingNaNStale, evaluateDose(in).cause);
+}
+
+// (b) Frontière de classification + (c) temporisation.
+// Les quatre codes de PANNE sont exactement {16, 17, 20, 21} ; les qualifications
+// bénignes (warmup, porte fermée) et les causes génériques n'en font pas partie.
+// Ce verrou est la contrepartie testable de la liste `sensorFault` de
+// pump_controller.cpp : si un code y était ajouté ou retiré, la liste des codes
+// « PANNE » documentée dans dosing_logic.h et ici divergerait.
+void test_V2251_episode_frontiere_de_classification_et_temporisation(void) {
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(60000UL, kDoseSensorFaultAlertDelayMs,
+      "temporisation d'alerte de panne de mesure : 60 s (ecarte le transitoire de "
+      "reamorcage du filtre a la reprise de circulation)");
+
+  // PANNES (la regulation est a l'arret et la sonde est en cause).
+  const DoseRefusal faults[4] = {
+      DoseRefusal::ReadingNaNFrozen, DoseRefusal::ReadingNaNStale,
+      DoseRefusal::FilterFrozen, DoseRefusal::FilterStale};
+  const int wants[4] = {16, 17, 20, 21};
+  for (int i = 0; i < 4; ++i) TEST_ASSERT_EQUAL_INT(wants[i], (int)faults[i]);
+
+  // NON-PANNES : etats normaux ou blocage voulu par le systeme. Alerter ici
+  // banaliserait l'alerte (demarrage de filtration, purge, boot).
+  const DoseRefusal benign[6] = {
+      DoseRefusal::ReadingNaNWarmup, DoseRefusal::ReadingNaNGateClosed,
+      DoseRefusal::FilterWarmup, DoseRefusal::FilterGateClosed,
+      DoseRefusal::ReadingNaN, DoseRefusal::FilterNotReady};
+  for (int i = 0; i < 6; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      TEST_ASSERT_TRUE_MESSAGE(benign[i] != faults[j],
+          "un etat benin ne doit JAMAIS partager le code d'une panne");
+    }
+  }
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   // T2 — hystérésis de démarrage.
@@ -2496,5 +2953,21 @@ int main(int, char **) {
   RUN_TEST(test_F073_carry_entree_suspect_reset_defensif);
   RUN_TEST(test_F073_pulse_jamais_hors_domaine);
   RUN_TEST(test_F073_regime_normal_balayage_identique_planPulse);
+  // V2251 — qualification des causes de refus par l'état interne du filtre.
+  RUN_TEST(test_V2251_precondition_frontieres_flottantes_exactes);
+  RUN_TEST(test_V2251_verdict_invariant_balayage_exhaustif);
+  RUN_TEST(test_V2251_resolve_filter_state_etats_simples);
+  RUN_TEST(test_V2251_resolve_filter_state_priorite_pannes_dabord);
+  RUN_TEST(test_V2251_resolve_filter_state_balayage_16_combinaisons);
+  RUN_TEST(test_V2251_qualification_reading_nan_par_etat);
+  RUN_TEST(test_V2251_qualification_filter_not_ready_par_etat);
+  RUN_TEST(test_V2251_panne_ezo_nest_plus_annoncee_comme_stabilisation);
+  RUN_TEST(test_V2251_filter_state_defaut_est_unknown);
+  RUN_TEST(test_V2251_contrat_serialisation_codes_0_a_14_inchanges);
+  RUN_TEST(test_V2251_contrat_serialisation_nouveaux_codes_15_a_22);
+  // Épisode de panne de mesure : entrées de la machine d'état (couverture
+  // partielle assumée — la chronologie vit dans PumpControllerClass).
+  RUN_TEST(test_V2251_episode_premisse_codes_de_panne_alternent_a_panne_continue);
+  RUN_TEST(test_V2251_episode_frontiere_de_classification_et_temporisation);
   return UNITY_END();
 }

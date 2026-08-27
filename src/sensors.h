@@ -9,6 +9,7 @@
 #include <DallasTemperature.h>
 #include "atlas_ezo.h"
 #include "constants.h"
+#include "dosing_logic.h"  // v2.25.1 : DoseFilterState (enum PUR, aucun Arduino.h)
 #include "sensor_filter.h"
 
 // Rôle attribué à une sonde DS18B20 (feature-020)
@@ -96,14 +97,30 @@ public:
   float getPhRaw() const;             // Dernière brute pH EZO, SANS offset (NaN si stale)
   float getPhMedian() const;          // Médiane courante pH CORRIGÉE (NaN si pas de donnée)
   float getPhFiltered() const;        // pH filtré EMA CORRIGÉ — valeur PID (NaN si non amorcé)
-  // pH filtré EMA BRUT (SANS offset). Réservé aux filets de sécurité chimique
-  // qui doivent raisonner sur la mesure réelle du capteur, indépendamment d'un
-  // offset éventuellement erroné (planchers de dosage pool-chemistry,
-  // kPhRawDosingFloor / kPhRawDosingFloorWide / kPhRawOrpInhibit).
+  // pH filtré EMA BRUT (SANS offset). Réservé aux gardes de sécurité chimique
+  // (pool-chemistry). Deux usages, tous deux dans pump_controller :
+  //   - les BUTÉES de dernier recours, qui doivent raisonner sur la mesure réelle
+  //     du capteur indépendamment d'un offset erroné (kPhFloorRawHard côté acide,
+  //     kPhCeilingRawHard côté ORP) ;
+  //   - la source du pH CORRIGÉ des gardes, recalculé par applyPhOffset(), parce
+  //     que cet accesseur est le seul à porter la GARDE D'ÂGE du filtre.
   float getPhFilteredRaw() const;
   bool isPhFilterReady() const;       // true après warmup + dernière mesure valide récente
   bool isPhFilterUnstable() const;    // true si trop de rejets consécutifs
   uint8_t getPhRejectedCount() const; // Compteur glissant de rejets pH
+
+  // ===== v2.25.1 : POURQUOI le filtre n'est pas prêt (observabilité) =========
+  // `is*FilterReady()` est faux pour quatre raisons physiquement distinctes
+  // (fenêtre incomplète, mesure absente/périmée, capteur figé, porte
+  // d'alimentation fermée). Ces accesseurs rendent l'état INTERNE du filtre,
+  // composé par resolveFilterState() (priorité : pannes d'abord). Consommés par
+  // canDose() pour QUALIFIER la cause de refus — jamais pour décider du dosage.
+  // ⚠️ Ne JAMAIS reconstruire ce diagnostic depuis getPhRaw() : le cache brut est
+  // alimenté par toute lecture, donc frais même sur une sonde figée → il
+  // conclurait « warmup » sur une panne (défaut corrigé en v2.25.1).
+  // Lock-free, même contrat de concurrence que is*FilterReady() (loopTask).
+  DoseFilterState getPhFilterState() const;
+  DoseFilterState getOrpFilterState() const;
 
   // v2.20.6 : amplitude (max−min) de la fenêtre médiane PLEINE, NaN sinon.
   // C'est la grandeur qui DÉCIDE du drapeau d'instabilité (comparée à

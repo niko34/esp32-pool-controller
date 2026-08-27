@@ -1495,13 +1495,30 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
       });
-      if (res.ok) return { ok: true, error: "" };
+      if (res.ok) return { ok: true, error: "", status: res.status, message: "" };
       let msg = "";
-      try { const j = await res.json(); msg = (j && j.error) ? String(j.error) : ""; } catch (e) { /* corps non JSON */ }
-      return { ok: false, error: msg || `Enregistrement refusé (HTTP ${res.status}).` };
+      let detail = "";
+      try {
+        const j = await res.json();
+        if (j && j.error) msg = String(j.error);
+        // v2.25.0 : certains refus portent une phrase d'explication complète en
+        // plus du libellé court (`error`) — ex. le 409 du gate de sécurité pH.
+        if (j && j.message) detail = String(j.message);
+      } catch (e) { /* corps non JSON */ }
+      return {
+        ok: false,
+        error: msg || `Enregistrement refusé (HTTP ${res.status}).`,
+        status: res.status,
+        message: detail,
+      };
     } catch (e) {
       // Hors ligne / contrôleur injoignable : surtout ne pas afficher « réussi ».
-      return { ok: false, error: "Contrôleur injoignable — modification non enregistrée." };
+      return {
+        ok: false,
+        error: "Contrôleur injoignable — modification non enregistrée.",
+        status: 0,
+        message: "",
+      };
     }
   }
 
@@ -1707,13 +1724,66 @@
   }
 
   // ---------- feature-067 : offset logiciel de mesure pH ----------
-  // pH corrigé = pH brut EZO + offset. Bornes alignées sur le firmware
-  // (kPhOffsetMin / kPhOffsetMax dans src/constants.h) — la validation qui FAIT FOI
-  // reste côté serveur (refus HTTP 400), ces bornes ne servent qu'au confort de saisie.
-  const PH_OFFSET_MIN = -0.50;
-  const PH_OFFSET_MAX = 0.50;
+  // pH corrigé = pH brut EZO + offset.
   const PH_OFFSET_WARN1 = 0.15;  // palier 1 : avertissement de décalage de régulation
   const PH_OFFSET_WARN2 = 0.30;  // palier 2 : offset élevé, recalibration recommandée
+
+  // ---------- v2.25.0 (B1) : bornes SERVIES PAR LE SERVEUR ----------
+  // `/get-config` publie ph_target_min/_max/_step et ph_offset_min/_max/_step,
+  // dérivés des constantes firmware (constants.h). Le client n'en code AUCUNE en
+  // dur : élargir la plage ou passer de 4 à 5 positions se fait côté firmware,
+  // sans retouche de l'UI. Aucun miroir de seuil de sécurité (plancher, plafond,
+  // inhibition ORP) ne subsiste ici : ces seuils sont FIXES côté firmware et ne
+  // dépendent plus de l'offset — l'UI n'a plus à les recalculer.
+  //
+  // Le repli ci-dessous n'est qu'une valeur de secours pour un firmware antérieur
+  // qui ne servirait pas encore ces champs : jamais une autorité.
+  const PH_BOUNDS_FALLBACK = Object.freeze({
+    targetMin: 7.20, targetMax: 7.50, targetStep: 0.10,
+    offsetMin: -0.50, offsetMax: 0.50, offsetStep: 0.10,
+  });
+  let _phBounds = Object.assign({}, PH_BOUNDS_FALLBACK);
+
+  const _phNum = (v) => (typeof v === "number" && isFinite(v)) ? v : NaN;
+  // Arrondi au centième : neutralise la dérive flottante des additions de pas
+  // (0.1 + 0.2 = 0.30000000000000004).
+  const _phRound = (v) => Math.round(v * 100) / 100;
+  const PH_EPS = 1e-9;
+
+  // Reprend les bornes de la config. Un lot incohérent (borne inversée, pas nul)
+  // ou ABSENT est ignoré EN BLOC : on conserve les bornes déjà connues. C'est
+  // indispensable — la trame de config du WebSocket ne transporte PAS ces bornes
+  // (statiques, budget de trame) et ne doit donc pas les faire retomber sur le
+  // repli entre deux appels à /get-config.
+  function _applyPhBounds(cfg) {
+    const next = Object.assign({}, _phBounds);
+    const tMin = _phNum(cfg?.ph_target_min);
+    const tMax = _phNum(cfg?.ph_target_max);
+    const tStep = _phNum(cfg?.ph_target_step);
+    if (isFinite(tMin) && isFinite(tMax) && isFinite(tStep) && tMin < tMax && tStep > 0) {
+      next.targetMin = tMin; next.targetMax = tMax; next.targetStep = tStep;
+    }
+    const oMin = _phNum(cfg?.ph_offset_min);
+    const oMax = _phNum(cfg?.ph_offset_max);
+    const oStep = _phNum(cfg?.ph_offset_step);
+    if (isFinite(oMin) && isFinite(oMax) && isFinite(oStep) && oMin < oMax && oStep > 0) {
+      next.offsetMin = oMin; next.offsetMax = oMax; next.offsetStep = oStep;
+    }
+    _phBounds = next;
+  }
+
+  // Positions du contrôle segmenté de consigne, calculées depuis les bornes.
+  // Le nombre de positions est borné (garde-fou : un pas aberrant servi par un
+  // firmware corrompu ne doit pas fabriquer des milliers de boutons).
+  function _phTargetValues() {
+    const { targetMin, targetMax, targetStep } = _phBounds;
+    let n = Math.round((targetMax - targetMin) / targetStep);
+    if (!isFinite(n) || n < 1) n = 1;
+    if (n > 20) n = 20;
+    const out = [];
+    for (let i = 0; i <= n; i++) out.push(_phRound(targetMin + i * targetStep));
+    return out;
+  }
 
   // Offset actuellement appliqué par le firmware (config, pas le champ de saisie).
   function _phOffsetValue() {
@@ -1741,22 +1811,24 @@
       box.textContent = "";
       return;
     }
-    // Consigne réelle de l'utilisateur : champ de saisie s'il est renseigné,
-    // sinon valeur enregistrée, sinon 7,20 (défaut projet).
+    // Consigne réelle de l'utilisateur : contrôle segmenté s'il est initialisé,
+    // sinon valeur enregistrée, sinon borne basse de la plage servie.
     const fieldTarget = parseFloat($("#ph_target")?.value);
     const cfgTarget = window._config?.ph_target;
     const target = isFinite(fieldTarget) ? fieldTarget
-                 : ((typeof cfgTarget === "number" && isFinite(cfgTarget)) ? cfgTarget : 7.2);
+                 : ((typeof cfgTarget === "number" && isFinite(cfgTarget))
+                      ? cfgTarget : _phBounds.targetMin);
     const regulated = target - off;
     if (Math.abs(off) >= PH_OFFSET_WARN2) {
-      // Le plancher annoncé doit être CELUI QUE LE FIRMWARE APPLIQUERA : il passe
-      // au palier large STRICTEMENT au-dessus du seuil (|offset| > 0,30), alors
-      // que cet avertissement s'affiche DÈS 0,30. À exactement 0,30, le plancher
-      // reste donc 6,80 — annoncer 6,90 serait faux (revue).
-      const floor = Math.abs(off) > PH_OFFSET_WARN2 ? "6,90" : "6,80";
-      box.textContent = `Offset élevé (${_fmtPh(off, true)} pH). La régulation visera un pH mesuré brut de `
-        + `${_fmtPh(regulated, false)}. Au-delà de 0,30, la sonde doit être recalibrée plutôt que compensée. `
-        + `Le dosage d'acide sera bloqué sous ${floor} de pH BRUT (valeur de la sonde, avant correction).`;
+      // v2.25.0 : plus AUCUN seuil annoncé ici. Les seuils de sécurité sont
+      // désormais FIXES et portent sur le pH AFFICHÉ (offset compris) : ils ne
+      // dépendent plus de l'offset, il n'y a donc plus rien à recalculer côté
+      // client — et donc plus de miroir de constante firmware à maintenir.
+      box.textContent = `Offset élevé (${_fmtPh(off, true)} pH). Si cet offset est erroné, l'eau réelle `
+        + `s'établira autour de ${_fmtPh(regulated, false)} au lieu de ${_fmtPh(target, false)}. `
+        + `Au-delà de 0,30, la sonde doit être recalibrée plutôt que compensée. `
+        + `Les seuils de sécurité du dosage portent sur le pH affiché (offset compris) : `
+        + `un offset faux les déplace d'autant sur l'eau réelle.`;
     } else {
       box.textContent = `Attention : cet offset décale la régulation. Avec une consigne de `
         + `${_fmtPh(target, false)} et cet offset, le système régulera l'eau à un pH réel de `
@@ -1764,6 +1836,272 @@
         + `Vérifiez votre mesure de référence avant d'enregistrer.`;
     }
     box.style.display = "";
+  }
+
+  // v2.25.0 — Aide sous le contrôle « pH cible ». La saisie hors plage étant
+  // devenue IMPOSSIBLE (contrôle segmenté), ce texte n'est plus un avertissement
+  // de validation : il rappelle la plage servie par le firmware et le référentiel
+  // des seuils de sécurité. Le rouge est réservé aux ÉCHECS DE SAUVEGARDE (B5,
+  // showPhTargetSaveError ci-dessous).
+  function renderPhTargetHint() {
+    const hint = $("#ph_target_hint");
+    if (!hint) return;
+    const { targetMin, targetMax, targetStep } = _phBounds;
+    hint.style.color = "";
+    hint.textContent = `Plage autorisée : ${_fmtPh(targetMin, false)} à ${_fmtPh(targetMax, false)}, `
+      + `par pas de ${_fmtPh(targetStep, false)}. Les seuils de sécurité du dosage portent sur le pH `
+      + `affiché (offset compris).`;
+  }
+
+  // B5 — Le hint rouge ne signale plus qu'un échec de SAUVEGARDE (contrôleur
+  // injoignable, refus serveur). Effacé au prochain rendu du hint, donc dès que
+  // l'utilisateur change de position ou qu'une sauvegarde réussit.
+  function showPhTargetSaveError(msg) {
+    const hint = $("#ph_target_hint");
+    if (!hint) return;
+    hint.style.color = "var(--danger)";
+    hint.textContent = msg;
+  }
+
+  // Avertissement chimique attaché à la borne HAUTE de la plage : à cette
+  // consigne le chlore est déjà nettement moins actif, et c'est précisément la
+  // raison pour laquelle la plage s'arrête là. Aucun avertissement sur la borne
+  // basse : 7,20 est une consigne d'exploitation normale (défaut du projet).
+  function renderPhTargetWarning() {
+    const box = $("#ph_target_warning");
+    if (!box) return;
+    const v = parseFloat($("#ph_target")?.value);
+    if (isFinite(v) && v >= _phBounds.targetMax - PH_EPS) {
+      box.textContent = `Consigne à la borne haute (${_fmtPh(_phBounds.targetMax, false)}) : à ce pH, `
+        + `le chlore est nettement moins actif et la désinfection perd en efficacité. `
+        + `Au-delà, le dosage de chlore serait suspendu — c'est pourquoi la plage s'arrête ici.`;
+      box.hidden = false;
+    } else {
+      box.hidden = true;
+      box.textContent = "";
+    }
+  }
+
+  // ---------- v2.25.0 : consigne pH (contrôle segmenté généré) ----------
+  const _phTargetButtons = () => $$("#ph_target_group .segmented__btn");
+
+  // (Re)génère les positions depuis les bornes serveur. Idempotent : on ne
+  // reconstruit que si la liste des valeurs a changé, pour ne pas détruire le
+  // bouton qui a le focus à chaque trame de config.
+  function buildPhTargetSegments() {
+    const group = $("#ph_target_group");
+    if (!group) return;
+    const values = _phTargetValues();
+    const signature = values.join(",");
+    if (group.dataset.signature === signature) return;
+    group.dataset.signature = signature;
+    group.textContent = "";
+    values.forEach((v) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "segmented__btn";
+      btn.setAttribute("role", "radio");
+      btn.setAttribute("aria-checked", "false");
+      btn.tabIndex = -1;  // roving tabindex : la position active passera à 0
+      btn.dataset.value = String(v);       // format machine (point décimal)
+      btn.textContent = _fmtPh(v, false);  // affichage français (virgule)
+      group.appendChild(btn);
+    });
+    // Une reconstruction efface la sélection : la rétablir TOUT DE SUITE depuis le
+    // porteur de valeur, y compris si l'utilisateur était en train de modifier —
+    // « aucune position sélectionnée » est un état interdit (B7).
+    const current = parseFloat($("#ph_target")?.value);
+    if (isFinite(current)) setPhTarget(current, true);
+  }
+
+  // Sélectionne la position correspondant à `value` et met à jour le porteur de
+  // valeur caché. `silent` = écriture programmatique (chargement de config) : ni
+  // `input` ni `change` ne sont émis, donc aucun « dirty » implicite (B6).
+  function setPhTarget(value, silent) {
+    const input = $("#ph_target");
+    const btns = _phTargetButtons();
+    if (!input || btns.length === 0) return;
+    // Position la PLUS PROCHE : une consigne héritée hors grille (7,35 d'une
+    // configuration antérieure) doit s'afficher quelque part — « aucune position
+    // sélectionnée » est un état interdit (B7).
+    const v = (typeof value === "number" && isFinite(value)) ? value : _phBounds.targetMin;
+    let best = btns[0];
+    let bestDelta = Infinity;
+    btns.forEach((b) => {
+      const d = Math.abs(parseFloat(b.dataset.value) - v);
+      if (d < bestDelta) { bestDelta = d; best = b; }
+    });
+    btns.forEach((b) => {
+      const on = (b === best);
+      b.classList.toggle("is-active", on);
+      b.setAttribute("aria-checked", on ? "true" : "false");
+      b.tabIndex = on ? 0 : -1;
+    });
+    input.value = best.dataset.value;
+    renderPhTargetHint();
+    renderPhTargetWarning();
+    renderPhOffsetWarning();  // la consigne entre dans le calcul de l'avertissement
+    if (!silent) {
+      // Les consommateurs historiques (trackDirtyState, updatePhControls) écoutent
+      // `input`/`change` sur #ph_target : une écriture `.value =` ne les déclenche
+      // PAS, il faut émettre explicitement.
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
+
+  // Clic + clavier (délégation : survit à la regénération des positions).
+  // Mêmes touches que les onglets Réglages : ←/→/↑/↓ déplacent ET sélectionnent,
+  // Début/Fin vont aux bornes.
+  function bindPhTargetControl() {
+    const group = $("#ph_target_group");
+    if (!group) return;
+    // Contrôleur injoignable au chargement : le contrôle doit malgré tout avoir
+    // des positions ET une position sélectionnée (état « aucune » interdit). Les
+    // bornes de repli seront remplacées par celles du serveur dès /get-config.
+    buildPhTargetSegments();
+    if (!$("#ph_target_group .segmented__btn.is-active")) {
+      setPhTarget(_phBounds.targetMin, true);
+    }
+    group.addEventListener("click", (e) => {
+      const btn = e.target.closest(".segmented__btn");
+      if (!btn || !group.contains(btn)) return;
+      setPhTarget(parseFloat(btn.dataset.value), false);
+    });
+    group.addEventListener("keydown", (e) => {
+      const btns = _phTargetButtons();
+      const i = btns.indexOf(e.target);
+      if (i < 0 || btns.length === 0) return;
+      let target = null;
+      if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        target = btns[(i + 1) % btns.length];
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        target = btns[(i - 1 + btns.length) % btns.length];
+      } else if (e.key === "Home") {
+        target = btns[0];
+      } else if (e.key === "End") {
+        target = btns[btns.length - 1];
+      }
+      if (!target) return;
+      e.preventDefault();
+      setPhTarget(parseFloat(target.dataset.value), false);
+      target.focus();
+    });
+  }
+
+  // ---------- v2.25.0 : offset pH (incrémenteur) ----------
+  function _phOffsetFromField() {
+    const v = parseFloat($("#ph_offset")?.value);
+    return isFinite(v) ? v : 0;
+  }
+
+  // Arrondi au pas + bornage. Sert à la MIGRATION (B6) : une configuration
+  // antérieure a pu enregistrer 0,47 ; on affiche 0,50 sans marquer le formulaire
+  // modifié — l'arrondi persistant est fait côté firmware.
+  function _phSnapOffset(v) {
+    if (typeof v !== "number" || !isFinite(v)) return 0;  // B7 : absent → 0,00
+    const { offsetMin, offsetMax, offsetStep } = _phBounds;
+    const snapped = _phRound(Math.round(v / offsetStep) * offsetStep);
+    return clamp(snapped, offsetMin, offsetMax);
+  }
+
+  // Écrit l'offset dans le porteur caché et rafraîchit tout l'incrémenteur.
+  // `silent` : voir setPhTarget().
+  function setPhOffset(value, silent) {
+    const input = $("#ph_offset");
+    if (!input) return;
+    const { offsetMin, offsetMax, offsetStep } = _phBounds;
+    const raw = (typeof value === "number" && isFinite(value)) ? value : 0;
+    const v = _phRound(clamp(raw, offsetMin, offsetMax)) || 0;  // `|| 0` neutralise -0
+    input.value = v.toFixed(2);  // format machine : 2 décimales, point décimal
+
+    const valueEl = $("#ph_offset_value");
+    if (valueEl) {
+      const txt = _fmtPh(v, true);
+      valueEl.textContent = txt;
+      valueEl.classList.toggle("is-neutral", v === 0);  // B7 : 0,00 = aucune correction
+      valueEl.setAttribute("aria-valuemin", String(offsetMin));
+      valueEl.setAttribute("aria-valuemax", String(offsetMax));
+      valueEl.setAttribute("aria-valuenow", String(v));
+      valueEl.setAttribute("aria-valuetext", txt + " pH");
+    }
+
+    const dec = $("#ph_offset_dec");
+    const inc = $("#ph_offset_inc");
+    const pas = _fmtPh(offsetStep, false);
+    if (dec) {
+      dec.disabled = (v <= offsetMin + PH_EPS);
+      dec.setAttribute("aria-label", `Diminuer l'offset de ${pas}`);
+    }
+    if (inc) {
+      inc.disabled = (v >= offsetMax - PH_EPS);
+      inc.setAttribute("aria-label", `Augmenter l'offset de ${pas}`);
+    }
+    // `.btn:disabled` porte `pointer-events:none` : un bouton désactivé SOUS le
+    // focus le laisserait retomber sur <body> et la navigation clavier serait
+    // perdue. On rapatrie donc le focus sur la valeur (elle-même focusable).
+    if (valueEl && document.activeElement &&
+        ((dec && dec.disabled && document.activeElement === dec) ||
+         (inc && inc.disabled && document.activeElement === inc))) {
+      valueEl.focus();
+    }
+
+    const reset = $("#ph_offset_reset");
+    if (reset) reset.hidden = (v === 0);
+
+    renderPhOffsetWarning();
+    if (!silent) {
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
+
+  // Incrément d'un pas. L'arrondi au centième est fait AVANT le bornage pour
+  // éviter la dérive flottante cumulée (−0,5 + 0,1 × 5 ≠ 0 sans lui).
+  function stepPhOffset(direction) {
+    setPhOffset(_phRound(_phOffsetFromField() + direction * _phBounds.offsetStep), false);
+  }
+
+  // Boutons + clavier de l'incrémenteur. PAS d'auto-répétition à l'appui long :
+  // l'offset est un réglage de sécurité chimique, chaque pas doit être un acte.
+  function bindPhOffsetStepper() {
+    // État initial cohérent (0,00 neutre, boutons armés) avant la première
+    // réponse de /get-config.
+    setPhOffset(_phOffsetFromField(), true);
+    $("#ph_offset_dec")?.addEventListener("click", () => stepPhOffset(-1));
+    $("#ph_offset_inc")?.addEventListener("click", () => stepPhOffset(+1));
+    $("#ph_offset_reset")?.addEventListener("click", () => {
+      setPhOffset(0, false);
+      $("#ph_offset_value")?.focus();  // le bouton disparaît : ne pas perdre le focus
+    });
+    $("#ph_offset_value")?.addEventListener("keydown", (e) => {
+      const k = e.key;
+      if (k === "ArrowUp" || k === "ArrowRight" || k === "PageUp") {
+        e.preventDefault(); stepPhOffset(+1);
+      } else if (k === "ArrowDown" || k === "ArrowLeft" || k === "PageDown") {
+        e.preventDefault(); stepPhOffset(-1);
+      } else if (k === "Home") {
+        e.preventDefault(); setPhOffset(_phBounds.offsetMin, false);
+      } else if (k === "End") {
+        e.preventDefault(); setPhOffset(_phBounds.offsetMax, false);
+      }
+    });
+  }
+
+  // Un contrôle est « occupé » si l'utilisateur y a le focus OU si son bouton
+  // Sauvegarder est actif (modification non enregistrée). Dans les deux cas, la
+  // trame de config poussée par le WebSocket ne doit RIEN y écraser.
+  //
+  // CORRECTIF v2.25.0 : le test historique `document.activeElement !== input` est
+  // devenu TOUJOURS VRAI depuis que le porteur de valeur est un input CACHÉ (il
+  // n'est jamais focusable) — la trame écrasait donc la saisie en cours. On teste
+  // le CONTENEUR visible, pas le porteur.
+  function _phControlBusy(containerSelector, saveBtnSelector) {
+    const container = $(containerSelector);
+    const active = document.activeElement;
+    if (container && active && container.contains(active)) return true;
+    const btn = $(saveBtnSelector);
+    return !!(btn && !btn.disabled);
   }
 
   function bindPhOffsetSave() {
@@ -1787,30 +2125,27 @@
     trackDirtyState("#ph_offset_save_btn", ["ph_offset"]);
     input.addEventListener("input", () => { showErr(""); renderPhOffsetWarning(); });
     input.addEventListener("change", renderPhOffsetWarning);
+    bindPhOffsetStepper();  // v2.25.0 : incrémenteur (± 0,10) + clavier + remise à zéro
 
     btn.addEventListener("click", async () => {
       if (btn.disabled) return;
-      const value = parseFloat(input.value);
-      if (input.value === "" || !isFinite(value)) {
-        showErr("Saisissez une valeur numérique entre −0,50 et +0,50 (0,00 = aucune correction).");
-        return;
-      }
-      // Pré-contrôle local (confort) ; le serveur refait la validation et fait foi.
-      if (value < PH_OFFSET_MIN || value > PH_OFFSET_MAX) {
-        showErr("Offset pH invalide : la valeur doit être comprise entre −0,50 et +0,50 pH.");
-        return;
-      }
+      // v2.25.0 : plus aucune validation locale de plage. L'incrémenteur ne peut
+      // produire qu'un multiple du pas dans les bornes servies par le serveur ;
+      // une valeur illisible dans le porteur caché retombe sur 0,00 (neutre).
+      const value = _phOffsetFromField();
       showErr("");
       setBtn("Sauvegarde...", true, true, "default");
-      const res = await sendConfigDetailed({ ph_offset: Math.round(value * 100) / 100 });
+      const res = await sendConfigDetailed({ ph_offset: _phRound(value) });
       if (res.ok) {
         setBtn("Sauvegarde réussie", false, true, "success");
         loadConfig();
         setTimeout(() => setBtn("Sauvegarder", false, true, "default"), 2000);
       } else {
-        // Refus serveur : afficher le message tel quel, ne JAMAIS laisser croire
-        // que la valeur est enregistrée (le champ conserve la saisie fautive).
-        showErr(res.error);
+        // B5 — Ce message ne signale plus qu'un ÉCHEC DE SAUVEGARDE (contrôleur
+        // injoignable, refus serveur) : ne JAMAIS laisser croire que la valeur
+        // affichée est enregistrée.
+        showErr((res.message || res.error || "Enregistrement refusé.") +
+                " L'offset affiché n'a pas été enregistré.");
         setBtn("Erreur", false, false, "error");
         setTimeout(() => setBtn("Sauvegarder", false, false, "default"), 2000);
       }
@@ -1840,7 +2175,7 @@
     const mqttEnabled = $("#mqtt_enabled");
 
     const portValue = parseInt($("#mqtt_port")?.value || "1883", 10);
-    const phValue = parseFloat($("#ph_target")?.value || "7.2");
+    const phValue = parseFloat($("#ph_target")?.value);  // porteur caché du segmenté
     const orpValue = parseFloat($("#orp_target")?.value || "650");
 
     const phPumpValue = parseInt($("#ph_pump")?.value || "1", 10);
@@ -1871,10 +2206,26 @@
       topic: $("#mqtt_topic")?.value || "",
       username: $("#mqtt_username")?.value || "",
       password: $("#mqtt_password")?.value || "",
-      ph_target: isNaN(phValue) ? 7.2 : phValue,
+      // v2.25.0 : le porteur caché #ph_target ne contient qu'une valeur de la
+      // GRILLE servie par le serveur (contrôle segmenté) — il n'y a plus de
+      // saisie libre à filtrer, donc plus de risque de faire échouer (400) une
+      // auto-save d'un réglage sans rapport (éclairage, filtration...) avec une
+      // consigne en cours de frappe. Repli défensif si le contrôle n'est pas
+      // encore construit : consigne enregistrée, puis borne basse de la plage.
+      ph_target: isFinite(phValue)
+        ? phValue
+        : (typeof window._config?.ph_target === "number" && isFinite(window._config.ph_target)
+            ? window._config.ph_target
+            : _phBounds.targetMin),
       orp_target: isNaN(orpValue) ? 650 : orpValue,
-      ph_enabled: (window._config?.ph_regulation_mode || "automatic") !== "manual",
-      ph_regulation_mode: window._config?.ph_regulation_mode || "automatic",
+      // v2.25.0 (B1) : ph_regulation_mode et ph_enabled VOLONTAIREMENT absents du
+      // payload — même patron que feature-074 (pumpN_max_duty_pct). Le mode a son
+      // PROPRE chemin de sauvegarde (clic sur le segmented, plus bas) ; le réémettre
+      // ici avec un repli EN DUR sur "automatic" faisait rouvrir la régulation pH
+      // depuis un onglet périmé (window._config absent ou obsolète). Incident du
+      // 2026-08-25 : une bascule de sécurité annulée et sa trace effacée sur une
+      // simple consultation de l'app. ph_enabled est en outre un dérivé pur du mode
+      // et n'est plus accepté en écriture par /save-config.
       ph_daily_target_ml: parseInt($("#ph_daily_target_ml")?.value ?? "0", 10) || 0,
       ph_pump: isNaN(phPumpValue) ? 1 : phPumpValue,
       orp_regulation_mode: window._config?.orp_regulation_mode || "automatic",
@@ -1967,15 +2318,28 @@
 
     updateMqttStatusIndicator(cfg.enabled, cfg.mqtt_connected);
 
-    $("#ph_target").value = typeof cfg.ph_target === "number" ? cfg.ph_target : 7.2;
+    // v2.25.0 (B1) : bornes de réglage servies par le serveur, JAMAIS codées côté
+    // client. À appliquer AVANT de (re)construire les positions de la consigne.
+    _applyPhBounds(cfg);
+    buildPhTargetSegments();
+    renderPhTargetHint();
+
+    // Consigne pH — écriture SILENCIEUSE (pas de dispatch) : lire la config ne
+    // doit jamais marquer le formulaire modifié. B7 : consigne absente ou
+    // invalide → borne basse ; « aucune position sélectionnée » est interdit.
+    if (!_phControlBusy("#ph_target_group", "#ph_regulation_save_btn")) {
+      setPhTarget(typeof cfg.ph_target === "number" ? cfg.ph_target : _phBounds.targetMin, true);
+    }
     $("#orp_target").value = typeof cfg.orp_target === "number" ? cfg.orp_target : 650;
 
-    // feature-067 : offset de mesure pH. Ne jamais écraser une saisie en cours
-    // (la config est aussi poussée par le WebSocket toutes les quelques secondes).
-    const phOffsetEl = $("#ph_offset");
-    if (phOffsetEl && document.activeElement !== phOffsetEl) {
-      const phOff = (typeof cfg.ph_offset === "number" && isFinite(cfg.ph_offset)) ? cfg.ph_offset : 0;
-      phOffsetEl.value = phOff.toFixed(2);
+    // feature-067 : offset de mesure pH. Ne jamais écraser une modification en
+    // cours (la config est aussi poussée par le WebSocket toutes les quelques
+    // secondes) — cf. _phControlBusy() pour le correctif du test de focus.
+    // B6 : un offset hérité hors pas (0,47) est affiché arrondi au plus proche,
+    // SANS activer le bouton Sauvegarder (l'arrondi persistant est déjà fait
+    // côté firmware). B7 : offset absent → 0,00 (état neutre).
+    if (!_phControlBusy("#ph-offset-stepper", "#ph_offset_save_btn")) {
+      setPhOffset(_phSnapOffset(cfg.ph_offset), true);
     }
     renderPhOffsetWarning();
 
@@ -2668,7 +3032,7 @@
     const show = (html, stateCls) => {
       el.innerHTML = html;
       el.classList.add("is-visible");
-      ["is-active", "is-waiting"].forEach((c) => el.classList.toggle(c, c === stateCls));
+      ["is-active", "is-waiting", "is-fault"].forEach((c) => el.classList.toggle(c, c === stateCls));
     };
 
     // Priorité 1 : injection MANUELLE minutée (valeur ancrée à la réception).
@@ -2712,10 +3076,16 @@
       el.textContent = stopReason;
       el.classList.add("is-visible");
       el.classList.remove("is-active", "is-waiting");
+      // v2.25.1 : ton d'alerte SI ET SEULEMENT SI le texte affiché est bien le
+      // libellé d'une PANNE de mesure (sonde figée / muette). Les états
+      // transitoires attendus (préchauffage, porte de validité fermée, quotas)
+      // gardent le ton neutre — c'est toute la distinction que ce correctif pose.
+      const b = _doseBlockInfo(data, sensor);
+      el.classList.toggle("is-fault", b.tone === "fault" && stopReason === b.label);
     } else {
       // Priorité 6 : rien à afficher.
       el.textContent = "";
-      el.classList.remove("is-visible", "is-active", "is-waiting");
+      el.classList.remove("is-visible", "is-active", "is-waiting", "is-fault");
     }
 
     _dosingCountdownShown[sensor] = countdownShown;
@@ -2767,11 +3137,20 @@
     const limitMin  = sensor === "ph" ? (config.ph_limit_minutes || 0) : (config.orp_limit_minutes || 0);
     if (limitMin > 0 && usedMs >= limitMin * 60000) return "Limite de durée atteinte";
 
+    // v2.25.1 : PORTE DE VALIDITÉ FERMÉE — traitée AVANT la cause de refus
+    // firmware. Le badge capteur affiche déjà « Stabilisation : ~N min »
+    // (measureStateSegments, measures_valid === false) ; descendre jusqu'au motif
+    // de refus juxtaposait deux messages contradictoires sur la même carte.
+    // On ne se taît QUE pour la famille « stabilisation des mesures » : une panne
+    // (sonde figée / muette) ou tout autre motif reste dit, badge ou pas.
+    const block = _doseBlockInfo(data, sensor);
+    const blockEntry = DOSE_BLOCK_CODES[block.code];
+    if (data.measures_valid === false && blockEntry && blockEntry.stab) return "";
+
     // v2.8.5 : remonter la cause de refus firmware non couverte ci-dessus
     // (anti-cycling cycles/jour, anti-rafale…). Vide en cas 2 « valeur OK »
-    // (canDose ne refuse pas → *DoseBlockedReason vide) → statut reste vide.
-    const blocked = _doseBlockReasonFr(data[`${sensor}DoseBlockedReason`]);
-    if (blocked) return blocked;
+    // (canDose ne refuse pas → code 0/null) → statut reste vide.
+    if (block.label) return block.label;
 
     return "";  // Pas de refus firmware : valeur dans l'hystérésis (rien à doser)
   }
@@ -3774,6 +4153,10 @@
   // La valeur principale (#xx_current_value) affiche déjà la valeur FILTRÉE (json.ph/json.orp).
   // Ces helpers gèrent la ligne brute discrète, le chip d'état et le modal détail.
   const FILTER_REJECT_WINDOW_MS = 30000; // fenêtre « pics rejetés récents »
+  // v2.25.1 : au-delà de cette fenêtre sans valeur brute, l'absence de lecture
+  // cesse d'être un blip et devient « EZO indisponible » (2 rafraîchissements
+  // /data de 30 s au minimum avant de condamner la sonde).
+  const FILTER_RAW_BLIP_MS = 60000;
   const _filterState = {
     ph:  { lastRawAt: 0, prevRejected: null, lastRejectAt: 0 },
     orp: { lastRawAt: 0, prevRejected: null, lastRejectAt: 0 },
@@ -3807,8 +4190,25 @@
     if (json?.[prefix + 'FilterAlarm'] === true) {
       return { cls: 'bad', label: 'Régulation à l’arrêt' };
     }
-    if (!_filterRawIsValid(raw)) return { cls: 'unknown', label: 'EZO indisponible' };
+    // v2.25.1 : le CODE de refus discrimine PANNE (sonde figée / muette) et état
+    // transitoire (préchauffage, porte de validité fermée). Il passe avant le
+    // test « brut invalide », qui condamnait l'EZO sans savoir pourquoi.
+    const entry = DOSE_BLOCK_CODES[_doseBlockInfo(json, prefix).code];
+    const short = entry && entry.chip;   // undefined si code absent / non qualifiant
+    if (short && entry.tone === 'fault') return { cls: 'bad', label: short };
+    // Remonté avant le test « brut invalide », qui le masquait (une sonde
+    // instable finit souvent par rendre une lecture nulle).
     if (json?.[prefix + 'FilterUnstable'] === true) return { cls: 'bad', label: 'Capteur instable' };
+    if (!_filterRawIsValid(raw)) {
+      // Une lecture manquante alors qu'on en avait une il y a moins d'une minute
+      // est un blip de bus, pas une panne établie : on nuance au lieu de conclure.
+      const recent = st && st.lastRawAt && (Date.now() - st.lastRawAt) < FILTER_RAW_BLIP_MS;
+      return recent ? { cls: 'warn', label: 'Lecture EZO manquante' }
+                    : { cls: 'unknown', label: 'EZO indisponible' };
+    }
+    // Cause connue et NORMALE (préchauffage, mesures non représentatives) :
+    // ton d'attente, jamais le registre visuel d'une panne.
+    if (short) return { cls: 'warn', label: short };
     if (json?.[prefix + 'FilterReady'] === false) return { cls: 'warn', label: 'Stabilisation…' };
     if (st.lastRejectAt && (Date.now() - st.lastRejectAt) < FILTER_REJECT_WINDOW_MS) {
       return { cls: 'warn2', label: 'Pics rejetés' };
@@ -3824,16 +4224,84 @@
     el.textContent = `brut ${raw} · médiane ${med} · maj ${_filterAgeText(prefix)}`;
   }
 
-  function _doseBlockReasonFr(r) {
-    if (!r) return '';
-    const s = String(r).toLowerCase();
-    if (s.includes('warm') || s.includes('stabil')) return 'Stabilisation du filtre';
-    if (s.includes('unstab') || s.includes('instab')) return 'Capteur instable';
-    if (s.includes('mix') || s.includes('mélange') || s.includes('melange')) return 'Mélange en cours';
-    if (s.includes('ezo') || s.includes('indispo')) return 'EZO indisponible';
-    if (s.includes('cycle')) return 'Limite cycles/jour atteinte — reprise à minuit';
-    if (s.includes('rafale') || s.includes('burst')) return 'Anti-rafale — patienter avant la prochaine injection';
-    return r; // déjà rédigé en clair côté firmware
+  // ==========================================================================
+  // v2.25.1 — Cause de refus de dosage : on traduit un CODE, plus jamais une phrase
+  // ==========================================================================
+  // L'ancienne version devinait la catégorie par includes() sur le texte français.
+  // Deux défauts observés en production, symétriques et tous deux graves :
+  //   - « mesure filtrée indisponible (NaN) » contenait « indispo » → affichage
+  //     « EZO indisponible » pendant ~6 min au boot, sonde parfaitement saine ;
+  //   - « warmup / EZO injoignable » contenait « warm » ET « ezo », « warm » testé
+  //     d'abord → une VRAIE panne d'EZO s'affichait « Stabilisation du filtre »,
+  //     c'est-à-dire une panne matérielle maquillée en état normal.
+  // Le firmware publie désormais `ph/orpDoseBlockedCode` (entier) À CÔTÉ du texte.
+  // Ces valeurs sont un CONTRAT DE SÉRIALISATION FIGÉ (jamais renumérotées, toute
+  // nouvelle cause s'ajoute à la fin) — cf. enum DoseRefusal, src/dosing_logic.h.
+  //
+  // tone :
+  //   'normal'  → état transitoire ATTENDU (préchauffage, porte de validité
+  //               fermée, quota, mélange) : ton neutre/informatif ;
+  //   'fault'   → PANNE (sonde figée, sonde muette, watchdog…) : ton d'alerte ;
+  //   'unknown' → cause non attribuable (le firmware lui-même dit qu'il ne sait
+  //               pas, ou code plus récent que cette page) : aveu d'ignorance.
+  // chip : libellé court pour le chip d'état filtre (absent = pas d'incidence).
+  // stab : cause appartenant à la famille « stabilisation des mesures », déjà
+  //        annoncée par le badge capteur (cf. measureStateSegments) — sert à ne
+  //        pas afficher deux messages concurrents côte à côte.
+  const DOSE_BLOCK_CODE_GUARD = 250;
+  const DOSE_BLOCK_CODES = {
+    1:  { tone: 'fault',   label: 'Watchdog inactif — dosage suspendu' },
+    2:  { tone: 'normal',  label: 'Filtration arrêtée' },
+    3:  { tone: 'unknown', label: 'Mesure indisponible — cause indéterminée' },
+    4:  { tone: 'unknown', label: 'Filtre de mesure non prêt — cause indéterminée' },
+    5:  { tone: 'fault',   label: 'Capteur instable (mesures rejetées)', chip: 'Capteur instable' },
+    6:  { tone: 'fault',   label: 'Calibration insuffisante' },
+    7:  { tone: 'normal',  label: 'Stabilisation post-calibration' },
+    8:  { tone: 'normal',  label: 'Mélange en cours' },
+    9:  { tone: 'normal',  label: 'Régulation non automatique' },
+    10: { tone: 'normal',  label: 'Limite journalière atteinte' },
+    11: { tone: 'normal',  label: 'Limite horaire atteinte' },
+    12: { tone: 'normal',  label: 'Limite cycles/jour atteinte — reprise à minuit' },
+    13: { tone: 'normal',  label: 'Anti-rafale — patienter avant la prochaine injection' },
+    14: { tone: 'normal',  label: 'Anti-rafale (15 min) — patienter avant la prochaine injection' },
+    // Qualification de la garde 3 (lecture filtrée NaN)
+    15: { tone: 'normal',  label: 'Stabilisation du filtre de mesure', chip: 'Stabilisation…', stab: true },
+    16: { tone: 'fault',   label: 'Sonde figée — vérifier la sonde', chip: 'Sonde figée' },
+    17: { tone: 'fault',   label: 'Plus aucune mesure acceptée — vérifier la sonde', chip: 'Sonde muette' },
+    18: { tone: 'normal',  label: 'Mesures non représentatives (stabilisation)', chip: 'Mesures non représentatives', stab: true },
+    // Qualification de la garde 3b (filtre non prêt)
+    19: { tone: 'normal',  label: 'Stabilisation du filtre de mesure', chip: 'Stabilisation…', stab: true },
+    20: { tone: 'fault',   label: 'Sonde figée — vérifier la sonde', chip: 'Sonde figée' },
+    21: { tone: 'fault',   label: 'Plus aucune mesure acceptée — vérifier la sonde', chip: 'Sonde muette' },
+    22: { tone: 'normal',  label: 'Mesures non représentatives (stabilisation)', chip: 'Mesures non représentatives', stab: true },
+  };
+
+  // Traduit le couple (code, texte) servi pour `prefix` en { code, label, tone }.
+  // SÉMANTIQUE STRICTE des états du champ code (clé absente ≠ null ≠ 0) :
+  //   0 ou null → aucun refus en cours, mesuré et affirmé par le firmware ;
+  //   undefined → INFORMATION ABSENTE (firmware antérieur à la parité v2.25.1) :
+  //               dans ce cas SEULEMENT, repli sur le texte serveur, affiché tel
+  //               quel — aucune catégorie n'est déduite de son contenu ;
+  //   code non répertorié → « cause inconnue (code N) ». Jamais le libellé
+  //               voisin : un firmware plus récent que cette page doit produire
+  //               un doute visible, pas une approximation plausible.
+  function _doseBlockInfo(json, prefix) {
+    if (!json) return { code: undefined, label: '', tone: 'none' };
+    const code = json[prefix + 'DoseBlockedCode'];
+    const raw = json[prefix + 'DoseBlockedReason'];
+    const text = (typeof raw === 'string') ? raw.trim() : '';
+    if (code === undefined) {
+      return { code: undefined, label: text, tone: text ? 'unknown' : 'none' };
+    }
+    if (code === null || code === 0) return { code: 0, label: '', tone: 'none' };
+    if (code === DOSE_BLOCK_CODE_GUARD) {
+      // Garde de sécurité pH/ORP : message porteur de valeurs runtime (seuils,
+      // mesure), rédigé en clair côté firmware et non énumérable → on cite.
+      return { code, label: text || 'Sécurité pH/ORP active', tone: 'fault' };
+    }
+    const e = DOSE_BLOCK_CODES[code];
+    if (e) return { code, label: e.label, tone: e.tone };
+    return { code, label: `Cause inconnue (code ${code})`, tone: 'unknown' };
   }
 
   function _renderFilterModalValues(prefix, json) {
@@ -3869,9 +4337,17 @@
       rdyEl.textContent = ready === true ? 'Oui' : (ready === false ? 'Non' : '--');
     }
 
-    let reason = _doseBlockReasonFr(json?.[prefix + 'DoseBlockedReason']);
-    if (!reason && json?.[prefix + 'MixingDelayActive'] === true) reason = 'Mélange en cours';
+    const block = _doseBlockInfo(json, prefix);
+    let reason = block.label;
+    let tone = block.tone;
+    if (!reason && json?.[prefix + 'MixingDelayActive'] === true) {
+      reason = 'Mélange en cours';
+      tone = 'normal';
+    }
     if (blockedRow && blockedEl) {
+      // Le ton d'alerte est RÉSERVÉ aux pannes : un préchauffage ou une porte de
+      // validité fermée sont des états attendus et restent en ton neutre.
+      blockedEl.classList.toggle('probe-modal__value--bad', tone === 'fault');
       if (reason) { blockedEl.textContent = reason; blockedRow.style.display = ''; }
       else { blockedRow.style.display = 'none'; }
     }
@@ -3938,8 +4414,11 @@
 
   // ---- v2.20.3 (C5) : encart « bascule automatique pH → manuel » (page pH) ----
   // Trace PERSISTÉE côté firmware (ph_auto_manual_epoch / _reason dans /get-config).
-  // Elle survit au redémarrage et au ring buffer du journal ; elle disparaît dès
-  // que l'utilisateur choisit lui-même un mode de régulation.
+  // Elle survit au redémarrage et au ring buffer du journal.
+  // v2.25.0 (B3) : elle ne disparaît PLUS « en choisissant un mode » — tant qu'elle
+  // est là, /save-config refuse (409) toute sortie du mode manuel. Le seul chemin
+  // de sortie est le bouton d'acquittement ci-dessous (ph_auto_manual_ack), qui
+  // efface la trace SANS réarmer la régulation : l'utilisateur choisit ensuite.
   function renderPhAutoManualBanner(cfg) {
     const box = $("#ph-auto-manual-banner");
     if (!box) return;
@@ -3960,9 +4439,39 @@
       textEl.textContent =
         `Le ${quand}, l’appareil a basculé la régulation pH en mode manuel par ` +
         `sécurité. Cause : ${reason || 'non renseignée'}. ` +
-        `Choisissez un mode ci-dessous pour acquitter cette alerte.`;
+        `Tant que cette alerte n’est pas acquittée, la régulation ne peut pas être ` +
+        `réactivée : traitez d’abord la cause, puis utilisez le bouton ci-dessous. ` +
+        `L’acquittement n’enclenche aucun dosage — il vous rend seulement le choix ` +
+        `du mode.`;
     }
     box.hidden = false;
+  }
+
+  // v2.25.0 (B3) : acquittement DÉLIBÉRÉ de la bascule de sécurité pH.
+  // N'envoie QUE ph_auto_manual_ack — jamais de mode : effacer la trace ne doit
+  // pas réarmer la régulation (l'utilisateur reste en manuel et décide ensuite).
+  function bindPhAutoManualAck() {
+    const btn = $("#ph-auto-manual-ack");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      if (btn.disabled) return;
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Acquittement…";
+      try {
+        const r = await sendConfigDetailed({ ph_auto_manual_ack: true });
+        if (r.ok) {
+          showToast("Alerte acquittée — vous pouvez choisir un mode de régulation.", "success");
+          await loadConfig();  // masque la bannière et resynchronise le segmented
+        } else {
+          showToast(r.error || "Acquittement refusé.", "error");
+        }
+      } finally {
+        // Hors ligne comme succès : le bouton ne doit jamais rester figé.
+        btn.disabled = false;
+        btn.textContent = label;
+      }
+    });
   }
 
   // ---- v2.20.3 (D3) : réarmement manuel d'un filtre depuis son modal ----
@@ -6852,8 +7361,99 @@
       return "";
     };
 
+    // ======================================================================
+    // v2.25.x — Butée pH BRUTE et injection MANUELLE
+    // ======================================================================
+    // La butée de sécurité porte sur le pH BRUT (mesure capteur, offset NON
+    // appliqué) : c'est le seul signal qui reste fiable quand l'offset est faux,
+    // puisqu'un offset erroné rend le pH affiché rassurant. Le chemin
+    // d'injection MANUELLE ignore délibérément cette butée (échappatoire
+    // opérateur, décision produit) : le firmware obéit. L'UI n'a donc RIEN à
+    // bloquer — elle doit seulement dire, AVANT le clic, que la sécurité est
+    // active, pourquoi, et que l'injection passera outre.
+    //
+    // Les seuils (6,20 / 8,10) ne sont JAMAIS reconstruits ici : la v2.25.0 a
+    // supprimé tous les miroirs de constantes firmware. On consomme les booléens
+    // (« la butée mord ») et la chaîne de cause, servis à l'identique par /data
+    // et par le WebSocket.
+
+    // true = la butée brute mord pour ce produit, false = elle ne mord pas,
+    // null = INFORMATION ABSENTE (firmware antérieur à la parité /data ↔ WS).
+    // L'absence n'est PAS convertie en false : elle a son propre état, pour ne
+    // jamais laisser croire à un « pas de blocage » qui n'a pas été mesuré.
+    const rawGuardBites = (data, product) => {
+      if (!data) return null;
+      const v = data[product === "ph" ? "phRawGuardBlocked" : "orpPhRawGuardBlocked"];
+      if (v === true) return true;
+      if (v === false) return false;
+      return null;
+    };
+
+    // Nom du produit réellement injecté (le libellé pH dépend du type de
+    // correction configuré : acide pH− ou base pH+).
+    const injectProductLabel = (product) => {
+      if (product === "orp") return "du chlore";
+      return (window._config?.ph_correction_type === "ph_plus")
+        ? "de la base (pH+)" : "de l’acide (pH−)";
+    };
+
+    // Cause exacte telle que rapportée par l'appareil. Seule normalisation :
+    // la virgule décimale française (le firmware sérialise avec un point).
+    // Aucun seuil recalculé, aucune reformulation du fond.
+    const rawGuardCause = (data, product) => {
+      // v2.25.1 : la cause passe par la table code → libellé (code 250 = garde de
+      // sécurité → le texte firmware, déjà rédigé en clair, est cité tel quel).
+      const r = _doseBlockInfo(data, product).label;
+      return r ? String(r).replace(/(\d)\.(\d)/g, "$1,$2") : "";
+    };
+
+    // Avertissement in situ, au-dessus du bouton Injecter. Rendu depuis
+    // _updateInjectButtons, donc alimenté par l'UNIQUE chemin loadSensorData
+    // (charge /data comme trame WebSocket) : les deux sources servant ces
+    // champs, l'encart ne clignote pas d'un rafraîchissement à l'autre.
+    const renderInjectRawGuardWarning = (data) => {
+      ["ph", "orp"].forEach(product => {
+        const box = $(`#${product}_inject_raw_guard_warning`);
+        if (!box) return;
+        const titleEl = $(`#${product}_inject_raw_guard_title`);
+        const textEl = $(`#${product}_inject_raw_guard_text`);
+        // false ET null → aucun avertissement. Un encart permanent (affiché
+        // « par précaution » quand l'info manque) serait ignoré et détruirait
+        // la valeur de signal de l'encart réel.
+        if (rawGuardBites(data, product) !== true) {
+          box.hidden = true;
+          if (titleEl) titleEl.textContent = "";
+          if (textEl) textEl.textContent = "";
+          return;
+        }
+        const cause = rawGuardCause(data, product);
+        if (titleEl) {
+          titleEl.textContent = "Sécurité pH brut active — l’injection manuelle passera outre. ";
+        }
+        if (textEl) {
+          textEl.textContent =
+            `La régulation automatique refuse d’injecter ${injectProductLabel(product)}.`
+            + (cause ? ` Cause signalée par l’appareil : « ${cause} ».` : "")
+            + ` Cette butée porte sur le pH brut — la mesure du capteur, sans l’offset :`
+            + ` c’est le seul repère fiable si l’offset pH est mal réglé, car le pH affiché`
+            + ` peut alors sembler normal alors que la mesure ne l’est pas.`
+            + ` L’eau n’est donc pas forcément à ce pH.`
+            + ` Lancer une injection manuelle contournera cette sécurité et injectera quand même.`
+            + ` Avant de continuer, contrôlez le pH au réactif (trousse DPD ou photomètre)`
+            + ` et vérifiez l’offset pH${product === "ph" ? " (carte « Correction de la mesure pH »)"
+                                                          : " sur la page pH"}.`;
+        }
+        box.hidden = false;
+      });
+    };
+
     // Appelé à chaque push sensor_data pour mettre à jour les boutons
     window._updateInjectButtons = (data) => {
+      // Avertissement butée brute : rendu AVANT et INDÉPENDAMMENT de l'état du
+      // bouton — il reste visible pendant une injection en cours (la sécurité
+      // mord toujours) et n'entre jamais en concurrence avec #*_inject_block_hint,
+      // qui porte les blocages réels (limite journalière, filtration…).
+      renderInjectRawGuardWarning(data);
       // bug-dosage-fantome it.3 : harmonisation dans le sens RESTRICTIF — le
       // verrou du bouton Calibrer inclut le dosage AUTO (ph_dosing) comme
       // l'ORP le faisait déjà. Verrou fonctionnel voulu (pas de calibration
@@ -6936,6 +7536,41 @@
         await stopInject(product);
         return;
       }
+
+      // v2.25.x — Confirmation quand la butée pH BRUTE mord pour CE produit.
+      // Placée APRÈS la branche d'arrêt : le stop est un coupe-circuit opérateur,
+      // il n'est jamais conditionné. Placée AVANT le retour visuel optimiste,
+      // pour ne pas laisser le bouton sur « Démarrage… » pendant la modale.
+      //
+      // Pourquoi une modale et pas un second clic sur le bouton : ce bouton est
+      // à double fonction (Injecter / Arrêter). Y greffer un état transitoire
+      // « confirmer ? » rendrait sa signification dépendante d'un minutage
+      // invisible et exposerait le coupe-circuit à un clic malheureux. La modale
+      // est de plus le motif déjà utilisé pour les actions à conséquence, elle
+      // focalise « Annuler » par défaut, et elle peut restituer la cause serveur
+      // complète et le réflexe attendu — ce qu'un libellé de bouton ne peut pas.
+      // Elle n'est PAS une barrière : annulable, et affichée uniquement quand la
+      // butée mord réellement (jamais quand l'information est absente).
+      if (rawGuardBites(latestSensorData, product) === true) {
+        const cause = rawGuardCause(latestSensorData, product);
+        const ok = await confirmDialog({
+          title: "Sécurité pH brut active",
+          message:
+            `La régulation automatique refuse d’injecter ${injectProductLabel(product)}.`
+            + (cause ? `\n\nCause signalée par l’appareil : ${cause}.` : "")
+            + `\n\nCette butée porte sur le pH brut (mesure du capteur, sans l’offset).`
+            + ` Un offset pH mal réglé en est la cause la plus probable : l’eau n’est pas`
+            + ` forcément à ce pH. Le bon réflexe est de contrôler le pH au réactif`
+            + ` (trousse DPD ou photomètre) avant d’injecter.`
+            + `\n\nEn continuant, l’injection manuelle contournera cette sécurité :`
+            + ` le produit sera injecté malgré le refus de l’automatisme.`,
+          confirmLabel: "Injecter quand même",
+          cancelLabel: "Annuler",
+          danger: true
+        });
+        if (!ok) return;
+      }
+
       const btn = $(`#${product}_inject_btn`);
       const mlInput = $(`#${product}_inject_ml`);
       const volumeMl = Math.max(1, Math.min(2000, parseFloat(mlInput?.value) || 50));
@@ -7532,12 +8167,25 @@
     };
     saveBtn.addEventListener("click", async () => {
       if (saveBtn.disabled) return;
+      // v2.25.0 : plus de garde-fou de saisie sur la consigne pH — le contrôle
+      // segmenté ne peut produire qu'une valeur de la plage servie par le
+      // serveur. La validation serveur reste, elle, en place (défense en
+      // profondeur pour l'API et MQTT).
       setBtn("Sauvegarde...", true, true, "default");
-      const ok = await sendConfig(collectConfig());
-      if (ok) {
+      // sendConfigDetailed : un refus serveur porte un message explicite, il ne
+      // doit pas se réduire à un bouton « Erreur » muet.
+      const r = await sendConfigDetailed(collectConfig());
+      if (r.ok) {
         setBtn("Sauvegarde réussie", false, true, "success");
+        if (sensor === "ph") renderPhTargetHint();  // efface un éventuel échec précédent
         setTimeout(() => setBtn(defaultLabel, false, true, "default"), 2000);
       } else {
+        const msg = r.message || r.error || "Enregistrement refusé.";
+        showToast(msg, "error");
+        // B5 : le hint rouge ne signale plus qu'un échec de SAUVEGARDE.
+        if (sensor === "ph") {
+          showPhTargetSaveError(msg + " La consigne affichée n'a pas été enregistrée.");
+        }
         setBtn("Erreur", false, true, "error");
         setTimeout(() => setBtn(defaultLabel, false, false, "default"), 2000);
       }
@@ -7595,11 +8243,37 @@
     // pH / ORP regulation — sauvegarde immédiate sur le sélecteur de mode
     initSegmented("ph_regulation_mode");
     $$(`#ph_regulation_mode .segmented__btn`).forEach(btn => {
-      btn.addEventListener("click", () => {
-        updatePhModeControls();
+      btn.addEventListener("click", async () => {
+        // v2.25.0 (B4) : le serveur peut REFUSER (409) — bascule de sécurité pH
+        // non acquittée. Sans revert, l'UI resterait bloquée sur un mode que
+        // l'appareil n'a jamais adopté, et l'utilisateur n'aurait aucune issue.
+        const previousMode = window._config?.ph_regulation_mode || "manual";
         const mode = btn.dataset.value;
+        updatePhModeControls();
         if (window._config) { window._config.ph_regulation_mode = mode; window._config.ph_enabled = (mode !== "manual"); }
-        sendConfig({ ph_regulation_mode: mode }).then(ok => { if (ok) loadConfig(); });
+        const r = await sendConfigDetailed({ ph_regulation_mode: mode });
+        if (r.ok) { loadConfig(); return; }
+        // Revert de l'override optimiste (config + segmented) sur l'état serveur.
+        if (window._config) {
+          window._config.ph_regulation_mode = previousMode;
+          window._config.ph_enabled = (previousMode !== "manual");
+        }
+        setSegmented("ph_regulation_mode", previousMode);
+        updatePhModeControls();
+        if (r.status === 409) {
+          // On NE propose PAS d'acquitter depuis ce message : l'acquittement doit
+          // rester un acte lu et réfléchi (bouton de la bannière, qui affiche la
+          // cause), pas un réflexe pour débloquer un clic refusé.
+          showToast(r.message || r.error, "error");
+          const banner = $("#ph-auto-manual-banner");
+          if (banner && !banner.hidden && typeof banner.scrollIntoView === "function") {
+            banner.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        } else {
+          showToast(r.error || "Changement de mode refusé.", "error");
+        }
+        // Resynchronisation sur l'état RÉEL du contrôleur (et bannière à jour).
+        loadConfig();
       });
     });
     const schedBtn = $("#ph_scheduled_save_btn");
@@ -7656,8 +8330,11 @@
     bindRegulationSave("ph",  "#ph_regulation_save_btn");
     bindRegulationSave("orp", "#orp_regulation_save_btn");
     bindPhOffsetSave();  // feature-067 : carte « Correction de la mesure pH »
+    bindPhTargetControl();  // v2.25.0 : contrôle segmenté de la consigne pH
     // La consigne pH entre dans le calcul de l'avertissement d'offset → resynchroniser.
     $("#ph_target")?.addEventListener("input", renderPhOffsetWarning);
+    // v2.25.0 : rappel de la plage sous le contrôle.
+    $("#ph_target")?.addEventListener("input", renderPhTargetHint);
     // Onglet Régulation : initialisation segmented + save dédié
     initSegmented("regulation_speed");
     $("#regulation_save_btn")?.addEventListener("click", async () => {
@@ -8129,6 +8806,7 @@
     bindAutosave();
     bindPhCalibration();
     bindPhProbeChip();
+    bindPhAutoManualAck();  // v2.25.0 : acquittement de la bascule de sécurité pH
     bindFilterChip('ph');
     bindFilterChip('orp');
     bindOrpCalibration();

@@ -64,6 +64,8 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0045](0045-etat-impulsion-expose-en-calendrier.md) | État d'impulsion exposé en calendrier (période / pouls / phase), pas en booléen instantané | Accepté |
 | [0046](0046-accumulateur-demande-sous-pouls-minimal.md) | Accumulateur de demande sous le pouls minimal (amende le seuil C de l'ADR-0043) | Accepté |
 | [0047](0047-calibration-de-type-par-defaut-et-gel-amplitude.md) | Calibration de type par défaut pour la flotte + gel de l'amplitude d'impulsion (amende le fail-closed des défauts de l'ADR-0043) | Accepté |
+| [0048](0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md) | Seuils de sécurité pH **fixes**, dérivés de la plage de consigne [7,20 ; 7,50] et appliqués au pH **corrigé** ; deux butées de dernier recours sur le brut (6,20 / 8,10) ; surveillance séparée de la décision ; acquittement explicite fail-closed d'une bascule de sécurité (amende feature-067 et l'ADR-0039) | Accepté |
+| [0049](0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md) | La cause de refus de dosage est transportée par un **code machine** (contrat de sérialisation figé), et discriminée sur l'**état interne du filtre** — jamais sur la fraîcheur de la lecture brute ; priorité pannes d'abord ; grâce de ré-amorçage lue par `stale()` mais pas par `ready()` | Accepté |
 
 ## Template
 

@@ -10,6 +10,7 @@
 #include "ws_manager.h"  // feature bug-sync-ws-config : notifier l'UI d'un changement config via MQTT
 #include "schedule_logic.h"  // feature-051 : validation HH:MM (timeStringToMinutes)
 #include "mqtt_topics_logic.h"  // bug-race-refreshtopics-uaf : normalisation pure du préfixe
+#include "ph_guard_logic.h"  // v2.25.0 : phModeChangeNeedsAck (gate fail-closed du mode pH)
 #include <ArduinoJson.h>
 #include <esp_task_wdt.h>
 #include <WiFi.h>
@@ -662,13 +663,57 @@ void MqttManager::publishTargetState() {
   enqueueOutbound(topics.orpDailyTargetMlState,  String(orpDaily), true);
 }
 
+// Alerte applicative sur {base}/alerts — JSON {type, message, timestamp}, NON
+// retenue (une alerte est un ÉVÉNEMENT : la rejouer à chaque abonnement d'un
+// client HA ferait remonter un incident clos).
+//
+// TYPES ÉMIS (inventaire à jour v2.25.0 — `docs/MQTT.md` fait foi pour le détail) :
+//   ph_abnormal        pH hors plage de plausibilité (mesure)
+//   ph_low_warning     [NOUVEAU v2.25.0] eau acide sous kPhLowWarn (7,00) sur le pH
+//                      CORRIGÉ — NON BLOQUANT, aucun compteur, signal précoce
+//   ph_guard           [ex-`ph_raw_floor`] refus de dosage pH par une garde de
+//                      seuil : plancher corrigé (pH−), plafond corrigé (pH+) ou
+//                      butée brute ; couvre aussi l'escalade « 3 refus / 24 h »
+//   ph_guard_scheduled [NOUVEAU v2.25.0] refus en mode PROGRAMMÉ — signalement
+//                      périodique, sans compteur ni bascule en manuel
+//   orp_ph_inhibit     [ex-`orp_ph_raw_inhibit`] dosage ORP suspendu sur pH élevé
+//                      (seuil kPhOrpInhibit, désormais sur le pH CORRIGÉ)
+//   + les alertes de dosage/volume/matériel émises par pump_controller et filtration.
+// SUPPRIMÉ en v2.25.0 : `ph_target_unreachable` — la marge consigne ↔ seuil est
+// devenue STRUCTURELLE (static_assert), la garde de cohérence n'existe plus.
 void MqttManager::publishAlert(const String& alertType, const String& message) {
-  JsonDocument doc;
-  doc["type"] = alertType;
-  doc["message"] = message;
-  doc["timestamp"] = millis();
+  // v2.25.0 (revue) — le transport borne la charge utile à kMaxPayloadLen (128 o,
+  // strlcpy dans enqueueOutbound). Les messages d'escalade récents (bascule pH,
+  // consigne inatteignable) font ~330 caractères : ils sortaient COUPÉS EN PLEINE
+  // CHAÎNE, donc en JSON INVALIDE — Home Assistant rejetait l'alerte entière, et
+  // c'est précisément l'alerte de sécurité qu'on voulait voir arriver.
+  // On raccourcit donc le MESSAGE avant sérialisation pour que l'enveloppe reste
+  // valide et parsable. Le texte intégral n'est jamais perdu : il part dans
+  // systemLogger juste en dessous, et la bascule pH le persiste en NVS
+  // (phAutoManualReason, affiché par la bannière de la page pH).
+  static const char kAlertTail[] = "... (voir journal)";
+  const size_t budget = mqtt_internal::kMaxPayloadLen - 1;  // strlcpy réserve l'octet NUL
+  String msg = message;
   String payload;
-  serializeJson(doc, payload);
+  // Convergence garantie : chaque tour retire au moins l'excès mesuré. La boucle
+  // est bornée pour ne jamais tourner longtemps dans le contexte appelant.
+  for (int attempt = 0; attempt < 4; ++attempt) {
+    JsonDocument doc;
+    doc["type"] = alertType;
+    doc["message"] = msg;
+    doc["timestamp"] = millis();
+    payload = "";
+    serializeJson(doc, payload);
+    if (payload.length() <= budget) break;
+    const size_t excess = payload.length() - budget;
+    size_t keep = (msg.length() > excess + sizeof(kAlertTail))
+                      ? msg.length() - excess - sizeof(kAlertTail)
+                      : 0;
+    // Ne pas couper au milieu d'un caractère UTF-8 multi-octets (accents des
+    // messages français) : reculer jusqu'au début du caractère.
+    while (keep > 0 && (msg.charAt(keep) & 0xC0) == 0x80) keep--;
+    msg = msg.substring(0, keep) + kAlertTail;
+  }
   enqueueOutbound(topics.alertsTopic, payload, false);
   systemLogger.warning("Alerte: " + alertType + " - " + message);
 }
@@ -1199,8 +1244,28 @@ void MqttManager::drainCommandQueue() {
         break;
       }
       case InboundCmdType::PhTarget: {
+        // v2.25.0 — Mêmes bornes qu'en HTTP : kPhTargetMin/kPhTargetMax. Les
+        // littéraux 6,0/8,5 qui traînaient ici acceptaient des consignes
+        // franchement corrosives (6,0) ou inhibant en permanence la régulation
+        // ORP (8,5 > kPhOrpInhibit) — et divergeaient de /save-config, donc
+        // du plafond appliqué au chargement NVS.
+        //
+        // REFUS (pas d'écrêtage) + republication de l'état RÉEL : c'est le même
+        // raisonnement que le gate de mode ci-dessous. Un number Home Assistant
+        // est un curseur DISTANT ; écrêter en silence laisserait HA afficher
+        // 8,5 pendant que le contrôleur régule à 7,6, et une automation
+        // rejouerait indéfiniment la valeur écrêtée. La republication force HA à
+        // revenir sur la consigne effective, ce qui rend le refus VISIBLE côté
+        // utilisateur — un clamp muet ne l'aurait pas été.
         float value = payloadStr.toFloat();
-        if (value >= 6.0f && value <= 8.5f) {
+        if (isfinite(value) && value >= kPhTargetMin && value <= kPhTargetMax) {
+          // Alignement sur kPhTargetStep, comme en HTTP : une automation peut
+          // envoyer une valeur hors grille (7,35) que le curseur HA ne produit
+          // pas. Le demi-pas d'écart (0,05 pH) est sous le bruit du filtre, et
+          // publishTargetState() renvoie à HA la consigne EFFECTIVE.
+          value = roundf(value / kPhTargetStep) * kPhTargetStep;
+          if (value < kPhTargetMin) value = kPhTargetMin;
+          if (value > kPhTargetMax) value = kPhTargetMax;
           // feature-027 : timeout → commande abandonnée (rien modifié avant le take),
           // resync HA sur la consigne réelle via publishTargetState().
           if (xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
@@ -1215,7 +1280,13 @@ void MqttManager::drainCommandQueue() {
           publishTargetState();
           systemLogger.info("Consigne pH changée via MQTT: " + String(value, 1));
         } else {
-          systemLogger.warning("Consigne pH invalide (MQTT): " + payloadStr);
+          String minStr(kPhTargetMin, 2); minStr.replace('.', ',');
+          String maxStr(kPhTargetMax, 2); maxStr.replace('.', ',');
+          systemLogger.warning("Consigne pH REFUSÉE (MQTT) : " + payloadStr +
+                               " hors plage autorisée " + minStr + " à " + maxStr +
+                               " — en dessous l'eau devient agressive, au-dessus la "
+                               "régulation du chlore serait inhibée en permanence.");
+          publishTargetState();  // resync HA sur la consigne RÉELLE (inchangée)
         }
         break;
       }
@@ -1253,13 +1324,38 @@ void MqttManager::drainCommandQueue() {
             publishTargetState();
             break;
           }
+          // v2.25.0 (B6) — GATE fail-closed, miroir de /save-config.
+          // Un select Home Assistant est un clic DISTANT : il n'affiche ni la
+          // cause de la bascule, ni le refus. Pire, une automation ou une simple
+          // restauration d'état HA au redémarrage rejouerait « automatic » et
+          // désarmerait la sécurité en silence — exactement le scénario du
+          // 2026-08-25, mais sans témoin. Tant qu'une trace est active, ce chemin
+          // REFUSE la sortie de `manual` et n'efface JAMAIS la trace :
+          // l'acquittement passe obligatoirement par la bannière de la page pH
+          // (`ph_auto_manual_ack`), seul endroit où la cause est affichée.
+          const bool traceActive = (mqttCfg.phAutoManualReason.length() > 0) ||
+                                   (mqttCfg.phAutoManualEpoch != 0);
+          if (phModeChangeNeedsAck(traceActive,
+                                   mqttCfg.phRegulationMode == "manual",
+                                   payloadStr == "manual",
+                                   /*ack=*/false)) {
+            const String reason = mqttCfg.phAutoManualReason;  // copie AVANT le give
+            xSemaphoreGiveRecursive(configMutex);
+            systemLogger.warning(
+                "Mode régulation pH REFUSÉ (MQTT → " + payloadStr +
+                ") : bascule de sécurité pH non acquittée — acquittez l'alerte sur "
+                "la page pH de l'interface web avant de réactiver la régulation. "
+                "Trace active : " + reason);
+            publishTargetState();  // resync HA sur le mode RÉEL (toujours manual)
+            break;
+          }
           const bool changed = (mqttCfg.phRegulationMode != payloadStr);
           if (changed) {
             mqttCfg.phRegulationMode = payloadStr;
             mqttCfg.phEnabled = (payloadStr != "manual");
-            // v2.20.3 (C4) : commande utilisateur (HA) → acquittement de la trace
-            // de bascule automatique, dans la même transaction NVS.
-            clearPhAutoManualTrace();
+            // v2.25.0 : plus d'acquittement de la trace depuis MQTT (cf. gate
+            // ci-dessus). La trace ne peut être effacée que par un acte délibéré
+            // sur l'interface web.
             saveMqttConfig();
           }
           xSemaphoreGiveRecursive(configMutex);
@@ -2024,9 +2120,14 @@ void MqttManager::publishDiscovery() {
   doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_target";
   doc["state_topic"] = topics.phTargetState;
   doc["command_topic"] = topics.phTargetCommand;
-  doc["min"] = 6.0;
-  doc["max"] = 8.5;
-  doc["step"] = 0.1;
+  // v2.25.0 : bornes ET pas alignés sur les constantes (mêmes valeurs qu'en HTTP,
+  // qu'au drain de la commande et que le contrôle segmenté de l'interface web) —
+  // soit 7,20 à 7,50 par pas de 0,10. Le curseur HA ne peut plus proposer une
+  // consigne que le contrôleur refusera ou réalignera. `unique_id` inchangé :
+  // l'entité et son historique sont conservés (republication de la config seule).
+  doc["min"]  = kPhTargetMin;
+  doc["max"]  = kPhTargetMax;
+  doc["step"] = kPhTargetStep;
   doc["unit_of_measurement"] = "pH";
   doc["icon"] = "mdi:water";
   makeDevice(doc["device"].to<JsonObject>());

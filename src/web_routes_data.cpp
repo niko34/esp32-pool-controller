@@ -51,6 +51,19 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // copiées dans le pool), 4 nœuds ≈ 64 o → bump 1792 → 1920.
   // feature-075 : +1 objet flow_assist (9 champs dont tableau flow255[2],
   // ~165 o sérialisés au pire + 13 nœuds de pool ≈ 208 o) → bump 1920 → 2304.
+  // D2 (v2.25.0) : +4 champs de parité avec le WS — ph/orpDoseBlockedReason
+  // (chaînes, ~62/64 o au pire) + ph/orpRawGuardBlocked (booléens, 26+29 o).
+  // TAILLE RÉELLE MESURÉE de la charge (harnais hôte ArduinoJson 7.4.3, valeurs
+  // PIRE CAS) : 1591 o AVANT, 1823 o APRÈS — soit 481 o de marge sous le
+  // gabarit, qui reste donc à 2304. NB : en ArduinoJson 7, StaticJson<N> dérive
+  // de JsonDocument (N purement documentaire) et sendJsonResponse sérialise dans
+  // une String dimensionnée à la demande : ce chemin n'a AUCUN plafond dur, donc
+  // aucun risque de troncature silencieuse (contrairement à sWsFrameBuf côté WS).
+  // v2.25.1 : +2 champs de CODE de cause de refus (parité WS, même passage).
+  // Octets SÉRIALISÉS au pire cas (`null`, plus long que le code « 250 ») :
+  //   "phDoseBlockedCode":null, = 25 o | "orpDoseBlockedCode":null, = 26 o → 51 o.
+  // Charge pire cas : 1823 o (mesure v2.25.0) + 51 = 1874 o, soit 430 o de marge
+  // sous le gabarit, qui reste donc à 2304.
   StaticJson<2304> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
@@ -184,6 +197,51 @@ static void handleGetData(AsyncWebServerRequest* request) {
     doc["orp_pulse_ms"]       = PumpController.getPulseMs(1);
     doc["ph_pulse_phase_ms"]  = PumpController.getPulsePhaseMs(0, pulseNowMs);
     doc["orp_pulse_phase_ms"] = PumpController.getPulsePhaseMs(1, pulseNowMs);
+  }
+
+  // D2 (v2.25.0) : PARITÉ /data ↔ WS de l'état de blocage du dosage. Troisième
+  // récidive du même motif après les pentes de sonde (v2.21.2) et les champs de
+  // calibration de la trame de config (v2.23.0) : ces champs n'existaient QUE sur
+  // le WebSocket. Or `latestSensorData` est intégralement REMPLACÉ par les
+  // charges /data sur plusieurs chemins côté client — l'information ne
+  // disparaissait donc pas seulement pour un client sans WS, elle clignotait par
+  // INTERMITTENCE, ce qui est pire qu'une absence franche.
+  //
+  // Règles null/arrondi STRICTEMENT identiques à ws_manager::_buildSensorJson
+  // (modèle : le précédent v2.21.2) : chaîne vide → null explicite (absent ≠ 0),
+  // booléens publiés tels quels. Getters LECTURE SEULE, sûrs en contexte
+  // async_tcp (cf. pump_controller.h) — aucun I²C, aucune décision de dosage.
+  //
+  // R2 (revue v2.25.0) : COPIE BORNÉE dans un tampon de PILE, et non copie d'une
+  // `String` du contrôleur. Cette route s'exécute sur `async_tcp` alors que
+  // loopTask réassigne la cause (surveillance, escalade, canDose) : copier une
+  // `String` lisait `buffer`/`len` pendant que l'écrivain pouvait libérer et
+  // réallouer le tas. Le tampon source est désormais fixe, donc indéboulonnable ;
+  // le pire cas est une lecture déchirée (message partiellement à jour).
+  // ArduinoJson DUPLIQUE un `char[]` non const dans le document (seuls les
+  // littéraux `const char(&)[N]` sont stockés par pointeur) : le tampon de pile
+  // peut donc mourir à la sortie du bloc.
+  {
+    char phBlocked[kDoseBlockedReasonMaxLen];
+    char orpBlocked[kDoseBlockedReasonMaxLen];
+    PumpController.copyPhDoseBlockedReason(phBlocked, sizeof(phBlocked));
+    PumpController.copyOrpDoseBlockedReason(orpBlocked, sizeof(orpBlocked));
+    if (phBlocked[0]  != '\0') doc["phDoseBlockedReason"]  = phBlocked;  else doc["phDoseBlockedReason"]  = nullptr;
+    if (orpBlocked[0] != '\0') doc["orpDoseBlockedReason"] = orpBlocked; else doc["orpDoseBlockedReason"] = nullptr;
+    // v2.25.1 : CODE de cause à côté du texte — le client ne doit plus deviner la
+    // cause en cherchant des fragments dans une phrase française (un « indispo »
+    // de warmup matchait « EZO indisponible » : panne affichée sur sonde saine).
+    // MÊME règle null que le texte, et publié dans le MÊME passage que le WS
+    // (ws_manager::_buildSensorJson) : 0 = aucun refus → null explicite.
+    const uint8_t phCode  = PumpController.getPhDoseBlockedCode();
+    const uint8_t orpCode = PumpController.getOrpDoseBlockedCode();
+    if (phCode  != kDoseBlockedCodeNone) doc["phDoseBlockedCode"]  = phCode;  else doc["phDoseBlockedCode"]  = nullptr;
+    if (orpCode != kDoseBlockedCodeNone) doc["orpDoseBlockedCode"] = orpCode; else doc["orpDoseBlockedCode"] = nullptr;
+    // « La butée BRUTE mord » — indéductible du pH corrigé publié : c'est tout
+    // l'objet de ces deux booléens. Recalculés à chaque tick de la surveillance,
+    // SANS latch (un latch reproduirait le défaut D1 de la cause collante).
+    doc["phRawGuardBlocked"]    = PumpController.isPhRawGuardBlocked();
+    doc["orpPhRawGuardBlocked"] = PumpController.isOrpPhRawGuardBlocked();
   }
   doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;
   doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;

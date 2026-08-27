@@ -319,7 +319,28 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   //   "orp_pulse_ms":60000, = 21 o | "ph_pulse_phase_ms":60000, = 26 o
   //   "orp_pulse_phase_ms":60000, = 27 o → total 169 o. Pool : 7 nœuds ≈ 112 o
   //   (clés littérales non copiées). Bump 2176 → 2432 (marge alignement incluse).
-  StaticJson<2432> doc;
+  // D2 (v2.25.0) : +2 booléens de butée BRUTE. Octets SÉRIALISÉS ajoutés :
+  //   "phRawGuardBlocked":false,    → 1+17+1+1+5+1 = 26 o
+  //   "orpPhRawGuardBlocked":false, → 1+20+1+1+5+1 = 29 o  → 55 o.
+  // TAILLE RÉELLE MESURÉE de la trame (harnais hôte ArduinoJson 7.4.3, valeurs
+  // PIRE CAS : causes de refus les plus longues, uint32 saturés, flottants à 9
+  // chiffres) : 2373 o AVANT, 2428 o APRÈS. La trame tient donc largement dans
+  // sWsFrameBuf (kWsFrameBufBytes = 3584 o, marge 1156 o) — INCHANGÉ, aucune
+  // troncature possible (garde `measureJson(doc) + 1 > cap` en fin de fonction).
+  // Le gabarit ci-dessous est porté 2432 → 2560 pour rester ≥ au pire cas mesuré.
+  // v2.25.1 : +2 champs de CODE de cause de refus. Octets SÉRIALISÉS au pire cas
+  // (valeur `null`, 4 caractères, plus longue que le plus grand code « 250 ») :
+  //   "phDoseBlockedCode":null,  → 1+17+1+1+4+1 = 25 o
+  //   "orpDoseBlockedCode":null, → 1+18+1+1+4+1 = 26 o   → 51 o.
+  // Pire cas de trame : 2428 o (mesure v2.25.0) + 51 = 2479 o, soit encore
+  // 1105 o de marge sous sWsFrameBuf (kWsFrameBufBytes = 3584 o) et sous le
+  // gabarit documentaire 2560 — aucun bump nécessaire, aucune troncature
+  // possible (garde `measureJson(doc) + 1 > cap` en fin de fonction, qui SAUTE
+  // le push au lieu de tronquer).
+  // NB : en ArduinoJson 7, StaticJson<N> dérive de JsonDocument et N n'est plus
+  // qu'une valeur documentaire (capacity()) — le pool est alloué dynamiquement.
+  // Le seul plafond DUR de ce chemin est kWsFrameBufBytes.
+  StaticJson<2560> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -375,10 +396,34 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // Secondes restantes de pause mélange par pompe (observabilité widget dashboard).
   d["ph_mix_remaining_s"]  = PumpController.getMixingRemainingS(0);
   d["orp_mix_remaining_s"] = PumpController.getMixingRemainingS(1);
-  String phBlocked  = PumpController.getPhDoseBlockedReason();
-  String orpBlocked = PumpController.getOrpDoseBlockedReason();
-  if (phBlocked.length() > 0)  d["phDoseBlockedReason"]  = phBlocked;  else d["phDoseBlockedReason"]  = nullptr;
-  if (orpBlocked.length() > 0) d["orpDoseBlockedReason"] = orpBlocked; else d["orpDoseBlockedReason"] = nullptr;
+  // R2 (revue v2.25.0) : copie BORNÉE dans un tampon de pile (mêmes accesseurs
+  // que /data — parité de transport). Ce chemin tourne en loopTask, mais garder
+  // les deux côtés identiques évite qu'une future migration du WS vers un autre
+  // contexte réintroduise la lecture de `String` inter-tâches. ArduinoJson
+  // duplique un `char[]` non const : le tampon peut mourir après la trame.
+  char phBlocked[kDoseBlockedReasonMaxLen];
+  char orpBlocked[kDoseBlockedReasonMaxLen];
+  PumpController.copyPhDoseBlockedReason(phBlocked, sizeof(phBlocked));
+  PumpController.copyOrpDoseBlockedReason(orpBlocked, sizeof(orpBlocked));
+  if (phBlocked[0]  != '\0') d["phDoseBlockedReason"]  = phBlocked;  else d["phDoseBlockedReason"]  = nullptr;
+  if (orpBlocked[0] != '\0') d["orpDoseBlockedReason"] = orpBlocked; else d["orpDoseBlockedReason"] = nullptr;
+  // v2.25.1 : CODE de cause de refus (identifiant STABLE) publié à côté du texte.
+  // Le texte restait la seule source d'identification côté client, qui y cherchait
+  // des fragments de phrase — d'où des causes fausses (warmup lu comme « EZO
+  // indisponible »). Règles null IDENTIQUES à /data (web_routes_data.cpp), champs
+  // ajoutés dans le MÊME passage : 0 = aucun refus → null explicite (absent ≠ 0).
+  const uint8_t phDoseCode  = PumpController.getPhDoseBlockedCode();
+  const uint8_t orpDoseCode = PumpController.getOrpDoseBlockedCode();
+  if (phDoseCode  != kDoseBlockedCodeNone) d["phDoseBlockedCode"]  = phDoseCode;  else d["phDoseBlockedCode"]  = nullptr;
+  if (orpDoseCode != kDoseBlockedCodeNone) d["orpDoseBlockedCode"] = orpDoseCode; else d["orpDoseBlockedCode"] = nullptr;
+  // D2 (v2.25.0) : « la butée BRUTE mord » — état qu'AUCUN client ne peut
+  // déduire du pH corrigé publié (un offset saisi à tort rend le corrigé
+  // rassurant pendant que la mesure capteur est hors limite). Booléens STRICTS,
+  // recalculés à chaque tick par la surveillance, sans latch (un latch
+  // reproduirait le défaut D1). Noms et sémantique IDENTIQUES à /data
+  // (web_routes_data.cpp) — parité de transport exigée.
+  d["phRawGuardBlocked"]    = PumpController.isPhRawGuardBlocked();
+  d["orpPhRawGuardBlocked"] = PumpController.isOrpPhRawGuardBlocked();
   if (!isnan(tVal))       d["temperature"] = tVal;                              else d["temperature"] = nullptr;
   if (!isnan(tRawWater))  d["temperature_raw"] = round(tRawWater * 100.0f) / 100.0f; else d["temperature_raw"] = nullptr;
   // feature-020 : 2ᵉ sonde DS18B20 "circuit" + indicateurs identification

@@ -6,6 +6,7 @@
 #include "config.h"
 #include "constants.h"
 #include "pulse_dosing_logic.h"  // itération 2 : proportionnel de temps (option B+C)
+#include "dosing_logic.h"        // v2.25.1 : DoseRefusal (code de cause exposé)
 
 struct PumpDriver {
   int pwmPin;    // Pin PWM Gate MOSFET (IRLZ44N)
@@ -136,9 +137,77 @@ private:
 
   // Cache de la dernière cause de refus pour log "edge-triggered" (1 seule entrée
   // par transition de cause). Évite le spam quand canDose() est appelé chaque cycle.
-  // feature-025 : également exposé via getPhDoseBlockedReason()/getOrpDoseBlockedReason()
-  // pour le WS (chaîne vide si dosage autorisé). Écrit/lu en loopTask uniquement.
-  String _lastRefusalCause[2];
+  // feature-025 : également exposé via copyPhDoseBlockedReason()/
+  // copyOrpDoseBlockedReason() pour /data et le WS (chaîne vide = dosage autorisé).
+  //
+  // TAMPON FIXE ET NON `String` (revue v2.25.0) : cette chaîne est écrite par
+  // loopTask (surveillance, escalade, canDose) et LUE depuis `async_tcp` (route
+  // /data), sans aucune exclusion mutuelle. Copier une `String` réassignée par
+  // une autre tâche lit `buffer`/`len` pendant que l'écrivain peut la libérer et
+  // la réallouer : lecture de tas libéré, potentiellement fatale. Un tampon
+  // membre de l'objet ne peut PAS être libéré — le pire cas dégénère en lecture
+  // DÉCHIRÉE, soit un message d'affichage partiellement à jour, sans
+  // conséquence. Dimensionnement et politique de troncature UTF-8 :
+  // cf. kDoseBlockedReasonMaxLen (constants.h) et clampReasonUtf8()
+  // (pump_controller.cpp). Écrit en loopTask UNIQUEMENT.
+  char _lastRefusalCause[2][kDoseBlockedReasonMaxLen] = {{0}, {0}};
+
+  // v2.25.1 — CODE de la cause, tenu STRICTEMENT en phase avec le tampon texte
+  // ci-dessus (mêmes quatre points d'écriture : canDose, garde, relâche, reset).
+  // Cf. getPhDoseBlockedCode() pour la sémantique des valeurs.
+  uint8_t _lastRefusalCode[2] = {kDoseBlockedCodeNone, kDoseBlockedCodeNone};
+
+  // v2.25.1 — escalade des causes de PANNE DE MESURE (sonde figée / plus aucune
+  // mesure acceptée) en `warning` + alerte MQTT dédiée, sous condition de
+  // PERSISTANCE (kDoseSensorFaultAlertDelayMs) : le transitoire de ré-amorçage à
+  // la reprise de circulation ne doit pas crier au loup.
+  //
+  // UN ÉPISODE = une période de panne CONTINUE, quelle que soit la NATURE de la
+  // panne pendant cette période (revue : la fenêtre était redatée sur tout
+  // changement de code, donc aussi sur panne → panne ; un EZO agonisant qui
+  // alterne figé ↔ périmé par phases < 60 s n'alertait alors JAMAIS).
+  //   `_sensorFaultActive`  = une panne était en cours au tour précédent — SEUL
+  //                           front non-panne → panne redate la fenêtre ;
+  //   `_sensorFaultSinceMs` = millis() du début de l'épisode (0 = pas d'épisode) ;
+  //   `_sensorFaultAlerted` = alerte déjà émise pour CET épisode (une seule, même
+  //                           si la nature de la panne change ensuite).
+  // loopTask uniquement (patron _stabilizationEndMs).
+  uint32_t _sensorFaultSinceMs[2] = {0, 0};
+  bool _sensorFaultAlerted[2] = {false, false};
+  bool _sensorFaultActive[2] = {false, false};
+
+  // Écriture BORNÉE d'une cause dans _lastRefusalCause[pumpIndex] (troncature
+  // sûre en UTF-8). Seul point d'écriture du tampon, loopTask uniquement.
+  void storeRefusalCause(int pumpIndex, const char* cause);
+
+  // ===== D1 (v2.25.0) : PROPRIÉTÉ de la chaîne de cause ======================
+  // Deux écrivains alimentent `_lastRefusalCause` — la SURVEILLANCE pH/ORP
+  // (tick*Surveillance, inconditionnelle) et la DÉCISION canDose() (sous
+  // conjonction `&&`). Sans arbitrage, la cause posée par une garde restait
+  // FIGÉE après le lever de la butée dans tous les modes où canDose() n'est
+  // jamais appelé — en particulier le mode `manual`, le seul où l'UI affiche
+  // l'injection manuelle, et l'état exact où l'escalade laisse l'appareil.
+  // L'UI annonçait alors un blocage révolu, indéfiniment.
+  //
+  // ARBITRAGE : un seul propriétaire à la fois, mémorisé ici.
+  //   - true  = la chaîne courante a été posée par une GARDE de sécurité
+  //             (surveillance ou escalade) → seule la garde peut l'effacer,
+  //             et elle le fait à la RELÂCHE, qui tourne à chaque tick ;
+  //   - false = la chaîne a été posée (ou vidée) par canDose() → la garde n'y
+  //             touche pas, sinon la relâche effacerait un refus RÉEL et
+  //             toujours actif (« filtration arrêtée », quota, anti-rafale…).
+  // Conséquence : quand une garde bloque réellement, la cause reste celle de la
+  // garde (canDose n'est pas atteint) ; quand canDose refuse, elle reste celle
+  // de canDose ; quand ni l'un ni l'autre ne refuse, la chaîne est vide.
+  // Écrit/lu en loopTask uniquement (patron _stabilizationEndMs).
+  bool _refusalCauseFromGuard[2] = {false, false};
+
+  // Pose une cause au nom d'une GARDE (prend la propriété de la chaîne).
+  void setGuardRefusalCause(int pumpIndex, const String& cause);
+  // Efface la cause SI ET SEULEMENT SI une garde en est propriétaire. No-op
+  // (aucune écriture, aucune allocation) dans tous les autres cas — appelable
+  // donc à chaque tick depuis les branches de relâche.
+  void clearGuardRefusalCause(int pumpIndex);
 
   // feature-025 : pause mélange hydraulique post-injection (pool-chemistry).
   // _mixingEndMs[0]=pH, [1]=ORP. Armé par notifyPhDose()/notifyOrpDose() à l'ARRÊT
@@ -147,51 +216,218 @@ private:
   // Écrits/lus en loopTask uniquement → pas de mutex (cohérent avec _stabilizationEndMs).
   uint32_t _mixingEndMs[2] = {0, 0};
 
-  // Helpers internes pour le log de refus (canDose).
-  void logRefusalOnce(int pumpIndex, const String& cause);
+  // Helpers internes pour le log de refus (canDose). `code` est mémorisé pour
+  // /data + WS et pilote la SÉVÉRITÉ du journal : v2.25.1 escalade en `warn` +
+  // alerte MQTT dédiée les causes de PANNE de mesure (capteur figé, mesure
+  // absente/périmée) — sur une installation surveillée à distance, un `info`
+  // dédoublonné reste invisible. Les autres causes restent en `info`.
+  void logRefusalOnce(int pumpIndex, const String& cause, DoseRefusal code);
   void resetRefusalLogState(int pumpIndex);
 
-  // ===== feature-067 : filets de sécurité sur le pH BRUT (pool-chemistry) =====
-  // Un offset logiciel pH erroné décale la consigne EFFECTIVE de régulation.
-  // Ces deux gardes raisonnent sur getPhFilteredRaw() (mesure capteur SANS
-  // offset), donc restent valides même si l'offset est faux. Inertes à offset 0.
+  // ===== Gardes de sécurité pH (pool-chemistry, refonte v2.25.0) =============
+  // Les seuils CHIMIQUES portent sur le pH CORRIGÉ (brut + offset) : une fois
+  // l'offset appliqué, la valeur EST le pH de l'eau, et un seuil chimique doit
+  // porter sur le pH réel. Seules les deux BUTÉES de dernier recours portent sur
+  // le pH BRUT (getPhFilteredRaw()), pour rester valides si l'offset est FAUX.
+  // Le pH corrigé est RECALCULÉ ici — applyPhOffset(getPhFilteredRaw(), offset) —
+  // et non lu via getPhFiltered() : getPhFilteredRaw() est l'unique accesseur qui
+  // porte la garde d'âge du filtre (pool-chemistry P2). Aucune garde d'âge n'est
+  // ajoutée à getPhFiltered(), dont le contrat est celui de /data, du WS et de MQTT.
   // Appelées UNIQUEMENT depuis update() (loopTask) : état et logs sans mutex.
 
-  // Condition #2 : plancher dur d'injection d'acide. True → dosage pH REFUSÉ
-  // (branches automatique ET programmée). Palier kPhRawDosingFloor si
-  // |offset| <= kPhOffsetWideThreshold, kPhRawDosingFloorWide au-delà.
-  // Ne s'applique pas au produit basique (phCorrectionType == "ph_plus").
-  // Condition #7 : compte les refus sur 24 h glissantes → au-delà de
-  // kPhRawFloorRefusalMax, bascule la régulation pH en manuel (fail-closed).
-  bool isPhRawFloorBlocking();
-
-  // Condition #3 : inhibition du dosage ORP quand le pH BRUT dépasse
-  // kPhRawOrpInhibit (chlore peu actif → la régulation ORP surdoserait).
-  // True → dosage ORP SUSPENDU (branches automatique ET programmée).
+  // ===== SÉPARATION SURVEILLANCE / DÉCISION (contre-visite C1, v2.25.0) ======
+  // Les fonctions de DÉCISION ci-dessous sont appelées dans une conjonction
+  // d'éligibilité (`phMode == "automatic" && phLimitOk && … && !isPhGuardBlocking`).
+  // Le court-circuit `&&` de C++ fait qu'elles ne sont PAS appelées dès qu'un
+  // terme amont est faux : quota journalier épuisé, mode `manual` (l'état exact
+  // où l'escalade laisse l'appareil), régulation désactivée… Y laisser la
+  // SURVEILLANCE, c'est promettre des alertes qui ne partiront jamais quand elles
+  // sont le plus nécessaires — une panne silencieuse.
   //
-  // `requireKnownPh` (pool-chemistry P2) : true en régulation AUTOMATIQUE → un pH
-  // brut INDISPONIBLE (capteur muet, filtre non amorcé) inhibe aussi, car
-  // canDose(1) ne consulte jamais le pH : ce filet est l'unique garde du couplage
-  // pH/chlore, et doser à l'aveugle avec une eau possiblement au-dessus de 7,60
-  // reviendrait à surdoser. false pour le dosage PROGRAMMÉ, aveugle à la mesure
-  // par conception (comportement historique préservé, hors périmètre).
-  bool isOrpInhibitedByPhRaw(bool requireKnownPh);
+  // La surveillance vit donc dans les deux `tick*Surveillance()` ci-dessous,
+  // appelées INCONDITIONNELLEMENT une fois par tick d'update(), hors de toute
+  // conjonction. Elles portent : les franchissements de seuil, l'hystérésis de
+  // relâche, les logs warn/critical, les alertes MQTT et la cause exposée au WS.
+  // Elles ne comptent RIEN et n'escaladent JAMAIS (un appareil laissé en manuel
+  // s'auto-escaladerait sinon). Elles ne lisent que des CACHES capteur
+  // (getPhFilteredRaw / getPhOffset) : aucune transaction I²C supplémentaire.
 
-  // État edge-triggered des deux gardes ci-dessus (1 seul log critical + 1 seule
-  // alerte MQTT par transition) + compteur de refus sur fenêtre glissante 24 h.
-  bool     _phRawFloorActive = false;
-  bool     _orpPhRawInhibitActive = false;
+  // Surveillance pH inconditionnelle — met à jour les 5 drapeaux d'hystérésis, le
+  // verdict `_phGuardBlockingNow` et le latch `_phGuardRefusalPending`, journalise
+  // et alerte. Une mesure périmée (getPhFilteredRaw() == NaN, garde d'âge du
+  // filtre) ne produit NI refus NI alerte : tous les drapeaux sont réarmés.
+  // D1 : la RELÂCHE (et le cas mesure périmée) EFFACE la cause de refus quand une
+  // garde en est propriétaire — cf. _refusalCauseFromGuard.
+  void tickPhGuardSurveillance();
+
+  // Surveillance de l'inhibition ORP inconditionnelle — met à jour
+  // `_orpPhInhibitActive` / `_orpPhInhibitKind` et le verdict `_orpPhInhibitNow`.
+  // R1 (v2.25.0) : SEUL point d'écriture des DEUX mémoires d'hystérésis de seuil
+  // `_orpPhCorrThresholdActive` (seuil CORRIGÉ) et `_orpPhRawThresholdActive`
+  // (butée BRUTE haute) — chacune écrite depuis le résultat de SA SEULE
+  // comparaison, jamais depuis l'autre ni depuis une branche NaN.
+  // R2 (contre-visite v2.25.0) : porte aussi l'anti-rafale d'alertes —
+  // re-qualification du motif admise UNIQUEMENT en montée de gravité, et une
+  // seule alerte par gravité et par ÉPISODE (`_orpPhAlertedSeverity`, remis à
+  // zéro à la seule LEVÉE de l'inhibition).
+  // La politique `requireKnownPh` (fail-closed sur pH inconnu) est dérivée ICI du
+  // mode ORP courant, plus passée par l'appelant : la branche automatique n'est
+  // atteignable que si le mode EST "automatic", donc le verdict rendu à la
+  // décision est celui de sa propre politique.
+  // D1 : la RELÂCHE efface la cause de refus ORP d'origine garde (idem pH).
+  void tickOrpPhInhibitSurveillance();
+
+  // Conditions #2 + #7 : DÉCISION de refus du dosage pH. True → dosage pH REFUSÉ.
+  // Ne détecte plus rien : rend le verdict de tickPhGuardSurveillance() et n'y
+  // ajoute que ce qui relève d'un refus RÉEL (comptage + escalade en automatique,
+  // signalement périodique en programmé). Seuils appliqués par la surveillance :
+  //   - `ph_minus` : refus d'ACIDIFIER sous kPhFloorCorrected [CORRIGÉ], plus la
+  //     butée kPhFloorRawHard [BRUT] contre un offset positif saisi à tort ;
+  //   - `ph_plus`  : refus d'ALCALINISER au-dessus de kPhCeilingCorrected
+  //     [CORRIGÉ] (durcissement v2.25.0 : le pH+ n'était pas gardé du tout),
+  //     plus la butée kPhCeilingRawHard [BRUT] contre un offset négatif saisi à
+  //     tort (contre-visite C3 : symétrique de la butée brute basse — sans elle
+  //     un offset −0,50 erroné laissait le pH+ alcaliniser jusqu'à 8,20 brut).
+  // Alerte NON BLOQUANTE en plus, à kPhLowWarn [CORRIGÉ], dans les deux cas.
+  //
+  // `countRefusal` (condition du gate) : true depuis la branche AUTOMATIQUE
+  // seulement. Un refus y alimente le compteur 24 h glissantes → au-delà de
+  // kPhGuardRefusalMax, bascule fail-closed de la régulation pH en manuel. La
+  // branche PROGRAMMÉE passe false : elle refuse tout autant (c'est un filet
+  // chimique, pas une boucle de régulation) mais ne compte ni n'escalade — elle
+  // signale à la place, en warn + alerte MQTT à débit limité.
+  bool isPhGuardBlocking(bool countRefusal);
+
+  // Condition #3 : DÉCISION d'inhibition du dosage ORP sur pH élevé. True →
+  // dosage ORP SUSPENDU (branches automatique ET programmée). Rend le verdict de
+  // tickOrpPhInhibitSurveillance(), sans effet de bord. Deux seuils, OU logique :
+  // kPhOrpInhibit sur le pH CORRIGÉ (chlore peu actif → la régulation ORP
+  // surdoserait) et la butée kPhCeilingRawHard sur le pH BRUT, inconditionnelle,
+  // contre un offset négatif saisi à tort qui masquerait une eau réellement haute.
+  //
+  // Le paramètre `requireKnownPh` a disparu (pool-chemistry P2 inchangé sur le
+  // fond) : la politique est désormais dérivée du mode ORP dans la surveillance —
+  // AUTOMATIQUE → un pH INDISPONIBLE (capteur muet, filtre non amorcé) inhibe
+  // aussi, car canDose(1) ne consulte jamais le pH ; PROGRAMMÉ → aveugle à la
+  // mesure par conception (comportement historique préservé).
+  bool isOrpInhibitedByPh() const { return _orpPhInhibitNow; }
+
+  // État edge-triggered des gardes ci-dessus : 1 seul log critical + 1 seule
+  // alerte MQTT par transition, et hystérésis de relâche portée par ces drapeaux.
+  // Écrits par la SURVEILLANCE uniquement (tick*Surveillance) — jamais par la
+  // décision : c'est ce qui garantit UNE alerte par franchissement, la
+  // surveillance étant le seul point d'évaluation et n'étant appelée qu'une fois
+  // par tick.
+  //
+  // CINQ drapeaux pH INDÉPENDANTS, et non un seul : ils vivent dans deux
+  // référentiels (corrigé / brut) et dans deux directions (bas / haut). Un
+  // drapeau unique ferait relâcher une garde sur le franchissement d'une autre.
+  bool     _phLowBlockActive     = false;  // Refus d'acidifier  [CORRIGÉ, bas]
+  bool     _phHighBlockActive    = false;  // Refus d'alcaliniser [CORRIGÉ, haut]
+  bool     _phRawHardBlockActive = false;  // Butée acide         [BRUT, bas]
+  // Contre-visite C3 : butée brute HAUTE appliquée au refus d'ALCALINISER,
+  // symétrique de _phRawHardBlockActive. Sans elle, kPhCeilingRawHard n'agissait
+  // que sur l'inhibition ORP : un offset −0,50 erroné laissait le pH+ pousser
+  // l'eau au-delà de 8,10 BRUT pendant que le chlore était inhibé — l'appareil
+  // conduisait lui-même l'eau dans l'impasse sanitaire. Depuis le plafond à 7,60,
+  // les deux gardes mordent au même point au pire cas d'offset (cf. constants.h).
+  bool     _phRawHardHighBlockActive = false;  // Butée base      [BRUT, haut]
+  bool     _orpPhInhibitActive   = false;  // Inhibition ORP  [CORRIGÉ + BRUT, haut]
+  // ===== R1 (revue v2.25.0) : DÉCOUPLAGE DES DEUX RÔLES DU DRAPEAU ORP =======
+  // `_orpPhInhibitActive` cumulait deux rôles incompatibles :
+  //   (a) MÉMOIRE D'HYSTÉRÉSIS des franchissements de seuil (paramètre
+  //       `wasBlocking` de phGuardBlocksAbove) ;
+  //   (b) LATCH « inhibition en cours », qui porte `_orpPhInhibitKind` et le
+  //       edge-trigger de log/alerte.
+  // Or les branches NaN arment (b) pour des motifs ÉTRANGERS À TOUT SEUIL
+  // (kind 1 = pH indisponible, kind 2 = stabilisation des mesures). Résultat
+  // observé : reprise de filtration → mesures non représentatives → latch posé
+  // (kind 2) ; le pH revient à 7,57, JAMAIS monté au-dessus de 7,60 — mais
+  // l'hystérésis, croyant sortir d'un blocage, exigeait ≤ 7,55 et MAINTENAIT
+  // l'inhibition du chlore, indéfiniment, à chaque démarrage de filtration, en
+  // annonçant « stabilisation des mesures » (kind figé). Panne silencieuse de
+  // chloration + cause publiée trompeuse.
+  //
+  // Les drapeaux ci-dessous ne portent QUE le rôle (a) : ils sont armés/désarmés
+  // EXCLUSIVEMENT par les comparaisons de seuil de
+  // tickOrpPhInhibitSurveillance(). AUCUNE branche NaN ne les écrit — le
+  // fail-closed sur pH inconnu reste entier, il agit sur le latch (b), pas sur la
+  // mémoire de franchissement.
+  //
+  // ===== R2 (contre-visite v2.25.0) : UNE MÉMOIRE PAR SEUIL ==================
+  // Ces deux seuils PARTAGEAIENT un drapeau unique, écrit par `(raw || corr)`.
+  // Le seuil le moins souvent armé perdait alors toute hystérésis : tant que le
+  // seuil CORRIGÉ maintenait le drapeau à true, la butée BRUTE se comportait en
+  // simple comparateur à 8,05 (= 8,10 − hystérésis). Cas physique observé —
+  // bassin à pH 8,03-8,12 avec offset 0,00 : chaque mesure franchissant 8,05
+  // re-qualifiait le motif (3 ↔ 0) et produisait un critical + une alerte MQTT,
+  // en alternant DEUX messages contradictoires (« offset négatif probablement
+  // erroné » alors que l'offset vaut 0,00, puis « pH > 7,60 »). Deux seuils, deux
+  // référentiels : une mémoire par seuil, comme les quatre drapeaux pH ci-dessus.
+  bool     _orpPhCorrThresholdActive = false;  // kPhOrpInhibit     [CORRIGÉ, haut]
+  bool     _orpPhRawThresholdActive  = false;  // kPhCeilingRawHard [BRUT, haut]
+  // ===== R2 : anti-rafale — une alerte par gravité et par ÉPISODE ============
+  // Gravité du motif d'inhibition DÉJÀ signalé dans l'épisode courant :
+  //   0 = épisode vierge (rien signalé) — sentinelle, toute gravité la dépasse
+  //   1 = mesure absente  (`_orpPhInhibitKind` 1 ou 2)
+  //   2 = seuil CORRIGÉ franchi (kind 0)
+  //   3 = butée BRUTE haute    (kind 3)
+  // Une alerte n'est émise QUE si la gravité du motif courant dépasse cette
+  // valeur : la re-qualification ne va donc jamais en DÉGRADATION (la butée brute
+  // qui se relâche à 8,05 pendant que le seuil corrigé tient ne réémet rien), et
+  // une gravité déjà signalée ne réémet pas non plus. Remise à 0 au SEUL point de
+  // LEVÉE de l'inhibition — jamais avant, sinon l'épisode se scinderait et la
+  // rafale reviendrait.
+  uint8_t  _orpPhAlertedSeverity = 0;
+  // Motif dont le LIBELLÉ de cause est actuellement exposé (mêmes valeurs que
+  // `_orpPhInhibitKind`, 255 = aucun). Sert d'edge-trigger au rafraîchissement du
+  // libellé quand la mesure devient indisponible sous un latch de motif de seuil :
+  // sans lui, la cause publiée continuait d'afficher l'ancienne valeur pH, et le
+  // rafraîchir à chaque tick construirait un String par tour de loop.
+  uint8_t  _orpPhCauseKind = 255;
+  // Alerte NON BLOQUANTE d'eau acide (kPhLowWarn) : edge-trigger séparé, parce
+  // qu'elle n'est pas une garde — elle ne refuse rien et ne compte rien.
+  bool     _phLowWarnActive      = false;
+  // Type de correction observé au tick précédent (0 = ph_minus, 1 = ph_plus).
+  // Snapshot lu UNE FOIS par tick : changer de produit change de seuil ET de
+  // direction, donc les trois drapeaux pH ci-dessus deviennent caducs et sont
+  // réarmés. Le compteur de refus, lui, n'est PAS réinitialisé : une anomalie
+  // durable ne doit pas s'effacer d'un changement de réglage.
+  uint8_t  _phCorrectionKind = 0;
   // v2.20.3 (C6) : nature de l'inhibition ORP en cours, pour que le message de
   // LEVÉE corresponde au message de POSE.
-  //   0 = pH brut trop élevé (seuil franchi)
-  //   1 = pH brut indisponible (capteur muet / filtre non amorcé) → anomalie
+  //   0 = pH corrigé trop élevé (kPhOrpInhibit franchi)
+  //   1 = pH indisponible (capteur muet / filtre non amorcé) → anomalie
   //   2 = mesures non représentatives (purge chambre de mesure) → état NORMAL
+  //   3 = butée BRUTE haute (kPhCeilingRawHard) → offset négatif suspect
   // Le cas 2 était auparavant journalisé comme le cas 1 : à chaque reprise de
   // filtration l'appareil annonçait un « capteur muet » alarmant alors qu'il
   // s'agissait de la stabilisation qu'il venait lui-même de déclencher.
-  uint8_t  _orpPhRawInhibitKind = 0;
-  uint8_t  _phRawFloorRefusals = 0;      // Refus dans la fenêtre courante
-  uint32_t _phRawFloorWindowStart = 0;   // millis() du 1er refus de la fenêtre
+  uint8_t  _orpPhInhibitKind = 0;
+
+  // ===== Verdicts du tick, posés par la surveillance, lus par la décision =====
+  // Écrits/lus en loopTask uniquement (aucun mutex, patron _stabilizationEndMs).
+  // Verdict pH du tick courant : true si une garde pH bloque le dosage.
+  bool     _phGuardBlockingNow = false;
+  // Latch « épisode de blocage pas encore comptabilisé ». Posé par la
+  // surveillance à la TRANSITION vers blocage (au plus une fois par tick, comme
+  // l'ex-`newRefusal`), consommé UNE seule fois par la décision automatique.
+  // Sans lui, un franchissement survenu pendant une inéligibilité amont (quota
+  // épuisé) ne serait jamais compté : la surveillance ayant déjà posé les
+  // drapeaux d'hystérésis, la décision ne verrait plus aucune transition au
+  // retour de l'éligibilité. Remis à false dès que le blocage retombe : un
+  // épisode terminé sans refus RÉEL ne doit rien compter.
+  bool     _phGuardRefusalPending = false;
+  // Verdict ORP du tick courant : true si le dosage chlore est inhibé.
+  bool     _orpPhInhibitNow = false;
+
+  uint8_t  _phGuardRefusals = 0;         // Refus AUTOMATIQUES dans la fenêtre
+  uint32_t _phGuardWindowStart = 0;      // millis() du 1er refus de la fenêtre
+  // Débit limité de l'alerte « dosage pH programmé refusé » (pas de compteur ni
+  // d'escalade dans cette branche : sans réémission, un refus permanent serait
+  // un no-op silencieux après la première transition).
+  uint32_t _phScheduledAlertMs = 0;
+  bool     _phScheduledAlertSent = false;
 
   // Ring buffer anti-rafale (pool-chemistry Pass 3.5) — timestamps de start
   // de cycle (millis) par pompe. Index circulaire, 0 = pH, 1 = ORP.
@@ -435,10 +671,84 @@ public:
   // Secondes restantes de pause mélange par pompe ([0]=pH, [1]=ORP) — observabilité UI.
   unsigned long getMixingRemainingS(int pumpIndex) const;
 
-  // ===== feature-025 : raison de blocage dosage exposée au WS =====
-  // Chaîne vide si dosage autorisé, sinon la dernière cause de refus de canDose().
-  String getPhDoseBlockedReason() const { return _lastRefusalCause[0]; }
-  String getOrpDoseBlockedReason() const { return _lastRefusalCause[1]; }
+  // ===== feature-025 : raison de blocage dosage exposée au WS + /data =====
+  // Chaîne vide si dosage autorisé, sinon la dernière cause de refus EN COURS
+  // (garde de sécurité pH/ORP ou canDose() — cf. _refusalCauseFromGuard).
+  // D1 (v2.25.0) : la chaîne est désormais effacée par la RELÂCHE de la
+  // surveillance, qui tourne à chaque tick quel que soit le mode de régulation —
+  // elle reflète donc l'état COURANT y compris en mode `manual`, où canDose()
+  // n'est jamais appelé.
+  //
+  // R2 (revue v2.25.0) : COPIE BORNÉE vers un tampon de l'APPELANT, en
+  // remplacement des ex-getters `String getPhDoseBlockedReason()`. Renvoyer une
+  // `String` copiait, depuis `async_tcp`, un objet réassigné par loopTask :
+  // lecture de tas potentiellement libéré. Ici, `out` reçoit au plus `outSize-1`
+  // octets + NUL, la lecture du tampon source est bornée par sa capacité, et la
+  // troncature ne coupe jamais au milieu d'un caractère UTF-8 (accents des
+  // messages français → JSON non décodable côté client sinon).
+  // Sortie garantie NUL-terminée (chaîne vide si `out`/`outSize` invalides), ce
+  // qui préserve le contrat « chaîne vide ⇒ null en JSON » des deux côtés.
+  // Course bénigne assumée (patron isAnyPumpEnergized) : pire cas, une lecture
+  // déchirée = message partiellement à jour ; le tampon source ne peut pas
+  // disparaître. Aucun effet de bord, aucune décision de dosage.
+  void copyPhDoseBlockedReason(char* out, size_t outSize) const;
+  void copyOrpDoseBlockedReason(char* out, size_t outSize) const;
+
+  // ===== v2.25.1 : CODE de la cause de refus, à côté du texte ================
+  // Le texte reste publié (journal, message par défaut, causes de garde portant
+  // des valeurs runtime), mais il ne doit plus servir à IDENTIFIER la cause : le
+  // client cherchait des fragments de phrase française, si bien qu'un simple
+  // « indisponible » de warmup matchait « EZO indisponible » et affichait une
+  // panne inexistante. Le code est le seul identifiant stable.
+  //   0 (kDoseBlockedCodeNone) = aucun refus en cours → publié `null` ;
+  //   1..22                    = valeur de DoseRefusal (contrat figé, dosing_logic.h) ;
+  //   250 (kDoseBlockedCodeGuard) = cause posée par une garde de sécurité pH/ORP
+  //       ou l'escalade → le client se rabat sur le TEXTE.
+  // Course bénigne assumée, identique au tampon de texte : écrit par loopTask, lu
+  // en contexte async ; lecture 8 bits atomique sur Xtensa. Pire cas, un code en
+  // retard d'un tour de loop sur le texte (ou l'inverse) — un affichage corrigé
+  // au rafraîchissement suivant, jamais une décision de dosage.
+  uint8_t getPhDoseBlockedCode() const { return _lastRefusalCode[0]; }
+  uint8_t getOrpDoseBlockedCode() const { return _lastRefusalCode[1]; }
+
+  // ===== D2 (v2.25.0) : « la butée BRUTE mord » — LECTURE SEULE ==============
+  // Aucun client ne peut déduire ces deux états du pH CORRIGÉ publié : c'est
+  // tout leur objet. Un offset saisi à tort rend le corrigé rassurant alors que
+  // la mesure capteur, elle, est hors limite — seule la butée brute le voit.
+  //
+  // SANS LATCH : ces getters rendent les drapeaux d'hystérésis recalculés à
+  // chaque tick par la surveillance (posés au franchissement, effacés à la
+  // relâche). Un latch reproduirait exactement le défaut D1.
+  //
+  // Course bénigne assumée (patron isAnyPumpEnergized / getPulseMs) : drapeaux
+  // écrits par loopTask, lus ici en contexte web async ; lectures 8 bits
+  // atomiques sur Xtensa, pire cas un instantané en retard d'un tour de loop.
+  // Aucun setter, aucune influence sur une décision de dosage.
+
+  // Butée pH BRUTE applicable au produit DÉCLARÉ : basse (butée acide) en
+  // `ph_minus`, haute (butée base) en `ph_plus`. Le produit est lu via le
+  // snapshot `_phCorrectionKind` (uint8_t posé par la surveillance) et non via
+  // mqttCfg.phCorrectionType : on ne copie pas une String écrite par loopTask
+  // depuis un handler async.
+  bool isPhRawGuardBlocked() const {
+    return (_phCorrectionKind == 1) ? _phRawHardHighBlockActive
+                                    : _phRawHardBlockActive;
+  }
+
+  // Inhibition ORP due à la BUTÉE BRUTE HAUTE uniquement — pas aux autres motifs
+  // (pH corrigé élevé, pH indisponible, mesures non représentatives), qui ont
+  // leurs propres champs.
+  //
+  // Lit le DRAPEAU DE SEUIL et non `_orpPhInhibitKind` (revue v2.25.0, 2ᵉ passe) :
+  // le kind est LATCHÉ et re-qualifié en montée de gravité seulement, donc il
+  // reste à 3 après le retour du pH brut sous la butée tant que le seuil corrigé
+  // maintient l'inhibition. Scénario : bassin à 8,03-8,12 avec offset 0,00 — la
+  // butée brute retombe sous 8,05, le seuil corrigé tient, et l'encart
+  // d'injection manuelle citerait un pH brut périmé. Le drapeau de seuil, lui,
+  // dit l'état courant : c'est ce que le client doit voir.
+  bool isOrpPhRawGuardBlocked() const {
+    return _orpPhInhibitNow && _orpPhRawThresholdActive;
+  }
 
   // ===== feature-011 : débit moyen planifié du mode scheduled (mL/min) =====
   // Débit moyen restant de la répartition (remaining / horizonMinutes).

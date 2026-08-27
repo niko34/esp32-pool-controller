@@ -59,6 +59,14 @@ void SensorFilter::reset() {
   _lastValidMs = 0;
   _hasValid = false;
 
+  // Grâce de ré-amorçage : reset() est un état NEUF, aucune grâce en cours. La
+  // sémantique de reset() est donc intacte — un filtre remis à zéro qui ne reçoit
+  // plus rien est bien déclaré périmé (sonde muette), sans temporisation.
+  // _lastSeenMs n'est PAS effacé : ce n'est pas un état de filtre mais une simple
+  // observation d'horloge, utile au tout premier ré-amorçage qui suivra.
+  _staleGraceArmed = false;
+  _staleGraceFromMs = 0;
+
   // Latch EMI (feature-058) : compteur de fenêtres en dépassement + latch collant.
   _dispersionBreachStreak = 0;
   _dispersionCleanStreak = 0;  // v2.8.4 : streak d'auto-levée
@@ -132,6 +140,18 @@ void SensorFilter::rearm() {
   _filtered = NAN;
   _dispersionCleanStreak = 0;
 
+  // Grâce « périmé » (revue v2.25.1) : l'âge que porte le filtre à cet instant est
+  // celui d'AVANT le ré-amorçage — il ne dit RIEN de la santé de la sonde, dont la
+  // première lecture n'a pas encore eu lieu. Sans cette grâce, la réouverture de
+  // porte (démarrage de filtration) affichait « Sonde muette — vérifier la sonde »
+  // sur une sonde saine. On ne redate NI _lastValidMs NI _hasValid : ils ne
+  // décrivent que des échantillons réellement acceptés, et ils alimentent la garde
+  // d'âge de ready() (donc le dosage) ainsi que /debug/sensor_filter_state.
+  // La fenêtre est datée par son INSTANT D'ARMEMENT, pas par une échéance : cf.
+  // _staleGraceArmed dans l'en-tête (revue v2.25.1).
+  _staleGraceArmed = true;
+  _staleGraceFromMs = _lastSeenMs;
+
   // Bookkeeping de la sortie de secours : la série de rejets a rempli son office.
   _spikeCount = 0;
   _spikeMin = NAN;
@@ -150,9 +170,40 @@ void SensorFilter::rearm() {
 }
 
 // -----------------------------------------------------------------------------
+// _expireStaleGrace() — expiration EFFECTIVE de la grâce (revue v2.25.1)
+// -----------------------------------------------------------------------------
+// La v2.25.1 laissait le getteur const stale() constater l'échéance sans pouvoir
+// la nettoyer : sur une sonde muette, le drapeau restait armé pour toujours et la
+// comparaison de deadline se retournait 24,8 jours plus tard, masquant de nouveau
+// la panne. On désarme donc ICI, sur un chemin non-const — et seulement ici : les
+// getteurs restent en lecture pure.
+// Appelé en tête de setContext() ET de addSample(), c'est-à-dire à chaque cycle de
+// lecture (la coquille appelle setContext() inconditionnellement, AVANT toute
+// tentative de lecture EZO, même pendant une panne de bus I²C) : la grâce est donc
+// désarmée au plus tard kPhOrpSensorIntervalMs après son échéance, quelle que soit
+// la santé de la sonde.
+void SensorFilter::_expireStaleGrace(uint32_t nowMs) {
+  if (!_staleGraceArmed) return;
+  // Écoulé depuis l'ARMEMENT (arithmétique non signée, comme ageMs()) : la grâce
+  // est un intervalle FERMÉ, pas une demi-droite au-delà d'une échéance.
+  if ((nowMs - _staleGraceFromMs) >= _cfg.maxAgeMs) {
+    _staleGraceArmed = false;
+    _staleGraceFromMs = 0;
+  }
+}
+
+// -----------------------------------------------------------------------------
 // setContext() — porte d'alimentation (v2.20.3)
 // -----------------------------------------------------------------------------
 void SensorFilter::setContext(bool waterPresent, bool measuresValid, uint32_t nowMs) {
+  // Expiration EFFECTIVE de la grâce de ré-amorçage (revue v2.25.1) : AVANT le rearm()
+  // éventuel de réouverture ci-dessous, qui en armera une neuve.
+  _expireStaleGrace(nowMs);
+
+  // Ancre d'horloge du ré-amorçage (cf. _lastSeenMs) : posée AVANT tout appel à
+  // rearm() ci-dessous, pour que la grâce soit datée du cycle en cours.
+  _lastSeenMs = nowMs;
+
   // Front montant d'eau → plancher de gel : la chambre de mesure contient encore
   // l'eau STAGNANTE (potentiellement très acide au voisinage du point d'injection).
   // On l'applique même si la coquille déclare déjà les mesures représentatives
@@ -193,6 +244,15 @@ bool SensorFilter::rearmedSinceLastPoll() {
 uint8_t SensorFilter::rearmDenied() const { return _rearmDenied; }
 
 bool SensorFilter::addSample(float raw, uint32_t nowMs) {
+  // Expiration EFFECTIVE de la grâce (revue v2.25.1) : en TÊTE, donc AVANT la sortie sur
+  // porte fermée et avant le rearm() de la sortie de secours. Second point de
+  // désarmement, pour un appelant qui n'utiliserait pas setContext() (tests natifs
+  // antérieurs à v2.20.3, porte ouverte par défaut).
+  _expireStaleGrace(nowMs);
+
+  // Ancre d'horloge du ré-amorçage (cf. _lastSeenMs) : posée en TÊTE, donc valable
+  // aussi pour le rearm() de la sortie de secours déclenché plus bas.
+  _lastSeenMs = nowMs;
   _raw = raw;
 
   // ----- PORTE FERMÉE (v2.20.3) : sortie EN TÊTE -----
@@ -381,6 +441,9 @@ bool SensorFilter::addSample(float raw, uint32_t nowMs) {
   if (_validCount < 255) ++_validCount;
   _lastValidMs = nowMs;
   _hasValid = true;
+  // La datation redevient significative : la grâce de ré-amorçage n'a plus d'objet
+  // (l'âge est maintenant celui d'une mesure réellement acceptée).
+  _staleGraceArmed = false;
   return true;
 }
 
@@ -441,6 +504,32 @@ bool SensorFilter::ready(uint32_t nowMs) const {
   // existante de evaluateDose — pas de nouvelle valeur DoseRefusal).
   if (_frozenDetector.frozen()) return false;
   return true;
+}
+
+// v2.25.1 — décomposition de ready() (observabilité). Mêmes prédicats, mêmes
+// frontières que ready() ci-dessus : toute divergence rendrait la cause affichée
+// incohérente avec le refus réel.
+bool SensorFilter::warmingUp() const { return _bufCount < _cfg.centralWindow; }
+
+bool SensorFilter::stale(uint32_t nowMs) const {
+  // Grâce de ré-amorçage (revue v2.25.1) : pendant au plus maxAgeMs après un
+  // rearm(), l'âge porté par le filtre est celui d'avant le ré-amorçage — il ne
+  // qualifie pas la sonde, qui n'a pas encore eu l'occasion de répondre. On
+  // n'inverse SURTOUT PAS la priorité stale/warmup de resolveFilterState() : une
+  // sonde réellement muette resterait « en stabilisation » indéfiniment. Ici la
+  // grâce EXPIRE, et la panne est alors annoncée (retard borné à 20 s).
+  //
+  // Ce getteur ne fait que CONSTATER la fenêtre — son désarmement effectif est
+  // fait par _expireStaleGrace() sur les chemins non-const (revue v2.25.1). La fenêtre
+  // est donc testée en ÉCOULÉ DEPUIS L'ARMEMENT, jamais par une échéance : un
+  // intervalle fermé ne se réouvre qu'au repliement COMPLET de millis() (49,7 j),
+  // alors qu'une deadline signée redevenait vraie dès 2³¹ ms (24,8 j).
+  if (_staleGraceArmed && (nowMs - _staleGraceFromMs) < _cfg.maxAgeMs) return false;
+  // `!_hasValid` (aucune mesure jamais acceptée) est traité comme périmé : c'est
+  // le cas de l'EZO muet depuis le boot. ageMs() rend UINT32_MAX dans ce cas,
+  // mais on ne s'appuie pas sur cette sentinelle — le test est explicite.
+  if (!_hasValid) return true;
+  return ageMs(nowMs) > _cfg.maxAgeMs;
 }
 
 bool SensorFilter::frozen() const { return _frozenDetector.frozen(); }

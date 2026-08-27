@@ -1,6 +1,7 @@
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
+#include <stddef.h>  // size_t (kDoseBlockedReasonMaxLen) — self-contained
 #include <stdint.h>
 #include <time.h>  // time_t (kMinValidEpoch) — self-contained : ne dépend plus d'Arduino.h en amont
 
@@ -603,34 +604,273 @@ constexpr size_t kSensorTraceHeapMarginBytes     = kHttpHeapMarginBytes;
 constexpr float kPhOffsetMin = -0.50f;
 constexpr float kPhOffsetMax =  0.50f;
 
-// --- Plancher dur d'injection d'acide sur le pH filtré BRUT (pool-chemistry #2) ---
-// Filet de sécurité contre un offset POSITIF erroné : la régulation croit doser
-// vers 7,20 alors que l'eau réelle est déjà sous 6,90. Sous ~6,8 l'eau devient
-// agressive (attaque du liner, des joints, des parties métalliques et du filtre).
-// Sous le plancher applicable, TOUTE injection d'acide est refusée, quelle que
-// soit la valeur corrigée. Deux paliers : plus l'offset est large, plus la marge
-// doit être grande (l'incertitude sur le pH réel croît avec |offset|).
-// Inerte à offset 0 : à 6,80 brut la régulation acide n'a de toute façon rien à
-// corriger (cible usuelle 7,0-7,4).
-constexpr float kPhOffsetWideThreshold = 0.30f;  // Bascule de palier sur |offset|
-constexpr float kPhRawDosingFloor      = 6.80f;  // |offset| <= kPhOffsetWideThreshold
-constexpr float kPhRawDosingFloorWide  = 6.90f;  // |offset| >  kPhOffsetWideThreshold
+// ============================================================================
+// SEUILS DE SÉCURITÉ pH — SOURCE UNIQUE + SEUILS DÉRIVÉS (v2.25.0)
+// ============================================================================
+// Refonte « seuils fixes dérivés » : le plancher CONTINU asservi à l'offset
+// (première mouture de la v2.25.0) est abandonné. Il était juste, mais trop
+// complexe pour ce qu'il protégeait, et cette complexité a elle-même désactivé
+// la régulation en production le 25/08/2026.
+//
+// Principe : UNE seule source de vérité (la plage de consigne + trois marges),
+// dont TOUS les seuils dérivent en `constexpr`. Aucun seuil de sécurité pH n'est
+// écrit en littéral, sauf les deux qui ont une justification chimique PROPRE
+// (kPhOrpInhibit, kPhLowWarn) — et ceux-là sont commentés comme tels.
+//
+// RÉFÉRENTIEL — chaque seuil porte le sien dans son NOM, parce que confondre les
+// deux est exactement le défaut qu'on corrige :
+//   [CORRIGÉ] = pH brut + offset utilisateur (cf. ph_offset.h / ADR-0039). C'est
+//               le pH RÉEL de l'eau : un seuil CHIMIQUE doit porter là-dessus.
+//   [BRUT]    = mesure capteur SANS offset. Réservé aux deux BUTÉES de dernier
+//               recours, qui doivent rester valides même si l'offset est FAUX.
 
-// --- Inhibition du dosage ORP sur pH brut élevé (pool-chemistry #3) ---
-// Filet de sécurité symétrique contre un offset NÉGATIF erroné : la régulation
-// laisse alors le pH réel monter. Au-dessus de ~7,6 la fraction d'acide
-// hypochloreux (HClO, forme active du chlore) s'effondre (< 25 %) : l'ORP mesuré
-// chute à concentration de chlore constante et la régulation ORP compense en
-// SURDOSANT le chlore. On suspend donc le dosage ORP tant que le pH filtré BRUT
-// dépasse ce seuil — le vrai correctif est de faire baisser le pH.
-constexpr float kPhRawOrpInhibit = 7.60f;
+// --- Plage de CONSIGNE pH (source unique) ---
+// Fenêtre chimique d'exploitation d'un bassin, identique pour `ph_minus` et
+// `ph_plus` : le type de produit choisit la POMPE à actionner, pas la fenêtre de
+// pH visée — une eau à 7,80 est aussi mauvaise qu'elle ait été atteinte par
+// excès de base ou par défaut d'acide.
+//   - Borne BASSE 7,20 : sous cette valeur l'eau devient corrosive (attaque du
+//     liner, des joints, des parties métalliques et du filtre).
+//   - Borne HAUTE 7,50 : au-delà, la fraction d'acide hypochloreux (HClO, forme
+//     active du chlore) s'effondre. 7,50 et NON 7,60 : à 7,60 pile, la consigne
+//     elle-même atteindrait le seuil d'inhibition ORP (kPhOrpInhibit) — le
+//     chlore serait suspendu EN PERMANENCE dès que la régulation tient sa
+//     consigne, c'est-à-dire une panne sanitaire silencieuse. Le static_assert
+//     kPhTargetMax + kPhOrpInhibitMargin <= kPhOrpInhibit interdit d'y revenir.
+// Appliquées à TOUS les chemins d'écriture (HTTP, MQTT) et au chargement NVS.
+constexpr float kPhTargetMin = 7.20f;
+constexpr float kPhTargetMax = 7.50f;
 
-// --- Compteur de refus plancher (pool-chemistry #7) ---
-// Un plancher qui se déclenche à répétition signe une sonde pH morte ou un
-// offset saisi à l'envers, pas un incident ponctuel : log critical explicite +
-// bascule fail-closed de la régulation pH en manuel.
-constexpr uint8_t  kPhRawFloorRefusalMax      = 3;           // Refus tolérés dans la fenêtre
-constexpr uint32_t kPhRawFloorRefusalWindowMs = 86400000UL;  // 24 h — fenêtre glissante
+// Pas de réglage des curseurs (consigne et offset), partagé UI / API / MQTT-HA
+// et utilisé par roundPhOffsetToStep() pour la migration NVS de l'offset.
+// 0,1 pH : sous le bruit résiduel du filtre (~0,05 pH), donc sans effet mesurable
+// sur la régulation, et lisible par un humain.
+constexpr float kPhTargetStep = 0.10f;
+constexpr float kPhOffsetStep = 0.10f;
+
+// --- Marges de sécurité (les seuils de garde en dérivent) ---
+// kPhSafetyMargin — distance entre la consigne BASSE et le refus d'ACIDIFIER.
+//   0,50 pH = inertie de l'acide encore « en vol » après l'arrêt de la pompe
+//   (0,10-0,15 pH sur 30-50 m³) + bruit résiduel du filtre (~0,05 pH) + marge
+//   d'erreur de mesure. La régulation ne doit JAMAIS buter sur ce seuil en
+//   fonctionnement nominal : c'est ce qui a fermé la régulation le 25/08/2026.
+// kPhHighMargin — distance entre la consigne HAUTE et le refus d'ALCALINISER.
+//   ASYMÉTRIE ASSUMÉE (0,10 et non 0,50) : au-dessus de 7,6 la désinfection est
+//   déjà compromise et l'inhibition ORP est active ; laisser le pH+ alcaliniser
+//   0,50 pH plus haut reviendrait à autoriser le système à conduire lui-même
+//   l'eau dans une impasse (chlore inactif, inhibition permanente).
+//   0,20 (v2.25.0 initiale) violait cette règle qu'il énonçait : le plafond
+//   tombait à 7,70, soit AU-DESSUS de kPhOrpInhibit — l'appareil autorisait
+//   d'alcaliniser une eau dont il venait de décider que le chlore y était
+//   inactif. Aucun argument physique ne soutient cette zone : remonter le TAC se
+//   fait au bicarbonate, hors régulation, et jamais en visant un pH plus haut.
+//   0,10 aligne le plafond sur l'inhibition (7,60) et rend l'invariant du filet
+//   brut haut satisfiable — voir kPhCeilingRawHard.
+// kPhOrpInhibitMargin — garde-fou STRUCTUREL entre la consigne haute et le seuil
+//   d'inhibition ORP. Ne sert à aucun calcul de dosage : il n'existe que pour le
+//   static_assert qui rend l'inhibition permanente IMPOSSIBLE à recompiler.
+constexpr float kPhSafetyMargin     = 0.50f;
+constexpr float kPhHighMargin       = 0.10f;
+constexpr float kPhOrpInhibitMargin = 0.10f;
+
+// Hystérésis de RELÂCHE commune à TOUTES les gardes pH (basses, hautes, butées
+// brutes, inhibition ORP) : une garde déclenchée ne retombe qu'après 0,05 pH de
+// retour FRANC dans le domaine sûr. Sans elle, un pH qui oscille sur un seuil
+// (bruit du filtre) génère une rafale bloque/relâche → autant de refus
+// comptabilisés → bascule fail-closed de la régulation sur un incident unique.
+constexpr float kPhGuardReleaseHysteresis = 0.05f;
+
+// --- Seuils à justification chimique PROPRE (non dérivés, assumés littéraux) ---
+// Inhibition du dosage ORP sur pH élevé (pool-chemistry #3). Au-dessus de ~7,6 la
+// fraction de HClO s'effondre (< 25 %) : l'ORP mesuré chute à concentration de
+// chlore constante et la régulation ORP compense en SURDOSANT. On suspend donc le
+// dosage ORP — le vrai correctif est de faire baisser le pH.
+// v2.25.0 : comparé au pH [CORRIGÉ] et non plus au brut. La fraction de HClO
+// dépend du pH RÉEL de l'eau, pas de la lecture non corrigée du capteur.
+// Relâche à ≈ 7,55 (kPhOrpInhibit − kPhGuardReleaseHysteresis). « ≈ » car en
+// float l'expression vaut 7,5499997 : à 7,55 pile la garde bloque encore. Écart
+// 3e-7 pH, cinq ordres sous le bruit du filtre, et il penche du côté bloquant —
+// fail-closed. Ne JAMAIS écrire le littéral 7.55f à la place de l'expression.
+constexpr float kPhOrpInhibit = 7.60f;
+// Alerte NON BLOQUANTE d'eau acide, sur le pH [CORRIGÉ]. Signal PRÉCOCE conservé
+// (condition du gate) malgré l'abaissement du seuil de blocage à 6,70 : sous 7,0
+// l'eau commence à être agressive pour l'installation bien avant qu'il faille
+// refuser de doser. N'incrémente aucun compteur, ne bloque rien.
+constexpr float kPhLowWarn = 7.00f;
+
+// --- Seuils DÉRIVÉS (jamais de littéral) ---
+// Refus d'ACIDIFIER (produit `ph_minus` uniquement) sur le pH [CORRIGÉ].
+constexpr float kPhFloorCorrected   = kPhTargetMin - kPhSafetyMargin;    // 6,70
+// Refus d'ALCALINISER (produit `ph_plus` uniquement) sur le pH [CORRIGÉ].
+// Aligné sur kPhOrpInhibit par construction (static_assert ci-dessous) : on ne
+// peut pas alcaliniser au-delà du point où l'on a décidé que le chlore est
+// inactif.
+constexpr float kPhCeilingCorrected = kPhTargetMax + kPhHighMargin;      // 7,60
+// BUTÉE BASSE sur le pH [BRUT] : ultime filet contre un offset POSITIF saisi à
+// tort (la régulation croit doser vers 7,20 alors que l'eau est déjà sous 6,7).
+// Dérivée de l'offset MAXIMAL, elle ne peut structurellement JAMAIS mordre avant
+// kPhFloorCorrected en usage légitime : 6,70 − 0,50 = 6,20. Une butée plus haute
+// (6,40 avait été proposée) bloquerait AVANT le seuil corrigé pour un offset
+// légitime de +0,50, rendant celui-ci inopérant — le static_assert l'interdit.
+constexpr float kPhFloorRawHard     = kPhFloorCorrected - kPhOffsetMax;  // 6,20
+// BUTÉE HAUTE sur le pH [BRUT] : filet symétrique contre un offset NÉGATIF saisi
+// à tort, qui masquerait une eau réellement au-dessus de 7,6 et laisserait la
+// régulation ORP surdoser le chlore. Dérivée de l'offset maximal :
+// 7,60 + 0,50 = 8,10.
+// DEUX POINTS D'APPLICATION, quel que soit le type de produit déclaré :
+//   (a) inhibition du dosage ORP (isOrpInhibitedByPh) — le chlore est suspendu ;
+//   (b) refus d'ALCALINISER (isPhGuardBlocking, produit `ph_plus`), symétrique de
+//       la butée brute basse appliquée au refus d'acidifier. Ajouté à la
+//       contre-visite de la v2.25.0 : sans (b), un offset −0,50 erroné laissait le
+//       pH+ pousser l'eau au-delà de 8,10 BRUT pendant que (a) inhibait le
+//       chlore — l'appareil conduisait lui-même l'eau dans une impasse
+//       sanitaire. Ce refus alimente le compteur des 3 refus / 24 h en mode
+//       automatique, comme la butée basse.
+// Avec kPhHighMargin = 0,10 la butée brute haute coïncide exactement avec le
+// plafond corrigé au pire cas d'offset (8,10 brut ⟺ 7,60 corrigé à offset
+// −0,50), relâches comprises (8,05 ⟺ 7,55) : elle ne mord donc JAMAIS avant lui.
+// C'est la symétrie de l'exigence posée sur la butée basse, et elle est
+// satisfaite sans nouvelle constante — voir le static_assert dédié.
+// Avec un produit `ph_minus`, (b) est sans objet (l'acide ne peut pas faire
+// monter le pH) : seule (a) s'applique — d'où « quel que soit le produit ».
+constexpr float kPhCeilingRawHard   = kPhOrpInhibit + kPhOffsetMax;      // 8,10
+
+// --- Invariants verrouillés à la compilation ---
+// Toute retouche d'une valeur ci-dessus doit relire la justification chimique,
+// pas seulement compiler.
+static_assert(kPhTargetMin < kPhTargetMax,
+              "Bornes de consigne pH inversees");
+// (ii) LE verrou du gate : interdit structurellement qu'une eau maintenue à la
+// consigne haute inhibe la régulation ORP en permanence.
+static_assert(kPhTargetMax + kPhOrpInhibitMargin <= kPhOrpInhibit,
+              "Consigne pH haute trop proche de kPhOrpInhibit : le chlore serait "
+              "inhibe en permanence a la consigne (panne sanitaire silencieuse)");
+static_assert(kPhSafetyMargin > 0.0f && kPhHighMargin > 0.0f &&
+                  kPhOrpInhibitMargin > 0.0f,
+              "Les marges de securite pH doivent etre strictement positives");
+// (iv) La butée brute basse ne doit JAMAIS mordre avant le seuil corrigé, pour
+// tout offset du domaine autorisé. Écrit en INÉGALITÉ : remonter la butée (6,40)
+// ne compile plus, l'abaisser reste possible.
+static_assert(kPhFloorRawHard <= kPhFloorCorrected - kPhOffsetMax,
+              "Butee brute basse trop haute : elle mordrait avant le seuil "
+              "corrige pour un offset legitime, rendant celui-ci inoperant");
+static_assert(kPhFloorCorrected < kPhLowWarn && kPhLowWarn <= kPhTargetMin,
+              "kPhLowWarn doit alerter AVANT le refus de dosage et rester sous "
+              "la consigne minimale");
+static_assert(kPhGuardReleaseHysteresis > 0.0f &&
+                  kPhGuardReleaseHysteresis < kPhHighMargin,
+              "Hysteresis de relache nulle (rafale de refus) ou plus large que "
+              "la plus petite marge (relache impossible)");
+static_assert(kPhFloorRawHard > 0.0f,
+              "Butee brute basse hors de l'echelle pH");
+// (viii) Le plafond d'alcalinisation ne peut JAMAIS dépasser le seuil
+// d'inhibition ORP : au-delà, l'appareil autoriserait le pH+ à pousser une eau
+// dont il a déjà décidé que le chlore y était inactif — il conduirait lui-même
+// l'eau dans l'impasse sanitaire que l'inhibition signale. Verrou DÉDIÉ : celui
+// de kPhOrpInhibitMargin ne protège que la CONSIGNE, pas le plafond.
+static_assert(kPhCeilingCorrected <= kPhOrpInhibit,
+              "Plafond d'alcalinisation au-dessus de kPhOrpInhibit : le systeme "
+              "pourrait alcaliniser une eau dont il a inhibe le chlore");
+// (ix) Symétrique de (iv) : la butée brute haute ne doit jamais mordre avant le
+// plafond corrigé, pour tout offset du domaine. Le pire cas est l'offset MINIMAL
+// (négatif), qui abaisse le pH corrigé à brut donné. La tolérance absorbe l'ulp
+// entre deux expressions flottantes distinctes qui valent la même chose en
+// décimal (piège identique au littéral 7,55 de la relâche).
+static_assert(kPhCeilingRawHard >= kPhCeilingCorrected - kPhOffsetMin - 1e-4f,
+              "Butee brute haute trop basse : elle mordrait avant le plafond "
+              "corrige pour un offset legitime, rendant celui-ci inoperant");
+
+// --- Diagnostic EZO : fenêtre de « sonde saine » (v2.25.0) ---
+// Sert UNIQUEMENT à nuancer le message d'escalade (3 refus / 24 h) : une sonde
+// dans cette fenêtre n'est pas en cause, il faut chercher un décalage de
+// référence externe (courants de fuite de la pompe de filtration, campagne de
+// bruit 22-23/08/2026). Aucune décision de dosage ne dépend de ces bornes.
+// Pentes : ±10 % autour du Nernst théorique (tolérance Atlas Scientific pour une
+// sonde en bon état). Zéro : 15 mV ≈ 0,25 pH, sous le plus petit décalage
+// INTERNE qui justifierait une recalibration.
+constexpr float kPhSlopeHealthyMinPct = 90.0f;
+constexpr float kPhSlopeHealthyMaxPct = 110.0f;
+constexpr float kPhZeroHealthyMaxMv   = 15.0f;
+
+// --- Compteur de refus des gardes pH (pool-chemistry #7) ---
+// Une garde pH qui se déclenche à répétition signe une anomalie durable (sonde
+// morte, offset saisi à l'envers, produit mal déclaré), pas un incident
+// ponctuel : log critical explicite + bascule fail-closed de la régulation pH en
+// manuel. v2.25.0 : SEULS les refus survenus en mode `automatic` sont comptés —
+// un dosage PROGRAMMÉ refusé est signalé mais ne ferme pas la régulation.
+constexpr uint8_t  kPhGuardRefusalMax      = 3;           // Refus tolérés dans la fenêtre
+constexpr uint32_t kPhGuardRefusalWindowMs = 86400000UL;  // 24 h — fenêtre glissante
+
+// Débit maximal de réémission de l'alerte « dosage pH programmé refusé ».
+// Le mode Programmée n'escalade pas (il ne compte pas ses refus) : sans cette
+// réémission périodique, un refus permanent serait un no-op SILENCIEUX après la
+// première transition. Une heure = visible dans la journée, jamais spammé.
+constexpr uint32_t kPhGuardScheduledAlertIntervalMs = 3600000UL;  // 1 h
+
+// Taille du tampon FIXE de la cause de refus de dosage exposée à /data et au
+// WebSocket (`_lastRefusalCause`, un tampon par pompe).
+//
+// POURQUOI UN TAMPON FIXE ET NON UNE `String` (revue v2.25.0) : la cause est
+// écrite par loopTask (surveillance, escalade, canDose) et LUE depuis
+// `async_tcp` (route /data). Copier une `String` réassignée par une autre tâche
+// lit `buffer`/`len` pendant que l'écrivain peut libérer/réallouer le tas :
+// lecture de mémoire libérée, potentiellement fatale. Un tampon fixe, membre de
+// l'objet, ne peut PAS être libéré : le pire cas devient une lecture DÉCHIRÉE,
+// soit un message d'affichage partiellement à jour, sans conséquence.
+//
+// DIMENSIONNEMENT — mesuré sur les messages RÉELLEMENT produits (inventaire des
+// 23 causes de canDose(), des gardes pH/ORP et de l'escalade). Pire cas en
+// OCTETS UTF-8 (les accents comptent double) :
+//   64 o  « pH brut au-dessus de la butée (7.85) — dosage chlore suspendu »
+//   62 o  « régulation pH basculée en manuel (refus de garde répétés) »
+//   58 o  « pH brut au-dessus de la butée de sécurité (7.85 > 7.60) »
+// Marge des valeurs formatées : ces messages portent 1 à 2 `String(float, 2)`.
+// Une valeur nominale tient en 4 caractères (« 7.85 ») mais une mesure aberrante
+// peut en prendre 8 (« -1234.57 ») → +8 o sur le message à deux flottants, soit
+// 72 o au pire. 96 octets laissent donc ≥ 24 o d'entête libre, pour un coût de
+// 2 × 96 = 192 octets statiques (contre 2 objets String + leurs allocations tas).
+// La troncature éventuelle est faite SANS couper un caractère UTF-8 multi-octets
+// (cf. clampReasonUtf8 dans pump_controller.cpp) : un octet de continuation
+// orphelin produirait un JSON non décodable côté client.
+constexpr size_t kDoseBlockedReasonMaxLen = 96;
+
+// Code de cause de refus exposé À CÔTÉ du texte (v2.25.1) : `phDoseBlockedCode` /
+// `orpDoseBlockedCode` sur /data et le WebSocket. Le client traduit un CODE, il
+// ne cherche plus des fragments de texte dans une phrase française (l'ancien
+// procédé faisait matcher « indispo » de « lecture filtrée indisponible » avec
+// « EZO indisponible » : cause fausse affichée sur une sonde saine).
+//
+// Les valeurs 0..22 sont celles de `DoseRefusal` (dosing_logic.h, contrat de
+// sérialisation figé). Les deux sentinelles ci-dessous couvrent les causes qui
+// ne viennent PAS de canDose() :
+//   kDoseBlockedCodeNone  = dosage non refusé (le champ est publié `null`) ;
+//   kDoseBlockedCodeGuard = cause posée par une GARDE de sécurité pH/ORP ou par
+//     l'escalade (butée brute, pH trop élevé, bascule en manuel…). Ces messages
+//     portent des valeurs runtime et ne sont pas énumérables : le client se
+//     rabat sur le TEXTE, qui reste publié en parallèle.
+// Valeur 250 volontairement éloignée de la fin de DoseRefusal : de nouvelles
+// causes pourront s'ajouter à l'énum sans jamais heurter la sentinelle.
+constexpr uint8_t kDoseBlockedCodeNone  = 0;
+constexpr uint8_t kDoseBlockedCodeGuard = 250;
+
+// Persistance exigée avant d'escalader une cause de refus de type PANNE DE
+// MESURE (sonde figée, plus aucune mesure acceptée) en `warning` + alerte MQTT.
+// POURQUOI UNE TEMPORISATION : à la réouverture de la porte d'alimentation du
+// filtre (reprise de circulation, fin de purge), le filtre est ré-amorcé — sa
+// fenêtre est vide et l'âge de la dernière mesure ACCEPTÉE est encore celui
+// d'avant la fermeture. Pendant au plus un cycle de lecture EZO (5 s), l'état
+// interne est donc légitimement « périmé » alors que la sonde va très bien.
+// Sans temporisation, chaque démarrage de filtration produirait une alerte
+// « sonde muette » — un cri au loup quotidien qui décrédibiliserait l'alerte
+// réelle. 60 s = 12 cycles de lecture : aucune panne réelle n'est masquée
+// (l'affichage, lui, montre la cause SANS délai).
+// Depuis la revue v2.25.1, ce transitoire est ÉGALEMENT traité à la source par la
+// grâce de ré-amorçage de SensorFilter::stale() (l'affichage ne clignote plus en
+// rouge au démarrage). Cette temporisation reste en défense en profondeur : elle
+// couvre tout autre transitoire et borne l'épisode à une panne PERSISTANTE. Elle
+// s'applique à un épisode de panne CONTINUE, la nature de la panne pouvant varier
+// à l'intérieur de l'épisode (cf. _sensorFaultActive, pump_controller.h).
+constexpr uint32_t kDoseSensorFaultAlertDelayMs = 60000UL;
 
 // Pause mélange hydraulique après injection (pool-chemistry feature-025).
 // Distincte du timer post-calibration (_stabilizationEndMs). Gates indépendantes (OR).

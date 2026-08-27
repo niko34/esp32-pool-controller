@@ -54,7 +54,7 @@ Détails techniques :
 | 401  | Authentification requise ou mot de passe incorrect |
 | 403  | Accès refusé (ex: wizard déjà complété) |
 | 404  | Endpoint introuvable |
-| 409  | Conflit d'état — typiquement injection manuelle refusée car filtration arrêtée (sécurité chimique). Voir [`POST /ph/inject/start`](#post-phinjectstart--write). |
+| 409  | Conflit d'état — typiquement injection manuelle refusée car filtration arrêtée (sécurité chimique, voir [`POST /ph/inject/start`](#post-phinjectstart--write)), ou **réactivation de la régulation pH sans acquittement** de la bascule de sécurité (**v2.25.0**, voir [`POST /save-config`](#post-save-config--critical)). |
 | 429  | Trop de requêtes (rate limiting) |
 | 500  | Erreur serveur |
 
@@ -534,6 +534,12 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "ph_offset": 0,
   "ph_auto_manual_epoch": 0,
   "ph_auto_manual_reason": "",
+  "ph_target_min": 7.2,
+  "ph_target_max": 7.5,
+  "ph_target_step": 0.1,
+  "ph_offset_min": -0.5,
+  "ph_offset_max": 0.5,
+  "ph_offset_step": 0.1,
   "boost_active": false,
   "boost_until": 0
 }
@@ -547,6 +553,8 @@ Champs notables de la réponse :
 |-------|------|-------------|
 | `install_mode` | string | **Mode d'installation** (feature-056, v2.19.0). `"managed"` (PoolController pilote la filtration : relais GPIO 26 piloté, programmation active, eau présente = filtration commandée ON), `"powered"` (contrôleur alimenté par le circuit de filtration : relais inerte, programmation masquée, eau présumée présente en permanence — ex-`continu`), `"external"` (filtration tierce signalée : relais inerte, eau présente seulement si dernier signal ON reçu < 180 s, sinon dosage suspendu). Remplace `regulation_mode` **et** `filtration_enabled`. Voir [ADR-0026](adr/0026-mode-installation.md). |
 | `regulation_speed` | string | `"slow"` / `"normal"` / `"fast"` — préréglages PID |
+| `ph_target_min` / `ph_target_max` / `ph_target_step` | float | **v2.25.0** — Plage et pas de la **consigne pH**, dérivés de `kPhTargetMin` / `kPhTargetMax` / `kPhTargetStep` ([`constants.h`](../src/constants.h)). **Lecture seule**, jamais acceptés en écriture. Servis pour que le frontend construise son contrôle segmenté **sans coder aucune borne en dur** : élargir la plage ou passer de 4 à 5 positions se fait côté firmware seul. Un lot incohérent ou absent est ignoré **en bloc** par le client, qui conserve les bornes déjà connues. |
+| `ph_offset_min` / `ph_offset_max` / `ph_offset_step` | float | **v2.25.0** — Idem pour l'**offset pH** (`kPhOffsetMin` / `kPhOffsetMax` / `kPhOffsetStep`). Alimentent l'incrémenteur `−` / valeur / `+` de la carte « Correction de la mesure pH ». |
 | `stabilization_delay_min` | integer | Délai de stabilisation capteurs après démarrage filtration (0–60 min) |
 | `ph_limit_minutes` | integer | Durée max d'injection pH par fenêtre glissante d'1 h (minutes, 1–60) |
 | `orp_limit_minutes` | integer | Durée max d'injection ORP par fenêtre glissante d'1 h (minutes, 1–60) |
@@ -559,7 +567,7 @@ Champs notables de la réponse :
 | `pump1_flow_weighed` / `pump2_flow_weighed` | boolean | **v2.23.0** ([ADR-0047](adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md)) — provenance du débit : `false` = **valeur usine** (calibration de type du modèle de pompe), `true` = **pesée individuelle** de CETTE pompe. **Purement informatif** (indication « valeur usine / pesé » de l'UI) — aucun gate de dosage ne s'y fie. Persisté NVS `p1/p2_flow_weighed` ; rabattu à `false` par l'effacement et par la garde de plausibilité au chargement NVS. **Parité trame WS `config` (correctif on-target v2.23.0)** : les 6 champs de caractérisation (`pumpN_calibrated_duty`, `pumpN_pulse_flow_ml_per_min`, `pumpN_flow_weighed`) sont présents **à l'identique** dans la trame WebSocket `config` — ils en étaient absents à la livraison initiale et le premier push écrasait l'affichage de la calibration côté UI (clé absente interprétée comme zéro). Voir [ws-manager.md](subsystems/ws-manager.md#champs-config-ajoutés-en-v2230--caractérisation-des-pompes-feature-074-correctif-on-target). |
 | `ph_regulation_mode` | string | Mode de régulation pH : `"automatic"` (PID vers ph_target), `"scheduled"` (volume quotidien réparti sur 24 h), `"manual"` (aucune régulation automatique) |
 | `ph_daily_target_ml` | integer | Volume quotidien cible en mL pour le mode Programmée pH (0 = désactivé, borné par `max_ph_ml_per_day`) |
-| `ph_enabled` | boolean | Miroir dérivé de `ph_regulation_mode` : `true` si mode ≠ `"manual"`. Maintenu pour compatibilité MQTT / HA. |
+| `ph_enabled` | boolean | Miroir dérivé de `ph_regulation_mode` : `true` si mode ≠ `"manual"`. Maintenu pour compatibilité MQTT / HA. ⚠️ **v2.25.0 — LECTURE SEULE** : le champ n'est **plus accepté en écriture** par `/save-config` (une clé envoyée est ignorée silencieusement). Il ouvrait un second chemin capable de rouvrir la régulation en contournant le gate d'acquittement, et de désynchroniser le couple mode/enabled en NVS. |
 | `orp_regulation_mode` | string | Mode de régulation ORP : `"automatic"` (PID vers orp_target), `"scheduled"` (volume quotidien de chlore, aveugle au capteur), `"manual"` (aucune régulation automatique) |
 | `orp_daily_target_ml` | integer | Volume quotidien cible en mL pour le mode Programmée ORP (0 = désactivé, borné par `max_orp_ml_per_day`) |
 | `orp_enabled` | boolean | Miroir dérivé de `orp_regulation_mode` : `true` si mode ≠ `"manual"`. Maintenu pour compatibilité MQTT / HA. |
@@ -569,21 +577,23 @@ Champs notables de la réponse :
 | `debug_logs_enabled` | boolean | Active la production des logs de niveau `DEBUG` côté firmware (default `false`). Quand `false`, `Logger::debug()` court-circuite immédiatement (early return). Les niveaux `INFO`/`WARN`/`ERROR`/`CRITICAL` ne sont pas affectés. Modifiable via Paramètres → Avancé → « Logs DEBUG activés ». Persisté en NVS sous la clé `debug_logs`. Effet immédiat, pas de redémarrage requis. |
 | `boost_active` | boolean | Mode Boost actif (feature-053, v2.18.0). `true` tant que la surchloration temporaire du jour est en cours. Piloté par `POST /boost/start` \| `/boost/stop` (jamais par `/save-config`). Persisté en NVS (survit à un reboot dans la journée), expire automatiquement au prochain minuit local. Voir [ADR-0025](adr/0025-mode-boost.md). |
 | `boost_until` | integer (epoch) | Instant d'expiration du Boost (epoch UNIX, prochain minuit local). `0` si le Boost est inactif. Permet à l'UI d'afficher l'heure de fin. |
-| `ph_auto_manual_epoch` | integer (epoch) | **v2.20.3** — Instant (epoch UNIX) de la dernière **bascule automatique** de la régulation pH en mode `manual` par le filet de sécurité « refus de plancher acide répétés » (feature-067). `0` = aucune bascule en attente d'acquittement. Vaut `0` si l'horloge n'était pas synchronisée au moment de la bascule (la `reason` reste renseignée). Persisté en NVS (`ph_am_epoch`). **Lecture seule** : jamais accepté en écriture par `/save-config`. |
-| `ph_auto_manual_reason` | string | **v2.20.3** — Cause en clair (français) de cette bascule, ex. `"3 refus de plancher pH en 24 h — sonde pH à recalibrer ou remplacer ; régulation pH basculée en manuel"`. Chaîne vide si `ph_auto_manual_epoch` vaut `0`. Persisté en NVS (`ph_am_reason`). |
+| `ph_auto_manual_epoch` | integer (epoch) | **v2.20.3** — Instant (epoch UNIX) de la dernière **bascule automatique** de la régulation pH en mode `manual` par le filet de sécurité « refus de garde pH répétés en mode `automatic` » (feature-067, refondu en v2.25.0). `0` = aucune bascule en attente d'acquittement. Vaut `0` si l'horloge n'était pas synchronisée au moment de la bascule (la `reason` reste renseignée). Persisté en NVS (`ph_am_epoch`). **Lecture seule** : jamais accepté en écriture par `/save-config`. |
+| `ph_auto_manual_reason` | string | **v2.20.3** — Cause en clair (français) de cette bascule, ex. `"3 refus de garde pH en 24 h — régulation pH basculée en manuel. Diagnostic sonde EZO NORMAL (…) : la sonde n'est pas en cause. …"` (message conditionné au diagnostic EZO depuis la v2.25.0). Chaîne vide si `ph_auto_manual_epoch` vaut `0`. Persisté en NVS (`ph_am_reason`). |
 
 > **Trace de bascule automatique pH (v2.20.3)** — le journal système est un ring buffer : après quelques heures il ne restait **aucune** trace de l'escalade de sécurité, et il devenait impossible de dire si le mode `manual` venait du firmware ou d'une action humaine (incident du 2026-08-16). Les deux champs ci-dessus sont donc **persistés en NVS**, dans la **même transaction** que le mode lui-même.
 >
-> **Acquittement** : la trace est effacée dès qu'un `POST /save-config` (ou une commande MQTT) provoque un **changement réel** du champ `ph_regulation_mode`. Renvoyer le mode courant à l'identique — ce que fait l'interface à chaque sauvegarde des réglages — **n'acquitte rien**. Clés NVS absentes sur un appareil mis à jour ⇒ `0` / `""` : rétrocompatible. Voir [`docs/subsystems/pump-controller.md`](subsystems/pump-controller.md#persistance-de-la-bascule-automatique-en-manuel-v2203).
-| `ph_offset` | float | **Offset logiciel de mesure pH** (feature-067, v2.20.0). `pH corrigé = pH brut EZO + ph_offset`. Plage **[−0.50, +0.50]**, pas de 0,01, défaut **0** (inerte). Persisté en NVS (clé `ph_offset`). **Ne touche jamais la calibration interne du module Atlas EZO** : c'est une correction en aval de la lecture, destinée à compenser un écart d'implantation de la sonde. Voir [ADR-0039](adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md). |
+> **Acquittement (v2.25.0 — fail-closed)** : la trace n'est **plus** effacée par un changement de mode. Tant qu'elle existe, `/save-config` **refuse en 409** toute sortie du mode `manual`, et la commande MQTT équivalente est refusée sans jamais effacer la trace. Le seul chemin de sortie est le champ **`ph_auto_manual_ack`** ci-dessous, envoyé par le bouton d'acquittement de la [page pH](features/page-ph.md). Clés NVS absentes sur un appareil mis à jour ⇒ `0` / `""` : rétrocompatible. Voir [`docs/subsystems/pump-controller.md`](subsystems/pump-controller.md#acquittement-fail-closed-de-la-bascule-v2250).
+| `ph_offset` | float | **Offset logiciel de mesure pH** (feature-067, v2.20.0). `pH corrigé = pH brut EZO + ph_offset`. Plage **[−0.50, +0.50]**, **pas de 0,10 depuis la v2.25.0** (était 0,01), défaut **0** (inerte). Persisté en NVS (clé `ph_offset`). **Ne touche jamais la calibration interne du module Atlas EZO** : c'est une correction en aval de la lecture, destinée à compenser un écart d'implantation de la sonde. Voir [ADR-0039](adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md). |
 
 **`POST /save-config` — champs pH spécifiques :**
 
 | Champ | Type | Validation |
 |-------|------|------------|
-| `ph_regulation_mode` | string | Valeurs acceptées : `"automatic"`, `"scheduled"`, `"manual"`. Toute autre valeur est ignorée. Met à jour `ph_enabled` automatiquement. |
+| `ph_regulation_mode` | string | Valeurs acceptées : `"automatic"`, `"scheduled"`, `"manual"`. Toute autre valeur est ignorée. Met à jour `ph_enabled` automatiquement. ⚠️ **v2.25.0** : si une trace de bascule automatique est active, toute sortie du mode `"manual"` est **refusée en 409** sans `ph_auto_manual_ack: true` (voir ci-dessous). |
+| `ph_auto_manual_ack` | boolean | **v2.25.0** — Acquittement **délibéré** de la bascule de sécurité pH. **Booléen STRICT** : seule la valeur JSON `true` compte ; une chaîne (`"true"`, `"false"`, `"1"`) est **rejetée**, car ArduinoJson convertit toute chaîne en `true` et un client maladroit acquitterait une sécurité chimique par accident. Envoyé **seul** ⇒ efface la trace et **laisse le mode en manuel** (acquitter ≠ réarmer). Envoyé **avec** `ph_regulation_mode` ⇒ autorise en plus la transition. Sans effet s'il n'y a pas de trace. |
+| `ph_target` | float | **v2.25.0** — Doit être dans **[7.20 ; 7.50]** (`kPhTargetMin` / `kPhTargetMax` de [`constants.h`](../src/constants.h)), **mêmes bornes pour `ph_minus` et `ph_plus`**. Hors plage, non finie ou non numérique → **HTTP 400** avec message français, **aucun** champ de la requête n'est appliqué (contrôle placé avant toute mutation). Jamais d'écrêtage silencieux. Dans la plage, la valeur est **alignée sur `kPhTargetStep` = 0.10**. Champ **absent** → consigne inchangée. Voir [Bornes de la consigne pH et de l'offset](#bornes-de-la-consigne-ph-et-de-loffset-v2250). |
 | `ph_daily_target_ml` | integer | Doit être ≥ 0 et ≤ `max_ph_ml_per_day` (si configuré). Retourne HTTP 400 si la limite est dépassée. |
-| `ph_offset` | float | Doit être dans **[−0.50, +0.50]** (`kPhOffsetMin` / `kPhOffsetMax` de [`constants.h`](../src/constants.h)). Hors plage → **HTTP 400**, **aucun** champ de la requête n'est appliqué. Champ **absent** ou **non numérique** → paramètre inchangé (patron des autres champs). Prise en compte **immédiate** (pas de reboot, pas d'attente de la fenêtre de lissage). Chaque changement effectif est journalisé en `INFO` : `Offset pH modifié: ancien=X.XX nouveau=Y.YY`. |
+| `ph_offset` | float | Doit être dans **[−0.50, +0.50]** (`kPhOffsetMin` / `kPhOffsetMax` de [`constants.h`](../src/constants.h)). Hors plage → **HTTP 400**, **aucun** champ de la requête n'est appliqué. Dans la plage, la valeur est **arrondie au plus proche multiple de `kPhOffsetStep` = 0.10** (v2.25.0, `roundPhOffsetToStep()`). Champ **absent** ou **non numérique** → paramètre inchangé (patron des autres champs). Prise en compte **immédiate** (pas de reboot, pas d'attente de la fenêtre de lissage). Chaque changement effectif est journalisé en `INFO` : `Offset pH modifié: ancien=X.XX nouveau=Y.YY`. |
 
 **Corps de la réponse 400 (`ph_offset` hors plage)** :
 
@@ -641,6 +651,86 @@ curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
   -d '{"ph_target":7.2,"orp_target":700}' \
   http://poolcontroller.local/save-config
 ```
+
+#### Authentification du corps de requête (durcissement v2.25.0)
+
+⚠️ **Correctif de sécurité — trou préexistant sur TOUTE la route** (pas seulement le pH). Le contrôle `REQUIRE_AUTH` n'était posé que dans le handler de **complétion**, qui s'exécute **après** le handler de corps : un `POST` **anonyme** voyait donc son corps intégralement **appliqué** (mutations de la config RAM **et** écriture NVS) avant que le `401` ne parte. Le refus n'était qu'un affichage.
+
+Depuis la v2.25.0, le handler de **corps** vérifie l'authentification **avant** d'accumuler ou d'appliquer quoi que ce soit : un corps non autorisé est **ignoré en totalité** (aucune modification, aucun buffer alloué), un `warning` journalise l'IP d'origine, et la complétion émet le `401` comme avant.
+
+- L'**exemption « premier démarrage »** (assistant de configuration initiale) est conservée à l'identique.
+- Le quota `kMaxRequestsPerMinute` reste compté **une seule fois** par requête (le contrôle du corps ne rejoue pas le rate-limiting).
+
+#### Codes de réponse
+
+| Code | Cas |
+|------|-----|
+| `200` | Configuration enregistrée |
+| `400` | Valeur invalide (**`ph_target` hors [7.20 ; 7.50]** — v2.25.0, `ph_offset` hors plage, débit de pesée hors plage, cible journalière > limite, JSON invalide…). **Aucun** champ n'est appliqué. |
+| `401` | Non authentifié — **aucune** modification appliquée depuis la v2.25.0 |
+| `409` | **v2.25.0** — Bascule de sécurité pH non acquittée : la requête tente de sortir du mode `manual` alors qu'une trace existe, sans `ph_auto_manual_ack: true`. **Aucune** mutation n'est appliquée (le gate est le premier bloc du handler) et la trace **survit**. |
+
+#### Bornes de la consigne pH et de l'offset (v2.25.0)
+
+`ph_target` est validé **côté serveur** contre `kPhTargetMin` = **7.20** et `kPhTargetMax` = **7.50**, par pas de `kPhTargetStep` = **0.10** (4 positions), bornes **identiques** pour `ph_minus` et `ph_plus`. Avant la v2.25.0, ce champ n'était validé **nulle part** sur ce chemin (le champ UI acceptait 0-14 et la valeur était persistée telle quelle) tandis que la commande MQTT équivalente appliquait ses propres littéraux `6.0 – 8.5`.
+
+- **Refus `400`, jamais d'écrêtage** : écrêter en silence ferait croire que la consigne saisie est appliquée alors que la régulation viserait une autre valeur.
+- Le contrôle est placé **avant toute mutation** de la configuration : un refus ne laisse jamais la RAM divergente de la NVS.
+- Une valeur **non numérique** est refusée elle aussi (correctif v2.25.0 : `ph_target` était lu sans conversion explicite — une chaîne JSON valait `0` et était persistée).
+- **Dans** la plage, une valeur non alignée sur le pas est **alignée au plus proche** (log `info` si l'alignement change quelque chose) : l'interface ne produit que des multiples du pas, mais l'API reste ouverte.
+- Une consigne hors bornes déjà présente en NVS est **clampée au démarrage** et réécrite immédiatement.
+
+⚠️ **Changement de contrat visible** : la borne haute passe de **7.60 à 7.50**. À 7.60 pile, la consigne atteindrait le seuil d'inhibition ORP (`kPhOrpInhibit`) et le chlore serait suspendu **en permanence** dès que la régulation tient sa consigne. Une installation persistée à 7.60 est clampée à 7.50 au premier démarrage, avec avertissement journalisé. Voir [ADR-0048](adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md).
+
+```bash
+curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+  -d '{"ph_target":6.8}' http://poolcontroller.local/save-config
+```
+
+```json
+{
+  "error": "Consigne pH hors plage autorisée",
+  "message": "Consigne pH hors plage autorisée (7,20 à 7,50). En dessous, l'eau devient agressive pour le liner, les joints et les parties métalliques ; au-dessus, la régulation du chlore serait inhibée en permanence."
+}
+```
+
+L'**offset** suit la même logique : bornes `±0.50`, pas **0.10**, hors bornes → `400`, dans la plage → **arrondi au plus proche multiple du pas** (`roundPhOffsetToStep()`). Les installations ayant enregistré une valeur libre (0.47) sont migrées au chargement NVS ; l'écart maximal introduit est de 0,05 pH, soit le bruit résiduel du filtre.
+
+**Les bornes sont servies au client par `GET /get-config`** — six champs en lecture seule, dérivés des constantes firmware : `ph_target_min`, `ph_target_max`, `ph_target_step`, `ph_offset_min`, `ph_offset_max`, `ph_offset_step`. Le frontend n'en code aucune en dur : élargir la plage ou changer le pas se fait **côté firmware seul**.
+
+#### Payload mixte : quel code sort ?
+
+Si une même requête cumule plusieurs motifs de refus, l'ordre d'évaluation du handler est **déterministe** et documenté :
+
+1. authentification du corps (`401`) ;
+2. **gate d'acquittement de la bascule pH** (`409`) ;
+3. bornes de la consigne pH (`400`) ;
+4. autres validations de champs (`400`).
+
+Donc un payload contenant **à la fois** un changement de mode refusé **et** une consigne hors bornes — par exemple `{"ph_regulation_mode":"automatic","ph_target":6.8}` sous trace de sécurité active — répond **`409`**, pas `400` : le gate de mode est évalué en premier. Dans tous les cas, **aucun** champ n'est appliqué.
+
+**Corps de la réponse 409** :
+
+```json
+{
+  "error": "Bascule de sécurité pH non acquittée",
+  "message": "Bascule de sécurité pH non acquittée — acquittez l'alerte sur la page pH avant de réactiver la régulation."
+}
+```
+
+Acquitter puis réarmer (deux requêtes, patron de l'interface web) :
+
+```bash
+# 1. Acquitter (efface la trace, reste en manuel)
+curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+  -d '{"ph_auto_manual_ack":true}' http://poolcontroller.local/save-config
+
+# 2. Choisir le mode
+curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+  -d '{"ph_regulation_mode":"automatic"}' http://poolcontroller.local/save-config
+```
+
+> Cette route journalise l'**IP d'origine** de tout changement du mode de régulation pH, sur les deux issues (accepté / refusé en 409).
 
 ---
 
@@ -912,8 +1002,60 @@ Champs ajoutés en feature-025 (lissage mesures + régulation P temporisée) :
 | `phFilterAlarm` / `orpFilterAlarm` | boolean | **v2.20.3** — `true` quand le filtre est resté non prêt > 5 min alors que la filtration tournait **et** que les mesures étaient représentatives → plus aucune régulation. Jamais armé pendant une purge, un warmup ou une filtration à l'arrêt. Voir [`ws-manager.md`](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2203-alarme-filtre-bloqué). |
 | `phMixingDelayActive` | boolean | `true` pendant la pause mélange hydraulique pH (15 min après injection). |
 | `orpMixingDelayActive` | boolean | `true` pendant la pause mélange hydraulique ORP (20 min après injection). |
-| `phDoseBlockedReason` | string \| null | Dernière cause de refus de `canDose(0)` (ex `"filtre capteur non prêt (warmup / EZO injoignable)"`, `"pause mélange en cours"`). `null` si dosage autorisé. |
+| `phDoseBlockedReason` | string \| null | Dernière cause de refus de `canDose(0)` **ou d'une garde de sécurité pH**, en **texte français** destiné au journal et à l'affichage (ex `"filtre capteur en cours de remplissage (stabilisation)"`, `"pause mélange en cours"`, `"pH sous le plancher de sécurité (6.65 < 6.70)"`). `null` si dosage autorisé. **v2.25.0** : champ ajouté à `/data`, en **parité stricte** avec le WebSocket (voir ci-dessous). ⚠️ **Ne jamais analyser ce texte pour en déduire une catégorie** — utiliser `phDoseBlockedCode` (voir [Code de cause de refus](#code-de-cause-de-refus-de-dosage-v2251)). |
 | `orpDoseBlockedReason` | string \| null | Équivalent ORP. |
+| `phDoseBlockedCode` | integer \| null | **v2.25.1** — **CODE MACHINE** de la cause de refus du dosage pH. `null` = aucun refus. Table des valeurs et sémantique : [Code de cause de refus](#code-de-cause-de-refus-de-dosage-v2251). |
+| `orpDoseBlockedCode` | integer \| null | **v2.25.1** — Équivalent ORP. |
+| `phRawGuardBlocked` | bool | **v2.25.0** — `true` quand une **butée de sécurité sur le pH BRUT** mord pour le produit pH déclaré (`6,20` en `ph_minus`, `8,10` en `ph_plus`). Consommé par l'UI pour avertir **avant** une injection manuelle, qui contourne délibérément ces butées. |
+| `orpPhRawGuardBlocked` | bool | **v2.25.0** — `true` quand la butée haute sur le pH BRUT (`8,10`) inhibe le dosage chlore. |
+
+> ⚠️ **Exigence de PARITÉ STRICTE `/data` ↔ WebSocket.** Ces six champs existent sur les **deux** canaux, avec le même nom, la même valeur et les mêmes règles de nullité. Les quatre premiers ont été ajoutés à `/data` en v2.25.0 (ils n'existaient que sur le WebSocket, alors que l'UI les consomme depuis les deux sources : `loadSensorData()` charge `/data` comme une trame WS) ; les deux `*DoseBlockedCode` sont publiés **d'emblée sur les deux canaux** en v2.25.1, dans le même passage de sérialisation. C'était la **troisième récidive** du même motif dans le projet — pentes de sonde en 2.21.2, calibration de pompe en 2.23.0, indicateurs de garde en 2.25.0. Règle désormais explicite ([ADR-0048](adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md), rappelée par [ADR-0049](adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md)) : **tout champ consommé par l'interface doit exister sur les deux canaux**, et le client doit rester inerte quand il manque (clé absente ≠ `false`, clé absente ≠ `null`). Voir [ws-manager.md](subsystems/ws-manager.md).
+>
+> ⚠️ Les quatre champs de garde (`*DoseBlockedReason`, `*RawGuardBlocked`) **gèlent** sur leur dernière valeur pendant les sorties anticipées de la boucle de dosage (filtration arrêtée, OTA, mode maintenance, stabilisation post-calibration) : la surveillance n'y tourne pas, car en eau stagnante la mesure n'est pas représentative. Voir [pump-controller.md](subsystems/pump-controller.md#surveillance-inconditionnelle-séparée-de-la-décision).
+
+#### Code de cause de refus de dosage (v2.25.1)
+
+`phDoseBlockedCode` / `orpDoseBlockedCode` transportent la cause de refus sous forme d'**entier**, à côté du texte. Motif : l'interface web déduisait auparavant la catégorie du refus en cherchant des **fragments de texte** dans la phrase française. Deux défauts de production en sont résultés — « EZO indisponible » affiché pendant ~6 min au démarrage sur une sonde saine (le mot « indispo » du libellé de warmup correspondait), et une **vraie panne d'EZO** affichée « Stabilisation du filtre » (le libellé `FilterNotReady` mélangeait « warmup » et « EZO injoignable » dans une seule phrase). Voir [ADR-0049](adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md).
+
+> ⚠️ **CONTRAT DE SÉRIALISATION FIGÉ.** Ces valeurs sont celles de `enum class DoseRefusal` ([`src/dosing_logic.h`](../src/dosing_logic.h)), écrites **explicitement** dans l'énum. Elles ne sont **jamais renumérotées** et **jamais insérées au milieu** : toute cause nouvelle s'ajoute **à la fin**, et une cause retirée du firmware reste **réservée**. 23 `static_assert` verrouillent la correspondance valeur par valeur dans [`src/pump_controller.cpp`](../src/pump_controller.cpp).
+
+| Code | Cause | Registre |
+|---:|---|---|
+| `null` / `0` | Aucun refus en cours — dosage autorisé | — |
+| `1` | Watchdog inactif | panne |
+| `2` | Pas de présence d'eau (`resolveWaterPresent`, selon le mode d'installation) | normal |
+| `3` | Lecture filtrée NaN, **état de filtre indéterminé** | indéterminé |
+| `4` | Filtre non prêt, **état de filtre indéterminé** | indéterminé |
+| `5` | Capteur instable (rejets consécutifs / latch EMI) | panne |
+| `6` | Calibration insuffisante | panne |
+| `7` | Stabilisation post-calibration en cours | normal |
+| `8` | Pause mélange en cours | normal |
+| `9` | Mode de régulation ≠ `automatic` | normal |
+| `10` | Limite journalière atteinte | normal |
+| `11` | Limite horaire atteinte | normal |
+| `12` | Limite cycles/jour atteinte | normal |
+| `13` | Anti-rafale (1 min) | normal |
+| `14` | Anti-rafale (15 min) | normal |
+| `15` | Lecture filtrée NaN — **fenêtre de lissage en cours** | normal |
+| `16` | Lecture filtrée NaN — **sonde figée** | panne |
+| `17` | Lecture filtrée NaN — **plus aucune mesure acceptée** | panne |
+| `18` | Lecture filtrée NaN — **mesures non représentatives** (purge / eau à l'arrêt) | normal |
+| `19` | Filtre non prêt — **fenêtre de lissage en cours** | normal |
+| `20` | Filtre non prêt — **sonde figée** | panne |
+| `21` | Filtre non prêt — **plus aucune mesure acceptée** | panne |
+| `22` | Filtre non prêt — **mesures non représentatives** | normal |
+| `250` | Cause posée par une **garde de sécurité pH/ORP** ou par l'escalade | panne |
+
+Les codes `15`-`22` **qualifient** les causes génériques `3` et `4` : quatre états physiquement distincts derrière un même `SensorFilter::ready() == false`, discriminés sur l'**état interne du filtre** (jamais sur la fraîcheur de la lecture brute, qui reste fraîche sur une sonde figée). Les codes `3` et `4` subsistent et signifient explicitement « le firmware ne sait pas » (état non collecté). Le code `250` (`kDoseBlockedCodeGuard`) couvre les messages porteurs de **valeurs runtime** (seuils, mesures), non énumérables : le client se rabat alors sur `*DoseBlockedReason`.
+
+**Règles de consommation client** (sémantique stricte : clé absente ≠ `null` ≠ `0`) :
+
+| État du champ | Interprétation attendue |
+|---|---|
+| `0` ou `null` | Aucun refus, **affirmé** par le firmware |
+| clé **absente** | Information indisponible (firmware antérieur à la v2.25.1) → **seul** cas de repli sur `*DoseBlockedReason`, affiché tel quel, sans déduire de catégorie de son contenu |
+| `250` | Citer le texte de `*DoseBlockedReason` |
+| code **non répertorié** | Afficher un aveu d'ignorance (« Cause inconnue (code N) ») — **jamais** le libellé voisin |
 
 Champs ajoutés en feature-011 (répartition scheduled, v2.8.0 — [ADR-0021](adr/0021-repartition-scheduled.md)) :
 

@@ -880,6 +880,76 @@ canvas:hover {
   }
 }
 
+/* ========== v2.25.0 — Contrôles numériques pH (consigne + offset) ========== */
+/* PLACÉ APRÈS la media-query ci-dessus : sans cela, `flex: 1 1 calc(50% - 4px)`
+   y remettrait les positions de la consigne sur deux lignes sous 640 px. */
+
+/* Consigne pH : segmenté NUMÉRIQUE — toutes les positions de largeur égale, une
+   seule ligne, cible tactile de 44 px (WCAG 2.5.8). */
+.segmented--num {
+  display: flex;
+  width: 100%;
+  margin: 0;  /* l'espacement vient du .field (grid gap), pas du contrôle */
+}
+
+.segmented--num .segmented__btn {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 4px;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;  /* chiffres de largeur fixe : pas de saut */
+}
+
+@media (max-width: 640px) {
+  /* Sécurité de cascade : redouble l'override de la media-query précédente. */
+  .segmented--num .segmented__btn {
+    flex: 1 1 0;
+    padding: 10px 4px;
+  }
+}
+
+/* Offset pH : incrémenteur (− valeur +) */
+.stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stepper__btn {
+  width: 44px;
+  min-width: 44px;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.stepper__value {
+  min-width: 88px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel2);
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.stepper__value:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Offset neutre (0,00) : aucune correction appliquée — ton discret. */
+.stepper__value.is-neutral {
+  color: var(--muted);
+  font-weight: 600;
+}
+
 /* État hover - micro lift */
 .segmented__btn:hover:not(.is-active) {
   color: var(--text);
@@ -2244,6 +2314,14 @@ input.is-computed:disabled {
   background: var(--text-secondary);
   opacity: .55;
 }
+/* v2.25.1 : PANNE de mesure (sonde figée / plus aucune mesure acceptée). Registre
+   visuel volontairement distinct des états transitoires attendus (préchauffage du
+   filtre, porte de validité fermée), qui restent en ton neutre : c'est l'objet du
+   correctif — ne plus présenter une panne matérielle comme un état normal. */
+.dosing-status.is-fault {
+  color: var(--danger);
+  font-weight: 600;
+}
 
 
 .calibration-alert {
@@ -3445,6 +3523,10 @@ h1, h2, h3 {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
+/* v2.25.1 : ligne « Dosage bloqué » d'un modal filtre quand la cause est une
+   PANNE (code 16/17/20/21 : sonde figée, sonde muette). Les causes normales
+   (stabilisation, porte de validité fermée, quotas) restent en couleur de texte. */
+.probe-modal__value--bad { color: var(--danger); }
 .probe-modal__actions {
   display: flex;
   justify-content: flex-end;

@@ -52,13 +52,18 @@ Chip cliquable `#orp-filter-chip` reflétant l'état du filtre ORP. Classificati
 | Condition (ordre) | Label | Classe / couleur |
 |---|---|---|
 | **`orpFilterAlarm === true`** (v2.20.3) | **« Régulation à l'arrêt »** | `bad` (rouge) |
-| `orpRaw` invalide | « EZO indisponible » | `unknown` (gris) |
+| **`orpDoseBlockedCode` = PANNE de mesure** (v2.25.1 — codes 16/20, 17/21) | « Sonde figée » / « Sonde muette » | `bad` (rouge) |
 | `orpFilterUnstable === true` | « Capteur instable » | `bad` (rouge) |
+| `orpRaw` invalide **et** dernière brute valide < 1 min (v2.25.1) | « Lecture EZO manquante » | `warn` (ambré) |
+| `orpRaw` invalide et aucune brute valide depuis ≥ 1 min | « EZO indisponible » | `unknown` (gris) |
+| **`orpDoseBlockedCode` = état TRANSITOIRE** (v2.25.1 — codes 15/19, 18/22) | « Stabilisation… » / « Mesures non représentatives » | `warn` (ambré) |
 | `orpFilterReady === false` | « Stabilisation… » | `warn` (ambré) |
 | `orpRejectedCount` augmenté récemment | « Pics rejetés » | `warn2` (ambré) |
 | sinon | « Mesure stable » | `good` (vert) |
 
-Clic → `<dialog id="orp-filter-modal">` (`État filtre ORP`) : brut, médiane, filtré, **Pics rejetés**, âge, **Filtre prêt**, et raison de blocage dosage conditionnelle (`orpDoseBlockedReason`, ou « Mélange en cours » si `orpMixingDelayActive`). La pause mélange ORP est plus longue (20 min vs 15 min pour le pH).
+> **v2.25.1** — le défaut corrigé était **symétrique côté ORP** : le libellé firmware « filtre capteur non prêt (warmup / EZO injoignable) » mélangeait deux causes physiques, et l'UI, qui testait « warm » avant « ezo », affichait « Stabilisation du filtre » sur une **vraie panne du module EZO ORP**. La catégorie vient désormais du firmware (`orpDoseBlockedCode`), les pannes et les états transitoires ont deux registres visuels **disjoints**, et une brute manquante depuis moins d'une minute est un avertissement (« Lecture EZO manquante ») et non une panne. Détail du mécanisme et table des codes : [page-ph.md](page-ph.md#chip-détat-filtre-feature-025), [API.md](../API.md#code-de-cause-de-refus-de-dosage-v2251), [ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md).
+
+Clic → `<dialog id="orp-filter-modal">` (`État filtre ORP`) : brut, médiane, filtré, **Pics rejetés**, âge, **Filtre prêt**, et raison de blocage dosage conditionnelle (traduite depuis `orpDoseBlockedCode`, ou « Mélange en cours » si `orpMixingDelayActive`) — mêmes trois chemins que la page pH (code répertorié / sentinelle 250 → texte serveur / clé absente → repli sur `orpDoseBlockedReason` / code inconnu → « Cause inconnue (code N) »). Le ton rouge est réservé aux **pannes**. La pause mélange ORP est plus longue (20 min vs 15 min pour le pH).
 
 > **v2.20.3** — `orpFilterAlarm` prime sur tout le reste, y compris sur « EZO indisponible » : le filtre ORP est resté non prêt > 5 min alors que la filtration tournait et que les mesures étaient représentatives, donc **plus aucune chloration**. Le firmware ne l'arme jamais pendant une purge, un warmup ou une filtration à l'arrêt.
 
@@ -129,7 +134,7 @@ La carte `#orp-card-calibration` présente un **stepper** (`<ol class="calibrati
 ## Données consommées (WebSocket `/ws`)
 
 **Mesure** : `orp` (= valeur **filtrée**, entier mV) ; `orpRaw`, `orpMedian`, `orpFiltered` (feature-025)
-**État filtre** : `orpFilterReady`, `orpFilterUnstable`, `orpRejectedCount`, `orpMixingDelayActive`, `orpDoseBlockedReason` (feature-025), `orpFilterAlarm` (v2.20.3) — voir [Chip d'état filtre](#chip-détat-filtre-feature-025)
+**État filtre** : `orpFilterReady`, `orpFilterUnstable`, `orpRejectedCount`, `orpMixingDelayActive`, `orpDoseBlockedReason` (feature-025), `orpFilterAlarm` (v2.20.3), **`orpDoseBlockedCode`** (v2.25.1 — code machine de la cause de refus, source de la catégorie) — voir [Chip d'état filtre](#chip-détat-filtre-feature-025)
 **Calibration** : `orpCalPoints` (`-1..1`) — voir [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)
 **Dosage** : `orp_dosing`, `orp_used_ms`, `orp_daily_ml`, `orp_limit_reached`
 **Mode** : `orp_regulation_mode`, `orp_daily_target_ml`, `orp_enabled` (miroir — voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
@@ -177,6 +182,21 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md), not
 ### Comportement UI injection manuelle (v2.6.0)
 
 **Blocage proactif** : identique à la page pH (`_updateInjectButtons()` → `getInjectBlockReason()`) — bouton « ▶ Injecter » (`#orp_inject_btn`) désactivé + raison dans le hint `#orp_inject_block_hint` quand le blocage est connu côté client : `orp_limit_reached`, `stabilization_remaining_s > 0`, ou filtration arrêtée en mode `pilote`. Le firmware reste l'autorité (WS déconnecté → bouton cliquable, le 409 tranche). Le bouton « ⏹ Arrêter » n'est **jamais** désactivé.
+
+#### Avertissement « sécurité pH brut active » avant injection manuelle (v2.25.0)
+
+Encart `#orp_inject_raw_guard_warning` (titre `#orp_inject_raw_guard_title`, texte `#orp_inject_raw_guard_text`), rendu par `renderInjectRawGuardWarning()` **au-dessus** du bouton Injecter.
+
+**Le chemin d'injection manuelle ignore délibérément les butées de sécurité sur le pH brut** — c'est l'échappatoire de l'opérateur, décision produit assumée : le firmware obéit. L'interface n'a donc **rien à bloquer** ; elle doit dire, **avant le clic**, que la sécurité est active, pourquoi, et que l'injection passera outre.
+
+- **Condition d'affichage** : `orpPhRawGuardBlocked === true` **strictement**. `false` **et** information absente (firmware antérieur à la parité `/data` ↔ WS) → **aucun encart**. Un encart affiché « par précaution » quand l'info manque serait ignoré et détruirait la valeur de signal de l'encart réel.
+- **Aucun seuil n'est reconstruit côté client** (ni 6,20 ni 8,10) : l'UI consomme le booléen et la **chaîne de cause** rapportée par l'appareil, avec pour seule normalisation la virgule décimale française.
+- Le texte explique que la butée porte sur le **pH brut** — la mesure du capteur, sans l'offset : c'est le seul repère fiable si l'offset est mal réglé, car le pH affiché peut alors sembler normal. Il invite à contrôler au réactif et à vérifier l'offset.
+- L'encart est rendu **avant et indépendamment** de l'état du bouton : il reste visible pendant une injection en cours (la sécurité mord toujours) et n'entre jamais en concurrence avec `#orp_inject_block_hint`, qui porte les blocages **réels** (limite journalière, filtration).
+- **Confirmation obligatoire** : un clic sur Injecter alors que la butée mord ouvre une `confirmDialog` annonçant explicitement le contournement. Elle n'apparaît **jamais** quand l'information est absente.
+
+> ⚠️ Cet indicateur **gèle** sur sa dernière valeur quand la boucle de dosage sort par anticipation (filtration arrêtée, OTA, mode maintenance) : la surveillance ne tourne pas en eau stagnante. Après un arrêt de filtration, l'encart peut refléter un état antérieur. Voir [pump-controller.md](../subsystems/pump-controller.md#surveillance-inconditionnelle-séparée-de-la-décision).
+
 
 **Toasts sur refus 409** :
 

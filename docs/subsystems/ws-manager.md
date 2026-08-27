@@ -258,6 +258,42 @@ Source : `sensors.isPhFilterNotReadyAlarm()` / `isOrpFilterNotReadyAlarm()` — 
 
 Voir [sensors.md](sensors.md#alarme--filtre-non-prêt-durablement--v2203), [page-ph.md](../features/page-ph.md#bouton--réarmer-le-filtre-ph--v2203) et [page-dashboard.md](../features/page-dashboard.md#bannière--régulation-à-larrêt--v2203).
 
+## Parité `/data` ↔ `sensor_data` — indicateurs de garde pH (v2.25.0)
+
+Les quatre champs ci-dessous existaient **uniquement** sur le canal WebSocket, alors que l'UI les consomme depuis les **deux** sources : `loadSensorData()` charge `/data` et le traite comme une trame `sensor_data`. Ils ont donc été ajoutés à `/data` en v2.25.0, en **parité stricte**.
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `phDoseBlockedReason` | string \| null | Dernière cause de refus du dosage pH — `canDose(0)` **ou** une garde de sécurité pH. `null` si autorisé. |
+| `orpDoseBlockedReason` | string \| null | Équivalent ORP. |
+| `phRawGuardBlocked` | bool | `true` quand une **butée de sécurité sur le pH BRUT** mord pour le produit pH déclaré (`6,20` en `ph_minus`, `8,10` en `ph_plus`). |
+| `orpPhRawGuardBlocked` | bool | `true` quand la butée haute sur le pH BRUT (`8,10`) inhibe le dosage chlore. |
+
+Source : `PumpController.copyPhDoseBlockedReason()` / `copyOrpDoseBlockedReason()` (copie dans un tampon fourni — les ex-getters rendant une `String` allouaient sur le tas dans la tâche `async_tcp` à chaque appel) et `isPhRawGuardBlocked()` / `isOrpPhRawGuardBlocked()`.
+
+**Budget de payload** : les deux booléens ajoutés à la trame `sensor_data` coûtent 55 o au pire cas (`"phRawGuardBlocked":false,` = 26 o, `"orpPhRawGuardBlocked":false,` = 29 o).
+
+### Code de cause de refus — parité d'emblée (v2.25.1)
+
+Deux champs s'ajoutent, cette fois **sur les deux canaux dans le même passage** (`_buildSensorJson()` pour le WS, `web_routes_data.cpp` pour `/data`) — la parité n'est plus rattrapée après coup :
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `phDoseBlockedCode` | integer \| null | **Code machine** de la cause de refus du dosage pH. `null` si aucun refus (`kDoseBlockedCodeNone` = 0 n'est jamais publié en tant que `0`). Valeurs = `enum class DoseRefusal`, **contrat de sérialisation figé** ; sentinelle `250` = cause de garde de sécurité. Table complète : [API.md](../API.md#code-de-cause-de-refus-de-dosage-v2251). |
+| `orpDoseBlockedCode` | integer \| null | Équivalent ORP. |
+
+Source : `PumpController.getPhDoseBlockedCode()` / `getOrpDoseBlockedCode()` (lecture d'un `uint8_t` membre, aucune allocation). **Même règle de nullité que le texte** : `code == kDoseBlockedCodeNone` ⇒ `null` explicite. Le code est écrit **avant** le texte côté firmware (`logRefusalOnce()`, `setGuardRefusalCause()`), de sorte qu'un lecteur asynchrone ne puisse jamais associer un texte de garde à un code de `canDose()` : au pire il voit le nouveau code avec l'ancien texte, et le **code fait foi**.
+
+**Budget de payload** : **51 o** au pire cas (`"phDoseBlockedCode":null,` = 25 o, `"orpDoseBlockedCode":null,` = 26 o).
+
+> Pourquoi un entier et non une chaîne d'identifiant stable (`"filter_frozen"`) : 1 à 3 octets au lieu de 10 à 20 sur un budget de trame contraint, et surtout un entier ne se compare **que par égalité** — une chaîne invite au `startsWith` / `includes`, c'est-à-dire au procédé même que ce champ retire. Voir [ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md).
+
+> ⚠️ **Exigence désormais explicite ([ADR-0048](../adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md))** : tout champ consommé par l'interface doit exister sur **tous** les canaux qui le poussent, avec le même nom et la même valeur ; et le client doit rester **inerte** quand il manque — clé absente ≠ `false`. Côté client, `rawGuardBites()` distingue explicitement trois états (`true` / `false` / **information absente**) et n'affiche aucun avertissement dans le troisième cas : un encart affiché « par précaution » quand l'info manque serait ignoré et détruirait la valeur de signal de l'encart réel.
+>
+> C'est la **troisième récidive** de ce motif : pentes de sonde en 2.21.2, calibration de pompe en 2.23.0 (voir plus bas), indicateurs de garde ici.
+
+> ⚠️ Ces champs **gèlent** sur leur dernière valeur pendant les sorties anticipées de la boucle de dosage (filtration arrêtée, OTA, mode maintenance, capteurs non initialisés, stabilisation post-calibration, assistant de mesure du débit) : la surveillance n'y tourne pas, car en eau stagnante la mesure n'est pas représentative du bassin. Voir [pump-controller.md](pump-controller.md#surveillance-inconditionnelle-séparée-de-la-décision).
+
 ## Champ `config` ajouté en feature-067 (offset logiciel pH, v2.20.0)
 
 | Champ | Type | Message | Description |
@@ -269,6 +305,8 @@ Voir [sensors.md](sensors.md#alarme--filtre-non-prêt-durablement--v2203), [page
 **Aucun champ `sensor_data` n'est ajouté.** En revanche la **valeur** de trois champs existants intègre désormais l'offset — `ph`, `phMedian`, `phFiltered` sont **corrigés**, `phRaw` reste **brut EZO** (règle : seuls les champs `*Raw` sont bruts, [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)). Le repli de warmup de `ph` passe par la valeur **corrigée**, jamais par le brut : on ne mélange jamais brut et corrigé sur un même champ.
 
 Marge du buffer `_buildConfigJson()` portée à **2368 octets** (+1 champ ≈ 24 octets).
+
+> ⚠️ **Asymétrie assumée (v2.25.0)** : les six bornes `ph_target_min/_max/_step` et `ph_offset_min/_max/_step` sont servies par `GET /get-config` mais **PAS** par la trame `config` du WebSocket — ce sont des constantes de compilation, invariantes pour un firmware donné, et le budget de trame est mieux dépensé ailleurs. C'est une **exception documentée** à la règle de parité ci-dessus, tolérable uniquement parce que le client la connaît : `_applyPhBounds()` ignore **en bloc** un lot absent ou incohérent (borne inversée, pas nul) et **conserve les bornes déjà connues**. Sans cette précaution, chaque push `config` ferait retomber l'UI sur ses valeurs de repli entre deux appels à `/get-config`.
 
 ## Champs `config` ajoutés en v2.23.0 — caractérisation des pompes (feature-074, correctif on-target)
 

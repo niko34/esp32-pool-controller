@@ -1062,6 +1062,21 @@ bool SensorManager::isOrpFilterReady() const { return _orpFilter.ready(millis())
 bool SensorManager::isOrpFilterUnstable() const { return _orpFilter.unstable(); }
 uint8_t SensorManager::getOrpRejectedCount() const { return _orpFilter.rejectedCount(); }
 
+// v2.25.1 — état interne du filtre (discriminant des causes de refus de dosage).
+// UN SEUL snapshot de millis() par appel : les quatre primitives doivent décrire
+// le MÊME instant, sinon la cause affichée pourrait contredire le refus.
+DoseFilterState SensorManager::getPhFilterState() const {
+  const uint32_t nowMs = (uint32_t)millis();
+  return resolveFilterState(_phFilter.frozen(), _phFilter.gateClosed(),
+                            _phFilter.stale(nowMs), _phFilter.warmingUp());
+}
+
+DoseFilterState SensorManager::getOrpFilterState() const {
+  const uint32_t nowMs = (uint32_t)millis();
+  return resolveFilterState(_orpFilter.frozen(), _orpFilter.gateClosed(),
+                            _orpFilter.stale(nowMs), _orpFilter.warmingUp());
+}
+
 // feature-022 Passe 2 — getters capteur figé (lock-free : simple comparaison
 // d'entiers 16 bits, même contrat de concurrence que is*FilterUnstable()).
 bool SensorManager::isPhSensorFrozen() const { return _phFilter.frozen(); }

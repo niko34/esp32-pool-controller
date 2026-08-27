@@ -75,9 +75,29 @@ void notifyOrpDose(uint32_t nowMs);
 bool isPhMixingDelayActive(uint32_t nowMs) const;
 bool isOrpMixingDelayActive(uint32_t nowMs) const;
 
-// Raison de blocage du dosage (feature-025) — "" si autorisé
-String getPhDoseBlockedReason() const;          // dernière cause de refus canDose(0)
-String getOrpDoseBlockedReason() const;         // dernière cause de refus canDose(1)
+// Raison de blocage du dosage (feature-025) — chaîne vide si autorisé.
+// v2.25.0 : les ex-getters `String get*DoseBlockedReason()` sont remplacés par une
+// COPIE dans un tampon fourni par l'appelant. La cause est écrite par loopTask
+// (surveillance, escalade, canDose) et lue depuis les handlers async_tcp : rendre
+// une `String` par valeur allouait sur le tas dans la tâche réseau, à chaque appel.
+void copyPhDoseBlockedReason(char* out, size_t outSize) const;
+void copyOrpDoseBlockedReason(char* out, size_t outSize) const;
+
+// v2.25.1 — CODE MACHINE de la cause de refus, exposé À CÔTÉ du texte sur /data
+// ET sur le WebSocket. Le client traduit un code par une table ; il ne cherche
+// plus de fragment dans une phrase française (ADR-0049).
+//   0   (kDoseBlockedCodeNone)  = aucun refus → publié `null` ;
+//   1..22                       = valeur de `DoseRefusal` (contrat FIGÉ) ;
+//   250 (kDoseBlockedCodeGuard) = cause posée par une garde de sécurité pH/ORP
+//                                 (message à valeurs runtime → lire le TEXTE).
+uint8_t getPhDoseBlockedCode() const;
+uint8_t getOrpDoseBlockedCode() const;
+
+// Butées de sécurité sur le pH BRUT : true = la butée mord pour ce produit.
+// Exposées à /data ET au WebSocket (parité stricte) pour que l'UI puisse avertir
+// avant une injection MANUELLE, qui contourne délibérément ces butées.
+bool isPhRawGuardBlocked() const;
+bool isOrpPhRawGuardBlocked() const;
 
 // Caractérisation des pompes (itération 2, v2.21.0 — lecture seule, sûre depuis
 // les handlers async). Index PHYSIQUE (0 = pompe 1, 1 = pompe 2).
@@ -196,7 +216,7 @@ Lecture seule **STRICTE** de l'utilisabilité de la pompe ([`pump_controller.h`]
 
 ## Algorithme (résumé)
 
-0. **Filets de sécurité pH brut** (feature-067) — évalués **avant** `canDose()` : plancher d'injection d'acide et inhibition ORP, calculés sur la mesure **sans offset**. Voir [Filets de sécurité sur le pH brut](#filets-de-sécurité-sur-le-ph-brut-feature-067-v2200).
+0. **Gardes de sécurité pH** (feature-067, refondues en v2.25.0) — évaluées **avant** `canDose()` : refus de dosage pH et inhibition ORP, sur le pH **corrigé** pour les seuils chimiques et sur le pH **brut** pour les deux butées de dernier recours. Voir [Gardes de sécurité pH](#gardes-de-sécurité-ph-refonte-v2250).
 1. **Gate `canDose(int pumpIndex)`** — fail-closed strict (feature-021, validé pool-chemistry). Voir [Garde-fous `canDose`](#garde-fous-candose) ci-dessous pour la liste complète des 10 conditions évaluées dans l'ordre.
 2. **Calcul de l'erreur** ([`pump_controller.cpp:432`](../../src/pump_controller.cpp:432)) — deux modes exclusifs sélectionnés via `mqttCfg.phCorrectionType` :
 
@@ -258,15 +278,15 @@ Trois branches dans `tickDailyRollover()` :
 
 `canDose(int pumpIndex)` (feature-021, validé pool-chemistry — voir [ADR-0014](../adr/0014-migration-atlas-ezo.md)) est appelée à chaque cycle `update()` pour la pompe pH (index 0) puis ORP (index 1), **avant** tout calcul PID ou démarrage d'injection. La fonction est **fail-closed strict** : tout résultat ambigu retourne `false` (refus de dosage).
 
-Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontré court-circuite les suivants et logue la cause **edge-triggered** (1 entrée info par transition de cause, pas de spam). La dernière cause de refus est **exposée au WS** via `getPhDoseBlockedReason()` / `getOrpDoseBlockedReason()` (chaîne vide si autorisé).
+Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontré court-circuite les suivants et logue la cause **edge-triggered** (1 entrée info par transition de cause, pas de spam). La dernière cause de refus est **exposée à `/data` et au WS** sous **deux formes** : le **texte** via `copyPhDoseBlockedReason()` / `copyOrpDoseBlockedReason()` (chaîne vide si autorisé) et, depuis la v2.25.1, le **code machine** via `getPhDoseBlockedCode()` / `getOrpDoseBlockedCode()` (voir [Causes de refus](#causes-de-refus-code-machine--string-fr)).
 
 | # | Condition | Refus si | Cause documentée |
 |---|-----------|----------|------------------|
 | 1 | **Index pompe valide** | `pumpIndex` ∉ {0, 1} | bug interne |
 | 2 | **Watchdog actif** | wdt non initialisé | sécurité hardware |
 | 3 | **Présence d'eau** | `filtration.resolveWaterPresence().waterPresent == false` | eau ne circule pas — risque bouchon doseuse / injection en eau stagnante. **Source unique** selon le mode d'installation (feature-056, voir [Présence d'eau selon le mode d'installation](#présence-deau-selon-le-mode-dinstallation-feature-056)) |
-| 4 | **Lecture FILTRÉE non NaN** | `getPhFiltered()` ou `getOrpFiltered()` = NaN | feature-025 : le PID consomme le filtré (**corrigé** côté pH depuis feature-067) ; NaN = warmup non amorcé / stale |
-| 4b | **Filtre prêt** (feature-025) | `!isPhFilterReady()` / `!isOrpFilterReady()` | warmup en cours, mesure trop ancienne (> 20 s), ou EZO injoignable — **fail-closed** |
+| 4 | **Lecture FILTRÉE non NaN** | `getPhFiltered()` ou `getOrpFiltered()` = NaN | feature-025 : le PID consomme le filtré (**corrigé** côté pH depuis feature-067) ; NaN = warmup non amorcé / stale. **v2.25.1** : la cause exposée est **qualifiée** en 4 codes distincts (15-18) selon l'état interne du filtre |
+| 4b | **Filtre prêt** (feature-025) | `!isPhFilterReady()` / `!isOrpFilterReady()` | fenêtre de lissage incomplète, sonde figée, plus aucune mesure acceptée (> 20 s), ou porte de validité fermée — **fail-closed**. **v2.25.1** : ces quatre raisons sont désormais **distinguées** (codes 19-22) ; l'ancien libellé unique « warmup / EZO injoignable » présentait une panne comme un état normal |
 | 4c | **Capteur stable** (feature-025) | `isPhFilterUnstable()` / `isOrpFilterUnstable()` | ≥ 10 rejets consécutifs (EMI persistant) → on bloque plutôt que de lisser |
 | 5 | **EZO calibré** | `cal_points < 2` (pH) ou `< 1` (ORP). `-1` (bus down) bloque. | pool-chemistry **cond #2** : régulation auto inhibée tant que calibration incomplète |
 | 6 | **Pas de stabilisation post-cal** | `isStabilizationTimerActive(pumpIndex)` = true | pool-chemistry **cond #3** : 5 min pH / 3 min ORP après calibration EZO |
@@ -278,30 +298,161 @@ Les conditions sont évaluées dans l'ordre suivant. Le premier `false` rencontr
 
 > **Conditions #1, #2, #3, #5, #6** issues du checklist `pool-chemistry` validé en cadrage feature-021. **Condition #10** ajoutée en correctif Pass 3.5. **Conditions #4 (filtré), #4b, #4c, #6b** ajoutées en feature-025 — toutes **fail-closed** et **prioritaires** : elles s'ajoutent aux gardes existantes sans les contourner.
 >
-> **L'ordre et le contenu de `canDose()` sont INCHANGÉS par feature-067.** Les filets pH brut sont évalués **en amont**, jamais à l'intérieur : aucune valeur d'énum `DoseRefusal` n'est ajoutée, aucune garde existante n'est déplacée.
+> **L'ordre et le contenu de `canDose()` sont INCHANGÉS par feature-067 comme par la refonte v2.25.0.** Les gardes pH sont évaluées **en amont**, jamais à l'intérieur : aucune valeur d'énum `DoseRefusal` n'est ajoutée, aucune garde existante n'est déplacée.
 
-## Filets de sécurité sur le pH brut (feature-067, v2.20.0)
+## Gardes de sécurité pH (refonte v2.25.0)
 
-L'offset logiciel pH ([ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)) **déplace l'entrée de la régulation** : `canDose(0)`, le calcul d'erreur et le PID consomment désormais `getPhFiltered()`, c'est-à-dire la valeur **corrigée** (`brut + ph_offset`). Un offset erroné fait donc réguler le bassin à un pH réel différent de la consigne — exemple : consigne 7,20 avec offset `+0,40` ⇒ l'eau est réellement régulée à **6,80**.
+Décision, alternatives écartées et asymétries assumées : [ADR-0048](../adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md).
 
-Trois filets, **exigés par le gate `pool-chemistry`**, encadrent ce risque. Tous raisonnent sur `sensors.getPhFilteredRaw()` — la mesure capteur **SANS offset**, assortie d'une garde d'âge ([sensors.md](sensors.md#garde-dâge-de-getphfilteredraw--pourquoi-elle-existe)) — donc ils restent valides **même si l'offset est faux**. Ils sont évalués **en amont** de `canDose()` dans `update()` : quand ils bloquent, `canDose()` n'est pas évalué et `_lastRefusalCause` porte la cause du filet (exposée au WS).
+L'offset logiciel pH ([ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md)) **déplace l'entrée de la régulation** : `canDose(0)`, le calcul d'erreur et le PID consomment `getPhFiltered()`, c'est-à-dire la valeur **corrigée** (`brut + ph_offset`). Les gardes de cette section encadrent ce risque, en amont de `canDose()` dans `update()` : quand une garde bloque, `canDose()` n'est pas évalué et `_lastRefusalCause` porte la cause de la garde.
 
-### 1. Plancher dur d'injection d'acide (`isPhRawFloorBlocking`)
+### Le principe : deux référentiels, jamais mélangés
 
-Filet contre un offset **positif** erroné : la régulation croit doser vers 7,20 alors que l'eau réelle est déjà basse. Sous ~6,8, l'eau devient agressive (liner, joints, parties métalliques, filtre).
+Jusqu'à la v2.25.0, le plancher de refus était **asservi à l'offset** (`phRawFloorFor()`) et comparé au pH **BRUT**. Ce mécanisme est **supprimé** — il était juste mais incompréhensible (le seuil affiché bougeait avec l'offset) et il a lui-même désactivé la régulation en production le 25/08/2026.
 
-| Condition | Effet |
+Les seuils sont désormais **FIXES**, **dérivés** de la plage de consigne, et comparés au pH **CORRIGÉ** — celui que l'utilisateur voit à l'écran. Justification : l'offset est une correction de **mesure** ; une fois appliqué, la valeur *est* le pH de l'eau, et un seuil chimique (agressivité, fraction de HClO) porte sur l'eau réelle.
+
+Le pH brut ne garde qu'un rôle : **deux butées de dernier recours**, qui doivent rester valides si l'offset est faux. Elles lisent `sensors.getPhFilteredRaw()`, seul accesseur portant la garde d'âge du filtre ([sensors.md](sensors.md#garde-dâge-de-getphfilteredraw--pourquoi-elle-existe)). Le pH corrigé est **recalculé** ici — `applyPhOffset(getPhFilteredRaw(), offset)` — et non lu via `getPhFiltered()`, dont le contrat est celui de `/data`, du WS et de MQTT.
+
+| Grandeur | Valeur | Référentiel | Dérivation (`constants.h`) |
+|---|---:|---|---|
+| Consigne pH | `7,20` → `7,50`, pas `0,10` | corrigé | `kPhTargetMin` / `kPhTargetMax` / `kPhTargetStep` (source unique) |
+| Refus d'**ACIDIFIER** (`ph_minus`) | `6,70` | corrigé | `kPhFloorCorrected = kPhTargetMin − kPhSafetyMargin` (0,50) |
+| Refus d'**ALCALINISER** (`ph_plus`) | `7,60` | corrigé | `kPhCeilingCorrected = kPhTargetMax + kPhHighMargin` (0,10) |
+| Inhibition du dosage ORP | `7,60` (relâche ≈ 7,55) | corrigé | `kPhOrpInhibit` — littéral à justification chimique propre |
+| Avertissement d'eau acide, **non bloquant** | `7,00` | corrigé | `kPhLowWarn` — littéral à justification chimique propre |
+| **Butée basse** | `6,20` | **brut** | `kPhFloorRawHard = kPhFloorCorrected − kPhOffsetMax` |
+| **Butée haute** | `8,10` | **brut** | `kPhCeilingRawHard = kPhOrpInhibit + kPhOffsetMax` |
+| Offset pH | `−0,50` → `+0,50`, pas `0,10` | — | `kPhOffsetMin` / `kPhOffsetMax` / `kPhOffsetStep` |
+| Hystérésis de relâche | `0,05` | — | `kPhGuardReleaseHysteresis`, commune à **toutes** les gardes |
+
+**Aucun seuil n'est écrit en littéral**, hors les deux exceptions ci-dessus. Le calcul est délégué au module **pur** [`src/ph_guard_logic.h`](../../src/ph_guard_logic.h) — deux comparateurs symétriques avec hystérésis (`phGuardBlocksBelow` / `phGuardBlocksAbove`), pattern Humble Object [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md), tests natifs dans `test/test_native_ph_guard/`.
+
+#### Pourquoi les butées brutes valent exactement 6,20 et 8,10
+
+Chaque butée est placée à **exactement l'offset maximal** de son seuil corrigé. Conséquence : à l'offset extrême, butée et seuil mordent **au même point** et se relâchent ensemble — aucune ne peut rendre l'autre inopérante.
+
+| Offset | Butée basse 6,20 [BRUT] équivaut à | Seuil bas 6,70 [CORRIGÉ] | Verdict |
+|---:|---:|---:|---|
+| `+0,50` | `6,70` corrigé | `6,70` | mordent ensemble |
+| `0,00` | `6,20` corrigé | `6,70` | le seuil corrigé mord d'abord |
+| `−0,50` | `5,70` corrigé | `6,70` | le seuil corrigé mord d'abord |
+
+> Une butée **plus haute** (6,40 avait été proposée) mordrait AVANT le seuil corrigé pour un offset **légitime** de `+0,50` (6,40 brut = 6,90 corrigé > 6,70), rendant l'offset inopérant et réintroduisant par la bande la dépendance qu'on venait de supprimer. Le `static_assert` est écrit en **inégalité** : la remonter ne compile plus, l'abaisser reste possible.
+
+#### Invariants verrouillés à la compilation
+
+Trois `static_assert` de [`constants.h`](../../src/constants.h) — toute retouche d'une valeur oblige à relire la justification chimique, pas seulement à recompiler :
+
+1. `kPhTargetMax + kPhOrpInhibitMargin <= kPhOrpInhibit` — la consigne haute ne peut **pas atteindre** le seuil d'inhibition ORP. Sinon, une eau maintenue à la consigne inhiberait le chlore **en permanence** : panne sanitaire silencieuse.
+2. `kPhCeilingCorrected <= kPhOrpInhibit` — le plafond d'alcalinisation ne peut **pas dépasser** l'inhibition ORP. Sinon l'appareil alcaliniserait une eau dont il vient de décider que le chlore y est inactif. Verrou **dédié** : celui de `kPhOrpInhibitMargin` ne protège que la consigne, pas le plafond.
+3. `kPhFloorRawHard <= kPhFloorCorrected − kPhOffsetMax` et son symétrique haut — chaque butée brute ne peut **pas mordre avant** son seuil corrigé, pour tout offset du domaine.
+
+S'y ajoutent les gardes de cohérence : bornes non inversées, marges strictement positives, `kPhLowWarn` compris entre le seuil bas et la consigne minimale, hystérésis non nulle et plus petite que la plus petite marge.
+
+### Surveillance INCONDITIONNELLE, séparée de la décision
+
+Défaut corrigé en v2.25.0 : la détection vivait **à l'intérieur** de la conjonction d'éligibilité `phMode == "automatic" && phLimitOk && … && !isPhGuardBlocking(...)`. Le court-circuit `&&` la rendait muette dès qu'un terme amont était faux — quota journalier épuisé, régulation désactivée, **mode `manual`**, c'est-à-dire l'état exact où l'escalade laisse l'appareil. La seule alerte désignant la vraie cause ne partait jamais quand elle était le plus nécessaire.
+
+| | `tickPhGuardSurveillance()` / `tickOrpPhInhibitSurveillance()` | `isPhGuardBlocking(bool countRefusal)` / `isOrpInhibitedByPh()` |
+|---|---|---|
+| **Appel** | **inconditionnel**, 1 fois par tick d'`update()`, hors de toute conjonction | sous conjonction d'éligibilité |
+| **Rôle** | franchissements, hystérésis, logs `warn`/`critical`, alertes MQTT, cause exposée | rend le verdict du tick + ce qui relève d'un refus **réel** |
+| **Compte / escalade** | **jamais** (un appareil laissé en manuel s'auto-escaladerait sinon) | compteur 24 h + bascule fail-closed, en mode `automatic` seulement |
+| **Coût** | lectures de **caches** capteur uniquement, aucune transaction I²C | — |
+
+L'ordre surveillance → décision est garanti **dans le même tick** : aucune décision n'est prise sur un verdict périmé. Un pH qui s'effondre produit donc son `warn` à 7,00, son `critical` à 6,70 et ses alertes MQTT **même quota journalier épuisé et même en mode `manual`**.
+
+> ⚠️ **Les indicateurs exposés GÈLENT pendant les sorties anticipées d'`update()`** (OTA, mode maintenance, capteurs non initialisés, **filtration arrêtée / eau absente**, stabilisation post-calibration, assistant de mesure du débit). La surveillance n'y tourne pas : `phRawGuardBlocked`, `orpPhRawGuardBlocked` et les causes de refus conservent la valeur du **dernier tick complet**. Voulu — en eau stagnante la mesure n'est pas représentative du bassin, surveiller là produirait de fausses alertes, et l'appareil n'y dose rien. Conséquence pratique : après un arrêt de filtration, l'encart d'avertissement d'injection manuelle peut refléter un état antérieur.
+
+> ⚠️ **Dette résiduelle** : l'alerte de refus en mode **`programmé`** (`ph_guard_scheduled`) vit encore sous une conjonction d'éligibilité — même classe de défaut que celui corrigé ici. Impact faible : la surveillance couvre la **détection** (franchissement, `critical`, alerte `ph_guard`), seul le signalement périodique peut manquer.
+
+### 1. Refus de dosage pH (`isPhGuardBlocking`)
+
+Le seuil appliqué dépend du **produit déclaré** (`phCorrectionType`) : un acide ne peut violer qu'un seuil bas, une base qu'un seuil haut. La butée brute est évaluée **d'abord** — c'est le seul signal disponible quand l'offset est faux, sa cause doit primer dans le journal.
+
+| Produit | Butée [BRUT] | Seuil chimique [CORRIGÉ] |
+|---|---|---|
+| `ph_minus` (acide) | `phRaw < 6,20` → refus | `ph < 6,70` → refus d'acidifier |
+| `ph_plus` (base) | `phRaw > 8,10` → refus | `ph > 7,60` → refus d'alcaliniser |
+
+> **Durcissement v2.25.0** : le `ph_plus` n'était gardé par **aucun** seuil jusqu'ici. Rien n'empêchait le système d'alcaliniser l'eau dans la zone où il inhibe lui-même le chlore. La butée brute haute a été ajoutée en contre-visite : sans elle, un offset `−0,50` erroné laissait le pH+ pousser l'eau au-delà de 8,10 brut pendant que l'inhibition ORP suspendait le chlore — l'appareil conduisait lui-même l'eau dans une impasse sanitaire.
+
+**Changement de produit** : les cinq drapeaux d'hystérésis sont réarmés (le seuil ET la direction changent, les drapeaux deviennent caducs), mais le **compteur de refus n'est PAS réinitialisé** — une anomalie durable ne s'effface pas d'un changement de réglage.
+
+**Mesure indisponible** (`getPhFilteredRaw()` = NaN, garde d'âge du filtre) : **aucun refus, aucune alerte, aucun refus compté**. Les gardes NaN existantes (`canDose`, filtre non prêt) couvrent déjà le cas ; fabriquer un refus ici ajouterait un refus **fantôme** au compteur des 3 refus / 24 h, jusqu'à fermer la régulation sur une donnée qui n'existe pas. Tous les drapeaux d'hystérésis pH sont **réarmés**.
+
+> ⚠️ **Asymétrie assumée de la politique NaN** — les gardes pH **réarment** leurs mémoires d'hystérésis sur mesure indisponible, les gardes ORP les **conservent**. Côté pH c'est un *fail-open borné à 0,05 pH* : après un trou de mesure, la garde peut se relâcher 0,05 pH plus tôt — au niveau du bruit résiduel du filtre. Côté ORP la conservation est **nécessaire** (voir [filet 2](#2-inhibition-du-dosage-orp-sur-ph-élevé-isorpinhibitedbyph)). Détail dans l'[ADR-0048](../adr/0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md).
+
+#### Avertissement non bloquant à 7,00 (`kPhLowWarn`)
+
+Seuil `warn` sur le pH **corrigé**, edge-triggered, **dans les deux cas de produit**. Il **ne bloque rien** et **n'incrémente aucun compteur** : c'est le premier avertisseur, conservé (condition du gate) malgré l'abaissement du seuil de blocage à 6,70. Sous 7,0, l'eau commence à être agressive pour l'installation bien avant qu'il faille refuser de doser.
+
+- Pose : `warning` + alerte MQTT `ph_low_warning` — `pH 6.95 sous 7.00 — eau agressive (liner, joints, parties métalliques). Dosage encore autorisé jusqu'à 6.70 ; contrôler le pH au réactif.`
+- Levée : `info`, pas d'alerte.
+
+#### Hystérésis de relâche (0,05 pH, toutes les gardes)
+
+Entrée en blocage à `value < threshold` (ou `>` pour un seuil haut) ; **sortie** seulement à `value >= threshold + 0,05` (ou `<= threshold − 0,05`). Sans elle, un pH qui oscille sur un seuil (bruit du filtre) produit une **rafale** de transitions bloque/relâche, chacune comptée comme un refus — donc une bascule fail-closed sur un incident unique.
+
+Les logs de relâche citent l'hystérésis : `[Dosage pH] pH remonté à 6.75 (plancher 6.70 + hystérésis 0.05) — injection d'acide de nouveau possible`.
+
+#### Alertes de franchissement
+
+`critical` + alerte MQTT **`ph_guard`** à la transition ; `info` au retour, sans alerte. Un franchissement de butée brute et un franchissement de seuil corrigé sur le même tick valent **un seul** refus.
+
+| Garde | Message publié |
 |---|---|
-| `phCorrectionType == "ph_plus"` (produit basique) | filet **sans objet** — aucune acidification possible |
-| `getPhFilteredRaw()` = NaN | **pas de refus fantôme**, aucun refus compté : les gardes NaN existantes (`canDose`, filtre non prêt) couvrent déjà le cas |
-| `phRaw < kPhRawDosingFloor = 6.80` (si \|offset\| ≤ `kPhOffsetWideThreshold` = 0,30) | **toute** injection d'acide refusée |
-| `phRaw < kPhRawDosingFloorWide = 6.90` (si \|offset\| > 0,30) | idem, marge élargie |
+| Seuil bas [CORRIGÉ] | `pH 6.65 sous le plancher de sécurité 6.70 (offset=0.10) — injection d'acide refusée` |
+| Butée basse [BRUT] | `pH BRUT 6.18 sous la butée de sécurité 6.20 (offset=0.50) — injection d'acide refusée quelle que soit la valeur corrigée : offset positif probablement erroné, contrôler le pH au réactif` |
+| Plafond [CORRIGÉ] | `pH 7.65 au-dessus du plafond de sécurité 7.60 (offset=-0.10) — injection de pH+ refusée : au-delà, le chlore est peu actif et la régulation ORP est inhibée` |
+| Butée haute [BRUT] | `pH BRUT 8.14 au-dessus de la butée de sécurité 8.10 (offset=-0.20) — injection de pH+ refusée quelle que soit la valeur corrigée : offset négatif probablement erroné, contrôler le pH au réactif` |
 
-Deux paliers parce que **l'incertitude sur le pH réel croît avec \|offset\|** : plus la correction est large, plus la marge de sécurité doit l'être. Le filet est **inerte à offset nul** (à 6,80 brut, une régulation acide de consigne usuelle 7,0–7,4 n'a de toute façon rien à corriger).
+#### Escalade — 3 refus en 24 h, mode `automatic` uniquement
 
-À la **transition** sous le plancher : log `CRITICAL` + alerte MQTT `ph_raw_floor` (`pH brut 6.72 sous le plancher de sécurité 6.80 (offset=0.40) — injection d'acide refusée`). Au retour au-dessus : log `INFO`, pas d'alerte.
+`kPhGuardRefusalMax = 3`, `kPhGuardRefusalWindowMs = 86 400 000` (fenêtre glissante). Le firmware bascule `mqttCfg.phRegulationMode` en `"manual"`, met `phEnabled` à `false` (invariant du projet : `ph_enabled` est le miroir de « mode ≠ manual »), **persiste** (`saveMqttConfig()`), loggue `critical` et publie une seconde alerte `ph_guard`.
 
-**Escalade — 3 refus en 24 h** (`kPhRawFloorRefusalMax = 3`, `kPhRawFloorRefusalWindowMs = 86 400 000`, fenêtre glissante) : un plancher qui se déclenche à répétition signe une **sonde morte ou un offset saisi à l'envers**, pas un incident ponctuel. Le firmware bascule alors `mqttCfg.phRegulationMode` en `"manual"`, **persiste** (`saveMqttConfig()`), loggue `CRITICAL` et publie une seconde alerte `ph_raw_floor` : `3 refus de plancher pH en 24 h — sonde pH à recalibrer ou remplacer ; régulation pH basculée en manuel`. Sortie : intervention utilisateur (recalibration / remplacement de sonde, puis re-sélection du mode).
+**Seuls les refus survenus en mode `automatic` sont comptés** (condition du gate) : une consigne volumétrique choisie par l'utilisateur en mode **programmé** ne doit pas fermer la régulation. Le mode programmé refuse tout autant — c'est un filet chimique, pas une boucle de régulation — mais **signale** à la place, en `warning` + alerte MQTT **`ph_guard_scheduled`** à débit limité (`kPhGuardScheduledAlertIntervalMs` = 1 h). Sans cette réémission, un refus permanent y serait un no-op **silencieux** après la première transition.
+
+Le latch de refus est **consommé** par la décision et non relu comme une transition : le franchissement a pu survenir alors que la branche automatique était inéligible (quota épuisé) — le refus n'en est pas moins réel dès qu'elle le redevient.
+
+**Le message d'escalade ne présume plus de la cause.** L'ancien texte (« sonde pH à recalibrer ou remplacer ») a induit l'utilisateur en erreur le 25/08/2026 alors que le diagnostic EZO était nominal. Le firmware interroge `isPhProbeHealthy(slopeAcid, slopeBase, zeroMv)` — pentes ∈ [90 ; 110] % **et** \|zéro\| ≤ 15 mV, toute valeur `NaN` ⇒ `false` (on ne déclare jamais une sonde saine sans preuve) — et choisit un des deux textes :
+
+| Diagnostic | Message publié |
+|---|---|
+| Sonde **saine** | `3 refus de garde pH en 24 h — régulation pH basculée en manuel. Diagnostic sonde EZO NORMAL (pente acide 101.0 %, base 100.0 %, zéro −1.03 mV) : la sonde n'est pas en cause. Vérifier la cohérence consigne / offset / produit déclaré, puis un décalage de référence EXTERNE (courants de fuite de la pompe de filtration, équipotentialité du bassin). Contrôler le pH au réactif avant toute intervention sur la sonde.` |
+| Hors norme ou **indisponible** | `… Diagnostic sonde EZO hors norme ou indisponible (…) : vérifier la calibration et l'état de la sonde, puis un éventuel décalage de référence externe (courants de fuite, équipotentialité). Contrôler le pH au réactif.` |
+
+Ces seuils de diagnostic servent **uniquement** à formuler le message : **aucune décision de dosage n'en dépend**.
+
+> ℹ️ Ces messages dépassent la charge utile MQTT (`kMaxPayloadLen` = 128 o) : `publishAlert()` les tronque proprement (frontière UTF-8 + suffixe `... (voir journal)`) pour que le JSON reste valide côté Home Assistant. Texte intégral dans le journal système et dans `ph_auto_manual_reason`.
+
+**Effacement de la cause exposée.** La **relâche** d'une garde (et le cas mesure indisponible) efface la cause de refus quand une garde en est propriétaire — y compris le message « régulation pH basculée en manuel », qui ne décrit plus un refus en cours. C'est le seul point du firmware qui tourne à chaque tick **quel que soit le mode** : `canDose(0)` ne le ferait qu'en mode `automatic`, donc en `manual` la chaîne restait figée sur un blocage révolu — précisément le mode où l'UI expose l'injection manuelle. La trace de l'escalade est conservée à part (`setPhAutoManualTrace` + bannière d'acquittement).
+
+#### Bornes de la consigne pH et de l'offset (v2.25.0)
+
+`kPhTargetMin` = **7,20**, `kPhTargetMax` = **7,50**, pas `kPhTargetStep` = **0,10** (4 positions), **identiques** pour `ph_minus` et `ph_plus` : le type de produit choisit la **pompe** à actionner, pas la fenêtre de pH visée — une eau à 7,80 est aussi mauvaise qu'elle ait été atteinte par excès de base ou par défaut d'acide.
+
+| Borne | Valeur | Justification |
+|---|---:|---|
+| Basse | `7,20` | Sous 7,2 l'eau devient **agressive** (liner, joints, parties métalliques), inconfortable, et **consomme le TAC**. Le gain d'acide hypochloreux entre 7,2 et 7,0 ne justifie pas une corrosion permanente : le bon levier pour l'efficacité du chlore est le **TAC / stabilisant**, pas un pH bas. |
+| Haute | `7,50` | Au-delà, la fraction de HClO s'effondre. **7,50 et non 7,60** : à 7,60 pile la consigne atteindrait `kPhOrpInhibit` et le chlore serait suspendu **en permanence** dès que la régulation tient sa consigne — panne sanitaire silencieuse. Verrouillé par `static_assert`. |
+
+⚠️ **Changement visible sur les installations existantes** : la borne haute passe de 7,60 (v2.25.0 initiale, non publiée) à **7,50**. Une consigne persistée à 7,60 est **clampée au chargement NVS**, journalisée (`warning` quand l'écart vient du seul resserrement de borne, `critical` sinon) et **réécrite immédiatement** en NVS. Valeur non finie ⇒ `kPhTargetMin`.
+
+Les bornes sont appliquées sur les **trois** chemins d'écriture :
+
+| Chemin | Comportement hors bornes |
+|---|---|
+| `POST /save-config` | **Refus 400** avec message français, **avant toute mutation** de `mqttCfg`. Jamais d'écrêtage silencieux — écrêter ferait croire que la consigne saisie est appliquée. Dans la plage, la valeur est **alignée sur le pas** (`info` si l'alignement change quelque chose). Voir [API.md](../API.md#post-save-config--critical). |
+| Commande MQTT `ph_target/set` | **Refus** + `warning` + `publishTargetState()` pour resynchroniser Home Assistant sur la consigne réelle. Voir [MQTT.md](../MQTT.md). |
+| Chargement NVS (`loadMqttConfig`) | **Clamp** + log + **réécriture NVS immédiate** (installations existantes, ancienne commande MQTT, NVS corrompue). |
+
+L'**offset** suit la même logique : bornes `±0,50`, pas `0,10`, arrondi au plus proche multiple par la fonction pure `roundPhOffsetToStep()` — partagée par la route de sauvegarde et par la **migration NVS** des installations ayant enregistré une valeur libre (0,47 → 0,50). L'écart maximal introduit est de 0,05 pH, soit le bruit résiduel du filtre : aucun effet mesurable sur la régulation. Offset `NaN` ⇒ 0,00 (neutre), jamais `−0,0`.
+
+**Bornes servies au client, jamais codées en dur.** `GET /get-config` publie six champs dérivés des constantes firmware — `ph_target_min`, `ph_target_max`, `ph_target_step`, `ph_offset_min`, `ph_offset_max`, `ph_offset_step`. Le frontend n'en code aucune : élargir la plage ou passer de 4 à 5 positions se fait **côté firmware seul**. Aucun miroir de seuil de sécurité ne subsiste côté client — les seuils sont fixes et ne dépendent plus de l'offset, il n'y a plus rien à recalculer ([page-ph.md](../features/page-ph.md)).
+
+**Suppressions** : `phRawFloorFor()`, `kPhRealFloorTarget`, `kPhRawFloorAbsolute`, `kPhOffsetWideThreshold`, `checkPhTargetReachable()`, `isPhTargetUnreachable()`, `kPhTargetFloorMarginMin` et l'alerte MQTT `ph_target_unreachable` **n'existent plus** : la marge est devenue structurelle (garantie par les `static_assert`), il n'y a donc plus rien à détecter à l'exécution.
 
 #### Persistance de la bascule automatique en manuel (v2.20.3)
 
@@ -314,26 +465,70 @@ Deux champs dans `mqttCfg` ([`config.h`](../../src/config.h)) :
 | `phAutoManualEpoch` | `ph_am_epoch` | epoch UNIX de la bascule ; `0` si aucune bascule en attente **ou** si l'horloge n'était pas synchronisée (`< kMinValidEpoch`) |
 | `phAutoManualReason` | `ph_am_reason` | cause en clair (français) ; chaîne vide si `epoch == 0` |
 
-- **Écriture** : `setPhAutoManualTrace(reason)` est appelée **juste avant** `saveMqttConfig()` sur le chemin d'escalade — la trace part donc dans la **même transaction NVS** que le mode lui-même. Un `critical` + l'alerte MQTT `ph_raw_floor` sont émis comme avant.
-- **Acquittement** : `clearPhAutoManualTrace()` n'est appelée que sur un **changement RÉEL** du mode (`regMode != mqttCfg.phRegulationMode`), côté `POST /save-config` comme côté commande MQTT. ⚠️ Tester la seule **présence** de la clé faisait acquitter la trace à la moindre sauvegarde des réglages — l'interface renvoyant systématiquement le mode courant dans son payload — donc la trace et la bannière disparaissaient alors que la régulation restait en manuel (correctif bloquant de revue v2.20.3).
+- **Écriture** : `setPhAutoManualTrace(reason)` est appelée **juste avant** `saveMqttConfig()` sur le chemin d'escalade — la trace part donc dans la **même transaction NVS** que le mode lui-même. Un `critical` + l'alerte MQTT `ph_guard` (ex-`ph_raw_floor`) sont émis comme avant.
+- **Acquittement** : voir [Acquittement fail-closed](#acquittement-fail-closed-de-la-bascule-v2250) ci-dessous — depuis la v2.25.0, il exige un **acte délibéré** et ne peut plus résulter d'un simple changement de mode. ⚠️ Historique : tester la seule **présence** de la clé faisait acquitter la trace à la moindre sauvegarde des réglages (correctif bloquant de revue v2.20.3), puis un `ph_regulation_mode` **réémis** par le client suffisait encore (incident du 2026-08-25).
 - **Relecture au boot** : clés absentes ⇒ `0` / `""`, **rétrocompatible** sur un appareil mis à jour. Une trace non acquittée relue au boot est re-journalisée en `critical`. Un epoch invalide est neutralisé avec la raison.
 - **Exposition** : `ph_auto_manual_epoch` / `ph_auto_manual_reason` en lecture seule dans `GET /get-config` ⇒ bannière « Bascule automatique en mode manuel » de la page pH. Voir [API.md](../API.md#get-get-config--write) et [page-ph.md](../features/page-ph.md#bannière--bascule-automatique-en-mode-manuel--v2203).
 
-L'invariant du projet est préservé : `ph_enabled` reste le **miroir** de « mode ≠ manual » (mis à `false` par la bascule), sans quoi l'UI et Home Assistant afficheraient la régulation pH active juste après un basculement de sécurité.
+L'invariant du projet est préservé : `ph_enabled` reste le **miroir** de « mode ≠ manual » (mis à `false` par la bascule), sans quoi l'UI et Home Assistant afficheraient la régulation pH active juste après un basculement de sécurité. Depuis la v2.25.0 ce miroir est un **dérivé pur** : `ph_enabled` n'est **plus accepté en écriture** par `/save-config` (il reste exposé en lecture) — le laisser écrivable ouvrait un second chemin capable de rouvrir la régulation en contournant le gate d'acquittement.
 
-### 2. Inhibition du dosage ORP sur pH brut élevé (`isOrpInhibitedByPhRaw`)
+#### Acquittement fail-closed de la bascule (v2.25.0)
 
-Filet **symétrique**, contre un offset **négatif** erroné (la régulation laisse le pH réel monter). Au-dessus de `kPhRawOrpInhibit = 7.60`, la fraction d'**acide hypochloreux** (HClO, forme active du chlore) s'effondre (< 25 %) : l'ORP mesuré chute à concentration de chlore constante, et la régulation ORP compenserait en **surdosant**. Le dosage ORP est donc suspendu tant que le pH brut dépasse le seuil — le vrai correctif est de **faire baisser le pH**.
+Tant qu'une trace existe (`phAutoManualReason` non vide **ou** `phAutoManualEpoch != 0`), toute sortie du mode `manual` est **refusée**. La décision est portée par la fonction pure `phModeChangeNeedsAck(traceActive, curIsManual, newIsManual, ack)` ([`ph_guard_logic.h`](../../src/ph_guard_logic.h)), appelée depuis **les deux** chemins de commande :
 
-`CRITICAL` + alerte MQTT `orp_ph_raw_inhibit` à la transition ; `INFO` au retour sous le seuil.
+| Chemin | Comportement sous trace active |
+|---|---|
+| `POST /save-config` | **409 Conflict** + corps JSON français. Le bloc de gate est le **premier** du handler : il précède toute mutation de `mqttCfg`, sinon un refus laisserait la config RAM divergente de la NVS. |
+| Commande MQTT `ph_regulation_mode` (Home Assistant) | **Refus silencieux côté bus** + log `warning` + `publishTargetState()` pour **resynchroniser HA** sur le mode réel (`manual`). La trace n'est **jamais** effacée par MQTT. |
 
-### 3. Fail-closed sur pH brut indisponible (régulation ORP automatique)
+**Sortie unique : l'interface web.** Un select Home Assistant est un clic distant qui n'affiche ni la cause ni le refus ; une automation ou une restauration d'état HA au redémarrage rejouerait `automatic` et désarmerait la sécurité sans témoin. L'acquittement passe donc **obligatoirement** par le bouton de la bannière de la page pH (champ `ph_auto_manual_ack`), seul endroit où la cause est affichée — recommandation du gate `pool-chemistry`.
 
-En régulation **automatique**, un pH brut `NaN` (sonde muette, filtre non amorcé) **inhibe aussi** le dosage chlore. Justification : **`canDose(1)` ne consulte JAMAIS le pH** — ce filet est donc l'**unique garde du couplage pH/chlore**. Si la sonde pH est morte alors que l'eau est réellement au-dessus de 7,60, le chlore y est peu actif et l'asservissement ORP courrait à l'aveugle vers un surdosage. Un pH inconnu doit **suspendre** la chloration automatique, pas la laisser courir.
+Sémantique du champ :
 
-Journalisé en **`INFO`, sans alerte MQTT** : c'est une situation transitoire normale (démarrage, warmup de filtre). Le `CRITICAL` reste réservé à un vrai franchissement de seuil.
+- `ph_auto_manual_ack: true` **seul** ⇒ efface la trace et **laisse le mode en manuel** (la bannière acquitte, elle ne réarme pas). L'utilisateur choisit ensuite son mode.
+- `ph_auto_manual_ack: true` + `ph_regulation_mode` ⇒ autorise en plus la transition dans le même POST.
+- **Booléen STRICT** : ArduinoJson convertit *toute* chaîne en `true` via `as<bool>()` — y compris `"false"`. Le firmware exige donc le type booléen JSON (`isExplicitJsonTrue`), sans quoi un client maladroit acquitterait une sécurité chimique par accident.
 
-Le dosage **programmé** (`scheduled`) reste **aveugle à la mesure** sur ce point (paramètre `requireKnownPh = false`) : comportement historique préservé, cohérent avec [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md). En revanche le **plancher acide (filet 1) s'applique aux deux branches**, automatique et programmée.
+Journalisation : l'**IP d'origine** est tracée sur les deux issues (`REFUSÉ (409) depuis …` / `Mode régulation pH changé: … (depuis …)`) — sans elle, l'incident du 25/08 était indiagnosticable.
+
+Voir [API.md](../API.md#post-save-config--critical), [MQTT.md](../MQTT.md) et [page-ph.md](../features/page-ph.md#bannière--bascule-automatique-en-mode-manuel--v2203).
+
+### 2. Inhibition du dosage ORP sur pH élevé (`isOrpInhibitedByPh`)
+
+Au-dessus de `kPhOrpInhibit` = **7,60**, la fraction d'**acide hypochloreux** (HClO, forme active du chlore) s'effondre (< 25 %) : l'ORP mesuré chute à concentration de chlore constante, et la régulation ORP compenserait en **surdosant**. Le dosage ORP est donc suspendu — le vrai correctif est de **faire baisser le pH**.
+
+**v2.25.0 — le seuil porte désormais sur le pH CORRIGÉ**, plus sur le brut : la fraction de HClO dépend du pH **réel** de l'eau, pas de la lecture non corrigée du capteur. Cela supprime la limitation connue de la v2.25.0 initiale (avec un offset négatif légitime, le brut d'exploitation valait 7,50-8,10 et l'inhibition devenait **permanente**).
+
+Deux seuils, **OU logique**, appliqués aux branches automatique **et** programmée, quel que soit le type de produit déclaré :
+
+| Seuil | Référentiel | Rôle |
+|---|---|---|
+| `kPhOrpInhibit` = `7,60` (relâche ≈ 7,55) | **corrigé** | chlore peu actif → la régulation ORP surdoserait |
+| `kPhCeilingRawHard` = `8,10` (relâche `8,05`) | **brut** | butée inconditionnelle contre un offset **négatif** saisi à tort, qui masquerait une eau réellement haute |
+
+> La relâche est écrite `kPhOrpInhibit − kPhGuardReleaseHysteresis` et **jamais** en littéral `7.55f` : en `float` l'expression vaut 7,5499997, donc à 7,55 pile la garde bloque encore. Écart de 3e−7 pH, cinq ordres sous le bruit du filtre, et il penche du côté **bloquant** — fail-closed.
+
+`critical` + alerte MQTT **`orp_ph_inhibit`** à la transition ; `info` au retour sous le seuil.
+
+#### Une mémoire d'hystérésis PAR SEUIL, et anti-rafale par épisode
+
+Deux correctifs de revue v2.25.0, tous deux issus de cas observés :
+
+**R1 — découplage mémoire d'hystérésis / latch d'inhibition.** Un drapeau unique cumulait deux rôles : la mémoire de franchissement (`wasBlocking`) et le latch « inhibition en cours » qui porte le motif et l'edge-trigger d'alerte. Or les branches NaN arment le latch pour des motifs **étrangers à tout seuil** (pH indisponible, mesures non représentatives). Résultat observé : reprise de filtration → mesures non représentatives → latch posé ; le pH revient à 7,57 **sans jamais être monté au-dessus de 7,60**, mais l'hystérésis, croyant sortir d'un blocage, exigeait ≤ 7,55 et **maintenait l'inhibition du chlore indéfiniment**, à chaque démarrage de filtration, en annonçant « stabilisation des mesures ». Les mémoires de franchissement sont désormais écrites **exclusivement** par les comparaisons de seuil ; aucune branche NaN ne les touche. Le fail-closed sur pH inconnu reste entier — il agit sur le latch, pas sur la mémoire.
+
+**R2 — une mémoire par seuil.** Les deux seuils **partageaient** un drapeau, écrit par `(raw || corr)`. Le seuil le moins souvent armé perdait alors toute hystérésis : tant que le seuil corrigé maintenait le drapeau, la butée brute se comportait en simple comparateur à 8,05. Cas physique observé — bassin à pH 8,03-8,12 avec offset 0,00 : chaque mesure franchissant 8,05 re-qualifiait le motif et produisait un `critical` + une alerte MQTT, en alternant **deux messages contradictoires** (« offset négatif probablement erroné » alors que l'offset vaut 0,00, puis « pH > 7,60 »). Sur une partition `history` de 64 Ko, ce battement chasse tout le reste du journal.
+
+**Anti-rafale d'alertes** : une alerte est émise **uniquement** si la gravité du motif courant **dépasse** celle déjà signalée dans l'épisode (butée brute `3` > seuil corrigé `2` > mesure absente `1`). La re-qualification ne va donc jamais en dégradation, et une gravité déjà signalée ne réémet rien. La mémoire n'est remise à zéro qu'à la **levée** de l'inhibition — jamais avant, sinon l'épisode se scinderait et la rafale reviendrait.
+
+**Libellés honnêtes** : quand la mesure est retombée **dans la bande de relâche** (l'hystérésis peut rester armée après un effacement de latch), le message ne prétend pas « au-dessus de 8,10 » mais « maintenu dans la bande d'hystérésis de la butée 8,10 (relâche à 8,05) ». Et l'offset n'est mis en cause que s'il est réellement **négatif** : à offset ≥ 0 le pH corrigé est au moins égal au brut, l'eau est réellement haute, et accuser l'offset est un contresens (c'est l'accusation que recevait le bassin à offset 0,00).
+
+### 3. Fail-closed sur pH indisponible (régulation ORP automatique)
+
+En régulation **automatique**, un pH `NaN` (sonde muette, filtre non amorcé) **inhibe aussi** le dosage chlore. Justification : **`canDose(1)` ne consulte JAMAIS le pH** — ce filet est donc l'**unique garde du couplage pH/chlore**. Si la sonde pH est morte alors que l'eau est réellement au-dessus de 7,60, le chlore y est peu actif et l'asservissement ORP courrait à l'aveugle vers un surdosage. Un pH inconnu doit **suspendre** la chloration automatique, pas la laisser courir.
+
+Journalisé en **`info`, sans alerte MQTT** : c'est une situation transitoire normale (démarrage, warmup de filtre). Le `critical` reste réservé à un vrai franchissement de seuil. Le motif « mesures non représentatives » (purge de la chambre de mesure, [ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md)) est distingué du motif « capteur muet » : les confondre faisait annoncer un « capteur muet » alarmant à chaque reprise de filtration, pour une stabilisation que l'appareil venait lui-même de déclencher.
+
+Le paramètre `requireKnownPh` a disparu de la signature : la politique est **dérivée du mode ORP courant** dans la surveillance — `automatic` ⇒ fail-closed, `scheduled` ⇒ **aveugle à la mesure** par conception (comportement historique préservé, cohérent avec [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md)). En revanche les **gardes pH (filet 1) s'appliquent aux deux branches**, automatique et programmée.
 
 ### Interdiction : écrire l'offset ne réinitialise aucun compteur
 
@@ -345,13 +540,27 @@ Une injection **en cours** n'est pas interrompue par un changement d'offset : le
 
 | Constante | Valeur | Rôle |
 |---|---:|---|
-| `kPhOffsetMin` / `kPhOffsetMax` | `−0.50` / `+0.50` pH | Bornes de l'offset (validation serveur, refus 400) |
-| `kPhOffsetWideThreshold` | `0.30` pH | Bascule de palier du plancher acide sur \|offset\| |
-| `kPhRawDosingFloor` | `6.80` pH | Plancher acide, offset « étroit » |
-| `kPhRawDosingFloorWide` | `6.90` pH | Plancher acide, offset « large » |
-| `kPhRawOrpInhibit` | `7.60` pH | Seuil d'inhibition du dosage ORP |
-| `kPhRawFloorRefusalMax` | `3` | Refus tolérés dans la fenêtre avant bascule en manuel |
-| `kPhRawFloorRefusalWindowMs` | `86 400 000` ms (24 h) | Fenêtre glissante du compteur de refus |
+| `kPhOffsetMin` / `kPhOffsetMax` / `kPhOffsetStep` | `−0.50` / `+0.50` / `0.10` pH | Bornes et pas de l'**offset** (validation serveur, refus 400, arrondi au pas) |
+| `kPhTargetMin` / `kPhTargetMax` / `kPhTargetStep` | `7.20` / `7.50` / `0.10` pH | **v2.25.0** — Plage et pas de la **consigne** pH, source unique dont tout dérive (HTTP 400, refus MQTT, clamp NVS, auto-discovery HA, `/get-config`) |
+| `kPhSafetyMargin` | `0.50` pH | **v2.25.0** — Distance consigne basse ↔ refus d'ACIDIFIER |
+| `kPhHighMargin` | `0.10` pH | **v2.25.0** — Distance consigne haute ↔ refus d'ALCALINISER (asymétrie assumée) |
+| `kPhOrpInhibitMargin` | `0.10` pH | **v2.25.0** — Garde-fou **structurel** consigne haute ↔ inhibition ORP. N'entre dans **aucun** calcul de dosage : n'existe que pour le `static_assert` |
+| `kPhFloorCorrected` | `6.70` pH (dérivé) | **v2.25.0** — Refus d'**ACIDIFIER** (`ph_minus`) sur le pH **CORRIGÉ** |
+| `kPhCeilingCorrected` | `7.60` pH (dérivé) | **v2.25.0** — Refus d'**ALCALINISER** (`ph_plus`) sur le pH **CORRIGÉ** |
+| `kPhFloorRawHard` | `6.20` pH (dérivé) | **v2.25.0** — **Butée basse** sur le pH **BRUT** (offset positif saisi à tort) |
+| `kPhCeilingRawHard` | `8.10` pH (dérivé) | **v2.25.0** — **Butée haute** sur le pH **BRUT** : inhibition ORP **et** refus d'alcaliniser (offset négatif saisi à tort) |
+| `kPhOrpInhibit` | `7.60` pH | Seuil d'inhibition du dosage ORP — **sur le pH CORRIGÉ** depuis la v2.25.0 |
+| `kPhLowWarn` | `7.00` pH | **v2.25.0** — Avertissement d'eau acide **NON BLOQUANT** sur le pH CORRIGÉ (ne compte ni ne bloque rien) |
+| `kPhGuardReleaseHysteresis` | `0.05` pH | **v2.25.0** — Hystérésis de relâche **commune à toutes** les gardes pH (basses, hautes, butées brutes, inhibition ORP) |
+| `kPhSlopeHealthyMinPct` / `kPhSlopeHealthyMaxPct` | `90` / `110` % | **v2.25.0** — Fenêtre de pente « sonde saine » (message d'escalade uniquement) |
+| `kPhZeroHealthyMaxMv` | `15` mV | **v2.25.0** — \|zéro\| maximal d'une sonde saine (≈ 0,25 pH) |
+| `kPhGuardRefusalMax` | `3` | Refus tolérés dans la fenêtre avant bascule en manuel (mode `automatic` **seul**) |
+| `kPhGuardRefusalWindowMs` | `86 400 000` ms (24 h) | Fenêtre glissante du compteur de refus |
+| `kPhGuardScheduledAlertIntervalMs` | `3 600 000` ms (1 h) | **v2.25.0** — Débit maximal de réémission de l'alerte `ph_guard_scheduled` (le mode programmé n'escalade pas) |
+| `kDoseBlockedReasonMaxLen` | `96` o | Tampon statique de la cause de refus en **texte** (troncature respectant les frontières UTF-8) |
+| `kDoseBlockedCodeNone` | `0` | **v2.25.1** — Sentinelle « aucun refus » : le champ `*DoseBlockedCode` est alors publié `null` |
+| `kDoseBlockedCodeGuard` | `250` | **v2.25.1** — Sentinelle « cause posée par une garde de sécurité » (message à valeurs runtime, non énumérable → le client lit le texte). Volontairement éloignée de la fin de `DoseRefusal`, avec `static_assert` de non-collision |
+| `kDoseSensorFaultAlertDelayMs` | `60 000` ms (60 s) | **v2.25.1** — Panne de mesure **continue** exigée avant l'alerte `ph/orp_dose_sensor_fault`. 12 cycles de lecture EZO : écarte le transitoire de ré-amorçage de filtre sans masquer une panne réelle (l'affichage, lui, est immédiat) |
 
 Toutes dans [`constants.h`](../../src/constants.h).
 
@@ -379,7 +588,7 @@ Cette valeur est résolue par la fonction **pure** `resolveWaterPresent(WaterPre
 |---|---|---|
 | **Entrées** | `struct DoseInputs` (POD : `bool` / `int` / `float` / `unsigned long`) | collecte les globals : `sensors`, `filtration`, `mqttCfg`, `safetyLimits`, `millis()`, `esp_task_wdt_status()`, ring buffer anti-rafale |
 | **Sortie** | `struct DoseDecision { bool allowed; DoseRefusal cause; }` (énum pur) | mappe `DoseRefusal` → **String FR** (cause au mot près), réinjecte les valeurs runtime (`cal=X requis=Y`, `mode=X`, compteurs…) |
-| **Effets de bord** | aucun | `logRefusalOnce()` edge-triggered, exposition WS via `getPhDoseBlockedReason()` / `getOrpDoseBlockedReason()`, log `warning(...)` |
+| **Effets de bord** | aucun | `logRefusalOnce()` edge-triggered, exposition `/data` + WS via `copyPhDoseBlockedReason()` / `copyOrpDoseBlockedReason()`, log `warning(...)` |
 | **Temps** | injecté en paramètre (`runTimeMs`, `usedMs`) | fourni depuis `millis()` |
 
 ### Fonctions pures
@@ -389,24 +598,85 @@ Cette valeur est résolue par la fonction **pure** `resolveWaterPresent(WaterPre
 - **`bool shouldContinueDosingPure(error, stopThreshold, runTimeMs, minInjectionTimeMs)`** — force la poursuite tant que `runTimeMs < minInjectionTimeMs` (30 s), puis poursuit ssi `error > stopThreshold`. Le **temps est injecté** → le minimum d'injection est testable sans attendre 30 s réelles.
 - **`CycleStartAccounting evaluateCycleStartAccounting(wasActive, startDecided, flowActive)`** (v2.20.5) — vrai ssi `!wasActive && startDecided && flowActive`. Verrouille l'invariant « cycle compté ⇔ cycle réellement démarré » : voir [Comptabilisation d'un démarrage de cycle](#comptabilisation-dun-démarrage-de-cycle--invariant-v2205).
 
-### Causes de refus (énum ↔ String FR)
+### Causes de refus (code machine ↔ String FR)
 
-`enum class DoseRefusal` ([`dosing_logic.h`](../../src/dosing_logic.h:27)) — l'ordre des valeurs **suit l'ordre des gardes** de `canDose()`. La coquille traduit chaque valeur en la chaîne française **identique** à celle exposée avant le refactor (les valeurs runtime — points de calibration, mode, nombre de cycles — sont réinjectées par la coquille au moment du formatage) :
+`enum class DoseRefusal` ([`dosing_logic.h`](../../src/dosing_logic.h)) — l'ordre des 15 premières valeurs **suit l'ordre des gardes** de `canDose()` ; les valeurs 15-22, ajoutées en v2.25.1, **qualifient** les gardes #4 et #4b. La coquille traduit chaque valeur en une chaîne française (les valeurs runtime — points de calibration, mode, nombre de cycles — sont réinjectées au moment du formatage), **et** publie la valeur numérique telle quelle sur `/data` + WS.
 
-| `DoseRefusal` | Garde `canDose` | Cause FR (réinjectée) |
+> ⚠️ **CONTRAT DE SÉRIALISATION FIGÉ (v2.25.1, [ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md))** : ces valeurs sont **écrites explicitement** dans l'énum, **jamais renumérotées**, **jamais insérées au milieu** — toute cause nouvelle s'**ajoute à la fin**, une cause retirée reste **réservée**. **23 `static_assert`** verrouillent la correspondance valeur par valeur en tête de [`pump_controller.cpp`](../../src/pump_controller.cpp), et un `static_assert` supplémentaire garantit que l'énum ne rejoindra jamais la sentinelle `kDoseBlockedCodeGuard` = 250. Un décalage d'une seule valeur ferait afficher **une mauvaise cause** — précisément la classe de défaut que la v2.25.1 corrige.
+
+| Code | `DoseRefusal` | Garde | Cause FR (réinjectée) |
+|---:|---|---|---|
+| 0 | `None` | — | *(aucun refus — publié `null`)* |
+| 1 | `WatchdogInactive` | #2 | watchdog inactif |
+| 2 | `FiltrationOff` | #3 | filtration arrêtée (présence d'eau résolue par `resolveWaterPresent`) |
+| 3 | `ReadingNaN` | #4 | mesure filtrée indisponible (**état du filtre indéterminé**) |
+| 4 | `FilterNotReady` | #4b | filtre capteur non prêt (**état du filtre indéterminé**) |
+| 5 | `FilterUnstable` | #4c | capteur instable (rejets consécutifs) |
+| 6 | `CalibrationInsufficient` | #5 | calibration insuffisante (`cal=X, requis=Y`) |
+| 7 | `StabilizationActive` | #6 | stabilisation post-calibration en cours |
+| 8 | `MixingActive` | #6b | pause mélange en cours |
+| 9 | `ModeNotAutomatic` | #7 | mode régulation != automatic (`X`) |
+| 10 | `DailyLimit` | #8 | limite journalière pH / ORP atteinte |
+| 11 | `HourlyLimit` | #9 | limite horaire atteinte |
+| 12 | `CyclesPerDay` | #9 | limite cycles/jour atteinte |
+| 13 | `BurstPerMinute` | #10 | anti-rafale : N cycles dans la dernière minute |
+| 14 | `BurstPer15Min` | #10 | anti-rafale : N cycles dans les 15 dernières minutes |
+| 15 | `ReadingNaNWarmup` | #4 | mesure filtrée indisponible : fenêtre de lissage en cours |
+| 16 | `ReadingNaNFrozen` | #4 | mesure filtrée indisponible : **sonde figée** |
+| 17 | `ReadingNaNStale` | #4 | mesure filtrée indisponible : **plus aucune mesure acceptée** |
+| 18 | `ReadingNaNGateClosed` | #4 | mesure filtrée indisponible : mesures non représentatives |
+| 19 | `FilterWarmup` | #4b | filtre capteur en cours de remplissage (stabilisation) |
+| 20 | `FilterFrozen` | #4b | **sonde figée** (valeur constante) — filtre non prêt |
+| 21 | `FilterStale` | #4b | **plus aucune mesure acceptée par le filtre** (sonde muette) |
+| 22 | `FilterGateClosed` | #4b | mesures non représentatives (purge / circulation à l'arrêt) |
+| 250 | *(sentinelle `kDoseBlockedCodeGuard`)* | — | cause posée par une **garde de sécurité pH/ORP** ou par l'escalade (hors `canDose`) |
+
+**Aucun libellé ne mélange plus deux causes.** Les deux anciennes phrases — « lecture pH/ORP filtrée indisponible (NaN) » et « filtre capteur non prêt (**warmup / EZO injoignable**) » — recouvraient chacune plusieurs causes physiques, et l'interface en extrayait un fragment de texte : une **vraie panne d'EZO** s'affichait « Stabilisation du filtre ». Les codes 3 et 4 subsistent pour le cas où l'état du filtre n'a **pas** été collecté (`DoseFilterState::Unknown`) et disent alors explicitement qu'ils ne savent pas — pire cas : une cause **imprécise**, jamais une panne maquillée en état normal.
+
+#### Qualification par l'état interne du filtre (`resolveFilterState`)
+
+`SensorFilter::ready()` est faux pour **quatre** raisons physiquement distinctes. La fonction pure `resolveFilterState(frozen, gateClosed, stale, warmingUp)` ([`dosing_logic.cpp`](../../src/dosing_logic.cpp)) les compose en un `DoseFilterState`, **unique lieu de décision de priorité** :
+
+```
+frozen → Frozen ; sinon gateClosed → GateClosed ; sinon stale → Stale ;
+sinon warmingUp → Warmup ; sinon Ready
+```
+
+- **Les pannes d'abord** : un défaut ne doit jamais être masqué par un état bénin concomitant. Après une reprise de circulation sur une sonde figée, le filtre est simultanément `warmingUp` **et** `frozen` — annoncer le warmup masquerait la panne.
+- **`gateClosed` AVANT `stale`** : porte fermée, l'âge de la dernière mesure acceptée croît **par conception** (rien n'est ingéré). L'annoncer « périmé » accuserait la sonde d'un blocage voulu par le système, à chaque arrêt de filtration.
+- **Jamais depuis `getPhRaw()`** : le cache brut est alimenté par **toute** lecture, donc reste frais sur une sonde figée ou un EZO débitant du garbage. Un discriminant fondé sur sa fraîcheur — proposé puis **refusé par le gate `pool-chemistry`** — aurait conclu « warmup » sur une panne, soit exactement le défaut corrigé.
+- **Aucun effet sur le verdict** : `DoseInputs::filterState` ne sert qu'à qualifier la cause. Valeur par défaut `Unknown` (initialiseur de membre obligatoire : `DoseInputs in;` ne value-initialise pas l'agrégat) ⇒ retour aux causes génériques.
+
+Collecte : `SensorManager::getPhFilterState()` / `getOrpFilterState()` — voir [sensors.md](sensors.md#prédicats-détat-du-filtre-observabilité-v2251).
+
+#### Alerte de panne de mesure (v2.25.1)
+
+Quand la cause de refus courante est une **panne** de la chaîne de mesure — `FilterFrozen`, `FilterStale`, `ReadingNaNFrozen`, `ReadingNaNStale` — `logRefusalOnce()` escalade en `warning` + alerte MQTT `ph_dose_sensor_fault` / `orp_dose_sensor_fault`, **une seule fois par épisode**, après `kDoseSensorFaultAlertDelayMs` = **60 s** de panne **continue**.
+
+| Mécanisme | Règle | Motif |
 |---|---|---|
-| `WatchdogInactive` | #2 | watchdog inactif |
-| `FiltrationOff` | #3 | pas de présence d'eau (résolue par `resolveWaterPresent` selon le mode d'installation) |
-| `ReadingNaN` | #4 | lecture filtrée indisponible |
-| `FilterNotReady` | #4b | filtre non prêt |
-| `FilterUnstable` | #4c | capteur instable |
-| `CalibrationInsufficient` | #5 | calibration insuffisante (`cal=X requis=Y`) |
-| `StabilizationActive` | #6 | stabilisation post-calibration en cours |
-| `MixingActive` | #6b | pause mélange en cours |
-| `ModeNotAutomatic` | #7 | mode régulation ≠ automatic (`X`) |
-| `DailyLimit` | #8 | limite journalière atteinte |
-| `HourlyLimit` | #9 | limite horaire atteinte |
-| `CyclesPerDay` / `BurstPerMinute` / `BurstPer15Min` | #4 (anti-cycling) / #10 | limite cycles/jour / anti-rafale |
+| **Temporisation 60 s** | 12 cycles de lecture EZO avant d'alerter | à la réouverture de la porte du filtre, l'état interne est légitimement « périmé » pendant au plus un cycle. Sans délai, chaque démarrage de filtration criait « sonde muette ». L'**affichage** reste immédiat |
+| **Épisode = panne CONTINUE** | la fenêtre n'est redatée **que** sur la transition non-panne → panne | un EZO agonisant alterne `Frozen` ↔ `Stale` par phases plus courtes que 60 s : redater à chaque bascule réarmait le droit d'alerter et **l'alerte ne partait jamais** — le correctif anti-panne-silencieuse introduisait une panne silencieuse (défaut relevé en revue) |
+| **Une trace de journal** | `publishAlert()` journalise déjà en `warning`, y compris MQTT déconnecté | un `systemLogger.warning()` supplémentaire produisait deux lignes quasi identiques par épisode dans une partition `history` de 64 Ko |
+| **Clôture** | `!sensorFault` ⇒ épisode clos, droit d'alerter **non** réarmé avant la prochaine transition ; `resetRefusalLogState()` remet tout à zéro | une panne ultérieure ré-attend la temporisation complète |
+
+**Sémantique exacte de l'épisode.** Un épisode est une **plage de panne continue**, indépendante de la **nature** que la panne prend à l'intérieur. Trois états par pompe le décrivent : `_sensorFaultActive[]` (la panne était-elle en cours au tour précédent ?), `_sensorFaultSinceMs[]` (instant d'**ouverture** de l'épisode), `_sensorFaultAlerted[]` (droit d'alerter déjà consommé).
+
+| Transition | Effet |
+|---|---|
+| non-panne → **panne** | ouverture d'un épisode : `_sensorFaultSinceMs = nowMs`, `_sensorFaultAlerted = false` — **seul** cas de datation |
+| panne → **panne d'une autre nature** (`Frozen` ↔ `Stale`, `Filter*` ↔ `ReadingNaN*`) | **rien** : ni redatation, ni réarmement du droit d'alerter. Le compteur de 60 s continue de courir sur l'épisode entier |
+| panne → **non-panne** | clôture : `_sensorFaultSinceMs = 0`, `_sensorFaultAlerted = false` |
+
+Conséquences : (1) un EZO **agonisant**, alternant « figé » et « muet » par phases de moins d'une minute, déclenche bien l'alerte à 60 s cumulées — la première écriture, qui redatait à chaque changement de code, ne l'aurait **jamais** déclenchée (le correctif anti-panne-silencieuse contenait sa propre panne silencieuse) ; (2) l'alerte part **une seule fois** par épisode, quelle que soit la succession de natures ; (3) la comparaison `nowMs − _sensorFaultSinceMs >= kDoseSensorFaultAlertDelayMs` est en arithmétique **non signée** sur une **durée écoulée depuis l'instant d'ouverture** — forme wrap-safe imposée par [ADR-0049](../adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md#pourquoi-la-forme-du-prédicat-compte-correctif-de-repliement-revue-v2251).
+
+> 📋 Cette machine d'épisode vit aujourd'hui dans la coquille (`logRefusalOnce()`), donc **hors couverture native**. Son extraction en module pur est spécifiée par [feature-077](../../specs/features/todo/feature-077-extraction-machine-episode-panne-sonde.md) ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)).
+
+Les états **normaux** (`FilterWarmup`, `FilterGateClosed`, et leurs équivalents `ReadingNaN*`) n'émettent jamais sur ce type. Complémentaire de `ph_filter_not_ready` (5 min, conditionné à la filtration en marche et aux mesures représentatives) : cette alerte-ci qualifie la **nature** de la panne. Voir [MQTT.md](../MQTT.md#alertes).
+
+#### Ordre d'écriture code / texte
+
+Le **code est écrit avant le texte** dans `logRefusalOnce()` et dans `setGuardRefusalCause()`. Un lecteur asynchrone (`async_tcp`) qui verrait le nouveau texte avec l'ancien code afficherait une cause **périmée** ; dans cet ordre il voit au pire le nouveau code avec l'ancien texte, et le **code fait foi**. `resetRefusalLogState()` et `clearGuardRefusalCause()` remettent les deux à zéro ensemble (invariant code ⇔ texte).
 
 > ⚠️ **Invariant** : toute évolution future de la décision de dosage **passe par `dosing_logic`** et doit conserver l'équivalence stricte (table d'équivalence validée par `pool-chemistry`). La logique pure est verrouillée par les tests natifs (`test/test_native_dosing/`, dont un **verrou de non-régression** du bug pause-mélange v2.2.5 : une injection auto dure **≥ `minInjectionTimeMs`** avant que la pause ne s'arme). Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
 

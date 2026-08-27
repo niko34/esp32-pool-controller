@@ -691,11 +691,17 @@
                    (escalade de sécurité). Persistée en NVS → survit au redémarrage
                    et au ring buffer du journal. Disparaît dès que l'utilisateur
                    choisit lui-même un mode. -->
+              <!-- v2.25.0 (B3) : l'acquittement est un acte DÉLIBÉRÉ. Tant qu'il
+                   n'a pas eu lieu, /save-config refuse (409) toute sortie du mode
+                   manuel — c'est ce bouton qui envoie ph_auto_manual_ack. -->
               <div class="regul-alert regul-alert--inline" id="ph-auto-manual-banner" role="alert" hidden>
                 <span class="regul-alert__dot" aria-hidden="true"></span>
                 <div class="regul-alert__body">
                   <strong class="regul-alert__title">Bascule automatique en mode manuel</strong>
                   <span class="regul-alert__text" id="ph-auto-manual-text"></span>
+                  <div style="margin-top:10px">
+                    <button type="button" id="ph-auto-manual-ack" class="btn btn--primary">Acquitter l’alerte</button>
+                  </div>
                 </div>
               </div>
               <div class="segmented" id="ph_regulation_mode" style="margin-bottom:16px">
@@ -712,12 +718,25 @@
                     <option value="ph_plus">pH+ (base) : augmenter le pH</option>
                   </select>
                 </label>
-                <div class="grid grid--2" style="margin-top:12px">
-                  <label class="field">
-                    <span class="field__label">pH cible</span>
-                    <input type="number" id="ph_target" min="0" max="14" step="0.1" placeholder="ex: 7.2" />
-                  </label>
+                <!-- v2.25.0 — Consigne pH : contrôle SEGMENTÉ, une position par
+                     valeur autorisée. La saisie hors plage devient IMPOSSIBLE
+                     depuis l'interface (le serveur reste l'autorité : HTTP 400).
+                     Les positions sont GÉNÉRÉES par app.js à partir des bornes
+                     servies par /get-config (ph_target_min / _max / _step) :
+                     aucune valeur en dur ici, passer de 4 à 5 positions ne
+                     demande aucune retouche de cette page.
+                     L'<input type="hidden"> reste le PORTEUR de valeur (format
+                     machine, point décimal) : collectConfig() et l'état « dirty »
+                     du bouton Sauvegarder continuent de le lire tel quel. -->
+                <div class="field" style="margin-top:12px">
+                  <span class="field__label" id="ph_target_label">pH cible</span>
+                  <div class="segmented segmented--num" id="ph_target_group"
+                       role="radiogroup" aria-labelledby="ph_target_label"></div>
+                  <input type="hidden" id="ph_target" />
+                  <span class="field__hint muted small" id="ph_target_hint"></span>
                 </div>
+                <div class="callout callout--warn" id="ph_target_warning"
+                     role="status" aria-live="polite" hidden></div>
                 <div class="detail-actions" style="margin-top:12px">
                   <button class="btn btn--primary" type="button" id="ph_regulation_save_btn">Sauvegarder</button>
                 </div>
@@ -746,6 +765,19 @@
                   ou vérifier le fonctionnement de la pompe, même si la régulation automatique est désactivée.
                   Cliquez à nouveau sur le bouton pour arrêter l'injection avant la fin.
                 </p>
+                <!-- v2.25.x — Avertissement « butée pH BRUT » sur le chemin d'injection
+                     MANUELLE. L'injection manuelle est une échappatoire VOULUE : le
+                     firmware obéit même quand la butée brute a fait refuser le dosage
+                     automatique. Le bouton n'est donc JAMAIS bloqué ici (cf. la barrière
+                     réelle : #ph_inject_block_hint) — seulement précédé de cet
+                     avertissement et d'une confirmation explicite.
+                     Affiché uniquement quand phRawGuardBlocked vaut STRICTEMENT true :
+                     clé absente = information inconnue, pas « pas de blocage ». -->
+                <div class="callout callout--warn" id="ph_inject_raw_guard_warning"
+                     role="status" aria-live="polite" hidden style="margin:0 0 10px">
+                  <strong id="ph_inject_raw_guard_title"></strong>
+                  <span id="ph_inject_raw_guard_text"></span>
+                </div>
                 <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
                   <label style="display:flex;align-items:center;gap:6px;font-size:0.9em">
                     Volume
@@ -770,11 +802,24 @@
               <h2 class="card__title">Correction de la mesure pH</h2>
             </div>
             <div class="card__body">
-              <label class="field" style="max-width:220px">
-                <span class="field__label">Offset pH</span>
-                <input type="number" id="ph_offset" min="-0.50" max="0.50" step="0.01"
-                       inputmode="decimal" placeholder="0.00" />
-              </label>
+              <!-- v2.25.0 — Offset pH : INCRÉMENTEUR (pas de 0,10). Comme pour la
+                   consigne, une valeur hors plage n'est plus saisissable ; les
+                   bornes et le pas viennent de /get-config (ph_offset_min / _max /
+                   _step). L'<input type="hidden"> reste le porteur de valeur
+                   (format machine, 2 décimales, point décimal). -->
+              <div class="field" style="max-width:280px">
+                <span class="field__label" id="ph_offset_label">Offset pH</span>
+                <div class="stepper" id="ph-offset-stepper">
+                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_offset_dec"
+                          aria-label="Diminuer l'offset de 0,10">−</button>
+                  <div class="stepper__value" id="ph_offset_value" role="spinbutton" tabindex="0"
+                       aria-labelledby="ph_offset_label">+0,00</div>
+                  <button class="btn btn--ghost stepper__btn" type="button" id="ph_offset_inc"
+                          aria-label="Augmenter l'offset de 0,10">+</button>
+                </div>
+                <input type="hidden" id="ph_offset" />
+              </div>
+              <button class="btn btn--ghost" type="button" id="ph_offset_reset" hidden>Remettre à zéro</button>
               <p class="muted small" id="ph_offset_help" style="margin:8px 0 0">
                 Correction logicielle de la mesure pH. Ne remplace pas la calibration du module EZO :
                 à n'utiliser que pour compenser un écart lié à l'implantation de la sonde, après
@@ -1058,6 +1103,13 @@
                   de chlore ou vérifier le fonctionnement de la pompe. Cliquez à nouveau sur le bouton pour
                   arrêter l'injection avant la fin.
                 </p>
+                <!-- v2.25.x — Même avertissement côté chlore : la butée pH BRUTE HAUTE
+                     inhibe le dosage ORP (orpPhRawGuardBlocked). Bouton jamais bloqué. -->
+                <div class="callout callout--warn" id="orp_inject_raw_guard_warning"
+                     role="status" aria-live="polite" hidden style="margin:0 0 10px">
+                  <strong id="orp_inject_raw_guard_title"></strong>
+                  <span id="orp_inject_raw_guard_text"></span>
+                </div>
                 <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
                   <label style="display:flex;align-items:center;gap:6px;font-size:0.9em">
                     Volume

@@ -191,6 +191,9 @@ public:
   // Ré-amorce l'ESTIMATEUR (buffer, EMA, streak de dispersion propre) sans toucher
   // au détecteur figé ni au latch EMI — c'est ce qui la distingue de reset() et ce
   // qui garantit qu'on ne masque pas une sonde HS en re-convergeant.
+  // Arme aussi une GRÂCE d'observabilité de maxAgeMs sur stale() (cf.
+  // _staleGraceArmed) : l'âge d'avant le ré-amorçage ne doit pas être présenté
+  // comme une panne de sonde. Aucun effet sur ready() ni sur le dosage.
   void rearm();
 
   // true si la porte est fermée : addSample() sort en tête (aucune alimentation).
@@ -216,6 +219,19 @@ public:
                             // JAMAIS figée ; NaN tant que la fenêtre n'est pas pleine (C2/C5).
   float dispersion() const; // Amplitude (max−min) de la fenêtre brute PLEINE (NaN sinon). Diagnostic + drapeau.
   bool ready(uint32_t nowMs) const;   // Fenêtre pleine ET mesure récente ET non figé
+
+  // --- v2.25.1 : décomposition de ready() pour l'OBSERVABILITÉ ---------------
+  // ready() est faux pour quatre raisons physiquement distinctes ; la chaîne de
+  // refus de dosage les confondait dans un seul libellé, présentant une panne de
+  // sonde comme une stabilisation normale. Ces trois prédicats exposent l'ÉTAT
+  // INTERNE du filtre (jamais un cache brut extérieur, qui reste frais sur une
+  // sonde figée) et sont composés par resolveFilterState() (dosing_logic.h).
+  // Aucun effet sur la décision de dosage : lecture seule, const.
+  bool warmingUp() const;             // Fenêtre centrale incomplète (_bufCount < centralWindow)
+  // Aucune mesure acceptée, OU âge > maxAgeMs — SAUF pendant la grâce de
+  // ré-amorçage (cf. _staleGraceArmed) : juste après un rearm(), l'âge porté par
+  // le filtre est celui d'AVANT le ré-amorçage et n'incrimine pas la sonde.
+  bool stale(uint32_t nowMs) const;
   bool unstable() const;    // Drapeau d'inhibition : dispersion > cap OU latch EMI OU rejets consécutifs
   bool frozen() const;      // Capteur figé : N échantillons acceptés dans une bande < epsilon (feature-022)
   uint8_t rejectedCount() const;        // Compteur glissant (8 bits, sature à 255)
@@ -245,6 +261,46 @@ private:
   uint8_t _consecutiveRejects = 0;  // Rejets NaN/hors-plage consécutifs (le spike ne compte pas)
   uint32_t _lastValidMs = 0;  // millis() de la dernière mesure acceptée
   bool _hasValid = false;     // true dès la 1ʳᵉ mesure acceptée
+
+  // --- Grâce « périmé » après ré-amorçage (revue v2.25.1) ---
+  // rearm() vide l'estimateur mais NE FABRIQUE PAS de mesure : _hasValid et
+  // _lastValidMs restent ceux d'avant (invariant : ils ne décrivent QUE des
+  // échantillons réellement acceptés — c'est ce qui rend ready() et ageMs()
+  // honnêtes). Conséquence non voulue : juste après un ré-amorçage de porte, le
+  // filtre était simultanément warmingUp ET stale, et la priorité pannes-d'abord
+  // de resolveFilterState() affichait « sonde muette » sur une sonde SAINE, au
+  // démarrage de la filtration.
+  // On ne falsifie donc PAS la datation : on mémorise que l'âge courant est
+  // IMPUTABLE AU RÉ-AMORÇAGE, pendant maxAgeMs au plus, et seul stale() lit ce
+  // drapeau. Aucun chemin de DÉCISION (ready(), unstable(), dosage) ne le
+  // consulte : la garde d'âge de ready() reste inchangée au bit près.
+  // Une sonde réellement muette redevient stale à l'expiration (≤ maxAgeMs, soit
+  // 20 s) : le retard est intrinsèque — on ne peut pas conclure avant d'avoir
+  // laissé sa chance à la première lecture qui suit le ré-amorçage.
+  //
+  // EXPIRATION EFFECTIVE, PAS SEULEMENT OBSERVÉE (revue v2.25.1, correctif de repliement) — 3ᵉ défaut
+  // de repliement du projet, après la retentative de pente (v2.21.2) et
+  // tickPulse. La v2.25.1 n'évaluait l'échéance QUE dans stale(), qui est const :
+  // sur une sonde restée muette, le drapeau ne redescendait jamais et la
+  // comparaison de deadline `(int32_t)(now - until) < 0`, juste au premier tour,
+  // se retournait 2³¹ ms plus tard (24,8 j) → la panne était masquée à nouveau
+  // pendant 24,8 j. Deux mesures cumulatives :
+  //   (1) le drapeau est RÉELLEMENT désarmé par _expireStaleGrace(), appelé en
+  //       tête de setContext() ET de addSample() — les deux seuls chemins
+  //       non-const qui reçoivent l'horloge ;
+  //   (2) la fenêtre est exprimée en ÉCOULÉ DEPUIS L'ARMEMENT (intervalle fermé
+  //       [from, from+maxAgeMs[) et non en deadline (demi-droite) : le prédicat
+  //       n'est plus monotone en `now` mais en `now − from`, donc même un drapeau
+  //       resté armé ne peut re-rentrer dans la grâce qu'au repliement COMPLET de
+  //       millis() (49,7 j = la limite intrinsèque du projet), au lieu de 24,8 j.
+  bool _staleGraceArmed = false;     // grâce en cours (levée par expiration, par la 1ʳᵉ mesure acceptée, ou par reset())
+  uint32_t _staleGraceFromMs = 0;    // instant d'ARMEMENT (durée = _cfg.maxAgeMs)
+  // Dernier nowMs vu par setContext()/addSample(). rearm() n'a pas d'argument de
+  // temps (API publique consommée par les tests natifs et la coquille) : cette
+  // observation d'horloge en tient lieu. Sur les DEUX chemins de ré-amorçage réels
+  // (réouverture de porte dans setContext, sortie de secours dans addSample) elle
+  // vaut exactement le nowMs du cycle en cours, l'affectation étant faite en tête.
+  uint32_t _lastSeenMs = 0;
 
   // --- Latch EMI (anti bruit soutenu) ---
   // Compteur de fenêtres PLEINES consécutives en dépassement de dispersion.
@@ -284,6 +340,12 @@ private:
   bool _lastWasGap = false;         // Le dernier échantillon de la série était un trou
   uint8_t _rejectedBeforeRearm = 0; // rejectedCount() juste avant le dernier rearm()
   void _noteSpikeSeriesGap();       // Applique la règle de tolérance ci-dessus
+
+  // Désarme la grâce « périmé » si sa durée est écoulée (cf. _staleGraceArmed).
+  // À appeler en TÊTE de tout chemin non-const recevant l'horloge : c'est ce qui
+  // rend l'expiration EFFECTIVE et interdit tout ré-armement spontané au
+  // repliement de millis(). Idempotent, sans effet si aucune grâce n'est armée.
+  void _expireStaleGrace(uint32_t nowMs);
   uint32_t _lastRearmMs = 0;        // millis() du dernier ré-amorçage par sortie de secours
   bool _hasRearmed = false;         // false = jamais ré-amorcé (cooldown inapplicable)
   bool _rearmedFlag = false;        // Drapeau drainé par rearmedSinceLastPoll()

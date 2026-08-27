@@ -85,7 +85,9 @@ docs/
 │   ├── 0044-budget-horaire-et-temps-min-en-temps-pompe-on.md
 │   ├── 0045-etat-impulsion-expose-en-calendrier.md
 │   ├── 0046-accumulateur-demande-sous-pouls-minimal.md
-│   └── 0047-calibration-de-type-par-defaut-et-gel-amplitude.md
+│   ├── 0047-calibration-de-type-par-defaut-et-gel-amplitude.md
+│   ├── 0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md
+│   └── 0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

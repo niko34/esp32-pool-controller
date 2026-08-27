@@ -11,6 +11,7 @@
 #include "pump_controller.h"
 #include "dosing_logic.h"  // feature-060 : clampCyclesPerDay (clamp serveur obligatoire)
 #include "ph_offset.h"     // feature-067 : isPhOffsetValid (validation serveur de ph_offset)
+#include "ph_guard_logic.h"  // v2.25.0 : phModeChangeNeedsAck (gate fail-closed du mode pH)
 #include "logger.h"
 #include "version.h"
 #include "json_compat.h"
@@ -41,6 +42,17 @@ static std::map<AsyncWebServerRequest*, bool>* g_configErrors = nullptr;
 // cette map préserve en plus le libellé précis (sans elle, on retomberait sur le
 // générique « Invalid JSON configuration », inexploitable pour l'utilisateur).
 static std::map<AsyncWebServerRequest*, String> g_configErrorMessages;
+
+// Code HTTP du refus associé à une requête (v2.25.0). Absent = 400 (le seul code
+// de refus qui existait avant). Le gate d'acquittement de la bascule de sécurité
+// pH répond 409 Conflict : ce n'est pas une valeur invalide (400) mais un état
+// serveur qui interdit la transition tant qu'elle n'est pas acquittée.
+// MÊME CONTRAINTE que g_configErrorMessages : c'est la COMPLÉTION qui répond.
+// Un `request->send(409, ...)` posé ici serait remplacé par le `req->send(200,
+// "OK")` du lambda de complétion (WebRequest.cpp : send() delete l'ancienne
+// réponse et la remplace) — le navigateur verrait « enregistré » sur un refus,
+// et l'UI ne pourrait pas revenir en arrière.
+static std::map<AsyncWebServerRequest*, int> g_configErrorStatus;
 
 // Variables globales pour la reconnexion WiFi asynchrone
 static bool g_wifiReconnectRequested = false;
@@ -84,7 +96,8 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // Itération 2 (bug-dosage-fantome) : +4 champs de caractérisation pompes
   // (~130 o au pire) → marge portée à 2752.
   // feature-074 : +2 drapeaux pumpN_flow_weighed (~56 o) → marge portée à 2816.
-  StaticJson<2816> doc;
+  // v2.25.0 (B1) : +6 bornes de réglage pH (~30 o chacune) → marge portée à 3072.
+  StaticJson<3072> doc;
   doc["server"] = mqttCfg.server;
   doc["port"] = mqttCfg.port;
   doc["topic"] = mqttCfg.topic;
@@ -178,6 +191,22 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // Ne remplace PAS la calibration EZO (ph_cal_points ci-dessus) — champ distinct.
   doc["ph_offset"] = mqttCfg.phOffset;
 
+  // v2.25.0 (B1) — BORNES DE RÉGLAGE pH servies au client.
+  // L'interface construit ses contrôles (positions de la consigne, pas de
+  // l'incrémenteur d'offset) à partir de CES valeurs : plus aucune borne de
+  // sécurité n'est écrite en dur dans data/app.js, donc plus de miroir à
+  // maintenir. Élargir la plage ou changer le pas se fait ici (constants.h),
+  // sans retouche du frontend.
+  // VOLONTAIREMENT ABSENTES de la trame WebSocket : ce sont des constantes de
+  // compilation, elles n'ont pas à consommer le budget d'une trame émise toutes
+  // les quelques secondes. app.js conserve donc les dernières bornes reçues.
+  doc["ph_target_min"]  = kPhTargetMin;
+  doc["ph_target_max"]  = kPhTargetMax;
+  doc["ph_target_step"] = kPhTargetStep;
+  doc["ph_offset_min"]  = kPhOffsetMin;
+  doc["ph_offset_max"]  = kPhOffsetMax;
+  doc["ph_offset_step"] = kPhOffsetStep;
+
   // v2.20.3 (C5) : bascule AUTOMATIQUE de la régulation pH en manuel, persistée.
   // `ph_auto_manual_epoch` == 0 → aucune bascule automatique en attente
   // d'acquittement (cas de tous les appareils avant 2.20.3 : clé NVS absente).
@@ -232,9 +261,60 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   sendJsonResponse(request, doc);
 }
 
+// Acquittement STRICT (v2.25.0) : seule la valeur JSON booléenne `true` compte.
+// ArduinoJson convertit TOUTE chaîne en `true` via as<bool>() (VariantData.hpp,
+// `default: return true`) — y compris "false" : un client maladroit acquitterait
+// une sécurité chimique par accident. On exige donc le type booléen.
+static bool isExplicitJsonTrue(JsonVariantConst v) {
+  return v.is<bool>() && v.as<bool>();
+}
+
+// IP d'origine d'une requête, sans jamais déréférencer un client nul (revue).
+// Le client peut avoir disparu entre l'arrivée du corps et la journalisation
+// (fermeture navigateur, timeout TCP) : un log ne doit pas faire tomber l'appareil.
+static String clientIpOf(AsyncWebServerRequest* request) {
+  if (request == nullptr || request->client() == nullptr) return "IP inconnue";
+  return request->client()->remoteIP().toString();
+}
+
+// Autorisation du CORPS de /save-config (v2.25.0, revue — bloquant n°1).
+//
+// TROU PRÉEXISTANT, sur TOUTE la route (pas seulement le pH) : REQUIRE_AUTH n'est
+// posé que dans le lambda de COMPLÉTION, qui s'exécute APRÈS handleSaveConfig.
+// Un POST non authentifié voyait donc son corps intégralement appliqué (mutations
+// mqttCfg + saveMqttConfig() en NVS) avant que le 401 ne parte — le refus n'était
+// qu'un affichage. Avec le gate d'acquittement pH, cela devenait un contournement
+// direct d'une sécurité chimique ({"ph_auto_manual_ack":true,...} effaçait la trace
+// et rouvrait la régulation).
+//
+// On reproduit ici la décision de AuthManager::checkAuth SANS ses effets de bord :
+//   - pas de checkRateLimit() → le quota kMaxRequestsPerMinute reste compté UNE
+//     fois par requête (dans la complétion), sinon chaque POST en aurait consommé 2 ;
+//   - pas de sendAuthRequired() → c'est la complétion qui émet le 401 (une réponse
+//     posée ici serait de toute façon remplacée par la sienne).
+// L'exemption « premier démarrage » (wizard) est conservée à l'identique.
+static bool saveConfigBodyAuthorized(AsyncWebServerRequest* request) {
+  if (!authManager.isEnabled()) return true;            // authentification désactivée
+  if (authManager.isFirstBootDetected()) return true;   // wizard de premier démarrage
+  return authManager.checkTokenAuth(request) || authManager.checkBasicAuth(request);
+}
+
 static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size_t len, size_t index, size_t total) {
   if (g_configBuffers == nullptr || g_configErrors == nullptr) {
     systemLogger.error("Config context non initialisé!");
+    return;
+  }
+
+  // Corps non authentifié : on n'accumule RIEN et on n'applique RIEN. Sortie
+  // AVANT toute écriture dans les maps — poser un drapeau ici créerait un nœud
+  // que la complétion (qui rend la main sur REQUIRE_AUTH) n'effacerait jamais et
+  // qu'aucun onDisconnect n'aurait encore été enregistré pour purger : fuite non
+  // bornée, atteignable sans authentification. Le 401 est émis par la complétion.
+  if (!saveConfigBodyAuthorized(request)) {
+    if (index == 0) {
+      systemLogger.warning("[Config] /save-config NON AUTHENTIFIÉ depuis " +
+                           clientIpOf(request) + " — corps ignoré (aucune modification)");
+    }
     return;
   }
 
@@ -253,6 +333,7 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
       if (g_configBuffers) g_configBuffers->erase(request);
       if (g_configErrors) g_configErrors->erase(request);
       g_configErrorMessages.erase(request);
+      g_configErrorStatus.erase(request);
     });
 
     // Vérifier la taille totale
@@ -296,6 +377,124 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     return;
   }
 
+  // ===========================================================================
+  // v2.25.0 (B2) — GATE fail-closed : réarmement de la régulation pH
+  // ===========================================================================
+  // Tant qu'une trace de bascule AUTOMATIQUE existe (phAutoManualReason /
+  // phAutoManualEpoch), la sortie de `manual` exige un acte DÉLIBÉRÉ :
+  // `ph_auto_manual_ack: true` dans le même POST. Incident du 2026-08-25 : une
+  // simple consultation de l'app a réémis `ph_regulation_mode: "automatic"`
+  // (repli en dur du client sur un `window._config` périmé), rouvert la
+  // régulation et effacé la trace dans la même seconde.
+  //
+  // CE BLOC DOIT RESTER LE PREMIER : il précède TOUTE mutation de mqttCfg. Un
+  // refus survenant après des écritures partielles laisserait la config RAM
+  // divergente de la NVS (aucun saveMqttConfig() n'est atteint sur ce chemin),
+  // et l'écart ne serait visible qu'au prochain redémarrage.
+  {
+    const bool traceActive = (mqttCfg.phAutoManualReason.length() > 0) ||
+                             (mqttCfg.phAutoManualEpoch != 0);
+    // Champ absent ou non booléen → false : jamais d'acquittement implicite.
+    const bool ack = isExplicitJsonTrue(doc["ph_auto_manual_ack"]);
+    const bool curIsManual = (mqttCfg.phRegulationMode == "manual");
+    // Mode DEMANDÉ : le mode courant si la clé est absente ou invalide (la
+    // requête ne changerait alors rien — même verdict que le bloc d'application).
+    String requestedMode = mqttCfg.phRegulationMode;
+    if (!doc["ph_regulation_mode"].isNull()) {
+      const String m = doc["ph_regulation_mode"].as<String>();
+      if (m == "automatic" || m == "scheduled" || m == "manual") requestedMode = m;
+    }
+    if (phModeChangeNeedsAck(traceActive, curIsManual, requestedMode == "manual", ack)) {
+      const String reason = mqttCfg.phAutoManualReason;  // copie AVANT le give
+      xSemaphoreGiveRecursive(configMutex);
+      // B5 : l'origine de la requête est journalisée sur les DEUX issues
+      // (refus ici, acceptation plus bas) — sans elle, l'incident du 25/08 était
+      // indiagnosticable (ni corps ni IP dans le journal).
+      systemLogger.warning(
+          "[Config] /save-config REFUSÉ (409) depuis " +
+          clientIpOf(request) + " : passage manual → " +
+          requestedMode + " sans acquittement de la bascule de sécurité pH. "
+          "Trace active : " + reason);
+      // Drapeau + message + code : c'est la complétion qui répond (cf. le
+      // commentaire de g_configErrorMessages). Ne PAS répondre ni purger ici.
+      (*g_configErrors)[request] = true;
+      g_configErrorStatus[request] = 409;
+      g_configErrorMessages[request] =
+        "{\"error\":\"Bascule de s\\u00e9curit\\u00e9 pH non acquitt\\u00e9e\","
+        "\"message\":\"Bascule de s\\u00e9curit\\u00e9 pH non acquitt\\u00e9e \\u2014 "
+        "acquittez l'alerte sur la page pH avant de r\\u00e9activer la r\\u00e9gulation.\"}";
+      return;
+    }
+  }
+
+  // ===========================================================================
+  // v2.25.0 — Bornes de la CONSIGNE pH (fenêtre chimique d'exploitation)
+  // ===========================================================================
+  // La consigne n'était validée NULLE PART sur ce chemin : un `ph_target` de 6,0
+  // (ou une chaîne, convertie en 0 par ArduinoJson) était persisté tel quel et
+  // pilotait ensuite la régulation. Bornes [kPhTargetMin ; kPhTargetMax] =
+  // [7,20 ; 7,50], IDENTIQUES pour `ph_minus` et `ph_plus` (le type de produit
+  // choisit la pompe, pas la fenêtre de pH de l'eau) — justification chimique
+  // complète dans constants.h.
+  //
+  // `.as<float>()` est OBLIGATOIRE : sans lui, une chaîne JSON ("7.2") se
+  // convertirait en 0 et passerait pour une consigne franchement corrosive.
+  //
+  // DÉFENSE EN PROFONDEUR : depuis la v2.25.0 l'interface web n'expose plus
+  // qu'un contrôle segmenté (saisie hors plage impossible), mais l'API HTTP et
+  // MQTT restent ouverts — cette validation est le seul garde-fou de ces chemins.
+  //
+  // REFUS explicite, JAMAIS d'écrêtage silencieux (patron ph_offset) : écrêter
+  // ferait croire à l'utilisateur que sa consigne a été prise en compte alors
+  // que la régulation viserait une autre valeur.
+  //
+  // CE BLOC PRÉCÈDE TOUTE MUTATION de mqttCfg, pour la même raison que le gate
+  // ci-dessus : un refus après écritures partielles laisserait la config RAM
+  // divergente de la NVS (aucun saveMqttConfig() n'est atteint sur ce chemin).
+  if (!doc["ph_target"].isNull()) {
+    const float requestedPhTarget = doc["ph_target"].as<float>();
+    if (!isfinite(requestedPhTarget) ||
+        requestedPhTarget < kPhTargetMin || requestedPhTarget > kPhTargetMax) {
+      xSemaphoreGiveRecursive(configMutex);
+      // Bornes formatées à la française (virgule décimale) à partir des
+      // constantes : le message ne peut pas dériver des valeurs appliquées.
+      String minStr(kPhTargetMin, 2); minStr.replace('.', ',');
+      String maxStr(kPhTargetMax, 2); maxStr.replace('.', ',');
+      systemLogger.warning("Consigne pH refusée (hors plage " + minStr + "-" + maxStr +
+                           ") : " + String(requestedPhTarget, 2) + " depuis " +
+                           clientIpOf(request));
+      // Drapeau + message : c'est le lambda de complétion qui répondra (400 par
+      // défaut, cf. le commentaire de g_configErrorMessages). Ne PAS répondre ici.
+      (*g_configErrors)[request] = true;
+      g_configErrorMessages[request] =
+        String("{\"error\":\"Consigne pH hors plage autoris\\u00e9e\",\"message\":\""
+               "Consigne pH hors plage autoris\\u00e9e (") + minStr +
+        " \\u00e0 " + maxStr + "). "
+        "En dessous, l'eau devient agressive pour le liner, les joints et les "
+        "parties m\\u00e9talliques ; au-dessus, la r\\u00e9gulation du chlore "
+        "serait inhib\\u00e9e en permanence.\"}";
+      return;
+    }
+    // ALIGNEMENT SUR LE PAS (kPhTargetStep, v2.25.0). Dans la plage, une valeur
+    // hors grille (7,35 envoyée par un script, ou héritée d'un firmware
+    // antérieur) est chimiquement acceptable : on ne la REFUSE pas, on la cale
+    // sur la position la plus proche. L'écart introduit est au pire un demi-pas
+    // (0,05 pH), soit le bruit résiduel du filtre — sans effet sur la régulation,
+    // alors qu'une consigne hors grille ne correspondrait à AUCUNE position du
+    // contrôle de l'interface (état d'affichage ambigu).
+    // La valeur alignée est réinjectée dans le document : le bloc d'application
+    // plus bas reste l'unique point d'écriture de mqttCfg.phTarget.
+    float snappedPhTarget = roundf(requestedPhTarget / kPhTargetStep) * kPhTargetStep;
+    if (snappedPhTarget < kPhTargetMin) snappedPhTarget = kPhTargetMin;
+    if (snappedPhTarget > kPhTargetMax) snappedPhTarget = kPhTargetMax;
+    if (fabsf(snappedPhTarget - requestedPhTarget) > 0.001f) {
+      systemLogger.info("Consigne pH alignée sur le pas de " + String(kPhTargetStep, 2) +
+                        " : " + String(requestedPhTarget, 2) + " → " +
+                        String(snappedPhTarget, 2));
+    }
+    doc["ph_target"] = snappedPhTarget;
+  }
+
   // Snapshot pour détecter si la config MQTT a réellement changé (feature-018).
   // Évite les reconnect/republish discovery inutiles sur les saves de paramètres
   // non-MQTT (modes régulation, NTP, logs, etc.).
@@ -321,9 +520,26 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
 
   if (!doc["enabled"].isNull()) mqttCfg.enabled = doc["enabled"];
-  if (!doc["ph_target"].isNull()) mqttCfg.phTarget = doc["ph_target"];
+  // Valeur déjà VALIDÉE et ALIGNÉE sur kPhTargetStep plus haut : ce point n'est
+  // atteint que si la consigne est dans la fenêtre autorisée.
+  if (!doc["ph_target"].isNull()) mqttCfg.phTarget = doc["ph_target"].as<float>();
   if (!doc["orp_target"].isNull()) mqttCfg.orpTarget = doc["orp_target"];
-  if (!doc["ph_enabled"].isNull()) mqttCfg.phEnabled = doc["ph_enabled"];
+  // v2.25.0 (B7) : `ph_enabled` n'est plus ACCEPTÉ en écriture. C'est un DÉRIVÉ
+  // pur du mode (`mode != "manual"`, invariant projet rappelé dans
+  // pump_controller.cpp) : le laisser écrivable ouvrait un second chemin capable
+  // de rouvrir la régulation en contournant le gate ci-dessus, et de désynchroniser
+  // le couple mode/enabled persisté en NVS. Le champ reste exposé en LECTURE
+  // (/get-config, trame WS config, Home Assistant) — aucune rupture de contrat
+  // pour les clients ; une clé envoyée par un vieux client est simplement ignorée
+  // (même patron que screen_enabled, v2.17.1).
+  //
+  // v2.25.0 (B2) : acquittement DÉLIBÉRÉ de la trace de bascule automatique.
+  // Sémantique : `ph_auto_manual_ack: true` SEUL efface la trace et LAISSE le
+  // mode en manuel (la bannière acquitte, elle ne réarme pas). Associé à un
+  // `ph_regulation_mode`, il autorise en plus la transition (gate ci-dessus).
+  if (isExplicitJsonTrue(doc["ph_auto_manual_ack"])) {
+    clearPhAutoManualTrace();  // no-op si aucune trace ; persisté en fin de handler
+  }
   if (!doc["ph_regulation_mode"].isNull()) {
     String regMode = doc["ph_regulation_mode"].as<String>();
     if (regMode == "automatic" || regMode == "scheduled" || regMode == "manual") {
@@ -342,7 +558,9 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
         // bascule AUTOMATIQUE est acquittée (elle ne décrit plus l'état
         // courant). Persistée par le saveMqttConfig() de fin de handler.
         clearPhAutoManualTrace();
-        systemLogger.info("Mode régulation pH changé: " + regMode);
+        // B5 (v2.25.0) : l'origine est journalisée sur les DEUX issues du gate.
+        systemLogger.info("Mode régulation pH changé: " + regMode + " (depuis " +
+                          clientIpOf(request) + ")");
       }
     }
   }
@@ -636,15 +854,36 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
     float requestedPhOffset = doc["ph_offset"].as<float>();
     if (!isPhOffsetValid(requestedPhOffset)) {
       xSemaphoreGiveRecursive(configMutex);
-      systemLogger.warning("Offset pH refusé (hors plage) : " + String(requestedPhOffset, 2));
+      // Plage citée à partir des constantes (jamais de littéral dans le texte) :
+      // le message ne peut pas dériver des bornes réellement appliquées.
+      String oMinStr(kPhOffsetMin, 2); oMinStr.replace('.', ',');
+      String oMaxStr(kPhOffsetMax, 2); oMaxStr.replace('.', ',');
+      systemLogger.warning("Offset pH refusé (hors plage " + oMinStr + " à +" + oMaxStr +
+                           ") : " + String(requestedPhOffset, 2) + " depuis " +
+                           clientIpOf(request));
       // Drapeau + message : c'est le lambda de complétion qui répondra (voir le
       // commentaire de g_configErrorMessages). Ne PAS répondre ni purger ici.
       (*g_configErrors)[request] = true;
       g_configErrorMessages[request] =
-        "{\"error\":\"Offset pH invalide : la valeur doit \\u00eatre comprise entre -0.50 et +0.50 pH\"}";
+        String("{\"error\":\"Offset pH hors plage autoris\\u00e9e\",\"message\":\""
+               "Offset pH hors plage autoris\\u00e9e (") + oMinStr + " \\u00e0 +" + oMaxStr +
+        " pH). Au-del\\u00e0, c'est la sonde ou sa calibration EZO qui est en cause, "
+        "pas son implantation.\"}";
       return;
     }
-    mqttCfg.phOffset = requestedPhOffset;
+    // v2.25.0 (B2) — Alignement sur kPhOffsetStep par la MÊME fonction que la
+    // migration NVS (roundPhOffsetToStep, ph_guard_logic.h) : source unique, donc
+    // aucune divergence possible entre une valeur reçue par l'API et une valeur
+    // relue au démarrage. L'écart maximal introduit est un demi-pas (0,05 pH),
+    // sous le bruit résiduel du filtre. Ce n'est PAS un écrêtage silencieux : la
+    // valeur hors plage a déjà été refusée ci-dessus.
+    const float snappedPhOffset = roundPhOffsetToStep(requestedPhOffset);
+    if (fabsf(snappedPhOffset - requestedPhOffset) > 0.001f) {
+      systemLogger.info("Offset pH aligné sur le pas de " + String(kPhOffsetStep, 2) +
+                        " : " + String(requestedPhOffset, 2) + " → " +
+                        String(snappedPhOffset, 2));
+    }
+    mqttCfg.phOffset = snappedPhOffset;
     sensors.refreshPhOffsetCache();  // journalise ancien/nouveau si changement
   }
 
@@ -777,6 +1016,12 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
 
   // Libérer le mutex
   xSemaphoreGiveRecursive(configMutex);
+
+  // v2.25.0 (refonte seuils fixes dérivés) : la garde de cohérence
+  // consigne / offset / plancher est SUPPRIMÉE. Les seuils ne dépendent plus de
+  // l'offset et la marge consigne ↔ seuil bas vaut kPhSafetyMargin (0,50 pH) par
+  // construction, verrouillée par static_assert : il n'y a plus d'impasse
+  // arithmétique possible à détecter au moment de la sauvegarde.
 
   systemLogger.info("Configuration mise à jour via interface web");
   // La réponse sera envoyée par le handler principal
@@ -1045,6 +1290,7 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
 
       if (g_configErrors == nullptr || g_configBuffers == nullptr) {
         g_configErrorMessages.erase(req);  // pas de nœud orphelin sur ce chemin
+        g_configErrorStatus.erase(req);
         req->send(500, "text/plain", "Config context error");
         return;
       }
@@ -1057,14 +1303,20 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
       auto itMsg = g_configErrorMessages.find(req);
       if (itMsg != g_configErrorMessages.end()) errorBody = itMsg->second;
 
+      // Code de refus (v2.25.0) : 400 par défaut, 409 pour le gate pH.
+      int errorStatus = 400;
+      auto itStatus = g_configErrorStatus.find(req);
+      if (itStatus != g_configErrorStatus.end()) errorStatus = itStatus->second;
+
       // Nettoyer les buffers et états
       g_configBuffers->erase(req);
       g_configErrors->erase(req);
       g_configErrorMessages.erase(req);
+      g_configErrorStatus.erase(req);
 
       if (hasError) {
         if (errorBody.length() > 0) {
-          req->send(400, "application/json", errorBody);
+          req->send(errorStatus, "application/json", errorBody);
         } else {
           req->send(400, "text/plain", "Invalid JSON configuration");
         }

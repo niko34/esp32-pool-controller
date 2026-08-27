@@ -21,6 +21,9 @@
 #include <unity.h>
 #include <math.h>  // C header uniquement (libc++ <cmath> indisponible sur l'hôte)
 #include "sensor_filter.h"
+// v2.25.1 : la composition des 4 primitives d'état (resolveFilterState) est
+// testée ICI sur un filtre RÉEL, exactement comme la fait sensors.cpp.
+#include "dosing_logic.h"
 
 // Ordre positionnel de SensorFilter::Config (cf. sensor_filter.h) :
 //   minValue, maxValue, spikeReject, emaAlpha, centralWindow,
@@ -1447,6 +1450,522 @@ void test_rearm_disabled_with_legacy_config(void) {
   TEST_ASSERT_FALSE(f.ready(t));
 }
 
+// =============================================================================
+// V2251 — warmingUp() / stale() sur un filtre RÉEL + composition de l'état
+// =============================================================================
+// Ces prédicats décomposent ready() pour NOMMER la cause d'un refus de dosage.
+// Ils sont testés ici sur un vrai SensorFilter (jamais sur des booléens simulés) :
+// le défaut de production venait précisément d'un discriminant qui « paraissait »
+// juste sur des états simulés mais mentait sur le filtre réel.
+//
+// Réplique EXACTE de la composition faite en production (sensors.cpp) : un SEUL
+// instant pour les quatre primitives.
+static DoseFilterState composeFrom(const SensorFilter& f, uint32_t nowMs) {
+  return resolveFilterState(f.frozen(), f.gateClosed(), f.stale(nowMs),
+                            f.warmingUp());
+}
+
+// --- warmingUp() : remplissage progressif de la fenêtre centrale --------------
+void test_V2251_warmingUp_remplissage_progressif(void) {
+  SensorFilter f(phCfg());
+  uint32_t t = 0;
+  TEST_ASSERT_TRUE_MESSAGE(f.warmingUp(), "filtre neuf => fenetre vide");
+  for (int i = 0; i < 12; ++i) {
+    TEST_ASSERT_TRUE(f.addSample(7.00f, t));
+    TEST_ASSERT_TRUE_MESSAGE(f.warmingUp(), "12 echantillons < fenetre 13");
+    TEST_ASSERT_TRUE_MESSAGE(isnan(f.filtered()),
+        "warmingUp doit coincider avec l'absence d'estimateur exploitable");
+    t += 1000;
+  }
+  TEST_ASSERT_TRUE(f.addSample(7.00f, t));
+  TEST_ASSERT_FALSE_MESSAGE(f.warmingUp(), "13e echantillon => fenetre pleine");
+  TEST_ASSERT_FALSE(isnan(f.filtered()));
+  TEST_ASSERT_TRUE(f.ready(t));
+  // Reste faux ensuite (le buffer circulaire ne redescend jamais sous 13).
+  for (int i = 0; i < 20; ++i) { t += 1000; f.addSample(7.00f, t); }
+  TEST_ASSERT_FALSE(f.warmingUp());
+  TEST_ASSERT_EQUAL(DoseFilterState::Ready, composeFrom(f, t));
+}
+
+// --- stale() : sonde muette depuis le boot, puis franchissement de maxAgeMs ---
+void test_V2251_stale_avant_toute_mesure_puis_franchissement_maxAge(void) {
+  SensorFilter f(phCfg());  // maxAgeMs = 20 000
+  // Aucune mesure jamais acceptée (EZO muet depuis le boot) → PÉRIMÉ dès t=0,
+  // sans s'appuyer sur la sentinelle UINT32_MAX de ageMs().
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(0), "aucune mesure acceptee => perime");
+  TEST_ASSERT_TRUE(f.stale(1));
+  // À ce stade la fenêtre est vide AUSSI : la panne (Stale) doit primer.
+  TEST_ASSERT_TRUE(f.warmingUp());
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Stale, composeFrom(f, 0),
+      "sonde muette au boot : panne annoncee, pas une stabilisation");
+
+  uint32_t t = 0;
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(7.00f, t)); t += 1000; }
+  const uint32_t last = t - 1000;
+  TEST_ASSERT_FALSE(f.stale(last));
+  // Frontière STRICTE, identique à ready() : age == maxAgeMs → encore frais.
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(last + 20000), "age == maxAgeMs => non perime");
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(last + 20001), "age > maxAgeMs => perime");
+  TEST_ASSERT_TRUE_MESSAGE(f.ready(last + 20000),
+      "stale() doit partager la frontiere de ready() : sinon la cause affichee "
+      "contredirait le refus reel");
+  TEST_ASSERT_FALSE(f.ready(last + 20001));
+  TEST_ASSERT_EQUAL(DoseFilterState::Stale, composeFrom(f, last + 20001));
+}
+
+// --- Le piège du projet : la datation suit le dernier échantillon ACCEPTÉ -----
+void test_V2251_stale_date_sur_le_dernier_echantillon_accepte(void) {
+  SensorFilter f(phCfg());
+  uint32_t t = 0;
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(7.00f, t)); t += kDt; }
+  const uint32_t lastAccepted = t - kDt;
+  TEST_ASSERT_FALSE(f.stale(t));
+
+  // La sonde RÉPOND encore (le cache brut reste frais) mais toutes ses lectures
+  // sont rejetées : 6 × 5 s = 30 s > maxAgeMs.
+  for (int i = 0; i < 6; ++i) {
+    TEST_ASSERT_FALSE_MESSAGE(f.addSample(20.0f, t), "hors plage => rejete");
+    t += kDt;
+  }
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(20.0f, f.raw(),
+      "le cache brut parait FRAIS : c'est pourquoi le discriminant porte sur "
+      "l'etat interne du filtre, jamais sur getPhRaw()");
+  TEST_ASSERT_TRUE_MESSAGE(t - lastAccepted > 20000, "precondition: age > maxAgeMs");
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(t), "l'age se compte sur le dernier ACCEPTE");
+  TEST_ASSERT_FALSE_MESSAGE(f.warmingUp(), "la fenetre reste pleine : pas un warmup");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Stale, composeFrom(f, t),
+      "sonde qui debite du garbage => Stale (panne), jamais Warmup");
+}
+
+// --- reset() / rearm() : effets DIFFÉRENTS sur warmingUp() et stale() ---------
+void test_V2251_reset_et_rearm_replacent_en_warmup(void) {
+  SensorFilter f(phCfg());
+  uint32_t t = 0;
+  for (int i = 0; i < 13; ++i) { f.addSample(7.00f, t); t += kDt; }
+  TEST_ASSERT_FALSE(f.warmingUp());
+
+  f.reset();
+  TEST_ASSERT_TRUE_MESSAGE(f.warmingUp(), "reset => fenetre vide");
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(t), "reset efface la derniere mesure acceptee");
+
+  for (int i = 0; i < 13; ++i) { f.addSample(7.00f, t); t += kDt; }
+  TEST_ASSERT_FALSE(f.warmingUp());
+  TEST_ASSERT_FALSE(f.stale(t));
+
+  f.rearm();
+  TEST_ASSERT_TRUE_MESSAGE(f.warmingUp(), "rearm vide l'estimateur => warmup");
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(t),
+      "rearm ne touche PAS la datation : la derniere mesure acceptee reste recente");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Warmup, composeFrom(f, t),
+      "reprise immediate apres rearm : etat normal, aucune panne annoncee");
+}
+
+// --- Porte fermée : l'âge croît PAR CONCEPTION → cause GateClosed, pas Stale --
+void test_V2251_porte_fermee_prime_sur_age_et_warmup(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  openGate(f, t);
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(6.80f, t)); t += kDt; }
+  TEST_ASSERT_EQUAL(DoseFilterState::Ready, composeFrom(f, t));
+
+  // Filtration arrêtée : la coquille ferme la porte, plus rien n'est ingéré.
+  f.setContext(false, true, t);
+  TEST_ASSERT_TRUE(f.gateClosed());
+  TEST_ASSERT_EQUAL(DoseFilterState::GateClosed, composeFrom(f, t));
+
+  // 5 min de stagnation : le filtre devient AUSSI périmé, mais accuser la sonde
+  // d'un blocage voulu par le système serait faux.
+  for (int i = 0; i < 60; ++i) {
+    f.addSample(4.79f, t);
+    t += kDt;
+    f.setContext(false, true, t);
+  }
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(t), "precondition: age > maxAgeMs porte fermee");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::GateClosed, composeFrom(f, t),
+      "porte fermee => GateClosed meme perime (l'age croit par conception)");
+}
+
+// =============================================================================
+// GRÂCE « périmé » au ré-amorçage (revue v2.25.1)
+// =============================================================================
+// Rejoue la séquence de PRODUCTION qui arme la grâce : filtre chaud, arrêt de la
+// filtration (porte fermée), 5 min d'arrêt, retour d'eau puis plancher de gel
+// écoulé → réouverture de porte, donc rearm(). À la sortie, `t` (et la valeur
+// rendue) valent l'instant EXACT de la réouverture, la fenêtre centrale est vide
+// et la dernière mesure ACCEPTÉE date de plus de 6 min.
+static uint32_t reopenGateAfterStop(SensorFilter& f, uint32_t& t) {
+  openGate(f, t);
+  for (int i = 0; i < 13; ++i) { f.addSample(6.80f, t); t += kDt; }
+  f.setContext(false, true, t);           // arrêt filtration → porte fermée
+  t += 300000;                            // 5 min d'arrêt
+  f.setContext(true, true, t);            // retour d'eau : plancher de gel armé
+  t += kSensorFilterGateFloorMs;
+  f.setContext(true, true, t);            // plancher écoulé → réouverture + rearm
+  f.rearmedSinceLastPoll();               // drain du drapeau de journalisation
+  return t;
+}
+
+// --- Réouverture de porte : Warmup, JAMAIS Stale -----------------------------
+// RÉALIGNÉ (revue v2.25.1) : ce test verrouillait auparavant, en caractérisation,
+// le fait que le premier cycle après réouverture affichait Stale — c'était le
+// DÉFAUT signalé en production (« Sonde muette — vérifier la sonde » à chaque
+// démarrage de la filtration et au boot, sur une sonde parfaitement saine). La
+// grâce de ré-amorçage corrige ce point ; le test asserte désormais l'inverse.
+void test_V2251_reouverture_de_porte_annonce_warmup_jamais_stale(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  const uint32_t tReopen = reopenGateAfterStop(f, t);
+  TEST_ASSERT_FALSE(f.gateClosed());
+  TEST_ASSERT_TRUE_MESSAGE(f.warmingUp(), "rearm de reouverture => fenetre vide");
+  TEST_ASSERT_TRUE_MESSAGE(f.ageMs(tReopen) > 20000,
+      "precondition: l'age porte par le filtre est celui d'AVANT la fermeture, "
+      "c'est bien la combinaison warmingUp + age perime qui est en jeu");
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(tReopen),
+      "grace de reamorcage : l'age d'avant la fermeture n'incrimine pas la sonde, "
+      "dont la premiere lecture n'a pas encore eu lieu");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Warmup, composeFrom(f, tReopen),
+      "reouverture de porte sur sonde SAINE => Warmup, jamais Stale");
+
+  // Dès le PREMIER échantillon accepté, la cause reste un warmup normal.
+  TEST_ASSERT_TRUE(f.addSample(8.10f, t));
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Warmup, composeFrom(f, t),
+      "1er echantillon accepte => Warmup (etat normal de reprise)");
+  for (int i = 0; i < 12; ++i) { t += kDt; TEST_ASSERT_TRUE(f.addSample(8.10f, t)); }
+  TEST_ASSERT_EQUAL(DoseFilterState::Ready, composeFrom(f, t));
+}
+
+// --- LE point critique : la grâce EXPIRE, elle ne masque pas une panne --------
+// Sans expiration, une sonde réellement muette au retour de la filtration serait
+// annoncée « en stabilisation » POUR TOUJOURS : la grâce d'observabilité se
+// transformerait en panne silencieuse, soit un défaut plus grave que celui
+// qu'elle corrige. La borne est maxAgeMs (20 s), le retard est intrinsèque.
+void test_V2251_grace_expire_sonde_muette_redevient_stale(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  const uint32_t tReopen = reopenGateAfterStop(f, t);
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(tReopen), "precondition: grace armee");
+
+  // La sonde ne répond plus DU TOUT : chaque cycle de lecture rend NaN, rien
+  // n'est accepté, la grâce n'est donc jamais levée par une mesure.
+  for (uint32_t k = 1; k * kDt < 20000; ++k) {
+    TEST_ASSERT_FALSE(f.addSample(NAN, tReopen + k * kDt));
+  }
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(tReopen + 19999),
+      "grace encore active a maxAgeMs - 1 ms");
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(tReopen + 20000),
+      "grace EXPIREE a maxAgeMs : la sonde muette est de nouveau annoncee en panne");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Stale, composeFrom(f, tReopen + 20000),
+      "la grace ne masque PAS une panne au-dela de maxAgeMs");
+  // Et la panne le reste pendant la suite de l'épisode.
+  TEST_ASSERT_TRUE(f.stale(tReopen + 60000));
+  TEST_ASSERT_EQUAL(DoseFilterState::Stale, composeFrom(f, tReopen + 300000));
+}
+
+// --- Une lecture REJETÉE ne prolonge pas la grâce ----------------------------
+// L'échéance est fixée UNE FOIS au ré-amorçage. Si elle était recalculée à chaque
+// lecture reçue, un EZO débitant du garbage repousserait indéfiniment l'annonce
+// de sa propre panne — le scénario `stale_date_sur_le_dernier_echantillon_accepte`
+// appliqué à la fenêtre de grâce.
+void test_V2251_grace_non_prolongee_par_les_lectures_rejetees(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  const uint32_t tReopen = reopenGateAfterStop(f, t);
+  TEST_ASSERT_FALSE(f.addSample(99.0f, tReopen + 15000));  // hors plage → rejet
+  TEST_ASSERT_FALSE(f.addSample(99.0f, tReopen + 19000));  // hors plage → rejet
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(tReopen + 19999), "echeance inchangee");
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(tReopen + 20000),
+      "echeance TOUJOURS a tReopen + maxAgeMs : une lecture rejetee ne prouve "
+      "rien sur la sante de la mesure et ne prolonge pas la grace");
+}
+
+// --- La grâce est levée par la 1ʳᵉ mesure ACCEPTÉE ---------------------------
+// Dans la chronologie nominale, ce désarmement est indiscernable de l'expiration
+// (la grâce dure exactement maxAgeMs à compter du ré-amorçage, et une mesure
+// acceptée remet l'âge à zéro). Il est en revanche observable au repliement de la
+// comparaison wrap-safe : drapeau désarmé ⇒ aucun ré-armement spontané.
+void test_V2251_grace_levee_par_premiere_mesure_acceptee(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  const uint32_t tReopen = reopenGateAfterStop(f, t);
+  const uint32_t tAccept = tReopen + 5000;
+  TEST_ASSERT_TRUE(f.addSample(8.10f, tAccept));   // 1ʳᵉ mesure acceptée
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, f.ageMs(tAccept),
+      "la datation redevient significative : elle porte sur CETTE mesure");
+  TEST_ASSERT_FALSE(f.stale(tAccept + 20000));
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(tAccept + 20001),
+      "grace levee : la frontiere redevient celle de l'age reel");
+  // Preuve que le DRAPEAU a été désarmé, et pas seulement dépassé : la
+  // comparaison signée (int32_t)(now - until) redeviendrait négative 2^31 ms
+  // plus tard. Drapeau désarmé ⇒ court-circuit ⇒ la panne reste annoncée.
+  const uint32_t farFuture = tReopen + 20000 + 0x80000000UL;
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(farFuture),
+      "drapeau desarme par la mesure acceptee => aucun re-armement au repliement");
+}
+
+// =============================================================================
+// NON-RÉGRESSION — 3ᵉ défaut de repliement du projet (corrigé)
+// =============================================================================
+// PROTECTION 1 sur 2 : l'INTERVALLE FERMÉ. Ne pas « simplifier » en demi-droite.
+//
+// Le défaut, tel qu'il existait : la grâce était datée par une ÉCHÉANCE
+// (`_staleGraceUntilMs`) et stale() la testait par une demi-droite wrap-safe
+// `(int32_t)(nowMs - until) < 0`. Ce prédicat n'est pas monotone en `nowMs` : il
+// est faux juste après l'échéance, puis redevient VRAI 2^31 ms plus tard
+// (24,8 j), parce que la différence non signée repasse dans les négatifs
+// signés. Sur une sonde restée muette, la panne était donc annoncée 20 s, puis
+// MASQUÉE DE NOUVEAU pendant 24,8 jours — uptime parfaitement atteignable, la
+// borne du projet étant le repliement complet de millis() à 49,7 j.
+// Le correctif date la grâce par son INSTANT D'ARMEMENT (`_staleGraceFromMs`) et
+// teste `(nowMs - from) < maxAgeMs` : un intervalle FERMÉ [from, from+maxAgeMs[.
+// Ce prédicat est monotone en `nowMs - from`, jamais en `nowMs` : il ne peut
+// plus se retourner avant le repliement complet de millis().
+//
+// Ce test SUPPOSE LE DRAPEAU ENCORE ARMÉ : aucun appel non-const n'a lieu après
+// le ré-amorçage, donc _expireStaleGrace() n'est jamais atteint. Il valide donc
+// l'intervalle fermé SEUL, indépendamment du désarmement. Réécrire la garde en
+// `(int32_t)(nowMs - (from + maxAgeMs)) < 0` fait mourir ce test, et lui seul.
+void test_V2251_grace_expiree_ne_se_rearme_pas_apres_2exp31_ms(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  const uint32_t tReopen = reopenGateAfterStop(f, t);
+  // Sonde muette : ni setContext() ni addSample() après le rearm() → le drapeau
+  // reste ARMÉ (from = tReopen). Seule la forme du prédicat protège ici.
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(tReopen + 20000), "precondition: grace expiree");
+
+  const uint32_t wrapPoint = tReopen + 20000 + 0x80000000UL;  // +24,8 j
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(wrapPoint),
+      "intervalle FERME : meme drapeau arme, la grace ne se re-arme pas a 2^31 ms "
+      "(une demi-droite signee, elle, redevenait vraie => panne masquee 24,8 j)");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Stale, composeFrom(f, wrapPoint),
+      "la sonde morte reste annoncee morte, pas 'en stabilisation'");
+  // Et tout au long des 24,8 j : la grâce ne rouvre à AUCUN instant intermédiaire.
+  const uint32_t probes[4] = {0x20000000UL, 0x40000000UL, 0x60000000UL, 0x7FFFFFFFUL};
+  for (int i = 0; i < 4; ++i) {
+    TEST_ASSERT_TRUE_MESSAGE(f.stale(tReopen + 20000 + probes[i]),
+        "aucune fenetre de re-armement entre l'expiration et 2^31 ms");
+  }
+  // ready() ne consulte PAS la grâce : il reste fail-closed sur toute la plage.
+  TEST_ASSERT_FALSE_MESSAGE(f.ready(wrapPoint),
+      "ready() inchange par le renommage de champ : aucun couplage a la grace");
+}
+
+// --- PROTECTION 2 sur 2 : le DÉSARMEMENT EFFECTIF du drapeau -----------------
+// Redondante par conception avec l'intervalle fermé ci-dessus, et couverte à
+// part pour cette raison : un test qui ne validerait que la conjonction des deux
+// laisserait supprimer l'une d'elles sans rien casser.
+// L'expiration ne peut PAS être appliquée dans stale(), qui est const : elle est
+// faite par _expireStaleGrace(), appelé en tête de setContext() ET d'addSample().
+// Le drapeau réellement remis à faux n'est observable que par ce qu'il empêche :
+// au repliement COMPLET de millis() (49,7 j), l'écoulé `nowMs - from` redevient
+// petit et un drapeau resté armé rentrerait de nouveau dans la grâce. Drapeau
+// désarmé (from = 0, armed = false) ⇒ court-circuit ⇒ la panne reste annoncée.
+//
+// Chemin testé ici : setContext() SEUL, sans aucun addSample(). C'est le cas du
+// bus I²C mort — la coquille appelle setContext() inconditionnellement toutes les
+// 5 s (sensors.cpp, _updateFilterGates() avant toute tentative de lecture EZO),
+// et c'est ce qui garantit le désarmement même quand plus aucune lecture n'est
+// tentée. Supprimer l'appel en tête de setContext() fait mourir ce test.
+void test_V2251_grace_desarmee_par_setContext_meme_sans_lecture(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  const uint32_t tReopen = reopenGateAfterStop(f, t);
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(tReopen), "precondition: grace armee");
+
+  // Cycles de coquille sans la moindre lecture (bus mort). L'eau est déjà
+  // présente et le plancher de gel écoulé → aucun nouveau rearm() n'est armé.
+  for (uint32_t k = 1; k * kDt < 20000; ++k) {
+    f.setContext(true, true, tReopen + k * kDt);
+    TEST_ASSERT_FALSE_MESSAGE(f.gateClosed(), "precondition: porte reste ouverte");
+  }
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(tReopen + 19999),
+      "desarmement NON PREMATURE : la grace couvre bien [from, from+maxAgeMs[");
+
+  f.setContext(true, true, tReopen + 20000);   // écoulé == maxAgeMs → désarmement
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(tReopen + 20000),
+      "la meme frontiere que stale() : ecoule == maxAgeMs => hors grace");
+
+  // 49,7 j plus tard, millis() repasse par les mêmes valeurs : c'est le seul
+  // instant où un drapeau resté armé pourrait re-masquer la panne.
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(tReopen + 5000),
+      "drapeau REELLEMENT desarme => aucun re-armement au repliement de millis()");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Stale, composeFrom(f, tReopen + 5000),
+      "sonde muette depuis 49,7 j : toujours annoncee en panne");
+  TEST_ASSERT_FALSE_MESSAGE(f.ready(tReopen + 5000), "et toujours fail-closed");
+}
+
+// --- Même désarmement par l'AUTRE chemin non-const : addSample() -------------
+// Second point d'entrée de _expireStaleGrace(), pour un appelant qui n'utiliserait
+// pas setContext() (tests natifs antérieurs à v2.20.3, porte ouverte par défaut).
+// Ici la sonde RÉPOND mais ne débite que du garbage : rien n'est accepté, la
+// grâce n'est donc jamais levée par une mesure valide — seule l'expiration la
+// lève. Supprimer l'appel en tête d'addSample() fait mourir ce test.
+void test_V2251_grace_desarmee_par_addSample_sonde_muette(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  const uint32_t tReopen = reopenGateAfterStop(f, t);
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(tReopen), "precondition: grace armee");
+
+  for (uint32_t k = 1; k * kDt <= 20000; ++k) {
+    TEST_ASSERT_FALSE(f.addSample(NAN, tReopen + k * kDt));  // k*kDt == 20000 → désarme
+  }
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(tReopen + 20000), "precondition: grace expiree");
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(tReopen + 5000),
+      "drapeau desarme par addSample() => aucun re-armement au repliement (49,7 j)");
+  TEST_ASSERT_EQUAL(DoseFilterState::Stale, composeFrom(f, tReopen + 5000));
+}
+
+// --- Le repliement RÉEL de millis() PENDANT la grâce -------------------------
+// Le cas que les deux tests ci-dessus n'exercent pas : la grâce est armée à
+// ~49,7 j d'uptime et millis() se replie AU MILIEU de sa fenêtre. C'est le seul
+// endroit où l'écoulé `nowMs - from` traverse la discontinuité pour de bon.
+// L'arithmétique non signée le gère (comme ageMs()) — encore faut-il que
+// personne ne « corrige » un jour ces soustractions en int32_t/int64_t.
+void test_V2251_grace_traverse_le_repliement_de_millis(void) {
+  // Calibrage de la séquence pour placer la réouverture 5 s AVANT le repliement.
+  uint32_t span = 0;
+  { SensorFilter probe(phCfgRearm()); span = reopenGateAfterStop(probe, span); }
+
+  SensorFilter f(phCfgRearm());
+  uint32_t t = (uint32_t)(0u - span - 5000u);
+  const uint32_t tReopen = reopenGateAfterStop(f, t);
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE((uint32_t)(0u - 5000u), tReopen,
+      "precondition: rearm exactement 5 s avant le repliement de millis()");
+
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(tReopen + 4999), "grace active avant le repliement");
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(tReopen + 5000),
+      "millis() vient de se replier a 0 : la grace reste active, elle se compte "
+      "en ECOULE depuis l'armement (soustraction non signee)");
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(tReopen + 19999), "et jusqu'a maxAgeMs - 1 ms");
+  for (uint32_t k = 1; k * kDt <= 20000; ++k) f.setContext(true, true, tReopen + k * kDt);
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(tReopen + 20000),
+      "expiration a la meme frontiere de part et d'autre du repliement");
+  TEST_ASSERT_EQUAL(DoseFilterState::Stale, composeFrom(f, tReopen + 20000));
+}
+
+// --- reset() n'arme RIEN : sonde muette au boot annoncée sans délai ----------
+// reset() est le « gros marteau » (boot, recalibration, reprise manuelle) : rien
+// n'y est imputable à un ré-amorçage, donc aucune temporisation n'est justifiée.
+// Ce test couvre en particulier l'héritage : un reset() APRÈS un rearm() ne doit
+// pas conserver la grâce en cours.
+void test_V2251_reset_apres_rearm_annonce_stale_immediatement(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  const uint32_t tReopen = reopenGateAfterStop(f, t);
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(tReopen), "precondition: grace armee par rearm()");
+
+  f.reset();
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(tReopen),
+      "reset() n'herite JAMAIS de la grace : sonde muette annoncee sans delai");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Stale, composeFrom(f, tReopen),
+      "boot / recalibration : une sonde qui ne repond pas est annoncee tout de suite");
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(tReopen + 1), "et reset() n'arme rien ensuite");
+  TEST_ASSERT_TRUE(f.stale(tReopen + 20000));
+}
+
+// --- La grâce n'ouvre JAMAIS le dosage, et ne falsifie pas l'âge -------------
+// Propriété de sécurité : la grâce est un dispositif d'OBSERVABILITÉ pur. Elle ne
+// doit toucher ni ageMs() (journal, /debug/sensor_filter_state) ni ready() (garde
+// d'âge du dosage). Vérification par le COMPORTEMENT, l'affirmation « ready() est
+// inchangé au bit près » n'étant pas prise pour acquise.
+void test_V2251_grace_nouvre_jamais_le_dosage_ni_ne_falsifie_lage(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  const uint32_t tReopen = reopenGateAfterStop(f, t);
+  // (1) Datation intacte : rearm() ne fabrique pas de mesure.
+  TEST_ASSERT_TRUE_MESSAGE(f.ageMs(tReopen) >= 300000,
+      "rearm() ne redate NI _lastValidMs NI _hasValid : l'age reste honnete");
+  // (2) Aucun dosage possible pendant TOUTE la fenêtre de grâce.
+  const uint32_t probes[5] = {0, 1, 10000, 19999, 20000};
+  for (int i = 0; i < 5; ++i) {
+    TEST_ASSERT_FALSE_MESSAGE(f.ready(tReopen + probes[i]),
+        "grace d'observabilite => fail-closed maintenu (fenetre centrale vide)");
+  }
+  // (3) Frontière d'âge de ready() inchangée après un ré-amorçage : une fois la
+  // fenêtre reconstituée, elle se compte sur la dernière mesure ACCEPTÉE, avec
+  // la même inégalité stricte que sans ré-amorçage (cf. test maxAge ci-dessus).
+  for (int i = 0; i < 13; ++i) f.addSample(8.10f, tReopen + 5000 + (uint32_t)i * kDt);
+  const uint32_t last = tReopen + 5000 + 12 * kDt;
+  TEST_ASSERT_TRUE(f.ready(last));
+  TEST_ASSERT_TRUE_MESSAGE(f.ready(last + 20000), "age == maxAgeMs => encore pret");
+  TEST_ASSERT_FALSE_MESSAGE(f.ready(last + 20001), "age > maxAgeMs => non pret");
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(last + 20001),
+      "hors grace, stale() et ready() partagent toujours la meme frontiere");
+}
+
+// --- L'autre chemin de ré-amorçage : la SORTIE DE SECOURS --------------------
+// Elle arme la même grâce, et c'est voulu : la sonde RÉPOND (ses lectures sont
+// rejetées comme spikes par une médiane périmée), l'accuser d'être muette serait
+// faux. Le contrat d'expiration est identique.
+void test_V2251_sortie_de_secours_arme_aussi_la_grace_et_expire(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  primeAt479(f, t);
+  const uint32_t lastAccepted = t - kDt;
+  for (int i = 0; i < 11; ++i) { TEST_ASSERT_FALSE(f.addSample(6.96f, t)); t += kDt; }
+  const uint32_t tRearm = t;
+  TEST_ASSERT_FALSE(f.addSample(6.96f, tRearm));   // 12ᵉ rejet cohérent → rearm
+  TEST_ASSERT_TRUE_MESSAGE(f.rearmedSinceLastPoll(), "precondition: sortie de secours");
+  TEST_ASSERT_TRUE_MESSAGE(tRearm - lastAccepted > 20000,
+      "precondition: 12 cycles de rejets => age deja > maxAgeMs");
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(tRearm),
+      "echelon legitime : la sonde REPOND, l'age d'avant l'echelon ne l'incrimine pas");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Warmup, composeFrom(f, tRearm),
+      "sortie de secours => Warmup (re-convergence), jamais Stale");
+  TEST_ASSERT_FALSE(f.stale(tRearm + 19999));
+  TEST_ASSERT_TRUE_MESSAGE(f.stale(tRearm + 20000),
+      "meme borne d'expiration sur ce chemin de reamorcage");
+  TEST_ASSERT_EQUAL(DoseFilterState::Stale, composeFrom(f, tRearm + 20000));
+}
+
+// --- Sonde FIGÉE : elle répond, donc elle paraît saine ----------------------
+// Le scénario par lequel le gate a réfuté le premier discriminant proposé.
+void test_V2251_sonde_figee_prime_sur_fenetre_pleine_et_fraiche(void) {
+  SensorFilter f(frozenPhCfg());
+  uint32_t t = 0;
+  for (int i = 0; i < 30; ++i) { TEST_ASSERT_TRUE(f.addSample(7.00f, t)); t += 1000; }
+  const uint32_t now = t - 1000;
+  TEST_ASSERT_TRUE(f.frozen());
+  TEST_ASSERT_FALSE_MESSAGE(f.warmingUp(), "precondition: la sonde figee REPOND (fenetre pleine)");
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(now), "precondition: lecture FRAICHE");
+  TEST_ASSERT_FALSE(f.gateClosed());
+  TEST_ASSERT_FALSE(f.ready(now));
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Frozen, composeFrom(f, now),
+      "sonde figee et fraiche => Frozen, jamais Ready");
+}
+
+// --- Figé + warmup SIMULTANÉS sur un filtre réel (via rearm) -----------------
+// Combinaison réellement atteignable en production : reprise après purge sur une
+// sonde figée. rearm() ne blanchit PAS le détecteur figé — l'état composé doit
+// rester Frozen, JAMAIS Warmup, sinon une panne matérielle s'afficherait comme
+// une stabilisation normale (le défaut corrigé en v2.25.1).
+void test_V2251_figee_puis_rearm_reste_frozen_pas_warmup(void) {
+  SensorFilter f(frozenPhCfg());
+  uint32_t t = 0;
+  for (int i = 0; i < 30; ++i) { f.addSample(7.00f, t); t += 1000; }
+  TEST_ASSERT_TRUE(f.frozen());
+  f.rearm();
+  TEST_ASSERT_TRUE_MESSAGE(f.warmingUp(), "precondition: rearm vide la fenetre");
+  TEST_ASSERT_TRUE_MESSAGE(f.frozen(), "rearm ne blanchit PAS une sonde figee");
+  const uint32_t now = t - 1000;
+  TEST_ASSERT_FALSE_MESSAGE(f.stale(now), "precondition: derniere mesure recente");
+  TEST_ASSERT_EQUAL_MESSAGE(DoseFilterState::Frozen, composeFrom(f, now),
+      "figee + warmup simultanes => Frozen (priorite pannes d'abord)");
+}
+
+// --- Sentinelle 250 : code des gardes de sécurité pH/ORP ---------------------
+// Servie telle quelle sur /data + WS et interprétée par la page (constante
+// DOSE_BLOCK_CODE_GUARD dans data/app.js). Elle ne doit JAMAIS collisionner avec
+// une valeur de DoseRefusal, sinon un refus de garde s'afficherait comme une
+// cause de filtre. Verrouillée côté firmware par un static_assert de
+// pump_controller.cpp, qui ne compile PAS en natif : on la reverrouille ici
+// (cette suite voit constants.h ET dosing_logic.h ; la suite dosing, non).
+void test_V2251_sentinelle_garde_250_sans_collision(void) {
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(250, kDoseBlockedCodeGuard,
+      "valeur figee, dupliquee dans data/app.js (DOSE_BLOCK_CODE_GUARD)");
+  TEST_ASSERT_TRUE_MESSAGE((int)DoseRefusal::FilterGateClosed < kDoseBlockedCodeGuard,
+      "collision sentinelle / DoseRefusal : relever la sentinelle");
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   // Verrou constantes.
@@ -1525,5 +2044,27 @@ int main(int, char **) {
   RUN_TEST(test_two_consecutive_gaps_deny_rearm);                      // 4d
   RUN_TEST(test_accepted_sample_resets_reject_series);                 // 4e
   RUN_TEST(test_gap_does_not_advance_spike_count);                     // 4f
+  // V2251 — warmingUp/stale sur filtre réel + composition de l'état de filtre.
+  RUN_TEST(test_V2251_warmingUp_remplissage_progressif);
+  RUN_TEST(test_V2251_stale_avant_toute_mesure_puis_franchissement_maxAge);
+  RUN_TEST(test_V2251_stale_date_sur_le_dernier_echantillon_accepte);
+  RUN_TEST(test_V2251_reset_et_rearm_replacent_en_warmup);
+  RUN_TEST(test_V2251_porte_fermee_prime_sur_age_et_warmup);
+  RUN_TEST(test_V2251_reouverture_de_porte_annonce_warmup_jamais_stale);
+  // Grâce « périmé » au ré-amorçage (revue v2.25.1).
+  RUN_TEST(test_V2251_grace_expire_sonde_muette_redevient_stale);
+  RUN_TEST(test_V2251_grace_non_prolongee_par_les_lectures_rejetees);
+  RUN_TEST(test_V2251_grace_levee_par_premiere_mesure_acceptee);
+  // Non-régression du 3ᵉ défaut de repliement : les DEUX protections, séparément.
+  RUN_TEST(test_V2251_grace_expiree_ne_se_rearme_pas_apres_2exp31_ms);       // intervalle fermé
+  RUN_TEST(test_V2251_grace_desarmee_par_setContext_meme_sans_lecture);      // désarmement (bus mort)
+  RUN_TEST(test_V2251_grace_desarmee_par_addSample_sonde_muette);            // désarmement (lectures rejetées)
+  RUN_TEST(test_V2251_grace_traverse_le_repliement_de_millis);               // repliement réel à 49,7 j
+  RUN_TEST(test_V2251_reset_apres_rearm_annonce_stale_immediatement);
+  RUN_TEST(test_V2251_grace_nouvre_jamais_le_dosage_ni_ne_falsifie_lage);
+  RUN_TEST(test_V2251_sortie_de_secours_arme_aussi_la_grace_et_expire);
+  RUN_TEST(test_V2251_sonde_figee_prime_sur_fenetre_pleine_et_fraiche);
+  RUN_TEST(test_V2251_figee_puis_rearm_reste_frozen_pas_warmup);
+  RUN_TEST(test_V2251_sentinelle_garde_250_sans_collision);
   return UNITY_END();
 }

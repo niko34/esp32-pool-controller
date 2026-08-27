@@ -6,18 +6,54 @@
 #include "filtration.h"
 #include "dosing_logic.h"
 #include "schedule_logic.h"
-#include "mqtt_manager.h"  // feature-067 : alertes MQTT des planchers pH bruts
+#include "mqtt_manager.h"  // feature-067 : alertes MQTT des gardes pH
 #include "measure_validity.h"  // v2.20.3 (C6) : distinguer purge en cours et capteur muet
+#include "ph_guard_logic.h"    // v2.25.0 : gardes pH + diagnostic sonde (logique pure)
+#include "ph_offset.h"         // v2.25.0 : applyPhOffset() — pH corrigé des gardes
 #include <esp_task_wdt.h>
+#include <string.h>  // strlcpy / strnlen / memcpy — tampon de cause de refus (R2)
 #include <time.h>
 
 PumpControllerClass PumpController;
 
 // pool-chemistry (feature-036) : verrou de complétude de la table énum→String FR
-// du switch de canDose(). BurstPer15Min DOIT rester la dernière valeur de
-// DoseRefusal ; si l'énum évolue, ce static_assert force la relecture du mapping.
-static_assert(static_cast<int>(DoseRefusal::BurstPer15Min) == 14,
-              "DoseRefusal modifié : mettre à jour le switch énum→String FR de canDose()");
+// du switch de canDose().
+//
+// v2.25.1 — le verrou porte désormais sur CHAQUE valeur, plus seulement sur la
+// dernière : depuis que les codes sont SÉRIALISÉS vers /data et le WebSocket
+// (`ph/orpDoseBlockedCode`), une insertion au MILIEU de l'énum décalerait la
+// table de traduction du client et lui ferait afficher une AUTRE cause — c'est
+// exactement la classe de défaut corrigée par cette version. Un tel décalage
+// compile sans bruit ; seuls ces static_assert l'attrapent.
+// Règle : ne jamais renuméroter, ne jamais insérer au milieu, toujours ajouter
+// à la fin (et ajouter ici l'assertion correspondante + le case du switch).
+static_assert(static_cast<int>(DoseRefusal::None) == 0, "DoseRefusal::None renuméroté");
+static_assert(static_cast<int>(DoseRefusal::WatchdogInactive) == 1, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::FiltrationOff) == 2, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::ReadingNaN) == 3, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::FilterNotReady) == 4, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::FilterUnstable) == 5, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::CalibrationInsufficient) == 6, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::StabilizationActive) == 7, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::MixingActive) == 8, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::ModeNotAutomatic) == 9, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::DailyLimit) == 10, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::HourlyLimit) == 11, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::CyclesPerDay) == 12, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::BurstPerMinute) == 13, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::BurstPer15Min) == 14, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::ReadingNaNWarmup) == 15, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::ReadingNaNFrozen) == 16, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::ReadingNaNStale) == 17, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::ReadingNaNGateClosed) == 18, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::FilterWarmup) == 19, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::FilterFrozen) == 20, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::FilterStale) == 21, "DoseRefusal renuméroté");
+static_assert(static_cast<int>(DoseRefusal::FilterGateClosed) == 22, "DoseRefusal renuméroté");
+// La sentinelle « cause posée par une garde » ne doit jamais collisionner avec
+// une valeur de l'énum (elle serait traduite en cause de canDose côté client).
+static_assert(static_cast<int>(DoseRefusal::FilterGateClosed) < kDoseBlockedCodeGuard,
+              "kDoseBlockedCodeGuard collisionne avec DoseRefusal : relever la sentinelle");
 
 // Définitions des membres statiques
 bool PumpControllerClass::_dailyLoaded = false;
@@ -367,85 +403,462 @@ void PumpControllerClass::requestManualCycleRecord(int pumpIndex) {
   _manualCycleStartPending[pumpIndex].fetch_add(1);
 }
 
+// =============================================================================
+// R2 (revue v2.25.0) — tampon FIXE de la cause de refus
+// =============================================================================
+// Tronque `dst` (déjà écrit, NUL-terminé) au dernier caractère UTF-8 COMPLET.
+// Les messages sont en français : couper à l'octet laisserait une séquence
+// multi-octets incomplète, donc un JSON non décodable par le client — le
+// symptôme exact déjà rencontré sur les charges MQTT (cf. publishAlert).
+// Ne fait rien si la chaîne se termine sur un caractère complet.
+static void clampReasonUtf8(char* dst) {
+  size_t len = strlen(dst);
+  if (len == 0) return;
+  // Reculer jusqu'au premier octet du DERNIER caractère (les octets de
+  // continuation valent 10xxxxxx).
+  size_t start = len - 1;
+  while (start > 0 && (static_cast<unsigned char>(dst[start]) & 0xC0) == 0x80) start--;
+  const unsigned char lead = static_cast<unsigned char>(dst[start]);
+  size_t expected;
+  if ((lead & 0x80) == 0x00)      expected = 1;   // ASCII
+  else if ((lead & 0xE0) == 0xC0) expected = 2;
+  else if ((lead & 0xF0) == 0xE0) expected = 3;
+  else if ((lead & 0xF8) == 0xF0) expected = 4;
+  else { dst[start] = '\0'; return; }  // octet de tête invalide (lecture déchirée)
+  if (start + expected > len) dst[start] = '\0';  // séquence tronquée : on la retire
+}
+
+// Écriture BORNÉE du tampon de cause (seul point d'écriture). strlcpy garantit la
+// terminaison ; clampReasonUtf8 rattrape une éventuelle coupe multi-octets.
+void PumpControllerClass::storeRefusalCause(int pumpIndex, const char* cause) {
+  if (pumpIndex < 0 || pumpIndex > 1) return;
+  if (cause == nullptr) { _lastRefusalCause[pumpIndex][0] = '\0'; return; }
+  strlcpy(_lastRefusalCause[pumpIndex], cause, kDoseBlockedReasonMaxLen);
+  clampReasonUtf8(_lastRefusalCause[pumpIndex]);
+}
+
+// Copie bornée vers le tampon de l'APPELANT (contexte async_tcp autorisé).
+// La lecture de la source est plafonnée à sa capacité (strnlen) : une lecture
+// déchirée qui n'aurait pas encore vu l'octet NUL ne peut pas sortir du tampon.
+// Reste possible sur une lecture déchirée : une jonction ancien/nouveau message
+// au MILIEU de la chaîne. Sans conséquence — le décodeur du client remplace
+// l'octet douteux (U+FFFD) sur un affichage qui sera corrigé au rafraîchissement
+// suivant ; aucune mémoire libérée n'est lue, c'est tout l'objet du tampon fixe.
+static void copyReasonBounded(const char* src, char* out, size_t outSize) {
+  if (out == nullptr || outSize == 0) return;
+  const size_t srcLen = strnlen(src, kDoseBlockedReasonMaxLen);
+  size_t n = (srcLen < outSize - 1) ? srcLen : outSize - 1;
+  memcpy(out, src, n);
+  out[n] = '\0';
+  clampReasonUtf8(out);
+}
+
+void PumpControllerClass::copyPhDoseBlockedReason(char* out, size_t outSize) const {
+  copyReasonBounded(_lastRefusalCause[0], out, outSize);
+}
+
+void PumpControllerClass::copyOrpDoseBlockedReason(char* out, size_t outSize) const {
+  copyReasonBounded(_lastRefusalCause[1], out, outSize);
+}
+
 // Logge la cause de refus uniquement à la transition (1 seule entrée par changement
 // de cause). Évite le spam quand canDose() est appelé chaque cycle de update().
-void PumpControllerClass::logRefusalOnce(int pumpIndex, const String& cause) {
+void PumpControllerClass::logRefusalOnce(int pumpIndex, const String& cause,
+                                         DoseRefusal code) {
   if (pumpIndex < 0 || pumpIndex > 1) return;
-  if (_lastRefusalCause[pumpIndex] != cause) {
+  const uint8_t newCode = static_cast<uint8_t>(code);
+  // Code posé AVANT le texte : un lecteur async qui verrait le nouveau texte
+  // avec l'ancien code afficherait une cause périmée ; dans l'ordre inverse il
+  // voit au pire le nouveau code avec l'ancien texte, et le code fait foi.
+  _lastRefusalCode[pumpIndex] = newCode;
+
+  // v2.25.1 — PANNES de mesure : le filtre n'est pas « en train de chauffer », la
+  // sonde ne répond plus (figée, ou plus aucune mesure acceptée depuis maxAgeMs).
+  // La régulation est à l'arrêt et rien ne le signale hors de l'interface web.
+  const bool sensorFault = (code == DoseRefusal::FilterFrozen ||
+                            code == DoseRefusal::FilterStale ||
+                            code == DoseRefusal::ReadingNaNFrozen ||
+                            code == DoseRefusal::ReadingNaNStale);
+  const uint32_t nowMs = (uint32_t)millis();
+  // ÉPISODE = période de panne CONTINUE, sans considération de la NATURE de la
+  // panne. La fenêtre n'est donc redatée que sur la transition non-panne → panne
+  // (revue : elle l'était sur tout changement de code, y compris panne → panne).
+  // Un EZO agonisant alterne FilterFrozen ↔ FilterStale par phases plus courtes
+  // que la temporisation : la date de début était repoussée à chaque bascule et le
+  // droit d'alerter réarmé → le `warning` et l'alerte MQTT ne partaient JAMAIS
+  // alors que la régulation était à l'arrêt. Le correctif anti-panne-silencieuse
+  // introduisait donc une panne silencieuse.
+  const bool wasFault = _sensorFaultActive[pumpIndex];
+  if (sensorFault && !wasFault) {
+    _sensorFaultSinceMs[pumpIndex] = nowMs;   // début du nouvel épisode
+    _sensorFaultAlerted[pumpIndex] = false;   // droit d'alerter réarmé (1 fois / épisode)
+  } else if (!sensorFault) {
+    // Le refus courant n'est plus une panne de mesure : l'épisode est clos. Une
+    // panne ultérieure devra ré-attendre la temporisation complète.
+    _sensorFaultSinceMs[pumpIndex] = 0;
+    _sensorFaultAlerted[pumpIndex] = false;
+  }
+  // Cas restant (sensorFault && wasFault) : panne qui CHANGE DE NATURE pendant
+  // l'épisode → on conserve la date de début ET `_sensorFaultAlerted`, donc
+  // l'alerte part bien à 60 s de panne cumulée continue, et une seule fois.
+  _sensorFaultActive[pumpIndex] = sensorFault;
+
+  // La comparaison porte sur la forme RÉELLEMENT stockable (bornée + clampée) :
+  // comparer le texte intégral à un tampon tronqué rendrait la transition
+  // toujours vraie → une entrée de journal à CHAQUE tick (spam) pour une cause
+  // inchangée. Tampon de pile (loopTask), aucune allocation.
+  char next[kDoseBlockedReasonMaxLen];
+  strlcpy(next, cause.c_str(), sizeof(next));
+  clampReasonUtf8(next);
+  if (strcmp(_lastRefusalCause[pumpIndex], next) != 0) {
     systemLogger.info(String("[Dosage ") + (pumpIndex == 0 ? "pH" : "ORP") +
                       "] Refus : " + cause);
-    _lastRefusalCause[pumpIndex] = cause;
+    strlcpy(_lastRefusalCause[pumpIndex], next, kDoseBlockedReasonMaxLen);
   }
+
+  // Escalade `warning` + alerte MQTT dédiée, UNE SEULE FOIS par épisode, après
+  // kDoseSensorFaultAlertDelayMs de panne CONTINUE (la nature de la panne peut
+  // varier à l'intérieur de l'épisode, cf. ci-dessus). Le délai écarte le
+  // transitoire de ré-amorçage du filtre à la reprise de circulation, où l'âge de
+  // la dernière mesure acceptée est encore celui d'avant la coupure.
+  // Aucune allocation hors de cette branche (franchie au plus une fois par
+  // épisode) : arithmétique non signée, wrap millis() sans effet.
+  if (sensorFault && !_sensorFaultAlerted[pumpIndex] &&
+      (nowMs - _sensorFaultSinceMs[pumpIndex]) >= kDoseSensorFaultAlertDelayMs) {
+    const String chem = (pumpIndex == 0) ? "pH" : "ORP";
+    const String msg = "[Dosage " + chem + "] Refus : " + cause +
+                       " — régulation " + chem +
+                       " à l'arrêt depuis " +
+                       String((nowMs - _sensorFaultSinceMs[pumpIndex]) / 1000UL) +
+                       " s : vérifier la sonde";
+    // UNE SEULE trace de journal (revue) : publishAlert() journalise déjà le
+    // message en `warning` (« Alerte: <type> - <message> »), y compris quand MQTT
+    // est déconnecté. Un systemLogger.warning(msg) ici produisait deux lignes
+    // quasi identiques par épisode dans une partition `history` de 64 Ko.
+    mqttManager.publishAlert(
+        (pumpIndex == 0) ? "ph_dose_sensor_fault" : "orp_dose_sensor_fault", msg);
+    _sensorFaultAlerted[pumpIndex] = true;
+  }
+  // D1 : canDose() prend la propriété de la chaîne — inconditionnellement, même
+  // quand le texte est inchangé : c'est bien lui qui refuse MAINTENANT, et la
+  // relâche d'une garde ne doit pas effacer ce refus. Simple écriture d'un octet.
+  _refusalCauseFromGuard[pumpIndex] = false;
 }
 
 void PumpControllerClass::resetRefusalLogState(int pumpIndex) {
   if (pumpIndex < 0 || pumpIndex > 1) return;
-  _lastRefusalCause[pumpIndex] = "";
+  _lastRefusalCause[pumpIndex][0] = '\0';
+  _lastRefusalCode[pumpIndex] = kDoseBlockedCodeNone;  // v2.25.1 : code ⇔ texte
+  // Dosage de nouveau autorisé : l'épisode de panne (s'il y en avait un) est
+  // clos — le prochain devra ré-attendre la temporisation avant d'alerter.
+  _sensorFaultSinceMs[pumpIndex] = 0;
+  _sensorFaultAlerted[pumpIndex] = false;
+  _sensorFaultActive[pumpIndex] = false;
+  _refusalCauseFromGuard[pumpIndex] = false;
+}
+
+// D1 — pose une cause de refus au nom d'une GARDE de sécurité (surveillance
+// pH/ORP ou escalade). Prend la propriété de la chaîne : seule une garde pourra
+// l'effacer, et uniquement à sa relâche.
+void PumpControllerClass::setGuardRefusalCause(int pumpIndex, const String& cause) {
+  if (pumpIndex < 0 || pumpIndex > 1) return;
+  // v2.25.1 : sentinelle « cause de garde » — ces messages portent des valeurs
+  // runtime (seuils, mesures) et ne sont pas énumérables ; le client les affiche
+  // via le TEXTE. Posée AVANT le texte (cf. logRefusalOnce) pour qu'un lecteur
+  // async ne puisse jamais associer un texte de garde à un code de canDose().
+  _lastRefusalCode[pumpIndex] = kDoseBlockedCodeGuard;
+  storeRefusalCause(pumpIndex, cause.c_str());
+  _refusalCauseFromGuard[pumpIndex] = true;
+}
+
+// D1 — efface la cause SI une garde en est propriétaire. Appelée depuis les
+// branches de RELÂCHE des deux surveillances, qui tournent à chaque tick hors de
+// toute conjonction : c'est ce qui garantit que la chaîne reflète l'état COURANT
+// même en mode `manual`, où canDose() n'est jamais appelé et n'effaçait donc
+// jamais rien.
+// Un refus posé par canDose() (filtration arrêtée, quota, anti-rafale…) n'est
+// JAMAIS touché ici : il décrit un blocage réel dont la garde ne sait rien.
+// No-op strict hors propriété garde → aucune écriture de String, donc aucune
+// allocation récurrente dans le chemin du tick.
+void PumpControllerClass::clearGuardRefusalCause(int pumpIndex) {
+  if (pumpIndex < 0 || pumpIndex > 1) return;
+  if (!_refusalCauseFromGuard[pumpIndex]) return;
+  _refusalCauseFromGuard[pumpIndex] = false;
+  _lastRefusalCause[pumpIndex][0] = '\0';
+  _lastRefusalCode[pumpIndex] = kDoseBlockedCodeNone;  // v2.25.1 : code ⇔ texte
 }
 
 // =============================================================================
-// feature-067 — Filets de sécurité sur le pH BRUT (conditions pool-chemistry)
+// Gardes de sécurité pH (conditions pool-chemistry) — refonte v2.25.0
 // =============================================================================
-// L'offset logiciel pH (feature-067) déplace l'entrée de la régulation : un
-// offset erroné fait réguler le bassin à un pH réel différent de la consigne.
-// Ces deux gardes travaillent donc sur sensors.getPhFilteredRaw() — la mesure
-// capteur SANS offset — et restent valides même si l'offset est faux.
+// Refonte « seuils fixes dérivés » : le plancher CONTINU asservi à l'offset est
+// abandonné. Il était juste, mais sa complexité (formule asservie, garde de
+// cohérence, marge structurelle) a elle-même désactivé la régulation en
+// production le 25/08/2026. Les seuils sont désormais FIXES et dérivés de la
+// plage de consigne (cf. constants.h, source unique).
+//
+// DEUX RÉFÉRENTIELS, choisis délibérément seuil par seuil :
+//   - les seuils CHIMIQUES portent sur le pH CORRIGÉ (brut + offset), parce que
+//     l'offset est une correction de MESURE : une fois appliqué, la valeur EST le
+//     pH de l'eau, et un seuil chimique doit porter sur le pH réel ;
+//   - les deux BUTÉES de dernier recours portent sur le pH BRUT, pour rester
+//     valides quand l'offset lui-même est faux (cf. ph_offset.h / ADR-0039).
+//
+// Le pH corrigé est RECALCULÉ ici, applyPhOffset(getPhFilteredRaw(), offset), et
+// non lu via getPhFiltered() : getPhFilteredRaw() est le seul accesseur qui porte
+// la garde d'âge du filtre (pool-chemistry P2 — une EMA périmée ne doit jamais
+// déclencher un refus fantôme). Ajouter cette garde d'âge à getPhFiltered()
+// casserait au contraire le contrat de /data, du WebSocket et de MQTT.
+//
 // Appelées EN AMONT de canDose() dans update() (loopTask) : quand elles bloquent,
-// canDose() n'est pas évalué et `_lastRefusalCause` porte la cause du plancher.
+// canDose() n'est pas évalué et `_lastRefusalCause` porte la cause de la garde.
+//
+// SÉPARATION SURVEILLANCE / DÉCISION (contre-visite C1) : la DÉTECTION vit dans
+// tickPhGuardSurveillance() / tickOrpPhInhibitSurveillance(), appelées
+// inconditionnellement à chaque tick d'update() ; isPhGuardBlocking() et
+// isOrpInhibitedByPh() ne font plus que rendre le verdict du tick. Motif : ces
+// deux dernières sont appelées DANS une conjonction `&&` d'éligibilité, donc pas
+// appelées du tout dès qu'un terme amont est faux (quota journalier épuisé, mode
+// `manual` — l'état où l'escalade laisse justement l'appareil). Y laisser la
+// surveillance revenait à promettre des alertes que le court-circuit supprimait
+// exactement quand elles comptaient.
 
-// Condition #2 + #7 : plancher dur d'injection d'acide.
-bool PumpControllerClass::isPhRawFloorBlocking() {
-  // Produit basique (pH+) : aucune acidification possible → plancher sans objet.
-  if (mqttCfg.phCorrectionType == "ph_plus") {
-    _phRawFloorActive = false;
-    return false;
+// Surveillance pH INCONDITIONNELLE (contre-visite C1) — détection, hystérésis,
+// logs et alertes MQTT. Ne compte RIEN, n'escalade JAMAIS : un appareil laissé en
+// mode `manual` s'auto-escaladerait sinon, alors qu'il ne refuse aucun dosage.
+// Aucune transaction I²C : getPhFilteredRaw() et getPhOffset() lisent des caches.
+void PumpControllerClass::tickPhGuardSurveillance() {
+  // --- Snapshot du produit de correction, lu UNE FOIS par tick ---
+  // Changer de produit change de seuil ET de direction : les drapeaux
+  // d'hystérésis pH deviennent caducs et sont réarmés. Le compteur de refus
+  // n'est PAS réinitialisé — une anomalie durable ne doit pas s'effacer d'un
+  // simple changement de réglage.
+  const bool isPhPlus = (mqttCfg.phCorrectionType == "ph_plus");
+  const uint8_t corrKind = isPhPlus ? 1 : 0;
+  if (corrKind != _phCorrectionKind) {
+    _phCorrectionKind = corrKind;
+    _phLowBlockActive = false;
+    _phHighBlockActive = false;
+    _phRawHardBlockActive = false;
+    _phRawHardHighBlockActive = false;
+    // R3 (revue v2.25.0) : le latch de refus NON ENCORE COMPTABILISÉ doit être
+    // réarmé avec les drapeaux. Sans cela, un refus latché sous `ph_minus`
+    // (plancher / butée basse) était consommé APRÈS le passage à `ph_plus` et
+    // comptait pour un franchissement qui n'a jamais eu lieu dans le nouveau
+    // référentiel. Le COMPTEUR des 3 refus / 24 h et sa fenêtre ne sont PAS
+    // touchés (invariant du gate : une anomalie durable ne s'efface pas d'un
+    // changement de réglage).
+    _phGuardRefusalPending = false;
+    systemLogger.info(String("[Dosage pH] Produit de correction : ") +
+                      (isPhPlus ? "pH+ (base)" : "pH- (acide)") +
+                      " — gardes de seuil réarmées (compteur de refus conservé)");
   }
+
   const float phRaw = sensors.getPhFilteredRaw();
-  // Mesure indisponible : les gardes NaN existantes (canDose / filtre non prêt)
-  // traitent déjà le cas — ne pas ajouter de refus fantôme ni compter un refus.
+  // Mesure indisponible (garde d'âge du filtre, pool-chemistry P2) : les gardes
+  // NaN existantes (canDose / filtre non prêt) traitent déjà le cas — ne pas
+  // fabriquer ici de refus fantôme, ni d'ALERTE fantôme, ni de refus à compter.
   if (isnan(phRaw)) {
-    _phRawFloorActive = false;
-    return false;
+    _phLowBlockActive = false;
+    _phHighBlockActive = false;
+    _phRawHardBlockActive = false;
+    _phRawHardHighBlockActive = false;
+    _phLowWarnActive = false;
+    _phScheduledAlertSent = false;
+    _phGuardBlockingNow = false;
+    _phGuardRefusalPending = false;
+    // D1 : aucune garde pH ne bloque (mesure indisponible = pas de verdict) —
+    // une cause de garde encore affichée serait périmée. Le refus RÉEL de ce
+    // cas (NaN / filtre non prêt) est posé par canDose(), qui en est
+    // propriétaire et n'est donc pas écrasé ici.
+    clearGuardRefusalCause(0);
+    return;
   }
   const float offset = sensors.getPhOffset();
-  // Palier élargi quand l'offset est large : l'incertitude sur le pH réel croît
-  // avec |offset|, la marge de sécurité doit croître avec elle.
-  const float floorPh = (fabsf(offset) > kPhOffsetWideThreshold)
-                            ? kPhRawDosingFloorWide
-                            : kPhRawDosingFloor;
-  if (phRaw >= floorPh) {
-    if (_phRawFloorActive) {
-      systemLogger.info("[Dosage pH] pH brut remonté à " + String(phRaw, 2) +
-                        " (plancher " + String(floorPh, 2) + ") — injection d'acide de nouveau possible");
-      _phRawFloorActive = false;
-    }
-    return false;
+  const float ph = applyPhOffset(phRaw, offset);  // pH CORRIGÉ = pH de l'eau
+
+  // --- Alerte NON BLOQUANTE d'eau acide (signal précoce, condition du gate) ---
+  // Le seuil de BLOCAGE est descendu à 6,70 pour ne plus jamais mordre en
+  // fonctionnement nominal ; ce signal à 7,00 reste, lui, le premier avertisseur.
+  const bool lowWarn = phGuardBlocksBelow(ph, kPhLowWarn, _phLowWarnActive);
+  if (lowWarn && !_phLowWarnActive) {
+    _phLowWarnActive = true;
+    const String msg = "pH " + String(ph, 2) + " sous " + String(kPhLowWarn, 2) +
+                       " — eau agressive (liner, joints, parties métalliques). "
+                       "Dosage encore autorisé jusqu'à " + String(kPhFloorCorrected, 2) +
+                       " ; contrôler le pH au réactif.";
+    systemLogger.warning("[Dosage pH] " + msg);
+    mqttManager.publishAlert("ph_low_warning", msg);
+  } else if (!lowWarn && _phLowWarnActive) {
+    _phLowWarnActive = false;
+    systemLogger.info("[Dosage pH] pH remonté à " + String(ph, 2) +
+                      " — alerte d'eau acide levée");
   }
 
-  // --- Sous le plancher : refus, log critical + alerte MQTT à la TRANSITION ---
-  if (!_phRawFloorActive) {
-    _phRawFloorActive = true;
-    const String msg = "pH brut " + String(phRaw, 2) + " sous le plancher de sécurité " +
-                       String(floorPh, 2) + " (offset=" + String(offset, 2) +
-                       ") — injection d'acide refusée";
-    systemLogger.critical("[Dosage pH] " + msg);
-    mqttManager.publishAlert("ph_raw_floor", msg);
-    // Cause exposée au WS (canDose n'est pas appelé tant que le plancher bloque).
-    _lastRefusalCause[0] = "pH brut sous plancher de sécurité (" + String(phRaw, 2) +
-                           " < " + String(floorPh, 2) + ")";
+  // --- Gardes BLOQUANTES, selon le produit déclaré ---
+  bool blocked = false;
+  bool newRefusal = false;  // transition « ne bloquait pas » → « bloque » sur ce tick
 
-    // Condition #7 : compteur de refus sur fenêtre glissante de 24 h.
-    const uint32_t nowMs = (uint32_t)millis();
-    if (_phRawFloorRefusals == 0 ||
-        (nowMs - _phRawFloorWindowStart) >= kPhRawFloorRefusalWindowMs) {
-      _phRawFloorWindowStart = nowMs;
-      _phRawFloorRefusals = 0;
+  if (isPhPlus) {
+    // Produit BASIQUE : seule une sur-alcalinisation est possible. Durcissement
+    // v2.25.0 — le pH+ n'était gardé par AUCUN seuil jusqu'ici.
+    // Contre-visite C3 : la butée BRUTE haute est évaluée d'abord, symétriquement
+    // à la butée brute basse du produit acide — c'est le seul signal disponible
+    // quand l'offset est faux, et sa cause de refus doit primer dans le journal.
+    const bool rawHardHigh =
+        phGuardBlocksAbove(phRaw, kPhCeilingRawHard, _phRawHardHighBlockActive);
+    if (rawHardHigh && !_phRawHardHighBlockActive) {
+      _phRawHardHighBlockActive = true;
+      newRefusal = true;
+      const String msg = "pH BRUT " + String(phRaw, 2) + " au-dessus de la butée de sécurité " +
+                         String(kPhCeilingRawHard, 2) + " (offset=" + String(offset, 2) +
+                         ") — injection de pH+ refusée quelle que soit la valeur "
+                         "corrigée : offset négatif probablement erroné, contrôler "
+                         "le pH au réactif";
+      systemLogger.critical("[Dosage pH] " + msg);
+      mqttManager.publishAlert("ph_guard", msg);
+      setGuardRefusalCause(0, "pH brut au-dessus de la butée de sécurité (" + String(phRaw, 2) +
+                              " > " + String(kPhCeilingRawHard, 2) + ")");
+    } else if (!rawHardHigh && _phRawHardHighBlockActive) {
+      _phRawHardHighBlockActive = false;
+      systemLogger.info("[Dosage pH] pH brut redescendu à " + String(phRaw, 2) + " (butée " +
+                        String(kPhCeilingRawHard, 2) + " − hystérésis " +
+                        String(kPhGuardReleaseHysteresis, 2) +
+                        ") — butée brute haute levée");
     }
-    if (_phRawFloorRefusals < 255) _phRawFloorRefusals++;
-    if (_phRawFloorRefusals >= kPhRawFloorRefusalMax &&
-        mqttCfg.phRegulationMode != "manual") {
-      // Répétition = sonde morte ou offset saisi à l'envers, pas un incident
-      // ponctuel : on ferme la régulation pH (fail-closed) et on le dit.
+
+    const bool high = phGuardBlocksAbove(ph, kPhCeilingCorrected, _phHighBlockActive);
+    if (high && !_phHighBlockActive) {
+      _phHighBlockActive = true;
+      newRefusal = true;
+      const String msg = "pH " + String(ph, 2) + " au-dessus du plafond de sécurité " +
+                         String(kPhCeilingCorrected, 2) + " (offset=" + String(offset, 2) +
+                         ") — injection de pH+ refusée : au-delà, le chlore est peu "
+                         "actif et la régulation ORP est inhibée";
+      systemLogger.critical("[Dosage pH] " + msg);
+      mqttManager.publishAlert("ph_guard", msg);
+      // La butée brute, plus grave, ne doit pas être écrasée si elle bloque aussi.
+      if (!_phRawHardHighBlockActive) {
+        setGuardRefusalCause(0, "pH au-dessus du plafond de sécurité (" + String(ph, 2) +
+                                " > " + String(kPhCeilingCorrected, 2) + ")");
+      }
+    } else if (!high && _phHighBlockActive) {
+      _phHighBlockActive = false;
+      systemLogger.info("[Dosage pH] pH redescendu à " + String(ph, 2) + " (plafond " +
+                        String(kPhCeilingCorrected, 2) + " − hystérésis " +
+                        String(kPhGuardReleaseHysteresis, 2) +
+                        ") — injection de pH+ de nouveau possible");
+    }
+    blocked = rawHardHigh || high;
+  } else {
+    // Produit ACIDE : seuil chimique bas sur le CORRIGÉ + butée sur le BRUT.
+    // La butée brute est évaluée d'abord : c'est le seul signal disponible quand
+    // l'offset est faux, et sa cause de refus doit primer dans le journal.
+    const bool rawHard = phGuardBlocksBelow(phRaw, kPhFloorRawHard, _phRawHardBlockActive);
+    if (rawHard && !_phRawHardBlockActive) {
+      _phRawHardBlockActive = true;
+      newRefusal = true;
+      const String msg = "pH BRUT " + String(phRaw, 2) + " sous la butée de sécurité " +
+                         String(kPhFloorRawHard, 2) + " (offset=" + String(offset, 2) +
+                         ") — injection d'acide refusée quelle que soit la valeur "
+                         "corrigée : offset positif probablement erroné, contrôler "
+                         "le pH au réactif";
+      systemLogger.critical("[Dosage pH] " + msg);
+      mqttManager.publishAlert("ph_guard", msg);
+      setGuardRefusalCause(0, "pH brut sous la butée de sécurité (" + String(phRaw, 2) +
+                              " < " + String(kPhFloorRawHard, 2) + ")");
+    } else if (!rawHard && _phRawHardBlockActive) {
+      _phRawHardBlockActive = false;
+      systemLogger.info("[Dosage pH] pH brut remonté à " + String(phRaw, 2) + " (butée " +
+                        String(kPhFloorRawHard, 2) + " + hystérésis " +
+                        String(kPhGuardReleaseHysteresis, 2) +
+                        ") — butée brute levée");
+    }
+
+    const bool low = phGuardBlocksBelow(ph, kPhFloorCorrected, _phLowBlockActive);
+    if (low && !_phLowBlockActive) {
+      _phLowBlockActive = true;
+      newRefusal = true;
+      const String msg = "pH " + String(ph, 2) + " sous le plancher de sécurité " +
+                         String(kPhFloorCorrected, 2) + " (offset=" + String(offset, 2) +
+                         ") — injection d'acide refusée";
+      systemLogger.critical("[Dosage pH] " + msg);
+      mqttManager.publishAlert("ph_guard", msg);
+      // Cause exposée au WS (canDose n'est pas appelé tant que la garde bloque).
+      // La butée brute, plus grave, ne doit pas être écrasée si elle bloque aussi.
+      if (!_phRawHardBlockActive) {
+        setGuardRefusalCause(0, "pH sous le plancher de sécurité (" + String(ph, 2) +
+                                " < " + String(kPhFloorCorrected, 2) + ")");
+      }
+    } else if (!low && _phLowBlockActive) {
+      _phLowBlockActive = false;
+      systemLogger.info("[Dosage pH] pH remonté à " + String(ph, 2) + " (plancher " +
+                        String(kPhFloorCorrected, 2) + " + hystérésis " +
+                        String(kPhGuardReleaseHysteresis, 2) +
+                        ") — injection d'acide de nouveau possible");
+    }
+    blocked = rawHard || low;
+  }
+
+  // --- Verdict du tick, consommé par la DÉCISION (isPhGuardBlocking) ---
+  _phGuardBlockingNow = blocked;
+  if (!blocked) {
+    _phScheduledAlertSent = false;  // un nouvel épisode alertera immédiatement
+    // Épisode terminé sans qu'aucune branche de dosage n'ait été éligible : il
+    // n'y a eu AUCUN refus réel, le latch est abandonné sans rien comptabiliser.
+    _phGuardRefusalPending = false;
+    // D1 (défaut CORRIGÉ ici) : la RELÂCHE efface la cause de garde. C'est le
+    // seul point du firmware qui tourne à chaque tick quel que soit le mode —
+    // `canDose(0)` ne le fait qu'en mode `automatic` (court-circuit `&&`), donc
+    // en mode `manual` la chaîne restait figée sur un blocage révolu, y compris
+    // le message d'escalade, alors que c'est précisément le mode où l'UI expose
+    // l'injection manuelle. Inclut donc aussi l'effacement du message
+    // « régulation pH basculée en manuel » : une fois la butée levée, il ne
+    // décrit plus un refus en cours (la trace de l'escalade est conservée à part,
+    // via setPhAutoManualTrace + la bannière d'acquittement).
+    clearGuardRefusalCause(0);
+    return;
+  }
+  // Latch armé au plus UNE fois par tick — comme l'ex-`newRefusal` : deux
+  // franchissements simultanés (butée brute + seuil corrigé) valent un seul
+  // refus, exactement comme avant la séparation surveillance / décision.
+  if (newRefusal) _phGuardRefusalPending = true;
+}
+
+// DÉCISION pH (contre-visite C1) : rend le verdict posé par la surveillance du
+// tick et n'y ajoute QUE ce qui relève d'un refus RÉEL. Appelée sous conjonction
+// `&&` — c'est précisément pourquoi elle ne détecte plus rien.
+//
+// `countRefusal` = true depuis la branche AUTOMATIQUE seulement : là, un refus
+// alimente le compteur 24 h et peut escalader jusqu'à la bascule fail-closed en
+// manuel. La branche PROGRAMMÉE passe false — elle refuse tout autant (c'est un
+// filet chimique, pas une boucle de régulation) mais ne compte ni n'escalade :
+// une consigne volumétrique choisie par l'utilisateur ne doit pas fermer la
+// régulation. Elle signale à la place, en warn + alerte MQTT à débit limité,
+// sans quoi un refus permanent y serait un no-op SILENCIEUX.
+bool PumpControllerClass::isPhGuardBlocking(bool countRefusal) {
+  if (!_phGuardBlockingNow) return false;
+
+  // --- Comptabilisation : mode AUTOMATIQUE uniquement (condition du gate) ---
+  // Les refus de BUTÉE BRUTE y sont inclus : ils sont le SEUL signal d'un offset
+  // faux, donc précisément ce que le compteur doit faire remonter.
+  // Le latch est consommé ici (et non relu comme une transition) : le
+  // franchissement a pu survenir alors que cette branche était inéligible
+  // (quota épuisé) — le refus n'en est pas moins réel dès qu'elle le redevient.
+  if (countRefusal && _phGuardRefusalPending) {
+    _phGuardRefusalPending = false;
+    const uint32_t nowMs = (uint32_t)millis();
+    if (_phGuardRefusals == 0 ||
+        (nowMs - _phGuardWindowStart) >= kPhGuardRefusalWindowMs) {
+      _phGuardWindowStart = nowMs;
+      _phGuardRefusals = 0;
+    }
+    if (_phGuardRefusals < 255) _phGuardRefusals++;
+    if (_phGuardRefusals >= kPhGuardRefusalMax &&
+        mqttCfg.phRegulationMode == "automatic") {
+      // Répétition = anomalie durable (sonde morte, offset à l'envers, produit
+      // mal déclaré), pas un incident ponctuel : on ferme la régulation pH
+      // (fail-closed) et on le dit.
       mqttCfg.phRegulationMode = "manual";
       // INVARIANT DU PROJET (revue) : `ph_enabled` est le miroir de « mode !=
       // manual » (ws_manager.cpp, web_routes_config.cpp, mqtt_manager.cpp). Le
@@ -454,9 +867,32 @@ bool PumpControllerClass::isPhRawFloorBlocking() {
       // sécurité, exactement quand il faut que l'utilisateur voie qu'elle ne
       // l'est plus.
       mqttCfg.phEnabled = false;
-      const String alert = String(kPhRawFloorRefusalMax) +
-                           " refus de plancher pH en 24 h — sonde pH à recalibrer ou "
-                           "remplacer ; régulation pH basculée en manuel";
+      // v2.25.0 : le message NE PRÉSUME PLUS de la cause. L'ancien texte
+      // (« sonde pH à recalibrer ou remplacer ») a induit l'utilisateur en erreur
+      // le 2026-08-25 alors que le diagnostic EZO était nominal (pente acide
+      // 101,0 %, base 100,0 %, zéro −1,03 mV) et que le vrai coupable était un
+      // décalage de référence EXTERNE. On interroge donc le diagnostic EZO et on
+      // formule en conséquence.
+      const float slopeAcid = sensors.getPhSlopeAcid();
+      const float slopeBase = sensors.getPhSlopeBase();
+      const float zeroMv    = sensors.getPhSlopeZero();
+      const String diag = "(pente acide " + String(slopeAcid, 1) + " %, base " +
+                          String(slopeBase, 1) + " %, zéro " + String(zeroMv, 2) + " mV)";
+      String alert = String(kPhGuardRefusalMax) +
+                     " refus de garde pH en 24 h — régulation pH basculée en manuel. ";
+      if (isPhProbeHealthy(slopeAcid, slopeBase, zeroMv)) {
+        alert += "Diagnostic sonde EZO NORMAL " + diag +
+                 " : la sonde n'est pas en cause. Vérifier la cohérence consigne / "
+                 "offset / produit déclaré, puis un décalage de référence EXTERNE "
+                 "(courants de fuite de la pompe de filtration, équipotentialité du "
+                 "bassin). Contrôler le pH au réactif avant toute intervention sur "
+                 "la sonde.";
+      } else {
+        alert += "Diagnostic sonde EZO hors norme ou indisponible " + diag +
+                 " : vérifier la calibration et l'état de la sonde, puis un éventuel "
+                 "décalage de référence externe (courants de fuite, équipotentialité). "
+                 "Contrôler le pH au réactif.";
+      }
       // v2.20.3 (C4) : PERSISTER la cause de la bascule AVANT saveMqttConfig(),
       // pour qu'elle parte dans la même transaction NVS que le mode lui-même.
       // Le journal système est un ring buffer : après quelques heures il ne reste
@@ -465,16 +901,47 @@ bool PumpControllerClass::isPhRawFloorBlocking() {
       setPhAutoManualTrace(alert);
       saveMqttConfig();
       systemLogger.critical("[Dosage pH] " + alert);
-      mqttManager.publishAlert("ph_raw_floor", alert);
-      _lastRefusalCause[0] = "régulation pH basculée en manuel (refus plancher répétés)";
+      mqttManager.publishAlert("ph_guard", alert);
+      setGuardRefusalCause(0, "régulation pH basculée en manuel (refus de garde répétés)");
+    }
+  }
+
+  // --- Mode PROGRAMMÉ : signalement périodique, sans compteur ni escalade ---
+  if (!countRefusal) {
+    const uint32_t nowMs = (uint32_t)millis();
+    if (!_phScheduledAlertSent ||
+        (nowMs - _phScheduledAlertMs) >= kPhGuardScheduledAlertIntervalMs) {
+      _phScheduledAlertSent = true;
+      _phScheduledAlertMs = nowMs;
+      // R2 : `_lastRefusalCause[0]` est un tampon char[] — String(...) explicite
+      // (concaténation littéral + char* impossible sans elle).
+      const String msg = "Dosage pH programmé refusé — " +
+                         String(_lastRefusalCause[0]) +
+                         ". Le volume quotidien ne sera pas injecté tant que la garde "
+                         "tient ; la régulation n'est PAS basculée en manuel dans ce "
+                         "mode. Contrôler le pH au réactif, l'offset et le produit "
+                         "déclaré.";
+      systemLogger.warning("[Dosage pH] " + msg);
+      mqttManager.publishAlert("ph_guard_scheduled", msg);
     }
   }
   return true;
 }
 
-// Condition #3 : inhibition du dosage ORP sur pH brut élevé.
-// `requireKnownPh` = true pour la régulation AUTOMATIQUE (fail-closed sur pH
-// inconnu), false pour le dosage PROGRAMMÉ (comportement historique préservé).
+// Surveillance INCONDITIONNELLE de l'inhibition ORP sur pH élevé (condition #3).
+//
+// Contre-visite C1 : cette détection vivait dans isOrpInhibitedByPh(), appelée
+// sous conjonction `&&`. Quota chlore journalier atteint (`orpSafetyOk` faux) et
+// l'alerte « pH élevé, chlore inhibé » — la SEULE qui désigne la vraie cause du
+// chlore qui ne monte pas — ne partait jamais. Elle est donc évaluée ici, à
+// chaque tick, hors de toute conjonction.
+//
+// La politique `requireKnownPh` (ex-paramètre) est dérivée du mode ORP COURANT :
+// la branche automatique de update() n'est atteignable que si le mode EST
+// "automatic", et la branche programmée que si le mode EST "scheduled" — le
+// verdict rendu à chaque décision est donc bien celui de sa propre politique.
+// true pour la régulation AUTOMATIQUE (fail-closed sur pH inconnu), false pour le
+// dosage PROGRAMMÉ (comportement historique préservé) et pour tout autre mode.
 //
 // POURQUOI LE FAIL-CLOSED EN AUTO (pool-chemistry P2, correctif bloquant) :
 // `canDose(1)` ne consulte JAMAIS le pH — ce filet est donc l'UNIQUE garde du
@@ -482,15 +949,49 @@ bool PumpControllerClass::isPhRawFloorBlocking() {
 // au-dessus de 7,60, le chlore y est peu actif (fraction HClO effondrée) et
 // l'asservissement ORP compenserait en surdosant. Un pH inconnu doit donc
 // suspendre la chloration automatique, pas la laisser courir à l'aveugle.
-bool PumpControllerClass::isOrpInhibitedByPhRaw(bool requireKnownPh) {
+//
+// v2.25.0 : le seuil chimique kPhOrpInhibit porte désormais sur le pH CORRIGÉ
+// (la fraction de HClO dépend du pH RÉEL de l'eau), doublé d'une butée BRUTE
+// inconditionnelle à kPhCeilingRawHard contre un offset négatif saisi à tort.
+
+// Gravité CROISSANTE des motifs d'inhibition ORP (R2, anti-rafale d'alertes).
+// L'échelle n'est PAS l'ordre des valeurs de `_orpPhInhibitKind` — celles-ci sont
+// des étiquettes, pas un rang :
+//   1 = mesure ABSENTE (kind 1 pH indisponible, kind 2 stabilisation) — le motif
+//       le moins grave, c'est une suspension prudentielle sur une donnée manquante ;
+//   2 = seuil CORRIGÉ franchi (kind 0) — l'eau EST au-dessus du plafond ;
+//   3 = butée BRUTE haute franchie (kind 3) — le plus grave, il vaut quel que
+//       soit l'offset.
+// 0 est réservé à la sentinelle « épisode vierge » de `_orpPhAlertedSeverity` :
+// toute gravité réelle la dépasse, donc la première alerte d'un épisode part
+// toujours.
+static inline uint8_t orpPhInhibitSeverity(uint8_t kind) {
+  switch (kind) {
+    case 3:  return 3;  // butée BRUTE haute
+    case 0:  return 2;  // seuil CORRIGÉ
+    default: return 1;  // 1 = pH indisponible, 2 = stabilisation des mesures
+  }
+}
+
+void PumpControllerClass::tickOrpPhInhibitSurveillance() {
+  const bool requireKnownPh = (mqttCfg.orpRegulationMode == "automatic");
   const float phRaw = sensors.getPhFilteredRaw();
 
   if (isnan(phRaw)) {
     if (!requireKnownPh) {
-      // Dosage programmé : aveugle à la mesure par conception, on ne change rien.
-      _orpPhRawInhibitActive = false;
-      _orpPhRawInhibitKind = 0;
-      return false;
+      // Dosage programmé (ou tout autre mode) : aveugle à la mesure par
+      // conception, on ne change rien.
+      _orpPhInhibitActive = false;
+      _orpPhInhibitKind = 0;
+      _orpPhInhibitNow = false;
+      // R2 : levée de l'inhibition = FIN d'épisode → la mémoire anti-rafale est
+      // effacée ici aussi, sinon un motif déjà signalé resterait inhibable à vie.
+      _orpPhAlertedSeverity = 0;
+      _orpPhCauseKind = 255;
+      // D1 : aucune inhibition ORP dans ce mode — une cause de garde encore
+      // affichée serait périmée (canDose(1) n'est pas appelé hors automatique).
+      clearGuardRefusalCause(1);
+      return;
     }
     // Auto : pH inconnu → inhibition. Journalisé en INFO (situation transitoire
     // normale au démarrage ou pendant un warmup de filtre), le CRITICAL reste
@@ -503,62 +1004,221 @@ bool PumpControllerClass::isOrpInhibitedByPhRaw(bool requireKnownPh) {
     // reprise de filtration transforme un état normal en fausse alerte et noie
     // le vrai défaut (incident 2026-08-16 : ce log est le seul indice qui a été
     // émis pendant les 3 h sans régulation, et il était trompeur).
-    if (!_orpPhRawInhibitActive) {
-      _orpPhRawInhibitActive = true;
-      bool waterPresent = false, measuresValid = false;
-      uint32_t remainingS = 0;
-      measureValidity.getSnapshot(waterPresent, measuresValid, remainingS);
-      if (!measuresValid) {
-        _orpPhRawInhibitKind = 2;
+    // Motif de mesure absente, réévalué à chaque tick : 2 = purge de la chambre
+    // de mesure (état NORMAL), 1 = capteur muet / filtre non amorcé (anomalie).
+    // getSnapshot() lit un cache sous spinlock — aucune transaction I²C.
+    bool waterPresent = false, measuresValid = false;
+    uint32_t remainingS = 0;
+    measureValidity.getSnapshot(waterPresent, measuresValid, remainingS);
+    const uint8_t nanKind = measuresValid ? 1 : 2;
+
+    if (!_orpPhInhibitActive) {
+      // POSE d'un nouvel épisode. La mesure absente est le motif le MOINS grave
+      // (gravité 1) : un vrai franchissement de seuil survenant ensuite reste
+      // admis comme MONTÉE en gravité et produira sa vraie cause — c'est le
+      // durcissement de la passe précédente, préservé par construction ici.
+      _orpPhInhibitActive = true;
+      _orpPhInhibitKind = nanKind;
+      _orpPhAlertedSeverity = orpPhInhibitSeverity(nanKind);
+      if (nanKind == 2) {
         systemLogger.info("[Dosage ORP] Stabilisation des mesures en cours — dosage "
                           "chlore automatique suspendu (reprise automatique dès que "
                           "les mesures sont de nouveau représentatives)");
-        _lastRefusalCause[1] = "stabilisation des mesures — dosage chlore suspendu";
       } else {
-        _orpPhRawInhibitKind = 1;
-        systemLogger.info("[Dosage ORP] pH brut indisponible (capteur muet ou filtre "
-                          "non amorcé) — dosage chlore automatique suspendu par sécurité");
-        _lastRefusalCause[1] = "pH brut indisponible — dosage chlore suspendu";
+        systemLogger.info("[Dosage ORP] pH indisponible (capteur muet ou filtre non "
+                          "amorcé) — dosage chlore automatique suspendu par sécurité");
       }
     }
-    return true;
+    // R2 (recommandation du gate) — CAUSE DE GARDE PÉRIMÉE. Après un passage à
+    // NaN sous un latch de motif de seuil, la cause publiée continuait d'annoncer
+    // l'ancienne valeur pH alors que la mesure n'existe plus. Seul le LIBELLÉ est
+    // rafraîchi : ni le verdict (`_orpPhInhibitNow`), ni le motif latché
+    // (`_orpPhInhibitKind`, qui porte le message de levée et le badge de butée
+    // brute), ni la mémoire d'épisode ne sont touchés — une mesure qui disparaît
+    // n'est pas une re-qualification, et surtout pas une DÉGRADATION admise.
+    // Edge-triggered sur `_orpPhCauseKind` : un seul String par transition, aucune
+    // allocation par tour de loop.
+    if (_orpPhCauseKind != nanKind) {
+      setGuardRefusalCause(1, nanKind == 2
+                                  ? "stabilisation des mesures — dosage chlore suspendu"
+                                  : "pH indisponible — dosage chlore suspendu");
+      _orpPhCauseKind = nanKind;
+    }
+    _orpPhInhibitNow = true;
+    return;
   }
 
-  if (phRaw <= kPhRawOrpInhibit) {
-    if (_orpPhRawInhibitActive) {
+  const float offset = sensors.getPhOffset();
+  const float ph = applyPhOffset(phRaw, offset);  // pH CORRIGÉ = pH de l'eau
+
+  // Deux seuils en OU logique : ils vont dans la MÊME direction (haut) et
+  // décrivent le même état « chloration suspendue » — la levée exige donc que les
+  // DEUX soient franchement retombés, ce qui est fail-closed.
+  //
+  // R1 (revue v2.25.0) : la mémoire d'hystérésis n'est PAS `_orpPhInhibitActive`.
+  // Ce dernier est un latch d'inhibition que les branches NaN ci-dessus arment
+  // pour des motifs étrangers à tout seuil (kind 1 = pH indisponible, kind 2 =
+  // stabilisation) : le passer ici en `wasBlocking` faisait croire à l'hystérésis
+  // qu'elle SORTAIT d'un blocage de seuil jamais franchi, et maintenait
+  // l'inhibition du chlore dans toute la bande [seuil − hystérésis, seuil] —
+  // indéfiniment, à chaque reprise de filtration (pH 7,57 sous un seuil de 7,60
+  // jamais atteint).
+  //
+  // R2 (contre-visite v2.25.0) : et ce n'est pas UNE mémoire mais DEUX, une PAR
+  // SEUIL. Un drapeau unique écrit par `(rawCeil || corrCeil)` neutralisait
+  // l'hystérésis du seuil le moins souvent armé : tant que le seuil CORRIGÉ le
+  // maintenait à true, la butée BRUTE redevenait un simple comparateur à
+  // 8,05 (= 8,10 − hystérésis) et re-qualifiait le motif à chaque oscillation.
+  // Chaque mémoire est donc passée en `wasBlocking` à SA SEULE comparaison, dans
+  // SON SEUL référentiel.
+  const bool rawCeil  = phGuardBlocksAbove(phRaw, kPhCeilingRawHard, _orpPhRawThresholdActive);
+  const bool corrCeil = phGuardBlocksAbove(ph, kPhOrpInhibit, _orpPhCorrThresholdActive);
+  // Mémoires d'hystérésis : écrites ICI et NULLE PART AILLEURS, chacune depuis le
+  // résultat de SA propre comparaison (jamais depuis le OU des deux, jamais
+  // depuis une branche NaN — cf. R1 ci-dessus).
+  _orpPhRawThresholdActive  = rawCeil;
+  _orpPhCorrThresholdActive = corrCeil;
+
+  if (!rawCeil && !corrCeil) {
+    if (_orpPhInhibitActive) {
       // v2.20.3 (C6) : le message de levée doit refléter la cause réellement
       // journalisée à la pose, sinon « redescendu à 7,10 » sort après un simple
       // warmup où le pH n'était jamais monté.
-      if (_orpPhRawInhibitKind == 2) {
-        systemLogger.info("[Dosage ORP] Stabilisation terminée, pH brut de nouveau "
-                          "mesuré (" + String(phRaw, 2) +
+      if (_orpPhInhibitKind == 2) {
+        systemLogger.info("[Dosage ORP] Stabilisation terminée, pH de nouveau "
+                          "mesuré (" + String(ph, 2) +
                           ") — dosage chlore de nouveau possible");
-      } else if (_orpPhRawInhibitKind == 1) {
-        systemLogger.info("[Dosage ORP] pH brut de nouveau disponible (" +
-                          String(phRaw, 2) + ") — dosage chlore de nouveau possible");
-      } else {
+      } else if (_orpPhInhibitKind == 1) {
+        systemLogger.info("[Dosage ORP] pH de nouveau disponible (" + String(ph, 2) +
+                          ") — dosage chlore de nouveau possible");
+      } else if (_orpPhInhibitKind == 3) {
         systemLogger.info("[Dosage ORP] pH brut redescendu à " + String(phRaw, 2) +
+                          " (butée " + String(kPhCeilingRawHard, 2) +
+                          ") — dosage chlore de nouveau possible");
+      } else {
+        systemLogger.info("[Dosage ORP] pH redescendu à " + String(ph, 2) +
                           " — dosage chlore de nouveau possible");
       }
     }
-    _orpPhRawInhibitActive = false;
-    _orpPhRawInhibitKind = 0;
-    return false;
+    _orpPhInhibitActive = false;
+    _orpPhInhibitKind = 0;
+    _orpPhInhibitNow = false;
+    // R2 : SEUL point (avec la levée du mode non automatique ci-dessus) où la
+    // mémoire anti-rafale d'épisode est effacée. Elle DOIT l'être ici et pas
+    // avant : l'effacer sur une simple retombée de motif rouvrirait la porte au
+    // battement d'alertes que cette mémoire ferme.
+    _orpPhAlertedSeverity = 0;
+    _orpPhCauseKind = 255;
+    // D1 (défaut CORRIGÉ ici) : la RELÂCHE efface la cause de garde ORP.
+    // Symétrique du pH : hors mode `automatic`, canDose(1) n'est jamais appelé,
+    // la chaîne restait donc figée sur une inhibition révolue.
+    clearGuardRefusalCause(1);
+    return;
   }
 
-  if (!_orpPhRawInhibitActive) {
-    _orpPhRawInhibitActive = true;
-    _orpPhRawInhibitKind = 0;  // v2.20.3 (C6) : vrai franchissement de seuil
-    const String msg = "pH brut " + String(phRaw, 2) + " > " + String(kPhRawOrpInhibit, 2) +
-                       " (offset=" + String(sensors.getPhOffset(), 2) +
-                       ") — chlore peu actif à ce pH : dosage ORP suspendu (faire baisser le pH)";
-    systemLogger.critical("[Dosage ORP] " + msg);
-    mqttManager.publishAlert("orp_ph_raw_inhibit", msg);
-    // Cause exposée au WS (canDose(1) n'est pas appelé tant que l'inhibition dure).
-    _lastRefusalCause[1] = "pH brut trop élevé (" + String(phRaw, 2) +
-                           ") — dosage chlore suspendu";
+  // Nature de l'inhibition IMPOSÉE PAR LES SEUILS sur ce tick. La butée BRUTE
+  // prime : elle vaut quel que soit l'offset, donc elle est la plus grave.
+  const uint8_t thresholdKind = rawCeil ? 3 : 0;
+
+  // ===== R2 : UNE alerte par GRAVITÉ et par ÉPISODE, jamais en dégradation ====
+  // Ancien edge-trigger : `!_orpPhInhibitActive || _orpPhInhibitKind != thresholdKind`.
+  // Il admettait la re-qualification DANS LES DEUX SENS. Avec la butée brute qui
+  // s'arme à 8,10 et se relâche à 8,05 pendant que le seuil corrigé tient en
+  // continu, un bassin à pH 8,03-8,12 (offset 0,00) faisait basculer le motif
+  // 3 ↔ 0 à chaque mesure : un critical + une alerte MQTT par oscillation, avec
+  // DEUX messages contradictoires en alternance. Sur la partition `history` de
+  // 64 Ko, ce battement chasse aussi tout le reste du journal.
+  //
+  // Règle retenue : la re-qualification n'est admise que vers un motif PLUS GRAVE
+  // (butée brute > seuil corrigé > mesure absente), et une gravité déjà signalée
+  // dans l'épisode ne réémet rien. La comparaison stricte `>` sur la gravité code
+  // les deux exigences d'un coup. La mémoire n'est effacée qu'à la LEVÉE de
+  // l'inhibition (deux points, plus haut).
+  //
+  // Le durcissement de la passe précédente est PRÉSERVÉ : un vrai franchissement
+  // pendant une inhibition de motif « mesure absente » (gravité 1) est une MONTÉE
+  // en gravité (2 ou 3 > 1) — il produit donc bien son critical, son alerte MQTT
+  // et sa vraie cause, au lieu de laisser l'UI annoncer « stabilisation des
+  // mesures » sur une eau réellement au-dessus du plafond.
+  const uint8_t severity = orpPhInhibitSeverity(thresholdKind);
+  const bool escalate = (severity > _orpPhAlertedSeverity);
+  // Symétrique de la recommandation « cause périmée » traitée dans la branche NaN :
+  // au RETOUR d'un interlude sans mesure, la cause exposée décrit encore
+  // « stabilisation » ou « pH indisponible » alors qu'un seuil bloque de nouveau.
+  // Le libellé est alors re-posé SANS alerter (la gravité a déjà été signalée dans
+  // cet épisode). Cadré aux seuls libellés non-seuil (255, 1, 2) : une simple
+  // oscillation 3 ↔ 0 ne re-pose RIEN, sinon on remplacerait le battement
+  // d'alertes par un battement de causes.
+  const bool refreshLabel = (_orpPhCauseKind != 0 && _orpPhCauseKind != 3);
+  if (escalate || refreshLabel) {
+    if (escalate) _orpPhAlertedSeverity = severity;
+    if (rawCeil) {
+      if (escalate) {
+        // Butée BRUTE : la mesure capteur elle-même est au-dessus de la limite,
+        // aucun offset ne peut le justifier. Seule une MONTÉE en gravité
+        // re-qualifie le motif latché et journalise.
+        _orpPhInhibitKind = 3;
+        // Recommandation du gate : ne pas affirmer « au-dessus de la butée 8,10 »
+        // quand la mesure est retombée DANS la bande de relâche — l'hystérésis
+        // peut rester armée alors que le latch a été effacé (passage en mode non
+        // automatique, mesure indisponible). La bande est donc libellée telle
+        // quelle. Et l'offset n'est mis en cause que s'il est réellement NÉGATIF :
+        // à offset ≥ 0 le pH corrigé est au moins égal au brut, l'eau est
+        // réellement haute et accuser l'offset est un contresens (c'est
+        // l'accusation que recevait le bassin à offset 0,00).
+        String band;
+        if (phRaw > kPhCeilingRawHard) {
+          band = " au-dessus de la butée " + String(kPhCeilingRawHard, 2);
+        } else {
+          band = " maintenu dans la bande d'hystérésis de la butée " +
+                 String(kPhCeilingRawHard, 2) + " (relâche à " +
+                 String(kPhCeilingRawHard - kPhGuardReleaseHysteresis, 2) + ")";
+        }
+        const String diag = (offset < 0.0f)
+                                ? String("offset négatif probablement erroné, contrôler "
+                                         "le pH au réactif")
+                                : String("l'eau est réellement au-dessus de la butée : "
+                                         "contrôler le pH au réactif et le faire baisser");
+        const String msg = "pH BRUT " + String(phRaw, 2) + band + " (offset=" +
+                           String(offset, 2) +
+                           ") — dosage ORP suspendu quelle que soit la valeur corrigée : " +
+                           diag;
+        systemLogger.critical("[Dosage ORP] " + msg);
+        mqttManager.publishAlert("orp_ph_inhibit", msg);
+      }
+      // Cause exposée au WS (canDose(1) n'est pas appelé tant que l'inhibition dure).
+      setGuardRefusalCause(1, "pH brut en butée haute (" + String(phRaw, 2) +
+                              ") — dosage chlore suspendu");
+      _orpPhCauseKind = 3;
+    } else {
+      if (escalate) {
+        _orpPhInhibitKind = 0;  // v2.20.3 (C6) : vrai franchissement de seuil
+        // Même libellé de bande que ci-dessus, et pour la même raison : « pH 7,58
+        // > 7,60 » est faux et fait douter l'utilisateur de tout le message.
+        String band;
+        if (ph > kPhOrpInhibit) {
+          band = " > " + String(kPhOrpInhibit, 2);
+        } else {
+          band = " maintenu dans la bande d'hystérésis du seuil " +
+                 String(kPhOrpInhibit, 2) + " (relâche à " +
+                 String(kPhOrpInhibit - kPhGuardReleaseHysteresis, 2) + ")";
+        }
+        const String msg = "pH " + String(ph, 2) + band + " (offset=" + String(offset, 2) +
+                           ") — chlore peu actif à ce pH : dosage ORP suspendu "
+                           "(faire baisser le pH)";
+        systemLogger.critical("[Dosage ORP] " + msg);
+        mqttManager.publishAlert("orp_ph_inhibit", msg);
+      }
+      setGuardRefusalCause(1, "pH trop élevé (" + String(ph, 2) +
+                              ") — dosage chlore suspendu");
+      _orpPhCauseKind = 0;
+    }
   }
-  return true;
+  // Latch d'inhibition posé HORS du bloc d'alerte : une gravité déjà signalée (ou
+  // une dégradation, non re-qualifiée) n'émet rien mais l'inhibition, elle, court
+  // toujours — c'est `(rawCeil || corrCeil)` qui la commande, jamais l'alerte.
+  _orpPhInhibitActive = true;
+  _orpPhInhibitNow = true;
 }
 
 // Ring buffer anti-rafale (pool-chemistry Pass 3.5).
@@ -614,6 +1274,11 @@ bool PumpControllerClass::canDose(int pumpIndex) {
                                     : sensors.isOrpFilterReady();
   in.filterUnstable = (pumpIndex == 0) ? sensors.isPhFilterUnstable()
                                        : sensors.isOrpFilterUnstable();
+  // v2.25.1 — état INTERNE du filtre : sert UNIQUEMENT à nommer la cause des
+  // gardes 3/3b (aucune garde ajoutée, aucun verdict modifié). Deux lectures de
+  // cache, aucun I²C.
+  in.filterState = (pumpIndex == 0) ? sensors.getPhFilterState()
+                                    : sensors.getOrpFilterState();
   // 4. Calibration (cache, pas d'I²C bloquant dans la boucle ; -1 si injoignable).
   in.calPoints = (pumpIndex == 0) ? sensors.getPhCalibrationPointsCached()
                                   : sensors.getOrpCalibrationPointsCached();
@@ -668,11 +1333,40 @@ bool PumpControllerClass::canDose(int pumpIndex) {
     case DoseRefusal::FiltrationOff:
       cause = "filtration arrêtée";
       break;
+    // v2.25.1 — LIBELLÉS DÉCONFLATÉS. Les deux anciennes phrases mélangeaient
+    // chacune plusieurs causes physiques (« warmup / EZO injoignable ») : l'UI en
+    // extrayait un fragment et pouvait présenter une panne matérielle comme un
+    // état normal. Chaque libellé ne décrit plus QU'UNE cause ; les deux causes
+    // génériques ci-dessous disent explicitement qu'elles ne savent pas.
     case DoseRefusal::ReadingNaN:
-      cause = "lecture pH/ORP filtrée indisponible (NaN)";
+      cause = "mesure filtrée indisponible (état du filtre indéterminé)";
       break;
     case DoseRefusal::FilterNotReady:
-      cause = "filtre capteur non prêt (warmup / EZO injoignable)";
+      cause = "filtre capteur non prêt (état du filtre indéterminé)";
+      break;
+    case DoseRefusal::ReadingNaNWarmup:
+      cause = "mesure filtrée indisponible : fenêtre de lissage en cours";
+      break;
+    case DoseRefusal::ReadingNaNFrozen:
+      cause = "mesure filtrée indisponible : sonde figée";
+      break;
+    case DoseRefusal::ReadingNaNStale:
+      cause = "mesure filtrée indisponible : plus aucune mesure acceptée";
+      break;
+    case DoseRefusal::ReadingNaNGateClosed:
+      cause = "mesure filtrée indisponible : mesures non représentatives";
+      break;
+    case DoseRefusal::FilterWarmup:
+      cause = "filtre capteur en cours de remplissage (stabilisation)";
+      break;
+    case DoseRefusal::FilterFrozen:
+      cause = "sonde figée (valeur constante) — filtre non prêt";
+      break;
+    case DoseRefusal::FilterStale:
+      cause = "plus aucune mesure acceptée par le filtre (sonde muette)";
+      break;
+    case DoseRefusal::FilterGateClosed:
+      cause = "mesures non représentatives (purge / circulation à l'arrêt)";
       break;
     case DoseRefusal::FilterUnstable:
       cause = "capteur instable (rejets consécutifs)";
@@ -713,7 +1407,7 @@ bool PumpControllerClass::canDose(int pumpIndex) {
       break;
   }
 
-  logRefusalOnce(pumpIndex, cause);
+  logRefusalOnce(pumpIndex, cause, decision.cause);
   return false;
 }
 
@@ -1229,14 +1923,40 @@ void PumpControllerClass::update() {
   bool phSafetyOk = checkSafetyLimits(true);
   bool orpSafetyOk = checkSafetyLimits(false);
 
+  // ===== SURVEILLANCE des gardes pH / ORP (contre-visite C1) =================
+  // Point d'appel choisi pour n'être sous AUCUN court-circuit : il précède
+  // TOUTES les conjonctions d'éligibilité (mode de régulation, limite horaire,
+  // limite journalière, canDose) et n'est lui-même gardé par aucune condition
+  // dans ce bloc. Un pH qui s'effondre produit donc son warn 7,00, son critical
+  // 6,70 et ses alertes MQTT même quand le quota journalier est épuisé, même en
+  // mode `manual` — c'est-à-dire dans l'état exact où l'escalade laisse
+  // l'appareil, et où l'ancienne implémentation devenait muette.
+  //
+  // Les seules sorties d'update() en amont (OTA, mode maintenance, capteurs non
+  // initialisés, eau absente, stabilisation post-cal, assistant de débit) sont
+  // volontairement conservées : la sonde y est hors circulation ou la mesure non
+  // représentative — surveiller là produirait de FAUSSES alertes, et l'appareil
+  // n'y dose de toute façon rien. L'ordre surveillance → décision est garanti
+  // dans le même tick, aucune décision n'est prise sur un verdict périmé.
+  //
+  // Ces deux appels ne comptent RIEN et n'escaladent JAMAIS (cf. leur en-tête) :
+  // le compteur des 3 refus / 24 h reste alimenté par les seuls refus RÉELS de la
+  // branche automatique, via isPhGuardBlocking(true).
+  tickPhGuardSurveillance();
+  tickOrpPhInhibitSurveillance();
+
   // Contrôle pH — branche automatique gardée en profondeur par canDose(0).
   // canDose(0) vérifie watchdog, filtration, stale/NaN, calibration, stabilisation,
   // mode automatic, limites journalière/horaire, anti-cycling.
-  // feature-067 (pool-chemistry #2) : isPhRawFloorBlocking() est évalué AVANT
-  // canDose(0) — quand le plancher bloque, aucune évaluation de dosage n'a lieu
-  // et la cause de refus exposée au WS est celle du plancher.
+  // pool-chemistry #2 : isPhGuardBlocking() est évalué AVANT canDose(0) — quand
+  // une garde bloque, aucune évaluation de dosage n'a lieu et la cause de refus
+  // exposée au WS est celle de la garde. `true` = les refus de CETTE branche
+  // (automatique) alimentent le compteur des 3 refus / 24 h et peuvent escalader.
+  // Contre-visite C1 : cet appel ne DÉTECTE plus rien (la surveillance ci-dessus
+  // l'a fait, hors court-circuit) — il ne fait que consommer le verdict du tick
+  // et comptabiliser le refus RÉEL de cette branche.
   const String& phMode = mqttCfg.phRegulationMode;
-  if (phMode == "automatic" && phLimitOk && phSafetyOk && !isPhRawFloorBlocking() && canDose(0)) {
+  if (phMode == "automatic" && phLimitOk && phSafetyOk && !isPhGuardBlocking(true) && canDose(0)) {
     // feature-025 : le PID auto consomme la mesure FILTRÉE (médiane + EMA).
     // canDose(0) a déjà garanti isPhFilterReady() && !isPhFilterUnstable() → non NaN.
     float phValue = sensors.getPhFiltered();
@@ -1474,10 +2194,13 @@ void PumpControllerClass::update() {
         " (cycle " + String(phDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
     }
   } else if (phMode == "scheduled" && phLimitOk && phSafetyOk &&
-             mqttCfg.phDailyTargetMl > 0 && !isPhRawFloorBlocking()) {
-    // feature-067 (pool-chemistry #2) : le mode Programmée est aveugle à la
-    // mesure PAR CONCEPTION, mais le plancher acide s'y applique QUAND MÊME —
-    // c'est un filet de sécurité chimique, pas une boucle de régulation.
+             mqttCfg.phDailyTargetMl > 0 && !isPhGuardBlocking(false)) {
+    // pool-chemistry #2 : le mode Programmée est aveugle à la mesure PAR
+    // CONCEPTION, mais les gardes pH s'y appliquent QUAND MÊME — ce sont des
+    // filets de sécurité chimique, pas une boucle de régulation. `false` = ces
+    // refus ne sont ni comptés ni escaladés (une consigne volumétrique choisie
+    // par l'utilisateur ne doit pas fermer la régulation) ; ils sont signalés
+    // en warn + alerte MQTT à débit limité.
     // Mode Programmée (feature-011) : répartition du volume quotidien par
     // fenêtres de kScheduledWindowMinutes (15 min) sur l'horizon de filtration
     // restant, borné à minuit. Intentionnellement aveugle à la valeur mesurée
@@ -1701,10 +2424,14 @@ void PumpControllerClass::update() {
   }
 
   // Contrôle ORP — dispatch sur orpRegulationMode, gardé en profondeur par canDose(1).
-  // feature-067 (pool-chemistry #3) : inhibition ORP sur pH BRUT élevé, évaluée
-  // AVANT canDose(1) (même patron que le plancher acide côté pH).
+  // feature-067 (pool-chemistry #3) : inhibition ORP sur pH élevé, évaluée AVANT
+  // canDose(1) (même patron que le plancher acide côté pH). Contre-visite C1 :
+  // la DÉTECTION et l'alerte « pH élevé, chlore inhibé » ont été faites plus haut
+  // par tickOrpPhInhibitSurveillance(), hors conjonction — elles partent donc même
+  // quand le quota chlore journalier est atteint (orpSafetyOk faux), cas où cette
+  // alerte est justement la seule à désigner la vraie cause.
   const String& orpMode = mqttCfg.orpRegulationMode;
-  if (orpMode == "automatic" && orpLimitOk && orpSafetyOk && !isOrpInhibitedByPhRaw(true) && canDose(1)) {
+  if (orpMode == "automatic" && orpLimitOk && orpSafetyOk && !isOrpInhibitedByPh() && canDose(1)) {
     // feature-025 : le PID auto consomme la mesure FILTRÉE (médiane + EMA).
     // canDose(1) a déjà garanti isOrpFilterReady() && !isOrpFilterUnstable() → non NaN.
     float orpValue = sensors.getOrpFiltered();
@@ -1892,7 +2619,7 @@ void PumpControllerClass::update() {
         " (cycle " + String(orpDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
     }
   } else if (orpMode == "scheduled" && orpLimitOk && orpSafetyOk &&
-             mqttCfg.orpDailyTargetMl > 0 && !isOrpInhibitedByPhRaw(false)) {
+             mqttCfg.orpDailyTargetMl > 0 && !isOrpInhibitedByPh()) {
     // feature-067 (pool-chemistry #3) : l'inhibition sur pH brut élevé s'applique
     // AUSSI au mode Programmée — injecter du chlore à pH > 7,6 est inefficace et
     // conduit au surdosage (filet de sécurité, pas régulation sur la mesure).
