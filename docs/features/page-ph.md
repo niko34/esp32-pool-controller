@@ -18,7 +18,7 @@ En mode nominal, cinq zones :
    - **Manuelle** : bloc Injection manuelle (volume + bouton ▶ Injecter / ⏹ Stopper).
    - **Pied de carte, mode Automatique uniquement** : bloc « **Rattrapage accumulé** » (`#ph-integral-section`, v2.26.0) — voir [Rattrapage accumulé par la régulation pH](#rattrapage-accumulé-par-la-régulation-ph-v2260).
 3. **Carte Correction de la mesure pH** (`#ph-card-offset`, feature-067, v2.20.0) — offset logiciel appliqué à la mesure. Voir [Carte « Correction de la mesure pH »](#carte--correction-de-la-mesure-ph--feature-067-v2200).
-4. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`.
+4. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : bande fixe **7,2-7,6** (plage idéale de l'eau) + **ligne de consigne pointillée** à `ph_target` — voir [Repères du graphique d'historique](#repères-du-graphique-dhistorique-feature-083-v2281).
 5. **Carte Calibration** — **remplace** Régulation + Historique pendant une session de calibration. Écran **guidé par stepper** (feature-034) — voir [Workflow calibration](#workflow-calibration).
 
 Le bloc Statistiques reste visible **en permanence**, y compris pendant la calibration.
@@ -52,6 +52,27 @@ brut 7.24 · médiane 7.24 · maj à l'instant
 > **feature-067 (v2.20.0)** : la valeur affichée en grand (`ph`), la médiane et la valeur filtrée intègrent l'**offset logiciel** `ph_offset` ; seul `phRaw` reste brut. Voir [Carte « Correction de la mesure pH »](#carte--correction-de-la-mesure-ph--feature-067-v2200).
 
 `--` est affiché si la valeur est `null` (filtre non amorcé / EZO injoignable).
+
+## Repères du graphique d'historique (feature-083, v2.28.1)
+
+Le graphique de détail (carte Historique) porte deux repères **distincts** :
+
+- **Bande fixe 7,2 – 7,6** (lignes rouges + zones ombrées hors plage) : la **plage idéale de l'eau** selon la littérature (poolplanet — optimum 7,4 ; sous 7,2 : irritation, corrosion ; au-dessus de 7,6 : calcaire, chlore moins efficace). C'est la **seule** borne de graphique codée en dur côté client (`PH_IDEAL_MIN` / `PH_IDEAL_MAX`, commentées avec leur référence dans [`data/app.js`](../../data/app.js)) — **Option B** de la spec 083 ; l'option « bornes servies par le firmware » est écartée pour ce cycle, reportable dans une spec future. L'ancienne bande **7,0-7,4** ne correspondait à aucune référence.
+- **Ligne de consigne pointillée** (bleue) à `ph_target` : la valeur **configurée**, dynamique.
+
+> ⚠️ **Trois plages différentes, et elles le restent** (arbitrage du 30/08/2026, consigné dans la spec — ne pas les unifier) :
+>
+> | | Valeur | Sens |
+> |---|---|---|
+> | Bande du graphique | **7,2 – 7,6** | plage idéale de l'eau (littérature) |
+> | Plage de consigne réglable | **7,20 – 7,50** | ce que l'appareil autorise à viser |
+> | Seuils de garde | **6,70 / 7,60** | où le dosage est refusé |
+>
+> La consigne est **délibérément plus resserrée** que la plage idéale : elle laisse une marge avant l'inhibition du chlore à 7,60. Caler la bande sur la plage de consigne (première version de la demande, écartée) ferait apparaître un pH 7,10 « hors plage » alors qu'il est acceptable.
+
+**Mise à jour sans rechargement** : la ligne de consigne est posée/mise à jour par `loadConfig()` (`phChart?.setTarget(cfg.ph_target)`) — point de passage **unique** couvrant l'UI, l'API et MQTT : chaque sauvegarde recharge `/get-config`, et les trames WS `config` passent aussi par `loadConfig`. La valeur est **normalisée à 2 décimales** avant comparaison (`/get-config` sert un arrondi, le WS le float brut — sans normalisation, chaque trame provoquerait un re-render cosmétique).
+
+**Repli** : consigne jamais servie (firmware antérieur, clé absente) → **aucune ligne tracée**, jamais de valeur inventée (piège maison : clé absente ≠ 0). Une valeur **absente ou non finie** dans une trame est ignorée : une trame partielle ne fait **jamais disparaître** une ligne existante. Les bornes d'axe Y (`calculateAxisLimits`) incluent la consigne en plus des données : la ligne reste toujours visible dans le cadre.
 
 ## Rattrapage accumulé par la régulation pH (v2.26.0)
 

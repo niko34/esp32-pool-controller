@@ -2,6 +2,24 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.28.1] - 2026-08-30
+
+> ✅ **Les repères des graphiques d'historique pH et ORP disent enfin la vérité.** La bande pH affichait 7,0-7,4, une plage qui ne correspondait ni à la plage idéale de l'eau ni aux réglages de l'appareil. La bande ORP 600-800 mV affirmait une norme qui n'existe pas (le potentiel utile dépend du pH, du stabilisant et de la température) et annonçait « hors plage » en permanence une installation correctement réglée à 550 mV.
+
+### Fonctionnalités
+
+- **Graphique pH (page pH)** : la bande ombrée reflète désormais la **plage idéale de l'eau 7,2-7,6** (littérature, optimum 7,4), et une **ligne de consigne pointillée** trace la valeur configurée (`ph_target`). Trois plages distinctes, et c'est voulu : bande du graphique **7,2-7,6** / plage de consigne réglable **7,20-7,50** / seuils de garde **6,70-7,60** — elles ne doivent pas être unifiées (la consigne laisse une marge avant l'inhibition du chlore à 7,60).
+- **Graphique ORP (page ORP)** : la **bande 600-800 mV trompeuse disparaît**, remplacée par la **ligne de consigne** à `orp_target`.
+- Les lignes de consigne se mettent à jour **sans rechargement de page**, quel que soit le canal du changement (UI, API, MQTT). Firmware antérieur ne servant pas la consigne : **repère absent — jamais de valeur inventée** ; une trame partielle ne fait jamais disparaître la ligne. Empreinte : +258 o gzippé sur le filesystem, aucun changement firmware hors numéro de version.
+
+### Documentation
+
+- `docs/features/page-ph.md` : nouvelle section « Repères du graphique d'historique » — bande 7,2-7,6, ligne de consigne, table des trois plages (arbitrage du 30/08 consigné dans la spec), règles de mise à jour et de repli.
+- `docs/features/page-orp.md` : nouvelle section « Repère du graphique d'historique » — suppression motivée de la bande, ligne de consigne.
+- Pas d'ADR : arbitrage Option A/B consigné dans la spec, portée locale à l'affichage, la bande pH reste une constante d'affichage commentée avec sa référence dans `data/app.js` (Option B — bornes servies par le firmware reportables dans une spec future).
+
+---
+
 ## [2.28.0] - 2026-08-30
 
 > ✅ **La charge quotidienne connue est désormais couverte dès la première heure de filtration, au lieu de J+2,4.** Le bassin consomme une dose d'acide très régulière (~80 % vient du dégazage de CO₂, stable d'un jour à l'autre), et l'appareil la connaît déjà : elle est dans son historique de consommation depuis la v2.27.0. Jusqu'ici la régulation la redécouvrait chaque fois par tâtonnement — et le moindre à-coup (pluie, appoint) effaçait l'apprentissage. Cette version injecte d'office la charge connue pendant les sessions automatiques (« **dose de base apprise** », feedforward), la régulation ne traitant plus que l'écart résiduel. Elle est **apprise, jamais saisie** : aucun volume de bassin, TAC ou concentration à renseigner.

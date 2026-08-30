@@ -432,19 +432,22 @@
   }
 
   // ---------- Charts (Dashboard) ----------
-  const PH_MIN = 7.0;
-  const PH_MAX = 7.4;
+  // Bande du graphique pH : plage idéale de l'eau (littérature — poolplanet,
+  // optimum 7,4), distincte de la plage de consigne 7,20-7,50 et des seuils de
+  // garde — Option B, spec 083. L'ORP n'a AUCUNE bande : pas de plage
+  // universelle (dépend du pH, du stabilisant, de la sonde) — consigne seule.
+  const PH_IDEAL_MIN = 7.2;
+  const PH_IDEAL_MAX = 7.6;
   const PH_AXIS_MIN_DEFAULT = 6;
   const PH_AXIS_MAX_DEFAULT = 9;
   const PH_ZONE_COLOR = 'rgba(239, 68, 68, 0.08)';
   const PH_LINE_COLOR = 'rgba(239, 68, 68, 0.7)';
 
-  const ORP_MIN = 600;
-  const ORP_MAX = 800;
   const ORP_AXIS_MIN_DEFAULT = 500;
   const ORP_AXIS_MAX_DEFAULT = 900;
-  const ORP_ZONE_COLOR = 'rgba(239, 68, 68, 0.08)';
-  const ORP_LINE_COLOR = 'rgba(239, 68, 68, 0.7)';
+  // Ligne de consigne (ph_target / orp_target servis par /get-config et le WS)
+  const TARGET_LINE_COLOR = 'rgba(59, 130, 246, 0.85)';
+  const TARGET_LINE_DASH = [6, 6];
   const CHART_POINT_PX = 18;
   const CHART_SCROLL_EPS = 20;
   let chartAutoScroll = true;
@@ -938,21 +941,35 @@
   }
 
   // Usine des graphiques détail (Température / pH / ORP)
-  // referenceLines : { max, min, axisMin, axisMax, zoneColor, lineColor } → lignes + zones
-  // hors plage (bandes uPlot) avec bornes Y dynamiques via calculateAxisLimits
+  // referenceLines : { max, min, zoneColor, lineColor } → lignes + zones hors
+  // plage (bandes uPlot). targetLine : { color, dash } → ligne de consigne
+  // horizontale, mutable via setTarget() sans recréer le graphe (feature-083).
+  // axisMin/axisMax (requis si referenceLines ou targetLine) : bornes Y par
+  // défaut, étendues dynamiquement via calculateAxisLimits (données + consigne).
   function createLineChart(host, color, label, options = {}) {
     if (!host || typeof uPlot === 'undefined') return null;
-    const { integerOnly = false, fill = true, referenceLines = null } = options;
+    const {
+      integerOnly = false, fill = true,
+      referenceLines = null, targetLine = null,
+      axisMin = null, axisMax = null
+    } = options;
 
     const hasBands = referenceLines != null;
-    const measureIdx = hasBands ? 5 : 1;
+    const hasTarget = targetLine != null;
+    const dynamicY = hasBands || hasTarget; // bornes Y pilotées par calculateAxisLimits
+    // Index de la série de mesure (la DERNIÈRE : après les 4 séries de zones et
+    // l'éventuelle ligne de consigne) — pilote le curseur et le tooltip
+    const measureIdx = 1 + (hasBands ? 4 : 0) + (hasTarget ? 1 : 0);
     const st = {
       labels: [],
       values: [],
       ts: [],   // timestamp du dernier point contribuant à chaque entrée (tooltip)
       gran: [], // granularité de ce point (0/1/2)
-      yMin: hasBands ? referenceLines.axisMin : null,
-      yMax: hasBands ? referenceLines.axisMax : null
+      // Consigne : null tant que non servie (firmware antérieur) → aucune ligne
+      // tracée, jamais de valeur inventée (clé absente ≠ 0 — spec 083)
+      target: null,
+      yMin: dynamicY ? axisMin : null,
+      yMax: dynamicY ? axisMax : null
     };
 
     // Séries invisibles portant les bornes des zones hors plage
@@ -981,9 +998,18 @@
     };
     if (fill) measureSeries.fill = color + '20';
 
-    const series = hasBands
-      ? [{}, boundLine(), refLine(), refLine(), boundLine(), measureSeries]
-      : [{}, measureSeries];
+    // Ordre des séries : x, [4 séries de zones], [ligne de consigne], mesure —
+    // les zones restent aux index 1-4 (bands uPlot figées sur [1,2]/[3,4])
+    const series = [{}];
+    if (hasBands) series.push(boundLine(), refLine(), refLine(), boundLine());
+    if (hasTarget) series.push({
+      scale: 'y',
+      stroke: targetLine.color,
+      width: 2,
+      dash: targetLine.dash,
+      points: { show: false }
+    });
+    series.push(measureSeries);
 
     const yAxis = {
       scale: 'y',
@@ -1047,7 +1073,7 @@
       ]
     };
 
-    const initialData = hasBands ? [[], [], [], [], [], []] : [[], []];
+    const initialData = series.map(() => []);
     const u = new uPlot(opts, initialData, host);
     observeChart(host, u);
 
@@ -1057,19 +1083,27 @@
       // Reconstruit les données columnar + bornes Y dynamiques (les zones suivent)
       render() {
         const xs = st.labels.map((_, i) => i);
-        if (hasBands) {
-          const limits = calculateAxisLimits(st.values, referenceLines.axisMin, referenceLines.axisMax);
+        if (dynamicY) {
+          // Bornes Y : données + consigne — la ligne de consigne reste toujours
+          // visible dans le cadre (spec 083)
+          const forLimits = st.target != null ? st.values.concat(st.target) : st.values;
+          const limits = calculateAxisLimits(forLimits, axisMin, axisMax);
           st.yMin = limits.min;
           st.yMax = limits.max;
           const constant = (v) => Array(xs.length).fill(v);
-          u.setData([
-            xs,
-            constant(limits.max),          // borne haute de la zone haute
-            constant(referenceLines.max),  // ligne max
-            constant(referenceLines.min),  // ligne min
-            constant(limits.min),          // borne basse de la zone basse
-            st.values
-          ]);
+          const data = [xs];
+          if (hasBands) {
+            data.push(
+              constant(limits.max),          // borne haute de la zone haute
+              constant(referenceLines.max),  // ligne max
+              constant(referenceLines.min),  // ligne min
+              constant(limits.min)           // borne basse de la zone basse
+            );
+          }
+          // Consigne null → série entièrement null : uPlot ne trace rien
+          if (hasTarget) data.push(constant(st.target));
+          data.push(st.values);
+          u.setData(data);
         } else {
           u.setData([xs, st.values]);
         }
@@ -1081,6 +1115,19 @@
         st.values = values;
         st.ts = ts || labels.map(() => null);
         st.gran = gran || labels.map(() => null);
+        this.render();
+      },
+      // feature-083 : consigne mutable sans recréer le graphe. Les options uPlot
+      // sont capturées par closure → on mute l'état partagé st.target PUIS on
+      // re-rend via setData. Normalisation à 2 décimales : /get-config sert un
+      // arrondi, le WS le float brut — sans elle, chaque trame provoquerait un
+      // re-render cosmétique. Valeur absente/non finie → ignorée : une trame
+      // incomplète n'efface jamais une ligne existante, et rien n'est inventé.
+      setTarget(v) {
+        if (!hasTarget || typeof v !== 'number' || !isFinite(v)) return;
+        const norm = Math.round(v * 100) / 100;
+        if (norm === st.target) return;
+        st.target = norm;
         this.render();
       }
     };
@@ -2306,6 +2353,14 @@
 
     // Stocker la config globalement pour les alertes et cartes status
     window._config = cfg;
+
+    // feature-083 : lignes de consigne des graphiques détail pH/ORP — mise à
+    // jour sans rechargement, quelle que soit la source du changement (UI, API,
+    // MQTT) : chaque sauvegarde recharge /get-config ici, et les trames WS
+    // "config" passent aussi par loadConfig. setTarget ignore les valeurs
+    // absentes/non finies et ne re-rend que si la consigne a changé.
+    phChart?.setTarget(cfg.ph_target);
+    orpChart?.setTarget(cfg.orp_target);
 
     const activeId = document.activeElement?.id || "";
     const mqttEditing = ["mqtt_server", "mqtt_port", "mqtt_topic", "mqtt_username", "mqtt_password", "mqtt_enabled"].includes(activeId);
@@ -8940,30 +8995,30 @@
     // Créer les graphiques cachés seulement s'ils existent (compatibilité)
     if (tempChartCanvas) tempChart = createLineChart(tempChartCanvas, "#4f8fff", "Température");
     if (phChartCanvas) {
+      // feature-083 : bande = plage idéale de l'eau (7,2-7,6) + ligne de
+      // consigne ph_target (tracée à réception de la config — jamais inventée)
       phChart = createLineChart(phChartCanvas, "#8b5cf6", "pH", {
         fill: false,
+        axisMin: PH_AXIS_MIN_DEFAULT,
+        axisMax: PH_AXIS_MAX_DEFAULT,
         referenceLines: {
-          max: PH_MAX,
-          min: PH_MIN,
-          axisMin: PH_AXIS_MIN_DEFAULT,
-          axisMax: PH_AXIS_MAX_DEFAULT,
+          max: PH_IDEAL_MAX,
+          min: PH_IDEAL_MIN,
           zoneColor: PH_ZONE_COLOR,
           lineColor: PH_LINE_COLOR
-        }
+        },
+        targetLine: { color: TARGET_LINE_COLOR, dash: TARGET_LINE_DASH }
       });
     }
     if (orpChartCanvas) {
+      // feature-083 : plus de bande ORP (aucune plage universelle) — ligne de
+      // consigne orp_target seule
       orpChart = createLineChart(orpChartCanvas, "#10b981", "ORP", {
         integerOnly: true,
         fill: false,
-        referenceLines: {
-          max: ORP_MAX,
-          min: ORP_MIN,
-          axisMin: ORP_AXIS_MIN_DEFAULT,
-          axisMax: ORP_AXIS_MAX_DEFAULT,
-          zoneColor: ORP_ZONE_COLOR,
-          lineColor: ORP_LINE_COLOR
-        }
+        axisMin: ORP_AXIS_MIN_DEFAULT,
+        axisMax: ORP_AXIS_MAX_DEFAULT,
+        targetLine: { color: TARGET_LINE_COLOR, dash: TARGET_LINE_DASH }
       });
     }
 

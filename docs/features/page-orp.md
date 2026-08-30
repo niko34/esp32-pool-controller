@@ -16,7 +16,7 @@ En mode nominal, quatre zones :
    - **Automatique** : ORP cible (mV) + bouton Sauvegarder.
    - **Programmée** : volume quotidien de chlore en mL + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#orp_scheduled_flow_line` / `#orp_scheduled_flow_value`, alimentée par le champ WS `orp_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
    - **Manuelle** : bloc Injection manuelle.
-3. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`, zone ombrée 600–800 mV (`ORP_MIN`/`ORP_MAX`, app.js) indiquant la plage de désinfection.
+3. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : **plus de zone ombrée** — **ligne de consigne pointillée** à `orp_target`, voir [Repère du graphique d'historique](#repère-du-graphique-dhistorique-feature-083-v2281).
 4. **Carte Calibration** — **remplace** Régulation + Historique pendant une session. Écran **guidé par stepper** (feature-034), 1 seul point de calibration (architecture symétrique de la page pH) — voir [Workflow calibration](#workflow-calibration).
 
 Le bloc Statistiques reste visible en permanence.
@@ -44,6 +44,16 @@ brut 720 mV · médiane 720 mV · maj à l'instant
 ```
 
 - **brut** = `orpRaw` ; **médiane** = `orpMedian` ; **maj** = âge de la dernière mesure brute valide. `--` si `null`.
+
+## Repère du graphique d'historique (feature-083, v2.28.1)
+
+La **bande ombrée 600-800 mV est supprimée** (constantes `ORP_MIN`/`ORP_MAX` retirées de `data/app.js`). Motif : **l'ORP n'a pas de plage universelle** — le potentiel utile dépend du pH, du stabilisant (CYA), de la température et de l'état de l'électrode. Une bande fixe affirmait une norme qui n'existe pas, et affichait « hors plage basse » en permanence une installation dont la consigne (550 mV) avait été choisie délibérément après analyse.
+
+Elle est remplacée par une **ligne de consigne pointillée** (bleue) à `orp_target` — même mécanisme que la page pH ([détail complet](page-ph.md#repères-du-graphique-dhistorique-feature-083-v2281)) :
+
+- mise à jour **sans rechargement** via `loadConfig()` (`orpChart?.setTarget(cfg.orp_target)`), quel que soit le canal du changement (UI, API, MQTT — les trames WS `config` passent aussi par `loadConfig`) ; valeur **normalisée à 2 décimales** avant comparaison ;
+- **repli** : consigne jamais servie (firmware antérieur, clé absente) → **aucune ligne tracée**, jamais de valeur inventée ; une valeur absente ou non finie dans une trame est ignorée — une trame partielle ne fait **jamais disparaître** la ligne ;
+- les bornes d'axe Y (`calculateAxisLimits`) incluent la consigne : la ligne reste toujours visible dans le cadre.
 
 ## Chip d'état filtre (feature-025)
 
