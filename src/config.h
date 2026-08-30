@@ -334,6 +334,16 @@ void recordPhLoadDay(const char* date8, float phMl, uint32_t filtrationMinutes,
 // vraisemblance doit suivre les réglages, sans quoi relever la limite horaire
 // (recommandation du gate) écarterait toutes les journées en silence.
 PhPersistLoadObservation readPhLoadObservation(float sustainableMlPerMin);
+// feature-086 : série de journées calendaires consécutives SATURÉES par
+// l'actionneur pH (délivré ≥ kPhActuatorLimitDayFillRatio × maximum possible),
+// relue depuis le MÊME anneau — LECTURE SEULE STRICTE (schéma, CRC et
+// recordPhLoadDay intouchés). Toute la décision vit dans
+// ph_actuator_limit_logic.h (module PUR) ; ici, le transport uniquement.
+// Prévu pour être appelé RAREMENT (démarrage + clôture de journée) — l'appelant
+// met le résultat en cache, JAMAIS de lecture NVS depuis update().
+// `sustainableMlPerMin` ≤ 0 ou non fini ⇒ 0 (pompe non caractérisée : pas de
+// maximum calculable, donc pas de série — fail-closed côté alerte).
+uint8_t readPhActuatorLimitStreak(float sustainableMlPerMin);
 // SOURCE UNIQUE du débit moyen soutenable de la voie pH (mL/min) : débit
 // d'amplitude CALIBRÉ de la pompe pH × limite horaire CONFIGURÉE. Rend 0 quand la
 // pompe n'est pas caractérisée — l'appelant retombe alors sur le repli documenté

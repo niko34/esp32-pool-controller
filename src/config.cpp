@@ -4,6 +4,7 @@
 #include "ph_offset.h"  // feature-067 : isPhOffsetValid() (logique pure)
 #include "ph_guard_logic.h"  // v2.25.0 : roundPhOffsetToStep() (logique pure)
 #include "ph_integral_logic.h"  // v2.27.0 : phSustainableAvgFlow() (logique pure)
+#include "ph_actuator_limit_logic.h"  // feature-086 : phActuatorLimitStreak() (logique pure)
 #include <Preferences.h>
 #include <time.h>
 
@@ -779,6 +780,15 @@ PhPersistLoadObservation readPhLoadObservation(float sustainableMlPerMin) {
   // qui ne sont les 7 derniers JOURS que si l'appareil a tourné sans
   // interruption), le débit soutenable BORNE leur vraisemblance.
   return phLoadObservation(h, currentLoadDateNumber(), sustainableMlPerMin);
+}
+
+uint8_t readPhActuatorLimitStreak(float sustainableMlPerMin) {
+  PhLoadHistory h;      // vide par défaut ⇒ série 0 (fail-closed)
+  loadPhLoadHistory(h); // anneau absent ou corrompu : on garde vide
+  // Mêmes bornes que readPhLoadObservation : la date du jour ancre la série (le
+  // jour archivé le plus récent doit dater d'hier ou d'aujourd'hui), le débit
+  // soutenable borne la vraisemblance ET fixe le maximum délivrable par journée.
+  return phActuatorLimitStreak(h, currentLoadDateNumber(), sustainableMlPerMin);
 }
 
 void recordPhLoadDay(const char* date8, float phMl, uint32_t filtrationMinutes,

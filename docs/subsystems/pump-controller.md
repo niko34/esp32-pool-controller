@@ -1262,6 +1262,71 @@ Publiés en **parité stricte** sur `/data`, le WebSocket et MQTT (`ph_ff_ml_per
 
 Nouvelle suite native [`test/test_native_ph_feedforward/`](../../test/test_native_ph_feedforward/) — total du projet **932 → 970 tests**, **6 mutations tuées sur 6** (validation par mutation exigée par le workflow projet).
 
+## Limite d'actionneur pH — exposition et alerte de sous-dimensionnement (feature-086, v2.29.0)
+
+> Décision structurante : [ADR-0056](../adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md) (3 jours × 80 %, anneau évalué au soutenable courant). Visa `pool-chemistry` : **GO sous conditions** (les deux conditions prouvées par test et par grep), revue **Approved**, 30/08/2026. Spec : [feature-086](../../specs/features/doing/feature-086-limite-actionneur-dosage-ph.md).
+
+Le visa du 30/08/2026 établit que le bassin de référence est limité par l'**actionneur**, pas par le correcteur : maximum délivrable ~911 mL/j (2,17 mL/min soutenable × 420 min de filtration) contre un besoin de ~1 800 mL/j. Cette section rend la limite **visible** et **alertable** — **lecture seule stricte** : aucun de ces chemins n'est consommé par une décision de dosage, aucun chemin nouveau vers les pompes. Logique pure dans [`src/ph_actuator_limit_logic.h`](../../src/ph_actuator_limit_logic.h) ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)).
+
+### Les 4 accesseurs (lecture seule, parité `/data` ↔ WS)
+
+| Accesseur | Retour | Contrat |
+|---|---|---|
+| `getPhSustainableMlPerMin()` | float | Débit moyen soutenable = amplitude calibrée × limite horaire (`phSustainableFlowFromConfig()`, source unique, recalcul à la demande — une multiplication, pas de cache à invalider). `NAN` si pompe non caractérisée ou valeur non finie → `null` en JSON. |
+| `getPhDailyMaxMl()` | float | Soutenable × `filtration.scheduledMinutesToday()` (minutes **programmées**, voir ci-dessous). `NAN` si soutenable indisponible ou planning inexploitable (−1). |
+| `isPhLimitedByHourlyBudget()` | bool | Épisode de saturation C5 **ouvert** (`_phIntegral.satActive`, hystérésis sur la **demande**) **ET** mesure pH valide. |
+| `isPhUndersizedSuspected()` | bool | `phActuatorUndersized(_phLimitStreakDays, anomalyHeldMs > 0)` **ET** mesure pH valide. |
+
+Course bénigne assumée (patron `isAnyPumpEnergized`) : état écrit par `loopTask`, lu en contexte web async, lectures 8/32 bits atomiques sur Xtensa. Publication : [API.md](../API.md#champs-de-la-limite-dactionneur-ph-feature-086-v2290), [ws-manager.md](ws-manager.md#champs-sensor_data-ajoutés-en-v2290--limite-dactionneur-ph-feature-086), UI : [page-ph.md](../features/page-ph.md#capacités-de-dosage-et-bandeaux-de-limite-dactionneur-feature-086-v2290).
+
+### Critère de détection (`phActuatorLimitStreak`, module pur)
+
+La série compte **N = 3 journées calendaires consécutives exploitables** (`kPhActuatorLimitConsecutiveDays`) dont le volume délivré atteint **≥ 80 %** du maximum délivrable de la journée (`kPhActuatorLimitDayFillRatio` × soutenable × minutes **réellement archivées** de circulation). Règles du parcours de l'anneau `ph_load7` (du plus récent au plus ancien) :
+
+- **Ancrage hier/aujourd'hui** : le jour archivé le plus récent doit dater d'hier (cas nominal post-minuit) ou d'aujourd'hui (journée close par recul d'horloge). Un appareil arrêté deux mois retrouve des journées d'été intactes : une série ancienne ne décrit plus le régime courant → série 0.
+- **Les jours non exploitables et les trous calendaires CASSENT la série** — ils ne la traversent pas : journée non archivée (horloge invalide, appareil éteint), journée sous 2 h de circulation, rapport mL/min implausible (mêmes critères `phLoadDayUsable` que la médiane R1). Arithmétique de dates exacte (`phLoadDayNumber`, bissextiles comprises).
+- **Marge 80 % et non 90-95 %, justifiée par l'incident du 23/08** : en saturation permanente réelle, le délivré observé plafonne à **84-88 % du maximum théorique** (765-802 mL comptés pour ~911 mL max) — pauses de mélange, délai de purge et plafonds de session amputent mécaniquement le reste. Un seuil à 90-95 % ne se déclencherait **jamais** ; un régime convergé délivre < 50 %, donc aucun faux positif à 80 % (`static_assert` verrouille ]0,5 ; 0,9[).
+- Soutenable ≤ 0/non fini ou date du jour inexploitable → série 0 (fail-closed, on n'invente pas de maximum).
+
+### Réarmement implicite : l'anneau est évalué au soutenable COURANT
+
+Aucun compteur d'alerte n'est persisté : la série est **recalculée** à chaque relecture de l'anneau contre le débit soutenable **courant**. Conséquences voulues :
+
+- **Limite relevée** ⇒ le soutenable monte ⇒ les ratios des journées passées retombent sous 80 % ⇒ la série retombe, l'alerte se lève d'elle-même.
+- **Limite baissée** ⇒ les journées passées deviennent implausibles au filet de vraisemblance ⇒ écartées.
+
+**Trade-off assumé** ([ADR-0056](../adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md)) : relever la limite « blanchit » jusqu'à 7 jours d'historique — mais c'est précisément l'**action corrective attendue** ; l'alerte n'a plus de raison de persister une fois le remède appliqué (cas limite « changement de produit ou de concentration » de la spec : l'alerte se réarme, elle ne persiste pas).
+
+### Garde mesure-valide sur les DEUX accesseurs booléens
+
+L'épisode C5 est tenu en **temps de branche automatique** : sur mesure pH invalide (panne de sonde), la branche d'entretien s'arrête et `anomalyHeldMs` **GÈLE** à sa dernière valeur > 0 — sans garde, une montée du streak 2→3 à la clôture de journée pendant une panne de sonde émettrait l'alerte sur un épisode **figé** (trou trouvé par le `test-engineer` en cours de cycle, corrigé — condition bloquante n°1 du visa). Les deux booléens portent donc **strictement le même prédicat** `!isnan(sensors.getPhFilteredRaw())` (garde d'âge du filtre comprise) : « borné par la limite » et « sous-dimensionné » restent distincts de « bidon vide » et de « panne de sonde ». Le journal passe par l'accesseur lui-même : journal et champ publié **ne peuvent pas diverger** — une panne de sonde fait aussi retomber l'alerte (fail-closed), qui se réarme d'elle-même au retour de la mesure.
+
+### Cache `_phLimitStreakDays` — zéro NVS dans `update()`
+
+La série est relue par `readPhActuatorLimitStreak()` (config.cpp) au **même rythme** que la médiane R1, dans `refreshPhLoadObservation()` : au **démarrage différé** et à la **clôture de journée** — les deux seuls instants où l'anneau bouge. C'est la garantie « jamais de lecture NVS dans `update()` ». Avant amorçage : 0 par défaut (fail-closed).
+
+### `scheduledMinutesToday()` (FiltrationManager)
+
+Durée **programmée** de filtration du jour (minutes), −1 = indisponible. Prédicat de mode **aligné sur `decideFiltrationRun`** par comparaison **exacte** (`strcmp`) : les modes `auto` **ET** `manual` suivent tous deux la plage start/end (`manual` = « horaires fixés par l'utilisateur », pas « sans planning ») ; `off`/`force` et plage invalide → −1, rien n'est inventé. **Nuance assumée** : `forceOn`/`forceOff`/boost peuvent faire tourner la filtration **hors plage** — le maximum journalier reste une capacité **ANNONCÉE** fondée sur le planning (capacité stable), pas un décompte des minutes réelles. Plage `[start, end)` fermée à gauche, ouverte à droite (durée = end − start, modulo minuit), même sémantique qu'`isMinutesInRange`.
+
+### Constantes ([`constants.h`](../../src/constants.h))
+
+| Constante | Valeur | Rôle |
+|---|---:|---|
+| `kPhActuatorLimitConsecutiveDays` | 3 | Journées consécutives saturées requises — alignée sur le jalon d'observation terrain et `kPhIntegralRestoreMinHistoryDays` ; une journée isolée (canicule, baignade) n'alerte pas, trois ne sont plus un épisode mais un régime. `static_assert` : [2 ; 7] (tient dans l'anneau). |
+| `kPhActuatorLimitDayFillRatio` | 0,80 | Fraction du maximum théorique comptant une journée « saturée ». `static_assert` : ]0,5 ; 0,9[. |
+
+### Journal (par transition, jamais par tour)
+
+| Message | Niveau | Quand |
+|---|---|---|
+| `[Dosage pH] Sous-dimensionnement suspecté : N jour(s) consécutif(s) au maximum délivrable (débit soutenable X.XX mL/min) et pH toujours au-dessus de la consigne — la limite horaire d'injection borne le débit sous le besoin du bassin` | `warning` | Montée de l'alerte (`tickPhUndersizedAlert()`) — diagnostic d'installation, pas un `critical` d'incident |
+| `[Dosage pH] Suspicion de sous-dimensionnement levée : la série de journées saturées est interrompue ou l'erreur pH est rentrée (épisode de saturation clos)` | `info` | Retombée |
+
+### Testabilité
+
+Nouvelle suite native `test/test_native_ph_actuator_limit/` — total du projet **970 → 994 tests**, **5 mutations tuées sur 5** (validation par mutation exigée par le workflow projet).
+
 ## Comptabilisation d'un démarrage de cycle : invariant (v2.20.5)
 
 > **INVARIANT** : dans les branches `automatic` (pH **et** ORP), **un cycle est comptabilisé si et seulement si un cycle a réellement démarré** — c'est-à-dire si un duty non nul a été commandé ce tour de boucle.

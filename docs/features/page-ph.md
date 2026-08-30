@@ -138,6 +138,41 @@ Ligne `#ph_ff_line`, ajoutée **dans le bloc Rattrapage accumulé** (mêmes règ
 - La valeur n'est affichée **que** pour le statut `actif` : dans tous les autres états le débit vaut 0 par construction, et un « 0,00 mL/min » se lirait comme une mesure.
 - Parité `/data` ↔ WS : les deux champs sont servis à l'identique par les deux transports (voir [API.md](../API.md#champs-du-feedforward-ph-feature-085-v2280)).
 
+## Capacités de dosage et bandeaux de limite d'actionneur (feature-086, v2.29.0)
+
+Trois éléments exposent la [limite d'actionneur pH](../subsystems/pump-controller.md#limite-dactionneur-ph--exposition-et-alerte-de-sous-dimensionnement-feature-086-v2290) ([ADR-0056](../adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md)) : un bloc de capacités, un bandeau informatif, une alerte de diagnostic. Point de décision **unique** : `updatePhActuatorLimitDisplay()` (appelée depuis `updateDetailSections()`, sous `try/catch` — un rendu qui lance ne masque jamais les rubriques suivantes en silence). **Sentinelle de présence** : `ph_limited_by_hourly_budget` non booléen (`undefined`, firmware < 2.29.0) → les **trois** éléments restent masqués, rien n'est inventé.
+
+### Bloc capacités (`#ph_capacity_block`)
+
+Sous la barre de dose journalière, présentation volontairement **discrète** (`muted small`) : ce sont des **capacités dérivées des réglages** (limite horaire × débit calibré, × minutes de filtration programmées), pas des mesures.
+
+| Élément | Id | Source | Format |
+|---|---|---|---|
+| Débit soutenable | `#ph_sustainable_value` | `ph_sustainable_ml_per_min` | `X,XX mL/min` (fr-FR, 2 décimales) ; `null` → **« Indisponible — pompe non caractérisée »** |
+| Maximum journalier | `#ph_daily_max_value` | `ph_daily_max_ml` | `N mL/j` (entier, fr-FR) ; `null` → « Indisponible » |
+
+### Bandeau informatif « Dosage au maximum autorisé » (`#ph_budget_banner`)
+
+`callout--info`, `role="status"` — ton **neutre** validé par `pool-chemistry` : c'est un **état normal** de la régulation, pas une anomalie (pas de rouge, pas d'icône d'alerte). Affiché quand `ph_limited_by_hourly_budget` est `true`, texte composé par `updatePhActuatorLimitDisplay()` :
+
+> **Dosage au maximum autorisé**
+> La limite horaire d'injection ({X} min/h) plafonne l'apport de correcteur à {Y} mL/min, soit au plus {Z} mL sur la journée de filtration programmée. Le pH redescend au rythme le plus rapide que ce réglage autorise.
+
+`{X}` = `ph_limit_minutes` (config), `{Y}` = `ph_sustainable_ml_per_min`, `{Z}` = `ph_daily_max_ml`. Si `{Z}` est `null`, la première phrase est tronquée après « {Y} mL/min. ». Si `{Y}` est `null`, le bandeau est **masqué** (garde défensive : sans débit soutenable, la phrase serait creuse — cas théorique, le firmware ne tient pas d'épisode C5 sans pompe caractérisée).
+
+### Alerte « Capacité de dosage insuffisante » (`#ph_undersized_banner`)
+
+`callout--warn`, `role="status"` — diagnostic d'installation, visuellement distinct du bandeau informatif, plus grave, mais **pas une alarme critique**. Affichée quand `ph_undersized` est `true`. Texte **statique** (seul `hidden` est piloté), libellé exact validé par `pool-chemistry` :
+
+> **Capacité de dosage insuffisante**
+> Depuis 3 jours, la pompe pH délivre chaque jour tout ce que la limite horaire autorise, sans ramener le pH à la consigne. Le réglage actuel ne couvre pas le besoin du bassin : allonger la durée de filtration ou, après vérification de l'installation, relever la limite horaire.
+
+**Règles de rédaction tenues** :
+- **L'alerte REMPLACE le bandeau informatif** — jamais d'empilement : quand `ph_undersized` est vrai, le bandeau est masqué (l'alerte contient l'information).
+- **Aucune mention de bidon** (leçon v2.26.0 : le client annonçait « vérifiez le bidon » sur une saturation qui désignait la limite horaire).
+- Le conseil cite **la filtration en premier** ; le relèvement de la limite horaire n'est proposé qu'**« après vérification de l'installation »** (le relèvement augmente proportionnellement le volume injecté pendant le retard de mélange — point 3 de la spec, différé).
+- « 3 jours » est la **constante firmware** du diagnostic (`kPhActuatorLimitConsecutiveDays`), pas un champ servi.
+
 ## Carte « Correction de la mesure pH » (feature-067, v2.20.0)
 
 Carte `#ph-card-offset`, placée **entre la carte Régulation et la carte Historique**. Elle est **toujours visible**, quel que soit le mode de régulation : elle corrige la **mesure**, pas la régulation. Elle est **distincte de la calibration EZO**, qui reste dans sa propre carte.
@@ -442,6 +477,7 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 **Répartition scheduled (feature-011, v2.8.0)** : `ph_scheduled_flow_ml_per_min` (float 1 décimale, mL/min — débit moyen planifié restant ; `null` hors mode `scheduled`, hors plage de filtration ou heure ESP32 invalide → l'UI affiche « — »)
 **Terme intégral (v2.26.0)** : `ph_integral_pct` (float, % — remplissage de la réserve), `ph_integral` (float, pH·s), `ph_integral_term` (float, mL/min). Servis **à l'identique** par `GET /data`. Clé **absente** = firmware antérieur → bloc masqué ; `null` = « non calculable » → « — » ; `0` = **réserve vide, affirmé**. Voir [Rattrapage accumulé](#rattrapage-accumulé-par-la-régulation-ph-v2260)
 **Dose de base apprise (feature-085, v2.28.0)** : `ph_ff_ml_per_min` (float 2 décimales, mL/min), `ph_ff_status` (int 0-4, contrat figé). Servis **à l'identique** par `GET /data`. `ph_ff_status` absent = firmware antérieur → ligne masquée. Voir [Ligne « Dose de base apprise »](#ligne--dose-de-base-apprise--feature-085-v2280)
+**Limite d'actionneur (feature-086, v2.29.0)** : `ph_sustainable_ml_per_min` (float 2 décimales \| `null`), `ph_daily_max_ml` (int mL/j \| `null`), `ph_limited_by_hourly_budget` (bool), `ph_undersized` (bool). Servis **à l'identique** par `GET /data` (même passage des deux côtés — aucun clignotement possible). `ph_limited_by_hourly_budget` non booléen = firmware antérieur → capacités **et** bandeaux masqués. Voir [Capacités et bandeaux](#capacités-de-dosage-et-bandeaux-de-limite-dactionneur-feature-086-v2290)
 **Config** : `ph_target`, `ph_correction_type` (`ph_minus` / `ph_plus`), `max_ph_ml_per_day`, `ph_offset` (feature-067, message `config` — pas `sensor_data`)
 **Injection manuelle** : `ph_inject_remaining_s`
 **Stabilisation** : `stabilization_remaining_s`

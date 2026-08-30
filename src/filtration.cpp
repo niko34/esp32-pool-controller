@@ -114,6 +114,36 @@ bool FiltrationManager::isMinutesInRange(int now, int start, int end) {
   return ::isMinutesInRange(now, start, end);
 }
 
+// feature-086 : durée PROGRAMMÉE de filtration du jour (minutes), −1 = indisponible.
+// Le prédicat de mode est ALIGNÉ sur decideFiltrationRun (schedule_logic.cpp :
+// `strcmp(mode, "manual") == 0 || strcmp(mode, "auto") == 0`) : dans ce projet,
+// les modes `auto` ET `manual` suivent tous deux la plage start/end — `manual`
+// signifie « horaires fixés par l'utilisateur », pas « sans planning ». Toute
+// évolution de decideFiltrationRun doit être répercutée ici, sinon le maximum
+// journalier annoncé divergerait silencieusement de la filtration réelle.
+// `off`/`force` (hors planning) et plage invalide → −1 : rien n'est inventé.
+// NUANCE ASSUMÉE : forceOn/forceOff/boost peuvent faire tourner la filtration
+// HORS plage ; le maximum journalier reste une capacité ANNONCÉE fondée sur le
+// planning (capacité stable), pas un décompte des minutes réelles.
+// Le calcul délègue au parseur PUR ::timeStringToMinutes (schedule_logic) — la
+// méthode privée homonyme n'est pas const, on appelle la fonction libre.
+// La plage [start, end) est un intervalle fermé à gauche, ouvert à droite,
+// même sémantique qu'isMinutesInRange (schedule_logic.cpp) — sa durée est
+// exactement end − start (modulo minuit).
+int FiltrationManager::scheduledMinutesToday() const {
+  // Comparaison EXACTE (strcmp), comme decideFiltrationRun : un mode « Auto »
+  // avec majuscule n'y suit pas le planning, il ne doit pas en annoncer un ici.
+  const char* mode = filtrationCfg.mode.c_str();
+  if (strcmp(mode, "auto") != 0 && strcmp(mode, "manual") != 0) return -1;
+  const int startMin = ::timeStringToMinutes(filtrationCfg.start.c_str());
+  const int endMin = ::timeStringToMinutes(filtrationCfg.end.c_str());
+  // Plage illisible ou invalide (start == end = plage nulle côté filtration,
+  // cf. isMinutesInRange) : rien à annoncer.
+  if (startMin < 0 || endMin < 0 || startMin == endMin) return -1;
+  if (startMin < endMin) return endMin - startMin;      // plage simple
+  return (1440 - startMin) + endMin;                    // à cheval sur minuit
+}
+
 void FiltrationManager::update() {
   // feature-056 : le relais filtration n'est piloté QUE dans le mode
   // « PoolController pilote la filtration » (ManagedFiltration). Dans les modes

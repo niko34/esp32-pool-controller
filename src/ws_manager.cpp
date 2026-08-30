@@ -355,10 +355,21 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   //   "ph_ff_status":4,          → 1+13+1+1+1+1 = 18 o   → 44 o.
   // Pire cas de trame : 2582 + 44 = 2626 o, sous le gabarit 2688 (marge 62 o) et
   // sous sWsFrameBuf (kWsFrameBufBytes = 3584 o, marge 958 o) — aucun bump.
+  // feature-086 (v2.29.0) : +4 champs limite d'actionneur pH (parité /data).
+  // Octets SÉRIALISÉS au pire cas (flottant 2 décimales, entier 7 chiffres,
+  // booléens `false`) :
+  //   "ph_sustainable_ml_per_min":123.45,  → 1+25+1+1+6+1 = 35 o
+  //   "ph_daily_max_ml":1439986,           → 1+15+1+1+7+1 = 26 o
+  //   "ph_limited_by_hourly_budget":false, → 1+27+1+1+5+1 = 36 o
+  //   "ph_undersized":false,               → 1+13+1+1+5+1 = 22 o   → 119 o.
+  // Pire cas de trame : 2626 + 119 = 2745 o, AU-DESSUS du gabarit 2688 → gabarit
+  // porté 2688 → 2816. La marge sous sWsFrameBuf (kWsFrameBufBytes = 3584 o)
+  // reste de 839 o — aucune troncature possible (garde `measureJson(doc) + 1 >
+  // cap` en fin de fonction, qui SAUTE le push au lieu de tronquer).
   // NB : en ArduinoJson 7, StaticJson<N> dérive de JsonDocument et N n'est plus
   // qu'une valeur documentaire (capacity()) — le pool est alloué dynamiquement.
   // Le seul plafond DUR de ce chemin est kWsFrameBufBytes.
-  StaticJson<2688> doc;
+  StaticJson<2816> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -532,6 +543,23 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   float phFfFlow = PumpController.getPhFeedforwardFlow();
   if (!isnan(phFfFlow)) d["ph_ff_ml_per_min"] = round(phFfFlow * 100.0f) / 100.0f; else d["ph_ff_ml_per_min"] = nullptr;
   d["ph_ff_status"] = PumpController.getPhFeedforwardStatus();
+  // feature-086 (v2.29.0) : LIMITE D'ACTIONNEUR pH — capacités et verdicts de
+  // diagnostic. Champs et règles STRICTEMENT identiques à /data
+  // (web_routes_data.cpp) : MÊMES clés, MÊMES arrondis, NaN → null explicite
+  // (parité stricte — un champ servi d'un seul côté CLIGNOTE dans l'UI,
+  // 5 récidives du motif). Accesseurs LECTURE SEULE (cf. pump_controller.cpp).
+  //   ph_sustainable_ml_per_min   = plafond de débit moyen imposé par la limite
+  //       horaire (mL/min, 2 décimales ; null si pompe non caractérisée)
+  //   ph_daily_max_ml             = maximum injectable sur la journée de
+  //       filtration PROGRAMMÉE (mL/j, entier ; null si non calculable)
+  //   ph_limited_by_hourly_budget = épisode C5 ouvert ET mesure pH valide
+  //   ph_undersized               = série ≥ 3 journées saturées ET anomalie ouverte
+  const float phSust     = PumpController.getPhSustainableMlPerMin();
+  const float phDailyMax = PumpController.getPhDailyMaxMl();
+  if (!isnan(phSust))     d["ph_sustainable_ml_per_min"] = round(phSust * 100.0f) / 100.0f; else d["ph_sustainable_ml_per_min"] = nullptr;
+  if (!isnan(phDailyMax)) d["ph_daily_max_ml"] = (uint32_t)lroundf(phDailyMax);             else d["ph_daily_max_ml"] = nullptr;
+  d["ph_limited_by_hourly_budget"] = PumpController.isPhLimitedByHourlyBudget();
+  d["ph_undersized"]               = PumpController.isPhUndersizedSuspected();
   d["ph_daily_ml"]        = safetyLimits.dailyPhInjectedMl;
   d["orp_daily_ml"]       = safetyLimits.dailyOrpInjectedMl;
   d["ph_limit_reached"]   = safetyLimits.phLimitReached;

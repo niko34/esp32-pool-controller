@@ -79,6 +79,14 @@ static void handleGetData(AsyncWebServerRequest* request) {
   //   "ph_ff_ml_per_min":123.45, = 26 o | "ph_ff_status":4, = 17 o → 43 o.
   // Charge pire cas : 1977 (mesure v2.26.0) + 43 = 2020 o, marge 284 o sous le
   // gabarit, qui reste donc à 2304.
+  // feature-086 (v2.29.0) : +4 champs limite d'actionneur pH (parité WS, même
+  // passage). Octets SÉRIALISÉS au pire cas (flottant 2 décimales, entier 7
+  // chiffres, booléens `false`) :
+  //   "ph_sustainable_ml_per_min":123.45,  = 35 o | "ph_daily_max_ml":1439986, = 26 o
+  //   "ph_limited_by_hourly_budget":false, = 36 o | "ph_undersized":false,     = 22 o
+  //   → 119 o.
+  // Charge pire cas : 2020 (v2.28.0) + 119 = 2139 o, marge 165 o sous le
+  // gabarit, qui reste donc à 2304.
   StaticJson<2304> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
@@ -291,6 +299,27 @@ static void handleGetData(AsyncWebServerRequest* request) {
     const float phFfFlow = PumpController.getPhFeedforwardFlow();
     if (!isnan(phFfFlow)) doc["ph_ff_ml_per_min"] = round(phFfFlow * 100.0f) / 100.0f; else doc["ph_ff_ml_per_min"] = nullptr;
     doc["ph_ff_status"] = PumpController.getPhFeedforwardStatus();
+    // feature-086 (v2.29.0) : LIMITE D'ACTIONNEUR pH — capacités et verdicts de
+    // diagnostic. Accesseurs LECTURE SEULE (aucun chemin nouveau vers les
+    // pompes, cf. pump_controller.cpp). Publié dans le MÊME passage que le WS
+    // (ws_manager::_buildSensorJson), MÊMES clés, MÊMES arrondis, MÊME règle
+    // NaN → null (parité stricte /data ↔ WS — un champ servi d'un seul côté
+    // CLIGNOTE dans l'UI, 5 récidives du motif).
+    //   ph_sustainable_ml_per_min   = plafond de débit moyen imposé par la
+    //       limite horaire (mL/min, 2 décimales ; null si pompe non caractérisée)
+    //   ph_daily_max_ml             = maximum injectable sur la journée de
+    //       filtration PROGRAMMÉE (mL/j, entier — la décimale serait du bruit ;
+    //       null si soutenable null ou planning indisponible)
+    //   ph_limited_by_hourly_budget = épisode de saturation C5 ouvert ET mesure
+    //       pH valide (booléen, jamais null)
+    //   ph_undersized               = série ≥ 3 journées saturées ET anomalie C5
+    //       ouverte (booléen, jamais null)
+    const float phSust     = PumpController.getPhSustainableMlPerMin();
+    const float phDailyMax = PumpController.getPhDailyMaxMl();
+    if (!isnan(phSust))     doc["ph_sustainable_ml_per_min"] = round(phSust * 100.0f) / 100.0f; else doc["ph_sustainable_ml_per_min"] = nullptr;
+    if (!isnan(phDailyMax)) doc["ph_daily_max_ml"] = (uint32_t)lroundf(phDailyMax);             else doc["ph_daily_max_ml"] = nullptr;
+    doc["ph_limited_by_hourly_budget"] = PumpController.isPhLimitedByHourlyBudget();
+    doc["ph_undersized"]               = PumpController.isPhUndersizedSuspected();
   }
   doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;
   doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;

@@ -377,3 +377,20 @@ La [dose de base apprise](pump-controller.md#dose-de-base-apprise--feedforward-p
 - Getters `PumpController` **lecture seule**, aucun setter, aucune influence sur une décision de dosage ; course bénigne assumée écriture `loopTask` / lecture `async_tcp`.
 
 **Budget de payload** : **44 o** au pire cas (`"ph_ff_ml_per_min":123.45,` = 26 o, `"ph_ff_status":4,` = 18 o). Pire cas de trame **2 582 → 2 626 o**, sous le gabarit documentaire **2688** (marge 62 o) et sous `kWsFrameBufBytes` (3584 o, marge **958 o**) — **aucun bump**. Aucune troncature possible : la garde `measureJson(doc) + 1 > cap` **saute** le push au lieu de tronquer.
+
+## Champs `sensor_data` ajoutés en v2.29.0 — limite d'actionneur pH (feature-086)
+
+L'[exposition de la limite d'actionneur pH](pump-controller.md#limite-dactionneur-ph--exposition-et-alerte-de-sous-dimensionnement-feature-086-v2290) ([ADR-0056](../adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md)) rend visible la **conséquence** de la limite horaire d'injection : un plafond de débit moyen, donc un maximum journalier — l'élément qui explique un pH qui ne descend pas.
+
+| Champ | Type | Unité | Description |
+|-------|------|-------|-------------|
+| `ph_sustainable_ml_per_min` | float \| null | mL/min | Débit moyen soutenable (`getPhSustainableMlPerMin()`), **2 décimales**. `NAN` firmware (pompe non caractérisée) → `null` explicite. |
+| `ph_daily_max_ml` | int \| null | mL/j | Maximum journalier délivrable (`getPhDailyMaxMl()`, arrondi à l'entier) = soutenable × minutes **programmées** de filtration. `NAN` (soutenable indisponible ou planning inexploitable : mode `off`/`force`, plage invalide) → `null`. |
+| `ph_limited_by_hourly_budget` | bool | — | Verdict « borné par la limite horaire » (`isPhLimitedByHourlyBudget()`) : épisode de saturation C5 ouvert **ET** mesure pH valide. |
+| `ph_undersized` | bool | — | Sous-dimensionnement suspecté (`isPhUndersizedSuspected()`) : série ≥ 3 journées consécutives saturées **ET** anomalie C5 ouverte **ET** mesure pH valide. |
+
+- **Parité stricte d'emblée avec `/data`** (mêmes noms, mêmes arrondis, `NaN` → `null`, même passage de code) — motif à **5 récidives** dans ce projet, exigé explicitement par la spec. **Pas de publication MQTT** (hors périmètre du cycle, budget flash).
+- **Rétrocompat client** : `ph_limited_by_hourly_budget` **absent** (non booléen) = firmware < 2.29.0 → l'UI masque capacités **et** bandeaux. Voir [page-ph.md](../features/page-ph.md#capacités-de-dosage-et-bandeaux-de-limite-dactionneur-feature-086-v2290).
+- Accesseurs `PumpController` **lecture seule**, aucun setter, aucune influence sur une décision de dosage ; course bénigne assumée écriture `loopTask` / lecture `async_tcp` (lectures 8/32 bits atomiques sur Xtensa).
+
+**Budget de payload** : **119 o** au pire cas (`"ph_sustainable_ml_per_min":123.45,` = 35 o, `"ph_daily_max_ml":1439986,` = 26 o, `"ph_limited_by_hourly_budget":false,` = 36 o, `"ph_undersized":false,` = 22 o). Pire cas de trame **2 626 → 2 745 o** ; le gabarit documentaire `StaticJson<>` de `_buildSensorJson()` passe de **2688 à 2816** pour rester franchement au-dessus, la marge sous `kWsFrameBufBytes` (3584 o) restant de **839 o**. Aucune troncature possible : la garde `measureJson(doc) + 1 > cap` **saute** le push au lieu de tronquer.

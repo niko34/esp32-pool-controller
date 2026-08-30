@@ -1108,6 +1108,23 @@ Interprétation : [pump-controller.md — Dose de base apprise](subsystems/pump-
 
 > **Budget de payload** : +**43 o** au pire cas sur `/data` (`"ph_ff_ml_per_min":123.45,` 26 o + `"ph_ff_status":4,` 17 o). Charge pire cas portée à **2 020 o** (1 977 mesurés v2.26.0 + 43), marge 284 o sous le gabarit documentaire `StaticJson<2304>`, inchangé. Côté WebSocket : voir [ws-manager.md](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2280--feedforward-ph-adr-0055).
 
+#### Champs de la limite d'actionneur pH (feature-086, v2.29.0)
+
+Ajoutés par l'**exposition de la limite d'actionneur pH** ([ADR-0056](adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md)). Publiés en **parité stricte** sur `/data` **ET** sur la trame WebSocket `sensor_data` (mêmes noms, mêmes arrondis, mêmes règles de nullité — même passage de code). **Lecture seule stricte** : aucun de ces champs n'influence une décision de dosage. MQTT hors périmètre de ce cycle (budget flash).
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `ph_sustainable_ml_per_min` | float \| null | Débit moyen **soutenable** de la voie pH (mL/min, **2 décimales**) = débit d'amplitude calibré × limite horaire configurée. `null` si la pompe n'est pas caractérisée ou la valeur non calculable — l'UI affiche l'indisponibilité, rien n'est inventé. |
+| `ph_daily_max_ml` | int \| null | Maximum journalier **délivrable** (mL/j, entier) = soutenable × minutes **programmées** de filtration du jour. `null` si le soutenable est indisponible **ou** si le planning ne fait pas foi (mode `off`/`force`, plage invalide). |
+| `ph_limited_by_hourly_budget` | bool | La régulation pH est **bornée par la limite horaire en ce moment** : verdict de saturation C5 (épisode ouvert, hystérésis firmware sur la **demande**) **ET** mesure pH valide. La conjonction évite de servir un verdict **figé** sur panne de sonde — « borné par la limite » reste distinct de « bidon vide » et de « panne de sonde ». |
+| `ph_undersized` | bool | **Sous-dimensionnement suspecté** de l'actionneur : ≥ 3 journées calendaires **consécutives exploitables** délivrées à ≥ 80 % du maximum délivrable **ET** anomalie C5 encore ouverte **ET** mesure pH valide (même garde que le champ précédent). Information de **diagnostic d'installation**, pas une anomalie de fonctionnement. |
+
+**Règles de consommation client** : `ph_limited_by_hourly_budget` **absent** (non booléen) = firmware antérieur à la v2.29.0 → masquer l'affichage entier (capacités et bandeaux). Les quatre champs sont servis dans le **même passage** des deux côtés : une trame ne peut pas être partielle sur ces clés, donc aucun clignotement possible.
+
+Interprétation : [pump-controller.md — Limite d'actionneur pH](subsystems/pump-controller.md#limite-dactionneur-ph--exposition-et-alerte-de-sous-dimensionnement-feature-086-v2290). Affichage : [page-ph.md](features/page-ph.md#capacités-de-dosage-et-bandeaux-de-limite-dactionneur-feature-086-v2290).
+
+> **Budget de payload** : +**119 o** au pire cas sur `/data` (`"ph_sustainable_ml_per_min":123.45,` 35 o + `"ph_daily_max_ml":1439986,` 26 o + `"ph_limited_by_hourly_budget":false,` 36 o + `"ph_undersized":false,` 22 o). Charge pire cas portée à **2 139 o** (2 020 v2.28.0 + 119), marge 165 o sous le gabarit documentaire `StaticJson<2304>`, inchangé. Côté WebSocket : voir [ws-manager.md](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2290--limite-dactionneur-ph-feature-086).
+
 Champs ajoutés en feature-056 (mode d'installation, v2.19.0 — [ADR-0026](adr/0026-mode-installation.md)) :
 
 | Champ | Type | Description |

@@ -3862,6 +3862,92 @@
     }
   }
 
+  // ---------- feature-086 (v2.29.0) : limite d'actionneur pH ----------
+  //
+  // QUATRE champs servis à l'IDENTIQUE sur /data et le WebSocket :
+  //   ph_sustainable_ml_per_min   → plafond de débit moyen (mL/min, 2 décimales),
+  //                                 null si pompe non caractérisée ;
+  //   ph_daily_max_ml             → maximum injectable sur la journée de
+  //                                 filtration programmée (mL/j, entier), null
+  //                                 si non calculable ;
+  //   ph_limited_by_hourly_budget → bandeau informatif « Dosage au maximum
+  //                                 autorisé » (état NORMAL, ton neutre) ;
+  //   ph_undersized               → alerte diagnostic « Capacité de dosage
+  //                                 insuffisante » (série ≥ 3 j saturés).
+  //
+  // MÊME contrat de présence que ph_ff_status : `ph_limited_by_hourly_budget`
+  // absent (undefined) = firmware antérieur à la 2.29.0 → TOUT reste masqué
+  // (capacités ET bandeaux), rien d'inventé. Les quatre champs sont servis dans
+  // le MÊME passage des deux côtés (parité stricte /data ↔ WS) : une trame ne
+  // peut pas être partielle sur ces clés, donc aucun clignotement possible.
+  // Quand ph_undersized est vrai, l'alerte REMPLACE le bandeau informatif
+  // (elle contient l'information — on n'empile jamais les deux).
+  // Jamais de NaN/undefined affiché (helper num()).
+  function updatePhActuatorLimitDisplay() {
+    const data = latestSensorData || {};
+    const capBlock = $("#ph_capacity_block");
+    const budgetBanner = $("#ph_budget_banner");
+    const undersizedBanner = $("#ph_undersized_banner");
+
+    // Sentinelle de présence : booléen TOUJOURS servi par les firmwares ≥ 2.29.0.
+    if (typeof data.ph_limited_by_hourly_budget !== "boolean") {
+      if (capBlock) capBlock.hidden = true;
+      if (budgetBanner) budgetBanner.hidden = true;
+      if (undersizedBanner) undersizedBanner.hidden = true;
+      return;
+    }
+
+    const num = (v) => (typeof v === "number" && isFinite(v)) ? v : null;
+    const sustainable = num(data.ph_sustainable_ml_per_min);
+    const dailyMax = num(data.ph_daily_max_ml);
+    const fmtFlow = (v) => v.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const fmtDaily = (v) => Math.round(v).toLocaleString("fr-FR");
+
+    // B1.1 — capacités (présentation discrète : dérivées des réglages, pas mesures)
+    if (capBlock) {
+      capBlock.hidden = false;
+      const sustEl = $("#ph_sustainable_value");
+      const maxEl = $("#ph_daily_max_value");
+      if (sustEl) sustEl.textContent = (sustainable !== null)
+        ? fmtFlow(sustainable) + " mL/min"
+        : "Indisponible — pompe non caractérisée";
+      if (maxEl) maxEl.textContent = (dailyMax !== null)
+        ? fmtDaily(dailyMax) + " mL/j"
+        : "Indisponible";
+    }
+
+    const undersized = data.ph_undersized === true;
+    // Le bandeau a besoin de {Y} : sans débit soutenable, la phrase serait
+    // creuse (cas théorique — le firmware ne tient pas d'épisode C5 sans pompe
+    // caractérisée ; garde défensive, on masque plutôt qu'inventer).
+    const limited = data.ph_limited_by_hourly_budget === true
+      && !undersized && sustainable !== null;
+
+    if (undersizedBanner) undersizedBanner.hidden = !undersized;
+    if (budgetBanner) {
+      budgetBanner.hidden = !limited;
+      if (limited) {
+        const textEl = $("#ph_budget_banner_text");
+        if (textEl) {
+          // {X} = limite horaire configurée (min/h) — config, pas donnée capteur.
+          const limitMin = num(window._config?.ph_limit_minutes);
+          const x = (limitMin !== null) ? limitMin.toLocaleString("fr-FR") : "—";
+          // Libellé EXACT validé par pool-chemistry ; si {Z} est null, la
+          // première phrase est tronquée après « {Y} mL/min. ».
+          let txt = "La limite horaire d'injection (" + x
+            + " min/h) plafonne l'apport de correcteur à "
+            + fmtFlow(sustainable) + " mL/min";
+          txt += (dailyMax !== null)
+            ? ", soit au plus " + fmtDaily(dailyMax)
+              + " mL sur la journée de filtration programmée."
+            : ".";
+          txt += " Le pH redescend au rythme le plus rapide que ce réglage autorise.";
+          textEl.textContent = txt;
+        }
+      }
+    }
+  }
+
   // ========== SECTIONS DÉTAILLÉES ==========
   function updateDetailSections() {
     const config = window._config || {};
@@ -3876,6 +3962,11 @@
     // est de toute façon invisible hors mode Programmée. Un bloc neuf qui « ne
     // s'affiche jamais » est exactement la trace que laisserait ce défaut.
     try { updatePhIntegralDisplay(); } catch (e) { console.error('[ph-integral] rendu:', e); }
+
+    // feature-086 : capacités et bandeaux de limite d'actionneur pH — même
+    // précaution try/catch que le rattrapage accumulé (un rendu qui lance ne
+    // doit jamais masquer les rubriques suivantes en silence).
+    try { updatePhActuatorLimitDisplay(); } catch (e) { console.error('[ph-limite] rendu:', e); }
 
     // === FILTRATION ===
     const detailFiltrationMode = $("#detail-filtration-mode");

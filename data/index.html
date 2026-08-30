@@ -679,7 +679,49 @@
                 </div>
                 <p class="daily-dose__status" id="daily-dose-ph-status"></p>
               </div>
+              <!-- feature-086 (v2.29.0) : capacités de dosage pH — débit soutenable
+                   (limite horaire × débit calibré) et maximum journalier (× minutes
+                   de filtration programmées). Présentation DISCRÈTE voulue : ce
+                   sont des CAPACITÉS dérivées des réglages, pas des mesures.
+                   Masqué en bloc si le firmware ne sert pas
+                   ph_limited_by_hourly_budget (antérieur à la 2.29.0) — cf.
+                   updatePhActuatorLimitDisplay(), seul point de décision. -->
+              <div class="muted small" id="ph_capacity_block" hidden style="margin-top:8px">
+                <div>Débit soutenable : <span id="ph_sustainable_value">—</span></div>
+                <div>Maximum journalier : <span id="ph_daily_max_value">—</span></div>
+              </div>
             </div>
+          </div>
+
+          <!-- feature-086 (v2.29.0) : bandeau INFORMATIF « Dosage au maximum
+               autorisé » (ph_limited_by_hourly_budget). Ton NEUTRE validé par
+               pool-chemistry : c'est un état normal de la régulation, pas une
+               anomalie — callout info, pas de rouge, pas d'icône d'alerte.
+               Remplacé par #ph_undersized_banner quand le diagnostic de
+               sous-dimensionnement est posé (l'alerte contient l'information,
+               on n'empile jamais les deux). Texte composé par
+               updatePhActuatorLimitDisplay() ({X} min/h, {Y} mL/min, {Z} mL/j). -->
+          <div class="callout callout--info" id="ph_budget_banner"
+               role="status" aria-live="polite" hidden>
+            <strong>Dosage au maximum autorisé</strong><br>
+            <span id="ph_budget_banner_text"></span>
+          </div>
+          <!-- feature-086 (v2.29.0) : alerte DIAGNOSTIC « Capacité de dosage
+               insuffisante » (ph_undersized : série ≥ 3 journées saturées +
+               anomalie C5 ouverte). Warning — visuellement distinct du bandeau
+               informatif, plus grave, mais PAS une alarme critique. Libellés
+               EXACTS validés par pool-chemistry ; « 3 jours » est la constante
+               firmware du diagnostic, pas un champ servi — aucune mention de
+               bidon. Texte statique : seul `hidden` est piloté par
+               updatePhActuatorLimitDisplay(). -->
+          <div class="callout callout--warn" id="ph_undersized_banner"
+               role="status" aria-live="polite" hidden>
+            <strong>Capacité de dosage insuffisante</strong><br>
+            <span>Depuis 3 jours, la pompe pH délivre chaque jour tout ce que la
+              limite horaire autorise, sans ramener le pH à la consigne. Le réglage
+              actuel ne couvre pas le besoin du bassin : allonger la durée de
+              filtration ou, après vérification de l'installation, relever la
+              limite horaire.</span>
           </div>
 
           <div class="card" id="ph-card-regulation">

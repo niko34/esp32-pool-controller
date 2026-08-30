@@ -473,6 +473,27 @@ private:
   uint32_t _waterMinuteTickMs = 0;            // millis du dernier tick de comptage
   uint32_t _waterMinuteAccumMs = 0;           // résidu sous la minute
 
+  // --- feature-086 : sous-dimensionnement de l'actionneur pH ------------------
+  // CACHE de la série de journées saturées (ph_actuator_limit_logic.h), rafraîchi
+  // par refreshPhLoadObservation() — c'est-à-dire aux SEULS points existants où
+  // l'anneau NVS est relu (démarrage différé + clôture de journée) : JAMAIS de
+  // lecture NVS dans update() ni dans un handler. Écrit en loopTask, lu aussi en
+  // contexte web async (isPhUndersizedSuspected) — lecture 8 bits atomique sur
+  // Xtensa, course bénigne (patron isAnyPumpEnergized).
+  uint8_t _phLimitStreakDays = 0;
+  // État annoncé de l'alerte : log par TRANSITION (montée ET retombée), jamais
+  // par tour. Écrit/lu en loopTask uniquement (tickPhUndersizedAlert).
+  bool _phUndersizedActive = false;
+  // Compare le verdict courant à l'état annoncé et journalise le franchissement
+  // (warning à la montée, info à la retombée). Le verdict est celui de
+  // l'accesseur publié isPhUndersizedSuspected() — garde mesure-pH-valide
+  // comprise — pour que journal et champ /data+WS ne divergent jamais. Coût par
+  // tour : trois lectures de cache et une comparaison — aucune NVS, aucune
+  // allocation. Appelé une fois par tick d'update(), hors de toute conjonction
+  // d'éligibilité (l'alerte doit retomber même quand la branche automatique
+  // n'est pas atteinte). loopTask uniquement.
+  void tickPhUndersizedAlert();
+
   // Conditions #2 + #7 : DÉCISION de refus du dosage pH. True → dosage pH REFUSÉ.
   // Ne détecte plus rien : rend le verdict de tickPhGuardSurveillance() et n'y
   // ajoute que ce qui relève d'un refus RÉEL (comptage + escalade en automatique,
@@ -1033,6 +1054,49 @@ public:
   // Course bénigne assumée (patron isAnyPumpEnergized) : drapeau écrit par
   // loopTask, lu ici en contexte web async ; lecture 8 bits atomique sur Xtensa.
   bool isPhIntegralSaturated() const { return _phIntegral.satActive; }
+
+  // ===== feature-086 : LIMITE D'ACTIONNEUR pH — LECTURE SEULE (diagnostic) ====
+  // Quatre accesseurs à publier à l'IDENTIQUE sur /data ET sur la trame WS
+  // (parité stricte — 5 récidives du motif « champ servi d'un seul côté »).
+  // AUCUN setter, AUCUNE décision de dosage n'en dépend : ils rendent VISIBLE la
+  // conséquence de la limite horaire (plafond de débit moyen → maximum
+  // journalier), ils ne la modifient pas. Course bénigne assumée (patron
+  // isAnyPumpEnergized) : état écrit par loopTask, lu en contexte web async ;
+  // lectures 8/32 bits atomiques sur Xtensa, pire cas un instantané en retard
+  // d'un tour de loop.
+
+  // Débit moyen SOUTENABLE de la voie pH (mL/min) = débit d'amplitude calibré ×
+  // limite horaire configurée (phSustainableFlowFromConfig, source unique,
+  // recalcul à la demande — coût nul, pas de cache). NAN si la pompe n'est pas
+  // caractérisée ou la valeur non calculable (→ null en JSON : on affiche
+  // l'indisponibilité, on n'invente rien).
+  float getPhSustainableMlPerMin() const;
+
+  // Maximum journalier DÉLIVRABLE (mL) = soutenable × minutes PROGRAMMÉES de
+  // filtration (scheduledMinutesToday, modes `auto` et `manual` — les deux
+  // suivent la plage start/end, cf. decideFiltrationRun). NAN si le soutenable
+  // est indisponible ou si le planning ne fait pas foi (mode `off`, plage
+  // invalide) — jamais de maximum inventé.
+  float getPhDailyMaxMl() const;
+
+  // La régulation pH est-elle BORNÉE par la limite horaire EN CE MOMENT ?
+  // = épisode de saturation C5 ouvert (hystérésis du module intégral sur la
+  // demande, jamais sur le remplissage) ET mesure pH valide — la conjonction
+  // évite de servir un verdict FIGÉ sur panne de sonde : sans mesure, la
+  // saturation affichée ne décrirait plus rien (distinction demandée par la
+  // spec : borné par la limite ≠ bidon vide ≠ panne de sonde).
+  bool isPhLimitedByHourlyBudget() const;
+
+  // Sous-dimensionnement de l'actionneur SUSPECTÉ : kPhActuatorLimitConsecutiveDays
+  // journées calendaires consécutives saturées (cache _phLimitStreakDays, anneau
+  // ph_load7) ET épisode C5 encore ouvert (l'erreur pH reste positive) ET mesure
+  // pH valide — même garde exactement qu'isPhLimitedByHourlyBudget : la tenue
+  // d'anomalie GÈLE quand la branche d'entretien s'arrête sur mesure invalide,
+  // et l'alerte ne doit jamais s'émettre sur un épisode figé par une panne de
+  // sonde (condition bloquante n°1 du visa pool-chemistry). Verdict du module
+  // PUR phActuatorUndersized — information de diagnostic, pas une anomalie de
+  // fonctionnement (spec, livrable A3).
+  bool isPhUndersizedSuspected() const;
 
   // ===== feature-085 : FEEDFORWARD pH — LECTURE SEULE (observabilité) =========
   // Deux grandeurs, à publier à l'IDENTIQUE sur /data ET sur la trame WS (parité

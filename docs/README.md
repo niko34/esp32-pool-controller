@@ -93,7 +93,8 @@ docs/
 │   ├── 0052-terme-integral-ph-dimensionne-par-autorite.md
 │   ├── 0053-persistance-conditionnelle-integrale-ph.md
 │   ├── 0054-seuil-de-vraisemblance-fonction-de-la-configuration.md
-│   └── 0055-feedforward-appris-additif-plafonne.md
+│   ├── 0055-feedforward-appris-additif-plafonne.md
+│   └── 0056-sous-dimensionnement-actionneur-3-jours-80-pct.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

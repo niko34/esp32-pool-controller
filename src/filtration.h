@@ -52,6 +52,19 @@ public:
   // manuelle, monitor injection). Fail-closed strict.
   WaterPresence resolveWaterPresence() const;
 
+  // feature-086 : durée PROGRAMMÉE de filtration du jour, en minutes (plage
+  // [start, end) de filtrationCfg, passage minuit géré). LECTURE SEULE, aucune
+  // décision de dosage n'en dépend : sert au maximum journalier délivrable
+  // affiché (getPhDailyMaxMl). Modes `auto` ET `manual` — même prédicat que
+  // decideFiltrationRun (schedule_logic.cpp) : les deux suivent la plage
+  // start/end, `manual` = horaires fixés par l'utilisateur. −1 = indisponible :
+  // mode `off`/`force` (hors planning) ou plage invalide (start == end, heure
+  // illisible). Capacité ANNONCÉE fondée sur le planning : forceOn/boost hors
+  // plage n'y entrent pas. Appelable depuis un handler web async (lit
+  // filtrationCfg.mode/start/end — course bénigne d'un tour de loop, patron
+  // des getters existants).
+  int scheduledMinutesToday() const;
+
   void computeAutoSchedule();
   void ensureTimesValid();
   void publishState();

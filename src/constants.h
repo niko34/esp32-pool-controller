@@ -1223,6 +1223,44 @@ static_assert(kPhLoadDayMinFiltrationMin >= 30 &&
                   kPhLoadDayMinFiltrationMin <= 720,
               "kPhLoadDayMinFiltrationMin hors plage raisonnable (30 min - 12 h)");
 
+// =============================================================================
+// feature-086 (v2.29.0) — ALERTE DE SOUS-DIMENSIONNEMENT DE L'ACTIONNEUR pH
+// =============================================================================
+// Le visa pool-chemistry du 30/08/2026 chiffre le déficit structurel du bassin
+// de référence : maximum délivrable ~911 mL/j (2,17 mL/min soutenable × 420 min
+// de filtration) contre un besoin de neutralisation estimé à ~1 800 mL/j.
+// L'installation est limitée par l'ACTIONNEUR, pas par le correcteur. L'alerte
+// signale cette situation quand elle se RÉPÈTE : N journées calendaires
+// consécutives où le volume délivré colle au maximum possible, PENDANT QUE
+// l'épisode C5 (« demande saturée sans atteindre la consigne ») est ouvert.
+// Diagnostic pur : aucune décision de dosage n'en dépend (lecture seule).
+//
+// N = 3 : aligné sur le jalon d'observation terrain de la spec (3 journées
+// exploitables dans l'anneau ph_load7) et sur kPhIntegralRestoreMinHistoryDays —
+// une journée saturée ISOLÉE (canicule, apport ponctuel après baignade, remise
+// en eau) n'alerte pas ; trois journées consécutives ne sont plus un épisode,
+// c'est un régime.
+constexpr uint8_t kPhActuatorLimitConsecutiveDays = 3;
+// Fraction du maximum théorique (soutenable × minutes de circulation ARCHIVÉES)
+// au-delà de laquelle une journée est comptée « saturée ». 0,80 et non 0,90-0,95 :
+// en saturation permanente RÉELLE, le délivré observé plafonne à 84-88 % du
+// maximum théorique — les pauses de mélange, le délai de purge et les plafonds
+// de session amputent mécaniquement le reste (incident du 23/08 : 765-802 mL
+// comptés pour ~911 mL max). Un seuil à 90-95 % ne se déclencherait donc JAMAIS.
+// À l'inverse, un régime convergé (pH tenu à la consigne) délivre < 50 % du
+// maximum : 0,80 reste très au-dessus, aucun faux positif à attendre de ce côté.
+constexpr float kPhActuatorLimitDayFillRatio = 0.80f;
+static_assert(kPhActuatorLimitConsecutiveDays >= 2 &&
+                  kPhActuatorLimitConsecutiveDays <=
+                      kPhIntegralRestoreHistoryWindowDays,
+              "kPhActuatorLimitConsecutiveDays doit tenir dans l'anneau de 7 "
+              "jours et exclure la journee isolee");
+static_assert(kPhActuatorLimitDayFillRatio > 0.5f &&
+                  kPhActuatorLimitDayFillRatio < 0.9f,
+              "kPhActuatorLimitDayFillRatio hors de ]0,5 ; 0,9[ : au-dessus il "
+              "ne se declenche jamais (delivre reel 84-88 % du max), en dessous "
+              "il attrape un regime converge");
+
 // R3 — PÉREMPTION de l'instantané, en SECONDES d'horloge murale (l'âge est
 // mesuré sur time(), pas sur millis() : c'est justement le reboot qu'il faut
 // traverser). 6 h = UNE constante d'intégration à vitesse `normal` : au-delà, le

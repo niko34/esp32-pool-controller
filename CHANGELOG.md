@@ -2,6 +2,39 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.29.0] - 2026-08-30
+
+> ✅ **Vous pouvez enfin voir POURQUOI le pH ne descend pas.** Le constat des versions précédentes reste entier : avec la limite horaire d'injection à **5 min/h**, le débit moyen que la pompe peut délivrer plafonne à **~2,17 mL/min**, soit **~911 mL/jour** sur la filtration programmée — sous le besoin du bassin (**~1 800 mL/jour**). Jusqu'ici, cette conséquence n'était calculée nulle part et affichée nulle part : l'utilisateur constatait un pH qui ne descend pas sans disposer de l'élément qui l'explique. Cette version l'affiche noir sur blanc sur la page pH.
+>
+> ℹ️ **Ces indicateurs sont en lecture seule** : aucun comportement de dosage ne change dans cette version. Le **relèvement de la limite horaire** (le seul remède réel avec l'allongement de la filtration) est **volontairement différé** après l'observation terrain — jalons : 3 journées exploitables dans l'anneau de charge (~2-3/09), 72 h de feedforward (~5-6/09), et une restauration vérifiée ([feature-086](specs/features/doing/feature-086-limite-actionneur-dosage-ph.md), point 3).
+
+### Firmware
+
+- **La conséquence de la limite horaire est désormais calculée et publiée** ([ADR-0056](docs/adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md)) : 4 nouveaux champs en **parité stricte `/data` ↔ WebSocket** (même passage de code des deux côtés — le motif du champ qui « clignote » a 5 récidives dans ce projet) : `ph_sustainable_ml_per_min` (débit moyen soutenable, `null` si pompe non caractérisée), `ph_daily_max_ml` (maximum journalier délivrable sur la filtration **programmée**, `null` si planning inexploitable), `ph_limited_by_hourly_budget` (régulation bornée par la limite horaire **en ce moment**), `ph_undersized` (sous-dimensionnement **prouvé sur 3 jours**). MQTT hors périmètre (budget flash).
+- **Détection du sous-dimensionnement** : ≥ **3 journées calendaires consécutives exploitables** délivrées à ≥ **80 %** du maximum théorique (le délivré réel plafonne à 84-88 % en saturation permanente — chiffrage de l'incident du 23/08 : un seuil à 90-95 % ne se déclencherait jamais), **pendant que** l'épisode « demande saturée sans atteindre la consigne » reste ouvert. Jours non exploitables et trous calendaires **cassent** la série ; **réarmement implicite** : la série est réévaluée au débit soutenable **courant** — relever la limite fait retomber l'alerte d'elle-même. Nouveau module pur `src/ph_actuator_limit_logic.h`, cache relu hors de la boucle (démarrage + clôture de journée, zéro NVS dans `update()`).
+- **Garde mesure-valide sur les deux verdicts** : sur panne de sonde, l'épisode de saturation gèle à sa dernière valeur — sans cette garde (trou trouvé par les tests en cours de cycle, corrigé), l'alerte pouvait s'émettre sur un épisode figé. « Borné par la limite » reste ainsi distinct de « bidon vide » et de « panne de sonde ».
+- **Nouveaux messages de journal par transition** : montée de l'alerte (`warning`, avec la série et le débit soutenable) et retombée (`info`).
+- **Empreinte** : +2 428 o de firmware, +800 o de filesystem gzippé.
+
+### Fonctionnalités
+
+- **Page pH — bloc « capacités de dosage »** : débit soutenable (`X,XX mL/min`) et maximum journalier (`N mL/j`) dérivés des réglages ; « Indisponible — pompe non caractérisée » plutôt qu'une valeur inventée.
+- **Page pH — bandeau informatif « Dosage au maximum autorisé »** (ton neutre, état **normal**) : *« La limite horaire d'injection (X min/h) plafonne l'apport de correcteur à Y mL/min, soit au plus Z mL sur la journée de filtration programmée. Le pH redescend au rythme le plus rapide que ce réglage autorise. »*
+- **Page pH — alerte « Capacité de dosage insuffisante »** (diagnostic, distincte du bandeau qu'elle **remplace** — jamais d'empilement) : signale le sous-dimensionnement prouvé sur 3 jours, conseille **la filtration d'abord**, le relèvement de limite seulement « après vérification de l'installation ». **Aucune mention de bidon** (leçon v2.26.0). Firmware antérieur : tout reste masqué, rien d'inventé.
+
+### Documentation
+
+- **[ADR-0056](docs/adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md) créé** — *Sous-dimensionnement d'actionneur : 3 jours × 80 %, anneau évalué au soutenable courant*. Consigne la marge contre-intuitive (< 90 % à cause des pauses de mélange, chiffrage incident 23/08), le réarmement implicite (invisible dans le code) et les alternatives écartées (stocker le soutenable du jour dans l'anneau ; compteur persisté de jours en anomalie).
+- `docs/subsystems/pump-controller.md` : nouvelle section « Limite d'actionneur pH » — accesseurs, critère de détection, réarmement implicite, garde mesure-valide, cache, `scheduledMinutesToday()`, constantes, journal.
+- `docs/API.md`, `docs/subsystems/ws-manager.md`, `docs/features/page-ph.md` : les 4 champs (budgets de payload : +119 o des deux côtés, gabarit WS 2688 → 2816), les trois éléments UI et leurs règles.
+- `specs/features/doing/feature-086-*.md` : livrables des points 1-2 cochés, notes techniques. **La spec reste dans `doing/`** : le point 3 (relèvement de la limite) est verrouillé jusqu'aux jalons d'observation terrain.
+
+### Tests
+
+- **970 → 994 tests natifs**, nouvelle suite `test/test_native_ph_actuator_limit/`. Validation par mutation exigée par le workflow : **5 mutations tuées sur 5**.
+
+---
+
 ## [2.28.1] - 2026-08-30
 
 > ✅ **Les repères des graphiques d'historique pH et ORP disent enfin la vérité.** La bande pH affichait 7,0-7,4, une plage qui ne correspondait ni à la plage idéale de l'eau ni aux réglages de l'appareil. La bande ORP 600-800 mV affirmait une norme qui n'existe pas (le potentiel utile dépend du pH, du stabilisant et de la température) et annonçait « hors plage » en permanence une installation correctement réglée à 550 mV.

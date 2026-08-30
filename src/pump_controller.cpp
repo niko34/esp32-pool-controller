@@ -10,6 +10,7 @@
 #include "measure_validity.h"  // v2.20.3 (C6) : distinguer purge en cours et capteur muet
 #include "ph_guard_logic.h"    // v2.25.0 : gardes pH + diagnostic sonde (logique pure)
 #include "ph_offset.h"         // v2.25.0 : applyPhOffset() — pH corrigé des gardes
+#include "ph_actuator_limit_logic.h"  // feature-086 : phActuatorUndersized() (pure)
 #include <esp_task_wdt.h>
 #include <string.h>  // strlcpy / strnlen / memcpy — tampon de cause de refus (R2)
 #include <time.h>
@@ -1988,12 +1989,105 @@ void PumpControllerClass::refreshPhLoadObservation() {
   // que l'utilisateur relève `phInjectionLimitMinutes`, et la restauration
   // mourrait en silence. Source unique partagée avec le prédicat de saturation.
   _phLoadObs = readPhLoadObservation(phSustainableFlowFromConfig());
+  // feature-086 : la série de journées saturées est relue au MÊME rythme que la
+  // médiane (démarrage différé + clôture de journée) — l'anneau ne bouge qu'à
+  // ces instants, et c'est la garantie « jamais de NVS dans update() ».
+  _phLimitStreakDays = readPhActuatorLimitStreak(phSustainableFlowFromConfig());
 }
 
 PhPersistLoadObservation PumpControllerClass::phIntegralObservedLoad() const {
   // Cache non encore amorcé (avant le premier loadDailyCounters différé) :
   // `days = 0` par défaut, donc fail-closed — jamais de valeur inventée.
   return _phLoadObs;
+}
+
+// =============================================================================
+// feature-086 — LIMITE D'ACTIONNEUR pH : accesseurs de diagnostic (lecture seule)
+// =============================================================================
+// AUCUN de ces quatre accesseurs n'est consommé par une décision de dosage : ils
+// rendent visible la CONSÉQUENCE de la limite horaire (plafond de débit moyen,
+// maximum journalier), ils n'ouvrent aucun chemin nouveau vers les pompes.
+
+float PumpControllerClass::getPhSustainableMlPerMin() const {
+  // Recalcul à la demande depuis la source UNIQUE (config.cpp) : une
+  // multiplication, pas de cache à invalider quand l'utilisateur change la
+  // limite horaire ou recalibre la pompe.
+  const float s = phSustainableFlowFromConfig();
+  // 0 (pompe non caractérisée) ou valeur non finie ⇒ NAN : le transport /data et
+  // WS traduit NAN en null — on affiche l'indisponibilité, on n'invente rien.
+  if (!isfinite(s) || s <= 0.0f) return NAN;
+  return s;
+}
+
+float PumpControllerClass::getPhDailyMaxMl() const {
+  const float sustainable = getPhSustainableMlPerMin();
+  if (isnan(sustainable)) return NAN;
+  // Minutes PROGRAMMÉES du planning de filtration (pas les minutes effectives :
+  // le maximum annoncé est celui de la journée telle que planifiée — modes
+  // `auto` et `manual`, alignés sur decideFiltrationRun). −1 = mode `off`/
+  // `force` ou plage invalide ⇒ indisponible.
+  const int scheduledMin = filtration.scheduledMinutesToday();
+  if (scheduledMin < 0) return NAN;
+  return sustainable * (float)scheduledMin;
+}
+
+bool PumpControllerClass::isPhLimitedByHourlyBudget() const {
+  // Conjonction VOULUE (spec, livrable A2) : l'épisode de saturation C5 est tenu
+  // en temps de branche automatique — sur panne de sonde, la branche ne tourne
+  // plus et le drapeau resterait FIGÉ à sa dernière valeur. Exiger une mesure pH
+  // valide (getPhFilteredRaw porte la garde d'âge du filtre, NaN si périmée)
+  // évite de servir ce verdict gelé : « borné par la limite horaire » doit
+  // rester distinct de « panne de sonde » et de « bidon vide ».
+  return _phIntegral.satActive && !isnan(sensors.getPhFilteredRaw());
+}
+
+bool PumpControllerClass::isPhUndersizedSuspected() const {
+  // anomalyNow = épisode C5 OUVERT : `anomalyHeldMs` est remis à zéro par le
+  // module pur dès que l'anomalie cesse (demande désaturée OU erreur rentrée
+  // sous le seuil d'arrêt) — c'est le prédicat exact, sans double hystérésis.
+  //
+  // GARDE MESURE VALIDE (condition bloquante n°1 du visa pool-chemistry :
+  // l'alerte ne peut PAS s'émettre avec une mesure inexploitable) : la remise à
+  // zéro d'`anomalyHeldMs` n'a lieu QUE quand la branche d'entretien tourne avec
+  // une erreur exploitable — sur mesure invalide (panne de sonde), la branche
+  // s'arrête et la tenue GÈLE à sa dernière valeur > 0. Sans cette conjonction,
+  // une montée du streak 2→3 à la clôture de journée pendant une panne de sonde
+  // émettrait l'alerte sur un épisode d'anomalie FIGÉ. Prédicat STRICTEMENT
+  // identique à celui d'isPhLimitedByHourlyBudget (pas une variante) :
+  // getPhFilteredRaw porte la garde d'âge du filtre, NaN si périmée.
+  return phActuatorUndersized(_phLimitStreakDays,
+                              _phIntegral.anomalyHeldMs > 0) &&
+         !isnan(sensors.getPhFilteredRaw());
+}
+
+// Journalisation PAR TRANSITION de l'alerte de sous-dimensionnement (montée ET
+// retombée). Un tour d'update() coûte ici deux lectures et une comparaison.
+void PumpControllerClass::tickPhUndersizedAlert() {
+  // MÊME verdict que le champ publié (/data + WS) : le log passe par l'accesseur
+  // lui-même — garde mesure-valide comprise — pour que journal et champ ne
+  // puissent pas diverger. Une panne de sonde fait donc aussi RETOMBER l'alerte
+  // (fail-closed, condition n°1 du visa) ; elle se réarmera d'elle-même si la
+  // conjonction redevient vraie au retour de la mesure.
+  const bool active = isPhUndersizedSuspected();
+  if (active == _phUndersizedActive) return;
+  _phUndersizedActive = active;
+  if (active) {
+    // Diagnostic d'installation, pas anomalie de fonctionnement (spec A3) :
+    // warning — visible à distance, sans le côté « incident » d'un critical.
+    char msg[240];
+    snprintf(msg, sizeof(msg),
+             "[Dosage pH] Sous-dimensionnement suspecté : %u jour(s) "
+             "consécutif(s) au maximum délivrable (débit soutenable "
+             "%.2f mL/min) et pH toujours au-dessus de la consigne — la limite "
+             "horaire d'injection borne le débit sous le besoin du bassin",
+             (unsigned)_phLimitStreakDays,
+             (double)phSustainableFlowFromConfig());
+    systemLogger.warning(msg);
+  } else {
+    systemLogger.info("[Dosage pH] Suspicion de sous-dimensionnement levée : "
+                      "la série de journées saturées est interrompue ou "
+                      "l'erreur pH est rentrée (épisode de saturation clos)");
+  }
 }
 
 // -----------------------------------------------------------------------------
@@ -2666,6 +2760,13 @@ void PumpControllerClass::update() {
   // faire mûrir sur une erreur périmée (ou de crier au loup sur un appareil qui,
   // en `manual`, ne régule tout simplement pas).
   tickPhIntegralExpiry(now);
+
+  // feature-086 : franchissements de l'alerte de sous-dimensionnement (montée ET
+  // retombée), journalisés par TRANSITION. Placé au même point que la péremption
+  // C4, hors de toute conjonction d'éligibilité : la RETOMBÉE doit être vue même
+  // quand la branche automatique n'est plus atteinte (c'est la purge C4
+  // elle-même qui referme l'épisode C5 après un hiver sans filtration).
+  tickPhUndersizedAlert();
 
   // feature-084 (sujet 3) : lecture DIFFÉRÉE de l'instantané NVS. Placée ici, en
   // aval des sorties OTA et maintenance (une lecture NVS ne doit pas s'inviter au
