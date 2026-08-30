@@ -238,6 +238,55 @@ Depuis la v2.11.0, **toute image téléchargée depuis GitHub est vérifiée par
 
 ## Notes de migration
 
+### La régulation pH vise enfin sa consigne — depuis v2.26.0 (2026-08-28)
+
+**Aucune migration, aucune action requise.** Pas de changement de partition, de configuration NVS ni de format de données ; **aucun réglage utilisateur n'est modifié** (consigne, limites journalière et horaire, seuils de sécurité, modes : tout est inchangé).
+
+Jusqu'ici, le pH se stabilisait systématiquement **au-dessus** de sa consigne — typiquement 7,50-7,66 pour une consigne à 7,30 — malgré près d'un litre d'acide injecté dans la journée. Ce n'était **ni une panne, ni un problème de dosage** : le correcteur utilisé était **proportionnel**, c'est-à-dire qu'il ne dose qu'en proportion de l'écart au but. Face à une dérive **permanente** (le CO₂ qui s'échappe de l'eau fait remonter le pH en continu), un tel correcteur s'arrête forcément **à un écart non nul** : celui où la dose produite compense exactement la dérive.
+
+La correction ajoute un second terme, qui **accumule le retard** au lieu de ne regarder que l'écart instantané. Une fois la consigne atteinte, c'est lui qui fournit **toute** la dose d'entretien.
+
+- **Ce que vous devriez voir** : le pH descend vers sa consigne au lieu de plafonner, et s'y maintient à **+0,01** près (la valeur exacte à laquelle la régulation coupe de toute façon). L'approche est **lente par conception** — comptez quelques heures à une journée, pas quelques minutes.
+- ⚠️ **Résultat pas encore vérifié sur le terrain.** La correction est fondée sur la théorie du réglage et vérifiée en simulation, mais elle n'a pas encore tourné une saison sur un bassin réel. **Surveiller le pH et le compteur de dosage journalier pendant quelques jours.**
+- **Nouvelle information dans l'interface** : en bas de la carte « Régulation pH », en mode Automatique, une ligne « **Rattrapage accumulé : N %** » indique le remplissage de cette réserve de correction. `0 %` = réserve vide (normal quand le pH est à sa consigne). Un encart d'avertissement apparaît au-delà de **95 %** : la régulation demande alors tout ce qu'elle peut sans que le pH bouge — vérifier le **niveau du bidon**, l'**amorçage de la pompe** et le **TAC** de l'eau (une alcalinité élevée bloque le pH).
+- **Nouveauté Home Assistant** : trois entités `sensor` s'ajoutent automatiquement (« Piscine pH Rattrapage », « … Rattrapage Débit », « Piscine pH Intégrale »), plus une alerte `ph_integral_saturated` (avertissement après 2 h de saturation, critique après 6 h, rappelé toutes les 12 h). **Aucune entité existante n'est renommée ni supprimée** : les automations en place continuent de fonctionner.
+- **Sécurité inchangée** : limites journalière et horaire, seuils de plancher pH, butées sur la mesure brute, inhibition du chlore sur pH haut, pause mélange — tout reste en place. La réserve de correction est **plafonnée** (6 mL/min au maximum), **gelée** dès que le quota journalier dépasse 80 %, **purgée** après 24 h sans régulation, et **jamais conservée au redémarrage**.
+- **Régulation ORP (chlore) : strictement inchangée.**
+
+Le message de journal de configuration du correcteur change de format (`PID régulation: vitesse=… Ki_pH=… (Ti=…h, intMax=… pH·s, autorité=… mL/min) …`) : un filtre de journal sur « P temporisée » ou « Ki=0 » ne matche plus. Voir [ADR-0052](adr/0052-terme-integral-ph-dimensionne-par-autorite.md).
+
+> Firmware **et** filesystem doivent être mis à jour **ensemble** pour voir la ligne « Rattrapage accumulé ». Un filesystem à jour sur un firmware antérieur reste fonctionnel : le bloc est simplement **masqué** (il ne montre jamais un « 0 % » qu'il ne connaît pas).
+
+### Injections moins fréquentes mais deux fois plus longues — depuis v2.25.3 (2026-08-28)
+
+**Aucune migration, aucune action requise.** Pas de changement de partition, de configuration NVS ni de format de données ; aucun réglage utilisateur n'est modifié.
+
+La durée **minimale** d'une injection passe de **5 à 10 secondes**. **La quantité demandée par la régulation ne change pas** : ce sont les mêmes millilitres, servis en paquets deux fois plus gros et deux fois moins souvent.
+
+- **Pourquoi** : sur une pompe péristaltique, chaque **démarrage** coûte du produit qui n'est pas compté (détente puis ré-occlusion du tube, ré-amorçage — 0,1 à 0,5 mL). Comme toutes les injections étaient à la durée minimale, cette perte portait sur **la totalité** du volume. Deux fois moins de démarrages pour le même volume, c'est cette perte amortie sur deux fois plus de produit utile.
+- **Ce que vous verrez** : sur le tableau de bord, le compte à rebours « Prochaine impulsion » s'allonge (par exemple ~2,7 min au lieu de ~1,4 min sur une petite demande) et la pompe tourne 10 s d'affilée au lieu de 5.
+- **Le pH devrait descendre plus efficacement** — c'est l'effet attendu, **pas encore vérifié sur la durée**. Suivre le pH sur quelques jours.
+- ⚠️ **Surveiller le plafond journalier pendant 3 jours.** Le comptage du volume ignore toujours la perte au démarrage : à volume **compté** constant, on délivre désormais **réellement** un peu plus de produit (quelques dizaines de mL/jour). La limite journalière est donc légèrement **moins prudente** qu'avant. Aucun réglage n'est à modifier a priori.
+- Aucune alerte MQTT n'est ajoutée, renommée ni supprimée ; le contrat `GET /data` et la trame WebSocket sont inchangés.
+
+Le message de journal « Dosage par accumulation : impulsion minimale de 5 s » devient « … de 10 s » (à ajuster si vous filtrez le journal sur ce texte). Voir [ADR-0051](adr/0051-pouls-minimal-double-rendement-avant-comptage.md).
+
+> Firmware seul : cette version ne modifie pas l'interface web. Mettre à jour le filesystem reste sans risque.
+
+### Les compteurs de dosage comptent un peu plus vite — depuis v2.25.2 (2026-08-28)
+
+**Aucune migration, aucune action requise.** Pas de changement de partition, de configuration NVS ni de format de données ; aucun réglage utilisateur n'est modifié.
+
+Un point à connaître : le débit servant à créditer les brefs à-coups de démarrage des pompes (et les injections manuelles hors amplitude calibrée) était mesuré sur **un seul exemplaire de pompe**, puis figé sur un numéro de pompe. Il devient un **majorant unique de flotte** (74,0 mL/min). Conséquence : le volume **compté** augmente d'environ **+3,6 % côté pH** et **+1,9 % côté chlore** (~+47 mL et ~+25 mL par jour sur ~1 300 mL comptés).
+
+- **Rien n'est injecté en plus** : c'est le comptage qui devient prudent. Les limites journalières et horaires mordent simplement un peu plus tôt.
+- Si une limite journalière était déjà atteinte de justesse en fin de journée, elle peut l'être **quelques minutes plus tôt**. Relever la limite n'est pas nécessaire dans les réglages usuels ; le cas échéant, ajuster `max_ph_ml_per_day` / `max_orp_ml_per_day` avec la même prudence que d'habitude.
+- La **durée annoncée** pour une injection manuelle volumée change également (chemin dégradé uniquement, amplitude ≠ duty calibré). Une pompe **mesurée** avec l'assistant de mesure du débit n'est pas concernée : elle utilise son débit propre.
+
+Motif : sur un appareil dont la pompe pH aurait été de l'exemplaire le plus rapide, le firmware **sous-comptait de 11 %** — il injectait plus que ses propres limites ne le croyaient. Voir [ADR-0050](adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md).
+
+> Firmware et filesystem doivent être mis à jour **ensemble** : l'interface lit désormais ce débit depuis `GET /data` au lieu d'en garder une copie. Un filesystem à jour sur un firmware antérieur reste fonctionnel (repli sur les anciennes valeurs 61 / 67, qui sont exactement ce que dose ce firmware-là).
+
 ### Deux nouvelles alertes de panne de sonde — depuis v2.25.1 (2026-08-27)
 
 **Aucune migration, aucune action requise.** Pas de changement de partition, de configuration NVS ni de format de données : la mise à jour est un simple flash firmware + filesystem.

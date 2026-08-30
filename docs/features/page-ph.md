@@ -16,6 +16,7 @@ En mode nominal, cinq zones :
    - **Automatique** : pH cible — **contrôle segmenté 4 positions** `#ph_target_group` depuis la v2.25.0 (7,20 / 7,30 / 7,40 / 7,50), avec hint de plage `#ph_target_hint`. Voir [Consigne pH : contrôle segmenté](#consigne-ph--contrôle-segmenté-v2250) et [Règles firmware appliquées](#règles-firmware-appliquées).
    - **Programmée** : volume quotidien en mL (borné par `max_ph_ml_per_day`) + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#ph_scheduled_flow_line` / `#ph_scheduled_flow_value`, alimentée par le champ WS `ph_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
    - **Manuelle** : bloc Injection manuelle (volume + bouton ▶ Injecter / ⏹ Stopper).
+   - **Pied de carte, mode Automatique uniquement** : bloc « **Rattrapage accumulé** » (`#ph-integral-section`, v2.26.0) — voir [Rattrapage accumulé par la régulation pH](#rattrapage-accumulé-par-la-régulation-ph-v2260).
 3. **Carte Correction de la mesure pH** (`#ph-card-offset`, feature-067, v2.20.0) — offset logiciel appliqué à la mesure. Voir [Carte « Correction de la mesure pH »](#carte--correction-de-la-mesure-ph--feature-067-v2200).
 4. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`.
 5. **Carte Calibration** — **remplace** Régulation + Historique pendant une session de calibration. Écran **guidé par stepper** (feature-034) — voir [Workflow calibration](#workflow-calibration).
@@ -51,6 +52,44 @@ brut 7.24 · médiane 7.24 · maj à l'instant
 > **feature-067 (v2.20.0)** : la valeur affichée en grand (`ph`), la médiane et la valeur filtrée intègrent l'**offset logiciel** `ph_offset` ; seul `phRaw` reste brut. Voir [Carte « Correction de la mesure pH »](#carte--correction-de-la-mesure-ph--feature-067-v2200).
 
 `--` est affiché si la valeur est `null` (filtre non amorcé / EZO injoignable).
+
+## Rattrapage accumulé par la régulation pH (v2.26.0)
+
+Bloc `#ph-integral-section`, en **pied de la carte Régulation pH**, **visible en mode Automatique uniquement**. Il expose le **terme intégral** introduit par la [levée de `Ki = 0`](../subsystems/pump-controller.md#terme-intégral-ph--levée-de-ki--0-v2260) ([ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md)).
+
+**Contenu**
+
+```
+La régulation met de côté une correction lente pour compenser une dérive
+permanente du pH (dégazage du CO₂, apport d'eau neuve). Cette réserve se
+vide d'elle-même quand le pH rejoint sa consigne.
+
+Rattrapage accumulé : 46 %   (7 450 pH·s · 2,8 mL/min demandés)
+```
+
+| Élément | Id | Source | Format |
+|---|---|---|---|
+| Valeur de tête | `#ph_integral_pct_value` | `ph_integral_pct` | entier + « % », `—` si `null` |
+| Détail discret | `#ph_integral_detail` | `ph_integral` et `ph_integral_term` | `(N pH·s · X,X mL/min demandés)`, **valeurs absolues** |
+| Encart d'avertissement | `#ph_integral_warning` | dérivé de `ph_integral_pct` | `callout--warn`, `role="status"`, masqué hors saturation |
+
+**Règles d'affichage** (point de décision unique : `updatePhIntegralDisplay()`, appelée depuis `updateDetailSections()` et depuis le changement de mode) :
+
+| Condition | Comportement |
+|---|---|
+| `ph_integral_pct` **absent** (firmware < 2.26.0) | **Bloc entier masqué.** Afficher « 0 % » mentirait sur une régulation dont on ne sait rien. |
+| Mode de régulation ≠ `automatic` | **Bloc masqué** : le rattrapage n'évolue que là ; ailleurs on n'afficherait qu'un reliquat figé, sans lecture possible. |
+| Valeur `null` | « — » — le firmware dit explicitement « non calculable » (terme intégral inactif). **Jamais un zéro.** |
+| Nombre fini, `0` compris | Valeur affirmée : `0 %` = **réserve vide**. |
+| `ph_integral_pct ≥ 95` | Encart d'avertissement affiché : *« Rattrapage au maximum : la régulation demande tout ce qu'elle peut sans que le pH rejoigne sa consigne. Vérifiez le niveau du bidon, l'amorçage de la pompe doseuse et le TAC de l'eau (une alcalinité élevée bloque le pH). »* |
+
+**Pourquoi le pourcentage en premier** : c'est la seule des trois grandeurs lisible **sans connaître le plafond de l'anti-windup**, lequel **varie** avec la vitesse de correction (43 200 / 16 200 / 7 200 pH·s). Ce plafond n'est donc **jamais recopié côté client** — le firmware sert le rapport déjà calculé. Recalculer un pourcentage dans le navigateur rouvrirait le motif du miroir de constante firmware, éliminé quatre fois dans ce projet.
+
+**Le signe n'est pas affiché** : le détail montre les valeurs **absolues**, le sens de correction étant déjà porté plus haut dans la carte (pH- / pH+).
+
+> ⚠️ **Le seuil `PH_INTEGRAL_SATURATION_PCT = 95` de `app.js` est un seuil de MISE EN FORME**, aligné sur `kPhIntegralSaturationPct`. **L'autorité reste l'alerte firmware** `ph_integral_saturated`, seule à tenir compte de la **durée** (`warning` à 2 h, `critical` à 6 h, rappel 12 h) — l'encart web peut apparaître sur un transitoire de quelques minutes sans qu'aucune alerte ne parte, et c'est voulu.
+
+**Volontairement absent d'ailleurs** : du **tableau de bord** (c'est une grandeur d'automatique, pas une mesure d'eau) et de la page **Réglages** (c'est un **état temps réel**, pas un paramètre à sauvegarder).
 
 ## Carte « Correction de la mesure pH » (feature-067, v2.20.0)
 
@@ -354,6 +393,7 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 **Dosage** : `ph_dosing`, `ph_used_ms`, `ph_daily_ml`, `ph_limit_reached`
 **Mode** : `ph_regulation_mode` (`automatic` / `scheduled` / `manual`), `ph_daily_target_ml`, `ph_enabled` (miroir, voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
 **Répartition scheduled (feature-011, v2.8.0)** : `ph_scheduled_flow_ml_per_min` (float 1 décimale, mL/min — débit moyen planifié restant ; `null` hors mode `scheduled`, hors plage de filtration ou heure ESP32 invalide → l'UI affiche « — »)
+**Terme intégral (v2.26.0)** : `ph_integral_pct` (float, % — remplissage de la réserve), `ph_integral` (float, pH·s), `ph_integral_term` (float, mL/min). Servis **à l'identique** par `GET /data`. Clé **absente** = firmware antérieur → bloc masqué ; `null` = « non calculable » → « — » ; `0` = **réserve vide, affirmé**. Voir [Rattrapage accumulé](#rattrapage-accumulé-par-la-régulation-ph-v2260)
 **Config** : `ph_target`, `ph_correction_type` (`ph_minus` / `ph_plus`), `max_ph_ml_per_day`, `ph_offset` (feature-067, message `config` — pas `sensor_data`)
 **Injection manuelle** : `ph_inject_remaining_s`
 **Stabilisation** : `stabilization_remaining_s`
@@ -412,6 +452,8 @@ Voir [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md) pour
 - **Cumul journalier** : persisté en NVS, reset à minuit local — voir [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md).
 - ✅ **Injection manuelle gardée (v2.6.0, feature-006)** : `POST /ph/inject/start` passe par les gardes de `evaluateManualInject()` — dans l'ordre : watchdog, filtration (sauf mode `continu`), stabilisation post-cal **de la pompe pH**, double démarrage, **limite journalière prédictive** (frontière `==` acceptée ; depuis la **v2.9.2**, une demande supérieure au reliquat est **écrêtée automatiquement au reliquat** au lieu d'être refusée — le refus `daily_limit` ne subsiste que si le reliquat est nul ou < 1 s de pompe, avec `remaining_ml` arrondi vers le bas), **limite horaire partagée avec l'auto** (`ph_limit_minutes`, [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md)), cycles/jour (20) et anti-rafale (6/min, 20/15 min — ring partagé avec l'auto). Refus = **409 JSON** `{"error","message","seconds_remaining"?,"remaining_ml"?}` — voir [Comportement UI injection manuelle](#comportement-ui-injection-manuelle-v260) et [docs/subsystems/pump-controller.md](../subsystems/pump-controller.md#gardes-des-injections-manuelles-feature-006). Le mode de régulation et la mesure capteur ne sont volontairement **pas** vérifiés (le manuel est disponible dans tous les modes et aveugle à la mesure). Arrêt cyclique automatique conservé si la filtration s'arrête pendant l'injection. `POST /ph/inject/stop` n'est **jamais** gardé.
 - **Bornage durée** : `duration` plafonné à 600 s (10 min, `kManualInjectMaxDurationS`) au lieu de 3600 s avant v2.1.2. Les gardes évaluent le volume **post-plafonnement** (ce qui sera réellement injecté).
+- **Durée estimée sous le champ volume (« ≈ X min »)** : `calcInjectDurationS()` ([`data/app.js`](../../data/app.js)) est un miroir *best-effort* de `planManualInject()` — amplitude == duty calibré → débit mesuré de la pompe ; sinon débit **majorant à 255**. ⚠️ **v2.25.2** ([ADR-0050](../adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md)) : ce débit majorant n'est plus une **constante recopiée dans le navigateur** (`FLOW_255_ML_PER_MIN = {1: 61, 2: 67}`, devenue fausse de ~21 %) mais la valeur **servie** par `flow_assist.flow255` de [`GET /data`](../API.md#get-data--write). Le **repli 61 / 67** est conservé **délibérément** pour les firmwares antérieurs, qui ne publient pas ce champ et dosent bien à ces débits-là — l'aligner sur 74 mentirait sur un appareil ancien. Le firmware reste l'autorité : l'estimation client n'est qu'un indicatif.
+  > **Dette connue** : `MAX_INJECT_DURATION_S = 600` reste un **miroir en dur** de `kManualInjectMaxDurationS` dans `data/app.js` (4ᵉ occurrence du motif). Candidat à être servi par `/get-config`.
 
 ### Comportement UI injection manuelle (v2.6.0)
 
@@ -476,7 +518,11 @@ Encart `#ph_inject_raw_guard_warning` (titre `#ph_inject_raw_guard_title`, texte
 | `sensor.*_ph_slope_acid` | `{base}/ph_slope_acid` (% — feature-024) | — |
 | `sensor.*_ph_slope_base` | `{base}/ph_slope_base` (% — feature-024) | — |
 | `sensor.*_ph_slope_zero` | `{base}/ph_slope_zero` (mV — feature-024) | — |
+| `sensor.*_ph_integral_pct` | `{base}/ph_integral_pct` (% — v2.26.0) | — |
+| `sensor.*_ph_integral_term` | `{base}/ph_integral_term` (mL/min — v2.26.0, diagnostic) | — |
+| `sensor.*_ph_integral` | `{base}/ph_integral` (pH·s — v2.26.0, diagnostic) | — |
 | (alerte) | `{base}/alerts/calibration_required` | — |
+| (alerte) | `{base}/alerts` type `ph_integral_saturated` (v2.26.0) | — |
 
 > **Mode de régulation commandable depuis HA (feature-009, v2.7.0)** : l'entité `select.*_ph_regulation_mode` (options `automatic` / `scheduled` / `manual`) permet de changer le mode depuis Home Assistant, par la **même voie** que le sélecteur de la carte Régulation (miroir `ph_enabled`, [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), persistance NVS). La **carte Régulation de l'UI web reste la source principale** ; un changement initié par HA se reflète dans l'UI via les canaux existants (broadcast WS `ph_regulation_mode` + `/get-config`) — aucun code UI ajouté. Valeur hors enum → ignorée + log `warning`. Un changement pendant une injection en cours ne l'interrompt pas : le nouveau mode prend effet au cycle de régulation suivant. Voir [docs/MQTT.md](../MQTT.md#entités-ajoutées-en-feature-009-modes-de-régulation-commandables-v270).
 

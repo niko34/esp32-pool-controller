@@ -248,6 +248,12 @@ void MqttManager::refreshTopics() {
   topics.installModeState           = base + "/install_mode";
   topics.installModeCommand         = base + "/install_mode/set";
   topics.filtrationExternalStateCommand = base + "/filtration_external_state/set";
+  // v2.26.0 (C5) : terme intégral pH. Noms de sous-topics ALIGNÉS sur les champs
+  // /data et WebSocket (ph_integral, ph_integral_term, ph_integral_pct) — une même
+  // grandeur porte le même nom sur les trois transports.
+  topics.phIntegralState            = base + "/ph_integral";
+  topics.phIntegralTermState        = base + "/ph_integral_term";
+  topics.phIntegralPctState         = base + "/ph_integral_pct";
 
   xSemaphoreGive(topicsMutex);
 
@@ -419,7 +425,7 @@ void MqttManager::connectInTask() {
 
     discoveryPublished = false;
     esp_task_wdt_reset();
-    publishDiscovery();              // ~34 publish — long si CPL lossy
+    publishDiscovery();              // 52 publish — long si CPL lossy
     esp_task_wdt_reset();
     publishAllStatesInternal();      // ~15 publish
     esp_task_wdt_reset();
@@ -667,7 +673,7 @@ void MqttManager::publishTargetState() {
 // retenue (une alerte est un ÉVÉNEMENT : la rejouer à chaque abonnement d'un
 // client HA ferait remonter un incident clos).
 //
-// TYPES ÉMIS (inventaire à jour v2.25.0 — `docs/MQTT.md` fait foi pour le détail) :
+// TYPES ÉMIS (inventaire à jour v2.26.0 — `docs/MQTT.md` fait foi pour le détail) :
 //   ph_abnormal        pH hors plage de plausibilité (mesure)
 //   ph_low_warning     [NOUVEAU v2.25.0] eau acide sous kPhLowWarn (7,00) sur le pH
 //                      CORRIGÉ — NON BLOQUANT, aucun compteur, signal précoce
@@ -678,6 +684,19 @@ void MqttManager::publishTargetState() {
 //                      périodique, sans compteur ni bascule en manuel
 //   orp_ph_inhibit     [ex-`orp_ph_raw_inhibit`] dosage ORP suspendu sur pH élevé
 //                      (seuil kPhOrpInhibit, désormais sur le pH CORRIGÉ)
+//   ph_integral_saturated [NOUVEAU v2.26.0] la demande de dosage dépasse ce que
+//                      le budget horaire permet de délivrer en moyenne
+//                      (demande ≥ ampFlow × budget/60), ET l'erreur reste
+//                      au-dessus du seuil d'arrêt — `warning` après 2 h,
+//                      `critical` après 6 h (kPhIntegralSaturationCriticalMs,
+//                      = Ti à vitesse normale), rappel toutes les 12 h. La tenue
+//                      est comptée en temps de branche AUTOMATIQUE : un séjour en
+//                      mode manuel suspend l'épisode au lieu de le faire mûrir
+//                      sur une erreur périmée. Signe que la
+//                      correction demandée n'a pas d'effet mesurable sur le pH
+//                      (bidon vide, pompe désamorcée, alcalinité trop élevée) :
+//                      un même type d'alerte pour les deux paliers, la gravité est
+//                      portée par le message et le niveau de journal.
 //   + les alertes de dosage/volume/matériel émises par pump_controller et filtration.
 // SUPPRIMÉ en v2.25.0 : `ph_target_unreachable` — la marge consigne ↔ seuil est
 // devenue STRUCTURELLE (static_assert), la garde de cohérence n'existe plus.
@@ -793,6 +812,23 @@ void MqttManager::publishAllStatesInternal() {
   // par valeur mémorisée — slots 14/15). Remis à 0 à minuit par le pump_controller.
   safePublishDedup(14, topics.phDailyMlState.c_str(),  String(safetyLimits.dailyPhInjectedMl, 1));
   safePublishDedup(15, topics.orpDailyMlState.c_str(), String(safetyLimits.dailyOrpInjectedMl, 1));
+
+  // v2.26.0 (C5) : TERME INTÉGRAL pH — troisième transport de la parité déjà
+  // établie sur /data (web_routes_data.cpp) et le WebSocket (ws_manager.cpp) :
+  // MÊMES noms de champs, MÊMES arrondis (1 / 3 / 1 décimales). Sans ces topics,
+  // une intégrale saturée resterait invisible depuis Home Assistant, alors que
+  // c'est précisément le terme qui porte TOUTE la charge à l'équilibre.
+  // NaN (Ki nul, PID non initialisé) → AUCUNE publication : le retain précédent
+  // reste valable, on ne fabrique jamais un « 0 » qui se lirait « intégrale vide ».
+  // Getters LECTURE SEULE, sans I²C ni mutex (cf. pump_controller.h).
+  {
+    const float phInt    = PumpController.getPhIntegral();
+    const float phIntTrm = PumpController.getPhIntegralTerm();
+    const float phIntPct = PumpController.getPhIntegralPct();
+    if (!isnan(phInt))    safePublishDedup(18, topics.phIntegralState.c_str(),     String(phInt, 1));
+    if (!isnan(phIntTrm)) safePublishDedup(19, topics.phIntegralTermState.c_str(), String(phIntTrm, 3));
+    if (!isnan(phIntPct)) safePublishDedup(20, topics.phIntegralPctState.c_str(),  String(phIntPct, 1));
+  }
 
   // Product / target sous configMutex — snapshot puis publish hors verrou.
   // feature-027 : snapshot atomique ou rien. Timeout → seul ce bloc est sauté
@@ -2341,6 +2377,52 @@ void MqttManager::publishDiscovery() {
   doc["payload_off"] = "OFF";
   doc["device_class"] = "problem";
   doc["icon"] = "mdi:filter-remove";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // v2.26.0 (C5) : terme intégral pH — 3 entités NOUVELLES, aucune entité
+  // existante touchée (`unique_id` inédits, l'auto-discovery en place est intacte).
+  //
+  // L'entité de tête est le POURCENTAGE : c'est la seule des trois qui soit
+  // actionnable sans connaître `integralMax` (lequel VARIE avec la vitesse de
+  // correction — 43 200 / 16 200 / 7 200 pH·s). Home Assistant n'a donc jamais à
+  // connaître ce plafond, et aucune template n'a à le recopier : le firmware sert
+  // le rapport déjà calculé. Les deux autres entités sont du diagnostic
+  // (`entity_category: diagnostic` → repliées hors de la carte principale).
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_integral_pct/config";
+  doc["name"] = "Piscine pH Rattrapage";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_integral_pct";
+  doc["state_topic"] = topics.phIntegralPctState;
+  doc["unit_of_measurement"] = "%";
+  doc["icon"] = "mdi:gauge";
+  doc["state_class"] = "measurement";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Contribution du terme intégral au débit moyen demandé. Autorité bornée à
+  // 6,0 mL/min quelle que soit la vitesse de correction.
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_integral_term/config";
+  doc["name"] = "Piscine pH Rattrapage Débit";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_integral_term";
+  doc["state_topic"] = topics.phIntegralTermState;
+  doc["unit_of_measurement"] = "mL/min";
+  doc["icon"] = "mdi:speedometer";
+  doc["state_class"] = "measurement";
+  doc["entity_category"] = "diagnostic";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Intégrale brute (pH·s) — grandeur d'automatique pure, signée : une valeur
+  // négative n'est pas une anomalie, elle indique le côté de la consigne.
+  // Pas de `device_class` (aucune classe HA ne correspond à des pH·s).
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_integral/config";
+  doc["name"] = "Piscine pH Intégrale";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_integral";
+  doc["state_topic"] = topics.phIntegralState;
+  doc["unit_of_measurement"] = "pH·s";
+  doc["icon"] = "mdi:sigma";
+  doc["state_class"] = "measurement";
+  doc["entity_category"] = "diagnostic";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 

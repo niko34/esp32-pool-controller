@@ -99,6 +99,11 @@ struct MqttTopics {
   String installModeState;          // Mode d'installation publié (managed/powered/external, retain)
   String installModeCommand;        // .../install_mode/set (managed/powered/external)
   String filtrationExternalStateCommand;  // .../filtration_external_state/set (ON/OFF, NON-retain) → setExternalState (signal filtration externe)
+  // v2.26.0 (C5) : terme intégral pH — observabilité de la levée de Ki. Trois
+  // topics retain, dédupliqués. Aucun équivalent ORP (Ki_ORP reste 0).
+  String phIntegralState;           // Intégrale accumulée (pH·s, 1 décimale)
+  String phIntegralTermState;       // Contribution au débit demandé (mL/min, 3 décimales)
+  String phIntegralPctState;        // Remplissage de l'anti-windup (% de integralMax)
 };
 
 // Architecture producer/consumer (cf. ADR-0011) :
@@ -189,7 +194,10 @@ private:
   // depuis mqttTask. Sentinelle vide = "jamais publié".
   // feature-050 : slots 14/15 réservés aux cumuls journaliers ph_daily_ml/orp_daily_ml.
   // v2.20.3 : +2 slots (16/17) pour ph/orp_filter_stuck.
-  static constexpr int kDedupCacheSlots = 18;
+  // v2.26.0 (C5) : +3 slots (18/19/20) pour ph_integral / _term / _pct — l'intégrale
+  // est FIGÉE hors dosage (aucune erreur intégrée) : la déduplication supprime la
+  // quasi-totalité du trafic de ces trois topics pendant les heures d'arrêt.
+  static constexpr int kDedupCacheSlots = 21;
   String _lastFilterPub[kDedupCacheSlots];
   // Publie `payload` sur `topic` uniquement si différent du dernier publié (slot `cacheIdx`).
   void safePublishDedup(int cacheIdx, const char* topic, const String& payload);

@@ -192,17 +192,19 @@ Détails du workflow et des cas d'erreur : voir [docs/features/page-orp.md](docs
 
 ### Tuning de la régulation (Avancé)
 
-La régulation est une **proportionnelle temporisée (P)** : seul le gain **Kp** module la vitesse, **Ki = 0** et **Kd = 0** sont impératifs (pas d'intégrale ni de dérivée). La valeur d'entrée de la régulation est la mesure **lissée** (médiane + EMA) ; le dosage est **bloqué tant que le filtre de mesure n'est pas amorcé/prêt**. Voir [applyRegulationSpeed()](src/pump_controller.cpp) et [ADR-0016](docs/adr/0016-regulation-p-temporisee-vs-pid.md).
+La régulation est **temporisée** : la mesure d'entrée est la valeur **lissée** (médiane + EMA), et le dosage est **bloqué tant que le filtre de mesure n'est pas amorcé/prêt**. **Kd = 0 est impératif sur les deux chimies** (pas de dérivée : elle n'amplifierait que le bruit résiduel du filtre).
 
-**Gain Kp par vitesse** (sélectionnable dans Paramètres → Régulation) :
+Depuis la **v2.26.0**, la boucle **pH** est une **PI** : un proportionnel pur sous charge permanente (dégazage du CO₂) ne peut structurellement pas rejoindre sa consigne — il se stabilise sur un écart résiduel. La boucle **ORP** reste **proportionnelle pure** (`Ki = 0`). Voir [applyRegulationSpeed()](src/pump_controller.cpp), [ADR-0016](docs/adr/0016-regulation-p-temporisee-vs-pid.md) et [ADR-0052](docs/adr/0052-terme-integral-ph-dimensionne-par-autorite.md).
 
-| Vitesse | Kp pH | Kp ORP |
-|---------|-------|--------|
-| Lente   | 4.0   | 0.15   |
-| Normale | 8.0   | 0.30   |
-| Rapide  | 12.0  | 0.50   |
+**Coefficients par vitesse** (sélectionnable dans Paramètres → Régulation) :
 
-> **Ki = 0 / Kd = 0** quelle que soit la vitesse (P temporisée pure). `integralMax` (50.0) est conservé pour une éventuelle réactivation future mais reste **inerte** tant que Ki = 0.
+| Vitesse | Kp pH | Ti pH | Kp ORP |
+|---------|-------|-------|--------|
+| Lente   | 4.0   | 8 h   | 0.15   |
+| Normale | 8.0   | 6 h   | 0.30   |
+| Rapide  | 12.0  | 4 h   | 0.50   |
+
+> Côté pH, `Ki = Kp / Ti` et le plafond d'anti-windup se **dérive de l'autorité** posée pour le terme intégral (6,0 mL/min) : `integralMax = U × Ti / Kp`, soit 43 200 / 16 200 / 7 200 pH·s. Il **varie donc avec la vitesse**, comme Kp. L'intégrale n'est **jamais persistée** : un redémarrage repart de zéro.
 
 **Protection anti-cycling** (prolonge durée de vie des pompes) :
 - Injection minimum : 30 secondes par cycle

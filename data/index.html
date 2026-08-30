@@ -791,6 +791,40 @@
                 <p id="ph_inject_block_hint" class="muted small" style="margin:6px 0 0"></p>
               </div>
 
+              <!-- v2.26.0 (C5) : rattrapage accumulé par la régulation pH (terme
+                   intégral). Placé ICI, en pied de la carte Régulation pH et
+                   UNIQUEMENT en mode automatique : c'est la seule surface où
+                   l'utilisateur vient déjà quand « la régulation se comporte
+                   bizarrement », et le seul mode où ce terme évolue. Volontairement
+                   ABSENT du tableau de bord (grandeur d'automatique, pas une mesure
+                   d'eau) et absent de la page Réglages (valeur d'ÉTAT temps réel,
+                   pas un paramètre à sauvegarder).
+                   Masqué en bloc tant que le firmware ne sert pas ph_integral_pct
+                   (antérieur à la 2.26.0) — cf. updatePhIntegralDisplay(), seul
+                   point de décision de la visibilité de ce bloc. -->
+              <div id="ph-integral-section" style="display:none">
+                <hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">
+                <!-- Intitulé au format des autres rubriques de la carte
+                     (« TYPE DE CORRECTION », « PH CIBLE ») : sans lui, le bloc
+                     se lisait comme une note de bas de carte et se confondait
+                     avec le texte explicatif — un utilisateur qui le CHERCHE ne
+                     le trouvait pas. La valeur vient JUSTE après l'intitulé,
+                     l'explication passe en dessous : le pourcentage reste la
+                     première grandeur lue. -->
+                <span class="field__label">Rattrapage accumulé</span>
+                <p style="margin:6px 0 0">
+                  <strong id="ph_integral_pct_value">—</strong>
+                  <span class="muted small" id="ph_integral_detail"></span>
+                </p>
+                <p class="muted small" style="margin:8px 0 0">
+                  La régulation met de côté une <strong>correction lente</strong> pour compenser
+                  une dérive permanente du pH (dégazage du CO₂, apport d'eau neuve). Cette réserve
+                  se vide d'elle-même quand le pH rejoint sa consigne.
+                </p>
+                <div class="callout callout--warn" id="ph_integral_warning"
+                     role="status" aria-live="polite" hidden style="margin:10px 0 0"></div>
+              </div>
+
             </div>
           </div>
 

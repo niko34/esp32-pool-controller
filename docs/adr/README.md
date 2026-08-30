@@ -32,7 +32,7 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0013](0013-identification-sondes-onewire.md) | Identification des sondes DS18B20 par adresse ROM persistée NVS + workflow utilisateur | Accepté |
 | [0014](0014-migration-atlas-ezo.md) | Migration Atlas EZO pH/ORP (PCB v2) — supersedes ADR-0001 | Accepté |
 | [0015](0015-partition-app-1.5mb.md) | Partition application 1.5 MB (layout v2) | Superseded by ADR-0019 |
-| [0016](0016-regulation-p-temporisee-vs-pid.md) | Régulation P temporisée par défaut (Kp seul, Ki=0, Kd=0) sur mesure filtrée | Accepté |
+| [0016](0016-regulation-p-temporisee-vs-pid.md) | Régulation P temporisée par défaut (Kp seul, Ki=0, Kd=0) sur mesure filtrée | Accepté (`Ki = 0` levé sur le pH par ADR-0052 ; `Kd = 0` et `Ki_ORP = 0` inchangés) |
 | [0017](0017-logique-metier-pure-humble-object-testabilite.md) | Logique métier pure (Humble Object) séparée de la couche hardware pour testabilité native | Accepté |
 | [0018](0018-migration-uplot.md) | uPlot au lieu de Chart.js pour les graphiques de l'UI (contrainte Flash/FS) | Accepté |
 | [0019](0019-partition-app-1664k.md) | Partitions app à 1664 KB (layout v3, spiffs 576 KB) | Superseded by ADR-0024 |
@@ -59,13 +59,16 @@ Certaines décisions techniques ne sont pas lisibles dans le code : elles expliq
 | [0040](0040-pas-de-calibrage-sur-fragmentation-pathologique.md) | On ne calibre pas des seuils sur une fragmentation pathologique (régime bi-métrique assumé) | Accepté |
 | [0041](0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md) | Autorité des mesures non représentatives et sortie de secours du filtre de tendance centrale | Accepté |
 | [0042](0042-core3-environnement-par-defaut.md) | Le core Arduino 3.x / IDF 5 devient l'environnement par défaut (bootloader ET application) | Accepté |
-| [0043](0043-dosage-proportionnel-de-temps-amplitude-calibree.md) | Dosage en proportionnel de temps à amplitude calibrée (fail-closed, sans interpolation) | Accepté (seuil C amendé par ADR-0046, défauts de calibration amendés par ADR-0047) |
+| [0043](0043-dosage-proportionnel-de-temps-amplitude-calibree.md) | Dosage en proportionnel de temps à amplitude calibrée (fail-closed, sans interpolation) | Accepté (seuil C amendé par ADR-0046, défauts de calibration amendés par ADR-0047, pouls minimal amendé par ADR-0051) |
 | [0044](0044-budget-horaire-et-temps-min-en-temps-pompe-on.md) | Budget horaire et temps minimum d'injection comptés en temps POMPE-ON | Accepté |
 | [0045](0045-etat-impulsion-expose-en-calendrier.md) | État d'impulsion exposé en calendrier (période / pouls / phase), pas en booléen instantané | Accepté |
 | [0046](0046-accumulateur-demande-sous-pouls-minimal.md) | Accumulateur de demande sous le pouls minimal (amende le seuil C de l'ADR-0043) | Accepté |
-| [0047](0047-calibration-de-type-par-defaut-et-gel-amplitude.md) | Calibration de type par défaut pour la flotte + gel de l'amplitude d'impulsion (amende le fail-closed des défauts de l'ADR-0043) | Accepté |
+| [0047](0047-calibration-de-type-par-defaut-et-gel-amplitude.md) | Calibration de type par défaut pour la flotte + gel de l'amplitude d'impulsion (amende le fail-closed des défauts de l'ADR-0043) | Accepté (valeurs d'usine amendées par ADR-0050) |
 | [0048](0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md) | Seuils de sécurité pH **fixes**, dérivés de la plage de consigne [7,20 ; 7,50] et appliqués au pH **corrigé** ; deux butées de dernier recours sur le brut (6,20 / 8,10) ; surveillance séparée de la décision ; acquittement explicite fail-closed d'une bascule de sécurité (amende feature-067 et l'ADR-0039) | Accepté |
 | [0049](0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md) | La cause de refus de dosage est transportée par un **code machine** (contrat de sérialisation figé), et discriminée sur l'**état interne du filtre** — jamais sur la fraîcheur de la lecture brute ; priorité pannes d'abord ; grâce de ré-amorçage lue par `stale()` mais pas par `ready()` | Accepté |
+| [0050](0050-debit-pleine-puissance-constante-unique-de-flotte.md) | Le débit à pleine puissance est une constante **unique de flotte** (74,0 = max mesuré 68,0 + 8 % de dispersion), la marge doit dépasser la dispersion observée, les maxima mesurés deviennent des `static_assert`, aucun miroir client d'une valeur de sécurité (amende les valeurs d'usine de l'ADR-0047) | Accepté |
+| [0051](0051-pouls-minimal-double-rendement-avant-comptage.md) | Pouls minimal doublé (5 s → 10 s) : améliorer le **rendement** des démarrages d'abord, corriger le modèle de **comptage** ensuite — la dose demandée est inchangée, le compteur reste faux (dette assumée, amende le pouls minimal de l'ADR-0043) | Accepté |
+| [0052](0052-terme-integral-ph-dimensionne-par-autorite.md) | Levée de `Ki = 0` sur la **seule** régulation pH (un P pur sous charge permanente ne peut pas annuler son droop) : `integralMax` **dimensionné par l'autorité** `U × Ti / kp` et non « en pH·s », intégration **signée** sur `erreur − phStopThreshold` par quanta d'1 s, gel d'anti-windup **asymétrique**, aucune persistance NVS (amende le `Ki = 0` de l'ADR-0016) | Accepté |
 
 ## Template
 

@@ -337,10 +337,22 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // gabarit documentaire 2560 — aucun bump nécessaire, aucune troncature
   // possible (garde `measureJson(doc) + 1 > cap` en fin de fonction, qui SAUTE
   // le push au lieu de tronquer).
+  // v2.26.0 (C5) : +3 champs du terme intégral pH. Octets SÉRIALISÉS au pire cas
+  // (flottants arrondis, signe compris) :
+  //   "ph_integral":-43200.0,    → 1+11+1+1+8+1 = 23 o
+  //   "ph_integral_term":-6.000, → 1+16+1+1+6+1 = 26 o
+  //   "ph_integral_pct":100.0,   → 1+15+1+1+5+1 = 24 o   → 73 o.
+  // v2.26.0 (revue, mineure n°1) : +1 booléen de VERDICT de saturation (parité /data)
+  //   "ph_integral_saturated":false, → 1+21+1+1+5+1 = 30 o.
+  // Pire cas de trame : 2479 o (mesure v2.25.1) + 73 + 30 = 2582 o. Le gabarit
+  // documentaire est porté 2560 → 2688 pour rester franchement au-dessus du pire
+  // cas ; la marge sous sWsFrameBuf (kWsFrameBufBytes = 3584 o) reste de 1002 o.
+  // Aucune troncature possible (garde `measureJson(doc) + 1 > cap` en fin de
+  // fonction, qui SAUTE le push au lieu de tronquer).
   // NB : en ArduinoJson 7, StaticJson<N> dérive de JsonDocument et N n'est plus
   // qu'une valeur documentaire (capacity()) — le pool est alloué dynamiquement.
   // Le seul plafond DUR de ce chemin est kWsFrameBufBytes.
-  StaticJson<2560> doc;
+  StaticJson<2688> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -483,6 +495,27 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   float orpSchedFlow = PumpController.getOrpScheduledPlannedFlow();
   if (!isnan(phSchedFlow))  d["ph_scheduled_flow_ml_per_min"]  = round(phSchedFlow * 10.0f) / 10.0f;  else d["ph_scheduled_flow_ml_per_min"]  = nullptr;
   if (!isnan(orpSchedFlow)) d["orp_scheduled_flow_ml_per_min"] = round(orpSchedFlow * 10.0f) / 10.0f; else d["orp_scheduled_flow_ml_per_min"] = nullptr;
+  // v2.26.0 (C5) : TERME INTÉGRAL pH — observabilité de la levée de Ki (le terme
+  // intégral fournit TOUTE la charge à l'équilibre, où le proportionnel s'annule ;
+  // sans ces champs, une intégrale saturée resterait invisible).
+  //   ph_integral      = intégrale accumulée (pH·s)
+  //   ph_integral_term = contribution au débit moyen demandé (mL/min)
+  //   ph_integral_pct  = remplissage de l'anti-windup (% de integralMax)
+  //   ph_integral_saturated = VERDICT d'épisode de saturation (booléen) — v2.26.0
+  //     (revue, mineure n°1). Le seuil (95 % de `demande / débit soutenable`) et
+  //     son hystérésis restent au FIRMWARE : comparer soi-même 95 % au
+  //     REMPLISSAGE (`ph_integral_pct`) confond deux grandeurs et annonce
+  //     « vérifiez le bidon » sur une régulation saine.
+  // Champs et règles STRICTEMENT identiques à /data (web_routes_data.cpp) : mêmes
+  // noms, mêmes arrondis, NaN → null explicite. Pas d'équivalent ORP : Ki_ORP
+  // reste 0 (asymétrie voulue, hors périmètre du gate v2.26.0).
+  float phIntegral    = PumpController.getPhIntegral();
+  float phIntegralTrm = PumpController.getPhIntegralTerm();
+  float phIntegralPct = PumpController.getPhIntegralPct();
+  if (!isnan(phIntegral))    d["ph_integral"]      = round(phIntegral * 10.0f) / 10.0f;         else d["ph_integral"]      = nullptr;
+  if (!isnan(phIntegralTrm)) d["ph_integral_term"] = round(phIntegralTrm * 1000.0f) / 1000.0f;  else d["ph_integral_term"] = nullptr;
+  if (!isnan(phIntegralPct)) d["ph_integral_pct"]  = round(phIntegralPct * 10.0f) / 10.0f;      else d["ph_integral_pct"]  = nullptr;
+  d["ph_integral_saturated"] = PumpController.isPhIntegralSaturated();
   d["ph_daily_ml"]        = safetyLimits.dailyPhInjectedMl;
   d["orp_daily_ml"]       = safetyLimits.dailyOrpInjectedMl;
   d["ph_limit_reached"]   = safetyLimits.phLimitReached;

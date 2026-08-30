@@ -141,12 +141,15 @@ L'environnement `native` (`platform = native` dans [`platformio.ini`](../platfor
 pio test -e native
 ```
 
-PlatformIO compile **un binaire par dossier `test/test_*`** ; `pio test -e native` couvre donc désormais **deux suites** :
+PlatformIO compile **un binaire par dossier `test/test_*`**. Le nombre de suites a beaucoup augmenté depuis la rédaction de cette section : **`ls test/` fait foi** — la table ci-dessous n'est qu'un extrait des suites historiques et de la plus récente.
 
 | Dossier | Couvre | Source testée |
 |---------|--------|---------------|
 | `test/test_native_sensor_filter/` | tendance centrale (médiane longue + EMA), rejet aberrations, dispersion/latch, capteur figé (feature-025 → feature-058) | `src/sensor_filter.cpp` |
 | `test/test_native_dosing/` | décision de dosage (`evaluateDose`, hystérésis start/stop, non-régression pause-mélange) (feature-036) | `src/dosing_logic.cpp` |
+| `test/test_native_ph_integral/` | terme intégral pH (v2.26.0, [ADR-0052](adr/0052-terme-integral-ph-dimensionne-par-autorite.md)) : charge signée, oubli, reset sec, péremption, hystérésis de saturation, **test de droop** (un P pur ne converge pas, un PI converge) | `src/ph_integral_logic.h` |
+
+> ⚠️ **Section partiellement périmée** : le reste de ce paragraphe (« les deux modules purs », `build_src_filter`) décrit un état antérieur du projet. Se référer à [`platformio.ini`](../platformio.ini) pour le filtre de sources réel.
 
 Le `build_src_filter` de l'env `native` inclut les deux modules purs :
 

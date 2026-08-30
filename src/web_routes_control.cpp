@@ -207,8 +207,7 @@ static ManualInjectPlan planManualInject(int pumpIdx) {
                                           : mqttCfg.pump2CalibratedDuty;
   const float pulseFlow  = (pumpIdx == 0) ? mqttCfg.pump1PulseFlowMlPerMin
                                           : mqttCfg.pump2PulseFlowMlPerMin;
-  const float flow255    = (pumpIdx == 0) ? kPump1Flow255MlPerMin
-                                          : kPump2Flow255MlPerMin;
+  const float flow255    = kPumpFlow255MlPerMin;  // majorant de flotte (v2.25.2)
   const uint8_t ampDuty  = PumpController.getPumpAmplitudeDuty(pumpIdx);
   if (calDuty != 0 && ampDuty == calDuty) {
     // Ce chemin exige le débit pesé : sans pesée plausible → refus explicite,
@@ -269,11 +268,10 @@ static bool flowAssistPumpIsPh(int pumpIdx) {
   return pumpIdx == (mqttCfg.phPump - 1);
 }
 
-// Débit MAJORANT (mesuré à duty 255) de la pompe physique — base du crédit de
-// sécurité (surestimer est fail-safe, P4 : jamais zéro sur pompe alimentée).
-static float flowAssistFlow255(int pumpIdx) {
-  return (pumpIdx == 0) ? kPump1Flow255MlPerMin : kPump2Flow255MlPerMin;
-}
+// Débit MAJORANT à duty 255 — base du crédit de sécurité (surestimer est
+// fail-safe, P4 : jamais zéro sur pompe alimentée). Depuis v2.25.2 c'est une
+// constante de FLOTTE unique (kPumpFlow255MlPerMin) : plus de dispatch par
+// index physique, qui attribuait la mesure d'un exemplaire à un numéro de pompe.
 
 // Arrêt ANTICIPÉ d'une marche d'assistant (stop utilisateur, exit, timeout).
 // Condition gate 6 (vérifiée sur le code) : sous suspension flow-assist,
@@ -299,7 +297,7 @@ static bool flowAssistStopRun() {
   PumpController.setManualPump(sFlowAssist.pumpIdx, 0);  // coupure immédiate
   unsigned long elapsedMs = millis() - mi.startMs;
   if (elapsedMs > mi.durationMs) elapsedMs = mi.durationMs;
-  mi.creditMl = flowAssistFlow255(sFlowAssist.pumpIdx) * (float)elapsedMs / 60000.0f;
+  mi.creditMl = kPumpFlow255MlPerMin * (float)elapsedMs / 60000.0f;
   mi.durationMs = elapsedMs;  // échéance immédiate → crédit plancher au prochain tour de loop
   systemLogger.info(String("[Assistant débit] Marche arrêtée par anticipation (pompe ") +
                     String(sFlowAssist.pumpIdx + 1) + ", " + String(elapsedMs / 1000UL) +
@@ -327,7 +325,7 @@ static void flowAssistCreditAbortedRun(bool isPh, const ManualInjectState& mi,
   unsigned long elapsedMs = now - mi.startMs;
   if (elapsedMs > mi.durationMs) elapsedMs = mi.durationMs;
   const float creditMl =
-      flowAssistFlow255(sFlowAssist.pumpIdx) * (float)elapsedMs / 60000.0f;
+      kPumpFlow255MlPerMin * (float)elapsedMs / 60000.0f;
   PumpController.creditManualInjectionFloor(isPh ? 0 : 1, mi.startCumulMl, creditMl);
   sFlowAssist.runOwned = false;  // marche close et créditée
   // Revue feature-075 : signaler l'interruption SERVEUR à l'UI (/data). Sans ce
@@ -947,7 +945,7 @@ void setupControlRoutes(AsyncWebServer* server) {
     // flow255 majore le débit réel à tout duty ≤ 255 : le registre journalier ne
     // sous-compte jamais, et la garde daily_limit évalue ce majorant (le coût
     // budget est annoncé à l'utilisateur en étape 1 de l'assistant). ---
-    const float creditMl = flowAssistFlow255(pumpIdx) * (float)durS / 60.0f;
+    const float creditMl = kPumpFlow255MlPerMin * (float)durS / 60.0f;
 
     // --- Gardes COMPLÈTES du chemin manuel (présence d'eau incluse) ---
     if (!manualInjectGuardOrReject(req, isPh, creditMl, (int)durS)) return;

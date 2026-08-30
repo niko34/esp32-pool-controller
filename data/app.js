@@ -1714,6 +1714,9 @@
     if (params)    params.style.display    = mode === "automatic"  ? "" : "none";
     if (scheduled) scheduled.style.display = mode === "scheduled"  ? "" : "none";
     if (inject)    inject.style.display    = mode === "manual"     ? "" : "none";
+    // v2.26.0 (C5) : le bloc « rattrapage accumulé » dépend AUSSI de la
+    // disponibilité de la donnée — sa visibilité est décidée en un seul endroit.
+    updatePhIntegralDisplay();
     // feature-034 itération 3 (volet A) : le bouton Calibrer la sonde vit désormais
     // sous la rangée des badges (#ph-card-stats, toujours visible) → accessible
     // dans tous les modes par construction, sans gestion de display ici.
@@ -3668,9 +3671,114 @@
     });
   }
 
+  // ---------- v2.26.0 (C5) : rattrapage accumulé par la régulation pH ----------
+  //
+  // Le firmware sert TROIS champs sur /data et le WebSocket :
+  //   ph_integral_pct  → remplissage de la réserve, en % (0-100, valeur absolue) ;
+  //   ph_integral      → l'intégrale brute, en pH·s (signée) ;
+  //   ph_integral_term → sa contribution au débit demandé, en mL/min (signée).
+  //
+  // Le POURCENTAGE est affiché en premier : c'est la seule des trois grandeurs
+  // lisible sans connaître le plafond de l'anti-windup — lequel VARIE avec la
+  // vitesse de correction (lente / normale / rapide). Ce plafond n'est donc
+  // JAMAIS recopié ici : le firmware sert le rapport déjà calculé. Toute
+  // tentative de recalculer un pourcentage côté client rouvrirait le motif du
+  // miroir de constante firmware, éliminé quatre fois dans ce projet.
+  //
+  // SÉMANTIQUE STRICTE des états (clé absente ≠ null ≠ 0), même contrat que
+  // `phDoseBlockedCode` :
+  //   nombre fini → valeur mesurée, 0 compris (0 % = réserve VIDE, affirmé) ;
+  //   null        → le firmware dit explicitement « non calculable » (terme
+  //                 intégral inactif) : on affiche « — », pas un zéro ;
+  //   undefined   → INFORMATION ABSENTE (firmware antérieur à la 2.26.0) : le
+  //                 bloc entier reste masqué. Afficher « 0 % » dans ce cas
+  //                 mentirait sur une régulation dont on ne sait rien.
+  //
+  // Aucun seuil de saturation côté client (revue v2.26.0) : le verdict est servi
+  // par le firmware via `ph_integral_saturated`. Une constante 95 recopiée ici
+  // aurait été un 5ᵉ miroir de valeur firmware dans ce fichier — et surtout elle
+  // aurait porté sur la MAUVAISE grandeur (remplissage au lieu de
+  // demande/soutenable), sans jamais connaître la durée (2 h / 6 h).
+
+  function updatePhIntegralDisplay() {
+    const section = $("#ph-integral-section");
+    if (!section) return;
+    const pctEl = $("#ph_integral_pct_value");
+    const detailEl = $("#ph_integral_detail");
+    const warnEl = $("#ph_integral_warning");
+
+    const data = latestSensorData || {};
+    const pct = data.ph_integral_pct;
+
+    // Firmware antérieur : rien à dire, donc rien à montrer.
+    if (pct === undefined) { section.style.display = "none"; return; }
+
+    // Le rattrapage n'évolue qu'en régulation automatique : l'exposer dans les
+    // autres modes afficherait un reliquat figé, sans lecture possible.
+    const mode = getSegmented("ph_regulation_mode") || "automatic";
+    if (mode !== "automatic") { section.style.display = "none"; return; }
+    section.style.display = "";
+
+    const num = (v) => (typeof v === "number" && isFinite(v)) ? v : null;
+    const p = num(pct);
+    const raw = num(data.ph_integral);
+    const term = num(data.ph_integral_term);
+
+    if (pctEl) {
+      pctEl.textContent = (p === null)
+        ? "—"
+        : p.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + " %";
+    }
+    if (detailEl) {
+      // Second rang, volontairement discret : la valeur brute et le débit
+      // qu'elle réclame. |term| suffit — le signe est porté par le sens de
+      // correction (pH- / pH+), déjà affiché plus haut dans la carte.
+      const parts = [];
+      if (raw !== null) {
+        parts.push(Math.abs(raw).toLocaleString("fr-FR", { maximumFractionDigits: 0 }) + " pH·s");
+      }
+      if (term !== null) {
+        parts.push(Math.abs(term).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " mL/min demandés");
+      }
+      detailEl.textContent = parts.length ? " (" + parts.join(" · ") + ")" : "";
+    }
+    if (warnEl) {
+      // Le verdict est SERVI par le firmware (`ph_integral_saturated`), il n'est
+      // PAS recalculé ici (revue v2.26.0). Motif : le seuil firmware porte sur
+      // `demande / débit soutenable`, alors que `ph_integral_pct` mesure le
+      // REMPLISSAGE de l'anti-windup — deux grandeurs distinctes. Une intégrale
+      // au plafond qui tient la charge sans forcer est une régulation SAINE :
+      // comparer le remplissage à 95 % afficherait « vérifiez le bidon » sur une
+      // installation qui va bien, et c'est le faux positif qui décrédibilise
+      // l'alerte. Le firmware seul connaît en outre la DURÉE (2 h / 6 h).
+      // Clé absente (firmware antérieur à 2.26.0) ⇒ pas d'encart, jamais un
+      // `false` inventé.
+      const sat = latestSensorData?.ph_integral_saturated;
+      const saturated = (sat === true);
+      warnEl.hidden = !saturated;
+      if (saturated) {
+        warnEl.textContent =
+          "Rattrapage au maximum : la régulation demande tout ce qu'elle peut sans que "
+          + "le pH rejoigne sa consigne. Vérifiez le niveau du bidon, l'amorçage de la "
+          + "pompe doseuse et le TAC de l'eau (une alcalinité élevée bloque le pH).";
+      }
+    }
+  }
+
   // ========== SECTIONS DÉTAILLÉES ==========
   function updateDetailSections() {
     const config = window._config || {};
+
+    // v2.26.0 (C5) : rattrapage accumulé — rendu EN TÊTE et sous try/catch, même
+    // précaution que le statut MQTT dans _onWsSensorData. Motif : c'est le SEUL
+    // point de décision de la visibilité du bloc, et il était appelé en DERNIER,
+    // après quatre autres rafraîchisseurs. Une exception dans l'un d'eux (donnée
+    // inattendue d'un firmware donné) laissait le bloc masqué EN SILENCE — sans
+    // rien casser de visible par ailleurs, puisque les rubriques qui le
+    // précèdent avaient déjà été mises à jour et que la ligne « débit calculé »
+    // est de toute façon invisible hors mode Programmée. Un bloc neuf qui « ne
+    // s'affiche jamais » est exactement la trace que laisserait ce défaut.
+    try { updatePhIntegralDisplay(); } catch (e) { console.error('[ph-integral] rendu:', e); }
 
     // === FILTRATION ===
     const detailFiltrationMode = $("#detail-filtration-mode");
@@ -7272,13 +7380,27 @@
       return `${s}s`;
     };
 
+    // Débit majorant à duty 255 pour la pompe `n` (1|2), SERVI par /data
+    // (flow_assist.flow255[n-1]) — plus de miroir en dur de la constante
+    // firmware (kPumpFlow255MlPerMin) : une valeur de sécurité n'a pas de copie
+    // dans le navigateur, sinon l'UI annonce une durée que la pompe ne tient pas.
+    // PIÈGE : clé absente ≠ tableau vide ≠ zéro. Seul un nombre fini > 0 est une
+    // information ; tout le reste retombe sur le repli.
+    // REPLI = valeurs des firmwares ANTÉRIEURS à la fusion de flotte (61 pompe 1,
+    // 67 pompe 2), qui ne publient pas flow255 et dosent bien à ces débits-là.
+    // Ne PAS l'aligner sur 74 : ce serait mentir sur un firmware ancien.
+    const FLOW_255_FALLBACK = { 1: 61.0, 2: 67.0 };
+    const flow255For = (pumpNum) => {
+      const served = latestSensorData?.flow_assist?.flow255;
+      const v = Array.isArray(served) ? served[pumpNum - 1] : undefined;
+      return (typeof v === "number" && isFinite(v) && v > 0) ? v : FLOW_255_FALLBACK[pumpNum];
+    };
     // Calcule la durée d'injection (secondes) pour un volume donné (mL).
     // bug-dosage-fantome it.2 (W3) : miroir best-effort de planManualInject
     // (web_routes_control.cpp) — le modèle linéaire duty↔débit est mort, plus
     // JAMAIS d'interpolation : amplitude == duty calibré → débit mesuré ; sinon
-    // la pompe est forcée à 255 et le débit est celui mesuré à 255 (miroir de
-    // kPump1Flow255MlPerMin / kPump2Flow255MlPerMin). Le firmware fait autorité.
-    const FLOW_255_ML_PER_MIN = { 1: 61.0, 2: 67.0 };
+    // la pompe est forcée à 255 et le débit majorant SERVI s'applique.
+    // Le firmware fait autorité.
     const calcInjectDurationS = (product, volumeMl) => {
       const cfg = window._config;
       if (!cfg) return null;
@@ -7289,7 +7411,7 @@
       const ampDuty = pumpAmplitudeDuty(dutyPct);
       const flow = (calDuty > 0 && ampDuty === calDuty && calFlow > 0)
         ? calFlow
-        : FLOW_255_ML_PER_MIN[pumpNum];
+        : flow255For(pumpNum);
       return Math.max(1, Math.round((volumeMl / flow) * 60));
     };
 
@@ -7980,9 +8102,15 @@
       const budget = $("#flow-wizard-budget");
       if (budget) {
         // Débit majorant SERVI par /data (flow_assist.flow255[n-1]) — plus de
-        // miroir en dur (revue) ; repli générique si firmware plus ancien.
-        const f = (fa && Array.isArray(fa.flow255) && fa.flow255[n - 1] > 0)
-          ? fa.flow255[n - 1] : 61;
+        // miroir en dur (revue).
+        // Repli PAR POMPE et non générique (revue v2.25.2) : un repli à 61 pour
+        // les deux sous-annonçait le budget de 10 % sur la pompe 2, dont les
+        // firmwares ANTÉRIEURS à la fusion de flotte dosent bien à 67.
+        // Logique dupliquée volontairement plutôt qu'appelée via flow255For() :
+        // celle-ci est déclarée dans un autre bloc (const = portée de bloc).
+        const servi = fa && Array.isArray(fa.flow255) ? fa.flow255[n - 1] : undefined;
+        const f = (typeof servi === "number" && isFinite(servi) && servi > 0)
+          ? servi : (n === 2 ? 67.0 : 61.0);
         budget.textContent =
           `≈ ${Math.ceil(f * wiz.purgeS / 60)} ml par purge, ≈ ${Math.ceil(f * wiz.measureS / 60)} ml pour la mesure`;
       }

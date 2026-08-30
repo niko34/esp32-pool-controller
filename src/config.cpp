@@ -15,9 +15,14 @@ AuthConfig authCfg;
 // (kPumpMinFlowMlPerMin / kPumpMaxFlowMlPerMin supprimés). Ces params ne
 // servent plus qu'à l'ESTIMATION de l'injection manuelle volumée
 // (web_routes_control, refonte prévue par l'agent web) : minFlow 0 (plus de
-// clamp vers le haut), maxFlow = débit MESURÉ à 255 de la pompe par défaut.
-PumpControlParams phPumpControl  = {0.0f, kPump1Flow255MlPerMin, kPhMaxError};
-PumpControlParams orpPumpControl = {0.0f, kPump2Flow255MlPerMin, kOrpMaxError};
+// clamp vers le haut), maxFlow = MAJORANT de flotte à duty 255 — et non un
+// débit « mesuré » : depuis la v2.25.2 c'est kPumpFlow255MlPerMin (74,0 =
+// max mesuré 68,0 + 8 % de dispersion), commun aux deux pompes.
+// DETTE (revue v2.25.2) : PumpControlParams est une structure MORTE —
+// phPumpControl/orpPumpControl sont déclarées et initialisées ici, mais lues
+// NULLE PART dans src/ ni test/. À supprimer lors d'un passage sur ce fichier.
+PumpControlParams phPumpControl  = {0.0f, kPumpFlow255MlPerMin, kPhMaxError};
+PumpControlParams orpPumpControl = {0.0f, kPumpFlow255MlPerMin, kOrpMaxError};
 SafetyLimits safetyLimits;
 PumpProtection pumpProtection;
 ProductConfig productCfg;

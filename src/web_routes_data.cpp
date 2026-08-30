@@ -64,6 +64,16 @@ static void handleGetData(AsyncWebServerRequest* request) {
   //   "phDoseBlockedCode":null, = 25 o | "orpDoseBlockedCode":null, = 26 o → 51 o.
   // Charge pire cas : 1823 o (mesure v2.25.0) + 51 = 1874 o, soit 430 o de marge
   // sous le gabarit, qui reste donc à 2304.
+  // v2.26.0 (C5) : +3 champs du terme intégral pH (parité WS, même passage).
+  // Octets SÉRIALISÉS au pire cas (flottants arrondis, signe compris) :
+  //   "ph_integral":-43200.0, = 23 o | "ph_integral_term":-6.000, = 26 o |
+  //   "ph_integral_pct":100.0, = 24 o  → 73 o.
+  // v2.26.0 (revue, mineure n°1) : +1 booléen de VERDICT de saturation (parité WS)
+  //   "ph_integral_saturated":false, = 30 o → charge pire cas 1977 o, marge 327 o.
+  // Charge pire cas : 1874 + 73 = 1947 o, soit 357 o de marge sous le gabarit,
+  // qui reste donc à 2304. Rappel : ce chemin n'a AUCUN plafond dur
+  // (sendJsonResponse dimensionne la String à la demande), le gabarit est
+  // documentaire — contrairement à sWsFrameBuf côté WS.
   StaticJson<2304> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
@@ -243,6 +253,29 @@ static void handleGetData(AsyncWebServerRequest* request) {
     doc["phRawGuardBlocked"]    = PumpController.isPhRawGuardBlocked();
     doc["orpPhRawGuardBlocked"] = PumpController.isOrpPhRawGuardBlocked();
   }
+  // v2.26.0 (C5) : TERME INTÉGRAL pH — observabilité de la levée de Ki. Publié
+  // dans le MÊME passage que le WS (ws_manager::_buildSensorJson), avec les MÊMES
+  // règles null (NaN → null explicite) et les MÊMES arrondis : quatrième
+  // application du contrat de parité /data ↔ WS après les pentes de sonde
+  // (v2.21.2), les champs de calibration (v2.23.0) et l'état de blocage (v2.25.0).
+  // Une intégrale saturée en silence est LA classe de défaut de ce projet : ces
+  // trois champs sont le seul moyen de la voir de l'extérieur.
+  // Getters LECTURE SEULE, sûrs en contexte async_tcp (cf. pump_controller.h).
+  {
+    const float phIntegral    = PumpController.getPhIntegral();
+    const float phIntegralTrm = PumpController.getPhIntegralTerm();
+    const float phIntegralPct = PumpController.getPhIntegralPct();
+    if (!isnan(phIntegral))    doc["ph_integral"]      = round(phIntegral * 10.0f) / 10.0f;         else doc["ph_integral"]      = nullptr;
+    if (!isnan(phIntegralTrm)) doc["ph_integral_term"] = round(phIntegralTrm * 1000.0f) / 1000.0f;  else doc["ph_integral_term"] = nullptr;
+    if (!isnan(phIntegralPct)) doc["ph_integral_pct"]  = round(phIntegralPct * 10.0f) / 10.0f;      else doc["ph_integral_pct"]  = nullptr;
+    // v2.26.0 (revue, mineure n°1) : VERDICT de saturation, jamais un seuil à
+    // recalculer côté client. Les 95 % du firmware portent sur `demande / débit
+    // soutenable` ; le client les comparait au REMPLISSAGE (`ph_integral_pct`) —
+    // deux grandeurs derrière un seul nombre. Une intégrale au plafond qui tient
+    // la charge sans forcer est une régulation SAINE : la comparaison locale
+    // annonçait « vérifiez le bidon » sans qu'aucun épisode ne soit ouvert.
+    doc["ph_integral_saturated"] = PumpController.isPhIntegralSaturated();
+  }
   doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;
   doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;
   doc["ph_limit_reached"] = safetyLimits.phLimitReached;
@@ -268,11 +301,14 @@ static void handleGetData(AsyncWebServerRequest* request) {
     faObj["purges_left"] = fa.purgesLeft;
     faObj["purge_s"]     = kFlowAssistPurgeDurationS;    // durées servies : l'UI
     faObj["measure_s"]   = kFlowAssistMeasureDurationS;  // paramètre ses libellés
-    // Débits majorants mesurés à duty 255 ([0] = pompe 1, [1] = pompe 2) —
-    // servis pour que l'UI annonce le coût budget SANS miroir en dur (revue).
+    // Débit majorant de flotte à duty 255 — servi pour que l'UI annonce le coût
+    // budget SANS miroir en dur (revue). Tableau [0] = pompe 1, [1] = pompe 2
+    // CONSERVÉ tel quel (contrat UI inchangé) : depuis v2.25.2 la valeur est
+    // unique pour les deux pompes (kPumpFlow255MlPerMin), mais casser la forme
+    // du tableau ferait tomber l'UI sur son repli générique.
     JsonArray f255 = faObj["flow255"].to<JsonArray>();
-    f255.add(kPump1Flow255MlPerMin);
-    f255.add(kPump2Flow255MlPerMin);
+    f255.add(kPumpFlow255MlPerMin);
+    f255.add(kPumpFlow255MlPerMin);
   }
 
   doc["ph_tracking_enabled"]  = productCfg.phTrackingEnabled;

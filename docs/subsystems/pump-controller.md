@@ -112,6 +112,15 @@ bool isPulseSessionActive(int chem) const;         // séance ouverte (auto OU s
 uint32_t getPulseMs(int chem) const;               // durée du pouls planifié (ms), 0 = période sans pouls (accumulation) ; 0 si index invalide
 uint32_t getPulsePhaseMs(int chem, uint32_t nowMs) const;  // position dans la période, clampée [0..kPulsePeriodMs] ; 0 si session inactive
 
+// v2.26.0 — TERME INTÉGRAL pH (ADR-0052), LECTURE SEULE. Aucun setter, aucune
+// influence sur une décision de dosage. Publiés à l'IDENTIQUE sur /data, sur le
+// WebSocket et sur MQTT (mêmes noms, mêmes arrondis, mêmes règles null).
+// Course bénigne assumée (patron isAnyPumpEnergized) : écrits par loopTask, lus
+// en contexte web async ; pire cas = instantané en retard d'un tour de loop.
+float getPhIntegral() const;       // intégrale accumulée (pH·s, SIGNÉE) — NAN si non finie
+float getPhIntegralTerm() const;   // ki × intégrale = contribution au débit demandé (mL/min)
+float getPhIntegralPct() const;    // remplissage de l'anti-windup (% de integralMax, ABSOLU)
+
 void setManualPump(int pumpIndex, uint8_t duty);  // test manuel
 ```
 
@@ -228,23 +237,28 @@ Lecture seule **STRICTE** de l'utilisabilité de la pompe ([`pump_controller.h`]
 
    > **feature-067 (v2.20.0)** : `pH_mesuré` est la valeur **filtrée et corrigée** (`getPhFiltered()` = brut + `ph_offset`). La consigne `phTarget` est donc comparée au pH **corrigé** — le pH réellement visé dans le bassin est `phTarget − ph_offset`.
 
-3. **Régulation P temporisée** (feature-025, [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md)) : `computePID(pid, error, now, deadband, freezeIntegral)`. La stratégie par défaut est **proportionnelle pure temporisée**, pas un PID complet :
+3. **Régulation temporisée** (feature-025, [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) ; **PI côté pH depuis la v2.26.0**, [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md)) : `computePID(pid, error, now, deadband, freezeIntegral)`.
 
-   | Grandeur | Kp | Ki | Kd |
-   |----------|----|----|----|
-   | pH (défaut struct) | 8 | 0 | 0 |
-   | ORP (override constructeur) | 0.3 | 0 | 0 |
+   | Grandeur | Kp | Ki | Kd | `integralMax` |
+   |----------|----|----|----|---|
+   | pH — `slow` | 4 | 1,389e-4 (Ti = 8 h) | 0 | 43 200 pH·s |
+   | pH — `normal` (défaut) | 8 | 3,704e-4 (Ti = 6 h) | 0 | 16 200 pH·s |
+   | pH — `fast` | 12 | 8,333e-4 (Ti = 4 h) | 0 | 7 200 pH·s |
+   | ORP (`slow`/`normal`/`fast`) | 0.15 / 0.3 / 0.5 | **0** | 0 | (inerte) |
 
-   - **`Kd = 0` IMPÉRATIF** — un terme dérivé amplifierait le bruit résiduel après filtrage (incompatible avec un système hydraulique lent).
-   - **`Ki = 0`** — l'intégrale est inerte (l'`integralMax = 50` reste codé pour une réactivation terrain future, mais sans effet tant que Ki = 0). Anti-windup strict de toute façon (cf. ci-dessous).
+   - **`Kd = 0` IMPÉRATIF** sur les deux chimies — un terme dérivé amplifierait le bruit résiduel après filtrage (incompatible avec un système hydraulique lent).
+   - **`Ki_ORP = 0` inchangé** — l'ORP dépend du pH, de la T° et du stabilisant ; son droop n'est pas le défaut diagnostiqué. Le lever exigerait un nouvel ADR.
+   - **`Ki_pH` levé en v2.26.0** — voir [Terme intégral pH : levée de `Ki = 0`](#terme-intégral-ph--levée-de-ki--0-v2260). `kp`, `ki` **et** `integralMax` sont posés ensemble par `applyRegulationSpeed()` depuis les constantes `kPhKp*` / `kPhKi*` / `kPhIntegralMax*` : ils ne peuvent plus divorcer silencieusement.
    - La temporisation vient de la **pause mélange** (point 6) et de l'anti-cycling : on dose un pulse court, puis on attend l'homogénéisation avant de réévaluer.
    - Normalisation d'erreur (bornée) : `kPhMaxError = 1.0`, `kOrpMaxError = 200 mV`. `dt` PID plafonné : deltas > 10 s ignorés.
 
-   **Anti-windup** : `computePID()` reçoit `freezeIntegral` — l'intégrale est **gelée** (aucune accumulation) si l'un des cas suivants est vrai : filtre non prêt, `canDose() == false`, pause mélange active, sortie PID saturée, erreur dans la zone morte, ou mesure rejetée / capteur instable.
+   **Anti-windup** : `computePID()` reçoit `freezeIntegral` — l'intégrale est **gelée** (aucune accumulation) si l'un des cas suivants est vrai : filtre non prêt, `canDose() == false`, pause mélange active, sortie PID saturée, erreur dans la zone morte, ou mesure rejetée / capteur instable. **v2.26.0** : côté pH, `freezeIntegral` est passé **inconditionnellement à `true`** — l'intégrale appartient désormais au module pur `ph_integral_logic`, qui l'entretient une fois par tick ; `computePidPure` ne fait plus que **servir** le terme acquis (`kp·e + ki·I`, borné). Laisser `computePidPure` intégrer une seconde fois compterait le même `dt` deux fois, et le ferait sur `error` au lieu de `error − stopThreshold`.
 
    > Le **cœur du calcul** (terme proportionnel, anti-windup, plancher 0, bornage final min/max) est extrait dans la fonction pure `computePidPure` testée en natif. `computePID` n'est plus qu'une coquille qui gère `dt`/`millis()` et l'état PID. Voir [Calcul proportionnel pur (`computePidPure`)](#calcul-proportionnel-pur-computepidpure).
 
    **Zone morte** : le paramètre `deadband` passé à `computePID()` est le **seuil de démarrage existant** (`phStartThreshold` / `orpStartThreshold`) — **un seul** deadband fait foi, aucun second seuil dupliqué. Si `|error| < deadband` → sortie forcée à 0 **et** intégrale figée.
+   >
+   > ⚠️ **v2.26.0 — côté pH, la bande morte suit désormais l'HYSTÉRÉSIS.** Elle valait *toujours* `phStartThreshold` (0,05), y compris pendant une session **déjà ouverte**, alors que `shouldContinueDosing` poursuit jusqu'à `phStopThreshold` (0,01) : la plage `]0,01 ; 0,05]` était une **session vivante à débit nul**, et le seuil d'arrêt réellement appliqué était 0,05. La valeur passée est maintenant `phWasActiveTick ? phStopThreshold : phStartThreshold`. Le côté ORP est **inchangé**.
 4. **Anti-cycling** ([`config.h:152`](../../src/config.h:152) `PumpProtection`) — **en dur, non configurables via UI** (exception : `maxCyclesPerDay`, configurable borné depuis feature-060) :
    - `minInjectionTimeMs = 30000` — 30 s minimum par injection démarrée.
    - Hystérésis de seuils (démarrage / arrêt) :
@@ -686,8 +700,8 @@ Le **code est écrit avant le texte** dans `logRefusalOnce()` et dans `setGuardR
 
 **Ce que `computePidPure` calcule** (tout le métier) :
 
-1. Terme proportionnel `kp × error`, plus termes `ki × integral` et `kd × (error − lastError) / dt` (inertes tant que `Ki = Kd = 0`).
-2. **Anti-windup** : si `freezeIntegral` est vrai, l'intégrale est **gelée** (aucune accumulation) ; sinon elle est accumulée puis **bornée** à `±integralMax` (= 50).
+1. Terme proportionnel `kp × error`, plus termes `ki × integral` et `kd × (error − lastError) / dt`. Le terme dérivé est inerte partout (`Kd = 0`) ; le terme intégral est inerte côté ORP (`Ki = 0`) et **actif côté pH depuis la v2.26.0**.
+2. **Anti-windup** : si `freezeIntegral` est vrai, l'intégrale est **gelée** (aucune accumulation) ; sinon elle est accumulée puis **bornée symétriquement** à `±integralMax`. ⚠️ **v2.26.0** : côté pH, `freezeIntegral` vaut **toujours `true`** — l'accumulation a lieu dans [`ph_integral_logic`](#terme-intégral-ph--levée-de-ki--0-v2260), `computePidPure` ne fait que servir le terme acquis. `integralMax` n'est plus la valeur inerte de 50 mais **43 200 / 16 200 / 7 200 pH·s** selon la vitesse.
 3. **Plancher** : une sortie négative est forcée à `0` (pas de débit négatif).
 4. **Bornage final min/max intégré (« Option Y »)** : le `constrain(flow, minFlow, maxFlow)` qui était appliqué *chez les appelants* pH/ORP **après** `computePID` est désormais **dans la fonction pure**. `computePidPure` renvoie donc directement le **débit FINAL borné** ; le `constrain` externe a été supprimé des chemins pH et ORP.
 
@@ -776,6 +790,134 @@ Sites d'appel à `recordDosingCycleStart()` (4 au total) : démarrage cycle pH a
 
 > **Indépendant** des limites volumétriques (`ph_limit_minutes`, `max_ph_ml_per_day`) et de l'anti-cycling existant (`maxCyclesPerDay`, 24 par défaut — configurable 10-60, feature-060 — mesuré sur 24 h glissante). Couvre le cas d'un PID qui démarrerait 30 cycles très courts en 5 minutes (lectures bruitées sur sonde mal calibrée par exemple).
 
+## Terme intégral pH — levée de `Ki = 0` (v2.26.0)
+
+> Décision structurante : [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md), qui **amende le `Ki = 0` de l'[ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md)** pour le **seul pH**. `Kd = 0` et `Ki_ORP = 0` sont **inchangés**.
+
+### Pourquoi : un P pur ne peut pas rejoindre sa consigne sous charge permanente
+
+Le pH ne descendait jamais à sa consigne : ~1 000 mL d'acide injectés dans la journée, pH **tenu à 7,50-7,66** pour une consigne à 7,30. Ce n'était **ni un défaut du firmware, ni un problème de dosage**, mais une propriété du correcteur. Un proportionnel pur soumis à une charge permanente se stabilise sur son **droop** :
+
+```
+e* = besoin / (kp × T)
+```
+
+Le terme P **est** la seule source de débit : pour délivrer un débit non nul, il lui faut une erreur non nulle. Vérification numérique avec `kp = 8` : `e* = 0,358` ⇒ 2,86 mL/min ⇒ 1 800 mL/j pour 628 min ≈ **10,5 h de filtration/jour** — exactement le régime de l'installation. **Le système était à son équilibre théorique.**
+
+Charge basique quotidienne mesurée : **CO₂ (dégazage) ≈ 80 %**, **chlore (hypochlorite, basique) ≈ 20 %**. Besoin ≈ **1 800 mL/j pour TENIR**, ≈ **2 700 mL/j** pour descendre de 0,2.
+
+### Dimensionnement par l'AUTORITÉ, jamais « en pH·s »
+
+On pose le **débit maximal que l'intégrale seule est autorisée à demander**, puis on en déduit le plafond d'anti-windup :
+
+```
+kPhIntegralAuthorityMlPerMin = 6,0 mL/min     (2 × la charge d'équilibre 2,86)
+ki          = kp / Ti
+integralMax = U_I,max / ki  =  U × Ti / kp
+```
+
+| Vitesse | `kp` | `Ti` | `ki` (mL/min par pH·s) | `integralMax` (pH·s) |
+|---|---:|---:|---:|---:|
+| `slow` | 4 | 8 h | 1,389e-4 | 43 200 |
+| `normal` (défaut) | 8 | 6 h | 3,704e-4 | **16 200** |
+| `fast` | 12 | 4 h | 8,333e-4 | 7 200 |
+
+`integralMax` **varie avec la vitesse de régulation**, exactement comme `kp` : l'autorité est constante, seule la **vitesse de charge** change. **9 `static_assert`** verrouillent l'ensemble, dont le verrou central `ki × integralMax ≈ U` pour les trois vitesses, la monotonie de `kp`/`Ti`, et `Ti_fast ≥ 4 × kPhMixingDelayMs`.
+
+> ⚠️ **Le piège évité.** L'ancien `integralMax = 50` (inerte tant que `Ki = 0`) aurait plafonné la contribution intégrale à `3,704e-4 × 50 = 0,0185 mL/min` pour un besoin de 2,86 — **0,6 %**, saturé en **140 s**. Réactiver `Ki` sans redimensionner `integralMax` aurait été un **échec silencieux** : intégrale sur le papier, droop intact dans le bassin.
+>
+> **À l'équilibre l'erreur tend vers 0, donc le terme P disparaît et l'intégrale porte TOUTE la charge.** Son autorité doit couvrir la charge, pas une correction d'appoint.
+
+### Intégration SIGNÉE sur `erreur − phStopThreshold`
+
+```
+dI/dt = (erreur − phStopThreshold)
+```
+
+évaluée à **chaque tour de la branche automatique**, que l'on dose ou non. La **sortie**, elle, reste gatée par `shouldDose` et par la bande morte : entretenir l'intégrale n'autorise aucune injection.
+
+- **La décharge devient structurelle** : dès que l'erreur passe sous le seuil d'arrêt, l'intégrande devient négatif. L'équilibre s'établit à **`consigne + phStopThreshold`**, c'est-à-dire au point exact où l'hystérésis de dosage coupe — correcteur et ordonnanceur visent enfin le même point. **Résidu attendu : +0,01 pH.**
+- **Par quanta d'une seconde** (`kPhIntegralChargeQuantumMs`) : à 16 200 pH·s, l'*ulp* du flottant simple précision vaut ~2e-3 ; un incrément de 5 ms × 0,01 pH (5e-5) serait **perdu à l'addition** — la décharge n'aurait pas existé. Le reliquat sous le quantum est **reporté**, aucun temps n'est perdu.
+- **`dt > 10 s` rejeté** (`kPhIntegralMaxTickDtMs`) : un trou d'évaluation (pause mélange de 15 min, garde bloquante, changement de mode) n'est **jamais** crédité d'un bloc.
+- **Gel ASYMÉTRIQUE** : l'anti-windup bloque la **charge**, jamais la **décharge**. Strictement plus sûr que l'ancien gel total.
+
+> **Défaut préexistant corrigé au passage.** La bande morte valait `phStartThreshold` (0,05) alors que l'hystérésis poursuit jusqu'à `phStopThreshold` (0,01) : la plage `]0,01 ; 0,05]` était une **session vivante à débit nul**, et le point fixe de l'intégration signée était **inatteignable**. Voir la note de l'[algorithme, point 3](#algorithme-résumé). À l'équilibre, le volume total injecté est **inchangé** (bilan de matière).
+
+### Module pur `ph_integral_logic` ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md))
+
+Toute la logique vit dans [`src/ph_integral_logic.h`](../../src/ph_integral_logic.h) : charge signée, oubli exponentiel, reset sec, péremption, hystérésis de saturation, paliers et rappel. **Motif de l'extraction** : les conditions C2-C5 du gate vivaient dans la coquille ESP32 et **aucune mutation ne les tuait** (« restaurer le reset à −0,01 », « supprimer la décroissance » laissaient la suite native verte) — et le défaut trouvé était **exactement** dans la garde de C2.
+
+| Élément | Rôle |
+|---|---|
+| `PhIntegralState` | POD sans allocation, porté par `PumpControllerClass`. Écrit/lu depuis la **seule** `loopTask` → aucun mutex. |
+| `PhIntegralTuning` | `kp`, `ki`, `integralMax`, `startThreshold`, `stopThreshold` — passés en paramètre, ce ne sont pas des constantes firmware. |
+| `phIntegralTick()` | Un tick : reset sec → base de temps → demande + gel → charge signée → oubli → hystérésis → anomalie. Rend un `PhIntegralVerdict`. |
+| `phIntegralExpire()` | Péremption 24 h, appelée **hors de toute conjonction d'éligibilité**. |
+| `phSustainableAvgFlow()` | `ampFlow × budget_min/60` — le débit moyen réellement **tenable**. |
+| `phIntegralFillPct()` | Remplissage de l'anti-windup en % (valeur absolue), exposé à `/data`, au WS et à MQTT. |
+
+La coquille (`tickPhIntegralExpiry`, `applyPhIntegralVerdict` dans [`pump_controller.cpp`](../../src/pump_controller.cpp)) ne fournit que le **temps** et **applique** le verdict (journal + alerte MQTT). `phPID.integral` n'est plus qu'un **miroir** de `_phIntegral.integral`, consommé par `computePidPure` et par les accesseurs.
+
+### Garde-fous
+
+| Garde | Règle |
+|---|---|
+| **Gel sur saturation d'actionneur** | Accumulation gelée si `demande ≥ ampFlow × budget_horaire / 60`. ⚠️ Le prédicat porte sur le **débit moyen soutenable** (~2 mL/min à 5 min/h), **pas** sur le débit d'amplitude (~25 mL/min) : comparé à l'amplitude, ce gel ne s'était **jamais** déclenché et ne protégeait de rien. |
+| **Gel sur quota journalier** | Au-delà de **80 %** du quota (`kPhIntegralFreezeDailyFraction`). Couvre la sonde bloquée sur une valeur haute (plage et fraîcheur valides — le filtre la croit bonne) : le volume déjà injecté est le seul témoin fiable. Le terme acquis reste servi, on n'en ajoute plus. |
+| **Reset sec** | `erreur < −(phStartThreshold + kPhIntegralResetMargin)`, soit **−0,15** par défaut : une excursion **franche** de l'autre côté de la consigne, pas le bruit du filtre (~0,05). *Avant la v2.26.0 le reset mordait dès −0,01 — six heures d'accumulation effacées par 0,011 pH de dérive.* |
+| **Oubli exponentiel** | Demi-vie **1 h** sous la consigne, par **pas fixes** de 1 min (`powf()` coûte 2 320 o de flash sur une ressource à 97 %) ; facteur `0,9885140` vérifié par `static_assert`, rattrapage borné à 600 pas. Épisode fermé sous 1 pH·s. |
+| **Péremption** | Purge après **24 h** sans évaluation (`kPhIntegralStaleResetMs`) : mode `off`/`manual`, garde bloquante durable, filtration coupée tout l'hiver. Appelée **hors de toute conjonction d'éligibilité**, après les sorties OTA/maintenance mais **avant** les sorties « capteurs non initialisés » / « eau absente ». |
+| **Aucune persistance NVS** | Un reboot repart **de zéro**. Une valeur stockée — a fortiori corrompue — serait une **autorisation de dosage pré-chargée** au démarrage. |
+
+**Points de purge de l'intégrale** (tous appellent `phIntegralReset()` **et** remettent le miroir `phPID` à zéro) :
+
+| Événement | Motif |
+|---|---|
+| Changement **réel** de vitesse de régulation | `Ki` change d'un facteur jusqu'à 2,25 : servir l'intégrale acquise avec le nouveau `Ki` produirait jusqu'à 13,5 mL/min, **plus du double de l'autorité**. La purge a lieu **AVANT** l'écriture de `ki`/`integralMax` : quel que soit l'entrelacement vu par `loopTask`, le terme vaut `ki_quelconque × 0 = 0`. ⚠️ La purge n'a lieu **que si les coefficients changent réellement** — le client renvoie `regulation_speed` à chaque enregistrement des réglages, purger à chaque appel reproduirait le défaut C2. |
+| Bascule `ph_minus` ↔ `ph_plus` | Le **signe de l'erreur s'inverse** : une intégrale chargée pour acidifier deviendrait une demande d'alcaliniser de même amplitude. |
+| `resetDosingStates()` | `phPID = {}` restaure les **défauts de structure** (`Ki = 0`, `integralMax = 50`) : sans ré-application, la réinitialisation **désarmerait silencieusement** le terme intégral et laisserait l'ORP à `kp = 8` (26× trop agressif). `applyRegulationSpeed()` est donc rappelée. |
+| Fin de branche `scheduled` | Cette branche est **hors PID** — elle dose une quantité planifiée, aveugle à la mesure. Une intégrale entretenue pendant des jours de mode Programmée serait servie d'un bloc au retour en automatique. |
+| Péremption 24 h | Voir ci-dessus. |
+
+### Surveillance de saturation (C5)
+
+« La régulation demande son maximum **SANS atteindre la consigne** » se dit en **deux termes** : demande **saturée** ET erreur **encore au-dessus du seuil d'arrêt**. Une demande saturée avec l'erreur déjà rentrée est un transitoire de fin de correction, pas un défaut.
+
+- Le prédicat porte sur le **rapport demande / débit soutenable** — et non sur le remplissage de `integralMax`. Le gel d'anti-windup immobilise l'intégrale à la valeur qui sature l'actionneur, très inférieure au plafond (~34 % avec 5 min/h de budget) : un seuil sur `integralMax` **ne serait jamais atteint**.
+- **Hystérésis 95 / 85 %** : sans bande, une demande oscillant autour du seuil ouvrirait et refermerait l'épisode en rafale et réarmerait le rappel à chaque oscillation.
+- La tenue se compte en **temps de branche automatique**, jamais en temps mural : un passage en `manual`, une garde bloquante ou un hiver sans filtration **suspendent** l'épisode.
+- Paliers : `warning` à **2 h**, `critical` à **6 h** (= un `Ti` entier à autorité pleine), **rappel du critical toutes les 12 h** tant que l'anomalie dure. *Une seule alerte par épisode laissait un silence **permanent** sur un état qui, lui, ne cessait pas.*
+- Alerte MQTT `ph_integral_saturated` (voir [MQTT.md](../MQTT.md#alertes)).
+
+### Observabilité
+
+Trois grandeurs **lecture seule**, publiées à l'identique sur `GET /data`, sur la trame WebSocket **et** sur MQTT (mêmes noms, mêmes arrondis, `NaN` → `null` / non publié) :
+
+| Champ | Unité | Arrondi | Sens |
+|---|---|---|---|
+| `ph_integral` | pH·s (signé) | 1 déc. | Intégrale accumulée |
+| `ph_integral_term` | mL/min | 3 déc. | `ki × intégrale` = contribution au débit demandé |
+| `ph_integral_pct` | % | 1 déc. | Remplissage de l'anti-windup (valeur **absolue**) |
+
+Détail : [API.md](../API.md#champs-du-terme-intégral-ph-v2260), [ws-manager.md](ws-manager.md), [MQTT.md](../MQTT.md#topics-et-entités-ajoutés-en-v2260-terme-intégral-ph), affichage : [page-ph.md](../features/page-ph.md#rattrapage-accumulé-par-la-régulation-ph-v2260).
+
+### Journal
+
+| Message | Niveau | Quand |
+|---|---|---|
+| `PID régulation: vitesse=… Kp_pH=… Ki_pH=… (Ti=…h, intMax=… pH·s, autorité=… mL/min) Kp_ORP=… Ki_ORP=0 Kd=0` | `info` | À chaque `applyRegulationSpeed()`. ⚠️ **Format changé** : l'ancien `PID régulation (P temporisée): … Ki=0 Kd=0` n'existe plus — un filtre de journal sur « P temporisée » ou « Ki=0 » ne matche plus. |
+| `Intégrale pH remise à zéro (changement de vitesse de régulation) : N pH·s abandonnés` | `info` | Changement **réel** de coefficients |
+| `Intégrale pH purgée (erreur … — pH franchement au-delà de la consigne) : N pH·s abandonnés` | `info` | Reset sec |
+| `Intégrale pH périmée (aucune évaluation depuis 24 h) : N pH·s purgés` | `info` | Péremption |
+| `Régulation pH saturée depuis plus de 2 h (… mL/min demandés pour … soutenables) — la correction n'a pas d'effet mesurable sur le pH` | `warning` | Palier warning (+ alerte MQTT) |
+| `Régulation pH saturée depuis plus de N h (…, terme intégral … mL/min) — … vérifier le niveau et l'amorçage du bidon, l'étanchéité du circuit de dosage, la sonde pH et la limite horaire d'injection` | `critical` | Palier critical, **répété toutes les 12 h** (+ alerte MQTT) |
+| `Intégrale pH sortie de saturation (…) — alerte levée` | `info` | Sortie d'hystérésis |
+| `PID pH configuré: Kp=… Ki=… Kd=… (integralMax INCHANGÉ=… pH·s)` | `info` | `setPhPID()` — **aucun appelant à ce jour** ; le suffixe rappelle que ce chemin ne redimensionne pas le plafond |
+
+### Testabilité
+
+Suite native dédiée [`test/test_native_ph_integral/`](../../test/test_native_ph_integral/). Total du projet **823 → 849 tests**, et **cinq mutations tuent désormais** — dont **trois qui n'en tuaient aucune** avant l'extraction du module pur. Le test de **droop** vérifie la propriété qui fonde la décision : en boucle fermée, un P pur **ne converge pas**, un PI **converge**.
+
 ## Comptabilisation d'un démarrage de cycle : invariant (v2.20.5)
 
 > **INVARIANT** : dans les branches `automatic` (pH **et** ORP), **un cycle est comptabilisé si et seulement si un cycle a réellement démarré** — c'est-à-dire si un duty non nul a été commandé ce tour de boucle.
@@ -803,6 +945,8 @@ Conséquences observées en production : **deux** lignes « Démarrage dosage »
 La comptabilisation a été **déplacée après** le calcul du débit et conditionnée au **même prédicat** que le latch de `active` (`phActive` / `orpActive`). Ce n'est pas une garde ajoutée à côté du latch, qui pourrait en diverger : c'est le **même booléen** qui décide des deux. Un double comptage redeviendrait donc possible **seulement** si l'on remettait un comptage en amont du calcul de débit.
 
 `computePID` et `pid.lastTime` sont **intacts** : **aucun `dt` n'est synthétisé** (prescription **P5** du gate `pool-chemistry`). Amorcer artificiellement `lastTime` à l'entrée du cycle serait un piège latent le jour où `ki` deviendrait non nul (un `dt` inventé fabriquerait de l'intégrale). C'est la comptabilité qui attend le débit, jamais le PID qu'on force.
+
+> ⚠️ **Ce jour est arrivé en v2.26.0** : `ki` **n'est plus nul côté pH**. La prescription P5 cesse d'être une précaution théorique et devient une garde active — le module pur `ph_integral_logic` la reprend à son compte (base de temps propre, `dt > 10 s` **rejeté** et non crédité d'un bloc, reliquat sous le quantum reporté). Aucun `dt` n'est synthétisé nulle part.
 
 Le premier tour « à vide » de chaque cycle **subsiste** donc : il coûte un tour de boucle, aucun produit et aucun cycle.
 
@@ -941,13 +1085,13 @@ demande PID (mL/min moyen)
   ├─ evaluatePulseGate(ampDuty, calibratedDuty, ampFlow, MIN_ACTIVE_DUTY)
   │    ≠ None → REFUS (critical throttlé 30 min, badge UI) — fin de session
   │
-  ├─ planPulseWithCarry(demande, ampFlow, flow255, 60 s, 5 s, 400 ms, carry)
+  ├─ planPulseWithCarry(demande, ampFlow, flow255, 60 s, 10 s, 400 ms, carry)
   │    — à l'entrée de séance et à chaque frontière de période (v2.22.0)
   │    demande ≥ plancher → pouls proportionnel (planPulse INCHANGÉ, bit-identique),
   │      accumulateur abandonné (F2)
   │    demande vivante SOUS le plancher (ex-seuil C) → ACCUMULATION : pouls = 0,
   │      séance MAINTENUE, cumul += demande × période ; cumul ≥ V_pouls (volume
-  │      réel kick-inclus) → UNE impulsion de 5 s, résidu conservé (F3)
+  │      réel kick-inclus) → UNE impulsion de 10 s, résidu conservé (F3)
   │    refused (entrées invalides) → fail-closed, accumulateur remis à zéro (F1)
   │
   └─ tickPulse(...) chaque tour :
@@ -957,7 +1101,7 @@ demande PID (mL/min moyen)
 
 - **Amplitude** = `pumpN_max_duty_pct × 255 / 100` (getter `getPumpAmplitudeDuty(pumpIndex)`). Le réglage garde sa sémantique PWM, borné **[40..100] %** côté serveur (`kPumpAmpMinPct = 40` ⇒ 102 counts ≥ `MIN_ACTIVE_DUTY = 98`). **v2.23.0 ([ADR-0047](../adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md)) : amplitude GELÉE à 50 % (`kPumpAmpDefaultPct`)** — curseur UI retiré (ligne lecture seule à la place), le frontend n'envoie plus `pumpN_max_duty_pct` ; le champ API + validation [40..100] restent vivants pour cas exceptionnel.
 - **Kick** : chaque pouls démarre par `kPulseKickMs = 400 ms` à duty 255 (couple de décollage à froid — symptôme terrain : rotation entretenue OK à 82, non-démarrage au même duty), puis retombe à l'amplitude.
-- **Condition B3** : période **fixe** `kPulsePeriodMs = 60 s`, pouls minimal `kPulseMinMs = 5 s`.
+- **Condition B3** : période **fixe** `kPulsePeriodMs = 60 s`, pouls minimal `kPulseMinMs` = **10 s depuis la v2.25.3** (était 5 s — [ADR-0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md), voir [Pouls minimal porté à 10 s](#pouls-minimal-porté-à-10-s-v2253)).
 - **Condition B2** : une amplitude sous `MIN_ACTIVE_DUTY = 98` (Dmin mesuré 82 + 16 counts de marge P2) → **refus + critical**, jamais un clamp silencieux.
 
 ### Gate de caractérisation (fail-closed, P4)
@@ -970,9 +1114,9 @@ demande PID (mL/min moyen)
 | Débit pesé implausible (NaN, ≤ 0, > `kPulseFlowMaxMlPerMin = 200`) | `FlowUncharacterized` | idem |
 | **Amplitude ≠ duty calibré** (le débit n'est mesuré qu'à l'amplitude pesée) | `FlowUncharacterized` | idem |
 | Amplitude < `MIN_ACTIVE_DUTY` | `AmplitudeBelowMinActive` | `CRITICAL` throttlé 30 min (B2) |
-| Demande < débit_amplitude × 5/60 (pouls < 5 s) | **plus un refus depuis la v2.22.0** — demande **accumulée** ([accumulateur sous-plancher](#accumulateur-sous-le-pouls-minimal-feature-073-v2220), [ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md)) | `INFO` au premier tir d'accumulateur de la séance |
+| Demande < débit_amplitude × 10/60 (pouls < `kPulseMinMs` = 10 s ; était 5/60 avant la v2.25.3) | **plus un refus depuis la v2.22.0** — demande **accumulée** ([accumulateur sous-plancher](#accumulateur-sous-le-pouls-minimal-feature-073-v2220), [ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md)) | `INFO` au premier tir d'accumulateur de la séance |
 
-**AUCUNE interpolation nulle part** : les deux seuls débits connus sont la pesée à l'amplitude (`pumpN_pulse_flow_ml_per_min`) et la pesée à 255 (`kPump1Flow255MlPerMin = 61` / `kPump2Flow255MlPerMin = 67`, [`constants.h`](../../src/constants.h) — +10 % d'écart tube entre deux pompes identiques, d'où la calibration **par pompe**). L'état est exposé à l'UI/WS : `isPumpFlowUncharacterized(pumpIndex)` (+ raccourcis par chimie `isPhPumpFlowUncharacterized()` / `isOrpPumpFlowUncharacterized()`) → badge « Débit non caractérisé — pesée requise » et champs `/data` `ph/orp_pump_flow_uncharacterized`, `ph/orp_pump_amplitude_duty`.
+**AUCUNE interpolation nulle part** : les deux seuls débits connus sont la mesure à l'amplitude (`pumpN_pulse_flow_ml_per_min`, propre à CETTE pompe) et le **majorant de flotte à 255** (`kPumpFlow255MlPerMin = 74,0` depuis la v2.25.2, [`constants.h`](../../src/constants.h) — voir [Débit à 255 : constante unique de flotte](#débit-à-255--constante-unique-de-flotte-v2252)). L'état est exposé à l'UI/WS : `isPumpFlowUncharacterized(pumpIndex)` (+ raccourcis par chimie `isPhPumpFlowUncharacterized()` / `isOrpPumpFlowUncharacterized()`) → badge « Débit non caractérisé — pesée requise » et champs `/data` `ph/orp_pump_flow_uncharacterized`, `ph/orp_pump_amplitude_duty`.
 
 **Persistance NVS** : `p1_cal_duty` / `p1_pulse_flow` / `p2_cal_duty` / `p2_pulse_flow` + drapeaux `p1_flow_weighed` / `p2_flow_weighed` (v2.23.0). L'ancienne clé partagée `pump_max_flow` est **supprimée SANS conversion** (purgée au premier `saveMqttConfig()`) : c'est le modèle faux qu'on retire. Une valeur NVS implausible est neutralisée à 0 (non caractérisé) au chargement, avec `warning` — **et rabat aussi `weighed = false`** (une pesée corrompue n'en est plus une, condition C4).
 
@@ -986,15 +1130,46 @@ Les **défauts** de la struct `MqttConfig` passent de « non caractérisé » (0
 |---|---|---|
 | `kPumpAmpDefaultPct` ([`config.h`](../../src/config.h)) | 50 % | Amplitude d'impulsion par défaut (gelée — UI retirée, champ API vivant) |
 | `kPumpTypeCalDuty` ([`config.h`](../../src/config.h)) | **127** | Duty de type = `(kPumpAmpDefaultPct × MAX_PWM_DUTY) / 100` — **même expression entière** que `getPumpAmplitudeDuty` (condition C2 : l'égalité exacte amplitude == duty calibré du gate est garantie **par construction**). Verrous `static_assert` : `== 127` et `≥ MIN_ACTIVE_DUTY`. |
-| `kPumpTypePulseFlowMlPerMin` ([`constants.h`](../../src/constants.h)) | **28,0 mL/min** | Débit de type au duty 127. Mesures de référence 2026-08-23 (interpolations 24,7 / ~27,2, dispersion inter-unités ±10 %) — **biais SÛR** : surestimer le débit ⇒ pompe ON moins longtemps (sous-dosage) + compteurs journaliers majorants. À remplacer par la **pesée de type à 127** sur l'unité de référence. |
+| `kPumpTypePulseFlowMlPerMin` ([`constants.h`](../../src/constants.h)) | **28,0 mL/min** | Débit de type au duty 127. **v2.25.2 : justification refondée sur une MESURE** ([ADR-0050](../adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md)) — mesures réelles du 2026-08-28 (assistant feature-075, 120 s à duty 127) : **26,0 mL/min pompe 1, 25,5 pompe 2** ; la valeur d'usine vaut **max mesuré 26,0 + 8 % de dispersion**, elle n'est plus adossée aux interpolations 24,7 / ~27,2 (bonnes à 4-7 % près). **Biais SÛR** : surestimer le débit ⇒ pompe ON moins longtemps (sous-dosage) + compteurs journaliers majorants. |
+| `kPumpTypeFlowMeasuredMaxMlPerMin` ([`constants.h`](../../src/constants.h)) | **26,0 mL/min** | v2.25.2 — maximum **réellement mesuré** à duty 127. N'intervient dans **aucun calcul** : porte le `static_assert` qui interdit de descendre la valeur d'usine sous le max mesuré. Ne change que sur une nouvelle mesure d'exemplaire. |
 
 **Sémantique NVS (condition C1)** — clé **absente** (appareil vierge / jamais sauvegardé) → défaut de type, le dosage fonctionne au premier flash ; clé **présente à 0** (effacement explicite, ou appareil ≤ 2.22 jamais calibré ayant sauvegardé) → **0 lu tel quel, fail-closed conservé** — jamais de conversion silencieuse. Un appareil provisionné garde ses valeurs NVS intactes.
 
 **Drapeaux `pumpN_flow_weighed`** (`false` = valeur usine de type, `true` = pesée individuelle de CETTE pompe) : **purement informatifs** — alimentent l'indication « valeur usine / pesé » de l'UI, **aucun gate ne s'y fie** (condition C5). Posés par `/save-config` à toute pesée (débit seul → duty déduit de l'amplitude courante ; duty explicite d'un vieux client → aussi, résidu assumé) ; rabattus à `false` par l'effacement (`duty=0`) et par la garde de plausibilité NVS.
 
+### Débit à 255 : constante unique de flotte (v2.25.2)
+
+> **[ADR-0050](../adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md)** — amende les **valeurs d'usine** de l'ADR-0047 (le reste de l'ADR-0047 est inchangé).
+
+`kPump1Flow255MlPerMin = 61,0` et `kPump2Flow255MlPerMin = 67,0` sont **supprimées** et remplacées par **`kPumpFlow255MlPerMin = 74,0`**. Les helpers `pumpFlow255()` / `flowAssistFlow255()`, qui **dispatchaient par index physique de pompe**, disparaissent avec elles (11 sites d'appel ramenés à la constante).
+
+**Le défaut corrigé.** Ces deux constantes n'étaient **pas configurables**, provenaient d'**un seul exemplaire chacune**, et servaient de **majorant de sécurité** dans trois usages :
+
+| Usage | Fichier |
+|---|---|
+| Crédit du **kick** de chaque impulsion (400 ms à duty 255) | `pulseDeltaVolumeMl()` — [`pump_controller.cpp`](../../src/pump_controller.cpp) |
+| **Majorant du mode manuel** `?duty=N` et des marches d'assistant (P4 : jamais créditer zéro sur une pompe alimentée) | [`web_routes_control.cpp`](../../src/web_routes_control.cpp) |
+| Durée d'une **injection volumée sur le chemin dégradé** (amplitude ≠ duty calibré → duty forcé à 255) | `planManualInject()` |
+
+La constante de la pompe 1 était calée sur l'exemplaire **le plus lent** du lot : un appareil de flotte dont la pompe pH aurait ressemblé à l'exemplaire « 67 » se serait **sous-crédité de 11 %** — il aurait injecté plus que ses limites ne le croyaient. Attribuer une mesure d'exemplaire à un **index physique** n'a de surcroît aucun sens sur une flotte.
+
+**Pourquoi 74,0** : **max réellement mesuré 68,0 + 8 % de dispersion inter-unités** (`kPumpFlow255MeasuredMaxMlPerMin = 68,0`, verrou `static_assert`). La valeur 70,0 a été **refusée par le gate `pool-chemistry`** — +3 % de marge alors que l'écart **déjà constaté** entre deux exemplaires du même lot est de **11 %** : une marge inférieure à la dispersion observée est statistiquement nulle. Même raisonnement, le même jour, pour `kPumpTypePulseFlowMlPerMin` (26,0 proposé, refusé, 28,0 conservé).
+
+**Pourquoi UNE seule valeur et non deux** (majorant pour créditer + estimateur central pour la durée) : les trois usages poussent **dans le même sens** — surestimer ne sur-injecte **jamais**. Un « estimateur central » destiné à la durée serait par construction une valeur choisie pour **allonger la marche de la pompe**, soit exactement le risque interdit. La précision de l'injection volumée dispose déjà d'un **chemin exact** (`ampDuty == calDuty` ⇒ débit mesuré) ; le chemin à 255 est un **repli dégradé** dont la précision ne s'achète pas contre une garde.
+
+⚠️ **Effet visible : les compteurs journaliers se remplissent un peu plus vite.** Le crédit du kick passe de **0,407 à 0,494 mL par impulsion**. Sur une journée au pouls minimal (~45 impulsions/h × 12 h) : **+46,8 mL/j de sur-crédit sur la pompe pH (+3,6 %)** et **+25,2 mL sur la pompe chlore (+1,9 %)**, sur ~1 300 mL comptés. Effet **borné**, direction **fail-safe** : les limites journalières mordent plus tôt.
+>
+> **v2.25.3** : ces pourcentages sont établis avec un pouls minimal de **5 s**. Le pouls passant à **10 s** ([ADR-0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md)), le nombre de kicks **par volume compté** est divisé par deux — le sur-crédit du kick l'est donc aussi (≈ +1,8 % pH / +0,9 % chlore).
+
+**Côté client** : le miroir en dur `FLOW_255_ML_PER_MIN = {1: 61.0, 2: 67.0}` de [`data/app.js`](../../data/app.js) (devenu faux de ~21 %) est remplacé par la lecture de `flow_assist.flow255` servi par [`GET /data`](../API.md#get-data--write). Le **repli à 61 / 67** est conservé **délibérément** : un firmware antérieur à la v2.25.2 ne publie pas ce champ et dose bien à ces débits-là.
+
+> **Dette repérée, non traitée** (consignée dans l'ADR-0050) : `phPumpControl` / `orpPumpControl` ([`config.cpp`](../../src/config.cpp)) sont **entièrement mortes** — déclarées et initialisées (leur second membre portait le débit à 255), lues **nulle part** dans `src/` ni `test/`. Elles ont été mises à jour mécaniquement pour ne pas laisser traîner une valeur périmée, mais elles doivent disparaître.
+
 ### Accumulateur sous le pouls minimal (feature-073, v2.22.0)
 
-> **[ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md)** — amende le **seuil C** de l'ADR-0043. Le refus créait une **zone morte** (< débit_amplitude × 5/60 ÷ kp) : stagnation terrain du pH à **~cible + 0,26** constatée le 23/08 (kp = 8). La demande sous le plancher est désormais **cumulée**, jamais refusée.
+> **[ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md)** — amende le **seuil C** de l'ADR-0043. Le refus créait une **zone morte** (< débit_amplitude × poulsMin/60 ÷ kp) : stagnation terrain du pH à **~cible + 0,26** constatée le 23/08 (kp = 8). La demande sous le plancher est désormais **cumulée**, jamais refusée.
+>
+> ⚠️ Les valeurs chiffrées ci-dessous supposaient un pouls minimal de **5 s** ; elles sont recalculées pour le pouls de **10 s** de la v2.25.3 ([ADR-0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md)). **La mécanique et la moyenne restituée sont inchangées** — seuls le plancher, la taille du paquet et la cadence des tirs doublent / se divisent par deux.
 
 Logique pure dans `planPulseWithCarry` ([`src/pulse_dosing_logic.h`](../../src/pulse_dosing_logic.h)) :
 
@@ -1014,11 +1189,11 @@ PulseCarryPlan planPulseWithCarry(float meanFlowMlPerMin, float ampFlowMlPerMin,
 Sémantique par régime (une fois par frontière de période) :
 
 - **Demande ≥ plancher** : délégation **stricte** à `planPulse` — comportement **bit-identique** (vérifié en natif sur 255 demandes) — et accumulateur **abandonné** (**F2** : fusionner reviendrait à compter deux fois la même erreur).
-- **Demande vivante sous le plancher** (ex-seuil C) : `carryMl += demande × période / 60000` (mL), **séance MAINTENUE** (`phActive`/`orpActive` restent `true`, pompe OFF via `tickPulse` — l'UI affiche « Dosage en attente : Ns », calendrier ADR-0045 inchangé). Dès que le cumul **atteint** (égalité incluse) **V_pouls**, **UNE** impulsion de `kPulseMinMs` (5 s) exactement part (**F3**), le **résidu est conservé** — jamais deux pouls par période, invariant de sortie `carryMl < V_pouls`.
-- **V_pouls = volume RÉEL kick-inclus** (décision gate n°1) : `pulseDeltaVolumeMl(0, kPulseKickMs, 0, kPulseMinMs, flow255, ampFlow)` — seuil ET décrément ; le nominal `ampFlow × 5 s` sous-estimerait de **+10-12 %** (sur-livraison systématique). Le `flow255` est celui de la **pompe affectée** (`pumpFlow255(pumpIdx)`).
+- **Demande vivante sous le plancher** (ex-seuil C) : `carryMl += demande × période / 60000` (mL), **séance MAINTENUE** (`phActive`/`orpActive` restent `true`, pompe OFF via `tickPulse` — l'UI affiche « Dosage en attente : Ns », calendrier ADR-0045 inchangé). Dès que le cumul **atteint** (égalité incluse) **V_pouls**, **UNE** impulsion de `kPulseMinMs` (**10 s** depuis la v2.25.3) exactement part (**F3**), le **résidu est conservé** — jamais deux pouls par période, invariant de sortie `carryMl < V_pouls`.
+- **V_pouls = volume RÉEL kick-inclus** (décision gate n°1) : `pulseDeltaVolumeMl(0, kPulseKickMs, 0, kPulseMinMs, flow255, ampFlow)` — seuil ET décrément ; le nominal `ampFlow × kPulseMinMs` sous-estimerait de **+7-8 % au pouls de 10 s** (+10-12 % au pouls de 5 s — le kick de 400 ms pèse deux fois moins dans un pouls deux fois plus long), d'où une sur-livraison systématique du même ordre. Le `flow255` est le **majorant de flotte** `kPumpFlow255MlPerMin` (v2.25.2 — le dispatch par pompe `pumpFlow255(pumpIdx)` est supprimé).
 - **Entrées invalides** (demande nulle/non finie, ampFlow invalide, période 0) ou `carryMl` d'entrée suspect (non fini, négatif, ≥ V_pouls) : refus / écrêtage **fail-closed** à zéro (**F1** : une demande disparue ne laisse pas de dette ; jamais de rafale de rattrapage).
 
-Ordre de grandeur : 0,7 mL/min (amplitude 25, flow255 61 → V_pouls ≈ 2,32 mL) → une impulsion de 5 s toutes les **3-4 périodes**, volume restitué exact à **±5 %** (test natif `test_F073_scenario_long_*`).
+Ordre de grandeur (**v2.25.3**, pouls 10 s, débit d'amplitude **mesuré** 25,75 mL/min, flow255 74 → **V_pouls ≈ 4,61 mL**) : une demande de 0,7 mL/min donne une impulsion de 10 s toutes les **6-7 périodes** ; une demande de 1,76 mL/min, une impulsion toutes les **~2,7 min** (contre ~1,4 min au pouls de 5 s). Volume restitué exact à **±5 %** (test natif `test_F073_scenario_long_*`). *Historique : V_pouls ≈ 2,47 mL au pouls de 5 s ; ≈ 2,32 mL avant la v2.25.2 (flow255 61).*
 
 **Coquille** (`pump_controller.{h,cpp}`) : `_pulseCarryMl[2]` / `_carryPulseLogged[2]` par **chimie** ([0] = pH, [1] = ORP), écrits/lus en loopTask uniquement (patron `_stabilizationEndMs`, aucun mutex). L'ouverture de séance est faite **AVANT** le plan (la séance s'ouvre aussi en régime d'accumulation — décision gate n°2 : une **seule** séance, jamais une par pouls, sinon ~480 séances/j auto-bloquantes par `maxCyclesPerDay`).
 
@@ -1028,18 +1203,47 @@ Ordre de grandeur : 0,7 mL/min (amplitude 25, flow255 61 → V_pouls ≈ 2,32 mL
 |---|---|
 | Ouverture / reprise de séance | cumul = 0 (décision gate n°3 : aucune dette héritée) + flag de log réarmé |
 | Fermeture de séance — **inconditionnelle à chaque tick sans `flow > 0`** : demande nulle, refus de gate / `canDose`, limite atteinte, suspension (OTA, filtration…) | cumul = 0 + flag de log réarmé |
-| Reboot | **non persistant** — perte bornée < V_pouls (≈ 2,3 mL), voulu |
+| Reboot | **non persistant** — perte bornée < V_pouls (≈ 4,6 mL depuis la v2.25.3, ≈ 2,5 mL avant), voulu |
 | Entrées invalides / cumul d'entrée ≥ V_pouls | reset défensif fail-closed dans la logique pure |
 
 **Aucun passe-droit** : le tir d'accumulateur est un pouls **normal** — chemin standard `tickPulse`, `usedMs` pompe-ON (ADR-0044), volume crédité par `pulseDeltaVolumeMl`, toutes les gardes réévaluées à chaque tour en amont.
 
-**Log (A3)** : `INFO [Dosage pH|ORP] Dosage par accumulation : impulsion minimale de 5 s (X mL cumulés, résidu Y mL)` — **un par séance** (premier tir, `_carryPulseLogged`), les suivants silencieux (le log d'arrêt de séance résume le volume). Remplace l'`INFO` « injection différée (seuil C) », **supprimé**. *Limite connue (revue)* : le « X mL cumulés » peut être légèrement faux si l'écrêtage défensif a joué — cosmétique, le volume **crédité** reste exact.
+**Log (A3)** : `INFO [Dosage pH|ORP] Dosage par accumulation : impulsion minimale de 10 s (X mL cumulés, résidu Y mL)` — la durée affichée est dérivée de `kPulseMinMs` (`10 s` depuis la v2.25.3, `5 s` avant) — **un par séance** (premier tir, `_carryPulseLogged`), les suivants silencieux (le log d'arrêt de séance résume le volume). Remplace l'`INFO` « injection différée (seuil C) », **supprimé**. *Limite connue (revue)* : le « X mL cumulés » peut être légèrement faux si l'écrêtage défensif a joué — cosmétique, le volume **crédité** reste exact.
+
+### Pouls minimal porté à 10 s (v2.25.3)
+
+> **[ADR-0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md)** — amende le **pouls minimal** (condition B3) de l'ADR-0043. Gate `pool-chemistry` : **GO SOUS CONDITIONS**. `kPulseMinMs` : **5 000 → 10 000 ms**. Rien d'autre ne change : ni `kPulsePeriodMs`, ni l'amplitude, ni le modèle de comptage.
+
+**Constat de terrain (28/08/2026).** La régulation pH ne converge pas : **968 mL comptés en une journée**, pH toujours à **7,50** pour une consigne à **7,30**. Le besoin réel est de **800-900 mL pour ΔpH 0,2** sur 40 m³ — chiffre validé par deux voies indépendantes et concordantes (composition du produit : 12 % H₂SO₄ + 13 % HCl ≈ 6,9 éq/L ; dosage constructeur : 0,2 L/10 m³ pour 0,1-0,2 unité). Près d'un litre **compté** sans effet mesurable.
+
+**Hypothèse retenue** : la **perte fixe par démarrage** de la pompe péristaltique (relaxation puis ré-occlusion du tube, reprise d'amorçage) vaut **0,1 à 0,5 mL** sur une pompe dont un tour délivre 1-2 mL, alors que `pulseDeltaVolumeMl` compte comme si le débit s'établissait **instantanément**. Facteur aggravant : `ph_pulse_ms = 5000` **en permanence** ⇒ l'erreur porte sur **100 % du volume**, pas sur une fraction.
+
+**Ce que le changement fait — et ce qu'il ne fait pas** (point contre-intuitif) :
+
+- il **n'augmente PAS la dose demandée**. `planPulseWithCarry` accumule `meanFlow × period` et retire **exactement** `V_pouls` au tir : la moyenne restituée est **indépendante** de `kPulseMinMs` (invariance vérifiée par le gate dans [`pulse_dosing_logic.cpp`](../../src/pulse_dosing_logic.cpp)). Les impulsions deviennent **deux fois plus grosses, deux fois moins fréquentes** ;
+- il améliore le **rendement** : deux fois moins de démarrages pour un même volume, donc la perte fixe est amortie sur deux fois plus de volume utile — et le débit d'un pouls de 10 s est plus reproductible que celui d'un pouls de 5 s.
+
+**Chiffres** (débit à l'amplitude **mesuré** 25,75 mL/min, `flow255` = 74,0) :
+
+| Grandeur | Pouls 5 s | Pouls 10 s |
+|---|---:|---:|
+| `V_pouls` (volume réel kick-inclus d'une impulsion minimale) | 2,47 mL | **4,61 mL** |
+| Seuil de bascule vers le régime proportionnel direct | 2,15 mL/min | **4,29 mL/min** |
+| Cadence à demande 1,76 mL/min | ~1 / 1,4 min | **~1 / 2,7 min** |
+
+Bolus unitaire 4,6 mL = **32 méq** ⇒ **ΔpH < 0,002** même sur 15 m³ ; négligeable jusqu'à ~5 m³ (réserve du gate : un spa < 2 m³ sortirait du raisonnement — hors périmètre flotte).
+
+**Effets de bord instruits, tous inchangés** — `maxCyclesPerDay` et l'anti-rafale comptent par **séance**, pas par impulsion ; la **limite horaire** est réévaluée à chaque tick (dépassement borné par un tour de boucle, pas par 10 s) ; le **temps minimum d'injection** raisonne en temps pompe-ON cumulé ([ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md)), donc la durée murale d'une séance ne bouge pas ; la **pause mélange** s'arme en fin de séance seulement.
+
+**`kPulsePeriodMs` reste à 60 s** (décision explicite) : la fraction de temps pompe maximale est inchangée et le refus antérieur de l'utilisateur d'allonger la période (cycle feature-073) reste fondé.
+
+⚠️ **DETTE ASSUMÉE — condition n°1 du gate : le compteur reste FAUX.** En divisant les démarrages par deux à volume **compté** constant, on augmente le volume **réel** délivré sous le même plafond journalier : la limite journalière devient légèrement **moins conservatrice** (quelques dizaines de mL/jour si la perte vaut ~0,5 mL). Cet allongement **atténue** le défaut de comptage, **il ne le corrige pas**. Exigences du gate : **surveiller le plafond journalier sur 3 jours**, et la **mesure de la perte fixe reste due** (M2 : 24 pouls de 5 s contre 12 pouls de 10 s à temps de pompe égal ⇒ `V₁₀ − V₅ = 12 × L`), après quoi le modèle de comptage devra être corrigé — et traité **explicitement comme une hausse de dose**. Voir [feature-078](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md).
 
 ### Comptabilité du volume (P4)
 
 `accountPumpVolume(chem, physIdx, now, manualActive)` crédite par **delta de tick** (attribution arrière — le volume du delta est celui de la commande posée au tour précédent) :
 
-- **Pouls auto/scheduled** : `pulseDeltaVolumeMl()` — la part du delta recouvrant le kick est créditée au **débit 255 mesuré**, le reste au **débit d'amplitude pesé**. Exact au jitter de loop près (seule la géométrie du pouls compte). *Limite connue* : la transition kick→plateau est vue au premier tick après 400 ms → sous-comptage ~0,1 mL/pouls, borné.
+- **Pouls auto/scheduled** : `pulseDeltaVolumeMl()` — la part du delta recouvrant le kick est créditée au **majorant de flotte à 255** (`kPumpFlow255MlPerMin`), le reste au **débit d'amplitude mesuré**. Exact au jitter de loop près (seule la géométrie du pouls compte). *Limite connue* : la transition kick→plateau est vue au premier tick après 400 ms → sous-comptage ~0,1 mL/pouls, borné.
 - **Manuel `?duty=N`** : crédit au **MAJORANT** débit-255 (surestimer est fail-safe), **sauf** `duty == calibrated_duty` → débit pesé exact.
 - **Jamais zéro sur une pompe alimentée** (prescription P4).
 
@@ -1067,17 +1271,30 @@ Garanties : **aucun setter associé**, aucun chemin de décision de dosage trave
 Plus jamais de durée déduite du modèle linéaire (`calcInjectFlow` supprimé). `planManualInject()` ([`web_routes_control.cpp`](../../src/web_routes_control.cpp)) ne connaît que **deux points** :
 
 - amplitude configurée **== duty calibré** → duty calibré, débit pesé ;
-- sinon → duty **forcé à 255**, débit `kPumpNFlow255MlPerMin` (durée volume/débit exacte) ;
+- sinon → duty **forcé à 255**, débit `kPumpFlow255MlPerMin` (**majorant de flotte** depuis la v2.25.2 : la durée annoncée est donc légèrement **courte**, jamais longue) ;
 - état incohérent (duty calibré posé mais débit pesé invalide) → **409 `flow_uncharacterized`** + `critical`. Voir [API.md](../API.md#codes-de-refus-409-v260).
 
 ## Paramètres en dur (récapitulatif)
 
 | Catégorie | Constante | Valeur | Source |
 |-----------|-----------|--------|--------|
-| Régulation P — Kp pH (feature-025) | `kp` (défaut struct) | 8.0 | [`pump_controller.h`](../../src/pump_controller.h) |
-| Régulation P — Kp ORP (feature-025) | `kp` (override constructeur) | 0.3 | [`pump_controller.cpp`](../../src/pump_controller.cpp) |
-| Régulation P — Ki / Kd (feature-025) | `ki` / `kd` | 0 / 0 (Kd=0 impératif) | [`pump_controller.h`](../../src/pump_controller.h) |
-| PID — anti-windup | `integralMax` | 50.0 (inerte avec Ki=0) | `PIDState` ([`pump_controller.h`](../../src/pump_controller.h)) |
+| Régulation — Kp pH par vitesse (**externalisés en v2.26.0** : `integralMax` en dérive) | `kPhKpSlow` / `kPhKpNormal` / `kPhKpFast` | 4 / **8** / 12 | [`constants.h`](../../src/constants.h) |
+| Régulation P — Kp ORP (feature-025) | `kp` (override constructeur) | 0.15 / **0.3** / 0.5 | [`pump_controller.cpp`](../../src/pump_controller.cpp) |
+| Régulation — Kd (feature-025, **impératif sur les 2 chimies**) | `kd` | 0 | [`pump_controller.h`](../../src/pump_controller.h) |
+| Régulation — Ki ORP (feature-025, **inchangé en v2.26.0**) | `ki` (ORP) | 0 | [`pump_controller.cpp`](../../src/pump_controller.cpp) |
+| Intégrale pH — **autorité** du terme intégral seul (v2.26.0, [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) — **constante de SÉCURITÉ CHIMIQUE**) | `kPhIntegralAuthorityMlPerMin` | 6,0 mL/min (= 2 × charge mesurée 2,86) | [`constants.h`](../../src/constants.h) |
+| Intégrale pH — constantes de temps par vitesse | `kPhIntegralTiSlowS` / `TiNormalS` / `TiFastS` | 8 h / **6 h** / 4 h | [`constants.h`](../../src/constants.h) |
+| Intégrale pH — Ki dérivé (`kp / Ti`) | `kPhKiSlow` / `kPhKiNormal` / `kPhKiFast` | 1,389e-4 / **3,704e-4** / 8,333e-4 | [`constants.h`](../../src/constants.h) |
+| PID — anti-windup pH, **dérivé de l'autorité** `U × Ti / kp` (v2.26.0 ; était 50,0 inerte) | `kPhIntegralMaxSlow` / `Normal` / `Fast` | 43 200 / **16 200** / 7 200 pH·s | [`constants.h`](../../src/constants.h) |
+| PID — anti-windup, défaut de structure (**volontairement inerte**, `Ki = 0` par défaut) | `integralMax` | 50.0 | `PIDController` ([`pump_controller.h`](../../src/pump_controller.h)) |
+| Intégrale pH — marge du reset sec (seuil réel −0,15 avec les défauts) | `kPhIntegralResetMargin` | 0,10 pH | [`constants.h`](../../src/constants.h) |
+| Intégrale pH — demi-vie d'oubli sous consigne (pas fixes de 1 min, facteur 0,9885140) | `kPhIntegralDecayHalfLifeMs` | 3 600 000 ms (1 h) | [`constants.h`](../../src/constants.h) |
+| Intégrale pH — `dt` maximal crédité | `kPhIntegralMaxTickDtMs` | 10 000 ms (10 s) | [`constants.h`](../../src/constants.h) |
+| Intégrale pH — quantum d'intégration (garantit un incrément représentable en `float`) | `kPhIntegralChargeQuantumMs` | 1 000 ms (1 s) | [`constants.h`](../../src/constants.h) |
+| Intégrale pH — gel sur quota journalier | `kPhIntegralFreezeDailyFraction` | 0,80 | [`constants.h`](../../src/constants.h) |
+| Intégrale pH — péremption | `kPhIntegralStaleResetMs` | 86 400 000 ms (24 h) | [`constants.h`](../../src/constants.h) |
+| Intégrale pH — hystérésis de saturation (entrée / sortie) | `kPhIntegralSaturationPct` / `…ClearPct` | 95 % / 85 % | [`constants.h`](../../src/constants.h) |
+| Intégrale pH — paliers d'alerte et rappel | `…SaturationWarnMs` / `…CriticalMs` / `…ReminderMs` | 2 h / **6 h** / 12 h | [`constants.h`](../../src/constants.h) |
 | PID — borne erreur pH | `kPhMaxError` | 1.0 | [`constants.h:89`](../../src/constants.h:89) |
 | PID — borne erreur ORP | `kOrpMaxError` | 200.0 mV | [`constants.h:90`](../../src/constants.h:90) |
 | PID — `dt` max | (literal in code) | 10 s | [`pump_controller.cpp`](../../src/pump_controller.cpp) |
@@ -1093,14 +1310,15 @@ Plus jamais de durée déduite du modèle linéaire (`calcInjectFlow` supprimé)
 | Pompe — plancher de rotation (**98 en v2.21.0** : Dmin mesuré 82 + 16 counts marge P2) | `MIN_ACTIVE_DUTY` | 98 (sur 255) | [`config.h`](../../src/config.h) |
 | Pompe — duty max | `MAX_PWM_DUTY` | 255 (8 bits) | [`config.h:27`](../../src/config.h:27) |
 | Impulsions — période fixe (B3, v2.21.0) | `kPulsePeriodMs` | 60 000 ms (1 min) | [`constants.h`](../../src/constants.h) |
-| Impulsions — pouls minimal (B3 ; durée exacte du tir d'accumulateur, v2.22.0) | `kPulseMinMs` | 5 000 ms (5 s) | [`constants.h`](../../src/constants.h) |
+| Impulsions — pouls minimal (B3 ; durée exacte du tir d'accumulateur, v2.22.0 ; **10 s depuis la v2.25.3**, [ADR-0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md) — rendement des démarrages, dose demandée inchangée) | `kPulseMinMs` | **10 000 ms (10 s)** — était 5 000 | [`constants.h`](../../src/constants.h) |
 | Impulsions — kick de décollage à 255 | `kPulseKickMs` | 400 ms | [`constants.h`](../../src/constants.h) |
-| Pompe 1 — débit **pesé** à 255 (2026-08-23) | `kPump1Flow255MlPerMin` | 61,0 mL/min | [`constants.h`](../../src/constants.h) |
-| Pompe 2 — débit **pesé** à 255 (2026-08-23) | `kPump2Flow255MlPerMin` | 67,0 mL/min | [`constants.h`](../../src/constants.h) |
+| Pompes — débit **majorant de flotte** à 255 (v2.25.2, ADR-0050 — remplace `kPump1/2Flow255MlPerMin` = 61,0 / 67,0) | `kPumpFlow255MlPerMin` | 74,0 mL/min (= max mesuré 68,0 + 8 %) | [`constants.h`](../../src/constants.h) |
+| Pompes — maximum **réellement mesuré** à 255 (verrou `static_assert`, aucun calcul) | `kPumpFlow255MeasuredMaxMlPerMin` | 68,0 mL/min | [`constants.h`](../../src/constants.h) |
 | Amplitude — plancher du réglage `pumpN_max_duty_pct` | `kPumpAmpMinPct` | 40 % (≈ 102 counts) | [`constants.h`](../../src/constants.h) |
 | Amplitude — défaut (gelée, v2.23.0) | `kPumpAmpDefaultPct` | 50 % | [`config.h`](../../src/config.h) |
 | Calibration de type — duty (v2.23.0, ADR-0047, static_assert == 127) | `kPumpTypeCalDuty` | 127 (= 50 % × 255, division entière) | [`config.h`](../../src/config.h) |
-| Calibration de type — débit au duty 127 (v2.23.0, biais sûr, à remplacer par la pesée de type) | `kPumpTypePulseFlowMlPerMin` | 28,0 mL/min | [`constants.h`](../../src/constants.h) |
+| Calibration de type — débit au duty 127 (v2.23.0 ; **justification refondée sur la mesure en v2.25.2**, ADR-0050 : max mesuré 26,0 + 8 %) | `kPumpTypePulseFlowMlPerMin` | 28,0 mL/min | [`constants.h`](../../src/constants.h) |
+| Calibration de type — maximum **réellement mesuré** à 127 (v2.25.2, verrou `static_assert`, aucun calcul) | `kPumpTypeFlowMeasuredMaxMlPerMin` | 26,0 mL/min | [`constants.h`](../../src/constants.h) |
 | Calibration — plausibilité du débit pesé | `kPulseFlowMaxMlPerMin` | 200 mL/min | [`constants.h`](../../src/constants.h) |
 | Impulsions — throttle des logs de refus de gate (critical ; l'info seuil C est supprimé en v2.22.0) | `kPulseRefusalLogIntervalMs` | 1 800 000 ms (30 min) | [`constants.h`](../../src/constants.h) |
 | Stabilisation post-cal pH (feature-021) | `kStabilizationDurationPhMs` | 300 000 ms (5 min) | [`constants.h`](../../src/constants.h) |
@@ -1248,12 +1466,14 @@ Hors compteurs journaliers, la **trace de bascule automatique pH** est persisté
 - [`src/pump_controller.h`](../../src/pump_controller.h), [`src/pump_controller.cpp`](../../src/pump_controller.cpp)
 - [`src/config.h:152`](../../src/config.h:152) — `PumpProtection`
 - [`src/config.h:141`](../../src/config.h:141) — `SafetyLimits`
-- [`src/constants.h`](../../src/constants.h) — `kPulsePeriodMs`, `kPulseMinMs`, `kPulseKickMs`, `kPump1Flow255MlPerMin`, `kPump2Flow255MlPerMin`, `kPumpAmpMinPct`, `kPulseFlowMaxMlPerMin`, `kPulseRefusalLogIntervalMs` (v2.21.0)
+- [`src/constants.h`](../../src/constants.h) — `kPulsePeriodMs`, `kPulseMinMs`, `kPulseKickMs`, `kPumpAmpMinPct`, `kPulseFlowMaxMlPerMin`, `kPulseRefusalLogIntervalMs` (v2.21.0), `kPumpFlow255MlPerMin` + `kPumpFlow255MeasuredMaxMlPerMin` et `kPumpTypeFlowMeasuredMaxMlPerMin` (v2.25.2, ADR-0050 — remplacent `kPump1/2Flow255MlPerMin`)
+- [`src/ph_integral_logic.h`](../../src/ph_integral_logic.h) — **terme intégral pH pur** (v2.26.0, [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md)) : charge signée, oubli, reset sec, péremption, hystérésis de saturation
+- [`src/constants.h`](../../src/constants.h) — section « RÉGULATION pH — TERME INTÉGRAL » (v2.26.0) : `kPhIntegralAuthorityMlPerMin`, `kPhIntegralTi*`, `kPhKp*`, `kPhKi*`, `kPhIntegralMax*`, `kPhIntegralResetMargin`, `kPhIntegralDecay*`, `kPhIntegralMaxTickDtMs`, `kPhIntegralChargeQuantumMs`, `kPhIntegralFreezeDailyFraction`, `kPhIntegralStaleResetMs`, `kPhIntegralSaturation*` + les 9 `static_assert`
 - [`src/pulse_dosing_logic.h`](../../src/pulse_dosing_logic.h), [`src/pulse_dosing_logic.cpp`](../../src/pulse_dosing_logic.cpp) — ordonnanceur d'impulsions pur (gate, plan, tick, volume — v2.21.0 ; accumulateur sous-plancher `planPulseWithCarry` — v2.22.0)
 - [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036) + gardes d'injection manuelle `evaluateManualInject` (feature-006) + répartition scheduled `evaluateScheduledDose` (feature-011)
 - [`src/schedule_logic.h`](../../src/schedule_logic.h), [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) — `remainingRangeMinutes` (horizon de répartition scheduled, feature-011)
-- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053), [ADR-0026](../adr/0026-mode-installation.md) (Mode d'installation — 3 archétypes de câblage + résolution unique de la présence d'eau, feature-056), [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) (offset pH en sortie des accesseurs + filets sur le brut, feature-067), [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md) (proportionnel de temps à amplitude calibrée, v2.21.0), [ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md) (budget horaire et temps min en temps pompe-ON, v2.21.0), [ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md) (accumulateur sous le pouls minimal, v2.22.0), [ADR-0047](../adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md) (calibration de type par défaut + gel de l'amplitude, v2.23.0)
+- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053), [ADR-0026](../adr/0026-mode-installation.md) (Mode d'installation — 3 archétypes de câblage + résolution unique de la présence d'eau, feature-056), [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) (offset pH en sortie des accesseurs + filets sur le brut, feature-067), [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md) (proportionnel de temps à amplitude calibrée, v2.21.0), [ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md) (budget horaire et temps min en temps pompe-ON, v2.21.0), [ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md) (accumulateur sous le pouls minimal, v2.22.0), [ADR-0047](../adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md) (calibration de type par défaut + gel de l'amplitude, v2.23.0), [ADR-0050](../adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md) (débit à 255 = constante unique de flotte, marge ≥ dispersion mesurée, v2.25.2), [ADR-0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md) (pouls minimal 5 s → 10 s : rendement des démarrages d'abord, correction du comptage ensuite, v2.25.3), [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) (**levée de `Ki = 0` sur le seul pH**, `integralMax` dimensionné par l'autorité, intégration signée sur le seuil d'arrêt, v2.26.0 — amende l'ADR-0016)
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — entrée filtrée, anti-windup, pause mélange, zone morte
 - [feature-036](../../specs/features/done/feature-036-dosage-testable-decision-pure.md) — extraction de la décision de dosage en module pur testable
 - [feature-039](../../specs/features/done/feature-039-anti-rafale-rollover-testable.md) — extraction de l'anti-rafale + déclencheurs de rollover en logique pure testable

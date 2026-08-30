@@ -879,6 +879,293 @@ constexpr unsigned long kPhMixingDelayMs         = 900000UL;  // 15 min — paus
 constexpr unsigned long kOrpMixingDelayMs        = 1200000UL; // 20 min — pause mélange ORP
 
 // ============================================================================
+// RÉGULATION pH — TERME INTÉGRAL (v2.26.0, gate pool-chemistry GO/conditions)
+// ============================================================================
+// LEVÉE de `Ki = 0` (feature-025) sur le SEUL pH. Ki_ORP reste 0 (hors périmètre)
+// et Kd reste 0 PARTOUT (un dérivé amplifierait le bruit résiduel du filtre).
+//
+// POURQUOI : sous charge basique permanente (~325 g CO₂/j, 80 % de la charge), un
+// P pur ne peut pas rejoindre sa consigne — il se stabilise sur son droop
+// `e* = besoin / (kp × T)`. Vérification terrain (août 2026) : kp = 8, e* = 0,358
+// ⇒ 2,86 mL/min ⇒ 1 800 mL/j pour 10,5 h de filtration ; 1 000 mL réellement
+// injectés, pH TENU à 7,50-7,66 pour une consigne à 7,30. Le pH ne POUVAIT pas
+// descendre : ce n'était ni la pompe, ni le produit, ni le dosage, mais la
+// structure même d'un correcteur proportionnel.
+//
+// DIMENSIONNEMENT PAR L'AUTORITÉ, jamais « en pH·s à l'intuition » : on pose le
+// débit maximal que l'intégrale seule est autorisée à demander, puis on en déduit
+// integralMax = U_I,max / ki. À l'équilibre l'erreur tend vers 0, donc le terme P
+// disparaît et l'intégrale fournit TOUTE la charge : son autorité doit couvrir la
+// charge d'équilibre, avec un facteur 2 pour la dérive saisonnière.
+//
+//   vitesse | kp | Ti      | ki = kp/Ti | integralMax = U/ki
+//   --------|----|---------|------------|-------------------
+//   slow    |  4 | 8 h     | 1,39e-4    | 43 200 pH·s
+//   normal  |  8 | 6 h     | 3,70e-4    | 16 200 pH·s
+//   fast    | 12 | 4 h     | 8,33e-4    |  7 200 pH·s
+//
+// integralMax VARIE donc avec `regulation_speed`, exactement comme kp : l'autorité
+// est constante (6 mL/min), seule la VITESSE de charge de l'intégrale change.
+//
+// LE PIÈGE À NE PAS REFAIRE : l'ancien `integralMax = 50.0f` (inerte tant que
+// Ki valait 0) plafonnait la contribution intégrale à 3,70e-4 × 50 = 0,0185 mL/min,
+// soit 0,6 % du besoin de 2,86 mL/min — saturé en 140 s. Réactiver Ki sans
+// redimensionner integralMax serait un ÉCHEC SILENCIEUX : régulation « avec
+// intégrale » sur le papier, droop intact dans le bassin.
+//
+// Ti = 2 à 3× le temps de brassage du bassin (4-6 h). Le retard de mélange
+// (kPhMixingDelayMs = 15 min) est négligeable devant Ti — verrouillé ci-dessous.
+
+// Autorité MAXIMALE du terme intégral seul (mL/min de débit moyen demandé).
+// 2× la charge d'équilibre mesurée (2,86 mL/min). Toute retouche de cette valeur
+// est une décision de SÉCURITÉ CHIMIQUE : elle fixe le débit qu'un capteur figé
+// haut pourrait demander en permanence (borné par ailleurs par le gel d'intégrale
+// sur quota journalier, les limites horaire/journalière et la pause mélange).
+constexpr float kPhIntegralAuthorityMlPerMin = 6.0f;
+
+// Constantes de temps d'intégration par vitesse (secondes).
+constexpr float kPhIntegralTiSlowS   = 28800.0f;  // 8 h
+constexpr float kPhIntegralTiNormalS = 21600.0f;  // 6 h
+constexpr float kPhIntegralTiFastS   = 14400.0f;  // 4 h
+
+// Kp pH par vitesse — externalisés du code métier : integralMax en DÉRIVE, les
+// deux ne peuvent donc plus divorcer silencieusement.
+constexpr float kPhKpSlow   = 4.0f;
+constexpr float kPhKpNormal = 8.0f;
+constexpr float kPhKpFast   = 12.0f;
+
+// Ki = Kp / Ti (mL/min par pH·s).
+constexpr float kPhKiSlow   = kPhKpSlow   / kPhIntegralTiSlowS;    // 1,389e-4
+constexpr float kPhKiNormal = kPhKpNormal / kPhIntegralTiNormalS;  // 3,704e-4
+constexpr float kPhKiFast   = kPhKpFast   / kPhIntegralTiFastS;    // 8,333e-4
+
+// integralMax = U_I,max / ki (pH·s) — écrit sous la forme U × Ti / Kp pour rester
+// exact en flottant (pas de division par une division).
+constexpr float kPhIntegralMaxSlow =
+    kPhIntegralAuthorityMlPerMin * kPhIntegralTiSlowS   / kPhKpSlow;    // 43 200
+constexpr float kPhIntegralMaxNormal =
+    kPhIntegralAuthorityMlPerMin * kPhIntegralTiNormalS / kPhKpNormal;  // 16 200
+constexpr float kPhIntegralMaxFast =
+    kPhIntegralAuthorityMlPerMin * kPhIntegralTiFastS   / kPhKpFast;    //  7 200
+
+// --- C2 : marge du RESET SEC de l'intégrale ---------------------------------
+// L'ancien code remettait l'intégrale à zéro dès `error < -phStopThreshold`
+// (−0,01) : six heures d'accumulation effacées par 0,011 pH de dérive, à chaque
+// tick. Sans cette marge, la levée de Ki n'aurait AUCUN bénéfice.
+// Le seuil devient `error < -(phStartThreshold + kPhIntegralResetMargin)`, soit
+// −0,15 avec les défauts (0,05 + 0,10) : une excursion FRANCHE de l'autre côté de
+// la consigne (surcorrection réelle, changement de produit, apport externe), et
+// non le bruit du filtre (~0,05 pH).
+constexpr float kPhIntegralResetMargin = 0.10f;
+
+// Demi-vie de l'OUBLI progressif de l'intégrale pendant une excursion sous la
+// consigne (option 2 du gate, retenue — cf. le commentaire C2 de
+// pump_controller.cpp pour la justification complète). Nécessaire parce que
+// l'intégrale ne se décharge PAS d'elle-même : le PID n'est évalué que si
+// `shouldDose`, donc plus du tout dès que l'erreur devient négative. Sans oubli,
+// une intégrale pleine survivrait à une semaine de pH sous consigne (bassin
+// bâché, charge basique disparue) et serait restituée d'un bloc au premier retour
+// au-dessus du seuil de démarrage.
+// 1 h = ordre de grandeur du brassage du bassin, six fois plus court que le Ti le
+// plus rapide : l'oubli est franc devant la charge, sans jamais concurrencer la
+// dynamique de régulation (il n'agit QUE hors dosage).
+constexpr uint32_t kPhIntegralDecayHalfLifeMs = 3600000UL;  // 1 h
+
+// Mise en œuvre PAR PAS FIXES plutôt que par powf(0,5 ; dt/T½) : la fonction
+// powf() coûte 2 320 octets de FLASH mesurés (linkage de la bibliothèque
+// mathématique), sur une ressource occupée à 97 %. La demi-vie est donc obtenue
+// par répétition d'un facteur constant, exact au même titre — et vérifié à la
+// COMPILATION ci-dessous.
+constexpr uint32_t kPhIntegralDecayStepMs = 60000UL;  // 1 min par pas
+// 0,5^(1/60) — un pas d'une minute, soixante pas par demi-vie.
+constexpr float kPhIntegralDecayStepFactor = 0.9885140f;
+// Rattrapage borné : au-delà de 10 demi-vies il ne reste que 0,1 % de
+// l'intégrale, le plancher de 1 pH·s a déjà fermé l'épisode. Borne la boucle de
+// rattrapage d'update() quand la branche automatique n'a pas tourné pendant des
+// heures (600 multiplications flottantes = quelques dizaines de µs).
+constexpr uint32_t kPhIntegralDecayMaxSteps = 600;
+
+// --- Intégration SIGNÉE : cadence et quantum --------------------------------
+// v2.26.0 (correction) : l'intégrale est désormais entretenue à CHAQUE tick
+// automatique, sur `(erreur − phStopThreshold)` — cf. src/ph_integral_logic.h.
+//
+// Deux garde-fous de mise en œuvre, tous deux NUMÉRIQUES :
+//
+// (1) dt MAXIMAL crédité. Même valeur et même raison que la garde de computePID :
+//     un trou d'évaluation (pause mélange de 15 min, garde bloquante, changement
+//     de mode) ne doit JAMAIS être crédité d'un bloc — 900 s × erreur chargeraient
+//     l'intégrale au plafond en un seul tour. Au-delà, le temps est REJETÉ.
+constexpr uint32_t kPhIntegralMaxTickDtMs = 10000UL;  // 10 s
+//
+// (2) QUANTUM d'intégration. La branche automatique tourne à la cadence de loop
+//     (quelques millisecondes). À 16 200 pH·s, l'ulp du flottant simple précision
+//     vaut ~2e-3 : un incrément de 5 ms × 0,01 pH (5e-5) serait PERDU à
+//     l'addition, et la décharge en bande morte n'existerait tout simplement pas.
+//     On accumule donc le temps observé et on n'intègre que par quanta d'une
+//     seconde — incrément minimal 1e-2 pH·s, très au-dessus de l'ulp. Le reliquat
+//     sous le quantum est reporté : aucun temps n'est perdu.
+constexpr uint32_t kPhIntegralChargeQuantumMs = 1000UL;  // 1 s
+
+// --- C3 : gel d'intégrale sur quota journalier -------------------------------
+// Fraction de la limite journalière au-delà de laquelle l'accumulation intégrale
+// est GELÉE. Couvre le trou du gel existant : une sonde bloquée sur une valeur
+// HAUTE (plage et fraîcheur valides — le filtre la croit bonne) présente une
+// erreur constante que rien ne résorbe ; l'intégrale chargerait jusqu'à son
+// plafond et y resterait. Le volume déjà injecté est le seul témoin fiable de
+// cette divergence : à 80 % du quota, on cesse d'accumuler (le terme acquis reste
+// servi, on n'en ajoute plus).
+constexpr float kPhIntegralFreezeDailyFraction = 0.80f;
+
+// --- C4 : péremption ---------------------------------------------------------
+// Purge de l'intégrale quand le PID n'a pas été évalué depuis 24 h (mode `off` /
+// `manual`, garde bloquante durable, filtration arrêtée tout l'hiver). Sans elle
+// l'intégrale resterait figée des jours, puis serait servie telle quelle au
+// retour en automatique, sur un bassin devenu étranger à la mesure qui l'a
+// chargée.
+// L'intégrale n'est JAMAIS persistée en NVS (cf. PIDController) : un reboot doit
+// repartir de zéro. Une valeur stockée — a fortiori corrompue — serait une
+// AUTORISATION DE DOSAGE PRÉ-CHARGÉE au boot.
+constexpr uint32_t kPhIntegralStaleResetMs = 86400000UL;  // 24 h
+
+// --- C5 : observabilité de la saturation ------------------------------------
+// Une intégrale saturée EN SILENCE est la classe de défaut historique de ce
+// projet : la régulation demande son maximum, n'y arrive pas, et personne ne le
+// sait.
+//
+// v2.26.0 (correction) — DEUX défauts de conditionnement corrigés :
+//
+//  (a) le seuil portait sur le remplissage de l'anti-windup (% de integralMax).
+//      Or le gel d'anti-windup immobilise l'intégrale à la valeur qui SATURE
+//      l'actionneur, laquelle peut être très inférieure au plafond : avec 5 min/h
+//      de budget, l'intégrale se fige vers 34 % de integralMax et l'alerte ne
+//      partait JAMAIS. Le seuil porte désormais sur le RAPPORT « demande PID /
+//      débit moyen soutenable » — la formulation directe de « la régulation
+//      demande son maximum ». La valeur (95 %) et son encadrement sont conservés.
+//
+//  (b) une seule alerte critical par ÉPISODE, jamais réémise : un état anormal
+//      durable devenait SILENCIEUX au bout d'une ligne de journal. D'où la sortie
+//      d'hystérésis explicite et le RAPPEL périodique ci-dessous.
+constexpr float    kPhIntegralSaturationPct      = 95.0f;  // entrée en saturation
+// Sortie d'hystérésis : sans bande, une demande qui oscille autour du seuil
+// ouvre/referme l'épisode en rafale et réarme le rappel à chaque oscillation.
+// 10 points de bande ≈ 0,2 mL/min de demande avec le budget horaire par défaut.
+constexpr float    kPhIntegralSaturationClearPct = 85.0f;
+
+// Paliers de TENUE, comptés en temps de branche automatique (pas en temps mural)
+// et conditionnés à « saturée ET erreur toujours au-dessus du seuil d'ARRÊT ».
+constexpr uint32_t kPhIntegralSaturationWarnMs     = 7200000UL;   // 2 h → warning
+// N = 6 h = Ti à vitesse `normal`, soit UNE constante d'intégration entière à
+// autorité pleine. Au-delà, une correction qui n'a toujours pas ramené l'erreur
+// sous le seuil d'arrêt n'est plus un transitoire : c'est un bidon vide, un tube
+// désamorcé, une fuite ou une sonde figée. L'ancienne valeur de 24 h faisait
+// perdre une journée entière de produit avant le premier signalement.
+constexpr uint32_t kPhIntegralSaturationCriticalMs = 21600000UL;  // 6 h → critical
+// Rappel du critical tant que l'anomalie dure. 12 h : l'action corrective est
+// PHYSIQUE (aller voir le bidon, réamorcer, vérifier la sonde) et se fait au
+// mieux une fois par demi-journée — une anomalie née le soir est re-signalée le
+// matin, sans jamais dépasser deux lignes de journal et deux alertes MQTT par
+// jour pour une condition qui peut durer des semaines.
+constexpr uint32_t kPhIntegralSaturationReminderMs = 43200000UL;  // 12 h
+
+// --- Invariants verrouillés à la compilation --------------------------------
+// (i) L'autorité doit être strictement positive ET rester dans l'ordre de
+// grandeur d'une pompe doseuse : au-delà de 30 mL/min, l'intégrale seule
+// saturerait le débit d'amplitude de n'importe quelle pompe du parc.
+static_assert(kPhIntegralAuthorityMlPerMin > 0.0f &&
+                  kPhIntegralAuthorityMlPerMin <= 30.0f,
+              "Autorite integrale pH nulle ou hors de portee d'une pompe doseuse");
+// (ii) LE verrou anti-piège : ki × integralMax DOIT redonner l'autorité posée,
+// pour les trois vitesses. C'est cet invariant que `integralMax = 50` violait
+// d'un facteur 160 — et il le violait en SILENCE.
+static_assert(kPhKiSlow * kPhIntegralMaxSlow > 0.99f * kPhIntegralAuthorityMlPerMin &&
+                  kPhKiSlow * kPhIntegralMaxSlow < 1.01f * kPhIntegralAuthorityMlPerMin,
+              "integralMax (slow) incoherent avec l'autorite posee : le terme "
+              "integral ne pourra pas fournir la charge d'equilibre");
+static_assert(kPhKiNormal * kPhIntegralMaxNormal > 0.99f * kPhIntegralAuthorityMlPerMin &&
+                  kPhKiNormal * kPhIntegralMaxNormal < 1.01f * kPhIntegralAuthorityMlPerMin,
+              "integralMax (normal) incoherent avec l'autorite posee");
+static_assert(kPhKiFast * kPhIntegralMaxFast > 0.99f * kPhIntegralAuthorityMlPerMin &&
+                  kPhKiFast * kPhIntegralMaxFast < 1.01f * kPhIntegralAuthorityMlPerMin,
+              "integralMax (fast) incoherent avec l'autorite posee");
+// (iii) La constante de temps la plus COURTE doit dominer le retard de mélange :
+// intégrer plus vite que le bassin ne s'homogénéise, c'est intégrer sur une
+// mesure qui ne reflète pas encore les doses déjà passées (surdosage garanti).
+static_assert(kPhIntegralTiFastS >= 4.0f * (kPhMixingDelayMs / 1000.0f),
+              "Ti trop court devant la pause melange : l'integrale chargerait "
+              "sur une mesure non representative des doses deja injectees");
+// (iv) Kp/Ti doivent rester ordonnés (slow plus lent que fast) — une inversion
+// ferait qu'accélérer la régulation la ralentirait.
+static_assert(kPhKpSlow < kPhKpNormal && kPhKpNormal < kPhKpFast,
+              "Kp pH non monotones avec la vitesse de regulation");
+static_assert(kPhIntegralTiFastS < kPhIntegralTiNormalS &&
+                  kPhIntegralTiNormalS < kPhIntegralTiSlowS,
+              "Ti pH non monotones avec la vitesse de regulation");
+// (v) La marge du reset sec doit rester au-dessus du bruit résiduel du filtre
+// (~0,05 pH) et sous la marge de sécurité basse : un reset qui mord avant la
+// garde de plancher effacerait l'intégrale en fonctionnement nominal (défaut C2).
+static_assert(kPhIntegralResetMargin >= 0.05f &&
+                  kPhIntegralResetMargin < kPhSafetyMargin,
+              "Marge de reset d'integrale sous le bruit du filtre (defaut C2 "
+              "reproduit) ou au-dela de la marge de securite basse");
+// (vi) Le gel sur quota doit laisser une réserve avant la limite dure.
+static_assert(kPhIntegralFreezeDailyFraction > 0.5f &&
+                  kPhIntegralFreezeDailyFraction < 1.0f,
+              "Fraction de gel sur quota journalier hors de [0,5 ; 1,0[");
+// (vii) Les paliers d'alerte doivent être ordonnés et le seuil de saturation
+// rester sous 100 % (sinon jamais atteint en flottant).
+static_assert(kPhIntegralSaturationPct > 50.0f && kPhIntegralSaturationPct < 100.0f,
+              "Seuil de saturation d'integrale hors de ]50 ; 100[ %");
+static_assert(kPhIntegralSaturationWarnMs < kPhIntegralSaturationCriticalMs,
+              "Palier warning de saturation d'integrale au-dela du palier critical");
+// (vii bis) L'hystérésis d'alerte doit RELÂCHER franchement sous le seuil
+// d'entrée : sans bande, une demande oscillante réarmerait le rappel sans fin.
+static_assert(kPhIntegralSaturationClearPct > 50.0f &&
+                  kPhIntegralSaturationClearPct < kPhIntegralSaturationPct,
+              "Seuil de sortie de saturation hors de ]50 % ; seuil d'entree[");
+// (vii ter) Le RAPPEL ne doit jamais devancer le premier critical, sinon la
+// première émission ré-armerait immédiatement la suivante (rafale d'alertes).
+static_assert(kPhIntegralSaturationReminderMs >= kPhIntegralSaturationCriticalMs,
+              "Rappel de critical plus court que le palier qui le declenche");
+// (vii quater) Cadence d'intégration : le quantum doit tenir dans le dt maximal
+// crédité (sinon aucun quantum ne serait jamais complété en un tick), et le dt
+// maximal rester du même ordre que la garde de computePID (10 s).
+static_assert(kPhIntegralChargeQuantumMs > 0UL &&
+                  kPhIntegralChargeQuantumMs <= kPhIntegralMaxTickDtMs,
+              "Quantum de charge d'integrale superieur au dt maximal credite");
+static_assert(kPhIntegralMaxTickDtMs >= 1000UL && kPhIntegralMaxTickDtMs <= 60000UL,
+              "dt maximal credite a l'integrale hors de [1 s ; 60 s]");
+// (viii) L'oubli doit être franc devant la constante d'intégration la plus rapide
+// (sinon il concurrencerait la charge) et jamais plus rapide que l'homogénéisation
+// du bassin (sinon il oublierait une dose encore « en vol »).
+static_assert(kPhIntegralDecayHalfLifeMs * 4.0f <= kPhIntegralTiFastS * 1000.0f &&
+                  kPhIntegralDecayHalfLifeMs >= kPhMixingDelayMs,
+              "Demi-vie d'oubli de l'integrale pH incompatible avec Ti ou plus "
+              "rapide que la pause melange");
+// (ix) LE facteur d'oubli répété DOIT redonner la demi-vie annoncée. Sans ce
+// verrou, un pas ou un facteur retouché isolément produirait un oubli
+// silencieusement faux (trop lent = windup entretenu, trop rapide = charge
+// d'équilibre perdue à chaque bruit sous consigne). Élévation à la puissance
+// `constexpr` récursive : évaluée par le compilateur, aucun coût à l'exécution.
+constexpr float constexprPowf(float base, unsigned int exponent) {
+  return exponent == 0u ? 1.0f : base * constexprPowf(base, exponent - 1u);
+}
+static_assert(kPhIntegralDecayHalfLifeMs % kPhIntegralDecayStepMs == 0,
+              "La demi-vie d'oubli doit etre un multiple entier du pas");
+static_assert(
+    constexprPowf(kPhIntegralDecayStepFactor,
+                  (unsigned int)(kPhIntegralDecayHalfLifeMs / kPhIntegralDecayStepMs)) > 0.499f &&
+        constexprPowf(kPhIntegralDecayStepFactor,
+                      (unsigned int)(kPhIntegralDecayHalfLifeMs / kPhIntegralDecayStepMs)) < 0.501f,
+              "Facteur d'oubli incoherent avec la demi-vie annoncee : le pas "
+              "repete ne divise pas l'integrale par deux en une demi-vie");
+static_assert(kPhIntegralDecayStepFactor > 0.0f && kPhIntegralDecayStepFactor < 1.0f,
+              "Facteur d'oubli hors de ]0 ; 1[ : l'integrale ne decroitrait pas");
+static_assert(kPhIntegralDecayMaxSteps >=
+                  8 * (kPhIntegralDecayHalfLifeMs / kPhIntegralDecayStepMs),
+              "Rattrapage d'oubli borne a moins de 8 demi-vies : un residu "
+              "significatif pourrait survivre a une longue excursion");
+
+// ============================================================================
 // SENSOR FROZEN DETECTION — Détection capteur figé (feature-022 Passe 2)
 // ============================================================================
 // Un module EZO peut répondre sans erreur I²C mais retourner indéfiniment la
@@ -931,20 +1218,85 @@ constexpr uint32_t kExternalFiltrationStaleMs = 180000UL;  // 3 min — fraîche
 // Période fixe du train d'impulsions (condition B3 : période FIXE).
 constexpr uint32_t kPulsePeriodMs = 60000;   // 1 min — période d'impulsion
 // Pouls minimal (condition B3 : ≥ 5 s). Sous ce pouls, le débit n'est pas
-// reproductible (transitoires de démarrage dominants) → REFUS (seuil C).
-constexpr uint32_t kPulseMinMs = 5000;       // 5 s — pouls minimal
+// reproductible (transitoires de démarrage dominants).
+//
+// v2.25.3 : 5 s → 10 s (gate GO sous conditions du 28/08/2026). Motif : la
+// régulation pH ne converge pas — 968 mL comptés en une journée sans effet
+// mesurable sur le pH (7,50 pour une consigne à 7,30), alors que le besoin
+// calculé est de 800-900 mL pour ΔpH 0,2 sur 40 m³ (composition du produit ET
+// dosage constructeur concordants). Hypothèse : la PERTE FIXE par démarrage
+// (relaxation puis ré-occlusion du tube, reprise d'amorçage — 0,1 à 0,5 mL sur
+// une pompe dont un tour vaut 1-2 mL) fait que le volume réellement injecté est
+// très inférieur au volume compté. Toutes les injections étant au pouls
+// minimal, l'erreur porte sur 100 % du volume.
+//
+// Doubler le pouls **n'augmente PAS la dose demandée** : planPulseWithCarry
+// accumule `meanFlow × period` et retire exactement V_pouls au tir, donc la
+// moyenne restituée est indépendante de cette constante (vérifié par le gate
+// dans pulse_dosing_logic.cpp:56-99). Ce qui change est le RENDEMENT : moins de
+// démarrages pour le même volume, donc la perte fixe est amortie sur davantage
+// de volume utile.
+// Facteur MESURÉ en test natif (600 min à demande 1,76 mL/min) : 427 → 228 tirs,
+// soit **×1,87** et non ×2 — le kick n'étant compté qu'une fois par pouls, la
+// perte fixe est amortie de **47 %**, pas de 50 %.
+// Effet SECONDAIRE favorable, trouvé en test : dans la bande de demande
+// 2,15-4,29 mL/min, le régime proportionnel DIRECT sur-restituait 0,32 mL par
+// période (kick crédité au majorant de flotte 74), écart NON borné par V_pouls
+// — contrairement au régime accumulateur, qui est exact. Doubler le pouls
+// ramène cette bande dans le régime accumulateur et supprime donc ce surplus.
+// Conséquences chiffrées (ampFlow mesuré 25,75 mL/min) : V_pouls 2,47 → 4,61 mL,
+// seuil de bascule vers le régime proportionnel direct 2,15 → 4,29 mL/min de
+// demande, une impulsion toutes les ~2,7 min au lieu de ~1,4 min à demande
+// 1,76 mL/min. Bolus unitaire 4,6 mL = 32 méq : ΔpH < 0,002 même sur 15 m³,
+// négligeable jusqu'à ~5 m³ (réserve : spa < 2 m³, hors périmètre flotte).
+//
+// ⚠️ DETTE ASSUMÉE (condition n°1 du gate) : le compteur reste FAUX. En divisant
+// les démarrages par deux à volume COMPTÉ constant, on augmente le volume RÉEL
+// délivré sous le même plafond journalier — la limite devient légèrement moins
+// conservatrice (quelques dizaines de mL/jour si la perte vaut ~0,5 mL). Cet
+// allongement ATTÉNUE le défaut, il ne le corrige pas : la mesure de la perte
+// fixe (24 pouls de 5 s contre 12 de 10 s, à temps de pompe égal) reste due, et
+// le modèle de comptage devra être corrigé ensuite. Voir feature-078.
+constexpr uint32_t kPulseMinMs = 10000;      // 10 s — pouls minimal
 // Kick de décollage : pleine puissance (duty 255) en tête de chaque pouls pour
 // vaincre le couple de démarrage à froid (symptôme terrain : rotation entretenue
 // OK à duty 82 mais NON-démarrage au même duty). Volume du kick comptabilisé au
-// débit mesuré à 255 (kPumpNFlow255MlPerMin).
+// débit majorant de flotte à 255 (kPumpFlow255MlPerMin).
 constexpr uint32_t kPulseKickMs = 400;       // 0,4 s — durée du kick à 255
-// Débits MESURÉS à duty 255 (pesées du 2026-08-23 : 61 g / 60 s pompe 1,
-// 67 g / 60 s pompe 2 — même modèle, +10 % d'écart tube, d'où la calibration
-// PAR pompe). Servent au crédit du kick ET de MAJORANT pour le mode manuel
-// ?duty=N (P4 : jamais créditer zéro sur une pompe alimentée — surestimer est
-// fail-safe).
-constexpr float kPump1Flow255MlPerMin = 61.0f;  // Pompe 1 (pH) — pesé à 255
-constexpr float kPump2Flow255MlPerMin = 67.0f;  // Pompe 2 (ORP) — pesé à 255
+// Débit MAJORANT de FLOTTE à duty 255 (v2.25.2 — fusion des deux anciennes
+// constantes kPump1Flow255MlPerMin = 61,0 / kPump2Flow255MlPerMin = 67,0).
+// Trois usages, tous dans le MÊME sens : crédit du kick de chaque impulsion,
+// majorant du mode manuel ?duty=N (P4 : jamais créditer zéro sur une pompe
+// alimentée) et durée d'une injection volumée sur le chemin DÉGRADÉ (pompe non
+// calibrée). Surestimer ne sur-injecte jamais — les limites mordent plus tôt.
+//
+// POURQUOI UNE SEULE VALEUR : les 61,0 / 67,0 étaient des mesures d'UN SEUL
+// exemplaire chacune, figées en dur sur un index PHYSIQUE de pompe. Attribuer
+// la mesure d'un exemplaire à un index n'a aucun sens sur une flotte : un
+// appareil dont la pompe 1 ressemblerait à l'exemplaire « 67 » se serait
+// sous-crédité de 11 % — il aurait injecté plus que ses limites ne le croyaient.
+//
+// POURQUOI 74,0 — même raisonnement que kPumpTypePulseFlowMlPerMin (28,0) :
+// **max réellement mesuré 68,0 + 8 % de dispersion inter-unités**. 70,0 a été
+// écarté : +3 % de marge alors que l'écart DÉJÀ CONSTATÉ entre deux exemplaires
+// du même lot est de 11 % — une marge inférieure à la dispersion observée est
+// statistiquement nulle.
+//
+// La précision volumée n'est PAS achetée contre cette garde : le chemin exact
+// (ampDuty == calDuty ⇒ débit PESÉ par l'utilisateur) existe déjà ; le chemin
+// 255 est un repli dégradé.
+constexpr float kPumpFlow255MlPerMin = 74.0f;
+// Maximum RÉELLEMENT mesuré à duty 255 (banc du 2026-08-23 : 61,0 g/60 s sur
+// l'exemplaire 1, 68,0 g/60 s sur l'exemplaire 2 — la constante historique
+// portait 67,0, sous-estimation corrigée ici). N'intervient dans aucun calcul :
+// verrou du static_assert ci-dessous, pour qu'une future « simplification » du
+// majorant sous le max mesuré ne compile plus. Mettre à jour SEULEMENT sur une
+// nouvelle mesure d'exemplaire.
+constexpr float kPumpFlow255MeasuredMaxMlPerMin = 68.0f;
+static_assert(kPumpFlow255MlPerMin >= kPumpFlow255MeasuredMaxMlPerMin,
+              "Majorant a 255 sous le maximum mesure : le firmware "
+              "sous-crediterait le kick et les injections manuelles — les "
+              "limites de dosage mordraient TROP TARD");
 // Plancher de l'amplitude en % (UI/config) : 40 % × 255 ≈ 102 counts, cohérent
 // avec MIN_ACTIVE_DUTY = 98 (Dmin mesuré 82 + 16 counts de marge P2).
 constexpr uint8_t kPumpAmpMinPct = 40;
@@ -955,15 +1307,46 @@ constexpr float kPulseFlowMaxMlPerMin = 200.0f;
 // (ml/min) au duty de type kPumpTypeCalDuty (= 127, amplitude 50 %). Contexte
 // flotte : tous les exemplaires embarquent le MÊME modèle de pompe péristaltique,
 // un appareil neuf doit doser dès le premier flash sans pesée individuelle.
-// Mesures de référence du 2026-08-23 (unité de référence) :
+// Mesures de référence du 2026-08-23 (unité de référence, interpolations) :
 //   - Pompe 1 : 12,0 ml/min @82 et 61,0 ml/min @255 → interpolation 24,7 @127 ;
-//   - Pompe 2 : 67,0 ml/min @255 → ~27,2 @127 (échelle 67/61) ;
-//   - Dispersion inter-unités constatée : ±10 % (61 vs 67 à 255, même modèle).
-// 28.0 est AU-DESSUS des deux interpolations : biais SÛR — surestimer le débit
-// ⇒ la pompe tourne MOINS longtemps (sous-dosage) ET les compteurs journaliers
-// créditent PLUS que le volume réel (sur-comptage, les limites mordent plus tôt).
-// À remplacer par la pesée de type à 127 (unité de référence) quand disponible.
+//   - Pompe 2 : 68,0 ml/min @255 → ~27,2 @127 (échelle relevée à l'époque sur
+//     67, valeur corrigée en v2.25.2 : la mesure de l'utilisateur est 68,0) ;
+//   - Dispersion inter-unités constatée : ±11 % (61 vs 68 à 255, même modèle).
+//
+// MESURES RÉELLES du 2026-08-28 (assistant feature-075, 120 s à duty 127,
+// volume lu en éprouvette — elles REMPLACENT les interpolations ci-dessus comme
+// référence) : **pompe 1 = 26,0 ml/min, pompe 2 = 25,5 ml/min**. Les
+// interpolations étaient donc bonnes à 4-7 % près.
+//
+// POURQUOI 28,0 ET NON 26,0 (le maximum mesuré) — arbitrage gate du 28/08 :
+// le débit configuré agit DEUX FOIS DANS LE MÊME SENS — il fixe la durée du
+// pouls (débit élevé ⇒ pompe ON moins longtemps ⇒ sous-dosage) ET le crédit des
+// compteurs (débit élevé ⇒ sur-comptage ⇒ les limites mordent plus tôt).
+// Surestimer est donc doublement fail-safe ; SOUS-estimer casse les deux
+// protections à la fois.
+// 26,0 est le max de n = 2 exemplaires du MÊME LOT, marge nulle : ce n'est pas
+// une statistique de flotte. Sur péristaltique à duty 127 (zone non linéaire :
+// frottement balais, tension d'alim, couple de démarrage) la dispersion attendue
+// est de ±10-15 %, et un tube NEUF débite plus qu'un tube rodé (ovalisation).
+// Le fait que les deux pompes diffèrent de 10 % @255 mais de 2 % @127 ne
+// rassure pas : il prouve que le rapport de débit n'est PAS transposable d'un
+// point de fonctionnement à l'autre — la queue de distribution est inconnue.
+// 28,0 = **max mesuré 26,0 + 8 % de dispersion inter-unités**. Justification
+// désormais adossée à une MESURE, non plus à une interpolation.
+// Coût assumé : un appareil neuf sous-dose de ~8 % jusqu'à sa propre mesure.
+// En boucle fermée cela ne crée aucun biais permanent, seulement une
+// convergence plus lente — on n'affaiblit pas un filet de sécurité pour
+// compenser un défaut de réglage.
 constexpr float kPumpTypePulseFlowMlPerMin = 28.0f;
+// Maximum RÉELLEMENT mesuré à duty 127 sur les unités de référence (28/08/2026).
+// N'intervient dans aucun calcul : sert de verrou au static_assert ci-dessous,
+// pour qu'une future « simplification » du défaut d'usine sous le max mesuré ne
+// compile plus. Mettre à jour SEULEMENT sur une nouvelle mesure d'exemplaire.
+constexpr float kPumpTypeFlowMeasuredMaxMlPerMin = 26.0f;
+static_assert(kPumpTypePulseFlowMlPerMin >= kPumpTypeFlowMeasuredMaxMlPerMin,
+              "Debit d'usine sous le maximum mesure : le firmware sous-compterait "
+              "et sous-estimerait la duree de pouls — les deux protections tombent "
+              "ensemble sur un appareil neuf jamais mesure");
 // Throttle des logs de refus de l'ordonnanceur d'impulsions : critical « pompe
 // non caractérisée / amplitude sous plancher » (état de config persistant) et
 // info « consigne sous le pouls minimal » (deadband normal). 30 min : visible
@@ -976,7 +1359,7 @@ constexpr unsigned long kPulseRefusalLogIntervalMs = 1800000UL;  // 30 min
 // dépend jamais du navigateur) + suspension du dosage auto pendant l'assistant.
 // ---------------------------------------------------------------------------
 // Purge des tuyaux à l'eau claire : à duty 255 IMPÉRATIVEMENT — c'est le SEUL
-// duty dont le débit est connu d'usine (kPumpNFlow255MlPerMin), donc le seul
+// duty dont le débit est connu d'usine (kPumpFlow255MlPerMin), donc le seul
 // permettant de borner le volume de produit résiduel poussé au bassin.
 constexpr uint32_t kFlowAssistPurgeDurationS = 60;       // 60 s — purge à duty 255
 // Marche de mesure à l'amplitude EXACTE d'exploitation : 120 s (et non 60 s)
@@ -1035,6 +1418,86 @@ constexpr uint16_t kDosingNoFlowWarnStreak = 5;
 // passage pool-chemistry.
 constexpr unsigned int kCyclesPerDayMin = 10;  // plancher : en dessous, la garde bloque un régime d'entretien sain
 constexpr unsigned int kCyclesPerDayMax = 60;  // plafond : sous la cadence physique ~70/j imposée par la pause mélange
+
+// ============================================================================
+// PLAFOND DE SESSION DE DOSAGE pH (v2.26.0 — condition bloquante pool-chemistry)
+// ============================================================================
+// POURQUOI CES DEUX CONSTANTES EXISTENT
+// -------------------------------------
+// La pause mélange (kPhMixingDelayMs) n'est armée qu'à la FIN d'une session de
+// dosage. Depuis l'alignement de la bande morte sur l'hystérésis (la bande vaut
+// phStopThreshold dès que la session est ouverte), le correcteur PI se parque
+// exactement au point où l'hystérésis coupe — `consigne + phStopThreshold` — et
+// l'erreur ne repasse donc JAMAIS franchement sous le seuil d'arrêt. Conséquence
+// mesurée en boucle fermée : la session ne se referme plus, notifyPhDose() n'est
+// plus jamais appelé, la pause mélange CESSE D'EXISTER et l'appareil dose en
+// continu sur une eau dont l'homogénéisation n'est plus jamais attendue.
+//
+// L'alignement lui-même est nécessaire (sans lui l'intégrale remonte à 100 % du
+// plafond, le point fixe étant inatteignable) : on ne revient donc pas dessus, on
+// referme son effet de bord par un PLAFOND DE SESSION explicite.
+//
+// DEUX CRITÈRES, PAS UN — ils ne bornent pas la même chose :
+//
+//   * kPhSessionMaxOnMs (temps POMPE-ON cumulé) borne le VOLUME injecté entre
+//     deux homogénéisations. C'est le critère CHIMIQUE : à l'amplitude calibrée
+//     (~26 mL/min mesurés au banc), 60 min de pompe-ON valent ~1,5 L d'acide,
+//     soit l'ordre de grandeur d'une descente complète de pH sur un bassin de
+//     30-50 m³ — au-delà, continuer sans re-regarder l'eau serait doser à
+//     l'aveugle. Il se déclenche d'autant plus vite que la correction est
+//     agressive, ce qui est exactement le comportement voulu.
+//
+//   * kPhSessionMaxWallMs (durée MURALE de session) borne la PÉREMPTION de
+//     l'hypothèse d'homogénéité. En régime établi la pompe ne tourne qu'environ
+//     10 % du temps : le critère pompe-ON seul ne se déclencherait qu'au bout de
+//     ~10 h. Ce second critère garantit qu'une pause mélange a lieu au moins
+//     toutes les 3 h, quelle que soit la demande.
+//
+// DIMENSIONNEMENT — la contrainte dure est de NE PAS hacher les sessions ni de
+// saturer le quota `maxCyclesPerDay` (défaut 24, plancher configurable 10) :
+//   - pire cas (pompe en permanence) : une session dure kPhSessionMaxOnMs et est
+//     suivie de kPhMixingDelayMs ⇒ 24 h / 75 min = 19 démarrages/jour < 24 ;
+//   - régime établi (~10 % de marche) : c'est le critère mural qui tranche ⇒
+//     24 h / (3 h + 15 min) ≈ 7 démarrages/jour, très en deçà du plancher de 10.
+// La pause mélange coûte au plus 15 min / 3 h 15, soit 7,7 % du temps de dosage :
+// l'excursion de pH pendant la pause (~0,09 pH à la charge mesurée) reste sous le
+// seuil de DÉMARRAGE + sa marge, donc la reprise est immédiate et sans à-coup.
+constexpr unsigned long kPhSessionMaxOnMs   = 3600000UL;   // 60 min de POMPE-ON cumulé
+constexpr unsigned long kPhSessionMaxWallMs = 10800000UL;  // 3 h de session (temps mural)
+
+// Le critère mural ne doit jamais couper une session AVANT le critère pompe-ON
+// (sinon le second serait décoratif) : à 100 % de marche ils coïncideraient.
+static_assert(kPhSessionMaxOnMs <= kPhSessionMaxWallMs,
+              "Plafond pompe-ON > plafond mural : le critère chimique deviendrait inatteignable");
+// Le plafond doit rester très au-dessus du temps minimum d'injection configurable
+// (défaut 30 s, cf. pumpProtection.minInjectionTimeMs) : sans cette marge, le
+// plafond et la garde de temps minimum se contrediraient à chaque session.
+static_assert(kPhSessionMaxOnMs >= 600000UL,
+              "Plafond de session pompe-ON trop bas : conflit avec minInjectionTimeMs");
+// Cadence pire cas (pompe en continu) : le plafond ne doit pas à lui seul épuiser
+// le quota de démarrages journaliers, sinon il fermerait la régulation pour la
+// journée — l'exact opposé du but recherché.
+//
+// LIMITE CONNUE (revue v2.26.0), volontairement NON corrigée ici : la borne 24
+// est le quota par DÉFAUT (`maxCyclesPerDay`), alors que la plage configurable
+// descend jusqu'à `kCyclesPerDayMin` = 10. Cadence pire cas réelle : 86 400 000 /
+// (60 min + 15 min) = **19 démarrages/jour**. Un utilisateur qui configurerait
+// 10 cycles/jour ET soutiendrait une correction en continu pourrait donc voir le
+// plafond de session épuiser son quota.
+// Pourquoi ne pas simplement comparer à `kCyclesPerDayMin` : l'assertion
+// échouerait (19 > 10). La rendre vraie exigerait de porter `kPhSessionMaxOnMs`
+// au-delà de **129 min** de pompe-ON, soit ~3,2 L injectés entre deux
+// homogénéisations — ce qui contredirait le critère chimique que ce plafond
+// existe précisément pour faire respecter. L'arbitrage (allonger le plafond,
+// relever le plancher de quota, ou assumer le cas) relève de `pool-chemistry`,
+// pas d'un ajustement d'assertion. Le régime nominal reste très en deçà :
+// 6,4 démarrages/jour mesurés en simulation.
+static_assert(86400000UL / (kPhSessionMaxOnMs + kPhMixingDelayMs) < 24UL,
+              "Plafond de session trop court : le quota cycles/jour serait sature");
+// Cadence en régime établi : au moins 8 sessions de large devant la pause mélange,
+// pour que la pause reste marginale devant le temps de dosage.
+static_assert(kPhSessionMaxWallMs >= 8UL * kPhMixingDelayMs,
+              "Session murale trop courte devant la pause mélange (hachage des sessions)");
 
 // Répartition du volume quotidien du mode "scheduled" (feature-011).
 // Le volume restant est réparti uniformément par fenêtres de 15 min sur

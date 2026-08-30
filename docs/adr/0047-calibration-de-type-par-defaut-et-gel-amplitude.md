@@ -1,6 +1,6 @@
 # ADR-0047 — Calibration de type par défaut pour la flotte + gel de l'amplitude d'impulsion (amende le fail-closed « pesée obligatoire » de l'ADR-0043)
 
-- **Statut** : Accepté
+- **Statut** : Accepté — **valeurs d'usine amendées par [ADR-0050](0050-debit-pleine-puissance-constante-unique-de-flotte.md)** (2026-08-28, v2.25.2) : les débits à duty 255 deviennent une **constante unique de flotte** `kPumpFlow255MlPerMin = 74,0` (fin du dispatch par index physique), et la justification de `kPumpTypePulseFlowMlPerMin = 28,0` quitte l'interpolation pour la **mesure réelle** (max mesuré 26,0 + 8 % de dispersion). Le reste de la décision (sémantique NVS, drapeaux `weighed`, gel de l'amplitude, `kPumpTypeCalDuty`) est inchangé.
 - **Date** : 2026-08-24
 - **Décideurs** : gate `pool-chemistry` (GO amont sous conditions C1-C5 + GO en
   contre-visite, 2026-08-24), architect, utilisateur (contexte produit)

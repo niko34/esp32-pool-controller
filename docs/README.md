@@ -87,7 +87,10 @@ docs/
 │   ├── 0046-accumulateur-demande-sous-pouls-minimal.md
 │   ├── 0047-calibration-de-type-par-defaut-et-gel-amplitude.md
 │   ├── 0048-seuils-ph-fixes-derives-de-la-plage-de-consigne.md
-│   └── 0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md
+│   ├── 0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md
+│   ├── 0050-debit-pleine-puissance-constante-unique-de-flotte.md
+│   ├── 0051-pouls-minimal-double-rendement-avant-comptage.md
+│   └── 0052-terme-integral-ph-dimensionne-par-autorite.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

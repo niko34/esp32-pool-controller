@@ -166,6 +166,22 @@ safePublishDedup(17, topics.orpFilterStuckState.c_str(), sensors.isOrpFilterNotR
 - Déduplication ⇒ un seul message par bascule, première publication forcée après connexion. Retain ⇒ HA retrouve l'état après reboot.
 - Deux familles d'alertes JSON accompagnent ces états sur `{base}/alerts` : `ph/orp_filter_not_ready` (pose + répétition 30 min, émise par `SensorManager`) et `ph/orp_filter_rearm_denied` (refus de ré-amorçage, une fois par épisode). Voir [`sensors.md`](sensors.md#alarme--filtre-non-prêt-durablement--v2203) et [`docs/MQTT.md`](../MQTT.md#topics-et-entités-ajoutés-en-v2203-filtre-de-mesure-bloqué).
 
+### États du terme intégral pH `ph_integral*` (v2.26.0)
+
+Trois topics **retain**, publiés depuis `publishAllStatesInternal()` via `safePublishDedup()` sur les **slots 18, 19 et 20** — `kDedupCacheSlots` passe de 18 à **21** :
+
+```cpp
+if (!isnan(phInt))    safePublishDedup(18, topics.phIntegralState.c_str(),     String(phInt, 1));
+if (!isnan(phIntTrm)) safePublishDedup(19, topics.phIntegralTermState.c_str(), String(phIntTrm, 3));
+if (!isnan(phIntPct)) safePublishDedup(20, topics.phIntegralPctState.c_str(),  String(phIntPct, 1));
+```
+
+- Membres de topic : `MqttTopics::phIntegralState` / `phIntegralTermState` / `phIntegralPctState`, construits dans `refreshTopics()` (`base + "/ph_integral"`, `…_term`, `…_pct`). Les noms de sous-topics sont **alignés sur les champs `/data` et WebSocket** : une même grandeur porte le même nom sur les trois transports.
+- Source : accesseurs **lecture seule** `PumpController.getPhIntegral()` / `getPhIntegralTerm()` / `getPhIntegralPct()` — sans I²C ni mutex. Toute la logique est côté [`ph_integral_logic`](pump-controller.md#terme-intégral-ph--levée-de-ki--0-v2260) ; `mqtt_manager` ne fait que refléter.
+- **`NaN` ⇒ aucune publication** (`Ki` nul, PID non initialisé) : le retain précédent reste valable. On ne fabrique jamais un `0` qui se lirait « intégrale vide ».
+- Déduplication : l'intégrale est **figée hors dosage** (aucune erreur intégrée), la dédup supprime donc la quasi-totalité du trafic de ces trois topics pendant les heures d'arrêt.
+- Alerte associée : `ph_integral_saturated` (deux paliers, rappel 12 h) — voir [`docs/MQTT.md`](../MQTT.md#alertes).
+
 ### Alerte `pump_unusable` re-publiée à chaque connexion (feature-064, v2.16.0)
 
 Hook dans `connectInTask()` ([`mqtt_manager.cpp:432`](../../src/mqtt_manager.cpp:432)), **branche connectée uniquement**, juste après `publishDiagnosticInternal()` : pour chaque pompe (0 = pH, 1 = ORP/chlore), si `PumpController.isPumpUsable(i)` retourne `false` (flag fail-closed `pumpUsable[]` posé au boot sur échec `ledcAttachChannel` — **core 3 uniquement**, feature-063), une alerte `publishAlert("pump_unusable", ...)` est émise avec pompe / rôle / GPIO / canal LEDC en français.
@@ -181,7 +197,7 @@ Format du message et exemple : voir [`docs/MQTT.md`](../MQTT.md#alertes).
 
 ## Auto-discovery Home Assistant
 
-`publishDiscovery()` publie les messages `retain=true` sur `homeassistant/.../config` pour déclarer automatiquement les entités (17 à l'origine, **48 à ce jour** au fil des features — dont les 2 `binary_sensor` `device_class: problem` « Filtre pH/ORP Bloqué » ajoutés en v2.20.3, le `select` « Mode d'installation » et le `switch` optimiste « Signal filtration externe » de feature-056 v2.19.0, les 2 `select` de mode de régulation pH/ORP ajoutés en feature-009 v2.7.0, les 2 `binary_sensor` `device_class: problem` « Capteur pH/ORP — problème » ajoutés en feature-022 v2.10.0, les 5 entités feature-050 v2.14.0 : 2 `sensor` cumuls journaliers, 2 `number` volumes quotidiens, 1 `button` « Redémarrer », les 2 `text` éditables « Filtration début » / « Filtration fin » de feature-051 v2.16.0, et les 3 entités feature-052 v2.17.0 : 1 `select` « Mode Éclairage » (Programmation/Désactivé — `switch` à l'origine, migré en `select` en bug-ha-eclairage-select v2.17.2, avec publication d'un config vide sur l'ancien topic `switch/{id}_lighting_schedule` pour retirer l'orphelin) + 2 `text` « Éclairage début » / « Éclairage fin »). **Exécutée uniquement depuis `mqttTask`** lors d'une connexion réussie (lambda interne, pas appelable de l'extérieur). Publié **une seule fois** par session (`discoveryPublished` guard).
+`publishDiscovery()` publie les messages `retain=true` sur `homeassistant/.../config` pour déclarer automatiquement les entités (17 à l'origine, **52 à ce jour** au fil des features — dont les 3 `sensor` du **terme intégral pH** ajoutés en v2.26.0 ([ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) : « Piscine pH Rattrapage » en tête, « … Rattrapage Débit » et « … Intégrale » en `entity_category: diagnostic`), les 2 `binary_sensor` `device_class: problem` « Filtre pH/ORP Bloqué » ajoutés en v2.20.3, le `select` « Mode d'installation » et le `switch` optimiste « Signal filtration externe » de feature-056 v2.19.0, les 2 `select` de mode de régulation pH/ORP ajoutés en feature-009 v2.7.0, les 2 `binary_sensor` `device_class: problem` « Capteur pH/ORP — problème » ajoutés en feature-022 v2.10.0, les 5 entités feature-050 v2.14.0 : 2 `sensor` cumuls journaliers, 2 `number` volumes quotidiens, 1 `button` « Redémarrer », les 2 `text` éditables « Filtration début » / « Filtration fin » de feature-051 v2.16.0, et les 3 entités feature-052 v2.17.0 : 1 `select` « Mode Éclairage » (Programmation/Désactivé — `switch` à l'origine, migré en `select` en bug-ha-eclairage-select v2.17.2, avec publication d'un config vide sur l'ancien topic `switch/{id}_lighting_schedule` pour retirer l'orphelin) + 2 `text` « Éclairage début » / « Éclairage fin »). **Exécutée uniquement depuis `mqttTask`** lors d'une connexion réussie (lambda interne, pas appelable de l'extérieur). Publié **une seule fois** par session (`discoveryPublished` guard).
 
 ### Select « Mode Filtration » — templates d'affichage (bug-ha-filtration-mode-labels, v2.15.0)
 

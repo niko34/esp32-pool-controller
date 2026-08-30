@@ -330,11 +330,33 @@ static const float kFloatEps = 1e-3f;
 // --- Config pH de référence (table AC1) --------------------------------------
 //   kp=8.0, ki=kd=0, integralMax=50, deadband=0.05, minFlow=5.2, maxFlow=90,
 //   dtSec=10. Helper : applique computePidPure avec cette config + error/freeze.
+//
+// ⚠️ v2.26.0 — CE N'EST PLUS LA CONFIGURATION DU FIRMWARE pH. `Ki = 0` a été levé
+// sur le pH (kPhKi*, integralMax = kPhIntegralMax*, cf. constants.h « RÉGULATION
+// pH — TERME INTÉGRAL »). Ces tables AC1..AC7 restent VALIDES et sont conservées
+// telles quelles : elles verrouillent le contrat de `computePidPure` pour un
+// correcteur P pur — ce que reste l'ORP (Ki_ORP = 0, hors périmètre du gate) et
+// ce que fait la fonction pour ki = 0. Elles ne couvrent simplement plus la
+// régulation pH de production : le volet PI est ajouté juste après (AC8..AC11),
+// et le comportement en boucle fermée est couvert par test_native_ph_integral.
 static PidResult pidPh(float error, float integralIn, bool freeze) {
   return computePidPure(/*kp*/8.0f, /*ki*/0.0f, /*kd*/0.0f,
                         error, /*prevError*/0.0f, integralIn,
                         /*dtSec*/10.0f, /*integralMax*/50.0f, /*deadband*/0.05f,
                         /*minFlow*/5.2f, /*maxFlow*/90.0f, freeze);
+}
+
+// --- Config pH de PRODUCTION v2.26.0 (vitesse `normal`) ----------------------
+// Constantes IMPORTÉES de constants.h (jamais recopiées) : kp = kPhKpNormal,
+// ki = kPhKiNormal, integralMax = kPhIntegralMaxNormal. Bornes de la coquille
+// (feature-073) : minFlow = 0, maxFlow = débit d'amplitude calibré 24,7 mL/min,
+// deadband = seuil de démarrage 0,05.
+static const float kPhAmpFlow = 24.7f;
+static PidResult pidPhPI(float error, float integralIn, bool freeze) {
+  return computePidPure(kPhKpNormal, kPhKiNormal, /*kd*/0.0f,
+                        error, /*prevError*/0.0f, integralIn,
+                        /*dtSec*/10.0f, kPhIntegralMaxNormal, /*deadband*/0.05f,
+                        /*minFlow*/0.0f, kPhAmpFlow, freeze);
 }
 
 // --- Config ORP de référence (table AC1) -------------------------------------
@@ -497,6 +519,8 @@ void test_AC6_anti_windup(void) {
 // -----------------------------------------------------------------------------
 // AC7 — P-temporisée (ki=kd=0) : output == kp*error (borné) ; l'intégrale
 //        s'accumule mais N'INFLUENCE PAS le flow (ki=0).
+//        ⚠️ v2.26.0 : vaut encore pour l'ORP et pour tout appel à ki = 0 ; le pH
+//        de production n'est PLUS dans ce cas (cf. AC8 ci-dessous).
 // -----------------------------------------------------------------------------
 void test_AC7_p_temporisee(void) {
   // Avec une intégrale entrante énorme, le flow reste piloté par kp*error seul.
@@ -530,6 +554,79 @@ void test_pid_negative_error_zero_flow(void) {
   // (retour avant constrain, le plancher ne s'applique pas).
   r = pidPh(-0.04f, 0.0f, false);
   TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 0.0f, r.flow);
+}
+
+// =============================================================================
+// v2.26.0 — VARIANTE PI (configuration pH RÉELLE du firmware)
+// =============================================================================
+// Double des tables AC1/AC6/AC7 avec les constantes de PRODUCTION. Ce qui change
+// par rapport au P pur : le débit dépend désormais de l'ÉTAT (l'intégrale), le
+// plafond d'accumulation n'est plus 50 pH·s mais kPhIntegralMaxNormal, et le
+// plancher minFlow a disparu (feature-073, servi par l'accumulateur de pouls).
+// Le comportement en boucle fermée (droop, convergence) est couvert par la suite
+// dédiée test_native_ph_integral.
+
+// AC8 — L'intégrale INFLUENCE le débit : c'est l'inverse exact d'AC7. Deux états
+// intégraux différents, même erreur → débits différents.
+void test_AC8_pi_l_integrale_influence_le_flow(void) {
+  float f0 = pidPhPI(0.20f, 0.0f, false).flow;
+  float fCharge = pidPhPI(0.20f, kPhIntegralMaxNormal, false).flow;
+  TEST_ASSERT_TRUE(fCharge > f0);
+  // Débit = kp·error + ki·integral, exactement.
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, kPhKpNormal * 0.20f, f0);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps,
+                           kPhKpNormal * 0.20f + kPhKiNormal * kPhIntegralMaxNormal,
+                           fCharge);
+  // L'apport de l'intégrale PLEINE vaut l'autorité posée : 6 mL/min.
+  TEST_ASSERT_FLOAT_WITHIN(0.06f, kPhIntegralAuthorityMlPerMin, fCharge - f0);
+}
+
+// AC9 — Anti-windup avec les VRAIES bornes : plafond kPhIntegralMaxNormal, clamp
+// symétrique, gel effectif.
+void test_AC9_pi_anti_windup_bornes_de_production(void) {
+  // dt énorme (1 h) et grosse erreur → clamp au plafond de PRODUCTION (16 200),
+  // et surtout PAS à l'ancien 50.
+  PidResult r = computePidPure(kPhKpNormal, kPhKiNormal, 0.0f, 5.0f, 0.0f, 0.0f,
+                               /*dtSec*/3600.0f, kPhIntegralMaxNormal, 0.05f,
+                               0.0f, kPhAmpFlow, false);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, kPhIntegralMaxNormal, r.integral);
+  TEST_ASSERT_TRUE(r.integral > 100.0f);   // le piège des 50 pH·s est bien mort
+  // Symétrie basse.
+  r = computePidPure(kPhKpNormal, kPhKiNormal, 0.0f, -5.0f, 0.0f, 0.0f,
+                     3600.0f, kPhIntegralMaxNormal, 0.05f, 0.0f, kPhAmpFlow, false);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, -kPhIntegralMaxNormal, r.integral);
+  // Gel : aucune accumulation, mais le terme acquis reste servi.
+  r = pidPhPI(1.0f, 8000.0f, /*freeze*/true);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 8000.0f, r.integral);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps,
+                           kPhKpNormal * 1.0f + kPhKiNormal * 8000.0f, r.flow);
+}
+
+// AC10 — La sortie reste bornée par le débit d'amplitude QUELLE QUE SOIT
+// l'intégrale : l'invariant de sécurité que la levée de Ki ne doit pas entamer.
+void test_AC10_pi_flow_jamais_au_dessus_du_debit_d_amplitude(void) {
+  for (float e = -1.0f; e <= 6.0f; e += 0.25f) {
+    for (float integ = -kPhIntegralMaxNormal; integ <= kPhIntegralMaxNormal;
+         integ += kPhIntegralMaxNormal / 4.0f) {
+      PidResult r = pidPhPI(e, integ, false);
+      TEST_ASSERT_TRUE(r.flow <= kPhAmpFlow + kFloatEps);
+      TEST_ASSERT_TRUE(r.flow >= 0.0f);
+      TEST_ASSERT_TRUE(fabsf(r.integral) <= kPhIntegralMaxNormal + kFloatEps);
+    }
+  }
+}
+
+// AC11 — La deadband gèle AUSSI l'intégrale sous PI (retour anticipé) : c'est la
+// propriété qui empêche la bande morte d'alimenter le windup… et, en contrepartie,
+// qui prive l'intégrale de toute décharge tant que l'erreur reste positive
+// (cf. caractérisation dans test_native_ph_integral).
+void test_AC11_pi_deadband_gele_l_integrale(void) {
+  PidResult r = pidPhPI(0.049f, 5000.0f, false);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 0.0f, r.flow);       // aucun débit…
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 5000.0f, r.integral); // …et intégrale intacte
+  // Hors deadband, l'accumulation reprend : += error × dt.
+  r = pidPhPI(0.06f, 5000.0f, false);
+  TEST_ASSERT_FLOAT_WITHIN(kFloatEps, 5000.0f + 0.06f * 10.0f, r.integral);
 }
 
 // =============================================================================
@@ -1649,14 +1746,23 @@ void test_F060_hourly_and_mixing_refusals_precede_guard9(void) {
 // suivant (2 lignes de journal, 2 entrées anti-rafale, budget cycles/jour de
 // moitié). Ces tests verrouillent : UN démarrage réel = UN cycle comptabilisé.
 
-static const float kSimKp = 8.0f;              // Kp pH « normal » (P temporisée)
+// v2.26.0 : la simulation prend les constantes de PRODUCTION (elle modélisait un
+// P pur — `computePidPure(kSimKp, 0.0f, …)` avec un integralMax de 100 inventé —
+// ce qui est devenu FAUX depuis la levée de Ki sur le pH). Elle importe donc
+// désormais kPhKpNormal / kPhKiNormal / kPhIntegralMaxNormal : le séquencement
+// testé ici (comptabilisation d'un cycle) reste inchangé, mais il est vérifié sur
+// le correcteur RÉEL. `kSimKiZero` conserve la variante P pur, encore exacte pour
+// l'ORP et utile en comparaison.
+static const float kSimKp = kPhKpNormal;       // Kp pH « normal »
+static const float kSimKi = kPhKiNormal;       // Ki pH « normal » (v2.26.0)
+static const float kSimKiZero = 0.0f;          // variante P pur (ORP / historique)
 // Itération 2 (bug-dosage-fantome) : bornes du PID alignées sur la production —
 // le modèle linéaire est mort. minFlow = 0 (plus de clamp vers le haut, le
 // seuil C de planPulse joue le deadband bas) ; maxFlow = débit MESURÉ à
 // l'amplitude calibrée (24,7 ml/min interpolé à duty 127, pesée 2026-08-23).
 static const float kSimMinFlow = 0.0f;         // plancher minFlow supprimé
 static const float kSimMaxFlow = 24.7f;        // débit calibré à l'amplitude (127)
-static const float kSimIntegralMax = 100.0f;
+static const float kSimIntegralMax = kPhIntegralMaxNormal;  // plafond de production
 
 struct DosingTickSim {
   bool active;                 // DosingState.active
@@ -1681,7 +1787,9 @@ static void simInit(DosingTickSim& s) {
 }
 
 // Un tour de update() ; renvoie le débit commandé (mL/min, 0 = pompe à l'arrêt).
-static float simTick(DosingTickSim& s, float error, unsigned long nowMs) {
+// `ki` est explicite depuis v2.26.0 : simTick() = configuration pH de production
+// (PI), simTickP() = variante P pur conservée pour l'ORP et la comparaison.
+static float simTickKi(DosingTickSim& s, float error, unsigned long nowMs, float ki) {
   const bool wasActive = s.active;
   const bool shouldDose =
       wasActive ? shouldContinueDosingPure(error, kStopThreshold,
@@ -1701,7 +1809,7 @@ static float simTick(DosingTickSim& s, float error, unsigned long nowMs) {
       if (dt <= 0.0f || dt > 10.0f) {
         s.pidLastTimeMs = nowMs;    // delta aberrant → débit nul (le défaut n°2)
       } else {
-        PidResult r = computePidPure(kSimKp, 0.0f, 0.0f, error, s.pidLastError,
+        PidResult r = computePidPure(kSimKp, ki, 0.0f, error, s.pidLastError,
                                      s.pidIntegral, dt, kSimIntegralMax,
                                      kStartThreshold, kSimMinFlow, kSimMaxFlow,
                                      false);
@@ -1727,6 +1835,17 @@ static float simTick(DosingTickSim& s, float error, unsigned long nowMs) {
   // production ne lit pas (cf. retrait de `latchActive`, revue 2.20.5).
   s.active = (flow > 0.0f);
   return flow;
+}
+
+// Configuration pH de PRODUCTION (PI) — celle qu'utilisent tous les scénarios de
+// comptabilisation ci-dessous depuis v2.26.0.
+static float simTick(DosingTickSim& s, float error, unsigned long nowMs) {
+  return simTickKi(s, error, nowMs, kSimKi);
+}
+
+// Variante P pur (ki = 0) : encore exacte pour l'ORP, conservée pour comparaison.
+static float simTickP(DosingTickSim& s, float error, unsigned long nowMs) {
+  return simTickKi(s, error, nowMs, kSimKiZero);
 }
 
 // Table de vérité de la fonction pure : le comptage suit EXACTEMENT le latch.
@@ -1831,16 +1950,67 @@ void test_BUG2_aborted_start_consumes_no_cycle(void) {
   TEST_ASSERT_EQUAL_INT(0, s.startLogs);
 }
 
+// v2.26.0 — Ce que la levée de Ki change dans CE séquencement : l'intégrale
+// SURVIT d'un cycle à l'autre (rien ne la remet à zéro entre deux sessions de
+// dosage), donc le second cycle démarre avec une autorité déjà acquise. C'est
+// précisément le mécanisme qui résorbe la droop… et celui qu'un futur « reset en
+// fin de cycle » détruirait sans casser aucun autre test.
+void test_BUG2_pi_integrale_survit_entre_deux_cycles(void) {
+  DosingTickSim pi, p;
+  simInit(pi);
+  simInit(p);
+  unsigned long t = 1000000UL;
+  const float errHigh = 0.85f;
+
+  // Cycle 1 identique pour les deux configurations.
+  for (int i = 0; i < 40; ++i) {
+    simTick(pi, errHigh, t);
+    simTickP(p, errHigh, t);
+    t += 1000UL;
+  }
+  // L'intégrale du PI s'est chargée ; celle du P pur aussi (ki=0 ⇒ sans effet).
+  TEST_ASSERT_TRUE(pi.pidIntegral > 0.0f);
+  TEST_ASSERT_EQUAL_UINT(1u, pi.cyclesToday);
+  TEST_ASSERT_EQUAL_UINT(1u, p.cyclesToday);   // comptage INCHANGÉ sous PI
+
+  // Fin de cycle, 29 min d'attente, puis cycle 2.
+  simTick(pi, 0.0f, t);
+  simTickP(p, 0.0f, t);
+  const float integralApresCycle1 = pi.pidIntegral;
+  TEST_ASSERT_TRUE(integralApresCycle1 > 0.0f);  // aucune purge en fin de cycle
+
+  t += 29UL * 60UL * 1000UL;
+  simTick(pi, errHigh, t);                        // dt aberrant → débit nul
+  simTickP(p, errHigh, t);
+  t += 1000UL;
+  const float flowPi = simTick(pi, errHigh, t);
+  const float flowP  = simTickP(p, errHigh, t);
+  TEST_ASSERT_TRUE(flowPi > 0.0f && flowP > 0.0f);
+  // Le PI démarre le cycle 2 plus haut que le P pur : l'écart vaut ki × intégrale.
+  TEST_ASSERT_TRUE(flowPi > flowP);
+  TEST_ASSERT_FLOAT_WITHIN(1e-3f, kPhKiNormal * pi.pidIntegral, flowPi - flowP);
+  // Et le comptage de cycles reste strictement identique dans les deux mondes.
+  TEST_ASSERT_EQUAL_UINT(p.cyclesToday, pi.cyclesToday);
+  TEST_ASSERT_EQUAL_INT(p.ringEntries, pi.ringEntries);
+}
+
 // =============================================================================
 // Itération 2 (bug-dosage-fantome, option B+C) — proportionnel de temps
 // =============================================================================
 // Valeurs de référence : pompe 1 (pH) pesée le 2026-08-23 — 61,0 ml/min à 255 ;
 // hypothèse de recalibration à l'amplitude 127 (50 %) : 24,7 ml/min (interpolé).
-// Constantes prod : période 60 000 ms, pouls min 5 000 ms, kick 400 ms,
-// MIN_ACTIVE_DUTY 98 (Dmin 82 + 16 counts de marge P2).
+// Constantes de SCÉNARIO (pas des miroirs de constants.h) : période 60 000 ms,
+// pouls min 5 000 ms, kick 400 ms, MIN_ACTIVE_DUTY 98 (Dmin 82 + 16 counts P2).
+//
+// ⚠️ kTMinPulseMs = 5 000 est un PARAMÈTRE passé aux fonctions pures, PAS la
+// valeur de production. Depuis v2.25.3, `kPulseMinMs` vaut 10 000 ms : les
+// scénarios à 5 s restent délibérément en place (ils verrouillent le
+// comportement de planPulse / planPulseWithCarry pour un pouls minimal
+// QUELCONQUE), et le réglage de production est couvert par la section
+// « v2.25.3 » en fin de fichier, qui balaye 5 s / 10 s / 20 s.
 
 static const uint32_t kTPeriodMs = 60000;
-static const uint32_t kTMinPulseMs = 5000;
+static const uint32_t kTMinPulseMs = 5000;   // paramètre de scénario (cf. NB)
 static const uint32_t kTKickMs = 400;
 static const uint8_t  kTMinActiveDuty = 98;
 static const uint8_t  kTCalDuty = 127;   // amplitude 50 % = duty calibré
@@ -2006,8 +2176,12 @@ void test_PULSE_periode_complete_on_time_et_volume(void) {
 // =============================================================================
 
 // --- Seuil C : frontière FINE (encadrement à 0,01 mL/min près) ---------------
-// Seuil exact = ampFlow × minPulse / period = 24,7 × 5000 / 60000 = 2,0583 mL/min.
+// Seuil exact = ampFlow × minPulse / period, ici avec le POULS MINIMAL DU
+// SCÉNARIO (kTMinPulseMs = 5 000, cf. NB en tête de section — pas la constante
+// prod) : 24,7 × 5000 / 60000 = 2,0583 mL/min.
 // 2,05 → pouls 4 980 ms < 5 000 → REFUSÉ ; 2,06 → 5 004 ms ≥ 5 000 → ACCEPTÉ.
+// La dérivation du seuil À PARTIR de minPulseMs (donc son doublement à 10 s)
+// est verrouillée par test_V253_seuil_de_bascule_derive_du_pouls_minimal.
 void test_PULSE_plan_seuil_C_frontiere_fine(void) {
   PulsePlan p = planPulse(2.05f, kTAmpFlow, kTPeriodMs, kTMinPulseMs);
   TEST_ASSERT_TRUE(p.refused);
@@ -2356,6 +2530,300 @@ void test_F073_regime_normal_balayage_identique_planPulse(void) {
     TEST_ASSERT_EQUAL_UINT32(base.pulseMs, p.pulseMs);  // bit-identique
     TEST_ASSERT_FALSE(p.carryFired);
     TEST_ASSERT_EQUAL_FLOAT(0.0f, p.carryMl);
+  }
+}
+
+// =============================================================================
+// v2.25.3 — kPulseMinMs 5 s → 10 s : la MOYENNE restituée est INDÉPENDANTE du
+// pouls minimal (seul le rendement physique de l'injection change)
+// =============================================================================
+// C'est L'affirmation sur laquelle repose l'absence de risque de surdosage :
+// planPulseWithCarry accumule `meanFlow × period / 60000` et retire EXACTEMENT
+// V_pouls au tir, donc le volume restitué sur une longue série est égal au
+// volume demandé, à la dette résiduelle près (< 1 × V_pouls), QUEL QUE SOIT
+// minPulseMs. Allonger le pouls ne change que la CADENCE des démarrages.
+//
+// Ce que cette section protège :
+//   1. conservation demandé = restitué + dette, et écart au volume demandé
+//      borné par UN pouls (pas par la longueur de la série) — pour 5 s, 10 s
+//      ET 20 s : si le décrément au tir n'était pas exactement V_pouls, l'erreur
+//      croîtrait avec la série et ces tests tomberaient ;
+//   2. l'invariant de sortie `0 ≤ carryMl < V_pouls` à 10 s sur série longue,
+//      et le reset défensif (pulse_dosing_logic.cpp:86) RECALÉ sur le nouveau
+//      V_pouls — une dette de 2,47 mL (ex-V_pouls à 5 s) est désormais légitime ;
+//   3. le domaine du pouls à 10 s : {0} ∪ {minPulseMs} sous la bascule,
+//      [minPulseMs, periodMs] au-dessus, jamais deux pouls dans une période ;
+//   4. le seuil de bascule DÉRIVÉ de minPulseMs (2,15 → 4,29 mL/min), jamais
+//      un littéral 5000 en miroir de la constante firmware.
+//
+// Valeurs de PRODUCTION du gate pool-chemistry du 28/08/2026 : débit mesuré
+// 25,75 mL/min à l'amplitude calibrée, kick crédité au majorant de flotte
+// `kPumpFlow255MlPerMin` (74 mL/min) → V_pouls 2,47 mL à 5 s, 4,61 mL à 10 s.
+// AUCUNE de ces valeurs n'est écrite en dur dans une assertion : V_pouls est
+// TOUJOURS dérivé de pulseDeltaVolumeMl (décision n°1 du gate feature-073).
+static const float kV253AmpFlow = 25.75f;                // mesuré à l'amplitude calibrée
+static const float kV253Flow255 = kPumpFlow255MlPerMin;  // majorant de flotte (kick)
+
+// V_pouls kick-inclus pour UN pouls minimal donné — LA fonction de référence.
+static float v253VPulseMl(uint32_t minPulseMs) {
+  return pulseDeltaVolumeMl(0u, kTKickMs, 0u, minPulseMs, kV253Flow255, kV253AmpFlow);
+}
+
+// Résultat d'un rejeu de N périodes à demande constante, carry CHAÎNÉ.
+struct V253Run {
+  float deliveredMl;  // Σ des volumes RÉELS des pouls émis (pulseDeltaVolumeMl)
+  float carryEndMl;   // dette encore en attente en fin de série
+  int fires;          // nombre de démarrages de pompe
+};
+
+// Rejeu de N périodes : assert au passage l'invariant de sortie et le domaine
+// du pouls à CHAQUE appel (conditions 2 et 3), et cumule le volume restitué.
+static V253Run v253Replay(float demand, uint32_t minPulseMs, int nPeriods) {
+  V253Run r = {0.0f, 0.0f, 0};
+  const float vP = v253VPulseMl(minPulseMs);
+  float carry = 0.0f;
+  for (int i = 0; i < nPeriods; ++i) {
+    PulseCarryPlan p = planPulseWithCarry(demand, kV253AmpFlow, kV253Flow255,
+                                          kTPeriodMs, minPulseMs, kTKickMs, carry);
+    TEST_ASSERT_FALSE(p.refused);
+    TEST_ASSERT_TRUE(p.carryMl >= 0.0f);
+    TEST_ASSERT_TRUE(p.carryMl < vP);  // invariant de sortie, chaque période
+    if (p.pulseMs > 0u) {
+      ++r.fires;                       // structurellement UN pouls par appel
+      TEST_ASSERT_TRUE(p.pulseMs >= minPulseMs);
+      TEST_ASSERT_TRUE(p.pulseMs <= kTPeriodMs);
+      r.deliveredMl += pulseDeltaVolumeMl(0u, kTKickMs, 0u, p.pulseMs,
+                                          kV253Flow255, kV253AmpFlow);
+    } else {
+      TEST_ASSERT_FALSE(p.carryFired);
+    }
+    carry = p.carryMl;
+  }
+  r.carryEndMl = carry;
+  return r;
+}
+
+// --- (1) LE test du gate : moyenne restituée indépendante de minPulseMs -------
+// Demandes choisies SOUS le plancher aux TROIS réglages (plancher à 5 s =
+// 25,75 × 5000/60000 = 2,146 mL/min) pour comparer le régime d'accumulation à
+// lui-même, et non à un autre régime. Inclut 0,5 mL/min (très faible) et la
+// demande terrain 1,76 mL/min. 1 200 périodes = 20 h de régulation continue.
+void test_V253_moyenne_restituee_independante_du_pouls_minimal(void) {
+  const float demands[] = {0.5f, 1.0f, 1.76f, 2.0f};
+  const uint32_t mins[] = {5000u, 10000u, 20000u};
+  const int nPeriods = 1200;
+  for (float d : demands) {
+    const float totalDemandMl = d * (float)nPeriods;  // periodMs = 1 min
+    float delivered[3] = {0.0f, 0.0f, 0.0f};
+    for (int k = 0; k < 3; ++k) {
+      V253Run r = v253Replay(d, mins[k], nPeriods);
+      delivered[k] = r.deliveredMl;
+      const float vP = v253VPulseMl(mins[k]);
+      // (i) CONSERVATION : tout le volume demandé est soit restitué, soit
+      // encore en dette. Rien n'est perdu (sous-dosage) ni créé (surdosage).
+      // C'est CE point qui rend la moyenne indépendante de minPulseMs.
+      TEST_ASSERT_FLOAT_WITHIN(0.05f, totalDemandMl, r.deliveredMl + r.carryEndMl);
+      // (ii) Écart au volume demandé borné par UN pouls — PAS par la série.
+      // Si le décrément au tir n'était pas exactement V_pouls, l'écart
+      // dériverait proportionnellement à nPeriods et cette borne tomberait.
+      TEST_ASSERT_TRUE(r.deliveredMl <= totalDemandMl + 0.05f);
+      TEST_ASSERT_TRUE(totalDemandMl - r.deliveredMl < vP);
+      TEST_ASSERT_TRUE(r.fires > 0);  // la régulation n'est pas morte
+    }
+    // (iii) Comparaison DIRECTE 5 s ↔ 10 s ↔ 20 s : même volume restitué, à la
+    // dette résiduelle du réglage le plus long près (≤ 1 × V_pouls).
+    TEST_ASSERT_FLOAT_WITHIN(v253VPulseMl(10000u), delivered[0], delivered[1]);
+    TEST_ASSERT_FLOAT_WITHIN(v253VPulseMl(20000u), delivered[0], delivered[2]);
+    TEST_ASSERT_FLOAT_WITHIN(v253VPulseMl(20000u), delivered[1], delivered[2]);
+  }
+}
+
+// --- (1 bis) Demande juste SOUS le nouveau seuil de bascule (4,29 mL/min) -----
+// À 4,25 mL/min, le réglage 10 s bascule dans l'accumulateur alors que le
+// réglage 5 s reste en proportionnel DIRECT. La moyenne restituée doit rester
+// égale à la demande dans les DEUX régimes — c'est le cas le plus sensible car
+// c'est celui où le changement de constante change de régime.
+void test_V253_moyenne_juste_sous_le_nouveau_seuil_de_bascule(void) {
+  const float demand = 4.25f;  // < 4,2917 = 25,75 × 10000/60000
+  const int nPeriods = 600;
+  const float totalDemandMl = demand * (float)nPeriods;
+  // Pré-conditions de régime (dérivées, pas devinées).
+  TEST_ASSERT_FALSE(planPulse(demand, kV253AmpFlow, kTPeriodMs, 5000u).refused);
+  TEST_ASSERT_TRUE(planPulse(demand, kV253AmpFlow, kTPeriodMs, 10000u).refused);
+
+  // Régime accumulateur (10 s) : conservation exacte, écart ≤ 1 × V_pouls.
+  V253Run r10 = v253Replay(demand, 10000u, nPeriods);
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, totalDemandMl, r10.deliveredMl + r10.carryEndMl);
+  TEST_ASSERT_TRUE(totalDemandMl - r10.deliveredMl < v253VPulseMl(10000u));
+
+  // Régime direct (5 s) : le pouls proportionnel est calculé sur le débit de
+  // PLATEAU, alors que le volume réel crédite le kick au majorant de flotte →
+  // léger EXCÉDENT systématique par période (majorant volontaire, P4), borné
+  // ici pour documenter l'écart. Aucun sous-dosage dans l'un ou l'autre régime.
+  V253Run r5 = v253Replay(demand, 5000u, nPeriods);
+  const float kickSurplusPerPeriod =
+      (kV253Flow255 - kV253AmpFlow) * (float)kTKickMs / 60000.0f;
+  TEST_ASSERT_FLOAT_WITHIN(0.5f, totalDemandMl + kickSurplusPerPeriod * (float)nPeriods,
+                           r5.deliveredMl);
+  TEST_ASSERT_TRUE(r5.deliveredMl >= totalDemandMl);
+  // Les deux régimes restituent la demande à ce surplus de kick près : passer
+  // à 10 s ne SUR-dose pas, il retire même l'excédent de kick.
+  TEST_ASSERT_TRUE(r10.deliveredMl <= r5.deliveredMl);
+}
+
+// --- (2) Invariant de sortie à 10 s + reset défensif recalé sur V_pouls -------
+void test_V253_invariant_sortie_et_reset_defensif_recales_sur_10s(void) {
+  const float vP5 = v253VPulseMl(5000u);
+  const float vP10 = v253VPulseMl(10000u);
+  // Le seuil de tir a grossi (pas exactement doublé : le kick n'est compté
+  // qu'une fois par pouls) — dérivé, jamais écrit en dur.
+  TEST_ASSERT_TRUE(vP10 > vP5);
+  TEST_ASSERT_TRUE(vP10 < 2.0f * vP5);
+
+  // Série longue à demandes HÉTÉROGÈNES sous le nouveau seuil de bascule :
+  // l'invariant 0 ≤ carryMl < V_pouls tient à CHAQUE appel (3 000 périodes,
+  // soit ~50 h), et le pouls reste dans son domaine.
+  float carry = 0.0f;
+  for (int i = 0; i < 3000; ++i) {
+    const float demand = 0.05f + 4.20f * (float)(i % 97) / 96.0f;  // 0,05 → 4,25
+    PulseCarryPlan p = planPulseWithCarry(demand, kV253AmpFlow, kV253Flow255,
+                                          kTPeriodMs, 10000u, kTKickMs, carry);
+    TEST_ASSERT_FALSE(p.refused);
+    TEST_ASSERT_TRUE(p.carryMl >= 0.0f);
+    TEST_ASSERT_TRUE(p.carryMl < vP10);
+    TEST_ASSERT_TRUE(p.pulseMs == 0u || p.pulseMs == 10000u);
+    carry = p.carryMl;
+  }
+
+  // Reset défensif (l.86) RECALÉ : une dette de 2,47 mL — exactement l'ancien
+  // V_pouls à 5 s — est LÉGITIME sous le seuil de 10 s. Elle doit SURVIVRE :
+  // la remettre à zéro effacerait un demi-pouls de dette au changement de
+  // réglage, donc sous-doserait.
+  PulseCarryPlan p = planPulseWithCarry(0.5f, kV253AmpFlow, kV253Flow255,
+                                        kTPeriodMs, 10000u, kTKickMs, vP5);
+  TEST_ASSERT_FALSE(p.refused);
+  TEST_ASSERT_FALSE(p.carryFired);                   // vP5 + 0,5 < vP10
+  TEST_ASSERT_EQUAL_FLOAT(vP5 + 0.5f, p.carryMl);    // dette CONSERVÉE
+  // Frontière : une dette ≥ le NOUVEAU V_pouls viole l'invariant d'entrée →
+  // reset à zéro (jamais de rafale de rattrapage).
+  p = planPulseWithCarry(0.5f, kV253AmpFlow, kV253Flow255,
+                         kTPeriodMs, 10000u, kTKickMs, vP10);
+  TEST_ASSERT_FALSE(p.carryFired);
+  TEST_ASSERT_EQUAL_FLOAT(0.5f, p.carryMl);
+  // Juste SOUS le nouveau V_pouls : dette conservée et tir immédiat.
+  p = planPulseWithCarry(0.5f, kV253AmpFlow, kV253Flow255,
+                         kTPeriodMs, 10000u, kTKickMs, vP10 - 0.25f);
+  TEST_ASSERT_TRUE(p.carryFired);
+  TEST_ASSERT_EQUAL_UINT32(10000u, p.pulseMs);
+  TEST_ASSERT_EQUAL_FLOAT((vP10 - 0.25f) + 0.5f - vP10, p.carryMl);
+  TEST_ASSERT_TRUE(p.carryMl < vP10);
+}
+
+// --- (3) Domaine du pouls à 10 s : {0} ∪ {10 000}, et un seul pouls/période ---
+void test_V253_pouls_jamais_hors_domaine_a_10s(void) {
+  const uint32_t minPulseMs = 10000u;
+  const float vP10 = v253VPulseMl(minPulseMs);
+  // Sous la bascule (0,05 → 4,25 mL/min) × dettes d'entrée valides : JAMAIS un
+  // pouls court intermédiaire (1..9 999 ms), qui serait un pouls non
+  // reproductible — exactement ce que la constante est censée interdire.
+  for (int d = 1; d <= 85; ++d) {
+    const float demand = 0.05f * (float)d;
+    for (int c = 0; c <= 9; ++c) {
+      const float carry = vP10 * (float)c / 10.0f;
+      PulseCarryPlan p = planPulseWithCarry(demand, kV253AmpFlow, kV253Flow255,
+                                            kTPeriodMs, minPulseMs, kTKickMs, carry);
+      TEST_ASSERT_FALSE(p.refused);
+      TEST_ASSERT_TRUE(p.pulseMs == 0u || p.pulseMs == minPulseMs);
+      TEST_ASSERT_EQUAL(p.pulseMs == minPulseMs, p.carryFired);
+      TEST_ASSERT_TRUE(p.carryMl < vP10);  // pas de dette de rafale reportée
+    }
+  }
+  // Au-dessus de la bascule (4,30 → 34,3 mL/min) : pouls ∈ [10 000, 60 000],
+  // carry ABANDONNÉ (F2), et un SEUL pouls par appel donc par période.
+  for (int d = 0; d <= 300; ++d) {
+    const float demand = 4.30f + 0.1f * (float)d;
+    PulseCarryPlan p = planPulseWithCarry(demand, kV253AmpFlow, kV253Flow255,
+                                          kTPeriodMs, minPulseMs, kTKickMs,
+                                          0.9f * vP10);
+    TEST_ASSERT_FALSE(p.refused);
+    TEST_ASSERT_TRUE(p.pulseMs >= minPulseMs);
+    TEST_ASSERT_TRUE(p.pulseMs <= kTPeriodMs);
+    TEST_ASSERT_TRUE(p.pulseMs >= kTKickMs);  // le kick tient toujours (10 s ≫ 0,4 s)
+    TEST_ASSERT_FALSE(p.carryFired);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, p.carryMl);
+  }
+}
+
+// --- (4) Seuil de bascule DÉRIVÉ de minPulseMs (aucun 5000 en miroir) --------
+static void v253AssertSwitchThreshold(uint32_t minPulseMs) {
+  // Seuil NOMINAL de bascule = ampFlow × minPulseMs / periodMs.
+  const float thr = kV253AmpFlow * (float)minPulseMs / (float)kTPeriodMs;
+  PulsePlan below = planPulse(thr * 0.99f, kV253AmpFlow, kTPeriodMs, minPulseMs);
+  TEST_ASSERT_TRUE(below.refused);            // → régime accumulateur
+  TEST_ASSERT_EQUAL_UINT32(0u, below.pulseMs);
+  PulsePlan above = planPulse(thr * 1.01f, kV253AmpFlow, kTPeriodMs, minPulseMs);
+  TEST_ASSERT_FALSE(above.refused);           // → proportionnel direct
+  TEST_ASSERT_TRUE(above.pulseMs >= minPulseMs);
+}
+
+void test_V253_seuil_de_bascule_derive_du_pouls_minimal(void) {
+  v253AssertSwitchThreshold(5000u);
+  v253AssertSwitchThreshold(10000u);
+  v253AssertSwitchThreshold(20000u);
+  // Chiffres du gate : 2,15 mL/min à 5 s → 4,29 mL/min à 10 s. Encadrement fin
+  // à ±0,01 mL/min autour de la valeur DÉRIVÉE, pour les deux réglages.
+  TEST_ASSERT_FALSE(planPulse(2.15f, kV253AmpFlow, kTPeriodMs, 5000u).refused);
+  TEST_ASSERT_TRUE(planPulse(2.14f, kV253AmpFlow, kTPeriodMs, 5000u).refused);
+  TEST_ASSERT_FALSE(planPulse(4.30f, kV253AmpFlow, kTPeriodMs, 10000u).refused);
+  TEST_ASSERT_TRUE(planPulse(4.29f, kV253AmpFlow, kTPeriodMs, 10000u).refused);
+
+  // Demande terrain 1,76 mL/min : SOUS le seuil aux deux réglages → même
+  // régime, seule la CADENCE change. Passer à 10 s divise les démarrages par
+  // ~1,87 (pas exactement 2 : le kick n'est compté qu'une fois par pouls) POUR
+  // LE MÊME volume restitué.
+  const int nPeriods = 600;
+  V253Run r5 = v253Replay(1.76f, 5000u, nPeriods);
+  V253Run r10 = v253Replay(1.76f, 10000u, nPeriods);
+  TEST_ASSERT_TRUE(r10.fires < r5.fires);
+  // Ratio attendu = V_pouls(5 s) / V_pouls(10 s), dérivé — pas un littéral.
+  const float expectedRatio = v253VPulseMl(5000u) / v253VPulseMl(10000u);
+  TEST_ASSERT_INT_WITHIN(1, (int)((float)r5.fires * expectedRatio + 0.5f), r10.fires);
+  // ... et le VOLUME restitué est le même à un pouls près (l'affirmation clé).
+  TEST_ASSERT_FLOAT_WITHIN(v253VPulseMl(10000u), r5.deliveredMl, r10.deliveredMl);
+}
+
+// --- (5) Écrêtage fail-closed (l.98) : inatteignable, y compris à 10 s -------
+// La borne structurelle est inc/V_pouls < minPulseMs/(minPulseMs − kickMs), soit
+// < 1,042 à 10 s : une seule période sous-plancher ne peut JAMAIS financer deux
+// pouls, même avec une calibration atypique (flow255 < ampFlow). On le vérifie
+// en observant que le résidu après tir vaut EXACTEMENT inc + carryIn − V_pouls
+// (aucun écrasement à zéro par l'écrêtage) sur un balayage large.
+void test_V253_ecretage_fail_closed_inatteignable_a_10s(void) {
+  const uint32_t minPulseMs = 10000u;
+  const float amps[] = {5.0f, 13.0f, 25.75f, 60.0f};
+  const float f255s[] = {0.0f, 5.0f, 25.75f, 74.0f, 190.0f};
+  for (float amp : amps) {
+    for (float f255 : f255s) {
+      const float vP = pulseDeltaVolumeMl(0u, kTKickMs, 0u, minPulseMs, f255, amp);
+      if (!(vP > 0.0f)) continue;  // référence incalculable : cas F1, hors sujet
+      const float floorDemand = amp * (float)minPulseMs / (float)kTPeriodMs;
+      for (int c = 0; c <= 9; ++c) {
+        const float carryIn = vP * (float)c / 10.0f;
+        const float demand = floorDemand * 0.999f;  // juste sous la bascule
+        PulseCarryPlan p = planPulseWithCarry(demand, amp, f255, kTPeriodMs,
+                                              minPulseMs, kTKickMs, carryIn);
+        TEST_ASSERT_FALSE(p.refused);
+        TEST_ASSERT_TRUE(p.carryMl >= 0.0f);
+        TEST_ASSERT_TRUE(p.carryMl < vP);
+        const float inc = demand * (float)kTPeriodMs / 60000.0f;
+        if (p.carryFired) {
+          // Résidu EXACT → l'écrêtage n'a pas mordu (il aurait mis 0).
+          TEST_ASSERT_FLOAT_WITHIN(0.001f, (carryIn + inc) - vP, p.carryMl);
+        } else {
+          TEST_ASSERT_FLOAT_WITHIN(0.001f, carryIn + inc, p.carryMl);
+        }
+      }
+    }
   }
 }
 
@@ -2852,6 +3320,11 @@ int main(int, char **) {
   RUN_TEST(test_AC6_anti_windup);
   RUN_TEST(test_AC7_p_temporisee);
   RUN_TEST(test_pid_negative_error_zero_flow);
+  // v2.26.0 — variante PI (configuration pH réelle du firmware)
+  RUN_TEST(test_AC8_pi_l_integrale_influence_le_flow);
+  RUN_TEST(test_AC9_pi_anti_windup_bornes_de_production);
+  RUN_TEST(test_AC10_pi_flow_jamais_au_dessus_du_debit_d_amplitude);
+  RUN_TEST(test_AC11_pi_deadband_gele_l_integrale);
   // feature-039 — anti-rafale + rollover journalier purs.
   RUN_TEST(test_F039_count_empty_buffer_zero);
   RUN_TEST(test_F039_count_all_recent_in_window);
@@ -2924,6 +3397,7 @@ int main(int, char **) {
   RUN_TEST(test_BUG2_first_tick_zero_flow_counts_one_cycle);
   RUN_TEST(test_BUG2_two_spaced_cycles_count_two);
   RUN_TEST(test_BUG2_aborted_start_consumes_no_cycle);
+  RUN_TEST(test_BUG2_pi_integrale_survit_entre_deux_cycles);
   // bug-dosage-fantome itération 2 (défaut n°1) — proportionnel de temps (B+C).
   RUN_TEST(test_PULSE_gate_cal_duty_zero_refuses);
   RUN_TEST(test_PULSE_gate_amplitude_differs_from_calibrated_refuses);
@@ -2953,6 +3427,13 @@ int main(int, char **) {
   RUN_TEST(test_F073_carry_entree_suspect_reset_defensif);
   RUN_TEST(test_F073_pulse_jamais_hors_domaine);
   RUN_TEST(test_F073_regime_normal_balayage_identique_planPulse);
+  // v2.25.3 — pouls minimal 5 s → 10 s : moyenne restituée indépendante.
+  RUN_TEST(test_V253_moyenne_restituee_independante_du_pouls_minimal);
+  RUN_TEST(test_V253_moyenne_juste_sous_le_nouveau_seuil_de_bascule);
+  RUN_TEST(test_V253_invariant_sortie_et_reset_defensif_recales_sur_10s);
+  RUN_TEST(test_V253_pouls_jamais_hors_domaine_a_10s);
+  RUN_TEST(test_V253_seuil_de_bascule_derive_du_pouls_minimal);
+  RUN_TEST(test_V253_ecretage_fail_closed_inatteignable_a_10s);
   // V2251 — qualification des causes de refus par l'état interne du filtre.
   RUN_TEST(test_V2251_precondition_frontieres_flottantes_exactes);
   RUN_TEST(test_V2251_verdict_invariant_balayage_exhaustif);

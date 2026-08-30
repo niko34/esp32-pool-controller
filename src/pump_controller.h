@@ -7,6 +7,7 @@
 #include "constants.h"
 #include "pulse_dosing_logic.h"  // itération 2 : proportionnel de temps (option B+C)
 #include "dosing_logic.h"        // v2.25.1 : DoseRefusal (code de cause exposé)
+#include "ph_integral_logic.h"   // v2.26.0 : terme intégral pH (logique PURE)
 
 struct PumpDriver {
   int pwmPin;    // Pin PWM Gate MOSFET (IRLZ44N)
@@ -28,19 +29,34 @@ struct DosingState {
 };
 
 struct PIDController {
-  // feature-025 (pool-chemistry) : régulation P temporisée par défaut.
-  //   - pH  : Kp=8, Ki=0, Kd=0
+  // feature-025 (pool-chemistry) : régulation P temporisée.
   //   - ORP : Kp=0.3, Ki=0, Kd=0 (override en construction PumpController)
-  // Kd=0 IMPÉRATIF (pas d'amplification du bruit résiduel). Ki=0 → intégrale inerte
-  // (integralMax conservé mais sans effet). Les valeurs ci-dessous sont les défauts pH ;
-  // l'ORP est ajusté dans le constructeur de PumpControllerClass.
+  // v2.26.0 (gate pool-chemistry) : Ki LEVÉ sur le SEUL pH — un P pur sous charge
+  // basique permanente ne peut structurellement PAS rejoindre sa consigne (il se
+  // stabilise sur son droop e* = besoin/(kp×T) : 7,50-7,66 mesurés pour une
+  // consigne à 7,30, cf. constants.h « RÉGULATION pH — TERME INTÉGRAL »).
+  //   - pH  : Kp/Ki/integralMax posés par applyRegulationSpeed() selon la vitesse
+  //           (kPhKp*/kPhKi*/kPhIntegralMax*), Kd=0.
+  //   - ORP : Ki=0 INCHANGÉ (hors périmètre du gate v2.26.0).
+  // Kd=0 IMPÉRATIF sur les DEUX chimies (pas d'amplification du bruit résiduel).
+  //
+  // AUCUN champ de cette structure n'est persisté en NVS, et l'intégrale ne doit
+  // JAMAIS l'être : un reboot doit repartir de zéro (l'intégrale est un filet, pas
+  // un réglage). Une valeur stockée — a fortiori corrompue — serait une
+  // autorisation de dosage PRÉ-CHARGÉE au boot.
   float kp = 8.0f;     // Proportionnel : réaction à l'erreur actuelle
-  float ki = 0.0f;     // Intégral : désactivé (anti-windup strict, P pure)
+  float ki = 0.0f;     // Intégral : 0 = inerte (défaut ; le pH est armé par
+                       // applyRegulationSpeed, l'ORP reste à 0)
   float kd = 0.0f;     // Dérivé : désactivé (bruit)
   float integral = 0.0f;
   float lastError = 0.0f;
   unsigned long lastTime = 0;
-  float integralMax = 50.0f; // Anti-windup (inerte avec Ki=0, conservé pour réactivation future)
+  // Anti-windup. Défaut VOLONTAIREMENT inerte (Ki=0 par défaut) ; côté pH la
+  // valeur réelle est dimensionnée PAR L'AUTORITÉ (U_I,max / ki) et posée par
+  // applyRegulationSpeed(). Ne jamais réactiver un Ki sans redimensionner ce
+  // plafond : 50 pH·s ne représentent que 0,6 % de la charge d'équilibre pH,
+  // soit une régulation « avec intégrale » qui n'en a que le nom.
+  float integralMax = 50.0f;
 };
 
 class PumpControllerClass {
@@ -128,6 +144,26 @@ private:
   // lastStartTime — cohérence avec le proportionnel de temps (flaggé pour
   // contre-visite du gate pool-chemistry).
   bool shouldContinueDosing(float error, float stopThreshold, unsigned long sessionOnMs);
+
+  // ===== v2.26.0 : FERMETURE de session de dosage pH (branche AUTOMATIQUE) =====
+  // POINT DE PASSAGE UNIQUE de toute fin de session pH automatique. Y sont
+  // réunies les trois choses qui doivent aller ENSEMBLE et qui, avant ce cycle,
+  // ne vivaient que dans la branche automatique :
+  //   1. `phDosingState.active = false` + datation de `lastStopTime` ;
+  //   2. ARMEMENT DE LA PAUSE MÉLANGE (notifyPhDose) — homogénéisation post-dose ;
+  //   3. le log d'arrêt de session (durée, pompe-ON, volume, cumul du jour).
+  //
+  // POURQUOI CE POINT UNIQUE. La branche automatique est court-circuitée par la
+  // limite horaire, la limite journalière, une garde pH ou canDose() : la session
+  // se refermait alors SILENCIEUSEMENT en fin d'update() (`active = phActive`),
+  // sans pause mélange ni trace. Le produit déjà injecté n'avait donc jamais son
+  // temps d'homogénéisation, et le journal ne montrait aucun arrêt.
+  //
+  // No-op (aucune écriture, aucun log, aucune allocation) si aucune session pH
+  // n'est ouverte — appelable donc inconditionnellement depuis un chemin de
+  // suspension. `reason` doit être un littéral (durée de vie statique).
+  // Appelée UNIQUEMENT depuis update() (loopTask) — pas de mutex.
+  void closePhDosingSession(unsigned long now, const char* reason);
 
   // Timer de stabilisation par pompe (index 0 = pH, 1 = ORP).
   // La cinétique chimique différente justifie une fenêtre indépendante par sonde
@@ -276,6 +312,30 @@ private:
   // décision est celui de sa propre politique.
   // D1 : la RELÂCHE efface la cause de refus ORP d'origine garde (idem pH).
   void tickOrpPhInhibitSurveillance();
+
+  // ===== v2.26.0 : TERME INTÉGRAL pH — la coquille du module PUR ==============
+  // Toute la LOGIQUE (charge signée sur `erreur − stopThreshold`, oubli, reset
+  // sec, péremption, hystérésis de saturation et rappel) vit dans
+  // src/ph_integral_logic.h, testable en natif. Ici : le temps, les entrées, et
+  // l'application du verdict. État et logs en loopTask, sans mutex.
+
+  // C4 — PÉREMPTION : purge l'intégrale pH quand la branche automatique n'a pas
+  // tourné depuis kPhIntegralStaleResetMs (mode `off`/`manual`, garde bloquante
+  // durable, filtration arrêtée tout l'hiver). Appelée UNE fois par tick
+  // d'update(), hors de toute conjonction d'éligibilité — c'est justement dans
+  // les états où l'intégrale est laissée à l'abandon qu'elle doit être purgée.
+  void tickPhIntegralExpiry(unsigned long now);
+
+  // Applique le verdict d'un tick du module pur : journalisation de la purge
+  // sèche, des paliers de saturation (warning / critical + RAPPEL périodique) et
+  // de la levée d'alerte, plus la publication MQTT associée. Aucune décision.
+  void applyPhIntegralVerdict(const PhIntegralVerdict& verdict, float error);
+
+  // État persistant du terme intégral pH (source de vérité ; phPID.integral en
+  // est le miroir consommé par computePidPure et les accesseurs /data + WS).
+  // JAMAIS persisté en NVS : un reboot repart de zéro (une intégrale stockée
+  // serait une autorisation de dosage pré-chargée au démarrage).
+  PhIntegralState _phIntegral;
 
   // Conditions #2 + #7 : DÉCISION de refus du dosage pH. True → dosage pH REFUSÉ.
   // Ne détecte plus rien : rend le verdict de tickPhGuardSurveillance() et n'y
@@ -449,6 +509,27 @@ private:
   std::atomic<bool> _resetRequested{false};
   std::atomic<bool> _phPauseResetRequested{false};
 
+  // ===== v2.26.0 (revue, bloquant n°1) : CHANGEMENT DE RÉGLAGE PID DIFFÉRÉ =====
+  // `applyRegulationSpeed()` est appelée depuis le contexte web async (route de
+  // config). Elle écrivait alors directement `phPID` et `_phIntegral`, que
+  // loopTask lit ET réécrit dans le même tick (phIntegralTick). L'entrelacement
+  // « loopTask lit I → la tâche web purge tout et pose un Ki plus grand → loopTask
+  // réécrit I » ressuscite jusqu'à 16 200 pH·s servis avec le nouveau Ki, soit
+  // 13,5 mL/min pour une autorité de 6 — et le clamp sur le nouveau plafond ne
+  // s'exécute pas (accumulation gelée, delta positif non appliqué).
+  //
+  // Patron du projet (resetPhPauseGuard) : la tâche web pose un drapeau ATOMIQUE,
+  // loopTask résout en tête d'update(). AUCUNE écriture de phPID/_phIntegral hors
+  // loopTask. `_regulationSpeedCode` porte la vitesse demandée sous forme de CODE
+  // 8 bits (0 = slow, 1 = normal, 2 = fast) : loopTask n'a ainsi jamais à lire la
+  // String mqttCfg.regulationSpeed, qu'une autre tâche peut réassigner.
+  std::atomic<bool> _phTuningChangeRequested{false};
+  std::atomic<uint8_t> _regulationSpeedCode{1};
+
+  // Application EFFECTIVE des coefficients (loopTask uniquement) : begin() et
+  // update() après consommation de `_phTuningChangeRequested`.
+  void applyRegulationSpeedNow();
+
   // feature-006 : démarrages de cycle MANUELS demandés depuis les handlers web
   // async (requestManualCycleRecord). Consommés en tête d'update() (loopTask,
   // AVANT les branches de régulation) : recordDosingCycleStart + cyclesToday++
@@ -464,6 +545,24 @@ private:
   bool _pulseSession[2] = {false, false}; // session de dosage en cours (auto OU scheduled)
   unsigned long _sessionOnMs[2] = {0, 0}; // temps POMPE-ON cumulé de la session (garde temps min)
   float _sessionVolMl[2] = {0.0f, 0.0f};  // volume crédité de la session (log d'arrêt)
+  // v2.26.0 : instant d'OUVERTURE de la session pH (millis, 0 = aucune session).
+  // Base du critère MURAL du plafond de session (kPhSessionMaxWallMs). Distinct de
+  // `phDosingState.lastStartTime`, qui n'est daté qu'à la COMPTABILISATION d'un
+  // cycle : une reprise après suspension hors-branche rouvre bien une session sans
+  // compter de cycle, et laisserait donc une base de temps périmée. Scalaire (pH
+  // seul) : le plafond de session est une réponse au point de fonctionnement du PI
+  // pH — l'ORP, dont la bande morte n'a pas été alignée, referme ses sessions
+  // normalement et reste hors périmètre.
+  uint32_t _phSessionStartMs = 0;
+  // v2.26.0 (revue, bloquant n°2) : PROPRIÉTÉ de la session pH ouverte —
+  // true = ouverte par la branche AUTOMATIQUE, false = par le mode PROGRAMMÉ (ou
+  // aucune session). La garde de fermeture hors branche s'excluait auparavant sur
+  // `phMode != "scheduled"`, c'est-à-dire sur le mode COURANT : une bascule
+  // automatique → programmée en cours de session s'auto-excluait, et la session
+  // ouverte par l'automatique se refermait en silence, sans pause mélange. Le
+  // critère correct est QUI a ouvert la session, pas le mode du moment.
+  // Écrit/lu en loopTask uniquement (patron _stabilizationEndMs).
+  bool _phSessionFromAuto = false;
   // feature-073 : accumulateur de dosage SOUS le pouls minimal (ex-seuil C),
   // par CHIMIE ([0]=pH, [1]=ORP). _pulseCarryMl = volume demandé cumulé (mL),
   // borné structurellement à < V_pouls (volume kick-inclus d'une impulsion
@@ -570,7 +669,11 @@ public:
   float getEffectiveOrpTarget() const;
   float getEffectiveMaxChlorineMlPerDay() const;
 
-  // Applique les paramètres PID selon mqttCfg.regulationSpeed
+  // DEMANDE l'application des paramètres PID de mqttCfg.regulationSpeed.
+  // Appelable depuis N'IMPORTE QUEL contexte, y compris un handler web async :
+  // photographie la vitesse en code 8 bits puis pose un drapeau atomique.
+  // L'écriture de phPID / de l'intégrale a lieu dans update(), sur loopTask
+  // (cf. _phTuningChangeRequested) — jamais depuis async.
   void applyRegulationSpeed();
 
   // Setters pour PID tuning
@@ -749,6 +852,45 @@ public:
   bool isOrpPhRawGuardBlocked() const {
     return _orpPhInhibitNow && _orpPhRawThresholdActive;
   }
+
+  // ===== v2.26.0 (C5) : observabilité du TERME INTÉGRAL pH — LECTURE SEULE =====
+  // Trois grandeurs, publiées à l'IDENTIQUE sur /data ET sur la trame WS (mêmes
+  // règles null, mêmes arrondis) : le motif « champ servi d'un seul côté » a déjà
+  // récidivé trois fois dans ce projet (pentes de sonde v2.21.2, champs de
+  // calibration v2.23.0, état de blocage de dosage v2.25.0), et il produit pire
+  // qu'une absence : un clignotement, `latestSensorData` étant intégralement
+  // remplacé par les charges /data sur plusieurs chemins côté client.
+  //
+  // Course bénigne assumée (patron isAnyPumpEnergized) : l'état PID est écrit par
+  // loopTask et lu ici en contexte web async ; les lectures 32 bits sont atomiques
+  // sur Xtensa, le pire cas est un instantané en retard d'un tour de loop. Aucun
+  // setter, aucune influence sur une décision de dosage.
+
+  // Intégrale accumulée (pH·s). NAN si non finie (→ null en JSON).
+  float getPhIntegral() const;
+  // Contribution du terme intégral au débit moyen demandé (mL/min) = ki × intégrale.
+  // NAN si non finie. Vaut 0 tant que Ki est nul (ORP, ou pH avant armement).
+  float getPhIntegralTerm() const;
+  // Remplissage de l'anti-windup, en % de integralMax (valeur ABSOLUE : une
+  // saturation négative est tout aussi anormale). NAN si integralMax ≤ 0.
+  float getPhIntegralPct() const;
+
+  // ===== v2.26.0 (revue, mineure n°1) : VERDICT de saturation, PAS un seuil =====
+  // Épisode de saturation OUVERT au sens du module pur : hystérésis 95 % / 85 %
+  // sur le rapport `demande / débit soutenable` — JAMAIS sur le remplissage.
+  //
+  // POURQUOI UN BOOLÉEN ET PAS UN SEUIL CÔTÉ CLIENT. Le client comparait 95 % au
+  // REMPLISSAGE (`ph_integral_pct`) alors que les 95 % du firmware portent sur la
+  // DEMANDE : deux grandeurs distinctes derrière un seul nombre. Une intégrale
+  // proche de son plafond qui tient la charge sans forcer est une régulation
+  // SAINE — le client annonçait « vérifiez le bidon » alors qu'aucun épisode
+  // n'était ouvert côté firmware. Le seuil et son hystérésis restent donc au
+  // FIRMWARE ; le client ne consomme qu'un verdict.
+  // Servi à l'IDENTIQUE sur /data et sur la trame WS (parité stricte).
+  //
+  // Course bénigne assumée (patron isAnyPumpEnergized) : drapeau écrit par
+  // loopTask, lu ici en contexte web async ; lecture 8 bits atomique sur Xtensa.
+  bool isPhIntegralSaturated() const { return _phIntegral.satActive; }
 
   // ===== feature-011 : débit moyen planifié du mode scheduled (mL/min) =====
   // Débit moyen restant de la répartition (remaining / horizonMinutes).

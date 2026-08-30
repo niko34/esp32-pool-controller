@@ -1,6 +1,6 @@
 # ADR-0016 — Régulation proportionnelle temporisée par défaut, pas de PID complet
 
-- **Statut** : Accepté
+- **Statut** : Accepté — **`Ki = 0` levé sur le SEUL pH par [ADR-0052](0052-terme-integral-ph-dimensionne-par-autorite.md)** (2026-08-28, v2.26.0) : un P pur sous charge basique permanente ne peut structurellement pas rejoindre sa consigne (droop `e* = besoin/(kp × T)`, vérifié sur le terrain à 7,50-7,66 pour une consigne à 7,30). La réactivation utilise exactement la porte de sortie prévue ci-dessous (« infrastructure `PIDController` conservée pour une réactivation progressive après validation terrain »), avec un `integralMax` **dimensionné par l'autorité** et non plus la valeur inerte de 50. **Le reste de cette décision est INCHANGÉ** : `Kd = 0` impératif sur les deux chimies, `Ki_ORP = 0`, temporisation par pause mélange / zone morte / anti-cycling, anti-windup strict.
 - **Date** : 2026-06-16
 - **Décideurs** : pool-chemistry, architect
 - **Spec(s) liée(s)** : [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md)

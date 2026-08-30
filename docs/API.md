@@ -238,6 +238,9 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
   "orp_pulse_ms": 0,
   "ph_pulse_phase_ms": 0,
   "orp_pulse_phase_ms": 0,
+  "ph_integral": 7450.2,
+  "ph_integral_term": 2.759,
+  "ph_integral_pct": 46.0,
   "ph_daily_ml": 45.2,
   "orp_daily_ml": 120.5,
   "ph_limit_reached": false,
@@ -251,7 +254,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
     "purges_left": 3,
     "purge_s": 60,
     "measure_s": 120,
-    "flow255": [61.0, 67.0]
+    "flow255": [74.0, 74.0]
   },
   "ph_tracking_enabled": true,
   "ph_remaining_ml": 1500,
@@ -277,7 +280,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 > |-------|------|-------------|
 > | `pulse_period_ms` | uint32 | Période fixe du train d'impulsions (`kPulsePeriodMs` = 60000 ms), publiée pour que le client ne la code pas en dur. |
 > | `ph_pulse_session` / `orp_pulse_session` | boolean | Séance de dosage ouverte (auto **ou** scheduled) pour la chimie. |
-> | `ph_pulse_ms` / `orp_pulse_ms` | uint32 | Durée d'impulsion **planifiée** (ms) pour la période courante. **`0` = deadband** (période sans pouls : demande sous le pouls minimal de 5 s, seuil C). |
+> | `ph_pulse_ms` / `orp_pulse_ms` | uint32 | Durée d'impulsion **planifiée** (ms) pour la période courante. **`0` = deadband** (période sans pouls : demande sous le pouls minimal `kPulseMinMs` — **10 s depuis la v2.25.3**, 5 s avant). Depuis la v2.22.0 la demande n'est plus refusée mais **accumulée** ([ADR-0046](adr/0046-accumulateur-demande-sous-pouls-minimal.md)) : la séance reste ouverte, la pompe ne tourne simplement pas cette période. |
 > | `ph_pulse_phase_ms` / `orp_pulse_phase_ms` | uint32 | Position **relative** dans la période, clampée `[0..pulse_period_ms]` — jamais un `millis()` absolu (le client l'ancre sur sa propre horloge). `0` si session inactive. **Pompe alimentée ⇔ `phase < pulse_ms`.** |
 >
 > Getters `PumpController` lecture seule, fail-closed sur index invalide — aucun chemin de dosage touché. Buffer `/data` porté de 1536 à **1792** octets. Consommateur : statut dosage des cartes pH/ORP du tableau de bord ([page-dashboard.md](features/page-dashboard.md#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211)).
@@ -295,7 +298,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 > | `aborted` | boolean | La **dernière** marche a été interrompue **par le serveur** (perte de filtration). L'UI ne doit **jamais** router une mesure avortée vers la saisie du volume (débit sous-estimé → sur-injection). Réarmé à `false` au `start` suivant. |
 > | `purges_left` | integer | Purges restantes dans la session (max 3, `kFlowAssistMaxPurgesPerSession`). |
 > | `purge_s` / `measure_s` | integer | Durées **servies** (60 s / 120 s) — l'UI paramètre ses libellés dessus, pas de miroir en dur. |
-> | `flow255` | array[2] | Débits **majorants** mesurés à duty 255 (ml/min, `[0]` = pompe 1, `[1]` = pompe 2) — permet à l'UI d'annoncer le coût budget des marches sans constante dupliquée. |
+> | `flow255` | array[2] | Débit **majorant** à duty 255 (ml/min, `[0]` = pompe 1, `[1]` = pompe 2) — permet à l'UI d'annoncer le coût budget des marches et la durée d'une injection volumée **sans constante dupliquée**. ⚠️ **v2.25.2 ([ADR-0050](adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md))** : la valeur est un **majorant unique de flotte** (`kPumpFlow255MlPerMin` = **74,0**), **identique pour les deux pompes** — elle ne décrit plus l'exemplaire câblé en n°1 ou n°2 (61,0 / 67,0 avant la v2.25.2). Le tableau **reste de taille 2** : le contrat client est inchangé. Un client doit traiter « clé absente », « tableau vide » et « 0 » comme **trois cas distincts** — seul un nombre fini > 0 est une information. |
 >
 > **feature-021** : `ph` est désormais publié avec **3 décimales** (vs 1 décimale en v1.x). Champs `phCalPoints` (`-1..3`) et `orpCalPoints` (`-1..1`) ajoutés. Champs **supprimés** de la réponse `/data` : `orp_raw`, `ph_raw`, `ph_voltage_mv`, `temperature_raw` (la notion de « valeur brute » n'a pas de sens côté Atlas EZO — la valeur est déjà calibrée par le module). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md).
 >
@@ -1064,6 +1067,32 @@ Champs ajoutés en feature-011 (répartition scheduled, v2.8.0 — [ADR-0021](ad
 | `ph_scheduled_flow_ml_per_min` | float \| null | Débit moyen **planifié** restant du mode Programmée pH (mL/min, 1 décimale) = volume restant à injecter / minutes de filtration restantes (bornées à minuit). `null` si le mode pH n'est pas `scheduled`, hors plage de filtration, ou heure locale ESP32 invalide — l'UI affiche alors « — ». |
 | `orp_scheduled_flow_ml_per_min` | float \| null | Équivalent ORP (chlore). Mêmes conditions de nullité. |
 
+#### Champs du terme intégral pH (v2.26.0)
+
+Ajoutés par la **levée de `Ki = 0`** sur la régulation pH ([ADR-0052](adr/0052-terme-integral-ph-dimensionne-par-autorite.md)). Publiés en **parité stricte** avec le WebSocket (mêmes noms, mêmes arrondis, mêmes règles de nullité) et avec MQTT.
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `ph_integral` | float \| null | Intégrale accumulée par la régulation pH, en **pH·s**, **signée** (1 décimale). Une valeur négative n'est pas une anomalie : elle indique de quel côté de la consigne l'accumulation se trouve. `null` si la valeur n'est pas finie. |
+| `ph_integral_term` | float \| null | Contribution du terme intégral au **débit moyen demandé**, en mL/min (3 décimales) = `ki × ph_integral`. Bornée par construction à l'**autorité** `kPhIntegralAuthorityMlPerMin` = **6,0 mL/min**, quelle que soit la vitesse de régulation. Vaut `0` tant que `Ki` est nul. |
+| `ph_integral_pct` | float \| null | Remplissage de l'anti-windup, en **% de `integralMax`** (1 décimale), **valeur absolue** — une saturation négative est tout aussi anormale. `null` si `integralMax ≤ 0`. |
+
+**Aucun équivalent ORP** : `Ki_ORP` reste à 0 (asymétrie voulue, hors périmètre de l'ADR-0052).
+
+> ⚠️ **Ne pas recalculer `ph_integral_pct` côté client.** `integralMax` **varie avec la vitesse de régulation** (43 200 / 16 200 / 7 200 pH·s pour `slow` / `normal` / `fast`) et n'est pas publié : le firmware sert le rapport déjà calculé. Le recalculer exigerait de recopier une constante firmware dans le client — motif éliminé quatre fois dans ce projet.
+
+**Règles de consommation client** (sémantique stricte : clé absente ≠ `null` ≠ `0`) :
+
+| État du champ | Interprétation attendue |
+|---|---|
+| nombre fini, `0` compris | Valeur mesurée, **affirmée**. `0 %` signifie « réserve vide », pas « inconnu ». |
+| `null` | Le firmware dit explicitement « non calculable » (terme intégral inactif) → afficher « — », **jamais** un zéro. |
+| clé **absente** | Information indisponible (firmware antérieur à la v2.26.0) → masquer l'affichage entier. Afficher « 0 % » mentirait sur une régulation dont on ne sait rien. |
+
+Interprétation : voir [pump-controller.md — Terme intégral pH](subsystems/pump-controller.md#terme-intégral-ph--levée-de-ki--0-v2260). Un `ph_integral_pct` proche de 100 % **durablement** signale que la régulation demande son maximum sans atteindre la consigne — l'alerte MQTT `ph_integral_saturated` en est la forme autoritative (elle seule tient compte de la **durée**).
+
+> **Budget de payload** : +**73 o** au pire cas sur `/data` (`"ph_integral":-43200.0,` 23 o + `"ph_integral_term":-6.000,` 26 o + `"ph_integral_pct":100.0,` 24 o). Charge pire cas portée à **1 947 o**, gabarit documentaire `StaticJson<2304>` inchangé. Côté WebSocket, le gabarit passe de 2560 à **2688** (voir [ws-manager.md](subsystems/ws-manager.md)).
+
 Champs ajoutés en feature-056 (mode d'installation, v2.19.0 — [ADR-0026](adr/0026-mode-installation.md)) :
 
 | Champ | Type | Description |
@@ -1106,7 +1135,7 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/off
 
 > **Motif** : ce paramètre sert à **caractériser au banc** le duty en dessous duquel la pompe cesse réellement de tourner, et à peser le débit à un duty fixe. C'est lui qui a produit la mesure du 2026-08-23 (Dmin = 82 ; 61/67 mL/min à 255) fondant le modèle en proportionnel de temps ([ADR-0043](adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)). Voir [pump-controller.md — Dosage en proportionnel de temps](subsystems/pump-controller.md#dosage-en-proportionnel-de-temps-itération-2-v2210).
 >
-> ⚠️ Il n'est **volontairement pas** borné par `MIN_ACTIVE_DUTY` (98 depuis v2.21.0) : sonder **sous** le plancher est précisément l'objet de la mesure. Sûreté : le paramètre ne peut que **réduire** la puissance par rapport au 255 déjà atteignable sans lui, et **toutes** les gardes restent en amont (auth `WRITE`, présence d'eau, inhibition maintenance). Sans le paramètre, le comportement est **strictement inchangé**. **Comptabilité (v2.21.0)** : le volume d'une marche manuelle est crédité au **majorant** débit-255 (`kPumpNFlow255MlPerMin`), sauf si `duty` égale le duty calibré (crédit au débit pesé) — jamais zéro sur une pompe alimentée.
+> ⚠️ Il n'est **volontairement pas** borné par `MIN_ACTIVE_DUTY` (98 depuis v2.21.0) : sonder **sous** le plancher est précisément l'objet de la mesure. Sûreté : le paramètre ne peut que **réduire** la puissance par rapport au 255 déjà atteignable sans lui, et **toutes** les gardes restent en amont (auth `WRITE`, présence d'eau, inhibition maintenance). Sans le paramètre, le comportement est **strictement inchangé**. **Comptabilité (v2.21.0)** : le volume d'une marche manuelle est crédité au **majorant** débit-255 (`kPumpFlow255MlPerMin` — **74,0 mL/min, unique pour les deux pompes** depuis la v2.25.2, [ADR-0050](adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md)), sauf si `duty` égale le duty calibré (crédit au débit mesuré) — jamais zéro sur une pompe alimentée.
 >
 > Journal : `[Test] Pompe 1 démarrée en mode manuel (duty=N)`.
 
@@ -1143,7 +1172,7 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/pump1/duty/128
 
 ### POST /ph/inject/start — WRITE
 
-Démarre une injection manuelle pH. **v2.21.0 ([ADR-0043](adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md))** : la pompe tourne au **duty calibré** (pesée) si l'amplitude configurée y correspond, **sinon à 255** (seul autre débit mesuré, `kPumpNFlow255MlPerMin`) — plus jamais un duty interpolé. La durée est calculée depuis le volume demandé et ce débit **connu** ; si le duty calibré est posé mais le débit pesé invalide (état incohérent), la route refuse en **409 `flow_uncharacterized`**. Le log de démarrage mentionne le duty : `[Injection] pH démarrée Xs pour Y mL (débit=Z mL/min, duty=D, pompe N)`.
+Démarre une injection manuelle pH. **v2.21.0 ([ADR-0043](adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md))** : la pompe tourne au **duty calibré** (mesure de CETTE pompe) si l'amplitude configurée y correspond, **sinon à 255** (seul autre débit connu, `kPumpFlow255MlPerMin` — **majorant unique de flotte, 74,0 mL/min** depuis la v2.25.2, [ADR-0050](adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md) : sur ce chemin **dégradé** la durée calculée est donc légèrement **courte**, jamais longue) — plus jamais un duty interpolé. La durée est calculée depuis le volume demandé et ce débit **connu** ; si le duty calibré est posé mais le débit pesé invalide (état incohérent), la route refuse en **409 `flow_uncharacterized`**. Le log de démarrage mentionne le duty : `[Injection] pH démarrée Xs pour Y mL (débit=Z mL/min, duty=D, pompe N)`.
 
 > ✅ **Injection manuelle gardée (v2.6.0, feature-006)** : le démarrage passe par les gardes de sécurité chimique de `evaluateManualInject()` ([`src/dosing_logic.h`](../src/dosing_logic.h)) — watchdog, filtration, stabilisation post-calibration, double démarrage, limite journalière **prédictive** (cumul + volume demandé), limite horaire (budget **partagé** avec la régulation auto, [ADR-0020](adr/0020-budget-horaire-dosage-unique.md)), cycles/jour et anti-rafale (ring partagé avec l'auto). Tout refus retourne **`409 Conflict`** avec un corps **JSON structuré** (voir [tableau des codes](#codes-de-refus-409-v260)). Le mode de régulation n'est volontairement **pas** vérifié (le manuel est disponible dans tous les modes), ni la mesure capteur (le manuel est aveugle à la mesure — assumé).
 >

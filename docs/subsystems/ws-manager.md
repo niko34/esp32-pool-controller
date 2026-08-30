@@ -333,7 +333,7 @@ Itération 3 de bug-dosage-fantome (défaut n°3) : distinguer « **session de d
 | `pulse_period_ms` | uint32 | ms | Période **fixe** du train d'impulsions (= `kPulsePeriodMs` = 60000). Constante de contrat, publiée pour que le client ne la code pas en dur. |
 | `ph_pulse_session` | bool | — | Séance de dosage **ouverte** pour le pH (auto **OU** scheduled) — `PumpController.isPulseSessionActive(0)`. C'est l'état « commandé », pas la pompe. |
 | `orp_pulse_session` | bool | — | Idem ORP (`isPulseSessionActive(1)`). |
-| `ph_pulse_ms` | uint32 | ms | Durée d'impulsion **planifiée** pour la période courante (`getPulseMs(0)`). **`0` = deadband** : la période ne contient aucun pouls (demande sous le pouls minimal de 5 s, seuil C) — la session reste ouverte, la pompe ne tournera pas cette période. |
+| `ph_pulse_ms` | uint32 | ms | Durée d'impulsion **planifiée** pour la période courante (`getPulseMs(0)`). **`0` = deadband** : la période ne contient aucun pouls (demande sous le pouls minimal `kPulseMinMs` — **10 s depuis la v2.25.3**, 5 s avant) — la session reste ouverte, la pompe ne tournera pas cette période. La demande n'est pas perdue : elle est **accumulée** ([ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md)). |
 | `orp_pulse_ms` | uint32 | ms | Idem ORP. |
 | `ph_pulse_phase_ms` | uint32 | ms | Position **RELATIVE** dans la période courante (`getPulsePhaseMs(0, nowMs)`), clampée **[0..`pulse_period_ms`]** — jamais un `millis()` absolu : le client l'ancre sur SA propre horloge à la réception (`dosingAnchor`, app.js). `0` si session inactive. **Pompe alimentée ⇔ `phase < pulse_ms`.** |
 | `orp_pulse_phase_ms` | uint32 | ms | Idem ORP. |
@@ -345,3 +345,20 @@ Itération 3 de bug-dosage-fantome (défaut n°3) : distinguer « **session de d
 **Budget de payload** : décompte au pire cas des octets sérialisés = **169 o** (7 champs, valeurs max `60000`/`false`) + pool ArduinoJson 7 nœuds ≈ 112 o → `_buildSensorJson()` bumpe de **2176 → 2432 octets**. **`kWsFrameBufBytes` passe de 3072 → 3584** (trame réelle mesurée ~2,2 Ko / 3584 — marge restaurée après plusieurs ajouts de champs successifs).
 
 Consommateur UI : statut dosage des cartes pH/ORP du tableau de bord — 6 priorités d'affichage, compte à rebours local resynchronisé à chaque trame ([page-dashboard.md](../features/page-dashboard.md#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211)).
+
+## Champs `sensor_data` ajoutés en v2.26.0 — terme intégral pH (ADR-0052)
+
+La [levée de `Ki = 0`](pump-controller.md#terme-intégral-ph--levée-de-ki--0-v2260) sur la régulation pH rend le terme intégral **porteur de toute la charge à l'équilibre** (là où le proportionnel s'annule). Sans ces champs, une intégrale saturée resterait **invisible** — la classe de défaut historique du projet.
+
+| Champ | Type | Unité | Description |
+|-------|------|-------|-------------|
+| `ph_integral` | float \| null | pH·s | Intégrale accumulée (`getPhIntegral()`), **signée**, arrondie à 1 décimale. Négative = accumulation de l'autre côté de la consigne, ce n'est pas une anomalie. `NAN` firmware → `null` explicite. |
+| `ph_integral_term` | float \| null | mL/min | Contribution au débit moyen demandé (`getPhIntegralTerm()` = `ki × intégrale`), 3 décimales. Bornée par l'**autorité** de 6,0 mL/min quelle que soit la vitesse. |
+| `ph_integral_pct` | float \| null | % | Remplissage de l'anti-windup (`getPhIntegralPct()`), **valeur absolue**, 1 décimale. `null` si `integralMax ≤ 0`. |
+
+- **Parité stricte d'emblée avec `/data`** (`_buildSensorJson()` et `web_routes_data.cpp` **dans le même passage**) : mêmes noms, mêmes arrondis, `NaN` → `null` explicite. C'est la **quatrième application** du contrat de parité après les pentes de sonde (v2.21.2), les champs de calibration (v2.23.0) et l'état de blocage de dosage (v2.25.0). Le même trio est également publié sur MQTT ([MQTT.md](../MQTT.md#topics-et-entités-ajoutés-en-v2260-terme-intégral-ph)).
+- **Aucun équivalent ORP** : `Ki_ORP` reste 0 — asymétrie voulue, hors périmètre de l'ADR-0052.
+- Getters `PumpController` **lecture seule**, aucun setter, aucune influence sur une décision de dosage ; course bénigne assumée écriture `loopTask` / lecture `async_tcp` (lectures 32 bits atomiques sur Xtensa).
+- **Rétrocompat client** : clé **absente** (firmware < 2.26.0) ≠ `null` ≠ `0`. L'UI masque le bloc entier quand la clé est absente — afficher « 0 % » mentirait sur une régulation dont on ne sait rien. Voir [page-ph.md](../features/page-ph.md#rattrapage-accumulé-par-la-régulation-ph-v2260).
+
+**Budget de payload** : **73 o** au pire cas (`"ph_integral":-43200.0,` = 23 o, `"ph_integral_term":-6.000,` = 26 o, `"ph_integral_pct":100.0,` = 24 o). Pire cas de trame **2 479 → 2 552 o** ; le gabarit documentaire `StaticJson<>` de `_buildSensorJson()` passe de **2560 à 2688** pour rester franchement au-dessus, la marge sous `kWsFrameBufBytes` (3584 o) restant de **1 032 o**. Aucune troncature possible : la garde `measureJson(doc) + 1 > cap` **saute** le push au lieu de tronquer.
