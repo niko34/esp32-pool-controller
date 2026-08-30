@@ -1196,6 +1196,7 @@ void MqttManager::drainCommandQueue() {
   if (_rebootPending && millis() - _rebootRequestedAtMs >= kRestartApModeDelayMs) {
     _rebootPending = false;
     systemLogger.critical("Redémarrage (commande MQTT/HA)");
+    saveDailyCounters();  // v2.27.0 : ne pas perdre le dénominateur de charge pH
     shutdownForRestart();
     ESP.restart();
   }

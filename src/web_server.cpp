@@ -132,6 +132,11 @@ void WebServerManager::update() {
   if (restartRequested && (millis() - restartRequestedTime >= kRestartAfterOtaDelayMs)) {
     restartRequested = false;
     systemLogger.critical("Redémarrage après mise à jour OTA");
+    // v2.27.0 (gate pool-chemistry) : seul performFailSafeRestart() persistait les
+    // compteurs journaliers. Un redémarrage OTA perdait donc jusqu'à 30 s de
+    // comptage — et surtout, l'épisode d'OTA lui-même laissait courir les minutes
+    // de circulation. Les poser ICI garde le rapport mL/min cohérent au reboot.
+    saveDailyCounters();
     mqttManager.shutdownForRestart();  // ADR-0011 : flush status=offline + stop mqttTask
     ESP.restart();
   }
@@ -140,6 +145,7 @@ void WebServerManager::update() {
   if (restartApRequested && (millis() - restartRequestedTime >= kRestartApModeDelayMs)) {
     restartApRequested = false;
     systemLogger.critical("Redémarrage en mode Point d'accès");
+    saveDailyCounters();  // idem : ne pas perdre le dénominateur de charge
     mqttManager.shutdownForRestart();  // ADR-0011 : flush status=offline + stop mqttTask
     ESP.restart();
   }

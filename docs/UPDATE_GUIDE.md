@@ -238,6 +238,37 @@ Depuis la v2.11.0, **toute image téléchargée depuis GitHub est vérifiée par
 
 ## Notes de migration
 
+### L'apprentissage de la régulation pH survit à un redémarrage — depuis v2.27.0 (2026-08-30)
+
+**Aucune migration, aucune action requise.** Pas de changement de partition ni de format de configuration. Deux nouveaux enregistrements NVS apparaissent (instantané de l'intégrale pH, historique de charge sur 7 jours) ; leur **absence est le cas nominal** au premier démarrage et ne produit aucune erreur.
+
+> ⚠️ **À lire d'abord : votre installation est limitée par la POMPE, pas par la régulation.**
+>
+> Avec la limite horaire d'injection réglée à **5 min/h** et une pompe qui débite ~26 mL/min, le maximum **physiquement délivrable** est de **~911 mL par jour** sur 7 h de filtration, pour un besoin d'environ **1 800 mL/jour**. **Aucune amélioration de la régulation ne peut combler cet écart.**
+>
+> **L'alerte « régulation saturée » est donc VRAIE et légitime** : elle signale que la **limite horaire d'injection** est atteinte, pas un bidon vide ni une sonde en panne. Ce n'est pas un faux positif.
+
+- ⚠️ **Si vous relevez `phInjectionLimitMinutes`** (le seul levier réel), sachez qu'il augmente **proportionnellement** le volume injecté pendant les **15 minutes de retard de mélange**, période où la régulation dose sans voir encore l'effet des doses précédentes :
+
+| Limite horaire | Volume injecté pendant les 15 min | Excursion pH |
+|---|---:|---:|
+| **5 min/h** (défaut) | 130 mL | 0,046 |
+| 30 min/h | 780 mL | **0,28** |
+
+  à comparer à la marge de sécurité de **0,50 pH**. **Augmenter par paliers et surveiller le pH.**
+
+- **Ce que cette version change pour vous** : l'apprentissage de la régulation pH (la « réserve de correction » affichée en bas de la carte Régulation pH) **survit désormais à un redémarrage**. Un redémarrage coûtait **2,4 jours** de reconvergence ; il coûte maintenant **environ une heure**.
+- **La valeur n'est JAMAIS appliquée au démarrage.** Elle est mise en attente et n'est restaurée que si le bassin confirme lui-même, pendant **5 minutes de régulation effective**, un écart au-dessus du seuil de démarrage. Un pH déjà à sa consigne au retour du courant ⇒ **rien n'est restauré**. Elle est de plus **plafonnée**, **périmée au bout de 6 h**, invalidée par tout changement de vitesse de correction, de produit ou de consigne, et **désarmée après 3 redémarrages rapprochés**.
+- ⚠️ **Rien n'est restauré pendant les 3 premiers jours** suivant l'installation, ou après un effacement de la mémoire : le plafond de restauration se calcule sur la charge réellement observée du bassin, qui demande au moins 3 journées exploitables (≥ 2 h de filtration chacune). C'est volontaire.
+- **L'apprentissage résiste mieux aux à-coups** : une pluie légèrement acide effaçait auparavant **deux jours et demi** d'apprentissage d'un coup. Il faut désormais que l'écart soit **soutenu 15 minutes** pour déclencher la remise à zéro — la protection n'est pas suspendue pendant l'attente, elle est **graduée**.
+- **Les alertes de saturation arrivent au même moment qu'avant** en temps réel (~8 h, ~24 h, rappel ~48 h) : leurs seuils internes ont été recalibrés pour compenser le changement de cadence de calcul. **Rien à ajuster côté Home Assistant.**
+- **Sécurité inchangée** : limites journalière et horaire, seuils de plancher pH, butées sur la mesure brute, inhibition du chlore sur pH haut, pause mélange, plafond de la réserve de correction (6 mL/min) — tout reste en place. **Régulation ORP (chlore) : strictement inchangée.**
+- ⚠️ **Résultat pas encore vérifié sur le terrain.** Surveiller le pH et le compteur de dosage journalier pendant quelques jours.
+
+Le message de journal de purge de l'apprentissage change de format (`… pH franchement au-delà de la consigne **depuis plus de 15 min** …`) : un filtre de journal sur l'ancienne phrase exacte ne matche plus. Voir [ADR-0053](adr/0053-persistance-conditionnelle-integrale-ph.md) et [ADR-0054](adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md).
+
+> Aucune mise à jour du filesystem n'est nécessaire pour cette version : l'interface est inchangée.
+
 ### La régulation pH vise enfin sa consigne — depuis v2.26.0 (2026-08-28)
 
 **Aucune migration, aucune action requise.** Pas de changement de partition, de configuration NVS ni de format de données ; **aucun réglage utilisateur n'est modifié** (consigne, limites journalière et horaire, seuils de sécurité, modes : tout est inchangé).
@@ -249,8 +280,8 @@ La correction ajoute un second terme, qui **accumule le retard** au lieu de ne r
 - **Ce que vous devriez voir** : le pH descend vers sa consigne au lieu de plafonner, et s'y maintient à **+0,01** près (la valeur exacte à laquelle la régulation coupe de toute façon). L'approche est **lente par conception** — comptez quelques heures à une journée, pas quelques minutes.
 - ⚠️ **Résultat pas encore vérifié sur le terrain.** La correction est fondée sur la théorie du réglage et vérifiée en simulation, mais elle n'a pas encore tourné une saison sur un bassin réel. **Surveiller le pH et le compteur de dosage journalier pendant quelques jours.**
 - **Nouvelle information dans l'interface** : en bas de la carte « Régulation pH », en mode Automatique, une ligne « **Rattrapage accumulé : N %** » indique le remplissage de cette réserve de correction. `0 %` = réserve vide (normal quand le pH est à sa consigne). Un encart d'avertissement apparaît au-delà de **95 %** : la régulation demande alors tout ce qu'elle peut sans que le pH bouge — vérifier le **niveau du bidon**, l'**amorçage de la pompe** et le **TAC** de l'eau (une alcalinité élevée bloque le pH).
-- **Nouveauté Home Assistant** : trois entités `sensor` s'ajoutent automatiquement (« Piscine pH Rattrapage », « … Rattrapage Débit », « Piscine pH Intégrale »), plus une alerte `ph_integral_saturated` (avertissement après 2 h de saturation, critique après 6 h, rappelé toutes les 12 h). **Aucune entité existante n'est renommée ni supprimée** : les automations en place continuent de fonctionner.
-- **Sécurité inchangée** : limites journalière et horaire, seuils de plancher pH, butées sur la mesure brute, inhibition du chlore sur pH haut, pause mélange — tout reste en place. La réserve de correction est **plafonnée** (6 mL/min au maximum), **gelée** dès que le quota journalier dépasse 80 %, **purgée** après 24 h sans régulation, et **jamais conservée au redémarrage**.
+- **Nouveauté Home Assistant** : trois entités `sensor` s'ajoutent automatiquement (« Piscine pH Rattrapage », « … Rattrapage Débit », « Piscine pH Intégrale »), plus une alerte `ph_integral_saturated` (avertissement après 2 h de saturation, critique après 6 h, rappelé toutes les 12 h — *seuils recalibrés en v2.27.0 à 2 h 20 / 7 h / 14 h, pour une fenêtre en temps réel identique*). **Aucune entité existante n'est renommée ni supprimée** : les automations en place continuent de fonctionner.
+- **Sécurité inchangée** : limites journalière et horaire, seuils de plancher pH, butées sur la mesure brute, inhibition du chlore sur pH haut, pause mélange — tout reste en place. La réserve de correction est **plafonnée** (6 mL/min au maximum), **gelée** dès que le quota journalier dépasse 80 %, **purgée** après 24 h sans régulation, et **jamais conservée au redémarrage** *(ce dernier point est amendé en v2.27.0 : la réserve survit désormais à un redémarrage, sous conditions et avec confirmation par la mesure — voir la note ci-dessus)*.
 - **Régulation ORP (chlore) : strictement inchangée.**
 
 Le message de journal de configuration du correcteur change de format (`PID régulation: vitesse=… Ki_pH=… (Ti=…h, intMax=… pH·s, autorité=… mL/min) …`) : un filtre de journal sur « P temporisée » ou « Ki=0 » ne matche plus. Voir [ADR-0052](adr/0052-terme-integral-ph-dimensionne-par-autorite.md).

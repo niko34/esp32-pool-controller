@@ -45,10 +45,32 @@
 // charge basique mesurée (2,86 mL/min) et lever Ki deviendrait inutile.
 //
 // CE QUI RESTE INCHANGÉ (exigence explicite du gate pool-chemistry)
-//   - le RESET SEC à `error < -(startThreshold + kPhIntegralResetMargin)` ;
+//   - le SEUIL du reset sec, `error < -(startThreshold + kPhIntegralResetMargin)` ;
 //   - l'OUBLI exponentiel sous consigne (error < 0), demi-vie 1 h par pas fixes ;
-//   - la PÉREMPTION à 24 h sans évaluation ;
-//   - l'intégrale n'est JAMAIS persistée en NVS (un reboot repart de zéro).
+//   - la PÉREMPTION à 24 h sans évaluation.
+//
+// feature-084 (sujet 2) — LE RESET SEC EST TEMPORISÉ
+// ---------------------------------------------------
+// Le seuil ne bouge pas, son DÉCLENCHEMENT devient conditionné à une tenue de
+// kPhIntegralResetHoldMs de temps de BRANCHE (même base que la charge). Un
+// transitoire — une pluie suffit — n'efface donc plus deux jours et demi
+// d'apprentissage. Pendant l'attente la protection n'est pas suspendue mais
+// GRADUÉE : `error < 0` fait tourner l'oubli exponentiel ET la décharge signée.
+// Cf. constants.h, kPhIntegralResetHoldMs, pour la justification chimique.
+//
+// Conséquence sur l'ORDRE des étapes : la base de temps (ex-étape 2) passe
+// DEVANT le reset sec (ex-étape 1), puisque c'est elle qui produit le `dt` que
+// la tenue accumule. Aucun autre effet — après une purge, la base de temps est
+// réarmée exactement comme avant (pas de péremption fantôme).
+//
+// feature-084 (sujet 3) — LA PERSISTANCE NVS N'EST PAS ICI
+// --------------------------------------------------------
+// L'intégrale est désormais persistée (ADR-0052 amendé), sous sept conditions
+// cumulatives R1-R7 décrites dans constants.h. RIEN de tout cela ne vit dans ce
+// fichier : les DÉCISIONS sont dans `ph_persist_logic.h` (module pur voisin, lui
+// aussi testable en natif), le transport NVS dans config.cpp, et le câblage dans
+// pump_controller.cpp. Ce module-ci ne voit qu'un `st.integral` déjà posé,
+// exactement comme après un reset.
 // =============================================================================
 
 #include <math.h>
@@ -72,6 +94,9 @@ struct PhIntegralState {
   uint32_t lastTickMs     = 0;     // dernier tick automatique (0 = jamais évalué)
   uint32_t pendingMs      = 0;     // temps observé pas encore intégré (reliquat)
   uint32_t decayMs        = 0;     // dernier pas d'oubli appliqué (0 = pas d'épisode)
+  uint32_t resetHoldMs    = 0;     // feature-084 : tenue CUMULÉE de l'excursion
+                                   // franche sous la consigne (temps de branche).
+                                   // Remise à zéro à la moindre remontée.
   bool     satActive      = false; // hystérésis de saturation : épisode ouvert
   uint32_t anomalyHeldMs  = 0;     // tenue CUMULÉE de l'anomalie (temps de branche auto)
   uint32_t nextCriticalMs = 0;     // prochaine échéance de RAPPEL critical
@@ -96,6 +121,11 @@ struct PhIntegralInputs {
   float    ampFlow;           // débit MESURÉ à l'amplitude calibrée (mL/min)
   int      budgetMinPerHour;  // limite horaire d'injection (min/h ; 0 = illimitée)
   bool     quotaNearLimit;    // quota journalier au-delà de la fraction de gel
+  // Quota de CYCLES journalier épuisé (cyclesToday >= maxCyclesPerDay).
+  // Défaut `false` : une coquille qui ne renseigne pas ce champ ne gèle pas —
+  // c'est l'ancien comportement, et le champ n'est pas un critère de sécurité
+  // par lui-même (il ne fait que suspendre une accumulation stérile).
+  bool     cycleQuotaExhausted = false;
 };
 
 // Événement ponctuel du tick (pour la journalisation par la coquille).
@@ -195,8 +225,8 @@ inline bool phIntegralExpire(PhIntegralState& st, uint32_t nowMs) {
  * bande morte. Ce module ne fait qu'ENTRETENIR l'intégrale et la surveiller.
  *
  * Enchaînement, dans cet ordre exact :
- *   1. RESET SEC (excursion franche sous la consigne) — court-circuite tout ;
- *   2. base de temps : reliquat `pendingMs`, rejet des dt aberrants ;
+ *   1. base de temps : reliquat `pendingMs`, rejet des dt aberrants ;
+ *   2. RESET SEC TEMPORISÉ (excursion franche TENUE) — court-circuite tout ;
  *   3. demande `kp·e + ki·I` avec l'intégrale AVANT intégration, d'où le gel
  *      d'anti-windup (intégration conditionnelle classique) ;
  *   4. CHARGE SIGNÉE sur `(erreur − stopThreshold)`, par quanta ;
@@ -228,30 +258,15 @@ inline PhIntegralVerdict phIntegralTick(PhIntegralState& st,
   const float sustainable = phSustainableAvgFlow(in.ampFlow, in.budgetMinPerHour);
   v.sustainableMlPerMin = sustainable;
 
-  // --- 1. RESET SEC ----------------------------------------------------------
-  // Le seul rôle qu'aucune décharge progressive ne remplit : déclarer
-  // l'accumulation immédiatement CADUQUE sur une excursion FRANCHE de l'autre
-  // côté de la consigne (surcorrection réelle, apport externe, changement de
-  // produit) — −0,15 avec les défauts, soit trois fois le bruit résiduel du
-  // filtre. Conservé À L'IDENTIQUE (exigence du gate).
-  if (errorUsable && in.error < -(tun.startThreshold + kPhIntegralResetMargin)) {
-    const bool wasAlerting = (st.warnSent || st.critSent);
-    phIntegralReset(st);
-    st.lastTickMs = in.nowMs;  // le tick a bien eu lieu : pas de péremption fantôme
-    v.event = PhIntegralEvent::kDryReset;
-    v.emitClear = wasAlerting;
-    // Demande APRÈS la purge (intégrale nulle) : c'est l'état que décrit le
-    // message « alerte levée ». Publier la demande d'avant la purge dirait
-    // « saturé » dans la phrase même qui annonce la sortie de saturation.
-    v.demandMlPerMin = tun.kp * in.error;
-    return v;
-  }
-
-  // --- 2. BASE DE TEMPS ------------------------------------------------------
-  // Aucun temps n'est SYNTHÉTISÉ : un trou d'évaluation (pause mélange, garde
-  // bloquante, mode changé) est REJETÉ, jamais crédité d'un bloc. Le reliquat
+  // --- 1. BASE DE TEMPS ------------------------------------------------------
+  // Aucun temps n'est SYNTHÉTISÉ : un trou d'évaluation (mesure invalide, mode
+  // changé, filtration coupée) est REJETÉ, jamais crédité d'un bloc. Le reliquat
   // sous le quantum est reporté au tour suivant, donc aucun temps n'est perdu
   // non plus tant que la branche tourne.
+  //
+  // feature-084 : cette étape passe DEVANT le reset sec, qui a maintenant besoin
+  // du `dt` pour accumuler sa tenue. Le reset réarme lui-même `lastTickMs` après
+  // la purge, comme avant — l'ordre n'a aucun autre effet observable.
   uint32_t elapsed = 0;
   bool dtUsable = false;
   if (st.lastTickMs == 0) {
@@ -265,6 +280,59 @@ inline PhIntegralVerdict phIntegralTick(PhIntegralState& st,
       st.pendingMs += elapsed;
     } else {
       st.pendingMs = 0;  // trou d'évaluation : le reliquat n'a plus de sens
+    }
+  }
+
+  // --- 2. RESET SEC TEMPORISÉ (feature-084) ----------------------------------
+  // Le seul rôle qu'aucune décharge progressive ne remplit : déclarer
+  // l'accumulation CADUQUE sur une excursion FRANCHE de l'autre côté de la
+  // consigne (surcorrection réelle, apport externe, changement de produit) —
+  // −0,15 avec les défauts, soit trois fois le bruit résiduel du filtre. Le
+  // SEUIL est conservé à l'identique (exigence du gate).
+  //
+  // Ce qui change : la purge n'est plus INSTANTANÉE. L'excursion doit être
+  // CONTINUE pendant kPhIntegralResetHoldMs de TEMPS DE BRANCHE, et toute
+  // remontée au-dessus du seuil CONSTATÉE PAR UN TICK remet la tenue à zéro.
+  // Motif : un transitoire de −0,15 (une pluie légèrement acide suffit) effaçait
+  // deux jours et demi d'apprentissage, sans commune mesure avec le trouble
+  // observé.
+  //
+  // PRÉCISION QUI COMPTE — « temps de branche » veut dire ce qu'il dit. Quand
+  // phIntegralAccumulationAllowed() est faux (mode manuel, filtration coupée,
+  // mesure invalide), phIntegralTick n'est PAS appelé : `resetHoldMs` est alors
+  // GELÉ, pas remis à zéro. Une excursion de 10 min interrompue par une heure de
+  // filtration à l'arrêt reprend donc à 10 min, et non à zéro. La direction reste
+  // sûre — geler ne fait que RETARDER une purge, et une purge n'ajoute jamais
+  // d'autorité de dosage — mais la remise à zéro exige un tick, pas une simple
+  // absence d'excursion.
+  //
+  // CE DIFFÉRÉ NE SUSPEND AUCUNE PROTECTION. Pendant l'attente on tombe dans les
+  // étapes 4 et 5 avec une erreur franchement négative : la décharge signée ET
+  // l'oubli exponentiel travaillent tous les deux (−16 % d'intégrale sur les 15
+  // minutes). L'étape 7 lève par ailleurs immédiatement toute alerte en cours,
+  // l'anomalie exigeant une erreur POSITIVE. Seule la purge SÈCHE est différée,
+  // le temps de vérifier que l'excursion est réelle et non un à-coup.
+  const bool deepNegative =
+      errorUsable && in.error < -(tun.startThreshold + kPhIntegralResetMargin);
+  if (!deepNegative) {
+    st.resetHoldMs = 0;  // remontée : la tenue repart de zéro
+  } else {
+    if (dtUsable) {
+      // Saturation d'addition, comme la tenue d'anomalie : jamais de repliement.
+      const uint32_t room = kPhIntegralHoldNever - st.resetHoldMs;
+      st.resetHoldMs += (elapsed < room) ? elapsed : room;
+    }
+    if (st.resetHoldMs >= kPhIntegralResetHoldMs) {
+      const bool wasAlerting = (st.warnSent || st.critSent);
+      phIntegralReset(st);
+      st.lastTickMs = in.nowMs;  // le tick a bien eu lieu : pas de péremption fantôme
+      v.event = PhIntegralEvent::kDryReset;
+      v.emitClear = wasAlerting;
+      // Demande APRÈS la purge (intégrale nulle) : c'est l'état que décrit le
+      // message « alerte levée ». Publier la demande d'avant la purge dirait
+      // « saturé » dans la phrase même qui annonce la sortie de saturation.
+      v.demandMlPerMin = tun.kp * in.error;
+      return v;
     }
   }
 
@@ -284,12 +352,25 @@ inline PhIntegralVerdict phIntegralTick(PhIntegralState& st,
   // Fail-closed : amplitude invalide (pompe non caractérisée) ou demande non
   // finie ⇒ gel. Le second motif (quota journalier) est CONSERVÉ tel quel : il
   // couvre la sonde bloquée sur une valeur haute, que rien d'autre ne borne.
+  //
+  // TROISIÈME MOTIF (gate pool-chemistry, 30/08/2026) — QUOTA DE CYCLES ÉPUISÉ.
+  // L'anti-cycling était traité comme une suspension rythmique, alors qu'il ne se
+  // relève qu'au basculement de 24 h, exactement comme le quota volumique.
+  // Épuisé à 10 h du matin, il laissait l'intégrale charger NEUF HEURES sur une
+  // erreur que l'actionneur n'a plus le droit de résorber — de l'ordre de
+  // 1 300 pH·s de windup pur, servis d'un bloc au premier cycle du lendemain.
+  //
+  // Le gel, et SURTOUT PAS le prédicat d'accumulation : geler ne bloque que la
+  // direction qui aggrave (delta positif), la voie de DÉCHARGE reste ouverte —
+  // l'oubli exponentiel et la décharge signée continuent de travailler. Fermer
+  // le prédicat, lui, figerait l'intégrale à sa valeur haute.
   const float demand = tun.kp * in.error + tun.ki * st.integral;
   v.demandMlPerMin = demand;
 
   const bool outputSaturated =
       !(sustainable > 0.0f) || !isfinite(demand) || (demand >= sustainable);
-  const bool freeze = outputSaturated || in.quotaNearLimit;
+  const bool freeze =
+      outputSaturated || in.quotaNearLimit || in.cycleQuotaExhausted;
   v.frozen = freeze;
 
   // --- 4. CHARGE SIGNÉE ------------------------------------------------------

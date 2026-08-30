@@ -6,6 +6,7 @@
 #include <freertos/semphr.h>
 #include "dosing_logic.h"  // feature-056 : enum InstallMode (logique pure partagée)
 #include "constants.h"     // feature-074 : kPumpTypePulseFlowMlPerMin (calibration de type)
+#include "ph_persist_logic.h"  // feature-084 : PhIntegralSnapshot (logique PURE)
 
 // ==== Configuration des canaux PWM pompes ====
 // MOSFET IRLZ44N - PWM sur Gate, pins définis dans constants.h (PCB v2)
@@ -196,6 +197,15 @@ struct SafetyLimits {
   bool phLimitReached = false;
   bool orpLimitReached = false;
   char currentDayDate[9] = {};  // YYYYMMDD\0 — date locale du dernier reset journalier
+  // v2.27.0 (feature-084, R1) — DÉNOMINATEUR de la charge acide observée :
+  // minutes de circulation EFFECTIVES cumulées sur la journée courante (présence
+  // d'eau au sens de resolveWaterPresence(), tous modes d'installation). Persisté
+  // avec les compteurs de volume dans `pool-daily` : sans persistance, un
+  // redémarrage en cours de journée repartirait de zéro et SOUS-estimerait les
+  // minutes, donc SUR-estimerait la charge mL/min — soit un plafond de
+  // restauration trop généreux (fail-open). Archivé puis remis à zéro au
+  // basculement de date, au même point que les volumes.
+  uint32_t dailyFiltrationMinutes = 0;
 };
 
 struct PumpProtection {
@@ -268,6 +278,69 @@ void saveProductConfig();
 void loadProductConfig();
 void saveDailyCounters();
 void loadDailyCounters();
+
+// ==== feature-084 : instantané NVS de l'intégrale pH (ADR-0052 amendé) ====
+// Namespace NVS DÉDIÉ (`pool-phint`, clé unique `snap`) : aucune interaction
+// avec la config générale ni avec les compteurs journaliers, et une seule
+// écriture d'un bloc de 20 octets par flush (usure minimale, cf. R5).
+//
+// ICI, IL N'Y A QUE DU TRANSPORT. La structure `PhIntegralSnapshot`, son schéma,
+// son empreinte d'intégrité et TOUTES les décisions (R1-R7) vivent dans
+// `ph_persist_logic.h`, module PUR compilable en natif — sans quoi rien de tout
+// cela ne serait atteignable par les tests (ni config.cpp ni pump_controller.cpp
+// ne sont dans le `build_src_filter` de `env:native`).
+//
+// AUCUN configMutex n'est pris par ces deux fonctions, et c'est VOULU : la
+// charge utile appartient exclusivement à loopTask (`PumpControllerClass::
+// _phIntegral`), il n'y a donc aucune donnée partagée à sérialiser — le mutex ne
+// protégerait rien tout en introduisant une prise de verrou dans update(). Le
+// pilote NVS est lui-même réentrant.
+
+// Relit l'instantané. false si absent, de taille inattendue ou de CRC invalide —
+// dans tous ces cas `out` est laissé à ses valeurs par défaut (fail-closed).
+bool loadPhIntegralSnapshot(PhIntegralSnapshot& out);
+// Écrit l'instantané en le SCELLANT au préalable (`reserved` normalisé, `crc`
+// posé) : le champ `crc` fourni par l'appelant est ignoré.
+void savePhIntegralSnapshot(PhIntegralSnapshot& s);
+
+// ==== v2.27.0 (feature-084, R1) : anneau NVS de l'historique de charge ====
+// 7 journées {date, mL pH, minutes de filtration} dans UN blob de 64 octets
+// (`pool-daily`, clé `ph_load7`) — UNE écriture par jour, au basculement de date.
+// Même répartition que ci-dessus : ici le transport, toutes les décisions
+// (schéma, intégrité, insertion, exploitabilité, médiane) dans ph_persist_logic.h.
+//
+// Relit l'anneau. false si absent, de taille inattendue, d'un autre schéma ou de
+// CRC invalide — `out` est alors laissé VIDE, donc `days = 0` et aucune
+// restauration (fail-closed, rétrocompatible avec une NVS qui l'ignore).
+bool loadPhLoadHistory(PhLoadHistory& out);
+// Écrit l'anneau en le SCELLANT au préalable.
+void savePhLoadHistory(PhLoadHistory& h);
+// CLÔTURE d'une journée : ajoute l'échantillon à l'anneau, le persiste et
+// journalise (info) le volume et les minutes retenus. No-op si la date est
+// absente ou aberrante (horloge non synchronisée : une journée non datable
+// n'est pas archivable). Idempotent pour une même date.
+// À n'appeler QUE depuis les points EXISTANTS de basculement de date.
+// `sustainableMlPerMin` : débit moyen soutenable COURANT, pour le filet de
+// vraisemblance du journal (0 = inconnu ⇒ repli documenté).
+void recordPhLoadDay(const char* date8, float phMl, uint32_t filtrationMinutes,
+                     float sustainableMlPerMin);
+// Charge acide observée du bassin, relue depuis l'anneau NVS : médiane des mL/min
+// des journées exploitables. Prévu pour être appelé RAREMENT (au démarrage et à
+// chaque clôture de journée) — l'appelant met le résultat en cache. Réutilisable
+// tel quel par la dose de base apprise (feature-085), qui exige la même médiane.
+//
+// `sustainableMlPerMin` = phSustainableAvgFlow(débit d'amplitude CALIBRÉ, limite
+// horaire CONFIGURÉE). C'est un PARAMÈTRE et non une constante : le seuil de
+// vraisemblance doit suivre les réglages, sans quoi relever la limite horaire
+// (recommandation du gate) écarterait toutes les journées en silence.
+PhPersistLoadObservation readPhLoadObservation(float sustainableMlPerMin);
+// SOURCE UNIQUE du débit moyen soutenable de la voie pH (mL/min) : débit
+// d'amplitude CALIBRÉ de la pompe pH × limite horaire CONFIGURÉE. Rend 0 quand la
+// pompe n'est pas caractérisée — l'appelant retombe alors sur le repli documenté
+// (kPhLoadSustainableFallbackMlPerMin). Centralisée ici pour que le filet de
+// vraisemblance de l'anneau et le prédicat de saturation de l'intégrale ne
+// puissent pas diverger.
+float phSustainableFlowFromConfig();
 
 // ==== Mode Boost (feature-053) ====
 // Persistance NVS DÉDIÉE (namespace poolctrl, clés boost_active/boost_until) —

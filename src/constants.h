@@ -958,6 +958,27 @@ constexpr float kPhIntegralMaxFast =
 // non le bruit du filtre (~0,05 pH).
 constexpr float kPhIntegralResetMargin = 0.10f;
 
+// --- feature-084 (sujet 2) : le reset sec est CONSERVÉ mais TEMPORISÉ --------
+// Le gate du 30/08 le conserve — c'est le seul mécanisme RAPIDE sur une inversion
+// de sens (bascule ph_minus ↔ ph_plus, apport externe massif, recalibration) :
+// l'oubli à demi-vie 1 h met environ 3 h à vider 8 400 pH·s, ce qui est trop lent
+// pour une erreur qui a franchement changé de signe.
+//
+// Mais un reset TOTAL sur un transitoire de −0,15 (une pluie suffit) efface deux
+// jours et demi d'apprentissage. L'excursion doit donc être CONTINUE pendant
+// N minutes de temps de BRANCHE (même base que la charge : un trou d'évaluation
+// n'est jamais crédité), le compteur repartant de zéro dès la moindre remontée
+// au-dessus du seuil.
+//
+// CE DIFFÉRÉ N'EST PAS UNE PRISE DE RISQUE : pendant l'attente, `error < 0` fait
+// tourner l'OUBLI exponentiel et la décharge signée. La protection est donc
+// GRADUÉE (−16 % d'intégrale sur les 15 minutes), jamais suspendue ; seule la
+// purge INSTANTANÉE est différée le temps de vérifier que l'excursion est réelle.
+//
+// 15 min = la pause mélange (kPhMixingDelayMs) : en deçà, l'excursion mesurée
+// peut n'être que la dose précédente pas encore homogénéisée.
+constexpr uint32_t kPhIntegralResetHoldMs = 900000UL;  // 15 min de temps de branche
+
 // Demi-vie de l'OUBLI progressif de l'intégrale pendant une excursion sous la
 // consigne (option 2 du gate, retenue — cf. le commentaire C2 de
 // pump_controller.cpp pour la justification complète). Nécessaire parce que
@@ -1022,10 +1043,226 @@ constexpr float kPhIntegralFreezeDailyFraction = 0.80f;
 // l'intégrale resterait figée des jours, puis serait servie telle quelle au
 // retour en automatique, sur un bassin devenu étranger à la mesure qui l'a
 // chargée.
-// L'intégrale n'est JAMAIS persistée en NVS (cf. PIDController) : un reboot doit
-// repartir de zéro. Une valeur stockée — a fortiori corrompue — serait une
-// AUTORISATION DE DOSAGE PRÉ-CHARGÉE au boot.
 constexpr uint32_t kPhIntegralStaleResetMs = 86400000UL;  // 24 h
+
+// ============================================================================
+// feature-084 (sujet 3) — PERSISTANCE NVS de l'intégrale pH
+// ============================================================================
+// L'ADR-0052 l'INTERDISAIT (« ne jamais persister — une valeur stockée serait une
+// autorisation de dosage PRÉ-CHARGÉE au boot »). Le gate pool-chemistry du
+// 30/08/2026 ASSOUPLIT cette interdiction, l'ADR étant amendé en conséquence :
+// un redémarrage coûtait 2,4 jours de convergence, et le PANIC du 29/08
+// (bug-080) n'est pas élucidé.
+//
+// L'assouplissement est conditionné à SEPT garanties CUMULATIVES. Aucune n'est
+// facultative : retirée isolément, chacune ramène l'objection de l'ADR intacte.
+//
+//   R1 — PLAFOND CHIMIQUE de restauration (ci-dessous) ;
+//   R2 — INVALIDATION CONTEXTUELLE : CRC + schéma + vitesse de régulation + type
+//        de correction + consigne ; toute différence ⇒ zéro ;
+//   R3 — PÉREMPTION 6 h (= 1 Ti), pas 24 h ;
+//   R4 — CONFIRMATION PAR LA MESURE : restauration DIFFÉRÉE ;
+//   R5 — ÉCRITURE bornée (usure NVS) ;
+//   R6 — TRAÇABILITÉ (info à la restauration, warn au rejet) ;
+//   R7 — ANTI-BOUCLE DE BOOT.
+//
+// R1 — PLAFOND CHIMIQUE. VERSION CORRIGÉE (gate pool-chemistry, réexamen du
+// 30/08/2026 après le test signalant une marge étroite).
+//
+// CE QUE LE GATE A ÉTABLI. Le remplissage d'ÉQUILIBRE de l'intégrale vaut
+//     I* = (charge − kp × stopThreshold) / ki
+// soit, sur l'installation de référence, (2,86 − 0,08) / 3,704e-4 = 7 505 pH·s
+// = 46,3 % du plafond. C'est EXACTEMENT la frontière convergence / cycle limite
+// observée en simulation entre 30 % et 45 % : en dessous de I* la boucle finit
+// de charger (sens sûr) ; au-dessus, elle ne peut décharger qu'à 0,013 mL/min
+// par heure — d'où les six jours sans retour. Les 30 % valent donc 0,65·I* :
+// la marge réelle est de 35 %, et non de 50 %.
+//
+// LE DÉFAUT DE FORMULATION, BLOQUANT POUR LA FLOTTE. Écrit en fraction du
+// plafond, l'équilibre vaut f* = (charge − kp × stop) / autorité, soit
+// (charge − 0,08) / 6. L'égalité f* = 30 % se produit à charge = 1,88 mL/min.
+// TOUT BASSIN SOUS 1,88 mL/min — plus petit, bâché, TAC bas, acide plus
+// concentré, hors saison — voit le plafond forfaitaire de 30 % passer AU-DESSUS
+// de son propre équilibre, et l'argument « aucune restauration ne peut produire
+// un surdosage net » s'effondre. À 1,5 mL/min, f* = 23,7 % : 30 % restaurerait
+// 1,27× l'équilibre. Aggravant : un bassin deux fois plus petit a un gain pH
+// double, donc des excursions doublées. Chiffrage du risque : si la charge
+// disparaît, l'autorité parquée continue de doser pendant les 15 minutes
+// AVEUGLES de la pause mélange ⇒ excursion acide de 0,19 pH au plafond plein
+// (0,07 à 30 %), à comparer à kPhSafetyMargin = 0,50 — le plafond plein
+// consommerait 38 % de la garde en un seul temps mort.
+//
+// LE PLAFOND RETENU est donc le MINIMUM de deux termes :
+//   plafond = min( 0,30 × integralMax ,
+//                  0,50 × (charge_OBSERVÉE − kp × stopThreshold) / ki )
+// Le premier reste une BUTÉE ABSOLUE, jamais dépassée. Le second est la
+// vérification À L'EXÉCUTION que le static_assert (xi) ne pouvait pas faire :
+// il est calculé sur la charge RÉELLEMENT observée de CE bassin, pas sur celle
+// de l'installation de référence. Sur la référence il rend 3 753 pH·s = 23 %
+// (1,39 mL/min) au lieu de 30 % (1,80 mL/min).
+//
+// FAIL-CLOSED : la charge observée est la médiane des volumes pH journaliers sur
+// 7 jours, rapportée aux minutes de filtration du jour. Moins de 3 jours
+// d'historique exploitable ⇒ AUCUNE restauration. Un appareil neuf ne restaure
+// donc rien, ce qui est le comportement voulu.
+// ⚠️ CE CHIFFRE EST UNE DEMANDE, PAS UN VOLUME DÉLIVRÉ — distinction qui a déjà
+// coûté une conclusion erronée en revue (v2.27.0). La rédaction précédente disait
+// « charge MESURÉE », ce qui laissait croire à un relevé de pompe.
+//
+//   DEMANDE à l'équilibre (ci-dessous, 2,86 mL/min) : le BESOIN de neutralisation
+//   de l'installation de référence, ~1 800 mL/j rapportés aux minutes de
+//   filtration. C'est ce que la boucle CHERCHERAIT à injecter si rien ne la
+//   bornait ; c'est la grandeur qui fixe le remplissage d'équilibre I*.
+//
+//   DÉLIVRÉ (ce que l'anneau de charge observe, cf. plus bas) : `dailyPhInjectedMl`
+//   rapporté aux minutes de circulation — donc ce qui SORT réellement de la pompe,
+//   structurellement borné par la limite horaire d'injection × le débit
+//   d'amplitude. Sur la référence à 5 min/h, ce plafond vaut ~2,17 mL/min : le
+//   délivré ne peut PAS atteindre 2,86, et le déficit demande/délivré est
+//   précisément ce que le gate propose de combler en relevant la limite horaire.
+//
+// Les deux grandeurs ne sont donc jamais comparables directement, et le filet de
+// vraisemblance de l'anneau ne s'applique qu'à la SECONDE.
+constexpr float kPhEquilibriumLoadMlPerMin = 2.86f;  // DEMANDE à l'équilibre
+                                                     // (2026-08), réf.
+constexpr float kPhIntegralRestoreMaxFraction = 0.30f;  // butée absolue
+// Fraction de l'équilibre OBSERVÉ que l'on s'autorise à restaurer. 0,50 place la
+// restauration à mi-chemin de I*, dans la zone où la boucle converge (le sens
+// sûr), avec une marge de 50 % au lieu des 35 % du forfait.
+constexpr float kPhIntegralRestoreLoadFraction = 0.50f;
+// Fenêtre et exigence minimale d'historique pour que la charge observée fasse
+// foi. Sous le minimum, le plafond vaut ZÉRO (fail-closed) : mieux vaut
+// réapprendre en 2,4 jours que restaurer au-dessus de l'équilibre d'un bassin
+// qu'on n'a pas encore mesuré.
+constexpr uint8_t kPhIntegralRestoreHistoryWindowDays = 7;
+constexpr uint8_t kPhIntegralRestoreMinHistoryDays    = 3;
+
+// v2.27.0 — L'HISTORIQUE EXISTE ENFIN : anneau NVS de 7 journées
+// {date, mL pH, minutes de filtration}, archivé UNE fois par jour au basculement
+// de date (cf. ph_persist_logic.h et recordPhLoadDay dans config.cpp). Jusqu'ici
+// la charge observée rendait `days = 0` et RIEN n'était jamais restauré.
+//
+// CRITÈRE DE JOUR EXPLOITABLE : au moins kPhLoadDayMinFiltrationMin minutes de
+// circulation. Sous ce seuil le rapport mL/min ne décrit plus la charge du
+// bassin mais des transitoires : le délai de purge (stabilizationDelayMin,
+// 5 min par défaut) et la pause de mélange amputent une part fixe de la journée,
+// et le budget horaire d'injection (5 min/h) rend une journée courte
+// structurellement bornée par le quota, pas par la chimie. 2 h correspond au
+// minimum syndical d'un cycle de filtration hivernal ; en dessous, la journée est
+// écartée. Une journée à VOLUME NUL mais à circulation suffisante est en
+// revanche CONSERVÉE : l'écarter biaiserait la médiane VERS LE HAUT (fail-open),
+// alors que la garder ne peut que réduire le plafond de restauration.
+constexpr uint16_t kPhLoadDayMinFiltrationMin = 120;  // 2 h de circulation
+
+// Écart maximal entre deux tours de loop encore CRÉDITÉ au compteur de minutes de
+// circulation. Distinct de kPhIntegralMaxTickDtMs (10 s), et VOLONTAIREMENT plus
+// large : les deux compteurs ne courent pas le même risque. L'intégrale se
+// protège d'un dt aberrant qui la CHARGERAIT trop (fail-open) ; le dénominateur,
+// lui, ne risque que d'être TRONQUÉ — et un dénominateur tronqué SURÉVALUE la
+// charge mL/min, donc le plafond de restauration. Un tour long (flush LittleFS,
+// export d'historique, reconnexion réseau) perdait ainsi des minutes sans perdre
+// le volume correspondant, que `accountPumpVolume` crédite lui sur le delta
+// ENTIER. 60 s couvre tout ce qui n'est pas une panne franche ; au-delà, la
+// saturation à 1440 min/jour reste le garde-fou.
+constexpr uint32_t kPhLoadMinuteMaxTickDtMs = 60000UL;  // 60 s
+
+// FILET DE VRAISEMBLANCE PHYSIQUE (gate pool-chemistry, 30/08/2026) — plafond
+// au-delà duquel un rapport mL/min est la PREUVE d'un dénominateur corrompu, et
+// non l'observation d'un bassin très chargé.
+//
+// AUCUNE journée ne peut afficher un DÉLIVRÉ supérieur au débit moyen soutenable
+// de l'actionneur : la pompe elle-même ne le permet pas. Un rapport supérieur ne
+// peut donc venir que d'un numérateur complet posé sur un dénominateur amputé —
+// minutes perdues par un flush NVS inatteignable, compteur remis à zéro en cours
+// de journée, enregistrement à demi écrit. La journée est ÉCARTÉE, jamais
+// « corrigée » : on ne devine pas le dénominateur manquant.
+//
+// ⚠️ LE SEUIL EST UNE FONCTION, PAS UNE CONSTANTE. Le débit soutenable vaut
+// `phSustainableAvgFlow(ampFlow, budgetMinPerHour)` — le débit d'amplitude
+// CALIBRÉ de la pompe et la limite horaire CONFIGURÉE, tous deux réglables par
+// l'utilisateur. Le figer serait un piège silencieux : le gate recommande
+// justement de relever `phInjectionLimitMinutes` pour combler le déficit
+// demande/délivré, et à 15 min/h le délivré légitime atteint ~6,5 mL/min. Contre
+// un seuil figé à 2,17, TOUTES les journées deviendraient invraisemblables,
+// `days` retomberait à 0 et la restauration ne s'armerait plus jamais — sans un
+// mot dans le journal. La feature mourrait au moment exact où l'utilisateur
+// applique la recommandation.
+//
+// La marge de 10 % absorbe l'arrondi du volume au mL et le décalage d'une minute
+// entre les deux compteurs. Elle ne rattrape PAS un dénominateur tronqué : dans
+// le scénario de référence (360 min de maintenance perdues sur 480), le rapport
+// observé est 4× la vérité, très au-delà du filet.
+//
+// SENS DU FILTRE : il n'écarte que par le HAUT. Une journée à volume nul et
+// longue circulation reste CONSERVÉE — elle tire la médiane vers le bas, donc le
+// plafond de restauration aussi, c'est-à-dire du bon côté.
+//
+// VALEUR DE REPLI, et rien d'autre : 5/60 × 26 mL/min, c'est-à-dire les réglages
+// PAR DÉFAUT de l'installation de référence. Employée uniquement quand le débit
+// soutenable n'est pas calculable — pompe non caractérisée (`pulseFlow` nul au
+// sortir d'usine), configuration non encore chargée, valeur non finie. Ne JAMAIS
+// s'en servir comme seuil nominal.
+constexpr float kPhLoadSustainableFallbackMlPerMin = 2.17f;  // repli 5/60 × 26
+constexpr float kPhLoadDayMaxRateFactor    = 1.10f;   // tolérance d'arrondi
+static_assert(kPhLoadSustainableFallbackMlPerMin > 0.0f &&
+                  kPhLoadSustainableFallbackMlPerMin < kPhIntegralAuthorityMlPerMin,
+              "Repli de debit soutenable incoherent avec l'autorite integrale");
+static_assert(kPhLoadDayMaxRateFactor >= 1.0f && kPhLoadDayMaxRateFactor <= 1.5f,
+              "Tolerance du filet de vraisemblance hors de [1,0 ; 1,5]");
+static_assert(kPhLoadMinuteMaxTickDtMs >= kPhIntegralMaxTickDtMs &&
+                  kPhLoadMinuteMaxTickDtMs <= 300000UL,
+              "kPhLoadMinuteMaxTickDtMs doit couvrir au moins le dt de "
+              "l'intégrale et rester sous 5 min");
+
+// Version du schéma de l'anneau. Toute retouche de PhLoadDaySample / PhLoadHistory
+// DOIT l'incrémenter : un anneau d'un autre schéma est rejeté (historique vide,
+// donc days = 0 ⇒ fail-closed), jamais réinterprété.
+constexpr uint8_t kPhLoadHistorySchema = 1;
+
+static_assert(kPhLoadDayMinFiltrationMin >= 30 &&
+                  kPhLoadDayMinFiltrationMin <= 720,
+              "kPhLoadDayMinFiltrationMin hors plage raisonnable (30 min - 12 h)");
+
+// R3 — PÉREMPTION de l'instantané, en SECONDES d'horloge murale (l'âge est
+// mesuré sur time(), pas sur millis() : c'est justement le reboot qu'il faut
+// traverser). 6 h = UNE constante d'intégration à vitesse `normal` : au-delà, le
+// bassin a eu le temps de changer d'état et la valeur ne décrit plus la charge
+// courante. Sans heure valide (NTP/RTC non synchronisés), on n'écrit ni ne
+// restaure : un âge incalculable vaut un âge périmé (fail-closed).
+constexpr uint32_t kPhIntegralPersistMaxAgeS = 21600UL;  // 6 h
+
+// R4 — CONFIRMATION PAR LA MESURE. La valeur relue n'est PAS appliquée au boot :
+// elle reste CANDIDATE jusqu'à ce que le bassin confirme lui-même qu'une charge
+// acide est bien présente — filtre capteur prêt, porte de validité ouverte et
+// erreur au-dessus du seuil de DÉMARRAGE pendant 5 minutes consécutives de temps
+// de branche. Un pH déjà à la consigne au retour du courant ⇒ candidate rejetée.
+constexpr uint32_t kPhIntegralRestoreConfirmMs = 300000UL;  // 5 min
+
+// R4 (suite) — fenêtre d'ARMEMENT : au-delà, on renonce définitivement à lire
+// l'instantané. Évite de réessayer la lecture NVS indéfiniment quand l'heure ne
+// se synchronise jamais (installation hors ligne).
+constexpr uint32_t kPhIntegralRestoreArmWindowMs = 600000UL;  // 10 min après boot
+
+// R5 — ÉCRITURE. Au plus une par demi-heure ET seulement si la valeur a bougé de
+// plus de 5 % du plafond depuis la dernière écriture. Ordre de grandeur : ~2
+// écritures par jour de filtration en régime établi, à comparer aux 100 000
+// cycles garantis d'un secteur NVS. Le flush emprunte le point de sauvegarde
+// différée des compteurs journaliers (fin d'update, loopTask).
+constexpr uint32_t kPhIntegralPersistMinIntervalMs = 1800000UL;  // 30 min
+constexpr float    kPhIntegralPersistMinDeltaFrac  = 0.05f;      // 5 % du plafond
+
+// R7 — ANTI-BOUCLE DE BOOT. Au-delà de 3 restaurations SANS écriture normale
+// intercalée, la persistance se DÉSARME (plus aucune restauration jusqu'à la
+// prochaine écriture normale, qui remet le compteur à zéro). Motif : le PANIC du
+// 29/08 (bug-080) n'est pas élucidé — une boucle de redémarrage ne doit pas
+// recharger indéfiniment la même dose. Le compteur vit DANS l'instantané NVS :
+// il doit survivre au reboot qu'il compte.
+constexpr uint8_t kPhIntegralRestoreMaxStreak = 3;
+
+// Version du schéma de l'instantané (R2). Toute retouche de la structure, du
+// sens d'un champ ou de la sémantique de la valeur DOIT l'incrémenter : un
+// enregistrement de schéma différent est rejeté, jamais réinterprété.
+constexpr uint8_t kPhIntegralPersistSchema = 1;
 
 // --- C5 : observabilité de la saturation ------------------------------------
 // Une intégrale saturée EN SILENCE est la classe de défaut historique de ce
@@ -1053,19 +1290,58 @@ constexpr float    kPhIntegralSaturationClearPct = 85.0f;
 
 // Paliers de TENUE, comptés en temps de branche automatique (pas en temps mural)
 // et conditionnés à « saturée ET erreur toujours au-dessus du seuil d'ARRÊT ».
-constexpr uint32_t kPhIntegralSaturationWarnMs     = 7200000UL;   // 2 h → warning
-// N = 6 h = Ti à vitesse `normal`, soit UNE constante d'intégration entière à
-// autorité pleine. Au-delà, une correction qui n'a toujours pas ramené l'erreur
-// sous le seuil d'arrêt n'est plus un transitoire : c'est un bidon vide, un tube
-// désamorcé, une fuite ou une sonde figée. L'ancienne valeur de 24 h faisait
-// perdre une journée entière de produit avant le premier signalement.
-constexpr uint32_t kPhIntegralSaturationCriticalMs = 21600000UL;  // 6 h → critical
-// Rappel du critical tant que l'anomalie dure. 12 h : l'action corrective est
-// PHYSIQUE (aller voir le bidon, réamorcer, vérifier la sonde) et se fait au
-// mieux une fois par demi-journée — une anomalie née le soir est re-signalée le
-// matin, sans jamais dépasser deux lignes de journal et deux alertes MQTT par
-// jour pour une condition qui peut durer des semaines.
-constexpr uint32_t kPhIntegralSaturationReminderMs = 43200000UL;  // 12 h
+//
+// ===== feature-084 : RECALIBRATION IMPOSÉE PAR LE CHANGEMENT DE CADENCE ======
+// La BASE DE TEMPS est CONSERVÉE (temps de branche automatique) : c'est la seule
+// qui SUSPENDE l'épisode en `manual`, sous garde bloquante ou pendant un hiver
+// sans filtration, au lieu de le faire mûrir tout seul sur une erreur périmée.
+// Cette propriété est verrouillée par test natif et n'est pas négociable.
+//
+// En revanche, le TARIF de cette base a changé : le tick d'entretien est sorti de
+// la conjonction `canDose(0)`, il tourne donc plus souvent. À seuils inchangés,
+// les paliers mûriraient d'autant plus vite et signaleraient un transitoire de
+// rattrapage légitime — le faux positif qui décrédibilise l'alerte C5, dont c'est
+// la seule raison d'être. L'INTENTION de la recalibration est donc : laisser la
+// FENÊTRE DE PREUVE EN TEMPS RÉEL exactement telle qu'elle était en v2.26.0,
+// version validée sur le terrain.
+//
+// ⚠️ D'OÙ VIENT LE FACTEUR — À LIRE AVANT TOUTE RECALIBRATION FUTURE ⚠️
+// Le facteur est le RAPPORT DES DEUX RAPPORTS CYCLIQUES CHIFFRÉS PAR LE GATE
+// pool-chemistry du 30/08/2026, et rien d'autre. Une première rédaction avait
+// retenu ×4, repris d'une analyse d'impact PRÉLIMINAIRE (« le tick passe de
+// `canDose(0)` à toute la fenêtre de filtration », soit un rapport cyclique
+// implicitement porté à 100 %) sans le confronter au chiffrage du gate. Résultat
+// mesuré : la fenêtre réelle avant warning passait de ~8 h à ~27,6 h et celle
+// avant critical à ~3,4 jours — un bidon vide détecté 3,45× PLUS LENTEMENT,
+// l'inverse exact de l'intention. Règle qui en découle : ne recalibrer ces
+// paliers que sur un rapport cyclique CHIFFRÉ ET ARGUMENTÉ (celui du gate l'est,
+// cf. la note de vraisemblance plus bas), jamais sur une intuition d'impact.
+constexpr float kPhIntegralDutyV2260 = 0.25f;  // sous canDose(0) — chiffrage gate
+constexpr float kPhIntegralDutyF084  = 0.29f;  // prédicat d'entretien — idem
+// Paliers de la v2.26.0, VALIDÉS SUR LE TERRAIN : ce sont eux, divisés par le
+// rapport cyclique de l'époque, qui définissent les fenêtres réelles à préserver
+// (2 h / 0,25 = 8 h ; 6 h / 0,25 = 24 h ; 12 h / 0,25 = 48 h).
+constexpr uint32_t kPhIntegralSaturationWarnMsV2260     = 7200000UL;   // 2 h
+constexpr uint32_t kPhIntegralSaturationCriticalMsV2260 = 21600000UL;  // 6 h
+constexpr uint32_t kPhIntegralSaturationReminderMsV2260 = 43200000UL;  // 12 h
+//
+// CALCUL RETENU (facteur 0,29 / 0,25 = 1,16), arrondi à la minute ronde la plus
+// proche — l'écart d'arrondi vaut +0,6 % sur la fenêtre réelle, négligeable
+// devant l'incertitude du rapport cyclique lui-même :
+//   warning  : 2 h × 1,16 = 2,32 h  → 2 h 20 min de branche ≈ 8,0 h réelles
+//   critical : 6 h × 1,16 = 6,96 h  → 7 h     de branche ≈ 24,1 h réelles
+//   rappel   : 12 h × 1,16 = 13,92 h → 14 h   de branche ≈ 48,3 h réelles
+constexpr uint32_t kPhIntegralSaturationWarnMs     = 8400000UL;   // 2 h 20 → warning
+// ≈ 24 h réelles, soit ~3 jours de filtration à 7 h/jour. Au-delà, une correction
+// qui n'a toujours pas ramené l'erreur sous le seuil d'arrêt n'est plus un
+// transitoire : c'est un bidon vide, un tube désamorcé, une fuite ou une sonde
+// figée. C'est la valeur de la v2.26.0 exprimée dans la nouvelle base de temps.
+constexpr uint32_t kPhIntegralSaturationCriticalMs = 25200000UL;  // 7 h → critical
+// Rappel du critical tant que l'anomalie dure. ≈ 48 h réelles : l'action
+// corrective est PHYSIQUE (aller voir le bidon, réamorcer, vérifier la sonde) et
+// ne se fait pas plus souvent. Doit rester ≥ au palier critical (verrou (vii ter)
+// ci-dessous), sans quoi la première émission réarmerait immédiatement la suivante.
+constexpr uint32_t kPhIntegralSaturationReminderMs = 50400000UL;  // 14 h
 
 // --- Invariants verrouillés à la compilation --------------------------------
 // (i) L'autorité doit être strictement positive ET rester dans l'ordre de
@@ -1117,6 +1393,55 @@ static_assert(kPhIntegralSaturationPct > 50.0f && kPhIntegralSaturationPct < 100
               "Seuil de saturation d'integrale hors de ]50 ; 100[ %");
 static_assert(kPhIntegralSaturationWarnMs < kPhIntegralSaturationCriticalMs,
               "Palier warning de saturation d'integrale au-dela du palier critical");
+// (vii bis-a) feature-084 — LA FENÊTRE DE PREUVE EN TEMPS RÉEL EST L'INVARIANT.
+// Les paliers sont exprimés en temps de BRANCHE ; ce qui a été validé sur le
+// terrain, ce sont les fenêtres RÉELLES correspondantes. Tout changement du
+// rapport cyclique du tick d'entretien doit donc être répercuté sur les paliers,
+// et ce verrou l'impose : palier / rapport cyclique doit rester constant à 5 %
+// près (la tolérance couvre l'arrondi des paliers à la minute ronde).
+// Forme croisée (pas de division) : neuf × ancien_duty ≈ ancien × nouveau_duty.
+static_assert(
+    kPhIntegralSaturationWarnMs * kPhIntegralDutyV2260 >
+            0.95f * kPhIntegralSaturationWarnMsV2260 * kPhIntegralDutyF084 &&
+        kPhIntegralSaturationWarnMs * kPhIntegralDutyV2260 <
+            1.05f * kPhIntegralSaturationWarnMsV2260 * kPhIntegralDutyF084,
+    "Palier warning recalibre hors de la fenetre reelle validee en v2.26.0: "
+    "verifier le rapport cyclique (facteur = duty_apres / duty_avant)");
+static_assert(
+    kPhIntegralSaturationCriticalMs * kPhIntegralDutyV2260 >
+            0.95f * kPhIntegralSaturationCriticalMsV2260 * kPhIntegralDutyF084 &&
+        kPhIntegralSaturationCriticalMs * kPhIntegralDutyV2260 <
+            1.05f * kPhIntegralSaturationCriticalMsV2260 * kPhIntegralDutyF084,
+    "Palier critical recalibre hors de la fenetre reelle validee en v2.26.0");
+static_assert(
+    kPhIntegralSaturationReminderMs * kPhIntegralDutyV2260 >
+            0.95f * kPhIntegralSaturationReminderMsV2260 * kPhIntegralDutyF084 &&
+        kPhIntegralSaturationReminderMs * kPhIntegralDutyV2260 <
+            1.05f * kPhIntegralSaturationReminderMsV2260 * kPhIntegralDutyF084,
+    "Rappel de critical recalibre hors de la fenetre reelle validee en v2.26.0");
+// CE QUE SONT CES DEUX RAPPORTS CYCLIQUES, DIT EXACTEMENT (correction du gate
+// pool-chemistry du 30/08/2026 : la rédaction précédente les qualifiait de
+// « MESURES, pas des estimations » — c'était faux, et faux dans le paragraphe
+// même qui interdit de recalibrer sur une estimation).
+//
+// Ce sont des ESTIMATIONS ANALYTIQUES du gate, pas des relevés de terrain :
+// 0,29 vaut 7/24 exactement, soit la fenêtre de filtration quotidienne de la
+// spec PRIVÉE de son facteur de disponibilité 0,85 ; 0,25 est le chiffrage
+// correspondant sous `canDose(0)`.
+//
+// POURQUOI CELA RESTE ACCEPTABLE : le sens de l'erreur est CONSERVATEUR. Ces
+// deux nombres ne servent qu'au RAPPORT 0,29/0,25 qui recalibre les paliers.
+// Sur-estimer l'ANCIEN rapport cyclique raccourcit les paliers recalibrés, donc
+// avance les alertes : le défaut possible est le faux positif — jamais le
+// silence, qui est la classe de défaut que C5 existe pour éliminer.
+//
+// Bornes de vraisemblance, pour empêcher qu'une future retouche y glisse un
+// chiffre invraisemblable ou fasse régresser la cadence.
+static_assert(kPhIntegralDutyV2260 > 0.0f && kPhIntegralDutyV2260 <= 1.0f &&
+                  kPhIntegralDutyF084 > 0.0f && kPhIntegralDutyF084 <= 1.0f &&
+                  kPhIntegralDutyF084 >= kPhIntegralDutyV2260,
+              "Rapports cycliques du tick d'entretien hors de ]0 ; 1] ou en "
+              "regression : le predicat elargi ne peut pas ticker moins souvent");
 // (vii bis) L'hystérésis d'alerte doit RELÂCHER franchement sous le seuil
 // d'entrée : sans bande, une demande oscillante réarmerait le rappel sans fin.
 static_assert(kPhIntegralSaturationClearPct > 50.0f &&
@@ -1164,6 +1489,72 @@ static_assert(kPhIntegralDecayMaxSteps >=
                   8 * (kPhIntegralDecayHalfLifeMs / kPhIntegralDecayStepMs),
               "Rattrapage d'oubli borne a moins de 8 demi-vies : un residu "
               "significatif pourrait survivre a une longue excursion");
+// (x) feature-084 — TEMPORISATION DU RESET SEC. Elle doit couvrir au moins la
+// pause mélange (sinon l'excursion observée peut n'être que la dose précédente
+// pas encore homogénéisée) et rester franchement sous la demi-vie de l'oubli :
+// au-delà, l'oubli aurait déjà fait le travail et le reset sec ne servirait plus
+// à rien — or c'est le SEUL mécanisme rapide sur inversion de sens.
+static_assert(kPhIntegralResetHoldMs >= kPhMixingDelayMs &&
+                  kPhIntegralResetHoldMs < kPhIntegralDecayHalfLifeMs,
+              "Temporisation du reset sec sous la pause melange (excursion non "
+              "homogeneisee) ou au-dela de la demi-vie d'oubli (reset inutile)");
+// (xi) feature-084 — R1 : LE VERROU CHIMIQUE DE LA PERSISTANCE. La contribution
+// intégrale RESTAURABLE doit rester STRICTEMENT sous la charge d'équilibre
+// mesurée du bassin : une restauration ne peut alors jamais, à elle seule,
+// produire un surdosage net. C'est l'invariant qui permet d'amender l'ADR-0052 ;
+// le violer rétablit l'objection « autorisation de dosage pré-chargée ».
+//
+// ⚠️ CE VERROU NE VAUT QUE POUR L'INSTALLATION DE RÉFÉRENCE. Il compare la butée
+// absolue à UNE charge mesurée, celle du bassin de développement ; il ne dit
+// rien d'un bassin de la flotte dont la charge serait plus faible (sous
+// 1,88 mL/min, la butée passe au-dessus de l'équilibre). La vérification qui
+// vaut pour TOUT bassin est faite À L'EXÉCUTION, sur la charge observée, par
+// phPersistRestoreCap() dans ph_persist_logic.h — ce static_assert n'en est que
+// le garde-fou de compilation.
+static_assert(kPhIntegralRestoreMaxFraction * kPhIntegralAuthorityMlPerMin <
+                  kPhEquilibriumLoadMlPerMin,
+              "Plafond de restauration de l'integrale pH au-dela de la charge "
+              "d'equilibre mesuree : une restauration pourrait surdoser seule");
+static_assert(kPhIntegralRestoreMaxFraction > 0.0f &&
+                  kPhIntegralRestoreMaxFraction <= 0.5f,
+              "Fraction de restauration de l'integrale hors de ]0 ; 0,5]");
+// (xi bis) Le terme dérivé de la charge OBSERVÉE doit rester dans la moitié
+// convergente de l'équilibre : à I* la boucle bascule sur un cycle limite dont
+// elle ne revient pas (0,013 mL/min de décharge par heure, six jours sans
+// retour). 0,50 laisse 50 % de marge ; au-delà de 0,80 il n'y en aurait plus.
+static_assert(kPhIntegralRestoreLoadFraction > 0.0f &&
+                  kPhIntegralRestoreLoadFraction <= 0.80f,
+              "Fraction de l'equilibre observe restauree hors de ]0 ; 0,8] : "
+              "au-dela, la boucle s'installe sur un cycle limite");
+// (xi ter) L'exigence d'historique doit tenir dans la fenêtre observée et rester
+// strictement positive : à zéro jour, le fail-closed disparaîtrait et un appareil
+// neuf restaurerait sur une charge inconnue.
+static_assert(kPhIntegralRestoreMinHistoryDays >= 1 &&
+                  kPhIntegralRestoreMinHistoryDays <=
+                      kPhIntegralRestoreHistoryWindowDays,
+              "Exigence d'historique de charge nulle ou superieure a la fenetre "
+              "d'observation");
+// (xii) R3 : la péremption de l'instantané ne doit pas dépasser une constante
+// d'intégration (au-delà, la valeur ne décrit plus la charge courante) et doit
+// rester franchement plus courte que la péremption d'inactivité de 24 h.
+static_assert(kPhIntegralPersistMaxAgeS <= (uint32_t)kPhIntegralTiNormalS &&
+                  kPhIntegralPersistMaxAgeS * 1000UL < kPhIntegralStaleResetMs,
+              "Peremption de l'instantane d'integrale au-dela d'un Ti ou de la "
+              "peremption d'inactivite");
+// (xiii) R4 : la confirmation doit durer plusieurs quanta d'intégration (sinon
+// un seul tick suffirait) et rester très inférieure à la péremption (sinon la
+// candidate mourrait de vieillesse avant d'avoir pu être confirmée).
+static_assert(kPhIntegralRestoreConfirmMs >= 10UL * kPhIntegralChargeQuantumMs &&
+                  kPhIntegralRestoreConfirmMs < kPhIntegralPersistMaxAgeS * 100UL,
+              "Fenetre de confirmation de restauration trop courte (un tick "
+              "suffirait) ou trop longue devant la peremption");
+// (xiv) R5/R7 : bornes de l'écriture et du garde-fou anti-boucle.
+static_assert(kPhIntegralPersistMinDeltaFrac > 0.0f &&
+                  kPhIntegralPersistMinDeltaFrac < kPhIntegralRestoreMaxFraction,
+              "Seuil d'ecriture NVS nul, ou superieur au plafond de restauration "
+              "(l'integrale ne serait jamais persistee sous ce plafond)");
+static_assert(kPhIntegralRestoreMaxStreak >= 1 && kPhIntegralRestoreMaxStreak <= 5,
+              "Nombre de restaurations consecutives tolerees hors de [1 ; 5]");
 
 // ============================================================================
 // SENSOR FROZEN DETECTION — Détection capteur figé (feature-022 Passe 2)

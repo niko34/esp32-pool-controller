@@ -45,6 +45,54 @@
 //   - l'ordonnanceur d'impulsions (pouls discret, pause mélange, temps minimum
 //     d'injection) n'est pas modélisé : `flow` est la demande MOYENNE, ce qui est
 //     exactement la grandeur que le module et computePidPure manipulent.
+//
+// feature-084 (v2.27.0) — CE QUE CE FICHIER COUVRE, ET CE QU'IL NE COUVRE PAS
+// ---------------------------------------------------------------------------
+// Trois sujets sont livrés ; leur testabilité native est TRÈS inégale, et il faut
+// le savoir avant de lire le vert de cette suite comme une garantie.
+//
+//   SUJET 2 — RESET SEC TEMPORISÉ : ENTIÈREMENT COUVERT. Le mécanisme vit dans
+//   le module pur (`st.resetHoldMs`, étape 2 de phIntegralTick). Tenue, remise à
+//   zéro sur remontée, base de temps de branche, et surtout la PROTECTION
+//   GRADUÉE pendant l'attente (décharge signée + oubli exponentiel) — c'est
+//   l'argument de sûreté du gate, il est vérifié ici (bloc « B »).
+//
+//   SUJET 1 — CADENCE : COUVERT SEULEMENT PAR SES EFFETS BORNÉS. Le prédicat
+//   `PumpControllerClass::phIntegralAccumulationAllowed()` est une méthode PRIVÉE
+//   de la coquille, qui interroge `sensors`, `mqttCfg`, `esp_task_wdt_status()` et
+//   `_phGuardBlockingNow` : RIEN de tout cela ne compile en natif, et il n'existe
+//   aucune extraction pure. Autrement dit :
+//     • « n'accumule pas en `manual` / sous garde bloquante / filtre non prêt /
+//       calibration < 2 points / stabilisation » N'EST PAS TESTÉ ICI, et ne peut
+//       pas l'être sans extraire le prédicat dans un header pur (patron ADR-0017,
+//       exactement ce qui a été fait pour ph_integral_logic.h). Une mutation qui
+//       rendrait le prédicat permissif en `manual` NE TUERAIT AUCUN test.
+//     • ce qui EST testable, et qui est testé (bloc « D ») : les BORNES chimiques
+//       que le gate invoque pour justifier d'accumuler dans les états rythmiques —
+//       sur-crédit d'une pause mélange, et plafonnement par le gel d'anti-windup
+//       quand la limite horaire est épuisée.
+//
+//   SUJET 3 — PERSISTANCE NVS : LE MOINS COUVERT, ALORS QUE C'EST LE PLUS RISQUÉ.
+//   Le blob et son empreinte (`PhIntegralSnapshot`, `phIntegralSnapshotCrc`) sont
+//   dans src/config.{h,cpp}, qui tirent <Arduino.h>, freertos et <Preferences.h> :
+//   config.cpp n'est PAS dans le `build_src_filter` de l'env native et ne peut pas
+//   y entrer. La séquence de décision R1-R7 (clamp, CRC, schéma, contexte,
+//   péremption, confirmation différée, anti-boucle) est écrite en ligne dans
+//   PumpControllerClass::loadPhIntegralSnapshotDeferred() /
+//   tickPhIntegralPersistence(), sans extraction pure. Conséquence nette :
+//     • NE SONT PAS TESTABLES ICI : le calcul du CRC et son rejet, le rejet sur
+//       schéma / contexte (vitesse, produit, consigne, plafond), le rejet à 7 h,
+//       la confirmation de 5 min et son abandon si l'erreur retombe, le
+//       désarmement après 3 restaurations, la cadence d'écriture. Supprimer la
+//       vérification de CRC ou le clamp R1 NE TUE AUCUN test de cette suite.
+//     • CE QUI EST TESTÉ (bloc « R ») : le CONTRAT NUMÉRIQUE des sept conditions
+//       (valeurs et encadrements mutuels), et surtout la PROPRIÉTÉ CHIMIQUE que
+//       R1 est censé garantir — une restauration au plafond de 30 % ne peut pas
+//       faire passer le bassin sous la consigne, alors qu'une restauration au
+//       plafond PLEIN le fait. Cela verrouille la FRACTION, pas le CLAMP.
+//   Le correctif recommandé (hors périmètre du test-engineer, qui ne touche pas
+//   src/) est l'extraction d'un `ph_persist_logic.h` pur rendant un verdict
+//   « accepter / rejeter + motif » à partir d'un instantané et d'un contexte.
 // =============================================================================
 
 #include <unity.h>
@@ -171,6 +219,15 @@ struct ProdStats {
   float minErrLastDay;
   float maxErrLastDay;
   float meanErrLastDay;
+  // feature-084 : minimum sur TOUTE la simulation, transitoire initial compris.
+  // Les statistiques « dernier jour » décrivent le régime établi ; une excursion
+  // ACIDE provoquée par un état initial (une restauration NVS, précisément) est un
+  // TRANSITOIRE — la moyenne du dernier jour ne la voit jamais.
+  float minErrEver;
+  // feature-084 : demande MAXIMALE observée pendant la PREMIÈRE HEURE, c'est-à-dire
+  // pendant le transitoire de restauration NVS. C'est la grandeur que R1 borne :
+  // l'« autorisation de dosage pré-chargée » que l'ADR-0052 refusait.
+  float firstHourMaxFlow;
   float finalIntegral;
   float finalFillPct;
   float totalMl;
@@ -180,9 +237,16 @@ struct ProdStats {
   long  criticalCount;
 };
 
+// `initialIntegral` / `initialError` : état de DÉPART de la boucle. Défauts nuls
+// = comportement historique (sortie de boot, bassin à la consigne). Non nuls, ils
+// modélisent le scénario de restauration NVS (R4 n'applique la valeur relue
+// qu'après 5 min d'erreur au-dessus du seuil de démarrage : l'erreur de départ
+// est donc, par construction, franchement positive).
 static ProdStats simulateProduction(float kp, float ki, float integralMax,
                                     int budgetMinPerHour, int days,
-                                    DeadbandPolicy policy) {
+                                    DeadbandPolicy policy,
+                                    float initialIntegral = 0.0f,
+                                    float initialError = 0.0f) {
   const long steps = (long)days * kTicksPerDay;
   const long lastDayFrom = steps - kTicksPerDay;
 
@@ -194,7 +258,8 @@ static ProdStats simulateProduction(float kp, float ki, float integralMax,
   tun.startThreshold = kStartThreshold;
   tun.stopThreshold = kStopThreshold;
 
-  float error = 0.0f;
+  st.integral = initialIntegral;
+  float error = initialError;
   float lastError = 0.0f;
   bool active = false;
   uint32_t now = kT0;
@@ -202,6 +267,8 @@ static ProdStats simulateProduction(float kp, float ki, float integralMax,
   ProdStats s;
   s.maxErrLastDay = -1e9f;
   s.minErrLastDay = 1e9f;
+  s.minErrEver = error;
+  s.firstHourMaxFlow = 0.0f;
   s.totalMl = 0.0f;
   s.everFrozen = false;
   s.everSaturated = false;
@@ -242,10 +309,14 @@ static ProdStats simulateProduction(float kp, float ki, float integralMax,
     }
     active = shouldDose;
     s.totalMl += flow * kPidDtSec / 60.0f;
+    if (i < (long)(3600.0f / kPidDtSec) && flow > s.firstHourMaxFlow) {
+      s.firstHourMaxFlow = flow;
+    }
 
     error += kPlantPhPerFlowPerSec * (kLoadMlPerMin - flow) * kPidDtSec;
     now += (uint32_t)(kPidDtSec * 1000.0f);
 
+    if (error < s.minErrEver) s.minErrEver = error;
     if (i >= lastDayFrom) {
       if (error > s.maxErrLastDay) s.maxErrLastDay = error;
       if (error < s.minErrLastDay) s.minErrLastDay = error;
@@ -640,15 +711,49 @@ static PhIntegralTuning tuning(float ki = kPhKiNormal,
 // aucune saturation parasite ne vient geler les scénarios d'accumulation.
 static PhIntegralInputs inputs(uint32_t nowMs, float error,
                                float ampFlow = kAmpFlow, int budget = 0,
-                               bool quota = false) {
+                               bool quota = false, bool cycles = false) {
   PhIntegralInputs in;
   in.nowMs = nowMs;
   in.error = error;
   in.ampFlow = ampFlow;
   in.budgetMinPerHour = budget;
   in.quotaNearLimit = quota;
+  in.cycleQuotaExhausted = cycles;
   return in;
 }
+
+// -----------------------------------------------------------------------------
+// feature-084 — TENIR une condition pendant N ms de temps de BRANCHE
+// -----------------------------------------------------------------------------
+// Le reset sec n'est plus instantané : un scénario d'excursion ne se décrit plus
+// par « un tick sous le seuil » mais par « le seuil TENU pendant une durée ». Ce
+// helper avance le curseur de temps `t` par pas de `pasMs` (10 s par défaut,
+// c'est-à-dire la frontière haute du dt acceptable) et rend le verdict du DERNIER
+// tick ; `purges` compte les purges sèches rencontrées en chemin.
+//
+// `dureeMs` est du temps de BRANCHE si `pasMs <= kPhIntegralMaxTickDtMs` ; au-delà
+// c'est du temps MURAL non crédité, ce qui sert justement à tester la distinction.
+static PhIntegralVerdict tenirPendant(PhIntegralState& st,
+                                      const PhIntegralTuning& tun, float error,
+                                      uint32_t dureeMs, uint32_t& t,
+                                      int* purges = nullptr,
+                                      uint32_t pasMs = kPhIntegralMaxTickDtMs,
+                                      float ampFlow = kAmpFlow, int budget = 0) {
+  PhIntegralVerdict v;
+  const uint32_t fin = t + dureeMs;
+  if (purges != nullptr) *purges = 0;
+  while (t < fin) {
+    t += pasMs;
+    v = phIntegralTick(st, inputs(t, error, ampFlow, budget), tun);
+    if (purges != nullptr && v.event == PhIntegralEvent::kDryReset) (*purges)++;
+  }
+  return v;
+}
+
+// Excursion FRANCHE de référence : au-delà du seuil de purge (−0,15 avec les
+// défauts), donc éligible au reset sec — dérivée, jamais recodée en dur.
+static const float kSeuilPurge = kStartThreshold + kPhIntegralResetMargin;
+static const float kExcursionFranche = -(kSeuilPurge + 0.01f);  // −0,16
 
 // --- Base de temps ------------------------------------------------------------
 
@@ -919,6 +1024,71 @@ void test_P_fraction_de_gel_sur_quota_journalier(void) {
   TEST_ASSERT_TRUE(st.integral > 0.0f);
 }
 
+// ⭐ QUOTA DE CYCLES ÉPUISÉ (gate pool-chemistry du 30/08/2026) — l'anti-cycling
+// ne se relève qu'au basculement de 24 h, exactement comme le quota volumique :
+// il appartient donc au GEL, et non aux suspensions rythmiques. Épuisé à 10 h du
+// matin, il laissait l'intégrale charger neuf heures sur une erreur que
+// l'actionneur n'avait plus le droit de résorber.
+void test_P_quota_de_cycles_epuise_gele_la_charge_pas_la_decharge(void) {
+  const PhIntegralTuning tun = tuning();
+
+  // (a) charge INTERDITE tant que les cycles sont épuisés — 9 h d'erreur franche
+  //     n'ajoutent rien. Sans le gel, (0,50 − 0,01) × 32 400 s ≈ 15 876 pH·s
+  //     seraient accumulés, soit le plafond d'anti-windup plein.
+  PhIntegralState up;
+  up.integral = 2000.0f;
+  up.lastTickMs = kT0;
+  for (int i = 0; i < 3240; ++i) {  // 9 h par pas de 10 s
+    PhIntegralVerdict v = phIntegralTick(
+        up, inputs(kT0 + (uint32_t)(i + 1) * 10000u, 0.50f, kAmpFlow, 0,
+                   /*quota*/false, /*cycles*/true), tun);
+    TEST_ASSERT_TRUE(v.frozen);
+  }
+  TEST_ASSERT_FLOAT_WITHIN(kEps, 2000.0f, up.integral);
+
+  // (b) la DÉCHARGE reste ouverte sous le même gel : c'est la différence entre
+  //     geler et fermer le prédicat d'accumulation. Le prédicat figerait
+  //     l'intégrale à sa valeur haute ; le gel la laisse redescendre.
+  PhIntegralState down;
+  down.integral = 2000.0f;
+  down.lastTickMs = kT0;
+  for (int i = 0; i < 360; ++i) {  // 1 h
+    PhIntegralVerdict v = phIntegralTick(
+        down, inputs(kT0 + (uint32_t)(i + 1) * 10000u, 0.0f, kAmpFlow, 0,
+                     /*quota*/false, /*cycles*/true), tun);
+    TEST_ASSERT_TRUE(v.frozen);
+  }
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 2000.0f - 36.0f, down.integral);
+
+  // (c) drapeau retombé (nouveau jour) : la même situation accumule à nouveau —
+  //     c'est bien LUI qui gelait, et le gel n'a rien latché.
+  PhIntegralState libre;
+  libre.lastTickMs = kT0;
+  PhIntegralVerdict v = phIntegralTick(
+      libre, inputs(kT0 + 10000u, 0.50f, kAmpFlow, 0, false, /*cycles*/false), tun);
+  TEST_ASSERT_FALSE(v.frozen);
+  TEST_ASSERT_TRUE(libre.integral > 0.0f);
+}
+
+// Les trois motifs de gel sont INDÉPENDANTS et disjonctifs : chacun suffit seul.
+void test_P_les_trois_motifs_de_gel_sont_disjonctifs(void) {
+  const PhIntegralTuning tun = tuning();
+  const uint32_t t = kT0 + 10000u;
+
+  PhIntegralState a; a.lastTickMs = kT0;
+  TEST_ASSERT_TRUE(phIntegralTick(a, inputs(t, 0.5f, kAmpFlow, /*budget*/5), tun)
+                       .frozen);  // saturation de sortie seule
+  PhIntegralState b; b.lastTickMs = kT0;
+  TEST_ASSERT_TRUE(phIntegralTick(b, inputs(t, 0.5f, kAmpFlow, 0, true, false), tun)
+                       .frozen);  // quota volumique seul
+  PhIntegralState c; c.lastTickMs = kT0;
+  TEST_ASSERT_TRUE(phIntegralTick(c, inputs(t, 0.5f, kAmpFlow, 0, false, true), tun)
+                       .frozen);  // quota de cycles seul
+  PhIntegralState d; d.lastTickMs = kT0;
+  TEST_ASSERT_FALSE(phIntegralTick(d, inputs(t, 0.5f, kAmpFlow, 0, false, false), tun)
+                        .frozen);  // aucun des trois
+}
+
 // --- C2 : reset sec et oubli exponentiel --------------------------------------
 
 // LE TUEUR SILENCIEUX : −0,011 pH n'efface plus six heures d'accumulation.
@@ -944,36 +1114,217 @@ void test_P_erreur_moins_0011_n_efface_pas_l_integrale(void) {
   TEST_ASSERT_TRUE(st.integral < charged);         // mais l'oubli travaille
 }
 
+// RÉÉCRIT (feature-084) — le SEUIL est inchangé, sa satisfaction ne suffit plus.
+// L'ancienne version concluait sur UN tick ; elle figeait donc la purge
+// INSTANTANÉE, qui n'est plus le comportement. On tient désormais chaque
+// excursion sur toute la fenêtre de tenue : seule celle qui franchit VRAIMENT le
+// seuil, et le tient, purge.
 void test_P_reset_sec_uniquement_au_dela_de_moins_015(void) {
-  const float seuil = kStartThreshold + kPhIntegralResetMargin;  // 0,15
   const PhIntegralTuning tun = tuning();
+  int purges = 0;
 
-  // Juste EN DEÇÀ (−0,14) : pas de purge.
+  // Juste EN DEÇÀ (−0,14), tenu DEUX fois la fenêtre : jamais de purge, et la
+  // tenue ne s'arme même pas.
   PhIntegralState a;
   a.integral = 12000.0f;
   a.lastTickMs = kT0;
-  PhIntegralVerdict v = phIntegralTick(a, inputs(kT0 + 10000u, -(seuil - 0.01f)), tun);
-  TEST_ASSERT_TRUE(v.event != PhIntegralEvent::kDryReset);
-  TEST_ASSERT_TRUE(a.integral > 11000.0f);
+  uint32_t ta = kT0;
+  tenirPendant(a, tun, -(kSeuilPurge - 0.01f), 2u * kPhIntegralResetHoldMs, ta, &purges);
+  TEST_ASSERT_EQUAL_INT(0, purges);
+  TEST_ASSERT_EQUAL_UINT32(0u, a.resetHoldMs);
+  TEST_ASSERT_TRUE(a.integral > 0.0f);  // l'oubli travaille, il n'efface pas tout
 
-  // Frontière stricte : −0,15 pile n'est PAS < −0,15 → pas de purge.
+  // Frontière stricte : −0,15 PILE n'est pas < −0,15 → pas de purge, même tenu.
   PhIntegralState b;
   b.integral = 12000.0f;
   b.lastTickMs = kT0;
-  v = phIntegralTick(b, inputs(kT0 + 10000u, -seuil), tun);
-  TEST_ASSERT_TRUE(v.event != PhIntegralEvent::kDryReset);
+  uint32_t tb = kT0;
+  tenirPendant(b, tun, -kSeuilPurge, 2u * kPhIntegralResetHoldMs, tb, &purges);
+  TEST_ASSERT_EQUAL_INT(0, purges);
+  TEST_ASSERT_EQUAL_UINT32(0u, b.resetHoldMs);
 
-  // AU-DELÀ (−0,16) : purge immédiate et complète.
+  // AU-DELÀ (−0,16) : la tenue s'arme, mais RIEN n'est purgé avant son terme.
   PhIntegralState c;
   c.integral = 12000.0f;
   c.lastTickMs = kT0;
-  v = phIntegralTick(c, inputs(kT0 + 10000u, -(seuil + 0.01f)), tun);
+  uint32_t tc = kT0;
+  tenirPendant(c, tun, kExcursionFranche,
+               kPhIntegralResetHoldMs - kPhIntegralMaxTickDtMs, tc, &purges);
+  TEST_ASSERT_EQUAL_INT(0, purges);
+  TEST_ASSERT_EQUAL_UINT32(kPhIntegralResetHoldMs - kPhIntegralMaxTickDtMs, c.resetHoldMs);
+  const float avantPurge = c.integral;
+  TEST_ASSERT_TRUE(avantPurge > 0.0f);
+
+  // …et au terme exact de la tenue, la purge tombe, complète.
+  tc += kPhIntegralMaxTickDtMs;
+  PhIntegralVerdict v = phIntegralTick(c, inputs(tc, kExcursionFranche), tun);
   TEST_ASSERT_TRUE(v.event == PhIntegralEvent::kDryReset);
-  TEST_ASSERT_FLOAT_WITHIN(kEps, 12000.0f, v.integralBefore);
+  TEST_ASSERT_FLOAT_WITHIN(kEps, avantPurge, v.integralBefore);
   TEST_ASSERT_FLOAT_WITHIN(kEps, 0.0f, c.integral);
   TEST_ASSERT_EQUAL_UINT32(0u, c.decayMs);
+  TEST_ASSERT_EQUAL_UINT32(0u, c.resetHoldMs);  // la tenue repart de zéro aussi
   // La base de temps est RÉARMÉE au tick : pas de péremption fantôme derrière.
-  TEST_ASSERT_EQUAL_UINT32(kT0 + 10000u, c.lastTickMs);
+  TEST_ASSERT_EQUAL_UINT32(tc, c.lastTickMs);
+}
+
+// =============================================================================
+// B — feature-084, sujet 2 : LA TEMPORISATION DU RESET SEC
+// =============================================================================
+// Ce que le gate a acheté avec ce différé : un transitoire de −0,15 (une pluie
+// suffit) n'efface plus deux jours et demi d'apprentissage. Ce qu'il a promis en
+// échange : « protection graduée, pas suspendue ». Les deux moitiés du marché
+// sont vérifiées ici — la seconde par le test `..._la_protection_tourne_toujours`,
+// sans lequel l'argument de sûreté du gate ne repose sur rien.
+
+// LA FRONTIÈRE. Non déclenché à 14 min, déclenché à 15 — dérivé de la constante,
+// jamais recodé (seul le test de contrat ci-dessous fige la valeur elle-même).
+void test_P_reset_sec_non_declenche_a_14_min_declenche_a_15(void) {
+  const PhIntegralTuning tun = tuning();
+  const uint32_t uneMinute = 60000UL;
+  const uint32_t presqueLaTenue = kPhIntegralResetHoldMs - uneMinute;  // 14 min
+
+  PhIntegralState st;
+  st.integral = 12000.0f;
+  st.lastTickMs = kT0;
+  uint32_t t = kT0;
+  int purges = 0;
+
+  tenirPendant(st, tun, kExcursionFranche, presqueLaTenue, t, &purges);
+  TEST_ASSERT_EQUAL_INT(0, purges);                       // 14 min : rien
+  TEST_ASSERT_EQUAL_UINT32(presqueLaTenue, st.resetHoldMs);
+  TEST_ASSERT_TRUE(st.integral > 0.0f);
+
+  tenirPendant(st, tun, kExcursionFranche, uneMinute, t, &purges);
+  TEST_ASSERT_EQUAL_INT(1, purges);                       // 15 min : purge, UNE fois
+  TEST_ASSERT_FLOAT_WITHIN(kEps, 0.0f, st.integral);
+}
+
+// LA REMISE À ZÉRO. Une seule remontée au-dessus du seuil et la tenue repart de
+// zéro : deux excursions de 14 min séparées par un souffle ne purgent PAS. C'est
+// exactement la propriété qui distingue « excursion réelle » de « à-coup ».
+void test_P_la_tenue_du_reset_repart_a_zero_a_la_moindre_remontee(void) {
+  const PhIntegralTuning tun = tuning();
+  const uint32_t uneMinute = 60000UL;
+  const uint32_t presqueLaTenue = kPhIntegralResetHoldMs - uneMinute;
+
+  PhIntegralState st;
+  st.integral = 12000.0f;
+  st.lastTickMs = kT0;
+  uint32_t t = kT0;
+  int purges = 0;
+
+  tenirPendant(st, tun, kExcursionFranche, presqueLaTenue, t, &purges);
+  TEST_ASSERT_EQUAL_UINT32(presqueLaTenue, st.resetHoldMs);
+
+  // UN SEUL tick au-dessus du seuil (−0,14 : toujours sous la consigne, mais pas
+  // une excursion franche) suffit à annuler la tenue.
+  t += kPhIntegralMaxTickDtMs;
+  phIntegralTick(st, inputs(t, -(kSeuilPurge - 0.01f)), tun);
+  TEST_ASSERT_EQUAL_UINT32(0u, st.resetHoldMs);
+
+  // Deuxième excursion de 14 min : toujours pas de purge (la tenue a bien
+  // recommencé à zéro et non repris là où elle s'était arrêtée).
+  tenirPendant(st, tun, kExcursionFranche, presqueLaTenue, t, &purges);
+  TEST_ASSERT_EQUAL_INT(0, purges);
+  TEST_ASSERT_EQUAL_UINT32(presqueLaTenue, st.resetHoldMs);
+  TEST_ASSERT_TRUE(st.integral > 0.0f);
+
+  // La minute manquante, elle, déclenche.
+  tenirPendant(st, tun, kExcursionFranche, uneMinute, t, &purges);
+  TEST_ASSERT_EQUAL_INT(1, purges);
+}
+
+// L'ARGUMENT DE SÛRETÉ DU GATE, vérifié : pendant l'attente, la protection n'est
+// pas suspendue mais GRADUÉE. Les DEUX voies de décharge tournent — l'oubli
+// exponentiel ET la décharge signée. La démonstration est faite par ENCADREMENT :
+// l'intégrale observée doit tomber sous CHACUNE des deux références « un seul
+// mécanisme actif ». Si l'une des deux voies était coupée, l'encadrement casse.
+void test_P_pendant_l_attente_du_reset_la_protection_tourne_toujours(void) {
+  const PhIntegralTuning tun = tuning();
+  const float charge = 12000.0f;
+  const uint32_t attente = kPhIntegralResetHoldMs - 60000UL;  // 14 min, avant la purge
+
+  // Référence 1 — BORNE HAUTE de l'« oubli seul » : le nombre de pas d'oubli
+  // applicables sur la fenêtre, au facteur de pas du module (aucune valeur
+  // recopiée). Borne HAUTE car l'épisode d'oubli s'arme au premier tick, ce qui
+  // lui coûte un pas ; l'inégalité reste donc valide dans le sens qu'on teste.
+  float oubliSeulBorne = charge;
+  const uint32_t pasDOubli =
+      (attente - kPhIntegralMaxTickDtMs) / kPhIntegralDecayStepMs;
+  for (uint32_t i = 0; i < pasDOubli; ++i) oubliSeulBorne *= kPhIntegralDecayStepFactor;
+  // Référence 2 — DÉCHARGE SIGNÉE SEULE : (erreur − seuil d'arrêt) × durée.
+  const float perteParDecharge =
+      (kStopThreshold - kExcursionFranche) * (float)(attente / 1000u);
+  const float dechargeSeule = charge - perteParDecharge;
+
+  PhIntegralState st;
+  st.integral = charge;
+  st.lastTickMs = kT0;
+  uint32_t t = kT0;
+  int purges = 0;
+  tenirPendant(st, tun, kExcursionFranche, attente, t, &purges);
+
+  TEST_ASSERT_EQUAL_INT(0, purges);          // on est bien AVANT la purge…
+  TEST_ASSERT_TRUE(st.resetHoldMs > 0u);     // …et la tenue court
+  TEST_ASSERT_TRUE(st.decayMs != 0u);        // épisode d'oubli ARMÉ
+
+  // Sous la référence « oubli seul » ⇒ la décharge signée a bien tourné EN PLUS
+  // (marge dérivée : au moins la moitié de la décharge théorique de la fenêtre).
+  TEST_ASSERT_TRUE(st.integral < oubliSeulBorne - 0.5f * perteParDecharge);
+  // Sous la référence « décharge seule » ⇒ l'oubli exponentiel a bien tourné.
+  TEST_ASSERT_TRUE(st.integral < dechargeSeule - 500.0f);
+  // Ordre de grandeur annoncé par le gate (« −16 % sur les 15 minutes ») : la
+  // protection graduée est réelle, sans être une purge déguisée.
+  const float perte = (charge - st.integral) / charge;
+  TEST_ASSERT_TRUE(perte > 0.10f);
+  TEST_ASSERT_TRUE(perte < 0.30f);
+
+  // Et quand la purge finit par tomber, elle abandonne l'intégrale DÉJÀ ENTAMÉE,
+  // pas les 12 000 pH·s du départ.
+  PhIntegralVerdict v = tenirPendant(st, tun, kExcursionFranche, 60000UL, t, &purges);
+  TEST_ASSERT_EQUAL_INT(1, purges);
+  TEST_ASSERT_TRUE(v.integralBefore < charge);
+}
+
+// La tenue se compte en temps de BRANCHE, comme la charge et comme la tenue
+// d'anomalie : des ticks espacés au-delà du dt maximal (branche dégradée) ne la
+// font PAS mûrir toute seule. Sans cela, un appareil qui tourne mal purgerait son
+// apprentissage sur une base de temps qu'il ne maîtrise pas.
+void test_P_la_tenue_du_reset_se_compte_en_temps_de_branche(void) {
+  const PhIntegralTuning tun = tuning();
+  PhIntegralState st;
+  st.integral = 12000.0f;
+  st.lastTickMs = kT0;
+  uint32_t t = kT0;
+  int purges = 0;
+
+  // 2 h de temps MURAL par pas de 30 s (> kPhIntegralMaxTickDtMs) : aucun dt
+  // n'est crédité, donc la tenue reste à zéro malgré une excursion permanente.
+  tenirPendant(st, tun, kExcursionFranche, 2u * 3600000UL, t, &purges,
+               /*pasMs*/30000u);
+  TEST_ASSERT_EQUAL_INT(0, purges);
+  TEST_ASSERT_EQUAL_UINT32(0u, st.resetHoldMs);
+  // L'oubli, lui, a bien tourné (asymétrie assumée, cf. étape 5 du module) : la
+  // protection ne dépend donc pas de la qualité de la base de temps.
+  TEST_ASSERT_TRUE(st.integral < 0.30f * 12000.0f);
+}
+
+// CONTRAT NUMÉRIQUE de la temporisation — ici la VALEUR est le sujet : 15 min,
+// c'est la pause mélange, en deçà de laquelle l'excursion mesurée peut n'être que
+// la dose précédente pas encore homogénéisée.
+void test_P_temporisation_du_reset_encadree_par_la_chimie(void) {
+  TEST_ASSERT_EQUAL_UINT32(900000UL, kPhIntegralResetHoldMs);
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kPhMixingDelayMs, kPhIntegralResetHoldMs);
+  // Franchement sous la demi-vie de l'oubli : au-delà, l'oubli aurait déjà fait le
+  // travail et le reset sec — seul mécanisme RAPIDE sur inversion de sens — ne
+  // servirait plus à rien.
+  TEST_ASSERT_TRUE(kPhIntegralResetHoldMs < kPhIntegralDecayHalfLifeMs);
+  // …et très en deçà de la constante d'intégration : la purge reste « rapide »
+  // devant la dynamique qu'elle est censée corriger.
+  TEST_ASSERT_TRUE((float)kPhIntegralResetHoldMs < 0.25f * kPhIntegralTiNormalS * 1000.0f);
+  // La tenue doit rester représentable en pas de dt acceptables (sinon elle ne
+  // pourrait jamais s'accumuler complètement).
+  TEST_ASSERT_TRUE(kPhIntegralResetHoldMs > kPhIntegralMaxTickDtMs);
 }
 
 // Oubli exponentiel : demi-vie d'UNE HEURE. Les ticks sont espacés de 60 s (donc
@@ -1144,6 +1495,7 @@ void test_P_reset_remet_tout_l_etat_a_neuf(void) {
   st.lastTickMs = kT0;
   st.pendingMs = 700;
   st.decayMs = kT0;
+  st.resetHoldMs = 4242;  // feature-084 : la tenue fait partie de l'état à purger
   st.satActive = true;
   st.anomalyHeldMs = 12345;
   st.nextCriticalMs = 999;
@@ -1154,6 +1506,7 @@ void test_P_reset_remet_tout_l_etat_a_neuf(void) {
   TEST_ASSERT_EQUAL_UINT32(0u, st.lastTickMs);
   TEST_ASSERT_EQUAL_UINT32(0u, st.pendingMs);
   TEST_ASSERT_EQUAL_UINT32(0u, st.decayMs);
+  TEST_ASSERT_EQUAL_UINT32(0u, st.resetHoldMs);
   TEST_ASSERT_FALSE(st.satActive);
   TEST_ASSERT_EQUAL_UINT32(0u, st.anomalyHeldMs);
   TEST_ASSERT_EQUAL_UINT32(0u, st.nextCriticalMs);
@@ -1263,11 +1616,15 @@ void test_P_saturation_sans_erreur_residuelle_n_est_pas_une_anomalie(void) {
   TEST_ASSERT_TRUE(st.integral < 8000.0f);
 }
 
-// Paliers 2 h → warning, 6 h → critical, puis RAPPEL toutes les 12 h.
-void test_P_paliers_2h_6h_puis_rappel_toutes_les_12h(void) {
-  TEST_ASSERT_EQUAL_UINT32(7200000UL, kPhIntegralSaturationWarnMs);
-  TEST_ASSERT_EQUAL_UINT32(21600000UL, kPhIntegralSaturationCriticalMs);
-  TEST_ASSERT_EQUAL_UINT32(43200000UL, kPhIntegralSaturationReminderMs);
+// RÉÉCRIT (feature-084) — l'ancienne version codait 7 200 000 / 21 600 000 /
+// 43 200 000 en dur : elle figeait la CALIBRATION, alors que le sujet du test est
+// la MÉCANIQUE des paliers (un warning, puis un critical, puis des rappels
+// périodiques qui ne retombent jamais dans le silence). Tout est dérivé ; les
+// valeurs elles-mêmes sont verrouillées par le test de recalibration dédié.
+void test_P_paliers_warn_puis_critical_puis_rappels(void) {
+  // Ordonnancement STRUCTUREL des trois seuils (invariant (vii ter) du gate).
+  TEST_ASSERT_TRUE(kPhIntegralSaturationWarnMs < kPhIntegralSaturationCriticalMs);
+  TEST_ASSERT_TRUE(kPhIntegralSaturationReminderMs >= kPhIntegralSaturationCriticalMs);
 
   const PhIntegralTuning tun = tuning(/*ki*/0.0f);
   PhIntegralState st;
@@ -1277,9 +1634,14 @@ void test_P_paliers_2h_6h_puis_rappel_toutes_les_12h(void) {
   long warns = 0, crits = 0;
   uint32_t warnAt = 0, firstCritAt = 0, secondCritAt = 0, thirdCritAt = 0;
   uint32_t t = kT0;
-  const long kTicks31h = 31L * 3600L / 10L;  // 11 160 ticks : couvre 2, 6, 18 et 30 h
-  for (long i = 0; i < kTicks31h; ++i) {
-    t += 10000u;
+  // Fenêtre DÉRIVÉE : de quoi voir le critical et DEUX rappels, plus une marge
+  // d'une heure de branche pour prouver qu'il n'en tombe pas un troisième.
+  const uint32_t pas = kPhIntegralMaxTickDtMs;
+  const uint64_t fenetreMs = (uint64_t)kPhIntegralSaturationCriticalMs +
+                             2ULL * kPhIntegralSaturationReminderMs + 3600000ULL;
+  const long ticks = (long)(fenetreMs / pas);
+  for (long i = 0; i < ticks; ++i) {
+    t += pas;
     PhIntegralVerdict v =
         phIntegralTick(st, inputs(t, error, kAmpFlow, kSatBudget), tun);
     if (v.emitWarn) {
@@ -1293,19 +1655,88 @@ void test_P_paliers_2h_6h_puis_rappel_toutes_les_12h(void) {
       if (crits == 3) thirdCritAt = v.anomalyHeldMs;
     }
   }
-  // Warning UNE seule fois, au palier de 2 h.
+  // Warning UNE seule fois, à son palier.
   TEST_ASSERT_EQUAL_INT(1, warns);
-  TEST_ASSERT_UINT32_WITHIN(10000u, kPhIntegralSaturationWarnMs, warnAt);
-  // Critical à 6 h, puis rappels à 18 h et 30 h — un état anormal qui dure ne
-  // doit PAS retomber dans le silence.
+  TEST_ASSERT_UINT32_WITHIN(pas, kPhIntegralSaturationWarnMs, warnAt);
+  // Critical à son palier, puis rappels — un état anormal qui dure ne doit PAS
+  // retomber dans le silence.
   TEST_ASSERT_EQUAL_INT(3, crits);
-  TEST_ASSERT_UINT32_WITHIN(10000u, kPhIntegralSaturationCriticalMs, firstCritAt);
-  TEST_ASSERT_UINT32_WITHIN(10000u,
+  TEST_ASSERT_UINT32_WITHIN(pas, kPhIntegralSaturationCriticalMs, firstCritAt);
+  TEST_ASSERT_UINT32_WITHIN(pas,
                             kPhIntegralSaturationCriticalMs + kPhIntegralSaturationReminderMs,
                             secondCritAt);
-  TEST_ASSERT_UINT32_WITHIN(10000u,
+  TEST_ASSERT_UINT32_WITHIN(pas,
                             kPhIntegralSaturationCriticalMs + 2u * kPhIntegralSaturationReminderMs,
                             thirdCritAt);
+}
+
+// ⚠️ SENTINELLE — feature-084 : LA RECALIBRATION DES PALIERS C5.
+// -----------------------------------------------------------------------------
+// HISTORIQUE, à conserver : la première version de ce test figeait le facteur ×4
+// annoncé — « le tick tournait sous canDose(0) (~25 % du temps), il tourne
+// désormais sur TOUTE la fenêtre », donc ×4, à fenêtre réelle prétendument
+// inchangée. Or le rapport cyclique chiffré par le gate lui-même ne passait pas de
+// 25 % à 100 % mais de 25 % à 29 %, soit ×1,16. Le test a EXHIBÉ l'écart (il
+// exigeait 28 800 000, la constante valait 8 400 000) et la recalibration a été
+// corrigée. On le GARDE, réécrit sur les valeurs retenues.
+//
+// CE QU'IL SURVEILLE, et que rien d'autre ne surveille à l'exécution :
+// l'invariant « palier ÷ rapport cyclique = constante », c'est-à-dire la fenêtre
+// de preuve en TEMPS RÉEL — la seule grandeur qui ait un sens pour l'exploitant.
+// constants.h le verrouille par trois static_assert à 5 % près ; ceux-ci peuvent
+// être relâchés dans le même geste que les paliers. Ici, la référence terrain
+// (v2.26.0 : 2 h / 6 h / 12 h de branche à 25 %) est RÉÉCRITE EN DUR : une
+// recalibration future ne peut pas la déplacer avec elle.
+void test_P_SENTINELLE_recalibration_laisse_la_fenetre_reelle_inchangee(void) {
+  // 1. La référence terrain v2.26.0, en dur — indépendante de constants.h.
+  const uint32_t kWarnV2260 = 7200000UL;   // 2 h de branche — validé terrain
+  const uint32_t kCritV2260 = 21600000UL;  // 6 h de branche — validé terrain
+  const uint32_t kRappV2260 = 43200000UL;  // 12 h de branche — validé terrain
+  // …et son report dans constants.h, qui sert de base aux static_assert.
+  TEST_ASSERT_EQUAL_UINT32(kWarnV2260, kPhIntegralSaturationWarnMsV2260);
+  TEST_ASSERT_EQUAL_UINT32(kCritV2260, kPhIntegralSaturationCriticalMsV2260);
+  TEST_ASSERT_EQUAL_UINT32(kRappV2260, kPhIntegralSaturationReminderMsV2260);
+
+  // 2. Les paliers RETENUS (facteur 1,16, pas 4).
+  TEST_ASSERT_EQUAL_UINT32(8400000UL,  kPhIntegralSaturationWarnMs);      // 2 h 20
+  TEST_ASSERT_EQUAL_UINT32(25200000UL, kPhIntegralSaturationCriticalMs);  // 7 h
+  TEST_ASSERT_EQUAL_UINT32(50400000UL, kPhIntegralSaturationReminderMs);  // 14 h
+
+  // 3. Les rapports cycliques déclarés au gate — ce sont EUX qui justifient le
+  //    facteur ; les figer empêche de « corriger » un palier en bougeant sa base.
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.25f, kPhIntegralDutyV2260);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.29f, kPhIntegralDutyF084);
+
+  // 4. LA PROPRIÉTÉ : la fenêtre de preuve en temps RÉEL est inchangée, palier par
+  //    palier (8 h / 24 h / 48 h), à 1 % près — soit l'arrondi de +0,6 % entre le
+  //    facteur appliqué (1,1667) et le rapport des rapports cycliques (1,16).
+  struct { uint32_t avant, apres; float heures; const char* nom; } paliers[] = {
+      {kWarnV2260, kPhIntegralSaturationWarnMs,      8.0f, "warning"},
+      {kCritV2260, kPhIntegralSaturationCriticalMs, 24.0f, "critical"},
+      {kRappV2260, kPhIntegralSaturationReminderMs, 48.0f, "rappel"},
+  };
+  for (int i = 0; i < 3; ++i) {
+    const float heuresAvant = paliers[i].avant / kPhIntegralDutyV2260 / 3600000.0f;
+    const float heuresApres = paliers[i].apres / kPhIntegralDutyF084 / 3600000.0f;
+    char msg[128];
+    snprintf(msg, sizeof(msg), "palier %s : %.2f h avant, %.2f h apres",
+             paliers[i].nom, (double)heuresAvant, (double)heuresApres);
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f * paliers[i].heures, paliers[i].heures,
+                                     heuresAvant, msg);
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f * heuresAvant, heuresAvant, heuresApres,
+                                     msg);
+    // Et le facteur appliqué au palier suit bien celui du rapport cyclique.
+    const float facteurPalier = (float)paliers[i].apres / (float)paliers[i].avant;
+    const float facteurDuty = kPhIntegralDutyF084 / kPhIntegralDutyV2260;
+    TEST_ASSERT_FLOAT_WITHIN_MESSAGE(0.01f * facteurDuty, facteurDuty,
+                                     facteurPalier, msg);
+    TEST_ASSERT_TRUE_MESSAGE(facteurPalier < 2.0f, msg);  // ×4 ⇒ ce test tombe
+  }
+
+  // 5. Le rappel n'est plus aligné sur le palier critical (il l'était en v2.26.0
+  //    par un ×4 tronqué) : il vaut le double, comme le voulait la v2.26.0.
+  TEST_ASSERT_EQUAL_UINT32(2u * kPhIntegralSaturationCriticalMs,
+                           kPhIntegralSaturationReminderMs);
 }
 
 // La tenue se compte en temps de BRANCHE AUTOMATIQUE : des ticks espacés au-delà
@@ -1329,21 +1760,26 @@ void test_P_la_tenue_de_l_anomalie_ne_court_pas_en_temps_mural(void) {
 }
 
 // Fin d'anomalie : l'épisode alerté est CLOS (la coquille lève l'alerte) et la
-// tenue repart de zéro — une deuxième alerte devra remûrir 2 h.
+// tenue repart de zéro — une deuxième alerte devra remûrir tout le palier.
+// RÉÉCRIT (feature-084) : l'ancienne version ne pilotait que 3 h en dur, ce qui ne
+// franchit plus le palier de warning recalibré. La durée est désormais DÉRIVÉE.
 void test_P_fin_d_anomalie_leve_l_alerte_et_remet_la_tenue_a_zero(void) {
   const PhIntegralTuning tun = tuning(/*ki*/0.0f);
   PhIntegralState st;
   st.lastTickMs = kT0;
   uint32_t t = kT0;
-  for (int i = 0; i < 1080; ++i) {  // 3 h saturées → warning émis
-    t += 10000u;
+  // Le palier de warning, plus 10 min de branche de marge → warning émis.
+  const uint32_t pas = kPhIntegralMaxTickDtMs;
+  const long ticks = (long)((kPhIntegralSaturationWarnMs + 600000UL) / pas);
+  for (long i = 0; i < ticks; ++i) {
+    t += pas;
     phIntegralTick(st, inputs(t, 0.50f, kAmpFlow, kSatBudget), tun);
   }
   TEST_ASSERT_TRUE(st.warnSent);
   TEST_ASSERT_TRUE(st.anomalyHeldMs >= kPhIntegralSaturationWarnMs);
 
   // Retour à la normale : demande ramenée sous 85 % du soutenable.
-  t += 10000u;
+  t += pas;
   PhIntegralVerdict v =
       phIntegralTick(st, inputs(t, errorForRatio(50.0f), kAmpFlow, kSatBudget), tun);
   TEST_ASSERT_FALSE(v.saturated);
@@ -1353,25 +1789,50 @@ void test_P_fin_d_anomalie_leve_l_alerte_et_remet_la_tenue_a_zero(void) {
   TEST_ASSERT_FALSE(st.critSent);
 
   // Et le clear n'est émis QU'UNE fois (pas de spam au tour suivant).
-  t += 10000u;
+  t += pas;
   v = phIntegralTick(st, inputs(t, errorForRatio(50.0f), kAmpFlow, kSatBudget), tun);
   TEST_ASSERT_FALSE(v.emitClear);
 }
 
-// Un reset sec pendant un épisode alerté lève aussi l'alerte (l'accumulation
-// qui la motivait n'existe plus).
-void test_P_reset_sec_pendant_une_alerte_leve_l_alerte(void) {
+// RÉÉCRIT (feature-084) — L'ALERTE TOMBE TOUT DE SUITE, LA PURGE ATTEND.
+// L'ancienne version figeait l'enchaînement « un tick sous −0,15 ⇒ purge ET levée
+// d'alerte dans le même verdict ». Avec la temporisation, les deux se dissocient,
+// et c'est une PROPRIÉTÉ DE SÛRETÉ à verrouiller : l'étape 7 lève l'alerte dès le
+// PREMIER tick de l'excursion (l'anomalie exige une erreur positive), donc le
+// différé ne laisse JAMAIS une alerte pendante pendant les 15 minutes d'attente.
+// Quand la purge finit par tomber, il n'y a plus rien à lever.
+void test_P_excursion_leve_l_alerte_aussitot_et_purge_apres_la_tenue(void) {
   const PhIntegralTuning tun = tuning(/*ki*/0.0f);
   PhIntegralState st;
   st.lastTickMs = kT0;
+  st.satActive = true;
+  st.anomalyHeldMs = kPhIntegralSaturationCriticalMs;
   st.warnSent = true;
   st.critSent = true;
   st.integral = 9000.0f;
-  PhIntegralVerdict v = phIntegralTick(st, inputs(kT0 + 10000u, -0.30f), tun);
-  TEST_ASSERT_TRUE(v.event == PhIntegralEvent::kDryReset);
+
+  // PREMIER tick de l'excursion : pas de purge (la tenue démarre), mais l'alerte
+  // est levée immédiatement et la tenue d'anomalie remise à zéro.
+  uint32_t t = kT0 + kPhIntegralMaxTickDtMs;
+  PhIntegralVerdict v = phIntegralTick(st, inputs(t, -0.30f), tun);
+  TEST_ASSERT_TRUE(v.event != PhIntegralEvent::kDryReset);
   TEST_ASSERT_TRUE(v.emitClear);
   TEST_ASSERT_FALSE(st.warnSent);
   TEST_ASSERT_FALSE(st.critSent);
+  TEST_ASSERT_EQUAL_UINT32(0u, st.anomalyHeldMs);
+  TEST_ASSERT_TRUE(st.resetHoldMs > 0u);
+
+  // La purge tombe au terme de la tenue, sans réémettre de levée (plus d'alerte
+  // ouverte) et sur une intégrale déjà entamée par la protection graduée.
+  int purges = 0;
+  v = tenirPendant(st, tun, -0.30f,
+                   kPhIntegralResetHoldMs - kPhIntegralMaxTickDtMs, t, &purges);
+  TEST_ASSERT_EQUAL_INT(1, purges);
+  TEST_ASSERT_TRUE(v.event == PhIntegralEvent::kDryReset);
+  TEST_ASSERT_FALSE(v.emitClear);
+  TEST_ASSERT_TRUE(v.integralBefore > 0.0f);
+  TEST_ASSERT_TRUE(v.integralBefore < 9000.0f);
+  TEST_ASSERT_FLOAT_WITHIN(kEps, 0.0f, st.integral);
 }
 
 // --- Remplissage exposé à /data et au WebSocket -------------------------------
@@ -1542,6 +2003,201 @@ void test_E_budget_horaire_sous_la_charge_gele_et_alerte(void) {
 }
 
 // =============================================================================
+// D — feature-084, sujet 1 : LA CADENCE (ce qui en est atteignable en natif)
+// =============================================================================
+// Le prédicat `phIntegralAccumulationAllowed()` est une méthode PRIVÉE de la
+// coquille : « n'accumule pas en manual / sous garde bloquante / filtre non prêt »
+// NE PEUT PAS être vérifié ici (cf. l'en-tête du fichier — une mutation permissive
+// du prédicat ne tuerait aucun test). Ce qui EST vérifiable, et qui l'est ci-dessous,
+// ce sont les BORNES CHIMIQUES sur lesquelles le gate s'appuie pour autoriser
+// l'accumulation dans les états où le dosage est seulement SUSPENDU.
+
+// PAUSE MÉLANGE. Le tick tourne désormais pendant les 15 min de mélange, où l'on
+// mesure une eau que la dose précédente n'a pas fini d'homogénéiser. Le gate borne
+// ce sur-crédit à « 15 min × 0,15 pH » ; on le vérifie sur le module RÉEL, avec la
+// pire erreur plausible dans cet état (l'excursion de purge, en valeur absolue).
+void test_D_sur_credit_d_une_pause_melange_reste_negligeable(void) {
+  const PhIntegralTuning tun = tuning();
+  PhIntegralState st;
+  st.lastTickMs = kT0;
+  uint32_t t = kT0;
+  tenirPendant(st, tun, kSeuilPurge, (uint32_t)kPhMixingDelayMs, t);
+
+  // Moins de 1 % du plafond d'anti-windup…
+  TEST_ASSERT_TRUE(st.integral > 0.0f);
+  TEST_ASSERT_TRUE(st.integral < 0.01f * kPhIntegralMaxNormal);
+  // …et moins de 5 % de la charge d'équilibre en demande : chimiquement inerte,
+  // même si la pause mélange se répétait à chaque cycle.
+  TEST_ASSERT_TRUE(kPhKiNormal * st.integral < 0.05f * kPhEquilibriumLoadMlPerMin);
+}
+
+// LIMITE HORAIRE ÉPUISÉE. C'est l'état qui inquiète le plus : le dosage est
+// suspendu, mais l'intégrale continue d'accumuler. Le gate répond « les deux gels
+// d'anti-windup restent actifs et bornent l'accumulation exactement comme avant ».
+// Vérification : sur 24 h de branche à limite épuisée, l'intégrale ne monte PAS au
+// plafond — elle se pose exactement au point où la demande atteint le débit
+// SOUTENABLE, et n'en bouge plus.
+void test_D_limite_horaire_epuisee_l_accumulation_est_bornee_par_le_gel(void) {
+  const PhIntegralTuning tun = tuning();
+  const float erreur = 0.10f;                        // au-dessus du seuil de démarrage
+  const float soutenable = phSustainableAvgFlow(kAmpFlow, kSatBudget);
+  // Point de gel analytique : kp·e + ki·I == soutenable.
+  const float integraleAuGel = (soutenable - kPhKpNormal * erreur) / kPhKiNormal;
+
+  PhIntegralState st;
+  st.lastTickMs = kT0;
+  uint32_t t = kT0;
+  PhIntegralVerdict v = tenirPendant(st, tun, erreur, 24u * 3600000UL, t,
+                                     /*purges*/nullptr, kPhIntegralMaxTickDtMs,
+                                     kAmpFlow, kSatBudget);
+
+  // L'accumulation a bien eu lieu (c'est tout l'objet du changement de cadence)…
+  TEST_ASSERT_TRUE(st.integral > 0.0f);
+  // …mais elle s'est arrêtée AU point de gel, très loin du plafond.
+  TEST_ASSERT_FLOAT_WITHIN(0.02f * integraleAuGel, integraleAuGel, st.integral);
+  TEST_ASSERT_TRUE(st.integral < 0.25f * kPhIntegralMaxNormal);
+  TEST_ASSERT_TRUE(v.frozen);
+  // Et la demande accumulée ne dépasse jamais ce que l'actionneur peut tenir.
+  TEST_ASSERT_TRUE(v.demandMlPerMin <= soutenable * 1.02f);
+}
+
+// =============================================================================
+// R — feature-084, sujet 3 : LA PERSISTANCE NVS (couverture PARTIELLE, assumée)
+// =============================================================================
+// ⚠️ LIRE L'EN-TÊTE DU FICHIER AVANT DE FAIRE CONFIANCE À CE BLOC.
+// Ni le blob, ni son CRC, ni la séquence de décision R1-R7 ne sont atteignables en
+// natif (src/config.cpp et src/pump_controller.cpp ne compilent pas hors ESP32, et
+// aucune extraction pure n'existe). Ce bloc couvre donc DEUX choses seulement :
+//   (1) le CONTRAT NUMÉRIQUE des sept conditions, avec leurs encadrements mutuels ;
+//   (2) la PROPRIÉTÉ CHIMIQUE que R1 est censé garantir, vérifiée en boucle fermée
+//       de production — c'est-à-dire ce que la fraction de 30 % achète réellement.
+// Ce qui reste NON COUVERT est listé sans détour dans le rapport de test.
+
+// R1 — LE VERROU CHIMIQUE, aux TROIS vitesses de régulation. Le static_assert de
+// constants.h ne porte que sur l'autorité nominale ; ici on recalcule la
+// contribution restaurable réelle pour chaque vitesse (ki × 30 % × plafond).
+void test_R1_le_plafond_de_restauration_reste_sous_la_charge_d_equilibre(void) {
+  // La valeur EST le sujet : c'est elle que le gate a négociée.
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.30f, kPhIntegralRestoreMaxFraction);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 2.86f, kPhEquilibriumLoadMlPerMin);
+
+  const float slow   = kPhKiSlow   * kPhIntegralRestoreMaxFraction * kPhIntegralMaxSlow;
+  const float normal = kPhKiNormal * kPhIntegralRestoreMaxFraction * kPhIntegralMaxNormal;
+  const float fast   = kPhKiFast   * kPhIntegralRestoreMaxFraction * kPhIntegralMaxFast;
+
+  // Strictement sous la charge d'équilibre MESURÉE : aucune restauration ne peut,
+  // à elle seule, produire un surdosage net.
+  TEST_ASSERT_TRUE(slow   < kPhEquilibriumLoadMlPerMin);
+  TEST_ASSERT_TRUE(normal < kPhEquilibriumLoadMlPerMin);
+  TEST_ASSERT_TRUE(fast   < kPhEquilibriumLoadMlPerMin);
+  // …avec une marge réelle, pas au ras du seuil : 1,80 mL/min pour 2,86.
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, 1.80f, normal);
+  TEST_ASSERT_TRUE(normal < 0.70f * kPhEquilibriumLoadMlPerMin);
+  // L'autorité restaurable est la même aux trois vitesses (verrou I2 hérité).
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, normal, slow);
+  TEST_ASSERT_FLOAT_WITHIN(0.05f, normal, fast);
+}
+
+// R1 — CE QUE LA FRACTION ACHÈTE, en boucle fermée de PRODUCTION : la demande du
+// TRANSITOIRE de restauration. C'est l'objection exacte de l'ADR-0052 (« une
+// autorisation de dosage PRÉ-CHARGÉE au boot ») ramenée à une grandeur mesurable —
+// la demande maximale de la première heure après application.
+//   • écrêtée à 30 %, elle reste de l'ordre de la charge d'équilibre du bassin :
+//     le bidon ne peut pas partir plus vite que le bassin ne consomme ;
+//   • servie au plafond PLEIN — ce qu'un instantané non écrêté produirait — elle
+//     vaut plus du DOUBLE de cette charge.
+//
+// ⚠️ DEUX LIMITES DE PORTÉE, à lire avant d'en tirer une garantie :
+//   1. ce test verrouille la FRACTION, pas le CLAMP. Le `if (candidate > cap)` de
+//      pump_controller.cpp n'est jamais exécuté ici ; le supprimer ne tue rien.
+//   2. le modèle de bassin n'a AUCUN retard de transport (la pause mélange n'y
+//      est pas) : l'hystérésis y coupe le dosage à l'instant exact où l'erreur
+//      passe sous le seuil d'arrêt. Le modèle SOUS-ESTIME donc l'excursion d'une
+//      intégrale sur-restaurée — c'est bien pourquoi R1 borne l'AUTORITÉ plutôt
+//      que de s'en remettre au comportement de la boucle.
+void test_R1_une_restauration_plafonnee_ne_precharge_pas_de_dosage(void) {
+  const float erreurDeDepart = kStartThreshold + 0.01f;  // R4 : erreur soutenue
+  const float plafondR1 = kPhIntegralRestoreMaxFraction * kPhIntegralMaxNormal;
+
+  ProdStats ecrete = simulateProduction(kPhKpNormal, kPhKiNormal, kPhIntegralMaxNormal,
+                                        kBudgetNominalMinPerHour, /*days*/6,
+                                        DeadbandPolicy::kAlignedOnHysteresis,
+                                        plafondR1, erreurDeDepart);
+  // Le transitoire ne dépasse pas de plus de 25 % la charge d'équilibre mesurée :
+  // « au pire elle dispense la boucle de réapprendre », pas de surdosage net.
+  TEST_ASSERT_TRUE(ecrete.firstHourMaxFlow < 1.25f * kPhEquilibriumLoadMlPerMin);
+  // JAMAIS sous la consigne, transitoire initial compris.
+  TEST_ASSERT_TRUE(ecrete.minErrEver >= 0.0f);
+  // …et le régime établi reste celui de la boucle nominale : la restauration
+  // dispense d'apprendre, elle ne déplace pas le point de fonctionnement.
+  TEST_ASSERT_FLOAT_WITHIN(0.005f, kStopThreshold, ecrete.meanErrLastDay);
+  TEST_ASSERT_EQUAL_INT(0, ecrete.criticalCount);
+
+  // Contre-épreuve : la MÊME boucle servie au plafond PLEIN réclame d'emblée plus
+  // du double de la charge du bassin — l'autorisation pré-chargée que R1 refuse.
+  ProdStats plein = simulateProduction(kPhKpNormal, kPhKiNormal, kPhIntegralMaxNormal,
+                                       kBudgetNominalMinPerHour, 6,
+                                       DeadbandPolicy::kAlignedOnHysteresis,
+                                       kPhIntegralMaxNormal, erreurDeDepart);
+  TEST_ASSERT_TRUE(plein.firstHourMaxFlow > 2.0f * kPhEquilibriumLoadMlPerMin);
+  TEST_ASSERT_TRUE(plein.firstHourMaxFlow > 2.0f * ecrete.firstHourMaxFlow);
+
+  // …et le prix ne se paie pas qu'au transitoire : SIX JOURS plus tard, la boucle
+  // sur-restaurée n'est TOUJOURS pas revenue au seuil d'arrêt. Elle s'installe sur
+  // un cycle limite trois fois plus haut, avec une intégrale parquée bien au-dessus
+  // de sa valeur d'équilibre. Une restauration excessive ne coûte donc pas « un
+  // peu de transitoire » : elle déplace durablement le point de fonctionnement.
+  TEST_ASSERT_TRUE(plein.meanErrLastDay > 2.0f * ecrete.meanErrLastDay);
+  TEST_ASSERT_TRUE(plein.finalIntegral > 1.3f * ecrete.finalIntegral);
+}
+
+// R2/R3/R4/R5/R7 — CONTRAT NUMÉRIQUE des conditions restantes. Ce test ne vérifie
+// AUCUN comportement (le code de décision n'est pas atteignable en natif) : il
+// verrouille les valeurs négociées au gate et leurs encadrements mutuels, de sorte
+// qu'un ajustement silencieux d'une des sept conditions casse la suite.
+void test_R_contrat_numerique_des_conditions_de_persistance(void) {
+  // R2 — schéma : toute retouche de structure DOIT l'incrémenter.
+  TEST_ASSERT_EQUAL_UINT8(1, kPhIntegralPersistSchema);
+
+  // R3 — péremption 6 h = UNE constante d'intégration à vitesse `normal`.
+  TEST_ASSERT_EQUAL_UINT32(21600UL, kPhIntegralPersistMaxAgeS);
+  TEST_ASSERT_FLOAT_WITHIN(1.0f, kPhIntegralTiNormalS, (float)kPhIntegralPersistMaxAgeS);
+  // …et franchement plus courte que la péremption d'inactivité de 24 h.
+  TEST_ASSERT_TRUE((uint64_t)kPhIntegralPersistMaxAgeS * 1000ULL <
+                   (uint64_t)kPhIntegralStaleResetMs);
+
+  // R4 — confirmation par la mesure : 5 min, soit bien plus qu'un tick, et très
+  // en deçà de la péremption (sinon la candidate mourrait avant d'être confirmée).
+  TEST_ASSERT_EQUAL_UINT32(300000UL, kPhIntegralRestoreConfirmMs);
+  TEST_ASSERT_TRUE(kPhIntegralRestoreConfirmMs >= 10UL * kPhIntegralChargeQuantumMs);
+  TEST_ASSERT_TRUE((uint64_t)kPhIntegralRestoreConfirmMs <
+                   (uint64_t)kPhIntegralPersistMaxAgeS * 1000ULL / 10ULL);
+  // La fenêtre d'armement doit laisser le temps d'au moins une confirmation.
+  TEST_ASSERT_EQUAL_UINT32(600000UL, kPhIntegralRestoreArmWindowMs);
+  TEST_ASSERT_TRUE(kPhIntegralRestoreArmWindowMs >= kPhIntegralRestoreConfirmMs);
+
+  // R5 — cadence d'écriture : 30 min ET 5 % du plafond.
+  TEST_ASSERT_EQUAL_UINT32(1800000UL, kPhIntegralPersistMinIntervalMs);
+  TEST_ASSERT_FLOAT_WITHIN(1e-6f, 0.05f, kPhIntegralPersistMinDeltaFrac);
+  // Le seuil d'écriture doit rester SOUS le plafond de restauration, sans quoi une
+  // intégrale sous ce plafond ne serait jamais persistée (mécanisme mort-né).
+  TEST_ASSERT_TRUE(kPhIntegralPersistMinDeltaFrac < kPhIntegralRestoreMaxFraction);
+  // Usure NVS au PIRE cas (une écriture toutes les 30 min, en continu) : le
+  // secteur doit tenir plusieurs années devant les 100 000 cycles garantis.
+  const float ecrituresParJour = 24.0f * 3600000.0f / (float)kPhIntegralPersistMinIntervalMs;
+  TEST_ASSERT_TRUE(100000.0f / (ecrituresParJour * 365.0f) > 5.0f);
+
+  // R7 — anti-boucle de démarrage : 3 restaurations sans écriture intercalée.
+  TEST_ASSERT_EQUAL_UINT8(3, kPhIntegralRestoreMaxStreak);
+  TEST_ASSERT_TRUE(kPhIntegralRestoreMaxStreak >= 1 && kPhIntegralRestoreMaxStreak <= 5);
+  // Le garde-fou n'a de sens que si une boucle de reboot ne peut PAS produire
+  // d'écriture normale (qui remettrait le compteur à zéro) : l'intervalle minimal
+  // d'écriture doit dominer la fenêtre d'armement, donc a fortiori le temps que
+  // met un appareil en panique à se relancer.
+  TEST_ASSERT_TRUE(kPhIntegralPersistMinIntervalMs > kPhIntegralRestoreArmWindowMs);
+}
+
+// =============================================================================
 // Runner
 // =============================================================================
 void setUp(void) {}
@@ -1586,8 +2242,16 @@ int main(int argc, char** argv) {
   RUN_TEST(test_P_amplitude_invalide_gele_en_fail_closed);
   RUN_TEST(test_P_le_gel_bloque_la_charge_jamais_la_decharge);
   RUN_TEST(test_P_fraction_de_gel_sur_quota_journalier);
+  RUN_TEST(test_P_quota_de_cycles_epuise_gele_la_charge_pas_la_decharge);
+  RUN_TEST(test_P_les_trois_motifs_de_gel_sont_disjonctifs);
   RUN_TEST(test_P_erreur_moins_0011_n_efface_pas_l_integrale);
   RUN_TEST(test_P_reset_sec_uniquement_au_dela_de_moins_015);
+  // B — feature-084 sujet 2 : la temporisation du reset sec
+  RUN_TEST(test_P_reset_sec_non_declenche_a_14_min_declenche_a_15);
+  RUN_TEST(test_P_la_tenue_du_reset_repart_a_zero_a_la_moindre_remontee);
+  RUN_TEST(test_P_pendant_l_attente_du_reset_la_protection_tourne_toujours);
+  RUN_TEST(test_P_la_tenue_du_reset_se_compte_en_temps_de_branche);
+  RUN_TEST(test_P_temporisation_du_reset_encadree_par_la_chimie);
   RUN_TEST(test_P_oubli_demi_vie_1h);
   RUN_TEST(test_P_oubli_rattrape_par_pas_entiers_apres_une_absence);
   RUN_TEST(test_P_oubli_reliquat_reporte_aucun_temps_perdu);
@@ -1604,10 +2268,11 @@ int main(int argc, char** argv) {
   RUN_TEST(test_P_hysterese_de_saturation_95_puis_85);
   RUN_TEST(test_P_le_seuil_porte_sur_la_demande_pas_sur_le_remplissage);
   RUN_TEST(test_P_saturation_sans_erreur_residuelle_n_est_pas_une_anomalie);
-  RUN_TEST(test_P_paliers_2h_6h_puis_rappel_toutes_les_12h);
+  RUN_TEST(test_P_paliers_warn_puis_critical_puis_rappels);
+  RUN_TEST(test_P_SENTINELLE_recalibration_laisse_la_fenetre_reelle_inchangee);
   RUN_TEST(test_P_la_tenue_de_l_anomalie_ne_court_pas_en_temps_mural);
   RUN_TEST(test_P_fin_d_anomalie_leve_l_alerte_et_remet_la_tenue_a_zero);
-  RUN_TEST(test_P_reset_sec_pendant_une_alerte_leve_l_alerte);
+  RUN_TEST(test_P_excursion_leve_l_alerte_aussitot_et_purge_apres_la_tenue);
   RUN_TEST(test_P_remplissage_en_pourcent_du_plafond);
   RUN_TEST(test_P_facteur_de_pas_divise_bien_par_deux_en_une_demi_vie);
   RUN_TEST(test_P_marge_de_reset_reste_au_dessus_du_bruit_du_filtre);
@@ -1619,6 +2284,13 @@ int main(int argc, char** argv) {
   RUN_TEST(test_E_volume_total_equivalent_au_regime_p_pur);
   RUN_TEST(test_E_bande_morte_figee_au_seuil_de_demarrage_sature_la_regulation);
   RUN_TEST(test_E_budget_horaire_sous_la_charge_gele_et_alerte);
+  // D — feature-084 sujet 1 : bornes chimiques de la nouvelle cadence
+  RUN_TEST(test_D_sur_credit_d_une_pause_melange_reste_negligeable);
+  RUN_TEST(test_D_limite_horaire_epuisee_l_accumulation_est_bornee_par_le_gel);
+  // R — feature-084 sujet 3 : persistance NVS (couverture partielle assumée)
+  RUN_TEST(test_R1_le_plafond_de_restauration_reste_sous_la_charge_d_equilibre);
+  RUN_TEST(test_R1_une_restauration_plafonnee_ne_precharge_pas_de_dosage);
+  RUN_TEST(test_R_contrat_numerique_des_conditions_de_persistance);
 
   return UNITY_END();
 }

@@ -1,6 +1,6 @@
 # ADR-0052 — Levée de `Ki = 0` sur la régulation pH : terme intégral dimensionné par l'AUTORITÉ, intégré en signé sur le seuil d'arrêt
 
-- **Statut** : Accepté — **lève le `Ki = 0` de l'[ADR-0016](0016-regulation-p-temporisee-vs-pid.md), pour le SEUL pH** ; `Ki_ORP = 0` et `Kd = 0` **partout** restent inchangés, la temporisation (pause mélange, zone morte, anti-cycling) et l'anti-windup strict de l'ADR-0016 restent intégralement en vigueur.
+- **Statut** : Accepté — **lève le `Ki = 0` de l'[ADR-0016](0016-regulation-p-temporisee-vs-pid.md), pour le SEUL pH** ; `Ki_ORP = 0` et `Kd = 0` **partout** restent inchangés, la temporisation (pause mélange, zone morte, anti-cycling) et l'anti-windup strict de l'ADR-0016 restent intégralement en vigueur. **La clause « Aucune persistance NVS » est amendée par l'[ADR-0053](0053-persistance-conditionnelle-integrale-ph.md)** (persistance autorisée sous sept garanties cumulatives, la valeur relue n'étant jamais appliquée au démarrage) ; **tout le reste de cet ADR est inchangé**.
 - **Date** : 2026-08-28
 - **Décideurs** : gate `pool-chemistry` (**GO SOUS CONDITIONS C1-C5**, 28/08/2026, + contre-visite sur la correction d'intégration signée), utilisateur (principe de non-biais de la consigne), architect
 - **Spec(s) liée(s)** : [feature-078-rendement-des-impulsions-et-lenteur-regulation-ph](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md) (cause n°1 : « la loi P plafonne la demande »)

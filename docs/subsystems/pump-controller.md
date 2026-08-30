@@ -28,6 +28,10 @@ void stopAll();
 void setOtaInProgress(bool);
 
 // Mode maintenance auto-guérison (v2.9.1) — inhibe/réarme TOUT dosage
+// v2.27.0 : n'est plus `inline` — l'ENTRÉE en maintenance pose les compteurs
+// journaliers en NVS (le mode est de durée non bornée et se termine le plus
+// souvent par un redémarrage ; perdre les minutes de circulation surévaluerait
+// la charge observée, cf. ADR-0053)
 void setMaintenanceInhibit(bool);   // true → dosage suspendu toutes voies
 bool isMaintenanceInhibited() const;
 
@@ -136,11 +140,13 @@ Ordre par cycle :
 1. Consommation des resets atomiques (`_resetRequested`, `_phPauseResetRequested`) — évite les races inter-core (web handler vs loop).
 2. Chargement différé des cumuls NVS : `_dailyLoaded` reste à `false` tant que NTP/RTC n'a pas synchronisé une date valide (sinon on chargerait sur une date 1970 fantôme).
 3. **`tickDailyRollover()`** — bascule date / reset des compteurs journaliers. Appelé **avant** `canDose()` pour que le passage à minuit soit honoré même si la filtration est arrêtée. Voir [Reset journalier](#reset-journalier) ci-dessous.
+3bis. **v2.27.0** — `tickDailyFiltrationMinutes()` (dénominateur de la charge acide observée) puis le **flush périodique 30 s** des compteurs journaliers, tous deux **remontés ici, en amont de toutes les sorties anticipées** (OTA, maintenance, capteurs non initialisés, stabilisation). Voir [Points de flush ajoutés](#points-de-flush-ajoutés-défaut-fail-open-corrigé-en-revue).
 4. **Court-circuit OTA** : `otaInProgress` actif → `applyPumpDuty(0,0)` + `applyPumpDuty(1,0)` puis `return`. Pompes coupées tant que l'OTA dure.
 4bis. **Court-circuit maintenance** (v2.9.1) : `maintenanceInhibit` actif → `applyPumpDuty(0,0)` + `applyPumpDuty(1,0)` puis `return`. Gate identique à l'OTA, placée **avant** toute évaluation de dosage ([`pump_controller.cpp:798`](../../src/pump_controller.cpp:798)). Voir [Mode maintenance auto-guérison](#mode-maintenance-auto-guérison-v291).
 5. Refresh des fenêtres glissantes 1 h (`refreshDosingState`).
 6. Court-circuit capteurs : `!sensors.isInitialized()` → arrêt pompes.
 7. Gate `canDose()` (cf. ci-dessous) → arrêt pompes si non autorisé (mais respecte `manualMode[i]` pour ne pas couper un test développeur en cours).
+7bis. **v2.27.0** — `tickPhIntegralAuto()` : **entretien du terme intégral pH, hors de toute conjonction de dosage**, après `tickPhGuardSurveillance()` et après la garde de présence d'eau. Porte aussi la confirmation R4 d'une restauration NVS en attente. Voir [Cadence, mémoire et charge observée de l'intégrale pH](#cadence-mémoire-et-charge-observée-de-lintégrale-ph-v2270).
 8. Pour pH puis ORP : calcul de l'erreur, anti-cycling start/stop, PID (demande de débit **moyen**), puis ordonnanceur d'impulsions (`evaluatePulseGate` → `planPulseWithCarry` (v2.22.0, [accumulateur sous-plancher](#accumulateur-sous-le-pouls-minimal-feature-073-v2220)) → `tickPulse`, [Dosage en proportionnel de temps](#dosage-en-proportionnel-de-temps-itération-2-v2210)), `applyPumpDuty()` (255 pendant le kick, amplitude calibrée sinon). *(`flowToDuty()`/`dutyToFlow()` supprimés en v2.21.0, [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md).)*
 
 ## Mode maintenance auto-guérison (v2.9.1)
@@ -851,7 +857,7 @@ Toute la logique vit dans [`src/ph_integral_logic.h`](../../src/ph_integral_logi
 |---|---|
 | `PhIntegralState` | POD sans allocation, porté par `PumpControllerClass`. Écrit/lu depuis la **seule** `loopTask` → aucun mutex. |
 | `PhIntegralTuning` | `kp`, `ki`, `integralMax`, `startThreshold`, `stopThreshold` — passés en paramètre, ce ne sont pas des constantes firmware. |
-| `phIntegralTick()` | Un tick : reset sec → base de temps → demande + gel → charge signée → oubli → hystérésis → anomalie. Rend un `PhIntegralVerdict`. |
+| `phIntegralTick()` | Un tick : base de temps → reset sec **temporisé** → demande + gel → charge signée → oubli → hystérésis → anomalie. Rend un `PhIntegralVerdict`. *(v2.27.0 : la base de temps passe **devant** le reset sec, qui a besoin du `dt` pour accumuler sa tenue.)* |
 | `phIntegralExpire()` | Péremption 24 h, appelée **hors de toute conjonction d'éligibilité**. |
 | `phSustainableAvgFlow()` | `ampFlow × budget_min/60` — le débit moyen réellement **tenable**. |
 | `phIntegralFillPct()` | Remplissage de l'anti-windup en % (valeur absolue), exposé à `/data`, au WS et à MQTT. |
@@ -864,10 +870,11 @@ La coquille (`tickPhIntegralExpiry`, `applyPhIntegralVerdict` dans [`pump_contro
 |---|---|
 | **Gel sur saturation d'actionneur** | Accumulation gelée si `demande ≥ ampFlow × budget_horaire / 60`. ⚠️ Le prédicat porte sur le **débit moyen soutenable** (~2 mL/min à 5 min/h), **pas** sur le débit d'amplitude (~25 mL/min) : comparé à l'amplitude, ce gel ne s'était **jamais** déclenché et ne protégeait de rien. |
 | **Gel sur quota journalier** | Au-delà de **80 %** du quota (`kPhIntegralFreezeDailyFraction`). Couvre la sonde bloquée sur une valeur haute (plage et fraîcheur valides — le filtre la croit bonne) : le volume déjà injecté est le seul témoin fiable. Le terme acquis reste servi, on n'en ajoute plus. |
-| **Reset sec** | `erreur < −(phStartThreshold + kPhIntegralResetMargin)`, soit **−0,15** par défaut : une excursion **franche** de l'autre côté de la consigne, pas le bruit du filtre (~0,05). *Avant la v2.26.0 le reset mordait dès −0,01 — six heures d'accumulation effacées par 0,011 pH de dérive.* |
+| **Gel sur quota de CYCLES épuisé** *(v2.27.0)* | `cyclesToday ≥ maxCyclesPerDay`. L'anti-cycling était traité comme une suspension rythmique alors qu'il ne se relève **qu'au basculement de 24 h**, exactement comme le quota volumique. Épuisé à 10 h du matin, il laissait l'intégrale charger **neuf heures** sur une erreur que l'actionneur n'a plus le droit de résorber (~1 300 pH·s de windup pur, servis d'un bloc au premier cycle du lendemain). C'est un **gel**, surtout pas une fermeture du prédicat d'accumulation : la voie de décharge reste ouverte. |
+| **Reset sec** | `erreur < −(phStartThreshold + kPhIntegralResetMargin)`, soit **−0,15** par défaut : une excursion **franche** de l'autre côté de la consigne, pas le bruit du filtre (~0,05). *Avant la v2.26.0 le reset mordait dès −0,01 — six heures d'accumulation effacées par 0,011 pH de dérive.* **v2.27.0 : le seuil est inchangé, la purge est TEMPORISÉE** — voir [ci-dessous](#2-le-reset-sec-est-temporisé-15-min-de-temps-de-branche). |
 | **Oubli exponentiel** | Demi-vie **1 h** sous la consigne, par **pas fixes** de 1 min (`powf()` coûte 2 320 o de flash sur une ressource à 97 %) ; facteur `0,9885140` vérifié par `static_assert`, rattrapage borné à 600 pas. Épisode fermé sous 1 pH·s. |
 | **Péremption** | Purge après **24 h** sans évaluation (`kPhIntegralStaleResetMs`) : mode `off`/`manual`, garde bloquante durable, filtration coupée tout l'hiver. Appelée **hors de toute conjonction d'éligibilité**, après les sorties OTA/maintenance mais **avant** les sorties « capteurs non initialisés » / « eau absente ». |
-| **Aucune persistance NVS** | Un reboot repart **de zéro**. Une valeur stockée — a fortiori corrompue — serait une **autorisation de dosage pré-chargée** au démarrage. |
+| ~~**Aucune persistance NVS**~~ → **persistance CONDITIONNELLE** *(v2.27.0)* | L'interdiction de l'ADR-0052 est **amendée** par l'[ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md) : l'intégrale est persistée sous **sept garanties cumulatives R1-R7**, et la valeur relue **n'est jamais appliquée au démarrage**. Voir [ci-dessous](#3-persistance-nvs-conditionnelle-r1-r7). |
 
 **Points de purge de l'intégrale** (tous appellent `phIntegralReset()` **et** remettent le miroir `phPID` à zéro) :
 
@@ -885,8 +892,8 @@ La coquille (`tickPhIntegralExpiry`, `applyPhIntegralVerdict` dans [`pump_contro
 
 - Le prédicat porte sur le **rapport demande / débit soutenable** — et non sur le remplissage de `integralMax`. Le gel d'anti-windup immobilise l'intégrale à la valeur qui sature l'actionneur, très inférieure au plafond (~34 % avec 5 min/h de budget) : un seuil sur `integralMax` **ne serait jamais atteint**.
 - **Hystérésis 95 / 85 %** : sans bande, une demande oscillant autour du seuil ouvrirait et refermerait l'épisode en rafale et réarmerait le rappel à chaque oscillation.
-- La tenue se compte en **temps de branche automatique**, jamais en temps mural : un passage en `manual`, une garde bloquante ou un hiver sans filtration **suspendent** l'épisode.
-- Paliers : `warning` à **2 h**, `critical` à **6 h** (= un `Ti` entier à autorité pleine), **rappel du critical toutes les 12 h** tant que l'anomalie dure. *Une seule alerte par épisode laissait un silence **permanent** sur un état qui, lui, ne cessait pas.*
+- La tenue se compte en **temps de branche automatique**, jamais en temps mural : un passage en `manual`, une garde bloquante ou un hiver sans filtration **suspendent** l'épisode. **Cette base de temps est verrouillée par test natif et n'est pas négociable** — c'est la seule qui suspende l'épisode au lieu de le faire mûrir sur une erreur périmée.
+- Paliers **recalibrés en v2.27.0** (le tarif de la base de temps a changé, l'intention est de préserver la **fenêtre de preuve en temps réel** validée en v2.26.0) : `warning` à **2 h 20**, `critical` à **7 h**, **rappel du critical toutes les 14 h**. Voir [Recalibration des paliers](#recalibration-des-paliers-dalerte-de-saturation). *Une seule alerte par épisode laissait un silence **permanent** sur un état qui, lui, ne cessait pas.*
 - Alerte MQTT `ph_integral_saturated` (voir [MQTT.md](../MQTT.md#alertes)).
 
 ### Observabilité
@@ -907,9 +914,9 @@ Détail : [API.md](../API.md#champs-du-terme-intégral-ph-v2260), [ws-manager.md
 |---|---|---|
 | `PID régulation: vitesse=… Kp_pH=… Ki_pH=… (Ti=…h, intMax=… pH·s, autorité=… mL/min) Kp_ORP=… Ki_ORP=0 Kd=0` | `info` | À chaque `applyRegulationSpeed()`. ⚠️ **Format changé** : l'ancien `PID régulation (P temporisée): … Ki=0 Kd=0` n'existe plus — un filtre de journal sur « P temporisée » ou « Ki=0 » ne matche plus. |
 | `Intégrale pH remise à zéro (changement de vitesse de régulation) : N pH·s abandonnés` | `info` | Changement **réel** de coefficients |
-| `Intégrale pH purgée (erreur … — pH franchement au-delà de la consigne) : N pH·s abandonnés` | `info` | Reset sec |
+| `Intégrale pH purgée (erreur … — pH franchement au-delà de la consigne depuis plus de 15 min) : N pH·s abandonnés` | `info` | Reset sec. ⚠️ **Format changé en v2.27.0** : le fragment « depuis plus de N min » est ajouté — une purge sèche est désormais la conclusion d'une excursion **soutenue**, pas la réaction à un à-coup. Un filtre de journal sur l'ancienne phrase exacte ne matche plus. |
 | `Intégrale pH périmée (aucune évaluation depuis 24 h) : N pH·s purgés` | `info` | Péremption |
-| `Régulation pH saturée depuis plus de 2 h (… mL/min demandés pour … soutenables) — la correction n'a pas d'effet mesurable sur le pH` | `warning` | Palier warning (+ alerte MQTT) |
+| `Régulation pH saturée depuis plus de 2 h (… mL/min demandés pour … soutenables) — la correction n'a pas d'effet mesurable sur le pH` | `warning` | Palier warning (+ alerte MQTT). *v2.27.0 : le palier passe à **2 h 20** de temps de branche — le texte affiche la valeur courante.* |
 | `Régulation pH saturée depuis plus de N h (…, terme intégral … mL/min) — … vérifier le niveau et l'amorçage du bidon, l'étanchéité du circuit de dosage, la sonde pH et la limite horaire d'injection` | `critical` | Palier critical, **répété toutes les 12 h** (+ alerte MQTT) |
 | `Intégrale pH sortie de saturation (…) — alerte levée` | `info` | Sortie d'hystérésis |
 | `PID pH configuré: Kp=… Ki=… Kd=… (integralMax INCHANGÉ=… pH·s)` | `info` | `setPhPID()` — **aucun appelant à ce jour** ; le suffixe rappelle que ce chemin ne redimensionne pas le plafond |
@@ -917,6 +924,247 @@ Détail : [API.md](../API.md#champs-du-terme-intégral-ph-v2260), [ws-manager.md
 ### Testabilité
 
 Suite native dédiée [`test/test_native_ph_integral/`](../../test/test_native_ph_integral/). Total du projet **823 → 849 tests**, et **cinq mutations tuent désormais** — dont **trois qui n'en tuaient aucune** avant l'extraction du module pur. Le test de **droop** vérifie la propriété qui fonde la décision : en boucle fermée, un P pur **ne converge pas**, un PI **converge**.
+
+## Cadence, mémoire et charge observée de l'intégrale pH (v2.27.0)
+
+> Décisions structurantes : [ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md) (persistance **conditionnelle**, qui **amende la clause « aucune persistance NVS » de l'[ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md)**) et [ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md) (un seuil de vraisemblance dérivé d'un réglage est une **fonction** de ce réglage). Gate `pool-chemistry` : **GO**, 30/08/2026.
+>
+> ⚠️ **Non vérifié sur le terrain** au moment de la rédaction : le déploiement OTA n'a pas eu lieu.
+
+### ⚠️ Le point de fond : l'installation est limitée par l'ACTIONNEUR, pas par le correcteur
+
+Ce constat est **plus important que la feature elle-même** et conditionne la lecture de tout ce qui suit.
+
+À **5 min/h** de limite horaire et **~26 mL/min** de débit d'amplitude calibré, le maximum **physiquement délivrable** vaut :
+
+```
+5/60 × 26  ≈  2,17 mL/min      ⇒  ~911 mL/jour sur 7 h de filtration
+```
+
+pour un besoin de **~1 800 mL/jour**. **Ni la feature-084 ni la feature-085 ne peuvent combler cet écart** : elles agissent sur le **correcteur**, pas sur la vanne. Une régulation parfaite ne délivre pas plus que ce que l'actionneur laisse passer.
+
+Deux corollaires :
+
+1. **L'alerte « régulation saturée » est chimiquement VRAIE et LÉGITIME.** Elle désigne la **limite horaire**, pas un bidon vide ni une sonde en panne. La traiter comme un faux positif à faire taire serait une erreur de diagnostic.
+2. ⚠️ **Relever `phInjectionLimitMinutes` est le seul levier réel — et il n'est pas neutre.** Il augmente **proportionnellement** le volume injecté pendant les **15 minutes de retard de mélange** (`kPhMixingDelayMs`), fenêtre pendant laquelle la boucle dose **à l'aveugle** sur une mesure qui ne reflète pas encore les doses passées :
+
+| Limite horaire | Volume injecté pendant les 15 min de retard | Excursion pH correspondante |
+|---|---:|---:|
+| **5 min/h** (défaut) | 130 mL | **0,046** |
+| 30 min/h | 780 mL | **0,28** |
+
+à comparer à `kPhSafetyMargin` = **0,50**. À 30 min/h, un seul temps mort consomme **56 %** de la garde de sécurité. **Ce réglage ne doit pas être relevé sans en tenir compte.**
+
+Suivi : [feature-086](../../specs/features/todo/feature-086-limite-actionneur-dosage-ph.md) (limite d'actionneur) et [feature-085](../../specs/features/todo/feature-085-dose-de-base-apprise-feedforward.md) (dose de base apprise).
+
+### 1. Le tick d'entretien sort de la conjonction de dosage
+
+Jusqu'à la v2.26.0, `phIntegralTick()` n'était appelé que **dans** la branche automatique, elle-même gardée par `canDose(0)` : rapport cyclique ≈ **25 %** du temps. L'intégrale n'apprenait ni pendant les pauses de mélange, ni pendant les suspensions de limite horaire — précisément les états où l'eau circule, la mesure est valide et **la charge du bassin continue d'agir**. `Ti` = 6 h « de branche » valait donc ≈ **24 h réelles**, et la convergence demandait **2,4 jours de filtration**.
+
+Le tick rejoint donc `tickPhGuardSurveillance()` **hors de toute conjonction** (précédent de la v2.25.0 : *surveillance ≠ décision*). **La sortie reste gatée exactement comme avant**, par `shouldDose` et par la bande morte de `computePidPure` : entretenir l'intégrale n'autorise **aucune** injection.
+
+Prédicat `phIntegralAccumulationAllowed()` — en clair : `canDose(0)` **moins** {pause mélange, limite horaire, quota journalier, anti-cycling, plafond de session}, **plus** `phMode == "automatic"`.
+
+| Accumule | N'accumule pas |
+|---|---|
+| Pause mélange (l'eau circule, la mesure est valide ; sur-crédit borné à 15 min × 0,15 = **135 pH·s**, soit 0,8 % du plafond) | **Filtration coupée / eau absente**, stabilisation post-cal, OTA, maintenance, assistant de débit — `update()` sort **avant** le point d'appel : la garantie est **structurelle** |
+| Limite horaire épuisée, quota journalier, anti-cycling, plafond de session — ce sont des **suspensions rythmiques** du dosage, pas des interdits | Porte de validité fermée, warmup, sonde figée/périmée, `NaN`, calibration < 2 points — **rejet EXPLICITE**, jamais hérité du `isfinite(error)` interne au module pur (une sonde figée haut rend une erreur parfaitement finie) |
+| | Mode `manual`/`off` : le dosage est **durablement** impossible, charger armerait une autorité libérée d'un bloc au retour |
+| | Garde pH bloquante ou escalade des 3 refus (fail-closed) ; watchdog inactif |
+
+> **Le prédicat lit `_phGuardBlockingNow`** — le verdict posé par `tickPhGuardSurveillance()` — et **non** `isPhGuardBlocking(true)`, qui **compte** les refus et peut escalader. Un prédicat d'entretien doit être **sans effet de bord**.
+>
+> **Ordre impératif** : après `tickPhGuardSurveillance()` (dont il consomme le verdict) et **après** la garde de présence d'eau. Déplacer l'appel en amont de cette garde romprait l'exigence chimique « pas d'accumulation en eau stagnante ».
+>
+> **Un seul point d'évaluation par tour.** Deux appels compteraient le même `dt` deux fois. Le calcul de l'erreur signée est lui aussi remonté hors branche et **réutilisé tel quel** par la branche automatique — deux formules pour une seule grandeur finiraient par diverger.
+
+**Gain réel : rapport cyclique 25 % → 29 %**, convergence **2,4 j → 2,05 j** (−15 %). Le facteur limitant n'est **pas** les pauses de dosage, ce sont les **7 heures de filtration sur 24**.
+
+### 2. Le reset sec est TEMPORISÉ (15 min de temps de branche)
+
+Le **seuil** est conservé à l'identique (exigence du gate) : `erreur < −(phStartThreshold + 0,10)`, soit −0,15. Ce qui change, c'est que **la purge n'est plus instantanée** : l'excursion doit être **continue** pendant `kPhIntegralResetHoldMs` = **15 min de temps de branche**, et toute remontée **constatée par un tick** remet la tenue à zéro.
+
+Motif : un transitoire de −0,15 — **une pluie légèrement acide suffit** — effaçait deux jours et demi d'apprentissage, sans commune mesure avec le trouble observé.
+
+- **Ce différé ne suspend AUCUNE protection.** Pendant l'attente, l'erreur est franchement négative : la **décharge signée** et l'**oubli exponentiel** travaillent tous les deux (**−16 % d'intégrale sur les 15 minutes**). La protection est **graduée**, pas suspendue ; seule la purge **sèche** est différée, le temps de vérifier que l'excursion est réelle.
+- **15 min = la pause mélange** (`kPhMixingDelayMs`) : en deçà, l'excursion mesurée peut n'être que la dose précédente pas encore homogénéisée. Verrou `static_assert` (x) : `kPhMixingDelayMs ≤ kPhIntegralResetHoldMs < kPhIntegralDecayHalfLifeMs` — au-delà de la demi-vie d'oubli, le reset sec ne servirait plus à rien, or c'est le **seul mécanisme rapide sur une inversion de sens**.
+- ⚠️ **« Temps de branche » veut dire ce qu'il dit.** Quand `phIntegralAccumulationAllowed()` est faux, `phIntegralTick()` n'est pas appelé : `resetHoldMs` est **gelé**, pas remis à zéro. Une excursion de 10 min interrompue par une heure de filtration à l'arrêt reprend **à 10 min**. La direction reste sûre (geler ne fait que **retarder** une purge, et une purge n'ajoute jamais d'autorité), mais la remise à zéro exige **un tick**, pas une simple absence d'excursion.
+- L'addition de la tenue est **saturée** (`kPhIntegralHoldNever`) : jamais de repliement.
+
+### 3. Persistance NVS conditionnelle (R1-R7)
+
+L'[ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) l'**interdisait** (« une valeur stockée serait une autorisation de dosage **pré-chargée** au boot »). L'[ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md) l'autorise sous **sept garanties cumulatives**, l'objection étant levée **par R4** :
+
+> **La valeur relue n'est jamais appliquée au démarrage.** Elle attend que le bassin démontre lui-même, pendant **5 min de temps de branche**, une erreur **au-dessus du seuil de démarrage** — état dans lequel la boucle aurait de toute façon ouvert une session sur le seul terme proportionnel. **Ce qui est restauré n'est pas une autorisation de doser, c'est la VITESSE d'une correction déjà décidée par la mesure courante.**
+
+| # | Garantie | Où |
+|---|---|---|
+| **R1** | Plafond `min(0,30 × integralMax ; 0,50 × (charge observée − kp × stop) / ki)`, **réappliqué à l'instant de l'application** | `phPersistRestoreCap`, `phPersistClampRestore` |
+| **R2** | Scellement (schéma + empreinte FNV-1a + **taille exacte**, aucune réinterprétation partielle) et **empreinte de contexte** (vitesse, produit, consigne, plafond) | `phPersistSnapshotIntact`, `phPersistContextHash` |
+| **R3** | Péremption **6 h** (= 1 `Ti`), sur l'**horloge murale**, **réévaluée à chaque tick** | `phPersistFresh` |
+| **R4** | Confirmation par la mesure : **5 min continues** d'écart au-dessus du seuil de démarrage | `phPersistConfirmTick` |
+| **R5** | Écriture **conjonctive** : ≤ 1 par **30 min** **ET** > **5 % du plafond** de variation (~2 écritures/jour) | `phPersistShouldWrite` |
+| **R6** | Journalisation de la retenue, de la restauration, de **chaque rejet motivé** | coquille `pump_controller.cpp` |
+| **R7** | Anti-boucle : **3 restaurations** sans écriture normale intercalée ⇒ désarmement. Compteur **dans l'instantané NVS**, incrémenté **avant** confirmation, incrément **saturé** | `phPersistStreakExhausted`, `phPersistNextStreak` |
+
+**Fail-closed sur R1** : moins de 3 jours d'historique exploitable, `ki` inerte, charge non finie ou équilibre ≤ 0 ⇒ **plafond nul ⇒ aucune restauration**. Un appareil neuf ne restaure rien.
+
+**Points d'abandon DÉFINITIF d'une candidate en attente** (`phPersistConfirmAbandon`) — ce sont les **ruptures de sens**, à distinguer des simples **interruptions** (`phPersistConfirmInterrupt`, qui ne remettent que la tenue à zéro) :
+
+| Rupture | Motif |
+|---|---|
+| Changement **réel** de vitesse de régulation | La candidate a été validée contre l'**ancien** `ki` et l'ancien plafond ; le contrôle de contexte n'a lieu qu'au chargement |
+| Bascule `ph_minus` ↔ `ph_plus` | Le **signe de l'erreur s'inverse** |
+| Passage en mode `manual` | L'opérateur dose à la main, hors de toute conduite automatique. Traité **en amont** de la garde de présence d'eau : une session manuelle filtration coupée ne doit pas laisser la candidate en vie |
+| Fin de branche `scheduled` | Le mode Programmée a dosé **à l'aveugle** entre-temps |
+| **Purge sèche** (`kDryReset`) | ⚠️ **Défaut corrigé en revue.** Sans cet abandon : candidate en attente → pluie acide → purge sèche → le pH remonte → la candidate se confirme et **recharge l'autorité que la purge venait d'invalider**. Séquence atteignable dans la fenêtre R3 de 6 h |
+
+**Structures NVS** — `PhIntegralSnapshot` (20 o) dans un namespace **dédié** `pool-phint`, clé `snap`. Aucun `configMutex` : la charge utile appartient exclusivement à `loopTask`.
+
+### 4. L'anneau de charge acide sur 7 jours
+
+`phPersistRestoreCap()` consomme une **charge observée** qui **n'existait nulle part** : `pool-daily` n'a que le compteur du jour courant (écrasé au changement de date) et `history.*` ne stocke que pH/ORP/température. La fonction rendait donc `days = 0` et le fail-closed interdisait **toute** restauration.
+
+**`PhLoadHistory`** — 7 échantillons `{date AAAAMMJJ, mL, minutes}` dans **un blob de 64 octets**, namespace **existant** `pool-daily`, clé `ph_load7`, **une écriture par jour**.
+
+- **Alimenté aux DEUX points de basculement de date existants** — `tickDailyRollover()` (minuit, appareil allumé) et `loadDailyCounters()` (l'appareil était éteint à minuit). Aucun troisième point n'est créé.
+- **Déduplication sur TOUTE l'étendue de l'anneau** : si une case porte déjà cette date, elle est **remplacée**. Ne comparer qu'à la case la plus récente ne suffit pas — un recul d'horloge (correction NTP à cheval sur minuit) rouvre puis reclôt une date archivée **une case plus loin**, et la journée serait **pondérée double** dans la médiane.
+- **Médiane, pas moyenne** : une seule journée aberrante (purge, incident, assistant de mesure de débit, mise en service) déplacerait une moyenne sur 7 valeurs de plus de 10 % — et le plafond de restauration avec elle. La médiane encaisse **jusqu'à trois journées folles sur sept**.
+- **Aucun scellement partiel** : taille exacte + schéma `kPhLoadHistorySchema` + empreinte FNV-1a, sinon **historique vidé** (avec un `warning`, cf. journal).
+
+#### Critère de jour exploitable — les trois filtres n'écartent QUE par le haut
+
+| Filtre | Règle | Pourquoi |
+|---|---|---|
+| **Circulation minimale** | `minutes ≥ kPhLoadDayMinFiltrationMin` (**120 min**) | Sous 2 h, le rapport mL/min ne décrit plus la charge du bassin mais des **transitoires** : le délai de purge (`stabilizationDelayMin`) et la pause de mélange amputent une part **fixe** de la journée, et le budget horaire rend une journée courte structurellement bornée par le **quota**, pas par la chimie |
+| **Fenêtre d'âge** | ≤ 7 jours **calendaires**, vue de la date du jour (`phLoadDayWithinWindow`) | ⚠️ **Défaut corrigé en revue.** L'anneau garde les 7 dernières journées **ARCHIVÉES**, pas les 7 derniers **jours** : un appareil arrêté deux mois retrouvait des journées d'été intactes. 4 journées à 2,86 + 3 journées d'automne à 1,00 ⇒ médiane **2,86**, plafond **3 753 pH·s** contre **2 484** d'équilibre réel = **1,5 × l'équilibre courant**. Conversion Howard Hinnant (`days_from_civil`) : sans elle, « 20260301 − 20260228 » vaudrait **73** |
+| **Vraisemblance physique** | `ml / minutes ≤ 1,10 × débit soutenable` | Un rapport au-dessus du délivrable n'est pas l'observation d'un bassin chargé : c'est la **preuve** qu'il manque des minutes au dénominateur. La journée est **écartée**, jamais rapiécée. ⚠️ **Le seuil est une FONCTION de la configuration** — [ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md) |
+
+> **Une journée à volume NUL est CONSERVÉE.** Le volume n'entre pas dans le critère de représentativité : une circulation suffisante sans dosage est une observation **légitime** de charge faible. L'écarter tirerait la médiane **vers le haut**, c'est-à-dire **du mauvais côté** (fail-open).
+
+Le seuil de vraisemblance suit `phSustainableFlowFromConfig()` = `phSustainableAvgFlow(débit d'amplitude calibré, limite horaire configurée)` — **source unique** partagée avec le gel d'anti-windup de l'intégrale. Le figer aurait tué la restauration **en silence** dès que l'utilisateur applique la recommandation de relever la limite horaire : à 15 min/h le délivré légitime atteint ~6,5 mL/min, et un seuil bloqué à 2,17 écarterait **toutes** les journées.
+
+#### Le dénominateur : pourquoi les minutes de circulation existent
+
+**La charge se mesure en mL/min, pas en mL/jour.** Un jour à 4 h et un jour à 10 h de circulation qui injectent le même volume ne décrivent **pas** la même charge — le second est 2,5 fois moins chargé. Sans dénominateur, la médiane serait celle d'une grandeur qui dépend surtout de l'**horaire de filtration**.
+
+`SafetyLimits::dailyFiltrationMinutes` ([`config.h`](../../src/config.h)) est incrémenté par `tickDailyFiltrationMinutes()`, **hors de toute conjonction d'éligibilité** — compter la circulation n'est pas décider de doser. La source est le **cache de présence d'eau** (`measureValidity.waterPresent()`, lui-même alimenté par `resolveWaterPresence()`), donc valable dans les **trois modes d'installation**, pas seulement quand ce contrôleur pilote le relais. Saturation à **1440 min/jour**.
+
+> **Seuil de `dt` distinct et volontairement plus large** : `kPhLoadMinuteMaxTickDtMs` = **60 s**, contre 10 s pour l'intégrale. Les deux compteurs ne courent pas le même risque : l'intégrale se protège d'un `dt` aberrant qui la **chargerait trop** (fail-open) ; le dénominateur, lui, ne risque que d'être **tronqué** — et un dénominateur tronqué **surévalue** la charge mL/min, donc le plafond de restauration. `accountPumpVolume` crédite le numérateur sur le delta **entier**. Le sens du fail-closed est inversé, le seuil l'est donc aussi.
+
+**Relecture d'une valeur > 1440** (impossible ⇒ enregistrement corrompu) : **deux usages, deux traitements opposés**, chacun choisi du côté qui **sous-estime** la charge — journée **close** à archiver ⇒ sentinelle **0** (journée rendue non archivable, elle ne pollue pas la médiane ; l'écrêter à 1440 fabriquerait un échantillon de toutes pièces) ; journée **en cours** à reprendre ⇒ dénominateur **saturé à 1440** (la journée est déjà « pleine », sa charge sera minimale).
+
+#### Usure NVS : un facteur 5 à 6, assumé
+
+`_dailyCountersDirty` est désormais posé **une fois par minute de circulation**. Le flush périodique 30 s se déclenche donc tant que l'eau tourne :
+
+| | Avant v2.27.0 | v2.27.0 |
+|---|---:|---:|
+| Transactions `pool-daily` / jour | ~70-100 | **~420-600** |
+
+**Le choix est délibéré, pas un effet de bord.** Numérateur (mL) et dénominateur (minutes) sont persistés **ensemble** dans la même transaction : une coupure ne perd au plus qu'**une minute de chacun**, donc **le rapport mL/min est préservé**. L'ordre de grandeur reste très en deçà des 100 000 cycles garantis d'un secteur (NVS à nivellement d'usure, réécritures à valeur identique ignorées), mais le coût doit être **présenté**, pas minimisé.
+
+#### Points de flush ajoutés (défaut fail-open corrigé en revue)
+
+Le flush 30 s vivait en **fin** d'`update()`, derrière **quatre `return`** : OTA, mode maintenance, capteurs non initialisés, stabilisation / assistant de débit. Pendant ces épisodes **l'eau circule** et les minutes s'accumulent, mais `_dailyCountersDirty` n'était **jamais consommé** — et l'OTA comme la maintenance se terminent par un **redémarrage**. Chiffrage : une journée de 480 min de circulation dont 360 en maintenance et 120 en régulation à 5 mL était relue **5/120 = 0,042 mL/min** au lieu de **0,0104**, soit une charge observée **quatre fois trop grande**.
+
+| Point | Fichier |
+|---|---|
+| Flush périodique **remonté en amont de toutes les sorties anticipées** d'`update()` | [`pump_controller.cpp`](../../src/pump_controller.cpp) |
+| `setMaintenanceInhibit(true)` — **entrée** en maintenance (durée non bornée, se termine le plus souvent par un redémarrage) | [`pump_controller.cpp`](../../src/pump_controller.cpp) |
+| Redémarrage **après OTA** et redémarrage en **mode Point d'accès** | [`web_server.cpp`](../../src/web_server.cpp) |
+| Redémarrage demandé par le **web** (`/restart`) | [`web_routes_config.cpp`](../../src/web_routes_config.cpp) |
+| Redémarrage demandé par **MQTT / Home Assistant** | [`mqtt_manager.cpp`](../../src/mqtt_manager.cpp) |
+
+> ⚠️ **Aucune sortie anticipée d'`update()` ne doit repasser devant le flush des compteurs journaliers.** L'intégrité de la charge observée est une **propriété de sécurité** ([ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md)).
+
+Les deux flushs de **transition** (démarrage d'injection pH / ORP), qui dépendent de `phActive`/`orpActive`, restent en fin d'`update()`.
+
+### Recalibration des paliers d'alerte de saturation
+
+La **base de temps est conservée** (temps de branche automatique) : c'est la seule qui **suspende** l'épisode en `manual`, sous garde bloquante ou pendant un hiver sans filtration. **Mais son tarif a changé** : le tick d'entretien tourne plus souvent. À seuils inchangés, les paliers mûriraient d'autant plus vite et signaleraient un **transitoire de rattrapage légitime** — le faux positif qui décrédibilise l'alerte.
+
+**L'invariant préservé est la FENÊTRE DE PREUVE EN TEMPS RÉEL** de la v2.26.0, validée sur le terrain. Facteur = `0,29 / 0,25` = **1,16**, arrondi à la minute ronde :
+
+| Palier | v2.26.0 (branche) | v2.27.0 (branche) | Fenêtre réelle (inchangée) |
+|---|---:|---:|---:|
+| `warning` | 2 h | **2 h 20** | ~8,0 h |
+| `critical` | 6 h | **7 h** | ~24,1 h (≈ 3 jours de filtration à 7 h/j) |
+| Rappel du `critical` | 12 h | **14 h** | ~48,3 h |
+
+Trois `static_assert` (vii bis-a) verrouillent le rapport `palier / rapport cyclique` à **5 % près**, sous forme croisée (pas de division).
+
+> ⚠️ **D'où vient le facteur — à lire avant toute recalibration future.** Une première rédaction avait retenu **×4**, repris d'une analyse d'impact **préliminaire** (« le tick passe de `canDose(0)` à toute la fenêtre de filtration », soit un rapport cyclique implicitement porté à 100 %) sans le confronter au chiffrage du gate. Résultat mesuré : la fenêtre avant `warning` passait de ~8 h à **~27,6 h** et celle avant `critical` à **~3,4 jours** — un bidon vide détecté **3,45 × plus lentement**, l'inverse exact de l'intention. **Ne recalibrer ces paliers que sur un rapport cyclique chiffré et argumenté, jamais sur une intuition d'impact.**
+
+> **Ce que sont ces deux rapports cycliques, dit exactement.** `kPhIntegralDutyV2260 = 0,25` et `kPhIntegralDutyF084 = 0,29` sont des **ESTIMATIONS ANALYTIQUES** du gate, **pas des relevés de terrain** : 0,29 vaut **7/24 exactement**, c'est-à-dire la fenêtre de filtration quotidienne de la spec **privée de son facteur de disponibilité 0,85** ; 0,25 est le chiffrage correspondant sous `canDose(0)`. *(Le commentaire de `constants.h` les qualifiait de « MESURES, pas des estimations » — c'était faux, et faux dans le paragraphe même qui interdit de recalibrer sur une estimation. Corrigé en v2.27.0.)*
+>
+> **Pourquoi cela reste acceptable** : le **sens de l'erreur est conservateur**. Ces deux nombres ne servent qu'au **rapport** 0,29/0,25. Sur-estimer l'ancien rapport cyclique **raccourcit** les paliers recalibrés, donc **avance** les alertes : le défaut possible est le **faux positif**, jamais le **silence** — qui est la classe de défaut que cette surveillance existe pour éliminer.
+
+### Nouvelles signatures publiques
+
+```cpp
+// pump_controller.h — setMaintenanceInhibit n'est PLUS inline (flush NVS à l'entrée)
+void setMaintenanceInhibit(bool inhibit);
+
+// config.h — anneau de charge et charge observée (transport NVS seul)
+bool loadPhIntegralSnapshot(PhIntegralSnapshot& out);
+void savePhIntegralSnapshot(PhIntegralSnapshot& s);
+bool loadPhLoadHistory(PhLoadHistory& out);
+void savePhLoadHistory(PhLoadHistory& h);
+void recordPhLoadDay(const char* date8, float phMl, uint32_t filtrationMinutes,
+                     float sustainableMlPerMin);
+PhPersistLoadObservation readPhLoadObservation(float sustainableMlPerMin);
+
+// config.h — SOURCE UNIQUE du débit moyen soutenable de la voie pH (mL/min).
+// Rend 0 quand la pompe n'est pas caractérisée (l'appelant retombe alors sur
+// kPhLoadSustainableFallbackMlPerMin). ADR-0054.
+float phSustainableFlowFromConfig();
+```
+
+`readPhLoadObservation()` est prévue pour être appelée **rarement** (démarrage + une clôture de journée) : l'appelant met le résultat en **cache** (`_phLoadObs`), jamais de lecture NVS depuis `update()`. Elle est **réutilisable telle quelle** par la dose de base apprise (feature-085), qui exige la même médiane.
+
+### Nouvelles constantes ([`constants.h`](../../src/constants.h))
+
+| Constante | Valeur | Rôle |
+|---|---:|---|
+| `kPhIntegralResetHoldMs` | 900 000 ms (**15 min**) | Tenue de l'excursion avant purge sèche (temps de branche) |
+| `kPhIntegralRestoreMaxFraction` | 0,30 | R1 — **butée absolue** (fraction de `integralMax`) |
+| `kPhIntegralRestoreLoadFraction` | 0,50 | R1 — fraction de l'**équilibre observé** |
+| `kPhEquilibriumLoadMlPerMin` | 2,86 mL/min | **DEMANDE** à l'équilibre (réf. 2026-08) — ⚠️ pas un volume délivré |
+| `kPhIntegralRestoreHistoryWindowDays` / `…MinHistoryDays` | 7 / **3** | Fenêtre de l'anneau / exigence **fail-closed** |
+| `kPhIntegralPersistMaxAgeS` | 21 600 s (**6 h** = 1 `Ti`) | R3 — péremption de l'instantané |
+| `kPhIntegralRestoreConfirmMs` | 300 000 ms (**5 min**) | R4 — tenue de confirmation |
+| `kPhIntegralRestoreArmWindowMs` | 600 000 ms (10 min) | R4 — fenêtre d'armement après boot |
+| `kPhIntegralPersistMinIntervalMs` / `…MinDeltaFrac` | 30 min / 5 % | R5 — cadence **conjonctive** |
+| `kPhIntegralRestoreMaxStreak` | 3 | R7 — anti-boucle de démarrage |
+| `kPhIntegralPersistSchema` / `kPhLoadHistorySchema` | 1 / 1 | Versions de schéma NVS |
+| `kPhLoadDayMinFiltrationMin` | **120 min** | Critère de jour exploitable |
+| `kPhLoadMinuteMaxTickDtMs` | 60 000 ms (**60 s**) | `dt` maximal crédité au **dénominateur** (≠ 10 s de l'intégrale) |
+| `kPhLoadSustainableFallbackMlPerMin` | 2,17 mL/min | **REPLI seulement** (ex-`kPhLoadSustainableMlPerMin`, **renommée**) — jamais un seuil nominal, [ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md) |
+| `kPhLoadDayMaxRateFactor` | 1,10 | Tolérance d'arrondi du filet de vraisemblance |
+| `kPhIntegralDutyV2260` / `kPhIntegralDutyF084` | 0,25 / 0,29 | Rapports cycliques (**estimations analytiques**) servant à la recalibration des paliers |
+
+### Journal (v2.27.0)
+
+| Message | Niveau | Quand |
+|---|---|---|
+| `Intégrale pH : instantané NVS retenu — N pH·s écrits il y a M min, plafonnés à P pH·s par {la charge observée\|la butée absolue} ; application DIFFÉRÉE jusqu'à confirmation par la mesure (5 min d'écart soutenu)` | `info` | Candidate acceptée au démarrage (R6) |
+| `Intégrale pH restaurée : N pH·s (X % du plafond), confirmée par 5 min d'écart soutenu ; plafond P pH·s, charge observée C mL/min sur D jour(s), équilibre E pH·s` | `info` | Confirmation R4 aboutie — **la charge observée et l'origine du plafond sont journalisées** : sans elles, impossible de dire après coup si la restauration a été bornée par la butée ou par la chimie |
+| `Intégrale pH : instantané NVS REJETÉ (motif) — la régulation repart de zéro` | `warning` | Rejet motivé : schéma, anti-boucle, contexte, horodatage, péremption, valeur |
+| `Intégrale pH : instantané NVS non restauré — plafond de restauration nul (D jour(s) d'historique de charge sur 3 requis) ; la régulation repart de zéro` | `info` | **État nominal** d'un appareil neuf — `info`, pas `warning`, sinon les vrais rejets seraient noyés |
+| `Intégrale pH : restauration abandonnée — instantané périmé avant confirmation` | `warning` | R3 pendant l'attente |
+| `Intégrale pH : restauration abandonnée — plafond de restauration retombé à zéro avant confirmation` | `warning` | R1 pendant l'attente. **Cause distincte de la péremption** : les confondre ferait partir le diagnostic sur l'horloge au lieu de la charge observée |
+| `Intégrale pH : restauration abandonnée — heure non synchronisée (âge de l'instantané incalculable)` | `warning` | Fenêtre d'armement écoulée sans NTP/RTC |
+| `Intégrale pH : restauration en attente abandonnée — régulation pH en mode manuel` | `info` | Rupture de sens |
+| `[Charge pH] Journée AAAAMMJJ archivée : N mL en M min de circulation ; D/3 jour(s) exploitable(s), charge médiane C mL/min` | `info` | Clôture d'une journée (une fois par jour) |
+| `[Charge pH] Anneau NVS illisible (taille, schéma ou empreinte) — historique vidé, plus de restauration d'intégrale avant 3 nouvelles journées` | `warning` | Anneau corrompu. **Une absence (0 octet) reste silencieuse** — c'est le cas nominal avant la première clôture |
+| `[Charge pH] Historique de charge : ouverture NVS refusée` / `[Config] Instantané intégrale pH : ouverture NVS refusée` | `warning` | Échec d'ouverture en écriture |
+
+### Testabilité
+
+Nouvelle suite native [`test/test_native_ph_persist/`](../../test/test_native_ph_persist/) — total du projet **849 → 932 tests**. **Motif de l'extraction** : R1 à R7 vivaient dans `config.cpp` et `pump_controller.cpp`, **ni l'un ni l'autre n'étant dans le `build_src_filter` de `env:native`**. Trois mutations survivaient : *supprimer l'écrêtage R1*, *supprimer la vérification de CRC*, *rendre le prédicat permissif*. C'est la situation exacte qui avait précédé l'extraction de `ph_integral_logic.h` — où le défaut réel se trouvait **dans la garde de C2**.
+
+La sentinelle du filet de vraisemblance **verrouille les deux sens** : la même journée à 6 mL/min est **écartée** à 5 min/h et **retenue** à 15 min/h. Un seuil figé — à 2,17 comme à 6,5 — casse **l'une des deux lignes** ; un test à sens unique ne tuerait pas la mutation « seuil figé » ([ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md)).
 
 ## Comptabilisation d'un démarrage de cycle : invariant (v2.20.5)
 
@@ -1288,13 +1536,26 @@ Plus jamais de durée déduite du modèle linéaire (`calcInjectFlow` supprimé)
 | PID — anti-windup pH, **dérivé de l'autorité** `U × Ti / kp` (v2.26.0 ; était 50,0 inerte) | `kPhIntegralMaxSlow` / `Normal` / `Fast` | 43 200 / **16 200** / 7 200 pH·s | [`constants.h`](../../src/constants.h) |
 | PID — anti-windup, défaut de structure (**volontairement inerte**, `Ki = 0` par défaut) | `integralMax` | 50.0 | `PIDController` ([`pump_controller.h`](../../src/pump_controller.h)) |
 | Intégrale pH — marge du reset sec (seuil réel −0,15 avec les défauts) | `kPhIntegralResetMargin` | 0,10 pH | [`constants.h`](../../src/constants.h) |
+| Intégrale pH — **tenue** de l'excursion avant purge sèche (v2.27.0 ; = pause mélange) | `kPhIntegralResetHoldMs` | 900 000 ms (15 min de branche) | [`constants.h`](../../src/constants.h) |
 | Intégrale pH — demi-vie d'oubli sous consigne (pas fixes de 1 min, facteur 0,9885140) | `kPhIntegralDecayHalfLifeMs` | 3 600 000 ms (1 h) | [`constants.h`](../../src/constants.h) |
 | Intégrale pH — `dt` maximal crédité | `kPhIntegralMaxTickDtMs` | 10 000 ms (10 s) | [`constants.h`](../../src/constants.h) |
 | Intégrale pH — quantum d'intégration (garantit un incrément représentable en `float`) | `kPhIntegralChargeQuantumMs` | 1 000 ms (1 s) | [`constants.h`](../../src/constants.h) |
 | Intégrale pH — gel sur quota journalier | `kPhIntegralFreezeDailyFraction` | 0,80 | [`constants.h`](../../src/constants.h) |
 | Intégrale pH — péremption | `kPhIntegralStaleResetMs` | 86 400 000 ms (24 h) | [`constants.h`](../../src/constants.h) |
 | Intégrale pH — hystérésis de saturation (entrée / sortie) | `kPhIntegralSaturationPct` / `…ClearPct` | 95 % / 85 % | [`constants.h`](../../src/constants.h) |
-| Intégrale pH — paliers d'alerte et rappel | `…SaturationWarnMs` / `…CriticalMs` / `…ReminderMs` | 2 h / **6 h** / 12 h | [`constants.h`](../../src/constants.h) |
+| Intégrale pH — paliers d'alerte et rappel (**recalibrés en v2.27.0** : fenêtre réelle inchangée, ~8 h / ~24 h / ~48 h) | `…SaturationWarnMs` / `…CriticalMs` / `…ReminderMs` | **2 h 20 / 7 h / 14 h** de branche (était 2 h / 6 h / 12 h) | [`constants.h`](../../src/constants.h) |
+| Intégrale pH — rapports cycliques du tick d'entretien (**estimations analytiques**, servent au seul rapport 0,29/0,25) | `kPhIntegralDutyV2260` / `kPhIntegralDutyF084` | 0,25 / 0,29 | [`constants.h`](../../src/constants.h) |
+| Persistance intégrale — plafond de restauration (v2.27.0, [ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md) — **constantes de SÉCURITÉ CHIMIQUE**) | `kPhIntegralRestoreMaxFraction` / `…RestoreLoadFraction` | 0,30 (butée absolue) / 0,50 (de l'équilibre **observé**) | [`constants.h`](../../src/constants.h) |
+| Persistance intégrale — historique de charge (fenêtre / exigence fail-closed) | `kPhIntegralRestoreHistoryWindowDays` / `…MinHistoryDays` | 7 j / **3 j** | [`constants.h`](../../src/constants.h) |
+| Persistance intégrale — péremption de l'instantané (R3, = 1 `Ti`) | `kPhIntegralPersistMaxAgeS` | 21 600 s (6 h) | [`constants.h`](../../src/constants.h) |
+| Persistance intégrale — confirmation par la mesure (R4) / fenêtre d'armement | `kPhIntegralRestoreConfirmMs` / `…RestoreArmWindowMs` | 5 min de branche / 10 min après boot | [`constants.h`](../../src/constants.h) |
+| Persistance intégrale — cadence d'écriture **conjonctive** (R5) | `kPhIntegralPersistMinIntervalMs` / `…MinDeltaFrac` | 30 min **ET** 5 % du plafond | [`constants.h`](../../src/constants.h) |
+| Persistance intégrale — anti-boucle de démarrage (R7) | `kPhIntegralRestoreMaxStreak` | 3 restaurations | [`constants.h`](../../src/constants.h) |
+| Persistance intégrale — schémas NVS (toute retouche de structure les incrémente) | `kPhIntegralPersistSchema` / `kPhLoadHistorySchema` | 1 / 1 | [`constants.h`](../../src/constants.h) |
+| Charge observée — circulation minimale d'un jour exploitable | `kPhLoadDayMinFiltrationMin` | 120 min (2 h) | [`constants.h`](../../src/constants.h) |
+| Charge observée — `dt` maximal crédité au **dénominateur** (≠ 10 s de l'intégrale : sens du fail-closed inversé) | `kPhLoadMinuteMaxTickDtMs` | 60 000 ms (60 s) | [`constants.h`](../../src/constants.h) |
+| Charge observée — filet de vraisemblance : **REPLI** et tolérance ([ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md) — le seuil nominal est une **fonction** de la limite horaire et du débit calibré) | `kPhLoadSustainableFallbackMlPerMin` (ex-`kPhLoadSustainableMlPerMin`) / `kPhLoadDayMaxRateFactor` | 2,17 mL/min (repli) / 1,10 | [`constants.h`](../../src/constants.h) |
+| Régulation — **DEMANDE** à l'équilibre de l'installation de référence (⚠️ pas un volume délivré) | `kPhEquilibriumLoadMlPerMin` | 2,86 mL/min | [`constants.h`](../../src/constants.h) |
 | PID — borne erreur pH | `kPhMaxError` | 1.0 | [`constants.h:89`](../../src/constants.h:89) |
 | PID — borne erreur ORP | `kOrpMaxError` | 200.0 mV | [`constants.h:90`](../../src/constants.h:90) |
 | PID — `dt` max | (literal in code) | 10 s | [`pump_controller.cpp`](../../src/pump_controller.cpp) |
@@ -1450,8 +1711,18 @@ Voir [`pump_controller.cpp`](../../src/pump_controller.cpp) `savePersistentDaily
 - `phLimitReached`, `orpLimitReached` (bool)
 - `currentDayDate` (YYYYMMDD, char[9])
 - `phDosingCycles`, `orpDosingCycles` (uint16)
+- **v2.27.0** — `filt_min` (uint32) : **minutes de circulation effectives** de la journée courante, **dénominateur** de la charge acide observée. Persisté dans la **même** transaction que les volumes, pour que le rapport mL/min survive à une coupure.
 
-Flush différé : `_dailyCountersDirty` armé à chaque injection, écrit en NVS au max toutes les 60 s pour réduire la charge d'écriture.
+Flush différé : `_dailyCountersDirty` armé à chaque injection, écrit en NVS au max toutes les 60 s pour réduire la charge d'écriture. **v2.27.0** : le drapeau est désormais **aussi** posé à chaque minute de circulation, le flush périodique est **remonté en amont de toutes les sorties anticipées** d'`update()`, et les compteurs sont explicitement posés à l'entrée en maintenance ainsi qu'avant les redémarrages OTA / mode AP / web / MQTT. Coût assumé : **~420-600 transactions/jour contre ~70-100** — voir [Usure NVS](#usure-nvs--un-facteur-5-à-6-assumé).
+
+**v2.27.0 — deux structures NVS supplémentaires** ([ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md)) :
+
+| Structure | Emplacement | Taille | Cadence d'écriture |
+|---|---|---:|---|
+| `PhIntegralSnapshot` (intégrale pH + schéma + contexte + horodatage + compteur anti-boucle + empreinte) | namespace **dédié** `pool-phint`, clé `snap` | 20 o | ≤ 1 / 30 min **ET** > 5 % du plafond (R5) — ~2/jour |
+| `PhLoadHistory` (anneau de 7 journées `{date, mL, minutes}` + schéma + empreinte) | namespace existant `pool-daily`, clé `ph_load7` | 64 o | **1 / jour**, au basculement de date |
+
+Aucune de ces deux fonctions ne prend `configMutex` : la charge utile appartient exclusivement à `loopTask` — le mutex ne protégerait rien tout en introduisant une prise de verrou dans `update()`.
 
 Hors compteurs journaliers, la **trace de bascule automatique pH** est persistée par `saveMqttConfig()` (namespace de configuration, pas ce flush) : `ph_am_epoch` + `ph_am_reason`, v2.20.3 — voir [Persistance de la bascule automatique en manuel](#persistance-de-la-bascule-automatique-en-manuel-v2203).
 
@@ -1467,13 +1738,16 @@ Hors compteurs journaliers, la **trace de bascule automatique pH** est persisté
 - [`src/config.h:152`](../../src/config.h:152) — `PumpProtection`
 - [`src/config.h:141`](../../src/config.h:141) — `SafetyLimits`
 - [`src/constants.h`](../../src/constants.h) — `kPulsePeriodMs`, `kPulseMinMs`, `kPulseKickMs`, `kPumpAmpMinPct`, `kPulseFlowMaxMlPerMin`, `kPulseRefusalLogIntervalMs` (v2.21.0), `kPumpFlow255MlPerMin` + `kPumpFlow255MeasuredMaxMlPerMin` et `kPumpTypeFlowMeasuredMaxMlPerMin` (v2.25.2, ADR-0050 — remplacent `kPump1/2Flow255MlPerMin`)
-- [`src/ph_integral_logic.h`](../../src/ph_integral_logic.h) — **terme intégral pH pur** (v2.26.0, [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md)) : charge signée, oubli, reset sec, péremption, hystérésis de saturation
-- [`src/constants.h`](../../src/constants.h) — section « RÉGULATION pH — TERME INTÉGRAL » (v2.26.0) : `kPhIntegralAuthorityMlPerMin`, `kPhIntegralTi*`, `kPhKp*`, `kPhKi*`, `kPhIntegralMax*`, `kPhIntegralResetMargin`, `kPhIntegralDecay*`, `kPhIntegralMaxTickDtMs`, `kPhIntegralChargeQuantumMs`, `kPhIntegralFreezeDailyFraction`, `kPhIntegralStaleResetMs`, `kPhIntegralSaturation*` + les 9 `static_assert`
+- [`src/ph_integral_logic.h`](../../src/ph_integral_logic.h) — **terme intégral pH pur** (v2.26.0, [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md)) : charge signée, oubli, reset sec **temporisé** (v2.27.0), péremption, hystérésis de saturation, `phSustainableAvgFlow()`
+- [`src/ph_persist_logic.h`](../../src/ph_persist_logic.h) — **persistance de l'intégrale pH, pure** (v2.27.0, [ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md) / [ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md)) : scellement et empreinte FNV-1a, empreinte de contexte, plafond R1, péremption R3, machine de confirmation R4, cadence R5, anti-boucle R7, anneau de charge sur 7 jours, fenêtre d'âge calendaire, filet de vraisemblance, médiane
+- [`src/constants.h`](../../src/constants.h) — section « RÉGULATION pH — TERME INTÉGRAL » (v2.26.0) : `kPhIntegralAuthorityMlPerMin`, `kPhIntegralTi*`, `kPhKp*`, `kPhKi*`, `kPhIntegralMax*`, `kPhIntegralResetMargin`, `kPhIntegralDecay*`, `kPhIntegralMaxTickDtMs`, `kPhIntegralChargeQuantumMs`, `kPhIntegralFreezeDailyFraction`, `kPhIntegralStaleResetMs`, `kPhIntegralSaturation*` + les 9 `static_assert` ; section « PERSISTANCE NVS de l'intégrale pH » (v2.27.0) : `kPhIntegralResetHoldMs`, `kPhIntegralRestore*`, `kPhIntegralPersist*`, `kPhLoad*`, `kPhEquilibriumLoadMlPerMin`, `kPhIntegralDuty*` + les `static_assert` (vii bis-a) et (x) à (xiv)
+- [`src/config.h`](../../src/config.h) / [`src/config.cpp`](../../src/config.cpp) — transport NVS de l'instantané et de l'anneau (`loadPhIntegralSnapshot`, `savePhIntegralSnapshot`, `loadPhLoadHistory`, `savePhLoadHistory`, `recordPhLoadDay`, `readPhLoadObservation`), `phSustainableFlowFromConfig()` (**source unique** du débit soutenable) et `SafetyLimits::dailyFiltrationMinutes`
 - [`src/pulse_dosing_logic.h`](../../src/pulse_dosing_logic.h), [`src/pulse_dosing_logic.cpp`](../../src/pulse_dosing_logic.cpp) — ordonnanceur d'impulsions pur (gate, plan, tick, volume — v2.21.0 ; accumulateur sous-plancher `planPulseWithCarry` — v2.22.0)
 - [`src/constants.h`](../../src/constants.h) — `kPumpPhPin = 25`, `kPumpOrpPin = 33` (PCB v2, voir ADR-0012)
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036) + gardes d'injection manuelle `evaluateManualInject` (feature-006) + répartition scheduled `evaluateScheduledDose` (feature-011)
 - [`src/schedule_logic.h`](../../src/schedule_logic.h), [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) — `remainingRangeMinutes` (horizon de répartition scheduled, feature-011)
-- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053), [ADR-0026](../adr/0026-mode-installation.md) (Mode d'installation — 3 archétypes de câblage + résolution unique de la présence d'eau, feature-056), [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) (offset pH en sortie des accesseurs + filets sur le brut, feature-067), [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md) (proportionnel de temps à amplitude calibrée, v2.21.0), [ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md) (budget horaire et temps min en temps pompe-ON, v2.21.0), [ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md) (accumulateur sous le pouls minimal, v2.22.0), [ADR-0047](../adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md) (calibration de type par défaut + gel de l'amplitude, v2.23.0), [ADR-0050](../adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md) (débit à 255 = constante unique de flotte, marge ≥ dispersion mesurée, v2.25.2), [ADR-0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md) (pouls minimal 5 s → 10 s : rendement des démarrages d'abord, correction du comptage ensuite, v2.25.3), [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) (**levée de `Ki = 0` sur le seul pH**, `integralMax` dimensionné par l'autorité, intégration signée sur le seuil d'arrêt, v2.26.0 — amende l'ADR-0016)
+- [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053), [ADR-0026](../adr/0026-mode-installation.md) (Mode d'installation — 3 archétypes de câblage + résolution unique de la présence d'eau, feature-056), [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) (offset pH en sortie des accesseurs + filets sur le brut, feature-067), [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md) (proportionnel de temps à amplitude calibrée, v2.21.0), [ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md) (budget horaire et temps min en temps pompe-ON, v2.21.0), [ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md) (accumulateur sous le pouls minimal, v2.22.0), [ADR-0047](../adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md) (calibration de type par défaut + gel de l'amplitude, v2.23.0), [ADR-0050](../adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md) (débit à 255 = constante unique de flotte, marge ≥ dispersion mesurée, v2.25.2), [ADR-0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md) (pouls minimal 5 s → 10 s : rendement des démarrages d'abord, correction du comptage ensuite, v2.25.3), [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) (**levée de `Ki = 0` sur le seul pH**, `integralMax` dimensionné par l'autorité, intégration signée sur le seuil d'arrêt, v2.26.0 — amende l'ADR-0016), [ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md) (**persistance conditionnelle de l'intégrale pH** sous sept garanties R1-R7 — la valeur relue n'est jamais appliquée au démarrage ; amende la clause « aucune persistance NVS » de l'ADR-0052, v2.27.0), [ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md) (un seuil de vraisemblance dérivé d'un réglage configurable est une **fonction** de ce réglage, jamais une constante, v2.27.0)
+- [feature-084](../../specs/features/doing/feature-084-integrale-ph-cadence-et-memoire.md) — cadence du tick d'entretien, reset sec temporisé, persistance NVS conditionnelle, anneau de charge acide (v2.27.0)
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — entrée filtrée, anti-windup, pause mélange, zone morte
 - [feature-036](../../specs/features/done/feature-036-dosage-testable-decision-pure.md) — extraction de la décision de dosage en module pur testable
 - [feature-039](../../specs/features/done/feature-039-anti-rafale-rollover-testable.md) — extraction de l'anti-rafale + déclencheurs de rollover en logique pure testable

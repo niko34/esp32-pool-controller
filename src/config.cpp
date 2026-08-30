@@ -3,6 +3,7 @@
 #include "logger.h"
 #include "ph_offset.h"  // feature-067 : isPhOffsetValid() (logique pure)
 #include "ph_guard_logic.h"  // v2.25.0 : roundPhOffsetToStep() (logique pure)
+#include "ph_integral_logic.h"  // v2.27.0 : phSustainableAvgFlow() (logique pure)
 #include <Preferences.h>
 #include <time.h>
 
@@ -662,6 +663,158 @@ void applyMqttConfig() {
 // Cal,mid, Cal,low, Cal,<ref>). Plus de calculs offset/slope ni d'EEPROM côté
 // ESP32. Voir SensorManager::enqueueCalibrate*() et getPhCalibrationPointsCached().
 
+// =============================================================================
+// feature-084 (sujet 3) — INSTANTANÉ NVS DE L'INTÉGRALE pH
+// =============================================================================
+// L'ADR-0052 interdisait toute persistance de l'intégrale. Le gate
+// pool-chemistry du 30/08/2026 l'autorise sous SEPT conditions cumulatives
+// (R1-R7, cf. constants.h) ; l'ADR est amendé en conséquence.
+//
+// ICI, IL N'Y A QUE DU TRANSPORT — ouvrir la NVS, lire/écrire 20 octets, la
+// refermer. TOUTES les décisions, y compris le calcul et la VÉRIFICATION de
+// l'empreinte d'intégrité, vivent dans `ph_persist_logic.h`. Motif : config.cpp
+// n'est pas dans le `build_src_filter` de `env:native`, donc tout ce qui décide
+// ici est hors d'atteinte des tests — et c'est précisément dans une zone de ce
+// genre que le défaut de la garde C2 s'était logé.
+bool loadPhIntegralSnapshot(PhIntegralSnapshot& out) {
+  PhIntegralSnapshot raw;
+  Preferences prefs;
+  if (!prefs.begin("pool-phint", true)) return false;  // namespace jamais écrit
+  const size_t read = prefs.getBytes("snap", &raw, sizeof(raw));
+  prefs.end();
+  // Taille inattendue ou empreinte discordante ⇒ rejet net, jamais de
+  // réinterprétation partielle (fail-closed R2). Le prédicat est PUR et testé.
+  if (!phPersistSnapshotIntact(raw, read)) return false;
+  out = raw;
+  return true;
+}
+
+void savePhIntegralSnapshot(PhIntegralSnapshot& s) {
+  phPersistSealSnapshot(s);  // normalise `reserved`, pose `crc` (logique pure)
+  Preferences prefs;
+  if (!prefs.begin("pool-phint", false)) {
+    systemLogger.warning("[Config] Instantané intégrale pH : ouverture NVS refusée");
+    return;
+  }
+  prefs.putBytes("snap", &s, sizeof(s));
+  prefs.end();
+}
+
+// =============================================================================
+// v2.27.0 (feature-084, R1) — ANNEAU NVS DE L'HISTORIQUE DE CHARGE ACIDE
+// =============================================================================
+// Sept journées {date, mL pH, minutes de filtration} dans UN blob de 64 octets,
+// rangé dans le namespace EXISTANT `pool-daily` (clé `ph_load7`, 8 caractères —
+// la NVS en tolère 15) : aucun namespace supplémentaire à provisionner, et
+// l'anneau vit au plus près des compteurs dont il archive la clôture.
+//
+// UNE écriture par jour, hors de toute transaction critique : elle n'a lieu qu'au
+// basculement de date, jamais pendant une injection.
+//
+// ICI, IL N'Y A QUE DU TRANSPORT. Schéma, intégrité, insertion, critère de jour
+// exploitable et médiane vivent dans `ph_persist_logic.h` — config.cpp n'est pas
+// dans le `build_src_filter` de `env:native`, donc tout ce qui déciderait ici
+// serait hors d'atteinte des tests.
+bool loadPhLoadHistory(PhLoadHistory& out) {
+  PhLoadHistory raw;
+  Preferences prefs;
+  if (!prefs.begin("pool-daily", true)) return false;  // namespace jamais écrit
+  const size_t read = prefs.getBytes("ph_load7", &raw, sizeof(raw));
+  prefs.end();
+  // Deux issues, deux traitements. ABSENCE (0 octet) = cas nominal d'un appareil
+  // qui n'a pas encore clôturé sa première journée : silence. CORRUPTION (des
+  // octets, mais taille, schéma ou empreinte discordants) = sept journées
+  // d'observation qui disparaissent : cela ne doit pas se produire sans trace,
+  // c'est le choix déjà fait pour l'instantané.
+  if (read == 0) return false;
+  if (!phLoadHistoryIntact(raw, read)) {  // prédicat PUR et testé
+    systemLogger.warning("[Charge pH] Anneau NVS illisible (taille, schéma ou "
+                         "empreinte) — historique vidé, plus de restauration "
+                         "d'intégrale avant 3 nouvelles journées");
+    return false;
+  }
+  out = raw;
+  return true;
+}
+
+void savePhLoadHistory(PhLoadHistory& h) {
+  phLoadHistorySeal(h);  // schéma, octets d'alignement, empreinte (logique pure)
+  Preferences prefs;
+  if (!prefs.begin("pool-daily", false)) {
+    systemLogger.warning("[Charge pH] Historique de charge : ouverture NVS refusée");
+    return;
+  }
+  prefs.putBytes("ph_load7", &h, sizeof(h));
+  prefs.end();
+}
+
+/**
+ * Date du jour au format AAAAMMJJ, ou 0 si l'horloge n'est pas exploitable.
+ * C'est l'ORIGINE de la fenêtre d'âge de l'anneau : sans elle, aucun échantillon
+ * n'est retenu (fail-closed, cf. phLoadDayWithinWindow).
+ */
+static uint32_t currentLoadDateNumber() {
+  time_t now = time(nullptr);
+  if (now < kMinValidEpoch) return 0;
+  struct tm ti;
+  localtime_r(&now, &ti);
+  return (uint32_t)(ti.tm_year + 1900) * 10000UL +
+         (uint32_t)(ti.tm_mon + 1) * 100UL + (uint32_t)ti.tm_mday;
+}
+
+float phSustainableFlowFromConfig() {
+  const int idx = pumpIndexFromNumber(mqttCfg.phPump);
+  const float amp = (idx == 0) ? mqttCfg.pump1PulseFlowMlPerMin
+                               : mqttCfg.pump2PulseFlowMlPerMin;
+  // Même fonction PURE que le prédicat de saturation de l'intégrale : le filet de
+  // vraisemblance de l'anneau et le gel d'anti-windup parlent ainsi du MÊME débit.
+  return phSustainableAvgFlow(amp, mqttCfg.phInjectionLimitMinutes);
+}
+
+PhPersistLoadObservation readPhLoadObservation(float sustainableMlPerMin) {
+  PhLoadHistory h;                    // vide par défaut ⇒ days = 0 (fail-closed)
+  loadPhLoadHistory(h);               // anneau absent ou corrompu : on garde vide
+  // Deux bornes, toutes deux fournies par l'appelant : la date du jour BORNE
+  // l'âge des échantillons (l'anneau garde les 7 dernières journées ARCHIVÉES,
+  // qui ne sont les 7 derniers JOURS que si l'appareil a tourné sans
+  // interruption), le débit soutenable BORNE leur vraisemblance.
+  return phLoadObservation(h, currentLoadDateNumber(), sustainableMlPerMin);
+}
+
+void recordPhLoadDay(const char* date8, float phMl, uint32_t filtrationMinutes,
+                     float sustainableMlPerMin) {
+  if (date8 == nullptr) return;
+  // Sans horloge valide, la journée n'est pas datable — donc pas archivable.
+  const uint32_t date = (uint32_t)strtoul(date8, nullptr, 10);
+  if (date < 19700101UL) return;
+
+  PhLoadDaySample s;
+  s.date = date;
+  s.minutes = (filtrationMinutes > 65535UL) ? 65535u : (uint16_t)filtrationMinutes;
+  float ml = phMl;
+  if (!(ml > 0.0f)) ml = 0.0f;  // NaN et négatifs ⇒ 0 (journée à charge nulle)
+  s.ml = (ml > 65535.0f) ? 65535u : (uint16_t)lroundf(ml);
+
+  PhLoadHistory h;
+  loadPhLoadHistory(h);
+  if (!phLoadHistoryAppend(h, s)) return;
+  savePhLoadHistory(h);  // l'UNIQUE écriture NVS quotidienne de l'anneau
+
+  // Observabilité : le volume et les minutes réellement archivés, plus l'état de
+  // l'historique qui en résulte — c'est cette profondeur qui arme (ou non) la
+  // restauration au prochain démarrage.
+  const PhPersistLoadObservation obs =
+      phLoadObservation(h, currentLoadDateNumber(), sustainableMlPerMin);
+  char msg[192];
+  snprintf(msg, sizeof(msg),
+           "[Charge pH] Journée %lu archivée : %u mL en %u min de circulation ; "
+           "%u/%u jour(s) exploitable(s), charge médiane %.2f mL/min",
+           (unsigned long)date, (unsigned)s.ml, (unsigned)s.minutes,
+           (unsigned)obs.days, (unsigned)kPhIntegralRestoreMinHistoryDays,
+           (double)obs.loadMlPerMin);
+  systemLogger.info(msg);
+}
+
 /**
  * Persiste les compteurs journaliers de dosage en NVS (namespace "pool-daily").
  * Appelé : au démarrage d'une injection, toutes les 30s pendant l'injection,
@@ -677,6 +830,19 @@ void saveDailyCounters() {
   prefs.putFloat("ph_daily_ml", safetyLimits.dailyPhInjectedMl);
   prefs.putFloat("orp_daily_ml", safetyLimits.dailyOrpInjectedMl);
   prefs.putString("daily_date", safetyLimits.currentDayDate);
+  // v2.27.0 : dénominateur de la charge observée. Aucune transaction NVS
+  // supplémentaire n'est CRÉÉE (le champ voyage dans celle-ci), mais le coût doit
+  // être assumé plutôt que nié : `_dailyCountersDirty` est désormais posé à
+  // CHAQUE minute de circulation (pump_controller.cpp), donc le flush périodique
+  // 30 s se déclenche tant que l'eau tourne — de l'ordre de 420 à 600
+  // transactions `pool-daily` par jour contre 70 à 100 auparavant, soit un
+  // facteur 5 à 6. C'est le prix ASSUMÉ de la cohérence : numérateur (mL) et
+  // dénominateur (minutes) sont persistés ENSEMBLE, si bien qu'une coupure ne
+  // perd au plus qu'une minute de CHACUN — le rapport mL/min, lui, est préservé.
+  // L'usure reste très en deçà des 100 000 cycles garantis d'un secteur, la NVS
+  // étant par ailleurs à nivellement d'usure et ignorant les réécritures à
+  // valeur identique.
+  prefs.putUInt("filt_min", safetyLimits.dailyFiltrationMinutes);
   prefs.end();
   if (configMutex) xSemaphoreGiveRecursive(configMutex);
 }
@@ -694,7 +860,27 @@ void loadDailyCounters() {
   float phMl   = prefs.getFloat("ph_daily_ml", 0.0f);
   float orpMl  = prefs.getFloat("orp_daily_ml", 0.0f);
   String savedDate = prefs.getString("daily_date", "");
+  // v2.27.0 : absente d'une NVS antérieure → 0 (la journée en cours comptera
+  // moins de minutes qu'elle n'en a vécu — jamais plus).
+  //
+  // AU-DELÀ DE 24 h la valeur est IMPOSSIBLE (le compteur sature à 1440) :
+  // l'enregistrement est corrompu. Il en est fait DEUX usages, qui appellent deux
+  // traitements opposés — chacun choisi du côté fail-closed, c'est-à-dire du côté
+  // qui SOUS-estime la charge observée :
+  //   - journée CLOSE à archiver → sentinelle 0 : la journée devient NON
+  //     ARCHIVABLE (phLoadDayUsable la rejette), elle ne pollue pas la médiane ;
+  //     l'écrêter à 1440 fabriquerait au contraire un échantillon de toutes
+  //     pièces ;
+  //   - journée EN COURS à reprendre → dénominateur SATURÉ à 1440 : la journée
+  //     est déjà « pleine », donc sa charge sera minimale. La mettre à zéro
+  //     rouvrirait exactement le défaut que corrige le comptage — un numérateur
+  //     complet (les mL, eux, sont restaurés) sur un dénominateur tronqué, soit
+  //     une charge SURÉVALUÉE.
+  uint32_t filtMin = prefs.getUInt("filt_min", 0);
   prefs.end();
+  const bool filtMinCorrupt = (filtMin > 1440UL);
+  const uint32_t filtMinRunning = filtMinCorrupt ? 1440UL : filtMin;
+  const uint32_t filtMinArchive = filtMinCorrupt ? 0UL : filtMin;
 
   if (!hasDate) {
     systemLogger.info("[Config] loadDailyCounters: aucune donnée NVS, démarrage à 0");
@@ -723,9 +909,20 @@ void loadDailyCounters() {
     if (savedDate == todayStr) {
       safetyLimits.dailyPhInjectedMl  = phMl;
       safetyLimits.dailyOrpInjectedMl = orpMl;
+      safetyLimits.dailyFiltrationMinutes = filtMinRunning;
       strlcpy(safetyLimits.currentDayDate, todayStr, sizeof(safetyLimits.currentDayDate));
       systemLogger.info("[Config] Compteurs journaliers restaurés: pH=" + String(phMl, 0) + " mL, ORP=" + String(orpMl, 0) + " mL");
     } else {
+      // v2.27.0 (feature-084, R1) : ce basculement de date EST une clôture de
+      // journée — l'appareil était éteint à minuit. La journée `savedDate`
+      // rejoint donc l'anneau de charge, avec le volume et les minutes qui
+      // avaient été persistés pour elle. C'est le second des DEUX points de
+      // basculement existants (l'autre est tickDailyRollover) ; aucun n'est
+      // créé pour l'occasion, et phLoadHistoryAppend déduplique si les deux
+      // clôturent la même date.
+      recordPhLoadDay(savedDate.c_str(), phMl, filtMinArchive,
+                      phSustainableFlowFromConfig());
+      safetyLimits.dailyFiltrationMinutes = 0;
       strlcpy(safetyLimits.currentDayDate, todayStr, sizeof(safetyLimits.currentDayDate));
       saveDailyCounters();
       systemLogger.info("[Config] Nouveau jour détecté — compteurs remis à 0");
@@ -734,6 +931,7 @@ void loadDailyCounters() {
     // Heure non synchronisée : restore conservatif (sécurité)
     safetyLimits.dailyPhInjectedMl  = phMl;
     safetyLimits.dailyOrpInjectedMl = orpMl;
+    safetyLimits.dailyFiltrationMinutes = filtMinRunning;  // journée reprise, pas close
     strlcpy(safetyLimits.currentDayDate, savedDate.c_str(), sizeof(safetyLimits.currentDayDate));
     systemLogger.info("[Config] Heure non synchro — compteurs restaurés conservativement");
   }

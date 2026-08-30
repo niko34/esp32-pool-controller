@@ -90,7 +90,9 @@ docs/
 │   ├── 0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md
 │   ├── 0050-debit-pleine-puissance-constante-unique-de-flotte.md
 │   ├── 0051-pouls-minimal-double-rendement-avant-comptage.md
-│   └── 0052-terme-integral-ph-dimensionne-par-autorite.md
+│   ├── 0052-terme-integral-ph-dimensionne-par-autorite.md
+│   ├── 0053-persistance-conditionnelle-integrale-ph.md
+│   └── 0054-seuil-de-vraisemblance-fonction-de-la-configuration.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant
