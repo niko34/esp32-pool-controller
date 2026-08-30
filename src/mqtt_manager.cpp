@@ -254,6 +254,10 @@ void MqttManager::refreshTopics() {
   topics.phIntegralState            = base + "/ph_integral";
   topics.phIntegralTermState        = base + "/ph_integral_term";
   topics.phIntegralPctState         = base + "/ph_integral_pct";
+  // feature-085 (v2.28.0) : feedforward pH. Noms ALIGNÉS sur les champs /data et
+  // WebSocket (ph_ff_ml_per_min, ph_ff_status) — même règle que ph_integral*.
+  topics.phFfFlowState              = base + "/ph_ff_ml_per_min";
+  topics.phFfStatusState            = base + "/ph_ff_status";
 
   xSemaphoreGive(topicsMutex);
 
@@ -828,6 +832,15 @@ void MqttManager::publishAllStatesInternal() {
     if (!isnan(phInt))    safePublishDedup(18, topics.phIntegralState.c_str(),     String(phInt, 1));
     if (!isnan(phIntTrm)) safePublishDedup(19, topics.phIntegralTermState.c_str(), String(phIntTrm, 3));
     if (!isnan(phIntPct)) safePublishDedup(20, topics.phIntegralPctState.c_str(),  String(phIntPct, 1));
+    // feature-085 (v2.28.0) : FEEDFORWARD pH — mêmes grandeurs que /data et WS
+    // (ph_ff_ml_per_min arrondi 2 décimales, ph_ff_status = code PhFfStatus
+    // 0/1/2/3/4). Le débit vaut 0 hors session automatique (jamais NaN en
+    // pratique — garde par symétrie avec l'intégrale : on ne publie pas un
+    // « nan » texte). Le code est toujours publié : c'est lui qui dit POURQUOI
+    // le FF ne s'applique pas (latch, historique, quota).
+    const float phFfFlow = PumpController.getPhFeedforwardFlow();
+    if (!isnan(phFfFlow)) safePublishDedup(21, topics.phFfFlowState.c_str(), String(phFfFlow, 2));
+    safePublishDedup(22, topics.phFfStatusState.c_str(), String(PumpController.getPhFeedforwardStatus()));
   }
 
   // Product / target sous configMutex — snapshot puis publish hors verrou.
@@ -2423,6 +2436,36 @@ void MqttManager::publishDiscovery() {
   doc["unit_of_measurement"] = "pH·s";
   doc["icon"] = "mdi:sigma";
   doc["state_class"] = "measurement";
+  doc["entity_category"] = "diagnostic";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-085 (v2.28.0) : feedforward pH — 2 entités NOUVELLES (`unique_id`
+  // inédits, aucune entité existante touchée), même facture que les entités
+  // ph_integral* : diagnostic, une grandeur par topic scalaire retain.
+  // Débit de base APPLIQUÉ à la session automatique en cours (0 hors session).
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_ff_flow/config";
+  doc["name"] = "Piscine pH Dose de Base";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_ff_flow";
+  doc["state_topic"] = topics.phFfFlowState;
+  doc["unit_of_measurement"] = "mL/min";
+  doc["icon"] = "mdi:water-pump";
+  doc["state_class"] = "measurement";
+  doc["entity_category"] = "diagnostic";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Code d'état PhFfStatus (contrat FIGÉ) : 0 inactif, 1 actif, 2 retenu par le
+  // latch de sécurité (pH sous consigne), 3 historique insuffisant (< 3 j),
+  // 4 quota journalier (≥ 60 %). Publié en code BRUT (pas de libellé français
+  // dans le topic) : le mapping appartient aux clients, comme pour les codes
+  // ph/orpDoseBlockedCode côté /data. Pas de `state_class` (code discret, pas
+  // une mesure) ni de `unit_of_measurement`.
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_ff_status/config";
+  doc["name"] = "Piscine pH Dose de Base Statut";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_ff_status";
+  doc["state_topic"] = topics.phFfStatusState;
+  doc["icon"] = "mdi:state-machine";
   doc["entity_category"] = "diagnostic";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);

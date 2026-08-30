@@ -823,6 +823,19 @@
                 </p>
                 <div class="callout callout--warn" id="ph_integral_warning"
                      role="status" aria-live="polite" hidden style="margin:10px 0 0"></div>
+                <!-- feature-085 (v2.28.0) : dose de base apprise (feedforward pH).
+                     Une LIGNE dans le bloc existant, même facture que « Rattrapage
+                     accumulé » : valeur en tête, libellé d'état discret à côté.
+                     Masquée si le firmware ne sert pas ph_ff_status (antérieur à
+                     la 2.28.0) — cf. updatePhIntegralDisplay(), seul point de
+                     décision, comme pour le reste du bloc. -->
+                <div id="ph_ff_line" hidden style="margin:12px 0 0">
+                  <span class="field__label">Dose de base apprise</span>
+                  <p style="margin:6px 0 0">
+                    <strong id="ph_ff_value">—</strong>
+                    <span class="muted small" id="ph_ff_state"></span>
+                  </p>
+                </div>
               </div>
 
             </div>

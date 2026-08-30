@@ -1754,12 +1754,93 @@ bool PumpControllerClass::phIntegralAccumulationAllowed() {
   return true;
 }
 
+// =============================================================================
+// feature-085 — DOSE DE BASE APPRISE (feedforward) : la coquille du module pur
+// =============================================================================
+// Toutes les DÉCISIONS (plafond d'actionneur, quota, historique minimal, latch,
+// réarmement) sont dans ph_feedforward_logic.h. Ici : fournir les entrées,
+// appliquer le verdict, journaliser les transitions. loopTask uniquement.
+float PumpControllerClass::tickPhFeedforward(unsigned long now, float signedError,
+                                             float sustainableMlPerMin) {
+  // --- Recommandation du gate : TENUE PRODUIT ---------------------------------
+  // Détection par front du changement de phCorrectionType. Snapshot local (comme
+  // _phCorrectionKind de la surveillance) : on ne relit la String qu'une fois.
+  const uint8_t kind = (mqttCfg.phCorrectionType == "ph_plus") ? 1 : 0;
+  if (_ffCorrectionKind == 255) {
+    _ffCorrectionKind = kind;  // boot : on adopte sans tenir (anneau supposé homogène)
+  } else if (kind != _ffCorrectionKind) {
+    _ffCorrectionKind = kind;
+    _ffProductChangeHold = true;
+    _ffProductHoldFreshDay = true;  // la 1re clôture archivera une journée MIXTE
+    systemLogger.info("Feedforward pH retenu : changement de produit — dose de "
+                      "base suspendue jusqu'à une journée entière archivée sous "
+                      "le nouveau régime");
+  }
+
+  // Porte de validité de la MESURE, évaluée ici (caches capteur, aucun I²C) :
+  // mêmes critères que le §4 de phIntegralAccumulationAllowed — une sonde figée
+  // ou périmée ferme le filtre, une valeur non finie n'est pas une mesure.
+  const bool measureValid = sensors.isPhFilterReady() &&
+                            !sensors.isPhFilterUnstable() &&
+                            isfinite(sensors.getPhFiltered());
+
+  // Session de dosage pH AUTOMATIQUE ouverte — état du tour PRÉCÉDENT (le latch
+  // se réarme donc au 2e tick d'une session neuve : un tour de retard, assumé et
+  // borné, dans le sens sûr — jamais un FF servi avant l'ouverture réelle).
+  const bool sessionOpen = phDosingState.active && _phSessionFromAuto;
+
+  const PhFfVerdict v = phFeedforwardTick(
+      _phFf, signedError, measureValid, phIntegralContextHash(),
+      phIntegralObservedLoad(), sustainableMlPerMin, sessionOpen, (uint32_t)now,
+      safetyLimits.dailyPhInjectedMl, safetyLimits.maxPhMlPerDay,
+      _ffProductChangeHold);
+
+  // --- Journalisation par TRANSITION (jamais de spam par tour) ----------------
+  if (v.latched != PhFfLatchCause::kNone &&
+      v.latched != PhFfLatchCause::kProductChange) {  // la tenue produit a son log dédié
+    const char* cause =
+        (v.latched == PhFfLatchCause::kAdverseError)
+            ? "pH franchement au-delà de la consigne depuis plus de 30 min"
+            : (v.latched == PhFfLatchCause::kMeasureInvalid)
+                  ? "mesure pH invalide"
+                  : "réglages de régulation modifiés";
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "Feedforward pH retenu (%s) — dose de base suspendue jusqu'à la "
+             "prochaine session",
+             cause);
+    systemLogger.info(msg);
+  }
+  if (v.released) {
+    systemLogger.info("Feedforward pH réarmé (ouverture de session)");
+  }
+  // Premier tick ACTIF de la session : trace du débit de base retenu (une seule
+  // ligne par session — le log d'arrêt résume déjà les volumes).
+  if (v.ffMlPerMin > 0.0f && !_ffAnnounced) {
+    _ffAnnounced = true;
+    char msg[144];
+    snprintf(msg, sizeof(msg),
+             "Dosage pH : dose de base apprise %.2f mL/min (charge observée "
+             "%.2f mL/min sur %u jour(s), plafond %.2f)",
+             v.ffMlPerMin, phIntegralObservedLoad().loadMlPerMin,
+             (unsigned)phIntegralObservedLoad().days,
+             kPhFfMaxSustainableFraction * sustainableMlPerMin);
+    systemLogger.info(msg);
+  }
+  if (!sessionOpen) _ffAnnounced = false;
+
+  // Instantanés d'observabilité (/data + WS via les accesseurs publics).
+  _ffFlowMlPerMin = v.ffMlPerMin;
+  _ffStatus = (uint8_t)v.status;
+  return v.ffMlPerMin;
+}
+
 // UN tick d'entretien. Porte aussi la CONFIRMATION (R4) d'une restauration NVS
 // en attente : c'est le seul endroit où l'on dispose à la fois d'une mesure
 // validée, de l'erreur signée et d'une base de temps de branche.
 void PumpControllerClass::tickPhIntegralAuto(unsigned long now, float error,
                                              float ampFlow, int limitMin,
-                                             bool allowed) {
+                                             bool allowed, float ffMlPerMin) {
   if (!allowed) {
     // R4 exige une confirmation CONTINUE : toute interruption la remet à zéro.
     phPersistConfirmInterrupt(_phIntegralConfirm);
@@ -1837,6 +1918,9 @@ void PumpControllerClass::tickPhIntegralAuto(unsigned long now, float error,
   in.cycleQuotaExhausted =
       (pumpProtection.maxCyclesPerDay > 0) &&
       (phDosingState.cyclesToday >= (unsigned int)pumpProtection.maxCyclesPerDay);
+  // feature-085 : le soutenable vu par le PI est réduit de la part du FF —
+  // dimension traitée DANS le module pur (cf. PhIntegralInputs::ffMlPerMin).
+  in.ffMlPerMin = ffMlPerMin;
 
   PhIntegralTuning tun;
   tun.kp = phPID.kp;
@@ -2234,6 +2318,22 @@ void PumpControllerClass::tickDailyRollover() {
                       safetyLimits.dailyFiltrationMinutes,
                       phSustainableFlowFromConfig());
       refreshPhLoadObservation();  // le plafond R1 suit la nouvelle médiane
+      // feature-085 — TENUE PRODUIT du feedforward, levée en DEUX temps : la
+      // journée qui vient d'être archivée est MIXTE si le changement de produit
+      // a eu lieu en cours de journée (_ffProductHoldFreshDay la saute) ; la
+      // clôture SUIVANTE archive une journée entière sous le nouveau régime et
+      // lève la tenue. Chemin DATE uniquement : le rollover fallback 24 h
+      // n'archive rien, il ne compte donc pas comme journée archivée.
+      if (_ffProductChangeHold) {
+        if (_ffProductHoldFreshDay) {
+          _ffProductHoldFreshDay = false;  // journée mixte : on attend la suivante
+        } else {
+          _ffProductChangeHold = false;
+          systemLogger.info("Feedforward pH : tenue de changement de produit "
+                            "levée (une journée entière archivée sous le "
+                            "nouveau régime) — réarmement à la prochaine session");
+        }
+      }
       resetScheduledSplit();  // feature-011 : reliquat scheduled + réarmement fenêtres
       safetyLimits.dailyPhInjectedMl  = 0;
       safetyLimits.dailyOrpInjectedMl = 0;
@@ -2766,8 +2866,17 @@ void PumpControllerClass::update() {
   const float phSignedError = (mqttCfg.phCorrectionType == "ph_plus")
                                   ? (mqttCfg.phTarget - phMeasured)
                                   : (phMeasured - mqttCfg.phTarget);
+  // ===== feature-085 : DOSE DE BASE APPRISE (feedforward) ====================
+  // Évalué AVANT le tick intégral — ORDRE IMPÉRATIF (condition n°4 du visa) :
+  // l'anti-windup du PI retranche le débit FF de son soutenable dans le MÊME
+  // tour ; l'inverser ferait geler l'intégrale sur la marge du tour précédent.
+  // Le débit rendu n'est PAS une décision de dosage : il n'est consommé que par
+  // la branche automatique sous `shouldDose`, via le chemin existant (un seul
+  // chemin vers la pompe, une seule comptabilité — condition n°1 du gate).
+  const float phFfFlow = tickPhFeedforward(
+      now, phSignedError, phSustainableAvgFlow(phAmpFlow, phLimitMin));
   tickPhIntegralAuto(now, phSignedError, phAmpFlow, phLimitMin,
-                     phIntegralAccumulationAllowed());
+                     phIntegralAccumulationAllowed(), phFfFlow);
 
   // Contrôle pH — branche automatique gardée en profondeur par canDose(0).
   // canDose(0) vérifie watchdog, filtration, stale/NaN, calibration, stabilisation,
@@ -2935,9 +3044,23 @@ void PumpControllerClass::update() {
       // que soit la position de la bande morte (bilan de matière).
       const float phDeadband = phWasActiveTick ? pumpProtection.phStopThreshold
                                                : pumpProtection.phStartThreshold;
+      // feature-085 : le PI ne dispose que de l'amplitude RESTANTE après le
+      // feedforward — les deux termes sont des débits INSTANTANÉS, la
+      // soustraction est donc dimensionnellement correcte ici (le pendant MOYEN,
+      // pour l'anti-windup, est traité dans phIntegralTick via ffMlPerMin).
+      float phPiMaxFlow = phAmpFlow - phFfFlow;
+      if (phPiMaxFlow < 0.0f) phPiMaxFlow = 0.0f;
       flow = computePID(phPID, error, now,
                         phDeadband, /*freezeIntegral=*/true,
-                        0.0f, phAmpFlow);
+                        0.0f, phPiMaxFlow);
+      // TERME ADDITIF (condition n°1 du gate) : le FF s'ajoute au PI, la somme
+      // reste clampée à l'amplitude — redondant avec la réduction ci-dessus
+      // (PI ≤ ampFlow − ff ⇒ somme ≤ ampFlow), gardé en défense en profondeur.
+      // Un FF > 0 avec un PI encore muet (premier tick, dt en reconstruction)
+      // produit un débit non nul : la charge connue est couverte dès la
+      // première période d'impulsion, c'est tout l'objet de la feature.
+      flow += phFfFlow;
+      if (flow > phAmpFlow) flow = phAmpFlow;
     }
 
     // --- Ordonnanceur d'impulsions (proportionnel de temps, pulse_dosing_logic) ---

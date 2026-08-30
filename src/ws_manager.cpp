@@ -349,6 +349,12 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // cas ; la marge sous sWsFrameBuf (kWsFrameBufBytes = 3584 o) reste de 1002 o.
   // Aucune troncature possible (garde `measureJson(doc) + 1 > cap` en fin de
   // fonction, qui SAUTE le push au lieu de tronquer).
+  // feature-085 (v2.28.0) : +2 champs feedforward pH (parité /data). Octets
+  // SÉRIALISÉS au pire cas (flottant 2 décimales, code 1 chiffre) :
+  //   "ph_ff_ml_per_min":123.45, → 1+16+1+1+6+1 = 26 o
+  //   "ph_ff_status":4,          → 1+13+1+1+1+1 = 18 o   → 44 o.
+  // Pire cas de trame : 2582 + 44 = 2626 o, sous le gabarit 2688 (marge 62 o) et
+  // sous sWsFrameBuf (kWsFrameBufBytes = 3584 o, marge 958 o) — aucun bump.
   // NB : en ArduinoJson 7, StaticJson<N> dérive de JsonDocument et N n'est plus
   // qu'une valeur documentaire (capacity()) — le pool est alloué dynamiquement.
   // Le seul plafond DUR de ce chemin est kWsFrameBufBytes.
@@ -516,6 +522,16 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   if (!isnan(phIntegralTrm)) d["ph_integral_term"] = round(phIntegralTrm * 1000.0f) / 1000.0f;  else d["ph_integral_term"] = nullptr;
   if (!isnan(phIntegralPct)) d["ph_integral_pct"]  = round(phIntegralPct * 10.0f) / 10.0f;      else d["ph_integral_pct"]  = nullptr;
   d["ph_integral_saturated"] = PumpController.isPhIntegralSaturated();
+  // feature-085 (v2.28.0) : FEEDFORWARD pH — dose de base apprise. Champs et
+  // règles STRICTEMENT identiques à /data (web_routes_data.cpp) : MÊMES clés,
+  // MÊME arrondi 2 décimales, NaN → null explicite (parité stricte — un champ
+  // servi d'un seul côté CLIGNOTE dans l'UI, 5 récidives du motif).
+  //   ph_ff_ml_per_min = débit de base appliqué à la session auto (mL/min, 0 hors session)
+  //   ph_ff_status     = code PhFfStatus (0 inactif, 1 actif, 2 latch sécurité,
+  //                      3 historique < 3 j, 4 quota ≥ 60 %) — contrat FIGÉ.
+  float phFfFlow = PumpController.getPhFeedforwardFlow();
+  if (!isnan(phFfFlow)) d["ph_ff_ml_per_min"] = round(phFfFlow * 100.0f) / 100.0f; else d["ph_ff_ml_per_min"] = nullptr;
+  d["ph_ff_status"] = PumpController.getPhFeedforwardStatus();
   d["ph_daily_ml"]        = safetyLimits.dailyPhInjectedMl;
   d["orp_daily_ml"]       = safetyLimits.dailyOrpInjectedMl;
   d["ph_limit_reached"]   = safetyLimits.phLimitReached;

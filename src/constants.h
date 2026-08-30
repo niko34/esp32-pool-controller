@@ -1264,6 +1264,58 @@ constexpr uint8_t kPhIntegralRestoreMaxStreak = 3;
 // enregistrement de schéma différent est rejeté, jamais réinterprété.
 constexpr uint8_t kPhIntegralPersistSchema = 1;
 
+// =============================================================================
+// feature-085 (v2.28.0) — DOSE DE BASE APPRISE (feedforward) pH
+// =============================================================================
+// Le FF injecte la charge CONNUE (médiane 7 j de l'anneau de charge, la même que
+// le plafond R1 ci-dessus) en TERME ADDITIF du débit de la branche automatique ;
+// le PI ne traite plus que l'écart résiduel. Toute la logique est dans
+// ph_feedforward_logic.h (module pur, ADR-0017). AUCUN paramètre de volume, de
+// TAC ni de concentration n'entre ici (exigence utilisateur, A9 de la spec).
+
+// PLAFOND D'ACTIONNEUR : le FF ne consomme jamais plus de 60 % du débit moyen
+// soutenable (phSustainableAvgFlow — amplitude calibrée × limite horaire).
+// Pourquoi 60 % : le PI GARDE au moins 40 % du soutenable pour l'écart résiduel
+// (condition bloquante n°2 du gate amont). Sur l'installation de référence
+// (26 mL/min à 5 min/h ⇒ soutenable 2,17 mL/min), le FF est borné à 1,30 mL/min
+// pour une charge observée de 2,86 : le FF couvre ~45 % de la charge DÈS LA
+// PREMIÈRE HEURE (au lieu de J+2,4 pour l'intégrale seule) et le PI conserve
+// 0,87 mL/min d'autorité immédiate.
+constexpr float kPhFfMaxSustainableFraction = 0.60f;
+
+// LATCH « erreur défavorable » : erreur SIGNÉE < −kPhFfAdverseErrorPh tenue
+// kPhFfLowHoldMs de temps de BRANCHE ⇒ FF retenu jusqu'à la session suivante.
+// −0,05 = le seuil de DÉMARRAGE par défaut, transposé de l'autre côté de la
+// consigne : une excursion franche que ni l'hystérésis ni la bande morte
+// n'expliquent (apport externe, pluie, surdosage). 30 min = 2× la tenue du reset
+// sec de l'intégrale (15 min) : le FF est une autorité PERMANENTE (il dose sans
+// regarder l'erreur), on exige donc une preuve plus longue avant de conclure —
+// mais assez courte pour satisfaire le critère de la spec (« fausse pluie » :
+// annulation en < 30 min). Erreur SIGNÉE et non pH brut : le même déclencheur
+// vaut pour ph_minus ET ph_plus (condition n°3 du visa).
+constexpr uint32_t kPhFfLowHoldMs = 1800000UL;  // 30 min de temps de branche
+constexpr float kPhFfAdverseErrorPh = 0.05f;
+
+// PLAFOND QUOTA JOURNALIER (condition bloquante n°2 du visa) : FF = 0 dès que le
+// volume pH du jour atteint 60 % de la limite journalière configurée (si > 0).
+// 60 % du soutenable N'EST PAS 60 % du quota : avec 300 mL/j et 12 h de
+// filtration, 0,42 mL/min suffisent à consommer 100 % du quota alors que le
+// plafond d'actionneur autorise 1,30 mL/min — sans ce gel, le FF viderait seul
+// la limite journalière et le PI n'aurait plus aucune marge. Même esprit que
+// kPhIntegralFreezeDailyFraction (0,80) : plus strict (0,60), car le FF est une
+// autorité aveugle à l'erreur, l'intégrale non.
+constexpr float kPhFfDailyQuotaFraction = 0.60f;
+
+static_assert(kPhFfMaxSustainableFraction > 0.0f && kPhFfMaxSustainableFraction < 1.0f,
+              "Le FF doit laisser une marge d'actionneur au PI");
+static_assert(kPhFfDailyQuotaFraction > 0.0f &&
+                  kPhFfDailyQuotaFraction < kPhIntegralFreezeDailyFraction,
+              "Le gel du FF doit mordre AVANT le gel d'anti-windup de l'intégrale");
+static_assert(kPhFfLowHoldMs >= kPhIntegralResetHoldMs,
+              "La tenue du latch FF ne doit pas être plus nerveuse que le reset sec");
+static_assert(kPhFfLowHoldMs <= 1800000UL,
+              "Critère de spec : le FF s'annule en <= 30 min sur fausse pluie");
+
 // --- C5 : observabilité de la saturation ------------------------------------
 // Une intégrale saturée EN SILENCE est la classe de défaut historique de ce
 // projet : la régulation demande son maximum, n'y arrive pas, et personne ne le

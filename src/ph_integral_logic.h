@@ -126,6 +126,15 @@ struct PhIntegralInputs {
   // c'est l'ancien comportement, et le champ n'est pas un critère de sécurité
   // par lui-même (il ne fait que suspendre une accumulation stérile).
   bool     cycleQuotaExhausted = false;
+  // feature-085 — débit du FEEDFORWARD réellement appliqué ce tour (mL/min ;
+  // 0 hors session). Retranché du débit soutenable MOYEN vu par le PI : c'est la
+  // DIMENSION correcte de l'anti-windup (condition bloquante n°1 du visa).
+  // Passer `ampFlow − ff` à la place serait presque un no-op — le soutenable
+  // vaudrait (ampFlow − ff) × budget/60, soit un retrait de 8,3 % du FF
+  // seulement à 5 min/h : le gel resterait quasi aveugle à la part d'actionneur
+  // que le FF consomme réellement, et l'intégrale se chargerait sur une marge
+  // qui n'existe pas. Défaut 0 : une coquille sans FF garde l'ancien calcul.
+  float    ffMlPerMin = 0.0f;
 };
 
 // Événement ponctuel du tick (pour la journalisation par la coquille).
@@ -255,7 +264,21 @@ inline PhIntegralVerdict phIntegralTick(PhIntegralState& st,
   // trompeur au moment précis où l'on cherche à comprendre ce qui s'est passé.
   // Le débit soutenable est indépendant de l'intégrale : il est calculé une fois
   // ici et sert aussi bien au message qu'au prédicat de gel de l'étape 3.
-  const float sustainable = phSustainableAvgFlow(in.ampFlow, in.budgetMinPerHour);
+  //
+  // feature-085 — LE FEEDFORWARD EST RETRANCHÉ ICI, en mL/min MOYENS des deux
+  // côtés : le soutenable que le PI peut réellement occuper est ce qui reste
+  // après la part du FF (condition bloquante n°4 de la spec : anti-windup sur
+  // « demande totale − FF »). Toutes les grandeurs en aval — prédicat de gel
+  // (étape 3), hystérésis de saturation (étape 6), anomalie C5 (étape 7) et
+  // messages — portent sur la demande du SEUL PI comparée à SA part : c'est
+  // cohérent, le FF n'étant pas une demande d'erreur mais une charge connue.
+  // Borne à 0 : un FF qui consommerait tout (impossible par construction, il est
+  // plafonné à kPhFfMaxSustainableFraction < 1) dégénérerait en gel fail-closed.
+  float sustainable = phSustainableAvgFlow(in.ampFlow, in.budgetMinPerHour);
+  if (isfinite(in.ffMlPerMin) && in.ffMlPerMin > 0.0f) {
+    sustainable -= in.ffMlPerMin;
+    if (sustainable < 0.0f) sustainable = 0.0f;
+  }
   v.sustainableMlPerMin = sustainable;
 
   // --- 1. BASE DE TEMPS ------------------------------------------------------

@@ -9,6 +9,7 @@
 #include "dosing_logic.h"        // v2.25.1 : DoseRefusal (code de cause exposé)
 #include "ph_integral_logic.h"   // v2.26.0 : terme intégral pH (logique PURE)
 #include "ph_persist_logic.h"    // feature-084 : persistance de l'intégrale (PURE)
+#include "ph_feedforward_logic.h"  // feature-085 : dose de base apprise (PURE)
 
 struct PumpDriver {
   int pwmPin;    // Pin PWM Gate MOSFET (IRLZ44N)
@@ -378,8 +379,46 @@ private:
   // No-op si le prédicat ci-dessus est faux (l'absence de tick nourrit alors la
   // péremption C4, inchangée). Fournit aussi la base de temps de la confirmation
   // de restauration NVS (R4). loopTask uniquement.
+  // feature-085 : `ffMlPerMin` = débit du feedforward appliqué CE tour, retranché
+  // du soutenable MOYEN vu par le PI (anti-windup sur « demande − FF », condition
+  // bloquante n°4 de la spec — la dimension correcte est traitée dans
+  // PhIntegralInputs::ffMlPerMin, ph_integral_logic.h).
   void tickPhIntegralAuto(unsigned long now, float error, float ampFlow,
-                          int limitMin, bool allowed);
+                          int limitMin, bool allowed, float ffMlPerMin);
+
+  // ===== feature-085 : DOSE DE BASE APPRISE (feedforward) — la coquille =======
+  // Toute la LOGIQUE (plafond d'actionneur, quota, historique minimal, latch et
+  // réarmement) vit dans src/ph_feedforward_logic.h, testable en natif. Ici : le
+  // câblage (erreur signée, validité de mesure, empreinte de contexte, charge
+  // observée, session) et la journalisation des transitions. Rend le débit FF
+  // (mL/min) à ADDITIONNER au PI dans la branche automatique — c'est le SEUL
+  // terme rendu, il passe ensuite par le chemin de dosage existant (computePID
+  // borné à `ampFlow − ff`, somme clampée, planPulse, comptabilité) : un seul
+  // chemin vers la pompe, une seule comptabilité (condition n°1 du gate).
+  // À appeler AVANT tickPhIntegralAuto (le tick intégral consomme le FF).
+  // loopTask uniquement (lit les caches capteur et l'état de session).
+  float tickPhFeedforward(unsigned long now, float signedError,
+                          float sustainableMlPerMin);
+
+  // État du feedforward (module pur) — loopTask uniquement.
+  PhFfState _phFf;
+  // Instantanés servis à /data + WS (écrits par tickPhFeedforward en loopTask,
+  // lus en contexte web async — course bénigne, patron isAnyPumpEnergized).
+  float   _ffFlowMlPerMin = 0.0f;
+  uint8_t _ffStatus = 0;  // PhFfStatus (contrat figé, cf. ph_feedforward_logic.h)
+  // Anti-spam : premier tick actif de la session déjà journalisé.
+  bool    _ffAnnounced = false;
+  // Recommandation du gate — TENUE PRODUIT : au changement de phCorrectionType,
+  // le latch FF est tenu jusqu'à ce qu'au moins UNE journée ENTIÈRE ait été
+  // archivée sous le nouveau régime (l'anneau contient des mL de l'autre
+  // produit, la médiane ne décrit pas la charge courante). Deux temps : la
+  // première clôture de journée après le changement archive une journée MIXTE
+  // (_ffProductHoldFreshDay la saute), la suivante lève la tenue. RAM seulement
+  // (pas de NVS — périmètre du plan) : un reboot la lève, le FF restant borné
+  // par le plafond d'actionneur et le gel de quota (fail-open borné, assumé).
+  uint8_t _ffCorrectionKind = 255;      // 255 = pas encore observé (boot)
+  bool    _ffProductChangeHold = false;
+  bool    _ffProductHoldFreshDay = false;
 
   // ===== feature-084 (sujet 3) : PERSISTANCE NVS (R1-R7) =====================
   // La coquille ne DÉCIDE de rien : elle fournit le temps, l'heure, la mesure et
@@ -994,6 +1033,42 @@ public:
   // Course bénigne assumée (patron isAnyPumpEnergized) : drapeau écrit par
   // loopTask, lu ici en contexte web async ; lecture 8 bits atomique sur Xtensa.
   bool isPhIntegralSaturated() const { return _phIntegral.satActive; }
+
+  // ===== feature-085 : FEEDFORWARD pH — LECTURE SEULE (observabilité) =========
+  // Deux grandeurs, à publier à l'IDENTIQUE sur /data ET sur la trame WS (parité
+  // stricte — 5 récidives du motif « champ servi d'un seul côté » dans ce
+  // projet). AUCUN setter, aucune influence sur une décision de dosage.
+  //
+  // Les instantanés `_ffFlowMlPerMin` / `_ffStatus` ne sont rafraîchis que
+  // lorsque update() atteint le tick FF (eau présente, hors OTA/maintenance) :
+  // les deux accesseurs les CONDITIONNENT donc à l'état de session courant, pour
+  // ne jamais servir un « actif » périmé après une sortie anticipée d'update()
+  // (filtration coupée, par exemple). Course bénigne assumée (patron
+  // isAnyPumpEnergized) : écrits par loopTask, lus en contexte web async ;
+  // lectures 8/32 bits atomiques sur Xtensa, pire cas un instantané en retard
+  // d'un tour de loop.
+
+  // Débit de base appliqué à la session pH AUTOMATIQUE en cours (mL/min).
+  // 0 hors session — le FF ne vit que sous `shouldDose` (A8, structurel).
+  float getPhFeedforwardFlow() const {
+    return (phDosingState.active && _phSessionFromAuto) ? _ffFlowMlPerMin : 0.0f;
+  }
+
+  // Code d'état PhFfStatus (contrat FIGÉ, cf. ph_feedforward_logic.h) :
+  //   0 = inactif (aucune session automatique) ; 1 = actif ; 2 = retenu par le
+  //   latch de sécurité ; 3 = historique insuffisant (< 3 jours exploitables) ;
+  //   4 = quota journalier (≥ 60 % de la limite consommés).
+  // Un statut « actif » n'est servi que si une session automatique est ouverte
+  // (sinon il est traduit en « inactif » — instantané périmé possible après une
+  // sortie anticipée d'update()). Les états 2-4, eux, restent servis hors
+  // session : l'UI peut dire POURQUOI le FF ne s'appliquera pas.
+  uint8_t getPhFeedforwardStatus() const {
+    const bool sessionOpen = phDosingState.active && _phSessionFromAuto;
+    if (!sessionOpen && _ffStatus == (uint8_t)PhFfStatus::kActive) {
+      return (uint8_t)PhFfStatus::kInactive;
+    }
+    return _ffStatus;
+  }
 
   // ===== feature-011 : débit moyen planifié du mode scheduled (mL/min) =====
   // Débit moyen restant de la répartition (remaining / horizonMinutes).

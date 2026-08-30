@@ -125,6 +125,11 @@ float getPhIntegral() const;       // intégrale accumulée (pH·s, SIGNÉE) —
 float getPhIntegralTerm() const;   // ki × intégrale = contribution au débit demandé (mL/min)
 float getPhIntegralPct() const;    // remplissage de l'anti-windup (% de integralMax, ABSOLU)
 
+// feature-085 (v2.28.0) — DOSE DE BASE APPRISE (feedforward pH), LECTURE SEULE.
+// Contrat de statut FIGÉ (0-4, cf. PhFfStatus). Même course bénigne assumée.
+float getPhFeedforwardFlow() const;    // débit FF appliqué à la session auto (mL/min, 0 hors session)
+uint8_t getPhFeedforwardStatus() const; // 0 inactif · 1 actif · 2 latch · 3 historique < 3 j · 4 quota
+
 void setManualPump(int pumpIndex, uint8_t duty);  // test manuel
 ```
 
@@ -146,7 +151,7 @@ Ordre par cycle :
 5. Refresh des fenêtres glissantes 1 h (`refreshDosingState`).
 6. Court-circuit capteurs : `!sensors.isInitialized()` → arrêt pompes.
 7. Gate `canDose()` (cf. ci-dessous) → arrêt pompes si non autorisé (mais respecte `manualMode[i]` pour ne pas couper un test développeur en cours).
-7bis. **v2.27.0** — `tickPhIntegralAuto()` : **entretien du terme intégral pH, hors de toute conjonction de dosage**, après `tickPhGuardSurveillance()` et après la garde de présence d'eau. Porte aussi la confirmation R4 d'une restauration NVS en attente. Voir [Cadence, mémoire et charge observée de l'intégrale pH](#cadence-mémoire-et-charge-observée-de-lintégrale-ph-v2270).
+7bis. **v2.27.0** — `tickPhIntegralAuto()` : **entretien du terme intégral pH, hors de toute conjonction de dosage**, après `tickPhGuardSurveillance()` et après la garde de présence d'eau. Porte aussi la confirmation R4 d'une restauration NVS en attente. Voir [Cadence, mémoire et charge observée de l'intégrale pH](#cadence-mémoire-et-charge-observée-de-lintégrale-ph-v2270). **v2.28.0** — `tickPhFeedforward()` est évalué **immédiatement avant** ce tick (ordre impératif : l'anti-windup du PI retranche le débit FF de son soutenable dans le **même** tour). Voir [Dose de base apprise](#dose-de-base-apprise--feedforward-ph-v2280).
 8. Pour pH puis ORP : calcul de l'erreur, anti-cycling start/stop, PID (demande de débit **moyen**), puis ordonnanceur d'impulsions (`evaluatePulseGate` → `planPulseWithCarry` (v2.22.0, [accumulateur sous-plancher](#accumulateur-sous-le-pouls-minimal-feature-073-v2220)) → `tickPulse`, [Dosage en proportionnel de temps](#dosage-en-proportionnel-de-temps-itération-2-v2210)), `applyPumpDuty()` (255 pendant le kick, amplitude calibrée sinon). *(`flowToDuty()`/`dutyToFlow()` supprimés en v2.21.0, [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md).)*
 
 ## Mode maintenance auto-guérison (v2.9.1)
@@ -955,7 +960,7 @@ Deux corollaires :
 
 à comparer à `kPhSafetyMargin` = **0,50**. À 30 min/h, un seul temps mort consomme **56 %** de la garde de sécurité. **Ce réglage ne doit pas être relevé sans en tenir compte.**
 
-Suivi : [feature-086](../../specs/features/todo/feature-086-limite-actionneur-dosage-ph.md) (limite d'actionneur) et [feature-085](../../specs/features/todo/feature-085-dose-de-base-apprise-feedforward.md) (dose de base apprise).
+Suivi : [feature-086](../../specs/features/todo/feature-086-limite-actionneur-dosage-ph.md) (limite d'actionneur) et [feature-085](../../specs/features/doing/feature-085-dose-de-base-apprise-feedforward.md) (dose de base apprise, **livrée en v2.28.0** — voir [ci-dessous](#dose-de-base-apprise--feedforward-ph-v2280)).
 
 ### 1. Le tick d'entretien sort de la conjonction de dosage
 
@@ -1165,6 +1170,97 @@ float phSustainableFlowFromConfig();
 Nouvelle suite native [`test/test_native_ph_persist/`](../../test/test_native_ph_persist/) — total du projet **849 → 932 tests**. **Motif de l'extraction** : R1 à R7 vivaient dans `config.cpp` et `pump_controller.cpp`, **ni l'un ni l'autre n'étant dans le `build_src_filter` de `env:native`**. Trois mutations survivaient : *supprimer l'écrêtage R1*, *supprimer la vérification de CRC*, *rendre le prédicat permissif*. C'est la situation exacte qui avait précédé l'extraction de `ph_integral_logic.h` — où le défaut réel se trouvait **dans la garde de C2**.
 
 La sentinelle du filet de vraisemblance **verrouille les deux sens** : la même journée à 6 mL/min est **écartée** à 5 min/h et **retenue** à 15 min/h. Un seuil figé — à 2,17 comme à 6,5 — casse **l'une des deux lignes** ; un test à sens unique ne tuerait pas la mutation « seuil figé » ([ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md)).
+
+## Dose de base apprise — feedforward pH (v2.28.0)
+
+> Décision structurante : [ADR-0055](../adr/0055-feedforward-appris-additif-plafonne.md) (feedforward appris **additif plafonné**). Gate `pool-chemistry` : **GO amont sous 4 conditions** (toutes implémentées) **+ GO contre-visite**, 30/08/2026. Spec : [feature-085](../../specs/features/doing/feature-085-dose-de-base-apprise-feedforward.md).
+
+### Principe
+
+Le PI redécouvrait par tâtonnement une charge **parfaitement prévisible** (le dégazage de CO₂, stable d'un jour à l'autre). Le feedforward injecte la charge **connue** ; le PI ne traite plus que l'**écart résiduel** :
+
+```
+débit = FF(charge apprise) + kp·e + ki·∫(e − seuil)
+        └─ connu d'avance ─┘  └── correction de l'écart résiduel ──┘
+```
+
+La charge est couverte **dès la première heure de filtration** au lieu de J+2,4. Le FF est un **débit** (mL/min), jamais un accumulateur : aucun état volumique, donc aucune « dette » à rattraper après un reboot ou une suspension — pas de rafale possible (critère A7 de la spec).
+
+Toute la logique vit dans le module pur [`src/ph_feedforward_logic.h`](../../src/ph_feedforward_logic.h) ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) ; la coquille `tickPhFeedforward()` fournit les entrées (erreur signée, validité de mesure, empreinte de contexte, charge observée, soutenable, session) et journalise les transitions.
+
+### Source : la médiane 7 jours, RÉUTILISÉE
+
+La dose de base est la **médiane des mL/min journaliers sur 7 jours** de l'anneau `ph_load7` ([feature-084, ci-dessus](#4-lanneau-de-charge-acide-sur-7-jours)), consommée via `phIntegralObservedLoad()` — **aucune nouvelle médiane, aucun second anneau** : la restauration R1 et le FF lisent la même grandeur, elles ne peuvent pas diverger. **Fail-closed sous 3 jours** d'historique exploitable (`kPhIntegralRestoreMinHistoryDays`, statut `kNoHistory`) : un appareil neuf ne dose rien « de mémoire ». Elle est **apprise, jamais saisie** — aucun paramètre de volume de bassin, de TAC ni de concentration (exigence utilisateur, critère A9).
+
+### Plafond double (condition bloquante n°2 du gate)
+
+```
+ff = min(charge observée, kPhFfMaxSustainableFraction × débit soutenable)   // plafond d'ACTIONNEUR
+ff = 0 dès que dailyPhInjectedMl ≥ kPhFfDailyQuotaFraction × maxPhMlPerDay  // gel de QUOTA
+```
+
+- **Plafond d'actionneur (0,60)** : le PI garde au moins 40 % du soutenable pour l'écart résiduel. Sur l'installation de référence (soutenable 2,17 mL/min, charge 2,86) : FF borné à **1,30 mL/min**, ~45 % de la charge couverte immédiatement, 0,87 mL/min d'autorité restante au PI.
+- **Gel de quota (0,60 de `maxPhMlPerDay`)** : « 60 % du soutenable » **n'est pas** « 60 % du quota » — c'est une condition **affaiblie**. Contre-exemple du gate : quota 300 mL/j avec 12 h de filtration ⇒ 0,42 mL/min consomment 100 % du quota alors que l'actionneur autorise 1,30. Sans ce gel, le FF viderait seul la limite journalière. Limite ≤ 0 (désactivée) = pas de gel, comme partout. `static_assert` : le gel du FF (0,60) mord **avant** le gel d'anti-windup de l'intégrale (0,80) — l'autorité aveugle à l'erreur cède la première.
+
+### Latch de sécurité (condition n°3) et réarmement
+
+Le FF est la seule source de dosage **aveugle à l'erreur** : sans mesure digne de confiance, personne ne peut constater qu'il dose à tort. Une fois le latch posé, FF = 0 jusqu'au **front d'ouverture de la session automatique suivante** (un latch posé en cours de session tient jusqu'à sa fin).
+
+| Cause | Règle |
+|---|---|
+| **Erreur défavorable tenue** | Erreur **SIGNÉE** < −`kPhFfAdverseErrorPh` (−0,05) tenue `kPhFfLowHoldMs` (**30 min de temps de branche**, durées observées, jamais d'échéance future — ADR-0049). Erreur signée et non pH brut : le même déclencheur vaut pour `ph_minus` **et** `ph_plus`. C'est le scénario « fausse pluie » de la spec : annulation en < 30 min |
+| **Mesure invalide** | Filtre non prêt / instable / valeur non finie ⇒ fail-closed **immédiat, sans tenue** ; la tenue d'erreur est remise à zéro (l'erreur n'a plus de sens) |
+| **Changement de contexte** | Détection par front sur `phIntegralContextHash()` (vitesse, produit, consigne, plafond) — même règle R2 que la persistance : la charge a été apprise pour un autre point de fonctionnement |
+
+**Tenue produit** (recommandation du gate) : au changement de `phCorrectionType`, le latch tient jusqu'à ce qu'une journée **entière** ait été archivée sous le nouveau régime — la première clôture après le changement archive une journée **mixte** et est sautée (`_ffProductHoldFreshDay`), la suivante lève la tenue. **RAM-only, fail-open borné assumé** : un reboot lève la tenue, mais le FF reste borné par le plafond d'actionneur et le gel de quota — borne chiffrée par le gate à **~39 mL au pire**, soit ~0,01-0,02 pH sur 30-50 m³ ; la persistance NVS est jugée non requise ([ADR-0055](../adr/0055-feedforward-appris-additif-plafonne.md), alternative (e)).
+
+### Un seul chemin de commande (condition n°1) et anti-windup (condition n°4)
+
+Le FF est un **terme additif** dans la branche automatique, jamais une seconde branche de dosage : il passe par le chemin existant (`computePID` borné à `ampFlow − ff`, somme clampée à `ampFlow`, `planPulseWithCarry`, `tickPulse`, comptabilité) — **une seule comptabilité de volume, un seul jeu de gardes**. L'alternative « branche `scheduled` parallèle » a été écartée par le gate (double comptabilité, double jeu de gardes, double dosage à la première divergence).
+
+**Anti-windup recalculé** : le soutenable moyen vu par le tick intégral devient `max(0, soutenable − ff)` (`PhIntegralInputs::ffMlPerMin`, [`ph_integral_logic.h`](../../src/ph_integral_logic.h)) — sinon l'intégrale se gèlerait sur une saturation **causée par le FF** et le PI deviendrait sourd. D'où l'**ordre impératif** dans `update()` : `tickPhFeedforward()` **avant** `tickPhIntegralAuto()`, dans le même tour.
+
+### Stabilité : par l'hystérésis de session, structurellement
+
+Le FF ne vit que sous `shouldDose` (session automatique ouverte, statut `kInactive` sinon). Un FF qui sur-corrigerait fait retomber l'erreur sous le seuil d'**arrêt** : la session se ferme et le FF cesse **avec elle** — sa condition d'existence est précisément la session qu'il vient de fermer ; la réouverture exige une remontée à `phStartThreshold`, la bande [stop ; start] absorbe le rebond. L'argument de fond est le **bilan de matière** : le volume journalier livré converge vers la charge réelle du bassin **quel que soit le FF**, donc la médiane apprise est **non expansive** (pas d'auto-amplification d'un jour sur l'autre). **C'est le mécanisme de stabilité ; le plafond d'actionneur n'est qu'une ceinture.** Ne pas ajouter d'hystérésis interne au FF — double emploi et second point de réglage.
+
+Corollaire « sonde figée » (critère A6) : une sonde figée ferme la porte de validité ⇒ `canDose()` refuse ⇒ aucune session ⇒ FF = 0 — garantie structurelle, **doublée** par le latch « mesure invalide » explicite.
+
+### Constantes ([`constants.h`](../../src/constants.h))
+
+| Constante | Valeur | Rôle |
+|---|---:|---|
+| `kPhFfMaxSustainableFraction` | 0,60 | Plafond d'actionneur — le PI garde ≥ 40 % du soutenable |
+| `kPhFfDailyQuotaFraction` | 0,60 | Gel de quota — `static_assert` : < `kPhIntegralFreezeDailyFraction` (0,80) |
+| `kPhFfAdverseErrorPh` | 0,05 | Seuil du latch « erreur défavorable » (erreur signée < −0,05) |
+| `kPhFfLowHoldMs` | 1 800 000 ms (**30 min**) | Tenue du latch, en temps de branche — `static_assert` : ≥ `kPhIntegralResetHoldMs` (15 min, le FF est une autorité permanente, la preuve exigée est plus longue) et ≤ 30 min (critère « fausse pluie » de la spec) |
+
+### Accesseurs publics (contrat figé)
+
+`getPhFeedforwardFlow()` (mL/min, 0 hors session) et `getPhFeedforwardStatus()` — code `PhFfStatus` **FIGÉ**, jamais renuméroté (même règle que `DoseRefusal`, ADR-0049) :
+
+| Code | État | Servi hors session ? |
+|---|---|---|
+| 0 | `kInactive` — aucune session automatique | oui (état de repos) |
+| 1 | `kActive` — FF appliqué (0,00 possible : charge observée nulle = observation légitime) | **non** — traduit en 0 hors session (les instantanés ne sont rafraîchis que quand `update()` atteint le tick : sans cette garde, un « actif » périmé survivrait à une sortie anticipée) |
+| 2 | `kHeld` — latch de sécurité | oui — l'UI peut dire **pourquoi** le FF ne s'appliquera pas |
+| 3 | `kNoHistory` — < 3 jours exploitables | oui |
+| 4 | `kQuota` — ≥ 60 % de la limite journalière consommés | oui |
+
+Publiés en **parité stricte** sur `/data`, le WebSocket et MQTT (`ph_ff_ml_per_min` 2 décimales, `ph_ff_status`) : [API.md](../API.md#champs-du-feedforward-ph-feature-085-v2280), [ws-manager.md](ws-manager.md#champs-sensor_data-ajoutés-en-v2280--feedforward-ph-adr-0055), [MQTT.md](../MQTT.md#topics-et-entités-ajoutés-en-v2280-dose-de-base-apprise--feedforward-ph), UI : [page-ph.md](../features/page-ph.md#ligne--dose-de-base-apprise--feature-085-v2280).
+
+### Journal
+
+| Message | Niveau | Quand |
+|---|---|---|
+| `Dosage pH : dose de base apprise X.XX mL/min (charge observée X.XX mL/min sur N jour(s), plafond X.XX)` | `info` | Premier tick **actif** de chaque session (anti-spam `_ffAnnounced`) |
+| `Feedforward pH retenu (pH franchement au-delà de la consigne depuis plus de 30 min \| mesure pH invalide \| réglages de régulation modifiés) — dose de base suspendue jusqu'à la prochaine session` | `info` | Pose du latch (par transition, jamais par tour) |
+| `Feedforward pH retenu : changement de produit — dose de base suspendue jusqu'à une journée entière archivée sous le nouveau régime` | `info` | Tenue produit |
+| `Feedforward pH réarmé (ouverture de session)` | `info` | Réarmement au front de session |
+
+### Testabilité
+
+Nouvelle suite native [`test/test_native_ph_feedforward/`](../../test/test_native_ph_feedforward/) — total du projet **932 → 970 tests**, **6 mutations tuées sur 6** (validation par mutation exigée par le workflow projet).
 
 ## Comptabilisation d'un démarrage de cycle : invariant (v2.20.5)
 

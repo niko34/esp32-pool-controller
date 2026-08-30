@@ -3763,6 +3763,48 @@
           + "pompe doseuse et le TAC de l'eau (une alcalinité élevée bloque le pH).";
       }
     }
+
+    // ----- feature-085 (v2.28.0) : dose de base apprise (feedforward pH) -----
+    // Deux champs servis à l'IDENTIQUE sur /data et le WebSocket :
+    //   ph_ff_ml_per_min → débit de base appliqué à la session auto (mL/min) ;
+    //   ph_ff_status     → code d'état FIGÉ côté firmware :
+    //     0 inactif · 1 actif · 2 latch sécurité (pH sous consigne) ·
+    //     3 historique < 3 j · 4 quota journalier ≥ 60 %.
+    // MÊME contrat de présence que le reste du bloc : `ph_ff_status` absent
+    // (undefined) = firmware antérieur à la 2.28.0 → la ligne reste masquée
+    // (afficher « inactif » mentirait sur un firmware qui n'a pas de FF).
+    // La valeur n'est affichée QUE pour le statut « actif » : dans tous les
+    // autres états le débit vaut 0 par construction, et un « 0,00 mL/min »
+    // se lirait comme une mesure. Jamais de NaN affiché (helper num()).
+    const ffLine = $("#ph_ff_line");
+    if (ffLine) {
+      const st = data.ph_ff_status;
+      if (typeof st !== "number" || !isFinite(st)) {
+        ffLine.hidden = true;
+      } else {
+        ffLine.hidden = false;
+        const valEl = $("#ph_ff_value");
+        const stateEl = $("#ph_ff_state");
+        const flow = num(data.ph_ff_ml_per_min);
+        let valTxt = "—";
+        let stateTxt = "";
+        if (st === 1) {
+          stateTxt = "active";
+          if (flow !== null) {
+            valTxt = flow.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " mL/min";
+          }
+        } else if (st === 2) {
+          stateTxt = "suspendue (pH sous consigne)";
+        } else if (st === 3) {
+          stateTxt = "en apprentissage (historique < 3 j)";
+        } else if (st === 4) {
+          stateTxt = "suspendue (60 % du quota atteint)";
+        }
+        // st === 0 (inactif) ou code inconnu d'un firmware plus récent : tiret seul.
+        if (valEl) valEl.textContent = valTxt;
+        if (stateEl) stateEl.textContent = stateTxt ? " " + stateTxt : "";
+      }
+    }
   }
 
   // ========== SECTIONS DÉTAILLÉES ==========

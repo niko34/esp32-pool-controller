@@ -89,6 +89,8 @@ Tous les topics utilisent le préfixe configurable (ex: `pool/sensors`). Les val
 | `{base}/ph_integral` | `7450.2` | Terme intégral pH accumulé (pH·s, **signé**) — retain, dédup (v2.26.0). Voir [ci-dessous](#topics-et-entités-ajoutés-en-v2260-terme-intégral-ph) |
 | `{base}/ph_integral_term` | `2.759` | Contribution du terme intégral au débit demandé (mL/min) — retain, dédup (v2.26.0) |
 | `{base}/ph_integral_pct` | `46.0` | Remplissage de l'anti-windup (% du plafond, valeur absolue) — retain, dédup (v2.26.0) |
+| `{base}/ph_ff_ml_per_min` | `1.30` | Dose de base apprise appliquée à la session auto (mL/min, 2 décimales, 0 hors session) — retain, dédup (v2.28.0). Voir [ci-dessous](#topics-et-entités-ajoutés-en-v2280-dose-de-base-apprise--feedforward-ph) |
+| `{base}/ph_ff_status` | `1` | Code d'état du feedforward pH (0-4, contrat figé) — retain, dédup (v2.28.0) |
 
 ### Consignes
 
@@ -304,6 +306,8 @@ Le contrôleur publie automatiquement sa configuration pour Home Assistant au d�
 | Sensor | Piscine pH Rattrapage | `{base}/ph_integral_pct` | — (v2.26.0) |
 | Sensor | Piscine pH Rattrapage Débit | `{base}/ph_integral_term` | — (v2.26.0, `entity_category: diagnostic`) |
 | Sensor | Piscine pH Intégrale | `{base}/ph_integral` | — (v2.26.0, `entity_category: diagnostic`) |
+| Sensor | Piscine pH Dose de Base | `{base}/ph_ff_ml_per_min` | — (v2.28.0, `entity_category: diagnostic`) |
+| Sensor | Piscine pH Dose de Base Statut | `{base}/ph_ff_status` | — (v2.28.0, `entity_category: diagnostic`) |
 
 > **Compatibilité `orp_enabled` :** le champ `orp_enabled` (booléen) est maintenu comme miroir de `orp_regulation_mode` (`true` si mode ≠ `manual`). Les automations Home Assistant qui testent la valeur de ce champ continuent de fonctionner sans modification. Le topic `{base}/orp_regulation_mode` est la source de vérité pour le mode actif.
 
@@ -588,6 +592,29 @@ La régulation pH passe de **P pur** à **PI** ([ADR-0052](adr/0052-terme-integr
 - Mêmes noms de champs et mêmes arrondis que `GET /data` et que la trame WebSocket : une même grandeur porte le **même nom sur les trois transports**.
 
 L'anomalie « la régulation demande son maximum sans atteindre la consigne » est signalée par l'alerte [`ph_integral_saturated`](#alertes) — c'est elle qui fait autorité, elle seule tenant compte de la **durée** de l'épisode.
+
+---
+
+## Topics et entités ajoutés en v2.28.0 (dose de base apprise — feedforward pH)
+
+La régulation pH ajoute un terme de **feedforward** ([ADR-0055](adr/0055-feedforward-appris-additif-plafonne.md)) : la charge quotidienne connue (médiane 7 j de l'anneau de charge) est couverte d'office pendant les sessions automatiques, le PI ne traitant plus que l'écart résiduel. Détail firmware : [`docs/subsystems/pump-controller.md`](subsystems/pump-controller.md#dose-de-base-apprise--feedforward-ph-v2280).
+
+Même facture que les topics du terme intégral : **une grandeur par topic scalaire**, retain, dédup, mêmes noms et mêmes arrondis que `GET /data` et la trame WebSocket.
+
+| Topic | Payload | Description | Retain |
+|-------|---------|-------------|--------|
+| `{base}/ph_ff_ml_per_min` | `1.30` | Débit de base appliqué à la session de dosage pH **automatique** en cours (mL/min, **2 décimales**). Vaut `0` hors session — le feedforward ne vit que sous une session ouverte. `NaN` → aucune publication (garde par symétrie avec l'intégrale, le retain précédent reste valable). | true |
+| `{base}/ph_ff_status` | `1` | Code d'état `PhFfStatus`, **contrat figé 0-4** : `0` inactif · `1` actif · `2` retenu par le latch de sécurité · `3` en apprentissage (historique < 3 jours) · `4` quota journalier (≥ 60 % de la limite). **Toujours publié** : c'est lui qui dit *pourquoi* le feedforward ne s'applique pas. Code **brut** (pas de libellé français dans le topic) : le mapping appartient aux clients, comme pour les codes de cause de refus ([ADR-0049](adr/0049-code-machine-de-cause-de-refus-et-etat-interne-du-filtre.md)). | true |
+
+### Auto-discovery HA (v2.28.0)
+
+| Entité | Type | `state_topic` | `unique_id` | Détails |
+|--------|------|---------------|-------------|---------|
+| Piscine pH Dose de Base | `sensor` | `{base}/ph_ff_ml_per_min` | `poolcontroller_ph_ff_flow` | `unit: mL/min`, `icon: mdi:water-pump`, `state_class: measurement`, `entity_category: diagnostic` |
+| Piscine pH Dose de Base Statut | `sensor` | `{base}/ph_ff_status` | `poolcontroller_ph_ff_status` | `icon: mdi:state-machine`, `entity_category: diagnostic`. Pas de `state_class` ni d'`unit_of_measurement` : code discret, pas une mesure. |
+
+- **Aucune entité existante n'est touchée** : les deux `unique_id` sont inédits. Le nombre de publications de `publishDiscovery()` passe de 52 à **54**.
+- Deux **slots de déduplication** ajoutés (21/22, `kDedupCacheSlots` 21 → **23**) : le feedforward étant figé hors session, la dédup supprime la quasi-totalité du trafic de ces topics hors dosage.
 
 ---
 

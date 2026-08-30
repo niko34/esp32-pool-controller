@@ -104,6 +104,12 @@ struct MqttTopics {
   String phIntegralState;           // Intégrale accumulée (pH·s, 1 décimale)
   String phIntegralTermState;       // Contribution au débit demandé (mL/min, 3 décimales)
   String phIntegralPctState;        // Remplissage de l'anti-windup (% de integralMax)
+  // feature-085 (v2.28.0) : feedforward pH (dose de base apprise). Deux topics
+  // scalaires retain, dédupliqués — même pattern que ph_integral* (il n'existe
+  // pas de payload JSON d'état de régulation : une grandeur = un topic, et une
+  // même grandeur porte le même nom sur les trois transports /data, WS, MQTT).
+  String phFfFlowState;             // Débit de base appliqué (mL/min, 2 décimales, 0 hors session auto)
+  String phFfStatusState;           // Code PhFfStatus (0 inactif, 1 actif, 2 latch, 3 historique<3j, 4 quota)
 };
 
 // Architecture producer/consumer (cf. ADR-0011) :
@@ -197,7 +203,10 @@ private:
   // v2.26.0 (C5) : +3 slots (18/19/20) pour ph_integral / _term / _pct — l'intégrale
   // est FIGÉE hors dosage (aucune erreur intégrée) : la déduplication supprime la
   // quasi-totalité du trafic de ces trois topics pendant les heures d'arrêt.
-  static constexpr int kDedupCacheSlots = 21;
+  // feature-085 : +2 slots (21/22) pour ph_ff_ml_per_min / ph_ff_status — figés
+  // hors session automatique (0 / code stable) : la déduplication supprime tout
+  // le trafic hors dosage, comme pour l'intégrale.
+  static constexpr int kDedupCacheSlots = 23;
   String _lastFilterPub[kDedupCacheSlots];
   // Publie `payload` sur `topic` uniquement si différent du dernier publié (slot `cacheIdx`).
   void safePublishDedup(int cacheIdx, const char* topic, const String& payload);

@@ -362,3 +362,18 @@ La [levée de `Ki = 0`](pump-controller.md#terme-intégral-ph--levée-de-ki--0-v
 - **Rétrocompat client** : clé **absente** (firmware < 2.26.0) ≠ `null` ≠ `0`. L'UI masque le bloc entier quand la clé est absente — afficher « 0 % » mentirait sur une régulation dont on ne sait rien. Voir [page-ph.md](../features/page-ph.md#rattrapage-accumulé-par-la-régulation-ph-v2260).
 
 **Budget de payload** : **73 o** au pire cas (`"ph_integral":-43200.0,` = 23 o, `"ph_integral_term":-6.000,` = 26 o, `"ph_integral_pct":100.0,` = 24 o). Pire cas de trame **2 479 → 2 552 o** ; le gabarit documentaire `StaticJson<>` de `_buildSensorJson()` passe de **2560 à 2688** pour rester franchement au-dessus, la marge sous `kWsFrameBufBytes` (3584 o) restant de **1 032 o**. Aucune troncature possible : la garde `measureJson(doc) + 1 > cap` **saute** le push au lieu de tronquer.
+
+## Champs `sensor_data` ajoutés en v2.28.0 — feedforward pH (ADR-0055)
+
+La [dose de base apprise](pump-controller.md#dose-de-base-apprise--feedforward-ph-v2280) ([ADR-0055](../adr/0055-feedforward-appris-additif-plafonne.md)) est la seule source de dosage **aveugle à l'erreur mesurée** : sans observabilité, personne ne pourrait constater qu'elle dose (ou pourquoi elle ne dose pas).
+
+| Champ | Type | Unité | Description |
+|-------|------|-------|-------------|
+| `ph_ff_ml_per_min` | float \| null | mL/min | Débit de base appliqué à la session automatique en cours (`getPhFeedforwardFlow()`), **2 décimales**, `0` hors session. `NaN` firmware → `null` explicite. |
+| `ph_ff_status` | int | — | Code `PhFfStatus` (`getPhFeedforwardStatus()`), **contrat figé 0-4** : `0` inactif · `1` actif · `2` latch de sécurité · `3` historique < 3 j · `4` quota ≥ 60 %. Les états 2-4 sont servis même hors session. |
+
+- **Parité stricte d'emblée avec `/data`** (mêmes noms, mêmes arrondis, `NaN` → `null`, même passage de code) — la parité `/data` ↔ WS est un motif à **5 récidives** dans ce projet, le critère de la spec l'exigeait explicitement. Le même duo est publié sur MQTT ([MQTT.md](../MQTT.md#topics-et-entités-ajoutés-en-v2280-dose-de-base-apprise--feedforward-ph)).
+- **Rétrocompat client** : clé `ph_ff_status` **absente** = firmware < 2.28.0 → l'UI masque la ligne entière (afficher « inactif » mentirait sur un firmware sans feedforward). Voir [page-ph.md](../features/page-ph.md#ligne--dose-de-base-apprise--feature-085-v2280).
+- Getters `PumpController` **lecture seule**, aucun setter, aucune influence sur une décision de dosage ; course bénigne assumée écriture `loopTask` / lecture `async_tcp`.
+
+**Budget de payload** : **44 o** au pire cas (`"ph_ff_ml_per_min":123.45,` = 26 o, `"ph_ff_status":4,` = 18 o). Pire cas de trame **2 582 → 2 626 o**, sous le gabarit documentaire **2688** (marge 62 o) et sous `kWsFrameBufBytes` (3584 o, marge **958 o**) — **aucun bump**. Aucune troncature possible : la garde `measureJson(doc) + 1 > cap` **saute** le push au lieu de tronquer.

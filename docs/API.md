@@ -1093,6 +1093,21 @@ Interprétation : voir [pump-controller.md — Terme intégral pH](subsystems/pu
 
 > **Budget de payload** : +**73 o** au pire cas sur `/data` (`"ph_integral":-43200.0,` 23 o + `"ph_integral_term":-6.000,` 26 o + `"ph_integral_pct":100.0,` 24 o). Charge pire cas portée à **1 947 o**, gabarit documentaire `StaticJson<2304>` inchangé. Côté WebSocket, le gabarit passe de 2560 à **2688** (voir [ws-manager.md](subsystems/ws-manager.md)).
 
+#### Champs du feedforward pH (feature-085, v2.28.0)
+
+Ajoutés par la **dose de base apprise** ([ADR-0055](adr/0055-feedforward-appris-additif-plafonne.md)). Publiés en **parité stricte** sur `/data` **ET** sur la trame WebSocket `sensor_data` (mêmes noms, mêmes arrondis, mêmes règles de nullité — même passage de code), ainsi que sur MQTT.
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `ph_ff_ml_per_min` | float \| null | Débit de base appliqué à la session de dosage pH **automatique** en cours, en mL/min (**2 décimales**). Vaut `0` hors session (le feedforward ne vit que sous une session ouverte). `null` si la valeur n'est pas finie (indisponible). |
+| `ph_ff_status` | int | Code d'état `PhFfStatus`, **contrat figé 0-4** (jamais renuméroté) : `0` inactif (aucune session automatique) · `1` actif · `2` retenu par le latch de sécurité (pH sous consigne, mesure invalide ou réglages modifiés) · `3` en apprentissage (historique de charge < 3 jours exploitables) · `4` quota journalier (≥ 60 % de la limite consommés). Les états 2-4 sont servis **même hors session** : ils disent pourquoi le feedforward ne s'appliquera pas. |
+
+**Règles de consommation client** : clé `ph_ff_status` **absente** = firmware antérieur à la v2.28.0 → masquer l'affichage entier. Un code **non répertorié** (firmware plus récent) → affichage neutre (« — »), jamais le libellé voisin. La valeur `ph_ff_ml_per_min` ne se lit qu'au statut `1` (partout ailleurs elle vaut 0 par construction).
+
+Interprétation : [pump-controller.md — Dose de base apprise](subsystems/pump-controller.md#dose-de-base-apprise--feedforward-ph-v2280). Affichage : [page-ph.md](features/page-ph.md#ligne--dose-de-base-apprise--feature-085-v2280).
+
+> **Budget de payload** : +**43 o** au pire cas sur `/data` (`"ph_ff_ml_per_min":123.45,` 26 o + `"ph_ff_status":4,` 17 o). Charge pire cas portée à **2 020 o** (1 977 mesurés v2.26.0 + 43), marge 284 o sous le gabarit documentaire `StaticJson<2304>`, inchangé. Côté WebSocket : voir [ws-manager.md](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2280--feedforward-ph-adr-0055).
+
 Champs ajoutés en feature-056 (mode d'installation, v2.19.0 — [ADR-0026](adr/0026-mode-installation.md)) :
 
 | Champ | Type | Description |

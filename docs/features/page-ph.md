@@ -91,6 +91,32 @@ Rattrapage accumulé : 46 %   (7 450 pH·s · 2,8 mL/min demandés)
 
 **Volontairement absent d'ailleurs** : du **tableau de bord** (c'est une grandeur d'automatique, pas une mesure d'eau) et de la page **Réglages** (c'est un **état temps réel**, pas un paramètre à sauvegarder).
 
+### Ligne « Dose de base apprise » (feature-085, v2.28.0)
+
+Ligne `#ph_ff_line`, ajoutée **dans le bloc Rattrapage accumulé** (mêmes règles de visibilité : mode Automatique uniquement). Elle expose le [feedforward pH](../subsystems/pump-controller.md#dose-de-base-apprise--feedforward-ph-v2280) ([ADR-0055](../adr/0055-feedforward-appris-additif-plafonne.md)) : la charge quotidienne connue (médiane 7 j) couverte d'office pendant les sessions automatiques.
+
+| Élément | Id | Source | Format |
+|---|---|---|---|
+| Valeur | `#ph_ff_value` | `ph_ff_ml_per_min` | `X,XX mL/min` (fr-FR, 2 décimales) — **uniquement** au statut `actif` ; `—` sinon |
+| État | `#ph_ff_state` | `ph_ff_status` | libellé discret, voir table |
+
+**Libellés des 5 états** (`ph_ff_status`, contrat firmware figé) :
+
+| Code | Affichage |
+|---|---|
+| `0` (inactif) | tiret seul, pas de libellé |
+| `1` (actif) | valeur + « active » |
+| `2` (latch de sécurité) | « suspendue (pH sous consigne) » |
+| `3` (historique < 3 j) | « en apprentissage (historique < 3 j) » |
+| `4` (quota) | « suspendue (60 % du quota atteint) » |
+| code inconnu (firmware plus récent) | tiret seul — jamais un libellé voisin |
+
+**Règles** :
+
+- `ph_ff_status` **absent** (`undefined`, firmware < 2.28.0) → **ligne masquée** (`hidden`). Afficher « inactif » mentirait sur un firmware qui n'a pas de feedforward.
+- La valeur n'est affichée **que** pour le statut `actif` : dans tous les autres états le débit vaut 0 par construction, et un « 0,00 mL/min » se lirait comme une mesure.
+- Parité `/data` ↔ WS : les deux champs sont servis à l'identique par les deux transports (voir [API.md](../API.md#champs-du-feedforward-ph-feature-085-v2280)).
+
 ## Carte « Correction de la mesure pH » (feature-067, v2.20.0)
 
 Carte `#ph-card-offset`, placée **entre la carte Régulation et la carte Historique**. Elle est **toujours visible**, quel que soit le mode de régulation : elle corrige la **mesure**, pas la régulation. Elle est **distincte de la calibration EZO**, qui reste dans sa propre carte.
@@ -394,6 +420,7 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 **Mode** : `ph_regulation_mode` (`automatic` / `scheduled` / `manual`), `ph_daily_target_ml`, `ph_enabled` (miroir, voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
 **Répartition scheduled (feature-011, v2.8.0)** : `ph_scheduled_flow_ml_per_min` (float 1 décimale, mL/min — débit moyen planifié restant ; `null` hors mode `scheduled`, hors plage de filtration ou heure ESP32 invalide → l'UI affiche « — »)
 **Terme intégral (v2.26.0)** : `ph_integral_pct` (float, % — remplissage de la réserve), `ph_integral` (float, pH·s), `ph_integral_term` (float, mL/min). Servis **à l'identique** par `GET /data`. Clé **absente** = firmware antérieur → bloc masqué ; `null` = « non calculable » → « — » ; `0` = **réserve vide, affirmé**. Voir [Rattrapage accumulé](#rattrapage-accumulé-par-la-régulation-ph-v2260)
+**Dose de base apprise (feature-085, v2.28.0)** : `ph_ff_ml_per_min` (float 2 décimales, mL/min), `ph_ff_status` (int 0-4, contrat figé). Servis **à l'identique** par `GET /data`. `ph_ff_status` absent = firmware antérieur → ligne masquée. Voir [Ligne « Dose de base apprise »](#ligne--dose-de-base-apprise--feature-085-v2280)
 **Config** : `ph_target`, `ph_correction_type` (`ph_minus` / `ph_plus`), `max_ph_ml_per_day`, `ph_offset` (feature-067, message `config` — pas `sensor_data`)
 **Injection manuelle** : `ph_inject_remaining_s`
 **Stabilisation** : `stabilization_remaining_s`

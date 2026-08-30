@@ -74,6 +74,11 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // qui reste donc à 2304. Rappel : ce chemin n'a AUCUN plafond dur
   // (sendJsonResponse dimensionne la String à la demande), le gabarit est
   // documentaire — contrairement à sWsFrameBuf côté WS.
+  // feature-085 (v2.28.0) : +2 champs feedforward pH (parité WS, même passage).
+  // Octets SÉRIALISÉS au pire cas (flottant 2 décimales signé, code 1 chiffre) :
+  //   "ph_ff_ml_per_min":123.45, = 26 o | "ph_ff_status":4, = 17 o → 43 o.
+  // Charge pire cas : 1977 (mesure v2.26.0) + 43 = 2020 o, marge 284 o sous le
+  // gabarit, qui reste donc à 2304.
   StaticJson<2304> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
@@ -275,6 +280,17 @@ static void handleGetData(AsyncWebServerRequest* request) {
     // la charge sans forcer est une régulation SAINE : la comparaison locale
     // annonçait « vérifiez le bidon » sans qu'aucun épisode ne soit ouvert.
     doc["ph_integral_saturated"] = PumpController.isPhIntegralSaturated();
+    // feature-085 (v2.28.0) : FEEDFORWARD pH — dose de base apprise. Publié dans
+    // le MÊME passage que le WS (ws_manager::_buildSensorJson), MÊMES clés, MÊMES
+    // arrondis (2 décimales), MÊME règle NaN → null (parité stricte /data ↔ WS —
+    // un champ servi d'un seul côté CLIGNOTE dans l'UI, 5 récidives du motif).
+    //   ph_ff_ml_per_min = débit de base appliqué à la session auto (mL/min, 0 hors session)
+    //   ph_ff_status     = code PhFfStatus (0 inactif, 1 actif, 2 latch sécurité,
+    //                      3 historique < 3 j, 4 quota ≥ 60 %) — contrat FIGÉ,
+    //                      cf. pump_controller.h. Entier toujours servi (jamais null).
+    const float phFfFlow = PumpController.getPhFeedforwardFlow();
+    if (!isnan(phFfFlow)) doc["ph_ff_ml_per_min"] = round(phFfFlow * 100.0f) / 100.0f; else doc["ph_ff_ml_per_min"] = nullptr;
+    doc["ph_ff_status"] = PumpController.getPhFeedforwardStatus();
   }
   doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;
   doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;
