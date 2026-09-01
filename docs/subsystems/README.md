@@ -21,6 +21,7 @@ Quand un composant change, la fiche correspondante dans `subsystems/` doit être
 
 ### Régulation & actuateurs
 
+- [regulation-vue-d-ensemble.md](regulation-vue-d-ensemble.md) — **commencer ici pour comprendre la régulation** : la chaîne pH et ORP de bout en bout, la division feedforward/PI, l'asymétrie pH ↔ chlore, les constantes de temps et les invariants — raconte et renvoie, ne duplique pas
 - [pump-controller.md](pump-controller.md) — régulation PID pH/ORP, anti-cycling, cumuls journaliers, stabilisation (**composant critique** — passe par `pool-chemistry`)
 - [filtration.md](filtration.md) — pilote relais filtration (GPIO25), modes auto/manual/off, calcul horaire selon température
 - [lighting.md](lighting.md) — pilote relais éclairage (GPIO26), programmation horaire

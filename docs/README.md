@@ -17,10 +17,15 @@ docs/
 │   ├── page-ph.md
 │   ├── page-orp.md
 │   ├── page-dosages.md
-│   └── page-settings.md
+│   ├── page-settings.md
+│   └── page-wizard.md
+│
+├── user/                ← Documents pour l'utilisateur FINAL (PDF vulgarisés, dérivés — voir user/README.md)
+│   └── guide-regulation-v<version>.pdf
 │
 ├── subsystems/          ← Doc vivante, 1 fichier par composant firmware
 │   ├── README.md
+│   ├── regulation-vue-d-ensemble.md   ← commencer ici pour comprendre la régulation
 │   ├── pump-controller.md
 │   ├── sensors.md
 │   ├── filtration.md
@@ -94,7 +99,8 @@ docs/
 │   ├── 0053-persistance-conditionnelle-integrale-ph.md
 │   ├── 0054-seuil-de-vraisemblance-fonction-de-la-configuration.md
 │   ├── 0055-feedforward-appris-additif-plafonne.md
-│   └── 0056-sous-dimensionnement-actionneur-3-jours-80-pct.md
+│   ├── 0056-sous-dimensionnement-actionneur-3-jours-80-pct.md
+│   └── 0057-taille-bassin-preselection-jamais-entree-de-calcul.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

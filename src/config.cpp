@@ -186,6 +186,9 @@ void saveMqttConfig() {
   prefs.putString("install_mode", installModeToString(mqttCfg.installMode));
   prefs.putInt("stab_delay", mqttCfg.stabilizationDelayMin);
   prefs.putString("reg_speed", mqttCfg.regulationSpeed);
+  // feature-090 : taille du bassin (présélection des défauts — JAMAIS une
+  // entrée de calcul de dosage). Sérialisation stable "small"/"medium"/"large".
+  prefs.putString("pool_size", poolSizeToString(mqttCfg.poolSize));
   prefs.putString("ph_corr_type", mqttCfg.phCorrectionType);
 
   // Calibration Température
@@ -353,7 +356,7 @@ void loadMqttConfig() {
     mqttCfg.phRegulationMode = mqttCfg.phEnabled ? "automatic" : "manual";
     systemLogger.info("Migration ph_enabled → ph_regulation_mode: " + mqttCfg.phRegulationMode);
   }
-  mqttCfg.phDailyTargetMl = prefs.getInt("ph_daily_ml", 0);
+  mqttCfg.phDailyTargetMl = prefs.getInt("ph_daily_ml", kDefaultPhDailyTargetMl);
   if (mqttCfg.phRegulationMode != "automatic" &&
       mqttCfg.phRegulationMode != "scheduled" &&
       mqttCfg.phRegulationMode != "manual") {
@@ -427,7 +430,7 @@ void loadMqttConfig() {
     mqttCfg.orpRegulationMode = mqttCfg.orpEnabled ? "automatic" : "manual";
     systemLogger.info("Migration orp_enabled → orp_regulation_mode: " + mqttCfg.orpRegulationMode);
   }
-  mqttCfg.orpDailyTargetMl = prefs.getInt("orp_daily_ml", 0);
+  mqttCfg.orpDailyTargetMl = prefs.getInt("orp_daily_ml", kDefaultOrpDailyTargetMl);
   if (mqttCfg.orpRegulationMode != "automatic" &&
       mqttCfg.orpRegulationMode != "scheduled" &&
       mqttCfg.orpRegulationMode != "manual") {
@@ -456,8 +459,14 @@ void loadMqttConfig() {
     }
     prefs.begin("poolctrl", true);
   }
-  mqttCfg.stabilizationDelayMin = prefs.getInt("stab_delay", 5);
-  mqttCfg.regulationSpeed = prefs.getString("reg_speed", "normal");
+  // feature-088 : défauts de tuning relus depuis la source UNIQUE (regulation_defaults.h)
+  mqttCfg.stabilizationDelayMin = prefs.getInt("stab_delay", kDefaultStabilizationDelayMin);
+  mqttCfg.regulationSpeed = prefs.getString("reg_speed", kDefaultRegulationSpeed);
+  // feature-090 : taille du bassin. Clé absente (flotte existante) ou valeur
+  // corrompue → Medium (poolSizeFromString), la colonne des défauts v2.30.0.
+  // On ne fait ICI que CHARGER le champ : JAMAIS d'application des défauts au
+  // boot — les réglages NVS existants restent intouchés par une mise à jour.
+  mqttCfg.poolSize = poolSizeFromString(prefs.getString("pool_size", "medium").c_str());
   mqttCfg.phCorrectionType = prefs.getString("ph_corr_type", "ph_minus");
 
   // feature-021 (Pass 4a) : calibration ORP gérée par le module Atlas EZO
@@ -604,6 +613,82 @@ void loadMqttConfig() {
   applyTimezoneEnv();
 
   systemLogger.info("Configuration chargée depuis NVS");
+}
+
+// =============================================================================
+// feature-088 (v2.31.0) — RESTAURATION DES VALEURS D'USINE DE RÉGULATION
+// =============================================================================
+// La LISTE des champs copiés est le template PUR applyRegulationDefaults()
+// (regulation_defaults.h), prouvable par mutation en natif — ici il ne reste
+// que le transport : mutex, persistance NVS et journal avant → après.
+// feature-090 : les valeurs restaurées sont celles de la TAILLE DE BASSIN
+// COURANTE (mqttCfg.poolSize) — la taille elle-même n'est PAS modifiée.
+bool restoreRegulationDefaults() {
+  // Prise bornée (miroir de saveMqttConfig). Timeout → restauration ANNULÉE en
+  // bloc : aucun champ n'est modifié, jamais d'application partielle — et le
+  // retour false permet à la route de répondre une ERREUR au lieu d'un faux
+  // succès (revue v2.31.0 : une réponse mensongère sur une route CRITICAL de
+  // régulation est inacceptable, même sans risque chimique).
+  if (configMutex && xSemaphoreTakeRecursive(configMutex, pdMS_TO_TICKS(kConfigMutexTimeoutMs)) != pdTRUE) {
+    systemLogger.error("[Config] restoreRegulationDefaults: timeout mutex — restauration annulée");
+    return false;
+  }
+
+  // feature-090 : colonne CIBLE = celle de la taille de bassin courante (lue
+  // sous mutex — c'est une référence constexpr vers la table, jamais invalidée).
+  const PoolSize size = mqttCfg.poolSize;
+  const RegulationDefaults& d = regulationDefaultsFor(size);
+
+  // Instantané AVANT — condition 1 du visa pool-chemistry (leçon phAutoManual :
+  // sans la valeur précédente, un incident est indiagnosticable).
+  const float  oldPhTarget   = mqttCfg.phTarget;
+  const float  oldOrpTarget  = mqttCfg.orpTarget;
+  const int    oldPhLimit    = mqttCfg.phInjectionLimitMinutes;
+  const int    oldOrpLimit   = mqttCfg.orpInjectionLimitMinutes;
+  const int    oldStabDelay  = mqttCfg.stabilizationDelayMin;
+  const int    oldPhDailyMl  = mqttCfg.phDailyTargetMl;
+  const int    oldOrpDailyMl = mqttCfg.orpDailyTargetMl;
+  char oldSpeed[8];  // "slow"/"normal"/"fast" — copie sans String (budget flash)
+  strlcpy(oldSpeed, mqttCfg.regulationSpeed.c_str(), sizeof(oldSpeed));
+
+  // Niveau du journal décidé sur l'état AVANT copie (prédicat PUR) : warning si
+  // la restauration AUGMENTE la capacité de dosage (consigne ORP qui monte,
+  // limite horaire pH/ORP qui monte — ex. bassin < 20 m³ volontairement
+  // redescendu à 5 min/h), info sinon.
+  const bool raisesDosing =
+      regulationDefaultsRaiseDosing(d, oldOrpTarget, oldPhLimit, oldOrpLimit);
+
+  // Copie des 8 champs de tuning de la colonne de la taille courante — RIEN
+  // d'autre (invariants du visa : modes, enabled, phCorrectionType, phOffset,
+  // trace phAutoManual*, calibration et sélection des pompes, SafetyLimits
+  // ET poolSize intouchés).
+  applyRegulationDefaults(mqttCfg, size);
+
+  saveMqttConfig();  // mutex récursif : persistance dans la même section critique
+  xSemaphoreGiveRecursive(configMutex);
+
+  // Journal COMPACT (condition 1 du visa) : UN message, les 8 champs lisibles
+  // avant → après (un champ inchangé s'y lit x → x — l'état complet d'avant
+  // restauration reste ainsi toujours reconstituable depuis le journal).
+  // UN SEUL snprintf : nettement plus compact en flash (budget ≤ 2 Ko) que huit
+  // segments conditionnels ou des concaténations String.
+  char msg[352];
+  snprintf(msg, sizeof(msg),
+           "[Config] Défauts de régulation (taille %s) restaurés%s : pH %.2f→%.2f ; "
+           "ORP %.0f→%.0f mV ; limites pH %d→%d / ORP %d→%d min/h ; "
+           "stab. %d→%d min ; prog. pH %d→%d / ORP %d→%d mL/j ; vitesse %s→%s",
+           poolSizeToString(size),
+           raisesDosing ? " (dosage AUGMENTÉ)" : "",
+           (double)oldPhTarget, (double)d.phTarget,
+           (double)oldOrpTarget, (double)d.orpTarget,
+           oldPhLimit, d.phInjectionLimitMin,
+           oldOrpLimit, d.orpInjectionLimitMin,
+           oldStabDelay, d.stabilizationDelayMin,
+           oldPhDailyMl, d.phDailyTargetMl,
+           oldOrpDailyMl, d.orpDailyTargetMl,
+           oldSpeed, d.regulationSpeed);
+  systemLogger.log(raisesDosing ? LogLevel::WARNING : LogLevel::INFO, msg);
+  return true;
 }
 
 void saveProductConfig() {

@@ -1755,6 +1755,26 @@ action:
                   <h2 class="card__title">Régulation pH / ORP</h2>
                 </div>
                 <div class="card__body">
+                  <!-- feature-090 : taille du bassin → présélection des défauts de
+                       régulation. Masqué face à un firmware sans pool_size dans
+                       /get-config (la vitesse est alors ré-affichée) — loadConfig(). -->
+                  <div id="pool_size_block" hidden>
+                    <label class="field">
+                      <span class="field__label">Taille du bassin</span>
+                      <div class="segmented" id="pool_size" role="group" aria-label="Taille du bassin">
+                        <button class="segmented__btn" type="button" data-value="small">Moins de 20 m³</button>
+                        <button class="segmented__btn" type="button" data-value="medium">20 à 60 m³</button>
+                        <button class="segmented__btn" type="button" data-value="large">Plus de 60 m³</button>
+                      </div>
+                    </label>
+                    <div class="muted small" style="margin-top: 8px; margin-bottom: 16px;">
+                      Présélectionne les réglages de régulation adaptés au volume (limites d'injection, vitesse de correction, délai de stabilisation). Un récapitulatif est affiché avant application ; tous les réglages restent modifiables ensuite.
+                    </div>
+                  </div>
+
+                  <!-- feature-090 : vitesse de correction masquée quand la taille du
+                       bassin pilote les défauts (le réglage reste dans l'API/NVS/MQTT). -->
+                  <div id="regulation_speed_block">
                   <label class="field">
                     <span class="field__label">Vitesse de correction</span>
                     <div class="segmented" id="regulation_speed" role="group" aria-label="Vitesse de correction">
@@ -1768,6 +1788,7 @@ action:
                     <strong>Lente</strong> : piscine &gt; 60 m³ ou eau très tamponnée — corrections progressives, aucun dépassement.<br>
                     <strong>Normale</strong> : piscine 20 – 60 m³ — bon équilibre réactivité / stabilité (recommandé).<br>
                     <strong>Rapide</strong> : piscine &lt; 20 m³ ou spa — corrections plus vives, surveiller les dépassements.
+                  </div>
                   </div>
 
                   <div class="grid grid--2" style="margin-top: 16px;">
@@ -1809,6 +1830,18 @@ action:
 
                   <div class="detail-actions" style="margin-top: 16px;">
                     <button class="btn btn--primary" id="regulation_save_btn">Sauvegarder</button>
+                  </div>
+
+                  <!-- feature-088 : restauration des valeurs d'usine de régulation.
+                       Masqué tant que /get-config ne fournit pas regulation_defaults
+                       (firmware antérieur à 2.31.0) — géré dans loadConfig(). -->
+                  <div id="regulation_reset_block" hidden>
+                    <div class="detail-actions" style="margin-top: 24px;">
+                      <button class="btn" type="button" id="regulation_reset_btn">Restaurer les valeurs par défaut</button>
+                    </div>
+                    <div class="hint">
+                      Remet aux valeurs d'usine les réglages de régulation : consignes pH et ORP, durées max d'injection par heure, vitesse de correction, délai avant injection et volumes quotidiens du mode programmé. Un récapitulatif détaillé est affiché avant application.
+                    </div>
                   </div>
                 </div>
               </div>

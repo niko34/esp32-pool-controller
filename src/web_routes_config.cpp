@@ -79,6 +79,25 @@ void initConfigContext(
   g_configErrors = configErrors;
 }
 
+// feature-088 : VALEURS D'USINE des réglages de régulation, sérialisées depuis
+// la source UNIQUE (regulation_defaults.h, via config.h). Partagé entre
+// /get-config (dialogue avant/après de l'UI — qui ne doit JAMAIS porter ces
+// valeurs en constantes JS) et la réponse de /reset-regulation-defaults.
+// Mêmes clés que les champs de config correspondants de /get-config.
+// feature-090 : paramétré par la TAILLE DE BASSIN — sérialise la colonne
+// correspondante de kRegulationDefaultsBySize.
+static void fillRegulationDefaults(JsonObject o, PoolSize size) {
+  const RegulationDefaults& d = regulationDefaultsFor(size);
+  o["ph_target"] = d.phTarget;
+  o["orp_target"] = d.orpTarget;
+  o["ph_limit_minutes"] = d.phInjectionLimitMin;
+  o["orp_limit_minutes"] = d.orpInjectionLimitMin;
+  o["stabilization_delay_min"] = d.stabilizationDelayMin;
+  o["ph_daily_target_ml"] = d.phDailyTargetMl;
+  o["orp_daily_target_ml"] = d.orpDailyTargetMl;
+  o["regulation_speed"] = d.regulationSpeed;
+}
+
 static void handleGetConfig(AsyncWebServerRequest* request) {
   // Vérifier si l'utilisateur est authentifié pour accéder aux données sensibles
   // Note: On ne bloque PAS la requête (route publique pour premier démarrage),
@@ -97,7 +116,10 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // (~130 o au pire) → marge portée à 2752.
   // feature-074 : +2 drapeaux pumpN_flow_weighed (~56 o) → marge portée à 2816.
   // v2.25.0 (B1) : +6 bornes de réglage pH (~30 o chacune) → marge portée à 3072.
-  StaticJson<3072> doc;
+  // feature-088 : +objet regulation_defaults (8 valeurs, ~130 o) → marge 3328.
+  // feature-090 : +pool_size (~22 o) et +regulation_defaults_by_size (3 colonnes
+  // de 8 valeurs, ~410 o) → marge portée à 3776.
+  StaticJson<3776> doc;
   doc["server"] = mqttCfg.server;
   doc["port"] = mqttCfg.port;
   doc["topic"] = mqttCfg.topic;
@@ -140,6 +162,10 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["install_mode"] = installModeToString(mqttCfg.installMode);  // feature-056
   doc["stabilization_delay_min"] = mqttCfg.stabilizationDelayMin;
   doc["regulation_speed"] = mqttCfg.regulationSpeed;
+  // feature-090 : taille du bassin (présélection des défauts, jamais une
+  // entrée de calcul). Un client ancien ignore la clé ; un client nouveau face
+  // à un vieux firmware masque le sélecteur (détection par présence du champ).
+  doc["pool_size"] = poolSizeToString(mqttCfg.poolSize);
   doc["ph_correction_type"] = mqttCfg.phCorrectionType;
   doc["time_use_ntp"] = mqttCfg.timeUseNtp;
   doc["ntp_server"] = mqttCfg.ntpServer;
@@ -257,6 +283,20 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // feature-053 : Mode Boost (état effectif + epoch d'expiration, 0 si inactif).
   doc["boost_active"] = isBoostActive(time(nullptr));
   doc["boost_until"] = (long)boostState.untilEpoch;
+
+  // feature-088 : valeurs d'usine des réglages de régulation — le dialogue de
+  // confirmation avant/après de l'UI lit le FIRMWARE, jamais des constantes JS.
+  // feature-090 : `regulation_defaults` reflète la colonne de la taille
+  // COURANTE (contrat 088 intact : mêmes clés, à plat) ; le dialogue de
+  // CHANGEMENT de taille lit lui `regulation_defaults_by_size`, qui porte les
+  // trois colonnes — l'UI n'a ainsi jamais à deviner une colonne côté JS.
+  fillRegulationDefaults(doc["regulation_defaults"].to<JsonObject>(), mqttCfg.poolSize);
+  {
+    JsonObject bySize = doc["regulation_defaults_by_size"].to<JsonObject>();
+    fillRegulationDefaults(bySize["small"].to<JsonObject>(), PoolSize::Small);
+    fillRegulationDefaults(bySize["medium"].to<JsonObject>(), PoolSize::Medium);
+    fillRegulationDefaults(bySize["large"].to<JsonObject>(), PoolSize::Large);
+  }
 
   sendJsonResponse(request, doc);
 }
@@ -493,6 +533,73 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
                         String(snappedPhTarget, 2));
     }
     doc["ph_target"] = snappedPhTarget;
+  }
+
+  // ===========================================================================
+  // feature-090 — TAILLE DU BASSIN : présélection des défauts de régulation
+  // ===========================================================================
+  // INVARIANT ABSOLU : la taille ne sert qu'à appliquer la colonne de défauts
+  // correspondante (regulation_defaults.h) — elle n'entre JAMAIS dans un calcul
+  // de dosage, de débit ou de quota. Changement de taille (valeur valide ET
+  // différente de la courante) → les 8 réglages de tuning reçoivent les défauts
+  // de la NOUVELLE taille, par le MÊME chemin que la restauration 088 :
+  //   - écritures de mqttCfg sous configMutex (déjà pris par ce handler) ;
+  //   - persistance par le saveMqttConfig() de fin de handler (clé pool_size
+  //     incluse) ;
+  //   - retune PID UNIQUEMENT via le hook DIFFÉRÉ applyRegulationSpeed()
+  //     (drapeau atomique consommé par update() dans loopTask — JAMAIS
+  //     d'écriture de coefficients PID depuis la tâche web, invariant v2.26.0 ;
+  //     le hash de contexte de la 088 purge l'intégrale si la vitesse change).
+  // Ce bloc PRÉCÈDE le parse des clés individuelles : des clés de tuning
+  // présentes dans le MÊME POST raffinent donc les défauts qui viennent d'être
+  // appliqués (sémantique de fusion JSON). Valeur inconnue ou taille
+  // inchangée : aucune modification (un vieux client qui n'envoie pas la clé
+  // ne change rien).
+  if (!doc["pool_size"].isNull()) {
+    const String ps = doc["pool_size"].as<String>();
+    if (ps == "small" || ps == "medium" || ps == "large") {
+      const PoolSize newSize = poolSizeFromString(ps.c_str());
+      if (newSize != mqttCfg.poolSize) {
+        const RegulationDefaults& d = regulationDefaultsFor(newSize);
+        // Instantané AVANT + niveau du journal — MÊME format et même patron
+        // que restoreRegulationDefaults (condition 1 du visa pool-chemistry) :
+        // WARNING si la colonne cible AUGMENTE la capacité de dosage (passage
+        // à une taille supérieure : limites 5 → 10 → 15 min/h).
+        const float oldPhTarget   = mqttCfg.phTarget;
+        const float oldOrpTarget  = mqttCfg.orpTarget;
+        const int   oldPhLimit    = mqttCfg.phInjectionLimitMinutes;
+        const int   oldOrpLimit   = mqttCfg.orpInjectionLimitMinutes;
+        const int   oldStabDelay  = mqttCfg.stabilizationDelayMin;
+        const int   oldPhDailyMl  = mqttCfg.phDailyTargetMl;
+        const int   oldOrpDailyMl = mqttCfg.orpDailyTargetMl;
+        char oldSpeed[8];  // "slow"/"normal"/"fast" — copie sans String
+        strlcpy(oldSpeed, mqttCfg.regulationSpeed.c_str(), sizeof(oldSpeed));
+        const char* oldSizeStr = poolSizeToString(mqttCfg.poolSize);
+        const bool raisesDosing =
+            regulationDefaultsRaiseDosing(d, oldOrpTarget, oldPhLimit, oldOrpLimit);
+
+        mqttCfg.poolSize = newSize;
+        applyRegulationDefaults(mqttCfg, newSize);
+        PumpController.applyRegulationSpeed();  // hook DIFFÉRÉ (invariant 088)
+
+        char msg[384];
+        snprintf(msg, sizeof(msg),
+                 "[Config] Taille de bassin %s → %s%s : pH %.2f→%.2f ; "
+                 "ORP %.0f→%.0f mV ; limites pH %d→%d / ORP %d→%d min/h ; "
+                 "stab. %d→%d min ; prog. pH %d→%d / ORP %d→%d mL/j ; vitesse %s→%s",
+                 oldSizeStr, poolSizeToString(newSize),
+                 raisesDosing ? " (dosage AUGMENTÉ)" : "",
+                 (double)oldPhTarget, (double)d.phTarget,
+                 (double)oldOrpTarget, (double)d.orpTarget,
+                 oldPhLimit, d.phInjectionLimitMin,
+                 oldOrpLimit, d.orpInjectionLimitMin,
+                 oldStabDelay, d.stabilizationDelayMin,
+                 oldPhDailyMl, d.phDailyTargetMl,
+                 oldOrpDailyMl, d.orpDailyTargetMl,
+                 oldSpeed, d.regulationSpeed);
+        systemLogger.log(raisesDosing ? LogLevel::WARNING : LogLevel::INFO, msg);
+      }
+    }
   }
 
   // Snapshot pour détecter si la config MQTT a réellement changé (feature-018).
@@ -1332,6 +1439,52 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
     nullptr,
     handleSaveConfig
   );
+
+  // Route /reset-regulation-defaults — PROTÉGÉE (CRITICAL, le niveau de
+  // /save-config : même pouvoir d'écriture sur la config de régulation).
+  // feature-088 : restaure les 8 réglages de TUNING aux valeurs d'usine
+  // (regulation_defaults.h) — depuis la feature-090, celles de la TAILLE DE
+  // BASSIN COURANTE (mqttCfg.poolSize). SANS corps, donc AUCUN parsing JSON : aucune
+  // valeur ne transite par le client, elle ne peut pas diverger de la source.
+  // Ne touche JAMAIS : modes de régulation, ph/orpEnabled, phCorrectionType,
+  // phOffset, trace phAutoManual*, calibration/sélection des pompes,
+  // SafetyLimits (périmètre arbitré par pool-chemistry).
+  server->on("/reset-regulation-defaults", HTTP_POST, [](AsyncWebServerRequest* req) {
+    REQUIRE_AUTH(req, RouteProtection::CRITICAL);
+
+    // Origine journalisée (leçon de l'incident du 25/08 : sans IP, une écriture
+    // de config est indiagnosticable) ; le détail avant → après champ par champ
+    // est journalisé par restoreRegulationDefaults().
+    systemLogger.info("Reset régulation: " + clientIpOf(req));
+    // Revue v2.31.0 : sur timeout du mutex, RIEN n'a été modifié — répondre
+    // une ERREUR franche (503) et NE PAS retuner ni broadcaster. Un
+    // success:true mensonger sur une route CRITICAL de régulation ferait
+    // afficher « restauré » à l'UI pour une restauration jamais appliquée.
+    if (!restoreRegulationDefaults()) {  // écrit sous configMutex + saveMqttConfig()
+      req->send(503, "application/json",
+                "{\"success\":false,\"error\":\"Configuration occupée, réessayez\"}");
+      return;
+    }
+
+    // Retune PID par le MÊME hook DIFFÉRÉ que /save-config (regulation_speed) :
+    // applyRegulationSpeed() ne fait que poser le drapeau atomique
+    // _phTuningChangeRequested, consommé par update() dans loopTask — AUCUNE
+    // écriture de phPID/_phIntegral depuis ce handler (invariant v2.26.0).
+    PumpController.applyRegulationSpeed();
+
+    // Réponse : les valeurs appliquées, depuis la source unique (mêmes clés
+    // que l'objet regulation_defaults de /get-config). feature-090 : la
+    // colonne est celle de la TAILLE COURANTE — contrat JSON inchangé.
+    StaticJson<512> doc;
+    doc["success"] = true;
+    fillRegulationDefaults(doc["regulation_defaults"].to<JsonObject>(), mqttCfg.poolSize);
+    sendJsonResponse(req, doc);
+
+    // Broadcast WS config DIFFÉRÉ à la main loop (patron /save-config) : les
+    // autres clients voient les nouvelles valeurs sans risquer le stack
+    // overflow de _buildConfigJson() en tâche AsyncTCP.
+    wsManager.requestConfigBroadcast();
+  });
 
   // Route reboot - PROTÉGÉE (CRITICAL) - Redémarrage normal
   server->on("/reboot", HTTP_POST, [restartApRequested, restartRequestedTime](AsyncWebServerRequest *req) {

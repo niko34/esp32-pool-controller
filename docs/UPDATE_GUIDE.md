@@ -238,6 +238,24 @@ Depuis la v2.11.0, **toute image téléchargée depuis GitHub est vérifiée par
 
 ## Notes de migration
 
+### Taille du bassin — depuis v2.32.0 (2026-08-31)
+
+**Migration sans effet : rien ne change tant que vous ne touchez pas au nouveau réglage.** Le champ « Taille du bassin » (Paramètres → Régulation, et assistant de premier démarrage) présélectionne les réglages de régulation adaptés au volume. La clé NVS étant absente sur un appareil existant, la taille vaut **« 20 à 60 m³ »** (medium), dont les défauts sont **exactement** les valeurs v2.30.0 — égalité **verrouillée à la compilation** (`static_assert`, [ADR-0057](adr/0057-taille-bassin-preselection-jamais-entree-de-calcul.md)). Aucun réglage existant n'est modifié par la mise à jour seule ; la vitesse de correction (masquée de l'UI, dérivée de la taille) garde sa valeur NVS tant que la taille n'est pas changée.
+
+- **Changer la taille** applique les 8 défauts de la nouvelle taille (récapitulatif avant/après affiché, annulation sans effet).
+- **Bassin > 60 m³** : la colonne promet 15 min/h, mais le **quota journalier d'usine reste 300 mL/j** (protection, inchangé) — soit **≈ 11 min d'injection par jour à 28 mL/min**, atteint bien avant la limite horaire. Si le besoin réel le justifie, **relever « pH — volume max / jour »** (Paramètres → Régulation) ; l'alerte de sous-dimensionnement ([ADR-0056](adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md)) guide.
+
+### Nouvelles valeurs d'usine de régulation — depuis v2.30.0 (2026-08-31)
+
+**Aucun changement pour les appareils existants : la configuration NVS prime toujours.** Un appareil déjà provisionné conserve ses réglages à l'identique après cette mise à jour. Les nouveaux défauts (limite pH **10 min/h**, consigne ORP **600 mV**, consigne pH **7,3**) ne s'appliquent qu'aux appareils **neufs** ou **réinitialisés** (`deploy.sh factory`).
+
+⚠️ **Le visa `pool-chemistry` (GO, 31/08/2026, feature-087) est assorti de DEUX conditions** à vérifier lors d'une première mise en service ou d'une réinitialisation :
+
+1. **Taille minimale de bassin ~20 m³** pour le défaut 10 min/h. Cette limite fixe le **volume de mélange aveugle** — le correcteur injecté pendant les 15 minutes où la mesure ne reflète pas encore les doses passées : ~280 mL/h, soit une excursion possible de **≈ 0,20 pH à 20 m³** mais **≈ 0,40 pH à 10 m³**, contre une marge de sécurité de **0,50**. Sur un bassin de moins de ~20 m³ : depuis la **v2.32.0**, **choisir « Moins de 20 m³ »** dans le sélecteur Taille du bassin (Paramètres → Régulation) avant la mise en route du dosage — la colonne applique 5 min/h et une correction douce (sur un firmware 2.30.x/2.31.x : redescendre la limite horaire d'injection pH à 5 min/h à la main).
+2. **Bassin intérieur sans stabilisant** : le défaut 600 mV vise le cas commun du bassin extérieur stabilisé (CYA 30-50 mg/L, qui déprime l'ORP). Sans stabilisant, **relever la consigne ORP vers 650 mV** — la laisser à 600 sous-chlorerait l'eau.
+
+Pourquoi ces valeurs changent : à 5 min/h le maximum délivrable (~911 mL/j) était **sous le besoin d'un bassin médian** (~1 800 mL/j) — pH bloqué au-dessus de la consigne sans explication ; depuis la v2.29.0, l'alerte de sous-dimensionnement guide un relèvement au-delà de 10 si nécessaire. Une consigne ORP de 650 quasi inatteignable sur bassin stabilisé provoquait un **dosage de chlore permanent silencieux** (mécanisme de l'épisode de 07/2026). Détail complet : [CHANGELOG.md](../CHANGELOG.md) et `specs/features/done/feature-087-valeurs-usine-regulation.md`.
+
 ### L'apprentissage de la régulation pH survit à un redémarrage — depuis v2.27.0 (2026-08-30)
 
 **Aucune migration, aucune action requise.** Pas de changement de partition ni de format de configuration. Deux nouveaux enregistrements NVS apparaissent (instantané de l'intégrale pH, historique de charge sur 7 jours) ; leur **absence est le cas nominal** au premier démarrage et ne produit aucune erreur.

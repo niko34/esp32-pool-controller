@@ -30,6 +30,7 @@ Quand une spec `specs/features/` est terminée et déplacée en `done/`, le fich
 | [ORP](page-orp.md) | `/orp` | Mesure, régulation, historique et calibration ORP (chlore) |
 | [Produits](page-dosages.md) | `/dosages` | Suivi des bidons pH et chlore, alertes stock faible |
 | [Paramètres](page-settings.md) | `/settings` | WiFi, MQTT, heure, sécurité, régulation avancée, système |
+| [Assistant de premier démarrage](page-wizard.md) | `/wizard.html` | Onboarding : mot de passe, Wi-Fi, installation et bassin, heure |
 
 ## Composants transverses
 

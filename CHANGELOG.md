@@ -2,11 +2,115 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.32.0] - 2026-08-31
+
+> ℹ️ **Appareils existants : RIEN ne change tant que la taille n'est pas touchée.** La clé NVS étant absente, la taille vaut « 20 à 60 m³ » dont les défauts sont **exactement** les réglages actuels (v2.30.0) — égalité **verrouillée à la compilation** (`static_assert`). Visa + contre-visa `pool-chemistry` : **GO**, 31/08/2026 (feature-090).
+
+### Fonctionnalités
+
+- **Choisissez la taille de votre bassin, les bons réglages suivent** (feature-090) : nouveau sélecteur « Taille du bassin » en première position de Paramètres → Régulation (« Moins de 20 m³ » / « 20 à 60 m³ » / « Plus de 60 m³ ») — le seul réglage que l'utilisateur connaît vraiment. Changer de taille présélectionne les 8 réglages de régulation adaptés (limites d'injection 5/10/15 min/h, vitesse de correction, délai de stabilisation ; les consignes pH/ORP ne dépendent pas du volume), après un **récapitulatif avant/après** — annulation sans effet, tout reste modifiable ensuite. La taille est aussi demandée dans l'assistant de premier démarrage (étape « Installation et bassin »), sans dialogue : rien à écraser.
+- **La vitesse de correction disparaît de l'écran** : elle dérive désormais de la taille (douce / normale / rapide) et n'est plus visible que dans le récapitulatif de changement de taille. Le réglage reste **intact dans l'API, la NVS et MQTT** (cas experts, rétrocompat) ; face à un ancien firmware, le sélecteur de taille est masqué et la vitesse ré-affichée.
+- **La taille ne sert JAMAIS de base de calcul** ([ADR-0057](docs/adr/0057-taille-bassin-preselection-jamais-entree-de-calcul.md)) : elle présélectionne des réglages, point — le dosage reste piloté par les réglages et l'apprentissage de la consommation réelle (`ph_load7`, feedforward). Principe fondateur : l'appareil doit fonctionner sur n'importe quelle piscine.
+- **Colonnes < 20 et > 60 m³ = extrapolations étiquetées** (visées par `pool-chemistry`, logique d'excursion de mélange aveugle ~constante) ; seule la colonne 20-60 m³ est adossée aux mesures du bassin de référence. **Note honnête sur > 60 m³** : le quota journalier d'usine de 300 mL/j (inchangé, c'est une protection) limite en pratique la capacité promise par 15 min/h (≈ 11 min d'injection/jour à 28 mL/min) — le relever manuellement si besoin, l'alerte de sous-dimensionnement ([ADR-0056](docs/adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md)) guide.
+
+### Firmware
+
+- **`regulation_defaults.h`** : la source unique 088 devient une **table à trois colonnes** (`kRegulationDefaultsBySize`, enum `PoolSize`), avec `static_assert` de bornes chimiques **par colonne**, de **monotonie** (limites et vitesse croissantes avec la taille) et **verrou de migration** (colonne Medium == littéraux v2.30.0 en dur — la retoucher exige un nouveau visa). `applyRegulationDefaults(cfg, size)` et le prédicat de journal `regulationDefaultsRaiseDosing()` sont paramétrés par la colonne cible.
+- **`/save-config`** : nouvelle clé `pool_size` (`"small"`/`"medium"`/`"large"`) — si elle diffère de la taille courante, les 8 réglages reçoivent les défauts de la nouvelle taille par le chemin de la restauration 088 (mutex, NVS, retune PID différé), avec **journal avant → après** (niveau `warning` si la capacité de dosage augmente). Un POST combiné applique la taille **puis** les clés individuelles. Valeur inconnue ou inchangée : aucun effet.
+- **`/get-config`** : nouveaux champs `pool_size` et `regulation_defaults_by_size` (les trois colonnes — l'UI ne code aucune valeur en dur) ; `regulation_defaults` reflète la colonne de la taille **courante** (contrat 088 intact), et le bouton « Restaurer les valeurs par défaut » restaure donc les défauts de la taille sélectionnée. `regulation_speed` inchangé dans l'API. Pas de nouvelle entité HA.
+- **Migration** : clé NVS `pool_size` absente ou illisible ⇒ `medium` — **aucun réglage modifié** par la mise à jour seule.
+- **Empreinte** : +2 784 o de firmware, +1 201 o de filesystem.
+
+### Documentation
+
+- `docs/API.md` : `pool_size` (/get-config + /save-config, journal, POST combiné), `regulation_defaults_by_size`, reset 088 dépendant de la taille.
+- `docs/features/page-settings.md` : sélecteur de taille, dialogue avant/après, masquage de la vitesse, rétrocompat.
+- `docs/features/page-wizard.md` : **nouvelle page** — assistant de premier démarrage (l'étape « Installation et bassin » y est détaillée).
+- `docs/subsystems/pump-controller.md` : table par taille, enum `PoolSize`, verrous compile-time, signatures généralisées.
+- `docs/UPDATE_GUIDE.md` : note de migration v2.32.0 (sans effet) ; la condition « < 20 m³ » de la v2.30.0 devient « choisir “Moins de 20 m³” » ; note quota journalier sur > 60 m³.
+- **Nouvel [ADR-0057](docs/adr/0057-taille-bassin-preselection-jamais-entree-de-calcul.md)** : « Taille du bassin : présélection de réglages, jamais entrée de calcul » (invariant prouvé par grep + mutation, statut des colonnes, verrou de migration, vitesse dérivée masquée ; alternatives écartées : volume en entrée de dosage, suppression du champ vitesse, entité HA, table dupliquée en JS).
+
+### Tests
+
+- `pio run` SUCCESS 0 warning, **1020/1020 tests natifs** verts (suite `test_native_regulation_defaults` étendue : colonnes Small/Large, monotonie, sérialisation `PoolSize`, migration valeur inconnue ⇒ défauts v2.30.0). Validation par mutation : **6/6 mutants tués** (dont les `static_assert` de monotonie et de verrou de migration, prouvés par échec de compilation).
+
+---
+
+## [2.31.0] - 2026-08-31
+
+### Fonctionnalités
+
+- **Un clic pour revenir aux réglages d'usine de la régulation** (feature-088) : nouveau bouton « Restaurer les valeurs par défaut » dans Paramètres → Régulation, sous Sauvegarder. Il remet les 8 réglages de tuning aux valeurs d'usine de la v2.30.0 (recalibrées sur mesures) : consignes pH (7,3) et ORP (600 mV), limites horaires d'injection pH/ORP (10 min/h), délai de stabilisation (5 min), volumes quotidiens du mode programmé (0) et vitesse de correction (normale). Fini la ressaisie champ par champ avec le risque de se tromper de valeur.
+- **Récapitulatif « actuel → usine » avant confirmation** : le dialogue liste les 8 paramètres avec leur valeur actuelle et la valeur d'usine, met **en gras** ceux qui changent réellement, et affiche « Tous les paramètres sont déjà aux valeurs d'usine » avec confirmation **désactivée** si rien ne change. Après confirmation : rechargement complet de la page de réglages + toast de succès. Erreurs gérées : configuration occupée (503 — rien n'a été modifié), session expirée, panne réseau. Le bouton est **masqué** face à un firmware antérieur.
+- **Ce que le bouton ne touche JAMAIS** : la calibration des pompes (une pesée physique, la « restaurer » fausserait la comptabilité de volume), le type de produit acide/base (il décrit le bidon réellement branché), les modes de régulation automatique/programmé/manuel (un état choisi, pas un réglage), l'offset pH (une correction de mesure propre à l'installation) et les limites de sécurité journalières (des garde-fous, pas du tuning). Périmètre arbitré par `pool-chemistry` (visa GO SOUS CONDITIONS, 3 conditions livrées).
+
+### Firmware
+
+- **Nouvelle route `POST /reset-regulation-defaults`** (auth CRITICAL, corps vide — aucune valeur ne transite par le client) : applique les défauts, persiste en NVS, retune le PID par le hook différé existant et pousse la config aux autres clients WebSocket. Sur mutex config occupé : **503 `success:false`**, restauration annulée **en bloc** — jamais d'application partielle (correctif de revue : la première implémentation répondait un faux succès sur ce chemin).
+- **Source unique `src/regulation_defaults.h`** : les valeurs d'usine de tuning n'existent qu'à un seul endroit, partagé entre les défauts de `MqttConfig`, la restauration et l'objet `regulation_defaults` de `/get-config` — au prochain recalibrage, une seule ligne change et rien ne peut diverger. Chaque défaut est verrouillé par `static_assert` dans sa fenêtre de sécurité (un recalibrage hors fenêtre casse la compilation).
+- **Journal avant → après tracé sur l'appareil** : un message compact avec les 8 champs (`x → y`, un champ inchangé se lit `x → x`) — niveau **alerte** (`warning`, mention « dosage AUGMENTÉ ») si la restauration augmente la capacité de dosage (consigne ORP ou limite horaire qui monte), `info` sinon. L'IP d'origine est journalisée.
+- **`/get-config`** : nouvel objet `regulation_defaults` (8 clés, lecture seule) — le frontend ne code aucune valeur d'usine en dur.
+- **Empreinte** : +2 020 o de firmware, +1 378 o de filesystem.
+
+### Documentation
+
+- `docs/API.md` : route `POST /reset-regulation-defaults` (200/401/503, périmètre, invariants) + objet `regulation_defaults` de `/get-config`.
+- `docs/features/page-settings.md` : bouton, dialogue récapitulatif, visibilité conditionnelle, erreurs.
+- `docs/subsystems/pump-controller.md` : nouvelle section « Restauration des valeurs d'usine de régulation » (`restoreRegulationDefaults()`, source unique, verrous compile-time, prédicat de niveau de journal).
+- `docs/subsystems/ws-manager.md` : aucun champ WS nouveau (broadcast config différé réutilisé) ; écart de parité **préexistant** de la trame `config` consigné dans [bug-089](specs/features/todo/bug-089-parite-ws-config-champs-manquants.md).
+- Pas d'ADR : mécanisme local sans alternative structurante, la source unique est documentée dans le code et le périmètre tracé dans la spec + le visa `pool-chemistry`.
+
+### Tests
+
+- `pio run` SUCCESS 0 warning, **1007/1007 tests natifs** verts (nouvelle suite `test_native_regulation_defaults`). Validation par mutation : **4/4 mutants tués**, dont un mutant `static_assert` prouvé par échec de compilation ; la liste des champs copiés est prouvée exhaustive ET exclusive (aucun champ hors périmètre ne bouge).
+
+---
+
+## [2.30.0] - 2026-08-31
+
+> ℹ️ **Aucun changement pour les appareils existants.** Les trois valeurs modifiées sont des **défauts d'usine** : la configuration enregistrée en NVS **prime toujours**. Un appareil déjà provisionné conserve ses réglages à l'identique après cette mise à jour — seuls les appareils **neufs ou réinitialisés** (`deploy.sh factory`, première mise en service) démarrent sur les nouvelles valeurs. Visa `pool-chemistry` : **GO**, 31/08/2026 (feature-087) — deux conditions d'application, voir [UPDATE_GUIDE.md](docs/UPDATE_GUIDE.md#nouvelles-valeurs-dusine-de-régulation--depuis-v2300-2026-08-31).
+
+### Firmware
+
+- **Limite horaire d'injection pH** : défaut **5 → 10 min/h** (`phInjectionLimitMinutes`). Le défaut 5 était **prouvé impuissant** sur un bassin médian : ~911 mL/j délivrables pour un besoin estival de ~1 800 mL/j — des semaines de pH bloqué au-dessus de la consigne sans explication visible, qu'aucune amélioration du correcteur ne pouvait compenser (mesuré le 23/08 : 765-802 mL en saturation permanente). Depuis la v2.29.0, l'alerte de sous-dimensionnement ([ADR-0056](docs/adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md)) guide explicitement un relèvement **au-delà** si le bassin le demande : défaut prudent + guidage explicite plutôt que défaut agressif. ⚠️ Condition du visa : **bassin ≥ ~20 m³** — en dessous, redescendre à 5 min/h (voir guide de mise à jour).
+- **Consigne ORP** : défaut **650 → 600 mV** (`orpTarget`). 650 mV est quasi inatteignable sur un bassin extérieur stabilisé (CYA 30-50 mg/L déprime l'ORP) : une consigne inatteignable = **dosage de chlore permanent silencieux**, borné par les seules limites volumétriques — le mécanisme exact de l'épisode de surconsommation de 07/2026. 600 mV est tenable et relevable ; bassin **intérieur non stabilisé** : relever la consigne vers 650.
+- **Consigne pH** : défaut **7,2 → 7,3** (`phTarget`). Centre de la plage autorisée [7,20 ; 7,50] : à pH plus bas l'acide surconsomme sans bénéfice net, à pH plus haut c'est le chlore qui surconsomme (fraction HOCl plus faible à ORP égale). Valeur éprouvée sur le bassin de référence.
+- **Repli du filet de vraisemblance conservé à 2,17 mL/min** (`kPhLoadSustainableFallbackMlPerMin`) : arbitrage du visa — la valeur était historiquement dérivée de l'ancien défaut (5/60 × 26), elle devient un **plancher prudent délibéré**. Un repli sert quand la configuration est indisponible ou aberrante : il doit être fail-closed (filtre de vraisemblance plus strict, jours écartés, pas de restauration) — l'aligner sur le nouveau défaut (4,67) l'affaiblirait. Seul le commentaire de `constants.h` change ; aucun comportement.
+
+### Documentation
+
+- `docs/UPDATE_GUIDE.md` : note de migration v2.30.0 avec les **deux conditions du visa** (taille minimale de bassin ~20 m³ pour le défaut 10 min/h ; consigne ORP à relever vers 650 sur bassin intérieur non stabilisé).
+- `docs/subsystems/pump-controller.md` : la mention « 5 min/h (défaut) » du tableau volume-aveugle est datée (défaut d'usine ≤ v2.29.x), ligne 10 min/h ajoutée.
+- Pas d'ADR : valeurs paramétrables sans contrainte structurelle, l'arbitrage vit dans la spec et le visa ; le principe « seuil fonction de la config » est déjà couvert par l'[ADR-0054](docs/adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md).
+
+### Tests
+
+- Aucune suite nouvelle (changement de valeurs d'usine uniquement) : `pio run` SUCCESS 0 warning, **994/994 tests natifs** verts, `static_assert` des plages de consigne vérifiés à la compilation (7,3 ∈ [7,20 ; 7,50]).
+
+---
+
 ## [2.29.0] - 2026-08-30
 
-> ✅ **Vous pouvez enfin voir POURQUOI le pH ne descend pas.** Le constat des versions précédentes reste entier : avec la limite horaire d'injection à **5 min/h**, le débit moyen que la pompe peut délivrer plafonne à **~2,17 mL/min**, soit **~911 mL/jour** sur la filtration programmée — sous le besoin du bassin (**~1 800 mL/jour**). Jusqu'ici, cette conséquence n'était calculée nulle part et affichée nulle part : l'utilisateur constatait un pH qui ne descend pas sans disposer de l'élément qui l'explique. Cette version l'affiche noir sur blanc sur la page pH.
+> 🔎 **RECTIFICATIF (30/08, soir — première lecture des nouveaux indicateurs).**
+> Le paragraphe ci-dessous, écrit avant le déploiement, raisonne sur la limite
+> horaire **d'usine** (5 min/h). Or la config **réelle** de l'appareil vaut
+> **25 min/h** — relevée par l'utilisateur entre le 24 et le 30/08 (le 23/08,
+> les 765-802 mL délivrés en saturation prouvent la limite encore à 5 ; le
+> 30/08, les 1 052 mL délivrés prouvent 25). À 25 min/h le maximum délivrable
+> vaut **~8 450 mL/j** : l'installation n'est **plus** limitée par l'actionneur,
+> et le pH a atteint 7,298 (consigne 7,30) sous filtration active le 30/08 à
+> 17h31. Les analyses des v2.27.0-2.29.0 (ADR-0053, feature-086) restaient
+> justes **pour une limite à 5 min/h** — leur erreur est d'avoir lu la valeur
+> d'usine de `constants.h` au lieu de la config vivante de l'appareil. C'est
+> précisément la visibilité apportée par cette version qui a révélé l'écart.
+> Le point 3 de la feature-086 (relever la limite) est donc **sans objet** ;
+> l'avertissement sur le volume de mélange aveugle s'applique en revanche dès
+> maintenant (~650 mL/h possibles à 25 min/h ≈ 0,23 pH à 40 m³ — sous la marge
+> de 0,50, protections 2.27.0/2.28.0 déployées, observation terrain en cours).
 >
-> ℹ️ **Ces indicateurs sont en lecture seule** : aucun comportement de dosage ne change dans cette version. Le **relèvement de la limite horaire** (le seul remède réel avec l'allongement de la filtration) est **volontairement différé** après l'observation terrain — jalons : 3 journées exploitables dans l'anneau de charge (~2-3/09), 72 h de feedforward (~5-6/09), et une restauration vérifiée ([feature-086](specs/features/doing/feature-086-limite-actionneur-dosage-ph.md), point 3).
+> ✅ **Vous pouvez enfin voir POURQUOI le pH ne descend pas** — quand c'est le cas. Avec une limite horaire d'injection à **5 min/h** (valeur d'usine), le débit moyen que la pompe peut délivrer plafonne à **~2,17 mL/min**, soit **~911 mL/jour** sur la filtration programmée — sous le besoin du bassin (**~1 800 mL/jour**). Jusqu'ici, cette conséquence n'était calculée nulle part et affichée nulle part. Cette version l'affiche noir sur blanc sur la page pH, calculée sur la **configuration réelle**.
+>
+> ℹ️ **Ces indicateurs sont en lecture seule** : aucun comportement de dosage ne change dans cette version. Le **relèvement de la limite horaire** (le seul remède réel avec l'allongement de la filtration) était **volontairement différé** après l'observation terrain — jalons : 3 journées exploitables dans l'anneau de charge (~2-3/09), 72 h de feedforward (~5-6/09), et une restauration vérifiée ([feature-086](specs/features/doing/feature-086-limite-actionneur-dosage-ph.md), point 3). Cf. rectificatif : ce relèvement avait en réalité déjà été fait par l'utilisateur.
 
 ### Firmware
 

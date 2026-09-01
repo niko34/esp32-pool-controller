@@ -252,11 +252,16 @@
   // Retourne Promise<boolean> : true si confirmé, false sinon (Annuler / Escape / backdrop).
   let _confirmDialogState = null; // { resolve, confirmed } quand la modale est ouverte
 
-  function confirmDialog({ title, message, confirmLabel = 'Confirmer', cancelLabel = 'Annuler', danger = false } = {}) {
+  // feature-088 : options ajoutées — messageNode (contenu DOM construit via
+  // createElement, JAMAIS innerHTML) pour les récapitulatifs riches (gras sur
+  // les lignes qui changent) et confirmDisabled (bouton Confirmer inactif,
+  // ex. « rien à restaurer »). `message` reste requis : c'est le fallback texte.
+  function confirmDialog({ title, message, messageNode = null, confirmLabel = 'Confirmer', cancelLabel = 'Annuler', danger = false, confirmDisabled = false } = {}) {
     const modal = $("#confirm-modal");
     if (!modal || typeof modal.showModal !== 'function') {
       // Fallback navigateur sans <dialog> : on ne supprime JAMAIS une confirmation
       // de sécurité → window.confirm() natif.
+      if (confirmDisabled) { window.alert(message); return Promise.resolve(false); }
       return Promise.resolve(window.confirm(message));
     }
     // Réentrance : une confirmation est déjà ouverte → refus immédiat
@@ -271,10 +276,15 @@
       const cancelBtn = $("#confirm-modal-cancel");
       if (titleEl) titleEl.textContent = title || 'Confirmation';
       // textContent uniquement (jamais innerHTML) — les \n\n sont rendus via
-      // white-space: pre-line (CSS .confirm-modal__message)
-      if (messageEl) messageEl.textContent = message || '';
+      // white-space: pre-line (CSS .confirm-modal__message). messageNode :
+      // arbre DOM déjà construit (textContent interne), substitué au texte.
+      if (messageEl) {
+        messageEl.textContent = message || '';
+        if (messageNode) { messageEl.textContent = ''; messageEl.appendChild(messageNode); }
+      }
       if (okBtn) {
         okBtn.textContent = confirmLabel;
+        okBtn.disabled = !!confirmDisabled;
         okBtn.classList.toggle('btn--danger', danger);
         okBtn.classList.toggle('btn--primary', !danger);
       }
@@ -314,6 +324,217 @@
       _confirmDialogState = null;
       if (state) state.resolve(!!state.confirmed);
     });
+  }
+
+  // ---------- feature-088 : restauration des valeurs d'usine de régulation ----------
+  // Les VALEURS D'USINE ne sont JAMAIS codées ici : elles viennent exclusivement
+  // de l'objet regulation_defaults servi par /get-config (source unique
+  // firmware). Ce module ne porte que les libellés/unités d'affichage.
+  const kRegulationResetFields = [
+    { key: "ph_target",               label: "Consigne pH",                          fmt: (v) => `${Math.round(Number(v) * 100) / 100} pH` },
+    { key: "orp_target",              label: "Consigne ORP",                         fmt: (v) => `${Math.round(Number(v))} mV` },
+    { key: "ph_limit_minutes",        label: "pH — durée max d'injection",           fmt: (v) => `${v} min/h` },
+    { key: "orp_limit_minutes",       label: "ORP — durée max d'injection",          fmt: (v) => `${v} min/h` },
+    { key: "stabilization_delay_min", label: "Délai avant injection au démarrage",   fmt: (v) => `${v} min` },
+    { key: "ph_daily_target_ml",      label: "Volume quotidien pH (mode programmé)", fmt: (v) => `${v} mL/j` },
+    { key: "orp_daily_target_ml",     label: "Volume quotidien ORP (mode programmé)",fmt: (v) => `${v} mL/j` },
+    { key: "regulation_speed",        label: "Vitesse de correction",                fmt: (v) => ({ slow: "Lente", normal: "Normale", fast: "Rapide" }[v] || String(v)) },
+  ];
+
+  // Cache des valeurs d'usine : la trame WS "config" remplace window._config
+  // sans porter regulation_defaults (parité partielle) — le cache évite que le
+  // bouton clignote et que le dialogue perde ses valeurs de référence.
+  let _regulationDefaults = null;
+
+  function _regValueChanged(key, cur, def) {
+    // Valeur courante inconnue → considérée comme modifiée (la restauration l'écrira)
+    if (cur == null || def == null) return def != null;
+    if (key === "regulation_speed") return String(cur) !== String(def);
+    const c = Number(cur), d = Number(def);
+    if (!isFinite(c) || !isFinite(d)) return true;
+    return Math.abs(c - d) > 0.005; // tolérance flottants (pH à 2 décimales)
+  }
+
+  // Construit le récapitulatif avant/après : { node (DOM), text (fallback), changes }
+  function _buildRegulationResetSummary(cfg, defs) {
+    const node = document.createElement("div");
+    const lines = [];
+    let changes = 0;
+    kRegulationResetFields.forEach((f) => {
+      const cur = cfg[f.key];
+      const def = defs[f.key];
+      const changed = _regValueChanged(f.key, cur, def);
+      if (changed) changes++;
+      const curStr = cur == null ? "—" : f.fmt(cur);
+      const defStr = def == null ? "—" : f.fmt(def);
+      const row = document.createElement("div");
+      row.textContent = `${f.label} : ${curStr} → ${defStr}`;
+      // Mise en évidence discrète des lignes qui changent réellement
+      if (changed) row.style.fontWeight = "600";
+      else row.classList.add("muted");
+      node.appendChild(row);
+      lines.push(row.textContent);
+    });
+    const foot = document.createElement("div");
+    foot.style.marginTop = "10px";
+    foot.textContent = changes === 0
+      ? "Tous les paramètres sont déjà aux valeurs d'usine."
+      : `${changes} paramètre${changes > 1 ? "s" : ""} ${changes > 1 ? "seront modifiés" : "sera modifié"} (en gras). Les calibrations, modes et limites de sécurité ne sont pas touchés.`;
+    node.appendChild(foot);
+    lines.push("", foot.textContent);
+    return { node, text: lines.join("\n"), changes };
+  }
+
+  async function _onRegulationResetClick() {
+    const btn = $("#regulation_reset_btn");
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    try {
+      // Valeurs courantes FRAÎCHES : window._config peut avoir été remplacé par
+      // une trame WS partielle (sans stabilization_delay_min/regulation_speed).
+      try { await loadConfig(); }
+      catch (e) { showToast("Impossible de lire la configuration — réessayez", "error"); return; }
+      const cfg = window._config || {};
+      const defs = cfg.regulation_defaults;
+      if (!defs) { showToast("Fonction indisponible sur ce firmware", "error"); return; }
+
+      const { node, text, changes } = _buildRegulationResetSummary(cfg, defs);
+      const ok = await confirmDialog({
+        title: "Restaurer les valeurs par défaut",
+        message: text,
+        messageNode: node,
+        confirmLabel: "Restaurer",
+        confirmDisabled: changes === 0,
+      });
+      if (!ok) return;
+
+      let res;
+      try {
+        res = await authFetch("/reset-regulation-defaults", { method: "POST" });
+      } catch (e) {
+        if (e && e.message === "Authentication required") {
+          showToast("Session expirée — reconnectez-vous", "error"); // redirection login déjà déclenchée
+        } else {
+          showToast("Erreur réseau — réessayez", "error");
+        }
+        return;
+      }
+      if (!res.ok) { showToast(`Erreur serveur (${res.status}) — réessayez`, "error"); return; }
+
+      // Restauration appliquée côté firmware : recharger la config pour
+      // rafraîchir TOUS les champs de la page (aucun état à moitié appliqué).
+      try {
+        await loadConfig();
+        showToast("Valeurs d'usine restaurées", "success");
+      } catch (e) {
+        showToast("Valeurs d'usine restaurées — rechargez la page pour actualiser l'affichage", "success");
+      }
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  // Appelé par loadConfig() : met en cache les valeurs d'usine si présentes,
+  // les réinjecte dans une config partielle (trame WS), et pilote la
+  // visibilité du bouton (masqué face à un firmware antérieur à 2.31.0).
+  function syncRegulationDefaults(cfg) {
+    if (cfg.regulation_defaults) _regulationDefaults = cfg.regulation_defaults;
+    else if (_regulationDefaults) cfg.regulation_defaults = _regulationDefaults;
+    const block = $("#regulation_reset_block");
+    if (block) block.hidden = !cfg.regulation_defaults;
+  }
+
+  // ---------- feature-090 : taille du bassin → présélection des défauts ----------
+  // La taille ne fait que PRÉSÉLECTIONNER des réglages : c'est le firmware qui
+  // applique les défauts de la nouvelle taille sur POST {pool_size}. L'UI
+  // n'envoie JAMAIS les 8 paramètres elle-même.
+  // Caches : la trame WS "config" remplace window._config sans porter
+  // pool_size/regulation_defaults_by_size/regulation_speed (parité partielle,
+  // même mécanique que _regulationDefaults ci-dessus).
+  let _poolSizeCache = null;
+  let _regulationDefaultsBySizeCache = null;
+  let _regulationSpeedCache = null;
+
+  // Appelé par loadConfig() AVANT setSegmented("regulation_speed", ...) :
+  // réinjecte les champs absents d'une config partielle, synchronise le
+  // sélecteur et pilote la visibilité (B4 — rétrocompat ancien firmware :
+  // pool_size absent ⇒ sélecteur masqué ET vitesse ré-affichée).
+  function syncPoolSize(cfg) {
+    if (typeof cfg.pool_size === "string" && cfg.pool_size) _poolSizeCache = cfg.pool_size;
+    else if (_poolSizeCache) cfg.pool_size = _poolSizeCache;
+    if (cfg.regulation_defaults_by_size) _regulationDefaultsBySizeCache = cfg.regulation_defaults_by_size;
+    else if (_regulationDefaultsBySizeCache) cfg.regulation_defaults_by_size = _regulationDefaultsBySizeCache;
+    if (typeof cfg.regulation_speed === "string" && cfg.regulation_speed) _regulationSpeedCache = cfg.regulation_speed;
+    else if (_regulationSpeedCache) cfg.regulation_speed = _regulationSpeedCache;
+
+    const supported = typeof cfg.pool_size === "string" && !!cfg.pool_size;
+    const sizeBlock = $("#pool_size_block");
+    if (sizeBlock) sizeBlock.hidden = !supported;
+    // B2 : la vitesse de correction disparaît de l'UI quand la taille pilote
+    // les défauts — le réglage reste dans l'API, la NVS et MQTT.
+    const speedBlock = $("#regulation_speed_block");
+    if (speedBlock) speedBlock.hidden = supported;
+    // Pendant le dialogue de changement, ne pas écraser la surbrillance
+    // optimiste de la taille CIBLE (loadConfig frais + trames WS périodiques).
+    if (supported && !_poolSizeDialogBusy) setSegmented("pool_size", cfg.pool_size);
+  }
+
+  let _poolSizeDialogBusy = false;
+
+  async function _onPoolSizeClick(target) {
+    if (_poolSizeDialogBusy) return;
+    _poolSizeDialogBusy = true;
+    const previous = window._config?.pool_size || _poolSizeCache || "medium";
+    try {
+      if (target === previous) { setSegmented("pool_size", previous); return; }
+      // Valeurs courantes FRAÎCHES (même précaution que le reset 088) : la
+      // colonne de gauche du dialogue doit refléter l'état réel du contrôleur.
+      try { await loadConfig(); }
+      catch (e) { showToast("Impossible de lire la configuration — réessayez", "error"); setSegmented("pool_size", previous); return; }
+      const cfg = window._config || {};
+      const defs = cfg.regulation_defaults_by_size?.[target];
+      if (!defs) { showToast("Fonction indisponible sur ce firmware", "error"); setSegmented("pool_size", previous); return; }
+      // La taille a pu changer ailleurs (autre onglet) pendant le rechargement.
+      if (target === (cfg.pool_size || previous)) { setSegmented("pool_size", target); return; }
+      setSegmented("pool_size", target);  // maintien de la surbrillance cible
+
+      // Dialogue avant/après (mécanisme 088) : les 8 paramètres, dont la
+      // vitesse de correction — elle change avec la taille et n'est plus
+      // visible ailleurs, l'utilisateur DOIT le voir ici.
+      const { node } = _buildRegulationResetSummary(cfg, defs);
+      const labels = { small: "moins de 20 m³", medium: "20 à 60 m³", large: "plus de 60 m³" };
+      const head = document.createElement("div");
+      head.style.marginBottom = "10px";
+      head.textContent = `Bassin de ${labels[target] || target} : les réglages de régulation seront remplacés par les valeurs recommandées pour cette taille.`;
+      node.insertBefore(head, node.firstChild);
+      const ok = await confirmDialog({
+        title: "Changer la taille du bassin",
+        message: "",
+        messageNode: node,
+        confirmLabel: "Appliquer",
+      });
+      if (!ok) { setSegmented("pool_size", previous); return; }
+
+      // pool_size SEUL : le firmware applique les défauts, journalise et retune.
+      const r = await sendConfigDetailed({ pool_size: target });
+      if (!r.ok) {
+        setSegmented("pool_size", previous);
+        showToast(r.message || r.error || "Erreur lors de la sauvegarde", "error");
+        return;
+      }
+      try {
+        await loadConfig();
+        // syncPoolSize ne touche pas au sélecteur tant que le flux est actif
+        // (_poolSizeDialogBusy) : alignement explicite sur l'état serveur.
+        setSegmented("pool_size", window._config?.pool_size || target);
+        showToast("Taille du bassin enregistrée — réglages recommandés appliqués", "success");
+      } catch (e) {
+        setSegmented("pool_size", target);
+        showToast("Taille enregistrée — rechargez la page pour actualiser l'affichage", "success");
+      }
+    } finally {
+      _poolSizeDialogBusy = false;
+    }
   }
 
   // ---------- Auth Helper ----------
@@ -2443,7 +2664,14 @@
     if ($("#stabilization_delay_min") && cfg.stabilization_delay_min != null) {
       $("#stabilization_delay_min").value = cfg.stabilization_delay_min;
     }
+    // feature-090 : réinjection des champs absents d'une config partielle
+    // (pool_size, regulation_defaults_by_size, regulation_speed) + sélecteur de
+    // taille + visibilité taille/vitesse — AVANT le setSegmented de la vitesse,
+    // pour que celui-ci lise la valeur réinjectée et jamais le défaut "normal".
+    syncPoolSize(cfg);
     setSegmented("regulation_speed", cfg.regulation_speed || "normal");
+    // feature-088 : cache des valeurs d'usine + visibilité du bouton de restauration
+    syncRegulationDefaults(cfg);
     $("#ph_correction_type").value = cfg.ph_correction_type || "ph_minus";
 
     // pH/ORP calibration info — Atlas EZO : basé sur phCalPoints / orpCalPoints (WS sensor_data)
@@ -8653,10 +8881,25 @@
     $("#ph_target")?.addEventListener("input", renderPhTargetHint);
     // Onglet Régulation : initialisation segmented + save dédié
     initSegmented("regulation_speed");
+    // feature-090 : sélecteur de taille du bassin (dialogue avant/après 088).
+    // initSegmented rend le clic optimiste ; _onPoolSizeClick confirme ou revert.
+    initSegmented("pool_size");
+    $$(`#pool_size .segmented__btn`).forEach(btn => {
+      btn.addEventListener("click", () => { _onPoolSizeClick(btn.dataset.value); });
+    });
     $("#regulation_save_btn")?.addEventListener("click", async () => {
       // feature-056 : regulation_mode retiré (remplacé par le mode d'installation).
       const delay = parseInt($("#stabilization_delay_min")?.value ?? "5", 10);
-      const speed = getSegmented("regulation_speed") || "normal";
+      // feature-090 (B2) : quand la taille du bassin pilote les défauts, le
+      // segmented vitesse est MASQUÉ — on réémet alors la valeur COURANTE du
+      // contrôleur (window._config, complétée par le cache anti-trame-WS-
+      // partielle de syncPoolSize), jamais un défaut ni un segmented invisible.
+      // Face à un ancien firmware (pool_size absent), le segmented est visible
+      // et reste la source du choix utilisateur en attente.
+      const speedHidden = !!(window._config && window._config.pool_size);
+      const speed = speedHidden
+        ? (window._config.regulation_speed || getSegmented("regulation_speed") || "normal")
+        : (getSegmented("regulation_speed") || "normal");
       const phLimit = parseInt($("#ph_limit")?.value ?? "5", 10);
       const phDaily = parseFloat($("#ph_daily_limit")?.value ?? "300");
       const orpLimit = parseInt($("#orp_limit")?.value ?? "10", 10);
@@ -8675,6 +8918,8 @@
       if (ok) { showToast("Enregistré", "success"); loadConfig(); }
       else showToast("Erreur lors de la sauvegarde", "error");
     });
+    // feature-088 : restauration des valeurs d'usine de régulation
+    $("#regulation_reset_btn")?.addEventListener("click", _onRegulationResetClick);
 
     // Temperature feature
     $("#temperature_enabled")?.addEventListener("change", () => {

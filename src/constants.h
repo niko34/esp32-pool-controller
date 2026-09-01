@@ -1197,12 +1197,17 @@ constexpr uint32_t kPhLoadMinuteMaxTickDtMs = 60000UL;  // 60 s
 // longue circulation reste CONSERVÉE — elle tire la médiane vers le bas, donc le
 // plafond de restauration aussi, c'est-à-dire du bon côté.
 //
-// VALEUR DE REPLI, et rien d'autre : 5/60 × 26 mL/min, c'est-à-dire les réglages
-// PAR DÉFAUT de l'installation de référence. Employée uniquement quand le débit
-// soutenable n'est pas calculable — pompe non caractérisée (`pulseFlow` nul au
-// sortir d'usine), configuration non encore chargée, valeur non finie. Ne JAMAIS
-// s'en servir comme seuil nominal.
-constexpr float kPhLoadSustainableFallbackMlPerMin = 2.17f;  // repli 5/60 × 26
+// VALEUR DE REPLI, et rien d'autre — et un PLANCHER PRUDENT DÉLIBÉRÉ, PAS une
+// dérivation du défaut d'usine courant. Historiquement 5/60 × 26 mL/min (les
+// défauts d'avant la v2.30.0) ; le défaut est passé à 10 min/h (feature-087)
+// et cette valeur reste VOLONTAIREMENT à 2,17 : un repli sert quand la config
+// est indisponible ou aberrante, il doit être fail-closed (filtre de
+// vraisemblance PLUS strict, jours écartés, pas de restauration) — l'aligner
+// sur l'usine (4,67) l'affaiblirait. Visa pool-chemistry du 31/08/2026.
+// Employée uniquement quand le débit soutenable n'est pas calculable — pompe
+// non caractérisée, configuration non chargée, valeur non finie. Ne JAMAIS
+// s'en servir comme seuil nominal, ne JAMAIS l'« aligner » sur les défauts.
+constexpr float kPhLoadSustainableFallbackMlPerMin = 2.17f;  // plancher délibéré
 constexpr float kPhLoadDayMaxRateFactor    = 1.10f;   // tolérance d'arrondi
 static_assert(kPhLoadSustainableFallbackMlPerMin > 0.0f &&
                   kPhLoadSustainableFallbackMlPerMin < kPhIntegralAuthorityMlPerMin,

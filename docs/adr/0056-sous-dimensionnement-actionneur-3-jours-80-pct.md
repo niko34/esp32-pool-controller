@@ -17,6 +17,22 @@ sans persister de nouvel état, sans toucher au schéma de l'anneau `ph_load7`
 (v2.27.0), et sans qu'une alerte légitime devienne un cri au loup qui persiste
 après le remède.
 
+> **Rectificatif (30/08, soir)** — la première lecture des indicateurs livrés
+> par cette feature a révélé que le « 5 min/h » ci-dessus est la valeur
+> **d'usine** (`config.h`), pas la config réelle : l'utilisateur avait relevé
+> la limite à **25 min/h** entre le 24 et le 30/08. Le bassin de référence
+> n'est donc **plus** limité par l'actionneur (~8 450 mL/j délivrables).
+> **La décision de cet ADR reste valable telle quelle** : le critère est
+> relatif au soutenable *configuré* (jamais une constante, ADR-0054), et la
+> justification de la marge 80 % repose sur une **mesure datée** faite quand
+> la limite valait réellement 5 min/h (incident du 23/08, voir plus bas) —
+> le ratio délivré réel / max théorique (84-88 %) est un rapport de
+> mécanique de dosage (pauses de mélange, plafonds de session), indépendant
+> de la valeur de la limite. Leçon de méthode : **toute analyse doit lire la
+> configuration vivante de l'appareil, jamais les valeurs d'usine des
+> sources** — c'est la visibilité livrée par cette feature qui a exposé
+> l'écart.
+
 Trois questions à trancher : **combien** de journées consécutives, **à quel
 seuil** de remplissage compter une journée « saturée », et **comment l'alerte se
 réarme** quand l'utilisateur agit (relève la limite, change de produit).

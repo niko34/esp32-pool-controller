@@ -1773,9 +1773,9 @@ float PumpControllerClass::tickPhFeedforward(unsigned long now, float signedErro
     _ffCorrectionKind = kind;
     _ffProductChangeHold = true;
     _ffProductHoldFreshDay = true;  // la 1re clôture archivera une journée MIXTE
-    systemLogger.info("Feedforward pH retenu : changement de produit — dose de "
-                      "base suspendue jusqu'à une journée entière archivée sous "
-                      "le nouveau régime");
+    systemLogger.info("Feedforward pH retenu : changement de TYPE de produit "
+                      "(pH- <-> pH+) — dose de base suspendue jusqu'à une journée "
+                      "entière archivée sous le nouveau régime");
   }
 
   // Porte de validité de la MESURE, évaluée ici (caches capteur, aucun I²C) :

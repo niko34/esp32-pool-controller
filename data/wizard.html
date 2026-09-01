@@ -859,9 +859,9 @@
         </div>
       </div>
 
-      <!-- Step 3: Installation (feature-056) -->
+      <!-- Step 3: Installation et bassin (feature-056 / feature-090) -->
       <div class="step-content" data-step="3">
-        <div class="step-title">Type d'installation</div>
+        <div class="step-title">Installation et bassin</div>
         <div class="step-description">
           Indiquez comment le PoolController est raccordé à la filtration. Ce réglage garantit
           qu'aucun produit n'est injecté sans circulation d'eau.
@@ -890,6 +890,36 @@
               <span class="install-card-title">Filtration externe signalée</span>
               <span class="install-card-desc"><strong>Câblage :</strong> alimentation permanente, filtration pilotée par un tiers qui signale son état.</span>
               <span class="install-card-desc"><strong>Dosage :</strong> autorisé seulement si le signal est ON et récent.</span>
+            </span>
+          </label>
+        </div>
+
+        <!-- feature-090 : taille du bassin → présélection des défauts de régulation -->
+        <div class="step-description" style="margin-top: 20px;">
+          Indiquez la taille de votre bassin : elle présélectionne les réglages de régulation
+          recommandés (limites d'injection, vitesse de correction, délai de stabilisation).
+          Tous restent modifiables ensuite.
+        </div>
+        <div class="field" role="radiogroup" aria-label="Taille du bassin">
+          <label class="install-card">
+            <input type="radio" name="pool_size" value="small">
+            <span class="install-card-body">
+              <span class="install-card-title">Moins de 20 m³</span>
+              <span class="install-card-desc">Petit bassin ou spa — corrections douces.</span>
+            </span>
+          </label>
+          <label class="install-card">
+            <input type="radio" name="pool_size" value="medium" checked>
+            <span class="install-card-body">
+              <span class="install-card-title">20 à 60 m³</span>
+              <span class="install-card-desc">Piscine familiale courante (réglages recommandés).</span>
+            </span>
+          </label>
+          <label class="install-card">
+            <input type="radio" name="pool_size" value="large">
+            <span class="install-card-body">
+              <span class="install-card-title">Plus de 60 m³</span>
+              <span class="install-card-desc">Grand bassin — mélange plus lent, corrections plus soutenues.</span>
             </span>
           </label>
         </div>
@@ -1238,14 +1268,20 @@
 
     // feature-056 : type d'installation (managed/powered/external). Persiste via
     // /save-config → propagé au firmware (et à l'écran LVGL via set_config UART).
+    // feature-090 : + taille du bassin (small/medium/large) — le firmware applique
+    // les défauts de régulation de la taille choisie. Pas de dialogue avant/après
+    // au premier démarrage : il n'y a rien à écraser. Un ancien firmware ignore
+    // simplement la clé pool_size.
     async function saveStepInstall() {
       const sel = document.querySelector('input[name="install_mode"]:checked');
       const mode = sel ? sel.value : 'managed';
+      const sizeSel = document.querySelector('input[name="pool_size"]:checked');
+      const poolSize = sizeSel ? sizeSel.value : 'medium';
       try {
         const response = await authFetch('/save-config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ install_mode: mode })
+          body: JSON.stringify({ install_mode: mode, pool_size: poolSize })
         });
         if (!response.ok) {
           throw new Error("Erreur lors de la sauvegarde du mode d'installation");

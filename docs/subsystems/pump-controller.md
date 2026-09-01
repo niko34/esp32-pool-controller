@@ -236,6 +236,8 @@ Lecture seule **STRICTE** de l'utilisabilité de la pompe ([`pump_controller.h`]
 
 ## Algorithme (résumé)
 
+> 🧭 **Vue d'ensemble narrative** de la chaîne complète (pH ET ORP, de la mesure à l'observabilité, avec les ADR) : [regulation-vue-d-ensemble.md](regulation-vue-d-ensemble.md) — commencer là avant de plonger dans les sections détaillées de ce fichier.
+
 0. **Gardes de sécurité pH** (feature-067, refondues en v2.25.0) — évaluées **avant** `canDose()` : refus de dosage pH et inhibition ORP, sur le pH **corrigé** pour les seuils chimiques et sur le pH **brut** pour les deux butées de dernier recours. Voir [Gardes de sécurité pH](#gardes-de-sécurité-ph-refonte-v2250).
 1. **Gate `canDose(int pumpIndex)`** — fail-closed strict (feature-021, validé pool-chemistry). Voir [Garde-fous `canDose`](#garde-fous-candose) ci-dessous pour la liste complète des 10 conditions évaluées dans l'ordre.
 2. **Calcul de l'erreur** ([`pump_controller.cpp:432`](../../src/pump_controller.cpp:432)) — deux modes exclusifs sélectionnés via `mqttCfg.phCorrectionType` :
@@ -955,7 +957,8 @@ Deux corollaires :
 
 | Limite horaire | Volume injecté pendant les 15 min de retard | Excursion pH correspondante |
 |---|---:|---:|
-| **5 min/h** (défaut) | 130 mL | **0,046** |
+| **5 min/h** (défaut d'usine ≤ v2.29.x) | 130 mL | **0,046** |
+| **10 min/h** (défaut d'usine depuis v2.30.0, feature-087 — visa conditionné à un bassin ≥ ~20 m³) | 260 mL | **0,092** |
 | 30 min/h | 780 mL | **0,28** |
 
 à comparer à `kPhSafetyMargin` = **0,50**. À 30 min/h, un seul temps mort consomme **56 %** de la garde de sécurité. **Ce réglage ne doit pas être relevé sans en tenir compte.**
@@ -1255,7 +1258,7 @@ Publiés en **parité stricte** sur `/data`, le WebSocket et MQTT (`ph_ff_ml_per
 |---|---|---|
 | `Dosage pH : dose de base apprise X.XX mL/min (charge observée X.XX mL/min sur N jour(s), plafond X.XX)` | `info` | Premier tick **actif** de chaque session (anti-spam `_ffAnnounced`) |
 | `Feedforward pH retenu (pH franchement au-delà de la consigne depuis plus de 30 min \| mesure pH invalide \| réglages de régulation modifiés) — dose de base suspendue jusqu'à la prochaine session` | `info` | Pose du latch (par transition, jamais par tour) |
-| `Feedforward pH retenu : changement de produit — dose de base suspendue jusqu'à une journée entière archivée sous le nouveau régime` | `info` | Tenue produit |
+| `Feedforward pH retenu : changement de TYPE de produit (pH- <-> pH+) — dose de base suspendue jusqu'à une journée entière archivée sous le nouveau régime` | `info` | Tenue produit (le TYPE déclaré dans les réglages — un simple changement de bidon n'a aucun effet sur l'apprentissage) |
 | `Feedforward pH réarmé (ouverture de session)` | `info` | Réarmement au front de session |
 
 ### Testabilité
@@ -1854,6 +1857,45 @@ La route `POST /boost/start` expose en parallèle ces deux états dans sa répon
 ### Testabilité native
 
 `effectiveOrpTargetPure` / `effectiveMaxChlorinePure` (bornage + gate mode) sont couvertes par la suite Unity native (**+14 tests boost**, 199 tests au total) : plafonds, non-abaissement, gate `automatic` vs Manuel/Programmé, arithmétique du delta et du facteur. Voir [BUILD.md](../BUILD.md) pour `pio test -e native`.
+
+## Restauration des valeurs d'usine de régulation (feature-088, v2.31.0)
+
+> ℹ️ Le code vit dans le sous-système **config** (`restoreRegulationDefaults()`, [`config.cpp`](../../src/config.cpp) ; déclaration [`config.h`](../../src/config.h)) — documenté ici parce que son objet est **exclusivement** le tuning de la régulation pH/ORP et que le périmètre a été arbitré par `pool-chemistry`.
+
+Déclenchée par [`POST /reset-regulation-defaults`](../API.md#post-reset-regulation-defaults--critical) (bouton de la [page Paramètres](../features/page-settings.md#bouton--restaurer-les-valeurs-par-défaut--feature-088-v2310)). Remet **8 champs de tuning** de `MqttConfig` aux valeurs d'usine, puis persiste (`saveMqttConfig()`). **v2.32.0 (feature-090)** : les valeurs d'usine sont désormais **par taille de bassin** — la restauration applique la colonne de la taille **courante** (`mqttCfg.poolSize`, la taille elle-même n'est pas modifiée).
+
+### `regulation_defaults.h` — source UNIQUE des valeurs d'usine, PAR TAILLE (feature-090, v2.32.0)
+
+[`src/regulation_defaults.h`](../../src/regulation_defaults.h) est le **seul** endroit où les valeurs d'usine de tuning existent — depuis la v2.32.0 sous forme de **table à trois colonnes** `kRegulationDefaultsBySize[3]`, indexée par `enum class PoolSize : uint8_t { Small = 0, Medium = 1, Large = 2 }` (sérialisation stable `"small"`/`"medium"`/`"large"`, `poolSizeTo/FromString()` — valeur inconnue ou NVS corrompue ⇒ **Medium**, fail-safe de migration) :
+
+| Réglage | Small (< 20 m³) | **Medium (20-60 m³)** | Large (> 60 m³) |
+|---|---|---|---|
+| `phInjectionLimitMin` / `orpInjectionLimitMin` | 5 / 5 min/h | **10 / 10 min/h** | 15 / 15 min/h |
+| `regulationSpeed` | slow | **normal** | fast |
+| `stabilizationDelayMin` | 5 min | **5 min** | 10 min |
+| `phTarget` / `orpTarget` | 7,3 / 600 mV | 7,3 / 600 mV | 7,3 / 600 mV |
+| `ph/orpDailyTargetMl` | 0 | 0 | 0 |
+
+**Statut** : Medium = **mesures** du bassin de référence (v2.30.0, visa pool-chemistry du 31/08/2026) ; Small et Large = **EXTRAPOLATIONS** étiquetées (excursion de mélange aveugle ~constante à travers les tailles, voir [ADR-0057](../adr/0057-taille-bassin-preselection-jamais-entree-de-calcul.md)). Les `kDefault*` historiques (088) subsistent comme **alias de la colonne Medium** — les initialiseurs de `MqttConfig` les référencent, garantie qu'une mise à jour seule ne modifie rien. Consommateurs de la table : initialiseurs de `MqttConfig` ([`config.h`](../../src/config.h)), `restoreRegulationDefaults()`, le bloc `pool_size` de `/save-config` et la sérialisation `fillRegulationDefaults(o, size)` ([`web_routes_config.cpp`](../../src/web_routes_config.cpp) — objets `regulation_defaults` [colonne courante] et `regulation_defaults_by_size` [les trois] de `/get-config`, réponse de la route). Au prochain recalibrage, **une seule colonne change et rien ne peut diverger**.
+
+- **Header PUR** (n'inclut que `constants.h` et `<string.h>`) : compilable en `env:native` ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)).
+- **Verrous compile-time** (conditions du visa, généralisés par la 090) : `static_assert` de **bornes chimiques par colonne** (`regulationDefaultsColumnValid()` : consignes ∈ fenêtres projet, limites horaires ∈ [1 ; 60], délai ∈ [0 ; 60], volumes ≥ 0, vitesse = libellé connu), de **monotonie** (limites d'injection et rang de vitesse **croissants** avec la taille) et **VERROU DE MIGRATION** : la colonne Medium est comparée aux **littéraux v2.30.0 en dur** (10/10, normal, 5, 7,3, 600, 0/0) — la retoucher exige de retoucher aussi l'assert, en connaissance de cause (nouveau visa pool-chemistry requis). Un recalibrage hors fenêtre **casse la compilation**.
+- **`applyRegulationDefaults<Cfg>(c, size)`** — template pur qui **EST la liste des champs copiés** : `phTarget`, `orpTarget`, `ph/orpInjectionLimitMinutes`, `stabilizationDelayMin`, `ph/orpDailyTargetMl`, `regulationSpeed`, depuis la colonne de `size`. **`poolSize` n'est PAS copié** (la taille est l'entrée de la sélection, pas un réglage restauré). Template plutôt que fonction sur `MqttConfig` (qui dépend d'`Arduino.h`) : les tests natifs ([`test/test_native_regulation_defaults/`](../../test/test_native_regulation_defaults/test_regulation_defaults.cpp)) l'instancient sur un **double portant tous les champs** de `MqttConfig` et prouvent **par mutation** que rien d'autre ne bouge.
+- **`regulationDefaultsRaiseDosing(target, curOrpTarget, curPhLimit, curOrpLimit)`** — prédicat pur du niveau de journal, **paramétré par la colonne cible** depuis la 090 : l'application de `target` **augmente-t-elle la capacité de dosage** par rapport à l'état courant ? Oui si la consigne ORP **monte** ou si une limite horaire d'injection **monte** (restauration sur un réglage abaissé à la main, OU passage à une taille **supérieure** : 5 → 10 → 15 min/h) → journal en **`warning`** avec mention `(dosage AUGMENTÉ)`, sinon `info`. Partagé entre la restauration 088 et le changement de taille 090.
+
+### `restoreRegulationDefaults()` — transport (mutex, NVS, journal)
+
+```cpp
+bool restoreRegulationDefaults();  // false = timeout mutex, RIEN modifié
+```
+
+1. **Prise bornée de `configMutex`** (`kConfigMutexTimeoutMs`, miroir de `saveMqttConfig`). Timeout → **restauration annulée en bloc** (aucun champ modifié, `error` journalisé) et retour `false` — la route répond alors **503 `success:false`** (correctif de revue v2.31.0 : la première version répondait un faux succès).
+2. Instantané **avant** des 8 champs, puis `applyRegulationDefaults(mqttCfg, mqttCfg.poolSize)` (colonne de la taille **courante** depuis la v2.32.0) et `saveMqttConfig()` dans la **même section critique** (mutex récursif).
+3. **Journal compact en UN message** : les 8 champs **avant → après** (un champ inchangé s'y lit `x → x` — l'état complet d'avant restauration reste reconstituable depuis le journal, leçon `phAutoManual`). Niveau `warning` + mention `(dosage AUGMENTÉ)` si `regulationDefaultsRaiseDosing()`, `info` sinon.
+
+**Ce qui n'est JAMAIS touché** (invariants du visa, prouvés par mutation) : modes de régulation, `ph/orpEnabled`, `phCorrectionType` (le bidon physiquement branché), `phOffset`, trace `phAutoManual*`, calibration (`pumpN_*`) et sélection des pompes, `SafetyLimits` (limites journalières), `maxCyclesPerDay`. Ces champs décrivent un **état physique** ou une **sécurité**, pas un réglage.
+
+**Après restauration** : la route déclenche le **retune PID différé** existant (`applyRegulationSpeed()` pose le drapeau atomique `_phTuningChangeRequested`, consommé par `update()` dans loopTask — aucune écriture PID depuis le handler HTTP, invariant v2.26.0 ; un changement **effectif** de vitesse purge l'intégrale, [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md)) et le broadcast WS `config` différé ([ws-manager.md](ws-manager.md#feature-088-v2310--restauration-des-défauts-de-régulation--aucun-champ-nouveau)).
 
 ## Interaction avec les autres composants
 

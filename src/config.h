@@ -7,6 +7,7 @@
 #include "dosing_logic.h"  // feature-056 : enum InstallMode (logique pure partagée)
 #include "constants.h"     // feature-074 : kPumpTypePulseFlowMlPerMin (calibration de type)
 #include "ph_persist_logic.h"  // feature-084 : PhIntegralSnapshot (logique PURE)
+#include "regulation_defaults.h"  // feature-088 : valeurs d'usine de régulation (source UNIQUE)
 
 // ==== Configuration des canaux PWM pompes ====
 // MOSFET IRLZ44N - PWM sur Gate, pins définis dans constants.h (PCB v2)
@@ -54,8 +55,12 @@ struct MqttConfig {
   String username = "";
   String password = "";
   bool enabled = false;
-  float phTarget = 7.2f;
-  float orpTarget = 650.0f;
+  // feature-088 : les VALEURS D'USINE de régulation vivent dans
+  // regulation_defaults.h (source UNIQUE, avec leurs justifications v2.30.0) —
+  // partagées entre ces initialiseurs, restoreRegulationDefaults() et l'objet
+  // `regulation_defaults` de /get-config.
+  float phTarget = kDefaultPhTarget;
+  float orpTarget = kDefaultOrpTarget;
   bool phEnabled = false;
   bool orpEnabled = false;
   int phPump = 1;
@@ -85,20 +90,29 @@ struct MqttConfig {
   // informatif (affichage « usine » / « pesé ») — ne participe à aucun gate.
   bool pump1FlowWeighed = false;   // true = débit pompe 1 issu d'une pesée individuelle
   bool pump2FlowWeighed = false;   // true = débit pompe 2 issu d'une pesée individuelle
-  int phInjectionLimitMinutes = 5;    // Max 5 min d'injection par fenêtre d'1h
-  int orpInjectionLimitMinutes = 10;  // Max 10 min d'injection par fenêtre d'1h
+  // feature-088 : justification du 10 min/h (v2.30.0, feature-087) déménagée
+  // avec les valeurs dans regulation_defaults.h.
+  int phInjectionLimitMinutes = kDefaultPhInjectionLimitMin;    // Max min d'injection pH / fenêtre d'1 h
+  int orpInjectionLimitMinutes = kDefaultOrpInjectionLimitMin;  // Max min d'injection ORP / fenêtre d'1 h
   // feature-056 : mode d'installation (remplace regulationMode ET
   // filtrationCfg.enabled). Décrit le câblage réel et pilote la présence d'eau,
   // le relais filtration et l'horizon de répartition. Défaut = Managed (ancien
   // "pilote" + filtration gérée).
   InstallMode installMode = InstallMode::ManagedFiltration;
-  int stabilizationDelayMin = 5;     // Délai de stabilisation avant dosage (minutes)
-  String regulationSpeed = "normal"; // Vitesse de correction PID : "slow", "normal", "fast"
+  int stabilizationDelayMin = kDefaultStabilizationDelayMin;  // Délai de stabilisation avant dosage (minutes)
+  String regulationSpeed = kDefaultRegulationSpeed;  // Vitesse de correction PID : "slow", "normal", "fast"
+  // feature-090 : taille du bassin. INVARIANT ABSOLU : elle ne sert qu'à
+  // PRÉSÉLECTIONNER les défauts de régulation (regulation_defaults.h) — elle
+  // n'entre JAMAIS dans un calcul de dosage, de débit ou de quota. Défaut
+  // Medium = colonne des défauts v2.30.0 (clé NVS pool_size absente sur la
+  // flotte existante ⇒ zéro changement de comportement à la mise à jour ;
+  // AUCUNE application de défauts au boot, la lecture ne fait que charger le champ).
+  PoolSize poolSize = PoolSize::Medium;
   String phCorrectionType = "ph_minus";  // "ph_minus" (acide) ou "ph_plus" (base)
   String phRegulationMode = "automatic"; // "automatic" / "scheduled" / "manual"
-  int phDailyTargetMl = 0;               // Volume quotidien cible (mL) pour le mode programmée
+  int phDailyTargetMl = kDefaultPhDailyTargetMl;      // Volume quotidien cible (mL) pour le mode programmée
   String orpRegulationMode = "automatic"; // "automatic" / "scheduled" / "manual"
-  int orpDailyTargetMl = 0;               // Volume quotidien cible (mL) pour le mode Programmée ORP
+  int orpDailyTargetMl = kDefaultOrpDailyTargetMl;    // Volume quotidien cible (mL) pour le mode Programmée ORP
   bool timeUseNtp = true;
   String ntpServer = "pool.ntp.org";
   String manualTimeIso = "";
@@ -380,6 +394,18 @@ extern SemaphoreHandle_t i2cMutex;
 void initConfigMutexes();  // Initialise les mutex (à appeler dans setup())
 void saveMqttConfig();
 void loadMqttConfig();
+
+// feature-088 : restaure les 8 réglages de TUNING de la régulation aux valeurs
+// d'usine (regulation_defaults.h) puis persiste (saveMqttConfig). Depuis la
+// feature-090, les valeurs restaurées sont celles de la TAILLE DE BASSIN
+// COURANTE (mqttCfg.poolSize). Écrit sous configMutex ; sur timeout du mutex,
+// RIEN n'est modifié (journalisé en error).
+// Journal avant → après pour chaque champ modifié — WARNING si la restauration
+// AUGMENTE la capacité de dosage (consigne ORP ou limite horaire qui monte),
+// info sinon. Ne touche JAMAIS : modes de régulation, ph/orpEnabled,
+// phCorrectionType, phOffset, trace phAutoManual*, calibration/sélection des
+// pompes, SafetyLimits (périmètre arbitré par pool-chemistry, feature-088).
+bool restoreRegulationDefaults();  // false = timeout mutex, RIEN modifié
 
 // v2.20.3 (C4) — trace de la bascule AUTOMATIQUE pH → manual.
 // setPhAutoManualTrace() : à appeler JUSTE AVANT saveMqttConfig() par le chemin

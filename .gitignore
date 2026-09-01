@@ -52,3 +52,8 @@ freecad/
 # Exports de diagnostic tirés de l'appareil (journal, logs) — jamais versionnés
 pool_logs.txt
 syslog*.txt
+
+# PDF utilisateur (docs/user/) — exports Claude Design volumineux (26+6 Mo),
+# régénérés à chaque version : l'historique git n'a pas à les porter.
+# La convention et les sources de vérité restent versionnées (README.md).
+docs/user/*.pdf

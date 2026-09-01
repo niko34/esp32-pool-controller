@@ -57,7 +57,17 @@ Nouvelle section **en 1ᵉʳ onglet** (feature-056, v2.19.0). Un `radiogroup` (`
 ### Régulation (`panel-regulation`)
 > ℹ️ **Mode pilote/continu retiré en v2.19.0 (feature-056)** : `regulation_mode` n'est plus dans cet onglet ni dans `/get-config`. Il est fusionné avec l'ancien toggle « Gérer la filtration » dans le **mode d'installation** (onglet Installation, `install_mode`). Voir [ADR-0026](../adr/0026-mode-installation.md).
 
+#### Sélecteur « Taille du bassin » (feature-090, v2.32.0)
+
+Sélecteur segmenté `#pool_size` en **première position** du panneau ([`data/index.html`](../../data/index.html) `#pool_size_block`), 3 libellés : **« Moins de 20 m³ » / « 20 à 60 m³ » / « Plus de 60 m³ »** (`small` / `medium` / `large`). Il **présélectionne** les défauts de régulation adaptés au volume — il n'entre jamais dans un calcul de dosage ([ADR-0057](../adr/0057-taille-bassin-preselection-jamais-entree-de-calcul.md)).
+
+- **Changement de taille** (`_onPoolSizeClick`, [`data/app.js`](../../data/app.js)) : `loadConfig()` **frais d'abord** (colonne « actuel » = état réel du contrôleur), puis **dialogue avant/après** (mécanisme 088, `_buildRegulationResetSummary`) listant les **8 réglages** — valeurs courantes → défauts de la nouvelle taille, lignes qui changent en gras. La **vitesse de correction y figure** : c'est le **seul endroit où elle reste visible** (masquée ailleurs, voir ci-dessous), l'utilisateur DOIT voir qu'elle change avec la taille.
+- **Confirmation** → `POST /save-config` avec **`pool_size` seul** (l'UI n'envoie jamais les 8 paramètres : le firmware applique les défauts, journalise avant → après et retune le PID par le hook différé), puis rechargement complet de la config + toast succès. **Annulation** → le sélecteur revient à la taille précédente, **rien n'est modifié** (aucun appel réseau).
+- **Défauts par taille servis par le firmware** : le dialogue lit l'objet `regulation_defaults_by_size` de `/get-config` — aucune colonne codée en JS (leçon 087/088, source unique [`src/regulation_defaults.h`](../../src/regulation_defaults.h)).
+- **Rétrocompatibilité** (`syncPoolSize()`) : face à un **ancien firmware** (champ `pool_size` absent de `/get-config`), le sélecteur est **masqué** et le sélecteur de vitesse **ré-affiché** — rien de cassé, rien d'inventé. Les caches `_poolSizeCache` / `_regulationDefaultsBySizeCache` / `_regulationSpeedCache` réinjectent les champs absents d'une trame WS `config` partielle (même mécanique que `_regulationDefaults`).
+
 - `regulation_speed` (`slow` | `normal` | `fast`) — sélectionne le jeu de paramètres PID. Gains exacts détaillés dans [`docs/subsystems/pump-controller.md`](../subsystems/pump-controller.md#algorithme-résumé).
+  > ℹ️ **v2.32.0 (feature-090)** : le bloc `#regulation_speed_block` est **masqué** quand le firmware expose `pool_size` — la vitesse **dérive de la taille du bassin** (slow/normal/fast pour small/medium/large) et reste visible **uniquement** dans le dialogue de changement de taille. Le réglage reste **intact dans l'API, la NVS et MQTT** (cas experts, rétrocompat) et garde sa valeur tant que la taille n'est pas changée.
   > ⚠️ **v2.26.0** : ce sélecteur pilote désormais **trois** grandeurs côté pH (`Kp`, `Ki = Kp/Ti`, `integralMax`) et non plus le seul `Kp`. Un changement **effectif** de vitesse **remet le rattrapage accumulé à zéro** — servir une intégrale acquise avec un `Ki` jusqu'à 2,25× différent produirait plus du double de l'autorité autorisée. La charge est ré-identifiée en un `Ti` (4 à 8 h). Un enregistrement des réglages **sans changement de vitesse ne purge rien** ([ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md)).
 - `ph_limit` / `orp_limit` (min/h) — mapping firmware : `ph_limit_minutes`, `orp_limit_minutes` (CHANGELOG 2026-04-24).
 - `ph_daily_limit` / `orp_daily_limit` (mL) — mapping : `max_ph_ml_per_day` / `max_chlorine_ml_per_day` ([`config.h:141`](../../src/config.h:141) `SafetyLimits`).
@@ -81,6 +91,20 @@ Nouvelle section **en 1ᵉʳ onglet** (feature-056, v2.19.0). Un `radiogroup` (`
 > Toute modification de ces valeurs exige un nouveau build firmware + passage obligatoire par l'agent `pool-chemistry`.
 >
 > ℹ️ `maxCyclesPerDay` a **quitté ce tableau en v2.12.0** (feature-060) : il est désormais exposé dans l'UI (champ « Cycles de dosage max / jour (par pompe) » ci-dessus), borné en dur [10-60] côté serveur — l'élargissement des bornes reste, lui, soumis à `pool-chemistry`.
+
+#### Bouton « Restaurer les valeurs par défaut » (feature-088, v2.31.0)
+
+Bloc `#regulation_reset_block` ([`data/index.html`](../../data/index.html)) placé **sous le bouton Sauvegarder** du panneau Régulation : bouton `#regulation_reset_btn` + texte d'aide listant le périmètre. Remet les **8 réglages de tuning** aux valeurs d'usine via [`POST /reset-regulation-defaults`](../API.md#post-reset-regulation-defaults--critical). **v2.32.0 (feature-090)** : les valeurs restaurées sont les défauts **de la taille de bassin courante** — l'objet `regulation_defaults` de `/get-config` reflète cette colonne (contrat 088 intact : mêmes clés, à plat) ; sur `medium`, ce sont les valeurs v2.30.0.
+
+- **Visibilité conditionnelle** : le bloc est `hidden` par défaut et n'apparaît que si `/get-config` fournit l'objet `regulation_defaults` (`syncRegulationDefaults()`, appelée par `loadConfig()`). Sur un **firmware antérieur à 2.31.0**, le bouton reste masqué — rien de cassé, rien d'inventé.
+- **Aucune valeur d'usine codée côté client** : le module JS (`kRegulationResetFields`, [`data/app.js`](../../data/app.js)) ne porte que les **libellés et unités** d'affichage ; les valeurs viennent exclusivement de `regulation_defaults` (source unique firmware [`src/regulation_defaults.h`](../../src/regulation_defaults.h)).
+- **Clic** → `loadConfig()` **frais d'abord** (la trame WS `config` peut avoir remplacé `window._config` sans porter tous les champs — voir [bug-089](../../specs/features/todo/bug-089-parite-ws-config-champs-manquants.md)) → **dialogue récapitulatif « actuel → usine »** sur les 8 paramètres (`confirmDialog` avec contenu DOM `messageNode`) :
+  - chaque ligne affiche `Libellé : valeur actuelle → valeur d'usine` ; les lignes qui **changent réellement** sont **en gras** (tolérance flottants 0,005 pour le pH), les autres en grisé ;
+  - pied de dialogue : « N paramètre(s) seront modifiés (en gras). Les calibrations, modes et limites de sécurité ne sont pas touchés. » ;
+  - **si rien ne change** : « Tous les paramètres sont déjà aux valeurs d'usine. » et le bouton **Restaurer est désactivé** (`confirmDisabled`).
+- **Après confirmation** : `POST /reset-regulation-defaults`, puis **rechargement complet de la config** (`loadConfig()` — tous les champs de la page sont rafraîchis, aucun état à moitié appliqué) + toast succès « Valeurs d'usine restaurées ». Si le rechargement échoue, le toast succès invite à recharger la page.
+- **Erreurs** : `503` (mutex config occupé — **rien n'a été modifié** côté firmware) → toast « Erreur serveur (503) — réessayez » ; session expirée (401) → « Session expirée — reconnectez-vous » (redirection login déjà déclenchée par `authFetch`) ; erreur réseau → « Erreur réseau — réessayez ». Le bouton est désactivé pendant toute l'opération (anti double-clic).
+- **Cache `_regulationDefaults`** : les valeurs d'usine reçues sont mises en cache et réinjectées dans une config partielle (trame WS sans `regulation_defaults`) pour que le bouton ne « clignote » pas entre deux pushs.
 
 ### Système (`panel-system`)
 - **Card « Infos système »** en **première position** (déplacée depuis Avancé en v2.5.1, feature-046) : Firmware, Build, Uptime, Chip, CPU, **Mémoire utilisable**, PSRAM, Flash, Firmware (flash), FS, Wi-Fi RSSI, MAC — alimentée par `GET /get-system-info` (`loadSystemInfo()`, chargée au démarrage de la page) + bouton **Actualiser** (`#refresh_info_btn`). La version firmware s'affiche sur la ligne « Firmware » (`sys_firmware_version`, depuis `FIRMWARE_VERSION` dans [`version.h`](../../src/version.h)).
@@ -308,6 +332,7 @@ Toggles complémentaires :
 | Action | Endpoint | Auth |
 |--------|----------|------|
 | Sauvegarder config (tous champs sauf password, dont `install_mode`) | `POST /save-config` | CRITICAL |
+| Restaurer les valeurs d'usine de régulation (feature-088, v2.31.0 — corps vide, dialogue avant/après) | `POST /reset-regulation-defaults` | CRITICAL |
 | Signaler l'état d'une filtration externe (mode `external`) | `POST /filtration/external-state?running=…` | WRITE |
 | Changer mot de passe admin | `POST /auth/change-password` (body `{current, new}`) | CRITICAL |
 | Scanner Wi-Fi | `POST /wifi/scan` | WRITE |
@@ -371,7 +396,7 @@ Le champ `mqtt_enabled` pilote directement la présence / l'absence du client MQ
 - [`data/index.html:1065`](../../data/index.html:1065) — structure HTML (tabs + panels)
 - [`data/app.js`](../../data/app.js) — handlers des 9 onglets (`setupInstall` (feature-056), `setupWifi`, `setupMqtt`, `setupTime`, `setupSecurity`, `setupRegulation`, `setupSystem`, `setupDev`)
 - [`src/config.h`](../../src/config.h) — structs `MqttConfig`, `AuthConfig`, `PumpControlParams`, `SafetyLimits`, `PumpProtection`
-- [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) — `/save-config`, `/reboot`, `/reboot-ap`, `/factory-reset`
+- [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp) — `/save-config`, `/reset-regulation-defaults` (feature-088), `/reboot`, `/reboot-ap`, `/factory-reset`
 - [`src/web_routes_auth.cpp`](../../src/) / [`src/auth_manager.cpp`](../../src/) — endpoints `/auth/*`
 - [`src/web_routes_wifi.cpp`](../../src/) — `/wifi/scan`, `/wifi/status`, `/wifi/disconnect`, `/wifi/ap/disable`
 - [`src/web_routes_control.cpp`](../../src/web_routes_control.cpp) — `/pump1/*`, `/pump2/*`, `/flow-assist/*` (feature-075)
