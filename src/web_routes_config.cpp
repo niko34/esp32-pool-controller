@@ -92,7 +92,8 @@ static void fillRegulationDefaults(JsonObject o, PoolSize size) {
   o["orp_target"] = d.orpTarget;
   o["ph_limit_minutes"] = d.phInjectionLimitMin;
   o["orp_limit_minutes"] = d.orpInjectionLimitMin;
-  o["stabilization_delay_min"] = d.stabilizationDelayMin;
+  // feature-091 : stabilization_delay_min RETIRÉ (7 réglages) — la purge est
+  // désormais pilotée par la stabilité des mesures (plancher/plafond constants).
   o["ph_daily_target_ml"] = d.phDailyTargetMl;
   o["orp_daily_target_ml"] = d.orpDailyTargetMl;
   o["regulation_speed"] = d.regulationSpeed;
@@ -119,6 +120,10 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // feature-088 : +objet regulation_defaults (8 valeurs, ~130 o) → marge 3328.
   // feature-090 : +pool_size (~22 o) et +regulation_defaults_by_size (3 colonnes
   // de 8 valeurs, ~410 o) → marge portée à 3776.
+  // feature-091 (v2.34.0) : stabilization_delay_min RETIRÉ — regulation_defaults
+  // et chacune des 3 colonnes passent de 8 à 7 valeurs (≈ −65 o au total), et la
+  // clé de premier niveau disparaît. La marge 3776 est donc CONSERVÉE TELLE
+  // QUELLE : elle ne fait que s'élargir. Ne pas la réduire sans recompter.
   StaticJson<3776> doc;
   doc["server"] = mqttCfg.server;
   doc["port"] = mqttCfg.port;
@@ -160,7 +165,8 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["orp_limit_minutes"] = mqttCfg.orpInjectionLimitMinutes;
   doc["max_cycles_per_day"] = pumpProtection.maxCyclesPerDay;  // feature-060 : garde 9 configurable (10-60)
   doc["install_mode"] = installModeToString(mqttCfg.installMode);  // feature-056
-  doc["stabilization_delay_min"] = mqttCfg.stabilizationDelayMin;
+  // feature-091 : stabilization_delay_min n'est plus exposé (réglage inerte,
+  // conservé en NVS pour la compatibilité descendante — cf. A8 de la spec).
   doc["regulation_speed"] = mqttCfg.regulationSpeed;
   // feature-090 : taille du bassin (présélection des défauts, jamais une
   // entrée de calcul). Un client ancien ignore la clé ; un client nouveau face
@@ -569,7 +575,8 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
         const float oldOrpTarget  = mqttCfg.orpTarget;
         const int   oldPhLimit    = mqttCfg.phInjectionLimitMinutes;
         const int   oldOrpLimit   = mqttCfg.orpInjectionLimitMinutes;
-        const int   oldStabDelay  = mqttCfg.stabilizationDelayMin;
+        // feature-091 : plus de « stab. » dans le récapitulatif — le délai de
+        // stabilisation n'est plus un réglage (purge adaptative par stabilité).
         const int   oldPhDailyMl  = mqttCfg.phDailyTargetMl;
         const int   oldOrpDailyMl = mqttCfg.orpDailyTargetMl;
         char oldSpeed[8];  // "slow"/"normal"/"fast" — copie sans String
@@ -586,14 +593,13 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
         snprintf(msg, sizeof(msg),
                  "[Config] Taille de bassin %s → %s%s : pH %.2f→%.2f ; "
                  "ORP %.0f→%.0f mV ; limites pH %d→%d / ORP %d→%d min/h ; "
-                 "stab. %d→%d min ; prog. pH %d→%d / ORP %d→%d mL/j ; vitesse %s→%s",
+                 "prog. pH %d→%d / ORP %d→%d mL/j ; vitesse %s→%s",
                  oldSizeStr, poolSizeToString(newSize),
                  raisesDosing ? " (dosage AUGMENTÉ)" : "",
                  (double)oldPhTarget, (double)d.phTarget,
                  (double)oldOrpTarget, (double)d.orpTarget,
                  oldPhLimit, d.phInjectionLimitMin,
                  oldOrpLimit, d.orpInjectionLimitMin,
-                 oldStabDelay, d.stabilizationDelayMin,
                  oldPhDailyMl, d.phDailyTargetMl,
                  oldOrpDailyMl, d.orpDailyTargetMl,
                  oldSpeed, d.regulationSpeed);
@@ -845,10 +851,9 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
       mqttCfg.installMode = installModeFromString(im.c_str(), mqttCfg.installMode);
     }
   }
-  if (!doc["stabilization_delay_min"].isNull()) {
-    int v = doc["stabilization_delay_min"].as<int>();
-    if (v >= 0 && v <= 60) mqttCfg.stabilizationDelayMin = v;
-  }
+  // feature-091 : la clé stabilization_delay_min est ACCEPTÉE SILENCIEUSEMENT
+  // (un client ancien / le wizard peut encore l'envoyer) mais n'a plus aucun
+  // effet — le délai de purge est piloté par la stabilité des mesures.
   if (!doc["regulation_speed"].isNull()) {
     String speed = doc["regulation_speed"].as<String>();
     if (speed == "slow" || speed == "normal" || speed == "fast") {

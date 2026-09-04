@@ -723,6 +723,19 @@
               filtration ou, après vérification de l'installation, relever la
               limite horaire.</span>
           </div>
+          <!-- feature-091 : purge adaptative — la stabilisation des mesures n'a
+               pas été atteinte au plafond (measures_purge_last_end === 2).
+               Warning, pas critique : l'injection a repris sous les gardes
+               habituelles. Texte statique, seul `hidden` est piloté par
+               updateMeasuresPurgeDisplay(). Reste visible si une re-purge
+               rouvre le badge capteur. Doublon sur la page ORP (suffixe _orp). -->
+          <div class="callout callout--warn" id="measures_purge_timeout_banner"
+               role="status" aria-live="polite" hidden>
+            <strong>Stabilisation des mesures non atteinte</strong><br>
+            <span>Après 90 min de circulation, le pH ou l'ORP brut varie encore.
+              Vérifier les sondes et la chambre de mesure (bulles, encrassement).
+              L'injection a repris sous la surveillance des gardes habituelles.</span>
+          </div>
 
           <div class="card" id="ph-card-regulation">
             <div class="card__head">
@@ -1139,6 +1152,17 @@
                 <p class="daily-dose__status" id="daily-dose-orp-status"></p>
               </div>
             </div>
+          </div>
+
+          <!-- feature-091 : miroir ORP du bandeau #measures_purge_timeout_banner
+               (page pH) — même condition, même texte, piloté par
+               updateMeasuresPurgeDisplay(). -->
+          <div class="callout callout--warn" id="measures_purge_timeout_banner_orp"
+               role="status" aria-live="polite" hidden>
+            <strong>Stabilisation des mesures non atteinte</strong><br>
+            <span>Après 90 min de circulation, le pH ou l'ORP brut varie encore.
+              Vérifier les sondes et la chambre de mesure (bulles, encrassement).
+              L'injection a repris sous la surveillance des gardes habituelles.</span>
           </div>
 
           <!-- Carte Régulation ORP (visible en mode nominal, masquée pendant calibration) -->
@@ -1768,7 +1792,7 @@ action:
                       </div>
                     </label>
                     <div class="muted small" style="margin-top: 8px; margin-bottom: 16px;">
-                      Présélectionne les réglages de régulation adaptés au volume (limites d'injection, vitesse de correction, délai de stabilisation). Un récapitulatif est affiché avant application ; tous les réglages restent modifiables ensuite.
+                      Présélectionne les réglages de régulation adaptés au volume (limites d'injection, vitesse de correction, volumes quotidiens). Un récapitulatif est affiché avant application ; tous les réglages restent modifiables ensuite.
                     </div>
                   </div>
 
@@ -1819,13 +1843,17 @@ action:
                     <strong>Cycles de dosage max / jour</strong> : garde anti-emballement — borne le nombre de démarrages de dosage par pompe et par jour (10-60). Le volume reste plafonné par les limites journalière et horaire.
                   </div>
 
-                  <label class="field" style="margin-top: 16px;">
-                    <span class="field__label">Délai avant injection au démarrage (minutes)</span>
-                    <input type="number" class="form-control" id="stabilization_delay_min" min="0" max="60" step="1" value="5" style="width:120px;">
-                  </label>
+                  <!-- feature-091 : le réglage « délai avant injection » (stabilization_delay_min)
+                       a disparu — la purge se termine sur la STABILITÉ des mesures
+                       (plancher 10 min, plafond 90 min, constantes firmware). À sa place :
+                       la durée mesurée de la dernière purge et son motif de fin
+                       (measures_purge_last_duration_s / measures_purge_last_end),
+                       rendus par updateMeasuresPurgeDisplay(). -->
+                  <div class="kv kv--compact" style="margin-top: 16px;">
+                    <div class="kv__row"><span class="kv__k">Dernière purge</span><span class="kv__v" id="measures_purge_last">—</span></div>
+                  </div>
                   <div class="muted small" style="margin-top: 8px;">
-                    Temps d'attente après le démarrage de la filtration avant d'autoriser toute injection, pour laisser les capteurs pH et ORP se stabiliser dans l'eau en circulation.<br>
-                    La minuterie ne repart que si la filtration a été arrêtée plus longtemps que ce délai — un arrêt bref (coupure, sauvegarde) ne la relance pas. Valeur recommandée : 5 à 10 min. Mettre 0 pour désactiver.
+                    Au redémarrage de la filtration, l'injection est suspendue tant que les mesures pH et ORP ne sont pas stables (10 min minimum, 90 min maximum). Aucune durée à régler.
                   </div>
 
                   <div class="detail-actions" style="margin-top: 16px;">
@@ -1840,7 +1868,7 @@ action:
                       <button class="btn" type="button" id="regulation_reset_btn">Restaurer les valeurs par défaut</button>
                     </div>
                     <div class="hint">
-                      Remet aux valeurs d'usine les réglages de régulation : consignes pH et ORP, durées max d'injection par heure, vitesse de correction, délai avant injection et volumes quotidiens du mode programmé. Un récapitulatif détaillé est affiché avant application.
+                      Remet aux valeurs d'usine les réglages de régulation : consignes pH et ORP, durées max d'injection par heure, vitesse de correction et volumes quotidiens du mode programmé. Un récapitulatif détaillé est affiché avant application.
                     </div>
                   </div>
                 </div>

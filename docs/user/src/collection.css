@@ -1,0 +1,157 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   collection.css — système visuel partagé des guides utilisateur
+   PoolController (la « collection » : guide d'utilisation, guide de
+   régulation…).
+
+   Codes communs : chapeau majuscules bleu espacé, titres très gras en
+   encre sombre, grands numéros bleu pâle, encarts à bord pointillé bleu,
+   encarts d'alerte rouges, captures d'écran encadrées, filets fins,
+   pied de page « PoolController / Firmware ».
+
+   Chaque document définit dans un petit <style> local ses variables
+   propres, notamment le préfixe des sections :
+
+     :root { --prefixe-section: "CHAPITRE 0"; }   (défaut : "SECTION 0")
+   ═══════════════════════════════════════════════════════════════════════ */
+:root {
+  --bleu:      #2456D6;   /* accent royal (chapeaux, règles, liens)      */
+  --encre:     #111827;   /* titres                                       */
+  --texte:     #374151;   /* corps                                        */
+  --sourdine:  #6B7280;   /* légendes, pied de page                       */
+  --num-pale:  #BFCDEE;   /* grands numéros de section/étape              */
+  --fond-note: #F4F7FE;   /* fond des encarts                             */
+  --filet:     #E5E7EB;   /* hairlines                                    */
+  --rouge:     #DC2626;   /* encarts d'alerte                             */
+  --fond-alerte: #FEF2F2; /* fond des encarts d'alerte                    */
+}
+@page { size: A4; margin: 18mm 19mm 20mm 19mm; }
+  body { padding-bottom: 10mm; }
+* { box-sizing: border-box; }
+html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  font-size: 10.6pt; line-height: 1.58; color: var(--texte);
+  margin: 0; padding: 0;
+}
+
+/* ── Couverture ─────────────────────────────────────────────────────── */
+header { margin: 34mm 0 10mm; }
+.kicker {
+  font-size: 9pt; font-weight: 700; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--bleu); margin: 0 0 10px;
+}
+h1 {
+  font-size: 30pt; font-weight: 800; letter-spacing: -0.02em;
+  color: var(--encre); line-height: 1.12; margin: 0 0 12px;
+}
+.subtitle { font-size: 12.5pt; color: var(--texte); margin: 0 0 18px; max-width: 34em; }
+.cover-rule {
+  border: none; border-top: 3px solid var(--bleu);
+  width: 46px; margin: 0 0 22px;
+}
+.lead { max-width: 42em; }
+
+/* ── Titres de section : chapeau « PRÉFIXE 0n » + titre gras + filet ── */
+h2 {
+  margin: 26px 0 14px; padding-bottom: 10px;
+  border-bottom: 1px solid var(--filet);
+  font-size: 20pt; font-weight: 800; letter-spacing: -0.015em;
+  color: var(--encre); line-height: 1.15;
+}
+h2 .num {
+  display: block; font-size: 9pt; font-weight: 700;
+  letter-spacing: 0.14em; color: var(--bleu); margin-bottom: 6px;
+}
+h2 .num::before { content: var(--prefixe-section, "SECTION 0"); }
+h3 { font-size: 13pt; font-weight: 700; color: var(--encre); margin: 20px 0 8px; }
+
+/* ── Étapes / sommaire : grands numéros bleu pâle ───────────────────── */
+.step {
+  display: flex; gap: 14px; align-items: flex-start;
+  padding: 10px 0 12px; border-bottom: 1px solid var(--filet);
+  break-inside: avoid;
+}
+.step-badge {
+  flex: 0 0 38px; font-size: 19pt; font-weight: 800;
+  color: var(--num-pale); line-height: 1.1; letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.step-body { flex: 1; }
+.step-body strong:first-child { color: var(--encre); }
+.step-body p { margin: 4px 0; }
+
+/* ── Encarts : bord pointillé bleu, fond bleu très clair ────────────── */
+.box {
+  background: var(--fond-note);
+  border: 1.5px dashed rgba(36, 86, 214, 0.45);
+  border-radius: 8px; padding: 12px 16px; margin: 14px 0;
+  break-inside: avoid;
+}
+.box-title { font-weight: 700; color: var(--encre); }
+.box-title::after { content: " — "; }
+
+/* ── Encarts d'alerte : même géométrie, bord/fond rouge doux ────────── */
+.box-alerte {
+  background: var(--fond-alerte);
+  border: 1.5px solid rgba(220, 38, 38, 0.45);
+  border-radius: 8px; padding: 12px 16px; margin: 14px 0;
+  break-inside: avoid;
+}
+.box-alerte .box-title { color: var(--rouge); }
+
+/* ── Captures d'écran ───────────────────────────────────────────────── */
+figure { margin: 16px 0; text-align: center; break-inside: avoid; }
+.capture {
+  display: block; max-width: 100%; margin: 0 auto 6px;
+  border: 1px solid var(--filet); border-radius: 8px;
+  box-shadow: 0 1px 5px rgba(17, 24, 39, 0.07);
+  break-inside: avoid;
+}
+.capture-etroite { max-width: 60%; }   /* écrans mobiles / étroits (assistant) */
+.capture-legende {
+  font-style: italic; color: var(--sourdine); text-align: center;
+  font-size: 8.5pt; margin: 0;
+}
+
+/* ── Tableaux : sobres, zébrage bleu-gris très léger ────────────────── */
+table {
+  border-collapse: collapse; width: 100%; margin: 12px 0;
+  font-size: 9.8pt; break-inside: avoid;
+}
+th {
+  text-align: left; font-size: 8.5pt; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--sourdine);
+  padding: 6px 10px; border-bottom: 1.5px solid var(--filet);
+}
+td { padding: 7px 10px; border-bottom: 1px solid var(--filet); vertical-align: top; }
+tbody tr:nth-child(even) td { background: #F8FAFD; }
+.duree {
+  font-weight: 700; color: var(--bleu); white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Listes ─────────────────────────────────────────────────────────── */
+ul { padding-left: 1.2em; margin: 8px 0; }
+li { margin: 5px 0; }
+li::marker { color: var(--sourdine); }
+strong { color: var(--encre); }
+
+/* ── Pied de page répété + colophon ─────────────────────────────────── */
+.footer {
+  position: fixed; bottom: 0; left: 0; right: 0; background: #fff;
+  display: flex; justify-content: space-between;
+  font-size: 8pt; color: var(--sourdine);
+  border-top: 1px solid var(--filet); padding-top: 6px;
+}
+.colophon {
+  margin-top: 28px; font-size: 8.5pt; color: var(--sourdine);
+  border-top: 1px solid var(--filet); padding-top: 10px;
+}
+
+/* ── Impression ─────────────────────────────────────────────────────── */
+.page-break { break-before: page; }
+h2, h3 { break-after: avoid; }
+@media screen {
+  body { max-width: 760px; margin: 0 auto; padding: 40px 24px 80px; background: #fff; }
+  .footer { display: none; }
+}

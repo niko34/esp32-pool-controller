@@ -64,6 +64,10 @@ static const float kStart = 0.05f;                 // pumpProtection.phStartThre
 
 // Heure murale de référence : 15 janv. 2027, très au-dessus de kMinValidEpoch.
 static const uint32_t kNow = 1800000000UL;
+// feature-093 : compteur MONOTONE de filtration « courant » (minutes). Les
+// instantanés scellés par défaut portent ce compteur → âge en filtration nul.
+static const uint32_t kFiltNow = 100000UL;
+
 
 static PhPersistLoadObservation obs(float loadMlPerMin, uint8_t days) {
   PhPersistLoadObservation o;
@@ -86,15 +90,28 @@ static float equilibriumPhS(float loadMlPerMin, float kp, float ki, float stop) 
 /** Instantané SCELLÉ, prêt à relire. */
 static PhIntegralSnapshot sealed(float value, uint32_t epoch, uint32_t context,
                                  uint8_t streak = 0,
-                                 uint8_t schema = kPhIntegralPersistSchema) {
+                                 uint8_t schema = kPhIntegralPersistSchema,
+                                 uint32_t filtTotalMin = kFiltNow) {
   PhIntegralSnapshot s;
   s.schema = schema;
   s.restoreStreak = streak;
   s.context = context;
   s.epoch = epoch;
   s.value = value;
+  s.filtTotalMin = filtTotalMin;
   phPersistSealSnapshot(s);
   return s;
+}
+
+/** R3 (feature-093) : fraîcheur avec les deux bases de temps explicites. */
+static bool fresh(uint32_t epochWritten, uint32_t epochNow,
+                  uint32_t filtWritten = kFiltNow, uint32_t filtNow = kFiltNow) {
+  PhPersistAgeInputs in;
+  in.epochWritten = epochWritten;
+  in.epochNow = epochNow;
+  in.filtTotalWritten = filtWritten;
+  in.filtTotalNow = filtNow;
+  return phPersistFresh(in);
 }
 
 static PhIntegralContext ctxRef() {
@@ -110,14 +127,15 @@ static PhIntegralContext ctxRef() {
 // A — INTÉGRITÉ DU BLOB (R2, volet intégrité)
 // =============================================================================
 
-// La disposition EST le contrat : 20 octets, et un CRC qui couvre les 16 octets
-// amont sans se couvrir lui-même. Si la structure grossit sans que le schéma
+// La disposition EST le contrat : 24 octets (schéma 2, feature-093), et un CRC
+// qui couvre les 20 octets amont sans se couvrir lui-même. Si la structure grossit sans que le schéma
 // change, un ancien enregistrement serait relu avec la mauvaise taille — c'est
 // précisément ce que le garde-fou de taille attrape, à condition que la taille
 // soit celle qu'on croit.
 void test_A_disposition_du_blob(void) {
-  TEST_ASSERT_EQUAL_UINT32(20u, (uint32_t)sizeof(PhIntegralSnapshot));
-  TEST_ASSERT_EQUAL_UINT32(16u, (uint32_t)offsetof(PhIntegralSnapshot, crc));
+  TEST_ASSERT_EQUAL_UINT32(24u, (uint32_t)sizeof(PhIntegralSnapshot));
+  TEST_ASSERT_EQUAL_UINT32(20u, (uint32_t)offsetof(PhIntegralSnapshot, crc));
+  TEST_ASSERT_EQUAL_UINT32(16u, (uint32_t)offsetof(PhIntegralSnapshot, filtTotalMin));
   TEST_ASSERT_EQUAL_UINT32(0u,  (uint32_t)offsetof(PhIntegralSnapshot, schema));
   TEST_ASSERT_EQUAL_UINT32(1u,  (uint32_t)offsetof(PhIntegralSnapshot, restoreStreak));
 }
@@ -151,7 +169,7 @@ void test_A_blob_non_scelle_est_rejete(void) {
   TEST_ASSERT_FALSE(phPersistSnapshotIntact(vierge, sizeof(vierge)));
 }
 
-// EXHAUSTIF : les 160 bits du blob, un par un. Aucun ne doit passer — ni dans la
+// EXHAUSTIF : les 192 bits du blob, un par un. Aucun ne doit passer — ni dans la
 // charge utile, ni dans le CRC lui-même. C'est la propriété qui protège d'un
 // secteur NVS à demi écrit : un `value` dont l'exposant a basculé, c'est une
 // intégrale multipliée par 2^n, donc une dose pré-armée arbitraire.
@@ -174,7 +192,7 @@ void test_A_tout_bit_retourne_est_rejete(void) {
       ++testes;
     }
   }
-  TEST_ASSERT_EQUAL_INT(160, testes);
+  TEST_ASSERT_EQUAL_INT(192, testes);
 }
 
 // Taille inattendue = enregistrement d'un autre schéma ou tronqué. Rejet NET,
@@ -202,6 +220,7 @@ void test_A_scellement_normalise_le_trou_d_alignement(void) {
   sale.context = 42u;
   sale.epoch = kNow;
   sale.value = 999.0f;
+  sale.filtTotalMin = kFiltNow;
   phPersistSealSnapshot(sale);
 
   TEST_ASSERT_EQUAL_UINT16(0u, sale.reserved);
@@ -219,7 +238,7 @@ void test_A_un_autre_schema_reste_intact_mais_est_refuse(void) {
   TEST_ASSERT_TRUE(phPersistSnapshotIntact(s, sizeof(s)));  // intègre…
 
   const PhPersistRestoreVerdict v =
-      phPersistEvaluateRestore(s, 0xABCDu, kNow, capFor(2.86f).capPhS);
+      phPersistEvaluateRestore(s, 0xABCDu, kNow, kFiltNow, capFor(2.86f).capPhS);
   TEST_ASSERT_FALSE(v.accepted);  // …mais refusé
   TEST_ASSERT_TRUE(v.reject == PhPersistReject::kSchema);
   TEST_ASSERT_EQUAL_FLOAT(0.0f, v.candidate);
@@ -227,7 +246,7 @@ void test_A_un_autre_schema_reste_intact_mais_est_refuse(void) {
   // Schéma 0 (secteur effacé dont le CRC tomberait juste) : même traitement.
   PhIntegralSnapshot zero = sealed(2000.0f, kNow - 60u, 0xABCDu, 0, 0);
   const PhPersistRestoreVerdict vz =
-      phPersistEvaluateRestore(zero, 0xABCDu, kNow, capFor(2.86f).capPhS);
+      phPersistEvaluateRestore(zero, 0xABCDu, kNow, kFiltNow, capFor(2.86f).capPhS);
   TEST_ASSERT_TRUE(vz.reject == PhPersistReject::kSchema);
 }
 
@@ -239,23 +258,29 @@ void test_A_l_ordre_des_controles_est_stable(void) {
                                 kPhIntegralRestoreMaxStreak,
                                 (uint8_t)(kPhIntegralPersistSchema + 9));
   PhPersistRestoreVerdict v =
-      phPersistEvaluateRestore(s, 0u, kNow, capFor(2.86f).capPhS);
+      phPersistEvaluateRestore(s, 0u, kNow, kFiltNow, capFor(2.86f).capPhS);
   TEST_ASSERT_TRUE(v.reject == PhPersistReject::kSchema);
 
   // Schéma bon, streak épuisé ET contexte faux ET périmé → kStreak.
   s = sealed(2000.0f, kNow - 100000u, 0xBADu, kPhIntegralRestoreMaxStreak);
-  v = phPersistEvaluateRestore(s, 0u, kNow, capFor(2.86f).capPhS);
+  v = phPersistEvaluateRestore(s, 0u, kNow, kFiltNow, capFor(2.86f).capPhS);
   TEST_ASSERT_TRUE(v.reject == PhPersistReject::kStreak);
 
   // Streak sain, contexte faux ET périmé → kContext.
   s = sealed(2000.0f, kNow - 100000u, 0xBADu, 0);
-  v = phPersistEvaluateRestore(s, 0u, kNow, capFor(2.86f).capPhS);
+  v = phPersistEvaluateRestore(s, 0u, kNow, kFiltNow, capFor(2.86f).capPhS);
   TEST_ASSERT_TRUE(v.reject == PhPersistReject::kContext);
 
-  // Contexte bon, périmé ET valeur nulle → kStale (la péremption prime).
-  s = sealed(0.0f, kNow - 100000u, 0xBADu, 0);
-  v = phPersistEvaluateRestore(s, 0xBADu, kNow, capFor(2.86f).capPhS);
+  // Contexte bon, périmé (7 h de filtration) ET valeur nulle → kStale (la
+  // péremption prime sur la valeur).
+  s = sealed(0.0f, kNow - 100000u, 0xBADu, 0, kPhIntegralPersistSchema,
+             kFiltNow - 420u);
+  v = phPersistEvaluateRestore(s, 0xBADu, kNow, kFiltNow, capFor(2.86f).capPhS);
   TEST_ASSERT_TRUE(v.reject == PhPersistReject::kStale);
+  // Compteur reculé ET valeur nulle → kFiltCounter (l'âge prime aussi).
+  s = sealed(0.0f, kNow - 100000u, 0xBADu, 0, kPhIntegralPersistSchema, kFiltNow + 1u);
+  v = phPersistEvaluateRestore(s, 0xBADu, kNow, kFiltNow, capFor(2.86f).capPhS);
+  TEST_ASSERT_TRUE(v.reject == PhPersistReject::kFiltCounter);
 }
 
 // =============================================================================
@@ -303,7 +328,7 @@ void test_B_contexte_different_est_refuse(void) {
 
   const PhIntegralSnapshot s = sealed(1000.0f, kNow - 600u, ecrit);
   const PhPersistRestoreVerdict v = phPersistEvaluateRestore(
-      s, phPersistContextHash(apres), kNow, capFor(2.86f).capPhS);
+      s, phPersistContextHash(apres), kNow, kFiltNow, capFor(2.86f).capPhS);
   TEST_ASSERT_FALSE(v.accepted);
   TEST_ASSERT_TRUE(v.reject == PhPersistReject::kContext);
   TEST_ASSERT_EQUAL_FLOAT(0.0f, v.candidate);
@@ -551,7 +576,7 @@ void test_C_une_valeur_excessive_est_acceptee_mais_ramenee_au_plafond(void) {
   const PhIntegralSnapshot s = sealed(kImax, kNow - 300u, 0x5A5Au);  // plafond plein
 
   const PhPersistRestoreVerdict v =
-      phPersistEvaluateRestore(s, 0x5A5Au, kNow, cap);
+      phPersistEvaluateRestore(s, 0x5A5Au, kNow, kFiltNow, cap);
   TEST_ASSERT_TRUE(v.accepted);
   TEST_ASSERT_FLOAT_WITHIN(1.0f, cap, v.candidate);
   TEST_ASSERT_TRUE(v.candidate < 0.30f * kImax);  // strictement sous la butée
@@ -562,7 +587,7 @@ void test_C_une_valeur_excessive_est_acceptee_mais_ramenee_au_plafond(void) {
 // parfaitement valide et il n'est PAS restauré. Rejet volontairement silencieux.
 void test_C_plafond_nul_refuse_une_restauration_par_ailleurs_valide(void) {
   const PhIntegralSnapshot s = sealed(1000.0f, kNow - 300u, 0x5A5Au);
-  const PhPersistRestoreVerdict v = phPersistEvaluateRestore(s, 0x5A5Au, kNow, 0.0f);
+  const PhPersistRestoreVerdict v = phPersistEvaluateRestore(s, 0x5A5Au, kNow, kFiltNow, 0.0f);
   TEST_ASSERT_FALSE(v.accepted);
   TEST_ASSERT_TRUE(v.reject == PhPersistReject::kNoCap);
   TEST_ASSERT_EQUAL_FLOAT(0.0f, v.candidate);
@@ -578,7 +603,7 @@ void test_C_valeur_nulle_ou_non_finie_est_refusee(void) {
   const float mauvaises[] = {0.0f, -1.0f, -kImax, NAN, INFINITY, -INFINITY};
   for (int i = 0; i < 6; ++i) {
     const PhIntegralSnapshot s = sealed(mauvaises[i], kNow - 60u, 0x1u);
-    const PhPersistRestoreVerdict v = phPersistEvaluateRestore(s, 0x1u, kNow, cap);
+    const PhPersistRestoreVerdict v = phPersistEvaluateRestore(s, 0x1u, kNow, kFiltNow, cap);
     char msg[96];
     snprintf(msg, sizeof(msg), "valeur %.1f acceptee", (double)mauvaises[i]);
     TEST_ASSERT_FALSE_MESSAGE(v.accepted, msg);
@@ -591,17 +616,36 @@ void test_C_valeur_nulle_ou_non_finie_est_refusee(void) {
 // D — R3 : PÉREMPTION
 // =============================================================================
 
+// feature-093 : l'âge se mesure en TEMPS DE FILTRATION — 6 h de filtration
+// accumulée depuis l'écriture (359 min → frais, 361 min → périmé), l'heure murale
+// n'étant qu'un plafond de sécurité (72 h).
 void test_D_frais_a_5h59_perime_a_6h01(void) {
-  const uint32_t ecrit = kNow - 3600u * 6u;  // écrit il y a 6 h pile
-  TEST_ASSERT_TRUE(phPersistFresh(ecrit + 60u, kNow));   // 5 h 59 → frais
-  TEST_ASSERT_FALSE(phPersistFresh(ecrit - 60u, kNow));  // 6 h 01 → périmé
+  const uint32_t ecrit = kFiltNow - kPhIntegralPersistMaxFiltMin;  // 6 h pile
+  TEST_ASSERT_TRUE(fresh(kNow - 60u, kNow, ecrit + 1u, kFiltNow));   // 5 h 59 → frais
+  TEST_ASSERT_FALSE(fresh(kNow - 60u, kNow, ecrit - 1u, kFiltNow));  // 6 h 01 → périmé
+  // Le cas du 03/09/2026 : écrit la veille 15:00 (17 h murales), 4 h de
+  // filtration depuis → FRAIS. L'ancien critère mural (6 h) le rejetait.
+  TEST_ASSERT_TRUE(fresh(kNow - 17u * 3600u, kNow, kFiltNow - 240u, kFiltNow));
+  // Une nuit ENTIÈRE sans filtration ne vieillit pas la valeur : 0 min de
+  // filtration accumulée, 14 h murales → frais.
+  TEST_ASSERT_TRUE(fresh(kNow - 14u * 3600u, kNow, kFiltNow, kFiltNow));
 }
 
-// Frontière EXACTE : l'âge maximal est inclusif (<=), 1 s de plus ne l'est pas.
+// Frontières EXACTES : les deux âges maximaux sont inclusifs (<=), une unité de
+// plus ne l'est pas — en minutes de filtration comme en secondes murales.
 void test_D_frontiere_exacte_de_la_peremption(void) {
-  TEST_ASSERT_TRUE(phPersistFresh(kNow - kPhIntegralPersistMaxAgeS, kNow));
-  TEST_ASSERT_FALSE(phPersistFresh(kNow - kPhIntegralPersistMaxAgeS - 1u, kNow));
-  TEST_ASSERT_TRUE(phPersistFresh(kNow, kNow));  // âge nul
+  TEST_ASSERT_TRUE(fresh(kNow, kNow, kFiltNow - kPhIntegralPersistMaxFiltMin, kFiltNow));
+  TEST_ASSERT_FALSE(fresh(kNow, kNow, kFiltNow - kPhIntegralPersistMaxFiltMin - 1u, kFiltNow));
+  TEST_ASSERT_TRUE(fresh(kNow - kPhIntegralPersistMaxWallAgeS, kNow));
+  TEST_ASSERT_FALSE(fresh(kNow - kPhIntegralPersistMaxWallAgeS - 1u, kNow));
+  TEST_ASSERT_TRUE(fresh(kNow, kNow));  // âges nuls
+  // Compteur de filtration courant INFÉRIEUR à celui écrit (NVS effacée) : âge
+  // incalculable ⇒ périmé, avec son propre motif.
+  TEST_ASSERT_FALSE(fresh(kNow, kNow, kFiltNow + 1u, kFiltNow));
+  PhPersistAgeInputs in;
+  in.epochWritten = kNow; in.epochNow = kNow;
+  in.filtTotalWritten = kFiltNow + 1u; in.filtTotalNow = kFiltNow;
+  TEST_ASSERT_TRUE(phPersistAge(in).reject == PhPersistReject::kFiltCounter);
 }
 
 // Sans heure murale exploitable, l'âge est INCALCULABLE — et un âge incalculable
@@ -614,48 +658,63 @@ void test_D_horloge_inexploitable_vaut_perime(void) {
   TEST_ASSERT_TRUE(phPersistClockUsable(kNow));
 
   // Même un instantané écrit à l'instant est refusé si l'horloge est inutilisable.
-  TEST_ASSERT_FALSE(phPersistFresh(1000u, 1000u));
-  TEST_ASSERT_FALSE(phPersistFresh(kNow, 12345u));
+  TEST_ASSERT_FALSE(fresh(1000u, 1000u));
+  TEST_ASSERT_FALSE(fresh(kNow, 12345u));
 }
 
 // Horodatage nul (champ jamais posé) ou situé dans le FUTUR (horloge reculée
 // après une resynchronisation) : traités comme incohérents, pas comme « très
 // frais » — sans quoi une horloge en avance rendrait un instantané éternel.
 void test_D_horodatage_nul_ou_futur_est_incoherent(void) {
-  TEST_ASSERT_FALSE(phPersistFresh(0u, kNow));
-  TEST_ASSERT_FALSE(phPersistFresh(kNow + 1u, kNow));
-  TEST_ASSERT_FALSE(phPersistFresh(kNow + 86400u, kNow));
+  TEST_ASSERT_FALSE(fresh(0u, kNow));
+  TEST_ASSERT_FALSE(fresh(kNow + 1u, kNow));
+  TEST_ASSERT_FALSE(fresh(kNow + 86400u, kNow));
 }
 
 void test_D_peremption_dans_la_decision(void) {
   const float cap = capFor(kPhEquilibriumLoadMlPerMin).capPhS;
   const uint32_t ctx = 0xC0FFEEu;
 
-  // 5 h 59 → accepté.
-  PhIntegralSnapshot s = sealed(1000.0f, kNow - (kPhIntegralPersistMaxAgeS - 60u), ctx);
-  PhPersistRestoreVerdict v = phPersistEvaluateRestore(s, ctx, kNow, cap);
+  // 5 h 59 de filtration (et 20 h murales) → accepté ; les deux âges sont rendus.
+  PhIntegralSnapshot s = sealed(1000.0f, kNow - 20u * 3600u, ctx, 0,
+                                kPhIntegralPersistSchema,
+                                kFiltNow - (kPhIntegralPersistMaxFiltMin - 1u));
+  PhPersistRestoreVerdict v = phPersistEvaluateRestore(s, ctx, kNow, kFiltNow, cap);
   TEST_ASSERT_TRUE(v.accepted);
-  TEST_ASSERT_EQUAL_UINT32(kPhIntegralPersistMaxAgeS - 60u, v.ageS);
+  TEST_ASSERT_EQUAL_UINT32(kPhIntegralPersistMaxFiltMin - 1u, v.filtAgeMin);
+  TEST_ASSERT_EQUAL_UINT32(20u * 3600u, v.ageS);
 
-  // 6 h 01 → kStale, et l'âge est tout de même renseigné pour le journal.
-  s = sealed(1000.0f, kNow - (kPhIntegralPersistMaxAgeS + 60u), ctx);
-  v = phPersistEvaluateRestore(s, ctx, kNow, cap);
+  // 6 h 01 de filtration → kStale, et l'âge est tout de même renseigné.
+  s = sealed(1000.0f, kNow - 60u, ctx, 0, kPhIntegralPersistSchema,
+             kFiltNow - (kPhIntegralPersistMaxFiltMin + 1u));
+  v = phPersistEvaluateRestore(s, ctx, kNow, kFiltNow, cap);
   TEST_ASSERT_FALSE(v.accepted);
   TEST_ASSERT_TRUE(v.reject == PhPersistReject::kStale);
-  TEST_ASSERT_EQUAL_UINT32(kPhIntegralPersistMaxAgeS + 60u, v.ageS);
+  TEST_ASSERT_EQUAL_UINT32(kPhIntegralPersistMaxFiltMin + 1u, v.filtAgeMin);
+  TEST_ASSERT_NOT_NULL(phPersistRejectLabel(v.reject));
+
+  // Plafond mural de sécurité : 0 min de filtration mais 72 h + 1 s → kStale.
+  s = sealed(1000.0f, kNow - (kPhIntegralPersistMaxWallAgeS + 1u), ctx);
+  v = phPersistEvaluateRestore(s, ctx, kNow, kFiltNow, cap);
+  TEST_ASSERT_TRUE(v.reject == PhPersistReject::kStale);
+
+  // Compteur reculé → kFiltCounter (journalisable).
+  s = sealed(1000.0f, kNow - 60u, ctx, 0, kPhIntegralPersistSchema, kFiltNow + 5u);
+  v = phPersistEvaluateRestore(s, ctx, kNow, kFiltNow, cap);
+  TEST_ASSERT_TRUE(v.reject == PhPersistReject::kFiltCounter);
   TEST_ASSERT_NOT_NULL(phPersistRejectLabel(v.reject));
 
   // Horloge inexploitable / epoch nul / epoch futur → kEpoch.
   s = sealed(1000.0f, kNow - 60u, ctx);
-  v = phPersistEvaluateRestore(s, ctx, 12345u, cap);
+  v = phPersistEvaluateRestore(s, ctx, 12345u, kFiltNow, cap);
   TEST_ASSERT_TRUE(v.reject == PhPersistReject::kEpoch);
 
   s = sealed(1000.0f, 0u, ctx);
-  v = phPersistEvaluateRestore(s, ctx, kNow, cap);
+  v = phPersistEvaluateRestore(s, ctx, kNow, kFiltNow, cap);
   TEST_ASSERT_TRUE(v.reject == PhPersistReject::kEpoch);
 
   s = sealed(1000.0f, kNow + 3600u, ctx);
-  v = phPersistEvaluateRestore(s, ctx, kNow, cap);
+  v = phPersistEvaluateRestore(s, ctx, kNow, kFiltNow, cap);
   TEST_ASSERT_TRUE(v.reject == PhPersistReject::kEpoch);
 }
 
@@ -668,9 +727,11 @@ void test_D_peremption_dans_la_decision(void) {
 
 static PhPersistConfirmInputs confirmIn(float error, uint32_t dtMs = 10000u,
                                         float cap = 4000.0f,
-                                        uint32_t epochNow = kNow) {
+                                        uint32_t epochNow = kNow,
+                                        uint32_t filtNow = kFiltNow) {
   PhPersistConfirmInputs in;
   in.epochNow = epochNow;
+  in.filtTotalNow = filtNow;
   in.dtMs = dtMs;
   in.error = error;
   in.startThreshold = kStart;
@@ -679,10 +740,12 @@ static PhPersistConfirmInputs confirmIn(float error, uint32_t dtMs = 10000u,
 }
 
 static PhPersistConfirmState armed(float candidate = 3000.0f,
-                                   uint32_t epoch = kNow - 600u) {
+                                   uint32_t epoch = kNow - 600u,
+                                   uint32_t filtTotalMin = kFiltNow) {
   PhPersistConfirmState st;
   st.candidate = candidate;
   st.epoch = epoch;
+  st.filtTotalMin = filtTotalMin;
   st.heldMs = 0;
   return st;
 }
@@ -817,13 +880,16 @@ void test_E_interruption_conserve_la_candidate_abandon_la_detruit(void) {
 // R3 est RÉÉVALUÉE à chaque tick : une candidate qui attend sa confirmation peut
 // mourir de vieillesse. Elle n'est pas gelée à son âge de lecture.
 void test_E_candidate_perimee_avant_confirmation_est_abandonnee(void) {
-  PhPersistConfirmState st = armed(3000.0f, kNow - (kPhIntegralPersistMaxAgeS - 60u));
+  // Écrite il y a 5 h 59 de filtration.
+  PhPersistConfirmState st =
+      armed(3000.0f, kNow - 600u, kFiltNow - (kPhIntegralPersistMaxFiltMin - 1u));
   // Encore fraîche : la tenue court.
   PhPersistConfirmVerdict v = phPersistConfirmTick(st, confirmIn(kStart + 0.10f));
   TEST_ASSERT_TRUE(v.outcome == PhPersistConfirmOutcome::kWaiting);
 
-  // 2 minutes d'horloge murale plus tard, elle a dépassé les 6 h.
-  v = phPersistConfirmTick(st, confirmIn(kStart + 0.10f, 10000u, 4000.0f, kNow + 120u));
+  // 2 minutes de FILTRATION plus tard, elle a dépassé les 6 h.
+  v = phPersistConfirmTick(st, confirmIn(kStart + 0.10f, 10000u, 4000.0f, kNow + 120u,
+                                         kFiltNow + 2u));
   TEST_ASSERT_TRUE(v.outcome == PhPersistConfirmOutcome::kExpired);
   TEST_ASSERT_EQUAL_FLOAT(0.0f, v.restored);
   TEST_ASSERT_EQUAL_FLOAT(0.0f, st.candidate);  // détruite
@@ -880,13 +946,14 @@ void test_E_scenario_complet_de_la_lecture_a_l_application(void) {
 
   TEST_ASSERT_TRUE(phPersistSnapshotIntact(s, sizeof(s)));
   const PhPersistRestoreVerdict v =
-      phPersistEvaluateRestore(s, ctx, kNow, cap.capPhS);
+      phPersistEvaluateRestore(s, ctx, kNow, kFiltNow, cap.capPhS);
   TEST_ASSERT_TRUE(v.accepted);
   TEST_ASSERT_FLOAT_WITHIN(5.0f, 3753.0f, v.candidate);  // écrêtée à 23,2 %
 
   PhPersistConfirmState st;
   st.candidate = v.candidate;
   st.epoch = s.epoch;
+  st.filtTotalMin = s.filtTotalMin;
   PhPersistConfirmVerdict cv;
   uint32_t epochNow = kNow;
   for (int i = 0; i < (int)(kPhIntegralRestoreConfirmMs / 10000u); ++i) {
@@ -941,7 +1008,7 @@ void test_F_boucle_de_boot_trois_essais_puis_refus(void) {
   int acceptes = 0;
   for (int boot = 1; boot <= 6; ++boot) {
     TEST_ASSERT_TRUE(phPersistSnapshotIntact(nvs, sizeof(nvs)));
-    const PhPersistRestoreVerdict v = phPersistEvaluateRestore(nvs, ctx, kNow, cap);
+    const PhPersistRestoreVerdict v = phPersistEvaluateRestore(nvs, ctx, kNow, kFiltNow, cap);
     char msg[96];
     snprintf(msg, sizeof(msg), "boot %d : streak %u, accepte %d", boot,
              (unsigned)nvs.restoreStreak, (int)v.accepted);
@@ -970,12 +1037,12 @@ void test_F_une_ecriture_normale_reamorce_la_persistance(void) {
   PhIntegralSnapshot bloque = sealed(3000.0f, kNow - 60u, ctx,
                                      kPhIntegralRestoreMaxStreak);
   TEST_ASSERT_TRUE(
-      phPersistEvaluateRestore(bloque, ctx, kNow, cap).reject == PhPersistReject::kStreak);
+      phPersistEvaluateRestore(bloque, ctx, kNow, kFiltNow, cap).reject == PhPersistReject::kStreak);
 
   // Écriture normale : streak remis à zéro (R7).
   const PhIntegralSnapshot apresEcriture = sealed(3200.0f, kNow - 10u, ctx, 0);
   const PhPersistRestoreVerdict v =
-      phPersistEvaluateRestore(apresEcriture, ctx, kNow, cap);
+      phPersistEvaluateRestore(apresEcriture, ctx, kNow, kFiltNow, cap);
   TEST_ASSERT_TRUE(v.accepted);
 }
 
@@ -997,6 +1064,8 @@ static PhPersistWriteInputs writeIn(uint32_t nowMs, uint32_t lastSaveMs,
   in.value = value;
   in.savedValue = savedValue;
   in.integralMax = integralMax;
+  in.filtMinNow = kFiltNow;    // feature-093 : pas d'échéance P3 par défaut
+  in.filtMinSaved = kFiltNow;
   return in;
 }
 
@@ -1112,10 +1181,14 @@ void test_H_contrat_numerique_du_module(void) {
   TEST_ASSERT_TRUE(kPhIntegralRestoreMinHistoryDays <=
                    kPhIntegralRestoreHistoryWindowDays);
   // R2
-  TEST_ASSERT_EQUAL_UINT8(1, kPhIntegralPersistSchema);
-  // R3 — 6 h = une constante d'intégration à vitesse `normal`.
-  TEST_ASSERT_EQUAL_UINT32(21600UL, kPhIntegralPersistMaxAgeS);
-  TEST_ASSERT_EQUAL_UINT32((uint32_t)kPhIntegralTiNormalS, kPhIntegralPersistMaxAgeS);
+  TEST_ASSERT_EQUAL_UINT8(2, kPhIntegralPersistSchema);  // feature-093 : 24 octets
+  // R3 (feature-093) — 6 h DE FILTRATION = une constante d'intégration à
+  // vitesse `normal` ; plafond mural de sécurité 72 h ; échéance P3 à mi-fenêtre.
+  TEST_ASSERT_EQUAL_UINT32(360UL, kPhIntegralPersistMaxFiltMin);
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kPhIntegralTiNormalS, kPhIntegralPersistMaxFiltMin * 60UL);
+  TEST_ASSERT_EQUAL_UINT32(259200UL, kPhIntegralPersistMaxWallAgeS);
+  TEST_ASSERT_EQUAL_UINT32(180UL, kPhIntegralPersistDueFiltMin);
+  TEST_ASSERT_TRUE(kPhIntegralPersistDueFiltMin < kPhIntegralPersistMaxFiltMin);
   // R4
   TEST_ASSERT_EQUAL_UINT32(300000UL, kPhIntegralRestoreConfirmMs);
   TEST_ASSERT_EQUAL_UINT32(600000UL, kPhIntegralRestoreArmWindowMs);
@@ -1136,8 +1209,9 @@ void test_H_libelles_de_rejet(void) {
       PhPersistReject::kSchema, PhPersistReject::kStreak,
       PhPersistReject::kContext, PhPersistReject::kEpoch,
       PhPersistReject::kStale,  PhPersistReject::kValue,
+      PhPersistReject::kFiltCounter,
   };
-  for (int i = 0; i < 6; ++i) {
+  for (int i = 0; i < 7; ++i) {
     const char* label = phPersistRejectLabel(parlants[i]);
     TEST_ASSERT_NOT_NULL(label);
     TEST_ASSERT_TRUE(label[0] != '\0');
@@ -1605,6 +1679,366 @@ void test_I_scellement_deterministe(void) {
 }
 
 // =============================================================================
+// J — feature-093 : INTÉGRALE TRANSPARENTE AU REBOOT (v2.34.0)
+// =============================================================================
+// Ce qui a cassé le 03/09/2026 : valeur écrite la veille 15:00, stable ensuite
+// (aucune écriture kDelta), rejetée « périmée » au matin par un âge MURAL de
+// 6 h. Deux correctifs : (a) l'âge nominal se compte en MINUTES DE FILTRATION
+// (schéma 2, champ filtTotalMin), l'heure murale n'est qu'un filet à 72 h ;
+// (b) une écriture d'ÉCHÉANCE (kDue) toutes les 180 min de filtration garantit
+// qu'un instantané frais existe à tout instant. Plus kRewrite (C5) : un
+// enregistrement rejeté au boot est remplacé dès la 1re intégrale positive.
+
+static const float kCapJ = 3000.0f;  // plafond R1 confortable pour ces tests
+static const uint32_t kCtxJ = 0x0930C0DEu;
+
+// Aller-retour : sceller, relire les 24 octets, vérifier CRC + champs, dont le
+// compteur de filtration (offset 16) ; un bit du compteur inversé → non intact.
+void test_J_aller_retour_24_octets_schema_2(void) {
+  PhIntegralSnapshot s = sealed(1234.5f, kNow - 3600u, kCtxJ, 2, kPhIntegralPersistSchema, 4242u);
+  uint8_t blob[24];
+  memcpy(blob, &s, sizeof(blob));
+  PhIntegralSnapshot r;
+  memcpy(&r, blob, sizeof(r));
+  TEST_ASSERT_TRUE(phPersistSnapshotIntact(r, 24));
+  TEST_ASSERT_EQUAL_UINT8(2, r.schema);
+  TEST_ASSERT_EQUAL_UINT8(2, r.restoreStreak);
+  TEST_ASSERT_EQUAL_UINT32(kCtxJ, r.context);
+  TEST_ASSERT_EQUAL_UINT32(kNow - 3600u, r.epoch);
+  TEST_ASSERT_EQUAL_FLOAT(1234.5f, r.value);
+  TEST_ASSERT_EQUAL_UINT32(4242u, r.filtTotalMin);
+  TEST_ASSERT_EQUAL_UINT32(16, offsetof(PhIntegralSnapshot, filtTotalMin));
+  TEST_ASSERT_EQUAL_UINT32(20, offsetof(PhIntegralSnapshot, crc));
+  // Le CRC couvre bien le compteur : l'inverser est détecté.
+  blob[16] ^= 0x01;
+  memcpy(&r, blob, sizeof(r));
+  TEST_ASSERT_FALSE(phPersistSnapshotIntact(r, 24));
+  // Et il est relu par la décision : accepté tel quel, sans rejet.
+  PhPersistRestoreVerdict v = phPersistEvaluateRestore(s, kCtxJ, kNow, 4242u + 100u, kCapJ);
+  TEST_ASSERT_TRUE(v.accepted);
+  TEST_ASSERT_EQUAL_UINT32(100u, v.filtAgeMin);
+  TEST_ASSERT_EQUAL_UINT32(3600u, v.ageS);
+}
+
+// Un enregistrement du schéma 1 (v2.27-v2.33, sans compteur) est rejeté kSchema
+// AVANT tout autre contrôle — même intact, même frais, même contexte identique.
+void test_J_schema_1_est_rejete_avant_tout_autre_controle(void) {
+  PhIntegralSnapshot s = sealed(1000.0f, kNow - 60u, kCtxJ, 0, /*schema*/1);
+  TEST_ASSERT_TRUE(phPersistSnapshotIntact(s, sizeof(s)));  // intact…
+  PhPersistRestoreVerdict v = phPersistEvaluateRestore(s, kCtxJ, kNow, kFiltNow, kCapJ);
+  TEST_ASSERT_FALSE(v.accepted);
+  TEST_ASSERT_TRUE(v.reject == PhPersistReject::kSchema);  // …mais refusé
+  TEST_ASSERT_EQUAL_UINT8(2, kPhIntegralPersistSchema);
+}
+
+// LE CAS DU 03/09 : écrit la veille (14 h murales), 0 min de filtration depuis
+// (nuit) → accepté, âge filtration 0.
+void test_J_nuit_sans_filtration_puis_reboot_accepte(void) {
+  PhIntegralSnapshot s = sealed(1200.0f, kNow - 14u * 3600u, kCtxJ, 0, kPhIntegralPersistSchema, kFiltNow);
+  PhPersistRestoreVerdict v = phPersistEvaluateRestore(s, kCtxJ, kNow, kFiltNow, kCapJ);
+  TEST_ASSERT_TRUE(v.accepted);
+  TEST_ASSERT_TRUE(v.reject == PhPersistReject::kNone);
+  TEST_ASSERT_EQUAL_UINT32(0, v.filtAgeMin);
+  TEST_ASSERT_EQUAL_UINT32(14u * 3600u, v.ageS);
+  TEST_ASSERT_EQUAL_FLOAT(1200.0f, v.candidate);
+}
+
+// Reboot (OTA, watchdog) en PLEINE filtration : écrit il y a 45 min de filtration
+// et 45 min murales → accepté.
+void test_J_reboot_en_cours_de_filtration_accepte(void) {
+  PhIntegralSnapshot s = sealed(1200.0f, kNow - 45u * 60u, kCtxJ, 0, kPhIntegralPersistSchema, kFiltNow - 45u);
+  PhPersistRestoreVerdict v = phPersistEvaluateRestore(s, kCtxJ, kNow, kFiltNow, kCapJ);
+  TEST_ASSERT_TRUE(v.accepted);
+  TEST_ASSERT_EQUAL_UINT32(45u, v.filtAgeMin);
+}
+
+// 361 min de filtration accumulées → kStale, même si l'heure murale ne dit que
+// 1 h (impossible physiquement, mais la règle est en filtration : elle prime).
+void test_J_361_min_de_filtration_rejete_meme_a_1h_murale(void) {
+  PhIntegralSnapshot s = sealed(1200.0f, kNow - 3600u, kCtxJ, 0, kPhIntegralPersistSchema,
+                                kFiltNow - (kPhIntegralPersistMaxFiltMin + 1u));
+  PhPersistRestoreVerdict v = phPersistEvaluateRestore(s, kCtxJ, kNow, kFiltNow, kCapJ);
+  TEST_ASSERT_FALSE(v.accepted);
+  TEST_ASSERT_TRUE(v.reject == PhPersistReject::kStale);
+  TEST_ASSERT_EQUAL_UINT32(kPhIntegralPersistMaxFiltMin + 1u, v.filtAgeMin);
+  // 360 pile → accepté (inclusif).
+  s = sealed(1200.0f, kNow - 3600u, kCtxJ, 0, kPhIntegralPersistSchema,
+             kFiltNow - kPhIntegralPersistMaxFiltMin);
+  TEST_ASSERT_TRUE(phPersistEvaluateRestore(s, kCtxJ, kNow, kFiltNow, kCapJ).accepted);
+}
+
+// 72 h + 1 s murales → kStale même à 0 min de filtration (hivernage, longue
+// coupure : la chimie a pu changer sans circulation) ; 72 h pile → accepté.
+void test_J_72h_plus_1s_rejete_meme_a_0_min_de_filtration(void) {
+  PhIntegralSnapshot s = sealed(1200.0f, kNow - (kPhIntegralPersistMaxWallAgeS + 1u), kCtxJ);
+  PhPersistRestoreVerdict v = phPersistEvaluateRestore(s, kCtxJ, kNow, kFiltNow, kCapJ);
+  TEST_ASSERT_FALSE(v.accepted);
+  TEST_ASSERT_TRUE(v.reject == PhPersistReject::kStale);
+  TEST_ASSERT_EQUAL_UINT32(0, v.filtAgeMin);
+  s = sealed(1200.0f, kNow - kPhIntegralPersistMaxWallAgeS, kCtxJ);
+  TEST_ASSERT_TRUE(phPersistEvaluateRestore(s, kCtxJ, kNow, kFiltNow, kCapJ).accepted);
+}
+
+// Compteur non monotone (NVS `pool-daily` effacée : compteur courant < écrit) ET
+// âge mural > 72 h : c'est kFiltCounter qui doit sortir, pas kStale — l'ordre
+// compteur → péremption est verrouillé (le journal doit nommer la cause racine,
+// une NVS effacée, pas un symptôme). Un ordre inversé, ou une régression de
+// compteur non détectée (soustraction non signée → âge géant → kStale),
+// donnerait kStale.
+void test_J_compteur_non_monotone_avec_72h_c_est_le_compteur_qui_parle(void) {
+  PhIntegralSnapshot s = sealed(1200.0f, kNow - (kPhIntegralPersistMaxWallAgeS + 1u), kCtxJ, 0,
+                                kPhIntegralPersistSchema, kFiltNow + 1u);
+  PhPersistRestoreVerdict v = phPersistEvaluateRestore(s, kCtxJ, kNow, kFiltNow, kCapJ);
+  TEST_ASSERT_FALSE(v.accepted);
+  TEST_ASSERT_TRUE(v.reject == PhPersistReject::kFiltCounter);
+  // Régression de 1 seule minute, tout le reste frais : refusée aussi.
+  s = sealed(1200.0f, kNow - 60u, kCtxJ, 0, kPhIntegralPersistSchema, kFiltNow + 1u);
+  v = phPersistEvaluateRestore(s, kCtxJ, kNow, kFiltNow, kCapJ);
+  TEST_ASSERT_FALSE(v.accepted);
+  TEST_ASSERT_TRUE(v.reject == PhPersistReject::kFiltCounter);
+  // Régression énorme (compteur écrit ≫ courant) : pas d'âge « négatif » relu
+  // comme frais ni comme périmé.
+  s = sealed(1200.0f, kNow - 60u, kCtxJ, 0, kPhIntegralPersistSchema, 0xFFFFFFF0u);
+  v = phPersistEvaluateRestore(s, kCtxJ, kNow, kFiltNow, kCapJ);
+  TEST_ASSERT_TRUE(v.reject == PhPersistReject::kFiltCounter);
+  // Compteur égal : âge nul, accepté.
+  s = sealed(1200.0f, kNow - 60u, kCtxJ, 0, kPhIntegralPersistSchema, kFiltNow);
+  TEST_ASSERT_TRUE(phPersistEvaluateRestore(s, kCtxJ, kNow, kFiltNow, kCapJ).accepted);
+}
+
+// Ordre kEpoch → kFiltCounter → kStale, chaque étape avec toutes les suivantes
+// fautives : epoch futur + compteur reculé + 72 h → kEpoch ; compteur reculé +
+// 72 h → kFiltCounter ; 72 h seul → kStale.
+void test_J_ordre_epoch_compteur_peremption(void) {
+  PhPersistAgeInputs in;
+  in.epochWritten = kNow + 1u;          // futur
+  in.epochNow = kNow;
+  in.filtTotalWritten = kFiltNow + 1u;  // reculé
+  in.filtTotalNow = kFiltNow;
+  TEST_ASSERT_TRUE(phPersistAge(in).reject == PhPersistReject::kEpoch);
+  in.epochWritten = kNow - (kPhIntegralPersistMaxWallAgeS + 1u);  // 72 h + 1
+  TEST_ASSERT_TRUE(phPersistAge(in).reject == PhPersistReject::kFiltCounter);
+  in.filtTotalWritten = kFiltNow;
+  TEST_ASSERT_TRUE(phPersistAge(in).reject == PhPersistReject::kStale);
+  // Horloge non sync avec tout le reste faux → kEpoch.
+  in.epochNow = 5u;
+  in.filtTotalWritten = kFiltNow + 1u;
+  TEST_ASSERT_TRUE(phPersistAge(in).reject == PhPersistReject::kEpoch);
+}
+
+// Heure non synchronisée : la relecture refuse (kEpoch) ET l'écriture s'abstient
+// (kNone), quelle que soit l'échéance de filtration ou la demande de réécriture.
+void test_J_heure_non_sync_fail_closed_a_la_relecture_et_a_l_ecriture(void) {
+  PhIntegralSnapshot s = sealed(1200.0f, kNow - 60u, kCtxJ);
+  TEST_ASSERT_TRUE(phPersistEvaluateRestore(s, kCtxJ, 0u, kFiltNow, kCapJ).reject == PhPersistReject::kEpoch);
+  TEST_ASSERT_TRUE(phPersistEvaluateRestore(s, kCtxJ, (uint32_t)kMinValidEpoch - 1u, kFiltNow, kCapJ).reject == PhPersistReject::kEpoch);
+
+  PhPersistWriteInputs w = writeIn(10 * kPhIntegralPersistMinIntervalMs, 1000u, 3000.0f, 0.0f, /*epoch*/0u);
+  w.filtMinNow = kFiltNow + 10u * kPhIntegralPersistDueFiltMin;
+  w.rewriteWanted = true;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+  w.epochNow = kNow;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kRewrite);
+}
+
+// kDelta : variation > 5 % du plafond, cadence respectée → motif kDelta (et pas
+// kDue même si l'échéance est aussi atteinte : kDelta est testé d'abord).
+void test_J_motif_kDelta(void) {
+  const float span = kPhIntegralPersistMinDeltaFrac * kImax;
+  const uint32_t t0 = 100000u;
+  PhPersistWriteInputs w = writeIn(t0 + kPhIntegralPersistMinIntervalMs, t0, 1000.0f + 1.5f * span, 1000.0f);
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kDelta);
+  w.filtMinNow = kFiltNow + kPhIntegralPersistDueFiltMin;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kDelta);
+  // Sous 5 % et sans échéance : kNone.
+  w = writeIn(t0 + kPhIntegralPersistMinIntervalMs, t0, 1000.0f + 0.5f * span, 1000.0f);
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+}
+
+// Revue v2.34.0 (Majeur 1) : pendant la confirmation R4, la RAM vaut 0 alors que
+// la NVS porte l'instantané accepté (3 000 pH·s). 30 min plus tard, sans le
+// drapeau `candidatePending`, kDelta écraserait la NVS par un zéro — l'intégrale
+// serait perdue au reboot suivant. Le drapeau interdit TOUTE écriture (kDelta,
+// kDue et même kRewrite) tant que la candidate vit ; une fois la candidate morte
+// (drapeau baissé), la cadence normale reprend et le zéro peut s'écrire.
+void test_J_candidate_en_attente_interdit_toute_ecriture(void) {
+  const uint32_t t0 = 100000u;
+  // Sans garde : le scénario du bug — kDelta vers 0.
+  PhPersistWriteInputs w = writeIn(t0 + kPhIntegralPersistMinIntervalMs, t0, 0.0f, 3000.0f);
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kDelta);
+  // Avec la candidate en attente : rien, même échéance atteinte.
+  w.candidatePending = true;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+  w.filtMinNow = kFiltNow + kPhIntegralPersistDueFiltMin;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+  // Même kRewrite s'incline (cas théorique : pas de candidate sans acceptation,
+  // donc pas de rejet — mais la priorité doit être sans ambiguïté).
+  w.rewriteWanted = true;
+  w.value = 500.0f;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+  // Candidate morte : le zéro s'écrit (l'ancien instantané n'était plus restaurable).
+  w = writeIn(t0 + kPhIntegralPersistMinIntervalMs, t0, 0.0f, 3000.0f);
+  w.candidatePending = false;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kDelta);
+}
+
+// kDue : 180 min de filtration depuis la dernière écriture, valeur INCHANGÉE,
+// cadence respectée → écriture d'échéance. 179 min → rien.
+void test_J_motif_kDue_a_180_min_de_filtration_sans_delta(void) {
+  const uint32_t t0 = 100000u;
+  PhPersistWriteInputs w = writeIn(t0 + 4u * kPhIntegralPersistMinIntervalMs, t0, 1500.0f, 1500.0f);
+  w.filtMinSaved = kFiltNow;
+  w.filtMinNow = kFiltNow + kPhIntegralPersistDueFiltMin;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kDue);
+  TEST_ASSERT_TRUE(phPersistShouldWrite(w));
+  w.filtMinNow = kFiltNow + kPhIntegralPersistDueFiltMin - 1u;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+  // Valeur légèrement différente (sous 5 %) + échéance → kDue quand même.
+  w.filtMinNow = kFiltNow + kPhIntegralPersistDueFiltMin;
+  w.value = 1500.0f + 100.0f;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kDue);
+  // Compteur de filtration reculé (NVS effacée) : échéance immédiate (fail-open :
+  // une écriture de trop, jamais une de moins).
+  w.filtMinNow = kFiltNow - 1u;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kDue);
+}
+
+// Pas de kDue : sous l'échéance ; ou à valeur nulle / négative (rien à préserver,
+// la retombée à zéro est couverte par kDelta).
+void test_J_pas_de_kDue_sous_l_echeance_ni_a_valeur_nulle(void) {
+  const uint32_t t0 = 100000u;
+  PhPersistWriteInputs w = writeIn(t0 + 4u * kPhIntegralPersistMinIntervalMs, t0, 1500.0f, 1500.0f);
+  for (uint32_t m = 0; m < kPhIntegralPersistDueFiltMin; m += 15u) {
+    w.filtMinNow = kFiltNow + m;
+    TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+  }
+  w.filtMinNow = kFiltNow + 10u * kPhIntegralPersistDueFiltMin;
+  w.value = 0.0f; w.savedValue = 0.0f;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+  w.value = -50.0f; w.savedValue = -50.0f;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+}
+
+// L'échéance n'outrepasse pas la cadence R5 : 180 min de filtration mais dernier
+// flush il y a 29 min → kNone ; à 30 min → kDue.
+void test_J_kDue_respecte_la_cadence_de_30_min(void) {
+  const uint32_t t0 = 100000u;
+  PhPersistWriteInputs w = writeIn(t0 + kPhIntegralPersistMinIntervalMs - 1u, t0, 1500.0f, 1500.0f);
+  w.filtMinNow = kFiltNow + kPhIntegralPersistDueFiltMin;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+  w.nowMs = t0 + kPhIntegralPersistMinIntervalMs;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kDue);
+}
+
+// L'échéance se compte en MINUTES DE FILTRATION, pas en minutes murales : 14 h
+// murales (nuit) sans filtration → pas d'écriture ; inversement, 180 min de
+// filtration en 180 min murales → écriture. (Mutant « fraîcheur/échéance en
+// minutes murales ».)
+void test_J_kDue_en_minutes_de_filtration_pas_murales(void) {
+  const uint32_t t0 = 100000u;
+  PhPersistWriteInputs w = writeIn(t0 + 14u * 3600000u, t0, 1500.0f, 1500.0f, kNow + 14u * 3600u);
+  w.filtMinNow = kFiltNow;  // 0 min de filtration
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+  // Côté relecture, la nuit de 14 h reste FRAÎCHE (0 min de filtration).
+  TEST_ASSERT_TRUE(fresh(kNow - 14u * 3600u, kNow, kFiltNow, kFiltNow));
+  // Et 361 min de filtration en 361 min murales (6 h 01) → périmé : c'est bien la
+  // filtration qui vieillit, pas l'horloge seule (6 h murales ne suffiraient pas
+  // à périmer avec 0 min de filtration, cf. ci-dessus).
+  TEST_ASSERT_FALSE(fresh(kNow - 361u * 60u, kNow, kFiltNow - 361u, kFiltNow));
+  TEST_ASSERT_TRUE(fresh(kNow - 361u * 60u, kNow, kFiltNow, kFiltNow));
+}
+
+// kRewrite (C5) : après un rejet au boot, la première intégrale POSITIVE est
+// écrite sans attendre ni la cadence ni l'amplitude ; à valeur nulle, rien
+// (il n'y a encore rien à préserver) ; le drapeau levé sans intégrale ne fait
+// pas écrire une valeur négative.
+void test_J_motif_kRewrite_apres_rejet_des_la_premiere_integrale_positive(void) {
+  PhPersistWriteInputs w = writeIn(5000u, 4000u, 0.0f, 0.0f);  // 1 s après un flush
+  w.rewriteWanted = true;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+  w.value = 1.0f;  // première intégrale positive, minuscule (≪ 5 %)
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kRewrite);
+  w.value = -1.0f;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+  // Drapeau baissé : retour au régime nominal (cadence non respectée → kNone).
+  w.value = 1.0f; w.rewriteWanted = false;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kNone);
+  // kRewrite prime sur kDelta et kDue.
+  w.rewriteWanted = true; w.value = 5000.0f; w.filtMinNow = kFiltNow + 1000u;
+  TEST_ASSERT_TRUE(phPersistWriteReason(w) == PhPersistWriteReason::kRewrite);
+}
+
+// Simulation d'une journée : 12 h de filtration continue, tick par minute,
+// intégrale STABLE (3000 pH·s, jamais de kDelta après la 1re écriture). La
+// coquille écrit quand le module le dit et met à jour lastSaveMs/filtMinSaved/
+// savedValue. Attendu : ≤ 6 écritures (1 initiale + 4 échéances = 5), et à TOUT
+// instant un instantané d'âge de filtration ≤ 180 min < 360 (frais).
+static uint32_t simulateFiltrationHours(uint32_t hours, float value, uint32_t* maxAgeMin) {
+  uint32_t writes = 0;
+  uint32_t lastSaveMs = 0;
+  uint32_t filtSaved = kFiltNow;
+  float saved = 0.0f;
+  uint32_t worst = 0;
+  for (uint32_t m = 0; m <= hours * 60u; ++m) {
+    PhPersistWriteInputs w;
+    w.nowMs = 1000u + m * 60000u;
+    w.lastSaveMs = lastSaveMs;
+    w.epochNow = kNow + m * 60u;
+    w.value = value;
+    w.savedValue = saved;
+    w.integralMax = kImax;
+    w.filtMinNow = kFiltNow + m;
+    w.filtMinSaved = filtSaved;
+    if (phPersistShouldWrite(w)) {
+      ++writes;
+      lastSaveMs = w.nowMs;
+      filtSaved = w.filtMinNow;
+      saved = value;
+    }
+    const uint32_t age = w.filtMinNow - filtSaved;
+    if (age > worst) worst = age;
+    // Invariant : l'instantané persistant est TOUJOURS frais.
+    TEST_ASSERT_TRUE(fresh(kNow, w.epochNow, filtSaved, w.filtMinNow));
+  }
+  if (maxAgeMin) *maxAgeMin = worst;
+  return writes;
+}
+
+void test_J_douze_heures_de_filtration_au_plus_six_ecritures(void) {
+  uint32_t worst = 0;
+  const uint32_t writes = simulateFiltrationHours(12, 3000.0f, &worst);
+  char msg[96];
+  snprintf(msg, sizeof(msg), "%u ecritures sur 12 h (attendu <= 6), age max %u min", writes, worst);
+  TEST_ASSERT_TRUE_MESSAGE(writes <= 6, msg);
+  TEST_ASSERT_TRUE_MESSAGE(writes >= 4, msg);  // 1 + échéances 180/360/540 au moins
+  TEST_ASSERT_TRUE_MESSAGE(worst <= kPhIntegralPersistDueFiltMin, msg);
+  TEST_ASSERT_TRUE(worst < kPhIntegralPersistMaxFiltMin);
+}
+
+// 8 h de filtration (journée d'été typique) : au moins une écriture d'échéance
+// après l'initiale, l'instantané reste frais tout le long.
+void test_J_huit_heures_de_filtration_au_moins_une_ecriture(void) {
+  uint32_t worst = 0;
+  const uint32_t writes = simulateFiltrationHours(8, 3000.0f, &worst);
+  char msg[96];
+  snprintf(msg, sizeof(msg), "%u ecritures sur 8 h (attendu >= 2), age max %u min", writes, worst);
+  TEST_ASSERT_TRUE_MESSAGE(writes >= 2, msg);
+  TEST_ASSERT_TRUE_MESSAGE(writes <= 5, msg);
+  TEST_ASSERT_TRUE(worst < kPhIntegralPersistMaxFiltMin);
+}
+
+void test_J_contrat_numerique_feature_093(void) {
+  TEST_ASSERT_EQUAL_UINT8(2, kPhIntegralPersistSchema);
+  TEST_ASSERT_EQUAL_UINT32(360, kPhIntegralPersistMaxFiltMin);
+  TEST_ASSERT_EQUAL_UINT32(72u * 3600u, kPhIntegralPersistMaxWallAgeS);
+  TEST_ASSERT_EQUAL_UINT32(180, kPhIntegralPersistDueFiltMin);
+  // L'échéance est strictement inférieure à la péremption : deux échéances
+  // ratées d'affilée sont nécessaires pour périmer.
+  TEST_ASSERT_TRUE(2u * kPhIntegralPersistDueFiltMin <= kPhIntegralPersistMaxFiltMin);
+  TEST_ASSERT_TRUE(kPhIntegralPersistMinIntervalMs <= kPhIntegralPersistDueFiltMin * 60000u);
+}
+
+// =============================================================================
 
 int main(int argc, char** argv) {
   (void)argc; (void)argv;
@@ -1688,5 +2122,25 @@ int main(int argc, char** argv) {
   RUN_TEST(test_I_deduplication_balaie_toutes_les_cases);
   RUN_TEST(test_I_anneau_scelle_est_accepte_toute_alteration_est_rejetee);
   RUN_TEST(test_I_scellement_deterministe);
+  // J — feature-093
+  RUN_TEST(test_J_aller_retour_24_octets_schema_2);
+  RUN_TEST(test_J_schema_1_est_rejete_avant_tout_autre_controle);
+  RUN_TEST(test_J_nuit_sans_filtration_puis_reboot_accepte);
+  RUN_TEST(test_J_reboot_en_cours_de_filtration_accepte);
+  RUN_TEST(test_J_361_min_de_filtration_rejete_meme_a_1h_murale);
+  RUN_TEST(test_J_72h_plus_1s_rejete_meme_a_0_min_de_filtration);
+  RUN_TEST(test_J_compteur_non_monotone_avec_72h_c_est_le_compteur_qui_parle);
+  RUN_TEST(test_J_ordre_epoch_compteur_peremption);
+  RUN_TEST(test_J_heure_non_sync_fail_closed_a_la_relecture_et_a_l_ecriture);
+  RUN_TEST(test_J_motif_kDelta);
+  RUN_TEST(test_J_candidate_en_attente_interdit_toute_ecriture);
+  RUN_TEST(test_J_motif_kDue_a_180_min_de_filtration_sans_delta);
+  RUN_TEST(test_J_pas_de_kDue_sous_l_echeance_ni_a_valeur_nulle);
+  RUN_TEST(test_J_kDue_respecte_la_cadence_de_30_min);
+  RUN_TEST(test_J_kDue_en_minutes_de_filtration_pas_murales);
+  RUN_TEST(test_J_motif_kRewrite_apres_rejet_des_la_premiere_integrale_positive);
+  RUN_TEST(test_J_douze_heures_de_filtration_au_plus_six_ecritures);
+  RUN_TEST(test_J_huit_heures_de_filtration_au_moins_une_ecriture);
+  RUN_TEST(test_J_contrat_numerique_feature_093);
   return UNITY_END();
 }

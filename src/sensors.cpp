@@ -558,10 +558,9 @@ void SensorManager::_readEzoSensors(float tempC) {
 // directement. La journalisation est edge-triggered ici — le module pur ne peut
 // pas logger (ADR-0017), même pattern que le latch EMI.
 void SensorManager::_updateFilterGates(uint32_t nowMs) {
-  bool waterPresent = false;
-  bool measuresValid = false;
-  uint32_t remainingS = 0;
-  measureValidity.getSnapshot(waterPresent, measuresValid, remainingS);
+  const MeasureValiditySnapshot mv = measureValidity.getSnapshot();
+  const bool waterPresent = mv.waterPresent;
+  const bool measuresValid = mv.measuresValid;
 
   const bool phWasClosed = _phFilter.gateClosed();
   const bool orpWasClosed = _orpFilter.gateClosed();
@@ -574,7 +573,8 @@ void SensorManager::_updateFilterGates(uint32_t nowMs) {
   if (nowClosed && !phWasClosed) {
     systemLogger.info(
         "Filtres pH/ORP : alimentation GELÉE — mesures non représentatives (" +
-        String(waterPresent ? "stabilisation en cours" : "circulation arrêtée") +
+        String(waterPresent ? (mv.purgeCount > 0 ? "re-purge en cours" : "purge en cours")
+                            : "circulation arrêtée") +
         ") — dosage auto bloqué tant que la porte est fermée");
   } else if (!nowClosed && phWasClosed) {
     systemLogger.info(
@@ -649,11 +649,8 @@ void SensorManager::_checkRearmAndLog(bool isPh) {
 //     kSensorFilterNotReadyRepeatMs (30 min) tant que la panne dure, info à la
 //     levée. Edge-triggered de bout en bout : jamais de spam.
 void SensorManager::_checkFilterNotReadyAlarm(uint32_t nowMs) {
-  bool waterPresent = false;
-  bool measuresValid = false;
-  uint32_t remainingS = 0;
-  measureValidity.getSnapshot(waterPresent, measuresValid, remainingS);
-  const bool representative = waterPresent && measuresValid;
+  const MeasureValiditySnapshot mv = measureValidity.getSnapshot();
+  const bool representative = mv.waterPresent && mv.measuresValid;
 
   _evalNotReadyAlarm(true,  representative && !isPhFilterReady(),  nowMs);
   _evalNotReadyAlarm(false, representative && !isOrpFilterReady(), nowMs);

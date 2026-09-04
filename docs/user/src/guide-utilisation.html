@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<!--
+  ═══════════════════════════════════════════════════════════════════════════
+  SOURCE MAINTENABLE du « Guide d'utilisation » PoolController.
+
+  Régénérer le PDF (depuis la racine du projet) :
+
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+      --headless --no-pdf-header-footer \
+      --print-to-pdf="docs/user/guide-utilisation-v<version>.pdf" \
+      "docs/user/src/guide-utilisation.html"
+
+  Sources de vérité : les 9 pages de docs/features/ (page-dashboard, page-ph,
+  page-orp, page-temperature, page-filtration, page-lighting, page-dosages,
+  page-settings, page-wizard) + docs/UPDATE_GUIDE.md — état firmware 2.32.
+  Registre : vulgarisation pour le propriétaire du bassin. Ce guide explique
+  COMMENT SE SERVIR de chaque écran ; le fonctionnement interne de la
+  régulation est traité par le guide compagnon « La régulation chimique —
+  comment ça marche » (guide-regulation.html), vers lequel on renvoie sans
+  jamais ré-expliquer. Aucun nom de constante, aucune référence de fichier
+  ni d'ADR ne doit apparaître ici.
+  Captures : ../../../screenshots/*.jpg (noms exacts, accents compris).
+  ═══════════════════════════════════════════════════════════════════════════
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>PoolController — Guide d'utilisation</title>
+<link rel="stylesheet" href="collection.css">
+<style>
+/* Variables propres à ce document (le système visuel commun est dans
+   collection.css). */
+:root {
+  --prefixe-section: "CHAPITRE 0";   /* chapeau des titres h2 */
+}
+</style>
+</head>
+<body>
+
+<!-- ══════════════════ Couverture ══════════════════ -->
+<header>
+  <p class="kicker">Guide d'utilisation</p>
+  <h1>PoolController</h1>
+  <p class="subtitle">Comprendre et piloter la filtration, l'éclairage et le
+  traitement de votre bassin, au quotidien.</p>
+  <hr class="cover-rule">
+  <p class="subtitle" style="font-size:10.5pt">Guide du propriétaire —
+  firmware&nbsp;2.32, septembre&nbsp;2026</p>
+</header>
+
+<p class="lead">
+Votre PoolController surveille l'eau de votre piscine (température, pH,
+potentiel de désinfection), pilote la filtration et l'éclairage, et corrige
+la chimie de l'eau grâce à deux pompes doseuses. Tout se passe depuis une
+interface web accessible avec n'importe quel navigateur — téléphone,
+tablette ou ordinateur. Ce guide fait le tour de chaque écran&nbsp;:
+ce que vous y voyez, ce que vous pouvez y faire, et les quelques réglages
+qui méritent votre attention.
+</p>
+
+<div class="box">
+  <span class="box-title">À savoir</span>
+  <p>Ce guide explique <strong>comment se servir</strong> de l'appareil.
+  Comment il décide de doser, comment il apprend votre bassin, pourquoi il
+  refuse parfois d'injecter&nbsp;: tout cela est expliqué dans le guide
+  compagnon <strong>«&nbsp;La régulation chimique — comment ça
+  marche&nbsp;»</strong>. Quand un mécanisme profond affleure dans un écran,
+  un encart comme celui-ci vous y renvoie.</p>
+</div>
+
+<!-- ══════════════════ Sommaire ══════════════════ -->
+<h3 style="margin-top:26px">Dans ce guide</h3>
+
+<div class="step">
+  <div class="step-badge">01</div>
+  <div class="step-body">
+    <strong>Bienvenue</strong>
+    <p>Ce que fait l'appareil, comment s'y connecter, comment lire ce guide.</p>
+  </div>
+</div>
+<div class="step">
+  <div class="step-badge">02</div>
+  <div class="step-body">
+    <strong>Premier démarrage</strong>
+    <p>L'assistant de mise en service, en quatre étapes.</p>
+  </div>
+</div>
+<div class="step">
+  <div class="step-badge">03</div>
+  <div class="step-body">
+    <strong>Utiliser au quotidien</strong>
+    <p>Le tableau de bord et les pages Filtration, Éclairage, Température,
+    pH, Chlore et Produits.</p>
+  </div>
+</div>
+<div class="step">
+  <div class="step-badge">04</div>
+  <div class="step-body">
+    <strong>Que faire si…</strong>
+    <p>Les messages et situations courantes, et la bonne réaction à chacune.</p>
+  </div>
+</div>
+<div class="step">
+  <div class="step-badge">05</div>
+  <div class="step-body">
+    <strong>Réglages</strong>
+    <p>Les neuf onglets de la page Paramètres, un par un.</p>
+  </div>
+</div>
+<div class="step">
+  <div class="step-badge">06</div>
+  <div class="step-body">
+    <strong>Pour aller plus loin</strong>
+    <p>Le guide de régulation, et la domotique pour les intégrateurs.</p>
+  </div>
+</div>
+
+<!-- ══════════════════ CH. 01 — Bienvenue ══════════════════ -->
+<h2 class="page-break"><span class="num">1</span>Bienvenue</h2>
+
+<h3>Ce que fait l'appareil</h3>
+
+<p>Le PoolController regroupe en un seul boîtier ce qui demande d'habitude
+plusieurs équipements&nbsp;:</p>
+
+<ul>
+  <li><strong>Il mesure</strong> en continu la température de l'eau, le pH
+  (l'acidité) et le potentiel de désinfection (l'efficacité du chlore,
+  mesurée en millivolts)&nbsp;;</li>
+  <li><strong>Il pilote la filtration</strong>&nbsp;: horaires calculés
+  automatiquement selon la température de l'eau, ou horaires fixes de votre
+  choix&nbsp;;</li>
+  <li><strong>Il corrige la chimie de l'eau</strong> grâce à deux pompes
+  doseuses — l'une pour le produit pH, l'autre pour le chlore liquide —
+  encadrées par de nombreuses sécurités&nbsp;;</li>
+  <li><strong>Il commande l'éclairage</strong> du bassin, à la demande ou
+  sur programmation&nbsp;;</li>
+  <li><strong>Il garde l'historique</strong> des mesures et vous alerte
+  quand quelque chose mérite votre attention (bidon presque vide, sonde à
+  recalibrer, régulation suspendue…).</li>
+</ul>
+
+<h3>Se connecter</h3>
+
+<p>Depuis n'importe quel appareil connecté au même réseau Wi-Fi que le
+contrôleur, ouvrez un navigateur et tapez&nbsp;:</p>
+
+<p style="text-align:center; font-size:13pt"><strong>http://poolcontroller.local</strong></p>
+
+<p>Une page de connexion s'affiche&nbsp;: entrez le <strong>mot de passe
+administrateur</strong> que vous avez choisi au premier démarrage
+(chapitre&nbsp;2). Si le nom «&nbsp;poolcontroller.local&nbsp;» ne répond
+pas sur votre réseau — cela arrive avec certaines box ou répéteurs —,
+utilisez directement l'adresse IP de l'appareil, visible dans
+Paramètres&nbsp;→&nbsp;Wi-Fi (ou dans l'application de votre box, section
+«&nbsp;appareils connectés&nbsp;»).</p>
+
+<figure>
+  <img class="capture capture-etroite" src="../../../screenshots/02_Connexion.jpg" alt="Écran de connexion PoolController">
+  <figcaption class="capture-legende">L'écran de connexion&nbsp;: le mot de passe administrateur suffit.</figcaption>
+</figure>
+
+<h3>Comment lire ce guide</h3>
+
+<p>Deux types d'encarts jalonnent les pages qui suivent&nbsp;:</p>
+
+<div class="box">
+  <span class="box-title">Encart bleu à bord pointillé</span>
+  <p>Un <strong>renvoi</strong> vers le guide de régulation, quand un écran
+  touche à un mécanisme interne (dosage, apprentissage, sécurités). Rien
+  d'urgent&nbsp;: c'est pour comprendre, pas pour agir.</p>
+</div>
+
+<div class="box-alerte">
+  <span class="box-title">Encart rouge</span>
+  <p>Une <strong>action à conséquences</strong>&nbsp;: un bouton ou un
+  réglage qui modifie durablement le comportement de l'appareil. Lisez
+  l'encart avant de cliquer.</p>
+</div>
+
+<!-- ══════════════════ CH. 02 — Premier démarrage ══════════════════ -->
+<h2 class="page-break"><span class="num">2</span>Premier démarrage</h2>
+
+<p>Au tout premier allumage (ou après une réinitialisation d'usine),
+l'appareil n'est encore relié à aucun réseau&nbsp;: il crée son propre
+réseau Wi-Fi, nommé <strong>PoolControllerAP</strong>. Connectez-y votre
+téléphone ou votre ordinateur (le mot de passe de ce réseau figure sur
+l'étiquette de l'appareil), puis ouvrez un navigateur à l'adresse
+<strong>http://192.168.4.1</strong>&nbsp;: l'assistant de mise en service
+s'affiche. Il vous guide en <strong>quatre étapes</strong> — impossible d'en
+sauter une, et revenir en arrière ne défait pas ce qui est déjà
+enregistré.</p>
+
+<h3>Étape 1 — Le mot de passe administrateur</h3>
+
+<p>C'est le mot de passe qui protégera ensuite l'accès à l'interface.
+Il doit compter <strong>au moins 8&nbsp;caractères, dont un chiffre et un
+caractère spécial</strong>&nbsp;; une liste de contrôle et une jauge de
+force vous accompagnent pendant la saisie. Choisissez-le soigneusement
+et notez-le&nbsp;: c'est lui qui donne accès à tous les réglages.</p>
+
+<figure>
+  <img class="capture capture-etroite" src="../../../screenshots/01_Assistant_Etape_1_Mot_de_passe.jpg" alt="Assistant, étape 1 : mot de passe">
+  <figcaption class="capture-legende">Étape 1 — le mot de passe, avec sa liste de contrôle en temps réel.</figcaption>
+</figure>
+
+<h3>Étape 2 — Le Wi-Fi</h3>
+
+<p>L'appareil recherche les réseaux à portée&nbsp;: choisissez le vôtre et
+entrez sa clé. Cette étape est <strong>facultative</strong>&nbsp;— vous
+pouvez la passer et rester sur le réseau propre de l'appareil, mais vous
+devrez alors vous y reconnecter à chaque consultation. En pratique,
+raccordez-le à votre box&nbsp;: l'interface devient accessible depuis
+toute la maison, et l'heure se règle toute seule par internet.</p>
+
+<figure>
+  <img class="capture capture-etroite" src="../../../screenshots/01_Assistant_Etape_2_Wifi.jpg" alt="Assistant, étape 2 : Wi-Fi">
+  <figcaption class="capture-legende">Étape 2 — le choix du réseau Wi-Fi.</figcaption>
+</figure>
+
+<h3>Étape 3 — Installation et bassin</h3>
+
+<p>Deux choix sur cette étape, sous forme de cartes à cocher&nbsp;:</p>
+
+<p><strong>Le mode d'installation</strong> décrit la façon dont l'appareil
+est câblé par rapport à la pompe de filtration — c'est ce câblage qui
+garantit qu'aucun produit n'est jamais injecté dans une eau qui ne circule
+pas. Trois cas&nbsp;:</p>
+
+<ul>
+  <li><strong>PoolController pilote la filtration</strong> — c'est lui qui
+  allume et éteint la pompe de filtration (cas le plus courant)&nbsp;;</li>
+  <li><strong>Alimenté par le circuit de filtration</strong> — l'appareil
+  n'est sous tension que lorsque la filtration tourne&nbsp;;</li>
+  <li><strong>Filtration externe signalée</strong> — un autre équipement
+  (domotique, horloge) gère la filtration et signale son état à
+  l'appareil.</li>
+</ul>
+
+<p><strong>La taille du bassin</strong> — «&nbsp;Moins de 20&nbsp;m³&nbsp;»,
+«&nbsp;20 à 60&nbsp;m³&nbsp;» ou «&nbsp;Plus de 60&nbsp;m³&nbsp;» —
+présélectionne les réglages de rythme de la régulation adaptés à votre
+volume d'eau. Tous restent modifiables ensuite dans
+Paramètres&nbsp;→&nbsp;Régulation.</p>
+
+<div class="box">
+  <span class="box-title">Pourquoi la taille, et pas le volume exact&nbsp;?</span>
+  <p>La taille déclarée règle uniquement le <em>rythme</em> de la
+  correction — doucement dans un petit bassin, plus franchement dans un
+  grand. Elle n'entre jamais dans un calcul de dose&nbsp;: la quantité de
+  produit dont votre eau a besoin est apprise par l'observation. Voir le
+  guide de régulation, section «&nbsp;La taille du bassin, seul réglage de
+  rythme&nbsp;».</p>
+</div>
+
+<figure>
+  <img class="capture capture-etroite" src="../../../screenshots/01_Assistant_Etape_3_Installation.jpg" alt="Assistant, étape 3 : installation et bassin">
+  <figcaption class="capture-legende">Étape 3 — le mode d'installation et la taille du bassin.</figcaption>
+</figure>
+
+<h3>Étape 4 — L'heure</h3>
+
+<p>L'appareil a besoin d'une heure juste&nbsp;: les horaires de filtration,
+les quotas journaliers de produit et l'historique en dépendent. Si vous
+l'avez connecté à internet à l'étape&nbsp;2, laissez le réglage
+<strong>automatique</strong> (l'heure se synchronise en ligne)&nbsp;; sinon,
+saisissez l'heure à la main. Choisissez votre fuseau horaire dans la
+liste.</p>
+
+<figure>
+  <img class="capture capture-etroite" src="../../../screenshots/01_Assistant_Etape_4_Heure.jpg" alt="Assistant, étape 4 : heure">
+  <figcaption class="capture-legende">Étape 4 — le réglage de l'heure et du fuseau.</figcaption>
+</figure>
+
+<p>L'assistant terminé, l'appareil vous conduit à l'interface principale.
+Il ne reste qu'à calibrer les sondes pH et chlore (chapitre&nbsp;3) avant
+de laisser la régulation automatique prendre la main.</p>
+
+<!-- ══════════════════ CH. 03 — Utiliser au quotidien ══════════════════ -->
+<h2 class="page-break"><span class="num">3</span>Utiliser au quotidien</h2>
+
+<p>L'interface s'organise autour d'un <strong>tableau de bord</strong> —
+la vue d'ensemble — et de pages dédiées, une par fonction. La navigation
+se fait par le menu&nbsp;; chaque carte du tableau de bord porte aussi un
+petit engrenage qui mène directement à sa page de détail.</p>
+
+<h3>Le tableau de bord</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/03_Tableau_de_bord.jpg" alt="Tableau de bord">
+  <figcaption class="capture-legende">Le tableau de bord&nbsp;: l'état du bassin en un coup d'œil.</figcaption>
+</figure>
+
+<p><strong>Ce que vous voyez</strong> — six cartes&nbsp;: Filtration,
+Éclairage, pH, Chlore (ORP), Température et Boost. Les cartes de mesure
+affichent la valeur courante, la cible, et un mini-graphique de la
+<strong>journée en cours</strong> (depuis minuit — les courbes sont donc
+courtes le matin, c'est normal). Sous chaque valeur, un petit badge résume
+l'état&nbsp;:</p>
+
+<ul>
+  <li><strong>Badge bleu</strong> («&nbsp;Filtration arrêtée&nbsp;»,
+  «&nbsp;Stabilisation depuis N&nbsp;min&nbsp;») — état <em>normal</em>,
+  il n'y a qu'à attendre&nbsp;;</li>
+  <li><strong>Badge orange</strong> («&nbsp;Stock faible&nbsp;»,
+  «&nbsp;Limite journalière atteinte&nbsp;»…) — une information à
+  prendre en compte&nbsp;;</li>
+  <li><strong>Badge rouge</strong> («&nbsp;Capteur indisponible&nbsp;»,
+  «&nbsp;Trop élevé&nbsp;»…) — quelque chose demande votre
+  intervention.</li>
+</ul>
+
+<p>Quand une mesure n'est pas disponible — ou pas représentative, par
+exemple filtration à l'arrêt —, la valeur affiche
+«&nbsp;<strong>--</strong>&nbsp;» et le badge explique pourquoi. L'appareil
+préfère avouer qu'il ne sait pas plutôt que d'afficher une valeur
+douteuse.</p>
+
+<p><strong>Ce que vous pouvez faire</strong> — démarrer ou arrêter la
+filtration, allumer ou éteindre l'éclairage, et activer le
+<strong>Mode Boost</strong>&nbsp;: après une journée de forte fréquentation,
+un seul bouton prolonge la filtration et relève temporairement la cible de
+chlore, jusqu'à minuit où tout revient automatiquement à la normale. À
+l'activation, un message vous rappelle de vérifier le taux de chlore avant
+la baignade — l'appareil mesure le potentiel de désinfection, pas le taux
+de chlore en tant que tel.</p>
+
+<p>Enfin, si la régulation venait à s'arrêter alors qu'elle devrait
+tourner, une <strong>bannière rouge</strong> l'annonce en tête du tableau
+de bord avec un bouton «&nbsp;Diagnostiquer&nbsp;» — voir le
+chapitre&nbsp;4.</p>
+
+<h3>La filtration</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/04_Filtration.jpg" alt="Page Filtration">
+  <figcaption class="capture-legende">La page Filtration&nbsp;: contrôle manuel et programmation.</figcaption>
+</figure>
+
+<p><strong>Ce que vous voyez</strong> — l'état actuel (Marche / Arrêt) et
+la configuration&nbsp;: le mode et les horaires du jour.</p>
+
+<p><strong>Ce que vous pouvez faire</strong> — trois modes&nbsp;:</p>
+
+<ul>
+  <li><strong>Automatique</strong> — l'appareil calcule lui-même les
+  horaires du jour à partir de la température de l'eau&nbsp;: plus l'eau
+  est chaude, plus la filtration tourne longtemps. C'est le mode
+  recommandé.</li>
+  <li><strong>Manuel</strong> — vous fixez une heure de début et une heure
+  de fin, respectées telles quelles (les plages qui franchissent minuit
+  sont acceptées).</li>
+  <li><strong>Off</strong> — la filtration reste arrêtée en permanence.</li>
+</ul>
+
+<p>Les boutons <strong>Démarrer</strong> / <strong>Arrêter</strong>
+permettent de déroger ponctuellement au planning, sans le modifier — ce
+forçage est oublié au prochain redémarrage de l'appareil.</p>
+
+<p>Si votre installation n'est pas câblée pour que le PoolController pilote
+la filtration (chapitre&nbsp;2, étape&nbsp;3), cette page l'indique et les
+commandes sont masquées&nbsp;: l'appareil se contente alors de suivre
+l'état de la filtration, sans la commander.</p>
+
+<h3>L'éclairage</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/05_Eclairage.jpg" alt="Page Éclairage">
+  <figcaption class="capture-legende">La page Éclairage&nbsp;: bouton immédiat et programmation horaire.</figcaption>
+</figure>
+
+<p><strong>Ce que vous voyez</strong> — l'état de l'éclairage (Allumé /
+Éteint) et sa programmation.</p>
+
+<p><strong>Ce que vous pouvez faire</strong> — allumer ou éteindre
+immédiatement, et, indépendamment, activer une <strong>programmation
+horaire</strong> (mode «&nbsp;Programmation&nbsp;» + heures de début et de
+fin). Les deux ne se gênent pas&nbsp;: un allumage manuel reste possible
+en dehors des heures programmées. Si votre bassin n'a pas d'éclairage
+raccordé, le réglage «&nbsp;Gérer l'éclairage&nbsp;» masque toute la
+fonction.</p>
+
+<h3>La température</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/06_Température.jpg" alt="Page Température">
+  <figcaption class="capture-legende">La page Température&nbsp;: valeur courante, état de calibration et historique.</figcaption>
+</figure>
+
+<p><strong>Ce que vous voyez</strong> — la température de l'eau en grand,
+un petit indicateur d'état de calibration («&nbsp;Calibré · il y a
+N&nbsp;j&nbsp;», ou «&nbsp;Non calibré&nbsp;»), et l'historique complet
+(affichable sur tout l'historique, 30&nbsp;jours, 7&nbsp;jours ou
+24&nbsp;heures).</p>
+
+<p><strong>Ce que vous pouvez faire</strong> — si la sonde mesure
+légèrement à côté d'un thermomètre de confiance, le bouton
+<strong>«&nbsp;Calibrer la sonde&nbsp;»</strong> ouvre un petit assistant
+en trois étapes&nbsp;: plonger la sonde dans un liquide dont vous
+connaissez la température, attendre la stabilisation, saisir la valeur de
+référence. L'appareil retient l'écart et corrige toutes les mesures
+suivantes. C'est la calibration la plus simple de l'appareil — pas de
+solution étalon, un simple thermomètre fiable suffit.</p>
+
+<h3>Le pH</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/07_pH.jpg" alt="Page pH">
+  <figcaption class="capture-legende">La page pH&nbsp;: mesure, mode de régulation, dose du jour et historique.</figcaption>
+</figure>
+
+<p><strong>Ce que vous voyez</strong> — le pH courant en grand, deux
+pastilles d'état (l'une pour la <strong>qualité de la mesure</strong>,
+l'autre pour la <strong>santé de la sonde</strong> — cliquez-les pour le
+détail), la <strong>dose du jour</strong> (une barre de progression vers le
+quota journalier), et l'historique. Sur le graphique, la <strong>zone
+comprise entre 7,2 et 7,6</strong> matérialise la plage idéale de l'eau,
+et une <strong>ligne pointillée</strong> marque votre consigne.</p>
+
+<p>Sous la barre de dose, deux <strong>capacités de dosage</strong> sont
+affichées discrètement&nbsp;: le débit que la pompe peut soutenir compte
+tenu de vos réglages, et le maximum de produit livrable sur la journée de
+filtration programmée. Un bandeau bleu «&nbsp;<strong>Dosage au maximum
+autorisé</strong>&nbsp;» peut apparaître&nbsp;: c'est un état
+<em>normal</em> — la régulation corrige au rythme le plus rapide que vos
+réglages autorisent, rien à faire. Seule l'alerte
+«&nbsp;<strong>Capacité de dosage insuffisante</strong>&nbsp;» appelle une
+action de votre part (chapitre&nbsp;4).</p>
+
+<p><strong>Ce que vous pouvez faire</strong> — choisir le mode de
+régulation&nbsp;:</p>
+
+<ul>
+  <li><strong>Automatique</strong> — l'appareil vise votre consigne, à
+  choisir parmi quatre positions&nbsp;: 7,20, 7,30, 7,40 ou 7,50. Un clic
+  suffit, la valeur est enregistrée immédiatement. En pied de carte, le
+  bloc «&nbsp;Rattrapage accumulé&nbsp;» et la ligne «&nbsp;Dose de base
+  apprise&nbsp;» montrent ce que la régulation a en tête — pure
+  information, rien à régler.</li>
+  <li><strong>Programmée</strong> — un volume quotidien fixe est réparti
+  sur les heures de filtration, sans regarder la mesure. Utile le temps de
+  remplacer une sonde. Le volume non injecté avant minuit est perdu, jamais
+  reporté.</li>
+  <li><strong>Manuelle</strong> — plus aucune régulation automatique&nbsp;;
+  vous déclenchez vous-même des injections d'un volume choisi (bouton
+  ▶&nbsp;Injecter, bouton ⏹ pour arrêter à tout moment). Les sécurités
+  restent actives&nbsp;: pas d'injection sans filtration, et les limites
+  journalières et horaires s'appliquent aussi au manuel.</li>
+</ul>
+
+<div class="box">
+  <span class="box-title">Rattrapage, dose apprise, refus de doser…</span>
+  <p>Tout ce que la carte Régulation laisse entrevoir — la part apprise,
+  la part réactive, les pauses de mélange, les seuils de sécurité — est
+  expliqué pas à pas dans le guide de régulation, sections «&nbsp;Le voyage
+  d'une correction&nbsp;» et «&nbsp;La dose de base apprise&nbsp;».</p>
+</div>
+
+<div class="box-alerte">
+  <span class="box-title">Type de correction pH- / pH+</span>
+  <p>Le réglage «&nbsp;Type de correction&nbsp;» déclare le produit branché
+  sur la pompe pH&nbsp;: <strong>pH-</strong> (acide, pour baisser le pH)
+  ou <strong>pH+</strong> (base, pour l'augmenter). Ne le changez que si
+  vous changez <em>réellement</em> de type de produit — un simple
+  changement de bidon n'en est pas un. Ce réglage inverse le sens de la
+  correction et met en pause la mémoire apprise de l'appareil le temps
+  d'observer le nouveau produit.</p>
+</div>
+
+<h4>Calibrer la sonde pH</h4>
+
+<figure>
+  <img class="capture" src="../../../screenshots/07_pH_Calibration.jpg" alt="Écran de calibration pH">
+  <figcaption class="capture-legende">La calibration pH guidée&nbsp;: deux points, avec minuterie de stabilisation.</figcaption>
+</figure>
+
+<p>La sonde pH se calibre avec <strong>deux solutions étalon</strong>
+(pH&nbsp;7,00 puis pH&nbsp;4,00). Le bouton «&nbsp;Calibrer la
+sonde&nbsp;» — toujours accessible, quel que soit le mode — ouvre un écran
+guidé&nbsp;: rincer la sonde à l'eau distillée, la plonger dans la première
+solution, attendre la stabilisation (une minuterie de 60&nbsp;secondes vous
+aide, et la valeur lue s'affiche en direct), calibrer, puis recommencer avec
+la seconde solution. Tant que la calibration n'est pas complète (2&nbsp;points),
+la régulation automatique du pH reste volontairement inactive. À refaire en
+début de saison, ou quand l'indicateur de santé de la sonde le suggère.</p>
+
+<h3>Le chlore (ORP)</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/08_ORP.jpg" alt="Page Chlore / ORP">
+  <figure>
+    <img class="capture" src="../../../screenshots/08_ORP_Calibration.jpg" alt="Calibration de la sonde ORP">
+    <figcaption class="capture-legende">Calibration de la sonde ORP (solution étalon)</figcaption>
+  </figure>
+  <figcaption class="capture-legende">La page Chlore&nbsp;: le potentiel de désinfection en millivolts.</figcaption>
+</figure>
+
+<p><strong>Ce que vous voyez</strong> — la page est construite comme la
+page pH&nbsp;: valeur courante en grand (en millivolts), pastilles d'état,
+dose du jour, historique avec la ligne pointillée de votre consigne. Pas de
+«&nbsp;plage idéale&nbsp;» ombrée ici&nbsp;: contrairement au pH, il
+n'existe pas de plage universelle du potentiel de désinfection — la bonne
+cible dépend de votre eau.</p>
+
+<p><strong>Ce que vous pouvez faire</strong> — les trois mêmes modes que le
+pH&nbsp;: <strong>Automatique</strong> (l'appareil tient votre cible en
+millivolts), <strong>Programmée</strong> (volume quotidien de chlore réparti
+sur la filtration, sans regarder la mesure) et <strong>Manuelle</strong>
+(injections à la demande). La calibration de la sonde se fait en
+<strong>un seul point</strong>, avec une solution étalon dont vous saisissez
+la valeur (les kits courants&nbsp;: 225 ou 470&nbsp;mV) — même écran guidé
+que le pH, minuterie comprise.</p>
+
+<div class="box">
+  <span class="box-title">Comment choisir la cible en millivolts&nbsp;?</span>
+  <p>La bonne méthode est la <strong>bandelette</strong> (ou le test à
+  pastille)&nbsp;: mesurez le chlore de <em>votre</em> eau, puis ajustez la
+  cible pour qu'elle corresponde au bon taux. Le pourquoi — et la raison
+  pour laquelle le chlore est suspendu quand le pH est trop haut — est
+  expliqué dans le guide de régulation, section «&nbsp;pH et chlore&nbsp;:
+  deux traitements différents&nbsp;».</p>
+</div>
+
+<h3>Les produits (suivi des bidons)</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/09_Produits.jpg" alt="Page Produits">
+  <figcaption class="capture-legende">La page Produits&nbsp;: le niveau estimé de chaque bidon.</figcaption>
+</figure>
+
+<p><strong>Ce que vous voyez</strong> — une carte par produit (pH et
+chlore), chacune avec une barre «&nbsp;restant / total&nbsp;»&nbsp;:
+l'appareil décompte chaque millilitre injecté du volume du bidon que vous
+avez déclaré. Sous un seuil d'alerte réglable (2&nbsp;litres par défaut),
+la barre passe au rouge et un badge «&nbsp;Stock faible&nbsp;» apparaît sur
+le tableau de bord.</p>
+
+<p><strong>Ce que vous pouvez faire</strong> — activer ou non le suivi pour
+chaque produit, régler le <strong>volume du bidon</strong> (20&nbsp;litres
+par défaut) et le <strong>seuil d'alerte</strong>. Deux boutons, aux rôles
+bien distincts&nbsp;:</p>
+
+<ul>
+  <li><strong>Enregistrer</strong> — sauvegarde le volume et le seuil,
+  <em>sans toucher au décompte</em> de ce qui a déjà été consommé&nbsp;;</li>
+  <li><strong>Nouveau bidon</strong> — remet le décompte à zéro&nbsp;:
+  c'est lui qu'il faut utiliser quand vous remplacez ou remplissez le
+  bidon.</li>
+</ul>
+
+<div class="box-alerte">
+  <span class="box-title">Changement de bidon&nbsp;: le bon geste</span>
+  <p>Saisir un volume et cliquer «&nbsp;Enregistrer&nbsp;» <strong>ne remet
+  PAS le compteur à zéro</strong>&nbsp;: l'appareil continuerait de croire
+  le bidon presque vide. Quand vous installez un bidon neuf, cliquez
+  <strong>«&nbsp;Nouveau bidon&nbsp;»</strong> — c'est ce bouton, et lui
+  seul, qui repart d'un bidon plein.</p>
+</div>
+
+<p>Deux précisions utiles&nbsp;: ce suivi est <strong>indicatif</strong> —
+un bidon affiché vide ne bloque pas le dosage (ce sont les limites
+journalières qui protègent le bassin, pas ce compteur)&nbsp;; et changer de
+bidon n'a <strong>aucun effet</strong> sur ce que l'appareil a appris de
+votre bassin — la mémoire porte sur la consommation de l'eau, pas sur le
+contenant.</p>
+
+<!-- ══════════════════ CH. 04 — Que faire si… ══════════════════ -->
+<h2 class="page-break"><span class="num">4</span>Que faire si…</h2>
+
+<p>Les situations les plus courantes, et la bonne réaction à chacune.
+Règle générale&nbsp;: les badges <strong>bleus</strong> disent
+«&nbsp;attendez&nbsp;», les <strong>rouges</strong> disent
+«&nbsp;agissez&nbsp;».</p>
+
+<h3>… les valeurs affichent «&nbsp;--&nbsp;» le matin&nbsp;?</h3>
+
+<p>C'est normal. Filtration à l'arrêt, l'eau ne circule pas devant les
+sondes&nbsp;: les mesures ne reflètent plus le bassin, l'appareil les masque
+(badge bleu «&nbsp;Filtration arrêtée&nbsp;»). Au redémarrage de la
+filtration, l'eau immobilisée toute la nuit dans les canalisations doit
+d'abord être chassée&nbsp;: elle a un pH artificiellement bas et un chlore
+consommé, elle ne dit rien du bassin. Pendant ce rinçage, le badge affiche
+«&nbsp;<strong>Stabilisation depuis N&nbsp;min</strong>&nbsp;» et le dosage
+reste suspendu.</p>
+
+<p><strong>Combien de temps&nbsp;?</strong> L'appareil ne suit pas un
+minuteur&nbsp;: il attend que la mesure <em>cesse de bouger</em>. Comptez
+<strong>10&nbsp;minutes au minimum</strong>, et couramment
+<strong>30 à 50&nbsp;minutes</strong> après une nuit complète d'arrêt —
+c'est la durée réelle du rinçage sur une installation courante. C'est plus
+long qu'avant, et c'est <em>voulu</em>&nbsp;: l'appareil rouvrait
+auparavant les mesures au beau milieu du rinçage, ce qui déclenchait des
+alertes pH pour rien. Rien à régler, rien à surveiller&nbsp;: les valeurs
+reviennent d'elles-mêmes.</p>
+
+<p>Deux cas particuliers, tous deux normaux&nbsp;: si l'appareil a
+redémarré <em>tout seul</em> pendant moins de dix secondes alors que la
+filtration tournait, il n'y a rien à rincer et la mesure revient
+immédiatement&nbsp;; si la mesure se remet à bouger après coup, le badge
+affiche «&nbsp;Re-stabilisation depuis N&nbsp;min&nbsp;» et l'attente
+reprend.</p>
+
+<h3>… le bandeau «&nbsp;Stabilisation des mesures non atteinte&nbsp;» apparaît&nbsp;?</h3>
+
+<p>Ce bandeau orange, sur les pages pH et Chlore, dit qu'après
+<strong>90&nbsp;minutes</strong> de circulation la mesure <em>bougeait
+encore</em>. L'appareil ne reste jamais bloqué en silence&nbsp;: il a
+repris la régulation, sous la surveillance de toutes ses sécurités
+habituelles — mais il vous prévient, parce que ce n'est pas normal.</p>
+
+<p>À vérifier, dans l'ordre&nbsp;: des <strong>bulles d'air</strong> ou un
+débit insuffisant dans la chambre où sont montées les sondes, un
+<strong>encrassement</strong> de la chambre ou des sondes, enfin l'âge et
+la calibration des sondes elles-mêmes. Un bandeau isolé après une longue
+coupure n'a rien d'alarmant&nbsp;; <strong>répété plusieurs matins de
+suite</strong>, il signale un vrai problème d'hydraulique ou de sonde.</p>
+
+<h3>… un badge «&nbsp;Stock faible&nbsp;» apparaît&nbsp;?</h3>
+
+<p>Le bidon concerné approche du seuil d'alerte. Remplacez-le (ou
+remplissez-le), puis — le geste qui compte — cliquez
+<strong>«&nbsp;Nouveau bidon&nbsp;»</strong> sur la page Produits pour
+repartir d'un compteur plein (chapitre&nbsp;3).</p>
+
+<h3>… «&nbsp;Limite journalière atteinte&nbsp;» s'affiche&nbsp;?</h3>
+
+<p>Le quota de produit du jour est épuisé&nbsp;: le dosage est suspendu
+jusqu'à minuit. Ce n'est pas une panne, c'est un <strong>plafond de
+sécurité</strong> qui protège le bassin d'un surdosage. Si cela se répète
+plusieurs jours de suite, l'eau a peut-être un problème de fond (stabilisant,
+alcalinité)&nbsp;: contrôlez-la avec une bandelette complète.</p>
+
+<h3>… la régulation pH est «&nbsp;passée en mode manuel&nbsp;»&nbsp;?</h3>
+
+<p>Une bannière rouge dans la carte Régulation pH annonce que l'appareil a
+<strong>basculé de lui-même en manuel</strong>, avec la date et la cause&nbsp;:
+cela arrive après trois refus de sécurité en 24&nbsp;heures (par exemple un
+pH déjà trop bas pour recevoir de l'acide). Marche à suivre&nbsp;:
+<strong>traitez d'abord la cause</strong> affichée (vérifiez l'eau au
+réactif, la sonde, le produit), puis cliquez
+<strong>«&nbsp;Acquitter l'alerte&nbsp;»</strong>. L'acquittement ne dose
+rien et ne réactive rien&nbsp;: il vous rend simplement le choix du mode —
+c'est vous qui repassez en Automatique quand la situation est comprise.
+Tant que l'alerte n'est pas acquittée, tout retour en automatique est
+refusé, y compris depuis la domotique.</p>
+
+<h3>… la bannière «&nbsp;Régulation à l'arrêt&nbsp;» s'affiche sur le tableau de bord&nbsp;?</h3>
+
+<p>Le filtre de mesure est resté bloqué plus de 5&nbsp;minutes alors que la
+filtration tourne&nbsp;: plus aucun dosage n'est effectué. Cliquez
+«&nbsp;Diagnostiquer&nbsp;», puis, sur la page concernée, la pastille
+d'état de la mesure pour ouvrir le détail. En dernier recours, le bouton
+<strong>«&nbsp;Réarmer le filtre&nbsp;»</strong> y relance la mesure.</p>
+
+<div class="box-alerte">
+  <span class="box-title">Réarmer le filtre</span>
+  <p>Le réarmement efface aussi les détections de défaut en cours (sonde
+  figée, bruit électrique)&nbsp;: si la sonde est réellement défectueuse,
+  le défaut sera masqué avant d'être re-détecté. Une confirmation explicite
+  est demandée, le dosage reste bloqué environ une minute le temps du
+  réamorçage, et un seul réarmement est autorisé toutes les 10&nbsp;minutes
+  par sonde.</p>
+</div>
+
+<h3>… une pastille annonce «&nbsp;Calibration requise&nbsp;» ou une sonde «&nbsp;usée&nbsp;»&nbsp;?</h3>
+
+<p>«&nbsp;<strong>Calibration requise</strong>&nbsp;» (rouge)&nbsp;: la
+sonde n'a jamais été calibrée, ou sa calibration a été effacée — la
+régulation automatique reste inactive tant qu'elle n'est pas faite
+(chapitre&nbsp;3). «&nbsp;<strong>Sonde usée</strong>&nbsp;» ou
+«&nbsp;<strong>à remplacer</strong>&nbsp;»&nbsp;: l'électrode vieillit —
+commencez par une recalibration avec des solutions étalon
+<em>fraîches</em>&nbsp;; si le diagnostic persiste, prévoyez le
+remplacement de l'électrode.</p>
+
+<h3>… l'alerte «&nbsp;Capacité de dosage insuffisante&nbsp;» apparaît sur la page pH&nbsp;?</h3>
+
+<p>Depuis trois jours, la pompe pH délivre chaque jour tout ce que la
+limite horaire autorise, sans parvenir à ramener le pH à la consigne&nbsp;:
+vos réglages ne couvrent pas le besoin du bassin. Deux leviers, dans cet
+ordre&nbsp;: <strong>allonger la durée de filtration</strong> quotidienne
+(plus d'heures de filtration = plus de temps de dosage), ou — seulement
+après avoir vérifié l'installation — relever la limite horaire d'injection
+dans Paramètres&nbsp;→&nbsp;Régulation.</p>
+
+<!-- ══════════════════ CH. 05 — Réglages ══════════════════ -->
+<h2 class="page-break"><span class="num">5</span>Réglages</h2>
+
+<p>La page <strong>Paramètres</strong> regroupe toute la configuration,
+répartie en neuf onglets. Au quotidien vous n'y toucherez guère&nbsp;: une
+fois l'appareil en service, seuls Régulation et Système servent de temps en
+temps.</p>
+
+<h3>1 — Installation</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/10_Paramètres_1_Installation.jpg" alt="Paramètres, onglet Installation">
+  <figcaption class="capture-legende">L'onglet Installation&nbsp;: le mode de câblage de l'appareil.</figcaption>
+</figure>
+
+<p>Les trois mêmes cartes que l'étape&nbsp;3 de l'assistant
+(chapitre&nbsp;2)&nbsp;: qui pilote la filtration, et comment l'appareil
+sait que l'eau circule. <strong>Ne changez ce réglage que si le câblage
+réel change</strong> — il conditionne la sécurité «&nbsp;jamais d'injection
+sans circulation d'eau&nbsp;». En mode «&nbsp;filtration externe
+signalée&nbsp;», un encart montre l'état du signal reçu et des exemples
+prêts à l'emploi pour le brancher depuis votre domotique.</p>
+
+<h3>2 — Wi-Fi</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/10_Paramètres_2_Wifi.jpg" alt="Paramètres, onglet Wi-Fi">
+  <figcaption class="capture-legende">L'onglet Wi-Fi&nbsp;: réseau, adresse IP et nom local.</figcaption>
+</figure>
+
+<p>Le réseau auquel l'appareil est connecté, son adresse IP (à noter&nbsp;:
+c'est le plan B si «&nbsp;poolcontroller.local&nbsp;» ne répond pas) et
+l'accès à la reconfiguration du Wi-Fi.</p>
+
+<h3>3 — MQTT</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/10_Paramètres_3_MQTT.jpg" alt="Paramètres, onglet MQTT">
+  <figcaption class="capture-legende">L'onglet MQTT&nbsp;: la passerelle vers la domotique.</figcaption>
+</figure>
+
+<p>Réservé aux utilisateurs d'une domotique (Home Assistant notamment)&nbsp;:
+adresse du serveur, identifiants, et une pastille d'état qui dit en temps
+réel si la liaison est établie. Si vous n'avez pas de domotique, laissez
+l'onglet désactivé — l'appareil fonctionne entièrement sans.</p>
+
+<h3>4 — Heure</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/10_Paramètres_4_Heure.jpg" alt="Paramètres, onglet Heure">
+  <figcaption class="capture-legende">L'onglet Heure&nbsp;: synchronisation automatique ou heure manuelle.</figcaption>
+</figure>
+
+<p>Heure automatique par internet (recommandé) ou manuelle, et fuseau
+horaire. Un changement de fuseau demande un redémarrage de l'appareil pour
+s'appliquer.</p>
+
+<h3>5 — Sécurité</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/10_Paramètres_5_Sécurité.jpg" alt="Paramètres, onglet Sécurité">
+  <figcaption class="capture-legende">L'onglet Sécurité&nbsp;: le changement de mot de passe.</figcaption>
+</figure>
+
+<p>Le changement du mot de passe administrateur — mêmes exigences qu'au
+premier démarrage (8&nbsp;caractères minimum, un chiffre, un caractère
+spécial).</p>
+
+<h3>6 — Régulation pH / ORP</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/10_Paramètres_6_Régulation_pH_ORP_1.jpg" alt="Paramètres, onglet Régulation">
+  <figcaption class="capture-legende">L'onglet Régulation&nbsp;: la taille du bassin en tête, puis les limites de dosage.</figcaption>
+</figure>
+
+<p>Le cœur des réglages de traitement&nbsp;:</p>
+
+<ul>
+  <li><strong>Taille du bassin</strong> — en première position&nbsp;: le
+  même choix qu'à la mise en service. En changer ouvre un <strong>dialogue
+  récapitulatif</strong> qui liste, réglage par réglage, les valeurs
+  actuelles et celles qui les remplaceront (les lignes qui changent sont en
+  gras) — dont la vitesse de correction, qui découle de la taille et
+  n'apparaît nulle part ailleurs. Vous confirmez en connaissance de cause,
+  ou vous annulez sans rien modifier.</li>
+  <li><strong>Limites horaires</strong> (minutes de pompe par heure) et
+  <strong>limites journalières</strong> (millilitres par jour) pour chaque
+  produit — les plafonds de sécurité du dosage.</li>
+  <li><strong>Cycles de dosage max par jour</strong> — un garde-fou
+  supplémentaire, à laisser à la valeur proposée sauf besoin précis.</li>
+  <li><strong>Dernière purge</strong> — une <em>information</em>, pas un
+  réglage&nbsp;: la durée qu'a réellement pris le dernier rinçage des
+  mesures et la façon dont il s'est terminé («&nbsp;12&nbsp;min —
+  stabilité atteinte&nbsp;», «&nbsp;dispensée — coupure brève&nbsp;»,
+  «&nbsp;relancée, la mesure a bougé&nbsp;», ou en orange
+  «&nbsp;plafond atteint, mesures non stabilisées&nbsp;»).</li>
+</ul>
+
+<div class="box">
+  <span class="box-title">Le «&nbsp;délai de stabilisation&nbsp;» a disparu</span>
+  <p>Ce réglage existait jusqu'à la version&nbsp;2.33&nbsp;: il fixait
+  combien de temps l'appareil devait attendre, au redémarrage de la
+  filtration, avant de croire ses sondes. Il n'existe plus, et c'est une
+  bonne nouvelle&nbsp;: aucune durée fixe n'était juste — trop courte,
+  l'appareil dosait sur de l'eau de rinçage&nbsp;; trop longue, il perdait
+  une heure de régulation chaque matin. L'appareil <strong>mesure</strong>
+  désormais la stabilité de l'eau et s'arrête quand elle est atteinte, au
+  minimum 10&nbsp;minutes et au maximum 90. Si vous aviez modifié ce
+  réglage, votre valeur est simplement ignorée&nbsp;: il n'y a rien à
+  faire.</p>
+</div>
+
+<figure>
+  <img class="capture" src="../../../screenshots/10_Paramètres_6_Régulation_pH_ORP_2.jpg" alt="Dialogue de confirmation avant/après">
+  <figcaption class="capture-legende">Le dialogue récapitulatif «&nbsp;avant&nbsp;→&nbsp;après&nbsp;»&nbsp;: rien ne change sans votre confirmation.</figcaption>
+</figure>
+
+<div class="box-alerte">
+  <span class="box-title">Restaurer les valeurs par défaut</span>
+  <p>Ce bouton remet les huit réglages de la régulation aux valeurs d'usine
+  <em>de la taille de bassin sélectionnée</em>. Un dialogue récapitulatif
+  «&nbsp;actuel&nbsp;→&nbsp;usine&nbsp;» s'affiche d'abord — lisez les
+  lignes en gras&nbsp;: ce sont elles qui vont changer. Les calibrations
+  des sondes, les modes de régulation et les limites de sécurité ne sont
+  pas touchés. Si tout est déjà aux valeurs d'usine, le dialogue le dit et
+  le bouton reste inactif.</p>
+</div>
+
+<h3>7 — Système</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/10_Paramètres_7_Système_1.jpg" alt="Paramètres, onglet Système (informations)">
+  <figcaption class="capture-legende">L'onglet Système&nbsp;: l'état de l'appareil (version, mémoire, réseau).</figcaption>
+</figure>
+
+<p>Les informations de l'appareil (version du logiciel, mémoire, réseau) et
+les <strong>mises à jour</strong>&nbsp;: en ligne d'un clic
+(«&nbsp;Vérifier&nbsp;» puis «&nbsp;Mettre à jour&nbsp;» — si votre modèle
+ne le permet pas, un encart l'explique et renvoie à la mise à jour
+manuelle), ou manuelle par envoi d'un fichier — le type est reconnu
+automatiquement d'après le nom du fichier, une notice le confirme sous le
+sélecteur. On y trouve aussi le bouton <strong>Redémarrer</strong> (sans
+danger&nbsp;: aucun réglage n'est perdu) et la réinitialisation
+d'usine.</p>
+
+<figure>
+  <img class="capture" src="../../../screenshots/10_Paramètres_7_Système_2.jpg" alt="Paramètres, onglet Système (mises à jour)">
+  <figcaption class="capture-legende">Les cartes de mise à jour&nbsp;: en ligne, ou par fichier.</figcaption>
+</figure>
+
+<div class="box-alerte">
+  <span class="box-title">Réinitialisation d'usine</span>
+  <p>Elle efface <strong>tout</strong>&nbsp;: Wi-Fi, mot de passe,
+  calibrations, historique, réglages. L'appareil redémarre comme au premier
+  jour, sur son propre réseau Wi-Fi, et l'assistant de mise en service
+  reprend du début. Une double confirmation est demandée — un refus à
+  n'importe quelle étape annule tout.</p>
+</div>
+
+<h3>8 — Avancé</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/10_Paramètres_8_Avancé_1.jpg" alt="Paramètres, onglet Avancé (historique et pompes)">
+  <figcaption class="capture-legende">L'onglet Avancé&nbsp;: historique des mesures et configuration des pompes.</figcaption>
+</figure>
+
+<p>L'onglet du diagnostic et de la maintenance — à visiter quand on sait ce
+qu'on y cherche&nbsp;:</p>
+
+<ul>
+  <li><strong>Historique des mesures</strong> — export en fichier CSV
+  (pour vos archives ou un tableur), import, et purge&nbsp;;</li>
+  <li><strong>Pompes doseuses</strong> — leur affectation, un test de
+  marche de 10&nbsp;secondes, et surtout l'assistant
+  <strong>«&nbsp;Mesurer le débit&nbsp;»</strong>&nbsp;: un parcours guidé
+  qui mesure le débit réel de chaque pompe avec un récipient gradué.
+  Important&nbsp;: la mesure se fait <strong>toujours à l'eau
+  claire</strong>, jamais avec l'acide ou le chlore — l'assistant vous
+  guide pas à pas, purge comprise&nbsp;;</li>
+  <li><strong>Journal</strong> — la liste des événements de l'appareil
+  (démarrages, injections, refus, alertes), consultable et téléchargeable.
+  Précieux pour comprendre a posteriori ce qui s'est passé&nbsp;;</li>
+  <li><strong>Diagnostic</strong> — signaux des sondes, rapport de panne&nbsp;:
+  des outils d'analyse fine, sans danger à consulter.</li>
+</ul>
+
+<figure>
+  <img class="capture" src="../../../screenshots/10_Paramètres_8_Avancé_2.jpg" alt="Paramètres, onglet Avancé (signaux capteurs)">
+  <figcaption class="capture-legende">Les signaux des sondes, valeur brute contre valeur lissée.</figcaption>
+</figure>
+
+<figure>
+  <img class="capture" src="../../../screenshots/10_Paramètres_8_Avancé_3.jpg" alt="Paramètres, onglet Avancé (journal)">
+  <figcaption class="capture-legende">Le journal des événements, avec ses filtres par niveau.</figcaption>
+</figure>
+
+<h3>9 — À propos</h3>
+
+<figure>
+  <img class="capture" src="../../../screenshots/10_Paramètres_9_A_Propos.jpg" alt="Paramètres, onglet À propos">
+  <figcaption class="capture-legende">L'onglet À propos&nbsp;: versions et liens du projet.</figcaption>
+</figure>
+
+<p>Les versions des composants et les liens du projet. Purement
+informatif.</p>
+
+<!-- ══════════════════ CH. 06 — Pour aller plus loin ══════════════════ -->
+<h2 class="page-break"><span class="num">6</span>Pour aller plus loin</h2>
+
+<div class="box">
+  <span class="box-title">Le guide de régulation</span>
+  <p>Pour comprendre <em>comment l'appareil décide</em> — le voyage d'une
+  correction de la sonde à la pompe, la dose de base apprise, le
+  disjoncteur qui la protège, les tempos du système et les règles que rien
+  ne fait plier —, lisez le guide compagnon
+  <strong>«&nbsp;La régulation chimique — comment ça marche&nbsp;»</strong>.
+  Il est écrit pour le propriétaire, pas pour l'ingénieur.</p>
+</div>
+
+<p>Si vous utilisez une domotique&nbsp;: l'appareil sait s'annoncer
+automatiquement à <strong>Home Assistant</strong> via MQTT — mesures,
+modes de régulation, filtration et éclairage y apparaissent comme des
+entités prêtes à l'emploi (onglet Paramètres&nbsp;→&nbsp;MQTT pour
+l'activer). Le détail des entités et des commandes est décrit dans la
+documentation technique du projet, destinée aux intégrateurs.</p>
+
+<p class="colophon">Document généré depuis la documentation des écrans
+(docs/features/) du firmware — version 2.32, septembre 2026.</p>
+
+<div class="footer"><span>PoolController — Guide d'utilisation</span><span>Firmware 2.32</span></div>
+
+</body>
+</html>

@@ -390,21 +390,17 @@ void PumpControllerClass::resetPhPauseGuard() {
 }
 
 // Arme le timer pour une pompe spécifique. Sélectionne la durée selon l'index :
-//   - pH (0)  : kStabilizationDurationPhMs (post-cal) ou stabilizationDelayMin (override)
-//   - ORP (1) : kStabilizationDurationOrpMs (post-cal) ou stabilizationDelayMin (override)
-// Si l'utilisateur a configuré `mqttCfg.stabilizationDelayMin > 0`, son override prime
-// (il a explicitement choisi une durée). Sinon, on applique la durée chimique par défaut.
+//   - pH (0)  : kStabilizationDurationPhMs (post-calibration EZO)
+//   - ORP (1) : kStabilizationDurationOrpMs (post-calibration EZO)
+// feature-091 : le réglage utilisateur `stabilizationDelayMin` n'intervient
+// PLUS (retiré) — la purge de reprise d'eau est portée par measure_validity
+// (stabilité des mesures) ; ce timer ne couvre que la cinétique post-cal et le
+// double quota de minuit.
 void PumpControllerClass::armStabilizationTimer(int pumpIndex) {
   if (pumpIndex < 0 || pumpIndex > 1) return;
 
-  int delayMin = mqttCfg.stabilizationDelayMin;
-  unsigned long durationMs;
-  if (delayMin > 0) {
-    durationMs = (unsigned long)delayMin * 60000UL;
-  } else {
-    durationMs = (pumpIndex == 0) ? kStabilizationDurationPhMs
-                                  : kStabilizationDurationOrpMs;
-  }
+  const unsigned long durationMs = (pumpIndex == 0) ? kStabilizationDurationPhMs
+                                                    : kStabilizationDurationOrpMs;
   _stabilizationEndMs[pumpIndex] = millis() + durationMs;
   systemLogger.info(String("[Dosage] Stabilisation pompe ") +
                     (pumpIndex == 0 ? "pH" : "ORP") +
@@ -412,13 +408,13 @@ void PumpControllerClass::armStabilizationTimer(int pumpIndex) {
                     String((durationMs % 60000UL) / 1000UL) + " s");
 }
 
-// Surcharge legacy : arme les 2 pompes simultanément (cas filtration / continu / minuit).
-// Délègue à armStabilizationTimer(int) pour conserver le comportement par-pompe.
-// Désactive le log info de la version par-pompe pour produire un seul log condensé.
+// Surcharge : arme les 2 pompes simultanément. feature-091 : seul usage restant
+// = le double quota de minuit (tickDailyRollover) — les armings au boot
+// (main.cpp) et au démarrage de filtration (filtration.cpp) sont RETIRÉS, la
+// purge adaptative de measure_validity les remplace. Durées post-cal constantes.
 void PumpControllerClass::armStabilizationTimer() {
-  int delayMin = mqttCfg.stabilizationDelayMin;
-  unsigned long durationPhMs  = (delayMin > 0) ? ((unsigned long)delayMin * 60000UL) : kStabilizationDurationPhMs;
-  unsigned long durationOrpMs = (delayMin > 0) ? ((unsigned long)delayMin * 60000UL) : kStabilizationDurationOrpMs;
+  const unsigned long durationPhMs  = kStabilizationDurationPhMs;
+  const unsigned long durationOrpMs = kStabilizationDurationOrpMs;
   uint32_t now = millis();
   _stabilizationEndMs[0] = now + durationPhMs;
   _stabilizationEndMs[1] = now + durationOrpMs;
@@ -1135,9 +1131,7 @@ void PumpControllerClass::tickOrpPhInhibitSurveillance() {
     // Motif de mesure absente, réévalué à chaque tick : 2 = purge de la chambre
     // de mesure (état NORMAL), 1 = capteur muet / filtre non amorcé (anomalie).
     // getSnapshot() lit un cache sous spinlock — aucune transaction I²C.
-    bool waterPresent = false, measuresValid = false;
-    uint32_t remainingS = 0;
-    measureValidity.getSnapshot(waterPresent, measuresValid, remainingS);
+    const bool measuresValid = measureValidity.measuresValid();
     const uint8_t nanKind = measuresValid ? 1 : 2;
 
     if (!_orpPhInhibitActive) {
@@ -1736,6 +1730,10 @@ bool PumpControllerClass::phIntegralAccumulationAllowed() {
   if (!sensors.isPhFilterReady()) return false;    // warmup, gate fermée, figée, périmée
   if (sensors.isPhFilterUnstable()) return false;  // rejets consécutifs
   if (!isfinite(sensors.getPhFiltered())) return false;
+  // feature-091 (C6 pool-chemistry) : porte de validité relue EXPLICITEMENT (le
+  // filtre la répercute déjà via ready(), mais le prédicat doit rester vrai
+  // isolément — une mesure en purge ou en re-purge ne charge jamais l'intégrale).
+  if (!measureValidity.measuresValid()) return false;
 
   // 5. CALIBRATION (2 points requis sur le pH) : sans elle l'erreur n'a pas de
   // sens physique, l'intégrer reviendrait à apprendre un décalage d'instrument.
@@ -1781,9 +1779,11 @@ float PumpControllerClass::tickPhFeedforward(unsigned long now, float signedErro
   // Porte de validité de la MESURE, évaluée ici (caches capteur, aucun I²C) :
   // mêmes critères que le §4 de phIntegralAccumulationAllowed — une sonde figée
   // ou périmée ferme le filtre, une valeur non finie n'est pas une mesure.
+  // feature-091 (C6) : + porte de validité des mesures relue explicitement.
   const bool measureValid = sensors.isPhFilterReady() &&
                             !sensors.isPhFilterUnstable() &&
-                            isfinite(sensors.getPhFiltered());
+                            isfinite(sensors.getPhFiltered()) &&
+                            measureValidity.measuresValid();
 
   // Session de dosage pH AUTOMATIQUE ouverte — état du tour PRÉCÉDENT (le latch
   // se réarme donc au 2e tick d'une session neuve : un tour de retard, assumé et
@@ -1859,6 +1859,7 @@ void PumpControllerClass::tickPhIntegralAuto(unsigned long now, float error,
     const uint32_t last = _phIntegral.lastTickMs;
     PhPersistConfirmInputs cin;
     cin.epochNow = (uint32_t)time(nullptr);
+    cin.filtTotalNow = safetyLimits.filtTotalMin;  // feature-093 : R3 en filtration
     cin.dtMs = (last == 0) ? 0u : (uint32_t)((uint32_t)now - last);
     cin.error = error;
     cin.startThreshold = pumpProtection.phStartThreshold;
@@ -2122,6 +2123,9 @@ void PumpControllerClass::tickDailyFiltrationMinutes(unsigned long now) {
     if (safetyLimits.dailyFiltrationMinutes < 1440UL) {
       safetyLimits.dailyFiltrationMinutes++;
     }
+    // v2.34.0 (feature-093, R3) : compteur MONOTONE — base de temps de la
+    // fraîcheur de l'instantané d'intégrale pH. Jamais remis à zéro.
+    safetyLimits.filtTotalMin++;
     // Persistance différée par le point de flush EXISTANT (30 s), remonté AVANT
     // les sorties anticipées d'update() : aucune écriture NVS supplémentaire
     // n'est déclenchée ici, et un redémarrage ne peut perdre qu'une minute.
@@ -2153,9 +2157,24 @@ void PumpControllerClass::loadPhIntegralSnapshotDeferred(unsigned long now) {
     return;
   }
   _phIntegralPersistLoaded = true;
+  // v2.34.0 (feature-093, P3) : l'échéance d'écriture en temps de filtration part
+  // d'ICI par défaut (aucun instantané exploitable) ; un instantané retenu la
+  // recale plus bas sur son propre compteur.
+  _phIntegralSavedFiltMin = safetyLimits.filtTotalMin;
 
   PhIntegralSnapshot snap;
-  if (!loadPhIntegralSnapshot(snap)) return;  // aucun instantané valide : silence
+  if (!loadPhIntegralSnapshot(snap)) {
+    // Aucun instantané exploitable (absent, tronqué, CRC faux — dont tout
+    // enregistrement du schéma 1, 20 octets). C5 : on veut un enregistrement
+    // valide dès qu'une intégrale positive existe, sans attendre la cadence R5.
+    // Revue v2.34.0 : dit explicitement — au premier démarrage après la mise à
+    // jour (schéma 1 → 2), « l'intégrale repart de zéro » est attendu, pas un bug.
+    _phIntegralRewriteWanted = true;
+    systemLogger.info("Intégrale pH : aucun instantané NVS exploitable (absent, "
+                      "ancien schéma ou empreinte invalide) — départ de zéro, "
+                      "réécriture dès la première intégrale positive");
+    return;
+  }
 
   // v2.27.0 (revue) : le cache de charge a pu être amorcé AVANT que l'heure ne
   // soit synchronisée, et la fenêtre d'âge de l'anneau exige la date du jour —
@@ -2171,19 +2190,34 @@ void PumpControllerClass::loadPhIntegralSnapshotDeferred(unsigned long now) {
   const PhPersistCapVerdict cap = phIntegralRestoreCap();
   const PhPersistRestoreVerdict v =
       phPersistEvaluateRestore(snap, phIntegralContextHash(), (uint32_t)epochNow,
-                               cap.capPhS);
+                               safetyLimits.filtTotalMin, cap.capPhS);
 
   if (!v.accepted) {
+    // C5 (pool-chemistry) : l'enregistrement en place ne servira à aucun
+    // redémarrage futur — il sera remplacé dès la première intégrale positive.
+    // Exception : kNoCap (l'instantané est SAIN, c'est le plafond du jour qui
+    // est nul) — on le laisse vivre, un jour d'historique de plus le rendra utile.
+    if (v.reject != PhPersistReject::kNoCap) _phIntegralRewriteWanted = true;
+
     // R6 — au rejet, le MOTIF est journalisé. Un rejet muet rendrait la
     // persistance indébogable : on ne saurait pas distinguer « rien à restaurer »
     // de « restauration refusée », précisément l'ambiguïté qui ferait douter du
-    // mécanisme au premier redémarrage inexpliqué.
+    // mécanisme au premier redémarrage inexpliqué. Les DEUX âges figurent pour
+    // un rejet « périmé » : on doit pouvoir dire lequel des critères a tranché.
     const char* reject = phPersistRejectLabel(v.reject);
     if (reject != nullptr) {
-      char msg[176];
-      snprintf(msg, sizeof(msg),
-               "Intégrale pH : instantané NVS REJETÉ (%s) — la régulation repart "
-               "de zéro", reject);
+      char msg[224];
+      if (v.reject == PhPersistReject::kStale) {
+        snprintf(msg, sizeof(msg),
+                 "Intégrale pH : instantané NVS REJETÉ (%s : %lu min de filtration, "
+                 "%lu h murales depuis l'écriture) — la régulation repart de zéro",
+                 reject, (unsigned long)v.filtAgeMin,
+                 (unsigned long)(v.ageS / 3600UL));
+      } else {
+        snprintf(msg, sizeof(msg),
+                 "Intégrale pH : instantané NVS REJETÉ (%s) — la régulation repart "
+                 "de zéro", reject);
+      }
       systemLogger.warning(msg);
     } else if (v.reject == PhPersistReject::kNoCap) {
       // Plafond NUL : état nominal d'un appareil dont la charge acide n'est pas
@@ -2209,22 +2243,28 @@ void PumpControllerClass::loadPhIntegralSnapshotDeferred(unsigned long now) {
 
   _phIntegralConfirm.candidate = v.candidate;
   _phIntegralConfirm.epoch = snap.epoch;
+  _phIntegralConfirm.filtTotalMin = snap.filtTotalMin;
   _phIntegralConfirm.heldMs = 0;
   // La valeur de référence de la cadence d'écriture est celle du DISQUE : sans
   // cela, la première comparaison R5 se ferait contre 0 et réécrirait aussitôt.
+  // Même chose pour l'échéance P3 : elle court depuis l'ÉCRITURE, pas depuis le
+  // boot — un redémarrage n'offre pas 3 h de filtration de sursis.
   _phIntegralSavedValue = snap.value;
   _phIntegralSaveMs = now;
+  _phIntegralSavedFiltMin = snap.filtTotalMin;
 
   // R6 (recommandation du gate) : la charge observée et l'origine du plafond
   // figurent dans le message — c'est la seule trace qui permettra, après coup, de
-  // savoir sur quelle chimie la restauration a été bornée.
-  char msg[240];
+  // savoir sur quelle chimie la restauration a été bornée. feature-093 : l'âge
+  // est donné en TEMPS DE FILTRATION (le critère), l'âge mural en complément.
+  char msg[256];
   snprintf(msg, sizeof(msg),
            "Intégrale pH : instantané NVS retenu — %.0f pH·s écrits il y a "
-           "%lu min, plafonnés à %.0f pH·s par %s ; application DIFFÉRÉE "
-           "jusqu'à confirmation par la mesure (%lu min d'écart soutenu)",
-           snap.value, (unsigned long)(v.ageS / 60UL), v.candidate,
-           cap.loadGoverns ? "la charge observée" : "la butée absolue",
+           "%lu min de filtration (%lu h murales), plafonnés à %.0f pH·s par %s ; "
+           "application DIFFÉRÉE jusqu'à confirmation par la mesure (%lu min "
+           "d'écart soutenu)",
+           snap.value, (unsigned long)v.filtAgeMin, (unsigned long)(v.ageS / 3600UL),
+           v.candidate, cap.loadGoverns ? "la charge observée" : "la butée absolue",
            kPhIntegralRestoreConfirmMs / 60000UL);
   systemLogger.info(msg);
 }
@@ -2232,13 +2272,15 @@ void PumpControllerClass::loadPhIntegralSnapshotDeferred(unsigned long now) {
 // R5 — ÉCRITURE BORNÉE. Appelée au point de sauvegarde différée de fin
 // d'update() (loopTask), à côté du flush des compteurs journaliers : au plus une
 // écriture par demi-heure ET seulement si la valeur a bougé de plus de 5 % du
-// plafond. Aucun mutex : la charge utile appartient à loopTask seule
+// plafond — OU (feature-093, P3) si 3 h de filtration se sont écoulées depuis la
+// dernière écriture, OU (C5) si l'enregistrement en NVS est connu invalide.
+// Aucun mutex : la charge utile appartient à loopTask seule
 // (cf. l'en-tête de savePhIntegralSnapshot dans config.h).
 void PumpControllerClass::tickPhIntegralPersistence(unsigned long now) {
   if (!_phIntegralPersistLoaded) return;  // lecture pas encore soldée
 
-  // La DÉCISION d'écrire (cadence, amplitude, heure exploitable) est PURE : la
-  // coquille ne fait que présenter l'état courant et exécuter le verdict.
+  // La DÉCISION d'écrire (cadence, amplitude, échéance, heure exploitable) est
+  // PURE : la coquille ne fait que présenter l'état courant et exécuter le verdict.
   const time_t epochNow = time(nullptr);
   const float value = _phIntegral.integral;
 
@@ -2249,7 +2291,14 @@ void PumpControllerClass::tickPhIntegralPersistence(unsigned long now) {
   win.value = value;
   win.savedValue = _phIntegralSavedValue;
   win.integralMax = phPID.integralMax;
-  if (!phPersistShouldWrite(win)) return;
+  win.filtMinNow = safetyLimits.filtTotalMin;
+  win.filtMinSaved = _phIntegralSavedFiltMin;
+  win.rewriteWanted = _phIntegralRewriteWanted;
+  // Revue v2.34.0 : tant que la candidate R4 attend sa confirmation, la RAM (0)
+  // ne doit jamais écraser la NVS (la valeur à restaurer).
+  win.candidatePending = (_phIntegralConfirm.candidate > 0.0f);
+  const PhPersistWriteReason reason = phPersistWriteReason(win);
+  if (reason == PhPersistWriteReason::kNone) return;
 
   PhIntegralSnapshot snap;
   snap.schema = kPhIntegralPersistSchema;
@@ -2257,10 +2306,34 @@ void PumpControllerClass::tickPhIntegralPersistence(unsigned long now) {
   snap.context = phIntegralContextHash();
   snap.epoch = (uint32_t)epochNow;
   snap.value = value;
+  snap.filtTotalMin = safetyLimits.filtTotalMin;
   savePhIntegralSnapshot(snap);
 
   _phIntegralSavedValue = value;
   _phIntegralSaveMs = now;
+  _phIntegralSavedFiltMin = safetyLimits.filtTotalMin;
+  _phIntegralRewriteWanted = false;  // C5 soldé : la NVS porte un enregistrement sain
+
+  // Les écritures « par échéance » et « de remplacement » sont les seules à
+  // journaliser : elles sont rares (≤ 3-4/jour) et disent que le filet P3/C5 a
+  // joué ; celles « par amplitude » restent muettes comme avant.
+  if (reason != PhPersistWriteReason::kDelta) {
+    char msg[176];
+    if (reason == PhPersistWriteReason::kDue) {
+      snprintf(msg, sizeof(msg),
+               "Intégrale pH : instantané NVS écrit par échéance (%lu min de "
+               "filtration depuis le précédent) — %.0f pH·s à %lu min de filtration "
+               "cumulée",
+               (unsigned long)kPhIntegralPersistDueFiltMin, value,
+               (unsigned long)safetyLimits.filtTotalMin);
+    } else {
+      snprintf(msg, sizeof(msg),
+               "Intégrale pH : instantané NVS écrit en remplacement d'un "
+               "enregistrement rejeté — %.0f pH·s à %lu min de filtration cumulée",
+               value, (unsigned long)safetyLimits.filtTotalMin);
+    }
+    systemLogger.info(msg);
+  }
 }
 
 // =============================================================================
@@ -3462,10 +3535,30 @@ void PumpControllerClass::update() {
             }
           }
 
+          bool wantDose = dec.doseNow;
+
+          // C4 pool-chemistry (feature-091) : la branche Programmée est aveugle
+          // à la mesure, elle n'attend donc pas la porte de validité — mais elle
+          // attend que l'eau de la CONDUITE ait été renouvelée (≥ kPurgeFloorMs
+          // de circulation depuis la reprise) : injecter dans une conduite
+          // stagnante n'est pas doser le bassin. Ne touche qu'au DÉMARRAGE ; le
+          // volume reste dû et se reporte aux fenêtres suivantes.
+          static bool phSchedSettleLogged = false;
+          if (wantDose && !phDosingState.active && !measureValidity.isCirculationSettled()) {
+            if (!phSchedSettleLogged) {
+              systemLogger.info("[Scheduled] Démarrage pH différé : circulation reprise "
+                "depuis moins de " + String(kPurgeFloorMs / 60000UL) +
+                " min (eau de la conduite non renouvelée)");
+              phSchedSettleLogged = true;
+            }
+            wantDose = false;
+          } else if (phSchedSettleLogged && measureValidity.isCirculationSettled()) {
+            phSchedSettleLogged = false;
+          }
+
           // Condition pool-chemistry n°1 : consulter le ring anti-rafale AVANT
           // tout DÉMARRAGE (transition inactive → active). Mêmes fenêtres et
           // seuils que canDose() (ring PARTAGÉ auto + manuel + scheduled).
-          bool wantDose = dec.doseNow;
           static bool phSchedBurstLogged = false;
           if (wantDose && !phDosingState.active) {
             int cyclesLastMin = countRecentDosingCycles(0, 60000);
@@ -3894,10 +3987,26 @@ void PumpControllerClass::update() {
             }
           }
 
+          bool wantDose = dec.doseNow;
+
+          // C4 pool-chemistry (feature-091) : même garde de renouvellement de la
+          // conduite que la branche pH programmée (cf. commentaire là-bas).
+          static bool orpSchedSettleLogged = false;
+          if (wantDose && !orpDosingState.active && !measureValidity.isCirculationSettled()) {
+            if (!orpSchedSettleLogged) {
+              systemLogger.info("[Scheduled] Démarrage ORP différé : circulation reprise "
+                "depuis moins de " + String(kPurgeFloorMs / 60000UL) +
+                " min (eau de la conduite non renouvelée)");
+              orpSchedSettleLogged = true;
+            }
+            wantDose = false;
+          } else if (orpSchedSettleLogged && measureValidity.isCirculationSettled()) {
+            orpSchedSettleLogged = false;
+          }
+
           // Condition pool-chemistry n°1 : consulter le ring anti-rafale AVANT
           // tout DÉMARRAGE (transition inactive → active). Mêmes fenêtres et
           // seuils que canDose() (ring PARTAGÉ auto + manuel + scheduled).
-          bool wantDose = dec.doseNow;
           static bool orpSchedBurstLogged = false;
           if (wantDose && !orpDosingState.active) {
             int cyclesLastMin = countRecentDosingCycles(1, 60000);

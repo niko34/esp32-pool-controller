@@ -503,6 +503,13 @@ bool SensorFilter::ready(uint32_t nowMs) const {
   // feature-022 : capteur figé → non prêt (fail-closed via la garde FilterNotReady
   // existante de evaluateDose — pas de nouvelle valeur DoseRefusal).
   if (_frozenDetector.frozen()) return false;
+  // feature-091 (C6 pool-chemistry) : porte FERMÉE → non prêt IMMÉDIATEMENT.
+  // Avant, une re-fermeture (re-purge, C1) laissait ready() vrai jusqu'à
+  // maxAgeMs (20 s) avec la dernière valeur filtrée : fenêtre pendant laquelle
+  // l'intégrale, le feedforward, les planchers bruts et le PID auraient consommé
+  // une mesure déclarée non représentative. Sans effet à la PREMIÈRE ouverture
+  // (le ré-amorçage vide déjà la fenêtre) ni sur un appelant sans setContext().
+  if (_gateClosed) return false;
   return true;
 }
 

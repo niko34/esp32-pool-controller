@@ -37,20 +37,30 @@
 #include "constants.h"  // kPhIntegral*, kMinValidEpoch — source unique des seuils
 
 // -----------------------------------------------------------------------------
-// L'INSTANTANÉ NVS (20 octets, POD)
+// L'INSTANTANÉ NVS (24 octets, POD — schéma 2, feature-093)
 // -----------------------------------------------------------------------------
 // Écrit tel quel dans un namespace NVS dédié (`pool-phint`, clé `snap`). La
 // structure est ICI et non dans config.h : son schéma, son empreinte et sa
 // validation sont de la logique, pas du transport.
+//
+// feature-093 : l'âge de l'instantané se mesure d'abord en TEMPS DE FILTRATION
+// (`filtTotalMin`, compteur monotone de minutes d'eau présente, persisté dans
+// `pool-daily`), l'heure murale ne servant plus que de plafond de sécurité très
+// large (kPhIntegralPersistMaxWallAgeS). Le passage de 20 à 24 octets change le
+// schéma : un enregistrement v1 est REJETÉ (taille inexacte), jamais réinterprété.
 struct PhIntegralSnapshot {
   uint8_t  schema        = 0;    // R2 : kPhIntegralPersistSchema attendu
   uint8_t  restoreStreak = 0;    // R7 : restaurations sans écriture intercalée
   uint16_t reserved      = 0;    // alignement (jamais interprété)
   uint32_t context       = 0;    // R2 : empreinte vitesse/produit/consigne/plafond
-  uint32_t epoch         = 0;    // R3 : date d'écriture (time(), secondes)
+  uint32_t epoch         = 0;    // R3 : date d'écriture (time(), secondes) — plafond mural
   float    value         = 0.0f; // intégrale persistée (pH·s)
-  uint32_t crc           = 0;    // R2 : contrôle d'intégrité des 16 octets amont
+  uint32_t filtTotalMin  = 0;    // R3 : compteur de filtration cumulé à l'écriture (min)
+  uint32_t crc           = 0;    // R2 : contrôle d'intégrité des 20 octets amont
 };
+static_assert(sizeof(PhIntegralSnapshot) == 24,
+              "PhIntegralSnapshot : 24 octets attendus (schéma 2) — tout changement "
+              "de taille exige d'incrémenter kPhIntegralPersistSchema");
 
 /**
  * @brief Empreinte FNV-1a 32 bits d'un bloc mémoire.
@@ -70,7 +80,7 @@ inline uint32_t phPersistFnv1a(const void* data, size_t len) {
   return h;
 }
 
-/** @brief Empreinte d'intégrité de l'instantané : les 16 octets AVANT `crc`. */
+/** @brief Empreinte d'intégrité de l'instantané : les 20 octets AVANT `crc`. */
 inline uint32_t phPersistSnapshotCrc(const PhIntegralSnapshot& s) {
   return phPersistFnv1a(&s, offsetof(PhIntegralSnapshot, crc));
 }
@@ -259,19 +269,87 @@ inline bool phPersistClockUsable(uint32_t epochNow) {
   return epochNow >= (uint32_t)kMinValidEpoch;
 }
 
+// Motifs de rejet d'un instantané — déclarés ICI car le verdict d'âge (R3) les
+// emploie ; la décision complète de restauration (plus bas) les réutilise.
+enum class PhPersistReject : uint8_t {
+  kNone = 0,
+  kSchema,       // enregistrement d'un autre schéma
+  kStreak,       // R7 : anti-boucle de démarrage
+  kContext,      // R2 : réglages de régulation modifiés depuis l'écriture
+  kEpoch,        // horodatage nul, futur, ou horloge inexploitable
+  kFiltCounter,  // R3 : compteur de filtration courant INFÉRIEUR à celui écrit
+  kStale,        // R3 : instantané périmé (filtration ou plafond mural)
+  kValue,        // valeur nulle ou non finie
+  kNoCap,        // R1 : plafond nul (historique trop court, ki inerte…)
+};
+
 /**
- * @brief R3 : l'instantané est-il encore frais ?
+ * @brief Entrées du calcul d'âge R3 : l'horloge murale ET le compteur de
+ *        filtration, à l'écriture et maintenant.
+ *
+ * feature-093 : l'intégrale ne vit qu'en temps de filtration (gelée hors
+ * circulation), sa fraîcheur aussi. Le compteur `filtTotal*` est le cumul
+ * MONOTONE de minutes d'eau présente (persisté dans `pool-daily`, jamais remis à
+ * zéro à minuit) ; le module ne le lit nulle part, il le REÇOIT.
+ */
+struct PhPersistAgeInputs {
+  uint32_t epochWritten     = 0;  // heure murale à l'écriture (s)
+  uint32_t epochNow         = 0;  // heure murale courante (s)
+  uint32_t filtTotalWritten = 0;  // compteur de filtration cumulé à l'écriture (min)
+  uint32_t filtTotalNow     = 0;  // compteur de filtration cumulé courant (min)
+};
+
+struct PhPersistAgeVerdict {
+  bool            fresh      = false;
+  PhPersistReject reject     = PhPersistReject::kNone;  // kEpoch / kFiltCounter / kStale
+  uint32_t        filtAgeMin = 0;  // filtration accumulée depuis l'écriture (min)
+  uint32_t        wallAgeS   = 0;  // âge mural (s) — journalisation
+};
+
+/**
+ * @brief R3 (feature-093) : l'instantané est-il encore frais ?
+ *
+ * DOUBLE CRITÈRE, tranché par pool-chemistry :
+ *   - filtration accumulée depuis l'écriture ≤ kPhIntegralPersistMaxFiltMin
+ *     (le critère qui compte : la nuit sans filtration ne vieillit pas la valeur) ;
+ *   - âge mural ≤ kPhIntegralPersistMaxWallAgeS (plafond de sécurité large :
+ *     après un hivernage ou une longue coupure, la chimie a pu changer même sans
+ *     circulation — filet, jamais critère nominal).
  *
  * Réévalué EN CONTINU, et pas seulement au boot : une candidate qui attend sa
  * confirmation peut mourir de vieillesse entre-temps, elle n'est pas « gelée » à
- * son âge de lecture. Un horodatage nul ou situé dans le futur (horloge reculée)
- * est traité comme périmé.
+ * son âge de lecture.
+ *
+ * FAIL-CLOSED : horloge inexploitable, horodatage nul ou futur ⇒ kEpoch ;
+ * compteur de filtration courant INFÉRIEUR à celui écrit (NVS `pool-daily`
+ * effacée, restauration d'usine) ⇒ kFiltCounter — un âge négatif n'est pas
+ * « très frais », il est incalculable.
  */
-inline bool phPersistFresh(uint32_t epochWritten, uint32_t epochNow) {
-  if (!phPersistClockUsable(epochNow)) return false;
-  if (epochWritten == 0) return false;
-  if (epochNow < epochWritten) return false;
-  return (epochNow - epochWritten) <= kPhIntegralPersistMaxAgeS;
+inline PhPersistAgeVerdict phPersistAge(const PhPersistAgeInputs& in) {
+  PhPersistAgeVerdict v;
+  if (!phPersistClockUsable(in.epochNow) || in.epochWritten == 0 ||
+      in.epochNow < in.epochWritten) {
+    v.reject = PhPersistReject::kEpoch;
+    return v;
+  }
+  v.wallAgeS = in.epochNow - in.epochWritten;
+  if (in.filtTotalNow < in.filtTotalWritten) {
+    v.reject = PhPersistReject::kFiltCounter;
+    return v;
+  }
+  v.filtAgeMin = in.filtTotalNow - in.filtTotalWritten;
+  if (v.filtAgeMin > kPhIntegralPersistMaxFiltMin ||
+      v.wallAgeS > kPhIntegralPersistMaxWallAgeS) {
+    v.reject = PhPersistReject::kStale;
+    return v;
+  }
+  v.fresh = true;
+  return v;
+}
+
+/** @brief Raccourci booléen de phPersistAge(). */
+inline bool phPersistFresh(const PhPersistAgeInputs& in) {
+  return phPersistAge(in).fresh;
 }
 
 // -----------------------------------------------------------------------------
@@ -293,22 +371,14 @@ inline uint8_t phPersistNextStreak(uint8_t streak) {
 // DÉCISION DE RESTAURATION (R1 + R2 + R3 + R7)
 // -----------------------------------------------------------------------------
 
-enum class PhPersistReject : uint8_t {
-  kNone = 0,
-  kSchema,     // enregistrement d'un autre schéma
-  kStreak,     // R7 : anti-boucle de démarrage
-  kContext,    // R2 : réglages de régulation modifiés depuis l'écriture
-  kEpoch,      // horodatage nul, futur, ou horloge inexploitable
-  kStale,      // R3 : instantané périmé
-  kValue,      // valeur nulle ou non finie
-  kNoCap,      // R1 : plafond nul (historique trop court, ki inerte…)
-};
+// (PhPersistReject est déclaré avec la section R3, plus haut.)
 
 struct PhPersistRestoreVerdict {
-  bool            accepted  = false;
-  PhPersistReject reject    = PhPersistReject::kNone;
-  float           candidate = 0.0f;  // valeur ÉCRÊTÉE, à confirmer par la mesure
-  uint32_t        ageS      = 0;     // âge de l'instantané (journalisation)
+  bool            accepted   = false;
+  PhPersistReject reject     = PhPersistReject::kNone;
+  float           candidate  = 0.0f;  // valeur ÉCRÊTÉE, à confirmer par la mesure
+  uint32_t        ageS       = 0;     // âge MURAL de l'instantané (journalisation)
+  uint32_t        filtAgeMin = 0;     // âge en FILTRATION de l'instantané (journalisation)
 };
 
 /**
@@ -329,6 +399,9 @@ inline const char* phPersistRejectLabel(PhPersistReject reject) {
     case PhPersistReject::kContext: return "réglages de régulation modifiés "
                                            "depuis l'écriture";
     case PhPersistReject::kEpoch:   return "horodatage incohérent";
+    case PhPersistReject::kFiltCounter:
+                                    return "compteur de filtration incohérent "
+                                           "(inférieur à celui de l'écriture)";
     case PhPersistReject::kStale:   return "instantané périmé";
     case PhPersistReject::kValue:   return "valeur nulle ou non finie";
     default:                        return nullptr;
@@ -339,22 +412,24 @@ inline const char* phPersistRejectLabel(PhPersistReject reject) {
  * @brief Faut-il retenir cet instantané comme CANDIDAT à la restauration ?
  *
  * Applique, dans cet ordre exact : schéma (R2), anti-boucle (R7), empreinte de
- * contexte (R2), horodatage puis péremption (R3), plausibilité de la valeur,
- * enfin écrêtage au plafond chimique (R1). L'ordre importe : un enregistrement
- * d'un autre schéma ne doit pas être jugé sur son contexte, qui n'a pas le même
- * sens.
+ * contexte (R2), horodatage, compteur de filtration puis péremption (R3,
+ * phPersistAge), plausibilité de la valeur, enfin écrêtage au plafond chimique
+ * (R1). L'ordre importe : un enregistrement d'un autre schéma ne doit pas être
+ * jugé sur son contexte, qui n'a pas le même sens.
  *
  * ATTENTION : un verdict `accepted` n'autorise PAS à appliquer la valeur. Elle
  * reste CANDIDATE jusqu'à confirmation par la mesure (R4, phPersistConfirmTick).
  *
- * @param s            Instantané relu (intégrité déjà vérifiée par l'appelant)
- * @param contextHash  Empreinte du contexte COURANT
- * @param epochNow     Heure murale courante (secondes)
- * @param capPhS       Plafond R1 courant, rendu par phPersistRestoreCap()
+ * @param s             Instantané relu (intégrité déjà vérifiée par l'appelant)
+ * @param contextHash   Empreinte du contexte COURANT
+ * @param epochNow      Heure murale courante (secondes)
+ * @param filtTotalNow  Compteur de filtration cumulé COURANT (minutes)
+ * @param capPhS        Plafond R1 courant, rendu par phPersistRestoreCap()
  */
 inline PhPersistRestoreVerdict phPersistEvaluateRestore(const PhIntegralSnapshot& s,
                                                         uint32_t contextHash,
                                                         uint32_t epochNow,
+                                                        uint32_t filtTotalNow,
                                                         float capPhS) {
   PhPersistRestoreVerdict v;
 
@@ -370,13 +445,16 @@ inline PhPersistRestoreVerdict phPersistEvaluateRestore(const PhIntegralSnapshot
     v.reject = PhPersistReject::kContext;
     return v;
   }
-  if (!phPersistClockUsable(epochNow) || s.epoch == 0 || epochNow < s.epoch) {
-    v.reject = PhPersistReject::kEpoch;
-    return v;
-  }
-  v.ageS = epochNow - s.epoch;
-  if (v.ageS > kPhIntegralPersistMaxAgeS) {
-    v.reject = PhPersistReject::kStale;
+  PhPersistAgeInputs ain;
+  ain.epochWritten = s.epoch;
+  ain.epochNow = epochNow;
+  ain.filtTotalWritten = s.filtTotalMin;
+  ain.filtTotalNow = filtTotalNow;
+  const PhPersistAgeVerdict age = phPersistAge(ain);
+  v.ageS = age.wallAgeS;
+  v.filtAgeMin = age.filtAgeMin;
+  if (!age.fresh) {
+    v.reject = age.reject;
     return v;
   }
   if (!isfinite(s.value) || s.value <= 0.0f) {
@@ -404,13 +482,15 @@ inline PhPersistRestoreVerdict phPersistEvaluateRestore(const PhIntegralSnapshot
 // BRANCHE. Un pH déjà à la consigne au retour du courant ⇒ candidate abandonnée.
 
 struct PhPersistConfirmState {
-  float    candidate = 0.0f;  // valeur en attente (0 = aucune candidate)
-  uint32_t epoch     = 0;     // date d'écriture de la candidate (R3)
-  uint32_t heldMs    = 0;     // tenue CONTINUE de l'écart, en temps de branche
+  float    candidate    = 0.0f;  // valeur en attente (0 = aucune candidate)
+  uint32_t epoch        = 0;     // date d'écriture de la candidate (R3, plafond mural)
+  uint32_t filtTotalMin = 0;     // compteur de filtration à l'écriture (R3, feature-093)
+  uint32_t heldMs       = 0;     // tenue CONTINUE de l'écart, en temps de branche
 };
 
 struct PhPersistConfirmInputs {
   uint32_t epochNow       = 0;    // heure murale (péremption réévaluée en continu)
+  uint32_t filtTotalNow   = 0;    // compteur de filtration cumulé courant (min)
   uint32_t dtMs           = 0;    // dt de BRANCHE depuis le tick précédent
   float    error          = 0.0f; // erreur signée courante
   float    startThreshold = 0.0f; // seuil de DÉMARRAGE de l'hystérésis
@@ -462,7 +542,12 @@ inline PhPersistConfirmVerdict phPersistConfirmTick(PhPersistConfirmState& st,
 
   // R3 réévaluée à chaque tick : la candidate meurt de vieillesse si la
   // confirmation tarde. Elle n'est pas figée à son âge de lecture.
-  if (!phPersistFresh(st.epoch, in.epochNow)) {
+  PhPersistAgeInputs ain;
+  ain.epochWritten = st.epoch;
+  ain.epochNow = in.epochNow;
+  ain.filtTotalWritten = st.filtTotalMin;
+  ain.filtTotalNow = in.filtTotalNow;
+  if (!phPersistFresh(ain)) {
     phPersistConfirmAbandon(st);
     v.outcome = PhPersistConfirmOutcome::kExpired;
     return v;
@@ -503,38 +588,93 @@ inline PhPersistConfirmVerdict phPersistConfirmTick(PhPersistConfirmState& st,
 // -----------------------------------------------------------------------------
 
 struct PhPersistWriteInputs {
-  uint32_t nowMs       = 0;     // millis() courant
-  uint32_t lastSaveMs  = 0;     // millis du dernier flush (0 = jamais écrit)
-  uint32_t epochNow    = 0;     // heure murale
-  float    value       = 0.0f;  // intégrale courante
-  float    savedValue  = 0.0f;  // dernière valeur persistée
-  float    integralMax = 0.0f;  // plafond courant (échelle du seuil d'amplitude)
+  uint32_t nowMs         = 0;     // millis() courant
+  uint32_t lastSaveMs    = 0;     // millis du dernier flush (0 = jamais écrit)
+  uint32_t epochNow      = 0;     // heure murale
+  float    value         = 0.0f;  // intégrale courante
+  float    savedValue    = 0.0f;  // dernière valeur persistée
+  float    integralMax   = 0.0f;  // plafond courant (échelle du seuil d'amplitude)
+  uint32_t filtMinNow    = 0;     // compteur de filtration cumulé courant (min)
+  uint32_t filtMinSaved  = 0;     // compteur de filtration à la dernière écriture (min)
+  bool     rewriteWanted = false; // C5 : l'enregistrement NVS est connu invalide
+  bool     candidatePending = false; // R4 : une restauration attend sa confirmation
+};
+
+enum class PhPersistWriteReason : uint8_t {
+  kNone = 0,  // pas d'écriture
+  kDelta,     // la valeur a bougé de plus de kPhIntegralPersistMinDeltaFrac
+  kDue,       // P3 : échéance en temps de filtration atteinte (valeur stable)
+  kRewrite,   // C5 : remplacement d'un enregistrement rejeté au boot
 };
 
 /**
- * @brief R5 : faut-il écrire l'instantané maintenant ?
+ * @brief R5 (feature-093) : faut-il écrire l'instantané maintenant, et pourquoi ?
  *
- * Au plus une écriture par kPhIntegralPersistMinIntervalMs ET seulement si la
- * valeur a bougé de plus de kPhIntegralPersistMinDeltaFrac du plafond depuis la
- * dernière. Ordre de grandeur : ~2 écritures par jour de filtration en régime
- * établi, à comparer aux 100 000 cycles garantis d'un secteur NVS.
+ * Trois déclencheurs, par priorité :
+ *   - kRewrite (C5 pool-chemistry) : l'instantané relu au boot a été REJETÉ
+ *     (schéma, contexte, compteur…) — la NVS porte un enregistrement inutile, et
+ *     tant qu'il n'est pas remplacé, un second redémarrage repartirait de zéro.
+ *     Dès que l'heure est exploitable et qu'une intégrale POSITIVE existe, on
+ *     écrit, sans attendre ni la cadence ni l'amplitude (une seule fois : la
+ *     coquille lève le drapeau après l'écriture).
+ *   - kDelta : au plus une écriture par kPhIntegralPersistMinIntervalMs ET
+ *     seulement si la valeur a bougé de plus de kPhIntegralPersistMinDeltaFrac du
+ *     plafond — le critère historique (~2 écritures/jour en régime établi).
+ *   - kDue (P3) : ÉCHÉANCE en temps de filtration — si kPhIntegralPersistDueFiltMin
+ *     minutes de filtration se sont écoulées depuis la dernière écriture, on écrit
+ *     même à valeur stable. C'est ce qui garantit qu'un instantané FRAIS (âge de
+ *     filtration ≤ kPhIntegralPersistMaxFiltMin) existe à TOUT instant : le cas
+ *     réel du 03/09/2026 (valeur stable la veille, aucune écriture, rejet
+ *     « périmé » au matin) ne peut plus se produire. Coût : ~3 écritures de plus
+ *     par jour de filtration, négligeable devant les 100 000 cycles NVS.
  *
- * Sans heure valide on n'écrit PAS : l'âge serait incalculable au prochain boot
- * et l'enregistrement y serait de toute façon rejeté (R3) — autant épargner le
- * cycle d'écriture.
+ * Sans heure valide on n'écrit PAS : l'âge mural serait incalculable au prochain
+ * boot et l'enregistrement y serait de toute façon rejeté (R3) — autant épargner
+ * le cycle d'écriture.
  *
- * Soustraction non signée sur `nowMs` → wrap-safe (millis() boucle à ~49,7 j).
+ * CANDIDATE EN ATTENTE (revue v2.34.0) : tant qu'une restauration R4 attend sa
+ * confirmation par la mesure, l'intégrale RAM vaut 0 alors que la NVS porte la
+ * valeur à préserver. Sans cette garde, 30 min plus tard (pH proche de la
+ * consigne, donc pas de confirmation) kDelta verrait |0 − savedValue| > seuil et
+ * ÉCRASERAIT l'instantané valide par un zéro — le reboot suivant repartirait de
+ * zéro, exactement ce que feature-093 doit empêcher. Aucune écriture donc tant
+ * que la candidate vit ; si elle meurt (R3, changement de contexte), la coquille
+ * baisse le drapeau et la cadence normale reprend (un zéro écrit à ce moment-là
+ * est légitime : l'ancien instantané n'était plus restaurable).
+ *
+ * Soustraction non signée sur `nowMs` → wrap-safe (millis() boucle à ~49,7 j) ;
+ * le compteur de filtration est monotone, la soustraction est protégée contre un
+ * repli (NVS effacée en cours de route ⇒ échéance immédiate, fail-open acceptable :
+ * une écriture de trop, jamais une de moins).
  */
-inline bool phPersistShouldWrite(const PhPersistWriteInputs& in) {
-  if (!phPersistClockUsable(in.epochNow)) return false;
+inline PhPersistWriteReason phPersistWriteReason(const PhPersistWriteInputs& in) {
+  if (!phPersistClockUsable(in.epochNow)) return PhPersistWriteReason::kNone;
+  if (!isfinite(in.value)) return PhPersistWriteReason::kNone;
+  if (in.candidatePending) return PhPersistWriteReason::kNone;  // la NVS a raison, pas la RAM
+
+  if (in.rewriteWanted && in.value > 0.0f) return PhPersistWriteReason::kRewrite;
+
   if (in.lastSaveMs != 0 &&
       (uint32_t)(in.nowMs - in.lastSaveMs) < kPhIntegralPersistMinIntervalMs) {
-    return false;
+    return PhPersistWriteReason::kNone;
   }
   const float span = kPhIntegralPersistMinDeltaFrac * in.integralMax;
-  if (!(span > 0.0f) || !isfinite(span)) return false;
-  if (!isfinite(in.value)) return false;
-  return fabsf(in.value - in.savedValue) > span;
+  if ((span > 0.0f) && isfinite(span) && fabsf(in.value - in.savedValue) > span) {
+    return PhPersistWriteReason::kDelta;
+  }
+  // Échéance : seulement s'il y a quelque chose à préserver (une intégrale nulle
+  // n'a rien à restaurer ; la retomber à zéro est déjà couverte par kDelta).
+  if (!(in.value > 0.0f)) return PhPersistWriteReason::kNone;
+  const uint32_t filtElapsed =
+      (in.filtMinNow >= in.filtMinSaved) ? (in.filtMinNow - in.filtMinSaved)
+                                         : kPhIntegralPersistDueFiltMin;
+  if (filtElapsed >= kPhIntegralPersistDueFiltMin) return PhPersistWriteReason::kDue;
+  return PhPersistWriteReason::kNone;
+}
+
+/** @brief Raccourci booléen de phPersistWriteReason(). */
+inline bool phPersistShouldWrite(const PhPersistWriteInputs& in) {
+  return phPersistWriteReason(in) != PhPersistWriteReason::kNone;
 }
 
 // -----------------------------------------------------------------------------

@@ -1164,8 +1164,8 @@ constexpr uint8_t kPhIntegralRestoreMinHistoryDays    = 3;
 //
 // CRITÈRE DE JOUR EXPLOITABLE : au moins kPhLoadDayMinFiltrationMin minutes de
 // circulation. Sous ce seuil le rapport mL/min ne décrit plus la charge du
-// bassin mais des transitoires : le délai de purge (stabilizationDelayMin,
-// 5 min par défaut) et la pause de mélange amputent une part fixe de la journée,
+// bassin mais des transitoires : la purge de reprise d'eau (adaptative depuis la
+// feature-091, ≥ 4 min) et la pause de mélange amputent une part fixe de la journée,
 // et le budget horaire d'injection (5 min/h) rend une journée courte
 // structurellement bornée par le quota, pas par la chimie. 2 h correspond au
 // minimum syndical d'un cycle de filtration hivernal ; en dessous, la journée est
@@ -1286,13 +1286,25 @@ static_assert(kPhActuatorLimitDayFillRatio > 0.5f &&
               "ne se declenche jamais (delivre reel 84-88 % du max), en dessous "
               "il attrape un regime converge");
 
-// R3 — PÉREMPTION de l'instantané, en SECONDES d'horloge murale (l'âge est
-// mesuré sur time(), pas sur millis() : c'est justement le reboot qu'il faut
-// traverser). 6 h = UNE constante d'intégration à vitesse `normal` : au-delà, le
-// bassin a eu le temps de changer d'état et la valeur ne décrit plus la charge
-// courante. Sans heure valide (NTP/RTC non synchronisés), on n'écrit ni ne
-// restaure : un âge incalculable vaut un âge périmé (fail-closed).
-constexpr uint32_t kPhIntegralPersistMaxAgeS = 21600UL;  // 6 h
+// R3 — PÉREMPTION de l'instantané (feature-093, v2.34.0) : l'âge qui compte est
+// le TEMPS DE FILTRATION écoulé depuis l'écriture, pas l'heure murale. Le
+// bassin n'évolue (acidification, mélange) que pendant que l'eau circule : une
+// nuit sans filtration ne périme rien, et l'ancienne péremption murale de 6 h
+// (v2.27.0) jetait à chaque matin l'intégrale de la veille (spec feature-093).
+// Le compteur monotone de filtration (SafetyLimits::filtTotalMin, clé NVS
+// filt_total) fournit cet âge à travers le reboot. Trois bornes :
+//  - MaxFiltMin : 360 min de filtration = UNE constante d'intégration à vitesse
+//    `normal` (au-delà, la valeur ne décrit plus la charge courante) ;
+//  - MaxWallAgeS : filet MURAL de 72 h (compteur monotone à l'arrêt = appareil
+//    éteint plusieurs jours, ou horloge/compteur incohérents) ;
+//  - DueFiltMin : ÉCHÉANCE d'écriture forcée (P3) — au-delà de 180 min de
+//    filtration depuis la dernière écriture, on persiste même si la valeur n'a
+//    pas bougé de 5 % (sinon un régime stable n'est jamais rafraîchi et périme).
+// Sans heure valide (NTP/RTC non synchronisés), on n'écrit ni ne restaure : un
+// âge incalculable vaut un âge périmé (fail-closed).
+constexpr uint32_t kPhIntegralPersistMaxFiltMin   = 360UL;     // 6 h de filtration
+constexpr uint32_t kPhIntegralPersistMaxWallAgeS  = 259200UL;  // 72 h murales
+constexpr uint32_t kPhIntegralPersistDueFiltMin   = 180UL;     // 3 h de filtration
 
 // R4 — CONFIRMATION PAR LA MESURE. La valeur relue n'est PAS appliquée au boot :
 // elle reste CANDIDATE jusqu'à ce que le bassin confirme lui-même qu'une charge
@@ -1325,7 +1337,9 @@ constexpr uint8_t kPhIntegralRestoreMaxStreak = 3;
 // Version du schéma de l'instantané (R2). Toute retouche de la structure, du
 // sens d'un champ ou de la sémantique de la valeur DOIT l'incrémenter : un
 // enregistrement de schéma différent est rejeté, jamais réinterprété.
-constexpr uint8_t kPhIntegralPersistSchema = 1;
+// v2 (feature-093) : +filtTotalMin (compteur monotone de filtration à
+// l'écriture, 24 octets) — un instantané v1 (20 o) est rejeté au 1er boot.
+constexpr uint8_t kPhIntegralPersistSchema = 2;
 
 // =============================================================================
 // feature-085 (v2.28.0) — DOSE DE BASE APPRISE (feedforward) pH
@@ -1649,18 +1663,29 @@ static_assert(kPhIntegralRestoreMinHistoryDays >= 1 &&
                       kPhIntegralRestoreHistoryWindowDays,
               "Exigence d'historique de charge nulle ou superieure a la fenetre "
               "d'observation");
-// (xii) R3 : la péremption de l'instantané ne doit pas dépasser une constante
-// d'intégration (au-delà, la valeur ne décrit plus la charge courante) et doit
-// rester franchement plus courte que la péremption d'inactivité de 24 h.
-static_assert(kPhIntegralPersistMaxAgeS <= (uint32_t)kPhIntegralTiNormalS &&
-                  kPhIntegralPersistMaxAgeS * 1000UL < kPhIntegralStaleResetMs,
+// (xii) R3 (feature-093) : la péremption en temps de FILTRATION ne doit pas
+// dépasser une constante d'intégration (au-delà, la valeur ne décrit plus la
+// charge courante) et doit rester franchement plus courte que la péremption
+// d'inactivité de 24 h ; l'échéance d'écriture forcée (P3) doit précéder la
+// péremption (sinon l'instantané périme avant d'être rafraîchi) ; le filet
+// mural doit être au moins aussi long que la péremption de filtration (sinon il
+// la masquerait et la filtration ne compterait jamais).
+static_assert(kPhIntegralPersistMaxFiltMin * 60UL <= (uint32_t)kPhIntegralTiNormalS &&
+                  kPhIntegralPersistMaxFiltMin * 60000UL < kPhIntegralStaleResetMs,
               "Peremption de l'instantane d'integrale au-dela d'un Ti ou de la "
               "peremption d'inactivite");
+static_assert(kPhIntegralPersistDueFiltMin > 0 &&
+                  kPhIntegralPersistDueFiltMin < kPhIntegralPersistMaxFiltMin,
+              "Echeance d'ecriture forcee nulle ou au-dela de la peremption : "
+              "l'instantane perimerait avant d'etre rafraichi");
+static_assert(kPhIntegralPersistMaxWallAgeS >= kPhIntegralPersistMaxFiltMin * 60UL,
+              "Filet mural plus court que la peremption de filtration : la "
+              "filtration ne compterait jamais");
 // (xiii) R4 : la confirmation doit durer plusieurs quanta d'intégration (sinon
 // un seul tick suffirait) et rester très inférieure à la péremption (sinon la
 // candidate mourrait de vieillesse avant d'avoir pu être confirmée).
 static_assert(kPhIntegralRestoreConfirmMs >= 10UL * kPhIntegralChargeQuantumMs &&
-                  kPhIntegralRestoreConfirmMs < kPhIntegralPersistMaxAgeS * 100UL,
+                  kPhIntegralRestoreConfirmMs < kPhIntegralPersistMaxFiltMin * 60UL * 100UL,
               "Fenetre de confirmation de restauration trop courte (un tick "
               "suffirait) ou trop longue devant la peremption");
 // (xiv) R5/R7 : bornes de l'écriture et du garde-fou anti-boucle.
@@ -1889,11 +1914,97 @@ constexpr float kOrpMaxError          = 200.0f;  // Erreur ORP maximale (mV)
 // Validation pool-chemistry feature-021 :
 //   - pH  : équilibre membrane verre + jonction Ag/AgCl ≈ 5 min
 //   - ORP : équilibre Pt/Ag ≈ 3 min (cinétique plus rapide que pH)
-// Si `mqttCfg.stabilizationDelayMin > 0`, l'override utilisateur prend la priorité
-// pour les armings legacy (filtration, mode continu). Les armings post-calibration
-// EZO utilisent toujours ces durées spécifiques (la cinétique chimique l'impose).
+// feature-091 (v2.34.0) : le réglage `stabilizationDelayMin` est RETIRÉ de ces
+// armings — il ne reste que les usages post-calibration EZO et le double quota
+// de minuit (durée pH). La purge de reprise d'eau est désormais pilotée par la
+// STABILITÉ des mesures (kPurge*, ci-dessous), pas par une minuterie fixe.
 constexpr unsigned long kStabilizationDurationPhMs  = 300000UL;  // 5 min — pH post-cal
 constexpr unsigned long kStabilizationDurationOrpMs = 180000UL;  // 3 min — ORP post-cal
+
+// =============================================================================
+// feature-091 (v2.34.0) — PURGE ADAPTATIVE PAR STABILITÉ DES MESURES
+// =============================================================================
+// À chaque reprise d'eau (filtration qui démarre), les sondes lisent d'abord
+// l'eau STAGNANTE de la canalisation, puis un transitoire de mélange. La porte
+// de validité des mesures (measure_validity.*) reste FERMÉE tant que les bruts
+// pH/ORP n'ont pas cessé de bouger — plutôt qu'un délai fixe réglé à la main
+// (l'ancien stabilizationDelayMin : trop court on dose sur du transitoire, trop
+// long on perd du temps de régulation chaque matin).
+//
+// Détecteur : une MÉDIANE PAR MINUTE de chaque brut (12 lectures EZO à 5 s), sur
+// une fenêtre glissante de kPurgeWindowMin minutes ; « stable » = fenêtre pleine
+// ET étendue (max−min des médianes) ≤ seuil sur les DEUX voies. Seuils = bruit
+// de mesure observé sur le bassin de référence (dispersion pH brut ~0,36 sur
+// les LECTURES, ~0,10-0,15 sur les médianes minute) : 0,15 pH / 15 mV.
+//
+// FENÊTRE = 10 min (double arbitrage pool-chemistry du 04/09 après rejeux
+// natifs) : W médianes couvrent W−1 intervalles, la pente minimale détectable
+// d'une RAMPE est seuil/(W−1) moins le bruit de la médiane (±0,03). Mais le
+// rinçage est un FOND EN V (descente −0,047 puis remontée +0,043 pH/min le
+// 04/09) : le fond occupe une demi-fenêtre de chaque côté et la pente
+// détectable devient seuil/((W−1)/2). Avec W = 4 la porte s'ouvrait à t+7-8 à
+// pH ≈ 5,6 (l'incident à supprimer) ; avec W = 8 le rejeu sans bruit ouvrait
+// encore à t+13 à pH 5,71 (étendue 0,145 — 5 millièmes sous le seuil) puis
+// refermait à t+17 (0,303 — 3 millièmes au-dessus) : pas une marge. Avec
+// W = 10 : 4,5 × 0,045 = 0,20 > 0,15 sur le V, 9 × 0,045 = 0,40 ≫ 0,15 sur la
+// rampe, re-fermeture C1 dès 0,033 pH/min ; le rejeu ouvre à t+46-53 sur le
+// plateau (pH 6,88). Limite connue : une dérive lente de sonde (≤ 0,017
+// pH/min) est jugée stable — la régulation suit la filtrée, gardes
+// butée/plancher actives. L'ORP (1,5 mV/min au rinçage → 13,5 mV < 15) est un
+// critère SECONDAIRE : il ne détecte pas seul une remontée ≤ 1,6 mV/min.
+// 10 = capacité de l'anneau (kPurgeStabilityMaxWindowMin) : aller au-delà
+// exige d'agrandir le module pur.
+constexpr uint8_t  kPurgeWindowMin        = 10;       // fenêtre de médianes (min)
+constexpr uint8_t  kPurgeSamplesPerMin    = 12;       // lectures EZO par minute (5 s)
+constexpr float    kPurgeStablePhRange    = 0.15f;    // étendue max pH brut (fenêtre)
+constexpr float    kPurgeStableOrpRange   = 15.0f;    // étendue max ORP brut (mV)
+// PLANCHER : la porte ne s'ouvre jamais avant 10 min d'eau présente, même si la
+// fenêtre est déjà stable (une canalisation courte peut paraître stable alors
+// que l'eau de la conduite n'a pas encore été renouvelée). ≥ fenêtre — donc
+// coût d'une coupure longue ≈ 10 min + amorçage des filtres (~65 s), contre
+// 15 min de minuteur fixe avant 2.34 ; la coupure ≤ 10 s (dispense, ci-dessous)
+// reste à zéro.
+constexpr uint32_t kPurgeFloorMs          = 600000UL; // 10 min
+// PLAFOND (C2 pool-chemistry) : fail-safe si la stabilité n'arrive jamais (sonde
+// bruyante, injection en cours en amont…) — la porte s'ouvre quand même à 90 min
+// avec ALERTE `measures_purge_timeout` ; la surveillance de re-fermeture est
+// alors DÉSARMÉE jusqu'à la prochaine reprise d'eau (sinon boucle fermer/ouvrir).
+constexpr uint32_t kPurgeCapMs            = 5400000UL; // 90 min
+// RE-FERMETURE (C1 pool-chemistry) : après une ouverture par stabilité ou par
+// dispense, si l'étendue de la fenêtre dépasse 2× le seuil d'ouverture, la porte
+// se referme (re-purge) jusqu'à un nouveau plancher + stabilité. Hystérésis
+// ×2 : un simple retour au bruit d'ouverture ne referme pas.
+constexpr float    kPurgeRecloseRangePh   = 0.30f;    // = 2 × kPurgeStablePhRange
+constexpr float    kPurgeRecloseRangeOrp  = 30.0f;    // = 2 × kPurgeStableOrpRange
+// COUPURE COURTE (C3 pool-chemistry) : un redémarrage LOGICIEL (OTA, panic,
+// watchdog) de ≤ 10 s alors que l'eau était présente ne renouvelle pas l'eau de
+// la conduite — la purge est DISPENSÉE. Mémoire RTC (survit au reset, pas à la
+// coupure secteur), heure valide obligatoire, au plus UNE dispense par heure.
+constexpr uint32_t kShortOutageS             = 10;    // durée max d'une coupure « courte »
+constexpr uint32_t kOutageWaiverMinIntervalS = 3600;  // 1 dispense max par heure
+
+static_assert(kPurgeFloorMs >= (uint32_t)kPurgeWindowMin * 60000UL,
+              "Plancher de purge plus court que la fenetre de stabilite : "
+              "la porte s'ouvrirait sur une fenetre incomplete");
+static_assert(kPurgeFloorMs < kPurgeCapMs,
+              "Plancher de purge au-dela du plafond");
+static_assert(kPurgeCapMs >= 3600000UL,
+              "Plafond de purge < 60 min : un transitoire lent declencherait "
+              "l'alerte a tort");
+static_assert(kPurgeRecloseRangePh == 2.0f * kPurgeStablePhRange &&
+                  kPurgeRecloseRangeOrp == 2.0f * kPurgeStableOrpRange,
+              "Hysteresis de re-fermeture != 2 x seuil d'ouverture (C1)");
+static_assert(kPurgeStablePhRange > 0.0f && kPurgeStableOrpRange > 0.0f,
+              "Seuil de stabilite nul : la porte ne s'ouvrirait qu'au plafond");
+static_assert(kPurgeWindowMin >= 2 && kPurgeWindowMin <= 10,
+              "Fenetre de stabilite hors de [2 ; 10] min");
+static_assert(kPurgeSamplesPerMin >= 3 && kPurgeSamplesPerMin <= 60,
+              "Nombre de lectures par minute hors de [3 ; 60]");
+static_assert(kShortOutageS > 0 && kShortOutageS <= 30,
+              "Coupure courte hors de ]0 ; 30] s : au-dela l'eau de la conduite "
+              "peut avoir ete renouvelee sans que la purge le voie");
+static_assert(kOutageWaiverMinIntervalS >= 600,
+              "Intervalle minimal entre deux dispenses < 10 min");
 
 // Anti-rafale dosage chimique (pool-chemistry feature-021, Pass 3.5).
 // Limite le nombre de DÉMARRAGES de cycle de dosage par fenêtre glissante

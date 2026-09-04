@@ -220,6 +220,14 @@ struct SafetyLimits {
   // restauration trop généreux (fail-open). Archivé puis remis à zéro au
   // basculement de date, au même point que les volumes.
   uint32_t dailyFiltrationMinutes = 0;
+  // v2.34.0 (feature-093, R3) — compteur MONOTONE de minutes de filtration
+  // cumulées depuis la première mise en service : JAMAIS remis à zéro au
+  // basculement de date, incrémenté avec `dailyFiltrationMinutes`. C'est la base
+  // de temps de la fraîcheur de l'instantané d'intégrale pH (`filtTotalMin` de
+  // PhIntegralSnapshot) : l'âge en filtration = compteur courant − compteur écrit.
+  // Persisté dans `pool-daily` (clé `filt_total`) dans la même transaction que les
+  // volumes, relu quelle que soit la date. Déborde après ~8 000 ans.
+  uint32_t filtTotalMin = 0;
 };
 
 struct PumpProtection {

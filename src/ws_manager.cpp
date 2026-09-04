@@ -374,10 +374,21 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // porté 2688 → 2816. La marge sous sWsFrameBuf (kWsFrameBufBytes = 3584 o)
   // reste de 839 o — aucune troncature possible (garde `measureJson(doc) + 1 >
   // cap` en fin de fonction, qui SAUTE le push au lieu de tronquer).
+  // feature-091 (v2.34.0) : purge adaptative — `measures_stab_remaining_s`
+  // (39 o au pire cas) RETIRÉ, +4 champs (parité /data). Octets SÉRIALISÉS au
+  // pire cas (uint32 saturés, uint8 à 3 chiffres) :
+  //   "measures_stab_elapsed_s":4294967295,        → 1+23+1+1+10+1 = 37 o
+  //   "measures_purge_last_duration_s":4294967295, → 1+30+1+1+10+1 = 44 o
+  //   "measures_purge_last_end":4,                 → 1+23+1+1+1+1  = 28 o
+  //   "measures_purge_count":255,                  → 1+20+1+1+3+1  = 27 o
+  //   → +136 − 39 = +97 o. Pire cas de trame : 2745 + 97 = 2842 o, AU-DESSUS du
+  // gabarit 2816 → gabarit porté 2816 → 2944. Marge sous sWsFrameBuf
+  // (kWsFrameBufBytes = 3584 o) : 742 o — aucune troncature possible (garde
+  // `measureJson(doc) + 1 > cap` en fin de fonction, qui SAUTE le push).
   // NB : en ArduinoJson 7, StaticJson<N> dérive de JsonDocument et N n'est plus
   // qu'une valeur documentaire (capacity()) — le pool est alloué dynamiquement.
   // Le seul plafond DUR de ce chemin est kWsFrameBufBytes.
-  StaticJson<2816> doc;
+  StaticJson<2944> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -630,12 +641,16 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // quels (calibration, onglet Avancé) — l'UI arbitre via measures_valid.
   // NB : nom distinct de stabilization_remaining_s (stabilisation post-
   // calibration des pompes, plus haut) : ici purge de la chambre de mesure.
+  // feature-091 (v2.34.0) : purge adaptative — écoulé, dernière durée, motif de
+  // fin et nombre de re-purges. PARITÉ /data ↔ WS : mêmes clés que
+  // web_routes_data.cpp (un champ WS-seul CLIGNOTERAIT à chaque rafraîchissement).
   {
-    bool mvWater = false, mvValid = false;
-    uint32_t mvRemainS = 0;
-    measureValidity.getSnapshot(mvWater, mvValid, mvRemainS);  // snapshot cohérent
-    d["measures_valid"] = mvValid;
-    d["measures_stab_remaining_s"] = mvRemainS;
+    const MeasureValiditySnapshot mv = measureValidity.getSnapshot();  // snapshot cohérent
+    d["measures_valid"] = mv.measuresValid;
+    d["measures_stab_elapsed_s"] = mv.stabElapsedS;
+    d["measures_purge_last_duration_s"] = mv.lastPurgeDurationS;
+    d["measures_purge_last_end"] = mv.lastPurgeEnd;
+    d["measures_purge_count"] = mv.purgeCount;
   }
 
   d["time_synced"]   = (time(nullptr) >= kMinValidEpoch);

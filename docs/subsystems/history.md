@@ -88,7 +88,9 @@ Deux gardes, complémentaires :
 
 ## Exclusion des mesures pH/ORP/température sans circulation d'eau (feature-061, v2.13.0)
 
-`recordDataPoint()` force **`point.ph = NAN`, `point.orp = NAN` et `point.temperature = NAN`** (même bloc) quand `measureValidity.measuresValid()` est faux — c'est-à-dire quand l'eau ne circule pas (filtration arrêtée, signal externe périmé) **ou** pendant le **délai de purge** post-reprise (`stabilizationDelayMin`, défaut 5 min — l'eau stagnante de la chambre de mesure doit être chassée). Voir [measure-validity.md](measure-validity.md).
+`recordDataPoint()` force **`point.ph = NAN`, `point.orp = NAN` et `point.temperature = NAN`** (même bloc) quand `measureValidity.measuresValid()` est faux — c'est-à-dire quand l'eau ne circule pas (filtration arrêtée, signal externe périmé) **ou** pendant la **purge** post-reprise — l'eau stagnante de la chambre de mesure doit être chassée, puis le transitoire de rinçage doit s'éteindre. Voir [measure-validity.md](measure-validity.md).
+
+> **v2.34.0 (feature-091)** : la purge n'est plus une minuterie réglable (`stabilizationDelayMin`, retiré) mais s'arrête **sur la stabilité des bruts**, entre un plancher de 10 min et un plafond de 90 min. Conséquence pour l'historique : le nombre de points `NaN` du matin n'est plus prévisible à l'avance et varie d'un jour à l'autre (typiquement 30 à 50 min de rinçage). C'est voulu — les points exclus sont exactement ceux qui n'étaient pas représentatifs. Voir [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md).
 
 > La température a rejoint pH/ORP en **itération 2** de feature-061 : la sonde DS18B20 est dans la canalisation → à l'arrêt, l'eau du tuyau dérive vers la température ambiante du local (plateaux nocturnes non représentatifs du bassin). Même drapeau `measures_valid`, pas de validité séparée.
 

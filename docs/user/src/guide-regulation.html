@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<!--
+  ═══════════════════════════════════════════════════════════════════════════
+  SOURCE MAINTENABLE du guide utilisateur « La régulation chimique ».
+
+  Régénérer le PDF (depuis la racine du projet) :
+
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+      --headless --no-pdf-header-footer \
+      --print-to-pdf="docs/user/guide-regulation-v<version>.pdf" \
+      "docs/user/src/guide-regulation.html"
+
+  Source de vérité : docs/subsystems/regulation-vue-d-ensemble.md
+  (état COURANT — toute divergence se résout en faveur du .md).
+  Registre : vulgarisation pour le propriétaire du bassin. Aucun nom de
+  constante, aucune référence de fichier ni d'ADR ne doit apparaître ici.
+  ═══════════════════════════════════════════════════════════════════════════
+-->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>La régulation chimique — comment ça marche</title>
+<link rel="stylesheet" href="collection.css">
+<style>
+/* ══════════════════════════════════════════════════════════════════════
+   Système visuel commun de la collection : docs/user/src/collection.css
+   (chapeaux, titres, numéros pâles, encarts, tableaux, pied de page).
+   Ce bloc local ne contient QUE les variables propres à ce document.
+   ══════════════════════════════════════════════════════════════════════ */
+:root {
+  --prefixe-section: "SECTION 0";   /* chapeau des titres h2 */
+}
+</style>
+</head>
+<body>
+
+<!-- ══════════════════ 1. Titre + introduction ══════════════════ -->
+<header>
+  <p class="kicker">Guide de régulation</p>
+  <h1>La régulation chimique&nbsp;—&nbsp;comment ça marche</h1>
+  <p class="subtitle">Guide du propriétaire — contrôleur de piscine, firmware 2.32</p>
+  <hr class="cover-rule">
+</header>
+
+<p class="lead">
+Votre appareil surveille et corrige en continu deux grandeurs de l'eau&nbsp;:
+le <strong>pH</strong> (l'acidité, corrigée par une pompe doseuse de produit pH)
+et le <strong>potentiel de désinfection</strong> (mesuré en millivolts et
+corrigé par une pompe doseuse de chlore liquide). Sa philosophie tient en
+quatre idées&nbsp;: <strong>mesurer souvent</strong> (une lecture toutes les
+5&nbsp;secondes), <strong>doser peu à la fois</strong> (de petites impulsions,
+espacées de pauses de mélange), <strong>apprendre votre bassin</strong> (la
+dose quotidienne dont votre eau a besoin est observée, jamais devinée), et
+surtout <strong>ne jamais doser dans le doute</strong>. Chaque fois qu'une
+information est douteuse — mesure absente, eau qui ne circule pas, calibration
+incertaine — l'appareil choisit systématiquement de ne pas injecter&nbsp;: une
+eau sous-dosée se rattrape en quelques heures, un surdosage, non.
+Ce guide explique le chemin complet d'une correction, de l'électrode à la
+pompe, puis les mécanismes d'apprentissage et de sécurité qui l'encadrent —
+des réflexes d'une fraction de seconde aux mémoires qui s'étendent sur
+plusieurs jours.
+</p>
+
+<!-- ══════════════════ 2. Le voyage d'une correction ══════════════════ -->
+<h2 class="page-break"><span class="num">1</span>Le voyage d'une correction</h2>
+
+<p>Entre le moment où l'électrode sent que l'eau dérive et le moment où la
+pompe verse quelques millilitres de produit, la mesure traverse une série
+d'étapes. Chacune peut dire «&nbsp;non&nbsp;» — et un seul «&nbsp;non&nbsp;»
+suffit à suspendre le dosage. Voici ce voyage, étape par étape.</p>
+
+<div class="step">
+  <div class="step-badge">1</div>
+  <div class="step-body">
+    <h4>Le module de mesure — la précision commence avant l'appareil</h4>
+    <p>Chaque électrode (pH et désinfection) est branchée sur un
+    <strong>module de mesure dédié</strong>, un petit circuit spécialisé qui
+    possède son propre processeur. C'est lui qui acquiert le signal fragile de
+    l'électrode, c'est lui qui garde en mémoire la calibration (les points de
+    référence que vous enregistrez avec les solutions étalon), et côté pH,
+    c'est encore lui qui compense l'effet de la température de l'eau. La
+    valeur qui arrive au contrôleur est donc <strong>déjà une vraie
+    mesure</strong>, calibrée et compensée — le contrôleur ne la retouche
+    jamais en amont.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-badge">2</div>
+  <div class="step-body">
+    <h4>La lecture, toutes les 5 secondes</h4>
+    <p>Le contrôleur interroge les modules de mesure toutes les
+    <strong>5&nbsp;secondes</strong>, sans interruption — que le dosage soit
+    en cours, en pause ou suspendu, la mesure, elle, ne s'arrête jamais.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-badge">3</div>
+  <div class="step-body">
+    <h4>Le filtrage — séparer la tendance du bruit</h4>
+    <p>Une piscine est un milieu vivant&nbsp;: une bulle d'air, un remous, le
+    panache du produit qui vient d'être injecté peuvent passer devant la
+    sonde. L'appareil rejette d'abord les valeurs manifestement aberrantes,
+    puis calcule une <strong>tendance sur environ une minute de
+    lectures</strong>&nbsp;: c'est cette valeur lissée, et elle seule, qui
+    entre dans les décisions de dosage. Deux protections s'y ajoutent&nbsp;:
+    si aucune lecture fraîche n'arrive pendant <strong>20&nbsp;secondes</strong>,
+    la mesure est déclarée absente (et sans mesure, pas de dosage
+    automatique)&nbsp;; et quand l'eau ne circule pas, les mesures sont
+    déclarées <strong>non représentatives</strong> — l'eau stagnante devant
+    les sondes ne dit rien de l'état du bassin, l'appareil refuse d'en tirer
+    la moindre conclusion.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-badge">4</div>
+  <div class="step-body">
+    <h4>Les seuils de sécurité — le droit chimique d'injecter</h4>
+    <p>Avant tout calcul, l'appareil vérifie que le produit demandé a même le
+    <em>droit</em> d'entrer dans l'eau. Côté pH&nbsp;: jamais d'acide si le pH
+    est déjà sous <strong>6,70</strong>, jamais de produit basique s'il
+    dépasse <strong>7,60</strong> — avec deux butées de dernier recours
+    (6,20 et 8,10) qui restent valides même si un réglage était erroné. Trois
+    refus de ce type en 24&nbsp;heures suspendent la régulation automatique et
+    demandent votre intervention. Côté chlore, une règle capitale&nbsp;: si le
+    pH est trop haut (au-dessus de 7,60) ou simplement inconnu, <strong>le
+    dosage de chlore est suspendu</strong>. Au-dessus de ce pH, le chlore
+    perd l'essentiel de son pouvoir désinfectant&nbsp;— en pousser davantage
+    ne désinfecterait pas mieux, le vrai remède est de corriger le pH
+    d'abord.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-badge">5</div>
+  <div class="step-body">
+    <h4>L'ouverture d'une session de dosage</h4>
+    <p>Pour éviter que la pompe démarre et s'arrête sans cesse autour de la
+    consigne, l'appareil travaille par <strong>sessions</strong>&nbsp;: le
+    dosage ne s'ouvre que si l'écart à la consigne est franc (0,05&nbsp;unité
+    de pH, ou 15&nbsp;millivolts côté désinfection), et une fois ouvert, il se
+    poursuit jusqu'à revenir tout près de la cible (0,01&nbsp;unité, ou
+    2&nbsp;millivolts). Cette marge entre le seuil d'entrée et le seuil de
+    sortie absorbe le bruit de mesure et empêche toute oscillation.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-badge">6</div>
+  <div class="step-body">
+    <h4>Le calcul de la dose — un débit, jamais un rattrapage</h4>
+    <p>L'appareil ne calcule jamais «&nbsp;un volume à rattraper&nbsp;»&nbsp;:
+    il calcule un <strong>débit moyen</strong>, en millilitres par minute —
+    ainsi, aucun retard accumulé ne peut se transformer en rafale de produit.
+    Côté chlore, la réaction est volontairement simple&nbsp;: plus l'écart à
+    la cible est grand, plus le débit demandé est élevé, et c'est tout. Côté
+    pH, la demande additionne deux parts&nbsp;: une <strong>part
+    apprise</strong> — la dose de base dont votre bassin a besoin chaque jour,
+    observée sur les jours précédents (section&nbsp;2) — et une <strong>part
+    réactive</strong>, qui répond à l'écart du moment (baignade, pluie,
+    appoint d'eau) et à ce qui reste d'écart persistant.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-badge">7</div>
+  <div class="step-body">
+    <h4>Les plafonds — combien est réellement livrable</h4>
+    <p>La demande calculée passe ensuite sous quatre plafonds
+    empilés&nbsp;: le débit maximal que la pompe peut réellement fournir
+    (mesuré lors de sa calibration), la <strong>limite horaire</strong> de
+    fonctionnement de la pompe que vous avez configurée, le <strong>quota
+    journalier</strong> de produit, et — pour le pH — la règle que la part
+    apprise ne dépasse jamais 60&nbsp;% du débit soutenable&nbsp;: la part
+    réactive, celle qui voit l'erreur, garde toujours le dernier mot. Aucun
+    plafond n'est jamais dépassé «&nbsp;pour rattraper&nbsp;».</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-badge">8</div>
+  <div class="step-body">
+    <h4>Le dosage par impulsions</h4>
+    <p>La pompe ne module pas sa vitesse&nbsp;: elle tourne toujours à une
+    allure unique, dont le débit a été <strong>pesé</strong> lors de la
+    calibration. C'est la <em>fraction du temps de marche</em> qui fait la
+    dose&nbsp;: toutes les <strong>60&nbsp;secondes</strong>, la pompe tourne
+    pendant une durée proportionnelle à la demande — c'est un
+    <strong>pouls</strong>. Chaque pouls démarre par un bref coup de fouet de
+    0,4&nbsp;seconde à pleine puissance, le temps de décoller le mécanisme.
+    Un pouls ne descend jamais sous <strong>10&nbsp;secondes</strong>&nbsp;:
+    en dessous, la dose serait trop imprécise — la petite quantité est alors
+    mise de côté et versée plus tard, en une impulsion exacte&nbsp;; rien
+    n'est jamais perdu, et rien n'est jamais versé en rafale de rattrapage.</p>
+  </div>
+</div>
+
+<div class="box">
+  <span class="box-title">Vocabulaire — pouls et injection, deux échelles de temps</span>
+  <p>Un <strong>pouls</strong> est une marche de pompe de quelques secondes à
+  l'intérieur d'une période de 60&nbsp;secondes. Une <strong>injection</strong>
+  (le journal dit aussi «&nbsp;session&nbsp;» ou «&nbsp;cycle&nbsp;» — trois
+  noms pour le même épisode) est l'épisode complet de dosage, du démarrage à
+  l'arrêt&nbsp;: elle enchaîne un ou plusieurs pouls, de minute en minute.
+  <strong>La confusion classique</strong>&nbsp;: croire que la pause de
+  mélange suit chaque pouls. Non — les pouls s'enchaînent librement pendant
+  une injection&nbsp;; la pause ne s'arme qu'à la <em>fin de l'épisode</em>,
+  et c'est l'injection <em>suivante</em> qu'elle retarde.</p>
+</div>
+
+<div class="step">
+  <div class="step-badge">9</div>
+  <div class="step-body">
+    <h4>La pause de mélange — le métronome de la boucle</h4>
+    <p>Quand une injection se termine, une pause d'homogénéisation
+    s'enclenche&nbsp;: <strong>15&nbsp;minutes</strong> pour le pH,
+    <strong>20&nbsp;minutes</strong> pour le chlore (plus prudent). Le produit
+    versé a besoin de ce temps pour se répartir dans le bassin&nbsp;; redoser
+    avant, ce serait corriger une eau qui n'a pas fini de réagir. Résultat&nbsp;:
+    au plus une injection toutes les 15 à 20&nbsp;minutes par produit. Pendant
+    la pause, <strong>la mesure continue</strong> (toujours toutes les
+    5&nbsp;secondes)&nbsp;— seule la décision de redoser attend.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-badge">10</div>
+  <div class="step-body">
+    <h4>La comptabilité — chaque millilitre est compté</h4>
+    <p>Chaque seconde de marche de la pompe est convertie en millilitres au
+    débit pesé (le coup de fouet initial est compté au débit le plus élevé
+    possible&nbsp;: en cas de doute, l'appareil <em>surestime</em> ce qu'il a
+    versé, pour que les limites se déclenchent plus tôt). Cette comptabilité
+    alimente les cumuls journaliers, la fenêtre de la limite horaire, le suivi
+    du niveau de bidon si vous l'avez activé, et — côté pH — la mémoire de
+    consommation sur 7&nbsp;jours qui nourrit la dose de base apprise.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-badge">11</div>
+  <div class="step-body">
+    <h4>Les vérifications transverses — évaluées avant tout, à chaque tour</h4>
+    <p>En parallèle de toute cette chaîne, une batterie de vérifications est
+    passée en revue à chaque instant, <em>avant</em> tout calcul&nbsp;:
+    l'<strong>eau circule-t-elle</strong> (jamais d'injection dans une
+    canalisation sans débit)&nbsp;? le chien de garde interne — le mécanisme
+    qui redémarre l'appareil s'il venait à se figer — est-il actif&nbsp;? la
+    calibration des sondes est-elle suffisante&nbsp;? l'eau des canalisations
+    a-t-elle été <strong>rincée</strong> depuis la reprise de la
+    filtration&nbsp;? les protections
+    anti-emballement (nombre de démarrages par minute, cycles par jour)
+    sont-elles respectées&nbsp;? Un seul «&nbsp;non&nbsp;», et les pompes
+    restent à l'arrêt.</p>
+  </div>
+</div>
+
+<div class="step">
+  <div class="step-badge">12</div>
+  <div class="step-body">
+    <h4>Ce que vous voyez</h4>
+    <p>Tout cela est visible&nbsp;: l'interface web, l'application et Home
+    Assistant affichent exactement les mêmes valeurs (mêmes noms, mêmes
+    arrondis). Quand l'appareil refuse de doser, la <strong>cause du
+    refus</strong> est affichée en clair, en français. Et le journal ne note
+    que les <em>événements</em> — un début, une fin, un refus, une alerte —
+    jamais du remplissage.</p>
+  </div>
+</div>
+
+<!-- ══════════════════ 3. La dose de base apprise ══════════════════ -->
+<h2 class="page-break"><span class="num">2</span>La dose de base apprise&nbsp;: l'appareil connaît votre bassin</h2>
+
+<p>La plus grande partie de la consommation d'acide d'un bassin est
+remarquablement <strong>stable d'un jour à l'autre</strong> (elle vient
+surtout du dégazage naturel du CO₂ de l'eau — environ 80&nbsp;% de la charge
+observée). Plutôt que de redécouvrir cette charge chaque matin par
+tâtonnement, l'appareil l'apprend&nbsp;: il retient la consommation des
+<strong>7&nbsp;derniers jours</strong> et applique d'emblée la valeur médiane
+comme <strong>dose de base</strong>, dès la première heure de filtration de
+la journée. La part réactive n'a alors plus qu'à s'occuper de l'imprévu du
+jour&nbsp;: une baignade, une pluie, un appoint d'eau.</p>
+
+<p>Cette mémoire est <strong>apprise, jamais saisie</strong>&nbsp;: vous
+n'entrez ni volume de bassin, ni dureté, ni concentration de produit dans un
+quelconque calcul. Et elle reste une mémoire de <em>débit</em>, pas de
+dette&nbsp;: après une coupure de courant, il n'y a rien «&nbsp;à
+rattraper&nbsp;», donc aucune rafale possible.</p>
+
+<div class="box">
+  <span class="box-title">Les trois premiers jours</span>
+  <p>Un appareil neuf ne dose <strong>jamais «&nbsp;de mémoire&nbsp;»</strong>
+  avant d'avoir observé <strong>3&nbsp;journées exploitables</strong> (au
+  moins 2&nbsp;heures de circulation chacune). Pendant ce temps, la régulation
+  ne vous fait pas attendre&nbsp;: la part réactive fonctionne <strong>dès la
+  première heure</strong>. La mémoire accélère la régulation&nbsp;; elle n'est
+  jamais sa condition.</p>
+</div>
+
+<h3>À quelle vitesse la mémoire s'adapte-t-elle&nbsp;?</h3>
+
+<table>
+  <tr><th style="width:44%">Événement</th><th>Réaction de la mémoire</th></tr>
+  <tr>
+    <td><strong>Une journée aberrante</strong> (incident, purge, fête au bord du bassin)</td>
+    <td><strong>Ignorée.</strong> La médiane sur 7&nbsp;jours encaisse jusqu'à
+    3&nbsp;journées folles sans broncher, et un filet de vraisemblance écarte
+    en plus les journées physiquement impossibles.</td>
+  </tr>
+  <tr>
+    <td><strong>Une dérive de saison</strong> (montée en température, fréquentation)</td>
+    <td><strong>Suivie en 3 à 4&nbsp;jours</strong> — le temps que la majorité
+    de la fenêtre reflète le nouveau régime.</td>
+  </tr>
+  <tr>
+    <td><strong>Un changement de TYPE de produit</strong> (passer d'un pH&nbsp;moins à un
+    pH&nbsp;plus — <em>pas</em> un simple changement de bidon&nbsp;!)</td>
+    <td><strong>Mémoire mise en quarantaine</strong> jusqu'à ce qu'une journée
+    entière ait été observée avec le nouveau produit — la dose apprise pour
+    l'ancien produit ne vaut plus rien, et pourrait même agir à contresens.
+    C'est le réglage «&nbsp;type de produit&nbsp;» qui le déclare à
+    l'appareil&nbsp;: il ne détecte rien chimiquement.</td>
+  </tr>
+  <tr>
+    <td><strong>Un changement ou une recharge de bidon</strong> (même produit)</td>
+    <td><strong>Aucun effet sur l'apprentissage.</strong> La mémoire porte sur
+    la consommation du <em>bassin</em>, pas sur le contenant. Seul le suivi de
+    niveau de la page Produits est concerné (bouton «&nbsp;Réinitialiser le
+    bidon&nbsp;»).</td>
+  </tr>
+  <tr>
+    <td><strong>L'hiver, filtration courte</strong> (moins de 2&nbsp;h par jour)</td>
+    <td><strong>Auto-désactivation prudente</strong>&nbsp;: plus aucune journée
+    n'est jugée exploitable, la dose de base s'éteint d'elle-même. La part
+    réactive suffit largement à ce régime de faible charge.</td>
+  </tr>
+  <tr>
+    <td><strong>Un redémarrage de l'appareil</strong> (mise à jour, coupure,
+    incident)</td>
+    <td><strong>Rien n'est perdu.</strong> La consommation des 7&nbsp;derniers
+    jours est conservée, et depuis la version&nbsp;2.34 la correction
+    accumulée l'est aussi — voir ci-dessous.</td>
+  </tr>
+</table>
+
+<h3>Un redémarrage ne remet plus la régulation à zéro</h3>
+
+<p>Deux mémoires font travailler la régulation pH&nbsp;: la <strong>dose de
+base</strong> apprise sur 7&nbsp;jours, et la <strong>correction
+accumulée</strong> — la part patiemment construite qui annule l'écart
+résiduel une fois la consigne approchée. La seconde met plusieurs heures à
+se constituer&nbsp;; jusqu'à la version&nbsp;2.33, un simple redémarrage la
+détruisait, et il fallait une matinée entière pour la reconstruire.</p>
+
+<p>Elle est désormais conservée, sous conditions&nbsp;: elle
+<strong>n'est jamais rappliquée au démarrage</strong>. Elle attend que le
+bassin confirme lui-même, pendant <strong>cinq minutes</strong> de
+régulation effective, qu'un écart existe bel et bien. Si le pH est déjà à
+sa consigne au retour du courant, elle est <em>abandonnée</em>&nbsp;: la
+régulation ne redémarre jamais sur une dose que rien ne demande.</p>
+
+<div class="box">
+  <span class="box-title">Pourquoi ça se compte en heures de filtration</span>
+  <p>Cette mémoire ne vit que quand l'eau circule&nbsp;: la nuit, filtration
+  arrêtée, elle est <em>gelée</em>. On lui appliquait pourtant une date de
+  péremption en heures d'horloge — si bien qu'elle était déclarée périmée
+  chaque matin, alors qu'elle décrivait toujours exactement le même bassin.
+  Sa fraîcheur se mesure maintenant en <strong>heures de filtration</strong>.
+  Une nuit d'arrêt ne la vieillit plus&nbsp;; une longue absence
+  (plusieurs jours), si.</p>
+</div>
+
+<!-- ══════════════════ 4. Le latch / disjoncteur ══════════════════ -->
+<h2 class="page-break"><span class="num">3</span>Le disjoncteur de la dose de base</h2>
+
+<p>La dose de base a une particularité qui exige une protection
+spéciale&nbsp;: elle est le seul dosage <strong>aveugle à la mesure</strong>.
+Elle verse ce que le bassin consomme d'habitude — mais si la mesure du moment
+n'est pas digne de confiance, personne ne peut vérifier qu'elle dose à bon
+escient. Sa protection est donc un <strong>disjoncteur</strong>, au sens
+propre du terme&nbsp;: une fois déclenché, il <em>ne se réarme pas tout
+seul</em> quand la cause disparaît, contrairement à un simple blocage.</p>
+
+<p>Trois choses le font sauter&nbsp;:</p>
+<ul>
+  <li><strong>Une mesure invalide</strong> — coupure immédiate, sans délai&nbsp;;</li>
+  <li><strong>Un bassin qui n'a manifestement pas besoin de la dose</strong> —
+  si le pH reste franchement de l'autre côté de la consigne (plus de
+  0,05&nbsp;unité) pendant <strong>30&nbsp;minutes</strong>, le scénario
+  «&nbsp;fausse pluie&nbsp;»&nbsp;: continuer à verser la dose habituelle
+  serait doser à contretemps&nbsp;;</li>
+  <li><strong>Un changement de contexte</strong> — consigne modifiée, taille
+  de bassin, type de produit&nbsp;: la mémoire a été apprise pour un autre
+  point de fonctionnement.</li>
+</ul>
+
+<p>Le réarmement se fait à un instant unique et prévisible&nbsp;:
+<strong>l'ouverture de la session de dosage suivante</strong> (à une exception
+près&nbsp;: après un changement de type de produit, il faut une journée
+entière observée sous le nouveau régime). Pourquoi cette rigidité&nbsp;?
+Deux raisons. <strong>L'anti-battement</strong>&nbsp;: une mesure qui vacille
+entre valide et invalide ferait sans cela battre la dose marche/arrêt.
+<strong>La traçabilité</strong>&nbsp;: chaque coupure et chaque réarmement a
+sa ligne motivée dans le journal — vous pouvez toujours reconstituer pourquoi
+l'appareil a fait ce qu'il a fait.</p>
+
+<div class="box">
+  <span class="box-title">Un exemple vécu — le matin du 2 septembre</span>
+  <p>Au démarrage de la filtration, l'eau morte restée dans les canalisations
+  passe devant les sondes&nbsp;: mesure jugée non fiable, le disjoncteur
+  saute à 6h59. À 7h30, l'eau du bassin a remplacé le bouchon, la mesure est
+  redevenue parfaitement saine… et le disjoncteur est <strong>resté
+  fermé</strong>. C'est voulu&nbsp;: une mesure redevenue bonne ne le rouvre
+  pas — il attend l'ouverture de la session de dosage suivante, quelques
+  dizaines de minutes plus tard. Entre-temps, la part réactive, elle, reste
+  pleinement opérationnelle.</p>
+</div>
+
+<!-- ══════════════════ 5. Taille du bassin ══════════════════ -->
+<h2 class="page-break"><span class="num">4</span>La taille du bassin, seul réglage de rythme</h2>
+
+<p>Vous ne choisissez pas de «&nbsp;vitesse de régulation&nbsp;»&nbsp;: vous
+déclarez la <strong>taille de votre bassin</strong> («&nbsp;Moins de
+20&nbsp;m³&nbsp;», «&nbsp;20 à 60&nbsp;m³&nbsp;», «&nbsp;Plus de
+60&nbsp;m³&nbsp;»), et l'appareil en déduit le tempérament de sa
+correction. La logique est physique&nbsp;: dans un <strong>petit bassin,
+chaque millilitre a beaucoup d'effet</strong> — il faut donc corriger
+doucement, sous peine de dépasser la cible&nbsp;; dans un grand bassin,
+c'est l'inverse, chaque millilitre pèse peu, la correction peut être plus
+franche. Ce choix ne fait que régler le <em>rythme</em>&nbsp;: le volume que
+vous déclarez n'entre <strong>jamais</strong> dans un calcul de dose
+(section&nbsp;7) — la quantité de produit dont votre eau a réellement besoin
+est, elle, apprise par l'observation.</p>
+
+<!-- ══════════════════ 6. pH et chlore ══════════════════ -->
+<h2><span class="num">5</span>pH et chlore&nbsp;: deux traitements différents, et c'est voulu</h2>
+
+<p>Toute la <strong>machinerie de livraison</strong> — impulsions, pauses de
+mélange, limites, comptabilité — est identique pour les deux produits. Mais
+l'<strong>intelligence</strong> n'est pas symétrique&nbsp;: le pH bénéficie
+de l'apprentissage et de la mémoire, le chlore reste sur une réaction simple
+et directe. Ce n'est pas un retard de développement, c'est une décision.</p>
+
+<table>
+  <tr>
+    <th style="width:34%"></th>
+    <th style="width:33%">pH</th>
+    <th>Chlore (désinfection)</th>
+  </tr>
+  <tr>
+    <td><strong>Livraison</strong> (impulsions, pompe calibrée, coup de fouet)</td>
+    <td colspan="2" style="text-align:center">Identique — même mécanique, mêmes garde-fous</td>
+  </tr>
+  <tr>
+    <td><strong>Rythme et limites</strong> (pauses, quotas, limite horaire, suivi bidon)</td>
+    <td colspan="2" style="text-align:center">Identiques — seules les valeurs diffèrent (pause 15&nbsp;min / 20&nbsp;min)</td>
+  </tr>
+  <tr>
+    <td><strong>Calcul de la dose</strong></td>
+    <td>Dose de base apprise + part réactive complète (immédiate et persistante)</td>
+    <td>Réaction simple et directe à l'écart, volontairement sans mémoire</td>
+  </tr>
+  <tr>
+    <td><strong>Couplage entre les deux</strong></td>
+    <td>—</td>
+    <td>Suspendu si le pH est trop haut ou inconnu</td>
+  </tr>
+</table>
+
+<p>Trois raisons à cette asymétrie&nbsp;:</p>
+
+<p><strong>1. La mesure de désinfection n'est pas une jauge de chlore.</strong>
+Le potentiel mesuré en millivolts dépend certes du chlore, mais aussi du pH,
+de la température et du stabilisant présent dans l'eau — la même quantité de
+chlore peut donner des lectures différentes selon les conditions. Une mémoire
+construite sur cette mesure accumulerait un mélange indémêlable de chimie
+réelle et d'artefacts, puis le servirait en produit. C'est aussi pourquoi
+<strong>la bonne façon de régler la cible de désinfection est la
+bandelette</strong> (ou le test à pastille)&nbsp;: vous mesurez directement le
+chlore de <em>votre</em> eau et vous ajustez la cible en millivolts pour
+qu'elle corresponde au bon taux. L'appareil tient la cible&nbsp;; vous, vous
+lui donnez son sens.</p>
+
+<p><strong>2. Le risque n'est pas le même.</strong> Un pH un peu hors consigne
+est un problème de confort et d'efficacité — cela se corrige en quelques
+jours. Un <strong>surdosage de chlore est un problème de santé</strong>. Côté
+pH, on a pu ajouter de l'intelligence parce que chaque ajout est plafonné et
+que le pire cas résiduel est un sous-dosage&nbsp;; côté chlore, le sens sûr
+est de sous-doser — toute mémoire qui accumulerait une autorité de dosage
+irait à contresens du risque.</p>
+
+<p><strong>3. On ne répare pas ce qui marche.</strong> Tout l'apprentissage
+côté pH répond à un défaut réellement observé et mesuré&nbsp;: un pH resté
+bloqué au-dessus de sa consigne pendant des semaines, faute de mémoire. Le
+chlore, lui, atteint sa cible avec sa réaction simple et ses garde-fous&nbsp;:
+il n'a jamais présenté ce défaut. On ne déploie pas une machinerie
+d'apprentissage sur une boucle qui converge déjà.</p>
+
+<!-- ══════════════════ 7. Les tempos ══════════════════ -->
+<h2 class="page-break"><span class="num">6</span>Les tempos du système</h2>
+
+<p>La régulation vit sur des échelles de temps très différentes — du réflexe
+d'une fraction de seconde aux mémoires de plusieurs jours. Les voici, du plus
+court au plus long.</p>
+
+<table>
+  <tr><th style="width:22%">Durée</th><th>Ce qui se joue</th></tr>
+  <tr><td class="duree">0,4 seconde</td>
+      <td>Le «&nbsp;coup de fouet&nbsp;»&nbsp;: brève pleine puissance au
+      démarrage de chaque pouls, le temps de décoller le mécanisme de la
+      pompe.</td></tr>
+  <tr><td class="duree">5 secondes</td>
+      <td>Cadence de lecture des sondes pH et désinfection — la mesure ne
+      s'arrête jamais.</td></tr>
+  <tr><td class="duree">10 secondes</td>
+      <td>Durée minimale d'un pouls de pompe. En dessous, la petite dose est
+      mise de côté et versée plus tard, jamais perdue.</td></tr>
+  <tr><td class="duree">20 secondes</td>
+      <td>Sans lecture fraîche au-delà de ce délai, la mesure est déclarée
+      absente — et sans mesure, pas de dosage automatique.</td></tr>
+  <tr><td class="duree">30 secondes</td>
+      <td>Durée minimale d'une injection démarrée.</td></tr>
+  <tr><td class="duree">~1 minute</td>
+      <td>Fenêtre du filtre de mesure (la tendance calculée sur les dernières
+      lectures) — et période du dosage par impulsions (un pouls au plus par
+      minute).</td></tr>
+  <tr><td class="duree">3 à 5 minutes</td>
+      <td>Stabilisation après une calibration de sonde — le temps que la
+      lecture se pose.</td></tr>
+  <tr><td class="duree">10 à 90 minutes</td>
+      <td>Purge à la reprise de la circulation, le temps que l'eau devant les
+      sondes redevienne représentative du bassin. <strong>Durée non
+      fixe</strong>&nbsp;: elle se termine quand la mesure cesse de bouger —
+      10&nbsp;minutes au minimum, 90 au maximum (au-delà, l'appareil rouvre
+      la régulation <em>et le signale</em>). Après un redémarrage de moins de
+      dix secondes, la purge est dispensée.</td></tr>
+  <tr><td class="duree">15 / 20 minutes</td>
+      <td>Pause de mélange après chaque injection (15&nbsp;min pour le pH,
+      20&nbsp;min pour le chlore)&nbsp;: le métronome de la boucle — au plus
+      une injection toutes les 15 à 20&nbsp;minutes par produit.</td></tr>
+  <tr><td class="duree">30 minutes</td>
+      <td>Tenue d'une mesure défavorable avant que le disjoncteur de la dose
+      de base ne saute (le scénario «&nbsp;fausse pluie&nbsp;»).</td></tr>
+  <tr><td class="duree">1 heure</td>
+      <td>Fenêtre glissante de la limite horaire de fonctionnement des pompes
+      — et rythme d'oubli progressif de la correction accumulée quand elle ne
+      sert plus.</td></tr>
+  <tr><td class="duree">24 heures</td>
+      <td>Fenêtre des trois refus de sécurité pH avant suspension de la
+      régulation automatique. Les quotas journaliers de produit se remettent
+      à zéro chaque nuit.</td></tr>
+  <tr><td class="duree">3 jours</td>
+      <td>Premier apprentissage&nbsp;: aucune dose «&nbsp;de mémoire&nbsp;»
+      avant 3&nbsp;journées observées. C'est aussi le nombre de journées
+      consécutives de pompe saturée avant l'alerte
+      «&nbsp;pompe sous-dimensionnée&nbsp;».</td></tr>
+  <tr><td class="duree">7 jours</td>
+      <td>Profondeur de la mémoire de consommation — la fenêtre glissante dont
+      la dose de base apprise est la médiane.</td></tr>
+</table>
+
+<!-- ══════════════════ 8. Ce que l'appareil ne fait jamais ══════════════════ -->
+<h2 class="page-break"><span class="num">7</span>Ce que l'appareil ne fait jamais</h2>
+
+<p>Certaines règles ne souffrent aucune exception, quels que soient les
+réglages, les modes ou les circonstances&nbsp;:</p>
+
+<ul>
+  <li><strong>Jamais votre volume de bassin dans un calcul de dose.</strong>
+  La taille que vous déclarez ne fait que présélectionner des réglages de
+  rythme (que vous pouvez modifier)&nbsp;; la quantité de produit dont votre
+  eau a besoin est toujours <em>apprise par l'observation</em>, jamais déduite
+  d'un volume déclaré. L'appareil doit réguler correctement n'importe quelle
+  piscine — pas seulement celle qu'on lui a décrite.</li>
+
+  <li><strong>Jamais deux chemins vers la pompe.</strong> Tout ce qui dose —
+  la part apprise, la part réactive, le mode boost, le mode programmé — passe
+  par le même circuit, les mêmes garde-fous et la même comptabilité. Aucune
+  fonction, aucun mode ne possède de raccourci vers la pompe.</li>
+
+  <li><strong>Jamais de dose sans eau en circulation, jamais de dose
+  automatique sans mesure fiable.</strong> La présence d'eau conditionne
+  toutes les voies de dosage, y compris manuelles. La régulation automatique
+  exige en plus une mesure filtrée valide et une calibration de sonde
+  suffisante. Et jamais de dose «&nbsp;de mémoire&nbsp;» sans trois jours
+  d'observation.</li>
+
+  <li><strong>Les limites de sécurité survivent à tout.</strong> Restaurer les
+  réglages d'usine ne touche jamais les quotas journaliers maximaux de
+  produit, ni la calibration des pompes, ni le produit déclaré, ni le réglage
+  fin de la sonde pH&nbsp;: ces valeurs décrivent votre installation physique
+  et vos plafonds de sécurité, pas des préférences. Inversement, aucun réglage
+  ne remet à zéro les compteurs de dosage — on ne peut pas «&nbsp;vider les
+  compteurs&nbsp;» pour contourner une limite.</li>
+</ul>
+
+<p>Et le principe qui les résume tous&nbsp;: <strong>dans le doute, on ne dose
+pas</strong>. Une donnée douteuse, un état ambigu, une vérification impossible
+se résolvent toujours par l'arrêt des pompes — jamais par un pari.</p>
+
+<!-- ══════════════════ 9. Pied de page ══════════════════ -->
+<p class="colophon">Document généré depuis la documentation technique du firmware — version 2.32, septembre 2026.</p>
+
+<div class="footer"><span>PoolController — La régulation chimique</span><span>Firmware 2.32</span></div>
+
+</body>
+</html>

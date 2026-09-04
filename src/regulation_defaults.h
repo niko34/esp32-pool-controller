@@ -5,7 +5,7 @@
 // feature-088 (v2.31.0) puis feature-090 (v2.32.0) — VALEURS D'USINE des
 // réglages de RÉGULATION, désormais PAR TAILLE DE BASSIN
 // =============================================================================
-// SOURCE UNIQUE des 8 réglages de « tuning » restaurables par le bouton
+// SOURCE UNIQUE des 7 réglages de « tuning » restaurables par le bouton
 // « Restaurer les valeurs par défaut » (route POST /reset-regulation-defaults)
 // et PRÉSÉLECTIONNÉS par le réglage « Taille du bassin » (feature-090).
 // Les initialiseurs de MqttConfig (config.h), la restauration
@@ -65,12 +65,14 @@ inline PoolSize poolSizeFromString(const char* s) {
 // =============================================================================
 // TABLE DES DÉFAUTS PAR TAILLE — visa pool-chemistry du 31/08/2026
 // =============================================================================
-// Une COLONNE = les 8 réglages de tuning d'une taille de bassin.
+// Une COLONNE = les 7 réglages de tuning d'une taille de bassin.
+// feature-091 (v2.34.0) : stabilizationDelayMin RETIRÉ — la purge des mesures
+// est pilotée par la STABILITÉ (kPurgeFloorMs/kPurgeCapMs, constants.h), le
+// délai n'est plus un réglage utilisateur (champ NVS stab_delay conservé, inerte).
 struct RegulationDefaults {
   int phInjectionLimitMin;      // Max min d'injection pH par fenêtre d'1 h
   int orpInjectionLimitMin;     // Max min d'injection ORP par fenêtre d'1 h
   const char* regulationSpeed;  // Vitesse PID : "slow"/"normal"/"fast"
-  int stabilizationDelayMin;    // Délai de stabilisation avant dosage (min)
   float phTarget;               // Consigne pH
   float orpTarget;              // Consigne ORP (mV)
   int phDailyTargetMl;          // Volume quotidien cible pH, mode programmé (mL)
@@ -79,7 +81,7 @@ struct RegulationDefaults {
 
 // Logique de la table (spec feature-090) : excursion de mélange aveugle
 // ~constante (~0,10-0,13 pH) à travers les tailles, capacité journalière qui
-// suit le besoin, mélange plus lent au-delà de 60 m³ (délai 10 min). Vitesse :
+// suit le besoin (le délai de mélange n'est plus un réglage, feature-091). Vitesse :
 // petit bassin = gain du procédé élevé (chaque mL a plus d'effet) → correction
 // douce ; grand bassin → l'inverse. Les consignes pH/ORP ne dépendent PAS de
 // la taille (chimie de l'eau, pas volume).
@@ -88,19 +90,19 @@ constexpr RegulationDefaults kRegulationDefaultsBySize[3] = {
     // à 5 min/h (le 10 min/h de la v2.30.0 donnait ~0,20 pH d'excursion à
     // 20 m³, cf. justification kDefaultPhInjectionLimitMin ci-dessous) et
     // correction douce (gain du procédé élevé).
-    {5, 5, "slow", 5, 7.3f, 600.0f, 0, 0},
+    {5, 5, "slow", 7.3f, 600.0f, 0, 0},
     // [1] Medium (20-60 m³) — adossée aux MESURES du bassin de référence
     // (30-50 m³, v2.30.0, visa pool-chemistry du 31/08/2026). C'est la colonne
     // dont les kDefault* ci-dessous sont les alias : elle est VERROUILLÉE par
     // static_assert sur les littéraux v2.30.0 (garantie de migration).
-    {10, 10, "normal", 5, 7.3f, 600.0f, 0, 0},
+    {10, 10, "normal", 7.3f, 600.0f, 0, 0},
     // [2] Large (> 60 m³) — EXTRAPOLATION (non mesurée) : 15 min/h suit le
-    // besoin d'un grand volume, délai 10 min (mélange plus lent), correction
+    // besoin d'un grand volume, correction
     // rapide (gain du procédé faible). ATTENTION : le quota journalier d'usine
     // maxPhMlPerDay = 300 mL/j ≈ 11 min d'injection/jour à 28 mL/min plafonne
     // en pratique bien avant la promesse 15 min/h — protection acceptable,
     // sens sûr (détail dans UPDATE_GUIDE, note feature-090).
-    {15, 15, "fast", 10, 7.3f, 600.0f, 0, 0},
+    {15, 15, "fast", 7.3f, 600.0f, 0, 0},
 };
 
 // Colonne d'une taille — l'UNIQUE chemin de lecture de la table (constexpr :
@@ -132,7 +134,9 @@ constexpr float kDefaultPhTarget  = regulationDefaultsFor(PoolSize::Medium).phTa
 constexpr float kDefaultOrpTarget = regulationDefaultsFor(PoolSize::Medium).orpTarget;
 constexpr int kDefaultPhInjectionLimitMin  = regulationDefaultsFor(PoolSize::Medium).phInjectionLimitMin;
 constexpr int kDefaultOrpInjectionLimitMin = regulationDefaultsFor(PoolSize::Medium).orpInjectionLimitMin;
-constexpr int kDefaultStabilizationDelayMin = regulationDefaultsFor(PoolSize::Medium).stabilizationDelayMin;
+// feature-091 : kDefaultStabilizationDelayMin conservé UNIQUEMENT pour la
+// lecture NVS du champ inerte mqttCfg.stabilizationDelayMin (compat A8).
+constexpr int kDefaultStabilizationDelayMin = 5;
 constexpr int kDefaultPhDailyTargetMl  = regulationDefaultsFor(PoolSize::Medium).phDailyTargetMl;
 constexpr int kDefaultOrpDailyTargetMl = regulationDefaultsFor(PoolSize::Medium).orpDailyTargetMl;
 constexpr const char* kDefaultRegulationSpeed = regulationDefaultsFor(PoolSize::Medium).regulationSpeed;
@@ -156,8 +160,7 @@ constexpr int regulationSpeedRank(const char* s) {
 
 // --- Bornes chimiques d'UNE colonne (mêmes fenêtres que la feature-088) ---
 // Consignes dans les fenêtres du projet ; limites horaires = clamp serveur de
-// /save-config ([1 ; 60]) ; délai = validation de /save-config ([0 ; 60]) ;
-// volumes programmés jamais négatifs ; vitesse = un libellé connu.
+// /save-config ([1 ; 60]) ; volumes programmés jamais négatifs ; vitesse = un libellé connu.
 // Plage ORP : bornes NOMMÉES du projet = fenêtre de plausibilité du réarmement
 // filtre [300 ; 950] mV (kOrpFilterRearmMin/Max) — le chemin de commande MQTT
 // accepte [400 ; 900], 600 est confortablement dans les deux.
@@ -166,7 +169,6 @@ constexpr bool regulationDefaultsColumnValid(const RegulationDefaults& d) {
          d.orpTarget >= kOrpFilterRearmMin && d.orpTarget <= kOrpFilterRearmMax &&
          d.phInjectionLimitMin >= 1 && d.phInjectionLimitMin <= 60 &&
          d.orpInjectionLimitMin >= 1 && d.orpInjectionLimitMin <= 60 &&
-         d.stabilizationDelayMin >= 0 && d.stabilizationDelayMin <= 60 &&
          d.phDailyTargetMl >= 0 && d.orpDailyTargetMl >= 0 &&
          regulationSpeedRank(d.regulationSpeed) >= 0;
 }
@@ -207,7 +209,6 @@ static_assert(
     regulationDefaultsFor(PoolSize::Medium).phInjectionLimitMin == 10 &&
     regulationDefaultsFor(PoolSize::Medium).orpInjectionLimitMin == 10 &&
     regulationDefaultsStrEq(regulationDefaultsFor(PoolSize::Medium).regulationSpeed, "normal") &&
-    regulationDefaultsFor(PoolSize::Medium).stabilizationDelayMin == 5 &&
     regulationDefaultsFor(PoolSize::Medium).phTarget == 7.3f &&
     regulationDefaultsFor(PoolSize::Medium).orpTarget == 600.0f &&
     regulationDefaultsFor(PoolSize::Medium).phDailyTargetMl == 0 &&
@@ -219,7 +220,7 @@ static_assert(
 // LISTE DES CHAMPS COPIÉS — logique PURE, testable en natif (condition 3)
 // =============================================================================
 // L'application des défauts (restauration 088 OU changement de taille 090)
-// n'écrit QUE ces 8 champs, depuis la colonne de la taille demandée. Template
+// n'écrit QUE ces 7 champs, depuis la colonne de la taille demandée. Template
 // plutôt que fonction sur MqttConfig : config.h dépend d'Arduino.h (String),
 // hors d'atteinte de `env:native`. Les tests instancient ce template sur un
 // DOUBLE portant TOUS les champs de MqttConfig et prouvent PAR MUTATION que
@@ -234,7 +235,6 @@ inline void applyRegulationDefaults(Cfg& c, PoolSize size) {
   c.orpTarget                = d.orpTarget;
   c.phInjectionLimitMinutes  = d.phInjectionLimitMin;
   c.orpInjectionLimitMinutes = d.orpInjectionLimitMin;
-  c.stabilizationDelayMin    = d.stabilizationDelayMin;
   c.phDailyTargetMl          = d.phDailyTargetMl;
   c.orpDailyTargetMl         = d.orpDailyTargetMl;
   c.regulationSpeed          = d.regulationSpeed;
@@ -246,7 +246,7 @@ inline void applyRegulationDefaults(Cfg& c, PoolSize size) {
 // MONTE (plus de chlore visé) ou si une limite horaire d'injection MONTE —
 // restauration sur un réglage abaissé à la main, OU passage à une taille
 // SUPÉRIEURE (5 → 10 → 15 min/h) → le journal passe en WARNING.
-// La consigne pH, le délai de stabilisation, la vitesse et les volumes
+// La consigne pH, la vitesse et les volumes
 // programmés (remis à 0, donc jamais en hausse) restent au niveau info.
 inline bool regulationDefaultsRaiseDosing(const RegulationDefaults& target,
                                           float curOrpTarget,

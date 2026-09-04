@@ -2157,21 +2157,26 @@ void test_R1_une_restauration_plafonnee_ne_precharge_pas_de_dosage(void) {
 // qu'un ajustement silencieux d'une des sept conditions casse la suite.
 void test_R_contrat_numerique_des_conditions_de_persistance(void) {
   // R2 — schéma : toute retouche de structure DOIT l'incrémenter.
-  TEST_ASSERT_EQUAL_UINT8(1, kPhIntegralPersistSchema);
+  TEST_ASSERT_EQUAL_UINT8(2, kPhIntegralPersistSchema);  // feature-093 : 24 octets
 
-  // R3 — péremption 6 h = UNE constante d'intégration à vitesse `normal`.
-  TEST_ASSERT_EQUAL_UINT32(21600UL, kPhIntegralPersistMaxAgeS);
-  TEST_ASSERT_FLOAT_WITHIN(1.0f, kPhIntegralTiNormalS, (float)kPhIntegralPersistMaxAgeS);
+  // R3 (feature-093) — péremption 6 h DE FILTRATION = UNE constante d'intégration
+  // à vitesse `normal` ; plafond mural de sécurité 72 h ; échéance P3 à mi-fenêtre.
+  TEST_ASSERT_EQUAL_UINT32(360UL, kPhIntegralPersistMaxFiltMin);
+  TEST_ASSERT_FLOAT_WITHIN(1.0f, kPhIntegralTiNormalS, (float)(kPhIntegralPersistMaxFiltMin * 60UL));
   // …et franchement plus courte que la péremption d'inactivité de 24 h.
-  TEST_ASSERT_TRUE((uint64_t)kPhIntegralPersistMaxAgeS * 1000ULL <
+  TEST_ASSERT_TRUE((uint64_t)kPhIntegralPersistMaxFiltMin * 60000ULL <
                    (uint64_t)kPhIntegralStaleResetMs);
+  TEST_ASSERT_EQUAL_UINT32(259200UL, kPhIntegralPersistMaxWallAgeS);
+  TEST_ASSERT_TRUE(kPhIntegralPersistMaxWallAgeS >= kPhIntegralPersistMaxFiltMin * 60UL);
+  TEST_ASSERT_EQUAL_UINT32(180UL, kPhIntegralPersistDueFiltMin);
+  TEST_ASSERT_TRUE(kPhIntegralPersistDueFiltMin < kPhIntegralPersistMaxFiltMin);
 
   // R4 — confirmation par la mesure : 5 min, soit bien plus qu'un tick, et très
   // en deçà de la péremption (sinon la candidate mourrait avant d'être confirmée).
   TEST_ASSERT_EQUAL_UINT32(300000UL, kPhIntegralRestoreConfirmMs);
   TEST_ASSERT_TRUE(kPhIntegralRestoreConfirmMs >= 10UL * kPhIntegralChargeQuantumMs);
   TEST_ASSERT_TRUE((uint64_t)kPhIntegralRestoreConfirmMs <
-                   (uint64_t)kPhIntegralPersistMaxAgeS * 1000ULL / 10ULL);
+                   (uint64_t)kPhIntegralPersistMaxFiltMin * 60000ULL / 10ULL);
   // La fenêtre d'armement doit laisser le temps d'au moins une confirmation.
   TEST_ASSERT_EQUAL_UINT32(600000UL, kPhIntegralRestoreArmWindowMs);
   TEST_ASSERT_TRUE(kPhIntegralRestoreArmWindowMs >= kPhIntegralRestoreConfirmMs);

@@ -238,6 +238,53 @@ Depuis la v2.11.0, **toute image téléchargée depuis GitHub est vérifiée par
 
 ## Notes de migration
 
+### La régulation attend que l'eau soit rincée, et un redémarrage ne coûte plus l'apprentissage — depuis v2.34.0 (2026-09-04)
+
+**Aucune action requise.** Pas de changement de partition ni de format de configuration. **Un seul effet de bord, une seule fois** : voir l'encadré ci-dessous.
+
+> ⚠️ **Au tout premier démarrage de la v2.34.0, la « réserve de correction » du pH repart de zéro.**
+>
+> Le format de sa sauvegarde a changé (un champ s'y ajoute) et l'ancienne sauvegarde est **volontairement rejetée** plutôt que réinterprétée — une donnée relue avec le mauvais format vaudrait n'importe quoi. Le journal l'indique en clair (« aucun instantané NVS exploitable … départ de zéro »). La réserve se reconstruit ensuite normalement, et **à partir du redémarrage suivant, elle survit** (c'est tout l'objet de cette version). Aucun réglage, aucune calibration, aucun historique n'est touché.
+
+#### Le réglage « délai de stabilisation » a disparu
+
+Il n'apparaît plus dans **Paramètres → Régulation** ni dans l'assistant de premier démarrage : la purge des mesures se termine désormais **quand la mesure est stable**, entre un plancher de **10 min** et un plafond de **90 min**.
+
+- **Si vous aviez modifié ce délai** (par exemple porté à 15 min en septembre), votre valeur est **simplement ignorée** — elle reste stockée mais sans effet. Rien à faire.
+- **Un client ancien qui enverrait encore ce réglage** ne reçoit pas d'erreur : la clé est acceptée sans effet.
+- **À la place**, la ligne **« Dernière purge »** (Paramètres → Régulation) indique la durée **mesurée** de la dernière purge et son motif de fin :
+
+| Ce qui s'affiche | Ce que ça veut dire |
+|---|---|
+| `12 min — stabilité atteinte` | cas nominal |
+| `dispensée — coupure brève (≤ 10 s)` | l'appareil a redémarré tout seul en moins de 10 s, l'eau n'a pas stagné |
+| `8 min — relancée, la mesure a bougé` | la mesure est redevenue instable après ouverture, une nouvelle purge a été faite |
+| `90 min — plafond atteint, mesures non stabilisées` | ⚠️ la mesure n'a jamais cessé de bouger — voir ci-dessous |
+
+#### Ce qu'il faut observer le premier matin
+
+1. **Le badge des cartes pH et chlore** affiche « **Stabilisation depuis N min** » (et non plus un compte à rebours) tant que l'eau se rince. Comptez **10 à 50 minutes** après le démarrage de la filtration selon la durée de stagnation de la nuit — c'est **normal et voulu** : avant, l'appareil rouvrait les mesures **au milieu** du rinçage et déclenchait des alertes pH à tort.
+2. **Aucune alerte pH ne devrait apparaître** pendant cette phase (c'était le symptôme des 02/09 et 04/09).
+3. **La réserve de correction** doit être **retrouvée** (et non remise à zéro) après un redémarrage survenu pendant la filtration.
+
+#### Si le bandeau « Stabilisation des mesures non atteinte » s'affiche
+
+Il apparaît sur les pages **pH** et **ORP** quand la purge a atteint son plafond de 90 minutes sans que la mesure se stabilise. **La régulation a repris** (l'appareil ne reste jamais bloqué en silence), mais sous surveillance :
+
+- vérifier la **chambre de mesure** : bulles d'air, débit insuffisant, encrassement ;
+- vérifier les **sondes** : ancienneté, calibration ;
+- une alerte MQTT `measures_purge_timeout` est publiée en parallèle (utile pour une automation Home Assistant).
+
+> Un bandeau isolé après une longue coupure n'a rien d'alarmant. **Répété plusieurs matins de suite, il signale un vrai problème d'hydraulique ou de sonde.**
+
+#### Le reste est inchangé
+
+Limites journalière et horaire, seuils de plancher pH, butées sur la mesure brute, inhibition du chlore sur pH haut, pause de mélange, plafond de la réserve de correction : **tout reste en place**. La valeur restaurée n'est **jamais** appliquée au démarrage — elle attend 5 minutes d'écart confirmé par la mesure, exactement comme depuis la v2.27.0. **Régulation ORP (chlore) : inchangée.**
+
+> Firmware **et** filesystem doivent être mis à jour **ensemble** : la ligne « Dernière purge » et les bandeaux sont portés par l'interface. Un filesystem ancien sur firmware 2.34 affiche simplement « — » et masque les bandeaux (rien n'est inventé) ; un filesystem 2.34 sur firmware ancien fait de même.
+
+Détail des décisions : [ADR-0059](adr/0059-purge-adaptative-fenetre-de-medianes.md) (purge adaptative, retrait du réglage) et [ADR-0060](adr/0060-fraicheur-en-temps-de-filtration.md) (fraîcheur en temps de filtration).
+
 ### Taille du bassin — depuis v2.32.0 (2026-08-31)
 
 **Migration sans effet : rien ne change tant que vous ne touchez pas au nouveau réglage.** Le champ « Taille du bassin » (Paramètres → Régulation, et assistant de premier démarrage) présélectionne les réglages de régulation adaptés au volume. La clé NVS étant absente sur un appareil existant, la taille vaut **« 20 à 60 m³ »** (medium), dont les défauts sont **exactement** les valeurs v2.30.0 — égalité **verrouillée à la compilation** (`static_assert`, [ADR-0057](adr/0057-taille-bassin-preselection-jamais-entree-de-calcul.md)). Aucun réglage existant n'est modifié par la mise à jour seule ; la vitesse de correction (masquée de l'UI, dérivée de la taille) garde sa valeur NVS tant que la taille n'est pas changée.
@@ -276,7 +323,7 @@ Pourquoi ces valeurs changent : à 5 min/h le maximum délivrable (~911 mL/j) é
   à comparer à la marge de sécurité de **0,50 pH**. **Augmenter par paliers et surveiller le pH.**
 
 - **Ce que cette version change pour vous** : l'apprentissage de la régulation pH (la « réserve de correction » affichée en bas de la carte Régulation pH) **survit désormais à un redémarrage**. Un redémarrage coûtait **2,4 jours** de reconvergence ; il coûte maintenant **environ une heure**.
-- **La valeur n'est JAMAIS appliquée au démarrage.** Elle est mise en attente et n'est restaurée que si le bassin confirme lui-même, pendant **5 minutes de régulation effective**, un écart au-dessus du seuil de démarrage. Un pH déjà à sa consigne au retour du courant ⇒ **rien n'est restauré**. Elle est de plus **plafonnée**, **périmée au bout de 6 h**, invalidée par tout changement de vitesse de correction, de produit ou de consigne, et **désarmée après 3 redémarrages rapprochés**.
+- **La valeur n'est JAMAIS appliquée au démarrage.** Elle est mise en attente et n'est restaurée que si le bassin confirme lui-même, pendant **5 minutes de régulation effective**, un écart au-dessus du seuil de démarrage. Un pH déjà à sa consigne au retour du courant ⇒ **rien n'est restauré**. Elle est de plus **plafonnée**, **périmée au bout de 6 h** *(amendé en v2.34.0 : 6 h de **filtration**, et non plus 6 h d'horloge — une nuit d'arrêt ne périme plus rien ; filet mural de 72 h)*, invalidée par tout changement de vitesse de correction, de produit ou de consigne, et **désarmée après 3 redémarrages rapprochés**.
 - ⚠️ **Rien n'est restauré pendant les 3 premiers jours** suivant l'installation, ou après un effacement de la mémoire : le plafond de restauration se calcule sur la charge réellement observée du bassin, qui demande au moins 3 journées exploitables (≥ 2 h de filtration chacune). C'est volontaire.
 - **L'apprentissage résiste mieux aux à-coups** : une pluie légèrement acide effaçait auparavant **deux jours et demi** d'apprentissage d'un coup. Il faut désormais que l'écart soit **soutenu 15 minutes** pour déclencher la remise à zéro — la protection n'est pas suspendue pendant l'attente, elle est **graduée**.
 - **Les alertes de saturation arrivent au même moment qu'avant** en temps réel (~8 h, ~24 h, rappel ~48 h) : leurs seuils internes ont été recalibrés pour compenser le changement de cadence de calcul. **Rien à ajuster côté Home Assistant.**
@@ -561,7 +608,9 @@ Détails techniques : voir [ADR-0011](adr/0011-mqtt-task-dediee.md) et [`docs/su
 
 **Reset journalier :** le reset est désormais aligné sur **minuit local** (heure RTC/NTP) et non sur une fenêtre glissante de 24 h depuis le dernier boot.
 
-> ⚠️ **Recommandation :** configurer `stabilizationDelayMin ≥ 5 min` (Paramètres → Régulation) pour bénéficier d'une protection anti-double-quota au passage de minuit. Si ce paramètre est à `0`, le dosage peut reprendre immédiatement après le reset de minuit alors que la journée précédente venait d'atteindre son quota.
+> ⚠️ **Recommandation (obsolète depuis la v2.34.0, conservée pour l'historique) :** il fallait configurer `stabilizationDelayMin ≥ 5 min` (Paramètres → Régulation) pour bénéficier d'une protection anti-double-quota au passage de minuit ; à `0`, le dosage pouvait reprendre immédiatement après le reset de minuit alors que la journée précédente venait d'atteindre son quota.
+>
+> **Depuis la v2.34.0, il n'y a plus rien à configurer** : le réglage a disparu ([feature-091](../specs/features/done/feature-091-purge-adaptative-stabilisation.md)) et le passage de minuit arme désormais une suspension d'injection de durée **gravée** — 5 min pour le pH, 3 min pour l'ORP (`kStabilizationDurationPhMs` / `kStabilizationDurationOrpMs`, les mêmes que le sas post-calibration). La protection est donc active en permanence, sans dépendre d'un réglage que l'utilisateur pouvait mettre à zéro.
 
 ---
 

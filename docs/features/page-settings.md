@@ -16,7 +16,7 @@ Page de configuration système. Structurée en **9 onglets segmentés** ([`data/
 | MQTT | `panel-mqtt` | Activation + broker (host/port/topic/auth) |
 | Heure | `panel-time` | NTP ou heure manuelle, timezone, serveur NTP |
 | Sécurité | `panel-security` | Changement mot de passe admin |
-| Régulation pH / ORP | `panel-regulation` | Vitesse PID, limites horaires/journalières, délai stabilisation (mode pilote/continu **retiré** — fusionné dans l'onglet Installation, feature-056) |
+| Régulation pH / ORP | `panel-regulation` | Taille du bassin, consignes, limites horaires/journalières, cycles/jour, ligne **« Dernière purge »** (lecture seule). Le **délai de stabilisation** est retiré en v2.34.0 (feature-091) et le mode pilote/continu en v2.19.0 (fusionné dans l'onglet Installation, feature-056) |
 | Système | `panel-system` | Infos système (runtime), OTA GitHub, OTA manuel, reboot, factory reset |
 | Avancé | `panel-dev` | Historique des mesures (export/import/purge CSV), affectation pompes, puissance max, débit nominal, tests pompe, diagnostic crash, logs |
 | À propos | `panel-about` | Liens projet + versions des libs — contenu statique |
@@ -61,8 +61,8 @@ Nouvelle section **en 1ᵉʳ onglet** (feature-056, v2.19.0). Un `radiogroup` (`
 
 Sélecteur segmenté `#pool_size` en **première position** du panneau ([`data/index.html`](../../data/index.html) `#pool_size_block`), 3 libellés : **« Moins de 20 m³ » / « 20 à 60 m³ » / « Plus de 60 m³ »** (`small` / `medium` / `large`). Il **présélectionne** les défauts de régulation adaptés au volume — il n'entre jamais dans un calcul de dosage ([ADR-0057](../adr/0057-taille-bassin-preselection-jamais-entree-de-calcul.md)).
 
-- **Changement de taille** (`_onPoolSizeClick`, [`data/app.js`](../../data/app.js)) : `loadConfig()` **frais d'abord** (colonne « actuel » = état réel du contrôleur), puis **dialogue avant/après** (mécanisme 088, `_buildRegulationResetSummary`) listant les **8 réglages** — valeurs courantes → défauts de la nouvelle taille, lignes qui changent en gras. La **vitesse de correction y figure** : c'est le **seul endroit où elle reste visible** (masquée ailleurs, voir ci-dessous), l'utilisateur DOIT voir qu'elle change avec la taille.
-- **Confirmation** → `POST /save-config` avec **`pool_size` seul** (l'UI n'envoie jamais les 8 paramètres : le firmware applique les défauts, journalise avant → après et retune le PID par le hook différé), puis rechargement complet de la config + toast succès. **Annulation** → le sélecteur revient à la taille précédente, **rien n'est modifié** (aucun appel réseau).
+- **Changement de taille** (`_onPoolSizeClick`, [`data/app.js`](../../data/app.js)) : `loadConfig()` **frais d'abord** (colonne « actuel » = état réel du contrôleur), puis **dialogue avant/après** (mécanisme 088, `_buildRegulationResetSummary`) listant les **7 réglages** (8 avant la v2.34.0 — le délai de stabilisation a été retiré) — valeurs courantes → défauts de la nouvelle taille, lignes qui changent en gras. La **vitesse de correction y figure** : c'est le **seul endroit où elle reste visible** (masquée ailleurs, voir ci-dessous), l'utilisateur DOIT voir qu'elle change avec la taille.
+- **Confirmation** → `POST /save-config` avec **`pool_size` seul** (l'UI n'envoie jamais les paramètres un à un : le firmware applique les défauts, journalise avant → après et retune le PID par le hook différé), puis rechargement complet de la config + toast succès. **Annulation** → le sélecteur revient à la taille précédente, **rien n'est modifié** (aucun appel réseau).
 - **Défauts par taille servis par le firmware** : le dialogue lit l'objet `regulation_defaults_by_size` de `/get-config` — aucune colonne codée en JS (leçon 087/088, source unique [`src/regulation_defaults.h`](../../src/regulation_defaults.h)).
 - **Rétrocompatibilité** (`syncPoolSize()`) : face à un **ancien firmware** (champ `pool_size` absent de `/get-config`), le sélecteur est **masqué** et le sélecteur de vitesse **ré-affiché** — rien de cassé, rien d'inventé. Les caches `_poolSizeCache` / `_regulationDefaultsBySizeCache` / `_regulationSpeedCache` réinjectent les champs absents d'une trame WS `config` partielle (même mécanique que `_regulationDefaults`).
 
@@ -72,7 +72,27 @@ Sélecteur segmenté `#pool_size` en **première position** du panneau ([`data/i
 - `ph_limit` / `orp_limit` (min/h) — mapping firmware : `ph_limit_minutes`, `orp_limit_minutes` (CHANGELOG 2026-04-24).
 - `ph_daily_limit` / `orp_daily_limit` (mL) — mapping : `max_ph_ml_per_day` / `max_chlorine_ml_per_day` ([`config.h:141`](../../src/config.h:141) `SafetyLimits`).
 - `max_cycles_per_day` (feature-060, v2.12.0) — champ **« Cycles de dosage max / jour (par pompe) »** (`#max_cycles_per_day`, [`data/index.html:1573`](../../data/index.html:1573)) : garde anti-emballement (garde 9 anti-cycling), borne le nombre de démarrages de dosage par pompe et par jour. Défaut **24** (était 48 — abaissé en v2.20.5 ; ⚠️ la valeur étant persistée en NVS, un appareil **déjà provisionné garde son 48** et doit être réglé à la main dans ce champ), saisie **10–60** (`min`/`max` HTML + pré-clamp JS indicatifs — le **serveur clampe systématiquement** dans [10, 60] et journalise un warn, voir [`docs/API.md`](../API.md)). Aide contextuelle sous la grille : « garde anti-emballement — borne le nombre de démarrages de dosage par pompe et par jour (10-60). Le volume reste plafonné par les limites journalière et horaire. » Détails et fondement chimique : [`pump-controller.md`](../subsystems/pump-controller.md#limite-de-cyclesjour-configurable-garde-9-feature-060-v2120).
-- `stabilization_delay_min` — voir [`pump_controller.h`](../../src/pump_controller.h) `stabilizationDelayMs`.
+
+#### Ligne « Dernière purge » — le délai avant injection n'est plus un réglage (feature-091, v2.34.0)
+
+Le champ **« Délai avant injection »** (`stabilization_delay_min`) a été **retiré du panneau**. La suspension d'injection à la reprise de la filtration ne se règle plus : elle dure le temps que les mesures pH et ORP **se stabilisent**, entre un plancher de **10 min** et un plafond de **90 min** (constantes firmware, [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md)).
+
+À sa place, une ligne **lecture seule** sous la grille des limites ([`data/index.html`](../../data/index.html) `#measures_purge_last`) :
+
+| `measures_purge_last_end` | Texte affiché |
+|---|---|
+| `1` stabilité | `N min — stabilité atteinte` |
+| `2` plafond | `N min — plafond atteint, mesures non stabilisées` (valeur colorée en `var(--warn)`) |
+| `3` dispensée | `dispensée — coupure brève (≤ 10 s)` |
+| `4` re-purge | `N min — relancée, la mesure a bougé` |
+| `0` / champ absent (firmware < 2.34.0) | `—`, sans couleur |
+
+- **Rendu** : `updateMeasuresPurgeDisplay(latestSensorData)` ([`data/app.js`](../../data/app.js)), appelé depuis `updateDetailSections()` sous `try/catch` — nourri par `latestSensorData`, donc par `/data` **et** par le push WS (mêmes clés des deux côtés), **jamais** par `/get-config`. La sentinelle de présence est `measures_purge_last_end` **numérique** : rien n'est inventé face à un firmware ancien.
+- **Durée** : `measures_purge_last_duration_s` arrondie à la minute (`Math.round(dur / 60)`), `—` si absente.
+- **Texte d'aide** sous la ligne : « Au redémarrage de la filtration, l'injection est suspendue tant que les mesures pH et ORP ne sont pas stables (10 min minimum, 90 min maximum). Aucune durée à régler. »
+- **Compatibilité** : `/save-config` accepte encore la clé `stabilization_delay_min` **sans effet** — un onglet resté ouvert sur l'ancienne version n'échoue pas ; le frontend embarqué, lui, ne l'envoie plus ([`docs/API.md`](../API.md#post-save-config--critical)).
+
+Le **dialogue de restauration** et le **dialogue de changement de taille de bassin** listent donc **7 réglages** au lieu de 8 (le « délai de stabilisation » y a disparu, comme dans l'objet `regulation_defaults` du firmware).
 
 > ⚠️ **Paramètres de sécurité NON exposés dans l'UI** (en dur dans le firmware, décision volontaire — voir [docs/subsystems/pump-controller.md#paramètres-en-dur-récapitulatif](../subsystems/pump-controller.md#paramètres-en-dur-récapitulatif)) :
 >
@@ -405,7 +425,7 @@ Le champ `mqtt_enabled` pilote directement la présence / l'absence du client MQ
 
 ## Specs historiques
 
-Aucune spec dédiée. Les changements récents (renommage `ph_limit_minutes`, suppression `min_pause`, ajout `stabilization_delay_min`) sont tracés dans [`CHANGELOG.md`](../../CHANGELOG.md).
+Aucune spec dédiée. Les changements récents (renommage `ph_limit_minutes`, suppression `min_pause`, ajout puis **retrait** de `stabilization_delay_min` en v2.34.0) sont tracés dans [`CHANGELOG.md`](../../CHANGELOG.md).
 
 ## Card « Identification des sondes de température » (feature-020, panel Avancé)
 

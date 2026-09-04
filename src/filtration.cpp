@@ -222,17 +222,11 @@ void FiltrationManager::update() {
     state.startedAtMs = millis();
     state.scheduleComputedThisCycle = false;
     systemLogger.info("Démarrage filtration");
-    // Mode ManagedFiltration (garanti ici) : armer le timer de stabilisation au
-    // démarrage de la filtration. On n'arme le timer que si la filtration a été
-    // arrêtée suffisamment longtemps (durée >= délai de stabilisation) pour éviter
-    // les boucles sur un arrêt/redémarrage fugace (glitch, sauvegarde config, etc.).
-    unsigned long pauseMs = (state.lastStoppedAtMs == 0)
-                              ? 0xFFFFFFFFUL
-                              : (millis() - state.lastStoppedAtMs);
-    unsigned long stabilizationMs = (unsigned long)mqttCfg.stabilizationDelayMin * 60000UL;
-    if (pauseMs > stabilizationMs) {
-      PumpController.armStabilizationTimer();
-    }
+    // feature-091 (v2.34.0) : l'arming du timer de stabilisation au démarrage de
+    // la filtration est RETIRÉ. La stabilisation après reprise de circulation est
+    // portée par la purge adaptative de measureValidity (front montant de
+    // présence d'eau → plancher kPurgeFloorMs + stabilité de la mesure) ; un
+    // arrêt/redémarrage fugace y est traité par la logique pure, pas ici.
   }
 
   bool runNow = state.running;

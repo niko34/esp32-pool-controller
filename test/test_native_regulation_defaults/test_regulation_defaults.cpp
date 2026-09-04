@@ -7,7 +7,7 @@
 //
 // Trois familles :
 //
-//   D1 — applyRegulationDefaults<Cfg>() : les 8 champs de tuning sont copiés
+//   D1 — applyRegulationDefaults<Cfg>() : les 7 champs de tuning sont copiés
 //        (valeurs EXACTES du recalibrage v2.30.0, visa pool-chemistry du
 //        31/08/2026 — un recalibrage futur DOIT consciemment retoucher ces
 //        tests), idempotence, alignement de kDefaultPhTarget sur la grille
@@ -29,7 +29,7 @@
 //
 // Familles ajoutées par la feature-090 (v2.32.0, table par taille de bassin) :
 //
-//   D4 — Colonnes Small et Large : les 8 champs prennent les valeurs de la
+//   D4 — Colonnes Small et Large : les 7 champs prennent les valeurs de la
 //        colonne, écrites EN DUR (littéraux de la spec, PAS des lectures de
 //        kRegulationDefaultsBySize : un mutant qui altère une colonne doit
 //        mourir ici) ; sentinelles hors périmètre intactes pour les TROIS
@@ -82,22 +82,24 @@ struct MiniStr {
 
 // ---------------------------------------------------------------------------
 // DOUBLE de MqttConfig (config.h dépend d'Arduino.h → hors d'atteinte en
-// natif). Porte les 8 champs du périmètre + TOUS les champs sensibles listés
+// natif). Porte les 7 champs du périmètre + TOUS les champs sensibles listés
 // par le visa pool-chemistry, avec des SENTINELLES hors valeurs d'usine.
 // ---------------------------------------------------------------------------
 struct TestCfg {
-  // --- Périmètre : les 8 champs de tuning restaurables --------------------
+  // --- Périmètre : les 7 champs de tuning restaurables --------------------
   // Initialisés TOUS différents des défauts (pré-condition des tests D1).
   float phTarget = 7.45f;               // ≠ 7.3
   float orpTarget = 650.0f;             // ≠ 600
   int phInjectionLimitMinutes = 25;     // ≠ 10
   int orpInjectionLimitMinutes = 5;     // ≠ 10
-  int stabilizationDelayMin = 12;       // ≠ 5
   int phDailyTargetMl = 300;            // ≠ 0
   int orpDailyTargetMl = 450;           // ≠ 0
   MiniStr regulationSpeed = "fast"; // ≠ "normal"
 
   // --- HORS périmètre : sentinelles (visa : JAMAIS touchés) ----------------
+  // feature-091 : le délai de stabilisation N'EST PLUS un réglage — le champ
+  // inerte de MqttConfig ne doit plus être écrit par la copie (sentinelle).
+  int stabilizationDelayMin = 12;
   // Type de produit / modes / activation — sentinelles ≠ défauts d'usine de
   // MqttConfig ("ph_minus", "automatic", false) pour tuer un mutant qui
   // « restaurerait » aussi ces champs.
@@ -132,20 +134,21 @@ struct TestCfg {
 };
 
 // ---------------------------------------------------------------------------
-// D1 — Copie des 8 champs de tuning
+// D1 — Copie des 7 champs de tuning
 // ---------------------------------------------------------------------------
 
-// Les 8 défauts sont copiés, aux valeurs EXACTES du recalibrage v2.30.0.
+// Les 7 défauts sont copiés, aux valeurs EXACTES du recalibrage v2.30.0
+// (le délai de stabilisation, retiré par la feature-091, reste intouché).
 // Toutes les valeurs de départ diffèrent des défauts (cf. TestCfg) : un mutant
 // qui RETIRE un champ de la copie (ex. orpTarget) meurt ici.
-void test_apply_copies_all_eight_defaults(void) {
+void test_apply_copies_all_seven_defaults(void) {
   TestCfg c;
   applyRegulationDefaults(c, PoolSize::Medium);
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 7.3f, c.phTarget);
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 600.0f, c.orpTarget);
   TEST_ASSERT_EQUAL_INT(10, c.phInjectionLimitMinutes);
   TEST_ASSERT_EQUAL_INT(10, c.orpInjectionLimitMinutes);
-  TEST_ASSERT_EQUAL_INT(5, c.stabilizationDelayMin);
+  TEST_ASSERT_EQUAL_INT(12, c.stabilizationDelayMin);  // feature-091 : intouché
   TEST_ASSERT_EQUAL_INT(0, c.phDailyTargetMl);
   TEST_ASSERT_EQUAL_INT(0, c.orpDailyTargetMl);
   TEST_ASSERT_EQUAL_STRING("normal", c.regulationSpeed.c_str());
@@ -160,7 +163,6 @@ void test_apply_writes_the_named_constants(void) {
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, kDefaultOrpTarget, c.orpTarget);
   TEST_ASSERT_EQUAL_INT(kDefaultPhInjectionLimitMin, c.phInjectionLimitMinutes);
   TEST_ASSERT_EQUAL_INT(kDefaultOrpInjectionLimitMin, c.orpInjectionLimitMinutes);
-  TEST_ASSERT_EQUAL_INT(kDefaultStabilizationDelayMin, c.stabilizationDelayMin);
   TEST_ASSERT_EQUAL_INT(kDefaultPhDailyTargetMl, c.phDailyTargetMl);
   TEST_ASSERT_EQUAL_INT(kDefaultOrpDailyTargetMl, c.orpDailyTargetMl);
   TEST_ASSERT_EQUAL_STRING(kDefaultRegulationSpeed, c.regulationSpeed.c_str());
@@ -178,7 +180,6 @@ void test_apply_is_idempotent(void) {
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, once.orpTarget, twice.orpTarget);
   TEST_ASSERT_EQUAL_INT(once.phInjectionLimitMinutes, twice.phInjectionLimitMinutes);
   TEST_ASSERT_EQUAL_INT(once.orpInjectionLimitMinutes, twice.orpInjectionLimitMinutes);
-  TEST_ASSERT_EQUAL_INT(once.stabilizationDelayMin, twice.stabilizationDelayMin);
   TEST_ASSERT_EQUAL_INT(once.phDailyTargetMl, twice.phDailyTargetMl);
   TEST_ASSERT_EQUAL_INT(once.orpDailyTargetMl, twice.orpDailyTargetMl);
   TEST_ASSERT_EQUAL_STRING(once.regulationSpeed.c_str(), twice.regulationSpeed.c_str());
@@ -322,28 +323,28 @@ void test_raise_dosing_is_stateless_across_calls(void) {
 // elle-même ne tuerait aucun mutant. Toutes les valeurs de départ de TestCfg
 // diffèrent des trois colonnes (cf. définition) : un champ non copié meurt.
 
-// Small (< 20 m³) : {5, 5, "slow", 5, 7.3, 600, 0, 0}.
+// Small (< 20 m³) : {5, 5, "slow", 7.3, 600, 0, 0}.
 void test_apply_small_column_matches_spec_literals(void) {
   TestCfg c;
   applyRegulationDefaults(c, PoolSize::Small);
   TEST_ASSERT_EQUAL_INT(5, c.phInjectionLimitMinutes);
   TEST_ASSERT_EQUAL_INT(5, c.orpInjectionLimitMinutes);
   TEST_ASSERT_EQUAL_STRING("slow", c.regulationSpeed.c_str());
-  TEST_ASSERT_EQUAL_INT(5, c.stabilizationDelayMin);
+  TEST_ASSERT_EQUAL_INT(12, c.stabilizationDelayMin);  // feature-091 : intouché
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 7.3f, c.phTarget);
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 600.0f, c.orpTarget);
   TEST_ASSERT_EQUAL_INT(0, c.phDailyTargetMl);
   TEST_ASSERT_EQUAL_INT(0, c.orpDailyTargetMl);
 }
 
-// Large (> 60 m³) : {15, 15, "fast", 10, 7.3, 600, 0, 0}.
+// Large (> 60 m³) : {15, 15, "fast", 7.3, 600, 0, 0}.
 void test_apply_large_column_matches_spec_literals(void) {
   TestCfg c;
   applyRegulationDefaults(c, PoolSize::Large);
   TEST_ASSERT_EQUAL_INT(15, c.phInjectionLimitMinutes);
   TEST_ASSERT_EQUAL_INT(15, c.orpInjectionLimitMinutes);
   TEST_ASSERT_EQUAL_STRING("fast", c.regulationSpeed.c_str());
-  TEST_ASSERT_EQUAL_INT(10, c.stabilizationDelayMin);
+  TEST_ASSERT_EQUAL_INT(12, c.stabilizationDelayMin);  // feature-091 : intouché
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 7.3f, c.phTarget);
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 600.0f, c.orpTarget);
   TEST_ASSERT_EQUAL_INT(0, c.phDailyTargetMl);
@@ -430,7 +431,7 @@ void test_migration_unknown_pool_size_yields_v2_30_defaults(void) {
   TEST_ASSERT_EQUAL_INT(10, c.phInjectionLimitMinutes);
   TEST_ASSERT_EQUAL_INT(10, c.orpInjectionLimitMinutes);
   TEST_ASSERT_EQUAL_STRING("normal", c.regulationSpeed.c_str());
-  TEST_ASSERT_EQUAL_INT(5, c.stabilizationDelayMin);
+  TEST_ASSERT_EQUAL_INT(12, c.stabilizationDelayMin);  // feature-091 : intouché
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 7.3f, c.phTarget);
   TEST_ASSERT_FLOAT_WITHIN(1e-6f, 600.0f, c.orpTarget);
   TEST_ASSERT_EQUAL_INT(0, c.phDailyTargetMl);
@@ -486,8 +487,8 @@ int main(int argc, char** argv) {
   (void)argv;
   UNITY_BEGIN();
 
-  // D1 — copie des 8 défauts
-  RUN_TEST(test_apply_copies_all_eight_defaults);
+  // D1 — copie des 7 défauts (feature-091 : stabilizationDelayMin retiré de la table)
+  RUN_TEST(test_apply_copies_all_seven_defaults);
   RUN_TEST(test_apply_writes_the_named_constants);
   RUN_TEST(test_apply_is_idempotent);
   RUN_TEST(test_default_ph_target_is_on_the_ui_step_grid);

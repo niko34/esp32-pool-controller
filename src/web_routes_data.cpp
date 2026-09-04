@@ -88,6 +88,18 @@ static void handleGetData(AsyncWebServerRequest* request) {
   //   → 119 o.
   // Charge pire cas : 2020 (v2.28.0) + 119 = 2139 o, marge 165 o sous le
   // gabarit, qui reste donc à 2304.
+  // feature-091 (v2.34.0) : purge adaptative — `measures_stab_remaining_s` est
+  // REMPLACÉ par `measures_stab_elapsed_s` et 3 champs sont ajoutés (parité WS,
+  // même passage). Octets SÉRIALISÉS au pire cas :
+  //   retiré  "measures_stab_remaining_s":4294967295, = 39 o
+  //   ajouté  "measures_stab_elapsed_s":4294967295,         = 37 o
+  //           "measures_purge_last_duration_s":4294967295,  = 44 o
+  //           "measures_purge_last_end":4,                  = 28 o
+  //           "measures_purge_count":255,                   = 27 o
+  //   → +136 − 39 = +97 o (même calcul que ws_manager.cpp, mêmes champs).
+  // Charge pire cas : 2139 (v2.29.0) + 97 = 2236 o, marge 68 o sous le gabarit,
+  // qui reste donc à 2304. ATTENTION : la marge devient étroite — tout nouveau
+  // champ de `/data` exige de recompter ici ET dans ws_manager.cpp (parité).
   StaticJson<2304> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
@@ -185,15 +197,19 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // filtration.resolveWaterPresence() ici : callback en contexte async_tcp.
   // NB : les champs live ph/orp/phRaw/... restent publiés tels quels (page
   // calibration + onglet Avancé) — l'UI arbitre l'affichage via measures_valid.
+  // feature-091 (v2.34.0) : purge ADAPTATIVE — plus de « restant » (la fin n'est
+  // pas datée à l'avance), mais l'écoulé, la dernière durée et son motif de fin.
+  // PARITÉ /data ↔ WS obligatoire : mêmes clés dans ws_manager.cpp.
   {
-    bool wPresent = false, mValid = false;
-    uint32_t mRemainS = 0;
-    measureValidity.getSnapshot(wPresent, mValid, mRemainS);
-    doc["water_present"] = wPresent;
-    doc["measures_valid"] = mValid;
+    const MeasureValiditySnapshot mv = measureValidity.getSnapshot();
+    doc["water_present"] = mv.waterPresent;
+    doc["measures_valid"] = mv.measuresValid;
     // Nom distinct de stabilization_remaining_s (WS = stabilisation post-
     // calibration des pompes) : ici purge de la chambre de mesure.
-    doc["measures_stab_remaining_s"] = mRemainS;
+    doc["measures_stab_elapsed_s"] = mv.stabElapsedS;
+    doc["measures_purge_last_duration_s"] = mv.lastPurgeDurationS;
+    doc["measures_purge_last_end"] = mv.lastPurgeEnd;  // 0 aucune/1 stabilité/2 plafond/3 dispensée/4 re-purge
+    doc["measures_purge_count"] = mv.purgeCount;
   }
   doc["ph_dosing"] = PumpController.isPhDosing();
   doc["orp_dosing"] = PumpController.isOrpDosing();

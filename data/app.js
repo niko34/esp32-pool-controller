@@ -335,8 +335,9 @@
     { key: "orp_target",              label: "Consigne ORP",                         fmt: (v) => `${Math.round(Number(v))} mV` },
     { key: "ph_limit_minutes",        label: "pH — durée max d'injection",           fmt: (v) => `${v} min/h` },
     { key: "orp_limit_minutes",       label: "ORP — durée max d'injection",          fmt: (v) => `${v} min/h` },
-    { key: "stabilization_delay_min", label: "Délai avant injection au démarrage",   fmt: (v) => `${v} min` },
-    { key: "ph_daily_target_ml",      label: "Volume quotidien pH (mode programmé)", fmt: (v) => `${v} mL/j` },
+    // feature-091 : stabilization_delay_min retiré (purge adaptative, plancher/plafond
+    // firmware) — regulation_defaults ne porte plus que 7 réglages.
+    { key: "ph_daily_target_ml",     label: "Volume quotidien pH (mode programmé)", fmt: (v) => `${v} mL/j` },
     { key: "orp_daily_target_ml",     label: "Volume quotidien ORP (mode programmé)",fmt: (v) => `${v} mL/j` },
     { key: "regulation_speed",        label: "Vitesse de correction",                fmt: (v) => ({ slow: "Lente", normal: "Normale", fast: "Rapide" }[v] || String(v)) },
   ];
@@ -391,7 +392,7 @@
     btn.disabled = true;
     try {
       // Valeurs courantes FRAÎCHES : window._config peut avoir été remplacé par
-      // une trame WS partielle (sans stabilization_delay_min/regulation_speed).
+      // une trame WS partielle (sans regulation_speed ni regulation_defaults).
       try { await loadConfig(); }
       catch (e) { showToast("Impossible de lire la configuration — réessayez", "error"); return; }
       const cfg = window._config || {};
@@ -447,7 +448,7 @@
   // ---------- feature-090 : taille du bassin → présélection des défauts ----------
   // La taille ne fait que PRÉSÉLECTIONNER des réglages : c'est le firmware qui
   // applique les défauts de la nouvelle taille sur POST {pool_size}. L'UI
-  // n'envoie JAMAIS les 8 paramètres elle-même.
+  // n'envoie JAMAIS les 7 paramètres elle-même.
   // Caches : la trame WS "config" remplace window._config sans porter
   // pool_size/regulation_defaults_by_size/regulation_speed (parité partielle,
   // même mécanique que _regulationDefaults ci-dessus).
@@ -498,7 +499,7 @@
       if (target === (cfg.pool_size || previous)) { setSegmented("pool_size", target); return; }
       setSegmented("pool_size", target);  // maintien de la surbrillance cible
 
-      // Dialogue avant/après (mécanisme 088) : les 8 paramètres, dont la
+      // Dialogue avant/après (mécanisme 088) : les 7 paramètres, dont la
       // vitesse de correction — elle change avec la taille et n'est plus
       // visible ailleurs, l'utilisateur DOIT le voir ici.
       const { node } = _buildRegulationResetSummary(cfg, defs);
@@ -2661,9 +2662,9 @@
     if ($("#max_cycles_per_day")) $("#max_cycles_per_day").value = typeof cfg.max_cycles_per_day === "number" ? cfg.max_cycles_per_day : 48;
     // feature-056 : mode d'installation (remplace regulation_mode + filtration_enabled)
     applyInstallMode(cfg.install_mode || "managed");
-    if ($("#stabilization_delay_min") && cfg.stabilization_delay_min != null) {
-      $("#stabilization_delay_min").value = cfg.stabilization_delay_min;
-    }
+    // feature-091 : plus de champ « délai avant injection » — la purge est
+    // adaptative (plancher/plafond firmware) ; la ligne « Dernière purge » est
+    // nourrie par latestSensorData (updateMeasuresPurgeDisplay), pas par la config.
     // feature-090 : réinjection des champs absents d'une config partielle
     // (pool_size, regulation_defaults_by_size, regulation_speed) + sélecteur de
     // taille + visibilité taille/vitesse — AVANT le setSegmented de la vitesse,
@@ -2840,8 +2841,13 @@
   }
 
   // feature-061 : segments d'état mesure partagés dashboard / pages pH-ORP.
-  // Recalculés à chaque push WS (le firmware décrémente measures_stab_remaining_s),
-  // AUCUN tick JS seconde. `sensor` réservé pour d'éventuels textes différenciés.
+  // Recalculés à chaque push WS, AUCUN tick JS seconde. `sensor` réservé pour
+  // d'éventuels textes différenciés.
+  // feature-091 : la purge est ADAPTATIVE (fin sur stabilité des bruts, plancher
+  // 10 min / plafond 90 min firmware) — il n'y a plus de durée connue à l'avance,
+  // donc plus de compte à rebours : le firmware pousse la durée ÉCOULÉE
+  // (measures_stab_elapsed_s) et le nombre de re-purges du cycle d'eau courant
+  // (measures_purge_count). Firmware ancien (champs absents) → texte neutre.
   function measureStateSegments(sensor, data) {
     if (!data) return []; // boot : pas de faux positif avant le 1er message WS
     if (data.water_present === false) {
@@ -2851,10 +2857,20 @@
         : [{ priority: 1, variant: 'info', text: 'Filtration arrêtée' }];
     }
     if (data.water_present === true && data.measures_valid === false) {
-      const s = data.measures_stab_remaining_s;
-      const text = (s != null && s >= 60)
-        ? `Stabilisation : ~${Math.ceil(s / 60)} min`
-        : 'Stabilisation : < 1 min';
+      // Le plafond 90 min (motif 2) OUVRE la porte (measures_valid passe à true) :
+      // il n'a donc jamais sa place ici — il est porté par les bandeaux
+      // #measures_purge_timeout_banner[_orp] (updateMeasuresPurgeDisplay). Revue
+      // v2.34.0 : une branche « non atteinte » testée ici ne se déclenchait qu'à
+      // la purge SUIVANTE, tant que le motif 2 restait mémorisé — texte faux.
+      const elapsed = data.measures_stab_elapsed_s;
+      if (typeof elapsed !== 'number' || !isFinite(elapsed)) {
+        return [{ priority: 1, variant: 'info', text: 'Stabilisation en cours' }];
+      }
+      const rePurge = (data.measures_purge_count || 0) >= 1;
+      const verb = rePurge ? 'Re-stabilisation' : 'Stabilisation';
+      const text = elapsed < 60
+        ? `${verb} depuis < 1 min`
+        : `${verb} depuis ${Math.floor(elapsed / 60)} min`;
       return [{ priority: 1, variant: 'info', text }];
     }
     return [];
@@ -3424,7 +3440,7 @@
     if (limitMin > 0 && usedMs >= limitMin * 60000) return "Limite de durée atteinte";
 
     // v2.25.1 : PORTE DE VALIDITÉ FERMÉE — traitée AVANT la cause de refus
-    // firmware. Le badge capteur affiche déjà « Stabilisation : ~N min »
+    // firmware. Le badge capteur affiche déjà « Stabilisation depuis X min »
     // (measureStateSegments, measures_valid === false) ; descendre jusqu'au motif
     // de refus juxtaposait deux messages contradictoires sur la même carte.
     // On ne se taît QUE pour la famille « stabilisation des mesures » : une panne
@@ -4176,6 +4192,46 @@
     }
   }
 
+  // feature-091 : purge adaptative — rendu de la ligne « Dernière purge »
+  // (Réglages > Régulation) et des bandeaux « Stabilisation des mesures non
+  // atteinte » (pages pH et ORP). Champs servis à l'IDENTIQUE sur /data et WS :
+  //   measures_purge_last_duration_s → durée de la dernière purge (s) ;
+  //   measures_purge_last_end        → motif de fin : 0 aucune, 1 stabilité,
+  //                                    2 plafond (90 min), 3 dispensée
+  //                                    (coupure ≤ 10 s), 4 relancée (re-purge).
+  // Sentinelle de présence : measures_purge_last_end numérique. Absent
+  // (firmware antérieur) → « — » et bandeaux masqués, rien d'inventé.
+  // L'alerte firmware measures_purge_timeout ne transite que par MQTT : côté
+  // web, le motif 2 EST le signal. Le bandeau reste visible tant que le motif
+  // vaut 2, y compris si une re-purge rouvre le badge capteur.
+  function updateMeasuresPurgeDisplay(data) {
+    data = data || {};
+    const lastEl = $("#measures_purge_last");
+    const banners = [$("#measures_purge_timeout_banner"), $("#measures_purge_timeout_banner_orp")];
+    const end = data.measures_purge_last_end;
+    if (typeof end !== "number" || !isFinite(end)) {
+      if (lastEl) { lastEl.textContent = "—"; lastEl.style.color = ""; }
+      banners.forEach((b) => { if (b) b.hidden = true; });
+      return;
+    }
+    const dur = data.measures_purge_last_duration_s;
+    const min = (typeof dur === "number" && isFinite(dur)) ? Math.round(dur / 60) : null;
+    const minTxt = (min === null) ? "—" : `${min} min`;
+    let txt = "—";
+    switch (end) {
+      case 1: txt = `${minTxt} — stabilité atteinte`; break;
+      case 2: txt = `${minTxt} — plafond atteint, mesures non stabilisées`; break;
+      case 3: txt = "dispensée — coupure brève (≤ 10 s)"; break;
+      case 4: txt = `${minTxt} — relancée, la mesure a bougé`; break;
+      default: txt = "—";
+    }
+    if (lastEl) {
+      lastEl.textContent = txt;
+      lastEl.style.color = (end === 2) ? "var(--warn)" : "";
+    }
+    banners.forEach((b) => { if (b) b.hidden = (end !== 2); });
+  }
+
   // ========== SECTIONS DÉTAILLÉES ==========
   function updateDetailSections() {
     const config = window._config || {};
@@ -4195,6 +4251,10 @@
     // précaution try/catch que le rattrapage accumulé (un rendu qui lance ne
     // doit jamais masquer les rubriques suivantes en silence).
     try { updatePhActuatorLimitDisplay(); } catch (e) { console.error('[ph-limite] rendu:', e); }
+
+    // feature-091 : durée/motif de la dernière purge + bandeaux plafond — même
+    // source (latestSensorData : /data ET WS), même précaution try/catch.
+    try { updateMeasuresPurgeDisplay(latestSensorData); } catch (e) { console.error('[purge] rendu:', e); }
 
     // === FILTRATION ===
     const detailFiltrationMode = $("#detail-filtration-mode");
@@ -8889,7 +8949,8 @@
     });
     $("#regulation_save_btn")?.addEventListener("click", async () => {
       // feature-056 : regulation_mode retiré (remplacé par le mode d'installation).
-      const delay = parseInt($("#stabilization_delay_min")?.value ?? "5", 10);
+      // feature-091 : stabilization_delay_min retiré (purge adaptative) — la clé
+      // n'est plus émise ; le firmware l'ignore de toute façon.
       // feature-090 (B2) : quand la taille du bassin pilote les défauts, le
       // segmented vitesse est MASQUÉ — on réémet alors la valeur COURANTE du
       // contrôleur (window._config, complétée par le cache anti-trame-WS-
@@ -8906,7 +8967,6 @@
       const orpDaily = parseFloat($("#orp_daily_limit")?.value ?? "500");
       const maxCycles = parseInt($("#max_cycles_per_day")?.value ?? "48", 10);
       const ok = await sendConfig({
-        stabilization_delay_min: isNaN(delay) ? 5 : Math.min(60, Math.max(0, delay)),
         regulation_speed: speed,
         ph_limit_minutes:        isNaN(phLimit)  ? 5  : Math.min(60, Math.max(1, phLimit)),
         max_ph_ml_per_day:       isNaN(phDaily)  ? 300 : Math.max(0, phDaily),

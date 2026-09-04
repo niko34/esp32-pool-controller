@@ -187,6 +187,31 @@ Trois couplages les tiennent ensemble :
 
 **L'argument de stabilité est le bilan de matière**, pas un réglage : le volume journalier livré converge vers la charge réelle du bassin quel que soit le FF — un FF trop fort ferme la session (l'erreur retombe sous le seuil d'arrêt) et cesse avec elle, un FF trop faible laisse le PI compléter. La médiane apprise est donc **non expansive** : pas d'auto-amplification d'un jour sur l'autre. L'hystérésis de session [3] est le mécanisme ; le plafond 60 % n'est qu'une ceinture. Voir [Stabilité : par l'hystérésis de session](pump-controller.md#stabilité--par-lhystérésis-de-session-structurellement).
 
+### Le latch — le disjoncteur du feedforward
+
+Le FF est la seule source de dosage **aveugle à l'erreur mesurée** : sans mesure
+digne de confiance, personne ne peut constater qu'il dose à tort. Sa protection
+est donc un **latch** — un *disjoncteur*, au sens propre : une fois déclenché,
+il **ne se réarme pas tout seul** quand la cause disparaît, contrairement à une
+simple condition de blocage. Trois déclencheurs : **mesure invalide**
+(immédiat, sans tenue) ; **erreur signée < −0,05 pH tenue 30 min** (le scénario
+« fausse pluie » : le bassin n'a manifestement pas besoin de la dose apprise) ;
+**changement de contexte** (consigne, vitesse, type de produit — la mémoire a
+été apprise pour un autre point de fonctionnement).
+
+Le réarmement a lieu à un instant unique et observable : le **front d'ouverture
+de la session de dosage suivante** (exception : la tenue « type de produit »
+prime et attend une journée entière archivée sous le nouveau régime, § 4).
+Pourquoi cette rigidité ? **Anti-battement** — une mesure qui vacille entre
+valide et invalide ferait battre la dose marche/arrêt ; et **traçabilité** —
+chaque pose et chaque levée a sa ligne de journal motivée. Une mesure redevenue
+bonne ne rouvre donc PAS le latch : il reste fermé jusqu'à la prochaine session,
+et c'est voulu (constaté en conditions réelles le 02/09/2026 : bouchon d'eau
+morte au démarrage → latch à 06h59 → mesure saine à 07h30 → latch toujours
+fermé, réarmement à la session suivante).
+
+**Détail** : [Latch de sécurité et réarmement](pump-controller.md#latch-de-sécurité-condition-n3-et-réarmement) ([ADR-0055](../adr/0055-feedforward-appris-additif-plafonne.md)).
+
 ---
 
 ## 3. L'asymétrie pH ↔ chlore
@@ -224,7 +249,7 @@ Les vitesses d'adaptation qui en résultent :
 | **Journée aberrante** (incident, purge, assistant de débit, fête au bord du bassin) | **Ignorée** — la médiane sur 7 encaisse jusqu'à 3 journées folles ; le filet de vraisemblance écarte en plus les journées physiquement impossibles |
 | **Dérive saisonnière** (montée en température, fréquentation) | **Suivie en ~3-4 jours** — la médiane bascule quand la majorité de la fenêtre reflète le nouveau régime |
 | **Changement de TYPE de produit** (réglage `ph_minus` ↔ `ph_plus` — PAS un simple changement de bidon) | **Latch** du FF jusqu'à ce qu'une **journée entière** ait été archivée sous le nouveau régime (la première clôture, mixte, est sautée) ; l'intégrale est purgée immédiatement (le signe de l'erreur s'inverse). L'appareil ne détecte rien chimiquement : c'est le réglage « type de produit » qui le lui déclare |
-| **Changement ou recharge de bidon** (même produit) | **Aucun effet sur l'apprentissage** — la mémoire porte sur la consommation du bassin, pas sur le contenant. Seul le suivi de volume de la page Produits est concerné (bouton « Réinitialiser le bidon », qui remet le compteur à zéro) |
+| **Changement ou recharge de bidon** (même produit) | **Aucun effet sur l'apprentissage** — la mémoire porte sur la consommation du bassin, pas sur le contenant. Seul le suivi de volume de la page Produits est concerné (bouton « Nouveau bidon », qui remet le compteur à zéro) |
 | **Changement de consigne, de vitesse ou de plafond** (empreinte de contexte) | **Latch** du FF jusqu'à la session suivante ; changement de vitesse ⇒ purge de l'intégrale (le `ki` acquis ne vaut plus) |
 | **Excursion franche de l'autre côté de la consigne** (pluie acide…) | FF retenu après 30 min d'erreur défavorable tenue (`kPhFfLowHoldMs`) ; purge sèche de l'intégrale après 15 min d'excursion soutenue (`kPhIntegralResetHoldMs`) — un transitoire n'efface plus des jours d'apprentissage |
 | **Hiver, filtration courte** (< 2 h/jour) | **Auto-désactivation fail-closed** : plus aucune journée exploitable → moins de 3 jours dans la fenêtre → FF en `kNoHistory`, restauration d'intégrale interdite (plafond nul). **Le PI seul suffit** à ce régime de faible charge |
@@ -253,7 +278,7 @@ Du plus court au plus long. Les noms font foi ([`constants.h`](../../src/constan
 | ~65 s | fenêtre médiane du filtre (13 échantillons) | ~65 s | Tendance centrale > 1 période d'oscillation | [ADR-0027](../adr/0027-filtre-tendance-centrale.md) |
 | 60 s | `kPulsePeriodMs` | **60 s (gravé)** | Période du proportionnel de temps | [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)/[0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md) |
 | 3-5 min | `kStabilizationDurationOrpMs` / `PhMs` | 3 / 5 min | Sas post-calibration EZO, par sonde | feature-021 |
-| 5 min | `stabilizationDelayMin` (config, défaut par taille) | 5-10 min | Purge à la reprise de circulation (dosage ET validité des mesures) | [measure-validity.md](measure-validity.md) |
+| 10-90 min | `kPurgeFloorMs` / `kPurgeCapMs` (gravés) | **non fixe** | Purge à la reprise de circulation (dosage ET validité des mesures) : se termine **sur la stabilité des bruts**, plancher 10 min, plafond 90 min. Le réglage `stabilizationDelayMin` est retiré depuis la v2.34.0 | [measure-validity.md](measure-validity.md), [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md) |
 | 15 min | `kPhIntegralResetHoldMs` | 15 min de branche | Tenue d'excursion avant purge sèche de l'intégrale (= pause mélange, `static_assert`) | v2.27.0 |
 | 15-20 min | `kPhMixingDelayMs` / `kOrpMixingDelayMs` | 15 / 20 min | Pause mélange — le métronome de la boucle | feature-025, [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) |
 | 30 min | `kPhFfLowHoldMs` | **≤ 30 min (verrou)** | Latch « fausse pluie » du feedforward (erreur défavorable tenue) | [ADR-0055](../adr/0055-feedforward-appris-additif-plafonne.md) |

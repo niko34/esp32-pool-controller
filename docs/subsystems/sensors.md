@@ -311,7 +311,7 @@ Trois correctifs complémentaires en v2.20.3 (tous dans le module **pur**, donc 
 | sinon | ouverte |
 
 - **Porte fermée** ⇒ `addSample()` **sort en tête** : l'échantillon est mémorisé pour le diagnostic (`raw()`) mais ne touche **ni** le buffer, **ni** le `FrozenDetector`, **ni** aucun compteur — il n'existe pas pour le filtre. L'âge de la dernière mesure valide continue de grandir ⇒ `ready() = false` ⇒ dosage fail-closed pendant toute la purge, ce qui est le comportement voulu.
-- **Plancher de gel de 60 s** : appliqué **même si** la coquille déclare déjà les mesures représentatives. Il couvre le cas `stabilizationDelayMin = 0` (délai de purge désactivé par l'utilisateur), sans lequel l'eau stagnante de la chambre de mesure entrerait directement dans le buffer. Comparaison wrap-safe sur `(int32_t)(nowMs - _gateFloorUntilMs)`.
+- **Plancher de gel de 60 s** : appliqué **même si** la coquille déclare déjà les mesures représentatives — il couvre le cas d'une porte de validité qui s'ouvrirait sans délai (dispense après coupure courte). Comparaison wrap-safe sur `(int32_t)(nowMs - _gateFloorUntilMs)`. Ce plancher est **indépendant** du plancher de purge `kPurgeFloorMs` (10 min) de `measure_validity`, qui joue en amont.
 - **Transition fermée → ouverte** ⇒ `rearm()` : la médiane construite avant/pendant la stagnation n'a **aucune** autorité sur les mesures représentatives qui suivent. Le filtre repart en warmup complet (13 échantillons ≈ 65 s) — disponibilité sacrifiée au profit de la justesse, arbitrage `pool-chemistry`.
 - **Rétrocompatibilité** : `_gateClosed` vaut `false` par défaut. Un appelant qui n'utilise pas `setContext()` (tests natifs existants) conserve strictement le comportement antérieur.
 
@@ -321,6 +321,18 @@ Journalisation **edge-triggered** par `SensorManager::_updateFilterGates()` (les
 - réouverture — `info` : `Filtres pH/ORP : alimentation REPRISE — mesures représentatives, filtres ré-amorcés (warmup en cours, la médiane de stagnation est abandonnée)`
 
 Le drapeau `rearmedSinceLastPoll()` est **drainé** juste après, pour que le ré-amorçage de porte (légitime et déjà journalisé) ne soit pas attribué à tort à la sortie de secours.
+
+#### `ready()` est faux tant que la porte est fermée (C6, v2.34.0)
+
+Depuis la v2.34.0 (feature-091, condition **C6** de `pool-chemistry`), `SensorFilter::ready(nowMs)` retourne **faux immédiatement** quand la porte est fermée — un cinquième prédicat s'ajoute aux quatre existants (fenêtre pleine, mesure présente, âge ≤ `maxAgeMs`, non figé), à la toute fin de [`sensor_filter.cpp`](../../src/sensor_filter.cpp) (`if (_gateClosed) return false;`).
+
+**Le trou qu'il ferme** : jusque-là, `ready()` ne devenait faux qu'*indirectement*, par vieillissement du dernier échantillon accepté (`maxAgeMs` = 20 s). À la **première** ouverture ce n'était pas visible (le ré-amorçage vide déjà la fenêtre), mais lors d'une **re-fermeture** (re-purge C1, mesure redevenue instable après ouverture) le filtre restait « prêt » pendant jusqu'à 20 s **avec la dernière valeur filtrée du rinçage**. Pendant cette fenêtre, le terme proportionnel, le **terme intégral**, le **feedforward** et les gardes d'alerte pH/ORP pouvaient consommer une mesure que le système venait de déclarer non représentative.
+
+- **Aucun terme de régulation ni aucune alerte pH/ORP ne consomme les mesures de rinçage** : toutes ces consommations passent par `ready()`.
+- **Sans effet** sur un appelant qui n'utilise pas `setContext()` (tests natifs antérieurs : `_gateClosed` reste `false`), ni à la première ouverture d'un cycle d'eau.
+- Le prédicat d'observabilité `gateClosed()` (v2.25.1) est **inchangé** : il continue de qualifier le refus en « attente normale », jamais en panne de sonde.
+
+Décision d'origine : [ADR-0041](../adr/0041-autorite-mesures-non-representatives-et-sortie-de-secours-filtre.md) ; purge adaptative qui rend la re-fermeture possible : [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md) et [measure-validity.md](measure-validity.md).
 
 ### Sortie de secours sur rejets cohérents (v2.20.3)
 
@@ -377,7 +389,7 @@ Conséquence voulue : après `rearm()`, `_bufCount = 0` ⇒ `ready() = false` pe
 ### États du filtre
 
 - **warmup** : tant que la fenêtre centrale n'est pas **pleine** (`< kSensorFilterCentralWindow` = 13 échantillons acceptés) → `filtered() = NaN`, `ready() = false`. **Aucun dosage** tant que non prêt.
-- **ready** : fenêtre pleine ET dernière mesure valide `< kSensorFilterMaxAgeMs` (= 20 s). Au-delà (EZO injoignable) → `ready()` repasse `false` → dosage fail-closed.
+- **ready** : fenêtre pleine ET dernière mesure valide `< kSensorFilterMaxAgeMs` (= 20 s) ET capteur non figé ET **porte d'alimentation ouverte** (C6, v2.34.0). Au-delà (EZO injoignable) → `ready()` repasse `false` → dosage fail-closed.
 - **unstable** (drapeau d'inhibition, **découplé** de la valeur — ne fige jamais `filtered()`) : `true` si l'un de ces trois signaux est posé :
   - **(a) dispersion > cap** : l'amplitude `max − min` de la fenêtre brute **pleine** dépasse `kPhFilterMaxDispersion` (= 0.5 pH) / `kOrpFilterMaxDispersion` (= 100 mV) → oscillation de niveau EMI. Les caps sont maintenus **sous** l'amplitude EMI observée (feature-057) pour préserver l'inhibition existante — **ne pas assouplir** ;
   - **(b) latch EMI** : dispersion > cap **soutenue** (`kSensorFilterDispersionLatchCycles` = 3 fenêtres pleines consécutives en dépassement) → latch collant `unstableLatched()`. Auto-levé après `kSensorFilterLatchClearCycles` = 12 fenêtres pleines **propres** consécutives (≈ 2 min de signal réellement propre, v2.8.4) ou immédiatement par `reset()`/recalibration ;
@@ -386,7 +398,7 @@ Conséquence voulue : après `rearm()`, `_bufCount = 0` ⇒ `ready() = false` pe
 
 ### Prédicats d'état du filtre (observabilité, v2.25.1)
 
-`ready()` est faux pour **quatre** raisons physiquement distinctes, dont deux sont des états d'attente normaux et deux des **pannes**. Jusqu'à la v2.25.1, la chaîne de refus de dosage les confondait dans un seul libellé (« warmup / EZO injoignable ») : une vraie panne d'EZO s'affichait « Stabilisation du filtre ». `SensorFilter` expose donc quatre prédicats `const`, **lecture seule, sans effet sur la décision** :
+`ready()` est faux pour **quatre** raisons physiquement distinctes, dont deux sont des états d'attente normaux et deux des **pannes**. (Depuis la v2.34.0, la porte fermée est en plus une condition **directe** de `ready()` — voir [`ready()` est faux tant que la porte est fermée](#ready-est-faux-tant-que-la-porte-est-fermée-c6-v2340) ; les quatre prédicats d'observabilité ci-dessous sont inchangés.) Jusqu'à la v2.25.1, la chaîne de refus de dosage les confondait dans un seul libellé (« warmup / EZO injoignable ») : une vraie panne d'EZO s'affichait « Stabilisation du filtre ». `SensorFilter` expose donc quatre prédicats `const`, **lecture seule, sans effet sur la décision** :
 
 | Prédicat | Vrai quand | Registre |
 |---|---|---|

@@ -218,12 +218,16 @@ void setup() {
   // APRÈS l'application de l'heure RTC pour que la fenêtre epoch soit fiable.
   initAutoHealRtcState();
 
+  // feature-091 (C3 pool-chemistry) : décision de dispense de la première purge
+  // après une coupure COURTE (mémoire RTC + esp_reset_reason). APRÈS
+  // rtcManager.applyToSystem() (l'heure système doit être valide pour mesurer la
+  // coupure), AVANT le premier measureValidity.update() de la loop.
+  measureValidity.begin();
+
   PumpController.begin();
-  // feature-056 : en mode « alimenté par la filtration » (Powered), l'eau est
-  // présumée présente dès le boot → armer le timer de stabilisation comme avant.
-  if (mqttCfg.installMode == InstallMode::PoweredByFiltration) {
-    PumpController.armStabilizationTimer();
-  }
+  // feature-091 : l'arming legacy du timer de stabilisation au boot (mode Powered)
+  // est RETIRÉ — la stabilisation après reprise de circulation est portée par la
+  // purge adaptative de measureValidity (plancher + stabilité de la mesure).
   filtration.begin();
   lighting.begin();
   history.begin();
@@ -1239,8 +1243,14 @@ void checkSystemHealth() {
   static bool lastOrpAbnormal  = false;
   static bool lastTempAbnormal = false;
 
-  bool phAbnormal   = (ph < 5.0f || ph > 9.0f);
-  bool orpAbnormal  = (orp < 400.0f || orp > 900.0f);
+  // feature-091 (C6 pool-chemistry) : hors porte de validité (purge, re-purge,
+  // circulation arrêtée), l'eau de la conduite n'est PAS celle du bassin — une
+  // valeur « anormale » y est attendue, pas alarmante. Les alertes pH/ORP ne
+  // portent que sur des mesures représentatives ; la température n'est pas
+  // concernée (sonde DS18B20 indépendante de la purge).
+  const bool measuresValid = measureValidity.measuresValid();
+  bool phAbnormal   = measuresValid && (ph < 5.0f || ph > 9.0f);
+  bool orpAbnormal  = measuresValid && (orp < 400.0f || orp > 900.0f);
   bool tempAbnormal = (!isnan(temp) && (temp < 5.0f || temp > 40.0f));
 
   if (phAbnormal && !lastPhAbnormal) {

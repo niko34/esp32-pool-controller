@@ -645,7 +645,7 @@ bool restoreRegulationDefaults() {
   const float  oldOrpTarget  = mqttCfg.orpTarget;
   const int    oldPhLimit    = mqttCfg.phInjectionLimitMinutes;
   const int    oldOrpLimit   = mqttCfg.orpInjectionLimitMinutes;
-  const int    oldStabDelay  = mqttCfg.stabilizationDelayMin;
+  // feature-091 : le délai de stabilisation n'est plus un réglage (7 champs).
   const int    oldPhDailyMl  = mqttCfg.phDailyTargetMl;
   const int    oldOrpDailyMl = mqttCfg.orpDailyTargetMl;
   char oldSpeed[8];  // "slow"/"normal"/"fast" — copie sans String (budget flash)
@@ -658,7 +658,7 @@ bool restoreRegulationDefaults() {
   const bool raisesDosing =
       regulationDefaultsRaiseDosing(d, oldOrpTarget, oldPhLimit, oldOrpLimit);
 
-  // Copie des 8 champs de tuning de la colonne de la taille courante — RIEN
+  // Copie des 7 champs de tuning de la colonne de la taille courante — RIEN
   // d'autre (invariants du visa : modes, enabled, phCorrectionType, phOffset,
   // trace phAutoManual*, calibration et sélection des pompes, SafetyLimits
   // ET poolSize intouchés).
@@ -667,23 +667,22 @@ bool restoreRegulationDefaults() {
   saveMqttConfig();  // mutex récursif : persistance dans la même section critique
   xSemaphoreGiveRecursive(configMutex);
 
-  // Journal COMPACT (condition 1 du visa) : UN message, les 8 champs lisibles
+  // Journal COMPACT (condition 1 du visa) : UN message, les 7 champs lisibles
   // avant → après (un champ inchangé s'y lit x → x — l'état complet d'avant
   // restauration reste ainsi toujours reconstituable depuis le journal).
-  // UN SEUL snprintf : nettement plus compact en flash (budget ≤ 2 Ko) que huit
+  // UN SEUL snprintf : nettement plus compact en flash (budget ≤ 2 Ko) que sept
   // segments conditionnels ou des concaténations String.
   char msg[352];
   snprintf(msg, sizeof(msg),
            "[Config] Défauts de régulation (taille %s) restaurés%s : pH %.2f→%.2f ; "
            "ORP %.0f→%.0f mV ; limites pH %d→%d / ORP %d→%d min/h ; "
-           "stab. %d→%d min ; prog. pH %d→%d / ORP %d→%d mL/j ; vitesse %s→%s",
+           "prog. pH %d→%d / ORP %d→%d mL/j ; vitesse %s→%s",
            poolSizeToString(size),
            raisesDosing ? " (dosage AUGMENTÉ)" : "",
            (double)oldPhTarget, (double)d.phTarget,
            (double)oldOrpTarget, (double)d.orpTarget,
            oldPhLimit, d.phInjectionLimitMin,
            oldOrpLimit, d.orpInjectionLimitMin,
-           oldStabDelay, d.stabilizationDelayMin,
            oldPhDailyMl, d.phDailyTargetMl,
            oldOrpDailyMl, d.orpDailyTargetMl,
            oldSpeed, d.regulationSpeed);
@@ -938,6 +937,10 @@ void saveDailyCounters() {
   // étant par ailleurs à nivellement d'usure et ignorant les réécritures à
   // valeur identique.
   prefs.putUInt("filt_min", safetyLimits.dailyFiltrationMinutes);
+  // v2.34.0 (feature-093, R3) : compteur MONOTONE de filtration — base de temps
+  // de la fraîcheur de l'instantané d'intégrale pH. Même transaction, aucun
+  // coût NVS supplémentaire (réécriture à valeur identique ignorée par la NVS).
+  prefs.putUInt("filt_total", safetyLimits.filtTotalMin);
   prefs.end();
   if (configMutex) xSemaphoreGiveRecursive(configMutex);
 }
@@ -972,6 +975,12 @@ void loadDailyCounters() {
   //     complet (les mL, eux, sont restaurés) sur un dénominateur tronqué, soit
   //     une charge SURÉVALUÉE.
   uint32_t filtMin = prefs.getUInt("filt_min", 0);
+  // v2.34.0 (feature-093, R3) : compteur MONOTONE, relu QUELLE QUE SOIT la date
+  // et l'état de l'horloge — il ne se remet jamais à zéro. Absent d'une NVS
+  // antérieure → 0 : le premier instantané écrit portera 0 et l'âge en filtration
+  // se calculera normalement à partir de là (perte d'une restauration au premier
+  // boot après mise à jour, conséquence acceptée par la spec).
+  safetyLimits.filtTotalMin = prefs.getUInt("filt_total", 0);
   prefs.end();
   const bool filtMinCorrupt = (filtMin > 1440UL);
   const uint32_t filtMinRunning = filtMinCorrupt ? 1440UL : filtMin;

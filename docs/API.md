@@ -224,7 +224,10 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
   "filtration_running": true,
   "water_present": true,
   "measures_valid": true,
-  "measures_stab_remaining_s": 0,
+  "measures_stab_elapsed_s": 0,
+  "measures_purge_last_duration_s": 2820,
+  "measures_purge_last_end": 1,
+  "measures_purge_count": 0,
   "ph_dosing": false,
   "orp_dosing": false,
   "ph_pump_flow_uncharacterized": false,
@@ -309,8 +312,21 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 > | Champ | Type | Description |
 > |-------|------|-------------|
 > | `water_present` | boolean | Présence d'eau résolue (source unique feature-056 — déjà présent en WS, **ajouté à `/data`** ici). |
-> | `measures_valid` | boolean | `true` = mesures pH/ORP représentatives du bassin. `false` = eau absente **ou** délai de purge post-reprise en cours (`stabilizationDelayMin`, défaut 5 min). |
-> | `measures_stab_remaining_s` | integer | Secondes restantes de purge (arrondi seconde sup) ; `0` si valide ou eau absente. Nom **distinct** de `stabilization_remaining_s` (stabilisation post-calibration des pompes). |
+> | `measures_valid` | boolean | `true` = mesures pH/ORP représentatives du bassin. `false` = eau absente **ou** purge post-reprise en cours. |
+> | `measures_stab_remaining_s` | integer | Secondes restantes de purge (arrondi seconde sup) ; `0` si valide ou eau absente. ⚠️ **Champ SUPPRIMÉ en v2.34.0** — voir le bloc feature-091 ci-dessous. |
+>
+> **feature-091 (v2.34.0) — purge adaptative** ([ADR-0059](adr/0059-purge-adaptative-fenetre-de-medianes.md)) : la purge se termine sur la **stabilité des mesures brutes**, encadrée par un plancher de **10 min** et un plafond de **90 min** (`kPurgeFloorMs` / `kPurgeCapMs`). Il n'y a donc **plus de fin connue à l'avance** : `measures_stab_remaining_s` est **retiré** et remplacé par quatre champs. **Mêmes champs, mêmes valeurs côté WS `sensor_data`** (parité obligatoire — un champ servi d'un seul côté *clignote* au lieu de disparaître) :
+>
+> | Champ | Type | Description |
+> |-------|------|-------------|
+> | `measures_stab_elapsed_s` | uint32 | Secondes **écoulées** dans la purge courante ; `0` hors purge. Nom toujours **distinct** de `stabilization_remaining_s` (sas post-calibration des pompes). |
+> | `measures_purge_last_duration_s` | uint32 | Durée de la **dernière purge terminée** (s) ; `0` si aucune depuis le boot ou si elle a été dispensée. |
+> | `measures_purge_last_end` | uint8 | Motif de fin : `0` aucune, `1` stabilité, `2` **plafond atteint** (mesures non stabilisées → alerte MQTT `measures_purge_timeout`), `3` dispensée (coupure ≤ 10 s), `4` re-purge terminée. Valeurs figées (`enum class PurgeEnd`, [`src/measure_validity.h`](../src/measure_validity.h)). |
+> | `measures_purge_count` | uint8 | Nombre de **re-purges** du cycle d'eau courant (refermeture sur mesure redevenue instable) ; remis à zéro à l'arrêt de la circulation. |
+>
+> ⚠️ Le motif `2` **ouvre** la porte (`measures_valid` repasse à `true`) : c'est un fail-safe de disponibilité de la régulation, pas un blocage — les gardes pH/ORP habituelles restent seules en vigueur. Un client ne doit donc **pas** en déduire « mesures invalides », mais « mesures à surveiller ».
+>
+> Rétrocompat : un client antérieur qui lit `measures_stab_remaining_s` ne le trouve plus (clé absente) — il doit traiter l'absence comme « pas de compte à rebours disponible ». Buffer `/data` **inchangé** (gabarit documentaire 2304 o : +97 o net au pire cas ; ce chemin n'a de toute façon aucun plafond dur, `sendJsonResponse` dimensionne la `String` à la demande). Détail : [`docs/subsystems/measure-validity.md`](subsystems/measure-validity.md).
 >
 > **feature-067 (v2.20.0) — sémantique brut / corrigé des valeurs pH.** Aucun champ n'est ajouté ni renommé dans `/data`, mais la **valeur** de trois d'entre eux intègre désormais l'offset logiciel `ph_offset` :
 >
@@ -497,7 +513,6 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
   "install_mode": "managed",
   "regulation_speed": "normal",
   "pool_size": "medium",
-  "stabilization_delay_min": 5,
   "ph_correction_type": "ph_minus",
   "ph_target": 7.2,
   "orp_target": 700,
@@ -551,18 +566,23 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-config
     "orp_target": 600,
     "ph_limit_minutes": 10,
     "orp_limit_minutes": 10,
-    "stabilization_delay_min": 5,
     "ph_daily_target_ml": 0,
     "orp_daily_target_ml": 0,
     "regulation_speed": "normal"
   },
   "regulation_defaults_by_size": {
-    "small":  { "ph_target": 7.3, "orp_target": 600, "ph_limit_minutes": 5,  "orp_limit_minutes": 5,  "stabilization_delay_min": 5,  "ph_daily_target_ml": 0, "orp_daily_target_ml": 0, "regulation_speed": "slow" },
-    "medium": { "ph_target": 7.3, "orp_target": 600, "ph_limit_minutes": 10, "orp_limit_minutes": 10, "stabilization_delay_min": 5,  "ph_daily_target_ml": 0, "orp_daily_target_ml": 0, "regulation_speed": "normal" },
-    "large":  { "ph_target": 7.3, "orp_target": 600, "ph_limit_minutes": 15, "orp_limit_minutes": 15, "stabilization_delay_min": 10, "ph_daily_target_ml": 0, "orp_daily_target_ml": 0, "regulation_speed": "fast" }
+    "small":  { "ph_target": 7.3, "orp_target": 600, "ph_limit_minutes": 5,  "orp_limit_minutes": 5,  "ph_daily_target_ml": 0, "orp_daily_target_ml": 0, "regulation_speed": "slow" },
+    "medium": { "ph_target": 7.3, "orp_target": 600, "ph_limit_minutes": 10, "orp_limit_minutes": 10, "ph_daily_target_ml": 0, "orp_daily_target_ml": 0, "regulation_speed": "normal" },
+    "large":  { "ph_target": 7.3, "orp_target": 600, "ph_limit_minutes": 15, "orp_limit_minutes": 15, "ph_daily_target_ml": 0, "orp_daily_target_ml": 0, "regulation_speed": "fast" }
   }
 }
 ```
+
+> ⚠️ **v2.34.0 (feature-091) — `stabilization_delay_min` RETIRÉ de `/get-config`.** Le « délai de stabilisation avant injection » n'est plus un réglage : la purge des mesures se termine sur leur **stabilité** (plancher 10 min, plafond 90 min — constantes firmware, [ADR-0059](adr/0059-purge-adaptative-fenetre-de-medianes.md)). Conséquences sur le contrat :
+>
+> - la réponse expose **7** réglages de régulation au lieu de 8 ; les objets `regulation_defaults` et `regulation_defaults_by_size` perdent la même clé (voir [`src/regulation_defaults.h`](../src/regulation_defaults.h), `struct RegulationDefaults` = 7 champs) ;
+> - en écriture, [`POST /save-config`](#post-save-config--critical) **accepte silencieusement** la clé `stabilization_delay_min` d'un client ancien (ni erreur, ni effet) — même traitement que `screen_enabled` en v2.17.1 ;
+> - le champ NVS `stab_delay` continue d'être lu et écrit mais reste **inerte** ([`src/config.cpp:187,463`](../src/config.cpp)) : aucune migration à faire, aucune valeur perdue si un retour arrière était nécessaire.
 
 ---
 
@@ -573,10 +593,9 @@ Champs notables de la réponse :
 | `install_mode` | string | **Mode d'installation** (feature-056, v2.19.0). `"managed"` (PoolController pilote la filtration : relais GPIO 26 piloté, programmation active, eau présente = filtration commandée ON), `"powered"` (contrôleur alimenté par le circuit de filtration : relais inerte, programmation masquée, eau présumée présente en permanence — ex-`continu`), `"external"` (filtration tierce signalée : relais inerte, eau présente seulement si dernier signal ON reçu < 180 s, sinon dosage suspendu). Remplace `regulation_mode` **et** `filtration_enabled`. Voir [ADR-0026](adr/0026-mode-installation.md). |
 | `regulation_speed` | string | `"slow"` / `"normal"` / `"fast"` — préréglages PID. **v2.32.0 (feature-090)** : le champ est **inchangé dans l'API** (lecture, écriture, NVS, MQTT) mais **masqué dans l'UI** quand le firmware expose `pool_size` — la vitesse dérive de la taille du bassin et reste visible dans le dialogue de changement de taille ([ADR-0057](adr/0057-taille-bassin-preselection-jamais-entree-de-calcul.md)). |
 | `pool_size` | string | **v2.32.0 (feature-090)** — **Taille du bassin** : `"small"` (< 20 m³) / `"medium"` (20-60 m³) / `"large"` (> 60 m³). Sert **uniquement à présélectionner** les défauts de régulation ([ADR-0057](adr/0057-taille-bassin-preselection-jamais-entree-de-calcul.md) : elle n'entre **jamais** dans un calcul de dosage, débit ou quota). Persisté NVS (`pool_size`) ; clé absente ou illisible ⇒ **`medium`**, la colonne des défauts v2.30.0 — **migration sans effet** pour la flotte existante (aucun réglage modifié par la mise à jour seule). Champ absent sur un firmware < 2.32.0 : le client masque le sélecteur et ré-affiche la vitesse. Pas de nouvelle entité HA. |
-| `regulation_defaults_by_size` | object | **v2.32.0 (feature-090)** — Les **trois colonnes** de défauts (`small` / `medium` / `large`), mêmes 8 clés que `regulation_defaults`, sérialisées depuis la table unique [`src/regulation_defaults.h`](../src/regulation_defaults.h) (`kRegulationDefaultsBySize`). Lecture seule. Sert au **dialogue avant/après du changement de taille** — l'UI n'a jamais à deviner une colonne côté JS. |
+| `regulation_defaults_by_size` | object | **v2.32.0 (feature-090)** — Les **trois colonnes** de défauts (`small` / `medium` / `large`), mêmes clés que `regulation_defaults` (**7 depuis la v2.34.0**, `stabilization_delay_min` retiré), sérialisées depuis la table unique [`src/regulation_defaults.h`](../src/regulation_defaults.h) (`kRegulationDefaultsBySize`). Lecture seule. Sert au **dialogue avant/après du changement de taille** — l'UI n'a jamais à deviner une colonne côté JS. |
 | `ph_target_min` / `ph_target_max` / `ph_target_step` | float | **v2.25.0** — Plage et pas de la **consigne pH**, dérivés de `kPhTargetMin` / `kPhTargetMax` / `kPhTargetStep` ([`constants.h`](../src/constants.h)). **Lecture seule**, jamais acceptés en écriture. Servis pour que le frontend construise son contrôle segmenté **sans coder aucune borne en dur** : élargir la plage ou passer de 4 à 5 positions se fait côté firmware seul. Un lot incohérent ou absent est ignoré **en bloc** par le client, qui conserve les bornes déjà connues. |
 | `ph_offset_min` / `ph_offset_max` / `ph_offset_step` | float | **v2.25.0** — Idem pour l'**offset pH** (`kPhOffsetMin` / `kPhOffsetMax` / `kPhOffsetStep`). Alimentent l'incrémenteur `−` / valeur / `+` de la carte « Correction de la mesure pH ». |
-| `stabilization_delay_min` | integer | Délai de stabilisation capteurs après démarrage filtration (0–60 min) |
 | `ph_limit_minutes` | integer | Durée max d'injection pH par fenêtre glissante d'1 h (minutes, 1–60) |
 | `orp_limit_minutes` | integer | Durée max d'injection ORP par fenêtre glissante d'1 h (minutes, 1–60) |
 | `max_cycles_per_day` | integer | Limite anti-cycling (garde 9, feature-060, v2.12.0) : démarrages de dosage max **par pompe et par jour**, compteur partagé régulation auto + injections manuelles. Défaut **24** (était 48 — abaissé en v2.20.5, cf. [pump-controller.md](subsystems/pump-controller.md#limite-de-cyclesjour-configurable-garde-9-feature-060-v2120)). Bornes dures **10–60** clampées côté serveur (voir la table de validation `/save-config` ci-dessous). Persisté en NVS (`max_cycles_day`) — le nouveau défaut **ne s'applique donc pas** à un appareil déjà provisionné, aucune migration n'écrase la valeur enregistrée. |
@@ -605,7 +624,7 @@ Champs notables de la réponse :
 >
 > **Acquittement (v2.25.0 — fail-closed)** : la trace n'est **plus** effacée par un changement de mode. Tant qu'elle existe, `/save-config` **refuse en 409** toute sortie du mode `manual`, et la commande MQTT équivalente est refusée sans jamais effacer la trace. Le seul chemin de sortie est le champ **`ph_auto_manual_ack`** ci-dessous, envoyé par le bouton d'acquittement de la [page pH](features/page-ph.md). Clés NVS absentes sur un appareil mis à jour ⇒ `0` / `""` : rétrocompatible. Voir [`docs/subsystems/pump-controller.md`](subsystems/pump-controller.md#acquittement-fail-closed-de-la-bascule-v2250).
 | `ph_offset` | float | **Offset logiciel de mesure pH** (feature-067, v2.20.0). `pH corrigé = pH brut EZO + ph_offset`. Plage **[−0.50, +0.50]**, **pas de 0,10 depuis la v2.25.0** (était 0,01), défaut **0** (inerte). Persisté en NVS (clé `ph_offset`). **Ne touche jamais la calibration interne du module Atlas EZO** : c'est une correction en aval de la lecture, destinée à compenser un écart d'implantation de la sonde. Voir [ADR-0039](adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md). |
-| `regulation_defaults` | object | **v2.31.0 (feature-088)** — **Valeurs d'usine** des 8 réglages de tuning de la régulation, sérialisées depuis la source unique [`src/regulation_defaults.h`](../src/regulation_defaults.h) (mêmes clés que les champs de config correspondants : `ph_target`, `orp_target`, `ph_limit_minutes`, `orp_limit_minutes`, `stabilization_delay_min`, `ph_daily_target_ml`, `orp_daily_target_ml`, `regulation_speed`). **Lecture seule**. Sert au dialogue « actuel → usine » du bouton de restauration ([page Paramètres](features/page-settings.md#bouton--restaurer-les-valeurs-par-défaut--feature-088-v2310)) — le frontend ne code **aucune** de ces valeurs en dur. Objet **absent** sur un firmware < 2.31.0 : le client masque alors le bouton. **v2.32.0 (feature-090)** : le **contrat 088 est intact** (mêmes clés, à plat) mais l'objet reflète désormais la colonne de la **taille de bassin courante** (`mqttCfg.poolSize`) — le bouton de restauration remet donc les défauts **de la taille sélectionnée**. Voir [`POST /reset-regulation-defaults`](#post-reset-regulation-defaults--critical). |
+| `regulation_defaults` | object | **v2.31.0 (feature-088)** — **Valeurs d'usine** des réglages de tuning de la régulation, sérialisées depuis la source unique [`src/regulation_defaults.h`](../src/regulation_defaults.h) (mêmes clés que les champs de config correspondants). **v2.34.0 (feature-091)** : **7 clés** — `ph_target`, `orp_target`, `ph_limit_minutes`, `orp_limit_minutes`, `ph_daily_target_ml`, `orp_daily_target_ml`, `regulation_speed` (`stabilization_delay_min` retiré). **Lecture seule**. Sert au dialogue « actuel → usine » du bouton de restauration ([page Paramètres](features/page-settings.md#bouton--restaurer-les-valeurs-par-défaut--feature-088-v2310)) — le frontend ne code **aucune** de ces valeurs en dur. Objet **absent** sur un firmware < 2.31.0 : le client masque alors le bouton. **v2.32.0 (feature-090)** : le **contrat 088 est intact** (mêmes clés, à plat) mais l'objet reflète désormais la colonne de la **taille de bassin courante** (`mqttCfg.poolSize`) — le bouton de restauration remet donc les défauts **de la taille sélectionnée**. Voir [`POST /reset-regulation-defaults`](#post-reset-regulation-defaults--critical). |
 
 **`POST /save-config` — champs pH spécifiques :**
 
@@ -644,9 +663,9 @@ Champs notables de la réponse :
 
 | Champ | Type | Validation |
 |-------|------|------------|
-| `pool_size` | string | Valeurs acceptées : `"small"`, `"medium"`, `"large"`. Valeur inconnue ou **égale à la taille courante** : aucune modification. Si la taille **change**, les **8 réglages de tuning** reçoivent les défauts de la nouvelle taille (colonne de [`src/regulation_defaults.h`](../src/regulation_defaults.h)) par le **même chemin** que la restauration 088 : écritures sous `configMutex`, persistance NVS en fin de handler (clé `pool_size` incluse), retune PID **différé** via `applyRegulationSpeed()` (jamais d'écriture de coefficients depuis la tâche web ; changement effectif de vitesse ⇒ purge de l'intégrale, [ADR-0052](adr/0052-terme-integral-ph-dimensionne-par-autorite.md)). |
+| `pool_size` | string | Valeurs acceptées : `"small"`, `"medium"`, `"large"`. Valeur inconnue ou **égale à la taille courante** : aucune modification. Si la taille **change**, les **7 réglages de tuning** (8 avant la v2.34.0) reçoivent les défauts de la nouvelle taille (colonne de [`src/regulation_defaults.h`](../src/regulation_defaults.h)) par le **même chemin** que la restauration 088 : écritures sous `configMutex`, persistance NVS en fin de handler (clé `pool_size` incluse), retune PID **différé** via `applyRegulationSpeed()` (jamais d'écriture de coefficients depuis la tâche web ; changement effectif de vitesse ⇒ purge de l'intégrale, [ADR-0052](adr/0052-terme-integral-ph-dimensionne-par-autorite.md)). |
 
-- **Journal avant → après** : un message compact `Taille de bassin X → Y : pH a→b ; ORP … ; limites … ; stab. … ; prog. … ; vitesse …` — niveau **`warning`** avec mention `(dosage AUGMENTÉ)` si la nouvelle colonne **augmente la capacité de dosage** (consigne ORP ou limite horaire qui monte — passage à une taille supérieure : 5 → 10 → 15 min/h), `info` sinon (`regulationDefaultsRaiseDosing()`, prédicat 088 généralisé).
+- **Journal avant → après** : un message compact `[Config] Taille de bassin X → Y : pH a→b ; ORP … mV ; limites … min/h ; prog. … mL/j ; vitesse …` — le segment `stab. …` a **disparu en v2.34.0** avec le réglage. Niveau **`warning`** avec mention `(dosage AUGMENTÉ)` si la nouvelle colonne **augmente la capacité de dosage** (consigne ORP ou limite horaire qui monte — passage à une taille supérieure : 5 → 10 → 15 min/h), `info` sinon (`regulationDefaultsRaiseDosing()`, prédicat 088 généralisé).
 - **POST combiné** : le bloc `pool_size` est évalué **avant** le parse des clés individuelles — un corps `{ "pool_size": "large", "ph_limit_minutes": 12 }` applique d'abord les défauts de la taille **puis** les clés individuelles, qui les raffinent (sémantique de fusion JSON). C'est le chemin utilisé par l'assistant de premier démarrage (`{install_mode, pool_size}`).
 - **INVARIANT** ([ADR-0057](adr/0057-taille-bassin-preselection-jamais-entree-de-calcul.md)) : la taille **présélectionne** des réglages modifiables — elle n'entre **jamais** dans un calcul de dosage, de débit ou de quota.
 
@@ -667,6 +686,8 @@ Champs notables de la réponse :
 Journal : pesée avec duty explicite → `INFO Pesée pompe N enregistrée : duty X, débit Y ml/min` ; pesée à duty déduit (v2.23.0) → `INFO Pesée pompe N enregistrée : duty X (déduit de l'amplitude P %), débit Y ml/min` ; effacement → `WARN Calibration pompe N effacée — pompe non caractérisée (dosage auto refusé)`.
 
 > ⚠️ **Retiré en v2.21.0** : le champ `pump_max_flow_ml_per_min` **n'existe plus** dans `/get-config` ni `/save-config` (suppression du modèle linéaire duty↔débit, [ADR-0043](adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)). Un client qui l'envoie encore est **ignoré silencieusement** (aucun champ cible). La clé NVS `pump_max_flow` est purgée à la première sauvegarde, **sans conversion** vers les nouvelles clés : aucune valeur issue du modèle faux n'est reprise. **v2.23.0 ([ADR-0047](adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md))** : un appareil **vierge** (clés NVS absentes) reçoit la **calibration de type** (127 / 28,0 mL/min) et dose au premier flash ; seul `pumpN_calibrated_duty` **présent à 0** (effacement explicite / NVS hérité jamais calibré) reste fail-closed — **dosage automatique/programmé refusé** (badge « Débit non caractérisé — pesée requise » + `CRITICAL` throttlé).
+
+> ⚠️ **Retiré en v2.34.0 (feature-091)** : le champ `stabilization_delay_min` **n'est plus servi** par `/get-config` (ni dans `regulation_defaults` / `regulation_defaults_by_size`). En écriture, `/save-config` l'**accepte silencieusement sans effet et sans erreur** — un client ancien, ou un assistant de premier démarrage non mis à jour, continue de fonctionner ([`src/web_routes_config.cpp:850`](../src/web_routes_config.cpp)). La clé NVS `stab_delay` reste lue et écrite mais **inerte** (précédent `screen_enabled`, feature-065). Le délai avant injection est désormais décidé par la **stabilité des mesures** : plancher 10 min, plafond 90 min ([ADR-0059](adr/0059-purge-adaptative-fenetre-de-medianes.md), [`docs/subsystems/measure-validity.md`](subsystems/measure-validity.md)).
 
 > ⚠️ **Retirés en v2.19.0 (feature-056)** : les champs `regulation_mode` et `filtration_enabled` **n'existent plus** dans `/get-config` ni `/save-config`. Ils sont fusionnés dans `install_mode` (voir [ADR-0026](adr/0026-mode-installation.md)). La migration NVS est automatique — voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md).
 
@@ -768,7 +789,7 @@ curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
 
 ### POST /reset-regulation-defaults — CRITICAL
 
-**v2.31.0 (feature-088)** — Restaure les **8 réglages de tuning** de la régulation pH/ORP aux **valeurs d'usine**, puis persiste en NVS. Périmètre **arbitré par `pool-chemistry`** : `ph_target`, `orp_target`, `ph_limit_minutes`, `orp_limit_minutes`, `stabilization_delay_min`, `ph_daily_target_ml`, `orp_daily_target_ml`, `regulation_speed`. **v2.32.0 (feature-090)** : les valeurs restaurées sont celles de la **taille de bassin courante** (`mqttCfg.poolSize` — la taille elle-même n'est **pas** modifiée) ; sur `medium` (défaut de migration), ce sont exactement les valeurs v2.30.0 de la feature-087.
+**v2.31.0 (feature-088)** — Restaure les réglages de tuning de la régulation pH/ORP aux **valeurs d'usine**, puis persiste en NVS. Périmètre **arbitré par `pool-chemistry`**, **7 champs depuis la v2.34.0** : `ph_target`, `orp_target`, `ph_limit_minutes`, `orp_limit_minutes`, `ph_daily_target_ml`, `orp_daily_target_ml`, `regulation_speed` (`stabilization_delay_min` retiré par la feature-091 — la purge des mesures n'est plus réglable). **v2.32.0 (feature-090)** : les valeurs restaurées sont celles de la **taille de bassin courante** (`mqttCfg.poolSize` — la taille elle-même n'est **pas** modifiée) ; sur `medium` (défaut de migration), ce sont exactement les valeurs v2.30.0 de la feature-087.
 
 **Corps vide** — aucune valeur ne transite par le client, donc **aucun parsing JSON** : les valeurs appliquées viennent exclusivement de la source unique [`src/regulation_defaults.h`](../src/regulation_defaults.h) et ne peuvent pas diverger de celles annoncées par l'objet `regulation_defaults` de `/get-config` (qui reflète la même colonne).
 
@@ -786,7 +807,6 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/reset-regulation
     "orp_target": 600,
     "ph_limit_minutes": 10,
     "orp_limit_minutes": 10,
-    "stabilization_delay_min": 5,
     "ph_daily_target_ml": 0,
     "orp_daily_target_ml": 0,
     "regulation_speed": "normal"
@@ -804,7 +824,7 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/reset-regulation
 
 **Ce que la route ne touche JAMAIS** (invariants du visa `pool-chemistry`) : modes de régulation (`ph/orp_regulation_mode`), miroirs `ph/orp_enabled`, type de produit (`ph_correction_type`), offset pH, trace `ph_auto_manual_*`, calibration et sélection des pompes (`pumpN_*`, `ph_pump`, `orp_pump`), limites de sécurité journalières (`max_ph_ml_per_day`, `max_chlorine_ml_per_day`), `max_cycles_per_day`. Ces champs décrivent un **état physique** ou une **sécurité**, pas un réglage.
 
-**Journal** : IP d'origine (`info`), puis **un message compact avant → après sur les 8 champs** — niveau **`warning`** si la restauration **augmente la capacité de dosage** (consigne ORP qui monte, limite horaire pH/ORP qui monte), `info` sinon. L'état complet d'avant restauration reste reconstituable depuis le journal. Voir [pump-controller.md](subsystems/pump-controller.md#restauration-des-valeurs-dusine-de-régulation-feature-088-v2310).
+**Journal** : IP d'origine (`info`), puis **un message compact avant → après sur les 7 champs** (`[Config] Défauts de régulation (taille X) restaurés : pH a→b ; ORP … mV ; limites … min/h ; prog. … mL/j ; vitesse …`) — niveau **`warning`** si la restauration **augmente la capacité de dosage** (consigne ORP qui monte, limite horaire pH/ORP qui monte), `info` sinon. L'état complet d'avant restauration reste reconstituable depuis le journal. Voir [pump-controller.md](subsystems/pump-controller.md#restauration-des-valeurs-dusine-de-régulation-feature-088-v2310).
 
 ---
 

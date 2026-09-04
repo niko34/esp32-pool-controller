@@ -467,6 +467,11 @@ private:
   PhPersistConfirmState _phIntegralConfirm;
   float    _phIntegralSavedValue = 0.0f;      // R5 : dernière valeur persistée
   uint32_t _phIntegralSaveMs = 0;             // R5 : millis du dernier flush
+  // v2.34.0 (feature-093) : compteur de filtration à la dernière écriture (P3,
+  // échéance en temps de filtration) et demande de réécriture C5 (l'instantané
+  // relu au boot a été rejeté : la NVS porte un enregistrement inutile).
+  uint32_t _phIntegralSavedFiltMin = 0;
+  bool     _phIntegralRewriteWanted = false;
 
   // --- v2.27.0 (R1) : historique de charge (loopTask uniquement) -------------
   PhPersistLoadObservation _phLoadObs;        // cache de la médiane sur 7 jours
@@ -849,16 +854,16 @@ public:
   // Réinitialise la garde anti-cycling du pH (ex: changement de type de correction)
   void resetPhPauseGuard();
 
-  // Arme le timer de stabilisation pour une pompe donnée (0 = pH, 1 = ORP).
-  // Bloque le dosage pendant la durée appropriée :
-  //   - kStabilizationDurationPhMs / kStabilizationDurationOrpMs après calibration EZO,
-  //   - mqttCfg.stabilizationDelayMin (override utilisateur) pour les armings legacy
-  //     (filtration, mode continu, passage de minuit) — applique la même durée aux 2 pompes.
+  // Arme le timer de stabilisation pour une pompe donnée (0 = pH, 1 = ORP) :
+  // bloque le dosage pendant kStabilizationDurationPhMs / kStabilizationDurationOrpMs
+  // (après calibration EZO). v2.34.0 (feature-091) : le réglage utilisateur
+  // `stabilizationDelayMin` est RETIRÉ de ce chemin — la stabilisation après
+  // reprise de circulation est portée par la purge adaptative de measureValidity.
   void armStabilizationTimer(int pumpIndex);
 
-  // Surcharge legacy (sans paramètre) : conservée pour les sites d'arming "globaux"
-  // (filtration, boot mode continu, rollover minuit). Arme les 2 pompes simultanément
-  // avec la durée utilisateur `mqttCfg.stabilizationDelayMin`.
+  // Surcharge sans paramètre : arme les 2 pompes avec leurs durées fixes
+  // respectives. Seul site d'appel restant : le passage de minuit (double quota).
+  // Les armings « filtration » et « boot mode continu » ont été retirés (feature-091).
   void armStabilizationTimer();
 
   // True si le timer de stabilisation est encore actif pour la pompe donnée.

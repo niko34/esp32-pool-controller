@@ -240,9 +240,11 @@ Buffer `_buildSensorJson()` bumpe de **1664 → 1920 octets**.
 | `measures_valid` | bool | `true` = les mesures pH/ORP sont **représentatives de l'eau du bassin**. `false` = eau absente (filtration arrêtée / signal externe périmé) **ou** délai de purge post-reprise en cours (`stabilizationDelayMin`, défaut 5 min). |
 | `measures_stab_remaining_s` | uint | Secondes restantes du délai de purge (arrondi seconde sup). `0` si valide **ou** eau absente. ⚠️ Nom volontairement **distinct** de `stabilization_remaining_s` (stabilisation post-**calibration des pompes**, feature-006) : ici il s'agit de la **purge de la chambre de mesure**. |
 
-Les deux champs sont lus depuis le **cache** du singleton `measureValidity` (`getSnapshot()`, snapshot cohérent sous spinlock — jamais d'appel direct à `resolveWaterPresence()` hors `loopTask`). Voir [measure-validity.md](measure-validity.md). Le champ `water_present` (feature-056, ci-dessus) complète le triptyque : l'UI combine `water_present` + `filtration_state_stale` + `measures_valid` + `measures_stab_remaining_s` pour les badges « Filtration arrêtée » / « Signal filtration périmé » / « Stabilisation : ~N min » ([page-dashboard.md](../features/page-dashboard.md#mesures-phorp-non-représentatives--filtration-arrêtée--stabilisation-feature-061-v2130)).
+> ⚠️ **`measures_stab_remaining_s` est SUPPRIMÉ depuis la v2.34.0** (feature-091) : la purge n'a plus de fin connue à l'avance, il n'y a donc plus de compte à rebours à publier. Il est remplacé par quatre champs — voir [feature-091 (v2.34.0)](#champs-sensor_data-ajoutés-en-feature-091--purge-adaptative-v2340) ci-dessous. La description de `measures_valid` ci-dessus reste vraie **sauf** la mention du réglage `stabilizationDelayMin`, lui aussi retiré.
 
-**Les champs live `ph` / `orp` / `phRaw` / `orpRaw` / … restent publiés tels quels** quand les mesures sont invalides (page calibration et onglet Avancé intacts) — c'est l'UI qui arbitre l'affichage via `measures_valid`. Le compte à rebours est **recalculé côté firmware** et rafraîchi à chaque push (5 s) : l'UI n'a aucun tick JS.
+Les deux champs sont lus depuis le **cache** du singleton `measureValidity` (`getSnapshot()`, snapshot cohérent sous spinlock — jamais d'appel direct à `resolveWaterPresence()` hors `loopTask`). Voir [measure-validity.md](measure-validity.md). Le champ `water_present` (feature-056, ci-dessus) complète le triptyque : l'UI combine `water_present` + `filtration_state_stale` + `measures_valid` + l'état de purge pour les badges « Filtration arrêtée » / « Signal filtration périmé » / « Stabilisation depuis N min » ([page-dashboard.md](../features/page-dashboard.md#mesures-phorp-non-représentatives--filtration-arrêtée--stabilisation-feature-061-v2130)).
+
+**Les champs live `ph` / `orp` / `phRaw` / `orpRaw` / … restent publiés tels quels** quand les mesures sont invalides (page calibration et onglet Avancé intacts) — c'est l'UI qui arbitre l'affichage via `measures_valid`. L'état de purge est **recalculé côté firmware** et rafraîchi à chaque push (5 s) : l'UI n'a aucun tick JS.
 
 Buffer `_buildSensorJson()` bumpe de **2048 → 2112 octets** (l'étape intermédiaire 1920 → 2048 venait des champs `ph/orp_mix_remaining_s`, v2.19.1).
 
@@ -402,4 +404,39 @@ L'[exposition de la limite d'actionneur pH](pump-controller.md#limite-dactionneu
 
 **Rien n'est ajouté à la trame `config` ni à `sensor_data`** — vérifié par grep de `_buildConfigJson()` : ni `regulation_defaults`, ni aucun champ propre à la feature n'y figure. La route [`POST /reset-regulation-defaults`](../API.md#post-reset-regulation-defaults--critical) **réutilise le mécanisme existant** `requestConfigBroadcast()` ([`ws_manager.h`](../../src/ws_manager.h)) : broadcast `config` **différé à la main loop** (patron `/save-config`, jamais de `_buildConfigJson()` en tâche AsyncTCP) — les autres clients connectés voient les valeurs restaurées sans reload.
 
-> ⚠️ **Écart de parité PRÉEXISTANT relevé au passage** (non introduit ni corrigé par la feature-088) : la trame `config` ne porte **ni** `stabilization_delay_min`, **ni** `regulation_speed`, **ni** l'objet `regulation_defaults` servi par `/get-config`. Suivi dans [bug-089](../../specs/features/todo/bug-089-parite-ws-config-champs-manquants.md). Le client de la feature-088 s'en protège de deux façons : `loadConfig()` **frais avant** d'ouvrir le dialogue (les valeurs « actuelles » ne viennent jamais d'une trame partielle) et cache `_regulationDefaults` réinjecté dans une config partielle (le bouton ne clignote pas — leçon du motif « champ WS-seul qui clignote », plusieurs récidives dans ce projet). Détail côté UI : [page-settings.md](../features/page-settings.md#bouton--restaurer-les-valeurs-par-défaut--feature-088-v2310).
+> ⚠️ **Écart de parité PRÉEXISTANT relevé au passage** (non introduit ni corrigé par la feature-088) : la trame `config` ne porte **ni** `regulation_speed`, **ni** l'objet `regulation_defaults` servi par `/get-config`. Suivi dans [bug-089](../../specs/features/todo/bug-089-parite-ws-config-champs-manquants.md). Le client de la feature-088 s'en protège de deux façons : `loadConfig()` **frais avant** d'ouvrir le dialogue (les valeurs « actuelles » ne viennent jamais d'une trame partielle) et cache `_regulationDefaults` réinjecté dans une config partielle (le bouton ne clignote pas — leçon du motif « champ WS-seul qui clignote », plusieurs récidives dans ce projet). Détail côté UI : [page-settings.md](../features/page-settings.md#bouton--restaurer-les-valeurs-par-défaut--feature-088-v2310).
+>
+> **v2.34.0** : `stabilization_delay_min` figurait aussi dans cette liste ; le réglage ayant été **retiré de `/get-config`** (feature-091), il ne relève plus d'un écart de parité — il n'existe plus nulle part.
+
+## Champs `sensor_data` ajoutés en feature-091 — purge adaptative (v2.34.0)
+
+La purge des mesures pH/ORP n'est plus une minuterie mais un **verdict de stabilité** encadré par un plancher de 10 min et un plafond de 90 min ([ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md), détail complet dans [measure-validity.md](measure-validity.md)). Conséquence sur la trame : `measures_stab_remaining_s` **disparaît** (plus de fin datée à l'avance) et **quatre** champs le remplacent.
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `measures_stab_elapsed_s` | uint32 | Secondes **écoulées** dans la purge courante ; `0` hors purge. Remplace `measures_stab_remaining_s`. ⚠️ Nom toujours **distinct** de `stabilization_remaining_s` (sas post-**calibration des pompes**). |
+| `measures_purge_last_duration_s` | uint32 | Durée de la **dernière purge terminée** (s). `0` si aucune depuis le boot, ou si elle a été dispensée. |
+| `measures_purge_last_end` | uint8 | Motif de fin de la dernière purge : `0` aucune, `1` stabilité, `2` **plafond** (alerte), `3` dispensée (coupure ≤ 10 s), `4` re-purge terminée. Valeurs figées par `enum class PurgeEnd` ([`src/measure_validity.h`](../../src/measure_validity.h)). |
+| `measures_purge_count` | uint8 | Nombre de **re-purges** (refermetures C1) du cycle d'eau courant ; remis à zéro au front descendant d'eau. Saturé à 255. |
+
+- **Parité `/data` ↔ WS obligatoire** : les cinq champs (`measures_valid` + les quatre ci-dessus) sont écrits dans le **même ordre** et depuis la **même source** (`measureValidity.getSnapshot()`) par [`ws_manager.cpp:649-653`](../../src/ws_manager.cpp) et [`web_routes_data.cpp:194-200`](../../src/web_routes_data.cpp). Motif récurrent du projet (**3 récidives**) : un champ présent d'un seul côté ne disparaît pas, il **clignote** — `latestSensorData` est remplacé par la charge `/data` toutes les 30 s, puis re-rempli par le push WS 5 s plus tard.
+- Le champ `circulationSettled` du snapshot n'est **pas** publié (usage firmware seul : autorisation de la branche Programmée, C4).
+- Consommateurs UI : segments d'état « Stabilisation / Re-stabilisation depuis N min » ([page-dashboard.md](../features/page-dashboard.md)), ligne « Dernière purge » de Réglages → Régulation ([page-settings.md](../features/page-settings.md)), bandeaux de plafond des pages [pH](../features/page-ph.md) et [ORP](../features/page-orp.md).
+
+**Budget de payload** : **+136 o** ajoutés et **−39 o** retirés au pire cas, soit **+97 o**.
+
+| Champ | Sérialisation pire cas | Octets |
+|-------|------------------------|--------|
+| `measures_stab_remaining_s` (retiré) | `"measures_stab_remaining_s":4294967295,` | −39 |
+| `measures_stab_elapsed_s` | `"measures_stab_elapsed_s":4294967295,` | +37 |
+| `measures_purge_last_duration_s` | `"measures_purge_last_duration_s":4294967295,` | +44 |
+| `measures_purge_last_end` | `"measures_purge_last_end":4,` | +28 |
+| `measures_purge_count` | `"measures_purge_count":255,` | +27 |
+
+Pire cas de trame **2 745 → 2 842 o** ; le gabarit documentaire `StaticJson<>` de `_buildSensorJson()` passe de **2816 à 2944** pour rester franchement au-dessus, la marge sous `kWsFrameBufBytes` (3584 o) restant de **742 o**. Aucune troncature possible : la garde `measureJson(doc) + 1 > cap` **saute** le push au lieu de tronquer. Rappel ArduinoJson 7 : `StaticJson<N>` dérive de `JsonDocument`, `N` n'est plus qu'une valeur documentaire (`capacity()`) — le seul plafond **dur** de ce chemin reste `kWsFrameBufBytes`.
+
+> Côté `/data`, les mêmes champs tiennent **sans bump** : le gabarit documentaire reste **2304** o (charge pire cas ≈ 2 236 o), et ce chemin n'a de toute façon aucun plafond dur (`sendJsonResponse` dimensionne la `String` à la demande).
+
+## feature-093 (v2.34.0) — persistance de l'intégrale pH : AUCUN champ nouveau
+
+La restauration de l'intégrale pH au démarrage ([pump-controller.md](pump-controller.md#3-persistance-nvs-conditionnelle-r1-r7)) ne publie **rien de neuf** : les champs `ph_integral`, `ph_integral_term`, `ph_integral_pct` et `ph_integral_saturated` (v2.26.0) suffisent — une valeur restaurée s'y lit comme n'importe quelle autre. Toute la traçabilité (motif de rejet, âge en temps de filtration, motif d'écriture) passe par le **journal système**, donc par `broadcastLog`.

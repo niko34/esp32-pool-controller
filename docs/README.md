@@ -101,7 +101,9 @@ docs/
 │   ├── 0055-feedforward-appris-additif-plafonne.md
 │   ├── 0056-sous-dimensionnement-actionneur-3-jours-80-pct.md
 │   ├── 0057-taille-bassin-preselection-jamais-entree-de-calcul.md
-│   └── 0058-gardes-heap-metrique-8-bits.md
+│   ├── 0058-gardes-heap-metrique-8-bits.md
+│   ├── 0059-purge-adaptative-fenetre-de-medianes.md
+│   └── 0060-fraicheur-en-temps-de-filtration.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

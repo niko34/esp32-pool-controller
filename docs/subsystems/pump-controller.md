@@ -52,8 +52,9 @@ void resetPhPauseGuard();
 
 // Stabilisation par pompe (feature-021) — durée différenciée pH / ORP
 void armStabilizationTimer(int pumpIndex);     // 0 = pH (5 min), 1 = ORP (3 min)
-void armStabilizationTimer();                   // surcharge legacy : arme les 2 pompes
-                                                // avec mqttCfg.stabilizationDelayMin
+void armStabilizationTimer();                   // arme les 2 pompes aux MÊMES durées
+                                                // post-cal (v2.34.0 : ne lit plus
+                                                // stabilizationDelayMin, retiré)
 bool isStabilizationTimerActive(int pumpIndex) const;
 void clearStabilizationTimer();
 unsigned long getStabilizationRemainingS() const;              // max des 2 pompes (UI WS)
@@ -1009,9 +1010,9 @@ L'[ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) l'**inte
 |---|---|---|
 | **R1** | Plafond `min(0,30 × integralMax ; 0,50 × (charge observée − kp × stop) / ki)`, **réappliqué à l'instant de l'application** | `phPersistRestoreCap`, `phPersistClampRestore` |
 | **R2** | Scellement (schéma + empreinte FNV-1a + **taille exacte**, aucune réinterprétation partielle) et **empreinte de contexte** (vitesse, produit, consigne, plafond) | `phPersistSnapshotIntact`, `phPersistContextHash` |
-| **R3** | Péremption **6 h** (= 1 `Ti`), sur l'**horloge murale**, **réévaluée à chaque tick** | `phPersistFresh` |
+| **R3** | Péremption **en temps de filtration** (v2.34.0) : ≤ **360 min** de circulation **ET** ≤ **72 h** murales, **réévaluée à chaque tick** | `phPersistAge`, `phPersistFresh` |
 | **R4** | Confirmation par la mesure : **5 min continues** d'écart au-dessus du seuil de démarrage | `phPersistConfirmTick` |
-| **R5** | Écriture **conjonctive** : ≤ 1 par **30 min** **ET** > **5 % du plafond** de variation (~2 écritures/jour) | `phPersistShouldWrite` |
+| **R5** | Écriture **conjonctive** (`kDelta`) : ≤ 1 par **30 min** **ET** > **5 % du plafond** de variation — complétée en v2.34.0 par une **échéance** (`kDue`) et une **réécriture** (`kRewrite`) | `phPersistWriteReason` |
 | **R6** | Journalisation de la retenue, de la restauration, de **chaque rejet motivé** | coquille `pump_controller.cpp` |
 | **R7** | Anti-boucle : **3 restaurations** sans écriture normale intercalée ⇒ désarmement. Compteur **dans l'instantané NVS**, incrémenté **avant** confirmation, incrément **saturé** | `phPersistStreakExhausted`, `phPersistNextStreak` |
 
@@ -1027,7 +1028,43 @@ L'[ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) l'**inte
 | Fin de branche `scheduled` | Le mode Programmée a dosé **à l'aveugle** entre-temps |
 | **Purge sèche** (`kDryReset`) | ⚠️ **Défaut corrigé en revue.** Sans cet abandon : candidate en attente → pluie acide → purge sèche → le pH remonte → la candidate se confirme et **recharge l'autorité que la purge venait d'invalider**. Séquence atteignable dans la fenêtre R3 de 6 h |
 
-**Structures NVS** — `PhIntegralSnapshot` (20 o) dans un namespace **dédié** `pool-phint`, clé `snap`. Aucun `configMutex` : la charge utile appartient exclusivement à `loopTask`.
+**Structures NVS** — `PhIntegralSnapshot` (**24 o, schéma 2** depuis la v2.34.0 ; 20 o / schéma 1 avant) dans un namespace **dédié** `pool-phint`, clé `snap`. Aucun `configMutex` : la charge utile appartient exclusivement à `loopTask`.
+
+#### Fraîcheur mesurée en TEMPS DE FILTRATION (feature-093, v2.34.0)
+
+**Le défaut corrigé** : la péremption murale de 6 h (v2.27.0) jetait l'intégrale **chaque matin**. Le bassin ne s'acidifie et ne se mélange que **pendant que l'eau circule** — une nuit sans filtration ne périme rien, mais l'horloge murale, elle, continue d'avancer. Cas réel du 03/09/2026 : valeur stable la veille, aucune écriture déclenchée, rejet « périmé » au matin.
+
+L'instantané passe donc au **schéma 2** (24 o), avec un champ supplémentaire `filtTotalMin` : le **compteur monotone de minutes de filtration** au moment de l'écriture. Un enregistrement de schéma 1 (20 o) est **rejeté** au premier démarrage après mise à jour, jamais réinterprété — l'intégrale repart alors de zéro, comportement attendu et **journalisé**.
+
+| Borne | Constante | Valeur | Rôle |
+|---|---|---|---|
+| Filtration accumulée depuis l'écriture | `kPhIntegralPersistMaxFiltMin` | **360 min** (6 h) | Le **critère nominal** : une constante d'intégration entière à vitesse `normal` |
+| Âge mural | `kPhIntegralPersistMaxWallAgeS` | **72 h** | **Filet** de sécurité (hivernage, compteur à l'arrêt, horloge incohérente) — jamais le critère nominal |
+| Échéance d'écriture forcée | `kPhIntegralPersistDueFiltMin` | **180 min** (3 h) | Garantit qu'un instantané **frais** existe à tout instant, même à valeur stable |
+
+Le compteur vient de `SafetyLimits::filtTotalMin` (clé NVS `filt_total` du namespace `pool-daily`, écrite dans la **même transaction** que les compteurs journaliers). Il est **monotone** : jamais remis à zéro à minuit, contrairement à `dailyFiltrationMinutes`. **Fail-closed** — un compteur courant **inférieur** à celui écrit (NVS `pool-daily` effacée, restauration d'usine) donne le rejet `kFiltCounter` : un âge négatif n'est pas « très frais », il est **incalculable**. Sans heure valide, on ne restaure ni n'écrit (`kEpoch`).
+
+#### Trois motifs d'écriture (`phPersistWriteReason`)
+
+| Motif | Condition | Journalisé |
+|---|---|---|
+| `kRewrite` | Aucun instantané exploitable au boot (absent, schéma 1, empreinte fausse) **ou** instantané rejeté, **et** intégrale courante > 0 → on remplace sans attendre la cadence (C5 `pool-chemistry`). Une seule fois : la coquille baisse le drapeau après écriture | oui |
+| `kDelta` | Critère historique : ≥ 30 min depuis la dernière écriture **et** variation > 5 % du plafond | non (rare mais nominal) |
+| `kDue` | **180 min de filtration** écoulées depuis la dernière écriture, même à valeur inchangée — et seulement s'il y a quelque chose à préserver (valeur > 0) | oui |
+
+Coût : ~3 écritures de plus par jour de filtration, négligeable devant les 100 000 cycles garantis d'un secteur NVS.
+
+#### Garde `candidatePending` — « la NVS a raison, pas la RAM » (revue v2.34.0)
+
+Tant qu'une restauration R4 attend sa confirmation (`_phIntegralConfirm.candidate > 0`), **aucune écriture n'est autorisée**, quel que soit le motif.
+
+**Sans cette garde** : l'intégrale en RAM vaut 0 pendant l'attente, alors que la NVS porte précisément la valeur à préserver. 30 min plus tard (pH proche de la consigne, donc pas de confirmation), `kDelta` constatait `|0 − savedValue| > seuil` et **écrasait l'instantané valide par un zéro** — le redémarrage suivant repartait de zéro, exactement ce que la feature-093 doit empêcher. Si la candidate meurt (péremption R3, changement de contexte), la coquille baisse le drapeau et la cadence normale reprend : un zéro écrit à ce moment-là est **légitime**, l'ancien instantané n'étant plus restaurable.
+
+#### Journal au boot quand rien n'est exploitable
+
+Un `info` (et non un `warning` : c'est l'état nominal d'un appareil neuf ou d'une première mise à jour) — `Intégrale pH : aucun instantané NVS exploitable (absent, ancien schéma ou empreinte invalide) — départ de zéro, réécriture dès la première intégrale positive`. Les **rejets motivés** (R6) restent en `warning`, et le rejet « périmé » cite **les deux âges** (`N min de filtration, N h murales`) : on doit pouvoir dire lequel des deux critères a tranché.
+
+> R1, R2, R4 et R7 sont **inchangés** par la feature-093. Décisions : [ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md) (persistance conditionnelle) et [ADR-0060](../adr/0060-fraicheur-en-temps-de-filtration.md) (fraîcheur mesurée en temps de filtration). Logique pure et tests : [`src/ph_persist_logic.h`](../../src/ph_persist_logic.h), coquille [`src/pump_controller.cpp`](../../src/pump_controller.cpp) (`loadPhIntegralSnapshotDeferred`, `tickPhIntegralPersistence`), constantes [`src/constants.h`](../../src/constants.h).
 
 ### 4. L'anneau de charge acide sur 7 jours
 
@@ -1044,7 +1081,7 @@ L'[ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) l'**inte
 
 | Filtre | Règle | Pourquoi |
 |---|---|---|
-| **Circulation minimale** | `minutes ≥ kPhLoadDayMinFiltrationMin` (**120 min**) | Sous 2 h, le rapport mL/min ne décrit plus la charge du bassin mais des **transitoires** : le délai de purge (`stabilizationDelayMin`) et la pause de mélange amputent une part **fixe** de la journée, et le budget horaire rend une journée courte structurellement bornée par le **quota**, pas par la chimie |
+| **Circulation minimale** | `minutes ≥ kPhLoadDayMinFiltrationMin` (**120 min**) | Sous 2 h, le rapport mL/min ne décrit plus la charge du bassin mais des **transitoires** : la purge des mesures (≥ 10 min, v2.34.0) et la pause de mélange amputent une part **fixe** de la journée, et le budget horaire rend une journée courte structurellement bornée par le **quota**, pas par la chimie |
 | **Fenêtre d'âge** | ≤ 7 jours **calendaires**, vue de la date du jour (`phLoadDayWithinWindow`) | ⚠️ **Défaut corrigé en revue.** L'anneau garde les 7 dernières journées **ARCHIVÉES**, pas les 7 derniers **jours** : un appareil arrêté deux mois retrouvait des journées d'été intactes. 4 journées à 2,86 + 3 journées d'automne à 1,00 ⇒ médiane **2,86**, plafond **3 753 pH·s** contre **2 484** d'équilibre réel = **1,5 × l'équilibre courant**. Conversion Howard Hinnant (`days_from_civil`) : sans elle, « 20260301 − 20260228 » vaudrait **73** |
 | **Vraisemblance physique** | `ml / minutes ≤ 1,10 × débit soutenable` | Un rapport au-dessus du délivrable n'est pas l'observation d'un bassin chargé : c'est la **preuve** qu'il manque des minutes au dénominateur. La journée est **écartée**, jamais rapiécée. ⚠️ **Le seuil est une FONCTION de la configuration** — [ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md) |
 
@@ -1140,12 +1177,14 @@ float phSustainableFlowFromConfig();
 | `kPhIntegralRestoreLoadFraction` | 0,50 | R1 — fraction de l'**équilibre observé** |
 | `kPhEquilibriumLoadMlPerMin` | 2,86 mL/min | **DEMANDE** à l'équilibre (réf. 2026-08) — ⚠️ pas un volume délivré |
 | `kPhIntegralRestoreHistoryWindowDays` / `…MinHistoryDays` | 7 / **3** | Fenêtre de l'anneau / exigence **fail-closed** |
-| `kPhIntegralPersistMaxAgeS` | 21 600 s (**6 h** = 1 `Ti`) | R3 — péremption de l'instantané |
+| `kPhIntegralPersistMaxFiltMin` | **360 min** de filtration (= 1 `Ti` à vitesse `normal`) | R3 — péremption, **critère nominal** (v2.34.0 ; remplace `kPhIntegralPersistMaxAgeS`, 6 h murales) |
+| `kPhIntegralPersistMaxWallAgeS` | 259 200 s (**72 h**) | R3 — filet mural (v2.34.0) |
+| `kPhIntegralPersistDueFiltMin` | **180 min** de filtration | R5 — échéance d'écriture forcée `kDue` (v2.34.0) |
 | `kPhIntegralRestoreConfirmMs` | 300 000 ms (**5 min**) | R4 — tenue de confirmation |
 | `kPhIntegralRestoreArmWindowMs` | 600 000 ms (10 min) | R4 — fenêtre d'armement après boot |
-| `kPhIntegralPersistMinIntervalMs` / `…MinDeltaFrac` | 30 min / 5 % | R5 — cadence **conjonctive** |
+| `kPhIntegralPersistMinIntervalMs` / `…MinDeltaFrac` | 30 min / 5 % | R5 — cadence **conjonctive** du motif `kDelta` |
 | `kPhIntegralRestoreMaxStreak` | 3 | R7 — anti-boucle de démarrage |
-| `kPhIntegralPersistSchema` / `kPhLoadHistorySchema` | 1 / 1 | Versions de schéma NVS |
+| `kPhIntegralPersistSchema` / `kPhLoadHistorySchema` | **2** / 1 | Versions de schéma NVS (l'instantané passe à **2** en v2.34.0 : +`filtTotalMin`, 20 → 24 o) |
 | `kPhLoadDayMinFiltrationMin` | **120 min** | Critère de jour exploitable |
 | `kPhLoadMinuteMaxTickDtMs` | 60 000 ms (**60 s**) | `dt` maximal crédité au **dénominateur** (≠ 10 s de l'intégrale) |
 | `kPhLoadSustainableFallbackMlPerMin` | 2,17 mL/min | **REPLI seulement** (ex-`kPhLoadSustainableMlPerMin`, **renommée**) — jamais un seuil nominal, [ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md) |
@@ -1156,9 +1195,12 @@ float phSustainableFlowFromConfig();
 
 | Message | Niveau | Quand |
 |---|---|---|
-| `Intégrale pH : instantané NVS retenu — N pH·s écrits il y a M min, plafonnés à P pH·s par {la charge observée\|la butée absolue} ; application DIFFÉRÉE jusqu'à confirmation par la mesure (5 min d'écart soutenu)` | `info` | Candidate acceptée au démarrage (R6) |
+| `Intégrale pH : instantané NVS retenu — N pH·s écrits il y a M min de filtration (H h murales), plafonnés à P pH·s par {la charge observée\|la butée absolue} ; application DIFFÉRÉE jusqu'à confirmation par la mesure (5 min d'écart soutenu)` | `info` | Candidate acceptée au démarrage (R6). **v2.34.0** : l'âge est donné en **temps de filtration** (le critère), l'âge mural en complément |
 | `Intégrale pH restaurée : N pH·s (X % du plafond), confirmée par 5 min d'écart soutenu ; plafond P pH·s, charge observée C mL/min sur D jour(s), équilibre E pH·s` | `info` | Confirmation R4 aboutie — **la charge observée et l'origine du plafond sont journalisées** : sans elles, impossible de dire après coup si la restauration a été bornée par la butée ou par la chimie |
-| `Intégrale pH : instantané NVS REJETÉ (motif) — la régulation repart de zéro` | `warning` | Rejet motivé : schéma, anti-boucle, contexte, horodatage, péremption, valeur |
+| `Intégrale pH : instantané NVS REJETÉ (motif) — la régulation repart de zéro` | `warning` | Rejet motivé : schéma, anti-boucle, contexte, horodatage, **compteur de filtration incohérent** (v2.34.0), péremption, valeur. Sur « périmé », le message cite **les deux âges** (`M min de filtration, H h murales`) — on doit pouvoir dire lequel a tranché |
+| `Intégrale pH : aucun instantané NVS exploitable (absent, ancien schéma ou empreinte invalide) — départ de zéro, réécriture dès la première intégrale positive` | `info` | **v2.34.0** : rien de lisible en NVS. État nominal d'un appareil neuf **et** du premier démarrage après la migration schéma 1 → 2 |
+| `Intégrale pH : instantané NVS écrit par échéance (180 min de filtration depuis le précédent) — N pH·s à M min de filtration cumulée` | `info` | **v2.34.0**, motif `kDue` |
+| `Intégrale pH : instantané NVS écrit en remplacement d'un enregistrement rejeté — N pH·s à M min de filtration cumulée` | `info` | **v2.34.0**, motif `kRewrite` (C5). Les écritures par amplitude (`kDelta`) restent **muettes** |
 | `Intégrale pH : instantané NVS non restauré — plafond de restauration nul (D jour(s) d'historique de charge sur 3 requis) ; la régulation repart de zéro` | `info` | **État nominal** d'un appareil neuf — `info`, pas `warning`, sinon les vrais rejets seraient noyés |
 | `Intégrale pH : restauration abandonnée — instantané périmé avant confirmation` | `warning` | R3 pendant l'attente |
 | `Intégrale pH : restauration abandonnée — plafond de restauration retombé à zéro avant confirmation` | `warning` | R1 pendant l'attente. **Cause distincte de la péremption** : les confondre ferait partir le diagnostic sur l'horloge au lieu de la charge observée |
@@ -1441,34 +1483,33 @@ Après chaque injection, le bassin a besoin de temps pour s'homogénéiser avant
 
 > Gate **indépendante** du timer de stabilisation post-calibration (`_stabilizationEndMs`). Les deux sont des `OR` dans `canDose()` : la pompe reste bloquée tant que l'une OU l'autre est active. Écrits/lus uniquement en `loopTask` → pas de mutex (cohérent avec `_stabilizationEndMs`). Pendant la pause, l'intégrale PID est gelée (`freezeIntegral`).
 
-## Stabilisation au démarrage filtration et post-calibration
+## Stabilisation post-calibration et passage de minuit (v2.34.0)
 
 **Stabilisation par pompe** (feature-021) : `_stabilizationEndMs[2]` — un timer indépendant pour pH (index 0) et ORP (index 1). La cinétique chimique différente justifie une fenêtre par sonde.
 
 | Source d'arming | Fonction | Durée |
 |-----------------|----------|-------|
-| Calibration EZO pH réussie (`Cal,mid`, `Cal,low`, `Cal,clear`) | `armStabilizationTimer(0)` | `kStabilizationDurationPhMs = 5 min` |
-| Calibration EZO ORP réussie | `armStabilizationTimer(1)` | `kStabilizationDurationOrpMs = 3 min` |
-| Démarrage filtration en mode `managed` (pause précédente > `stabilizationDelayMin`) | `armStabilizationTimer()` (legacy, sans index) | `mqttCfg.stabilizationDelayMin` × 60 s — applique aux 2 pompes |
-| Boot en mode `powered` | `armStabilizationTimer()` (legacy) | idem |
-| Passage de minuit (mitigation double quota) | `armStabilizationTimer()` (legacy) | idem |
+| Calibration EZO pH réussie (`Cal,mid`, `Cal,low`, `Cal,clear`) | `armStabilizationTimer(0)` | `kStabilizationDurationPhMs` = **5 min** |
+| Calibration EZO ORP réussie | `armStabilizationTimer(1)` | `kStabilizationDurationOrpMs` = **3 min** |
+| Passage de minuit — mitigation du risque de double quota (`tickDailyRollover`, chemin horloge valide **et** chemin de repli `millis()` 24 h) | `armStabilizationTimer()` (les 2 pompes) | 5 min pH / 3 min ORP |
 
-**Surcharge legacy `armStabilizationTimer()` (sans paramètre)** : conservée pour les sites « globaux » (filtration, boot continu, rollover minuit). Arme **les 2 pompes simultanément** avec `mqttCfg.stabilizationDelayMin × 60_000` ms.
+> ⚠️ **Changement v2.34.0 (feature-091)** — deux sites d'arming ont été **RETIRÉS** : le **démarrage de la filtration** en mode `managed` ([`filtration.cpp`](../../src/filtration.cpp)) et le **boot** en mode `powered` ([`main.cpp`](../../src/main.cpp)). Le sas de reprise d'eau est désormais porté **entièrement** par la purge adaptative de [`measure_validity`](measure-validity.md) (plancher 10 min, fin sur stabilité des mesures, plafond 90 min — [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md)) : deux temporisations concurrentes sur le même événement n'avaient plus de sens, et celle-ci était aveugle à l'état réel de l'eau.
+>
+> Corollaire : la surcharge `armStabilizationTimer()` (sans index) n'utilise **plus** `mqttCfg.stabilizationDelayMin` — retiré comme réglage utilisateur ([API.md](../API.md#get-get-config--write)) — mais les **mêmes constantes post-calibration** que la version indexée. Son seul appelant restant est le passage de minuit.
 
-- **Démarrage filtration en mode `managed`** : appel **conditionnel** — uniquement si `pauseMs > stabilizationMs`. Empêche le réarmement après un glitch très court (sauvegarde config, redémarrage relais involontaire). Au tout premier démarrage (`lastStoppedAtMs == 0`), la pause est considérée infinie → timer armé.
-- **Arrêt filtration en mode `managed`** : `clearStabilizationTimer()` (efface les 2 pompes).
-- **Modes `powered` / `external`** : le relais n'est pas piloté (feature-056), donc aucun appel automatique au démarrage/arrêt filtration. Le timer peut être armé manuellement (boot `powered`) ou ignoré selon le besoin.
-
-`stabilizationDelayMin` est **configurable via `/save-config`** (plage 0-60 min, défaut 5). Valeur 0 = stabilisation legacy désactivée — la stabilisation post-calibration EZO reste, elle, toujours active (5 min pH / 3 min ORP).
+- **Arrêt filtration en mode `managed`** : `clearStabilizationTimer()` (efface les 2 pompes) — **inchangé**.
+- Le champ NVS `stab_delay` et le champ `mqttCfg.stabilizationDelayMin` subsistent mais sont **inertes** : plus aucun chemin de dosage ne les lit (précédent `screen_enabled` de la feature-065).
+- Les champs WS `ph_stab_remaining_s` / `orp_stab_remaining_s` sont **conservés à l'identique** : ils décrivent ce sas post-calibration, à ne pas confondre avec `measures_stab_elapsed_s` (purge de la chambre de mesure).
 
 ## Cycle de régulation : chronologie stabilisation + pause mélange
 
 Les deux temporisations ci-dessus jouent à des moments **différents** et sont deux gates **indépendantes** (`OR`) de `canDose()`. Vue d'ensemble pour la régulation `automatic` (exemple ORP, mode d'installation `managed`) :
 
 ```
-T0            Filtration démarre        → stabilisation armée (stabilizationDelayMin, défaut 5 min)   [dosage bloqué]
-T0 + 5 min    Stabilisation terminée    → si |erreur| > seuil de démarrage (orpStartThreshold, 15 mV),
-                                           une injection démarre
+T0            Filtration démarre        → purge des mesures (measure_validity : plancher 10 min,
+                                           fin sur stabilité, plafond 90 min)                        [dosage bloqué]
+T0 + ~10 min  Porte de validité ouverte → si |erreur| > seuil de démarrage (orpStartThreshold, 15 mV),
+              (ou plus tard)               une injection démarre
   injection   dure ≥ minInjectionTimeMs (30 s) et continue tant que |erreur| > seuil d'arrêt (2 mV) ;
               s'arrête quand la cible est ~atteinte (ou budget horaire épuisé)
   à l'arrêt   → pause mélange armée (kOrpMixingDelayMs = 20 min ; pH = 15 min)                        [dosage bloqué]
@@ -1477,7 +1518,8 @@ T + 20 min    Pause mélange terminée    → nouvelle mesure → réinjection s
 ```
 
 Points clés :
-- **Stabilisation** = sas de (re)démarrage, **ponctuel** : rejoué uniquement sur un événement d'armement (démarrage filtration `managed`, boot `powered`, minuit, calibration). Ne se répète pas tant que la filtration tourne.
+- **Purge des mesures** (v2.34.0) = sas de reprise d'eau, armé à **chaque** front montant de circulation. Sa durée n'est plus connue à l'avance : elle dépend de l'extinction du transitoire de rinçage. Voir [measure-validity.md](measure-validity.md).
+- **Stabilisation** = sas **ponctuel** des pompes, rejoué uniquement sur un événement d'armement — depuis la v2.34.0 : **calibration EZO** ou **passage de minuit** seulement. Ne se répète pas tant que la filtration tourne.
 - **Pause mélange** = sas **récurrent**, armé à l'arrêt de **chaque** injection ; il rythme la régulation.
 - **Cadence résultante** : la régulation ORP est plafonnée à **~1 injection / 20 min** (pH : ~1 / 15 min). C'est délibéré — la réponse de la sonde ORP et l'homogénéisation du chlore sont lentes ; réinjecter avant serait un surdosage.
 - Les deux peuvent coïncider (ex. filtration qui redémarre juste après une dose) : `canDose()` attend que **les deux** soient levées.
@@ -1711,11 +1753,12 @@ Plus jamais de durée déduite du modèle linéaire (`calcInjectFlow` supprimé)
 | Intégrale pH — rapports cycliques du tick d'entretien (**estimations analytiques**, servent au seul rapport 0,29/0,25) | `kPhIntegralDutyV2260` / `kPhIntegralDutyF084` | 0,25 / 0,29 | [`constants.h`](../../src/constants.h) |
 | Persistance intégrale — plafond de restauration (v2.27.0, [ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md) — **constantes de SÉCURITÉ CHIMIQUE**) | `kPhIntegralRestoreMaxFraction` / `…RestoreLoadFraction` | 0,30 (butée absolue) / 0,50 (de l'équilibre **observé**) | [`constants.h`](../../src/constants.h) |
 | Persistance intégrale — historique de charge (fenêtre / exigence fail-closed) | `kPhIntegralRestoreHistoryWindowDays` / `…MinHistoryDays` | 7 j / **3 j** | [`constants.h`](../../src/constants.h) |
-| Persistance intégrale — péremption de l'instantané (R3, = 1 `Ti`) | `kPhIntegralPersistMaxAgeS` | 21 600 s (6 h) | [`constants.h`](../../src/constants.h) |
+| Persistance intégrale — péremption de l'instantané (R3, v2.34.0 — [ADR-0060](../adr/0060-fraicheur-en-temps-de-filtration.md)) | `kPhIntegralPersistMaxFiltMin` / `…PersistMaxWallAgeS` | **360 min de filtration** (critère) **ET** 72 h murales (filet) | [`constants.h`](../../src/constants.h) |
 | Persistance intégrale — confirmation par la mesure (R4) / fenêtre d'armement | `kPhIntegralRestoreConfirmMs` / `…RestoreArmWindowMs` | 5 min de branche / 10 min après boot | [`constants.h`](../../src/constants.h) |
-| Persistance intégrale — cadence d'écriture **conjonctive** (R5) | `kPhIntegralPersistMinIntervalMs` / `…MinDeltaFrac` | 30 min **ET** 5 % du plafond | [`constants.h`](../../src/constants.h) |
+| Persistance intégrale — cadence d'écriture **conjonctive** (R5, motif `kDelta`) | `kPhIntegralPersistMinIntervalMs` / `…MinDeltaFrac` | 30 min **ET** 5 % du plafond | [`constants.h`](../../src/constants.h) |
+| Persistance intégrale — échéance d'écriture forcée (R5, motif `kDue`, v2.34.0) | `kPhIntegralPersistDueFiltMin` | 180 min de filtration | [`constants.h`](../../src/constants.h) |
 | Persistance intégrale — anti-boucle de démarrage (R7) | `kPhIntegralRestoreMaxStreak` | 3 restaurations | [`constants.h`](../../src/constants.h) |
-| Persistance intégrale — schémas NVS (toute retouche de structure les incrémente) | `kPhIntegralPersistSchema` / `kPhLoadHistorySchema` | 1 / 1 | [`constants.h`](../../src/constants.h) |
+| Persistance intégrale — schémas NVS (toute retouche de structure les incrémente) | `kPhIntegralPersistSchema` / `kPhLoadHistorySchema` | **2** / 1 | [`constants.h`](../../src/constants.h) |
 | Charge observée — circulation minimale d'un jour exploitable | `kPhLoadDayMinFiltrationMin` | 120 min (2 h) | [`constants.h`](../../src/constants.h) |
 | Charge observée — `dt` maximal crédité au **dénominateur** (≠ 10 s de l'intégrale : sens du fail-closed inversé) | `kPhLoadMinuteMaxTickDtMs` | 60 000 ms (60 s) | [`constants.h`](../../src/constants.h) |
 | Charge observée — filet de vraisemblance : **REPLI** et tolérance ([ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md) — le seuil nominal est une **fonction** de la limite horaire et du débit calibré) | `kPhLoadSustainableFallbackMlPerMin` (ex-`kPhLoadSustainableMlPerMin`) / `kPhLoadDayMaxRateFactor` | 2,17 mL/min (repli) / 1,10 | [`constants.h`](../../src/constants.h) |
@@ -1862,25 +1905,26 @@ La route `POST /boost/start` expose en parallèle ces deux états dans sa répon
 
 > ℹ️ Le code vit dans le sous-système **config** (`restoreRegulationDefaults()`, [`config.cpp`](../../src/config.cpp) ; déclaration [`config.h`](../../src/config.h)) — documenté ici parce que son objet est **exclusivement** le tuning de la régulation pH/ORP et que le périmètre a été arbitré par `pool-chemistry`.
 
-Déclenchée par [`POST /reset-regulation-defaults`](../API.md#post-reset-regulation-defaults--critical) (bouton de la [page Paramètres](../features/page-settings.md#bouton--restaurer-les-valeurs-par-défaut--feature-088-v2310)). Remet **8 champs de tuning** de `MqttConfig` aux valeurs d'usine, puis persiste (`saveMqttConfig()`). **v2.32.0 (feature-090)** : les valeurs d'usine sont désormais **par taille de bassin** — la restauration applique la colonne de la taille **courante** (`mqttCfg.poolSize`, la taille elle-même n'est pas modifiée).
+Déclenchée par [`POST /reset-regulation-defaults`](../API.md#post-reset-regulation-defaults--critical) (bouton de la [page Paramètres](../features/page-settings.md#bouton--restaurer-les-valeurs-par-défaut--feature-088-v2310)). Remet **7 champs de tuning** de `MqttConfig` aux valeurs d'usine (8 avant la v2.34.0 — `stabilizationDelayMin` retiré du périmètre par la feature-091), puis persiste (`saveMqttConfig()`). **v2.32.0 (feature-090)** : les valeurs d'usine sont désormais **par taille de bassin** — la restauration applique la colonne de la taille **courante** (`mqttCfg.poolSize`, la taille elle-même n'est pas modifiée).
 
 ### `regulation_defaults.h` — source UNIQUE des valeurs d'usine, PAR TAILLE (feature-090, v2.32.0)
 
 [`src/regulation_defaults.h`](../../src/regulation_defaults.h) est le **seul** endroit où les valeurs d'usine de tuning existent — depuis la v2.32.0 sous forme de **table à trois colonnes** `kRegulationDefaultsBySize[3]`, indexée par `enum class PoolSize : uint8_t { Small = 0, Medium = 1, Large = 2 }` (sérialisation stable `"small"`/`"medium"`/`"large"`, `poolSizeTo/FromString()` — valeur inconnue ou NVS corrompue ⇒ **Medium**, fail-safe de migration) :
 
+> **v2.34.0 (feature-091)** : la table ne porte plus que **7 réglages** — la ligne `stabilizationDelayMin` a disparu de `struct RegulationDefaults` (la purge des mesures n'est plus réglable). L'alias `kDefaultStabilizationDelayMin` (= 5) subsiste **uniquement** comme défaut de lecture NVS du champ inerte.
+
 | Réglage | Small (< 20 m³) | **Medium (20-60 m³)** | Large (> 60 m³) |
 |---|---|---|---|
 | `phInjectionLimitMin` / `orpInjectionLimitMin` | 5 / 5 min/h | **10 / 10 min/h** | 15 / 15 min/h |
 | `regulationSpeed` | slow | **normal** | fast |
-| `stabilizationDelayMin` | 5 min | **5 min** | 10 min |
 | `phTarget` / `orpTarget` | 7,3 / 600 mV | 7,3 / 600 mV | 7,3 / 600 mV |
 | `ph/orpDailyTargetMl` | 0 | 0 | 0 |
 
 **Statut** : Medium = **mesures** du bassin de référence (v2.30.0, visa pool-chemistry du 31/08/2026) ; Small et Large = **EXTRAPOLATIONS** étiquetées (excursion de mélange aveugle ~constante à travers les tailles, voir [ADR-0057](../adr/0057-taille-bassin-preselection-jamais-entree-de-calcul.md)). Les `kDefault*` historiques (088) subsistent comme **alias de la colonne Medium** — les initialiseurs de `MqttConfig` les référencent, garantie qu'une mise à jour seule ne modifie rien. Consommateurs de la table : initialiseurs de `MqttConfig` ([`config.h`](../../src/config.h)), `restoreRegulationDefaults()`, le bloc `pool_size` de `/save-config` et la sérialisation `fillRegulationDefaults(o, size)` ([`web_routes_config.cpp`](../../src/web_routes_config.cpp) — objets `regulation_defaults` [colonne courante] et `regulation_defaults_by_size` [les trois] de `/get-config`, réponse de la route). Au prochain recalibrage, **une seule colonne change et rien ne peut diverger**.
 
 - **Header PUR** (n'inclut que `constants.h` et `<string.h>`) : compilable en `env:native` ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)).
-- **Verrous compile-time** (conditions du visa, généralisés par la 090) : `static_assert` de **bornes chimiques par colonne** (`regulationDefaultsColumnValid()` : consignes ∈ fenêtres projet, limites horaires ∈ [1 ; 60], délai ∈ [0 ; 60], volumes ≥ 0, vitesse = libellé connu), de **monotonie** (limites d'injection et rang de vitesse **croissants** avec la taille) et **VERROU DE MIGRATION** : la colonne Medium est comparée aux **littéraux v2.30.0 en dur** (10/10, normal, 5, 7,3, 600, 0/0) — la retoucher exige de retoucher aussi l'assert, en connaissance de cause (nouveau visa pool-chemistry requis). Un recalibrage hors fenêtre **casse la compilation**.
-- **`applyRegulationDefaults<Cfg>(c, size)`** — template pur qui **EST la liste des champs copiés** : `phTarget`, `orpTarget`, `ph/orpInjectionLimitMinutes`, `stabilizationDelayMin`, `ph/orpDailyTargetMl`, `regulationSpeed`, depuis la colonne de `size`. **`poolSize` n'est PAS copié** (la taille est l'entrée de la sélection, pas un réglage restauré). Template plutôt que fonction sur `MqttConfig` (qui dépend d'`Arduino.h`) : les tests natifs ([`test/test_native_regulation_defaults/`](../../test/test_native_regulation_defaults/test_regulation_defaults.cpp)) l'instancient sur un **double portant tous les champs** de `MqttConfig` et prouvent **par mutation** que rien d'autre ne bouge.
+- **Verrous compile-time** (conditions du visa, généralisés par la 090) : `static_assert` de **bornes chimiques par colonne** (`regulationDefaultsColumnValid()` : consignes ∈ fenêtres projet, limites horaires ∈ [1 ; 60], volumes ≥ 0, vitesse = libellé connu), de **monotonie** (limites d'injection et rang de vitesse **croissants** avec la taille) et **VERROU DE MIGRATION** : la colonne Medium est comparée aux **littéraux v2.30.0 en dur** (10/10, normal, 7,3, 600, 0/0) — la retoucher exige de retoucher aussi l'assert, en connaissance de cause (nouveau visa pool-chemistry requis). Un recalibrage hors fenêtre **casse la compilation**.
+- **`applyRegulationDefaults<Cfg>(c, size)`** — template pur qui **EST la liste des champs copiés** : `phTarget`, `orpTarget`, `ph/orpInjectionLimitMinutes`, `ph/orpDailyTargetMl`, `regulationSpeed`, depuis la colonne de `size` (**7 champs** depuis la v2.34.0). **`poolSize` n'est PAS copié** (la taille est l'entrée de la sélection, pas un réglage restauré). Template plutôt que fonction sur `MqttConfig` (qui dépend d'`Arduino.h`) : les tests natifs ([`test/test_native_regulation_defaults/`](../../test/test_native_regulation_defaults/test_regulation_defaults.cpp)) l'instancient sur un **double portant tous les champs** de `MqttConfig` et prouvent **par mutation** que rien d'autre ne bouge.
 - **`regulationDefaultsRaiseDosing(target, curOrpTarget, curPhLimit, curOrpLimit)`** — prédicat pur du niveau de journal, **paramétré par la colonne cible** depuis la 090 : l'application de `target` **augmente-t-elle la capacité de dosage** par rapport à l'état courant ? Oui si la consigne ORP **monte** ou si une limite horaire d'injection **monte** (restauration sur un réglage abaissé à la main, OU passage à une taille **supérieure** : 5 → 10 → 15 min/h) → journal en **`warning`** avec mention `(dosage AUGMENTÉ)`, sinon `info`. Partagé entre la restauration 088 et le changement de taille 090.
 
 ### `restoreRegulationDefaults()` — transport (mutex, NVS, journal)
@@ -1901,7 +1945,7 @@ bool restoreRegulationDefaults();  // false = timeout mutex, RIEN modifié
 
 | Composant | Interaction |
 |-----------|-------------|
-| [`filtration`](filtration.md) | Démarrage filtration → `armStabilizationTimer()` ; arrêt filtration → `clearStabilizationTimer()`. **Boost** : `boostForce` prioritaire dans `decideFiltrationRun` force la marche tant que `isBoostActive()` (feature-053) |
+| [`filtration`](filtration.md) | Arrêt filtration → `clearStabilizationTimer()` (l'arming au **démarrage** est retiré en v2.34.0 : la purge adaptative de [`measure_validity`](measure-validity.md) le remplace). **Boost** : `boostForce` prioritaire dans `decideFiltrationRun` force la marche tant que `isBoostActive()` (feature-053) |
 | [`sensors`](sensors.md) | Lecture **filtrée** `getPhFiltered()` / `getOrpFiltered()` pour l'erreur PID (+ `isPhFilterReady`/`isPhFilterUnstable` dans `canDose`). Brut `getPh()`/`getOrp()` pour logs uniquement (feature-025) |
 | [`mqtt_manager`](mqtt-manager.md) | Publication `ph_dosing`, `orp_dosing`, `ph_limit`, `orp_limit`, `ph/orp_mixing_delay_active`, `boost` (switch HA « Boost », feature-053) ; commande `{base}/boost/set` |
 | [`ota_manager`](ota-manager.md) | `setOtaInProgress(true)` arrête toutes les pompes |
@@ -1914,7 +1958,8 @@ Voir [`pump_controller.cpp`](../../src/pump_controller.cpp) `savePersistentDaily
 - `phLimitReached`, `orpLimitReached` (bool)
 - `currentDayDate` (YYYYMMDD, char[9])
 - `phDosingCycles`, `orpDosingCycles` (uint16)
-- **v2.27.0** — `filt_min` (uint32) : **minutes de circulation effectives** de la journée courante, **dénominateur** de la charge acide observée. Persisté dans la **même** transaction que les volumes, pour que le rapport mL/min survive à une coupure.
+- **v2.27.0** — `filt_min` (uint32) : **minutes de circulation effectives** de la journée courante, **dénominateur** de la charge acide observée. Persisté dans la **même** transaction que les volumes, pour que le rapport mL/min survive à une coupure. **Remis à zéro à chaque minuit.**
+- **v2.34.0** — `filt_total` (uint32, `SafetyLimits::filtTotalMin`) : compteur **MONOTONE** de minutes de circulation cumulées, **jamais** remis à zéro au changement de date. C'est la base de temps de la fraîcheur de l'instantané d'intégrale pH ([ADR-0060](../adr/0060-fraicheur-en-temps-de-filtration.md)) — écrit dans la même transaction que les compteurs journaliers. Un compteur qui **recule** (NVS effacée, restauration d'usine) fait rejeter l'instantané, jamais réinterpréter son âge.
 
 Flush différé : `_dailyCountersDirty` armé à chaque injection, écrit en NVS au max toutes les 60 s pour réduire la charge d'écriture. **v2.27.0** : le drapeau est désormais **aussi** posé à chaque minute de circulation, le flush périodique est **remonté en amont de toutes les sorties anticipées** d'`update()`, et les compteurs sont explicitement posés à l'entrée en maintenance ainsi qu'avant les redémarrages OTA / mode AP / web / MQTT. Coût assumé : **~420-600 transactions/jour contre ~70-100** — voir [Usure NVS](#usure-nvs--un-facteur-5-à-6-assumé).
 
@@ -1922,7 +1967,7 @@ Flush différé : `_dailyCountersDirty` armé à chaque injection, écrit en NVS
 
 | Structure | Emplacement | Taille | Cadence d'écriture |
 |---|---|---:|---|
-| `PhIntegralSnapshot` (intégrale pH + schéma + contexte + horodatage + compteur anti-boucle + empreinte) | namespace **dédié** `pool-phint`, clé `snap` | 20 o | ≤ 1 / 30 min **ET** > 5 % du plafond (R5) — ~2/jour |
+| `PhIntegralSnapshot` (intégrale pH + schéma + contexte + horodatage + **compteur de filtration cumulé** + compteur anti-boucle + empreinte) | namespace **dédié** `pool-phint`, clé `snap` | **24 o** (schéma 2, v2.34.0 ; 20 o en schéma 1) | `kDelta` : ≤ 1 / 30 min **ET** > 5 % du plafond (~2/jour) — **plus** `kDue` toutes les 180 min de filtration et `kRewrite` (une fois) ⇒ ~3 écritures/jour de plus |
 | `PhLoadHistory` (anneau de 7 journées `{date, mL, minutes}` + schéma + empreinte) | namespace existant `pool-daily`, clé `ph_load7` | 64 o | **1 / jour**, au basculement de date |
 
 Aucune de ces deux fonctions ne prend `configMutex` : la charge utile appartient exclusivement à `loopTask` — le mutex ne protégerait rien tout en introduisant une prise de verrou dans `update()`.

@@ -1966,6 +1966,87 @@ void test_V2251_sentinelle_garde_250_sans_collision(void) {
       "collision sentinelle / DoseRefusal : relever la sentinelle");
 }
 
+// =============================================================================
+// feature-091 C6 (pool-chemistry, v2.34.0) — porte fermée ⇒ ready() FAUX
+// =============================================================================
+// Ce que ce test prouve EXACTEMENT : après une RE-FERMETURE de porte (eau
+// présente, mesures déclarées non représentatives — cas de la re-purge C1),
+// ready() rend faux AU MÊME INSTANT, alors que tous les autres prédicats de
+// ready() sont satisfaits (fenêtre pleine, dernière mesure acceptée il y a 5 s
+// ≪ maxAgeMs 20 s, détecteur figé inactif). Avant C6, ready() restait vrai
+// pendant jusqu'à 20 s (jusqu'à l'expiration de l'âge) avec la dernière valeur
+// filtrée : P, I, feedforward et gardes brutes consommaient une mesure que le
+// système venait de déclarer non représentative.
+//
+// Ce qu'il ne prouve PAS : filtered() n'est pas mis à NaN à la fermeture (il
+// garde la dernière EMA — l'observabilité UI en dépend) ; la garantie « aucune
+// valeur filtrée consommée » passe par ready(), que tous les consommateurs de
+// régulation interrogent d'abord (evaluateDose → FilterNotReady / GateClosed).
+void test_C6_porte_fermee_ready_faux_immediatement_aucune_valeur_filtree(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  openGate(f, t);
+  for (int i = 0; i < 13; ++i) { TEST_ASSERT_TRUE(f.addSample(6.80f, t)); t += kDt; }
+  TEST_ASSERT_TRUE(f.ready(t));
+  TEST_ASSERT_FALSE(f.warmingUp());
+  TEST_ASSERT_FALSE(f.stale(t));
+  TEST_ASSERT_TRUE(f.ageMs(t) <= 20000u);
+
+  // Re-fermeture : eau PRÉSENTE, mesures non représentatives (re-purge C1).
+  f.setContext(true, false, t);
+  TEST_ASSERT_TRUE(f.gateClosed());
+  // Tous les autres prédicats sont encore vrais…
+  TEST_ASSERT_FALSE(f.warmingUp());
+  TEST_ASSERT_FALSE(f.stale(t));
+  TEST_ASSERT_TRUE(f.ageMs(t) <= 20000u);
+  // …et pourtant : non prêt, IMMÉDIATEMENT, sans attendre maxAgeMs.
+  TEST_ASSERT_FALSE_MESSAGE(f.ready(t), "porte fermee => ready() doit etre faux sans delai");
+  TEST_ASSERT_FALSE(f.ready(t + 1));
+
+  // Porte fermée : plus aucune lecture n'entre (l'eau de re-purge ne pollue pas
+  // la fenêtre) ; ready() reste faux pendant toute la fermeture.
+  for (int i = 0; i < 12; ++i) {
+    t += kDt;
+    f.setContext(true, false, t);
+    TEST_ASSERT_FALSE(f.addSample(5.60f, t));
+    TEST_ASSERT_FALSE(f.ready(t));
+  }
+  // La dernière valeur filtrée reste celle d'avant la fermeture (pas polluée par
+  // 5,60) : c'est la seule chose qu'un lecteur qui ignorerait ready() verrait.
+  TEST_ASSERT_FLOAT_WITHIN(0.01f, 6.80f, f.filtered());
+
+  // Ré-ouverture (mesures redevenues représentatives, PAS de front d'eau donc pas
+  // de plancher de gel) : ré-amorçage → fenêtre vide → ready() faux jusqu'à 13
+  // NOUVELLES lectures, puis vrai.
+  t += kDt;
+  f.setContext(true, true, t);
+  TEST_ASSERT_FALSE(f.gateClosed());
+  TEST_ASSERT_TRUE(f.rearmedSinceLastPoll());
+  TEST_ASSERT_TRUE(f.warmingUp());
+  TEST_ASSERT_FALSE(f.ready(t));
+  for (int i = 0; i < 12; ++i) {
+    TEST_ASSERT_TRUE(f.addSample(6.85f, t));
+    t += kDt;
+    TEST_ASSERT_FALSE(f.ready(t));
+  }
+  TEST_ASSERT_TRUE(f.addSample(6.85f, t));
+  TEST_ASSERT_TRUE(f.ready(t));
+}
+
+// Même garantie pour la fermeture par ABSENCE d'eau (filtration arrêtée) :
+// ready() faux à l'instant même, sans attendre la péremption.
+void test_C6_refermeture_par_eau_absente_meme_effet(void) {
+  SensorFilter f(phCfgRearm());
+  uint32_t t = 0;
+  openGate(f, t);
+  for (int i = 0; i < 13; ++i) { f.addSample(6.80f, t); t += kDt; }
+  TEST_ASSERT_TRUE(f.ready(t));
+  f.setContext(false, true, t);
+  TEST_ASSERT_TRUE(f.gateClosed());
+  TEST_ASSERT_FALSE(f.stale(t));
+  TEST_ASSERT_FALSE(f.ready(t));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   // Verrou constantes.
@@ -2066,5 +2147,8 @@ int main(int, char **) {
   RUN_TEST(test_V2251_sonde_figee_prime_sur_fenetre_pleine_et_fraiche);
   RUN_TEST(test_V2251_figee_puis_rearm_reste_frozen_pas_warmup);
   RUN_TEST(test_V2251_sentinelle_garde_250_sans_collision);
+  // feature-091 C6 (v2.34.0) — porte fermée ⇒ ready() faux IMMÉDIATEMENT.
+  RUN_TEST(test_C6_porte_fermee_ready_faux_immediatement_aucune_valeur_filtree);
+  RUN_TEST(test_C6_refermeture_par_eau_absente_meme_effet);
   return UNITY_END();
 }
