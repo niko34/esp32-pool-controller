@@ -44,6 +44,45 @@ bool oomGuardReserveArmed();
 size_t oomGuardReserveArmedBytes();
 
 /**
+ * @brief true si la réserve d'urgence armée réside bien en RAM INTERNE.
+ *
+ * Condition C1 du gate pool-chemistry de bug-080 B-1 : depuis la bascule PSRAM
+ * (`heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes)`), l'emplacement
+ * de la réserve n'est plus une évidence mais un INVARIANT À OBSERVER — libérer
+ * 12 Ko de PSRAM pendant une famine de RAM interne ne sauverait rien, et le
+ * parachute serait mort sans que rien ne le dise. La réponse est LUE
+ * (`esp_ptr_internal()` sur le pointeur publié), jamais supposée.
+ *
+ * @return false si aucune réserve n'est armée, ou si elle a atterri en PSRAM
+ *         (ANOMALIE : les trois sites d'allocation passent par
+ *         MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT explicites).
+ *
+ * Lecture seule : ni allocation, ni log, ni parcours de tas — sûr depuis un
+ * handler AsyncWebServer (`/get-system-info`) comme depuis la loop.
+ */
+bool oomGuardReserveIsInternalRam();
+
+/**
+ * @brief Consomme (drain one-shot) le drapeau « aucune réserve armable ».
+ *
+ * bug-080 B-1, revue priorité 1. `oomGuardLoopTick()` LÈVE ce drapeau quand
+ * aucun palier n'a pu être armé depuis `kOomNoReserveCriticalDelayMs`, et
+ * journalise lui-même en `critical()`. Il ne publie PAS l'alerte MQTT : cela
+ * allouerait (JsonDocument + String) au moment précis où le tas vient de
+ * refuser 1 Ko trente fois de suite, écrirait le message une SECONDE fois dans
+ * un journal de 8 Ko dont la rétention est de 25-35 min, et ferait dépendre le
+ * filet de sécurité de plus bas niveau du sous-système applicatif le plus haut.
+ *
+ * `mqtt_manager` appelle donc ceci depuis SA tâche, qui alloue déjà et connaît
+ * son état de connexion. Alerte perdue si MQTT est absent : le `critical()` du
+ * journal reste la source de vérité.
+ *
+ * @return true une seule fois par épisode ; le compteur repart dès qu'une
+ *         réserve est de nouveau armée.
+ */
+bool oomGuardConsumeNoReserveAlert();
+
+/**
  * @brief true si le std::set_new_handler du parachute est actuellement inscrit.
  *
  * Miroir atomique (v2.20.2, bloc A) : passe à false au moment exact où

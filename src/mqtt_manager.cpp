@@ -10,6 +10,7 @@
 #include "ws_manager.h"  // feature bug-sync-ws-config : notifier l'UI d'un changement config via MQTT
 #include "schedule_logic.h"  // feature-051 : validation HH:MM (timeStringToMinutes)
 #include "mqtt_topics_logic.h"  // bug-race-refreshtopics-uaf : normalisation pure du préfixe
+#include "oom_guard.h"  // bug-080 B-1 : drain du drapeau « parachute sans réserve »
 #include "ph_guard_logic.h"  // v2.25.0 : phModeChangeNeedsAck (gate fail-closed du mode pH)
 #include <ArduinoJson.h>
 #include <esp_task_wdt.h>
@@ -287,6 +288,19 @@ void MqttManager::taskLoop() {
     esp_task_wdt_reset();
     // Single source of truth pour l'UI : connectedAtomic suit l'état canonique de la lib à chaque tour.
     connectedAtomic.store(mqtt.connected(), std::memory_order_relaxed);
+
+    // 0) bug-080 B-1 (revue, priorité 1) : drain du drapeau « parachute OOM sans
+    //    réserve ». oom_guard LÈVE le drapeau et journalise lui-même en critical ;
+    //    la PUBLICATION se fait ici, dans NOTRE tâche, parce que publishAlert
+    //    alloue et que oom_guard est une feuille qui ne doit rien allouer en
+    //    famine (il est armé avant tout le reste au setup). Le drain est one-shot :
+    //    si MQTT est désactivé ou déconnecté, l'alerte est simplement perdue —
+    //    le critical du journal reste la source de vérité.
+    if (oomGuardConsumeNoReserveAlert()) {
+      publishAlert("oom_reserve_absent",
+                   "Parachute OOM sans réserve depuis plusieurs minutes — plus aucun "
+                   "filet anti-bad_alloc ; voir le journal pour les valeurs de tas");
+    }
 
     // 1) Reconnect/connect géré ici (pas depuis loopTask)
     if (reconnectRequested) {

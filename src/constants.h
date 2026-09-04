@@ -391,6 +391,52 @@ constexpr unsigned long kHeapIntegrityCheckIntervalMs = 300000; // 5 min - caden
 constexpr uint32_t kHeapIntegrityMaxDurationUs = 20000;         // 20 ms - au-delà : contrôle désactivé définitivement
 constexpr uint32_t kHeapIntegrityWarnDurationUs = 5000;         // 5 ms - au-delà : WARN (contrôle conservé)
 
+// ---------------------------------------------------------------------------
+// Seuil de bascule PSRAM des allocations ordinaires (bug-080, lot B-1, v2.35.0)
+// ---------------------------------------------------------------------------
+// FRAGMENTEUR IDENTIFIÉ le 04/09/2026 : la couche FS d'Arduino attache un tampon
+// stdio de EXACTEMENT 4096 octets à CHAQUE fichier LittleFS ouvert
+// (`libraries/FS/src/vfs_api.cpp:22` DEFAULT_FILE_BUFFER_SIZE, posé par le
+// `setvbuf(_f, NULL, _IOFBF, ...)` de la ligne 250). Aggravant : `VFSImpl::exists()`
+// OUVRE réellement le fichier, et AsyncStaticWebHandler::_searchFile enchaîne
+// `exists()` PUIS `open()` → 2 × 4096 o par fichier statique servi. Un chargement
+// d'interface (≈ 8 requêtes, jusqu'à 6 en parallèle) réclame ainsi jusqu'à ~49 Ko
+// de RAM interne 8 bits EN RAFALE, sur un `free8` mesuré à 42-59 Ko.
+//
+// POURQUOI CE TAMPON RESTAIT INTERNE ALORS QUE 4 Mo DE PSRAM DORMENT À CÔTÉ :
+// le sdkconfig des libs précompilées (IDF 5.5) porte CONFIG_SPIRAM_USE_MALLOC=y
+// et CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096, et le test de
+// `heap_caps_malloc_default` est « taille <= limite ⇒ RAM INTERNE » (désassemblage
+// de libheap.a, `.iram1.2`, `bgeu a8, a2` — inclusif). Avec une limite à 4096, un
+// malloc de 4096 tombe donc du côté INTERNE : il s'en fallait d'UN OCTET.
+//
+// D'où le correctif : `heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes)`
+// au setup (main.cpp, juste après initOomGuard). 4095 est CHIRURGICAL — la seule
+// classe d'allocations qui change de camp est « exactement 4096 o » ; tout ce qui
+// est strictement plus grand partait DÉJÀ en PSRAM d'abord, et tout ce qui est à
+// 4095 o ou moins reste en RAM interne comme avant. On ne déplace pas une
+// politique d'allocation, on ferme une inégalité non stricte.
+// Rappel : la bascule est une PRÉFÉRENCE, pas une contrainte — si la PSRAM refuse,
+// l'allocateur retombe sur la RAM interne (aucun échec supplémentaire créé).
+constexpr size_t kVfsStdioBufferBytes = 4096;        // Miroir de DEFAULT_FILE_BUFFER_SIZE (vfs_api.cpp:22)
+constexpr size_t kPsramExtmemThresholdBytes = 4095;  // « <= seuil ⇒ interne » : 4096 o bascule en PSRAM
+
+static_assert(kPsramExtmemThresholdBytes + 1 == kVfsStdioBufferBytes,
+              "Le seuil PSRAM doit valoir EXACTEMENT (tampon stdio VFS - 1) : le test "
+              "de heap_caps_malloc_default est taille <= seuil, donc un seuil egal a "
+              "4096 laisserait le tampon en RAM interne (le defaut corrige par B-1)");
+static_assert(kOomReserveBytes > kPsramExtmemThresholdBytes,
+              "La reserve du parachute depasse le seuil : elle DOIT etre allouee "
+              "avec MALLOC_CAP_INTERNAL explicite (oom_guard.cpp), jamais malloc().");
+
+// Condition C2 du gate pool-chemistry (bug-080 B-1) : un parachute NON armé ne
+// doit jamais l'être en silence. Passé ce délai sans aucune réserve (ni nominale
+// ni de repli), la loop émet un CRITICAL + une alerte MQTT `oom_reserve_absent`.
+// 5 min = 30 tentatives de réarmement (kOomRearmCheckIntervalMs = 10 s) : bien
+// au-delà d'un creux transitoire, très en deçà des heures de vol à nu qu'ont
+// duré les régimes sans filet des 13 et 15/08/2026.
+constexpr unsigned long kOomNoReserveCriticalDelayMs = 300000;  // 5 min - sans réserve → CRITICAL + alerte MQTT
+
 // Garde des sessions TLS sortantes GitHub (/check-update, /download-update),
 // évaluée AVANT la création de WiFiClientSecure — prédicat pur oomTlsGateReason.
 //

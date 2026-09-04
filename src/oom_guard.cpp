@@ -3,9 +3,14 @@
 #include <atomic>
 #include <stdio.h>   // snprintf (ligne de WARN construite sur la PILE, aucune String)
 #include <string.h>  // memcpy (copie de la zone RTC vers un tampon d'octets)
-#include <esp_heap_caps.h>  // heap_caps_register_failed_alloc_callback, heap_caps_check_integrity_all
+#include <esp_heap_caps.h>  // heap_caps_malloc/free, register_failed_alloc_callback, check_integrity_all
 #include <esp_task_wdt.h>   // esp_task_wdt_reset (après la section critique du contrôle d'intégrité)
 #include <esp_timer.h>      // esp_timer_get_time (mesure de durée du contrôle d'intégrité)
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+#include <esp_memory_utils.h>       // esp_ptr_internal (IDF 5) — vérification C1 de l'emplacement
+#else
+#include <soc/soc_memory_layout.h>  // esp_ptr_internal (IDF 4.4, env de repli esp32dev)
+#endif
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>  // xTaskGetTickCount (horloge SANS verrou pour le chemin d'échec)
 #include "oom_guard.h"
@@ -13,6 +18,35 @@
 #include "constants.h"
 #include "heap_metrics.h"  // heapFree8Bit / heapLargestFreeBlock8Bit (JAMAIS depuis les chemins d'échec)
 #include "logger.h"
+
+// =============================================================================
+// INTERDICTION DE malloc() DANS CE FICHIER (bug-080 B-1, condition C3 du gate)
+// =============================================================================
+// Depuis heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes), un malloc()
+// ordinaire de plus de 4095 o est tenté EN PSRAM D'ABORD. La réserve du parachute
+// (12 288 o) tomberait donc en PSRAM — et libérer de la PSRAM pendant une famine
+// de RAM INTERNE ne sauve strictement rien : le parachute deviendrait décoratif.
+// Le poison rend l'erreur IMPOSSIBLE À RECOMMETTRE : tout retour de malloc() dans
+// ce fichier casse la compilation. Placé APRÈS tous les #include (un header du
+// core qui déclare malloc casserait le build sinon).
+// free() N'EST PAS empoisonné : la réserve est libérée par free() (heap_caps_free
+// ≡ free sur un pointeur issu de heap_caps_malloc), y compris depuis le
+// new_handler où l'on ne veut aucun appel non trivial.
+// calloc/realloc/strdup sont empoisonnés AUSSI (test-engineer + revue) : ils
+// passent par le MÊME allocateur par défaut et contourneraient l'entonnoir tout
+// aussi bien — `calloc(1, target)` compilait sans broncher avant ce durcissement.
+// `new` est un mot-clé, non empoisonnable : c'est assumé (aucun new ici).
+#pragma GCC poison malloc calloc realloc strdup
+
+// Entonnoir UNIQUE d'allocation de la réserve d'urgence (les trois sites —
+// nominal, repli, réarmement — passent par ici, et par ici seulement).
+// MALLOC_CAP_INTERNAL : jamais de PSRAM, quelle que soit la politique globale.
+// MALLOC_CAP_8BIT : mémoire adressable octet par octet, la seule que malloc/new
+// ordinaires savent servir — c'est bien celle-là dont la famine nous prive
+// (l'IRAM 32 bits gonflait la métrique historique, ADR-0038).
+static void* oomAllocReserveInternal(size_t bytes) {
+  return heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
 
 // =============================================================================
 // État partagé handler/callback ↔ loop (bug-oom-accept-http-durcissement)
@@ -25,6 +59,10 @@
 
 static std::atomic<void*>    sOomReserve{nullptr};            // Réserve d'urgence (nullptr = consommée/absente)
 static std::atomic<uint32_t> sOomReserveBytes{0};             // Taille du palier armé (0 = aucune réserve)
+// Revue B-1 (priorité 1) : drapeau d'alerte « aucune réserve armable », levé ici
+// et DRAINÉ par mqtt_manager depuis son propre contexte. oom_guard ne publie pas
+// lui-même : il est une feuille et ne doit rien allouer en famine.
+static std::atomic<bool>     sNoReserveAlertPending{false};
 static std::atomic<uint8_t>  sOomState{kOomStateDepleted};    // Machine à états (oom_guard_logic.h)
 static std::atomic<uint32_t> sOomReleaseCount{0};             // Épisodes de libération de la réserve
 static std::atomic<uint32_t> sOomFailedAllocCount{0};         // Échecs heap_caps cumulés (diagnostic)
@@ -227,10 +265,11 @@ void initOomGuard() {
   // fragmentation. Pas de log ici (systemLogger.begin() pas encore appelé) —
   // le setup journalise l'armement (et le palier obtenu) juste après.
   // Deux paliers (v2.18.8) : nominal, puis repli si le nominal est refusé.
-  void* reserve = malloc(kOomReserveBytes);
+  // bug-080 B-1 : allocation via l'entonnoir INTERNAL|8BIT (jamais malloc()).
+  void* reserve = oomAllocReserveInternal(kOomReserveBytes);
   size_t armedBytes = kOomReserveBytes;
   if (reserve == nullptr) {
-    reserve = malloc(kOomFallbackReserveBytes);
+    reserve = oomAllocReserveInternal(kOomFallbackReserveBytes);
     armedBytes = kOomFallbackReserveBytes;
   }
   if (reserve != nullptr) {
@@ -277,6 +316,23 @@ bool oomGuardHandlerRegistered() {
 size_t oomGuardReserveArmedBytes() {
   if (sOomReserve.load() == nullptr) return 0;
   return (size_t)sOomReserveBytes.load();
+}
+
+bool oomGuardReserveIsInternalRam() {
+  // Condition C1 du gate : l'invariant « la réserve vit en RAM interne » est LU
+  // sur le pointeur publié, jamais déduit du code d'allocation. esp_ptr_internal()
+  // est une comparaison d'adresse en ligne (inline, aucun verrou, aucun parcours
+  // de tas) : appelable depuis la loop comme depuis un handler web.
+  void* reserve = sOomReserve.load();
+  if (reserve == nullptr) return false;  // pas de réserve = pas d'invariant à tenir
+  return esp_ptr_internal(reserve);
+}
+
+bool oomGuardConsumeNoReserveAlert() {
+  // Drain ONE-SHOT, appelé par mqtt_manager depuis SA tâche : il alloue déjà,
+  // connaît son état de connexion, et n'est pas le filet de sécurité de plus bas
+  // niveau. Voir la note « priorité 1 » du bloc C2 dans oomGuardLoopTick().
+  return sNoReserveAlertPending.exchange(false, std::memory_order_relaxed);
 }
 
 void oomGuardNoteHeapSample(uint32_t uptimeS, uint32_t freeBytes, uint32_t maxAllocBytes) {
@@ -463,6 +519,69 @@ void oomGuardLoopTick() {
     }
   }
 
+  // 0 bis) CONDITION C2 DU GATE (bug-080 B-1) : aucun déclassement silencieux.
+  //    (a) WARN ONE-SHOT si le palier NOMINAL a été refusé et que le parachute
+  //        tourne sur son palier de REPLI. Couvre les deux origines : le boot
+  //        (initOomGuard n'a pas de logger) et le réarmement dégradé.
+  //        Lignes construites en UN snprintf sur tampon de PILE (convention du
+  //        fichier) : elles décrivent une pénurie et peuvent donc s'émettre
+  //        PENDANT une pénurie — y construire des String allouerait précisément
+  //        quand l'allocation échoue.
+  static bool sDowngradeWarned = false;
+  if (reservePresent && !sDowngradeWarned) {
+    uint32_t armed = sOomReserveBytes.load();
+    if (armed > 0 && armed < (uint32_t)kOomReserveBytes) {
+      sDowngradeWarned = true;
+      // Revue B1 : 159 o de partie fixe (accents 2 o, cadratin 3 o) + 3 × %u.
+      // Pire cas 190 o : un [176] tronquait SILENCIEUSEMENT un WARN de
+      // diagnostic — exactement ce que ce lot existe pour supprimer.
+      char ligne[224];
+      snprintf(ligne, sizeof(ligne),
+               "Parachute OOM DÉCLASSÉ : palier de repli de %u o armé (nominal %u o "
+               "refusé en RAM interne 8 bits), maxBloc8=%u o — surclassement auto "
+               "dès que le tas le permet",
+               (unsigned)armed, (unsigned)kOomReserveBytes,
+               (unsigned)heapLargestFreeBlock8Bit());
+      systemLogger.warning(ligne);
+    }
+  }
+  //    (b) CRITICAL + alerte MQTT si AUCUNE réserve n'est armée depuis plus de
+  //        kOomNoReserveCriticalDelayMs. C'est exactement le régime « des heures
+  //        sans filet » des 13 et 15/08/2026, qu'aucun signal ne dénonçait.
+  //        One-shot par épisode : le compteur repart dès qu'une réserve existe.
+  static bool sNoReserveTracking = false;
+  static unsigned long sNoReserveSinceMs = 0;
+  static bool sNoReserveAlerted = false;
+  if (reservePresent) {
+    sNoReserveTracking = false;
+    sNoReserveAlerted = false;
+  } else if (!sNoReserveTracking) {
+    sNoReserveTracking = true;
+    sNoReserveSinceMs = now;
+  } else if (!sNoReserveAlerted && now - sNoReserveSinceMs >= kOomNoReserveCriticalDelayMs) {
+    sNoReserveAlerted = true;
+    char ligne[224];  // même dimensionnement que (a) — revue B1
+    snprintf(ligne, sizeof(ligne),
+             "Parachute OOM SANS RÉSERVE depuis %u min (aucun palier armable) — plus "
+             "aucun filet anti-bad_alloc, maxBloc8=%u o, libre8=%u o",
+             (unsigned)(kOomNoReserveCriticalDelayMs / 60000UL),
+             (unsigned)heapLargestFreeBlock8Bit(), (unsigned)heapFree8Bit());
+    systemLogger.critical(ligne);
+    // REVUE (priorité 1) : on ne PUBLIE PAS l'alerte MQTT d'ici. `publishAlert`
+    // alloue (2 String au site d'appel, String msg, String payload, ~2 tours de
+    // JsonDocument) et se termine par un systemLogger.warning() qui écrirait le
+    // MÊME message une SECONDE fois — dans un journal de 8 Ko dont la rétention
+    // est de 25-35 min, soit la fenêtre forensique de l'épisode qu'on documente,
+    // divisée par deux. Or la précondition d'arrivée ici est que le tas a refusé
+    // 1024 o trente fois de suite : demander ~1 Ko en une vingtaine de blocs y
+    // est absurde. Enfin, `oom_guard` est une FEUILLE (constants / oom_guard_logic
+    // / heap_metrics / logger) : la faire dépendre du sous-système applicatif le
+    // plus haut inverse les couches, alors qu'initOomGuard() est le TOUT PREMIER
+    // appel de setup(). On lève donc un drapeau, drainé par mqtt_manager depuis
+    // SON contexte, qui alloue déjà et connaît son état de connexion.
+    sNoReserveAlertPending.store(true, std::memory_order_relaxed);
+  }
+
   // 1) Log CRITICAL différé « réserve OOM consommée » — one-shot par épisode
   //    (drain du compteur posé par le handler). Pas de flushToDisk() ici : en
   //    pleine famine une écriture LittleFS aggraverait la pression ; le flush
@@ -552,11 +671,14 @@ void oomGuardLoopTick() {
                                         kOomFallbackRearmMinMaxAllocBytes);
   if (target == 0) return;  // déjà au meilleur palier, ou tas insuffisant
 
-  // SEUL malloc auto-infligé de la garde : encadré par le drapeau pour que
+  // SEULE allocation auto-infligée de la garde : encadrée par le drapeau pour que
   // oomFailedAllocHook ne comptabilise pas son propre échec (bloc E1). Le drapeau
   // est retiré IMMÉDIATEMENT après, y compris en cas d'échec.
+  // bug-080 B-1 : c'est LE site le plus important de l'entonnoir INTERNAL|8BIT —
+  // il s'exécute en loop, donc APRÈS heap_caps_malloc_extmem_enable(). Un malloc()
+  // ici armerait une réserve en PSRAM, inutile contre une famine de RAM interne.
   sSelfAllocInFlight.store(true);
-  void* reserve = malloc(target);
+  void* reserve = oomAllocReserveInternal(target);
   sSelfAllocInFlight.store(false);
   if (reserve == nullptr) return;  // maxBloc a bougé entre-temps : retente au prochain tick
 
@@ -579,9 +701,21 @@ void oomGuardLoopTick() {
   sHandlerRegistered.store(true);
   std::set_new_handler(oomNewHandler);
   bool upgrade = (armedBytes > 0);
+  // Condition C1 du gate (bug-080 B-1) : l'EMPLACEMENT réel de la réserve est
+  // journalisé à chaque réarmement — c'est le seul chemin d'allocation qui
+  // s'exécute APRÈS la bascule PSRAM du setup, donc le seul qui pourrait dériver.
   systemLogger.info(String(upgrade ? "Parachute OOM surclassé" : "Parachute OOM réarmé") +
                     " : réserve de " + String(target) + " o (" +
                     String(target >= (uint32_t)kOomReserveBytes ? "palier nominal"
                                                                 : "palier de repli") +
-                    ") allouée, maxBloc8=" + String(maxAlloc) + " o");
+                    ") allouée en " +
+                    // Revue B2 : on lit le pointeur LOCAL, pas l'atomique. Relire
+                    // sOomReserve exposerait à une course avec oomNewHandler, qui
+                    // peut consommer la réserve entre le exchange et ce log — la
+                    // fenêtre s'ouvre précisément en famine, c'est-à-dire quand ce
+                    // message s'émet. On annoncerait alors « PSRAM (ANOMALIE) »
+                    // pour une réserve parfaitement interne : un faux positif
+                    // alarmant, dans la trace même ajoutée pour éviter ça.
+                    String(esp_ptr_internal(reserve) ? "RAM interne" : "PSRAM (ANOMALIE)") +
+                    ", maxBloc8=" + String(maxAlloc) + " o");
 }

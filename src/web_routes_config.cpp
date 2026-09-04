@@ -1156,10 +1156,13 @@ static void handleRebootAp(AsyncWebServerRequest* request);  // Forward declarat
 static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
-  // 30 champs (version, chip, mémoire, WiFi, uptime). Charge utile mesurée avec
+  // 32 champs (version, chip, mémoire, WiFi, uptime). Charge utile mesurée avec
   // measureJson() sur des valeurs pires cas (compteurs 32 bits saturés, SSID de
-  // 32 caractères) : ~748 octets, contre 716 avant `oom_handler_registered`
-  // (v2.20.2) et 628 avant les trois champs mémoire v2.19.0.
+  // 32 caractères) : ~805 octets, contre 748 avant le COUPLE `oom_reserve_bytes`
+  // (~26 o) + `oom_reserve_internal` (~29 o) de la v2.35.0, 716 avant
+  // `oom_handler_registered` (v2.20.2) et 628 avant les trois champs mémoire
+  // v2.19.0. (Revue B-1 R1 : le compte annonçait 31 champs / ~778 o, écrit pour
+  // `oom_reserve_internal` seul avant que le point 9 n'ajoute `oom_reserve_bytes`.)
   // PRÉCISION (revue v2.19.0) : en ArduinoJson 7, StaticJson<N> n'est plus qu'un
   // JsonDocument à capacité ÉLASTIQUE — le N ne borne rien et aucune troncature
   // silencieuse n'est possible. Le chiffre ci-dessus documente donc la taille de
@@ -1200,6 +1203,25 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   // logs. Lecture d'un miroir atomique : ni allocation, ni log, ni parcours de
   // tas — sûr dans un handler AsyncWebServer. Ajout PUREMENT ADDITIF.
   doc["oom_handler_registered"] = oomGuardHandlerRegistered();
+
+  // bug-080 B-1 (condition C1 du gate pool-chemistry) : depuis la bascule PSRAM
+  // (heap_caps_malloc_extmem_enable), « la réserve du parachute vit en RAM
+  // interne » n'est plus une évidence de code mais un invariant à VÉRIFIER —
+  // une réserve tombée en PSRAM ne sauverait rien d'une famine de RAM interne,
+  // et le parachute serait décoratif sans que rien ne le signale.
+  // Lecture d'une comparaison d'adresse : ni allocation, ni parcours de tas.
+  //
+  // REVUE (point 9) : `oom_reserve_internal` seul est AMBIGU — false vaut aussi
+  // bien « aucune réserve armée » que « réserve en PSRAM ». Le croiser avec
+  // `oom_handler_registered` NE MARCHE PAS : ce miroir peut transitoirement
+  // valoir true alors que la réserve est nulle (documenté dans oom_guard.cpp).
+  // On expose donc la TAILLE armée, qui rend le contrat total et auto-portant :
+  //   bytes=0     internal=false → aucune réserve armée
+  //   bytes=12288 internal=true  → nominal, sain
+  //   bytes=1024  internal=true  → palier de repli
+  //   bytes≠0     internal=false → ANOMALIE : réserve en PSRAM, parachute inerte
+  doc["oom_reserve_bytes"] = (uint32_t)oomGuardReserveArmedBytes();
+  doc["oom_reserve_internal"] = oomGuardReserveIsInternalRam();
 
   // feature-066 : PSRAM (0 = absente, module WROOM — l'UI affiche « absente »)
   doc["psram_size"] = ESP.getPsramSize();

@@ -5,6 +5,7 @@
 #include <LittleFS.h>
 #include <ESPmDNS.h>
 #include <esp_task_wdt.h>
+#include <esp_heap_caps.h>  // heap_caps_malloc_extmem_enable (bascule PSRAM, bug-080 B-1)
 #include <Preferences.h>
 #include <nvs_flash.h>
 
@@ -113,6 +114,20 @@ void setup() {
   // bloc contigu avant toute fragmentation. N'émet aucun log (drainé en loop).
   initOomGuard();
 
+  // bug-080 lot B-1 : bascule des allocations ordinaires « de plus de 4095 o »
+  // vers la PSRAM D'ABORD. Le seuil du sdkconfig vaut 4096 et son test est
+  // INCLUSIF (« taille <= seuil ⇒ RAM interne ») : le tampon stdio de 4096 o que
+  // la couche FS attache à CHAQUE fichier LittleFS ouvert restait donc en RAM
+  // interne, à un octet près, jusqu'à ~49 Ko réclamés en rafale par un simple
+  // chargement d'interface. Voir kPsramExtmemThresholdBytes (constants.h).
+  // Placé JUSTE APRÈS initOomGuard : la réserve du parachute est déjà prise en
+  // RAM interne, et tout le reste du setup profite de la nouvelle politique.
+  // AUCUN LOG ICI (systemLogger.begin() n'a pas encore eu lieu) ; garde
+  // psramFound() pour le binaire unique WROOM/WROVER-E.
+  if (psramFound()) {
+    heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes);
+  }
+
   Serial.begin(115200);
   delay(kSerialInitDelayMs);
 
@@ -123,12 +138,19 @@ void setup() {
   // déjà contraint au boot).
   size_t oomArmedBytes = oomGuardReserveArmedBytes();
   if (oomArmedBytes > 0) {
+    // Condition C1 du gate (bug-080 B-1) : l'EMPLACEMENT de la réserve est
+    // journalisé, pas supposé. Depuis la bascule PSRAM, « la réserve est en RAM
+    // interne » est un invariant qui doit s'observer — une réserve en PSRAM ne
+    // sauverait rien d'une famine de RAM interne.
     systemLogger.info("Parachute OOM armé : réserve d'urgence de " +
                       String(oomArmedBytes) + " o (" +
                       String(oomArmedBytes >= kOomReserveBytes ? "palier nominal"
                                                               : "palier de repli") +
+                      ") pré-allouée en " +
+                      String(oomGuardReserveIsInternalRam() ? "RAM interne"
+                                                            : "PSRAM (ANOMALIE)") +
                       // Métrique 8 bits : la même que les seuils du parachute (bug-080).
-                      ") pré-allouée, maxBloc8=" + String(heapLargestFreeBlock8Bit()) + " o");
+                      ", maxBloc8=" + String(heapLargestFreeBlock8Bit()) + " o");
   } else {
     // Improbable au boot : les deux mallocs refusés — la loop réarmera (hystérésis).
     systemLogger.warning("Parachute OOM : réserve non allouée au boot (nominal ET repli refusés) "
@@ -138,11 +160,22 @@ void setup() {
   // feature-066 : détection PSRAM (module WROVER-E). psramFound() est fiable
   // ici : l'init a lieu avant setup() (BOARD_HAS_PSRAM) et échoue proprement
   // sur un module WROOM sans PSRAM (binaire unique, dégradation gracieuse).
+  // bug-080 B-1 : ce message disait « les allocations > 4 Ko y sont placées
+  // automatiquement ». C'était FAUX, et cet arrondi en kilo-octets a masqué le
+  // défaut pendant trois cycles de diagnostic : le test de l'allocateur est
+  // INCLUSIF (« taille <= seuil ⇒ RAM interne »), si bien qu'à seuil 4096 une
+  // allocation de 4096 o — le tampon stdio de chaque fichier ouvert — restait en
+  // RAM interne. Le seuil est désormais énoncé EN OCTETS, avec sa direction.
   if (psramFound()) {
-    systemLogger.info("PSRAM : " + String(ESP.getPsramSize() / 1048576) +
-                      " Mo détectés (les allocations > 4 Ko y sont placées automatiquement)");
+    systemLogger.info("PSRAM : " + String(ESP.getPsramSize() / 1048576) + " Mo détectés, " +
+                      String(ESP.getFreePsram() / 1024) + " Ko libres — allocations de PLUS de " +
+                      String((unsigned long)kPsramExtmemThresholdBytes) +
+                      " o tentées en PSRAM d'abord (repli RAM interne si refus) ; " +
+                      String((unsigned long)kPsramExtmemThresholdBytes) +
+                      " o et moins : RAM interne");
   } else {
-    systemLogger.info("PSRAM absente — RAM interne seule (module WROOM)");
+    systemLogger.info("PSRAM absente — RAM interne seule (module WROOM), "
+                      "politique d'allocation inchangée");
   }
 
   // Initialisation GPIO bouton factory reset et LED intégrée
@@ -996,11 +1029,21 @@ void checkHeapHealth() {
     // contrôleur le 15/08 : log → console → mutex → abort).
     // « ws= » donne le contexte de charge (clients temps réel connectés), qui
     // distingue régime chargé et régime calme au moment du calibrage.
+    // « psram= » (bug-080 B-1) : la prédiction falsifiable du correctif est que
+    // la PSRAM libre CHUTE à chaque chargement d'interface — sans ce chiffre
+    // dans la même ligne que libre8, la corrélation n'est pas observable.
+    // Appel LOCAL à ESP.getFreePsram() : surtout PAS un champ de HeapMetrics —
+    // heapMetricsSnapshot() est appelé par WsManager::_heapAllowsPush() à chaque
+    // trame, et les heap_caps_* s'exécutent interruptions coupées.
+    // Tampon de PILE conservé (pire cas ~117 caractères sur 128 avec le nouveau
+    // champ, en supposant les 6 valeurs à 10 chiffres — donc inatteignable en
+    // pratique) : aucune String ici, cette trace s'émet PENDANT une pénurie.
     char ligne[128];
     snprintf(ligne, sizeof(ligne),
-             "Heap 8bits: libre8=%u maxBloc8=%u minBoot=%u minFen=%u ws=%u",
+             "Heap 8bits: libre8=%u maxBloc8=%u minBoot=%u minFen=%u ws=%u psram=%u",
              (unsigned)m.free8, (unsigned)m.maxAlloc8, (unsigned)minBoot,
-             (unsigned)minWindow, (unsigned)wsManager.clientCount());
+             (unsigned)minWindow, (unsigned)wsManager.clientCount(),
+             (unsigned)ESP.getFreePsram());
     systemLogger.info(ligne);
   }
 

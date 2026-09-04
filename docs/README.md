@@ -103,7 +103,8 @@ docs/
 │   ├── 0057-taille-bassin-preselection-jamais-entree-de-calcul.md
 │   ├── 0058-gardes-heap-metrique-8-bits.md
 │   ├── 0059-purge-adaptative-fenetre-de-medianes.md
-│   └── 0060-fraicheur-en-temps-de-filtration.md
+│   ├── 0060-fraicheur-en-temps-de-filtration.md
+│   └── 0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

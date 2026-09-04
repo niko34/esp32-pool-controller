@@ -1,8 +1,8 @@
 # Subsystem — `oom-guard` (parachute OOM global)
 
 - **Fichiers** : [`src/oom_guard_logic.h`](../../src/oom_guard_logic.h) (logique pure, header-only), [`src/oom_guard.h`](../../src/oom_guard.h) / [`src/oom_guard.cpp`](../../src/oom_guard.cpp) (coquille Arduino), [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp) (garde TLS sortante partagée `/check-update` + `/download-update`)
-- **Pas de singleton** : fonctions libres (`initOomGuard()`, `oomGuardLoopTick()`, `oomGuardReserveArmed()`, `oomGuardReserveArmedBytes()`, `oomGuardHandlerRegistered()`, `oomGuardNoteHeapSample()`, `oomPostMortemDumpIfBoot()`, `oomGuardIntegrityTick()`, `oomGuardNoteIntegrityResult()`) + fonctions pures inline.
-- **Décisions architecturales** : [ADR-0035](../adr/0035-parachute-oom-new-handler.md) (parachute OOM), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) (**bascule des 4 gardes sur la métrique 8 bits, échelle unique**, v2.33.0 — supersede le régime bi-métrique d'[ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)), [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md) (PSRAM libre requise pour toute session TLS sortante), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure testable), [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison heap = containment de fond).
+- **Pas de singleton** : fonctions libres (`initOomGuard()`, `oomGuardLoopTick()`, `oomGuardReserveArmed()`, `oomGuardReserveArmedBytes()`, `oomGuardReserveIsInternalRam()`, `oomGuardConsumeNoReserveAlert()`, `oomGuardHandlerRegistered()`, `oomGuardNoteHeapSample()`, `oomPostMortemDumpIfBoot()`, `oomGuardIntegrityTick()`, `oomGuardNoteIntegrityResult()`) + fonctions pures inline.
+- **Décisions architecturales** : [ADR-0035](../adr/0035-parachute-oom-new-handler.md) (parachute OOM), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) (**bascule des 4 gardes sur la métrique 8 bits, échelle unique**, v2.33.0 — supersede le régime bi-métrique d'[ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)), [ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md) (**bascule PSRAM au-delà de 4095 o + réserve du parachute en RAM interne explicite**, v2.35.0), [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md) (PSRAM libre requise pour toute session TLS sortante), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure testable), [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison heap = containment de fond).
 
 > ✅ **v2.33.0 — fin du régime bi-métrique ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)).** Depuis bug-080 lot A, **toutes les gardes décisionnelles heap** lisent `heapLargestFreeBlock8Bit()` ([`heap_metrics.h`](../../src/heap_metrics.h)) : paliers de réarmement du parachute, auto-guérison (`kRestartMaxAllocHeapBytes` = 4 096), WARN (`kLowHeapWarnBytes` = 12 288), skip des pushes WS (`kWsPushMinAllocBytes` = 6 144) et garde 503 de `/get-logs`. Le NO GO d'[ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md) (v2.20.2) est **révoqué** par le gate `pool-chemistry` du 02/09/2026 : les données nouvelles montrent un nominal fragmenté **stable à 21 492 o** (2.26→2.32) et des creux transitoires de quelques secondes seulement — **l'immunité aux faux positifs vient du débounce temporel** (3 mesures consécutives, famine continue ≥ 10-15 s), pas du niveau du seuil. Restent en métrique **brute**, hors périmètre consigné : `web_routes_debug.cpp:55` (503 trace capteurs) et `web_routes_ota.cpp` (garde TLS `kCheckUpdateMin*`) — suivi lot B ou spec dédiée.
 
@@ -12,18 +12,125 @@ Transformer une **famine heap ponctuelle** (échec d'un `operator new`) en épis
 
 Déclencheur : crash de production du 2026-08-11 (v2.18.4) — `operator new(356)` (`new AsyncWebServerRequest`, fork ESP32Async) à l'**acceptation d'une connexion HTTP**, après un effondrement du heap de ~60 Ko en ~5 s dont la cause reste **non attribuée** (spec `bug-oom-accept-http-durcissement`). La garde `if (r == NULL)` de la lib est **morte** sur exceptions activées : `new` lance, ne retourne jamais `nullptr` — et la lib externe n'est pas patchable. Le parachute est **trigger-agnostique** : il protège quelle que soit l'allocation qui échoue.
 
+## Politique d'allocation par défaut — bascule PSRAM (v2.35.0)
+
+> 🔎 **bug-080 lot B-1, [ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md).** Depuis la v2.35.0, `setup()` appelle **une seule fois**, juste après `initOomGuard()` et sous garde `psramFound()` :
+>
+> ```cpp
+> heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes);  // 4095
+> ```
+>
+> Toute allocation **par défaut** (`malloc`, `new`, `calloc`, `realloc`, `strdup`) de **plus de 4095 octets** est désormais tentée **en PSRAM d'abord**.
+
+### Pourquoi : le tampon stdio de chaque fichier ouvert restait interne à un octet près
+
+`vfs_api.cpp:22` définit `DEFAULT_FILE_BUFFER_SIZE 4096` et la ligne `:250` attache ce tampon par `setvbuf(_f, NULL, _IOFBF, …)` à **chaque** fichier LittleFS ouvert. `VFSImpl::exists()` **ouvre réellement** le fichier, et `AsyncStaticWebHandler::_searchFile` enchaîne `exists()` **puis** `open()` : **2 × (4096 o + ~90 o de mutex newlib) par fichier statique servi**, soit jusqu'à **~49 Ko de RAM interne 8 bits en rafale** par chargement d'interface (≈ 8 requêtes, jusqu'à 6 en parallèle) — sur un `free8` mesuré à 42-59 Ko.
+
+Le seuil IDF des libs précompilées vaut `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096` et son test est **inclusif** (`taille <= seuil ⇒ RAM interne`, désassemblage de `libheap.a`) : un tampon de **exactement 4096 o** restait donc **interne**. **Il s'en fallait d'un octet.** 4095 est chirurgical — la seule classe d'allocations qui change de camp est « exactement 4096 o » ; tout ce qui est plus grand partait **déjà** en PSRAM, tout ce qui fait 4095 o ou moins reste interne.
+
+C'est le déclencheur **commun** des deux PANIC (29/08 et 03/09), tous deux survenus sur un chargement d'interface web.
+
+> **Fail-safe** : la bascule est une **préférence**, pas une contrainte. L'allocateur tente les capacités choisies, **se replie sur `MALLOC_CAP_DEFAULT`** si la PSRAM refuse, et n'appelle `heap_caps_alloc_failed` qu'**après** ce repli — **aucun échec nouveau n'est créé** et les **compteurs OOM ne sont pas pollués** par une tentative PSRAM infructueuse.
+
+> ⚠️ **Appel UNIQUE au setup, jamais à l'exécution.** `heap_caps_malloc_extmem_enable` écrit une **variable globale de l'allocateur**, relue par **chaque** `malloc()` du système. L'appeler depuis une route, un tick ou un handler changerait la politique d'allocation de **toutes les tâches** sans qu'on puisse raisonner sur les allocations en vol.
+
+### Les trois sites de la réserve passent par un entonnoir `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`
+
+`kOomReserveBytes` vaut **12 288 o**, donc **plus** que 4095 : un `malloc()` ordinaire enverrait la réserve du parachute **en PSRAM**. Or **libérer 12 Ko de PSRAM pendant une famine de RAM interne ne sauve rien** — tout en journalisant « palier nominal » de façon parfaitement crédible.
+
+> ⚠️ **Hypothèse forte, à confirmer : la réserve part probablement en PSRAM DEPUIS l'activation de la PSRAM (feature-066), sans attendre ce lot** — `malloc(12288)` dépasse déjà le seuil de 4096 aujourd'hui. Le coredump du 03/09 ne capture aucune variable globale (seules les piles de tâches) : il ne permet pas de le prouver. **C'est la ligne d'armement du prochain boot qui tranchera.** Ce lot ne crée pas ce défaut : il le **révèle** et le corrige.
+>
+> **Incohérence adjacente, désormais fermée** : le réarmement mesure **déjà** `heapLargestFreeBlock8Bit()` (RAM interne) et exige 18 432 o **avant** d'appeler l'allocation — la garde vérifiait l'interne puis allouait peut-être de l'externe. Le correctif rend **l'allocation conforme à la garde qui la gouverne**.
+
+Les **trois** sites d'allocation de la réserve — **nominale** (12 288 o, `initOomGuard`), **de repli** (1 024 o, `initOomGuard`) et **réarmement** (`oomGuardLoopTick`, le plus important : il s'exécute **après** la bascule du setup) — passent donc par un entonnoir unique :
+
+```cpp
+static void* oomAllocReserveInternal(size_t bytes) {
+  return heap_caps_malloc(bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+```
+
+- `MALLOC_CAP_INTERNAL` : jamais de PSRAM, **quelle que soit la politique globale** ;
+- `MALLOC_CAP_8BIT` : mémoire adressable octet par octet — la seule que `malloc`/`new` ordinaires savent servir, et exactement celle dont la famine nous prive (l'IRAM 32 bits gonflait la métrique historique, [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)).
+
+### `#pragma GCC poison malloc calloc realloc strdup`
+
+Placé dans `oom_guard.cpp` **après tous les `#include`** (un header du core qui déclare `malloc` casserait le build sinon), il rend l'erreur **impossible à recommettre** : tout retour d'une allocation par défaut dans cette unité de compilation **casse la compilation**.
+
+- `calloc` / `realloc` / `strdup` sont empoisonnés **aussi** (demande `test-engineer` + revue) : ils passent par le **même** allocateur par défaut et contourneraient l'entonnoir tout aussi bien — `calloc(1, target)` compilait sans broncher avant ce durcissement ;
+- **`free` n'est PAS empoisonné** : la réserve est libérée par `free()` — équivalent à `heap_caps_free` sur un pointeur issu de `heap_caps_malloc` — y compris depuis le `new_handler`, où l'on ne veut **aucun appel non trivial** ;
+- `new` est un **mot-clé**, non empoisonnable : assumé (aucun `new` dans ce fichier).
+
+Deux `static_assert` de [`constants.h`](../../src/constants.h) verrouillent le couple : `kPsramExtmemThresholdBytes + 1 == kVfsStdioBufferBytes` (si un futur core change `DEFAULT_FILE_BUFFER_SIZE`, le build casse — c'est voulu) et `kOomReserveBytes > kPsramExtmemThresholdBytes` (sentinelle : la réserve dépasse le seuil, elle **doit** donc être allouée en capacités explicites).
+
+### L'invariant est OBSERVÉ, pas supposé
+
+`oomGuardReserveIsInternalRam()` lit `esp_ptr_internal()` **sur le pointeur publié** (comparaison d'adresse *inline* : ni allocation, ni verrou, ni parcours de tas — appelable depuis la loop comme depuis un handler AsyncWebServer). Il retourne `false` s'il n'y a **aucune** réserve armée **ou** si elle a atterri en PSRAM. Il alimente les deux lignes de journal ci-dessous et le champ `oom_reserve_internal` de [`/get-system-info`](../API.md#get-get-system-info--write).
+
+### Logs modifiés ou ajoutés en v2.35.0
+
+| Ligne | Niveau | Nouveauté |
+|---|---|---|
+| Message PSRAM du boot | INFO | **Réécrit en octets**, avec sa direction |
+| Armement du parachute (boot) | INFO | Mention de l'**emplacement** : `RAM interne` / `PSRAM (ANOMALIE)` |
+| Réarmement / surclassement | INFO | Idem — seul chemin d'allocation **postérieur** à la bascule, donc le seul qui pourrait dériver |
+| Parachute **DÉCLASSÉ** | WARN | **Nouveau**, one-shot : le palier nominal a été refusé, le parachute tourne sur son repli |
+| Parachute **SANS RÉSERVE** | CRITICAL | **Nouveau**, one-shot par épisode : aucun palier armable depuis `kOomNoReserveCriticalDelayMs` |
+
+```
+PSRAM : 4 Mo détectés, 4076 Ko libres — allocations de PLUS de 4095 o tentées en PSRAM
+  d'abord (repli RAM interne si refus) ; 4095 o et moins : RAM interne
+PSRAM absente — RAM interne seule (module WROOM), politique d'allocation inchangée
+
+Parachute OOM armé : réserve d'urgence de 12288 o (palier nominal) pré-allouée en
+  RAM interne, maxBloc8=36852 o
+Parachute OOM réarmé : réserve de 12288 o (palier nominal) allouée en RAM interne, maxBloc8=21492 o
+
+Parachute OOM DÉCLASSÉ : palier de repli de 1024 o armé (nominal 12288 o refusé en RAM
+  interne 8 bits), maxBloc8=3060 o — surclassement auto dès que le tas le permet
+Parachute OOM SANS RÉSERVE depuis 5 min (aucun palier armable) — plus aucun filet
+  anti-bad_alloc, maxBloc8=1268 o, libre8=42752 o
+```
+
+> **Pourquoi l'emplacement est journalisé et non déduit du code** (condition **C1** du gate `pool-chemistry`) : « la réserve vit en RAM interne » n'est plus une évidence de lecture depuis la bascule, c'est un **invariant à observer**. Sans cette mention, un parachute décoratif annoncerait « palier nominal » sans que rien ne le dénonce.
+>
+> **Pourquoi le message PSRAM du boot a été réécrit** : il disait « les allocations > 4 Ko y sont placées automatiquement ». C'était **faux**, et cet arrondi en kilo-octets a **masqué le défaut pendant trois cycles de diagnostic** — le test de l'allocateur étant inclusif, une allocation de 4096 o restait interne. Le seuil est désormais énoncé **en octets, avec sa direction**.
+
+### Alerte MQTT `oom_reserve_absent` — le drapeau, pas la publication
+
+Le CRITICAL « sans réserve » lève un drapeau, drainé par `mqtt_manager` **depuis sa propre tâche** (`oomGuardConsumeNoReserveAlert()`, drain one-shot) qui publie l'alerte [`oom_reserve_absent`](../MQTT.md#alertes).
+
+`oom_guard` **ne publie pas lui-même**, pour trois raisons cumulées :
+
+1. `publishAlert()` **alloue** (deux `String` au site d'appel, message, charge utile, JsonDocument) — or la précondition d'arrivée ici est que le tas a refusé 1 024 o **trente fois de suite** ;
+2. `publishAlert()` se termine par un `systemLogger.warning()` qui écrirait le **même** message une **seconde** fois, dans un journal de 8 Ko dont la rétention est de 25-35 min : la fenêtre forensique de l'épisode documenté serait divisée par deux ;
+3. `oom_guard` est une **feuille** (`constants` / `oom_guard_logic` / `heap_metrics` / `logger`) et `initOomGuard()` est le **tout premier** appel de `setup()` : le faire dépendre du sous-système applicatif le plus haut inverserait les couches.
+
+**Conséquence assumée** : si MQTT est désactivé ou déconnecté, l'alerte est **perdue** — le `critical()` du journal reste la source de vérité.
+
+### Ce qu'il faut lire pendant les 48 h d'observation
+
+Le champ **`psram=`** ajouté à la trace « Heap 8bits: » (cadence 30 min, voir [system-health.md](system-health.md#trace-de-calibrage-des-seuils-mémoire-v2190)) porte la **prédiction falsifiable** du lot :
+
+- `minFen` ne doit plus descendre sous **~30 000 o** ;
+- `psram=` doit **chuter de plusieurs dizaines de Ko** à chaque chargement d'interface, puis remonter.
+
+**Si `minFen` replonge à 16-20 Ko, l'hypothèse du tampon stdio est FAUSSE** et le cycle repart aux **mesures**, pas à un correctif de plus.
+
+> Les **seuils de l'échelle 8 bits ne sont PAS retouchés** par ce lot ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) reste en vigueur) : un seul levier, un seul effet à mesurer. L'assiette de calibrage ayant changé, ils seront réévalués **après** ces 48 h.
+
 ## Fonctionnement
 
 ### Réserve d'urgence — 12 Ko (`kOomReserveBytes`)
 
-`initOomGuard()` fait `malloc(12288)` **au plus tôt du `setup()`** (avant `Serial`/logger/FS : bloc contigu pris avant toute fragmentation) — et depuis la v2.18.8, **à défaut**, `malloc(kOomFallbackReserveBytes)` (palier de repli, voir ci-dessous). Il prend ensuite l'**instantané** de la zone post-mortem RTC du boot précédent, l'invalide, puis enregistre `std::set_new_handler(oomNewHandler)` et `heap_caps_register_failed_alloc_callback(oomFailedAllocHook)`. Aucun log à ce stade (logger non initialisé) — le `setup()` journalise l'armement juste après, avec le **palier réellement obtenu** (`oomGuardReserveArmedBytes()`) et le `maxBloc` du moment :
+`initOomGuard()` alloue **12 288 o en RAM interne explicite** (`oomAllocReserveInternal`, cf. [politique d'allocation](#politique-dallocation-par-défaut--bascule-psram-v2350)) **au plus tôt du `setup()`** — avant `Serial`/logger/FS **et avant la bascule PSRAM** : bloc contigu interne pris avant toute fragmentation — et depuis la v2.18.8, **à défaut**, `kOomFallbackReserveBytes` (palier de repli, voir ci-dessous). Il prend ensuite l'**instantané** de la zone post-mortem RTC du boot précédent, l'invalide, puis enregistre `std::set_new_handler(oomNewHandler)` et `heap_caps_register_failed_alloc_callback(oomFailedAllocHook)`. Aucun log à ce stade (logger non initialisé) — le `setup()` journalise l'armement juste après, avec le **palier réellement obtenu** (`oomGuardReserveArmedBytes()`), l'**emplacement réel** (`oomGuardReserveIsInternalRam()`) et le `maxBloc8` du moment :
 
 ```
-Parachute OOM armé : réserve de 12288 o (palier nominal) pré-allouée, maxBloc8=36852 o
+Parachute OOM armé : réserve d'urgence de 12288 o (palier nominal) pré-allouée en RAM interne, maxBloc8=36852 o
 Parachute OOM : réserve non allouée au boot (nominal ET repli refusés) — armement différé en loop
 ```
 
-> Le log d'armement affiche **`maxBloc8=`** depuis la v2.33.0 (réserve du contre-visa `pool-chemistry`, bug-080) : il affichait la mesure brute alors que les seuils du parachute lisent la mesure 8 bits — un chiffre juste mais trompeur au diagnostic.
+> Le log d'armement affiche **`maxBloc8=`** depuis la v2.33.0 (réserve du contre-visa `pool-chemistry`, bug-080) : il affichait la mesure brute alors que les seuils du parachute lisent la mesure 8 bits — un chiffre juste mais trompeur au diagnostic. Depuis la **v2.35.0** il affiche en plus l'**emplacement** de la réserve (`RAM interne` / `PSRAM (ANOMALIE)`), condition C1 du gate ([ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)).
 
 Dimensionnement des 12 Ko :
 
@@ -313,6 +420,9 @@ Chaque refus émet un WARN auto-explicatif : motif, PSRAM libre, les deux mesure
 | `kOomFallbackReserveBytes` | `1024` (1 Ko) | Réserve de **repli** quand le nominal n'est pas allouable — **2048 → 1024 en v2.20.2** (invariant C2-b : `1024 ≤ 2048/2`) |
 | `kOomFallbackRearmMinMaxAllocBytes` | `2048` (2 Ko) | **`maxBloc8`** minimal pour armer le palier de repli — **12288 → 2048 en v2.20.2** (invariant C2-a : `2048 < 3060` = pire creux observé) |
 | `kOomRearmCheckIntervalMs` | `10000` (10 s) | Cadence du contrôle de réarmement dans la loop |
+| `kPsramExtmemThresholdBytes` | `4095` | **v2.35.0** ([ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)) — seuil passé à `heap_caps_malloc_extmem_enable()` : au-delà, une allocation **par défaut** est tentée en PSRAM d'abord. Le test de l'allocateur est **inclusif** (`taille <= seuil ⇒ interne`), d'où `4095` et non `4096` |
+| `kVfsStdioBufferBytes` | `4096` | **v2.35.0 — miroir documentaire** de `DEFAULT_FILE_BUFFER_SIZE` (`vfs_api.cpp:22`), le tampon stdio attaché à chaque fichier LittleFS ouvert. Verrouillé par `static_assert` : `kPsramExtmemThresholdBytes + 1 == kVfsStdioBufferBytes` |
+| `kOomNoReserveCriticalDelayMs` | `300000` (5 min) | **v2.35.0, condition C2 du gate** — sans **aucune** réserve armée pendant ce délai : `critical()` + alerte MQTT [`oom_reserve_absent`](../MQTT.md#alertes). 5 min = **30 tentatives** de réarmement (10 s) : bien au-delà d'un creux transitoire, très en deçà des **heures** de vol à nu des 13 et 15/08/2026 |
 | `kOomFailWarnDelayInitialMs` | `30000` (30 s) | Backoff du WARN d'échec — 1ᵉʳ palier (v2.20.2, remplace `kOomFailWarnThrottleMs`) |
 | `kOomFailWarnDelayMidMs` | `300000` (5 min) | Backoff — 2ᵉ palier |
 | `kOomFailWarnDelayMaxMs` | `1800000` (30 min) | Backoff — palier de **saturation** |
@@ -327,11 +437,15 @@ Chaque refus émet un WARN auto-explicatif : motif, PSRAM libre, les deux mesure
 | `kCheckUpdateMinFreeHeapBytes` | `65536` (64 Ko) | Garde TLS : heap libre total minimal (**inchangé** en v2.18.6) |
 | `kCheckUpdateMinMaxAllocBytes` | `20480` (20 Ko) | Garde TLS : plus gros bloc contigu minimal (**inchangé** en v2.18.6) |
 
+> ⚠️ **Précision v2.35.0 sur la note ci-dessous** : « > 4 Ko » était un **arrondi faux**. Le test de l'allocateur est `taille <= seuil ⇒ RAM interne` — à seuil 4096, une allocation de **exactement 4096 o** restait **interne**. Depuis la bascule ([ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)), le seuil effectif est **4095** : « plus de 4095 o ⇒ PSRAM d'abord ».
+
 > **Note WROVER/PSRAM** : sur module PSRAM (WROVER-E), les buffers mbedTLS > 4 Ko partent automatiquement en PSRAM (`SPIRAM_USE_MALLOC`, seuil 4096) — les deux seuils **heap** restent dimensionnés pour la RAM interne d'un WROOM et deviennent conservateurs sur WROVER (cf. [ADR-0034](../adr/0034-migration-core3-idf5.md)). `kOtaTlsMinPsramBytes` = 1 Mo n'a **jamais été mesuré sur WROVER réel** : valeur volontairement large, **à re-mesurer à la mise en service** du premier module PSRAM.
 
 ## Tests
 
 82 tests natifs dédiés (`test/test_native_oom_guard/`, **+16 en v2.20.2** : `oomShouldRegisterHandler` sous condition C1, escalade et saturation de `oomFailWarnNextDelayMs`, exclusion `oomShouldCountFailure`, paliers de repli recalibrés) : machine à états du handler (libération / désenregistrement), hystérésis et critère pointeur du réarmement (course handler/réarmement incluse), **paliers nominal/repli** de `oomRearmTargetBytes` (surclassement autorisé, déclassement interdit, tas trop dégradé), one-shot du log par épisode, **encodage/décodage/validité/span** du post-mortem (aller-retour, saturations, repliement des uptimes sur 16 bits), **verdict** (frontière stricte de `kOomCorruptionMaxFails`, fenêtre de rafale, ratio de comptabilité saine, cas indéterminés), cadence et autolimitation du contrôle d'intégrité, garde `oomTlsGateReason` — motifs et **priorité PSRAM sur heap**, PSRAM saturée, frontières inclusives des trois seuils — **582 tests au total**.
+
+**v2.35.0 (bug-080 B-1)** : `test_psram_extmem_threshold_arithmetic_v2350` fige les **valeurs absolues** `kVfsStdioBufferBytes = 4096` et `kPsramExtmemThresholdBytes = 4095`, la relation `seuil + 1 == tampon`, `kOomReserveBytes > seuil` (c'est cette relation, et elle seule, qui rend **nécessaire** le `MALLOC_CAP_INTERNAL` explicite), `kOomFallbackReserveBytes <= seuil` et `kOomNoReserveCriticalDelayMs = 300 000`. **Ce que les `static_assert` ne couvrent pas** : ils verrouillent des *relations*, donc ils sont indifférents à une **translation** des deux constantes (8192 / 8191 compile sans un mot et ramène le tampon réel de 4096 o en RAM interne) — seules les valeurs absolues du test refusent cette mutation.
 
 ## Fichiers liés
 

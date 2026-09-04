@@ -532,6 +532,66 @@ void test_rearm_real_constant_values_v2188(void) {
   TEST_ASSERT_TRUE((uint32_t)kOomFallbackReserveBytes < (uint32_t)kOomReserveBytes);
 }
 
+// -----------------------------------------------------------------------------
+// v2.35.0 (bug-080, lot B-1) — arithmétique du seuil de bascule PSRAM
+// -----------------------------------------------------------------------------
+// CE QUE CE TEST APPORTE EN PLUS DES static_assert de constants.h : les deux
+// static_assert verrouillent des RELATIONS (seuil + 1 == tampon, réserve >
+// seuil) et tuent donc déjà, à la COMPILATION, la mutation « seuil 4095 → 4096 ».
+// Ils sont en revanche indifférents à une TRANSLATION des deux constantes : poser
+// kVfsStdioBufferBytes = 8192 et kPsramExtmemThresholdBytes = 8191 satisfait la
+// relation, compile sans un mot, et pourtant change complètement le
+// comportement — la classe « 4096 o » (le tampon stdio réel du VFS, mesuré dans
+// vfs_api.cpp) repasserait EN RAM INTERNE et bug-080 reviendrait à l'identique,
+// tandis que toute la plage 4097-8191 y basculerait au passage. Ce test fige donc
+// les VALEURS ABSOLUES, seul moyen de refuser cette translation.
+void test_psram_extmem_threshold_arithmetic_v2350(void) {
+  // Le tampon stdio du VFS vaut EXACTEMENT 4096 o (miroir de
+  // DEFAULT_FILE_BUFFER_SIZE, libraries/FS/src/vfs_api.cpp) : c'est une
+  // constante d'un composant EXTERNE, recopiée ici. Si le core change ce
+  // chiffre, l'échec de ce test est le signal attendu, pas un faux positif.
+  TEST_ASSERT_EQUAL_UINT32(4096u, (uint32_t)kVfsStdioBufferBytes);
+  // POURQUOI 4095 ET PAS 4096 : le test de heap_caps_malloc_default est
+  // « taille <= seuil ⇒ RAM INTERNE » (inclusif, désassemblage de libheap.a).
+  // À 4096, le tampon stdio retomberait du côté interne et le défaut d'origine
+  // reviendrait à l'identique — il s'en faut d'UN OCTET, et c'est précisément
+  // cet octet que le lot B-1 corrige.
+  TEST_ASSERT_EQUAL_UINT32(4095u, (uint32_t)kPsramExtmemThresholdBytes);
+  // La relation elle-même (redondante avec le static_assert, conservée pour que
+  // l'invariant soit ÉNONCÉ dans la suite de tests et non seulement dans un
+  // en-tête) : le seuil est le plus grand entier qui laisse encore le tampon
+  // basculer, donc tampon - 1.
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kVfsStdioBufferBytes,
+                           (uint32_t)kPsramExtmemThresholdBytes + 1u);
+  // Rien d'autre ne doit changer de camp : un seuil strictement inférieur
+  // déplacerait des allocations plus petites que le tampon (correctif non
+  // chirurgical, effet de bord non mesuré sur tout le reste du firmware).
+  TEST_ASSERT_TRUE((uint32_t)kPsramExtmemThresholdBytes <
+                   (uint32_t)kVfsStdioBufferBytes);
+
+  // POURQUOI LA RÉSERVE DU PARACHUTE DOIT DÉPASSER LE SEUIL : c'est cette
+  // relation, et elle seule, qui rend NÉCESSAIRE le MALLOC_CAP_INTERNAL explicite
+  // de oomAllocReserveInternal(). Une réserve de 12 288 o allouée par un malloc()
+  // ordinaire partirait désormais EN PSRAM — or libérer de la PSRAM pendant une
+  // famine de RAM interne 8 bits ne rend pas un seul octet utilisable : le
+  // parachute deviendrait décoratif. Si la réserve repassait SOUS le seuil, les
+  // caps explicites ne seraient plus qu'une ceinture, et le #pragma GCC poison
+  // malloc de oom_guard.cpp perdrait sa justification.
+  TEST_ASSERT_TRUE((uint32_t)kOomReserveBytes > (uint32_t)kPsramExtmemThresholdBytes);
+  // Le palier de REPLI (1 024 o), lui, est sous le seuil : il resterait interne
+  // même sans caps. On le documente pour que personne ne conclue à tort que
+  // « seul le nominal a besoin de l'entonnoir » — les trois sites d'allocation
+  // passent par oomAllocReserveInternal() par UNIFORMITÉ, et parce qu'un futur
+  // recalibrage du repli au-dessus de 4 095 ne doit pas rouvrir le défaut.
+  TEST_ASSERT_TRUE((uint32_t)kOomFallbackReserveBytes <=
+                   (uint32_t)kPsramExtmemThresholdBytes);
+  // Délai avant CRITICAL + alerte MQTT `oom_reserve_absent` (condition C2 du
+  // gate) : 5 min = 30 tentatives de réarmement à kOomRearmCheckIntervalMs.
+  TEST_ASSERT_EQUAL_UINT32(300000u, (uint32_t)kOomNoReserveCriticalDelayMs);
+  TEST_ASSERT_TRUE((uint32_t)kOomNoReserveCriticalDelayMs >
+                   10u * (uint32_t)kOomRearmCheckIntervalMs);
+}
+
 // Mesures 8 bits ON-TARGET du 15/08/2026 (firmware 2.20.0 core 3, 5 h) — ce sont
 // elles qui fondent le recalibrage, et non plus la métrique brute.
 static const uint32_t kField8MinMaxBlocSinceBoot = 3060u;   // pire creux observé
@@ -1450,6 +1510,8 @@ int main(int, char**) {
   RUN_TEST(test_tls_gate_with_psram_preserves_v2185_behaviour);
   // v2.18.8 — réarmement à deux paliers
   RUN_TEST(test_rearm_real_constant_values_v2188);
+  // v2.35.0 (bug-080 B-1) — arithmétique du seuil de bascule PSRAM
+  RUN_TEST(test_psram_extmem_threshold_arithmetic_v2350);
   RUN_TEST(test_rearm_fallback_tier_respects_chemistry_gate_invariants_v2202);
   RUN_TEST(test_rearm_arms_fallback_across_whole_measured_8bit_regime);
   RUN_TEST(test_rearm_never_downgrades_nominal_in_8bit_regime);

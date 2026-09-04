@@ -5,6 +5,8 @@
 - **Décideurs** : `debugger` (diagnostic coredump), `architect`, `pool-chemistry` (**gate GO du 02/09 + contre-visa GO** — révoque son propre NO GO d'[ADR-0040](0040-pas-de-calibrage-sur-fragmentation-pathologique.md)), `code-reviewer`, utilisateur
 - **Spec(s) liée(s)** : `specs/features/doing/bug-080-redemarrage-panic-et-fragmentation-heap.md` (lot A, v2.33.0)
 
+> 📋 **Amendement du 2026-09-05 (bug-080 lot B-1, v2.35.0 — [ADR-0061](0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md))** : la bascule des allocations de plus de 4095 o vers la PSRAM **change l'assiette** sur laquelle les seuils ci-dessous ont été calibrés — le régime de RAM interne mesuré en 2.26→2.32 (nominal fragmenté 21 492 o, creux à 1 268 o) n'inclut plus la rafale de tampons stdio du service des fichiers statiques. **Aucun seuil n'est retouché par le lot B-1** (principe « un seul levier, un seul effet à mesurer ») : l'échelle `2 048 < 4 096 < 6 144 < 12 288 < 18 432` reste **strictement en vigueur**, et sera **réévaluée après 48 h d'observation** du nouveau régime. Cet ADR reste **Accepté** ; seule la valeur documentaire « nominal terrain 21 492 o » est à considérer comme datée. La contrepartie du lot B-1 — la réserve du parachute allouée en `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT` explicite — **rend l'allocation conforme à la garde qui la gouverne** (le seuil de réarmement 18 432 mesure la RAM interne).
+
 ## Contexte
 
 ### La cause racine du 15/08 est restée à moitié traitée

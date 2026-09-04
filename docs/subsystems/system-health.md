@@ -80,7 +80,7 @@ L'alerte heap **total** (CRIT « Mémoire faible » + MQTT `low_memory`, seuil `
 Trace **INFO persistée**, émise par `checkHeapHealth()` toutes les **`kHeap8LogIntervalMs` = 30 min** (`kHeapLogIntervalMs` = 5 min jusqu'à la v2.20.1 — voir l'encadré ci-dessous). Elle **ne remplace pas** la trace « Heap: … » historique, restée en commentaire depuis la 2.10.2 : elle a une autre finalité. Format depuis la v2.20.2, en octets bruts, sans arrondi :
 
 ```
-Heap 8bits: libre8=46088 maxBloc8=4596 minBoot=3060 minFen=3060 ws=1
+Heap 8bits: libre8=46088 maxBloc8=4596 minBoot=3060 minFen=3060 ws=1 psram=4174848
 ```
 
 | Champ | Signification |
@@ -90,6 +90,13 @@ Heap 8bits: libre8=46088 maxBloc8=4596 minBoot=3060 minFen=3060 ws=1
 | `minBoot` | **Minimum de `maxBloc8` depuis le boot** — c'est LA valeur qui sert à recalibrer les seuils (anciennement `minMaxBloc8_boot`) |
 | `minFen` | Minimum de `maxBloc8` sur la **fenêtre** écoulée depuis la trace précédente : montre si les creux s'aggravent (anciennement `minMaxBloc8_fenetre`) |
 | `ws` | Clients WebSocket connectés — contexte de charge, distingue régime chargé et régime calme |
+| `psram` | **PSRAM libre en octets** (`ESP.getFreePsram()`), ajouté en **v2.35.0** ([ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)) — `0` sur module WROOM |
+
+> **Pourquoi `psram=` a été ajouté** (bug-080 lot B-1) : depuis la bascule des allocations de plus de 4095 o vers la PSRAM, la **prédiction falsifiable** du correctif est que la PSRAM libre **chute à chaque chargement d'interface**. Sans ce chiffre **sur la même ligne** que `libre8` et `minFen`, la corrélation n'est pas observable.
+>
+> **Ce qu'il faut y lire pendant les 48 h d'observation** : `minFen` ne doit plus descendre sous **~30 000 o**, et `psram` doit **baisser de plusieurs dizaines de Ko** lors des chargements d'UI puis remonter. Une baisse de `psram` est le signe **attendu**, pas une anomalie : la PSRAM est devenue un **pool de travail**. En revanche, **si `minFen` replonge à 16-20 Ko, l'hypothèse du tampon stdio est fausse** et le diagnostic repart aux mesures.
+>
+> **Mise en œuvre** : `ESP.getFreePsram()` est appelé **localement** dans la trace, surtout **pas** ajouté à `HeapMetrics` — `heapMetricsSnapshot()` est appelé par `WsManager::_heapAllowsPush()` à **chaque trame**, et les `heap_caps_*` s'exécutent **interruptions coupées**. Le tampon de pile reste dimensionné à 128 caractères (pire cas ~117 avec le nouveau champ) : aucune `String` ici, cette trace s'émet **pendant** une pénurie.
 
 > **v2.20.2 — cadence 5 min → 30 min et partie `interne:` RETIRÉE.** Les champs `interne: libre=… maxBloc=…` (mesure brute) étaient **figés** — `maxBloc = 27 636` à **chaque** relevé pendant 5 h. Ils ont servi **une fois**, à prouver l'écart entre les deux métriques ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)) ; la preuve est faite et consignée. Les conserver coûtait ~70 octets par ligne sur un journal persistant de 8 Ko dont la rétention était tombée à ~30 min — c'est ce qui a **détruit le post-mortem du crash du 15/08**. L'écart entre les deux familles reste consultable à tout instant via `/get-system-info` (`max_alloc_8bit` / `max_alloc_internal`). Bilan chiffré de la rétention : [logger.md](logger.md#rétention-réelle-du-journal-persistant-v2202).
 

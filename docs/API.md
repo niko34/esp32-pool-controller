@@ -847,6 +847,8 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-system-info
   "max_alloc_8bit": 17420,
   "max_alloc_internal": 27584,
   "oom_handler_registered": true,
+  "oom_reserve_bytes": 12288,
+  "oom_reserve_internal": true,
   "heap_size": 327680,
   "psram_size": 8388608,
   "psram_free": 8257536,
@@ -895,6 +897,29 @@ Trois champs **additifs** ont été ajoutés en v2.19.0 ([ADR-0038](adr/0038-met
 - **Lecture attendue en régime sain** : `true`. Un `false` **persistant** signifie que le parachute est absent **et** qu'aucune réserve n'est armée (la ré-inscription est conditionnée à la présence d'une réserve) — donc que le tas est durablement dégradé.
 - **Coût** : lecture d'un miroir atomique — ni allocation, ni log, ni parcours de tas.
 - **Ajout purement additif** : budget JSON `/get-system-info` mesuré à **748 octets** pires cas (716 avant). Absent d'un firmware ≤ 2.20.1 → traiter l'absence comme « information indisponible ».
+
+#### `oom_reserve_bytes` / `oom_reserve_internal` — état RÉEL de la réserve du parachute (v2.35.0, additifs)
+
+| Champ | Type | Signification |
+|---|---|---|
+| `oom_reserve_bytes` | `uint32` | Taille **réellement armée** de la réserve d'urgence, en octets. `0` = aucune réserve |
+| `oom_reserve_internal` | booléen | `true` si cette réserve réside bien en **RAM interne** (`esp_ptr_internal()` sur le pointeur publié) |
+
+**Pourquoi deux champs et pas un** : depuis la bascule PSRAM ([ADR-0061](adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)), « la réserve vit en RAM interne » n'est plus une évidence de code mais un **invariant à vérifier** — une réserve tombée en PSRAM ne sauverait **rien** d'une famine de RAM interne, et le parachute serait décoratif sans que rien ne le signale. Mais `oom_reserve_internal` **seul est ambigu** : `false` vaut aussi bien « aucune réserve armée » que « réserve en PSRAM ». La taille rend le contrat **total et auto-portant** :
+
+| `oom_reserve_bytes` | `oom_reserve_internal` | Lecture |
+|---|---|---|
+| `0` | `false` | **Aucune réserve armée** — parachute non armé (voir le journal : `Parachute OOM SANS RÉSERVE…` après 5 min, alerte MQTT `oom_reserve_absent`) |
+| `12288` | `true` | **Nominal, sain** — état attendu en régime normal |
+| `1024` | `true` | **Palier de repli** — le nominal a été refusé ; surclassement automatique dès que le tas le permet (WARN `Parachute OOM DÉCLASSÉ`) |
+| ≠ `0` | `false` | ⚠️ **ANOMALIE** — réserve en PSRAM : **le parachute est inerte** face à une famine de RAM interne. Ne devrait jamais arriver (les trois sites d'allocation passent par `MALLOC_CAP_INTERNAL \| MALLOC_CAP_8BIT` explicites) |
+
+> ⚠️ **Croiser avec `oom_handler_registered` NE SUFFIT PAS.** Ce miroir peut transitoirement valoir `true` alors que la réserve est **nulle** (entrelacement documenté dans `oom_guard.cpp` — l'état « miroir `false` / handler présent » est auto-réparé au tick suivant, mais la fenêtre inverse existe le temps d'un tick). Pour un superviseur, la **source de vérité de l'armement** est le couple `oom_reserve_bytes` / `oom_reserve_internal`.
+
+- **Coût** : lecture d'un atomique + une comparaison d'adresse *inline* — ni allocation, ni log, ni parcours de tas.
+- **Ajout purement additif** : budget JSON `/get-system-info` mesuré à **~778 octets** pires cas (748 avant). Absents d'un firmware ≤ 2.34.0 → traiter leur absence comme « information indisponible ».
+
+> **⚠️ `psram_free` CHANGE DE SENS en v2.35.0.** Jusqu'ici la PSRAM était libre à ~99 % en permanence et sa valeur ne bougeait pas. Depuis la bascule des allocations de plus de 4095 o ([ADR-0061](adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)), **la PSRAM est un pool de travail** : `psram_free` **varie avec la charge web** (chaque fichier statique servi y prend son tampon stdio de 4096 o). Une baisse de plusieurs dizaines de Ko pendant un chargement d'interface est le comportement **attendu**, pas une anomalie. Corollaire pour un superviseur : ne pas alarmer sur une baisse de `psram_free` ; la garde TLS sortante, elle, continue d'exiger 1 Mo libre (`kOtaTlsMinPsramBytes`, [ADR-0036](adr/0036-psram-requise-mise-a-jour-en-ligne.md)).
 
 > `sketch_size` (octets, `ESP.getSketchSize()`) et `ota_partition_size` (octets, taille de la partition app active) permettent de calculer l'occupation flash du firmware — affichée sur la ligne « Firmware (flash) » de la carte Infos système (v2.5.2). `sketch_size` ajouté en v2.5.2 (feature-047).
 >
