@@ -19,11 +19,22 @@
 //   - debounce atteint ssi consecutiveBelow >= debounceChecks (== → atteint).
 //   - uptime atteint ssi uptimeMs >= minUptimeMs (== → atteint).
 //   - maintenance ssi rebootCountInWindow >= maxReboots (== → maintenance).
+//
+// Section 8 (bug-080, v2.33.0 — gate pool-chemistry 02/09/2026) : les sections
+// 1-7 gardent leurs valeurs INDICATIVES (elles testent la logique, pas le
+// calibrage) ; la section 8 verrouille l'ÉCHELLE RÉELLE 8 bits de constants.h
+// (2048 < 4096 < 6144 < 12288 < 18432), ses frontières exactes, le débounce en
+// séquence (contrat de la coquille main.cpp), le profil de famine du 02/09 et
+// l'hystérésis de réarmement du parachute (oom_guard_logic.h).
 // =============================================================================
 
 #include <unity.h>
 #include <stdint.h>
 #include "self_heal_logic.h"
+// Section 8 (bug-080, v2.33.0) : les tests d'échelle chargent les VRAIES
+// constantes de production et l'hystérésis de réarmement du parachute.
+#include "constants.h"        // kRestartMaxAllocHeapBytes, kLowHeapWarnBytes, ...
+#include "oom_guard_logic.h"  // oomShouldRearm / oomRearmTargetBytes
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -240,6 +251,201 @@ void test_heap_interval_uint32_max_normal(void) {
       heapSampleIntervalMs(UINT32_MAX, kWarnThreshold, kNormalInterval, kFastInterval));
 }
 
+// =============================================================================
+// 8. Échelle heap 8 bits RÉELLE — bug-080 (v2.33.0), gate pool-chemistry
+//    du 02/09/2026. À partir d'ici, plus de valeurs « indicatives » : on charge
+//    les VRAIES constantes de production (constants.h) pour verrouiller
+//    l'échelle validée :
+//      2 048 (réarmement repli parachute, kOomFallbackRearmMinMaxAllocBytes)
+//    < 4 096 (auto-heal, kRestartMaxAllocHeapBytes)
+//    < 6 144 (skip push WS, kWsPushMinAllocBytes)
+//    < 12 288 (WARN + cadence rapide, kLowHeapWarnBytes)
+//    < 18 432 (réarmement nominal parachute, kOomRearmMinMaxAllocBytes)
+//    < 21 492 (régime nominal terrain mesuré le 02/09).
+// =============================================================================
+
+// Régime nominal terrain (maxBloc8 mesuré le 02/09/2026 sur l'appareil sain).
+static const uint32_t kFieldNominalMaxBloc8 = 21492u;
+
+// Entrées avec les constantes RÉELLES (le pendant de healthyInputs pour la
+// section 8) : seul le couple (maxAllocHeap, consecutiveBelow) varie.
+static SelfHealInputs realInputs(uint32_t maxAlloc, uint8_t consecutiveBelow) {
+  SelfHealInputs in;
+  in.maxAllocHeap        = maxAlloc;
+  in.restartThreshold    = kRestartMaxAllocHeapBytes;
+  in.consecutiveBelow    = consecutiveBelow;
+  in.debounceChecks      = kAutoHealDebounceChecks;
+  in.uptimeMs            = kAutoHealMinUptimeMs * 10;  // hors phase de démarrage
+  in.minUptimeMs         = kAutoHealMinUptimeMs;
+  in.rebootCountInWindow = 0;
+  in.maxReboots          = kAutoHealMaxReboots;
+  return in;
+}
+
+// Un tick de checkHeapHealth() : réplique le CONTRAT documenté de la coquille
+// impure (main.cpp) — le compteur consecutiveBelow s'incrémente si
+// maxAlloc < kRestartMaxAllocHeapBytes (saturation à 255), sinon il est REMIS À
+// ZÉRO — puis délègue la décision au module pur. Permet de tester des SÉQUENCES
+// de mesures (débounce, creux bref vs famine soutenue).
+static SelfHealDecision tickHeapReal(uint8_t& consecutiveBelow, uint32_t maxAlloc) {
+  if (maxAlloc < kRestartMaxAllocHeapBytes) {
+    if (consecutiveBelow < 255) consecutiveBelow++;
+  } else {
+    consecutiveBelow = 0;
+  }
+  return evaluateSelfHeal(realInputs(maxAlloc, consecutiveBelow));
+}
+
+// Helper réarmement parachute avec les valeurs RÉELLES (aucun littéral).
+static uint32_t rearmTargetReal(uint32_t armedBytes, uint32_t maxAllocBytes) {
+  return oomRearmTargetBytes(armedBytes, maxAllocBytes,
+                             (uint32_t)kOomReserveBytes, kOomRearmMinMaxAllocBytes,
+                             (uint32_t)kOomFallbackReserveBytes,
+                             kOomFallbackRearmMinMaxAllocBytes);
+}
+
+// --- 8a. Sentinelles de calibrage + ordre strict de l'échelle ---
+void test_scale_real_constants_bug080(void) {
+  // Sentinelles (gate pool-chemistry 02/09/2026, bug-080) : tout recalibrage
+  // futur doit casser ICI et être re-validé en connaissance de cause.
+  TEST_ASSERT_EQUAL_UINT32(2048u, kOomFallbackRearmMinMaxAllocBytes);
+  TEST_ASSERT_EQUAL_UINT32(4096u, kRestartMaxAllocHeapBytes);
+  TEST_ASSERT_EQUAL_UINT32(6144u, kWsPushMinAllocBytes);
+  TEST_ASSERT_EQUAL_UINT32(12288u, kLowHeapWarnBytes);
+  TEST_ASSERT_EQUAL_UINT32(18432u, kOomRearmMinMaxAllocBytes);
+  // Ordre STRICT : chaque garde s'active avant la suivante (le WARN précède le
+  // skip WS, qui précède l'auto-heal, qui laisse le repli parachute en dessous).
+  TEST_ASSERT_TRUE(kOomFallbackRearmMinMaxAllocBytes < kRestartMaxAllocHeapBytes);
+  TEST_ASSERT_TRUE(kRestartMaxAllocHeapBytes < kWsPushMinAllocBytes);
+  TEST_ASSERT_TRUE(kWsPushMinAllocBytes < kLowHeapWarnBytes);
+  TEST_ASSERT_TRUE(kLowHeapWarnBytes < kOomRearmMinMaxAllocBytes);
+  // Et le régime nominal terrain est AU-DESSUS de toute l'échelle : aucune
+  // garde active en fonctionnement sain.
+  TEST_ASSERT_TRUE(kFieldNominalMaxBloc8 > kOomRearmMinMaxAllocBytes);
+}
+
+// --- 8b. Arithmétique du réarmement (refus du gate MATÉRIALISÉ) ---
+void test_rearm_arithmetic_never_triggers_autoheal_bug080(void) {
+  // Le gate du 02/09/2026 a REFUSÉ 16 384 : après allocation de la réserve
+  // nominale (12 288), le reliquat aurait été 4 096 — pile le seuil d'auto-heal,
+  // sans marge : le parachute aurait semé son propre restart d'auto-guérison.
+  // Propriété exigée : reliquat >= palier auto-heal + seuil de repli, exprimée
+  // sur les CONSTANTES (aucun littéral recopié). Une mutation 18432 → 16384 de
+  // kOomRearmMinMaxAllocBytes meurt ici (4096 < 4096 + 2048).
+  TEST_ASSERT_TRUE(kOomRearmMinMaxAllocBytes > (uint32_t)kOomReserveBytes);  // pas d'underflow ci-dessous
+  TEST_ASSERT_TRUE(kOomRearmMinMaxAllocBytes - (uint32_t)kOomReserveBytes >=
+                   kRestartMaxAllocHeapBytes + kOomFallbackRearmMinMaxAllocBytes);
+}
+
+// --- 8c. Frontière auto-heal réelle : 4 095 compte, 4 096 ne compte pas ---
+void test_boundary_autoheal_real_4095_restarts_4096_does_not(void) {
+  // 4 095 (< strict) avec débounce atteint → Restart.
+  TEST_ASSERT_EQUAL(SelfHealDecision::Restart,
+      evaluateSelfHeal(realInputs(kRestartMaxAllocHeapBytes - 1,
+                                  kAutoHealDebounceChecks)));
+  // 4 096 pile → ne compte pas comme famine : Continue, même « débounce atteint ».
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue,
+      evaluateSelfHeal(realInputs(kRestartMaxAllocHeapBytes,
+                                  kAutoHealDebounceChecks)));
+}
+
+// --- 8d. Frontière WARN réelle : cadence rapide à 12 287, normale à 12 288 ---
+void test_boundary_warn_real_12287_fast_12288_normal(void) {
+  TEST_ASSERT_EQUAL_UINT32(kHeapCheckFastIntervalMs,
+      heapSampleIntervalMs(kLowHeapWarnBytes - 1, kLowHeapWarnBytes,
+                           (uint32_t)kHealthCheckIntervalMs,
+                           kHeapCheckFastIntervalMs));
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kHealthCheckIntervalMs,
+      heapSampleIntervalMs(kLowHeapWarnBytes, kLowHeapWarnBytes,
+                           (uint32_t)kHealthCheckIntervalMs,
+                           kHeapCheckFastIntervalMs));
+}
+
+// --- 8e. Débounce réel : 2 creux + remontée = rien ; 3 consécutifs = Restart ---
+void test_debounce_real_two_dips_then_recovery_no_restart(void) {
+  uint8_t below = 0;
+  // 2 mesures sous 4 096 : comptées, mais débounce (3) pas atteint.
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue,
+                    tickHeapReal(below, kRestartMaxAllocHeapBytes - 1));
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue,
+                    tickHeapReal(below, kRestartMaxAllocHeapBytes - 1));
+  // Remontée (une seule mesure saine suffit) : compteur remis à zéro.
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue,
+                    tickHeapReal(below, kRestartMaxAllocHeapBytes));
+  TEST_ASSERT_EQUAL_UINT8(0, below);
+  // Preuve du reset : deux NOUVEAUX creux ne cumulent pas avec l'épisode
+  // précédent (2 + 2 ≠ débounce) → toujours pas de restart.
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue,
+                    tickHeapReal(below, kRestartMaxAllocHeapBytes - 1));
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue,
+                    tickHeapReal(below, kRestartMaxAllocHeapBytes - 1));
+}
+
+void test_debounce_real_three_consecutive_restart(void) {
+  uint8_t below = 0;
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue,
+                    tickHeapReal(below, kRestartMaxAllocHeapBytes - 1));
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue,
+                    tickHeapReal(below, kRestartMaxAllocHeapBytes - 1));
+  // 3ᵉ mesure consécutive sous le seuil = kAutoHealDebounceChecks → Restart.
+  TEST_ASSERT_EQUAL(SelfHealDecision::Restart,
+                    tickHeapReal(below, kRestartMaxAllocHeapBytes - 1));
+}
+
+// --- 8f. Profil du 02/09/2026 (cas imposé par le gate) ---
+void test_profile_20260902_sustained_famine_restarts(void) {
+  // Famine SOUTENUE : maxBloc8 reste sous 4 096 pendant toute la durée du
+  // débounce. Sous le WARN (12 288), la cadence passe à 5 s : les 3 ticks du
+  // débounce couvrent ~15 s de famine réelle — c'est la fenêtre voulue.
+  const uint32_t famine = 3060u;  // pire creux 8 bits jamais mesuré (15/08/2026)
+  TEST_ASSERT_EQUAL_UINT32(kHeapCheckFastIntervalMs,
+      heapSampleIntervalMs(famine, kLowHeapWarnBytes,
+                           (uint32_t)kHealthCheckIntervalMs,
+                           kHeapCheckFastIntervalMs));
+  uint8_t below = 0;
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue, tickHeapReal(below, famine));
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue, tickHeapReal(below, famine));
+  TEST_ASSERT_EQUAL(SelfHealDecision::Restart,  tickHeapReal(below, famine));
+}
+
+void test_profile_20260902_brief_8s_dip_no_restart(void) {
+  // Creux BREF de ~8 s : à la cadence rapide (5 s), il n'est vu que par 1 à 2
+  // échantillons avant la remontée → AUCUN restart, ni pendant ni après.
+  uint8_t below = 0;
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue, tickHeapReal(below, 3500u));  // t = 0 s
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue, tickHeapReal(below, 3900u));  // t = 5 s
+  // t = 10 s : le creux de 8 s est passé, retour au régime nominal terrain.
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue,
+                    tickHeapReal(below, kFieldNominalMaxBloc8));
+  TEST_ASSERT_EQUAL_UINT8(0, below);
+  TEST_ASSERT_EQUAL(SelfHealDecision::Continue,
+                    tickHeapReal(below, kFieldNominalMaxBloc8));  // stable
+}
+
+// --- 8g. Réarmement parachute : hystérésis réelle à 18 431 / 18 432 ---
+void test_rearm_real_hysteresis_18431_18432_never_downgrades(void) {
+  // Prédicat d'hystérésis : 18 431 → pas de réarmement nominal ; 18 432 → oui.
+  TEST_ASSERT_FALSE(oomShouldRearm(true, kOomRearmMinMaxAllocBytes - 1,
+                                   kOomRearmMinMaxAllocBytes));
+  TEST_ASSERT_TRUE(oomShouldRearm(true, kOomRearmMinMaxAllocBytes,
+                                  kOomRearmMinMaxAllocBytes));
+  // Surclassement repli → nominal à la borne exacte (18 432)...
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomReserveBytes,
+      rearmTargetReal((uint32_t)kOomFallbackReserveBytes,
+                      kOomRearmMinMaxAllocBytes));
+  // ...pas à 18 431 : on GARDE le repli (0 = rien à faire, pas d'oscillation).
+  TEST_ASSERT_EQUAL_UINT32(0u,
+      rearmTargetReal((uint32_t)kOomFallbackReserveBytes,
+                      kOomRearmMinMaxAllocBytes - 1));
+  // JAMAIS l'inverse : nominal armé → aucun déclassement vers le repli, même
+  // avec le tas juste sous le seuil, au régime terrain, ou effondré.
+  TEST_ASSERT_EQUAL_UINT32(0u, rearmTargetReal((uint32_t)kOomReserveBytes,
+                                               kOomRearmMinMaxAllocBytes - 1));
+  TEST_ASSERT_EQUAL_UINT32(0u, rearmTargetReal((uint32_t)kOomReserveBytes,
+                                               kFieldNominalMaxBloc8));
+  TEST_ASSERT_EQUAL_UINT32(0u, rearmTargetReal((uint32_t)kOomReserveBytes, 0u));
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   // 1. Heap OK
@@ -271,5 +477,15 @@ int main(int, char**) {
   RUN_TEST(test_heap_interval_boundary_equals_threshold_normal);
   RUN_TEST(test_heap_interval_zero_fast);
   RUN_TEST(test_heap_interval_uint32_max_normal);
+  // 8. Échelle réelle bug-080 (constants.h + réarmement parachute)
+  RUN_TEST(test_scale_real_constants_bug080);
+  RUN_TEST(test_rearm_arithmetic_never_triggers_autoheal_bug080);
+  RUN_TEST(test_boundary_autoheal_real_4095_restarts_4096_does_not);
+  RUN_TEST(test_boundary_warn_real_12287_fast_12288_normal);
+  RUN_TEST(test_debounce_real_two_dips_then_recovery_no_restart);
+  RUN_TEST(test_debounce_real_three_consecutive_restart);
+  RUN_TEST(test_profile_20260902_sustained_famine_restarts);
+  RUN_TEST(test_profile_20260902_brief_8s_dip_no_restart);
+  RUN_TEST(test_rearm_real_hysteresis_18431_18432_never_downgrades);
   return UNITY_END();
 }

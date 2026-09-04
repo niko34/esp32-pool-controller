@@ -1,6 +1,6 @@
 # ADR-0040 — On ne calibre pas des seuils sur une fragmentation pathologique (régime bi-métrique assumé)
 
-- **Statut** : Accepté
+- **Statut** : Superseded by [ADR-0058](0058-gardes-heap-metrique-8-bits.md) (v2.33.0 — le NO GO et le régime bi-métrique sont levés sur données nouvelles ; la doctrine « pas de calibrage sans signal exogène » y est reprise et reste en vigueur)
 - **Date** : 2026-08-15
 - **Décideurs** : `architect`, `pool-chemistry` (**gate — NO GO sur la bascule des gardes restantes**), `code-reviewer`, utilisateur
 - **Spec(s) liée(s)** : `specs/features/done/bug-famine-8bits-parachute-mort-et-gardes-aveugles.md` (v2.20.2), suite : `specs/features/todo/bug-bascule-gardes-8bits-recalibrage.md`

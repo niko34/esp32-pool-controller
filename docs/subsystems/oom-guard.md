@@ -2,11 +2,9 @@
 
 - **Fichiers** : [`src/oom_guard_logic.h`](../../src/oom_guard_logic.h) (logique pure, header-only), [`src/oom_guard.h`](../../src/oom_guard.h) / [`src/oom_guard.cpp`](../../src/oom_guard.cpp) (coquille Arduino), [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp) (garde TLS sortante partagée `/check-update` + `/download-update`)
 - **Pas de singleton** : fonctions libres (`initOomGuard()`, `oomGuardLoopTick()`, `oomGuardReserveArmed()`, `oomGuardReserveArmedBytes()`, `oomGuardHandlerRegistered()`, `oomGuardNoteHeapSample()`, `oomPostMortemDumpIfBoot()`, `oomGuardIntegrityTick()`, `oomGuardNoteIntegrityResult()`) + fonctions pures inline.
-- **Décisions architecturales** : [ADR-0035](../adr/0035-parachute-oom-new-handler.md) (parachute OOM), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md) (**régime bi-métrique assumé**, v2.20.2), [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md) (PSRAM libre requise pour toute session TLS sortante), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure testable), [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison heap = containment de fond).
+- **Décisions architecturales** : [ADR-0035](../adr/0035-parachute-oom-new-handler.md) (parachute OOM), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) (**bascule des 4 gardes sur la métrique 8 bits, échelle unique**, v2.33.0 — supersede le régime bi-métrique d'[ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)), [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md) (PSRAM libre requise pour toute session TLS sortante), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure testable), [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison heap = containment de fond).
 
-> ⚠️ **v2.20.2 — régime BI-MÉTRIQUE assumé, à lire avant tout le reste.** L'anneau de cinétique, le miroir du post-mortem **et les deux paliers de réarmement du parachute** lisent la **mémoire réellement allouable** (pool `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`, helper [`heap_metrics.h`](../../src/heap_metrics.h)). **Toutes les autres gardes lisent encore la mesure brute** `ESP.getMaxAllocHeap()` / `ESP.getFreeHeap()` : `kRestartMaxAllocHeapBytes`, `kHttpHeapMarginBytes`, `kWsPushMinAllocBytes`, `kLowHeapWarnBytes`, `kCheckUpdateMinFreeHeapBytes`, `kCheckUpdateMinMaxAllocBytes`. Ce n'est **pas un oubli** : le gate `pool-chemistry` a rendu un **NO GO explicite** sur leur bascule ([ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)). Les basculer aux valeurs actuelles rendrait le **mode maintenance — donc la suspension du dosage — atteignable en régime normal** (`kRestartMaxAllocHeapBytes` = 8 192 o alors que le minimum 8 bits observé vaut **3 060 o**), casserait l'interface web (marge HTTP 4 096 o ≈ `maxBloc8` courant 4 596 o → 503 quasi permanents), les pushes WebSocket (16 384 > 4 596) et la mise à jour en ligne (65 536 > `libre8` 46 480). Les valeurs de ces seuils restent donc **à refaire**, après **≥ 24 h de relevés propres sous 2.20.2** : spec de suivi `specs/features/todo/bug-bascule-gardes-8bits-recalibrage.md`.
-
-> ⚠️ **La règle de recalibrage publiée dans [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) est INAPPLICABLE en l'état.** `kRestartMaxAllocHeapBytes = clamp(0,40 × min24h ; 8192 ; 16384)` supposait un `min24h` de plusieurs dizaines de kilo-octets. Avec `minMaxBloc8_boot = 3 060` o, `0,40 × 3 060 = 1 224` est **écrêté au plancher 8 192**, soit un seuil de redémarrage **au-dessus du minimum observé en fonctionnement normal** : redémarrages en boucle, puis mode maintenance au 3ᵉ, en quelques minutes. Voir [ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md).
+> ✅ **v2.33.0 — fin du régime bi-métrique ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)).** Depuis bug-080 lot A, **toutes les gardes décisionnelles heap** lisent `heapLargestFreeBlock8Bit()` ([`heap_metrics.h`](../../src/heap_metrics.h)) : paliers de réarmement du parachute, auto-guérison (`kRestartMaxAllocHeapBytes` = 4 096), WARN (`kLowHeapWarnBytes` = 12 288), skip des pushes WS (`kWsPushMinAllocBytes` = 6 144) et garde 503 de `/get-logs`. Le NO GO d'[ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md) (v2.20.2) est **révoqué** par le gate `pool-chemistry` du 02/09/2026 : les données nouvelles montrent un nominal fragmenté **stable à 21 492 o** (2.26→2.32) et des creux transitoires de quelques secondes seulement — **l'immunité aux faux positifs vient du débounce temporel** (3 mesures consécutives, famine continue ≥ 10-15 s), pas du niveau du seuil. Restent en métrique **brute**, hors périmètre consigné : `web_routes_debug.cpp:55` (503 trace capteurs) et `web_routes_ota.cpp` (garde TLS `kCheckUpdateMin*`) — suivi lot B ou spec dédiée.
 
 ## Rôle
 
@@ -21,14 +19,16 @@ Déclencheur : crash de production du 2026-08-11 (v2.18.4) — `operator new(356
 `initOomGuard()` fait `malloc(12288)` **au plus tôt du `setup()`** (avant `Serial`/logger/FS : bloc contigu pris avant toute fragmentation) — et depuis la v2.18.8, **à défaut**, `malloc(kOomFallbackReserveBytes)` (palier de repli, voir ci-dessous). Il prend ensuite l'**instantané** de la zone post-mortem RTC du boot précédent, l'invalide, puis enregistre `std::set_new_handler(oomNewHandler)` et `heap_caps_register_failed_alloc_callback(oomFailedAllocHook)`. Aucun log à ce stade (logger non initialisé) — le `setup()` journalise l'armement juste après, avec le **palier réellement obtenu** (`oomGuardReserveArmedBytes()`) et le `maxBloc` du moment :
 
 ```
-Parachute OOM armé : réserve de 12288 o (palier nominal) pré-allouée, maxBloc=48916 o
+Parachute OOM armé : réserve de 12288 o (palier nominal) pré-allouée, maxBloc8=36852 o
 Parachute OOM : réserve non allouée au boot (nominal ET repli refusés) — armement différé en loop
 ```
+
+> Le log d'armement affiche **`maxBloc8=`** depuis la v2.33.0 (réserve du contre-visa `pool-chemistry`, bug-080) : il affichait la mesure brute alors que les seuils du parachute lisent la mesure 8 bits — un chiffre juste mais trompeur au diagnostic.
 
 Dimensionnement des 12 Ko :
 
 - **≈ 34 allocations vitales** de la taille du crash de référence (12 288 / 356 o ≈ 34) — accepts HTTP, trames WS, `String` de logs : de quoi tenir la phase critique ;
-- **1,5× le seuil d'auto-guérison** `kRestartMaxAllocHeapBytes` (8 192 o, [ADR-0029](../adr/0029-auto-guerison-heap.md)) : la libération redonne au système assez de marge pour que le watchdog heap (débounce ~15 s en cadence rapprochée) déclenche un **reboot propre** (pompes coupées, cumuls persistés, alerte MQTT) pendant la famine, au lieu d'un abort.
+- **3× le seuil d'auto-guérison** `kRestartMaxAllocHeapBytes` (4 096 o depuis v2.33.0 — était 8 192 en métrique brute, [ADR-0029](../adr/0029-auto-guerison-heap.md) / [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) : la libération redonne au système assez de marge pour que le watchdog heap (débounce ~15 s en cadence rapprochée) déclenche un **reboot propre** (pompes coupées, cumuls persistés, alerte MQTT) pendant la famine, au lieu d'un abort.
 
 ### Contrat du handler (`oomNewHandler`) — chemin d'urgence
 
@@ -73,7 +73,7 @@ Sur les **1 025** échecs d'allocation comptés le 15/08, **~100 %** étaient ce
 
 > **Limite assumée** : le drapeau est **global**, pas par tâche. Un échec **réel** survenant sur l'autre cœur pendant la fenêtre (quelques microsecondes toutes les 10 s) ne serait pas comptabilisé. Compromis très favorable face au bruit supprimé.
 
-#### Pourquoi le seuil est passé de 32 768 à 24 576 o
+#### Pourquoi le seuil est passé de 32 768 à 24 576 (v2.18.8), puis à 18 432 o (v2.33.0)
 
 **Le parachute livré en v2.18.5 ne se réarmait JAMAIS** — défaut confirmé par le 2ᵉ crash de production (13/08/2026, v2.18.7, uptime 12,9 h). Pour que libstdc++ lève à `new_op.cc:54`, il faut `get_new_handler() == nullptr` : le handler s'était donc **désenregistré** (état `Depleted`) lors d'un épisode antérieur. Or le réarmement exigeait `maxBloc ≥ 32 768 o`, alors que le plus gros bloc contigu **réel** de cet appareil vaut :
 
@@ -84,7 +84,17 @@ Sur les **1 025** échecs d'allocation comptés le 15/08, **~100 %** étaient ce
 
 Le seuil était donc **au-dessus du régime normal de l'appareil** : une fois la réserve consommée, elle n'était plus jamais ré-allouée et le handler restait désenregistré → **parachute one-shot en pratique**, inopérant au moment du crash du 13/08 (`new AsyncFileResponse`, 156 o, refusé alors que l'anneau annonçait `free=81 408` / `maxB=27 584`, stables depuis 78 s).
 
-Nouvelle valeur : `kOomRearmMinMaxAllocBytes = 24576` = **2 × `kOomReserveBytes`** — atteignable dans le régime réel, tout en gardant une marge d'un bloc entier au-dessus de la taille à allouer (pas d'oscillation libération/réallocation autour du seuil de famine).
+Valeur v2.18.8 : `kOomRearmMinMaxAllocBytes = 24576` = **2 × `kOomReserveBytes`** — atteignable dans le régime **de l'époque** (maxBloc brut 27-30 Ko), tout en gardant une marge d'un bloc entier au-dessus de la taille à allouer (pas d'oscillation libération/réallocation autour du seuil de famine).
+
+**v2.33.0 (bug-080, [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) : 24 576 → 18 432.** Le seuil, désormais comparé à `maxBloc8`, était retombé dans le défaut exact du 13/08 : **24 576 > nominal fragmenté réel 21 492 o** → après une première famine, plus jamais de réserve nominale (repli 1 024 o définitif). L'arithmétique de la nouvelle valeur, imposée par le gate `pool-chemistry` du 02/09 (qui a **refusé 16 384** : allouer 12 288 depuis 16 384 laisse un reliquat < 4 096 — le parachute sèmerait son propre auto-heal) :
+
+```
+18 432 = kOomReserveBytes (12 288)
+       + kRestartMaxAllocHeapBytes (4 096)
+       + kOomFallbackRearmMinMaxAllocBytes (2 048)
+```
+
+Après armement nominal, il reste **au moins** la marge d'auto-guérison plus le palier de repli — l'armement ne peut jamais déclencher lui-même un reboot. Cette somme est **verrouillée par un test natif d'arithmétique sur les constantes** (`test/test_native_oom_guard/`). Et `18 432 < 21 492` (nominal terrain) : en régime fragmenté **stable** observé depuis la 2.26, le réarmement nominal — impossible depuis le 13/08 — **redevient automatique** au tick suivant la résorption d'une famine, de même que le surclassement repli → nominal.
 
 #### Palier de repli — 1 Ko dès 2 Ko de plus gros bloc **8 bits** (recalibré v2.20.2)
 
@@ -98,27 +108,28 @@ Les deux valeurs ont été **recalibrées** parce que le tick lit désormais la 
 | b | taille allouée ≤ moitié du seuil | `1 024 ≤ 2 048 / 2` → allouer la réserve ne peut pas à soi seul faire retomber le tas sous son propre seuil de réarmement |
 | c | seuil ≤ minimum du régime établi | `2 048 ≤ 4 084` → armable en pratique |
 
-`kOomRearmMinMaxAllocBytes` **reste à 24 576** : le palier nominal devient **délibérément inatteignable** dans le régime fragmenté actuel — donc **plus aucun `malloc(12288)` répété toutes les 10 s** — mais le réarmement nominal **repart automatiquement** si la fragmentation disparaît. C'est un seuil laissé volontairement haut, pas un oubli de recalibrage.
+`kOomRearmMinMaxAllocBytes` était **resté à 24 576** en v2.20.2 (palier nominal délibérément inatteignable dans le régime fragmenté d'alors — plus aucun `malloc(12288)` répété toutes les 10 s). **Depuis la v2.33.0 il vaut 18 432** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md), arithmétique ci-dessus) : sous le nominal terrain 21 492 o, le palier nominal est de nouveau atteignable en régime réel.
 
 Règle de transition (fonction pure `oomRearmTargetBytes`) :
 
-- **surclassement** repli → nominal **autorisé** : dès que `maxBloc8 ≥ 24 576`, la réserve de 1 Ko est remplacée par 12 Ko (l'ancienne est libérée par l'`exchange`) ;
+- **surclassement** repli → nominal **autorisé** : dès que `maxBloc8 ≥ 18 432`, la réserve de 1 Ko est remplacée par 12 Ko (l'ancienne est libérée par l'`exchange`) ;
 - **déclassement** nominal → repli **INTERDIT** : jamais d'oscillation ni de dégradation silencieuse ;
 - réserve déjà au palier nominal → aucune action.
 
-#### Échelle des seuils « plus gros bloc contigu » — DEUX MÉTRIQUES depuis la v2.20.2
+#### Échelle des seuils « plus gros bloc contigu » — MÉTRIQUE 8 BITS UNIQUE depuis la v2.33.0
 
-Ces seuils décrivent une dégradation ordonnée du tas et ne se modifient pas isolément ([ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md)). ⚠️ **Ils ne sont plus tous exprimés dans la même métrique** — les comparer entre eux n'a donc plus de sens tant que la bascule n'est pas faite ([ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)).
+Ces seuils décrivent une dégradation ordonnée du tas et ne se modifient pas isolément ([ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md)). Depuis bug-080 ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)), **tous lisent `heapLargestFreeBlock8Bit()`** — le régime bi-métrique de la v2.20.2 est clos, l'échelle est de nouveau comparable de bout en bout :
 
-| Métrique lue | Seuil | Constante | Effet |
-|---|---|---|---|
-| **8 bits** | 2 048 o | `kOomFallbackRearmMinMaxAllocBytes` | Réarmement de la réserve de **repli** (1 Ko) |
-| **8 bits** | 24 576 o | `kOomRearmMinMaxAllocBytes` | Réarmement de la réserve **nominale** (12 Ko) — inatteignable en régime fragmenté, par construction |
-| brute | 8 192 o | `kRestartMaxAllocHeapBytes` | Reboot d'auto-guérison ([ADR-0029](../adr/0029-auto-guerison-heap.md)) |
-| brute | 16 384 o | `kWsPushMinAllocBytes` | Pushes WebSocket sautés |
-| brute | 20 000 o | `kLowHeapWarnBytes` | WARN heap + flush disque one-shot |
+| Seuil | Constante | Effet |
+|---|---|---|
+| 2 048 o | `kOomFallbackRearmMinMaxAllocBytes` | Réarmement de la réserve de **repli** (1 Ko) |
+| 4 096 o | `kRestartMaxAllocHeapBytes` | Reboot d'**auto-guérison** ([ADR-0029](../adr/0029-auto-guerison-heap.md)), débounce 3 mesures |
+| 6 144 o | `kWsPushMinAllocBytes` | Pushes WebSocket sautés (≈ 2,4× la trame pire cas 2 552 o) |
+| 12 288 o | `kLowHeapWarnBytes` | WARN heap + flush disque one-shot + cadence rapprochée 5 s |
+| 18 432 o | `kOomRearmMinMaxAllocBytes` | Réarmement de la réserve **nominale** (12 Ko) — = 12 288 + 4 096 + 2 048, verrouillé par test |
+| 21 492 o | — (documentaire) | **Nominal terrain** en régime fragmenté stable (2.26→2.32) |
 
-> ⚠️ **Les seuils « brute » sont à refaire, et le gate `pool-chemistry` a explicitement REFUSÉ de les basculer en v2.20.2** ([ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)). Motifs : (1) la règle `clamp(0,40 × min24h ; 8192 ; 16384)` d'[ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) est **inapplicable** avec `min = 3 060` (plancher 8 192 > minimum observé → reboots en boucle → **mode maintenance = dosage suspendu**) ; (2) les basculer aux valeurs actuelles casserait l'UI, les pushes WS et la mise à jour en ligne ; (3) **les mesures elles-mêmes sont invalidées** — ~100 % du signal d'échec était fabriqué par la garde de réarmement. Recalibrage uniquement après **≥ 24 h de relevés propres post-2.20.2** et identification du fragmenteur. L'ordre de bascule reste **le risque croissant** : pushes WS et gardes HTTP/TLS d'abord, **auto-guérison en dernier**.
+> **L'immunité aux creux transitoires vient du DÉBOUNCE, pas du niveau des seuils** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) : des creux à 1 268 o de quelques secondes existent en régime normal — aucun seuil statique > 1,3 Ko ne passe dessous. L'auto-guérison exige 3 mesures consécutives (60 s nominale, 5 s sous WARN) : seule une famine **continue ≥ 10-15 s** déclenche. Hors périmètre (encore en métrique brute) : `web_routes_debug.cpp:55` et la garde TLS de `web_routes_ota.cpp` — suivi lot B.
 
 Ceinture supplémentaire v2.18.8 : le handler remet la taille à 0 **avant** d'extraire le pointeur ; lire « pointeur vivant + taille 0 » dans cette fenêtre ferait passer une réserve nominale pour non armée et autoriserait un déclassement — la loop suppose donc le palier nominal dans ce cas.
 
@@ -131,7 +142,7 @@ Ceinture supplémentaire v2.18.8 : le handler remet la taille à 0 **avant** d'e
  [ Armed ] ────────────────────────────────────────────► [ Released ]
      ▲          free(réserve) + épisode++ (le new re-tenté réussit)         │
      │                                                                      │
-     │  réserve ABSENTE ET maxBloc8 ≥ 24 Ko (nominal) ou ≥ 2 Ko (repli)     │
+     │  réserve ABSENTE ET maxBloc8 ≥ 18 Ko (nominal) ou ≥ 2 Ko (repli)     │
      │  — tick 10 s, surclassement repli → nominal autorisé                 │
      ├──────────────────────────────────────────────────────────────────────┤
      │                                                                      ▼
@@ -297,8 +308,8 @@ Chaque refus émet un WARN auto-explicatif : motif, PSRAM libre, les deux mesure
 
 | Constante | Valeur | Rôle |
 |---|---|---|
-| `kOomReserveBytes` | `12288` (12 Ko) | Réserve d'urgence **nominale** (≈ 34 allocs vitales de 356 o ; 1,5× le seuil auto-guérison 8 192 o) |
-| `kOomRearmMinMaxAllocBytes` | `24576` (24 Ko) | Hystérésis : **`maxBloc8`** minimal pour ré-allouer la réserve nominale. **Inchangé en v2.20.2, volontairement** : inatteignable dans le régime fragmenté actuel (donc plus aucun `malloc(12288)` répété), mais le réarmement nominal repart seul si la fragmentation disparaît |
+| `kOomReserveBytes` | `12288` (12 Ko) | Réserve d'urgence **nominale** (≈ 34 allocs vitales de 356 o ; 3× le seuil auto-guérison 4 096 o) |
+| `kOomRearmMinMaxAllocBytes` | `18432` (18 Ko) | Hystérésis : **`maxBloc8`** minimal pour ré-allouer la réserve nominale — **24 576 → 18 432 en v2.33.0** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) : = 12 288 + 4 096 + 2 048 (16 384 refusé par le gate : reliquat post-armement < seuil auto-heal), atteignable sous le nominal terrain 21 492 o |
 | `kOomFallbackReserveBytes` | `1024` (1 Ko) | Réserve de **repli** quand le nominal n'est pas allouable — **2048 → 1024 en v2.20.2** (invariant C2-b : `1024 ≤ 2048/2`) |
 | `kOomFallbackRearmMinMaxAllocBytes` | `2048` (2 Ko) | **`maxBloc8`** minimal pour armer le palier de repli — **12288 → 2048 en v2.20.2** (invariant C2-a : `2048 < 3060` = pire creux observé) |
 | `kOomRearmCheckIntervalMs` | `10000` (10 s) | Cadence du contrôle de réarmement dans la loop |
@@ -332,4 +343,5 @@ Chaque refus émet un WARN auto-explicatif : motif, PSRAM libre, les deux mesure
 - [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) — post-mortem RTC + miroir de l'anneau + verdict + intégrité périodique + recalibrage du réarmement (v2.18.8)
 - [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md) — PSRAM libre requise pour toute session TLS sortante (alternatives écartées : seuil maxBloc relevé, tentative rattrapée, `/download-update` non gardée)
 - [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) — **cause racine des 3 crashs** : mesure 8 bits obligatoire dans les gardes, helper centralisé, double exposition, découpage mesure (2.19.0) puis bascule (2.19.1), bump des deux magics RTC
-- [ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md) — **on ne calibre pas des seuils sur une fragmentation pathologique** : régime bi-métrique assumé (seuls les paliers de réarmement passent en 8 bits), règle de recalibrage d'ADR-0038 déclarée inapplicable, mesures du 15/08 invalidées
+- [ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md) — **on ne calibre pas des seuils sur une fragmentation pathologique** : régime bi-métrique assumé en v2.20.2, règle de recalibrage d'ADR-0038 déclarée inapplicable, mesures du 15/08 invalidées — **superseded par ADR-0058** (v2.33.0)
+- [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) — **bascule des 4 gardes sur la métrique 8 bits** (v2.33.0) : échelle unique 2 048 < 4 096 < 6 144 < 12 288 < 18 432, immunité par débounce temporel, réarmement 18 432 verrouillé par test, révocation du NO GO v2.20.2

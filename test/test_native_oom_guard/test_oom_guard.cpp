@@ -9,7 +9,7 @@
 //     épuisement (Released→Depleted, bad_alloc laissé suivre) ;
 //   - oomShouldLogRelease : one-shot du log CRITICAL par épisode ;
 //   - oomShouldRearm : hystérésis kOomRearmMinMaxAllocBytes — seuil INCLUSIF
-//     (>= : à maxBloc == 24576 exactement, on réarme) ;
+//     (>= : à maxBloc == 18432 exactement, on réarme — bug-080 v2.33.0) ;
 //   - cycle complet échec→réarmement→échec→réarmement (pas d'oscillation
 //     d'états, log one-shot rejoué à chaque nouvel épisode) ;
 //   - oomTlsGateReason : garde TLS sortante partagée par /check-update et
@@ -108,9 +108,10 @@ void test_log_release_fires_again_on_new_episode(void) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. oomShouldRearm — hystérésis (seuil kOomRearmMinMaxAllocBytes = 24576)
+// 3. oomShouldRearm — hystérésis (seuil kOomRearmMinMaxAllocBytes = 18432,
+//    bug-080 v2.33.0 ; anciennement 24576 sur la métrique brute)
 // ---------------------------------------------------------------------------
-// Choix documenté : le seuil est INCLUSIF (>=) — à maxBloc == 24576 exactement
+// Choix documenté : le seuil est INCLUSIF (>=) — à maxBloc == 18432 exactement
 // le réarmement est autorisé (cf. `>=` dans oomShouldRearm).
 // Depuis la revue v2.18.5, le critère est l'ABSENCE DE RÉSERVE (pointeur nul),
 // pas l'état : reserveAbsent=true ⇔ sOomReserve == nullptr côté impur.
@@ -124,7 +125,7 @@ void test_rearm_denied_below_threshold(void) {
 }
 
 void test_rearm_allowed_at_exact_threshold(void) {
-  // Limite exacte : 24576 → réarme (>= inclusif)
+  // Limite exacte : 18432 → réarme (>= inclusif)
   TEST_ASSERT_TRUE(oomShouldRearm(true, kOomRearmMinMaxAllocBytes,
                                   kOomRearmMinMaxAllocBytes));
 }
@@ -314,7 +315,14 @@ void test_tls_gate_real_constant_values(void) {
   // kOomReserveBytes). L'ancien seuil était AU-DESSUS du plus gros bloc réel de
   // l'appareil (27-30 Ko mesurés) → réserve jamais ré-allouée, parachute
   // one-shot en pratique.
-  TEST_ASSERT_EQUAL_UINT32(24576u, kOomRearmMinMaxAllocBytes);
+  // Amendé par gate pool-chemistry 02/09/2026, bug-080 (v2.33.0) : 24576 →
+  // 18432 = 12288 (kOomReserveBytes) + 4096 (kRestartMaxAllocHeapBytes) + 2048
+  // (kOomFallbackRearmMinMaxAllocBytes) — un réarmement à 16384 laisserait un
+  // reliquat < seuil d'auto-heal 4096 : le parachute sèmerait son propre
+  // auto-heal (le gate a REFUSÉ 16384). L'invariant arithmétique correspondant
+  // est verrouillé dans test_native_self_heal
+  // (test_rearm_arithmetic_never_triggers_autoheal_bug080).
+  TEST_ASSERT_EQUAL_UINT32(18432u, kOomRearmMinMaxAllocBytes);
   // Scénario réaliste du crash du 11/08 : heap ~48 Ko, maxBloc ~12 Ko → refus
   TEST_ASSERT_EQUAL_UINT8(kOomTlsGateLowMemory,
                           oomTlsGateReason(kPsramWroverFreeBytes, 49152, 12288,
@@ -483,8 +491,9 @@ void test_tls_gate_with_psram_preserves_v2185_behaviour(void) {
 // mesures TERRAIN et verrouillent le correctif.
 //
 // Convention des seuils : INCLUSIFS (>=) sur les deux paliers — à maxBloc ==
-// 24576 exactement on arme le NOMINAL, à maxBloc == 12288 exactement on arme le
-// REPLI. Retour 0 = NE RIEN FAIRE.
+// 18432 exactement on arme le NOMINAL (bug-080 v2.33.0 ; 24576 avant), à
+// maxBloc == 2048 exactement on arme le REPLI (v2.20.2 ; 12288 avant).
+// Retour 0 = NE RIEN FAIRE.
 
 // Helper : appel avec les valeurs RÉELLES de constants.h (aucune valeur en dur).
 static uint32_t rearmTarget(uint32_t armedBytes, uint32_t maxAllocBytes) {
@@ -499,7 +508,11 @@ static const uint32_t kLegacyRearmMinMaxAllocBytes = 32768u;  // seuil v2.18.5 (
 void test_rearm_real_constant_values_v2188(void) {
   // Verrouille l'échelle des seuils : tout futur changement casse ici.
   TEST_ASSERT_EQUAL_UINT32(12288u, (uint32_t)kOomReserveBytes);
-  TEST_ASSERT_EQUAL_UINT32(24576u, kOomRearmMinMaxAllocBytes);
+  // Amendé par gate pool-chemistry 02/09/2026, bug-080 (v2.33.0) : 24576 →
+  // 18432 = 12288 + 4096 + 2048 (réserve nominale + palier auto-heal + seuil de
+  // repli) — un réarmement à 16384 laisserait un reliquat < seuil d'auto-heal
+  // 4096 : le parachute déclencherait lui-même le restart d'auto-guérison.
+  TEST_ASSERT_EQUAL_UINT32(18432u, kOomRearmMinMaxAllocBytes);
   // RECALIBRAGE v2.20.2 (bug-famine-8bits, bloc E1) : les DEUX valeurs du palier
   // de repli ont changé — 2048 → 1024 (taille) et 12288 → 2048 (seuil). Les
   // valeurs de v2.18.8 verrouillées ici étaient calées sur ESP.getMaxAllocHeap(),
@@ -603,7 +616,8 @@ void test_rearm_nothing_when_heap_below_fallback_threshold(void) {
 }
 
 void test_rearm_fallback_tier_between_thresholds(void) {
-  // E2 — maxBloc ∈ [12288, 24576[ → palier de REPLI (2 Ko)
+  // E2 — maxBloc ∈ [kOomFallbackRearmMinMaxAllocBytes, kOomRearmMinMaxAllocBytes[
+  // (= [2048, 18432[ depuis bug-080) → palier de REPLI
   TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFallbackReserveBytes,
                            rearmTarget(0u, kOomFallbackRearmMinMaxAllocBytes));  // borne INCLUSIVE
   TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomFallbackReserveBytes,
@@ -613,7 +627,7 @@ void test_rearm_fallback_tier_between_thresholds(void) {
 }
 
 void test_rearm_nominal_tier_at_and_above_threshold(void) {
-  // E2 — maxBloc >= 24576 → palier NOMINAL (12 Ko), borne INCLUSIVE
+  // E2 — maxBloc >= 18432 (bug-080) → palier NOMINAL (12 Ko), borne INCLUSIVE
   TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomReserveBytes,
                            rearmTarget(0u, kOomRearmMinMaxAllocBytes));
   TEST_ASSERT_EQUAL_UINT32((uint32_t)kOomReserveBytes,

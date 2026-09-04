@@ -4,6 +4,7 @@
 #include <new>  // std::bad_alloc (filet TOCTOU autour de textAll, bug-heap-toctou A1)
 #include "ws_manager.h"
 #include "web_helpers.h"
+#include "heap_metrics.h"  // heapLargestFreeBlock8Bit — sans log ni alloc (bug-080)
 #include "config.h"
 #include "constants.h"
 #include "sensors.h"
@@ -85,9 +86,12 @@ void WsManager::update() {
     unsigned long now = millis();
     if (skipped > _lastWarnedSkipped &&
         (_lastSkipWarnMs == 0 || now - _lastSkipWarnMs >= kWsSkipWarnThrottleMs)) {
+      // Réserve du contre-visa 02/09 (bug-080) : afficher la MÊME métrique que
+      // celle qui décide du saut (8 bits) — la brute (~27 Ko d'IRAM inutilisable
+      // en 8 bits) rendait ce diagnostic trompeur.
       systemLogger.warning(String(skipped - _lastWarnedSkipped) +
-          " pushes WS sautés (heap fragmenté, maxBloc=" +
-          String(ESP.getMaxAllocHeap()) + " o)");
+          " pushes WS sautés (heap fragmenté, maxBloc8=" +
+          String(heapLargestFreeBlock8Bit()) + " o)");
       // Capturé AVANT le warn : si ce warn est lui-même sauté par broadcastLog
       // (futur callback logger), l'incrément sera compté au prochain warn.
       _lastWarnedSkipped = skipped;
@@ -158,11 +162,15 @@ uint32_t WsManager::oversizedFrameCount() const {
 // std::bad_alloc → abort() (coredump 2026-07-28, payload 1777 o, maxBloc < ~1,8 Ko).
 // Si le plus gros bloc contigu est sous kWsPushMinAllocBytes, on saute le push : l'UI
 // rate un cycle de 5 s (sans coût UX) et le débounce auto-guérison se joue.
+// bug-080 (v2.33.0) : mesure basculée sur heapLargestFreeBlock8Bit() — la métrique
+// brute ESP.getMaxAllocHeap() comptait l'IRAM 32 bits (~27,5 Ko figés) et cette
+// garde ne sautait donc JAMAIS un push, même en famine réelle. heapLargestFreeBlock8Bit
+// est sans log ni allocation (contrat heap_metrics.h) : l'invariant ci-dessous tient.
 // INVARIANT : ce helper ne logge JAMAIS — chaîne de ré-entrance sinon :
 // logger → callback (futur) → broadcastLog → _heapAllowsPush → log → récursion.
 // Le warn vit EXCLUSIVEMENT dans update() (throttlé kWsSkipWarnThrottleMs).
 bool WsManager::_heapAllowsPush() {
-  if (ESP.getMaxAllocHeap() >= kWsPushMinAllocBytes) return true;
+  if (heapLargestFreeBlock8Bit() >= kWsPushMinAllocBytes) return true;
   _skippedPushes.fetch_add(1, std::memory_order_relaxed);
   return false;
 }

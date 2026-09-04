@@ -424,7 +424,7 @@ curl -u admin:monmotdepasse "http://poolcontroller.local/get-logs?since=14400000
 - `truncated: true` → il reste des entrées au-delà de cette page ; le client reboucle avec `?since=<timestamp de la dernière entrée reçue>` jusqu'à `truncated: false`. Un client ancien qui ignore `truncated` reste fonctionnel (il voit simplement la première page).
 - Le document JSON de la page est construit en **une seule passe sous le mutex logger**, l'échappement est délégué à `serializeJson` (l'échappement manuel a été supprimé).
 
-**Réponse 503** (`{"error":"heap fragmenté, réessayez"}`) : la taille **réelle** de la page (`measureJson`) + `kHttpHeapMarginBytes` (4 Ko) est comparée au plus gros bloc contigu libre (`ESP.getMaxAllocHeap()`) **avant** toute allocation ; sinon le stream est pré-dimensionné exactement (aucun `resize()`). Remplace la garde v2.8.2 à seuil fixe `kMinHeapForLogsResponse` (24 Ko), supprimée — un seuil constant indépendant de la taille réelle de la réponse ne protégeait pas (2 coredumps, 2026-07-23 et 2026-07-24).
+**Réponse 503** (`{"error":"heap fragmenté, réessayez"}`) : la taille **réelle** de la page (`measureJson`) + `kHttpHeapMarginBytes` (4 Ko) est comparée au plus gros bloc **réellement allouable** (`heapLargestFreeBlock8Bit()` depuis v2.33.0 — l'ancienne `ESP.getMaxAllocHeap()` comptait l'IRAM 32 bits, plancher ~27 636 o, et rendait ce 503 préventif inatteignable ; [ADR-0058](adr/0058-gardes-heap-metrique-8-bits.md)) **avant** toute allocation ; sinon le stream est pré-dimensionné exactement (aucun `resize()`). Remplace la garde v2.8.2 à seuil fixe `kMinHeapForLogsResponse` (24 Ko), supprimée — un seuil constant indépendant de la taille réelle de la réponse ne protégeait pas (2 coredumps, 2026-07-23 et 2026-07-24).
 
 ---
 

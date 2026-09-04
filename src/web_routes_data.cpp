@@ -13,6 +13,7 @@
 #include "logs_export_chunk.h"
 #include "history.h"
 #include "history_export_chunk.h"
+#include "heap_metrics.h"  // heapLargestFreeBlock8Bit — garde heap /get-logs (bug-080)
 #include "json_compat.h"
 #include <AsyncJson.h>
 #include <time.h>
@@ -580,8 +581,10 @@ static void handleGetLogs(AsyncWebServerRequest* request) {
 
   // ORDRE IMPÉRATIF : measureJson → garde heap → beginResponseStream pré-dimensionné
   // → serializeJson → send. Ne RIEN écrire d'autre dans le stream.
+  // bug-080 (v2.33.0) : la garde compare au plus gros bloc RÉELLEMENT allouable
+  // (8 bits) — la métrique brute rendait le 503 préventif inatteignable.
   size_t sz = measureJson(doc);
-  if (sz + kHttpHeapMarginBytes > ESP.getMaxAllocHeap()) {
+  if (sz + kHttpHeapMarginBytes > heapLargestFreeBlock8Bit()) {
     request->send(503, "application/json", "{\"error\":\"heap fragmenté, réessayez\"}");
     return;
   }

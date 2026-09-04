@@ -10,7 +10,7 @@
 // dosing_logic / schedule_logic / sensor_filter.
 //
 // INVARIANT : ce module ne fait QUE décider à partir de valeurs déjà collectées.
-// La collecte (ESP.getMaxAllocHeap, millis, RTC RAM, fenêtre glissante) et les
+// La collecte (heapLargestFreeBlock8Bit, millis, RTC RAM, fenêtre glissante) et les
 // effets (stopAll, saveDailyCounters, publishAlert, flushToDisk, ESP.restart)
 // restent dans la coquille impure main.cpp.
 //
@@ -29,7 +29,7 @@ enum class SelfHealDecision : uint8_t {
 
 // Entrées de la décision — toutes fournies par l'appelant (aucune API Arduino).
 struct SelfHealInputs {
-  uint32_t maxAllocHeap;        // plus gros bloc contigu libre (ESP.getMaxAllocHeap)
+  uint32_t maxAllocHeap;        // plus gros bloc allouable 8 bits (heapLargestFreeBlock8Bit, bug-080)
   uint32_t restartThreshold;    // seuil de restart (kRestartMaxAllocHeapBytes)
   uint8_t  consecutiveBelow;    // nb de ticks consécutifs sous le seuil
   uint8_t  debounceChecks;      // debounce requis (kAutoHealDebounceChecks)

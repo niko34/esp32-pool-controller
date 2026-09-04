@@ -28,9 +28,9 @@ uint32_t oversizedFrameCount() const;  // cumul des trames > kWsFrameBufBytes �
 
 Coredump 2026-07-28 (v2.11.0) : `AsyncWebSocket::textAll()` alloue un buffer partagé (`makeSharedBuffer`, `make_shared<vector<uint8_t>>`) **sans rattraper** `std::bad_alloc` → sur tas fragmenté (plus gros bloc < ~1,8 Ko), `abort()` et reboot brutal. Correctif — extension de la philosophie [ADR-0032](../adr/0032-reponses-http-bornees.md#extension-2026-07-28--émissions-websocket-v2111) à la voie WS :
 
-- `_heapAllowsPush()` est appelé en tête des **3** broadcasts (`broadcastSensorData`, `broadcastConfig`, `broadcastLog`), **avant** toute construction de JSON : si `ESP.getMaxAllocHeap() < kWsPushMinAllocBytes` (**16384** o depuis v2.14.0 — était 8192, voir la [section v2.14.0](#angle-mort-toctou-comblé--filet-bad_alloc--buffer-statique-v2140-bug-heap-toctou) ci-dessous), le push est **sauté** — l'UI rate un cycle de 5 s, sans conséquence, et le débounce de l'auto-guérison ([ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111)) se joue.
+- `_heapAllowsPush()` est appelé en tête des **3** broadcasts (`broadcastSensorData`, `broadcastConfig`, `broadcastLog`), **avant** toute construction de JSON : si `heapLargestFreeBlock8Bit() < kWsPushMinAllocBytes` (**6 144 o en métrique 8 bits depuis v2.33.0** — ≈ 2,4× la trame pire cas 2 552 o, au-dessus du palier auto-heal 4 096 ; était 16 384 sur la mesure **brute**, dont le plancher ~27 636 o rendait la garde **incapable de sauter un push**, même en famine réelle — [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)), le push est **sauté** — l'UI rate un cycle de 5 s, sans conséquence, et le débounce de l'auto-guérison ([ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111)) se joue.
 - Chaque saut incrémente `_skippedPushes` (**atomic relaxed**, pattern `connectedAtomic`), exposé par `skippedPushCount()` (diagnostic).
-- **INVARIANT anti-ré-entrance : `_heapAllowsPush()` ne logge JAMAIS.** Chaîne de récursion sinon : `logger` → callback (futur branchement) → `broadcastLog` → `_heapAllowsPush` → log → récursion. Le WARN « N pushes WS sautés (heap fragmenté, maxBloc=…) » est émis **exclusivement depuis `update()`** (contexte `loopTask`), throttlé à `kWsSkipWarnThrottleMs` (**30 s**), et placé **avant** le court-circuit « aucun client » pour tracer aussi les sauts survenus juste avant une déconnexion.
+- **INVARIANT anti-ré-entrance : `_heapAllowsPush()` ne logge JAMAIS.** Chaîne de récursion sinon : `logger` → callback (futur branchement) → `broadcastLog` → `_heapAllowsPush` → log → récursion (`heapLargestFreeBlock8Bit()` est elle-même sans log ni allocation, contrat [`heap_metrics.h`](../../src/heap_metrics.h) — l'invariant tient). Le WARN « N pushes WS sautés (heap fragmenté, maxBloc8=…) » — la **même métrique que celle qui décide**, réserve du contre-visa bug-080 — est émis **exclusivement depuis `update()`** (contexte `loopTask`), throttlé à `kWsSkipWarnThrottleMs` (**30 s**), et placé **avant** le court-circuit « aucun client » pour tracer aussi les sauts survenus juste avant une déconnexion.
 
 ## Angle mort TOCTOU comblé + filet bad_alloc + buffer statique (v2.14.0, bug-heap-toctou)
 
@@ -39,6 +39,8 @@ Coredump 2026-07-28 (v2.11.0) : `AsyncWebSocket::textAll()` alloue un buffer par
 ### Garde relevée : 8192 → 16384 (fin de la zone grise)
 
 L'ancien seuil `kWsPushMinAllocBytes = 8192` était **égal** au seuil de restart auto-guérison `kRestartMaxAllocHeapBytes` (8192) → **zone grise 8-16 Ko** de maxBloc où les pushes restaient autorisés **et** l'auto-guérison ne s'armait pas. Dans cette zone, le TOCTOU (voir ci-dessous) suffisait à provoquer le crash. Le seuil passe à **16384** (marge 2× au-dessus du seuil de restart) : les pushes s'arrêtent **avant** la zone rouge, et l'auto-guérison garde sa fenêtre d'action. Voir [`constants.h`](../../src/constants.h) et [ADR-0032 §Extension 2026-07-30](../adr/0032-reponses-http-bornees.md#extension-2026-07-30--get-history-chunked-et-filet-ws-v2140).
+
+> **v2.33.0 — garde basculée en métrique 8 bits, seuil 16 384 → 6 144** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md), bug-080). La mesure brute `ESP.getMaxAllocHeap()` compte l'IRAM 32 bits (plancher ~27 636 o) : cette garde n'a en réalité **jamais sauté un push**, même pendant la famine du 02/09. Elle lit désormais `heapLargestFreeBlock8Bit()` ; le principe « pushes coupés AVANT la zone rouge » est conservé dans la nouvelle échelle : 6 144 > 4 096 (auto-heal), et ≈ 2,4× la trame pire cas mesurée (2 552 o).
 
 ### Filet absolu : `try/catch (std::bad_alloc)` autour des 3 `textAll`
 
@@ -137,7 +139,7 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 - **Pas de client connecté** : `broadcastSensorData()` ne fait rien (gain CPU). `hasClients()` court-circuite la construction JSON.
 - **Client déconnecté sans close** : nettoyé par `AsyncWebSocket::cleanupClients()` appelé dans `update()` ; depuis v2.11.1, aussi récolté par saturation de file (fermeture par le fork) ou timeout de PING keepalive.
 - **Push pendant write en cours** : `AsyncWebSocket` gère la file d'attente (bornée à 5 trames depuis v2.11.1), pas de blocage du loop.
-- **Heap fragmenté** (plus gros bloc `< kWsPushMinAllocBytes = 16384` depuis v2.14.0) : pushes **sautés** (garde v2.11.1), compteur `skippedPushCount()` + WARN throttlé 30 s dans `update()`. Course résiduelle (TOCTOU) : `std::bad_alloc` **rattrapé** autour de `textAll` → push sauté, même compteur, jamais d'`abort()` (v2.14.0).
+- **Heap fragmenté** (plus gros bloc **8 bits** `< kWsPushMinAllocBytes = 6144` depuis v2.33.0, [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) : pushes **sautés** (garde v2.11.1), compteur `skippedPushCount()` + WARN throttlé 30 s dans `update()` (libellé `maxBloc8=`). Course résiduelle (TOCTOU) : `std::bad_alloc` **rattrapé** autour de `textAll` → push sauté, même compteur, jamais d'`abort()` (v2.14.0).
 - **Trame plus grande que le buffer statique** (`kWsFrameBufBytes = 3584` depuis v2.21.1, était 3072) : push **sauté** (jamais tronqué), compteur `oversizedFrameCount()` + WARN throttlé dédié dans `update()` — signale qu'il faut agrandir la constante (v2.14.0).
 
 ## Dépendances
@@ -154,7 +156,8 @@ Côté UI : un toast est affiché une seule fois par session si la valeur ∈ {`
 - [`src/ws_manager.h`](../../src/ws_manager.h), [`src/ws_manager.cpp`](../../src/ws_manager.cpp)
 - [`src/web_server.cpp`](../../src/web_server.cpp) — instanciation du serveur
 - [`src/logger.h:58`](../../src/logger.h) — `setLogCallback()` (**code mort**, jamais branché — cf. section API publique)
-- [`src/constants.h`](../../src/constants.h) — `kWsPushMinAllocBytes` (16384), `kWsFrameBufBytes` (3584 depuis v2.21.1), `kWsSkipWarnThrottleMs`, `kWsKeepAlivePeriodS` (`kWsSensorJsonReserveBytes` supprimée en v2.14.0)
+- [`src/constants.h`](../../src/constants.h) — `kWsPushMinAllocBytes` (6144 en 8 bits depuis v2.33.0, était 16384 en brute), `kWsFrameBufBytes` (3584 depuis v2.21.1), `kWsSkipWarnThrottleMs`, `kWsKeepAlivePeriodS` (`kWsSensorJsonReserveBytes` supprimée en v2.14.0)
+- [`src/heap_metrics.h`](../../src/heap_metrics.h) — `heapLargestFreeBlock8Bit()`, mesure lue par `_heapAllowsPush()` ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md))
 - [`platformio.ini`](../../platformio.ini) — `-DWS_MAX_QUEUED_MESSAGES=5`
 - [ADR-0005](../adr/0005-websocket-push-sans-polling.md), [ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111), [ADR-0032 §Extensions](../adr/0032-reponses-http-bornees.md#extension-2026-07-28--émissions-websocket-v2111) (v2.11.1 et v2.14.0)
 

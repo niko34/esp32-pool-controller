@@ -2,6 +2,22 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.33.0] - 2026-09-02
+
+### Corrections
+
+- **Les quatre gardes mémoire voient enfin la vraie mémoire** (bug-080, lot A) : jusqu'ici, l'alerte « heap fragmenté », le saut des pushes WebSocket, la garde des réponses HTTP volumineuses et le redémarrage d'auto-guérison lisaient tous une métrique qui compte de la mémoire **inutilisable** (IRAM 32 bits, ~27 Ko figés) — leur plancher n'était **matériellement jamais franchissable** : le crash du 29/08 et la famine du 02/09 sont passés **sans une seule alerte**. Ces quatre gardes lisent désormais le plus gros bloc **réellement allouable** (8 bits), avec des seuils recalibrés sur les mesures terrain : échelle complète 2 048 (repli parachute) < 4 096 (auto-guérison) < 6 144 (pushes WS) < 12 288 (WARN) < 18 432 (réarmement nominal du parachute) < 21 492 o (nominal terrain).
+- **Le parachute anti-crash se réarme à nouveau en régime fragmenté** : son seuil de réarmement nominal (24 576 o) était au-dessus du régime réel de l'appareil — une fois consommé, il ne revenait jamais à pleine réserve. Nouveau seuil 18 432 o (= réserve 12 288 + marge auto-guérison 4 096 + repli 2 048), atteignable en fonctionnement normal.
+- **L'auto-guérison peut désormais redémarrer l'appareil en famine réelle** : sous 4 096 o de bloc allouable pendant ~15 s (3 mesures consécutives), redémarrage **propre** — dosage coupé et compteurs journaliers persistés AVANT le restart, plafond de 3 redémarrages par fenêtre de 15 min, puis mode maintenance (dosage suspendu, appareil joignable). Séquence sécurité chimique inchangée (conditions `pool-chemistry`).
+- Journal : les traces mémoire disent désormais `maxBloc8=` (métrique 8 bits) au lieu de `maxBloc=` — les relevés restent auto-descriptifs.
+
+### Documentation
+
+- **Nouvel [ADR-0058](docs/adr/0058-gardes-heap-metrique-8-bits.md)** : « Les gardes heap basculent sur la métrique 8 bits : l'immunité vient du temps, pas du seuil » — révocation du NO GO v2.20.2 (les données ont changé : nominal fragmenté stable 21 492 o, creux transitoires de quelques secondes), immunité par débounce temporel (3 mesures, famine continue ≥ 10-15 s), réarmement 16 384 refusé par le gate → 18 432 = 12 288 + 4 096 + 2 048 (verrouillé par test), hors périmètre consigné (`web_routes_debug.cpp`, `web_routes_ota.cpp` — lot B). [ADR-0040](docs/adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md) passe en Superseded.
+- `docs/subsystems/oom-guard.md`, `docs/subsystems/system-health.md`, `docs/subsystems/ws-manager.md`, `docs/API.md` (503 `/get-logs`) : échelle 8 bits unique, seuils et libellés `maxBloc8=` à jour.
+
+---
+
 ## [2.32.0] - 2026-08-31
 
 > ℹ️ **Appareils existants : RIEN ne change tant que la taille n'est pas touchée.** La clé NVS étant absente, la taille vaut « 20 à 60 m³ » dont les défauts sont **exactement** les réglages actuels (v2.30.0) — égalité **verrouillée à la compilation** (`static_assert`). Visa + contre-visa `pool-chemistry` : **GO**, 31/08/2026 (feature-090).

@@ -120,10 +120,17 @@ constexpr size_t kMinFreeHeapBytes = 10000;               // Seuil critique mém
 // Auto-guérison mémoire (v2.9.1) — redémarrage propre sur fragmentation du tas.
 // Le gel observé (web mort + logging arrêté, loopTask vivant) est causé par un plus
 // gros bloc contigu qui s'effondre alors que le heap total reste correct.
-// kRestartMaxAllocHeapBytes est comparé à ESP.getMaxAllocHeap() (plus gros bloc), et
-// est DISTINCT de kMinFreeHeapBytes (alerte sur heap total, conservée telle quelle).
-constexpr uint32_t kRestartMaxAllocHeapBytes = 8192;      // Plus gros bloc contigu < seuil → restart auto-guérison
-constexpr uint32_t kLowHeapWarnBytes = 20000;             // Plus gros bloc < seuil → WARN + flush disque one-shot
+// bug-080 (v2.33.0) : kRestartMaxAllocHeapBytes est désormais comparé à
+// heapLargestFreeBlock8Bit() — le plus gros bloc RÉELLEMENT allouable. L'ancienne
+// métrique ESP.getMaxAllocHeap() comptait l'IRAM 32 bits (~27,5 Ko figés) : son
+// plancher de 8 192 o n'était matériellement JAMAIS franchissable — le crash du
+// 29/08 et la famine du 02/09 sont passés sans déclenchement. 4 096 o est le
+// palier auto-heal de l'échelle 8 bits (cf. bloc ÉCHELLE COMPLÈTE plus bas).
+// Reste DISTINCT de kMinFreeHeapBytes (alerte sur heap total, conservée telle quelle).
+constexpr uint32_t kRestartMaxAllocHeapBytes = 4096;      // Plus gros bloc 8 bits < seuil → restart auto-guérison
+// = kOomReserveBytes — sous ce niveau la réserve nominale du parachute n'est plus
+// allouable (bug-080, v2.33.0 ; anciennement 20 000 o sur la métrique brute).
+constexpr uint32_t kLowHeapWarnBytes = 12288;             // Plus gros bloc 8 bits < seuil → WARN + flush disque one-shot
 constexpr unsigned long kHeapLogIntervalMs = 300000;      // 5min - cadence mini de la trace INFO « Heap: … » (anti-spam journal)
 constexpr uint32_t kHeapLogDropBytes = 8192;              // Émet aussi la trace Heap si maxBloc chute de + de 8 Ko depuis la dernière émission
 // Cadence PROPRE de la trace de calibrage « Heap 8bits: … » (checkHeapHealth).
@@ -148,12 +155,15 @@ constexpr uint32_t kHeapCheckFastIntervalMs = 5000;       // 5s - cadence rappro
 // ce seuil de plus gros bloc contigu, le push est SAUTÉ (l'UI rate un cycle de 5 s,
 // sans coût UX) et le débounce auto-guérison se joue.
 // bug-heap-toctou (coredump 30/07) : relevé 8192 → 16384 = marge 2× vs
-// kRestartMaxAllocHeapBytes (8192). L'ancien alignement des deux seuils créait une
-// zone grise 8-16 Ko où les pushes étaient autorisés ET l'auto-guérison ne s'armait
+// kRestartMaxAllocHeapBytes. L'ancien alignement des deux seuils créait une
+// zone grise où les pushes étaient autorisés ET l'auto-guérison ne s'armait
 // pas — le TOCTOU (async_tcp consomme le bloc mesuré entre le check et l'alloc de
-// textAll) suffisait alors à provoquer le bad_alloc. Avec 16384, les pushes
-// s'arrêtent AVANT la zone rouge et l'auto-guérison garde sa fenêtre d'action.
-constexpr uint32_t kWsPushMinAllocBytes = 16384;          // Plus gros bloc < seuil → push WS sauté
+// textAll) suffisait alors à provoquer le bad_alloc.
+// bug-080 (v2.33.0) : la garde lit désormais heapLargestFreeBlock8Bit() (métrique
+// 8 bits réelle) et le seuil est recalibré : 6 144 o ≈ 2,4× la trame pire cas
+// mesurée (2 552 o), au-dessus du palier auto-heal (4 096) — les pushes
+// s'arrêtent toujours AVANT la zone rouge et l'auto-guérison garde sa fenêtre.
+constexpr uint32_t kWsPushMinAllocBytes = 6144;           // Plus gros bloc 8 bits < seuil → push WS sauté
 constexpr uint32_t kWsSkipWarnThrottleMs = 30000;         // 30s - throttle du warn « pushes WS sautés »
 
 // Buffer STATIQUE (.bss) de construction des trames WS sortantes (bug-heap-toctou A2) :
@@ -209,8 +219,10 @@ constexpr const char* kHistoryDumpHeadNvsKey    = "dmp_head";  // Blob : 16 prem
 
 // Marge commune des gardes heap HTTP (pattern v2.10.1, généralisé par
 // bug-crash-getlogs-badalloc) : la taille RÉELLE de la réponse (measureJson /
-// String::reserve) + cette marge doit tenir dans le plus gros bloc contigu libre
-// (ESP.getMaxAllocHeap()), sinon 503 propre — jamais de std::bad_alloc → abort().
+// String::reserve) + cette marge doit tenir dans le plus gros bloc contigu libre,
+// sinon 503 propre — jamais de std::bad_alloc → abort(). bug-080 (v2.33.0) :
+// /get-logs mesure désormais heapLargestFreeBlock8Bit() (bloc réellement
+// allouable) ; la route de trace debug conserve la métrique brute (hors périmètre).
 // Remplace l'ancien seuil FIXE kMinHeapForLogsResponse (24 Ko), indépendant de la
 // taille réelle de la réponse, donc insuffisant (2 coredumps le prouvent).
 constexpr size_t kHttpHeapMarginBytes = 4096;
@@ -285,22 +297,30 @@ constexpr size_t kOomReserveBytes = 12288;
 // JAMAIS ré-allouée et le handler restait désenregistré → parachute one-shot en
 // pratique, ce qui a laissé passer le bad_alloc de 156 o du 13/08 (tas pourtant
 // comptabilisé sain : free=81 408 o, maxB=27 584 o).
-// Nouvelle valeur = 2 × kOomReserveBytes : atteignable dans le régime réel tout
-// en gardant une marge d'un bloc entier au-dessus de la taille à allouer.
+// bug-080 (v2.33.0, gate du 02/09/2026) : 24 576 → 18 432 = kOomReserveBytes
+// (12 288) + kRestartMaxAllocHeapBytes (4 096) + kOomFallbackRearmMinMaxAllocBytes
+// (2 048). Le gate a REFUSÉ 16 384 : allouer la réserve nominale de 12 288 depuis
+// un bloc à 16 384 laisse un reliquat < 4 096 — le parachute sèmerait son propre
+// auto-heal. 18 432 < nominal terrain 21 492 o → réarmable en régime réel (défaut
+// n°1 de la récidive du 13/08 : un seuil au-dessus du régime = parachute one-shot).
 //
 // ÉCHELLE COMPLÈTE des seuils « plus gros bloc contigu » (ordre croissant).
-// ATTENTION v2.20.2 : les seuils ne sont PLUS tous exprimés dans la même métrique.
-// Seul le réarmement du parachute a basculé sur la mesure 8 bits RÉELLE
-// (heapLargestFreeBlock8Bit) ; les autres restent sur la métrique BRUTE
-// ESP.getMaxAllocHeap() par décision NO GO explicite du gate pool-chemistry —
-// les basculer avec les seuils actuels rendrait le mode maintenance (= DOSAGE
-// SUSPENDU) atteignable en régime normal, puisque 8 192 > minMaxBloc8 = 3 060.
-//   [8 bits]    2 048 o (kOomFallbackRearmMinMaxAllocBytes) → réserve de REPLI
-//   [8 bits]   24 576 o (kOomRearmMinMaxAllocBytes)         → réserve NOMINALE
-//   [brute]     8 192 o (kRestartMaxAllocHeapBytes)         → reboot d'auto-guérison
-//   [brute]    16 384 o (kWsPushMinAllocBytes)              → pushes WS sautés
-//   [brute]    20 000 o (kLowHeapWarnBytes)                 → WARN heap + flush one-shot
-constexpr uint32_t kOomRearmMinMaxAllocBytes = 24576;
+// bug-080 (v2.33.0) : TOUS les seuils sont désormais exprimés dans la MÊME
+// métrique 8 bits (heapLargestFreeBlock8Bit — mémoire réellement allouable).
+// RÉVOCATION du NO GO v2.20.2 : le gate pool-chemistry avait interdit de basculer
+// les gardes sur la mesure 8 bits (risque : mode maintenance = DOSAGE SUSPENDU
+// atteignable en régime normal). NO GO levé par le gate du 02/09/2026 —
+// l'immunité contre les faux positifs vient du DÉBOUNCE TEMPOREL (3 mesures
+// consécutives, soit ≥ 10-15 s de famine continue), pas du niveau du seuil ;
+// données terrain : nominal 21 492 o, creux transitoires 1 268 o pendant
+// quelques secondes seulement. Décision consignée : ADR-0058.
+//    2 048 o (kOomFallbackRearmMinMaxAllocBytes) → réarmement réserve de REPLI
+//    4 096 o (kRestartMaxAllocHeapBytes)         → reboot d'auto-guérison
+//    6 144 o (kWsPushMinAllocBytes)              → pushes WS sautés
+//   12 288 o (kLowHeapWarnBytes)                 → WARN heap + flush one-shot
+//   18 432 o (kOomRearmMinMaxAllocBytes)         → réarmement réserve NOMINALE
+//   21 492 o                                     → nominal terrain (documentaire)
+constexpr uint32_t kOomRearmMinMaxAllocBytes = 18432;
 constexpr unsigned long kOomRearmCheckIntervalMs = 10000;  // 10 s - cadence lente du réarmement (loop)
 
 // Réserve de REPLI (2ᵉ palier) : si le bloc nominal de 12 Ko n'est pas allouable,
@@ -322,10 +342,9 @@ constexpr unsigned long kOomRearmCheckIntervalMs = 10000;  // 10 s - cadence len
 //   (b) taille allouée 1 024 ≤ 2 048 / 2   → allouer la réserve ne peut pas à soi
 //       seul faire retomber le tas sous son propre seuil de réarmement ;
 //   (c) 2 048 ≤ 4 084 = min(maxBloc8 observé en régime) → armable en pratique.
-// kOomRearmMinMaxAllocBytes reste à 24 576 : DÉLIBÉRÉMENT inatteignable dans le
-// régime fragmenté actuel (donc plus aucun malloc(12288) répété toutes les 10 s),
-// mais le réarmement nominal automatique repart de lui-même si la fragmentation
-// disparaît.
+// kOomRearmMinMaxAllocBytes = 18 432 depuis bug-080 (v2.33.0) : désormais
+// ATTEIGNABLE en régime réel (nominal terrain 21 492 o) — le surclassement
+// repli → nominal redevient automatique dès que la fragmentation se résorbe.
 constexpr size_t kOomFallbackReserveBytes = 1024;
 constexpr uint32_t kOomFallbackRearmMinMaxAllocBytes = 2048;
 
@@ -583,7 +602,8 @@ constexpr size_t kSensorTraceBufferSize          = 300;
 // kSensorTraceHeapMarginBytes reste le filet en cas de heap trop fragmenté.
 constexpr size_t kSensorTraceMaxSamplesPerPage   = 50;
 // Marge de sécurité entre la taille mesurée de la réponse (measureJson) et le
-// plus gros bloc libre (ESP.getMaxAllocHeap()) : en dessous → 503 propre au
+// plus gros bloc libre 8 bits (heapLargestFreeBlock8Bit() depuis bug-080/
+// v2.33.0 — la brute d'avant comptait l'IRAM) : en dessous → 503 propre au
 // lieu d'un std::bad_alloc → abort() sur la tâche async_tcp.
 // Alias historique (v2.10.1) de la marge commune kHttpHeapMarginBytes — même
 // valeur, zéro diff comportemental (bug-crash-getlogs-badalloc).

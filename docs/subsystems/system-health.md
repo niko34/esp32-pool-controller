@@ -2,9 +2,9 @@
 
 - **Fichiers** : [`src/main.cpp`](../../src/main.cpp) (`checkSystemHealth`, `performFailSafeRestart`, `performAutoHealRestart`, `enterMaintenanceMode`, `initAutoHealRtcState`, `ensureNetworkProbe`, `onNetPingSuccess`), [`src/self_heal_logic.h`](../../src/self_heal_logic.h) / [`.cpp`](../../src/self_heal_logic.cpp), [`src/net_health_logic.h`](../../src/net_health_logic.h) / [`.cpp`](../../src/net_health_logic.cpp), [`src/history_guard_logic.h`](../../src/history_guard_logic.h) / [`.cpp`](../../src/history_guard_logic.cpp) (+ coquille dans [`src/history.cpp`](../../src/history.cpp))
 - **Pas de singleton** : logique portée par des fonctions libres de `main.cpp` + trois modules purs `self_heal_logic` (heap), `net_health_logic` (connectivité) et `history_guard_logic` (disjoncteur de boot-loop history).
-- **Décisions architecturales** : [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison mémoire), [ADR-0030](../adr/0030-watchdog-connectivite.md) (watchdog de connectivité), [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) (disjoncteur de boot-loop history), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité périodique du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0).
+- **Décisions architecturales** : [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison mémoire), [ADR-0030](../adr/0030-watchdog-connectivite.md) (watchdog de connectivité), [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) (disjoncteur de boot-loop history), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité périodique du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) (**bascule des gardes sur la métrique 8 bits**, v2.33.0).
 
-> ⚠️ **v2.19.0 — l'auto-guérison heap N'EST PAS ENCORE BASCULÉE sur la bonne métrique.** [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) a établi que `ESP.getMaxAllocHeap()` mesure `MALLOC_CAP_INTERNAL`, pool qui **inclut l'IRAM accessible en 32 bits seulement**, inutilisable par un `malloc()`/`new`. Sur l'appareil de production, cet indicateur est resté **figé à ~27 584 o pendant des jours et à travers les redémarrages** : le seuil `kRestartMaxAllocHeapBytes` = 8 192 o **n'a jamais pu être franchi**, donc **le watchdog heap décrit dans cette page n'a jamais déclenché un seul redémarrage depuis sa création**. La v2.19.0 se contente de **mesurer** : elle ajoute la [trace de calibrage](#trace-de-calibrage-des-seuils-mémoire-v2190) et bascule l'anneau/le post-mortem sur la mesure 8 bits (observationnel), **sans toucher un seul seuil ni une seule garde** — comportement de l'appareil strictement inchangé. Le recalibrage et la bascule arrivent en **v2.19.1**, après ≥ 24 h de relevés on-target, l'auto-guérison **en dernier**.
+> ✅ **v2.33.0 — l'auto-guérison heap et le WARN lisent enfin la métrique 8 bits** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md), bug-080 lot A). L'ancienne mesure `ESP.getMaxAllocHeap()` (pool `MALLOC_CAP_INTERNAL`, IRAM 32 bits comprise) possède un **plancher infranchissable ~27 636 o** : les gardes calées dessus n'ont **jamais déclenché** — le PANIC du 29/08 et la famine de 9 min du 02/09 (1 466 échecs d'allocation) sont passés sans une seule alerte. `checkHeapHealth()` échantillonne désormais `heapLargestFreeBlock8Bit()`, avec les seuils recalibrés : **auto-guérison à 4 096 o** (`kRestartMaxAllocHeapBytes`), **WARN + flush + cadence rapprochée à 12 288 o** (`kLowHeapWarnBytes`). L'immunité aux creux transitoires (jusqu'à 1 268 o pendant quelques secondes en régime normal) vient du **débounce temporel** — 3 mesures consécutives, cadence 5 s sous le WARN, soit une famine continue ≥ 10-15 s avant restart — pas du niveau du seuil. Les logs disent `maxBloc8=`.
 
 ## Rôle
 
@@ -42,7 +42,7 @@ Le disjoncteur history, lui, s'exécute **une seule fois au boot**, dans `Histor
 
 D'où **deux** gardes complémentaires, chacune sur sa vraie métrique :
 
-- **Heap** : `ESP.getMaxAllocHeap()` (plus gros bloc contigu libre), **distinct** de l'alerte heap total. ⚠️ **Bonne grandeur, mauvais pool** : cette fonction interroge `MALLOC_CAP_INTERNAL`, IRAM 32 bits comprise — la garde doit lire `heapLargestFreeBlock8Bit()` ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)), ce qui sera fait en **v2.19.1**.
+- **Heap** : plus gros bloc contigu **réellement allouable** — `heapLargestFreeBlock8Bit()` depuis la **v2.33.0** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) ; l'ancienne `ESP.getMaxAllocHeap()` interrogeait `MALLOC_CAP_INTERNAL`, IRAM 32 bits comprise ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)) et rendait la garde aveugle. **Distinct** de l'alerte heap total.
 - **Connectivité** : sonde ICMP active vers la passerelle (le réseau répond-il de bout en bout ?), **indépendante de MQTT**.
 
 Historique des modes de défaillance « appareil injoignable » (5 traités) : `std::bad_alloc` sur `/logs` (2.8.2, PANIC) → assert lwIP WebSocket (2.9.0, [ADR-0028](../adr/0028-migration-fork-esp32async.md), PANIC) → fragmentation du tas sans crash (2.9.1, [ADR-0029](../adr/0029-auto-guerison-heap.md), gel heap) → gel de la pile lwIP avec heap sain (2.9.2, [ADR-0030](../adr/0030-watchdog-connectivite.md), gel réseau) → **boot-loop sur partition history corrompue** (2.10.0, [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md), panic à chaque boot avant WiFi).
@@ -51,13 +51,13 @@ Historique des modes de défaillance « appareil injoignable » (5 traités) : `
 
 Coredump 2026-07-28 (v2.11.0, `bad_alloc` dans un broadcast WS) : le plus gros bloc peut s'effondrer sous ~2 Ko **entre deux ticks de 60 s** — à cadence fixe, le débounce (3 ticks = **~180 s**) ne confirme jamais avant le crash. Correctif ([ADR-0029 §Amendement](../adr/0029-auto-guerison-heap.md#amendement-2026-07-28--échantillonnage-adaptatif-v2111)) :
 
-- Le bloc heap est **extrait** de `checkSystemHealth()` vers `checkHeapHealth()` ([`main.cpp:793`](../../src/main.cpp)) — déplacement à **diff logique nul** (une seule ligne ajoutée : export de l'échantillon `lastHeapMaxAllocSample` ; sentinelle `UINT32_MAX` avant le premier échantillon → cadence normale au boot). `checkHeapHealth()` est la **source unique** de `ESP.getMaxAllocHeap()` et du compteur `consecutiveBelow`.
+- Le bloc heap est **extrait** de `checkSystemHealth()` vers `checkHeapHealth()` ([`main.cpp:793`](../../src/main.cpp)) — déplacement à **diff logique nul** (une seule ligne ajoutée : export de l'échantillon `lastHeapMaxAllocSample` ; sentinelle `UINT32_MAX` avant le premier échantillon → cadence normale au boot). `checkHeapHealth()` est la **source unique** de la mesure du plus gros bloc (`heapLargestFreeBlock8Bit()` depuis v2.33.0) et du compteur `consecutiveBelow`.
 - Son timer dans `loop()` ([`main.cpp:329`](../../src/main.cpp)) est cadencé par la fonction **pure** `heapSampleIntervalMs(maxAllocHeap, warnThreshold, normalMs, fastMs)` (`self_heal_logic`, +5 tests natifs) : **60 s** (`kHealthCheckIntervalMs`) si `maxAllocHeap ≥ kLowHeapWarnBytes`, **5 s** (`kHeapCheckFastIntervalMs`) en dessous → le débounce `kAutoHealDebounceChecks` (3 ticks) confirme un heap critique en **~15 s au lieu de ~180 s**.
 - **Invariants ADR-0029 inchangés** : seuils, débounce, uptime minimal, budget partagé, mode maintenance, garde OTA — seule la fréquence d'observation change.
 
 ## Instrumentation du tas (v2.9.1 — trace INFO désactivée en 2.10.2, portée par `checkHeapHealth()` depuis 2.11.1)
 
-À **chaque** tick, `maxAllocHeap = ESP.getMaxAllocHeap()` est **échantillonné** — cet échantillonnage reste actif : il alimente la décision d'auto-guérison (debounce), le flush one-shot ci-dessous et, depuis v2.11.1, la cadence adaptative du timer.
+À **chaque** tick, `maxAllocHeap = heapLargestFreeBlock8Bit()` (`ESP.getMaxAllocHeap()` jusqu'à la v2.32.x — [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) est **échantillonné** — cet échantillonnage reste actif : il alimente la décision d'auto-guérison (debounce), le flush one-shot ci-dessous et, depuis v2.11.1, la cadence adaptative du timer.
 
 La trace INFO périodique persistée :
 
@@ -67,7 +67,7 @@ Heap: libre=<getFreeHeap> maxBloc=<getMaxAllocHeap> minLibre=<getMinFreeHeap>
 
 (émise toutes les `kHeapLogIntervalMs = 5 min`, ou sur chute de `maxBloc` > `kHeapLogDropBytes = 8 Ko` depuis la dernière émission — elle visualisait la fragmentation : `maxBloc` s'effondre alors que `libre` reste correct) est **désactivée depuis la v2.10.2** : le bloc d'émission est **mis en commentaire** dans `checkHeapHealth()` ([`main.cpp:805`](../../src/main.cpp)), pour ne plus consommer le journal 64 Ko avec de la télémétrie de routine. Pour ré-instrumenter (diagnostic d'un nouvel épisode de fragmentation), **décommenter le bloc** — le commentaire sur place documente la marche à suivre.
 
-**Restent actifs** : au **premier** franchissement à la baisse de `kLowHeapWarnBytes = 20 Ko` (plus gros bloc), un WARN est émis **et** un `flushToDisk()` **one-shot** capture la descente sur disque même si le redémarrage n'est jamais atteint. Le déclencheur est **ré-armé** dès que `maxBloc` repasse au-dessus du seuil ([`main.cpp:826`](../../src/main.cpp)).
+**Restent actifs** : au **premier** franchissement à la baisse de `kLowHeapWarnBytes = 12 288 o` (plus gros bloc 8 bits — était 20 000 sur la métrique brute jusqu'à la v2.32.x), un WARN « Heap fragmenté sous seuil d'alerte: maxBloc8=… » est émis **et** un `flushToDisk()` **one-shot** capture la descente sur disque même si le redémarrage n'est jamais atteint. Le déclencheur est **ré-armé** dès que `maxBloc8` repasse au-dessus du seuil ([`main.cpp:826`](../../src/main.cpp)).
 
 ### Alerte `low_memory` en transition (v2.11.1, churn-heap Q4)
 
@@ -96,13 +96,13 @@ Heap 8bits: libre8=46088 maxBloc8=4596 minBoot=3060 minFen=3060 ws=1
 Deux points de mise en œuvre à connaître :
 
 - **Le minimum glissant n'est pas échantillonné à la cadence de la trace.** `minBoot` / `minFen` sont mis à jour à **chaque tick** de `checkHeapHealth()` (60 s en régime sain, `kHeapCheckFastIntervalMs` = 5 s sous seuil d'alerte), pas toutes les 30 min : un creux transitoire entre deux traces serait sinon **invisible**, et c'est précisément le creux qui dimensionne le seuil de redémarrage.
-- **Aucune décision ne dépend de cette trace.** C'est un instrument de calibrage, pas une garde. Les seuils comparés plus bas (`kRestartMaxAllocHeapBytes`, `kLowHeapWarnBytes`) lisent toujours la mesure **brute** — y compris en v2.20.2, par décision explicite du gate `pool-chemistry` ([ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)). Seuls les **paliers de réarmement du parachute** ont basculé sur la mesure 8 bits.
+- **Aucune décision ne dépend de cette trace.** C'est un instrument de calibrage et de surveillance de dérive, pas une garde. Depuis la v2.33.0, les gardes lisent **la même métrique 8 bits** que la trace ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) — c'est cette trace qui a fourni les valeurs du recalibrage (nominal fragmenté stable 21 492 o sur 2.26→2.32, creux transitoires 1 268 o).
 
 > ⚠️ **Ne pas confondre les deux colonnes en lisant le journal.** Un écart d'une dizaine de kilo-octets entre `maxBloc8` et `maxBloc` est **normal** : c'est le reliquat d'IRAM 32 bits que l'ancienne métrique comptait à tort. Un `maxBloc` figé à la même valeur pendant des heures ou à travers un redémarrage n'est **pas** un signe de stabilité, c'est la signature du piège ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)).
 
-**Ce qu'il faut relever on-target** (prérequis à la bascule des gardes restantes) : `minBoot` sur **au moins 24 h** d'uptime continu **sous 2.20.2**, plus les valeurs `libre8` / `maxBloc8` observées **en régime chargé** (chargement de l'interface, export d'historique, session OTA, plusieurs clients WebSocket). L'invariant d'ordre `restart < rearmOom ≤ kWsPushMinAllocBytes < kLowHeapWarnBytes < min(maxBloc8 sur 24 h)` reste contractuel, débounce maintenu à 3.
+**La bascule des gardes a été faite en v2.33.0** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) sur les relevés propres 2.26→2.32 de cette trace. L'échelle contractuelle en métrique 8 bits : `2 048 (repli) < 4 096 (auto-heal) < 6 144 (skip WS) < 12 288 (WARN) < 18 432 (réarmement nominal) < 21 492 (nominal terrain)`, débounce maintenu à 3. La trace reste émise pour surveiller la **dérive** du régime : si `minFen` s'installe durablement sous 12 288, les creux s'aggravent.
 
-> ⚠️ **La règle `clamp(0,40 × min(maxBloc8) ; 8192 ; 16384)` d'[ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) est INAPPLICABLE** telle quelle : avec le `min` réellement mesuré (**3 060 o**), le plancher **8 192 se situe au-dessus du minimum observé en régime normal** → redémarrages en boucle → **mode maintenance = dosage suspendu**. De plus, les relevés du 15/08 sont **invalidés** (~100 % du signal d'échec était fabriqué par la garde de réarmement elle-même). Doctrine retenue : **on ne calibre pas des seuils sur une fragmentation pathologique** ([ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)). Suite du chantier : `specs/features/todo/bug-bascule-gardes-8bits-recalibrage.md`.
+> **Historique** : la règle `clamp(0,40 × min(maxBloc8) ; 8192 ; 16384)` d'[ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) avait été déclarée **inapplicable** en v2.20.2 (min mesuré 3 060 o → plancher 8 192 au-dessus du régime normal → mode maintenance atteignable) et la bascule refusée par NO GO ([ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md), superseded). La révocation du NO GO repose sur un autre argument : **l'immunité vient du débounce temporel, pas du niveau du seuil** — voir [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md).
 
 ## Ring de télémétrie heap en RAM RTC noinit (v2.14.0, bug-heap-toctou A4)
 
@@ -191,12 +191,12 @@ Le résultat du contrôle est aussi consigné dans les **drapeaux du post-mortem
 ## Machine à états auto-guérison / maintenance
 
 ```
-                 maxBloc < kRestartMaxAllocHeapBytes (8 Ko)
+                 maxBloc8 < kRestartMaxAllocHeapBytes (4 096 o, 8 bits)
                  pendant kAutoHealDebounceChecks (3) ticks consécutifs
    [ NORMAL ] ───ET uptime ≥ kAutoHealMinUptimeMs (3 min)──────────► [ RESTART propre ]
        ▲                                                                     │
        │                                                                     │ reboots comptés
-       │ maxBloc ≥ seuil (compteur remis à 0)                               │ en RAM RTC
+       │ maxBloc8 ≥ seuil (compteur remis à 0)                              │ en RAM RTC
        │                                                                     ▼
        │                          rebootCountInWindow ≥ kAutoHealMaxReboots (3)
        └──────────────────────────────────────────────────► [ MAINTENANCE (joignable) ]
@@ -241,13 +241,13 @@ Condition pool-chemistry **C2** : quand `kAutoHealMaxReboots` (3) reboots ont eu
 
 ## Décision pure — `self_heal_logic`
 
-Style Humble Object ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) : la **décision** est extraite dans un module pur (`<stdint.h>` seul, sans Arduino/FreeRTOS/String) → **testable en natif**. La collecte (`getMaxAllocHeap`, `millis`, RAM RTC) et les effets restent dans la coquille `main.cpp`.
+Style Humble Object ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) : la **décision** est extraite dans un module pur (`<stdint.h>` seul, sans Arduino/FreeRTOS/String) → **testable en natif**. La collecte (`heapLargestFreeBlock8Bit`, `millis`, RAM RTC) et les effets restent dans la coquille `main.cpp`.
 
 ```cpp
 enum class SelfHealDecision : uint8_t { Continue, Restart, EnterMaintenance };
 
 struct SelfHealInputs {
-  uint32_t maxAllocHeap;        // plus gros bloc contigu libre
+  uint32_t maxAllocHeap;        // plus gros bloc allouable 8 bits (heapLargestFreeBlock8Bit, bug-080)
   uint32_t restartThreshold;    // kRestartMaxAllocHeapBytes
   uint8_t  consecutiveBelow;    // ticks consécutifs sous le seuil
   uint8_t  debounceChecks;      // kAutoHealDebounceChecks
@@ -459,10 +459,10 @@ Sinon, un `debug(...)` « Ré-annonce mDNS débouncée » trace l'oscillation ig
 | Constante | Valeur | Rôle |
 |---|---|---|
 | `kHealthCheckIntervalMs` | `60000` (60 s) | Période d'appel de `checkSystemHealth()` + cadence **nominale** de `checkHeapHealth()` |
-| `kHeapCheckFastIntervalMs` | `5000` (5 s) | Cadence **rapprochée** de `checkHeapHealth()` quand `maxBloc < kLowHeapWarnBytes` (v2.11.1) |
-| `kMinFreeHeapBytes` | `10000` (10 Ko) | Seuil heap **total** → alerte `low_memory` en **transition** (distinct de l'auto-guérison) |
-| `kLowHeapWarnBytes` | `20000` (20 Ko) | Plus gros bloc sous ce seuil → WARN + flush one-shot + bascule en cadence rapprochée |
-| `kRestartMaxAllocHeapBytes` | `8192` (8 Ko) | Plus gros bloc sous ce seuil → candidat au restart |
+| `kHeapCheckFastIntervalMs` | `5000` (5 s) | Cadence **rapprochée** de `checkHeapHealth()` quand `maxBloc8 < kLowHeapWarnBytes` (v2.11.1) |
+| `kMinFreeHeapBytes` | `10000` (10 Ko) | Seuil heap **total** → alerte `low_memory` en **transition** (distinct de l'auto-guérison ; toujours sur `ESP.getFreeHeap()`) |
+| `kLowHeapWarnBytes` | `12288` (12 Ko) | Plus gros bloc **8 bits** sous ce seuil → WARN + flush one-shot + cadence rapprochée — **20 000 (brute) → 12 288 (8 bits) en v2.33.0** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) : = `kOomReserveBytes`, sous ce niveau la réserve nominale du parachute n'est plus allouable |
+| `kRestartMaxAllocHeapBytes` | `4096` (4 Ko) | Plus gros bloc **8 bits** sous ce seuil → candidat au restart — **8 192 (brute) → 4 096 (8 bits) en v2.33.0** (palier auto-heal de l'échelle [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) |
 | `kAutoHealDebounceChecks` | `3` | Ticks consécutifs sous seuil avant restart (anti-oscillation ; ≈ 3 min à cadence nominale, **≈ 15 s** en cadence rapprochée) |
 | `kAutoHealMinUptimeMs` | `180000` (3 min) | Uptime minimal avant tout restart auto |
 | `kAutoHealMaxReboots` | `3` | Plafond de reboots dans la fenêtre → mode maintenance (**partagé heap + réseau**) |
@@ -484,7 +484,7 @@ Sinon, un `debug(...)` « Ré-annonce mDNS débouncée » trace l'oscillation ig
 | `kHeap8LogIntervalMs` | `1800000` (30 min) | Cadence de la [trace de calibrage](#trace-de-calibrage-des-seuils-mémoire-v2190) « Heap 8bits: … » — **était `kHeapLogIntervalMs` = 5 min jusqu'en 2.20.1** (rétention du journal ramenée à ~30 min) |
 | `kHeapLogIntervalMs` | `300000` (5 min) | Cadence de l'ancienne trace « Heap: … », restée en commentaire depuis la 2.10.2 |
 
-> ⚠️ **Aucune de ces constantes n'a été modifiée en v2.19.0.** `kLowHeapWarnBytes` et `kRestartMaxAllocHeapBytes` sont toujours comparées à la mesure **brute** (`ESP.getMaxAllocHeap()`) et ont été **calibrées sur cette mesure fausse** — d'où un seuil de redémarrage jamais atteignable. Leur recalibrage sur `maxBloc8` est livré en **v2.19.1** ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)).
+> ✅ **Depuis la v2.33.0, `kLowHeapWarnBytes` et `kRestartMaxAllocHeapBytes` sont comparées à `heapLargestFreeBlock8Bit()`** avec les valeurs recalibrées ci-dessus ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)). Jusqu'à la v2.32.x elles lisaient la mesure brute (plancher ~27 636 o) : le seuil de redémarrage n'était matériellement jamais atteignable — le watchdog heap n'avait **jamais déclenché un seul redémarrage** depuis sa création (preuve : PANIC du 29/08 et famine du 02/09, silencieux).
 
 ## Alertes MQTT émises
 
@@ -532,3 +532,4 @@ Voir [MQTT.md](../MQTT.md#alertes).
 - [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) — disjoncteur de boot-loop history
 - [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) — post-mortem d'allocation RTC + contrôle d'intégrité périodique du tas (alternatives écartées : échantillonnage rapproché du tas, poisoning comprehensive, `ESP.restart()` nu)
 - [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) — **cause racine des 3 crashs** : la métrique heap incluait l'IRAM 32 bits, le seuil d'auto-guérison n'a jamais pu être franchi ; mesure 8 bits obligatoire dans les gardes, découpage mesure (2.19.0) / bascule (2.19.1)
+- [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) — **bascule effective des gardes en v2.33.0** (bug-080 lot A) : auto-heal 4 096, WARN 12 288, immunité par débounce temporel, révocation du NO GO d'ADR-0040

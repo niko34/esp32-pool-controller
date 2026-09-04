@@ -51,7 +51,8 @@ private:
   unsigned long _lastOversizedWarnMs = 0; // Instant du dernier warn (0 = jamais)
 
   // Garde heap commune des broadcasts (bug-badalloc-ws-broadcast) : false si le plus
-  // gros bloc contigu est sous kWsPushMinAllocBytes (le push doit être sauté).
+  // gros bloc contigu RÉELLEMENT allouable (heapLargestFreeBlock8Bit, bug-080/v2.33.0)
+  // est sous kWsPushMinAllocBytes (le push doit être sauté).
   // INVARIANT : ne logge JAMAIS — voir le commentaire d'implémentation.
   bool _heapAllowsPush();
 

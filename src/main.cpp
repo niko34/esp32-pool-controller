@@ -127,7 +127,8 @@ void setup() {
                       String(oomArmedBytes) + " o (" +
                       String(oomArmedBytes >= kOomReserveBytes ? "palier nominal"
                                                               : "palier de repli") +
-                      ") pré-allouée, maxBloc=" + String(ESP.getMaxAllocHeap()) + " o");
+                      // Métrique 8 bits : la même que les seuils du parachute (bug-080).
+                      ") pré-allouée, maxBloc8=" + String(heapLargestFreeBlock8Bit()) + " o");
   } else {
     // Improbable au boot : les deux mallocs refusés — la loop réarmera (hystérésis).
     systemLogger.warning("Parachute OOM : réserve non allouée au boot (nominal ET repli refusés) "
@@ -785,9 +786,9 @@ void performFailSafeRestart(const char* reason, const char* alertType,
 // et délègue la séquence C1 à performFailSafeRestart(). Ne retourne jamais.
 void performAutoHealRestart(uint32_t maxAllocHeap) {
   String reason = "Auto-guérison : heap critique (fragmentation), "
-                  "redémarrage propre — maxBloc=" + String(maxAllocHeap) + " bytes";
+                  "redémarrage propre — maxBloc8=" + String(maxAllocHeap) + " bytes";
   performFailSafeRestart(reason.c_str(), "auto_reboot",
-      "Redémarrage auto-guérison (heap critique), maxBloc=" + String(maxAllocHeap));
+      "Redémarrage auto-guérison (heap critique), maxBloc8=" + String(maxAllocHeap));
 }
 
 // Callback ICMP (v2.9.2) : invoqué par le thread interne esp_ping à chaque écho reçu
@@ -911,8 +912,10 @@ void handleHeapCorruptionDetected() {
 
 // Surveillance heap + auto-guérison (bug-badalloc-ws-broadcast) : bloc extrait de
 // checkSystemHealth() pour tourner sur un timer PROPRE à cadence adaptative (cf.
-// heapSampleIntervalMs dans loop()). SOURCE UNIQUE de ESP.getMaxAllocHeap() et de
-// consecutiveBelow — checkSystemHealth() ne les touche plus (l'alerte kMinFreeHeapBytes
+// heapSampleIntervalMs dans loop()). SOURCE UNIQUE de la mesure du plus gros bloc
+// (heapLargestFreeBlock8Bit depuis bug-080/v2.33.0 — l'ancienne ESP.getMaxAllocHeap
+// comptait l'IRAM 32 bits et rendait les gardes AVEUGLES) et de consecutiveBelow
+// — checkSystemHealth() ne les touche plus (l'alerte kMinFreeHeapBytes
 // porte sur freeHeap, métrique différente, et reste à 60 s). AUCUNE publication MQTT
 // périodique ici (seules les alertes des chemins restart/maintenance).
 // Invariants ADR-0029 conservés À L'IDENTIQUE : débounce kAutoHealDebounceChecks,
@@ -925,7 +928,10 @@ void checkHeapHealth() {
   // (> kHeapLogDropBytes depuis la dernière émission) → capture la tendance/descente
   // sans noyer le journal (~1440 lignes/j sinon). Voir la fragmentation : maxBloc
   // s'effondre pendant que libre reste correct.
-  uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
+  // bug-080 (v2.33.0) : point de mesure UNIQUE basculé sur la métrique 8 bits
+  // RÉELLE. Ce même échantillon alimente le WARN+flush, le débounce auto-heal,
+  // SelfHealInputs::maxAllocHeap et la cadence adaptative (lastHeapMaxAllocSample).
+  uint32_t maxAllocHeap = heapLargestFreeBlock8Bit();
   // Export de l'échantillon pour la cadence adaptative du timer dans loop()
   // (bug-badalloc-ws-broadcast) — seule ligne ajoutée au bloc déplacé.
   lastHeapMaxAllocSample = maxAllocHeap;
@@ -949,21 +955,18 @@ void checkHeapHealth() {
   // }
 
   // ===== Trace de calibrage des seuils mémoire (v2.19.0) =====
-  // bug-metrique-heap-inclut-iram-32bits : les seuils actuels ont été fixés sur
-  // ESP.getMaxAllocHeap(), qui compte AUSSI l'IRAM 32 bits inutilisable par un
-  // malloc/new (cf. heap_metrics.h). Cette trace donne les DEUX familles de
-  // valeurs pour rendre l'écart mesurable ON-TARGET ; c'est elle qui servira à
-  // recalibrer les seuils en 2.19.1. Valeurs BRUTES en octets, aucun arrondi.
-  // AUCUNE décision n'en dépend : les gardes ci-dessous restent INCHANGÉES
-  // (elles basculeront sur la métrique 8 bits en 2.19.1, une fois les vraies
-  // valeurs relevées).
+  // bug-metrique-heap-inclut-iram-32bits : ESP.getMaxAllocHeap() compte AUSSI
+  // l'IRAM 32 bits inutilisable par un malloc/new (cf. heap_metrics.h). Cette
+  // trace a servi à relever les vraies valeurs 8 bits ON-TARGET ; depuis bug-080
+  // (v2.33.0), les gardes ci-dessous lisent la métrique 8 bits et leurs seuils
+  // sont recalibrés sur ces relevés (nominal 21 492 o) — la trace reste utile
+  // pour surveiller la dérive du régime. Valeurs BRUTES en octets, aucun arrondi.
   //
   // Le suivi des CREUX est alimenté par heapRingSample() (cadence 2 s, valeurs
-  // déjà mesurées) et NON ici : à la cadence de checkHeapHealth() (60 s, et la
-  // cadence rapide ne s'arme jamais puisqu'elle dépend de l'ANCIENNE métrique,
-  // figée à ~27,5 Ko), on raterait des creux qui ne durent que quelques
-  // secondes — le minimum serait trop optimiste et le seuil d'auto-guérison
-  // calibré dessus déclencherait des redémarrages en régime normal (revue).
+  // déjà mesurées) et NON ici : à la cadence de checkHeapHealth() (60 s en
+  // régime sain), on raterait des creux qui ne durent que quelques secondes —
+  // le minimum serait trop optimiste et le seuil d'auto-guérison calibré dessus
+  // déclencherait des redémarrages en régime normal (revue).
   // Deux minima sont tracés : depuis le BOOT (pire cas absolu, sature après le
   // premier creux profond) et sur la FENÊTRE écoulée depuis la trace précédente
   // (montre si les creux s'aggravent au fil des heures).
@@ -1002,7 +1005,7 @@ void checkHeapHealth() {
   static bool lowHeapFlushArmed = true;
   if (maxAllocHeap < kLowHeapWarnBytes) {
     if (lowHeapFlushArmed) {
-      systemLogger.warning("Heap fragmenté sous seuil d'alerte: maxBloc=" + String(maxAllocHeap) + " bytes");
+      systemLogger.warning("Heap fragmenté sous seuil d'alerte: maxBloc8=" + String(maxAllocHeap) + " bytes");
       systemLogger.flushToDisk();
       lowHeapFlushArmed = false;
     }
