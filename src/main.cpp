@@ -24,6 +24,7 @@
 #include "ws_manager.h"
 #include "history.h"
 #include "measure_validity.h"
+#include "time_to_target.h"  // feature-096 : indicateur temps d'atteinte de cible
 #include "version.h"
 #include "rtc_manager.h"
 #include "self_heal_logic.h"
@@ -263,6 +264,13 @@ void setup() {
   // purge adaptative de measureValidity (plancher + stabilité de la mesure).
   filtration.begin();
   lighting.begin();
+
+  // feature-096 : indicateur « temps d'atteinte de cible ». APRÈS
+  // PumpController.begin() (qui appelle loadDailyCounters : le compteur monotone
+  // de filtration doit être restauré avant tout calcul de minutes) et APRÈS
+  // rtcManager.applyToSystem() (une journée sans heure valide n'est pas datable).
+  timeToTarget.begin();
+
   history.begin();
 
   // Ring heap RTC noinit (bug-heap-toctou A4) : dump de la cinétique heap du boot
@@ -330,6 +338,14 @@ void loop() {
   mqttManager.update();              // No-op depuis ADR-0011 (mqttTask gère tout)
   mqttManager.drainCommandQueue();   // Applique les commandes HA reçues sous configMutex
   measureValidity.update();          // feature-061 : validité pH/ORP — AVANT history (le point 5 min lit le cache)
+  // feature-096 : indicateur passif (cadence 1 s en interne). APRÈS
+  // measureValidity.update() (il lit la porte de mesure du tour COURANT) et
+  // donc avant filtration.update() : il ne s'intercale PAS entre
+  // filtration.update() et PumpController.update(), qui doivent voir le même
+  // tour. Conséquence assumée et documentée (C5) : la grandeur de décision pH
+  // lue ici est celle du tour PRÉCÉDENT — une seconde de retard sur une
+  // métrique qui compte des minutes.
+  timeToTarget.tick();
   history.update();
   systemLogger.update();
   updateManualInject();

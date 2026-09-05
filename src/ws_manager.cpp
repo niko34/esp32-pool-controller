@@ -11,6 +11,7 @@
 #include "filtration.h"
 #include "measure_validity.h"
 #include "pump_controller.h"
+#include "time_to_target.h"  // feature-096 : instantané servi en parité avec /data
 #include "web_routes_control.h"
 #include "mqtt_manager.h"
 #include "lighting.h"
@@ -385,10 +386,30 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // gabarit 2816 → gabarit porté 2816 → 2944. Marge sous sWsFrameBuf
   // (kWsFrameBufBytes = 3584 o) : 742 o — aucune troncature possible (garde
   // `measureJson(doc) + 1 > cap` en fin de fonction, qui SAUTE le push).
+  // feature-096 (v2.37.0, 05/09/2026) : +8 champs « temps d'atteinte de cible »
+  // (parité /data ↔ WS, MÊME passage). Octets SÉRIALISÉS au pire cas, comptés
+  // clé par clé (guillemets + deux-points + valeur + virgule) :
+  //   "ph_ttt_state":3,     → 1+12+1+1+1+1 = 17 o   (état 0-3, 1 chiffre)
+  //   "ph_ttt_min":1440,    → 1+10+1+1+4+1 = 18 o   (borné à 1440 par le module pur)
+  //   "ph_ttt_e0":-14.00,   → 1+ 9+1+1+6+1 = 19 o   (pH, 2 décimales signées ; `null` = 4 o, plus court)
+  //   "ph_ttt_flag":255,    → 1+11+1+1+3+1 = 18 o   (CHAMP DE BITS uint8, jusqu'à 3 chiffres)
+  //   "orp_ttt_state":3,    → 1+13+1+1+1+1 = 18 o
+  //   "orp_ttt_min":1440,   → 1+11+1+1+4+1 = 19 o
+  //   "orp_ttt_e0":-1000.0, → 1+10+1+1+7+1 = 21 o   (mV, 1 décimale signée)
+  //   "orp_ttt_flag":255,   → 1+12+1+1+3+1 = 20 o
+  //   → 150 o (décompte IDENTIQUE à celui de web_routes_data.cpp — mêmes clés).
+  // Pire cas de trame : 2842 (v2.34.0) + 150 = 2992 o, AU-DESSUS du gabarit
+  // documentaire 2944 → gabarit porté 2944 → 3072 (marge 80 o).
+  // MARGE RÉSIDUELLE SOUS LE SEUL PLAFOND DUR, sWsFrameBuf
+  // (kWsFrameBufBytes = 3584 o, constants.h) : 3584 − 2992 = 592 o (elle était
+  // de 742 o avant cet ajout). Aucun bump de kWsFrameBufBytes n'est requis.
+  // Ce que fait la garde `measureJson(doc) + 1 > cap` en fin de fonction si un
+  // jour la trame dépassait : elle SAUTE le push et incrémente _oversizedFrames
+  // (warn throttlé, plus haut dans ce fichier) — elle ne TRONQUE jamais.
   // NB : en ArduinoJson 7, StaticJson<N> dérive de JsonDocument et N n'est plus
   // qu'une valeur documentaire (capacity()) — le pool est alloué dynamiquement.
   // Le seul plafond DUR de ce chemin est kWsFrameBufBytes.
-  StaticJson<2944> doc;
+  StaticJson<3072> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -651,6 +672,34 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
     d["measures_purge_last_duration_s"] = mv.lastPurgeDurationS;
     d["measures_purge_last_end"] = mv.lastPurgeEnd;
     d["measures_purge_count"] = mv.purgeCount;
+  }
+
+  // feature-096 (v2.37.0) : TEMPS D'ATTEINTE DE CIBLE — 8 champs servis depuis
+  // l'instantané mémorisé de timeToTarget (copie sous spinlock portMUX). Ce
+  // chemin n'appelle JAMAIS PumpController::getPhDecisionValue() : cet
+  // accesseur est réservé à loopTask (condition C2 du gate feature-096).
+  // PARITÉ /data ↔ WS obligatoire : MÊMES clés, MÊMES arrondis (pH 2 décimales,
+  // ORP 1 décimale), MÊME règle NaN → null que web_routes_data.cpp, publiées
+  // dans le MÊME passage. Un champ servi d'un seul côté ne disparaît pas, il
+  // CLIGNOTE (`latestSensorData` est alimenté par le WS puis intégralement
+  // REMPLACÉ par les charges /data toutes les ~30 s) — 3 récidives documentées.
+  //   *_ttt_state = 0 pas de départ / 1 en cours / 2 atteinte / 3 non atteinte
+  //   *_ttt_min   = minutes de FILTRATION (cf. état), bornées à 1440
+  //   *_ttt_e0    = écart initial SIGNÉ à t0 (null si aucun départ)
+  //   *_ttt_flag  = CHAMP DE BITS (0x01 consigne modifiée, 0x02 boost, 0x04
+  //                 purge au plafond, 0x08 reprise secteur, 0x10 régulation non
+  //                 automatique) : plusieurs causes SIMULTANÉES possibles, bits
+  //                 5-7 libres — le client teste des bits, jamais une égalité.
+  {
+    const TttSnapshot ttt = timeToTarget.getSnapshot();
+    d["ph_ttt_state"] = ttt.ph.state;
+    d["ph_ttt_min"]   = ttt.ph.minutes;
+    if (!isnan(ttt.ph.e0)) d["ph_ttt_e0"] = round(ttt.ph.e0 * 100.0f) / 100.0f; else d["ph_ttt_e0"] = nullptr;
+    d["ph_ttt_flag"]  = ttt.ph.flags;
+    d["orp_ttt_state"] = ttt.orp.state;
+    d["orp_ttt_min"]   = ttt.orp.minutes;
+    if (!isnan(ttt.orp.e0)) d["orp_ttt_e0"] = round(ttt.orp.e0 * 10.0f) / 10.0f; else d["orp_ttt_e0"] = nullptr;
+    d["orp_ttt_flag"]  = ttt.orp.flags;
   }
 
   d["time_synced"]   = (time(nullptr) >= kMinValidEpoch);

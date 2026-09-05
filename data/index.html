@@ -690,6 +690,25 @@
                 <div>Débit soutenable : <span id="ph_sustainable_value">—</span></div>
                 <div>Maximum journalier : <span id="ph_daily_max_value">—</span></div>
               </div>
+              <!-- feature-096 (v2.37.0) : temps d'atteinte de cible pH. Patron
+                   maison field__label + <strong> + <span class="muted small">,
+                   identique à #ph-integral-section et #ph_ff_line (pas de .kv).
+                   Masqué en bloc si le firmware ne sert pas ph_ttt_state
+                   (antérieur à la 2.37.0) — cf. updateTimeToTargetDisplay(),
+                   seul point de décision. Le tableau de bord n'est PAS touché. -->
+              <div class="ttt" id="ph-ttt-block" hidden>
+                <span class="field__label">Atteinte de la cible</span>
+                <p style="margin:6px 0 0">
+                  <strong id="ph-ttt-value">—</strong>
+                  <span class="muted small" id="ph-ttt-detail"></span>
+                </p>
+                <div class="ttt__days" id="ph-ttt-days" role="list"
+                     aria-label="Atteinte de la cible pH sur les sept derniers jours, du plus ancien au plus récent"></div>
+                <p class="muted small" id="ph-ttt-caption" style="margin:6px 0 0;font-size:11px">
+                  7 derniers jours — le plus récent à droite</p>
+                <p class="muted small" id="ph-ttt-note" style="margin:4px 0 0;font-size:11px"
+                   role="status" aria-live="polite" hidden></p>
+              </div>
             </div>
           </div>
 
@@ -1150,6 +1169,22 @@
                     style="width:0%"></div>
                 </div>
                 <p class="daily-dose__status" id="daily-dose-orp-status"></p>
+              </div>
+              <!-- feature-096 (v2.37.0) : miroir ORP du bloc pH — même patron,
+                   même rendu (updateTimeToTargetDisplay(), une seule fonction
+                   paramétrée par l'unité). Masqué si orp_ttt_state est absent. -->
+              <div class="ttt" id="orp-ttt-block" hidden>
+                <span class="field__label">Atteinte de la cible</span>
+                <p style="margin:6px 0 0">
+                  <strong id="orp-ttt-value">—</strong>
+                  <span class="muted small" id="orp-ttt-detail"></span>
+                </p>
+                <div class="ttt__days" id="orp-ttt-days" role="list"
+                     aria-label="Atteinte de la cible ORP sur les sept derniers jours, du plus ancien au plus récent"></div>
+                <p class="muted small" id="orp-ttt-caption" style="margin:6px 0 0;font-size:11px">
+                  7 derniers jours — le plus récent à droite</p>
+                <p class="muted small" id="orp-ttt-note" style="margin:4px 0 0;font-size:11px"
+                   role="status" aria-live="polite" hidden></p>
               </div>
             </div>
           </div>

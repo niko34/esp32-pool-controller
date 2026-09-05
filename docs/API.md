@@ -358,6 +358,38 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 >
 > ⚠️ Un client qui veut « **la pompe est alimentée maintenant** » ne doit pas lire `ph_dosing` : c'est le rôle du **calendrier d'impulsion** ([ADR-0045](adr/0045-etat-impulsion-expose-en-calendrier.md)) — pompe alimentée ⇔ `ph_pulse_phase_ms < ph_pulse_ms`. Détail : [pump-controller.md](subsystems/pump-controller.md#porte-de-session-ph-robuste-au-bruit-feature-094-v2360).
 
+> **feature-096 (v2.37.0) — temps d'atteinte de cible** ([ADR-0063](adr/0063-definition-normative-du-temps-d-atteinte-de-cible.md)) : **8 champs** décrivant, pour chaque régulation, le chronomètre du jour. **Mêmes champs, mêmes valeurs, même passage côté WS `sensor_data`** (parité obligatoire). Source unique : `timeToTarget.getSnapshot()` — un instantané mémorisé sous spinlock, jamais l'accesseur de `pump_controller`.
+>
+> | Champ | Type | Description |
+> |-------|------|-------------|
+> | `ph_ttt_state` / `orp_ttt_state` | uint8 | `0` pas encore de départ aujourd'hui, `1` en cours, `2` cible atteinte, `3` non atteinte. **Valeurs 4-255 réservées** — un client doit les traiter comme « état inconnu », jamais comme un voisin. |
+> | `ph_ttt_min` / `orp_ttt_min` | uint16 | **Minutes de circulation**, bornées à 1440. ⚠️ **Le sens dépend de l'état** (voir ci-dessous). |
+> | `ph_ttt_e0` / `orp_ttt_e0` | float \| `null` | Écart **initial signé** (valeur − consigne) à t0. pH à **2 décimales**, ORP à **1**. `null` = aucun départ, ou écart indisponible — **jamais `0`**. |
+> | `ph_ttt_flag` / `orp_ttt_flag` | uint8 | **CHAMP DE BITS**, jamais une énumération (voir table des bits). |
+>
+> ⚠️ **`*_ttt_min` a un sens VARIABLE selon `*_ttt_state`** — le lire sans lire l'état donne un chiffre faux :
+>
+> | `state` | Ce que porte `*_ttt_min` |
+> |---|---|
+> | `1` en cours | minutes **écoulées** depuis t0 |
+> | `2` atteinte | **temps d'atteinte** (`0` = « déjà à la cible au départ ») |
+> | `3` non atteinte | **durée totale** de circulation de la journée |
+> | `0` | `0` (aucune signification) |
+>
+> **Champ de bits `*_ttt_flag`** — **encodage figé dès le premier déploiement** (il est aussi archivé en NVS). Une journée peut cumuler plusieurs circonstances ; les bits 5-7 sont réservés. **Tester des bits, jamais l'égalité** :
+>
+> | Bit | Valeur | Sens |
+> |---|---|---|
+> | 0 | `0x01` | consigne **configurée** modifiée dans la journée |
+> | 1 | `0x02` | **boost** ORP actif dans la journée (un boost ne lève **pas** le bit 0) |
+> | 2 | `0x04` | purge de mesure terminée au **plafond** (stabilisation non atteinte, feature-091) |
+> | 3 | `0x08` | reprise après **coupure secteur** |
+> | 4 | `0x10` | **régulation non automatique** (manuel, maintenance, assistant de débit) — journée à **exclure des moyennes** de comparaison de versions |
+>
+> Rappel de la règle de partage du bit 4 ([ADR-0063](adr/0063-definition-normative-du-temps-d-atteinte-de-cible.md)) : *ce que le régulateur **choisit** compte ; ce qu'on lui **impose** de l'extérieur porte le bit*. Un quota journalier atteint, une limite horaire ou un actionneur sous-dimensionné ne posent **aucun bit** — ce sont de vraies non-atteintes, et c'est ce que la métrique doit voir.
+>
+> Rétrocompat : un firmware antérieur à la 2.37.0 ne sert **aucune** de ces clés. Un client doit traiter l'absence de `*_ttt_state` comme « indicateur inexistant » (bloc masqué), **jamais** comme l'état `0`. Gabarit documentaire `/data` **inchangé** ; ce chemin n'a de toute façon aucun plafond dur. Détail : [`docs/subsystems/time-to-target.md`](subsystems/time-to-target.md).
+
 > Les champs live `ph` / `orp` / `phRaw` / … restent publiés tels quels quand `measures_valid` est `false` (calibration et diagnostics intacts) — c'est le **client** qui arbitre l'affichage. ⚠️ **Repli HTTP** : `/data` n'expose pas `filtration_state_stale` (présent en WS uniquement) — un client en polling HTTP dégrade « Signal filtration périmé » en « Filtration arrêtée » (asymétrie préexistante, à harmoniser). Voir [`docs/subsystems/measure-validity.md`](subsystems/measure-validity.md).
 
 ---
@@ -397,6 +429,53 @@ Paramètre optionnel `?since=TIMESTAMP` pour récupération incrémentale.
 Le client réessaie simplement (le dashboard re-sollicite la route au refresh suivant).
 
 > ℹ️ **Note historique** : entre la v2.14.0 et la v2.18.1, **toutes** les réponses `/get-history` étaient tronquées (pied `],"count":N}` jamais émis — bug de machine à états corrigé en v2.18.2). La note v2.18.1 sur les « espaces de maintien de flux sous contention » relevait d'un diagnostic **erroné** ; ce mécanisme a été retiré en v2.18.2 — le corps ne contient plus de whitespace entre les tokens.
+
+---
+
+### GET /get-kpi — WRITE
+
+Mémoire **7 jours** du [temps d'atteinte de cible](subsystems/time-to-target.md) des deux régulations (feature-096, v2.37.0). Sert la bande de pastilles des pages pH et ORP, et toute analyse externe.
+
+**Authentification** : `RouteProtection::WRITE` — la **même classe que `/data`**. `NONE` exposerait sans authentification le comportement du bassin (heures de circulation, réactivité de la régulation, jours de maintenance) et rejouerait bug-081.
+
+```bash
+curl -u admin:monmotdepasse "http://poolcontroller.local/get-kpi"
+```
+
+**Réponse 200**
+
+```json
+{
+  "days": [
+    { "d": 20260904, "ph": { "s": 2, "m": 223, "e0": 0.18, "f": 0 },
+                     "orp": { "s": 2, "m": 303, "e0": -45.0, "f": 0 } },
+    { "d": 20260903, "ph": { "s": 3, "m": 612, "e0": 0.24, "f": 16 } }
+  ]
+}
+```
+
+| Clé | Type | Description |
+|-----|------|-------------|
+| `d` | uint32 | Jour civil `AAAAMMJJ`. |
+| `s` | uint8 | État de la journée — même codage que `*_ttt_state` de `/data` (`0`-`3`, **4-255 réservés**). |
+| `m` | uint16 | **Minutes de circulation** (≤ 1440) — **sens variable selon `s`**, cf. [`/data`](#get-data--write). |
+| `e0` | float \| `null` | Écart initial signé à t0. pH **2 décimales**, ORP **1** — mêmes arrondis que `/data` et le WS. `null` = journée sans départ exploitable. |
+| `f` | uint8 | **Champ de bits** — même encodage figé que `*_ttt_flag`, cf. [`/data`](#get-data--write). |
+
+**Règles de lecture** :
+
+- Le jour **le plus récent est en tête** ; au plus **7 entrées** (`kTimeToTargetHistoryDays`).
+- Les deux voies sont archivées **indépendamment** : leurs dates peuvent différer. La réponse est l'**union** des dates, triée décroissant.
+- Une voie **sans entrée** pour une date donnée voit sa clé **omise** — « absent » n'est pas « état 0 ». Un client doit distinguer les deux.
+- Clés courtes (`s`/`m`/`e0`/`f`) : la charge est lue par la machine, et 7 jours × 2 voies multiplient chaque octet de nom par 14.
+- **Non bloquant** : aucune lecture NVS, aucune E/S. La réponse est construite depuis un miroir RAM de 188 octets recopié sous spinlock `portMUX` (~800 o de JSON au pire cas).
+
+**Erreurs**
+
+- `401` : authentification manquante / invalide.
+- `503 {"error":"Mémoire des indicateurs indisponible"}` : la NVS `pool-kpi` a été refusée, l'indicateur est **suspendu**. ⚠️ Ce cas ne renvoie **jamais** un tableau vide, qui se lirait « aucune journée enregistrée » alors que la mémoire est en panne. L'UI remplace alors la légende par « Historique indisponible » et **vide** la bande, sans toucher à la ligne de valeur (qui vient de `/data`).
+
+> **Fréquence d'appel** : cette mémoire n'est écrite **que deux fois par jour et par régulation**. L'interface la relit à l'entrée dans les vues pH/ORP, puis uniquement au changement d'état ou de jour civil — **jamais en polling**.
 
 ---
 

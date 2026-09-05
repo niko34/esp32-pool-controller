@@ -3749,6 +3749,63 @@ h1, h2, h3 {
   border-radius: 4px;
 }
 
+/* ==========================================================================
+   feature-096 (v2.37.0) : temps d'atteinte de cible (pages pH et ORP)
+   --------------------------------------------------------------------------
+   Bande de sept pastilles : la COULEUR NE PORTE JAMAIS SEULE L'INFORMATION.
+   La durée est écrite dans la pastille, l'astérisque marque le jour non
+   comparable, le pointillé marque « pas de jugement », les hachures doublent
+   la couleur du drapeau. Pastilles NON interactives (pas de :hover, pas de
+   curseur, pas de focus) : elles n'ouvrent rien. Aucune variable redéfinie,
+   aucun override global, aucune media-query, aucune ressource externe.
+   ========================================================================== */
+.ttt { margin-top: 12px; }
+
+.ttt__days { display: flex; gap: 4px; margin-top: 8px; }
+
+/* Emplacement de base = « non atteinte » (gris neutre) : les sept cases sont
+   TOUJOURS rendues, un historique court n'en efface aucune — le vide informe. */
+.ttt__day {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 46px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Vert : cible atteinte en 2 h ou moins (mêmes teintes que .chip--probe-good) */
+.ttt__day--good {
+  background: rgba(21, 128, 61, 0.10);
+  border-color: rgba(21, 128, 61, 0.30);
+  color: var(--success);
+}
+
+/* Ambré : cible atteinte, mais au-delà de 2 h (teintes .chip--probe-warn2) */
+.ttt__day--long {
+  background: rgba(255, 193, 7, 0.18);
+  border-color: rgba(255, 193, 7, 0.45);
+  color: var(--warn);
+}
+
+/* Journée en cours : gris, contour tireté — aucun verdict n'est encore rendu */
+.ttt__day--pending { border-style: dashed; }
+
+/* Journée absente de la mémoire : pointillé estompé, contenu « · » */
+.ttt__day--none { border-style: dotted; opacity: .55; }
+
+/* Drapeau : hachures à 45° EN PLUS de la couleur, doublées par le « * » du texte */
+.ttt__day--flag {
+  background-image: repeating-linear-gradient(45deg, rgba(0, 0, 0, .10) 0 3px, transparent 3px 6px);
+}
+
 /* Assistant plein écran : masque le reste de la page Paramètres
    (pattern calibration pH — la carte #pump-flow-wizard reste seule visible) */
 #view-settings.is-flow-wizard .settingsHead,

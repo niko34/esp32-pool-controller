@@ -1165,6 +1165,27 @@ public:
     return _ffStatus;
   }
 
+  // ===== feature-096 : grandeur de DÉCISION pH, en lecture seule ==============
+  // Valeur du signal lent qui décide de l'ouverture de session pH (moyenne
+  // glissante de kPhDecisionWindowMs de la filtrée). NAN tant que la fenêtre
+  // n'est pas pleine — « absence », jamais 0 ni « à la consigne ».
+  //
+  // POURQUOI LA VALEUR ET NON L'ERREUR : _phDecisionError est calculée par le
+  // produit (`ph_plus` ⇒ consigne − valeur), son signe basculerait donc avec le
+  // produit employé. L'instrument qui la consomme calcule lui-même
+  // e0 = valeur − consigne, définition stable quel que soit le produit.
+  //
+  // loopTask UNIQUEMENT (elle lit l'état vivant du filtre de décision, écrit par
+  // update()) : INTERDITE aux handlers AsyncWebServer, qui lisent l'instantané
+  // mémorisé par l'indicateur (condition C2 du gate pool-chemistry).
+  //
+  // SENS UNIQUE : cet accesseur SORT de la régulation. Aucune sortie de
+  // l'indicateur ne doit jamais entrer ici — la garde est un test de grep
+  // bidirectionnel sur ce fichier.
+  float getPhDecisionValue() const {
+    return _phDecision.primed ? _phDecision.value : NAN;
+  }
+
   // ===== feature-011 : débit moyen planifié du mode scheduled (mL/min) =====
   // Débit moyen restant de la répartition (remaining / horizonMinutes).
   // NAN hors mode scheduled, hors plage de filtration, ou heure locale invalide

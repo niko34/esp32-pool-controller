@@ -586,7 +586,9 @@ court au plus long.</p>
       la <strong>durée minimale d'une session de dosage pH</strong>&nbsp;: une
       fois ouverte, elle ne se referme pas sur une fluctuation de la mesure —
       une sécurité ou un pH franchement passé sous la consigne, en revanche,
-      la ferment immédiatement.</td></tr>
+      la ferment immédiatement. Et c'est encore la durée pendant laquelle la
+      mesure doit rester sur sa cible pour que la journée soit déclarée
+      «&nbsp;atteinte&nbsp;» (section&nbsp;7).</td></tr>
   <tr><td class="duree">1 heure</td>
       <td>Fenêtre glissante de la limite horaire de fonctionnement des pompes
       — et rythme d'oubli progressif de la correction accumulée quand elle ne
@@ -605,8 +607,141 @@ court au plus long.</p>
       la dose de base apprise est la médiane.</td></tr>
 </table>
 
-<!-- ══════════════════ 8. Ce que l'appareil ne fait jamais ══════════════════ -->
-<h2 class="page-break"><span class="num">7</span>Ce que l'appareil ne fait jamais</h2>
+<!-- ══════════════════ 8. L'indicateur d'atteinte de la cible ══════════════════ -->
+<h2 class="page-break"><span class="num">7</span>Combien de temps la correction met-elle&nbsp;?</h2>
+
+<p>Depuis la version&nbsp;2.37, l'appareil <strong>se chronomètre lui-même</strong>.
+Chaque jour, pour le pH comme pour le chlore, il mesure le temps qu'il lui faut
+pour ramener l'eau sur sa consigne — et il l'affiche. Vous trouverez cet
+indicateur en bas du bandeau de mesure, sur la <strong>page pH</strong> et sur
+la <strong>page chlore</strong>, sous le titre «&nbsp;Atteinte de la
+cible&nbsp;».</p>
+
+<p>C'est un instrument d'<strong>observation</strong>&nbsp;: il regarde, il
+enregistre, il affiche. <strong>Il ne pilote rien.</strong> Aucune de ses
+valeurs ne modifie un réglage, une vitesse de correction ou une limite — il
+n'existe aucun chemin par lequel il pourrait le faire.</p>
+
+<h3>Ce que dit la première ligne</h3>
+
+<p>Elle raconte la journée en cours, ou celle qui vient de s'achever&nbsp;:</p>
+
+<table>
+  <tr><th style="width:38%">Ce que vous lisez</th><th>Ce que ça veut dire</th></tr>
+  <tr><td><strong>en cours — 1&nbsp;h&nbsp;10</strong></td>
+      <td>Le chronomètre tourne depuis 1&nbsp;h&nbsp;10 aujourd'hui&nbsp;; la
+      cible n'est pas encore tenue.</td></tr>
+  <tr><td><strong>en 3&nbsp;h&nbsp;53</strong></td>
+      <td>C'est fait&nbsp;: la cible a été atteinte au bout de 3&nbsp;h&nbsp;53.</td></tr>
+  <tr><td><strong>déjà à la cible au départ</strong></td>
+      <td>L'eau était déjà bonne à la première mesure du jour — rien à
+      rattraper.</td></tr>
+  <tr><td><strong>non atteinte</strong></td>
+      <td>La journée s'est achevée sans que la cible soit tenue. L'écart qu'il
+      y avait au départ est rappelé à côté.</td></tr>
+  <tr><td><strong>en attente du départ</strong></td>
+      <td>La journée n'a pas encore commencé pour l'indicateur&nbsp;: il attend
+      la première mesure exploitable, filtration en marche.</td></tr>
+  <tr><td><strong>indicateur suspendu</strong></td>
+      <td>L'appareil ne connaît pas l'heure (ni horloge interne ni internet).
+      Sans date, une journée n'est pas enregistrable&nbsp;: il préfère ne rien
+      noter plutôt que de noter faux.</td></tr>
+</table>
+
+<div class="box">
+  <p class="box-title">Le temps compté est du temps de circulation</p>
+  <p>Le chronomètre n'avance que <strong>lorsque l'eau circule</strong>. Une
+  nuit filtration à l'arrêt ne fait pas vieillir la journée&nbsp;: sans
+  circulation, le produit ne se mélange pas et les sondes ne voient pas le
+  bassin — la correction ne progresse tout simplement pas. C'est ce qui permet
+  de comparer une journée de 6&nbsp;heures de filtration avec une journée de
+  14&nbsp;heures.</p>
+</div>
+
+<h3>Qu'est-ce qu'une cible «&nbsp;atteinte&nbsp;»&nbsp;?</h3>
+
+<p>Pas un simple passage sur la bonne valeur&nbsp;: la mesure doit rester
+suffisamment près de la consigne pour que <strong>l'appareil ne redémarre pas
+de correction</strong> — et le rester <strong>30&nbsp;minutes de circulation
+d'affilée</strong>. Si l'eau ressort de cette zone entre-temps, ces
+30&nbsp;minutes repartent de zéro&nbsp;; le chronomètre général, lui, continue
+sans jamais repartir en arrière.</p>
+
+<p>Le temps affiché est celui du <strong>début</strong> de ces 30&nbsp;minutes.
+La cible avait bel et bien été atteinte à ce moment-là&nbsp;; la demi-heure qui
+a suivi n'a fait que le prouver.</p>
+
+<h3>Les sept pastilles</h3>
+
+<p>Sous la ligne, une rangée de sept cases résume la semaine, la plus ancienne
+à gauche, aujourd'hui à droite&nbsp;:</p>
+
+<table>
+  <tr><th style="width:30%">Pastille</th><th>Signification</th></tr>
+  <tr><td><strong>Verte</strong> avec une durée</td>
+      <td>Cible atteinte en <strong>2&nbsp;heures ou moins</strong>.</td></tr>
+  <tr><td><strong>Ambrée</strong> avec une durée</td>
+      <td>Cible atteinte, mais il a fallu <strong>plus de 2&nbsp;heures</strong>.</td></tr>
+  <tr><td><strong>Grise, un tiret</strong></td>
+      <td>Cible non atteinte ce jour-là.</td></tr>
+  <tr><td><strong>Contour tireté</strong></td>
+      <td>Journée en cours — aucun verdict n'est encore rendu.</td></tr>
+  <tr><td><strong>Contour pointillé, un point</strong></td>
+      <td>Aucune donnée pour ce jour (appareil éteint, ou heure inconnue).</td></tr>
+  <tr><td><strong>Hachures et un astérisque&nbsp;*</strong></td>
+      <td>Journée <strong>non comparable</strong> aux autres — voir
+      ci-dessous.</td></tr>
+</table>
+
+<p>Chaque pastille se survole&nbsp;: une phrase complète donne le jour, la
+durée et l'écart de départ. La couleur ne porte jamais seule
+l'information.</p>
+
+<h3>Les journées «&nbsp;non comparables&nbsp;»</h3>
+
+<p>Cinq circonstances rendent une journée inutilisable pour comparer des
+versions&nbsp;: la <strong>consigne a été modifiée</strong> en cours de
+journée, un <strong>boost chlore</strong> était actif, la
+<strong>stabilisation des mesures n'a jamais été atteinte</strong>, une
+<strong>coupure de courant</strong> a interrompu la journée, ou la
+<strong>régulation n'était pas en automatique</strong> (mode manuel, mode
+maintenance, assistant de mesure du débit). Une petite note sous la rangée
+énumère celles qui sont réellement présentes.</p>
+
+<div class="box box-alerte">
+  <p class="box-title">Le point à ne pas se tromper</p>
+  <p>Quand la cible n'est pas atteinte parce que l'appareil a <strong>épuisé son
+  quota du jour</strong>, <strong>buté sur la limite horaire</strong> de
+  fonctionnement des pompes ou <strong>saturé sa pompe doseuse</strong>, la
+  journée est marquée «&nbsp;non atteinte&nbsp;» <strong>sans
+  astérisque</strong>. Ce n'est pas un oubli&nbsp;: c'est une <em>vraie</em>
+  non-atteinte, et c'est précisément ce que l'instrument doit vous montrer. Ces
+  journées-là vous disent qu'un réglage est trop serré ou qu'une pompe est trop
+  petite pour le bassin.</p>
+  <p>L'astérisque est réservé à ce qu'on <strong>impose de l'extérieur</strong>
+  à la régulation. Autrement dit&nbsp;: <em>ce que l'appareil choisit compte
+  dans la note&nbsp;; ce qu'on lui impose l'en dispense.</em></p>
+</div>
+
+<h3>Deux précautions que prend l'indicateur</h3>
+
+<ul>
+  <li><strong>Il refuse de démarrer sur une mesure aberrante.</strong> Si
+  l'écart de départ dépasse 1,0&nbsp;pH ou 300&nbsp;mV, il ne lance pas le
+  chronomètre&nbsp;: il le signale une fois au journal et attend la première
+  mesure crédible. Cas vécu&nbsp;: de l'air dans le circuit, par niveau d'eau
+  bas, avait fait plonger la mesure de pH à 5,45 un matin — un tel départ
+  aurait faussé toute la semaine affichée.</li>
+
+  <li><strong>Une coupure de courant ne remet pas le compteur à zéro.</strong>
+  Le départ du jour est retrouvé, les minutes déjà comptées restent exactes.
+  Seules les 30&nbsp;minutes de confirmation repartent de zéro — l'eau s'est
+  arrêtée entre-temps, on ne fait pas semblant du contraire. La journée est
+  alors marquée «&nbsp;reprise après coupure&nbsp;».</li>
+</ul>
+
+<!-- ══════════════════ 9. Ce que l'appareil ne fait jamais ══════════════════ -->
+<h2 class="page-break"><span class="num">8</span>Ce que l'appareil ne fait jamais</h2>
 
 <p>Certaines règles ne souffrent aucune exception, quels que soient les
 réglages, les modes ou les circonstances&nbsp;:</p>
@@ -630,6 +765,12 @@ réglages, les modes ou les circonstances&nbsp;:</p>
   exige en plus une mesure filtrée valide et une calibration de sonde
   suffisante. Et jamais de dose «&nbsp;de mémoire&nbsp;» sans trois jours
   d'observation.</li>
+
+  <li><strong>Jamais l'indicateur d'atteinte de la cible ne pilote quoi que ce
+  soit.</strong> Le chronomètre de la section&nbsp;7 <em>observe</em> la
+  régulation&nbsp;; la régulation, elle, ne le lit jamais. Aucune vitesse de
+  correction, aucun seuil, aucune consigne ne s'ajuste sur ses chiffres. La
+  séparation est vérifiée automatiquement à chaque compilation du firmware.</li>
 
   <li><strong>Les limites de sécurité survivent à tout.</strong> Restaurer les
   réglages d'usine ne touche jamais les quotas journaliers maximaux de

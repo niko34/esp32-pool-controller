@@ -439,6 +439,38 @@ Pire cas de trame **2 745 → 2 842 o** ; le gabarit documentaire `StaticJson<>`
 
 > Côté `/data`, les mêmes champs tiennent **sans bump** : le gabarit documentaire reste **2304** o (charge pire cas ≈ 2 236 o), et ce chemin n'a de toute façon aucun plafond dur (`sendJsonResponse` dimensionne la `String` à la demande).
 
+## Champs `sensor_data` ajoutés en feature-096 — temps d'atteinte de cible (v2.37.0)
+
+**Huit** champs (4 par régulation) exposant le chronomètre du jour de l'indicateur [time-to-target](time-to-target.md) ([ADR-0063](../adr/0063-definition-normative-du-temps-d-atteinte-de-cible.md)). Source unique : `timeToTarget.getSnapshot()` — un instantané mémorisé publié sous spinlock `portMUX`, jamais l'accesseur de `pump_controller`.
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `ph_ttt_state` / `orp_ttt_state` | uint8 | `0` pas de départ aujourd'hui, `1` en cours, `2` atteinte, `3` non atteinte. **4-255 réservés** (un firmware plus récent doit rester lisible). |
+| `ph_ttt_min` / `orp_ttt_min` | uint16 | **Minutes de circulation**, bornées à 1440 par le module pur. ⚠️ **Sens variable** : état `1` = minutes écoulées, `2` = temps d'atteinte, `3` = durée totale. |
+| `ph_ttt_e0` / `orp_ttt_e0` | float \| `null` | Écart **initial signé** à t0. pH **2 décimales**, ORP **1**. `null` = pas de départ — jamais `0` (le firmware transporte `NAN`, `nullptr` à la sérialisation). |
+| `ph_ttt_flag` / `orp_ttt_flag` | uint8 | **Champ de bits** : `0x01` consigne modifiée, `0x02` boost, `0x04` stabilisation non atteinte, `0x08` coupure secteur, `0x10` régulation non automatique. Encodage **figé** (il est aussi archivé en NVS). Un client teste des **bits**, jamais l'égalité. |
+
+- **Parité `/data` ↔ WS obligatoire** : les huit champs sont écrits dans le **même ordre**, avec les **mêmes arrondis**, depuis la **même source**, par [`ws_manager.cpp:694-702`](../../src/ws_manager.cpp) et [`web_routes_data.cpp:427-435`](../../src/web_routes_data.cpp). Motif récurrent du projet (**3 récidives**) : un champ servi d'un seul côté ne disparaît pas, il **clignote**.
+- La **mémoire 7 jours** n'est **pas** poussée en WS : elle vient de [`GET /get-kpi`](../API.md#get-get-kpi--write), relue à l'entrée dans les vues pH/ORP puis au changement d'état ou de jour — jamais en polling (elle n'est écrite que deux fois par jour et par régulation).
+- Consommateurs UI : ligne « Atteinte de la cible » et bande de 7 pastilles des pages [pH](../features/page-ph.md#atteinte-de-la-cible-feature-096-v2370) et [ORP](../features/page-orp.md#atteinte-de-la-cible-feature-096-v2370). Le **tableau de bord n'est pas touché**.
+
+**Budget de payload** : **+150 o** au pire cas, décompté clé par clé (guillemets + deux-points + valeur + virgule). Décompte **identique** à celui de `web_routes_data.cpp` — mêmes clés.
+
+| Champ | Sérialisation pire cas | Octets |
+|-------|------------------------|--------|
+| `ph_ttt_state` | `"ph_ttt_state":3,` | 17 |
+| `ph_ttt_min` | `"ph_ttt_min":1440,` | 18 |
+| `ph_ttt_e0` | `"ph_ttt_e0":-14.00,` | 19 |
+| `ph_ttt_flag` | `"ph_ttt_flag":255,` | 18 |
+| `orp_ttt_state` | `"orp_ttt_state":3,` | 18 |
+| `orp_ttt_min` | `"orp_ttt_min":1440,` | 19 |
+| `orp_ttt_e0` | `"orp_ttt_e0":-1000.0,` | 21 |
+| `orp_ttt_flag` | `"orp_ttt_flag":255,` | 20 |
+
+Pire cas de trame **2 842 → 2 992 o**, au-dessus du gabarit documentaire 2944 → le gabarit `StaticJson<>` de `_buildSensorJson()` passe de **2944 à 3072**. **Marge résiduelle sous le seul plafond DUR** — `sWsFrameBuf`, `kWsFrameBufBytes` = **3584** o : **3584 − 2992 = 592 o** (elle était de 742 o avant cet ajout). **Aucun bump de `kWsFrameBufBytes` n'est requis.** Si un jour la trame dépassait, la garde `measureJson(doc) + 1 > cap` **saute** le push et incrémente `_oversizedFrames` (warn throttlé) — elle ne **tronque** jamais.
+
+> Côté `/data`, les mêmes champs tiennent **sans bump** : ce chemin n'a aucun plafond dur (`sendJsonResponse` dimensionne la `String` à la demande). Rappel ArduinoJson 7 : `StaticJson<N>` dérive de `JsonDocument`, `N` n'est plus qu'une valeur documentaire (`capacity()`).
+
 ## feature-093 (v2.34.0) — persistance de l'intégrale pH : AUCUN champ nouveau
 
 La restauration de l'intégrale pH au démarrage ([pump-controller.md](pump-controller.md#3-persistance-nvs-conditionnelle-r1-r7)) ne publie **rien de neuf** : les champs `ph_integral`, `ph_integral_term`, `ph_integral_pct` et `ph_integral_saturated` (v2.26.0) suffisent — une valeur restaurée s'y lit comme n'importe quelle autre. Toute la traçabilité (motif de rejet, âge en temps de filtration, motif d'écriture) passe par le **journal système**, donc par `broadcastLog`.

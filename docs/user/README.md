@@ -17,7 +17,7 @@ la référence. En cas de doute ou de divergence, la source fait foi.
   à une version donnée — son nom doit dire laquelle. La flotte étant
   **mono-appareil**, on ne conserve **que la version courante** : les PDF de la
   version précédente sont supprimés au même cycle que la régénération (pas
-  d'archive à maintenir). État courant : **v2.34**.
+  d'archive à maintenir). État courant : **v2.37**.
 - Génération : **filière locale** pour les DEUX guides depuis le 02/09/2026 —
   les sources `src/guide-*.html` partagent le style de la collection
   (`src/collection.css`, calqué sur l'identité du manuel Claude Design

@@ -833,12 +833,51 @@ void savePhLoadHistory(PhLoadHistory& h) {
   prefs.end();
 }
 
+// =============================================================================
+// feature-096 (v2.37.0) — ANNEAU NVS DU TEMPS D'ATTEINTE DE CIBLE
+// =============================================================================
+// Namespace `pool-kpi`, clé `ttt7` : 188 octets, DEUX écritures par jour et par
+// régulation (une au départ, une à la clôture). Le motif du namespace disjoint
+// de `pool-daily` est développé dans config.h (moindre privilège : cet
+// instrument ne doit pas détenir de handle d'écriture sur les compteurs de
+// dosage). ICI, IL N'Y A QUE DU TRANSPORT.
+bool loadTttHistory(TttHistory& out) {
+  TttHistory raw;
+  Preferences prefs;
+  if (!prefs.begin("pool-kpi", true)) return false;  // namespace jamais écrit
+  const size_t read = prefs.getBytes("ttt7", &raw, sizeof(raw));
+  prefs.end();
+  // ABSENCE (0 octet) = cas nominal d'un appareil qui n'a pas encore archivé de
+  // journée : silence. CORRUPTION = sept journées d'observation qui
+  // disparaissent, cela ne doit pas se produire sans trace.
+  if (read == 0) return false;
+  if (!tttHistoryIntact(raw, read)) {  // prédicat PUR et testé
+    systemLogger.warning("[KPI] Anneau NVS illisible (taille, schéma ou empreinte) "
+                         "— mémoire des 7 jours vidée");
+    return false;
+  }
+  out = raw;
+  return true;
+}
+
+bool saveTttHistory(TttHistory& h, uint32_t serieStamp) {
+  tttHistorySeal(h, serieStamp);  // schéma, alignement, estampille, empreinte
+  Preferences prefs;
+  if (!prefs.begin("pool-kpi", false)) return false;  // C4 : fail-closed, sans retry
+  const size_t written = prefs.putBytes("ttt7", &h, sizeof(h));
+  prefs.end();
+  return written == sizeof(h);
+}
+
 /**
  * Date du jour au format AAAAMMJJ, ou 0 si l'horloge n'est pas exploitable.
  * C'est l'ORIGINE de la fenêtre d'âge de l'anneau : sans elle, aucun échantillon
  * n'est retenu (fail-closed, cf. phLoadDayWithinWindow).
  */
-static uint32_t currentLoadDateNumber() {
+// feature-096 : n'est plus `static` — l'indicateur de temps d'atteinte date ses
+// journées avec CETTE fonction plutôt qu'avec une seconde, écrite ailleurs et
+// susceptible d'en diverger (fuseau, seuil d'epoch valide).
+uint32_t currentLoadDateNumber() {
   time_t now = time(nullptr);
   if (now < kMinValidEpoch) return 0;
   struct tm ti;

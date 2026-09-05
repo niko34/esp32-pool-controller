@@ -27,6 +27,7 @@ docs/
 │   ├── README.md
 │   ├── regulation-vue-d-ensemble.md   ← commencer ici pour comprendre la régulation
 │   ├── pump-controller.md
+│   ├── time-to-target.md               ← indicateur « temps d'atteinte de cible » (instrument passif)
 │   ├── sensors.md
 │   ├── filtration.md
 │   ├── lighting.md
@@ -105,7 +106,8 @@ docs/
 │   ├── 0059-purge-adaptative-fenetre-de-medianes.md
 │   ├── 0060-fraicheur-en-temps-de-filtration.md
 │   ├── 0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md
-│   └── 0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md
+│   ├── 0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md
+│   └── 0063-definition-normative-du-temps-d-atteinte-de-cible.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

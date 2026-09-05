@@ -7,6 +7,7 @@
 #include "filtration.h"
 #include "measure_validity.h"
 #include "pump_controller.h"
+#include "time_to_target.h"  // feature-096 : instantané + mémoire 7 jours (/get-kpi)
 #include "web_routes_control.h"
 #include "logger.h"
 #include "logs_page.h"
@@ -100,7 +101,27 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // Charge pire cas : 2139 (v2.29.0) + 97 = 2236 o, marge 68 o sous le gabarit,
   // qui reste donc à 2304. ATTENTION : la marge devient étroite — tout nouveau
   // champ de `/data` exige de recompter ici ET dans ws_manager.cpp (parité).
-  StaticJson<2304> doc;
+  // feature-096 (v2.37.0, 05/09/2026) : +8 champs « temps d'atteinte de cible »
+  // (parité /data ↔ WS, MÊME passage). Octets SÉRIALISÉS au pire cas, comptés
+  // clé par clé (guillemets + deux-points + valeur + virgule) :
+  //   "ph_ttt_state":3,     → 1+12+1+1+1+1 = 17 o   (état 0-3, 1 chiffre)
+  //   "ph_ttt_min":1440,    → 1+10+1+1+4+1 = 18 o   (borné à 1440 par le module pur)
+  //   "ph_ttt_e0":-14.00,   → 1+ 9+1+1+6+1 = 19 o   (pH, 2 décimales signées ; `null` = 4 o, plus court)
+  //   "ph_ttt_flag":255,    → 1+11+1+1+3+1 = 18 o   (CHAMP DE BITS uint8, jusqu'à 3 chiffres)
+  //   "orp_ttt_state":3,    → 1+13+1+1+1+1 = 18 o
+  //   "orp_ttt_min":1440,   → 1+11+1+1+4+1 = 19 o
+  //   "orp_ttt_e0":-1000.0, → 1+10+1+1+7+1 = 21 o   (mV, 1 décimale signée)
+  //   "orp_ttt_flag":255,   → 1+12+1+1+3+1 = 20 o
+  //   → 150 o (mêmes clés, mêmes largeurs que le décompte de ws_manager.cpp).
+  // Charge pire cas : 2236 (v2.34.0) + 150 = 2386 o, AU-DESSUS du gabarit 2304
+  // → gabarit porté 2304 → 2432 (marge 46 o).
+  // RAPPEL, et ce n'est pas une formalité : ce gabarit est PUREMENT DOCUMENTAIRE.
+  // En ArduinoJson 7, StaticJson<N> dérive de JsonDocument (N n'est plus qu'une
+  // valeur de capacity(), le pool est alloué dynamiquement) et sendJsonResponse
+  // sérialise dans une String dimensionnée à la demande : ce chemin n'a AUCUN
+  // plafond dur et AUCUNE troncature n'y est possible — contrairement à
+  // sWsFrameBuf côté WebSocket (kWsFrameBufBytes, seul plafond DUR du projet).
+  StaticJson<2432> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
   // (médiane + EMA), alignée sur le WS. Le brut reste exposé séparément (phRaw/orpRaw).
@@ -380,8 +401,123 @@ static void handleGetData(AsyncWebServerRequest* request) {
   doc["orp_remaining_ml"]     = max(0.0f, productCfg.orpContainerVolumeMl - productCfg.orpTotalInjectedMl);
   doc["orp_alert_threshold_ml"]= productCfg.orpAlertThresholdMl;
 
+  // feature-096 (v2.37.0) : TEMPS D'ATTEINTE DE CIBLE — 8 champs servis depuis
+  // l'instantané mémorisé de timeToTarget (copie sous spinlock portMUX, patron
+  // measure_validity, sûre en contexte async_tcp). Ce chemin n'appelle JAMAIS
+  // PumpController::getPhDecisionValue() : cet accesseur est réservé à loopTask
+  // (condition C2 du gate feature-096).
+  // PARITÉ /data ↔ WS obligatoire : MÊMES clés, MÊMES arrondis, MÊME règle
+  // NaN → null que ws_manager::_buildSensorJson, publiées dans le MÊME passage
+  // (un champ servi d'un seul côté ne disparaît pas, il CLIGNOTE :
+  // `latestSensorData` est alimenté par le WS puis intégralement REMPLACÉ par
+  // les charges /data toutes les ~30 s — 3 récidives documentées du motif).
+  //   *_ttt_state = 0 pas de départ aujourd'hui / 1 en cours / 2 atteinte /
+  //                 3 non atteinte (4-255 réservés)
+  //   *_ttt_min   = minutes de FILTRATION (état 1 : écoulées ; 2 : temps
+  //                 d'atteinte ; 3 : durée totale), bornées à 1440
+  //   *_ttt_e0    = écart initial SIGNÉ à t0 (null si aucun départ) — pH à
+  //                 2 décimales, ORP à 1 décimale
+  //   *_ttt_flag  = CHAMP DE BITS, jamais une énumération : 0x01 consigne
+  //                 modifiée, 0x02 boost, 0x04 purge au plafond, 0x08 reprise
+  //                 après coupure secteur, 0x10 régulation non automatique.
+  //                 Plusieurs causes peuvent être présentes SIMULTANÉMENT et
+  //                 les bits 5-7 restent libres : le client teste des bits, il
+  //                 ne compare jamais le champ à une valeur unique.
+  {
+    const TttSnapshot ttt = timeToTarget.getSnapshot();
+    doc["ph_ttt_state"] = ttt.ph.state;
+    doc["ph_ttt_min"]   = ttt.ph.minutes;
+    if (!isnan(ttt.ph.e0)) doc["ph_ttt_e0"] = round(ttt.ph.e0 * 100.0f) / 100.0f; else doc["ph_ttt_e0"] = nullptr;
+    doc["ph_ttt_flag"]  = ttt.ph.flags;
+    doc["orp_ttt_state"] = ttt.orp.state;
+    doc["orp_ttt_min"]   = ttt.orp.minutes;
+    if (!isnan(ttt.orp.e0)) doc["orp_ttt_e0"] = round(ttt.orp.e0 * 10.0f) / 10.0f; else doc["orp_ttt_e0"] = nullptr;
+    doc["orp_ttt_flag"]  = ttt.orp.flags;
+  }
+
   time_t nowEpoch = time(nullptr);
   doc["time_synced"] = isTimeValid(nowEpoch);
+
+  sendJsonResponse(request, doc);
+}
+
+// =============================================================================
+// GET /get-kpi — mémoire 7 jours du temps d'atteinte de cible (feature-096)
+// =============================================================================
+// PROTECTION : RouteProtection::WRITE, la MÊME classe que /data. `NONE`
+// exposerait sans authentification le comportement du bassin (heures de
+// filtration, réactivité de la régulation, jours de maintenance) et rejouerait
+// exactement bug-081.
+//
+// NON BLOQUANT : aucune lecture NVS, aucune E/S. copyHistory() recopie 188 o
+// depuis un miroir RAM sous spinlock portMUX ; le reste est du tri sur un
+// tableau de 14 dates en pile. Aucune allocation récurrente hors le document
+// JSON (~800 o au pire cas).
+//
+// FORME : { "days": [ {"d":AAAAMMJJ, "ph":{...}, "orp":{...}}, ... ] }
+//   - le PLUS RÉCENT EN TÊTE, au plus kTimeToTargetHistoryDays entrées ;
+//   - clés courtes (s/m/e0/f) : la charge est lue par la machine, pas par un
+//     humain, et 7 jours × 2 voies multiplient chaque octet de nom par 14 ;
+//   - une voie SANS entrée pour la date est OMISE (absent ≠ « état 0 ») ;
+//   - `e0` vaut null si la journée n'a pas de départ exploitable.
+// Les deux voies sont archivées indépendamment : leurs dates peuvent différer.
+// L'union des dates est donc calculée, triée décroissant, puis tronquée.
+static void handleGetKpi(AsyncWebServerRequest* request) {
+  REQUIRE_AUTH(request, RouteProtection::WRITE);
+
+  // C4 : NVS `pool-kpi` refusée ⇒ l'indicateur est suspendu. On le DIT (503 +
+  // message), on ne rend JAMAIS un tableau vide qui se lirait « aucun jour
+  // enregistré » alors que la mémoire est en panne.
+  if (timeToTarget.isMemoryUnavailable()) {
+    sendErrorResponse(request, 503, "Mémoire des indicateurs indisponible");
+    return;
+  }
+
+  TttHistory h;
+  timeToTarget.copyHistory(h);
+
+  // Union des dates des deux voies (au plus 2 × 7), triée par ordre décroissant.
+  // Tri par insertion : 14 éléments au maximum, aucune allocation, coût nul
+  // devant le budget de 50 ms d'un handler async.
+  uint32_t dates[kTttChannelCount * kTimeToTargetHistoryDays];
+  uint8_t  nDates = 0;
+  for (uint8_t c = 0; c < kTttChannelCount; ++c) {
+    for (uint8_t i = 0; i < kTimeToTargetHistoryDays; ++i) {
+      const uint32_t d = h.days[c][i].date;
+      if (d == 0) continue;  // case vide
+      bool seen = false;
+      for (uint8_t k = 0; k < nDates; ++k) {
+        if (dates[k] == d) { seen = true; break; }
+      }
+      if (seen) continue;
+      uint8_t pos = nDates;
+      while (pos > 0 && dates[pos - 1] < d) { dates[pos] = dates[pos - 1]; --pos; }
+      dates[pos] = d;
+      ++nDates;
+    }
+  }
+  if (nDates > kTimeToTargetHistoryDays) nDates = kTimeToTargetHistoryDays;
+
+  // Pire cas : 7 jours × 2 voies × ~48 o + enveloppe ≈ 800 o.
+  StaticJson<1024> doc;
+  JsonArray days = doc["days"].to<JsonArray>();
+  const char* chanKey[kTttChannelCount] = {"ph", "orp"};
+  // pH à 2 décimales, ORP à 1 : MÊMES arrondis que /data et le WS.
+  const float e0Scale[kTttChannelCount] = {100.0f, 10.0f};
+  for (uint8_t i = 0; i < nDates; ++i) {
+    JsonObject day = days.add<JsonObject>();
+    day["d"] = dates[i];
+    for (uint8_t c = 0; c < kTttChannelCount; ++c) {
+      const TttDay* e = tttHistoryFind(h, c, dates[i]);
+      if (e == nullptr) continue;  // voie sans entrée ce jour-là : clé ABSENTE
+      JsonObject o = day[chanKey[c]].to<JsonObject>();
+      o["s"] = e->state;
+      o["m"] = e->minutes;
+      if (!isnan(e->e0)) o["e0"] = round(e->e0 * e0Scale[c]) / e0Scale[c];
+      else               o["e0"] = nullptr;
+      o["f"] = e->flags;  // CHAMP DE BITS (cf. /data) — jamais une énumération
+    }
+  }
 
   sendJsonResponse(request, doc);
 }
@@ -775,6 +911,7 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
 
 void setupDataRoutes(AsyncWebServer* server) {
   server->on("/data", HTTP_GET, handleGetData);
+  server->on("/get-kpi", HTTP_GET, handleGetKpi);  // feature-096 (v2.37.0)
   server->on("/get-logs", HTTP_GET, handleGetLogs);
   server->on("/download-logs", HTTP_GET, handleDownloadLogs);
   server->on("/logs", HTTP_DELETE, [](AsyncWebServerRequest* request) {

@@ -8,6 +8,7 @@
 #include "constants.h"     // feature-074 : kPumpTypePulseFlowMlPerMin (calibration de type)
 #include "ph_persist_logic.h"  // feature-084 : PhIntegralSnapshot (logique PURE)
 #include "regulation_defaults.h"  // feature-088 : valeurs d'usine de régulation (source UNIQUE)
+#include "time_to_target_logic.h"  // feature-096 : TttHistory (logique PURE)
 
 // ==== Configuration des canaux PWM pompes ====
 // MOSFET IRLZ44N - PWM sur Gate, pins définis dans constants.h (PCB v2)
@@ -377,6 +378,39 @@ uint8_t readPhActuatorLimitStreak(float sustainableMlPerMin);
 // vraisemblance de l'anneau et le prédicat de saturation de l'intégrale ne
 // puissent pas diverger.
 float phSustainableFlowFromConfig();
+
+// Date du jour au format AAAAMMJJ, ou 0 si l'horloge n'est pas exploitable
+// (time() < kMinValidEpoch). SOURCE UNIQUE de la date civile pour tout ce qui
+// archive une journée : l'anneau de charge acide (feature-084) comme
+// l'indicateur de temps d'atteinte (feature-096).
+uint32_t currentLoadDateNumber();
+
+// ==== feature-096 : anneau NVS du temps d'atteinte de cible ====
+// Namespace NVS `pool-kpi` (clé unique `ttt7`), DISJOINT de `pool-daily`. Le
+// namespace n'isole pas la flash (les pages sont partagées) mais le DROIT DE
+// DESTRUCTION EN MASSE : il est l'unité de `clear()`. Mutualiser obligerait cet
+// instrument à détenir un handle en ÉCRITURE sur le namespace des compteurs de
+// dosage (dailyPhInjectedMl, dailyOrpInjectedMl, filtTotalMin, drapeaux de
+// limite) — un `clear()` ou une clé mal nommée y effacerait les quotas
+// journaliers. Moindre privilège : un non-garde-fou ne détient pas la clé
+// d'écriture des garde-fous. `filt_total` reste lu en LECTURE SEULE, jamais
+// écrit par ce module.
+//
+// Comme pour l'instantané d'intégrale, ICI IL N'Y A QUE DU TRANSPORT : schéma,
+// intégrité, insertion et machine d'états vivent dans time_to_target_logic.h
+// (config.cpp n'est pas dans le `build_src_filter` de `env:native`).
+// À n'appeler que depuis loopTask : la NVS est bloquante, jamais depuis un
+// callback AsyncWebServer.
+
+// Relit l'anneau. false si absent, de taille inattendue, d'un autre schéma ou
+// d'empreinte discordante — `out` est alors laissé VIDE (fail-closed).
+bool loadTttHistory(TttHistory& out);
+// Écrit l'anneau en le SCELLANT au préalable (`serieStamp` = estampille de
+// série, condition C6 du gate). false = NVS INDISPONIBLE (namespace refusé,
+// partition pleine ou corrompue) : l'appelant passe alors en « mémoire
+// indisponible » et n'insiste PAS (aucune boucle de retry, aucun repli
+// d'écriture vers un autre namespace).
+bool saveTttHistory(TttHistory& h, uint32_t serieStamp);
 
 // ==== Mode Boost (feature-053) ====
 // Persistance NVS DÉDIÉE (namespace poolctrl, clés boost_active/boost_until) —

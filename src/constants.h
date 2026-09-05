@@ -2287,6 +2287,43 @@ static_assert(kPhSessionUndershootFloorPh == kPhFfAdverseErrorPh,
 static_assert(0.0f < kPhDoorCloseMarginPh && kPhDoorCloseMarginPh < kPhIntegralResetMargin,
               "Marge de fermeture de porte hors plage (0 < marge < kPhIntegralResetMargin)");
 
+// ============================================================================
+// TEMPS D'ATTEINTE DE CIBLE — instrument passif (feature-096 / v2.37.0)
+// ============================================================================
+// Le POURQUOI complet est dans src/time_to_target_logic.h. Ces cinq valeurs
+// définissent la MÉTRIQUE DE RÉFÉRENCE du plan 2026-09 : les modifier change le
+// sens de toutes les journées déjà archivées, et rend les comparaisons de
+// versions caduques.
+
+// Tenue exigée dans la bande pour déclarer la cible ATTEINTE, en minutes de
+// FILTRATION consécutives. 30 min = trois fois la fenêtre du signal lent de
+// décision (kPhDecisionWindowMs) : une tenue plus courte serait indiscernable
+// du bruit de mesure (σ = 0,043 sur 60 s, cf. feature-094).
+constexpr uint16_t kTimeToTargetHoldMin = 30;
+
+// Profondeur de la mémoire glissante : 7 journées par régulation (une semaine =
+// le cycle naturel de comparaison avant/après un déploiement).
+constexpr uint8_t kTimeToTargetHistoryDays = 7;
+
+// Arrêt de filtration au-delà duquel la JOURNÉE est déclarée close (minutes
+// MURALES). Couvre d'un seul critère la fin de plage horaire et le passage en
+// OFF : au-delà d'une heure sans circulation, la journée de régulation est
+// terminée, qu'un cycle du soir reprenne ou non.
+constexpr uint16_t kTimeToTargetOffDayEndMin = 60;
+
+// Garde de VRAISEMBLANCE sur l'écart initial e0. Au-delà, l'indicateur REFUSE
+// de poser t0 (il n'invente jamais de valeur) et attend le premier échantillon
+// plausible. Cas réel du 05/09/2026 : brut 5,45 avec de l'air dans le circuit,
+// soit e0 = −1,75 — une mesure d'installation, pas une mesure de bassin.
+constexpr float kTttMaxPlausibleE0Ph  = 1.0f;    // pH
+constexpr float kTttMaxPlausibleE0Orp = 300.0f;  // mV
+
+// La tenue doit couvrir au moins deux fenêtres du signal lent, faute de quoi
+// elle attesterait d'une moyenne qui n'a pas fini de se constituer.
+static_assert((unsigned long)kTimeToTargetHoldMin * 60000UL >=
+                  2UL * (unsigned long)kPhDecisionWindowMs,
+              "Tenue d'atteinte sous deux fenetres du signal lent de decision");
+
 // Répartition du volume quotidien du mode "scheduled" (feature-011).
 // Le volume restant est réparti uniformément par fenêtres de 15 min sur
 // l'horizon de filtration restant, borné à minuit (les compteurs journaliers

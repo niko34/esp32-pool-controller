@@ -11,7 +11,7 @@ Point d'entrée unique pour **tout** ce qui concerne le pH : mesure, mode de ré
 
 En mode nominal, cinq zones :
 
-1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH **filtrée** courante en grand (1 décimale, cohérent avec le tableau de bord) + **ligne brute discrète** « brut · médiane · maj » + **rangée de chips** : chip d'état filtre cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) et **chip unique sonde + calibration** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression). Depuis feature-034, le chip de calibration distinct est **supprimé** : son information est fusionnée dans le chip sonde.
+1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH **filtrée** courante en grand (1 décimale, cohérent avec le tableau de bord) + **ligne brute discrète** « brut · médiane · maj » + **rangée de chips** : chip d'état filtre cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) et **chip unique sonde + calibration** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression). Depuis feature-034, le chip de calibration distinct est **supprimé** : son information est fusionnée dans le chip sonde. Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#ph-ttt-block`) : ligne de valeur + bande de 7 pastilles — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
 2. **Carte Régulation pH** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs conditionnels :
    - **Automatique** : pH cible — **contrôle segmenté 4 positions** `#ph_target_group` depuis la v2.25.0 (7,20 / 7,30 / 7,40 / 7,50), avec hint de plage `#ph_target_hint`. Voir [Consigne pH : contrôle segmenté](#consigne-ph--contrôle-segmenté-v2250) et [Règles firmware appliquées](#règles-firmware-appliquées).
    - **Programmée** : volume quotidien en mL (borné par `max_ph_ml_per_day`) + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#ph_scheduled_flow_line` / `#ph_scheduled_flow_value`, alimentée par le champ WS `ph_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
@@ -189,6 +189,59 @@ Sous la barre de dose journalière, présentation volontairement **discrète** (
 - **Aucune mention de bidon** (leçon v2.26.0 : le client annonçait « vérifiez le bidon » sur une saturation qui désignait la limite horaire).
 - Le conseil cite **la filtration en premier** ; le relèvement de la limite horaire n'est proposé qu'**« après vérification de l'installation »** (le relèvement augmente proportionnellement le volume injecté pendant le retard de mélange — point 3 de la spec, différé).
 - « 3 jours » est la **constante firmware** du diagnostic (`kPhActuatorLimitConsecutiveDays`), pas un champ servi.
+
+## Atteinte de la cible (feature-096, v2.37.0)
+
+Bloc `#ph-ttt-block`, placé **en pied du bloc Statistiques**, sous les capacités de dosage. Patron maison `field__label` + `<strong>` + `<span class="muted small">`, identique à `#ph-integral-section` et `#ph_ff_line` (pas de `.kv`). Il expose l'[indicateur « temps d'atteinte de cible »](../subsystems/time-to-target.md) ([ADR-0063](../adr/0063-definition-normative-du-temps-d-atteinte-de-cible.md)) : combien de temps la régulation pH met, chaque jour, à ramener le bassin sur sa consigne et à l'y tenir.
+
+> ⚠️ **« Minutes de circulation », jamais « de filtration »** — dans tous les libellés de ce bloc. La base de temps est le compteur de **présence d'eau** (`filtTotalMin`) : sans circulation, ni mélange ni mesure représentative, donc la régulation ne progresse pas.
+
+**Point de décision unique** : `updateTimeToTargetDisplay()` ([`data/app.js`](../../data/app.js)), appelée depuis `updateDetailSections()` sous `try/catch` — donc après une charge `/data` **et** après une trame WS `sensor_data`. Une seule fonction `renderTttChannel(prefix, unit, data)` sert **les deux pages**, paramétrée par l'unité.
+
+**Sentinelle de présence** : `ph_ttt_state` non numérique (`undefined`, firmware < 2.37.0) → **bloc entier masqué**, jamais un « — » qui ferait croire à un indicateur en panne.
+
+### Ligne de valeur (`#ph-ttt-value` + `#ph-ttt-detail`)
+
+| `ph_ttt_state` | Valeur (gras) | Détail (discret) |
+|---|---|---|
+| `2`, `min > 0` | `en 3 h 53` | `de circulation — écart initial +0,18` |
+| `2`, `min === 0` | `déjà à la cible au départ` | `écart initial +0,02` |
+| `1` | `en cours — 1 h 10` | `de circulation depuis le départ du jour — écart initial +0,18` |
+| `3` | `non atteinte` | `après 10 h 12 de circulation — écart initial +0,24` |
+| `0`, `time_synced === false` | `indicateur suspendu` | `heure système non synchronisée — aucune mesure enregistrée` |
+| `0`, heure valide | `en attente du départ` | `le chronomètre démarre au premier relevé valide, filtration en marche` |
+
+**Formats** : durée `45 min` sous l'heure, `3 h 53` (minutes sur 2 chiffres), `5 h` si le reste est nul — **espaces insécables** (une durée ne doit pas se couper en fin de ligne). Écart initial pH à **2 décimales**, virgule française, signe **toujours explicite**, moins typographique **U+2212** (jamais le trait d'union, qui se confond avec une puce à 11 px). `ph_ttt_e0` à `null` → « écart initial indisponible », jamais « 0,00 ».
+
+⚠️ Le contrat firmware **ne porte pas d'écart résiduel** : seul `e0` existe. Le détail dit « écart **initial** » — ne pas inventer un « à l'arrêt » que le firmware n'expose pas.
+
+**Drapeau sur le jour courant** : si `ph_ttt_flag` porte au moins un bit et que l'état n'est pas `0`, le détail est suffixé `— jour non comparable (consigne modifiée · boost chlore)`, causes jointes par ` · `.
+
+### Bande de 7 pastilles (`#ph-ttt-days`, `role="list"`)
+
+Sept emplacements, **toujours rendus**, du plus ancien (gauche) au plus récent (droite). Un historique court n'efface aucune case : **le vide EST une information** (« pas de jugement rendu »), pas un trou à masquer.
+
+| Cas | Contenu | Style |
+|---|---|---|
+| `s === 2`, `m ≤ 120 min` | `3h53` (chiffres tabulaires) | **vert** (`.ttt__day--good`) |
+| `s === 2`, `m > 120 min` | `5h12` | **ambré** (`.ttt__day--long`) — seuil **2 h** (`TTT_LONG_MIN`) |
+| `s === 3` (non atteinte) | `—` | gris neutre (style de base) |
+| `s === 1` (en cours) | `1h10` | gris, contour **tireté** (`.ttt__day--pending`) |
+| journée absente | `·` | pointillé estompé (`.ttt__day--none`) |
+| au moins un bit de drapeau | suffixe **`*`** | **hachures à 45°** (`.ttt__day--flag`) |
+
+- **La couleur ne porte jamais seule l'information** : l'astérisque double les hachures, et chaque pastille porte une **phrase complète** en `title` **et** en `aria-label` (« Vendredi 4 septembre : cible atteinte en 3 h 53 de circulation, écart initial +0,18. Jour non comparable : boost chlore. »).
+- **Note visible sous la bande** (`#ph-ttt-note`, `role="status"`) affichée seulement s'il existe au moins un drapeau sur les 7 jours : `* Jours non comparables : consigne modifiée, boost chlore.`
+- **Alignement par DATE, jamais par ordre du tableau** : les sept emplacements sont les sept dates attendues (J-6 … aujourd'hui) et chaque entrée de `/get-kpi` est placée par égalité de date. Il **y aura** des trous (appareil éteint une journée, ou journée sans heure synchronisée — le firmware refuse alors d'archiver une entrée datée faux). Un simple `reverse()` aligné à droite décalerait tout ce qui suit un trou, et chaque pastille **nomme son jour** : elle annoncerait la mauvaise date. Un indicateur qui se trompe de jour est pire qu'un indicateur absent.
+- **Le dernier emplacement (aujourd'hui) porte l'état VIVANT** (`/data` + WS) dès qu'un chronomètre existe, et non l'entrée « en cours » archivée en NVS à t0 — celle-ci est figée à 0 minute jusqu'à la clôture, la pastille afficherait « 0h00 » (qui se lit « déjà à la cible ») sous une ligne disant « en cours — 1 h 10 ». **Choix délibéré**, pas un bug.
+
+### Source des données
+
+- **Ligne de valeur** : les 4 champs `ph_ttt_*` de `latestSensorData` (`/data` **et** WS, parité stricte).
+- **Bande** : `GET /get-kpi`, relu **à l'entrée dans la vue**, puis uniquement au **changement d'état ou de jour civil** — **jamais en polling** (la mémoire n'est écrite que deux fois par jour et par régulation). Après un échec, le drapeau n'est pas réarmé par un rendu : la relecture n'a lieu qu'à la ré-entrée dans la vue.
+- **Échec ou `503`** (mémoire indisponible, hors ligne) : la bande est **vidée** et la légende remplacée par « Historique indisponible » — la ligne de valeur, elle, est **conservée** (elle ne vient pas de `/get-kpi`). Jamais de bande vide qui se lirait « aucune journée enregistrée ».
+
+**Volontairement absent du tableau de bord** — cohérent avec l'arbitrage qui avait déjà écarté le bloc « Rattrapage accumulé » : les cartes du tableau de bord sont denses, et c'est une grandeur d'analyse, pas une mesure d'eau.
 
 ## Bandeau « Stabilisation des mesures non atteinte » (`#measures_purge_timeout_banner`, feature-091, v2.34.0)
 
@@ -507,6 +560,7 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 **Répartition scheduled (feature-011, v2.8.0)** : `ph_scheduled_flow_ml_per_min` (float 1 décimale, mL/min — débit moyen planifié restant ; `null` hors mode `scheduled`, hors plage de filtration ou heure ESP32 invalide → l'UI affiche « — »)
 **Terme intégral (v2.26.0)** : `ph_integral_pct` (float, % — remplissage de la réserve), `ph_integral` (float, pH·s), `ph_integral_term` (float, mL/min). Servis **à l'identique** par `GET /data`. Clé **absente** = firmware antérieur → bloc masqué ; `null` = « non calculable » → « — » ; `0` = **réserve vide, affirmé**. Voir [Rattrapage accumulé](#rattrapage-accumulé-par-la-régulation-ph-v2260)
 **Dose de base apprise (feature-085, v2.28.0)** : `ph_ff_ml_per_min` (float 2 décimales, mL/min), `ph_ff_status` (int 0-4, contrat figé). Servis **à l'identique** par `GET /data`. `ph_ff_status` absent = firmware antérieur → ligne masquée. Voir [Ligne « Dose de base apprise »](#ligne--dose-de-base-apprise--feature-085-v2280)
+**Atteinte de la cible (feature-096, v2.37.0)** : `ph_ttt_state` (uint8 `0`-`3`, **4-255 réservés**), `ph_ttt_min` (uint16, **minutes de circulation** — ⚠️ **sens variable selon l'état**), `ph_ttt_e0` (float 2 décimales \| `null`), `ph_ttt_flag` (**champ de bits**). Servis **à l'identique** par `GET /data` (même passage des deux côtés). `ph_ttt_state` non numérique = firmware antérieur → bloc masqué. La mémoire 7 jours vient de [`GET /get-kpi`](../API.md#get-get-kpi--write), **jamais du WS**. Voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370)
 **Limite d'actionneur (feature-086, v2.29.0)** : `ph_sustainable_ml_per_min` (float 2 décimales \| `null`), `ph_daily_max_ml` (int mL/j \| `null`), `ph_limited_by_hourly_budget` (bool), `ph_undersized` (bool). Servis **à l'identique** par `GET /data` (même passage des deux côtés — aucun clignotement possible). `ph_limited_by_hourly_budget` non booléen = firmware antérieur → capacités **et** bandeaux masqués. Voir [Capacités et bandeaux](#capacités-de-dosage-et-bandeaux-de-limite-dactionneur-feature-086-v2290)
 **Config** : `ph_target`, `ph_correction_type` (`ph_minus` / `ph_plus`), `max_ph_ml_per_day`, `ph_offset` (feature-067, message `config` — pas `sensor_data`)
 **Injection manuelle** : `ph_inject_remaining_s`

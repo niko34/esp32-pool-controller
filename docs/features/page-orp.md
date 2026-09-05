@@ -11,7 +11,7 @@ Point d'entrée unique pour **tout** ce qui concerne l'ORP (potentiel redox, pil
 
 En mode nominal, quatre zones :
 
-1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP **filtrée** courante en grand (mV) + **ligne brute discrète** « brut · médiane · maj » + **rangée de chips** : chip d'état filtre cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) et **chip d'état de calibration** (cf. [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)) + dosage du jour (barre de progression, borne `max_orp_ml_per_day`).
+1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP **filtrée** courante en grand (mV) + **ligne brute discrète** « brut · médiane · maj » + **rangée de chips** : chip d'état filtre cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) et **chip d'état de calibration** (cf. [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)) + dosage du jour (barre de progression, borne `max_orp_ml_per_day`). Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#orp-ttt-block`) — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
 2. **Carte Régulation ORP** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs :
    - **Automatique** : ORP cible (mV) + bouton Sauvegarder.
    - **Programmée** : volume quotidien de chlore en mL + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#orp_scheduled_flow_line` / `#orp_scheduled_flow_value`, alimentée par le champ WS `orp_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
@@ -47,6 +47,27 @@ Pendant ces états, la **valeur ORP « actuelle » affiche `--`** (le badge expl
 - **Affiché** si `measures_purge_last_end === 2` ; **masqué** sinon, et masqué aussi quand le champ est absent (firmware < 2.34.0).
 - **Warning, pas critique** : le plafond ouvre la porte de validité, le dosage reprend sous les gardes habituelles. Le bandeau reste visible tant que le motif vaut `2`.
 - Détail du rendu et contexte firmware : [page-ph.md](page-ph.md#bandeau--stabilisation-des-mesures-non-atteinte--measures_purge_timeout_banner-feature-091-v2340), [measure-validity.md](../subsystems/measure-validity.md), alerte MQTT [`measures_purge_timeout`](../MQTT.md#alertes).
+
+## Atteinte de la cible (feature-096, v2.37.0)
+
+Bloc `#orp-ttt-block`, **miroir strict** de celui de la page pH : même patron HTML, même fonction de rendu (`renderTttChannel('orp', 'orp', …)`, une seule implémentation paramétrée par l'unité), même code couleur, même seuil de 2 h. Il expose l'[indicateur « temps d'atteinte de cible »](../subsystems/time-to-target.md) ([ADR-0063](../adr/0063-definition-normative-du-temps-d-atteinte-de-cible.md)) pour la régulation ORP.
+
+Structure, formats de durée, règles de la bande de 7 pastilles, alignement par date, écrasement du dernier emplacement par l'état vivant, comportement en cas d'échec de `/get-kpi` : **détail complet dans [page-ph.md](page-ph.md#atteinte-de-la-cible-feature-096-v2370)**. Ne sont listées ici que les **différences**.
+
+| Point | Page pH | Page ORP |
+|---|---|---|
+| Champs consommés | `ph_ttt_*` | `orp_ttt_*` |
+| Grandeur chronométrée | **signal lent** de décision (moyenne 10 min, feature-094) | mesure **filtrée** — **qui EST la grandeur de décision** de la régulation ORP |
+| Bande d'atteinte | `phStartThreshold` (**0,05 pH**) | `orpStartThreshold` (**15 mV**) |
+| Format de l'écart initial | 2 décimales, sans unité (`+0,18`) | **entier + `mV`** (`−45 mV`), signe explicite, moins typographique **U+2212** |
+| Garde de vraisemblance | refus de démarrer au-delà de **1,0 pH** | refus au-delà de **300 mV** |
+| Drapeau **boost chlore** (bit `0x02`) | jamais posé (aucun boost pH) | posé les jours de boost — le chronomètre **juge contre la consigne effective** (celle du boost), pas contre la consigne configurée |
+
+> ⚠️ **« Minutes de circulation », jamais « de filtration »** dans tous les libellés — la base de temps est le compteur de **présence d'eau**.
+
+**Sentinelle de présence** : `orp_ttt_state` non numérique (firmware < 2.37.0) → bloc masqué, jamais un « — ».
+
+**Volontairement absent du tableau de bord**, comme son homologue pH.
 
 ## Affichage mesure filtrée / brute (feature-025)
 
@@ -162,6 +183,7 @@ La carte `#orp-card-calibration` présente un **stepper** (`<ol class="calibrati
 **Dosage** : `orp_dosing`, `orp_used_ms`, `orp_daily_ml`, `orp_limit_reached`
 **Mode** : `orp_regulation_mode`, `orp_daily_target_ml`, `orp_enabled` (miroir — voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
 **Répartition scheduled (feature-011, v2.8.0)** : `orp_scheduled_flow_ml_per_min` (float 1 décimale, mL/min — débit moyen planifié restant ; `null` hors mode `scheduled`, hors plage de filtration ou heure ESP32 invalide → l'UI affiche « — »)
+**Atteinte de la cible (feature-096, v2.37.0)** : `orp_ttt_state` (uint8 `0`-`3`, **4-255 réservés**), `orp_ttt_min` (uint16, **minutes de circulation** — ⚠️ **sens variable selon l'état**), `orp_ttt_e0` (float 1 décimale, mV \| `null`), `orp_ttt_flag` (**champ de bits**). Servis **à l'identique** par `GET /data`. `orp_ttt_state` non numérique = firmware antérieur → bloc masqué. La mémoire 7 jours vient de [`GET /get-kpi`](../API.md#get-get-kpi--write), **jamais du WS**. Voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370)
 **Config** : `orp_target`, `max_orp_ml_per_day` (= `max_chlorine_ml_per_day`)
 **Injection manuelle** : `orp_inject_remaining_s`
 **Stabilisation** : `stabilization_remaining_s`

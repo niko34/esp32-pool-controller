@@ -648,6 +648,14 @@
       loadSensorData({ force: lastSensorDataLoadTime === 0, source: "route-view" });
     }
 
+    // feature-096 : la mémoire 7 jours du temps d'atteinte de cible n'est relue
+    // qu'à l'ENTRÉE des vues pH et ORP (puis au changement d'état ou de jour,
+    // cf. updateTimeToTargetDisplay). JAMAIS en polling : l'anneau NVS n'est
+    // écrit que deux fois par jour et par régulation.
+    if (routeObj.view === "/ph" || routeObj.view === "/orp") {
+      fetchKpiHistory();
+    }
+
     // Mobile: close sidebar after navigation
     closeSidebar();
     perf?.end();
@@ -4192,6 +4200,359 @@
     }
   }
 
+  // ========== feature-096 (v2.37.0) : temps d'atteinte de cible ==========
+  //
+  // HUIT champs servis à l'IDENTIQUE sur /data et le WebSocket (parité stricte,
+  // même passage côté firmware) :
+  //   {ph|orp}_ttt_state → 0 pas de départ aujourd'hui · 1 en cours ·
+  //                        2 atteinte · 3 non atteinte (4-255 réservés) ;
+  //   {ph|orp}_ttt_min   → minutes de FILTRATION (état 1 : écoulées ;
+  //                        2 : temps d'atteinte ; 3 : durée totale) ;
+  //   {ph|orp}_ttt_e0    → écart initial signé à t0 (null = indisponible) ;
+  //   {ph|orp}_ttt_flag  → CHAMP DE BITS, jamais une énumération : une journée
+  //                        peut cumuler plusieurs circonstances, et les bits
+  //                        libres d'un firmware plus récent doivent rester sans
+  //                        effet ici. On teste donc des bits, jamais l'égalité.
+  //
+  // Le contrat NE PORTE PAS d'écart résiduel : seul `e0` existe. Le détail dit
+  // « écart initial » — n'inventez pas un « à l'arrêt » que le firmware
+  // n'expose pas.
+  //
+  // La mémoire 7 jours vient de `GET /get-kpi` (jamais du WS) : elle n'est
+  // relue qu'à l'entrée des vues pH/ORP, puis au changement d'état ou de jour.
+  // JAMAIS en polling — c'est une donnée qui bouge deux fois par jour.
+  const TTT_LONG_MIN = 120;  // seuil vert/ambré des pastilles : 2 h
+
+  // Libellés des bits de drapeau. Table EXTENSIBLE : un bit inconnu (firmware
+  // plus récent) est simplement ignoré, il ne casse ni la phrase ni la note.
+  const TTT_FLAG_LABELS = [
+    [0x01, "consigne modifiée"],
+    [0x02, "boost chlore"],
+    [0x04, "stabilisation non atteinte"],
+    [0x08, "reprise après coupure"],
+    [0x10, "régulation non automatique"],
+  ];
+
+  function tttFlagCauses(flags) {
+    if (typeof flags !== "number" || !isFinite(flags) || flags <= 0) return [];
+    return TTT_FLAG_LABELS.filter(([bit]) => (flags & bit) !== 0).map(([, label]) => label);
+  }
+
+  // « 45 min » (< 60), « 3 h 53 » (minutes sur 2 chiffres), « 5 h » (reste nul).
+  // Espaces INSÉCABLES : une durée ne doit jamais se couper en fin de ligne.
+  function fmtLong(min) {
+    if (typeof min !== "number" || !isFinite(min) || min < 0) return "—";
+    const m = Math.round(min);
+    if (m < 60) return `${m} min`;
+    const h = Math.floor(m / 60);
+    const r = m % 60;
+    return r === 0 ? `${h} h` : `${h} h ${String(r).padStart(2, "0")}`;
+  }
+
+  // Forme courte des pastilles : 4 caractères, chiffres tabulaires (« 3h53 »).
+  function fmtShort(min) {
+    if (typeof min !== "number" || !isFinite(min) || min < 0) return "—";
+    const m = Math.round(min);
+    return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}`;
+  }
+
+  // Écart initial signé. pH : 2 décimales, virgule française. ORP : entier + mV.
+  // Signe TOUJOURS explicite, moins typographique U+2212 (jamais le trait
+  // d'union, qui se confond avec une puce à 11 px).
+  function fmtE0(v, unit) {
+    if (typeof v !== "number" || !isFinite(v)) return null;
+    const isPh = (unit === "ph");
+    const abs = Math.abs(v);
+    const txt = isPh
+      ? abs.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : Math.round(abs).toLocaleString("fr-FR");
+    const sign = (v < 0) ? "−" : "+";
+    return sign + txt + (isPh ? "" : " mV");
+  }
+
+  // Mémoire 7 jours (réponse de /get-kpi), + traces de la dernière relecture.
+  let _kpiDays = null;          // null = jamais chargé · [] = chargé et vide
+  // Dernière tentative en échec (hors ligne ou 503 « mémoire indisponible »).
+  // REVUE (mineur) : ce drapeau n'est PAS réarmé par un rendu. Après un échec,
+  // l'historique ne se recharge donc qu'à la ré-entrée dans la vue ou au
+  // changement d'état/de jour — jamais en boucle. C'est délibéré : la mémoire
+  // 7 jours ne change au plus que deux fois par jour et par régulation,
+  // repolluer le réseau pour elle n'apporterait rien.
+  let _kpiFailed = false;
+  let _kpiInFlight = false;
+  let _kpiSig = "";             // signature « états + jour » de la dernière relecture
+  let _kpiSuppressFetch = false; // rendu déclenché PAR la relecture : ne pas reboucler
+
+  async function fetchKpiHistory() {
+    if (_kpiInFlight) return;
+    _kpiInFlight = true;
+    try {
+      const res = await authFetch(`/get-kpi?t=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) throw new Error("kpi " + res.status);
+      const json = await res.json();
+      _kpiDays = Array.isArray(json.days) ? json.days : [];
+      _kpiFailed = false;
+    } catch (e) {
+      // Offline, 503 « mémoire indisponible » ou JSON illisible : on le DIT
+      // (légende remplacée), on ne fabrique pas une bande vide qui se lirait
+      // « aucune journée enregistrée ».
+      _kpiFailed = true;
+      _kpiDays = null;
+    } finally {
+      _kpiInFlight = false;
+      // Le re-rendu qui suit RAFRAÎCHIT la bande et met la signature à jour ; il
+      // ne doit pas relancer une seconde requête (la donnée vient d'arriver).
+      _kpiSuppressFetch = true;
+      try { updateTimeToTargetDisplay(); } catch (_) { /* rendu défensif */ }
+      _kpiSuppressFetch = false;
+    }
+  }
+
+  // Date lisible d'une journée (AAAAMMJJ) : « Vendredi 4 septembre ».
+  // Noms EN DUR, comme dans loadHistoricalData : toLocaleDateString("fr-FR")
+  // lance une SyntaxError sur certaines versions de Safari (précédent déjà
+  // rencontré et commenté dans ce fichier). Une phrase d'aria-label ne peut pas
+  // dépendre d'une API qui jette.
+  const TTT_JOURS_FR = ["Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi"];
+  const TTT_MOIS_FR = ["janvier", "février", "mars", "avril", "mai", "juin",
+                       "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+
+  function tttDayLabel(d) {
+    if (typeof d !== "number" || d < 19700101) return null;
+    const y = Math.floor(d / 10000);
+    const mo = Math.floor(d / 100) % 100;
+    const da = d % 100;
+    if (mo < 1 || mo > 12 || da < 1 || da > 31) return null;
+    const dt = new Date(y, mo - 1, da, 12, 0, 0, 0);
+    if (isNaN(dt.getTime())) return null;
+    // « 1er », pas « 1 » : la phrase est lue à voix haute par les lecteurs d'écran.
+    return `${TTT_JOURS_FR[dt.getDay()]} ${da === 1 ? "1er" : da} ${TTT_MOIS_FR[mo - 1]}`;
+  }
+
+  // Phrase COMPLÈTE d'une pastille (title ET aria-label identiques) : la couleur
+  // ne porte jamais seule l'information, le lecteur d'écran doit tout entendre.
+  function tttDaySentence(label, entry, unit) {
+    if (!entry) return `${label} : pas de donnée.`;
+    const e0 = fmtE0(entry.e0, unit);
+    const e0Txt = (e0 === null) ? "écart initial indisponible" : `écart initial ${e0}`;
+    let core;
+    if (entry.s === 2) {
+      core = (entry.m === 0)
+        ? `déjà à la cible au départ, ${e0Txt}`
+        : `cible atteinte en ${fmtLong(entry.m)} de circulation, ${e0Txt}`;
+    } else if (entry.s === 3) {
+      core = `cible non atteinte après ${fmtLong(entry.m)} de circulation, ${e0Txt}`;
+    } else if (entry.s === 1) {
+      core = `journée en cours, ${fmtLong(entry.m)} de circulation depuis le départ, ${e0Txt}`;
+    } else {
+      core = "aucun départ enregistré";
+    }
+    const causes = tttFlagCauses(entry.f);
+    const tail = causes.length
+      ? ` Jour non comparable : ${causes.join(" · ")}.`
+      : "";
+    return `${label} : ${core}.${tail}`;
+  }
+
+  // Rendu des SEPT emplacements — toujours sept, du plus ancien (gauche) au plus
+  // récent (droite). Un historique court n'efface pas les cases : le vide EST
+  // une information (« pas de jugement rendu »), pas un trou à masquer.
+  function renderTttDays(container, noteEl, captionEl, days, live, unit) {
+    if (!container) return;
+    container.textContent = "";
+    if (noteEl) { noteEl.hidden = true; noteEl.textContent = ""; }
+    if (_kpiFailed) {
+      // Bande VIDÉE et légende explicite ; la ligne de valeur, elle, est
+      // conservée (elle vient de /data ou du WS, pas de /get-kpi).
+      if (captionEl) captionEl.textContent = "Historique indisponible";
+      return;
+    }
+    if (captionEl) captionEl.textContent = "7 derniers jours — le plus récent à droite";
+
+    // ALIGNEMENT PAR DATE, jamais par ordre du tableau.
+    // -------------------------------------------------
+    // Les sept emplacements sont les sept dates ATTENDUES (J-6 … aujourd'hui) ;
+    // chaque entrée de /get-kpi est placée par ÉGALITÉ DE DATE. Un simple
+    // reverse() aligné à droite décalerait d'un cran tout ce qui se trouve à
+    // droite d'un trou — et il y aura des trous : appareil éteint une journée,
+    // ou journée où l'heure n'était pas synchronisée (le firmware REFUSE alors
+    // d'archiver une entrée datée faux, c'est voulu). Or chaque pastille NOMME
+    // son jour dans son title et son aria-label : un décalage ferait annoncer
+    // la mauvaise date. Un indicateur qui se trompe de jour est pire qu'un
+    // indicateur absent — on lui fait confiance.
+    // Ici un trou reste un trou À SA PLACE, et les jours présents gardent leur
+    // date exacte.
+    const byDate = new Map();
+    if (Array.isArray(days)) {
+      days.forEach((e) => { if (e && typeof e.d === "number") byDate.set(e.d, e); });
+    }
+    // Dates attendues : Date locale reculée par setDate(), qui gère seul les
+    // bascules de mois, d'année et d'heure d'été. Aucun décalage recalculé à la
+    // main (soustraire 86 400 000 ms casse aux changements d'heure), et même
+    // source de date locale que le reste de l'UI (loadHistoricalData).
+    const slots = new Array(7).fill(null);
+    const slotDate = new Array(7).fill(0);   // AAAAMMJJ attendu de l'emplacement
+    const slotBack = new Array(7).fill(0);   // ancienneté en jours (6 … 0)
+    for (let i = 0; i < 7; i++) {
+      const back = 6 - i;
+      const d = new Date();
+      d.setHours(12, 0, 0, 0);               // midi : à l'abri des sauts DST
+      d.setDate(d.getDate() - back);
+      slotDate[i] = d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+      slotBack[i] = back;
+      slots[i] = byDate.get(slotDate[i]) || null;
+    }
+
+    // CHOIX DÉLIBÉRÉ, non prescrit par le design — ne pas le prendre pour un
+    // bug : le dernier emplacement (aujourd'hui) porte l'état VIVANT (/data +
+    // WS) dès qu'un chronomètre existe, et non l'entrée « en cours » archivée
+    // en NVS à t0. Cette entrée-là est figée à 0 minute jusqu'à la clôture :
+    // la pastille afficherait « 0h00 » — qui se lit « déjà à la cible » — sous
+    // une ligne disant « en cours — 1 h 10 ». L'écrasement garde la bande
+    // cohérente avec la ligne qui la surmonte.
+    if (live && typeof live.s === "number" && live.s !== 0) {
+      slots[6] = { d: slotDate[6], s: live.s, m: live.m, e0: live.e0, f: live.f };
+    }
+
+    let anyFlag = false;
+    const causesSeen = [];
+    for (let i = 0; i < 7; i++) {
+      const e = slots[i];
+      const cell = document.createElement("div");
+      cell.className = "ttt__day";
+      cell.setAttribute("role", "listitem");
+
+      let txt;
+      if (!e) {
+        cell.classList.add("ttt__day--none");
+        txt = "·";
+      } else if (e.s === 2) {
+        cell.classList.add((e.m <= TTT_LONG_MIN) ? "ttt__day--good" : "ttt__day--long");
+        txt = fmtShort(e.m);
+      } else if (e.s === 3) {
+        txt = "—";  // non atteinte : aucune classe modificatrice, le style de
+                    // base de .ttt__day est déjà le gris voulu (revue : il n'y
+                    // a PAS de classe « --miss » dans app.css, ne pas en croire
+                    // l'existence sur la foi d'un commentaire)
+      } else if (e.s === 1) {
+        cell.classList.add("ttt__day--pending");
+        txt = fmtShort(e.m);
+      } else {
+        cell.classList.add("ttt__day--pending");
+        txt = "—";
+      }
+
+      const causes = e ? tttFlagCauses(e.f) : [];
+      if (causes.length) {
+        anyFlag = true;
+        cell.classList.add("ttt__day--flag");
+        txt += "*";  // l'astérisque DOUBLE les hachures : jamais la couleur seule
+        causes.forEach((c) => { if (!causesSeen.includes(c)) causesSeen.push(c); });
+      }
+      cell.textContent = txt;
+
+      // Libellé : les deux cas partent de la DATE ATTENDUE de l'emplacement,
+      // jamais de la position d'une entrée dans le tableau. Journée présente →
+      // sa date en toutes lettres ; journée absente → son ancienneté (« Il y a
+      // 6 jours »), qui décrit exactement le même jour.
+      const back = slotBack[i];
+      const rel = (back === 0) ? "Aujourd'hui" : (back === 1) ? "Hier" : `Il y a ${back} jours`;
+      const label = e ? (tttDayLabel(slotDate[i]) || rel) : rel;
+      const sentence = tttDaySentence(label, e, unit);
+      cell.title = sentence;
+      cell.setAttribute("aria-label", sentence);
+      container.appendChild(cell);
+    }
+
+    // Note visible SOUS la bande, affichée seulement s'il y a au moins un
+    // drapeau sur les sept jours ; elle énumère les causes RÉELLEMENT présentes.
+    if (noteEl && anyFlag) {
+      noteEl.hidden = false;
+      noteEl.textContent = `* Jours non comparables : ${causesSeen.join(", ")}.`;
+    }
+  }
+
+  // Rendu d'UNE voie. Une seule implémentation, paramétrée par l'unité.
+  function renderTttChannel(prefix, unit, data) {
+    const block = $(`#${prefix}-ttt-block`);
+    if (!block) return null;
+
+    // Sentinelle de présence (patron updatePhActuatorLimitDisplay) : un firmware
+    // antérieur à la 2.37.0 ne sert pas ces clés → bloc MASQUÉ, jamais un « — »
+    // qui ferait croire à un indicateur en panne.
+    const state = data[`${prefix}_ttt_state`];
+    if (typeof state !== "number" || !isFinite(state)) { block.hidden = true; return null; }
+    block.hidden = false;
+
+    const min = data[`${prefix}_ttt_min`];
+    const e0v = data[`${prefix}_ttt_e0`];
+    const flags = data[`${prefix}_ttt_flag`];
+    const e0 = fmtE0(e0v, unit);
+    const e0Txt = (e0 === null) ? "écart initial indisponible" : `écart initial ${e0}`;
+
+    let value = "—";
+    let detail = "";
+    if (state === 2) {
+      if (min === 0) {
+        value = "déjà à la cible au départ";
+        detail = e0Txt;
+      } else {
+        value = `en ${fmtLong(min)}`;
+        detail = `de circulation — ${e0Txt}`;
+      }
+    } else if (state === 1) {
+      value = `en cours — ${fmtLong(min)}`;
+      detail = `de circulation depuis le départ du jour — ${e0Txt}`;
+    } else if (state === 3) {
+      value = "non atteinte";
+      detail = `après ${fmtLong(min)} de circulation — ${e0Txt}`;
+    } else {
+      // État 0 : deux situations très différentes. L'heure système tranche.
+      if (data.time_synced === false) {
+        value = "indicateur suspendu";
+        detail = "heure système non synchronisée — aucune mesure enregistrée";
+      } else {
+        value = "en attente du départ";
+        detail = "le chronomètre démarre au premier relevé valide, filtration en marche";
+      }
+    }
+
+    // Drapeau sur le JOUR COURANT : la valeur reste inchangée, le détail porte
+    // le suffixe. Plusieurs causes simultanées sont jointes par « · ».
+    const causes = tttFlagCauses(flags);
+    if (causes.length && state !== 0) {
+      detail += ` — jour non comparable (${causes.join(" · ")})`;
+    }
+
+    const valEl = $(`#${prefix}-ttt-value`);
+    const detEl = $(`#${prefix}-ttt-detail`);
+    if (valEl) valEl.textContent = value;
+    if (detEl) detEl.textContent = detail ? " " + detail : "";
+
+    renderTttDays($(`#${prefix}-ttt-days`), $(`#${prefix}-ttt-note`), $(`#${prefix}-ttt-caption`),
+                  _kpiDays, { s: state, m: min, e0: e0v, f: flags }, unit);
+    return state;
+  }
+
+  // Point d'entrée UNIQUE, appelé là où updatePhIntegralDisplay() l'est : après
+  // une charge /data ET après une trame WS `sensor_data` (les deux passent par
+  // loadSensorData → updateDetailSections).
+  function updateTimeToTargetDisplay() {
+    const data = latestSensorData || {};
+    const sPh = renderTttChannel("ph", "ph", data);
+    const sOrp = renderTttChannel("orp", "orp", data);
+    if (sPh === null && sOrp === null) return;  // firmware antérieur : rien à faire
+
+    // Relecture de la mémoire 7 jours : au premier rendu, puis UNIQUEMENT au
+    // changement d'un état ou de jour civil. Jamais de polling — l'anneau NVS
+    // n'est écrit que deux fois par jour et par régulation.
+    const sig = `${sPh}|${sOrp}|${new Date().toDateString()}`;
+    const changed = (sig !== _kpiSig);
+    _kpiSig = sig;
+    if (_kpiSuppressFetch) return;
+    if (changed || (_kpiDays === null && !_kpiFailed)) fetchKpiHistory();
+  }
+
   // feature-091 : purge adaptative — rendu de la ligne « Dernière purge »
   // (Réglages > Régulation) et des bandeaux « Stabilisation des mesures non
   // atteinte » (pages pH et ORP). Champs servis à l'IDENTIQUE sur /data et WS :
@@ -4251,6 +4612,13 @@
     // précaution try/catch que le rattrapage accumulé (un rendu qui lance ne
     // doit jamais masquer les rubriques suivantes en silence).
     try { updatePhActuatorLimitDisplay(); } catch (e) { console.error('[ph-limite] rendu:', e); }
+
+    // feature-096 : temps d'atteinte de cible (pages pH ET ORP) — appelé
+    // exactement là où updatePhIntegralDisplay() l'est, donc après une charge
+    // /data ET après une trame WS `sensor_data` (les deux passent ici via
+    // loadSensorData). Même précaution try/catch : un rendu qui lance ne doit
+    // jamais masquer les rubriques suivantes en silence.
+    try { updateTimeToTargetDisplay(); } catch (e) { console.error('[ttt] rendu:', e); }
 
     // feature-091 : durée/motif de la dernière purge + bandeaux plafond — même
     // source (latestSensorData : /data ET WS), même précaution try/catch.
