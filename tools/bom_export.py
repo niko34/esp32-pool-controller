@@ -37,8 +37,14 @@ from xml.etree import ElementTree
 _NS = {"x": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 
 # Emplacements par défaut, relatifs à la racine du dépôt.
-_SOURCE_DEFAUT = os.path.join("kicad v2", "BOM.xlsx")
-_SORTIE_DEFAUT = os.path.join("hardware", "BOM.csv")
+# Mis à jour le 05/09/2026 : les deux chemins précédents (« kicad v2/BOM.xlsx »
+# et « hardware/BOM.csv ») ne pointaient plus sur rien — le premier dossier a été
+# sorti du projet, le second supprimé lors de la réorganisation des fichiers
+# générés. Les sources KiCad vivent désormais sous kicad/.
+# Le CSV produit est IGNORÉ par git (c'est un dérivé) : on le régénère à la
+# demande, et c'est le .xlsx qui est versionné.
+_SOURCE_DEFAUT = os.path.join("kicad", "esp32-pool-controller", "BOM.xlsx")
+_SORTIE_DEFAUT = os.path.join("kicad", "esp32-pool-controller", "BOM.csv")
 
 
 def _texte_de_si(element):

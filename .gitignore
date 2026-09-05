@@ -36,24 +36,46 @@ ai/.env
 .crew/
 ai/outputs/
 
-# Claude Code
-.claude/
-CLAUDE.md
+# Claude Code — les COMMANDES sont versionnées (elles font partie du process de
+# release, cf. CLAUDE.md « Fichiers générés et releases ») ; tout le reste est
+# de l'état local propre à cette machine (settings.local.json, sessions, cache).
+.claude/*
+!.claude/commands/
 specs/
 
-# KiCad (stored separately)
-kicad/
-kicad v2/
-kicad v3/
-
-# FreeCAD (stored separately)
-freecad/
+# ---------------------------------------------------------------------------
+# KiCad — les SOURCES sont versionnées comme le code ; les fichiers de
+# FABRICATION et l'état local ne le sont pas. Les gerbers sont régénérés par
+# ./scripts/build-gerbers.sh et attachés aux releases pcb-vX (/release-pcb).
+# ---------------------------------------------------------------------------
+# Sorties de fabrication (régénérables depuis le .kicad_pcb)
+kicad/**/*.gbr
+kicad/**/*.gbrjob
+kicad/**/*.drl
+kicad/**/gerbers/
+kicad/**/gerbers-*/
+kicad/**/*.zip
+kicad/*.zip
+# BOM CSV : généré depuis BOM.xlsx par tools/bom_export.py (la source .xlsx,
+# elle, est versionnée)
+kicad/**/BOM.csv
+# État local KiCad (préférences de projet, sauvegardes automatiques, caches)
+kicad/**/*.kicad_prl
+kicad/**/*-backups/
+kicad/**/*.kicad_pcb-bak
+kicad/**/*.kicad_sch-bak
+kicad/**/fp-info-cache
+kicad/**/*.lck
+kicad/**/~*.lck
+kicad/**/_autosave-*
+kicad/**/*.bck
+kicad/**/*~
 
 # Exports de diagnostic tirés de l'appareil (journal, logs) — jamais versionnés
 pool_logs.txt
 syslog*.txt
 
-# PDF utilisateur (docs/user/) — exports Claude Design volumineux (26+6 Mo),
-# régénérés à chaque version : l'historique git n'a pas à les porter.
-# La convention et les sources de vérité restent versionnées (README.md).
+# PDF utilisateur (docs/user/) — exports volumineux, régénérés à chaque release
+# par ./scripts/build-docs.sh et attachés comme assets (/release).
+# Les sources HTML/CSS de docs/user/src/ restent versionnées et font foi.
 docs/user/*.pdf

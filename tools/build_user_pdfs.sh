@@ -14,7 +14,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+# Moteur de rendu. Surchargeable par l'appelant (scripts/build-docs.sh sonde
+# weasyprint puis les différentes installations de Chrome/Chromium) ; le chemin
+# macOS reste le défaut pour un appel direct.
+CHROME="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 LARGEUR_CIBLE=1200   # px — largeur utile A4 ≈ 172 mm : ~180 dpi, net à l'impression
 QUALITE_JPEG=75      # normalFormatOptions sips (0-100)
 

@@ -35,7 +35,7 @@ Contrôleur automatique de piscine basé sur ESP32 :
 
 ### Module ESP32 — ⚠️ PSRAM requise
 
-Utiliser un **ESP32-DevKitC-VE** (module **WROVER-E**, ESP32 classique **avec 8 Mo de PSRAM**) — cf. [BOM](hardware/BOM.csv), repère U2.
+Utiliser un **ESP32-DevKitC-VE** (module **WROVER-E**, ESP32 classique **avec 8 Mo de PSRAM**) — cf. `kicad/esp32-pool-controller/BOM.xlsx`, repère U2.
 
 > ⚠️ **Pourquoi la PSRAM est nécessaire** : la **mise à jour en ligne depuis GitHub**
 > (onglet Système → « Vérifier les mises à jour ») ouvre une session TLS qui réclame
@@ -57,21 +57,24 @@ Utiliser un **ESP32-DevKitC-VE** (module **WROVER-E**, ESP32 classique **avec 8 
 
 ### PCB
 
-Les fichiers pour la partie électronique sont disponibles dans le dossier [`hardware/`](hardware/) :
+Les **sources** KiCad sont versionnées dans [`kicad/`](kicad/) :
 
 - [Schéma électronique](screenshots/Schema.png)
 - [PCB](screenshots/PCB.png)
-- [Fichiers Gerber](hardware/Gerber.zip)
-- [BOM](hardware/BOM.csv)
+- `kicad/esp32-pool-controller/esp32-pool-controller.kicad_sch` — schéma
+- `kicad/esp32-pool-controller/esp32-pool-controller.kicad_pcb` — routage
+- `kicad/esp32-pool-controller/BOM.xlsx` — nomenclature (source ; le `BOM.csv`
+  s'en déduit avec `python3 tools/bom_export.py`)
+
+Les **fichiers de fabrication** (gerbers, perçage) ne sont pas versionnés : ils se
+régénèrent avec `./scripts/build-gerbers.sh` et sont publiés comme assets des
+releases `pcb-vX`. Voir « Fichiers générés et releases » dans `CLAUDE.md`.
 
 ![PCB](screenshots/PCB_3D.png)
 
 ### Boîtier
 
-Les fichiers STL pour l’impression 3D du boîtier sont disponibles dans le dossier [`hardware/`](hardware/) :
-
-- [`esp32-pool-controller v3-Boitier.stl`](hardware/esp32-pool-controller%20v3-Boitier.stl) — Corps du boîtier
-- [`esp32-pool-controller v3-Couvercle.stl`](hardware/esp32-pool-controller%20v3-Couvercle.stl) — Couvercle
+Les sources FreeCAD et les STL d'impression 3D sont conservés **hors du dépôt**.
 
 ## 🚀 Installation
 
@@ -353,8 +356,9 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
 - **`src/`** - Code source C++ du firmware
 - **`data/`** - Fichiers web sources (HTML/CSS/JS) — versionnés
 - **`data-build/`** - Fichiers web minifiés — générés automatiquement (ignoré par git)
-- **`hardware/`** - Fichiers Gerber, BOM et STL du boîtier
-- **`kicad/`** - Schémas électroniques KiCad
+- **`kicad/`** - Sources KiCad du PCB (schéma, routage, BOM.xlsx) — versionnées ;
+  les gerbers et le BOM.csv en sont dérivés et ne le sont pas
+- **`scripts/`** - Génération des livrables de release (PDF, gerbers)
 - **`docs/`** - Documentation technique complémentaire
 - **`screenshots/`** - Captures d'écran de l'interface
 - **`tools/`** - Scripts utilitaires (couverture de tests, déploiement)
