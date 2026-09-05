@@ -57,7 +57,17 @@ Si la version n'est pas dans `$ARGUMENTS`, demande-la. Format **`pcb-vX`** ou
 **`pcb-vX.Y`** — ce préfixe distingue les tags matériels des tags firmware
 `vX.Y.Z` dans une liste de tags qui en compte déjà des dizaines.
 
-Vérifie que le tag n'existe pas (`git tag -l`). Si oui, arrête.
+Vérifie qu'**aucune référence** de ce nom n'existe — pas seulement un tag :
+
+    git show-ref | grep -w "<version>"
+
+`git tag -l` ne suffit pas. Une **branche** homonyme rend la référence ambiguë, et
+`git push origin <version>` échoue alors avec
+`src refspec <version> matches more than one` — après que le tag a été créé
+localement. Le cas s'est produit à la première utilisation de cette commande : une
+branche `pcb-v2` traînait, vestige d'un travail logiciel sans rapport avec la carte.
+
+Si une référence existe, **arrête** et dis laquelle (branche ? tag ? distante ?).
 
 Si le résumé n'est pas fourni, demande-le. Pour une révision de PCB, ce qui
 compte est : **ce qui change physiquement** (empreintes, routage, connecteurs,
