@@ -720,10 +720,72 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   // feature-053 : +2 champs boost_active/boost_until → marge portée à 2304.
   // feature-067 : +1 champ ph_offset (~24 octets) → marge portée à 2368.
   // feature-074 : +6 champs caractérisation pompes (~194 o au pire) → 2560.
-  StaticJson<2560> doc;
+  //
+  // bug-089 (v2.39.0) — PARITÉ DE LA TRAME `config` AVEC /get-config.
+  // CRITÈRE RETENU, qui structurera tous les ajouts futurs : la trame porte
+  // l'état MUTABLE À L'EXÉCUTION et NON DÉRIVABLE ; tout le reste est HTTP-seul
+  // et DÉCLARÉ (table `kHttpOnlyKeys` de test/test_native_ws_config_parity).
+  // La parité INTÉGRALE aurait été pire que le bug : +1365 o sur une trame
+  // plafonnée DUR à kWsFrameBufBytes = 3584 o, et un dépassement fait SAUTER le
+  // push (la garde n'a jamais tronqué) — on aurait remplacé des champs manquants
+  // par une trame absente pour TOUS les clients.
+  // 15 clés ajoutées ci-dessous ; octets SÉRIALISÉS au pire cas, comptés clé par
+  // clé (guillemets + deux-points + valeur + virgule) :
+  //   "max_cycles_per_day":60,                 → 1+18+1+1+ 2+1 =  24 o
+  //   "regulation_speed":"normal",             → 1+16+1+1+ 8+1 =  28 o
+  //   "pool_size":"medium",                    → 1+ 9+1+1+ 8+1 =  21 o
+  //   "ph_auto_manual_epoch":4294967295,       → 1+20+1+1+10+1 =  34 o
+  //   "ph_auto_manual_reason":"…",             → 1+21+1+1+427+1 = 452 o
+  //   "ph_tracking_enabled":false,             → 1+19+1+1+ 5+1 =  28 o
+  //   "ph_container_ml":123456.78,             → 1+15+1+1+ 9+1 =  28 o
+  //   "ph_total_injected_ml":123456.78,        → 1+20+1+1+ 9+1 =  33 o
+  //   "ph_remaining_ml":123456.78,             → 1+15+1+1+ 9+1 =  28 o
+  //   "ph_alert_threshold_ml":123456.78,       → 1+21+1+1+ 9+1 =  34 o
+  //   "orp_tracking_enabled":false,            → 1+20+1+1+ 5+1 =  29 o
+  //   "orp_container_ml":123456.78,            → 1+16+1+1+ 9+1 =  29 o
+  //   "orp_total_injected_ml":123456.78,       → 1+21+1+1+ 9+1 =  34 o
+  //   "orp_remaining_ml":123456.78,            → 1+16+1+1+ 9+1 =  29 o
+  //   "orp_alert_threshold_ml":123456.78,      → 1+22+1+1+ 9+1 =  35 o
+  //   → +866 o au pire cas, dont 452 o pour la SEULE valeur à longueur non
+  //     triviale, `ph_auto_manual_reason` : c'est un LITTÉRAL construit par
+  //     pump_controller, JAMAIS saisi par l'utilisateur.
+  //     ⚠️ CHIFFRE RECTIFIÉ EN REVUE (bug-089) : ce bloc annonçait « ~140
+  //     caractères / 167 o ». C'était FAUX d'un facteur 2,7. Les chaînes réelles
+  //     ont été reconstruites depuis leur unique écrivain, setPhAutoManualTrace()
+  //     (pump_controller.cpp:1021-1041) : la branche « Diagnostic sonde EZO
+  //     NORMAL » fait 411 caractères, soit 427 octets UTF-8 ; la branche « hors
+  //     norme » 325 caractères / 340 o. Ne pas se fier à une estimation ici : la
+  //     seule source de vérité est le littéral du firmware.
+  // TAILLE SÉRIALISÉE de la trame complète (81 clés, format compact) : 2053 o en
+  // nominal, ≈ 2948 o au PIRE CAS (chaînes libres à 64 caractères, uint32
+  // saturés, flottants à 9 chiffres, raison de bascule à 427 o) → MARGE ≈ 636 o
+  // sous le seul plafond DUR, sWsFrameBuf (kWsFrameBufBytes = 3584 o,
+  // constants.h). Gabarit documentaire porté 2560 → 2944.
+  // POURQUOI CE CHIFFRE COMPTE : c'est lui que lira le prochain contributeur pour
+  // arbitrer son ajout. Avec l'ancienne valeur, il aurait cru disposer de 285 o
+  // qui n'existent pas. Et le pire cas de longueur coïncide avec l'ESCALADE DE
+  // SÉCURITÉ pH — précisément le moment où perdre la trame coûte le plus cher,
+  // puisque la garde ne tronque pas : elle ABANDONNE le push.
+  // NB IMPORTANT : en ArduinoJson 7, StaticJson<N> dérive de JsonDocument et N
+  // n'est plus qu'une valeur DOCUMENTAIRE (capacity()) — le pool est alloué
+  // dynamiquement, ce bump coûte donc 0 o de RAM. Le seul plafond DUR reste
+  // kWsFrameBufBytes, et la garde `measureJson(doc) + 1 > cap` en fin de
+  // fonction SAUTE le push (elle ne tronque JAMAIS) en incrémentant
+  // _oversizedFrames (warn throttlé) — d'où l'exigence de marge ci-dessus.
+  // RÉSERVE CONNUE : `server`, `topic`, `username` et `wifi_ssid` ne sont bornés
+  // NULLE PART (/save-config ne valide aucune longueur) ; la marge est prouvée
+  // sous l'hypothèse d'environ 64 o par champ. Surveiller oversizedFrameCount().
+  StaticJson<2944> doc;
   doc["type"] = "config";
   JsonObject d = doc["data"].to<JsonObject>();
 
+  // >>> PARITE-CONFIG:DEBUT
+  // CONVENTION NORMATIVE (lue telle quelle par la sentinelle
+  // test/test_native_ws_config_parity) : entre ces deux marqueurs, TOUTE clé de
+  // la trame `config` s'écrit `d["<clé>"]` — un seul receveur, `d`. Côté HTTP,
+  // le receveur est `doc[` entre les mêmes marqueurs de web_routes_config.cpp.
+  // Une clé posée hors des marqueurs est INVISIBLE pour la sentinelle : la
+  // parité cesserait d'être garantie sans que rien ne casse.
   d["server"]           = mqttCfg.server;
   d["port"]             = mqttCfg.port;
   d["topic"]            = mqttCfg.topic;
@@ -758,7 +820,14 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   d["pump2_flow_weighed"]           = mqttCfg.pump2FlowWeighed;
   d["ph_limit_minutes"] = mqttCfg.phInjectionLimitMinutes;
   d["orp_limit_minutes"] = mqttCfg.orpInjectionLimitMinutes;
+  // bug-089 : garde anti-cycling (feature-060) — mutable à l'exécution.
+  d["max_cycles_per_day"] = pumpProtection.maxCyclesPerDay;
   d["install_mode"]     = installModeToString(mqttCfg.installMode);  // feature-056
+  // bug-089 : vitesse de correction + taille de bassin. `pool_size` est aussi ce
+  // qui permet au client de DÉRIVER `regulation_defaults` (HTTP-seul) depuis
+  // `regulation_defaults_by_size`, déjà en cache côté app.js.
+  d["regulation_speed"] = mqttCfg.regulationSpeed;
+  d["pool_size"]        = poolSizeToString(mqttCfg.poolSize);  // feature-090
   d["ph_correction_type"] = mqttCfg.phCorrectionType;
   d["time_use_ntp"]     = mqttCfg.timeUseNtp;
   d["ntp_server"]       = mqttCfg.ntpServer;
@@ -805,6 +874,42 @@ size_t WsManager::_buildConfigJson(char* buf, size_t cap) const {
   // feature-053 : Mode Boost (état effectif + epoch d'expiration, 0 si inactif).
   d["boost_active"]        = isBoostActive(time(nullptr));
   d["boost_until"]         = (long)boostState.untilEpoch;
+
+  // bug-089 : bascule AUTOMATIQUE de la régulation pH en manuel (v2.20.3, C5).
+  // État persistant ÉCRIT PAR LE FIRMWARE (pump_controller) sans action de
+  // l'utilisateur : sans ces deux clés, un client tiers n'apprend la bascule de
+  // sécurité qu'à son prochain /get-config.
+  d["ph_auto_manual_epoch"]  = mqttCfg.phAutoManualEpoch;
+  d["ph_auto_manual_reason"] = mqttCfg.phAutoManualReason;
+
+  // bug-089 : suivi des volumes de produit. `*_total_injected_ml` avance à
+  // CHAQUE injection et `*_remaining_ml` en découle — c'est l'état le plus
+  // mutable de toute la config ; le laisser hors trame gelait la jauge de bidon
+  // des clients tiers jusqu'à leur prochain /get-config.
+  const float phRemaining  = max(0.0f, productCfg.phContainerVolumeMl  - productCfg.phTotalInjectedMl);
+  const float orpRemaining = max(0.0f, productCfg.orpContainerVolumeMl - productCfg.orpTotalInjectedMl);
+  d["ph_tracking_enabled"]   = productCfg.phTrackingEnabled;
+  d["ph_container_ml"]       = productCfg.phContainerVolumeMl;
+  d["ph_total_injected_ml"]  = productCfg.phTotalInjectedMl;
+  d["ph_remaining_ml"]       = phRemaining;
+  d["ph_alert_threshold_ml"] = productCfg.phAlertThresholdMl;
+  d["orp_tracking_enabled"]   = productCfg.orpTrackingEnabled;
+  d["orp_container_ml"]       = productCfg.orpContainerVolumeMl;
+  d["orp_total_injected_ml"]  = productCfg.orpTotalInjectedMl;
+  d["orp_remaining_ml"]       = orpRemaining;
+  d["orp_alert_threshold_ml"] = productCfg.orpAlertThresholdMl;
+  // <<< PARITE-CONFIG:FIN
+  //
+  // CLÉS VOLONTAIREMENT HTTP-SEULES (chacune déclarée AVEC son motif dans
+  // `kHttpOnlyKeys`, test/test_native_ws_config_parity — la sentinelle casse si
+  // l'une d'elles perd son motif ou disparaît de /get-config) :
+  //   - ph_target_min/max/step, ph_offset_min/max/step,
+  //     regulation_defaults_by_size : CONSTANTES DE COMPILATION, immuables à
+  //     l'exécution (exclusion déjà argumentée dans web_routes_config.cpp) ;
+  //   - regulation_defaults : DÉRIVABLE côté client — `pool_size` est désormais
+  //     dans la trame et `regulation_defaults_by_size` est en cache (app.js,
+  //     syncRegulationDefaults). La sortir coûterait +703 o de trame pour une
+  //     information que le client sait reconstruire.
 
   // bug-heap-toctou A2 : même contrat que _buildSensorJson (0 = trame trop grande).
   if (measureJson(doc) + 1 > cap) return 0;

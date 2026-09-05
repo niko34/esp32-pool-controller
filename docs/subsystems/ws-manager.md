@@ -406,7 +406,9 @@ L'[exposition de la limite d'actionneur pH](pump-controller.md#limite-dactionneu
 
 **Rien n'est ajouté à la trame `config` ni à `sensor_data`** — vérifié par grep de `_buildConfigJson()` : ni `regulation_defaults`, ni aucun champ propre à la feature n'y figure. La route [`POST /reset-regulation-defaults`](../API.md#post-reset-regulation-defaults--critical) **réutilise le mécanisme existant** `requestConfigBroadcast()` ([`ws_manager.h`](../../src/ws_manager.h)) : broadcast `config` **différé à la main loop** (patron `/save-config`, jamais de `_buildConfigJson()` en tâche AsyncTCP) — les autres clients connectés voient les valeurs restaurées sans reload.
 
-> ⚠️ **Écart de parité PRÉEXISTANT relevé au passage** (non introduit ni corrigé par la feature-088) : la trame `config` ne porte **ni** `regulation_speed`, **ni** l'objet `regulation_defaults` servi par `/get-config`. Suivi dans [bug-089](../../specs/features/todo/bug-089-parite-ws-config-champs-manquants.md). Le client de la feature-088 s'en protège de deux façons : `loadConfig()` **frais avant** d'ouvrir le dialogue (les valeurs « actuelles » ne viennent jamais d'une trame partielle) et cache `_regulationDefaults` réinjecté dans une config partielle (le bouton ne clignote pas — leçon du motif « champ WS-seul qui clignote », plusieurs récidives dans ce projet). Détail côté UI : [page-settings.md](../features/page-settings.md#bouton--restaurer-les-valeurs-par-défaut--feature-088-v2310).
+> ⚠️ **Écart de parité PRÉEXISTANT relevé au passage** (non introduit ni corrigé par la feature-088) : la trame `config` ne porte **ni** `regulation_speed`, **ni** l'objet `regulation_defaults` servi par `/get-config`. Suivi dans [bug-089](../../specs/features/done/bug-089-parite-ws-config-champs-manquants.md).
+>
+> **RÉSOLU en v2.39.0** : `regulation_speed` est **dans la trame** ; `regulation_defaults` reste volontairement HTTP-seul, **dérivable** côté client depuis `pool_size` (désormais poussé) et le cache `regulation_defaults_by_size`. Voir [§ bug-089](#champs-config-ajoutés-en-bug-089--parité-de-la-trame-v2390) et [ADR-0065](../adr/0065-trame-websocket-etat-mutable-pas-constantes.md). Le client de la feature-088 s'en protège de deux façons : `loadConfig()` **frais avant** d'ouvrir le dialogue (les valeurs « actuelles » ne viennent jamais d'une trame partielle) et cache `_regulationDefaults` réinjecté dans une config partielle (le bouton ne clignote pas — leçon du motif « champ WS-seul qui clignote », plusieurs récidives dans ce projet). Détail côté UI : [page-settings.md](../features/page-settings.md#bouton--restaurer-les-valeurs-par-défaut--feature-088-v2310).
 >
 > **v2.34.0** : `stabilization_delay_min` figurait aussi dans cette liste ; le réglage ayant été **retiré de `/get-config`** (feature-091), il ne relève plus d'un écart de parité — il n'existe plus nulle part.
 
@@ -470,6 +472,96 @@ Pire cas de trame **2 745 → 2 842 o** ; le gabarit documentaire `StaticJson<>`
 Pire cas de trame **2 842 → 2 992 o**, au-dessus du gabarit documentaire 2944 → le gabarit `StaticJson<>` de `_buildSensorJson()` passe de **2944 à 3072**. **Marge résiduelle sous le seul plafond DUR** — `sWsFrameBuf`, `kWsFrameBufBytes` = **3584** o : **3584 − 2992 = 592 o** (elle était de 742 o avant cet ajout). **Aucun bump de `kWsFrameBufBytes` n'est requis.** Si un jour la trame dépassait, la garde `measureJson(doc) + 1 > cap` **saute** le push et incrémente `_oversizedFrames` (warn throttlé) — elle ne **tronque** jamais.
 
 > Côté `/data`, les mêmes champs tiennent **sans bump** : ce chemin n'a aucun plafond dur (`sendJsonResponse` dimensionne la `String` à la demande). Rappel ArduinoJson 7 : `StaticJson<N>` dérive de `JsonDocument`, `N` n'est plus qu'une valeur documentaire (`capacity()`).
+
+## Champs `config` ajoutés en bug-089 — parité de la trame (v2.39.0)
+
+`/get-config` servait **89** clés, la trame WebSocket `config` seulement **66**. Après un changement de configuration, les **autres** clients connectés ne voyaient donc pas ces champs se rafraîchir avant leur prochain `/get-config`. C'est la **4ᵉ occurrence documentée** du motif de parité dans ce projet.
+
+**Le correctif évident aurait été pire que le bug.** Ajouter les 23 clés manquantes coûtait **+1 365 o** sur une trame dont le plafond est **dur** : un dépassement fait **sauter le push** — la garde `measureJson(doc) + 1 > cap` ne tronque pas, elle **abandonne** la trame. On aurait remplacé des champs manquants par **une trame absente pour tous les clients**.
+
+### Le critère de partage (il contraint tous les ajouts futurs)
+
+> **La trame porte l'état mutable à l'exécution et non dérivable ; tout le reste est HTTP-seul et déclaré.**
+
+Voir [ADR-0065](../adr/0065-trame-websocket-etat-mutable-pas-constantes.md). Application : **15 clés ajoutées**, **8 déclarées en exception**.
+
+### Les 15 clés ajoutées à `_buildConfigJson()`
+
+| Champ | Type | Pourquoi il est mutable à l'exécution |
+|-------|------|----------------------------------------|
+| `max_cycles_per_day` | integer | Garde anti-cycling (feature-060), réglable depuis l'onglet Régulation |
+| `regulation_speed` | string | Vitesse de correction — réglage utilisateur |
+| `pool_size` | string | Taille de bassin (feature-090) ; c'est aussi la clé qui rend `regulation_defaults` **dérivable** côté client |
+| `ph_auto_manual_epoch` | integer (epoch) | Instant de la bascule **automatique** de la régulation pH en manuel (escalade de sécurité C5, v2.20.3) — écrit **par le firmware**, sans action utilisateur |
+| `ph_auto_manual_reason` | string | Motif littéral de cette bascule, produit par `setPhAutoManualTrace()` ([`src/pump_controller.cpp`](../../src/pump_controller.cpp)) — **jamais** une saisie utilisateur |
+| `ph_tracking_enabled` / `orp_tracking_enabled` | boolean | Suivi de produit activé |
+| `ph_container_ml` / `orp_container_ml` | float | Volume du bidon |
+| `ph_total_injected_ml` / `orp_total_injected_ml` | float | **Avance à chaque injection** — l'état le plus mutable de toute la config |
+| `ph_remaining_ml` / `orp_remaining_ml` | float | `max(0, container − total_injected)`, calculé au vol |
+| `ph_alert_threshold_ml` / `orp_alert_threshold_ml` | float | Seuil d'alerte de bidon bas |
+
+Sans ces clés, la **jauge de bidon** et l'**escalade de sécurité pH** des clients tiers restaient gelées jusqu'à leur prochain `/get-config`.
+
+### Les 8 exceptions déclarées (clés HTTP-seules)
+
+Chacune est inscrite dans la table `kHttpOnlyKeys` de la sentinelle **avec un motif écrit**, et le motif est **asserté** (≥ 20 caractères).
+
+| Clé HTTP-seule | Motif déclaré |
+|----------------|---------------|
+| `ph_target_min` / `ph_target_max` / `ph_target_step` | **Constantes de compilation** (`kPhTarget*`) : immuables à l'exécution ; `app.js` conserve la dernière borne reçue |
+| `ph_offset_min` / `ph_offset_max` / `ph_offset_step` | **Constantes de compilation** (`kPhOffset*`), même raison |
+| `regulation_defaults_by_size` | **Table de compilation** (`kRegulationDefaultsBySize`, 3 colonnes) : immuable **et** ~525 o de trame **par push** |
+| `regulation_defaults` | **Dérivable côté client** : `pool_size` est désormais dans la trame et `by_size` est en cache (`syncRegulationDefaults()`, [`data/app.js`](../../data/app.js)). L'extraire de `fillRegulationDefaults` coûterait **+703 o** de trame pour une valeur calculable |
+
+> Le client reste **inerte** quand une de ces clés manque : `_applyPhBounds()` ignore **en bloc** un lot de bornes absent ou incohérent et conserve les bornes déjà connues (asymétrie déjà documentée en [v2.25.0](#champ-config-ajouté-en-feature-067-offset-logiciel-ph-v2200)). `syncRegulationDefaults()` **reconstruit** la colonne courante depuis `pool_size` + cache `by_size` au lieu de resservir un cache périmé après un changement de taille reçu par WebSocket.
+
+### Budget de trame — décompte rectifié en revue
+
+Octets **sérialisés** au pire cas, comptés clé par clé (guillemets + deux-points + valeur + virgule) :
+
+| Champ | Sérialisation pire cas | Octets |
+|-------|------------------------|--------|
+| `max_cycles_per_day` | `"max_cycles_per_day":60,` | 24 |
+| `regulation_speed` | `"regulation_speed":"normal",` | 28 |
+| `pool_size` | `"pool_size":"medium",` | 21 |
+| `ph_auto_manual_epoch` | `"ph_auto_manual_epoch":4294967295,` | 34 |
+| `ph_auto_manual_reason` | `"ph_auto_manual_reason":"…"` (427 o) | **452** |
+| `ph_tracking_enabled` | `"ph_tracking_enabled":false,` | 28 |
+| `ph_container_ml` | `"ph_container_ml":123456.78,` | 28 |
+| `ph_total_injected_ml` | `"ph_total_injected_ml":123456.78,` | 33 |
+| `ph_remaining_ml` | `"ph_remaining_ml":123456.78,` | 28 |
+| `ph_alert_threshold_ml` | `"ph_alert_threshold_ml":123456.78,` | 34 |
+| `orp_tracking_enabled` | `"orp_tracking_enabled":false,` | 29 |
+| `orp_container_ml` | `"orp_container_ml":123456.78,` | 29 |
+| `orp_total_injected_ml` | `"orp_total_injected_ml":123456.78,` | 34 |
+| `orp_remaining_ml` | `"orp_remaining_ml":123456.78,` | 29 |
+| `orp_alert_threshold_ml` | `"orp_alert_threshold_ml":123456.78,` | 35 |
+| **Total** | | **+866** |
+
+Trame complète (81 clés, format compact) : **2 053 o en nominal**, **≈ 2 948 o au pire cas** → **marge ≈ 636 o** sous le seul plafond **dur**, `sWsFrameBuf` (`kWsFrameBufBytes = 3584` o). Gabarit documentaire `StaticJson<>` porté **2560 → 2944** ; rappel ArduinoJson 7 : `N` n'est plus qu'une valeur documentaire (`capacity()`), ce bump coûte **0 octet de RAM**. **Aucun dépassement, aucun bump de `kWsFrameBufBytes`.**
+
+> ⚠️ **Chiffre rectifié en revue — facteur 2,7.** Le bloc de dimensionnement annonçait **167 o** pour `ph_auto_manual_reason` (« ~140 caractères »). Les chaînes réelles ont été reconstruites depuis leur **unique écrivain**, `setPhAutoManualTrace()` : la branche « Diagnostic sonde EZO NORMAL » fait **411 caractères / 427 octets** UTF-8, la branche « hors norme » 325 caractères / 340 o. Coût réel **452 o**, total **+866 o**, marge **636 o** — et non 921. Le chiffre compte : c'est lui que lira le prochain contributeur pour arbitrer son ajout ; avec l'ancienne valeur il aurait cru disposer de 285 o qui n'existent pas. Et **le pire cas de longueur coïncide avec l'escalade de sécurité pH** — précisément le moment où perdre la trame coûterait le plus cher. Ne jamais estimer une longueur ici : la seule source de vérité est le littéral du firmware.
+>
+> **Réserve connue** : `server`, `topic`, `username` et `wifi_ssid` ne sont bornés **nulle part** (`/save-config` ne valide aucune longueur) ; la marge est prouvée sous l'hypothèse d'environ 64 o par champ. Surveiller `oversizedFrameCount()`.
+
+### La sentinelle de parité — `test/test_native_ws_config_parity/`
+
+Le motif en est à sa 4ᵉ occurrence. À chaque fois, la leçon retenue était « penser à vérifier des deux côtés » : une **discipline orale**, donc oubliée quatre fois. La sentinelle la remplace par une garde qui ne dépend de la vigilance de personne. Coût : **zéro octet de flash** (test natif, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)).
+
+Ce n'est pas un test de comportement mais un test **structurel** : il lit le **texte source** des deux fichiers entre des **marqueurs commentés** — `>>> PARITE-CONFIG:DEBUT` et `<<< PARITE-CONFIG:FIN` — et non des bornes de fonction, qui casseraient au premier refactor. Convention normative lue telle quelle : receveur `doc[` dans [`src/web_routes_config.cpp`](../../src/web_routes_config.cpp), receveur `d[` dans [`src/ws_manager.cpp`](../../src/ws_manager.cpp). **Une clé posée hors des marqueurs est invisible pour la sentinelle.**
+
+Quatre assertions :
+
+1. **Clé HTTP non couverte → échec.** Toute clé servie par `/get-config` est soit dans la trame WS, soit déclarée dans `kHttpOnlyKeys`.
+2. **Clé WS-seule → échec.** C'est le sens **dangereux** du motif : un champ WS-seul ne disparaît pas, il **clignote** — la charge `/get-config` remplace périodiquement l'objet de config côté client et l'efface, la trame WS le remet. Une clé HTTP-seule peut être déclarée ; une clé WS-seule, **jamais**.
+3. **Marqueur absent → échec explicite.** Sans marqueur, aucune clé n'est comparée et le test devient aveugle : le message dit « restaurer le marqueur, **ne pas désactiver le test** ». Un plancher de 60 clés extraites de chaque côté sert de contrôle négatif (un extracteur qui ne trouve rien passerait toutes les autres assertions).
+4. **Exception morte → échec.** Une clé exemptée qui n'existe plus côté HTTP fait échouer le test. **C'est elle qui empêche la liste de pourrir** : sans elle, la table serait devenue en un an un cimetière de justifications périmées. Corollaire symétrique : une exception **contredite** (clé finalement poussée en WS) échoue aussi.
+
+Deux gardes complémentaires : chaque exception porte un **motif écrit d'au moins 20 caractères** (asserté, doublons interdits), et le décompte des clés HTTP-seules constatées dans le code doit être **exactement** celui de la table.
+
+> ⚠️ **Angle mort assumé et documenté** : l'extraction est **textuelle**. Une clé mise en **commentaire** entre les marqueurs reste comptée comme présente. La sentinelle vise **la distraction, pas la malveillance** — c'est le bon périmètre, et parser du C++ ici serait un remède pire que le mal.
+
+**Que faire quand elle casse** : ajouter la clé du côté manquant **entre les marqueurs** (en vérifiant la marge de trame), ou l'inscrire dans `kHttpOnlyKeys` avec un motif écrit. Jamais la désactiver.
 
 ## feature-093 (v2.34.0) — persistance de l'intégrale pH : AUCUN champ nouveau
 

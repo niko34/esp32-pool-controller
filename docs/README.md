@@ -108,7 +108,8 @@ docs/
 │   ├── 0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md
 │   ├── 0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md
 │   ├── 0063-definition-normative-du-temps-d-atteinte-de-cible.md
-│   └── 0064-la-courbe-suit-le-nombre-affiche.md
+│   ├── 0064-la-courbe-suit-le-nombre-affiche.md
+│   └── 0065-trame-websocket-etat-mutable-pas-constantes.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

@@ -125,6 +125,15 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   // clé de premier niveau disparaît. La marge 3776 est donc CONSERVÉE TELLE
   // QUELLE : elle ne fait que s'élargir. Ne pas la réduire sans recompter.
   StaticJson<3776> doc;
+  // >>> PARITE-CONFIG:DEBUT
+  // CONVENTION NORMATIVE (lue telle quelle par la sentinelle
+  // test/test_native_ws_config_parity) : entre ces deux marqueurs, TOUTE clé
+  // servie s'écrit `doc["<clé>"]` — un seul receveur, `doc`. Côté WebSocket, le
+  // receveur est `d[` entre les mêmes marqueurs de ws_manager.cpp.
+  // La sentinelle compare les deux ensembles : une clé HTTP qui n'est ni dans la
+  // trame WS ni dans la table `kHttpOnlyKeys` (avec motif écrit) fait ÉCHOUER le
+  // test — c'est ce qui empêche la 5e occurrence du motif de parité.
+  // Une clé posée HORS des marqueurs est invisible pour la sentinelle.
   doc["server"] = mqttCfg.server;
   doc["port"] = mqttCfg.port;
   doc["topic"] = mqttCfg.topic;
@@ -303,6 +312,7 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
     fillRegulationDefaults(bySize["medium"].to<JsonObject>(), PoolSize::Medium);
     fillRegulationDefaults(bySize["large"].to<JsonObject>(), PoolSize::Large);
   }
+  // <<< PARITE-CONFIG:FIN
 
   sendJsonResponse(request, doc);
 }

@@ -1365,7 +1365,27 @@ Champs ajoutés en feature-056 (mode d'installation, v2.19.0 — [ADR-0026](adr/
 | `filtration_ext_on` | boolean | Dernier état signalé par la filtration externe (`ON`/`OFF`). |
 | `filtration_ext_age_s` | integer | Âge en secondes du dernier signal externe (`0` si `filtration_ext_known` est `false`). |
 
-> Le WebSocket pousse la configuration complète à la connexion initiale ; les mises à jour suivantes sont différentielles (seuls les champs modifiés sont inclus).
+### Message `config` — contrat de parité avec `/get-config` (v2.39.0, bug-089)
+
+Le message `type: "config"` est un **snapshot complet et idempotent** — il n'est jamais différentiel, et il n'est pas non plus un miroir exact de [`GET /get-config`](#get-get-config--write).
+
+> **Règle ([ADR-0065](adr/0065-trame-websocket-etat-mutable-pas-constantes.md))** : la trame porte l'**état mutable à l'exécution et non dérivable** ; tout le reste est **HTTP-seul et déclaré**.
+
+Jusqu'en v2.38.0, `/get-config` servait **89** clés et la trame **66** : les clients déjà connectés ne voyaient pas certains champs se rafraîchir avant leur prochain `/get-config`. La v2.39.0 ajoute **15 clés** (`max_cycles_per_day`, `regulation_speed`, `pool_size`, `ph_auto_manual_epoch`, `ph_auto_manual_reason`, et les 10 clés de suivi produit pH/ORP) — mêmes noms et mêmes valeurs que sur `/get-config`.
+
+**8 clés restent volontairement HTTP-seules**, chacune déclarée avec un motif écrit :
+
+| Clé HTTP-seule | Motif |
+|----------------|-------|
+| `ph_target_min` / `_max` / `_step`, `ph_offset_min` / `_max` / `_step` | **Constantes de compilation** : immuables pour un firmware donné, un client les lit une fois |
+| `regulation_defaults_by_size` | **Table de compilation** (3 colonnes), ~525 o de trame **par push** |
+| `regulation_defaults` | **Dérivable** côté client depuis `pool_size` (dans la trame) et le cache `regulation_defaults_by_size` |
+
+**Un intégrateur qui consomme la trame doit donc continuer d'appeler `/get-config`** pour ces 8 clés, et rester **inerte** quand elles manquent (clé absente ≠ `0`, ≠ `false`, ≠ `null`).
+
+> ⚠️ **Pourquoi ce n'est pas une parité intégrale** : les 23 clés manquantes coûtaient **+1 365 o** sur une trame construite dans un buffer statique plafonné **dur** à `kWsFrameBufBytes = 3584` o, dont la garde **saute le push** au lieu de tronquer. La parité brute aurait remplacé des champs manquants par **une trame absente pour tous les clients**. Trame pire cas actuelle ≈ **2 948 o**, marge **636 o**. Détail du décompte : [ws-manager.md](subsystems/ws-manager.md#champs-config-ajoutés-en-bug-089--parité-de-la-trame-v2390).
+>
+> Une **sentinelle de test natif** (`test/test_native_ws_config_parity/`, coût flash nul) casse le build dès qu'une clé est ajoutée d'un seul côté — y compris dans le sens **WS-seul**, où un champ ne disparaît pas mais **clignote** (la charge `/get-config` l'écrase périodiquement côté client).
 
 ---
 

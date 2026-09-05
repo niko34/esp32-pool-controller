@@ -440,7 +440,17 @@
   // visibilité du bouton (masqué face à un firmware antérieur à 2.31.0).
   function syncRegulationDefaults(cfg) {
     if (cfg.regulation_defaults) _regulationDefaults = cfg.regulation_defaults;
-    else if (_regulationDefaults) cfg.regulation_defaults = _regulationDefaults;
+    else {
+      // bug-089 : `regulation_defaults` reste volontairement HTTP-seul (dérivable,
+      // ~703 o de trame économisés). La trame WS porte désormais `pool_size` et
+      // syncPoolSize a déjà réinjecté le cache `by_size` : on RECONSTRUIT la
+      // colonne courante au lieu de resservir un cache périmé après un changement
+      // de taille reçu par WebSocket.
+      const derived = cfg.regulation_defaults_by_size && cfg.pool_size
+        ? cfg.regulation_defaults_by_size[cfg.pool_size] : null;
+      if (derived) _regulationDefaults = derived;
+      if (_regulationDefaults) cfg.regulation_defaults = _regulationDefaults;
+    }
     const block = $("#regulation_reset_block");
     if (block) block.hidden = !cfg.regulation_defaults;
   }
