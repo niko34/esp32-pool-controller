@@ -38,12 +38,56 @@ for html in "$ROOT/docs/user/src/"*.html; do
       "$html" > "$TMP/docs/user/src/$(basename "$html")"
 done
 
-# 2. Captures redimensionnées (jamais agrandies : sips -Z borne au max)
-echo "→ Redimensionnement des captures (${LARGEUR_CIBLE}px, JPEG q${QUALITE_JPEG})…"
+# 2. Captures redimensionnées (jamais AGRANDIES : on borne au maximum)
+#
+# Trois moteurs possibles, dans cet ordre : sips (livré avec macOS),
+# ImageMagick, puis Pillow. Le script tournait auparavant sur `sips` seul — donc
+# uniquement sur macOS, alors que tout le reste de la chaîne (tests, build,
+# gerbers) est portable. Un clone sur Linux échouait ICI, après avoir détecté un
+# Chromium parfaitement utilisable.
+#
+# ⚠️ L'étape n'est pas optionnelle : sans elle les PDF passent de 4 à 26 Mo.
+if command -v sips >/dev/null 2>&1; then          MOTEUR_IMG="sips"
+elif command -v magick >/dev/null 2>&1; then      MOTEUR_IMG="magick"
+elif command -v convert >/dev/null 2>&1; then     MOTEUR_IMG="convert"
+elif python3 -c "import PIL" 2>/dev/null; then    MOTEUR_IMG="pillow"
+else
+  echo "❌ Aucun outil de redimensionnement d'image disponible." >&2
+  echo "   Installez l'un des suivants :" >&2
+  echo "     Debian/Ubuntu : sudo apt install imagemagick" >&2
+  echo "                     (ou : pip install Pillow)" >&2
+  echo "     macOS         : sips est fourni avec le système" >&2
+  echo "" >&2
+  echo "   Cette étape n'est pas facultative : sans redimensionnement, les PDF" >&2
+  echo "   pèsent 26 Mo au lieu de 4." >&2
+  exit 1
+fi
+
+echo "→ Redimensionnement des captures (${LARGEUR_CIBLE}px, JPEG q${QUALITE_JPEG}, via ${MOTEUR_IMG})…"
 for img in "$ROOT/screenshots/"*.jpg; do
   base="$(basename "$img")"
-  sips -Z "$LARGEUR_CIBLE" -s format jpeg -s formatOptions "$QUALITE_JPEG" \
-       "$img" --out "$TMP/screenshots/$base" >/dev/null
+  case "$MOTEUR_IMG" in
+    sips)
+      sips -Z "$LARGEUR_CIBLE" -s format jpeg -s formatOptions "$QUALITE_JPEG" \
+           "$img" --out "$TMP/screenshots/$base" >/dev/null
+      ;;
+    magick|convert)
+      # « > » suffixé : ne redimensionne QUE si l'image dépasse la cible,
+      # équivalent du bornage de `sips -Z`.
+      "$MOTEUR_IMG" "$img" -resize "${LARGEUR_CIBLE}x${LARGEUR_CIBLE}>" \
+           -quality "$QUALITE_JPEG" "$TMP/screenshots/$base"
+      ;;
+    pillow)
+      python3 - "$img" "$TMP/screenshots/$base" "$LARGEUR_CIBLE" "$QUALITE_JPEG" <<'PY'
+import sys
+from PIL import Image
+src, dst, largeur, qualite = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+im = Image.open(src)
+im.thumbnail((largeur, largeur), Image.LANCZOS)   # thumbnail n'agrandit jamais
+im.convert("RGB").save(dst, "JPEG", quality=qualite)
+PY
+      ;;
+  esac
 done
 
 # 3. Génération des PDF

@@ -95,6 +95,42 @@ deux ans. Elle dit **où est quoi** et **comment on travaille ici**.
 ⚠️ Sur macOS, `kicad-cli` et Chrome ne sont pas dans le `PATH` : les scripts
 `scripts/*.sh` sondent aussi les emplacements `.app`.
 
+### Repartir d'un clone (conteneur, autre machine)
+
+```bash
+# Debian / Ubuntu
+sudo apt install -y python3 python3-pip nodejs npm chromium imagemagick zip gh
+pip install --user platformio
+# facultatif, seulement pour le PCB :
+sudo apt install -y kicad
+
+git clone https://github.com/niko34/esp32-pool-controller.git
+cd esp32-pool-controller
+pio pkg install -e esp32dev_core3   # télécharge la plateforme et les libs
+pio test -e native                  # doit être vert
+pio run                             # doit compiler
+```
+
+**Ce qui fonctionne depuis un clone nu** : les agents, les skills et les
+commandes, les specs, les tests natifs (la CI les exécute sur Linux à chaque
+push, c'est une preuve), la compilation, la génération des PDF et celle des
+gerbers. Les scripts détectent leurs outils et échouent avec un message explicite
+si l'un manque.
+
+**Ce qui ne fonctionne pas à distance** : le déploiement sur l'appareil. Son mot
+de passe n'est pas dans le dépôt — délibérément — et il vit sur un réseau local.
+Il faut être sur le même réseau, et fournir le mot de passe :
+
+```bash
+./ota_update.sh firmware <adresse-ip> <mot-de-passe>
+```
+
+**Confort dégradé** : `.claude/settings.local.json` n'est pas versionné (il
+contient des chemins absolus propres à une machine). Le `settings.json` partagé
+couvre l'essentiel — y compris les garde-fous `deny` et `ask` — mais vous
+confirmerez plus de commandes qu'en local. C'est le prix d'une configuration
+qui ne présume rien de la machine.
+
 ### Où est quoi
 
 ```
