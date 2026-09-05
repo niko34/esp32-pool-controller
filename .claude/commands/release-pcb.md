@@ -33,6 +33,13 @@ depuis le `.kicad_pcb` et n'existent que comme assets de release.
 - `git status --porcelain` : doit être **vide**. C'est important ici : les
   gerbers doivent correspondre exactement à des sources KiCad commitées, sinon
   on fabrique une carte dont le schéma n'est nulle part.
+- `git fetch` puis `git rev-list --left-right --count @{u}...HEAD` : la branche
+  doit être **à jour avec origin**. Un arbre propre ne suffit pas — on peut être
+  propre avec vingt commits en attente. Pousser un tag sur une branche non
+  poussée produit un état bancal : le tag et sa release existent sur GitHub,
+  mais la branche y montre un code antérieur.
+  Si la branche est en avance, **arrête et signale-le** : c'est à l'humain de
+  décider de pousser, pas à la commande.
 
 ### 2. Génération des fichiers de fabrication
 
