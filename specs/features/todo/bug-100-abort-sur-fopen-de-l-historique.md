@@ -26,8 +26,8 @@ Aucun code de dosage n'est modifié par le correctif attendu → gate `pool-chem
 ## Le constat — preuve, pas inférence
 
 Coredump relevé sur l'appareil le 05/09 à 15:35, archivé dans
-`builds/2.40.0/esp32dev_core3/coredump_panic_20260905_history.bin`, trace décodée
-dans `coredump_panic_20260905_decoded.txt`.
+`docs/incidents/2026-09-05-panic-fopen-historique.bin`, trace décodée
+dans `docs/incidents/2026-09-05-panic-fopen-historique.txt`.
 
 ```
 abort() ← lock_init_generic (newlib locks.c:77) ← __retarget_lock_init_recursive
@@ -99,8 +99,10 @@ l'avait anticipé pour `Logger::flushToDisk()` ; celui de l'historique n'avait p
 - [ ] Aucun `fopen` interne ne peut plus être tenté sous le seuil retenu
 - [ ] Le saut est observable (jamais silencieux) et l'opération est retentée
 - [ ] Test natif du prédicat de report + **validation par mutation**
-- [ ] Budget flash chiffré ⚠️ **marge actuelle : 9 291 o, flash à 99,5 %** — ce lot
-      devra probablement arriver avec son propre poste de récupération
+- [ ] Budget flash chiffré — **marge actuelle : 1 909 835 o, flash à 48,9 %**
+      *(mis à jour le 05/09 : le layout v5 a doublé la partition applicative. La
+      version initiale de cette spec annonçait 9 291 o et exigeait « son propre
+      poste de récupération » — cette contrainte n'existe plus.)*
 
 ## Notes
 

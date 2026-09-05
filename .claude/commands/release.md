@@ -87,6 +87,17 @@ Prends celui de `esp32dev_core3` (environnement de production). Copie-le sous un
 nom parlant pour l'asset, par exemple `firmware-<version>.bin` : un asset nommé
 `firmware.bin` est indistinguable d'une release à l'autre une fois téléchargé.
 
+**Joins aussi l'ELF** — c'est lui qui porte les symboles, et **sans lui un
+coredump de cette version est indécodable**. `esp-coredump` vérifie le SHA256 de
+l'image applicative et refuse tout ELF qui ne correspond pas exactement : celui
+d'une version voisine ne fera pas l'affaire.
+
+    ls builds/<version sans le v>/esp32dev_core3/*.elf   # archivé par le hook post-build
+
+Prends le plus récent et renomme-le `firmware-<version>.elf`. Il pèse ~29 Mo,
+c'est normal (symboles de débogage) et c'est le prix d'un diagnostic possible.
+Le projet a déjà perdu un coredump de production faute de cet ELF.
+
 Rassemble les PDF de `docs/user/` (ils portent le numéro de version dans leur
 nom, ex. `guide-d-utilisation-v2.42.pdf`).
 
@@ -94,6 +105,7 @@ nom, ex. `guide-d-utilisation-v2.42.pdf`).
       --title "<version> — <titre court>" \
       --notes-file <fichier de notes dans le scratchpad> \
       <firmware-<version>.bin> \
+      <firmware-<version>.elf> \
       docs/user/*.pdf
 
 Écris les notes dans un fichier du répertoire scratchpad et utilise

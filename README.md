@@ -184,6 +184,18 @@ fabrication, firmware compilé. Ils sont attachés aux **releases GitHub**, où 
 sont horodatés et associés à un tag. Voir « Fichiers générés et releases » dans
 [CLAUDE.md](CLAUDE.md).
 
+**Deux exceptions volontaires**, parce que ces fichiers ne sont pas *générés* mais
+*relevés* — rien ne les régénère :
+
+- **`docs/incidents/`** — les coredumps de production et leurs traces décodées. Un
+  coredump n'existe qu'une fois : il est écrasé au crash suivant.
+- **L'ELF est attaché à chaque release** (~29 Mo) en plus du `.bin`. `esp-coredump`
+  vérifie le SHA256 de l'image et refuse un ELF qui ne correspond pas : sans celui
+  de la version exacte, un crash reste indéchiffrable.
+
+`builds/` contient l'archive **locale** des ELF de tous les builds (2,6 Go) et
+n'est pas versionné.
+
 Les **sources FreeCAD** du boîtier et les exports STL sont conservés hors dépôt.
 
 ## 🚀 Installation

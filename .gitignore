@@ -14,6 +14,11 @@ compile_commands.json
 # Build artifacts
 *.bin
 *.elf
+# EXCEPTION : les coredumps de production sont versionnés. Ce ne sont pas des
+# fichiers générés mais RELEVÉS — un coredump n'existe qu'une fois, il est écrasé
+# au crash suivant, et plusieurs specs de diagnostic s'appuient dessus.
+# Voir docs/incidents/README.md.
+!docs/incidents/*.bin
 data-build/
 builds/
 # Générés par la plateforme pioarduino (env esp32dev_core3, IDF component manager)

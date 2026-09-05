@@ -235,8 +235,23 @@ un tag, et téléchargeables — sans alourdir l'historique git à chaque itéra
 
 - **Le binaire compilé est attaché aux releases, jamais commité.** `*.bin`,
   `*.elf`, `.pio/` et `builds/` sont ignorés.
-- `builds/` sert d'archive **locale** (ELF horodatés, indispensables pour décoder
-  un coredump) : local, jamais poussé.
+- **L'ELF est attaché aux releases lui aussi** (~29 Mo). Ce n'est pas un confort :
+  `esp-coredump` vérifie le **SHA256 de l'image applicative** et refuse tout ELF
+  qui ne correspond pas exactement. Sans l'ELF de la version qui tournait, un
+  coredump est **indécodable** — le projet en a déjà perdu un (15/08/2026).
+- `builds/` sert d'archive **locale** (2,6 Go d'ELF horodatés, un par build) :
+  local, jamais poussé. Ce qui doit survivre à un clone va dans les releases.
+
+### Incidents
+
+- **`docs/incidents/` est versionné** : les coredumps de production et leurs
+  traces décodées (163 Ko). Un coredump n'existe **qu'une fois** — il est écrasé
+  au crash suivant — et plusieurs specs de diagnostic s'appuient dessus.
+- C'est l'exception assumée à la règle « pas de binaire dans le dépôt » : ces
+  fichiers ne sont pas *générés*, ils sont **relevés**. Rien ne les régénère.
+- Y verser tout nouveau coredump analysé, avec sa trace décodée, et le référencer
+  depuis la spec concernée. Voir `docs/incidents/README.md` pour la procédure de
+  décodage.
 
 ### Les deux commandes de release
 

@@ -1,0 +1,332 @@
+espcoredump.py v1.15.0
+===============================================================
+==================== ESP32 CORE DUMP START ====================
+The ROM ELF file won't be loaded automatically since you are running the utility out of IDF.
+
+Crashed task handle: 0x3ffe5b40, name: 'async_tcp', GDB name: 'process 1073634112'
+Crashed task is not in the interrupt context
+Panic reason: abort() was called at PC 0x4008387b on core 1
+
+================== CURRENT THREAD REGISTERS ===================
+exccause       0x0 (IllegalInstructionCause)
+excvaddr       0x0
+epc1           0x40083c9f
+epc2           0x0
+epc3           0x0
+epc4           0x0
+epc5           0x40081eb3
+epc6           0x0
+eps2           0x0
+eps3           0x0
+eps4           0x0
+eps5           0x60a20
+eps6           0x0
+pc             0x4008f913          0x4008f913 <panic_abort+19>
+lbeg           0x4008a875          1074309237
+lend           0x4008a897          1074309271
+lcount         0x0                 0
+sar            0x8                 8
+ps             0x60a23             395811
+threadptr      <unavailable>
+br             <unavailable>
+scompare1      <unavailable>
+acclo          <unavailable>
+acchi          <unavailable>
+m0             <unavailable>
+m1             <unavailable>
+m2             <unavailable>
+m3             <unavailable>
+expstate       <unavailable>
+f64r_lo        <unavailable>
+f64r_hi        <unavailable>
+f64s           <unavailable>
+fcr            <unavailable>
+fsr            <unavailable>
+a0             0x8008f8d8          -2146895656
+a1             0x3ffe9ec0          1073651392
+a2             0x3ffe9f2a          1073651498
+a3             0x3ffe9f57          1073651543
+a4             0xa                 10
+a5             0x3f428c4c          1061325900
+a6             0x3ffea0fc          1073651964
+a7             0x3ffc9b6c          1073519468
+a8             0x3ffc956c          1073517932
+a9             0x1                 1
+a10            0x3ffe9f0e          1073651470
+a11            0x3ffe9f0e          1073651470
+a12            0xa                 10
+a13            0x3ffe9ecc          1073651404
+a14            0x3ffc9bc0          1073519552
+a15            0x0                 0
+
+==================== CURRENT THREAD STACK =====================
+#0  panic_abort (details=0x3ffe9f2a "abort() was called at PC 0x4008387b on core 1") at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/panic.c:489
+#1  0x4008f8d8 in esp_system_abort (details=0x3ffe9f2a "abort() was called at PC 0x4008387b on core 1") at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/port/esp_system_chip.c:87
+#2  0x4009605c in abort () at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/newlib/src/abort.c:38
+#3  0x4008387e in lock_init_generic (lock=0x3ffed7e8, mutex_type=4 '\004') at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/newlib/src/locks.c:77
+#4  0x40083a79 in __retarget_lock_init_recursive (lock=0x3ffed7e8) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/newlib/src/locks.c:303
+#5  0x40089d0e in __sfp (d=0x3ffe5ba8) at /builds/idf/crosstool-NG/.build/xtensa-esp-elf/src/newlib/newlib/libc/stdio/findfp.c:201
+#6  0x401ee4b2 in _fopen_r (ptr=0x3ffe5ba8, file=0x3ffec218 <error: Cannot access memory at address 0x3ffec218>, mode=0x3f428c4c "r") at /builds/idf/crosstool-NG/.build/xtensa-esp-elf/src/newlib/newlib/libc/stdio/fopen.c:126
+#7  0x401ee55c in fopen (file=0x3ffec218 <error: Cannot access memory at address 0x3ffec218>, mode=0x3f428c4c "r") at /builds/idf/crosstool-NG/.build/xtensa-esp-elf/src/newlib/newlib/libc/stdio/fopen.c:168
+#8  0x400d8564 in VFSFileImpl::VFSFileImpl (this=0x3ffea058, fs=<optimized out>, fpath=<optimized out>, mode=0x3f428c4c "r") at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/FS/src/vfs_api.cpp:245
+#9  0x400d85f2 in VFSImpl::exists (this=0x3ffbbcdc, fpath=0x3ffea15c "/app.js.gz") at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/FS/src/vfs_api.cpp:95
+#10 0x401fdc3e in fs::FS::exists (this=<optimized out>, path=0x3ffea15c "/app.js.gz") at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/FS/src/FS.cpp:216
+#11 0x400d7dfe in fs::FS::exists (this=0x3ffe5a58, path=...) at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/cores/esp32/WString.h:382
+#12 0x400dfc16 in AsyncStaticWebHandler::_searchFile (this=0x3ffe5a30, request=0x3ffffa8c, path=...) at .pio/libdeps/esp32dev_core3/ESPAsyncWebServer/src/WebHandlers.cpp:150
+#13 0x400dff18 in AsyncStaticWebHandler::_getFile (this=0x3ffe5a30, request=0x3ffffa8c) at .pio/libdeps/esp32dev_core3/ESPAsyncWebServer/src/WebHandlers.cpp:124
+#14 0x400e0017 in AsyncStaticWebHandler::canHandle (this=0x3ffe5a30, request=0x3ffffa8c) at .pio/libdeps/esp32dev_core3/ESPAsyncWebServer/src/ESPAsyncWebServer.h:541
+#15 0x400e5bd0 in AsyncWebServer::_attachHandler (this=0x3ffc4af8 <httpServer>, request=0x3ffffa8c) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/unique_ptr.h:463
+#16 0x400e23f4 in AsyncWebServerRequest::_parseLine (this=0x3ffffa8c) at .pio/libdeps/esp32dev_core3/ESPAsyncWebServer/src/WebRequest.cpp:997
+#17 0x400e3362 in AsyncWebServerRequest::_onData (this=0x3ffffa8c, buf=<optimized out>, len=2) at .pio/libdeps/esp32dev_core3/ESPAsyncWebServer/src/WebRequest.cpp:169
+#18 0x400e3484 in operator() (__closure=0x3ffebcd4, r=<optimized out>, c=<optimized out>, buf=<optimized out>, len=<optimized out>) at .pio/libdeps/esp32dev_core3/ESPAsyncWebServer/src/WebRequest.cpp:83
+#19 std::__invoke_impl<void, AsyncWebServerRequest::AsyncWebServerRequest(AsyncWebServer*, AsyncClient*)::<lambda(void*, AsyncClient*, void*, size_t)>&, void*, AsyncClient*, void*, unsigned int> (__f=...) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/invoke.h:61
+#20 std::__invoke_r<void, AsyncWebServerRequest::AsyncWebServerRequest(AsyncWebServer*, AsyncClient*)::<lambda(void*, AsyncClient*, void*, size_t)>&, void*, AsyncClient*, void*, unsigned int> (__fn=...) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/invoke.h:111
+#21 std::_Function_handler<void(void*, AsyncClient*, void*, unsigned int), AsyncWebServerRequest::AsyncWebServerRequest(AsyncWebServer*, AsyncClient*)::<lambda(void*, AsyncClient*, void*, size_t)> >::_M_invoke(const std::_Any_data &, void *&&, AsyncClient *&&, void *&&, unsigned int &&) (__functor=..., __args#0=@0x3ffea2b0: 0x3ffffa8c, __args#1=@0x3ffea2b4: 0x3ffebc80, __args#2=@0x3ffea2b8: 0x3fffe90a, __args#3=@0x3ffea2bc: 346) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/std_function.h:290
+#22 0x400d5bf8 in std::function<void (void*, AsyncClient*, void*, unsigned int)>::operator()(void*, AsyncClient*, void*, unsigned int) const (this=0x3ffebcd4, __args#0=<optimized out>, __args#1=0x3ffebc80, __args#2=<optimized out>, __args#3=<optimized out>) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/std_function.h:587
+#23 AsyncClient::_recv (this=0x3ffebc80, pcb=0x3ffeb98c, pb=0x0, err=0 '\000') at .pio/libdeps/esp32dev_core3/AsyncTCP/src/AsyncTCP.cpp:1068
+#24 0x400d62d0 in AsyncTCP_detail::handle_async_event (e=0x3ffe6350) at .pio/libdeps/esp32dev_core3/AsyncTCP/src/AsyncTCP.cpp:293
+#25 0x400d63fc in _async_service_task (pvParameters=<optimized out>) at .pio/libdeps/esp32dev_core3/AsyncTCP/src/AsyncTCP.cpp:328
+#26 0x40090824 in vPortTaskWrapper (pxCode=0x400d6348 <_async_service_task(void*)>, pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+======================== THREADS INFO =========================
+  Id   Target Id          Frame 
+* 1    process 1073634112 panic_abort (details=0x3ffe9f2a "abort() was called at PC 0x4008387b on core 1") at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/panic.c:489
+  2    process 1073447304 0x401f750f in _svfprintf_r (data=<optimized out>, fp=<optimized out>, fmt0=<optimized out>, ap=...) at /builds/idf/crosstool-NG/.build/xtensa-esp-elf/src/newlib/newlib/libc/stdio/vfprintf.c:1774
+  3    process 1073469696 0x4008d8ca in esp_cpu_wait_for_intr () at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/xtensa/include/xt_utils.h:82
+  4    process 1073469324 0x4008d8ca in esp_cpu_wait_for_intr () at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/xtensa/include/xt_utils.h:82
+  5    process 1073438252 0x4000bff0 in ?? ()
+  6    process 1073606676 0x4000bff0 in ?? ()
+  7    process 1073681100 0x40082a78 in esp_crosscore_int_send_yield (core_id=1) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/crosscore_int.c:125
+  8    process 1073558780 0x40082a78 in esp_crosscore_int_send_yield (core_id=1) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/crosscore_int.c:125
+  9    process 1073656976 0x4000bff0 in ?? ()
+  10   process 1073439876 0x4000bff0 in ?? ()
+  11   process 1073439504 0x4000bff0 in ?? ()
+  12   process 1073446240 0x4000bff0 in ?? ()
+  13   process 1073527088 0x4000bff0 in ?? ()
+  14   process 1073440912 0x4000bff0 in ?? ()
+  15   process 1073462656 0x4000bff0 in ?? ()
+  16   process 1073445852 0x4000bff0 in ?? ()
+
+
+       TCB             NAME PRIO C/B  STACK USED/FREE
+---------- ---------------- -------- ----------------
+0x3ffe5b40        async_tcp    10/10       1872/14504
+0x3ffb8188         loopTask      1/1        1712/6464
+0x3ffbd900            IDLE1      0/0          416/652
+0x3ffbd78c            IDLE0      0/0          416/656
+0x3ffb5e2c              tiT    18/18         528/4072
+0x3ffdf014         mqttTask      2/2         784/7396
+0x3fff12cc             ping      2/2         592/1964
+0x3ffd34fc          Tmr Svc      1/1         400/3688
+0x3ffeb490        async_udp      3/3         480/3600
+0x3ffb6484   arduino_events    19/19         720/3372
+0x3ffb6310          sys_evt    20/20         560/4036
+0x3ffb7d60             ipc1    24/24          448/564
+0x3ffcb930             mdns      1/1         496/3584
+0x3ffb6890             wifi    23/23         512/6128
+0x3ffbbd80        esp_timer    22/22         448/8244
+0x3ffb7bdc             ipc0    24/24          448/568
+
+==================== THREAD 1 (TCB: 0x3ffe5b40, name: 'async_tcp') =====================
+#0  panic_abort (details=0x3ffe9f2a "abort() was called at PC 0x4008387b on core 1") at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/panic.c:489
+#1  0x4008f8d8 in esp_system_abort (details=0x3ffe9f2a "abort() was called at PC 0x4008387b on core 1") at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/port/esp_system_chip.c:87
+#2  0x4009605c in abort () at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/newlib/src/abort.c:38
+#3  0x4008387e in lock_init_generic (lock=0x3ffed7e8, mutex_type=4 '\004') at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/newlib/src/locks.c:77
+#4  0x40083a79 in __retarget_lock_init_recursive (lock=0x3ffed7e8) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/newlib/src/locks.c:303
+#5  0x40089d0e in __sfp (d=0x3ffe5ba8) at /builds/idf/crosstool-NG/.build/xtensa-esp-elf/src/newlib/newlib/libc/stdio/findfp.c:201
+#6  0x401ee4b2 in _fopen_r (ptr=0x3ffe5ba8, file=0x3ffec218 <error: Cannot access memory at address 0x3ffec218>, mode=0x3f428c4c "r") at /builds/idf/crosstool-NG/.build/xtensa-esp-elf/src/newlib/newlib/libc/stdio/fopen.c:126
+#7  0x401ee55c in fopen (file=0x3ffec218 <error: Cannot access memory at address 0x3ffec218>, mode=0x3f428c4c "r") at /builds/idf/crosstool-NG/.build/xtensa-esp-elf/src/newlib/newlib/libc/stdio/fopen.c:168
+#8  0x400d8564 in VFSFileImpl::VFSFileImpl (this=0x3ffea058, fs=<optimized out>, fpath=<optimized out>, mode=0x3f428c4c "r") at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/FS/src/vfs_api.cpp:245
+#9  0x400d85f2 in VFSImpl::exists (this=0x3ffbbcdc, fpath=0x3ffea15c "/app.js.gz") at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/FS/src/vfs_api.cpp:95
+#10 0x401fdc3e in fs::FS::exists (this=<optimized out>, path=0x3ffea15c "/app.js.gz") at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/FS/src/FS.cpp:216
+#11 0x400d7dfe in fs::FS::exists (this=0x3ffe5a58, path=...) at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/cores/esp32/WString.h:382
+#12 0x400dfc16 in AsyncStaticWebHandler::_searchFile (this=0x3ffe5a30, request=0x3ffffa8c, path=...) at .pio/libdeps/esp32dev_core3/ESPAsyncWebServer/src/WebHandlers.cpp:150
+#13 0x400dff18 in AsyncStaticWebHandler::_getFile (this=0x3ffe5a30, request=0x3ffffa8c) at .pio/libdeps/esp32dev_core3/ESPAsyncWebServer/src/WebHandlers.cpp:124
+#14 0x400e0017 in AsyncStaticWebHandler::canHandle (this=0x3ffe5a30, request=0x3ffffa8c) at .pio/libdeps/esp32dev_core3/ESPAsyncWebServer/src/ESPAsyncWebServer.h:541
+#15 0x400e5bd0 in AsyncWebServer::_attachHandler (this=0x3ffc4af8 <httpServer>, request=0x3ffffa8c) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/unique_ptr.h:463
+#16 0x400e23f4 in AsyncWebServerRequest::_parseLine (this=0x3ffffa8c) at .pio/libdeps/esp32dev_core3/ESPAsyncWebServer/src/WebRequest.cpp:997
+#17 0x400e3362 in AsyncWebServerRequest::_onData (this=0x3ffffa8c, buf=<optimized out>, len=2) at .pio/libdeps/esp32dev_core3/ESPAsyncWebServer/src/WebRequest.cpp:169
+#18 0x400e3484 in operator() (__closure=0x3ffebcd4, r=<optimized out>, c=<optimized out>, buf=<optimized out>, len=<optimized out>) at .pio/libdeps/esp32dev_core3/ESPAsyncWebServer/src/WebRequest.cpp:83
+#19 std::__invoke_impl<void, AsyncWebServerRequest::AsyncWebServerRequest(AsyncWebServer*, AsyncClient*)::<lambda(void*, AsyncClient*, void*, size_t)>&, void*, AsyncClient*, void*, unsigned int> (__f=...) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/invoke.h:61
+#20 std::__invoke_r<void, AsyncWebServerRequest::AsyncWebServerRequest(AsyncWebServer*, AsyncClient*)::<lambda(void*, AsyncClient*, void*, size_t)>&, void*, AsyncClient*, void*, unsigned int> (__fn=...) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/invoke.h:111
+#21 std::_Function_handler<void(void*, AsyncClient*, void*, unsigned int), AsyncWebServerRequest::AsyncWebServerRequest(AsyncWebServer*, AsyncClient*)::<lambda(void*, AsyncClient*, void*, size_t)> >::_M_invoke(const std::_Any_data &, void *&&, AsyncClient *&&, void *&&, unsigned int &&) (__functor=..., __args#0=@0x3ffea2b0: 0x3ffffa8c, __args#1=@0x3ffea2b4: 0x3ffebc80, __args#2=@0x3ffea2b8: 0x3fffe90a, __args#3=@0x3ffea2bc: 346) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/std_function.h:290
+#22 0x400d5bf8 in std::function<void (void*, AsyncClient*, void*, unsigned int)>::operator()(void*, AsyncClient*, void*, unsigned int) const (this=0x3ffebcd4, __args#0=<optimized out>, __args#1=0x3ffebc80, __args#2=<optimized out>, __args#3=<optimized out>) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/std_function.h:587
+#23 AsyncClient::_recv (this=0x3ffebc80, pcb=0x3ffeb98c, pb=0x0, err=0 '\000') at .pio/libdeps/esp32dev_core3/AsyncTCP/src/AsyncTCP.cpp:1068
+#24 0x400d62d0 in AsyncTCP_detail::handle_async_event (e=0x3ffe6350) at .pio/libdeps/esp32dev_core3/AsyncTCP/src/AsyncTCP.cpp:293
+#25 0x400d63fc in _async_service_task (pvParameters=<optimized out>) at .pio/libdeps/esp32dev_core3/AsyncTCP/src/AsyncTCP.cpp:328
+#26 0x40090824 in vPortTaskWrapper (pxCode=0x400d6348 <_async_service_task(void*)>, pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 2 (TCB: 0x3ffb8188, name: 'loopTask') =====================
+#0  0x401f750f in _svfprintf_r (data=<optimized out>, fp=<optimized out>, fmt0=<optimized out>, ap=...) at /builds/idf/crosstool-NG/.build/xtensa-esp-elf/src/newlib/newlib/libc/stdio/vfprintf.c:1774
+#1  0x401ee98a in snprintf (str=0x3ffb215c "Alloc heap échouée x1 (dernière=1422 o caps=0x080C appelant=heap_caps_malloc, cumul=45"\373?\204J\374?\364J\374?\r\344\017\200", size=160, fmt=0x3f406b77 "Alloc heap échouée x%u (dernière=%u o caps=0x%04X appelant=%s, cumul=%u)") at /builds/idf/crosstool-NG/.build/xtensa-esp-elf/src/newlib/newlib/libc/stdio/snprintf.c:85
+#2  0x4010fc98 in oomGuardLoopTick () at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/atomic_base.h:499
+#3  0x400fe4c3 in loop () at src/main.cpp:423
+#4  0x401484f3 in loopTask (pvParameters=0x0) at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/cores/esp32/main.cpp:82
+#5  0x40090824 in vPortTaskWrapper (pxCode=0x401484a8 <loopTask(void*)>, pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 3 (TCB: 0x3ffbd900, name: 'IDLE1') =====================
+#0  0x4008d8ca in esp_cpu_wait_for_intr () at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/xtensa/include/xt_utils.h:82
+#1  0x4020fed0 in esp_vApplicationIdleHook () at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/freertos_hooks.c:58
+#2  0x400917ee in prvIdleTask (pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/tasks.c:4350
+#3  0x40090824 in vPortTaskWrapper (pxCode=0x40091774 <prvIdleTask>, pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 4 (TCB: 0x3ffbd78c, name: 'IDLE0') =====================
+#0  0x4008d8ca in esp_cpu_wait_for_intr () at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/xtensa/include/xt_utils.h:82
+#1  0x4020fed0 in esp_vApplicationIdleHook () at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/freertos_hooks.c:58
+#2  0x400917ee in prvIdleTask (pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/tasks.c:4350
+#3  0x40090824 in vPortTaskWrapper (pxCode=0x40091774 <prvIdleTask>, pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 5 (TCB: 0x3ffb5e2c, name: 'tiT') =====================
+#0  0x4000bff0 in ?? ()
+#1  0x40090a91 in vPortClearInterruptMaskFromISR (prev_level=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/portmacro.h:560
+#2  vPortExitCritical (mux=0x3ffb4118) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:514
+#3  0x4009026b in xQueueReceive (xQueue=0x3ffb40c4, pvBuffer=0x3ffb5c7c, xTicksToWait=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/queue.c:1632
+#4  0x40170872 in sys_arch_mbox_fetch (mbox=0x3ffca288 <tcpip_mbox>, msg=0x3ffb5c7c, timeout=68) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/port/freertos/sys_arch.c:313
+#5  0x4015e140 in tcpip_timeouts_mbox_fetch (mbox=<optimized out>, msg=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/api/tcpip.c:104
+#6  tcpip_thread (arg=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/lwip/src/api/tcpip.c:142
+#7  0x40090824 in vPortTaskWrapper (pxCode=0x4015e0a8 <tcpip_thread>, pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 6 (TCB: 0x3ffdf014, name: 'mqttTask') =====================
+#0  0x4000bff0 in ?? ()
+#1  0x40090a91 in vPortClearInterruptMaskFromISR (prev_level=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/portmacro.h:560
+#2  vPortExitCritical (mux=0x3ffdd2e0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:514
+#3  0x4009047f in xQueuePeek (xQueue=0x3ffdd28c, pvBuffer=0x3ffe2418, xTicksToWait=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/queue.c:2084
+#4  0x4010f02c in MqttManager::taskLoop (this=0x3ffc4c00 <mqttManager>) at src/mqtt_manager.cpp:333
+#5  0x4010f18e in MqttManager::mqttTaskFunction (pvParameters=0x3ffc4c00 <mqttManager>) at src/mqtt_manager.cpp:279
+#6  0x40090824 in vPortTaskWrapper (pxCode=0x4010f0e8 <MqttManager::mqttTaskFunction(void*)>, pvParameters=0x3ffc4c00 <mqttManager>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 7 (TCB: 0x3fff12cc, name: 'ping') =====================
+#0  0x40082a78 in esp_crosscore_int_send_yield (core_id=1) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/crosscore_int.c:125
+#1  0x400927ef in xTaskDelayUntil (pxPreviousWakeTime=<optimized out>, xTimeIncrement=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/xtensa/include/xt_utils.h:41
+#2  0x40170fa0 in esp_ping_thread (args=0x3ffdf734) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/lwip/apps/ping/ping_sock.c:187
+#3  0x40090824 in vPortTaskWrapper (pxCode=0x40170d3c <esp_ping_thread>, pvParameters=0x3ffdf734) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 8 (TCB: 0x3ffd34fc, name: 'Tmr Svc') =====================
+#0  0x40082a78 in esp_crosscore_int_send_yield (core_id=1) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/crosscore_int.c:125
+#1  0x4009115c in prvProcessTimerOrBlockTask (xNextExpireTime=0, xListWasEmpty=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/xtensa/include/xt_utils.h:41
+#2  prvTimerTask (pvParameters=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/timers.c:685
+#3  0x40090824 in vPortTaskWrapper (pxCode=0x4009104c <prvTimerTask>, pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 9 (TCB: 0x3ffeb490, name: 'async_udp') =====================
+#0  0x4000bff0 in ?? ()
+#1  0x40090a91 in vPortClearInterruptMaskFromISR (prev_level=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/portmacro.h:560
+#2  vPortExitCritical (mux=0x3ffdfbe8) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:514
+#3  0x4009026b in xQueueReceive (xQueue=0x3ffdfb94, pvBuffer=0x3ffefedc, xTicksToWait=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/queue.c:1632
+#4  0x400e69c8 in _udp_task (pvParameters=0x0) at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/AsyncUDP/src/AsyncUDP.cpp:193
+#5  0x40090824 in vPortTaskWrapper (pxCode=0x400e69b0 <_udp_task(void*)>, pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 10 (TCB: 0x3ffb6484, name: 'arduino_events') =====================
+#0  0x4000bff0 in ?? ()
+#1  0x40090a91 in vPortClearInterruptMaskFromISR (prev_level=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/portmacro.h:560
+#2  vPortExitCritical (mux=0x3ffb5ff4) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:514
+#3  0x4009026b in xQueueReceive (xQueue=0x3ffb5fa0, pvBuffer=0x3ffbd18c, xTicksToWait=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/queue.c:1632
+#4  0x400d34f5 in NetworkEvents::_checkForEvent (this=<optimized out>) at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/Network/src/NetworkEvents.cpp:114
+#5  NetworkEvents::_checkForEvent (this=0x3ffc437c <Network+4>) at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/Network/src/NetworkEvents.cpp:103
+#6  0x400d35c8 in operator() (__closure=0x0, self=0x3ffc437c <Network+4>) at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/Network/src/NetworkEvents.cpp:69
+#7  _FUN () at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/Network/src/NetworkEvents.cpp:70
+#8  0x40090824 in vPortTaskWrapper (pxCode=0x400d35c0 <_FUN(void*)>, pvParameters=0x3ffc437c <Network+4>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 11 (TCB: 0x3ffb6310, name: 'sys_evt') =====================
+#0  0x4000bff0 in ?? ()
+#1  0x40090a91 in vPortClearInterruptMaskFromISR (prev_level=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/portmacro.h:560
+#2  vPortExitCritical (mux=0x3ffb60e0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:514
+#3  0x4009026b in xQueueReceive (xQueue=0x3ffb608c, pvBuffer=0x3ffaf9b0, xTicksToWait=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/queue.c:1632
+#4  0x4020eec8 in esp_event_loop_run (event_loop=0x3ffb41b0, ticks_to_run=4294967295) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_event/esp_event.c:731
+#5  0x4020f082 in esp_event_loop_run_task (args=0x3ffb41b0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_event/esp_event.c:106
+#6  0x40090824 in vPortTaskWrapper (pxCode=0x4020f078 <esp_event_loop_run_task>, pvParameters=0x3ffb41b0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 12 (TCB: 0x3ffb7d60, name: 'ipc1') =====================
+#0  0x4000bff0 in ?? ()
+#1  0x40090a91 in vPortClearInterruptMaskFromISR (prev_level=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/portmacro.h:560
+#2  vPortExitCritical (mux=0x3ffbdfd0 <xKernelLock>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:514
+#3  0x40092db1 in ulTaskGenericNotifyTake (uxIndexToWait=0, xClearCountOnExit=1, xTicksToWait=4294967295) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/tasks.c:5768
+#4  0x400820b5 in ipc_task (arg=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/esp_ipc.c:62
+#5  0x40090824 in vPortTaskWrapper (pxCode=0x40082074 <ipc_task>, pvParameters=0x1) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 13 (TCB: 0x3ffcb930, name: 'mdns') =====================
+#0  0x4000bff0 in ?? ()
+#1  0x40090a91 in vPortClearInterruptMaskFromISR (prev_level=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/portmacro.h:560
+#2  vPortExitCritical (mux=0x3ffd9f50) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:514
+#3  0x4009026b in xQueueReceive (xQueue=0x3ffd9efc, pvBuffer=0x3fff9878, xTicksToWait=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/queue.c:1632
+#4  0x40190810 in _mdns_service_task (pvParameters=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/managed_components/espressif__mdns/mdns.c:5423
+#5  0x40090824 in vPortTaskWrapper (pxCode=0x401907ec <_mdns_service_task>, pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 14 (TCB: 0x3ffb6890, name: 'wifi') =====================
+#0  0x4000bff0 in ?? ()
+#1  0x40090a91 in vPortClearInterruptMaskFromISR (prev_level=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/portmacro.h:560
+#2  vPortExitCritical (mux=0x3ffd40c0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:514
+#3  0x4009026b in xQueueReceive (xQueue=0x3ffd406c, pvBuffer=0x3ffd6070, xTicksToWait=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/queue.c:1632
+#4  0x40186e40 in queue_recv_wrapper (queue=0x3ffd406c, item=0x3ffd6070, block_time_tick=4294967295) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_wifi/esp32/esp_adapter.c:323
+#5  0x4020664d in ppTask () at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/esp_additions/freertos_tasks_c_additions.h:1056
+#6  0x40090824 in vPortTaskWrapper (pxCode=0x40206620 <ppTask>, pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 15 (TCB: 0x3ffbbd80, name: 'esp_timer') =====================
+#0  0x4000bff0 in ?? ()
+#1  0x40090a91 in vPortClearInterruptMaskFromISR (prev_level=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/portmacro.h:560
+#2  vPortExitCritical (mux=0x3ffbdfd0 <xKernelLock>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:514
+#3  0x40092db1 in ulTaskGenericNotifyTake (uxIndexToWait=0, xClearCountOnExit=1, xTicksToWait=4294967295) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/tasks.c:5768
+#4  0x40199fd8 in timer_task (arg=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_timer/src/esp_timer.c:459
+#5  0x40090824 in vPortTaskWrapper (pxCode=0x40199fc8 <timer_task>, pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+==================== THREAD 16 (TCB: 0x3ffb7bdc, name: 'ipc0') =====================
+#0  0x4000bff0 in ?? ()
+#1  0x40090a91 in vPortClearInterruptMaskFromISR (prev_level=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/include/freertos/portmacro.h:560
+#2  vPortExitCritical (mux=0x3ffbdfd0 <xKernelLock>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:514
+#3  0x40092db1 in ulTaskGenericNotifyTake (uxIndexToWait=0, xClearCountOnExit=1, xTicksToWait=4294967295) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/tasks.c:5768
+#4  0x400820b5 in ipc_task (arg=<optimized out>) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/esp_ipc.c:62
+#5  0x40090824 in vPortTaskWrapper (pxCode=0x40082074 <ipc_task>, pvParameters=0x0) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c:139
+
+
+======================= ALL MEMORY REGIONS ========================
+Name   Address   Size   Attrs
+.rtc.text 0x400c0000 0x0 RW  
+.rtc.dummy 0x3ff80000 0x0 RW  
+.rtc.force_fast 0x3ff80000 0x0 RW  
+.rtc.force_slow 0x50000634 0x20 RW A
+.iram0.vectors 0x40080000 0x404 R XA
+.iram0.text 0x40080404 0x18b93 R XA
+.dram0.data 0x3ffbdb60 0x67f6 RW A
+.ext_ram_noinit 0x3f800000 0x0 RW  
+.ext_ram.bss 0x3f800000 0x0 RW  
+.flash.appdesc 0x3f400020 0x100 R  A
+.flash.rodata 0x3f400120 0x55f04 RW A
+.flash.text 0x400d0020 0x1426f8 R XA
+.iram0.data 0x40098f98 0x0 RW  
+.iram0.bss 0x40098f98 0x0 RW  
+.dram0.heap_start 0x3ffcf378 0x0 RW  
+.coredump.tasks.data 0x3ffe5b40 0x160 RW 
+.coredump.tasks.data 0x3ffe9e00 0x5b0 RW 
+.coredump.tasks.data 0x3ffb8188 0x160 RW 
+.coredump.tasks.data 0x3ffb1c60 0x6b0 RW 
+.coredump.tasks.data 0x3ffbd900 0x160 RW 
+.coredump.tasks.data 0x3ffd2200 0x1a0 RW 
+.coredump.tasks.data 0x3ffbd78c 0x160 RW 
+.coredump.tasks.data 0x3ffd1d80 0x1a0 RW 
+.coredump.tasks.data 0x3ffb5e2c 0x160 RW 
+.coredump.tasks.data 0x3ffb5b10 0x210 RW 
+.coredump.tasks.data 0x3ffdf014 0x160 RW 
+.coredump.tasks.data 0x3ffe22d0 0x310 RW 
+.coredump.tasks.data 0x3fff12cc 0x160 RW 
+.coredump.tasks.data 0x3fff48f0 0x250 RW 
+.coredump.tasks.data 0x3ffd34fc 0x160 RW 
+.coredump.tasks.data 0x3ffd3260 0x190 RW 
+.coredump.tasks.data 0x3ffeb490 0x160 RW 
+.coredump.tasks.data 0x3ffefda0 0x1e0 RW 
+.coredump.tasks.data 0x3ffb6484 0x160 RW 
+.coredump.tasks.data 0x3ffbd040 0x2d0 RW 
+.coredump.tasks.data 0x3ffb6310 0x160 RW 
+.coredump.tasks.data 0x3ffaf860 0x230 RW 
+.coredump.tasks.data 0x3ffb7d60 0x160 RW 
+.coredump.tasks.data 0x3ffb9f40 0x1c0 RW 
+.coredump.tasks.data 0x3ffcb930 0x160 RW 
+.coredump.tasks.data 0x3fff9730 0x1f0 RW 
+.coredump.tasks.data 0x3ffb6890 0x160 RW 
+.coredump.tasks.data 0x3ffd5f20 0x200 RW 
+.coredump.tasks.data 0x3ffbbd80 0x160 RW 
+.coredump.tasks.data 0x3ffd1720 0x1c0 RW 
+.coredump.tasks.data 0x3ffb7bdc 0x160 RW 
+.coredump.tasks.data 0x3ffb7990 0x1c0 RW 
+
+===================== ESP32 CORE DUMP END =====================
+===============================================================
+Done!

@@ -101,7 +101,7 @@ contrainte s'est resserrée.)*
 
 ## DIAGNOSTIC — 31/08/2026 (debugger, coredump décodé)
 
-Pièces archivées : `builds/2.26.0/esp32dev_core3/coredump_panic_20260829.bin`
+Pièces archivées : `docs/incidents/2026-08-29-panic-fopen-page-html.bin`
 et `..._decoded.txt` (trace complète), ELF concordant `firmware_20260829_065630.elf`
 (concordance établie par le SHA embarqué dans le dump — OTA ~06h57, panic
 2-3 min après, boot PANIC ~07h00, uptime 12,8 h au relevé du soir : cohérent).
@@ -307,7 +307,7 @@ réactivé à 09:15:54 avec la même dose de base 1,41 mL/min.
 
 **Coredump décodé (10:44) — même cause exacte que le 29/08 :**
 
-Pièces : `builds/2.33.0/esp32dev_core3/coredump_panic_20260903_0859.bin`,
+Pièces : `docs/incidents/2026-09-03-panic.bin`,
 `..._decoded.txt`, ELF concordant `firmware_20260902_094213.elf` (identique au
 `firmware.elf` courant), journal `system_log_20260903_1040.txt`.
 
@@ -1069,7 +1069,7 @@ seuils existants intacts** (condition C5 du gate B-1, reconduite en B-2 et ici).
 ## ⚠️ CRASH DU 05/09 SOUS LA v2.40.0 — un chemin `fopen` que B-3 ne couvre pas
 
 Relevé le 05/09 à 15:35 via `/coredump/info`, **après** le déploiement de la
-v2.41.0. Archivé : `builds/2.40.0/esp32dev_core3/coredump_panic_20260905_history.bin`
+v2.41.0. Archivé : `docs/incidents/2026-09-05-panic-fopen-historique.bin`
 et `..._decoded.txt`.
 
 ```

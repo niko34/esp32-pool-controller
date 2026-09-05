@@ -1,0 +1,81 @@
+=== ELF : builds/2.40.0/esp32dev_core3/firmware_20260905_140101.elf ===
+espcoredump.py v1.15.0
+===============================================================
+==================== ESP32 CORE DUMP START ====================
+The ROM ELF file won't be loaded automatically since you are running the utility out of IDF.
+
+Crashed task handle: 0x3ffb8188, name: 'loopTask', GDB name: 'process 1073447304'
+Crashed task is not in the interrupt context
+Panic reason: abort() was called at PC 0x4008387b on core 1
+
+================== CURRENT THREAD REGISTERS ===================
+exccause       0x0 (IllegalInstructionCause)
+excvaddr       0x0
+epc1           0x40083c9f
+epc2           0x0
+epc3           0x0
+epc4           0x0
+epc5           0x40081eb6
+epc6           0x0
+eps2           0x0
+eps3           0x0
+eps4           0x0
+eps5           0x60a20
+eps6           0x0
+pc             0x4008f913          0x4008f913 <panic_abort+19>
+lbeg           0x4008a875          1074309237
+lend           0x4008a897          1074309271
+lcount         0x0                 0
+sar            0x8                 8
+ps             0x60823             395299
+threadptr      <unavailable>
+br             <unavailable>
+scompare1      <unavailable>
+acclo          <unavailable>
+acchi          <unavailable>
+m0             <unavailable>
+m1             <unavailable>
+m2             <unavailable>
+m3             <unavailable>
+expstate       <unavailable>
+f64r_lo        <unavailable>
+f64r_hi        <unavailable>
+f64s           <unavailable>
+fcr            <unavailable>
+fsr            <unavailable>
+a0             0x8008f8d8          -2146895656
+a1             0x3ffb1e00          1073421824
+a2             0x3ffb1e6a          1073421930
+a3             0x3ffb1e97          1073421975
+a4             0xa                 10
+a5             0x3f429bf2          1061329906
+a6             0xff0000            16711680
+a7             0x3ffca04c          1073520716
+a8             0x3ffc9a48          1073519176
+a9             0x1                 1
+a10            0x3ffb1e4e          1073421902
+a11            0x3ffb1e4e          1073421902
+a12            0xa                 10
+a13            0x3ffb1e0c          1073421836
+a14            0x3ffca0a0          1073520800
+a15            0x0                 0
+
+==================== CURRENT THREAD STACK =====================
+#0  panic_abort (details=0x3ffb1e6a "abort() was called at PC 0x4008387b on core 1") at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/panic.c:489
+#1  0x4008f8d8 in esp_system_abort (details=0x3ffb1e6a "abort() was called at PC 0x4008387b on core 1") at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/esp_system/port/esp_system_chip.c:87
+#2  0x4009605c in abort () at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/newlib/src/abort.c:38
+#3  0x4008387e in lock_init_generic (lock=0x3ffb7250, mutex_type=4 '\004') at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/newlib/src/locks.c:77
+#4  0x40083a79 in __retarget_lock_init_recursive (lock=0x3ffb7250) at /home/runner/work/esp32-arduino-lib-builder/esp32-arduino-lib-builder/esp-idf/components/newlib/src/locks.c:303
+#5  0x40089d0e in __sfp (d=0x3ffb81f0) at /builds/idf/crosstool-NG/.build/xtensa-esp-elf/src/newlib/newlib/libc/stdio/findfp.c:201
+#6  0x401f22d2 in _fopen_r (ptr=0x3ffb81f0, file=0x3fffff80 <error: Cannot access memory at address 0x3fffff80>, mode=0x3f429bf2 "r") at /builds/idf/crosstool-NG/.build/xtensa-esp-elf/src/newlib/newlib/libc/stdio/fopen.c:126
+#7  0x401f237c in fopen (file=0x3fffff80 <error: Cannot access memory at address 0x3fffff80>, mode=0x3f429bf2 "r") at /builds/idf/crosstool-NG/.build/xtensa-esp-elf/src/newlib/newlib/libc/stdio/fopen.c:168
+#8  0x400d8618 in VFSFileImpl::VFSFileImpl (this=0x3ffffef4, fs=<optimized out>, fpath=<optimized out>, mode=0x3f429bf2 "r") at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/FS/src/vfs_api.cpp:245
+#9  0x400d8870 in std::_Construct<VFSFileImpl, VFSImpl*, char const*&, char const*&> (__p=0x3ffffef4) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/stl_construct.h:109
+#10 std::allocator_traits<std::allocator<void> >::construct<VFSFileImpl, VFSImpl*, char const*&, char const*&> (__p=0x3ffffef4) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/alloc_traits.h:657
+#11 std::_Sp_counted_ptr_inplace<VFSFileImpl, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_Sp_counted_ptr_inplace<VFSImpl*, char const*&, char const*&> (this=0x3ffffee4, __a=...) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/shared_ptr_base.h:607
+#12 std::__shared_count<(__gnu_cxx::_Lock_policy)2>::__shared_count<VFSFileImpl, std::allocator<void>, VFSImpl*, char const*&, char const*&> (this=0x3ffb1fec, __p=@0x3ffb1fe8: 0x0, __a=...) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/shared_ptr_base.h:969
+#13 std::__shared_ptr<VFSFileImpl, (__gnu_cxx::_Lock_policy)2>::__shared_ptr<std::allocator<void>, VFSImpl*, char const*&, char const*&> (this=0x3ffb1fe8, __tag=...) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/shared_ptr_base.h:1713
+#14 std::shared_ptr<VFSFileImpl>::shared_ptr<std::allocator<void>, VFSImpl*, char const*&, char const*&> (this=0x3ffb1fe8, __tag=...) at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/shared_ptr.h:463
+#15 std::make_shared<VFSFileImpl, VFSImpl*, char const*&, char const*&> () at /Users/nicolas/.platformio/packages/toolchain-xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/bits/shared_ptr.h:1008
+#16 0x400d89b4 in VFSImpl::open (this=0x3ffb7fbc, fpath=<optimized out>, mode=<optimized out>, create=<optimized out>) at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/FS/src/vfs_api.cpp:86
+#17 0x400d7f0c in fs::FS::open (this=0x3ffc4e6c <(anonymous namespace)::historyFs>, path=0x3f402dc0 "/history.json", mode=0x3f429bf2 "r", create=false) at /Users/nicolas/.platformio/packages/framework-arduinoespressif32/libraries/FS/src/FS.cpp:209
