@@ -1,13 +1,20 @@
 # Name,   Type, SubType, Offset,  Size,   Flags
-# Layout v4 (ADR-0024) — app0/app1 1792 KB (marge ~80 %) ;
-# spiffs 576→320 KB (payload gzippé 155 KB, feature-048) ;
-# history et coredump inchangés (données préservées).
-# ATTENTION : flash USB obligatoire (bootloader + table),
-# l'OTA ne peut PAS appliquer ce changement.
+# Layout v5 — la flash de 8 Mo est ENFIN utilisée en entier.
+# La puce est une 8 Mo (esptool : Device 4017, octet de capacité 0x17 = 2^23),
+# mais le layout v4 s'arrêtait à 0x400000 : 4 Mo étaient inutilisés.
+#   app0/app1 1792 → 3648 KB (occupation 99,5 % → 48,9 %)
+#   spiffs      320 →  512 KB (marge d'assets)
+#   history      64 →  256 KB (dissout bug-099 : la marge tombait à 90 octets)
+#   coredump     64 KB inchangé
+# La table se termine exactement à 0x800000.
+# ATTENTION : flash USB obligatoire (bootloader + table), l'OTA ne peut PAS
+# appliquer ce changement. spiffs/history/coredump changent d'offset donc leur
+# contenu est EFFACÉ ; la NVS reste à 0x9000 et est préservée (configuration,
+# calibrations pH/ORP, compteurs journaliers).
 nvs,      data, nvs,     0x9000,  0x5000,
 otadata,  data, ota,     0xE000,  0x2000,
-app0,     app,  ota_0,   0x10000, 0x1C0000,
-app1,     app,  ota_1,   0x1D0000,0x1C0000,
-spiffs,   data, spiffs,  0x390000,0x50000,
-history,  data, spiffs,  0x3E0000,0x10000,
-coredump, data, coredump,0x3F0000,0x10000,
+app0,     app,  ota_0,   0x10000, 0x390000,
+app1,     app,  ota_1,   0x3A0000,0x390000,
+spiffs,   data, spiffs,  0x730000,0x80000,
+history,  data, spiffs,  0x7B0000,0x40000,
+coredump, data, coredump,0x7F0000,0x10000,

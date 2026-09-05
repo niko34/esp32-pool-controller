@@ -1,6 +1,6 @@
 # Guide de compilation et déploiement
 
-Guide **opérationnel** : quelles commandes lancer pour compiler et déployer. Pour la structure des partitions et le pourquoi du layout courant (v4), voir [ADR-0024](adr/0024-partitions-layout-v4.md) et la source de vérité [`partitions.csv`](../partitions.csv).
+Guide **opérationnel** : quelles commandes lancer pour compiler et déployer. Pour la structure des partitions et le pourquoi du layout courant (**v5, flash 8 Mo**), voir [ADR-0068](adr/0068-partitions-layout-v5-flash-8-mo.md) et la source de vérité [`partitions.csv`](../partitions.csv).
 
 ## Compilation
 
@@ -69,14 +69,20 @@ Puis relancer le build. Même remède pour un **premier build** ou un **changeme
 - Utiliser le **pio du penv** : `~/.platformio/penv/bin/pio` (le pio système Python 3.12 échoue avec `ModuleNotFoundError: fatfs/littlefs`).
 - La plateforme est **épinglée sur la release taguée `55.03.37`** (2026-08-04) : pioarduino 55.3.37, core arduino-esp32 **3.3.7**, IDF 5.5.0 — les versions exactes validées au banc feature-063. Depuis la bascule, cet épinglage est un **contrat de production** : **toute montée de version est un choix explicite** exigeant une re-validation au banc avant flash — l'URL `stable`, utilisée avant l'épinglage, avait déjà dérivé vers 55.03.311 (core 3.3.11).
 
-#### Marge flash après bascule
+#### Marge flash — depuis le layout v5 (2026-09-05)
 
-| Env | Occupation app0 (1 835 008 o) |
+| Env | Occupation app0 (**3 735 552 o**) |
 |---|---|
-| `esp32dev_core3` *(production)* | **1 730 053 o = 94,3 %** — marge ≈ **102 Ko** |
-| `esp32dev` *(repli)* | ≈ **84,5 %** |
+| `esp32dev_core3` *(production)* | **1 825 717 o = 48,9 %** — marge **1 909 835 o ≈ 1,82 Mo** |
+| `esp32dev` *(repli)* | ≈ **41,5 %** — dérivé de la dernière mesure core 2 (~1 550 Ko) ; le binaire ne change pas avec le layout, seul le dénominateur change. Non recompilé depuis. |
 
-Le plafond de vigilance de 95 % (fixé par feature-063) est presque atteint : **à surveiller à chaque nouvelle fonctionnalité**.
+> ℹ️ **Le plafond de vigilance de 95 % n'est plus une contrainte de conception.** Avant le
+> layout v5, l'occupation était de **99,5 %** d'un slot de 1 835 008 o — soit **9 291 octets
+> de marge**, moins que le coût d'une fonctionnalité moyenne. C'est ce qui imposait à chaque
+> lot d'« arriver avec son propre poste de récupération flash ». La table de partitions
+> couvrant désormais les 8 Mo réellement présents sur la puce
+> ([ADR-0068](adr/0068-partitions-layout-v5-flash-8-mo.md)), cette contrainte disparaît :
+> **aucun arbitrage de conception ne doit plus invoquer la place flash sans remesurer d'abord.**
 
 > ℹ️ **CI non impactée** : [`.github/workflows/tests-natifs.yml`](../.github/workflows/tests-natifs.yml) ne construit que l'env `native`.
 
@@ -110,7 +116,7 @@ Les **deux envs** (`esp32dev` et `esp32dev_core3`) portent depuis v2.18.0 les fl
 
 Ce script :
 1. Minifie HTML / CSS / JS **puis pré-compresse en gzip** (via `minify.js`, sortie dans `data-build/`, ignoré par git) ;
-2. Construit `littlefs.bin` avec la **taille exacte de la partition `spiffs`** (327 680 octets = 320 KB, layout v4 — voir [ADR-0024](adr/0024-partitions-layout-v4.md)).
+2. Construit `littlefs.bin` avec la **taille exacte de la partition `spiffs`** (**524 288 octets = 512 KB**, layout v5 — voir [ADR-0068](adr/0068-partitions-layout-v5-flash-8-mo.md)).
 
 ⚠️ **Ne pas utiliser `pio run -t buildfs`** : PlatformIO recalcule une taille incorrecte (128 KB), ce qui produit un `littlefs.bin` non conforme à la partition `spiffs`.
 
@@ -119,6 +125,8 @@ Ce script :
 Après minification, `minify.js` gzippe (zlib **niveau 9**) chaque fichier texte (`.js`, `.html`, `.css`) et n'écrit dans `data-build/` **que la variante `.gz`** (ex. `app.js` → `app.js.gz`). Les images et icônes sont copiées telles quelles, sans compression. ESPAsyncWebServer résout nativement `<fichier>.gz` et sert avec `Content-Encoding: gzip` — aucun changement firmware requis (voir [subsystems/web-server.md](subsystems/web-server.md#assets-statiques-pré-compressés-gzip)).
 
 **Gain mesuré** : payload FS **443 → 155 KB** (occupation partition `spiffs` 78 % → 27 % du layout v3 de l'époque ; ≈48 % de la partition 320 KB du layout v4), chargement des pages ~4× plus rapide (le débit de l'ESP32 est le facteur limitant sur mobile). Ce gain est ce qui a rendu possible la réduction de `spiffs` à 320 KB au profit des slots app ([ADR-0024](adr/0024-partitions-layout-v4.md)).
+
+> Depuis le layout v5, `spiffs` fait **512 KB** : **221 184 o utilisés, 303 104 o libres**. Le pipeline gzip reste la règle (voir ci-dessous) mais il n'est plus une **condition d'existence** du frontend — la contrainte « frontend limité à 320 KB » de l'ADR-0024 est levée.
 
 Règles :
 - ⚠️ **Ne jamais placer de fichier texte non compressé dans `data-build/`** : le dossier est entièrement régénéré par `minify.js` à chaque build — tout ajout d'asset texte se fait dans `data/`, le pipeline produit le `.gz`.
@@ -357,8 +365,10 @@ Voir aussi [ADR-0009](adr/0009-partition-coredump.md) pour la décision architec
 - **Changement de bootloader** : l'OTA n'écrit que l'application — passer le bootloader d'un core à l'autre exige un **flash USB** (`./deploy.sh all`). Voir [ADR-0042](adr/0042-core3-environnement-par-defaut.md).
 - **`pio run -t buildfs`** : ne génère pas un `littlefs.bin` de la bonne taille → utiliser `./build_fs.sh`.
 - **`pio run -t uploadfs`** : reconstruit le filesystem à la mauvaise taille avant upload → utiliser `./deploy.sh fs` ou `./deploy.sh ota-fs`.
-- **Partition `history` préservée** : l'upload filesystem OTA n'écrase que la partition `spiffs`. L'historique des mesures n'est **pas** perdu à la mise à jour UI (voir [ADR-0024](adr/0024-partitions-layout-v4.md) et [history.md](subsystems/history.md)).
-- **Changement de table de partitions** : un nouveau layout (ex. v3 → v4 en v2.13.0) exige un **flash USB une fois** — l'OTA ne réécrit pas la table, et une image FS v4 (320 KB) ne doit **jamais** être poussée en OTA sur un appareil en table v3. Voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md#migration-layout-v3--v4-v2130--depuis-2026-07-06).
+- **Partition `history` préservée** : l'upload filesystem OTA n'écrase que la partition `spiffs`. L'historique des mesures n'est **pas** perdu à la mise à jour UI (voir [ADR-0068](adr/0068-partitions-layout-v5-flash-8-mo.md) et [history.md](subsystems/history.md)). ⚠️ Ceci vaut pour une mise à jour **à table constante** — un **changement de layout**, lui, déplace `history` et l'efface (point suivant).
+- **Changement de table de partitions** : un nouveau layout (dernier en date : v4 → v5 en v2.42.0) exige un **flash USB une fois** — l'OTA ne réécrit ni la table ni le bootloader, et une image FS d'un layout ne doit **jamais** être poussée en OTA sur un appareil resté dans l'ancien (métadonnées LittleFS discordantes). Voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md#migration-layout-v4--v5-flash-8-mo--depuis-2026-09-05).
+- ⚠️ **`LITTLEFS_OFFSET` dans `deploy.sh` est le point de défaillance silencieux d'un changement de layout.** Il vaut **`0x730000`** depuis le v5 (était `0x390000`). Oublier de le mettre à jour écrit le filesystem **au milieu de `app1`**, sans message d'erreur : le flash « réussit », l'interface web reste morte, et le slot OTA de secours est corrompu. Le quatuor à maintenir aligné est `partitions.csv` / `platformio.ini` / `build_fs.sh` / `deploy.sh`.
+- **La déclaration `board_build.flash_size` doit décrire le matériel, pas une habitude.** Elle a affirmé `4MB` pendant toute la vie des layouts v1 à v4 sur une puce qui en contient **8** — 4 Mo inutilisés, et une contrainte de conception imaginaire pendant des mois. Vérifier avec `esptool flash_id` (champ `Detected flash size`, ou l'octet de capacité du `Device ID`) **avant** de raisonner sur la place disponible.
 
 ## Dépendances PlatformIO
 
@@ -376,7 +386,7 @@ Liste des libs déclarées dans `platformio.ini` (`lib_deps`) — voir le fichie
 
 > **Migration fork ESP32Async (v2.9.0)** : `AsyncTCP` et `ESPAsyncWebServer` proviennent désormais du fork **maintenu** `ESP32Async` (ex-`mathieucarbou`), en **versions épinglées** (`@3.4.10` / `@3.11.2`), et non plus des dépôts Git `me-no-dev` non figés (abandonnés). Ce changement corrige un crash de course (assert lwIP au close/timeout d'un client WebSocket) diagnostiqué par coredump, **sans modification du code applicatif**, plateforme inchangée (`espressif32@6.9.0`, core 2.0.x / IDF 4.4). Un seul `AsyncTCP` et un seul `ESPAsyncWebServer` dans l'arbre de deps (aucun duplicata `me-no-dev` transitif). Voir [ADR-0028](adr/0028-migration-fork-esp32async.md).
 
-> **Libs supprimées en feature-021 (v2.0.0)** : `Adafruit ADS1X15` et `DFRobot_PH` ont été retirées des `lib_deps`. La chaîne pH/ORP est désormais entièrement portée par la mini-classe maison [`AtlasEzoSensor`](../src/atlas_ezo.h) qui pilote les modules Atlas EZO Embedded en I²C natif (`Wire`). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md). Cette suppression libère ~12 KB de flash mais l'ajout de la queue + des routes de calibration consomme environ autant — le build tenait alors à 98.8 % flash (layout v1). Depuis le layout v4 ([ADR-0024](adr/0024-partitions-layout-v4.md), slots app 1792 KB), l'occupation firmware est redescendue à ~78,5 % (marge ~392 KB).
+> **Libs supprimées en feature-021 (v2.0.0)** : `Adafruit ADS1X15` et `DFRobot_PH` ont été retirées des `lib_deps`. La chaîne pH/ORP est désormais entièrement portée par la mini-classe maison [`AtlasEzoSensor`](../src/atlas_ezo.h) qui pilote les modules Atlas EZO Embedded en I²C natif (`Wire`). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md). Cette suppression libère ~12 KB de flash mais l'ajout de la queue + des routes de calibration consomme environ autant — le build tenait alors à 98.8 % flash (layout v1). Depuis le layout v4 ([ADR-0024](adr/0024-partitions-layout-v4.md), slots app 1792 KB), l'occupation firmware était redescendue à ~78,5 % (marge ~392 KB) — puis remontée à **99,5 %** au fil des versions, avant que le layout v5 ([ADR-0068](adr/0068-partitions-layout-v5-flash-8-mo.md), slots app **3648 KB**) ne la ramène à **48,9 %**.
 
 ## Bibliothèque de graphiques uPlot (frontend)
 

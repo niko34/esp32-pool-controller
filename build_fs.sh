@@ -1,7 +1,7 @@
 #!/bin/bash
 # Script pour construire le filesystem LittleFS avec la bonne taille
-# Layout v4 (ADR-0024) — Taille: 0x50000 = 327 680 bytes = 320KB
-# (avant : 0x90000 = 576KB, layout v3)
+# Layout v5 — Taille: 0x80000 = 524 288 bytes = 512KB
+# (avant : 0x50000 = 320KB en v4, 0x90000 = 576KB en v3)
 
 set -e  # Arrêter en cas d'erreur
 
@@ -16,10 +16,10 @@ echo "🔧 Minification des fichiers web..."
 node minify.js
 
 echo ""
-echo "📦 Building LittleFS with size 327680 bytes (320KB)..."
+echo "📦 Building LittleFS with size 524288 bytes (512KB)..."
 ~/.platformio/packages/tool-mklittlefs/mklittlefs \
   -c data-build \
-  -s 327680 \
+  -s 524288 \
   -p 256 \
   -b 4096 \
   "$BUILD_DIR/littlefs.bin"

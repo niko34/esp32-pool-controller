@@ -111,7 +111,8 @@ docs/
 │   ├── 0064-la-courbe-suit-le-nombre-affiche.md
 │   ├── 0065-trame-websocket-etat-mutable-pas-constantes.md
 │   ├── 0066-sonde-du-tas-au-moment-du-refus.md
-│   └── 0067-garde-503-avant-fopen-handler-prioritaire.md
+│   ├── 0067-garde-503-avant-fopen-handler-prioritaire.md
+│   └── 0068-partitions-layout-v5-flash-8-mo.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

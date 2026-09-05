@@ -2,6 +2,55 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.42.0] - 2026-09-05
+
+> ⛔ **Mise à jour par câble USB obligatoire — l'OTA ne peut PAS installer cette version.** ⚠️ **L'historique des mesures est effacé : le sauvegarder AVANT le flash, appareil encore en ligne.** ✅ **En revanche toute la configuration est conservée** (consignes, calibrations, offset pH, taille de bassin, WiFi, mot de passe) : rien à reconfigurer.
+>
+> **Pourquoi cette version existe** : **l'appareil contient une flash de 8 Mo, et n'en utilisait que 4.** Pas « utilisait mal » : la table de partitions s'arrêtait à la moitié, et la moitié haute n'était référencée nulle part — ni lue, ni écrite, ni comptée. Le firmware occupait **99,5 %** de la place qui lui était allouée, soit **9 291 octets de marge** : moins que le coût d'une fonctionnalité moyenne. Depuis plusieurs versions, chaque correctif devait littéralement **financer sa place** en supprimant du code ailleurs. Cette contrainte disparaît : l'occupation tombe à **48,9 %**. Rien ne change à l'écran, aucun bouton ne bouge, aucune limite de sécurité n'est touchée.
+
+### Firmware
+
+- **Table de partitions — layout v5, la flash de 8 Mo est utilisée en entier** ([ADR-0068](docs/adr/0068-partitions-layout-v5-flash-8-mo.md)). `platformio.ini` déclarait `flash_size = 4MB` et la table se terminait à `0x400000` — **la déclaration ne décrivait pas le matériel**. Confirmation par `esptool flash_id` **avant toute modification** : ESP32-D0WD-V3 rev v3.1, `Manufacturer 20`, **`Device 4017`** (octet de capacité `0x17` = 2²³ = **8 388 608 octets**), `Detected flash size: 8MB`.
+
+  | Partition | v4 | v5 |
+  |---|---|---|
+  | `app0` | `0x010000`, 1792 Ko | `0x010000`, **3648 Ko** |
+  | `app1` | `0x1D0000`, 1792 Ko | **`0x3A0000`**, **3648 Ko** |
+  | `spiffs` | `0x390000`, 320 Ko | **`0x730000`**, **512 Ko** |
+  | `history` | `0x3E0000`, 64 Ko | **`0x7B0000`**, **256 Ko** |
+  | `coredump` | `0x3F0000`, 64 Ko | **`0x7F0000`**, 64 Ko |
+  | Fin de table | `0x400000` (4 Mo) | **`0x800000` (8 Mo, pile)** |
+
+  Aucun chevauchement, partitions applicatives alignées sur 64 Ko, **zéro octet perdu**.
+
+- **Marge applicative : 9 291 → 1 909 835 octets** (occupation 99,5 % → **48,9 %** d'un slot passé de 1 835 008 à 3 735 552 o). C'était **la contrainte dominante du projet** ; la phrase « le prochain lot devra arriver avec son propre poste de récupération flash », portée par les notes des lots B-2 et B-3 de `bug-080`, est **retirée** — elle n'a plus d'objet.
+
+- **Partition `history` : 64 → 256 Ko** (16 → 64 blocs LittleFS). Ce n'était pas un confort : la marge de croissance tombait à **90 octets** dans le pire cas (`bug-099` — `.tmp` de rotation orphelin cumulé à un tampon de log plein), et le mode de défaillance de ce budget est **le silence** (la sauvegarde cesse, rien ne casse visiblement). **`bug-099` est dissous** ; **`bug-098`** (un octet de plus par point, 339 o au total) **devient trivial à financer**. ⚠️ Les deux specs sont à relire au nouveau budget. La garde d'admission `historySaveAdmit()` reste en place — un budget confortable n'est pas un budget infini.
+
+- **Partition `spiffs` : 320 → 512 Ko** — 221 184 o utilisés, **303 104 o libres**. La contrainte « frontend limité à 320 Ko » de l'ADR-0024 est levée.
+
+- **Répartition assumée : 3648 Ko par slot et non 3840** (le maximum). 192 Ko ont été délibérément prélevés pour `spiffs` et 192 pour `history`, parce qu'une contrainte qui mord aujourd'hui prime sur une marge qui passerait de 51 % à 56 %.
+
+- **Alternative écartée, chiffrée** : rogner `spiffs` de 320 à 256 Ko dans le cadre 4 Mo — le palier qu'on aurait pris sans le `flash_id` — n'aurait rendu que 64 Ko, à partager entre `app0` **et** `app1`, soit **+32 Ko par partition**. Contre **+1 856 Ko**. **Un facteur 58.** C'est l'illustration du vrai risque : optimiser à l'intérieur d'une contrainte fausse.
+
+- ⚠️ **Une commande de dépannage change d'adresse.** L'effacement manuel de la partition `history` devient `esptool erase_region 0x7B0000 0x40000`. **Ne plus lancer l'ancienne `erase_region 0x3E0000 0x10000`** : cette zone est désormais **au milieu de `app1`** — elle détruirait le slot OTA de secours au lieu d'effacer l'historique.
+
+- ⚠️ **Limite découverte à l'usage, désormais documentée** : `POST /history/import` **refuse tout corps de plus de 16 384 octets** avec un `413` (plafond de la bibliothèque HTTP, jamais surchargé côté firmware — et émis **avant** le contrôle d'authentification). À ~112 octets par point compacté, **145 points passent, 146 non**. Sur les 245 points sauvegardés avant le flash, **100 n'ont pas pu être réimportés** (23 au 31 août) ; ils restent dans le fichier de sauvegarde. Contournement : découper la restauration en lots de ≤ 145 points, qui se cumulent.
+
+### Documentation
+
+- `docs/adr/0068-partitions-layout-v5-flash-8-mo.md` : **nouvel ADR** — utiliser les 8 Mo réels plutôt que dégraisser le firmware ou rogner le filesystem, répartition retenue, flash USB obligatoire / DATA effacées / NVS préservée, et clôture du sujet flash.
+- `docs/adr/0024-partitions-layout-v4.md` : passé en **`Superseded by ADR-0068`**, avec bannière datée expliquant que sa prémisse (flash de 4 Mo) était fausse. Contenu historique non réécrit.
+- `docs/UPDATE_GUIDE.md` : nouvelle note « Migration layout v4 → v5 (flash 8 Mo) » — sauvegarde préalable, `esptool flash_id`, `./deploy.sh all`, interdiction de `factory` et de l'OTA, réimport par lots de 145 points, vérifications post-flash, commande de secours corrigée.
+- `docs/API.md` : limite **16 384 octets** de `POST /history/import` documentée (codes d'erreur, `413` avant authentification, contournement) ; exemple `/get-system-info` réaligné (`flash_size`, `ota_partition_size`, `fs_total_bytes`) et ces trois champs érigés en **moyen de vérifier depuis l'extérieur qu'un appareil est bien passé en table v5**.
+- `docs/BUILD.md` : tableau de marge flash refait sur le slot de 3 735 552 o, taille FS 524 288, et deux pièges ajoutés — `LITTLEFS_OFFSET` comme point de défaillance **silencieux** d'un changement de layout, et l'obligation de vérifier la flash physique avant de raisonner sur la place.
+- `docs/subsystems/history.md` : partition 256 Ko / `0x7B0000`, budget avant-après (12/16 → 12/64 blocs), effet sur `bug-098` / `bug-099`, et cas réel de l'effacement au premier boot.
+- `docs/subsystems/system-health.md` : commande de récupération corrigée + avertissement sur l'ancienne, périmée et dangereuse.
+- `README.md` : description de `partitions.csv` réalignée (elle décrivait encore le **layout v2**).
+- `docs/user/README.md` : taille du filesystem embarqué corrigée.
+
+---
+
 ## [2.41.0] - 2026-09-05
 
 > ℹ️ **Rien à configurer, aucune migration, aucun réglage modifié, aucune limite de sécurité touchée. Aucun écran ne change, aucun bouton ne bouge.** **Pourquoi cette version existe** : quand l'appareil manquait vraiment de mémoire, **ouvrir une page web le faisait redémarrer**. Pas « ramer », pas « afficher une erreur » : **redémarrer**, sans avertissement — c'est le plantage du 29 août. Désormais, dans cette situation, l'appareil **refuse poliment** de servir la page (message « Memoire insuffisante, reessayez » dans le navigateur) au lieu de tomber. **Ce qui continue de fonctionner pendant ce temps** : la régulation, le dosage, la filtration, l'éclairage, Home Assistant, le suivi temps réel et **toutes les pages de diagnostic** — c'est-à-dire tout ce qui permet de comprendre ce qui se passe.

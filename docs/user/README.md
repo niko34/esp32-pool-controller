@@ -36,4 +36,4 @@ la référence. En cas de doute ou de divergence, la source fait foi.
   quatre divergences trouvées entre le PDF et la mécanique réelle, dont une
   héritée d'un état pré-v2.32.0). Claude Design n'est plus dans la boucle
   (ses canvas restent sur claude.ai, à titre d'archive).
-- Ces documents ne vont **jamais** dans `data/` (filesystem embarqué : 320 Ko).
+- Ces documents ne vont **jamais** dans `data/` (filesystem embarqué : 512 Ko depuis le layout v5, dont 303 Ko libres — la règle reste valable, l'embarqué n'est pas un espace de stockage documentaire).

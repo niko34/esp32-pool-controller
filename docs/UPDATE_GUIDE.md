@@ -238,6 +238,114 @@ Depuis la v2.11.0, **toute image téléchargée depuis GitHub est vérifiée par
 
 ## Notes de migration
 
+### Migration layout v4 → v5 (flash 8 Mo) — depuis 2026-09-05
+
+⛔ **Mise à jour par câble USB obligatoire. L'OTA ne peut PAS appliquer ce changement.**
+⚠️ **L'historique des mesures est effacé. Le sauvegarder AVANT le flash, appareil encore en ligne.**
+
+#### Ce qui change et pourquoi
+
+La table de partitions couvre désormais **la totalité de la flash**
+([ADR-0068](adr/0068-partitions-layout-v5-flash-8-mo.md)). Jusqu'ici elle s'arrêtait à
+`0x400000` et `platformio.ini` déclarait `flash_size = 4MB` — **mais la puce est une 8 Mo**
+(`esptool flash_id` : ESP32-D0WD-V3, `Device 4017`, octet de capacité `0x17` = 2²³ =
+8 388 608 o). **4 Mo n'étaient référencés par aucune partition** : ni lus, ni écrits, ni
+comptés.
+
+| Partition | v4 | v5 |
+|---|---|---|
+| `app0` | `0x010000`, 1792 Ko | `0x010000`, **3648 Ko** |
+| `app1` | `0x1D0000`, 1792 Ko | **`0x3A0000`**, **3648 Ko** |
+| `spiffs` | `0x390000`, 320 Ko | **`0x730000`**, **512 Ko** |
+| `history` | `0x3E0000`, 64 Ko | **`0x7B0000`**, **256 Ko** |
+| `coredump` | `0x3F0000`, 64 Ko | **`0x7F0000`**, 64 Ko |
+| Fin de table | `0x400000` (4 Mo) | **`0x800000` (8 Mo, pile)** |
+
+Effet mesuré : l'occupation du firmware passe de **99,5 %** (9 291 octets de marge) à
+**48,9 %** (1 909 835 octets). La partition `history` quadruple.
+
+#### Ce qui est préservé, ce qui ne l'est pas
+
+✅ **La configuration est intégralement préservée.** La partition `nvs` reste à `0x9000`,
+**hors de la zone déplacée** : consignes pH/ORP, offset pH, taille de bassin, calibrations
+des sondes, identification des DS18B20, WiFi, compteurs journaliers, mot de passe.
+**Rien à reconfigurer.**
+
+❌ **`spiffs`, `history` et `coredump` changent d'offset : leur contenu est perdu.** Pour
+`history`, l'effacement est en plus **explicite** — `HistoryManager` compare la taille de
+partition à la valeur mémorisée en NVS et efface sur écart, pour éviter un crash LittleFS.
+L'historique des mesures **repart de zéro**.
+
+#### Procédure
+
+**1. Sauvegarder l'historique, appareil encore en ligne.** Cette étape est irréversible si
+on l'oublie. Depuis Paramètres → Système, exporter `history.json` (et, tant qu'à faire,
+`config.json` et le journal système).
+
+**2. Vérifier la taille physique de la flash** (ne pas se fier à la déclaration) :
+
+```bash
+esptool.py flash_id
+# Attendu : Detected flash size: 8MB
+```
+
+**3. Flasher par USB :**
+
+```bash
+./deploy.sh all
+```
+
+Recompile firmware + filesystem, réécrit bootloader + table + application, flashe le FS au
+nouvel offset `0x730000`, et efface `otadata` pour forcer le démarrage sur `app0` — étape
+**indispensable** après un déplacement de partitions, l'`otadata` héritée pointant vers un
+slot qui n'est plus au même endroit.
+
+> ⚠️ **NE PAS utiliser `./deploy.sh factory`** : il efface toute la flash, **NVS comprise**
+> (perte de la config, des calibrations, du WiFi, régénération du mot de passe AP).
+> `./deploy.sh all` suffit et préserve la NVS.
+
+> ⛔ **Ne JAMAIS pousser ce firmware ou ce filesystem par OTA sur un appareil encore en
+> table v4.** L'OTA n'écrit ni la table ni le bootloader : elle resterait v4 même après une
+> « réussite » apparente, et une image FS construite pour 512 Ko sur une partition de
+> 320 Ko présente des métadonnées LittleFS discordantes — interface web morte ou corrompue.
+
+**4. Réimporter l'historique — par lots de 145 points maximum.**
+
+⚠️ `POST /history/import` **refuse tout corps de plus de 16 384 octets** avec un `413`
+(limite de la bibliothèque HTTP, pas un choix du firmware). À ~112 octets par point
+compacté, **145 points passent, 146 non**. Une sauvegarde plus longue doit être **découpée
+en plusieurs POST successifs** — les lots se cumulent. Détails :
+[API.md](API.md#post-historyimport--write).
+
+> Sur la migration du 05/09, 245 points avaient été sauvegardés et **145 seulement** ont
+> été réimportés en une passe ; les 100 plus anciens (23 au 31 août) restent dans le
+> fichier de sauvegarde.
+
+#### Vérifications post-flash
+
+Paramètres → Système → Infos système :
+
+- **Flash** : `8 388 608` octets ;
+- ligne **Firmware (flash)** : partition de **3 648 Ko**, occupation ≈ **49 %** ;
+- ligne **FS** : **512 Ko** ;
+- journal de démarrage : `LittleFS monté avec succès`, `Partition historique dédiée montée`,
+  `Historique chargé (N points)` ;
+- l'OTA (firmware et filesystem) refonctionne normalement dès le premier boot.
+
+#### Une commande de dépannage a changé d'adresse
+
+L'effacement manuel de secours de la partition `history` devient :
+
+```bash
+esptool.py erase_region 0x7B0000 0x40000   # partition history (256 Ko), layout v5
+```
+
+⛔ **Ne plus lancer `erase_region 0x3E0000 0x10000`** (ancienne commande, layout v4) : cette
+zone est désormais **au milieu de `app1`**. La commande n'effacerait pas l'historique mais
+détruirait le slot OTA de secours.
+
+---
+
 ### La régulation attend que l'eau soit rincée, et un redémarrage ne coûte plus l'apprentissage — depuis v2.34.0 (2026-09-04)
 
 **Aucune action requise.** Pas de changement de partition ni de format de configuration. **Un seul effet de bord, une seule fois** : voir l'encadré ci-dessous.

@@ -6,7 +6,7 @@ set -e  # Arrêter en cas d'erreur
 
 # Configuration
 BAUD="115200"
-LITTLEFS_OFFSET="0x390000"  # Layout v4 (ADR-0024) — était 0x350000 en layout v3
+LITTLEFS_OFFSET="0x730000"  # Layout v5 — était 0x390000 en v4, 0x350000 en v3
 NVS_OFFSET="0x9000"         # partitions.csv : nvs, data, nvs, 0x9000, 0x5000
 NVS_SIZE="0x5000"
 
@@ -141,7 +141,7 @@ erase_nvs() {
 }
 
 build_filesystem() {
-    print_step "Construction du filesystem LittleFS (320KB)..."
+    print_step "Construction du filesystem LittleFS (512KB)..."
     ./build_fs.sh
 }
 
@@ -181,8 +181,8 @@ upload_filesystem() {
 
     # Vérifier la taille du fichier
     SIZE=$(stat -f%z "$BUILD_DIR/littlefs.bin" 2>/dev/null || stat -c%s "$BUILD_DIR/littlefs.bin" 2>/dev/null)
-    if [ "$SIZE" != "327680" ]; then
-        print_warning "Taille incorrecte du fichier littlefs.bin: $SIZE bytes (attendu: 327680)"
+    if [ "$SIZE" != "524288" ]; then
+        print_warning "Taille incorrecte du fichier littlefs.bin: $SIZE bytes (attendu: 524288)"
         print_warning "Reconstruction avec build_fs.sh..."
         build_filesystem
     fi

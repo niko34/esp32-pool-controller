@@ -453,8 +453,10 @@ HistoryGuardDecision evaluateHistoryGuard(const HistoryGuardInputs& in);
 - **Récupération manuelle de secours** (reste valable si le disjoncteur lui-même est hors jeu) :
 
 ```bash
-esptool.py erase_region 0x3E0000 0x10000   # efface la partition history (64 Ko)
+esptool.py erase_region 0x7B0000 0x40000   # efface la partition history (256 Ko, layout v5)
 ```
+
+> ⛔ **L'ancienne commande `erase_region 0x3E0000 0x10000` (layout v4) est PÉRIMÉE et DANGEREUSE.** Depuis le passage au layout v5 ([ADR-0068](../adr/0068-partitions-layout-v5-flash-8-mo.md), 2026-09-05), `0x3E0000` tombe **au milieu de `app1`** : la commande n'effacerait pas l'historique mais **détruirait le slot OTA de secours**. Elle figure encore dans [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md), qui est immuable — c'est cette page qui fait foi. Source de vérité des offsets : [`partitions.csv`](../../partitions.csv).
 
 ## Debounce de la ré-annonce mDNS (v2.9.1)
 

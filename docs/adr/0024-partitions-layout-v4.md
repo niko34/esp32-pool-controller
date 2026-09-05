@@ -1,6 +1,16 @@
 # ADR-0024 — Partitions app à 1792 KB (layout v4)
 
-- **Statut** : Accepté
+> ⛔ **Superseded le 2026-09-05 par [ADR-0068](0068-partitions-layout-v5-flash-8-mo.md) (layout v5, flash 8 Mo).**
+> Tout ce qui suit reste vrai **de son époque** et n'est pas réécrit — mais la prémisse
+> centrale du raisonnement était **fausse** : la flash n'est pas de 4 Mo, c'est un
+> ESP32-D0WD-V3 avec **8 Mo** (`esptool flash_id` : `Device 4017`, capacité `0x17` = 2²³).
+> La table s'arrêtant à `0x400000`, **4 Mo n'étaient référencés par aucune partition**.
+> En conséquence, les offsets et tailles du tableau ci-dessous **ne décrivent plus
+> l'appareil** ; en particulier `LITTLEFS_OFFSET` vaut désormais `0x730000` et non
+> `0x390000`, et la commande de secours `erase_region 0x3E0000 0x10000` **tomberait au
+> milieu de `app1`**. Source de vérité : [`partitions.csv`](../../partitions.csv).
+
+- **Statut** : Superseded by ADR-0068
 - **Date** : 2026-07-06
 - **Décideurs** : Nicolas Philippe
 - **Spec(s) liée(s)** : feature-049 (déclencheur), feature-048 (prérequis — gzip des assets), feature-044 (origine du layout v3)

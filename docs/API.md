@@ -558,6 +558,40 @@ curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
 
 Les clés attendues sont celles **de l'export `/get-history`** (clés longues), pas celles du fichier persisté `/history.json`. Depuis la **v2.38.0**, `phFiltered` et `orpFiltered` sont relues : l'aller-retour `/get-history` → `/history/import` → `/get-history` restitue la [mesure lissée](#mesure-lissée--phfiltered--orpfiltered-feature-095-v2380) à l'identique. Clé **absente ou `null`** → mesure lissée absente (`null`), jamais 0 ni repli sur le brut.
 
+#### ⚠️ Limite dure : 16 384 octets de corps (constatée le 2026-09-05)
+
+**Un corps de plus de `16 384` octets reçoit `413` et n'est jamais traité.** La valeur
+vient de `AsyncCallbackJsonWebHandler::_maxContentLength`, **initialisée à 16384 par la
+bibliothèque** (`AsyncJson.cpp`) et **jamais surchargée** côté firmware
+([`src/web_routes_data.cpp:960-1025`](../src/web_routes_data.cpp)) — ce n'est donc pas un
+plafond métier, mais il est **réel et non contournable côté client**.
+
+Deux conséquences peu intuitives :
+
+- **Le `413` est émis par la bibliothèque, avant `REQUIRE_AUTH`** : la route répond `413`
+  même sans authentification, et le corps de la réponse n'est **pas** le JSON d'erreur
+  habituel `{"error": …}` mais la page d'erreur par défaut du serveur.
+- **Le refus est propre, pas partiel** : `handleBody()` ignore le corps dès le premier
+  fragment (`total > _maxContentLength`), donc **aucun point n'est importé**. Il n'y a pas
+  de risque d'import tronqué silencieux — mais pas de message d'aide non plus.
+
+**Ordre de grandeur mesuré** : à raison d'un point compacté de ~112 octets (JSON sans
+espaces, clés longues, six grandeurs), **145 points passent, 146 non**. Sur une
+restauration de 245 points le 05/09, **100 points n'ont pas pu être réimportés**.
+
+**Contournement** : découper la restauration en **lots de ≤ 145 points**, POSTés
+séquentiellement. `importData()` est cumulatif — les lots successifs s'ajoutent.
+
+> Cette limite conditionne toute restauration après un changement de table de partitions
+> (qui efface la partition `history`) — voir [ADR-0068](adr/0068-partitions-layout-v5-flash-8-mo.md).
+
+**Erreurs**
+
+- `400` : champ `history` manquant / tableau vide / aucun point valide / JSON illisible
+- `401` : authentification WRITE manquante ou invalide
+- `413` : corps > 16 384 octets (voir ci-dessus) — **avant** contrôle d'authentification
+- `500` : `importData()` a échoué (mutex historique, écriture)
+
 ---
 
 ### GET /get-logs — WRITE
@@ -1004,12 +1038,12 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-system-info
   "heap_size": 327680,
   "psram_size": 8388608,
   "psram_free": 8257536,
-  "flash_size": 4194304,
+  "flash_size": 8388608,
   "ota_partition": "app0",
-  "ota_partition_size": 1703936,
-  "sketch_size": 1427753,
-  "fs_total_bytes": 1507328,
-  "fs_used_bytes": 245760,
+  "ota_partition_size": 3735552,
+  "sketch_size": 1825717,
+  "fs_total_bytes": 524288,
+  "fs_used_bytes": 221184,
   "wifi_ssid": "MonWiFi",
   "wifi_rssi": -45,
   "wifi_ip": "192.168.1.100",
@@ -1096,6 +1130,8 @@ Quatre champs **purement additifs** ([ADR-0066](adr/0066-sonde-du-tas-au-moment-
 > **⚠️ `psram_free` CHANGE DE SENS en v2.35.0.** Jusqu'ici la PSRAM était libre à ~99 % en permanence et sa valeur ne bougeait pas. Depuis la bascule des allocations de plus de 4095 o ([ADR-0061](adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)), **la PSRAM est un pool de travail** : `psram_free` **varie avec la charge web** (chaque fichier statique servi y prend son tampon stdio de 4096 o). Une baisse de plusieurs dizaines de Ko pendant un chargement d'interface est le comportement **attendu**, pas une anomalie. Corollaire pour un superviseur : ne pas alarmer sur une baisse de `psram_free` ; la garde TLS sortante, elle, continue d'exiger 1 Mo libre (`kOtaTlsMinPsramBytes`, [ADR-0036](adr/0036-psram-requise-mise-a-jour-en-ligne.md)).
 
 > `sketch_size` (octets, `ESP.getSketchSize()`) et `ota_partition_size` (octets, taille de la partition app active) permettent de calculer l'occupation flash du firmware — affichée sur la ligne « Firmware (flash) » de la carte Infos système (v2.5.2). `sketch_size` ajouté en v2.5.2 (feature-047).
+>
+> **Valeurs de référence depuis le layout v5** (v2.42.0, [ADR-0068](adr/0068-partitions-layout-v5-flash-8-mo.md)) : `flash_size = 8388608`, `ota_partition_size = 3735552` (3648 Ko), `fs_total_bytes = 524288` (512 Ko). Ces trois champs sont le **moyen de vérifier depuis l'extérieur qu'un appareil est bien passé en table v5** : un `flash_size` à `4194304` ou un `ota_partition_size` à `1835008` signale une table v4 encore active — c'est-à-dire un flash USB qui n'a pas été fait.
 >
 > `psram_size` / `psram_free` (octets, `ESP.getPsramSize()` / `ESP.getFreePsram()`, ajoutés en v2.18.0, feature-066) : PSRAM du module (WROVER-E). **`psram_size = 0` signifie PSRAM absente** (module WROOM) — l'UI affiche alors « absente » sur la ligne PSRAM de la card Infos système. Depuis la v2.18.7, `psram_size === 0` sert aussi de **condition d'indisponibilité de la mise à jour en ligne** côté interface (bouton « Vérifier » neutralisé + explication permanente dans la carte GitHub, voir [features/page-settings.md](features/page-settings.md)) ; si le champ est **absent** de la réponse, l'UI ne modifie rien (compatibilité ascendante).
 

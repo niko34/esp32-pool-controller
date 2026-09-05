@@ -334,10 +334,11 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
   - `default_envs = esp32dev_core3` (core Arduino 3.x / IDF 5) ; `esp32dev` = repli core 2, `native` = tests unitaires
   - Port série: détecté par `deploy.sh` (surcharge `PORT=...`)
 
-- **`partitions.csv`** - Table de partitions ESP32 4MB (layout v2, [ADR-0015](docs/adr/0015-partition-app-1.5mb.md))
-  - 2× slots OTA app0/app1 (1.5 MB / 1536 KB chacun)
-  - LittleFS/spiffs (832 KB) pour l'interface web
-  - History (64 KB) partition séparée préservée lors des mises à jour
+- **`partitions.csv`** - Table de partitions ESP32 **8 Mo** (layout v5, [ADR-0068](docs/adr/0068-partitions-layout-v5-flash-8-mo.md))
+  - 2× slots OTA app0/app1 (**3648 KB** chacun) — occupation ≈ 49 %
+  - LittleFS/spiffs (**512 KB**) pour l'interface web
+  - History (**256 KB**) partition séparée préservée lors des mises à jour à table constante
+  - Coredump (64 KB) ; la table couvre la flash **en entier**, de 0x0 à 0x800000
 
 ### Documentation
 

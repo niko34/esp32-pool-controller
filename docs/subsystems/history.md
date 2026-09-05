@@ -2,7 +2,7 @@
 
 - **Fichiers** : [`src/history.h`](../../src/history.h), [`src/history.cpp`](../../src/history.cpp)
 - **Singleton** : `extern HistoryManager history;`
-- **Partition** : `history` LittleFS **64 KB** (séparée de `spiffs`) — voir [`partitions.csv`](../../partitions.csv) et [ADR-0009](../adr/0009-partition-coredump.md).
+- **Partition** : `history` LittleFS **256 KB** à l'offset `0x7B0000` (séparée de `spiffs`) — layout v5, voir [`partitions.csv`](../../partitions.csv), [ADR-0068](../adr/0068-partitions-layout-v5-flash-8-mo.md) et [ADR-0009](../adr/0009-partition-coredump.md). ⚠️ **Était 64 KB à `0x3E0000` jusqu'au 2026-09-05** — tous les budgets chiffrés « x/16 blocs » ci-dessous datent de cette époque et sont désormais **très conservateurs** (la partition compte 64 blocs).
 
 ## Rôle
 
@@ -176,7 +176,7 @@ La page confondait jusqu'ici ces deux formats. Ils ne sont **pas** interchangeab
 | Producteur | `saveToFile()` (`history.cpp`) | `formatHistoryPointJson()` ([`history_export_chunk.h`](../../src/history_export_chunk.h)) |
 | Consommateur de relecture | `loadFromFile()` | `POST /history/import` |
 
-- **Dans le fichier, chaque octet compte** : la partition fait 64 Ko et son dépassement est silencieux. D'où les clés de 2 caractères et l'omission pure et simple d'une clé non finie.
+- **Dans le fichier, chaque octet comptait** : la partition faisait 64 Ko et son dépassement est silencieux. D'où les clés de 2 caractères et l'omission pure et simple d'une clé non finie. *(Depuis le 05/09 la partition fait 256 Ko — le format reste tel quel, mais ce n'est plus une contrainte qui doit dicter un arbitrage : voir [Le budget a changé d'ordre de grandeur](#le-budget-a-changé-dordre-de-grandeur-le-2026-09-05).)*
 - **Sur le fil, la stabilité du contrat prime** : `ph` / `orp` / `temperature` sont **toujours** présents et disent `null` quand la mesure manque (contrat existant depuis feature-061). `phFiltered` / `orpFiltered` suivent **la même règle** — un client n'a jamais à distinguer « clé absente » de « valeur nulle ».
 - ⚠️ **`POST /history/import` lit les clés LONGUES**, celles de l'export — pas les clés courtes du fichier persisté. Ne pas confondre les deux formats en écrivant un outil de restauration.
 
@@ -308,16 +308,34 @@ Comportement nominal (mutex libre) strictement inchangé.
 
 ## Partition dédiée
 
-La partition `history` (64 KB, offset `0x3E0000`) est **séparée** de `spiffs` pour que les updates OTA du filesystem (qui réécrivent `spiffs`) ne touchent pas à l'historique. Voir [ADR-0009](../adr/0009-partition-coredump.md).
+La partition `history` (**256 KB, offset `0x7B0000`**, layout v5) est **séparée** de `spiffs` pour que les updates OTA du filesystem (qui réécrivent `spiffs`) ne touchent pas à l'historique. Voir [ADR-0009](../adr/0009-partition-coredump.md) et [ADR-0068](../adr/0068-partitions-layout-v5-flash-8-mo.md).
 
-**Budget de la partition (64 KB utiles ≈ 56 KB après réserves LittleFS) :**
+### Le budget a changé d'ordre de grandeur le 2026-09-05
+
+La partition est passée de **64 à 256 KB** (16 → **64 blocs** LittleFS de 4 096 o) avec le layout v5. Ce n'est pas un confort marginal : le budget de cette partition était une **contrainte active**, et sa violation était **silencieuse** (voir [Le mode de défaillance du budget est le SILENCE](#le-mode-de-défaillance-du-budget-est-le-silence-pas-la-corruption-)).
+
+| | v4 (jusqu'au 05/09) | v5 |
+|---|---|---|
+| Taille de partition | 64 KB | **256 KB** |
+| Blocs LittleFS (4 096 o) | 16 | **64** |
+| Occupation en régime établi (feature-095) | 12/16 | **12/64** |
+| Pire cas budgété (2 méta + 6 history + 3 log + 2 tmp) | 13/16 — **marge 3 blocs** | 13/64 — **marge 51 blocs** |
+
+**Conséquences directes sur les specs ouvertes :**
+
+- **`bug-099` (`.tmp` de rotation jamais nettoyé au boot) est dissous.** La marge de croissance tombait à **90 octets** dans le pire cas (`.tmp` orphelin + tampon de log plein) ; elle se compte maintenant en dizaines de Ko. Le nettoyage du `.tmp` reste souhaitable **par hygiène**, il n'est plus **structurel**.
+- **`bug-098` (drapeau de dosage ORP perdu à l'écriture) devient trivial à financer.** L'octet supplémentaire par point — **339 o au total** — était un arbitrage de budget ; ce n'en est plus un.
+
+⚠️ **Ce qui ne change pas** : la garde d'admission `historySaveAdmit()` ([ADR-0033](../adr/0033-budget-espace-partition-history.md)) reste en place et reste obligatoire pour toute nouvelle écriture sur cette partition. Un budget confortable n'est pas un budget infini, et le mode de panne — le silence — est inchangé.
+
+**Budget nominal des fichiers :**
 
 | Fichier | Taille max |
 |---------|-----------|
-| `history.bin` (données brutes + horaires + journalières) | ~24 KB |
+| `history.json` (données brutes + horaires + journalières) | ~30 KB |
 | `system.log` (logs firmware persistés) | 16 KB |
 | Fichier temporaire de rotation logs | 12 KB |
-| **Total** | **~52 KB < 56 KB** |
+| **Total** | **~58 KB ≪ 256 KB** |
 
 ### Protection au redimensionnement de partition
 
@@ -326,6 +344,8 @@ La partition `history` (64 KB, offset `0x3E0000`) est **séparée** de `spiffs` 
 Cette protection évite un crash `IntegerDivideByZero` dans `lfs_alloc` lorsque LittleFS tente de monter un filesystem dont la géométrie ne correspond plus à la taille physique de la partition — situation qui se produit lors d'un redimensionnement flash (ex. migration ADR-0007 → ADR-0009).
 
 > ⚠️ Le premier boot après un changement de table de partitions **efface l'historique**. C'est intentionnel et documenté dans [`docs/UPDATE_GUIDE.md`](../UPDATE_GUIDE.md).
+>
+> **Cas réel, 2026-09-05** : le passage au layout v5 a fait passer la partition de 64 à 256 KB — cette garde s'est donc déclenchée au premier boot et a effacé l'historique, comme prévu. C'est pour cette raison que la sauvegarde de `/history.json` **avant le flash, appareil encore en ligne**, est une étape de la procédure de migration et non une précaution optionnelle. ⚠️ La restauration se heurte ensuite à la limite de **16 384 octets de corps** de `POST /history/import` (≈145 points par lot) — voir [API.md](../API.md#post-historyimport--write).
 
 ### Détection de corruption LittleFS au boot (v2.1.1)
 
@@ -347,7 +367,7 @@ Si **toute** étape échoue (`open` retourne null, `print` retourne ≠ 2 octets
 | Cas | Coût |
 |-----|------|
 | Nominal (FS sain) | 4 opérations FS + cleanup ≈ 10 ms au boot, ~500 B flash ajoutés |
-| Corrompu | Erase 64 KB ≈ 100 ms + remount + reformatage LittleFS ≈ 300-500 ms total |
+| Corrompu | Erase de la partition + remount + reformatage LittleFS. Chiffre mesuré **avec la partition de 64 KB** : ~100 ms d'erase, 300-500 ms au total. ⚠️ **Non remesuré depuis le passage à 256 KB** (layout v5) : l'erase étant proportionnel à la taille, attendre un ordre de grandeur **~4×** supérieur. |
 
 > Cette validation s'exécute **après** le test de redimensionnement de partition décrit ci-dessus. Les deux mécanismes sont indépendants : le premier détecte un changement de géométrie matérielle, le second détecte une corruption logique du filesystem monté avec succès.
 
