@@ -110,7 +110,8 @@ docs/
 │   ├── 0063-definition-normative-du-temps-d-atteinte-de-cible.md
 │   ├── 0064-la-courbe-suit-le-nombre-affiche.md
 │   ├── 0065-trame-websocket-etat-mutable-pas-constantes.md
-│   └── 0066-sonde-du-tas-au-moment-du-refus.md
+│   ├── 0066-sonde-du-tas-au-moment-du-refus.md
+│   └── 0067-garde-503-avant-fopen-handler-prioritaire.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

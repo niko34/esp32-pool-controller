@@ -57,6 +57,42 @@ Détails techniques :
 | 409  | Conflit d'état — typiquement injection manuelle refusée car filtration arrêtée (sécurité chimique, voir [`POST /ph/inject/start`](#post-phinjectstart--write)), ou **réactivation de la régulation pH sans acquittement** de la bascule de sécurité (**v2.25.0**, voir [`POST /save-config`](#post-save-config--critical)). |
 | 429  | Trop de requêtes (rate limiting) |
 | 500  | Erreur serveur |
+| 503  | **Mémoire insuffisante** — réponse bornée refusée faute de tas contigu. Deux familles : réponses JSON volumineuses ([`GET /get-logs`](#get-get-logs--write), [`GET /debug/sensor_trace`](#get-debugsensor_trace--pas-dauth-cohérent-avec-autres-debug), [ADR-0032](adr/0032-reponses-http-bornees.md)) et, **depuis la v2.41.0**, **tout GET servant un fichier statique ou une page HTML** (voir ci-dessous). |
+
+---
+
+## 503 sur les fichiers statiques et les pages HTML (v2.41.0, [ADR-0067](adr/0067-garde-503-avant-fopen-handler-prioritaire.md))
+
+**Tout `GET` servant un fichier statique ou une page HTML peut répondre `503`** quand le plus gros bloc libre du tas 8 bits passe sous **8 192 octets** (`kStaticFileMinAllocBytes`).
+
+```http
+HTTP/1.1 503 Service Unavailable
+Content-Type: text/plain
+Retry-After: 5
+
+Memoire insuffisante, reessayez
+```
+
+Ce n'est pas une dégradation de confort : ouvrir un fichier demande à la libc un verrou interne dont l'échec d'allocation provoque un **`abort()` sans code de retour à tester** (redémarrage de l'appareil). Le `503` remplace un crash.
+
+**Routes concernées** — les 7 pages HTML (`/`, `/index.html`, `/login.html`, `/wifi.html`, `/wizard.html`, `/config`, `/config.html`) et **tous** les assets servis par `serveStatic` (`.css`, `.js`, images, polices).
+
+**Ce qui reste servi pendant la famine** — c'est cette liste qui permet de diagnostiquer l'appareil quand son interface est refusée :
+
+| Toujours servi | Détail |
+|---|---|
+| Diagnostic / lecture | [`/data`](#get-data--write), [`/get-config`](#get-get-config--write), [`/get-logs`](#get-get-logs--write), [`/download-logs`](#get-download-logs--write), [`/get-history`](#get-get-history--write), [`/get-kpi`](#get-get-kpi--write), [`/get-system-info`](#get-get-system-info--write), [`/time-now`](#get-time-now--write) |
+| Authentification | [`/auth/status`](#get-authstatus--public), [`/auth/token`](#get-authtoken--critical), [`/auth/ap-password`](#get-authap-password--critical) |
+| Réseau | [`/wifi/status`](#get-wifistatus--public), [`/wifi/scan`](#get-wifiscan--public-mode-ap--write-mode-sta) |
+| Coredump | [`/coredump/info`](#get-coredumpinfo--write), [`/coredump/download`](#get-coredumpdownload--write) |
+| OTA | [`/check-update`](#get-check-update--write) et **`POST /update`** (méthode POST → hors de la garde) |
+| Debug | [`/debug/sensor_filter_state`](#get-debugsensor_filter_state--pas-dauth-cohérent-avec-autres-debug), [`/debug/sensor_trace`](#get-debugsensor_trace--pas-dauth-cohérent-avec-autres-debug) |
+| Temps réel | **WebSocket [`/ws`](#ws-ws--write)** et **MQTT** — inchangés |
+| Actions | **toutes les routes `POST`**, dont le contrôle des pompes, de la filtration et de l'éclairage |
+
+⚠️ **Conséquences à connaître** : en famine, `/wifi.html` et `/` étant refusés, le **portail AP de secours** et la **page OTA** ne sont plus atteignables **par le navigateur**. Les chemins de secours réels restent ouverts : `POST /update`, `./deploy.sh ota-firmware`, et les routes de diagnostic ci-dessus.
+
+**Côté intégrateur** : traiter `503` sur ces routes comme **temporaire** et respecter `Retry-After` (5 s). Ne pas relancer en boucle serrée — c'est précisément le martèlement que l'en-tête existe pour éviter pendant que la mémoire se résorbe.
 
 ---
 

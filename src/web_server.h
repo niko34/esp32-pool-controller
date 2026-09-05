@@ -22,6 +22,13 @@ private:
 
   void setupRoutes();
 
+  // Drain du compteur de refus de la garde 503 « fichiers statiques » (bug-080,
+  // lot B-3). Appelé depuis update(), donc depuis la LOOP — jamais depuis
+  // `async_tcp`, où toute émission de log serait un fopen() potentiel et donc
+  // le crash même que la garde prévient. Émet au plus 2 lignes WARN/INFO par
+  // épisode (front montant, front descendant) ; jamais d'ERROR ni de CRITICAL.
+  void drainLowHeapGuard();
+
 public:
   WebServerManager();
 

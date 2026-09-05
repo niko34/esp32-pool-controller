@@ -11,11 +11,33 @@
 #include "auth.h"
 #include "config.h"
 #include "constants.h"
+#include "heap_metrics.h"        // heapLargestFreeBlock8Bit — garde 503 avant fopen (bug-080 B-3)
+#include "http_lowheap_logic.h"  // décision pure + bornage du journal (ADR-0017)
 #include "logger.h"
 #include "mqtt_manager.h"
 #include <LittleFS.h>
+#include <atomic>
 
 WebServerManager webServer;
+
+// ---------------------------------------------------------------------------
+// Garde 503 « fichiers statiques » (bug-080, lot B-3) — état partagé
+// ---------------------------------------------------------------------------
+// Écrit depuis `async_tcp` (filtre + callback du handler prioritaire), drainé
+// depuis la loop. Deux atomiques relaxés, AUCUN mutex, AUCUNE tâche neuve : la
+// seule contrainte est de ne jamais allouer ni journaliser côté `async_tcp`.
+static std::atomic<uint32_t> sStaticRefusalCount{0};     // refus cumulés depuis le boot
+// maxBloc8 de la dernière ÉVALUATION DE FILTRE sous le seuil — refus ou NON.
+// Ce n'est PAS « la mesure du dernier refus » : _attachHandler (WebServer.cpp:147)
+// évalue `h->filter(request) && h->canHandle(request)`, donc le filtre tourne
+// AVANT le contrôle de méthode. Une requête POST qui atteint la position de la
+// garde (les routes pompes dynamiques servies par onNotFound, p. ex.
+// /pump1/duty/) exécute le filtre — et donc ce store — alors qu'elle ne sera
+// jamais refusée. La valeur reste juste pour ce qu'on en fait (l'ordre de
+// grandeur du tas au moment où la garde s'est armée), mais ne pas la lire comme
+// un instantané du refus lui-même.
+static std::atomic<uint32_t> sStaticRefusalMaxAlloc{0};
+static HttpLowHeapEpisode sStaticRefusalEpisode;         // état d'épisode (loop uniquement)
 
 WebServerManager::WebServerManager() {}
 
@@ -63,6 +85,79 @@ void WebServerManager::setupRoutes() {
 
   // WebSocket (push temps réel : capteurs toutes les 5s, config après save, logs en direct)
   wsManager.begin(server);
+
+  // ==========================================================================
+  // GARDE 503 « fichiers statiques » — bug-080, lot B-3 (v2.41.0)
+  // ==========================================================================
+  // Position DÉLIBÉRÉE, ne pas déplacer : APRÈS wsManager.begin(), AVANT
+  // /login.html. C'est cet ordre — et lui seul — qui fait la politique
+  // d'exemption. _attachHandler (WebServer.cpp:145-152) parcourt _handlers dans
+  // l'ORDRE D'ENREGISTREMENT et s'arrête au premier filter() && canHandle() :
+  // tout ce qui est déclaré au-dessus (data, config, calibration, control, OTA,
+  // coredump, sondes, debug, auth, /ws) reste servi même en famine, et tout ce
+  // qui est déclaré en dessous (les 7 pages HTML + serveStatic) est couvert.
+  //
+  // ⚠️ TOUTE ROUTE `HTTP_GET` AJOUTÉE APRÈS CE POINT SERA COUVERTE PAR LA GARDE
+  // et répondra 503 sous 8 192 o de plus gros bloc. Une route GET qui doit
+  // rester servie en famine (diagnostic, secours) doit être enregistrée AVANT,
+  // avec les autres routes JSON. Aucune liste d'exemption n'est maintenue : une
+  // liste s'oublie, l'ordre d'enregistrement se voit.
+  //
+  // Pourquoi un handler PRIORITAIRE et non un filtre sur serveStatic :
+  // AsyncStaticWebHandler::canHandle (WebHandlers.cpp:105-107) appelle _getFile()
+  // → _searchFile(), donc serveStatic TOUCHE LE FS DÈS canHandle. Seul un
+  // handler antérieur est réellement en amont du fopen().
+  //
+  // Les routes dynamiques des pompes (onNotFound) sont HTTP_POST : hors
+  // matcher, donc jamais interceptées — aucune commande de dosage ne peut être
+  // avalée par cette garde GET-only.
+  // NUANCE À NE PAS PERDRE : le matcher protège de l'INTERCEPTION, pas de
+  // l'ÉVALUATION. _attachHandler (WebServer.cpp:147) teste
+  // `h->filter(request) && h->canHandle(request)` : le filtre passe AVANT le
+  // contrôle de méthode, donc un POST qui remonte jusqu'ici EXÉCUTE le filtre —
+  // parcours du tas compris, et écriture de sStaticRefusalMaxAlloc. Coût arbitré
+  // (70-250 µs/appel, ≲ 5-10 % du service de fichier qui existe déjà) ; effet de
+  // bord assumé et documenté à la déclaration de l'atomique. La requête POST,
+  // elle, poursuit son chemin normalement.
+  server->on(AsyncURIMatcher::all(), HTTP_GET, [](AsyncWebServerRequest* req) {
+    // Contexte : tâche `async_tcp`. Un log ici serait potentiellement un
+    // ERROR/CRITICAL → flushToDisk() synchrone → fopen() → l'abort() même que
+    // l'on prévient. Donc : incrément atomique, réponse, rien d'autre. Zéro
+    // String, zéro allocation hors la réponse (littéraux .rodata).
+    //
+    // POURQUOI `relaxed` ET PAS `release`/`acquire` — analyse déjà faite, ne pas
+    // la refaire : au sens STRICT du modèle mémoire C++, rien n'apparie ce
+    // compteur au store de sStaticRefusalMaxAlloc (filtre), donc la loop pourrait
+    // en théorie voir l'incrément sans le maxAlloc associé. C'est sûr ici pour
+    // trois raisons cumulées : (1) les deux écritures viennent de la MÊME tâche
+    // (`async_tcp`), dans cet ordre, à quelques microsecondes d'intervalle ;
+    // (2) elles sont dans deux lambdas appelées par indirection `std::function`,
+    // que le compilateur ne peut pas réordonner l'une par rapport à l'autre ;
+    // (3) le LX6 ne réordonne pas les accès mémoire de façon observable.
+    // Et surtout : le pire cas est une ligne de journal affichant un maxBloc8
+    // d'une évaluation voisine — jamais une décision fausse, le prédicat de refus
+    // ne lisant aucune de ces deux variables. Le coût d'une barrière sur le
+    // chemin chaud d'`async_tcp` n'est pas justifié par cet enjeu.
+    sStaticRefusalCount.fetch_add(1, std::memory_order_relaxed);
+    AsyncWebServerResponse* res =
+      req->beginResponse(503, "text/plain", "Memoire insuffisante, reessayez");
+    // 5 s : sous le débounce d'auto-guérison (~15 s) et au-dessus de l'échelle
+    // d'une rafale de chargement de page. Coût mesuré : 56 o de flash — conservé,
+    // c'est ce qui empêche un navigateur (ou Home Assistant) de marteler l'ESP32
+    // pendant la famine même qu'on essaie de laisser se résorber.
+    res->addHeader("Retry-After", "5");
+    req->send(res);
+  }).setFilter([](AsyncWebServerRequest*) {
+    // Aussi sur `async_tcp` : heapLargestFreeBlock8Bit() seulement (sans log ni
+    // allocation), JAMAIS heapMetricsSnapshot().
+    const uint32_t maxAlloc8 = heapLargestFreeBlock8Bit();
+    if (!httpLowHeapShouldRefuse(maxAlloc8, kStaticFileMinAllocBytes)) return false;
+    // `relaxed` : justification appariée au fetch_add ci-dessus. Rappel — ce
+    // store s'exécute aussi pour un POST qui atteint la garde (le filtre précède
+    // le contrôle de méthode) ; il n'implique donc pas qu'un refus a suivi.
+    sStaticRefusalMaxAlloc.store(maxAlloc8, std::memory_order_relaxed);
+    return true;
+  });
 
   // Page de login (PUBLIC - doit être accessible sans auth)
   server->on("/login.html", HTTP_GET, [](AsyncWebServerRequest *req) {
@@ -125,8 +220,54 @@ void WebServerManager::setupRoutes() {
   });
 }
 
+// Drain du compteur de refus de la garde 503 — exécuté depuis la LOOP.
+// Deux lignes de journal par épisode, pas une par requête : une rafale de
+// chargement de page produit 6 à 20 refus, et un journal persistant de 8 Ko a
+// 25-35 min de rétention. Journaliser par requête effacerait la fenêtre
+// forensique de l'épisode qu'on cherche justement à documenter (leçon du 15/08).
+// NIVEAUX : WARN et INFO exclusivement. Un ERROR/CRITICAL déclencherait le
+// flushToDisk() synchrone de logger.cpp:71-73 → fopen() → l'abort() prévenu.
+void WebServerManager::drainLowHeapGuard() {
+  const uint32_t now = millis();
+  const uint32_t refusals = sStaticRefusalCount.load(std::memory_order_relaxed);
+
+  // Le tas n'est mesuré que si la fermeture d'épisode est réellement en jeu :
+  // pas de parcours du tas à la fréquence de la loop pendant la famine.
+  const uint32_t maxAlloc8 =
+    httpLowHeapNeedsHeapSample(sStaticRefusalEpisode, now, kHttpLowHeapEpisodeQuietMs)
+      ? heapLargestFreeBlock8Bit()
+      : 0;
+
+  const HttpLowHeapDrainResult verdict =
+    httpLowHeapDrain(sStaticRefusalEpisode, refusals, now, maxAlloc8,
+                     kStaticFileMinAllocBytes, kHttpLowHeapEpisodeQuietMs);
+
+  if (verdict.action == HttpLowHeapLogAction::None) return;
+
+  // UN SEUL site d'appel snprintf, sur tampon de PILE, pour les deux fronts :
+  // les deux lignes prennent exactement deux %u, on sélectionne donc le format
+  // et les arguments plutôt que de dupliquer l'appel (économie de flash sur une
+  // partition à 99,5 %). Le seul temporaire qui subsiste est la String qu'impose
+  // l'API du logger.
+  const bool debut = (verdict.action == HttpLowHeapLogAction::EpisodeStart);
+  char ligne[112];
+  snprintf(ligne, sizeof(ligne),
+           debut ? "Service fichiers suspendu (503) — maxBloc8=%u o < %u o"
+                 : "Service fichiers rétabli — %u refus en %u s",
+           debut ? (unsigned)sStaticRefusalMaxAlloc.load(std::memory_order_relaxed)
+                 : (unsigned)verdict.refusals,
+           debut ? (unsigned)kStaticFileMinAllocBytes
+                 : (unsigned)(verdict.durationMs / 1000UL));
+  if (debut) {
+    systemLogger.warning(ligne);  // JAMAIS error() : flush disque synchrone → fopen()
+  } else {
+    systemLogger.info(ligne);
+  }
+}
+
 void WebServerManager::update() {
   wsManager.update();
+  drainLowHeapGuard();  // bug-080 B-3 : bornage du journal de la garde 503
 
   // Gérer le redémarrage après OTA (attendre que la réponse HTTP soit envoyée)
   if (restartRequested && (millis() - restartRequestedTime >= kRestartAfterOtaDelayMs)) {

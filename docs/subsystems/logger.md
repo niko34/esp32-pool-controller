@@ -110,6 +110,34 @@ Activable via `setPersistenceFs(LittleFS*)` après montage de la partition `hist
 
 > ⚠️ Ces deux plafonds **font partie du budget d'espace** de la partition `history` (pire cas 13/16 blocs, [ADR-0033](../adr/0033-budget-espace-partition-history.md)) : ne pas les ré-augmenter sans recalculer le budget.
 
+### 🔒 Un log `ERROR` depuis un chemin anti-`fopen` déclenche l'`abort()` qu'on prévient (v2.41.0)
+
+**Trouvaille du lot B-3 de bug-080** ([ADR-0067](../adr/0067-garde-503-avant-fopen-handler-prioritaire.md)). Le flush immédiat décrit ci-dessus n'est pas seulement « immédiat » : il est **synchrone, dans la tâche appelante**.
+
+```
+systemLogger.error(...)          logger.cpp:71-73  →  si ERROR ou CRITICAL
+  → flushToDisk()                logger.cpp:276-277
+    → _persistFs->open("/system.log", "a")
+      → fopen()  →  __sfp  →  __retarget_lock_init_recursive
+        → lock_init_generic (newlib locks.c:77)   ← malloc de ~88 o
+          → si le malloc échoue : abort()          ← AUCUN code de retour à tester
+```
+
+C'est exactement le chemin du PANIC du 29/08, et celui que la [garde 503 « fichiers statiques »](web-server.md#garde-503--fichiers-statiques--v2410-bug-080-lot-b-3-adr-0067) existe pour éviter.
+
+> **Règle générale, pas particularité de B-3** : **tout code écrit pour éviter `fopen` en famine mémoire est contraint à `WARN` / `INFO`.** Émettre un `ERROR` ou un `CRITICAL` depuis un tel chemin y rouvre le crash par la porte du journal. S'y ajoute : **aucun log depuis la tâche `async_tcp`** — le drain se fait depuis la loop.
+
+Corollaire noté pour la suite : `flushToDisk()` **lui-même** est un `fopen` abort-prone, et il n'est **pas** couvrable par un 503 (il n'y a pas de requête à refuser). Identifié, **hors périmètre** de B-3, lot ultérieur.
+
+**Émetteurs ajoutés en v2.41.0** — garde 503 fichiers statiques, **2 lignes par épisode maximum**, drainés depuis la loop (`WebServerManager::drainLowHeapGuard()`) :
+
+| Niveau | Message | Front |
+|---|---|---|
+| `WARN` | `Service fichiers suspendu (503) — maxBloc8=X o < 8192 o` | 1ᵉʳ refus drainé |
+| `INFO` | `Service fichiers rétabli — N refus en T s` | 30 s sans refus **et** tas `>= 8192` |
+
+Débit **nul en régime normal**, et borné à ~150 o par épisode en famine — contre plusieurs centaines de lignes si on journalisait par requête (une rafale de chargement de page produit 6 à 20 refus). C'est précisément la sur-journalisation qui a détruit la fenêtre forensique du 15/08. Un **WARN sans son INFO** signifie que l'épisode est toujours en cours, ou qu'un reboot l'a interrompu — auquel cas la bannière de démarrage le clôt.
+
 ### Rétention réelle du journal persistant (v2.20.2)
 
 `kMaxLogFileBytes` et `kRotateKeepBytes` sont **inchangés** : la rétention ne se règle pas en agrandissant le fichier (le budget de la partition l'interdit), elle se règle en **réduisant le débit des émetteurs périodiques**. Le fichier oscillant entre 6 144 et 8 192 octets, la fenêtre couverte vaut `6144…8192 ÷ débit`.

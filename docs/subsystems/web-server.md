@@ -13,7 +13,7 @@ Orchestre le serveur HTTP asynchrone. Déclare toutes les routes REST (en délé
 
 ```cpp
 void begin(AsyncWebServer* webServer, DNSServer* dnsServer);
-void update();                          // applique reboot différé
+void update();                          // reboot différé + drain de la garde 503 (v2.41.0)
 bool isRestartApRequested() const;
 void clearRestartRequest();
 ```
@@ -32,6 +32,72 @@ Les routes sont réparties par domaine fonctionnel dans des fichiers séparés :
 | [`web_routes_auth.cpp`](../../src/) | Authentification | `/auth/login`, `/auth/token`, `/auth/change-password`, etc. |
 
 Toutes les routes sont enregistrées dans `setupRoutes()` via des fonctions `register_*_routes(AsyncWebServer*)` déclarées dans les headers `web_routes_*.h`.
+
+## Garde 503 « fichiers statiques » (v2.41.0, bug-080 lot B-3, [ADR-0067](../adr/0067-garde-503-avant-fopen-handler-prioritaire.md))
+
+### Ce qu'elle ferme
+
+Servir une page statique (`req->send(LittleFS, …)` ou `serveStatic`) finit par appeler `fopen`, qui demande à la libc un **verrou récursif interne** (~88 o). Si ce `malloc` échoue, `lock_init_generic` (`newlib locks.c:77`) **aborte** : il n'y a **aucun code de retour à tester**. C'est le PANIC du 29/08.
+
+> ⚠️ **Ce chemin passe par `malloc` (C), pas par `operator new`.** Le parachute OOM ([ADR-0035](../adr/0035-parachute-oom-new-handler.md)) est un `std::set_new_handler` : il est **inopérant par construction** sur cette classe de crashs. Cette garde en est la **seule** défense.
+
+### Mécanisme
+
+Un **handler prioritaire unique** est enregistré dans `setupRoutes()` :
+
+```cpp
+server->on(AsyncURIMatcher::all(), HTTP_GET, /* → 503 + Retry-After: 5 */)
+      .setFilter(/* heapLargestFreeBlock8Bit() < kStaticFileMinAllocBytes */);
+```
+
+Il répond **`503 Service Unavailable`**, corps `text/plain` `Memoire insuffisante, reessayez` (~30 o), en-tête **`Retry-After: 5`** — sous le débounce d'auto-guérison (~15 s), au-dessus de l'échelle d'une rafale de chargement de page.
+
+Un filtre posé sur `serveStatic` **n'aurait pas marché**, pour deux raisons indépendantes :
+
+1. `AsyncStaticWebHandler::canHandle` (`WebHandlers.cpp:105-107`) appelle `_getFile()` → `_searchFile()` : **`serveStatic` touche le FS dès `canHandle`**, donc le filtre serait arrivé **après** `fopen` ;
+2. le filtre de `serveStatic` **rejette les `.html`** — il n'aurait jamais couvert les 7 routes HTML explicites, c'est-à-dire le chemin exact du PANIC.
+
+### ⚠️ L'ORDRE D'ENREGISTREMENT EST LA POLITIQUE D'EXEMPTION
+
+`_attachHandler` (`WebServer.cpp:145-152`) parcourt `_handlers` **dans l'ordre d'enregistrement** et s'arrête au **premier** `filter() && canHandle()`. La position du handler — **après `wsManager.begin(server)`, avant `/login.html`** — est donc **délibérée et structurante** :
+
+| Statut en famine | Routes | Mécanisme |
+|---|---|---|
+| **Servi** | les **19 routes `HTTP_GET`** déclarées avant : `/auth/status`, `/auth/token`, `/auth/ap-password`, `/data`, `/get-config`, `/get-logs`, `/download-logs`, `/get-history`, `/get-kpi`, `/get-system-info`, `/time-now`, `/wifi/status`, `/wifi/scan`, `/check-update`, `/coredump/info`, `/coredump/download`, `/sensors/onewire/scan`, `/debug/sensor_filter_state`, `/debug/sensor_trace` | premier match gagne |
+| **Servi** | `/ws` | déclaré avant **et** `canHandle` exige `isHTTP()` |
+| **Servi** | toutes les routes `HTTP_POST`, dont les routes pompes dynamiques (`onNotFound`) | hors du matcher `HTTP_GET` |
+| **Refusé (503)** | `/`, `/index.html`, `/login.html`, `/wifi.html`, `/wizard.html`, `/config`, `/config.html` et tout `serveStatic` (CSS, JS, images, polices) | déclarées après |
+
+**Aucune liste d'exemption n'est maintenue** : une liste s'oublie, l'ordre d'enregistrement se voit en lisant `setupRoutes()` de haut en bas.
+
+> 🔒 **TOUTE ROUTE `HTTP_GET` AJOUTÉE APRÈS CE POINT SERA COUVERTE PAR LA GARDE** et répondra 503 sous 8 192 o de plus gros bloc 8 bits. Une route GET qui doit rester servie en famine (diagnostic, secours) **doit** être enregistrée **avant**, avec les routes JSON.
+
+> **Nuance à ne pas perdre** : le matcher protège de l'**interception**, pas de l'**évaluation**. `_attachHandler` teste `h->filter(request) && h->canHandle(request)` — le filtre passe **avant** le contrôle de méthode. Un `POST` qui remonte jusqu'à cette position **exécute le filtre** (parcours de tas compris) sans jamais être refusé.
+
+### Seuil et coût
+
+`kStaticFileMinAllocBytes = 8192` ([`constants.h:272`](../../src/constants.h:272)) — **6ᵉ barreau** de l'échelle 8 bits d'[ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md), les 5 autres inchangés. Deux `static_assert` verrouillent sa position (`kWsPushMinAllocBytes < seuil < kLowHeapWarnBytes`) et son **plancher de 6 144 o** : une échelle mal ordonnée casse le **build**, pas un test.
+
+Le filtre appelle `heapLargestFreeBlock8Bit()` **à chaque GET atteignant la garde**, sur la tâche `async_tcp` : **70-250 µs** par appel, **1-3 ms** par chargement de page — **≲ 5-10 %** du coût d'un service de fichier. Arbitré acceptable **sans cache ni bornage** : la borne est acquise **par construction** (masque figé `INTERNAL|8BIT`, plafond pathologique ~800 µs), et un cache est **refusé** — le faux négatif d'une garde anti-crash vaut un `abort()`, alors que [`heap_metrics.h:133-135`](../../src/heap_metrics.h:133) documente ~45 Ko d'oscillation entre deux échantillons distants de 2 s. ⚠️ Le coût d'un parcours TLSF **croît avec la fragmentation** : il est maximal exactement dans le régime pour lequel la garde existe.
+
+### Journal — 2 lignes par épisode, WARN/INFO exclusivement
+
+Le callback `async_tcp` ne fait qu'un `fetch_add` atomique puis `send` : **zéro `String`, zéro log, zéro allocation** hors la réponse. Le drain est fait depuis la loop par `WebServerManager::drainLowHeapGuard()` (appelée par `update()`), via le module pur [`src/http_lowheap_logic.h`](../../src/http_lowheap_logic.h) :
+
+| Front | Niveau | Ligne |
+|---|---|---|
+| Montant (1ᵉʳ refus drainé) | `WARN` | `Service fichiers suspendu (503) — maxBloc8=X o < 8192 o` |
+| Descendant | `INFO` | `Service fichiers rétabli — N refus en T s` |
+
+La fermeture exige **deux** conditions cumulées : `kHttpLowHeapEpisodeQuietMs` = **30 000 ms** sans nouveau refus **et** tas revenu `>= 8192`. Cette constante est **d'abord une garde de coût** — sans elle, `update()` parcourrait le tas **à la fréquence de la loop pendant toute la famine** ; c'est **ensuite** un anti-spam (un tas oscillant autour du seuil produirait sinon une paire de lignes par oscillation).
+
+> 🔒 **`ERROR` et `CRITICAL` sont INTERDITS dans tout ce chemin.** [`logger.cpp:71-73`](../../src/logger.cpp:71) flushe en **synchrone, dans la tâche appelante**, sur `ERROR`/`CRITICAL` → `fopen` → **l'`abort()` que cette garde prévient**. Voir [logger.md](logger.md#-un-log-error-depuis-un-chemin-anti-fopen-déclenche-labort-quon-prévient-v2410).
+
+### Ce qu'il faut savoir en exploitation
+
+- **Bande de verrouillage stable** : l'auto-guérison mord à **4 096 o**, la garde à **8 192**. Entre les deux, l'interface web est **entièrement refusée** et **aucun reboot ne survient** — le régime est **stable**, pas transitoire.
+- **En famine, `/wifi.html` et `/` sont refusés** : portail AP de secours et page OTA **inaccessibles par le navigateur**. Chemins de secours réels : `POST /update` (hors matcher), `./deploy.sh ota-firmware`, et les routes de diagnostic ci-dessus.
+- Un **WARN sans son INFO** signifie que l'épisode est **toujours en cours** (famine persistante sans visiteur pour l'alimenter), ou qu'un **reboot** l'a interrompu — auquel cas la bannière de démarrage clôt l'épisode.
 
 ## Assets statiques pré-compressés (gzip)
 

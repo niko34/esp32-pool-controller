@@ -227,6 +227,72 @@ constexpr const char* kHistoryDumpHeadNvsKey    = "dmp_head";  // Blob : 16 prem
 // taille réelle de la réponse, donc insuffisant (2 coredumps le prouvent).
 constexpr size_t kHttpHeapMarginBytes = 4096;
 
+// ---------------------------------------------------------------------------
+// Garde 503 AVANT le premier fopen() de fichier statique (bug-080, lot B-3)
+// ---------------------------------------------------------------------------
+// Le PANIC du 29/08 :
+//   abort() ← lock_init_generic (newlib locks.c:77) ← __retarget_lock_init_recursive
+//   ← __sfp ← fopen ← VFSFileImpl ← LittleFS ← AsyncWebServerRequest::send(fs, …)
+// Servir une page statique demande à la libc un verrou récursif interne (~88 o) ;
+// le malloc échoue, et lock_init_generic ABORTE — aucun code de retour à tester.
+// Ce chemin passe par malloc(3) et non par operator new : le parachute OOM
+// (std::set_new_handler) y est INOPÉRANT PAR CONSTRUCTION. La seule défense est
+// de ne pas entrer dans fopen() : sous ce seuil, le handler prioritaire de
+// web_server.cpp répond 503 + Retry-After au lieu de servir le fichier.
+//
+// Dimensionnement (coûts mesurés / relevés d'un service de fichier statique) :
+//   __sfp → xSemaphoreCreateRecursiveMutex .....  ~88 o  → abort() (le crash)
+//   __sfmoreglue (pool de 4 FILE épuisé) .......  ~440 o → NULL propre
+//   esp_littlefs_open + cache lfs ..............  ~190 o → NULL propre
+//   new VFSFileImpl + bloc de contrôle shared_ptr  ~64 o → bad_alloc
+//   new AsyncFileResponse (mesuré le 13/08) .....  156 o → bad_alloc
+//   String de chemin (×2-3) ....................  ~100 o
+//   tampon stdio setvbuf 4096 ..................  PSRAM depuis le lot B-1
+//   pbuf lwip TCP, 1 à 3 en vol ................ 1 622 o pièce (retransmission)
+// → besoin DUR du chemin abort-prone ≈ 600 o (plus gros bloc contigu ≈ 440 o) ;
+// → besoin SANS bégaiement TCP ≈ 600 + 2 × 1 622 ≈ 3 850 o.
+// 8 192 = ×13,6 sur le besoin dur, ×2,1 sur le besoin complet.
+//
+// Compatibilité terrain (relevés du 05/09) : plateau calme post-B-2 13 300 o
+// (+38 % au-dessus du seuil), plancher de rafale 6 requêtes 14 324 o, plancher
+// absolu firmware 1 908 o (là, la garde DOIT mordre). Le plateau a décru de
+// façon MONOTONE (42 996 → 26 612 → 20 468 → 15 860 → 13 300) sans jamais
+// remonter hors reboot : si la décroissance reprend, la garde deviendra visible
+// en régime calme — C'EST LE SIGNAL VOULU, pas un défaut à corriger en relevant
+// le seuil. Un refus hors PANIC prouve que le lot C (cause de la fragmentation)
+// est dû.
+// INTERDICTION (ADR) : ne JAMAIS descendre ce seuil sous 6 144 o pour « faire
+// taire » la garde — en dessous il devient ambigu avec le barreau WS et la marge
+// tombe sous ×1,6 du besoin réel.
+// Écartés : 6 144 (identique au barreau WS, donc indistinguable au diagnostic) ;
+// 12 288 (à 1 012 o du plateau calme → UI perdue sur une mauvaise minute).
+//
+// 6ᵉ barreau de l'échelle ADR-0058 (cf. bloc « ÉCHELLE COMPLÈTE » plus bas) —
+// les 5 barreaux existants restent INCHANGÉS (condition C5 des gates B-1/B-2).
+constexpr uint32_t kStaticFileMinAllocBytes = 8192;       // Plus gros bloc 8 bits < seuil → fichiers statiques refusés (503)
+
+// Position du 6ᵉ barreau verrouillée à la COMPILATION, pas seulement par la suite
+// native : une échelle mal ordonnée doit casser le build, pas un test.
+static_assert(kStaticFileMinAllocBytes > kWsPushMinAllocBytes &&
+              kStaticFileMinAllocBytes < kLowHeapWarnBytes,
+              "6e barreau ADR-0058 : la garde 503 doit s'intercaler entre les pushes WS "
+              "sautes et le WARN heap — sinon l'appareil rebooterait avant d'avoir "
+              "jamais refuse une page.");
+static_assert(kStaticFileMinAllocBytes >= 6144, "Interdiction ADR : cf. constants.h:271-274");
+
+// Silence exigé avant de clore un épisode de refus (front descendant).
+// C'est d'abord une GARDE DE COÛT : httpLowHeapNeedsHeapSample() n'autorise la
+// loop à parcourir le tas que si un épisode est ouvert ET ce délai écoulé. Sans
+// elle, update() walkerait le tas à la fréquence de la loop pendant TOUTE la
+// famine — au pire moment possible, et pour bien plus cher que le filtre HTTP
+// (dont la fréquence, elle, est bornée par l'arrivée des requêtes TCP).
+// C'est ensuite un anti-spam : un tas qui oscille AUTOUR du seuil produirait
+// sinon une paire de lignes de journal par oscillation — exactement la
+// sur-journalisation qui a détruit la fenêtre forensique du crash du 15/08
+// (journal persistant de 8 Ko, rétention 25-35 min).
+// Aligné sur kWsSkipWarnThrottleMs.
+constexpr uint32_t kHttpLowHeapEpisodeQuietMs = 30000;    // 30 s sans refus + tas rétabli → fin d'épisode
+
 // Pagination de GET /get-logs (bug-crash-getlogs-badalloc) : page souple de 30
 // entrées (~4 Ko de JSON au pire), extensible jusqu'au plafond dur UNIQUEMENT pour
 // une queue d'entrées partageant la même milliseconde que la dernière incluse —
@@ -348,6 +414,7 @@ constexpr size_t kOomReserveBytes = 12288;
 //    2 048 o (kOomFallbackRearmMinMaxAllocBytes) → réarmement réserve de REPLI
 //    4 096 o (kRestartMaxAllocHeapBytes)         → reboot d'auto-guérison
 //    6 144 o (kWsPushMinAllocBytes)              → pushes WS sautés
+//    8 192 o (kStaticFileMinAllocBytes)          → fichiers statiques refusés (503)  ← 6ᵉ barreau, bug-080 lot B-3 (v2.41.0)
 //   12 288 o (kLowHeapWarnBytes)                 → WARN heap + flush one-shot
 //   18 432 o (kOomRearmMinMaxAllocBytes)         → réarmement réserve NOMINALE
 //   21 492 o                                     → nominal terrain (documentaire)
