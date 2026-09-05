@@ -5,6 +5,7 @@
 
 #include "auth.h"       // REQUIRE_AUTH / RouteProtection (revue 2.20.3)
 #include "constants.h"
+#include "heap_metrics.h"  // heapLargestFreeBlock8Bit — garde 503 sensor_trace (bug-080)
 #include "logger.h"
 #include "sensor_trace_page.h"
 #include "sensors.h"
@@ -51,8 +52,15 @@ void setupDebugRoutes(AsyncWebServer* server) {
 
     // Garde-fou défensif : si même une page ne tient pas dans le plus gros
     // bloc libre (+ marge), 503 propre au lieu d'un bad_alloc → reboot.
+    // bug-080 lot B-2 (ADR-0058) : DERNIÈRE garde restée sur ESP.getMaxAllocHeap(),
+    // qui compte l'IRAM 32 bits inutilisable par le `new` du cbuf
+    // d'AsyncResponseStream. Mesure basculée sur heapLargestFreeBlock8Bit()
+    // (caps fixes MALLOC_CAP_INTERNAL|8BIT = ce que ce `new` peut réellement
+    // obtenir). Seuil INCHANGÉ : on corrige la mesure, pas la marge. Écart
+    // quasi nul en régime normal (27 636 vs 26 612 o le 05/09), mais la brute
+    // reste figée en famine là où le 8 bits s'effondre (plancher relevé 14 324 o).
     size_t sz = measureJson(doc);
-    if (sz + kSensorTraceHeapMarginBytes > ESP.getMaxAllocHeap()) {
+    if (sz + kSensorTraceHeapMarginBytes > heapLargestFreeBlock8Bit()) {
       req->send(503, "application/json",
                 "{\"error\":\"heap fragmenté, réessayez\"}");
       return;

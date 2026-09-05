@@ -109,7 +109,8 @@ docs/
 │   ├── 0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md
 │   ├── 0063-definition-normative-du-temps-d-atteinte-de-cible.md
 │   ├── 0064-la-courbe-suit-le-nombre-affiche.md
-│   └── 0065-trame-websocket-etat-mutable-pas-constantes.md
+│   ├── 0065-trame-websocket-etat-mutable-pas-constantes.md
+│   └── 0066-sonde-du-tas-au-moment-du-refus.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

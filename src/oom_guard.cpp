@@ -6,6 +6,7 @@
 #include <esp_heap_caps.h>  // heap_caps_malloc/free, register_failed_alloc_callback, check_integrity_all
 #include <esp_task_wdt.h>   // esp_task_wdt_reset (après la section critique du contrôle d'intégrité)
 #include <esp_timer.h>      // esp_timer_get_time (mesure de durée du contrôle d'intégrité)
+#include <esp_cpu.h>        // esp_cpu_get_cycle_count (horloge SANS verrou de la sonde du refus)
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
 #include <esp_memory_utils.h>       // esp_ptr_internal (IDF 5) — vérification C1 de l'emplacement
 #else
@@ -16,7 +17,13 @@
 #include "oom_guard.h"
 #include "oom_guard_logic.h"
 #include "constants.h"
-#include "heap_metrics.h"  // heapFree8Bit / heapLargestFreeBlock8Bit (JAMAIS depuis les chemins d'échec)
+// heapFree8Bit / heapLargestFreeBlock8Bit / heapMetricsSnapshot : JAMAIS depuis
+// les chemins d'échec (aucune borne sur leur coût interruptions coupées).
+// heapProbeForCaps / heapCaps8BitMask : SEULE mesure autorisée depuis le chemin
+// d'échec, et uniquement via l'entonnoir borné oomProbeAtFailure() ci-dessous —
+// la restriction est un COÛT INTERRUPTIONS COUPÉES, pas un risque de deadlock
+// (requalification bug-080 B-2, cf. heap_metrics.h).
+#include "heap_metrics.h"
 #include "logger.h"
 
 // =============================================================================
@@ -101,26 +108,40 @@ static std::atomic<bool> sSelfAllocInFlight{false};
 // =============================================================================
 // Post-mortem d'allocation en RAM RTC noinit (bug-parachute-oom-jamais-rearme)
 // =============================================================================
-// TROISIÈME zone RTC noinit du projet, magic PROPRE (0xF00DFA12 depuis v2.19.0,
-// cf. kOomPostMortemMagic) — distinct de l'anneau heap (0xB10C4EAA, heap_ring.cpp)
-// et de l'auto-guérison (0xA5C0FFEE, main.cpp). Budget RAM RTC noinit total :
-// auto-heal 9 o + anneau 1032 o + post-mortem 32 o = 1073 o sur 8192 disponibles.
+// TROISIÈME zone RTC noinit du projet, magic PROPRE (0xF00DFA13 depuis bug-080
+// B-2, cf. kOomPostMortemMagic) — distinct de l'anneau heap (0xB10C4EAA,
+// heap_ring.cpp) et de l'auto-guérison (0xA5C0FFEE, main.cpp). Budget RAM RTC
+// noinit total, RE-DOCUMENTÉ après l'extension 32 → 48 o de B-2 :
+// auto-heal 9 o + anneau 1032 o + post-mortem 48 o = 1089 o sur 8192 disponibles.
 //
 // UNE seule zone, UN seul dump, UN seul budget : le drapeau « réserve consommée »
 // demandé par la spec EST l'octet `flags` de cette zone (pas une variable RTC
-// séparée).
+// séparée). ⚠️ Cet octet est SATURÉ (8/8 bits) depuis B-2.
 //
-// La zone est vue comme 8 mots de 32 bits ALIGNÉS : les chemins d'échec
+// La zone est vue comme 12 mots de 32 bits ALIGNÉS : les chemins d'échec
 // (oomFailedAllocHook, oomNewHandler) n'y font que des STORES BRUTS ALIGNÉS.
-// INTERDICTION ABSOLUE dans ces deux chemins (le verrou du composant heap est
-// déjà détenu par l'allocateur quand le callback est appelé → tout appel
-// réentrant est un deadlock) : heap_caps_*, ESP.get*Heap(), tout verrou, toute
-// allocation, tout log. Correspondance mot ↔ champs, IDENTIQUE au format pur
-// (little-endian, cf. oom_guard_logic.h) :
+// RESTRICTION REQUALIFIÉE (bug-080 B-2) — ce n'est PAS un risque de deadlock :
+// le désassemblage de libheap.a montre que `heap_caps.c.obj` ne porte AUCUNE
+// relocation vers multi_heap_internal_lock/_unlock (le verrou vit entièrement
+// dans multi_heap.c.obj) et que `heap_caps_alloc_failed` (statique, .iram1.0)
+// n'est atteinte qu'APRÈS le retour complet de heap_caps_malloc_base. Aucun
+// verrou de tas n'est détenu ici. Ce qui reste INTERDIT, et pour une autre
+// raison — le COÛT INTERRUPTIONS COUPÉES d'un parcours TLSF, dans un chemin
+// déclenchable en rafale et appelable depuis une ISR — : ESP.get*Heap(), tout
+// verrou, toute allocation, tout log, et tout appel heap_caps_* HORS de
+// l'exception bornée introduite par B-2 (oomProbeAtFailure : jamais en ISR, un
+// échantillon par épisode, plancher de kOomProbeMinIntervalMs, durée mesurée,
+// désactivation définitive au-delà de kOomProbeMaxDurationUs).
+// Correspondance mot ↔ champs, IDENTIQUE au format pur (little-endian, cf.
+// oom_guard_logic.h) :
 //   w0 = magic | w1 = failCount | w2 = firstSize | w3 = lastSize | w4 = lastCaps
 //   w5 = firstUptimeS | (lastUptimeS << 16)
 //   w6 = (ringFree >> 8) | ((ringMaxB >> 6) << 16)
 //   w7 = ringUptimeS | (flags << 16) | (releaseCount << 24)
+//   w8 = probeSize (exact)
+//   w9 = (probeCapsMaxB >> 6) | ((probeCapsFree >> 8) << 16)
+//   w10 = (probeRefMaxB >> 6) | ((probeRefFree >> 8) << 16)
+//   w11 = probeCaps (16 bits bas) | (probeDurationUs saturée 16 bits << 16)
 //
 // PRÉCISION IMPORTANTE (revue v2.18.8) : les mots w1 (failCount) et w5
 // (uptimes) sont modifiés en LECTURE-MODIFICATION-ÉCRITURE, pas en simple store.
@@ -153,7 +174,55 @@ static std::atomic<uint32_t> sHeapSampleUptimeS{0};   // uptime (s) de cet écha
 static std::atomic<uint8_t> sOomPmFlags{kOomPmFlagIntegrityNeverRun};
 
 static_assert(sizeof(sOomPmWords) == kOomPostMortemBytes,
-              "La zone post-mortem RTC doit faire exactement 32 octets");
+              "La zone post-mortem RTC doit faire exactement kOomPostMortemBytes octets");
+
+// =============================================================================
+// SONDE DU TAS AU MOMENT EXACT DU REFUS (bug-080, lot B-2)
+// =============================================================================
+// État de la sonde. TOUT est atomique : le hook s'exécute depuis n'importe quelle
+// tâche, sur l'un ou l'autre cœur. Aucun log, aucune allocation, et aucun verrou
+// PRIS PAR NOUS depuis le hook — les messages (INFO du 1er échantillon, WARN de
+// sonde lente, WARN de désactivation) sont DIFFÉRÉS et drainés par
+// oomGuardLoopTick().
+// NUANCE À NE PAS PERDRE (revue B-2, même exigence d'honnêteté que la
+// requalification de heap_metrics.h) : la sonde elle-même entre dans
+// multi_heap_get_info_impl, qui prend `multi_heap_internal_lock`. Nous ne
+// prenons aucun verrou, mais nous en ATTENDONS un : sur bicœur, la sonde peut
+// bloquer sur ce spinlock si l'autre cœur est au milieu d'un multi_heap_malloc
+// long. CCOUNT le verra APRÈS COUP (la durée mesurée inclut l'attente et
+// déclenchera WARN ou désactivation), la borne a priori de la condition 2 NON —
+// elle borne le parcours, pas la contention.
+//
+// sProbeArmed : JETON « un échantillon par ÉPISODE ». Consommé par un exchange
+// atomique dans le hook (deux cœurs en échec simultané ne peuvent pas sonder
+// tous les deux), REPOSÉ uniquement par oomGuardLoopTick(), JAMAIS par le hook.
+// Il suit donc exactement le backoff du WARN d'échec (immédiat → 30 s → 5 min →
+// 30 min) : aucun état de cadence supplémentaire n'est introduit.
+// Il démarre à FALSE : condition 5 du gate pool-chemistry — aucune sonde tant que
+// oomGuardLoopTick() n'a pas tourné au moins une fois (l'état n'est initialisé
+// que là, et non dans initOomGuard(), pour qu'aucun échec du setup ne sonde).
+static std::atomic<bool>     sProbeArmed{false};
+static std::atomic<bool>     sProbeDisabled{false};        // Désactivation DÉFINITIVE (durée > plafond)
+static std::atomic<bool>     sProbeDisableWarnPending{false};  // WARN one-shot différé de la désactivation
+static std::atomic<uint32_t> sProbeDisableDurationUs{0};   // Durée fautive, pour ce WARN
+static std::atomic<uint32_t> sProbeSlowUs{0};              // Durée > kOomProbeWarnDurationUs à signaler (0 = rien)
+static std::atomic<uint32_t> sProbeLastMs{0};              // Horodatage de la dernière sonde (plancher temporel)
+static std::atomic<uint32_t> sProbeCount{0};               // Sondes prises depuis le boot (diagnostic)
+static std::atomic<uint32_t> sProbeFirstDurationUs{0};     // Durée du 1er échantillon (INFO one-shot)
+static std::atomic<uint32_t> sProbeLastDurationUs{0};      // Durée du dernier COUPLE mesuré
+static std::atomic<uint32_t> sProbeMaxDurationUs{0};       // Pire durée observée (diagnostic)
+static std::atomic<uint32_t> sProbeLastCaps{0};            // Caps de la dernière sonde
+// Valeurs EXACTES (non quantifiées) de la dernière sonde, pour le WARN VIVANT —
+// la zone RTC, elle, ne conserve que la version quantifiée. Ce WARN est le seul
+// signal exploitable sans crash : il ne doit pas être moins précis que le dump.
+static std::atomic<uint32_t> sProbeCapsMaxB{0};
+static std::atomic<uint32_t> sProbeCapsFree{0};
+static std::atomic<uint32_t> sProbeRefMaxB{0};
+static std::atomic<uint32_t> sProbeRefFree{0};
+// Cycles CPU par microseconde, calculé UNE fois par initOomGuard() : le hook ne
+// fait qu'une division entière. Pas d'atomique — écrit au setup avant que le
+// moindre chemin d'échec puisse tourner, lu seul ensuite.
+static uint32_t sProbeCyclesPerUs = kOomProbeDefaultCpuMhz;
 
 // Écrit/actualise la zone post-mortem. APPELÉE DEPUIS LES CHEMINS D'ÉCHEC :
 // stores bruts alignés uniquement, aucune fonction de l'allocateur, aucun
@@ -166,13 +235,9 @@ static inline void oomPostMortemStore(bool countFailure, uint32_t size, uint32_t
     // Initialisation inline (power-on, ou magic invalidé par le dump du boot
     // courant). Magic écrit en DERNIER : une zone à moitié initialisée n'est
     // jamais vue comme valide si un abort survient au milieu.
-    sOomPmWords[1] = 0;
-    sOomPmWords[2] = 0;
-    sOomPmWords[3] = 0;
-    sOomPmWords[4] = 0;
-    sOomPmWords[5] = 0;
-    sOomPmWords[6] = 0;
-    sOomPmWords[7] = 0;
+    // Boucle plutôt que 11 stores littéraux depuis l'extension à 12 mots (B-2) :
+    // même effet, moins de flash, et impossible d'oublier un mot neuf.
+    for (uint32_t w = 1; w < kOomPostMortemBytes / 4u; w++) sOomPmWords[w] = 0;
     sOomPmWords[0] = kOomPostMortemMagic;
   }
 
@@ -197,6 +262,165 @@ static inline void oomPostMortemStore(bool countFailure, uint32_t size, uint32_t
   sOomPmWords[7] = (sHeapSampleUptimeS.load() & 0xFFFFu) |
                    ((uint32_t)sOomPmFlags.load() << 16) |
                    (releases << 24);
+}
+
+// Recopie le miroir de drapeaux dans l'octet `flags` de w7, SANS toucher aux
+// autres champs du mot (uptime de l'anneau, compteur d'épisodes). Store brut
+// aligné : aucun verrou, aucune allocation, aucun log — appelable depuis le
+// chemin d'échec.
+//
+// INDISPENSABLE (revue B-2, défaut BLOQUANT) : oomPostMortemStore() tourne AVANT
+// la sonde, donc tout bit posé APRÈS lui (ProbeTaken, ProbeIsrSkipped,
+// ProbeDisabled) ne serait flushé en RAM RTC qu'au refus SUIVANT — c'est-à-dire
+// JAMAIS si un abort suit, précisément le scénario que le post-mortem sert à
+// qualifier. Sans ce flush, la zone contient w8..w11 renseignés mais un `flags`
+// sans ProbeTaken : au boot, la sonde est déclarée « absente », le verdict
+// retombe en INDÉTERMINÉ et la ligne 2 n'est pas émise — la mesure est écrite
+// puis silencieusement jetée.
+// Le MASQUE lui-même est un prédicat PUR (oomPmPackFlagsIntoW7, ADR-0017) :
+// écraser par erreur les bits 0-15 effacerait l'uptime de l'échantillon
+// d'anneau, les bits 24-31 le compteur d'épisodes.
+static inline void oomPostMortemFlushFlags() {
+  sOomPmWords[7] = oomPmPackFlagsIntoW7(sOomPmWords[7], sOomPmFlags.load());
+}
+
+// Pose un ou plusieurs drapeaux ET les fait atteindre la RAM RTC dans le MÊME
+// geste. TOUT ajout de drapeau depuis le chemin d'échec DOIT passer par ici :
+// séparer la pose du flush EST le défaut B2 (mesure écrite puis silencieusement
+// jetée quand un abort suit le refus), et cette séparation n'est détectable par
+// AUCUN test natif — le défaut n'est pas dans une valeur, il est dans l'ABSENCE
+// d'une instruction. On le rend donc inexprimable : reproduire B2 exigerait
+// d'écrire délibérément un `fetch_or` nu. Coût flash nul (inline).
+// EXCEPTION VOLONTAIRE : oomNewHandler() garde son `fetch_or` nu, car il
+// enchaîne sur oomPostMortemStore(), qui reconstruit w7 EN ENTIER. Chemin
+// validé — ne pas l'aligner ici par symétrie cosmétique.
+static inline void oomPmSetFlags(uint8_t bits) {
+  sOomPmFlags.fetch_or(bits);
+  oomPostMortemFlushFlags();
+}
+
+// -----------------------------------------------------------------------------
+// Sonde du tas AU MOMENT EXACT du refus (bug-080 B-2) — entonnoir UNIQUE
+// -----------------------------------------------------------------------------
+// CE QUE ÇA CORRIGE : le verdict du post-mortem confrontait la taille refusée à
+// l'échantillon de l'ANNEAU (périmé de 0 à 2 s, mesuré sur des caps FIXES
+// INTERNAL|8BIT). Sur les 6 échecs réels du 05/09/2026 — 1 622 o refusés avec
+// caps=0x080C (8BIT|DMA|INTERNAL) — il concluait « SUSPICION CORRUPTION » sur un
+// maxBloc de 26 612 o qui ne répondait pas à la question posée. La sonde mesure
+// DEUX fois : les caps DE L'ÉCHEC (le pool réellement à sec) et la RÉFÉRENCE
+// INTERNAL|8BIT (le tas général) — d'où le verdict « FAMINE DMA (pool restreint) ».
+//
+// AUCUN FILTRAGE sur `caps`, `size` ou `function_name` : le hook est appelé
+// depuis 12 sites de l'IDF (malloc, malloc_default, realloc, realloc_default,
+// malloc_prefer, realloc_prefer, calloc, calloc_prefer, aligned_alloc,
+// aligned_alloc_default...) et TOUS doivent pouvoir rendre un verdict. Le seul
+// filtre conservé est oomShouldCountFailure (bruit auto-infligé). Pour les caps
+// SPIRAM, la sonde ne saute pas : elle change d'algorithme (O(régions) au lieu
+// d'O(blocs)) — la borne a priori de la condition 2 du gate est dans
+// heapProbeForCaps(), pas ici.
+//
+// ORDRE IMPÉRATIF DES GARDES (décision 2 de l'architecte) :
+//   désactivation → ISR → plancher temporel → consommation du jeton.
+// Tester l'ISR APRÈS le jeton le brûlerait sans jamais sonder ; consommer le
+// jeton avant le plancher temporel le gaspillerait sur une rafale.
+//
+// PAS D'esp_task_wdt_reset() APRÈS LA SECTION — divergence ASSUMÉE et validée
+// par le gate face au modèle d'oomGuardIntegrityTick() : ce dernier vise un
+// parcours de 5 à 20 ms exécuté DANS la loop ; ici la mesure est plafonnée à
+// kOomProbeMaxDurationUs (1,5 ms) et ce chemin est appelable depuis n'importe
+// quelle tâche. Prendre le verrou du TWDT depuis un contexte non-loop serait un
+// risque net pour un bénéfice nul.
+static inline void oomProbeAtFailure(uint32_t size, uint32_t caps) {
+  if (sProbeDisabled.load()) return;  // désactivation DÉFINITIVE (autolimitation)
+
+  // JAMAIS depuis une ISR : le hook y est appelable, et un parcours de tas
+  // interruptions coupées dans un contexte d'interruption est inacceptable.
+  if (xPortInIsrContext()) {
+    oomPmSetFlags(kOomPmFlagProbeIsrSkipped);  // l'indétermination sera ATTRIBUABLE
+    return;
+  }
+
+  // Plancher temporel ABSOLU (condition 3 du gate), EN PLUS du jeton : le
+  // backoff du WARN démarre à 0 ms, donc son drain immédiat pourrait réarmer le
+  // jeton quelques millisecondes après la sonde précédente. millis() n'est
+  // atteint qu'ICI, après la garde ISR — donc toujours en contexte tâche.
+  // Prédicat PUR (ADR-0017) : la décision est dans oom_guard_logic.h, ce chemin
+  // ne fait que lire les atomiques et l'horloge.
+  uint32_t nowMs = (uint32_t)millis();
+  if (!oomProbeFloorElapsed(sProbeCount.load(), nowMs, sProbeLastMs.load(),
+                            kOomProbeMinIntervalMs)) {
+    return;
+  }
+
+  // Jeton : un échantillon par épisode. La consommation DOIT rester un exchange
+  // atomique (oomProbeTakeTokenModel en est le MODÈLE pur, testé en natif mais
+  // jamais exécuté : déléguer perdrait l'atomicité) : deux
+  // cœurs en échec simultané ne doivent pas sonder tous les deux.
+  if (!sProbeArmed.exchange(false)) return;
+  sProbeLastMs.store(nowMs);
+
+  // Horloge CCOUNT : UNE instruction (rsr.ccount), aucun verrou — contrairement
+  // à esp_timer_get_time() qui prend un portMUX dans certaines implémentations.
+  // Le compteur est PAR CŒUR : si la tâche migre pendant la mesure, la
+  // soustraction n'a aucun sens. On lit donc le cœur avant et après ; en cas de
+  // migration la durée est marquée INVALIDE (0xFFFF) et l'autolimitation n'est
+  // PAS appliquée — une migration ne doit jamais désactiver la sonde à vie.
+  // Repliement du compteur à ~17,9 s (240 MHz) sans effet : la soustraction
+  // uint32_t reste exacte pour une mesure de l'ordre de la milliseconde.
+  uint32_t coreBefore = (uint32_t)xPortGetCoreID();
+  uint32_t c0 = (uint32_t)esp_cpu_get_cycle_count();
+  HeapProbe pc = heapProbeForCaps(caps);              // caps DE L'ÉCHEC
+  HeapProbe pr = heapProbeForCaps(heapCaps8BitMask());  // RÉFÉRENCE INTERNAL|8BIT
+  uint32_t c1 = (uint32_t)esp_cpu_get_cycle_count();
+  uint32_t coreAfter = (uint32_t)xPortGetCoreID();
+
+  // Durée du COUPLE (les DEUX parcours), pas de chacun : c'est l'assiette
+  // validée par la condition 1 du gate pour kOomProbeWarnDurationUs / MaxDurationUs.
+  // 0xFFFF est RÉSERVÉ au marqueur « durée invalide » (migration de cœur) : une
+  // durée réelle est donc saturée à 0xFFFE, pour que les deux cas restent
+  // discernables dans le dump comme dans le diagnostic.
+  bool durationValid = (coreBefore == coreAfter);
+  uint32_t durationUs = kOomProbeDurationInvalid;
+  if (durationValid) {
+    durationUs = oomProbeSaturateDurationUs((c1 - c0) / sProbeCyclesPerUs);
+  }
+
+  uint32_t n = sProbeCount.fetch_add(1) + 1u;
+  sProbeLastDurationUs.store(durationUs);
+  sProbeLastCaps.store(caps);
+  sProbeCapsMaxB.store(pc.largestBlockBytes);
+  sProbeCapsFree.store(pc.freeBytes);
+  sProbeRefMaxB.store(pr.largestBlockBytes);
+  sProbeRefFree.store(pr.freeBytes);
+  if (n == 1u) sProbeFirstDurationUs.store(durationUs);
+  if (durationValid && durationUs > sProbeMaxDurationUs.load()) {
+    sProbeMaxDurationUs.store(durationUs);
+  }
+  oomPmSetFlags(kOomPmFlagProbeTaken);
+
+  // Stores BRUTS ALIGNÉS dans la zone RTC. oomPostMortemStore() a déjà tourné
+  // (donc le magic est posé et w8..w11 remis à zéro si la zone venait d'être
+  // initialisée) : l'ordre hook → sonde est impératif.
+  sOomPmWords[8] = size;
+  sOomPmWords[9] = oomPmPackProbeWord(pc.largestBlockBytes, pc.freeBytes);
+  sOomPmWords[10] = oomPmPackProbeWord(pr.largestBlockBytes, pr.freeBytes);
+  sOomPmWords[11] = (caps & 0xFFFFu) | (durationUs << 16);
+
+  // Autolimitation. POST-HOC par construction (le dépassement a DÉJÀ eu lieu) —
+  // c'est précisément pourquoi le gate exige en plus la borne a priori du pire
+  // cas PSRAM dans heapProbeForCaps(). Le WARN est DIFFÉRÉ : jamais de log ici.
+  if (durationValid && durationUs > kOomProbeWarnDurationUs) {
+    sProbeSlowUs.store(durationUs);
+  }
+  if (durationValid && !heapIntegrityAdmitNextRun(durationUs, kOomProbeMaxDurationUs)) {
+    sProbeDisabled.store(true);
+    sProbeDisableDurationUs.store(durationUs);
+    sProbeDisableWarnPending.store(true);
+    // oomPmSetFlags : pose ET flush RTC en un geste. oomPostMortemStore() est
+    // déjà passé et ne repassera qu'au refus SUIVANT — qui n'aura jamais lieu si
+    // un abort suit, c'est-à-dire précisément quand le post-mortem sert.
+    oomPmSetFlags(kOomPmFlagProbeDisabled);
+  }
 }
 
 // new_handler (contrat libstdc++ : appelé quand malloc échoue dans operator
@@ -258,9 +482,21 @@ static void oomFailedAllocHook(size_t size, uint32_t caps, const char* function_
   sOomFailedAllocCount.fetch_add(1);
   uint32_t uptimeS = (uint32_t)(xTaskGetTickCount() / configTICK_RATE_HZ);
   oomPostMortemStore(true, (uint32_t)size, caps, uptimeS);
+
+  // Sonde du tas AU MOMENT EXACT du refus (bug-080 B-2). Appelée APRÈS
+  // oomPostMortemStore() : c'est lui qui pose le magic et remet w8..w11 à zéro
+  // lors de l'initialisation de la zone — sonder avant les effacerait.
+  oomProbeAtFailure((uint32_t)size, caps);
 }
 
 void initOomGuard() {
+  // Conversion cycles → µs de la sonde, calculée UNE SEULE FOIS ici : le hook
+  // ne fait ensuite qu'une division entière (bug-080 B-2). La zone RTC stocke
+  // des MICROSECONDES, jamais des cycles — pas d'ambiguïté de format si la
+  // fréquence CPU diffère entre deux boots.
+  uint32_t cpuMhz = (uint32_t)getCpuFrequencyMhz();
+  sProbeCyclesPerUs = (cpuMhz == 0u) ? kOomProbeDefaultCpuMhz : cpuMhz;
+
   // Réserve allouée au plus TÔT du setup : bloc contigu pris avant toute
   // fragmentation. Pas de log ici (systemLogger.begin() pas encore appelé) —
   // le setup journalise l'armement (et le palier obtenu) juste après.
@@ -400,30 +636,75 @@ void oomPostMortemDumpIfBoot() {
     verdictLabel = "FAMINE MÉMOIRE";
   } else if (verdict == kOomVerdictCorruptionSuspected) {
     verdictLabel = "SUSPICION CORRUPTION";
+  } else if (verdict == kOomVerdictDmaStarvation) {
+    verdictLabel = "FAMINE DMA (pool restreint)";
   }
 
-  // Ligne UNIQUE et exploitable (buffer pile : aucun heap sollicité pour la
-  // construction, le journal est le seul consommateur).
-  char line[288];
+  // Sous-cas de la sonde, NOMMÉ dans la ligne de verdict : une indétermination
+  // doit toujours être ATTRIBUABLE (« absente » ≠ « ISR » ≠ « désactivée » ≠
+  // « autre refus », ce dernier signifiant que la sonde décrit une classe
+  // d'échec différente du dernier échec enregistré — le jeton « un échantillon
+  // par épisode » rend ce cas possible).
+  const char* probeLabel = "absente";
+  if (f.flags & kOomPmFlagProbeDisabled) {
+    probeLabel = "désactivée";
+  } else if (f.flags & kOomPmFlagProbeTaken) {
+    probeLabel = oomPostMortemProbeRepresentative(f) ? "oui" : "autre refus";
+  } else if (f.flags & kOomPmFlagProbeIsrSkipped) {
+    probeLabel = "ISR";
+  }
+
+  // Tampon RECALCULÉ au pire cas en B-2, puis RE-RECALCULÉ en revue (288 → 384,
+  // et NON 320 : ce dernier n'avait qu'UN octet de marge). Pire cas en octets
+  // UTF-8 (accents 2 o, `—`/`→` 3 o) : **319 o**, et **323 o** si `f.lastCaps`
+  // ≥ 0x10000 — ce qui est atteignable, car oomPostMortemValid() ne borne QUE
+  // firstSize / lastSize / failCount, et toute la machinerie de plausibilité
+  // existe justement parce que la RAM RTC peut être corrompue : `%04X` imprime
+  // alors 8 chiffres. À noter aussi que `sonde=désactivée` (12 o) et
+  // `verdict=FAMINE DMA (pool restreint)` (27 o) sont CO-OCCURRENTS — probeLabel
+  // teste ProbeDisabled en premier, mais oomPostMortemVerdict() ignore ce
+  // drapeau, donc les deux pires cas s'additionnent bel et bien.
+  // Ligne 1 : la comptabilité de l'épisode (buffer pile : aucun heap sollicité
+  // pour la construction, le journal est le seul consommateur).
+  char line[384];
   snprintf(line, sizeof(line),
            "Post-mortem OOM : échecs=%u sur %u s (1er %u o, dernier %u o "
            "caps=0x%04X, uptime=%u s), tas comptabilisé t-%us free8=%u maxB8=%u, "
-           "réserve=%s, handler=%s, intégrité=%s → verdict %s",
+           "réserve=%s, handler=%s, intégrité=%s, sonde=%s → verdict %s",
            (unsigned)f.failCount,
            (unsigned)(uint16_t)(f.lastUptimeS - f.firstUptimeS),
            (unsigned)f.firstSize, (unsigned)f.lastSize, (unsigned)f.lastCaps,
            (unsigned)f.lastUptimeS,
            (unsigned)(uint16_t)(f.lastUptimeS - f.ringUptimeS),
            (unsigned)f.ringFreeBytes, (unsigned)f.ringMaxAllocBytes,
-           reserveLabel, handlerLabel, integrityLabel, verdictLabel);
+           reserveLabel, handlerLabel, integrityLabel, probeLabel, verdictLabel);
 
   // CRITICAL sur suspicion de corruption (information décisive, à persister),
-  // WARN sinon — même politique que le dump de l'anneau heap.
+  // WARN sinon — même politique que le dump de l'anneau heap. La FAMINE DMA
+  // n'est PAS une corruption : elle reste en WARN.
   if (verdict == kOomVerdictCorruptionSuspected ||
       (f.flags & kOomPmFlagIntegrityFailed)) {
     systemLogger.critical(String(line));
   } else {
     systemLogger.warning(String(line));
+  }
+
+  // Ligne 2 (bug-080 B-2) : la SONDE prise au moment exact du refus. Une ligne
+  // SÉPARÉE, volontairement : fusionner les deux ramènerait le risque de
+  // troncature silencieuse corrigé en B-1. Émise SEULEMENT si la sonde a été
+  // prise — sinon la ligne 1 dit déjà pourquoi (sonde=absente/ISR/désactivée) et
+  // afficher des zéros passerait pour une mesure.
+  if (f.flags & kOomPmFlagProbeTaken) {
+    // Pire cas calculé : partie fixe 110 o + libellé 12 o + 7 champs = 181 o.
+    char probeLine[224];
+    snprintf(probeLine, sizeof(probeLine),
+             "Post-mortem OOM (sonde %s) : au refus de %u o caps=0x%04X → maxBloc=%u o "
+             "libre=%u o ; réf8 maxBloc=%u o libre=%u o, en %u µs",
+             probeLabel, (unsigned)f.probeSize, (unsigned)f.probeCaps,
+             (unsigned)f.probeCapsMaxB, (unsigned)f.probeCapsFree,
+             (unsigned)f.probeRefMaxB, (unsigned)f.probeRefFree,
+             (unsigned)f.probeDurationUs);
+    systemLogger.warning(probeLine);
   }
 }
 
@@ -481,8 +762,92 @@ bool oomGuardIntegrityTick() {
   return false;
 }
 
+OomProbeStats oomGuardProbeStats() {
+  OomProbeStats s;
+  s.count = sProbeCount.load();
+  s.lastDurationUs = sProbeLastDurationUs.load();
+  s.maxDurationUs = sProbeMaxDurationUs.load();
+  s.lastCaps = sProbeLastCaps.load();
+  s.enabled = !sProbeDisabled.load();
+  return s;
+}
+
 void oomGuardLoopTick() {
   unsigned long now = millis();
+
+  // 0 quater) SONDE DU TAS AU REFUS (bug-080 B-2) — armement initial et drains.
+  //   CONDITION 5 DU GATE : aucune sonde tant que ce tick n'a pas tourné une
+  //   fois. L'état est donc initialisé ICI, pas dans initOomGuard() : un échec
+  //   d'allocation survenu pendant le setup (le moment le plus fragile) ne doit
+  //   pas déclencher un parcours de tas avant que la loop vive.
+  static bool sProbeEverArmed = false;
+  if (!sProbeEverArmed) {
+    sProbeEverArmed = true;
+    sProbeArmed.store(true);
+  }
+  //   Les TROIS messages d'observabilité de la sonde partagent UN SEUL site
+  //   d'émission (snprintf sur tampon de PILE, convention du fichier). Trois
+  //   chaînes de String concaténées coûtaient ~500 o de flash sur une marge de
+  //   13 Ko, pour trois lignes qui ne diffèrent que par un motif, un seuil et un
+  //   niveau. Priorité : désactivation > 1er échantillon > sonde lente ; les cas
+  //   sont exclusifs en pratique. Les drapeaux « désactivation » et « 1er
+  //   échantillon » non servis à ce tick le seront au suivant (ils restent
+  //   posés). CE N'EST PAS LE CAS de `slowUs` : son exchange ci-dessous a lieu
+  //   AVANT de savoir quelle branche gagne, donc la valeur est PERDUE si une
+  //   branche plus prioritaire l'emporte. Sans conséquence — le WARN est
+  //   one-shot par boot et se redéclenchera à la prochaine sonde lente — mais à
+  //   ne pas confondre avec les deux autres.
+  //     - condition 4 du gate : le CHIFFRE RÉEL du 1er échantillon en INFO,
+  //       one-shot — la mesure qui valide (ou non) l'innocuité de la sonde ;
+  //     - condition 1 : WARN au-delà de kOomProbeWarnDurationUs, sonde CONSERVÉE ;
+  //     - A5 : WARN one-shot de la désactivation définitive (jamais journalisée
+  //       depuis le hook, qui n'a le droit ni de logger ni d'allouer).
+  //   Le WARN « sonde lente » est ONE-SHOT PAR BOOT, volontairement : le
+  //   plancher temporel autorise une sonde par seconde, donc un WARN par sonde
+  //   lente ferait 3 600 lignes/h dans un journal de 8 Ko dont la rétention est
+  //   de 25-35 min — la fenêtre forensique détruite par notre propre
+  //   instrumentation (défaut n°3 du 15/08). Les durées restent lisibles par
+  //   oomGuardProbeStats() (max observé + compteur + caps).
+  static bool sProbeFirstLogged = false;
+  static bool sProbeSlowWarned = false;
+  uint32_t slowUs = sProbeSlowUs.exchange(0);
+  const char* probeMotif = nullptr;
+  uint32_t probeUs = 0;
+  uint32_t probeSeuilUs = kOomProbeMaxDurationUs;
+  bool probeWarn = true;
+  if (sProbeDisableWarnPending.exchange(false)) {
+    probeMotif = "DÉSACTIVÉE définitivement";
+    probeUs = sProbeDisableDurationUs.load();
+  } else if (!sProbeFirstLogged && sProbeCount.load() != 0u) {
+    sProbeFirstLogged = true;
+    probeMotif = "1er échantillon (couple de 2 parcours)";
+    probeUs = sProbeFirstDurationUs.load();
+    probeWarn = false;
+  } else if (slowUs != 0u && !sProbeSlowWarned) {
+    sProbeSlowWarned = true;
+    probeMotif = "LENTE, mais CONSERVÉE";
+    probeUs = slowUs;
+    probeSeuilUs = kOomProbeWarnDurationUs;
+  }
+  if (probeMotif != nullptr) {
+    // Condition 4 du gate : le CHIFFRE RÉEL. Une durée invalide (migration de
+    // cœur entre les deux lectures de CCOUNT) ne doit donc PAS s'afficher
+    // « 65535 µs », qui serait un chiffre inventé et alarmant — on dit ce qui
+    // s'est passé.
+    char ligneSonde[144];  // pire cas : 46 (fixe) + 39 (motif) + 2 × 10 = 105 o
+    if ((uint16_t)probeUs == kOomProbeDurationInvalid) {
+      snprintf(ligneSonde, sizeof(ligneSonde),
+               "Sonde OOM %s : durée non mesurable (migration de cœur)", probeMotif);
+    } else {
+      snprintf(ligneSonde, sizeof(ligneSonde), "Sonde OOM %s : %u µs (seuil %u µs)",
+               probeMotif, (unsigned)probeUs, (unsigned)probeSeuilUs);
+    }
+    if (probeWarn) {
+      systemLogger.warning(ligneSonde);
+    } else {
+      systemLogger.info(ligneSonde);
+    }
+  }
 
   // 0) FILET D'URGENCE — ré-inscription du new_handler EN TÊTE DE FONCTION
   //    (v2.20.2, bloc A). Doit rester AVANT tout `return` : c'est précisément
@@ -622,18 +987,47 @@ void oomGuardLoopTick() {
   if (fails != sLoggedFailedCount) {
     if (sLastFailWarnMs == 0 || now - sLastFailWarnMs >= sFailWarnDelayMs) {
       const char* fn = sOomFailedAllocLastFn.load();
-      char ligne[160];
-      snprintf(ligne, sizeof(ligne),
-               "Alloc heap échouée x%u (dernière=%u o caps=0x%04X appelant=%s, cumul=%u)",
-               (unsigned)(fails - sLoggedFailedCount),
-               (unsigned)sOomFailedAllocLastSize.load(),
-               (unsigned)sOomFailedAllocLastCaps.load(),
-               (fn != nullptr) ? fn : "?",
-               (unsigned)fails);
+      // Tampon RECALCULÉ au pire cas en B-2 (160 → 256) : la ligne porte
+      // désormais la sonde. Partie fixe 125 o (accents 2 o, cadratin/flèche 3 o)
+      // + jusqu'à 32 o de nom d'appelant + 8 champs numériques = 241 o. Un [160]
+      // tronquerait SILENCIEUSEMENT le WARN de diagnostic — précisément le
+      // défaut que ce lot supprime.
+      char ligne[256];
+      int tete = snprintf(ligne, sizeof(ligne),
+                          "Alloc heap échouée x%u (dernière=%u o caps=0x%04X appelant=%s,"
+                          " cumul=%u)",
+                          (unsigned)(fails - sLoggedFailedCount),
+                          (unsigned)sOomFailedAllocLastSize.load(),
+                          (unsigned)sOomFailedAllocLastCaps.load(),
+                          (fn != nullptr) ? fn : "?",
+                          (unsigned)fails);
+      // La queue « sonde » n'est ajoutée QUE si une sonde existe : sans cette
+      // garde, la ligne affichait « sonde(0x0000) maxBloc=0 libre=0 … en 0 µs »,
+      // c'est-à-dire des zéros qui passent pour une mesure. Le dump se protégeait
+      // déjà de ça, pas ce WARN (revue B-2). `tete` est borné par snprintf, mais
+      // on le re-borne : un retour tronqué vaut la taille VOULUE, pas l'écrite.
+      if (tete > 0 && (size_t)tete < sizeof(ligne)) {
+        if (sProbeCount.load() != 0u) {
+          snprintf(ligne + tete, sizeof(ligne) - (size_t)tete,
+                   " — sonde(0x%04X) maxBloc=%u libre=%u, réf8 maxBloc=%u libre=%u,"
+                   " en %u µs",
+                   (unsigned)sProbeLastCaps.load(),
+                   (unsigned)sProbeCapsMaxB.load(), (unsigned)sProbeCapsFree.load(),
+                   (unsigned)sProbeRefMaxB.load(), (unsigned)sProbeRefFree.load(),
+                   (unsigned)sProbeLastDurationUs.load());
+        } else {
+          snprintf(ligne + tete, sizeof(ligne) - (size_t)tete, " — sonde=absente");
+        }
+      }
       systemLogger.warning(ligne);
       sLoggedFailedCount = fails;
       sLastFailWarnMs = now;
       sFailWarnDelayMs = oomFailWarnNextDelayMs(sFailWarnDelayMs);
+      // (a) RÉARMEMENT DU JETON DE SONDE (décision 2 de l'architecte) : le
+      //     jeton est reposé au DRAIN du WARN, donc il suit exactement le
+      //     backoff existant (immédiat → 30 s → 5 min → 30 min). Aucun état de
+      //     cadence neuf. Jamais réarmé depuis le hook.
+      if (!sProbeDisabled.load()) sProbeArmed.store(true);
     }
   } else if (sLastFailWarnMs != 0 &&
              now - sLastFailWarnMs >= (unsigned long)kOomFailWarnDelayResetMs) {
@@ -641,6 +1035,8 @@ void oomGuardLoopTick() {
     // être signalé SANS délai résiduel de 30 min.
     sFailWarnDelayMs = 0;  // même convention qu'à l'initialisation (cf. ci-dessus)
     sLastFailWarnMs = 0;
+    // (b) Épisode CLOS : le prochain épisode doit pouvoir sonder immédiatement.
+    if (!sProbeDisabled.load()) sProbeArmed.store(true);
   }
 
   // 3) Réarmement à cadence lente, à DEUX PALIERS (bug-parachute-oom-jamais-rearme).

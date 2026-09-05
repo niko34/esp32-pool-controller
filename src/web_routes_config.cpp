@@ -1166,9 +1166,10 @@ static void handleRebootAp(AsyncWebServerRequest* request);  // Forward declarat
 static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
-  // 32 champs (version, chip, mémoire, WiFi, uptime). Charge utile mesurée avec
+  // 36 champs (version, chip, mémoire, WiFi, uptime). Charge utile mesurée avec
   // measureJson() sur des valeurs pires cas (compteurs 32 bits saturés, SSID de
-  // 32 caractères) : ~805 octets, contre 748 avant le COUPLE `oom_reserve_bytes`
+  // 32 caractères) : ~930 octets, contre ~805 avant le QUATUOR `oom_probe_*`
+  // (bug-080 B-2, ~125 o), 748 avant le COUPLE `oom_reserve_bytes`
   // (~26 o) + `oom_reserve_internal` (~29 o) de la v2.35.0, 716 avant
   // `oom_handler_registered` (v2.20.2) et 628 avant les trois champs mémoire
   // v2.19.0. (Revue B-1 R1 : le compte annonçait 31 champs / ~778 o, écrit pour
@@ -1232,6 +1233,22 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   //   bytes≠0     internal=false → ANOMALIE : réserve en PSRAM, parachute inerte
   doc["oom_reserve_bytes"] = (uint32_t)oomGuardReserveArmedBytes();
   doc["oom_reserve_internal"] = oomGuardReserveIsInternalRam();
+
+  // bug-080 B-2 (condition C4 du gate pool-chemistry) : la sonde de tas doit être
+  // OBSERVABLE sans attendre un crash. Sans ces champs, oomGuardProbeStats() n'a
+  // aucun appelant et --gc-sections l'élimine du binaire : le diagnostic n'existe
+  // que sur le papier. Protocole on-target visé :
+  //   enabled=false     → sonde DÉSACTIVÉE définitivement (parcours trop long) ;
+  //                       les statistiques sont figées, ne plus les interpréter
+  //   max_us < 300      → parcours sous kOomProbeWarnDurationUs, cadence saine
+  //   last_caps=0x080C  → 8BIT|DMA|INTERNAL, signature des échecs du relevé 05/09
+  // Quatre lectures d'atomiques : ni allocation, ni log, ni parcours de tas —
+  // sûr dans un handler AsyncWebServer. Ajout PUREMENT ADDITIF.
+  const OomProbeStats probe = oomGuardProbeStats();
+  doc["oom_probe_enabled"] = probe.enabled;
+  doc["oom_probe_count"] = probe.count;
+  doc["oom_probe_max_us"] = probe.maxDurationUs;
+  doc["oom_probe_last_caps"] = probe.lastCaps;
 
   // feature-066 : PSRAM (0 = absente, module WROOM — l'UI affiche « absente »)
   doc["psram_size"] = ESP.getPsramSize();

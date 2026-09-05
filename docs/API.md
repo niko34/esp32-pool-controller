@@ -961,6 +961,10 @@ curl -u admin:monmotdepasse http://poolcontroller.local/get-system-info
   "oom_handler_registered": true,
   "oom_reserve_bytes": 12288,
   "oom_reserve_internal": true,
+  "oom_probe_enabled": true,
+  "oom_probe_count": 11,
+  "oom_probe_max_us": 84,
+  "oom_probe_last_caps": 2060,
   "heap_size": 327680,
   "psram_size": 8388608,
   "psram_free": 8257536,
@@ -1030,6 +1034,28 @@ Trois champs **additifs** ont été ajoutés en v2.19.0 ([ADR-0038](adr/0038-met
 
 - **Coût** : lecture d'un atomique + une comparaison d'adresse *inline* — ni allocation, ni log, ni parcours de tas.
 - **Ajout purement additif** : budget JSON `/get-system-info` mesuré à **~778 octets** pires cas (748 avant). Absents d'un firmware ≤ 2.34.0 → traiter leur absence comme « information indisponible ».
+
+#### `oom_probe_*` — observabilité de la sonde du refus (v2.40.0, additifs)
+
+Quatre champs **purement additifs** ([ADR-0066](adr/0066-sonde-du-tas-au-moment-du-refus.md), bug-080 lot B-2, condition 4 du gate `pool-chemistry`). Ils décrivent la **sonde du tas prise au moment exact d'un refus d'allocation** — la mesure sur laquelle repose désormais le verdict post-mortem au démarrage.
+
+| Champ | Type | Signification |
+|---|---|---|
+| `oom_probe_enabled` | booléen | `false` = sonde **désactivée définitivement** (un couple de parcours a dépassé `kOomProbeMaxDurationUs` = 1 500 µs). Les trois autres champs sont alors **figés** |
+| `oom_probe_count` | `uint32` | Nombre de sondes prises depuis le boot. `0` = aucun refus sondé (pas nécessairement aucun refus : ISR, plancher temporel, jeton non réarmé) |
+| `oom_probe_max_us` | `uint32` | **Durée maximale observée** du couple des **deux** parcours, en µs |
+| `oom_probe_last_caps` | `uint32` | Masque `heap_caps` de la dernière sonde. `2060` = `0x080C` = `MALLOC_CAP_8BIT \| MALLOC_CAP_DMA \| MALLOC_CAP_INTERNAL` |
+
+**Protocole de lecture** — ces champs servent trois vérifications précises :
+
+1. **La sonde ne coûte pas cher** : `oom_probe_max_us < 300` (le seuil de WARN `kOomProbeWarnDurationUs`). C'est la mesure qui valide en vol l'innocuité d'un parcours de tas exécuté **interruptions coupées** depuis un chemin d'échec.
+2. **La sonde vit toujours** : `oom_probe_enabled = true`. Un `false` signifie que l'auto-limitation a frappé — chercher le WARN `Sonde OOM DÉSACTIVÉE définitivement` dans le journal, **et cesser d'interpréter les trois autres champs**.
+3. **Sur quelles capacités les échecs tombent** : `oom_probe_last_caps`. `0x080C` est la signature des **11 échecs du relevé du 05/09/2026** (1 622 o refusés en `8BIT|DMA|INTERNAL`), contrainte **strictement plus restrictive** que `INTERNAL|8BIT` — c'est-à-dire une famine de **pool restreint**, et non une famine générale ni une corruption.
+
+- **Coût** : quatre lectures d'atomiques — ni allocation, ni log, ni parcours de tas.
+- **Ajout purement additif** : budget JSON `/get-system-info` mesuré à **~930 octets** pires cas (~805 avant ce quatuor). Absents d'un firmware ≤ 2.39.0 → traiter leur absence comme « information indisponible ».
+
+> **Ce n'est pas une métrique de supervision.** Contrairement à `max_alloc_8bit`, ces quatre champs ne décrivent pas la santé du tas mais le **fonctionnement de l'instrument**. Ne pas construire d'alarme sur `oom_probe_count`, qui croît normalement en régime dégradé.
 
 > **⚠️ `psram_free` CHANGE DE SENS en v2.35.0.** Jusqu'ici la PSRAM était libre à ~99 % en permanence et sa valeur ne bougeait pas. Depuis la bascule des allocations de plus de 4095 o ([ADR-0061](adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)), **la PSRAM est un pool de travail** : `psram_free` **varie avec la charge web** (chaque fichier statique servi y prend son tampon stdio de 4096 o). Une baisse de plusieurs dizaines de Ko pendant un chargement d'interface est le comportement **attendu**, pas une anomalie. Corollaire pour un superviseur : ne pas alarmer sur une baisse de `psram_free` ; la garde TLS sortante, elle, continue d'exiger 1 Mo libre (`kOtaTlsMinPsramBytes`, [ADR-0036](adr/0036-psram-requise-mise-a-jour-en-ligne.md)).
 
@@ -2311,7 +2337,9 @@ curl "http://poolcontroller.local/debug/sensor_trace?offset=0&count=50"
 
 **Erreurs**
 
-- `503` `{"error":"heap fragmenté, réessayez"}` — garde-fou défensif : si la taille mesurée de la page (`measureJson`) + marge (`kSensorTraceHeapMarginBytes = 4096`) dépasse le plus gros bloc libre (`ESP.getMaxAllocHeap()`), la route répond proprement au lieu de crasher. Réessayer plus tard (l'auto-guérison heap, ADR-0029, finit par restaurer la situation).
+- `503` `{"error":"heap fragmenté, réessayez"}` — garde-fou défensif : si la taille mesurée de la page (`measureJson`) + marge (`kSensorTraceHeapMarginBytes = 4096`) dépasse le plus gros bloc **réellement allouable** (`heapLargestFreeBlock8Bit()` depuis la **v2.40.0**), la route répond proprement au lieu de crasher. Réessayer plus tard (l'auto-guérison heap, ADR-0029, finit par restaurer la situation).
+
+  > **v2.40.0 (bug-080 lot B-2, item A16)** : c'était la **dernière** garde 503 restée sur `ESP.getMaxAllocHeap()`, qui compte l'**IRAM 32 bits** inutilisable par le `new` du `cbuf` d'`AsyncResponseStream` ([ADR-0038](adr/0038-metrique-memoire-allouable-8-bits.md), [ADR-0058](adr/0058-gardes-heap-metrique-8-bits.md)). **Le seuil est inchangé — on corrige la mesure, pas la marge.** Comportement quasi identique en régime normal (**1 024 o** d'écart mesuré le 05/09/2026), mais la mesure brute **reste figée en famine** pendant que le 8 bits s'effondre : la garde cessait alors de protéger tout en paraissant fonctionner. Pour un client, **rien ne change** : mêmes code, message et sémantique de réessai.
 
 > ℹ️ **Glissement du ring entre deux pages** : le buffer continue d'avancer (~1 échantillon toutes les 5 s) pendant qu'un client enchaîne les pages — les bornes ne sont pas ancrées sur un identifiant d'échantillon, un décalage d'~1 échantillon entre pages est donc possible et **toléré** (route de diagnostic, contrat lock-free `SensorTraceSample` inchangé).
 

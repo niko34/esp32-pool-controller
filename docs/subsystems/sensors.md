@@ -690,7 +690,7 @@ SensorTraceSample _traceBuffer[kSensorTraceBufferSize];  // 300 × 28 octets ≈
 
 ### Pagination — bug-crash-sensor-trace-badalloc (v2.10.1)
 
-La route `GET /debug/sensor_trace` sérialisait les 300 échantillons dans un seul `AsyncResponseStream` (~20 Ko contigus dans son `cbuf`) → `std::bad_alloc` non rattrapé → `abort()` → reboot sur heap fragmenté (coredump v2.10.0, 2026-07-23). Elle est désormais **paginée** (`?offset=N&count=M`, page bornée à `kSensorTraceMaxSamplesPerPage = 50` ≈ 3,5 Ko) avec **garde heap** (`measureJson` + `kSensorTraceHeapMarginBytes = 4096` vs `ESP.getMaxAllocHeap()` → `503` propre) et stream **pré-dimensionné** (une seule allocation exacte, zéro `resize()`).
+La route `GET /debug/sensor_trace` sérialisait les 300 échantillons dans un seul `AsyncResponseStream` (~20 Ko contigus dans son `cbuf`) → `std::bad_alloc` non rattrapé → `abort()` → reboot sur heap fragmenté (coredump v2.10.0, 2026-07-23). Elle est désormais **paginée** (`?offset=N&count=M`, page bornée à `kSensorTraceMaxSamplesPerPage = 50` ≈ 3,5 Ko) avec **garde heap** (`measureJson` + `kSensorTraceHeapMarginBytes = 4096` vs `heapLargestFreeBlock8Bit()` depuis la **v2.40.0** — `ESP.getMaxAllocHeap()` avant, mesure qui comptait l'IRAM 32 bits inutilisable par ce `new` : voir [oom-guard.md](oom-guard.md) et [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) ; **seuil inchangé** → `503` propre) et stream **pré-dimensionné** (une seule allocation exacte, zéro `resize()`).
 
 Le clamp des bornes de page est un calcul **pur header-only** dans [`src/sensor_trace_page.h`](../../src/sensor_trace_page.h) (`computeTracePage()`, invariants `offset ≤ total`, `n ≤ max`, `offset + n ≤ total` pour tout input — testé en natif, suite `test_native_trace_page`, 16 tests, pattern [ADR-0017](../adr/0017-logique-pure-testable.md)). `appendSensorTraceJson()` applique en plus un **re-clamp défensif interne** sur son snapshot local de `_traceCount` (le buffer peut avoir glissé entre le clamp de la route et la lecture). Contrat complet de la route : [API.md](../API.md#get-debugsensor_trace--pas-dauth-cohérent-avec-autres-debug).
 
@@ -770,7 +770,7 @@ Un capteur **vivant** bruite d'au moins ±1 LSB (quantification + bruit sonde + 
 | `kPhOffsetMin` / `kPhOffsetMax` | `-0.50` / `+0.50` pH | Bornes de l'offset logiciel pH (feature-067) — validation serveur, refus 400 hors plage |
 | `kSensorTraceBufferSize` | `300` | Taille ring buffer trace signaux (~8,4 Ko RAM depuis feature-067) |
 | `kSensorTraceMaxSamplesPerPage` | `50` | Borne d'une page de `GET /debug/sensor_trace` (~3,5 Ko JSON — v2.10.1) |
-| `kSensorTraceHeapMarginBytes` | `4096` | Marge entre `measureJson` et `ESP.getMaxAllocHeap()` → 503 au lieu de `bad_alloc` (v2.10.1) |
+| `kSensorTraceHeapMarginBytes` | `4096` | Marge entre `measureJson` et `heapLargestFreeBlock8Bit()` → 503 au lieu de `bad_alloc` (v2.10.1 ; mesure basculée depuis `ESP.getMaxAllocHeap()` en **v2.40.0**, valeur du seuil **inchangée**) |
 
 Toutes définies dans [`src/constants.h`](../../src/constants.h).
 

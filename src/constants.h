@@ -423,6 +423,49 @@ constexpr uint32_t kHeapIntegrityMaxDurationUs = 20000;         // 20 ms - au-de
 constexpr uint32_t kHeapIntegrityWarnDurationUs = 5000;         // 5 ms - au-delà : WARN (contrôle conservé)
 
 // ---------------------------------------------------------------------------
+// SONDE DU TAS AU MOMENT EXACT DU REFUS (bug-080, lot B-2)
+// ---------------------------------------------------------------------------
+// POURQUOI : jusqu'ici le verdict du post-mortem confrontait la taille refusée à
+// l'échantillon de l'ANNEAU heap, vieux de 2 s et mesuré sur des caps FIXES
+// (INTERNAL|8BIT). Les 6 échecs réels du 05/09/2026 (1 622 o refusés avec
+// caps=0x080C = 8BIT|DMA|INTERNAL, sans PANIC) étaient donc qualifiés
+// « SUSPICION CORRUPTION » sur un maxBloc de 26 612 o périmé qui ne répondait pas
+// à la question posée : le pool DMA, lui, était bien à sec. La sonde mesure
+// désormais le tas AU REFUS, sur les caps DE L'ÉCHEC **et** sur une référence
+// INTERNAL|8BIT — d'où le verdict neuf « FAMINE DMA (pool restreint) ».
+//
+// AUTOLIMITATION (mêmes principes que le contrôle d'intégrité ci-dessus, mais
+// des seuils 3 à 13 fois plus serrés : la sonde s'exécute dans un chemin
+// d'échec, pas dans la loop). La durée mesurée est celle du COUPLE des DEUX
+// parcours, pas de chacun. Le plafond reste STRICTEMENT sous le seuil de WARN du
+// contrôle d'intégrité : une sonde ne doit jamais coûter l'ordre de grandeur
+// d'un parcours complet toléré ailleurs.
+constexpr uint32_t kOomProbeWarnDurationUs = 300;         // 300 µs - au-delà : WARN one-shot, sonde CONSERVÉE
+constexpr uint32_t kOomProbeMaxDurationUs = 1500;         // 1,5 ms - au-delà : sonde DÉSACTIVÉE définitivement
+// Plancher temporel ABSOLU entre deux sondes (condition 3 du gate pool-chemistry),
+// EN PLUS du jeton « un échantillon par épisode » : le backoff du WARN d'échec
+// démarre à 0 ms, donc son drain immédiat pourrait réarmer le jeton quelques
+// millisecondes seulement après la sonde précédente.
+constexpr uint32_t kOomProbeMinIntervalMs = 1000;         // 1 s - intervalle minimal entre deux sondes
+// Repli si getCpuFrequencyMhz() renvoie 0 (le hook ne fait qu'une division
+// entière par cette valeur, calculée UNE fois au setup).
+constexpr uint32_t kOomProbeDefaultCpuMhz = 240;          // MHz - repli de conversion cycles → µs
+// Sentinelle « plus gros bloc NON RENSEIGNÉ » : pour caps & MALLOC_CAP_SPIRAM la
+// sonde emprunte un chemin O(régions) (agrégats) au lieu du parcours O(blocs),
+// pour BORNER A PRIORI le pire cas (condition 2 du gate) — 4 Mo de PSRAM
+// contiennent des ordres de grandeur plus de blocs que la RAM interne. La valeur
+// est celle que produit la quantification du champ RTC saturé (0xFFFF << 6) :
+// aucun encodage spécial, aucune règle de décodage neuve.
+constexpr uint32_t kOomProbeBlockUnknown = 0xFFFFu << 6;  // 4 194 240 - « non renseigné »
+
+static_assert(kOomProbeWarnDurationUs < kOomProbeMaxDurationUs,
+              "Le seuil de WARN de la sonde doit rester sous son plafond de desactivation");
+static_assert(kOomProbeMaxDurationUs < kHeapIntegrityWarnDurationUs,
+              "La sonde (chemin d'echec) doit rester bien plus courte que le WARN du "
+              "controle d'integrite (loop) : elle s'execute interruptions coupees, "
+              "potentiellement en rafale.");
+
+// ---------------------------------------------------------------------------
 // Seuil de bascule PSRAM des allocations ordinaires (bug-080, lot B-1, v2.35.0)
 // ---------------------------------------------------------------------------
 // FRAGMENTEUR IDENTIFIÉ le 04/09/2026 : la couche FS d'Arduino attache un tampon

@@ -16,9 +16,14 @@
 //
 // bug-parachute-oom-jamais-rearme (crash du 13/08/2026, v2.18.8) : réarmement à
 // deux paliers (nominal/repli) + POST-MORTEM d'allocation en RAM RTC noinit
-// (32 o) écrit depuis le chemin d'échec en stores bruts, dumpé au boot suivant,
-// + contrôle d'intégrité périodique du tas. Budget RAM RTC noinit du projet :
-// auto-heal 9 o + anneau heap 1032 o + post-mortem 32 o = 1073 o sur 8192.
+// écrit depuis le chemin d'échec en stores bruts, dumpé au boot suivant,
+// + contrôle d'intégrité périodique du tas.
+//
+// bug-080 lot B-2 : la zone passe de 32 à 48 o (magic bumpé en 0xF00DFA13) pour
+// accueillir la SONDE prise au moment EXACT du refus — double mesure (caps de
+// l'échec + référence INTERNAL|8BIT) qui remplace la confrontation à un
+// échantillon d'anneau périmé de 2 s. Budget RAM RTC noinit du projet :
+// auto-heal 9 o + anneau heap 1032 o + post-mortem 48 o = 1089 o sur 8192.
 
 // Pré-alloue la réserve d'urgence (palier NOMINAL kOomReserveBytes, à défaut
 // palier de REPLI kOomFallbackReserveBytes — v2.18.8), enregistre le
@@ -104,12 +109,31 @@ bool oomGuardHandlerRegistered();
 // mesure JAMAIS le tas lui-même (réentrance allocateur interdite, ADR-0035).
 void oomGuardNoteHeapSample(uint32_t uptimeS, uint32_t freeBytes, uint32_t maxAllocBytes);
 
-// Dump du post-mortem d'allocation du boot PRÉCÉDENT (zone RTC noinit de 32 o) :
-// une ligne unique donnant l'état au moment EXACT de l'échec + le verdict
-// (famine / suspicion de corruption). Lit l'INSTANTANÉ pris par initOomGuard()
-// (la zone RTC, elle, a déjà été invalidée à ce moment-là et appartient au boot
-// COURANT). À appeler dans setup(), juste après heapRingDumpIfCrash().
+// Dump du post-mortem d'allocation du boot PRÉCÉDENT (zone RTC noinit de
+// kOomPostMortemBytes octets) : DEUX lignes — la comptabilité de l'épisode + le
+// verdict (famine mémoire / famine DMA / suspicion de corruption / indéterminé),
+// puis la SONDE prise au moment exact du refus (ou la raison de son absence).
+// Lit l'INSTANTANÉ pris par initOomGuard() (la zone RTC, elle, a déjà été
+// invalidée à ce moment-là et appartient au boot COURANT). À appeler dans
+// setup(), juste après heapRingDumpIfCrash().
 void oomPostMortemDumpIfBoot();
+
+/**
+ * @brief Compteurs d'observabilité de la sonde du refus (bug-080 B-2).
+ *
+ * Condition 4 du gate pool-chemistry : « rien de silencieux ». Le max observé,
+ * le nombre de sondes et les caps sondées doivent être lisibles depuis le
+ * diagnostic, sans attendre un crash. Lecture seule : ni allocation, ni log, ni
+ * parcours de tas — sûr depuis un handler AsyncWebServer comme depuis la loop.
+ */
+struct OomProbeStats {
+  uint32_t count;           // Sondes prises depuis le boot
+  uint32_t lastDurationUs;  // Durée du dernier COUPLE (2 parcours) — 0xFFFF = invalide (migration de cœur)
+  uint32_t maxDurationUs;   // Pire durée valide observée
+  uint32_t lastCaps;        // Masque heap_caps de la dernière sonde
+  bool enabled;             // false = sonde DÉSACTIVÉE définitivement (durée > kOomProbeMaxDurationUs)
+};
+OomProbeStats oomGuardProbeStats();
 
 // Contrôle d'intégrité périodique du tas (heap_caps_check_integrity_all, cadence
 // kHeapIntegrityCheckIntervalMs, autolimitation kHeapIntegrityMaxDurationUs).

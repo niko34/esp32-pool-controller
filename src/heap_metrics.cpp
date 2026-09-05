@@ -3,6 +3,24 @@
 #include <atomic>
 #include <esp_heap_caps.h>
 
+#include "constants.h"  // kOomProbeBlockUnknown (sentinelle « plus gros bloc non renseigné »)
+#include "oom_guard_logic.h"  // oomProbeUsesRegionScan (sélection de branche, PURE — ADR-0017)
+
+// La sélection de branche de la sonde est décidée par un prédicat PUR (testable
+// en natif, cf. ADR-0017), qui recopie un bit MALLOC_CAP_* sans inclure
+// esp_heap_caps.h. Cette égalité est le seul point de contact : si l'IDF changeait
+// la valeur du bit, c'est la COMPILATION du firmware qui casse, pas un test natif
+// silencieusement devenu faux.
+// L'assert épingle MALLOC_CAP_**INTERNAL**, et non plus MALLOC_CAP_SPIRAM :
+// l'invariant qui protège n'est pas « ce masque demande-t-il de la PSRAM » mais
+// « ce masque peut-il ATTEINDRE le tas PSRAM ». Épingler le bit SPIRAM est en
+// partie ce qui a laissé passer le défaut bloquant relevé en revue (caps
+// MALLOC_CAP_DEFAULT = 0x1000 pour tout malloc()/new ordinaire).
+static_assert(kOomProbeInternalCapBit == (uint32_t)MALLOC_CAP_INTERNAL,
+              "kOomProbeInternalCapBit doit valoir exactement MALLOC_CAP_INTERNAL : "
+              "la borne a priori du pire cas PSRAM de la sonde en depend (seul un "
+              "masque garantissant la RAM interne autorise le parcours O(blocs)).");
+
 // Capacités du pool « réellement allouable » : mémoire INTERNE (pas de PSRAM,
 // qui a ses propres contraintes) ET accessible en accès OCTET — c'est
 // exactement ce qu'exige un malloc()/new ordinaire. Voir heap_metrics.h pour la
@@ -15,6 +33,31 @@ uint32_t heapLargestFreeBlock8Bit() {
 
 uint32_t heapFree8Bit() {
   return (uint32_t)heap_caps_get_free_size(kHeapCaps8Bit);
+}
+
+uint32_t heapCaps8BitMask() {
+  return kHeapCaps8Bit;
+}
+
+HeapProbe heapProbeForCaps(uint32_t caps) {
+  HeapProbe p;
+  if (oomProbeUsesRegionScan(caps)) {
+    // Condition 2 du gate pool-chemistry (bug-080 B-2) : BORNE A PRIORI. Sur
+    // 4 Mo de PSRAM, le parcours O(blocs) de `largest_free_block` n'a pas de
+    // pire cas connu — et il s'exécute interruptions coupées. On ne SAUTE pas la
+    // sonde (interdit : les 12 sites d'appel du hook doivent tous rendre un
+    // verdict), on change d'ALGORITHME : agrégats O(régions), plus gros bloc
+    // déclaré non renseigné. Le verdict du post-mortem sait le lire ainsi.
+    p.freeBytes = (uint32_t)heap_caps_get_free_size(caps);
+    p.largestBlockBytes = kOomProbeBlockUnknown;
+    return p;
+  }
+  // UN seul parcours : heap_caps_get_info() livre les deux grandeurs.
+  multi_heap_info_t info;
+  heap_caps_get_info(&info, caps);
+  p.freeBytes = (uint32_t)info.total_free_bytes;
+  p.largestBlockBytes = (uint32_t)info.largest_free_block;
+  return p;
 }
 
 HeapMetrics heapMetricsSnapshot() {

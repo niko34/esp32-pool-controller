@@ -1,10 +1,12 @@
 # Subsystem — `oom-guard` (parachute OOM global)
 
-- **Fichiers** : [`src/oom_guard_logic.h`](../../src/oom_guard_logic.h) (logique pure, header-only), [`src/oom_guard.h`](../../src/oom_guard.h) / [`src/oom_guard.cpp`](../../src/oom_guard.cpp) (coquille Arduino), [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp) (garde TLS sortante partagée `/check-update` + `/download-update`)
-- **Pas de singleton** : fonctions libres (`initOomGuard()`, `oomGuardLoopTick()`, `oomGuardReserveArmed()`, `oomGuardReserveArmedBytes()`, `oomGuardReserveIsInternalRam()`, `oomGuardConsumeNoReserveAlert()`, `oomGuardHandlerRegistered()`, `oomGuardNoteHeapSample()`, `oomPostMortemDumpIfBoot()`, `oomGuardIntegrityTick()`, `oomGuardNoteIntegrityResult()`) + fonctions pures inline.
-- **Décisions architecturales** : [ADR-0035](../adr/0035-parachute-oom-new-handler.md) (parachute OOM), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) (**bascule des 4 gardes sur la métrique 8 bits, échelle unique**, v2.33.0 — supersede le régime bi-métrique d'[ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)), [ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md) (**bascule PSRAM au-delà de 4095 o + réserve du parachute en RAM interne explicite**, v2.35.0), [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md) (PSRAM libre requise pour toute session TLS sortante), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure testable), [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison heap = containment de fond).
+- **Fichiers** : [`src/oom_guard_logic.h`](../../src/oom_guard_logic.h) (logique pure, header-only), [`src/oom_guard.h`](../../src/oom_guard.h) / [`src/oom_guard.cpp`](../../src/oom_guard.cpp) (coquille Arduino), [`src/heap_metrics.h`](../../src/heap_metrics.h) / [`src/heap_metrics.cpp`](../../src/heap_metrics.cpp) (mesures, dont `heapProbeForCaps()`), [`src/web_routes_ota.cpp`](../../src/web_routes_ota.cpp) (garde TLS sortante partagée `/check-update` + `/download-update`)
+- **Pas de singleton** : fonctions libres (`initOomGuard()`, `oomGuardLoopTick()`, `oomGuardReserveArmed()`, `oomGuardReserveArmedBytes()`, `oomGuardReserveIsInternalRam()`, `oomGuardConsumeNoReserveAlert()`, `oomGuardHandlerRegistered()`, `oomGuardNoteHeapSample()`, `oomGuardProbeStats()`, `oomPostMortemDumpIfBoot()`, `oomGuardIntegrityTick()`, `oomGuardNoteIntegrityResult()`) + fonctions pures inline.
+- **Décisions architecturales** : [ADR-0035](../adr/0035-parachute-oom-new-handler.md) (parachute OOM), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) (**bascule des 4 gardes sur la métrique 8 bits, échelle unique**, v2.33.0 — supersede le régime bi-métrique d'[ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md)), [ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md) (**bascule PSRAM au-delà de 4095 o + réserve du parachute en RAM interne explicite**, v2.35.0), [ADR-0036](../adr/0036-psram-requise-mise-a-jour-en-ligne.md) (PSRAM libre requise pour toute session TLS sortante), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure testable), [ADR-0066](../adr/0066-sonde-du-tas-au-moment-du-refus.md) (**sonde du tas au moment exact du refus : requalification de l'interdit `heap_caps`, double mesure, verdict `FAMINE DMA`**, bug-080 B-2), [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison heap = containment de fond).
 
-> ✅ **v2.33.0 — fin du régime bi-métrique ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)).** Depuis bug-080 lot A, **toutes les gardes décisionnelles heap** lisent `heapLargestFreeBlock8Bit()` ([`heap_metrics.h`](../../src/heap_metrics.h)) : paliers de réarmement du parachute, auto-guérison (`kRestartMaxAllocHeapBytes` = 4 096), WARN (`kLowHeapWarnBytes` = 12 288), skip des pushes WS (`kWsPushMinAllocBytes` = 6 144) et garde 503 de `/get-logs`. Le NO GO d'[ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md) (v2.20.2) est **révoqué** par le gate `pool-chemistry` du 02/09/2026 : les données nouvelles montrent un nominal fragmenté **stable à 21 492 o** (2.26→2.32) et des creux transitoires de quelques secondes seulement — **l'immunité aux faux positifs vient du débounce temporel** (3 mesures consécutives, famine continue ≥ 10-15 s), pas du niveau du seuil. Restent en métrique **brute**, hors périmètre consigné : `web_routes_debug.cpp:55` (503 trace capteurs) et `web_routes_ota.cpp` (garde TLS `kCheckUpdateMin*`) — suivi lot B ou spec dédiée.
+> ✅ **v2.33.0 — fin du régime bi-métrique ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)).** Depuis bug-080 lot A, **toutes les gardes décisionnelles heap** lisent `heapLargestFreeBlock8Bit()` ([`heap_metrics.h`](../../src/heap_metrics.h)) : paliers de réarmement du parachute, auto-guérison (`kRestartMaxAllocHeapBytes` = 4 096), WARN (`kLowHeapWarnBytes` = 12 288), skip des pushes WS (`kWsPushMinAllocBytes` = 6 144) et garde 503 de `/get-logs`. Le NO GO d'[ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md) (v2.20.2) est **révoqué** par le gate `pool-chemistry` du 02/09/2026 : les données nouvelles montrent un nominal fragmenté **stable à 21 492 o** (2.26→2.32) et des creux transitoires de quelques secondes seulement — **l'immunité aux faux positifs vient du débounce temporel** (3 mesures consécutives, famine continue ≥ 10-15 s), pas du niveau du seuil. Restait en métrique **brute** : `web_routes_debug.cpp` (503 trace capteurs) — **basculé en bug-080 lot B-2** (voir ci-dessous). Seul `web_routes_ota.cpp` (garde TLS `kCheckUpdateMin*`) reste en brute, hors périmètre consigné — suivi spec dédiée.
+
+> ✅ **B-2 — la garde 503 de `GET /debug/sensor_trace` bascule à son tour.** Elle comparait `taille + kSensorTraceHeapMarginBytes` à `ESP.getMaxAllocHeap()`, qui compte l'**IRAM 32 bits inutilisable** par le `new` du cbuf d'`AsyncResponseStream`. Elle lit désormais `heapLargestFreeBlock8Bit()` — exactement ce que ce `new` peut obtenir. **Le seuil est INCHANGÉ : on corrige la mesure, pas la marge.** Écart quasi nul en régime normal (**27 636 vs 26 612 o**, soit 1 024 o mesurés le 05/09), mais la brute **reste figée en famine** pendant que le 8 bits s'effondre (plancher relevé sous rafale d'UI : **14 324 o**, et le firmware a vu **1 908 o**) : la garde cessait alors de protéger, tout en paraissant fonctionner.
 
 ## Rôle
 
@@ -116,6 +118,10 @@ Le champ **`psram=`** ajouté à la trace « Heap 8bits: » (cadence 30 min, voi
 - `psram=` doit **chuter de plusieurs dizaines de Ko** à chaque chargement d'interface, puis remonter.
 
 **Si `minFen` replonge à 16-20 Ko, l'hypothèse du tampon stdio est FAUSSE** et le cycle repart aux **mesures**, pas à un correctif de plus.
+
+> ⚠️ **VERDICT rendu le 05/09/2026 — prédiction n°2 CONFIRMÉE, prédiction n°1 RÉFUTÉE.** `psram_free` chute bien à chaque chargement d'interface (creux de **16 912 o = 4,13 tampons de 4 096**) : le levier de B-1 fonctionne. Mais `minFen` est descendu à **1 908 o** — deux ordres de grandeur sous la prédiction, et **bien en dessous des 16 372 o d'AVANT** B-1. Deux faits s'y ajoutent : (1) la fragmentation est **permanente et progressive**, le plateau de `maxBloc8` décroissant de façon **monotone** 42 996 → 26 612 → 20 468 → 15 860 sans jamais remonter ; (2) **le plateau est passé sous `kOomRearmMinMaxAllocBytes` = 18 432** — le palier nominal du parachute ne peut donc plus se réarmer, **en régime calme**, sans qu'aucune alerte ne le dise. Conformément à la règle ci-dessus, la réfutation **n'autorise pas un correctif de plus** : elle a renvoyé aux **mesures**, c'est-à-dire au lot **B-2** (la sonde du refus).
+>
+> **Fait neuf décisif** : le journal portait **11 échecs d'allocation en 1 h 12**, sans PANIC, tous sur **1 622 o** en **`caps=0x080C`** (`8BIT|DMA|INTERNAL`). La contrainte **DMA est strictement plus restrictive** que `INTERNAL|8BIT` : toute mesure à caps fixes répond **à côté de la question**. C'est ce relevé qui a imposé la **double mesure** de B-2 ([ADR-0066](../adr/0066-sonde-du-tas-au-moment-du-refus.md)).
 
 > Les **seuils de l'échelle 8 bits ne sont PAS retouchés** par ce lot ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) reste en vigueur) : un seul levier, un seul effet à mesurer. L'assiette de calibrage ayant changé, ils seront réévalués **après** ces 48 h.
 
@@ -236,7 +242,7 @@ Ces seuils décrivent une dégradation ordonnée du tas et ne se modifient pas i
 | 18 432 o | `kOomRearmMinMaxAllocBytes` | Réarmement de la réserve **nominale** (12 Ko) — = 12 288 + 4 096 + 2 048, verrouillé par test |
 | 21 492 o | — (documentaire) | **Nominal terrain** en régime fragmenté stable (2.26→2.32) |
 
-> **L'immunité aux creux transitoires vient du DÉBOUNCE, pas du niveau des seuils** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) : des creux à 1 268 o de quelques secondes existent en régime normal — aucun seuil statique > 1,3 Ko ne passe dessous. L'auto-guérison exige 3 mesures consécutives (60 s nominale, 5 s sous WARN) : seule une famine **continue ≥ 10-15 s** déclenche. Hors périmètre (encore en métrique brute) : `web_routes_debug.cpp:55` et la garde TLS de `web_routes_ota.cpp` — suivi lot B.
+> **L'immunité aux creux transitoires vient du DÉBOUNCE, pas du niveau des seuils** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) : des creux à 1 268 o de quelques secondes existent en régime normal — aucun seuil statique > 1,3 Ko ne passe dessous. L'auto-guérison exige 3 mesures consécutives (60 s nominale, 5 s sous WARN) : seule une famine **continue ≥ 10-15 s** déclenche. Hors périmètre (encore en métrique brute) : la seule garde TLS de `web_routes_ota.cpp` — `web_routes_debug.cpp` a basculé en lot B-2.
 
 Ceinture supplémentaire v2.18.8 : le handler remet la taille à 0 **avant** d'extraire le pointeur ; lire « pointeur vivant + taille 0 » dans cette fenêtre ferait passer une réserve nominale pour non armée et autoriserait un déclassement — la loop suppose donc le palier nominal dans ce cas.
 
@@ -270,7 +276,9 @@ L'IDF passe au callback un `function_name` que le firmware **jetait** (`(void)fu
 - `function_name` est un **littéral de `.rodata`** (immortel, jamais libéré) → on publie le **pointeur** dans un `std::atomic<const char*>`, **jamais une copie** : un `strncpy` coûterait une écriture non triviale **sous le verrou du tas** et autoriserait une lecture déchirée depuis la loop, pour aucun gain ;
 - les deux valeurs sont **drainées et journalisées depuis le tick**, **JAMAIS depuis le hook** (verrou du composant heap détenu — cf. contrainte structurante ci-dessous).
 
-Le **post-mortem RTC n'est PAS agrandi** pour les accueillir : la zone de 32 octets est pleine, et l'étendre imposerait un nouveau bump de magic (donc la perte d'une trace) pour une information déjà présente dans le journal.
+Le **post-mortem RTC n'est PAS agrandi** pour les accueillir : l'étendre imposerait un bump de magic (donc la perte d'une trace) pour une information déjà présente dans le journal.
+
+> 🔎 **Depuis bug-080 B-2, la zone fait 48 octets** (magic `0xF00DFA13`) — mais pour accueillir la **sonde du refus**, pas `function_name`, qui reste journal-seul. Le raisonnement ci-dessus est donc intact : on n'agrandit pas la zone pour une donnée déjà présente dans le journal, on l'agrandit pour une **mesure qu'aucune autre trace ne porte**.
 
 #### Backoff du WARN d'échec — restaurer la fenêtre forensique (v2.20.2)
 
@@ -290,21 +298,66 @@ Effet mesuré sur la **rétention du journal persistant** : voir [logger.md](log
 
 Défaut n°2 du crash du 13/08 : le CRITICAL « Réserve OOM consommée » est émis **en différé** par la loop → **perdu** quand l'abort suit immédiatement, et le journal persistant d'avant crash l'est aussi (flush toutes les 10 min). Seule la RAM RTC noinit survit. Le firmware y enregistre donc l'état **au moment exact de l'échec** et le **dumpe au boot suivant**, juste après le dump de l'anneau heap.
 
-### Contrainte structurante — aucun `heap_caps_*` depuis le chemin d'échec
+### Contrainte structurante — `heap_caps_*` depuis le chemin d'échec : REQUALIFIÉE en v2.40.0
 
-`heap_caps_register_failed_alloc_callback` est appelé **depuis l'intérieur de l'allocateur**, qui **détient déjà le verrou du composant heap**. Tout appel réentrant (`heap_caps_get_free_size`, `heap_caps_get_largest_free_block`, `ESP.getFreeHeap()`, `ESP.getMaxAllocHeap()`) y est donc un **deadlock** — interdiction absolue, au même titre que les allocations, les mutex et les logs déjà proscrits par [ADR-0035](../adr/0035-parachute-oom-new-handler.md).
+> ⚠️ **Ce paragraphe disait « deadlock ». C'était FACTUELLEMENT FAUX** — et cette erreur de justification a **empêché l'instrumentation décisive pendant trois cycles de diagnostic**. Corrigé par bug-080 B-2, [ADR-0066](../adr/0066-sonde-du-tas-au-moment-du-refus.md).
 
-Conséquence : le post-mortem ne mesure **jamais** le tas. Sa seule source « free / maxBloc » est un **miroir atomique du dernier échantillon de l'anneau heap** (`oomGuardNoteHeapSample()`, alimenté par `heapRingSample()`) : valeurs **déjà mesurées** à la cadence inchangée de `kHeapRingSampleIntervalMs` = 2 s, pré-encodées pour que le chemin d'échec n'ait qu'un unique store aligné à faire. **Aucun parcours de tas supplémentaire** n'est introduit. L'horloge du chemin d'échec est `xTaskGetTickCount()` (simple lecture de `xTickCount`, sans verrou) — le miroir est horodaté avec **la même** horloge pour que le calcul d'âge reste juste.
+Ce que dit le **désassemblage de `libheap.a`** (revue B-1) :
 
-### Format de la zone — 32 octets, magic `0xF00DFA12` (bumpé en v2.19.0)
+- `heap_caps.c.obj` ne contient **aucune relocation** vers `multi_heap_internal_lock` / `_unlock` — le verrou du tas vit **entièrement** dans `multi_heap.c.obj` ;
+- `heap_caps_alloc_failed`, d'où part le callback, est **statique en `.iram1.0`** et n'est atteinte qu'**après le retour complet** de `heap_caps_malloc_base`.
 
-3ᵉ zone RTC noinit du projet, magic **distinct** de l'anneau heap (`0xB10C4EAA`) et de l'auto-guérison (`0xA5C0FFEE`). Vue comme 8 mots de 32 bits **alignés** ; les chemins d'échec n'y font que des **stores bruts**.
+**Aucun verrou de tas n'est détenu** quand le callback s'exécute : mesurer depuis là n'est **pas réentrant**.
 
-> **Pourquoi le magic a été bumpé** (`0xF00DFA11` → `0xF00DFA12`, et `0xB10C4EA9` → `0xB10C4EAA` pour l'anneau, [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)) : depuis la v2.19.0, les champs « ring » de cette zone portent la mesure **8 bits**. Une zone écrite par un firmware **2.18.x** contient l'ancienne métrique (IRAM 32 bits comprise) ; la relire avec les nouveaux libellés (`free8=`, `maxB8=`) afficherait un chiffre **faux et crédible**. Conséquence assumée : **le post-mortem et la cinétique du boot de bascule 2.18.x → 2.19.0 sont perdus**. Perdre une trace est acceptable, afficher une valeur trompeuse ne l'est pas. Les quatre magics `0xA5C0FFEE`, `0xB10C4EA9`, `0xB10C4EAA`, `0xF00DFA11`, `0xF00DFA12` sont désormais **tous réservés** — aucun ne doit être réemployé.
+L'interdit **reste néanmoins valable**, sous sa vraie qualification : c'est un **COÛT INTERRUPTIONS COUPÉES**, pas un risque de réentrance. Un parcours TLSF (`largest_free_block`) s'exécute interruptions coupées ; le chemin d'échec peut être déclenché **par rafales** ; et il est **appelable depuis une ISR**. Mesurer sans borne y transformerait un diagnostic en **source de gigue** pour la régulation et le watchdog.
+
+**Exception unique et bornée** (depuis B-2) : `heapProbeForCaps()`, et **seulement** via l'entonnoir d'`oom_guard.cpp`, sous **quatre garde-fous cumulés** :
+
+| Garde-fou | Valeur | Ce qu'il empêche |
+|---|---|---|
+| Jeton « un échantillon par **épisode** » | `exchange` atomique, réarmé par la loop au drain du WARN d'échec (donc suit le backoff immédiat → 30 s → 5 min → 30 min) | Deux cœurs qui sondent simultanément ; une rafale qui sonde à chaque refus |
+| **Plancher temporel absolu** | `kOomProbeMinIntervalMs` = **1 000 ms** | Le drain **immédiat** du backoff (`sFailWarnDelayMs` démarre à 0) réarmant le jeton quelques ms après la sonde précédente |
+| **Jamais depuis une ISR** | `xPortInIsrContext()` | Un parcours de tas en contexte d'interruption |
+| **Désactivation DÉFINITIVE** | durée du **couple** > `kOomProbeMaxDurationUs` = **1 500 µs** | Qu'une plateforme lente paie le coût indéfiniment |
+
+Plus un **WARN** de conservation à `kOomProbeWarnDurationUs` = **300 µs**, et une **borne a priori** sur le pire cas PSRAM (ci-dessous) — parce que l'autolimitation est **post-hoc par construction** : le dépassement qui la déclenche a **déjà eu lieu**.
+
+> **Formulation honnête, à reprendre telle quelle** (déjà employée dans [`heap_metrics.h`](../../src/heap_metrics.h)) : « **sans verrou pris par nous** ». `multi_heap_get_info_impl` prend bien un spinlock, en interne et brièvement. Écrire « sans verrou » tout court reproduirait exactement le défaut que ce lot corrige : une affirmation qui se transmet mieux qu'elle ne se vérifie.
+
+`heapLargestFreeBlock8Bit()`, `heapFree8Bit()` et `heapMetricsSnapshot()` restent **INTERDITES** dans ces chemins : elles ne sont bornées par rien.
+
+#### La sonde du refus — double mesure, un parcours chacune (bug-080 B-2)
+
+`heapProbeForCaps(caps)` utilise `heap_caps_get_info()`, qui livre `total_free_bytes` **et** `largest_free_block` en **UN** parcours (là où `get_free_size()` + `get_largest_free_block()` en feraient deux). Le hook en fait **deux** appels :
+
+1. sur les **caps DE L'ÉCHEC** (`0x080C` dans le cas réel du 05/09) — la question effectivement posée à l'allocateur ;
+2. sur la **référence `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`** (`heapCaps8BitMask()`) — le point de comparaison qui rend le verdict **attribuable**.
+
+**Borne a priori du pire cas PSRAM** (condition 2 du gate `pool-chemistry`) : le parcours O(blocs) n'est pris que si le masque **GARANTIT la RAM interne** (`caps & MALLOC_CAP_INTERNAL`, prédicat pur `oomProbeUsesRegionScan`). Sinon, la sonde **change d'algorithme** — agrégats O(régions) via `heap_caps_get_free_size` — et « plus gros bloc » vaut la sentinelle `kOomProbeBlockUnknown`. **La sonde n'est JAMAIS sautée** : les 12 sites d'appel du hook doivent tous rendre un verdict.
+
+> ⚠️ **Le test porte sur `MALLOC_CAP_INTERNAL`, jamais sur la présence de `MALLOC_CAP_SPIRAM`** — la première écriture du lot faisait l'inverse, défaut **bloquant** relevé en revue. Tout `malloc()` / `operator new` ordinaire remonte `caps = MALLOC_CAP_DEFAULT` (`0x1000`), **sans** bit SPIRAM (désassemblage : `heap_caps.c.obj`, `.iram1.2`, `.literal+0x8 = 0x00001000`) — c'est la classe d'échec des crashs du 11/08 et du 13/08. Or le tas PSRAM est enregistré `DEFAULT|SPIRAM|8BIT|32BIT` : `heap_caps_match()` l'aurait sélectionné et `tlsf_walk_pool` aurait parcouru **4 Mo interruptions coupées**. La sonde se serait **désactivée dès le premier `new` refusé**, morte sur son cas d'usage principal.
+
+**Horloge = CCOUNT** (`esp_cpu_get_cycle_count()`) : une instruction, **aucun verrou** — `esp_timer_get_time()` prend un `portMUX` dans certaines implémentations ESP32, rédhibitoire dans un chemin appelable en ISR. Le compteur étant **par cœur**, `xPortGetCoreID()` est lu avant et après : si la tâche a migré, la durée est marquée invalide (`kOomProbeDurationInvalid` = `0xFFFF`) et **l'autolimitation n'est pas appliquée sur cet échantillon** — une migration ne doit jamais désactiver la sonde à vie. Une durée réelle sature à `0xFFFE`, pour que « très lente » et « non mesurable » restent discernables. La zone RTC stocke des **µs**, pas des cycles (`sProbeCyclesPerUs` calculé **une fois** dans `initOomGuard()`, repli `kOomProbeDefaultCpuMhz` = 240).
+
+**Pas d'`esp_task_wdt_reset()`** après la section critique — divergence assumée et **validée par le gate** : le modèle du contrôle d'intégrité vise un parcours de 5-20 ms dans la loop ; ici 1,5 ms plafonné, et prendre le verrou TWDT depuis un chemin appelable en contexte non-loop serait un risque net pour un bénéfice nul.
+
+**Condition 5 du gate** : aucune sonde tant que `oomGuardLoopTick()` n'a pas tourné **une fois** (le jeton y est armé, pas dans `initOomGuard()`) — un échec d'allocation pendant le `setup()`, le moment le plus fragile, ne doit pas déclencher un parcours de tas avant que la loop vive.
+
+Le miroir de l'anneau (`oomGuardNoteHeapSample()`, alimenté par `heapRingSample()` à `kHeapRingSampleIntervalMs` = 2 s, pré-encodé pour un unique store aligné) **subsiste** et reste la source des champs `ringFree` / `ringMaxB` : la sonde ne le remplace pas, elle **le prime** quand elle est représentative. L'horloge du chemin d'échec pour l'horodatage reste `xTaskGetTickCount()` (lecture de `xTickCount`, sans verrou), la même que celle du miroir, pour que le calcul d'âge reste juste.
+
+### Format de la zone — 48 octets, magic `0xF00DFA13` (bumpé en bug-080 B-2)
+
+3ᵉ zone RTC noinit du projet, magic **distinct** de l'anneau heap (`0xB10C4EAA`) et de l'auto-guérison (`0xA5C0FFEE`). Vue comme **12 mots** de 32 bits **alignés** ; les chemins d'échec n'y font que des **stores bruts**. Budget RAM RTC noinit du projet : auto-heal 9 o + anneau heap 1 032 o + post-mortem **48 o** = **1 089 / 8 192 o** (était 1 073).
+
+> **Pourquoi le magic a été bumpé** (`0xF00DFA11` → `0xF00DFA12`, et `0xB10C4EA9` → `0xB10C4EAA` pour l'anneau, [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)) : depuis la v2.19.0, les champs « ring » de cette zone portent la mesure **8 bits**. Une zone écrite par un firmware **2.18.x** contient l'ancienne métrique (IRAM 32 bits comprise) ; la relire avec les nouveaux libellés (`free8=`, `maxB8=`) afficherait un chiffre **faux et crédible**. Conséquence assumée : **le post-mortem et la cinétique du boot de bascule 2.18.x → 2.19.0 sont perdus**. Perdre une trace est acceptable, afficher une valeur trompeuse ne l'est pas.
+
+> **Re-bumpé en bug-080 B-2** (`0xF00DFA12` → `0xF00DFA13`) : la zone passe de **32 à 48 octets**. Même raisonnement, en plus grave — sans bump, les mots `w8..w11` seraient lus dans une zone de 32 o écrite par l'ancien firmware, c'est-à-dire dans de la **RAM RTC non initialisée** : des **valeurs de sonde inventées et crédibles**. Le post-mortem du boot de bascule est perdu, c'est accepté ([ADR-0066](../adr/0066-sonde-du-tas-au-moment-du-refus.md)).
+
+Les magics `0xA5C0FFEE`, `0xB10C4EA9`, `0xB10C4EAA`, `0xF00DFA11`, `0xF00DFA12` et `0xF00DFA13` sont **tous réservés** — aucun ne doit être réemployé. `0xF00DFA12` en particulier reste **réservé et REJETÉ** : une zone qui le porte vient d'un firmware ≤ 2.39.x, ne fait que 32 o et n'est pas relue.
 
 | Offset | Champ | Description |
 |---|---|---|
-| 0-3 | `magic` | `kOomPostMortemMagic` (`0xF00DFA12` depuis v2.19.0), écrit **en dernier** à l'initialisation |
+| 0-3 | `magic` | `kOomPostMortemMagic` (`0xF00DFA13` depuis bug-080 B-2), écrit **en dernier** à l'initialisation |
 | 4-7 | `failCount` | Échecs d'allocation cumulés du boot |
 | 8-11 | `firstSize` | Taille demandée au 1ᵉʳ échec (octets) |
 | 12-15 | `lastSize` | Taille demandée au dernier échec |
@@ -316,6 +369,17 @@ Conséquence : le post-mortem ne mesure **jamais** le tas. Sa seule source « fr
 | 28-29 | `ringUptimeS` | Uptime (s) de cet échantillon → **âge** = `lastUptimeS − ringUptimeS` |
 | 30 | `flags` | Drapeaux (ci-dessous) |
 | 31 | `releaseCount` | Épisodes de libération de la réserve (saturé à 255) |
+| 32-35 | `probeSize` | **Sonde** — taille refusée au moment de la sonde, **EXACTE** (non quantifiée : 1 622 o ne tolère aucun arrondi) |
+| 36-37 | `probeCapsMaxB >> 6` | Plus gros bloc pour les **caps DE L'ÉCHEC** (quantum 64 o), ou `kOomProbeBlockUnknown` |
+| 38-39 | `probeCapsFree >> 8` | Libre total pour les caps de l'échec (quantum 256 o) |
+| 40-41 | `probeRefMaxB >> 6` | Plus gros bloc de **RÉFÉRENCE `INTERNAL\|8BIT`** (quantum 64 o) |
+| 42-43 | `probeRefFree >> 8` | Libre total de référence `INTERNAL\|8BIT` (quantum 256 o) |
+| 44-45 | `probeCaps` | Masque `heap_caps` sondé, **tronqué à 16 bits** |
+| 46-47 | `probeDurationUs` | Durée du **COUPLE** des 2 parcours, saturée (`0xFFFF` = non mesurable, `0xFFFE` = plafond réel) |
+
+**Quanta inchangés** (bloc 64 o, libre 256 o) : aucune règle de décodage neuve. Les champs `ring*` sont **périmés de 0 à 2 s** ; les champs `probe*` sont mesurés **au moment exact du refus**.
+
+> ⚠️ **`probeCaps` est tronqué à 16 bits.** La ligne 1 du dump imprime `lastCaps` (32 bits), la ligne 2 `probeCaps` (16 bits) : identiques sur les caps rencontrées ici, **mais** l'IDF 5.5 déclare déjà des bits ≥ 16 (`TCM` 1<<16, `DMA_DESC_AHB` 1<<17, `CACHE_ALIGNED` 1<<19, `SIMD` 1<<20). Si l'un d'eux apparaissait, `probeCaps` le perdrait et `oomPostMortemProbeRepresentative()` resterait cohérente mais **moins discriminante**. Un champ de 32 bits exigerait un **13ᵉ mot**.
 
 ### Drapeaux (octet 30) — le « drapeau réserve consommée » demandé par la spec
 
@@ -328,35 +392,111 @@ Il n'y a **pas** de variable RTC séparée : le drapeau **est** cet octet. Il es
 | 2 (`0x04`) | `kOomPmFlagHandlerUnregistered` | `new_handler` désenregistré (le `bad_alloc` a suivi son cours) |
 | 3 (`0x08`) | `kOomPmFlagIntegrityFailed` | Contrôle d'intégrité du tas **ÉCHOUÉ** |
 | 4 (`0x10`) | `kOomPmFlagIntegrityNeverRun` | Contrôle d'intégrité **jamais exécuté** (valeur initiale) |
+| 5 (`0x20`) | `kOomPmFlagProbeTaken` | **Une sonde au refus a été prise** — les mots `w8..w11` sont renseignés. Ne **jamais** les lire sans ce drapeau |
+| 6 (`0x40`) | `kOomPmFlagProbeIsrSkipped` | Au moins un refus est survenu **en ISR** (sonde interdite dans ce contexte) |
+| 7 (`0x80`) | `kOomPmFlagProbeDisabled` | Sonde **DÉSACTIVÉE définitivement** (durée du couple > `kOomProbeMaxDurationUs`) |
 
-### Verdict — règle exacte
+> ⚠️ **L'octet `flags` est SATURÉ — 8 bits sur 8 — depuis bug-080 B-2.** Tout drapeau futur exigera un **mot supplémentaire** dans la zone (donc un nouveau bump de magic, donc la perte d'une trace). Ce n'est plus une extension gratuite. Consigné dans [ADR-0066](../adr/0066-sonde-du-tas-au-moment-du-refus.md).
 
-`oomPostMortemVerdict()` (fonction pure) départage les deux hypothèses laissées ouvertes par le 13/08 : **(a)** consommateur très rapide dans l'angle mort de 2 s de l'anneau, **(b)** corruption du tas (comptabilité saine, allocateur qui refuse 156 o).
+### Verdict — règle exacte (révisée en bug-080 B-2)
 
-1. `failCount == 0` **ou** `lastSize == 0` **ou** aucun échantillon d'anneau → `INDÉTERMINÉ` ;
-2. `failCount > kOomCorruptionMaxFails` (**comparaison stricte** : 9 échecs déclenchent, pas 8) **ET** rafale, c'est-à-dire span `lastUptimeS − firstUptimeS` ≤ `kOomCorruptionBurstSpanS` (60 s) → **`FAMINE MÉMOIRE`** ;
-3. sinon, comptabilité **non** saine (`ringMaxB / kOomCorruptionSaneBlockRatio < lastSize`, soit maxBloc < 4 × taille demandée) → **`FAMINE MÉMOIRE`** ;
-4. sinon (comptabilité saine : maxBloc ≥ 4 × la taille demandée) → **`SUSPICION CORRUPTION`**.
+`oomPostMortemVerdict()` (fonction pure) départage désormais **trois** hypothèses : **(a)** famine générale, **(b)** corruption du tas, **(c)** famine d'un **pool restreint** (DMA) alors que le tas 8 bits reste sain — cas neuf, et cas **majoritaire** en pratique (11 échecs sur 11 le 05/09).
+
+1. `failCount == 0` **ou** `lastSize == 0` → `INDÉTERMINÉ` ;
+2. **sonde REPRÉSENTATIVE** — `kOomPmFlagProbeTaken` **ET** `probeSize == lastSize` **ET** `probeCaps == (lastCaps & 0xFFFF)` — elle **fait autorité, l'anneau est IGNORÉ** (il est périmé de 0 à 2 s et mesuré sur des caps fixes) :
+   - `probeCapsMaxB == kOomProbeBlockUnknown` (sonde O(régions), masque pouvant atteindre la PSRAM) → on tranche sur le **libre seul** : `probeCapsFree < probeSize` → **`FAMINE MÉMOIRE`**, sinon **`INDÉTERMINÉ`** (abstention assumée) ;
+   - `probeCapsMaxB < probeSize` → **l'allocateur disait vrai** :
+     - référence saine (`probeRefMaxB / kOomCorruptionSaneBlockRatio >= probeSize`) → **`FAMINE DMA (pool restreint)`** ;
+     - sinon → **`FAMINE MÉMOIRE`** (tout le tas est à sec) ;
+   - `probeCapsMaxB >= probeSize` → un bloc **existait à l'instant du refus** → **`SUSPICION CORRUPTION`**. C'est désormais **le SEUL chemin** vers ce verdict, et il repose enfin sur une mesure **contemporaine**.
+3. **sonde absente ou non représentative** (jamais prise, sautée en ISR, désactivée, ou classe d'échec différente) → règle historique de la v2.18.8, **amputée de sa conclusion** :
+   - aucun échantillon d'anneau → `INDÉTERMINÉ` ;
+   - `failCount > kOomCorruptionMaxFails` (**comparaison stricte** : 9 échecs déclenchent, pas 8) **ET** rafale, c'est-à-dire span `lastUptimeS − firstUptimeS` ≤ `kOomCorruptionBurstSpanS` (60 s) → **`FAMINE MÉMOIRE`** ;
+   - comptabilité **non** saine (`ringMaxB / kOomCorruptionSaneBlockRatio < lastSize`) → **`FAMINE MÉMOIRE`** ;
+   - sinon → **`INDÉTERMINÉ`**.
+
+> ⚠️ **`SUSPICION CORRUPTION` a DISPARU de la branche 3.** C'était sa conclusion par défaut, et elle était **fausse sur le régime réel de l'appareil** : le 05/09, 1 622 o refusés en `caps=0x080C` face à un anneau annonçant 26 612 o de plus gros bloc **8 bits** — deux grandeurs qui ne parlent pas de la même mémoire. Sans mesure contemporaine, la règle **s'abstient** désormais, et le libellé du dump dit **pourquoi** (`sonde=absente` / `ISR` / `désactivée` / `autre refus`). Un `CRITICAL` faux coûte plus cher qu'un `INDÉTERMINÉ` honnête.
 
 > **La fenêtre de rafale vient d'une revue.** Le compteur d'échecs est cumulé sur **tout le boot** : sans borne temporelle, quelques échecs bénins étalés sur des heures auraient conclu « famine » sur le scénario **même** que ce verdict doit trancher (13/08 : 2 échecs, tas comptabilisé sain). Une vraie famine refuse tout en quelques secondes — 60 s couvrent largement l'épisode du 11/08 (~14 s).
 
-Sur le cas du 13/08, la règle conclut donc `SUSPICION CORRUPTION` : 156 o refusés avec `maxB = 27 584` annoncé, soit **176×** la taille demandée.
+#### Les sous-cas de la sonde — l'indétermination est toujours ATTRIBUABLE
+
+Quatre sous-cas d'**indétermination attribuable** (`absente`, `ISR`, `désactivée`, `autre refus`), plus le cas nominal `oui` :
+
+| `sonde=` | Signification | Que faire |
+|---|---|---|
+| `oui` | Sonde prise **et** représentative → le verdict repose sur elle | Lire la **ligne 2** du dump : elle porte les quatre mesures |
+| `absente` | Aucune sonde sur ce boot (jeton jamais consommé, plancher temporel, ou aucun échec hors ISR) | Vérifier `oom_probe_count` sur `/get-system-info` |
+| `ISR` | Au moins un refus est survenu **en ISR** — la sonde y est interdite | Attendu ; l'échec vient d'un chemin d'interruption |
+| `désactivée` | La sonde s'est **auto-désactivée** (couple > 1 500 µs) | Chercher le WARN `Sonde OOM DÉSACTIVÉE définitivement` ; `oom_probe_enabled=false` ; **ne plus interpréter les statistiques**, elles sont figées |
+| `autre refus` | Sonde prise, mais sur une **classe d'échec différente** du dernier échec enregistré (taille ou caps ≠) — le jeton « un échantillon par épisode » rend ce cas possible | La ligne 2 décrit un **autre** refus : ne pas la croiser avec la ligne 1 |
+
+Sur le cas du 13/08, l'**ancienne** règle concluait `SUSPICION CORRUPTION` : 156 o refusés avec `maxB = 27 584` annoncé, soit **176×** la taille demandée. **La règle révisée rendrait `INDÉTERMINÉ`** sur ce même jeu de données (aucune sonde : firmware 2.18.8).
 
 > ⚠️ **Ce verdict était faux, et on sait pourquoi depuis le 15/08** ([ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md)). Le `maxB = 27 584` sur lequel il repose venait de `ESP.getMaxAllocHeap()`, qui compte l'**IRAM 32 bits inutilisable** : c'était un reliquat d'IRAM figé, pas de la mémoire allouable. La comptabilité n'était donc pas « saine », elle était **fausse** — il n'y a jamais eu de corruption (l'intégrité du tas est vérifiée OK toutes les 5 min), la **famine 8 bits était réelle**. Depuis la v2.19.0, le miroir qui alimente ces champs porte la mesure 8 bits : **la règle du verdict, inchangée, redevient exploitable**. Ses paramètres (`kOomCorruptionMaxFails`, `kOomCorruptionBurstSpanS`, `kOomCorruptionSaneBlockRatio`) seront réévalués avec les relevés on-target de la 2.19.1.
 
-### Ligne de dump au boot
+### Lignes de dump au boot — DEUX lignes depuis bug-080 B-2
 
-`oomPostMortemDumpIfBoot()` est appelée dans `setup()` **juste après** `heapRingDumpIfCrash()` : les deux traces se lisent ensemble (l'anneau donne la **cinétique**, le post-mortem le **point d'échec**). Elle lit l'**instantané** pris par `initOomGuard()` (la zone RTC, elle, a déjà été invalidée et appartient au boot courant). Rien n'est émis si la zone est invalide, ou si elle ne contient ni échec ni corruption. Une **ligne unique**, construite dans un tampon de pile (aucune allocation) :
+`oomPostMortemDumpIfBoot()` est appelée dans `setup()` **juste après** `heapRingDumpIfCrash()` : les traces se lisent ensemble (l'anneau donne la **cinétique**, le post-mortem le **point d'échec**). Elle lit l'**instantané** pris par `initOomGuard()` (la zone RTC, elle, a déjà été invalidée et appartient au boot courant). Rien n'est émis si la zone est invalide, ou si elle ne contient ni échec ni corruption. Chaque ligne est construite en **un `snprintf` sur tampon de pile** (aucune allocation).
+
+**Ligne 1 — comptabilité de l'épisode** (toujours émise) :
 
 ```
-Post-mortem OOM : échecs=2 sur 41 s (1er 100 o, dernier 156 o caps=0x0404, uptime=46512 s),
-tas comptabilisé t-2s free8=81408 maxB8=27584, réserve=nominale consommée, handler=désenregistré,
-intégrité=jamais exécutée → verdict SUSPICION CORRUPTION
+Post-mortem OOM : échecs=11 sur 3077 s (1er 1622 o, dernier 1622 o caps=0x080C, uptime=4313 s),
+tas comptabilisé t-2s free8=58872 maxB8=20468, réserve=intacte, handler=actif,
+intégrité=OK, sonde=oui → verdict FAMINE DMA (pool restreint)
 ```
+
+**Ligne 2 — la sonde du refus**, émise **uniquement si `kOomPmFlagProbeTaken` est posé** :
+
+```
+Post-mortem OOM (sonde oui) : au refus de 1622 o caps=0x080C → maxBloc=1024 o libre=8192 o ;
+réf8 maxBloc=26612 o libre=59384 o, en 84 µs
+```
+
+> **Pourquoi DEUX lignes et non une seule fusionnée.** Fusionner économiserait ~120 o de flash mais ramènerait le **risque de troncature silencieuse** corrigé en B-1 — et la troncature frapperait la **fin** de la ligne, c'est-à-dire le verdict. Les tampons ont été recalculés au pire cas en **octets UTF-8** (accents 2 o, `—` et `→` **3 o**) : ligne 1 `char[384]` (pire cas 323 o, `sonde=désactivée` et `verdict=FAMINE DMA (pool restreint)` étant **co-occurrents**), ligne 2 `char[224]` (pire cas 181 o).
+>
+> La ligne 2 n'est **jamais** émise sans sonde : afficher `maxBloc=0 libre=0 … en 0 µs` ferait passer des zéros pour une mesure. Quand elle manque, la ligne 1 dit déjà **pourquoi** (`sonde=absente` / `ISR` / `désactivée`).
 
 > **Libellés suffixés `8` depuis la v2.19.0** (`free8=`, `maxB8=`, idem dans le dump de l'anneau) : le journal doit être **auto-descriptif**, pour qu'en relisant d'anciens logs on ne confonde jamais la mesure 8 bits (réellement allouable) avec l'ancienne mesure « interne totale ». Un log portant `free=` / `maxB=` vient d'un firmware **≤ 2.18.9** et contient la métrique surestimée.
 
-Niveau : **CRITICAL** si le verdict est `SUSPICION CORRUPTION` ou si le bit « intégrité échouée » est posé (information décisive, persistée), **WARN** sinon — même politique que le dump de l'anneau. Libellés : `réserve` = `intacte` / `nominale consommée` / `repli consommée` / `nominale+repli consommées` ; `handler` = `actif` / `désenregistré` ; `intégrité` = `OK` / `ÉCHEC` / `jamais exécutée`.
+**Politique de niveau** (révisée en B-2) :
+
+| Situation | Niveau |
+|---|---|
+| Verdict `SUSPICION CORRUPTION` **ou** bit « intégrité échouée » posé | **CRITICAL** (information décisive, persistée) |
+| Verdict **`FAMINE DMA (pool restreint)`** | **WARN** — ce n'est **pas** une corruption |
+| `FAMINE MÉMOIRE`, `INDÉTERMINÉ` | **WARN** |
+| Ligne 2 (sonde) | **WARN** dans tous les cas |
+
+Libellés : `réserve` = `intacte` / `nominale consommée` / `repli consommée` / `nominale+repli consommées` ; `handler` = `actif` / `désenregistré` ; `intégrité` = `OK` / `ÉCHEC` / `jamais exécutée` ; `sonde` = `oui` / `absente` / `ISR` / `désactivée` / `autre refus`.
+
+### Observabilité de la sonde en vol — trois lignes drainées par la loop
+
+**Jamais journalisé depuis le hook** (qui n'a le droit ni de logger ni d'allouer) : les trois messages partagent **un seul site d'émission** dans `oomGuardLoopTick()`, par ordre de priorité décroissante.
+
+```
+INFO  Sonde OOM 1er échantillon (couple de 2 parcours) : 84 µs (seuil 1500 µs)
+WARN  Sonde OOM LENTE, mais CONSERVÉE : 412 µs (seuil 300 µs)
+WARN  Sonde OOM DÉSACTIVÉE définitivement : 1742 µs (seuil 1500 µs)
+WARN  Sonde OOM 1er échantillon (couple de 2 parcours) : durée non mesurable (migration de cœur)
+```
+
+- **1ᵉʳ échantillon en INFO, one-shot** (condition 4 du gate) : le **chiffre réel** qui valide — ou non — l'innocuité de la sonde. Il arrive gratuitement, le 1ᵉʳ WARN d'échec d'un épisode étant immédiat.
+- **« LENTE, mais CONSERVÉE » est ONE-SHOT PAR BOOT**, volontairement : le plancher temporel autorise **une sonde par seconde**, donc un WARN par sonde lente ferait **3 600 lignes/h** dans un journal de 8 Ko dont la rétention est de 25-35 min — la fenêtre forensique détruite **par notre propre instrumentation** (le défaut n°3 du 15/08). Les durées restent lisibles via `/get-system-info`.
+- Une **durée invalide** (migration de cœur entre les deux lectures de CCOUNT) n'affiche **pas** « 65535 µs », qui serait un chiffre inventé et alarmant : elle dit ce qui s'est passé.
+
+Le **WARN d'échec vivant** porte lui aussi la sonde, en queue de ligne — ou dit explicitement qu'elle manque :
+
+```
+WARN  Alloc heap échouée x5 (dernière=1622 o caps=0x080C appelant=heap_caps_malloc, cumul=11)
+      — sonde(0x080C) maxBloc=1024 libre=8192, réf8 maxBloc=26612 libre=59384, en 84 µs
+WARN  Alloc heap échouée x1 (dernière=356 o caps=0x1000 appelant=?, cumul=1) — sonde=absente
+```
+
+Tampon porté `[160]` → **`[256]`** (pire cas 241 o) : un `[160]` aurait tronqué **silencieusement** le WARN de diagnostic — précisément le défaut que ce lot supprime.
+
+Les statistiques de la sonde sont par ailleurs exposées **hors journal**, en quatre champs additifs de [`/get-system-info`](../API.md#oom_probe_--observabilité-de-la-sonde-du-refus-v2400-additifs) : `oom_probe_enabled`, `oom_probe_count`, `oom_probe_max_us`, `oom_probe_last_caps` (quatre lectures d'atomiques : ni allocation, ni log, ni parcours de tas).
 
 ### Limites assumées (à connaître au diagnostic)
 
@@ -431,7 +571,12 @@ Chaque refus émet un WARN auto-explicatif : motif, PSRAM libre, les deux mesure
 | `kOomFailWarnDelayResetMs` | `3600000` (1 h) | Sans nouvel échec pendant ce délai → retour au palier initial |
 | `kOomCorruptionMaxFails` | `8` | Au-delà (comparaison **stricte**) **et** en rafale → verdict `FAMINE MÉMOIRE` (v2.18.8) |
 | `kOomCorruptionBurstSpanS` | `60` (60 s) | Fenêtre de **rafale** du verdict : span entre 1ᵉʳ et dernier échec (v2.18.8) |
-| `kOomCorruptionSaneBlockRatio` | `4` | maxBloc ≥ 4 × taille demandée = comptabilité **saine** → `SUSPICION CORRUPTION` (v2.18.8) |
+| `kOomCorruptionSaneBlockRatio` | `4` | **Sémantique élargie en bug-080 B-2** : le ratio « maxBloc ≥ 4 × taille demandée = comptabilité saine » sert désormais **deux** tests. **(1)** Sur la **référence `INTERNAL\|8BIT` de la sonde** — `probeRefMaxB / 4 >= probeSize` — il départage `FAMINE DMA (pool restreint)` (référence saine : seul le pool restreint est à sec) de `FAMINE MÉMOIRE` (tout le tas est à sec). **(2)** Sur l'**anneau**, en branche « sonde absente », il ne conclut plus que `FAMINE MÉMOIRE` **ou** `INDÉTERMINÉ` — **plus jamais `SUSPICION CORRUPTION`** |
+| `kOomProbeWarnDurationUs` | `300` (300 µs) | **B-2** — durée du **COUPLE** des 2 parcours au-delà de laquelle un WARN one-shot par boot est émis. **Sonde CONSERVÉE** |
+| `kOomProbeMaxDurationUs` | `1500` (1,5 ms) | **B-2** — au-delà : sonde **DÉSACTIVÉE définitivement** + WARN one-shot. Verrouillé sous `kHeapIntegrityWarnDurationUs` (5 ms) par `static_assert` : une sonde dans un chemin d'échec ne doit jamais coûter l'ordre de grandeur d'un parcours toléré dans la loop |
+| `kOomProbeMinIntervalMs` | `1000` (1 s) | **B-2, condition 3 du gate** — plancher temporel **absolu** entre deux sondes, **en plus** du jeton par épisode (dont le drain immédiat pourrait sinon réarmer à quelques ms d'intervalle). La **1ʳᵉ** sonde du boot n'est jamais bloquée |
+| `kOomProbeDefaultCpuMhz` | `240` | **B-2** — repli de conversion cycles CCOUNT → µs si `getCpuFrequencyMhz()` renvoie 0 (calculé **une fois** au setup ; le hook ne fait qu'une division entière) |
+| `kOomProbeBlockUnknown` | `0xFFFF << 6` (4 194 240) | **B-2** — sentinelle « plus gros bloc **non renseigné** », valeur produite naturellement par la quantification du champ RTC saturé : aucun encodage spécial, aucune règle de décodage neuve |
 | `kHeapIntegrityCheckIntervalMs` | `300000` (5 min) | Cadence du contrôle d'intégrité du tas (v2.18.8, gardes chimiques côté appelant) |
 | `kHeapIntegrityWarnDurationUs` | `5000` (5 ms) | Au-delà : WARN (contrôle conservé) |
 | `kHeapIntegrityMaxDurationUs` | `20000` (20 ms) | Au-delà : contrôle **désactivé définitivement** |
@@ -449,10 +594,12 @@ Chaque refus émet un WARN auto-explicatif : motif, PSRAM libre, les deux mesure
 
 **v2.35.0 (bug-080 B-1)** : `test_psram_extmem_threshold_arithmetic_v2350` fige les **valeurs absolues** `kVfsStdioBufferBytes = 4096` et `kPsramExtmemThresholdBytes = 4095`, la relation `seuil + 1 == tampon`, `kOomReserveBytes > seuil` (c'est cette relation, et elle seule, qui rend **nécessaire** le `MALLOC_CAP_INTERNAL` explicite), `kOomFallbackReserveBytes <= seuil` et `kOomNoReserveCriticalDelayMs = 300 000`. **Ce que les `static_assert` ne couvrent pas** : ils verrouillent des *relations*, donc ils sont indifférents à une **translation** des deux constantes (8192 / 8191 compile sans un mot et ramène le tampon réel de 4096 o en RAM interne) — seules les valeurs absolues du test refusent cette mutation.
 
+**bug-080 B-2** : la suite passe à **113 cas** (`test/test_native_oom_guard/`). Nouveaux invariants couverts — aller-retour d'encodage/décodage de la zone **48 o** (les 4 mots neufs, quanta et saturations comprises), `oomProbeUsesRegionScan` (**`0x1000` = `MALLOC_CAP_DEFAULT` prend bien les agrégats**, `0x080C` et `0x0804` gardent le parcours complet), `oomProbeFloorElapsed` (1ʳᵉ sonde jamais bloquée, repliement de `millis()`), `oomProbeSaturateDurationUs` (`0xFFFE` distinct de `0xFFFF`), `oomPostMortemProbeRepresentative` (taille ≠, caps ≠, drapeau absent), et les **quatre branches** du verdict révisé, dont `FAMINE DMA` sur les valeurs réelles du 05/09 et la **disparition de `SUSPICION CORRUPTION`** en branche « sonde absente ». Total projet : **32 suites / 1 261 cas**, **26 mutants tués sur 26**.
+
 ## Fichiers liés
 
 - [`src/main.cpp`](../../src/main.cpp) — `initOomGuard()` en tête de `setup()`, `oomPostMortemDumpIfBoot()` après le dump de l'anneau, `oomGuardLoopTick()` et `oomGuardIntegrityTick()` (sous gardes chimiques) dans `loop()`, `handleHeapCorruptionDetected()`
-- [`src/heap_metrics.h`](../../src/heap_metrics.h) / [`src/heap_metrics.cpp`](../../src/heap_metrics.cpp) — **source unique** de la mesure « mémoire réellement allouable » (`heapFree8Bit()`, `heapLargestFreeBlock8Bit()`, `heapMetricsSnapshot()`), v2.19.0. **Interdit d'appel depuis `oomFailedAllocHook` et depuis le `new_handler`** (réentrance allocateur) — au même titre que tout `heap_caps_*`.
+- [`src/heap_metrics.h`](../../src/heap_metrics.h) / [`src/heap_metrics.cpp`](../../src/heap_metrics.cpp) — **source unique** de la mesure « mémoire réellement allouable » (`heapFree8Bit()`, `heapLargestFreeBlock8Bit()`, `heapMetricsSnapshot()`), v2.19.0. Ces trois-là restent **interdites d'appel depuis `oomFailedAllocHook` et depuis le `new_handler`** — non pour cause de réentrance ([requalifié en B-2](#contrainte-structurante--heap_caps_-depuis-le-chemin-déchec--requalifiée-en-v2400)), mais parce qu'elles ne sont **bornées par rien**. Seule `heapProbeForCaps()` (+ `heapCaps8BitMask()`) y est autorisée, via l'entonnoir borné d'`oom_guard.cpp`.
 - [`src/heap_ring.cpp`](../../src/heap_ring.cpp) — source unique des mesures : alimente l'anneau **et** le miroir `oomGuardNoteHeapSample()` (cadence 2 s inchangée ; mesure 8 bits depuis v2.19.0)
 - [system-health.md](system-health.md) — auto-guérison heap (containment de fond), ring de télémétrie (cinétique pré-crash), contrôle d'intégrité et gardes chimiques, budget RAM RTC noinit consolidé
 - [ADR-0035](../adr/0035-parachute-oom-new-handler.md) — décision et alternatives écartées (parachute)
@@ -461,3 +608,4 @@ Chaque refus émet un WARN auto-explicatif : motif, PSRAM libre, les deux mesure
 - [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) — **cause racine des 3 crashs** : mesure 8 bits obligatoire dans les gardes, helper centralisé, double exposition, découpage mesure (2.19.0) puis bascule (2.19.1), bump des deux magics RTC
 - [ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md) — **on ne calibre pas des seuils sur une fragmentation pathologique** : régime bi-métrique assumé en v2.20.2, règle de recalibrage d'ADR-0038 déclarée inapplicable, mesures du 15/08 invalidées — **superseded par ADR-0058** (v2.33.0)
 - [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) — **bascule des 4 gardes sur la métrique 8 bits** (v2.33.0) : échelle unique 2 048 < 4 096 < 6 144 < 12 288 < 18 432, immunité par débounce temporel, réarmement 18 432 verrouillé par test, révocation du NO GO v2.20.2
+- [ADR-0066](../adr/0066-sonde-du-tas-au-moment-du-refus.md) — **sonde du tas au moment exact du refus** (bug-080 B-2) : requalification de l'interdit `heap_caps_*` (coût interruptions coupées, **pas** deadlock — preuve par désassemblage) et son exception à 4 garde-fous, **double mesure** caps de l'échec + référence `INTERNAL|8BIT` (zone RTC 48 o, magic `0xF00DFA13`), verdict neuf `FAMINE DMA (pool restreint)` en WARN, et `SUSPICION CORRUPTION` rendu inatteignable sans mesure contemporaine

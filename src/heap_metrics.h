@@ -28,11 +28,63 @@
 //  - `heap_caps_*` s'exécute interruptions coupées : appels rares et groupés
 //    (un instantané plutôt que quatre appels dispersés).
 //
-// INTERDIT ABSOLU : ne JAMAIS appeler ces fonctions depuis `oomFailedAllocHook`
-// ni depuis le new_handler (`oom_guard.cpp`). Quand ces chemins s'exécutent, le
-// verrou du composant heap est DÉJÀ détenu par l'allocateur : toute mesure y
-// serait un appel réentrant, donc un deadlock. Ces chemins lisent exclusivement
-// le miroir atomique alimenté par `oomGuardNoteHeapSample()`.
+// RESTRICTION D'APPEL DEPUIS LES CHEMINS D'ÉCHEC — REQUALIFIÉE (bug-080 B-2)
+// ---------------------------------------------------------------------------
+// Ce fichier a longtemps parlé de « DEADLOCK ». C'était FACTUELLEMENT FAUX, et
+// cette erreur de justification a bloqué pendant trois cycles l'instrumentation
+// décisive du diagnostic. Désassemblage de `libheap.a` (revue B-1) :
+//  - `heap_caps.c.obj` ne contient AUCUNE relocation vers
+//    `multi_heap_internal_lock` / `_unlock` — le verrou du tas vit ENTIÈREMENT
+//    dans `multi_heap.c.obj` ;
+//  - `heap_caps_alloc_failed` (d'où part le callback) est statique en `.iram1.0`
+//    et n'est atteinte qu'APRÈS LE RETOUR COMPLET de `heap_caps_malloc_base`.
+// Aucun verrou de tas n'est donc détenu quand le callback s'exécute : mesurer
+// depuis là n'est pas réentrant.
+//
+// L'interdit reste néanmoins valable, sous sa VRAIE qualification : c'est un
+// COÛT INTERRUPTIONS COUPÉES, pas un risque de réentrance. Un parcours TLSF
+// (`largest_free_block`) s'exécute interruptions coupées ; le chemin d'échec
+// peut être déclenché par rafales de centaines par seconde ; et il est
+// appelable depuis une ISR. Mesurer sans borne y transformerait un diagnostic
+// en source de gigue pour la régulation et le watchdog.
+//
+// RÈGLE : depuis `oomFailedAllocHook` / le new_handler, seule `heapProbeForCaps()`
+// est autorisée, et seulement via l'entonnoir borné d'`oom_guard.cpp` (jamais en
+// ISR, un échantillon par épisode, plancher de `kOomProbeMinIntervalMs`, durée
+// mesurée, désactivation définitive au-delà de `kOomProbeMaxDurationUs`).
+// `heapLargestFreeBlock8Bit()`, `heapFree8Bit()` et `heapMetricsSnapshot()`
+// restent INTERDITES dans ces chemins : elles ne sont bornées par rien.
+// Pour tout le reste, ces chemins lisent le miroir atomique alimenté par
+// `oomGuardNoteHeapSample()`.
+
+/**
+ * @brief Instantané du tas pour un masque de capacités donné (un seul parcours).
+ *
+ * `heap_caps_get_info()` livre `total_free_bytes` ET `largest_free_block` en UN
+ * parcours, là où `heap_caps_get_free_size()` + `heap_caps_get_largest_free_block()`
+ * en feraient deux.
+ *
+ * BORNE A PRIORI (condition 2 du gate pool-chemistry, bug-080 B-2) : si
+ * `caps & MALLOC_CAP_SPIRAM`, le parcours O(blocs) est REMPLACÉ par les agrégats
+ * O(régions) (`heap_caps_get_free_size`) et `largestBlockBytes` vaut
+ * `kOomProbeBlockUnknown` (« non renseigné »). La sonde n'est JAMAIS sautée —
+ * elle change d'algorithme — de sorte que le pire cas est borné AVANT coup, et
+ * non seulement rattrapé après par l'autolimitation.
+ *
+ * Sans log, sans allocation, sans verrou pris par nous.
+ */
+struct HeapProbe {
+  uint32_t freeBytes;          // Libre total pour ces caps
+  uint32_t largestBlockBytes;  // Plus gros bloc contigu, ou kOomProbeBlockUnknown
+};
+HeapProbe heapProbeForCaps(uint32_t caps);
+
+/**
+ * @brief Masque des capacités « réellement allouable par malloc/new ».
+ * `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT` — la RÉFÉRENCE de la double mesure de
+ * la sonde, à confronter aux caps (plus restrictives) de l'échec observé.
+ */
+uint32_t heapCaps8BitMask();
 
 /**
  * @brief Plus gros bloc contigu réellement allouable par malloc/new (octets).

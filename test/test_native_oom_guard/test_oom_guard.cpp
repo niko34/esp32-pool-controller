@@ -805,18 +805,26 @@ void test_postmortem_roundtrip_nominal(void) {
   TEST_ASSERT_TRUE(oomPostMortemValid(out));
 }
 
-void test_postmortem_wire_format_is_little_endian_32_bytes(void) {
+void test_postmortem_wire_format_is_little_endian_48_bytes(void) {
   // E3 — le format est un CONTRAT (la zone est écrite par mots u32 bruts depuis
   // le chemin d'échec, cf. oom_guard.cpp) : offsets et boutisme verrouillés.
-  TEST_ASSERT_EQUAL_UINT32(32u, kOomPostMortemBytes);
-  // v2.19.0 : magic bumpé (0xF00DFA11 → 0xF00DFA12) — bascule de la métrique
-  // « ring » vers la mesure 8 bits, une zone 2.18.x ne doit plus être décodée.
-  TEST_ASSERT_EQUAL_HEX32(0xF00DFA12u, kOomPostMortemMagic);
+  //
+  // ATTENDU MIS À JOUR EN bug-080 B-2 (32 → 48 o). Ce que ce test prouvait ne
+  // change pas — que la zone RTC a une taille et un boutisme FIGÉS, parce que
+  // les chemins d'échec y font des stores BRUTS par index de mot et qu'une
+  // divergence entre l'encodeur pur et ces stores ne produirait aucune erreur,
+  // seulement des chiffres faux. C'est la zone qui a grandi de 4 mots (w8..w11,
+  // la sonde du refus), pas le contrat.
+  TEST_ASSERT_EQUAL_UINT32(48u, kOomPostMortemBytes);
+  TEST_ASSERT_EQUAL_UINT32(0u, kOomPostMortemBytes % 4u);  // stores u32 alignés
+  // Magic RE-bumpé (0xF00DFA12 → 0xF00DFA13) : cf. section 14bis, une zone de
+  // 32 o écrite par l'ancien firmware ne doit JAMAIS être relue avec ce format.
+  TEST_ASSERT_EQUAL_HEX32(0xF00DFA13u, kOomPostMortemMagic);
   uint8_t raw[kOomPostMortemBytes];
   OomPostMortemFields f = makeFields();
   f.lastCaps = 0x11223344u;
   oomPostMortemEncode(raw, f);
-  TEST_ASSERT_EQUAL_HEX8(0x12, raw[0]);  // magic LE : 12 FA 0D F0
+  TEST_ASSERT_EQUAL_HEX8(0x13, raw[0]);  // magic LE : 13 FA 0D F0
   TEST_ASSERT_EQUAL_HEX8(0xFA, raw[1]);
   TEST_ASSERT_EQUAL_HEX8(0x0D, raw[2]);
   TEST_ASSERT_EQUAL_HEX8(0xF0, raw[3]);
@@ -1021,6 +1029,32 @@ void test_postmortem_valid_with_zero_failcount(void) {
 // 10. Post-mortem RTC — verdict famine / corruption / indéterminé
 // ===========================================================================
 
+// ⚠️ ATTENDUS RÉVISÉS PAR bug-080 B-2 — À LIRE AVANT DE TOUCHER À CETTE SECTION
+// -----------------------------------------------------------------------------
+// Six tests de cette section attendaient kOomVerdictCorruptionSuspected. Ils ne
+// l'attendent plus, et ce n'est PAS un assouplissement : c'est la SUPPRESSION
+// D'UN FAUX VERDICT, qui est l'objet même du lot.
+//
+// La règle historique (v2.18.8) concluait « corruption » par ÉLIMINATION : si ce
+// n'est ni une rafale, ni une comptabilité écroulée, alors un bloc existait donc
+// le tas ment. Cette conclusion reposait sur ringMaxAllocBytes, qui est
+//   (a) PÉRIMÉ de 0 à 2 s (miroir de l'anneau, cadence 2 s), et
+//   (b) mesuré sur des caps FIXES (INTERNAL|8BIT), donc muet sur le pool
+//       réellement demandé.
+// Le 05/09/2026 elle a produit « SUSPICION CORRUPTION » sur 6 refus de 1 622 o en
+// caps=0x080C (8BIT|DMA|INTERNAL) alors que l'anneau annonçait 26 612 o : le tas
+// 8 bits était sain, c'est le pool DMA qui était à sec. Un verdict de corruption
+// sur du matériel non corrompu, chiffré, crédible, et faux.
+//
+// makeFields() ne pose AUCUN champ de sonde (probeSize/probeCaps à 0, drapeau
+// kOomPmFlagProbeTaken absent) : tous les tests ci-dessous empruntent donc la
+// RÈGLE 3 (sonde absente), désormais amputée de sa conclusion. Ce qu'ils
+// prouvaient — la fenêtre de rafale, la frontière du ratio, la frontière du
+// nombre d'échecs, l'absence de débordement — est INTACT : seule la branche
+// « sinon » passe de CorruptionSuspected à Undetermined. Le chemin vers la
+// corruption existe toujours, mais il exige maintenant une MESURE CONTEMPORAINE
+// (section 16, cas c) — c'est tout le point.
+
 static uint8_t verdict(const OomPostMortemFields& f) {
   return oomPostMortemVerdict(f, kOomCorruptionMaxFails, kOomCorruptionSaneBlockRatio,
                               kOomCorruptionBurstSpanS);
@@ -1037,7 +1071,12 @@ void test_verdict_many_failures_spread_over_hours_is_not_starvation(void) {
   f.firstUptimeS = 1000;
   f.lastUptimeS = 1000 + 10800;                 // 3 h plus tard
   TEST_ASSERT_TRUE(oomPostMortemSpanS(f) > kOomCorruptionBurstSpanS);
-  TEST_ASSERT_EQUAL_UINT8(kOomVerdictCorruptionSuspected, verdict(f));
+  // CE QUE CE TEST PROUVE (inchangé) : hors fenêtre de rafale, le NOMBRE
+  // d'échecs ne suffit jamais à conclure « famine ». Seule la conclusion de la
+  // branche « sinon » change (B-2) : sans mesure contemporaine, on s'abstient au
+  // lieu d'accuser le tas de mentir.
+  TEST_ASSERT_NOT_EQUAL(kOomVerdictStarvation, verdict(f));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
 }
 
 void test_verdict_many_failures_in_burst_is_starvation(void) {
@@ -1058,26 +1097,73 @@ void test_verdict_burst_span_boundary_is_inclusive(void) {
   f.lastUptimeS = (uint16_t)(100 + kOomCorruptionBurstSpanS);       // pile la fenêtre
   TEST_ASSERT_EQUAL_UINT8(kOomVerdictStarvation, verdict(f));
   f.lastUptimeS = (uint16_t)(100 + kOomCorruptionBurstSpanS + 1);   // juste au-delà
-  TEST_ASSERT_EQUAL_UINT8(kOomVerdictCorruptionSuspected, verdict(f));
+  // La FRONTIÈRE est ce que ce test prouve, et elle est intacte : un octet de
+  // temps en plus et la famine n'est plus retenue. C'est l'AUTRE CÔTÉ de la
+  // frontière qui a changé de nom en B-2 (CorruptionSuspected → Undetermined),
+  // parce qu'aucune donnée contemporaine ne permet d'aller plus loin.
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
 }
 
-void test_verdict_real_case_20260813_is_corruption_suspected(void) {
+void test_verdict_real_case_20260813_needs_a_probe_to_accuse(void) {
   // E5 — cas RÉEL du 13/08/2026 : 2 échecs seulement (156 o puis 100 o pour
   // __cxa_allocate_exception), anneau annonçant free=81408 o et maxB=27584 o
-  // (soit 275× la taille refusée). Une famine capable de refuser 100 o refuserait
-  // TOUT : la comptabilité saine désigne une corruption du tas.
+  // (soit 275× la taille refusée). Le raisonnement d'origine — « une famine
+  // capable de refuser 100 o refuserait TOUT, donc le tas ment » — RESTE VALIDE.
+  //
+  // ATTENDU RÉVISÉ EN B-2, ET C'EST LE CŒUR DU LOT : ce raisonnement était
+  // appliqué à une donnée qui n'y donnait pas droit. 27 584 o est un chiffre de
+  // l'ANNEAU : vieux de 0 à 2 s, et mesuré sur INTERNAL|8BIT quelles que soient
+  // les caps du refus. Le 05/09, exactement la même arithmétique a accusé de
+  // corruption un appareil dont seul le pool DMA était à sec. On ne peut pas
+  // garder la conclusion en 2026-08 et la refuser en 2026-09 : la donnée est de
+  // même nature dans les deux cas. Sans sonde, donc, INDÉTERMINÉ.
   OomPostMortemFields f = makeFields();
   TEST_ASSERT_EQUAL_UINT32(2u, f.failCount);
   TEST_ASSERT_EQUAL_UINT32(156u, f.firstSize);
   TEST_ASSERT_EQUAL_UINT32(100u, f.lastSize);
   TEST_ASSERT_EQUAL_UINT32(81408u, f.ringFreeBytes);
   TEST_ASSERT_EQUAL_UINT32(27584u, f.ringMaxAllocBytes);
+  TEST_ASSERT_FALSE(oomPostMortemProbeRepresentative(f));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
+
+  // OBSERVATION QUE LA SONDE REND POSSIBLE, et qui échappait complètement à
+  // l'ancienne règle : le masque RELEVÉ ce jour-là, 0x0404, est
+  // MALLOC_CAP_8BIT (1<<2) | MALLOC_CAP_SPIRAM (1<<10). L'allocation demandait
+  // donc de la mémoire EN PSRAM — sur un WROOM qui n'en a pas. Une sonde sur
+  // cette classe bascule en parcours O(régions) (condition 2 du gate) et
+  // rapporte un libre NUL : ce n'est pas une corruption, c'est un pool
+  // INEXISTANT. Le verdict rendu est FAMINE, et il est exact.
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(f.lastCaps));
+  f.flags |= kOomPmFlagProbeTaken;
+  f.probeSize = f.lastSize;                       // 100 o
+  f.probeCaps = (uint16_t)(f.lastCaps & 0xFFFFu); // 0x0404, mêmes caps
+  f.probeCapsMaxB = kOomProbeBlockUnknown;        // O(régions) : bloc non renseigné
+  f.probeCapsFree = 0u;                           // aucune PSRAM sur ce module
+  f.probeRefMaxB = 27584u;                        // le tas INTERNE, lui, est intact
+  f.probeRefFree = 81408u;
+  f.probeDurationUs = 120u;
+  TEST_ASSERT_TRUE(oomPostMortemProbeRepresentative(f));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictStarvation, verdict(f));
+
+  // ET le verdict de corruption n'est pas perdu pour autant : il est rendu au
+  // même scénario dès lors que le refus porte sur une classe INTERNE et qu'un
+  // bloc suffisant y existait AU MOMENT EXACT du refus. C'est là toute la
+  // différence entre inférer et mesurer.
+  f.lastCaps = 0x00000804u;                       // 8BIT|INTERNAL
+  f.probeCaps = 0x0804u;
+  TEST_ASSERT_FALSE(oomProbeUsesRegionScan(f.lastCaps));
+  f.probeCapsMaxB = 27584u;                       // un bloc 275× la demande
+  f.probeCapsFree = 81408u;
+  TEST_ASSERT_TRUE(oomPostMortemProbeRepresentative(f));
   TEST_ASSERT_EQUAL_UINT8(kOomVerdictCorruptionSuspected, verdict(f));
-  // Et le verdict survit à l'aller-retour RTC (c'est le chemin réel du dump).
+
+  // Et le verdict survit à l'aller-retour RTC (c'est le chemin réel du dump) :
+  // ce n'est pas la structure en mémoire qui est dumpée, mais 48 octets relus.
   uint8_t raw[kOomPostMortemBytes];
   oomPostMortemEncode(raw, f);
   OomPostMortemFields o = oomPostMortemDecode(raw);
   TEST_ASSERT_TRUE(oomPostMortemValid(o));
+  TEST_ASSERT_TRUE(oomPostMortemProbeRepresentative(o));
   TEST_ASSERT_EQUAL_UINT8(kOomVerdictCorruptionSuspected, verdict(o));
 }
 
@@ -1104,12 +1190,16 @@ void test_verdict_starvation_when_accounting_collapsed(void) {
 }
 
 void test_verdict_sane_block_ratio_boundary(void) {
-  // E5 — frontière du critère de comptabilité saine : maxBloc >= 4 × taille
+  // E5 — frontière du critère de comptabilité saine : maxBloc >= 4 × taille.
+  // C'EST CETTE FRONTIÈRE que le test prouve, et elle est inchangée : à 4 000
+  // pour 1 000 demandés la comptabilité est réputée SAINE (donc pas de famine),
+  // un octet en dessous elle est réputée ÉCROULÉE (donc famine). Seul le nom du
+  // côté « saine » change en B-2 : sans mesure contemporaine, INDÉTERMINÉ.
   OomPostMortemFields f = makeFields();
   f.failCount = 1;
   f.lastSize = 1000;
   f.ringMaxAllocBytes = 4000;  // exactement 4 × → SAINE (inclusif)
-  TEST_ASSERT_EQUAL_UINT8(kOomVerdictCorruptionSuspected, verdict(f));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
   f.ringMaxAllocBytes = 3999;  // un octet sous → famine
   TEST_ASSERT_EQUAL_UINT8(kOomVerdictStarvation, verdict(f));
 }
@@ -1117,10 +1207,12 @@ void test_verdict_sane_block_ratio_boundary(void) {
 void test_verdict_failcount_threshold_boundary(void) {
   // E5 — frontière du nombre d'échecs. ATTENTION : le code applique
   // `failCount > maxFails` (STRICT), donc 8 échecs = encore analysable,
-  // 9 échecs = famine. Ce test documente l'inclusivité réelle.
+  // 9 échecs = famine. Ce test documente l'inclusivité réelle — inchangée.
+  // Côté « encore analysable », B-2 rend INDÉTERMINÉ au lieu d'accuser (la
+  // makeFields() de référence ne porte pas de sonde).
   OomPostMortemFields f = makeFields();
   f.failCount = kOomCorruptionMaxFails;      // 8
-  TEST_ASSERT_EQUAL_UINT8(kOomVerdictCorruptionSuspected, verdict(f));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
   f.failCount = kOomCorruptionMaxFails + 1u;  // 9
   TEST_ASSERT_EQUAL_UINT8(kOomVerdictStarvation, verdict(f));
   // Au-delà du seuil, la famine l'emporte MÊME avec une comptabilité saine.
@@ -1155,8 +1247,10 @@ void test_verdict_no_overflow_on_giant_last_size(void) {
   f.ringMaxAllocBytes = 27584;
   TEST_ASSERT_EQUAL_UINT8(kOomVerdictStarvation, verdict(f));
   // Ratio 0 (désactivation du critère par l'appelant) : comptabilité réputée
-  // saine → jamais de division par zéro.
-  TEST_ASSERT_EQUAL_UINT8(kOomVerdictCorruptionSuspected,
+  // saine → jamais de division par zéro. CE QUE CE TEST PROUVE (absence de
+  // division par zéro et de débordement) est inchangé ; la branche « saine »
+  // rend désormais INDÉTERMINÉ, comme partout ailleurs sans sonde.
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined,
                           oomPostMortemVerdict(f, kOomCorruptionMaxFails, 0, kOomCorruptionBurstSpanS));
 }
 
@@ -1479,6 +1573,915 @@ void test_count_failure_suppresses_the_1025_self_inflicted_of_20260815(void) {
   TEST_ASSERT_EQUAL_UINT32(1u, comptes);
 }
 
+// ===========================================================================
+// 14. bug-080 B-2 — SONDE DU REFUS : aller-retour RTC des 4 mots neufs (T1)
+// ===========================================================================
+// La zone passe de 32 à 48 o. Les mots w8..w11 sont écrits par le chemin
+// d'échec en STORES BRUTS (oom_guard.cpp) et relus par l'encodeur/décodeur pur :
+// une divergence de quantum ou d'offset ne lèverait aucune erreur, elle
+// produirait un DIAGNOSTIC FAUX. D'où des attendus en valeurs absolues.
+
+// Jeu de champs de sonde REPRÉSENTATIF (le drapeau + l'égalité de classe
+// d'échec), monté sur la base de makeFields().
+// ⚠️ COHÉRENCE PHYSIQUE DES CAPS. MALLOC_CAP_SPIRAM vaut 1<<10 = 0x0400 et
+// MALLOC_CAP_INTERNAL 1<<11 = 0x0800. Le masque 0x0404 de makeFields() (relevé
+// du 13/08) porte donc le bit SPIRAM : une sonde sur cette classe emprunterait
+// le parcours O(RÉGIONS) et son « plus gros bloc » vaudrait la sentinelle. Pour
+// que les fixtures de sonde restent PHYSIQUEMENT POSSIBLES, on les cale sur la
+// classe INTERNE 0x080C (8BIT|DMA|INTERNAL, celle des 6 refus du 05/09) ; le cas
+// SPIRAM a sa propre fixture (T3-h).
+static OomPostMortemFields makeFieldsWithProbe(void) {
+  OomPostMortemFields f = makeFields();
+  f.lastCaps = 0x0000080Cu;
+  f.flags |= kOomPmFlagProbeTaken;
+  f.probeSize = f.lastSize;                        // même classe d'échec
+  f.probeCaps = (uint16_t)(f.lastCaps & 0xFFFFu);  // 0x080C
+  f.probeCapsMaxB = 1024;
+  f.probeCapsFree = 8192;
+  f.probeRefMaxB = 26560;
+  f.probeRefFree = 81408;
+  f.probeDurationUs = 137;
+  return f;
+}
+
+void test_probe_roundtrip_preserves_all_four_new_words(void) {
+  // T1 — aller-retour fidèle sur des valeurs déjà alignées sur les quanta.
+  uint8_t raw[kOomPostMortemBytes];
+  OomPostMortemFields in = makeFieldsWithProbe();
+  oomPostMortemEncode(raw, in);
+  OomPostMortemFields out = oomPostMortemDecode(raw);
+  TEST_ASSERT_EQUAL_UINT32(in.probeSize, out.probeSize);
+  TEST_ASSERT_EQUAL_UINT32(1024u, out.probeCapsMaxB);
+  TEST_ASSERT_EQUAL_UINT32(8192u, out.probeCapsFree);
+  TEST_ASSERT_EQUAL_UINT32(26560u, out.probeRefMaxB);
+  TEST_ASSERT_EQUAL_UINT32(81408u, out.probeRefFree);
+  TEST_ASSERT_EQUAL_HEX16(0x080Cu, out.probeCaps);
+  TEST_ASSERT_EQUAL_UINT16(137u, out.probeDurationUs);
+  TEST_ASSERT_EQUAL_UINT8(in.flags, out.flags);
+  TEST_ASSERT_TRUE(oomPostMortemValid(out));
+  // Les champs HISTORIQUES ne bougent pas d'un octet : l'extension est ADDITIVE
+  // (w0..w7 inchangés), sans quoi l'ancien dump serait décodé de travers.
+  TEST_ASSERT_EQUAL_UINT32(in.failCount, out.failCount);
+  TEST_ASSERT_EQUAL_UINT32(in.lastSize, out.lastSize);
+  TEST_ASSERT_EQUAL_UINT32(in.ringFreeBytes, out.ringFreeBytes);
+  TEST_ASSERT_EQUAL_UINT32(in.ringMaxAllocBytes, out.ringMaxAllocBytes);
+  TEST_ASSERT_EQUAL_UINT8(in.releaseCount, out.releaseCount);
+}
+
+void test_probe_wire_offsets_are_w8_to_w11(void) {
+  // T1 — offsets EXACTS : w8=[32..35], w9=[36..39], w10=[40..43], w11=[44..47].
+  // C'est le contrat que respectent les stores bruts sOomPmWords[8..11].
+  uint8_t raw[kOomPostMortemBytes];
+  OomPostMortemFields f = makeFieldsWithProbe();
+  f.probeSize = 0x11223344u;
+  f.probeCaps = 0xABCDu;
+  f.probeDurationUs = 0x1234u;
+  oomPostMortemEncode(raw, f);
+  TEST_ASSERT_EQUAL_HEX8(0x44, raw[32]);  // probeSize LE, EXACT (non quantifié)
+  TEST_ASSERT_EQUAL_HEX8(0x33, raw[33]);
+  TEST_ASSERT_EQUAL_HEX8(0x22, raw[34]);
+  TEST_ASSERT_EQUAL_HEX8(0x11, raw[35]);
+  // w9 : bits 0-15 = maxBloc >> 6 (1024 >> 6 = 16), bits 16-31 = libre >> 8
+  // (8192 >> 8 = 32). Quanta IDENTIQUES à ceux des champs « ring ».
+  TEST_ASSERT_EQUAL_UINT16(16u, (uint16_t)(raw[36] | (raw[37] << 8)));
+  TEST_ASSERT_EQUAL_UINT16(32u, (uint16_t)(raw[38] | (raw[39] << 8)));
+  // w10 : réf8 26560 >> 6 = 415 ; 81408 >> 8 = 318
+  TEST_ASSERT_EQUAL_UINT16(415u, (uint16_t)(raw[40] | (raw[41] << 8)));
+  TEST_ASSERT_EQUAL_UINT16(318u, (uint16_t)(raw[42] | (raw[43] << 8)));
+  // w11 : caps sur les 16 bits BAS, durée sur les 16 bits HAUTS — les deux
+  // doivent cohabiter sans se mordre (0xABCD et 0x1234 sont choisis distincts).
+  TEST_ASSERT_EQUAL_UINT16(0xABCDu, (uint16_t)(raw[44] | (raw[45] << 8)));
+  TEST_ASSERT_EQUAL_UINT16(0x1234u, (uint16_t)(raw[46] | (raw[47] << 8)));
+}
+
+void test_probe_size_is_exact_never_quantized(void) {
+  // T1 — probeSize N'EST PAS quantifié, contrairement aux blocs/libres. 1 622 o
+  // (la taille refusée le 05/09) n'est multiple d'aucun quantum : la quantifier
+  // casserait l'égalité probeSize == lastSize, donc la garde de
+  // REPRÉSENTATIVITÉ, donc tout le verdict neuf. Cas de bord voulu.
+  uint8_t raw[kOomPostMortemBytes];
+  OomPostMortemFields f = makeFieldsWithProbe();
+  const uint32_t tailles[] = {1u, 63u, 100u, 156u, 356u, 1622u, 4095u, 65537u,
+                              kOomPmMaxSizeBytes};
+  for (unsigned i = 0; i < sizeof(tailles) / sizeof(tailles[0]); i++) {
+    f.probeSize = tailles[i];
+    f.lastSize = tailles[i];
+    oomPostMortemEncode(raw, f);
+    OomPostMortemFields o = oomPostMortemDecode(raw);
+    TEST_ASSERT_EQUAL_UINT32(tailles[i], o.probeSize);
+    TEST_ASSERT_TRUE(oomPostMortemProbeRepresentative(o));
+  }
+}
+
+void test_probe_quantization_is_bounded_and_pessimistic(void) {
+  // T1 — quanta 64 o (bloc) et 256 o (libre), perte TOUJOURS par défaut : la
+  // valeur relue ne SURESTIME jamais le tas, sans quoi le verdict pencherait à
+  // tort vers « un bloc existait » (corruption).
+  uint8_t raw[kOomPostMortemBytes];
+  OomPostMortemFields f = makeFieldsWithProbe();
+  f.probeCapsMaxB = 1087;   // 16,98 quanta → 16 → 1024 (perte 63 o)
+  f.probeCapsFree = 8447;   // 32,99 quanta → 32 → 8192 (perte 255 o)
+  f.probeRefMaxB = 26612;   // relevé RÉEL du 05/09 : 415,8 → 415 → 26560
+  f.probeRefFree = 81599;
+  oomPostMortemEncode(raw, f);
+  OomPostMortemFields o = oomPostMortemDecode(raw);
+  TEST_ASSERT_EQUAL_UINT32(1024u, o.probeCapsMaxB);
+  TEST_ASSERT_EQUAL_UINT32(8192u, o.probeCapsFree);
+  TEST_ASSERT_EQUAL_UINT32(26560u, o.probeRefMaxB);
+  TEST_ASSERT_EQUAL_UINT32(81408u, o.probeRefFree);
+  TEST_ASSERT_TRUE(o.probeCapsMaxB <= f.probeCapsMaxB);
+  TEST_ASSERT_TRUE(f.probeCapsMaxB - o.probeCapsMaxB < 64u);
+  TEST_ASSERT_TRUE(o.probeRefMaxB <= f.probeRefMaxB);
+  TEST_ASSERT_TRUE(f.probeRefMaxB - o.probeRefMaxB < 64u);
+  TEST_ASSERT_TRUE(o.probeCapsFree <= f.probeCapsFree);
+  TEST_ASSERT_TRUE(f.probeCapsFree - o.probeCapsFree < 256u);
+  TEST_ASSERT_TRUE(o.probeRefFree <= f.probeRefFree);
+  TEST_ASSERT_TRUE(f.probeRefFree - o.probeRefFree < 256u);
+}
+
+void test_probe_blocks_saturate_above_4_mib(void) {
+  // T1 — au-delà de la dynamique 16 bits, SATURATION (jamais de repliement, qui
+  // afficherait un tas minuscule pour un tas énorme). Le plafond du champ
+  // « plus gros bloc » EST la sentinelle kOomProbeBlockUnknown : c'est voulu —
+  // aucun encodage spécial, aucune règle de décodage neuve pour le parcours
+  // O(régions) de la PSRAM.
+  uint8_t raw[kOomPostMortemBytes];
+  OomPostMortemFields f = makeFieldsWithProbe();
+  f.probeCapsMaxB = 0xFFFFFFFFu;
+  f.probeCapsFree = 0xFFFFFFFFu;
+  f.probeRefMaxB = 8u * 1024u * 1024u;   // 8 Mio > 4 Mio de dynamique
+  f.probeRefFree = 32u * 1024u * 1024u;
+  oomPostMortemEncode(raw, f);
+  OomPostMortemFields o = oomPostMortemDecode(raw);
+  TEST_ASSERT_EQUAL_UINT32(kOomProbeBlockUnknown, o.probeCapsMaxB);
+  TEST_ASSERT_EQUAL_UINT32(0xFFFFu << 6, o.probeRefMaxB);
+  TEST_ASSERT_EQUAL_UINT32(0xFFFFu << 8, o.probeCapsFree);
+  TEST_ASSERT_EQUAL_UINT32(0xFFFFu << 8, o.probeRefFree);
+  TEST_ASSERT_EQUAL_UINT32(4194240u, kOomProbeBlockUnknown);
+  // Juste sous la saturation : valeur exacte conservée (pas de sentinelle par
+  // accident sur un tas de 4 Mio - 64 o).
+  f.probeCapsMaxB = kOomProbeBlockUnknown - 64u;
+  oomPostMortemEncode(raw, f);
+  o = oomPostMortemDecode(raw);
+  TEST_ASSERT_EQUAL_UINT32(kOomProbeBlockUnknown - 64u, o.probeCapsMaxB);
+}
+
+void test_probe_duration_saturates_at_fffe_reserving_ffff(void) {
+  // T1 — 0xFFFF est RÉSERVÉ au marqueur « non mesurable » (migration de cœur
+  // pendant la mesure : les compteurs CCOUNT sont PAR CŒUR). Une durée réelle
+  // plafonne donc à 0xFFFE. Sans cette réservation, une sonde pathologique de
+  // 70 ms serait relue « mesure impossible » — et n'aurait déclenché AUCUNE
+  // désactivation, l'autolimitation ignorant les échantillons invalides.
+  TEST_ASSERT_EQUAL_UINT16(0u, oomProbeSaturateDurationUs(0u));
+  TEST_ASSERT_EQUAL_UINT16(137u, oomProbeSaturateDurationUs(137u));
+  TEST_ASSERT_EQUAL_UINT16(kOomProbeMaxDurationUs,
+                           oomProbeSaturateDurationUs(kOomProbeMaxDurationUs));
+  TEST_ASSERT_EQUAL_UINT16(0xFFFEu, oomProbeSaturateDurationUs(0xFFFEu));
+  TEST_ASSERT_EQUAL_UINT16(0xFFFEu, oomProbeSaturateDurationUs(0xFFFFu));      // pas le marqueur
+  TEST_ASSERT_EQUAL_UINT16(0xFFFEu, oomProbeSaturateDurationUs(70000u));       // 70 ms
+  TEST_ASSERT_EQUAL_UINT16(0xFFFEu, oomProbeSaturateDurationUs(0xFFFFFFFFu));
+  TEST_ASSERT_EQUAL_HEX16(0xFFFFu, kOomProbeDurationInvalid);
+  // Et le marqueur traverse la zone RTC sans être confondu avec une durée.
+  uint8_t raw[kOomPostMortemBytes];
+  OomPostMortemFields f = makeFieldsWithProbe();
+  f.probeDurationUs = kOomProbeDurationInvalid;
+  f.probeCaps = 0x080Cu;
+  oomPostMortemEncode(raw, f);
+  OomPostMortemFields o = oomPostMortemDecode(raw);
+  TEST_ASSERT_EQUAL_UINT16(kOomProbeDurationInvalid, o.probeDurationUs);
+  TEST_ASSERT_EQUAL_HEX16(0x080Cu, o.probeCaps);  // les caps ne sont pas mangées
+}
+
+void test_probe_absent_zone_decodes_to_zeroed_probe(void) {
+  // T1 — une zone SANS sonde (drapeau absent) doit relire des champs à ZÉRO, et
+  // surtout ne PAS être jugée représentative : c'est ce qui évite d'afficher
+  // « au refus de 0 o → maxBloc=0 » comme s'il s'agissait d'une mesure.
+  uint8_t raw[kOomPostMortemBytes];
+  OomPostMortemFields f = makeFields();  // aucun champ de sonde renseigné
+  oomPostMortemEncode(raw, f);
+  OomPostMortemFields o = oomPostMortemDecode(raw);
+  TEST_ASSERT_EQUAL_UINT32(0u, o.probeSize);
+  TEST_ASSERT_EQUAL_UINT32(0u, o.probeCapsMaxB);
+  TEST_ASSERT_EQUAL_UINT32(0u, o.probeRefMaxB);
+  TEST_ASSERT_EQUAL_UINT16(0u, o.probeCaps);
+  TEST_ASSERT_EQUAL_UINT16(0u, o.probeDurationUs);
+  TEST_ASSERT_EQUAL_UINT8(0u, o.flags & kOomPmFlagProbeTaken);
+  TEST_ASSERT_FALSE(oomPostMortemProbeRepresentative(o));
+}
+
+// ===========================================================================
+// 14bis. bug-080 B-2 — L'ANCIEN MAGIC DOIT ÊTRE JUGÉ INVALIDE (T2)
+// ===========================================================================
+// LE test le plus important de la section format. Une zone de 32 o écrite par un
+// firmware ≤ v2.35.0 est suivie, en RAM RTC noinit, de 16 octets JAMAIS
+// INITIALISÉS. Les relire comme w8..w11 avec les nouveaux libellés produirait
+// des valeurs de sonde inventées — mais parfaitement crédibles : une taille de
+// quelques centaines d'octets, un masque de caps plausible, un maxBloc de
+// quelques kilo-octets. Et ces valeurs feraient AUTORITÉ sur l'anneau (règle 2),
+// donc décideraient du verdict. Perdre le post-mortem du boot de bascule est
+// accepté ; afficher un diagnostic inventé ne l'est pas.
+
+void test_old_magic_f00dfa12_is_rejected(void) {
+  // T2 — le magic de la zone de 32 o (v2.19.0 → v2.35.0) doit être REFUSÉ.
+  OomPostMortemFields f = makeFieldsWithProbe();
+  f.magic = 0xF00DFA12u;
+  TEST_ASSERT_FALSE(oomPostMortemValid(f));
+  // Et celui d'avant lui aussi (v2.18.x, métrique heap brute).
+  f.magic = 0xF00DFA11u;
+  TEST_ASSERT_FALSE(oomPostMortemValid(f));
+  // Le magic courant, et lui seul, ouvre la lecture.
+  f.magic = kOomPostMortemMagic;
+  TEST_ASSERT_TRUE(oomPostMortemValid(f));
+  TEST_ASSERT_EQUAL_HEX32(0xF00DFA13u, kOomPostMortemMagic);
+  // Le bump doit être STRICTEMENT croissant et d'exactement un cran : c'est la
+  // convention du projet (v2.19.0 avait fait FA11 → FA12).
+  TEST_ASSERT_EQUAL_HEX32(0xF00DFA12u + 1u, kOomPostMortemMagic);
+}
+
+void test_old_32_byte_zone_followed_by_rtc_garbage_is_rejected(void) {
+  // T2 — SIMULATION du boot de bascule, le vrai scénario redouté : les 32
+  // premiers octets sont une zone LÉGITIME écrite par l'ancien firmware (magic
+  // 0xF00DFA12, échecs réels), les 16 suivants sont de la RAM RTC non
+  // initialisée dont le contenu est arbitraire mais PLAUSIBLE une fois décodé.
+  uint8_t raw[kOomPostMortemBytes];
+  OomPostMortemFields ancien = makeFields();
+  oomPostMortemEncode(raw, ancien);
+  raw[0] = 0x12;  // magic de l'ANCIEN format (0xF00DFA12)
+  // Résidu RTC : des octets quelconques, choisis pour se décoder en une sonde
+  // crédible plutôt qu'en absurdité — c'est le piège exact.
+  const uint8_t residu[16] = {0x64, 0x02, 0x00, 0x00,   // « probeSize = 612 »
+                              0x40, 0x00, 0x20, 0x00,   // « maxBloc = 4096, libre = 8192 »
+                              0x00, 0x02, 0x40, 0x01,   // « réf8 = 32768 / 81920 »
+                              0x0C, 0x08, 0x91, 0x00};  // « caps = 0x080C, 145 µs »
+  for (unsigned i = 0; i < 16u; i++) raw[32 + i] = residu[i];
+  OomPostMortemFields o = oomPostMortemDecode(raw);
+  // Le décodage produit bien des valeurs qui PASSERAIENT pour une mesure...
+  TEST_ASSERT_EQUAL_UINT32(612u, o.probeSize);
+  TEST_ASSERT_EQUAL_HEX16(0x080Cu, o.probeCaps);
+  TEST_ASSERT_EQUAL_UINT32(4096u, o.probeCapsMaxB);
+  TEST_ASSERT_EQUAL_UINT16(145u, o.probeDurationUs);
+  // ...mais la zone est REFUSÉE en bloc par le magic : rien n'est jamais dumpé.
+  TEST_ASSERT_FALSE(oomPostMortemValid(o));
+  // Contre-épreuve (anti-vacuité) : le MÊME contenu avec le magic courant serait
+  // accepté. C'est donc bien le bump du magic, et rien d'autre, qui protège.
+  raw[0] = 0x13;
+  OomPostMortemFields o2 = oomPostMortemDecode(raw);
+  TEST_ASSERT_TRUE(oomPostMortemValid(o2));
+}
+
+// ===========================================================================
+// 15. bug-080 B-2 — VERDICT RÉVISÉ, les 7 cas de la règle (T3)
+// ===========================================================================
+
+void test_verdict_probe_dma_starvation_is_the_new_case(void) {
+  // T3-a — sonde représentative, le pool DEMANDÉ est à sec (maxBloc < taille)
+  // mais la RÉFÉRENCE INTERNAL|8BIT reste saine (>= ratio × taille) :
+  // FAMINE DMA. C'est le verdict que le lot ajoute, et le seul qui décrive
+  // correctement un pool restreint épuisé sur un tas général sain.
+  OomPostMortemFields f = makeFieldsWithProbe();
+  f.lastSize = 1622;
+  f.lastCaps = 0x0000080Cu;
+  f.probeSize = 1622;
+  f.probeCaps = 0x080Cu;
+  f.probeCapsMaxB = 1024;    // pool DMA à sec
+  f.probeCapsFree = 3072;
+  f.probeRefMaxB = 26560;    // tas 8 bits sain (16× la demande)
+  f.probeRefFree = 81408;
+  TEST_ASSERT_TRUE(oomPostMortemProbeRepresentative(f));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictDmaStarvation, verdict(f));
+  // Ce verdict est DISTINCT des trois autres (pas un alias) et vaut 3.
+  TEST_ASSERT_EQUAL_UINT8(3u, kOomVerdictDmaStarvation);
+  TEST_ASSERT_NOT_EQUAL(kOomVerdictStarvation, kOomVerdictDmaStarvation);
+  TEST_ASSERT_NOT_EQUAL(kOomVerdictCorruptionSuspected, kOomVerdictDmaStarvation);
+  TEST_ASSERT_NOT_EQUAL(kOomVerdictUndetermined, kOomVerdictDmaStarvation);
+}
+
+void test_verdict_probe_general_starvation_when_reference_also_dry(void) {
+  // T3-b — sonde représentative, pool demandé à sec ET référence à sec : ce
+  // n'est plus une affaire de pool, tout le tas est vide → FAMINE MÉMOIRE.
+  OomPostMortemFields f = makeFieldsWithProbe();
+  f.lastSize = 1622;
+  f.probeSize = 1622;
+  f.probeCapsMaxB = 512;
+  f.probeRefMaxB = 3200;   // 3200 / 4 = 800 < 1622 → référence PAS saine
+  f.probeRefFree = 4096;
+  TEST_ASSERT_TRUE(oomPostMortemProbeRepresentative(f));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictStarvation, verdict(f));
+  // FRONTIÈRE du ratio (anti-mutant « saneBlockRatio → 1 ») : la référence bascule
+  // « saine » à exactement 4 × la taille demandée, pas avant. Avec un ratio de 1,
+  // les deux valeurs ci-dessous rendraient FAMINE DMA — le test le refuse.
+  f.probeRefMaxB = 4u * 1622u;        // 6488 : pile le ratio → DMA
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictDmaStarvation, verdict(f));
+  f.probeRefMaxB = 4u * 1622u - 1u;   // 6487 : un octet sous → famine générale
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictStarvation, verdict(f));
+}
+
+void test_verdict_probe_corruption_is_now_the_only_path(void) {
+  // T3-c — sonde représentative et un bloc SUFFISANT existait à l'instant exact
+  // du refus : l'allocateur a menti → SUSPICION CORRUPTION. C'est désormais le
+  // SEUL chemin vers ce verdict, et il repose sur une mesure contemporaine.
+  OomPostMortemFields f = makeFieldsWithProbe();
+  f.lastSize = 1622;
+  f.probeSize = 1622;
+  f.probeCapsMaxB = 26560;   // un bloc 16× plus gros que la demande, AU REFUS
+  f.probeCapsFree = 81408;
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictCorruptionSuspected, verdict(f));
+  // FRONTIÈRE (anti-mutant « inversion de probeCapsMaxB < probeSize ») : le
+  // basculement se fait à l'octet près, et l'égalité compte comme « ça tenait ».
+  f.probeCapsMaxB = 1622u;       // exactement la taille demandée → ça tenait
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictCorruptionSuspected, verdict(f));
+  f.probeCapsMaxB = 1621u;       // un octet de moins → l'allocateur disait vrai
+  TEST_ASSERT_NOT_EQUAL(kOomVerdictCorruptionSuspected, verdict(f));
+  // Et la corruption l'emporte sur TOUT le reste : rafale d'échecs, anneau
+  // effondré — la sonde fait autorité, l'anneau est IGNORÉ (règle 2).
+  f.probeCapsMaxB = 26560u;
+  f.failCount = kOomCorruptionMaxFails + 50u;
+  f.firstUptimeS = 100;
+  f.lastUptimeS = 102;                 // rafale de 2 s
+  f.ringMaxAllocBytes = 0;             // anneau à sec
+  f.ringFreeBytes = 0;
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictCorruptionSuspected, verdict(f));
+}
+
+void test_verdict_probe_not_representative_falls_back_to_rule_3(void) {
+  // T3-d — la sonde décrit un AUTRE refus que celui qu'on qualifie. Le jeton
+  // « un échantillon par épisode » rend ce cas parfaitement possible : la sonde
+  // est prise au 1er refus, et c'est le DERNIER qui est enregistré dans w2..w4.
+  // Une sonde non représentative ne doit jamais faire autorité.
+  OomPostMortemFields base = makeFieldsWithProbe();
+  base.lastSize = 1622;
+  base.lastCaps = 0x0000080Cu;
+  base.probeCapsMaxB = 26560;   // « un bloc existait » — piège à corruption
+  base.probeCapsFree = 81408;
+  base.probeRefMaxB = 26560;
+  base.ringMaxAllocBytes = 26560;  // anneau sain lui aussi → règle 3 s'abstient
+
+  // (i) MÊMES caps, taille DIFFÉRENTE
+  OomPostMortemFields f = base;
+  f.probeSize = 356;                            // ≠ lastSize
+  f.probeCaps = (uint16_t)(f.lastCaps & 0xFFFFu);
+  TEST_ASSERT_FALSE(oomPostMortemProbeRepresentative(f));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
+
+  // (ii) MÊME taille, caps DIFFÉRENTES — c'est la garde que le mutant
+  // « suppression de probeCaps == lastCaps » retire. Sans elle, une sonde prise
+  // sur un refus INTERNAL|8BIT servirait à juger un refus DMA : exactement la
+  // confusion de classes que le lot supprime.
+  f = base;
+  f.probeSize = f.lastSize;
+  f.probeCaps = 0x0404u;                        // ≠ lastCaps (0x080C)
+  TEST_ASSERT_FALSE(oomPostMortemProbeRepresentative(f));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
+
+  // (iii) tout concorde MAIS le drapeau ProbeTaken est absent (w8..w11 sont des
+  // zéros, ou pire, des résidus) → jamais exploités.
+  f = base;
+  f.probeSize = f.lastSize;
+  f.probeCaps = (uint16_t)(f.lastCaps & 0xFFFFu);
+  f.flags &= (uint8_t)~kOomPmFlagProbeTaken;
+  TEST_ASSERT_FALSE(oomPostMortemProbeRepresentative(f));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
+
+  // CONTRE-ÉPREUVE (anti-vacuité) : les trois champs concordants ET le drapeau
+  // → la sonde reprend autorité et le verdict change. Les trois cas ci-dessus
+  // prouvent donc bien quelque chose.
+  f = base;
+  f.probeSize = f.lastSize;
+  f.probeCaps = (uint16_t)(f.lastCaps & 0xFFFFu);
+  TEST_ASSERT_TRUE(oomPostMortemProbeRepresentative(f));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictCorruptionSuspected, verdict(f));
+}
+
+void test_verdict_no_probe_with_healthy_ring_is_undetermined(void) {
+  // T3-e — LE CAS QUI JUSTIFIE LE LOT. Aucune sonde (jamais prise, sautée en
+  // ISR, ou sonde désactivée) et un anneau qui annonce un tas sain : la règle
+  // historique concluait « SUSPICION CORRUPTION » sur une donnée vieille de 2 s
+  // et mesurée sur d'autres caps. Elle s'abstient désormais.
+  OomPostMortemFields f = makeFields();     // pas de sonde du tout
+  f.failCount = 3;
+  f.lastSize = 1622;
+  f.ringMaxAllocBytes = 26560;              // 16× la demande : « sain »
+  f.ringFreeBytes = 81408;
+  f.firstUptimeS = 100;
+  f.lastUptimeS = 1377;                     // 1277 s : pas une rafale
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
+  // Les trois sous-cas d'absence sont traités à l'identique par le verdict (le
+  // dump, lui, les NOMME pour que l'indétermination soit attribuable).
+  f.flags |= kOomPmFlagProbeIsrSkipped;
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
+  f.flags |= kOomPmFlagProbeDisabled;
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
+}
+
+void test_verdict_no_probe_burst_is_still_starvation(void) {
+  // T3-f — la règle 3 garde ce qu'elle savait établir sans mesure
+  // contemporaine : une RAFALE d'échecs reste une famine. Le lot ampute la
+  // conclusion « corruption », pas les deux autres.
+  OomPostMortemFields f = makeFields();
+  f.failCount = kOomCorruptionMaxFails + 1u;
+  f.lastSize = 1622;
+  f.ringMaxAllocBytes = 26560;   // anneau « sain » — la rafale l'emporte
+  f.firstUptimeS = 1000;
+  f.lastUptimeS = 1005;          // 5 s
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictStarvation, verdict(f));
+  // ...et la comptabilité écroulée aussi, hors rafale.
+  f.failCount = 1;
+  f.lastUptimeS = 1000 + 3600;
+  f.ringMaxAllocBytes = 2048;    // 2048 / 4 = 512 < 1622
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictStarvation, verdict(f));
+}
+
+void test_verdict_zero_failcount_stays_undetermined_even_with_a_probe(void) {
+  // T3-g — règle 1, évaluée AVANT tout le reste : sans échec exploitable, rien
+  // à qualifier. Une sonde résiduelle ne doit pas ressusciter un verdict.
+  OomPostMortemFields f = makeFieldsWithProbe();
+  f.probeCapsMaxB = 26560;   // « un bloc existait » — ne doit RIEN déclencher
+  f.failCount = 0;
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
+  f = makeFieldsWithProbe();
+  f.probeCapsMaxB = 26560;
+  f.lastSize = 0;
+  f.probeSize = 0;
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
+}
+
+void test_verdict_probe_region_scan_marks_block_unknown(void) {
+  // T3-h (borne a priori PSRAM, condition 2 du gate) — quand la sonde a pris le
+  // chemin O(régions), le plus gros bloc est « non renseigné ». On ne doit alors
+  // JAMAIS conclure « un bloc existait » : on tranche sur le LIBRE seul, et à
+  // défaut on s'abstient. Le pire cas est ainsi borné AVANT coup.
+  OomPostMortemFields f = makeFieldsWithProbe();
+  f.lastSize = 1622;
+  f.lastCaps = 0x00000404u;               // 8BIT|SPIRAM — le masque relevé le 13/08
+  f.probeSize = 1622;
+  f.probeCaps = 0x0404u;
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(f.lastCaps));  // la sonde a bien basculé
+  f.probeCapsMaxB = kOomProbeBlockUnknown;
+  TEST_ASSERT_TRUE(oomPostMortemProbeRepresentative(f));
+  // Libre insuffisant → famine, c'est un indice honnête.
+  f.probeCapsFree = 1024;
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictStarvation, verdict(f));
+  // Libre suffisant mais fragmentation inconnue → ABSTENTION (surtout pas
+  // « corruption » : c'est précisément l'inférence que le lot supprime).
+  f.probeCapsFree = 81408;
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
+  // Frontière exacte du libre (inclusive côté « ça aurait dû tenir »).
+  f.probeCapsFree = 1622;
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
+  f.probeCapsFree = 1621;
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictStarvation, verdict(f));
+}
+
+// ===========================================================================
+// 15bis. DÉFAUT B2 DE LA REVUE — la mesure écrite puis silencieusement JETÉE
+// ===========================================================================
+// oomPostMortemStore() construit le mot 7 (qui porte l'octet `flags`) AVANT que
+// la sonde tourne. Sans le flush ajouté en correctif, tout drapeau posé APRÈS
+// lui — ProbeTaken en tête — n'atteignait la RAM RTC qu'au refus SUIVANT, donc
+// JAMAIS dans le scénario « refus → abort → reboot » que le post-mortem existe
+// précisément pour qualifier. La zone se retrouvait avec w8..w11 PARFAITEMENT
+// RENSEIGNÉS et un `flags` sans ProbeTaken.
+
+void test_b2_probe_words_written_but_flag_lost_discards_the_measure(void) {
+  // REJEU EXACT DU BUG, au niveau des 48 octets. On fabrique la zone telle que
+  // le firmware fautif la laissait : mots de sonde écrits, bit ProbeTaken absent
+  // de w7. C'est le pire cas de tous — la mesure EXISTE, elle est simplement
+  // ignorée, et rien dans le dump ne signale la perte.
+  uint8_t raw[kOomPostMortemBytes];
+  OomPostMortemFields f = makeFieldsWithProbe();     // sonde complète et cohérente
+  f.lastSize = 1622;
+  f.probeSize = 1622;
+  f.probeCapsMaxB = 1024;                            // pool à sec
+  f.probeRefMaxB = 26560;                            // référence saine → FAMINE DMA
+  f.ringMaxAllocBytes = 26560;                       // anneau « sain » → règle 3 s'abstient
+  oomPostMortemEncode(raw, f);
+  // Le bug : l'octet 30 (= bits 16-23 de w7) n'a jamais reçu le bit.
+  raw[30] &= (uint8_t)~kOomPmFlagProbeTaken;
+
+  OomPostMortemFields o = oomPostMortemDecode(raw);
+  TEST_ASSERT_TRUE(oomPostMortemValid(o));
+  // Les mesures sont bien là, intactes...
+  TEST_ASSERT_EQUAL_UINT32(1622u, o.probeSize);
+  TEST_ASSERT_EQUAL_UINT32(1024u, o.probeCapsMaxB);
+  TEST_ASSERT_EQUAL_UINT32(26560u, o.probeRefMaxB);
+  // ...mais elles ne font pas autorité, et le verdict RÉGRESSE vers l'ancien
+  // régime : INDÉTERMINÉ au lieu de FAMINE DMA. Le lot est neutralisé.
+  TEST_ASSERT_FALSE(oomPostMortemProbeRepresentative(o));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(o));
+  // Et la ligne 2 du dump n'est pas émise : sa condition d'émission EST le bit.
+  TEST_ASSERT_EQUAL_UINT8(0u, o.flags & kOomPmFlagProbeTaken);
+
+  // CONTRE-ÉPREUVE : le bit remis (ce que fait oomPostMortemFlushFlags), le
+  // verdict correct revient. C'est donc bien ce seul bit qui décide.
+  raw[30] |= kOomPmFlagProbeTaken;
+  OomPostMortemFields ok = oomPostMortemDecode(raw);
+  TEST_ASSERT_TRUE(oomPostMortemProbeRepresentative(ok));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictDmaStarvation, verdict(ok));
+  TEST_ASSERT_NOT_EQUAL(0u, ok.flags & kOomPmFlagProbeTaken);
+}
+
+void test_b2_flush_mask_preserves_ring_uptime_and_release_count(void) {
+  // Le flush est un store BRUT dans un mot PARTAGÉ : w7 porte ringUptimeS
+  // (bits 0-15), flags (16-23) et releaseCount (24-31). Un masque erroné
+  // détruirait l'âge de l'échantillon d'anneau ou le compteur d'épisodes —
+  // silencieusement, comme d'habitude avec cette zone.
+  const uint32_t w7 = 0x0712ABCDu;  // release=0x07, flags=0x12, ringUptime=0xABCD
+  uint32_t sortie = oomPmPackFlagsIntoW7(w7, 0xE5u);
+  TEST_ASSERT_EQUAL_HEX32(0xABCDu, sortie & 0xFFFFu);          // uptime INTACT
+  TEST_ASSERT_EQUAL_HEX8(0xE5u, (sortie >> 16) & 0xFFu);       // flags remplacés
+  TEST_ASSERT_EQUAL_HEX8(0x07u, (sortie >> 24) & 0xFFu);       // épisodes INTACTS
+  // Idempotence : reflusher la même valeur ne change rien (le hook peut être
+  // réentré, et le flush est appelé depuis trois sites).
+  TEST_ASSERT_EQUAL_HEX32(sortie, oomPmPackFlagsIntoW7(sortie, 0xE5u));
+  // Cas limites : octet plein / vide, et mot 7 saturé.
+  TEST_ASSERT_EQUAL_HEX32(0x07FFABCDu, oomPmPackFlagsIntoW7(w7, 0xFFu));
+  TEST_ASSERT_EQUAL_HEX32(0x0700ABCDu, oomPmPackFlagsIntoW7(w7, 0x00u));
+  TEST_ASSERT_EQUAL_HEX32(0xFF00FFFFu, oomPmPackFlagsIntoW7(0xFFFFFFFFu, 0x00u));
+  TEST_ASSERT_EQUAL_HEX32(0x00200000u, oomPmPackFlagsIntoW7(0u, kOomPmFlagProbeTaken));
+
+  // CONTRAT DE POSITION : le masque n'est correct que si `flags` occupe bien les
+  // bits 16-23 de w7, c'est-à-dire l'octet 30 de la zone. On le vérifie contre
+  // l'encodeur, seule autre autorité sur ce placement.
+  uint8_t raw[kOomPostMortemBytes];
+  OomPostMortemFields f = makeFields();
+  f.flags = 0xE5u;
+  f.ringUptimeS = 0xABCDu;
+  f.releaseCount = 0x07u;
+  oomPostMortemEncode(raw, f);
+  const uint32_t w7Encode = (uint32_t)raw[28] | ((uint32_t)raw[29] << 8) |
+                            ((uint32_t)raw[30] << 16) | ((uint32_t)raw[31] << 24);
+  TEST_ASSERT_EQUAL_HEX32(0x07E5ABCDu, w7Encode);
+  // Le flush appliqué à ce mot doit être un NO-OP quand les drapeaux sont déjà
+  // à jour : preuve que les deux écritures parlent bien du même octet.
+  TEST_ASSERT_EQUAL_HEX32(w7Encode, oomPmPackFlagsIntoW7(w7Encode, f.flags));
+}
+
+void test_b2_late_flags_isr_and_disabled_also_reach_the_zone(void) {
+  // ProbeTaken n'est pas le seul drapeau posé APRÈS oomPostMortemStore() :
+  // ProbeIsrSkipped et ProbeDisabled le sont aussi. Sans flush, le dump dirait
+  // « sonde absente » là où la vraie raison est « ISR » ou « désactivée » — et
+  // l'indétermination cesserait d'être ATTRIBUABLE, ce qui est justement
+  // l'exigence du gate.
+  const uint8_t tardifs[] = {kOomPmFlagProbeTaken, kOomPmFlagProbeIsrSkipped,
+                             kOomPmFlagProbeDisabled};
+  for (unsigned i = 0; i < sizeof(tardifs) / sizeof(tardifs[0]); i++) {
+    uint32_t w7 = 0x0300FA01u;  // flags à zéro au moment du store
+    TEST_ASSERT_EQUAL_UINT8(0u, (uint8_t)((w7 >> 16) & 0xFFu));
+    w7 = oomPmPackFlagsIntoW7(w7, tardifs[i]);
+    TEST_ASSERT_EQUAL_UINT8(tardifs[i], (uint8_t)((w7 >> 16) & 0xFFu));
+    TEST_ASSERT_EQUAL_HEX32(0xFA01u, w7 & 0xFFFFu);        // uptime préservé
+    TEST_ASSERT_EQUAL_HEX8(0x03u, (w7 >> 24) & 0xFFu);     // épisodes préservés
+  }
+  // Cumul des trois (une sonde prise, un refus en ISR, puis désactivation) :
+  // l'octet est saturé mais reste cohérent.
+  uint32_t w7 = oomPmPackFlagsIntoW7(0x0300FA01u,
+                                     (uint8_t)(kOomPmFlagProbeTaken |
+                                               kOomPmFlagProbeIsrSkipped |
+                                               kOomPmFlagProbeDisabled));
+  TEST_ASSERT_EQUAL_HEX8(0xE0u, (uint8_t)((w7 >> 16) & 0xFFu));
+}
+
+// ===========================================================================
+// 16. TEST-PREUVE — rejeu du relevé TERRAIN du 05/09/2026 (T4)
+// ===========================================================================
+// C'est ce relevé qui justifie tout le lot. Journal réel de l'appareil :
+// 6 refus d'allocation de 1 622 o en caps=0x080C (8BIT|DMA|INTERNAL) étalés sur
+// ~1 277 s (21 min), sans PANIC, alors que la métrique 8 bits annonçait
+// 26 612 o de plus gros bloc. Le firmware de l'époque a rendu
+// « SUSPICION CORRUPTION » — un verdict CRITICAL, chiffré, crédible et FAUX sur
+// un appareil dont seul le pool DMA était épuisé.
+static const uint32_t kField0509FailCount   = 6u;
+static const uint32_t kField0509LastSize    = 1622u;
+static const uint32_t kField0509LastCaps    = 0x0000080Cu;   // 8BIT|DMA|INTERNAL
+static const uint32_t kField0509RingMaxB    = 26612u;
+static const uint16_t kField0509SpanS       = 1277u;
+
+static OomPostMortemFields makeField0509(void) {
+  OomPostMortemFields f;
+  f.magic = kOomPostMortemMagic;
+  f.failCount = kField0509FailCount;
+  f.firstSize = kField0509LastSize;
+  f.lastSize = kField0509LastSize;
+  f.lastCaps = kField0509LastCaps;
+  f.firstUptimeS = 20000;
+  f.lastUptimeS = (uint16_t)(20000u + kField0509SpanS);
+  f.ringFreeBytes = 81408;
+  f.ringMaxAllocBytes = kField0509RingMaxB;
+  f.ringUptimeS = (uint16_t)(20000u + kField0509SpanS - 1u);
+  f.flags = kOomPmFlagIntegrityNeverRun;
+  f.releaseCount = 0;
+  return f;
+}
+
+void test_field_20260905_without_probe_is_no_longer_corruption(void) {
+  // T4 — LE cas. Sans sonde, la règle 3 ne peut plus accuser : INDÉTERMINÉ.
+  OomPostMortemFields f = makeField0509();
+  TEST_ASSERT_EQUAL_UINT16(kField0509SpanS, oomPostMortemSpanS(f));
+  // Les deux garde-fous de la règle 3 sont bien FRANCHIS (anti-vacuité : ce
+  // n'est ni une rafale, ni une comptabilité écroulée — donc on est bien dans
+  // la branche « sinon », celle qui concluait « corruption »).
+  TEST_ASSERT_TRUE(f.failCount <= kOomCorruptionMaxFails);
+  TEST_ASSERT_TRUE(f.ringMaxAllocBytes / kOomCorruptionSaneBlockRatio >= f.lastSize);
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(f));
+  // Le verdict FAUX de l'époque n'est plus rendu, sous aucun angle.
+  TEST_ASSERT_NOT_EQUAL(kOomVerdictCorruptionSuspected, verdict(f));
+  // Et il traverse la zone RTC (chemin réel du dump au boot suivant).
+  uint8_t raw[kOomPostMortemBytes];
+  oomPostMortemEncode(raw, f);
+  OomPostMortemFields o = oomPostMortemDecode(raw);
+  TEST_ASSERT_TRUE(oomPostMortemValid(o));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictUndetermined, verdict(o));
+}
+
+void test_field_20260905_with_probe_is_dma_starvation(void) {
+  // T4 — MÊME relevé, mais instrumenté par B-2 : la sonde mesure le pool
+  // RÉELLEMENT demandé (0x080C, ~1 Ko de plus gros bloc) et la référence
+  // INTERNAL|8BIT (26 612 o, le chiffre que l'anneau donnait déjà). Le verdict
+  // devient FAMINE DMA — le diagnostic qu'il fallait rendre le 05/09.
+  OomPostMortemFields f = makeField0509();
+  f.flags |= kOomPmFlagProbeTaken;
+  f.probeSize = kField0509LastSize;
+  f.probeCaps = (uint16_t)(kField0509LastCaps & 0xFFFFu);
+  f.probeCapsMaxB = 1024u;                  // pool DMA : ~1 Ko
+  f.probeCapsFree = 3328u;
+  f.probeRefMaxB = kField0509RingMaxB;      // réf8 : 26 612 o
+  f.probeRefFree = 81408u;
+  f.probeDurationUs = 180u;                 // sous kOomProbeWarnDurationUs
+  TEST_ASSERT_TRUE(oomPostMortemProbeRepresentative(f));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictDmaStarvation, verdict(f));
+
+  // ...et il SURVIT à l'aller-retour RTC, quantification comprise : 26 612 se
+  // relit 26 560 (>> 6 puis << 6), ce qui ne change pas le verdict — la marge
+  // du ratio est de 16×, pas de 1 %.
+  uint8_t raw[kOomPostMortemBytes];
+  oomPostMortemEncode(raw, f);
+  OomPostMortemFields o = oomPostMortemDecode(raw);
+  TEST_ASSERT_TRUE(oomPostMortemValid(o));
+  TEST_ASSERT_EQUAL_UINT32(kField0509LastSize, o.probeSize);   // EXACT, non quantifié
+  TEST_ASSERT_EQUAL_HEX16(0x080Cu, o.probeCaps);
+  TEST_ASSERT_EQUAL_UINT32(1024u, o.probeCapsMaxB);
+  TEST_ASSERT_EQUAL_UINT32(26560u, o.probeRefMaxB);
+  TEST_ASSERT_EQUAL_UINT16(180u, o.probeDurationUs);
+  TEST_ASSERT_TRUE(oomPostMortemProbeRepresentative(o));
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictDmaStarvation, verdict(o));
+
+  // CONTRE-ÉPREUVE : si le pool DMA avait été SAIN au refus (un bloc de 26 Ko
+  // disponible pour 1 622 o demandés), alors et seulement alors le verdict de
+  // corruption serait justifié — et il est bien rendu. La distinction repose
+  // donc entièrement sur la mesure contemporaine, pas sur un réglage de seuil.
+  f.probeCapsMaxB = 26560u;
+  TEST_ASSERT_EQUAL_UINT8(kOomVerdictCorruptionSuspected, verdict(f));
+}
+
+// ===========================================================================
+// 17. bug-080 B-2 — PRÉDICATS DE BORNAGE DE LA SONDE (T5, ADR-0017)
+// ===========================================================================
+// La sonde est le premier appel heap_caps_* JAMAIS autorisé depuis un chemin
+// d'échec. Ce qui la rend acceptable n'est pas sa mesure, c'est son BORNAGE :
+// jamais en ISR, un échantillon par épisode, un plancher temporel absolu, une
+// borne a priori sur le pire cas PSRAM, une désactivation définitive au-delà du
+// plafond. Ces décisions vivent dans oom_guard_logic.h — la coquille ne fait
+// plus que lire des atomiques et une horloge.
+
+void test_probe_token_is_one_sample_per_episode(void) {
+  // T5 — le jeton se consomme UNE fois et ne se réarme JAMAIS tout seul. C'est
+  // ce qui empêche une rafale de 6 refus (le relevé du 05/09) de déclencher
+  // 6 parcours de tas interruptions coupées.
+  bool jeton = true;
+  TEST_ASSERT_TRUE(oomProbeTakeTokenModel(jeton));
+  TEST_ASSERT_FALSE(jeton);
+  for (int refus = 0; refus < 50; refus++) {
+    TEST_ASSERT_FALSE(oomProbeTakeTokenModel(jeton));  // rafale : plus rien
+  }
+  // Seule la loop repose le jeton (drain du WARN d'échec / clôture d'épisode).
+  jeton = true;
+  TEST_ASSERT_TRUE(oomProbeTakeTokenModel(jeton));
+  TEST_ASSERT_FALSE(oomProbeTakeTokenModel(jeton));
+  // Jeton déjà désarmé : l'appel ne le RÉARME pas par effet de bord.
+  jeton = false;
+  TEST_ASSERT_FALSE(oomProbeTakeTokenModel(jeton));
+  TEST_ASSERT_FALSE(jeton);
+}
+
+void test_probe_temporal_floor_is_1000_ms(void) {
+  // T5 / CONDITION 3 DU GATE — plancher ABSOLU de 1 s, EN PLUS du jeton. Sans
+  // lui, le backoff du WARN démarrant à 0 ms, son drain immédiat réarmerait le
+  // jeton quelques millisecondes après la sonde précédente.
+  const uint32_t itv = kOomProbeMinIntervalMs;
+  TEST_ASSERT_EQUAL_UINT32(1000u, itv);
+  // 1re sonde du boot : jamais bloquée (lastProbeMs vaut 0, l'instant du boot
+  // ne doit pas décider de l'admission du tout premier échantillon).
+  TEST_ASSERT_TRUE(oomProbeFloorElapsed(0u, 0u, 0u, itv));
+  TEST_ASSERT_TRUE(oomProbeFloorElapsed(0u, 5u, 0u, itv));
+  // Ensuite : refus strictement sous 1 000 ms, admission à 1 000 ms pile (>=).
+  TEST_ASSERT_FALSE(oomProbeFloorElapsed(1u, 10000u, 10000u, itv));   // 0 ms
+  TEST_ASSERT_FALSE(oomProbeFloorElapsed(1u, 10005u, 10000u, itv));   // 5 ms — le cas redouté
+  TEST_ASSERT_FALSE(oomProbeFloorElapsed(1u, 10999u, 10000u, itv));   // 999 ms
+  TEST_ASSERT_TRUE(oomProbeFloorElapsed(1u, 11000u, 10000u, itv));    // pile
+  TEST_ASSERT_TRUE(oomProbeFloorElapsed(9u, 60000u, 10000u, itv));
+  // Repliement de millis() (49,7 j) : arithmétique non signée, écart CORRECT et
+  // non ~4,29 milliards. C'est le défaut qui a déjà mordu ce projet.
+  TEST_ASSERT_FALSE(oomProbeFloorElapsed(1u, 100u, 0xFFFFFF00u, itv));  // 356 ms réels
+  TEST_ASSERT_TRUE(oomProbeFloorElapsed(1u, 1000u, 0xFFFFFF00u, itv));  // 1256 ms réels
+}
+
+void test_probe_admission_bounds_are_300_and_1500_us(void) {
+  // T5 / CONDITION 1 DU GATE — WARN à 300 µs (sonde CONSERVÉE), désactivation
+  // DÉFINITIVE au-delà de 1 500 µs. L'assiette de ces seuils est le COUPLE des
+  // DEUX parcours (caps de l'échec + référence), pas chacun séparément : c'est
+  // le total que subit le système interruptions coupées.
+  TEST_ASSERT_EQUAL_UINT32(300u, kOomProbeWarnDurationUs);
+  TEST_ASSERT_EQUAL_UINT32(1500u, kOomProbeMaxDurationUs);
+  // Le seuil de WARN ne désactive PAS : il alerte.
+  TEST_ASSERT_TRUE(heapIntegrityAdmitNextRun(0u, kOomProbeMaxDurationUs));
+  TEST_ASSERT_TRUE(heapIntegrityAdmitNextRun(kOomProbeWarnDurationUs,
+                                             kOomProbeMaxDurationUs));
+  TEST_ASSERT_TRUE(heapIntegrityAdmitNextRun(kOomProbeWarnDurationUs + 1u,
+                                             kOomProbeMaxDurationUs));
+  // Plafond EXACT : encore admis (<=, inclusif) ; un µs de plus : refusé.
+  TEST_ASSERT_TRUE(heapIntegrityAdmitNextRun(kOomProbeMaxDurationUs,
+                                             kOomProbeMaxDurationUs));
+  TEST_ASSERT_FALSE(heapIntegrityAdmitNextRun(kOomProbeMaxDurationUs + 1u,
+                                              kOomProbeMaxDurationUs));
+  TEST_ASSERT_FALSE(heapIntegrityAdmitNextRun(70000u, kOomProbeMaxDurationUs));
+  // ORDRE DES SEUILS : un WARN doit toujours pouvoir précéder la désactivation,
+  // et la sonde (chemin d'échec, rafales, interruptions coupées) doit rester un
+  // ordre de grandeur sous le WARN du contrôle d'intégrité (loop, 5 ms).
+  TEST_ASSERT_TRUE(kOomProbeWarnDurationUs < kOomProbeMaxDurationUs);
+  TEST_ASSERT_TRUE(kOomProbeMaxDurationUs < kHeapIntegrityWarnDurationUs);
+  TEST_ASSERT_TRUE(kOomProbeMaxDurationUs * 3u <= kHeapIntegrityWarnDurationUs);
+}
+
+void test_probe_region_scan_unless_mask_guarantees_internal_ram(void) {
+  // T5 / CONDITION 2 DU GATE — sélection de branche. Sur 4 Mo de PSRAM, le
+  // parcours O(blocs) n'a pas de pire cas connu ; on ne SAUTE pas la sonde
+  // (interdit : les 12 sites d'appel du hook doivent tous rendre un verdict),
+  // on bascule sur les agrégats O(régions).
+  //
+  // ═══ ATTENDUS INVERSÉS PAR LA REVUE DE B-2 — DÉFAUT B1, BLOQUANT ═══════════
+  // LA VERSION PRÉCÉDENTE DE CE TEST VERROUILLAIT LE DÉFAUT. Elle affirmait
+  // `TEST_ASSERT_FALSE(oomProbeUsesRegionScan(0x0000FBFFu))` — masque qui
+  // CONTIENT 0x1000 — et épinglait `kOomProbeSpiramCapBit == 0x0400`. Elle
+  // passait, en prouvant exactement l'inverse de ce qu'on croyait : que la
+  // classe d'échec PRINCIPALE partait bien en parcours O(blocs).
+  //
+  // Ce que le désassemblage de `libheap.a` a établi (`heap_caps.c.obj`,
+  // `.iram1.2`, `.literal+0x8 = 0x00001000`) : tout échec de `malloc()` ou
+  // d'`operator new` ordinaire remonte au hook `caps = MALLOC_CAP_DEFAULT`
+  // (0x1000), SANS bit SPIRAM. C'est le masque des crashs du 11/08 (bad_alloc à
+  // l'accept HTTP) et du 13/08 (156 o) — ceux qui fondent tout ce chantier. Et
+  // le tas PSRAM est enregistré `DEFAULT|SPIRAM|8BIT|32BIT` (c'est ce qui rend
+  // opérant le heap_caps_malloc_extmem_enable() de B-1), donc `heap_caps_match()`
+  // le sélectionne : `tlsf_walk_pool` aurait parcouru 4 Mo interruptions
+  // coupées, et la sonde se serait DÉSACTIVÉE dès le premier `new` refusé.
+  //
+  // Le critère n'est donc plus « le masque demande-t-il de la PSRAM ? » (test de
+  // PRÉSENCE, qui échoue en silence sur tout masque non énuméré) mais
+  // « le masque GARANTIT-IL la RAM interne ? » — FAIL-SAFE : au moindre doute,
+  // agrégats. D'où le renommage du test : il ne parle plus de « spiram caps ».
+  TEST_ASSERT_EQUAL_HEX32(0x0800u, kOomProbeInternalCapBit);  // MALLOC_CAP_INTERNAL (1<<11)
+
+  // (A) O(BLOCS) — et UNIQUEMENT ici : le masque porte MALLOC_CAP_INTERNAL, donc
+  //     heap_caps_match() ne peut PAS sélectionner le tas PSRAM. Le cas motivant
+  //     du lot est intact.
+  TEST_ASSERT_FALSE(oomProbeUsesRegionScan(0x0000080Cu));  // 8BIT|DMA|INTERNAL — les 6 refus du 05/09
+  TEST_ASSERT_FALSE(oomProbeUsesRegionScan(0x00000804u));  // 8BIT|INTERNAL — la RÉFÉRENCE de la sonde
+  TEST_ASSERT_FALSE(oomProbeUsesRegionScan(0x00000800u));  // INTERNAL seul
+  TEST_ASSERT_FALSE(oomProbeUsesRegionScan(0x00001804u));  // 8BIT|INTERNAL|DEFAULT
+  TEST_ASSERT_FALSE(oomProbeUsesRegionScan(0xFFFFFFFFu));  // tout, INTERNAL compris
+
+  // (B) O(RÉGIONS) — LE CŒUR DU CORRECTIF. Ces masques atteignent la PSRAM.
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x00001000u));   // ⇐ MALLOC_CAP_DEFAULT SEUL :
+                                                           //   le masque de TOUT malloc/new refusé,
+                                                           //   donc des crashs du 11/08 et du 13/08.
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x00001400u));   // SPIRAM|DEFAULT
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x00001404u));   // 8BIT|SPIRAM|DEFAULT (bascule B-1)
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x00001004u));   // 8BIT|DEFAULT
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x00000400u));   // SPIRAM seul
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x00000404u));   // 8BIT|SPIRAM (relevé du 13/08)
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x00000004u));   // 8BIT seul : ne garantit RIEN
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x00000008u));   // DMA seul
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0u));            // masque vide → fail-safe
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x0000F7FFu));   // tout SAUF INTERNAL
+  // PRÉCISION SUR L'ANCIEN TEST, pour ne pas raconter d'histoire : son assertion
+  // `FALSE(0x0000FBFFu)` reste VRAIE ici, parce que 0xFBFF est « tout sauf
+  // SPIRAM » et contient donc encore INTERNAL. Ce n'est pas cette assertion qui
+  // était fausse — c'est l'ABSENCE de couverture de `0x1000` SEUL, le masque
+  // réellement remonté par le hook, qui laissait passer le défaut.
+  TEST_ASSERT_FALSE(oomProbeUsesRegionScan(0x0000FBFFu));  // contient INTERNAL
+
+  // (C) ANTI-VACUITÉ / anti-retour en arrière : un prédicat qui testerait de
+  //     nouveau la PRÉSENCE d'un bit (SPIRAM, ou n'importe quel autre) se
+  //     trompe forcément sur au moins un de ces trois masques, car ils
+  //     n'ont AUCUN bit en commun deux à deux hors INTERNAL.
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x00001000u));   // DEFAULT sans SPIRAM → régions
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x00000400u));   // SPIRAM sans DEFAULT → régions
+  TEST_ASSERT_FALSE(oomProbeUsesRegionScan(0x00000804u));  // INTERNAL, ni l'un ni l'autre → blocs
+  // Le bit voisin d'INTERNAL ne doit pas être confondu avec lui (mutation
+  // 0x0800 → 0x0400 ou 0x1000 : elle meurt ici).
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x00000400u));
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x00001000u));
+}
+
+void test_probe_region_scan_marks_largest_block_as_unknown(void) {
+  // T5 — la contrepartie de la bascule : le champ « plus gros bloc » est marqué
+  // NON RENSEIGNÉ, et cette sentinelle est exactement la valeur de saturation du
+  // champ RTC (0xFFFF << 6). Aucun encodage spécial, aucune règle de décodage
+  // neuve — mais un verdict qui sait ne pas conclure (cf. T3-h).
+  TEST_ASSERT_EQUAL_UINT32(0xFFFFu << 6, kOomProbeBlockUnknown);
+  TEST_ASSERT_EQUAL_UINT32(4194240u, kOomProbeBlockUnknown);
+  uint8_t raw[kOomPostMortemBytes];
+  OomPostMortemFields f = makeFieldsWithProbe();
+  f.lastCaps = 0x00000404u;               // 8BIT|SPIRAM → parcours O(régions)
+  f.probeCaps = 0x0404u;
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(f.lastCaps));
+  f.probeCapsMaxB = kOomProbeBlockUnknown;
+  f.probeCapsFree = 2u * 1024u * 1024u;   // 2 Mo de PSRAM libres, agrégat
+  oomPostMortemEncode(raw, f);
+  OomPostMortemFields o = oomPostMortemDecode(raw);
+  TEST_ASSERT_EQUAL_UINT32(kOomProbeBlockUnknown, o.probeCapsMaxB);
+  TEST_ASSERT_EQUAL_UINT32(2u * 1024u * 1024u, o.probeCapsFree);
+}
+
+void test_probe_full_bounded_sequence_of_an_episode(void) {
+  // T5 — SCÉNARIO COMPLET du bornage, tel que le vit un épisode réel (les
+  // 6 refus du 05/09 en 21 min). Les prédicats sont enchaînés dans l'ORDRE
+  // IMPÉRATIF de la coquille : désactivation → ISR → plancher → jeton.
+  bool active = true;      // sonde pas encore désactivée
+  bool jeton = true;       // armé par le 1er oomGuardLoopTick()
+  uint32_t sondes = 0, derniereMs = 0;
+  uint32_t nowMs = 500000u;
+
+  // Refus n°1 : tout est ouvert → sonde prise.
+  TEST_ASSERT_TRUE(active);
+  TEST_ASSERT_TRUE(oomProbeFloorElapsed(sondes, nowMs, derniereMs, kOomProbeMinIntervalMs));
+  TEST_ASSERT_TRUE(oomProbeTakeTokenModel(jeton));
+  sondes++; derniereMs = nowMs;
+  active = heapIntegrityAdmitNextRun(180u, kOomProbeMaxDurationUs);  // 180 µs : sain
+  TEST_ASSERT_TRUE(active);
+
+  // Refus n°2 à 6, dans la même seconde : le PLANCHER les refuse, et surtout il
+  // les refuse AVANT le jeton — qui reste donc désarmé, sans être « regagné ».
+  for (int i = 0; i < 5; i++) {
+    nowMs += 50u;
+    TEST_ASSERT_FALSE(oomProbeFloorElapsed(sondes, nowMs, derniereMs, kOomProbeMinIntervalMs));
+  }
+  // Une seconde plus tard, le plancher s'ouvre — mais le JETON, lui, est vide :
+  // les deux gardes sont bien INDÉPENDANTES et cumulatives.
+  nowMs = derniereMs + kOomProbeMinIntervalMs;
+  TEST_ASSERT_TRUE(oomProbeFloorElapsed(sondes, nowMs, derniereMs, kOomProbeMinIntervalMs));
+  TEST_ASSERT_FALSE(oomProbeTakeTokenModel(jeton));
+
+  // La loop draine le WARN d'échec → réarmement du jeton (backoff : 30 s après).
+  nowMs += 30000u;
+  jeton = true;
+  TEST_ASSERT_TRUE(oomProbeFloorElapsed(sondes, nowMs, derniereMs, kOomProbeMinIntervalMs));
+  TEST_ASSERT_TRUE(oomProbeTakeTokenModel(jeton));
+  sondes++; derniereMs = nowMs;
+
+  // Cet échantillon-là dépasse le plafond → DÉSACTIVATION DÉFINITIVE : plus
+  // aucune sonde ensuite, même jeton réarmé et plancher largement écoulé.
+  active = heapIntegrityAdmitNextRun(kOomProbeMaxDurationUs + 1u, kOomProbeMaxDurationUs);
+  TEST_ASSERT_FALSE(active);
+  jeton = true;
+  nowMs += 3600000u;
+  TEST_ASSERT_TRUE(oomProbeFloorElapsed(sondes, nowMs, derniereMs, kOomProbeMinIntervalMs));
+  TEST_ASSERT_TRUE(jeton);
+  TEST_ASSERT_FALSE(active);  // la garde de tête ferme tout : c'est définitif
+  TEST_ASSERT_EQUAL_UINT32(2u, sondes);
+}
+
+void test_probe_real_constant_values(void) {
+  // T5 — verrouillage des valeurs validées par le gate. Un futur commit qui les
+  // change sans repasser par pool-chemistry casse ici.
+  TEST_ASSERT_EQUAL_UINT32(300u, kOomProbeWarnDurationUs);
+  TEST_ASSERT_EQUAL_UINT32(1500u, kOomProbeMaxDurationUs);
+  TEST_ASSERT_EQUAL_UINT32(1000u, kOomProbeMinIntervalMs);
+  TEST_ASSERT_EQUAL_UINT32(240u, kOomProbeDefaultCpuMhz);
+  // Défaut B1 de la revue : la constante épinglée ici était kOomProbeSpiramCapBit
+  // (0x0400), c'est-à-dire un invariant qui n'était PAS celui qui protège. Le
+  // critère est désormais MALLOC_CAP_INTERNAL (1<<11) et le prédicat est
+  // FAIL-SAFE (absence du bit ⇒ agrégats), ce qui couvre MALLOC_CAP_DEFAULT
+  // (0x1000) — le masque de tout malloc/new refusé.
+  TEST_ASSERT_EQUAL_HEX32(0x0800u, kOomProbeInternalCapBit);
+  TEST_ASSERT_TRUE(oomProbeUsesRegionScan(0x1000u));   // le cas qui a défait la condition 2
+  TEST_ASSERT_FALSE(oomProbeUsesRegionScan(0x080Cu));  // ...sans perdre le cas motivant
+  TEST_ASSERT_EQUAL_UINT32(4194240u, kOomProbeBlockUnknown);
+  // Drapeaux de la sonde : bits 5, 6, 7 — l'octet est SATURÉ (8/8) depuis B-2,
+  // tout drapeau futur exigera un mot de plus ET un nouveau bump de magic.
+  TEST_ASSERT_EQUAL_HEX8(0x20, kOomPmFlagProbeTaken);
+  TEST_ASSERT_EQUAL_HEX8(0x40, kOomPmFlagProbeIsrSkipped);
+  TEST_ASSERT_EQUAL_HEX8(0x80, kOomPmFlagProbeDisabled);
+  const uint8_t tous = kOomPmFlagNominalUsed | kOomPmFlagFallbackUsed |
+                       kOomPmFlagHandlerUnregistered | kOomPmFlagIntegrityFailed |
+                       kOomPmFlagIntegrityNeverRun | kOomPmFlagProbeTaken |
+                       kOomPmFlagProbeIsrSkipped | kOomPmFlagProbeDisabled;
+  TEST_ASSERT_EQUAL_HEX8(0xFF, tous);  // aucun bit libre, aucun bit en double
+  // Budget RAM RTC noinit du projet : 9 (auto-heal) + 1032 (anneau) + 48.
+  TEST_ASSERT_EQUAL_UINT32(1089u, 9u + 1032u + kOomPostMortemBytes);
+  TEST_ASSERT_TRUE(9u + 1032u + kOomPostMortemBytes < 8192u);
+}
+
 // ---------------------------------------------------------------------------
 
 int main(int, char**) {
@@ -1526,7 +2529,7 @@ int main(int, char**) {
   RUN_TEST(test_rearm_two_tier_full_scenario_after_famine);
   // v2.18.8 — post-mortem RTC : encodage/décodage
   RUN_TEST(test_postmortem_roundtrip_nominal);
-  RUN_TEST(test_postmortem_wire_format_is_little_endian_32_bytes);
+  RUN_TEST(test_postmortem_wire_format_is_little_endian_48_bytes);
   RUN_TEST(test_postmortem_roundtrip_zero_and_extreme_sizes);
   RUN_TEST(test_postmortem_uptime_wraps_modulo_16_bits);
   RUN_TEST(test_postmortem_ring_quantization_is_bounded);
@@ -1542,7 +2545,7 @@ int main(int, char**) {
   RUN_TEST(test_verdict_many_failures_spread_over_hours_is_not_starvation);
   RUN_TEST(test_verdict_many_failures_in_burst_is_starvation);
   RUN_TEST(test_verdict_burst_span_boundary_is_inclusive);
-  RUN_TEST(test_verdict_real_case_20260813_is_corruption_suspected);
+  RUN_TEST(test_verdict_real_case_20260813_needs_a_probe_to_accuse);
   RUN_TEST(test_verdict_real_starvation_many_failures);
   RUN_TEST(test_verdict_starvation_when_accounting_collapsed);
   RUN_TEST(test_verdict_sane_block_ratio_boundary);
@@ -1576,5 +2579,41 @@ int main(int, char**) {
   RUN_TEST(test_count_failure_false_while_self_alloc_in_flight);
   RUN_TEST(test_count_failure_window_is_closed_after_self_alloc);
   RUN_TEST(test_count_failure_suppresses_the_1025_self_inflicted_of_20260815);
+
+  // bug-080 B-2 — sonde du refus : aller-retour RTC des 4 mots neufs (T1)
+  RUN_TEST(test_probe_roundtrip_preserves_all_four_new_words);
+  RUN_TEST(test_probe_wire_offsets_are_w8_to_w11);
+  RUN_TEST(test_probe_size_is_exact_never_quantized);
+  RUN_TEST(test_probe_quantization_is_bounded_and_pessimistic);
+  RUN_TEST(test_probe_blocks_saturate_above_4_mib);
+  RUN_TEST(test_probe_duration_saturates_at_fffe_reserving_ffff);
+  RUN_TEST(test_probe_absent_zone_decodes_to_zeroed_probe);
+  // bug-080 B-2 — l'ANCIEN magic doit être jugé invalide (T2)
+  RUN_TEST(test_old_magic_f00dfa12_is_rejected);
+  RUN_TEST(test_old_32_byte_zone_followed_by_rtc_garbage_is_rejected);
+  // bug-080 B-2 — verdict révisé, les 7 cas de la règle (T3)
+  RUN_TEST(test_verdict_probe_dma_starvation_is_the_new_case);
+  RUN_TEST(test_verdict_probe_general_starvation_when_reference_also_dry);
+  RUN_TEST(test_verdict_probe_corruption_is_now_the_only_path);
+  RUN_TEST(test_verdict_probe_not_representative_falls_back_to_rule_3);
+  RUN_TEST(test_verdict_no_probe_with_healthy_ring_is_undetermined);
+  RUN_TEST(test_verdict_no_probe_burst_is_still_starvation);
+  RUN_TEST(test_verdict_zero_failcount_stays_undetermined_even_with_a_probe);
+  RUN_TEST(test_verdict_probe_region_scan_marks_block_unknown);
+  // bug-080 B-2 / revue — défaut B2 : le drapeau tardif non flushé en RAM RTC
+  RUN_TEST(test_b2_probe_words_written_but_flag_lost_discards_the_measure);
+  RUN_TEST(test_b2_flush_mask_preserves_ring_uptime_and_release_count);
+  RUN_TEST(test_b2_late_flags_isr_and_disabled_also_reach_the_zone);
+  // bug-080 B-2 — TEST-PREUVE : relevé terrain du 05/09/2026 (T4)
+  RUN_TEST(test_field_20260905_without_probe_is_no_longer_corruption);
+  RUN_TEST(test_field_20260905_with_probe_is_dma_starvation);
+  // bug-080 B-2 — prédicats de bornage de la sonde (T5, ADR-0017)
+  RUN_TEST(test_probe_token_is_one_sample_per_episode);
+  RUN_TEST(test_probe_temporal_floor_is_1000_ms);
+  RUN_TEST(test_probe_admission_bounds_are_300_and_1500_us);
+  RUN_TEST(test_probe_region_scan_unless_mask_guarantees_internal_ram);
+  RUN_TEST(test_probe_region_scan_marks_largest_block_as_unknown);
+  RUN_TEST(test_probe_full_bounded_sequence_of_an_episode);
+  RUN_TEST(test_probe_real_constant_values);
   return UNITY_END();
 }
