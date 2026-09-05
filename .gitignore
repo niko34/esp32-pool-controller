@@ -36,12 +36,17 @@ ai/.env
 .crew/
 ai/outputs/
 
-# Claude Code — les COMMANDES sont versionnées (elles font partie du process de
-# release, cf. CLAUDE.md « Fichiers générés et releases ») ; tout le reste est
-# de l'état local propre à cette machine (settings.local.json, sessions, cache).
+# Claude Code — ce qui fait FONCTIONNER le projet est versionné : les agents
+# (CLAUDE.md décrit un workflow qui les nomme un par un — sans eux, le mode
+# d'emploi décrit une procédure impossible à suivre), les skills, les commandes
+# de release, et les permissions partagées de settings.json.
+# Reste local : settings.local.json (permissions à chemins absolus), les
+# worktrees, les verrous de tâches et le cache.
 .claude/*
+!.claude/agents/
+!.claude/skills/
 !.claude/commands/
-specs/
+!.claude/settings.json
 
 # ---------------------------------------------------------------------------
 # KiCad — les SOURCES sont versionnées comme le code ; les fichiers de

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./tools/coverage.sh *)",
+      "Bash(./tools/decode_coredump.sh *)",
+      "Bash(node --check *)"
+    ]
+  }
+}

@@ -76,6 +76,80 @@ releases `pcb-vX`. Voir « Fichiers générés et releases » dans `CLAUDE.md`.
 
 Les sources FreeCAD et les STL d'impression 3D sont conservés **hors du dépôt**.
 
+## 🧭 Reprendre le projet
+
+Cette section s'adresse à quiconque récupère le dépôt — y compris son auteur dans
+deux ans. Elle dit **où est quoi** et **comment on travaille ici**.
+
+### Outils nécessaires
+
+| Outil | Pour quoi | Indispensable ? |
+|---|---|---|
+| **PlatformIO** | compiler, téléverser, lancer les tests | oui |
+| **Node.js** | `minify.js`, appelé par `build_fs.sh` | oui |
+| **Chrome / Chromium** | générer les PDF de documentation | pour les releases |
+| **`gh`** (GitHub CLI) | publier les releases | pour les releases |
+| **KiCad 7+** | ouvrir le PCB, générer les gerbers | pour le matériel |
+| **Python 3** | `tools/*.py` (BOM, coredump, couverture) | ponctuel |
+
+⚠️ Sur macOS, `kicad-cli` et Chrome ne sont pas dans le `PATH` : les scripts
+`scripts/*.sh` sondent aussi les emplacements `.app`.
+
+### Où est quoi
+
+```
+src/            firmware C++ (ESP32, Arduino)      data/     interface web (vanilla JS)
+test/           tests natifs — logique pure         docs/     doc technique, ADR, guides
+specs/          LA SOURCE DE VÉRITÉ des demandes    kicad/    sources du PCB
+scripts/        livrables de release (PDF, gerbers) tools/    utilitaires de développement
+.claude/        agents, skills et commandes         builds/   archive LOCALE des binaires
+```
+
+### Comment on travaille
+
+Le cycle est décrit en détail dans **[CLAUDE.md](CLAUDE.md)**. En résumé :
+
+1. **Une demande = une spec** dans `specs/features/todo/`, au format du template.
+   Elle se déplace vers `doing/` quand le travail commence, `done/` quand il finit,
+   enrichie des notes techniques et des décisions prises.
+2. **Le travail passe par des agents spécialisés** (`.claude/agents/`) :
+   conception, implémentation firmware ou web, tests, revue, documentation.
+   ⚠️ **`pool-chemistry` est obligatoire** dès qu'on touche au dosage, à la
+   régulation ou à la calibration des sondes — ce sont les pompes qui injectent de
+   l'acide et du chlore dans un bassin.
+3. **Les tests natifs sont non négociables** : `pio test -e native` doit rester
+   vert, et tout test neuf est **validé par mutation** — on casse volontairement le
+   code qu'il protège pour vérifier qu'il meurt. Plusieurs défauts réels de ce
+   projet n'ont été trouvés que comme ça.
+4. **Toute décision structurante devient un ADR** dans `docs/adr/`. Les ADR sont
+   immuables : on les amende d'une bannière, on ne réécrit pas leur histoire.
+
+### Les commandes utiles
+
+```bash
+pio run                    # compiler (JAMAIS -e esp32dev, voir plus bas)
+pio test -e native         # 33 suites, ~1 286 cas
+./build_fs.sh              # construire le filesystem web
+./deploy.sh all            # flasher par USB (firmware + filesystem)
+./deploy.sh ota-firmware   # mettre à jour par WiFi
+./tools/coverage.sh        # couverture des tests
+/release                   # publier une version firmware + doc
+/release-pcb               # publier des fichiers de fabrication PCB
+```
+
+⚠️ **Ne jamais lancer `pio run -e esp32dev`** sans précaution : les deux
+environnements partagent le répertoire du framework et **se détruisent
+mutuellement**. Le repli core 2 passe par `PIO_ENV=esp32dev ./deploy.sh`.
+
+### Ce qui n'est pas dans le dépôt, et pourquoi
+
+Les **fichiers générés** n'y sont pas : PDF de documentation, gerbers de
+fabrication, firmware compilé. Ils sont attachés aux **releases GitHub**, où ils
+sont horodatés et associés à un tag. Voir « Fichiers générés et releases » dans
+[CLAUDE.md](CLAUDE.md).
+
+Les **sources FreeCAD** du boîtier et les exports STL sont conservés hors dépôt.
+
 ## 🚀 Installation
 
 ### PlatformIO (Recommandé)
@@ -362,6 +436,10 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
 - **`docs/`** - Documentation technique complémentaire
 - **`screenshots/`** - Captures d'écran de l'interface
 - **`tools/`** - Scripts utilitaires (couverture de tests, déploiement)
+- **`specs/`** - Demandes et décisions : `todo/` à faire, `doing/` en cours,
+  `done/` terminées avec leurs notes techniques. **La source de vérité du projet**
+- **`.claude/`** - Agents spécialisés, skills et commandes de release
+- **`test/`** - Tests natifs (logique pure, exécutés hors matériel)
 - **`logo/`** - Fichiers logo du projet
 
 ## 📄 Licence
