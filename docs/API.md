@@ -406,15 +406,36 @@ Paramètre `range` : `24h` (défaut), `3d`, `7d`, `30d`, `all`. Une valeur **inc
 
 Paramètre optionnel `?since=TIMESTAMP` pour récupération incrémentale.
 
-**Format de réponse** (inchangé octet pour octet depuis les versions antérieures) :
+**Format de réponse** :
 
 ```json
-{"range":"24h","count":0,"history":[{"timestamp":1753860000,"ph":7.2,"orp":650,"temperature":24.6,"filtration":true,"dosing":false,"granularity":0}, "…"],"count":123}
+{"range":"24h","count":0,"history":[{"timestamp":1753860000,"ph":7.2,"phFiltered":7.23,"orp":650,"orpFiltered":649,"temperature":24.6,"filtration":true,"dosing":false,"granularity":0}, "…"],"count":123}
 ```
 
 > ⚠️ La clé `count` apparaît **deux fois** : `0` dans l'en-tête, la valeur réelle dans le pied. Bizarrerie historique **conservée volontairement** pour compatibilité (les parseurs JSON gardent la dernière occurrence).
 
 > **feature-061 (v2.13.0)** : les points enregistrés pendant un arrêt de filtration (ou pendant la purge post-reprise) ont `ph` et `orp` à **`null`** (contrat existant, identique à un capteur absent) — `temperature`, `filtration` et `dosing` restent renseignés. Voir [`docs/subsystems/history.md`](subsystems/history.md#exclusion-des-mesures-phorptempérature-sans-circulation-deau-feature-061-v2130).
+
+#### Mesure lissée : `phFiltered` / `orpFiltered` (feature-095, v2.38.0)
+
+Chaque point porte, à côté de la mesure **brute** (`ph` = brut + offset, `orp` = brut), la mesure **lissée** — celle sur laquelle la régulation décide (médiane + EMA, exactement la valeur servie par `ph` / `orp` de [`/data`](#get-data--write) au même instant).
+
+| Clé | Type | Arrondi | Description |
+|-----|------|---------|-------------|
+| `phFiltered` | float \| `null` | **2 décimales** (`%.2f`) | pH lissé vu par la régulation. Le dixième du brut masquerait l'essentiel de sa dynamique (la régulation décide au centième). |
+| `orpFiltered` | int \| `null` | **entier** | ORP lissé (mV), mêmes règles d'arrondi que `/data`. |
+
+**Règles de lecture** — trois points, dans cet ordre d'importance :
+
+1. **Les clés sont TOUJOURS présentes**, comme `ph` / `orp` / `temperature` : l'absence de mesure se dit **`null`**, jamais par omission de clé. Ne pas confondre avec le **fichier persisté** `/history.json`, qui lui utilise des clés courtes (`pf` / `of`) et **omet** la clé quand la valeur n'est pas finie — voir [`docs/subsystems/history.md`](subsystems/history.md#point-persisté-vs-point-exporté--deux-formats-distincts-feature-095).
+2. **La lissée n'existe QUE sur les points RAW** (`granularity: 0`, points 5 min, ~8 h de profondeur). Sur les **moyennes horaires** (`1`) et **journalières** (`2`), `phFiltered` et `orpFiltered` valent **toujours `null`** — elle n'est ni persistée ni agrégée à ces granularités (décision de budget de partition, [ADR-0064](adr/0064-la-courbe-suit-le-nombre-affiche.md)). Un client qui trace la lissée doit donc gérer une série **plus courte** que celle du brut sur une fenêtre 24 h.
+3. **`null` ne vaut pas 0.** Filtre non amorcé, porte de mesure fermée (filtration arrêtée, purge), agrégat, ou point enregistré par un firmware antérieur à la 2.38 : dans tous ces cas la valeur est absente, jamais repliée sur le brut.
+
+**Rétrocompatibilité** : ajout **purement additif**. Un client antérieur ignore les clés qu'il ne connaît pas ; un firmware antérieur à la 2.38.0 ne sert aucune des deux clés (le client doit traiter leur absence comme « lissée inexistante »). Les points enregistrés **avant** la 2.38 restent dans l'historique avec `phFiltered` / `orpFiltered` à `null` — aucune migration, aucune purge.
+
+**Aller-retour** : [`POST /history/import`](#post-historyimport--write) relit ces deux clés **longues** (celles de l'export, pas les clés courtes du fichier persisté) — restaurer une sauvegarde `/get-history` restitue la lissée à l'identique, sans perte silencieuse.
+
+> ⚠️ **Points omis (rare, mais désormais audible)** : si le JSON d'un point dépasse `kHistoryPointJsonMaxBytes` (**192 o** depuis la v2.38.0, pire cas réaliste **161 o**), le point est **sauté** — jamais de JSON partiel. La réponse reste valide, mais la courbe est trouée. Depuis la v2.38.0 ces omissions sont **comptées** et un **WARNING throttlé 1/h** est journalisé (« *N point(s) omis de la réponse…* ») : un trou de courbe n'est plus indiscernable d'une panne de sonde.
 
 **Transfert chunked (v2.14.0, [ADR-0032 §Extension 2026-07-30](adr/0032-reponses-http-bornees.md#extension-2026-07-30--get-history-chunked-et-filet-ws-v2140))** : la réponse est émise en `Transfer-Encoding: chunked` (mécanisme (b), patron `/download-logs`) — plus aucune `String` contiguë ~40 Ko épinglée pendant le transfert, et le **503** « heap fragmenté » de la v2.10.4 **n'existe plus sur cette route** (aucune garde heap nécessaire en chunked). Transparent pour `fetch()`/curl : contrat JSON identique.
 
@@ -495,9 +516,11 @@ Importe un lot de points d'historique.
 
 ```bash
 curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
-  -d '[{"timestamp":1700000000,"ph":7.2,"orp":720,"temperature":24.5}]' \
+  -d '[{"timestamp":1700000000,"ph":7.2,"phFiltered":7.23,"orp":720,"orpFiltered":719,"temperature":24.5}]' \
   http://poolcontroller.local/history/import
 ```
+
+Les clés attendues sont celles **de l'export `/get-history`** (clés longues), pas celles du fichier persisté `/history.json`. Depuis la **v2.38.0**, `phFiltered` et `orpFiltered` sont relues : l'aller-retour `/get-history` → `/history/import` → `/get-history` restitue la [mesure lissée](#mesure-lissée--phfiltered--orpfiltered-feature-095-v2380) à l'identique. Clé **absente ou `null`** → mesure lissée absente (`null`), jamais 0 ni repli sur le brut.
 
 ---
 

@@ -13,8 +13,8 @@ La page est une **grille de six cartes** (classe `grid--status-cards`) :
 
 1. **Carte Filtration** (`#dashboard-filtration-card`) — état, mode, horaires, boutons Démarrer / Arrêter. Un lien engrenage amène vers `/filtration`.
 2. **Carte Éclairage** (`#dashboard-lighting-card`) — état, mode (programmation on/off), horaires, boutons Allumer / Éteindre. Lien vers `/lighting`.
-3. **Carte pH** (`#dashboard-ph-card`) — valeur pH courante, cible, badge dosage actif, mini-graphique. Bandeau « Calibration requise » si la sonde n'a jamais été calibrée. Lien vers `/ph`.
-4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible, badge dosage actif, mini-graphique. Bandeau calibration. Lien vers `/orp`.
+3. **Carte pH** (`#dashboard-ph-card`) — valeur pH courante, cible, badge dosage actif, mini-graphique + légende « Lissé (régulation) » / interrupteur « Brut » (v2.38.0). Bandeau « Calibration requise » si la sonde n'a jamais été calibrée. Lien vers `/ph`.
+4. **Carte ORP** (`#dashboard-orp-card`) — valeur ORP courante (mV), cible, badge dosage actif, mini-graphique + même légende (v2.38.0). Bandeau calibration. Lien vers `/orp`.
 5. **Carte Température** (`#dashboard-temperature-card`) — valeur courante en °C, badge `#temperature-sensor-badge` (« Capteur indisponible » v2.10.5 + segments d'état mesure feature-061 itération 2), mini-graphique. Lien vers `/temperature`.
 6. **Carte Boost** (`#dashboard-boost-card`) — activation / désactivation du Mode Boost, heure d'expiration quand il est actif (feature-053, v2.18.0, voir [Carte Boost](#carte-boost-feature-053)).
 
@@ -56,6 +56,45 @@ Les mini-graphiques des cartes pH, ORP et Température n'affichent **que la jour
 - **Fuseau horaire de référence = celui du NAVIGATEUR**, pas celui du contrôleur (`startOfTodaySeconds()` s'appuie sur `new Date().setHours(0,0,0,0)`). Les horodatages reçus sont des epoch UTC, la conversion est donc exacte ; mais consulter le tableau de bord depuis un appareil réglé sur un autre fuseau décale la coupure de « minuit » d'autant. Sans conséquence en usage normal (même fuseau que le bassin) ; c'est le même choix que pour les étiquettes horaires, qui suivent déjà la locale du navigateur.
 
 > ⚠️ Le changement est **entièrement dans `data/app.js`** : il faut **reconstruire et reflasher le filesystem** (`./build_fs.sh` puis `./deploy.sh fs` ou `ota-fs`). Mettre à jour le firmware seul ne suffit pas.
+
+## Mini-graphiques pH / ORP : la courbe suit le nombre affiché (feature-095, v2.38.0)
+
+**La vraie raison du lot.** Le grand nombre des cartes pH et ORP affichait **déjà** la mesure **lissée** servie par `/data` — celle sur laquelle la régulation décide — au-dessus d'une courbe **brute**. Le nombre et la courbe ne parlaient donc pas du même signal, ce qui a produit **deux mauvais diagnostics** par le passé. La feature-095 ne « promeut » pas la lissée : elle **aligne la courbe sur le nombre qu'elle est censée expliquer**.
+
+Depuis la v2.38.0, les mini-graphiques pH et ORP tracent **deux séries** :
+
+| Série | Rôle | Rendu | Source `/get-history` |
+|---|---|---|---|
+| **Lissé (régulation)** | courbe **principale** — c'est la valeur du grand nombre, celle qui décide du dosage | trait épais (2 px), **spline**, **aire** remplie, coloration conditionnelle par segment, point de survol | `phFiltered` / `orpFiltered` |
+| **Brut** | courbe **secondaire**, diagnostic sonde | trait fin (1 px), tracé **linéaire** (une spline inventerait des dépassements sur un signal bruité et dense) | `ph` / `orp` |
+
+- **pH affiché à 2 décimales** sur ces mini-graphiques (était 1) : à 0,1 près, la quantification dépasse l'amplitude utile du signal lissé (~0,05).
+- **Infobulle** : quand les deux séries existent, deux lignes préfixées `lissé` / `brut` (+ la ligne de granularité). Quand seul le brut existe, une seule ligne `brut` — l'infobulle ne disparaît **jamais** sur la portion sans lissée (ce serait un effet « panne »).
+- **La carte Température n'a qu'une série** : elle passe par la même fabrique `createMiniLineChart` avec une série brute entièrement nulle. Un seul chemin de code, la série principale reste toujours l'index 2.
+- **Les graphiques des écrans détail (`/ph`, `/orp`, `/temperature`) ne changent pas** : ils agrègent **1 point par jour**, granularité à laquelle la lissée vaut toujours `null` — et où elle serait de toute façon indiscernable du brut. Seuls les mini-graphiques du tableau de bord sont touchés. C'était aussi la **réduction de risque** du lot : la fonction de tracé principale (`createLineChart`) reste mono-série.
+
+### La frontière ~8 h, et pourquoi elle ne ressemble pas à une panne
+
+La fenêtre affichée couvre la journée en cours (jusqu'à 24 h) ; la mesure lissée, elle, n'est historisée **que sur les points 5 min**, soit **~8 h de profondeur** ([history.md](../subsystems/history.md#la-lissée-nest-historisée-que-sur-les-points-raw)). Le problème de conception n'était pas « la courbe s'arrête » — c'était « **une courbe forte apparaît de nulle part** » au milieu du graphique.
+
+Trois dispositifs, qui font lire **un seul événement** au lieu de deux :
+
+1. **Le brut couvre toujours 100 % de la fenêtre** — il n'y a jamais de zone vide.
+2. **La lissée est une aire, pas une ligne** : une **zone qui commence** évoque une période ; une **ligne qui s'arrête** évoque une panne.
+3. **L'opacité du brut bascule à la même frontière** : `0,35` (halo, sous la lissée) là où la lissée existe, `0,9` (courbe pleine, aspect d'avant la 2.38) là où elle n'existe pas. Le basculement tombe **exactement** au x où l'aire commence.
+
+**Aucune lissée sur toute la fenêtre** (première heure après la mise à jour, journée entièrement antérieure à la 2.38) : la légende le **dit** — l'entrée « Lissé (régulation) » s'atténue et reçoit le suffixe *« (aucune sur la période) »* + un `title`. La couleur et l'opacité ne portent **jamais seules** l'information.
+
+### Interrupteur « Brut » (`#ph-mini-raw-toggle`, `#orp-mini-raw-toggle`)
+
+Sous chaque mini-graphique pH et ORP, une légende (`.mini-legend`) porte l'entrée « Lissé (régulation) » et un **interrupteur « Brut »** (`role="switch"`, `aria-checked`, cible tactile 44 px compensée par marge négative pour ne pas grandir la carte).
+
+- **Un interrupteur par graphique**, indépendants. **Défaut : brut visible.**
+- **Mémorisé** dans `localStorage` sous `poolctl.ui.showRaw.ph` / `poolctl.ui.showRaw.orp` (`'1'` visible / `'0'` masqué). L'état est restauré **avant** le premier chargement de données.
+- **Bénéfice réel du masquage** : l'échelle Y **se resserre sur la lissée**. C'est pour cela que masquer le brut passe ses valeurs à `null` et **jamais** par `show: false` — une série cachée continuerait de dicter l'échelle.
+- **Aucun appel réseau au clic** : les valeurs brutes sont déjà en mémoire (`chart.st.raw`).
+
+> **Première utilisation de `localStorage` dans le projet.** L'accès est **entièrement protégé** (`uiPrefGet` / `uiPrefSet`, app.js) : `localStorage` peut lever **à la lecture comme à l'écriture** (Safari en navigation privée, stockage désactivé par politique). Un objet en mémoire sert de repli et un échec ne remonte **jamais** à l'utilisateur — la préférence vaut alors pour la session seulement. Tout nouveau réglage d'interface persisté doit passer par ces deux fonctions et par le préfixe `poolctl.ui.`.
 
 ## Tooltip daté/typé et coupures de courbe (v2.18.4, bug-points-futurs-et-ux-courbes)
 
@@ -205,7 +244,7 @@ La carte Boost lit :
 - `boost_active` (bool), `boost_until` (epoch d'expiration) — voir [Carte Boost](#carte-boost-feature-053)
 - `boost_filtration_extended`, `boost_chlorine_boosted` (bool, feature-055) — leviers réellement actifs, pilotent la ligne « Effet »
 
-Les mini-graphiques consomment `GET /get-history?range=24h` au chargement, puis se rafraîchissent par **polling HTTP incrémental toutes les 5 minutes** (`GET /get-history?range=24h&since=<dernier timestamp>`, ajout des nouveaux points en fin de série, avec insertion de la coupure > 90 min le cas échéant) — pas via WebSocket (`loadMiniChartData`, app.js). Depuis la **v2.18.9**, la réponse est **filtrée à minuit local** côté navigateur (seule la journée en cours est tracée) et un **changement de jour civil force un rechargement complet** au lieu de l'incrément — voir [Plage « journée en cours »](#plage-des-mini-graphiques--journée-en-cours-v2189). Le paramètre `range=24h` est conservé tel quel : le contrat HTTP est inchangé.
+Les mini-graphiques consomment `GET /get-history?range=24h` au chargement, puis se rafraîchissent par **polling HTTP incrémental toutes les 5 minutes** (`GET /get-history?range=24h&since=<dernier timestamp>`, ajout des nouveaux points en fin de série, avec insertion de la coupure > 90 min le cas échéant) — pas via WebSocket (`loadMiniChartData`, app.js). Depuis la **v2.18.9**, la réponse est **filtrée à minuit local** côté navigateur (seule la journée en cours est tracée) et un **changement de jour civil force un rechargement complet** au lieu de l'incrément — voir [Plage « journée en cours »](#plage-des-mini-graphiques--journée-en-cours-v2189). Le paramètre `range=24h` est conservé tel quel : le contrat HTTP est inchangé. Depuis la **v2.38.0**, la réponse porte en plus `phFiltered` / `orpFiltered` (mesure lissée, `null` au-delà de ~8 h) — voir [Mini-graphiques pH / ORP](#mini-graphiques-ph--orp--la-courbe-suit-le-nombre-affiché-feature-095-v2380).
 
 ## Carte Boost (feature-053)
 
@@ -266,9 +305,9 @@ Le détail complet du cumul journalier (barre de progression, mL consommés / qu
 ## Fichiers
 
 - [`data/index.html:162`](../../data/index.html:162) — structure HTML du dashboard
-- [`data/app.js`](../../data/app.js) — `latestSensorData`, `updateFiltrationBadges()`, `composeSensorBadge()`, `dailyCumulSegment()`, `getDosingStopReason()`, `updateDosingStatus()` + `dosingAnchor` (v2.21.1), rendu uPlot (`createMiniLineChart`)
+- [`data/app.js`](../../data/app.js) — `latestSensorData`, `updateFiltrationBadges()`, `composeSensorBadge()`, `dailyCumulSegment()`, `getDosingStopReason()`, `updateDosingStatus()` + `dosingAnchor` (v2.21.1), rendu uPlot (`createMiniLineChart`), préférences d'interface `uiPrefGet()` / `uiPrefSet()` + `bindMiniRawToggles()` / `refreshMiniLegendAbsence()` (v2.38.0)
 - [`data/uPlot.iife.min.js`](../../data/uPlot.iife.min.js), [`data/uPlot.min.css`](../../data/uPlot.min.css) — bibliothèque uPlot 1.6.32 (voir [BUILD.md](../BUILD.md#bibliothèque-de-graphiques-uplot-frontend))
-- [`data/app.css`](../../data/app.css) — classes `.card--status`, `.compact-value`, `.dosing-status`, `.sensor-badge`
+- [`data/app.css`](../../data/app.css) — classes `.card--status`, `.compact-value`, `.dosing-status`, `.sensor-badge`, `.mini-legend*` (v2.38.0 — pastilles **neutres** à dessein : les traits sont colorés **par la valeur**, une pastille colorée mentirait sur la couleur réelle)
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — `broadcastSensorData()` pousse les champs consommés ici
 - [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp) — `GET /data`, `GET /get-history`
 
@@ -281,4 +320,5 @@ Le détail complet du cumul journalier (barre de progression, mL consommés / qu
 - `feature-061-mesures-ph-orp-filtration-arretee` — mesures pH/ORP non représentatives sans circulation d'eau : badges info bleus, valeurs `--`, trous dans les courbes, dé-duplication dosing-status (v2.13.0) ; itération 2 : extension du même traitement à la température (carte/compact `--`, badges, courbe avec trous)
 - `ux-minicharts-journee-en-cours` — mini-graphiques de l'accueil limités à la **journée en cours** (minuit local) au lieu des 24 h glissantes, filtrage navigateur avant calcul des coupures, rechargement complet au passage de minuit (v2.18.9, voir [section dédiée](#plage-des-mini-graphiques--journée-en-cours-v2189))
 - `bug-dosage-fantome-duty-non-calibre` (itération 3) — statut dosage des cartes pH/ORP distinguant « commandé » (session) de « effectif » (pompe alimentée pendant un pouls) : 6 priorités d'affichage, compte à rebours de la prochaine impulsion ancré localement, dot animé/statique (v2.21.1, [ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md), voir [section dédiée](#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211))
+- `feature-095-historiser-la-mesure-filtree` — la **mesure lissée** (celle de la régulation) devient la courbe principale des mini-graphiques pH/ORP, le brut passe en courbe secondaire avec interrupteur mémorisé, frontière visuelle à ~8 h ; les graphiques d'historique des écrans détail restent **bruts** (v2.38.0, [ADR-0064](../adr/0064-la-courbe-suit-le-nombre-affiche.md), voir [section dédiée](#mini-graphiques-ph--orp--la-courbe-suit-le-nombre-affiché-feature-095-v2380))
 - `bug-points-futurs-et-ux-courbes` — tooltip toujours daté (`jj/mm hh:mm`) et typé (mesure / moyenne horaire / moyenne journalière), mini-graphiques sur 24 h (était 3 j — plage resserrée à la journée en cours en v2.18.9), coupure de courbe > 90 min entre deux points (arrêts de filtration visibles, incrémental inclus) et jour calendaire manquant sur les écrans détail (v2.18.4, voir [section dédiée](#tooltip-datétypé-et-coupures-de-courbe-v2184-bug-points-futurs-et-ux-courbes)) ; côté firmware : garde anti-futur de l'historique ([history.md](../subsystems/history.md#garde-anti-futur--purge-des-points-futurs-v2184-bug-points-futurs-et-ux-courbes))

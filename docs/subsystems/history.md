@@ -6,7 +6,7 @@
 
 ## Rôle
 
-Enregistre des snapshots des valeurs (pH, ORP, température, filtration active, dosing pH/ORP) toutes les 5 minutes. Consolide progressivement les données anciennes pour garder un historique utilisable sur **~82 jours** (7 jours de données horaires + 75 jours de données journalières) sans saturer la flash. ⚠️ Objectif théorique : l'étage journalier est actuellement affamé — voir le *Suivi connu* de la section [Consolidation par créneau complet](#consolidation-par-créneau-complet--déduplication-v2181-bug-history-doublons-troncature).
+Enregistre des snapshots des valeurs (pH, ORP, température, filtration active, dosing pH/ORP) toutes les 5 minutes. Depuis la **v2.38.0** (feature-095), chaque point `RAW` porte **en plus** la mesure **lissée** pH/ORP — celle sur laquelle la régulation décide — voir [Mesure lissée historisée](#mesure-lissée-historisée-feature-095-v2380). Consolide progressivement les données anciennes pour garder un historique utilisable sur **~82 jours** (7 jours de données horaires + 75 jours de données journalières) sans saturer la flash. ⚠️ Objectif théorique : l'étage journalier est actuellement affamé — voir le *Suivi connu* de la section [Consolidation par créneau complet](#consolidation-par-créneau-complet--déduplication-v2181-bug-history-doublons-troncature).
 
 ## Granularités
 
@@ -121,7 +121,122 @@ Cause racine des 2 « corruptions » de juillet 2026 : **saturation structurelle
 
 Sur save réussi : `_lastOkEpoch` mis à jour en RAM + INFO d'occupation FS `Partition history : used/total octets utilisés`, throttlé 1/h.
 
-**Budget pire cas résultant** (avant : 2 méta + 12 history COW ×2 + 5 log + 3 tmp = **22 blocs > 16**) : 2 méta + 6 history + 3 log (≤ 8 Ko) + 2 tmp (6 Ko) = **13 blocs ≤ 16, marge 3 blocs**. Les plafonds log réduits font partie du budget — voir [logger.md](logger.md#persistance-sur-littlefs-partition-history). ⚠️ Toute nouvelle écriture sur cette partition doit passer par la garde ou démontrer le respect du budget.
+**Budget pire cas résultant** (avant : 2 méta + 12 history COW ×2 + 5 log + 3 tmp = **22 blocs > 16**) : 2 méta + 6 history + 3 log (≤ 8 Ko) + 2 tmp (6 Ko) = **13 blocs ≤ 16, marge 3 blocs**. Les plafonds log réduits font partie du budget — voir [logger.md](logger.md#persistance-sur-littlefs-partition-history). ⚠️ Toute nouvelle écriture sur cette partition doit passer par la garde ou démontrer le respect du budget. Décompte réactualisé en v2.38.0 : [Budget de partition, avant / après](#budget-de-partition--avant--après-feature-095).
+
+### Le mode de défaillance du budget est le SILENCE, pas la corruption ⚠️
+
+C'est l'information la plus importante de cette page, et la moins intuitive. Un dépassement de budget **ne corrompt rien** et **ne casse rien de visible** :
+
+1. `historySaveAdmit()` **refuse** l'écriture **avant** de toucher au filesystem — l'ancien `/history.json` reste intact ;
+2. un **WARNING throttlé 1/h** est journalisé (jamais ERROR : un ERROR déclencherait un flush disque immédiat sur un FS déjà plein, toutes les 5 min) ;
+3. l'UI **continue d'afficher** l'historique, qui vit en RAM (`memoryBuffer`).
+
+Conséquence réelle : **l'historique cesse simplement d'être persisté**, et personne ne s'en aperçoit — la perte n'apparaît qu'au **reboot suivant**, sous la forme d'un historique tronqué à la dernière sauvegarde réussie. C'est pourquoi toute spec qui ajoute un champ au point persisté doit **chiffrer** l'occupation résultante (et non l'estimer), et pourquoi le critère d'acceptation « aucun WARNING *Partition history pleine* après 24 h » est **bloquant**. Le compteur cumulé `nospc_cnt` et l'epoch du dernier save réussi (`last_ok`) sont persistés en NVS `hist_meta` — ce sont eux qui permettent de constater a posteriori qu'on a franchi la ligne.
+
+## Mesure lissée historisée (feature-095, v2.38.0)
+
+`recordDataPoint()` enregistre, en plus du brut (`ph` = brut + offset, `orp` = brut), la mesure **lissée** pH/ORP (`sensors.getPhFiltered()` / `getOrpFiltered()`) — **les mêmes accesseurs que `/data`**, donc exactement la valeur sur laquelle la régulation a décidé à l'instant de l'enregistrement.
+
+- **Aucun repli sur le brut** : filtre non amorcé, sonde muette ⇒ `NAN`. « Pas de lissée » doit rester **observable**, pas maquillé.
+- **Même sort que le brut quand la mesure n'est pas représentative** : `measureValidity.measuresValid() == false` (filtration arrêtée, purge post-reprise) force `phFiltered = orpFiltered = NAN` dans le même bloc que `ph`/`orp`/`temperature` — une mesure non représentative lissée reste une mesure non représentative.
+- **`DataPoint` porte des initialiseurs `= NAN`** sur ces deux champs. Non optionnel : la structure est construite **sans initialisation explicite** dans `/history/import` et dans `avgPoint` de `consolidateData()` ; sans initialiseur on persisterait de la mémoire non initialisée, affichée ensuite comme une mesure réelle.
+- **`sizeof(DataPoint)` est verrouillé par `static_assert` à 28 o** (20 auparavant). Ce n'est pas cosmétique : c'est ce chiffre qui dimensionne l'allocation **contiguë** de `snapshotFiltered()` pour `/get-history` — 339 points × 28 = **9 492 o d'un seul bloc**, demandés en contexte `async_tcp` sur un appareil dont le plus gros bloc libre tourne autour de 28-30 Ko (bug-080, famine 8 bits). Tout champ ajouté à `DataPoint` doit faire recompter ce budget, en compilation plutôt qu'en production.
+
+### La lissée n'est historisée QUE sur les points RAW
+
+`saveToFile()` ne sérialise `pf` / `of` **que si `point.granularity == RAW`** (5 min, ~8 h de profondeur). Au-delà — moyennes **horaires** et **journalières** — la lissée est **absente du fichier** et vaut `NaN` en mémoire, donc `null` sur `/get-history`.
+
+Deux raisons, dans cet ordre :
+
+1. **Budget de partition, mesuré et non supposé.** Historiser la lissée à **toutes** les granularités coûtait **+7 119 o** (339 points × 21 o) et portait l'occupation à **16 blocs sur 16** : `historySaveAdmit()` aurait alors **refusé la sauvegarde**, avec le mode de défaillance silencieux décrit [ci-dessus](#le-mode-de-défaillance-du-budget-est-le-silence-pas-la-corruption-). En RAW seul : **12/16 blocs**, résiduel **8 102 o**, et la profondeur horaire (7 j) reste intacte — aucune réduction de `kMaxHourlyDataPoints` n'a été nécessaire.
+2. **La série aurait été redondante.** La lissée est un signal **passe-bas** : sa moyenne horaire **coïncide** avec celle du brut. On aurait payé ~5,1 Ko pour une seconde série indiscernable de la première.
+
+Décision et alternatives écartées : [ADR-0064](../adr/0064-la-courbe-suit-le-nombre-affiche.md).
+
+### Règle d'agrégation : la lissée n'est JAMAIS moyennée
+
+| Chemin | Traitement de `phFiltered` / `orpFiltered` |
+|---|---|
+| `consolidateData()` RAW → HOURLY | `avgPoint.phFiltered = avgPoint.orpFiltered = NAN`, **explicitement** — jamais accumulées, jamais divisées |
+| `consolidateData()` HOURLY → DAILY | idem |
+| `dedupAggregatedPoints()` | **volontairement non fusionnées** (pas d'appel à `historyMergeMeanFinite`) : ce chemin ne traite que des agrégats, qui ne portent jamais de lissée. Ne rien écrire garantit qu'aucune lissée n'est **inventée** |
+| `loadFromFile()` | `point["pf"] \| NAN` — tolérant à l'absence, aucune migration |
+
+> ⚠️ **Le `validCount` partagé est intact.** Les compteurs d'échantillons valides de la consolidation restent ceux du brut/de la température : la lissée ne les incrémente ni ne les décrémente. C'est un invariant de *characterization* (les moyennes horaires et journalières produisent **exactement** les mêmes valeurs qu'avant la v2.38.0) — ne pas le « corriger ».
+
+### Point persisté vs point exporté : deux formats distincts (feature-095)
+
+La page confondait jusqu'ici ces deux formats. Ils ne sont **pas** interchangeables, et l'asymétrie est **voulue** :
+
+| | `/history.json` (persisté) | `/get-history` (fil HTTP) |
+|---|---|---|
+| Nommage | clés **courtes** : `t p o T pf of f d g` | clés **longues** : `timestamp ph orp temperature phFiltered orpFiltered filtration dosing granularity` |
+| Valeur absente | **clé omise** | clé **présente**, valeur **`null`** |
+| Lissée sur un agrégat | jamais écrite | `null` |
+| Producteur | `saveToFile()` (`history.cpp`) | `formatHistoryPointJson()` ([`history_export_chunk.h`](../../src/history_export_chunk.h)) |
+| Consommateur de relecture | `loadFromFile()` | `POST /history/import` |
+
+- **Dans le fichier, chaque octet compte** : la partition fait 64 Ko et son dépassement est silencieux. D'où les clés de 2 caractères et l'omission pure et simple d'une clé non finie.
+- **Sur le fil, la stabilité du contrat prime** : `ph` / `orp` / `temperature` sont **toujours** présents et disent `null` quand la mesure manque (contrat existant depuis feature-061). `phFiltered` / `orpFiltered` suivent **la même règle** — un client n'a jamais à distinguer « clé absente » de « valeur nulle ».
+- ⚠️ **`POST /history/import` lit les clés LONGUES**, celles de l'export — pas les clés courtes du fichier persisté. Ne pas confondre les deux formats en écrivant un outil de restauration.
+
+### Fraîcheur de la mesure lissée : nuance connue, aucun changement
+
+`sensors.getPhFiltered()` **n'a pas de garde d'âge** : si le filtre est amorcé mais que la dernière mesure valide date, l'accesseur rend la dernière valeur lissée connue — et elle serait historisée comme une mesure fraîche.
+
+**La revue a conclu de ne rien changer**, délibérément :
+
+- c'est **exactement** la valeur que `/data`, le WebSocket, la page pH et la régulation utilisent **au même instant** — l'historique dit donc la vérité sur ce que l'appareil a fait ;
+- ajouter une garde d'âge **seulement** dans l'historique créerait une **divergence** entre la courbe et le nombre affiché : précisément le défaut que la feature-095 corrige.
+
+Le garde-fou réel est ailleurs et il est déjà là : `measureValidity` (filtration arrêtée / purge) et l'alarme de filtre bloqué (`phFilterAlarm` / `orpFilterAlarm`, > 5 min) annulent le point ou alertent l'utilisateur. La nuance est documentée ici pour qu'elle ne soit pas re-découverte comme un bug.
+
+### Budget de partition — avant / après (feature-095)
+
+Chiffres **mesurés**, pas estimés (bloc LittleFS = 4 096 o) :
+
+| | Avant (v2.37.0) | Après (v2.38.0) | Δ |
+|---|---|---|---|
+| Point `RAW` persisté (pire cas) | 68 o | **90 o** | +21 o mesurés par point |
+| `/history.json` pire cas (339 points) | 23 497 o | **25 513 o** | **+2 016 o** (96 points RAW seulement) |
+| Blocs occupés par `/history.json` | 6 | **7** | +1 |
+| Occupation de la partition en régime établi | 11/16 | **12/16** | +1 bloc |
+| Résiduel disponible | — | **8 102 o** | — |
+
+**Hypothèse écartée, chiffrée** : lissée à toutes les granularités ⇒ +7 119 o, `/history.json` ~30,6 Ko, **16/16 blocs** ⇒ `historySaveAdmit()` refuse, historique **plus jamais persisté**. Ce n'est pas une marge « mince », c'est un franchissement.
+
+### `kHistoryPointJsonMaxBytes` : 128 → 192 o
+
+La constante ([`constants.h`](../../src/constants.h)) borne le **carry** (`LogLineCarry<N>`) de la réponse chunked `/get-history` : un point entier — ou l'en-tête, ou le pied — doit y tenir, **jamais** de JSON partiel émis. Les deux clés longues faisaient sauter l'ancienne valeur de 128. Décompte du pire cas **réaliste** :
+
+| Poste | Octets |
+|---|---|
+| Clés + ponctuation fixes (virgule de séparation comprise) | 114 |
+| `timestamp` (10 chiffres) | 10 |
+| `ph` + `temperature` (`%.1f`) | 6 + 6 |
+| `phFiltered` (`%.2f`) | 7 |
+| `orp` + `orpFiltered` (entiers) | 5 + 5 |
+| `"false"` × 2 + granularité | 10 + 3 |
+| **Total** | **161** (+ NUL) |
+
+192 laisse donc **≥ 31 o de marge**. Coût du relèvement : **+64 o** d'état par requête `/get-history` (un seul carry vivant à la fois par requête) ; `/download-logs` n'est **pas** concerné (`kLogExportLineMaxBytes` lui est propre).
+
+> **Pire cas théorique, à connaître** : si les cinq conversions saturaient leurs tampons de 15 caractères, le point atteindrait **213 o** et dépasserait 192. Inatteignable avec des mesures plausibles (un pH ne fait pas 15 chiffres) — on documente la borne au lieu de surdimensionner le tampon, **parce que le chemin de saut n'est plus muet** (ci-dessous). Toute nouvelle clé au format impose de **refaire ce décompte**.
+
+### Points omis de `/get-history` : la perte n'est plus silencieuse
+
+Quand `formatHistoryPointJson()` retourne 0 (le point ne tient pas dans le carry), le point est **sauté**. Jusqu'en v2.37.0, il l'était **sans un mot** : la réponse restait un JSON parfaitement valide, et le trou de courbe qui en résultait était **indiscernable d'une panne de capteur**. C'est un mode de panne de la même famille que le budget de partition — muet.
+
+Depuis la v2.38.0 :
+
+- les omissions sont **comptées** dans l'état de réponse (`HistoryDownloadState::skipped`) — jamais journalisées à l'unité (un export en sauterait des centaines) ;
+- **un seul WARNING** est émis **à la clôture** de la réponse, throttlé par `kHistorySkipWarnThrottleMs` = **1 h** toutes réponses confondues (le dashboard rappelle la route à chaque rafraîchissement). Message **actionnable** : combien de points, pourquoi, et quoi faire —
+
+  `get-history : N point(s) omis de la réponse — JSON du point au-dessus de kHistoryPointJsonMaxBytes (192 o) ; courbes trouées, relever la constante`
+
+- construit par `snprintf` sur un tampon de pile : aucune `String` fabriquée dans le callback chunké.
+
+La trace de clôture DEBUG existante (`get-history clos: emis=…`) est inchangée.
 
 ## API publique
 
@@ -146,8 +261,8 @@ bool clearHistory();   // false si le mutex n'a pas pu être pris (historique oc
 
 Jusqu'en v2.13.x, `/get-history` copiait **tout** le buffer (`getLastHours`/`getAllData`) puis concaténait la réponse dans une `String` contiguë pré-réservée (~40 Ko épinglés pendant tout le transfert à chaque ouverture du dashboard) — **générateur de fond n°3 (G3)** de la fragmentation heap identifié par l'investigation churn-heap du 24/07. Depuis la v2.14.0, la route est **chunked** ([ADR-0032 §Extension 2026-07-30](../adr/0032-reponses-http-bornees.md#extension-2026-07-30--get-history-chunked-et-filet-ws-v2140), patron `/download-logs`) ; depuis la v2.18.2, elle streame depuis un **instantané figé** :
 
-- **`snapshotFiltered(out, cutoff, since)`** (v2.18.2) : copie de l'instantané **filtré** du buffer en **UNE** prise de mutex à l'ouverture de la requête — timeout dédié court `kHistorySnapshotTimeoutMs = 100 ms` (le timeout standard 2 s bloquerait la tâche `async_tcp`). Refus (rare) → la route répond **`503` `{"error":"historique occupé, réessayez"}`**. Coût borné : ≤ `kMaxRawDataPoints + kMaxHourlyDataPoints + kMaxDailyDataPoints` points ≈ **11 Ko transitoires**, libérés en fin de réponse. Le callback chunked ne prend ensuite **aucun mutex** : aucun timeout, aucun glissement d'index possible (l'instantané est immuable → plus de doublon/saut best-effort).
-- **Filtres `range`/`since` appliqués à la copie** (fonction pure `historyRangeCutoff`, sémantique exacte de l'ancien `getLastHours`) ; formatage d'un point par la fonction pure `formatHistoryPointJson` ([`src/history_export_chunk.h`](../../src/history_export_chunk.h)) — format JSON **octet pour octet identique** à l'ancienne concaténation (y compris la clé `count` émise deux fois, voir [API.md](../API.md#get-get-history--write)).
+- **`snapshotFiltered(out, cutoff, since)`** (v2.18.2) : copie de l'instantané **filtré** du buffer en **UNE** prise de mutex à l'ouverture de la requête — timeout dédié court `kHistorySnapshotTimeoutMs = 100 ms` (le timeout standard 2 s bloquerait la tâche `async_tcp`). Refus (rare) → la route répond **`503` `{"error":"historique occupé, réessayez"}`**. Coût borné : ≤ `kMaxRawDataPoints + kMaxHourlyDataPoints + kMaxDailyDataPoints` points — depuis la v2.38.0, 339 × 28 o ≈ **9,5 Ko d'un seul bloc contigu** (`reserve` dimensionné sur la taille du buffer : aucune réallocation possible), libérés en fin de réponse. Le callback chunked ne prend ensuite **aucun mutex** : aucun timeout, aucun glissement d'index possible (l'instantané est immuable → plus de doublon/saut best-effort).
+- **Filtres `range`/`since` appliqués à la copie** (fonction pure `historyRangeCutoff`, sémantique exacte de l'ancien `getLastHours`) ; formatage d'un point par la fonction pure `formatHistoryPointJson` ([`src/history_export_chunk.h`](../../src/history_export_chunk.h)). Le format était **octet pour octet identique** à l'ancienne concaténation jusqu'à la v2.37.0 ; la **v2.38.0 y insère `phFiltered` et `orpFiltered`** (ajout **additif**, tout le reste inchangé — y compris la clé `count` émise deux fois, voir [API.md](../API.md#get-get-history--write)). Les deux paramètres ont une valeur par défaut `NAN` : un appelant qui n'a pas de lissée produit `null`.
 - **Cause racine C — pied jamais émis (bug v2.14.0 → v2.18.1, corrigé v2.18.2)** : dans la machine à états du callback, le cas `kFooter` chargeait le pied `],"count":N}` dans le tampon de report (carry) **et** passait en phase `kDone` dans la **même itération** ; or la condition de boucle (`phase != kDone` seul) sortait **avant** d'émettre le carry → le pied n'était **JAMAIS envoyé** → JSON invalide sur **toutes** les réponses → graphiques morts depuis le déploiement v2.14 (05/08). Démontré au flux chunked brut sur l'appareil (chunks reçus = exactement l'émis, sans pied). **Fix** : la boucle continue tant que le carry n'est pas vide, **même en `kDone`** ([`src/web_routes_data.cpp:464`](../../src/web_routes_data.cpp)). Validé sur l'appareil (pied présent, JSON valide).
 - ⚠️ **Diagnostic v2.18.1 invalidé** : la théorie « troncature par `RESPONSE_TRY_AGAIN`/timeout mutex en cours de flux » (correctif « espace de maintien de flux ») était **fausse** — le mécanisme complet a été **retiré** en v2.18.2 (`getPointByIndex`, `kHistoryPointReadTimeoutMs`, `kHistoryChunkMaxRetries` supprimés) ; plus aucun espace n'est émis dans le corps.
 - **Trace de clôture (DEBUG)** : à la fin du flux, `get-history clos: emis=N o, points=N, idx=N, dernierAppel=N o` — l'émis réel de la machine à états, à confronter aux octets reçus côté client en cas de doute.
@@ -250,6 +365,8 @@ Si **toute** étape échoue (`open` retourne null, `print` retourne ≠ 2 octets
 - [`partitions.csv`](../../partitions.csv)
 - [`src/history_logic.h`](../../src/history_logic.h), [`src/history_logic.cpp`](../../src/history_logic.cpp) — math d'agrégation pure
 - [`src/history_export_chunk.h`](../../src/history_export_chunk.h) — logique pure de l'export chunked `/get-history` (v2.14.0) ; carry partagé avec [`src/logs_export_chunk.h`](../../src/logs_export_chunk.h)
+- [ADR-0064](../adr/0064-la-courbe-suit-le-nombre-affiche.md) — la mesure lissée est la référence des courbes 5 min ; lissée non historisée sur les agrégats (feature-095)
+- [ADR-0033](../adr/0033-budget-espace-partition-history.md) — budget d'espace de la partition `history` (garde d'admission)
 - [ADR-0009](../adr/0009-partition-coredump.md) — table de partitions courante
 - [ADR-0007](../adr/0007-table-partitions-custom.md) — supersedé
 - [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) — logique métier pure / Humble Object

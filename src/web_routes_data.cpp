@@ -765,13 +765,21 @@ struct HistoryDownloadState {
   // micro-chunks de maintien d'un octet interagissaient mal avec la couche
   // d'envoi de la lib : pied perdu, JSON tronqué — démontré en production),
   // plus de glissement d'index pendant une consolidation. Coût borné :
-  // ≤ 339 points × sizeof(DataPoint) ≈ 11 Ko, libérés à la fin de la réponse
-  // (l'ancienne route épinglait ~40 Ko de String non bornée — cf. ADR-0032).
+  // ≤ 339 points × sizeof(DataPoint) — 28 o depuis feature-095 (2 floats de plus)
+  // contre 20 auparavant, soit ~9,3 Ko d'un SEUL bloc contigu (reserve dimensionné
+  // sur la taille du buffer, donc majorant : aucune réallocation possible),
+  // libérés à la fin de la réponse (l'ancienne route épinglait ~40 Ko de String
+  // non bornée — cf. ADR-0032).
   std::vector<DataPoint> pts;
   // Comptabilité d'émission, loggée en DEBUG à la clôture — instrumentation
   // née du diagnostic de la cause C (pied jamais émis) et conservée : c'est
   // elle qui permet de confronter l'émis serveur aux octets reçus client.
   size_t sentBytes = 0;
+  // feature-095 : points écartés parce que leur JSON dépasse la capacité du
+  // carry (kHistoryPointJsonMaxBytes). Comptés ici, journalisés UNE fois à la
+  // clôture — sans cela, la perte est totalement muette (JSON valide, trou de
+  // courbe indiscernable d'une panne de sonde).
+  size_t skipped = 0;
   bool endLogged = false;
   String range;               // Écho du paramètre ?range= (en-tête)
   LogLineCarry<kHistoryPointJsonMaxBytes> carry;  // Reliquat en-tête/point/pied entre deux chunks
@@ -868,15 +876,22 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
               size_t n = formatHistoryPointJson(
                   st->carry.line, sizeof(st->carry.line), p.timestamp, p.ph, p.orp,
                   p.temperature, p.filtrationActive, p.phDosing || p.orpDosing,
-                  static_cast<uint8_t>(p.granularity), st->first);
+                  static_cast<uint8_t>(p.granularity), st->first,
+                  p.phFiltered, p.orpFiltered);
               if (n > 0) {
                 st->carry.len = n;
                 st->carry.pos = 0;
                 st->first = false;
                 st->count++;
               }
-              // n == 0 : point plus long que kHistoryPointJsonMaxBytes (impossible
-              // sur le format réel, ~120 o max) → sauté, jamais de JSON partiel.
+              // n == 0 : point plus long que kHistoryPointJsonMaxBytes (pire cas
+              // réel recompté en feature-095 : 163 o pour 192 de capacité) →
+              // point SAUTÉ, jamais de JSON partiel. Compté (jamais journalisé
+              // ici : un export en sauterait des centaines) — un unique WARNING
+              // throttlé est émis à la clôture.
+              else {
+                st->skipped++;
+              }
               break;
             }
             st->phase = HistoryDownloadState::kFooter;  // fin de l'instantané
@@ -897,6 +912,24 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
       if (st->phase == HistoryDownloadState::kDone &&
           st->carry.pos >= st->carry.len && !st->endLogged) {
         st->endLogged = true;
+        // feature-095 : perte de points rendue AUDIBLE. Un seul WARNING par
+        // réponse, throttlé entre réponses (kHistorySkipWarnThrottleMs) —
+        // message actionnable : combien, et la constante à relever. snprintf
+        // sur tampon de pile, pas de String construite dans le callback chunké.
+        if (st->skipped > 0) {
+          static unsigned long sWarnSkipMs = 0;
+          unsigned long nowMs = millis();
+          if (sWarnSkipMs == 0 || nowMs - sWarnSkipMs >= kHistorySkipWarnThrottleMs) {
+            char msg[160];
+            snprintf(msg, sizeof(msg),
+                     "get-history : %u point(s) omis de la réponse — JSON du point "
+                     "au-dessus de kHistoryPointJsonMaxBytes (%u o) ; courbes trouées, "
+                     "relever la constante",
+                     (unsigned)st->skipped, (unsigned)kHistoryPointJsonMaxBytes);
+            systemLogger.warning(msg);
+            sWarnSkipMs = nowMs;
+          }
+        }
         systemLogger.debug("get-history clos: emis=" + String((unsigned)st->sentBytes) +
                            " o, points=" + String((unsigned)st->count) +
                            ", idx=" + String((unsigned)st->idx) +
@@ -958,6 +991,12 @@ void setupDataRoutes(AsyncWebServer* server) {
         dp.ph = item["ph"].isNull() ? NAN : item["ph"].as<float>();
         dp.orp = item["orp"].isNull() ? NAN : item["orp"].as<float>();
         dp.temperature = item["temperature"].isNull() ? NAN : item["temperature"].as<float>();
+        // feature-095 : clés LONGUES, celles de l'export /get-history (le fichier
+        // persisté, lui, utilise les clés courtes pf/of — ne pas confondre les
+        // deux formats). Sans cette relecture, restaurer une sauvegarde perdrait
+        // la filtrée en silence. Absent ou null → NaN (absence), jamais 0.
+        dp.phFiltered = item["phFiltered"].isNull() ? NAN : item["phFiltered"].as<float>();
+        dp.orpFiltered = item["orpFiltered"].isNull() ? NAN : item["orpFiltered"].as<float>();
         dp.filtrationActive = item["filtration"] | false;
         dp.phDosing = item["dosing"] | false;
         dp.orpDosing = false;

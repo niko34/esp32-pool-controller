@@ -240,12 +240,43 @@ constexpr size_t kLogsPageHardCap = 60;                   // Plafond dur (coupe 
 // paramètre template à LogLineCarry<N> (logs_export_chunk.h, header pur).
 constexpr size_t kLogExportLineMaxBytes = 256;
 
-// Pire cas d'un point JSON de /get-history : mesuré 113-120 o sur le format
-// réel (clés fixes 82 o + valeurs : timestamp 10, ph 4, orp 4, temp 4, 2 bools,
-// granularity) — revue v2.10.4. bug-heap-toctou A3 : sert désormais de capacité
-// du carry (LogLineCarry<N>) de la réponse CHUNKED — un point (ou l'en-tête/pied
-// JSON) doit tenir dedans, jamais de JSON partiel émis.
-constexpr size_t kHistoryPointJsonMaxBytes = 128;
+// Pire cas d'un point JSON de /get-history — RECOMPTÉ en feature-095 (v2.38.0),
+// après l'ajout des clés "phFiltered" et "orpFiltered" (format de
+// formatHistoryPointJson, history_export_chunk.h) :
+//   clés + ponctuation fixes ........ 114 o (virgule de séparation comprise)
+//   timestamp (10 chiffres) .......... 10 o
+//   ph "%.1f" / temperature "%.1f" ... 6 + 6 o
+//   phFiltered "%.2f" ................. 7 o
+//   orp / orpFiltered (entiers) ....... 5 + 5 o
+//   "false" + "false" + granularité .. 10 + 3 o
+//   TOTAL pire cas .................. 161 o (+ NUL) → 192 laisse ≥ 31 o de marge.
+// (Décompte rectifié en revue : la partie fixe vaut 114 o et non 111 — le total
+// réaliste est donc 161, pas 163. La conclusion ne change pas.)
+// PIRE CAS THÉORIQUE, à connaître : si les cinq conversions saturaient leurs
+// tampons de 15 caractères, le point atteindrait 213 o et dépasserait 192. Ce
+// cas est INATTEIGNABLE avec des mesures plausibles (un pH ne fait pas 15
+// chiffres), et depuis feature-095 le chemin de saut n'est plus muet : les
+// points omis sont comptés et journalisés une fois par heure. On documente donc
+// la borne au lieu de surdimensionner le tampon.
+// bug-heap-toctou A3 : sert de capacité du carry (LogLineCarry<N>) de la réponse
+// CHUNKED — un point (ou l'en-tête/pied JSON) doit tenir dedans, jamais de JSON
+// partiel émis. Coût du relèvement 128 → 192 : +64 o de pile/état par requête
+// /get-history (le carry est un membre de l'état de réponse, un seul vivant à la
+// fois par requête), et +64 o pour /download-logs seulement s'il partageait la
+// constante — ce n'est pas le cas (kLogExportLineMaxBytes lui est propre).
+// ⚠️ L'ancien commentaire affirmait qu'un dépassement était « impossible sur le
+// format réel, ~120 o max » : c'est FAUX depuis feature-095 (163 o), et ce
+// n'était de toute façon pas une garantie. En cas de dépassement, le point est
+// SAUTÉ sans aucun log (web_routes_data.cpp, phase kPoints) : trou invisible
+// dans les courbes. Toute nouvelle clé au format impose de refaire ce décompte.
+constexpr size_t kHistoryPointJsonMaxBytes = 192;
+
+// feature-095 : throttle du WARNING « points omis de /get-history » (un seul par
+// réponse, et au plus un par heure toutes réponses confondues — le dashboard
+// rappelle la route à chaque rafraîchissement). Même cadence que les warn de
+// sauvegarde d'historique : assez rare pour ne pas noyer le journal, assez
+// fréquent pour qu'un trou de courbe soit expliqué dans la même session.
+constexpr unsigned long kHistorySkipWarnThrottleMs = 3600000UL;  // 1 h
 
 // /get-history (bug-history-doublons-troncature, itération 2) : instantané
 // filtré du buffer copié en UNE prise de mutex à l'ouverture de la requête

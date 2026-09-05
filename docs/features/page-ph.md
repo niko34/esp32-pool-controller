@@ -18,7 +18,7 @@ En mode nominal, cinq zones :
    - **Manuelle** : bloc Injection manuelle (volume + bouton ▶ Injecter / ⏹ Stopper).
    - **Pied de carte, mode Automatique uniquement** : bloc « **Rattrapage accumulé** » (`#ph-integral-section`, v2.26.0) — voir [Rattrapage accumulé par la régulation pH](#rattrapage-accumulé-par-la-régulation-ph-v2260).
 3. **Carte Correction de la mesure pH** (`#ph-card-offset`, feature-067, v2.20.0) — offset logiciel appliqué à la mesure. Voir [Carte « Correction de la mesure pH »](#carte--correction-de-la-mesure-ph--feature-067-v2200).
-4. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : bande fixe **7,2-7,6** (plage idéale de l'eau) + **ligne de consigne pointillée** à `ph_target` — voir [Repères du graphique d'historique](#repères-du-graphique-dhistorique-feature-083-v2281).
+4. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : bande fixe **7,2-7,6** (plage idéale de l'eau) + **ligne de consigne pointillée** à `ph_target` — voir [Repères du graphique d'historique](#repères-du-graphique-dhistorique-feature-083-v2281). Ce graphique trace la mesure **brute** et le reste en v2.38.0 — voir [Le graphique d'historique de cette page reste brut](#le-graphique-dhistorique-de-cette-page-reste-brut-feature-095-v2380).
 5. **Carte Calibration** — **remplace** Régulation + Historique pendant une session de calibration. Écran **guidé par stepper** (feature-034) — voir [Workflow calibration](#workflow-calibration).
 
 Le bloc Statistiques reste visible **en permanence**, y compris pendant la calibration.
@@ -75,6 +75,18 @@ Le graphique de détail (carte Historique) porte deux repères **distincts** :
 **Mise à jour sans rechargement** : la ligne de consigne est posée/mise à jour par `loadConfig()` (`phChart?.setTarget(cfg.ph_target)`) — point de passage **unique** couvrant l'UI, l'API et MQTT : chaque sauvegarde recharge `/get-config`, et les trames WS `config` passent aussi par `loadConfig`. La valeur est **normalisée à 2 décimales** avant comparaison (`/get-config` sert un arrondi, le WS le float brut — sans normalisation, chaque trame provoquerait un re-render cosmétique).
 
 **Repli** : consigne jamais servie (firmware antérieur, clé absente) → **aucune ligne tracée**, jamais de valeur inventée (piège maison : clé absente ≠ 0). Une valeur **absente ou non finie** dans une trame est ignorée : une trame partielle ne fait **jamais disparaître** une ligne existante. Les bornes d'axe Y (`calculateAxisLimits`) incluent la consigne en plus des données : la ligne reste toujours visible dans le cadre.
+
+## Le graphique d'historique de cette page reste **brut** (feature-095, v2.38.0)
+
+La v2.38.0 historise la mesure **lissée** (celle sur laquelle la régulation décide) à côté de la mesure **brute**, et en fait la **courbe principale des mini-graphiques du tableau de bord**. Le graphique de la **carte Historique de cette page n'est pas concerné** :
+
+- il agrège **1 point par jour** sur ses plages `Tout` / `30j` / `7j` / `24h` — granularité à laquelle la lissée vaut toujours `null` (elle n'est historisée que sur les points 5 min, ~8 h) ;
+- à cette échelle, elle serait de toute façon **indiscernable du brut** : la lissée est un signal passe-bas, sa moyenne journalière coïncide avec celle du brut ;
+- laisser `createLineChart` **mono-série** était la réduction de risque du lot.
+
+Les **repères** (bande fixe 7,2-7,6, ligne de consigne) sont donc inchangés et se lisent toujours par rapport à la courbe tracée. La comparaison « ce que la régulation voit » se fait sur le mini-graphique du tableau de bord ou directement sur `/get-history` (`phFiltered`).
+
+Détails : [page-dashboard.md](page-dashboard.md#mini-graphiques-ph--orp--la-courbe-suit-le-nombre-affiché-feature-095-v2380), [ADR-0064](../adr/0064-la-courbe-suit-le-nombre-affiche.md), [history.md](../subsystems/history.md#mesure-lissée-historisée-feature-095-v2380).
 
 ## Rattrapage accumulé par la régulation pH (v2.26.0)
 

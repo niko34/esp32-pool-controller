@@ -42,25 +42,35 @@ inline unsigned long historyRangeCutoff(int hours, unsigned long nowEpoch) {
   return nowEpoch - rangeSeconds;
 }
 
-// Formate UN point d'historique au format JSON EXACT de l'ancienne route
-// (web_routes_data.cpp, concaténation String) :
-//   {"timestamp":T,"ph":7.2,"orp":650,"temperature":24.6,
-//    "filtration":true,"dosing":false,"granularity":0}
+// Formate UN point d'historique au format JSON de la route /get-history :
+//   {"timestamp":T,"ph":7.2,"phFiltered":7.23,"orp":650,"orpFiltered":649,
+//    "temperature":24.6,"filtration":true,"dosing":false,"granularity":0}
 // - ph / temperature : arrondi au dixième puis 1 décimale (String(x,1) ≡ %.1f) ;
-// - orp : entier arrondi ;
-// - valeur non finie (NaN/inf) → null ;
+// - phFiltered : 2 décimales (feature-095 — la régulation décide au centième,
+//   le dixième du brut masquerait l'essentiel de sa dynamique) ;
+// - orp / orpFiltered : entier arrondi ;
+// - valeur non finie (NaN/inf) → null. Les clés sont TOUJOURS présentes (format
+//   fixe, contrat historique de ph/orp/temperature sur le fil) — l'absence de
+//   mesure se dit « null », jamais par omission de clé. À ne pas confondre avec
+//   le fichier persisté /history.json, qui lui OMET les clés courtes absentes ;
 // - first == false → virgule de séparation en tête.
+// phFiltered/orpFiltered ont une valeur par défaut NAN : les appelants qui
+// n'ont pas de filtrée (tests de format, agrégats) produisent « null ».
 // Retour : longueur écrite dans `out` (hors NUL), ou 0 si le point formaté ne
 // tient pas dans `cap` — JAMAIS de JSON partiel émis (point sauté par l'appelant).
 inline size_t formatHistoryPointJson(char* out, size_t cap, unsigned long ts,
                                      float ph, float orp, float temp,
                                      bool filtration, bool dosing,
-                                     uint8_t granularity, bool first) {
+                                     uint8_t granularity, bool first,
+                                     float phFiltered = NAN,
+                                     float orpFiltered = NAN) {
   if (out == nullptr || cap == 0) return 0;
 
   char phBuf[16];
   char orpBuf[16];
   char tempBuf[16];
+  char phFilBuf[16];
+  char orpFilBuf[16];
   if (isfinite(ph)) {
     snprintf(phBuf, sizeof(phBuf), "%.1f", (double)(roundf(ph * 10.0f) / 10.0f));
   } else {
@@ -76,13 +86,27 @@ inline size_t formatHistoryPointJson(char* out, size_t cap, unsigned long ts,
   } else {
     snprintf(tempBuf, sizeof(tempBuf), "null");
   }
+  // feature-095 : filtrée pH au centième, filtrée ORP en entier (mêmes règles
+  // d'arrondi que /data, pour que les deux sources restent superposables).
+  if (isfinite(phFiltered)) {
+    snprintf(phFilBuf, sizeof(phFilBuf), "%.2f",
+             (double)(roundf(phFiltered * 100.0f) / 100.0f));
+  } else {
+    snprintf(phFilBuf, sizeof(phFilBuf), "null");
+  }
+  if (isfinite(orpFiltered)) {
+    snprintf(orpFilBuf, sizeof(orpFilBuf), "%d", (int)roundf(orpFiltered));
+  } else {
+    snprintf(orpFilBuf, sizeof(orpFilBuf), "null");
+  }
 
   int n = snprintf(out, cap,
-                   "%s{\"timestamp\":%lu,\"ph\":%s,\"orp\":%s,\"temperature\":%s,"
+                   "%s{\"timestamp\":%lu,\"ph\":%s,\"phFiltered\":%s,\"orp\":%s,"
+                   "\"orpFiltered\":%s,\"temperature\":%s,"
                    "\"filtration\":%s,\"dosing\":%s,\"granularity\":%u}",
-                   first ? "" : ",", ts, phBuf, orpBuf, tempBuf,
-                   filtration ? "true" : "false", dosing ? "true" : "false",
-                   (unsigned)granularity);
+                   first ? "" : ",", ts, phBuf, phFilBuf, orpBuf, orpFilBuf,
+                   tempBuf, filtration ? "true" : "false",
+                   dosing ? "true" : "false", (unsigned)granularity);
   if (n < 0 || (size_t)n >= cap) return 0;  // ne tient pas : rien d'émis
   return (size_t)n;
 }

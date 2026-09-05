@@ -404,6 +404,11 @@ void HistoryManager::recordDataPoint() {
   point.ph = sensors.getPh();
   point.orp = sensors.getOrp();
   point.temperature = sensors.getTemperature();
+  // feature-095 : la valeur FILTRÉE, celle sur laquelle la régulation décide
+  // (mêmes accesseurs que /data). NaN tant que le filtre n'est pas amorcé —
+  // AUCUN repli sur le brut : « pas de filtrée » doit rester observable.
+  point.phFiltered = sensors.getPhFiltered();
+  point.orpFiltered = sensors.getOrpFiltered();
   point.filtrationActive = filtration.isRunning();
   point.phDosing = PumpController.isPhDosing();
   point.orpDosing = PumpController.isOrpDosing();
@@ -418,6 +423,10 @@ void HistoryManager::recordDataPoint() {
     point.ph = NAN;
     point.orp = NAN;
     point.temperature = NAN;
+    // feature-095 : la filtrée subit le MÊME sort que le brut — une mesure non
+    // représentative filtrée reste une mesure non représentative.
+    point.phFiltered = NAN;
+    point.orpFiltered = NAN;
   }
 
   memoryBuffer.push_back(point);
@@ -463,6 +472,18 @@ void HistoryManager::saveToFile() {
     if (isfinite(point.ph))          obj["p"] = serialized(String(point.ph, 2));
     if (isfinite(point.orp))         obj["o"] = serialized(String(point.orp, 1));
     if (isfinite(point.temperature)) obj["T"] = serialized(String(point.temperature, 1));
+    // feature-095 : la filtrée n'est persistée QUE sur les points RAW (5 min,
+    // ~8 h de profondeur). Cette garde est LE rempart du budget de la partition
+    // history (64 Ko) : toutes granularités confondues coûteraient ~7,1 Ko et
+    // porteraient l'occupation à 16 blocs sur 16 — historySaveAdmit() refuserait
+    // alors la sauvegarde et l'historique cesserait SILENCIEUSEMENT d'être
+    // persisté. En RAW seul : +2 016 o, profondeur horaire (7 j) intacte. La
+    // filtrée étant un signal passe-bas, sa moyenne horaire coïnciderait de
+    // toute façon avec celle du brut : série redondante, coût réel.
+    if (point.granularity == RAW) {
+      if (isfinite(point.phFiltered))  obj["pf"] = serialized(String(point.phFiltered, 2));
+      if (isfinite(point.orpFiltered)) obj["of"] = serialized(String(point.orpFiltered, 1));
+    }
     obj["f"] = point.filtrationActive;
     obj["d"] = point.phDosing || point.orpDosing;
     obj["g"] = static_cast<uint8_t>(point.granularity);
@@ -588,6 +609,11 @@ void HistoryManager::loadFromFile() {
     dp.ph = point["p"] | NAN;
     dp.orp = point["o"] | NAN;
     dp.temperature = point["T"] | NAN;
+    // feature-095 : tolérant à l'absence — un /history.json écrit par une
+    // version ≤ 2.37 (ou un agrégat, jamais sérialisé avec la filtrée) se relit
+    // sans perte, la filtrée valant simplement NaN.
+    dp.phFiltered = point["pf"] | NAN;
+    dp.orpFiltered = point["of"] | NAN;
     dp.filtrationActive = point["f"];
     dp.phDosing = point["d"];
     dp.orpDosing = false;
@@ -856,6 +882,12 @@ void HistoryManager::consolidateData() {
     avgPoint.ph = 0;
     avgPoint.orp = 0;
     avgPoint.temperature = 0;
+    // feature-095 : la filtrée n'est PAS agrégée — elle n'existe que sur les
+    // points RAW (cf. saveToFile). Explicitement NaN pour ne dépendre d'aucun
+    // état antérieur, et pour ne surtout pas toucher au `validCount` partagé
+    // ci-dessous (invariant de caractérisation gelé).
+    avgPoint.phFiltered = NAN;
+    avgPoint.orpFiltered = NAN;
     avgPoint.filtrationActive = false;
     avgPoint.phDosing = false;
     avgPoint.orpDosing = false;
@@ -931,6 +963,9 @@ void HistoryManager::consolidateData() {
     avgPoint.ph = 0;
     avgPoint.orp = 0;
     avgPoint.temperature = 0;
+    // feature-095 : idem HOURLY — aucune agrégation de la filtrée.
+    avgPoint.phFiltered = NAN;
+    avgPoint.orpFiltered = NAN;
     avgPoint.filtrationActive = false;
     avgPoint.phDosing = false;
     avgPoint.orpDosing = false;
@@ -1064,6 +1099,10 @@ void HistoryManager::dedupAggregatedPoints() {
       dup->ph = historyMergeMeanFinite(dup->ph, p.ph);
       dup->orp = historyMergeMeanFinite(dup->orp, p.orp);
       dup->temperature = historyMergeMeanFinite(dup->temperature, p.temperature);
+      // feature-095 : phFiltered/orpFiltered VOLONTAIREMENT non fusionnés — ce
+      // chemin ne traite que des agrégats (granularity != RAW), qui ne portent
+      // jamais de filtrée (NaN par initialiseur de membre, jamais sérialisée).
+      // Ne rien écrire ici garantit qu'aucune filtrée n'est inventée.
       dup->filtrationActive = dup->filtrationActive || p.filtrationActive;
       dup->phDosing = dup->phDosing || p.phDosing;
       dup->orpDosing = dup->orpDosing || p.orpDosing;

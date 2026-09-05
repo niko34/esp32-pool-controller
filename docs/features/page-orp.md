@@ -16,7 +16,7 @@ En mode nominal, quatre zones :
    - **Automatique** : ORP cible (mV) + bouton Sauvegarder.
    - **Programmée** : volume quotidien de chlore en mL + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#orp_scheduled_flow_line` / `#orp_scheduled_flow_value`, alimentée par le champ WS `orp_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
    - **Manuelle** : bloc Injection manuelle.
-3. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : **plus de zone ombrée** — **ligne de consigne pointillée** à `orp_target`, voir [Repère du graphique d'historique](#repère-du-graphique-dhistorique-feature-083-v2281).
+3. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : **plus de zone ombrée** — **ligne de consigne pointillée** à `orp_target`, voir [Repère du graphique d'historique](#repère-du-graphique-dhistorique-feature-083-v2281). Ce graphique trace la mesure **brute** et le reste en v2.38.0 — voir [Le graphique d'historique de cette page reste brut](#le-graphique-dhistorique-de-cette-page-reste-brut-feature-095-v2380).
 4. **Carte Calibration** — **remplace** Régulation + Historique pendant une session. Écran **guidé par stepper** (feature-034), 1 seul point de calibration (architecture symétrique de la page pH) — voir [Workflow calibration](#workflow-calibration).
 
 Le bloc Statistiques reste visible en permanence.
@@ -88,6 +88,12 @@ Elle est remplacée par une **ligne de consigne pointillée** (bleue) à `orp_ta
 - mise à jour **sans rechargement** via `loadConfig()` (`orpChart?.setTarget(cfg.orp_target)`), quel que soit le canal du changement (UI, API, MQTT — les trames WS `config` passent aussi par `loadConfig`) ; valeur **normalisée à 2 décimales** avant comparaison ;
 - **repli** : consigne jamais servie (firmware antérieur, clé absente) → **aucune ligne tracée**, jamais de valeur inventée ; une valeur absente ou non finie dans une trame est ignorée — une trame partielle ne fait **jamais disparaître** la ligne ;
 - les bornes d'axe Y (`calculateAxisLimits`) incluent la consigne : la ligne reste toujours visible dans le cadre.
+
+## Le graphique d'historique de cette page reste **brut** (feature-095, v2.38.0)
+
+La v2.38.0 historise la mesure **lissée** (celle sur laquelle la régulation décide) à côté de la mesure **brute**, et en fait la **courbe principale du mini-graphique ORP du tableau de bord** — accompagnée d'un interrupteur « Brut » mémorisé. Le graphique de la **carte Historique de cette page n'est pas concerné** : il agrège **1 point par jour**, granularité à laquelle la lissée vaut toujours `null` (elle n'est historisée que sur les points 5 min, ~8 h de profondeur) et où elle serait **indiscernable du brut**. Le repère de consigne est donc inchangé.
+
+Détails : [page-dashboard.md](page-dashboard.md#mini-graphiques-ph--orp--la-courbe-suit-le-nombre-affiché-feature-095-v2380), [ADR-0064](../adr/0064-la-courbe-suit-le-nombre-affiche.md), [history.md](../subsystems/history.md#mesure-lissée-historisée-feature-095-v2380).
 
 ## Chip d'état filtre (feature-025)
 

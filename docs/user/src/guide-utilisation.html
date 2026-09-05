@@ -310,6 +310,39 @@ l'état&nbsp;:</p>
   intervention.</li>
 </ul>
 
+<p><strong>Deux courbes sur les graphiques pH et chlore</strong> — depuis la
+version&nbsp;2.38, le mini-graphique ne trace plus un seul signal mais
+deux&nbsp;:</p>
+
+<ul>
+  <li>la mesure <strong>lissée</strong>, en courbe épaisse avec une zone
+  colorée&nbsp;: c'est <em>exactement</em> la valeur affichée en grand
+  au-dessus, et c'est <strong>sur elle que la régulation décide</strong>
+  d'injecter ou non&nbsp;;</li>
+  <li>la mesure <strong>brute</strong>, en trait fin en arrière-plan&nbsp;:
+  ce que la sonde lit à l'instant même, agitation comprise.</li>
+</ul>
+
+<p>Auparavant, le nombre affichait le lissé et la courbe traçait le
+brut&nbsp;: <strong>les deux ne parlaient pas du même signal</strong>, ce
+qui prêtait à confusion. C'est corrigé. Sous le graphique, un interrupteur
+«&nbsp;<strong>Brut</strong>&nbsp;» permet de masquer la courbe fine —
+l'échelle verticale se resserre alors sur la mesure lissée, et les petites
+variations deviennent bien plus lisibles. Le choix est <strong>mémorisé par
+votre navigateur</strong>, séparément pour le pH et pour le chlore.</p>
+
+<p>Un détail à connaître pour ne pas s'inquiéter&nbsp;: la courbe lissée
+<strong>ne remonte qu'à environ 8&nbsp;heures</strong>, alors que le
+graphique peut couvrir toute la journée. Ce n'est pas une panne — c'est la
+profondeur d'enregistrement de cette mesure. Avant cette limite, le trait
+brut redevient simplement la courbe principale, et la légende signale le
+cas quand il n'y a aucune mesure lissée sur la période affichée.</p>
+
+<p>Les graphiques des pages pH et Chlore, eux, sont
+<strong>inchangés</strong>&nbsp;: ils résument une journée par point, une
+échelle à laquelle la mesure lissée et la mesure brute sont de toute façon
+confondues.</p>
+
 <p>Quand une mesure n'est pas disponible — ou pas représentative, par
 exemple filtration à l'arrêt —, la valeur affiche
 «&nbsp;<strong>--</strong>&nbsp;» et le badge explique pourquoi. L'appareil

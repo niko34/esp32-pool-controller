@@ -18,11 +18,31 @@ struct DataPoint {
   float ph;
   float orp;
   float temperature;
+  // feature-095 : mesures FILTRÉES (médiane + EMA) telles que vues par la
+  // régulation à l'instant de l'enregistrement. NaN = absence (filtre non
+  // amorcé, porte de mesure fermée, agrégat HOURLY/DAILY) — JAMAIS 0, et
+  // jamais de repli sur le brut.
+  // INITIALISEURS OBLIGATOIRES : DataPoint est construit sans initialisation
+  // explicite dans /import-history et dans avgPoint de consolidateData() ;
+  // sans « = NAN » on persisterait de la mémoire non initialisée, affichée
+  // ensuite comme une mesure réelle.
+  float phFiltered = NAN;
+  float orpFiltered = NAN;
   bool filtrationActive;
   bool phDosing;
   bool orpDosing;
   Granularity granularity;
 };
+
+// REVUE feature-095 (mineur n°1) : la taille est VERROUILLÉE, pas supposée.
+// C'est elle qui chiffre l'allocation contiguë de /get-history — 339 points ×
+// 28 o = 9 492 o demandés d'UN SEUL BLOC en contexte async_tcp, sur un appareil
+// dont le plus gros bloc libre tourne autour de 28-30 Ko (bug-080, famine
+// 8 bits). Tout champ ajouté ici déplace ce chiffre : le static_assert force à
+// le recompter au lieu de le découvrir en production.
+static_assert(sizeof(DataPoint) == 28,
+              "sizeof(DataPoint) a change : recompter l'allocation contigue de "
+              "/get-history (339 points) et le budget de la partition history");
 
 class HistoryManager {
 private:

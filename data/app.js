@@ -713,6 +713,28 @@
     return { min, max };
   }
 
+  // ---------- Préférences d'interface persistées (namespace poolctl.ui.*) ----------
+  // localStorage peut lever À LA LECTURE COMME À L'ÉCRITURE (Safari en navigation
+  // privée, stockage désactivé par politique) : tout est enveloppé, et un objet en
+  // mémoire sert de repli. Un échec ne remonte JAMAIS à l'utilisateur — la
+  // préférence vaut alors pour la session seulement.
+  const _uiPrefFallback = {};
+
+  function uiPrefGet(key, defaultValue) {
+    try {
+      const v = window.localStorage.getItem(key);
+      if (v != null) return v;
+    } catch (e) { /* stockage indisponible : repli mémoire */ }
+    return (key in _uiPrefFallback) ? _uiPrefFallback[key] : defaultValue;
+  }
+
+  function uiPrefSet(key, value) {
+    _uiPrefFallback[key] = value;
+    try {
+      window.localStorage.setItem(key, value);
+    } catch (e) { /* stockage indisponible : la préférence ne survit pas au rechargement */ }
+  }
+
   // Mini charts pour les cartes pH et ORP du dashboard
   function getMiniChartRGB(value, target, tolerance) {
     if (value == null || isNaN(value)) return [156, 163, 175];
@@ -908,28 +930,57 @@
       + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
-  function createMiniLineChart(hostId, getTarget, getTolerance, formatValue) {
+  // Vrai si un tableau parallèle porte au moins une valeur exploitable
+  function hasFiniteValue(arr) {
+    return Array.isArray(arr) && arr.some(v => v != null && !isNaN(v));
+  }
+
+  // Relais de poids visuel du brut (feature-095) : là où la mesure lissée existe,
+  // le brut s'efface en halo sous la courbe principale ; là où elle n'existe pas
+  // (moyennes horaires, points antérieurs à la 2.38), il redevient la courbe pleine.
+  const MINI_RAW_ALPHA_WITH_SMOOTHED = 0.35;
+  const MINI_RAW_ALPHA_ALONE = 0.9;
+
+  // Mini-graphique à 2 séries parallèles : index 1 = mesure brute (secondaire),
+  // index 2 = mesure lissée (PRINCIPALE — couleur, tooltip, point de survol).
+  // La carte Température passe par la même fabrique avec une série brute
+  // entièrement nulle : un seul chemin de code, principal toujours en index 2.
+  // seriesLabels (optionnel) : { smoothed, raw } — préfixes de source du tooltip.
+  function createMiniLineChart(hostId, getTarget, getTolerance, formatValue, seriesLabels) {
     const host = document.getElementById(hostId);
     if (!host || typeof uPlot === 'undefined') return null;
 
-    // État du graphique : labels catégoriels + valeurs + timestamps/granularités
-    // (tableaux parallèles, pour le tooltip) + bornes Y de repli (série vide)
-    const st = { labels: [], values: [], ts: [], gran: [], yMin: null, yMax: null };
+    // État du graphique : labels catégoriels + valeurs (lissée) + valeurs brutes
+    // + timestamps/granularités (tableaux parallèles, pour le tooltip)
+    // + bornes Y de repli (série vide) + affichage du brut (interrupteur)
+    const st = { labels: [], values: [], raw: [], ts: [], gran: [], yMin: null, yMax: null, showRaw: true };
+
+    // Alpha du segment i du brut : 0.35 si la lissée couvre le segment (halo),
+    // 0.9 sinon. Le basculement tombe exactement au x où l'aire lissée commence.
+    const rawAlphaAt = (u, i) => {
+      const sm = u.data[2];
+      if (!sm) return MINI_RAW_ALPHA_ALONE;
+      const a = sm[i], b = sm[i + 1];
+      const covered = (a != null && !isNaN(a)) && (b != null && !isNaN(b));
+      return covered ? MINI_RAW_ALPHA_WITH_SMOOTHED : MINI_RAW_ALPHA_ALONE;
+    };
 
     // Coloration conditionnelle par segment : gradient HORIZONTAL à hard stops,
     // couleur du segment i = getMiniChartRGB(moyenne des 2 points) — formule Chart.js exacte
-    const strokeGradient = (u) => {
-      const xs = u.data[0], ys = u.data[1];
+    // alphaAt(u, i) → opacité du segment (constante à 1 pour la série lissée)
+    const makeStrokeGradient = (seriesIdx, alphaAt) => (u) => {
+      const xs = u.data[0], ys = u.data[seriesIdx];
       const n = xs.length;
-      if (n === 0) return getMiniChartColor(null, getTarget(), getTolerance());
-      if (n === 1) return getMiniChartColor(ys[0], getTarget(), getTolerance());
+      const alpha = i => (alphaAt ? alphaAt(u, i) : 1);
+      if (n === 0) return getMiniChartColor(null, getTarget(), getTolerance(), alpha(0));
+      if (n === 1) return getMiniChartColor(ys[0], getTarget(), getTolerance(), alpha(0));
       const x0 = u.valToPos(xs[0], 'x', true);
       const x1 = u.valToPos(xs[n - 1], 'x', true);
       const span = (x1 - x0) || 1;
       const grad = u.ctx.createLinearGradient(x0, 0, x1, 0);
       const clamp01 = v => Math.max(0, Math.min(1, v));
       for (let i = 0; i < n - 1; i++) {
-        const color = getMiniChartColor((ys[i] + ys[i + 1]) / 2, getTarget(), getTolerance());
+        const color = getMiniChartColor((ys[i] + ys[i + 1]) / 2, getTarget(), getTolerance(), alpha(i));
         const p0 = clamp01((u.valToPos(xs[i], 'x', true) - x0) / span);
         const p1 = clamp01((u.valToPos(xs[i + 1], 'x', true) - x0) / span);
         grad.addColorStop(p0, color);
@@ -939,8 +990,8 @@
     };
 
     // Remplissage : dégradé VERTICAL alpha 0.22 → 0.02, couleur = dernière valeur non nulle
-    const fillGradient = (u) => {
-      const ys = u.data[1];
+    const makeFillGradient = (seriesIdx) => (u) => {
+      const ys = u.data[seriesIdx];
       let lastVal = null;
       for (let i = ys.length - 1; i >= 0; i--) {
         if (ys[i] != null && !isNaN(ys[i])) { lastVal = ys[i]; break; }
@@ -952,21 +1003,35 @@
       return grad;
     };
 
+    const rawFillGradient = makeFillGradient(1);
+    // Le brut n'est rempli QUE s'il est seul à l'écran (aucune valeur lissée sur
+    // la fenêtre) : aspect d'avant la 2.38 conservé sur les données anciennes.
+    const rawFill = (u) => (hasFiniteValue(u.data[2]) ? 'rgba(0,0,0,0)' : rawFillGradient(u));
+
+    const fmt = v => (formatValue ? formatValue(v) : String(v));
+    // Ligne de tooltip toujours préfixée par sa source quand les 2 séries coexistent
+    // (la carte Température n'a qu'une série : aucun préfixe)
+    const smoothedLabel = seriesLabels?.smoothed ?? '';
+    const rawLabel = seriesLabels?.raw ?? '';
+    const tooltipRow = (prefix, v) => ({ text: prefix ? `${prefix} ${fmt(v)}` : fmt(v) });
+
     const opts = {
       width: Math.max(host.clientWidth, 50),
       height: Math.max(host.clientHeight, 50),
       padding: [4, 2, 0, 2],
       legend: { show: false },
       cursor: (() => {
-        const cursor = makeUplotCursor();
+        // Point de survol sur la seule série principale (lissée, index 2)
+        const cursor = makeUplotCursor((u2, seriesIdx) => seriesIdx === 2);
         // Le stroke de la série est un CanvasGradient (inutilisable comme couleur CSS) :
         // colorer le point de survol selon la valeur survolée
         const ptColor = (u2) => {
           const idx = u2.cursor.idx;
-          const v = idx != null ? u2.data[1][idx] : null;
+          const v = idx != null ? u2.data[2][idx] : null;
           return getMiniChartColor(v, getTarget(), getTolerance());
         };
-        cursor.points = { stroke: ptColor, fill: ptColor };
+        cursor.points.stroke = ptColor;
+        cursor.points.fill = ptColor;
         return cursor;
       })(),
       scales: {
@@ -1007,12 +1072,23 @@
       series: [
         {},
         {
+          // Mesure brute (secondaire) : trait fin, tracé LINÉAIRE — le signal est
+          // bruité et dense, une spline y inventerait des dépassements
           scale: 'y',
-          width: 1.5,
+          width: 1,
+          paths: uPlot.paths.linear(),
+          points: { show: false },
+          stroke: makeStrokeGradient(1, rawAlphaAt),
+          fill: rawFill
+        },
+        {
+          // Mesure lissée (principale) : trait épais + aire
+          scale: 'y',
+          width: 2,
           paths: uPlot.paths.spline(),
           points: { show: false },
-          stroke: strokeGradient,
-          fill: fillGradient
+          stroke: makeStrokeGradient(2, null),
+          fill: makeFillGradient(2)
         }
       ],
       plugins: [
@@ -1020,9 +1096,18 @@
           variant: 'mini',
           title: (u, idx) => tooltipDateTime(st.ts[idx]) || (st.labels[idx] ?? ''),
           rows: (u, idx) => {
-            const v = u.data[1][idx];
-            if (v == null || isNaN(v)) return [];
-            const lines = [{ text: formatValue ? formatValue(v) : String(v) }];
+            // Les lignes se construisent à partir de ce qui EXISTE : sans cela,
+            // toute la zone sans lissée perdrait son infobulle (effet « panne »).
+            // u.data[1] vaut null partout quand l'interrupteur « brut » est coupé.
+            const sm = u.data[2][idx];
+            const raw = u.data[1][idx];
+            const smOk = sm != null && !isNaN(sm);
+            const rawOk = raw != null && !isNaN(raw);
+            const lines = [];
+            if (smOk) lines.push(tooltipRow(smoothedLabel, sm));
+            else if (rawOk) lines.push(tooltipRow(rawLabel, raw));
+            if (smOk && rawOk) lines.push(tooltipRow(rawLabel, raw));
+            if (!lines.length) return [];
             const type = granularityLabel(st.gran[idx]);
             if (type) lines.push({ text: type });
             return lines;
@@ -1031,14 +1116,20 @@
       ]
     };
 
-    const u = new uPlot(opts, [[], []], host);
+    const u = new uPlot(opts, [[], [], []], host);
     observeChart(host, u);
 
     return {
       u,
       st,
+      getTarget,
+      getTolerance,
       render() {
-        u.setData([st.labels.map((_, i) => i), st.values]);
+        const xs = st.labels.map((_, i) => i);
+        // Masquer le brut = passer ses valeurs à null (JAMAIS show:false) pour que
+        // l'échelle Y se resserre réellement sur la lissée
+        const raw = st.showRaw ? st.raw : xs.map(() => null);
+        u.setData([xs, raw, st.values]);
       }
     };
   }
@@ -1089,6 +1180,10 @@
       // updateMiniChart/appendMiniChart copient pour que chaque graphe reste indépendant
       const labels = [], ts = [], gran = [];
       const phValues = [], orpValues = [], tempValues = [];
+      // Mesures lissées (feature-095) : historisées uniquement sur les points 5 min
+      // (~8 h) — au-delà (moyennes horaires/journalières) et avant la 2.38, null.
+      // Tableaux STRICTEMENT parallèles aux précédents, coupures comprises.
+      const phSmoothed = [], orpSmoothed = [];
       let maxTs = since;
       // Coupure de courbe : sur le chemin incrémental, le « point précédent » du
       // premier nouveau point est le dernier point déjà affiché — un arrêt entre
@@ -1104,6 +1199,7 @@
         if (prevTs != null && point.timestamp - prevTs > CHART_GAP_SECONDS) {
           labels.push(''); ts.push(null); gran.push(null);
           phValues.push(null); orpValues.push(null); tempValues.push(null);
+          phSmoothed.push(null); orpSmoothed.push(null);
         }
         prevTs = point.timestamp;
         // feature-061 : pH/ORP/température null (filtration arrêtée) → pousser null,
@@ -1112,23 +1208,32 @@
         labels.push(miniChartPointLabel(point.timestamp));
         ts.push(point.timestamp);
         gran.push(point.granularity ?? 0);
-        phValues.push((point.ph != null && !isNaN(point.ph)) ? Math.round(point.ph * 10) / 10 : null);
+        // pH affiché à 2 décimales sur les mini-graphiques : à 1 décimale, la
+        // quantification (0,10) dépasse l'amplitude utile du signal lissé (0,05)
+        phValues.push((point.ph != null && !isNaN(point.ph)) ? Math.round(point.ph * 100) / 100 : null);
         orpValues.push((point.orp != null && !isNaN(point.orp)) ? Math.round(point.orp) : null);
         tempValues.push((point.temperature != null && !isNaN(point.temperature))
           ? Math.round(point.temperature * 10) / 10 : null);
+        phSmoothed.push((point.phFiltered != null && !isNaN(point.phFiltered))
+          ? Math.round(point.phFiltered * 100) / 100 : null);
+        orpSmoothed.push((point.orpFiltered != null && !isNaN(point.orpFiltered))
+          ? Math.round(point.orpFiltered) : null);
       });
 
+      const phTarget = window._config?.ph_target ?? 7.2;
+      const orpTarget = window._config?.orp_target ?? 700;
       if (since === 0) {
         // Chargement initial : remplace toutes les données
-        updateMiniChart(phMiniChart, labels, phValues, ts, gran, window._config?.ph_target ?? 7.2, 0.2);
-        updateMiniChart(orpMiniChart, labels, orpValues, ts, gran, window._config?.orp_target ?? 700, 50);
-        updateMiniChart(tempMiniChart, labels, tempValues, ts, gran, 26, 8);
+        updateMiniChart(phMiniChart, labels, phSmoothed, phValues, ts, gran, phTarget, 0.2);
+        updateMiniChart(orpMiniChart, labels, orpSmoothed, orpValues, ts, gran, orpTarget, 50);
+        updateMiniChart(tempMiniChart, labels, tempValues, null, ts, gran, 26, 8);
       } else {
         // Mise à jour incrémentale : ajoute les nouveaux points
-        appendMiniChart(phMiniChart, labels, phValues, ts, gran, window._config?.ph_target ?? 7.2, 0.2);
-        appendMiniChart(orpMiniChart, labels, orpValues, ts, gran, window._config?.orp_target ?? 700, 50);
-        appendMiniChart(tempMiniChart, labels, tempValues, ts, gran, 26, 8);
+        appendMiniChart(phMiniChart, labels, phSmoothed, phValues, ts, gran, phTarget, 0.2);
+        appendMiniChart(orpMiniChart, labels, orpSmoothed, orpValues, ts, gran, orpTarget, 50);
+        appendMiniChart(tempMiniChart, labels, tempValues, null, ts, gran, 26, 8);
       }
+      refreshMiniLegendAbsence();
 
       if (maxTs > lastMiniChartTimestamp) lastMiniChartTimestamp = maxTs;
     } catch (e) {
@@ -1138,7 +1243,10 @@
 
   // Quand il n'y a pas de données, définir une plage Y sensée autour de la cible
   function applyMiniChartFallbackScale(chart, target, tolerance) {
-    const hasData = chart.st.values.some(v => v != null && !isNaN(v));
+    // Les DEUX séries comptent : sans cela, le repli « cible ± 4× tolérance »
+    // s'appliquerait alors que le brut est bien présent à l'écran
+    const hasData = hasFiniteValue(chart.st.values)
+      || (chart.st.showRaw && hasFiniteValue(chart.st.raw));
     if (!hasData && target != null && tolerance != null) {
       chart.st.yMin = target - tolerance * 4;
       chart.st.yMax = target + tolerance * 4;
@@ -1148,26 +1256,98 @@
     }
   }
 
-  function appendMiniChart(chart, newLabels, newValues, newTs, newGran, target, tolerance) {
+  // Série brute absente (carte Température) → tableau de null de même longueur :
+  // les 2 séries d'un mini-graphe restent STRICTEMENT parallèles
+  function miniRawSeries(rawValues, length) {
+    if (Array.isArray(rawValues)) return rawValues;
+    return new Array(length).fill(null);
+  }
+
+  // values = série lissée (principale) ; rawValues = série brute (null si absente)
+  function appendMiniChart(chart, newLabels, newValues, newRawValues, newTs, newGran, target, tolerance) {
     if (!chart || !newLabels.length) return;
     chart.st.labels.push(...newLabels);
     chart.st.values.push(...newValues);
+    chart.st.raw.push(...miniRawSeries(newRawValues, newLabels.length));
     chart.st.ts.push(...newTs);
     chart.st.gran.push(...newGran);
     applyMiniChartFallbackScale(chart, target, tolerance);
     chart.render();
   }
 
-  function updateMiniChart(chart, labels, values, ts, gran, target, tolerance) {
+  function updateMiniChart(chart, labels, values, rawValues, ts, gran, target, tolerance) {
     if (!chart) return;
     // slice() : labels/ts/gran sont partagés entre les 3 mini-charts — chaque
     // graphe doit posséder sa propre copie (appendMiniChart mute st.* par push)
     chart.st.labels = labels.slice();
     chart.st.values = values;
+    chart.st.raw = miniRawSeries(rawValues, labels.length).slice();
     chart.st.ts = ts.slice();
     chart.st.gran = gran.slice();
     applyMiniChartFallbackScale(chart, target, tolerance);
     chart.render();
+  }
+
+  // Interrupteurs « Brut » des mini-graphiques pH et ORP (feature-095) :
+  // 2 préférences INDÉPENDANTES, défaut visible, aucun rechargement réseau au clic
+  // (les valeurs brutes sont déjà en mémoire dans chart.st.raw).
+  const MINI_RAW_TOGGLES = [
+    { toggleId: 'ph-mini-raw-toggle', legendId: 'ph-mini-legend-smoothed', prefKey: 'poolctl.ui.showRaw.ph', chart: () => phMiniChart },
+    { toggleId: 'orp-mini-raw-toggle', legendId: 'orp-mini-legend-smoothed', prefKey: 'poolctl.ui.showRaw.orp', chart: () => orpMiniChart }
+  ];
+
+  function applyMiniRawVisibility(chart, visible) {
+    if (!chart) return;
+    chart.st.showRaw = visible;
+    applyMiniChartFallbackScale(chart, chart.getTarget(), chart.getTolerance());
+    chart.render();
+  }
+
+  function bindMiniRawToggles() {
+    MINI_RAW_TOGGLES.forEach(cfg => {
+      const btn = document.getElementById(cfg.toggleId);
+      if (!btn) return;
+      // Clé absente ou stockage illisible → « 1 » (visible)
+      let visible = uiPrefGet(cfg.prefKey, '1') !== '0';
+      btn.setAttribute('aria-checked', visible ? 'true' : 'false');
+      applyMiniRawVisibility(cfg.chart(), visible);
+      btn.addEventListener('click', () => {
+        visible = !visible;
+        btn.setAttribute('aria-checked', visible ? 'true' : 'false');
+        uiPrefSet(cfg.prefKey, visible ? '1' : '0');
+        applyMiniRawVisibility(cfg.chart(), visible);
+      });
+    });
+  }
+
+  // Aucune mesure lissée sur la fenêtre (première heure après mise à jour, ou
+  // journée entièrement antérieure à la 2.38) : la légende le dit au lieu de
+  // laisser croire à une courbe manquante
+  function refreshMiniLegendAbsence() {
+    MINI_RAW_TOGGLES.forEach(cfg => {
+      const el = document.getElementById(cfg.legendId);
+      const chart = cfg.chart();
+      if (!el || !chart) return;
+      const absent = !hasFiniteValue(chart.st.values);
+      el.classList.toggle('is-absent', absent);
+      // REVUE (mineur n°4) : l'opacité seule ne dit rien à un lecteur d'écran,
+      // ni à quelqu'un qui ne perçoit pas la nuance. On nomme donc l'absence.
+      // Cas concret : la première heure après une mise à jour, aucun point n'a
+      // encore de mesure lissée — la carte redevient identique à avant, et sans
+      // ce texte rien n'expliquerait pourquoi la courbe principale a disparu.
+      const suffixe = el.querySelector('.mini-legend__absent');
+      if (absent && !suffixe) {
+        const s = document.createElement('span');
+        s.className = 'mini-legend__absent';
+        s.textContent = ' (aucune sur la période)';
+        el.appendChild(s);
+      } else if (!absent && suffixe) {
+        suffixe.remove();
+      }
+      el.setAttribute('title', absent
+        ? 'Aucune mesure lissée sur la période affichée'
+        : 'Mesure lissée : la valeur utilisée par la régulation');
+    });
   }
 
   // Usine des graphiques détail (Température / pH / ORP)
@@ -9837,13 +10017,15 @@
       'ph-mini-chart',
       () => window._config?.ph_target ?? 7.2,
       () => 0.2,
-      v => v.toFixed(1)
+      v => v.toFixed(2), // 2 décimales : le lissé bouge de 0,05, pas de 0,10
+      { smoothed: 'lissé', raw: 'brut' }
     );
     orpMiniChart = createMiniLineChart(
       'orp-mini-chart',
       () => window._config?.orp_target ?? 700,
       () => 50,
-      v => Math.round(v) + ' mV'
+      v => Math.round(v) + ' mV',
+      { smoothed: 'lissé', raw: 'brut' }
     );
     tempMiniChart = createMiniLineChart(
       'temp-mini-chart',
@@ -9851,6 +10033,8 @@
       () => 8,
       v => v.toFixed(1) + ' °C'
     );
+    // Interrupteurs « Brut » (pH / ORP) : état restauré avant le 1er chargement
+    bindMiniRawToggles();
 
     // Load historical data to populate charts
     const historyPerf = debugStart("loadHistoricalData");
