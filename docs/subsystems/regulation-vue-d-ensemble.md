@@ -35,6 +35,8 @@ Le principe directeur, présent à chaque étage : **fail-closed**. Toute donné
         ▼                                             ▼
   [3] hystérésis de session                    [3] hystérésis de session
       start 0,05 / stop 0,01 pH                    start 15 mV / stop 2 mV
+      décidée sur un SIGNAL LENT (10 min)
+      + durée minimale 30 min murales
         │                                             │
         ▼                                             ▼
   [4] demande (mL/min moyen)                   [4] demande (mL/min moyen)
@@ -110,7 +112,13 @@ La confusion classique : croire que la pause mélange suit **chaque pouls**. Non
 
 **S'interdit** : rouvrir une session avant que l'erreur soit remontée au seuil de **démarrage** (pas d'oscillation sur le seuil d'arrêt), et doser moins de `minInjectionTimeMs` = 30 s une fois démarré.
 
-**Détail** : [Algorithme (résumé), point 4](pump-controller.md#algorithme-résumé).
+> **v2.36.0 — côté pH, la porte lit un SIGNAL LENT** ([ADR-0062](../adr/0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md)). Le bruit de la filtrée (σ = 0,043 sur 60 s, crête-à-crête 15 min ≈ 0,150) est **plus large que la bande 0,05 / 0,01** : près de la consigne, c'est lui qui ouvrait et fermait les sessions, avec 15 min de pause de mélange à chaque fermeture (rapport cyclique tombé à ~1/3). Le gate `pool-chemistry` a caractérisé ce bruit — **τc ≈ 50 s, processus quasi blanc** — donc **le moyenner marche** : la décision de porte lit désormais une **moyenne glissante de 10 min** (`kPhDecisionWindowMs`) et une session tient **30 min murales** minimum (`kPhSessionMinWallMs`), sauf garde et sauf sous-dépassement franc.
+>
+> **La distinction essentielle** : le signal **lent** décide **uniquement de la porte** (ouverture, fermeture, régime de débit de prolongation). **P, I et feedforward continuent de lire la filtrée ACTUELLE** — on ne ralentit pas la boucle, on stabilise sa porte. La bande morte, elle, garde exactement les mêmes valeurs et le même rôle : **déplacement du point d'équilibre = 0,000 pH**, condition d'acceptation du gate. Élargir la bande (0,17 pH nécessaires) a été **refusé** : avec de l'acide seul, le bassin ne saurait pas remonter.
+>
+> Corollaire observable : `isPhDosing()` — donc `/data ph_dosing`, le WS `ph_dosing`, MQTT `{base}/ph_dosing` / `ph_dosing_active` et `history.phDosing` — dit maintenant **« une session est ouverte »**, pompe éventuellement à l'arrêt. Pour « la pompe tourne maintenant », c'est le calendrier d'impulsion ([ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md)).
+
+**Détail** : [Porte de session pH robuste au bruit](pump-controller.md#porte-de-session-ph-robuste-au-bruit-feature-094-v2360), [Algorithme (résumé), point 4](pump-controller.md#algorithme-résumé).
 
 ### [4] Calcul de la demande
 
@@ -279,7 +287,9 @@ Du plus court au plus long. Les noms font foi ([`constants.h`](../../src/constan
 | 60 s | `kPulsePeriodMs` | **60 s (gravé)** | Période du proportionnel de temps | [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)/[0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md) |
 | 3-5 min | `kStabilizationDurationOrpMs` / `PhMs` | 3 / 5 min | Sas post-calibration EZO, par sonde | feature-021 |
 | 10-90 min | `kPurgeFloorMs` / `kPurgeCapMs` (gravés) | **non fixe** | Purge à la reprise de circulation (dosage ET validité des mesures) : se termine **sur la stabilité des bruts**, plancher 10 min, plafond 90 min. Le réglage `stabilizationDelayMin` est retiré depuis la v2.34.0 | [measure-validity.md](measure-validity.md), [ADR-0059](../adr/0059-purge-adaptative-fenetre-de-medianes.md) |
+| 10 min | `kPhDecisionWindowMs` | 10 min | Fenêtre du **signal lent** de décision de porte pH (σ 0,043 → 0,017 ; retard ≈ 7 min) | [ADR-0062](../adr/0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md) |
 | 15 min | `kPhIntegralResetHoldMs` | 15 min de branche | Tenue d'excursion avant purge sèche de l'intégrale (= pause mélange, `static_assert`) | v2.27.0 |
+| 30 min | `kPhSessionMinWallMs` | **30 min murales** | Durée minimale d'une session pH — `static_assert` : ≥ 2 × `kPhDecisionWindowMs` | [ADR-0062](../adr/0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md) |
 | 15-20 min | `kPhMixingDelayMs` / `kOrpMixingDelayMs` | 15 / 20 min | Pause mélange — le métronome de la boucle | feature-025, [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) |
 | 30 min | `kPhFfLowHoldMs` | **≤ 30 min (verrou)** | Latch « fausse pluie » du feedforward (erreur défavorable tenue) | [ADR-0055](../adr/0055-feedforward-appris-additif-plafonne.md) |
 | 1 h | `kPhIntegralDecayHalfLifeMs` | 1 h | Demi-vie d'oubli de l'intégrale sous la consigne | [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) |
@@ -291,7 +301,7 @@ Du plus court au plus long. Les noms font foi ([`constants.h`](../../src/constan
 | 3-7 j | `kPhIntegralRestoreMinHistoryDays` / `…HistoryWindowDays` | **3 / 7 j (gravés)** | Fenêtre d'apprentissage : 3 journées exploitables requises, 7 conservées | [ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md)/[0056](../adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md) |
 | 3 j | `kPhActuatorLimitConsecutiveDays` | **3 j (gravé)** | Journées saturées consécutives avant l'alerte de sous-dimensionnement | [ADR-0056](../adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md) |
 
-Les seuils d'**hystérésis de session** (sans dimension de temps mais rythmant tout) : `phStartThreshold` 0,05 / `phStopThreshold` 0,01 pH, `orpStartThreshold` 15 / `orpStopThreshold` 2 mV (`PumpProtection`, [`config.h`](../../src/config.h)).
+Les seuils d'**hystérésis de session** (sans dimension de temps mais rythmant tout) : `phStartThreshold` 0,05 / `phStopThreshold` 0,01 pH, `orpStartThreshold` 15 / `orpStopThreshold` 2 mV (`PumpProtection`, [`config.h`](../../src/config.h)). Depuis la v2.36.0, les deux valeurs pH sont **initialisées depuis des `constexpr`** de [`constants.h`](../../src/constants.h) (`kPhStartThresholdDefault` / `kPhStopThreshold`) — elles n'étaient de toute façon jamais relues depuis la NVS ni exposées par l'API, et cette promotion permet de **verrouiller par `static_assert`** que la bande reste au-dessus du bruit résiduel du signal lent. S'y ajoutent `kPhDoorCloseMarginPh` = 0,03 (marge de fermeture de la porte, sans effet sur la bande d'actionnement) et `kPhSessionUndershootFloorPh` = 0,05 (plancher de sous-dépassement, identique par `static_assert` à `kPhFfAdverseErrorPh`).
 
 ---
 

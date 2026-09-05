@@ -76,8 +76,8 @@ Tous les topics utilisent le préfixe configurable (ex: `pool/sensors`). Les val
 |-------|---------|-------------|
 | `{base}/ph_dosage` | `45.2` | Volume dosé pH aujourd'hui (ml) |
 | `{base}/orp_dosage` | `120.5` | Volume dosé ORP/chlore aujourd'hui (ml) |
-| `{base}/ph_dosing` | `ON` / `OFF` | Pompe doseuse pH en cours d'injection |
-| `{base}/orp_dosing` | `ON` / `OFF` | Pompe doseuse ORP en cours d'injection |
+| `{base}/ph_dosing` | `ON` / `OFF` | **Session de dosage pH ouverte** — ⚠️ **sens changé en v2.36.0**, voir la note ci-dessous : la pompe peut être **à l'arrêt** |
+| `{base}/orp_dosing` | `ON` / `OFF` | Pompe doseuse ORP en cours d'injection (**inchangé**) |
 | `{base}/ph_limit` | `ON` / `OFF` | Limite journalière pH atteinte |
 | `{base}/orp_limit` | `ON` / `OFF` | Limite journalière ORP atteinte |
 | `{base}/ph_stock_low` | `ON` / `OFF` | Volume pH restant sous le seuil d'alerte |
@@ -91,6 +91,16 @@ Tous les topics utilisent le préfixe configurable (ex: `pool/sensors`). Les val
 | `{base}/ph_integral_pct` | `46.0` | Remplissage de l'anti-windup (% du plafond, valeur absolue) — retain, dédup (v2.26.0) |
 | `{base}/ph_ff_ml_per_min` | `1.30` | Dose de base apprise appliquée à la session auto (mL/min, 2 décimales, 0 hors session) — retain, dédup (v2.28.0). Voir [ci-dessous](#topics-et-entités-ajoutés-en-v2280-dose-de-base-apprise--feedforward-ph) |
 | `{base}/ph_ff_status` | `1` | Code d'état du feedforward pH (0-4, contrat figé) — retain, dédup (v2.28.0) |
+
+> ⚠️ **v2.36.0 (feature-094, [ADR-0062](adr/0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md)) — `ph_dosing` change de SENS.** **Aucune entité nouvelle, aucun topic nouveau, aucun renommage** : c'est la **signification** de la valeur qui change.
+>
+> | | Avant (≤ 2.35.0) | Depuis 2.36.0 |
+> |---|---|---|
+> | `{base}/ph_dosing` (et `ph_dosing_active` du JSON [`{base}/diagnostic`](#diagnostic)) | `ON` ⇔ un débit est commandé (≈ la pompe tourne) | `ON` ⇔ une **session de dosage est ouverte** — **la pompe peut être à l'arrêt** |
+>
+> Le verrou de session pH suit désormais la **porte** (décidée sur une moyenne glissante de 10 min de la mesure filtrée) et non plus le débit instantané. Pendant une **prolongation** (durée minimale de session de 30 min murales, débit plafonné au feedforward puis nul), `ph_dosing` **reste `ON` pompe à l'arrêt** — jusqu'à 3 h au pire cas.
+>
+> **Impact Home Assistant** : le `binary_sensor` « Dosage pH Actif » restera donc `on` plus longtemps et plus continûment. Une automatisation qui en déduisait « la pompe tourne » doit être revue — l'information « pompe alimentée maintenant » n'est **pas** publiée en MQTT ; elle se lit sur le calendrier d'impulsion de `/data` ou du WebSocket ([ADR-0045](adr/0045-etat-impulsion-expose-en-calendrier.md) : pompe alimentée ⇔ `ph_pulse_phase_ms < ph_pulse_ms`). **`{base}/orp_dosing` et `orp_dosing_active` sont inchangés.**
 
 ### Consignes
 
@@ -278,7 +288,7 @@ Le contrôleur publie automatiquement sa configuration pour Home Assistant au d�
 | Sensor | Piscine pH Points Calibrés | `{base}/ph_cal_points` | — |
 | Sensor | Piscine ORP Points Calibrés | `{base}/orp_cal_points` | — |
 | Binary Sensor | Filtration Active | `{base}/filtration_state` | — |
-| Binary Sensor | Dosage pH Actif | `{base}/ph_dosing` | — |
+| Binary Sensor | Dosage pH Actif | `{base}/ph_dosing` | — (⚠️ **session ouverte** depuis la v2.36.0, pas « pompe en marche » — [voir la note](#dosage)) |
 | Binary Sensor | Dosage Chlore Actif | `{base}/orp_dosing` | — |
 | Binary Sensor | Limite Journalière pH | `{base}/ph_limit` | — |
 | Binary Sensor | Limite Journalière Chlore | `{base}/orp_limit` | — |

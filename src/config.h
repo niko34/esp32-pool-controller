@@ -233,8 +233,12 @@ struct SafetyLimits {
 struct PumpProtection {
   // Protection anti-cycling pour prolonger la durée de vie des pompes
   unsigned long minInjectionTimeMs = 30000;      // 30s minimum par injection
-  float phStartThreshold = 0.05f;                // Démarre dosage si erreur pH > 0.05
-  float phStopThreshold = 0.01f;                 // Continue dosage si erreur pH > 0.01
+  // feature-094 (C9) : initialisés depuis constants.h — ces deux seuils ne sont
+  // ni relus depuis la NVS ni exposés par l'API, ce sont de facto des constantes.
+  // Leur cohérence avec le bruit résiduel du signal lent de décision est
+  // verrouillée par static_assert là-bas, pas ici.
+  float phStartThreshold = kPhStartThresholdDefault;  // Démarre dosage si erreur pH > 0.05
+  float phStopThreshold = kPhStopThreshold;           // Continue dosage si erreur pH > 0.01
   float orpStartThreshold = 15.0f;               // Démarre dosage si erreur ORP > 15mV (feature-025 : deadband effectif ORP ±15 mV)
   float orpStopThreshold = 2.0f;                 // Continue dosage si erreur ORP > 2mV
   unsigned int maxCyclesPerDay = 24;             // Démarrages max/jour (feature-060). Configurable, borné

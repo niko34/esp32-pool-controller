@@ -144,7 +144,42 @@ suffit à suspendre le dosage. Voici ce voyage, étape par étape.</p>
     poursuit jusqu'à revenir tout près de la cible (0,01&nbsp;unité, ou
     2&nbsp;millivolts). Cette marge entre le seuil d'entrée et le seuil de
     sortie absorbe le bruit de mesure et empêche toute oscillation.</p>
+    <p>Côté pH, cette décision d'ouvrir ou de fermer une session ne se prend
+    pas sur la mesure de l'instant, mais sur une <strong>moyenne des
+    10&nbsp;dernières minutes</strong>&nbsp;: une petite fluctuation passagère
+    ne suffit plus à interrompre le dosage. Et une session ouverte
+    <strong>tient au moins 30&nbsp;minutes</strong>, sauf bien sûr si une
+    sécurité s'y oppose ou si le pH passe franchement sous la consigne.
+    Attention à ne pas confondre&nbsp;: seule la <em>décision</em> utilise
+    cette moyenne — le <em>calcul de la dose</em>, lui, continue de suivre la
+    mesure du moment, à la seconde près.</p>
   </div>
+</div>
+
+<div class="box">
+  <span class="box-title">Ce que vous devriez constater (nouveau en 2.36)</span>
+  <p>Jusqu'ici, quand le pH était <em>déjà proche</em> de sa consigne, la
+  régulation avait tendance à hésiter&nbsp;: elle ouvrait une session, la
+  refermait quelques minutes plus tard, s'imposait alors une pause de mélange
+  de 15&nbsp;minutes, recommençait… et perdait ainsi les <strong>deux
+  tiers</strong> de son temps de travail utile. La coupable n'était pas l'eau
+  du bassin&nbsp;: c'était la <strong>petite agitation permanente de la
+  mesure</strong> — plus large, à elle seule, que l'écart nécessaire pour
+  déclencher ou arrêter un dosage.</p>
+  <p>Désormais&nbsp;: <strong>des injections plus longues et plus
+  espacées</strong>, des pauses de mélange plus rares, la dose de base
+  (section&nbsp;2) servie <strong>en continu</strong> au lieu d'un tiers du
+  temps — et un pH qui devrait se <strong>rapprocher de sa consigne</strong>
+  au lieu de se stabiliser légèrement au-dessus. <strong>Aucune limite de
+  sécurité n'a été modifiée</strong>&nbsp;: ni les quotas, ni la limite
+  horaire, ni les seuils de refus.</p>
+  <p><strong>Un détail d'affichage à connaître</strong>&nbsp;: l'indicateur
+  «&nbsp;dosage pH en cours&nbsp;» (page pH, et l'entité correspondante dans
+  Home Assistant) signifie maintenant «&nbsp;<em>une session est
+  ouverte</em>&nbsp;» — et non plus «&nbsp;la pompe tourne à cet
+  instant&nbsp;». Il peut donc rester allumé alors que la pompe est à
+  l'arrêt&nbsp;: c'est normal. Le statut détaillé des cartes du tableau de
+  bord, lui, continue de distinguer les deux.</p>
 </div>
 
 <div class="step">
@@ -536,13 +571,22 @@ court au plus long.</p>
       10&nbsp;minutes au minimum, 90 au maximum (au-delà, l'appareil rouvre
       la régulation <em>et le signale</em>). Après un redémarrage de moins de
       dix secondes, la purge est dispensée.</td></tr>
+  <tr><td class="duree">10 minutes</td>
+      <td>Fenêtre de la moyenne sur laquelle l'appareil décide d'ouvrir ou de
+      fermer une session de dosage pH — assez large pour ignorer l'agitation
+      de la mesure, assez courte pour réagir à un vrai changement du
+      bassin.</td></tr>
   <tr><td class="duree">15 / 20 minutes</td>
       <td>Pause de mélange après chaque injection (15&nbsp;min pour le pH,
       20&nbsp;min pour le chlore)&nbsp;: le métronome de la boucle — au plus
       une injection toutes les 15 à 20&nbsp;minutes par produit.</td></tr>
   <tr><td class="duree">30 minutes</td>
       <td>Tenue d'une mesure défavorable avant que le disjoncteur de la dose
-      de base ne saute (le scénario «&nbsp;fausse pluie&nbsp;»).</td></tr>
+      de base ne saute (le scénario «&nbsp;fausse pluie&nbsp;»). C'est aussi
+      la <strong>durée minimale d'une session de dosage pH</strong>&nbsp;: une
+      fois ouverte, elle ne se referme pas sur une fluctuation de la mesure —
+      une sécurité ou un pH franchement passé sous la consigne, en revanche,
+      la ferment immédiatement.</td></tr>
   <tr><td class="duree">1 heure</td>
       <td>Fenêtre glissante de la limite horaire de fonctionnement des pompes
       — et rythme d'oubli progressif de la correction accumulée quand elle ne

@@ -348,6 +348,16 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 >
 > Ces drapeaux sont **edge-triggered côté firmware** (un `critical` + une alerte MQTT à la pose, répétition toutes les 30 min, `info` à la levée) et pilotent le chip d'état filtre + la bannière « Régulation à l'arrêt » du tableau de bord. Reprise : [`POST /reset-sensor-filter`](#post-reset-sensor-filter--critical). Buffer `/data` porté de 1280 à **1344** octets. Voir [`docs/subsystems/sensors.md`](subsystems/sensors.md#alarme--filtre-non-prêt-durablement--v2203).
 
+> **feature-094 (v2.36.0) — changement de SENS de `ph_dosing`** ([ADR-0062](adr/0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md)). **Aucun champ ajouté, aucun renommé, aucun retiré** — mais la valeur ne veut plus dire la même chose :
+>
+> | Champ | Avant (≤ 2.35.0) | Depuis 2.36.0 |
+> |-------|------------------|---------------|
+> | `ph_dosing` | « un débit a été commandé » (≈ la pompe tourne) | « une **session de dosage est ouverte** » — **la pompe peut être à l'arrêt** |
+>
+> Le verrou de session pH suit désormais la **porte** (décidée sur une moyenne glissante de 10 min de la mesure filtrée) et non plus le débit instantané : pendant une **prolongation** — durée minimale de session de 30 min murales, débit plafonné au feedforward puis nul — `ph_dosing` **reste `true` pompe à l'arrêt**, jusqu'à `kPhSessionMaxWallMs` = 3 h au pire cas. Même sens pour le champ WS `ph_dosing` (parité stricte), pour MQTT (`{base}/ph_dosing`, `ph_dosing_active`) et pour `history.phDosing`. **`orp_dosing` est inchangé.**
+>
+> ⚠️ Un client qui veut « **la pompe est alimentée maintenant** » ne doit pas lire `ph_dosing` : c'est le rôle du **calendrier d'impulsion** ([ADR-0045](adr/0045-etat-impulsion-expose-en-calendrier.md)) — pompe alimentée ⇔ `ph_pulse_phase_ms < ph_pulse_ms`. Détail : [pump-controller.md](subsystems/pump-controller.md#porte-de-session-ph-robuste-au-bruit-feature-094-v2360).
+
 > Les champs live `ph` / `orp` / `phRaw` / … restent publiés tels quels quand `measures_valid` est `false` (calibration et diagnostics intacts) — c'est le **client** qui arbitre l'affichage. ⚠️ **Repli HTTP** : `/data` n'expose pas `filtration_state_stale` (présent en WS uniquement) — un client en polling HTTP dégrade « Signal filtration périmé » en « Filtration arrêtée » (asymétrie préexistante, à harmoniser). Voir [`docs/subsystems/measure-validity.md`](subsystems/measure-validity.md).
 
 ---

@@ -10,6 +10,7 @@
 #include "ph_integral_logic.h"   // v2.26.0 : terme intégral pH (logique PURE)
 #include "ph_persist_logic.h"    // feature-084 : persistance de l'intégrale (PURE)
 #include "ph_feedforward_logic.h"  // feature-085 : dose de base apprise (PURE)
+#include "ph_session_logic.h"      // feature-094 : porte de session pH (PURE)
 
 struct PumpDriver {
   int pwmPin;    // Pin PWM Gate MOSFET (IRLZ44N)
@@ -144,6 +145,11 @@ private:
 
   // Fonctions anti-cycling
   bool shouldStartDosing(float error, float startThreshold, DosingState& state, unsigned long now);
+  // feature-094 : effets de bord journaliers de la porte de démarrage (rollover
+  // 24 h de cyclesToday + warning throttlé). Extraits de shouldStartDosing pour
+  // rester atteignables par le pH, dont la porte est désormais phSessionGate().
+  // loopTask uniquement.
+  void tickDosingCycleDay(DosingState& state, unsigned long now);
   // Itération 2 : la garde de temps minimum d'injection raisonne en temps
   // POMPE-ON cumulé de la session (sessionOnMs), plus en temps mural depuis
   // lastStartTime — cohérence avec le proportionnel de temps (flaggé pour
@@ -402,6 +408,26 @@ private:
 
   // État du feedforward (module pur) — loopTask uniquement.
   PhFfState _phFf;
+
+  // ===== feature-094 (v2.36.0) : PORTE DE SESSION pH ROBUSTE AU BRUIT ========
+  // Signal LENT de décision (moyenne glissante de 10 min de la filtrée). Tické
+  // HORS branche, à côté du tick intégral et après la garde de présence d'eau :
+  // la porte doit continuer de mûrir pendant les pauses de mélange et les
+  // suspensions de limite horaire, où l'eau circule et la mesure est valide.
+  // loopTask uniquement — écrivain unique, aucun mutex (patron _phIntegral).
+  PhDecisionFilter _phDecision;
+  // Erreur SIGNÉE portée par le signal lent, recalculée à chaque tick (NAN tant
+  // que la fenêtre n'est pas pleine). Consommée par la seule branche automatique.
+  float _phDecisionError = NAN;
+  // Un cycle a-t-il déjà été comptabilisé pour la session pH EN COURS ? Depuis
+  // que la session vit sur le verdict de PORTE et non plus sur le débit
+  // instantané, l'ouverture peut précéder de plusieurs tours le premier débit
+  // réel (computePID rejette dt > 10 s au premier tick). Sans ce témoin, le
+  // cycle ne serait comptabilisé NI à l'ouverture (aucun débit) NI ensuite
+  // (`startDecided` est déjà retombé) : la comptabilité de sécurité
+  // (cyclesToday, ring anti-rafale) deviendrait aveugle. Remis à false à toute
+  // fermeture de session. loopTask uniquement.
+  bool _phCycleCounted = false;
   // Instantanés servis à /data + WS (écrits par tickPhFeedforward en loopTask,
   // lus en contexte web async — course bénigne, patron isAnyPumpEnergized).
   float   _ffFlowMlPerMin = 0.0f;

@@ -361,8 +361,18 @@ void loop() {
   // mode maintenance, pas pendant une OTA, aucun dosage auto, aucune injection
   // manuelle, AUCUNE pompe énergisée (isAnyPumpEnergized couvre le test manuel
   // armé depuis la tâche web, invisible de isPh/isOrpDosing), et uptime minimal.
+  //
+  // feature-094 (revue, point n°2) : isPhDosing()/isOrpDosing() RETIRÉS de la
+  // conjonction. Depuis que le verrou de session suit la PORTE et non le débit,
+  // isPhDosing() reste vrai pompe à l'arrêt pendant toute une prolongation —
+  // jusqu'à kPhSessionMaxWallMs (3 h). Les garder ici aurait rendu le détecteur
+  // de corruption du tas AVEUGLE des heures d'affilée, alors que ce projet a
+  // déjà connu une boot-loop lfs_alloc et un parachute jamais réarmé.
+  // Ce qu'il faut protéger, c'est la CADENCE DES IMPULSIONS pendant qu'une pompe
+  // tourne : isAnyPumpEnergized() le couvre exactement (et couvre en plus le
+  // test manuel armé depuis la tâche web, invisible de isPh/isOrpDosing).
+  // Une porte ouverte pompe à l'arrêt n'a rien à protéger.
   if (!maintenanceMode && !PumpController.isOtaInProgress() &&
-      !PumpController.isPhDosing() && !PumpController.isOrpDosing() &&
       !manualInjectPh.active && !manualInjectOrp.active &&
       !PumpController.isAnyPumpEnergized() &&
       now >= kAutoHealMinUptimeMs) {

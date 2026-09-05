@@ -140,6 +140,21 @@ Ligne `#ph_ff_line`, ajoutée **dans le bloc Rattrapage accumulé** (mêmes règ
 - La valeur n'est affichée **que** pour le statut `actif` : dans tous les autres états le débit vaut 0 par construction, et un « 0,00 mL/min » se lirait comme une mesure.
 - Parité `/data` ↔ WS : les deux champs sont servis à l'identique par les deux transports (voir [API.md](../API.md#champs-du-feedforward-ph-feature-085-v2280)).
 
+## Sens de « en dosage » (feature-094, v2.36.0)
+
+Aucun élément d'interface n'est ajouté, déplacé ni renommé par ce lot — mais **le champ `ph_dosing` que la page consomme ne veut plus dire la même chose** ([ADR-0062](../adr/0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md)) :
+
+| | Avant (≤ 2.35.0) | Depuis 2.36.0 |
+|---|---|---|
+| `ph_dosing === true` | un débit est commandé (≈ la pompe tourne) | une **session de dosage est ouverte** — **la pompe peut être à l'arrêt** |
+
+Le verrou de session pH suit désormais la **porte** de session, décidée sur une moyenne glissante de 10 min de la mesure filtrée, et non plus le débit instantané ([Porte de session pH](../subsystems/pump-controller.md#porte-de-session-ph-robuste-au-bruit-feature-094-v2360)). Pendant une **prolongation** (durée minimale de 30 min murales, débit plafonné à la dose de base puis nul), `ph_dosing` **reste `true`** — jusqu'à 3 h au pire cas.
+
+Conséquences pour cette page :
+
+- **Verrou de calibration** (`_updateInjectButtons`, condition `(ph_inject_remaining_s > 0) || (ph_dosing === true)`, cf. [État de calibration](#état-de-calibration--bouton--calibrer-la-sonde--feature-034)) : le bouton « Calibrer la sonde » reste **désactivé plus longtemps**, y compris pompe à l'arrêt. C'est **cohérent avec l'intention d'origine** du verrou — il a toujours couvert **toute la session** d'impulsions, repos compris — et il va dans le sens **restrictif**, donc aucun changement n'est apporté.
+- **Statut de dosage des cartes** : la distinction « **commandé** vs **effectif** » posée en v2.21.1 ([ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md)) reste la règle et devient indispensable — « la pompe est alimentée maintenant » se lit **uniquement** sur `ph_pulse_phase_ms < ph_pulse_ms`, **jamais** sur `ph_dosing`. Voir [page-dashboard.md](page-dashboard.md#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211).
+
 ## Capacités de dosage et bandeaux de limite d'actionneur (feature-086, v2.29.0)
 
 Trois éléments exposent la [limite d'actionneur pH](../subsystems/pump-controller.md#limite-dactionneur-ph--exposition-et-alerte-de-sous-dimensionnement-feature-086-v2290) ([ADR-0056](../adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md)) : un bloc de capacités, un bandeau informatif, une alerte de diagnostic. Point de décision **unique** : `updatePhActuatorLimitDisplay()` (appelée depuis `updateDetailSections()`, sous `try/catch` — un rendu qui lance ne masque jamais les rubriques suivantes en silence). **Sentinelle de présence** : `ph_limited_by_hourly_budget` non booléen (`undefined`, firmware < 2.29.0) → les **trois** éléments restent masqués, rien n'est inventé.
@@ -487,7 +502,7 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 **État filtre** : `phFilterReady`, `phFilterUnstable`, `phRejectedCount`, `phMixingDelayActive`, `phDoseBlockedReason` (feature-025), `phFilterAlarm` (v2.20.3), **`phDoseBlockedCode`** (v2.25.1 — code machine de la cause de refus, source de la catégorie) — voir [Chip d'état filtre](#chip-détat-filtre-feature-025)
 **Calibration** : `phCalPoints` (`-1..3`) — voir [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)
 **Pente sonde** : `phSlopeAcid`, `phSlopeBase`, `phSlopeZero`, `phSlopeAgeMs` (feature-024) — voir [Chip d'état sonde](#chip-détat-sonde-feature-024)
-**Dosage** : `ph_dosing`, `ph_used_ms`, `ph_daily_ml`, `ph_limit_reached`
+**Dosage** : `ph_dosing`, `ph_used_ms`, `ph_daily_ml`, `ph_limit_reached` — ⚠️ **`ph_dosing` change de SENS en v2.36.0**, voir [Sens de « en dosage »](#sens-de--en-dosage--feature-094-v2360)
 **Mode** : `ph_regulation_mode` (`automatic` / `scheduled` / `manual`), `ph_daily_target_ml`, `ph_enabled` (miroir, voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
 **Répartition scheduled (feature-011, v2.8.0)** : `ph_scheduled_flow_ml_per_min` (float 1 décimale, mL/min — débit moyen planifié restant ; `null` hors mode `scheduled`, hors plage de filtration ou heure ESP32 invalide → l'UI affiche « — »)
 **Terme intégral (v2.26.0)** : `ph_integral_pct` (float, % — remplissage de la réserve), `ph_integral` (float, pH·s), `ph_integral_term` (float, mL/min). Servis **à l'identique** par `GET /data`. Clé **absente** = firmware antérieur → bloc masqué ; `null` = « non calculable » → « — » ; `0` = **réserve vide, affirmé**. Voir [Rattrapage accumulé](#rattrapage-accumulé-par-la-régulation-ph-v2260)

@@ -5,6 +5,12 @@
 - **Décideurs** : Nicolas (verdict architect du cycle `bug-parachute-oom-jamais-rearme-et-postmortem`, gate `pool-chemistry` GO en P1 sous conditions puis GO en P2 sur le diff)
 - **Spec(s) liée(s)** : `bug-parachute-oom-jamais-rearme-et-postmortem` (v2.18.8)
 
+> 📋 **Amendement du 2026-09-05 (feature-094, v2.36.0 — [ADR-0062](0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md))** : la garde du contrôle d'intégrité **ne dépend plus de l'état de session**, mais de l'**énergisation réelle** des pompes. `PumpController.isPhDosing()` et `isOrpDosing()` sont **retirés** de la conjonction de `main.cpp` — depuis la porte de session pH robuste au bruit, ces prédicats suivent la **porte** et non le débit : ils restent vrais **pompe à l'arrêt** jusqu'à `kPhSessionMaxWallMs` = **3 h**, ce qui aurait rendu le détecteur de corruption **aveugle des heures d'affilée** (rappel : ce projet a déjà connu une boot-loop `lfs_alloc`). Les gardes deviennent **6** : `!maintenanceMode`, `!isOtaInProgress()`, `!manualInjectPh.active`, `!manualInjectOrp.active`, `!isAnyPumpEnergized()`, `now >= kAutoHealMinUptimeMs`.
+>
+> **Confirmé par `pool-chemistry`**, dont le visa d'origine portait sur « **une pompe tourne** », jamais sur « une porte est ouverte » : ce qu'il faut protéger, c'est la **cadence des impulsions pendant qu'une pompe tourne**, et `isAnyPumpEnergized()` le couvre exactement — en couvrant de surcroît le test manuel armé depuis la tâche web, invisible des deux prédicats retirés. **L'argument chimique** : le rendement de pouls ([ADR-0051](0051-pouls-minimal-double-rendement-avant-comptage.md)) se mesure sur `usedMs`, compté à partir de l'**énergisation effective** — un pouls décalé dure la même chose et crédite le même volume. **Un retard décale, il ne sur-injecte pas.**
+>
+> **Nouveau `static_assert`** ([`constants.h`](../../src/constants.h), immédiatement après `kPulseMinMs`) : `kHeapIntegrityMaxDurationUs × 100 ≤ kPulseMinMs × 1000` — le parcours d'intégrité doit rester **sous 1 % du pouls minimal**, soit aujourd'hui **20 ms contre 10 s = 0,2 %** (5× de marge sous la règle, 500× en ratio brut). Si le parcours s'en approchait, le retard redeviendrait un sujet chimique. Le **retard maximal admissible de 65 ms** et la **position après `PumpController.update()`** sont inchangés. Cet ADR reste **Accepté** ; seule la mention « ses 8 gardes » ci-dessous est à lire comme **6 gardes**.
+
 ## Contexte
 
 **Deux crashs de production en trois jours**, tous deux par échec d'allocation d'une **petite** structure :

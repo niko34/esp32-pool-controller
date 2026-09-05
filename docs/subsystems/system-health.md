@@ -164,7 +164,7 @@ Détecteur **direct** de la corruption du tas — l'hypothèse laissée ouverte 
 - **Désactivation DÉFINITIVE** (+ WARN one-shot) au-delà de `kHeapIntegrityMaxDurationUs` = 20 ms : le contrôle ne doit jamais devenir lui-même une source de gigue.
 - Le parcours s'exécute **interruptions coupées** et prend les verrous de l'allocateur : **aucun `esp_task_wdt_reset()` à l'intérieur** — il est appelé **juste après**.
 
-### Les 8 gardes de sécurité chimique (exigence `pool-chemistry`)
+### Les 6 gardes de sécurité chimique (exigence `pool-chemistry`)
 
 Le contrôle est appelé **après `PumpController.update()`** en fin de `loop()` — jamais entre `filtration.update()` et `PumpController.update()`, qui doivent voir le même tour. Il n'est **JAMAIS** exécuté si l'une de ces conditions n'est pas remplie (gardes **cumulatives, fail-closed**) :
 
@@ -172,16 +172,18 @@ Le contrôle est appelé **après `PumpController.update()`** en fin de `loop()`
 |---|---|---|
 | 1 | Pas en **mode maintenance** | `maintenanceMode` |
 | 2 | Pas d'**OTA en cours** | `PumpController.isOtaInProgress()` |
-| 3 | Aucun **dosage pH** | `PumpController.isPhDosing()` |
-| 4 | Aucun **dosage ORP** | `PumpController.isOrpDosing()` |
-| 5 | Aucune **injection manuelle pH** | `manualInjectPh.active` |
-| 6 | Aucune **injection manuelle ORP** | `manualInjectOrp.active` |
-| 7 | **Aucune pompe énergisée** | `PumpController.isAnyPumpEnergized()` (**nouveau**, v2.18.8) |
-| 8 | **Uptime** ≥ `kAutoHealMinUptimeMs` (3 min) | `millis()` |
+| 3 | Aucune **injection manuelle pH** | `manualInjectPh.active` |
+| 4 | Aucune **injection manuelle ORP** | `manualInjectOrp.active` |
+| 5 | **Aucune pompe énergisée** | `PumpController.isAnyPumpEnergized()` (v2.18.8) |
+| 6 | **Uptime** ≥ `kAutoHealMinUptimeMs` (3 min) | `millis()` |
 
-La garde 7 est un **accesseur en lecture seule** ajouté à [`pump_controller.h`](../../src/pump_controller.h), fondé sur les **rapports cycliques PWM réels** (`pumpDuty[]`) : les indicateurs de dosage ne couvraient **que la régulation automatique** — une **injection manuelle** ou un **test de pompe** armé depuis la tâche web passait au travers. Aucun setter associé : cet accesseur n'influence **aucune** décision de dosage. Course bénigne assumée (lecture d'un octet, atomique sur Xtensa) : le pire cas est un contrôle **différé d'un tour de loop** — fail-closed.
+> ⚠️ **v2.36.0 (feature-094) — `isPhDosing()` et `isOrpDosing()` ont été RETIRÉS de cette conjonction** (ils en étaient les gardes 3 et 4). Motif : depuis la [porte de session pH](pump-controller.md#porte-de-session-ph-robuste-au-bruit-feature-094-v2360), ces prédicats suivent la **porte** et non le débit — ils restent donc vrais **pompe à l'arrêt**, jusqu'à `kPhSessionMaxWallMs` = **3 h**. Les conserver aurait rendu le détecteur de corruption du tas **aveugle des heures d'affilée**, dans un projet qui a déjà connu une boot-loop `lfs_alloc`. Ce qu'il faut protéger, c'est la **cadence des impulsions pendant qu'une pompe tourne** : `isAnyPumpEnergized()` (garde 5) le couvre **exactement**, et couvre en plus le test manuel armé depuis la tâche web, invisible des deux autres. **Confirmé par `pool-chemistry`**, dont le visa d'origine portait sur « une pompe tourne », jamais sur « une porte est ouverte ». Amendement porté à [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md).
+
+La garde 5 est un **accesseur en lecture seule** ajouté à [`pump_controller.h`](../../src/pump_controller.h), fondé sur les **rapports cycliques PWM réels** (`pumpDuty[]`) : les indicateurs de dosage ne couvraient **que la régulation automatique** — une **injection manuelle** ou un **test de pompe** armé depuis la tâche web passait au travers. Aucun setter associé : cet accesseur n'influence **aucune** décision de dosage. Course bénigne assumée (lecture d'un octet, atomique sur Xtensa) : le pire cas est un contrôle **différé d'un tour de loop** — fail-closed.
 
 **Retard maximal admissible** établi par `pool-chemistry` : **65 ms** (tolérance de 0,1 mL à 90 mL/min). Le plafond retenu est **20 ms** = **0,03 mL** — et, pompes à l'arrêt, ce retard n'affecte de toute façon aucun volume injecté.
+
+**Verrou de compilation neuf (v2.36.0)** : le parcours doit rester **sous 1 % du pouls minimal** — `static_assert(kHeapIntegrityMaxDurationUs × 100 ≤ kPulseMinMs × 1000)`, soit **20 ms contre 10 s = 0,2 %** (5× de marge sous la règle, 500× en ratio brut). L'argument chimique : le **rendement de pouls** ([ADR-0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md)) se mesure sur `usedMs`, compté **à partir de l'énergisation effective** — un pouls décalé dure la même chose et crédite le même volume. **Un retard décale, il ne sur-injecte pas.** Si le parcours s'approchait un jour de cette borne, le retard redeviendrait un sujet chimique.
 
 ### Action en cas de corruption détectée
 
@@ -485,7 +487,7 @@ Sinon, un `debug(...)` « Ré-annonce mDNS débouncée » trace l'oscillation ig
 | `kHeapRingEntries` | `128` | Capacité du ring de télémétrie heap (128 × 8 o = 1 Ko RTC noinit, v2.14.0) |
 | `kHeapRingSampleIntervalMs` | `2000` (2 s) | Cadence d'échantillonnage du ring depuis `loop()` |
 | `kHeapRingDumpMaxEntries` | `32` | Entrées dumpées au boot post-reset anormal (~64 s de cinétique, ~8 lignes) |
-| `kHeapIntegrityCheckIntervalMs` | `300000` (5 min) | Cadence du contrôle d'intégrité du tas (v2.18.8, sous les 8 gardes chimiques) |
+| `kHeapIntegrityCheckIntervalMs` | `300000` (5 min) | Cadence du contrôle d'intégrité du tas (v2.18.8, sous les **6** gardes chimiques — 8 avant la v2.36.0) |
 | `kHeapIntegrityWarnDurationUs` | `5000` (5 ms) | Durée au-delà de laquelle un WARN est émis (contrôle conservé) |
 | `kHeapIntegrityMaxDurationUs` | `20000` (20 ms) | Durée au-delà de laquelle le contrôle est **désactivé définitivement** |
 | `kHeap8LogIntervalMs` | `1800000` (30 min) | Cadence de la [trace de calibrage](#trace-de-calibrage-des-seuils-mémoire-v2190) « Heap 8bits: … » — **était `kHeapLogIntervalMs` = 5 min jusqu'en 2.20.1** (rétention du journal ramenée à ~30 min) |
@@ -519,7 +521,7 @@ Voir [MQTT.md](../MQTT.md#alertes).
 - **NVS indisponible au boot** : le disjoncteur history dégrade silencieusement (compteur lu à 0 → `Proceed`) — jamais de blocage du boot.
 - **Échec de l'effacement de la partition** (`esp_partition_erase_range != ESP_OK`) : log CRIT « échec de l'effacement », pas d'alerte MQTT (flag non posé), le montage est tenté quand même.
 - **Crash non-FS pendant la fenêtre d'init history** : 2 occurrences consécutives effacent l'historique à tort — trade-off assumé ([ADR-0031](../adr/0031-disjoncteur-bootloop-history.md)).
-- **Dosage permanent ou pompe énergisée en continu** : le contrôle d'intégrité du tas n'est **jamais** exécuté tant qu'une des 8 gardes est fermée (fail-closed) — la détection de corruption est **différée**, jamais forcée. Le bit 4 « intégrité jamais exécutée » du post-mortem le signale au boot suivant.
+- **Pompe énergisée en continu** : le contrôle d'intégrité du tas n'est **jamais** exécuté tant qu'une des 6 gardes est fermée (fail-closed). ⚠️ Depuis la v2.36.0, une **session de dosage ouverte ne le bloque plus** — seule une pompe **réellement énergisée** le fait — la détection de corruption est **différée**, jamais forcée. Le bit 4 « intégrité jamais exécutée » du post-mortem le signale au boot suivant.
 - **Contrôle d'intégrité trop long** (> `kHeapIntegrityMaxDurationUs`) : désactivation **définitive** jusqu'au reboot, avec WARN one-shot — le contrôle ne devient jamais lui-même une source de gigue.
 
 ## Fichiers liés

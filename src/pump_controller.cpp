@@ -326,6 +326,23 @@ void PumpControllerClass::refreshDosingState(DosingState& state, unsigned long n
 // warning "Limite cycles atteinte" (effets de bord) ; délègue le verdict pur à
 // shouldStartDosingPure().
 bool PumpControllerClass::shouldStartDosing(float error, float startThreshold, DosingState& state, unsigned long now) {
+  tickDosingCycleDay(state, now);
+  return shouldStartDosingPure(error, startThreshold, state.cyclesToday,
+                               pumpProtection.maxCyclesPerDay);
+}
+
+// EFFETS DE BORD JOURNALIERS de la porte de démarrage, extraits de
+// shouldStartDosing (feature-094) : rollover 24 h du compteur de cycles et
+// warning throttlé « limite atteinte ». Comportement STRICTEMENT inchangé.
+//
+// POURQUOI L'EXTRACTION : le pH ne passe plus par shouldStartDosing (sa porte de
+// session est désormais phSessionGate, sur le signal lent). Or ce rollover est le
+// SEUL endroit qui remet `phDosingState.cyclesToday` à zéro en régulation
+// automatique — le laisser dans une fonction devenue morte pour le pH aurait
+// figé le compteur de cycles à sa valeur du jour, jusqu'à ce que
+// `maxCyclesPerDay` ferme définitivement la régulation. L'ORP, lui, continue
+// d'appeler shouldStartDosing et retrouve exactement le même effet.
+void PumpControllerClass::tickDosingCycleDay(DosingState& state, unsigned long now) {
   // Réinitialiser le compteur de cycles chaque jour
   if (state.cyclesDayStart == 0 || now - state.cyclesDayStart >= 86400000UL) {
     state.cyclesToday = 0;
@@ -340,9 +357,6 @@ bool PumpControllerClass::shouldStartDosing(float error, float startThreshold, D
       lastWarning = now;
     }
   }
-
-  return shouldStartDosingPure(error, startThreshold, state.cyclesToday,
-                               pumpProtection.maxCyclesPerDay);
 }
 
 // COQUILLE (feature-036) : délègue à shouldContinueDosingPure().
@@ -369,6 +383,8 @@ void PumpControllerClass::closePhDosingSession(unsigned long now, const char* re
   phDosingState.active = false;
   phDosingState.lastStopTime = now;
   _phSessionFromAuto = false;  // plus de session automatique ouverte
+  // feature-094 : la prochaine session devra comptabiliser SON premier débit réel.
+  _phCycleCounted = false;
   // feature-025 : la pause mélange s'arme à la FIN DE SESSION (homogénéisation
   // post-dose) — jamais entre deux pouls d'une même session.
   notifyPhDose((uint32_t)now);
@@ -2939,6 +2955,9 @@ void PumpControllerClass::update() {
       if (phDosingState.active) notifyPhDose((uint32_t)now);
       phDosingState.active = false;
       orpDosingState.active = false;
+      // feature-094 : même remise à zéro que closePhDosingSession — la session
+      // suivante doit comptabiliser son propre premier débit réel.
+      _phCycleCounted = false;
     }
     // Ne pas arrêter les pompes en mode manuel (test développement)
     if (!manualMode[0]) applyPumpDuty(0, 0);
@@ -3040,6 +3059,25 @@ void PumpControllerClass::update() {
   const float phSignedError = (mqttCfg.phCorrectionType == "ph_plus")
                                   ? (mqttCfg.phTarget - phMeasured)
                                   : (phMeasured - mqttCfg.phTarget);
+  // ===== feature-094 : SIGNAL LENT DE DÉCISION DE SESSION pH =================
+  // MÊME point de passage et MÊME contrat que le tick intégral ci-dessous : hors
+  // de toute conjonction d'éligibilité, après la garde de présence d'eau,
+  // loopTask, écrivain unique, aucun mutex. La porte de session doit continuer de
+  // mûrir pendant les pauses de mélange et les suspensions de limite horaire —
+  // sinon la fenêtre de 10 min ne serait jamais pleine là où elle sert le plus.
+  //
+  // Le filtre se ré-amorce SEUL sur une filtrée non finie : c'est exactement ce
+  // que produit une reprise de filtration (SensorFilter::rearm vide la fenêtre
+  // médiane, cf. sensor_filter.h) — aucune décision ne sera prise avant que
+  // 10 min d'échantillons POST-reprise ne soient accumulés (condition C2).
+  //
+  // Ce tick n'est PAS une décision de dosage : il ne fait qu'entretenir une
+  // moyenne. Toute la porte est dans phSessionGate(), consommée plus bas par la
+  // seule branche automatique.
+  phDecisionTick(_phDecision, phMeasured, (uint32_t)now, kPhDecisionWindowMs);
+  _phDecisionError = (mqttCfg.phCorrectionType == "ph_plus")
+                         ? (mqttCfg.phTarget - _phDecision.value)
+                         : (_phDecision.value - mqttCfg.phTarget);
   // ===== feature-085 : DOSE DE BASE APPRISE (feedforward) ====================
   // Évalué AVANT le tick intégral — ORDRE IMPÉRATIF (condition n°4 du visa) :
   // l'anti-windup du PI retranche le débit FF de son soutenable dans le MÊME
@@ -3091,11 +3129,40 @@ void PumpControllerClass::update() {
     // fermeture, mémorisé pour le log d'arrêt ; nullptr = pas de plafonnement.
     const char* phCapReason = nullptr;
 
-    if (phWasActiveTick) {
-      // Déjà en cours : vérifier si on continue. Itération 2 : la garde de
-      // temps minimum raisonne en temps POMPE-ON cumulé de la session.
-      shouldDose = shouldContinueDosing(error, pumpProtection.phStopThreshold, _sessionOnMs[0]);
+    // ===== feature-094 : VERDICT UNIQUE DE PORTE DE SESSION ===================
+    // Les DEUX décisions d'hystérésis (démarrage / poursuite) ET le choix de la
+    // bande morte du PI sortent désormais d'UN SEUL appel, sur le SEUL signal
+    // lent. C'est le cœur du lot : la régression v2.26.0 (« la session ne se
+    // referme jamais ») venait de la divergence entre une porte écrite ici et une
+    // bande morte écrite 100 lignes plus bas. Un seul point de vérité la rend
+    // structurellement impossible à réintroduire.
+    //
+    // GARDES PRIORITAIRES (condition C1) : ce verdict n'est atteint QUE si toute
+    // la conjonction d'éligibilité ci-dessus est vraie (mode, limite horaire,
+    // quota journalier, gardes pH, canDose : watchdog, eau, capteur, cycles,
+    // anti-rafale). Une garde qui tombe court-circuite la branche et la session
+    // est refermée sans condition par le bloc de fin d'update() — la durée
+    // minimale de session ne s'y oppose JAMAIS.
+    PhGateIn gin;
+    gin.wasOpen       = phWasActiveTick;
+    gin.liveError     = error;
+    gin.decisionError = _phDecisionError;
+    gin.decisionReady = _phDecision.primed;
+    gin.startThr      = pumpProtection.phStartThreshold;
+    gin.stopThr       = pumpProtection.phStopThreshold;
+    gin.sessionOnMs   = (uint32_t)_sessionOnMs[0];
+    // Durée MURALE de la session (wrap-safe). Base inconnue ⇒ 0 : la prolongation
+    // reste alors bornée par le second terme (pompe-ON) de phSessionGate.
+    gin.sessionWallMs = (_phSessionStartMs != 0) ? ((uint32_t)now - _phSessionStartMs) : 0;
+    gin.minSessionMs  = (uint32_t)kPhSessionMinWallMs;
+    const PhGateOut phGate = phSessionGate(gin);
+    shouldDose = phGate.open;
+    // Effets de bord de l'ancienne porte de démarrage, conservés à l'identique :
+    // sans cet appel, `phDosingState.cyclesToday` ne serait plus jamais remis à
+    // zéro en automatique (cf. tickDosingCycleDay).
+    tickDosingCycleDay(phDosingState, now);
 
+    if (phWasActiveTick) {
       // ===== PLAFOND DE SESSION — restaure la pause mélange =====================
       // LE DÉFAUT REFERMÉ ICI. Depuis l'alignement de la bande morte sur
       // l'hystérésis (bande = phStopThreshold session ouverte), le PI se parque
@@ -3116,9 +3183,11 @@ void PumpControllerClass::update() {
       //     (critère chimique, se déclenche d'autant plus vite qu'on corrige fort) ;
       //   - durée murale : borne la PÉREMPTION de l'hypothèse d'homogénéité, y
       //     compris en régime établi où la pompe ne tourne que ~10 % du temps.
-      // Le plafond est évalué APRÈS shouldContinueDosing et le RECOUVRE : il prime
-      // donc sur le forçage de temps minimum d'injection — sans conflit possible,
-      // le plafond valant deux ordres de grandeur de plus (static_assert dédié).
+      // Le plafond est évalué APRÈS la porte de session et la RECOUVRE : il prime
+      // donc sur la durée minimale de session (feature-094) comme il primait sur
+      // le forçage de temps minimum d'injection — sans conflit possible, le
+      // plafond valant deux ordres de grandeur de plus (static_assert dédiés :
+      // kPhSessionMinWallMs + kPhMixingDelayMs <= kPhSessionMaxWallMs).
       if (shouldDose) {
         const uint32_t sessionWallMs = (uint32_t)now - _phSessionStartMs;
         if (_sessionOnMs[0] >= kPhSessionMaxOnMs) {
@@ -3128,9 +3197,6 @@ void PumpControllerClass::update() {
         }
         if (phCapReason != nullptr) shouldDose = false;
       }
-    } else {
-      // Arrêté : vérifier si on démarre
-      shouldDose = shouldStartDosing(error, pumpProtection.phStartThreshold, phDosingState, now);
     }
     const bool phStartDecided = !phWasActiveTick && shouldDose;
 
@@ -3216,8 +3282,13 @@ void PumpControllerClass::update() {
       // vers la charge (≈ 46 % du plafond) au lieu de saturer, et le volume total
       // injecté est INCHANGÉ — à l'équilibre il vaut la charge du bassin, quelle
       // que soit la position de la bande morte (bilan de matière).
-      const float phDeadband = phWasActiveTick ? pumpProtection.phStopThreshold
-                                               : pumpProtection.phStartThreshold;
+      //
+      // feature-094 : cette bande morte n'est PLUS calculée ici. Elle sort du
+      // MÊME appel que la porte de session (phSessionGate) — même règle
+      // (`session ouverte ? stopThreshold : startThreshold`), mais un seul point
+      // de vérité : porte et bande morte ne peuvent plus diverger, ce qui est
+      // précisément le mécanisme du défaut décrit ci-dessus.
+      const float phDeadband = phGate.deadband;
       // feature-085 : le PI ne dispose que de l'amplitude RESTANTE après le
       // feedforward — les deux termes sont des débits INSTANTANÉS, la
       // soustraction est donc dimensionnellement correcte ici (le pendant MOYEN,
@@ -3235,6 +3306,24 @@ void PumpControllerClass::update() {
       // première période d'impulsion, c'est tout l'objet de la feature.
       flow += phFfFlow;
       if (flow > phAmpFlow) flow = phAmpFlow;
+
+      // ===== feature-094 (C7) : PLAFOND DE DÉBIT PENDANT LA PROLONGATION ======
+      // LE SEUL VRAI DANGER DE LA DURÉE MINIMALE DE SESSION. Sans ce bloc,
+      // `flow += phFfFlow` servirait le feedforward AVEUGLÉMENT pendant toute la
+      // prolongation : la dose de base est un débit CONSTANT, insensible à
+      // l'erreur — elle continuerait d'acidifier un bassin déjà revenu à la
+      // consigne, jusqu'à 30 min durant.
+      //   - signal lent ≤ phStopThreshold : le PI est déjà annulé par la bande
+      //     morte, le plafond interdit que PI + FF dépasse le FF SEUL ;
+      //   - signal lent ≤ 0 (bassin sous la consigne) : débit NUL, la porte reste
+      //     ouverte (c'est la porte, pas le débit, que L3 maintient).
+      // Le régime est porté par le verdict de porte : une seule évaluation du
+      // signal lent, aucun seuil recopié ici.
+      if (phGate.reason == kPhGateHoldCapped) {
+        if (flow > phFfFlow) flow = phFfFlow;
+      } else if (phGate.reason == kPhGateHoldZero) {
+        flow = 0.0f;
+      }
     }
 
     // --- Ordonnanceur d'impulsions (proportionnel de temps, pulse_dosing_logic) ---
@@ -3297,7 +3386,12 @@ void PumpControllerClass::update() {
       }
     }
 
-    if (flow > 0.0f && _pulseSession[0]) {
+    // DÉBIT RÉELLEMENT COMMANDÉ ce tour — distinct de la SESSION depuis
+    // feature-094 (cf. le latch ci-dessous). C'est lui, et lui seul, qui sert de
+    // prédicat à la comptabilisation de cycle : sinon les « cycles fantômes »
+    // (bug-dosage-fantome, défaut n°2) reviendraient par la porte.
+    const bool phFlowActive = (flow > 0.0f && _pulseSession[0]);
+    if (phFlowActive) {
       PulseTick tk = tickPulse(_pulseState[0], now32, kPulsePeriodMs,
                                _pulseMs[0], kPulseKickMs);
       _pulseState[0] = tk.next;
@@ -3307,10 +3401,24 @@ void PumpControllerClass::update() {
         uint8_t duty = tk.kickPhase ? MAX_PWM_DUTY : phAmpDuty;
         if (duty > desiredDuty[phPumpIdx]) desiredDuty[phPumpIdx] = duty;
       }
-      // `active` = SESSION en cours (la pompe n'est alimentée que pendant les
-      // pouls) — les impulsions internes ne comptent ni cycle ni anti-rafale.
-      phActive = true;
       phFlow = flow;
+    }
+
+    // ===== feature-094 : LA SESSION VIT SUR LA PORTE, PLUS SUR LE DÉBIT =======
+    // `phActive` latchait sur `flow > 0`. Une session se refermait donc dès que
+    // le PI retombait dans sa bande morte — c'est-à-dire au premier creux de
+    // bruit — et chaque fermeture armait 15 min de pause mélange pendant
+    // lesquelles le dosage est interdit et le feedforward retenu.
+    // Le latch suit maintenant le verdict de PORTE : pendant la prolongation
+    // (durée minimale, débit plafonné au FF ou nul par C7), la session reste
+    // OUVERTE, pompe à l'arrêt. C'est exactement ce que L3 achète.
+    //
+    // FAIL-CLOSED CONSERVÉ : `shouldDose` porte encore tous les refus avals —
+    // plafond de session, pompe non caractérisée (evaluatePulseGate) — et un
+    // refus de plan referme aussi la session. Aucune de ces fermetures ne
+    // consulte la durée minimale (condition C1).
+    if (shouldDose && !phPlanRefused) {
+      phActive = true;
       // v2.26.0 (revue, bloquant n°2) : PROPRIÉTÉ de la session — c'est la branche
       // AUTOMATIQUE qui la porte. Consommé par la garde de fermeture hors branche
       // en fin d'update() (cf. _phSessionFromAuto).
@@ -3324,8 +3432,29 @@ void PumpControllerClass::update() {
       // v2.26.0 : la fermeture (état + pause mélange + log) est CENTRALISÉE dans
       // closePhDosingSession() — même rituel ici et sur les chemins de suspension
       // hors branche, plus aucune fin de session silencieuse.
-      closePhDosingSession(now, phCapReason != nullptr ? phCapReason
-                                                       : "erreur résorbée");
+      // feature-094 : le motif dit désormais LEQUEL des trois chemins de porte a
+      // refermé la session — un « erreur résorbée » unique ne distinguait plus un
+      // arrêt normal d'un sous-dépassement franc ni d'un ré-amorçage du signal.
+      const char* phCloseReason = phCapReason;
+      if (phCloseReason == nullptr) {
+        switch (phGate.reason) {
+          case kPhGateClosedUndershoot:
+            phCloseReason = "sous-dépassement du signal lent (pH passé sous la consigne)";
+            break;
+          case kPhGateClosedNotReady:
+            phCloseReason = "signal lent de décision ré-amorcé (mesure non représentative)";
+            break;
+          case kPhGateClosedResolved:
+            phCloseReason = "erreur résorbée (signal lent, durée minimale écoulée)";
+            break;
+          default:
+            // Porte encore ouverte : la fermeture vient d'un refus aval (pompe non
+            // caractérisée, plan invalide) — libellé historique conservé.
+            phCloseReason = "erreur résorbée";
+            break;
+        }
+      }
+      closePhDosingSession(now, phCloseReason);
       phSessionClosed = true;
     }
 
@@ -3357,9 +3486,17 @@ void PumpControllerClass::update() {
     // passe donc jamais ici. Idem pour le refus de gate (phGateRefused) : il a
     // déjà son critical dédié. Le streak reste réservé aux VRAIS cas anormaux
     // (PID muet plusieurs tours).
+    // feature-094 : le prédicat du streak devient « SESSION OUVERTE, porte
+    // demandant le PLEIN débit, et pourtant aucun débit commandé ». Il ne peut
+    // plus s'appuyer sur `phStartDecided` : la session vivant désormais sur la
+    // porte, la décision de démarrage n'est vraie qu'UN tour et le streak ne
+    // dépasserait jamais 1 — le signal serait perdu. Les régimes plafonné et nul
+    // de la prolongation (C7) sont EXCLUS : y commander zéro débit est le
+    // comportement voulu, pas une anomalie.
     static uint16_t phNoFlowStreak = 0;
     static unsigned long phNoFlowWarnMs = 0;
-    if (phStartDecided && !phActive && !phPlanRefused && !phGateRefused) {
+    if (phActive && !phFlowActive && phGate.reason == kPhGateHoldFull &&
+        !phPlanRefused && !phGateRefused) {
       if (phNoFlowStreak < 0xFFFF) ++phNoFlowStreak;
       if (phNoFlowStreak >= kDosingNoFlowWarnStreak &&
           (phNoFlowWarnMs == 0 || now - phNoFlowWarnMs >= kDosingNoFlowWarnIntervalMs)) {
@@ -3369,20 +3506,38 @@ void PumpControllerClass::update() {
             String(phNoFlowStreak) + " tours — régulation sans effet (boucle trop "
             "lente, ou consigne sous le plancher de duty). Erreur=" + String(error, 3));
       }
-    } else if (phActive) {
+    } else if (phFlowActive) {
       phNoFlowStreak = 0;  // un débit a bien été commandé : rien à signaler
     }
 
-    if (evaluateCycleStartAccounting(phWasActiveTick, phStartDecided, phActive)
-            .countCycleStart) {
+    // feature-094 : le cycle est comptabilisé au PREMIER DÉBIT RÉEL de la
+    // session, et une seule fois par session (`_phCycleCounted`). L'invariant
+    // « un cycle compté ⇔ un cycle réellement démarré » est préservé, mais son
+    // écriture change : la porte pouvant ouvrir la session plusieurs tours avant
+    // que le PI ne produise un débit, `phStartDecided` (vrai un seul tour) ne
+    // peut plus servir de témoin — le cycle ne serait alors JAMAIS compté et la
+    // comptabilité de sécurité (cyclesToday, ring anti-rafale) deviendrait
+    // aveugle. Le témoin est remis à zéro par closePhDosingSession().
+    // Revue (mineur) : l'appel à evaluateCycleStartAccounting était dégénéré
+    // (wasActive = _phCycleCounted, startDecided = !_phCycleCounted) — il se
+    // réduisait à l'expression ci-dessous, et le nommage des paramètres induisait
+    // en erreur. Écrit tel quel : un cycle est compté UNE fois par session, au
+    // PREMIER DÉBIT RÉEL (pas à l'ouverture de porte, qui peut ne rien injecter).
+    if (!_phCycleCounted && phFlowActive) {
+      _phCycleCounted = true;
       phDosingState.lastStartTime = now;
       phDosingState.cyclesToday++;
       // Anti-rafale Pass 3.5 : on enregistre le timestamp de start dans le
       // ring buffer pour les fenêtres glissantes 1 min / 15 min (cf. canDose()).
       recordDosingCycleStart(0);
+      // Revue (mineur) : l'erreur LENTE est ce qui a réellement décidé
+      // l'ouverture de la porte ; n'afficher que l'erreur instantanée pouvait
+      // montrer une valeur SOUS le seuil de démarrage et envoyer le prochain
+      // diagnostic sur une fausse piste. Les deux sont donc journalisées.
       systemLogger.info("Démarrage dosage pH (auto): pH=" + String(sensors.getPhFiltered(), 2) +
         " cible=" + String(mqttCfg.phTarget, 2) +
         " erreur=" + String(error, 3) +
+        " erreur_lente=" + String(_phDecisionError, 3) +
         " (cycle " + String(phDosingState.cyclesToday) + "/" + String(pumpProtection.maxCyclesPerDay) + ")");
     }
   } else if (phMode == "scheduled" && phLimitOk && phSafetyOk &&
@@ -4129,6 +4284,17 @@ void PumpControllerClass::update() {
     _pulseCarryMl[0] = 0.0f;
     _carryPulseLogged[0] = false;
     _phSessionStartMs = 0;  // plus de session ouverte : base du plafond invalidée
+    // feature-094 (revue, bloquant n°1) : c'est LE point de passage qui voit
+    // TOUTES les fermetures, y compris celles qui n'appellent pas
+    // closePhDosingSession(). Chemin de fuite trouvé en revue : session auto
+    // avec cycle déjà compté -> bascule en « Programmée » dans un tour où la
+    // demande est vraie (phActive reste vrai, donc pas de fermeture) -> fin de
+    // fenêtre programmée -> fermeture ici seulement, _phSessionFromAuto étant
+    // déjà faux. Sans cette ligne, _phCycleCounted restait VRAI et la session
+    // automatique suivante ne comptait AUCUN cycle : ni cyclesToday++, ni
+    // recordDosingCycleStart (anneau anti-rafale), ni log de démarrage — une
+    // garde chimique sous-comptée en silence.
+    _phCycleCounted = false;
   }
   if (!orpActive) {
     _pulseSession[1] = false;

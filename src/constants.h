@@ -945,6 +945,42 @@ constexpr unsigned long kPhMixingDelayMs         = 900000UL;  // 15 min — paus
 constexpr unsigned long kOrpMixingDelayMs        = 1200000UL; // 20 min — pause mélange ORP
 
 // ============================================================================
+// SEUILS D'HYSTÉRÉSIS pH — PROMUS EN CONSTANTES (feature-094, condition C9)
+// ============================================================================
+// Ces deux valeurs vivaient UNIQUEMENT comme initialiseurs de PumpProtection
+// (config.h). Vérification faite avant promotion : elles ne sont JAMAIS relues
+// depuis la NVS ni exposées par l'API (/get-config, /save-config) — ce sont donc
+// de facto des constantes de compilation, et non des réglages vivants. Les
+// promouvoir ici permet de VERROUILLER par static_assert la cohérence entre la
+// largeur de la bande de décision et le bruit résiduel du signal lent, au lieu
+// d'une garde d'exécution qui ne protégerait rien.
+//
+// Piège documenté du projet (« config d'usine ≠ config vivante ») : si un jour
+// ces seuils devenaient réglables, ces static_assert cesseraient de faire foi et
+// il faudrait leur substituer un bornage à l'enregistrement.
+//
+// RÔLE, INCHANGÉ depuis v2.26.0 (condition C3 du gate feature-094) :
+//   - kPhStartThresholdDefault : seuil d'OUVERTURE de session ET bande morte de
+//     computePidPure session fermée ;
+//   - kPhStopThreshold : seuil de FERMETURE, bande morte session ouverte, et
+//     CIBLE de l'intégrande `(erreur − phStopThreshold)` (ph_integral_logic.h).
+// Le point d'équilibre du bassin reste `consigne + kPhStopThreshold` : la porte
+// de session robuste au bruit ne le déplace pas d'un millième de pH.
+constexpr float kPhStartThresholdDefault = 0.05f;  // pH — démarrage de session
+constexpr float kPhStopThreshold         = 0.01f;  // pH — arrêt de session / cible du PI
+
+// Le signal lent de décision (feature-094) a un bruit résiduel σ ≈ 0,020 après
+// moyennage sur kPhDecisionWindowMs. Une bande de décision plus étroite que 2σ
+// serait de nouveau franchie par le seul bruit — c'est exactement le défaut que
+// la feature corrige.
+static_assert(kPhStartThresholdDefault - kPhStopThreshold >= 0.04f,
+              "Bande de decision sous le bruit residuel du signal lent (sigma 0,020)");
+// Un seuil d'arrêt nul rendrait le point fixe de l'intégration inatteignable ;
+// au-delà de 0,05 il vaudrait le seuil de démarrage (hystérésis dégénérée).
+static_assert(kPhStopThreshold > 0.0f && kPhStopThreshold <= 0.05f,
+              "Seuil d'arret pH hors plage exploitable (0 < stop <= 0,05)");
+
+// ============================================================================
 // RÉGULATION pH — TERME INTÉGRAL (v2.26.0, gate pool-chemistry GO/conditions)
 // ============================================================================
 // LEVÉE de `Ki = 0` (feature-025) sur le SEUL pH. Ki_ORP reste 0 (hors périmètre)
@@ -1835,6 +1871,24 @@ constexpr uint32_t kPulsePeriodMs = 60000;   // 1 min — période d'impulsion
 // fixe (24 pouls de 5 s contre 12 de 10 s, à temps de pompe égal) reste due, et
 // le modèle de comptage devra être corrigé ensuite. Voir feature-078.
 constexpr uint32_t kPulseMinMs = 10000;      // 10 s — pouls minimal
+
+// feature-094 (condition n°2 du gate pool-chemistry) : le parcours d'intégrité
+// du tas s'exécute INTERRUPTIONS COUPÉES et peut désormais s'intercaler juste
+// avant l'énergisation d'une pompe — isPhDosing()/isOrpDosing() ont été retirés
+// de sa garde (main.cpp), car depuis feature-094 ils suivent la PORTE et non le
+// débit, ce qui aurait rendu le détecteur aveugle jusqu'à 3 h d'affilée.
+// Le décalage induit est sans effet chimique TANT QU'il reste négligeable devant
+// le pouls minimal : le rendement de pouls (ADR-0051) se mesure sur usedMs,
+// compté à partir de l'énergisation EFFECTIVE, donc un pouls décalé dure la même
+// chose et crédite le même volume. On verrouille ici la marge : le parcours doit
+// rester sous 1 % du pouls minimal (aujourd'hui 20 ms contre 10 s, soit 500×).
+// Si un jour il s'en approche, le retard redevient un sujet chimique.
+// NOTE : comparaison ramenée aux microsecondes des DEUX côtés — l'expression
+// proposée en revue comparait des µs à des ms.
+static_assert((uint64_t)kHeapIntegrityMaxDurationUs * 100ULL <=
+                  (uint64_t)kPulseMinMs * 1000ULL,
+              "Parcours d'integrite du tas trop long devant le pouls minimal : "
+              "le decalage d'energisation cesse d'etre negligeable (gate 094)");
 // Kick de décollage : pleine puissance (duty 255) en tête de chaque pouls pour
 // vaincre le couple de démarrage à froid (symptôme terrain : rotation entretenue
 // OK à duty 82 mais NON-démarrage au même duty). Volume du kick comptabilisé au
@@ -2123,8 +2177,15 @@ constexpr unsigned int kCyclesPerDayMax = 60;  // plafond : sous la cadence phys
 //   - régime établi (~10 % de marche) : c'est le critère mural qui tranche ⇒
 //     24 h / (3 h + 15 min) ≈ 7 démarrages/jour, très en deçà du plancher de 10.
 // La pause mélange coûte au plus 15 min / 3 h 15, soit 7,7 % du temps de dosage :
-// l'excursion de pH pendant la pause (~0,09 pH à la charge mesurée) reste sous le
-// seuil de DÉMARRAGE + sa marge, donc la reprise est immédiate et sans à-coup.
+// l'excursion de pH pendant la pause reste sous le seuil de DÉMARRAGE + sa marge,
+// donc la reprise est immédiate et sans à-coup.
+// CHIFFRE CORRIGÉ (gate pool-chemistry, feature-094, 05/09/2026) : cette excursion
+// valait « ~0,09 pH » ici depuis l'origine. Les données la RÉFUTENT — bilan matière
+// 1,35 mL/min × 15 min × 0,0004 pH/mL = 0,008 pH, et la pause sans injection de
+// 50 min du 03/09 ne montre aucune montée (−0,02 ± 0,02). Le 0,09 dérivait d'une
+// charge de 2,86 mL/min ; la charge réellement mesurée est de 1,35 mL/min (966 mL
+// sur ~12 h le 03/09, 661 mL sur ~8 h le 04/09). NE PAS réutiliser 0,09 comme
+// budget d'excursion : ce serait s'autoriser cinq fois la réalité.
 constexpr unsigned long kPhSessionMaxOnMs   = 3600000UL;   // 60 min de POMPE-ON cumulé
 constexpr unsigned long kPhSessionMaxWallMs = 10800000UL;  // 3 h de session (temps mural)
 
@@ -2161,6 +2222,70 @@ static_assert(86400000UL / (kPhSessionMaxOnMs + kPhMixingDelayMs) < 24UL,
 // pour que la pause reste marginale devant le temps de dosage.
 static_assert(kPhSessionMaxWallMs >= 8UL * kPhMixingDelayMs,
               "Session murale trop courte devant la pause mélange (hachage des sessions)");
+
+// ============================================================================
+// PORTE DE SESSION pH ROBUSTE AU BRUIT (feature-094 / v2.36.0 — gate
+// pool-chemistry « GO sous conditions » du 05/09/2026)
+// ============================================================================
+// Le POURQUOI complet est dans src/ph_session_logic.h. Résumé chiffré : la
+// filtrée bruite à σ = 0,043 sur 60 s (crête-à-crête 15 min ≈ 0,150) pour une
+// bande de décision de 0,05/0,01 — près de la consigne, c'est le BRUIT qui ouvre
+// et ferme les sessions. Caractérisation du gate : τc ≈ 50 s, période dominante
+// ≈ 5 min ⇒ processus quasi blanc ⇒ moyenner marche.
+
+// L1 — FENÊTRE DU SIGNAL LENT DE DÉCISION. 10 min ramènent σ à ≈ 0,017 pour
+// ≈ 7 min de retard de décision, ce qui reste très en deçà de la pause mélange
+// (15 min) déjà tolérée par conception. Sert AUSSI de durée de remplissage :
+// aucune décision n'est prise tant que la fenêtre n'est pas pleine
+// d'échantillons post-reprise de filtration (le transitoire du 04/09 a duré
+// 40 min).
+constexpr uint32_t kPhDecisionWindowMs = 600000UL;  // 10 min
+
+// C4 — MARGE DE FERMETURE DE PORTE. La porte ferme sur
+// `signal lent < phStopThreshold − 0,03`, soit −0,02 : il faut une descente
+// FRANCHE sous la consigne pour refermer, alors que l'ouverture reste inchangée
+// à `> phStartThreshold`. Cette marge ne touche PAS la bande d'actionnement
+// (bande morte du PI) : le point d'équilibre reste `consigne + phStopThreshold`.
+constexpr float kPhDoorCloseMarginPh = 0.03f;
+
+// L3/C5 — DURÉE MINIMALE DE SESSION, en temps MURAL. Une session ouverte ne se
+// referme pas sur un creux de bruit : elle tient 30 min murales, sauf garde
+// (C1, priorité absolue) et sauf sous-dépassement franc (C6, ci-dessous).
+// POURQUOI MURAL ET NON POMPE-ON : au rapport cyclique mesuré près de la
+// consigne (3,4-5,3 %), 30 min de pompe-ON dureraient ~10 h murales — la borne
+// serait inatteignable et la durée minimale, décorative.
+// Sur-injection bornée : pendant la prolongation le débit est plafonné au
+// feedforward (2,60 mL/min sur la config vivante, C7) puis annulé dès que le
+// signal lent passe sous la consigne. Sous-dépassement pire cas calculé par le
+// gate : −0,058 pH → 7,242, au-dessus du plancher acide 7,20.
+constexpr unsigned long kPhSessionMinWallMs = 1800000UL;  // 30 min murales
+
+// C6 — PLANCHER DE SOUS-DÉPASSEMENT. Le signal LENT passé sous −0,05 n'est plus
+// du bruit : le bassin est franchement de l'autre côté de la consigne ⇒
+// fermeture immédiate, qui PRIME sur la durée minimale. Identique par
+// construction au latch défavorable du feedforward (kPhFfAdverseErrorPh) :
+// deux organes qui constatent le même événement physique ne doivent pas le
+// constater à deux valeurs différentes (static_assert d'identité ci-dessous).
+constexpr float kPhSessionUndershootFloorPh = 0.05f;
+
+// --- Verrous de cohérence (condition C12 du gate) ---------------------------
+// La durée minimale + sa pause mélange doivent tenir DANS le plafond mural,
+// sinon le plafond couperait des sessions que la durée minimale prolonge encore.
+static_assert(kPhSessionMinWallMs + kPhMixingDelayMs <= kPhSessionMaxWallMs,
+              "Duree minimale + pause melange depassent le plafond mural de session");
+// Une session doit durer au moins deux fenêtres de décision : en deçà, elle se
+// refermerait avant que le signal lent ait pu constater l'effet du dosage.
+static_assert(kPhSessionMinWallMs >= 2UL * (unsigned long)kPhDecisionWindowMs,
+              "Duree minimale de session sous deux fenetres du signal lent");
+// Identité EXIGÉE avec le seuil défavorable du feedforward (cf. ci-dessus).
+static_assert(kPhSessionUndershootFloorPh == kPhFfAdverseErrorPh,
+              "Plancher de sous-depassement desaccorde du latch defavorable du feedforward");
+// La marge de fermeture doit être strictement positive (sinon la porte
+// refermerait au point de coupure exact, régression v2.26.0) et rester très en
+// deçà de la marge de purge sèche de l'intégrale (0,10), qui décrit un TOUT
+// AUTRE événement (perturbation externe franche).
+static_assert(0.0f < kPhDoorCloseMarginPh && kPhDoorCloseMarginPh < kPhIntegralResetMargin,
+              "Marge de fermeture de porte hors plage (0 < marge < kPhIntegralResetMargin)");
 
 // Répartition du volume quotidien du mode "scheduled" (feature-011).
 // Le volume restant est réparti uniformément par fenêtres de 15 min sur

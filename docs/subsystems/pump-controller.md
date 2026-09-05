@@ -40,6 +40,11 @@ bool isMaintenanceInhibited() const;
 // (véhicule de l'assistant). Écrit en contexte web async, consommé par update()
 void setFlowAssistSuspend(bool suspend);
 bool isFlowAssistSuspended() const;
+// ⚠️ v2.36.0 — SENS CHANGÉ : isPhDosing() dit « une SESSION est ouverte », plus
+// « la pompe tourne ». Depuis feature-094 le verrou de session suit la PORTE et
+// non le débit : il reste vrai POMPE À L'ARRÊT pendant une prolongation (jusqu'à
+// kPhSessionMaxWallMs = 3 h). Voir « Porte de session pH robuste au bruit ».
+// Pour « la pompe est alimentée maintenant » : calendrier d'impulsion (ADR-0045).
 bool isPhDosing() const;
 bool isOrpDosing() const;
 unsigned long getPhUsedMs() const;
@@ -273,6 +278,8 @@ Lecture seule **STRICTE** de l'utilisabilité de la pompe ([`pump_controller.h`]
    **Zone morte** : le paramètre `deadband` passé à `computePID()` est le **seuil de démarrage existant** (`phStartThreshold` / `orpStartThreshold`) — **un seul** deadband fait foi, aucun second seuil dupliqué. Si `|error| < deadband` → sortie forcée à 0 **et** intégrale figée.
    >
    > ⚠️ **v2.26.0 — côté pH, la bande morte suit désormais l'HYSTÉRÉSIS.** Elle valait *toujours* `phStartThreshold` (0,05), y compris pendant une session **déjà ouverte**, alors que `shouldContinueDosing` poursuit jusqu'à `phStopThreshold` (0,01) : la plage `]0,01 ; 0,05]` était une **session vivante à débit nul**, et le seuil d'arrêt réellement appliqué était 0,05. La valeur passée est maintenant `phWasActiveTick ? phStopThreshold : phStartThreshold`. Le côté ORP est **inchangé**.
+   >
+   > ⚠️ **v2.36.0 — côté pH, ce choix de bande morte n'est plus écrit ici.** Il est rendu **par le même appel** que le verdict de porte (`phSessionGate()`, [Porte de session pH robuste au bruit](#porte-de-session-ph-robuste-au-bruit-feature-094-v2360)) : un seul point de vérité, pour que bande morte et hystérésis ne puissent plus diverger. **Les valeurs et le rôle sont inchangés** (déplacement du point d'équilibre = 0,000 pH) ; ce qui change, c'est **le signal qui décide de la porte** — une moyenne glissante de 10 min, pas la filtrée instantanée. P, I et feedforward continuent de lire la **filtrée actuelle**.
 4. **Anti-cycling** ([`config.h:152`](../../src/config.h:152) `PumpProtection`) — **en dur, non configurables via UI** (exception : `maxCyclesPerDay`, configurable borné depuis feature-060) :
    - `minInjectionTimeMs = 30000` — 30 s minimum par injection démarrée.
    - Hystérésis de seuils (démarrage / arrêt) :
@@ -1372,6 +1379,134 @@ Durée **programmée** de filtration du jour (minutes), −1 = indisponible. Pr�
 
 Nouvelle suite native `test/test_native_ph_actuator_limit/` — total du projet **970 → 994 tests**, **5 mutations tuées sur 5** (validation par mutation exigée par le workflow projet).
 
+## Porte de session pH robuste au bruit (feature-094, v2.36.0)
+
+> [ADR-0062](../adr/0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md). Module pur : [`src/ph_session_logic.h`](../../src/ph_session_logic.h). Câblage : [`pump_controller.cpp`](../../src/pump_controller.cpp).
+
+### Le problème : la bande de décision était plus étroite que le bruit
+
+Les valeurs ci-dessous ne sortent pas d'un objectif de précision, elles sont **mesurées** sur la filtrée (celle que lit la régulation) les 03 et 04/09/2026 :
+
+| Grandeur | Valeur mesurée |
+|---|---|
+| σ de la filtrée sur 60 s | **0,043 pH** |
+| Crête-à-crête sur 15 min | **≈ 0,150 pH** |
+| Bande d'hystérésis | 0,05 (démarrage) / 0,01 (arrêt) |
+| **Constante de corrélation τc** | **≈ 50 s** (période dominante ≈ 5 min) |
+
+**C'est τc qui débloque le dossier** : un bruit de τc ≈ 50 s est un processus **quasi blanc**, pas une oscillation lente — donc **le moyenner marche, et coûte peu de retard**. Une fenêtre de 10 min ramène σ à **≈ 0,017** pour **≈ 7 min** de retard, et laisse une ouverture sur échelon de +0,30 pH se produire en **< 4 min**.
+
+Sans cela, près de la consigne, c'est le bruit qui ouvrait et fermait les sessions : chaque fermeture armait 15 min de [pause mélange](#pause-mélange-hydraulique-feature-025), le [feedforward](#dose-de-base-apprise--feedforward-ph-v2280) était retenu puis réarmé au même rythme, et le **rapport cyclique effectif tombait à ~1/3**. La série du 03/09 ne montre **aucune relation dose-réponse** (10 mL « font » −0,18 ; 83 mL « font » −0,08) : ce sont des fluctuations de mesure.
+
+> **Le droop observé était un symptôme, pas l'équilibre.** Le bassin était parqué à **7,38-7,40**, pas à l'équilibre théorique 7,31 : la régulation était **bridée par la perte des 2/3 du rapport cyclique**. Restaurer ce rapport la fait **descendre vers la consigne** — **−0,07 pH au maximum**, dans le bon sens. C'est une correction, pas un déplacement.
+
+### Un seul point de vérité : `phSessionGate()`
+
+`phSessionGate(const PhGateIn&) → PhGateOut` produit **la porte ET la bande morte du PI** dans le même appel. C'est le cœur du lot : la régression v2.26.0 (« la session ne se referme jamais ») était née de la divergence entre ces deux décisions, écrites à deux endroits différents de `pump_controller.cpp` — le PI se parquait exactement au point de coupure de l'hystérésis. Les rendre indissociables rend ce défaut **structurellement impossible à réintroduire**.
+
+Ordre des décisions (**aucune ne peut être réordonnée sans nouveau passage `pool-chemistry`**) :
+
+| # | Décision | Effet |
+|---|---|---|
+| 1 | **Signal lent non prêt** (fenêtre en cours de remplissage après une reprise de filtration) | Aucune ouverture, **fermeture** d'une session en cours — fail-closed. La durée minimale ne s'y oppose pas. |
+| 2 | **Plancher de sous-dépassement** : signal lent < **−0,05** | Fermeture **immédiate**, qui **prime sur la durée minimale** |
+| 3 | **Hystérésis sur le signal lent** | Fermée → ouverture ssi `lent > phStartThreshold` (**inchangé**) ; ouverte → maintien tant que `lent > phStopThreshold − 0,03` ; sinon **prolongation** tant que la durée minimale murale n'est pas écoulée |
+| 4 | **Régime de débit** pendant la prolongation | `lent ≤ phStopThreshold` → débit total **plafonné au feedforward seul** ; `lent ≤ 0` → **débit nul**, porte maintenue |
+
+Le point 4 est la contrepartie indispensable de la prolongation : sans lui, `flow += phFfFlow` servirait le feedforward **aveuglément** pendant toute la durée minimale — le seul vrai danger de L3.
+
+**Bande morte** : `wasOpen ? phStopThreshold : phStartThreshold` — position et rôle **strictement inchangés** (start hors session, stop en session, cible de l'intégrande `erreur − phStopThreshold`). **Déplacement du point d'équilibre : 0,000 pH**, condition d'acceptation du gate. Elle s'applique à l'erreur **instantanée** dans `computePidPure` : le signal lent ne décide **que** de la porte.
+
+### Le signal lent (`PhDecisionFilter`, `phDecisionTick()`)
+
+Moyenne glissante du **premier ordre** de constante de temps `kPhDecisionWindowMs`, alimentée par la **filtrée**. État POD, **loopTask uniquement** (écrivain unique, aucun mutex — même contrat que `PhFfState` / `PhIntegralState`). Tické **hors branche**, à côté du tick intégral et après la garde de présence d'eau : la porte doit continuer de mûrir pendant les pauses de mélange et les suspensions de limite horaire, où l'eau circule et la mesure est valide.
+
+Trois règles de ré-amorçage (`phDecisionRearm()`), toutes fail-closed — plus **aucune décision** tant que la fenêtre n'est pas de nouveau pleine :
+
+- **mesure non finie** (reprise de filtration : la filtrée redevient `NaN` le temps que la médiane se reconstruise ; le transitoire du 04/09 a duré **40 min**) ;
+- **`dt` aberrant** (> `kPhIntegralMaxTickDtMs` = 10 s) : un trou d'évaluation donnerait α ≈ 1, c'est-à-dire une « moyenne » réduite au dernier échantillon **avec `primed` encore vrai** — exactement la décision sur bruit que ce module supprime ;
+- `tauMs == 0` (défense).
+
+Le pas de temps est **fourni par l'appelant**, jamais supposé : à α fixe, la fenêtre effective dépendrait de la charge CPU. La maturation (`warmupMs`) est une **addition saturée**, jamais un repliement.
+
+### Le verrou de session change de sens — et ce que ça implique
+
+`phDosingState.active` latchait sur **« un débit a été commandé »** (`flow > 0`). Il suit désormais le **verdict de porte**. Sans ce changement, ni le signal lent ni la durée minimale n'auraient d'effet : la session se refermait au premier tour où le PI retombait dans sa bande morte.
+
+⚠️ **Conséquence observable, à connaître avant toute lecture de l'UI ou d'un tableau Home Assistant** : `isPhDosing()` est désormais **vrai pompe à l'arrêt** pendant une prolongation. Sont concernés, tous alimentés par ce seul accesseur :
+
+| Surface | Champ / topic | Nouveau sens |
+|---|---|---|
+| `GET /data` | `ph_dosing` | **session ouverte** (la pompe peut être à l'arrêt) |
+| WebSocket `sensor_data` | `ph_dosing` | idem |
+| MQTT | `{base}/ph_dosing` (`ON`/`OFF`), `ph_dosing_active` du JSON de statut | idem |
+| Historique | `history.phDosing` | idem |
+
+**Aucun champ ajouté, aucun renommé.** Un client qui veut « la pompe tourne **maintenant** » dispose déjà du **calendrier d'impulsion** ([ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md)) : pompe alimentée ⇔ `ph_pulse_phase_ms < ph_pulse_ms`.
+
+**Le fail-closed est conservé** : `shouldDose` porte encore tous les refus avals (plafond de session, pompe non caractérisée via `evaluatePulseGate`), et un refus de plan referme aussi la session. **Aucune** de ces fermetures ne consulte la durée minimale.
+
+### Ce que la porte NE fait PAS : les gardes gardent la priorité absolue
+
+Plancher acide, butée brute, capteur instable, filtration absente, limite horaire, quota journalier, `maxCyclesPerDay`, anti-rafale, OTA, maintenance, watchdog : ces gardes ferment la session **dans le même tour**, arment la pause de mélange et journalisent, **quelle que soit la durée minimale**. Elles vivent en amont (`canDose` / `evaluateDose`) ou hors branche (`closePhDosingSession`) et **ne passent jamais** par `phSessionGate()`. Le paramètre `minSessionMs` n'est consommé que dans la branche hystérésis.
+
+### Comptabilisation du cycle et journal de démarrage
+
+La porte pouvant ouvrir la session **plusieurs tours avant** que le PI ne produise un débit (`computePID` rejette `dt > 10 s` au premier tick), `phStartDecided` (vrai un seul tour) ne peut plus servir de témoin. Un nouveau témoin `_phCycleCounted` garantit qu'un cycle est compté **une fois par session, au PREMIER DÉBIT RÉEL** — l'invariant « un cycle compté ⇔ un cycle réellement démarré » est préservé, son écriture change. Remis à `false` par `closePhDosingSession()`.
+
+Deux conséquences de journal :
+
+- la ligne `Démarrage dosage pH (auto)` est émise **au premier débit réel**, plus à la décision ;
+- elle porte désormais **`erreur_lente=`** en plus de `erreur=`. Sans elle, le journal pouvait afficher une erreur **instantanée sous le seuil de démarrage** au moment même où la porte s'ouvrait — et envoyer le prochain diagnostic sur une fausse piste ;
+- le warning **« Limite cycles atteinte »** devient possible **session ouverte** : les effets de bord journaliers de la porte de démarrage (rollover 24 h de `cyclesToday` + warning throttlé) ont été extraits dans `tickDosingCycleDay()` pour rester atteignables par le pH, dont la porte n'est plus `shouldStartDosing`.
+
+> **Réserve connue, non corrigée volontairement** : `_phSessionStartMs` est posé au **premier débit réel**, pas à l'ouverture de porte — les 30 min murales partent donc du **premier pouls**. Sans conséquence chimique (la prolongation est en régime débit nul ou plafonné au feedforward) et de toute façon borné par `kPhSessionMaxWallMs` (3 h).
+
+### Trois motifs d'arrêt de session (journal)
+
+Un « erreur résorbée » unique ne distinguait plus un arrêt normal d'un sous-dépassement franc ni d'un ré-amorçage du signal. Le motif passé à `closePhDosingSession()` dit désormais **lequel des trois chemins de porte** a refermé la session :
+
+| Verdict de porte | Motif journalisé |
+|---|---|
+| Sous-dépassement | `sous-dépassement du signal lent (pH passé sous la consigne)` |
+| Signal ré-amorcé | `signal lent de décision ré-amorcé (mesure non représentative)` |
+| Erreur résorbée | `erreur résorbée (signal lent, durée minimale écoulée)` |
+| (fermeture par refus aval : pompe non caractérisée, plan invalide) | `erreur résorbée` — libellé **historique conservé** |
+
+### Constantes ([`constants.h`](../../src/constants.h))
+
+| Constante | Valeur | Rôle |
+|---|---:|---|
+| `kPhDecisionWindowMs` | 600 000 ms (**10 min**) | Fenêtre du signal lent — σ ramené à ≈ 0,017 pour ≈ 7 min de retard. Sert **aussi** de durée de remplissage avant toute décision |
+| `kPhDoorCloseMarginPh` | **0,03** pH | Marge de fermeture : la porte ferme sous `phStopThreshold − 0,03` = **−0,02**. **N'affecte pas** la bande d'actionnement |
+| `kPhSessionMinWallMs` | 1 800 000 ms (**30 min murales**) | Durée minimale de session. **Murale et non pompe-ON** : au rapport cyclique mesuré (3,4-5,3 %), 30 min de pompe-ON dureraient ~10 h murales — la borne serait décorative |
+| `kPhSessionUndershootFloorPh` | **0,05** pH | Plancher de sous-dépassement, **prioritaire sur la durée minimale** |
+| `kPhStartThresholdDefault` / `kPhStopThreshold` | 0,05 / 0,01 | **Promues `constexpr`** (elles ne vivaient que comme initialiseurs de `PumpProtection`) — vérification faite : jamais relues depuis la NVS, jamais exposées par `/get-config` ou `/save-config` |
+
+**Sous-injection bornée** : pendant la prolongation, le débit est plafonné au feedforward (**2,60 mL/min** sur la configuration vivante) puis annulé dès que le signal lent passe sous la consigne. **Sous-dépassement pire cas calculé : −0,058 pH → 7,242**, au-dessus du plancher `kPhTargetMin` = 7,20.
+
+### `static_assert` neufs (condition C12 du gate)
+
+| Assertion | Ce qu'elle protège |
+|---|---|
+| `kPhStartThresholdDefault − kPhStopThreshold ≥ 0,04` | Une bande de décision **plus étroite que 2σ du signal lent** (0,020) serait de nouveau franchie par le seul bruit — le défaut que la feature corrige |
+| `0 < kPhStopThreshold ≤ 0,05` | Un seuil d'arrêt nul rendrait le point fixe de l'intégration inatteignable ; au-delà de 0,05 l'hystérésis dégénère |
+| `kPhSessionMinWallMs + kPhMixingDelayMs ≤ kPhSessionMaxWallMs` | Le plafond mural couperait des sessions que la durée minimale prolonge encore |
+| `kPhSessionMinWallMs ≥ 2 × kPhDecisionWindowMs` | Une session doit durer au moins **deux fenêtres** : en deçà elle se refermerait avant que le signal lent ait pu constater l'effet du dosage |
+| `kPhSessionUndershootFloorPh == kPhFfAdverseErrorPh` | Deux organes qui constatent **le même événement physique** ne doivent pas le constater à deux valeurs différentes (latch défavorable du feedforward, [ADR-0055](../adr/0055-feedforward-appris-additif-plafonne.md)) |
+| `0 < kPhDoorCloseMarginPh < kPhIntegralResetMargin` | Une marge nulle refermerait au point de coupure exact (régression v2.26.0) ; au-delà, elle empiéterait sur la purge sèche de l'intégrale, qui décrit un **tout autre** événement |
+| `kHeapIntegrityMaxDurationUs × 100 ≤ kPulseMinMs × 1000` | Le parcours d'intégrité du tas doit rester **sous 1 % du pouls minimal** — voir [system-health.md](system-health.md#contrôle-dintégrité-périodique-du-tas-v2188) et l'amendement d'[ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) |
+
+### Ce qui a été refusé (et pourquoi c'est écrit ici)
+
+**Élargir la bande d'hystérésis au-dessus du bruit (L2) — REFUSÉ par le gate.** Couvrir le bruit brut de façon robuste exigerait **0,17 pH**, c'est-à-dire parquer le bassin à **+0,09** au-dessus de la consigne et le laisser descendre à **−0,08** en dessous. Or l'installation ne dispose que d'**acide** : sous la consigne, **aucun moyen de remonter** — remontée passive **≤ 0,02 pH/h**, ~4 h de récupération. Un levier qui déplace l'équilibre du côté où l'actionneur est absent est refusé. Détail et alternatives : [ADR-0062](../adr/0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md).
+
+### Testabilité
+
+Suite native [`test/test_native_ph_session/`](../../test/test_native_ph_session/) — logique pure ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)), y compris le **rejeu de la série réelle du 03/09** convertie en fixture. Total du projet : **30 suites / 1 154 cas**, **8 mutations tuées sur 8**.
+
+⚠️ **Ce que le rejeu ne prouve PAS** : il est en **boucle ouverte**. Il démontre l'anti-chatter (moins de sessions, plus longues), **pas** que le bassin reste dosé — l'acide des 7 sessions réelles est déjà dans la série. Le critère « feedforward servi ≥ 80 % du temps » y ressort à **0,0 %** parce que le signal lent y siège **à la consigne** (moyenne 7,2999). Il est à mesurer sur l'appareil (enregistrement `/data` sur 4 h une après-midi à la consigne).
+
 ## Comptabilisation d'un démarrage de cycle : invariant (v2.20.5)
 
 > **INVARIANT** : dans les branches `automatic` (pH **et** ORP), **un cycle est comptabilisé si et seulement si un cycle a réellement démarré** — c'est-à-dire si un duty non nul a été commandé ce tour de boucle.
@@ -1767,8 +1902,12 @@ Plus jamais de durée déduite du modèle linéaire (`calcInjectFlow` supprimé)
 | PID — borne erreur ORP | `kOrpMaxError` | 200.0 mV | [`constants.h:90`](../../src/constants.h:90) |
 | PID — `dt` max | (literal in code) | 10 s | [`pump_controller.cpp`](../../src/pump_controller.cpp) |
 | Anti-cycling — durée min | `minInjectionTimeMs` | 30000 | [`config.h:154`](../../src/config.h:154) |
-| Anti-cycling — start pH | `phStartThreshold` | 0.05 | [`config.h:155`](../../src/config.h:155) |
-| Anti-cycling — stop pH | `phStopThreshold` | 0.01 | [`config.h:156`](../../src/config.h:156) |
+| Anti-cycling — start pH (**source `constexpr` depuis la v2.36.0**) | `phStartThreshold` ← `kPhStartThresholdDefault` | 0.05 | [`constants.h`](../../src/constants.h), initialise [`config.h:155`](../../src/config.h:155) |
+| Anti-cycling — stop pH (**source `constexpr` depuis la v2.36.0**) | `phStopThreshold` ← `kPhStopThreshold` | 0.01 | [`constants.h`](../../src/constants.h), initialise [`config.h:156`](../../src/config.h:156) |
+| Porte de session pH — fenêtre du signal lent (feature-094, [ADR-0062](../adr/0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md)) | `kPhDecisionWindowMs` | 600 000 ms (10 min) | [`constants.h`](../../src/constants.h) |
+| Porte de session pH — marge de fermeture | `kPhDoorCloseMarginPh` | 0,03 pH | [`constants.h`](../../src/constants.h) |
+| Porte de session pH — durée minimale (**murale**) | `kPhSessionMinWallMs` | 1 800 000 ms (30 min) | [`constants.h`](../../src/constants.h) |
+| Porte de session pH — plancher de sous-dépassement (**= `kPhFfAdverseErrorPh`**, `static_assert`) | `kPhSessionUndershootFloorPh` | 0,05 pH | [`constants.h`](../../src/constants.h) |
 | Anti-cycling — start ORP | `orpStartThreshold` | 10.0 mV | [`config.h:157`](../../src/config.h:157) |
 | Anti-cycling — stop ORP | `orpStopThreshold` | 2.0 mV | [`config.h:158`](../../src/config.h:158) |
 | Anti-cycling — cycles/jour (**configurable 10-60**, feature-060) | `maxCyclesPerDay` | **24** (défaut, était 48 — v2.20.5) | [`config.h:165`](../../src/config.h:165), bornes [`constants.h:423`](../../src/constants.h:423) |
