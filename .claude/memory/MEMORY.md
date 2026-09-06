@@ -4,6 +4,7 @@
 
 - **Ne jamais créer de release GitHub sans demande explicite.** Sur demande explicite (« publie une release »), Claude PEUT lancer `gh release create` : la règle est en `ask` depuis le 2026-07-04 (avant : `deny`) → l'utilisateur confirme via le prompt. Préparer les notes dans un fichier scratchpad + `--notes-file`.
 - **Ne jamais faire de commit ou push sans demande explicite.** Modifier les fichiers uniquement, attendre que l'utilisateur demande le commit.
+- **Le push exige un feu vert SÉPARÉ du commit** (précisé le 2026-09-06). « Commite » n'autorise pas à pousser : demander, et attendre la réponse. **Pourquoi** : un push publie — la CI se déclenche, l'historique devient irréversible (le `force-push` est en `deny` dans `settings.json`), et un déploiement peut suivre. Un commit local se corrige, un push se corrige par un commit de plus. **Comment appliquer** : commiter si c'est demandé, puis poser la question et s'arrêter — ne jamais lire une instruction ambiguë comme une autorisation de pousser.
 
 ## Workflow de build
 
@@ -65,7 +66,7 @@ le concernant = autre repo).
 
 ## Bassin utilisateur
 
-- [Paramètres du bassin](parametres-bassin-utilisateur.md) — 30-50 m³, chlore 36°, consigne ORP 530 mV calée sur BANDELETTE (31/08) ; limites restaurées aux défauts (pH 10 min/h) ; épisode surconsommation 07/2026 = stabilisant 15 mg/L
+- [Paramètres du bassin](parametres-bassin-utilisateur.md) — 30-50 m³, chlore 36°, consigne ORP 530 mV calée sur BANDELETTE (31/08) ; limites restaurées aux défauts (pH 10 min/h) ; épisode surconsommation 07/2026 = stabilisant 15 mg/L ; ⭐ **relevés de bidon** : baseline propre 31/08 (8 750 mL, compteur à 0) → 06/09 mesuré 3 700 ⇒ l'appareil **sur-compte de +4,76 %**, sens **conservateur**, **plancher** (les purges masquent) — nature du biais **indécidable sans compteur d'impulsions** (feature-110 puis feature-078)
 
 ## Chantiers futurs
 

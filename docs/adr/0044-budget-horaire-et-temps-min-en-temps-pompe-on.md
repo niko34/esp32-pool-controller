@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-08-23
 - **Décideurs** : gate `pool-chemistry` (contre-visite du 2026-08-23, GO), architect
-- **Spec(s) liée(s)** : [bug-dosage-fantome-duty-non-calibre](../../specs/features/todo/bug-dosage-fantome-duty-non-calibre.md) (itération 2, v2.21.0)
+- **Spec(s) liée(s)** : [bug-dosage-fantome-duty-non-calibre](../../specs/features/done/bug-dosage-fantome-duty-non-calibre.md) (itération 2, v2.21.0)
 
 ## Contexte
 
@@ -82,7 +82,7 @@ entre pouls. Sémantique validée par le gate : **« minutes où le produit coul
 - Code : [`src/pump_controller.cpp`](../../src/pump_controller.cpp)
   (`refreshDosingState`, `shouldContinueDosing`, `_sessionOnMs`),
   [`src/pump_controller.h`](../../src/pump_controller.h)
-- Spec : [bug-dosage-fantome-duty-non-calibre](../../specs/features/todo/bug-dosage-fantome-duty-non-calibre.md)
+- Spec : [bug-dosage-fantome-duty-non-calibre](../../specs/features/done/bug-dosage-fantome-duty-non-calibre.md)
 - ADR liés : [ADR-0020](0020-budget-horaire-dosage-unique.md) (budget partagé — horloge
   modifiée ici), [ADR-0043](0043-dosage-proportionnel-de-temps-amplitude-calibree.md)
 - Doc : [pump-controller.md](../subsystems/pump-controller.md#dosage-en-proportionnel-de-temps-itération-2-v2210)

@@ -3,7 +3,7 @@
 - **Statut** : Accepté — **amende la clause « Aucune persistance NVS » de l'[ADR-0052](0052-terme-integral-ph-dimensionne-par-autorite.md)**. Tout le reste de l'ADR-0052 est **inchangé** : autorité `kPhIntegralAuthorityMlPerMin` = 6,0 mL/min, `integralMax` dérivé de `U × Ti / kp`, intégration signée sur `erreur − phStopThreshold`, gel d'anti-windup asymétrique, `Kd = 0` sur les deux chimies, `Ki_ORP = 0`. **R3 (péremption) et R5 (cadence d'écriture) sont amendées par l'[ADR-0060](0060-fraicheur-en-temps-de-filtration.md)** (fraîcheur mesurée en **temps de filtration** — 360 min — avec plafond mural de 72 h, échéance d'écriture `kDue`, et garde « aucune écriture tant qu'une candidate attend sa confirmation ») ; **R1, R2, R4, R6, R7 et tout l'argument de sûreté ci-dessous sont inchangés**.
 - **Date** : 2026-08-30
 - **Décideurs** : gate `pool-chemistry` (**GO**, 30/08/2026, après réexamen du plafond de restauration), `architect`, `code-reviewer` (trois défauts fail-open relevés puis corrigés), utilisateur
-- **Spec(s) liée(s)** : [feature-084-integrale-ph-cadence-et-memoire](../../specs/features/doing/feature-084-integrale-ph-cadence-et-memoire.md)
+- **Spec(s) liée(s)** : [feature-084-integrale-ph-cadence-et-memoire](../../specs/features/done/feature-084-integrale-ph-cadence-et-memoire.md)
 
 ## Contexte
 
@@ -26,9 +26,9 @@ vérifiée revient à armer une demande de dosage que **rien dans le bassin n'a 
 2. **Le PANIC du 29/08 (`bug-080`) n'est pas élucidé.** Une régulation dont l'acquis est
    détruit par un redémarrage inexpliqué n'atteint jamais son régime.
 3. Le remède au problème de fond relève de la
-   [feature-085](../../specs/features/todo/feature-085-dose-de-base-apprise-feedforward.md)
+   [feature-085](../../specs/features/done/feature-085-dose-de-base-apprise-feedforward.md)
    (dose de base apprise) et de la
-   [feature-086](../../specs/features/todo/feature-086-limite-actionneur-dosage-ph.md)
+   [feature-086](../../specs/features/done/feature-086-limite-actionneur-dosage-ph.md)
    (l'installation est **limitée par l'actionneur** : ~911 mL/jour délivrables pour
    ~1 800 mL/jour de besoin). La feature-084 est une feature de **robustesse**, pas de
    vitesse : elle ramène le coût d'un redémarrage de **2,4 jours à environ une heure**.
@@ -264,7 +264,7 @@ candidate, au même titre que le changement de vitesse et la bascule de produit.
   [`src/web_server.cpp`](../../src/web_server.cpp) et
   [`src/mqtt_manager.cpp`](../../src/mqtt_manager.cpp) (flush avant redémarrage)
 - Tests : [`test/test_native_ph_persist/`](../../test/test_native_ph_persist/)
-- Spec : [feature-084](../../specs/features/doing/feature-084-integrale-ph-cadence-et-memoire.md)
+- Spec : [feature-084](../../specs/features/done/feature-084-integrale-ph-cadence-et-memoire.md)
 - ADR liés : [ADR-0052](0052-terme-integral-ph-dimensionne-par-autorite.md) (amendé sur le
   seul point de la persistance), [ADR-0054](0054-seuil-de-vraisemblance-fonction-de-la-configuration.md)
   (le filet de vraisemblance de l'anneau suit la configuration),

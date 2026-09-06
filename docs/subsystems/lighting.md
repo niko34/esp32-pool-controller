@@ -54,7 +54,7 @@ Entité : `switch.*_lighting` — topic état `{base}/lighting_state`, commande 
 
 ## Logique d'horaire pure (`schedule_logic`)
 
-[feature-040](../../specs/features/doing/feature-040-eclairage-horaire-testable.md) applique le pattern **Humble Object** ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md), **pas de nouvel ADR**) à la décision d'horaire de l'éclairage, en **réutilisant** le module pur [`src/schedule_logic.h`](../../src/schedule_logic.h) / [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) créé pour la filtration (feature-038). C'est un *characterization refactor* : **aucun comportement observable n'a changé** (mêmes décisions allumage/extinction pour les mêmes entrées). `lighting.cpp::update()` devient une **coquille mince** qui délègue à `decideLightingOn(...)` ; RTC/`getLocalTime`, `millis()` (timeout manuel), `digitalWrite`, `publishState()`/MQTT restent dans la coquille.
+[feature-040](../../specs/features/done/feature-040-eclairage-horaire-testable.md) applique le pattern **Humble Object** ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md), **pas de nouvel ADR**) à la décision d'horaire de l'éclairage, en **réutilisant** le module pur [`src/schedule_logic.h`](../../src/schedule_logic.h) / [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) créé pour la filtration (feature-038). C'est un *characterization refactor* : **aucun comportement observable n'a changé** (mêmes décisions allumage/extinction pour les mêmes entrées). `lighting.cpp::update()` devient une **coquille mince** qui délègue à `decideLightingOn(...)` ; RTC/`getLocalTime`, `millis()` (timeout manuel), `digitalWrite`, `publishState()`/MQTT restent dans la coquille.
 
 ### Fonctions pures utilisées
 

@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 82048c5b-7e8f-4cec-8242-ad9b5ed01f91
-  modified: 2026-08-31T17:33:48.359Z
+  modified: 2026-09-06T00:00:00.000Z
 ---
 
 ## Bassin
@@ -58,6 +58,50 @@ puis remis l'ORP à sa main : limites **pH 10 min/h** (avant : 25 — capacité
 utilisateur de le laisser ou non), volumes programmés 0, taille de bassin
 `medium`. Historique : la limite pH avait été montée 5 → 25 par l'utilisateur
 entre le 24 et le 30/08 (cf. [[piege-config-usine-vs-config-vivante]]).
+
+## Relevés de bidon — concordance avec le compteur de l'appareil
+
+### 31/08/2026 — baseline PROPRE posée (chlore)
+
+Bidon chlore **mesuré à 8 750 mL**, compteur `orp_total_injected_ml` **remis à 0**
+au même instant. Le point antérieur (même jour, avant remise à zéro) n'était pas
+exploitable : le remplissage initial du bidon « 20 L » n'était pas contrôlé.
+
+### 06/09/2026 — première concordance exploitable : l'appareil SUR-compte de +4,76 %
+
+| Grandeur | Valeur |
+|---|---:|
+| Compteur appareil `orp_total_injected_ml` | **5 290,44 mL** |
+| Restant **estimé** (8 750 − 5 290,44) | 3 459,56 mL |
+| Restant **mesuré** | **3 700 mL** |
+| Injecté **réel** | **5 050 mL** |
+| **Biais** | **+240,44 mL = +4,76 %** |
+
+**Méthode** : récipient doseur de 3 L rempli **à ras**, puis complément de 0,7 L.
+Incertitude ~±30-50 mL ⇒ biais réel entre **+3,8 % et +5,8 %** — distinguable de
+zéro. Fenêtre : **6 jours**, amplitude `duty = 127`.
+
+**Trois choses à ne pas oublier de ce relevé :**
+
+1. **Le sens est CONSERVATEUR** — sur-compter **resserre** les quotas journaliers
+   et **avance** l'alerte de bidon vide. Aucun risque chimique, aucune urgence.
+2. **+4,76 % est un PLANCHER, pas une valeur.** Une purge expulse du liquide sans
+   le compter et **masque** donc une partie du sur-comptage.
+   `measures_purge_count` valait 0 au relevé, mais l'appareil avait redémarré
+   20 min plus tôt — ce compteur ne couvre pas la fenêtre.
+3. **Le biais était DÉJÀ documenté** (`src/constants.h:2083-2089`, dette assumée
+   de l'ADR-0051). Ce relevé ne le découvre pas : il le **chiffre**, pour la
+   première fois, et dans le sens annoncé.
+
+**Ce que ce relevé NE dit PAS** : la **nature** du biais. Avec le volume seul,
+« biais multiplicatif » et « perte fixe par impulsion » (~0,21 mL sur ~1 160
+impulsions) sont indiscernables. ⛔ **NO GO `pool-chemistry` du 06/09 sur tout
+facteur de comptabilité de flotte** tant que la nature n'est pas établie.
+Suites : `feature-110` (compteur d'impulsions — le préalable) puis `feature-078`.
+
+**Pour le prochain relevé** : noter, au même instant, le **volume restant mesuré**,
+le **compteur de volume** et — dès que `feature-110` sera livrée — le **compteur
+d'impulsions**. Deux inconnues, deux équations.
 
 ## Charge basique quotidienne (28/08/2026)
 

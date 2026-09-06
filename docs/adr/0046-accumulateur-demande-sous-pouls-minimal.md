@@ -5,7 +5,7 @@
 - **Décideurs** : gate `pool-chemistry` (GO amont sous 5 conditions + GO en contre-visite,
   conditions vérifiées ligne par ligne, 2026-08-23), utilisateur (refus de l'allongement
   de période), architect
-- **Spec(s) liée(s)** : [feature-073-accumulateur-dosage-sous-plancher](../../specs/features/doing/feature-073-accumulateur-dosage-sous-plancher.md) (v2.22.0)
+- **Spec(s) liée(s)** : [feature-073-accumulateur-dosage-sous-plancher](../../specs/features/done/feature-073-accumulateur-dosage-sous-plancher.md) (v2.22.0)
 
 ## Contexte
 
@@ -118,7 +118,7 @@ Ordre de grandeur : une demande de 0,7 mL/min produit une impulsion de 5 s toute
   [`src/pump_controller.cpp`](../../src/pump_controller.cpp) (`_pulseCarryMl`,
   `_carryPulseLogged`, resets), [`test/test_native_dosing/test_dosing_decision.cpp`](../../test/test_native_dosing/test_dosing_decision.cpp)
   (9 tests `test_F073_*`, 649 natifs au total)
-- Spec : [feature-073-accumulateur-dosage-sous-plancher](../../specs/features/doing/feature-073-accumulateur-dosage-sous-plancher.md)
+- Spec : [feature-073-accumulateur-dosage-sous-plancher](../../specs/features/done/feature-073-accumulateur-dosage-sous-plancher.md)
 - ADR liés : [ADR-0043](0043-dosage-proportionnel-de-temps-amplitude-calibree.md)
   (seuil C amendé — le reste : proportionnel de temps, kick, fail-closed, inchangé),
   [ADR-0044](0044-budget-horaire-et-temps-min-en-temps-pompe-on.md) (usedMs pompe-ON,

@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-08-23
 - **Décideurs** : architect, utilisateur (revue itération 3) — visa `pool-chemistry` GO (lecture seule)
-- **Spec(s) liée(s)** : [bug-dosage-fantome-duty-non-calibre](../../specs/features/doing/bug-dosage-fantome-duty-non-calibre.md) (itération 3, défaut n°3, v2.21.1)
+- **Spec(s) liée(s)** : [bug-dosage-fantome-duty-non-calibre](../../specs/features/done/bug-dosage-fantome-duty-non-calibre.md) (itération 3, défaut n°3, v2.21.1)
 
 ## Contexte
 

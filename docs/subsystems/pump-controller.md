@@ -976,7 +976,7 @@ Deux corollaires :
 
 à comparer à `kPhSafetyMargin` = **0,50**. À 30 min/h, un seul temps mort consomme **56 %** de la garde de sécurité. **Ce réglage ne doit pas être relevé sans en tenir compte.**
 
-Suivi : [feature-086](../../specs/features/todo/feature-086-limite-actionneur-dosage-ph.md) (limite d'actionneur) et [feature-085](../../specs/features/doing/feature-085-dose-de-base-apprise-feedforward.md) (dose de base apprise, **livrée en v2.28.0** — voir [ci-dessous](#dose-de-base-apprise--feedforward-ph-v2280)).
+Suivi : [feature-086](../../specs/features/done/feature-086-limite-actionneur-dosage-ph.md) (limite d'actionneur) et [feature-085](../../specs/features/done/feature-085-dose-de-base-apprise-feedforward.md) (dose de base apprise, **livrée en v2.28.0** — voir [ci-dessous](#dose-de-base-apprise--feedforward-ph-v2280)).
 
 ### 1. Le tick d'entretien sort de la conjonction de dosage
 
@@ -1230,7 +1230,7 @@ La sentinelle du filet de vraisemblance **verrouille les deux sens** : la même 
 
 ## Dose de base apprise — feedforward pH (v2.28.0)
 
-> Décision structurante : [ADR-0055](../adr/0055-feedforward-appris-additif-plafonne.md) (feedforward appris **additif plafonné**). Gate `pool-chemistry` : **GO amont sous 4 conditions** (toutes implémentées) **+ GO contre-visite**, 30/08/2026. Spec : [feature-085](../../specs/features/doing/feature-085-dose-de-base-apprise-feedforward.md).
+> Décision structurante : [ADR-0055](../adr/0055-feedforward-appris-additif-plafonne.md) (feedforward appris **additif plafonné**). Gate `pool-chemistry` : **GO amont sous 4 conditions** (toutes implémentées) **+ GO contre-visite**, 30/08/2026. Spec : [feature-085](../../specs/features/done/feature-085-dose-de-base-apprise-feedforward.md).
 
 ### Principe
 
@@ -1321,7 +1321,7 @@ Nouvelle suite native [`test/test_native_ph_feedforward/`](../../test/test_nativ
 
 ## Limite d'actionneur pH — exposition et alerte de sous-dimensionnement (feature-086, v2.29.0)
 
-> Décision structurante : [ADR-0056](../adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md) (3 jours × 80 %, anneau évalué au soutenable courant). Visa `pool-chemistry` : **GO sous conditions** (les deux conditions prouvées par test et par grep), revue **Approved**, 30/08/2026. Spec : [feature-086](../../specs/features/doing/feature-086-limite-actionneur-dosage-ph.md).
+> Décision structurante : [ADR-0056](../adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md) (3 jours × 80 %, anneau évalué au soutenable courant). Visa `pool-chemistry` : **GO sous conditions** (les deux conditions prouvées par test et par grep), revue **Approved**, 30/08/2026. Spec : [feature-086](../../specs/features/done/feature-086-limite-actionneur-dosage-ph.md).
 
 Le visa du 30/08/2026 établit que le bassin de référence est limité par l'**actionneur**, pas par le correcteur : maximum délivrable ~911 mL/j (2,17 mL/min soutenable × 420 min de filtration) contre un besoin de ~1 800 mL/j. Cette section rend la limite **visible** et **alertable** — **lecture seule stricte** : aucun de ces chemins n'est consommé par une décision de dosage, aucun chemin nouveau vers les pompes. Logique pure dans [`src/ph_actuator_limit_logic.h`](../../src/ph_actuator_limit_logic.h) ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)).
 
@@ -1583,7 +1583,7 @@ La garde 9 anti-cycling (`cyclesToday >= maxCyclesPerDay` dans `evaluateDose` / 
 - **Effet immédiat** : le compteur `cyclesToday` en cours n'est **pas** remis à zéro à la modification — seule la borne de comparaison change (dans les deux sens).
 - **Inchangés** : exemption `cyclesToday` du mode `scheduled` ([ADR-0021](../adr/0021-repartition-scheduled.md)), anti-rafale, limites volumétriques/horaire, ordre des gardes, message UI « Limite cycles/jour atteinte — reprise à minuit ».
 
-> **Double validation `pool-chemistry` (2026-07-29)** : GO pré-design **sous conditions** (48, bornes 10-60, clamp serveur, logs — conditions toutes implémentées) + **GO** sur re-validation du diff d'implémentation. Voir [feature-060](../../specs/features/todo/feature-060-limite-cycles-configurable.md).
+> **Double validation `pool-chemistry` (2026-07-29)** : GO pré-design **sous conditions** (48, bornes 10-60, clamp serveur, logs — conditions toutes implémentées) + **GO** sur re-validation du diff d'implémentation. Voir [feature-060](../../specs/features/done/feature-060-limite-cycles-configurable.md).
 
 ## Anti-rafale & rollover journalier (logique pure)
 
@@ -1832,6 +1832,76 @@ Bolus unitaire 4,6 mL = **32 méq** ⇒ **ΔpH < 0,002** même sur 15 m³ ; nég
 **`kPulsePeriodMs` reste à 60 s** (décision explicite) : la fraction de temps pompe maximale est inchangée et le refus antérieur de l'utilisateur d'allonger la période (cycle feature-073) reste fondé.
 
 ⚠️ **DETTE ASSUMÉE — condition n°1 du gate : le compteur reste FAUX.** En divisant les démarrages par deux à volume **compté** constant, on augmente le volume **réel** délivré sous le même plafond journalier : la limite journalière devient légèrement **moins conservatrice** (quelques dizaines de mL/jour si la perte vaut ~0,5 mL). Cet allongement **atténue** le défaut de comptage, **il ne le corrige pas**. Exigences du gate : **surveiller le plafond journalier sur 3 jours**, et la **mesure de la perte fixe reste due** (M2 : 24 pouls de 5 s contre 12 pouls de 10 s à temps de pompe égal ⇒ `V₁₀ − V₅ = 12 × L`), après quoi le modèle de comptage devra être corrigé — et traité **explicitement comme une hausse de dose**. Voir [feature-078](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md).
+
+### Biais du compteur de volume — MESURÉ le 06/09/2026 : +4,76 %, conservateur
+
+> **La dette annoncée ci-dessus est désormais chiffrée.** Ce n'est plus une
+> hypothèse : c'est une mesure sur baseline contrôlée. Sa **nature** reste
+> ouverte.
+
+Première concordance bidon/compteur exploitable (baseline posée le 31/08 : bidon
+chlore mesuré 8 750 mL, compteur remis à 0 au même instant), relevée au titre du
+critère P12 de [feature-075](../../specs/features/done/feature-075-assistant-mesure-debit-pompe.md).
+
+| Grandeur | Valeur |
+|---|---:|
+| Compteur appareil (`orp_total_injected_ml`) | **5 290,44 mL** |
+| Restant **estimé** (8 750 − 5 290,44) | 3 459,56 mL |
+| Restant **mesuré** | **3 700 mL** |
+| Injecté **réel** | **5 050 mL** |
+| **Biais** | **+240,44 mL = +4,76 %** — le compteur **sur-compte** |
+
+**Méthode** : récipient doseur de 3 L rempli à ras + complément de 0,7 L,
+incertitude ~±30-50 mL ⇒ biais réel entre **+3,8 % et +5,8 %**, donc
+**distinguable de zéro**. **Fenêtre** : 6 jours, 5 050 mL injectés, amplitude
+`duty = 127`, pouls minimal 10 s.
+
+**Sens conservateur — aucune conséquence de sécurité chimique.** Sur-compter
+**resserre** les limites journalières et **avance** l'alerte de bidon vide. C'est
+exactement le sens dans lequel les gardes doivent se tromper
+([propriété fail-safe](#comptabilité-du-volume-p4)). Rien n'appelle de correctif
+en urgence.
+
+**⚠️ +4,76 % est un PLANCHER, pas une valeur.** Une purge de l'assistant de mesure
+expulse du liquide **sans le compter** : elle **masque** une partie du
+sur-comptage. `measures_purge_count` valait 0 au relevé, mais l'appareil avait
+redémarré 20 min plus tôt — ce compteur ne couvre pas la fenêtre.
+
+**Ordre de grandeur par impulsion** ([`pulse_dosing_logic.cpp`](../../src/pulse_dosing_logic.cpp),
+`pulseDeltaVolumeMl`) : un pouls minimal est compté **4,573 mL** (kick 0,493 +
+plateau 4,08) ⇒ ~**1 160 impulsions** sur la fenêtre ⇒ **0,21 mL de surcoût par
+impulsion**, soit ~**0,5 s de débit perdu au démarrage** — l'ordre de grandeur
+d'un transitoire péristaltique, cohérent avec l'hypothèse de perte fixe.
+
+**~19 % de ce surcoût est VOLONTAIRE et ne doit jamais être « corrigé ».** Le kick
+est crédité au majorant de flotte `kPumpFlow255MlPerMin = 74,0` contre **68,0
+réellement mesurés** ([ADR-0050](../adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md),
+[`constants.h`](../../src/constants.h)) : c'est une marge dimensionnée sur une
+dispersion inter-unités de 11 % constatée dans un même lot. La retirer serait
+supprimer une sécurité en croyant gagner en précision.
+
+**⛔ NO GO `pool-chemistry` du 06/09 sur tout facteur de comptabilité de flotte.**
+Avec le **volume seul**, « biais multiplicatif » et « perte fixe par impulsion »
+sont **indiscernables** — une inconnue, une équation. Un facteur multiplicatif
+calé sur ce point unique corrigerait **mal** une perte par impulsion : la fraction
+de biais varie avec la durée moyenne de pouls, donc avec la demande, et sur pouls
+longs il **sur-corrigerait et relâcherait les quotas**.
+
+**Réserve sur l'ampleur** : le passage de `kPulseMinMs` à 10 s
+([ADR-0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md)) a
+**divisé par deux** le nombre d'impulsions — le +4,76 % est donc mesuré **après**
+atténuation, et ce même allongement a réduit d'autant le coussin de sécurité
+involontaire que le sur-comptage constituait.
+
+**Suites** : [feature-110](../../specs/features/todo/feature-110-compteur-d-impulsions-de-dosage.md)
+(compteur d'impulsions par pompe — deux inconnues, deux équations ; **préalable**,
+sans quoi chaque concordance future sera aussi peu concluante), puis
+[feature-078](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md)
+(nature établie, puis correction du modèle — **à traiter explicitement comme une
+hausse de dose**). Le protocole de banc qui trancherait sans attendre est écrit
+dans [`constants.h`](../../src/constants.h) : **24 pouls de 5 s contre 12 de 10 s**,
+à temps de pompe égal — volumes égaux ⇒ multiplicatif, premier plus faible ⇒
+perte fixe.
 
 ### Comptabilité du volume (P4)
 
@@ -2139,10 +2209,10 @@ Hors compteurs journaliers, la **trace de bascule automatique pH** est persisté
 - [`src/dosing_logic.h`](../../src/dosing_logic.h), [`src/dosing_logic.cpp`](../../src/dosing_logic.cpp) — décision de dosage pure (feature-036) + gardes d'injection manuelle `evaluateManualInject` (feature-006) + répartition scheduled `evaluateScheduledDose` (feature-011)
 - [`src/schedule_logic.h`](../../src/schedule_logic.h), [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) — `remainingRangeMinutes` (horizon de répartition scheduled, feature-011)
 - [ADR-0002](../adr/0002-mode-programmee-volume-quotidien.md), [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md), [ADR-0008](../adr/0008-persistance-cumuls-journaliers-nvs.md), [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md), [ADR-0014](../adr/0014-migration-atlas-ezo.md) (refonte `canDose`), [ADR-0016](../adr/0016-regulation-p-temporisee-vs-pid.md) (régulation P temporisée, feature-025), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) (logique pure Humble Object, feature-036), [ADR-0020](../adr/0020-budget-horaire-dosage-unique.md) (budget horaire unique auto + manuel, feature-006), [ADR-0021](../adr/0021-repartition-scheduled.md) (répartition scheduled par fenêtres de 15 min, feature-011), [ADR-0025](../adr/0025-mode-boost.md) (Mode Boost — surcouche « valeurs effectives » + relèvement borné de la limite chlore, feature-053), [ADR-0026](../adr/0026-mode-installation.md) (Mode d'installation — 3 archétypes de câblage + résolution unique de la présence d'eau, feature-056), [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md) (offset pH en sortie des accesseurs + filets sur le brut, feature-067), [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md) (proportionnel de temps à amplitude calibrée, v2.21.0), [ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md) (budget horaire et temps min en temps pompe-ON, v2.21.0), [ADR-0046](../adr/0046-accumulateur-demande-sous-pouls-minimal.md) (accumulateur sous le pouls minimal, v2.22.0), [ADR-0047](../adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md) (calibration de type par défaut + gel de l'amplitude, v2.23.0), [ADR-0050](../adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md) (débit à 255 = constante unique de flotte, marge ≥ dispersion mesurée, v2.25.2), [ADR-0051](../adr/0051-pouls-minimal-double-rendement-avant-comptage.md) (pouls minimal 5 s → 10 s : rendement des démarrages d'abord, correction du comptage ensuite, v2.25.3), [ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) (**levée de `Ki = 0` sur le seul pH**, `integralMax` dimensionné par l'autorité, intégration signée sur le seuil d'arrêt, v2.26.0 — amende l'ADR-0016), [ADR-0053](../adr/0053-persistance-conditionnelle-integrale-ph.md) (**persistance conditionnelle de l'intégrale pH** sous sept garanties R1-R7 — la valeur relue n'est jamais appliquée au démarrage ; amende la clause « aucune persistance NVS » de l'ADR-0052, v2.27.0), [ADR-0054](../adr/0054-seuil-de-vraisemblance-fonction-de-la-configuration.md) (un seuil de vraisemblance dérivé d'un réglage configurable est une **fonction** de ce réglage, jamais une constante, v2.27.0)
-- [feature-084](../../specs/features/doing/feature-084-integrale-ph-cadence-et-memoire.md) — cadence du tick d'entretien, reset sec temporisé, persistance NVS conditionnelle, anneau de charge acide (v2.27.0)
+- [feature-084](../../specs/features/done/feature-084-integrale-ph-cadence-et-memoire.md) — cadence du tick d'entretien, reset sec temporisé, persistance NVS conditionnelle, anneau de charge acide (v2.27.0)
 - [feature-025](../../specs/features/done/feature-025-lissage-mesures-ph-orp-pid.md) — entrée filtrée, anti-windup, pause mélange, zone morte
 - [feature-036](../../specs/features/done/feature-036-dosage-testable-decision-pure.md) — extraction de la décision de dosage en module pur testable
 - [feature-039](../../specs/features/done/feature-039-anti-rafale-rollover-testable.md) — extraction de l'anti-rafale + déclencheurs de rollover en logique pure testable
-- [feature-011](../../specs/features/todo/feature-011-repartition-24h-programmee.md) — répartition du volume quotidien scheduled par fenêtres de 15 min
-- [bug-dosage-fantome-duty-non-calibre](../../specs/features/todo/bug-dosage-fantome-duty-non-calibre.md) — **spec ouverte** : défaut n°2 (double comptage) livré en v2.20.5 ; défaut n°1 (modèle duty↔débit) livré en **v2.21.0** (proportionnel de temps, [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)/[ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md)) ; défaut n°3 (UI commandé/effectif) = itération 3 restante
+- [feature-011](../../specs/features/done/feature-011-repartition-24h-programmee.md) — répartition du volume quotidien scheduled par fenêtres de 15 min
+- [bug-dosage-fantome-duty-non-calibre](../../specs/features/done/bug-dosage-fantome-duty-non-calibre.md) — **spec ouverte** : défaut n°2 (double comptage) livré en v2.20.5 ; défaut n°1 (modèle duty↔débit) livré en **v2.21.0** (proportionnel de temps, [ADR-0043](../adr/0043-dosage-proportionnel-de-temps-amplitude-calibree.md)/[ADR-0044](../adr/0044-budget-horaire-et-temps-min-en-temps-pompe-on.md)) ; défaut n°3 (UI commandé/effectif) = itération 3 restante
 - [page-ph.md](../features/page-ph.md), [page-orp.md](../features/page-orp.md) — UI consommatrices

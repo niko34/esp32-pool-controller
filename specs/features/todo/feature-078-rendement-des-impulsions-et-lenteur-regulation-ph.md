@@ -4,10 +4,11 @@
 
 | Champ | Valeur |
 |---|---|
-| Statut | todo — **levier 2 appliqué en v2.25.3**, **cause n°1 traitée en v2.26.0** (levée de `Ki = 0`) ; reste en attente des mesures M1/M2 et de la vérification terrain |
+| Statut | todo — **levier 2 appliqué en v2.25.3**, **cause n°1 traitée en v2.26.0** (levée de `Ki = 0`) ; **M1 faite** (28/08), **biais de comptage CHIFFRÉ le 06/09** (+4,76 %, plancher) ; reste **M2** (nature du biais), la correction du modèle et la vérification terrain |
 | Origine | Constat utilisateur du 28/08/2026 : « la correction de pH est très lente, on n'atteint pratiquement jamais la cible sur plusieurs jours » |
 | Priorité | Moyenne — dégrade le service, aucun risque de sécurité |
-| Analyse | `pool-chemistry`, 28/08/2026 (7 leviers examinés) |
+| Analyse | `pool-chemistry`, 28/08/2026 (7 leviers examinés) ; **verdict du 06/09/2026** sur la concordance bidon/compteur |
+| Préalable | [feature-110](feature-110-compteur-d-impulsions-de-dosage.md) — compteur d'impulsions : **sans lui, la nature du biais reste indécidable** |
 
 ## Domaines touchés (pressentis)
 
@@ -92,6 +93,13 @@ Précautions communes : aspiration en **eau claire**, refoulement en éprouvette
 **bypass de sondes ouvert** (leçon du 23/08 : 35 min de dosage sur des mesures
 non représentatives).
 
+> **État au 06/09/2026** : **M1 est FAITE** (26,0 et 25,5 mL/min à duty 127,
+> drapeau « mesuré » posé — cf. [feature-075](../done/feature-075-assistant-mesure-debit-pompe.md)),
+> ce qui **écarte la cause n°3**. **M2 reste due** : c'est elle, ou son équivalent
+> sans effort humain ([feature-110](feature-110-compteur-d-impulsions-de-dosage.md)),
+> qui tranchera la **nature** du biais désormais chiffré à **+4,76 %** (voir le
+> suivi du 06/09 ci-dessous).
+
 ## Leviers, du plus sûr au plus dangereux (analyse `pool-chemistry`)
 
 1. **Mesurer M1 et M2** — risque nul, débloque tout. ⚠️ si `q_réel < 25`,
@@ -156,9 +164,89 @@ non représentatives).
 - ⚠️ **Restent dus** : mesures **M1** et **M2**, correction du modèle de comptage (à traiter
   comme une **hausse de dose**), et la **vérification terrain** de la convergence du pH.
 
+### 2026-09-06 — le biais de comptage est MESURÉ : +4,76 %, dans le sens conservateur
+
+La concordance bidon/compteur de [feature-075](../done/feature-075-assistant-mesure-debit-pompe.md)
+(critère P12) a été relevée sur **baseline propre** (posée le 31/08 : bidon chlore
+mesuré 8 750 mL, compteur remis à 0). **Ce n'est plus une hypothèse : c'est un
+chiffre.** Cette spec part désormais de données mesurées.
+
+| Grandeur | Valeur |
+|---|---:|
+| Compteur appareil (`orp_total_injected_ml`) | **5 290,44 mL** |
+| Restant **estimé** | 3 459,56 mL |
+| Restant **mesuré** (doseur 3 L à ras + 0,7 L) | **3 700 mL** |
+| Injecté **réel** | **5 050 mL** |
+| **Biais** | **+240,44 mL = +4,76 %** — l'appareil **sur-compte** |
+
+Incertitude de lecture ~±30-50 mL ⇒ biais réel entre **+3,8 % et +5,8 %** :
+**distinguable de zéro**. Fenêtre : **6 jours**, 5 050 mL injectés, amplitude
+`duty = 127`, pouls minimal 10 s.
+
+#### Ce que ces chiffres apportent aux hypothèses de cette spec
+
+- **La cause n°2 (perte fixe par démarrage) est CONFIRMÉE dans son sens** — mais
+  son ampleur est **bien inférieure** à l'estimation initiale de 15-45 % de
+  sur-comptage. Le chiffre à retenir est **+4,76 %** (plancher).
+- **Quantification par impulsion** ([`src/pulse_dosing_logic.cpp:136-163`](../../../src/pulse_dosing_logic.cpp)) :
+  un pouls minimal est compté **4,573 mL** (kick 0,493 + plateau 4,08) ⇒
+  ~**1 160 impulsions** sur la fenêtre ⇒ **0,21 mL de surcoût par impulsion**,
+  soit ~**0,5 s de débit perdu au démarrage**. C'est l'ordre de grandeur exact
+  d'un transitoire péristaltique — donc **dans la fourchette basse** des 0,1-0,5 mL
+  postulés, pas au milieu.
+- **~19 % de ce surcoût est VOLONTAIRE et doit être préservé** : le kick est
+  crédité à `kPumpFlow255MlPerMin = 74,0` contre **68,0 réellement mesurés**
+  ([`constants.h:2114-2136`](../../../src/constants.h),
+  [ADR-0050](../../../docs/adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md)).
+  ⛔ **Ne pas « corriger » cette marge** en croyant gagner en précision : elle
+  couvre une dispersion inter-unités de 11 % déjà constatée sur un même lot.
+- **+4,76 % est un PLANCHER, pas une valeur.** Une purge expulse du liquide
+  **sans le compter** : elle **masque** une partie du sur-comptage.
+  `measures_purge_count` valait 0 au relevé, mais l'appareil avait redémarré
+  20 min plus tôt — ce compteur **ne couvre pas la fenêtre**.
+- **Réserve sur l'ampleur mesurée** : `kPulseMinMs` porté de 5 à 10 s
+  ([ADR-0051](../../../docs/adr/0051-pouls-minimal-double-rendement-avant-comptage.md))
+  a **divisé par deux** le nombre d'impulsions. Le +4,76 % est donc mesuré
+  **après** l'atténuation — et ce même allongement a réduit d'autant le coussin
+  de sécurité involontaire que le sur-comptage constituait.
+
+#### ⛔ NO GO ferme sur un facteur de comptabilité de flotte — verdict `pool-chemistry` du 06/09
+
+Un facteur **multiplicatif** calé sur ce point unique corrigerait **mal** une perte
+**par impulsion** : la fraction de biais varie avec la **durée moyenne de pouls**,
+donc avec la demande. Sur pouls longs, il **sur-corrigerait et relâcherait les
+quotas**. La branche « correctif de flotte » envisagée en feature-075 est
+**écartée**, et elle ne pourra être rouverte qu'une fois la **nature** du biais
+établie.
+
+**Aucune urgence de sécurité chimique** : le sens est **conservateur** — sur-compter
+**resserre** les quotas journaliers et **avance** l'alerte de bidon vide. La
+correction du modèle reste donc, comme annoncé, **une hausse de dose** à instruire
+comme telle.
+
+#### Comment trancher la nature — deux chemins, tous deux valides
+
+1. **Le chemin sans effort humain** : [feature-110](feature-110-compteur-d-impulsions-de-dosage.md),
+   compteur d'impulsions par pompe, persistant, remis à zéro **avec** le volume.
+   Volume **et** impulsions ⇒ **deux inconnues, deux équations**. Le relevé se
+   produit tout seul au changement de bidon — un geste déjà fait.
+   **Sans lui, chaque concordance future sera aussi peu concluante que celle du 06/09.**
+2. **Le chemin rapide** — le protocole de banc est **déjà écrit** dans
+   [`src/constants.h:2088`](../../../src/constants.h) et repris en M2 ci-dessus :
+   **24 pouls de 5 s contre 12 pouls de 10 s, à temps de pompe égal**.
+   **Volumes égaux ⇒ biais multiplicatif ; le premier plus faible ⇒ perte fixe
+   par impulsion** (`V₁₀ − V₅ = 12 × L`).
+
 ## Critères de clôture
 
-- M1 et M2 exécutées, valeurs consignées.
+- M1 et M2 exécutées, valeurs consignées. *(M1 faite le 28/08 ; M2 due — soit au
+  banc, soit par le couple volume/impulsions de
+  [feature-110](feature-110-compteur-d-impulsions-de-dosage.md).)*
+- **Nature du biais établie** (multiplicatif vs perte fixe par impulsion) **avant**
+  toute correction du modèle — ⛔ NO GO sur un facteur multiplicatif de flotte tant
+  qu'elle ne l'est pas (verdict `pool-chemistry` du 06/09).
+- **Marge délibérée du kick préservée** : `kPumpFlow255MlPerMin = 74,0` contre 68,0
+  mesurés — ~19 % du sur-comptage, volontaire, **jamais à « corriger »**.
 - Si sur-comptage confirmé : modèle de comptage corrigé **et** hausse de dose
   assumée explicitement, visa `pool-chemistry`.
 - Le pH atteint la consigne et s'y maintient sur 3 jours consécutifs.

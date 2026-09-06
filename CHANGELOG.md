@@ -502,7 +502,7 @@
 - `docs/API.md` : route `POST /reset-regulation-defaults` (200/401/503, périmètre, invariants) + objet `regulation_defaults` de `/get-config`.
 - `docs/features/page-settings.md` : bouton, dialogue récapitulatif, visibilité conditionnelle, erreurs.
 - `docs/subsystems/pump-controller.md` : nouvelle section « Restauration des valeurs d'usine de régulation » (`restoreRegulationDefaults()`, source unique, verrous compile-time, prédicat de niveau de journal).
-- `docs/subsystems/ws-manager.md` : aucun champ WS nouveau (broadcast config différé réutilisé) ; écart de parité **préexistant** de la trame `config` consigné dans [bug-089](specs/features/todo/bug-089-parite-ws-config-champs-manquants.md).
+- `docs/subsystems/ws-manager.md` : aucun champ WS nouveau (broadcast config différé réutilisé) ; écart de parité **préexistant** de la trame `config` consigné dans [bug-089](specs/features/done/bug-089-parite-ws-config-champs-manquants.md).
 - Pas d'ADR : mécanisme local sans alternative structurante, la source unique est documentée dans le code et le périmètre tracé dans la spec + le visa `pool-chemistry`.
 
 ### Tests
@@ -555,7 +555,7 @@
 >
 > ✅ **Vous pouvez enfin voir POURQUOI le pH ne descend pas** — quand c'est le cas. Avec une limite horaire d'injection à **5 min/h** (valeur d'usine), le débit moyen que la pompe peut délivrer plafonne à **~2,17 mL/min**, soit **~911 mL/jour** sur la filtration programmée — sous le besoin du bassin (**~1 800 mL/jour**). Jusqu'ici, cette conséquence n'était calculée nulle part et affichée nulle part. Cette version l'affiche noir sur blanc sur la page pH, calculée sur la **configuration réelle**.
 >
-> ℹ️ **Ces indicateurs sont en lecture seule** : aucun comportement de dosage ne change dans cette version. Le **relèvement de la limite horaire** (le seul remède réel avec l'allongement de la filtration) était **volontairement différé** après l'observation terrain — jalons : 3 journées exploitables dans l'anneau de charge (~2-3/09), 72 h de feedforward (~5-6/09), et une restauration vérifiée ([feature-086](specs/features/doing/feature-086-limite-actionneur-dosage-ph.md), point 3). Cf. rectificatif : ce relèvement avait en réalité déjà été fait par l'utilisateur.
+> ℹ️ **Ces indicateurs sont en lecture seule** : aucun comportement de dosage ne change dans cette version. Le **relèvement de la limite horaire** (le seul remède réel avec l'allongement de la filtration) était **volontairement différé** après l'observation terrain — jalons : 3 journées exploitables dans l'anneau de charge (~2-3/09), 72 h de feedforward (~5-6/09), et une restauration vérifiée ([feature-086](specs/features/done/feature-086-limite-actionneur-dosage-ph.md), point 3). Cf. rectificatif : ce relèvement avait en réalité déjà été fait par l'utilisateur.
 
 ### Firmware
 
@@ -606,7 +606,7 @@
 
 > ✅ **La charge quotidienne connue est désormais couverte dès la première heure de filtration, au lieu de J+2,4.** Le bassin consomme une dose d'acide très régulière (~80 % vient du dégazage de CO₂, stable d'un jour à l'autre), et l'appareil la connaît déjà : elle est dans son historique de consommation depuis la v2.27.0. Jusqu'ici la régulation la redécouvrait chaque fois par tâtonnement — et le moindre à-coup (pluie, appoint) effaçait l'apprentissage. Cette version injecte d'office la charge connue pendant les sessions automatiques (« **dose de base apprise** », feedforward), la régulation ne traitant plus que l'écart résiduel. Elle est **apprise, jamais saisie** : aucun volume de bassin, TAC ou concentration à renseigner.
 >
-> ⚠️ **Ce que cette version NE change PAS : la limitation par la pompe** (voir l'avertissement de la v2.27.0). Avec 5 min/h de limite d'injection, le maximum délivrable reste ~911 mL/j pour un besoin de ~1 800 mL/j — dose de base ou pas, la consigne peut rester hors d'atteinte. Le sujet reste suivi dans [feature-086](specs/features/todo/feature-086-limite-actionneur-dosage-ph.md).
+> ⚠️ **Ce que cette version NE change PAS : la limitation par la pompe** (voir l'avertissement de la v2.27.0). Avec 5 min/h de limite d'injection, le maximum délivrable reste ~911 mL/j pour un besoin de ~1 800 mL/j — dose de base ou pas, la consigne peut rester hors d'atteinte. Le sujet reste suivi dans [feature-086](specs/features/done/feature-086-limite-actionneur-dosage-ph.md).
 >
 > ⚠️ **Résultat non vérifié sur le terrain** : validé en natif (970 tests) et par le gate chimie (GO amont sous 4 conditions + contre-visite GO, risque résiduel borné ~0,01-0,02 pH), mais pas encore observé sur le bassin. À surveiller : quota journalier sur 72 h, annulation en < 30 min sur une vraie perturbation acide, redémarrage en pleine séance de dosage.
 
@@ -652,7 +652,7 @@
 >
 > ✅ **Ce que cette version apporte : de la ROBUSTESSE, pas de la vitesse.** L'apprentissage de la régulation pH survit désormais à un redémarrage et aux à-coups. Un redémarrage coûtait **2,4 jours** de reconvergence ; il coûte maintenant **environ une heure**.
 >
-> ⚠️ **Résultat non vérifié sur le terrain** : cette version n'a pas encore tourné sur le bassin. Le problème de fond est suivi dans [feature-086](specs/features/todo/feature-086-limite-actionneur-dosage-ph.md) (limite d'actionneur) et [feature-085](specs/features/todo/feature-085-dose-de-base-apprise-feedforward.md) (dose de base apprise).
+> ⚠️ **Résultat non vérifié sur le terrain** : cette version n'a pas encore tourné sur le bassin. Le problème de fond est suivi dans [feature-086](specs/features/done/feature-086-limite-actionneur-dosage-ph.md) (limite d'actionneur) et [feature-085](specs/features/done/feature-085-dose-de-base-apprise-feedforward.md) (dose de base apprise).
 
 ### Firmware
 

@@ -3,13 +3,13 @@
 - **Statut** : Accepté
 - **Date** : 2026-08-30
 - **Décideurs** : gate `pool-chemistry` (30/08/2026), `architect`, `code-reviewer`
-- **Spec(s) liée(s)** : [feature-084-integrale-ph-cadence-et-memoire](../../specs/features/doing/feature-084-integrale-ph-cadence-et-memoire.md)
+- **Spec(s) liée(s)** : [feature-084-integrale-ph-cadence-et-memoire](../../specs/features/done/feature-084-integrale-ph-cadence-et-memoire.md)
 
 ## Contexte
 
 ### Le filet dont il est question
 
-La [feature-084](../../specs/features/doing/feature-084-integrale-ph-cadence-et-memoire.md)
+La [feature-084](../../specs/features/done/feature-084-integrale-ph-cadence-et-memoire.md)
 introduit un **anneau de charge acide** : sept journées `{date, mL de correcteur pH,
 minutes de circulation}`, dont on tire une **médiane en mL/min**. Cette médiane borne le
 plafond de restauration de l'intégrale et porte, à ce titre, l'argument de sûreté de
@@ -159,7 +159,7 @@ changer**, la question n'est pas hypothétique.
   `kPhLoadDayMaxRateFactor` + `static_assert` associés)
 - Tests : [`test/test_native_ph_persist/`](../../test/test_native_ph_persist/) — sentinelle
   à deux sens (même journée écartée à 5 min/h, retenue à 15 min/h)
-- Spec : [feature-084](../../specs/features/doing/feature-084-integrale-ph-cadence-et-memoire.md)
+- Spec : [feature-084](../../specs/features/done/feature-084-integrale-ph-cadence-et-memoire.md)
 - ADR liés : [ADR-0053](0053-persistance-conditionnelle-integrale-ph.md) (l'intégrité de la
   charge observée est une propriété de sécurité — c'est ce qui rend ce filet nécessaire),
   [ADR-0052](0052-terme-integral-ph-dimensionne-par-autorite.md) (`phSustainableAvgFlow`, gel

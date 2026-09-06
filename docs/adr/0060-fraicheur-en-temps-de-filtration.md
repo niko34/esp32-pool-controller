@@ -3,7 +3,7 @@
 - **Statut** : Accepté — **amende R3 (péremption) et R5 (cadence d'écriture) de l'[ADR-0053](0053-persistance-conditionnelle-integrale-ph.md)**. R1 (plafond chimique), R2 (scellement et contexte), R4 (confirmation par la mesure), R6 (journalisation) et R7 (anti-boucle) sont **inchangés**, ainsi que tout l'argument de sûreté de l'ADR-0053 : *ce qui est restauré n'est pas une autorisation de doser, c'est la vitesse d'une correction déjà décidée par la mesure*.
 - **Date** : 2026-09-04
 - **Décideurs** : gate `pool-chemistry` (double critère filtration **ET** plafond mural — tranché sur la question laissée ouverte à la clôture de feature-084), `architect` (piste P1 retenue contre P2+P3), `code-reviewer` (**Majeur 1** : garde `candidatePending`), `test-engineer` (mutation), utilisateur (« un reboot ne devrait pas perturber le fonctionnement »)
-- **Spec(s) liée(s)** : [feature-093](../../specs/features/done/feature-093-regulation-transparente-au-reboot.md) ; origine : [feature-084](../../specs/features/doing/feature-084-integrale-ph-cadence-et-memoire.md) (question R3 laissée ouverte), `bug-080` (source des redémarrages)
+- **Spec(s) liée(s)** : [feature-093](../../specs/features/done/feature-093-regulation-transparente-au-reboot.md) ; origine : [feature-084](../../specs/features/done/feature-084-integrale-ph-cadence-et-memoire.md) (question R3 laissée ouverte), `bug-080` (source des redémarrages)
 
 ## Contexte
 

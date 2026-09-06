@@ -4,11 +4,11 @@
 - **ID** : feature-075
 - **Slug** : assistant-mesure-debit-pompe
 - **Type** : feature (UX produit — préparation flotte)
-- **Statut** : doing — livré (tests verts, revue Approved) ; **vérifications on-target restantes** (voir critères d'acceptation)
+- **Statut** : **done** — livré (tests verts, revue Approved), **vérifications on-target faites** (28/08) et **P12 clos le 06/09/2026** (concordance bidon/compteur sur baseline propre + limites d'exploitation restaurées)
 - **Priorité** : normale
 - **Version cible** : 2.24.0 (livrée)
-- **Dernière mise à jour** : 2026-08-24
-- **Spec(s) liée(s)** : feature-074 (calibration de type, formulaire actuel), ADR-0043/0047, bug-dosage-fantome it.2 (outil ?duty=)
+- **Dernière mise à jour** : 2026-09-06
+- **Spec(s) liée(s)** : feature-074 (calibration de type, formulaire actuel), ADR-0043/0047, bug-dosage-fantome it.2 (outil ?duty=), **feature-078** (nature du biais de comptage — résidu de P12), **feature-110** (compteur d'impulsions — préalable qui rendra la prochaine concordance auto-suffisante)
 
 ## Domaines touchés
 - [ ] Capteurs
@@ -90,11 +90,11 @@ Formulaire nu par pompe (feature-074) : un champ « Débit mesuré (ml/min) » p
 - **Probable** : non a priori (assemblage de mécanismes existants) — l'architect confirme
 
 ## Critères d'acceptation
-- [ ] **P12 — 3 jours de concordance bidon/compteur** *(transféré depuis
+- [x] **P12 — concordance bidon/compteur** *(transféré depuis
   `bug-dosage-fantome-duty-non-calibre.md` le 2026-08-28, avec l'accord de
-  l'utilisateur)*. Comparer le compteur (`ph/orp_daily_ml`) au niveau réel des
-  bidons gradués, relevé daté, sur 3 jours ; puis **restaurer les limites
-  d'exploitation** abaissées pendant la validation (P3).
+  l'utilisateur)*. Comparer le compteur au niveau réel des bidons gradués, relevé
+  daté ; puis **restaurer les limites d'exploitation** abaissées pendant la
+  validation (P3).
   **Motif du transfert** : ce critère ne valide pas la correction du dosage
   fantôme mais la **justesse des débits**, aujourd'hui **extrapolés** (25,0 et
   27,5 mL/min à l'amplitude d'exploitation, valeurs d'usine provisoires de la
@@ -102,6 +102,77 @@ Formulaire nu par pompe (feature-074) : un champ « Débit mesuré (ml/min) » p
   réelle. Faire la concordance avant la mesure reviendrait à valider un compteur
   contre un débit supposé : l'ordre naturel est **mesurer d'abord** (assistant),
   **concorder ensuite**.
+
+  **MESURÉ le 2026-09-06 — première concordance sur baseline propre** (posée le
+  31/08 : bidon chlore mesuré 8 750 mL, compteur remis à 0).
+
+  | Grandeur | Valeur |
+  |---|---:|
+  | Compteur appareil (`orp_total_injected_ml`) | **5 290,44 mL** |
+  | Restant **estimé** (8 750 − 5 290,44) | 3 459,56 mL |
+  | Restant **mesuré** | **3 700 mL** |
+  | Injecté **réel** (8 750 − 3 700) | **5 050 mL** |
+  | **Biais** | **+240,44 mL = +4,76 %** — l'appareil **sur-compte** |
+
+  **Méthode** : récipient doseur de 3 L rempli **à ras**, puis complément de
+  0,7 L. Incertitude ~±30-50 mL ⇒ biais réel entre **+3,8 % et +5,8 %** :
+  **distinguable de zéro**. **Fenêtre** : 6 jours, 5 050 mL réellement injectés,
+  amplitude `duty = 127`.
+
+  **Le critère demandait « 3 jours » — il est dépassé par l'esprit** : 6 jours,
+  5 L injectés, baseline contrôlée et compteur remis à zéro au même instant que
+  la mesure physique. C'est un **meilleur signal** que trois relevés quotidiens,
+  chacun noyé dans l'incertitude de lecture d'un bidon à peine entamé. Critère
+  **satisfait**.
+
+  **Second volet — restauration des limites d'exploitation : satisfait.**
+  `ph_limit_minutes` et `orp_limit_minutes` sont à **10 min/h** (défauts d'usine),
+  restaurés le 31/08 par l'utilisateur (cf. mémoire `parametres-bassin-utilisateur`).
+
+  #### Verdict `pool-chemistry` du 2026-09-06
+
+  **Ni la branche (a) ni la branche (b)** annoncées en itération 2bis. Le point
+  est **concluant sur l'EXISTENCE** du biais, **non concluant sur sa NATURE**.
+  **NO GO ferme sur tout facteur de comptabilité de flotte.**
+
+  1. **Le biais était déjà documenté.** [`src/constants.h:2083-2089`](../../../src/constants.h)
+     annonce que « le compteur reste FAUX », décrit une **perte fixe par
+     impulsion**, déclare la mesure due et renvoie à `feature-078`. Cette mesure
+     ne découvre rien : elle **chiffre pour la première fois une dette connue**,
+     et **dans le sens annoncé**.
+  2. **Le sens observé est l'INVERSE de celui que postulait la branche (b)**,
+     laquelle supposait des kick/rampes délivrant *plus* que `débit × temps`.
+  3. **Quantification** ([`src/pulse_dosing_logic.cpp:136-163`](../../../src/pulse_dosing_logic.cpp)) :
+     un pouls minimal est compté **4,573 mL** (kick 0,493 + plateau 4,08) ⇒
+     ~**1 160 impulsions** sur la fenêtre ⇒ **0,21 mL de surcoût par impulsion**,
+     soit ~**0,5 s de débit perdu au démarrage** — l'ordre de grandeur exact d'un
+     transitoire péristaltique.
+  4. **~19 % de ce surcoût est VOLONTAIRE** : le kick est crédité à
+     `kPumpFlow255MlPerMin = 74,0` contre **68,0 mesurés**
+     ([`constants.h:2114-2136`](../../../src/constants.h)). C'est une marge de
+     sécurité de flotte, **à ne jamais « corriger »** en croyant gagner en
+     précision.
+  5. **Pourquoi pas de facteur de flotte** : un facteur **multiplicatif** calé sur
+     un point unique corrigerait **mal** une perte **par impulsion** — la fraction
+     de biais varie avec la durée moyenne de pouls, donc avec la demande. Sur
+     pouls longs il **sur-corrigerait et relâcherait les quotas**.
+  6. **Sens conservateur, aucun effet de sécurité chimique** : sur-compter
+     **resserre** les quotas journaliers et **avance** l'alerte de bidon vide.
+     Rien à corriger en urgence.
+  7. **Réserve** : `kPulseMinMs` porté de 5 à 10 s ([ADR-0051](../../../docs/adr/0051-pouls-minimal-double-rendement-avant-comptage.md))
+     a **divisé par deux** le nombre d'impulsions — donc **réduit** ce coussin
+     involontaire d'autant.
+  8. **Incertitude à signaler** : une purge expulse du liquide **sans le
+     compter**, elle **masquerait** donc une partie du sur-comptage.
+     `measures_purge_count` valait 0 au relevé, mais l'appareil avait redémarré
+     20 min plus tôt : ce compteur **ne couvre pas la fenêtre**.
+     ⇒ **+4,76 % est un PLANCHER, pas une valeur.**
+
+  **Résidu routé** : la **nature** du biais et son éventuel correctif appartiennent
+  à [feature-078](../todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md),
+  dont le **préalable** est [feature-110](../todo/feature-110-compteur-d-impulsions-de-dosage.md)
+  (compteur d'impulsions : deux inconnues, deux équations). Sans ce compteur,
+  **chaque concordance future sera aussi peu concluante que celle-ci**.
 - [x] Fermer l'onglet pendant purge ou mesure → la pompe s'arrête à l'échéance
   **VÉRIFIÉ on-target le 2026-08-28**, par une variante assumée (voir nuance ci-dessous).
   Trace enregistrée depuis un poste tiers, échantillonnage 1,5 s de `/data` :
@@ -196,5 +267,30 @@ Formulaire nu par pompe (feature-074) : un champ « Débit mesuré (ml/min) » p
 |---|---|---|
 | 1 | Assistant complet (routes + suspension + UI 6 étapes + terminologie) | **livré — tests verts (674/674), revue OK (Approved après 2 rebouclages)**. Fichiers : `src/web_routes_control.{h,cpp}`, `src/web_routes_data.cpp`, `src/pump_controller.{h,cpp}`, `src/constants.h`, `src/flow_assist_logic.h` (nouveau), `src/version.h`, `data/index.html`, `data/app.js`, `data/app.css`, `test/test_native_flow_assist/` (nouveau), docs (API, page-settings, pump-controller, logger, CHANGELOG) |
 | 2 | Vérifications on-target post-OTA : fermeture d'onglet en pleine marche, parcours complet avec enregistrement « mesuré » | **vérifié on-target le 2026-08-28** (traces et tableau de mesures dans les critères d'acceptation ci-dessus) ; reste **P12** (3 jours de concordance bidon/compteur), qui ne peut se faire qu'après la mesure |
-| 2bis (P12) | **Premier point de concordance bidon/compteur — chlore, 31/08/2026.** Mesure physique du bidon : **8 750 mL** (saisi tel quel, l'affichage 8,8 L est un arrondi). État du compteur au même instant : `orp_total_injected_ml = 10 101,91` sur un bidon déclaré 20 000 ⇒ restant ESTIMÉ 9 898 mL vs 8 750 MESURÉ = **écart −1 148 mL (~11,4 % du volume compté), l'appareil SOUS-compte la consommation** (ou le remplissage initial était < 20,0 L — les bidons nominaux 20 L tolèrent ±3-5 %, ce qui absorbe une partie de l'écart ; purges et appoints manuels non comptés aussi). Si l'écart était 100 % débit : débit réel pompe 2 ≈ 25,5 × 1,114 ≈ **28,4 mL/min** vs 25,5 pesé. NON CONCLUANT seul — la baseline initiale n'était pas contrôlée. **Baseline PROPRE posée ce jour** : bidon 8 750 mesuré + compteur remis à 0 ⇒ la prochaine mesure physique donnera une concordance exploitable sans hypothèse. **OBJECTIF CADRÉ PAR L'UTILISATEUR (31/08)** : il ne s'agit PAS de mesurer les pompes de CET appareil (les appareils futurs auront d'autres pompes, jamais pesées une à une) mais de valider la CHAÎNE D'ESTIMATION de flotte. Le point propre à J+2 départage : (a) écart ≈ 0 ⇒ la comptabilité (débit pesé × temps de marche, phases de pouls comprises) est juste, l'erreur de flotte se réduit à la dispersion pompe-à-pompe autour de la calibration de type 28,0 — rien à changer ; (b) écart ≈ +10 % confirmé SUR POMPE PESÉE ⇒ biais dans la chaîne de comptage elle-même (kick/rampes qui délivrent plus que débit×temps, ou protocole de pesée) ⇒ correctif de flotte (facteur de comptabilité unique) à instruire avec pool-chemistry — ATTENTION au sens : sous-compter la consommation relâche de fait les quotas journaliers (~+11 %) et retarde l'alerte bidon vide. Mesure acide : possible mais délicate à manipuler, à la discrétion de l'utilisateur — non requise si le point chlore est net. | **en cours** — mesure physique du bidon chlore prévue vers le 2/09 |
+| 2bis (P12) | **Premier point de concordance bidon/compteur — chlore, 31/08/2026.** Mesure physique du bidon : **8 750 mL** (saisi tel quel, l'affichage 8,8 L est un arrondi). État du compteur au même instant : `orp_total_injected_ml = 10 101,91` sur un bidon déclaré 20 000 ⇒ restant ESTIMÉ 9 898 mL vs 8 750 MESURÉ = **écart −1 148 mL (~11,4 % du volume compté), l'appareil SOUS-compte la consommation** (ou le remplissage initial était < 20,0 L — les bidons nominaux 20 L tolèrent ±3-5 %, ce qui absorbe une partie de l'écart ; purges et appoints manuels non comptés aussi). Si l'écart était 100 % débit : débit réel pompe 2 ≈ 25,5 × 1,114 ≈ **28,4 mL/min** vs 25,5 pesé. NON CONCLUANT seul — la baseline initiale n'était pas contrôlée. **Baseline PROPRE posée ce jour** : bidon 8 750 mesuré + compteur remis à 0 ⇒ la prochaine mesure physique donnera une concordance exploitable sans hypothèse. **OBJECTIF CADRÉ PAR L'UTILISATEUR (31/08)** : il ne s'agit PAS de mesurer les pompes de CET appareil (les appareils futurs auront d'autres pompes, jamais pesées une à une) mais de valider la CHAÎNE D'ESTIMATION de flotte. Le point propre à J+2 départage : (a) écart ≈ 0 ⇒ la comptabilité (débit pesé × temps de marche, phases de pouls comprises) est juste, l'erreur de flotte se réduit à la dispersion pompe-à-pompe autour de la calibration de type 28,0 — rien à changer ; (b) écart ≈ +10 % confirmé SUR POMPE PESÉE ⇒ biais dans la chaîne de comptage elle-même (kick/rampes qui délivrent plus que débit×temps, ou protocole de pesée) ⇒ correctif de flotte (facteur de comptabilité unique) à instruire avec pool-chemistry — ATTENTION au sens : sous-compter la consommation relâche de fait les quotas journaliers (~+11 %) et retarde l'alerte bidon vide. Mesure acide : possible mais délicate à manipuler, à la discrétion de l'utilisateur — non requise si le point chlore est net. | **clos le 06/09/2026 — ni (a) ni (b)** : mesure faite (compteur 5 290,44 mL, restant mesuré 3 700, injecté réel 5 050 ⇒ **+240,44 mL = +4,76 %, l'appareil SUR-compte**, plancher). Verdict `pool-chemistry` : **concluant sur l'existence** du biais, **non concluant sur sa nature**, **NO GO ferme sur tout facteur de comptabilité de flotte**. Détail complet dans le critère P12 ci-dessus. Résidu routé vers `feature-078` (nature + correctif) avec `feature-110` en préalable. Mesure acide **non faite et non requise** — le point chlore est net. |
 | 3 (hors périmètre, conséquence) | Report des mesures dans les **valeurs d'usine** — v2.25.2, [ADR-0050](../../../docs/adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md) : débit à 255 = constante **unique de flotte** `kPumpFlow255MlPerMin = 74,0`, justification de `kPumpTypePulseFlowMlPerMin = 28,0` refondée sur la mesure, miroir client supprimé | **livré** — traité comme un cycle distinct (cette spec exclut explicitement la modification de la calibration de type) |
+
+## Notes de clôture (2026-09-06)
+
+**Ce que cette spec a livré** : l'assistant de mesure du débit, vérifié on-target
+sur les deux pompes le 28/08, et — par le critère P12 qui lui avait été transféré —
+**le premier chiffrage du biais du compteur de volume** sur une baseline contrôlée.
+
+**Ce qu'elle ne livre pas, et qui n'est pas de son ressort** : la **nature** de ce
+biais (multiplicatif ou perte fixe par impulsion) et son éventuel correctif. Le
+volume seul ne peut pas trancher — une inconnue, une équation. C'est un résultat
+en soi, et il est routé :
+
+| Suite | Objet | Pourquoi elle passe avant / après |
+|---|---|---|
+| [feature-110](../todo/feature-110-compteur-d-impulsions-de-dosage.md) | Compteur d'impulsions par pompe, persistant, remis à zéro **avec** le volume | **Préalable.** Deux inconnues, deux équations : sans lui, **chaque concordance future sera aussi peu concluante que celle du 06/09**. Il se relève sans effort, au geste déjà fait du changement de bidon. |
+| [feature-078](../todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md) | Nature du biais (M2) puis correction du modèle de comptage | **Après.** Toute correction du comptage est une **hausse de dose réelle** : elle exige la nature établie et un visa `pool-chemistry`. |
+
+**Aucune modification de code n'a été faite par cette clôture** — le sens du biais
+est **conservateur** (quotas resserrés, alerte de bidon vide en avance) : rien
+n'appelait d'action corrective immédiate.
+
+**Documentation touchée** : [`docs/subsystems/pump-controller.md`](../../../docs/subsystems/pump-controller.md)
+(section « Biais du compteur de volume — mesuré »), mémoire projet
+`.claude/memory/parametres-bassin-utilisateur.md` (relevé du 06/09).
+**`CHANGELOG.md` : aucune entrée** — rien n'est livré, aucun comportement ne change.

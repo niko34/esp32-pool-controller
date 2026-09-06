@@ -4,7 +4,7 @@
 - **Date** : 2026-08-24
 - **Décideurs** : gate `pool-chemistry` (GO amont sous conditions C1-C5 + GO en
   contre-visite, 2026-08-24), architect, utilisateur (contexte produit)
-- **Spec(s) liée(s)** : [feature-074-calibration-de-type-et-gel-amplitude](../../specs/features/doing/feature-074-calibration-de-type-et-gel-amplitude.md) (v2.23.0)
+- **Spec(s) liée(s)** : [feature-074-calibration-de-type-et-gel-amplitude](../../specs/features/done/feature-074-calibration-de-type-et-gel-amplitude.md) (v2.23.0)
 
 ## Contexte
 
@@ -153,7 +153,7 @@ MAX_PWM_DUTY / 100` et pose `weighed = true`. L'effacement (`duty = 0`) remet
   (duty déduit de l'amplitude, drapeau weighed), [`data/app.js`](../../data/app.js) /
   [`data/index.html`](../../data/index.html) (curseur retiré, ligne lecture seule,
   formulaire à champ unique)
-- Spec : [feature-074-calibration-de-type-et-gel-amplitude](../../specs/features/doing/feature-074-calibration-de-type-et-gel-amplitude.md)
+- Spec : [feature-074-calibration-de-type-et-gel-amplitude](../../specs/features/done/feature-074-calibration-de-type-et-gel-amplitude.md)
   (justification de 28.0, mesures du 2026-08-23)
 - ADR liés : [ADR-0043](0043-dosage-proportionnel-de-temps-amplitude-calibree.md)
   (fail-closed des défauts amendé — le reste inchangé), [ADR-0046](0046-accumulateur-demande-sous-pouls-minimal.md)

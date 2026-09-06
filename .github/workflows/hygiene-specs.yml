@@ -36,6 +36,22 @@ jobs:
       - name: Contrôle d'unicité
         run: ./tools/check_specs.sh
 
+  liens-doc:
+    name: Liens de documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Même famille que le contrôle d'unicité : le registre écrit doit rester
+      # univoque ET navigable. Le chemin d'un lien vers une spec encode son ÉTAT
+      # (`doing/`, `done/`) ; chaque promotion casse silencieusement les liens qui
+      # citaient l'ancien emplacement. Constat du 2026-09-06 : 27 liens morts,
+      # tous dans ce cas. Le commit qui promeut une spec échoue désormais tout de
+      # suite, au lieu de laisser pourrir la doc pendant des mois.
+      - name: Contrôle des liens de documentation
+        run: ./tools/check_doc_links.sh
+
   # JOB 2 — Point d'admission unique des fopen internes (ADR-0070, bug-100).
   # Sur ESP32, un fopen dont le malloc du verrou newlib (92 o) échoue appelle
   # abort() : AUCUN code de retour à tester. Deux crashs de production

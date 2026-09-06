@@ -198,7 +198,29 @@ Les tests natifs ne couvrent que la **logique pure**. L'**intégration matériel
 |---|---|---|---|
 | [`tests-natifs.yml`](../.github/workflows/tests-natifs.yml) | `pio test -e native`, puis couverture `gcovr` avec seuil **lignes ≥ 90 %** sur **tout `src/`** (filtre identique à `tools/coverage.sh`, cf. [Couverture de tests](#couverture-de-tests)) ; rapport HTML publié en artefact | push `main` + PR, **sans** filtre de chemins | env `native` seul (quelques Mo) |
 | [`build-firmware.yml`](../.github/workflows/build-firmware.yml) *(feature-103, 2026-09-06)* | **`pio run -e esp32dev_core3`** — la compilation du firmware. Étape informative supplémentaire : sections du binaire (`xtensa-esp32-elf-size`), `continue-on-error` | push `main` + PR, **avec** filtre de chemins (voir plus bas) | toolchain pioarduino ≈ **2 Go**, mise en cache |
-| [`hygiene-specs.yml`](../.github/workflows/hygiene-specs.yml) — **« Hygiène du dépôt »** *(feature-103, 2026-09-06 ; renommé et élargi par `bug-100` cycle 2)* | **Deux jobs indépendants** : `unicite` → [`tools/check_specs.sh`](../tools/check_specs.sh) (un nom de spec ne vit que dans **un seul** des dossiers `todo/` · `doing/` · `done/`) ; `fopen-guard` → [`tools/check_fopen_guard.sh`](../tools/check_fopen_guard.sh) (aucun fichier de `src/` autre que `fs_guard.cpp` n'appelle `open(` / `exists(` / `openNextFile(`, [ADR-0070](adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)) | push `main` + PR, **sans** filtre de chemins | ~1 s chacun, ni Python, ni PlatformIO, ni cache |
+| [`hygiene-specs.yml`](../.github/workflows/hygiene-specs.yml) — **« Hygiène du dépôt »** *(feature-103, 2026-09-06 ; renommé et élargi par `bug-100` cycle 2)* | **Trois jobs indépendants** : `unicite` → [`tools/check_specs.sh`](../tools/check_specs.sh) (un nom de spec ne vit que dans **un seul** des dossiers `todo/` · `doing/` · `done/`) ; `liens-doc` → [`tools/check_doc_links.sh`](../tools/check_doc_links.sh) (tout lien relatif de la doc résout — voir l'encadré ci-dessous) ; `fopen-guard` → [`tools/check_fopen_guard.sh`](../tools/check_fopen_guard.sh) (aucun fichier de `src/` autre que `fs_guard.cpp` n'appelle `open(` / `exists(` / `openNextFile(`, [ADR-0070](adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)) | push `main` + PR, **sans** filtre de chemins | ~1 s chacun, ni Python, ni PlatformIO, ni cache |
+
+> ⚠️ **Pourquoi un contrôle de liens** *(ajouté le 2026-09-06)*
+>
+> Le chemin d'un lien vers une spec **encode son état** dans le cycle :
+> `specs/features/doing/…`. Or cet état change **par conception** — `todo` →
+> `doing` → `done`. Chaque promotion casse donc, **silencieusement**, tous les
+> liens qui citaient l'ancien emplacement. Relevé du jour : **27 liens morts sur
+> 94** vers des specs (29 %), **tous** pointant vers `todo/` ou `doing/` pour des
+> specs passées en `done/`. Ce n'étaient pas des fautes de frappe : c'étaient des
+> liens **justes le jour où ils ont été écrits**.
+>
+> `check_specs.sh` garantit qu'une spec ne vit pas dans deux dossiers ; il ne dit
+> rien des liens qui la citent. Le registre écrit doit rester **univoque** *et*
+> **navigable**.
+>
+> Le script porte **trois exclusions**, sans lesquelles il serait bruyant donc
+> ignoré : les blocs de code clôturés (`](AsyncWebServerRequest*)` en C++ n'est
+> pas un lien), les segments entre backticks (ce document décrit la convention
+> avec des exemples), et le suffixe `:123` — c'est un **numéro de ligne**, pas une
+> partie du chemin.
+>
+> Lançable en local : `./tools/check_doc_links.sh` (0 si tout résout, 1 sinon).
 
 Les trois ont un groupe de `concurrency` propre avec `cancel-in-progress` : un nouveau push annule le run précédent sur la même réf.
 

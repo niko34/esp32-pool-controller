@@ -692,7 +692,7 @@ SensorTraceSample _traceBuffer[kSensorTraceBufferSize];  // 300 × 28 octets ≈
 
 La route `GET /debug/sensor_trace` sérialisait les 300 échantillons dans un seul `AsyncResponseStream` (~20 Ko contigus dans son `cbuf`) → `std::bad_alloc` non rattrapé → `abort()` → reboot sur heap fragmenté (coredump v2.10.0, 2026-07-23). Elle est désormais **paginée** (`?offset=N&count=M`, page bornée à `kSensorTraceMaxSamplesPerPage = 50` ≈ 3,5 Ko) avec **garde heap** (`measureJson` + `kSensorTraceHeapMarginBytes = 4096` vs `heapLargestFreeBlock8Bit()` depuis la **v2.40.0** — `ESP.getMaxAllocHeap()` avant, mesure qui comptait l'IRAM 32 bits inutilisable par ce `new` : voir [oom-guard.md](oom-guard.md) et [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) ; **seuil inchangé** → `503` propre) et stream **pré-dimensionné** (une seule allocation exacte, zéro `resize()`).
 
-Le clamp des bornes de page est un calcul **pur header-only** dans [`src/sensor_trace_page.h`](../../src/sensor_trace_page.h) (`computeTracePage()`, invariants `offset ≤ total`, `n ≤ max`, `offset + n ≤ total` pour tout input — testé en natif, suite `test_native_trace_page`, 16 tests, pattern [ADR-0017](../adr/0017-logique-pure-testable.md)). `appendSensorTraceJson()` applique en plus un **re-clamp défensif interne** sur son snapshot local de `_traceCount` (le buffer peut avoir glissé entre le clamp de la route et la lecture). Contrat complet de la route : [API.md](../API.md#get-debugsensor_trace--pas-dauth-cohérent-avec-autres-debug).
+Le clamp des bornes de page est un calcul **pur header-only** dans [`src/sensor_trace_page.h`](../../src/sensor_trace_page.h) (`computeTracePage()`, invariants `offset ≤ total`, `n ≤ max`, `offset + n ≤ total` pour tout input — testé en natif, suite `test_native_trace_page`, 16 tests, pattern [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)). `appendSensorTraceJson()` applique en plus un **re-clamp défensif interne** sur son snapshot local de `_traceCount` (le buffer peut avoir glissé entre le clamp de la route et la lecture). Contrat complet de la route : [API.md](../API.md#get-debugsensor_trace--pas-dauth-cohérent-avec-autres-debug).
 
 ### Contrat de concurrence — lock-free
 
@@ -704,7 +704,7 @@ Un module EZO peut répondre sans erreur I²C mais retourner indéfiniment la **
 
 ### Classe pure `FrozenDetector`
 
-Définie dans [`src/sensor_filter.h`](../../src/sensor_filter.h) (logique pure, testée en natif — pattern [ADR-0017](../adr/0017-logique-pure-testable.md)). Algorithme « **run ancré** » en **O(1)** mémoire et CPU — pas de fenêtre glissante stockée :
+Définie dans [`src/sensor_filter.h`](../../src/sensor_filter.h) (logique pure, testée en natif — pattern [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)). Algorithme « **run ancré** » en **O(1)** mémoire et CPU — pas de fenêtre glissante stockée :
 
 - Le run courant est décrit par 3 champs : `runMin` / `runMax` (bornes observées) et `runCount` (longueur, saturé à `UINT16_MAX`).
 - Chaque échantillon qui garde `(newMax − newMin) < epsilon` **étend les bornes** et allonge le run.

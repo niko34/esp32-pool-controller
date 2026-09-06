@@ -3,7 +3,7 @@
 - **Statut** : Accepté — **seuil C amendé par [ADR-0046](0046-accumulateur-demande-sous-pouls-minimal.md)** (2026-08-23, v2.22.0) : la demande sous le pouls minimal n'est plus refusée mais **accumulée** jusqu'à valoir une impulsion minimale réelle. **Défauts de calibration amendés par [ADR-0047](0047-calibration-de-type-par-defaut-et-gel-amplitude.md)** (2026-08-24, v2.23.0, contexte flotte) : le « pesée obligatoire, pas de valeur provisoire » ne vaut plus pour les DÉFAUTS — un appareil vierge reçoit la **calibration de type** (127 / 28,0 ml/min) ; le fail-closed reste pour les clés NVS présentes à 0. **Pouls minimal amendé par [ADR-0051](0051-pouls-minimal-double-rendement-avant-comptage.md)** (2026-08-28, v2.25.3) : le pouls minimal de la condition B3 passe de **5 s à 10 s** (rendement des démarrages ; la dose demandée est inchangée). Le reste de la décision (proportionnel de temps, amplitude calibrée, kick, égalité exacte, aucune interpolation) est inchangé.
 - **Date** : 2026-08-23
 - **Décideurs** : gate `pool-chemistry` (verdicts 2026-08-22 et 2026-08-23), utilisateur (amendement amplitude), architect
-- **Spec(s) liée(s)** : [bug-dosage-fantome-duty-non-calibre](../../specs/features/todo/bug-dosage-fantome-duty-non-calibre.md) (itération 2, v2.21.0)
+- **Spec(s) liée(s)** : [bug-dosage-fantome-duty-non-calibre](../../specs/features/done/bug-dosage-fantome-duty-non-calibre.md) (itération 2, v2.21.0)
 
 ## Contexte
 
@@ -111,7 +111,7 @@ Le débit moyen est réalisé par **proportionnel de temps** (option **B + C**, 
   [`src/pump_controller.cpp`](../../src/pump_controller.cpp),
   [`src/constants.h`](../../src/constants.h) (`kPulse*`, `kPumpNFlow255MlPerMin`,
   `kPumpAmpMinPct`), [`src/config.h`](../../src/config.h) (`MIN_ACTIVE_DUTY = 98`)
-- Spec : [bug-dosage-fantome-duty-non-calibre](../../specs/features/todo/bug-dosage-fantome-duty-non-calibre.md)
+- Spec : [bug-dosage-fantome-duty-non-calibre](../../specs/features/done/bug-dosage-fantome-duty-non-calibre.md)
   (mesure au banc du 2026-08-23, verdicts gate des 2026-08-22 / 2026-08-23)
 - ADR liés : [ADR-0017](0017-logique-metier-pure-humble-object-testabilite.md) (module
   pur natif), [ADR-0039](0039-offset-ph-applique-en-sortie-des-accesseurs.md) (l'offset

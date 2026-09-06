@@ -4,7 +4,7 @@
 - **Date** : 2026-08-28
 - **Décideurs** : gate `pool-chemistry` (arbitrage des deux valeurs, 2026-08-28),
   utilisateur (propositions 70,0 et 26,0, écartées), architect
-- **Spec(s) liée(s)** : [feature-075-assistant-mesure-debit-pompe](../../specs/features/doing/feature-075-assistant-mesure-debit-pompe.md)
+- **Spec(s) liée(s)** : [feature-075-assistant-mesure-debit-pompe](../../specs/features/done/feature-075-assistant-mesure-debit-pompe.md)
   (les mesures qui déclenchent cet ADR viennent de l'assistant qu'elle livre) — v2.25.2
 
 ## Contexte
@@ -177,7 +177,7 @@ la forme ferait tomber les clients existants sur leur repli générique.
   marches d'assistant), [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp)
   (`flow_assist.flow255`), [`data/app.js`](../../data/app.js) (miroir supprimé, repli
   historique conservé)
-- Spec : [feature-075-assistant-mesure-debit-pompe](../../specs/features/doing/feature-075-assistant-mesure-debit-pompe.md)
+- Spec : [feature-075-assistant-mesure-debit-pompe](../../specs/features/done/feature-075-assistant-mesure-debit-pompe.md)
   (mesures on-target du 2026-08-28)
 - ADR liés : [ADR-0047](0047-calibration-de-type-par-defaut-et-gel-amplitude.md)
   (valeurs d'usine amendées — le reste inchangé),
