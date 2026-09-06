@@ -2,6 +2,51 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.44.0] - 2026-09-06
+
+> ⚠️ **`src/version.h` n'est PAS encore bumpé** — il annonce toujours `2.43.0`. Le passage à **2.44.0** (mineure : comportement observable modifié, aucune rupture de contrat) est une **action à faire** avant release : `#define FIRMWARE_VERSION "2.44.0"`. Le code de ce cycle est gelé, revu et approuvé ; seul ce bump reste.
+>
+> **Ce qui change pour vous, en une phrase** : le **journal de bord redevient exploitable** — il couvrait 28 minutes, il doit couvrir **des heures**.
+
+### Firmware
+
+- **La découverte Home Assistant n'écrase plus le journal** (`feature-109`). À chaque (re)connexion au broker, l'appareil redéclare ses **54 entités** — et écrivait **54 lignes** au journal, soit **≈ 5,3 Ko**, pour un fichier qui n'en fait que **8**. Une seule reconnexion suffisait à effacer tout ce qui précédait. Le 06/09, l'appareil a redémarré à 14:19 : il **avait correctement enregistré la cause** (la ligne « Cinétique heap avant reset »), mais au relevé de 19:15 le journal ne remontait plus qu'à **28 minutes** en arrière. La cause est perdue — et c'est **le même mécanisme** qui avait détruit le post-mortem du crash du 15/08.
+
+- **Une rafale = une ligne, y compris quand tout échoue.** Exemples réels :
+
+  ```text
+  INFO    Découverte HA #3 : 54/54 entités, 0 échec, 1240 ms
+  WARNING Découverte HA #4 : 12/54 entités, 42 échecs, interrompue à la 13e (sensor/pool_ph/config), 310 ms
+  WARNING Découverte HA #7 : 52/54 entités, 2 échecs épars, 1er à la 9e (sensor/pool_orp/config), 1180 ms
+  WARNING Découverte HA #6 : abandonnée avant publication (lien MQTT absent)
+  ```
+
+  **Aucun échec n'est masqué** : le niveau passe en `WARNING` au premier, et le topic fautif est **nommé**. Le pire cas reste **une seule ligne** : un lien coupé dès la 1ʳᵉ entité produit 54 échecs et une ligne. Une ligne par échec aurait ramené les 5,3 Ko exactement le jour du crash.
+
+- **« interrompue » et « épars » ne veulent pas dire la même chose.** Le premier signifie que le lien MQTT est tombé en cours de rafale ; le second, que deux entités ont échoué alors que le lien tenait. Ce sont **deux pannes opposées**, et la distinction est **calculée** à partir de la position des échecs, pas déclarée à la main.
+
+- **Le cas silencieux a disparu.** Une découverte demandée sans lien MQTT ne produisait **rien du tout** ; elle produit désormais sa ligne d'abandon. Chaque rafale porte aussi un **numéro** (`#3`, `#4`…) : deux reconnexions rapprochées ne sont plus deux lignes indiscernables, et un numéro manquant est lui-même une information.
+
+- **Le contrat Home Assistant est strictement inchangé** : mêmes 54 topics, mêmes charges utiles, même `retain`, même ordre, même republication à chaque reconnexion. **Rien à refaire côté HA.** Seule la journalisation change.
+
+- **Le détail entité par entité reste disponible** en activant *Paramètres → Avancé → Logs DEBUG*. Il n'entre alors **pas** dans le fichier journal (c'est le but), mais il occupe à nouveau la mémoire, la page Logs et la console : à réserver aux sessions de diagnostic.
+
+- **Effet chiffré** : la découverte passe de **756 à 11 octets par minute** (**×67** sur ce poste), le débit total du journal de **913 à 168 o/min** (**÷5,4**), et la fenêtre couverte de **28 minutes à ≈ 2 h 30** — estimation de conception, **à confirmer par un relevé sur l'appareil**.
+
+  ⚠️ **93 % de ce qui reste vient désormais des autres émetteurs.** Ils étaient minoritaires, ils sont dominants : leur traitement, annoncé comme optionnel, ne l'est plus.
+
+- **Coût** : flash 1 828 981 → **1 830 809 o** (+1 828) ; RAM +8 o. Logique de synthèse extraite en module pur ([ADR-0017](docs/adr/0017-logique-metier-pure-humble-object-testabilite.md)) : **22 cas natifs** (1 325 → **1 347 tests**), **5 mutants sur 5 tués**.
+
+### Documentation
+
+- `docs/subsystems/mqtt-manager.md` : format exact des quatre lignes, prédicat « interrompue / épars », `burstSeq`, troncature du topic **par la tête**, et rappel explicite que le contrat de découverte est inchangé. Compte d'entités corrigé **52 → 54** (il avait dérivé en silence).
+- `docs/subsystems/logger.md` : nouveau budget du journal (tableau avant/après), et **coût résiduel de `DEBUG`** — le fichier est épargné, le ring RAM / WebSocket / Serial ne le sont pas ; plus le piège de **placement de la garde** au site d'appel.
+- `specs/features/doing/bug-080-*.md` : l'obstacle d'**observabilité** à son critère « 7 jours sans redémarrage inopiné » est levé (la spec **reste ouverte**).
+- **Aucun ADR** : site unique, contrat inchangé, aucun verrouillage, aucune primitive de journalisation réutilisable introduite — aucun critère de déclenchement rempli.
+- **Aucune régénération de `docs/user/`** : aucun écran, message ou réglage utilisateur ne change.
+
+---
+
 ## [2.43.0] - 2026-09-06
 
 > ⚠️ **Correctif NON validé sur matériel.** L'appareil est joignable (192.168.1.48) mais **aucun déploiement n'a été fait** — c'est une décision humaine. Cette version livre une défense **argumentée et testée en logique pure** ; elle **ne prouve pas** la disparition du crash en production. Le critère « 7 jours sans redémarrage inopiné » de `bug-080` **reste ouvert**.

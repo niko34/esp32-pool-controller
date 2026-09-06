@@ -1278,3 +1278,64 @@ serait la démonstration que la garde a mordu et fait son travail.
 `bug-100` traite la **conséquence** (l'`abort()` sur `fopen`), pas la **cause**
 (la fragmentation du tas qui produit la famine). Le lot C — cause de la
 fragmentation — n'est **pas** ouvert par ce cycle.
+
+---
+
+## OBSTACLE D'OBSERVABILITÉ LEVÉ — 06/09/2026 (`feature-109`)
+
+**Cette section AJOUTE au dossier ; elle ne clôt rien.** Le critère « 7 jours sans
+redémarrage inopiné » **reste ouvert** et repart toujours du **05/09 ~14:16**.
+
+### Ce qui était cassé sous le critère lui-même
+
+Le critère suppose qu'on puisse **voir** un redémarrage inopiné. Le 06/09 a montré
+que non : l'appareil a redémarré vers **14:19 locale**, `heapRingDumpIfCrash()`
+(`heap_ring.cpp:110-140`) a **correctement émis** son `WARNING` « Cinétique heap
+avant reset (*label*, reset_reason=N) » avec l'anneau des échantillons mémoire
+précédant le reset — et cette ligne **n'existait plus** au relevé de **19:15**.
+
+La cause du redémarrage avait été enregistrée, puis **détruite par notre propre
+journalisation** : la fenêtre du journal persistant ne couvrait que **28 minutes**
+(18:44 → 19:12). C'est le mécanisme qui avait déjà détruit le post-mortem du
+**15/08**.
+
+L'émetteur dominant était la découverte Home Assistant : **54 lignes `INFO` à
+~98 o par (re)connexion MQTT, ≈ 5 292 o** — soit **65 %** d'un fichier de 8 192 o
+et **86 %** des 6 144 o conservés à la rotation, avec **4 reconnexions observées
+en 28 min**. On ne peut pas compter des redémarrages qu'on ne peut pas voir.
+
+### Ce que `feature-109` change
+
+Une rafale de découverte pèse désormais **79 o** (une ligne de synthèse) contre
+~5 292 o : **×67 sur ce poste**.
+
+| | Découverte | Autres sources | **Total** |
+|---|---|---|---|
+| Avant | 756 o/min | 157 o/min | **913 o/min** |
+| Après | **11 o/min** | 157 o/min | **168 o/min** |
+
+Débit total **÷5,4**, fenêtre forensique **estimée** à **≈ 2 h 30** contre 28 min.
+La ligne « Cinétique heap avant reset » doit donc survivre assez longtemps pour
+être relevée — c'était l'objectif réel.
+
+### Ce que cela ne prouve PAS
+
+1. **≈ 2 h 30 est une estimation de conception**, pas une mesure. La fenêtre
+   réelle se relève sur l'appareil, après déploiement.
+2. **Aucun déploiement n'a eu lieu** — ni pour la v2.43.0 (`bug-100`), ni pour ce
+   cycle. Le firmware qui tourne est celui qui perd ses traces.
+3. **93 % du débit résiduel vient des autres émetteurs** (157 o/min sur 168). Ils
+   sont devenus **dominants** : tout gain supplémentaire de rétention passe
+   désormais par eux, et la spec de suivi correspondante n'est plus optionnelle.
+4. `feature-109` traite l'**observabilité** du critère, **pas la cause** des
+   redémarrages. Le **lot C** (cause de la fragmentation) reste **non ouvert**.
+
+### Effet sur le relevé à faire
+
+La procédure de clôture énoncée plus haut (relever `/coredump/info` et les
+compteurs `hdef` / `ldef` / `xdef` du payload retenu `<base>/diagnostic` pendant
+7 jours) **gagne une troisième source** : `/download-logs` redevient exploitable
+et doit porter la ligne « Cinétique heap avant reset » de tout redémarrage
+survenu dans les heures précédentes. Un redémarrage **sans** cette ligne alors que
+le journal couvre la période devient un fait à expliquer, et non plus le
+comportement normal.

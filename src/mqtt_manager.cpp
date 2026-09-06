@@ -14,6 +14,7 @@
 #include "ph_guard_logic.h"  // v2.25.0 : phModeChangeNeedsAck (gate fail-closed du mode pH)
 #include "history.h"          // bug-100 : historyFopenDeferralCount (diagnostic retenu)
 #include "web_routes_data.h"  // bug-100 : logsExportFopenDeferralCount (diagnostic retenu)
+#include "discovery_report_logic.h"  // feature-109 : synthèse pure d'une rafale de découverte HA
 #include <ArduinoJson.h>
 #include <esp_task_wdt.h>
 #include <WiFi.h>
@@ -445,7 +446,7 @@ void MqttManager::connectInTask() {
 
     discoveryPublished = false;
     esp_task_wdt_reset();
-    publishDiscovery();              // 52 publish — long si CPL lossy
+    publishDiscovery();              // 54 publish — long si CPL lossy
     esp_task_wdt_reset();
     publishAllStatesInternal();      // ~15 publish
     esp_task_wdt_reset();
@@ -1755,7 +1756,32 @@ void MqttManager::shutdownForRestart() {
 // ============================================================================
 
 void MqttManager::publishDiscovery() {
-  if (!mqtt.connected() || discoveryPublished) return;
+  // feature-109 : la garde composite d'origine confondait deux cas très
+  // différents. On la scinde.
+  // Cas 1 — rafale déjà publiée pour cette connexion : no-op de garde, silence
+  // légitime. Sémantique de discoveryPublished strictement inchangée.
+  if (discoveryPublished) return;
+
+  // Numéro de rafale incrémenté AVANT toute sortie : une tentative consomme un
+  // numéro, y compris quand elle échoue d'emblée. Deux reconnexions rapprochées
+  // restent ainsi distinguables au journal.
+  ++_discoveryBurstSeq;
+
+  // Cas 2 — lien MQTT absent : échec TOTAL, zéro entité publiée. Ce cas était
+  // muet ; la spec exige qu'il laisse une ligne (une seule).
+  if (!mqtt.connected()) {
+    char abortLine[kDiscoverySummaryLineMax];
+    discoveryFormatAbort(abortLine, sizeof(abortLine), _discoveryBurstSeq);
+    systemLogger.warning(abortLine);
+    return;
+  }
+
+  // Horodatage de départ. La durée sera calculée par SOUSTRACTION NON SIGNÉE
+  // (voir fin de fonction) : jamais de comparaison millis() < deadline, qui se
+  // replie à 24,8 jours.
+  const unsigned long startMs = millis();
+  DiscoveryTally tally;
+  discoveryTallyInit(tally, _discoveryBurstSeq);
 
   JsonDocument doc;
   const String discoveryBase = String(HA_DISCOVERY_PREFIX) + "/";
@@ -1773,7 +1799,16 @@ void MqttManager::publishDiscovery() {
     String payload;
     serializeJson(doc, payload);
     bool ok = safePublish(configTopic.c_str(), payload.c_str(), true);
-    systemLogger.info("Discovery " + configTopic + (ok ? " OK" : " FAILED"));
+    // feature-109 : comptage pur, zéro allocation, zéro écriture au journal —
+    // c'est tout ce que fait la boucle des 54 publications.
+    discoveryTallyRecord(tally, configTopic.c_str(), ok);
+    // Le détail par entité survit en DEBUG (non persisté quand DEBUG est off).
+    // La garde est ICI, au site d'appel, et non dans Logger::debug() qui
+    // court-circuite en interne (logger.cpp) : sans elle, la concaténation
+    // String serait construite — et payée — 54 fois même DEBUG désactivé.
+    if (authCfg.debugLogsEnabled) {
+      systemLogger.debug("Discovery " + configTopic + (ok ? " OK" : " FAILED"));
+    }
     doc.clear();
   };
 
@@ -2500,5 +2535,15 @@ void MqttManager::publishDiscovery() {
   publishConfig(topic);
 
   discoveryPublished = true;
-  systemLogger.info("Home Assistant discovery publié");
+
+  // feature-109 : cette ligne REMPLACE les 54 lignes INFO de la rafale (et non
+  // s'y ajoute). Soustraction non signée : correcte au repliement de millis().
+  tally.durationMs = (uint32_t)(millis() - startMs);
+  char summaryLine[kDiscoverySummaryLineMax];
+  discoveryFormatSummary(summaryLine, sizeof(summaryLine), tally);
+  if (tally.failed > 0) {
+    systemLogger.warning(summaryLine);  // un échec n'est jamais noyé en INFO
+  } else {
+    systemLogger.info(summaryLine);
+  }
 }

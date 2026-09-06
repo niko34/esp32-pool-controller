@@ -57,6 +57,23 @@ constexpr uint32_t kMqttOfflineFlushMs      = 1000;       // Timeout flush "stat
 constexpr uint32_t kMqttClientConnectTimeoutSec = 2;      // WiFiClient::setTimeout attend des SECONDES (Arduino-ESP32 6.9.0 — WiFiClient.cpp:327, _timeout = seconds*1000). 2 s borne SO_SNDTIMEO/SO_RCVTIMEO sur le client TCP de PubSubClient.
 constexpr uint32_t kMqttSocketSendTimeoutMs = 500;        // SO_SNDTIMEO socket TCP — borne write() à 500 ms (PINGREQ ~100 ms suffit, publish massif borné). Voir feature-014 IT5 / ADR-0011.
 
+// feature-109 : synthèse de la découverte Home Assistant en UNE ligne de journal
+// (voir src/discovery_report_logic.h). Les 54 lignes INFO précédentes pesaient
+// ≈ 5,3 Ko, soit 65 % du fichier de journal de 8 Ko (kMaxLogFileBytes, ADR-0033).
+// Topic de configuration le plus long mesuré : "homeassistant/" (14) +
+// "binary_sensor/poolcontroller_orp_sensor_problem/config" (53) = 67 caractères.
+// On n'en garde que la QUEUE (47 caractères + NUL) : le préfixe de classe est du
+// remplissage, le discriminant est en fin de chaîne. 48 o couvrent donc
+// "sensor/poolcontroller_orp_sensor_problem/config" en entier, pire cas du parc.
+constexpr size_t kDiscoveryFailTopicMax   = 48;   // Topic du 1er échec mémorisé (queue, NUL compris)
+// Pire cas ABSOLU de la ligne de synthèse, mesuré en saturant tous les champs
+// (burstSeq = 2^32-1, compteurs = 2^16-1, topic plein) : 154 octets UTF-8 pour
+// la forme « interrompue », 152 pour la forme « échecs épars ». 160 o couvrent
+// donc la troncature impossible, sans peser sur la pile de mqttTask
+// (kMqttTaskStackSize) : le buffer de synthèse et celui du détail DEBUG ne
+// coexistent jamais (scopes disjoints).
+constexpr size_t kDiscoverySummaryLineMax = 160;  // Buffer pile d'UNE ligne de synthèse de rafale
+
 // Intervalles capteurs (voir aussi sensors.cpp pour détails internes)
 constexpr unsigned long kTempSensorIntervalMs = 2000;     // 2s - Lecture température DS18B20
 constexpr unsigned long kPhOrpSensorIntervalMs = 5000;    // 5s - Lecture pH/ORP

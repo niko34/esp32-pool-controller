@@ -141,6 +141,11 @@ private:
   // (publishLog → enqueueOutbound reprendrait ce mutex → deadlock).
   SemaphoreHandle_t topicsMutex = nullptr;
   bool discoveryPublished = false;
+  // feature-109 : numéro de rafale de découverte HA, MONOTONE — jamais remis à
+  // zéro (cf. l'appel de publishDiscovery() dans onConnected). Il distingue au
+  // journal deux reconnexions rapprochées dont la ligne de synthèse serait
+  // sinon identique. Accédé UNIQUEMENT depuis mqttTask, comme discoveryPublished.
+  uint32_t _discoveryBurstSeq = 0;
 
   // Reconnect/backoff — accédés UNIQUEMENT depuis mqttTask
   bool reconnectRequested = false;

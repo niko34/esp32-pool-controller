@@ -55,4 +55,4 @@ Le redémarrage constaté le 06/09 vers 14:19 locale n'a **pas** produit de core
 celui-ci lui est antérieur. Sa cause avait pourtant été journalisée au démarrage par
 `heapRingDumpIfCrash()`, mais la ligne avait déjà été évincée du journal persistant
 au moment du relevé : sa fenêtre ne couvrait que **28 minutes**. Voir
-[`feature-109`](../../specs/features/todo/feature-109-decouverte-ha-une-ligne-au-journal.md).
+[`feature-109`](../../specs/features/done/feature-109-decouverte-ha-une-ligne-au-journal.md).

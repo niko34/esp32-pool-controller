@@ -74,6 +74,8 @@ void Logger::debug(const String& msg) {
 
 Les autres niveaux (`info`, `warning`, `error`, `critical`) **ne sont pas affectés** par ce toggle.
 
+⚠️ **`DEBUG` n'est pas gratuit** : il épargne le fichier `/system.log`, **mais pas** le ring RAM, le push WebSocket ni la console — et la construction des arguments doit être gardée au site d'appel. Voir [Coût RÉSIDUEL d'un détail passé en DEBUG](#coût-résiduel-dun-détail-passé-en-debug-feature-109).
+
 Activation utilisateur : Paramètres → Avancé → card Logs → switch « Logs DEBUG activés ». Effet immédiat (pas de redémarrage). La valeur est lue à chaque appel à `debug()` depuis la variable globale `authCfg`, sans mutex (lecture booléenne atomique sur ESP32).
 
 Default `false` choisi pour alléger le buffer en production : les logs `DEBUG` (`Diagnostic publié`, `Consolidation terminée: N points`, `MQTT publish drop`, etc.) ne saturent plus les 200 entrées de `kMaxLogEntries`. L'utilisateur active explicitement le switch en cas de session de diagnostic.
@@ -285,6 +287,34 @@ Voir [pump-controller.md](pump-controller.md#suspension--assistant-de-mesure-du-
 Le tampon `_persistBuffer` (std::vector<String>) accumule entre deux flushes. Sa capacité est **bornée à 100 entrées** (`kMaxPersistBufferEntries`) et pré-allouée dans le constructeur (`reserve(kMaxPersistBufferEntries)`) pour éviter les `std::bad_alloc` en cas de heap fragmenté en production. Les entrées au-delà de 100 sont silencieusement ignorées (les logs restent dans le buffer RAM circulaire).
 
 **Logs pré-persistance** : tant que `setPersistenceFs()` n'a pas été appelé (`_persistEnabled == false`), les entrées ne sont **pas** accumulées pour `/system.log` — elles partent en buffer RAM + console uniquement. C'est notamment le cas des logs du **disjoncteur de boot-loop history** (v2.10.0), qui s'exécute dans `HistoryManager::begin()` **avant** l'activation de la persistance (c'est précisément elle qu'il protège) : le CRIT « partition effacée automatiquement » est visible dans la page Logs (RAM) et sur la série, mais jamais dans `/system.log`. Voir [system-health.md](system-health.md#disjoncteur-de-boot-loop-de-linit-history-v2100).
+
+### La découverte HA n'est plus le premier poste du journal (feature-109, 06/09/2026)
+
+`publishDiscovery()` émettait **54 lignes `INFO` de ~98 o par rafale, ≈ 5 292 o**, soit **65 % d'un fichier de 8 192 o** et **86 % des 6 144 o que la rotation conserve** — plus 54 des 100 entrées du tampon RAM `_persistBuffer`. Ce n'est pas un émetteur *périodique* mais un émetteur **par reconnexion MQTT**, et 4 reconnexions ont été observées en 28 minutes le 06/09. Une rafale de synthèse pèse désormais **79 o** : **×67 sur ce poste**. Format et mécanique : [mqtt-manager.md](mqtt-manager.md#journalisation-dune-rafale--une-ligne-jamais-54-feature-109-discovery_report_logich).
+
+| | Découverte HA | Autres sources | **Total** |
+|---|---|---|---|
+| **Avant** | 756 o/min | 157 o/min | **913 o/min** |
+| **Après** | **11 o/min** | 157 o/min | **168 o/min** |
+
+Débit total **divisé par 5,4** ; fenêtre forensique estimée à **≈ 2 h 30** contre **28 minutes** mesurées le 06/09. Ce chiffre est une **estimation de conception** : le critère réel — « le journal couvre des heures » — se mesure sur l'appareil après déploiement, pas en test natif.
+
+> ⚠️ **93 % du débit résiduel vient désormais des AUTRES sources** (157 o/min sur 168). Elles étaient minoritaires, elles sont devenues **dominantes** : la spec de suivi annoncée en « Hors périmètre » de `feature-109` n'est **plus optionnelle**. Tout gain supplémentaire sur la rétention passe par elles, et par elles seules.
+
+#### Coût RÉSIDUEL d'un détail passé en DEBUG (feature-109)
+
+Basculer un émetteur verbeux de `INFO` vers `DEBUG` épargne le **fichier** — et **seulement** le fichier. À écrire franchement, parce que le raccourci « DEBUG = gratuit » est faux :
+
+| Chemin | Épargné par `DEBUG` ? | Pourquoi |
+|---|---|---|
+| `/system.log` (partition `history`) | ✅ **Oui** | `if (_persistEnabled && level != LogLevel::DEBUG)` ([`logger.cpp:58`](../../src/logger.cpp:58)) — une entrée `DEBUG` n'entre **jamais** dans `_persistBuffer`. **C'est le gain qui compte** pour la fenêtre forensique. |
+| Buffer circulaire RAM (`kMaxLogEntries = 200`) | ❌ **Non** | L'entrée est poussée comme n'importe quelle autre. 54 lignes `DEBUG` évincent toujours 54 entrées. |
+| Push WebSocket (page Logs) | ❌ **Non** | Le callback est appelé pour tous les niveaux. |
+| Sortie Serial | ❌ **Non** | Émise même quand le mutex n'a pas pu être pris. |
+
+Le seul rempart sur ces trois derniers chemins est le toggle `authCfg.debugLogsEnabled`, **à `false` par défaut** : en production le détail des 54 entités n'est effectivement produit nulle part, mais **activer le switch « Logs DEBUG activés » rétablit intégralement la pression sur le ring RAM, le WebSocket et la console** — pas sur le fichier. Une session de diagnostic prolongée le paie.
+
+**Placement de la garde `DEBUG` — le piège.** `Logger::debug()` court-circuite en première ligne (early return), ce qui suffit à éviter le *log* mais **pas** la construction de ses arguments : `systemLogger.debug("Discovery " + topic + …)` concatène **avant** d'appeler. La garde doit donc être posée **au site d'appel, autour de la concaténation** — sinon les 54 allocations `String` sont payées à chaque rafale, DEBUG désactivé compris. C'est le patron retenu dans `publishDiscovery()`.
 
 ## Push WebSocket
 

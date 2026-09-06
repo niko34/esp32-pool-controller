@@ -199,7 +199,50 @@ Format du message et exemple : voir [`docs/MQTT.md`](../MQTT.md#alertes).
 
 ## Auto-discovery Home Assistant
 
-`publishDiscovery()` publie les messages `retain=true` sur `homeassistant/.../config` pour déclarer automatiquement les entités (17 à l'origine, **52 à ce jour** au fil des features — dont les 3 `sensor` du **terme intégral pH** ajoutés en v2.26.0 ([ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) : « Piscine pH Rattrapage » en tête, « … Rattrapage Débit » et « … Intégrale » en `entity_category: diagnostic`), les 2 `binary_sensor` `device_class: problem` « Filtre pH/ORP Bloqué » ajoutés en v2.20.3, le `select` « Mode d'installation » et le `switch` optimiste « Signal filtration externe » de feature-056 v2.19.0, les 2 `select` de mode de régulation pH/ORP ajoutés en feature-009 v2.7.0, les 2 `binary_sensor` `device_class: problem` « Capteur pH/ORP — problème » ajoutés en feature-022 v2.10.0, les 5 entités feature-050 v2.14.0 : 2 `sensor` cumuls journaliers, 2 `number` volumes quotidiens, 1 `button` « Redémarrer », les 2 `text` éditables « Filtration début » / « Filtration fin » de feature-051 v2.16.0, et les 3 entités feature-052 v2.17.0 : 1 `select` « Mode Éclairage » (Programmation/Désactivé — `switch` à l'origine, migré en `select` en bug-ha-eclairage-select v2.17.2, avec publication d'un config vide sur l'ancien topic `switch/{id}_lighting_schedule` pour retirer l'orphelin) + 2 `text` « Éclairage début » / « Éclairage fin »). **Exécutée uniquement depuis `mqttTask`** lors d'une connexion réussie (lambda interne, pas appelable de l'extérieur). Publié **une seule fois** par session (`discoveryPublished` guard).
+`publishDiscovery()` publie les messages `retain=true` sur `homeassistant/.../config` pour déclarer automatiquement les entités (17 à l'origine, **54 à ce jour** au fil des features — dont les 3 `sensor` du **terme intégral pH** ajoutés en v2.26.0 ([ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md) : « Piscine pH Rattrapage » en tête, « … Rattrapage Débit » et « … Intégrale » en `entity_category: diagnostic`), les 2 `binary_sensor` `device_class: problem` « Filtre pH/ORP Bloqué » ajoutés en v2.20.3, le `select` « Mode d'installation » et le `switch` optimiste « Signal filtration externe » de feature-056 v2.19.0, les 2 `select` de mode de régulation pH/ORP ajoutés en feature-009 v2.7.0, les 2 `binary_sensor` `device_class: problem` « Capteur pH/ORP — problème » ajoutés en feature-022 v2.10.0, les 5 entités feature-050 v2.14.0 : 2 `sensor` cumuls journaliers, 2 `number` volumes quotidiens, 1 `button` « Redémarrer », les 2 `text` éditables « Filtration début » / « Filtration fin » de feature-051 v2.16.0, et les 3 entités feature-052 v2.17.0 : 1 `select` « Mode Éclairage » (Programmation/Désactivé — `switch` à l'origine, migré en `select` en bug-ha-eclairage-select v2.17.2, avec publication d'un config vide sur l'ancien topic `switch/{id}_lighting_schedule` pour retirer l'orphelin) + 2 `text` « Éclairage début » / « Éclairage fin »). **Exécutée uniquement depuis `mqttTask`** lors d'une connexion réussie (lambda interne, pas appelable de l'extérieur). Publié **une seule fois** par session (`discoveryPublished` guard).
+
+> Le compte **54** est celui du 06/09/2026 (feature-109). Il est **relevé, jamais figé** : `publishDiscovery()` compte ses entités à l'exécution. Un commentaire « 52 publish » de `mqtt_manager.cpp` avait dérivé silencieusement sur plusieurs versions — c'est précisément la classe de bug qu'une constante d'entités recréerait.
+
+### Journalisation d'une rafale — une ligne, jamais 54 (feature-109, [`discovery_report_logic.h`](../../src/discovery_report_logic.h))
+
+> ⚠️ **Le contrat de découverte est strictement INCHANGÉ** : mêmes 54 topics, mêmes charges utiles, même `retain=true`, même ordre, même déclenchement à chaque (re)connexion MQTT, même garde `discoveryPublished`. **Seule la journalisation change.** Aucun client Home Assistant ne voit de différence.
+
+Jusqu'en 2.43.0, la lambda `publishConfig` émettait un `systemLogger.info("Discovery <topic> OK|FAILED")` par entité — **54 lignes de ~98 o, soit ≈ 5,3 Ko par rafale**, pour un journal persistant de 8 Ko (`kMaxLogFileBytes`, [ADR-0033](../adr/0033-budget-espace-partition-history.md)). Une seule reconnexion évinçait donc la trace du redémarrage précédent. La rafale produit désormais **exactement une ligne**, émise après la dernière publication.
+
+**Formes émises** (`discoveryFormatSummary()` / `discoveryFormatAbort()`, `snprintf` dans un `char[kDiscoverySummaryLineMax]` de pile — aucun `String`) :
+
+```text
+INFO    Découverte HA #3 : 54/54 entités, 0 échec, 1240 ms
+WARNING Découverte HA #4 : 12/54 entités, 42 échecs, interrompue à la 13e (sensor/pool_ph/config), 310 ms
+WARNING Découverte HA #7 : 52/54 entités, 2 échecs épars, 1er à la 9e (sensor/pool_orp/config), 1180 ms
+WARNING Découverte HA #6 : abandonnée avant publication (lien MQTT absent)
+```
+
+Niveau : `INFO` si `failed == 0`, **`WARNING` dès le premier échec** — un échec n'est jamais noyé dans le flot `INFO`.
+
+**Le pire cas est borné à UNE ligne, pas « à une constante ».** `publishDiscovery()` ne s'arrête jamais (aucun `break`, aucun retour anticipé) : un lien coupé à la 1ʳᵉ entité produit **54 échecs et une seule ligne**. C'est la raison d'être de la forme retenue — une ligne par échec aurait ramené les 5,3 Ko exactement le jour du crash, c'est-à-dire le jour où la fenêtre forensique compte.
+
+| Élément de la ligne | Origine | Pourquoi |
+|---|---|---|
+| `#N` — `burstSeq` | `_discoveryBurstSeq`, `uint32_t` monotone incrémenté **avant toute sortie** | Deux reconnexions rapprochées produiraient sinon deux lignes identiques. Une tentative avortée **consomme** un numéro : un trou dans la suite est lui-même une information. `mqttTask` seul y accède, comme `discoveryPublished`. |
+| `P/A entités` | `published` / `attempted`, comptés à l'exécution | Distingue « 54/54 » d'une rafale partielle sans jamais figer le total. |
+| `interrompue` vs `épars` | **Prédicat calculé** : `failed == attempted - firstFailIndex + 1` | Ce n'est pas un libellé cosmétique. La boucle ne s'arrêtant jamais, un lien tombé rend en échec **toute la queue** de la rafale ; des échecs non contigus signifient au contraire que le lien tenait. **Deux diagnostics opposés.** |
+| `(topic)` | `firstFailTopic`, `kDiscoveryFailTopicMax = 48` o | Seul le **premier** échec est nommé — c'est lui qui porte le diagnostic. Troncature **par la tête** (`discoveryCopyTopicTail`) : le préfixe `homeassistant/<classe>/` est du remplissage identique partout, le discriminant est en queue. |
+| `N ms` | `millis() - startMs`, **soustraction non signée** | Correcte au repliement de `millis()` à 24,8 j. |
+
+**Cas « lien MQTT absent »** : la garde composite d'origine confondait deux situations. Elle est scindée — `discoveryPublished` reste un no-op silencieux légitime (rafale déjà publiée), tandis que `!mqtt.connected()` (échec total, zéro entité) était **muet** et produit désormais sa ligne d'abandon. Le silence n'est plus une réponse possible.
+
+**Le détail par entité survit en `DEBUG`**, sous une garde `if (authCfg.debugLogsEnabled)` posée **au site d'appel**, autour de la concaténation :
+
+```cpp
+if (authCfg.debugLogsEnabled) {
+  systemLogger.debug("Discovery " + configTopic + (ok ? " OK" : " FAILED"));
+}
+```
+
+Cette garde **paraît redondante** — `Logger::debug()` court-circuite déjà en interne. Elle ne l'est pas : sans elle, la concaténation `String` serait **construite et payée 54 fois par rafale même DEBUG désactivé**, les arguments étant évalués avant l'appel. C'est contre-intuitif et coûteux à redécouvrir. Le gain du passage en `DEBUG` est **partiel** — voir [logger.md](logger.md#coût-résiduel-dun-détail-passé-en-debug-feature-109).
+
+**Coût** : flash 1 828 981 → 1 830 809 o (+1 828), RAM +8 o. La logique de formatage est un **module pur header-only** ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)), couvert par 22 cas natifs (`test/test_native_discovery_report/`) validés par mutation 5/5.
 
 ### Select « Mode Filtration » — templates d'affichage (bug-ha-filtration-mode-labels, v2.15.0)
 
