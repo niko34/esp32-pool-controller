@@ -1,0 +1,33 @@
+name: Hygiène des specs
+
+# Vérifie qu'un nom de spec ne vit que dans UN seul des dossiers todo/ · doing/ ·
+# done/. Le cycle procède par déplacement ; une spec copiée produit deux versions
+# qui divergent et deux statuts qui se contredisent (constat du 2026-09-06 :
+# trois specs dans todo/ ET done/, l'une annoncée « todo », l'autre « livrée et
+# vérifiée »). Voir feature-103.
+#
+# Aucun filtre de chemins, aucune toolchain, aucun cache : le contrôle coûte une
+# seconde et doit tourner sur TOUS les commits — un déplacement de spec n'accompagne
+# pas nécessairement une modification de code.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: hygiene-specs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unicite:
+    name: Unicité des specs (todo · doing · done)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # La logique vit dans le dépôt, pas dans ce YAML : le même script tourne en
+      # local (`./tools/check_specs.sh`) et peut servir de hook pre-commit.
+      - name: Contrôle d'unicité
+        run: ./tools/check_specs.sh

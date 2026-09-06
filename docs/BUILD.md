@@ -25,7 +25,7 @@ pio run                              # core 3 (unique env matériel)
 ./deploy.sh all                      # déploiement complet
 ```
 
-> ℹ️ **L'env de repli `[env:esp32dev]` (core Arduino 2.0.17 / IDF 4.4.7) a été retiré en v2.42.1.** Il n'était plus compilable depuis la v2.40.0 (appel `esp_cpu_get_cycle_count()` hors garde dans `oom_guard.cpp`, invisible parce que la CI ne construit que l'env `native`), plus flashable (bootloader core 3 depuis l'ADR-0042 ⇒ retour arrière = flash USB) et **aucun binaire core 2 n'avait jamais été archivé**. Voir [ADR-0069](adr/0069-retrait-repli-core-2.md). Avec lui disparaissent les 8 gardes `#if ESP_ARDUINO_VERSION_MAJOR >= 3` du code source : elles étaient réparties sur `pump_controller.cpp` **et** `pump_controller.h`, `main.cpp` et `oom_guard.cpp` (LEDC, watchdog, en-têtes mémoire). La garde `#if MBEDTLS_VERSION_NUMBER >= 0x03000000` de `ota_integrity.cpp` **reste** : elle est indexée sur la version d'une bibliothèque, pas sur l'environnement retiré.
+> ℹ️ **L'env de repli `[env:esp32dev]` (core Arduino 2.0.17 / IDF 4.4.7) a été retiré en v2.42.1.** Il n'était plus compilable depuis la v2.40.0 (appel `esp_cpu_get_cycle_count()` hors garde dans `oom_guard.cpp`, resté invisible deux versions parce que la CI ne construisait alors **aucun env matériel** — trou comblé depuis par [`build-firmware.yml`](#intégration-continue-github-actions)), plus flashable (bootloader core 3 depuis l'ADR-0042 ⇒ retour arrière = flash USB) et **aucun binaire core 2 n'avait jamais été archivé**. Voir [ADR-0069](adr/0069-retrait-repli-core-2.md). Avec lui disparaissent les 8 gardes `#if ESP_ARDUINO_VERSION_MAJOR >= 3` du code source : elles étaient réparties sur `pump_controller.cpp` **et** `pump_controller.h`, `main.cpp` et `oom_guard.cpp` (LEDC, watchdog, en-têtes mémoire). La garde `#if MBEDTLS_VERSION_NUMBER >= 0x03000000` de `ota_integrity.cpp` **reste** : elle est indexée sur la version d'une bibliothèque, pas sur l'environnement retiré.
 
 > ⚠️ **La plateforme `espressif32@6.9.0` reste installée**, bien qu'aucun env ne l'utilise : elle fournit le paquet `tool-mklittlefs`, que [`build_fs.sh`](../build_fs.sh) référence en dur (`~/.platformio/packages/tool-mklittlefs/mklittlefs`) et que pioarduino 55.03.37 **ne déclare pas** (`"tool-mklittlefs": null` dans son `platform.json`). La désinstaller casserait `./build_fs.sh`, `./build_all.sh`, `./deploy.sh fs` et `./deploy.sh ota-fs`. Le ménage disque (~404 Mo) suppose d'abord de rendre `build_fs.sh` indépendant de cette plateforme.
 
@@ -64,7 +64,7 @@ Les scripts ne dépendent **plus** du `default_envs` de `platformio.ini` ni de c
 > ([ADR-0068](adr/0068-partitions-layout-v5-flash-8-mo.md)), cette contrainte disparaît :
 > **aucun arbitrage de conception ne doit plus invoquer la place flash sans remesurer d'abord.**
 
-> ℹ️ **CI non impactée** : [`.github/workflows/tests-natifs.yml`](../.github/workflows/tests-natifs.yml) ne construit que l'env `native`.
+> ℹ️ **Cette occupation est vérifiée à chaque push** : depuis le 2026-09-06, [`build-firmware.yml`](../.github/workflows/build-firmware.yml) compile l'env `esp32dev_core3` en CI et `pio run` y affiche RAM / Flash — voir [Intégration continue](#intégration-continue-github-actions).
 
 > ℹ️ **Cible matérielle** : le BOM du PCB v2 spécifie un **ESP32-DevKitC-VE**
 > (module WROVER-E, **8 Mo de PSRAM**) — voir la section PSRAM ci-dessous. L'env
@@ -162,6 +162,57 @@ Prérequis : `gcovr` dans le venv PlatformIO (`~/.platformio/penv/bin/pip instal
 ### Validation on-target (manuelle)
 
 Les tests natifs ne couvrent que la **logique pure**. L'**intégration matériel + réseau** (I²C, PWM, RTC, LittleFS, WiFi, WebSocket, MQTT) et les **scénarios complets de régulation** se valident à la main sur la carte, via la check-list [`docs/test-on-target.md`](test-on-target.md) — à dérouler après un `./deploy.sh` touchant la régulation, la filtration, les capteurs ou la persistance.
+
+## Intégration continue (GitHub Actions)
+
+**Trois** workflows, **trois signaux distincts**. Ils sont séparés à dessein : un échec de compilation, un échec de test et une incohérence de specs ne se diagnostiquent pas de la même façon, et les réunir sous un nom unique rendrait le résultat ambigu.
+
+| Workflow | Ce qu'il garde | Déclencheurs | Coût |
+|---|---|---|---|
+| [`tests-natifs.yml`](../.github/workflows/tests-natifs.yml) | `pio test -e native`, puis couverture `gcovr` avec seuil **lignes ≥ 90 %** sur `sensor_filter` et `dosing_logic` ; rapport HTML publié en artefact | push `main` + PR, **sans** filtre de chemins | env `native` seul (quelques Mo) |
+| [`build-firmware.yml`](../.github/workflows/build-firmware.yml) *(feature-103, 2026-09-06)* | **`pio run -e esp32dev_core3`** — la compilation du firmware. Étape informative supplémentaire : sections du binaire (`xtensa-esp32-elf-size`), `continue-on-error` | push `main` + PR, **avec** filtre de chemins (voir plus bas) | toolchain pioarduino ≈ **2 Go**, mise en cache |
+| [`hygiene-specs.yml`](../.github/workflows/hygiene-specs.yml) *(feature-103, 2026-09-06)* | [`tools/check_specs.sh`](../tools/check_specs.sh) — un nom de spec ne vit que dans **un seul** des dossiers `todo/` · `doing/` · `done/` | push `main` + PR, **sans** filtre de chemins | ~1 s, ni Python, ni PlatformIO, ni cache |
+
+Les trois ont un groupe de `concurrency` propre avec `cancel-in-progress` : un nouveau push annule le run précédent sur la même réf.
+
+### Pourquoi la compilation est devenue un gate
+
+Jusqu'au 2026-09-06, **aucun environnement matériel n'était bâti en CI**. « Le firmware ne compile plus » était donc un défaut que **rien ne signalait** : c'est ainsi que la casse de l'ancien env de repli core 2 est passée inaperçue pendant **deux versions** (v2.40.0 → v2.42.0), découverte par hasard. Le retrait de ce repli ([ADR-0069](adr/0069-retrait-repli-core-2.md)) a supprimé **une victime**, pas la **classe de défaut** — elle valait pour `esp32dev_core3`, seul env restant, et vaudrait pour tout successeur.
+
+> ℹ️ Le build CI exécute `tools/archive_build.py` (hook `post:` de l'env) : il écrit dans `builds/` **sur le runner**, qui est détruit ensuite. Ce n'est pas une anomalie.
+
+### `./tools/check_specs.sh` — le même contrôle en local
+
+Le contrôle d'hygiène vit dans un **script du dépôt**, pas dans du shell inline : il tourne à l'identique en local, avant de committer, et peut servir de hook pre-commit.
+
+```bash
+./tools/check_specs.sh    # sortie 0 si tout va bien, 1 sinon
+```
+
+Deux règles, de sévérité différente :
+
+1. **BLOQUANTE (sortie 1)** — un nom de fichier de spec présent dans plusieurs des trois dossiers. Le script liste les noms fautifs **et** leurs dossiers. Le cycle `todo/` → `doing/` → `done/` procède par **déplacement** (`git mv`) : une spec copiée, ce sont deux versions qui divergent et deux statuts qui se contredisent.
+2. **AVERTISSEMENT (n'échoue pas)** — un même **numéro** porté par deux slugs différents. Cas réel signalé aujourd'hui par le script : `feature-067` désigne à la fois `todo/feature-067-etude-portage-esp32-s3.md` et `done/feature-067-offset-mesure-ph.md`, ce qui rend **ambiguë** toute référence « feature-067 » dans un commit ou un ADR. Non bloquant à dessein : corriger exigerait de **renuméroter une spec close**.
+
+Cas limites tranchés : dossier `todo/`/`doing/`/`done/` vide ou absent → **sortie 0** avec mention du dossier ignoré (un cycle sans spec en cours est légitime) ; `specs/features/` **entièrement absent** ou `mktemp` en échec → **sortie 1**, jamais 0 — un contrôle qui ne peut pas conclure ne doit pas être vert.
+
+### ⚠️ Clé de cache cloisonnée `pio-fw-` — à ne pas « simplifier »
+
+`build-firmware.yml` utilise la clé `pio-fw-${{ runner.os }}-${{ hashFiles('platformio.ini') }}`, **distincte** du `pio-…` de `tests-natifs.yml`. Ce n'est pas cosmétique.
+
+Une clé de cache GitHub Actions est **immuable une fois créée**. Les deux workflows démarrent **en parallèle sur le même commit** : avec une clé partagée, si le job natif gagne la course, il écrit sous cette clé un cache ne contenant que l'env `native` (quelques Mo). Le job firmware le restaurerait, retéléchargerait ~2 Go de toolchain (`framework-arduinoespressif32-libs` 1,9 Go + `toolchain-xtensa-esp-elf` 1,2 Go), et **ne pourrait jamais sauvegarder le sien**, la clé étant prise. Résultat : 2 Go à chaque run, indéfiniment — et **silencieusement**, puisque le run reste vert.
+
+La clé reste indexée sur `platformio.ini` : une montée de plateforme invalide le cache d'elle-même, ce qui est le comportement voulu.
+
+### ⚠️ Contrepartie du filtre de chemins
+
+`build-firmware.yml` ne se déclenche que sur `src/**`, `platformio.ini`, `partitions.csv`, `tools/archive_build.py` (script `post:` de l'env, donc véritable entrée de build) et **le workflow lui-même**. Un commit purement documentaire ne consomme donc pas plusieurs minutes de runner.
+
+Le prix à connaître **avant** de le payer : si ce job est un jour déclaré ***required check*** sur les PR, une PR ne touchant **aucun** de ces chemins n'obtiendra **jamais** le statut attendu et restera **non fusionnable** — sans message explicite, la PR reste simplement bloquée sur un contrôle « en attente ». Les parades usuelles sont soit de ne pas le rendre requis, soit d'ajouter un job « bidon » toujours vert portant le même nom sur le chemin complémentaire. À trancher le jour où la protection de branche sera activée, pas avant.
+
+### ⚠️ Pas d'ancre YAML dans GitHub Actions
+
+Les ancres YAML (`&ancre` / `*ancre`) **ne sont pas supportées** par GitHub Actions. La liste de chemins de `build-firmware.yml` est donc **dupliquée littéralement** entre le bloc `push` et le bloc `pull_request` : **toute modification doit être faite deux fois**, sous peine d'un filtre asymétrique entre push et PR (un défaut discret — le workflow se déclencherait dans un cas et pas dans l'autre).
 
 ## Upload / Déploiement
 

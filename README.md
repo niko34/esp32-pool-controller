@@ -112,9 +112,12 @@ pio run                             # doit compiler
 ```
 
 **Ce qui fonctionne depuis un clone nu** : les agents, les skills et les
-commandes, les specs, les tests natifs (la CI les exécute sur Linux à chaque
-push, c'est une preuve), la compilation, la génération des PDF et celle des
-gerbers. Les scripts détectent leurs outils et échouent avec un message explicite
+commandes, les specs, les tests natifs, la compilation, la génération des PDF et
+celle des gerbers. **Trois workflows GitHub Actions rejouent les trois premiers à
+chaque push et à chaque PR** — tests natifs + couverture, compilation
+`pio run -e esp32dev_core3`, et hygiène des specs (`./tools/check_specs.sh`,
+lançable en local) : ce n'est pas une promesse, c'est une preuve. Voir
+[docs/BUILD.md](docs/BUILD.md#intégration-continue-github-actions). Les scripts détectent leurs outils et échouent avec un message explicite
 si l'un manque.
 
 **Ce qui ne fonctionne pas à distance** : le déploiement sur l'appareil. Son mot

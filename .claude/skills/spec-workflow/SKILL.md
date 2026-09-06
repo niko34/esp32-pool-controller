@@ -58,6 +58,18 @@ features/todo/X.md ──(démarrage par orchestrator)──> features/doing/X.m
 mv specs/features/todo/<nom>.md specs/features/doing/<nom>.md
 ```
 
+⚠️ **Déplacer, jamais copier** — et c'est désormais **vérifié par la CI**
+(`.github/workflows/hygiene-specs.yml`). Un nom de spec présent dans plusieurs des dossiers
+`todo/` · `doing/` · `done/` rend le run **rouge**. Contrôle lançable en local avant de
+committer :
+
+```bash
+./tools/check_specs.sh    # 0 si tout va bien, 1 sinon
+```
+
+Le script signale aussi, **sans bloquer**, un même numéro porté par deux slugs différents
+(cas connu : `feature-067`). Voir [BUILD.md](../../../docs/BUILD.md#intégration-continue-github-actions).
+
 ## Enrichissement pendant doing
 
 Ajouter **en fin de fichier** (pas en remplacement) une section :

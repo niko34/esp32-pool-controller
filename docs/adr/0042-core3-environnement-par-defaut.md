@@ -5,6 +5,8 @@
 - **Décideurs** : Nicolas
 - **Spec(s) liée(s)** : aucune spec dédiée — franchissement de la « porte de bascule production » ouverte par [ADR-0034](0034-migration-core3-idf5.md) (études/exécution : feature-062, feature-063)
 
+> 📋 **Amendement du 2026-09-06 (feature-103)** : la conséquence « **la CI n'est pas concernée** : `tests-natifs.yml` ne construit que l'env `native` » (§ Ce que ça verrouille) est **devenue fausse**. La CI construit désormais l'env matériel : [`.github/workflows/build-firmware.yml`](../../.github/workflows/build-firmware.yml) lance `pio run -e esp32dev_core3` sur push `main` et sur PR touchant les entrées de build. Un troisième workflow, [`hygiene-specs.yml`](../../.github/workflows/hygiene-specs.yml), contrôle l'unicité des specs. Cet ADR reste **Accepté**, son corps est **inchangé** — voir [BUILD.md § Intégration continue](../BUILD.md#intégration-continue-github-actions) et [feature-103](../../specs/features/done/feature-103-gardes-ci-build-firmware-et-hygiene-specs.md).
+
 ## Contexte
 
 [ADR-0034](0034-migration-core3-idf5.md) a livré la **phase code bi-core** (le même arbre compile en core 2 et en core 3) et a explicitement laissé la **bascule production** comme une **porte séparée**, conditionnelle : l'env `[env:esp32dev_core3]` y était déclaré **BUILD-ONLY**, « jamais flashé sur la production », et le bootloader IDF 4.4 devait être conservé pour garantir un retour arrière **OTA-only**.

@@ -5,6 +5,8 @@
 - **Décideurs** : utilisateur (constat « la saison de production est faite »), `architect`, gate `pool-chemistry` (**GO** — le retrait durcit `isPumpUsable()`, n'assouplit rien), `test-engineer` (**PASS** — équivalence binaire), `code-reviewer` (**Approved**)
 - **Spec(s) liée(s)** : [feature-102](../../specs/features/done/feature-102-retrait-repli-core-2.md) ; origine du défaut de compilation : `bug-080` (lot B-2)
 
+> 📋 **Amendement du 2026-09-06 (feature-103)** : la conséquence négative « **l'env core 3 reste sans garde CI** » et le constat du § Contexte « **aucun env matériel n'est bâti en CI** » sont **comblés le jour même** par [`.github/workflows/build-firmware.yml`](../../.github/workflows/build-firmware.yml), qui exécute `pio run -e esp32dev_core3` sur tout push `main` et toute PR touchant `src/**`, `platformio.ini`, `partitions.csv` ou `tools/archive_build.py`. Le **diagnostic** de cet ADR reste exact — c'est bien ce trou de détection qui a laissé passer la casse du core 2 pendant deux versions ; seules les formulations **au présent** sont datées. Cet ADR reste **Accepté**, son corps est **inchangé**. Voir [BUILD.md § Intégration continue](../BUILD.md#intégration-continue-github-actions) et [feature-103](../../specs/features/done/feature-103-gardes-ci-build-firmware-et-hygiene-specs.md).
+
 ## Contexte
 
 L'[ADR-0042](0042-core3-environnement-par-defaut.md) (22/08/2026) a fait du core 3 l'environnement
