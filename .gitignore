@@ -52,6 +52,10 @@ ai/outputs/
 !.claude/skills/
 !.claude/commands/
 !.claude/settings.json
+# La mémoire de projet (pièges récurrents, hypothèses réfutées, incidents) vivait
+# dans ~/.claude/projects/<projet>/memory/ — hors du dépôt, donc sur une seule
+# machine et sans sauvegarde. Versionnée depuis le 06/09/2026.
+!.claude/memory/
 
 # ---------------------------------------------------------------------------
 # KiCad — les SOURCES sont versionnées comme le code ; les fichiers de
