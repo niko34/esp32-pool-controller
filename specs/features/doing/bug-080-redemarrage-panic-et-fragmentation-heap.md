@@ -199,11 +199,22 @@ téléchargement de 16h10. Irrécupérable — le coredump a suppléé.
       dans `/get-system-info`, et alerté s'il n'y a **aucune** réserve depuis
       5 min (lot B-1). *Ce critère n'existait pas au départ : il a été ouvert
       par la découverte du 04/09.*
-- [ ] **Ceinture** : garde 503 dans le filtre `serveStatic`, **avant** le
-      premier `fopen` — **lot B-3**, à calibrer sur le régime post-B-1
-- [ ] **7 jours sans redémarrage inopiné** — **compteur toujours ouvert**, il
-      repart du déploiement de la 2.35.0 (le 2ᵉ PANIC du 03/09 l'avait déjà
-      remis à zéro)
+- [x] **Ceinture** : garde 503 **avant** le premier `fopen` — **lot B-3 livré en
+      v2.41.0 le 05/09**. ⚠️ Le périmètre annoncé ici était **faux** : le filtre
+      `serveStatic` rejette les `.html` et n'aurait donc jamais couvert le chemin
+      du PANIC du 29/08. Remplacé par un **handler prioritaire** enregistré avant
+      les autres, qui couvre les deux familles (routes HTML explicites *et*
+      fichiers statiques). Seuil `kStaticFileMinAllocBytes = 8192`, calibré sur le
+      régime post-B-1. Vue mordre le jour même, sur rafale de 6 requêtes
+      simultanées (`maxBloc8` effondré à 2 932 o) — voir ADR-0067.
+      ⚠️ **Elle ne couvre qu'un chemin `fopen` sur au moins trois** : le crash du
+      05/09 est passé par la sauvegarde de l'historique, hors de sa portée → `bug-100`.
+- [ ] **7 jours sans redémarrage inopiné** — **compteur toujours ouvert**.
+      Repart du **05/09 ~14:16**, dernier redémarrage inopiné connu (le PANIC sur
+      `fopen` de l'historique, daté par SHA256 du coredump — cf. `bug-100`), et
+      non des déploiements volontaires qui ont suivi.
+      **Échéance au plus tôt : 12/09/2026.** État au 06/09 08:30 : ~18 h écoulées,
+      aucun redémarrage inopiné depuis.
 
 ---
 
@@ -1062,6 +1073,41 @@ seuils existants intacts** (condition C5 du gate B-1, reconduite en B-2 et ici).
 - Mesure réelle du parcours (`esp_cpu_get_cycle_count` en instrumentation jetable),
   à reporter dans le commentaire de `kStaticFileMinAllocBytes` : c'est **la seule
   dette de mesure** que laisse ce lot.
+
+### ⚠️ MESURE RÉELLE DE LA SONDE B-2 — relevée le 06/09, l'estimation était fausse d'un facteur 4,5
+
+Premier déclenchement en conditions réelles, après 12 h 36 d'uptime en v2.42.0 :
+
+    oom_probe_count = 1     oom_probe_max_us = 675     oom_probe_last_caps = 0x080C
+
+- **`caps = 0x080C`** (`8BIT|DMA|INTERNAL`) : exactement la classe des onze refus
+  du 05/09. La sonde s'est déclenchée sur le bon cas.
+- **675 µs**, contre **80-150 µs** estimés par l'architecte (annexe C) et un seuil
+  d'alerte fixé à **300 µs**. L'estimation était optimiste d'un **facteur 4,5**,
+  et la mesure dépasse le seuil de WARN — un avertissement « sonde lente » a donc
+  été émis, que la rotation du journal a effacé avant relevé.
+- Sous le plafond de désactivation (**1 500 µs**) : la sonde **reste active**, et
+  le garde-fou A5 n'a pas eu à jouer. La marge est de 2,2×, non de 10× comme prévu.
+
+**Ce que cela dit du dimensionnement** : le raisonnement de l'annexe C (~700-900
+blocs, 10-15 cycles/bloc) sous-estimait le nombre de blocs, la fragmentation
+réelle, ou les défauts de cache. Le rapport 300/1 500 tenait pour une valeur
+attendue de 150 µs ; à 675 µs il ne reste qu'un facteur 2,2 avant désactivation
+définitive.
+
+**À arbitrer** — deux lectures, aucune tranchée par une seule mesure :
+1. **relever le seuil de WARN** (675 µs devient la référence, l'alerte perd son
+   sens à 300) ;
+2. **considérer 675 µs comme déjà trop** pour un parcours interruptions coupées, et
+   revoir le bornage.
+
+⚠️ **Ne pas trancher sur un échantillon.** Relever `oom_probe_max_us` à chaque
+occasion : c'est un maximum cumulé, il ne peut que croître, et sa progression dira
+si 675 µs est le régime ou une queue de distribution.
+
+**Le reste du lot se comporte comme prévu** : garde 503 jamais déclenchée (le plus
+grand bloc est descendu à 10 228 o, pour un seuil à 8 192 — marge 2 036 o), aucun
+redémarrage, parachute armé en RAM interne.
 
 
 ---

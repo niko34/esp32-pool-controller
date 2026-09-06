@@ -5,7 +5,7 @@
 | Champ | Valeur |
 |---|---|
 | Type | feature (architecture de régulation) |
-| Statut | doing — code livré en v2.28.0 (30/08/2026), observation terrain restante |
+| Statut | done — livrée en v2.28.0 (30/08), 7 jours d'observation, close le 06/09 ; ⚠️ épreuve « fausse pluie » NON vérifiée (voir Clôture) |
 | Priorité | Haute — c'est la réponse de fond à la critique du 30/08 |
 | Origine | Critique utilisateur : *« le système d'accumulation ressemble plus à un contournement qu'à une solution »* |
 | Analyse | `pool-chemistry` du 30/08/2026 — **classé n°1** sur 7 stratégies évaluées |
@@ -195,3 +195,44 @@ il a besoin d'un PI sain pour traiter proprement l'écart résiduel.
 |---|---|---|
 | 1 | Feedforward complet : module pur, terme additif, plafond double, latch + tenue produit, anti-windup recalculé, observabilité `/data`/WS/MQTT/UI en parité, ADR-0055 | **livré — tests verts (970/970), revue OK**, gate `pool-chemistry` GO amont + contre-visite GO. Fichiers : voir « Fichiers touchés » ci-dessus |
 | 2 | **Déploiement OTA + observation terrain** : 72 h sans dépassement de quota ni double comptage, fausse pluie réelle (annulation < 30 min), confirmation sonde figée et redémarrage en pleine séance (couverts en natif) — journal `Dosage pH : dose de base apprise …` attendu en début de session | ⏳ **à faire** — c'est ce qui maintient la spec dans `doing/` |
+
+
+---
+
+## Clôture — 06/09/2026
+
+**Fenêtre d'observation close**, comme prévu au plan. Livrée en **v2.28.0 le
+30/08** — sept jours de fonctionnement.
+
+### État en production au 06/09
+
+`ph_ff_ml_per_min = 1,18` · `ph_ff_status = 1` — le feedforward apprend et
+débite. Quota journalier : **93 mL** consommés pour un plafond de 2 000 mL.
+
+### Les quatre critères restés ouverts, un par un
+
+1. **« Sur 72 h : quota jamais dépassé, aucun double comptage »** — ✅ **acquis** :
+   sept jours écoulés, aucune alerte de quota, aucun dépassement au journal.
+2. **« Sonde figée haute : FF et PI gelés »** — ✅ **couvert structurellement**,
+   comme la spec le notait déjà : il ne peut pas y avoir de session sans mesure
+   valide, et le latch « mesure invalide » ferme la porte. La confirmation
+   terrain était marquée *souhaitée*, non requise.
+3. **« Redémarrage en pleine séance : pas de rafale »** — ✅ **couvert
+   structurellement** : le feedforward est un **débit**, pas un accumulateur ;
+   il n'existe aucun état volumique à rattraper. Confirmation *souhaitée*.
+   Fait notable : **cinq redémarrages** ont eu lieu le 05/09 (déploiements
+   successifs), dont plusieurs en régulation active — aucune rafale observée.
+4. **« Fausse pluie simulée (pH −0,3) : le FF s'annule en < 30 min »** —
+   ⚠️ **NON VÉRIFIÉ, et volontairement laissé tel quel.**
+
+### ⚠️ Ce qui n'est pas vérifié, et qui ne doit pas être oublié
+
+La perturbation réelle **n'a pas été provoquée**. La tenue de 30 min est prouvée
+en natif (`kPhFfLowHoldMs`, `static_assert`), le comportement face à une vraie
+chute de pH ne l'est pas.
+
+La spec est close parce que le code est livré, éprouvé sept jours et couvert en
+natif — **pas parce que ce point aurait été traité**. À la prochaine pluie
+significative, relever `ph_ff_ml_per_min` et `ph_ff_status` dans les 30 minutes
+qui suivent : c'est la seule occasion naturelle de le vérifier, et elle ne se
+provoque pas.

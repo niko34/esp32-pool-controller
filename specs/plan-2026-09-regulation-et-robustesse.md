@@ -524,3 +524,44 @@ Règles du plan :
   **Marge flash après les quatre : 13 195 o** (99,3 % occupés). C'est désormais
   la contrainte dominante du projet — les lots B-2 et B-3 de bug-080 (~700 o)
   y tiennent, mais plus grand-chose au-delà sans arbitrage.
+
+- 2026-09-06 08:40 — **Matin 1 exploitable pour feature-097**, et il retourne la
+  question que la spec posait.
+
+  Relevés : purge **780 s (13 min)**, fin **1 (stabilité)**, **0 re-purge**, fin
+  vers **07:05**. Au regard du critère de décision de la spec — « médiane ≤
+  plancher + 3 min et aucune fin 2 → ne rien changer » — c'est **exactement la
+  borne**. La feature-091 a fait son travail : elle n'a ouvert ni au plancher par
+  impatience, ni au plafond par échec.
+
+  **Mais le pH a continué de monter APRÈS l'ouverture** : +0,100 pH en 31 min,
+  sept valeurs de moyenne glissante croissantes d'affilée, puis un plateau net
+  (5 hausses sur 10 pas, amplitude 0,053). Le premier point post-purge est le plus
+  bas des dix-neuf de la matinée. Six hausses consécutives valent 1,56 % sous
+  hypothèse de hasard **à position fixée** — et la position était prédite.
+
+  Le détecteur ne pouvait pas le voir : 0,003 pH/min contre 0,033 de pente
+  minimale détectable. **Aveugle par construction**, pas par mauvais réglage.
+
+  ⚠️ **Deux lectures produisent la même courbe** : purge trop courte, ou dégazage
+  de CO₂ au démarrage du brassage. Une matinée ne tranche pas. Si c'est la
+  première, l'écart initial du KPI (**−0,02**, « déjà à la cible ») est faux et la
+  régulation a considéré n'avoir rien à faire pendant une demi-heure.
+
+  **Le protocole de collecte de feature-097 s'en trouve élargi** : il ne mesurait
+  que la DURÉE de purge, parce qu'il avait été écrit pour un problème d'ouverture
+  trop TARDIVE (rejeu du 04/09). Il faut désormais relever aussi la dérive du pH
+  filtré sur les 45 min qui SUIVENT l'ouverture, et l'heure de démarrage de la
+  filtration — c'est l'écart entre ces deux instants qui distinguera les deux
+  lectures. La `sensor_trace` d'ouverture a manqué ce matin.
+
+  **Reste de la matinée** : aucun redémarrage (12 h 36 d'uptime), flash à 48,9 %,
+  garde 503 jamais déclenchée. **La sonde B-2 s'est déclenchée une fois** —
+  `caps=0x080C`, la classe DMA attendue — mais en **675 µs**, soit 4,5× l'estimation
+  de l'architecte (80-150 µs) et **au-dessus du seuil d'alerte de 300 µs**. Sous le
+  plafond de désactivation (1 500 µs), donc la sonde reste active. Ce chiffre réel
+  était explicitement demandé par le protocole on-target du lot B-2.
+
+  Côté chimie, le vrai sujet du jour n'est pas le pH mais l'**ORP** : 530 mL de
+  chlore avant 8 h 20 — 35 % du budget journalier — **limite horaire atteinte deux
+  fois**, pour un ORP à 509 mV contre 530 visés.

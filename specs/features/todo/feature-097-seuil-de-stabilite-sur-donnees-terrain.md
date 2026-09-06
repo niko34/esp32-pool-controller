@@ -2,7 +2,7 @@
 - **ID** : feature-097
 - **Slug** : seuil-de-stabilite-sur-donnees-terrain
 - **Type** : feature (réglage sur données — condition 10 du gate pool-chemistry v2.34.0)
-- **Statut** : todo — **ne pas ouvrir avant 5 matins de télémétrie** (au plus tôt le 10/09/2026)
+- **Statut** : todo — **ne pas ouvrir avant 5 matins de télémétrie** (au plus tôt le 11/09/2026). **1 matin sur 5 collecté** (06/09) ; voir §Relevés terrain — la première mesure a fait apparaître une question hors du protocole initial (dérive APRÈS l'ouverture), qui élargit la collecte
 - **Priorité** : moyenne
 - **Version cible** : 2.36+
 - **Dernière mise à jour** : 2026-09-04
@@ -99,6 +99,79 @@ et 07:42 le 05/09. Consigner les relevés dans le §6 du plan 2026-09.
 en « sans objet ». Sinon, option (c) ou statistique robuste, sur rejeu des
 traces réelles.
 
+## Relevés terrain
+
+### Matin 1 — 06/09/2026 (v2.42.0)
+
+Premier matin exploitable. *(Le 05/09 est écarté : air dans le circuit par niveau
+d'eau bas, plus un reflash USB en cours de journée.)*
+
+| Grandeur | Valeur |
+|---|---|
+| `measures_purge_last_duration_s` | **780 s = 13 min** |
+| `measures_purge_last_end` | **1 — stabilité** (ni plancher, ni plafond) |
+| `measures_purge_count` (re-purges) | **0** |
+| Fin de purge | **≈ 07:05** (déduite : 1ᵉʳ pH filtré à 07:06 ; le journal, rogné par la rotation, ne remonte qu'à 07:02) |
+| Départ KPI | 07:12:22, **écart initial −0,02** |
+| `sensor_trace` couvrant l'ouverture | ⚠️ **MANQUANTE** — non déclenchée ce matin |
+
+**Au regard du critère de décision de cette spec** : 13 min = plancher + 3 min,
+fin de type 1, aucune fin 2. C'est **exactement la borne** du « ne rien changer ».
+
+### ⚠️ Mais l'observation du 06/09 pose une question que ce protocole NE COLLECTE PAS
+
+Cette spec a été écrite pour un problème : **la porte s'ouvre trop TARD** (rejeu
+du 04/09, ouverture à t+47…62 pour un plateau à t+39). Tout son protocole mesure
+donc la *durée* de purge.
+
+Or ce matin, après l'ouverture, le pH filtré a **continué de monter** :
+
+```
+moyenne glissante 3 points
+07:11  7,327  ┐  sept valeurs croissantes d'affilée
+07:16  7,347  │  +0,100 pH en 31 min
+   …          │
+07:42  7,427  ┘  sommet
+07:47  7,410  ┐  puis plateau : 5 hausses / 10 pas,
+   …          │  amplitude 0,053
+08:32  7,383  ┘
+```
+
+Le premier point post-purge (7,29) est **le plus bas des 19 de la matinée**.
+Six hausses consécutives valent **1,56 %** sous hypothèse de hasard à position
+fixée — et la position était **prédite** (juste après l'ouverture), donc pas de
+correction pour recherche multiple à appliquer.
+
+**Le détecteur ne pouvait pas voir cette dérive** : 0,003 pH/min observés contre
+**0,033 pH/min** de pente minimale détectable (seuil 0,15 sur W = 10). Il est
+aveugle à ce régime **par construction**, pas par mauvais réglage.
+
+⚠️ **Deux lectures restent possibles, et une seule matinée ne tranche pas** :
+1. **purge trop courte** — la mesure n'était pas stabilisée à l'ouverture ;
+2. **dégazage matinal réel** — le CO₂ s'échappe au démarrage du brassage, le pH
+   du bassin monte vraiment.
+
+Les deux produisent **exactement la même courbe** (montée puis plateau).
+
+**Conséquence si c'est (1)** : l'écart initial du KPI (−0,02, « déjà à la cible »)
+est faux, et la régulation a considéré n'avoir rien à faire pendant ~30 min.
+
+### Ce qu'il faut ajouter au protocole de collecte
+
+Le §« Pré-requis » ne suffit pas : il faut aussi, chaque matin,
+
+- l'**évolution du pH filtré sur les 45 min qui SUIVENT l'ouverture** (amplitude,
+  monotonie, instant du plateau) — c'est elle qui distingue les deux lectures ;
+- une **`sensor_trace` déclenchée à l'ouverture** (elle a manqué aujourd'hui) ;
+- **l'heure de démarrage de la filtration**, pour rapporter la dérive au début du
+  brassage plutôt qu'à la fin de la purge.
+
+**Discriminant proposé** : si la montée post-ouverture démarre à la **fin de la
+purge**, c'est (1) ; si elle démarre au **début de la filtration** et se poursuit
+à travers la purge, c'est (2). Aujourd'hui les deux instants sont trop proches
+(≈ 06:52 et 07:05) pour trancher ; une matinée où la purge sera longue les
+séparera.
+
 ## Fichiers potentiellement concernés
 - `src/purge_stability_logic.{h,cpp}` — statistique / taille de bloc
 - `src/constants.h` — constantes kPurge*, static_asserts
@@ -106,6 +179,9 @@ traces réelles.
 
 ## Livrables — check-list
 - [ ] A1 — Relevés 5 matins consignés (durées, fins, re-purges, σ médiane sur plateau)
+      **+ dérive du pH filtré sur les 45 min POST-ouverture** (ajouté le 06/09 —
+      c'est cette grandeur, absente du protocole initial, qui distingue « purge
+      trop courte » de « dégazage matinal réel ») — *1/5 collecté*
 - [ ] A2 — Décision architect + pool-chemistry : rien / (c) / statistique robuste
 - [ ] A3 — Implémentation dans le module pur, constantes, static_asserts
 - [ ] A4 — Tests natifs : rejeu 04/09 (sans et avec bruit, 20 graines) toujours fermé avant le plateau ; rejeu des traces réelles ouvre au plancher ≥ 90 % ; mutation (revenir à l'ancien paramètre → le rejeu terrain meurt)

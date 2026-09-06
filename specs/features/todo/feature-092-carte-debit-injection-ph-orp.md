@@ -5,9 +5,54 @@
 - **Statut** : todo
 - **Priorité** : normale
 - **Version cible** : 2.34.x ou 2.35.0 — **pas de déploiement isolé pendant la fenêtre d'observation 72 h ouverte le 03/09/2026 07:31** (features 084/085/086) ; embarquer avec la livraison suivante (lot B de bug-080 et/ou feature-091)
-- **Dernière mise à jour** : 2026-09-03
+- **Dernière mise à jour** : 2026-09-06 (deux points à rejouer avant ouverture — voir en tête : budget WS périmé, placement à arbitrer avec le bloc TTT de feature-096)
 - **Spec(s) liée(s)** : feature-085 (dose de base apprise — origine de la ligne `#ph_ff_line`), feature-084 (intégrale, anneau `ph_load7`), feature-086 (limite d'actionneur : bloc Capacités, bandeaux), bug-089 (parité WS ↔ config — même famille de piège), bug-082 (champ WS-seul)
 - **Historique** : première version de cette spec (03/09 matin, slug `dose-de-base-apprise-lisible-hors-session`) ne traitait que le tiret muet de la ligne dose de base ; élargie le même jour, sur décision utilisateur, en refonte de la présentation des débits — l'`ux-ui-designer` a été consulté en amont (pré-arbitrages ci-dessous, à confirmer pendant le cycle).
+
+## ⚠️ À REJOUER AVANT OUVERTURE — cette spec ignore feature-096 (ajouté le 06/09/2026)
+
+Cette spec a été écrite le **03/09**. La carte « **Atteinte de la cible** »
+(`feature-096`, blocs `#ph-ttt-block` / `#orp-ttt-block`) a été déployée le
+**05/09 en v2.37.0**. La spec n'en contient donc **aucune mention** — ce n'est pas
+un arbitrage, c'est un angle mort chronologique.
+
+**Ce qui va bien** : il n'y a **pas de collision de placement**. Le bloc TTT vit
+*à l'intérieur* de `.ph-stats` (2ᵉ colonne, `index.html` l. 719) ; la carte
+`#ph-card-dosing` s'insère *après* `.ph-stats`. Aucun élément que cette spec retire
+ou déplace n'appartient au bloc TTT. Les sept pastilles ne bougent pas.
+
+**Deux points à reprendre, cependant.**
+
+### R1 — Le budget WS chiffré ici est PÉRIMÉ
+
+Le § Contraintes techniques raisonne sur « gabarit `StaticJson<2816>`, pire cas
+2 745 o ». Depuis :
+
+| | gabarit | motif |
+|---|---|---|
+| au 03/09 (base de ce chiffrage) | **2816** | — |
+| bug-089, v2.39.0 | **2944** | 15 clés de configuration ajoutées à la trame |
+| état au 06/09 | **3072** | marge de **80 o** seulement sous `kWsFrameBufBytes = 3584` |
+
+La trame porte en outre **21 occurrences de champs `ttt`** (feature-096).
+
+⚠️ **Refaire le chiffrage sur 3072, pas sur 2816**, avant de trancher entre bump du
+gabarit et retrait compensatoire. La marge décrite dans cette spec n'existe plus.
+Rappel du mode de défaillance : le dépassement ne tronque pas, il **saute le push**
+— et le pire cas de taille coïncide avec l'escalade de sécurité pH, c'est-à-dire le
+moment où perdre la trame coûte le plus cher (cf. bug-089).
+
+### R2 — Le placement doit être rejoué par `ux-ui-designer`
+
+Il a été consulté le **03/09**, donc **sans voir le bloc TTT**. Or l'enchaînement
+que cette spec justifie — « mesure → ce que fait la régulation maintenant →
+réglages » — place désormais un **indicateur de performance** (« la cible a été
+atteinte en 3 h 44 ») juste au-dessus d'une carte disant **ce que la régulation
+demande à l'instant**. Deux temporalités très différentes se succèdent sans
+transition.
+
+Ce n'est pas forcément à changer, mais **personne ne l'a arbitré**. À trancher
+pendant le cycle, en ayant les deux blocs sous les yeux.
 
 ## Domaines touchés
 - [ ] Capteurs (pH / ORP / température)
@@ -170,6 +215,10 @@ Décrit au § Contexte : présentation en morceaux (`#ph-integral-section`, `#ph
 - [ ] A3 — fonction pure de composition `phDoseComposition(ff, p, i, sustainable)` → {demande, appliqué} (ou équivalent extrait du calcul PI existant, à résultat identique) — module pur testable.
 - [ ] A4 — `pump_controller.h` : accesseurs `const` pH + ORP listés ci-dessus ; `getPhFeedforwardStatus()` sur A2 ; statuts 1, 2, 4 strictement inchangés.
 - [ ] A5 — `/data` + WS : 7 nouveaux champs + 4 champs pause mélange sur `/data` ; **preuve de parité par grep des deux côtés consignée dans la spec** ; budget chiffré et commentaires mis à jour ; décision gabarit tracée.
+      ⚠️ **Chiffrer sur le gabarit RÉEL (3072 au 06/09, marge 80 o), pas sur les
+      2816 de ce document** — voir R1 en tête de spec.
+- [ ] A8 — **Placement rejoué avec le bloc TTT** (`feature-096`, absent lors de la
+      consultation `ux-ui-designer` du 03/09) — voir R2 en tête de spec.
 - [ ] A6 — règle firmware « pH à la consigne » pour la pastille de priorité 5 (à défaut : champ booléen ou réutilisation d'un code de refus existant) — décision architect.
 - [ ] A7 — MQTT : topics + auto-discovery HA.
 - [ ] B1 — `index.html` : `#ph-card-dosing` conforme aux maquettes ; retraits/déplacements exécutés (aucun id mort dans `app.js`).

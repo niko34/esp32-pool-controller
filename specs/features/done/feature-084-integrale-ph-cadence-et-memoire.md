@@ -5,7 +5,7 @@
 | Champ | Valeur |
 |---|---|
 | Type | bug de conception (le mécanisme fonctionne, sa cadence est fausse) |
-| Statut | **doing — implémentée, testée (932 tests natifs verts), revue OK, non déployée** |
+| Statut | **done — livrée en v2.33.0 (02/09), fenêtre d'observation close le 06/09 ; critère de convergence reporté sur feature-096 (voir Clôture)** |
 | Priorité | **Haute** — gain important pour un coût faible ; à faire même si `feature-085` est retenue |
 | Origine | Critique utilisateur du 30/08/2026, analyse `pool-chemistry` du même jour |
 | Version en cours | **2.27.0** (non déployée — reste dans `doing/`) ; base : 2.26.0 |
@@ -269,3 +269,41 @@ estimation. Ce sont des **estimations analytiques**, dont le sens d'erreur est
 | 2 | **Déploiement OTA + vérification terrain** : temps de convergence avant/après sur données réelles, absence de dépassement sous la consigne, comportement de la restauration après un redémarrage réel (journal `Intégrale pH restaurée : …`), profondeur d'historique atteinte après 3 jours | ⏳ **à faire** — c'est ce qui maintient la spec dans `doing/` |
 | 2 — **constat terrain du 03/09/2026** | Redémarrage **réel** (PANIC 08:59:47, cf. bug-080) : le test de restauration prévu « vers le 4-5/09 » a eu lieu involontairement. Verdict : **`Intégrale pH : instantané NVS REJETÉ (instantané périmé) — la régulation repart de zéro`** (R3). Cause : le dernier instantané datait de la veille au soir — depuis, l'intégrale n'a varié que de 2 556 → 2 188 → 2 357 pH·s, soit **moins que le seuil d'écriture** (`kPhIntegralPersistMinDeltaFrac` 5 % × 16 200 = 810 pH·s), donc aucune écriture le matin ; à 08:59 l'âge dépassait `kPhIntegralPersistMaxAgeS` = 6 h. **Conséquence structurelle** : l'intégrale est gelée toute la nuit (pas d'évaluation hors filtration) et la fenêtre 19:03 → 06:57 dure 12 h ⇒ **tout redémarrage matinal avant la première écriture du jour rejette un instantané pourtant exact** — les R1-R7 ne peuvent jamais s'exercer dans le scénario de redémarrage le plus probable. Point à trancher à la clôture (pas de correctif sans `pool-chemistry`) : (a) mesurer l'âge en **temps de filtration** plutôt qu'en temps mural, (b) forcer une écriture à l'arrêt de filtration (sortie du planning) et/ou à la reprise, (c) allonger l'âge à > 12 h. Le compteur journalier (130 mL) et l'anneau `ph_load7` (3 j, FF 1,41 réactivé à 09:15:54) ont, eux, survécu. L'intégrale s'est reconstruite à 733 pH·s en 85 min (pH 7,59 → 7,47 à 10:40). | ⏳ à statuer à la clôture |
 | 3 (hors périmètre, suivi) | Le problème de fond — l'installation est **limitée par l'actionneur** (~911 mL/j délivrables pour ~1 800 mL/j de besoin) | ⏳ **ouvert** — suivi dans [feature-086](../todo/feature-086-limite-actionneur-dosage-ph.md) ; relever `phInjectionLimitMinutes` par paliers, en tenant compte de l'excursion pendant le retard de mélange. [feature-085](../todo/feature-085-dose-de-base-apprise-feedforward.md) (dose de base apprise) reste la réponse côté correcteur |
+
+
+---
+
+## Clôture — 06/09/2026
+
+**Fenêtre d'observation close**, comme prévu au plan (« ~06/09 »). Déployée
+en **v2.33.0 le 02/09**, en production depuis.
+
+### Le seul critère resté ouvert, et ce qu'il devient
+
+> « Temps de convergence mesuré avant/après, sur données réelles — ⏳ ouvert :
+> exige le déploiement OTA, qui n'a pas eu lieu »
+
+**Le motif de blocage est périmé** : le déploiement a eu lieu le 02/09.
+
+Mais la comparaison « avant/après » telle qu'elle était envisagée **n'est plus
+réalisable proprement**, et il faut le dire plutôt que de cocher : entre le
+« avant » (≤ v2.32.0) et aujourd'hui se sont intercalées la purge adaptative
+(091), l'intégrale persistante (093) et la décision de session robuste (094).
+Un écart de convergence ne serait **attribuable à aucune** des quatre.
+
+Ce que l'instrumentation livrée depuis permet, en revanche, c'est de mesurer la
+convergence **en continu** : c'est exactement l'objet de l'indicateur « temps
+d'atteinte de cible » (**feature-096**, v2.37.0), qui enregistre chaque jour les
+minutes de circulation nécessaires. Premières valeurs : **224 min le 05/09**
+(journée marquée « non comparable » — air dans le circuit), mesure du 06/09 en
+cours.
+
+**Le critère est donc reporté sur feature-096**, qui le mesure mieux et
+durablement, plutôt que laissé ouvert sur une comparaison devenue impossible.
+
+### Ce qui est acquis
+
+Les six autres critères sont vérifiés, dont le gate `pool-chemistry` (GO du
+30/08) et la décision de persistance tranchée par l'**ADR-0053**. En production
+au 06/09 : intégrale à 306,4 pH·s (1,9 % de l'autorité), aucun emballement,
+aucun blocage de dosage imputable.

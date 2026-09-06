@@ -2,7 +2,7 @@
 - **ID** : feature-086
 - **Slug** : limite-actionneur-dosage-ph
 - **Type** : feature
-- **Statut** : doing
+- **Statut** : done — livrée en v2.29.0 (30/08), tous livrables réalisés, close le 06/09
 - **Priorité** : haute
 - **Version cible** : 2.29.0
 - **Dernière mise à jour** : 2026-08-30
@@ -305,3 +305,32 @@ Lecture async des `String` de `filtrationCfg` (`mode`/`start`/`end` lus par
 `scheduledMinutesToday()` depuis les handlers web) — motif **préexistant**
 partagé avec `/get-config`, non introduit par ce cycle. À traiter dans une spec
 dédiée si souhaité.
+
+
+---
+
+## Clôture — 06/09/2026
+
+**Tous les livrables sont réalisés** (A1-A3, B1, C1-C2, D1-D2) et la fenêtre
+d'observation prévue au plan est close. Livrée en **v2.29.0 le 30/08**.
+
+*(Les cases non cochées de « Domaines touchés » — filtration, MQTT, UART, OTA,
+authentification, historique — signalent des domaines **non concernés**, pas des
+livrables manquants.)*
+
+### État en production au 06/09
+
+`ph_limited_by_hourly_budget = false` — la régulation n'est pas bornée par
+l'actionneur ce matin. Le témoin est donc en place, observable, et **au repos**,
+ce qui est le comportement attendu quand le dimensionnement suffit.
+
+### La leçon que cette spec laisse au projet
+
+Le diagnostic initial — « la régulation est limitée par l'actionneur » — reposait
+sur la limite d'**usine** de 5 min/h, alors que l'appareil était réglé à **25**.
+D'où l'**ADR-0053** et une règle qui vaut au-delà de cette spec : **lire
+`/get-config` avant tout diagnostic chiffré**, car la configuration vivante n'est
+pas la configuration par défaut.
+
+Le témoin livré ici sert précisément à ne plus avoir à le déduire : il dit, en
+production et en français, si la limite horaire borne réellement le dosage.
