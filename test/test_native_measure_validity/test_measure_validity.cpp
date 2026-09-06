@@ -594,6 +594,36 @@ void test_outage_deny_labels(void) {
   }
 }
 
+// feature-105 (A5) — TOTALITÉ de outageDenyLabel : tout OutageDeny rend un
+// libellé imprimable, y compris hors des sept motifs nommés.
+//
+// ARBITRAGE de la branche `default:` (measure_validity_logic.cpp) : elle n'est
+// PAS un mort-code défensif inatteignable. `OutageDeny` a un type sous-jacent
+// FIXÉ (`: uint8_t`) : le standard fait de TOUTE valeur de 0 à 255 une valeur
+// valide du type — pas un comportement indéfini. Le domaine réel de la fonction
+// est donc [0, 255], et `default:` est ce qui la rend TOTALE.
+//
+// L'enjeu est côté appelant : measure_validity.cpp fait
+// `String(outageDenyLabel(v.deny))` dans un chemin de journalisation. Un retour
+// nul ou vide y produirait une ligne de log muette sur le motif d'un refus de
+// dispense — c'est-à-dire la perte de l'information qu'on écrit.
+//
+// CE QUE CE TEST NE PROUVE PAS : il n'attrape PAS l'ajout d'un motif à
+// l'énumération sans `case` correspondant (le nouveau motif tomberait dans
+// `default:` et serait journalisé « inconnue », sans échec de test). C'est le
+// tableau `all[]` de test_outage_deny_labels qu'il faudrait alors étendre.
+void test_outage_deny_label_est_total(void) {
+  // Valeurs hors des sept motifs nommés — atteignables par conversion, licites
+  // pour un enum class à type sous-jacent fixé.
+  const uint8_t hors[] = {7, 8, 42, 200, 255};
+  for (size_t i = 0; i < sizeof(hors) / sizeof(hors[0]); ++i) {
+    const char* l = outageDenyLabel(static_cast<OutageDeny>(hors[i]));
+    TEST_ASSERT_NOT_NULL_MESSAGE(l, "libelle nul : le journal perdrait le motif");
+    TEST_ASSERT_TRUE_MESSAGE(strlen(l) > 0, "libelle vide : motif de refus perdu");
+    TEST_ASSERT_EQUAL_STRING("inconnue", l);
+  }
+}
+
 // Scellement : le CRC couvre les 16 premiers octets (magic inclus) ; re-sceller
 // après modification donne un enregistrement intact ; le magic est imposé.
 void test_record_seal_et_magic(void) {
@@ -643,6 +673,7 @@ int main(int, char**) {
   RUN_TEST(test_rate_limit_dispense_frontieres);
   RUN_TEST(test_ordre_des_refus);
   RUN_TEST(test_outage_deny_labels);
+  RUN_TEST(test_outage_deny_label_est_total);
   RUN_TEST(test_record_seal_et_magic);
   return UNITY_END();
 }

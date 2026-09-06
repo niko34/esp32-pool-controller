@@ -53,9 +53,19 @@ jobs:
         run: |
           pio test -e native_coverage
           mkdir -p coverage
+          # Filtre LARGE (`src/`) et non plus deux modules nommés : la couverture
+          # suit désormais automatiquement tout module ajouté au `build_src_filter`
+          # de [env:native]. Avec l'ancien filtre, un module pur ajouté SANS test
+          # n'apparaissait nulle part et ne faisait pas bouger le chiffre — la
+          # mesure ne surveillait que ce qu'on avait pensé à lui nommer.
+          # Mesuré au 2026-09-06 sur les 34 modules, APRÈS les tests de feature-105 :
+          # lignes 100 % (1810/1810), fonctions 100 % (161/161), branches 86,8 %.
+          # Le seuil de 90 lignes est conservé — confortable, mais c'est un plancher
+          # de non-régression, pas un objectif. AUCUN seuil de branches n'est posé :
+          # les 86,8 % portent sur des demi-branches défensives dont plusieurs sont
+          # inatteignables par entrée réaliste (motifs écrits dans les tests).
           gcovr --root . \
-            --filter 'src/sensor_filter\.(cpp|h)' \
-            --filter 'src/dosing_logic\.(cpp|h)' \
+            --filter 'src/' \
             --txt --print-summary \
             --fail-under-line 90 \
             --html-details coverage/index.html \

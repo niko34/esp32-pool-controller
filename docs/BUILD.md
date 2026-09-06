@@ -148,16 +148,41 @@ Ces deux sources ne dépendent **ni d'Arduino, ni de FreeRTOS, ni d'I²C** ; seu
 
 ### Couverture de tests
 
-Le script [`tools/coverage.sh`](../tools/coverage.sh) mesure la couverture des classes pures (`sensor_filter`, `dosing_logic`) via l'env dédié `native_coverage` (env `native` + instrumentation `--coverage`) et **gcovr** :
+Le script [`tools/coverage.sh`](../tools/coverage.sh) mesure la couverture de **tous** les modules purs compilés par `[env:native]`, via l'env dédié `native_coverage` (env `native` + instrumentation `--coverage`) et **gcovr** :
 
 ```bash
 ./tools/coverage.sh          # résumé console (lignes + branches) + rapport HTML
 ./tools/coverage.sh --open   # idem + ouvre coverage/index.html (macOS)
 ```
 
-Prérequis : `gcovr` dans le venv PlatformIO (`~/.platformio/penv/bin/pip install gcovr`) et `/usr/bin/gcov` (Command Line Tools sur macOS — Apple LLVM, compatible). Le rapport HTML est généré dans `coverage/` (ignoré par git).
+Prérequis : `gcovr` dans le venv PlatformIO (`~/.platformio/penv/bin/pip install gcovr`) et `gcov` (`/usr/bin/gcov` par défaut, surchargeable : `GCOV=llvm-cov-gcov ./tools/coverage.sh`). Le rapport HTML est généré dans `coverage/` (ignoré par git).
+
+#### Périmètre : `src/`, et non une liste de modules nommés
+
+Jusqu'au 2026-09-06, le filtre `gcovr` **nommait** les modules mesurés (`sensor_filter`, `dosing_logic` en CI ; quatre modules en local — les deux périmètres divergeaient déjà entre eux). Un filtre qui nomme ses modules **ne surveille que ce qu'on a pensé à lui nommer** : un module pur ajouté au `build_src_filter` sans test n'apparaissait nulle part et **ne faisait pas bouger le chiffre**. C'est le même angle mort que la CI qui ne compilait aucun firmware (voir [Pourquoi la compilation est devenue un gate](#pourquoi-la-compilation-est-devenue-un-gate)) : un contrôle dont le périmètre est une liste manuelle finit par mentir par omission.
+
+Le filtre est donc `--filter 'src/'`, **à l'identique** dans [`tools/coverage.sh`](../tools/coverage.sh) et dans [`tests-natifs.yml`](../.github/workflows/tests-natifs.yml). Ces deux filtres doivent rester identiques : sinon le chiffre local et le chiffre CI divergent — et c'est le local qu'on croit.
+
+Le script local applique **la même garde de seuil que la CI** (`--fail-under-line 90`). Sans elle, il affichait un chiffre sans jamais échouer, et une chute sous le seuil ne se découvrait qu'**après** le push. Le rapport HTML est produit **même en cas d'échec** : le code de sortie de `gcovr` est retenu, puis rendu en fin de script.
+
+#### Référence de couverture (2026-09-06, feature-105)
+
+| Indicateur | Valeur |
+|---|---|
+| Modules mesurés | **34** |
+| Lignes | **100 % (1810/1810)** |
+| Fonctions | **100 % (161/161)** |
+| Branches | **86,8 %** |
+| Suites (`test/test_*`) | **33** |
+| Cas de test (`pio test -e native`) | **1291** |
+
+Référence d'avant le cycle, mesurée sur **2 modules seulement** : lignes 99,8 %, branches 86,5 %. L'élargissement du filtre a révélé 4 lignes non couvertes jusque-là **invisibles**, dont une garde de sécurité chimique (`pulse_dosing_logic`).
+
+Le seuil de 90 % de lignes est un **plancher de non-régression**, pas un objectif. **Aucun seuil de branches n'est posé** : les 13,2 % restants sont des demi-branches défensives, dont plusieurs sont inatteignables par entrée réaliste (motifs écrits dans les tests concernés). Les relever serait une décision séparée.
 
 > **Portée** : seules les **classes pures** sont mesurées. La coquille `pump_controller.cpp` (collecte des globals + mapping énum→chaîne) est **exclue du build natif** — son équivalence est validée par revue, pas par couverture. Voir [ADR-0017](adr/0017-logique-metier-pure-humble-object-testabilite.md).
+
+> **Limite assumée et datée (2026-09-06, feature-105)** : le chemin d'échec de `ledcAttachChannel` (`pump_controller.cpp`, qui pose `pumpUsable[i] = false`) reste **non mesuré et non testé — c'est un choix**, pas un constat ouvert. Le tester exigerait d'introduire un point de couture dans un fichier de sécurité chimique, au seul bénéfice d'une branche de deux lignes déjà relue par `pool-chemistry` **et** par `code-reviewer` (feature-102) ; `pool-chemistry` l'a qualifié de recommandation **non bloquante**. S'il devait être levé, la voie serait l'extraction d'un module pur au sens de l'[ADR-0017](adr/0017-logique-metier-pure-humble-object-testabilite.md), dans une spec dédiée — pas un ajout de test opportuniste.
 
 ### Validation on-target (manuelle)
 
@@ -169,7 +194,7 @@ Les tests natifs ne couvrent que la **logique pure**. L'**intégration matériel
 
 | Workflow | Ce qu'il garde | Déclencheurs | Coût |
 |---|---|---|---|
-| [`tests-natifs.yml`](../.github/workflows/tests-natifs.yml) | `pio test -e native`, puis couverture `gcovr` avec seuil **lignes ≥ 90 %** sur `sensor_filter` et `dosing_logic` ; rapport HTML publié en artefact | push `main` + PR, **sans** filtre de chemins | env `native` seul (quelques Mo) |
+| [`tests-natifs.yml`](../.github/workflows/tests-natifs.yml) | `pio test -e native`, puis couverture `gcovr` avec seuil **lignes ≥ 90 %** sur **tout `src/`** (filtre identique à `tools/coverage.sh`, cf. [Couverture de tests](#couverture-de-tests)) ; rapport HTML publié en artefact | push `main` + PR, **sans** filtre de chemins | env `native` seul (quelques Mo) |
 | [`build-firmware.yml`](../.github/workflows/build-firmware.yml) *(feature-103, 2026-09-06)* | **`pio run -e esp32dev_core3`** — la compilation du firmware. Étape informative supplémentaire : sections du binaire (`xtensa-esp32-elf-size`), `continue-on-error` | push `main` + PR, **avec** filtre de chemins (voir plus bas) | toolchain pioarduino ≈ **2 Go**, mise en cache |
 | [`hygiene-specs.yml`](../.github/workflows/hygiene-specs.yml) *(feature-103, 2026-09-06)* | [`tools/check_specs.sh`](../tools/check_specs.sh) — un nom de spec ne vit que dans **un seul** des dossiers `todo/` · `doing/` · `done/` | push `main` + PR, **sans** filtre de chemins | ~1 s, ni Python, ni PlatformIO, ni cache |
 
@@ -192,7 +217,9 @@ Le contrôle d'hygiène vit dans un **script du dépôt**, pas dans du shell inl
 Deux règles, de sévérité différente :
 
 1. **BLOQUANTE (sortie 1)** — un nom de fichier de spec présent dans plusieurs des trois dossiers. Le script liste les noms fautifs **et** leurs dossiers. Le cycle `todo/` → `doing/` → `done/` procède par **déplacement** (`git mv`) : une spec copiée, ce sont deux versions qui divergent et deux statuts qui se contredisent.
-2. **AVERTISSEMENT (n'échoue pas)** — un même **numéro** porté par deux slugs différents. Cas réel signalé aujourd'hui par le script : `feature-067` désigne à la fois `todo/feature-067-etude-portage-esp32-s3.md` et `done/feature-067-offset-mesure-ph.md`, ce qui rend **ambiguë** toute référence « feature-067 » dans un commit ou un ADR. Non bloquant à dessein : corriger exigerait de **renuméroter une spec close**.
+2. **AVERTISSEMENT (n'échoue pas)** — un même **numéro** porté par deux slugs différents. Non bloquant à dessein : corriger peut exiger de **renuméroter une spec close**, donc de réécrire de l'historique.
+
+> Premier cas réel, signalé par le script dès sa mise en service : `feature-067` désignait à la fois `todo/feature-067-etude-portage-esp32-s3.md` et `done/feature-067-offset-mesure-ph.md`. **Résolu par `feature-105`** (2026-09-06) : c'est l'**étude** qui a été renumérotée en `feature-104`, avec une bannière expliquant le motif — rien ne la référençait, alors que `feature-067-offset-mesure-ph` est citée par `CHANGELOG.md`, `data/app.js`, `src/main.cpp`, `src/constants.h` et `src/web_routes_debug.cpp`. Le script sort désormais **0 sans avertissement**.
 
 Cas limites tranchés : dossier `todo/`/`doing/`/`done/` vide ou absent → **sortie 0** avec mention du dossier ignoré (un cycle sans spec en cours est légitime) ; `specs/features/` **entièrement absent** ou `mktemp` en échec → **sortie 1**, jamais 0 — un contrôle qui ne peut pas conclure ne doit pas être vert.
 

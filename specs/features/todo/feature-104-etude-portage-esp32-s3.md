@@ -1,7 +1,15 @@
-# Feature 067 — Étude de portage ESP32-S3-WROOM-1 (PSRAM)
+# Feature 104 — Étude de portage ESP32-S3-WROOM-1 (PSRAM)
 
-- **Type** : étude / spec d'architecture (format minimal `specs/modele.md` — l'étude
-  produira la ou les specs d'exécution)
+> 🔢 **Renumérotée le 2026-09-06 : `feature-067` → `feature-104`.** Le numéro 067 était
+> porté par DEUX specs de slugs différents — cette étude, et
+> `done/feature-067-offset-mesure-ph.md`, close et référencée par `CHANGELOG.md`,
+> `data/app.js`, `src/main.cpp`, `src/constants.h` et `src/web_routes_debug.cpp`. Toute
+> référence « feature-067 » était donc ambiguë. C'est **cette étude** qui change de
+> numéro, précisément parce que rien ne la référençait : renuméroter la spec close aurait
+> exigé de réécrire de l'historique. Ambiguïté signalée par `tools/check_specs.sh`
+> (règle 2, feature-103).
+
+- **Type** : étude / spec d'architecture (l'étude produira la ou les specs d'exécution)
 - **Statut** : todo
 - **Version cible** : à déterminer (chantier, pas un correctif)
 - **Créée** : 2026-08-12 (mise à jour du BOM PCB v2 par l'utilisateur : U2 =

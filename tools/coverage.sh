@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Mesure de la couverture de tests des classes pures (sensor_filter, dosing_logic).
+# Mesure de la couverture de tests des classes pures compilées par [env:native].
+# Filtre LARGE (`src/`) depuis le 2026-09-06 : il doit rester IDENTIQUE à celui de
+# .github/workflows/tests-natifs.yml, sans quoi le chiffre local et le chiffre CI
+# divergent — et c'est le local qu'on croit.
 # =============================================================================
 # Compile et exécute les tests natifs Unity avec instrumentation gcov (--coverage),
 # puis génère un rapport via gcovr (texte console + HTML détaillé dans coverage/).
@@ -51,22 +54,24 @@ mkdir -p "$OUT_DIR"
 echo "==> Exécution des tests natifs instrumentés ($ENV)…"
 "$PIO" test -e "$ENV"
 
-# --- 3. Rapport gcovr (uniquement les 2 classes pures sous test) -------------
+# --- 3. Rapport gcovr (tous les modules purs compilés par [env:native]) ------
 echo
-echo "==> Rapport de couverture (sensor_filter, dosing_logic, schedule_logic, history_logic) :"
+echo "==> Rapport de couverture (tous les modules purs compilés par [env:native]) :"
 echo
 COMMON_ARGS=(
   --root .
   --gcov-executable "$GCOV"
-  --filter 'src/sensor_filter\.(cpp|h)'
-  --filter 'src/dosing_logic\.(cpp|h)'
-  --filter 'src/schedule_logic\.(cpp|h)'
-  --filter 'src/history_logic\.(cpp|h)'
+  --filter 'src/'
   "$BUILD_DIR"
 )
 
-# Résumé console (lignes + branches)
-"$GCOVR" "${COMMON_ARGS[@]}" --txt --print-summary
+# Résumé console (lignes + branches).
+# MÊME garde que la CI (`--fail-under-line 90` dans tests-natifs.yml) : sans elle, le
+# script local affichait un chiffre sans jamais échouer, et une chute sous le seuil ne
+# se découvrait qu'APRÈS le push. Le code de sortie est retenu pour être rendu en fin
+# de script, afin que le rapport HTML soit tout de même produit en cas d'échec.
+SEUIL_RC=0
+"$GCOVR" "${COMMON_ARGS[@]}" --txt --print-summary --fail-under-line 90 || SEUIL_RC=$?
 
 # Rapport HTML détaillé
 "$GCOVR" "${COMMON_ARGS[@]}" --html-details "$OUT_DIR/index.html" >/dev/null
@@ -75,4 +80,10 @@ echo "==> Rapport HTML : $OUT_DIR/index.html"
 
 if [ "${1:-}" = "--open" ] && command -v open >/dev/null 2>&1; then
   open "$OUT_DIR/index.html"
+fi
+
+if [ "$SEUIL_RC" -ne 0 ]; then
+  echo
+  echo "❌ Couverture de lignes SOUS le seuil de 90 % — la CI refusera ce push." >&2
+  exit "$SEUIL_RC"
 fi

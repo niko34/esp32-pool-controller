@@ -2534,6 +2534,97 @@ void test_F073_regime_normal_balayage_identique_planPulse(void) {
 }
 
 // =============================================================================
+// feature-105 (A3) — GARDE FAIL-CLOSED : référence de volume incalculable
+// (pulse_dosing_logic.cpp, `if (!isfinite(vPulseMl) || vPulseMl <= 0.0f)`)
+// =============================================================================
+// SÉMANTIQUE VERROUILLÉE ICI (validée par pool-chemistry, gate feature-105) :
+// quand le volume d'une impulsion minimale ne peut pas être calculé, on REFUSE
+// de tirer, ET l'accumulateur est ÉCRASÉ. Le tuple {refused=true, pulseMs=0,
+// carryFired=false, carryMl=0} est un refus COMPLET : côté coquille, `refused`
+// pose flow = 0, referme la séance et recopie le carry NUL — aucune dette de
+// rattrapage ne survit au refus. C'est le point le plus facile à rater : un
+// refus qui conserverait la dette produirait une rafale au retour à la normale.
+//
+// COMMENT ON Y ENTRE — la SEULE entrée réaliste est `kickMs >= minPulseMs` ET
+// `flow255MlPerMin <= 0` : l'impulsion minimale est alors intégralement dans la
+// fenêtre de kick, et le kick est facturé à un débit à 255 nul (valeur d'usine
+// jamais mesurée) ou négatif (configuration corrompue). Le volume de référence
+// vaut exactement 0 → garde déclenchée.
+//
+// MOITIÉ DE BRANCHE VOLONTAIREMENT NON COUVERTE : le sous-terme
+// `!isfinite(vPulseMl)`. Il est INATTEIGNABLE par entrée réaliste, parce que
+// pulseDeltaVolumeMl assainit déjà NaN/±inf en 0 avant de multiplier — il
+// faudrait un flow255 de l'ordre de 1e30 pour faire déborder le produit en
+// +inf. Une telle valeur sentinelle ne prouverait que l'EXÉCUTION de la ligne,
+// pas un comportement que l'appareil puisse produire. On laisse donc cette
+// moitié découverte, avec ce motif écrit.
+//
+// ÉTAT EN PRODUCTION : avec kPulseKickMs = 400 ms < kPulseMinMs = 10 000 ms,
+// cette branche est MORTE. Ce test est un filet contre un futur changement de
+// constante — exactement la classe de défaut que ce projet a déjà connue
+// (propagation d'une constante de pouls, trouvée par mutation).
+
+void test_F105_volume_reference_incalculable_refus_complet(void) {
+  // Entrées du gate pool-chemistry, reprises telles quelles.
+  const float carryIn = 3.0f;  // dette bien réelle en entrée
+  const uint32_t periodMs = 60000u;
+  const uint32_t minPulseMs = 10000u;
+  const uint32_t kickMs = 10000u;  // kick ≥ pouls minimal : tout le pouls est du kick
+
+  // Pré-condition explicite : la référence vaut bien 0 avec ces entrées.
+  TEST_ASSERT_EQUAL_FLOAT(
+      0.0f, pulseDeltaVolumeMl(0u, kickMs, 0u, minPulseMs, 0.0f, 12.0f));
+
+  PulseCarryPlan p = planPulseWithCarry(0.5f, 12.0f, /*flow255=*/0.0f, periodMs,
+                                        minPulseMs, kickMs, carryIn);
+  TEST_ASSERT_TRUE_MESSAGE(p.refused,
+                           "reference de volume incalculable : il faut REFUSER de tirer");
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(0u, p.pulseMs, "aucun pouls ne doit partir");
+  TEST_ASSERT_FALSE_MESSAGE(p.carryFired, "aucun tir ne doit etre impute");
+  // LE point du test : la dette d'entrée de 3,0 ml est ÉCRASÉE, pas reportée.
+  TEST_ASSERT_EQUAL_FLOAT_MESSAGE(0.0f, p.carryMl,
+                                  "l'accumulateur doit etre ecrase, pas reporte");
+
+  // Débit à 255 NÉGATIF (configuration corrompue) : même refus complet.
+  PulseCarryPlan n = planPulseWithCarry(0.5f, 12.0f, -61.0f, periodMs,
+                                        minPulseMs, kickMs, carryIn);
+  TEST_ASSERT_TRUE(n.refused);
+  TEST_ASSERT_EQUAL_UINT32(0u, n.pulseMs);
+  TEST_ASSERT_FALSE(n.carryFired);
+  TEST_ASSERT_EQUAL_FLOAT(0.0f, n.carryMl);
+}
+
+// Contre-test de NON-RÉGRESSION : mêmes demande, amplitude, période et pouls
+// minimal ; seuls flow255 et kickMs redeviennent réalistes (74 ml/min, 400 ms).
+// La garde ne doit PAS se déclencher et le mécanisme de cumul doit vivre.
+void test_F105_contre_test_garde_non_declenchee(void) {
+  const uint32_t periodMs = 60000u;
+  const uint32_t minPulseMs = 10000u;
+  const uint32_t kickMs = 400u;
+  const float ampFlow = 12.0f;
+  const float flow255 = 74.0f;
+
+  const float vP = pulseDeltaVolumeMl(0u, kickMs, 0u, minPulseMs, flow255, ampFlow);
+  TEST_ASSERT_TRUE_MESSAGE(vP > 0.0f, "reference de volume calculable attendue");
+
+  // Dette 3,0 ml ≥ V_pouls → reset défensif (pas la garde) puis accumulation.
+  PulseCarryPlan p = planPulseWithCarry(0.5f, ampFlow, flow255, periodMs,
+                                        minPulseMs, kickMs, 3.0f);
+  TEST_ASSERT_FALSE_MESSAGE(p.refused, "garde declenchee a tort");
+  TEST_ASSERT_EQUAL_UINT32(0u, p.pulseMs);
+  TEST_ASSERT_FALSE(p.carryFired);
+  TEST_ASSERT_EQUAL_FLOAT(0.5f * (float)periodMs / 60000.0f, p.carryMl);
+
+  // Et une dette licite juste sous le seuil fait bien PARTIR un pouls minimal :
+  // la voie de tir reste ouverte quand la référence est calculable.
+  PulseCarryPlan t = planPulseWithCarry(0.5f, ampFlow, flow255, periodMs,
+                                        minPulseMs, kickMs, vP - 0.1f);
+  TEST_ASSERT_FALSE(t.refused);
+  TEST_ASSERT_EQUAL_UINT32(minPulseMs, t.pulseMs);
+  TEST_ASSERT_TRUE(t.carryFired);
+}
+
+// =============================================================================
 // v2.25.3 — kPulseMinMs 5 s → 10 s : la MOYENNE restituée est INDÉPENDANTE du
 // pouls minimal (seul le rendement physique de l'injection change)
 // =============================================================================
@@ -3427,6 +3518,8 @@ int main(int, char **) {
   RUN_TEST(test_F073_carry_entree_suspect_reset_defensif);
   RUN_TEST(test_F073_pulse_jamais_hors_domaine);
   RUN_TEST(test_F073_regime_normal_balayage_identique_planPulse);
+  RUN_TEST(test_F105_volume_reference_incalculable_refus_complet);
+  RUN_TEST(test_F105_contre_test_garde_non_declenchee);
   // v2.25.3 — pouls minimal 5 s → 10 s : moyenne restituée indépendante.
   RUN_TEST(test_V253_moyenne_restituee_independante_du_pouls_minimal);
   RUN_TEST(test_V253_moyenne_juste_sous_le_nouveau_seuil_de_bascule);

@@ -697,6 +697,98 @@ void test_E_minutes_bornees_a_1440(void) {
   TEST_ASSERT_EQUAL_UINT16(1440, s.missed.minutes);
 }
 
+// feature-105 (A4) — COMPTEUR DE FILTRATION EN RECUL PENDANT UNE TENUE
+// (time_to_target_logic.cpp : `if (in.filtTotalMin < st.holdStartFiltMin)`)
+//
+// filtTotalMin est un compteur MONOTONE de minutes de filtration, persisté en
+// NVS (`pool-daily`). Il ne se replie pas (uint32 en minutes = 8 000 ans), mais
+// il peut RECULER : effacement de la NVS, restauration d'usine ou de
+// configuration en cours de tenue. Sans la garde, la soustraction
+// `filtTotalMin - holdStartFiltMin` se fait en NON SIGNÉ : elle sous-déborde en
+// une valeur énorme, franchit instantanément kTimeToTargetHoldMin, et la tenue
+// se croit ACCOMPLIE alors qu'elle vient à peine de commencer.
+//
+// Le comportement correct est de RELANCER la tenue : cela ALLONGE le temps
+// rendu, jamais ne le raccourcit. L'indicateur est purement informatif — aucune
+// sortie de ce module n'est lue par pump_controller (cf. section H).
+void test_D_compteur_en_recul_relance_la_tenue(void) {
+  Sim s;
+  simInit(s, 100);  // la filtration a déjà 100 minutes au compteur
+  TttInputs in = orpIn(kOrpTarget);  // dans la bande dès le départ
+
+  runSeconds(s, in, 2);  // t0 posé, tenue ouverte
+  TEST_ASSERT_EQUAL_INT(1, s.nStarted);
+  TEST_ASSERT_EQUAL_UINT8(kTttStateRunning, s.st.state);
+  TEST_ASSERT_EQUAL_UINT8(1, s.st.holding);
+  TEST_ASSERT_EQUAL_UINT32(100u, s.st.holdStartFiltMin);
+
+  runMinutes(s, in, 10);  // 10 minutes de tenue acquises, loin des 30 requises
+  TEST_ASSERT_EQUAL_UINT32(110u, s.st.holdStartFiltMin + 10u);
+  TEST_ASSERT_EQUAL_INT(0, s.nReached);
+
+  // Effacement de la NVS `pool-daily` : le compteur repart de zéro.
+  s.filtSec = 0;
+  runSeconds(s, in, 1);
+  // La tenue est RÉALIGNÉE sur le nouveau compteur…
+  TEST_ASSERT_EQUAL_UINT32(0u, s.st.holdStartFiltMin);
+  TEST_ASSERT_EQUAL_UINT8(1, s.st.holding);
+  // …et surtout : elle n'est PAS déclarée accomplie. C'est ce que tue la
+  // suppression de la branche (sous-débordement non signé ⇒ atteinte immédiate).
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, s.nReached,
+                                "un compteur en recul ne doit PAS valider la tenue");
+  TEST_ASSERT_EQUAL_UINT8(kTttStateRunning, s.st.state);
+
+  // La tenue repart bien de ZÉRO : 29 minutes après le recul, toujours rien.
+  runMinutes(s, in, 29);
+  TEST_ASSERT_EQUAL_INT(0, s.nReached);
+  TEST_ASSERT_EQUAL_UINT8(kTttStateRunning, s.st.state);
+
+  // Et elle aboutit une fois les 30 minutes pleines écoulées depuis le recul.
+  runMinutes(s, in, 2);
+  TEST_ASSERT_EQUAL_INT(1, s.nReached);
+  TEST_ASSERT_EQUAL_UINT8(kTttStateReached, s.st.state);
+}
+
+// Un recul ne fait jamais GAGNER du temps : la tenue redemande 30 minutes
+// PLEINES de circulation après le recul. La référence sans recul aboutit
+// strictement plus tôt en temps écoulé.
+void test_D_recul_ne_fait_jamais_gagner_de_temps(void) {
+  TttInputs in = orpIn(kOrpTarget);
+
+  // Référence : aucun recul.
+  Sim ref;
+  simInit(ref, 100);
+  runSeconds(ref, in, 2);
+  runMinutes(ref, in, 31);
+  TEST_ASSERT_EQUAL_INT(1, ref.nReached);
+  const uint32_t refWall = ref.wallSec;
+
+  // Même journée, mais le compteur recule de 20 minutes après 10 de tenue
+  // (restauration de configuration : `pool-daily` revient à un état antérieur).
+  Sim rec;
+  simInit(rec, 100);
+  runSeconds(rec, in, 2);
+  runMinutes(rec, in, 10);
+  const uint32_t wallAvantRecul = rec.wallSec;
+  rec.filtSec = 80UL * 60UL;  // 80 < holdStartFiltMin = 100
+  runSeconds(rec, in, 1);
+  TEST_ASSERT_EQUAL_UINT32(80u, rec.st.holdStartFiltMin);
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, rec.nReached,
+                                "recul de 20 min : la tenue ne doit PAS aboutir");
+
+  runMinutes(rec, in, 31);
+  TEST_ASSERT_EQUAL_INT(1, rec.nReached);
+  // Au moins 30 minutes de circulation se sont écoulées DEPUIS le recul.
+  TEST_ASSERT_TRUE_MESSAGE(rec.wallSec - wallAvantRecul >= 30UL * 60UL,
+                           "la tenue a abouti en moins de 30 min apres le recul");
+  // NOTE (revue feature-105) : une comparaison `rec.wallSec > refWall` figurait ici.
+  // Elle était TAUTOLOGIQUE — `rec` exécute 601 ticks de plus que `ref` par
+  // construction du harnais, elle ne pouvait donc jamais échouer. Retirée : une
+  // assertion qui ne peut pas mourir n'est pas une assertion. Le travail est fait
+  // par celle qui précède (>= 30 min pleines depuis le recul), laquelle tue bien
+  // le mutant du sous-débordement.
+}
+
 // =============================================================================
 // F — GARDE DE VRAISEMBLANCE SUR e0
 // =============================================================================
@@ -1409,6 +1501,8 @@ int main(int argc, char** argv) {
   RUN_TEST(test_D_bande_non_finie_ou_nulle_vaut_hors_bande);
   RUN_TEST(test_D_arret_de_circulation_sans_tenue_est_une_non_atteinte);
   RUN_TEST(test_D_apres_atteinte_le_rebond_ne_rouvre_pas_la_journee);
+  RUN_TEST(test_D_compteur_en_recul_relance_la_tenue);
+  RUN_TEST(test_D_recul_ne_fait_jamais_gagner_de_temps);
   // E — le départ
   RUN_TEST(test_E_un_seul_depart_par_jour_civil);
   RUN_TEST(test_E_t0_jamais_reecrit_par_les_repurges);

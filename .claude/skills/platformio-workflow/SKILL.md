@@ -63,7 +63,7 @@ Raccourcis utiles dans le monitor :
 ## Tests
 
 ```bash
-pio test -e native             # Tests natifs (PC, rapide) — 33 suites, 1286 cas
+pio test -e native             # Tests natifs (PC, rapide) — 33 suites, 1291 cas
 pio test -f test_xxx           # Filtrer une suite
 ```
 
