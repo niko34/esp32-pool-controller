@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # La logique vit dans le dépôt, pas dans ce YAML : le même script tourne en
       # local (`./tools/check_specs.sh`) et peut servir de hook pre-commit.
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Même famille que le contrôle d'unicité : le registre écrit doit rester
       # univoque ET navigable. Le chemin d'un lien vers une spec encode son ÉTAT
@@ -68,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Même script en local (`./tools/check_fopen_guard.sh`) et en CI.
       - name: Contrôle du point d'admission
