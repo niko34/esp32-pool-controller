@@ -10,6 +10,23 @@
 | Découvert | 05/09/2026, par l'`embedded-developer` pendant le cycle feature-095 |
 | Version en cours | 2.39.0 (déployée) |
 
+## ✅ Obstacle levé le 2026-09-06 — il ne reste qu'à écrire le code
+
+Le coût de stockage qui retenait ce correctif **n'est plus un obstacle**. Le layout v5
+(ADR-0068) a porté la partition `history` de 64 Ko à **256 Ko** ; le `CHANGELOG` de la
+v2.42.0 chiffre le surcoût de la séparation des deux drapeaux à **un octet par point,
+339 o au total**, désormais absorbables sans discussion.
+
+**Le défaut, lui, est intact** — vérifié dans le code le 2026-09-06 :
+
+```c
+history.cpp:573   obj["d"] = point.phDosing || point.orpDosing;   // fusion à l'écriture
+history.cpp:750   dp.phDosing = point["d"];                        // relecture partielle
+```
+
+`orpDosing` est toujours perdu. La mention « devient trivial à finaliser » du
+`CHANGELOG` signifiait **l'obstacle est levé**, jamais **c'est fait**.
+
 ## Domaines touchés
 
 - `src/history.cpp` — `saveToFile()` (~474-486), `loadFromFile()` (~610-616)

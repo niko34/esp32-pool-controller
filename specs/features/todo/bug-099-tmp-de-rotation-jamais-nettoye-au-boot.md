@@ -10,6 +10,29 @@
 | Découvert | 05/09/2026, par le `test-engineer` pendant la vérification de budget de la feature-095 |
 | Version en cours | 2.39.0 (déployée) |
 
+## ⚠️ Requalification du 2026-09-06 — le défaut tient, sa criticité a disparu
+
+Le `CHANGELOG` de la **v2.42.0** annonce que « **`bug-099` est dissous** ». Pris
+isolément, c'est **trompeur** : ce qui est dissous, c'est la **conséquence**, pas la
+**cause**.
+
+- **La cause est intacte, vérifiée dans le code le 2026-09-06** : le `.tmp` de
+  rotation n'est effacé qu'à l'effacement **explicite** des journaux
+  (`logger.cpp:222`). `Logger::begin()` et `setPersistenceFs()` ne contiennent
+  **aucun nettoyage au démarrage**. Un `.tmp` laissé par une rotation interrompue
+  survit donc indéfiniment, exactement comme décrit ci-dessous.
+- **La conséquence, elle, a disparu** : le layout v5 (ADR-0068) a porté la partition
+  `history` de 64 Ko à **256 Ko**. Six kilo-octets orphelins ne menacent plus le
+  budget — c'était le motif d'origine de ce bug.
+
+**Ce qui reste** n'est donc plus un risque de saturation mais un **fichier fantôme** :
+il occupe un bloc LittleFS, et un lecteur futur peut le prendre pour une rotation en
+cours. Priorité **basse**, sans échéance.
+
+⚠️ **Ne pas clore cette spec au motif qu'elle serait « dissoute »** : le code n'a pas
+changé. Et ne pas l'ouvrir en croyant traiter une urgence mémoire : ce n'en est plus
+une.
+
 ## Domaines touchés
 
 - `src/logger.cpp` — rotation de `/system.log`
