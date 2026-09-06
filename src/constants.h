@@ -233,7 +233,7 @@ constexpr size_t kHttpHeapMarginBytes = 4096;
 // Le PANIC du 29/08 :
 //   abort() ← lock_init_generic (newlib locks.c:77) ← __retarget_lock_init_recursive
 //   ← __sfp ← fopen ← VFSFileImpl ← LittleFS ← AsyncWebServerRequest::send(fs, …)
-// Servir une page statique demande à la libc un verrou récursif interne (~88 o) ;
+// Servir une page statique demande à la libc un verrou récursif interne (92 o) ;
 // le malloc échoue, et lock_init_generic ABORTE — aucun code de retour à tester.
 // Ce chemin passe par malloc(3) et non par operator new : le parachute OOM
 // (std::set_new_handler) y est INOPÉRANT PAR CONSTRUCTION. La seule défense est
@@ -241,17 +241,25 @@ constexpr size_t kHttpHeapMarginBytes = 4096;
 // web_server.cpp répond 503 + Retry-After au lieu de servir le fichier.
 //
 // Dimensionnement (coûts mesurés / relevés d'un service de fichier statique) :
-//   __sfp → xSemaphoreCreateRecursiveMutex .....  ~88 o  → abort() (le crash)
-//   __sfmoreglue (pool de 4 FILE épuisé) .......  ~440 o → NULL propre
+// (bug-100, cycle 1 : TROIS chiffres de ce bloc étaient faux — corrigés ici
+//  d'après le désassemblage de libc.a (newlib, GCC 14.2.0) et les sources IDF
+//  5.5. Aucun seuil n'en dépendait ; cf. ADR-0070 §« Trois chiffres FAUX ».)
+//   __sfp → xSemaphoreCreateRecursiveMutex ......  92 o  → abort() (le crash)
+//     (92 o = sizeof(Queue_t), IDF 5.5 — et 92 <= kPsramExtmemThresholdBytes :
+//      ce bloc reste TOUJOURS en RAM interne, la bascule PSRAM du lot B-1 ne
+//      peut pas le déplacer.)
+//   expansion du pool FILE (INLINÉE — __sfmoreglue n'existe PAS comme symbole,
+//     une recherche par symbole aurait conclu à tort à son absence)  428 o (0x1ac)
 //   esp_littlefs_open + cache lfs ..............  ~190 o → NULL propre
 //   new VFSFileImpl + bloc de contrôle shared_ptr  ~64 o → bad_alloc
 //   new AsyncFileResponse (mesuré le 13/08) .....  156 o → bad_alloc
 //   String de chemin (×2-3) ....................  ~100 o
 //   tampon stdio setvbuf 4096 ..................  PSRAM depuis le lot B-1
 //   pbuf lwip TCP, 1 à 3 en vol ................ 1 622 o pièce (retransmission)
-// → besoin DUR du chemin abort-prone ≈ 600 o (plus gros bloc contigu ≈ 440 o) ;
-// → besoin SANS bégaiement TCP ≈ 600 + 2 × 1 622 ≈ 3 850 o.
-// 8 192 = ×13,6 sur le besoin dur, ×2,1 sur le besoin complet.
+// → besoin DUR du chemin abort-prone ≈ 874 o (recompté en bug-100 sur les
+//   valeurs réelles ; plus gros bloc contigu de la séquence ≈ 428 o) ;
+// → besoin AVEC 2 pbuf en vol ≈ 874 + 2 × 1 622 ≈ 4 118 o.
+// 8 192 = ×9,4 sur le besoin dur, ×1,99 sur le besoin avec contention TCP.
 //
 // Compatibilité terrain (relevés du 05/09) : plateau calme post-B-2 13 300 o
 // (+38 % au-dessus du seuil), plancher de rafale 6 requêtes 14 324 o, plancher
@@ -292,6 +300,69 @@ static_assert(kStaticFileMinAllocBytes >= 6144, "Interdiction ADR : cf. constant
 // (journal persistant de 8 Ko, rétention 25-35 min).
 // Aligné sur kWsSkipWarnThrottleMs.
 constexpr uint32_t kHttpLowHeapEpisodeQuietMs = 30000;    // 30 s sans refus + tas rétabli → fin d'épisode
+
+// ---------------------------------------------------------------------------
+// Admission des fopen INTERNES (bug-100, ADR-0070) — 7ᵉ barreau + cadences
+// ---------------------------------------------------------------------------
+// Le lot B-3 (garde 503 ci-dessus) ferme le SERVICE DE FICHIERS STATIQUES. Il ne
+// ferme RIEN de ce que le firmware ouvre pour son propre compte : le recensement
+// de bug-100 en dénombre 14 (docs/subsystems/acces-fichiers.md), dont celui qui
+// a aborté le 05/09/2026 depuis loopTask (sauvegarde de l'historique).
+//
+// DEUX CLASSES DE CONTENTION, deux seuils (ADR-0070 §b) :
+//  - classe A — contention TCP réelle possible → kStaticFileMinAllocBytes (8 192,
+//    6ᵉ barreau EXISTANT, réutilisé tel quel) : les 2 sites de saveToFile()
+//    (atteignables depuis POST /history/import sur async_tcp), TOUT le journal
+//    (flushToDisk() s'exécute sur la tâche QUI LOGUE), et /download-logs ;
+//  - classe B — 4 sites de boot → 7ᵉ barreau NOUVEAU, 5 120. L'absence de
+//    contention n'est pas supposée, elle est PROUVÉE par l'ordre de setup() :
+//    history.begin() (main.cpp:270) précède mqttManager.begin() (300) et
+//    webServer.begin() (316) — aucune pile TCP applicative n'est démarrée.
+//
+// Le 7ᵉ barreau n'est PAS un seuil de report : c'est un TRIPWIRE DE BOOT. Au
+// démarrage, « reporter » n'a pas de sens — il n'y a pas de plus tard. Sous
+// 5 120, history.begin() bascule historyEnabled = false pour CE boot (état déjà
+// supporté, history.cpp:326-331) au lieu d'aborter. Conséquence voulue : entre
+// 4 096 (auto-guérison) et 5 120, l'appareil DÉMARRE SANS HISTORIQUE PERSISTANT
+// MAIS EN DOSANT. C'est un gain de disponibilité de la régulation, pas un
+// confort de diagnostic — le régime alternatif est un bootloop sur abort().
+// Marge : ×5,9 sur le besoin dur de 874 o (sans contention, par construction).
+// Écartés : 5 120 partout (×1,24 seulement sur la classe A — trop mince pour un
+// chemin sans code de retour) ; 8 192 partout (priverait les 4 sites de boot de
+// toute dégradation propre alors que leur besoin réel y est de 874 o).
+constexpr uint32_t kInternalFopenMinAllocBytes = 5120;    // Plus gros bloc 8 bits < seuil → fopen interne de boot refusé (tripwire)
+
+// Position du 7ᵉ barreau verrouillée à la COMPILATION (même exigence que le 6ᵉ) :
+// une échelle mal ordonnée doit casser le build, pas un test.
+static_assert(kInternalFopenMinAllocBytes > kRestartMaxAllocHeapBytes &&
+              kInternalFopenMinAllocBytes < kWsPushMinAllocBytes,
+              "7e barreau ADR-0070 : le tripwire fopen interne doit s'intercaler entre "
+              "le reboot d'auto-guerison et les pushes WS sautes — sinon l'appareil "
+              "rebooterait avant d'avoir jamais demarre sans historique.");
+// Marge minimale exigée sur le besoin dur d'une ouverture (874 o, valeurs
+// réelles ADR-0070) : ×5,27. Verrouille le seuil contre un abaissement discret.
+static_assert(kInternalFopenMinAllocBytes >= 4608,
+              "7e barreau ADR-0070 : marge insuffisante sur le besoin dur d'un fopen.");
+
+// Silence de refus exigé avant de re-mesurer le tas (donc avant d'envisager la
+// sortie d'épisode). Même rôle que kHttpLowHeapEpisodeQuietMs, et même valeur :
+// c'est d'abord une GARDE DE COÛT (un parcours TLSF coûte d'autant plus cher que
+// le tas est fragmenté — donc le plus cher exactement pendant la famine), et
+// ensuite un anti-spam de journal.
+constexpr uint32_t kInternalFopenEpisodeQuietMs = 30000;  // 30 s sans refus → on re-mesure
+
+// Plancher DUR entre deux parcours du tas au point de décision. Pendant une
+// rafale (flush de journal sur ERROR, import d'historique), les demandes
+// s'enchaînent à quelques millisecondes : sous ce plancher on REFUSE SANS
+// MESURER. C'est l'asymétrie d'ADR-0070 §e — un refus périmé coûte une
+// sauvegarde différée, une autorisation périmée coûte un abort().
+constexpr uint32_t kInternalFopenProbeMinIntervalMs = 100;  // 100 ms entre deux mesures en épisode
+
+// Escalade : nombre de refus cumulés dans un même épisode au-delà duquel on
+// publie une alerte MQTT (publishAlert → warning(), JAMAIS error/critical).
+// 5 : au-dessus d'un simple creux transitoire (l'historique n'essaie que toutes
+// les 5 min), assez bas pour qu'une rafale de flush de journal la déclenche.
+constexpr uint32_t kInternalFopenEscalateAfterRefusals = 5;
 
 // Pagination de GET /get-logs (bug-crash-getlogs-badalloc) : page souple de 30
 // entrées (~4 Ko de JSON au pire), extensible jusqu'au plafond dur UNIQUEMENT pour
@@ -404,6 +475,10 @@ constexpr size_t kOomReserveBytes = 12288;
 // ÉCHELLE COMPLÈTE des seuils « plus gros bloc contigu » (ordre croissant).
 // bug-080 (v2.33.0) : TOUS les seuils sont désormais exprimés dans la MÊME
 // métrique 8 bits (heapLargestFreeBlock8Bit — mémoire réellement allouable).
+// bug-100 (ADR-0070) : l'échelle passe de SIX à SEPT barreaux. Les 6 existants
+// restent INCHANGÉS en valeur ET en ordre (condition C5 des gates B-1/B-2,
+// reconduite) ; le 7ᵉ (5 120) s'intercale entre l'auto-guérison et les pushes
+// WS. Aucun barreau ne se modifie isolément.
 // RÉVOCATION du NO GO v2.20.2 : le gate pool-chemistry avait interdit de basculer
 // les gardes sur la mesure 8 bits (risque : mode maintenance = DOSAGE SUSPENDU
 // atteignable en régime normal). NO GO levé par le gate du 02/09/2026 —
@@ -413,8 +488,9 @@ constexpr size_t kOomReserveBytes = 12288;
 // quelques secondes seulement. Décision consignée : ADR-0058.
 //    2 048 o (kOomFallbackRearmMinMaxAllocBytes) → réarmement réserve de REPLI
 //    4 096 o (kRestartMaxAllocHeapBytes)         → reboot d'auto-guérison
+//    5 120 o (kInternalFopenMinAllocBytes)       → fopen INTERNE de boot refusé (tripwire)  ← 7ᵉ barreau, bug-100 / ADR-0070
 //    6 144 o (kWsPushMinAllocBytes)              → pushes WS sautés
-//    8 192 o (kStaticFileMinAllocBytes)          → fichiers statiques refusés (503)  ← 6ᵉ barreau, bug-080 lot B-3 (v2.41.0)
+//    8 192 o (kStaticFileMinAllocBytes)          → fichiers statiques refusés (503) + classe A des fopen internes  ← 6ᵉ barreau, bug-080 lot B-3 (v2.41.0)
 //   12 288 o (kLowHeapWarnBytes)                 → WARN heap + flush one-shot
 //   18 432 o (kOomRearmMinMaxAllocBytes)         → réarmement réserve NOMINALE
 //   21 492 o                                     → nominal terrain (documentaire)

@@ -5,7 +5,7 @@
 | Champ | Valeur |
 |---|---|
 | Type | **bug critique** — crash firmware en production, reproduit le jour même |
-| Statut | **doing** — **cycle 1 livré (2026-09-06)** : blocs A (recensement) et B (arbitrage, preuve, ADR-0070), **aucun code écrit** ; l'implémentation est le **cycle 2**, après validation humaine |
+| Statut | **done** — **cycle 1** (recensement, arbitrage, ADR-0070) **et cycle 2** (implémentation, tests, CI) **livrés le 2026-09-06**, sous **v2.43.0**. ⚠️ **Correctif NON validé sur matériel** — cf. la mention de clôture en fin de document |
 | Priorité | **Haute** — même mécanisme que le PANIC fondateur du bug-080, chemin non couvert |
 | Découvert | 05/09/2026 ~15:35, en relevant le coredump après le déploiement de la v2.41.0 |
 | Version au crash | **2.40.0** (concordance prouvée par SHA256, voir ci-dessous) |
@@ -100,13 +100,20 @@ l'avait anticipé pour `Logger::flushToDisk()` ; celui de l'historique n'avait p
       ou doit-il aboutir ? → **14 sites**, dans un lieu durable :
       [`docs/subsystems/acces-fichiers.md`](../../../docs/subsystems/acces-fichiers.md)
       (⚠️ dont `history.cpp:581`, invisible à tout `grep` : `exists()` ouvre le fichier)
-- [ ] Aucun `fopen` interne ne peut plus être tenté sous le seuil retenu
-      *(seuils **arrêtés** au cycle 1 — classe A 8 192, classe B 5 120,
-      [ADR-0070](../../../docs/adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) —
-      mais **aucune garde n'est posée** : reste ouvert)*
-- [ ] Le saut est observable (jamais silencieux) et l'opération est retentée
-- [ ] Test natif du prédicat de report + **validation par mutation**
-- [ ] Budget flash chiffré — **marge actuelle : 1 909 835 o, flash à 48,9 %**
+- [x] Aucun `fopen` interne ne peut plus être tenté sous le seuil retenu
+      *(classe A **8 192**, classe B **5 120** ;
+      [ADR-0070](../../../docs/adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md))* —
+      **13 sites** routés par `src/fs_guard.cpp`, **point d'admission unique**,
+      contrôlé en CI par `tools/check_fopen_guard.sh` (job `fopen-guard`)
+- [x] Le saut est observable (jamais silencieux) et l'opération est retentée —
+      compteurs **`hdef` / `ldef` / `xdef`** dans le payload **RETENU**
+      `<base>/diagnostic`, WARN throttlé 1/h, retentative naturelle au prochain
+      `SAVE_INTERVAL` (5 min) / `kFlushIntervalMs` (10 min)
+- [x] Test natif du prédicat de report + **validation par mutation** —
+      `test/test_native_fopen_guard/`, **34 cas**, **1 291 → 1 325 tests**.
+      ⚠️ **3 mutants non tués**, consignés comme **dette assumée** (voir plus bas)
+- [x] Budget flash chiffré — **1 825 701 → 1 829 013 o (+3 312), 49,0 %,
+      marge 1 906 539** ; RAM **+64 o**
       *(mis à jour le 05/09 : le layout v5 a doublé la partition applicative. La
       version initiale de cette spec annonçait 9 291 o et exigeait « son propre
       poste de récupération » — cette contrainte n'existe plus.)*
@@ -240,11 +247,161 @@ la main, et non dans une commande qu'on rejouerait.
 
 ### Ce qui reste à faire (cycle 2)
 
-- [ ] Implémenter le helper d'admission + le prédicat **pur** (ADR-0017)
-- [ ] Ajouter le **7ᵉ barreau `5120`** à l'échelle ADR-0058 + `static_assert` d'ordre
-- [ ] Router les **14 sites** par le helper, garde en **tête de `saveToFile()`**
-- [ ] Observabilité : compteurs `<base>/diagnostic` (retain), WARN throttlé,
+- [x] Implémenter le helper d'admission + le prédicat **pur** (ADR-0017) —
+      `src/fopen_guard_logic.{h,cpp}` (pur) + `src/fs_guard.{h,cpp}` (coquille)
+- [x] Ajouter le **7ᵉ barreau `5120`** à l'échelle ADR-0058 + `static_assert`
+      **d'encadrement** (2 assertions) ; **6 barreaux existants intacts**
+- [x] Router les sites par le helper, garde en **tête de `saveToFile()`** —
+      **13 sites** (le 14ᵉ, l'`exists()`, a été **supprimé** et non gardé)
+      **+ une SECONDE admission après la sérialisation** (cf. bloquant nº 1)
+- [x] Observabilité : compteurs `<base>/diagnostic` (retain), WARN throttlé,
       `critical()` différé au front descendant
-- [ ] Corriger les **trois chiffres** de `constants.h:244-246`
-- [ ] Tests natifs du prédicat + **validation par mutation**
-- [ ] Budget flash chiffré (marge actuelle 1 909 835 o, flash à 48,9 %)
+- [x] Corriger les **trois chiffres** de `constants.h`
+- [x] Tests natifs du prédicat + **validation par mutation** (3 mutants de
+      coquille non tués — dette assumée, voir plus bas)
+- [x] Budget flash chiffré
+
+---
+
+## Cycle 2 (2026-09-06) — implémentation, revue, clôture
+
+**Statut** : **livré — tests verts, revue OK**. Version : **2.43.0**.
+
+### Fichiers modifiés
+
+| Fichier | Nature |
+|---|---|
+| `src/fopen_guard_logic.{h,cpp}` | **[nouveaux]** module **pur** ([ADR-0017](../../../docs/adr/0017-logique-metier-pure-humble-object-testabilite.md)) : prédicat de report, machine d'épisode **asymétrique**, compteur d'escalade |
+| `src/fs_guard.{h,cpp}` | **[nouveaux]** coquille impure : `openIfHeapAllows()`, `existsIfHeapAllows()`, `fsGuardAdmit()`, `fsGuardDrain()`, compteurs atomiques |
+| `src/constants.h` | `kInternalFopenMinAllocBytes = 5120` (**7ᵉ barreau**) + 3 cadences + 2 `static_assert` d'encadrement ; échelle ADR-0058 mise à jour, **6 barreaux existants intacts** ; **3 chiffres faux corrigés** |
+| `src/history.cpp` | admission en tête de `saveToFile()` **+ seconde admission après sérialisation** ; tripwire de boot (`begin()`, `loadFromFile()`) ; `exists()` **supprimé** |
+| `src/logger.cpp` | une seule mesure par `flushToDisk()`, **7 ouvertures gardées** |
+| `src/web_routes_data.cpp` | `/download-logs` gardé, **troncature explicite** dans le fichier téléchargé |
+| `src/mqtt_manager.cpp` | 3 champs `hdef` / `ldef` / `xdef` dans le payload **retenu** `<base>/diagnostic` |
+| `src/main.cpp` | `fsGuardDrain()` dans la loop |
+| `tools/check_fopen_guard.sh` | **[nouveau]** + job `fopen-guard` dans `.github/workflows/hygiene-specs.yml` (workflow renommé **« Hygiène du dépôt »**) |
+| `test/test_native_fopen_guard/` | **[nouveau]** 34 cas — **1 291 → 1 325 tests** |
+
+**Coût** : flash **1 825 701 → 1 829 013 o** (+3 312, **49,0 %**, marge
+**1 906 539**) ; RAM **+64 o**.
+
+### Les trois bloquants trouvés en revue, et leurs correctifs
+
+#### 1. ⚠️ Une garde placée avant l'ouverture ne suffit pas — il faut avant le PIC D'ALLOCATION
+
+**C'est la leçon la plus transférable du cycle**, et elle généralise le §d de
+l'ADR-0070 sans le contredire.
+
+La première version posait l'admission en tête de `saveToFile()`, conformément à
+l'ADR. Entre cette admission et le `fopen` réellement gardé, la fonction
+construit le `JsonDocument` de l'historique et ses `String` : **elle dépense la
+marge qu'elle vient de valider**. L'ouverture s'exécutait donc sur une mesure
+**devenue fausse** — c'est-à-dire sur une **autorisation périmée**, exactement ce
+que l'asymétrie mesure/décision du §e existe pour interdire (*autoriser* sur une
+mesure périmée coûte un `abort()` ; *refuser* coûte 5 min).
+
+**Correctif** : une **seconde admission**, après `measureJson()` (donc après le
+pic) et toujours **avant** le `remove()` (donc là où l'opération peut encore ne
+rien faire). Les deux gardes sont nécessaires et non redondantes ; coût = une
+mesure de plus toutes les 5 min.
+
+**Lieu durable choisi** :
+[`docs/subsystems/acces-fichiers.md` § Piège de placement nº 2](../../../docs/subsystems/acces-fichiers.md) —
+un document **vivant**, celui qu'un futur auteur de garde consulte, et non un ADR
+figé. L'ADR-0070 en porte une **bannière d'amendement** (corps **inchangé**) dont
+la seule fonction est d'empêcher qu'on implémente son §d à la lettre en croyant
+avoir fini. Rappel repris aussi dans `docs/subsystems/history.md`.
+
+#### 2. Le tripwire de boot ne comptait pas son propre refus
+
+La dégradation **la plus sévère** du lot (démarrage sans historique persistant)
+était la **moins visible** : elle n'incrémentait pas `hdef`. Or le WARN qui
+l'accompagne n'est durable que de façon **bornée** — `_persistBuffer` plafonne à
+**100 entrées en éviction FIFO**, donc sous famine prolongée la ligne de boot
+sort par le haut. **Correctif** : le tripwire incrémente `hdef`, qui part dans le
+payload **retenu** et **survit au reboot**.
+
+Corollaire posé au même endroit : `setPersistenceFs()` **arme
+inconditionnellement** (`_persistEnabled = true` **avant** l'ouverture gardée du
+marqueur). Sous le tripwire, seul le **marqueur de démarrage** se perd, **pas le
+journal du boot**. *L'observabilité ne doit pas dépendre du sous-système qu'elle
+garde.*
+
+#### 3. Un refus servi par le cache affichait un `maxBloc8` périmé
+
+L'asymétrie du §e met en cache **le refus**, donc un refus peut être prononcé
+**sans aucune mesure**. Le libellé citait néanmoins la dernière valeur connue,
+comme si elle datait de l'instant. **Correctif** : `fsGuardLastRefusalMeasured()`
+distingue une mesure fraîche d'une valeur absente, et le message dit
+`maxBloc8 non mesure (refus en cache)` au lieu d'un chiffre faux. La distinction
+est portée par **l'API**, pas par la discipline de l'appelant.
+
+### Décisions consignées
+
+- **Perte de distinction assumée dans `loadFromFile()`** : l'`exists()` a été
+  **supprimé** (strictement redondant avec l'ouverture qui le suivait, et
+  doublant l'exposition à l'`abort()`), donc « absent » et « illisible » ne sont
+  plus discernables — l'API `fs::` n'offre **aucun `stat()`** pour les départager
+  sans réintroduire le site fermé. Libellé rendu **explicitement non
+  discriminant**, en `INFO`.
+- **Mesure sous mutex tenu acceptée**, sur l'argument du réviseur :
+  `consolidateData()` et `importData()` tiennent `_mutex` ; parcours TLSF ~10² µs
+  contre une E/S LittleFS de 10¹-10² ms **déjà payée sous ce verrou** ; coût
+  « interruptions coupées » **identique** avec ou sans mutex ; verrou du tas
+  **terminal**, donc **aucune inversion** possible.
+- **Limites du script de garde, écrites plutôt que tues** : `grep` est
+  **mono-ligne** (une coupure après `->` échappe au motif) et toute API
+  construisant un `VFSFileImpl` **sous un autre nom** passe. D'où le recensement
+  tenu **à la main** dans `docs/subsystems/acces-fichiers.md`. *Le script tient
+  l'ordre ; le document tient la liste.*
+
+### ⚠️ Dette assumée — trois mutants non tués
+
+Tous dans `history.cpp`, **hors du `build_src_filter` natif** :
+
+1. le **tripwire de boot** de `begin()` ;
+2. le **tripwire de `loadFromFile()`** ;
+3. la **seconde admission** de `saveToFile()` (bloquant nº 1 ci-dessus).
+
+**Ce n'est pas un oubli : c'est la frontière de l'[ADR-0017](../../../docs/adr/0017-logique-metier-pure-humble-object-testabilite.md).**
+La logique pure est testable, la coquille ne l'est pas. Les **prédicats** que ces
+trois chemins invoquent sont couverts et **tuent** leurs mutants ; ce qui n'est
+pas couvert, c'est le **câblage** entre le prédicat et l'effet.
+
+**Ce qu'il faudrait pour lever la dette** : un **double de `fs::FS`** compilable
+en natif, ou l'**extraction des trois séquences en fonctions pures** prenant
+`(admis, taille, état)` et retournant une action. Aucune des deux n'est gratuite,
+et aucune n'est justifiée par le risque courant — la décision est *un booléen
+déjà testé* dans les trois cas. **À réévaluer si un quatrième site de coquille
+apparaît.**
+
+### 🔴 Action à faire avant tout déploiement — bump de version
+
+**`src/version.h` porte encore `2.42.1`.** Il doit passer à **`2.43.0`**.
+
+Le motif n'est pas cosmétique : l'entrée `[2.42.1]` du `CHANGELOG.md` affirme
+« **aucun changement de comportement : binaire fonctionnellement identique** ».
+Ce cycle **change** le comportement (report des écritures, tripwire de boot,
+troncature annoncée, trois champs MQTT). Faire atterrir `bug-100` sous `2.42.1`
+rendrait cette entrée **fausse**.
+
+L'entrée `CHANGELOG.md` est **déjà rédigée sous `[2.43.0]`** ; `src/version.h`
+était **gelé** pendant ce cycle de documentation et n'a pas été touché.
+
+### Ce que ce cycle ne ferme PAS
+
+- **Le critère « 7 jours sans redémarrage inopiné » de `bug-080`** reste
+  **ouvert** — aucun déploiement, donc aucune mesure possible. Consigné dans
+  `specs/features/doing/bug-080-*.md` (section ajoutée le 2026-09-06).
+- **Le lot C de `bug-080`** (cause de la fragmentation) n'est **pas** ouvert :
+  ce cycle traite la **conséquence**, pas la cause.
+- **`bug-108`** (garde TLS/OTA sur métrique IRAM-inclusive) reste dans `todo/`.
+
+---
+
+## ⚠️ Mention de clôture
+
+> **Correctif NON validé sur matériel.** L'appareil est joignable
+> (192.168.1.48) mais **aucun déploiement n'a été fait** — c'est une décision
+> humaine. Ce cycle livre une **défense argumentée et testée en logique pure** ;
+> il **ne prouve pas** la disparition du crash en production.

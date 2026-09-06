@@ -52,7 +52,9 @@ Trois raisons distinctes, aucune accidentelle :
 2. **`/download-logs` est exempt par l'ordre d'enregistrement** — c'est un choix délibéré d'ADR-0067 (garder l'appareil observable en famine), pas un oubli ;
 3. **`POST /history/import` est hors matcher** (garde GET-only), alors qu'il atteint les deux `fopen` de `saveToFile()` depuis `async_tcp`.
 
-Le PANIC du 05/09 (`loopTask`, sauvegarde périodique de l'historique) est exactement ce trou. Stratégie retenue : [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) — point d'admission unique, deux classes de contention. ⚠️ **Non implémenté à ce jour** (cycle 2 de `bug-100`).
+Le PANIC du 05/09 (`loopTask`, sauvegarde périodique de l'historique) est exactement ce trou. Stratégie retenue : [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) — point d'admission unique, deux classes de contention.
+
+> ✅ **Implémenté en v2.43.0** (cycle 2 de `bug-100`). Les **13 sites** internes restants passent par [`src/fs_guard.cpp`](../../src/fs_guard.cpp) ; un contrôle CI ([`tools/check_fopen_guard.sh`](../../tools/check_fopen_guard.sh)) échoue si un autre fichier de `src/` ouvre un fichier lui-même. **Rien ne change côté routage** : la garde 503 reste `HTTP_GET`-only, et l'exemption de `/download-logs` par l'ordre d'enregistrement est **conservée telle quelle**. Ce qui change, c'est que la route exempte garde désormais son `fopen` **de l'intérieur** : sous 8 192 o, elle répond **200 avec un export tronqué et annoncé**, jamais un `abort()` — cf. [`docs/API.md`](../API.md#get-download-logs--write). L'appareil reste observable en famine, ce qui était **la raison** de l'exemption. ⚠️ **Non validé sur matériel.**
 
 ### Mécanisme
 

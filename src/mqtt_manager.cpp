@@ -12,6 +12,8 @@
 #include "mqtt_topics_logic.h"  // bug-race-refreshtopics-uaf : normalisation pure du préfixe
 #include "oom_guard.h"  // bug-080 B-1 : drain du drapeau « parachute sans réserve »
 #include "ph_guard_logic.h"  // v2.25.0 : phModeChangeNeedsAck (gate fail-closed du mode pH)
+#include "history.h"          // bug-100 : historyFopenDeferralCount (diagnostic retenu)
+#include "web_routes_data.h"  // bug-100 : logsExportFopenDeferralCount (diagnostic retenu)
 #include <ArduinoJson.h>
 #include <esp_task_wdt.h>
 #include <WiFi.h>
@@ -1160,6 +1162,19 @@ void MqttManager::publishDiagnosticInternal() {
   if (taskHandle) {
     doc["mqtt_task_stack_hwm"] = uxTaskGetStackHighWaterMark(taskHandle);
   }
+
+  // bug-100 / ADR-0070 — refus d'ouverture de fichier pour FAMINE MÉMOIRE.
+  // Trois champs COMPACTS (le payload est déjà dense) dans le topic RETENU
+  // <base>/diagnostic : aucun topic neuf, aucun endpoint neuf, et la valeur
+  // survit à la famine puisqu'elle est retenue par le broker.
+  // ⚠️ C'est ICI qu'est l'observabilité durable, PAS dans la ligne de journal :
+  // sous famine, le WARN reste prisonnier du _persistBuffer du logger.
+  //   hdef = sauvegardes/chargements d'historique refusés (≠ « partition pleine »)
+  //   ldef = flushs de journal refusés (lignes conservées, flush reporté)
+  //   xdef = exports /download-logs servis tronqués faute d'ouverture
+  doc["hdef"] = historyFopenDeferralCount();
+  doc["ldef"] = loggerFopenDeferralCount();
+  doc["xdef"] = logsExportFopenDeferralCount();
 
   String payload;
   serializeJson(doc, payload);

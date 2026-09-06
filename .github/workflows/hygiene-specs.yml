@@ -1,5 +1,9 @@
-name: Hygiène des specs
+name: Hygiène du dépôt
 
+# Deux contrôles d'invariant, sans toolchain ni cache — voir les commentaires de
+# chaque job.
+#
+# JOB 1 — Unicité des specs.
 # Vérifie qu'un nom de spec ne vit que dans UN seul des dossiers todo/ · doing/ ·
 # done/. Le cycle procède par déplacement ; une spec copiée produit deux versions
 # qui divergent et deux statuts qui se contredisent (constat du 2026-09-06 :
@@ -31,3 +35,25 @@ jobs:
       # local (`./tools/check_specs.sh`) et peut servir de hook pre-commit.
       - name: Contrôle d'unicité
         run: ./tools/check_specs.sh
+
+  # JOB 2 — Point d'admission unique des fopen internes (ADR-0070, bug-100).
+  # Sur ESP32, un fopen dont le malloc du verrou newlib (92 o) échoue appelle
+  # abort() : AUCUN code de retour à tester. Deux crashs de production
+  # (29/08/2026, 05/09/2026) viennent de là. ADR-0070 rend le défaut
+  # INEXPRIMABLE en imposant un point d'admission unique, src/fs_guard.cpp.
+  #
+  # Pourquoi ce job vit ICI et pas dans build-firmware.yml : « un contrôle que
+  # personne ne lance ne rend rien inexprimable ». Ce workflow tourne sur TOUS
+  # les commits, sans filtre de chemins, sans toolchain, sans cache — c'est la
+  # seule place où l'invariant est vérifié aussi souvent qu'il peut être violé.
+  # « L'ordre se voit, la liste s'oublie. »
+  fopen-guard:
+    name: Admission unique des fopen internes (ADR-0070)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Même script en local (`./tools/check_fopen_guard.sh`) et en CI.
+      - name: Contrôle du point d'admission
+        run: ./tools/check_fopen_guard.sh

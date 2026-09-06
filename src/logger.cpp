@@ -1,6 +1,18 @@
 #include "logger.h"
 #include "config.h"
+#include "constants.h"
+#include "fs_guard.h"  // bug-100 : point d'admission unique des fopen internes (ADR-0070)
+#include <atomic>
 #include <time.h>
+
+// bug-100 : flushs de journal refusés pour famine mémoire depuis le boot.
+// `relaxed` : flushToDisk() s'exécute SUR LA TÂCHE QUI LOGUE (loopTask,
+// mqttTask, async_tcp…) — il n'existe pas de « tâche du logger ».
+static std::atomic<uint32_t> sLoggerFopenDeferrals{0};
+
+uint32_t loggerFopenDeferralCount() {
+  return sLoggerFopenDeferrals.load(std::memory_order_relaxed);
+}
 
 Logger systemLogger;
 
@@ -226,8 +238,12 @@ void Logger::setPersistenceFs(fs::FS* fs) {
   _persistEnabled = true;
   _lastFlushMs = millis();
 
-  // Écrire un marqueur de démarrage dans le fichier existant
-  File f = fs->open("/system.log", "a");
+  // Écrire un marqueur de démarrage dans le fichier existant.
+  // bug-100 / ADR-0070 — CLASSE A : setPersistenceFs() est appelé aujourd'hui
+  // depuis loopTask au boot, mais RIEN ne le garantit ; on ne parie pas sur
+  // l'absence de contention TCP pour un site qu'un futur appelant pourrait
+  // déplacer. Refus → marqueur perdu, jamais d'abort().
+  File f = openIfHeapAllows(fs, "/system.log", "a", kStaticFileMinAllocBytes);
   if (f) {
     char timeBuf[20] = "????-??-??T??:??:??";
     time_t now = time(nullptr);
@@ -272,9 +288,46 @@ void Logger::flushToDisk() {
     return;
   }
 
-  // Écrire les entrées en append
-  File f = _persistFs->open("/system.log", "a");
-  if (!f) f = _persistFs->open("/system.log", "w");
+  // bug-100 / ADR-0070 — ADMISSION MÉMOIRE UNIQUE, classe A (8 192).
+  // Placée ICI, et pas ailleurs, pour trois raisons cumulées :
+  //  1. APRÈS le retour anticipé `toWrite.empty()` → zéro mesure quand il n'y a
+  //     rien à écrire (le cas courant, à la cadence de la loop) ;
+  //  2. APRÈS le xSemaphoreGive ci-dessus → JAMAIS de parcours de tas
+  //     (interruptions coupées) sous un mutex tenu ;
+  //  3. UNE seule fois pour les SIX ouvertures qui suivent (append, repli,
+  //     relecture de taille, source de rotation, .tmp en écriture, .tmp en
+  //     relecture) : 6 mesures deviennent 1.
+  // Classe A et non B : flushToDisk() s'exécute SUR LA TÂCHE QUI LOGUE — il
+  // n'existe pas de « tâche du logger » — et logger.cpp:71-73 le déclenche en
+  // synchrone sur chaque ERROR/CRITICAL, donc potentiellement depuis async_tcp
+  // pendant qu'une réponse est en vol.
+  if (!fsGuardAdmit(kStaticFileMinAllocBytes)) {
+    sLoggerFopenDeferrals.fetch_add(1, std::memory_order_relaxed);
+    // Serial UNIQUEMENT : journaliser ici rappellerait flushToDisk() (récursion
+    // sur ERROR/CRITICAL) et rouvrirait le chemin même que l'on ferme.
+    Serial.println("[LOGGER] Famine memoire : flush disque differe");
+    // Réinsertion du buffer non flushé — même discipline que le chemin d'échec
+    // d'ouverture ci-dessous : JAMAIS de réinsertion sans mutex.
+    if (_mutex && xSemaphoreTake(_mutex, pdMS_TO_TICKS(kLoggerMutexTimeoutMs)) != pdTRUE) {
+      _droppedLogs += toWrite.size();
+      Serial.printf("[LOGGER] Timeout mutex — %u ligne(s) de log perdue(s)\n",
+                    (unsigned)toWrite.size());
+      _lastFlushMs = millis();
+      return;
+    }
+    _persistBuffer.insert(_persistBuffer.begin(), toWrite.begin(), toWrite.end());
+    if (_mutex) xSemaphoreGive(_mutex);
+    // Report explicite : nouvelle tentative au prochain kFlushIntervalMs. Sans
+    // cela, update() rappellerait flushToDisk() à la fréquence de la loop
+    // pendant toute la famine.
+    _lastFlushMs = millis();
+    return;
+  }
+
+  // Écrire les entrées en append. Admission déjà prononcée ci-dessus : les six
+  // ouvertures qui suivent passent par le helper SANS re-mesurer.
+  File f = openIfHeapAllows(_persistFs, "/system.log", "a", kFsGuardAlreadyAdmitted);
+  if (!f) f = openIfHeapAllows(_persistFs, "/system.log", "w", kFsGuardAlreadyAdmitted);
   if (!f) {
     Serial.println("[LOGGER] ERREUR: impossible d'ouvrir /system.log pour écriture");
     // Remettre le buffer si l'écriture échoue
@@ -296,7 +349,7 @@ void Logger::flushToDisk() {
 
   // Relire la taille après close pour avoir la valeur réelle
   {
-    File fsize = _persistFs->open("/system.log", "r");
+    File fsize = openIfHeapAllows(_persistFs, "/system.log", "r", kFsGuardAlreadyAdmitted);
     if (!fsize) { _lastFlushMs = millis(); return; }
     size_t fileSize = fsize.size();
     fsize.close();
@@ -304,7 +357,7 @@ void Logger::flushToDisk() {
     // Rotation si le fichier dépasse 32KB : garder les 24 derniers KB
     // Utilise un fichier temporaire pour éviter la perte de données si le heap est insuffisant
     if (fileSize > kMaxLogFileBytes) {
-      File rf = _persistFs->open("/system.log", "r");
+      File rf = openIfHeapAllows(_persistFs, "/system.log", "r", kFsGuardAlreadyAdmitted);
       if (rf) {
         size_t sz = rf.size();
         size_t skipTo = sz > kRotateKeepBytes ? sz - kRotateKeepBytes : 0;
@@ -314,7 +367,7 @@ void Logger::flushToDisk() {
         if (rf.available()) rf.read();  // Consommer le \n
 
         // Écrire dans un fichier temporaire d'abord
-        File wf = _persistFs->open("/system.log.tmp", "w");
+        File wf = openIfHeapAllows(_persistFs, "/system.log.tmp", "w", kFsGuardAlreadyAdmitted);
         if (wf) {
           // Copie par blocs de 512 bytes pour ne pas allouer 24KB d'un coup
           uint8_t buf[512];
@@ -326,7 +379,7 @@ void Logger::flushToDisk() {
           rf.close();
 
           // Remplacer seulement si le fichier temporaire n'est pas vide
-          File check = _persistFs->open("/system.log.tmp", "r");
+          File check = openIfHeapAllows(_persistFs, "/system.log.tmp", "r", kFsGuardAlreadyAdmitted);
           bool tmpOk = check && check.size() > 0;
           if (check) check.close();
 

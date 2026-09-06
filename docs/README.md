@@ -41,7 +41,7 @@ docs/
 │   ├── system-health.md
 │   ├── oom-guard.md
 │   ├── web-server.md
-│   └── acces-fichiers.md     ← recensement des `fopen` du firmware (14 sites, classes A/B)
+│   └── acces-fichiers.md     ← recensement des `fopen` du firmware (13 sites gardés, classes A/B)
 │
 ├── adr/                 ← Architecture Decision Records (immuables)
 │   ├── README.md

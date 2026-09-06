@@ -49,6 +49,16 @@ size_t getLogCount();
 void setPersistenceFs(fs::FS* fs);
 void update();              // flush différé
 void flushToDisk();         // flush immédiat
+fs::FS* getPersistenceFs() const;
+```
+
+Fonction libre (`logger.h`, v2.43.0, bug-100) :
+
+```cpp
+// Flushs disque REFUSÉS pour famine mémoire, cumulés depuis le boot (les lignes
+// sont conservées, le flush est reporté). Publié en `ldef` dans le payload
+// RETENU <base>/diagnostic.
+uint32_t loggerFopenDeferralCount();
 ```
 
 ## Toggle DEBUG runtime
@@ -132,7 +142,7 @@ systemLogger.error(...)          logger.cpp:71-73  →  si ERROR ou CRITICAL
   → flushToDisk()                logger.cpp:276-277
     → _persistFs->open("/system.log", "a")
       → fopen()  →  __sfp  →  __retarget_lock_init_recursive
-        → lock_init_generic (newlib locks.c:77)   ← malloc de ~88 o
+        → lock_init_generic (newlib locks.c:77)   ← malloc de 92 o (rectifié en v2.43.0 ; « ~88 o » était faux)
           → si le malloc échoue : abort()          ← AUCUN code de retour à tester
 ```
 
@@ -141,6 +151,71 @@ C'est exactement le chemin du PANIC du 29/08, et celui que la [garde 503 « fich
 > **Règle générale, pas particularité de B-3** : **tout code écrit pour éviter `fopen` en famine mémoire est contraint à `WARN` / `INFO`.** Émettre un `ERROR` ou un `CRITICAL` depuis un tel chemin y rouvre le crash par la porte du journal. S'y ajoute : **aucun log depuis la tâche `async_tcp`** — le drain se fait depuis la loop.
 
 Corollaire noté pour la suite : `flushToDisk()` **lui-même** est un `fopen` abort-prone, et il n'est **pas** couvrable par un 503 (il n'y a pas de requête à refuser). Identifié, **hors périmètre** de B-3, lot ultérieur.
+
+> ✅ **Fermé en v2.43.0** (bug-100, [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)) — voir la section suivante. La règle « WARN/INFO uniquement depuis un chemin anti-`fopen` » reste **entièrement en vigueur** : elle est ce qui rend le correctif compatible avec lui-même.
+
+### Toutes les ouvertures du journal sont gardées (v2.43.0, bug-100 / [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md))
+
+`logger.cpp` ouvre `/system.log` (ou son `.tmp` de rotation) en **7 endroits**.
+Depuis la v2.43.0, les 7 passent par `openIfHeapAllows()`
+([`src/fs_guard.h`](../../src/fs_guard.h)) — plus aucun `fopen` nu.
+
+**Les 7 sites sont tous de CLASSE A (seuil 8 192)**, y compris celui du boot. Ce
+n'est pas une précaution : `flushToDisk()` s'exécute **sur la tâche qui a émis le
+log**, il n'existe pas de « tâche du logger ». Une ligne `ERROR` émise depuis un
+handler `async_tcp` ouvre le fichier **pendant** qu'une réponse est en vol, donc
+avec des pbuf lwip alloués.
+
+#### Une seule mesure par flush, six ouvertures ensuite
+
+`flushToDisk()` prend **une** admission
+([`logger.cpp:304`](../../src/logger.cpp:304)) puis ouvre jusqu'à six fois avec
+`kFsGuardAlreadyAdmitted` : append, repli `"w"`, relecture de taille, source de
+rotation, `.tmp` en écriture, `.tmp` en relecture. **6 mesures deviennent 1.**
+
+Ce n'est pas une optimisation de confort : le parcours TLSF qui mesure le tas
+coûte **d'autant plus cher que le tas est fragmenté**, c'est-à-dire exactement
+dans le régime pour lequel la garde existe. Et la rotation est une séquence
+**indissociable** — la re-mesurer à mi-parcours autoriserait un `.tmp` sans
+pouvoir le relire.
+
+Le 7ᵉ site, [`logger.cpp:246`](../../src/logger.cpp:246) (marqueur
+`--- DÉMARRAGE ---` de `setPersistenceFs()`), prend **sa propre** mesure : il est
+hors du flush.
+
+#### Ce que devient le journal sous famine
+
+Sur refus d'admission, `flushToDisk()` **réinsère le buffer non flushé en tête**
+de `_persistBuffer` (sous mutex, `kLoggerMutexTimeoutMs` — jamais de réinsertion
+sans mutex) et repousse `_lastFlushMs`. Conséquences, dans l'ordre :
+
+1. **Aucune ligne n'est perdue tant que le buffer tient.** Le flush est
+   **reporté**, retenté au prochain `kFlushIntervalMs` (10 min). Sans le
+   `_lastFlushMs = millis()`, `update()` rappellerait `flushToDisk()` **à la
+   fréquence de la loop** pendant toute la famine.
+2. **Au-delà, la perte est bornée et par le HAUT.** `_persistBuffer` plafonne à
+   **100 entrées en éviction FIFO** : sous famine prolongée, ce sont les lignes
+   **les plus anciennes** qui sortent — y compris le WARN de boot du tripwire de
+   l'historique.
+3. **Le refus n'est jamais silencieux**, mais son canal durable n'est **pas** le
+   journal : c'est le compteur **`ldef`** du payload **retenu**
+   `<base>/diagnostic`.
+
+> ⚠️ **Le refus est annoncé en `Serial` uniquement**, jamais via `systemLogger`.
+> Journaliser ici rappellerait `flushToDisk()` (récursion sur `ERROR`/`CRITICAL`)
+> et rouvrirait le chemin même que l'on ferme :
+> `[LOGGER] Famine memoire : flush disque differe`.
+
+#### `setPersistenceFs()` arme **inconditionnellement**
+
+`_persistEnabled = true` est posé **avant** l'ouverture gardée du marqueur de
+démarrage. Si l'ouverture est refusée, seul le **marqueur** se perd — la
+persistance reste armée, et le journal du boot sera écrit au premier flush qui
+passera. C'est ce qui permet à `history.cpp` d'appeler `setPersistenceFs()`
+**avant de sortir sur son tripwire** : on ne perd pas la trace de l'épisode que
+l'on vient de détecter.
+
+Sur échec, `Serial` seul : `[LOGGER] ERREUR: impossible d'ouvrir /system.log au démarrage`.
 
 **Émetteurs ajoutés en v2.41.0** — garde 503 fichiers statiques, **2 lignes par épisode maximum**, drainés depuis la loop (`WebServerManager::drainLowHeapGuard()`) :
 
@@ -359,3 +434,6 @@ systemLogger.critical("Heap below 10KB, forcing restart");
 - [`src/logger.h`](../../src/logger.h), [`src/logger.cpp`](../../src/logger.cpp)
 - [`src/constants.h:46`](../../src/constants.h:46) — `kMaxLogEntries`
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — abonnement callback
+- [`src/fs_guard.h`](../../src/fs_guard.h) — point d'admission unique des `fopen` internes (v2.43.0)
+- [acces-fichiers.md](acces-fichiers.md) — recensement des 13 sites d'ouverture, dont les 7 du journal
+- [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) — garde mémoire avant tout `fopen` interne

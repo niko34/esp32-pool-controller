@@ -87,6 +87,8 @@ Configurés dans [`src/constants.h`](../../src/constants.h) :
 | `kMqttClientConnectTimeoutSec` | `2` | **Timeout en SECONDES** passé à `WiFiClient::setTimeout()` — borne le SYN/CONNACK TCP côté broker injoignable. Voir avertissement ci-dessous |
 | `kMqttSocketSendTimeoutMs` | `500` | **Timeout en MILLISECONDES** posé via `setsockopt(SO_SNDTIMEO)` après chaque `mqtt.connect()` réussi — borne tout `WiFiClient::write()` à 500 ms (cf. ADR-0011 IT5). Le PINGREQ keepalive (2 octets) part en < 100 ms en réseau normal et reste fiable même si un publish massif est en cours |
 
+> **Trois compteurs d'accès fichier refusés (v2.43.0, bug-100 / [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md))** : `publishDiagnosticInternal()` ajoute `hdef` (historique), `ldef` (journal) et `xdef` (export `/download-logs` tronqué) au payload `<base>/diagnostic`. **Aucun topic neuf, aucun endpoint neuf** — trois champs compacts dans un payload existant. Le choix du topic n'est pas arbitraire : il est **retenu** par le broker, donc la valeur **survit au reboot** de l'appareil, alors que le WARN correspondant est prisonnier d'un `_persistBuffer` plafonné à 100 entrées. **C'est ici qu'est l'observabilité durable de la famine mémoire, pas dans le journal.** Contrat détaillé : [`docs/MQTT.md`](../MQTT.md#hdef--ldef--xdef--refus-daccès-fichier-pour-famine-mémoire-v2430).
+
 Le high-water-mark de la stack est exposé dans le payload `diagnostic` MQTT (champ `mqtt_task_stack_hwm`) — utile pour réduire `kMqttTaskStackSize` si on observe un large headroom après plusieurs jours.
 
 ## Topics
@@ -412,7 +414,7 @@ Tous les `mqtt.publish(...)` directs dans `mqttTask` ont été remplacés par `s
 | `connectInTask()` — status `online` au connect | LWT `online` après handshake réussi |
 | `drainOutQueue()` | Consomme `outQueue` (alertes, status, logs, états relais asynchrones) |
 | `publishAllStatesInternal()` | **23 publishes** des états périodiques (température, pH, ORP, targets, dosing, mode régulation, daily, remaining, stock_low, filtration, lighting + `lighting_schedule`/`lighting_start`/`lighting_end` feature-052) |
-| `publishDiagnosticInternal()` | Snapshot diagnostic (heap, RSSI, uptime, hwm, etc.) |
+| `publishDiagnosticInternal()` | Snapshot diagnostic (heap, RSSI, uptime, hwm, `hdef`/`ldef`/`xdef`, etc.) |
 | `publishDiscovery()` lambda `publishConfig` | **20 publishes** d'auto-discovery HA `homeassistant/.../config` (+ 1 `safePublish` retain vide pour retirer l'ancien switch `lighting_schedule`, v2.17.2) |
 
 Les `esp_task_wdt_reset()` IT3 et les bail-out `if (!mqtt.connected()) return;` IT3 répartis dans `publishAllStatesInternal()` et la lambda `publishConfig` ont été **supprimés** : ils sont devenus redondants avec le wrapper et alourdissaient la lecture (~50 lignes supprimées).

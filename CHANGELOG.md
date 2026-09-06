@@ -2,6 +2,49 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.43.0] - 2026-09-06
+
+> ⚠️ **Correctif NON validé sur matériel.** L'appareil est joignable (192.168.1.48) mais **aucun déploiement n'a été fait** — c'est une décision humaine. Cette version livre une défense **argumentée et testée en logique pure** ; elle **ne prouve pas** la disparition du crash en production. Le critère « 7 jours sans redémarrage inopiné » de `bug-080` **reste ouvert**.
+>
+> **Ce qui change pour vous, en une phrase** : quand la mémoire de l'appareil vient à manquer, **il ne redémarre plus brutalement** — il **reporte** l'écriture, la **retente**, et le **dit**.
+
+### Firmware
+
+- **Plus aucun redémarrage brutal quand la mémoire manque à l'écriture d'un fichier** (`bug-100`, [ADR-0070](docs/adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)). Le crash du **05/09** (PANIC daté au SHA256 du coredump, sous la v2.40.0) est survenu pendant la **sauvegarde périodique de l'historique** : sur ESP32, ouvrir un fichier fait allouer à la libc un verrou de 92 octets, et si cette allocation échoue, le système **s'arrête net, sans erreur exploitable**. La garde 503 de la v2.41.0 ne couvrait que les pages web ; **elle ne couvrait aucune des 14 ouvertures que le firmware fait pour son propre compte**.
+
+- **Historique — la sauvegarde est REPORTÉE, pas perdue.** Sous famine mémoire, la sauvegarde des 5 minutes est **sautée sans toucher au fichier existant** (mieux vaut un historique périmé de 5 min qu'un fichier détruit) et **retentée au cycle suivant**. Les mesures continuent d'être enregistrées en mémoire et affichées à l'écran. Un avertissement est journalisé, **au plus une fois par heure**.
+
+- **Au démarrage, l'appareil DOSE au lieu d'aborter.** Si la mémoire manque au boot, l'historique persistant est **désactivé pour ce démarrage** — l'appareil démarre, régule et dose normalement, simplement sans reprendre les mesures des jours précédents. L'alternative était un redémarrage en boucle. Le **journal de bord, lui, reste enregistré** : l'observabilité ne dépend pas du sous-système qu'elle garde.
+
+- **Journal système — les lignes ne sont plus perdues.** Les **7 ouvertures** de `/system.log` sont gardées. Sous famine, l'écriture disque est reportée et les lignes en attente sont **remises dans la file** (plafond de 100 entrées, les plus anciennes sortent). Une seule mesure mémoire par écriture au lieu de six.
+
+- **`GET /download-logs` ne ment plus quand il est tronqué.** Si le journal persistant ne peut pas être ouvert, l'export continue d'être servi (session courante seule) mais **l'annonce désormais dans le fichier téléchargé** — `# === Historique persistant INDISPONIBLE === … export TRONQUE a la session courante`. Le repli existait déjà ; il était **silencieux**.
+
+- **Trois compteurs dans le diagnostic MQTT — `hdef`, `ldef`, `xdef`** (topic **retenu** `<base>/diagnostic`, aucun topic ni endpoint nouveau). `0` en régime normal. Le topic étant retenu, ces valeurs **survivent au redémarrage** — c'est délibéré : sous famine, le journal de bord ne survit pas, mais le compteur si. ⚠️ `hdef` (famine **mémoire**) ne recoupe pas le compteur « partition pleine » (saturation **disque**) : deux pannes différentes, deux libellés distincts.
+
+- **Un seul point d'admission, vérifié par la CI.** Toute ouverture de fichier interne passe par `src/fs_guard.cpp` ; le contrôle `tools/check_fopen_guard.sh` (job `fopen-guard` du workflow **Hygiène du dépôt**) échoue si un autre fichier de `src/` ouvre un fichier lui-même. La garde par site — le mode de défaillance du lot B-3 — est **rejetée par construction** : le défaut devient **inexprimable**, pas seulement non testé.
+
+- **Une ouverture de fichier a été SUPPRIMÉE, pas gardée** : `exists()` du framework **ouvre le fichier** (aucun `stat()`), et l'appel qui précédait le chargement de l'historique était strictement redondant. ⚠️ Contrepartie assumée : « fichier absent » et « fichier illisible » ne sont plus distinguables ; le message est rendu explicitement non discriminant.
+
+- **7ᵉ barreau de l'échelle des seuils mémoire** : `kInternalFopenMinAllocBytes = 5 120 o`, intercalé entre l'auto-guérison (4 096) et les pushes WebSocket (6 144). **Les 6 barreaux existants sont inchangés** — l'ordre complet `2 048 < 4 096 < 5 120 < 6 144 < 8 192 < 12 288 < 18 432` est verrouillé à la compilation par `static_assert`.
+
+- **Trois chiffres de dimensionnement du projet étaient faux — corrigés.** Verrou récursif : **92 o** (et non « ~88 »), expansion du pool `FILE` : **428 o** (et non « ~440 »), et `__sfmoreglue` **n'existe pas comme symbole** (il est inliné — une recherche par symbole aurait conclu à tort à son absence). Établis par désassemblage de `libc.a`. **Aucun seuil n'en dépendait.**
+
+- **Coût** : flash 1 825 701 → **1 829 013 o** (+3 312, **49,0 %**, marge 1 906 539) ; RAM +64 o.
+
+### Documentation
+
+- `docs/subsystems/acces-fichiers.md` : recensement passé de 14 à **13 sites, tous gardés**, avec la classe et le point d'admission de chacun ; observabilité des refus ; limites du contrôle automatique ; **dette de test assumée** (3 mutants non tués) ; et surtout le **piège de placement nº 2** — *une garde mémoire va avant le PIC D'ALLOCATION du chemin, pas seulement avant l'appel qu'elle protège*. C'est le bloquant de revue le plus transférable du cycle : la première admission validait une marge que le `JsonDocument` dépensait ensuite, autorisant le `fopen` **sur une mesure devenue fausse**. D'où une **seconde** admission après la sérialisation.
+- [ADR-0070](docs/adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) : **bannière d'amendement** (le §d est nécessaire mais **non suffisant** ; le compte passe de 14 à 13 sites). **Corps inchangé** — un ADR accepté ne se réécrit pas.
+- [ADR-0058](docs/adr/0058-gardes-heap-metrique-8-bits.md) : **bannière d'amendement** pour le 7ᵉ barreau, les 6 précédents inchangés.
+- `docs/subsystems/history.md` : deux admissions dans `saveToFile()` et pourquoi aucune n'est redondante, tripwire de boot, suppression de l'`exists()`, mesure sous mutex acceptée (argument chiffré).
+- `docs/subsystems/logger.md` : une mesure par flush pour six ouvertures, ce que devient le journal sous famine, `setPersistenceFs()` qui arme inconditionnellement. Le corollaire « `flushToDisk()` reste un `fopen` abort-prone » de la v2.41.0 est **marqué fermé**.
+- `docs/MQTT.md`, `docs/API.md`, `docs/subsystems/mqtt-manager.md`, `docs/subsystems/web-server.md` : contrat des trois compteurs, troncature annoncée de `/download-logs`, périmètre du lot B-3 marqué implémenté.
+- `docs/BUILD.md` : job CI `fopen-guard` et ses **deux trous connus**, compte de tests **1 291 → 1 325** (34 suites), dette des 3 mutants.
+- ✅ Documentation utilisateur (`docs/user/`) **non concernée** : aucun écran, aucun bouton, aucun message d'interface ne change. Aucun PDF à régénérer, **aucune capture d'écran à refaire**.
+
+---
+
 ## [2.42.1] - 2026-09-06
 
 > ℹ️ **Aucun changement de comportement.** Le binaire est **fonctionnellement identique** à celui de la 2.42.0 : sections `text` / `data` / `bss` **inchangées à l'octet**, table des symboles identique (11 124 entrées, diff vide, adresses comprises). Les 77 octets d'écart du `.bin` sont tous imputés à l'horodatage de compilation, à la chaîne de version, au descripteur d'application et au SHA256 d'image. Rien à reconfigurer, aucune limite de sécurité touchée.

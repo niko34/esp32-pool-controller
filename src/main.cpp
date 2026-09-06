@@ -30,6 +30,7 @@
 #include "self_heal_logic.h"
 #include "net_health_logic.h"
 #include "heap_ring.h"
+#include "fs_guard.h"     // bug-100 : drain de l'épisode de famine fichiers (ADR-0070)
 #include "heap_metrics.h"  // mesure 8 bits (mémoire réellement allouable) — trace de calibrage v2.19.0
 #include "oom_guard.h"
 #include "ping/ping_sock.h"  // esp_ping : sonde ICMP passerelle (watchdog connectivité v2.9.2)
@@ -344,6 +345,10 @@ void loop() {
   timeToTarget.tick();
   history.update();
   systemLogger.update();
+  // bug-100 / ADR-0070 : bornage du journal de la garde d'admission des fopen
+  // internes. Placé juste APRÈS les deux producteurs de refus (historique et
+  // journal), dans la loop EXISTANTE — aucune tâche FreeRTOS neuve.
+  fsGuardDrain();
   updateManualInject();
 
   // Lecture capteurs à chaque loop (les capteurs gèrent leur propre throttling interne)

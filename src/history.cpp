@@ -1,6 +1,7 @@
 #include "history.h"
 #include "history_logic.h"
 #include "history_guard_logic.h"
+#include "fs_guard.h"          // bug-100 : point d'admission unique des fopen internes (ADR-0070)
 #include "constants.h"
 #include "logger.h"
 #include "sensors.h"
@@ -16,10 +17,31 @@
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 #include <esp_rom_crc.h>
+#include <atomic>
 
 HistoryManager history;
 
 namespace {
+// bug-100 : refus d'admission MÉMOIRE de l'historique (famine), distinct du
+// compteur NVS de refus d'admission d'ESPACE (historySaveAdmit / « partition
+// pleine »). Deux pannes différentes, deux compteurs. `relaxed` : saveToFile()
+// s'exécute depuis loopTask ET depuis async_tcp (POST /history/import).
+std::atomic<uint32_t> sHistoryFopenDeferrals{0};
+
+// Fragment de libellé commun aux DEUX refus mémoire de saveToFile() : même
+// forme, même seuil affiché, donc écart lisible dans les deux cas. Et si le
+// refus a été servi par le CACHE (asymétrie ADR-0070 §e, aucune mesure prise),
+// on le dit au lieu d'afficher un maxBloc8 périmé comme s'il datait de l'instant.
+// Une seule String temporaire, construite uniquement sur le chemin de refus
+// throttlé (au plus une fois par heure) — jamais dans la loop nominale.
+String fopenRefusalDetail() {
+  const String seuil = String((unsigned)kStaticFileMinAllocBytes);
+  if (!fsGuardLastRefusalMeasured()) {
+    return "maxBloc8 non mesure (refus en cache) < " + seuil + " o";
+  }
+  return "maxBloc8=" + String(fsGuardLastMaxAlloc8()) + " o < " + seuil + " o";
+}
+
 fs::LittleFSFS historyFs;
 fs::FS* historyStore = &LittleFS;
 const char* historyFilePath = "/history.json";
@@ -285,13 +307,43 @@ void HistoryManager::begin() {
     // (IntegerDivideByZero) à la 1ʳᵉ écriture — observé sur PCB v1 après
     // longue inactivité ESP32. On force un test write/read avant tout autre
     // accès. Si le test échoue → erase + remount propre.
+    // bug-100 / ADR-0070 — CLASSE B, 7e barreau (5 120). Sous le seuil, on ne
+    // REPORTE pas : au boot, « plus tard » n'existe pas. On arme le TRIPWIRE
+    // (historyEnabled = false pour ce boot) au lieu de laisser fopen aborter.
+    // L'absence de contention TCP est prouvée par l'ordre de setup() :
+    // history.begin() (main.cpp:270) precede mqttManager.begin() (300) et
+    // webServer.begin() (316).
+    if (!fsGuardAdmit(kInternalFopenMinAllocBytes)) {
+      // Le tripwire compte SON PROPRE refus : c'est la dégradation la plus
+      // sévère du lot, elle doit faire bouger `hdef`. La ligne de journal, elle,
+      // n'est durable que de façon BORNÉE — `_persistBuffer` plafonne à 100
+      // entrées en éviction FIFO (logger.cpp:69-70), donc sous famine prolongée
+      // le WARN de boot sort par le haut. Le compteur, lui, ne sort pas : il
+      // part dans le payload RETENU <base>/diagnostic et survit au reboot.
+      sHistoryFopenDeferrals.fetch_add(1, std::memory_order_relaxed);
+      // ⚠️ L'OBSERVABILITÉ NE DOIT PAS DÉPENDRE DU SOUS-SYSTÈME QU'ELLE GARDE.
+      // Le montage a réussi : ce n'est pas la partition qui manque, c'est la
+      // mémoire. On arme donc la persistance du JOURNAL avant de sortir, sans
+      // quoi le tripwire ferait perdre la trace de l'épisode même qu'il vient
+      // de détecter — on ne perdrait pas seulement l'historique, mais le
+      // journal persistant du boot ENTIER. setPersistenceFs() est lui-même
+      // gardé (classe A) : sous le seuil il ne fera qu'échouer proprement.
+      systemLogger.setPersistenceFs(&historyFs);
+      systemLogger.warning("Memoire insuffisante pour verifier la partition history — "
+                           "historique persistant desactive pour ce demarrage "
+                           "(journal persistant conserve)");
+      historyEnabled = false;
+      writeHistoryCrashCount(0);  // feature-059 : sortie propre → levée du drapeau
+      return;
+    }
+
     bool fsHealthy = false;
     {
-      File f = historyFs.open("/.fscheck", "w");
+      File f = openIfHeapAllows(&historyFs, "/.fscheck", "w", kFsGuardAlreadyAdmitted);
       if (f) {
         if (f.print("ok") == 2) {
           f.close();
-          File r = historyFs.open("/.fscheck", "r");
+          File r = openIfHeapAllows(&historyFs, "/.fscheck", "r", kFsGuardAlreadyAdmitted);
           if (r) {
             String s = r.readString();
             r.close();
@@ -337,6 +389,10 @@ void HistoryManager::begin() {
   // feature-059 : init complète sans crash → levée du drapeau (crash_cnt=0).
   writeHistoryCrashCount(0);
   systemLogger.info("Gestionnaire d'historique initialisé");
+}
+
+uint32_t historyFopenDeferralCount() {
+  return sHistoryFopenDeferrals.load(std::memory_order_relaxed);
 }
 
 void HistoryManager::update() {
@@ -459,6 +515,35 @@ void HistoryManager::recordDataPoint() {
 void HistoryManager::saveToFile() {
   if (!historyEnabled) return;
 
+  // bug-100 / ADR-0070 (§d) — ADMISSION MÉMOIRE EN TÊTE, classe A (8 192).
+  // La garde va là où la fonction peut encore NE RIEN FAIRE, jamais au point
+  // d'ouverture, pour deux raisons distinctes et toutes deux dirimantes :
+  //  1. saveToFile() n'est PAS atomique — le remove() precede l'open("w") : une
+  //     garde sur l'ouverture echangerait l'abort() contre la DESTRUCTION du
+  //     fichier d'historique ;
+  //  2. historySaveAdmit() consomme `oldSize`, une taille obtenue PAR le fopen
+  //     de lecture plus bas : garder ce fopen-là le laisserait s'executer nu.
+  // Classe A et non B : ce chemin est atteignable depuis POST /history/import
+  // (→ importData() → saveToFile()) sur la tâche async_tcp, donc avec des pbuf
+  // lwip en vol.
+  // Le libellé, le compteur et le champ de diagnostic sont DISTINCTS de ceux de
+  // historySaveAdmit() : « partition pleine » et « famine mémoire » sont deux
+  // pannes différentes, elles doivent rester discernables dans le journal.
+  if (!fsGuardAdmit(kStaticFileMinAllocBytes)) {
+    sHistoryFopenDeferrals.fetch_add(1, std::memory_order_relaxed);
+    // WARNING throttlé (jamais ERROR : un ERROR flusherait le disque en
+    // synchrone → fopen → l'abort() prévenu). Retentative naturelle au prochain
+    // cycle SAVE_INTERVAL, dans 5 min.
+    static unsigned long sWarnHeapMs = 0;
+    unsigned long nowHeapMs = millis();
+    if (sWarnHeapMs == 0 || nowHeapMs - sWarnHeapMs >= kHistorySaveWarnThrottleMs) {
+      systemLogger.warning("Famine memoire : sauvegarde de l'historique sautee (" +
+                           fopenRefusalDetail() + ") — nouvelle tentative dans 5 min");
+      sWarnHeapMs = nowHeapMs;
+    }
+    return;
+  }
+
   // bug-nospc-partition-history (A2+A3) : construire et MESURER le JSON avant
   // de toucher au FS — l'ancien code ouvrait "w" d'entrée, ce qui tronquait
   // l'ancien fichier avant toute vérification d'espace.
@@ -490,6 +575,33 @@ void HistoryManager::saveToFile() {
   }
   const size_t jsonSize = measureJson(doc);
 
+  // bug-100 / revue — SECONDE ADMISSION, et c'est la décisive.
+  // La première (tête de fonction) est exigée par ADR-0070 §d : la garde va là
+  // où la fonction peut encore ne rien faire. Mais entre elle et l'ouverture
+  // ci-dessous — LE SITE EXACT DU COREDUMP DU 05/09 — on vient de construire le
+  // JsonDocument et ses String de sérialisation, soit des dizaines de kilooctets.
+  // La marge ×1,99 validée par la première mesure est donc DÉPENSÉE APRÈS
+  // elle : autoriser sur cette seule mesure reviendrait à ouvrir sur une valeur
+  // qui n'est plus vraie — exactement le mode de défaillance que l'asymétrie
+  // mesure/décision existe pour interdire.
+  // Placement : après measureJson, donc après le pic d'allocation, et toujours
+  // AVANT le remove() plus bas — l'opération peut encore ne rien faire.
+  // L'ADR exige une garde AVANT la lecture d'oldSize ; il n'en interdit pas une
+  // seconde, et le coût est une mesure de plus toutes les 5 min.
+  if (!fsGuardAdmit(kStaticFileMinAllocBytes)) {
+    sHistoryFopenDeferrals.fetch_add(1, std::memory_order_relaxed);
+    static unsigned long sWarnHeapPostJsonMs = 0;
+    unsigned long nowPostJsonMs = millis();
+    if (sWarnHeapPostJsonMs == 0 ||
+        nowPostJsonMs - sWarnHeapPostJsonMs >= kHistorySaveWarnThrottleMs) {
+      systemLogger.warning("Famine memoire apres serialisation : sauvegarde de "
+                           "l'historique sautee (" + fopenRefusalDetail() +
+                           ") — nouvelle tentative dans 5 min");
+      sWarnHeapPostJsonMs = nowPostJsonMs;
+    }
+    return;
+  }
+
   // Espace libre + taille de l'ancien fichier (0 si absent). historyStore
   // pointe toujours sur un fs::LittleFSFS (partition dédiée après begin(),
   // sinon le LittleFS principal) — totalBytes()/usedBytes() y sont exposés.
@@ -497,7 +609,10 @@ void HistoryManager::saveToFile() {
   const size_t freeBytes = lfs->totalBytes() - lfs->usedBytes();
   size_t oldSize = 0;
   {
-    File old = historyStore->open(historyFilePath, "r");
+    // Admission déjà prononcée JUSTE AU-DESSUS, après le pic d'allocation du
+    // JSON (kFsGuardAlreadyAdmitted) : une seule mesure pour les deux
+    // ouvertures de la sauvegarde, et elle est postérieure à la dépense.
+    File old = openIfHeapAllows(historyStore, historyFilePath, "r", kFsGuardAlreadyAdmitted);
     if (old) {
       oldSize = old.size();
       old.close();
@@ -528,7 +643,7 @@ void HistoryManager::saveToFile() {
   // disjoncteur feature-059 et la cadence 5 min).
   historyStore->remove(historyFilePath);
 
-  File f = historyStore->open(historyFilePath, "w");
+  File f = openIfHeapAllows(historyStore, historyFilePath, "w", kFsGuardAlreadyAdmitted);
   if (!f) {
     static unsigned long sWarnOpenMs = 0;
     unsigned long nowMs = millis();
@@ -578,14 +693,31 @@ void HistoryManager::saveToFile() {
 
 void HistoryManager::loadFromFile() {
   if (!historyEnabled) return;
-  if (!historyStore->exists(historyFilePath)) {
-    systemLogger.info("Aucun historique existant");
+
+  // bug-100 / ADR-0070 — CLASSE B (5 120), tripwire de boot.
+  if (!fsGuardAdmit(kInternalFopenMinAllocBytes)) {
+    sHistoryFopenDeferrals.fetch_add(1, std::memory_order_relaxed);
+    systemLogger.warning("Memoire insuffisante pour charger l'historique — "
+                         "historique persistant desactive pour ce demarrage");
+    historyEnabled = false;
     return;
   }
 
-  File f = historyStore->open(historyFilePath, "r");
+  // L'exists() qui precedait a ete SUPPRIME : VFSImpl::exists() ne fait pas de
+  // stat(), il construit un VFSFileImpl — c'est-a-dire un fopen complet, verrou
+  // newlib compris. Il etait donc strictement redondant avec l'ouverture
+  // ci-dessous, tout en doublant l'exposition a l'abort(). C'est le site
+  // qu'aucun grep "open(" ne trouve (docs/subsystems/acces-fichiers.md).
+  File f = openIfHeapAllows(historyStore, historyFilePath, "r", kFsGuardAlreadyAdmitted);
   if (!f) {
-    systemLogger.error("Impossible de charger l'historique");
+    // Libellé volontairement NON DISCRIMINANT : sans l'exists() supprimé
+    // ci-dessus, « absent » et « illisible » ne se distinguent plus — et l'API
+    // fs:: n'offre aucun stat() pour les départager sans PAYER une seconde
+    // ouverture, c'est-à-dire sans réintroduire le site qu'on vient de fermer.
+    // On dit donc ce que l'on sait, ni plus ni moins. INFO et jamais ERROR :
+    // l'absence au premier boot est le cas nominal, et un ERROR flusherait le
+    // disque en synchrone.
+    systemLogger.info("Aucun historique exploitable (fichier absent ou illisible)");
     return;
   }
 

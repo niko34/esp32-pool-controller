@@ -1226,3 +1226,55 @@ brute » par [ADR-0058](../../../docs/adr/0058-gardes-heap-metrique-8-bits.md) :
 **ce n'est pas du rapport, c'est une garde aveugle** — ces valeurs alimentent
 `oomTlsGateReason()`, un prédicat qui **refuse la requête en 503**. Spec ouverte :
 `specs/features/todo/bug-108-garde-tls-ota-sur-metrique-ira-inclusive.md`.
+
+---
+
+## Ajout du 2026-09-06 (cycle 2 de `bug-100`, v2.43.0) — le chemin frère est FERMÉ
+
+*Ajout, pas réécriture : rien de ce qui précède n'est retiré.*
+
+### Ce que ce cycle ferme
+
+Le cycle 2 de [`bug-100`](../done/bug-100-abort-sur-fopen-de-l-historique.md)
+**implémente** l'[ADR-0070](../../../docs/adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) :
+les **13 sites** internes restants (14 recensés, moins l'`exists()` **supprimé**)
+passent par un **point d'admission unique**, `src/fs_guard.cpp`. Un contrôle CI
+(`tools/check_fopen_guard.sh`, job `fopen-guard`) échoue si un autre fichier de
+`src/` ouvre un fichier lui-même.
+
+Conséquence directe sur ce que **cette** spec avait consigné :
+
+| Constat de `bug-080` | État au 2026-09-06 |
+|---|---|
+| « Le lot B-3 ne couvre qu'un chemin `fopen` sur au moins trois » | **Compté et fermé** : B-3 ferme le service de fichiers statiques, `bug-100` ferme les 13 sites internes |
+| « `flushToDisk()` est lui-même un `fopen` abort-prone, non couvrable par un 503 — lot ultérieur » (l. 969-981) | **Fermé** : les 7 ouvertures du journal sont gardées, une mesure par flush |
+| « `/download-logs` exempt par l'ordre d'enregistrement » | **Exemption conservée** (l'appareil doit rester observable en famine) ; la route garde désormais son `fopen` **de l'intérieur** et annonce sa troncature |
+| « `POST /history/import` hors matcher, atteint `saveToFile()` depuis `async_tcp` » | **Fermé** : les deux admissions de `saveToFile()` sont de **classe A** précisément pour ce chemin |
+
+### ⚠️ Le critère « 7 jours sans redémarrage inopiné » RESTE OUVERT
+
+**Il ne peut pas être clos par ce cycle**, et ce n'est pas une réserve de forme :
+
+1. **Aucun déploiement n'a eu lieu.** L'appareil est joignable (192.168.1.48),
+   mais le flash de la v2.43.0 est une **décision humaine** qui n'a pas été
+   prise. Le firmware qui tourne est celui qui crashait.
+2. **Un compteur de disponibilité se mesure sur du matériel, pas sur des tests.**
+   `bug-100` livre une défense **argumentée et testée en logique pure** (34 cas,
+   1 325 tests natifs) ; il ne **prouve** pas la disparition du crash en
+   production.
+3. Le compteur repart donc **toujours** du **05/09 ~14:16**, dernier redémarrage
+   inopiné connu — et ne repartira du déploiement de la v2.43.0 que lorsque ce
+   déploiement aura eu lieu.
+
+**Ce qu'il faudrait pour le clore** : déployer la v2.43.0, puis relever pendant
+7 jours **`/coredump/info`** (et non l'`uptime` seul — c'est la leçon de
+`bug-100` : deux redémarrages du 05/09 étaient passés inaperçus dans les relevés
+d'`uptime`) et les compteurs **`hdef` / `ldef` / `xdef`** du payload retenu
+`<base>/diagnostic`. Une valeur non nulle de ces compteurs **sans** redémarrage
+serait la démonstration que la garde a mordu et fait son travail.
+
+### Le lot C reste non ouvert
+
+`bug-100` traite la **conséquence** (l'`abort()` sur `fopen`), pas la **cause**
+(la fragmentation du tas qui produit la famine). Le lot C — cause de la
+fragmentation — n'est **pas** ouvert par ce cycle.

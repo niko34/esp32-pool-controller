@@ -22,6 +22,13 @@ struct LogEntry {
   String message;
 };
 
+/**
+ * @brief Nombre de flushs de journal refusés pour FAMINE MÉMOIRE depuis le boot
+ *        (bug-100, ADR-0070). Les lignes ne sont pas perdues : le buffer est
+ *        réinséré et la tentative reportée au prochain `kFlushIntervalMs`.
+ */
+uint32_t loggerFopenDeferralCount();
+
 class Logger {
 private:
   static const size_t MAX_LOGS = kMaxLogEntries;

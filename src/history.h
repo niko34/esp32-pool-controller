@@ -111,4 +111,15 @@ public:
 
 extern HistoryManager history;
 
+/**
+ * @brief Nombre de sauvegardes/chargements d'historique refusés pour FAMINE
+ *        MÉMOIRE depuis le boot (bug-100, ADR-0070).
+ *
+ * ⚠️ À ne pas confondre avec le compteur NVS `kHistoryNospcCountNvsKey`, qui
+ * compte les refus d'admission d'ESPACE (« partition pleine », ADR-0033). Les
+ * deux pannes ont des causes et des remèdes différents : elles restent
+ * discernables, dans le journal comme dans le payload `<base>/diagnostic`.
+ */
+uint32_t historyFopenDeferralCount();
+
 #endif // HISTORY_H

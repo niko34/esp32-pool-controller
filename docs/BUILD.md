@@ -173,14 +173,16 @@ Le script local applique **la même garde de seuil que la CI** (`--fail-under-li
 | Lignes | **100 % (1810/1810)** |
 | Fonctions | **100 % (161/161)** |
 | Branches | **86,8 %** |
-| Suites (`test/test_*`) | **33** |
-| Cas de test (`pio test -e native`) | **1291** |
+| Suites (`test/test_*`) | **34** (33 à la mesure du 06/09 + `test_native_fopen_guard`) |
+| Cas de test (`pio test -e native`) | **1325** (1291 à la mesure + **34** cas `fopen_guard`) |
 
 Référence d'avant le cycle, mesurée sur **2 modules seulement** : lignes 99,8 %, branches 86,5 %. L'élargissement du filtre a révélé 4 lignes non couvertes jusque-là **invisibles**, dont une garde de sécurité chimique (`pulse_dosing_logic`).
 
 Le seuil de 90 % de lignes est un **plancher de non-régression**, pas un objectif. **Aucun seuil de branches n'est posé** : les 13,2 % restants sont des demi-branches défensives, dont plusieurs sont inatteignables par entrée réaliste (motifs écrits dans les tests concernés). Les relever serait une décision séparée.
 
 > **Portée** : seules les **classes pures** sont mesurées. La coquille `pump_controller.cpp` (collecte des globals + mapping énum→chaîne) est **exclue du build natif** — son équivalence est validée par revue, pas par couverture. Voir [ADR-0017](adr/0017-logique-metier-pure-humble-object-testabilite.md).
+
+> **Deuxième limite assumée (2026-09-06, `bug-100` cycle 2)** : **trois mutants de `history.cpp` ne sont pas tués** — le tripwire de boot, le tripwire de `loadFromFile()` et la seconde admission de `saveToFile()`. Ils vivent dans la **coquille**, hors du `build_src_filter` natif : c'est la frontière de l'[ADR-0017](adr/0017-logique-metier-pure-humble-object-testabilite.md), pas un oubli. Les **prédicats** qu'ils invoquent sont couverts et tuent leurs mutants. Lever la dette exigerait un double de `fs::FS` en natif, ou l'extraction des trois séquences en fonctions pures — voir [`docs/subsystems/acces-fichiers.md` § Dette de test assumée](subsystems/acces-fichiers.md#-dette-de-test-assumée--trois-mutants-non-tués).
 
 > **Limite assumée et datée (2026-09-06, feature-105)** : le chemin d'échec de `ledcAttachChannel` (`pump_controller.cpp`, qui pose `pumpUsable[i] = false`) reste **non mesuré et non testé — c'est un choix**, pas un constat ouvert. Le tester exigerait d'introduire un point de couture dans un fichier de sécurité chimique, au seul bénéfice d'une branche de deux lignes déjà relue par `pool-chemistry` **et** par `code-reviewer` (feature-102) ; `pool-chemistry` l'a qualifié de recommandation **non bloquante**. S'il devait être levé, la voie serait l'extraction d'un module pur au sens de l'[ADR-0017](adr/0017-logique-metier-pure-humble-object-testabilite.md), dans une spec dédiée — pas un ajout de test opportuniste.
 
@@ -196,7 +198,7 @@ Les tests natifs ne couvrent que la **logique pure**. L'**intégration matériel
 |---|---|---|---|
 | [`tests-natifs.yml`](../.github/workflows/tests-natifs.yml) | `pio test -e native`, puis couverture `gcovr` avec seuil **lignes ≥ 90 %** sur **tout `src/`** (filtre identique à `tools/coverage.sh`, cf. [Couverture de tests](#couverture-de-tests)) ; rapport HTML publié en artefact | push `main` + PR, **sans** filtre de chemins | env `native` seul (quelques Mo) |
 | [`build-firmware.yml`](../.github/workflows/build-firmware.yml) *(feature-103, 2026-09-06)* | **`pio run -e esp32dev_core3`** — la compilation du firmware. Étape informative supplémentaire : sections du binaire (`xtensa-esp32-elf-size`), `continue-on-error` | push `main` + PR, **avec** filtre de chemins (voir plus bas) | toolchain pioarduino ≈ **2 Go**, mise en cache |
-| [`hygiene-specs.yml`](../.github/workflows/hygiene-specs.yml) *(feature-103, 2026-09-06)* | [`tools/check_specs.sh`](../tools/check_specs.sh) — un nom de spec ne vit que dans **un seul** des dossiers `todo/` · `doing/` · `done/` | push `main` + PR, **sans** filtre de chemins | ~1 s, ni Python, ni PlatformIO, ni cache |
+| [`hygiene-specs.yml`](../.github/workflows/hygiene-specs.yml) — **« Hygiène du dépôt »** *(feature-103, 2026-09-06 ; renommé et élargi par `bug-100` cycle 2)* | **Deux jobs indépendants** : `unicite` → [`tools/check_specs.sh`](../tools/check_specs.sh) (un nom de spec ne vit que dans **un seul** des dossiers `todo/` · `doing/` · `done/`) ; `fopen-guard` → [`tools/check_fopen_guard.sh`](../tools/check_fopen_guard.sh) (aucun fichier de `src/` autre que `fs_guard.cpp` n'appelle `open(` / `exists(` / `openNextFile(`, [ADR-0070](adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)) | push `main` + PR, **sans** filtre de chemins | ~1 s chacun, ni Python, ni PlatformIO, ni cache |
 
 Les trois ont un groupe de `concurrency` propre avec `cancel-in-progress` : un nouveau push annule le run précédent sur la même réf.
 
@@ -218,6 +220,29 @@ Deux règles, de sévérité différente :
 
 1. **BLOQUANTE (sortie 1)** — un nom de fichier de spec présent dans plusieurs des trois dossiers. Le script liste les noms fautifs **et** leurs dossiers. Le cycle `todo/` → `doing/` → `done/` procède par **déplacement** (`git mv`) : une spec copiée, ce sont deux versions qui divergent et deux statuts qui se contredisent.
 2. **AVERTISSEMENT (n'échoue pas)** — un même **numéro** porté par deux slugs différents. Non bloquant à dessein : corriger peut exiger de **renuméroter une spec close**, donc de réécrire de l'historique.
+
+### `./tools/check_fopen_guard.sh` — le point d'admission unique reste unique
+
+```bash
+./tools/check_fopen_guard.sh    # sortie 0 si conforme, 1 sinon
+```
+
+Échoue si un `.cpp`/`.h` de `src/` **autre que `fs_guard.cpp`** appelle `open(`,
+`exists(` ou `openNextFile(` — les trois construisent un `VFSFileImpl`, donc un
+`fopen` complet, verrou newlib compris. Sur ESP32, l'échec du `malloc` de ce
+verrou **aborte sans code de retour** : deux crashs de production viennent de là.
+
+⛔ **Deux trous que ce contrôle ne peut pas fermer**, documentés dans l'entête du
+script plutôt que passés sous silence :
+
+1. `grep` travaille **ligne à ligne** — une coupure après le `->` ou le `.`
+   (formatage d'un appel long) échappe au motif ;
+2. toute API du framework construisant un `VFSFileImpl` **sous un autre nom**
+   passe.
+
+C'est pourquoi le recensement de
+[`docs/subsystems/acces-fichiers.md`](subsystems/acces-fichiers.md) reste tenu
+**à la main**. Le script tient l'**ordre** ; le document tient la **liste**.
 
 > Premier cas réel, signalé par le script dès sa mise en service : `feature-067` désignait à la fois `todo/feature-067-etude-portage-esp32-s3.md` et `done/feature-067-offset-mesure-ph.md`. **Résolu par `feature-105`** (2026-09-06) : c'est l'**étude** qui a été renumérotée en `feature-104`, avec une bannière expliquant le motif — rien ne la référençait, alors que `feature-067-offset-mesure-ph` est citée par `CHANGELOG.md`, `data/app.js`, `src/main.cpp`, `src/constants.h` et `src/web_routes_debug.cpp`. Le script sort désormais **0 sans avertissement**.
 

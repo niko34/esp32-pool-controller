@@ -655,6 +655,15 @@ Limites assumées de l'export (best-effort, route de diagnostic) :
 
 - Lignes formatées > **256 octets** (`kLogExportLineMaxBytes`) tronquées avec suffixe « … ».
 - Le ring RAM peut tourner entre deux chunks (doublon ou saut d'entrée possibles) ; un timeout du mutex logger termine la section RAM sans erreur.
+- **Sous famine mémoire, l'export peut être TRONQUÉ — et il le dit** (v2.43.0, [ADR-0070](adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)). L'ouverture de `/system.log` est désormais gardée : si la mémoire ne permet pas de l'ouvrir, la route **répond toujours 200** et sert la session courante seule, précédée d'un en-tête explicite au lieu du `# === Historique persistant ===` habituel :
+
+  ```
+  # === Historique persistant INDISPONIBLE ===
+  # (fichier absent, ou memoire insuffisante pour l'ouvrir :
+  #  export TRONQUE a la session courante)
+  ```
+
+  Le repli existait déjà, mais il était **silencieux** — rien ne distinguait un export complet d'un export amputé. Le compteur MQTT [`xdef`](MQTT.md#hdef--ldef--xdef--refus-daccès-fichier-pour-famine-mémoire-v2430) recense ces exports tronqués. ⚠️ Un fichier **absent** produit le même en-tête qu'un **refus** : les deux ne sont pas distinguables côté route.
 
 ---
 

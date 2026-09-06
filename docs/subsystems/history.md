@@ -145,6 +145,125 @@ C'est l'information la plus importante de cette page, et la moins intuitive. Un 
 
 Conséquence réelle : **l'historique cesse simplement d'être persisté**, et personne ne s'en aperçoit — la perte n'apparaît qu'au **reboot suivant**, sous la forme d'un historique tronqué à la dernière sauvegarde réussie. C'est pourquoi toute spec qui ajoute un champ au point persisté doit **chiffrer** l'occupation résultante (et non l'estimer), et pourquoi le critère d'acceptation « aucun WARNING *Partition history pleine* après 24 h » est **bloquant**. Le compteur cumulé `nospc_cnt` et l'epoch du dernier save réussi (`last_ok`) sont persistés en NVS `hist_meta` — ce sont eux qui permettent de constater a posteriori qu'on a franchi la ligne.
 
+## Sauvegarde `saveToFile()` — garde MÉMOIRE (v2.43.0, bug-100 / [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md))
+
+La garde d'espace ci-dessus protège d'une **partition pleine**. Celle-ci protège
+d'une **famine mémoire**, qui est une panne **différente** et bien plus brutale :
+sur ESP32, `fopen()` fait allouer à newlib un verrou récursif de **92 o** ; si ce
+`malloc` échoue, `lock_init_generic` appelle **`abort()`** — il n'y a **aucun
+code de retour à tester**. C'est le PANIC de production du **05/09/2026**,
+`loopTask`, sur `open("/history.json", "r")`.
+
+Depuis la v2.43.0, aucune ouverture de fichier de `history.cpp` n'est tentée sans
+admission préalable. Recensement complet et règles :
+[`acces-fichiers.md`](acces-fichiers.md).
+
+### Deux admissions dans `saveToFile()`, et aucune n'est redondante
+
+| # | Emplacement | Seuil | Ce qu'elle protège |
+|---|---|---|---|
+| 1 | **tête** de `saveToFile()` ([`history.cpp:532`](../../src/history.cpp:532)) | `kStaticFileMinAllocBytes` = **8 192** (classe A) | évite de **payer** la sérialisation en famine ; couvre la **non-atomicité** (le `remove()` précède l'`open("w")` : une garde sur l'ouverture échangerait l'`abort()` contre la **destruction** du fichier) ; précède la lecture d'`oldSize`, que `historySaveAdmit()` consomme |
+| 2 | **après `measureJson()`** ([`history.cpp:591`](../../src/history.cpp:591)) | idem | garantit que la mesure qui **autorise le `fopen`** est **postérieure au pic d'allocation** |
+
+> ⚠️ **La leçon à retenir de ce correctif.** La première version ne posait que la
+> garde nº 1 — et elle était **insuffisante**. Entre l'admission en tête de
+> fonction et le `fopen`, `saveToFile()` construit le `JsonDocument` et ses
+> `String` : **elle dépense la marge qu'elle vient de valider.** L'ouverture
+> s'exécutait donc sur une mesure **devenue fausse**, c'est-à-dire sur une
+> **autorisation périmée** — exactement ce que l'asymétrie mesure/décision existe
+> pour interdire. Règle générale :
+> [acces-fichiers.md § Piège de placement nº 2](acces-fichiers.md#-piège-de-placement-nº-2--avant-louverture-ne-suffit-pas--il-faut-avant-le-pic-dallocation).
+
+**Classe A et non B** : ce chemin est atteignable depuis `POST /history/import`
+(→ `importData()` → `saveToFile()`) sur la tâche `async_tcp`, donc avec des pbuf
+lwip en vol.
+
+**Une fois admis**, les deux ouvertures (`open("r")` pour `oldSize`,
+`open("w")` pour l'écriture) passent par le helper avec
+`kFsGuardAlreadyAdmitted` : **une** mesure du tas pour la sauvegarde entière.
+
+### Report, retentative, et jamais de silence
+
+Sur refus : **rien n'est touché sur le filesystem**, `saveToFile()` retourne, et
+la sauvegarde est **retentée au prochain cycle `SAVE_INTERVAL`, dans 5 min**.
+C'est un report, pas une perte : l'historique vit en RAM (`memoryBuffer`), l'UI
+continue de l'afficher.
+
+Observabilité, dans l'ordre de fiabilité décroissante :
+
+| Canal | Contenu | Durabilité |
+|---|---|---|
+| Compteur **`hdef`** | refus cumulés (sauvegardes + tripwires) dans le topic **retenu** `<base>/diagnostic` | **survit au reboot** |
+| **WARN throttlé 1/h** | `Famine memoire : sauvegarde de l'historique sautee (maxBloc8=X o < 8192 o) — nouvelle tentative dans 5 min` — variante `Famine memoire apres serialisation : …` pour la garde nº 2 | bornée (`_persistBuffer` = 100 entrées FIFO) |
+
+**Jamais `ERROR`, jamais `CRITICAL`** : un `ERROR` déclencherait le flush disque
+synchrone du logger, donc un `fopen`, donc l'`abort()` qu'on prévient.
+
+Si le refus a été servi par le **cache du refus** (aucune mesure prise), le
+message le dit — `maxBloc8 non mesure (refus en cache) < 8192 o` — au lieu
+d'afficher un chiffre périmé comme s'il datait de l'instant.
+
+⚠️ **`hdef` et `nospc_cnt` ne se remplacent pas** : « partition pleine » et
+« famine mémoire » sont deux pannes distinctes, avec deux libellés distincts.
+Les confondre ferait chercher de l'espace disque pendant une pénurie de RAM.
+
+### Tripwire de boot — classe B, seuil 5 120
+
+Au démarrage, **« reporter » n'a pas de sens** : il n'y a pas de plus tard. Deux
+sites de `begin()`/`loadFromFile()` basculent donc sur un **tripwire** au lieu
+d'un report, sur le **7ᵉ barreau** `kInternalFopenMinAllocBytes` = **5 120**
+(l'absence de contention TCP est prouvée par l'ordre de `setup()` :
+`history.begin()` à `main.cpp:270` précède `mqttManager.begin()` 300 et
+`webServer.begin()` 316) :
+
+| Site | Sous le seuil |
+|---|---|
+| [`history.cpp:316`](../../src/history.cpp:316) — avant le test d'intégrité `/.fscheck` | `historyEnabled = false` pour ce boot, `writeHistoryCrashCount(0)` (sortie **propre**, le drapeau du disjoncteur est levé) |
+| [`history.cpp:698`](../../src/history.cpp:698) — avant le chargement de `/history.json` | `historyEnabled = false` pour ce boot |
+
+**Conséquence utilisateur** : entre 4 096 (auto-guérison) et 5 120, **l'appareil
+démarre sans historique persistant mais en dosant**. C'est un gain de
+disponibilité de la régulation, pas un confort — l'alternative était l'`abort()`,
+donc un boot loop.
+
+Le tripwire **incrémente `hdef`** : c'est la dégradation la plus sévère du lot,
+elle doit être visible dans le canal **retenu**, qui survit au reboot. Son WARN,
+lui, sort par le haut du `_persistBuffer` sous famine prolongée.
+
+> ⚠️ **L'observabilité ne doit pas dépendre du sous-système qu'elle garde.** Sous
+> le tripwire de `begin()`, le montage a **réussi** — ce n'est pas la partition
+> qui manque, c'est la mémoire. `setPersistenceFs(&historyFs)` est donc appelé
+> **avant** de sortir : on ne perd que l'historique, **pas le journal persistant
+> du boot entier**. L'appel est lui-même gardé (classe A) : sous le seuil il
+> échoue proprement.
+
+### `loadFromFile()` — l'`exists()` a été supprimé, pas gardé
+
+`loadFromFile()` appelait `historyStore->exists()` **juste avant** d'ouvrir le
+même fichier. Or `VFSImpl::exists()` **ne fait pas de `stat()`** : il construit un
+`VFSFileImpl(this, fpath, "r")`, donc un `fopen` complet. L'appel était
+**strictement redondant** tout en **doublant** l'exposition à l'`abort()` — il a
+été supprimé.
+
+⚠️ **Perte de distinction assumée** : « fichier absent » (cas nominal au premier
+boot) et « fichier illisible » ne sont **plus discernables**, l'API `fs::`
+n'offrant aucun `stat()` pour les départager sans réintroduire le site fermé. Le
+libellé est rendu **explicitement non discriminant**, en `INFO` :
+
+```
+Aucun historique exploitable (fichier absent ou illisible)
+```
+
+### La mesure a lieu **sous `_mutex` tenu**, et c'est accepté
+
+`saveToFile()` est appelée avec `_mutex` tenu depuis `consolidateData()` **et**
+depuis `importData()` — ce n'est pas un cas de bord évitable. Un parcours TLSF
+coûte ~10² µs contre 10¹-10² ms pour l'écriture LittleFS **déjà payée sous ce
+même verrou** ; le coût réel (« interruptions coupées ») est **identique** avec
+ou sans mutex ; et le verrou du tas est **terminal**, donc aucune inversion de
+priorité n'est possible. Détail de l'argument :
+[acces-fichiers.md](acces-fichiers.md#la-mesure-sous-mutex-tenu-est-acceptée-et-cest-un-constat-mesuré).
+
 ## Mesure lissée historisée (feature-095, v2.38.0)
 
 `recordDataPoint()` enregistre, en plus du brut (`ph` = brut + offset, `orp` = brut), la mesure **lissée** pH/ORP (`sensors.getPhFiltered()` / `getOrpFiltered()`) — **les mêmes accesseurs que `/data`**, donc exactement la valeur sur laquelle la régulation a décidé à l'instant de l'enregistrement.
@@ -269,6 +388,16 @@ bool importData(const std::vector<DataPoint>& dataPoints);
 bool clearHistory();   // false si le mutex n'a pas pu être pris (historique occupé) — v2.11.1
 ```
 
+Fonction libre (`history.h`, v2.43.0, bug-100) :
+
+```cpp
+// Refus d'ouverture de fichier pour FAMINE MÉMOIRE, cumulés depuis le boot :
+// sauvegardes sautées + tripwires de boot. Publié en `hdef` dans le payload
+// RETENU <base>/diagnostic. ⚠️ DISTINCT de nospc_cnt (« partition pleine ») :
+// deux pannes différentes, deux compteurs.
+uint32_t historyFopenDeferralCount();
+```
+
 ## Export chunked `/get-history` (v2.14.0, refondu v2.18.2)
 
 Jusqu'en v2.13.x, `/get-history` copiait **tout** le buffer (`getLastHours`/`getAllData`) puis concaténait la réponse dans une `String` contiguë pré-réservée (~40 Ko épinglés pendant tout le transfert à chaque ouverture du dashboard) — **générateur de fond n°3 (G3)** de la fragmentation heap identifié par l'investigation churn-heap du 24/07. Depuis la v2.14.0, la route est **chunked** ([ADR-0032 §Extension 2026-07-30](../adr/0032-reponses-http-bornees.md#extension-2026-07-30--get-history-chunked-et-filet-ws-v2140), patron `/download-logs`) ; depuis la v2.18.2, elle streame depuis un **instantané figé** :
@@ -383,9 +512,18 @@ Si **toute** étape échoue (`open` retourne null, `print` retourne ≠ 2 octets
 
 > Cette validation s'exécute **après** le test de redimensionnement de partition décrit ci-dessus. Les deux mécanismes sont indépendants : le premier détecte un changement de géométrie matérielle, le second détecte une corruption logique du filesystem monté avec succès.
 
+> ⚠️ **Depuis la v2.43.0, cette validation elle-même est gardée** : les deux
+> ouvertures de `/.fscheck` sont précédées d'une admission classe B
+> ([`history.cpp:316`](../../src/history.cpp:316), seuil 5 120). Sous le seuil,
+> le test n'est **pas** exécuté et `historyEnabled` passe à `false` pour ce boot
+> — on ne conclut **pas** à une corruption faute de mémoire, et on ne reformate
+> donc **pas** une partition saine. Cf. [Tripwire de boot](#tripwire-de-boot--classe-b-seuil-5-120).
+
 ## Cas limites
 
 - **Partition pleine** : écriture impossible → log ERROR, `historyEnabled` peut être basculé à `false` manuellement depuis l'UI Avancé.
+- **Famine mémoire en fonctionnement** (v2.43.0) : sauvegarde **reportée** de 5 min, ancien fichier intact, `hdef` incrémenté, WARN throttlé 1/h. Jamais d'`abort()`.
+- **Famine mémoire au boot** (v2.43.0) : `historyEnabled = false` pour ce boot — l'appareil **démarre sans historique persistant mais en dosant**. Le journal persistant, lui, reste armé.
 - **Migration d'une ancienne version** : `migrateLegacyHistory()` lit les fichiers au format précédent si `legacyHistoryPending = true`.
 - **Boot sans heure** : les points sont enregistrés avec un timestamp uptime, corrigés à la synchro NTP.
 - **Import d'un CSV malformé** : ligne rejetée individuellement, le reste est importé.
@@ -398,6 +536,9 @@ Si **toute** étape échoue (`open` retourne null, `print` retourne ≠ 2 octets
 - [`src/history_logic.h`](../../src/history_logic.h), [`src/history_logic.cpp`](../../src/history_logic.cpp) — math d'agrégation pure
 - [`src/history_export_chunk.h`](../../src/history_export_chunk.h) — logique pure de l'export chunked `/get-history` (v2.14.0) ; carry partagé avec [`src/logs_export_chunk.h`](../../src/logs_export_chunk.h)
 - [ADR-0064](../adr/0064-la-courbe-suit-le-nombre-affiche.md) — la mesure lissée est la référence des courbes 5 min ; lissée non historisée sur les agrégats (feature-095)
+- [`src/fs_guard.h`](../../src/fs_guard.h), [`src/fopen_guard_logic.h`](../../src/fopen_guard_logic.h) — point d'admission unique des `fopen` internes (v2.43.0)
+- [acces-fichiers.md](acces-fichiers.md) — recensement des 13 sites, classes de contention, pièges de placement
+- [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) — garde mémoire avant tout `fopen` interne, classes A/B, tripwire de boot
 - [ADR-0033](../adr/0033-budget-espace-partition-history.md) — budget d'espace de la partition `history` (garde d'admission)
 - [ADR-0009](../adr/0009-partition-coredump.md) — table de partitions courante
 - [ADR-0007](../adr/0007-table-partitions-custom.md) — supersedé

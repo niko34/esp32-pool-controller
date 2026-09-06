@@ -15,11 +15,22 @@
 #include "history.h"
 #include "history_export_chunk.h"
 #include "heap_metrics.h"  // heapLargestFreeBlock8Bit — garde heap /get-logs (bug-080)
+#include "fs_guard.h"     // bug-100 : point d'admission unique des fopen internes (ADR-0070)
 #include "json_compat.h"
 #include <AsyncJson.h>
 #include <time.h>
 #include <memory>
 #include <stdarg.h>  // va_list (historyCarryLoadf)
+#include <atomic>
+
+// bug-100 : ouvertures du journal persistant refusées pour famine mémoire
+// (GET /download-logs, tâche async_tcp). L'export est alors TRONQUÉ à la
+// session courante, et le dit dans le fichier téléchargé.
+static std::atomic<uint32_t> sLogsExportFopenDeferrals{0};
+
+uint32_t logsExportFopenDeferralCount() {
+  return sLogsExportFopenDeferrals.load(std::memory_order_relaxed);
+}
 
 // Signal réseau secondaire (v2.9.2, défini dans main.cpp) : /data est polled toutes
 // les ~30 s par l'appli web → une requête servie prouve la pile HTTP vivante et
@@ -613,14 +624,33 @@ static void handleDownloadLogs(AsyncWebServerRequest* request) {
             break;
           }
           case LogsDownloadState::kFileOpen: {
-            // Ouverture paresseuse du journal persistant (boots précédents)
+            // Ouverture paresseuse du journal persistant (boots précédents).
+            // bug-100 / ADR-0070 — CLASSE A (8 192) : on est sur `async_tcp`,
+            // une réponse chunked est en vol, donc des pbuf lwip aussi. Le repli
+            // existait déjà (→ kRamHeader = journal RAM seul) mais il était
+            // SILENCIEUX : l'export ne disait pas qu'il était tronqué. Il le dit
+            // désormais dans le fichier téléchargé — c'est là que le lecteur est.
             fs::FS* pfs = systemLogger.getPersistenceFs();
-            if (pfs) st->file = pfs->open("/system.log", "r");
+            if (pfs) {
+              st->file = openIfHeapAllows(pfs, "/system.log", "r",
+                                          kStaticFileMinAllocBytes);
+            }
             if (st->file && st->file.size() > 0) {
               logsCarryLoad(st->carry, "\n# === Historique persistant ===\n");
               st->phase = LogsDownloadState::kFileData;
             } else {
-              if (st->file) st->file.close();
+              if (st->file) {
+                st->file.close();
+              } else if (pfs) {
+                // Ni fichier absent ni fichier vide ne se distinguent d'un refus
+                // ici : on annonce la troncature possible plutôt que de laisser
+                // croire à un journal complet.
+                sLogsExportFopenDeferrals.fetch_add(1, std::memory_order_relaxed);
+                logsCarryLoad(st->carry,
+                              "\n# === Historique persistant INDISPONIBLE ===\n"
+                              "# (fichier absent, ou memoire insuffisante pour l'ouvrir :\n"
+                              "#  export TRONQUE a la session courante)\n");
+              }
               st->phase = LogsDownloadState::kRamHeader;
             }
             break;

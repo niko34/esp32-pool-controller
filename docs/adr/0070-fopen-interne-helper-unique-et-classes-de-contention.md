@@ -5,6 +5,14 @@
 - **Décideurs** : `architect` (stratégie + preuve binaire, révisée après réfutation), `spec-reader` (recensement), `pool-chemistry` — **GO au 2ᵉ passage**, conditions **C1-C6 levées**
 - **Spec(s) liée(s)** : `bug-100-abort-sur-fopen-de-l-historique` (cycle 1), `bug-080-redemarrage-panic-et-fragmentation-heap` (parent, lot B-3)
 
+> 📋 **Amendement du 2026-09-06 (cycle 2 de `bug-100`, v2.43.0 — implémentation)** : cet ADR reste **Accepté** et son corps est **inchangé**. Deux faits s'y ajoutent, que l'implémentation a établis et que le §d ne dit pas.
+>
+> **1. Le §d est nécessaire mais NON SUFFISANT.** Il pose que « la garde va au point d'ADMISSION, pas d'ouverture », et localise ce point en **tête de `saveToFile()`**. La revue du cycle 2 a établi qu'**une garde placée avant l'ouverture ne suffit pas : il faut la placer avant le PIC D'ALLOCATION du chemin**. Entre l'admission en tête de fonction et le `fopen`, `saveToFile()` construit le `JsonDocument` de l'historique et ses `String` — elle **dépense la marge qu'elle vient de valider**. L'ouverture s'exécutait donc sur une mesure devenue fausse, c'est-à-dire sur une **autorisation périmée** : exactement ce que l'asymétrie du §e existe pour interdire. D'où une **seconde admission**, après `measureJson()` et toujours avant le `remove()`. Le §d n'est pas contredit — il est **complété** : les deux gardes sont nécessaires et non redondantes. La règle générale et son tableau de placement vivent dans [`docs/subsystems/acces-fichiers.md` § Piège de placement nº 2](../subsystems/acces-fichiers.md#-piège-de-placement-nº-2--avant-louverture-ne-suffit-pas--il-faut-avant-le-pic-dallocation), lieu **vivant** où un futur auteur de garde ira les lire ; cette bannière n'existe que pour empêcher qu'on implémente le §d à la lettre en croyant avoir fini.
+>
+> **2. Le compte passe de 14 à 13 sites.** Le 14ᵉ — l'`exists()` de `history.cpp`, le site qu'aucun `grep` ne trouvait — a été **supprimé** et non gardé : il était strictement redondant avec l'ouverture en lecture qui le suivait. Contrepartie **assumée** : `loadFromFile()` ne distingue plus « absent » d'« illisible », l'API `fs::` n'offrant aucun `stat()` pour les départager sans réintroduire le site fermé. Le libellé est rendu explicitement non discriminant.
+>
+> **Statut du code** : livré, compilé (flash 49,0 %, +3 312 o), testé en logique pure (34 cas, 1 325 tests natifs), contrôlé en CI (`tools/check_fopen_guard.sh`). ⚠️ **NON validé sur matériel** — aucun déploiement n'a eu lieu.
+
 ## Contexte
 
 ### Le crash, daté au SHA256

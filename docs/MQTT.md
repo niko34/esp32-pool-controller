@@ -267,9 +267,39 @@ Topic : `{base}/diagnostic` — publié au démarrage et à chaque reconnexion.
   "filtration_mode": "auto",
   "ph_target": 7.2,
   "orp_target": 700.0,
-  "firmware_version": "1.0.3"
+  "firmware_version": "1.0.3",
+  "hdef": 0,
+  "ldef": 0,
+  "xdef": 0
 }
 ```
+
+> ℹ️ Charge utile **non exhaustive** : d'autres champs de diagnostic interne
+> (p. ex. `mqtt_task_stack_hwm`) peuvent être présents. Ne pas supposer un
+> ensemble de clés fermé.
+
+### `hdef` / `ldef` / `xdef` — refus d'accès fichier pour famine mémoire (v2.43.0)
+
+Trois compteurs cumulés **depuis le démarrage**, ajoutés par
+[`bug-100`](subsystems/acces-fichiers.md) / [ADR-0070](adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md).
+Le topic étant **retenu**, ces valeurs **survivent à un redémarrage de
+l'intégrateur** — c'est délibéré : sous famine mémoire, le journal de bord de
+l'appareil, lui, ne survit pas.
+
+| Clé | Type | Signification |
+|---|---|---|
+| `hdef` | entier | Sauvegardes ou chargements d'**historique** refusés faute de mémoire. Inclut les **tripwires de boot** (démarrage sans historique persistant). |
+| `ldef` | entier | Flushs du **journal** vers le disque refusés. Les lignes sont **conservées en RAM** et le flush est **retenté** ; au-delà de 100 entrées en attente, les plus anciennes sont évincées. |
+| `xdef` | entier | Exports `GET /download-logs` servis **tronqués** (journal persistant non ouvrable) : la réponse ne contient alors que la session courante, et le dit. |
+
+**Valeur attendue en régime normal : `0`.** Une valeur non nulle signifie que
+l'appareil a **refusé une opération fichier au lieu de planter** — ce n'est pas
+une erreur à corriger dans l'intégration, c'est le symptôme d'une pénurie de RAM
+interne à instruire côté appareil.
+
+⚠️ **`hdef` ne remplace pas et ne recoupe pas le compteur « partition pleine »**
+(`nospc_cnt`, NVS) : famine **mémoire** et saturation **disque** sont deux pannes
+différentes.
 
 ---
 
