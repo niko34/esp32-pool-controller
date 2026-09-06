@@ -9,10 +9,8 @@ description: Cycle de vie d'une spec dans ESP32 Pool Controller (todo → doing 
 
 ```
 specs/
-  modele.md             # Template minimal (bug simple / refactor) — NE PAS modifier sans accord
-  modele_iteration.md   # Template de suivi d'itérations
   features/
-    _template.md        # Template OBLIGATOIRE pour toute nouvelle feature — NE PAS modifier sans accord
+    _template.md        # Template UNIQUE, obligatoire pour toute spec — NE PAS modifier sans accord
     todo/               # Specs à traiter, priorité par nom alphabétique ou horodatage
     doing/              # Spec en cours (idéalement une seule)
     done/               # Specs terminées et validées
@@ -45,9 +43,9 @@ features/todo/X.md ──(démarrage par orchestrator)──> features/doing/X.m
 3. Supprimer les sections optionnelles non pertinentes plutôt que les laisser vides
 4. Ne pas ajouter de sections « Notes techniques », « Statut » — elles seront ajoutées en cours de route
 
-### Bug simple ou refactor ponctuel (format minimal toléré)
+### Bug simple ou refactor ponctuel (template allégé)
 
-1. Copier `specs/modele.md` vers `specs/features/todo/bug-NNN-<slug>.md` (ou `refactor-NNN-<slug>.md`)
+1. Copier `specs/features/_template.md` vers `specs/features/todo/bug-NNN-<slug>.md` (ou `refactor-NNN-<slug>.md`) et supprimer les sections optionnelles non pertinentes — il n'existe pas de template minimal séparé (décision du 2026-09-06)
 2. Remplir type, description, contexte, comportement attendu/actuel, steps to reproduce (si bug), critères d'acceptation
 3. Si le bug touche la régulation/le dosage/la calibration : basculer sur le template feature complet pour que `pool-chemistry` soit déclenché
 

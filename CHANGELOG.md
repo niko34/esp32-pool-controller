@@ -2,6 +2,33 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.42.1] - 2026-09-06
+
+> ℹ️ **Aucun changement de comportement.** Le binaire est **fonctionnellement identique** à celui de la 2.42.0 : sections `text` / `data` / `bss` **inchangées à l'octet**, table des symboles identique (11 124 entrées, diff vide, adresses comprises). Les 77 octets d'écart du `.bin` sont tous imputés à l'horodatage de compilation, à la chaîne de version, au descripteur d'application et au SHA256 d'image. Rien à reconfigurer, aucune limite de sécurité touchée.
+>
+> ⚠️ **Un seul fait vous concerne : la procédure de retour arrière vers le core Arduino 2 disparaît.** Elle était publiée dans le guide de mise à jour et elle était **fausse** — l'environnement qu'elle invoquait ne compilait plus depuis la v2.40.0, et aucune image de secours n'avait jamais été archivée. Le retour arrière se fait désormais sur une **version antérieure du firmware** (image archivée ou asset de release), en OTA si l'appareil répond, par câble USB sinon.
+
+### Interne / maintenance
+
+- **Retrait définitif du repli core Arduino 2.x** ([ADR-0069](docs/adr/0069-retrait-repli-core-2.md), feature-102). Le projet n'a plus qu'un **environnement matériel**, `[env:esp32dev_core3]` (**non renommé**, `default_envs` conservé). Motifs cumulés : le repli n'était **plus compilable** depuis la v2.40.0 (`esp_cpu_get_cycle_count()` appelé hors garde dans `oom_guard.cpp`, resté invisible deux versions parce que la CI ne construit que l'env `native`), **plus flashable** (bootloader core 3 depuis la v2.20.4, machine de développement sans port série) et **sans image de secours** (aucun binaire core 2 n'a jamais été archivé — case ouverte de l'[ADR-0034](docs/adr/0034-migration-core3-idf5.md) jamais honorée). L'argument « marge flash » qui le justifiait est périmé depuis le layout v5 : **48,9 %** d'occupation, marge 1,82 Mo.
+- **Suppression des 8 gardes `#if ESP_ARDUINO_VERSION_MAJOR >= 3`** — `pump_controller.cpp` (6 sites) **et** `pump_controller.h`, `main.cpp`, `oom_guard.cpp`. Seule la branche core 3, **déjà la seule compilée depuis la v2.20.4**, subsiste. La garde `#if MBEDTLS_VERSION_NUMBER >= 0x03000000` d'`ota_integrity.cpp` est **conservée** : elle est indexée sur le contrat d'une bibliothèque tierce, pas sur l'environnement retiré. *(Rectification d'archive : l'entrée `[2.15.0]` de ce changelog et `docs/BUILD.md` annonçaient « 3 fichiers : `pump_controller.cpp`, `main.cpp`, `ota_integrity.cpp` » — la répartition réelle est celle ci-dessus.)*
+- **Durcissement de fait sur `isPumpUsable()`** : la branche « core 2 → retourne toujours `true` » disparaît. Une pompe n'est plus jamais réputée utilisable sans vérification, dans aucune configuration de build. L'alerte MQTT `pump_unusable` est **armée sans condition** (topic, charge utile et cadence inchangés). Gate `pool-chemistry` **GO** — durcissement unilatéral, échelle du duty (20 kHz / 8 bits, 0-255) strictement préservée.
+- **Fin du conflit de paquet `framework-arduinoespressif32`** : plus de `pio pkg install` à chaque bascule d'environnement — donc plus de réécriture de `platformio.ini` qui en supprimait les commentaires. ⚠️ La plateforme `espressif32@6.9.0` **reste installée** malgré tout : elle fournit `tool-mklittlefs`, absent de pioarduino 55.03.37 et référencé en dur par `build_fs.sh`. La désinstaller casserait la construction du filesystem.
+- `deploy.sh`, `ota_update.sh`, `tools/archive_build.py` et `tools/decode_coredump.sh` : exemples et justifications alignés sur l'environnement unique. Le **cloisonnement d'archivage par environnement** (`builds/<VERSION>/<PIOENV>/`) est **maintenu**. Aucune modification de la CI (elle ne construit aucun env matériel).
+
+### Documentation
+
+- `docs/adr/0069-retrait-repli-core-2.md` **[nouveau]** : les sept justifications chiffrées, les alternatives écartées (réparer `oom_guard`, garder un env non compilable « pour documentation », renommer `esp32dev_core3`), la décision de conserver la garde mbedtls, celle de ne pas désinstaller `espressif32@6.9.0`, et la **méthode de validation par équivalence binaire** — la validation par mutation étant inapplicable à des branches `#else` jamais compilées, et n'ayant pas été simulée.
+- [ADR-0042](docs/adr/0042-core3-environnement-par-defaut.md) et [ADR-0034](docs/adr/0034-migration-core3-idf5.md) : **bannières d'amendement** (clause de repli refermée ; phase code bi-core close, case « binaires de retour arrière archivés » close sans avoir été honorée). Corps des ADR inchangés.
+- `docs/UPDATE_GUIDE.md` : **suppression de la procédure de retour arrière core 2**, remplacée par ce qui fonctionne. Les avertissements « changer de bootloader = flash USB obligatoire » et « le filet `otadata` a disparu » sont **conservés et renforcés**.
+- `docs/BUILD.md` : environnement unique, tableau de marge flash, PSRAM, esptool 4/5, archivage, décodage de coredump et pièges connus mis à jour ; section « Conflit de paquet » retirée.
+- `docs/subsystems/pump-controller.md`, `docs/subsystems/mqtt-manager.md`, `docs/subsystems/ws-manager.md` : chemin PWM unique (invariant **20 kHz / 8 bits, échelle du duty inchangée** rendu explicite), `isPumpUsable()` sans branche fail-open, alerte `pump_unusable` non conditionnelle, requalification de la note « migration future vers ESP-IDF 5.x » (la migration a eu lieu ; la ré-isolation de `TCP_USER_TIMEOUT` reste une piste ouverte, hors périmètre).
+- `README.md` : environnement unique, et correction de la taille du filesystem annoncée (**512 Ko**, layout v5 — la valeur « 832 KB » était périmée).
+- `CLAUDE.md`, `.claude/skills/platformio-workflow/SKILL.md`, `.claude/commands/release.md`, `.claude/agents/{embedded-developer,debugger}.md` : plateforme, environnement, chemins d'ELF et compte des suites de tests réalignés sur l'état réel.
+- ✅ Documentation utilisateur (`docs/user/`) **non concernée** : aucune mention du core 2 ni de `esp32dev`. Aucun PDF à régénérer, aucune capture d'écran à refaire.
+
+---
+
 ## [2.42.0] - 2026-09-05
 
 > ⛔ **Mise à jour par câble USB obligatoire — l'OTA ne peut PAS installer cette version.** ⚠️ **L'historique des mesures est effacé : le sauvegarder AVANT le flash, appareil encore en ligne.** ✅ **En revanche toute la configuration est conservée** (consignes, calibrations, offset pH, taille de bassin, WiFi, mot de passe) : rien à reconfigurer.

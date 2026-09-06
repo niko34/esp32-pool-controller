@@ -37,9 +37,10 @@ voir apparaître dans `git status`, et ne cherche pas à les ajouter.
 
     pio run
 
-⚠️ **Sans `-e`.** Les environnements `esp32dev` (core 2) et `esp32dev_core3`
-partagent le même répertoire de framework et **se détruisent mutuellement** :
-ne lance jamais `pio run -e esp32dev` ici.
+ℹ️ **Sans `-e`** : `default_envs = esp32dev_core3` est le **seul** environnement
+matériel depuis la v2.42.1 (ADR-0069). N'invente aucun autre nom d'env, et ne
+lance aucun `pio pkg install` / `uninstall` ici — la commande réécrit
+`platformio.ini` en supprimant tous ses commentaires.
 
 Si la compilation échoue, arrête et montre l'erreur. Relève au passage la ligne
 `Flash:` pour l'inclure dans les notes.

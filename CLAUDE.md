@@ -4,10 +4,10 @@ Contrôleur automatique de piscine sur ESP32 (mesure température/pH/ORP, régul
 
 ## Stack technique
 
-- **Plateforme** : ESP32 (esp32dev)
-- **Build** : PlatformIO (`platform = espressif32@6.9.0`)
+- **Plateforme** : ESP32 (`board = esp32dev`, module WROVER-E avec PSRAM), flash **8 Mo**
+- **Build** : PlatformIO — **env matériel unique `esp32dev_core3`**, plateforme **pioarduino épinglée `55.03.37`** (core Arduino 3.3.7 / IDF 5.5.0). ADR-0042 (core 3 par défaut) et ADR-0069 (retrait du repli core 2, v2.42.1). ⚠️ `espressif32@6.9.0` reste **installée** sans être référencée — elle fournit `tool-mklittlefs` à `build_fs.sh` : ne pas la désinstaller. ⚠️ Ne jamais lancer `pio pkg install` / `uninstall` sans nécessité : la commande réécrit `platformio.ini` en supprimant tous ses commentaires.
 - **Framework** : **Arduino** (pas ESP-IDF pur, même si on utilise certaines API ESP-IDF comme `esp_task_wdt`)
-- **Filesystem** : LittleFS, 2 partitions — layout v4, ADR-0024 (`spiffs` 320 KB = 0x50000 pour `data/` gzippé, `history` 64 KB = 0x10000 pour `/history.json` + `/system.log`). Voir `partitions.csv` et `build_fs.sh` (taille FS = 327680 octets, alignée sur `board_build.filesystem_size` dans `platformio.ini`).
+- **Filesystem** : LittleFS, 2 partitions — **layout v5, ADR-0068** (`spiffs` **512 KB** = 0x80000 à l'offset 0x730000 pour `data/` gzippé, `history` **256 KB** = 0x40000 à l'offset 0x7B0000 pour `/history.json` + `/system.log`). Voir `partitions.csv` et `build_fs.sh` (taille FS = **524288** octets, alignée sur `board_build.filesystem_size` dans `platformio.ini`).
 - **Libs** : AsyncTCP, ESPAsyncWebServer, ESPAsyncWiFiManager, ArduinoJson 7, PubSubClient, DallasTemperature, OneWire, RTClib
 - **Frontend** : Vanilla JS/HTML/CSS dans `data/` (pas de framework, pas de bundler hors `minify.js`)
 - **Langue du code/commentaires/UI** : **Français**
@@ -39,9 +39,7 @@ specs/
     todo/               # Features en attente (source de vérité)
     doing/              # Features en cours
     done/               # Features terminées
-    _template.md        # Template obligatoire pour toute nouvelle feature
-  modele.md             # Template minimal (bug simple / refactor ponctuel)
-  modele_iteration.md   # Template de suivi d'itérations
+    _template.md        # Template UNIQUE, obligatoire pour toute spec
 kicad/                  # Sources KiCad du PCB (versionnées ; générés ignorés)
 scripts/                # Génération des livrables de release (PDF, gerbers)
 .claude/commands/       # Commandes slash versionnées (/release, /release-pcb)
@@ -51,9 +49,9 @@ scripts/                # Génération des livrables de release (PDF, gerbers)
 
 - Les demandes sont dans `specs/features/todo/*.md`
 - **Format obligatoire pour toute nouvelle feature** : copier `specs/features/_template.md` dans `specs/features/todo/feature-NNN-<slug>.md` et remplir les blocs **Métadonnées**, **Domaines touchés**, **Agents requis**, **Sécurité chimique** (si applicable) et **Éléments visibles**. Ces blocs pilotent l'`orchestrator` et déclenchent `pool-chemistry` automatiquement.
-- Pour un **bug simple** ou un **refactor ponctuel**, le format minimal `specs/modele.md` reste acceptable.
+- **Il n'y a qu'un seul template**, `specs/features/_template.md`, et il vaut pour tout : feature, bug, refactor. Pour un sujet petit, on l'allège — les sections marquées optionnelles se suppriment, les blocs pilotant l'`orchestrator` restent. Aucun format minimal séparé n'existe (décision du 2026-09-06 : les renvois vers un `specs/modele.md` jamais créé sont retirés).
 - Une spec à la fois. Quand Claude commence : `specs/features/todo/X.md` → `specs/features/doing/X.md`
-- À la fin (tests verts + revue OK) : `specs/features/doing/X.md` → `specs/features/done/X.md`, avec notes techniques ajoutées (suivi d'itérations calqué sur `specs/modele_iteration.md`)
+- À la fin (tests verts + revue OK) : `specs/features/doing/X.md` → `specs/features/done/X.md`, avec notes techniques ajoutées. Pour un travail mené en plusieurs itérations, se calquer sur une spec à itérations déjà close de `specs/features/done/`
 - Si pas de spec fournie, Claude propose d'en créer une avant d'implémenter
 
 ## Auto-vérification fin de tour (obligatoire)
@@ -101,7 +99,7 @@ L'idée force : **les docs ne sont pas un livrable de fin de cycle, c'est une ob
 5. **Pour tout code touchant la régulation pH/ORP ou le dosage** : passage obligatoire par l'agent `pool-chemistry`
 6. **Tests & lint** (agent `test-engineer`) :
    - `pio run` (compilation) — **obligatoire**
-   - `pio test -e native` — **obligatoire** : **24 suites natives** dans `test/` (**849 tests**, logique pure ADR-0017), zéro régression tolérée. Couverture : `tools/coverage.sh` (gcovr). CI GitHub Actions sur push/PR.
+   - `pio test -e native` — **obligatoire** : **33 suites natives** dans `test/` (**1286 cas**, logique pure ADR-0017), zéro régression tolérée. Couverture : `tools/coverage.sh` (gcovr). CI GitHub Actions sur push/PR.
    - **Valider les tests neufs par MUTATION** : casser volontairement le code qu'ils protègent et vérifier qu'ils meurent. Une suite qui ne tue aucun mutant ne prouve rien — plusieurs défauts réels de ce projet (repliement de `millis()` à 24,8 j, propagation d'une constante de pouls, terme intégral inopérant) n'ont été trouvés que par cette méthode, et trois mutations sur cinq ne tuaient rien avant l'extraction de la logique en module pur.
    - Pas de warnings nouveaux
 7. **Revue de code** (agent `code-reviewer`) avant tout commit

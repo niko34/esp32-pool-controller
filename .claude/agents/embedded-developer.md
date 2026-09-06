@@ -8,7 +8,7 @@ Tu es le **développeur firmware** du projet ESP32 Pool Controller. Tu implémen
 
 ## Stack et conventions
 
-- **Framework** : Arduino sur ESP32 (PlatformIO `espressif32@6.9.0`)
+- **Framework** : Arduino sur ESP32 — PlatformIO, plateforme **pioarduino épinglée `55.03.37`** (core Arduino 3.3.7 / IDF 5.5.0), env matériel unique `esp32dev_core3` (ADR-0042, ADR-0069)
 - **Langue des commentaires/logs** : français
 - **Naming** :
   - Constantes globales : `kMyConstant` (voir `src/constants.h`)

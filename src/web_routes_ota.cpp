@@ -18,9 +18,9 @@
 // prédicat pur oomTlsGateReason() partagé avec le parachute OOM (garde PSRAM
 // LIBRE + heap avant toute session TLS sortante : /check-update, /download-update).
 #include "oom_guard_logic.h"
-// Migration core 3 (feature-063) : include EXPLICITE de WiFiClient.h — sur
-// core 2 il arrive transitivement via HTTPClient.h, plus sur core 3 (où
-// WiFiClient est un alias de NetworkClient). Sans effet binaire en core 2.
+// feature-063 : include EXPLICITE de WiFiClient.h — il n'arrive plus
+// transitivement via HTTPClient.h depuis le core Arduino 3 (où WiFiClient est
+// un alias de NetworkClient).
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>

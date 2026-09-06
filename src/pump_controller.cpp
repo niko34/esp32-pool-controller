@@ -206,15 +206,14 @@ void PumpControllerClass::begin() {
   for (int i = 0; i < 2; ++i) {
     // MOSFET IRLZ44N: Configuration PWM sur Gate
     // Logic-level MOSFET compatible 3.3V ESP32.
-    // Force OUTPUT en amont de ledcAttachPin : sur PCB v2, GPIO25 (DAC1/ADC2)
+    // Force OUTPUT en amont de l'attache LEDC : sur PCB v2, GPIO25 (DAC1/ADC2)
     // et GPIO33 (ADC1) restent muets si LEDC est attaché sans pinMode préalable.
     pinMode(pumps[i].pwmPin, OUTPUT);
     digitalWrite(pumps[i].pwmPin, LOW);
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-    // Migration core 3 (feature-063) : ledcAttachChannel remplace
-    // ledcSetup+ledcAttachPin en conservant le canal LEDC explicite.
-    // Fréquence 20 kHz et résolution 8 bits STRICTEMENT identiques (sécurité
-    // chimique : le duty des pompes doseuses ne doit pas changer d'échelle).
+    // feature-063 : ledcAttachChannel attache le pin en conservant le canal LEDC
+    // explicite. Fréquence 20 kHz et résolution 8 bits STRICTEMENT identiques à
+    // celles d'origine (sécurité chimique : le duty des pompes doseuses ne doit
+    // pas changer d'échelle).
     if (!ledcAttachChannel(pumps[i].pwmPin, PUMP_PWM_FREQ, PUMP_PWM_RES_BITS,
                            pumps[i].channel)) {
       // Prescription P1 (pool-chemistry) : échec d'attache = pompe INUTILISABLE
@@ -228,11 +227,6 @@ void PumpControllerClass::begin() {
     } else {
       ledcWriteChannel(pumps[i].channel, 0);  // Pompe arrêtée au démarrage
     }
-#else
-    ledcSetup(pumps[i].channel, PUMP_PWM_FREQ, PUMP_PWM_RES_BITS);
-    ledcAttachPin(pumps[i].pwmPin, pumps[i].channel);
-    ledcWrite(pumps[i].channel, 0);  // Pompe arrêtée au démarrage
-#endif
     systemLogger.info("Pompe " + String(i + 1) + " : GPIO=" + String(pumps[i].pwmPin) +
                       " canal LEDC=" + String(pumps[i].channel));
   }
@@ -259,24 +253,16 @@ void PumpControllerClass::begin() {
 // uniquement à la visibilité (alerte MQTT pump_unusable, ADR-0034). Ne réactive
 // JAMAIS une pompe : le flag est posé une seule fois dans begin(), reboot requis.
 bool PumpControllerClass::isPumpUsable(int index) const {
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  // Core 3 : reflète le flag fail-closed posé par begin() en cas d'échec
+  // Reflète le flag fail-closed posé par begin() en cas d'échec
   // ledcAttachChannel(). Index hors bornes → false (fail-closed).
   return (index == 0 || index == 1) && pumpUsable[index];
-#else
-  // Core 2 : ledcSetup/ledcAttachPin ne signalent pas d'échec — la pompe est
-  // toujours réputée utilisable (aucune alerte possible, comportement inchangé).
-  return index == 0 || index == 1;
-#endif
 }
 
 void PumpControllerClass::applyPumpDuty(int index, uint8_t duty) {
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
   // Prescription P1 (pool-chemistry, feature-063) : garde en PREMIÈRE ligne,
   // AVANT le cache pumpDuty et toute mutation — une pompe inutilisable (échec
   // d'attache LEDC au boot) garde pumpDuty[index] == 0 à vie.
   if (!pumpUsable[index]) return;
-#endif
   duty = duty > MAX_PWM_DUTY ? MAX_PWM_DUTY : duty;
   if (pumpDuty[index] == duty) return;
 
@@ -285,13 +271,9 @@ void PumpControllerClass::applyPumpDuty(int index, uint8_t duty) {
   // MOSFET IRLZ44N: Contrôle simple via PWM sur Gate
   // duty=0 → MOSFET OFF (pompe arrêtée)
   // duty>0 → MOSFET ON proportionnel (pompe tourne)
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  // Core 3 : ledcWrite() attend désormais un PIN — ledcWriteChannel conserve
-  // l'adressage par canal (aucun changement d'échelle 0-255).
+  // ledcWriteChannel : adressage par CANAL (ledcWrite, lui, attend un pin).
+  // Aucun changement d'échelle — le duty reste sur 0-255.
   ledcWriteChannel(pumps[index].channel, duty);
-#else
-  ledcWrite(pumps[index].channel, duty);
-#endif
 }
 
 void PumpControllerClass::refreshDosingState(DosingState& state, unsigned long now, bool pumpOn) {
@@ -4434,7 +4416,6 @@ void PumpControllerClass::setManualPump(int pumpIndex, uint8_t duty) {
     return;
   }
 
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
   // Prescription P1 (pool-chemistry, feature-063) : pompe déclarée inutilisable
   // au boot (échec attache LEDC) → refus de toute commande manuelle. Défense en
   // profondeur (applyPumpDuty refuse déjà), avec log throttlé une fois par boot
@@ -4448,7 +4429,6 @@ void PumpControllerClass::setManualPump(int pumpIndex, uint8_t duty) {
     }
     return;
   }
-#endif
 
   duty = duty > MAX_PWM_DUTY ? MAX_PWM_DUTY : duty;
 

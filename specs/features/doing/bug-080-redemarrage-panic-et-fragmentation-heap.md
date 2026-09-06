@@ -700,6 +700,17 @@ n'a pas été compilé** dans ce cycle — c'est interdit ici, les deux platefor
 s'écrasant mutuellement dans `.pio/`. À vérifier si le repli core 2 devait un
 jour être réactivé.
 
+> **Réponse (2026-09-06, feature-102 / v2.42.1)** — la question est close : le repli
+> core 2 ne sera jamais réactivé, il a été **retiré définitivement**
+> ([ADR-0069](../../../docs/adr/0069-retrait-repli-core-2.md)). La garde citée ci-dessus a
+> disparu avec lui, seul `<esp_memory_utils.h>` subsiste. Deux constats de ce lot en
+> ressortent aggravés : (1) l'environnement core 2 n'était pas seulement « non compilé dans
+> ce cycle », il n'était **plus compilable du tout** depuis la v2.40.0 — le commit `b09fc8f`
+> de ce même lot B-2 a introduit `esp_cpu_get_cycle_count()` (API IDF 5) aux lignes 371 et
+> 374 d'`oom_guard.cpp` avec un `#include <esp_cpu.h>` **hors garde** ; (2) le défaut est
+> resté invisible **deux versions** parce que la CI ne construit que l'env `native`. Le
+> défaut n'a pas été réparé : il a **disparu par suppression** de la branche morte.
+
 ### Entrée du lot B-2 — l'interdit `heap_caps` de `heap_metrics.h:31-35` doit être REQUALIFIÉ, pas supprimé
 
 Avis du `code-reviewer`, à traiter en B-2 :

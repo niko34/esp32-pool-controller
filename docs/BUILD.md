@@ -12,22 +12,22 @@ pio run
 
 Génère `.pio/build/esp32dev_core3/firmware.bin` (env par défaut depuis la v2.20.4 — voir ci-dessous).
 
-### Les deux environnements firmware
+### L'environnement firmware unique
 
-`platformio.ini` déclare **deux** environnements ESP32. Depuis la **v2.20.4**, le core 3 est l'environnement **de production**, bootloader inclus ([ADR-0042](adr/0042-core3-environnement-par-defaut.md) — la porte de bascule laissée ouverte par [ADR-0034](adr/0034-migration-core3-idf5.md) est franchie) :
+`platformio.ini` déclare **un seul** environnement matériel. Depuis la **v2.20.4**, le core 3 est l'environnement **de production**, bootloader inclus ([ADR-0042](adr/0042-core3-environnement-par-defaut.md) — la porte de bascule laissée ouverte par [ADR-0034](adr/0034-migration-core3-idf5.md) est franchie) ; depuis la **v2.42.1**, il est le **seul** ([ADR-0069](adr/0069-retrait-repli-core-2.md)) :
 
 | Env | Plateforme | Rôle |
 |-----|-----------|------|
 | `esp32dev_core3` *(défaut)* | pioarduino **release taguée `55.03.37`** (core Arduino 3.3.7 / IDF 5.5.0) | **Production** — `default_envs`, c'est le binaire buildé par `pio run` et déployé par `deploy.sh` (bootloader **et** application) |
-| `esp32dev` | `espressif32@6.9.0` (core Arduino 2.0.17 / IDF 4.4.7) | **Repli explicite** — conservé compilable et déployable, mais jamais sélectionné implicitement |
 
 ```bash
-pio run                              # core 3 (défaut)
-pio run -e esp32dev                  # repli core 2
-PIO_ENV=esp32dev ./deploy.sh all     # déploiement complet en repli core 2
+pio run                              # core 3 (unique env matériel)
+./deploy.sh all                      # déploiement complet
 ```
 
-Le code source est identique pour les deux : les divergences d'API (LEDC, watchdog, mbedtls) sont sous gardes `#if ESP_ARDUINO_VERSION_MAJOR >= 3` dans 3 fichiers (`pump_controller.cpp`, `main.cpp`, `ota_integrity.cpp`). Ces gardes restent obligatoires tant que l'env de repli est maintenu.
+> ℹ️ **L'env de repli `[env:esp32dev]` (core Arduino 2.0.17 / IDF 4.4.7) a été retiré en v2.42.1.** Il n'était plus compilable depuis la v2.40.0 (appel `esp_cpu_get_cycle_count()` hors garde dans `oom_guard.cpp`, invisible parce que la CI ne construit que l'env `native`), plus flashable (bootloader core 3 depuis l'ADR-0042 ⇒ retour arrière = flash USB) et **aucun binaire core 2 n'avait jamais été archivé**. Voir [ADR-0069](adr/0069-retrait-repli-core-2.md). Avec lui disparaissent les 8 gardes `#if ESP_ARDUINO_VERSION_MAJOR >= 3` du code source : elles étaient réparties sur `pump_controller.cpp` **et** `pump_controller.h`, `main.cpp` et `oom_guard.cpp` (LEDC, watchdog, en-têtes mémoire). La garde `#if MBEDTLS_VERSION_NUMBER >= 0x03000000` de `ota_integrity.cpp` **reste** : elle est indexée sur la version d'une bibliothèque, pas sur l'environnement retiré.
+
+> ⚠️ **La plateforme `espressif32@6.9.0` reste installée**, bien qu'aucun env ne l'utilise : elle fournit le paquet `tool-mklittlefs`, que [`build_fs.sh`](../build_fs.sh) référence en dur (`~/.platformio/packages/tool-mklittlefs/mklittlefs`) et que pioarduino 55.03.37 **ne déclare pas** (`"tool-mklittlefs": null` dans son `platform.json`). La désinstaller casserait `./build_fs.sh`, `./build_all.sh`, `./deploy.sh fs` et `./deploy.sh ota-fs`. Le ménage disque (~404 Mo) suppose d'abord de rendre `build_fs.sh` indépendant de cette plateforme.
 
 > ⚠️ **Changer de bootloader exige un flash USB.** L'OTA n'écrit que l'application : une image core 3 démarre parfaitement sur un bootloader core 2 (montage qui a tourné plusieurs semaines en production). Le passage du **bootloader** en core 3 s'est donc fait par `./deploy.sh all` en USB, et le filet de repli d'autrefois (repointer `otadata` : `erase_region 0xE000 0x2000`) **n'existe plus** — voir [UPDATE_GUIDE.md](UPDATE_GUIDE.md#changer-de-bootloader--flash-usb-obligatoire-core-3-par-défaut-v2204).
 
@@ -43,28 +43,9 @@ Les scripts ne dépendent **plus** du `default_envs` de `platformio.ini` ni de c
 | [`build_all.sh`](../build_all.sh) | idem `deploy.sh` |
 | [`tools/decode_coredump.sh`](../tools/decode_coredump.sh) | ELF par défaut dérivé de `PIO_ENV` |
 
-**Pourquoi `decode_coredump.sh` suit `PIO_ENV`** — motif de sûreté, pas de confort : un ELF core 2 confronté à un dump core 3 ne produit pas d'erreur franche, il produit une pile de **noms de fonctions plausibles et FAUX**. C'est exactement ce qui a rendu le coredump de production du 15/08 inexploitable.
+**Pourquoi `decode_coredump.sh` suit `PIO_ENV`** — motif de sûreté, pas de confort : un ELF qui ne correspond pas au dump ne produit pas d'erreur franche, il produit une pile de **noms de fonctions plausibles et FAUX**. C'est exactement ce qui a rendu le coredump de production du 15/08 inexploitable (ELF core 2, dump core 3).
 
-#### ⚠️ Conflit de paquet entre les deux plateformes — à lire avant de jongler
-
-Les deux plateformes installent leur framework sous le **même nom de paquet** `framework-arduinoespressif32` (`3.20017.x` pour le core 2, `3.3.7` pour le core 3), donc dans le **même répertoire** : **elles s'écrasent mutuellement**. Un build core 2 détruit le framework core 3, et réciproquement.
-
-Symptôme — échec **immédiat** (~2 s, avant toute compilation) :
-
-```
-TypeError: expected str, bytes or os.PathLike object, not NoneType
-  ... platforms/espressif32/builder/frameworks/arduino.py
-```
-
-`FRAMEWORK_DIR` vaut `None` : le paquet attendu n'est plus là. **Ce n'est pas aléatoire** — c'est systématiquement un build de l'autre env qui vient de passer (ce défaut a été pris pour un aléa pendant tout un cycle de travail, les échecs étant contournés par simple relance). Remède :
-
-```bash
-pio pkg install -e esp32dev_core3    # ou -e esp32dev, selon l'env qu'on veut builder
-```
-
-Puis relancer le build. Même remède pour un **premier build** ou un **changement de version de plateforme**.
-
-**Autres pièges pioarduino** :
+#### Pièges pioarduino
 
 - Utiliser le **pio du penv** : `~/.platformio/penv/bin/pio` (le pio système Python 3.12 échoue avec `ModuleNotFoundError: fatfs/littlefs`).
 - La plateforme est **épinglée sur la release taguée `55.03.37`** (2026-08-04) : pioarduino 55.3.37, core arduino-esp32 **3.3.7**, IDF 5.5.0 — les versions exactes validées au banc feature-063. Depuis la bascule, cet épinglage est un **contrat de production** : **toute montée de version est un choix explicite** exigeant une re-validation au banc avant flash — l'URL `stable`, utilisée avant l'épinglage, avait déjà dérivé vers 55.03.311 (core 3.3.11).
@@ -73,8 +54,7 @@ Puis relancer le build. Même remède pour un **premier build** ou un **changeme
 
 | Env | Occupation app0 (**3 735 552 o**) |
 |---|---|
-| `esp32dev_core3` *(production)* | **1 825 717 o = 48,9 %** — marge **1 909 835 o ≈ 1,82 Mo** |
-| `esp32dev` *(repli)* | ≈ **41,5 %** — dérivé de la dernière mesure core 2 (~1 550 Ko) ; le binaire ne change pas avec le layout, seul le dénominateur change. Non recompilé depuis. |
+| `esp32dev_core3` *(production, env unique)* | **1 825 717 o = 48,9 %** — marge **1 909 835 o ≈ 1,82 Mo** |
 
 > ℹ️ **Le plafond de vigilance de 95 % n'est plus une contrainte de conception.** Avant le
 > layout v5, l'occupation était de **99,5 %** d'un slot de 1 835 008 o — soit **9 291 octets
@@ -87,15 +67,15 @@ Puis relancer le build. Même remède pour un **premier build** ou un **changeme
 > ℹ️ **CI non impactée** : [`.github/workflows/tests-natifs.yml`](../.github/workflows/tests-natifs.yml) ne construit que l'env `native`.
 
 > ℹ️ **Cible matérielle** : le BOM du PCB v2 spécifie un **ESP32-DevKitC-VE**
-> (module WROVER-E, **8 Mo de PSRAM**) — voir la section PSRAM ci-dessous. Les deux
-> envs produisent un **binaire unique** qui tourne sur WROVER-E comme sur WROOM-32 ;
+> (module WROVER-E, **8 Mo de PSRAM**) — voir la section PSRAM ci-dessous. L'env
+> produit un **binaire unique** qui tourne sur WROVER-E comme sur WROOM-32 ;
 > la PSRAM est requise pour la fiabilité de la mise à jour en ligne (TLS GitHub).
-> L'**ESP32-S3 n'est pas supporté** (architecture Xtensa LX7 : aucun de ces envs ne
-> produit un binaire S3, brochage incompatible avec le PCB v2).
+> L'**ESP32-S3 n'est pas supporté** (architecture Xtensa LX7 : cet env ne
+> produit pas de binaire S3, brochage incompatible avec le PCB v2).
 
 ### Support PSRAM — module WROVER-E (feature-066, v2.18.0)
 
-Les **deux envs** (`esp32dev` et `esp32dev_core3`) portent depuis v2.18.0 les flags PSRAM :
+L'env `esp32dev_core3` porte depuis v2.18.0 les flags PSRAM (ils étaient alors présents sur les deux envs) :
 
 ```ini
 -DBOARD_HAS_PSRAM
@@ -103,7 +83,7 @@ Les **deux envs** (`esp32dev` et `esp32dev_core3`) portent depuis v2.18.0 les fl
 -mfix-esp32-psram-cache-strategy=memw
 ```
 
-- `-DBOARD_HAS_PSRAM` : active l'init PSRAM au démarrage (avant `setup()`). Sur un module **sans** PSRAM (WROOM), l'init échoue **proprement** et le firmware continue à l'identique — **binaire unique** WROOM/WROVER, dégradation gracieuse validée sur les deux cores.
+- `-DBOARD_HAS_PSRAM` : active l'init PSRAM au démarrage (avant `setup()`). Sur un module **sans** PSRAM (WROOM), l'init échoue **proprement** et le firmware continue à l'identique — **binaire unique** WROOM/WROVER, dégradation gracieuse validée au banc.
 - Les deux `-mfix-esp32-psram-cache-issue` / `-mfix-esp32-psram-cache-strategy=memw` sont **obligatoires avec `BOARD_HAS_PSRAM`** : ils alignent la génération de code de **nos** sources sur les **libs précompilées** du core, qui sont buildées avec le workaround silicium PSRAM (`CONFIG_SPIRAM_CACHE_WORKAROUND=y`, stratégie MEMW) — même combinaison que les cartes WROVER officielles. Sans eux, mélange de code compilé avec/sans workaround → corruptions aléatoires.
 - Aucun placement explicite d'allocations : `SPIRAM_USE_MALLOC` (précompilé, seuil 4096) envoie **automatiquement** les allocations > 4 Ko en PSRAM quand elle est présente. C'est le levier qui restaure le TLS sortant sous core 3 (voir [ADR-0034](adr/0034-migration-core3-idf5.md), note du 2026-08-08).
 - Visibilité runtime : log de boot (« PSRAM : X Mo détectés » / « PSRAM absente ») + champs `psram_size` / `psram_free` de `/get-system-info` ([API.md](API.md)).
@@ -136,7 +116,6 @@ Règles :
 
 ```bash
 ./build_all.sh                       # env par défaut (esp32dev_core3)
-PIO_ENV=esp32dev ./build_all.sh      # repli core 2
 ```
 
 Enchaîne `pio run -e "$PIO_ENV"` puis `build_fs.sh` (qui écrit le `littlefs.bin` dans `.pio/build/$PIO_ENV/`).
@@ -192,11 +171,7 @@ Le script [`deploy.sh`](../deploy.sh) est l'entrée unique pour tous les modes d
 ./deploy.sh
 ```
 
-Il builde et flashe l'environnement désigné par `PIO_ENV` (défaut `esp32dev_core3`) — voir [`PIO_ENV`](#pio_env--sélection-denvironnement-pour-tout-loutillage) :
-
-```bash
-PIO_ENV=esp32dev ./deploy.sh all     # repli core 2 (firmware + FS)
-```
+Il builde et flashe l'environnement désigné par `PIO_ENV` (défaut `esp32dev_core3`, et désormais seul env matériel) — voir [`PIO_ENV`](#pio_env--sélection-denvironnement-pour-tout-loutillage).
 
 ### Modes USB (câble série)
 
@@ -247,9 +222,9 @@ C'est la **seule occasion de le lire** — le noter sur une étiquette. Voir [UP
 
 #### Compatibilité esptool 4 / 5
 
-Le paquet `tool-esptoolpy` est **partagé** entre les environnements PlatformIO et **chacun impose sa version** (`esp32dev` → 4.5.1, `esp32dev_core3` → 5.1.2) : la version installée bascule **au gré du dernier build lancé**. Or esptool 5 a renommé sous-commandes et valeurs d'options en tirets (`erase-region`, `--after no-reset`) là où la 4.x utilise des underscores (`erase_region`, `--after no_reset`).
+Le paquet `tool-esptoolpy` est **partagé entre plateformes PlatformIO** et chacune impose sa version. Tant que le repli core 2 existait, elle basculait entre 4.5.1 et 5.1.2 au gré du dernier build ; avec un env unique, c'est la **5.1.2** de pioarduino qui est installée. Le risque n'a pas disparu pour autant : la plateforme `espressif32@6.9.0` reste sur disque (voir plus haut) et toute commande qui la réactiverait ferait redescendre le paquet en 4.5.1. Or esptool 5 a renommé sous-commandes et valeurs d'options en tirets (`erase-region`, `--after no-reset`) là où la 4.x utilise des underscores (`erase_region`, `--after no_reset`).
 
-`deploy.sh` **sonde `--help`** et choisit l'orthographe correspondante, au lieu de supposer une version. Conséquence pratique : alterner les envs ne casse pas le déploiement — contrairement au **framework**, lui aussi partagé mais qui, lui, exige un `pio pkg install` (voir [Conflit de paquet](#-conflit-de-paquet-entre-les-deux-plateformes--à-lire-avant-de-jongler)).
+`deploy.sh` **sonde `--help`** et choisit l'orthographe correspondante, au lieu de supposer une version. Ce mécanisme est **conservé** : il ne coûte rien et rend le déploiement insensible à la version réellement installée.
 
 ### Modes OTA (WiFi)
 
@@ -269,13 +244,11 @@ Voir aussi [UPDATE_GUIDE.md](UPDATE_GUIDE.md) pour la procédure détaillée.
 
 ## Archivage automatique des artefacts de build (v2.20.2)
 
-L'archivage est branché **au niveau du build**, plus au niveau du script de déploiement : [`tools/archive_build.py`](../tools/archive_build.py) est déclaré en `extra_scripts = post:` sur les **deux envs matériels** (`esp32dev` et `esp32dev_core3`) dans [`platformio.ini`](../platformio.ini). **Chaque `pio run` réussi** archive donc `firmware.elf` **et** `firmware.bin` :
+L'archivage est branché **au niveau du build**, plus au niveau du script de déploiement : [`tools/archive_build.py`](../tools/archive_build.py) est déclaré en `extra_scripts = post:` sur l'env matériel `esp32dev_core3` dans [`platformio.ini`](../platformio.ini). **Chaque `pio run` réussi** archive donc `firmware.elf` **et** `firmware.bin` :
 
 ```
-builds/2.20.2/esp32dev/firmware_20260815_211804.elf
-builds/2.20.2/esp32dev/firmware_20260815_211804.bin
-builds/2.20.2/esp32dev_core3/firmware_20260815_212339.elf
-builds/2.20.2/esp32dev_core3/firmware_20260815_212339.bin
+builds/2.42.1/esp32dev_core3/firmware_20260906_212339.elf
+builds/2.42.1/esp32dev_core3/firmware_20260906_212339.bin
 ```
 
 | Élément | Règle |
@@ -288,7 +261,7 @@ builds/2.20.2/esp32dev_core3/firmware_20260815_212339.bin
 
 **Pourquoi ELF *et* BIN** : le décodage d'un coredump exige l'ELF **exact** du firmware qui tournait (il porte les symboles) ; le BIN identifie l'image **effectivement flashée** et permet de rejouer un déploiement à l'identique.
 
-**Pourquoi le cloisonnement par environnement est indispensable** : `esp32dev` et `esp32dev_core3` produisent des binaires **différents sous la même version**. Rangés ensemble, une série de 5 builds core 2 aurait **évincé l'ELF core 3 réellement déployé** — c'est-à-dire reconduit exactement la panne forensique décrite ci-dessous.
+**Le cloisonnement par environnement est conservé** (`builds/<VERSION>/<PIOENV>/`) alors qu'il n'y a plus qu'un env. Motif **historique** : `esp32dev` et `esp32dev_core3` produisaient des binaires **différents sous la même version**, et rangés ensemble une série de 5 builds core 2 aurait **évincé l'ELF core 3 réellement déployé** — c'est-à-dire reconduit exactement la panne forensique décrite ci-dessous. Le mécanisme reste en place parce qu'il est gratuit et qu'il redeviendrait nécessaire au premier second env ([ADR-0042](adr/0042-core3-environnement-par-defaut.md), [ADR-0069](adr/0069-retrait-repli-core-2.md)).
 
 > ⚠️ **Pourquoi ce mécanisme a été déplacé** : `deploy.sh` archivait bien l'ELF, mais **`pio run` lancé directement et `./ota_update.sh` ne passent pas par lui** — et ce sont les chemins réellement utilisés au quotidien. Résultat : le dernier ELF présent dans `builds/` datait du **02/08**, et le coredump du crash de production du **15/08** a été **inexploitable** — `esp-coredump` refuse de décoder avec `coredump SHA256 ≠ app SHA256`.
 
@@ -329,7 +302,7 @@ curl -H "X-Auth-Token: <token>" \
 ./tools/decode_coredump.sh coredump.bin
 ```
 
-L'ELF par défaut est `.pio/build/$PIO_ENV/firmware.elf` — donc celui de l'env **réellement déployé**. ⚠️ Décoder un dump core 3 avec un ELF core 2 (ou l'inverse) **n'échoue pas franchement** : cela produit des noms de fonctions plausibles et **faux**. Si le dump vient d'un appareil en repli core 2, préfixer : `PIO_ENV=esp32dev ./tools/decode_coredump.sh coredump.bin`.
+L'ELF par défaut est `.pio/build/$PIO_ENV/firmware.elf` — donc celui de l'env **réellement déployé**. ⚠️ Décoder un dump avec un ELF qui ne lui correspond pas **n'échoue pas franchement** : cela produit des noms de fonctions plausibles et **FAUX**. L'avertissement vaut toujours après le retrait du repli core 2 — il suffit d'un ELF d'une **autre version** du firmware.
 
 Un deuxième argument optionnel permet de spécifier l'ELF à utiliser (utile si l'ELF courant ne correspond pas au firmware crashé) :
 
@@ -361,8 +334,8 @@ Voir aussi [ADR-0009](adr/0009-partition-coredump.md) pour la décision architec
 
 ## Pièges connus
 
-- **Alternance entre les deux envs** : le paquet `framework-arduinoespressif32` est **partagé** — un build core 2 détruit le framework core 3 et réciproquement. Symptôme : `TypeError ... NoneType` en ~2 s. Remède : `pio pkg install -e <env>`. Voir [Conflit de paquet](#-conflit-de-paquet-entre-les-deux-plateformes--à-lire-avant-de-jongler).
-- **Changement de bootloader** : l'OTA n'écrit que l'application — passer le bootloader d'un core à l'autre exige un **flash USB** (`./deploy.sh all`). Voir [ADR-0042](adr/0042-core3-environnement-par-defaut.md).
+- **Changement de bootloader** : l'OTA n'écrit que l'application — réécrire le bootloader exige un **flash USB** (`./deploy.sh all`). Voir [ADR-0042](adr/0042-core3-environnement-par-defaut.md).
+- **Ne pas réintroduire un second env matériel à la légère** : les deux plateformes installent leur framework sous le **même nom de paquet** `framework-arduinoespressif32`, donc dans le **même répertoire**, et s'écrasent mutuellement (symptôme : `TypeError ... NoneType` en ~2 s, remède `pio pkg install -e <env>`). C'est l'une des raisons du retrait du repli core 2 — voir [ADR-0069](adr/0069-retrait-repli-core-2.md).
 - **`pio run -t buildfs`** : ne génère pas un `littlefs.bin` de la bonne taille → utiliser `./build_fs.sh`.
 - **`pio run -t uploadfs`** : reconstruit le filesystem à la mauvaise taille avant upload → utiliser `./deploy.sh fs` ou `./deploy.sh ota-fs`.
 - **Partition `history` préservée** : l'upload filesystem OTA n'écrase que la partition `spiffs`. L'historique des mesures n'est **pas** perdu à la mise à jour UI (voir [ADR-0068](adr/0068-partitions-layout-v5-flash-8-mo.md) et [history.md](subsystems/history.md)). ⚠️ Ceci vaut pour une mise à jour **à table constante** — un **changement de layout**, lui, déplace `history` et l'efface (point suivant).
@@ -384,7 +357,7 @@ Liste des libs déclarées dans `platformio.ini` (`lib_deps`) — voir le fichie
 | `OneWire` + `DallasTemperature` | Bus 1-Wire pour DS18B20 (eau + circuit) |
 | `RTClib` | DS3231 RTC |
 
-> **Migration fork ESP32Async (v2.9.0)** : `AsyncTCP` et `ESPAsyncWebServer` proviennent désormais du fork **maintenu** `ESP32Async` (ex-`mathieucarbou`), en **versions épinglées** (`@3.4.10` / `@3.11.2`), et non plus des dépôts Git `me-no-dev` non figés (abandonnés). Ce changement corrige un crash de course (assert lwIP au close/timeout d'un client WebSocket) diagnostiqué par coredump, **sans modification du code applicatif**, plateforme inchangée (`espressif32@6.9.0`, core 2.0.x / IDF 4.4). Un seul `AsyncTCP` et un seul `ESPAsyncWebServer` dans l'arbre de deps (aucun duplicata `me-no-dev` transitif). Voir [ADR-0028](adr/0028-migration-fork-esp32async.md).
+> **Migration fork ESP32Async (v2.9.0)** : `AsyncTCP` et `ESPAsyncWebServer` proviennent désormais du fork **maintenu** `ESP32Async` (ex-`mathieucarbou`), en **versions épinglées** (`@3.4.10` / `@3.11.2`), et non plus des dépôts Git `me-no-dev` non figés (abandonnés). Ce changement corrige un crash de course (assert lwIP au close/timeout d'un client WebSocket) diagnostiqué par coredump, **sans modification du code applicatif**. *(Contexte de l'époque : la plateforme était alors `espressif32@6.9.0`, core 2.0.x / IDF 4.4 — elle est restée inchangée par cette migration de libs. Le couple épinglé est aujourd'hui porté par le seul env core 3.)* Un seul `AsyncTCP` et un seul `ESPAsyncWebServer` dans l'arbre de deps (aucun duplicata `me-no-dev` transitif). Voir [ADR-0028](adr/0028-migration-fork-esp32async.md).
 
 > **Libs supprimées en feature-021 (v2.0.0)** : `Adafruit ADS1X15` et `DFRobot_PH` ont été retirées des `lib_deps`. La chaîne pH/ORP est désormais entièrement portée par la mini-classe maison [`AtlasEzoSensor`](../src/atlas_ezo.h) qui pilote les modules Atlas EZO Embedded en I²C natif (`Wire`). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md). Cette suppression libère ~12 KB de flash mais l'ajout de la queue + des routes de calibration consomme environ autant — le build tenait alors à 98.8 % flash (layout v1). Depuis le layout v4 ([ADR-0024](adr/0024-partitions-layout-v4.md), slots app 1792 KB), l'occupation firmware était redescendue à ~78,5 % (marge ~392 KB) — puis remontée à **99,5 %** au fil des versions, avant que le layout v5 ([ADR-0068](adr/0068-partitions-layout-v5-flash-8-mo.md), slots app **3648 KB**) ne la ramène à **48,9 %**.
 

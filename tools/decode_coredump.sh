@@ -11,8 +11,8 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 CORE="${1:-coredump.bin}"
-# L'ELF DOIT correspondre EXACTEMENT au firmware qui a crashé : un ELF core 2
-# sur un dump core 3 produit des noms de fonctions plausibles et FAUX.
+# L'ELF DOIT correspondre EXACTEMENT au firmware qui a crashé : un ELF d'une
+# AUTRE build produit des noms de fonctions plausibles et FAUX.
 PIO_ENV="${PIO_ENV:-esp32dev_core3}"
 ELF="${2:-$PROJECT_DIR/.pio/build/$PIO_ENV/firmware.elf}"
 

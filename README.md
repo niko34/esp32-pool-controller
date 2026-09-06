@@ -163,7 +163,7 @@ Le cycle est décrit en détail dans **[CLAUDE.md](CLAUDE.md)**. En résumé :
 ### Les commandes utiles
 
 ```bash
-pio run                    # compiler (JAMAIS -e esp32dev, voir plus bas)
+pio run                    # compiler (env unique esp32dev_core3)
 pio test -e native         # 33 suites, ~1 286 cas
 ./build_fs.sh              # construire le filesystem web
 ./deploy.sh all            # flasher par USB (firmware + filesystem)
@@ -173,9 +173,10 @@ pio test -e native         # 33 suites, ~1 286 cas
 /release-pcb               # publier des fichiers de fabrication PCB
 ```
 
-⚠️ **Ne jamais lancer `pio run -e esp32dev`** sans précaution : les deux
-environnements partagent le répertoire du framework et **se détruisent
-mutuellement**. Le repli core 2 passe par `PIO_ENV=esp32dev ./deploy.sh`.
+Il n'y a **qu'un seul environnement matériel**, `esp32dev_core3`. L'ancien repli
+core Arduino 2.x a été retiré en v2.42.1 : il n'était plus compilable, plus
+flashable, et aucun binaire de secours n'avait jamais été archivé
+([ADR-0069](docs/adr/0069-retrait-repli-core-2.md)).
 
 ### Ce qui n'est pas dans le dépôt, et pourquoi
 
@@ -215,14 +216,14 @@ Les **sources FreeCAD** du boîtier et les exports STL sont conservés hors dép
 
 3. **Compiler et déployer**
 
-   L'environnement de build par défaut est **`esp32dev_core3`** (core Arduino 3.x / ESP-IDF 5 via pioarduino) — bootloader **et** application, depuis la v2.20.4 ([ADR-0042](docs/adr/0042-core3-environnement-par-defaut.md)). Le core 2 reste disponible en repli explicite via `PIO_ENV` :
+   L'unique environnement de build est **`esp32dev_core3`** (core Arduino 3.x / ESP-IDF 5 via pioarduino) — bootloader **et** application, depuis la v2.20.4 ([ADR-0042](docs/adr/0042-core3-environnement-par-defaut.md)). L'environnement de repli core 2 a été retiré en v2.42.1 ([ADR-0069](docs/adr/0069-retrait-repli-core-2.md)) :
 
    ```bash
-   pio run                              # core 3 (défaut)
-   PIO_ENV=esp32dev ./deploy.sh all     # repli core 2
+   pio run                              # core 3, env unique
+   ./deploy.sh all                      # firmware + filesystem
    ```
 
-   ⚠️ Alterner entre les deux environnements exige un `pio pkg install -e <env>` : les deux plateformes partagent le nom de paquet du framework et s'écrasent mutuellement (voir [BUILD.md](docs/BUILD.md#les-deux-environnements-firmware)).
+   ℹ️ Premier build sur une machine neuve : `pio pkg install -e esp32dev_core3` (téléchargement du framework). Voir [BUILD.md](docs/BUILD.md#lenvironnement-firmware-unique).
 
    **Via USB** (obligatoire pour la première installation, et pour tout changement de bootloader ou de table de partitions) :
    ```bash
@@ -437,11 +438,11 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
   - `./deploy.sh ota-firmware` - Compile et envoie OTA firmware uniquement
   - `./deploy.sh ota-fs` - Compile et envoie OTA filesystem uniquement
   - Les modes **USB** détectent le port série (surcharge : `PORT=/dev/cu.usbserial-10 ./deploy.sh all`) et **enchaînent le moniteur série** — `NO_MONITOR=1` pour s'en passer
-  - L'environnement PlatformIO utilisé est celui de `PIO_ENV` (défaut `esp32dev_core3`, repli `PIO_ENV=esp32dev`)
+  - L'environnement PlatformIO utilisé est celui de `PIO_ENV` (défaut et seule valeur valide : `esp32dev_core3`)
 
 - **`build_fs.sh`** - Construction du filesystem LittleFS
   - Minifie automatiquement HTML/CSS/JS
-  - Construit LittleFS avec la bonne taille (832 KB — 851 968 octets)
+  - Construit LittleFS avec la bonne taille (**512 KB — 524 288 octets**, layout v5)
   - Utilise `data-build/` comme source (généré par minify.js)
 
 - **`minify.js`** - Minification des fichiers web
@@ -456,7 +457,7 @@ Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique complet des versions.
 
 - **`platformio.ini`** - Configuration PlatformIO
   - Définit les dépendances, ports, partitions
-  - `default_envs = esp32dev_core3` (core Arduino 3.x / IDF 5) ; `esp32dev` = repli core 2, `native` = tests unitaires
+  - `default_envs = esp32dev_core3` (core Arduino 3.x / IDF 5), seul environnement matériel ; `native` = tests unitaires
   - Port série: détecté par `deploy.sh` (surcharge `PORT=...`)
 
 - **`partitions.csv`** - Table de partitions ESP32 **8 Mo** (layout v5, [ADR-0068](docs/adr/0068-partitions-layout-v5-flash-8-mo.md))

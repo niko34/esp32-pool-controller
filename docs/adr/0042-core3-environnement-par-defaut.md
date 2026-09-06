@@ -1,6 +1,6 @@
 # ADR-0042 — Le core Arduino 3.x / IDF 5 devient l'environnement par défaut (bootloader ET application)
 
-- **Statut** : Accepté
+- **Statut** : Accepté — ⚠️ **la clause de repli est REFERMÉE par l'[ADR-0069](0069-retrait-repli-core-2.md)** (2026-09-06, v2.42.1). Sont **caducs** : le **point 4 de la Décision** (« `[env:esp32dev]` reste disponible comme repli explicite »), l'**alternative écartée** « Supprimer `[env:esp32dev]` » (sa condition — « tant que le core 3 n'a pas une saison complète de production derrière lui » — est remplie), la **dette « Conflit de paquet framework »** (sans objet, il n'y a plus qu'un env) et la **conséquence** « les gardes bi-core `#if ESP_ARDUINO_VERSION_MAJOR >= 3` restent obligatoires » (les 8 gardes sont supprimées, `grep` → 0 ligne). **Tout le reste est inchangé** : le core 3 est l'environnement de production bootloader compris, `PIO_ENV` reste l'unique point d'entrée de l'outillage, le cloisonnement d'archivage par env est maintenu, l'épinglage `55.03.37` reste un contrat de production, la perte du filet `otadata` reste entière.
 - **Date** : 2026-08-22
 - **Décideurs** : Nicolas
 - **Spec(s) liée(s)** : aucune spec dédiée — franchissement de la « porte de bascule production » ouverte par [ADR-0034](0034-migration-core3-idf5.md) (études/exécution : feature-062, feature-063)

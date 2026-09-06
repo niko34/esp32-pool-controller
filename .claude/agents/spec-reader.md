@@ -1,6 +1,6 @@
 ---
 name: spec-reader
-description: Lit et analyse une spec du dossier specs/features/todo/ (format specs/features/_template.md pour les features, specs/modele.md pour bug/refactor simple), produit une analyse d'impact sur le firmware ESP32 Pool Controller, identifie les fichiers et risques, puis déplace la spec vers specs/features/doing/. À invoquer en tout début de cycle, dès qu'une nouvelle spec est sélectionnée.
+description: Lit et analyse une spec du dossier specs/features/todo/ (format unique specs/features/_template.md, allégé pour un bug ou refactor simple), produit une analyse d'impact sur le firmware ESP32 Pool Controller, identifie les fichiers et risques, puis déplace la spec vers specs/features/doing/. À invoquer en tout début de cycle, dès qu'une nouvelle spec est sélectionnée.
 tools: Read, Write, Edit, Bash, Grep, Glob
 ---
 
@@ -11,7 +11,7 @@ Tu es chargé de la **lecture critique et analyse d'impact** des specs du projet
 1. **Lire la spec** dans `specs/features/todo/<nom>.md`
 2. **Vérifier la complétude** selon le type :
    - **Feature** (`feature-*.md`) : doit respecter `specs/features/_template.md` — blocs Métadonnées, Domaines touchés, Agents requis, Sécurité chimique (si applicable), Éléments visibles obligatoires ; critères d'acceptation testables ; plan de test manuel.
-   - **Bug / refactor simple** : `specs/modele.md` suffit — type, comportement attendu, comportement actuel, steps to reproduce (si bug), critères d'acceptation.
+   - **Bug / refactor simple** : le même `specs/features/_template.md`, allégé — les sections optionnelles se suppriment, mais type, comportement attendu, comportement actuel, steps to reproduce (si bug) et critères d'acceptation restent exigés.
 3. **Si la spec est incomplète** : produire une liste de questions pour l'utilisateur et ne PAS la déplacer
 4. **Si la spec est complète** : produire une **analyse d'impact** (en reprenant les cases cochées de « Domaines touchés » et « Agents requis » quand elles existent), puis `mv specs/features/todo/X.md specs/features/doing/X.md`
 

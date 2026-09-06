@@ -19,15 +19,14 @@ TYPE="${1:-both}"
 ESP32_HOST="${2:-poolcontroller.local}"
 UPDATE_URL="http://$ESP32_HOST/update"
 
-# Environnement déployé : core 3 par défaut depuis v2.20.4 (ADR-0042). Repli :
-#   PIO_ENV=esp32dev ./ota_update.sh firmware <hôte>
+# Environnement déployé : esp32dev_core3, seul env matériel depuis v2.42.1
+# (ADR-0069 ; core 3 par défaut depuis v2.20.4, ADR-0042). Surchargeable par
+#   PIO_ENV=<env> ./ota_update.sh firmware <hôte>
 # Chemins surchargeables individuellement si besoin (FIRMWARE_PATH / FILESYSTEM_PATH).
 #
-# RAPPEL UTILE : l'OTA n'écrit QUE l'application, jamais le bootloader. Une image
-# core 3 démarre donc parfaitement sur un bootloader core 2 — c'est le montage qui
-# a tourné en production pendant des semaines. Corollaire : passer au bootloader
-# core 3 exige un flash USB (./deploy.sh), l'OTA n'y suffit pas.
-# Le filesystem est indépendant du core : inutile de le renvoyer pour un changement de core.
+# RAPPEL UTILE : l'OTA n'écrit QUE l'application, jamais le bootloader.
+# Corollaire : tout changement de bootloader exige un flash USB (./deploy.sh),
+# l'OTA n'y suffit pas. Le filesystem, lui, est indépendant du bootloader.
 PIO_ENV="${PIO_ENV:-esp32dev_core3}"
 FIRMWARE_PATH="${FIRMWARE_PATH:-.pio/build/$PIO_ENV/firmware.bin}"
 FILESYSTEM_PATH="${FILESYSTEM_PATH:-.pio/build/$PIO_ENV/littlefs.bin}"

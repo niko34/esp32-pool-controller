@@ -213,11 +213,15 @@ Sous suspension flow-assist, `update()` sort par le chemin perte-filtration **av
 
 Le verdict pur `canStartFlowAssistPhase()` (quota de purges, marche déjà en cours) et le prédicat d'expiration vivent dans le header **sans dépendance Arduino** [`src/flow_assist_logic.h`](../../src/flow_assist_logic.h) (pattern ADR-0017) — 25 tests natifs `test/test_native_flow_assist/`.
 
-## Mise en sécurité `pumpUsable` (chemin core 3 — feature-063, v2.15.0 ; **actif en production depuis la v2.20.4**)
+## Mise en sécurité `pumpUsable` (feature-063, v2.15.0 ; **actif en production depuis la v2.20.4**)
 
-Le PWM des pompes est **bi-core** depuis feature-063 ([ADR-0034](../adr/0034-migration-core3-idf5.md)) : sous garde `#if ESP_ARDUINO_VERSION_MAJOR >= 3`, `begin()` utilise `ledcAttachChannel(pin, PUMP_PWM_FREQ, PUMP_PWM_RES_BITS, channel)` / `ledcWriteChannel()` — canaux 0/1 explicites, **20 kHz / 8 bits STRICTEMENT identiques** au core 2 (le duty ne change pas d'échelle). En core 2 (désormais **repli** — `PIO_ENV=esp32dev`, [ADR-0042](../adr/0042-core3-environnement-par-defaut.md)), le chemin `ledcSetup`/`ledcAttachPin`/`ledcWrite` est **inchangé, à l'octet près**. **Depuis la v2.20.4, la production tourne en core 3** : c'est donc la branche `ledcAttachChannel` qui est exécutée sur l'appareil.
+Le PWM des pompes emprunte **un chemin unique** : `begin()` appelle `ledcAttachChannel(pin, PUMP_PWM_FREQ, PUMP_PWM_RES_BITS, channel)` puis `ledcWriteChannel()` — canaux 0/1 explicites.
 
-Nouveauté du chemin core 3 : contrairement à `ledcSetup()`, `ledcAttachChannel()` **retourne un bool**. Prescription **P1 pool-chemistry** (GO sous conditions, toutes implémentées) — échec d'attache = **pompe inutilisable, fail-closed** :
+> 🔒 **Invariant de sécurité chimique** : le PWM est cadencé à **20 kHz sur 8 bits** (`PUMP_PWM_FREQ` / `PUMP_PWM_RES_BITS`), **l'échelle du duty est 0-255 et ne change pas**. Toute modification de la fréquence ou de la résolution modifierait le volume injecté à consigne constante et exige un passage par `pool-chemistry`.
+
+*(Historique : de la v2.15.0 à la v2.42.0, ce chemin était sous garde `#if ESP_ARDUINO_VERSION_MAJOR >= 3`, la branche `ledcSetup`/`ledcAttachPin`/`ledcWrite` servant au repli core 2. Ce repli a été retiré en v2.42.1 — [ADR-0069](../adr/0069-retrait-repli-core-2.md) — sans aucun changement du binaire produit : la branche core 2 n'était plus compilée depuis la bascule production de la v2.20.4.)*
+
+Point important : contrairement à `ledcSetup()`, `ledcAttachChannel()` **retourne un bool**. Prescription **P1 pool-chemistry** (GO sous conditions, toutes implémentées) — échec d'attache = **pompe inutilisable, fail-closed** :
 
 - `pumpUsable[i]` (`volatile bool`, [`pump_controller.h`](../../src/pump_controller.h) — patron identique à `maintenanceInhibit`) passé à `false` **uniquement** dans `begin()` sur échec d'attache, **jamais réarmé à chaud** (reboot requis). Log **CRITICAL** « pompe déclarée INUTILISABLE jusqu'au reboot ».
 - Le GPIO est **tenu LOW** (le `pinMode(OUTPUT)` + `digitalWrite(LOW)` précèdent la tentative d'attache) — pompe physiquement arrêtée.
@@ -230,15 +234,16 @@ Nouveauté du chemin core 3 : contrairement à `ledcSetup()`, `ledcAttachChannel
 bool isPumpUsable(int index) const;  // 0 = pH, 1 = ORP/chlore
 ```
 
-Lecture seule **STRICTE** de l'utilisabilité de la pompe ([`pump_controller.h`](../../src/pump_controller.h), impl. [`pump_controller.cpp:123`](../../src/pump_controller.cpp:123)) — **aucun setter**, l'accesseur ne doit JAMAIS servir à réactiver une pompe (reboot requis pour réarmer). Sémantique **bi-core** :
+Lecture seule **STRICTE** de l'utilisabilité de la pompe ([`pump_controller.h`](../../src/pump_controller.h), impl. [`pump_controller.cpp:123`](../../src/pump_controller.cpp:123)) — **aucun setter**, l'accesseur ne doit JAMAIS servir à réactiver une pompe (reboot requis pour réarmer). Sémantique **unique**, sans condition de plateforme :
 
-- **core 3** : reflète `pumpUsable[]` (échec `ledcAttachChannel` possible au boot) ;
-- **core 2** : retourne **toujours `true`** (le flag n'existe pas, l'échec d'attache non plus) ;
+- reflète `pumpUsable[]`, posé à `false` au boot sur échec `ledcAttachChannel` ;
 - index hors bornes (≠ 0/1) → **`false`** (fail-closed).
+
+> Jusqu'à la v2.42.0, l'accesseur retournait **toujours `true`** quand le firmware était compilé pour le repli core 2 — le drapeau `pumpUsable[]` n'existait alors pas. Une pompe y était donc **réputée utilisable sans vérification**. Ce comportement n'existe plus depuis le retrait du repli ([ADR-0069](../adr/0069-retrait-repli-core-2.md)) : le durcissement est unilatéral, aucun chemin n'est assoupli.
 
 ### Remontée MQTT `pump_unusable` (feature-064, v2.16.0 — exigence P1 livrée)
 
-✅ La **recommandation P1 pool-chemistry** (« le CRITICAL local ne suffit pas en production — alerte MQTT dédiée obligatoire avant toute bascule production core 3 », condition de la porte de bascule [ADR-0034](../adr/0034-migration-core3-idf5.md)) est **livrée** : `MqttManager::connectInTask()` lit `PumpController.isPumpUsable(i)` et publie une alerte `pump_unusable` **par pompe inutilisable**, **à chaque (re)connexion MQTT** (arbitrage Q1 : l'alerte est non-retained et l'état permanent jusqu'au reboot — un broker absent au boot ne la perd plus). Aucun chemin d'écriture nouveau vers `pumpUsable[]` ni vers les pompes. Voir [`docs/MQTT.md`](../MQTT.md#alertes) et [`mqtt-manager.md`](mqtt-manager.md). Ce chemin de déclenchement n'existe qu'en core 3 — et le core 3 est **l'environnement de production depuis la v2.20.4** ([ADR-0042](../adr/0042-core3-environnement-par-defaut.md)) : l'alerte est donc **réellement armée en production**, alors qu'elle était dormante tant que la production tournait en core 2 (elle le reste en repli `PIO_ENV=esp32dev`).
+✅ La **recommandation P1 pool-chemistry** (« le CRITICAL local ne suffit pas en production — alerte MQTT dédiée obligatoire avant toute bascule production core 3 », condition de la porte de bascule [ADR-0034](../adr/0034-migration-core3-idf5.md)) est **livrée** : `MqttManager::connectInTask()` lit `PumpController.isPumpUsable(i)` et publie une alerte `pump_unusable` **par pompe inutilisable**, **à chaque (re)connexion MQTT** (arbitrage Q1 : l'alerte est non-retained et l'état permanent jusqu'au reboot — un broker absent au boot ne la perd plus). Aucun chemin d'écriture nouveau vers `pumpUsable[]` ni vers les pompes. Voir [`docs/MQTT.md`](../MQTT.md#alertes) et [`mqtt-manager.md`](mqtt-manager.md). L'alerte est **armée sans condition** : elle l'est en production depuis la bascule core 3 de la v2.20.4 ([ADR-0042](../adr/0042-core3-environnement-par-defaut.md)), et depuis le retrait du repli core 2 en v2.42.1 ([ADR-0069](../adr/0069-retrait-repli-core-2.md)) il n'existe plus de configuration de build où elle serait dormante.
 
 ## Algorithme (résumé)
 

@@ -93,16 +93,14 @@ private:
   // (pose/levée), jamais de spam par tour. Écrit/lu en loopTask uniquement.
   bool _flowAssistSuspendPrev = false;
 
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  // Migration core 3 (feature-063, prescription P1 pool-chemistry) : pompe
-  // utilisable. Passé à false UNIQUEMENT dans begin() (chemin core 3) si
-  // ledcAttachChannel() échoue — écrit AVANT le démarrage du serveur web, jamais
-  // réarmé à chaud (reboot requis). Fail-closed : applyPumpDuty() refuse toute
-  // mutation d'une pompe inutilisable (pumpDuty reste 0 à vie).
+  // feature-063, prescription P1 pool-chemistry : pompe utilisable. Passé à
+  // false UNIQUEMENT dans begin() si ledcAttachChannel() échoue — écrit AVANT le
+  // démarrage du serveur web, jamais réarmé à chaud (reboot requis). Fail-closed :
+  // applyPumpDuty() refuse toute mutation d'une pompe inutilisable (pumpDuty
+  // reste 0 à vie).
   // volatile : écrit par loopTask (begin), lu en contexte web async
   // (setManualPump → applyPumpDuty) — patron identique à maintenanceInhibit.
   volatile bool pumpUsable[2] = {true, true};
-#endif
 
   DosingState phDosingState;
   DosingState orpDosingState;
@@ -831,9 +829,8 @@ public:
   // feature-064 (ADR-0034, prescription pool-chemistry P1) : lecture seule
   // STRICTE de l'utilisabilité de la pompe (0 = pH, 1 = ORP/chlore), posée une
   // seule fois par begin() (feature-063). Ne doit JAMAIS servir à réactiver une
-  // pompe (aucun setter — reboot requis). Sémantique bi-core :
-  //   - core 3 : reflète pumpUsable[] (échec ledcAttachChannel possible au boot),
-  //   - core 2 : toujours true (pas de flag, l'échec d'attache n'existe pas).
+  // pompe (aucun setter — reboot requis). Reflète pumpUsable[] : false dès que
+  // ledcAttachChannel() a échoué au boot pour cette pompe.
   // Index hors bornes → false (fail-closed).
   bool isPumpUsable(int index) const;
 

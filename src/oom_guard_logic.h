@@ -240,7 +240,7 @@ constexpr uint32_t kOomProbeInternalCapBit = 0x0800u;
 // INTERNES. Ce serait correct sur ESP32 classique (PSRAM non accessible en DMA)
 // et FAUX sur ESP32-S3, où la PSRAM EST DMA-capable : la sonde repartirait
 // parcourir 4 Mo interruptions coupées dans le chemin d'échec. Le plan de
-// migration core 3.x / S3 est ouvert dans les specs — la tentation
+// migration vers l'ESP32-S3 est ouvert dans les specs — la tentation
 // d'« optimiser » viendra.
 inline bool oomProbeUsesRegionScan(uint32_t caps) {
   return (caps & kOomProbeInternalCapBit) == 0u;

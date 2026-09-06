@@ -568,13 +568,11 @@ L'OTA n'écrit **que** l'application, à l'intérieur des partitions existantes.
 
 ⚠️ **Le filet de repli a disparu.** Tant que le bootloader restait en IDF 4.4, une application core 3 défaillante se rattrapait **sans câble** en repointant `otadata` (`erase_region 0xE000 0x2000`), ce qui faisait redémarrer l'appareil sur le slot précédent. Avec un bootloader core 3, ce recours n'existe plus : **tout échec impose un flash USB**, donc un **accès physique** au boîtier. À prendre en compte avant d'intervenir sur un appareil difficile d'accès ou hors saison.
 
-**Retour arrière vers le core 2** (repli complet, USB requis) :
+> ⚠️ **Il n'existe plus de retour arrière vers le core 2 — depuis la v2.42.1, l'environnement de repli est retiré** ([ADR-0069](adr/0069-retrait-repli-core-2.md)). Les versions antérieures de ce guide publiaient une procédure `PIO_ENV=esp32dev ./deploy.sh all` : elle était **fausse et dangereuse**. L'environnement core 2 n'était plus compilable depuis la **v2.40.0** (un appel `esp_cpu_get_cycle_count()` laissé hors garde dans `oom_guard.cpp`, resté invisible deux versions parce que la CI ne construit que l'env `native`), et **aucun binaire core 2 n'avait jamais été archivé**. La commande n'aurait donc produit aucune image : ni compilable, ni flashable, sans image de secours.
+>
+> **Ce qui remplace ce recours** : le retour arrière se fait sur une **version antérieure du firmware core 3** (image archivée dans `builds/<VERSION>/esp32dev_core3/`, ou asset d'une release GitHub), poussée en OTA si l'appareil répond, par flash USB sinon. Les deux conditions ci-dessus restent entières : **changer de bootloader ou de table de partitions exige toujours un câble série**, et **le filet `otadata` n'existe plus**.
 
-```bash
-PIO_ENV=esp32dev ./deploy.sh all
-```
-
-> ℹ️ Config NVS, historique et coredump sont **préservés** dans les deux sens : la table de partitions ne change pas (layout v4 inchangé) et le format LittleFS reste compatible. Détails outillage : [BUILD.md](BUILD.md#les-deux-environnements-firmware).
+> ℹ️ Config NVS, historique et coredump sont **préservés** par un simple changement d'application, dans les deux sens : la table de partitions ne change pas et le format LittleFS reste compatible. Un **changement de layout**, lui, déplace les partitions et efface leur contenu — voir la section « Migration layout v4 → v5 » ci-dessous. Détails outillage : [BUILD.md](BUILD.md#lenvironnement-firmware-unique).
 
 ### Mode d'installation (`install_mode`) — depuis v2.19.0 (2026-07-08)
 

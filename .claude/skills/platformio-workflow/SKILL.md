@@ -1,19 +1,19 @@
 ---
 name: platformio-workflow
-description: Workflow et commandes PlatformIO pour ESP32 Pool Controller. À charger dès qu'il faut compiler, flasher, déployer le firmware ou le filesystem, ou lancer des tests embarqués/natifs. Couvre pio run, upload USB, OTA, build FS LittleFS 1088KB, monitor série et décodage backtrace.
+description: Workflow et commandes PlatformIO pour ESP32 Pool Controller. À charger dès qu'il faut compiler, flasher, déployer le firmware ou le filesystem, ou lancer des tests embarqués/natifs. Couvre pio run, upload USB, OTA, build FS LittleFS 512KB, monitor série et décodage backtrace.
 ---
 
 # PlatformIO — workflow ESP32 Pool Controller
 
 ## Configuration
 
-- `platformio.ini` : env unique `[env:esp32dev]` avec `platform = espressif32@6.9.0`, `framework = arduino`
-- Partitions personnalisées : `partitions.csv` (ne jamais modifier sans migration OTA)
+- `platformio.ini` : env matériel unique `[env:esp32dev_core3]`, plateforme **pioarduino épinglée `55.03.37`** (core Arduino 3.3.7 / IDF 5.5.0), `framework = arduino`. L'ancien env de repli core 2 `[env:esp32dev]` (`espressif32@6.9.0`) a été **retiré en v2.42.1** — voir [ADR-0069](../../../docs/adr/0069-retrait-repli-core-2.md). ⚠️ La plateforme `espressif32@6.9.0` reste **installée** (elle fournit `tool-mklittlefs`, référencé en dur par `build_fs.sh`) : ne pas la désinstaller.
+- ⚠️ **Ne jamais lancer `pio pkg install` / `pio pkg uninstall` sans nécessité** : la commande réécrit `platformio.ini` en supprimant tous ses commentaires.
+- Partitions personnalisées : `partitions.csv` — **layout v5, flash 8 Mo** ([ADR-0068](../../../docs/adr/0068-partitions-layout-v5-flash-8-mo.md)). Ne jamais modifier sans flash USB (l'OTA n'écrit ni le bootloader ni la table).
 - Filesystem : LittleFS, deux partitions :
-  - `spiffs` : **1088 KB** (1 114 112 octets = 0x110000) — contient `data/` (frontend web)
-  - `history` : **128 KB** (0x20000) — contient les fichiers d'historique
+  - `spiffs` : **512 KB** (524 288 octets = 0x80000, offset 0x730000) — contient `data/` (frontend web)
+  - `history` : **256 KB** (0x40000, offset 0x7B0000) — contient `/history.json` et `/system.log`
 - ⚠️ Taille différente de la valeur par défaut PlatformIO — **utiliser `./build_fs.sh`**, pas `pio run -t buildfs`
-- ⚠️ Le commentaire `1344KB` présent dans `platformio.ini` est **obsolète/erroné** — se fier à `build_fs.sh` et `partitions.csv`
 
 ## Compilation & upload USB
 
@@ -63,24 +63,22 @@ Raccourcis utiles dans le monitor :
 ## Tests
 
 ```bash
-pio test                       # Tous les tests (si dossier test/ existe)
-pio test -e native             # Tests natifs (PC, rapide)
-pio test -e esp32dev           # Tests sur cible (ESP32 connecté)
-pio test -f test_xxx           # Filtrer un test
+pio test -e native             # Tests natifs (PC, rapide) — 33 suites, 1286 cas
+pio test -f test_xxx           # Filtrer une suite
 ```
 
-Organisation recommandée :
+⚠️ **Il n'existe pas d'environnement de test sur cible.** `pio test -e esp32dev` n'a jamais correspondu à un env déclaré, et `esp32dev` n'existe plus du tout depuis la v2.42.1. Toute la logique testable est extraite en modules purs ([ADR-0017](../../../docs/adr/0017-logique-metier-pure-humble-object-testabilite.md)) et jouée en natif :
+
 ```
 test/
-  test_native/          # Logique pure portable
-  test_embedded/        # Tests nécessitant HAL Arduino
+  test_native_<domaine>/   # Logique pure portable — 33 suites
 ```
 
 ## Debug
 
 ```bash
 # Décoder une backtrace manuellement (adresses collées depuis un ancien log)
-pio pkg exec -- xtensa-esp32-elf-addr2line -pfiaC -e .pio/build/esp32dev/firmware.elf <addr>
+pio pkg exec -- xtensa-esp32-elf-addr2line -pfiaC -e .pio/build/esp32dev_core3/firmware.elf <addr>
 ```
 
 ## Pièges connus

@@ -41,7 +41,7 @@ Tu es le **debugger** du projet ESP32 Pool Controller. Ta méthode : comprendre 
 ## Commandes utiles
 
 ```bash
-# Décoder une backtrace ESP32 (nécessite .pio/build/esp32dev/firmware.elf à jour)
+# Décoder une backtrace ESP32 (nécessite .pio/build/esp32dev_core3/firmware.elf à jour)
 # PlatformIO le fait automatiquement en live dans le monitor si exception_decoder est activé
 pio device monitor -b 115200 --filter esp32_exception_decoder
 

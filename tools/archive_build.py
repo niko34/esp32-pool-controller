@@ -18,9 +18,10 @@ effectivement flashée, l'ELF porte les symboles) sous :
 La version est lue dans `src/version.h` (FIRMWARE_VERSION) : les archives sont
 ainsi rangées par version, ce qui rend triviale la question « quel ELF correspond
 au firmware 2.20.2 qui a crashé ? ». Le sous-dossier d'environnement
-(`esp32dev` / `esp32dev_core3`) est indispensable : les deux envs produisent des
-binaires DIFFÉRENTS sous la même version, et l'ELF doit correspondre EXACTEMENT à
-l'image qui tournait.
+(`esp32dev_core3`) est MAINTENU (ADR-0042) : il est né du temps où deux envs
+matériels produisaient des binaires DIFFÉRENTS sous la même version. L'env de
+repli a disparu en v2.42.1 (ADR-0069), le cloisonnement reste — il garde les
+archives lisibles et survivra à l'ajout d'une future cible (S3, banc d'essai).
 
 Rétention : les 5 archives les plus récentes PAR VERSION ET PAR ENVIRONNEMENT
 (l'ELF pèse ~10 Mo ; 5 suffisent à couvrir les itérations d'une même version sans
@@ -60,10 +61,11 @@ def _lire_version(project_dir):
 def _purger(dossier, extension, garder):
     """Ne conserve que les `garder` fichiers *.extension les plus récents.
 
-    Le dossier est déjà cloisonné PAR ENVIRONNEMENT (cf. archiver_build) : la
-    purge ne peut donc pas faire évincer l'ELF core3 déployé par une série de
-    builds core2. C'était le bloquant n°2 de la revue 2.20.2, et c'est très
-    exactement la perte forensique qu'on corrige.
+    Le dossier est cloisonné PAR ENVIRONNEMENT (cf. archiver_build) : la purge
+    ne peut donc pas faire évincer l'ELF déployé par une série de builds d'un
+    AUTRE env. C'était le bloquant n°2 de la revue 2.20.2 (à l'époque, une série
+    de builds core 2 évinçait l'ELF core 3 réellement en production), et c'est
+    très exactement la perte forensique qu'on corrige.
 
     Tri par NOM et non par date de modification : `shutil.copy2` recopie la mtime
     de la source, si bien qu'un rebuild d'une révision plus ancienne pouvait
@@ -89,10 +91,11 @@ def archiver_build(source, target, env):  # noqa: ARG001 (signature imposée par
         project_dir = env.subst("$PROJECT_DIR")
         build_dir = env.subst("$BUILD_DIR")
         version = _lire_version(project_dir)
-        # Cloisonnement PAR ENVIRONNEMENT (revue 2.20.2, bloquant n°2) : les deux
-        # envs matériels produisent des binaires DIFFÉRENTS sous la même version.
-        # Rangés ensemble, 5 builds core2 évinçaient l'ELF core3 réellement
-        # déployé — soit la panne forensique du 15/08 reconduite.
+        # Cloisonnement PAR ENVIRONNEMENT (revue 2.20.2, bloquant n°2) : deux envs
+        # matériels produisaient des binaires DIFFÉRENTS sous la même version et,
+        # rangés ensemble, 5 builds core 2 évinçaient l'ELF core 3 réellement
+        # déployé — soit la panne forensique du 15/08 reconduite. Le repli core 2
+        # a disparu (ADR-0069) ; le cloisonnement, lui, est MAINTENU (ADR-0042).
         pioenv = env.subst("$PIOENV") or "env-inconnu"
         dossier = os.path.join(project_dir, "builds", version, pioenv)
         os.makedirs(dossier, exist_ok=True)

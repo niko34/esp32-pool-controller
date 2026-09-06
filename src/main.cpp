@@ -187,21 +187,17 @@ void setup() {
   digitalWrite(kBuiltinLedPin, LOW);
 
   // Initialisation watchdog
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  // Migration core 3 (feature-063) : IDF 5 remplace (timeout, panic) par une
-  // struct de config. Le TWDT est déjà initialisé par le core Arduino 3 →
-  // esp_task_wdt_reconfigure (esp_task_wdt_init renverrait ESP_ERR_INVALID_STATE).
+  // feature-063 : IDF 5 configure le TWDT par une struct. Le TWDT est déjà
+  // initialisé par le core Arduino → on RECONFIGURE (esp_task_wdt_init
+  // renverrait ESP_ERR_INVALID_STATE).
   {
     esp_task_wdt_config_t wdtConfig = {
         .timeout_ms = kWatchdogTimeoutSec * 1000,
-        .idle_core_mask = 0,   // idem core 2 : pas d'abonnement des tâches idle
-        .trigger_panic = true, // idem core 2 : panic → reset au timeout
+        .idle_core_mask = 0,   // pas d'abonnement des tâches idle
+        .trigger_panic = true, // panic → reset au timeout
     };
     esp_task_wdt_reconfigure(&wdtConfig);
   }
-#else
-  esp_task_wdt_init(kWatchdogTimeoutSec, true);
-#endif
   esp_task_wdt_add(NULL);
   systemLogger.info("Watchdog activé (" + String(kWatchdogTimeoutSec) + "s)");
 

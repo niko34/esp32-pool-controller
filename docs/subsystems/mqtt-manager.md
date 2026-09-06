@@ -184,14 +184,14 @@ if (!isnan(phIntPct)) safePublishDedup(20, topics.phIntegralPctState.c_str(),  S
 
 ### Alerte `pump_unusable` re-publiée à chaque connexion (feature-064, v2.16.0)
 
-Hook dans `connectInTask()` ([`mqtt_manager.cpp:432`](../../src/mqtt_manager.cpp:432)), **branche connectée uniquement**, juste après `publishDiagnosticInternal()` : pour chaque pompe (0 = pH, 1 = ORP/chlore), si `PumpController.isPumpUsable(i)` retourne `false` (flag fail-closed `pumpUsable[]` posé au boot sur échec `ledcAttachChannel` — **core 3 uniquement**, feature-063), une alerte `publishAlert("pump_unusable", ...)` est émise avec pompe / rôle / GPIO / canal LEDC en français.
+Hook dans `connectInTask()` ([`mqtt_manager.cpp:432`](../../src/mqtt_manager.cpp:432)), **branche connectée uniquement**, juste après `publishDiagnosticInternal()` : pour chaque pompe (0 = pH, 1 = ORP/chlore), si `PumpController.isPumpUsable(i)` retourne `false` (flag fail-closed `pumpUsable[]` posé au boot sur échec `ledcAttachChannel`, feature-063), une alerte `publishAlert("pump_unusable", ...)` est émise avec pompe / rôle / GPIO / canal LEDC en français.
 
 Points clés :
 
 - **Re-publication à CHAQUE (re)connexion MQTT** (arbitrage Q1, décision pool-chemistry P1) et non one-shot au boot (patron `history_partition_reset` écarté) : `publishAlert` est **non-retained** et l'état « pompe inutilisable » est **permanent jusqu'au reboot** — un broker absent au boot ne perd plus l'alerte (la 1ʳᵉ connexion couvre le boot, les reconnexions couvrent le reste). Aucun bloc dans `main.cpp`. Limitation résiduelle assumée : un HA qui redémarre sans reconnexion de l'ESP32 ne revoit pas l'alerte.
 - **Lecture seule stricte** du flag via l'accesseur `isPumpUsable()` (pas d'accès direct à `pumpUsable[]`, aucun setter) — voir [`pump-controller.md`](pump-controller.md#accesseur-ispumpusable-feature-064-v2160).
 - `publishAlert()` passe par l'**outQueue** existante — pas de publish direct dans `connectInTask()`, pas de mécanique nouvelle.
-- **Chemin ACTIF en production depuis la v2.20.4** : le core 3 est l'environnement par défaut ([ADR-0042](../adr/0042-core3-environnement-par-defaut.md)), donc `isPumpUsable()` peut réellement retourner `false` et l'alerte peut réellement partir. Il n'était dormant que tant que la production tournait en core 2 (où `isPumpUsable()` retournait toujours `true`) — c'était précisément l'exigence pool-chemistry de la porte de bascule ([ADR-0034](../adr/0034-migration-core3-idf5.md)). Reste dormant en repli `PIO_ENV=esp32dev`.
+- **Chemin ACTIF en production depuis la v2.20.4** : le core 3 est l'environnement par défaut ([ADR-0042](../adr/0042-core3-environnement-par-defaut.md)), donc `isPumpUsable()` peut réellement retourner `false` et l'alerte peut réellement partir. Il n'était dormant que tant que la production tournait en core 2 (où `isPumpUsable()` retournait toujours `true`) — c'était précisément l'exigence pool-chemistry de la porte de bascule ([ADR-0034](../adr/0034-migration-core3-idf5.md)). Depuis le retrait du repli core 2 en v2.42.1 ([ADR-0069](../adr/0069-retrait-repli-core-2.md)), **plus aucune configuration de build ne le laisse dormant**.
 
 Format du message et exemple : voir [`docs/MQTT.md`](../MQTT.md#alertes).
 
@@ -453,7 +453,9 @@ build_flags =
 > - **OTA HTTP** : un push OTA en réseau dégradé (CPL très lossy, RSSI marginal) peut être avorté plus tôt — l'humain doit relancer manuellement. Acceptable car OTA est déjà supervisé interactivement.
 > - **NTP** : abandon plus rapide d'une requête NTP qui ne répond pas. NTP a son propre retry applicatif, sans impact.
 >
-> **Pourquoi pas un timeout par-socket ?** L'option lwip `TCP_USER_TIMEOUT` (RFC 5482), qui aurait permis de borner uniquement la socket MQTT et pas les autres, **n'est pas supportée par lwip dans ESP-IDF 4.4** (Arduino-ESP32 6.9.0). On retombe donc sur le paramètre global. Si une migration future vers ESP-IDF 5.x apporte le support de `TCP_USER_TIMEOUT`, on pourra ré-isoler le bornage à la socket MQTT et restaurer le default lwip global.
+> **Pourquoi pas un timeout par-socket ?** L'option lwip `TCP_USER_TIMEOUT` (RFC 5482), qui aurait permis de borner uniquement la socket MQTT et pas les autres, **n'était pas supportée par lwip dans ESP-IDF 4.4** (plateforme `espressif32@6.9.0`, core Arduino 2.x) — d'où le repli sur le paramètre **global**, qui est le comportement en vigueur.
+>
+> ℹ️ **Ce constat est daté.** Le projet tourne sur **ESP-IDF 5.5.0** depuis la v2.20.4 ([ADR-0042](../adr/0042-core3-environnement-par-defaut.md)), et le core 2 a été retiré en v2.42.1 ([ADR-0069](../adr/0069-retrait-repli-core-2.md)). Le paramètre global **n'a pas été modifié** : la ré-isolation du bornage à la seule socket MQTT (et la restauration du défaut lwip global) est une **piste ouverte**, non instruite, hors du périmètre du retrait.
 
 ## Diagnostic — Codes d'état PubSubClient
 

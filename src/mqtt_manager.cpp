@@ -455,7 +455,7 @@ void MqttManager::connectInTask() {
     // retained et l'état "pompe inutilisable" est permanent jusqu'au reboot
     // (broker possiblement absent au boot : la 1ʳᵉ connexion couvre le boot,
     // les reconnexions couvrent le reste). Lecture seule stricte du flag posé
-    // par PumpController.begin() (core 3 uniquement ; core 2 : jamais déclenché).
+    // par PumpController.begin() — alerte armée sans condition.
     // publishAlert() passe par l'outQueue — pas de publish direct ici.
     {
       static const char* kPumpRoles[2] = {"pH", "Chlore/ORP"};

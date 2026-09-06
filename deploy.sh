@@ -10,9 +10,9 @@ LITTLEFS_OFFSET="0x730000"  # Layout v5 — était 0x390000 en v4, 0x350000 en v
 NVS_OFFSET="0x9000"         # partitions.csv : nvs, data, nvs, 0x9000, 0x5000
 NVS_SIZE="0x5000"
 
-# Environnement PlatformIO déployé. Depuis v2.20.4 le défaut est le core 3
-# (ADR-0042) — bootloader ET application. Repli explicite vers le core 2 :
-#   PIO_ENV=esp32dev ./deploy.sh all
+# Environnement PlatformIO déployé : esp32dev_core3, seul env matériel depuis
+# v2.42.1 (ADR-0069 ; core 3 par défaut depuis v2.20.4, ADR-0042 — bootloader ET
+# application). PIO_ENV reste le point d'entrée unique et surchargeable.
 # Doit rester cohérent avec default_envs de platformio.ini : l'env est passé
 # explicitement en -e à chaque appel pio pour que le script ne dépende pas du
 # défaut du fichier de config.

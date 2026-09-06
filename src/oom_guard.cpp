@@ -7,11 +7,7 @@
 #include <esp_task_wdt.h>   // esp_task_wdt_reset (après la section critique du contrôle d'intégrité)
 #include <esp_timer.h>      // esp_timer_get_time (mesure de durée du contrôle d'intégrité)
 #include <esp_cpu.h>        // esp_cpu_get_cycle_count (horloge SANS verrou de la sonde du refus)
-#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-#include <esp_memory_utils.h>       // esp_ptr_internal (IDF 5) — vérification C1 de l'emplacement
-#else
-#include <soc/soc_memory_layout.h>  // esp_ptr_internal (IDF 4.4, env de repli esp32dev)
-#endif
+#include <esp_memory_utils.h>  // esp_ptr_internal (IDF 5) — vérification C1 de l'emplacement
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>  // xTaskGetTickCount (horloge SANS verrou pour le chemin d'échec)
 #include "oom_guard.h"
