@@ -29,6 +29,41 @@ répond `401` sans autre explication.
 
 ## 2. État des chantiers
 
+### ⚠️ Livré depuis le conteneur le 06/09 après-midi — POSTÉRIEUR à ce document
+
+Cette passation a été écrite à **14:46**. Le conteneur travaillait déjà, et les deux
+copies de `main` ont divergé deux heures sans se voir (fusion `85904c5`, sans conflit).
+Ce qui suit n'était donc pas connu au moment de la rédaction :
+
+- **`feature-102` / [ADR-0069](adr/0069-retrait-repli-core-2.md) — retrait du repli
+  core 2** (v2.42.1). Il n'était plus compilable depuis la v2.40.0, plus flashable
+  depuis que le bootloader est en core 3, et aucun binaire de secours n'avait jamais
+  été archivé. Un seul environnement matériel subsiste. Voir §4, la leçon corrigée.
+- **`feature-103` — deux gardes CI** : `build-firmware.yml` (la compilation devient un
+  *gate* — c'est l'absence de cette garde qui avait laissé passer la casse du core 2
+  pendant deux versions) et `hygiene-specs.yml` + `tools/check_specs.sh` (un nom de spec
+  ne peut plus vivre dans deux dossiers). ⚠️ **Ces workflows n'ont jamais tourné sur un
+  runner GitHub** : le premier push sera un rodage, et le build firmware y téléchargera
+  ~2 Go de toolchain avant de peupler son cache.
+- **`feature-105` — couverture réelle** : le filtre `gcovr` ne nommait que 2 modules sur
+  34, donc ne surveillait que ce qu'on avait pensé à lui nommer. Élargi à tout `src/`,
+  en CI **et** en local, avec la même garde de seuil. 5 tests neufs validés par mutation,
+  **1291 cas**, lignes à **100 %**. `feature-067` renumérotée en **`feature-104`** (le
+  numéro désignait deux specs).
+
+Trois entrées neuves dans `todo/`, par ordre d'intérêt :
+
+- **`feature-107`** — le refus de plan de dosage est **totalement silencieux** : ni
+  journal, ni code de blocage, ni topic. La régulation peut s'arrêter sans laisser de
+  trace. Son voisin, le refus de *gate* (pompe non caractérisée — cas bien plus probable),
+  journalise mais reste invisible à l'écran et en MQTT. La tuyauterie existe pourtant
+  déjà : il s'agit de l'**appeler**, pas de la construire.
+- **`bug-106`** — sur recul du compteur de filtration, la journée s'archive à
+  `minutes = 0`, indistinguable d'un « déjà à la cible ». Indicateur informatif, aucune
+  incidence dosage. Trouvé en écrivant les tests de `feature-105`, **délibérément non
+  corrigé** : poser une assertion dessus l'aurait entériné.
+- **`feature-104`** — ex-`feature-067`, l'étude de portage ESP32-S3. Inchangée au fond.
+
 ### En cours (`specs/features/doing/`) — 2 seulement
 
 **`bug-080` — redémarrages PANIC et fragmentation.** Lots A, B-1, B-2, B-3
@@ -121,9 +156,23 @@ après la purge ? » —, c'est le premier chiffre qui s'applique.
 **Vérifier l'heure plutôt que l'estimer.** Trois annonces d'horaire fausses en une
 session, toutes évitables par un `date`.
 
-**Ne jamais lancer `pio run -e esp32dev`.** Les environnements core 2 et core 3
-partagent le répertoire du framework et **se détruisent mutuellement**. Le repli
-core 2 passe par `PIO_ENV=esp32dev ./deploy.sh`.
+**~~Ne jamais lancer `pio run -e esp32dev`~~ — piège DISPARU le 06/09.** Il n'y a
+plus qu'un environnement matériel, `esp32dev_core3` ([ADR-0069](adr/0069-retrait-repli-core-2.md),
+`feature-102`, v2.42.1) : le repli core 2 a été retiré, et avec lui le conflit de
+paquet `framework-arduinoespressif32` qui faisait que les deux environnements se
+détruisaient mutuellement. `pio run` suffit désormais, sans `-e`.
+
+> Cette leçon a été écrite le 06/09 à 14:46 depuis le Mac, pendant que le conteneur
+> supprimait précisément ce repli (commit de 14:09). Les deux copies de `main` ont
+> divergé deux heures durant sans se voir — les fichiers touchés étant disjoints,
+> la fusion est passée sans conflit, et seul ce paragraphe s'est retrouvé faux.
+> **C'est une leçon de méthode en soi**, et elle vaut d'être gardée : une passation
+> écrite pendant que quelqu'un d'autre travaille se périme à l'encre encore fraîche.
+
+Le motif du retrait, lui, mérite d'être connu : ce repli n'était plus **compilable**
+depuis la v2.40.0, plus **flashable** depuis que le bootloader est en core 3, et
+**aucun binaire core 2 n'avait jamais été archivé**. Une assurance triplement
+inopérante, dont personne ne s'était aperçu qu'elle avait expiré.
 
 ---
 

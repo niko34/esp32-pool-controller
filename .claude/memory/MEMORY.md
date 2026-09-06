@@ -11,6 +11,10 @@
 - Après modification de `src/` : lancer `pio run` (génère `firmware.bin`)
 - Fichier de version : `src/version.h` — incrémenter le CORRECTIF pour les fixes
 
+## Poste de travail
+
+- [Conteneur LXC Debian 13](env-lxc-esp32-pool-controller.md) — depuis le 2026-09-05 le développement se fait dans un LXC (`/root/esp32-pool-controller`), plus sur le Mac : **aucun port série** (OTA seul, et pas de mDNS → IP explicite), Chromium exige un wrapper `--no-sandbox` pour les PDF, `pio pkg` réécrit `platformio.ini` en supprimant ses commentaires, chaîne PCB et `gh` en place
+
 ## esp32-pool-controller-screen — Build / Plateforme
 
 - **Plateforme** : `pioarduino` (Arduino 3.x, IDF 5.x) — OBLIGATOIRE pour ESP32_Display_Panel
