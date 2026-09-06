@@ -4,6 +4,18 @@
 - **Singleton** : `extern HistoryManager history;`
 - **Partition** : `history` LittleFS **256 KB** à l'offset `0x7B0000` (séparée de `spiffs`) — layout v5, voir [`partitions.csv`](../../partitions.csv), [ADR-0068](../adr/0068-partitions-layout-v5-flash-8-mo.md) et [ADR-0009](../adr/0009-partition-coredump.md). ⚠️ **Était 64 KB à `0x3E0000` jusqu'au 2026-09-05** — tous les budgets chiffrés « x/16 blocs » ci-dessous datent de cette époque et sont désormais **très conservateurs** (la partition compte 64 blocs).
 
+
+> ⚠️ **Accès fichiers — 6 des 14 sites `fopen` du firmware sont ici.**
+> `history.cpp` ouvre `/history.json` aux lignes **500**, **531** et **586**,
+> `/.fscheck` aux lignes **290** et **294**, et — site invisible à tout `grep` —
+> **`exists()` de la ligne 581 OUVRE le fichier** (`VFSImpl::exists()` construit un
+> `VFSFileImpl`, il ne fait pas de `stat()`). Chaque ouverture alloue un verrou
+> newlib dont l'échec appelle **`abort()`** : c'est le crash du 05/09
+> ([`docs/incidents/2026-09-05-panic-fopen-historique.txt`](../incidents/2026-09-05-panic-fopen-historique.txt)).
+> Stratégie retenue : [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) ;
+> recensement : [acces-fichiers.md](acces-fichiers.md). ⚠️ **La garde n'est pas
+> encore posée** — implémentation au cycle 2 de `bug-100`.
+
 ## Rôle
 
 Enregistre des snapshots des valeurs (pH, ORP, température, filtration active, dosing pH/ORP) toutes les 5 minutes. Depuis la **v2.38.0** (feature-095), chaque point `RAW` porte **en plus** la mesure **lissée** pH/ORP — celle sur laquelle la régulation décide — voir [Mesure lissée historisée](#mesure-lissée-historisée-feature-095-v2380). Consolide progressivement les données anciennes pour garder un historique utilisable sur **~82 jours** (7 jours de données horaires + 75 jours de données journalières) sans saturer la flash. ⚠️ Objectif théorique : l'étage journalier est actuellement affamé — voir le *Suivi connu* de la section [Consolidation par créneau complet](#consolidation-par-créneau-complet--déduplication-v2181-bug-history-doublons-troncature).

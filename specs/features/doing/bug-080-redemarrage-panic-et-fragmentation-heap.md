@@ -1171,3 +1171,58 @@ pourra pas être atteint avant `bug-100`.
 heures alors que l'appareil était sous surveillance active. `uptime` seul est un
 **mauvais détecteur de redémarrage** quand on n'en lit que les minutes modulo 60.
 **Vérifier `/coredump/info` fait désormais partie de tout relevé de diagnostic.**
+
+---
+
+## Périmètre du lot B-3 — désormais BORNÉ ET CHIFFRÉ (ajout du 2026-09-06, cycle 1 de `bug-100`)
+
+*Ajout, pas réécriture : les constats ci-dessus restent tels qu'ils ont été écrits
+le 05/09. Ce que le cycle 1 de `bug-100` change, c'est le **dénombrement**.*
+
+### « Au moins trois chemins » devient un compte exact
+
+Le recensement de `bug-100` — [`docs/subsystems/acces-fichiers.md`](../../../docs/subsystems/acces-fichiers.md)
+— dénombre **14 sites** d'ouverture de fichier pour le compte propre du firmware.
+
+**Le lot B-3 ferme un seul chemin : le service de fichiers statiques. Il n'en
+couvre aucun des 14.** Trois raisons distinctes, aucune accidentelle :
+
+1. les **13 sites non-HTTP** ne passent par **aucun matcher** — le firmware les
+   ouvre hors de toute requête ;
+2. **`/download-logs` (`web_routes_data.cpp:618`) est EXEMPT par l'ordre
+   d'enregistrement** — il fait partie des 19 routes GET déclarées **avant** le
+   handler de garde ; c'est un choix délibéré d'[ADR-0067](../../../docs/adr/0067-garde-503-avant-fopen-handler-prioritaire.md)
+   (garder l'appareil observable en famine), pas un oubli ;
+3. **`POST /history/import` est hors matcher** (garde `HTTP_GET`-only), alors qu'il
+   atteint les deux `fopen` de `saveToFile()` **depuis `async_tcp`** — c'est-à-dire
+   avec contention TCP, le pire cas.
+
+Répartition : **10 sites de classe A** (contention TCP réelle) et **4 de classe B**
+(boot). Stratégie arrêtée : [ADR-0070](../../../docs/adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md).
+
+### ⚠️ `exists()` ouvre le fichier — toute recherche par motif textuel est invalide
+
+`history.cpp:581` appelle `historyStore->exists()`. `VFSImpl::exists()` du
+framework **ne fait pas de `stat()`** : il construit un `VFSFileImpl(this, fpath, "r")`,
+donc un `fopen` complet, verrou newlib compris.
+
+**Aucun `grep "open("` ne trouve ce site.** La méthode qui a produit les gardes du
+lot B-3 — chercher les ouvertures par motif — ne pouvait structurellement pas le
+voir. C'est la raison pour laquelle le recensement est maintenu **à la main dans
+`docs/subsystems/`** et non régénéré par une commande.
+
+### Le critère « 7 jours sans redémarrage inopiné » RESTE OUVERT
+
+Le cycle 1 de `bug-100` **ne livre aucun code** : il produit un recensement, un
+arbitrage et un ADR. Les 14 sites sont **toujours non gardés** à ce jour. Ce
+critère ne peut donc pas être clos par ce cycle, et ne pourra pas l'être avant le
+**cycle 2 de `bug-100`**.
+
+### Note incidente — une garde du lot B est inopérante, pas seulement imprécise
+
+L'`architect` a qualifié `ESP.getFreeHeap()` / `ESP.getMaxAllocHeap()` de
+`web_routes_ota.cpp` (l. 654-655 et 893-894), consignés « hors périmètre, métrique
+brute » par [ADR-0058](../../../docs/adr/0058-gardes-heap-metrique-8-bits.md) :
+**ce n'est pas du rapport, c'est une garde aveugle** — ces valeurs alimentent
+`oomTlsGateReason()`, un prédicat qui **refuse la requête en 503**. Spec ouverte :
+`specs/features/todo/bug-108-garde-tls-ota-sur-metrique-ira-inclusive.md`.

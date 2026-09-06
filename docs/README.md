@@ -40,7 +40,8 @@ docs/
 │   ├── logger.md
 │   ├── system-health.md
 │   ├── oom-guard.md
-│   └── web-server.md
+│   ├── web-server.md
+│   └── acces-fichiers.md     ← recensement des `fopen` du firmware (14 sites, classes A/B)
 │
 ├── adr/                 ← Architecture Decision Records (immuables)
 │   ├── README.md
@@ -112,7 +113,9 @@ docs/
 │   ├── 0065-trame-websocket-etat-mutable-pas-constantes.md
 │   ├── 0066-sonde-du-tas-au-moment-du-refus.md
 │   ├── 0067-garde-503-avant-fopen-handler-prioritaire.md
-│   └── 0068-partitions-layout-v5-flash-8-mo.md
+│   ├── 0068-partitions-layout-v5-flash-8-mo.md
+│   ├── 0069-retrait-repli-core-2.md
+│   └── 0070-fopen-interne-helper-unique-et-classes-de-contention.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

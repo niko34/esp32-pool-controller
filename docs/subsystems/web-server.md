@@ -37,9 +37,22 @@ Toutes les routes sont enregistrées dans `setupRoutes()` via des fonctions `reg
 
 ### Ce qu'elle ferme
 
-Servir une page statique (`req->send(LittleFS, …)` ou `serveStatic`) finit par appeler `fopen`, qui demande à la libc un **verrou récursif interne** (~88 o). Si ce `malloc` échoue, `lock_init_generic` (`newlib locks.c:77`) **aborte** : il n'y a **aucun code de retour à tester**. C'est le PANIC du 29/08.
+Servir une page statique (`req->send(LittleFS, …)` ou `serveStatic`) finit par appeler `fopen`, qui demande à la libc un **verrou récursif interne** (**92 o** — `sizeof(Queue_t)`, IDF 5.5 ; l'ADR-0067 écrivait « ~88 o », valeur corrigée par le désassemblage du cycle 1 de `bug-100`). Si ce `malloc` échoue, `lock_init_generic` (`newlib locks.c:77`) **aborte** : il n'y a **aucun code de retour à tester**. C'est le PANIC du 29/08.
 
 > ⚠️ **Ce chemin passe par `malloc` (C), pas par `operator new`.** Le parachute OOM ([ADR-0035](../adr/0035-parachute-oom-new-handler.md)) est un `std::set_new_handler` : il est **inopérant par construction** sur cette classe de crashs. Cette garde en est la **seule** défense.
+
+
+### Ce qu'elle NE ferme PAS
+
+La garde est **`HTTP_GET`-only** et ne couvre **que le service de fichiers statiques**. Elle ne garde **rien de ce que le firmware ouvre pour son propre compte** : le recensement de `bug-100` dénombre **14 sites** internes, dont **zéro** est couvert ici ([`acces-fichiers.md`](acces-fichiers.md)).
+
+Trois raisons distinctes, aucune accidentelle :
+
+1. les 13 sites non-HTTP ne passent par **aucun matcher** ;
+2. **`/download-logs` est exempt par l'ordre d'enregistrement** — c'est un choix délibéré d'ADR-0067 (garder l'appareil observable en famine), pas un oubli ;
+3. **`POST /history/import` est hors matcher** (garde GET-only), alors qu'il atteint les deux `fopen` de `saveToFile()` depuis `async_tcp`.
+
+Le PANIC du 05/09 (`loopTask`, sauvegarde périodique de l'historique) est exactement ce trou. Stratégie retenue : [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) — point d'admission unique, deux classes de contention. ⚠️ **Non implémenté à ce jour** (cycle 2 de `bug-100`).
 
 ### Mécanisme
 

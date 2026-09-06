@@ -3,6 +3,19 @@
 - **Fichiers** : [`src/logger.h`](../../src/logger.h), [`src/logger.cpp`](../../src/logger.cpp)
 - **Singleton** : `extern Logger systemLogger;`
 
+
+> ⚠️ **Accès fichiers — 7 des 14 sites `fopen` du firmware sont ici**
+> (l. **230**, **276-277**, **299**, **307**, **317**, **329**), et ils sont tous
+> classés **contention TCP** : `flushToDisk()` s'exécute **sur la tâche qui a émis
+> le log** — `loopTask`, `mqttTask` ou `async_tcp` — parce que `ERROR` et
+> `CRITICAL` déclenchent un flush **synchrone** ([`logger.cpp:71-73`](../../src/logger.cpp:71)).
+> Il n'existe pas de « tâche du logger ». L'échec du `malloc` du verrou newlib
+> appelle **`abort()`**. Voir [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)
+> (dont la décision **(f)** lève la contradiction de l'interdit `critical()` posé
+> par [ADR-0067](../adr/0067-garde-503-avant-fopen-handler-prioritaire.md)) et le
+> recensement [acces-fichiers.md](acces-fichiers.md). ⚠️ **Garde non posée à ce
+> jour** — cycle 2 de `bug-100`.
+
 ## Rôle
 
 Log central du firmware avec buffer circulaire en RAM + persistance sur la partition `history` + push temps réel via WebSocket. Niveaux : `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.
