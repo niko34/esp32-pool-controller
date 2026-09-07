@@ -716,6 +716,16 @@ void saveProductConfig() {
   prefs.putFloat("orp_cont_ml", productCfg.orpContainerVolumeMl);
   prefs.putFloat("orp_inj_ml", productCfg.orpTotalInjectedMl);
   prefs.putFloat("orp_alert_ml", productCfg.orpAlertThresholdMl);
+  // feature-110 : compteurs de démarrages + hygiène de mesure. Persistés avec le
+  // volume et remis à zéro avec lui (web_routes_config, blocs *_reset_container)
+  // — les deux grandeurs ne sont comparables qu'à cette condition. Clés NVS
+  // ≤ 15 caractères (limite Preferences).
+  prefs.putUInt("ph_starts", productCfg.phStartCount);
+  prefs.putUInt("ph_anom", productCfg.phAcctAnomalyCount);
+  prefs.putFloat("ph_anom_ml", productCfg.phAcctAnomalyMl);
+  prefs.putUInt("orp_starts", productCfg.orpStartCount);
+  prefs.putUInt("orp_anom", productCfg.orpAcctAnomalyCount);
+  prefs.putFloat("orp_anom_ml", productCfg.orpAcctAnomalyMl);
   prefs.end();
   productConfigDirty = false;
   if (configMutex) xSemaphoreGiveRecursive(configMutex);
@@ -735,6 +745,17 @@ void loadProductConfig() {
   productCfg.orpContainerVolumeMl = prefs.getFloat("orp_cont_ml", productCfg.orpContainerVolumeMl);
   productCfg.orpTotalInjectedMl = prefs.getFloat("orp_inj_ml", productCfg.orpTotalInjectedMl);
   productCfg.orpAlertThresholdMl = prefs.getFloat("orp_alert_ml", productCfg.orpAlertThresholdMl);
+  // feature-110 : absents en NVS sur un appareil qui monte de version → défauts
+  // de structure (0), c'est-à-dire « campagne démarrée à ce boot ». Le volume
+  // déjà cumulé, lui, est conservé : le premier relevé après montée de version
+  // porte donc un N tronqué et n'est pas exploitable — c'est assumé, et c'est
+  // pourquoi le mode d'emploi du relevé demande de repartir d'un reset.
+  productCfg.phStartCount = prefs.getUInt("ph_starts", productCfg.phStartCount);
+  productCfg.phAcctAnomalyCount = prefs.getUInt("ph_anom", productCfg.phAcctAnomalyCount);
+  productCfg.phAcctAnomalyMl = prefs.getFloat("ph_anom_ml", productCfg.phAcctAnomalyMl);
+  productCfg.orpStartCount = prefs.getUInt("orp_starts", productCfg.orpStartCount);
+  productCfg.orpAcctAnomalyCount = prefs.getUInt("orp_anom", productCfg.orpAcctAnomalyCount);
+  productCfg.orpAcctAnomalyMl = prefs.getFloat("orp_anom_ml", productCfg.orpAcctAnomalyMl);
   prefs.end();
   systemLogger.info("Config produits chargée depuis NVS");
 }

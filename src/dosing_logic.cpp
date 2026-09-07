@@ -222,6 +222,30 @@ CycleStartAccounting evaluateCycleStartAccounting(bool wasActive, bool startDeci
   return out;
 }
 
+// feature-110 — jumeau du précédent, un cran plus bas : on compte les
+// DÉMARRAGES PHYSIQUES de pompe, seul ensemble d'événements homogène au volume
+// crédité (voir le bloc de doc de dosing_logic.h). Aucune garde de dosage ici :
+// cette fonction n'autorise rien, elle observe.
+PumpStartAccounting evaluatePumpStartAccounting(bool prevOn, bool onNow,
+                                                uint32_t creditedDeltaMs,
+                                                uint32_t anomalyDeltaMs) {
+  PumpStartAccounting out;
+  // Front strict OFF→ON : une session `scheduled` en marche continue ne produit
+  // donc qu'UN démarrage, et un start/stop manuel logé entre deux ticks
+  // n'en produit AUCUN — mais il ne crédite aucun volume non plus, la paire
+  // (N, V) reste cohérente.
+  out.countStart = (!prevOn && onNow);
+  // Seuil 0 = indicateur désactivé (aucune anomalie possible). Frontière >
+  // STRICTE : un delta pile au seuil reste normal.
+  out.countAnomaly = (anomalyDeltaMs != 0u) && (creditedDeltaMs > anomalyDeltaMs);
+  return out;
+}
+
+uint32_t saturatingInc(uint32_t v) {
+  // Plafond DUR : jamais de repli à 0 (cf. dosing_logic.h).
+  return (v == UINT32_MAX) ? v : (uint32_t)(v + 1u);
+}
+
 // =============================================================================
 // Sanitization config (feature-060) — HORS des gardes de dosage
 // =============================================================================

@@ -77,6 +77,21 @@ static const HttpOnlyKey kHttpOnlyKeys[] = {
   // fichier de routes coûterait +703 o de trame pour une valeur calculable.
   {"regulation_defaults",
    "Derivable cote client : pool_size est dans la trame WS et by_size est en cache (app.js syncRegulationDefaults)."},
+  // feature-110 : compteurs d'HYGIENE de la comptabilite (ticks anormalement
+  // longs et volume credité par eux). Ils qualifient un releve de bidon, ils ne
+  // pilotent aucun affichage continu : ils sont lus UNE fois par campagne, au
+  // changement de bidon. Les pousser toutes les 5 s couterait ~120 o de trame
+  // (plafond DUR kWsFrameBufBytes = 3584 o) pour zero usage temps reel. Les
+  // compteurs de DEMARRAGES (`ph_starts`, `orp_starts`), eux, SONT dans la
+  // trame : ils avancent en continu a cote du volume.
+  {"ph_anom",
+   "Hygiene de mesure lue une fois par campagne (releve de bidon) : aucun usage temps reel, ~30 o de trame economises."},
+  {"orp_anom",
+   "Hygiene de mesure lue une fois par campagne (releve de bidon) : aucun usage temps reel, ~30 o de trame economises."},
+  {"ph_anom_ml",
+   "Hygiene de mesure lue une fois par campagne (releve de bidon) : aucun usage temps reel, ~30 o de trame economises."},
+  {"orp_anom_ml",
+   "Hygiene de mesure lue une fois par campagne (releve de bidon) : aucun usage temps reel, ~30 o de trame economises."},
 };
 static const size_t kHttpOnlyCount = sizeof(kHttpOnlyKeys) / sizeof(kHttpOnlyKeys[0]);
 

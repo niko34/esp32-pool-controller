@@ -291,6 +291,19 @@ static void handleGetConfig(AsyncWebServerRequest* request) {
   doc["orp_total_injected_ml"] = productCfg.orpTotalInjectedMl;
   doc["orp_remaining_ml"] = orpRemaining;
   doc["orp_alert_threshold_ml"] = productCfg.orpAlertThresholdMl;
+  // feature-110 — DÉNOMINATEUR du biais de comptage, relevé au changement de
+  // bidon en même temps que `*_total_injected_ml`. `*_starts` = démarrages de
+  // pompe crédités ; `*_anom` / `*_anom_ml` = part de ces crédits issue de
+  // ticks anormalement longs (> kAcctDeltaAnomalyMs), donc INDICATEUR
+  // D'HYGIÈNE : il sert à disqualifier un relevé pollué, jamais à corriger le
+  // volume. Les quatre clés d'hygiène sont HTTP-seules (déclarées dans
+  // kHttpOnlyKeys) : elles ne sont lues qu'au moment du relevé, pas en continu.
+  doc["ph_starts"]    = productCfg.phStartCount;
+  doc["ph_anom"]      = productCfg.phAcctAnomalyCount;
+  doc["ph_anom_ml"]   = productCfg.phAcctAnomalyMl;
+  doc["orp_starts"]   = productCfg.orpStartCount;
+  doc["orp_anom"]     = productCfg.orpAcctAnomalyCount;
+  doc["orp_anom_ml"]  = productCfg.orpAcctAnomalyMl;
 
   // Heure actuelle (pour l'affichage dans la configuration)
   doc["time_current"] = getCurrentTimeISO();
@@ -1096,6 +1109,14 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
   if (doc["ph_reset_container"] == true) {
     productCfg.phTotalInjectedMl = 0.0f;
+    // feature-110 — REMISE À ZÉRO STRUCTURELLEMENT SIMULTANÉE : le rapport V/N
+    // n'a de sens que si les deux grandeurs couvrent la même campagne. Les
+    // compteurs d'hygiène repartent EUX AUSSI de zéro dans ce même bloc, sinon
+    // l'indicateur qui doit qualifier la campagne à venir survivrait à celle
+    // qu'il vient de qualifier — il disqualifierait un relevé propre.
+    productCfg.phStartCount = 0;
+    productCfg.phAcctAnomalyCount = 0;
+    productCfg.phAcctAnomalyMl = 0.0f;
     productConfigDirty = true;
     systemLogger.info("Bidon pH réinitialisé");
   }
@@ -1109,6 +1130,11 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
   }
   if (doc["orp_reset_container"] == true) {
     productCfg.orpTotalInjectedMl = 0.0f;
+    // feature-110 — même invariant que pour le pH ci-dessus (V, N et hygiène
+    // remis à zéro par le MÊME geste, dans le MÊME bloc).
+    productCfg.orpStartCount = 0;
+    productCfg.orpAcctAnomalyCount = 0;
+    productCfg.orpAcctAnomalyMl = 0.0f;
     productConfigDirty = true;
     systemLogger.info("Bidon chlore réinitialisé");
   }

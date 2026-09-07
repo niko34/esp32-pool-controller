@@ -196,11 +196,24 @@ struct ProductConfig {
   float phContainerVolumeMl = 20000.0f;   // Volume bidon pH (ml), défaut 20L
   float phTotalInjectedMl = 0.0f;         // Total injecté depuis dernier reset (ml)
   float phAlertThresholdMl = 2000.0f;     // Seuil d'alerte volume restant (ml), défaut 2L
+  // feature-110 — DÉNOMINATEUR du biais de comptage. `V_compté = V_réel + N·δ`
+  // n'est soluble que si N porte sur le MÊME ensemble d'événements que
+  // phTotalInjectedMl ci-dessus : ces compteurs sont donc crédités dans la
+  // branche même qui crédite le volume (accountPumpVolume) et remis à zéro par
+  // le MÊME geste (« Nouveau bidon »). uint32_t et non uint16_t : à ~1 400
+  // démarrages/jour observés, un uint16_t saturerait en un peu plus d'un mois,
+  // soit AVANT le premier changement de bidon qu'il doit qualifier.
+  uint32_t phStartCount = 0;              // Démarrages de pompe pH crédités depuis le dernier reset
+  uint32_t phAcctAnomalyCount = 0;        // ... dont ticks anormalement longs (> kAcctDeltaAnomalyMs)
+  float phAcctAnomalyMl = 0.0f;           // Volume (ml) crédité par ces ticks anormaux
 
   bool orpTrackingEnabled = false;        // Suivi volume chlore activé
   float orpContainerVolumeMl = 20000.0f;  // Volume bidon chlore (ml)
   float orpTotalInjectedMl = 0.0f;        // Total injecté depuis dernier reset (ml)
   float orpAlertThresholdMl = 2000.0f;    // Seuil d'alerte volume restant (ml)
+  uint32_t orpStartCount = 0;             // Démarrages de pompe chlore crédités depuis le dernier reset
+  uint32_t orpAcctAnomalyCount = 0;       // ... dont ticks anormalement longs (> kAcctDeltaAnomalyMs)
+  float orpAcctAnomalyMl = 0.0f;          // Volume (ml) crédité par ces ticks anormaux
 };
 
 struct SafetyLimits {

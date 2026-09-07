@@ -56,6 +56,39 @@ constexpr uint32_t kMqttTaskLoopTimeoutMs   = 100;        // Timeout xQueueRecei
 constexpr uint32_t kMqttOfflineFlushMs      = 1000;       // Timeout flush "status=offline" avant ESP.restart() (OTA)
 constexpr uint32_t kMqttClientConnectTimeoutSec = 2;      // WiFiClient::setTimeout attend des SECONDES (Arduino-ESP32 6.9.0 — WiFiClient.cpp:327, _timeout = seconds*1000). 2 s borne SO_SNDTIMEO/SO_RCVTIMEO sur le client TCP de PubSubClient.
 constexpr uint32_t kMqttSocketSendTimeoutMs = 500;        // SO_SNDTIMEO socket TCP — borne write() à 500 ms (PINGREQ ~100 ms suffit, publish massif borné). Voir feature-014 IT5 / ADR-0011.
+// feature-110 : taille du buffer de publication PubSubClient. Était EN DUR à
+// 1024 dans MqttManager::begin() — contraire à la convention k* et, surtout,
+// invisible depuis les sites qui allongent le payload de diagnostic.
+// POURQUOI C'EST UN SUJET DE SÉCURITÉ D'OBSERVABILITÉ : PubSubClient::publish
+// REFUSE (return false, sans rien émettre) dès que
+//   bufferSize < MQTT_MAX_HEADER_SIZE(5) + 2 + longueur(topic) + longueur(payload)
+// (PubSubClient.cpp:450). Un diagnostic trop long n'est donc pas tronqué : il
+// DISPARAÎT EN ENTIER — hdef/ldef/xdef de bug-100 compris, soit l'observabilité
+// de famine mémoire, et cela dans le silence complet puisque le retour était
+// ignoré au site d'appel.
+// CHIFFRES MESURÉS (et non estimés) sur le littéral réel de
+// publishDiagnosticInternal(), ArduinoJson 7, harnais hôte :
+//                     payload   +topic+en-tête = buffer requis
+//   avant f-110  nominal  681 o        711 o
+//   avant f-110  PIRE     804 o        875 o
+//   après f-110  nominal  824 o        854 o
+//   après f-110  PIRE     986 o       1057 o  ← DÉPASSE 1024 de 33 o
+// Les 8 clés de feature-110 pèsent +182 o au pire cas (mesuré clé par clé).
+// Pire cas = SSID 32 c., filtration_mode 16 c., topic de base 64 c. (aucun de
+// ces trois n'est borné par /save-config), uint32 saturés, flottants à 9
+// chiffres significatifs. 1536 rétablit 479 o de marge (31 %). Coût RAM : +512 o
+// dans le buffer PubSubClient, alloués UNE fois dans begin(), jamais en boucle.
+constexpr uint16_t kMqttPublishBufferBytes = 1536;
+// Surcoût de trame MQTT au-dessus du payload, tel que PubSubClient le comptabilise :
+// MQTT_MAX_HEADER_SIZE (5 o, en-tête bâti en tête de buffer) + 2 o de longueur de
+// topic. Le topic lui-même s'ajoute à part (longueur dynamique).
+constexpr uint16_t kMqttPublishFrameOverheadBytes = 7;
+// Throttle des WARN de longueur/échec de publication du diagnostic. Le
+// diagnostic sort toutes les 5 min (kDiagnosticPublishIntervalMs) : sans
+// throttle, une trame durablement trop longue produirait 288 lignes par jour et
+// noierait le journal qu'elle est censée rendre lisible. 1 h = 12 publications
+// couvertes par ligne.
+constexpr uint32_t kMqttDiagnosticWarnThrottleMs = 3600000;
 
 // feature-109 : synthèse de la découverte Home Assistant en UNE ligne de journal
 // (voir src/discovery_report_logic.h). Les 54 lignes INFO précédentes pesaient
@@ -2151,6 +2184,18 @@ constexpr uint32_t kPulseKickMs = 400;       // 0,4 s — durée du kick à 255
 // (ampDuty == calDuty ⇒ débit PESÉ par l'utilisateur) existe déjà ; le chemin
 // 255 est un repli dégradé.
 constexpr float kPumpFlow255MlPerMin = 74.0f;
+// feature-110 — HYGIÈNE DE LA MESURE, aucun effet sur le dosage. Le volume d'un
+// tick est crédité par attribution ARRIÈRE sur [lastSafetyTimestamp, now] : au
+// delà de ce seuil, on ne sait plus si la pompe a tourné tout du long (loop
+// bloquée, OTA, I²C en souffrance). Ces ticks ne sont NI rejetés NI corrigés —
+// la comptabilité du volume est intouchée — ils sont comptés à part, avec leur
+// volume, pour pouvoir DISQUALIFIER un relevé de bidon pollué.
+// CALAGE DU SEUIL : accountPumpVolume tourne à la cadence de loop()
+// (kLoopDelayMs = 10 ms + le travail du tour, quelques dizaines de ms en
+// pratique) — 5 s est donc deux ordres de grandeur au-dessus du jitter normal,
+// et vaut la MOITIÉ du pouls minimal (kPulseMinMs = 10 s) : un tick qui couvre
+// la moitié d'une impulsion entière est bien une anomalie, pas du bruit.
+constexpr uint32_t kAcctDeltaAnomalyMs = 5000;
 // Maximum RÉELLEMENT mesuré à duty 255 (banc du 2026-08-23 : 61,0 g/60 s sur
 // l'exemplaire 1, 68,0 g/60 s sur l'exemplaire 2 — la constante historique
 // portait 67,0, sous-estimation corrigée ici). N'intervient dans aucun calcul :

@@ -3203,6 +3203,22 @@
 
   // ========== ÉCRAN PRODUITS ==========
 
+  // feature-110 : mise en forme du RELEVÉ (V, N). Une valeur absente rend
+  // « -- » et JAMAIS 0 : au changement de bidon, un zéro affiché à la place
+  // d'une valeur manquante serait relevé comme un vrai zéro, et fausserait la
+  // conclusion sur la nature du biais de comptage.
+  function fmtInjectedMl(v) {
+    const n = Number(v);
+    if (v == null || !isFinite(n)) return '--';
+    return Math.round(n).toLocaleString('fr-FR') + ' mL';
+  }
+
+  function fmtPumpStarts(v) {
+    const n = Number(v);
+    if (v == null || !isFinite(n)) return '--';
+    return Math.round(n).toLocaleString('fr-FR');
+  }
+
   function updateProductUI(data) {
     function updateCard(prefix, remainingMl, containerMl, thresholdMl) {
       const pct = containerMl > 0 ? Math.max(0, Math.min(100, (remainingMl / containerMl) * 100)) : 0;
@@ -3233,6 +3249,23 @@
     if (data.orp_remaining_ml != null) {
       updateCard('orp', data.orp_remaining_ml, data.orp_container_ml ?? 20000, data.orp_alert_threshold_ml ?? 2000);
     }
+
+    // feature-110 : relevé (V, N). Ces deux clés ne sont PAS dans la trame
+    // capteurs (seule la trame « config » et /get-config les portent) : on ne
+    // touche donc au DOM que si la clé est présente, sinon chaque trame
+    // capteurs effacerait le relevé une seconde après son affichage.
+    ['ph', 'orp'].forEach((prefix) => {
+      const injected = data[`${prefix}_total_injected_ml`];
+      const starts = data[`${prefix}_starts`];
+      if (injected != null) {
+        const el = $(`#product-${prefix}-injected`);
+        if (el) el.textContent = fmtInjectedMl(injected);
+      }
+      if (starts != null) {
+        const el = $(`#product-${prefix}-starts`);
+        if (el) el.textContent = fmtPumpStarts(starts);
+      }
+    });
     // Synchroniser les toggles depuis sensor_data (source de vérité pour ces champs)
     const phToggle = $('#ph_tracking_enabled');
     const orpToggle = $('#orp_tracking_enabled');
@@ -3277,7 +3310,13 @@
       ph_alert_threshold_ml: cfg.ph_alert_threshold_ml,
       orp_remaining_ml: cfg.orp_remaining_ml,
       orp_container_ml: cfg.orp_container_ml,
-      orp_alert_threshold_ml: cfg.orp_alert_threshold_ml
+      orp_alert_threshold_ml: cfg.orp_alert_threshold_ml,
+      // feature-110 : relevé (V, N) — présent dans /get-config et dans la
+      // trame WS « config », absent de la trame capteurs.
+      ph_total_injected_ml: cfg.ph_total_injected_ml,
+      ph_starts: cfg.ph_starts,
+      orp_total_injected_ml: cfg.orp_total_injected_ml,
+      orp_starts: cfg.orp_starts
     });
   }
 
@@ -3299,14 +3338,99 @@
       }
     }
 
+    // feature-110 : le couple (volume injecté, démarrages pompe) ne sert qu'au
+    // changement de bidon — et c'est ce geste même qui le détruit. La
+    // confirmation le présente donc à l'instant exact où il va disparaître,
+    // sans rien à mémoriser au préalable. Retourne { node, text } ; `text` doit
+    // porter LES DEUX VALEURS EN CLAIR, car c'est le seul contenu affiché par
+    // le repli window.confirm() des navigateurs sans <dialog>.
+    function _buildProductResetSummary(prefix, cfg) {
+      const vTxt = fmtInjectedMl(cfg[`${prefix}_total_injected_ml`]);
+      const nTxt = fmtPumpStarts(cfg[`${prefix}_starts`]);
+      const anomN = Number(cfg[`${prefix}_anom`] ?? 0);
+      const anomMl = Number(cfg[`${prefix}_anom_ml`] ?? 0);
+
+      const node = document.createElement('div');
+      const lines = [];
+
+      const intro = document.createElement('p');
+      intro.style.margin = '0 0 10px';
+      intro.textContent = "Notez ces deux valeurs avant de continuer : elles servent à vérifier la précision du comptage et seront effacées.";
+      node.appendChild(intro);
+      lines.push(intro.textContent, '');
+
+      // Mêmes libellés que la carte : le relevé doit se reconnaître d'un coup d'œil.
+      const kv = document.createElement('div');
+      kv.className = 'kv kv--compact';
+      [['Volume injecté', vTxt], ['Démarrages pompe', nTxt]].forEach(([k, v]) => {
+        const row = document.createElement('div');
+        row.className = 'kv__row';
+        const kEl = document.createElement('span');
+        kEl.className = 'kv__k';
+        kEl.textContent = k;
+        const vEl = document.createElement('span');
+        vEl.className = 'kv__v';
+        vEl.textContent = v;
+        row.appendChild(kEl);
+        row.appendChild(vEl);
+        kv.appendChild(row);
+        lines.push(`${k} : ${v}`);
+      });
+      node.appendChild(kv);
+
+      // Hygiène du relevé : affichée UNIQUEMENT si elle est non nulle. Un « 0 »
+      // permanent apprendrait à ignorer la zone, et l'avertissement passerait
+      // inaperçu le jour où il invalide vraiment le relevé.
+      if (anomN > 0 || anomMl > 0) {
+        const warn = document.createElement('div');
+        warn.className = 'callout callout--warn';
+        warn.textContent = `Relevé peu fiable : ${fmtPumpStarts(anomN)} démarrages (${fmtInjectedMl(anomMl)}) ont eu lieu hors comptage normal.`;
+        node.appendChild(warn);
+        lines.push('', warn.textContent);
+      }
+
+      const foot = document.createElement('p');
+      foot.style.margin = '10px 0 0';
+      foot.textContent = "Elles repartiront de zéro.";
+      node.appendChild(foot);
+      lines.push('', foot.textContent);
+
+      return { node, text: lines.join('\n') };
+    }
+
     async function resetProduct(prefix) {
       const label = prefix === 'ph' ? 'pH' : 'chlore';
+      // Lu AVANT loadConfig() : une valeur de bidon saisie mais non enregistrée
+      // reste prise en compte par la remise à zéro, comme avant feature-110.
       const contL = parseFloat($(`#${prefix}_container_l`)?.value) || 20;
-      const ok = await sendConfig({
+
+      // Config FRAÎCHE obligatoire : window._config peut provenir d'une trame WS
+      // « config » PARTIELLE, et les compteurs d'anomalie (*_anom, *_anom_ml) n'y
+      // sont JAMAIS — ils sont HTTP-seuls. Sans ce rechargement, le relevé serait
+      // incomplet à l'instant même où il est détruit.
+      try {
+        await loadConfig();
+      } catch (e) {
+        showToast('Impossible de lire la configuration — réessayez', 'error');
+        return;
+      }
+
+      const { node, text } = _buildProductResetSummary(prefix, window._config || {});
+      const ok = await confirmDialog({
+        title: `Nouveau bidon ${label}`,
+        message: text,
+        messageNode: node,
+        confirmLabel: 'Remettre à zéro',
+        danger: true
+      });
+      // Action IRRÉVERSIBLE : on ne repart que sur un « oui » explicite.
+      if (ok !== true) return;
+
+      const saved = await sendConfig({
         [`${prefix}_container_ml`]: contL * 1000,
         [`${prefix}_reset_container`]: true
       });
-      if (ok) {
+      if (saved) {
         showToast(`Bidon ${label} réinitialisé`, 'success');
         loadConfig().catch(() => {});
       } else {

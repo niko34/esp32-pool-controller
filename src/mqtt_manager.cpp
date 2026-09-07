@@ -83,7 +83,9 @@ void MqttManager::begin() {
   });
   mqtt.setSocketTimeout(2);  // 2s max de gel par tentative ratée — voir ADR-0010
   mqtt.setKeepAlive(60);     // Mosquitto applique 1.5×keepalive = 90s de tolérance
-  mqtt.setBufferSize(1024);
+  // feature-110 : plus de 1024 en dur — la longueur du diagnostic est arbitrée
+  // depuis constants.h, seul endroit où la mesure du payload est écrite.
+  mqtt.setBufferSize(kMqttPublishBufferBytes);
   wifiClient.setTimeout(kMqttClientConnectTimeoutSec);  // unité = secondes (cf. constants.h)
 
   // bug-race-refreshtopics-uaf : topicsMutex créé AVANT le premier refreshTopics()
@@ -1177,9 +1179,65 @@ void MqttManager::publishDiagnosticInternal() {
   doc["ldef"] = loggerFopenDeferralCount();
   doc["xdef"] = logsExportFopenDeferralCount();
 
+  // feature-110 — RELEVÉ DE BIDON À FROID. Le topic <base>/diagnostic est RETENU
+  // par le broker : ces huit valeurs se relisent plusieurs jours plus tard, sans
+  // avoir rien noté au préalable, et elles survivent à un reboot de l'appareil.
+  // C'est ce qui fait du changement de bidon — un geste déjà fait — une mesure
+  // auto-suffisante, et non une tâche à mémoriser.
+  //   *_starts   = démarrages de pompe CRÉDITÉS  → N, dénominateur de
+  //                V_compté = V_réel + N·δ (feature-078)
+  //   *_total_ml = volume compté sur la MÊME campagne → V, numérateur
+  //   *_anom / *_anom_ml = part de ces crédits issue de ticks anormalement longs
+  //                (> kAcctDeltaAnomalyMs) → HYGIÈNE : sert à DISQUALIFIER un
+  //                relevé pollué, jamais à corriger le volume.
+  // Les deux couples doivent être lus ENSEMBLE : un N sans son V, ou l'un des
+  // deux sans son indicateur d'hygiène, ne permet de conclure sur rien.
+  doc["ph_starts"]    = productCfg.phStartCount;
+  doc["ph_total_ml"]  = productCfg.phTotalInjectedMl;
+  doc["ph_anom"]      = productCfg.phAcctAnomalyCount;
+  doc["ph_anom_ml"]   = productCfg.phAcctAnomalyMl;
+  doc["orp_starts"]   = productCfg.orpStartCount;
+  doc["orp_total_ml"] = productCfg.orpTotalInjectedMl;
+  doc["orp_anom"]     = productCfg.orpAcctAnomalyCount;
+  doc["orp_anom_ml"]  = productCfg.orpAcctAnomalyMl;
+
   String payload;
   serializeJson(doc, payload);
-  safePublish(topics.diagnosticTopic.c_str(), payload.c_str(), true);
+
+  // feature-110 — GARDE DE LONGUEUR, puis VÉRIFICATION DU RETOUR.
+  // PubSubClient refuse le publish (return false, rien sur le fil) dès que
+  // bufferSize < 5 + 2 + longueur(topic) + longueur(payload) — cf.
+  // kMqttPublishBufferBytes dans constants.h, où la mesure est consignée. Le
+  // diagnostic n'est alors pas tronqué : il DISPARAÎT, hdef/ldef/xdef compris.
+  // Jusqu'ici le retour de safePublish() était ignoré ici : la disparition était
+  // donc TOTALEMENT silencieuse. Deux WARN throttlés séparés, parce que les deux
+  // causes n'appellent pas la même action : « trop long » se corrige dans le
+  // firmware (buffer ou payload), « publish refusé » est un problème de lien.
+  const size_t frameBytes = kMqttPublishFrameOverheadBytes +
+                            topics.diagnosticTopic.length() + payload.length();
+  static uint32_t sLastOversizeWarnMs = 0;
+  static uint32_t sLastDropWarnMs = 0;
+  const uint32_t nowMs = millis();
+  if (frameBytes > kMqttPublishBufferBytes) {
+    if (sLastOversizeWarnMs == 0 ||
+        (nowMs - sLastOversizeWarnMs) >= kMqttDiagnosticWarnThrottleMs) {
+      sLastOversizeWarnMs = nowMs;
+      systemLogger.warning("MQTT: diagnostic trop long pour le buffer de publication (" +
+                           String((unsigned long)frameBytes) + " o requis > " +
+                           String((unsigned long)kMqttPublishBufferBytes) +
+                           " o) — la trame sera ABANDONNÉE en entier, pas tronquée");
+    }
+  }
+  if (!safePublish(topics.diagnosticTopic.c_str(), payload.c_str(), true)) {
+    if (sLastDropWarnMs == 0 ||
+        (nowMs - sLastDropWarnMs) >= kMqttDiagnosticWarnThrottleMs) {
+      sLastDropWarnMs = nowMs;
+      systemLogger.warning("MQTT: publication du diagnostic refusée (" +
+                           String((unsigned long)frameBytes) +
+                           " o) — buffer insuffisant ou lien indisponible");
+    }
+    return;
+  }
   systemLogger.debug("Diagnostic publié");
 }
 

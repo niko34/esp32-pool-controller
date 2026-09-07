@@ -140,6 +140,13 @@ private:
   // Remplace updateSafetyTracking(flow, delta) : le volume est désormais calculé
   // en amont (pulseDeltaVolumeMl pour l'auto/scheduled, majorant pour le manuel).
   void creditInjectedVolume(bool isPhPump, float volumeMl);
+  // feature-110 — accesseur UNIQUE du drapeau de suivi produit d'une chimie
+  // (isPh true = pH, false = ORP). CONST, sans effet de bord, sans log, sans
+  // verrou : c'est ce qui rend le couplage volume/démarrages STRUCTUREL. Les
+  // deux crédits (creditInjectedVolume et le compteur de démarrages
+  // d'accountPumpVolume) le lisent, donc un mutant sur cet accesseur gèle V ET
+  // N ensemble — impossible de faire avancer l'un sans l'autre.
+  bool productTrackingEnabled(bool isPh) const;
 
   // Fonctions anti-cycling
   bool shouldStartDosing(float error, float startThreshold, DosingState& state, unsigned long now);

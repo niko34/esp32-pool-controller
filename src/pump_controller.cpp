@@ -2578,18 +2578,26 @@ bool PumpControllerClass::checkSafetyLimits(bool isPhPump) {
 // Itération 2 : remplace updateSafetyTracking(flow, delta) — le volume est
 // calculé en amont par accountPumpVolume (pulseDeltaVolumeMl exact pour les
 // pouls, majorant pour le manuel), plus jamais depuis le modèle linéaire.
+// feature-110 : accesseur UNIQUE du suivi produit (voir pump_controller.h).
+// Volontairement trivial — sa valeur est d'être le SEUL point de lecture
+// partagé par le crédit du volume et celui des démarrages.
+bool PumpControllerClass::productTrackingEnabled(bool isPh) const {
+  return isPh ? productCfg.phTrackingEnabled : productCfg.orpTrackingEnabled;
+}
+
 void PumpControllerClass::creditInjectedVolume(bool isPhPump, float volumeMl) {
   if (!(volumeMl > 0.0f)) return;  // rejette aussi NaN (défensif)
 
+  const bool tracking = productTrackingEnabled(isPhPump);
   if (isPhPump) {
     safetyLimits.dailyPhInjectedMl += volumeMl;
-    if (productCfg.phTrackingEnabled) {
+    if (tracking) {
       productCfg.phTotalInjectedMl += volumeMl;
       productConfigDirty = true;
     }
   } else {
     safetyLimits.dailyOrpInjectedMl += volumeMl;
-    if (productCfg.orpTrackingEnabled) {
+    if (tracking) {
       productCfg.orpTotalInjectedMl += volumeMl;
       productConfigDirty = true;
     }
@@ -2609,10 +2617,17 @@ void PumpControllerClass::accountPumpVolume(int chem, int physIdx,
                                             unsigned long now, bool manualActive) {
   DosingState& st = (chem == 0) ? phDosingState : orpDosingState;
 
+  // feature-110 : deltaMs/volMl hissés au corps de la fonction — la
+  // comptabilisation du DÉMARRAGE (plus bas) doit pouvoir qualifier le delta
+  // RÉELLEMENT crédité ce tour. 0 / 0,0 = aucun crédit (premier tour, pompe
+  // éteinte au tour précédent, delta nul). L'arithmétique de volume est
+  // strictement inchangée : seule la PORTÉE des variables bouge.
+  unsigned long deltaMs = 0;
+  float volMl = 0.0f;
+
   if (_acctPumpOn[chem] && st.lastSafetyTimestamp != 0) {
-    unsigned long deltaMs = now - st.lastSafetyTimestamp;
+    deltaMs = now - st.lastSafetyTimestamp;
     if (deltaMs > 0) {
-      float volMl;
       if (_acctManual[chem]) {
         uint8_t calDuty = pumpCalibratedDuty(physIdx);
         float pulseFlow = pumpPulseFlow(physIdx);
@@ -2636,6 +2651,33 @@ void PumpControllerClass::accountPumpVolume(int chem, int physIdx,
 
   // État pour le PROCHAIN tour : pumpDuty reflète la commande appliquée CE tour.
   bool onNow = (pumpDuty[physIdx] > 0);
+
+  // feature-110 — COMPTAGE DES DÉMARRAGES, dénominateur du biais de comptage.
+  // ÉVALUÉ AVANT la mise à jour de _acctPumpOn ci-dessous : c'est cet état
+  // (tour précédent) que le front OFF→ON interroge. Ni allocation, ni String,
+  // ni log, ni verrou — on est dans le chemin de dosage, écrivain unique
+  // loopTask (même discipline que le volume juste au-dessus).
+  // La garde productTrackingEnabled() est la MÊME que celle qui laisse avancer
+  // productCfg.*TotalInjectedMl : N et V couvrent donc exactement le même
+  // ensemble d'événements, y compris l'angle mort hérité du `return` amont
+  // (eau absente, stabilisation, assistant de mesure).
+  const PumpStartAccounting acct =
+      evaluatePumpStartAccounting(_acctPumpOn[chem], onNow,
+                                  (uint32_t)deltaMs, kAcctDeltaAnomalyMs);
+  if ((acct.countStart || acct.countAnomaly) && productTrackingEnabled(chem == 0)) {
+    uint32_t& starts  = (chem == 0) ? productCfg.phStartCount        : productCfg.orpStartCount;
+    uint32_t& anomCnt = (chem == 0) ? productCfg.phAcctAnomalyCount  : productCfg.orpAcctAnomalyCount;
+    float&    anomMl  = (chem == 0) ? productCfg.phAcctAnomalyMl     : productCfg.orpAcctAnomalyMl;
+    if (acct.countStart) starts = saturatingInc(starts);
+    if (acct.countAnomaly) {
+      anomCnt = saturatingInc(anomCnt);
+      if (volMl > 0.0f) anomMl += volMl;  // > 0 rejette aussi NaN (défensif)
+    }
+    // MÊME drapeau, MÊME endroit que pour le volume : le flush NVS reste celui,
+    // différé, de la boucle de configuration. AUCUN flush ajouté ici.
+    productConfigDirty = true;
+  }
+
   st.lastSafetyTimestamp = onNow ? now : 0;
   _acctPumpOn[chem] = onNow;
   _acctManual[chem] = manualActive;

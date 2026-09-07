@@ -251,6 +251,63 @@ CycleStartAccounting evaluateCycleStartAccounting(bool wasActive, bool startDeci
                                                   bool flowActive);
 
 // =============================================================================
+// Comptabilisation d'un DÉMARRAGE de pompe — PURE (feature-110)
+// =============================================================================
+// Invariant JUMEAU de evaluateCycleStartAccounting ci-dessus, mais un cran plus
+// bas : on ne compte pas des CYCLES de régulation, on compte des DÉMARRAGES
+// PHYSIQUES de pompe (transitions OFF→ON du duty), c'est-à-dire exactement les
+// événements auxquels se paie la perte fixe d'amorçage (relaxation du tube,
+// ré-occlusion, reprise d'amorçage — feature-078).
+//
+// POURQUOI ICI ET PAS SUR L'IMPULSION : le modèle de biais s'écrit
+// `V_compté = V_réel + N·δ`. Il n'a de sens que si `N` porte sur le MÊME
+// ensemble d'événements que `V`. Le seul endroit où cette identité est
+// STRUCTURELLE est la branche de accountPumpVolume() qui crédite le volume :
+// un démarrage compté ⇔ un volume crédité par ce démarrage. Compter
+// `plan.carryFired` aurait compté des SÉANCES (drapeau levé une seule fois par
+// séance, et jamais en régime proportionnel direct) — `N` massivement
+// sous-estimé, donc `δ` absurdement grand, donc un correctif calé de travers
+// dans le sens qui RELÂCHE les quotas.
+//
+// HYGIÈNE DE LA MESURE (countAnomaly) : le volume d'un tick est crédité par
+// attribution ARRIÈRE sur l'intervalle [lastSafetyTimestamp, now]. Un tick
+// anormalement long (loop bloquée, OTA, I²C en souffrance) crédite donc un
+// volume calculé sur un intervalle dont on ne sait pas si la pompe a réellement
+// tourné tout du long. Ces ticks ne sont NI rejetés NI corrigés (la
+// comptabilité du volume est intouchée par feature-110) : ils sont COMPTÉS à
+// part, avec leur volume, pour que le relevé de bidon puisse être disqualifié
+// s'ils pèsent trop. Sans cet indicateur, une campagne polluée serait
+// indiscernable d'une campagne propre.
+struct PumpStartAccounting {
+  bool countStart;    // front OFF→ON : incrémenter le compteur de démarrages
+  bool countAnomaly;  // le tick crédité était anormalement long (hygiène)
+};
+
+// Décide, pour UN tour de accountPumpVolume(), s'il faut compter un démarrage
+// et/ou un tick anormal.
+//   prevOn          : pompe alimentée au tour PRÉCÉDENT (_acctPumpOn[chem])
+//   onNow           : pompe alimentée au tour COURANT (pumpDuty > 0)
+//   creditedDeltaMs : durée du delta réellement CRÉDITÉ ce tour (0 = aucun
+//                     crédit : premier tour, pompe éteinte, delta nul)
+//   anomalyDeltaMs  : seuil d'anomalie (kAcctDeltaAnomalyMs) ; 0 désactive
+//
+// countStart   = !prevOn && onNow          (front strict, un seul par session)
+// countAnomaly = anomalyDeltaMs != 0 && creditedDeltaMs > anomalyDeltaMs
+//                (frontière > STRICTE : un delta pile au seuil est normal)
+//
+// Aucun débordement possible ici : la saturation est la responsabilité de
+// saturatingInc(), appliquée par la coquille au moment du crédit.
+PumpStartAccounting evaluatePumpStartAccounting(bool prevOn, bool onNow,
+                                                uint32_t creditedDeltaMs,
+                                                uint32_t anomalyDeltaMs);
+
+// Incrément SATURANT sur 32 bits : à UINT32_MAX, la valeur reste à UINT32_MAX.
+// Elle ne repart JAMAIS à 0 — un compteur qui reboucle donnerait un rapport
+// V/N silencieusement faux (et, à 4,29 milliards de démarrages, un compteur
+// figé est un aveu lisible, pas une erreur de mesure).
+uint32_t saturatingInc(uint32_t v);
+
+// =============================================================================
 // Sanitization config (feature-060) — HORS des gardes de dosage
 // =============================================================================
 // Sanitization config (PAS une garde de dosage) : borne maxCyclesPerDay dans

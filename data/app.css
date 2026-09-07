@@ -1592,6 +1592,13 @@ input.is-computed:disabled {
   color: var(--accent);
 }
 
+/* feature-110 : variante sémantique <dl>/<dt>/<dd> du même bloc (relevé
+   clé/valeur). Seule la marge implicite du <dd> (40px navigateur) doit être
+   annulée pour que la valeur reste alignée sur la grille — aucune classe neuve. */
+.kv dd.kv__v {
+  margin: 0;
+}
+
 /* Responsive : stack vertical sur mobile */
 @media (max-width: 600px) {
   .kv--compact {
