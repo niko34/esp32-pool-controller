@@ -9,17 +9,18 @@ Point d'entrée unique pour **tout** ce qui concerne le pH : mesure, mode de ré
 
 ## Structure
 
-En mode nominal, cinq zones :
+En mode nominal, six zones :
 
 1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur pH **filtrée** courante en grand (1 décimale, cohérent avec le tableau de bord) + **ligne brute discrète** « brut · médiane · maj » + **rangée de chips** : chip d'état filtre cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) et **chip unique sonde + calibration** cliquable (cf. [Chip d'état sonde](#chip-détat-sonde-feature-024)) + dosage du jour (barre de progression). Depuis feature-034, le chip de calibration distinct est **supprimé** : son information est fusionnée dans le chip sonde. Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#ph-ttt-block`) : ligne de valeur + bande de 7 pastilles — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
-2. **Carte Régulation pH** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs conditionnels :
+2. **Carte Débit d'injection pH** (`#ph-card-dosing`, feature-092, v2.46.0) — insérée **entre** le bloc Statistiques et la carte Régulation, visible **en mode automatique uniquement** : quatre lignes (dose de base apprise, écart courant, rattrapage accumulé, **Demande** en total) et une pastille d'état à 5 priorités. Voir [Carte « Débit d'injection pH »](#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460).
+3. **Carte Régulation pH** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs conditionnels :
    - **Automatique** : pH cible — **contrôle segmenté 4 positions** `#ph_target_group` depuis la v2.25.0 (7,20 / 7,30 / 7,40 / 7,50), avec hint de plage `#ph_target_hint`. Voir [Consigne pH : contrôle segmenté](#consigne-ph--contrôle-segmenté-v2250) et [Règles firmware appliquées](#règles-firmware-appliquées).
    - **Programmée** : volume quotidien en mL (borné par `max_ph_ml_per_day`) + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#ph_scheduled_flow_line` / `#ph_scheduled_flow_value`, alimentée par le champ WS `ph_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
    - **Manuelle** : bloc Injection manuelle (volume + bouton ▶ Injecter / ⏹ Stopper).
-   - **Pied de carte, mode Automatique uniquement** : bloc « **Rattrapage accumulé** » (`#ph-integral-section`, v2.26.0) — voir [Rattrapage accumulé par la régulation pH](#rattrapage-accumulé-par-la-régulation-ph-v2260).
-3. **Carte Correction de la mesure pH** (`#ph-card-offset`, feature-067, v2.20.0) — offset logiciel appliqué à la mesure. Voir [Carte « Correction de la mesure pH »](#carte--correction-de-la-mesure-ph--feature-067-v2200).
-4. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : bande fixe **7,2-7,6** (plage idéale de l'eau) + **ligne de consigne pointillée** à `ph_target` — voir [Repères du graphique d'historique](#repères-du-graphique-dhistorique-feature-083-v2281). Ce graphique trace la mesure **brute** et le reste en v2.38.0 — voir [Le graphique d'historique de cette page reste brut](#le-graphique-dhistorique-de-cette-page-reste-brut-feature-095-v2380).
-5. **Carte Calibration** — **remplace** Régulation + Historique pendant une session de calibration. Écran **guidé par stepper** (feature-034) — voir [Workflow calibration](#workflow-calibration).
+   - Le bloc « Rattrapage accumulé » qui vivait en pied de cette carte (`#ph-integral-section`, v2.26.0) est **retiré** depuis la v2.46.0 : son contenu est passé dans la carte « Débit d'injection pH ».
+4. **Carte Correction de la mesure pH** (`#ph-card-offset`, feature-067, v2.20.0) — offset logiciel appliqué à la mesure. Voir [Carte « Correction de la mesure pH »](#carte--correction-de-la-mesure-ph--feature-067-v2200).
+5. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : bande fixe **7,2-7,6** (plage idéale de l'eau) + **ligne de consigne pointillée** à `ph_target` — voir [Repères du graphique d'historique](#repères-du-graphique-dhistorique-feature-083-v2281). Ce graphique trace la mesure **brute** et le reste en v2.38.0 — voir [Le graphique d'historique de cette page reste brut](#le-graphique-dhistorique-de-cette-page-reste-brut-feature-095-v2380).
+6. **Carte Calibration** — **remplace** Régulation + Historique pendant une session de calibration. Écran **guidé par stepper** (feature-034) — voir [Workflow calibration](#workflow-calibration).
 
 Le bloc Statistiques reste visible **en permanence**, y compris pendant la calibration.
 
@@ -88,69 +89,93 @@ Les **repères** (bande fixe 7,2-7,6, ligne de consigne) sont donc inchangés et
 
 Détails : [page-dashboard.md](page-dashboard.md#mini-graphiques-ph--orp--la-courbe-suit-le-nombre-affiché-feature-095-v2380), [ADR-0064](../adr/0064-la-courbe-suit-le-nombre-affiche.md), [history.md](../subsystems/history.md#mesure-lissée-historisée-feature-095-v2380).
 
-## Rattrapage accumulé par la régulation pH (v2.26.0)
+## Carte « Débit d'injection pH » (`#ph-card-dosing`, feature-092, v2.46.0)
 
-Bloc `#ph-integral-section`, en **pied de la carte Régulation pH**, **visible en mode Automatique uniquement**. Il expose le **terme intégral** introduit par la [levée de `Ki = 0`](../subsystems/pump-controller.md#terme-intégral-ph--levée-de-ki--0-v2260) ([ADR-0052](../adr/0052-terme-integral-ph-dimensionne-par-autorite.md)).
+Une **carte unique** remplace quatre morceaux empilés au fil des versions : le bloc « Rattrapage accumulé » (`#ph-integral-section`), la ligne « Dose de base apprise » (`#ph_ff_line`), la ligne « Débit soutenable » du bloc capacités et le bandeau « Dosage au maximum autorisé » (`#ph_budget_banner`). Elle dit, à tout instant, la phrase que l'utilisateur cherchait sans jamais la trouver : *la régulation demande tant, composé de ceci + cela, borné par ça — et voici pourquoi elle l'applique ou non.*
 
-**Contenu**
+Point de décision **unique** de sa visibilité : `updatePhDosingCard()`, qui remplace `updatePhIntegralDisplay()` **et** `updatePhActuatorLimitDisplay()` (les deux sont supprimées, pas laissées mortes).
 
-```
-La régulation met de côté une correction lente pour compenser une dérive
-permanente du pH (dégazage du CO₂, apport d'eau neuve). Cette réserve se
-vide d'elle-même quand le pH rejoint sa consigne.
+### Placement (arbitrage `ux-ui-designer`, rejoué avec le bloc TTT)
 
-Rattrapage accumulé : 46 %   (7 450 pH·s · 2,8 mL/min demandés)
-```
+La carte s'insère **après `.ph-stats`** — donc après le bloc « [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370) », qui vit *à l'intérieur* de la 2ᵉ colonne des stats — et **avant `#ph-card-regulation`**. Lecture obtenue : **mesure → performance du jour → ce que fait la régulation maintenant → réglages**. Visible **en mode automatique uniquement**.
 
-| Élément | Id | Source | Format |
-|---|---|---|---|
-| Valeur de tête | `#ph_integral_pct_value` | `ph_integral_pct` | entier + « % », `—` si `null` |
-| Détail discret | `#ph_integral_detail` | `ph_integral` et `ph_integral_term` | `(N pH·s · X,X mL/min demandés)`, **valeurs absolues** |
-| Encart d'avertissement | `#ph_integral_warning` | dérivé de `ph_integral_pct` | `callout--warn`, `role="status"`, masqué hors saturation |
+L'ordre de la spec est **retenu**, mais **sans intitulé de section ni séparateur** entre les deux blocs : deux temporalités très différentes se succèdent (« la cible a été atteinte en 3 h 44 » puis « la régulation demande 4,33 mL/min à l'instant »), et la transition est portée par les éléments existants — la légende « **7 derniers jours — le plus récent à droite** » **ferme** le bloc TTT, le **titre** et la **pastille** **ouvrent** la carte. Ajouter un titre de section ou un `<hr>` aurait créé une hiérarchie qui n'existe pas dans le modèle mental de la page.
 
-**Règles d'affichage** (point de décision unique : `updatePhIntegralDisplay()`, appelée depuis `updateDetailSections()` et depuis le changement de mode) :
+`#ph_undersized_banner` est placé **juste sous la carte**, adjacent à ce qu'il explique.
+
+### Les 4 lignes (`.kv.kv--dose`, tableau — **pas** de barre empilée)
+
+Une barre empilée mentirait dès que le terme P est négatif et changerait d'échelle dès que la demande dépasse le plafond ; sur 360 px, trois segments de 20-40 px sont illisibles sans les nombres qu'ils dupliquent. Le liseré du total repose sur `.kv--dose .kv__row:last-child` — **ne rien ajouter après la ligne Demande dans cette `.kv`** (les pieds vivent hors du bloc clé/valeur).
+
+| Ligne | Valeur (`#ph-dose-*-value`) | Note (`#ph-dose-*-note`) |
+|---|---|---|
+| **Dose de base apprise** | `ph_ff_ml_per_min` — la contribution **appliquée**, celle qui rend le total additionnable. « — » au statut `3` ou si `null` | Dérivée de `ph_ff_status`, **la dose apprise** (`ph_ff_learned_ml_per_min`) descendant ici : statut `0` → « **en attente** — dose apprise X,XX, appliquée à la prochaine session » · `1` → *aucune note* (la valeur parle) · `2` → « suspendue (pH sous consigne, mesure invalide ou réglages modifiés) — dose apprise X,XX conservée » · `3` → « en apprentissage (historique < 3 j) » · `4` → « suspendue (60 % du quota atteint) — dose apprise X,XX conservée ». Aucune note si la dose apprise n'est pas un nombre fini |
+| **Écart courant** | `ph_p_term_ml_per_min`, **signé** (« −0,35 mL/min » quand le pH est sous la consigne) | *(vide côté pH — le bornage du couple s'annonce sur la ligne Rattrapage)* |
+| **Rattrapage accumulé** | `ph_i_term_ml_per_min` — le rattrapage **servi**, `0` dans la bande morte | Bornage du couple **en tête** s'il y a lieu (voir ci-dessous), puis « réserve N % » (`ph_integral_pct`, servi par le firmware). **Le « N pH·s » a disparu** : jargon sans usage pour la cible |
+| **Demande** (total, `border-top`) | `ph_demand_ml_per_min` en gras | « demande instantanée : la régulation attend une mesure stabilisée avant d'ouvrir une session » (6ᵉ cas de pastille seulement, demande non nulle), puis le plafond : bridé → « apport moyen possible X,XX mL/min **en moyenne sur l'heure** » ; sinon → « sous le maximum de X,XX mL/min ». Plafond `null` → **aucune note** |
+
+> ⚠️ **Le total est la DEMANDE, jamais un « appliqué ».** Il n'existe **aucun** champ `ph_applied_ml_per_min`, et il n'en existera pas. Le firmware borne la demande à l'**amplitude de la pompe** (26,0 mL/min sur cet appareil), **jamais** au débit soutenable ; la limite horaire agit **en aval**, par **refus**. Avec la configuration vivante (10 min/h), une demande de 5,20 mL/min est réellement servie **à 5,20 de moyenne jusqu'à épuisement du budget**, puis 0. Afficher `min(demande, soutenable)` comme un débit servi **sous-estimait de 17 %** ce que le bassin reçoit dans les dix minutes suivantes (verdict `pool-chemistry`). D'où : la Demande en total, le plafond en note, sous son vrai nom.
+
+**Note de bornage du couple** — l'égalité de référence n'est **pas** `demande = ff + p + i`, mais `demande = coupleServi + ffServi`, où `coupleServi = demande − ff` se **reconstitue par soustraction** (aucune régulation n'est recalculée côté client, et le couple borné n'est **jamais** réparti entre P et I selon une règle inventée). Quand le couple brut diffère du couple servi de plus de **0,01 mL/min** (seuil impératif : les champs sont servis arrondis à 2 décimales, un `!==` faux-positiverait d'un centime), la ligne le **nomme** : « **plancher appliqué · couple retenu 0,00 mL/min** » si le couple brut est négatif, « **couple non servi · maintien de session** » sinon. Un trait de total sous des nombres qui ne s'additionnent pas, **sans note**, serait le pire des deux mondes.
+
+### Pastille d'état (`#ph-dosing-pill`) — 5 priorités, 3 couleurs
+
+`.pill` dans `.card__head--wrap`, `role="status"` `aria-live="polite"` : **seule zone vocalisée de la carte** (invariant `ux-ui-designer` — deux régions live à 20 px l'une de l'autre se parasitent sur mobile). Dérivée **côté client** de champs servis, dans cet ordre :
+
+| Priorité | Condition | Classe | Libellé |
+|---:|---|---|---|
+| 1 | cause de refus de ton `fault` (panne sonde, filtre) | `.pill.bad` | « Dosage suspendu · {libellé court} » |
+| 2 | `ph_pulse_session === true` | `.pill.ok` | « Injection en cours » |
+| 3 | `phMixingDelayActive === true` | `.pill` neutre | « Pause mélange · N min » (`ceil(ph_mix_remaining_s / 60)`) ; « Pause mélange » seul si la valeur manque |
+| 4 | cause de refus de ton `normal` (filtration arrêtée, limite horaire, anti-rafale, stabilisation…) | `.pill` neutre | « En attente · {libellé court} » |
+| 5 | aucune cause, pas de session, `ph_p_term_ml_per_min === 0` | `.pill` neutre | « En attente · pH à la consigne » |
+
+**6ᵉ cas — « En attente » seul.** Aucune cause servie, pas de session, mais terme P **non nul**. C'est le cas trompeur, et il est atteignable : la porte de session statue sur le **signal lent** (moyenne 10 min), la composition sur l'erreur **instantanée** — avec la dispersion pH de cet appareil, la demande peut être non nulle porte fermée. La ligne Demande porte alors la note « demande instantanée … » qui l'explique : *un chiffre sans motif de non-application est exactement le vide que cette carte existe pour combler*. Un code non répertorié (firmware plus récent) donne aussi « En attente », mais **sans** cette note — la cause existe, la page ne sait pas la nommer.
+
+**Sémantique de couleur** : **vert = pompe commandée, gris = état normal, rouge = panne uniquement. Pas d'ambre** — une pause n'est pas un avertissement. **Aucun glyphe « ● / ○ »** : indiscernables à 12 px, et ils créeraient une seconde sémantique de vert à 20 px des pastilles du calendrier 7 jours. Compte à rebours **uniquement** sur la pause mélange (champ servi et borné, il répond exactement à la question posée) ; **pas** de durée écoulée de session (aucun champ, et un compteur qui tourne n'est que du bruit).
+
+`DOSE_BLOCK_CODES` reste la **source unique** des libellés de refus : la pastille lit un libellé **court** (`pill` / `chip`) et retombe sur `label` à défaut ; le modal filtre garde le texte complet. Cas particulier de la sentinelle `250` (cause de garde, message porteur de valeurs runtime, trop long pour une pastille) : « Sécurité pH/ORP active ».
+
+### Pieds de carte
+
+| Pied | Id | Règle |
+|---|---|---|
+| « Débits moyens sur la session : la pompe injecte par impulsions. » | *(statique)* | **Toujours** affiché — la session est la maille des débits |
+| « La limite horaire (X min/h) autorise Y en moyenne sur l'heure : la pompe sert la demande, puis s'arrête jusqu'à l'heure suivante. » | `#ph-dose-budget-foot` | Affiché quand `ph_limited_by_hourly_budget === true` **et** que le soutenable **et** `ph_limit_minutes` (`/get-config`) sont connus — sans quoi la phrase serait creuse. Phrase validée `pool-chemistry` : elle dit que la pompe **sert la demande puis s'arrête**, et non qu'elle débite en continu à un débit réduit |
+| « Débit de la pompe non caractérisé : ces valeurs reposent sur le débit d'usine, pas sur une pesée. » | `#ph-dose-uncharacterized-foot` | `ph_pump_flow_uncharacterized === true`. Qualification de la **fiabilité** des nombres — elle vivait avant dans la ligne « Débit soutenable » retirée. Clé absente ⇒ pied masqué, jamais un `false` inventé |
+| Callout « Rattrapage au maximum » | `#ph_integral_warning` | **Déplacé** au pied de la carte, **texte et règle inchangés** : verdict **servi** par le firmware (`ph_integral_saturated`), jamais recalculé ici — le seuil firmware porte sur `demande / soutenable` et lui seul connaît la **durée** (2 h / 6 h). ⚠️ `role="status"` et `aria-live` ont été **retirés** en entrant dans la carte : **ne pas les restaurer** |
+
+### Règles de dégradation — une sentinelle, des tirets, jamais de zéro
 
 | Condition | Comportement |
 |---|---|
-| `ph_integral_pct` **absent** (firmware < 2.26.0) | **Bloc entier masqué.** Afficher « 0 % » mentirait sur une régulation dont on ne sait rien. |
-| Mode de régulation ≠ `automatic` | **Bloc masqué** : le rattrapage n'évolue que là ; ailleurs on n'afficherait qu'un reliquat figé, sans lecture possible. |
-| Valeur `null` | « — » — le firmware dit explicitement « non calculable » (terme intégral inactif). **Jamais un zéro.** |
-| Nombre fini, `0` compris | Valeur affirmée : `0 %` = **réserve vide**. |
-| `ph_integral_pct ≥ 95` | Encart d'avertissement affiché : *« Rattrapage au maximum : la régulation demande tout ce qu'elle peut sans que le pH rejoigne sa consigne. Vérifiez le niveau du bidon, l'amorçage de la pompe doseuse et le TAC de l'eau (une alcalinité élevée bloque le pH). »* |
+| Mode de régulation ≠ `automatic` | **Carte entière masquée** : le feedforward et le rattrapage n'évoluent que là ; ailleurs on afficherait un reliquat figé |
+| `ph_demand_ml_per_min` **absent** (`undefined`, firmware < 2.46.0) | **Carte entière masquée.** Aucun repli sur l'ancienne présentation, qui est retirée ; aucune erreur console |
+| Une valeur `null` | « — » sur sa ligne, la raison en note ; la **pastille** porte la cause |
+| **Mesure non représentative** (filtration arrêtée, purge) | Écart et Demande « — » ; **Dose de base et Rattrapage restent affichés** (grandeurs lentes, toujours vraies) ; pastille « En attente · Filtration arrêtée » **en gris, jamais en rouge** |
+| Statut FF `3` | Ligne Dose de base « — » + note « en apprentissage (historique < 3 j) », **même si** le firmware sert un `0` de contribution |
+| **Archivage de minuit** portant l'anneau à 3 jours | La ligne quitte « en apprentissage » **au rafraîchissement `/data` suivant** (≤ 30 s), sans attendre la filtration du matin — correctif racine du défaut du 03/09 |
+| Charge médiane **nulle** avec 3 journées exploitables | « 0,00 mL/min » : observation légitime, **pas** un tiret |
+| Plafond `null` (pompe non caractérisée) | Demande sans note de plafond + pied « débit non caractérisé » |
+| WebSocket déconnecté | `/data` porte **tous** les champs (parité `PARITE-DATA`) → **aucun clignotement** |
 
-**Pourquoi le pourcentage en premier** : c'est la seule des trois grandeurs lisible **sans connaître le plafond de l'anti-windup**, lequel **varie** avec la vitesse de correction (43 200 / 16 200 / 7 200 pH·s). Ce plafond n'est donc **jamais recopié côté client** — le firmware sert le rapport déjà calculé. Recalculer un pourcentage dans le navigateur rouvrirait le motif du miroir de constante firmware, éliminé quatre fois dans ce projet.
+Un rendu qui lance est capté (`try/catch` autour de `updatePhDosingCard()`), pour ne jamais masquer les rubriques suivantes en silence.
 
-**Le signe n'est pas affiché** : le détail montre les valeurs **absolues**, le sens de correction étant déjà porté plus haut dans la carte (pH- / pH+).
+### Ce qui a été retiré, déplacé, conservé
 
-> ⚠️ **Le seuil `PH_INTEGRAL_SATURATION_PCT = 95` de `app.js` est un seuil de MISE EN FORME**, aligné sur `kPhIntegralSaturationPct`. **L'autorité reste l'alerte firmware** `ph_integral_saturated`, seule à tenir compte de la **durée** (`warning` à 2 h, `critical` à 6 h, rappel 12 h) — l'encart web peut apparaître sur un transitoire de quelques minutes sans qu'aucune alerte ne parte, et c'est voulu.
+**Retiré du DOM** (aucun id mort dans `app.js`) : `#ph-integral-section` (bloc + `<hr>` + paragraphe pédagogique « correction lente… », désormais couvert par le [guide de régulation](../user/src/guide-regulation.html)), `#ph_ff_line`, `#ph_budget_banner` (+ `_text`), la ligne « Débit soutenable » (`#ph_sustainable_value`) du bloc capacités, et le détail `#ph_integral_detail` (« N pH·s »).
 
-**Volontairement absent d'ailleurs** : du **tableau de bord** (c'est une grandeur d'automatique, pas une mesure d'eau) et de la page **Réglages** (c'est un **état temps réel**, pas un paramètre à sauvegarder).
+**Déplacé** : `#ph_integral_warning` → pied de la carte · `#ph_undersized_banner` → juste sous la carte, **conservé tel quel** (nature différente : diagnostic 3 jours) · `#ph_integral_pct_value` → note de la ligne Rattrapage (« réserve N % »).
 
-### Ligne « Dose de base apprise » (feature-085, v2.28.0)
+**Conservé** : `#daily-dose-ph*`, le bloc capacités `#ph_capacity_block` **réduit à « Maximum journalier »** (`#ph_daily_max_value`) — grandeur **journalière**, pas un débit, qui reste sous la barre du jour et n'est **pas** fusionnée dans l'en-tête `daily-dose` (deux « maximum » côte à côte prêteraient à confusion) —, les chips sonde et filtre, et le modal filtre (la pastille ne remplace pas le détail du code de refus).
 
-Ligne `#ph_ff_line`, ajoutée **dans le bloc Rattrapage accumulé** (mêmes règles de visibilité : mode Automatique uniquement). Elle expose le [feedforward pH](../subsystems/pump-controller.md#dose-de-base-apprise--feedforward-ph-v2280) ([ADR-0055](../adr/0055-feedforward-appris-additif-plafonne.md)) : la charge quotidienne connue (médiane 7 j) couverte d'office pendant les sessions automatiques.
+Le `hidden` du bloc capacités et celui de `#ph_undersized_banner` sont pilotés par `updatePhDosingCard()` (ils vivent hors de la carte, mais dépendaient de la fonction supprimée) et restent, comme avant, **indépendants du mode de régulation** : un maximum journalier reste une capacité lisible en mode manuel. Sentinelle de présence inchangée : `ph_limited_by_hourly_budget` non booléen ⇒ les deux éléments restent masqués.
 
-| Élément | Id | Source | Format |
-|---|---|---|---|
-| Valeur | `#ph_ff_value` | `ph_ff_ml_per_min` | `X,XX mL/min` (fr-FR, 2 décimales) — **uniquement** au statut `actif` ; `—` sinon |
-| État | `#ph_ff_state` | `ph_ff_status` | libellé discret, voir table |
+### Données consommées
 
-**Libellés des 5 états** (`ph_ff_status`, contrat firmware figé) :
+`ph_ff_learned_ml_per_min`, `ph_ff_ml_per_min`, `ph_ff_status`, `ph_p_term_ml_per_min`, `ph_i_term_ml_per_min`, `ph_demand_ml_per_min`, `ph_sustainable_ml_per_min`, `ph_limited_by_hourly_budget`, `ph_integral_pct`, `ph_integral_saturated`, `ph_undersized`, `ph_daily_max_ml`, `ph_pulse_session`, `ph_pump_flow_uncharacterized`, `phMixingDelayActive`, `ph_mix_remaining_s`, `phDoseBlockedCode` — **tous servis à l'identique** par `GET /data` et la trame WS ([ADR-0071](../adr/0071-parite-data-trame-capteurs.md)) ; `ph_limit_minutes` vient de `/get-config`.
 
-| Code | Affichage |
-|---|---|
-| `0` (inactif) | tiret seul, pas de libellé |
-| `1` (actif) | valeur + « active » |
-| `2` (latch de sécurité) | « suspendue (pH sous consigne) » |
-| `3` (historique < 3 j) | « en apprentissage (historique < 3 j) » |
-| `4` (quota) | « suspendue (60 % du quota atteint) » |
-| code inconnu (firmware plus récent) | tiret seul — jamais un libellé voisin |
-
-**Règles** :
-
-- `ph_ff_status` **absent** (`undefined`, firmware < 2.28.0) → **ligne masquée** (`hidden`). Afficher « inactif » mentirait sur un firmware qui n'a pas de feedforward.
-- La valeur n'est affichée **que** pour le statut `actif` : dans tous les autres états le débit vaut 0 par construction, et un « 0,00 mL/min » se lirait comme une mesure.
-- Parité `/data` ↔ WS : les deux champs sont servis à l'identique par les deux transports (voir [API.md](../API.md#champs-du-feedforward-ph-feature-085-v2280)).
+Contrats : [API.md](../API.md#champs-de-composition-du-débit-dinjection-feature-092-v2460) · [ws-manager.md](../subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-feature-092--composition-du-débit-dinjection-v2460) · firmware : [pump-controller.md](../subsystems/pump-controller.md#composition-du-débit-dinjection--accesseurs-de-lecture-seule-feature-092-v2460).
 
 ## Sens de « en dosage » (feature-094, v2.36.0)
 
@@ -167,44 +192,43 @@ Conséquences pour cette page :
 - **Verrou de calibration** (`_updateInjectButtons`, condition `(ph_inject_remaining_s > 0) || (ph_dosing === true)`, cf. [État de calibration](#état-de-calibration--bouton--calibrer-la-sonde--feature-034)) : le bouton « Calibrer la sonde » reste **désactivé plus longtemps**, y compris pompe à l'arrêt. C'est **cohérent avec l'intention d'origine** du verrou — il a toujours couvert **toute la session** d'impulsions, repos compris — et il va dans le sens **restrictif**, donc aucun changement n'est apporté.
 - **Statut de dosage des cartes** : la distinction « **commandé** vs **effectif** » posée en v2.21.1 ([ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md)) reste la règle et devient indispensable — « la pompe est alimentée maintenant » se lit **uniquement** sur `ph_pulse_phase_ms < ph_pulse_ms`, **jamais** sur `ph_dosing`. Voir [page-dashboard.md](page-dashboard.md#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211).
 
-## Capacités de dosage et bandeaux de limite d'actionneur (feature-086, v2.29.0)
+## Capacités de dosage et limite d'actionneur (feature-086, v2.29.0 ; remanié en v2.46.0)
 
-Trois éléments exposent la [limite d'actionneur pH](../subsystems/pump-controller.md#limite-dactionneur-ph--exposition-et-alerte-de-sous-dimensionnement-feature-086-v2290) ([ADR-0056](../adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md)) : un bloc de capacités, un bandeau informatif, une alerte de diagnostic. Point de décision **unique** : `updatePhActuatorLimitDisplay()` (appelée depuis `updateDetailSections()`, sous `try/catch` — un rendu qui lance ne masque jamais les rubriques suivantes en silence). **Sentinelle de présence** : `ph_limited_by_hourly_budget` non booléen (`undefined`, firmware < 2.29.0) → les **trois** éléments restent masqués, rien n'est inventé.
+Deux éléments exposent encore la [limite d'actionneur pH](../subsystems/pump-controller.md#limite-dactionneur-ph--exposition-et-alerte-de-sous-dimensionnement-feature-086-v2290) ([ADR-0056](../adr/0056-sous-dimensionnement-actionneur-3-jours-80-pct.md)) : la ligne « Maximum journalier » du bloc capacités, et l'alerte de diagnostic. Point de décision **unique** : `updatePhDosingCard()` depuis la v2.46.0 (`updatePhActuatorLimitDisplay()` est **supprimée**), appelée sous `try/catch`. **Sentinelle de présence** inchangée : `ph_limited_by_hourly_budget` non booléen (`undefined`, firmware < 2.29.0) → les deux éléments restent masqués, rien n'est inventé.
 
-### Bloc capacités (`#ph_capacity_block`)
+> ⚠️ **Deux éléments de cette feature ont été retirés en v2.46.0** ([feature-092](#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460)) :
+>
+> - la ligne « **Débit soutenable** » (`#ph_sustainable_value`) du bloc capacités — le soutenable est désormais la **note du total** de la carte « Débit d'injection », là où il qualifie ce qu'il borne. Sa mention « Indisponible — pompe non caractérisée » est devenue le **pied de carte** « débit non caractérisé » ;
+> - le bandeau informatif « **Dosage au maximum autorisé** » (`#ph_budget_banner`) — remplacé par la note « apport moyen possible … en moyenne sur l'heure » sur la ligne Demande **et** le pied de carte « limite horaire ». Il n'existe plus dans le DOM.
+>
+> Ce qui a changé au passage, et qui compte : l'ancien bandeau annonçait un débit **plafonné**, ce que la pompe ne fait pas. Elle **sert la demande, puis s'arrête** — voir l'avertissement « le total est la Demande » de la carte.
 
-Sous la barre de dose journalière, présentation volontairement **discrète** (`muted small`) : ce sont des **capacités dérivées des réglages** (limite horaire × débit calibré, × minutes de filtration programmées), pas des mesures.
+### Bloc capacités (`#ph_capacity_block`) — réduit à une ligne
+
+Sous la barre de dose journalière, présentation volontairement **discrète** (`muted small`) : c'est une **capacité dérivée des réglages** (soutenable × minutes de filtration programmées), pas une mesure.
 
 | Élément | Id | Source | Format |
 |---|---|---|---|
-| Débit soutenable | `#ph_sustainable_value` | `ph_sustainable_ml_per_min` | `X,XX mL/min` (fr-FR, 2 décimales) ; `null` → **« Indisponible — pompe non caractérisée »** |
 | Maximum journalier | `#ph_daily_max_value` | `ph_daily_max_ml` | `N mL/j` (entier, fr-FR) ; `null` → « Indisponible » |
 
-### Bandeau informatif « Dosage au maximum autorisé » (`#ph_budget_banner`)
-
-`callout--info`, `role="status"` — ton **neutre** validé par `pool-chemistry` : c'est un **état normal** de la régulation, pas une anomalie (pas de rouge, pas d'icône d'alerte). Affiché quand `ph_limited_by_hourly_budget` est `true`, texte composé par `updatePhActuatorLimitDisplay()` :
-
-> **Dosage au maximum autorisé**
-> La limite horaire d'injection ({X} min/h) plafonne l'apport de correcteur à {Y} mL/min, soit au plus {Z} mL sur la journée de filtration programmée. Le pH redescend au rythme le plus rapide que ce réglage autorise.
-
-`{X}` = `ph_limit_minutes` (config), `{Y}` = `ph_sustainable_ml_per_min`, `{Z}` = `ph_daily_max_ml`. Si `{Z}` est `null`, la première phrase est tronquée après « {Y} mL/min. ». Si `{Y}` est `null`, le bandeau est **masqué** (garde défensive : sans débit soutenable, la phrase serait creuse — cas théorique, le firmware ne tient pas d'épisode C5 sans pompe caractérisée).
+Cette ligne **reste ici** et n'est **pas** fusionnée dans l'en-tête `daily-dose` : c'est une grandeur **journalière**, pas un débit, et deux « maximum » côte à côte prêteraient à confusion. Elle reste affichée **quel que soit le mode de régulation** — un maximum journalier est une capacité lisible aussi en mode manuel.
 
 ### Alerte « Capacité de dosage insuffisante » (`#ph_undersized_banner`)
 
-`callout--warn`, `role="status"` — diagnostic d'installation, visuellement distinct du bandeau informatif, plus grave, mais **pas une alarme critique**. Affichée quand `ph_undersized` est `true`. Texte **statique** (seul `hidden` est piloté), libellé exact validé par `pool-chemistry` :
+`callout--warn`, `role="status"` — diagnostic d'installation, plus grave qu'une note de plafond, mais **pas une alarme critique**. Affichée quand `ph_undersized` est `true`. Texte **statique** (seul `hidden` est piloté), libellé exact validé par `pool-chemistry` :
 
 > **Capacité de dosage insuffisante**
 > Depuis 3 jours, la pompe pH délivre chaque jour tout ce que la limite horaire autorise, sans ramener le pH à la consigne. Le réglage actuel ne couvre pas le besoin du bassin : allonger la durée de filtration ou, après vérification de l'installation, relever la limite horaire.
 
 **Règles de rédaction tenues** :
-- **L'alerte REMPLACE le bandeau informatif** — jamais d'empilement : quand `ph_undersized` est vrai, le bandeau est masqué (l'alerte contient l'information).
+- **Plus rien à empiler depuis la v2.46.0** : le bandeau informatif qu'elle devait remplacer n'existe plus. L'alerte est le **seul** callout de ce domaine, et elle est placée **juste sous la carte « Débit d'injection »**, adjacente à ce qu'elle explique.
 - **Aucune mention de bidon** (leçon v2.26.0 : le client annonçait « vérifiez le bidon » sur une saturation qui désignait la limite horaire).
 - Le conseil cite **la filtration en premier** ; le relèvement de la limite horaire n'est proposé qu'**« après vérification de l'installation »** (le relèvement augmente proportionnellement le volume injecté pendant le retard de mélange — point 3 de la spec, différé).
 - « 3 jours » est la **constante firmware** du diagnostic (`kPhActuatorLimitConsecutiveDays`), pas un champ servi.
 
 ## Atteinte de la cible (feature-096, v2.37.0)
 
-Bloc `#ph-ttt-block`, placé **en pied du bloc Statistiques**, sous les capacités de dosage. Patron maison `field__label` + `<strong>` + `<span class="muted small">`, identique à `#ph-integral-section` et `#ph_ff_line` (pas de `.kv`). Il expose l'[indicateur « temps d'atteinte de cible »](../subsystems/time-to-target.md) ([ADR-0063](../adr/0063-definition-normative-du-temps-d-atteinte-de-cible.md)) : combien de temps la régulation pH met, chaque jour, à ramener le bassin sur sa consigne et à l'y tenir.
+Bloc `#ph-ttt-block`, placé **en pied du bloc Statistiques**, sous les capacités de dosage — donc **au-dessus** de la carte « [Débit d'injection pH](#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460) », dont il est séparé sans intitulé ni filet (sa légende « 7 derniers jours » ferme le bloc, le titre et la pastille de la carte l'ouvrent). Patron maison `field__label` + `<strong>` + `<span class="muted small">`, identique aux autres rubriques de cette colonne (pas de `.kv`). Il expose l'[indicateur « temps d'atteinte de cible »](../subsystems/time-to-target.md) ([ADR-0063](../adr/0063-definition-normative-du-temps-d-atteinte-de-cible.md)) : combien de temps la régulation pH met, chaque jour, à ramener le bassin sur sa consigne et à l'y tenir.
 
 > ⚠️ **« Minutes de circulation », jamais « de filtration »** — dans tous les libellés de ce bloc. La base de temps est le compteur de **présence d'eau** (`filtTotalMin`) : sans circulation, ni mélange ni mesure représentative, donc la régulation ne progresse pas.
 
@@ -571,7 +595,9 @@ L'ordre d'exécution est libre (mid puis low, ou inverse). En pratique, les util
 **Mode** : `ph_regulation_mode` (`automatic` / `scheduled` / `manual`), `ph_daily_target_ml`, `ph_enabled` (miroir, voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
 **Répartition scheduled (feature-011, v2.8.0)** : `ph_scheduled_flow_ml_per_min` (float 1 décimale, mL/min — débit moyen planifié restant ; `null` hors mode `scheduled`, hors plage de filtration ou heure ESP32 invalide → l'UI affiche « — »)
 **Terme intégral (v2.26.0)** : `ph_integral_pct` (float, % — remplissage de la réserve), `ph_integral` (float, pH·s), `ph_integral_term` (float, mL/min). Servis **à l'identique** par `GET /data`. Clé **absente** = firmware antérieur → bloc masqué ; `null` = « non calculable » → « — » ; `0` = **réserve vide, affirmé**. Voir [Rattrapage accumulé](#rattrapage-accumulé-par-la-régulation-ph-v2260)
-**Dose de base apprise (feature-085, v2.28.0)** : `ph_ff_ml_per_min` (float 2 décimales, mL/min), `ph_ff_status` (int 0-4, contrat figé). Servis **à l'identique** par `GET /data`. `ph_ff_status` absent = firmware antérieur → ligne masquée. Voir [Ligne « Dose de base apprise »](#ligne--dose-de-base-apprise--feature-085-v2280)
+**Dose de base apprise (feature-085, v2.28.0)** : `ph_ff_ml_per_min` (float 2 décimales, mL/min — **contribution appliquée**, `0` hors session, `0,00` aussi en régime de maintien à zéro depuis la v2.46.0), `ph_ff_status` (int 0-4, contrat figé ; le `3` est traduit en `0` dès 3 journées exploitables).
+
+**Composition du débit (feature-092, v2.46.0)** : `ph_ff_learned_ml_per_min`, `ph_p_term_ml_per_min`, `ph_i_term_ml_per_min`, `ph_demand_ml_per_min` (float 2 décimales | `null`), plus `phMixingDelayActive` et `ph_mix_remaining_s` (pause mélange, désormais servis **aussi** par `/data`) et `ph_pump_flow_uncharacterized` (désormais servi **aussi** par le WebSocket). Tous en **parité stricte** ([ADR-0071](../adr/0071-parite-data-trame-capteurs.md)). `ph_demand_ml_per_min` absent = firmware antérieur → **carte masquée**. Voir [Carte « Débit d'injection pH »](#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460)
 **Atteinte de la cible (feature-096, v2.37.0)** : `ph_ttt_state` (uint8 `0`-`3`, **4-255 réservés**), `ph_ttt_min` (uint16, **minutes de circulation** — ⚠️ **sens variable selon l'état**), `ph_ttt_e0` (float 2 décimales \| `null`), `ph_ttt_flag` (**champ de bits**). Servis **à l'identique** par `GET /data` (même passage des deux côtés). `ph_ttt_state` non numérique = firmware antérieur → bloc masqué. La mémoire 7 jours vient de [`GET /get-kpi`](../API.md#get-get-kpi--write), **jamais du WS**. Voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370)
 **Limite d'actionneur (feature-086, v2.29.0)** : `ph_sustainable_ml_per_min` (float 2 décimales \| `null`), `ph_daily_max_ml` (int mL/j \| `null`), `ph_limited_by_hourly_budget` (bool), `ph_undersized` (bool). Servis **à l'identique** par `GET /data` (même passage des deux côtés — aucun clignotement possible). `ph_limited_by_hourly_budget` non booléen = firmware antérieur → capacités **et** bandeaux masqués. Voir [Capacités et bandeaux](#capacités-de-dosage-et-bandeaux-de-limite-dactionneur-feature-086-v2290)
 **Config** : `ph_target`, `ph_correction_type` (`ph_minus` / `ph_plus`), `max_ph_ml_per_day`, `ph_offset` (feature-067, message `config` — pas `sensor_data`)

@@ -135,6 +135,19 @@ float getPhIntegralPct() const;    // remplissage de l'anti-windup (% de integra
 // Contrat de statut FIGÉ (0-4, cf. PhFfStatus). Même course bénigne assumée.
 float getPhFeedforwardFlow() const;    // débit FF appliqué à la session auto (mL/min, 0 hors session)
 uint8_t getPhFeedforwardStatus() const; // 0 inactif · 1 actif · 2 latch · 3 historique < 3 j · 4 quota
+                                        // v2.46.0 : le 3 est traduit en 0 si l'anneau porte >= 3 journées
+
+// feature-092 (v2.46.0) — COMPOSITION DU DÉBIT D'INJECTION, LECTURE SEULE.
+// Copie sous spinlock portMUX : les cinq flottants d'une même composition sont
+// cohérents entre eux. Aucun I2C, aucune NVS, aucun LittleFS — sûrs en async.
+float getPhFeedforwardLearnedFlow() const;  // dose de base APPRISE (mL/min) — vraie hors session, NAN si < 3 j
+float getPhPTermFlow() const;               // kp·erreur, SIGNÉ, 0 en bande morte, jamais borné
+float getPhITermFlow() const;               // ki·intégrale SERVI (0 en bande morte) — != getPhIntegralTerm()
+float getPhDemandFlow() const;              // clamp(PI servi + FF, 0, ampFlow)
+float getOrpPTermFlow() const;              // idem ORP (P-pure)
+float getOrpDemandFlow() const;             // demande ORP = terme P borné
+float getOrpSustainableMlPerMin() const;    // miroir de getPhSustainableMlPerMin()
+bool isOrpLimitedByHourlyBudget() const;    // VERDICT « chlore borné par sa limite horaire »
 
 void setManualPump(int pumpIndex, uint8_t duty);  // test manuel
 ```
@@ -1296,6 +1309,8 @@ Corollaire « sonde figée » (critère A6) : une sonde figée ferme la porte de
 
 `getPhFeedforwardFlow()` (mL/min, 0 hors session) et `getPhFeedforwardStatus()` — code `PhFfStatus` **FIGÉ**, jamais renuméroté (même règle que `DoseRefusal`, ADR-0049) :
 
+> ⚠️ **Deux ajustements en v2.46.0** (feature-092), tous deux des **corrections** : `getPhFeedforwardFlow()` rapporte le feedforward du **régime appliqué** — donc `0,00` en régime de maintien à zéro — et le statut `3` est **traduit en `0`** dès que l'anneau porte ≥ 3 journées exploitables. Voir [Composition du débit d'injection](#composition-du-débit-dinjection--accesseurs-de-lecture-seule-feature-092-v2460).
+
 | Code | État | Servi hors session ? |
 |---|---|---|
 | 0 | `kInactive` — aucune session automatique | oui (état de repos) |
@@ -1304,7 +1319,7 @@ Corollaire « sonde figée » (critère A6) : une sonde figée ferme la porte de
 | 3 | `kNoHistory` — < 3 jours exploitables | oui |
 | 4 | `kQuota` — ≥ 60 % de la limite journalière consommés | oui |
 
-Publiés en **parité stricte** sur `/data`, le WebSocket et MQTT (`ph_ff_ml_per_min` 2 décimales, `ph_ff_status`) : [API.md](../API.md#champs-du-feedforward-ph-feature-085-v2280), [ws-manager.md](ws-manager.md#champs-sensor_data-ajoutés-en-v2280--feedforward-ph-adr-0055), [MQTT.md](../MQTT.md#topics-et-entités-ajoutés-en-v2280-dose-de-base-apprise--feedforward-ph), UI : [page-ph.md](../features/page-ph.md#ligne--dose-de-base-apprise--feature-085-v2280).
+Publiés en **parité stricte** sur `/data`, le WebSocket et MQTT (`ph_ff_ml_per_min` 2 décimales, `ph_ff_status`) : [API.md](../API.md#champs-du-feedforward-ph-feature-085-v2280), [ws-manager.md](ws-manager.md#champs-sensor_data-ajoutés-en-v2280--feedforward-ph-adr-0055), [MQTT.md](../MQTT.md#topics-et-entités-ajoutés-en-v2280-dose-de-base-apprise--feedforward-ph), UI : [page-ph.md](../features/page-ph.md#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460).
 
 ### Journal
 
@@ -1511,6 +1526,98 @@ Un « erreur résorbée » unique ne distinguait plus un arrêt normal d'un sous
 Suite native [`test/test_native_ph_session/`](../../test/test_native_ph_session/) — logique pure ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)), y compris le **rejeu de la série réelle du 03/09** convertie en fixture. Total du projet : **30 suites / 1 154 cas**, **8 mutations tuées sur 8**.
 
 ⚠️ **Ce que le rejeu ne prouve PAS** : il est en **boucle ouverte**. Il démontre l'anti-chatter (moins de sessions, plus longues), **pas** que le bassin reste dosé — l'acide des 7 sessions réelles est déjà dans la série. Le critère « feedforward servi ≥ 80 % du temps » y ressort à **0,0 %** parce que le signal lent y siège **à la consigne** (moyenne 7,2999). Il est à mesurer sur l'appareil (enregistrement `/data` sur 4 h une après-midi à la consigne).
+
+## Composition du débit d'injection — accesseurs de lecture seule (feature-092, v2.46.0)
+
+> **Lecture seule stricte.** Aucun chemin nouveau vers les pompes : ces accesseurs **projettent** des grandeurs que la branche automatique calcule déjà. Visa `pool-chemistry` du 07/09/2026 : **GO de non-régression**, sous deux conditions implémentées (contre-exemple de composition testé, aucun appel à `getPhDecisionValue()` hors `loopTask`). Spec : [feature-092](../../specs/features/done/feature-092-carte-debit-injection-ph-orp.md).
+
+### Les 8 accesseurs `const`
+
+| Accesseur | Retour | Contrat |
+|---|---|---|
+| `getPhFeedforwardLearnedFlow()` | `float` (NAN → `null`) | Dose de base **apprise** = `min(charge médiane 7 j, kPhFfMaxSustainableFraction × soutenable)`, calculée **à la lecture** depuis le cache `_phLoadObs` — jamais depuis un instantané du tick, qui ne tourne que sous filtration hors purge. NAN sous `kPhIntegralRestoreMinHistoryDays` journées exploitables **ou** soutenable indisponible. Charge médiane nulle avec 3 journées ⇒ **0,00** (observation, pas indisponibilité). |
+| `getPhPTermFlow()` | `float` | `kp·erreur`, **signé**, `0` dans la bande morte, **jamais borné**. NAN si la porte de validité des mesures est fermée, **et** NAN si `kp = 0` (régulateur inerte). |
+| `getPhITermFlow()` | `float` | `ki·intégrale` **servi** (`0` dans la bande morte) — **distinct** de `getPhIntegralTerm()`, terme brut et contrat externe historique. |
+| `getPhDemandFlow()` | `float` | `clamp(PI servi + FF, 0, ampFlow)`. |
+| `getOrpPTermFlow()` / `getOrpDemandFlow()` | `float` | Mêmes règles, régulation **P-pure** : la demande **vaut** le terme proportionnel borné. |
+| `getOrpSustainableMlPerMin()` | `float` | Miroir strict de `getPhSustainableMlPerMin()` : recalcul à la demande depuis `orpSustainableFlowFromConfig()`, NAN si ≤ 0 ou non fini. |
+| `isOrpLimitedByHourlyBudget()` | `bool` | Verdict, jamais une comparaison laissée au client. Vrai si `orpDosingState.usedMs ≥ limite` **ou** si `demande ≥ soutenable` (deux faces du même phénomène). Faux si la limite est désactivée (≤ 0 ou ≥ 60 min/h) et faux quand la mesure n'est pas représentative — même fail-closed que le pH : servir un verdict figé ferait annoncer « bridé » sur une filtration à l'arrêt. **Il n'y a pas de terme intégral ORP**, donc aucune hystérésis d'épisode : au voisinage exact du plafond, la note « plafonnée » peut apparaître et disparaître d'un rafraîchissement à l'autre. |
+
+**Course bénigne assumée**, patron `isAnyPumpEnergized` : l'instantané est écrit par `loopTask` (branche automatique) et lu en contexte web async / tâche MQTT. La copie passe par un **spinlock `portMUX`** (`doseCompositionSnapshot()`, patron feature-096) : les cinq flottants d'une **même** composition sont donc cohérents **entre eux**. Le spinlock ne prétend pas rendre l'instantané synchrone avec la mesure publiée dans la même trame — pire cas, un instantané en retard d'un tour de loop. Aucun de ces accesseurs ne touche l'I²C, LittleFS, la NVS, ni `getPhDecisionValue()` (réservée à `loopTask`, condition C2 du gate feature-096) : ils sont sûrs dans un handler `AsyncWebServer`.
+
+### Traduction de statut `3 → 0`, et sa précédence
+
+`getPhFeedforwardStatus()` s'appuie désormais sur le module pur `phFeedforwardServedStatus(raw, sessionOpen, historyDays, learnedFinite)` ([`src/ph_feedforward_logic.h`](../../src/ph_feedforward_logic.h)), qui regroupe **les deux** traductions :
+
+| Ordre | Règle |
+|---:|---|
+| **1** | `raw == 3` (historique insuffisant) ⇒ `0` si `historyDays ≥ kPhIntegralRestoreMinHistoryDays`, sinon `3` |
+| 2 | `raw == 2` ou `4` ⇒ servis **tels quels** (vrais entre deux ticks) |
+| 3 | `raw == 1` et session fermée ⇒ `0` (traduction préexistante d'un instantané périmé) |
+| 4 | `!learnedFinite` ⇒ `0` (fail-closed : servir « actif » à côté d'un tiret serait un contresens) |
+
+⚠️ **Le statut 3 est testé AVANT le fail-closed `!learnedFinite`**, et cet ordre est porteur : au moment où l'anneau atteint 3 journées, la dose apprise devient finie **par la même occasion** — inverser les deux branches ne changerait rien au résultat nominal, mais rendrait le cas « 3 journées, soutenable indisponible » indiscernable de « historique insuffisant », donc afficherait « en apprentissage » sur une pompe non caractérisée. C'est le défaut du 03/09 dans une autre robe.
+
+Le contrat `PhFfStatus` est **inchangé** : aucun code ajouté (en ajouter un exigerait un ADR).
+
+### Bornage en deux étages — non réordonnable
+
+La composition vit dans le module pur `doseComposition()` ([`src/dosing_logic.h`](../../src/dosing_logic.h) / `.cpp`), **miroir littéral du tick** :
+
+```
+piServed = clamp(p + i, 0, max(0, ampFlow − ff))   // étage 1 : le COUPLE
+demand   = clamp(piServed + ff, 0, ampFlow)        // étage 2 : la SOMME
+```
+
+**La borne basse à zéro porte sur le couple `p + i`, jamais sur la somme des trois termes.** Le tick réduit d'abord le plafond du PI de la part servie au feedforward (`phPiMaxFlow = ampFlow − ff`, borné ≥ 0), borne le PI dans `[0 ; ce plafond]`, **puis** ajoute le feedforward et clampe à `ampFlow`.
+
+Déplacer la borne basse **après** l'addition changerait le **dosage réel** : avec `ff = 1,41`, `p = −3,00`, `i = 0` et régime `Full`, le tick injecte **1,41 mL/min**, tandis que `clamp(p + i + ff, 0, ampFlow)` donnerait **0**. L'écart n'est pas cosmétique — c'est un dosage réel contre un dosage nul. Ce piège a été attrapé en revue ; le **premier test** de [`test/test_native_dose_composition/`](../../test/test_native_dose_composition/) est ce contre-exemple, exigé par `pool-chemistry`.
+
+**La bande morte se LIT, elle ne se recalcule pas** : `deadband` vient du verdict de porte de session (`phSessionGate`, feature-094) — `phStopThreshold` (0,01) session ouverte, `phStartThreshold` (0,05) session fermée. La reconstruire depuis les seuils mentirait dans la bande `]0,01 ; 0,05]` : c'est le mécanisme exact du défaut v2.26.0.
+
+**Régimes de service du feedforward** (`DoseFlowRegime`, contrat **interne**, jamais sérialisé) : `Full` (PI + FF servis), `CappedToFeedforward` (PI annulé, FF seul — prolongation), `Zero` (débit nul, bassin repassé sous la consigne). **Fail-closed** : `error` non finie ⇒ les cinq flottants à NAN.
+
+### Le filet de divergence (un WARN par session)
+
+Les deux écritures de l'équation — la projection d'observabilité et le calcul PI qui commande réellement — sont comparées **dans la branche de dosage**, seul endroit où le débit appliqué existe :
+
+| Élément | Valeur |
+|---|---|
+| Constante | `kDoseCompositionDivergenceMlPerMin` = **0,05 mL/min** |
+| Cadence | **un seul WARN par session** (`_phCompDivergenceLogged`) |
+| Témoin | **RAM seule** — aucune persistance, aucun champ servi |
+| Neutralisé quand | le PI est **muet** : premier tick (`lastTime == 0`) ou intervalle > 10 s, les deux sorties anticipées de `computePID()` où le tick sert `0 + ff` sans que la projection les modélise |
+
+Le message nomme les deux nombres, l'écart, l'âge de session, l'erreur pH, le FF, le plafond **et la bande morte** — c'est cette dernière qui pointe l'entrée du défaut v2.26.0, et le tampon a été dimensionné à 480 o **pour ne pas la tronquer** (un `msg[248]` coupait à « …bande mor »).
+
+### Asymétrie GELÉE — servir le FF sur une erreur vive franchement négative
+
+Le régime `HoldZero` statue sur le **signal lent** (moyenne glissante de 10 min de la filtrée, `phSessionGate`), pas sur l'erreur instantanée. Il existe donc une fenêtre où l'**erreur vive** est franchement négative — le bassin est repassé sous la consigne à l'instant — alors que le régime sert encore le feedforward, parce que le signal lent n'a pas encore basculé. **Cette asymétrie est gelée dans ce cycle** : la corriger serait un changement de **dosage**, hors du périmètre purement observationnel de feature-092. Elle est renvoyée à une spec de suivi. Ce qui a changé, en revanche, c'est que l'écart est désormais **lisible** : `ph_ff_ml_per_min` rapporte le FF **du régime appliqué**, donc `0,00` en régime de maintien à zéro.
+
+### `ph_ff_ml_per_min` passe au régime appliqué (correction, pas rupture)
+
+`getPhFeedforwardFlow()` lit désormais le `ff` de l'**instantané de composition** (régime appliqué) et non plus le verdict brut du tick. Conséquence **unique** : pendant une prolongation de session à débit nul (régime `Zero`), le champ rapporte **0,00** au lieu de la dose de base. C'est exactement ce que le champ documente depuis l'origine (« appliqué »), et c'est ce qui rend **exacte** la reconstitution client `PI servi = demande − FF`. La dose de base **apprise** reste, elle, lisible en permanence par `getPhFeedforwardLearnedFlow()`.
+
+### Fenêtre résiduelle des trois sorties anticipées
+
+⚠️ **Connue, documentée, non corrigée.** Le point de publication de la composition vit dans la branche automatique d'`update()`. Or `update()` a **trois** sorties anticipées qui reviennent **avant** ce point **sans invalider `measuresValid`** — la filtration peut très bien tourner :
+
+1. **OTA en cours** (`closePhDosingSession(now, "OTA en cours")`) ;
+2. **mode maintenance** (inhibition totale du dosage) ;
+3. **assistant de mesure du débit** (`flowAssistSuspend`).
+
+Pendant ces trois états, l'instantané n'est **pas rafraîchi** : la carte, `/data`, le WebSocket et MQTT servent la **dernière** composition connue avec des mesures déclarées valides. Fenêtre **bornée et déclenchée par l'opérateur** (aucune n'est spontanée), sans commune mesure avec le défaut initial — d'où la décision de ne pas la corriger dans ce cycle.
+
+> **Pourquoi cette trace est là et pas ailleurs** : c'est la **même** chaîne de sorties anticipées qui produit l'asymétrie de comptabilité relevée sur feature-110 (l'état de comptabilité reste rémanent pendant la fenêtre aveugle, et toute la durée de la coupure est créditée au débit plateau à la reprise). Deux défauts de la même famille, dans la même fonction. Quiconque touche à `update()` doit trouver les **deux** traces au même endroit, sinon il rejouera l'un ou l'autre.
+
+### Publication
+
+Les 8 champs sont publiés en **parité stricte** `/data` ↔ WS (marqueurs `PARITE-DATA`, [ADR-0071](../adr/0071-parite-data-trame-capteurs.md)) et **5** d'entre eux sur MQTT :
+[API.md](../API.md#champs-de-composition-du-débit-dinjection-feature-092-v2460) · [ws-manager.md](ws-manager.md#champs-sensor_data-ajoutés-en-feature-092--composition-du-débit-dinjection-v2460) · [MQTT.md](../MQTT.md#topics-et-entités-ajoutés-en-v2460-composition-du-débit-dinjection) · UI : [page-ph.md](../features/page-ph.md#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460), [page-orp.md](../features/page-orp.md#carte--débit-dinjection-orp--orp-card-dosing-feature-092-v2460).
+
+### Testabilité
+
+[`test/test_native_dose_composition/`](../../test/test_native_dose_composition/) — **41 cas** couvrant `doseComposition()`, `phFeedforwardLearnedFlow()` et `phFeedforwardServedStatus()`. Campagne de **mutation** : 11 mutants (9 sur la logique, 2 sur la sentinelle de parité), **aucun survivant**. La suite [`test_native_ph_feedforward/`](../../test/test_native_ph_feedforward/) est restée **inchangée et verte** — c'est elle qui prouve que le tick n'a pas bougé.
 
 ## Comptabilisation d'un démarrage de cycle : invariant (v2.20.5)
 

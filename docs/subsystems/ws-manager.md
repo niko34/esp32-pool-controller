@@ -52,6 +52,38 @@ Les trames WS sortantes sont construites dans un buffer **statique** `sWsFrameBu
 
 > ⚠️ **INVARIANT BLOQUANT — `sWsFrameBuf` est réservé à `loopTask`.** Les 3 broadcasts sont tous appelés depuis `update()`/loop aujourd'hui. Tout futur câblage **multi-tâche** de `broadcastLog` (ex. callback logger depuis `async_tcp`/`mqttTask`) devra utiliser un buffer **dédié** — jamais celui-ci, sous peine de trames entrelacées. Voir le commentaire sur place ([`src/ws_manager.cpp`](../../src/ws_manager.cpp)).
 
+## Deux trames, deux gabarits — un seul plafond DUR (à lire AVANT tout chiffrage)
+
+⚠️ Cette section existe parce que la confusion entre ces deux notions a produit **quatre chiffrages de budget faux d'affilée** pendant feature-092. Elle est **normative** : tout bloc de budget plus bas dans ce fichier s'y réfère.
+
+Il y a **deux** trames JSON sortantes, donc **deux** gabarits `StaticJson<N>` distincts :
+
+| Trame | Fabricant | Gabarit documentaire |
+|---|---|---|
+| `sensor_data` | `_buildSensorJson()` — [`src/ws_manager.cpp:484`](../../src/ws_manager.cpp) | `StaticJson<3456>` (était **3072** avant feature-092) |
+| `config` | `_buildConfigJson()` — [`src/ws_manager.cpp:944`](../../src/ws_manager.cpp) | `StaticJson<3008>` |
+
+**Le gabarit n'est PAS une limite.** En ArduinoJson 7, `StaticJson<N>` dérive de `JsonDocument` et `N` n'est plus que la valeur rendue par `capacity()` — le pool est alloué dynamiquement. **Le bumper coûte 0 octet de RAM.** Un bump refusé « pour économiser la RAM » serait donc un **mauvais arbitrage** : il n'économise rien. Le gabarit ne documente que l'ordre de grandeur attendu de la trame ; c'est un repère de lecture, pas un garde-fou.
+
+**Le seul plafond DUR des deux chemins est `kWsFrameBufBytes = 3584` o** ([`src/constants.h`](../../src/constants.h)), taille du buffer statique `sWsFrameBuf` en `.bss`. Celui-là se paie : le relever coûte autant de `.bss`, donc autant de RAM en moins pour le tas.
+
+**Mode de défaillance** : un dépassement **saute le push** (garde `measureJson(doc) + 1 > cap`, compteur `_oversizedFrames`, WARN throttlé) — il ne **tronque jamais**. Une trame trop grosse est une trame **entièrement perdue**, pas une trame amputée.
+
+### La méthode de chiffrage (normative)
+
+> On compte la valeur au **PIRE CAS STRUCTUREL** — la borne du tampon ou du type qui la porte — **jamais** une valeur relevée sur une trame vivante.
+
+L'erreur d'origine de feature-092 tient en une phrase : la chaîne de commentaires de budget partait d'une **mesure vivante de 2 479 o** (v2.25.1) sur laquelle **huit deltas pire-cas** ont ensuite été empilés, version après version. Le total héritait donc, à chaque étape, du sous-comptage de son point de départ.
+
+Cas d'école, rectifié dans ce cycle. Les deux causes de refus de dosage sont bornées par `kDoseBlockedReasonMaxLen = 96` (95 caractères + 2 guillemets = **97 o de valeur**) :
+
+| Clé | Sérialisation pire cas | Octets | Était comptée |
+|---|---|---:|---:|
+| `phDoseBlockedReason` | `"phDoseBlockedReason":"<95 car.>",` | **120** | 62 |
+| `orpDoseBlockedReason` | `"orpDoseBlockedReason":"<95 car.>",` | **121** | 64 |
+
+**+115 o de correction sans qu'aucun champ n'ait été ajouté.** En fonctionnement normal ces deux clés pèsent ~8 o chacune — d'où le piège. Et ce pire cas n'est **pas théorique** : les causes de refus les plus longues sont celles de l'**escalade de sécurité pH**, c'est-à-dire le moment précis où perdre la trame coûte le plus cher. Même coïncidence que `ph_auto_manual_reason` sur la trame `config` (voir [budget de trame `config`](#budget-de-trame--décompte-rectifié-en-revue)).
+
 ## Récolte des clients zombies (v2.11.1, investigation churn-heap §G1)
 
 Générateur n°1 identifié de la fragmentation : un client WS **zombie** (téléphone verrouillé, fenêtre TCP gelée) conserve connexion ouverte une file d'envoi de jusqu'à **32 buffers ~1,8 Ko** (défaut fork) = **~58 Ko épinglés** en blocs dispersés — queue pleine en ~160 s au rythme d'un push / 5 s. Deux mécanismes complémentaires, appliqués à la connexion (`_onClientConnect`) :
@@ -380,7 +412,7 @@ La [dose de base apprise](pump-controller.md#dose-de-base-apprise--feedforward-p
 | `ph_ff_status` | int | — | Code `PhFfStatus` (`getPhFeedforwardStatus()`), **contrat figé 0-4** : `0` inactif · `1` actif · `2` latch de sécurité · `3` historique < 3 j · `4` quota ≥ 60 %. Les états 2-4 sont servis même hors session. |
 
 - **Parité stricte d'emblée avec `/data`** (mêmes noms, mêmes arrondis, `NaN` → `null`, même passage de code) — la parité `/data` ↔ WS est un motif à **5 récidives** dans ce projet, le critère de la spec l'exigeait explicitement. Le même duo est publié sur MQTT ([MQTT.md](../MQTT.md#topics-et-entités-ajoutés-en-v2280-dose-de-base-apprise--feedforward-ph)).
-- **Rétrocompat client** : clé `ph_ff_status` **absente** = firmware < 2.28.0 → l'UI masque la ligne entière (afficher « inactif » mentirait sur un firmware sans feedforward). Voir [page-ph.md](../features/page-ph.md#ligne--dose-de-base-apprise--feature-085-v2280).
+- **Rétrocompat client** : clé `ph_ff_status` **absente** = firmware < 2.28.0 → l'UI masque la ligne entière (afficher « inactif » mentirait sur un firmware sans feedforward). Voir [page-ph.md](../features/page-ph.md#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460).
 - Getters `PumpController` **lecture seule**, aucun setter, aucune influence sur une décision de dosage ; course bénigne assumée écriture `loopTask` / lecture `async_tcp`.
 
 **Budget de payload** : **44 o** au pire cas (`"ph_ff_ml_per_min":123.45,` = 26 o, `"ph_ff_status":4,` = 18 o). Pire cas de trame **2 582 → 2 626 o**, sous le gabarit documentaire **2688** (marge 62 o) et sous `kWsFrameBufBytes` (3584 o, marge **958 o**) — **aucun bump**. Aucune troncature possible : la garde `measureJson(doc) + 1 > cap` **saute** le push au lieu de tronquer.
@@ -592,3 +624,95 @@ Elles satisfont le critère de partage ([ADR-0065](../adr/0065-trame-websocket-e
 Conséquence pour un client : ces quatre clés ne s'obtiennent que par [`GET /get-config`](../API.md#get-get-config--write). C'est pourquoi le bouton « Nouveau bidon » de la [page Produits](../features/page-dosages.md) **recharge la configuration par HTTP** avant d'afficher sa confirmation — `window._config` peut venir d'une trame WS, où l'hygiène n'est jamais présente.
 
 **Ce que la sentinelle garantit ici** : `ph_starts` / `orp_starts` ne peuvent pas devenir WS-seules (sens dangereux, elles **clignoteraient**), et les 4 exceptions ne peuvent pas survivre à la disparition de leur clé HTTP (assertion « exception morte »).
+
+## Champs `sensor_data` ajoutés en feature-092 — composition du débit d'injection (v2.46.0)
+
+> ⚠️ Lire d'abord [Deux trames, deux gabarits — un seul plafond DUR](#deux-trames-deux-gabarits--un-seul-plafond-dur-à-lire-avant-tout-chiffrage). Les chiffres ci-dessous sont des **pires cas structurels**, jamais des mesures vivantes.
+
+**Huit** champs exposant l'équation que la régulation applique déjà — *demande = dose de base apprise + écart courant + rattrapage accumulé, bornée* — servis **à l'identique** sur `GET /data` et la trame `sensor_data`, dans le **même passage** de code, entre les marqueurs `PARITE-DATA`. Source unique : les [accesseurs de composition](pump-controller.md#composition-du-débit-dinjection--accesseurs-de-lecture-seule-feature-092-v2460) de `pump_controller`, copiés sous spinlock `portMUX`.
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `ph_ff_learned_ml_per_min` | float \| `null` | Dose de base **apprise** = `min(charge médiane 7 j, 60 % du soutenable)`. Calculée **à la lecture**, donc vraie hors session — contrairement à `ph_ff_ml_per_min`, qui vaut 0 hors session. `null` sous 3 journées exploitables ou pompe non caractérisée ; `0,00` avec 3 journées sans injection est une **observation**. |
+| `ph_p_term_ml_per_min` | float \| `null` | Écart courant `kp·e`, **SIGNÉ** (négatif = mesure sous la consigne), `0` dans la bande morte, **jamais borné**. `null` si la mesure n'est pas représentative, ou si `kp = 0`. |
+| `ph_i_term_ml_per_min` | float \| `null` | Rattrapage **servi** (`0` dans la bande morte). **Distinct** de `ph_integral_term`, terme brut et contrat externe historique. |
+| `ph_demand_ml_per_min` | float \| `null` | Demande **totale bornée** = `clamp(PI servi + FF, 0, débit d'amplitude)`. |
+| `orp_p_term_ml_per_min` | float \| `null` | Idem pH côté chlore. |
+| `orp_demand_ml_per_min` | float \| `null` | Demande ORP. Régulation **P-pure** (Ki = 0, aucun feedforward) : la demande **vaut** le terme proportionnel borné. |
+| `orp_sustainable_ml_per_min` | float \| `null` | Plafond de débit moyen de la voie ORP imposé par sa limite horaire — miroir de `ph_sustainable_ml_per_min`. |
+| `orp_limited_by_hourly_budget` | bool | **Verdict** firmware « le chlore est borné par sa limite horaire en ce moment » — homologue d'`ph_limited_by_hourly_budget`. Jamais `null`, jamais une comparaison laissée au client. |
+
+⚠️ **Il n'existe AUCUN champ « appliqué ».** Voir [API.md](../API.md#champs-de-composition-du-débit-dinjection-feature-092-v2460) : le tick borne à l'**amplitude de la pompe**, jamais au débit soutenable.
+
+### Budget de trame — décompte rectifié (le chiffre à lire est la marge, 137 o)
+
+Octets **sérialisés au pire cas structurel**, comptés clé par clé (guillemets + deux-points + valeur + virgule). Valeurs signées comptées sur 8 caractères (`-1234.56`) : les termes P et I ne sont **pas** bornés, c'est leur raison d'être ; grandeurs ≥ 0 sur 6 (`123.45`) ; `null` = 4 o, donc jamais dimensionnant.
+
+| Champ | Sérialisation pire cas | Octets |
+|-------|------------------------|-------:|
+| `ph_ff_learned_ml_per_min` | `"ph_ff_learned_ml_per_min":123.45,` | 34 |
+| `ph_p_term_ml_per_min` | `"ph_p_term_ml_per_min":-1234.56,` | 32 |
+| `ph_i_term_ml_per_min` | `"ph_i_term_ml_per_min":-1234.56,` | 32 |
+| `ph_demand_ml_per_min` | `"ph_demand_ml_per_min":123.45,` | 30 |
+| `orp_p_term_ml_per_min` | `"orp_p_term_ml_per_min":-1234.56,` | 33 |
+| `orp_demand_ml_per_min` | `"orp_demand_ml_per_min":123.45,` | 31 |
+| `orp_sustainable_ml_per_min` | `"orp_sustainable_ml_per_min":123.45,` | 36 |
+| `orp_limited_by_hourly_budget` | `"orp_limited_by_hourly_budget":false,` | 37 |
+| **Sous-total — 8 champs de composition** | | **+265** |
+| `ph_pump_flow_uncharacterized` | `"ph_pump_flow_uncharacterized":false,` | 37 |
+| `orp_pump_flow_uncharacterized` | `"orp_pump_flow_uncharacterized":false,` | 38 |
+| **Sous-total — correctif de parité (2 booléens)** | | **+75** |
+| **Correction de méthode** — `phDoseBlockedReason` / `orpDoseBlockedReason` recomptés au **pire cas structurel** | (aucun champ ajouté) | **+115** |
+| **Total** | | **+455** |
+
+Les **4** champs de pause mélange (`phMixingDelayActive` 28 o, `orpMixingDelayActive` 29 o, `ph_mix_remaining_s` 32 o, `orp_mix_remaining_s` 33 o = **122 o**, `uint32` comptés sur 10 chiffres — borne du **type**, pas la borne fonctionnelle de 900 s) **n'ajoutent rien à cette trame** : ils y existaient déjà depuis la v2.19.1. C'est `/data` qui rattrape (voir l'axe de parité ci-dessous).
+
+**Pire cas de trame : 2 992 (décompte v2.37.0) + 455 = 3 447 o**, au-dessus du gabarit documentaire 3072 → gabarit porté **3072 → 3456** (8 o sous le gabarit ; **0 octet de RAM**, cf. section normative).
+
+> ⚠️ **MARGE SOUS LE SEUL PLAFOND DUR** — `sWsFrameBuf`, `kWsFrameBufBytes = 3584` o : **3584 − 3 447 = 137 o**. C'est **sous la barre des 150 o**, et c'est dit ici plutôt qu'absorbé : le décompte v2.37.0 annonçait 592 o de marge, dont **115 n'ont jamais existé**. **137 o, c'est quatre clés flottantes.** Tout nouveau champ de cette trame exige désormais un **retrait compensatoire** OU un **relèvement de `kWsFrameBufBytes`** — décision d'ADR, pas de routine.
+
+**Chiffres courants** (v2.46.0) : **119** clés dans `sensor_data`, **96** dans `GET /data`, **26** WS-seules, **3** `/data`-seules.
+
+### Élagage chiffré, NON appliqué — et pourquoi il a été refusé
+
+`ph_integral` (pH·s) et `ph_integral_term` n'ont plus **aucun consommateur côté client** depuis feature-092 (la carte lit `ph_integral_pct` et `ph_i_term_ml_per_min`). Les retirer de **cette trame seulement** — en les gardant sur `/data`, sur MQTT et donc dans Home Assistant, où ils sont un contrat externe — rendrait :
+
+| Clé | Sérialisation pire cas | Octets |
+|---|---|---:|
+| `ph_integral` | `"ph_integral":-43200.0,` | 23 |
+| `ph_integral_term` | `"ph_integral_term":-6.000,` | 26 |
+| **Total rendu** | | **49** |
+
+soit une marge portée de 137 à **186 o**. **Refusé le 07/09/2026**, pour deux motifs à lire **avant toute nouvelle tentative** :
+
+1. les deux clés deviendraient `/data`-seules, donc **deux exceptions de plus** dans la sentinelle de parité — sur l'axe précis qui vient de produire un défaut réel. Payer en exceptions ce que l'on gagne en octets, **le jour même où l'on installe la garde**, est un mauvais échange ;
+2. l'autre voie — relever `kWsFrameBufBytes` — coûterait **+512 o de `.bss`**, donc autant de RAM en moins pour le tas, pendant que [bug-080](../../specs/features/doing/bug-080-redemarrage-panic-et-fragmentation-heap.md) documente une famine mémoire **active**.
+
+Le levier reste **valable** pour une future feature qui manquera de place : les **49 o** et les deux clés concernées sont consignés ici pour que le chiffre soit déjà disponible.
+
+### Le second axe de parité — `/data` ↔ `sensor_data` (`PARITE-DATA`)
+
+[ADR-0071](../adr/0071-parite-data-trame-capteurs.md) étend au **second axe** le principe posé par [ADR-0065](../adr/0065-trame-websocket-etat-mutable-pas-constantes.md) pour l'axe `config`. Deux différences de fond :
+
+- **le critère de partage diffère** : la trame capteurs porte de la **mesure**, pas de la configuration. « Mutable à l'exécution et non dérivable » ne discrimine rien ici — tout y est mutable ;
+- **le sens du danger est symétrique.** Sur l'axe config, c'est la charge `/get-config` qui écrase un champ WS-seul. Sur l'axe capteurs, le **push WS efface aussi un champ `/data`-seul** : `latestSensorData` est **remplacé en entier** par la dernière charge reçue, sans fusion.
+
+Marqueurs commentés, lus tels quels par la sentinelle : `>>> PARITE-DATA:DEBUT` / `<<< PARITE-DATA:FIN`, dans `handleGetData` ([`src/web_routes_data.cpp:425-510`](../../src/web_routes_data.cpp)) et `_buildSensorJson` ([`src/ws_manager.cpp:776-860`](../../src/ws_manager.cpp)). Receveurs : `doc[` côté HTTP, `d[` côté WS. Receveurs **imbriqués exclus** (`faObj[`, objet `flow_assist`). Le bloc porte **14** clés, ensembles **identiques** des deux côtés (assertion dans les deux sens) : 4 de pause mélange + 8 de composition + 2 de caractérisation de pompe.
+
+**Trois catégories d'exception**, et elles sont distinctes pour de bonnes raisons :
+
+| Catégorie | Compte | Règle |
+|---|---:|---|
+| `kWsOnlyLive` — état vivant servi par **aucune** route HTTP | **18** | **Dette inventoriée** (antérieure à feature-092), déclarée pour rendre la sentinelle utilisable, pas pour valider le motif. Sous **cliquet** `kWsOnlyLiveCeiling = 18` : le compte ne peut **jamais augmenter** — une clé neuve va dans `/data`. |
+| `kWsPlusOtherRoute` — clés **dual-sourcées** | **8** | Absentes de `/data` mais servies par une **autre** route HTTP, dont le **nom est obligatoire** et asserté non vide : **7** par `GET /get-config` (`ph_container_ml`, `orp_container_ml`, `lighting_enabled`, `boost_active`, `boost_until`, `install_mode`, `mqtt_connected`) et **1** par `GET /get-logs` (`uptime_ms` — la table de la sentinelle abrège la route en « GET /logs »). Catégorie qui **n'existe pas** sur l'axe config : une règle « aucune clé WS-seule » les signalerait à tort. |
+| `kDataOnly` — clés servies par `/data` seul | **3** | `ph_pump_amplitude_duty`, `orp_pump_amplitude_duty` (grandeurs de **calibration**, lues dans des vues de diagnostic) et le receveur imbriqué `flow_assist`. |
+
+Décompte **vérifié par mesure** et non supposé : les **26** clés WS-seules constatées = 18 « état vivant » + 8 dual-sourcées.
+
+**Sept assertions** : marqueurs présents (échec explicite sinon, message « restaurer le marqueur, **ne pas désactiver le test** ») · jeux de clés identiques entre les marqueurs, dans les deux sens · toute clé WS couverte ou déclarée · toute clé `/data` couverte ou déclarée · **aucune exception morte ni contredite** · motif écrit de **≥ 20 caractères** par exception, sans doublon · **cliquet** sur `kWsOnlyLive`. Coût : **zéro octet de flash** (test natif, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)).
+
+> **La sentinelle a attrapé un défaut RÉEL pendant son propre cycle, avant la revue.** Le pied « pompe non caractérisée » de la nouvelle carte **clignotait** : `ph_pump_flow_uncharacterized` / `orp_pump_flow_uncharacterized` n'étaient servis que par `GET /data`, donc valaient `undefined` après chaque push WS (~5 s) et le pied restait masqué (`!== true`) jusqu'à la charge `/data` suivante (~30 s). C'est le **piège n° 1 du projet dans son sens inverse**, et il avait été introduit par une demande de l'agent principal du cycle. Le correctif est la **parité** (migration des deux booléens dans le bloc `PARITE-DATA`), pas une mémorisation côté client. La sentinelle est alors **repassée au rouge une seconde fois**, sur les deux exceptions devenues **mortes** : le mécanisme prévu pour empêcher la table de pourrir a fonctionné du premier coup, sur un vrai changement (`kDataOnly` : 5 → 3 entrées).
+
+**Angle mort assumé** (identique à l'axe config) : l'extraction est **textuelle**. Une clé mise en **commentaire** entre les marqueurs reste comptée comme présente. La sentinelle vise **la distraction, pas la malveillance**.
+
+**Que faire quand elle casse** : ajouter la clé du côté manquant **entre les marqueurs** (en vérifiant la marge de 137 o), ou l'inscrire dans la table adéquate avec un motif écrit. Jamais la désactiver.

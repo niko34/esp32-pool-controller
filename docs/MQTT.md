@@ -91,6 +91,11 @@ Tous les topics utilisent le préfixe configurable (ex: `pool/sensors`). Les val
 | `{base}/ph_integral_pct` | `46.0` | Remplissage de l'anti-windup (% du plafond, valeur absolue) — retain, dédup (v2.26.0) |
 | `{base}/ph_ff_ml_per_min` | `1.30` | Dose de base apprise appliquée à la session auto (mL/min, 2 décimales, 0 hors session) — retain, dédup (v2.28.0). Voir [ci-dessous](#topics-et-entités-ajoutés-en-v2280-dose-de-base-apprise--feedforward-ph) |
 | `{base}/ph_ff_status` | `1` | Code d'état du feedforward pH (0-4, contrat figé) — retain, dédup (v2.28.0) |
+| `{base}/ph_ff_learned_ml_per_min` | `1.41` | Dose de base **apprise** (mL/min) — **conserve sa valeur hors session**, à ne pas confondre avec `ph_ff_ml_per_min` — retain, dédup (v2.46.0). Voir [ci-dessous](#topics-et-entités-ajoutés-en-v2460-composition-du-débit-dinjection) |
+| `{base}/ph_p_term_ml_per_min` | `0.35` | Écart courant pH `kp·e` (mL/min, **signé**) — retain, dédup (v2.46.0) |
+| `{base}/ph_demand_ml_per_min` | `4.33` | Demande totale bornée pH (mL/min) — **pas** `min(demande, soutenable)` — retain, dédup (v2.46.0) |
+| `{base}/orp_p_term_ml_per_min` | `1.20` | Écart courant ORP (mL/min, signé) — retain, dédup (v2.46.0) |
+| `{base}/orp_demand_ml_per_min` | `1.20` | Demande ORP (= terme P borné, régulation P-pure) — retain, dédup (v2.46.0) |
 
 > ⚠️ **v2.36.0 (feature-094, [ADR-0062](adr/0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md)) — `ph_dosing` change de SENS.** **Aucune entité nouvelle, aucun topic nouveau, aucun renommage** : c'est la **signification** de la valeur qui change.
 >
@@ -421,6 +426,11 @@ Le contrôleur publie automatiquement sa configuration pour Home Assistant au d�
 | Sensor | Piscine pH Intégrale | `{base}/ph_integral` | — (v2.26.0, `entity_category: diagnostic`) |
 | Sensor | Piscine pH Dose de Base | `{base}/ph_ff_ml_per_min` | — (v2.28.0, `entity_category: diagnostic`) |
 | Sensor | Piscine pH Dose de Base Statut | `{base}/ph_ff_status` | — (v2.28.0, `entity_category: diagnostic`) |
+| Sensor | Piscine pH Dose de Base Apprise | `{base}/ph_ff_learned_ml_per_min` | — (v2.46.0, `entity_category: diagnostic`) |
+| Sensor | Piscine pH Écart Courant | `{base}/ph_p_term_ml_per_min` | — (v2.46.0, `entity_category: diagnostic`) |
+| Sensor | Piscine pH Demande | `{base}/ph_demand_ml_per_min` | — (v2.46.0, `entity_category: diagnostic`) |
+| Sensor | Piscine ORP Écart Courant | `{base}/orp_p_term_ml_per_min` | — (v2.46.0, `entity_category: diagnostic`) |
+| Sensor | Piscine ORP Demande | `{base}/orp_demand_ml_per_min` | — (v2.46.0, `entity_category: diagnostic`) |
 
 > **Compatibilité `orp_enabled` :** le champ `orp_enabled` (booléen) est maintenu comme miroir de `orp_regulation_mode` (`true` si mode ≠ `manual`). Les automations Home Assistant qui testent la valeur de ce champ continuent de fonctionner sans modification. Le topic `{base}/orp_regulation_mode` est la source de vérité pour le mode actif.
 
@@ -728,6 +738,58 @@ Même facture que les topics du terme intégral : **une grandeur par topic scala
 
 - **Aucune entité existante n'est touchée** : les deux `unique_id` sont inédits. Le nombre de publications de `publishDiscovery()` passe de 52 à **54**.
 - Deux **slots de déduplication** ajoutés (21/22, `kDedupCacheSlots` 21 → **23**) : le feedforward étant figé hors session, la dédup supprime la quasi-totalité du trafic de ces topics hors dosage.
+
+---
+
+## Topics et entités ajoutés en v2.46.0 (composition du débit d'injection)
+
+La carte « Débit d'injection » (feature-092) rend lisible l'équation que la régulation applique déjà. **Cinq** topics la portent aussi vers Home Assistant — ce qu'aucune entité n'y disait : **l'équation**, et pas seulement ses effets. Détail firmware : [`docs/subsystems/pump-controller.md`](subsystems/pump-controller.md#composition-du-débit-dinjection--accesseurs-de-lecture-seule-feature-092-v2460).
+
+Même facture que les topics du terme intégral et du feedforward : **une grandeur par topic scalaire**, retain, dédup, mêmes noms et **mêmes arrondis** (2 décimales) que `GET /data` et la trame WebSocket. `NaN` → **aucune publication** : le retain précédent reste valable, on ne fabrique jamais un `0` qui se lirait « pH à la consigne » ou « rien d'appris ». C'est le cas nominal quand la filtration est arrêtée (porte de validité fermée) ou quand l'historique n'atteint pas 3 journées exploitables.
+
+| Topic | Payload | Description | Retain |
+|-------|---------|-------------|--------|
+| `{base}/ph_ff_learned_ml_per_min` | `1.41` | Dose de base **apprise** (mL/min) = `min(charge médiane 7 j, 60 % du soutenable)`. **Conserve sa valeur entre deux sessions.** | true |
+| `{base}/ph_p_term_ml_per_min` | `0.35` | Écart courant `kp·e` (mL/min), **SIGNÉ** — négatif = pH sous la consigne. `0` dans la bande morte, jamais borné. Non publié si `kp = 0`. | true |
+| `{base}/ph_demand_ml_per_min` | `4.33` | Demande **totale bornée** (mL/min) = `clamp(PI servi + FF, 0, amplitude de la pompe)`. ⚠️ **Ce n'est pas `min(demande, soutenable)`** — voir l'avertissement ci-dessous. | true |
+| `{base}/orp_p_term_ml_per_min` | `1.20` | Écart courant chlore (mL/min), signé. | true |
+| `{base}/orp_demand_ml_per_min` | `1.20` | Demande ORP. Régulation **P-pure** : elle **vaut** le terme proportionnel borné. | true |
+
+### Auto-discovery HA (v2.46.0)
+
+**Cinq** entités nouvelles, `unique_id` inédits — **aucune entité existante n'est touchée**. Toutes `sensor`, `entity_category: diagnostic`, `unit_of_measurement: mL/min`, `state_class: measurement`. **Aucune `device_class`** : HA n'en propose aucune pour un débit de dosage.
+
+| Entité | Type | `state_topic` | `unique_id` | Détails |
+|--------|------|---------------|-------------|---------|
+| Piscine pH Dose de Base Apprise | `sensor` | `{base}/ph_ff_learned_ml_per_min` | `poolcontroller_ph_ff_learned_flow` | `icon: mdi:school` |
+| Piscine pH Écart Courant | `sensor` | `{base}/ph_p_term_ml_per_min` | `poolcontroller_ph_p_term_flow` | `icon: mdi:delta` |
+| Piscine pH Demande | `sensor` | `{base}/ph_demand_ml_per_min` | `poolcontroller_ph_demand_flow` | `icon: mdi:speedometer` |
+| Piscine ORP Écart Courant | `sensor` | `{base}/orp_p_term_ml_per_min` | `poolcontroller_orp_p_term_flow` | `icon: mdi:delta` |
+| Piscine ORP Demande | `sensor` | `{base}/orp_demand_ml_per_min` | `poolcontroller_orp_demand_flow` | `icon: mdi:speedometer` |
+
+- Le nombre de publications de `publishDiscovery()` passe de 54 à **59**.
+- **Cinq slots de déduplication** ajoutés (23-27, `kDedupCacheSlots` 23 → **28**).
+
+> ⚠️ **« Dose de Base Apprise » coexiste avec « Dose de Base » — deux entités proches, à ne pas confondre.**
+>
+> | Entité | Topic | Comportement hors session |
+> |---|---|---|
+> | Piscine pH **Dose de Base** (v2.28.0) | `{base}/ph_ff_ml_per_min` | **retombe à 0** — c'est le débit *appliqué*, et le feedforward ne vit que sous une session ouverte. Depuis la v2.46.0 elle rapporte aussi `0,00` pendant une prolongation de session à débit nul (**régime appliqué** : correction, le champ est documenté « appliqué » depuis l'origine) |
+> | Piscine pH **Dose de Base Apprise** (v2.46.0) | `{base}/ph_ff_learned_ml_per_min` | **conserve sa valeur** — c'est ce que l'appareil *sait*, calculé à la lecture depuis l'anneau de charge |
+>
+> C'est précisément la grandeur qui manquait à Home Assistant : jusqu'ici, la valeur apprise n'était visible **nulle part** (ni `/data`, ni WS, ni MQTT — seulement dans le journal, à l'ouverture de session). Une automatisation qui suit « Dose de Base » voit un créneau ; une automatisation qui suit « Dose de Base Apprise » voit une tendance.
+
+> ⚠️ **`ph_demand_ml_per_min` n'est PAS un débit plafonné au soutenable.** Le firmware borne la demande à l'**amplitude de la pompe**, **jamais** au débit soutenable ; la limite horaire agit **en aval**, par **refus**. Avec une limite de 10 min/h, une demande de 5,20 mL/min est réellement servie **à 5,20 de moyenne jusqu'à épuisement du budget horaire**, puis 0. Un template HA qui calculerait `min(demande, soutenable)` pour afficher « ce que la pompe délivre » **sous-estimerait de 17 %** ce que le bassin reçoit dans les dix minutes suivantes. **Il n'existe aucun topic « appliqué », et il n'en existera pas.**
+
+### Trois champs délibérément HORS MQTT, et pourquoi
+
+| Champ servi sur `/data` + WS | Motif de non-publication |
+|---|---|
+| `ph_i_term_ml_per_min` | **Doublon fonctionnel** de `{base}/ph_integral_term`, déjà publié depuis la v2.26.0 et déjà une entité HA en production. Les deux ne diffèrent **que dans la bande morte** (le premier est le terme *servi*, le second le terme *brut*) : publier les deux créerait deux entités quasi identiques dans le tableau de bord, pour une nuance qui n'a d'usage que sur la carte web. |
+| `orp_sustainable_ml_per_min` | **Miroir** d'un champ pH qui n'est **pas** publié non plus (`ph_sustainable_ml_per_min`, feature-086 — MQTT explicitement hors périmètre de ce cycle-là, budget flash). Publier le miroir sans l'original serait une asymétrie sans justification. |
+| `orp_limited_by_hourly_budget` | Même raison : `ph_limited_by_hourly_budget` n'est pas publié. C'est en outre un **verdict d'affichage** dont la valeur d'automatisation est nulle — et un **diagnostic, pas une alarme** (voir ci-dessous). |
+
+> **`orp_limited_by_hourly_budget` est un DIAGNOSTIC, pas une alarme** — à écrire ici parce que la tentation qu'il déclenche est exactement l'inverse de la bonne réponse. Verdict `pool-chemistry` : à CYA **35 mg/L**, une boucle chlore qui sature son quota quotidien est **cohérente avec le coût de la protection UV** (chlore libre visé 2,5-3 mg/L). Ce n'est **pas** une anomalie à corriger en montant la consigne ORP ou le gain. Une automatisation HA qui relèverait la consigne sur ce signal aggraverait la consommation sans améliorer la désinfection.
 
 ---
 

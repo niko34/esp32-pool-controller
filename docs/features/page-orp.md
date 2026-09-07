@@ -9,15 +9,16 @@ Point d'entrée unique pour **tout** ce qui concerne l'ORP (potentiel redox, pil
 
 ## Structure
 
-En mode nominal, quatre zones :
+En mode nominal, cinq zones :
 
 1. **Bloc Statistiques** (bandeau compact, sans titre) — valeur ORP **filtrée** courante en grand (mV) + **ligne brute discrète** « brut · médiane · maj » + **rangée de chips** : chip d'état filtre cliquable (cf. [Chip d'état filtre](#chip-détat-filtre-feature-025)) et **chip d'état de calibration** (cf. [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)) + dosage du jour (barre de progression, borne `max_orp_ml_per_day`). Depuis la **v2.37.0** (feature-096), ce bloc se termine par « **Atteinte de la cible** » (`#orp-ttt-block`) — voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370).
-2. **Carte Régulation ORP** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs :
+2. **Carte Débit d'injection ORP** (`#orp-card-dosing`, feature-092, v2.46.0) — insérée **entre** le bloc Statistiques et la carte Régulation, visible **en mode automatique uniquement** : **deux** lignes (écart courant, **Demande** en total) et une pastille d'état. Voir [Carte « Débit d'injection ORP »](#carte--débit-dinjection-orp--orp-card-dosing-feature-092-v2460).
+3. **Carte Régulation ORP** — sélecteur de mode : `Automatique`, `Programmée`, `Manuelle`. Sous-blocs :
    - **Automatique** : ORP cible (mV) + bouton Sauvegarder.
    - **Programmée** : volume quotidien de chlore en mL + bouton Sauvegarder. Depuis la v2.8.0 (feature-011) : ligne « **Débit calculé : X,X mL/min** » (`#orp_scheduled_flow_line` / `#orp_scheduled_flow_value`, alimentée par le champ WS `orp_scheduled_flow_ml_per_min` ; affiche « — » avec `title` « Hors plage de filtration ou données indisponibles » quand la valeur est `null`) + hint statique « Le volume non injecté avant minuit est perdu (pas de report au lendemain). ». Volontairement **pas** de « sur Y h restantes » côté client : l'horloge du navigateur peut différer de celle de l'ESP32, seul le débit (source firmware) est affiché.
    - **Manuelle** : bloc Injection manuelle.
-3. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : **plus de zone ombrée** — **ligne de consigne pointillée** à `orp_target`, voir [Repère du graphique d'historique](#repère-du-graphique-dhistorique-feature-083-v2281). Ce graphique trace la mesure **brute** et le reste en v2.38.0 — voir [Le graphique d'historique de cette page reste brut](#le-graphique-dhistorique-de-cette-page-reste-brut-feature-095-v2380).
-4. **Carte Calibration** — **remplace** Régulation + Historique pendant une session. Écran **guidé par stepper** (feature-034), 1 seul point de calibration (architecture symétrique de la page pH) — voir [Workflow calibration](#workflow-calibration).
+4. **Carte Historique** — graphique uPlot (feature-043, ex-Chart.js), plages `Tout` / `30j` / `7j` / `24h`. Depuis la **v2.28.1** (feature-083) : **plus de zone ombrée** — **ligne de consigne pointillée** à `orp_target`, voir [Repère du graphique d'historique](#repère-du-graphique-dhistorique-feature-083-v2281). Ce graphique trace la mesure **brute** et le reste en v2.38.0 — voir [Le graphique d'historique de cette page reste brut](#le-graphique-dhistorique-de-cette-page-reste-brut-feature-095-v2380).
+5. **Carte Calibration** — **remplace** Régulation + Historique pendant une session. Écran **guidé par stepper** (feature-034), 1 seul point de calibration (architecture symétrique de la page pH) — voir [Workflow calibration](#workflow-calibration).
 
 Le bloc Statistiques reste visible en permanence.
 
@@ -68,6 +69,41 @@ Structure, formats de durée, règles de la bande de 7 pastilles, alignement par
 **Sentinelle de présence** : `orp_ttt_state` non numérique (firmware < 2.37.0) → bloc masqué, jamais un « — ».
 
 **Volontairement absent du tableau de bord**, comme son homologue pH.
+
+## Carte « Débit d'injection ORP » (`#orp-card-dosing`, feature-092, v2.46.0)
+
+Miroir **réduit** de la [carte pH](page-ph.md#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460) : **deux lignes seulement**, parce que le chlore est régulé en **P pur** (`Ki = 0`, aucun feedforward). Ce n'est **pas un repli** — la carte est complète pour ce qu'elle régule, et elle montre au passage *pourquoi* la régulation du chlore est plus simple.
+
+Placement : **après** le bloc Statistiques (donc après « [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370) ») et **avant** `#orp-card-regulation`, sans intitulé de section ni séparateur. Visible **en mode automatique uniquement**. Point de décision **unique** de sa visibilité : `updateOrpDosingCard()`.
+
+### Les 2 lignes (`.kv.kv--dose`)
+
+| Ligne | Valeur | Note |
+|---|---|---|
+| **Écart courant** | `orp_p_term_ml_per_min`, **signé** (négatif = mesure au-dessus de la cible) ; « — » si `null` | Bornage du couple s'il y a lieu — côté ORP il n'y a **pas** de ligne Rattrapage, la note s'annonce donc ici |
+| **Demande** (total, `border-top`) | `orp_demand_ml_per_min` en gras | Bridé → « apport moyen possible X,XX mL/min **en moyenne sur l'heure** » ; sinon → « sous le maximum de X,XX mL/min » (`orp_sustainable_ml_per_min`). Plafond `null` → **aucune note** |
+
+> **Pas** de note « demande instantanée » ici, à la différence de la carte pH — et ce n'est pas un oubli. Le signal lent et la **porte de session** de feature-094 (`phSessionGate`, moyenne glissante de 10 min) n'existent **que** pour le pH : il n'y a **pas** d'`orpSessionGate`. Côté chlore, la décision lit la mesure **filtrée instantanée**, la même que la composition — une demande non nulle sans session relève de la **bande morte d'hystérésis**, pas d'une attente de stabilisation. Reprendre la phrase du pH y serait **faux**.
+
+### Pastille d'état (`#orp-dosing-pill`)
+
+Composant **identique** à celui de la page pH : mêmes 5 priorités, mêmes trois couleurs (vert = pompe commandée, gris = normal, rouge = panne), même compte à rebours sur la seule pause mélange. Champs consommés : `orp_pulse_session`, `orpMixingDelayActive`, `orp_mix_remaining_s`, `orpDoseBlockedCode` — `_doseBlockInfo(json, prefix)` est préfixé. Voir la [table des priorités](page-ph.md#pastille-détat-ph-dosing-pill--5-priorités-3-couleurs).
+
+Une variante ORP existe pour la sentinelle `250` : côté chlore, cette garde est l'**inhibition sur pH élevé**, un état d'**attente normal** — pastille « pH trop haut, chlore peu actif » en **gris**, jamais en ambre ni en rouge (verdict `pool-chemistry`).
+
+### Pieds de carte
+
+| Pied | Id | Règle |
+|---|---|---|
+| « La régulation chlore corrige l'écart courant sans rattrapage cumulé : un écart résiduel permanent est normal et ne demande ni consigne plus haute ni gain plus fort. » | *(statique)* | **Permanent.** Texte validé `pool-chemistry`, **ne pas reformuler** : sans lui, un écart résiduel permanent se lit comme un défaut de réglage et pousse à relever la consigne ou le gain — les deux mauvaises réponses |
+| « La limite horaire (X min/h) autorise Y en moyenne sur l'heure : la pompe sert la demande, puis s'arrête jusqu'à l'heure suivante. » | `#orp-dose-budget-foot` | `orp_limited_by_hourly_budget === true` + soutenable et `orp_limit_minutes` connus. **Ce cas n'est pas théorique** : la boucle chlore sature son quota horaire **tous les jours** sur cet appareil |
+| « Débit de la pompe non caractérisé… » | `#orp-dose-uncharacterized-foot` | `orp_pump_flow_uncharacterized === true` |
+
+> **`orp_limited_by_hourly_budget` est un DIAGNOSTIC, pas une alarme.** Verdict `pool-chemistry` : à CYA **35 mg/L**, une boucle chlore qui sature son quota quotidien est **cohérente avec le coût de la protection UV** (chlore libre visé 2,5-3 mg/L). Ce n'est **pas** une anomalie à corriger en montant la consigne ou le gain — or c'est exactement la tentation que produit la lecture de cette carte. Le pied permanent le dit côté interface ; le **pourquoi chimique** est ici, et dans [API.md](../API.md#champs-de-composition-du-débit-dinjection-feature-092-v2460).
+
+### Règles de dégradation
+
+Identiques à la carte pH, aux deux lignes près : mode ≠ `automatic` **ou** `orp_demand_ml_per_min` `undefined` ⇒ **carte entière masquée** ; `null` ⇒ « — » sur sa ligne, la pastille portant la cause ; mesure non représentative ⇒ Écart et Demande « — » ; `/data` porte **tous** les champs (parité `PARITE-DATA`) ⇒ **aucun clignotement**. Le rendu est appelé sous `try/catch`.
 
 ## Affichage mesure filtrée / brute (feature-025)
 
@@ -187,6 +223,7 @@ La carte `#orp-card-calibration` présente un **stepper** (`<ol class="calibrati
 **État filtre** : `orpFilterReady`, `orpFilterUnstable`, `orpRejectedCount`, `orpMixingDelayActive`, `orpDoseBlockedReason` (feature-025), `orpFilterAlarm` (v2.20.3), **`orpDoseBlockedCode`** (v2.25.1 — code machine de la cause de refus, source de la catégorie) — voir [Chip d'état filtre](#chip-détat-filtre-feature-025)
 **Calibration** : `orpCalPoints` (`-1..1`) — voir [Chip d'état de calibration](#chip-détat-de-calibration-feature-034)
 **Dosage** : `orp_dosing`, `orp_used_ms`, `orp_daily_ml`, `orp_limit_reached`
+**Composition du débit (feature-092, v2.46.0)** : `orp_p_term_ml_per_min`, `orp_demand_ml_per_min`, `orp_sustainable_ml_per_min` (float 2 décimales \| `null`), `orp_limited_by_hourly_budget` (bool, **verdict** firmware — jamais `null`), plus `orpMixingDelayActive` / `orp_mix_remaining_s` (pause mélange, désormais servis **aussi** par `/data`) et `orp_pump_flow_uncharacterized` (désormais servi **aussi** par le WebSocket). Tous en **parité stricte** ([ADR-0071](../adr/0071-parite-data-trame-capteurs.md)). `orp_demand_ml_per_min` absent = firmware antérieur → **carte masquée**. Voir [Carte « Débit d'injection ORP »](#carte--débit-dinjection-orp--orp-card-dosing-feature-092-v2460)
 **Mode** : `orp_regulation_mode`, `orp_daily_target_ml`, `orp_enabled` (miroir — voir [ADR-0004](../adr/0004-mode-regulation-enum-3-valeurs.md))
 **Répartition scheduled (feature-011, v2.8.0)** : `orp_scheduled_flow_ml_per_min` (float 1 décimale, mL/min — débit moyen planifié restant ; `null` hors mode `scheduled`, hors plage de filtration ou heure ESP32 invalide → l'UI affiche « — »)
 **Atteinte de la cible (feature-096, v2.37.0)** : `orp_ttt_state` (uint8 `0`-`3`, **4-255 réservés**), `orp_ttt_min` (uint16, **minutes de circulation** — ⚠️ **sens variable selon l'état**), `orp_ttt_e0` (float 1 décimale, mV \| `null`), `orp_ttt_flag` (**champ de bits**). Servis **à l'identique** par `GET /data`. `orp_ttt_state` non numérique = firmware antérieur → bloc masqué. La mémoire 7 jours vient de [`GET /get-kpi`](../API.md#get-get-kpi--write), **jamais du WS**. Voir [Atteinte de la cible](#atteinte-de-la-cible-feature-096-v2370)

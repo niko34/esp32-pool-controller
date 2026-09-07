@@ -176,6 +176,8 @@ Le script local applique **la même garde de seuil que la CI** (`--fail-under-li
 | Suites (`test/test_*`) | **34** (33 à la mesure du 06/09 + `test_native_fopen_guard`) |
 | Cas de test (`pio test -e native`) | **1325** (1291 à la mesure + **34** cas `fopen_guard`) |
 
+> ⚠️ **Chiffres de la mesure du 06/09 — la ligne « Suites » est périmée.** `ls test/test_*` compte **38** dossiers au 07/09/2026 ; `ls test/` fait foi (cf. l'avertissement du § précédent). feature-092 (v2.46.0) en a ajouté **deux** : [`test_native_dose_composition/`](../test/test_native_dose_composition/) (**41 cas**, `doseComposition` + `phFeedforwardLearnedFlow` + `phFeedforwardServedStatus` ; **11 mutants, aucun survivant**) et [`test_native_ws_data_parity/`](../test/test_native_ws_data_parity/) (**9 cas**, sentinelle structurelle du second axe de parité — [ADR-0071](adr/0071-parite-data-trame-capteurs.md)). Le **total de cas** n'a pas été remesuré : ne pas déduire un nombre de cette note.
+
 Référence d'avant le cycle, mesurée sur **2 modules seulement** : lignes 99,8 %, branches 86,5 %. L'élargissement du filtre a révélé 4 lignes non couvertes jusque-là **invisibles**, dont une garde de sécurité chimique (`pulse_dosing_logic`).
 
 Le seuil de 90 % de lignes est un **plancher de non-régression**, pas un objectif. **Aucun seuil de branches n'est posé** : les 13,2 % restants sont des demi-branches défensives, dont plusieurs sont inatteignables par entrée réaliste (motifs écrits dans les tests concernés). Les relever serait une décision séparée.

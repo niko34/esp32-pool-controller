@@ -2,6 +2,120 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.46.0] - 2026-09-07
+
+> **Ce qui change pour vous, en trois phrases** : les pages **pH** et **ORP**
+> présentent désormais le débit d'injection dans **une seule carte** —
+> « **Débit d'injection** » — qui dit d'un coup d'œil ce que la régulation
+> demande, de quoi c'est composé, ce qui la borne, et **pourquoi** elle
+> l'applique ou non. Côté **chlore**, cette carte répond enfin à la question
+> « pourquoi la pompe ne tourne-t-elle pas ? ». Et la **dose de base apprise**
+> reste **lisible entre deux sessions** : elle ne reste plus figée sur
+> « en apprentissage » pendant les sept heures qui séparent l'archivage de
+> minuit du premier dosage du matin.
+
+### Fonctionnalités
+
+- **Carte « Débit d'injection pH »** (`feature-092`). Quatre lignes — dose de
+  base apprise, écart courant, rattrapage accumulé, **Demande** en total — et
+  une **pastille d'état** à cinq priorités (vert = pompe commandée, gris = état
+  normal, rouge = panne uniquement ; compte à rebours sur la seule pause
+  mélange). Elle **remplace quatre blocs empilés** au fil des versions : le
+  bloc « Rattrapage accumulé », la ligne « Dose de base apprise », la ligne
+  « Débit soutenable » des capacités et le bandeau « Dosage au maximum
+  autorisé ». Le « N pH·s » disparaît — jargon sans usage. L'alerte
+  « Capacité de dosage insuffisante » est **conservée telle quelle**, placée
+  juste sous la carte.
+
+- **Carte « Débit d'injection ORP »**. Deux lignes seulement, et c'est
+  volontaire : le chlore est régulé en **P pur** — ni dose de base apprise, ni
+  rattrapage cumulé. La carte montre au passage *pourquoi* la régulation du
+  chlore est plus simple, et son pied permanent dit ce qui manquait le plus :
+  **un écart résiduel permanent est normal**, il ne demande ni consigne plus
+  haute ni gain plus fort. Elle sert aussi un verdict que le firmware ne
+  publiait que côté pH : « la voie chlore est bornée par sa limite horaire en
+  ce moment » — un cas qui se produit **tous les jours** sur cet appareil.
+
+- **La dose de base apprise est enfin lisible hors session.** Elle n'était
+  servie **nulle part** (ni `/data`, ni WebSocket, ni MQTT — seulement dans le
+  journal, à l'ouverture de session) : impossible de distinguer « rien
+  d'appris » de « 1,41 mL/min appris, en attente ». Elle est désormais un champ
+  à part entière, calculé **à la lecture**, donc vrai en permanence. Corollaire
+  du même correctif : le statut « en apprentissage » n'est plus servi dès que
+  l'appareil a **3 journées exploitables** en mémoire — la ligne quitte cet
+  état **dans les 30 secondes** après l'archivage de minuit, sans attendre la
+  filtration du matin.
+
+- **Le total de la carte est la DEMANDE, jamais un « débit appliqué ».** C'est
+  un choix, et il a été chiffré : la pompe **sert la demande, puis s'arrête**
+  quand son budget horaire est épuisé — elle ne débite jamais en continu à un
+  débit réduit. Afficher `min(demande, soutenable)` comme « ce que la pompe
+  délivre » **sous-estimait de 17 %** ce que le bassin reçoit dans les dix
+  minutes suivantes. Le plafond descend donc en note, sous son vrai nom :
+  « apport moyen possible … **en moyenne sur l'heure** ».
+
+### Firmware
+
+- ⚠️ **Changement de sémantique — `ph_ff_ml_per_min` passe au régime appliqué.**
+  Le champ (et l'entité Home Assistant « **Piscine pH Dose de Base** ») rapporte
+  désormais **`0,00`** en régime de maintien à zéro — c'est-à-dire pendant une
+  prolongation de session où le bassin est repassé sous la consigne — au lieu de
+  la valeur du feedforward. **C'est une correction** : le champ est documenté
+  « appliqué » depuis son introduction en v2.28.0, et c'est ce qui rend exacte
+  la reconstitution `demande − dose de base = couple servi`. La dose de base
+  **apprise**, elle, conserve sa valeur : c'est le rôle de la nouvelle entité
+  « Piscine pH **Dose de Base Apprise** », à ne pas confondre avec la
+  précédente.
+
+- **MQTT / Home Assistant** : **5** topics et **5** entités nouvelles (3 pH, 2
+  ORP), toutes `sensor` / `diagnostic` / `mL/min` / `state_class: measurement`.
+  Aucune entité existante n'est touchée. Trois champs sont délibérément **hors
+  MQTT**, avec leur motif écrit — `ph_i_term_ml_per_min` (doublon de
+  `ph_integral_term`, déjà publié), `orp_sustainable_ml_per_min` et
+  `orp_limited_by_hourly_budget` (miroirs de champs pH qui ne sont pas publiés
+  non plus).
+
+- **Parité `/data` ↔ WebSocket** : la **pause mélange** (4 champs) était
+  WebSocket-seule et rejoint `GET /data` ; réciproquement, les deux booléens de
+  **caractérisation de pompe** étaient `/data`-seuls et rejoignent la trame. Un
+  champ servi d'un seul côté ne disparaît pas, il **clignote**.
+
+- **Aucune ligne du chemin de dosage ne change.** Les huit accesseurs ajoutés
+  sont en **lecture seule** ; les expressions de composition sont **factorisées**
+  à résultat strictement identique, prouvé par la suite native du feedforward
+  laissée **intacte**. Un **filet de non-divergence** compare les deux écritures
+  de l'équation à chaque tour de dosage et journalise **un WARN par session**
+  au-delà de 0,05 mL/min d'écart.
+
+### Documentation
+
+- `docs/adr/0071-parite-data-trame-capteurs.md` (**nouvel ADR**) : la parité
+  `/data` ↔ trame `sensor_data` devient une **garde**, pas une consigne orale —
+  marqueurs textuels, sentinelle native, trois tables d'exceptions à motif
+  obligatoire, échec sur exception morte, cliquet sur la dette. **Extension** de
+  l'[ADR-0065](docs/adr/0065-trame-websocket-etat-mutable-pas-constantes.md) au
+  second axe, avec un mécanisme différent parce que le critère de partage
+  diffère. La sentinelle a **attrapé un défaut réel pendant son propre cycle**,
+  avant la revue.
+- `docs/subsystems/ws-manager.md` : nouvelle section normative « **deux trames,
+  deux gabarits, un seul plafond dur** » et **méthode de chiffrage** du budget
+  (pire cas **structurel**, jamais une trame vivante). La confusion entre
+  gabarit documentaire et plafond dur avait produit **quatre chiffrages faux
+  d'affilée** ; le décompte est rectifié de **+115 o** sans qu'aucun champ ait
+  été ajouté, et la marge réelle sous `kWsFrameBufBytes` est de **137 o**.
+- `docs/API.md` : les 8 champs de composition, les 4 de pause mélange et les 2
+  de caractérisation ; sémantique de `ph_ff_status = 3` précisée ; avertissement
+  explicite qu'**aucun champ « appliqué » n'existe**.
+- `docs/MQTT.md`, `docs/subsystems/pump-controller.md`,
+  `docs/features/page-ph.md`, `docs/features/page-orp.md` : cartes, accesseurs,
+  bornage en deux étages, filet de divergence, fenêtre résiduelle des trois
+  sorties anticipées d'`update()`.
+- `docs/user/src/guide-utilisation.html` et `guide-regulation.html` mis à jour.
+  ⚠️ **Deux captures d'écran à refaire** (pages pH et ORP) — seule étape
+  humaine.
+
+---
+
 ## [2.45.1] - 2026-09-07
 
 > **Ce qui change pour vous, en une phrase** : sur les pages **pH** et **ORP**, la

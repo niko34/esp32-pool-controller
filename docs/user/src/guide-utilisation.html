@@ -450,15 +450,69 @@ quota journalier), et l'historique. Sur le graphique, la <strong>zone
 comprise entre 7,2 et 7,6</strong> matérialise la plage idéale de l'eau,
 et une <strong>ligne pointillée</strong> marque votre consigne.</p>
 
-<p>Sous la barre de dose, deux <strong>capacités de dosage</strong> sont
-affichées discrètement&nbsp;: le débit que la pompe peut soutenir compte
-tenu de vos réglages, et le maximum de produit livrable sur la journée de
-filtration programmée. Un bandeau bleu «&nbsp;<strong>Dosage au maximum
-autorisé</strong>&nbsp;» peut apparaître&nbsp;: c'est un état
-<em>normal</em> — la régulation corrige au rythme le plus rapide que vos
-réglages autorisent, rien à faire. Seule l'alerte
-«&nbsp;<strong>Capacité de dosage insuffisante</strong>&nbsp;» appelle une
-action de votre part (chapitre&nbsp;4).</p>
+<p>Sous la barre de dose, le <strong>maximum journalier</strong> livrable
+sur la journée de filtration programmée est affiché discrètement.</p>
+
+<h4>La carte «&nbsp;Débit d'injection pH&nbsp;»</h4>
+
+<p><em>Nouveau en 2.46.</em> En mode <strong>Automatique</strong>, une carte
+présente en un seul endroit tout ce que la régulation a en tête. Elle
+remplace quatre morceaux qui s'étaient empilés au fil des versions
+(rattrapage, dose apprise, débit soutenable, bandeau de limite).</p>
+
+<table>
+  <tr><th style="width:38%">Ligne</th><th>Ce qu'elle dit</th></tr>
+  <tr><td><strong>Dose de base apprise</strong></td>
+      <td>La part que l'appareil verse <em>parce qu'il connaît votre
+      bassin</em> (chapitre&nbsp;2 du guide de régulation). Entre deux
+      injections, la ligne affiche la valeur apprise avec la mention
+      «&nbsp;en attente — appliquée à la prochaine session&nbsp;»&nbsp;:
+      vous savez donc toujours ce que l'appareil a en mémoire.</td></tr>
+  <tr><td><strong>Écart courant</strong></td>
+      <td>La part qui répond à l'écart du <em>moment</em>. Elle peut être
+      <strong>négative</strong> (affichée «&nbsp;−0,35&nbsp;mL/min&nbsp;»)
+      quand le pH est passé sous la consigne&nbsp;: c'est normal, et c'est
+      la régulation qui freine.</td></tr>
+  <tr><td><strong>Rattrapage accumulé</strong></td>
+      <td>La correction lente mise de côté pour compenser une dérive
+      permanente, avec sa <em>réserve</em> en pourcentage.</td></tr>
+  <tr><td><strong>Demande</strong></td>
+      <td>Le total&nbsp;: ce que la régulation réclame à cet instant. En
+      note, le plafond que votre limite horaire autorise
+      «&nbsp;<strong>en moyenne sur l'heure</strong>&nbsp;».</td></tr>
+</table>
+
+<div class="box">
+  <span class="box-title">Pourquoi le total est la <em>demande</em>, et pas «&nbsp;ce que la pompe verse&nbsp;»</span>
+  <p>La pompe ne débite pas «&nbsp;au ralenti&nbsp;» quand elle atteint sa
+  limite horaire&nbsp;: elle <strong>sert la demande, puis s'arrête</strong>
+  jusqu'à l'heure suivante. Afficher un débit rabaissé au plafond
+  sous-estimerait donc d'environ <strong>17&nbsp;%</strong> ce que le bassin
+  reçoit dans les dix minutes qui suivent. Le total dit ce qui est demandé,
+  la note dit ce que la moyenne horaire autorise&nbsp;: les deux nombres
+  sont vrais, et ils ne disent pas la même chose.</p>
+</div>
+
+<p>Une <strong>pastille</strong> en haut de la carte dit l'instant, en trois
+couleurs seulement&nbsp;: <strong>verte</strong> «&nbsp;Injection en
+cours&nbsp;» (la pompe est commandée), <strong>grise</strong> pour tous les
+états d'attente normaux («&nbsp;Pause mélange · 12&nbsp;min&nbsp;» avec son
+compte à rebours, «&nbsp;Filtration arrêtée&nbsp;», «&nbsp;pH à la
+consigne&nbsp;», «&nbsp;Limite horaire atteinte&nbsp;»…), et
+<strong>rouge</strong> <em>uniquement</em> en cas de panne
+(«&nbsp;Dosage suspendu · …&nbsp;»). Une pause n'est pas un avertissement&nbsp;:
+il n'y a donc pas d'orange.</p>
+
+<p>Quand une valeur n'existe pas, la ligne affiche un
+<strong>tiret</strong>, jamais un zéro — et la raison est écrite juste à
+côté. Filtration à l'arrêt&nbsp;? L'écart et la demande passent au tiret,
+mais la dose apprise et le rattrapage <em>restent affichés</em>&nbsp;: ce
+sont des grandeurs lentes, toujours vraies. Si la pompe n'a jamais été
+pesée, un pied de carte le rappelle&nbsp;: les débits reposent alors sur le
+débit d'usine.</p>
+
+<p>Seule l'alerte «&nbsp;<strong>Capacité de dosage insuffisante</strong>&nbsp;»,
+juste sous la carte, appelle une action de votre part (chapitre&nbsp;4).</p>
 
 <p><strong>Ce que vous pouvez faire</strong> — choisir le mode de
 régulation&nbsp;:</p>
@@ -466,10 +520,9 @@ régulation&nbsp;:</p>
 <ul>
   <li><strong>Automatique</strong> — l'appareil vise votre consigne, à
   choisir parmi quatre positions&nbsp;: 7,20, 7,30, 7,40 ou 7,50. Un clic
-  suffit, la valeur est enregistrée immédiatement. En pied de carte, le
-  bloc «&nbsp;Rattrapage accumulé&nbsp;» et la ligne «&nbsp;Dose de base
-  apprise&nbsp;» montrent ce que la régulation a en tête — pure
-  information, rien à régler.</li>
+  suffit, la valeur est enregistrée immédiatement. Ce que la régulation a en
+  tête se lit dans la carte «&nbsp;Débit d'injection pH&nbsp;» juste
+  au-dessus — pure information, rien à régler.</li>
   <li><strong>Programmée</strong> — un volume quotidien fixe est réparti
   sur les heures de filtration, sans regarder la mesure. Utile le temps de
   remplacer une sonde. Le volume non injecté avant minuit est perdu, jamais
@@ -483,10 +536,12 @@ régulation&nbsp;:</p>
 
 <div class="box">
   <span class="box-title">Rattrapage, dose apprise, refus de doser…</span>
-  <p>Tout ce que la carte Régulation laisse entrevoir — la part apprise,
-  la part réactive, les pauses de mélange, les seuils de sécurité — est
-  expliqué pas à pas dans le guide de régulation, sections «&nbsp;Le voyage
-  d'une correction&nbsp;» et «&nbsp;La dose de base apprise&nbsp;».</p>
+  <p>Les quatre lignes de la carte «&nbsp;Débit d'injection&nbsp;» sont les
+  trois termes de l'équation de régulation, plus leur total. Le détail — la
+  part apprise, la part réactive, les pauses de mélange, les plafonds
+  empilés, les seuils de sécurité — est expliqué pas à pas dans le guide de
+  régulation, sections «&nbsp;Le voyage d'une correction&nbsp;» (étapes 6
+  et 7) et «&nbsp;La dose de base apprise&nbsp;».</p>
 </div>
 
 <div class="box-alerte">
@@ -543,6 +598,41 @@ sur la filtration, sans regarder la mesure) et <strong>Manuelle</strong>
 <strong>un seul point</strong>, avec une solution étalon dont vous saisissez
 la valeur (les kits courants&nbsp;: 225 ou 470&nbsp;mV) — même écran guidé
 que le pH, minuterie comprise.</p>
+
+<h4>La carte «&nbsp;Débit d'injection ORP&nbsp;»</h4>
+
+<p><em>Nouveau en 2.46.</em> En mode <strong>Automatique</strong>, la page
+chlore présente la même carte que la page pH, mais avec
+<strong>deux lignes seulement</strong>&nbsp;: «&nbsp;Écart courant&nbsp;» et
+«&nbsp;Demande&nbsp;». Ce n'est pas une version au rabais&nbsp;: le chlore est
+régulé <strong>plus simplement</strong> que le pH — pas de dose de base
+apprise, pas de rattrapage accumulé, juste une réaction à l'écart du moment.
+La carte le montre au passage.</p>
+
+<p>Sa <strong>pastille</strong> répond enfin à la question la plus fréquente,
+«&nbsp;pourquoi la pompe chlore ne tourne-t-elle pas&nbsp;?&nbsp;»&nbsp;:
+«&nbsp;Injection en cours&nbsp;» en vert, ou l'une des attentes normales en
+gris — «&nbsp;Pause mélange · N&nbsp;min&nbsp;»,
+«&nbsp;Limite horaire atteinte&nbsp;», «&nbsp;Filtration arrêtée&nbsp;», ou
+«&nbsp;pH trop haut, chlore peu actif&nbsp;» (voir l'encadré ci-dessous).</p>
+
+<div class="box-alerte">
+  <span class="box-title">Un écart résiduel permanent est NORMAL côté chlore</span>
+  <p>La carte porte cette phrase en permanence, et il vaut la peine de la
+  lire deux fois&nbsp;: <strong>la régulation chlore corrige l'écart courant
+  sans rattrapage cumulé</strong> — un écart résiduel permanent est normal et
+  ne demande <em>ni consigne plus haute, ni gain plus fort</em>.</p>
+  <p>Il est également normal que la boucle chlore atteigne
+  <strong>tous les jours</strong> sa limite horaire, et la carte le dit
+  («&nbsp;la limite horaire autorise X en moyenne sur l'heure&nbsp;»). Avec un
+  <strong>stabilisant</strong> autour de 35&nbsp;mg/L, tenir 2,5 à
+  3&nbsp;mg/L de chlore libre <em>coûte</em> ce qu'il coûte&nbsp;: c'est le
+  prix de la protection contre les UV, pas un défaut de réglage. Relever la
+  consigne en millivolts ou le gain en réaction à ce message
+  <strong>aggraverait la consommation sans améliorer la
+  désinfection</strong>. Le bon levier, s'il y a un doute sur le taux réel,
+  reste la <strong>bandelette</strong>.</p>
+</div>
 
 <div class="box">
   <span class="box-title">Comment choisir la cible en millivolts&nbsp;?</span>
