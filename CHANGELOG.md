@@ -2,6 +2,162 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.47.0] - 2026-09-07
+
+> **Ce qui change pour vous, en deux phrases** : l'historique ne prétend plus
+> qu'un dosage de **pH** a eu lieu quand c'était le **chlore**. Et une journée
+> dont le compteur de filtration a été remis à zéro ne s'affiche plus comme la
+> **meilleure de la semaine**.
+
+### Fonctionnalités
+
+- **Les graphiques du tableau de bord disent QUELLE pompe a dosé.** Sous les
+  mini-graphiques pH et chlore, une ligne de repères marque les moments
+  d'injection : **brun au rang du bas** pour le pH, **bleu au rang du dessus**
+  pour le chlore, et un **simple contour gris** pour les mesures d'avant la mise
+  à jour, dont l'appareil ne connaît plus la voie. L'infobulle nomme la ou les
+  pompes concernées — la couleur ne porte jamais seule l'information. Le
+  graphique de température n'a pas de repères : aucune pompe ne la corrige.
+- **Une journée dont la durée n'a pas pu être mesurée l'avoue.** Jusqu'ici, une
+  remise à zéro du compteur de filtration (restauration d'usine, restauration
+  d'une sauvegarde de réglages) archivait la journée à **0 minute** — donc
+  affichée « 0h00 » **en vert**, c'est-à-dire comme la **meilleure journée
+  possible**. Elle se rend maintenant en **pointillé estompé avec un tiret**, et
+  la note sous la rangée nomme la cause (« compteur de filtration remis à
+  zéro »). Ce n'est ni une réussite ni un échec : c'est une **absence de
+  mesure**.
+
+### Firmware
+
+- **Historique — le drapeau de dosage devient un MASQUE DE VOIES** (`bug-098`).
+  À l'écriture, `phDosing` et `orpDosing` étaient **fusionnés** en une seule clé
+  booléenne (`obj["d"] = phDosing || orpDosing`) ; à la relecture, cette clé
+  était réaffectée à `phDosing`. Une injection de **chlore seul** rechargée
+  depuis `/history.json` — donc **après chaque redémarrage** — se relisait donc en
+  **dosage pH** : le firmware ne perdait pas l'information, il en **fabriquait
+  une fausse**, puis `consolidateData()` la figeait dans les agrégats journaliers
+  pour **75 à 90 jours**. Remplacé par un champ de bits `doseMask`
+  (`kHistDosePh 0x01`, `kHistDoseOrp 0x02`, `kHistDoseUnknownChannel 0x04`), avec
+  un **troisième état explicite** : un point ancien se relit « dosage, voie
+  **indéterminée** », jamais « pH ».
+- **⚠️ Changement de format — la clé `dosing` de `GET /get-history` est un
+  ENTIER** (0..7 ; 0..4 en pratique), là où c'était un booléen. Un client qui la
+  lisait en booléen JavaScript **ne change pas de verdict** (`0` *falsy*,
+  `1`/`2`/`3`/`4` *truthy*) et la clé reste **toujours présente** — seul son type
+  change. Les **deux** surfaces portent les **trois** bits : le fichier interne
+  `/history.json` et la route HTTP, qui sert le masque **verbatim**.
+- **Relecture tolérante aux deux formats, sans clé de version** : le type JSON
+  suffit à les séparer (booléen ⇒ firmware ≤ 2.46 ⇒ voie indéterminée ; entier ⇒
+  masque ; clé absente ⇒ aucun dosage). Le masque de relecture porte sur **`0x07`
+  et non `0x03`** — avec `0x03`, le premier cycle sauvegarde/relecture suivant la
+  mise à jour (**5 minutes**) écrivait `"d":4` puis relisait `0` : le mensonge
+  réapparaissait, **réintroduit par le correctif lui-même**.
+- **Rétrogradation sûre** : un firmware ≤ 2.46 relisant `"d":3` obtient `true`,
+  soit **exactement son comportement actuel**. `"d":0` obtient `false`.
+- **Le fichier d'historique RÉTRÉCIT** : `,"d":0` … `,"d":7` (6 o) contre
+  `,"d":false` (10 o) et `,"d":true` (9 o), soit **−1 113 octets** sur la charge
+  de référence de 339 points. Le pire cas d'un point exporté passe de 163
+  (annoncés) à **161 o mesurés** — la marge sur le tampon de report **gagne 2 o**.
+- **Agrégation et déduplication par union BIT À BIT** : un créneau horaire ou
+  journalier cumule les voies réellement dosées, voie par voie. `anyTrue()` est
+  **supprimée** de `history_logic` avec ses trois tests — c'est ce diff qui a tué
+  son dernier appelant, et des assertions vertes sur du code mort font croire à un
+  invariant vivant.
+- **Temps d'atteinte de cible — `kTttFlagCounterReset` (`0x20`)** (`bug-106`).
+  Quand le compteur de filtration recule, la durée archivée n'est **plus** un
+  `0` muet : le bit dit « cette valeur n'est pas une mesure ». Il est posé aux
+  **trois** sites de recul, dont le chemin **vif** (celui qui alimente
+  l'affichage), que la spec ne nommait pas. Une **sentinelle dans le champ
+  `minutes`** a été écartée : elle aurait recommis, dans le champ voisin, la faute
+  que `bug-098` corrige.
+- **Aucun chemin de dosage touché.** Ces deux drapeaux sont des champs
+  d'observation : aucune décision de régulation, aucune limite de sécurité, aucun
+  budget horaire ou journalier ne les lit. `pump_controller` est inchangé.
+- **Limite assumée, consignée** : un `"dosing"` **flottant** (`3.0`) ou entier
+  **64 bits hors plage** ne satisfait aucun des deux cas du discriminant et
+  retombe sur `0`. Inatteignable sans édition manuelle du fichier — ni le
+  firmware ni l'export ne produisent ces formes.
+- **Trou résiduel connu, non corrigé** : un recul **puis** une remontée du
+  compteur au-dessus du départ, **avec une coupure secteur entre les deux**, perd
+  le drapeau (il n'est archivé qu'à la clôture de la journée). Atténué par le
+  drapeau « reprise après coupure », qui signale la journée pour le mauvais
+  motif. Motif du report : **usure de la flash** pour un scénario à trois
+  conditions simultanées.
+
+### Interface
+
+- **Export CSV de l'historique — colonne `dosing_mask` AJOUTÉE**, à côté de
+  `dosing` **conservée** en `0`/`1`. ⚠️ **Le nom est neuf à dessein** :
+  réutiliser `dosing` aurait rendu un `1` **indécidable** — pH, ou voie
+  inconnue ? — puisque les exports ≤ 2.46 écrivaient déjà `1` pour dire « il y a
+  eu dosage ». À l'import, `dosing_mask` a **priorité** quand les deux colonnes
+  sont présentes ; un fichier ancien reste importable et ses points se lisent
+  « voie indéterminée ».
+- **Marqueurs de dosage** : mini-graphiques pH et chlore du tableau de bord
+  **seulement**. Les graphiques des écrans détail (1 point par jour) sont
+  inchangés, et la carte Température ne trace aucun marqueur.
+
+### Tests
+
+- **39 suites / 1 451 cas natifs**, zéro régression. Nouvelle suite
+  `test_native_dose_mask` (le masque de bout en bout : contrat de bits, trois
+  formats de fichier, deux cycles consécutifs, union à l'agrégation, budget).
+- **13 mutants tués sur 13**, dont le mutant décisif `& 0x07` → `& 0x03`.
+  Couverture **lignes et fonctions à 100 %** sur les modules purs touchés.
+- **Balayage exhaustif des 65 536 couples (masque, granularité)** : aucun ne fait
+  sauter un point de l'export — le mode de défaillance **silencieux** (trou de
+  courbe indiscernable d'une panne de sonde) est structurellement exclu. Le pire
+  cas est le **maximum du balayage**, mesuré, pas postulé.
+- `sizeof(DataPoint) == 28` prouvé **par mutation**, l'allocation contiguë de
+  `/get-history` en dépend.
+- **Réserve consignée** : le modèle `historyPointPersistedLen`
+  (`test_native_history`) décrit encore `"d":true/false` et une partition de
+  64 Ko (256 Ko depuis le layout v5). Il se trompe **du côté sûr** — majorant —
+  donc rien n'est rouge ; le corriger propage sur une dizaine de constantes
+  asservies et sur tout le récit de budget. **Spec de suivi nécessaire.**
+
+### Documentation
+
+- **[ADR-0072](docs/adr/0072-absence-de-valeur-hors-du-domaine.md) — « Le domaine
+  d'une valeur ne porte jamais l'absence de valeur »** : l'idiome que ce dépôt
+  appliquait **sans l'avoir nommé**. La règle était **déjà écrite deux fois, dans
+  deux fichiers, comme deux remarques locales** (`history.h:23` « NaN = absence
+  […] JAMAIS 0 » ; `time_to_target_logic.h:78` « CHAMP DE BITS et non
+  énumération ») — et les deux bugs de ce lot sont précisément ce qui arrive
+  quand une règle existe sans être énoncée. Consigne aussi la **forme validée
+  comme précédent** (`tttUpdateElapsedMinutes` mute son entrée) et sa **condition
+  de copie** : OR idempotent obligatoire.
+- **[ADR-0073](docs/adr/0073-chiffre-consigne-porte-sa-methode.md) — « Un chiffre
+  consigné porte sa méthode, ou il ne vaut rien »** : **onze valeurs numériques
+  du dépôt se sont révélées fausses en une seule journée**, dont le budget de la
+  trame WebSocket **quatre fois de suite** (une mesure vivante sur laquelle huit
+  « pire cas » avaient été empilés) et un troisième chiffre faux **dans le bloc
+  de commentaires qui corrigeait les deux premiers**. Décision : tout chiffre
+  porte **comment il a été obtenu**, **la source à relire** et **sa date**. Un
+  chiffre sans méthode se recopie ; un chiffre avec méthode se refait.
+- `docs/API.md` : `GET /get-history` — `dosing` **entier**, table des trois bits,
+  règle « tester des bits, jamais l'égalité », compatibilité des clients
+  booléens ; `POST /history/import` — lecture typée des deux formats et sa limite.
+- `docs/subsystems/history.md` : nouveau chapitre « Masque de voies de dosage » —
+  discriminant de format, `0x07` et non `0x03`, rétrogradation sûre, union bit à
+  bit à l'agrégation et à la déduplication, budget avant/après avec sa méthode,
+  pire cas 161/157 o. Retrait d'`anyTrue()` de la table du module pur.
+- `docs/subsystems/time-to-target.md` : bit `0x20` ajouté au champ de bits (bits
+  6-7 désormais libres), ses **trois** sites de pose, le rendu en « absence de
+  mesure » et **non** en « échec », le trou résiduel.
+- `docs/features/page-dashboard.md` : marqueurs de dosage — deux séries
+  distinctes plus une « voie inconnue » **en creux**, portée limitée aux
+  mini-graphiques.
+- `docs/features/page-ph.md`, `page-orp.md` : nouveau cas de la bande de 7
+  pastilles, et **pourquoi il est testé avant l'état**.
+- `docs/user/src/guide-utilisation.html`, `guide-regulation.html` : repères de
+  dosage, sixième circonstance de « journée non comparable », et l'encadré
+  « pourquoi un tiret plutôt qu'un zéro ». ⚠️ **Capture à refaire** :
+  `screenshots/03_Tableau_de_bord.jpg` (les repères de dosage sont visibles sur
+  les mini-graphiques pH et chlore).
+
+---
+
 ## [2.46.2] - 2026-09-07
 
 > **Ce qui change pour vous, en deux phrases** : une demande de mise à jour

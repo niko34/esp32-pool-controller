@@ -447,12 +447,30 @@ Paramètre optionnel `?since=TIMESTAMP` pour récupération incrémentale.
 **Format de réponse** :
 
 ```json
-{"range":"24h","count":0,"history":[{"timestamp":1753860000,"ph":7.2,"phFiltered":7.23,"orp":650,"orpFiltered":649,"temperature":24.6,"filtration":true,"dosing":false,"granularity":0}, "…"],"count":123}
+{"range":"24h","count":0,"history":[{"timestamp":1753860000,"ph":7.2,"phFiltered":7.23,"orp":650,"orpFiltered":649,"temperature":24.6,"filtration":true,"dosing":2,"granularity":0}, "…"],"count":123}
 ```
 
 > ⚠️ La clé `count` apparaît **deux fois** : `0` dans l'en-tête, la valeur réelle dans le pied. Bizarrerie historique **conservée volontairement** pour compatibilité (les parseurs JSON gardent la dernière occurrence).
 
 > **feature-061 (v2.13.0)** : les points enregistrés pendant un arrêt de filtration (ou pendant la purge post-reprise) ont `ph` et `orp` à **`null`** (contrat existant, identique à un capteur absent) — `temperature`, `filtration` et `dosing` restent renseignés. Voir [`docs/subsystems/history.md`](subsystems/history.md#exclusion-des-mesures-phorptempérature-sans-circulation-deau-feature-061-v2130).
+
+#### `dosing` : un MASQUE DE VOIES entier (bug-098, v2.47.0) ⚠️ changement de type
+
+**Jusqu'à la v2.46 incluse, `dosing` était un booléen** : `true` disait « une pompe doseuse tournait à cet instant », sans dire **laquelle**. Depuis la **v2.47.0**, c'est un **entier**, champ de bits des voies réellement dosées ([ADR-0072](adr/0072-absence-de-valeur-hors-du-domaine.md)) :
+
+| Bit | Valeur | Sens |
+|---|---:|---|
+| `kHistDosePh` | `0x01` | pompe **pH** active à l'instant du point |
+| `kHistDoseOrp` | `0x02` | pompe **ORP (chlore)** active |
+| `kHistDoseUnknownChannel` | `0x04` | **dosage, voie indéterminée** — point écrit par un firmware **≤ 2.46**, qui ne persistait pas la voie |
+
+- **Valeurs observables** : `0`, `1`, `2`, `3`, `4` (jusqu'à `7` en théorie — un agrégat horaire peut cumuler `0x04` d'un point ancien et `0x01`/`0x02` de points récents). Les bits 3-7 sont **réservés**.
+- **Tester des bits, jamais l'égalité.** `dosing & 1` pour « dosage pH », `dosing & 2` pour « dosage chlore ». Un `=== 1` casserait dès qu'un bit inconnu apparaît.
+- **`0x04` ne se lit JAMAIS « pH ».** Un booléen ne dit pas la voie : la déduire inventerait une information absente. C'est exactement le défaut corrigé par bug-098, du côté firmware **comme** du côté client.
+- **Un client qui lisait `dosing` en booléen JavaScript ne change pas de verdict** : `0` est *falsy*, `1`/`2`/`3`/`4` sont *truthy*. La clé **reste toujours présente** ; seul son type change.
+- **Les deux surfaces portent les mêmes trois bits.** `GET /get-history` sert le masque **verbatim** ([`web_routes_data.cpp:1046`](../src/web_routes_data.cpp:1046) passe `p.doseMask` à `formatHistoryPointJson`) — aucune traduction, aucune perte entre le fichier interne [`/history.json`](subsystems/history.md) et le fil HTTP.
+- **`POST /history/import` accepte les deux formats**, distingués par le **type JSON** de la valeur : booléen ⇒ export ≤ 2.46 ⇒ `0x04` (voie indéterminée) ; entier ⇒ masque, réduit à `0x07` ; clé absente ⇒ `0` (aucun dosage). Détail et limite du discriminant : [history.md](subsystems/history.md).
+- **Export CSV de l'interface** : la colonne historique `dosing` est **conservée** en `0`/`1`, et une colonne **`dosing_mask`** est **ajoutée** à côté. Réutiliser le nom `dosing` aurait rendu un `1` **indécidable** — pH, ou voie inconnue ? — les anciens exports écrivant déjà `1` pour dire « il y a eu dosage ».
 
 #### Mesure lissée : `phFiltered` / `orpFiltered` (feature-095, v2.38.0)
 
@@ -562,6 +580,8 @@ curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
 ```
 
 Les clés attendues sont celles **de l'export `/get-history`** (clés longues), pas celles du fichier persisté `/history.json`. Depuis la **v2.38.0**, `phFiltered` et `orpFiltered` sont relues : l'aller-retour `/get-history` → `/history/import` → `/get-history` restitue la [mesure lissée](#mesure-lissée--phfiltered--orpfiltered-feature-095-v2380) à l'identique. Clé **absente ou `null`** → mesure lissée absente (`null`), jamais 0 ni repli sur le brut.
+
+**Clé `dosing` — les deux formats sont acceptés (bug-098, v2.47.0).** La lecture est **typée**, sans clé de version : un **booléen** est un export **≤ 2.46** et vaut `0x04` (« dosage, voie indéterminée ») ; un **entier** est un [masque de voies](#dosing--un-masque-de-voies-entier-bug-098-v2470) et est réduit à `0x07` ; une clé **absente** vaut `0`. Un booléen `true` ne se relit **jamais** « pH » — ce serait inventer la voie. ⚠️ **Limite assumée** : un `dosing` **flottant** (`3.0`) ou entier **64 bits hors plage `int`** ne satisfait aucun des deux cas et retombe sur `0` ; ni le firmware ni l'export de l'interface ne produisent ces formes.
 
 #### ⚠️ Limite dure : 16 384 octets de corps (constatée le 2026-09-05)
 

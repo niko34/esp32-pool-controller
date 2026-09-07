@@ -241,8 +241,9 @@ N'écrit pas en NVS : la resynchronisation se fera à la prochaine archive.
 
 `state` et `flags` sont archivés en NVS **et** servis à l'UI : leurs valeurs sont
 un **contrat**. Champ de bits et non énumération — une journée peut cumuler
-plusieurs circonstances, et les bits 5-7 restent disponibles sans casser les
+plusieurs circonstances, et les bits **6-7** restent disponibles sans casser les
 pastilles déjà archivées. Un client **teste des bits, jamais l'égalité**.
+Cet encodage est l'application canonique de l'[ADR-0072](../adr/0072-absence-de-valeur-hors-du-domaine.md).
 
 | Bit | Constante | Sens |
 |---|---|---|
@@ -251,6 +252,35 @@ pastilles déjà archivées. Un client **teste des bits, jamais l'égalité**.
 | `0x04` | `kTttFlagUnsettled` | purge de mesure terminée au **plafond** (feature-091) |
 | `0x08` | `kTttFlagPowerCycle` | reprise après coupure secteur |
 | `0x10` | `kTttFlagOperatorOff` | **régulation non automatique** — journée à exclure des moyennes |
+| `0x20` | `kTttFlagCounterReset` | **compteur de filtration en recul** — la durée archivée n'est **pas une mesure** (v2.47.0, bug-106) |
+
+### Bit 5 — `kTttFlagCounterReset` : « cette valeur n'est pas une mesure » (bug-106, v2.47.0)
+
+`minutes` est une **DURÉE** : son domaine ne peut pas porter l'**absence** de durée. Quand `filtTotalMin` recule — NVS `pool-daily` effacée, restauration d'usine, restauration de configuration en cours de tenue —, la soustraction n'a plus de sens et l'on rend `0`. Mais **0 minute est aussi la MEILLEURE journée possible** (« la cible était atteinte dès le départ ») : sans ce bit, la journée s'archivait en `kTttStateReached` à 0 minute et l'interface l'affichait **dans la classe des bonnes journées**, parce que `0 <= TTT_LONG_MIN`. **L'absence de mesure se lisait comme un record**, et tirait vers le bas toute moyenne de comparaison de versions.
+
+Le bit dit « cette valeur n'est pas une mesure ». Il **n'annule ni l'état ni les minutes** — le format servi à l'UI reste brut (`ph_ttt_min`, `/get-kpi`). C'est exactement pourquoi une **sentinelle dans `minutes`** (`0xFFFF`) a été écartée : elle aurait recommis, dans le champ voisin, la faute que bug-098 corrige ([ADR-0072](../adr/0072-absence-de-valeur-hors-du-domaine.md)).
+
+Comme `kTttFlagOperatorOff`, il **EXCLUT** la journée des moyennes de comparaison de versions ; il ne la **supprime pas** — mieux vaut une journée signalée qu'une journée absente, dont `tttHistoryCloseOrphans()` ferait de toute façon une « non atteinte à 0 minute » le lendemain, et cette fois **sans trace de la cause**.
+
+#### Les TROIS sites de pose
+
+Le drapeau est posé aux trois — et un seul oubli rouvre le défaut sur un chemin ([`src/time_to_target_logic.cpp`](../../src/time_to_target_logic.cpp)) :
+
+| Site | Ligne | Chemin |
+|---|---:|---|
+| `tttUpdateElapsedMinutes()` | **128** | le chemin **VIF** — `filtTotalMin < st.t0FiltMin`, c'est lui qui alimente l'instantané servi à l'UI, et c'est celui que la spec ne nommait pas |
+| `tttTick()` — tenue relancée | **307** | recul détecté **entre `t0` et le début de tenue** : `tttUpdateElapsedMinutes` ne l'a donc pas vu (`filtTotalMin >= t0FiltMin`), et c'est pourtant le même événement |
+| `tttTick()` — archivage | **326** | à la clôture, `holdStartFiltMin < t0FiltMin` : le repli à 0 produisait la journée « atteinte en 0 minute » |
+
+> ⚠️ **`tttUpdateElapsedMinutes(TttLive& st, uint32_t)` MUTE son entrée** — le nom dit « Update » pour cette seule raison. La forme est un **précédent assumé** et sa condition de copie (**OR idempotent** obligatoire, jamais un compteur ni un horodatage) est inscrite dans l'en-tête de la déclaration et motivée par l'[ADR-0072](../adr/0072-absence-de-valeur-hors-du-domaine.md#le-précédent-de-forme--un-accesseur-qui-marque-son-propre-état).
+
+#### Rendu côté interface
+
+La pastille du jour concerné rejoint le **vocabulaire des journées sans entrée** — pointillé estompé (`.ttt__day--none`), **aucune durée affichée**, texte `—` — et **non** celui de l'échec (pas de `.ttt__day--long`). Le test passe **avant** celui de l'état, précisément parce que l'entrée vaut `s = 2` / `m = 0`. La phrase complète (`title` + `aria-label`) dit « durée non mesurable », jamais « déjà à la cible au départ ». Détail : [page-ph.md](../features/page-ph.md), [page-orp.md](../features/page-orp.md).
+
+#### Trou résiduel connu, non corrigé
+
+Le bit vit dans `TttLive` (RAM RTC) et n'atteint la NVS qu'à l'**archivage** de la journée. Un recul **suivi d'une remontée** du compteur au-dessus de `t0`, **avec une coupure secteur entre les deux**, perd donc le bit : la journée se rouvre depuis l'anneau sans lui. **Atténuation** : cette même coupure pose `kTttFlagPowerCycle`, la journée reste donc signalée — mais **pour le mauvais motif**. Non corrigé : le remède (une écriture NVS à chaque recul) coûterait de l'**usure de flash** pour un scénario à **trois conditions simultanées**.
 
 ## API publique
 
@@ -371,8 +401,11 @@ ce ne sont pas des réglages mais la **définition d'un format** (patron
   porte est ouverte), bit 2 mémorisé pour lecture honnête.
 - **Changement de consigne** : bit 0 posé, chronomètre **poursuivi** sur la
   nouvelle consigne.
-- **Compteur de circulation en recul** (cas théorique) : la tenue est relancée,
-  jamais un écart négatif.
+- **Compteur de circulation en recul** (effacement NVS `pool-daily`, restauration
+  d'usine ou de configuration) : la tenue est relancée, jamais un écart négatif —
+  et depuis la v2.47.0 la journée **porte `kTttFlagCounterReset`** aux trois sites
+  de recul, donc la durée rendue (`0`) se **déclare** comme non mesurée. Voir
+  [Bit 5](#bit-5--ktttflagcounterreset--cette-valeur-nest-pas-une-mesure-bug-106-v2470).
 - **Anneau NVS absent ou corrompu** : rejet net, anneau vide, aucune journée
   servie — jamais de réinterprétation.
 - **`minutes` borné à 1440** à l'insertion : un `uint16` ne porte pas plus

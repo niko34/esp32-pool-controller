@@ -96,6 +96,29 @@ Sous chaque mini-graphique pH et ORP, une légende (`.mini-legend`) porte l'entr
 
 > **Première utilisation de `localStorage` dans le projet.** L'accès est **entièrement protégé** (`uiPrefGet` / `uiPrefSet`, app.js) : `localStorage` peut lever **à la lecture comme à l'écriture** (Safari en navigation privée, stockage désactivé par politique). Un objet en mémoire sert de repli et un échec ne remonte **jamais** à l'utilisateur — la préférence vaut alors pour la session seulement. Tout nouveau réglage d'interface persisté doit passer par ces deux fonctions et par le préfixe `poolctl.ui.`.
 
+## Marqueurs de dosage sur les mini-graphiques pH / ORP (bug-098, v2.47.0)
+
+Depuis la **v2.47.0**, chaque point d'historique porte un **masque de voies** de dosage et non plus un booléen ([ADR-0072](../adr/0072-absence-de-valeur-hors-du-domaine.md), [history.md](../subsystems/history.md#masque-de-voies-de-dosage-bug-098-v2470)). Les mini-graphiques **pH et ORP** le rendent en **trois séries de marqueurs distinctes**, dessinées au ras du bas de l'aire de tracé par le plugin `dosingMarksPlugin` (hook `draw` d'uPlot) :
+
+| Bit | Marqueur | Forme | Sens |
+|---|---|---|---|
+| `0x01` | pH | rectangle **plein**, brun, **rang du bas** | la pompe **pH** dosait à cet instant |
+| `0x02` | chlore | rectangle **plein**, bleu, **rang du dessus** | la pompe **ORP** dosait |
+| `0x04` | voie inconnue | rectangle **en creux** (contour seul), gris, **à cheval sur les deux rangs** | dosage attesté, **voie indéterminée** — point écrit par un firmware ≤ 2.46 |
+
+- **Trois formes distinctes, pas trois teintes** : couleur **+** rang **+** plein/creux. On doit pouvoir dire **quelle pompe a dosé** d'un coup d'œil, et la couleur ne porte jamais seule l'information.
+- **La voie inconnue est rendue « en creux »** — un contour, pas un aplat : c'est visuellement une **absence de réponse**, non une troisième pompe. Elle n'apparaît que sur des points antérieurs à la mise à jour, et se raréfie donc d'elle-même.
+- **Le marqueur ne porte jamais seul l'information** : l'infobulle du point ajoute une ligne par bit présent — « Dosage pH », « Dosage chlore », « Dosage (voie inconnue) » (`dosingLabels()`).
+- **Tester des bits, jamais l'égalité** : un bit inconnu servi par un firmware plus récent est **sans effet** ici, il ne casse ni le tracé ni l'infobulle.
+- **`0` → aucun marqueur.** Un point sans dosage ne dessine rien : les marqueurs se lisent comme des événements, pas comme une série continue.
+- **Un booléen `true` d'un firmware antérieur se lit `0x04`, JAMAIS `0x01`.** Le déduire « pH » inventerait la voie — c'est le défaut que bug-098 corrige côté firmware, on ne le réintroduit pas côté client (`dosingMaskFromApi()`).
+
+**Portée exacte** — trois précisions qui évitent des attentes fausses :
+
+- **Mini-graphiques du tableau de bord seulement.** La carte **Température** passe par la même fabrique `createMiniLineChart` avec un tableau de masques **vide** (`miniDoseSeries()` le remplit de `0`) : rien n'est tracé, un seul chemin de code pour les trois cartes.
+- **Les graphiques des écrans détail (`/ph`, `/orp`, `/temperature`) ne changent pas** — même arbitrage que feature-095 : ils agrègent 1 point par jour, granularité à laquelle un marqueur de dosage ne dirait rien d'utile.
+- **Tableau strictement parallèle aux labels.** `st.dose` suit `st.labels` sur les **deux** chemins d'alimentation, chargement complet (`updateMiniChart`) **et** incrémental (`appendMiniChart`) — comme `st.ts` et `st.gran`, et pour la même raison : les trois mini-graphiques partagent les points sources, chacun doit posséder sa propre copie (`slice()`).
+
 ## Tooltip daté/typé et coupures de courbe (v2.18.4, bug-points-futurs-et-ux-courbes)
 
 Conventions partagées entre les **mini-graphiques** du dashboard (`createMiniLineChart`) et les **graphiques des écrans détail** pH/ORP/température (`createLineChart`, app.js) :

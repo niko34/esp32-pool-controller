@@ -18,7 +18,7 @@
 
 ## Rôle
 
-Enregistre des snapshots des valeurs (pH, ORP, température, filtration active, dosing pH/ORP) toutes les 5 minutes. Depuis la **v2.38.0** (feature-095), chaque point `RAW` porte **en plus** la mesure **lissée** pH/ORP — celle sur laquelle la régulation décide — voir [Mesure lissée historisée](#mesure-lissée-historisée-feature-095-v2380). Consolide progressivement les données anciennes pour garder un historique utilisable sur **~82 jours** (7 jours de données horaires + 75 jours de données journalières) sans saturer la flash. ⚠️ Objectif théorique : l'étage journalier est actuellement affamé — voir le *Suivi connu* de la section [Consolidation par créneau complet](#consolidation-par-créneau-complet--déduplication-v2181-bug-history-doublons-troncature).
+Enregistre des snapshots des valeurs (pH, ORP, température, filtration active, **masque de voies de dosage** pH/ORP — voir [Masque de voies de dosage](#masque-de-voies-de-dosage-bug-098-v2470)) toutes les 5 minutes. Depuis la **v2.38.0** (feature-095), chaque point `RAW` porte **en plus** la mesure **lissée** pH/ORP — celle sur laquelle la régulation décide — voir [Mesure lissée historisée](#mesure-lissée-historisée-feature-095-v2380). Consolide progressivement les données anciennes pour garder un historique utilisable sur **~82 jours** (7 jours de données horaires + 75 jours de données journalières) sans saturer la flash. ⚠️ Objectif théorique : l'étage journalier est actuellement affamé — voir le *Suivi connu* de la section [Consolidation par créneau complet](#consolidation-par-créneau-complet--déduplication-v2181-bug-history-doublons-troncature).
 
 ## Granularités
 
@@ -57,13 +57,14 @@ Depuis **feature-041** (*characterization refactor*), la math **scalaire** d'agr
 | `isOlderThan(now, ts, maxAgeSeconds)` | Prédicat d'ancienneté `(now - ts) > maxAgeSeconds` | Frontière **stricte** (`>`) : `age == maxAge` → `false`. Arithmétique `uint32`, wrap (`ts > now`) conservé tel quel |
 | `finalizeMean(sum, count)` | Moyenne `sum/count` | `count == 0` → **`NaN`** (le point est ignoré par la coquille) |
 | `isMajority(trueCount, total)` | Majorité stricte `trueCount > total/2` | Division **entière** : `2/4` → `false`, `3/4` → `true`, `3/5` → `true` |
-| `anyTrue(count)` | « Au moins un » : `count > 0` | — |
 | `historySaveAdmit(freeBytes, oldFileBytes, jsonBytes, marginBytes)` | Admission d'une écriture de `/history.json` : vrai si `libre + taille de l'ancien fichier ≥ JSON + marge` ([ADR-0033](../adr/0033-budget-espace-partition-history.md), v2.11.0) | Frontière **large** (égalité exacte → admis). Anti-overflow : soustractions gardées, aucune addition — correct jusqu'à `SIZE_MAX` sur chaque paramètre. **Logique NOUVELLE** (pas de contrainte characterization) |
 | `historyBucketConsolidable(now, bucketStart, bucketLen, maxAgeSeconds)` | Créneau consolidable si **complet et ancien** : sa **dernière seconde** (`bucketStart + bucketLen − 1`) dépasse `maxAge` (v2.18.1, bug-history-doublons-troncature A1) | Même convention stricte qu'`isOlderThan` (`== maxAge` → `false`). `bucketLen == 0` → prédicat sur `bucketStart` seul (défensif). **Durcie v2.18.4** : dernière seconde dans le futur (`> now`) → **jamais consolidable** (voir [Garde anti-futur](#garde-anti-futur--purge-des-points-futurs-v2184-bug-points-futurs-et-ux-courbes)). **Logique NOUVELLE** |
 | `historyMergeMeanFinite(a, b)` | Fusion **équipondérée** de deux valeurs d'un même champ lors de la déduplication : fini+fini → moyenne, un seul fini → lui, aucun → `NaN` (v2.18.1, A2) | Équipondéré car les effectifs d'origine ne sont pas stockés (approximation assumée pour les doublons hérités ≤ 2.18.0). **Logique NOUVELLE** |
 | `historyIsExpired(now, ts, maxAgeSeconds)` | Ancienneté **future-safe** : `ts <= now && isOlderThan(...)` — un point horodaté dans le futur n'est **jamais** « expiré » (v2.18.4, bug-points-futurs-et-ux-courbes) | Utilisée par la purge 90 j de `consolidateData()`. L'invariant de wrap d'`isOlderThan` (documenté, verrouillé par tests) reste inchangé — la garde est posée **au-dessus**. **Logique NOUVELLE** |
 
 Les deux passes de `consolidateData()` (raw → horaire, horaire → quotidien) **délèguent** à ces fonctions. *Characterization refactor* : la math reproduit **exactement** l'ancien comportement inline (frontières strictes, divisions entières, wrap `uint32`) — **aucun changement de comportement**. Ne pas « corriger » ces frontières (exception : `historySaveAdmit`, logique nouvelle).
+
+> ⚠️ **`anyTrue(count)` a été RETIRÉE du module en v2.47.0** (bug-098), avec ses **trois** tests. L'union **bit à bit** des masques de dosage (`doseMaskUnion |= p.doseMask`) l'a remplacée dans les deux boucles de `consolidateData()`, **voie par voie**, et son dernier appelant (`anyTrue(phDosingCount)`) a disparu avec les deux booléens de `DataPoint`. Ses tests ont été supprimés **dans le même diff** : des assertions vertes sur du code mort font croire à un invariant vivant et maintiennent une couverture de 100 % trompeuse.
 
 > ⚠️ **Limite de testabilité** : seule la math scalaire est couverte en natif. Le **regroupement** par bucket (`std::map`/`std::vector`), l'accumulation des sommes/compteurs, la boucle de fusion `dedupAggregatedPoints()` et la **persistance** (`saveToFile`) restent dans la coquille `history.cpp` et **hors tests natifs** (contrainte libc++ absente de l'environnement natif). 48 tests Unity natifs (dont 10 pour `historySaveAdmit`, 8 pour `historyBucketConsolidable`/`historyMergeMeanFinite`, 5 pour la garde anti-futur — `historyIsExpired` passé/futur/frontières + bucket futur/en cours refusé) ; `history_logic.cpp` couvert à **100 % des lignes**.
 
@@ -112,6 +113,87 @@ Deux gardes, complémentaires :
 - **Pas de purge rétroactive** : les points enregistrés avant la v2.13.0 pendant des arrêts de filtration restent dans l'historique tels quels — seuls les nouveaux points sont exclus.
 
 L'exclusion s'applique **au point enregistré** (dans `recordDataPoint()`), pas en post-traitement — `measureValidity.update()` est appelé dans la loop **avant** `history.update()`.
+
+## Masque de voies de dosage (bug-098, v2.47.0)
+
+`DataPoint` portait **deux** booléens, `phDosing` et `orpDosing`, mais la sérialisation les **fusionnait** :
+
+```cpp
+obj["d"] = point.phDosing || point.orpDosing;   // écriture — la voie disparaît
+dp.phDosing = point["d"];                        // relecture — elle réapparaît en pH
+```
+
+Sur tout point rechargé depuis `/history.json` — donc **après chaque redémarrage** — une injection de **chlore seul** se relisait en **dosage pH**. Le firmware ne perdait pas l'information, il en **fabriquait une fausse**, puis `consolidateData()` la figeait dans les agrégats **DAILY** pour 75 à 90 jours. Les points encore en mémoire vive, eux, disaient vrai : l'historique était **incohérent avec lui-même selon l'âge du point**.
+
+Les deux booléens sont remplacés par **un champ de bits** `uint8_t DataPoint::doseMask` ([`src/history.h`](../../src/history.h)), conformément à l'idiome énoncé par l'[ADR-0072](../adr/0072-absence-de-valeur-hors-du-domaine.md) — *le domaine d'une valeur ne porte jamais l'absence de valeur*.
+
+| Bit | Constante | Sens |
+|---|---|---|
+| `0x01` | `kHistDosePh` | pompe **pH** active à l'instant du point |
+| `0x02` | `kHistDoseOrp` | pompe **ORP (chlore)** active |
+| `0x04` | `kHistDoseUnknownChannel` | **dosage, voie indéterminée** — point écrit par un firmware ≤ 2.46 |
+
+- `0` = aucun dosage. Bits **3-7 libres** : une voie de plus ne coûtera **pas un octet** de `DataPoint` (`static_assert(sizeof(DataPoint) == 28)` inchangé, voir [Export chunked](#export-chunked-get-history-v2140-refondu-v2182) qui en dépend pour son allocation contiguë).
+- Les valeurs de bits sont un **CONTRAT** : persistées dans `/history.json` (clé courte `d`) **et** servies par `GET /get-history` (clé `dosing`). Elles ne se renumérotent pas.
+- **Le troisième état est le cœur du correctif.** Relire un booléen `true` en `kHistDosePh` **inventerait** un dosage pH sur une injection ORP seule. On dit donc « dosage, voie **indéterminée** », jamais `false` — ni `kHistDosePh`.
+
+### Le discriminant de format : le TYPE JSON, pas une clé de version
+
+`loadFromFile()` sépare les deux écritures possibles **par le type de la valeur**, sans numéro de schéma ([`src/history.cpp`](../../src/history.cpp)) :
+
+| Valeur de `"d"` | Écrite par | Relue en |
+|---|---|---|
+| `true` | firmware **≤ 2.46** | `kHistDoseUnknownChannel` (`0x04`) |
+| `false` | firmware **≤ 2.46** | `0` |
+| `0` … `7` | firmware **≥ 2.47** | le masque, réduit à `0x07` |
+| **absente** | — | `0` |
+
+⚠️ **Le masque de réduction est `0x07`, PAS `0x03`** — et c'est un piège rencontré pendant le cycle, pas une précaution théorique. Avec `& (kHistDosePh | kHistDoseOrp)`, le **premier** cycle sauvegarde/relecture qui suit l'OTA — **cinq minutes** après la mise à jour — écrivait `"d":4` puis relisait `0` : le mensonge favorable revenait **par la porte de derrière, réintroduit par le correctif lui-même**. Le masque inclut donc `kHistDoseUnknownChannel` aux **trois** sites de lecture (`loadFromFile`, `POST /history/import`, et le codec de test qui les modélise).
+
+⚠️ **Limite assumée du discriminant** : un `"d"` **flottant** (`3.0`) ou entier **64 bits hors plage `int`** ne satisfait **ni** `is<bool>()` **ni** `is<int>()` — il retombe donc sur `0`, « aucun dosage », c'est-à-dire le mensonge favorable. Ni le firmware ni l'export ne produisent ces formes : il faut un **fichier édité à la main** ou un export étranger. Non traité pour ne pas élargir le discriminant à des types qui rendraient la séparation des deux formats moins nette.
+
+### Rétrogradation : sûre par construction
+
+Un firmware **≤ 2.46** qui relit un fichier écrit par la 2.47 lit `"d":3` avec `dp.phDosing = point["d"]`. ArduinoJson convertit alors l'entier non nul en `true` — soit **exactement le comportement actuel** de cette version : « il y a eu un dosage ». La rétrogradation ne produit ni erreur, ni perte supplémentaire par rapport à ce que ce firmware savait déjà faire. `"d":0` se lit `false`, également correct.
+
+### Agrégation et déduplication : union BIT À BIT
+
+Les deux passes de `consolidateData()` (raw → horaire, horaire → quotidien) accumulent un `doseMaskUnion` :
+
+```cpp
+doseMaskUnion = (uint8_t)(doseMaskUnion | p.doseMask);   // « au moins un », voie par voie
+```
+
+C'est ce qui a **retiré son dernier appelant** à `anyTrue()` (voir [Math d'agrégation pure](#math-dagrégation-pure-history_logic)). Même règle à la fusion des doublons (`dedupAggregatedPoints()`) : `dup->doseMask |= p.doseMask`.
+
+Conséquence à connaître : un agrégat **horaire** peut porter `0x05` ou `0x07` — le `0x04` d'un point ancien **cumulé** avec le `0x01`/`0x02` de points récents. Ce n'est pas une incohérence, c'est la lecture littérale du créneau : « il y a eu du pH, et il y a eu du dosage dont on ne connaît pas la voie ».
+
+### Budget du format persisté : il RÉTRÉCIT
+
+L'ancienne écriture coûtait `,"d":false` (**10 o**) ou `,"d":true` (**9 o**) ; la nouvelle coûte `,"d":0` … `,"d":7` (**6 o**). Sur la charge de référence — les plafonds de [`constants.h`](../../src/constants.h), 96 RAW + 168 HOURLY + 75 DAILY = **339 points** — la clé `d` passe de **3 147 à 2 034 octets**, soit **−1 113 o**.
+
+**Méthode** (cf. [ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md)) : décompte structurel des longueurs de clé, régime réaliste (les points RAW ne dosent pas la plupart du temps, les agrégats portent au moins une voie), **asserté** par `test_budget_charge_realiste_de_339_points_retrecit` dans [`test/test_native_dose_mask/test_dose_mask.cpp`](../../test/test_native_dose_mask/test_dose_mask.cpp). Le test vérifie aussi que **même le pire cas hors contrat** (`,"d":255`, 8 o) reste plus court que `,"d":false`.
+
+⚠️ **Le modèle `historyPointPersistedLen` de [`test/test_native_history/test_history_logic.cpp`](../../test/test_native_history/test_history_logic.cpp) n'a pas été mis à jour** : il modélise encore `"d":true/false` et une partition de 64 Ko (256 Ko depuis l'[ADR-0068](../adr/0068-partitions-layout-v5-flash-8-mo.md)). Il se trompe **du côté sûr** — il annonce le fichier plus **gros** qu'il n'est, de ces mêmes 1 113 o — donc ses tests restent verts et pertinents comme **majorant**. Le corriger propage sur une dizaine de constantes asservies et sur tout le récit de budget : **spec de suivi nécessaire**.
+
+### Pire cas d'un point exporté : 161 o absolus, 157 atteignables
+
+`formatHistoryPointJson()` ([`src/history_export_chunk.h`](../../src/history_export_chunk.h)) sert le masque en **entier** (`"dosing":%u`), **verbatim** — aucune traduction entre le fichier interne et le fil HTTP.
+
+- **161 o** : pire cas **absolu** du format, les deux `%u` saturés à `"255"`. Mesuré comme le **maximum d'un balayage exhaustif** des 65 536 couples (masque, granularité), pas postulé.
+- **157 o** : pire cas **atteignable** — le masque ne dépasse pas `7` et la granularité est bornée à `DAILY = 2`, soit **un** caractère chacun.
+- `kHistoryPointJsonMaxBytes = 192` laisse donc **31 o** (absolu) et **35 o** (atteignable) de marge. **Le changement de bug-098 AGRANDIT la marge de 2 o**, il ne la consomme pas.
+- Le balayage exhaustif garde le **mode de défaillance silencieux** : un point qui ne tient pas dans le report est **sauté** par la phase `kPoints` — le trou de courbe qui en résulte est indiscernable d'une panne de sonde. Aucun couple ne le déclenche. Voir aussi [Points omis de `/get-history`](#points-omis-de-get-history--la-perte-nest-plus-silencieuse).
+
+### Surfaces impactées
+
+| Surface | Effet |
+|---|---|
+| `/history.json` (persisté) | clé `d` **entière** ; relecture typée tolérante aux deux formats |
+| `GET /get-history` | clé `dosing` **entière** — voir [API.md](../API.md#dosing--un-masque-de-voies-entier-bug-098-v2470) |
+| `POST /history/import` | lecture **typée** ; ⚠️ `item["dosing"] \| false` aurait rendu `false` sur un entier (l'opérateur `\|` d'ArduinoJson exige la **concordance de type**) et effacé tout masque relu d'un export neuf |
+| Export CSV de l'interface | colonne **`dosing_mask`** ajoutée, `dosing` conservée en booléen d'héritage |
+| Mini-graphiques pH / ORP | marqueurs de dosage **par voie** — voir [page-dashboard.md](../features/page-dashboard.md) |
 
 ## Pré-NTP handling
 
@@ -302,6 +384,7 @@ La page confondait jusqu'ici ces deux formats. Ils ne sont **pas** interchangeab
 | | `/history.json` (persisté) | `/get-history` (fil HTTP) |
 |---|---|---|
 | Nommage | clés **courtes** : `t p o T pf of f d g` | clés **longues** : `timestamp ph orp temperature phFiltered orpFiltered filtration dosing granularity` |
+| Clé de dosage | `d` — **entier** depuis la v2.47.0 (`"d":3`) | `dosing` — **entier**, masque servi **verbatim** |
 | Valeur absente | **clé omise** | clé **présente**, valeur **`null`** |
 | Lissée sur un agrégat | jamais écrite | `null` |
 | Producteur | `saveToFile()` (`history.cpp`) | `formatHistoryPointJson()` ([`history_export_chunk.h`](../../src/history_export_chunk.h)) |
@@ -421,7 +504,7 @@ Tests natifs : suite dédiée `test/test_native_history_export/` (cutoff `range`
 | Importer un CSV | `POST /history/import` (multipart) | CRITICAL |
 | Purger l'historique | `POST /history/clear` | CRITICAL |
 
-Voir [`web_routes_data.cpp:303`](../../src/web_routes_data.cpp:303). Colonnes CSV : `datetime, ph, orp, temperature, filtration, dosing, granularity`.
+Voir [`web_routes_data.cpp:303`](../../src/web_routes_data.cpp:303). Colonnes CSV de l'export de l'interface (v2.47.0) : `datetime, ph, orp, temperature, filtration, dosing, dosing_mask, granularity` — `dosing` reste le **booléen d'héritage** `0`/`1`, `dosing_mask` porte le [masque de voies](#masque-de-voies-de-dosage-bug-098-v2470). ⚠️ **Le nom `dosing_mask` est neuf à dessein** : réutiliser `dosing` aurait rendu un `1` **indécidable** — pH, ou voie inconnue ? — les exports ≤ 2.46 écrivant déjà `1` pour dire « il y a eu dosage ». À l'import, `dosing_mask` a **priorité** sur `dosing` quand les deux colonnes sont présentes.
 
 `POST /history/clear` répond **`503` « Historique occupé — réessayer »** si `clearHistory()` retourne `false` (mutex non obtenu dans le délai — voir section Concurrence).
 

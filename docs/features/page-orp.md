@@ -64,6 +64,8 @@ Structure, formats de durée, règles de la bande de 7 pastilles, alignement par
 | Garde de vraisemblance | refus de démarrer au-delà de **1,0 pH** | refus au-delà de **300 mV** |
 | Drapeau **boost chlore** (bit `0x02`) | jamais posé (aucun boost pH) | posé les jours de boost — le chronomètre **juge contre la consigne effective** (celle du boost), pas contre la consigne configurée |
 
+**Commun aux deux pages, ajouté en v2.47.0** : une journée dont le **compteur de filtration a reculé** porte `f & 0x20` (`kTttFlagCounterReset`) et se rend en **pointillé estompé sans durée**, jamais en « bonne journée à 0h00 » — même règle, même fonction de rendu. Détail : [page-ph.md](page-ph.md#bande-de-7-pastilles-ph-ttt-days-rolelist), [time-to-target.md](../subsystems/time-to-target.md#bit-5--ktttflagcounterreset--cette-valeur-nest-pas-une-mesure-bug-106-v2470).
+
 > ⚠️ **« Minutes de circulation », jamais « de filtration »** dans tous les libellés — la base de temps est le compteur de **présence d'eau**.
 
 **Sentinelle de présence** : `orp_ttt_state` non numérique (firmware < 2.37.0) → bloc masqué, jamais un « — ».

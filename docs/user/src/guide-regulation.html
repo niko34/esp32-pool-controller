@@ -725,6 +725,11 @@ a suivi n'a fait que le prouver.</p>
       <td>Journée en cours — aucun verdict n'est encore rendu.</td></tr>
   <tr><td><strong>Contour pointillé, un point</strong></td>
       <td>Aucune donnée pour ce jour (appareil éteint, ou heure inconnue).</td></tr>
+  <tr><td><strong>Contour pointillé, un tiret</strong></td>
+      <td>La durée de ce jour <strong>n'a pas pu être mesurée</strong>&nbsp;:
+      le compteur de temps de filtration a été remis à zéro en cours de
+      journée. Ce n'est ni une réussite ni un échec &mdash; c'est une absence
+      de mesure (depuis la version&nbsp;2.47).</td></tr>
   <tr><td><strong>Hachures et un astérisque&nbsp;*</strong></td>
       <td>Journée <strong>non comparable</strong> aux autres — voir
       ci-dessous.</td></tr>
@@ -736,14 +741,27 @@ l'information.</p>
 
 <h3>Les journées «&nbsp;non comparables&nbsp;»</h3>
 
-<p>Cinq circonstances rendent une journée inutilisable pour comparer des
+<p>Six circonstances rendent une journée inutilisable pour comparer des
 versions&nbsp;: la <strong>consigne a été modifiée</strong> en cours de
 journée, un <strong>boost chlore</strong> était actif, la
 <strong>stabilisation des mesures n'a jamais été atteinte</strong>, une
-<strong>coupure de courant</strong> a interrompu la journée, ou la
+<strong>coupure de courant</strong> a interrompu la journée, la
 <strong>régulation n'était pas en automatique</strong> (mode manuel, mode
-maintenance, assistant de mesure du débit). Une petite note sous la rangée
+maintenance, assistant de mesure du débit), ou le <strong>compteur de temps
+de filtration a été remis à zéro</strong> (restauration d'usine,
+restauration d'une sauvegarde de réglages). Une petite note sous la rangée
 énumère celles qui sont réellement présentes.</p>
+
+<div class="box">
+  <p class="box-title">Pourquoi un tiret plutôt qu'un zéro</p>
+  <p>Jusqu'à la version&nbsp;2.46, une journée dont le compteur avait été
+  remis à zéro s'affichait «&nbsp;0h00&nbsp;» <strong>en vert</strong>
+  &mdash; c'est-à-dire comme la <em>meilleure</em> journée possible, puisque
+  «&nbsp;zéro minute pour atteindre la cible&nbsp;» est normalement une
+  excellente nouvelle. En réalité, la durée n'avait tout simplement pas pu
+  être calculée. L'appareil affiche désormais un tiret&nbsp;: une mesure
+  manquante se voit, un chiffre flatteur non.</p>
+</div>
 
 <div class="box box-alerte">
   <p class="box-title">Le point à ne pas se tromper</p>
