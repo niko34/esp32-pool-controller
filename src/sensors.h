@@ -11,6 +11,7 @@
 #include "constants.h"
 #include "dosing_logic.h"  // v2.25.1 : DoseFilterState (enum PUR, aucun Arduino.h)
 #include "sensor_filter.h"
+#include "temp_compensation_logic.h"  // bug-114 : TempCompStage (enum PUR)
 
 // Rôle attribué à une sonde DS18B20 (feature-020)
 enum class SondeRole : uint8_t {
@@ -300,6 +301,26 @@ public:
   float getWaterTemperatureRaw() const;
   // Retourne la T° brute de la sonde "circuit" (PAS d'offset, calibration usine).
   float getCircuitTemperature() const;
+
+  // ===== bug-114 : température de compensation effectivement envoyée à l'EZO =====
+  // Publie la valeur qui est PARTIE sur le bus dans `RT,<tempC>`, et l'étage de
+  // la cascade qui l'a produite. C'est le seul diagnostic qui permette de
+  // distinguer une sonde FIGÉE (valeur constante, étage `Current`), un REPLI
+  // (étage `LastPlausible` / `Fallback`) et un OFFSET mal réglé (écart constant
+  // entre getWaterTemperatureRaw() et cette valeur).
+  // NaN uniquement avant la première lecture EZO du cycle de démarrage.
+  // Contexte : lecture d'un float / d'un uint8_t alignés = atomique sur Xtensa
+  // LX6 — appelable depuis loopTask comme depuis un handler async.
+  float getEzoCompensationTempC() const { return _ezoCompTempC; }
+  TempCompStage getEzoCompensationStage() const { return _ezoCompStage; }
+  // Libellé stable ("mesure" / "derniere_valeur_plausible" / "repli_defaut").
+  const char* getEzoCompensationStageLabel() const {
+    return tempCompStageLabel(_ezoCompStage);
+  }
+  // true si la température de compensation est SUBSTITUÉE (étage ≠ Current).
+  bool isEzoCompensationSubstituted() const {
+    return _ezoCompStage != TempCompStage::Current;
+  }
   bool areSondesIdentified() const;
   int getDetectedSondeCount() const { return _detectedCount; }
   void getDetectedSondeAddresses(uint8_t addrs[kMaxDs18b20Sondes][kSondeAddrLen],
@@ -324,6 +345,21 @@ private:
   // Cache rétrocompat eau (alimenté par readDs18b20s())
   float tempValue = NAN;
   float tempRawValue = NAN;
+
+  // ===== bug-114 : état de la cascade de compensation T° =====
+  // Écrits en tête de la lecture EZO (loopTask), lus par les accesseurs const.
+  // Scalaires alignés → lecture atomique sur Xtensa LX6, pas de mutex (même
+  // contrat que _lastPh / _phOffset).
+  float _ezoCompTempC = NAN;                            // Valeur envoyée dans `RT`
+  TempCompStage _ezoCompStage = TempCompStage::Current;  // Étage l'ayant produite
+  float _lastPlausibleCompTempC = NAN;                   // Étage 2 de la cascade
+  uint32_t _lastPlausibleCompMs = 0;                     // millis() de _lastPlausibleCompTempC
+  uint32_t _compFallbackSinceMs = 0;                     // Début de l'épisode CONTINU de repli 25 °C (0 = aucun)
+  // Journalisation : transition d'étage immédiate + rappel throttlé, et un
+  // `critical` one-shot quand le repli au défaut DURE (réarmé à la sortie).
+  TempCompStage _compStageLogged = TempCompStage::Current;
+  uint32_t _compSubstitutionLastLogMs = 0;
+  bool _compFallbackCriticalLogged = false;
 
   // ===== Capteurs Atlas EZO =====
   AtlasEzoSensor _phEzo{kEzoPhAddress, "EZO pH"};
@@ -468,6 +504,10 @@ private:
   size_t _traceCount = 0;  // Nombre d'échantillons valides (≤ kSensorTraceBufferSize)
 
   // ===== Helpers privés =====
+  // bug-114 : applique la cascade de repli, journalise les substitutions et
+  // met à jour l'état exposé. Retourne la température à envoyer (jamais NaN).
+  // Contexte loopTask uniquement (écrit _ezoComp*).
+  float _resolveEzoCompensationTemp(uint32_t nowMs);
   void _readEzoSensors(float tempC);   // Lecture pH puis ORP, mise à jour caches
   // Enregistre un échantillon de trace (appelé en fin de _readEzoSensors, loopTask).
   // feature-067 : `phCorrected` = brut + offset (NaN si brut NaN) ; `phRaw` et

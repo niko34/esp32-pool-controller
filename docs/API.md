@@ -257,6 +257,7 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
   "orpFilterUnstable": false,
   "orpRejectedCount": 0,
   "orpFilterAlarm": false,
+  "tempFrozenAlarm": false,
   "filtration_running": true,
   "water_present": true,
   "measures_valid": true,
@@ -385,6 +386,16 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 > | `orpFilterAlarm` | boolean | Idem pour le filtre ORP. |
 >
 > Ces drapeaux sont **edge-triggered côté firmware** (un `critical` + une alerte MQTT à la pose, répétition toutes les 30 min, `info` à la levée) et pilotent le chip d'état filtre + la bannière « Régulation à l'arrêt » du tableau de bord. Reprise : [`POST /reset-sensor-filter`](#post-reset-sensor-filter--critical). Buffer `/data` porté de 1280 à **1344** octets. Voir [`docs/subsystems/sensors.md`](subsystems/sensors.md#alarme--filtre-non-prêt-durablement--v2203).
+
+> **feature-068 (v2.47.1) — sonde de température d'eau figée** (champ **en parité stricte** `/data` ↔ WS `sensor_data`, mêmes valeurs, valeur **instantanée** des deux côtés) :
+>
+> | Champ | Type | Description |
+> |-------|------|-------------|
+> | `tempFrozenAlarm` | boolean | `true` quand la sonde DS18B20 « eau » a rendu `kTempFrozenSamples` = **900** lectures valides consécutives dans une bande < `kTempFrozenEpsilonC` = **0,03 °C** (≈ **30 min** à 2 s). Miroir direct de `SensorManager::isTemperatureFrozen()`. |
+>
+> ⚠️ **Ce drapeau est PUREMENT INFORMATIF.** Il n'inhibe **ni** le dosage, **ni** la compensation `RT` de l'EZO pH, **ni** le planning automatique de filtration : l'erreur de pH induite par une température figée est de **≈ 0,001 pH**, soit 2 à 3 ordres de grandeur sous le premier seuil de régulation. Ne pas l'utiliser comme condition de sécurité côté intégrateur. Motif complet et chiffrage : [ADR-0074](adr/0074-temperature-figee-statu-quo-instrumente.md).
+>
+> **Levée immédiate**, sans hystérésis, dès la première lecture hors bande. Le seul anti-battement du projet sur cet état est un **maintien de 60 s à la publication MQTT** (`<base>/temp_sensor_frozen`) — il ne s'applique **pas** à `/data` ni au WebSocket. Coût de trame WS : **24 o** au pire cas structurel (`"tempFrozenAlarm":false,`), marge résiduelle **43 o** sous `kWsFrameBufBytes = 3584` (voir [`ws-manager.md`](subsystems/ws-manager.md)).
 
 > **feature-094 (v2.36.0) — changement de SENS de `ph_dosing`** ([ADR-0062](adr/0062-porte-de-session-ph-dimensionnee-par-le-bruit-de-mesure.md)). **Aucun champ ajouté, aucun renommé, aucun retiré** — mais la valeur ne veut plus dire la même chose :
 >
@@ -1384,6 +1395,7 @@ Champs ajoutés en feature-025 (lissage mesures + régulation P temporisée) :
 | `orpFilterReady` / `orpFilterUnstable` | boolean | Équivalents ORP. |
 | `orpRejectedCount` | integer | Équivalent ORP. |
 | `phFilterAlarm` / `orpFilterAlarm` | boolean | **v2.20.3** — `true` quand le filtre est resté non prêt > 5 min alors que la filtration tournait **et** que les mesures étaient représentatives → plus aucune régulation. Jamais armé pendant une purge, un warmup ou une filtration à l'arrêt. Voir [`ws-manager.md`](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2203-alarme-filtre-bloqué). |
+| `tempFrozenAlarm` | boolean | **v2.47.1** (feature-068) — `true` quand la sonde de température « eau » est **figée** (900 lectures valides dans une bande < 0,03 °C, ≈ 30 min). **Purement informatif** : aucun effet sur le dosage, la compensation `RT` ou le planning de filtration ([ADR-0074](adr/0074-temperature-figee-statu-quo-instrumente.md)). Levée immédiate. |
 | `phMixingDelayActive` | boolean | `true` pendant la pause mélange hydraulique pH (15 min après injection). |
 | `orpMixingDelayActive` | boolean | `true` pendant la pause mélange hydraulique ORP (20 min après injection). |
 | `phDoseBlockedReason` | string \| null | Dernière cause de refus de `canDose(0)` **ou d'une garde de sécurité pH**, en **texte français** destiné au journal et à l'affichage (ex `"filtre capteur en cours de remplissage (stabilisation)"`, `"pause mélange en cours"`, `"pH sous le plancher de sécurité (6.65 < 6.70)"`). `null` si dosage autorisé. **v2.25.0** : champ ajouté à `/data`, en **parité stricte** avec le WebSocket (voir ci-dessous). ⚠️ **Ne jamais analyser ce texte pour en déduire une catégorie** — utiliser `phDoseBlockedCode` (voir [Code de cause de refus](#code-de-cause-de-refus-de-dosage-v2251)). |

@@ -10,6 +10,12 @@
 > débit relevé sur une marche avortée — cesse d'être **neutralisé** quelques
 > secondes après chaque chargement de page.
 
+> **Et, dans le même lot** : l'appareil **dit** désormais quand sa sonde de
+> température d'eau ne bouge plus, sans rien changer à la régulation — parce que
+> le chiffrage a montré que cela ne coûte **qu'un millième de pH**. En revanche,
+> l'**offset de calibration de température** est enfin **borné** : c'était lui,
+> et pas la sonde, qui pouvait fausser le pH sans limite.
+
 ### Fonctionnalités
 
 - **L'assistant « Mesurer le débit » annonce le bon volume.** Sa ligne de budget
@@ -23,6 +29,27 @@
   elle porte : « lecture des paramètres en cours… » sur la ligne de budget, avec
   « continuer » **neutralisé** le temps de la réponse — impossible d'avancer sur
   des durées de repli.
+- **L'appareil signale une sonde de température immobile.** Quand la sonde d'eau
+  rend **900 lectures d'affilée** dans une bande de **0,03 °C** — soit environ
+  **30 minutes** sans le moindre frémissement, ce qu'une sonde vivante ne fait
+  pas —, un badge orange « **Sonde température figée** » apparaît sur la carte du
+  tableau de bord **et** sur la page Température, et une entité Home Assistant
+  passe à « problème ». **Rien d'autre ne change** : le dosage, la compensation
+  de température du pH et le planning de filtration continuent exactement comme
+  avant. C'est un signal de **maintenance** (remplacer le capteur), pas une
+  alarme de sécurité — l'écart de pH en jeu est de **0,001**, à comparer aux
+  **0,01** de la bande morte la plus serrée de la régulation.
+- **« Sonde eau non identifiée » ne se dit plus comme « eau figée ».** Deux états
+  distincts, deux messages distincts : le premier s'adresse à la page
+  d'identification des sondes, le second au remplacement du capteur. Et une sonde
+  **débranchée** en cours d'épisode fait **retomber** l'indication au lieu de la
+  laisser affichée sur un état périmé.
+- **Une calibration de température aberrante est ramenée à ±5 °C.** Saisir une
+  référence très éloignée de la mesure ne produit plus un décalage sans limite :
+  l'appareil borne la valeur, la **journalise** (valeur demandée, valeur retenue,
+  adresse du poste) et — c'est le point important — **affiche celle qu'il
+  applique**. Une valeur héritée d'une version antérieure est corrigée **au
+  démarrage**.
 
 ### Firmware
 
@@ -65,6 +92,62 @@
   feature-092) **n'est pas dépensée**. ⚠️ Le **3 447 hérité n'a pas été
   re-dérivé** : c'est exactement le genre d'héritage qui a produit quatre
   chiffrages faux pendant feature-092.
+- **`bug-114` a changé de cible en cours de route, et c'est le résultat le plus
+  utile du lot.** Le défaut visé était la **sonde** ; le chiffrage a montré
+  qu'elle était **déjà bornée** — lectures filtrées à `(−55 ; 125)` °C avec rejet
+  de `85.0` (power-on reset) et de `DEVICE_DISCONNECTED_C`
+  ([`src/sensors.cpp:324-326`](src/sensors.cpp)), erreur plafonnée à
+  0,05-0,07 pH **même aux bornes**. Le trou réel était l'**offset de
+  calibration**, écrit **sans aucune borne** : **+1000 ⇒ `RT,1025.0` ⇒ ≈ +0,15 pH**,
+  et un offset très **négatif** fait tendre la température de compensation vers
+  **0 K**, où l'erreur n'est **plus bornée du tout**. C'est une entrée de
+  **configuration**, donc **durable en NVS**.
+- **Écrêtage de l'offset à ±5 °C** (`kTempCalOffsetMin/Max`). Motif : un DS18B20
+  dérive de **dixièmes** de degré, pas de degrés. **QUATRE points de clamp**, et
+  aucun n'est un doublon — ils couvrent quatre **provenances** distinctes :
+  écriture (`handleSaveConfig`), **chargement NVS** (`loadMqttConfig`), émission
+  de la valeur de **mesure** (`_readDs18b20s` — affichage, MQTT, historique) et
+  **émission `RT`** (`getWaterTemperature` — le seul site qui alimente la commande
+  envoyée à la sonde). **Ne pas fusionner les deux derniers.** Le clamp au
+  chargement a un motif nommé : sans lui, `/get-config` afficherait une valeur que
+  le firmware **n'applique pas**, et la règle du dépôt « toujours lire
+  `/get-config` avant tout diagnostic chiffré » deviendrait un **piège** au lieu
+  d'une protection — un diagnostic du 06/09 avait déjà déraillé là-dessus.
+- **Fenêtre `[0 ; 40] °C` pour la température envoyée dans `RT`**, avec un
+  **repli en cascade** : valeur courante plausible → **dernière** valeur plausible
+  si son âge est sous la fenêtre stale (`kSensorStaleTimeoutMs` = 20 s) →
+  `kEzoFallbackTempC` = **25 °C**. `warning` à **chaque** substitution (immédiat à
+  la transition, rappelé toutes les 60 s tant qu'elle dure), `critical` si le
+  repli au défaut **dure** plus de 10 min. Coût maximal de ce repli : **±0,01 pH**.
+  ⚠️ **La borne de 40 °C est une borne de PRUDENCE, NON CONFIRMÉE par la datasheet
+  Atlas** : la plage réellement admise par `RT` n'a **aucune** trace dans le dépôt
+  (recherche du 07/09). Elle est signalée comme telle partout où elle est citée.
+- **⛔ « Suspendre la compensation » n'existe pas, et c'est écrit dans le code.**
+  Ne pas envoyer `RT` ([`src/atlas_ezo.cpp:149-155`](src/atlas_ezo.cpp)) fait
+  retomber la lecture sur `R` : le module **conserve sa dernière température
+  interne**, silencieusement périmée — **invisible et indatable**. Pire que
+  n'importe quel repli. La cascade rend **toujours** une valeur, et l'étage qui
+  l'a produite est **toujours** exposé.
+- **`tempFrozenAlarm`** en **parité stricte** `/data` ↔ WebSocket (**+24 o** au
+  pire cas structurel, marge résiduelle **43 o** sous `kWsFrameBufBytes = 3584`),
+  **`<base>/temp_sensor_frozen`** en retain + `binary_sensor` HA
+  `device_class: problem`, et **`ezo_comp_t` / `ezo_comp_stage`** sur le topic de
+  diagnostic (**+71 o**, marge **408 o**) — la température **effectivement
+  envoyée** dans `RT` et l'étage de la cascade qui l'a produite. Comparés à
+  `temperature`, ce sont les **seuls** champs qui distinguent une valeur figée,
+  un repli et un offset mal réglé.
+- **Maintien de 60 s à la PUBLICATION MQTT uniquement** (`kMqttTempFrozenHoldMs`).
+  La sortie de l'état figé est **immédiate côté firmware, sans hystérésis**
+  (décision du visa : le drapeau est informatif, un battement ne coûte rien
+  chimiquement, et une hystérésis ajouterait un second seuil à régler) — mais une
+  entité HA qui clignote est inutilisable en automatisation. `/data`, la trame WS
+  et l'UI voient la valeur **instantanée**.
+- **Le planning de filtration était DÉJÀ immunisé — zéro ligne écrite.**
+  [`src/filtration.cpp:86`](src/filtration.cpp) (NaN ⇒ planning conservé), `:89`
+  (bande morte de 1 °C ⇒ une température **figée** ne recalcule **rien**) et
+  [`src/schedule_logic.cpp:64-67`](src/schedule_logic.cpp) (durée clampée à
+  `[1 h ; 24 h]`). Pour le planning, « statu quo » et « fail-closed » sont
+  **identiques en fait**.
 
 ### Tests
 
@@ -82,6 +165,35 @@
 - **Propriété vérifiée par contre-mesure** : retirer `aborted` de la trame, **le
   déclarer** en exception **et relever le cliquet** produit **trois** échecs. On
   ne peut donc plus détourner la garde pour légitimer le bug.
+- **`test_native_temp_compensation` — nouvelle suite** (clamp, fenêtre, cascade,
+  libellés, non-régression, sentinelles structurelles). Parc porté à
+  **40 suites / 1 535 cas** (mesuré le 2026-09-07 par
+  `ls -d test/test_native_* | wc -l` et `grep -rn 'RUN_TEST(' test/ | wc -l`),
+  zéro régression.
+- **13 mutants, 12 tués, 1 équivalent PROUVÉ.** Le survivant est la garde `NaN`
+  de la fenêtre de plausibilité : IEEE-754 rend `NaN >= borne` **faux**, donc la
+  retirer ne change **aucun** comportement observable. Ce n'est vrai que sans
+  `-ffast-math` — **vérifié absent de `platformio.ini`** —, et un test échouerait
+  s'il y était ajouté.
+- **La sentinelle des quatre points de clamp était satisfaite par un
+  COMMENTAIRE.** Sa première version comptait les occurrences textuelles de
+  `clampTempCalOffset` au niveau du **fichier** : la mention
+  `// bug-114 : clampTempCalOffset()` de [`src/config.cpp:5`](src/config.cpp)
+  suffisait, et **supprimer l'appel réel laissait la suite verte**. Corrigée :
+  elle lit désormais du code **dépouillé de ses commentaires** et vise chaque
+  point **dans sa fonction**, par **signature** — donc insensible à la
+  renumérotation. **Démonstration faite** : pour les **quatre** suppressions,
+  l'ancienne sentinelle restait **verte**, la nouvelle **tue chaque cas**.
+- **Le compte des points de clamp a été annoncé « deux », puis « trois », avant
+  d'être grepé et fixé à QUATRE** — dans les commentaires mêmes qui devaient
+  empêcher une simplification future. L'erreur venait du brief de l'agent
+  principal et s'est **propagée** de là. Exactement le mécanisme de
+  [ADR-0073](docs/adr/0073-chiffre-consigne-porte-sa-methode.md), consigné parce
+  qu'il instruit.
+- **Non-régression prouvée par sentinelles STRUCTURELLES**, pas par intention :
+  `pump_controller.cpp` ne référence **aucun** des nouveaux symboles, `DoseInputs`
+  ne porte **aucun** champ de température, et `computeAutoWindow` reste bornée
+  `[60 ; 1440]` min même alimentée par −127 / −55 / 0 / 85 / 125 / 1025 °C.
 
 ### Documentation
 
@@ -96,9 +208,50 @@
 - `docs/features/page-settings.md`, `page-ph.md`, `page-orp.md`,
   `docs/subsystems/pump-controller.md` : lecture forcée à l'ouverture de
   l'assistant, parité du garde-fou, repli distinct.
-- **Aucun ADR créé** : la décision de fond (sentinelle de parité et ses
-  exceptions déclarées sous cliquet) est déjà **ADR-0071**, et le repli distinct
-  **ADR-0050** ; ce cycle les **applique**, il n'arbitre pas d'alternative neuve.
+- **[ADR-0074](docs/adr/0074-temperature-figee-statu-quo-instrumente.md) créé** —
+  « **Une sonde de température figée ne suspend rien : statu quo instrumenté** ».
+  Décision **invisible dans le code** (critère 2), dont le corps est le
+  **chiffrage** : pente de Nernst, `≈ 0,7 millième de pH par °C` d'erreur de
+  compensation, **+0,0011 pH** sur le cas de production, **≈ 15 °C** d'erreur
+  nécessaires pour atteindre `kPhStopThreshold = 0,01` et **≈ 75 °C** pour 0,05.
+  L'ADR **refuse** explicitement le fail-closed **et écrit le motif** :
+  suspendre la régulation pH sur soupçon de sonde figée échangerait **0,001 pH**
+  d'erreur de mesure contre une **sous-chloration réelle en quelques heures** — le
+  pH monte, la fraction de HOCl chute (pKa 7,54 : **52 %** à pH 7,50, **41 %** à
+  7,70), et la boucle ORP, qui **sature déjà son quota horaire de 10 min/h** sur
+  cet appareil, ne peut pas compenser ; l'inhibition à 7,60 la **couperait** même.
+  **La prudence apparente était du mauvais côté.**
+- **Le refus documenté d'entrer dans `alerts/sensor_frozen`.** La sémantique
+  **établie** de ce canal est « le dosage est compromis » : y ajouter un événement
+  **sans effet sur le dosage** déclencherait des automatisations Home Assistant
+  **existantes** — contrat externe cassé **sans bump de version**. La température
+  garde son topic dédié ; qui veut les deux états s'abonne aux deux topics.
+- `docs/subsystems/sensors.md` : cascade de résolution de `RT` (trois étages,
+  journalisation, seuils), les **quatre** points de clamp et leurs motifs, la
+  fenêtre `[0 ; 40]` avec son avertissement « **non confirmée par la datasheet** »,
+  l'**interdit `RT`**, les accesseurs `getEzoCompensationTempC` /
+  `getEzoCompensationStage` / `getEzoCompensationStageLabel` /
+  `isEzoCompensationSubstituted`, et le détecteur figé requalifié
+  « **warning-only par DÉCISION** ».
+- `docs/API.md` : champ `tempFrozenAlarm` en **parité** `/data` ↔ WS, avec
+  l'avertissement explicite « **ne pas l'utiliser comme condition de sécurité** ».
+- `docs/MQTT.md` : topic `<base>/temp_sensor_frozen` (retain, dédup slot 28,
+  garde « aucune sonde eau », maintien 60 s **à la publication seulement**),
+  `binary_sensor` HA, champs de diagnostic `ezo_comp_t` / `ezo_comp_stage` avec
+  leur budget, et la section « pourquoi la température n'entre pas dans
+  `alerts/sensor_frozen` ».
+- `docs/features/page-temperature.md`, `page-dashboard.md` : badge, **précédence
+  des trois états** de la sonde eau, et pourquoi la condition s'appuie sur
+  `sondes_identified` et **non** sur `temperature_raw` (WS-seul ⇒ le badge aurait
+  **clignoté**).
+- `docs/subsystems/ws-manager.md` : nouveau champ, budget **+24 o**, **marge
+  résiduelle 43 o** — acceptable pour ce lot, **pas pour le suivant** : le prochain
+  champ devra consommer la **réserve de 49 o** ou bumper `kWsFrameBufBytes` par
+  **ADR**.
+- **Aucun autre ADR créé** : la décision de fond du volet `bug-082` (sentinelle de
+  parité et ses exceptions déclarées sous cliquet) est déjà **ADR-0071**, et le
+  repli distinct **ADR-0050** ; ce cycle les **applique**, il n'arbitre pas
+  d'alternative neuve.
 - **Consigné comme ouvert** : `bug-119` — `loadSensorData()` ne **résout rien**,
   donc trois comportements de `verifyRunEnd()` sont morts. Le garde-fou `aborted`
   avait **deux morts indépendantes** ; ce lot en corrige **une**. Et

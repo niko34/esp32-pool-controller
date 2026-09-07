@@ -151,7 +151,7 @@ Les ~90 membres `String` de la struct `topics` sont construits par `MqttManager:
 
 Publiés depuis `publishCalibrationStatusInternal()` (exécutée par `mqttTask`) :
 
-- **`{base}/alerts/sensor_frozen`** (retain, edge-triggered) : JSON `{"type":"sensor_frozen","phFrozen":<bool>,"orpFrozen":<bool>,"timestamp":<ms>}` à la transition **figé** d'au moins un capteur pH/ORP (`sensors.isPhSensorFrozen()` / `isOrpSensorFrozen()`), payload **vide** au clear. Calquée sur le bloc `sensor_stale` (cache `_lastSensorFrozen`). La **température figée** (warning-only) n'y figure pas — sévérité différente, aucun impact dosage.
+- **`{base}/alerts/sensor_frozen`** (retain, edge-triggered) : JSON `{"type":"sensor_frozen","phFrozen":<bool>,"orpFrozen":<bool>,"timestamp":<ms>}` à la transition **figé** d'au moins un capteur pH/ORP (`sensors.isPhSensorFrozen()` / `isOrpSensorFrozen()`), payload **vide** au clear. Calquée sur le bloc `sensor_stale` (cache `_lastSensorFrozen`). La **température figée** (warning-only) n'y figure pas — sévérité différente, aucun impact dosage : depuis la v2.47.1 elle a son **topic dédié**, voir [ci-dessous](#état--sonde-de-température-figée--temp_sensor_frozen-feature-068-v2471).
 - **`{base}/ph_sensor_problem`** / **`{base}/orp_sensor_problem`** (retain) : synthèse binaire `ON`/`OFF` **par capteur**, `ON` si stale **OU** figé — directement consommable par un `binary_sensor` HA sans parser les JSON d'alerte. Publication **dédupliquée** par les caches `_lastPhSensorProblem` / `_lastOrpSensorProblem` (`int8_t`, `-1` = jamais publié → force la 1ʳᵉ publication ; lus/écrits uniquement depuis `mqttTask`). Log `info` à chaque bascule.
 
 ### États « filtre bloqué » `ph_filter_stuck` / `orp_filter_stuck` (v2.20.3)
@@ -183,6 +183,36 @@ if (!isnan(phIntPct)) safePublishDedup(20, topics.phIntegralPctState.c_str(),  S
 - **`NaN` ⇒ aucune publication** (`Ki` nul, PID non initialisé) : le retain précédent reste valable. On ne fabrique jamais un `0` qui se lirait « intégrale vide ».
 - Déduplication : l'intégrale est **figée hors dosage** (aucune erreur intégrée), la dédup supprime donc la quasi-totalité du trafic de ces trois topics pendant les heures d'arrêt.
 - Alerte associée : `ph_integral_saturated` (deux paliers, rappel 12 h) — voir [`docs/MQTT.md`](../MQTT.md#alertes).
+
+### État « sonde de température figée » `temp_sensor_frozen` (feature-068, v2.47.1)
+
+Publié depuis `publishFilterStatesInternal()` (contexte `mqttTask`), en **retain**, via `safePublishDedup()` sur le **slot 28** — `kDedupCacheSlots` passe de 28 à **29**.
+
+```cpp
+const bool frozenNow = sensors.isTemperatureFrozen() &&
+                       !isnan(sensors.getWaterTemperatureRaw());
+if (frozenNow) { _tempFrozenSeen = true; _tempFrozenLastOnMs = nowMs; }
+const bool frozenHeld = frozenNow ||
+    (_tempFrozenSeen && (nowMs - _tempFrozenLastOnMs) < kMqttTempFrozenHoldMs);
+safePublishDedup(28, topics.tempSensorFrozenState.c_str(), frozenHeld ? "ON" : "OFF");
+```
+
+- Membre de topic : `MqttTopics::tempSensorFrozenState`, construit dans `refreshTopics()` (`base + "/temp_sensor_frozen"`).
+- **Garde « aucune sonde eau »** : le discriminant est `getWaterTemperatureRaw()`, qui rend `NaN` si le rôle `Water` n'est identifié sur **aucune** adresse du bus **ou** si sa dernière lecture est invalide — et **non** `getTemperature()`, qui **retombe** sur n'importe quelle sonde détectée et rendrait donc une valeur plausible pour une sonde eau **absente**. Deux effets voulus : « sonde non identifiée » n'est jamais publiée comme « eau figée », et une sonde **débranchée en cours d'épisode** fait retomber le topic à `OFF` au lieu de le laisser figé sur un état obsolète.
+- **Maintien 60 s** (`kMqttTempFrozenHoldMs`, déclarée dans [`mqtt_manager.h`](../../src/mqtt_manager.h) et **non** dans `constants.h` : elle ne paramètre que la couche de publication). Il vit **ici et nulle part ailleurs** — la sortie de l'état figé est **immédiate** côté firmware, sans hystérésis, et `/data` comme la trame WS servent la valeur **instantanée**. Motif : une entité HA qui clignote est inutilisable en automatisation. Soustraction sur `uint32_t` ⇒ sûre au repliement de `millis()` (24,8 j).
+- **Aucun effet métier** : ce topic ne conditionne ni dosage, ni compensation `RT`, ni planning ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md)).
+- ⚠️ `kDedupCacheSlots` est un **nombre de slots**, pas le plus grand indice. Méthode de vérification (ADR-0073, **à refaire**) : `grep -oE 'safePublishDedup\([0-9]+' src/mqtt_manager.cpp | grep -oE '[0-9]+' | sort -n` — relevé du 2026-09-07 : **0 à 28, contigus, sans trou ni doublon** ⇒ 29 slots. Un slot manquant ne planterait pas : `safePublishDedup` borne l'indice et cesse simplement de dédupliquer, ce qui **republierait un topic retain à chaque cycle** — dégradation silencieuse.
+
+### Diagnostic de la compensation T° — `ezo_comp_t` / `ezo_comp_stage` (feature-068, v2.47.1)
+
+Deux champs ajoutés au payload de `publishDiagnosticInternal()` (topic **retenu** `{base}/diagnostic`, publié au démarrage, à chaque reconnexion, puis toutes les 5 min) :
+
+- `ezo_comp_t` — température **effectivement envoyée** dans `RT,<tempC>`, arrondie au dixième ; `null` avant la première lecture EZO (accesseur `NaN`) ;
+- `ezo_comp_stage` — libellé de l'étage de la cascade (`mesure` / `derniere_valeur_plausible` / `repli_defaut`).
+
+Source : accesseurs **lecture seule** `sensors.getEzoCompensationTempC()` / `getEzoCompensationStageLabel()` — pas d'I²C, pas de mutex. Toute la logique est dans [`temp_compensation_logic.h`](../../src/temp_compensation_logic.h) et `SensorManager` ; `mqtt_manager` ne fait que refléter.
+
+**Budget : +71 o** au pire cas structurel ⇒ trame **1 128 o** sous `kMqttPublishBufferBytes = 1536`, **marge résiduelle 408 o**. ⚠️ Rappel du mode de défaillance : PubSubClient refuse le publish **silencieusement et en entier** dès que `bufferSize < 5 + 2 + longueur(topic) + longueur(payload)` — ce n'est pas une troncature. Décompte détaillé : [`docs/MQTT.md`](../MQTT.md#ezo_comp_t--ezo_comp_stage--compensation-t-réellement-appliquée-feature-068-v2471).
 
 ### Alerte `pump_unusable` re-publiée à chaque connexion (feature-064, v2.16.0)
 

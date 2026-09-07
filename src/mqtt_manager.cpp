@@ -239,6 +239,8 @@ void MqttManager::refreshTopics() {
   // v2.20.3 (C3) : alarme « filtre non prêt durablement » (régulation à l'arrêt).
   topics.phFilterStuckState         = base + "/ph_filter_stuck";
   topics.orpFilterStuckState        = base + "/orp_filter_stuck";
+  // feature-068 (A5) : sonde de température d'eau figée (retain, ON/OFF).
+  topics.tempSensorFrozenState      = base + "/temp_sensor_frozen";
   topics.phMixingDelayActiveState   = base + "/ph_mixing_delay_active";
   topics.orpMixingDelayActiveState  = base + "/orp_mixing_delay_active";
   // feature-050 : cumuls journaliers injectés + commandes volume quotidien + reboot.
@@ -992,6 +994,36 @@ void MqttManager::publishFilterStatesInternal() {
   safePublishDedup(16, topics.phFilterStuckState.c_str(),  sensors.isPhFilterNotReadyAlarm()  ? "ON" : "OFF");
   safePublishDedup(17, topics.orpFilterStuckState.c_str(), sensors.isOrpFilterNotReadyAlarm() ? "ON" : "OFF");
 
+  // feature-068 (A5) : sonde de température d'EAU figée.
+  //
+  // GARDE « AUCUNE SONDE EAU » (arbitrage Q4-2 du verdict) : on ne publie JAMAIS
+  // « eau figée » quand la sonde « eau » n'a pas de valeur propre. Le
+  // discriminant est getWaterTemperatureRaw(), qui rend NaN si le rôle Water
+  // n'est identifié sur AUCUNE adresse du bus, ou si sa dernière lecture est
+  // invalide — et non getTemperature(), qui RETOMBE sur n'importe quelle sonde
+  // détectée et rendrait donc une valeur plausible pour une sonde eau absente.
+  // Les deux états sont distincts et l'un n'est pas actionnable comme l'autre :
+  // « sonde non identifiée » s'adresse à la page d'identification des sondes,
+  // « figée » au remplacement du capteur.
+  // Cette garde couvre du même coup l'arbitrage Q4-1 (sonde débranchée pendant
+  // l'épisode) : dès que la sonde eau cesse de rendre une valeur valide, le topic
+  // retombe à OFF au lieu de rester « figé » indéfiniment sur un état obsolète.
+  //
+  // MAINTIEN 60 s (kMqttTempFrozenHoldMs) : voir mqtt_manager.h. Il vit ICI et
+  // nulle part ailleurs — /data et la trame WS servent la valeur instantanée.
+  // Soustraction sur uint32_t : sûre au repliement de millis() (24,8 j).
+  {
+    const bool frozenNow = sensors.isTemperatureFrozen() &&
+                           !isnan(sensors.getWaterTemperatureRaw());
+    if (frozenNow) {
+      _tempFrozenSeen = true;
+      _tempFrozenLastOnMs = nowMs;
+    }
+    const bool frozenHeld = frozenNow ||
+        (_tempFrozenSeen && (nowMs - _tempFrozenLastOnMs) < kMqttTempFrozenHoldMs);
+    safePublishDedup(28, topics.tempSensorFrozenState.c_str(), frozenHeld ? "ON" : "OFF");
+  }
+
   // Pause mélange hydraulique active (post-injection).
   safePublishDedup(12, topics.phMixingDelayActiveState.c_str(),  PumpController.isPhMixingDelayActive(nowMs)  ? "ON" : "OFF");
   safePublishDedup(13, topics.orpMixingDelayActiveState.c_str(), PumpController.isOrpMixingDelayActive(nowMs) ? "ON" : "OFF");
@@ -1084,6 +1116,26 @@ void MqttManager::publishCalibrationStatusInternal() {
   // Calquée sur le bloc sensor_stale ci-dessus (JSON retain, clear payload vide).
   // La température N'EST PAS dans ce payload : sévérité différente (warning-only,
   // aucun impact dosage) — seuls pH/ORP figés inhibent la régulation auto.
+  //
+  // feature-068 (A5) — ARBITRAGE EXPLICITE, la spec laissait le choix ouvert :
+  // la sonde de température figée N'ENTRE PAS dans `alerts/sensor_frozen`, elle
+  // garde son topic dédié `temp_sensor_frozen`. Trois raisons, dans l'ordre :
+  //   1. `alerts/sensor_frozen` est un CONTRAT EXTERNE dont la sémantique
+  //      établie est « une mesure de régulation est morte, donc le dosage est
+  //      compromis » — un capteur pH/ORP figé rend le filtre non prêt et BLOQUE
+  //      l'injection. Y verser la température reclasserait silencieusement une
+  //      alerte de sécurité de dosage : une automatisation Home Assistant
+  //      existante se déclencherait sur un événement qui n'a aucun effet sur le
+  //      dosage. Élargir la portée d'une alerte déjà consommée est un
+  //      changement cassant sans bump de version, ce que le projet interdit.
+  //   2. La sévérité diffère de DEUX À TROIS ORDRES DE GRANDEUR, chiffrés :
+  //      ≈ 0,001 pH d'erreur sur le cas relevé contre l'arrêt complet d'une
+  //      boucle de régulation. Une même alerte pour les deux rendrait le
+  //      niveau d'urgence illisible et entraînerait, à terme, son ignorance.
+  //   3. La visibilité demandée est déjà obtenue sans cela : topic retenu
+  //      dédié + binary_sensor `problem` + champ /data/WS + badge UI.
+  // Conséquence assumée : un consommateur qui veut LES DEUX états s'abonne aux
+  // deux topics. C'est un abonnement de plus, pas une information perdue.
   bool phFrozen  = sensors.isPhSensorFrozen();
   bool orpFrozen = sensors.isOrpSensorFrozen();
   bool isFrozen = phFrozen || orpFrozen;
@@ -1229,6 +1281,57 @@ void MqttManager::publishDiagnosticInternal() {
   doc["orp_total_ml"] = productCfg.orpTotalInjectedMl;
   doc["orp_anom"]     = productCfg.orpAcctAnomalyCount;
   doc["orp_anom_ml"]  = productCfg.orpAcctAnomalyMl;
+
+  // feature-068 (A5) — DIAGNOSTIC DE LA COMPENSATION DE TEMPÉRATURE DE L'EZO pH.
+  // Deux valeurs, et elles vont ICI et pas dans la trame WS ni dans /data : ce
+  // sont des grandeurs relues À FROID, plusieurs jours après l'épisode, qu'aucun
+  // écran ne lit en direct. Le topic <base>/diagnostic est RETENU par le broker,
+  // donc elles survivent au reboot de l'appareil ; les mettre dans la trame
+  // capteurs aurait coûté du budget sur le seul plafond DUR du projet
+  // (kWsFrameBufBytes) et ouvert une question de parité pour rien.
+  //   ezo_comp_t     = température EFFECTIVEMENT envoyée par `RT,<t>` (°C), donc
+  //       APRÈS offset utilisateur, bornage et cascade de repli. C'est le seul
+  //       diagnostic qui distingue une valeur figée, un repli et un offset : la
+  //       comparer à `temperature` (état) montre l'écart réellement appliqué.
+  //       null avant la première lecture (accesseur NaN).
+  //   ezo_comp_stage = étage de la cascade qui a produit cette valeur —
+  //       « mesure » | « derniere_valeur_plausible » | « repli_defaut ».
+  //
+  // ⚠️ BUDGET PROPRE À CE PAYLOAD, RECOMPTÉ (ADR-0073) — PubSubClient REFUSE le
+  // publish, silencieusement et EN ENTIER, dès que
+  //   bufferSize < 5 + 2 + longueur(topic) + longueur(payload)
+  // (cf. kMqttPublishBufferBytes, constants.h). Ce n'est pas une troncature :
+  // hdef/ldef/xdef disparaissent avec le reste. Décompte au PIRE CAS STRUCTUREL
+  // du type qui porte la valeur, jamais sur un payload vivant :
+  //   "ezo_comp_t":<float>,     → 1+10+1+1+12+1 = 26 o
+  //       12 o = longueur maximale d'un `float` sérialisé par ArduinoJson 7,
+  //       établie par balayage EXHAUSTIF des bit-patterns finis (harnais hôte,
+  //       bug-082 / ws_manager.cpp) : la notation exponentielle
+  //       (« 1.401298e-45 ») est plus longue que 7 chiffres significatifs. On
+  //       retient cette borne du TYPE et non celle de la plage physique du
+  //       DS18B20, conformément à ADR-0073. `null` (4 o) est plus court, donc
+  //       jamais dimensionnant.
+  //   "ezo_comp_stage":"derniere_valeur_plausible", → 1+14+1+1+27+1 = 45 o
+  //       27 o = 25 caractères du plus long libellé + 2 guillemets ; les trois
+  //       libellés sont des littéraux de tempCompStageLabel(), donc bornés à la
+  //       compilation.
+  //   → +71 o.
+  // CONTRE-MESURE (harnais hôte, ArduinoJson des libdeps du projet, méthode de
+  // bug-082 — clés insérées entre deux clés factices pour capter les virgules) :
+  // ezo_comp_t 26 o au pire cas structurel (18 o avec `null`, jamais
+  // dimensionnant), ezo_comp_stage 45 o, total 71 o. Le balayage exhaustif des
+  // 2^32 bit-patterns, restreint à round(x·10)/10 comme le code ci-dessous,
+  // confirme la borne de 12 o pour la valeur flottante (atteinte par
+  // « -1e+10 », notation exponentielle). Décompte VÉRIFIÉ, pas déduit.
+  // Pire cas de trame : 1057 o (mesure feature-110, reprise telle quelle —
+  // SEUL le delta de cet ajout a été recompté) + 71 = 1128 o, sous
+  // kMqttPublishBufferBytes = 1536 → marge résiduelle 408 o (elle était de
+  // 479 o). Aucun bump du buffer nécessaire, et la garde de longueur ci-dessous
+  // reste le filet en cas de dérive.
+  const float ezoCompT = sensors.getEzoCompensationTempC();
+  if (!isnan(ezoCompT)) doc["ezo_comp_t"] = round(ezoCompT * 10.0f) / 10.0f;
+  else                  doc["ezo_comp_t"] = nullptr;
+  doc["ezo_comp_stage"] = sensors.getEzoCompensationStageLabel();
 
   String payload;
   serializeJson(doc, payload);
@@ -2542,6 +2645,25 @@ void MqttManager::publishDiscovery() {
   doc["payload_off"] = "OFF";
   doc["device_class"] = "problem";
   doc["icon"] = "mdi:filter-remove";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-068 (A5) : binary_sensor « Sonde température figée », sur le PATRON
+  // EXACT de ph_filter_stuck ci-dessus (device_class `problem`, payloads ON/OFF,
+  // pas d'entity_category — la consigne était de suivre le patron, pas de le
+  // réinventer). Entité NOUVELLE : les `unique_id` existants sont intacts, donc
+  // l'auto-discovery des entités déjà appariées dans Home Assistant ne bouge pas.
+  // La longueur du topic de configuration (54 c.) est IDENTIQUE à celle de
+  // binary_sensor/poolcontroller_orp_sensor_problem/config, pire cas déjà
+  // documenté pour kDiscoveryFailTopicMax : ce budget-là reste inchangé.
+  topic = discoveryBase + "binary_sensor/" + HA_DEVICE_ID + "_temp_sensor_frozen/config";
+  doc["name"] = "Piscine Sonde Température Figée";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_temp_sensor_frozen";
+  doc["state_topic"] = topics.tempSensorFrozenState;
+  doc["payload_on"] = "ON";
+  doc["payload_off"] = "OFF";
+  doc["device_class"] = "problem";
+  doc["icon"] = "mdi:thermometer-off";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);
 

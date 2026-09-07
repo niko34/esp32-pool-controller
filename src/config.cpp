@@ -2,6 +2,7 @@
 #include "constants.h"
 #include "logger.h"
 #include "ph_offset.h"  // feature-067 : isPhOffsetValid() (logique pure)
+#include "temp_compensation_logic.h"  // bug-114 : clampTempCalOffset() (logique pure)
 #include "ph_guard_logic.h"  // v2.25.0 : roundPhOffsetToStep() (logique pure)
 #include "ph_integral_logic.h"  // v2.27.0 : phSustainableAvgFlow() (logique pure)
 #include "ph_actuator_limit_logic.h"  // feature-086 : phActuatorLimitStreak() (logique pure)
@@ -473,7 +474,38 @@ void loadMqttConfig() {
   // (commande Cal,<ref>) — aucune lecture NVS ESP32.
 
   // Calibration Température
-  mqttCfg.tempCalibrationOffset = prefs.getFloat("temp_cal_off", 0.0f);
+  // bug-114 — ÉCRÊTAGE au chargement, à ±5 °C. Clamp **2/4** : il y a QUATRE
+  // sites d'appel de clampTempCalOffset() (compte vérifié par
+  // `grep -rn clampTempCalOffset src/`, 2026-09-07), aucun n'étant un doublon —
+  // ils couvrent des PROVENANCES distinctes de la valeur :
+  //   1/4 écriture      → web_routes_config.cpp (saisie de l'opérateur) ;
+  //   2/4 chargement    → ICI : valeur HÉRITÉE d'une version qui n'imposait
+  //                       aucune borne, jamais réenregistrée depuis ;
+  //   3/4 cache T° eau  → sensors.cpp, `tempValue` (affichage / MQTT / histo) ;
+  //   4/4 ÉMISSION `RT` → sensors.cpp, getWaterTemperature() — LE site qui
+  //                       alimente la commande de compensation de l'EZO pH.
+  //                       C'est celui dont la suppression fausserait le pH.
+  // Motif spécifique de CELUI-CI : sans lui, `/get-config` annoncerait un
+  // offset que le firmware n'applique PAS (il serait borné plus tard, à
+  // l'émission). C'est exactement le piège « config d'usine ≠ config vivante »
+  // qui a fait dérailler le diagnostic chiffré du 2026-09-06 — et la règle du
+  // dépôt « toujours lire /get-config avant tout diagnostic chiffré »
+  // deviendrait alors un piège au lieu d'une protection. La valeur EXPOSÉE doit
+  // être la valeur APPLIQUÉE.
+  // Journalisé une seule fois, au boot (ce bloc n'est parcouru qu'au chargement
+  // de la configuration) : une NVS polluée est une information utile au
+  // démarrage, pas un message à répéter.
+  {
+    const float storedTempOffset = prefs.getFloat("temp_cal_off", 0.0f);
+    mqttCfg.tempCalibrationOffset = clampTempCalOffset(storedTempOffset);
+    if (!isTempCalOffsetInRange(storedTempOffset)) {
+      systemLogger.warning("NVS : offset température hors plage (" +
+                           String(storedTempOffset, 2) + " °C) écrêté à " +
+                           String(mqttCfg.tempCalibrationOffset, 2) +
+                           " °C — bornes " + String(kTempCalOffsetMin, 1) +
+                           " à +" + String(kTempCalOffsetMax, 1) + " °C");
+    }
+  }
   mqttCfg.tempCalibrationDate = prefs.getString("temp_cal_date", "");
   mqttCfg.temperatureEnabled = prefs.getBool("temp_enabled", mqttCfg.temperatureEnabled);
 

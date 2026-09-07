@@ -58,10 +58,6 @@ const char* sondeRoleLabel(SondeRole r) {
   }
 }
 
-// Température de référence sécuritaire si la sonde "eau" n'est pas disponible.
-// Erreur de mesure pH < 0.1 dans la plage 15-30 °C piscine (cf. spec ligne 312).
-constexpr float kEzoFallbackTempC = 25.0f;
-
 }  // namespace
 
 // =============================================================================
@@ -221,9 +217,11 @@ void SensorManager::update() {
   unsigned long now = millis();
   if (now - lastEzoRead >= kPhOrpSensorIntervalMs) {
     lastEzoRead = now;
-    // Compensation T° : sonde "eau" si identifiée, sinon fallback 25 °C (cf. spec).
-    float tempC = getWaterTemperature();
-    if (isnan(tempC)) tempC = kEzoFallbackTempC;
+    // Compensation T° (bug-114) : cascade BORNÉE, jamais de suspension.
+    // Voir _resolveEzoCompensationTemp() — et surtout l'avertissement de
+    // temp_compensation_logic.h : ne pas envoyer `RT` laisserait l'EZO garder
+    // sa dernière température interne, invisible et indatable.
+    float tempC = _resolveEzoCompensationTemp((uint32_t)now);
     _readEzoSensors(tempC);
   }
 
@@ -349,7 +347,12 @@ void SensorManager::_readDs18b20s() {
       int waterIdx = _findSondeIndexByRole(SondeRole::Water);
       if (waterIdx >= 0 && !isnan(_sondes[waterIdx].lastTempRaw)) {
         tempRawValue = _sondes[waterIdx].lastTempRaw;
-        tempValue = tempRawValue + mqttCfg.tempCalibrationOffset;
+        // bug-114 : offset BORNÉ — clamp **3/4** (QUATRE sites au total, liste
+        // dans config.cpp / clamp 2/4). Celui-ci borne le cache `tempValue`
+        // consommé par l'affichage, MQTT et l'historique. Il n'alimente PAS
+        // `RT` : ce rôle appartient au clamp **4/4**, plus bas dans ce même
+        // fichier (getWaterTemperature()). Ne pas fusionner les deux.
+        tempValue = tempRawValue + clampTempCalOffset(mqttCfg.tempCalibrationOffset);
       } else {
         // Fallback gracieux : 1ʳᵉ sonde présente sans offset (rôle inconnu).
         tempRawValue = NAN;
@@ -388,6 +391,91 @@ void SensorManager::_readDs18b20s() {
     }
     lastTempDebugLog = now;
   }
+}
+
+// =============================================================================
+// bug-114 — Température de compensation envoyée à l'EZO pH : cascade bornée
+// =============================================================================
+//
+// ⛔ NE JAMAIS « SUSPENDRE LA COMPENSATION » pour traiter une température
+//    douteuse. C'est la simplification qui vient naturellement à l'esprit, et
+//    elle est fausse : ne pas envoyer `RT` fait retomber la lecture sur `R`, et
+//    le module EZO applique alors SA dernière température interne — une valeur
+//    silencieusement périmée, que le firmware ne peut ni voir ni dater. Le repli
+//    ci-dessous coûte au maximum ± 0,01 pH (verdict pool-chemistry du
+//    2026-09-07) et reste, lui, entièrement visible.
+//
+// Cascade :
+//   1. mesure courante si plausible ([0 ; 40] °C, cf. kEzoCompTemp*) ;
+//   2. sinon dernière valeur plausible, si son âge est sous la fenêtre stale
+//      existante (kSensorStaleTimeoutMs = 20 s, soit 10 lectures DS18B20) ;
+//   3. sinon kEzoFallbackTempC = 25 °C.
+//
+// Journalisation : `warning` à chaque substitution — immédiatement à la
+// transition d'étage, puis rappelé toutes les kEzoCompSubstitutionLogIntervalMs
+// tant qu'elle dure (sans throttle, la réévaluation toutes les 5 s produirait
+// 12 messages/minute). `critical` one-shot si le repli au défaut dépasse
+// kEzoCompFallbackCriticalMs — un repli qui DURE n'est plus un incident de
+// lecture, c'est une panne de sonde.
+float SensorManager::_resolveEzoCompensationTemp(uint32_t nowMs) {
+  const float measured = getWaterTemperature();  // brut + offset BORNÉ
+
+  // Âge de l'étage 2. `_lastPlausibleCompMs == 0` = jamais alimenté → âge
+  // maximal, l'étage sera refusé par la comparaison à la fenêtre stale.
+  const uint32_t age = (_lastPlausibleCompMs == 0)
+                           ? 0xFFFFFFFFu
+                           : (uint32_t)(nowMs - _lastPlausibleCompMs);
+
+  const TempCompDecision d = resolveCompensationTemp(
+      measured, _lastPlausibleCompTempC, age, kSensorStaleTimeoutMs);
+
+  // Mémoriser la valeur courante comme référence de l'étage 2 pour les cycles
+  // suivants (uniquement si elle vient bien de la mesure).
+  if (d.stage == TempCompStage::Current) {
+    _lastPlausibleCompTempC = d.tempC;
+    _lastPlausibleCompMs = (nowMs == 0) ? 1 : nowMs;  // 0 réservé à « jamais »
+  }
+
+  // ----- Journalisation des substitutions -----
+  const bool substituted = (d.stage != TempCompStage::Current);
+  const bool stageChanged = (d.stage != _compStageLogged);
+  const bool dueForReminder =
+      substituted && (nowMs - _compSubstitutionLastLogMs >= kEzoCompSubstitutionLogIntervalMs);
+
+  if (substituted && (stageChanged || dueForReminder)) {
+    systemLogger.warning(String("Compensation T° pH substituée (") +
+                         tempCompStageLabel(d.stage) + ") : mesure " +
+                         (isnan(measured) ? String("NaN") : String(measured, 1)) +
+                         " °C hors [" + String(kEzoCompTempMinC, 0) + " ; " +
+                         String(kEzoCompTempMaxC, 0) + "] °C → RT," +
+                         String(d.tempC, 1));
+    _compSubstitutionLastLogMs = nowMs;
+  } else if (!substituted && stageChanged) {
+    systemLogger.info("Compensation T° pH : retour sur la mesure courante (RT," +
+                      String(d.tempC, 1) + ")");
+  }
+  _compStageLogged = d.stage;
+
+  // ----- Alarme « repli au défaut DURABLE » -----
+  if (d.stage == TempCompStage::Fallback) {
+    if (_compFallbackSinceMs == 0) _compFallbackSinceMs = (nowMs == 0) ? 1 : nowMs;
+    if (!_compFallbackCriticalLogged &&
+        (nowMs - _compFallbackSinceMs) >= kEzoCompFallbackCriticalMs) {
+      systemLogger.critical(String("Compensation T° pH figée sur le repli ") +
+                            String(kEzoFallbackTempC, 1) + " °C depuis plus de " +
+                            String(kEzoCompFallbackCriticalMs / 60000UL) +
+                            " min — sonde eau indisponible ou hors plage (erreur pH ≤ 0,01)");
+      _compFallbackCriticalLogged = true;
+    }
+  } else {
+    _compFallbackSinceMs = 0;
+    _compFallbackCriticalLogged = false;
+  }
+
+  // État exposé (accesseurs const consommés par /data, WS, MQTT).
+  _ezoCompTempC = d.tempC;
+  _ezoCompStage = d.stage;
+  return d.tempC;
 }
 
 // =============================================================================
@@ -1349,7 +1437,18 @@ float SensorManager::getWaterTemperature() const {
   if (idx < 0) return NAN;
   float raw = _sondes[idx].lastTempRaw;
   if (isnan(raw)) return NAN;
-  return raw + mqttCfg.tempCalibrationOffset;
+  // bug-114 : offset BORNÉ — clamp **4/4 — ÉMISSION `RT`**. C'est LE site qui
+  // alimente réellement la commande de compensation de l'EZO pH : cette valeur
+  // remonte à _resolveEzoCompensationTemp(), qui la fait partir sur le bus I²C
+  // dans `RT,<tempC>`. Les clamps 1/4 (écriture, web_routes_config.cpp), 2/4
+  // (chargement NVS, config.cpp) et 3/4 (cache `tempValue`, plus haut) ne
+  // couvrent PAS ce chemin ; celui-ci ne doit donc jamais être supprimé comme
+  // doublon. Sans lui, un offset non borné (+1000 ⇒ `RT,1025.0`) fausse le pH
+  // d'environ +0,15 sans toucher la calibration — donc invisible aux gardes
+  // chimiques, qui sont calculées sur la mesure — et un offset très négatif
+  // fait tendre la température de compensation vers 0 K, où l'erreur n'est
+  // plus bornée du tout.
+  return raw + clampTempCalOffset(mqttCfg.tempCalibrationOffset);
 }
 
 float SensorManager::getWaterTemperatureRaw() const {

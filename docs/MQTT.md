@@ -283,7 +283,9 @@ Topic : `{base}/diagnostic` — publié au démarrage, à chaque reconnexion, pu
   "orp_starts": 613,
   "orp_total_ml": 1204.8,
   "orp_anom": 0,
-  "orp_anom_ml": 0
+  "orp_anom_ml": 0,
+  "ezo_comp_t": 25.4,
+  "ezo_comp_stage": "mesure"
 }
 ```
 
@@ -313,6 +315,32 @@ interne à instruire côté appareil.
 ⚠️ **`hdef` ne remplace pas et ne recoupe pas le compteur « partition pleine »**
 (`nospc_cnt`, NVS) : famine **mémoire** et saturation **disque** sont deux pannes
 différentes.
+
+### `ezo_comp_t` / `ezo_comp_stage` — compensation T° réellement appliquée (feature-068, v2.47.1)
+
+| Champ | Type | Description |
+|---|---|---|
+| `ezo_comp_t` | float \| `null` | Température **effectivement envoyée** à l'EZO pH dans `RT,<tempC>` (°C, 1 décimale) — donc **après** offset utilisateur écrêté **et** cascade de repli. `null` avant la première lecture EZO du démarrage. |
+| `ezo_comp_stage` | string | Étage de la cascade qui a produit cette valeur : `"mesure"` \| `"derniere_valeur_plausible"` \| `"repli_defaut"`. |
+
+Ces deux champs vont **ici et pas dans la trame WebSocket** : ce sont des grandeurs **relues à froid**, plusieurs jours après un épisode, qu'aucun écran ne lit en direct. Le topic `{base}/diagnostic` étant **retenu**, elles survivent à un redémarrage de l'appareil.
+
+**À quoi ça sert, concrètement** : comparés au champ `temperature` du même payload, ils sont le **seul** diagnostic qui distingue les trois causes d'un écart de compensation — une valeur **figée** (constante dans le temps, étage `mesure`), un **repli** (étage ≠ `mesure`) et un **offset** de calibration mal réglé (écart constant avec la mesure). Voir [ADR-0074](adr/0074-temperature-figee-statu-quo-instrumente.md) et [`sensors.md`](subsystems/sensors.md#cascade-de-résolution-de-rt-bug-114).
+
+**Budget de ce payload** ([ADR-0073](adr/0073-chiffre-consigne-porte-sa-methode.md), décompte au **pire cas structurel du type**, jamais sur un payload vivant) :
+
+| Fragment sérialisé | Décompte | Octets |
+|---|---|---:|
+| `"ezo_comp_t":<float>,` | 1+10+1+1+**12**+1 | 26 |
+| `"ezo_comp_stage":"derniere_valeur_plausible",` | 1+14+1+1+**27**+1 | 45 |
+| **Total** | | **+71** |
+
+- **12 o** = longueur maximale d'un `float` sérialisé par ArduinoJson 7, établie par **balayage exhaustif** des motifs de bits finis (harnais hôte, méthode `bug-082`) : la notation exponentielle (`1.401298e-45`, ou `-1e+10` avec l'arrondi au dixième appliqué ici) est plus longue que 7 chiffres significatifs. On retient la borne du **type**, pas celle de la plage physique du DS18B20. `null` (4 o) n'est jamais dimensionnant.
+- **27 o** = 25 caractères du plus long libellé + 2 guillemets ; les trois libellés sont des **littéraux** de `tempCompStageLabel()`, donc bornés à la compilation.
+
+**Pire cas de trame : 1 057 o** (mesure feature-110, reprise telle quelle — **seul le delta a été recompté**) **+ 71 = 1 128 o**, sous `kMqttPublishBufferBytes` = **1 536** ⇒ **marge résiduelle 408 o** (elle était de 479 o). Aucun bump nécessaire.
+
+> ⚠️ **Le refus de PubSubClient est SILENCIEUX et TOTAL.** Dès que `bufferSize < 5 + 2 + longueur(topic) + longueur(payload)`, le `publish` est refusé **en entier** — ce n'est pas une troncature : `hdef` / `ldef` / `xdef` et tout le reste disparaissent avec. D'où le décompte au pire cas plutôt qu'à la mesure, et la garde de longueur en fin de fonction.
 
 ### Relevé du biais de comptage (feature-110, v2.45.0)
 
@@ -562,7 +590,7 @@ Calquée sur `alerts/sensor_stale` (retain, edge-triggered, clear = payload vide
 { "type": "sensor_frozen", "phFrozen": true, "orpFrozen": false, "timestamp": 12345678 }
 ```
 
-Un capteur figé (30 lectures acceptées dans une bande < ½ LSB, ≈ 2,5 min) rend le filtre non prêt → **dosage automatique bloqué fail-closed** (garde `FilterNotReady` existante). La **température figée** (détection warning-only, aucun impact dosage) n'apparaît **ni** dans cette alerte **ni** dans les états `*_sensor_problem`. Détails firmware : [`docs/subsystems/sensors.md`](subsystems/sensors.md#détection-capteur-figé--feature-022).
+Un capteur figé (30 lectures acceptées dans une bande < ½ LSB, ≈ 2,5 min) rend le filtre non prêt → **dosage automatique bloqué fail-closed** (garde `FilterNotReady` existante). La **température figée** (détection warning-only, aucun impact dosage) n'apparaît **ni** dans cette alerte **ni** dans les états `*_sensor_problem` : depuis la v2.47.1 elle a son **topic dédié** `{base}/temp_sensor_frozen` — motif de cet arbitrage : [Pourquoi la température n'entre pas dans `alerts/sensor_frozen`](#pourquoi-la-température-nentre-pas-dans-alertssensor_frozen). Détails firmware : [`docs/subsystems/sensors.md`](subsystems/sensors.md#détection-capteur-figé--feature-022).
 
 ## Topics et entités ajoutés en v2.20.3 (filtre de mesure bloqué)
 
@@ -590,6 +618,46 @@ Un filtre pH ou ORP durablement non prêt = plus **aucune** régulation sur ce p
 | Piscine Filtre ORP Bloqué | `binary_sensor` | `{base}/orp_filter_stuck` | `poolcontroller_orp_filter_stuck` | `device_class: problem`, mêmes payloads/icône |
 
 Publié à `homeassistant/binary_sensor/poolcontroller_ph_filter_stuck/config` (resp. `_orp_…`) au démarrage. **Entités nouvelles** : l'auto-discovery des entités existantes est inchangée. Alertes JSON associées sur `{base}/alerts` : `ph_filter_not_ready` / `orp_filter_not_ready` et `ph_filter_rearm_denied` / `orp_filter_rearm_denied` (cf. [Alertes](#alertes)).
+
+## Topic et entité ajoutés en feature-068 (sonde de température figée, v2.47.1)
+
+### `{base}/temp_sensor_frozen`
+
+**Direction** : ESP32 → broker (**retain = true**)
+
+| Topic | Payload | Condition |
+|-------|---------|-----------|
+| `{base}/temp_sensor_frozen` | `ON` / `OFF` | `ON` quand la sonde DS18B20 « eau » a rendu `kTempFrozenSamples` = **900** lectures **valides** consécutives dans une bande < `kTempFrozenEpsilonC` = **0,03 °C** (≈ **30 min** à 2 s), **et** que la sonde « eau » rend bien une valeur. `OFF` sinon. |
+
+- Miroir du champ `tempFrozenAlarm` de [`GET /data`](API.md) et du WebSocket, **avec un décalage volontaire de 60 s à la retombée** (voir ci-dessous).
+- Publication **dédoublonnée** (`safePublishDedup`, slot 28) : émise au changement d'état seulement, première publication forcée après connexion. Retain ⇒ Home Assistant retrouve l'état après un redémarrage du contrôleur ou de HA.
+
+> ⚠️ **Cet état n'inhibe RIEN.** L'erreur de pH induite par une compensation de température figée vaut **≈ 0,001 pH**, soit 2 à 3 ordres de grandeur sous le premier seuil de régulation : le dosage, la compensation `RT` et le planning automatique de filtration sont **inchangés**. Chiffrage et motif : [ADR-0074](adr/0074-temperature-figee-statu-quo-instrumente.md). **Ne pas câbler ce topic comme une condition de sécurité** — c'est un signal de **maintenance** (remplacer le capteur), pas d'urgence.
+
+**Maintien de 60 s à la publication — et NULLE PART ailleurs** (`kMqttTempFrozenHoldMs`, [`src/mqtt_manager.h`](../src/mqtt_manager.h)). La sortie de l'état figé est **immédiate côté firmware, sans hystérésis** (décision du visa : le drapeau est informatif, un battement ne coûte rien chimiquement, et une hystérésis ajouterait un second seuil à régler). Mais une entité HA qui clignote est inutilisable en automatisation : l'état `ON` est donc **maintenu 60 s** après sa retombée, **uniquement sur ce chemin de publication**. Aucune décision de dosage, aucun champ `/data`, aucune trame WS n'en dépend — les trois voient la valeur **instantanée**.
+
+**Garde « aucune sonde eau »** : le topic ne passe **jamais** à `ON` si `getWaterTemperatureRaw()` rend `NaN` — c'est-à-dire si le rôle « eau » n'est identifié sur **aucune** adresse du bus OneWire, ou si sa dernière lecture est invalide. Deux conséquences voulues :
+
+1. « **sonde eau non identifiée** » n'est **jamais** confondu avec « **eau figée** » : les deux états ne sont pas actionnables de la même façon (identifier la sonde vs remplacer le capteur) ;
+2. une sonde **débranchée pendant l'épisode** fait retomber le topic à `OFF` au lieu de le laisser « figé » indéfiniment sur un état obsolète.
+
+### Auto-discovery HA (v2.47.1)
+
+| Entité | Type | Topic d'état | `unique_id` | Détails |
+|--------|------|--------------|-------------|---------|
+| Piscine Sonde Température Figée | `binary_sensor` | `{base}/temp_sensor_frozen` | `poolcontroller_temp_sensor_frozen` | `device_class: problem`, `payload_on: ON`, `payload_off: OFF`, `icon: mdi:thermometer-off` |
+
+Patron **exact** de `ph_filter_stuck` (v2.20.3), sans `entity_category`. Publié à `homeassistant/binary_sensor/poolcontroller_temp_sensor_frozen/config` au démarrage. **Entité nouvelle** : les `unique_id` existants sont intacts, l'appariement des entités déjà en place dans HA ne bouge pas. La longueur du topic de configuration (**54** caractères) est **identique** à celle de `binary_sensor/poolcontroller_orp_sensor_problem/config`, pire cas déjà documenté pour `kDiscoveryFailTopicMax` : ce budget-là est inchangé.
+
+### Pourquoi la température n'entre pas dans `alerts/sensor_frozen`
+
+La spec laissait le choix ouvert. **Arbitrage : topic dédié, et rien dans l'alerte existante.** Trois motifs, dans l'ordre :
+
+1. **`alerts/sensor_frozen` est un contrat externe** dont la sémantique **établie** est « une mesure de régulation est morte, **donc le dosage est compromis** » : un capteur pH/ORP figé rend le filtre non prêt et **bloque** l'injection. Y verser la température **reclasserait silencieusement** une alerte de sécurité de dosage — une automatisation Home Assistant **existante** se déclencherait sur un événement **sans aucun effet sur le dosage**. Élargir la portée d'une alerte déjà consommée est un **changement cassant sans bump de version**.
+2. **La sévérité diffère de deux à trois ordres de grandeur, chiffrés** : ≈ 0,001 pH contre l'**arrêt complet** d'une boucle de régulation. Une même alerte pour les deux rendrait le niveau d'urgence illisible, donc, à terme, ignoré.
+3. **La visibilité demandée est obtenue sans cela** : topic dédié retenu + `binary_sensor` `problem` + champ `/data`/WS + badge UI.
+
+Conséquence assumée : un intégrateur qui veut **les deux** états s'abonne aux **deux** topics. C'est un abonnement de plus, pas une information perdue. Même raison pour les états `{base}/ph|orp_sensor_problem`, qui restent pH/ORP.
 
 ## Topics et entités ajoutés en feature-050 (complétude MQTT/HA, v2.14.0)
 

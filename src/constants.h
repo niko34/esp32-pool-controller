@@ -824,6 +824,66 @@ constexpr unsigned long kPhSlopeQueryIntervalMs = 86400000UL; // 24h - re-query 
 constexpr unsigned long kPhSlopeBootRetryIntervalMs = 30000UL; // 30 s entre retentatives Slope,? de boot
 constexpr uint8_t kPhSlopeBootRetryMaxAttempts = 5;            // Borne DURE (gate C1 pool-chemistry) : 5 transactions max, jamais réarmé
 
+// ----------------------------------------------------------------------------
+// COMPENSATION DE TEMPÉRATURE DE LA MESURE pH (bug-114)
+// ----------------------------------------------------------------------------
+// La commande `RT,<tempC>` fait calculer la correction de Nernst À BORD du
+// module EZO pH. Une température de compensation fausse fausse donc le pH SANS
+// toucher à la calibration — et toutes les gardes chimiques, calculées sur la
+// mesure, valident la falsification.
+//
+// Chiffrage de référence (méthode : pente de Nernst, verdict `pool-chemistry`
+// du 2026-09-07, cf. specs/features/doing/bug-114-*.md) :
+//   pH_lu − pH_vrai = (pH_vrai − 7) × (T_vrai − T_comp) / T_comp   (T en kelvins)
+// soit ≈ 0,7 millième de pH par °C d'erreur. Conséquences chiffrées :
+//   - offset de calibration +1000 °C  → `RT,1025.0` ⇒ ≈ +0,15 pH ;
+//   - offset très négatif             → T_comp → 0 K ⇒ erreur NON BORNÉE.
+// D'où les trois bornes ci-dessous.
+
+// Bornes de `mqttCfg.tempCalibrationOffset` (offset utilisateur de la sonde eau).
+// Motif : un DS18B20 dérive de DIXIÈMES de degré, pas de degrés. ±5 °C laisse
+// une marge d'un ordre de grandeur sur toute dérive physique crédible ; au-delà,
+// ce n'est plus une calibration mais une saisie erronée (ou une NVS polluée par
+// une version antérieure, qui n'imposait AUCUNE borne — cf. bug-114).
+constexpr float kTempCalOffsetMin = -5.0f;
+constexpr float kTempCalOffsetMax =  5.0f;
+
+// Fenêtre de température ACCEPTÉE pour la compensation `RT` envoyée à l'EZO pH.
+// Motifs (arbitrage `pool-chemistry`, NE PAS resserrer) :
+//   - 0 °C  : plancher de l'eau liquide d'un bassin extérieur. Au gel, la
+//             filtration est arrêtée et les mesures n'ont plus de sens.
+//   - 40 °C : ~6 °C de marge au-dessus de toute eau de bassin plausible en
+//             canicule. ⚠️ BORNE DE PRUDENCE, NON CONFIRMÉE PAR LA DATASHEET
+//             ATLAS : la plage réellement admise par la commande `RT` n'a pas
+//             été vérifiée sur le document constructeur (recherche dans le
+//             dépôt le 2026-09-07 : aucune trace, cf. docs/subsystems/sensors.md
+//             qui ne documente que les DÉLAIS, pas les plages).
+// ⚠️ Resserrer sur 15-30 °C rejetterait des températures VRAIES (hors saison,
+// canicule) et DÉGRADERAIT la compensation au lieu de la protéger.
+constexpr float kEzoCompTempMinC = 0.0f;
+constexpr float kEzoCompTempMaxC = 40.0f;
+
+// Dernier étage de la cascade de repli : température de compensation par défaut
+// quand aucune valeur plausible n'est disponible, même périmée.
+// Motif : 25 °C est le centre de la plage d'exploitation d'un bassin ; le coût
+// maximal de ce repli est ± 0,01 pH (verdict `pool-chemistry`), donc acceptable
+// — mais il doit rester VISIBLE (journalisé, et exposé par un accesseur).
+constexpr float kEzoFallbackTempC = 25.0f;
+
+// Durée au-delà de laquelle le repli sur kEzoFallbackTempC cesse d'être un
+// incident de lecture isolé pour devenir une PANNE (journalisation `critical`).
+// Motif : le DS18B20 est relu toutes les kTempSensorIntervalMs (2 s) ; 10 min
+// = 300 cycles de lecture manqués d'affilée. En deçà, une rafale d'échecs I²C
+// ou un remplacement de sonde à chaud reste plausible.
+constexpr unsigned long kEzoCompFallbackCriticalMs = 600000UL;  // 10 min
+
+// Intervalle de RAPPEL de la journalisation d'une substitution de température
+// de compensation. Les transitions d'étage sont journalisées immédiatement ;
+// ce rappel évite qu'un repli DURABLE devienne muet, sans inonder les logs
+// (la compensation est réévaluée toutes les kPhOrpSensorIntervalMs = 5 s, soit
+// 12 messages/minute sans throttle).
+constexpr unsigned long kEzoCompSubstitutionLogIntervalMs = 60000UL;  // 1 min
+
 // ============================================================================
 // SENSOR FILTER CONSTANTS - Lissage mesures pH/ORP (feature-025 → feature-058)
 // ============================================================================

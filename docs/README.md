@@ -118,7 +118,8 @@ docs/
 │   ├── 0070-fopen-interne-helper-unique-et-classes-de-contention.md
 │   ├── 0071-parite-data-trame-capteurs.md
 │   ├── 0072-absence-de-valeur-hors-du-domaine.md
-│   └── 0073-chiffre-consigne-porte-sa-methode.md
+│   ├── 0073-chiffre-consigne-porte-sa-methode.md
+│   └── 0074-temperature-figee-statu-quo-instrumente.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

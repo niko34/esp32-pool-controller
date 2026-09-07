@@ -108,7 +108,7 @@ void resetOrpFilter();               // Reset filtre (warmup) — appelé après
 // is*FilterReady() = false → dosage bloqué par la garde FilterNotReady existante.
 bool isPhSensorFrozen()  const;      // 30 lectures acceptées dans une bande < kSensorFrozenEpsilonPh
 bool isOrpSensorFrozen() const;      // idem, bande < kSensorFrozenEpsilonOrp
-bool isTemperatureFrozen() const;    // sonde eau DS18B20 — warning-only, AUCUN impact dosage
+bool isTemperatureFrozen() const;    // sonde eau DS18B20 — warning-only, AUCUN impact dosage (exposé : /data, WS, MQTT, badge UI — feature-068)
 
 // Statut calibration EZO — version live (lecture I²C bloquante ~900 ms, diagnostic)
 int getPhCalibrationPoints();           // -1 = injoignable, 0..3 sinon
@@ -229,9 +229,74 @@ Une tentative non authentifiée est journalisée `WARNING` **au plus 1 fois par 
 
 `RT,<temp>` est envoyé **avant chaque `R`** sur l'EZO pH. Format : 1 décimale (ex `RT,25.3`). Source : `getWaterTemperature()` ([feature-020](../../specs/features/done/feature-020-deux-sondes-temperature.md), sonde DS18B20 identifiée comme « eau »).
 
-Si la sonde eau n'est pas identifiée OU retourne `NaN` : fallback **25.0 °C**. L'erreur résiduelle sur la mesure pH reste < 0.1 pH dans la plage 15-30 °C piscine, jugée acceptable.
-
 L'EZO ORP n'a pas besoin de compensation T° : la mesure ORP est intrinsèquement température-dépendante mais cette dépendance n'est pas linéaire et Atlas n'expose pas de commande de compensation pour ce module.
+
+### Ce qu'une température fausse coûte en pH (chiffrage de référence)
+
+Méthode (ADR-0073 — **à refaire, pas à recopier**) : pente de Nernst `S(T) = 2,303·R·T/F` = 59,16 mV/pH à 25 °C, l'EZO calculant `pH = 7 + (E_iso − E)/S(T_comp)`. À potentiel d'électrode donné :
+
+> `pH_lu − pH_vrai = (pH_vrai − 7) × (T_vrai − T_comp) / T_comp`  (T en **kelvins**)
+
+Soit **≈ 0,7 millième de pH par °C** d'erreur de compensation. **Sens** : `T_comp` trop haute ⇒ pente surestimée ⇒ lecture **tirée vers 7** ⇒ pour un brut **sous** 7, pH lu **trop basique** ⇒ **léger sur-dosage** d'acide (symétrie inversée au-dessus de 7).
+
+Conséquences, toutes chiffrées par la même formule :
+
+| Cas | Erreur de pH |
+|---|---|
+| Sonde **figée** — 26,6 °C figé contre 25,0 °C réel, brut ≈ 6,80 (cas de production du 16/08) | **+0,0011** |
+| Repli sur `kEzoFallbackTempC` = 25 °C | ≤ **±0,01** |
+| Bornes de la fenêtre brute du DS18B20 `(−55 ; 125)` °C | 0,05 à 0,07 |
+| Offset de calibration **non borné** de +1000 ⇒ `RT,1025.0` | ≈ **+0,15** |
+| Offset très **négatif** ⇒ `T_comp` → 0 K | **non bornée** |
+
+Les deux premières lignes sont **2 à 3 ordres de grandeur** sous le premier seuil de régulation (`kPhStopThreshold = 0,01`) : c'est le fondement de [ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md) — une sonde figée est **instrumentée**, jamais traitée. Les deux dernières sont le défaut réel corrigé par `bug-114`.
+
+### ⛔ « Suspendre la compensation » n'existe pas
+
+Ne pas envoyer `RT` ([`atlas_ezo.cpp:149-155`](../../src/atlas_ezo.cpp)) **ne suspend rien** : la lecture retombe sur `R` et le module **conserve sa dernière température interne**, silencieusement périmée, **invisible et indatable** côté firmware. C'est **pire que n'importe quel repli**. Il y a donc **toujours** une valeur envoyée, et l'étage qui l'a produite est **toujours** exposé — la cascade ne rend **jamais** `NaN` (vérifié par test).
+
+### Cascade de résolution de `RT` (bug-114)
+
+`_resolveEzoCompensationTemp()` ([`sensors.cpp`](../../src/sensors.cpp)) délègue la règle à la fonction pure `resolveCompensationTemp()` ([`temp_compensation_logic.h`](../../src/temp_compensation_logic.h), [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) :
+
+| Étage | Condition | Valeur envoyée | `TempCompStage` / libellé |
+|---|---|---|---|
+| 1 | mesure courante **plausible** (`getWaterTemperature()` ∈ `[0 ; 40]` °C, offset **borné** compris) | la mesure | `Current` / `mesure` |
+| 2 | sinon, **dernière** valeur plausible d'âge ≤ `kSensorStaleTimeoutMs` = **20 s** (≈ 10 lectures DS18B20) | la dernière plausible | `LastPlausible` / `derniere_valeur_plausible` |
+| 3 | sinon | `kEzoFallbackTempC` = **25,0 °C** | `Fallback` / `repli_defaut` |
+
+**Journalisation** : `warning` à **chaque** substitution — immédiatement à la transition d'étage, puis **rappelé** toutes les `kEzoCompSubstitutionLogIntervalMs` = 60 s tant qu'elle dure (sans throttle, la réévaluation toutes les 5 s produirait 12 messages/min) ; `info` au retour sur la mesure ; `critical` **one-shot** si le repli à 25 °C dépasse `kEzoCompFallbackCriticalMs` = **10 min** (= 300 cycles de lecture manqués — au-delà, ce n'est plus un incident de lecture, c'est une panne).
+
+Exemples :
+
+- `warning` — `Compensation T° pH substituée (repli_defaut) : mesure NaN °C hors [0 ; 40] °C → RT,25.0`
+- `critical` — `Compensation T° pH figée sur le repli 25.0 °C depuis plus de 10 min — sonde eau indisponible ou hors plage (erreur pH ≤ 0,01)`
+
+⚠️ La borne haute **40 °C** est une borne de **PRUDENCE**, **NON CONFIRMÉE par la datasheet Atlas** : la plage réellement admise par `RT` n'a pas été vérifiée sur le document constructeur (recherche dans le dépôt le 2026-09-07, aucune trace — cette page ne documente que les **délais** de transaction). Et ⚠️ **ne pas resserrer sur 15-30 °C** : cela rejetterait des températures **vraies** (hors saison, canicule) et **dégraderait** la compensation au lieu de la protéger.
+
+### Les QUATRE points de clamp de l'offset de calibration
+
+`mqttCfg.tempCalibrationOffset` est borné à `[kTempCalOffsetMin ; kTempCalOffsetMax]` = `[−5 ; +5]` °C par `clampTempCalOffset()` (un `NaN` est neutralisé à 0). Motif de la valeur : un DS18B20 dérive de **dixièmes** de degré, pas de degrés. **Quatre** sites d'appel — compte relevé par `grep -rn clampTempCalOffset src/` le 2026-09-07 —, **aucun doublon** : chacun couvre une **provenance** que les autres ne voient pas.
+
+| # | Site | Provenance couverte |
+|---|---|---|
+| **1/4** | `handleSaveConfig()` — [`web_routes_config.cpp`](../../src/web_routes_config.cpp) | saisie de l'opérateur (`POST /save-config`). Écrêtage **et non refus** (pas de canal d'erreur dédié dans ce flux) + `warning` nommant la valeur demandée, la valeur retenue et l'IP cliente |
+| **2/4** | `loadMqttConfig()` — [`config.cpp`](../../src/config.cpp) | valeur **héritée** d'une version sans borne, jamais réenregistrée. Sans lui, `/get-config` exposerait une valeur que le firmware n'applique **pas** — et la règle du dépôt « toujours lire `/get-config` avant tout diagnostic chiffré » deviendrait un **piège** (un diagnostic chiffré a déjà déraillé sur ce motif le 2026-09-06). `warning` une seule fois, au boot |
+| **3/4** | `_readDs18b20s()` — [`sensors.cpp`](../../src/sensors.cpp) | émission de la valeur de **mesure** : cache `tempValue` servi à l'affichage, à MQTT, à l'historique et au planning. **N'alimente PAS `RT`** |
+| **4/4** | `getWaterTemperature()` — [`sensors.cpp`](../../src/sensors.cpp) | **émission `RT`** : le **seul** site qui alimente la commande de compensation partant sur le bus I²C |
+
+⚠️ **Ne pas fusionner 3/4 et 4/4**, et n'en supprimer **aucun** comme doublon. La sentinelle de [`test_native_temp_compensation`](../../test/test_native_temp_compensation/test_temp_compensation.cpp) vise chaque point **dans sa fonction**, par **signature**, sur du code **dépouillé de ses commentaires** — donc indépendamment de toute renumérotation, et insensible à un commentaire qui citerait le nom de la fonction sans l'appeler. Les quatre suppressions ont été démontrées **détectées** (l'ancienne version de la sentinelle, satisfaite par un compte textuel, restait **verte** dans les quatre cas).
+
+### Diagnostic exposé (feature-068)
+
+| Accesseur ([`sensors.h`](../../src/sensors.h)) | Retour | Usage |
+|---|---|---|
+| `float getEzoCompensationTempC() const` | °C **effectivement** envoyés dans `RT` (offset borné + cascade). `NaN` **uniquement** avant la première lecture EZO du démarrage | `ezo_comp_t` du topic MQTT `<base>/diagnostic` |
+| `TempCompStage getEzoCompensationStage() const` | `Current` / `LastPlausible` / `Fallback` | logique interne |
+| `const char* getEzoCompensationStageLabel() const` | `"mesure"` / `"derniere_valeur_plausible"` / `"repli_defaut"` | `ezo_comp_stage` du topic diagnostic |
+| `bool isEzoCompensationSubstituted() const` | `true` si l'étage ≠ `Current` | synthèse |
+
+Lecture **lock-free** (un `float` et un `uint8_t` alignés ⇒ accès atomique sur Xtensa LX6) : appelables depuis `loopTask` comme depuis un handler async. Comparés à `temperature`, ces champs sont le **seul** diagnostic qui distingue une valeur **figée** (constante, étage `mesure`), un **repli** (étage ≠ `mesure`) et un **offset** mal réglé (écart constant avec `getWaterTemperatureRaw()`).
 
 ## Stale timeout (pool-chemistry condition #1)
 
@@ -631,7 +696,7 @@ Le filtre pH (`SensorFilter` : médiane longue + EMA + rejet de pics + latch EMI
 
 Décision structurante et alternatives écartées : [ADR-0039](../adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md).
 
-> ⚠️ **Divergence assumée avec `tempCalibrationOffset`.** L'offset de température s'applique lui **à l'ingestion**, par **nécessité** : la valeur corrigée est envoyée à l'EZO pH (`RT,<temp>`) pour la compensation thermique — c'est la valeur corrigée qui doit partir sur le bus. Le pH, lui, n'est **réinjecté nulle part** : rien n'oblige à corriger tôt, et corriger tard apporte l'immédiateté. Le patron « offset température » n'est donc **pas transposable** au pH ; ce n'est pas une incohérence.
+> ⚠️ **Divergence assumée avec `tempCalibrationOffset`.** L'offset de température s'applique lui **à l'ingestion**, par **nécessité** : la valeur corrigée est envoyée à l'EZO pH (`RT,<temp>`) pour la compensation thermique — c'est la valeur corrigée qui doit partir sur le bus. Le pH, lui, n'est **réinjecté nulle part** : rien n'oblige à corriger tôt, et corriger tard apporte l'immédiateté. Le patron « offset température » n'est donc **pas transposable** au pH ; ce n'est pas une incohérence. **Depuis `bug-114`, cet offset est écrêté à ±5 °C aux quatre points de la chaîne** — voir [Les QUATRE points de clamp](#les-quatre-points-de-clamp-de-loffset-de-calibration).
 
 ### Contrat des accesseurs pH — règle mnémotechnique
 
@@ -753,7 +818,7 @@ Définie dans [`src/sensor_filter.h`](../../src/sensor_filter.h) (logique pure, 
 |---|---|---:|---:|---|
 | `_phFilter` (composé dans `SensorFilter`) | lectures brutes **acceptées** par le filtre pH | `kSensorFrozenSamples` = 30 (≈ 2,5 min à 5 s) | `kSensorFrozenEpsilonPh` = 0.0005 (½ LSB EZO pH, résolution 0.001) | `ready()` = false → **dosage pH bloqué fail-closed** |
 | `_orpFilter` (idem) | lectures brutes acceptées par le filtre ORP | 30 | `kSensorFrozenEpsilonOrp` = 0.05 mV (½ LSB EZO ORP, résolution 0.1) | dosage ORP bloqué fail-closed |
-| `_waterTempFrozen` (dédié, dans `SensorManager`) | lectures DS18B20 **valides** de la sonde « eau » (valeur **brute**, non arrondie au 0.1 °C) | `kTempFrozenSamples` = 900 (≈ 30 min à 2 s) | `kTempFrozenEpsilonC` = 0.03 °C (< ½ LSB DS18B20 12 bits = 0.0625/2) | **warning-only** — AUCUN impact dosage/filtration (effets réels : compensation EZO pH + planning auto filtration sur valeur figée) |
+| `_waterTempFrozen` (dédié, dans `SensorManager`) | lectures DS18B20 **valides** de la sonde « eau » (valeur **brute**, non arrondie au 0.1 °C) | `kTempFrozenSamples` = 900 (≈ 30 min à 2 s) | `kTempFrozenEpsilonC` = 0.03 °C (< ½ LSB DS18B20 12 bits = 0.0625/2) | **warning-only, par DÉCISION** — AUCUN impact dosage/filtration, et il ne doit pas en avoir : l'erreur de pH induite est de **≈ 0,001** ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md)). Depuis feature-068, l'état est **exposé** (`/data`, WS, MQTT, badge UI) — exposé n'est pas actionné |
 
 ### Choix d'epsilon = ½ LSB (validation pool-chemistry)
 
@@ -774,6 +839,20 @@ Un capteur **vivant** bruite d'au moins ±1 LSB (quantification + bruit sonde + 
 - **MQTT** : alerte `{base}/alerts/sensor_frozen` (JSON retain, clear payload vide, pH/ORP uniquement) + états binaires `{base}/ph|orp_sensor_problem` (`ON` = stale OU figé) avec discovery HA `binary_sensor` `device_class: problem` — voir [MQTT.md](../MQTT.md#topics-et-entités-ajoutés-en-feature-022-problème-capteur-phorp-v2100).
 - **Getters lock-free** : `isPhSensorFrozen()` / `isOrpSensorFrozen()` / `isTemperatureFrozen()` (simple comparaison d'entiers 16 bits, même contrat de concurrence que `is*FilterUnstable()`).
 
+#### Exposition de la sonde de température figée — feature-068
+
+Ajoutée **sans changer aucun comportement** ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md)) :
+
+| Canal | Détail |
+|---|---|
+| `GET /data` + trame WS `sensor_data` | `tempFrozenAlarm` (bool), **parité stricte**, valeur **instantanée** — miroir direct de `isTemperatureFrozen()` |
+| MQTT | `<base>/temp_sensor_frozen` (`ON`/`OFF`, retain) + `binary_sensor` HA `device_class: problem`. **Garde « aucune sonde eau »** : jamais `ON` si `getWaterTemperatureRaw()` est `NaN` (rôle « eau » non identifié **ou** dernière lecture invalide) — cela couvre du même coup la sonde **débranchée en cours d'épisode**, qui retombe à `OFF` au lieu de rester « figée » indéfiniment. **Maintien 60 s** (`kMqttTempFrozenHoldMs`) sur **ce seul chemin de publication** |
+| UI | badge « Sonde température figée » (variant `warning`) sur la carte du tableau de bord et la page Température |
+
+**La sortie de l'état figé est immédiate, sans hystérésis** côté firmware — le drapeau est informatif, un battement ne coûte rien chimiquement, et une hystérésis ajouterait un second seuil à régler. L'anti-battement de 60 s existe **uniquement** à la publication MQTT (une entité HA qui clignote est inutilisable en automatisation) : `/data`, la trame WS et l'UI voient l'état instantané.
+
+⚠️ La température **n'entre pas** dans `alerts/sensor_frozen` ni dans `*_sensor_problem` : la sémantique établie de ces canaux est « le dosage est compromis ». Motif complet dans [MQTT.md](../MQTT.md#pourquoi-la-température-nentre-pas-dans-alertssensor_frozen) et [ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md).
+
 ## Constantes clés
 
 | Constante | Valeur | Usage |
@@ -784,6 +863,11 @@ Un capteur **vivant** bruite d'au moins ±1 LSB (quantification + bruit sonde + 
 | `kEzoCalDelayMs` | `900` ms | Délai après commande `Cal,*` |
 | `kCalibrationAuthWarnThrottleMs` | `60000` ms | 1 WARN/min/route maximum sur les tentatives de calibration non authentifiées (v2.46.1) |
 | `kEzoRtDelayMs` | `600` ms | Délai après commande `RT,<temp>` |
+| `kTempCalOffsetMin` / `kTempCalOffsetMax` | `-5.0` / `+5.0` °C | Bornes de `tempCalibrationOffset` (bug-114) — un DS18B20 dérive de **dixièmes** de degré |
+| `kEzoCompTempMinC` / `kEzoCompTempMaxC` | `0.0` / `40.0` °C | Fenêtre de plausibilité de la température envoyée dans `RT`. ⚠️ Borne haute **non confirmée par la datasheet Atlas** |
+| `kEzoFallbackTempC` | `25.0` °C | Étage 3 de la cascade (dernier recours) — coût maximal **±0,01 pH** |
+| `kEzoCompFallbackCriticalMs` | `600000` ms (10 min) | Durée au-delà de laquelle le repli au défaut passe en `critical` (= 300 lectures manquées) |
+| `kEzoCompSubstitutionLogIntervalMs` | `60000` ms | Rappel `warning` d'une substitution **durable** (sans lui : 12 messages/min) |
 | `kSensorStaleTimeoutMs` | `20000` ms | Timeout pH/ORP stale (cond #1 pool-chemistry) |
 | `kEzoBusFailMaxConsecutive` | `2` | Échecs I²C consécutifs → cache cal_points = -1 + lecture = NaN (cond #5) |
 | `kPhOrpSensorIntervalMs` | `5000` ms | Période lecture pH/ORP |

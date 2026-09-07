@@ -158,13 +158,29 @@ Chaque carte pH et ORP porte un badge composé (`composeSensorBadge()`, app.js �
 - Affiché à partir de **75 %** du quota journalier (`ph_daily_ml / max_ph_ml_per_day`, `orp_daily_ml / max_chlorine_ml_per_day`), même arithmétique que la barre de cumul des pages `/ph` et `/orp` (arrondi des entrées, pourcentage plafonné à 100).
 - Masqué quand la limite est atteinte (le segment « Limite journalière atteinte » prend le relais, pas de redondance), quand la limite n'est pas configurée (quota ≤ 0), ou quand les données sont indisponibles.
 
-## Badge de la carte Température (`#temperature-sensor-badge`, v2.10.5, étendu feature-061 itération 2)
+## Badge de la carte Température (`#temperature-sensor-badge`, v2.10.5, étendu feature-061 itération 2 puis feature-068)
 
 La carte Température porte un badge calqué sur les badges pH/ORP :
 
 - **« Capteur indisponible »** (variant `danger`, v2.10.5) : affiché quand `temperature` est `null` ou NaN dans le WS (sonde DS18B20 débranchée, non identifiée ou en erreur). Même **garde anti-faux-positif au boot** (badge produit uniquement si `latestSensorData !== null`) et, depuis l'itération 2 de feature-061, même **garde anti-faux-positif « mesures invalides »** que pH/ORP (segment gaté par `measuresAreValid()` — on ne juge pas la sonde quand l'eau ne circule pas).
 - **Segments d'état mesure** (feature-061 itération 2) : mêmes états que pH/ORP via `measureStateSegments()` — « Filtration arrêtée » (info bleu), « Signal filtration périmé » (warning), « Stabilisation depuis N min » (info, v2.34.0). Voir la [section dédiée](#mesures-phorp-non-représentatives--filtration-arrêtée--stabilisation-feature-061-v2130).
+- **« Sonde eau non identifiée »** (variant `danger`, priorité 0, **v2.47.1**, feature-068) : aucun rôle « eau » assigné alors qu'au moins une sonde est présente sur le bus (`sondes_identified === false` **et** `sondes_detected >= 1`). État **actionnable** — aller identifier la sonde dans les réglages —, et **distinct** de « figée ».
+- **« Sonde température figée »** (variant `warning`, priorité 1, **v2.47.1**, feature-068) : `tempFrozenAlarm === true`, c'est-à-dire 900 lectures valides consécutives dans une bande < 0,03 °C (≈ 30 min). **Informatif, pas actionnable en urgence** : rien n'est inhibé et rien ne doit l'être — l'erreur de pH induite vaut ≈ 0,001 pH ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md)). D'où le `warning` et non le `danger`.
 - Masqué dès que la valeur redevient valide (disparition au prochain push WS, sans reload).
+
+**Précédence des trois états de la sonde eau** — c'est un arbitrage, pas un détail de présentation :
+
+| Rang | État | Condition | Effet sur les autres |
+|---|---|---|---|
+| 1 | « Capteur indisponible » (`danger`) | `temperature` `null`/NaN | **prime sur tout** : une sonde qui ne mesure plus rien ne peut pas être « figée » — c'est aussi ce qui empêche un badge « figée » de rester à l'écran après un débranchement en cours d'épisode |
+| 2 | « Sonde eau non identifiée » (`danger`) | rôle « eau » non assigné, ≥ 1 sonde détectée | **supprime** « figée » : on ne publie **jamais** « eau figée » pour un rôle inconnu |
+| 3 | « Sonde température figée » (`warning`) | `tempFrozenAlarm`, rôle « eau » identifié, valeur présente | — |
+
+Les trois segments sont gatés par `measuresAreValid()`, comme pH/ORP : filtration arrêtée, l'eau est immobile dans la canalisation et la sonde peut légitimement rendre la même valeur pendant une demi-heure — on ne juge pas la sonde quand l'eau ne circule pas.
+
+> ⚠️ **Pourquoi la condition « non identifiée » s'appuie sur `sondes_identified` et non sur `temperature_raw`**, qui serait le discriminant naturel : `temperature_raw` est **WS-seul** (dette déclarée dans la sentinelle de parité). S'en servir aurait rejoué le piège n° 1 du projet — `latestSensorData` est **remplacé en entier** par chaque charge `/data`, le champ y disparaîtrait toutes les ~30 s, et le badge **clignoterait** entre « figée » et « non identifiée » ([ADR-0071](../adr/0071-parite-data-trame-capteurs.md)). `sondes_identified` / `sondes_detected` sont servis des **deux** côtés, et la condition retenue est **exactement** celle de la pastille `#sondes-chip` existante : l'appareil dit déjà la même chose, au même moment.
+>
+> **Limite assumée** : `sondes_identified` couvre les **deux** rôles (eau **et** circuit). Dans une installation où seule la sonde « circuit » manque, le badge « figée » est **supprimé à tort**. Défaut **conservateur** — on perd un badge informatif, on n'en invente pas un faux — et le sens inverse est impossible : le rôle « eau » non assigné rend toujours `sondes_identified` faux.
 
 Pas de segments dosage/limites/calibration ici : la température n'a ni dosage, ni limites, ni calibration.
 
@@ -319,6 +335,7 @@ La fonction `updateFiltrationBadges()` côté JS met à jour simultanément `#de
 - **WebSocket déconnecté** : les valeurs affichent `--`. Les mini-graphiques conservent la dernière série.
 - **Capteur pH ou ORP en erreur** : segment « Capteur indisponible » (danger, priorité 0) dans le badge multi-états (voir [Badge multi-états](#badge-multi-états-des-cartes-ph--orp-ph-sensor-badge-orp-sensor-badge)), valeur `--` (voir [Convention « `--` »](#convention-----quand-un-capteur-est-indisponible-v2105)).
 - **Sonde de température en erreur** (v2.10.5) : badge « Capteur indisponible » (`#temperature-sensor-badge`), valeur `--` partout où la température s'affiche.
+- **Sonde de température figée** (v2.47.1, feature-068) : badge orange « Sonde température figée », valeur **conservée** (elle est plausible, seulement immobile) — aucun dosage ni planning n'est modifié. Précédé par « Capteur indisponible » et par « Sonde eau non identifiée ». Voir [`docs/subsystems/sensors.md`](../subsystems/sensors.md#exposition-de-la-sonde-de-température-figée--feature-068).
 - **Filtration arrêtée / purge post-reprise** (feature-061) : valeurs pH/ORP et — depuis l'itération 2 — température à `--`, badge bleu « Filtration arrêtée » ou « Stabilisation depuis N min » sur les trois cartes (voir [section dédiée](#mesures-phorp-non-représentatives--filtration-arrêtée--stabilisation-feature-061-v2130)).
 - **Sonde non calibrée** : bandeau `calibration-alert` + chip global en haut de page.
 - **Dosage en cours** : badge `dosing-status` affiché dans la carte concernée (motif filtration masqué si le badge capteur le porte déjà — dé-duplication feature-061).
@@ -340,6 +357,7 @@ Le détail complet du cumul journalier (barre de progression, mL consommés / qu
 - `feature-022-observabilite-dosage` — segment « Capteur indisponible » (priorité 0, danger) piloté par `ph`/`orp` null dans le WS, garde anti-faux-positif au boot (v2.10.0)
 - `bug-ui-valeurs-figees-capteur-absent` — convention « `--` » généralisée à tous les sites d'affichage numérique (fin du pattern « skip si null ») + badge « Capteur indisponible » température (v2.10.5)
 - `bug-minicharts-ecretes-mobile` — graphiques étirés/écrêtés sur iPhone : règle CSS morte Chart.js supprimée, `ResizeObserver` durci (v2.18.3, voir note « Responsive / mobile » dans [Structure](#structure))
+- `feature-068-sonde-temperature-eau-figee` — badge « Sonde température figée » + « Sonde eau non identifiée », précédence des trois états de la sonde eau, statu quo instrumenté ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md)) (v2.47.1)
 - `feature-061-mesures-ph-orp-filtration-arretee` — mesures pH/ORP non représentatives sans circulation d'eau : badges info bleus, valeurs `--`, trous dans les courbes, dé-duplication dosing-status (v2.13.0) ; itération 2 : extension du même traitement à la température (carte/compact `--`, badges, courbe avec trous)
 - `ux-minicharts-journee-en-cours` — mini-graphiques de l'accueil limités à la **journée en cours** (minuit local) au lieu des 24 h glissantes, filtrage navigateur avant calcul des coupures, rechargement complet au passage de minuit (v2.18.9, voir [section dédiée](#plage-des-mini-graphiques--journée-en-cours-v2189))
 - `bug-dosage-fantome-duty-non-calibre` (itération 3) — statut dosage des cartes pH/ORP distinguant « commandé » (session) de « effectif » (pompe alimentée pendant un pouls) : 6 priorités d'affichage, compte à rebours de la prochaine impulsion ancré localement, dot animé/statique (v2.21.1, [ADR-0045](../adr/0045-etat-impulsion-expose-en-calendrier.md), voir [section dédiée](#statut-dosage-des-cartes-phorp--commandé-vs-effectif-v2211))

@@ -11,6 +11,7 @@
 #include "pump_controller.h"
 #include "dosing_logic.h"  // feature-060 : clampCyclesPerDay (clamp serveur obligatoire)
 #include "ph_offset.h"     // feature-067 : isPhOffsetValid (validation serveur de ph_offset)
+#include "temp_compensation_logic.h"  // bug-114 : clampTempCalOffset (écrêtage serveur de l'offset T°)
 #include "ph_guard_logic.h"  // v2.25.0 : phModeChangeNeedsAck (gate fail-closed du mode pH)
 #include "logger.h"
 #include "version.h"
@@ -1024,7 +1025,32 @@ static void handleSaveConfig(AsyncWebServerRequest* request, uint8_t* data, size
 
   // Données de calibration Température
   if (!doc["temp_calibration_offset"].isNull()) {
-    mqttCfg.tempCalibrationOffset = doc["temp_calibration_offset"];
+    // bug-114 — ÉCRÊTAGE de l'offset à ±5 °C. Motif : un DS18B20 dérive de
+    // DIXIÈMES de degré, pas de degrés. Cette valeur alimente la commande
+    // `RT,<tempC>` de compensation de l'EZO pH : sans borne, un offset de +1000
+    // produit `RT,1025.0` (≈ +0,15 pH d'erreur) et un offset très négatif fait
+    // tendre la température de compensation vers 0 K, où l'erreur n'est plus
+    // bornée — le tout SANS toucher la calibration, donc invisible aux gardes
+    // chimiques qui sont calculées sur la mesure.
+    // Écrêtage (et non refus) : contrairement à l'offset pH, il n'existe pas de
+    // message d'erreur dédié dans ce flux de sauvegarde ; on borne et on
+    // JOURNALISE pour que l'utilisateur sache que sa valeur a été ramenée.
+    // Clamp **1/4** : QUATRE sites d'appel de clampTempCalOffset() (compte
+    // vérifié par `grep -rn clampTempCalOffset src/`), aucun doublon — ils
+    // couvrent des provenances distinctes. Voir la liste complète dans
+    // config.cpp (clamp 2/4). Le site DÉCISIF est le **4/4**,
+    // sensors.cpp::getWaterTemperature() : c'est lui qui alimente `RT`.
+    const float requestedTempOffset = doc["temp_calibration_offset"].as<float>();
+    const float clampedTempOffset = clampTempCalOffset(requestedTempOffset);
+    if (!isTempCalOffsetInRange(requestedTempOffset)) {
+      systemLogger.warning("Offset température écrêté (hors plage " +
+                           String(kTempCalOffsetMin, 1) + " à +" +
+                           String(kTempCalOffsetMax, 1) + " °C) : " +
+                           String(requestedTempOffset, 2) + " → " +
+                           String(clampedTempOffset, 2) + " depuis " +
+                           clientIpOf(request));
+    }
+    mqttCfg.tempCalibrationOffset = clampedTempOffset;
   }
   if (!doc["temp_calibration_date"].isNull()) {
     mqttCfg.tempCalibrationDate = doc["temp_calibration_date"].as<String>();

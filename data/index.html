@@ -557,6 +557,8 @@
                 <!-- feature-035 : chip d'état de calibration température (NON cliquable), calqué sur #orp-cal-chip -->
                 <span id="temp-cal-chip" class="chip chip--probe chip--cal chip--probe-unknown" role="status" aria-live="polite"><span class="chip__dot" aria-hidden="true"></span><span class="chip__label" id="temp-cal-chip-label">Non calibré</span></span>
               </div>
+              <!-- feature-068 (B1) : badge d'état de la sonde, calqué sur #ph-page-badge (aucune classe CSS neuve) -->
+              <div class="sensor-badge" id="temperature-page-badge" role="status" style="display:none;"></div>
               <div class="cal-trigger-row">
                 <button class="btn btn--secondary" type="button" id="temp_cal_trigger_btn">Calibrer la sonde</button>
                 <span class="muted small" id="temp_cal_hint"></span>

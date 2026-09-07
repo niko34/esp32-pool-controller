@@ -183,6 +183,21 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // sérialise dans une String dimensionnée à la demande : ce chemin n'a AUCUN
   // plafond dur et AUCUNE troncature n'y est possible — contrairement à
   // sWsFrameBuf côté WebSocket (kWsFrameBufBytes, seul plafond DUR du projet).
+  //
+  // feature-068 (A4) : +1 booléen `tempFrozenAlarm` (sonde de température d'eau
+  // figée), servi dans le MÊME passage que la trame WS, entre les mêmes
+  // marqueurs PARITE-DATA. MÉTHODE DE CHIFFRAGE (ADR-0073), refaite et non
+  // recopiée : borne STRUCTURELLE du type — `bool`, dont la sérialisation la
+  // plus longue est `false` (5 o) et non `true` (4 o) ; clé de 15 caractères
+  // comptés un à un (t-e-m-p-F-r-o-z-e-n-A-l-a-r-m).
+  //   "tempFrozenAlarm":false, → 1+15+1+1+5+1 = 24 o
+  // Contre-mesure au harnais hôte : 24 o avec `false`, 23 o avec `true` (cf. le
+  // même décompte dans src/ws_manager.cpp).
+  // Pire cas de charge : 2888 (décompte feature-092) + 24 = 2912 o, sous le
+  // gabarit 2944 (marge 32 o) → AUCUN bump. Rappel : ce gabarit est PUREMENT
+  // documentaire, ce chemin n'a aucun plafond dur. Le budget CONTRAIGNANT de
+  // cet ajout est celui de la trame WS (kWsFrameBufBytes), décompté dans
+  // src/ws_manager.cpp : marge portée de 67 à 43 o.
   StaticJson<2944> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
@@ -507,6 +522,21 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // au banc, un réglage de puissance), jamais null.
   doc["ph_pump_flow_uncharacterized"]  = PumpController.isPhPumpFlowUncharacterized();
   doc["orp_pump_flow_uncharacterized"] = PumpController.isOrpPumpFlowUncharacterized();
+  //
+  // SONDE DE TEMPÉRATURE D'EAU FIGÉE (feature-068, A4) — drapeau INFORMATIF, et
+  // c'est tout ce qu'il est : le verdict pool-chemistry du 07/09/2026 a chiffré
+  // l'erreur de pH induite par une compensation de température fausse à
+  // ≈ 0,7 millième de pH par °C d'écart, soit ≈ 0,001 pH sur le cas relevé —
+  // deux à trois ORDRES DE GRANDEUR sous la bande morte la plus serrée (0,01).
+  // La compensation, la régulation et le planning de filtration sont donc
+  // INCHANGÉS : on instrumente, on ne corrige pas. Ce booléen ne doit jamais
+  // servir à inhiber quoi que ce soit côté client.
+  // Booléen STRICT, jamais null (l'absence de sonde n'est pas « figé » : elle se
+  // lit sur `temperature` / `temperature_raw`, déjà servis plus haut, et l'UI
+  // fait primer « sonde absente ou invalide » sur « figée », plus sévère).
+  // Accesseur LECTURE SEULE d'un compteur de run (aucune I²C, aucun OneWire) :
+  // sûr dans un handler AsyncWebServer.
+  doc["tempFrozenAlarm"] = sensors.isTemperatureFrozen();
   // <<< PARITE-DATA:FIN
   doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;
   doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;

@@ -3309,8 +3309,63 @@
     if (latestSensorData !== null && measuresOk && (latestSensorData.temperature == null || isNaN(latestSensorData.temperature))) {
       tempSegments.push({ priority: 0, variant: 'danger', text: 'Capteur indisponible' });
     }
+    // ---- feature-068 (B1) : état de la sonde de température d'EAU ----
+    // Trois états DISTINCTS, et l'ordre entre eux est l'arbitrage du verdict
+    // pool-chemistry du 07/09/2026, pas un détail de présentation :
+    //   1. valeur absente ou invalide → « Capteur indisponible » (segment
+    //      ci-dessus, priorité 0). PRIME sur « figée », étant plus sévère : une
+    //      sonde qui ne mesure plus rien ne peut pas être « figée ». C'est aussi
+    //      ce qui empêche un badge « figée » de rester à l'écran après un
+    //      débranchement en cours d'épisode.
+    //   2. sonde eau non identifiée   → on n'affiche JAMAIS « eau figée » : les
+    //      deux états ne sont pas actionnables de la même façon (ici, aller
+    //      identifier la sonde ; là, remplacer le capteur).
+    //   3. figée                      → informatif, uniquement quand une sonde
+    //      « eau » est bien identifiée et rend une valeur.
+    //
+    // POURQUOI `sondes_identified` ET NON `temperature_raw`, qui serait le
+    // discriminant naturel : `temperature_raw` est WS-SEUL (dette déclarée dans
+    // la sentinelle de parité). S'en servir ici aurait rejoué le piège n° 1 du
+    // projet — `latestSensorData` est REMPLACÉ en entier par chaque charge /data,
+    // le champ y disparaîtrait toutes les ~30 s, et le badge aurait CLIGNOTÉ
+    // entre « figée » et « non identifiée ». `sondes_identified` et
+    // `sondes_detected` sont servis des DEUX côtés : la condition retenue est
+    // exactement celle de la pastille #sondes-chip existante (identification
+    // incomplète avec au moins une sonde sur le bus), donc l'appareil dit déjà
+    // la même chose au même moment, au même endroit.
+    // LIMITE ASSUMÉE : `sondes_identified` couvre les DEUX rôles (eau ET
+    // circuit). Dans une installation où seule la sonde « circuit » manque, la
+    // sonde « eau » fonctionne et le badge « figée » sera SUPPRIMÉ à tort. C'est
+    // un défaut CONSERVATEUR — on perd un badge informatif, on n'en invente pas
+    // un faux — et le sens inverse est impossible : le rôle « eau » non assigné
+    // rend toujours `sondes_identified` faux.
+    const sondesIdentified = latestSensorData?.sondes_identified;
+    const sondesDetected = latestSensorData?.sondes_detected;
+    const waterRoleUnknown = sondesIdentified === false &&
+      typeof sondesDetected === 'number' && sondesDetected >= 1;
+    const tempValued = latestSensorData?.temperature != null && !isNaN(latestSensorData.temperature);
+    if (latestSensorData !== null && measuresOk && waterRoleUnknown && tempValued) {
+      tempSegments.push({ priority: 0, variant: 'danger', text: 'Sonde eau non identifiée' });
+    }
+    // « Sonde température figée » — WARNING et non DANGER, volontairement :
+    // l'erreur de pH induite par une compensation figée a été chiffrée à
+    // ≈ 0,001 pH, soit 2 à 3 ordres de grandeur sous la bande morte de la
+    // régulation. Rien n'est inhibé ici, et rien ne doit l'être : le badge
+    // informe, il ne déclenche pas. Le gate `measuresOk` évite le faux positif
+    // évident — filtration arrêtée, eau immobile dans la canalisation, la sonde
+    // peut légitimement rendre la même valeur pendant une demi-heure ; c'est la
+    // même garde que les badges pH/ORP ci-dessus.
+    if (measuresOk && !waterRoleUnknown && tempValued &&
+        latestSensorData?.tempFrozenAlarm === true) {
+      tempSegments.push({ priority: 1, variant: 'warning', text: 'Sonde température figée' });
+    }
     const tempBadge = composeSensorBadge(tempSegments);
     setBadge('temperature-sensor-badge', tempBadge.variant, tempBadge.text);
+    // Page Température : MÊME composition que la carte du tableau de bord. Les
+    // segments de dosage/stock n'existent pas pour la température, il n'y a donc
+    // rien à retirer (contrairement aux pages pH/ORP, qui n'affichent que les
+    // segments d'état mesure).
+    setBadge('temperature-page-badge', tempBadge.variant, tempBadge.text);
 
     // feature-061 : badges des pages pH/ORP — alimentés par les SEULS segments
     // d'état mesure (pas les segments dosage/stock, déjà portés ailleurs sur la page).

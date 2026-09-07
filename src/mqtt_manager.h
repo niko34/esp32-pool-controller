@@ -85,6 +85,13 @@ struct MqttTopics {
   // sur une panne. ON/OFF retain, device_class `problem` côté HA.
   String phFilterStuckState;
   String orpFilterStuckState;
+  // feature-068 (A5) : sonde de température d'EAU figée (run d'échantillons dans
+  // une bande < ½ LSB du DS18B20). ON/OFF retain, device_class `problem` côté HA.
+  // INFORMATIF : le verdict pool-chemistry du 07/09/2026 chiffre l'erreur de pH
+  // induite à ≈ 0,001 pH sur le cas relevé, soit 2 à 3 ordres de grandeur sous la
+  // bande morte — la compensation et le planning restent INCHANGÉS. Le topic ne
+  // s'allume donc pas pour couper quoi que ce soit, il rend l'état LISIBLE.
+  String tempSensorFrozenState;
   String phMixingDelayActiveState;  // ON/OFF pause mélange pH
   String orpMixingDelayActiveState; // ON/OFF pause mélange ORP
   // feature-050 : cumuls journaliers injectés + commandes volume quotidien + reboot
@@ -223,10 +230,36 @@ private:
   // feature-085 : +2 slots (21/22) pour ph_ff_ml_per_min / ph_ff_status — figés
   // hors session automatique (0 / code stable) : la déduplication supprime tout
   // le trafic hors dosage, comme pour l'intégrale.
-  static constexpr int kDedupCacheSlots = 28;  // feature-092 : 23 → 28 (5 topics de composition)
+  // ⚠️ kDedupCacheSlots est un NOMBRE DE SLOTS, pas le plus grand indice : les
+  // indices utilisés vont de 0 à kDedupCacheSlots − 1. Historique des NOMBRES :
+  // 23 (avant feature-092) → 28 (feature-092, 5 topics de composition) → 29
+  // (feature-068, +1 slot pour temp_sensor_frozen, publié à l'indice 28).
+  // MÉTHODE DE VÉRIFICATION (ADR-0073 — à REFAIRE, pas à recopier) : les indices
+  // réellement passés se relèvent par
+  //   grep -oE 'safePublishDedup\([0-9]+' src/mqtt_manager.cpp | grep -oE '[0-9]+' | sort -n
+  // Relevé du 07/09/2026 : 0 à 28, contigus, sans trou ni doublon → plus grand
+  // indice 28, donc 29 slots exactement. Un slot manquant ne planterait pas :
+  // safePublishDedup borne l'indice et se contente de NE PLUS dédupliquer, ce
+  // qui republierait un topic retain à chaque cycle — dégradation silencieuse.
+  static constexpr int kDedupCacheSlots = 29;
   String _lastFilterPub[kDedupCacheSlots];
   // Publie `payload` sur `topic` uniquement si différent du dernier publié (slot `cacheIdx`).
   void safePublishDedup(int cacheIdx, const char* topic, const String& payload);
+  // feature-068 (A5) — ANTI-BATTEMENT DE PUBLICATION, et NULLE PART AILLEURS.
+  // La sortie de l'état figé est IMMÉDIATE côté firmware, sans hystérésis
+  // (arbitrage du verdict pool-chemistry : le drapeau est informatif, un
+  // battement ne coûte rien chimiquement, et une hystérésis ajouterait un second
+  // seuil à régler). Mais une entité Home Assistant qui clignote est inutilisable
+  // dans une automatisation : on MAINTIENT donc l'état ON pendant 60 s après sa
+  // retombée, UNIQUEMENT sur ce chemin de publication. Aucune décision de dosage,
+  // aucun champ /data, aucune trame WS n'en dépend — les trois voient la valeur
+  // instantanée.
+  // Constante déclarée ICI et non dans constants.h : elle ne paramètre que la
+  // couche de publication MQTT et n'a aucun sens pour un autre sous-système.
+  static constexpr uint32_t kMqttTempFrozenHoldMs = 60000;
+  bool     _tempFrozenSeen   = false;  // false = jamais figé depuis le boot
+  uint32_t _tempFrozenLastOnMs = 0;    // millis() du dernier verdict « figé » VRAI
+
   // Publie l'ensemble des topics de la chaîne de filtrage (edge-triggered).
   void publishFilterStatesInternal();
   // Vérifie l'état de calibration et stale, publie/clear les alertes au besoin.

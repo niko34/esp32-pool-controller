@@ -644,7 +644,7 @@ Conséquence pour un client : ces quatre clés ne s'obtiennent que par [`GET /ge
 
 ⚠️ **Il n'existe AUCUN champ « appliqué ».** Voir [API.md](../API.md#champs-de-composition-du-débit-dinjection-feature-092-v2460) : le tick borne à l'**amplitude de la pompe**, jamais au débit soutenable.
 
-### Budget de trame — décompte rectifié (v2.40.0 ; la marge de 137 o est retombée à **67 o** en v2.47.1)
+### Budget de trame — décompte rectifié (v2.40.0 ; la marge de 137 o est retombée à **67 o** puis **43 o** en v2.47.1)
 
 Octets **sérialisés au pire cas structurel**, comptés clé par clé (guillemets + deux-points + valeur + virgule). Valeurs signées comptées sur 8 caractères (`-1234.56`) : les termes P et I ne sont **pas** bornés, c'est leur raison d'être ; grandeurs ≥ 0 sur 6 (`123.45`) ; `null` = 4 o, donc jamais dimensionnant.
 
@@ -671,7 +671,7 @@ Les **4** champs de pause mélange (`phMixingDelayActive` 28 o, `orpMixingDelayA
 
 > ⚠️ **MARGE SOUS LE SEUL PLAFOND DUR** — `sWsFrameBuf`, `kWsFrameBufBytes = 3584` o : **3584 − 3 447 = 137 o** (⚠️ **valeur de la v2.40.0** ; `bug-082` a dépensé 70 o de plus, la marge courante est de **67 o** — voir la [section v2.47.1](#champs-sensor_data-ajoutés-en-v2471--parité-de-flow_assist-bug-082)). C'est **sous la barre des 150 o**, et c'est dit ici plutôt qu'absorbé : le décompte v2.37.0 annonçait 592 o de marge, dont **115 n'ont jamais existé**. **137 o, c'est quatre clés flottantes.** Tout nouveau champ de cette trame exige désormais un **retrait compensatoire** OU un **relèvement de `kWsFrameBufBytes`** — décision d'ADR, pas de routine.
 
-**Chiffres courants** — **mesurés** le 2026-09-07 sur la v2.47.1 (extraction du receveur `d[` dans `_buildSensorJson` et `doc[` dans `handleGetData`, corps de fonction entiers, même convention que la sentinelle) : **121** clés dans `sensor_data`, **97** dans `GET /data`, **26** WS-seules, **2** `/data`-seules. L'écart avec la ligne précédente (v2.46.0 : 119 / 96 / 26 / 3) n'a **pas** été imputé clé par clé ; seule la baisse des `/data`-seules l'est : `flow_assist` est devenue **bilatérale** (`bug-082`). Ne pas recopier ces nombres ([ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md)) — la sentinelle les remesure à chaque `pio test`.
+**Chiffres courants** — **mesurés** le 2026-09-07 sur la v2.47.1 (extraction du receveur `d[` dans `_buildSensorJson` et `doc[` dans `handleGetData`, corps de fonction entiers, même convention que la sentinelle) : **121** clés dans `sensor_data`, **97** dans `GET /data`, **26** WS-seules, **2** `/data`-seules. L'écart avec la ligne précédente (v2.46.0 : 119 / 96 / 26 / 3) n'a **pas** été imputé clé par clé ; seule la baisse des `/data`-seules l'est : `flow_assist` est devenue **bilatérale** (`bug-082`). Ne pas recopier ces nombres ([ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md)) — la sentinelle les remesure à chaque `pio test`. **Remesuré le 2026-09-07 après feature-068**, même méthode (corps de `_buildSensorJson` et de `handleGetData`, code **dépouillé de ses commentaires**, clés uniques) : **121 / 97 / 26 / 2**. ⚠️ Le même comptage sur l'arbre **d'avant** feature-068 donne **120 / 96** : le quadruplet ci-dessus décrit donc l'état **avec** `tempFrozenAlarm`, et l'attribution « v2.47.1 / bug-082 » de la phrase précédente est à lire comme « v2.47.1, lot complet ». `tempFrozenAlarm` étant **bilatéral**, il ne déplace ni les WS-seules ni les `/data`-seules.
 
 ### Élagage chiffré, NON appliqué — et pourquoi il a été refusé
 
@@ -730,6 +730,30 @@ Les **sept** champs de session (`active`, `pump`, `phase`, `remaining_s`, `purge
 **Pire cas de trame : 3 447 + 70 = 3 517 o** → gabarit documentaire porté **3456 → 3584** (0 octet de RAM, cf. section normative). **Marge résiduelle sous le seul plafond DUR** (`sWsFrameBuf`, `kWsFrameBufBytes = 3584` o) : **67 o**, contre 137 o avant cet ajout. **67 o, c'est deux clés flottantes** : tout nouveau champ de cette trame exige un **retrait compensatoire** ou un relèvement de `kWsFrameBufBytes` (décision d'ADR, pas de routine). La [réserve de 49 o](#élagage-chiffré-non-appliqué--et-pourquoi-il-a-été-refusé) (`ph_integral`, `ph_integral_term`) **n'est pas dépensée**.
 
 > ⚠️ **Le 3 447 hérité n'a PAS été re-dérivé dans ce cycle** : il est repris tel quel du décompte v2.40.0. C'est **exactement** le genre d'héritage qui a produit quatre chiffrages faux pendant feature-092 — dit ici plutôt qu'absorbé. Un futur cycle qui touche ce budget doit **recompter la trame entière**, pas empiler un delta de plus.
+
+### Champ `sensor_data` ajouté en v2.47.1 — sonde de température figée (feature-068)
+
+| Champ | Type | Description |
+|---|---|---|
+| `tempFrozenAlarm` | bool | `true` quand la sonde DS18B20 « eau » est **figée** : `kTempFrozenSamples` = **900** lectures valides consécutives dans une bande < `kTempFrozenEpsilonC` = **0,03 °C**, soit ≈ **30 min** à 2 s. Reflet direct de `sensors.isTemperatureFrozen()`, **valeur instantanée**. |
+
+**En parité stricte avec `GET /data`** — aucune exception déclarée dans la sentinelle. Le champ est **purement informatif** : il n'inhibe ni le dosage, ni la compensation `RT`, ni le planning de filtration ([ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md) — l'erreur de pH induite vaut ≈ 0,001).
+
+**Ce qui N'ENTRE PAS dans cette trame, et pourquoi** : les diagnostics de la cascade de compensation (`ezo_comp_t`, `ezo_comp_stage`) partent sur le topic MQTT **retenu** `<base>/diagnostic`, qui a son propre budget. Ce sont des grandeurs **relues à froid**, plusieurs jours après un épisode ; aucun écran ne les lit en direct, et les mettre ici aurait coûté du budget sur le **seul plafond dur** du projet en ouvrant une question de parité pour rien.
+
+#### Budget de payload — méthode ([ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md))
+
+Borne **structurelle du type**, refaite et non recopiée. Le type est `bool` ; la sérialisation la plus longue d'un booléen ArduinoJson est `false` (**5 o**), pas `true` (4 o). Le nom de clé est un littéral de **15** caractères, compté caractère par caractère (t-e-m-p-F-r-o-z-e-n-A-l-a-r-m) :
+
+| Fragment sérialisé | Décompte | Octets |
+|---|---|---:|
+| `"tempFrozenAlarm":false,` | 1+15+1+1+5+1 | **24** |
+
+**Contre-mesure** (harnais hôte, ArduinoJson des `libdeps` du projet, clé insérée **entre deux clés factices** pour capter la virgule de séparation — méthode de `bug-082`) : **24 o** avec `false`, 23 o avec `true`. Décompte **vérifié**, pas déduit.
+
+**Pire cas de trame : 3 517 + 24 = 3 541 o.** Le gabarit `StaticJson<3584>` reste suffisant, **aucun bump**. ⚠️ Seul le **delta** a été recompté : le 3 517 hérité de `bug-082` (lui-même adossé au 3 447 de la v2.40.0, **non re-dérivé**) est repris tel quel — même réserve que ci-dessus.
+
+> ⚠️ **MARGE RÉSIDUELLE : 43 o** sous `kWsFrameBufBytes = 3584` (elle était de 67 o). **C'est UNE clé booléenne de plus, pas deux.** Acceptable pour ce lot ; **pas pour le suivant** : le prochain champ de cette trame devra **consommer la réserve de 49 o** (`ph_integral` + `ph_integral_term`, sans consommateur client depuis feature-092 — arbitrage exigeant une exception motivée dans la sentinelle de parité, **toujours pas pris**) **ou** relever `kWsFrameBufBytes` par **ADR**. Rappel du mode de défaillance : le dépassement **saute** le push (garde `measureJson(doc) + 1 > cap`, `_oversizedFrames` + warn throttlé), il ne **tronque** jamais — et le pire cas de longueur **coïncide** avec l'escalade de sécurité pH, donc avec le moment où perdre la trame coûte le plus cher.
 
 ### Le second axe de parité — `/data` ↔ `sensor_data` (`PARITE-DATA`)
 

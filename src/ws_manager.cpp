@@ -541,6 +541,36 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // depuis feature-092 — rendrait 49 o et porterait la marge à 116 o. Cet
   // arbitrage exige une exception motivée dans la sentinelle de parité (les deux
   // clés deviendraient /data-seules) : il reste à prendre, il n'est PAS pris.
+  //
+  // feature-068 (A4) : +1 booléen `tempFrozenAlarm` — drapeau « sonde de
+  // température d'eau figée » (SensorManager::isTemperatureFrozen). SEUL ce
+  // drapeau entre dans la trame : les diagnostics de la cascade de compensation
+  // (température effectivement envoyée à l'EZO, étage de repli) partent sur le
+  // topic MQTT RETENU <base>/diagnostic, qui a son propre budget — ce sont des
+  // grandeurs relues à froid, aucun écran ne les lit en direct, et les y mettre
+  // aurait ouvert une question de parité pour rien.
+  //
+  // MÉTHODE DE CHIFFRAGE (ADR-0073), refaite et non recopiée : on compte la
+  // BORNE STRUCTURELLE du type qui porte la valeur. Le type est `bool` ; la
+  // sérialisation la plus longue d'un booléen ArduinoJson est `false` (5 o), pas
+  // `true` (4 o). Le nom de clé est un littéral de 15 caractères, compté
+  // caractère par caractère : t-e-m-p-F-r-o-z-e-n-A-l-a-r-m.
+  //   "tempFrozenAlarm":false, → 1+15+1+1+5+1 = 24 o
+  // CONTRE-MESURE (harnais hôte, ArduinoJson des libdeps du projet, clé insérée
+  // entre deux clés factices pour capter la virgule de séparation, méthode de
+  // bug-082) : 24 o avec `false`, 23 o avec `true` — le décompte ci-dessus est
+  // donc VÉRIFIÉ et non déduit.
+  // Pire cas de trame : 3517 (décompte bug-082, repris tel quel — SEUL le delta
+  // de cet ajout a été recompté) + 24 = 3541 o. Le gabarit documentaire 3584
+  // reste SUFFISANT, aucun bump.
+  //
+  // MARGE RÉSIDUELLE SOUS LE SEUL PLAFOND DUR, sWsFrameBuf
+  // (kWsFrameBufBytes = 3584 o, constants.h) : 3584 − 3541 = 43 o (elle était de
+  // 67 o avant cet ajout). C'est UNE clé booléenne de plus, pas deux. Tout
+  // nouveau champ de cette trame exige désormais un retrait compensatoire OU un
+  // relèvement de kWsFrameBufBytes (décision d'ADR, pas de routine).
+  // La RÉSERVE documentée ci-dessus (`ph_integral` + `ph_integral_term`, 49 o)
+  // n'a PAS été dépensée pour cet ajout : elle reste disponible en entier.
   StaticJson<3584> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
@@ -960,6 +990,19 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // au banc, un réglage de puissance), jamais null.
   d["ph_pump_flow_uncharacterized"]  = PumpController.isPhPumpFlowUncharacterized();
   d["orp_pump_flow_uncharacterized"] = PumpController.isOrpPumpFlowUncharacterized();
+  //
+  // SONDE DE TEMPÉRATURE D'EAU FIGÉE (feature-068, A4) — drapeau INFORMATIF, et
+  // c'est tout ce qu'il est : le verdict pool-chemistry du 07/09/2026 a chiffré
+  // l'erreur de pH induite par une compensation de température fausse à
+  // ≈ 0,7 millième de pH par °C d'écart, soit ≈ 0,001 pH sur le cas relevé —
+  // deux à trois ORDRES DE GRANDEUR sous la bande morte la plus serrée (0,01).
+  // La compensation, la régulation et le planning de filtration sont donc
+  // INCHANGÉS : on instrumente, on ne corrige pas. Ce booléen ne doit jamais
+  // servir à inhiber quoi que ce soit côté client.
+  // Booléen STRICT, jamais null (l'absence de sonde n'est pas « figé » : elle se
+  // lit sur `temperature` / `temperature_raw`, déjà servis plus haut, et l'UI
+  // fait primer « sonde absente ou invalide » sur « figée », plus sévère).
+  d["tempFrozenAlarm"] = sensors.isTemperatureFrozen();
   // <<< PARITE-DATA:FIN
 
   d["time_synced"]   = (time(nullptr) >= kMinValidEpoch);
