@@ -301,6 +301,18 @@ Débit total **divisé par 5,4** ; fenêtre forensique estimée à **≈ 2 h 30*
 
 > ⚠️ **93 % du débit résiduel vient désormais des AUTRES sources** (157 o/min sur 168). Elles étaient minoritaires, elles sont devenues **dominantes** : la spec de suivi annoncée en « Hors périmètre » de `feature-109` n'est **plus optionnelle**. Tout gain supplémentaire sur la rétention passe par elles, et par elles seules.
 
+#### Émetteur non authentifié : le motif du throttle de calibration (v2.46.1)
+
+La garde d'authentification du corps des routes `/calibrate_*` ([sensors.md](sensors.md#authentification-du-corps-des-routes-de-calibration-v2461)) journalise les tentatives refusées. Ce WARN est throttlé à **1 par 60 s et par route** (`kCalibrationAuthWarnThrottleMs`), et le throttle **fait partie du correctif**, pas de son confort — pour une raison qui est celle de toute cette page :
+
+- **Le quota HTTP ne borne pas cet émetteur.** `checkRateLimit()` est appelé par `checkAuth()` dans le handler de **requête**, donc **après** le handler de corps. Le corps s'exécute pour **chaque** requête reçue, quota dépassé ou non : un émetteur qui journalise depuis un handler de corps est, par construction, **non borné**.
+- **Chiffrage.** Une ligne persistée de ce type pèse **~230 o**. Aux valeurs en vigueur — fichier `kMaxLogFileBytes` = **8 192 o**, `kRotateKeepBytes` = **6 144 o** conservés à la rotation — un émetteur non throttlé purge le journal en **~27 requêtes**, soit **~13 s** au seul quota autorisé de 120 req/min. La fenêtre forensique de **≈ 2 h 30** gagnée par `feature-109`, et dont `bug-080` dépend pour tracer un redémarrage, serait **effaçable à volonté** par un client anonyme sur le réseau local.
+- **Coût résiduel avec throttle** : ≤ 1 ligne/min/route, et le **chemin muet n'alloue rien** (sortie avant toute concaténation `String`) — condition non négociable puisque ce chemin est atteignable sans authentification pendant une famine mémoire active.
+
+> ⚠️ **L'émetteur non borné PRÉEXISTE à ce cycle.** `AuthManager::sendAuthRequired()` ([`auth.cpp:231`](../../src/auth.cpp:231)) émet un `WARNING "Accès non autorisé depuis <ip> vers <url>"` **sans throttle**, sur **toute** route protégée, depuis toujours. Le cycle 2.46.1 ne l'a **pas créé** : sans throttle, sa ligne de ~230 o serait venue s'ajouter à ce WARN existant sur trois routes, **multipliant par ~2,7** le coût journal d'une requête non authentifiée. Le throttle annule cet ajout ; il ne borne pas l'émetteur préexistant, qui reste le vrai poste. Le traitement de cet émetteur préexistant fait l'objet d'une **spec dédiée ouverte**, [`bug-112`](../../specs/features/todo/bug-112-journal-non-borne-sur-route-protegee.md) — son périmètre n'est pas arrêté ici.
+
+> 📋 **Écart de chiffrage à corriger dans le code.** Le commentaire de `kCalibrationAuthWarnThrottleMs` ([`constants.h:153`](../../src/constants.h:153)) raisonne sur « 24 Ko conservés » et « ~105 requêtes » : ce sont les tailles **historiques** du journal (32 Ko de fichier, antérieures à l'[ADR-0033](../adr/0033-budget-espace-partition-history.md)). Aux valeurs réelles (8 192 / 6 144 o), la purge est **~4 fois plus rapide** que ce que dit le commentaire. La conclusion n'est pas affaiblie, elle est renforcée — seul le chiffre du commentaire est à reprendre.
+
 #### Coût RÉSIDUEL d'un détail passé en DEBUG (feature-109)
 
 Basculer un émetteur verbeux de `INFO` vers `DEBUG` épargne le **fichier** — et **seulement** le fichier. À écrire franchement, parce que le raccourci « DEBUG = gratuit » est faux :

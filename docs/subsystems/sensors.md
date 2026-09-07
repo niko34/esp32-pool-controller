@@ -187,6 +187,44 @@ Les chemins chauds (PID 100 Hz, broadcast WS 5 s, MQTT 10 s) ne peuvent pas tol�
 - **Saturation** : `enqueue*()` retourne `false`. La route HTTP renvoie `503 calibration queue saturée — réessayer dans 1s`.
 - **Acquittement** : la mise en queue est l'ack de la route HTTP (`{success:true, queued:true}`). L'UI observe l'avancement via les champs WS `phCalPoints` / `orpCalPoints` rafraîchis automatiquement après chaque calibration.
 
+## Authentification du CORPS des routes de calibration (v2.46.1)
+
+Les trois routes [`/calibrate_ph`, `/calibrate_orp`, `/calibrate_clear`](../API.md#calibration-atlas-ezo--feature-021) suivent le patron ESPAsyncWebServer **handler de requête + handler de corps**. Le `REQUIRE_AUTH(req, WRITE)` est posé dans le handler de **requête**, exécuté **APRÈS** le handler de corps. Jusqu'en 2.46.0, le corps mettait donc la commande EZO dans `_ezoQueue` **avant** toute vérification : le client recevait bien son `401`, et `loopTask` exécutait la calibration **~900 ms plus tard**. Il n'existe **pas de dé-calibration** — l'effet est **irréversible**.
+
+**Pourquoi le défaut a survécu à plusieurs revues** : `REQUIRE_AUTH` **est présent**, trois lignes au-dessus du handler de corps. Un relecteur qui cherche la macro voit une route protégée. C'est exactement la mécanique du bug d'origine sur [`POST /save-config`](../API.md#post-save-config--critical), corrigé en v2.25.0 par `saveConfigBodyAuthorized()`. La macro n'est **pas** redondante avec la garde de corps et la garde ne **remplace pas** la macro : `REQUIRE_AUTH` produit le `401` propre, la garde empêche l'effet de bord.
+
+### La garde `calibrationBodyAuthorized()`
+
+[`src/web_routes_calibration.cpp:46`](../../src/web_routes_calibration.cpp:46) — appelée en **première instruction** des trois handlers de corps, avant tout `deserializeJson()` et avant tout `enqueue*()`.
+
+- **Prédicat identique à `checkAuth()` moins le rate limiting** : `authManager.isEnabled()` faux → autorisé ; sinon `checkTokenAuth() || checkBasicAuth()`. Toute requête que `REQUIRE_AUTH` accepterait est acceptée ici — **aucune calibration légitime n'est refusée** (vérifié dans les deux sens).
+- **Pas de `checkRateLimit()` ni de `sendAuthRequired()` dans la garde** : une seule réponse au client, un seul décompte de quota par requête. C'est le handler de requête qui répond.
+- **Pas d'exemption `isFirstBootDetected()`**, contrairement au site de référence `/save-config` : aucune des trois routes n'appartient au flux de premier démarrage (l'interface les appelle via `authFetch` depuis la page Réglages ; `/calibrate_clear` n'a aucun appelant d'interface). L'exemption y serait un trou, pas une compatibilité.
+
+### Portée chimique — deux régimes opposés, tous deux graves
+
+Verdict `pool-chemistry` (**GO**, gravité **haute**) : l'effet de bord n'est pas un simple accès, c'est une **mesure falsifiée** en entrée du dosage.
+
+| Commande passée | Régime | Conséquence |
+|---|---|---|
+| `Cal,clear` — et `Cal,mid` **seul**, l'EZO effaçant les autres points | **fail-closed** | `calPoints < requiredPoints` ([`pump_controller.cpp:1738`](../../src/pump_controller.cpp:1738), [`dosing_logic.h:180`](../../src/dosing_logic.h:180)) **refuse** le dosage automatique : arrêt **silencieux** de la régulation. À CYA ~35 mg/L, la boucle ORP saturant déjà son quota horaire chaque jour, la sous-chloration se compte **en jours**. |
+| `/calibrate_orp` | **surdosage** | `requiredPoints = 1` : **un seul POST suffit**, la garde de calibration reste satisfaite. `reference` bornée `0..1000` mV, soit jusqu'à **±500 mV** de décalage sur une consigne de 530 mV → erreur écrêtée, régulation **P pur en saturation permanente**. |
+| `Cal,mid` puis `Cal,low` (pH) | **surdosage** | Même chaîne côté pH : mesure faussée → erreur contre 7,30 → sortie saturée → 10 min/h × 26,0 mL/min = **260 mL/h d'acide**. |
+
+> ⚠️ **Les filets de sécurité ne bornent pas, ils ralentissent.** Les gardes `kPhFloorCorrected` = **6,70** (pH corrigé), `kPhFloorRawHard` = **6,20** (pH brut) et `kPhOrpInhibit` = **7,60** (inhibition ORP) sont calculées **sur la mesure falsifiée**. Dérivées de `kPhOffsetMax`, elles couvrent l'**offset** de mesure, pas la **calibration** ([offset pH](#offset-logiciel-de-mesure-ph--feature-067)). Seules bornent réellement `maxPhMlPerDay` (défaut **300 mL/j**) et la limite horaire : elles plafonnent le **débit**, mais le quota **se réarme à minuit** — la **dérive cumulative n'a donc pas de plafond**. Le timer de stabilisation post-calibration ([`sensors.cpp:882-915`](../../src/sensors.cpp:882)) ne fait que **différer**.
+
+### WARN throttlé — et pourquoi il l'est
+
+Une tentative non authentifiée est journalisée `WARNING` **au plus 1 fois par 60 s et par route** (`kCalibrationAuthWarnThrottleMs`, statique locale **par site**), avec annonce du nombre de tentatives occultées quand le site redevient bavard :
+
+```
+[Calibration] /calibrate_ph NON AUTHENTIFIÉ depuis 192.168.1.50 — corps ignoré (aucune commande EZO mise en file) ; et 12 tentatives non journalisées
+```
+
+- **Le quota `kMaxRequestsPerMinute` ne borne PAS cet émetteur** : `checkRateLimit()` est appelé par `checkAuth()` dans le handler de **requête**, donc après le corps. Le handler de corps tourne pour **chaque** requête reçue, quota dépassé ou non. Motif chiffré : [logger.md](logger.md#émetteur-non-authentifié--le-motif-du-throttle-de-calibration-v2461).
+- **Invariant : le chemin muet n'alloue rien** — sortie avant toute concaténation, aucune `String` construite. Ce chemin est atteignable sans authentification et s'exécute en RAM interne pendant une famine mémoire active (`bug-080`).
+- L'IP est lue sans jamais déréférencer un client nul : le client peut avoir disparu entre l'arrivée du corps et la journalisation.
+
 ## Compensation T° du pH
 
 `RT,<temp>` est envoyé **avant chaque `R`** sur l'EZO pH. Format : 1 décimale (ex `RT,25.3`). Source : `getWaterTemperature()` ([feature-020](../../specs/features/done/feature-020-deux-sondes-temperature.md), sonde DS18B20 identifiée comme « eau »).
@@ -744,6 +782,7 @@ Un capteur **vivant** bruite d'au moins ±1 LSB (quantification + bruit sonde + 
 | `kEzoOrpAddress` | `0x62` | Adresse I²C EZO ORP (défaut Atlas) |
 | `kEzoReadDelayMs` | `900` ms | Délai après commande `R` (lecture) |
 | `kEzoCalDelayMs` | `900` ms | Délai après commande `Cal,*` |
+| `kCalibrationAuthWarnThrottleMs` | `60000` ms | 1 WARN/min/route maximum sur les tentatives de calibration non authentifiées (v2.46.1) |
 | `kEzoRtDelayMs` | `600` ms | Délai après commande `RT,<temp>` |
 | `kSensorStaleTimeoutMs` | `20000` ms | Timeout pH/ORP stale (cond #1 pool-chemistry) |
 | `kEzoBusFailMaxConsecutive` | `2` | Échecs I²C consécutifs → cache cal_points = -1 + lecture = NaN (cond #5) |
@@ -931,6 +970,7 @@ Si une sonde est remplacée physiquement (adresse ROM différente), le scan au b
 - [`src/ph_offset.h`](../../src/ph_offset.h) — logique pure de l'offset pH `applyPhOffset()` / `isPhOffsetValid()` (feature-067, testé en natif `test/test_native_ph_offset/`)
 - [`src/atlas_ezo.h`](../../src/atlas_ezo.h), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp)
 - [`src/web_routes_calibration.cpp`](../../src/web_routes_calibration.cpp) — routes refondues `/calibrate_ph`, `/calibrate_orp`, `/calibrate_clear`
+- [bug-save-config-applique-avant-authentification](../../specs/features/done/bug-save-config-applique-avant-authentification.md) — audit des handlers de corps, garde d'authentification des trois routes de calibration (v2.46.1)
 - [`src/web_routes_debug.cpp`](../../src/web_routes_debug.cpp) — routes `/debug/sensor_trace` (GET, paginée v2.10.1) + `/debug/sensor_trace_clear` (POST) (feature-057)
 - [`src/sensor_trace_page.h`](../../src/sensor_trace_page.h) — clamp pur header-only `computeTracePage()` (pagination v2.10.1, testé en natif `test/test_native_trace_page/`)
 - [`src/web_routes_sensor_id.cpp`](../../src/web_routes_sensor_id.cpp) — routes feature-020 inchangées

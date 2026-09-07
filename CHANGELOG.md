@@ -2,6 +2,54 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.46.1] - 2026-09-07
+
+> **Ce qui change pour vous, en deux phrases** : une demande de calibration
+> envoyée **sans être connecté** ne déclenche plus rien sur la sonde. Elle était
+> déjà refusée à l'écran — le refus s'affichait, mais la sonde exécutait quand
+> même l'ordre une seconde plus tard, et une calibration ne se défait pas.
+
+### Sécurité
+
+- **Une requête de calibration non authentifiée ne touche plus la sonde**
+  (`bug-save-config-applique-avant-authentification`). Les trois routes
+  [`/calibrate_ph`, `/calibrate_orp` et `/calibrate_clear`](docs/API.md#calibration-atlas-ezo--feature-021)
+  affichaient bien un refus `401`, mais l'ordre partait vers le module Atlas EZO
+  **avant** que le refus ne soit décidé, et s'exécutait **~900 ms plus tard**.
+  Conséquences possibles selon l'ordre reçu : **régulation du chlore arrêtée en
+  silence** (une calibration effacée bloque le dosage automatique — sous-chloration
+  qui se compte en jours), ou à l'inverse **pompe doseuse en saturation permanente**
+  sur une mesure faussée (jusqu'à 260 mL/h d'acide). Il n'existe **aucune
+  dé-calibration** : l'effet était irréversible. Le refus est désormais prononcé
+  **avant** toute mise en file, avant même la lecture du corps de la requête.
+  Aucune calibration légitime n'est affectée : le contrôle est le même que celui
+  de l'interface.
+- **Journalisation des tentatives** : une tentative non authentifiée écrit une
+  ligne `WARNING` avec l'adresse IP d'origine, **au plus une par minute et par
+  route**, en annonçant le nombre de tentatives masquées. Ce plafond protège le
+  journal : sans lui, un client anonyme sur le réseau local pouvait effacer en
+  quelques secondes les heures de traces conservées par l'appareil.
+- **Audit des autres routes acceptant un corps de requête** conduit à cette
+  occasion (7 sites) : seules les trois routes de calibration agissaient avant
+  vérification ; `/save-config` avait été corrigée en v2.25.0 et sert de
+  référence. Une **réserve** sur `POST /update` (mise à jour OTA) est consignée
+  dans la spec, non instruite dans cette version. Trois constats annexes ont été ouverts en specs distinctes
+  (`bug-112`, `bug-113`, `bug-114`), sans correctif dans cette version.
+
+### Documentation
+
+- `docs/API.md` : section Calibration — le corps est refusé avant toute mise en
+  file, le `401` reste produit par le handler de requête.
+- `docs/subsystems/sensors.md` : nouveau chapitre « Authentification du CORPS
+  des routes de calibration » — le piège d'ordonnancement corps/requête (et
+  pourquoi `REQUIRE_AUTH`, bien présent, ne suffisait pas), la garde, le
+  throttle, et la portée chimique des deux régimes opposés (arrêt silencieux
+  vs surdosage).
+- `docs/subsystems/logger.md` : chiffrage du motif du throttle et rappel que
+  l'émetteur non borné (`sendAuthRequired`) **préexiste** — spec de suivi ouverte.
+
+---
+
 ## [2.46.0] - 2026-09-07
 
 > **Ce qui change pour vous, en trois phrases** : les pages **pH** et **ORP**

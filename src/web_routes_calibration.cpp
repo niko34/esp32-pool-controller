@@ -5,6 +5,7 @@
 #include "auth.h"
 #include "sensors.h"
 #include "json_compat.h"
+#include "logger.h"
 
 // =============================================================================
 // Routes de calibration capteurs Atlas EZO (feature-021 — Pass 4a)
@@ -15,6 +16,76 @@
 // L'UI observe l'avancement via les champs WS phCalPoints / orpCalPoints
 // rafraîchis à chaque cycle (cf. ws_manager.cpp).
 // =============================================================================
+
+// =============================================================================
+// Garde d'authentification du CORPS des routes de calibration (v2.46.1)
+// =============================================================================
+// PIÈGE — identique à celui corrigé sur /save-config (cf. saveConfigBodyAuthorized()
+// dans web_routes_config.cpp) : ESPAsyncWebServer exécute le handler de CORPS AVANT
+// le lambda de requête qui porte REQUIRE_AUTH. Un relecteur qui voit la macro trois
+// lignes au-dessus croit la route protégée, alors que le corps a déjà tout fait.
+// La macro n'est donc PAS redondante avec cette garde, et cette garde ne remplace
+// pas la macro : REQUIRE_AUTH produit le 401 propre, la garde empêche l'effet de bord.
+//
+// Ici l'effet de bord n'est pas une simple écriture : la commande part dans la queue
+// FreeRTOS de SensorManager et loopTask l'exécute ~900 ms APRÈS le départ du 401. Un
+// « Cal,clear » ainsi passé est IRRÉVERSIBLE (il n'existe pas de dé-calibration) et
+// fausse la mesure pH/ORP dont dépend le dosage d'acide et de chlore : la conséquence
+// est chimique, pas seulement un accès. D'où l'exigence : PREMIÈRE instruction du
+// handler de corps, avant tout parse et avant tout enqueue.
+//
+// Écart assumé avec le site de référence : PAS d'exemption isFirstBootDetected().
+// Aucune des trois routes n'appartient au flux de premier démarrage (l'interface les
+// appelle via authFetch depuis la page réglages ; /calibrate_clear n'a aucun appelant
+// d'interface) — l'exemption y serait un trou, pas une compatibilité.
+//
+// Prédicat volontairement identique à celui de checkAuth() moins le rate limiting :
+// toute requête acceptée par REQUIRE_AUTH est acceptée ici, donc une calibration
+// légitime passe. Pas de sendAuthRequired() ni de checkRateLimit() ici : une seule
+// réponse au client, un seul décompte de quota par requête.
+static bool calibrationBodyAuthorized(AsyncWebServerRequest* request) {
+  if (!authManager.isEnabled()) return true;  // authentification désactivée
+  return authManager.checkTokenAuth(request) || authManager.checkBasicAuth(request);
+}
+
+// IP d'origine, sans jamais déréférencer un client nul : le client peut avoir disparu
+// entre l'arrivée du corps et la journalisation — un log ne doit pas faire tomber
+// l'appareil.
+static String clientIpOf(AsyncWebServerRequest* request) {
+  if (request == nullptr || request->client() == nullptr) return "IP inconnue";
+  return request->client()->remoteIP().toString();
+}
+
+// Journalisation THROTTLÉE des tentatives non authentifiées (1/min/route).
+// Le quota kMaxRequestsPerMinute ne borne pas cet émetteur : checkRateLimit() est
+// appelé par checkAuth() dans le handler de REQUÊTE, donc APRÈS le corps — le corps
+// tourne pour chaque requête reçue, quota dépassé ou non. Cf. le motif détaillé de
+// kCalibrationAuthWarnThrottleMs (constants.h).
+// INVARIANT : quand le site est muet, AUCUNE String n'est construite — sortie avant
+// toute concaténation. Ce chemin est atteignable sans authentification et s'exécute
+// en RAM interne pendant une famine mémoire active : y allouer serait le vrai coût.
+static void logUnauthorizedCalibrationBody(const char* route,
+                                           AsyncWebServerRequest* request,
+                                           unsigned long& lastWarnMs,
+                                           uint16_t& suppressedCount) {
+  const unsigned long now = millis();
+  // lastWarnMs == 0 == « jamais journalisé » : sans ce cas, la première tentative
+  // des 60 premières secondes de vie de l'appareil serait avalée. La comparaison
+  // par soustraction non signée reste immunisée au repliement de millis() (49,7 j).
+  if (lastWarnMs != 0 && (now - lastWarnMs) < kCalibrationAuthWarnThrottleMs) {
+    if (suppressedCount < UINT16_MAX) suppressedCount++;
+    return;  // MUET : zéro allocation
+  }
+
+  String msg = String("[Calibration] ") + route + " NON AUTHENTIFIÉ depuis " +
+               clientIpOf(request) + " — corps ignoré (aucune commande EZO mise en file)";
+  if (suppressedCount > 0) {
+    msg += " ; et " + String(suppressedCount) + " tentatives non journalisées";
+    suppressedCount = 0;
+  }
+  systemLogger.warning(msg);
+  lastWarnMs = now;
+}
 
 void setupCalibrationRoutes(AsyncWebServer* server) {
   // ===========================================================================
@@ -35,6 +106,19 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
       },
       nullptr,
       [](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total) {
+        // Garde en PREMIÈRE instruction (cf. calibrationBodyAuthorized) : le
+        // REQUIRE_AUTH visible juste au-dessus s'exécute APRÈS ce handler, la
+        // commande EZO serait déjà en file quand le 401 part.
+        if (!calibrationBodyAuthorized(req)) {
+          // Statiques locales AU SITE : un throttle par route (cf. constants.h).
+          static unsigned long lastWarnMs = 0;
+          static uint16_t suppressedCount = 0;
+          if (index == 0) {
+            logUnauthorizedCalibrationBody("/calibrate_ph", req, lastWarnMs, suppressedCount);
+          }
+          return;
+        }
+
         // Buffer simple : la payload attendue fait < 64 octets.
         if (index != 0 || len != total) {
           // On ne supporte pas le chunked ici (payload minuscule, pas de raison)
@@ -84,6 +168,19 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
       },
       nullptr,
       [](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total) {
+        // Garde en PREMIÈRE instruction (cf. calibrationBodyAuthorized) : le
+        // REQUIRE_AUTH visible juste au-dessus s'exécute APRÈS ce handler, la
+        // commande EZO serait déjà en file quand le 401 part.
+        if (!calibrationBodyAuthorized(req)) {
+          // Statiques locales AU SITE : un throttle par route (cf. constants.h).
+          static unsigned long lastWarnMs = 0;
+          static uint16_t suppressedCount = 0;
+          if (index == 0) {
+            logUnauthorizedCalibrationBody("/calibrate_orp", req, lastWarnMs, suppressedCount);
+          }
+          return;
+        }
+
         if (index != 0 || len != total) {
           sendErrorResponse(req, 400, "payload too large or chunked");
           return;
@@ -127,6 +224,19 @@ void setupCalibrationRoutes(AsyncWebServer* server) {
       },
       nullptr,
       [](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total) {
+        // Garde en PREMIÈRE instruction (cf. calibrationBodyAuthorized) : le
+        // REQUIRE_AUTH visible juste au-dessus s'exécute APRÈS ce handler, la
+        // commande EZO serait déjà en file quand le 401 part.
+        if (!calibrationBodyAuthorized(req)) {
+          // Statiques locales AU SITE : un throttle par route (cf. constants.h).
+          static unsigned long lastWarnMs = 0;
+          static uint16_t suppressedCount = 0;
+          if (index == 0) {
+            logUnauthorizedCalibrationBody("/calibrate_clear", req, lastWarnMs, suppressedCount);
+          }
+          return;
+        }
+
         if (index != 0 || len != total) {
           sendErrorResponse(req, 400, "payload too large or chunked");
           return;

@@ -1901,6 +1901,8 @@ curl -u admin:monmotdepasse -X POST http://poolcontroller.local/flow-assist/exit
 
 Toutes les routes de calibration retournent **immédiatement** (`< 1 ms`) en mettant la commande dans la queue FreeRTOS de `SensorManager`. La commande s'exécute dans `loopTask` en ~900 ms (transaction I²C bloquante avec le module EZO). L'UI observe l'avancement via les champs WS `phCalPoints` / `orpCalPoints` rafraîchis automatiquement.
 
+⚠️ **Authentification du corps (v2.46.1)** — pour les trois routes ci-dessous, le **corps est refusé AVANT toute mise en file** : la garde `calibrationBodyAuthorized()` est la première instruction du handler de corps, exécutée avant le parse JSON et avant `enqueue*()`. Le `401` reste produit par le handler de **requête** (`REQUIRE_AUTH(WRITE)`), qui s'exécute **après** le corps — la réponse et le décompte de quota sont inchangés, seul l'effet de bord disparaît. Jusqu'en 2.46.0, un `POST` **anonyme** obtenait bien son `401` mais la commande EZO partait quand même, et `loopTask` l'exécutait ~900 ms plus tard : une calibration est **irréversible**. Une tentative non authentifiée est journalisée `WARNING` **au plus 1 fois/60 s et par route**. Détail et portée chimique : [`docs/subsystems/sensors.md`](subsystems/sensors.md#authentification-du-corps-des-routes-de-calibration-v2461).
+
 ### POST /calibrate_ph — WRITE
 
 Calibration EZO pH — déclenche `Cal,mid,7.00` (point milieu) ou `Cal,low,4.00` (point bas).

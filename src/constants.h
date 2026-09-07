@@ -145,6 +145,26 @@ constexpr int kManualInjectMaxDurationS = 600;             // 10 min
 constexpr uint16_t kMaxRequestsPerMinute = 120;           // Limite globale par IP
 constexpr unsigned long kRateLimitWindowMs = 60000;       // Fenêtre de rate limit (1 min)
 
+// Throttle du WARN « corps de calibration non authentifié » (v2.46.1).
+// MOTIF : le handler de CORPS s'exécute AVANT checkRateLimit() (appelé par
+// checkAuth() dans le handler de requête), donc le quota kMaxRequestsPerMinute ne
+// borne PAS ce WARN — il borne les requêtes traitées, pas les lignes déjà écrites.
+// Sans throttle, un émetteur non authentifié persiste ~230 o par requête et purge
+// les 6 144 o conservés du journal (kRotateKeepBytes ; fichier kMaxLogFileBytes =
+// 8 192 o, logger.h:50-51) en ~27 requêtes, soit ~13 s au seul quota autorisé : la
+// fenêtre forensique de ~2 h 30 (feature-109) deviendrait effaçable à volonté, alors
+// que bug-080 en dépend pour tracer un redémarrage.
+// ⚠️ Ce chiffrage a d'abord été écrit sur 24 Ko conservés / 32 Ko de fichier — des
+// tailles HISTORIQUES, jamais celles de ce binaire. Corrigé le 2026-09-07 : la
+// conclusion en est renforcée, pas affaiblie (13 s au lieu de 70). Toute reprise de
+// ce calcul doit lire logger.h, jamais un commentaire.
+// L'émetteur générique non borné (sendAuthRequired, toute route protégée) PRÉEXISTE
+// et reste ouvert : voir bug-112.
+// 1 WARN/min/route maximum, via une statique locale par site ; les tentatives
+// occultées sont comptées et annoncées quand le site redevient bavard.
+// Aligné sur kMutexTimeoutWarnThrottleMs (même convention).
+constexpr unsigned long kCalibrationAuthWarnThrottleMs = 60000;  // 60s - 1 warn/min/route
+
 // ============================================================================
 // MEMORY & BUFFER CONSTANTS - Limites mémoire et buffers
 // ============================================================================
