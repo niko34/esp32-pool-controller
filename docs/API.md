@@ -2011,6 +2011,16 @@ curl -u admin:monmotdepasse -X POST \
 
 > ⚠️ `update_type` doit être envoyé **avant** le fichier dans le multipart.
 
+<a id="authentification-de-lupload-v2462"></a>
+
+⚠️ **Authentification de l'UPLOAD (v2.46.2, `bug-117`)** — jusqu'en 2.46.1 incluse, le **corps** de cette requête était traité **sans aucune vérification d'authentification** : `REQUIRE_AUTH(req, RouteProtection::CRITICAL)` n'existait que dans le handler de **réponse**, exécuté **après** un handler d'upload qui appelait `Update.begin()` puis `Update.end(true)`. Un client **non authentifié** du réseau local pouvait donc faire **flasher une image arbitraire** ; le `401` partait après le flash.
+
+Depuis la v2.46.2, la garde `otaUploadAuthorized()` est la **première instruction** du handler d'upload, **avant** le verrou anti-uploads concurrents et avant tout effet de bord : un corps non autorisé est **ignoré en totalité** — aucun `Update.begin()`, **aucune écriture de partition**, pompes doseuses jamais inhibées, LittleFS jamais démonté. Un **`401` est donc désormais un résultat possible de cette route**, et il reste produit par le handler de **requête** (`REQUIRE_AUTH`) : la réponse, son corps et le décompte de quota sont inchangés, seul l'effet de bord disparaît.
+
+**Aucun client légitime n'est affecté** — équivalence vérifiée dans les deux sens sur ESPAsyncWebServer 3.11.2 (`_parseReqHeader()` renseigne `_authorization` **et** empile tous les en-têtes avant le premier fragment, et rien ne les purge en cours de requête). Les **trois** appelants passent : `ota_update.sh` en authentification basique (`curl -u admin:<mdp>`), le même en jeton (`-H 'X-Auth-Token: …'`), et la page web d'upload (XHR + `X-Auth-Token`).
+
+Une tentative non authentifiée est journalisée `WARNING` **au plus 1 fois/60 s**, avec l'IP d'origine — et **une seule fois par upload** (au premier fragment). Détail, motif et limites : [`docs/subsystems/ota-manager.md`](subsystems/ota-manager.md#authentification-du-handler-dupload-v2462).
+
 **Champ POST optionnel `sha256`** (v2.11.0, [ADR-0022](adr/0022-verification-integrite-ota.md)) : empreinte SHA-256 attendue de l'image, avec ou sans préfixe `sha256:`. Si elle est fournie et ne correspond pas à l'empreinte calculée du flux reçu (ou si elle est malformée), le flash est **refusé** (`Update.abort()`, corps `FAIL`, log `CRITICAL`). Sans ce champ, l'empreinte calculée est simplement **loggée** (`info`) — flash autorisé (upload manuel, utilisateur présent).
 
 ```bash
@@ -2029,6 +2039,7 @@ curl -u admin:monmotdepasse -X POST \
 | Cas | Statut | Corps |
 |---|---|---|
 | Succès | `200` | `OK` **exactement** — inchangé (le front et `ota_update.sh` en dépendent) |
+| **Non authentifié** (v2.46.2) | **`401`** | `{"error":"Authentication required"}` — corps d'upload **refusé avant toute écriture de partition** ([détail](#authentification-de-lupload-v2462)) |
 | Upload concurrent | `409` | `Upload refusé: une mise à jour OTA est déjà en cours` — inchangé |
 | Refus de type (octet magique) | `400` | `FAIL: <cause>` |
 | `sha256` malformé, ou empreinte non conforme | `400` | `FAIL: <cause>` |
@@ -2163,6 +2174,10 @@ Chaque refus émet un log `CRITICAL` avec empreintes attendue/calculée.
 | `503` | `tls_low_memory` | Heap interne momentanément dégradé — **réessayable** |
 
 Les corps des **trois** refus sont produits par le **même helper** (`refuseIfTlsGateClosed`) que ceux de `/check-update` : les deux routes renvoient donc, au caractère près, les mêmes textes et les mêmes valeurs de `code` — voir le [tableau détaillé plus haut](#garde-tls-sortante-psram-libre--heap-v2186). Là encore, seul `code` fait contrat ; le champ `error` est un texte utilisateur reformulable.
+
+<a id="download-update-aucun-handler-de-corps"></a>
+
+✅ **Audité SAIN vis-à-vis de `bug-117` — pour une raison structurelle** (v2.46.2) : cette route est enregistrée en `server->on(url, HTTP_POST, lambda)` à **trois arguments**, donc **sans aucun handler de corps ni handler d'upload**. Il n'existe pas de point d'entrée exécuté avant le lambda de requête : `REQUIRE_AUTH(req, RouteProtection::CRITICAL)` s'exécute **nécessairement** avant tout accès à `Update`. Le défaut de `POST /update` ne peut pas s'y produire. Consigné ici pour ne pas re-auditer la même route : la question ne se rouvre que si un 4ᵉ ou 5ᵉ argument (corps / upload) est ajouté à cet enregistrement.
 
 **Position de la garde** (importante) : après la validation `url` / allowlist / `digest` (une requête malformée reste un `400`/`403`) et **avant** `WiFiClientSecure`, `setOtaInProgress()`, `LittleFS.end()` et tout effacement de partition — un refus n'a donc **aucun effet de bord** : pompes non gelées, filesystem non démonté, aucune partition touchée. Le WARN de refus est identique à celui de `/check-update`, préfixé `/download-update`.
 

@@ -231,7 +231,146 @@ static void remountUploadFsIfNeeded(bool afterFailure = true) {
   }
 }
 
+// =============================================================================
+// Garde d'authentification du handler d'UPLOAD de POST /update (bug-117, 2.46.2)
+// =============================================================================
+// PIÈGE — MÊME TOPOLOGIE que les défauts corrigés sur /save-config (v2.25.0,
+// saveConfigBodyAuthorized) et sur les trois routes de calibration (v2.46.1,
+// calibrationBodyAuthorized) : ESPAsyncWebServer exécute le handler d'UPLOAD
+// AVANT le lambda de requête qui porte REQUIRE_AUTH. Le relecteur qui voit
+// « REQUIRE_AUTH(req, RouteProtection::CRITICAL) » en tête de setupOtaRoutes()
+// croit la route protégée, alors que handleOtaUpdate a déjà appelé
+// Update.begin() puis Update.end(true) : l'image est FLASHÉE quand le 401 part.
+// Le pré-contrôle de l'octet magique ne compense pas — il contrôle la VALIDITÉ
+// de l'image, pas l'AUTORISATION de l'appelant. L'empreinte SHA-256 non plus :
+// elle est conditionnée à g_uploadHasExpected (donc au bon vouloir du client) et
+// une empreinte fournie par l'appelant prouve l'intégrité du TRANSPORT, jamais
+// l'authenticité de l'image.
+//
+// CETTE GARDE N'EST PAS REDONDANTE AVEC REQUIRE_AUTH, et elle ne le remplace
+// pas : REQUIRE_AUTH produit le 401 propre (une seule réponse, un seul décompte
+// de quota), la garde empêche l'EFFET DE BORD. Supprimer l'une ou l'autre
+// réouvre le trou. Ne pas « simplifier » ce point en revue.
+//
+// ÉQUIVALENCE avec REQUIRE_AUTH(CRITICAL) — dans les deux sens, sinon l'appareil
+// devient non déployable (l'OTA est son SEUL canal : pas de port série) :
+//   checkAuth(CRITICAL) accepte  ⇔  (jeton valide) OU (basic valide)
+//     · l'exemption RouteProtection::NONE ne concerne pas /update ;
+//     · l'exemption « premier démarrage » de checkAuth() est bornée aux URL
+//       commençant par /save-config — elle n'a jamais couvert /update, donc son
+//       absence ici n'ajoute AUCUNE restriction (et l'ajouter serait un trou) ;
+//     · checkRateLimit() est volontairement absent (cf. ci-dessus) : il ne peut
+//       que REFUSER, jamais accepter — l'omettre élargit, ne restreint pas.
+//   Les deux méthodes que ota_update.sh peut employer passent donc la garde :
+//     · `curl -u admin:<mdp>`      → checkBasicAuth  → request->authenticate()
+//       lit _authorization, renseigné au PARSE DES EN-TÊTES ;
+//     · `curl -H 'X-Auth-Token: …'` → checkTokenAuth → request->getHeader(),
+//       lu dans _headers, renseigné au PARSE DES EN-TÊTES.
+//   L'interface web (data/app.js, xhr.setRequestHeader('X-Auth-Token')) emprunte
+//   le second chemin.
+//
+// DISPONIBILITÉ DES EN-TÊTES AU PREMIER FRAGMENT — vérifié sur ESPAsyncWebServer
+// 3.11.2 (le supposer ne suffisait pas) : _parseReqHeader() renseigne
+// _authorization/_authMethod et empile chaque en-tête dans _headers pendant
+// l'état PARSE_REQ_HEADERS ; _parseMultipartPostByte() → _handleUploadByte() ne
+// tourne qu'ensuite, et RIEN ne purge _headers avant la fin de la requête. Les
+// deux méthodes sont donc lisibles dès le fragment index == 0 et le restent
+// jusqu'au fragment final. (Le commentaire « check if authenticated before
+// calling the upload » de WebRequest.cpp:738 n'est suivi d'AUCUN contrôle en
+// amont : la responsabilité est bien à notre charge.)
+//
+// ORDRE DES DEUX PRÉDICATS — inversé par rapport à checkAuth() (basic d'abord),
+// et le court-circuit hasHeader() est délibéré : cette garde s'exécute à CHAQUE
+// fragment (≈1000 fois pour un firmware de 1,5 Mo), or checkTokenAuth() émet
+// `systemLogger.debug("Aucun header X-Auth-Token trouvé")` quand l'en-tête est
+// absent — soit, pour un upload en authentification basique, une String
+// construite et un millier de lignes de journal PENDANT le flash. L'ensemble
+// accepté est identique : checkTokenAuth() ne peut retourner true QUE si
+// l'en-tête existe, donc « en-tête absent » ⇒ false dans les deux écritures.
+static bool otaUploadAuthorized(AsyncWebServerRequest* request) {
+  if (request == nullptr) return false;                 // fail-closed
+  if (!authManager.isEnabled()) return true;            // authentification désactivée
+  if (authManager.checkBasicAuth(request)) return true;  // curl -u admin:<mdp>
+  // Court-circuit STRICTEMENT équivalent : checkTokenAuth() ne lit que cet en-tête et
+  // refuse délibérément le paramètre d'URL (motifs écrits dans auth.cpp). Il évite la
+  // String de son systemLogger.debug() quand l'en-tête manque — ~1000 fragments par
+  // flash de 1,5 Mo.
+  // ⚠️ La justification initiale de l'ORDRE des prédicats était INVERSÉE (corrigée
+  // après revue, 2026-09-07) : authenticate() court-circuite déjà sur _authorization
+  // vide, donc le chemin JETON n'allouait rien de toute façon. C'est le chemin BASIC
+  // — celui d'ota_update.sh par défaut — qui paie generateBasicHash (2 new char[] +
+  // String) à CHAQUE fragment. Aucun ordre ne l'évite : la garde est réévaluée par
+  // fragment à dessein (un pointeur réutilisé après free accorderait l'auth).
+  // Allocations transitoires et LIFO, jugées non bloquantes en revue — mais c'est un
+  // coût assumé, pas un coût évité.
+  if (!request->hasHeader("X-Auth-Token")) return false;
+  return authManager.checkTokenAuth(request);            // curl -H 'X-Auth-Token: …'
+}
+
+// IP d'origine, sans jamais déréférencer un client nul : le client peut avoir
+// disparu entre l'arrivée du fragment et la journalisation — un log ne doit pas
+// faire tomber l'appareil.
+static String otaClientIpOf(AsyncWebServerRequest* request) {
+  if (request == nullptr || request->client() == nullptr) return "IP inconnue";
+  return request->client()->remoteIP().toString();
+}
+
+// Journalisation THROTTLÉE du refus (1 WARN/min pour ce site).
+// MOTIF : le quota kMaxRequestsPerMinute ne borne PAS cet émetteur — checkRateLimit()
+// est appelé par checkAuth() dans le handler de REQUÊTE, donc APRÈS l'upload ; le
+// handler d'upload tourne pour chaque requête reçue, quota dépassé ou non. Sans
+// throttle, un émetteur non authentifié purge les 6 144 o conservés du journal
+// (kRotateKeepBytes, logger.h:50-51) en ~27 requêtes soit ~13 s, effaçant la fenêtre
+// forensique dont dépend bug-080.
+// ⚠️ MOTIF SUREVALUÉ — corrigé après revue (2026-09-07) : ce throttle réduit la
+// pression, il ne la supprime PAS. sendAuthRequired() (auth.cpp:234) émet déjà, dans
+// le lambda de réponse, UN WARN NON THROTTLÉ par requête sur cette route. La fenêtre
+// forensique reste donc purgeable sans authentification, et ce throttle-ci n'y change
+// rien à lui seul. Le sujet est l'émetteur GÉNÉRIQUE : voir bug-112. Ne pas conclure
+// de la présence de ce throttle que le vecteur est fermé.
+// Seuil RÉUTILISÉ tel quel : kCalibrationAuthWarnThrottleMs (60 s). Même valeur, même
+// motif et même chiffrage documenté dans constants.h — introduire une constante jumelle
+// n'aurait fait que dupliquer la démonstration. Le nom mériterait d'être généralisé
+// (kBodyAuthWarnThrottleMs) le jour où constants.h sera rouvert.
+// INVARIANT : quand le site est muet, AUCUNE String n'est construite — sortie avant
+// toute concaténation. Ce chemin est atteignable sans authentification.
+static void logUnauthorizedOtaUpload(AsyncWebServerRequest* request) {
+  static unsigned long lastWarnMs = 0;
+  static uint16_t suppressedCount = 0;
+
+  const unsigned long now = millis();
+  // lastWarnMs == 0 == « jamais journalisé » : sans ce cas, la première tentative des
+  // 60 premières secondes de vie de l'appareil serait avalée. La comparaison par
+  // soustraction non signée reste immunisée au repliement de millis() (49,7 j).
+  if (lastWarnMs != 0 && (now - lastWarnMs) < kCalibrationAuthWarnThrottleMs) {
+    if (suppressedCount < UINT16_MAX) suppressedCount++;
+    return;  // MUET : zéro allocation
+  }
+
+  String msg = String("[OTA] POST /update NON AUTHENTIFIÉ depuis ") + otaClientIpOf(request) +
+               " — upload ignoré (aucun Update.begin(), aucune écriture de partition)";
+  if (suppressedCount > 0) {
+    msg += " ; et " + String(suppressedCount) + " tentatives non journalisées";
+    suppressedCount = 0;
+  }
+  systemLogger.warning(msg);
+  lastWarnMs = now;
+}
+
 static void handleOtaUpdate(AsyncWebServerRequest* request, const String& filename, size_t index, uint8_t* data, size_t len, bool final) {
+  // GARDE D'AUTHENTIFICATION — PREMIÈRE INSTRUCTION, avant tout effet de bord
+  // (bug-117). Évaluée à CHAQUE fragment, pas seulement à index == 0 : un client
+  // ne doit pas pouvoir franchir la garde une fois puis pousser la suite du flux.
+  // Rien n'est touché sur ce chemin — aucune statique, pas de g_uploadOwner, pas
+  // de markUploadRejected : c'est REQUIRE_AUTH, dans le lambda de réponse, qui
+  // émettra le 401.
+  if (!otaUploadAuthorized(request)) {
+    if (!index) {
+      logUnauthorizedOtaUpload(request);
+    }
+    return;
+  }
+
   if (!index) {
     // Verrou anti-uploads concurrents : si une autre requête possède déjà la
     // session, la refuser AVANT de toucher aux statiques (sinon le 2ᵉ upload

@@ -2,6 +2,68 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.46.2] - 2026-09-07
+
+> **Ce qui change pour vous, en deux phrases** : une demande de mise à jour
+> envoyée **sans être connecté** ne peut plus rien écrire dans la mémoire de
+> l'appareil. Elle recevait déjà un refus à l'écran — mais l'image était déjà
+> installée quand ce refus partait.
+
+### Sécurité
+
+- **Une requête de mise à jour non authentifiée ne peut plus faire écrire de
+  partition** (`bug-117`, **critique**). Sur
+  [`POST /update`](docs/API.md#authentification-de-lupload-v2462), le fichier
+  envoyé était traité **sans aucune vérification d'authentification** : le
+  contrôle n'existait que sur la **réponse**, prononcée **après** que l'image
+  ait été écrite et validée. N'importe quel appareil du réseau local pouvait
+  donc installer un firmware de son choix — et par là prendre le contrôle des
+  **pompes doseuses**. Le refus est désormais prononcé **avant** la première
+  écriture : aucun démarrage de mise à jour, aucune partition touchée, aucun
+  redémarrage. La route répond maintenant `401` dans ce cas.
+- **Le dosage ne peut plus être suspendu sans authentification** (bénéfice
+  relevé en revue, non anticipé). Déclarer une mise à jour **coupe les pompes
+  doseuses** le temps de l'opération. Ce mécanisme était atteignable sans
+  connexion : un appareil du réseau local pouvait **arrêter la régulation pH et
+  chlore** en annonçant une mise à jour fantôme, sans jamais envoyer d'image
+  valide. Le vecteur est fermé.
+- **Aucune mise à jour légitime n'est affectée** : les trois façons de mettre
+  l'appareil à jour par fichier (script `ota_update.sh` par mot de passe, le
+  même par jeton, et la page **Mise à jour** de l'interface) passent le nouveau
+  contrôle — équivalence vérifiée dans les deux sens, ce point étant vital :
+  la mise à jour par le réseau est le **seul** canal de déploiement de cet
+  appareil.
+- **Journalisation des tentatives** : une tentative non authentifiée écrit une
+  ligne `WARNING` avec l'adresse IP d'origine, **au plus une par minute** et une
+  seule fois par envoi. ⚠️ Ce plafond **réduit** la pression sur le journal, il
+  ne la supprime pas : le refus `401` lui-même écrit déjà une ligne non plafonnée
+  par requête. Le sujet reste ouvert (`bug-112`).
+- **`POST /download-update` (mise à jour depuis GitHub) audité : SAIN**, et pour
+  une raison structurelle — cette route n'a **aucun** traitement de corps, le
+  contrôle d'authentification y précède donc nécessairement tout accès à la
+  mémoire de programme. Consigné pour ne pas la ré-auditer.
+- **Non traité dans cette version** : l'appareil vérifie l'**intégrité** de
+  l'image reçue (empreinte SHA-256), pas son **authenticité** — et, sur l'envoi
+  manuel, seulement si l'appelant fournit l'empreinte. Point renvoyé à
+  `feature-118`.
+
+### Documentation
+
+- `docs/API.md` : `POST /update` — un **`401` est désormais possible dès
+  l'upload**, le corps est refusé avant toute écriture de partition, et le `401`
+  reste produit par le handler de requête. Note structurelle sur
+  `/download-update`.
+- `docs/subsystems/ota-manager.md` : nouveau chapitre « Authentification du
+  handler d'UPLOAD » — la garde et son emplacement, la règle de méthode
+  « chercher la **place** de la garde, jamais sa seule présence » (trois défauts
+  du même jour, même cause), la réévaluation à chaque fragment et son coût
+  **assumé**, le WARN throttlé **et la limite de ce throttle**, le bénéfice sur
+  l'inhibition du dosage, et ce que le correctif ne fait pas.
+- `docs/subsystems/logger.md` : troisième site du même throttle, avec rappel de
+  sa limite.
+
+---
+
 ## [2.46.1] - 2026-09-07
 
 > **Ce qui change pour vous, en deux phrases** : une demande de calibration

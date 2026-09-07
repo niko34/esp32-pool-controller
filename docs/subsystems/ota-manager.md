@@ -61,6 +61,77 @@ Règle de sécurité #6 (« toujours vérifier la signature/CRC avant flash »),
 | Upload manuel (`/update`) | Empreinte **loggée**, comparaison **optionnelle** | SHA-256 du flux toujours calculé et loggé (`info`). Paramètre POST `sha256` optionnel (avec ou sans préfixe `sha256:`) : mismatch ou valeur malformée → `Update.abort()`, réponse **`400 FAIL: <cause>`** (v2.20.1 — auparavant `200` avec corps `FAIL`), log `CRITICAL`. Sans paramètre : flash autorisé (utilisateur physiquement présent — fail-open documenté). |
 | ArduinoOTA / espota | Déjà protégé | Le protocole espota transmet le MD5 de l'image, vérifié par la stack `Update`. Non modifié. |
 
+<a id="authentification-du-handler-dupload-v2462"></a>
+
+## Authentification du handler d'UPLOAD `POST /update` (v2.46.2, `bug-117`)
+
+Jusqu'en 2.46.1 incluse, `handleOtaUpdate()` ([`src/web_routes_ota.cpp:360`](../../src/web_routes_ota.cpp:360)) — le **handler d'upload** de `POST /update` — ne contenait **aucune** vérification d'authentification : ni `authManager`, ni `checkAuth`, ni `REQUIRE_AUTH`, ni `checkTokenAuth`, ni `checkBasicAuth`. Le `REQUIRE_AUTH(req, RouteProtection::CRITICAL)` n'existait que dans le lambda de **réponse**, exécuté **après** un handler qui appelait `Update.begin()` puis `Update.end(true)`. Un client **non authentifié** du réseau local pouvait faire **flasher une image arbitraire** — donc prendre le contrôle des pompes doseuses ; le `401` partait après le flash.
+
+**Même topologie** que les défauts corrigés sur [`/save-config`](../API.md#post-save-config--critical) (v2.25.0, `saveConfigBodyAuthorized()`) et sur les [trois routes de calibration](sensors.md#authentification-du-corps-des-routes-de-calibration-v2461) (v2.46.1, `calibrationBodyAuthorized()`), avec l'effet le plus lourd des trois : l'écriture d'une partition applicative.
+
+### La garde `otaUploadAuthorized()`
+
+[`src/web_routes_ota.cpp:290`](../../src/web_routes_ota.cpp:290) — appelée en **première instruction** du handler d'upload, **avant** le verrou `g_uploadOwner`, avant le pré-contrôle du type et avant tout effet de bord.
+
+- **`fail-closed` sur pointeur nul**, puis `authManager.isEnabled()` faux → autorisé ; sinon `checkBasicAuth() || checkTokenAuth()`.
+- **Aucun état touché sur le chemin de refus** : aucune statique, pas de `g_uploadOwner`, pas de `markUploadRejected()`, rien sur `Update`, ni empreinte, ni rollback, ni pré-contrôle du type. C'est `REQUIRE_AUTH`, dans le lambda de réponse, qui émet le `401`.
+- **Pas de `checkRateLimit()`** : il ne peut que **refuser**, jamais accepter — l'omettre élargit l'ensemble accepté, il ne le restreint pas. Une seule réponse au client, un seul décompte de quota.
+- **Pas d'exemption « premier démarrage »** : celle de `checkAuth()` est bornée aux URL commençant par `/save-config` et n'a **jamais** couvert `/update`. Son absence n'ajoute donc aucune restriction — l'ajouter serait un trou.
+- La garde **ne remplace pas** `REQUIRE_AUTH` et n'en est **pas** redondante : `REQUIRE_AUTH` produit le `401` propre, la garde empêche l'**effet de bord**. Supprimer l'une ou l'autre réouvre le trou.
+
+### Chercher la PLACE de la garde, jamais sa seule présence
+
+C'est le livrable réutilisable de ce cycle, et il vaut au-delà de l'OTA : **trois** défauts de sécurité relevés le 2026-09-07, tous survivants à des revues pour la **même** raison — un garde-fou **visible** fait passer le relecteur.
+
+| Garde-fou visible | Ce qu'il contrôlait réellement | Défaut |
+|---|---|---|
+| `REQUIRE_AUTH` présent trois lignes plus bas | la **réponse**, pas le corps | routes de calibration (v2.46.1) |
+| une sentinelle de parité `/data` ↔ WebSocket | elle déclarait **légitime** le bug qu'elle devait signaler | `bug-082` |
+| le pré-contrôle de l'**octet magique** | la **validité** de l'image, prise pour une **autorisation** | `bug-117`, cette section |
+
+L'audit du 07/09 avait d'ailleurs classé `POST /update` **saine** en s'appuyant sur ce pré-contrôle (« refus AVANT `setOtaInProgress`, `LittleFS.end()` et `Update.begin()` »). Le défaut n'a été trouvé qu'en **refusant de reprendre ce verdict** et en relisant la fonction. Règle : **chercher la place de la garde dans le cycle de vie de la requête, jamais sa seule présence.**
+
+### Réévaluation à CHAQUE fragment — et pourquoi
+
+La garde n'est **pas** évaluée seulement à `index == 0` : elle est réévaluée à **chaque** fragment. Un client ne doit pas pouvoir la franchir une fois puis pousser la suite du flux. Aucun cache par pointeur de requête n'est admissible : un pointeur **réutilisé après `free`** accorderait l'authentification à une autre requête.
+
+**Coût assumé, pas coût évité** — la justification initiale de l'ordre des prédicats était **inversée**, corrigée après revue : `request->authenticate()` court-circuite déjà sur `_authorization` vide, donc le chemin **jeton** n'allouait rien de toute façon. C'est le chemin **basique** — celui d'`ota_update.sh` par défaut — qui paie `generateBasicHash()` (2 `new char[]` + une `String`) à chaque fragment, soit **≈ 1 000 fois pour un firmware de 1,5 Mo**, dans la tâche réseau et en famine mémoire potentielle. **Aucun ordre des prédicats n'évite ce coût**, la réévaluation par fragment étant délibérée. Allocations transitoires et LIFO, jugées non bloquantes en revue.
+
+Le court-circuit `hasHeader("X-Auth-Token")` reste, lui, **strictement équivalent** (`checkTokenAuth()` ne peut retourner `true` que si l'en-tête existe) et évite la `String` de son `systemLogger.debug("Aucun header X-Auth-Token trouvé")` — sinon ~1 000 lignes de journal pendant un flash.
+
+### Disponibilité des en-têtes au premier fragment — vérifiée, pas supposée
+
+Sur **ESPAsyncWebServer 3.11.2** : `_parseReqHeader()` renseigne `_authorization` / `_authMethod` **et** empile chaque en-tête dans `_headers` pendant l'état `PARSE_REQ_HEADERS` ; `_parseMultipartPostByte()` → `_handleUploadByte()` ne tourne qu'**ensuite**, et **rien ne purge `_headers`** avant la fin de la requête. Les deux méthodes sont donc lisibles dès `index == 0` et le restent jusqu'au fragment final. Le commentaire « check if authenticated before calling the upload » de `WebRequest.cpp:738` n'est suivi d'**aucun** contrôle en amont : la responsabilité est bien à notre charge.
+
+**Les trois clients légitimes passent** (équivalence vérifiée dans les deux sens — indispensable, l'OTA étant le **seul** canal de déploiement de cet appareil) : `ota_update.sh` en authentification basique, le même en jeton, et la page web d'upload ([`data/app.js:7715`](../../data/app.js:7715), XHR + `X-Auth-Token`).
+
+### Bénéfice second, non anticipé : `setOtaInProgress` n'est plus atteignable sans authentification
+
+Relevé **en revue**, pas à la conception. `PumpController::setOtaInProgress(true)` **coupe les pompes doseuses** (voir [Interaction avec `pump_controller`](#interaction-avec-pump_controller)). Il était atteignable depuis le handler d'upload, donc **sans authentification** : un attaquant du réseau local pouvait **suspendre la régulation pH/ORP** en déclarant un OTA fantôme — sans jamais avoir à fournir d'image valide, et sans laisser autre chose qu'un « Type de mise à jour » au journal. La garde ferme ce vecteur en même temps que le flash.
+
+### WARN throttlé — et la LIMITE de ce throttle
+
+Une tentative non authentifiée est journalisée `WARNING` **au plus 1 fois/60 s** pour ce site (statique locale, seuil `kCalibrationAuthWarnThrottleMs` **réutilisé tel quel** : même valeur, même motif et même chiffrage que pour les routes de calibration — une constante jumelle n'aurait dupliqué que la démonstration ; le nom mériterait d'être généralisé en `kBodyAuthWarnThrottleMs` le jour où `constants.h` sera rouvert). **Une seule fois par upload**, au premier fragment :
+
+```
+[OTA] POST /update NON AUTHENTIFIÉ depuis 192.168.1.50 — upload ignoré (aucun Update.begin(), aucune écriture de partition) ; et 12 tentatives non journalisées
+```
+
+- **Le quota `kMaxRequestsPerMinute` ne borne pas cet émetteur** : `checkRateLimit()` est appelé par `checkAuth()` dans le handler de **requête**, donc après l'upload. Le handler d'upload tourne pour **chaque** requête reçue, quota dépassé ou non.
+- **Invariant : le chemin muet n'alloue rien** — sortie avant toute concaténation. Ce chemin est atteignable sans authentification et s'exécute en RAM interne pendant une famine mémoire active (`bug-080`).
+- L'IP est lue sans jamais déréférencer un client nul : le client peut avoir disparu entre l'arrivée du fragment et la journalisation.
+- ⚠️ **LIMITE — motif initialement surévalué, corrigé après revue.** Ce throttle **réduit la pression, il ne ferme pas le vecteur**. `AuthManager::sendAuthRequired()` ([`auth.cpp:234`](../../src/auth.cpp:234)) émet déjà, dans le lambda de réponse, **un `WARNING` NON throttlé par requête** sur cette même route. La fenêtre forensique reste donc **purgeable sans authentification**, et ce throttle-ci n'y change rien à lui seul. Ne pas conclure de sa présence que le vecteur est fermé — l'émetteur générique est traité par [`bug-112`](../../specs/features/todo/bug-112-journal-non-borne-sur-route-protegee.md). L'avertissement est porté dans le commentaire du code.
+
+### `/download-update` : audité SAIN, pour une raison structurelle
+
+Cette route est enregistrée en `server->on("/download-update", HTTP_POST, lambda)` à **trois** arguments ([`src/web_routes_ota.cpp:1329`](../../src/web_routes_ota.cpp:1329)) : **aucun handler de corps, aucun handler d'upload**. Il n'existe donc **aucun** point d'entrée exécuté avant le lambda de requête — `REQUIRE_AUTH(req, RouteProtection::CRITICAL)` s'exécute **nécessairement** avant tout accès à `Update`. Le défaut de `POST /update` ne peut pas s'y produire.
+
+Consigné pour **ne pas re-auditer la même route** : la question ne se rouvre que si un 4ᵉ ou 5ᵉ argument est ajouté à cet enregistrement.
+
+### Ce que ce correctif ne fait PAS
+
+Il apporte l'**autorisation** de l'appelant, pas l'**authenticité** de l'image. La comparaison SHA-256 de l'upload manuel reste conditionnée à `g_uploadHasExpected` — donc au bon vouloir du client — et une empreinte **fournie par l'appelant** prouve l'intégrité du **transport**, jamais l'authenticité de l'image. La règle de sécurité n° 6 de `CLAUDE.md` (« vérifier la signature/CRC avant flash ») n'est donc **pas** entièrement satisfaite sur ce chemin : point renvoyé à [`feature-118`](../../specs/features/todo/feature-118-authenticite-de-l-image-ota.md).
+
 ### Verrou anti-upload concurrent (`/update`)
 
 Le handler d'upload est appelé par chunks et son état vit dans des statiques de fichier (`g_uploadHasher`, `g_uploadLastLog`, empreinte attendue…), réinitialisées à `index == 0`. Un second upload lancé pendant qu'un premier est en cours corromprait cet état :
