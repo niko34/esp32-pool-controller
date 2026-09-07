@@ -1428,6 +1428,15 @@ void setupConfigRoutes(AsyncWebServer* server, bool* restartApRequested, unsigne
       sendJsonResponse(request, doc);
     });
   wifiConnectHandler->setMethod(HTTP_POST);
+  // bug-113 — ORDRE SIGNIFICATIF (cf. WebServer.cpp:147 : premier handler dont
+  // filter() et canHandle() passent). Le garde borne le tamponnage AVANT toute
+  // authentification, ce qui est précisément le vecteur relevé.
+  // ⚠️ Le plafond de 1 024 o est calibré pour NE PAS casser le premier
+  // démarrage : cette route reste ouverte sans identifiants quand
+  // wifiConfigAllowed(), et la charge la plus lourde imaginable (SSID 32 o +
+  // mot de passe 63 o, tous deux échappés \uXXXX, soit ×6) tient en ~600 o.
+  registerJsonBodyGuard(server, "/wifi/connect", kWifiConnectMaxBodyBytes);
+  wifiConnectHandler->setMaxContentLength(kWifiConnectMaxBodyBytes);
   server->addHandler(wifiConnectHandler);
 
   // Route: Déconnecter du WiFi et effacer les credentials

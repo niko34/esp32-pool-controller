@@ -309,17 +309,36 @@ slot qui n'est plus au même endroit.
 > « réussite » apparente, et une image FS construite pour 512 Ko sur une partition de
 > 320 Ko présente des métadonnées LittleFS discordantes — interface web morte ou corrompue.
 
-**4. Réimporter l'historique — par lots de 145 points maximum.**
+**4. Réimporter l'historique — depuis l'interface, quelle que soit sa taille (v2.48.0).**
 
-⚠️ `POST /history/import` **refuse tout corps de plus de 16 384 octets** avec un `413`
-(limite de la bibliothèque HTTP, pas un choix du firmware). À ~112 octets par point
-compacté, **145 points passent, 146 non**. Une sauvegarde plus longue doit être **découpée
-en plusieurs POST successifs** — les lots se cumulent. Détails :
-[API.md](API.md#post-historyimport--write).
+Paramètres → **Avancé** → « Historique des mesures » → choisir le fichier CSV, puis
+**« Remplacer l'historique »**. L'interface **découpe elle-même** l'envoi en lots et
+affiche une barre de progression : il n'y a plus de taille maximale de sauvegarde.
 
-> Sur la migration du 05/09, 245 points avaient été sauvegardés et **145 seulement** ont
-> été réimportés en une passe ; les 100 plus anciens (23 au 31 août) restent dans le
-> fichier de sauvegarde.
+> 🛑 **Ne PAS découper le fichier à la main, et surtout pas avec `curl` sur
+> `/history/import` sans `mode`.** L'ancienne version de ce guide conseillait des
+> « lots de 145 points qui se cumulent » : **les lots ne se cumulaient pas**, chacun
+> **écrasait** le précédent (`memoryBuffer = dataPoints;`) et seul le **dernier**
+> survivait, sans aucun message. C'est la cause des **100 points perdus** de la
+> migration du 05/09 (245 sauvegardés, 145 réimportés, les plus anciens du 23 au
+> 31 août restés dans le fichier).
+>
+> Depuis la v2.48.0 un découpage manuel est possible, mais **uniquement** en posant
+> `"mode":"append"` sur les lots suivants, et sous **8 192 octets** de corps par
+> requête (le plafond a été **abaissé**, cf. [API.md](API.md#post-historyimport--write)).
+> L'interface fait tout cela seule ; s'en passer n'apporte rien.
+
+> ⚠️ **Rechargez la page (Ctrl-Maj-R) après avoir flashé le filesystem** avant
+> d'importer. Une interface restée en cache ignore le découpage et se heurte au
+> nouveau plafond de 8 192 o — elle recevra un `413`.
+
+**Si l'import s'interrompt** (coupure Wi-Fi) : les lots déjà envoyés **restent** dans
+l'appareil. Un bouton **« Reprendre l'import »** apparaît et repart du lot interrompu ;
+les créneaux déjà présents sont réécrits à l'identique, donc **aucun doublon**. Tant
+qu'une reprise est en attente, « Remplacer » et « Compléter » sont **désactivés** —
+cliquer « Remplacer » à cet instant détruirait précisément l'import partiel qu'on
+cherche à finir. **« Abandonner la reprise »** est la sortie explicite : elle
+n'efface rien, elle renonce seulement aux lots restants.
 
 #### Vérifications post-flash
 

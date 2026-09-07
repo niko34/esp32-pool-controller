@@ -122,6 +122,11 @@ void setupSensorIdRoutes(AsyncWebServer* server) {
   auto* identifyHandler = new AsyncCallbackJsonWebHandler(
       "/sensors/onewire/identify", handleIdentify);
   identifyHandler->setMethod(HTTP_POST);
+  // bug-113 — même patron que /wifi/connect : garde enregistré AVANT le handler
+  // JSON (le premier handler qui accepte gagne). Charge réelle : `address`
+  // 16 hex + `role` ≤ 7 caractères, soit ~45 o — 256 o laissent 5,7× de marge.
+  registerJsonBodyGuard(server, "/sensors/onewire/identify", kSensorIdentifyMaxBodyBytes);
+  identifyHandler->setMaxContentLength(kSensorIdentifyMaxBodyBytes);
   server->addHandler(identifyHandler);
 
   // Le reset n'a pas de body utile : on accepte POST sans payload JSON.

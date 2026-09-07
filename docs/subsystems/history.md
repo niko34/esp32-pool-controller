@@ -452,6 +452,119 @@ Depuis la v2.38.0 :
 
 La trace de clôture DEBUG existante (`get-history clos: emis=…`) est inchangée.
 
+## Mode « compléter » — `appendData()` + `trimToCaps()` (bug-101, v2.48.0)
+
+`POST /history/import` a désormais **deux** modes (champ `mode`, défaut `replace` —
+voir [API.md](../API.md#post-historyimport--write)) :
+
+| Mode | Fonction | Effet sur `memoryBuffer` |
+|---|---|---|
+| `replace` | `importData()` | `memoryBuffer = dataPoints;` — **substitution totale**, puis `dedupAggregatedPoints()` |
+| `append` | `appendData()` | **fusion en place** créneau par créneau, puis `std::sort`, puis `trimToCaps()` |
+
+C'est `append` qui rend une restauration de **taille quelconque** possible sans toucher
+au budget mémoire : le client découpe, et chaque lot s'ajoute au précédent au lieu de
+l'écraser. Décision et alternatives écartées (streaming firmware, format compact) :
+[ADR-0075](../adr/0075-decoupage-client-contre-streaming-firmware.md).
+
+### Règle de collision : le point entrant ÉCRASE
+
+À **`(timestamp, granularité)` identique**, le point entrant remplace le point vivant
+(`historyImportSameSlot()`, [`src/history_import_logic.h`](../../src/history_import_logic.h)).
+Deux précisions qui ne sont pas des détails :
+
+1. **RAW comprise.** ⚠️ **Ne pas espérer que `dedupAggregatedPoints()` couvre ce
+   chemin** : il commence par `if (p.granularity != RAW)`
+   ([`src/history.cpp:1248`](../../src/history.cpp)) et ignore donc les points RAW —
+   dont un export porte jusqu'à `kMaxRawDataPoints` = **96**. Sans la règle appliquée
+   *dans* `appendData()`, un lot RAW réenvoyé (reprise après coupure) **doublait en
+   silence**.
+2. **TOUTES les occurrences du créneau, pas seulement la première.** Un buffer chargé
+   depuis un fichier écrit par une version **≤ 2.18.0** peut porter des doublons
+   d'agrégats. N'en écraser qu'un laisserait l'autre **périmé**, que
+   `dedupAggregatedPoints()` **moyennerait** ensuite avec le neuf : l'**idempotence**
+   tomberait. Écraser les deux la conserve, `historyMergeMeanFinite(x, x) == x`.
+
+**Pourquoi l'écrasement et non la moyenne** — c'est le cœur de la décision. Une moyenne
+équipondérée fabriquerait une valeur **qui n'a jamais été mesurée** ; sur une reprise
+après coupure, ce qu'on veut est la valeur de la **sauvegarde, telle quelle**. Et
+l'écrasement donne l'**idempotence exacte** : réenvoyer *n* fois le même lot donne le
+même historique qu'une fois. C'est cette propriété — et rien d'autre — qui rend le
+bouton « Reprendre l'import » sûr.
+
+> ⚠️ **`dedupAggregatedPoints()` n'est PAS appelé par `appendData()`, et c'est un
+> choix.** Il moyennerait précisément les agrégats que l'écrasement vient de remplacer.
+> La fusion en place garantit déjà l'unicité de `(timestamp, granularité)` pour tout ce
+> que le lot a touché ; le reste relève de `consolidateData()`.
+
+### Fusion en place : zéro tampon supplémentaire
+
+La recherche est **linéaire dans `memoryBuffer`**, sans structure auxiliaire — ni
+`std::map`, ni vecteur trié. Coût : `|pts| × |buffer|`, soit au pire ≈ 45 × 339
+≈ **15 000 comparaisons de deux scalaires** par lot (le plafond de corps borne `|pts|`).
+Compromis **délibérément inverse** de l'usuel : sur ce chemin, la ressource rare est la
+**mémoire**, pas le CPU.
+
+**Le seul contigu du chemin reste le vecteur existant** :
+`(kMaxRawDataPoints + kMaxHourlyDataPoints + kMaxDailyDataPoints) × sizeof(DataPoint)`
+= 339 × 28 = **9 492 octets**, verrouillé par `static_assert` (et `sizeof(DataPoint) == 28`
+l'est aussi). C'est le chiffre à confronter au relevé `max_alloc_8bit` de
+`GET /get-system-info` avant/après un import : l'invariant est que **l'interne ne bouge
+pas de plus de 9 492 o** et que la **PSRAM absorbe** les tampons de corps
+([ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)).
+
+### `trimToCaps()` — bornage du mode « ajouter »
+
+Ramène `memoryBuffer` sous les plafonds de [`constants.h`](../../src/constants.h),
+**granularité par granularité**, en évinçant les **plus anciens**. Le plan d'éviction
+est calculé par la fonction pure `historyImportTrimPlan(raw, hourly, daily)`, puis
+appliqué en **un seul** passage `erase`/`remove_if` (O(n) au total).
+
+- **Pré-requis** : mutex **déjà pris** par l'appelant, et buffer **trié par timestamp**
+  — l'ordre du vecteur *est* l'ordre chronologique, donc « les premiers rencontrés » =
+  « les plus anciens ».
+- **Appelé uniquement par `appendData()`, et ce n'est pas un oubli.** Les deux sites de
+  bornage existants sont **inchangés** : `recordDataPoint()` pour RAW, le pas 4 de
+  `consolidateData()` pour HOURLY/DAILY. Le mode `replace` reste borné par le plafond
+  de corps de la route (`kHistoryImportMaxBodyBytes`) et n'a donc pas besoin de ce
+  filet. Seul l'ajout par lots pouvait franchir un plafond sans passer par aucun des
+  deux chemins existants.
+- **Ce que `trimToCaps()` retire n'est pas ce que le lot apportait.** Le compteur rendu
+  au client (`dropped`) compte les **évincés de l'historique**, jamais les entrants
+  refusés — cf. l'avertissement de [API.md](../API.md#post-historyimport--write).
+
+### Atomicité et journal
+
+`appendData()` prend le mutex historique **une seule fois** (idiome d'`importData()`) :
+la séquence **fusion → tri → bornage → sauvegarde** est atomique, un lot ne peut pas
+s'entrelacer avec le `recordDataPoint()` de la boucle. Comme `importData()`, il remet
+`legacyHistoryPending = false` / `legacyMaxTimestamp = 0` — sans quoi la migration
+d'historique hérité se réveillerait au prochain `consolidateData()` et **réécrirait
+par-dessus** le lot.
+
+Une ligne `INFO` par lot, émise **après** la libération du mutex (un `WARNING` ou pire
+flusherait le journal en synchrone, donc un `fopen`, **sous** le mutex historique) :
+
+```
+Historique : lot ajouté (N nouveaux, M écrasés, D évincés, total T)
+```
+
+### 📋 Défauts ouverts sur ce chemin (consignés, non traités)
+
+- **Une réécriture complète de `history.json` PAR LOT.** `appendData()` appelle
+  `saveToFile()` à chaque appel : restaurer 339 points en 8 lots produit **8
+  réécritures intégrales** du fichier, depuis la tâche `async_tcp` — latence perçue et
+  usure de la partition. Un `flush` explicite en fin de séquence supposerait une notion
+  de session côté appareil, qui n'existe pas (chaque lot est autonome, c'est ce qui rend
+  la reprise possible). **Préexistant au mode `append`** (`importData()` faisait déjà
+  une sauvegarde par appel), **atténué** par le filtre 503 de la garde de corps qui
+  refuse les lots en famine.
+- **`saveToFile()` est `void`.** Elle peut sauter la sauvegarde (admission d'espace ou
+  de mémoire refusée) **sans que `appendData()` le sache** : la route répond alors
+  `200` avec un `total` juste **en RAM**, mais le fichier n'a pas été écrit. Le point
+  est visible dans le journal et par `historyFopenDeferralCount()` / `nospc_cnt`, jamais
+  dans la réponse HTTP. **Préexistant.**
+
 ## API publique
 
 ```cpp
@@ -468,6 +581,13 @@ std::vector<DataPoint> getAllData();
 // de réponse. false = mutex indisponible (rare) → la route répond 503.
 bool snapshotFiltered(std::vector<DataPoint>& out, unsigned long cutoff, unsigned long since);
 bool importData(const std::vector<DataPoint>& dataPoints);
+// bug-101 (v2.48.0) : mode « ajouter » de POST /history/import — fusion EN PLACE
+// d'un lot dans l'historique existant, puis bornage par trimToCaps().
+// outTotal   = points DÉTENUS après le lot ; outDropped = points ÉVINCÉS par
+// trimToCaps() pendant cet appel (les plus anciens), JAMAIS « entrants refusés ».
+// Les deux sorties sont écrites AVANT tout retour d'échec (jamais non initialisées).
+// false = historique désactivé, lot vide, ou mutex non pris → RIEN n'a été modifié.
+bool appendData(const std::vector<DataPoint>& pts, size_t* outTotal, size_t* outDropped);
 bool clearHistory();   // false si le mutex n'a pas pu être pris (historique occupé) — v2.11.1
 ```
 
@@ -501,7 +621,7 @@ Tests natifs : suite dédiée `test/test_native_history_export/` (cutoff `range`
 | Action | Endpoint | Auth |
 |--------|----------|------|
 | Récupérer l'historique | `GET /get-history?range={24h|7d|30d|3d|all}` | READ |
-| Importer un CSV | `POST /history/import` (multipart) | CRITICAL |
+| Importer un lot de points | `POST /history/import` (JSON, `mode` `replace`/`append`, ≤ **8 192 o** de corps) | WRITE |
 | Purger l'historique | `POST /history/clear` | CRITICAL |
 
 Voir [`web_routes_data.cpp:303`](../../src/web_routes_data.cpp:303). Colonnes CSV de l'export de l'interface (v2.47.0) : `datetime, ph, orp, temperature, filtration, dosing, dosing_mask, granularity` — `dosing` reste le **booléen d'héritage** `0`/`1`, `dosing_mask` porte le [masque de voies](#masque-de-voies-de-dosage-bug-098-v2470). ⚠️ **Le nom `dosing_mask` est neuf à dessein** : réutiliser `dosing` aurait rendu un `1` **indécidable** — pH, ou voie inconnue ? — les exports ≤ 2.46 écrivant déjà `1` pour dire « il y a eu dosage ». À l'import, `dosing_mask` a **priorité** sur `dosing` quand les deux colonnes sont présentes.

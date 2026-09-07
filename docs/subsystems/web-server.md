@@ -18,6 +18,15 @@ bool isRestartApRequested() const;
 void clearRestartRequest();
 ```
 
+Fonction libre ([`src/web_helpers.h`](../../src/web_helpers.h), v2.48.0, bug-113) :
+
+```cpp
+// Garde prioritaire de corps JSON : 413 (corps > capBytes) / 503 (famine) rendus
+// AVANT le tamponnage de AsyncCallbackJsonWebHandler. À enregistrer AVANT le
+// handler gardé — l'ordre EST le mécanisme (voir section dédiée).
+void registerJsonBodyGuard(AsyncWebServer* server, const char* uri, size_t capBytes);
+```
+
 ## Organisation des routes
 
 Les routes sont réparties par domaine fonctionnel dans des fichiers séparés :
@@ -50,7 +59,7 @@ Trois raisons distinctes, aucune accidentelle :
 
 1. les 13 sites non-HTTP ne passent par **aucun matcher** ;
 2. **`/download-logs` est exempt par l'ordre d'enregistrement** — c'est un choix délibéré d'ADR-0067 (garder l'appareil observable en famine), pas un oubli ;
-3. **`POST /history/import` est hors matcher** (garde GET-only), alors qu'il atteint les deux `fopen` de `saveToFile()` depuis `async_tcp`.
+3. **`POST /history/import` est hors matcher** (garde GET-only), alors qu'il atteint les deux `fopen` de `saveToFile()` depuis `async_tcp`. ✅ **Couvert depuis la v2.48.0** par une garde distincte, `registerJsonBodyGuard()` (section ci-dessous) : la route répond **503 + `Retry-After`** en famine, sur la **même** métrique et le **même** seuil. La garde statique reste `HTTP_GET`-only, elle n'a pas bougé.
 
 Le PANIC du 05/09 (`loopTask`, sauvegarde périodique de l'historique) est exactement ce trou. Stratégie retenue : [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) — point d'admission unique, deux classes de contention.
 
@@ -113,6 +122,123 @@ La fermeture exige **deux** conditions cumulées : `kHttpLowHeapEpisodeQuietMs` 
 - **Bande de verrouillage stable** : l'auto-guérison mord à **4 096 o**, la garde à **8 192**. Entre les deux, l'interface web est **entièrement refusée** et **aucun reboot ne survient** — le régime est **stable**, pas transitoire.
 - **En famine, `/wifi.html` et `/` sont refusés** : portail AP de secours et page OTA **inaccessibles par le navigateur**. Chemins de secours réels : `POST /update` (hors matcher), `./deploy.sh ota-firmware`, et les routes de diagnostic ci-dessus.
 - Un **WARN sans son INFO** signifie que l'épisode est **toujours en cours** (famine persistante sans visiteur pour l'alimenter), ou qu'un **reboot** l'a interrompu — auquel cas la bannière de démarrage clôt l'épisode.
+
+## Garde de corps JSON `registerJsonBodyGuard()` (bug-113, v2.48.0)
+
+- **Fichiers** : [`src/web_helpers.h`](../../src/web_helpers.h), [`src/web_helpers.cpp`](../../src/web_helpers.cpp)
+- **Patron** : [ADR-0067](../adr/0067-garde-503-avant-fopen-handler-prioritaire.md) — handler prioritaire enregistré **avant** celui qu'il garde
+- **Décision d'ensemble** : [ADR-0075](../adr/0075-decoupage-client-contre-streaming-firmware.md) — découpage client contre streaming firmware, et pourquoi le plafond **descend**
+
+```cpp
+void registerJsonBodyGuard(AsyncWebServer* server, const char* uri, size_t capBytes);
+```
+
+### Ce qu'elle ferme
+
+`AsyncCallbackJsonWebHandler` **tamponne le corps entier** (`calloc(total + 1)`) avant
+d'appeler son callback, donc **avant `REQUIRE_AUTH`**. Trois routes l'utilisent, et son
+plafond par défaut (16 384 o) n'était **jamais surchargé** : **49 152 octets
+réclamables sans identifiants**. La garde impose un plafond **par route**, et rend le
+refus **en JSON maison** au lieu du `413` nu de la bibliothèque.
+
+| Route | Plafond | Constante |
+|---|---|---|
+| `POST /history/import` | **8 192 o** | `kHistoryImportMaxBodyBytes` |
+| `POST /wifi/connect` | **1 024 o** | `kWifiConnectMaxBodyBytes` |
+| `POST /sensors/onewire/identify` | **256 o** | `kSensorIdentifyMaxBodyBytes` |
+| **Total exposé sans authentification** | **9 472 o** | contre 49 152 — **−80,73 %** |
+
+Le total, l'écart au défaut de la bibliothèque et la position du budget client par
+rapport au seuil PSRAM sont **assertés à la compilation**
+([`constants.h`](../../src/constants.h)) : réviser un plafond **casse le build** au lieu
+de périmer cette page.
+
+> ⚠️ **Le motif n'est pas « ça va planter ».** La prémisse d'origine de `bug-113` est
+> **fausse** au-delà de 4 095 o : `calloc` → `heap_caps_malloc_default`, qui charge
+> `MALLOC_CAP_DEFAULT|MALLOC_CAP_SPIRAM` dès que `size > malloc_alwaysinternal_limit`
+> — donc **PSRAM d'abord**, repli interne seulement si la PSRAM rend `NULL` (établi
+> **par désassemblage** de `libheap.a`, section `.iram1.2`, le 2026-09-07 ;
+> [ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)).
+> Un tampon de 16 Ko ne partait **pas** dans le tas 8 bits affamé. Le plafond bas reste
+> juste, mais pour une raison **plus solide** : sans lui, la sûreté de ce chemin
+> reposerait **entièrement sur une préférence d'allocateur**, dont le repli interne est
+> le contre-exemple. Le dépôt s'est déjà trompé **dans l'autre sens** — le parachute
+> anti-OOM a vécu **en PSRAM**, donc décoratif, depuis `feature-066`.
+>
+> **Corollaire contre-intuitif** : découper les lots **plus fin** ramènerait
+> l'allocation **dans** le tas affamé (≤ 4 095 o ⇒ interne). Le budget de lot client
+> (`kHistoryImportChunkBudgetBytes` = **7 168 o**) est **au-dessus** de ce seuil, à
+> dessein, et un `static_assert` l'interdit de descendre.
+
+### Mécanisme — l'ordre d'enregistrement EST la garde
+
+```cpp
+registerJsonBodyGuard(server, "/history/import", kHistoryImportMaxBodyBytes);
+importHandler->setMaxContentLength(kHistoryImportMaxBodyBytes);
+server->addHandler(importHandler);   // ⚠️ APRÈS la garde, jamais avant
+```
+
+`AsyncWebServer::_attachHandler` retient le **premier** handler dont `filter()` **et**
+`canHandle()` passent (`WebServer.cpp:147`), et le handler est attaché **en fin
+d'en-têtes** (`WebRequest.cpp:997`) : le `Content-Length` est donc connu **avant le
+premier octet de corps**, et *a fortiori* avant tout `calloc`. Permuter les deux lignes
+rendrait la garde **inerte sans rien casser visiblement** — c'est la mutation M7 de la
+campagne de `bug-101`, tuée par une sentinelle structurelle dédiée.
+
+**Ordre des tests dans le filtre — méthode → URI → longueur → tas en DERNIER.** Le
+filtre est appelé **avant `canHandle()`**, donc pour toute requête qui atteint cette
+position de la chaîne : les deux court-circuits gratuits passent d'abord, sans quoi
+chaque `GET` de page parcourrait le tas **trois fois de plus** (une par route gardée).
+
+**Filtre sans aucune allocation.** La comparaison d'URI **reproduit** la correspondance
+**souple** de la bibliothèque (`AsyncURIMatcher` en `BackwardCompatible` :
+`_value == path || path.startsWith(_value + "/")`) au lieu d'appeler `matches()`, qui
+copie `request->url()` **puis** concatène `_value + "/"` — deux allocations sur
+`async_tcp`. ⚠️ **Une égalité stricte n'aurait pas suffi** : le handler JSON gardé est
+lui-même en `BackwardCompatible`, donc `/history/import/` aurait **filé jusqu'au 413
+nu** de la bibliothèque.
+
+### Les deux réponses
+
+| Cas | Réponse |
+|---|---|
+| `contentLength() > capBytes` | **413** `{"error":"Corps JSON trop volumineux : N octets reçus, plafond M octets pour cette route."}` |
+| famine mémoire | **503** `{"error":"Mémoire insuffisante, réessayez dans quelques secondes"}` + `Retry-After: 5` |
+
+- **Comparaison strictement `>`, deux fois** (filtre *et* handler), identique à
+  `AsyncJson.cpp:158/203` : le plafond est le nombre d'octets **autorisés**. Un `>=`
+  ferait diverger garde et bibliothèque **d'un octet** — un `413` inexplicable en
+  production, introuvable en recette. Verrouillé par test (mutation M5).
+- **Verdict déterministe, sans seconde lecture du tas** : le filtre n'accepte que si le
+  corps dépasse le plafond **ou** si le tas est en famine ; dans le handler, « corps
+  sous le plafond » **implique** donc la famine. Aucun risque de troisième cas si le tas
+  s'est rétabli entre les deux.
+- **Famine mesurée sur la métrique 8 bits** :
+  `httpLowHeapShouldRefuse(heapLargestFreeBlock8Bit(), kStaticFileMinAllocBytes)` —
+  prédicat et constante **existants**, aucun seuil inventé
+  ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md),
+  [ADR-0066](../adr/0066-sonde-du-tas-au-moment-du-refus.md)). Jamais
+  `ESP.getFreeHeap()` / `getMaxAllocHeap()`, la métrique fausse du projet.
+- **`Retry-After: 5`** : même valeur que la garde 503 des fichiers statiques — sous le
+  débounce d'auto-guérison (~15 s), au-dessus d'une rafale de chargement.
+- **Zéro log, zéro `String`.** Le garde tourne sur `async_tcp` : un `WARNING`
+  déclencherait un flush synchrone du journal, donc un `fopen`, **l'`abort()` même
+  qu'il prévient** (cf. [logger.md](logger.md)). Le corps du 413 est composé par
+  `snprintf` dans un tampon de **pile** de 224 o.
+- ⚠️ **Message 413 volontairement GÉNÉRIQUE** : le garde sert **trois** routes. Une
+  mention de « découpez votre import » y serait absurde sur `/wifi/connect` et
+  `/sensors/onewire/identify` (relevé en revue). Le conseil actionnable propre à
+  l'import vit **côté interface**, qui affiche la limite *avant* l'envoi et découpe
+  seule.
+- **`setMaxContentLength()` reste posé EN PLUS du garde**, et ce n'est pas redondant :
+  le garde lit le `Content-Length` **annoncé**, la bibliothèque compte les octets
+  **réellement reçus**. Un client qui sous-déclare son corps n'est arrêté que par la
+  seconde.
+
+> **Ce que la garde ne fait pas** : elle ne déplace pas l'authentification. Le `413` et
+> le `503` sont rendus **avant `REQUIRE_AUTH`** — structurel, le `Content-Length` étant
+> connu bien avant le callback de corps. D'où le message générique, qui **ne divulgue
+> rien** sur l'appareil.
 
 ## Assets statiques pré-compressés (gzip)
 

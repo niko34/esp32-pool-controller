@@ -2,6 +2,203 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.48.0] - 2026-09-07
+
+> **Ce qui change pour vous, en deux phrases** : **restaurer un historique
+> sauvegardé fonctionne enfin, quelle que soit sa taille**. Avant cette version,
+> au-delà d'environ 145 mesures l'appareil refusait l'envoi **sans rien
+> expliquer** — et le contournement que documentait ce projet, « découper en
+> plusieurs envois », **détruisait les données** au lieu de les cumuler.
+
+> **Et, dans le même lot** : l'appareil accepte désormais **cinq fois moins** de
+> données d'un visiteur **non identifié** avant de l'avoir authentifié.
+
+### Fonctionnalités
+
+- **La restauration d'historique n'a plus de taille maximale.** Paramètres →
+  Avancé → « Historique des mesures » : l'interface **découpe elle-même** l'envoi
+  et affiche une **barre de progression**. Le cas réel qui a motivé le correctif :
+  le 05/09, après le changement de partitions, **245 mesures** devaient être
+  réimportées et **145 seulement** sont passées — les 100 plus anciennes (23 au
+  31 août) sont restées dans le fichier.
+- **Deux boutons au lieu d'un, et la différence est écrite.** « **Remplacer
+  l'historique** » (rouge) efface l'existant et le reconstruit depuis le fichier ;
+  « **Compléter l'historique** » conserve l'existant et ne remplace que les
+  périodes communes. Envoyer **deux fois** le même fichier en « Compléter » donne
+  exactement le même résultat qu'une fois : **aucun doublon**.
+- **Une coupure réseau en cours d'import ne fait plus perdre le travail.** Les
+  paquets déjà arrivés **restent** dans l'appareil, un bouton « **Reprendre
+  l'import** » repart du paquet interrompu, et « **Abandonner la reprise** »
+  renonce aux paquets restants **sans rien effacer**.
+- **Tant qu'une reprise est en attente, « Remplacer » et « Compléter » sont
+  grisés.** Ce n'est pas une gêne, c'est la protection : cliquer « Remplacer »
+  à cet instant effacerait précisément l'import partiel qu'on cherche à
+  récupérer. Une confirmation aurait laissé ce bouton à **un clic de distance**
+  dans l'état où l'on est le plus pressé et le moins attentif — juste après une
+  coupure. Le geste est rendu **impossible**, pas seulement déconseillé.
+- **Un refus n'est plus muet.** Un envoi hors gabarit reçoit un message
+  intelligible (au lieu d'une page d'erreur nue du serveur), l'interface annonce
+  la limite **avant** d'envoyer, et toute éviction de mesures anciennes est
+  **rapportée et affichée**.
+- ⚠️ **Rechargez la page (Ctrl-Maj-R) après la mise à jour du filesystem.** Une
+  interface restée en cache envoie l'historique **en une seule fois** et se
+  heurte au nouveau plafond, abaissé : elle reçoit un refus. Le message d'erreur
+  le dit explicitement.
+
+### Firmware
+
+- **`POST /history/import` gagne un mode `append`** (`bug-101`). Le champ `mode`
+  vaut `"replace"` **par défaut** — donc **aucun client existant ne change de
+  comportement** —, et toute valeur inconnue retombe sur `"replace"` plutôt que
+  sur une fusion silencieuse. La réponse porte désormais `{status, count, total,
+  dropped}`.
+- **Règle de collision : le point entrant écrase**, à `(timestamp, granularité)`
+  identique, **toutes granularités RAW comprise** et **toutes** les occurrences du
+  créneau. Ce n'est pas un détail : `dedupAggregatedPoints()` **ignore les points
+  RAW** (`history.cpp:1248`) alors qu'un export en porte jusqu'à **96** — un lot
+  RAW réenvoyé **doublait en silence**. Et écraser *toutes* les occurrences est ce
+  qui préserve l'idempotence face à un doublon hérité d'une version ≤ 2.18.0, que
+  la déduplication aurait sinon **moyenné** avec le point neuf. C'est l'idempotence
+  qui rend le bouton « Reprendre » sûr.
+- **Fusion en place, zéro tampon supplémentaire** : recherche linéaire dans le
+  buffer (~15 000 comparaisons de scalaires par lot au pire), compromis
+  délibérément inverse d'une `std::map` — sur ce chemin la ressource rare est la
+  **mémoire**, pas le CPU. Le seul contigu reste le vecteur existant, 339 × 28 =
+  **9 492 o**, verrouillé par `static_assert`.
+- **`trimToCaps()`** borne le nouveau mode granularité par granularité, en
+  évinçant les **plus anciens**. Les deux sites de bornage existants
+  (`recordDataPoint` pour RAW, pas 4 de `consolidateData` pour les agrégats)
+  restent **inchangés**.
+- ⚠️ **`dropped` compte les points ÉVINCÉS DE L'HISTORIQUE, jamais les entrants
+  refusés.** Importer 20 points récents dans un historique plein rend
+  `dropped = 20`, et ce sont **20 points anciens déjà présents** qui partent. Un
+  client qui traduirait ce compteur par « mesures de votre fichier rejetées »
+  mentirait à l'utilisateur.
+- **Les plafonds de corps JSON sont abaissés, par route** (`bug-113`, **close par
+  ce lot**). Trois routes tamponnent le corps entier **avant toute
+  authentification** : `/history/import` **8 192 o**, `/wifi/connect` **1 024 o**,
+  `/sensors/onewire/identify` **256 o**. Total réclamable sans identifiants :
+  **9 472 o** contre 49 152 auparavant, soit **−80,73 %**. Les trois valeurs et
+  leur total sont **assertés à la compilation** — une révision casse le build au
+  lieu de périmer la documentation. Le flux de **premier démarrage** est préservé :
+  la charge WiFi nominale pèse **58 o**, **595 o** au pire cas tout échappé, sous
+  le plafond de 1 024.
+- **Nouvelle garde `registerJsonBodyGuard()`** (patron ADR-0067) : elle rend un
+  **413 en JSON maison** (au lieu du 413 nu de la bibliothèque) et un **503 +
+  `Retry-After: 5`** en famine mémoire, sur la métrique **8 bits** et le seuil
+  **existants**. Elle ne journalise pas et ne construit aucune `String` — elle
+  tourne sur `async_tcp`, où un `WARNING` déclencherait le flush synchrone du
+  journal, donc l'`abort()` même qu'elle prévient. **Son mécanisme est l'ordre
+  d'enregistrement** : elle doit précéder le handler gardé, sans quoi elle est
+  inerte **sans rien casser visiblement**.
+- ⚠️ **Le motif du plafond bas a changé, pas la décision.** La prémisse « un gros
+  tampon part dans la RAM interne affamée » est **fausse** au-delà de 4 095 o —
+  établi **par désassemblage** : `calloc` préfère la **PSRAM**. Sans plafond, la
+  sûreté de ce chemin reposerait **entièrement sur une préférence d'allocateur**
+  dont le repli interne est le contre-exemple. **Corollaire** : découper **plus
+  fin** ramènerait l'allocation **dans** le tas affamé — le budget de lot client
+  (**7 168 o**) est **au-dessus** de 4 095 à dessein, et un `static_assert`
+  l'interdit de descendre.
+- **Découpage client par octets mesurés, jamais par nombre de points** : un point
+  pèse de **110** à **149 octets** selon les décimales rendues par
+  `JSON.stringify` (mesuré le 2026-09-07 en exécutant `parseHistoryCsv` sur des
+  fixtures à 17 chiffres significatifs). `constants.h` retient **157 o** comme
+  **borne conservatrice, nommée comme telle** — pas comme une mesure. Un découpage
+  « par 145 points » aurait repassé le plafond au premier fichier à décimales
+  longues.
+
+### Tests
+
+- **Suite neuve `test/test_native_history_import/`** (73 cas) : natif passe de
+  **40 suites / 1 535 cas** à **41 suites / 1 608 cas**, 100 % vert. `pio run`
+  après `-t clean` : SUCCESS, **6 warnings tous préexistants**, Flash **49,6 %**.
+- **Campagne de mutation : 10 mutants, 10 morts, 0 survivant.** Dont le plus
+  important, ajouté par le `test-engineer` : « **garde enregistré après son
+  handler** » — c'est **celui qui prouve l'ordre**, et sans lui un test se
+  contentant de constater la *présence* de l'appel serait resté vert sur une garde
+  totalement inerte.
+- **Une sentinelle verrouille la *méthode* de découpage, pas son chiffre.**
+  `chunkHistoryPoints()` doit **mesurer** les octets de chaque point
+  (`jsonByteLength(JSON.stringify(point))`) et non diviser le budget par un poids
+  supposé. Les trois mutants correspondants meurent, y compris celui qui met
+  l'appel réel **en commentaire** en laissant sa mention visible — le piège exact
+  qui avait rendu décorative la sentinelle de `test_native_temp_compensation` le
+  matin même.
+- **Fixtures synthétiques et déterministes** (`test/fixtures/*.csv`, régénérables
+  par `tools/gen_history_fixture.py`, PRNG à graine fixe). La sauvegarde réelle du
+  05/09 a servi à **calibrer les formes**, jamais à les remplir : elle est restée
+  **hors dépôt**, car elle porte l'**IP du broker MQTT** et le **SSID**. Un test
+  verrouille cette règle.
+
+### Documentation
+
+- **Le « poids d'un point » corrigé pour la quatrième fois — et cette fois avec
+  sa méthode.** Le chiffre existait en deux versions divergentes (148 o dans les
+  notes de test, 149 o dans `constants.h`). Tranché en **exécutant**
+  `parseHistoryCsv()` et `chunkHistoryPoints()` : **148 o** est le pire cas de la
+  fixture, **105-109 o** un point typique, et le maximum **théorique** vaut
+  **172 o** — 97 o de squelette de clés plus trois nombres de 25 o, 25 étant la
+  longueur JSON maximale d'un `double` (`-0.0000012345678901234567`), atteinte
+  dès qu'une valeur passe sous `1e-6` : un **ORP qui traverse zéro**, une
+  **température proche de 0 °C**. Conséquence : les **157 o** que `constants.h`
+  annonçait comme une « borne conservatrice » **n'en étaient pas une** — le
+  chiffre avait été emprunté au pire cas de l'**export firmware**, un autre
+  format, et 172 le dépasse. Rien n'a jamais cassé parce que le découpage
+  **mesure** au lieu de diviser ; l'historique des quatre chiffres faux est
+  désormais conservé sur place, dans le commentaire même, pour qu'ils ne
+  reviennent pas (ADR-0073).
+
+- **Nouvel [ADR-0075](docs/adr/0075-decoupage-client-contre-streaming-firmware.md)** :
+  « La restauration d'historique est découpée par le CLIENT, pas streamée par le
+  firmware ». Il porte la **résolution de la contradiction** entre `bug-101` (plus
+  de capacité) et `bug-113` (moins) — le découpage client permet d'**abaisser** le
+  plafond et satisfait les deux. **Streaming firmware écarté, et le motif n'est
+  pas la flash** (1,9 Mo libres) : c'est la machine à états de parsing JSON
+  incrémental sur `async_tcp`, sur des fragments qui coupent **au milieu d'un
+  nombre**. Le dépôt a **déjà payé ce prix exact** sur le chemin **sortant** — le
+  pied `],"count":N}` de `/get-history` n'était **jamais émis**, donc **JSON
+  tronqué sur toutes les réponses pendant plusieurs versions**, et la sauvegarde
+  réelle du 05/09 en porte encore la cicatrice (sa clé `count` apparaît **deux
+  fois**, `0` puis `245`). **Format compact écarté** aussi : diviser par 1,8
+  laisserait le pire cas à ~28 Ko — **encore** le plateau — et créerait un
+  **troisième** format d'historique.
+- `docs/API.md` : contrat de `POST /history/import` **refait** — plafond **8 192**
+  (il annonçait encore 16 384), champ `mode`, réponse `{status, count, total,
+  dropped}` avec la **sémantique exacte de `dropped`** et son contre-exemple,
+  413/503 **en JSON maison**, exemple `curl` corrigé (le corps est un **objet**,
+  pas un tableau nu). Plafonds ajoutés sur `/wifi/connect` et
+  `/sensors/onewire/identify`.
+- `docs/subsystems/history.md` : `appendData()` / `trimToCaps()` — règle de
+  collision et son motif (écrasement contre moyenne), fusion en place, atomicité,
+  et les **deux défauts ouverts** de ce chemin.
+- `docs/subsystems/web-server.md` : `registerJsonBodyGuard()` — l'ordre
+  d'enregistrement comme mécanisme, le filtre **sans allocation**, la
+  correspondance d'URI **souple** (une égalité stricte aurait laissé
+  `/history/import/` filer jusqu'au 413 nu), et le message 413 **générique** parce
+  qu'il sert trois routes.
+- `docs/features/page-settings.md` : les **quatre** boutons, le verrou de reprise
+  et son motif, la formulation exacte du message d'éviction.
+- `docs/UPDATE_GUIDE.md` : l'étape « réimporter l'historique » est **refaite**.
+  Elle portait encore le contournement destructeur (« lots de 145 points, les lots
+  se cumulent ») — **troisième** endroit où il vivait, après `docs/API.md` et ce
+  fichier.
+- `docs/user/src/guide-utilisation.html` : section « Restaurer une sauvegarde
+  d'historique » — les deux modes, l'absence de taille maximale, la reprise après
+  coupure, le verrou, et ce que `dropped` veut dire en langage d'utilisateur.
+  📸 **Capture à refaire** : `screenshots/10_Paramètres_8_Avancé_1.jpg` (la carte
+  « Historique des mesures » montre désormais **quatre** boutons au lieu d'un).
+
+### Reste à valider sur l'appareil
+
+Le critère d'acceptation est **on-target** et comporte une étape que seul l'humain
+peut jouer : **coupure Wi-Fi au 3ᵉ lot sur 6**, historique **partiel et
+cohérent**, reprise **sans doublon**. À relever en même temps : `psram_free` et
+`max_alloc_8bit` **avant/après** — l'invariant est que l'**interne ne bouge pas de
+plus de 9 492 o** et que la **PSRAM absorbe** les tampons de corps. C'est la
+mesure qui **confirmera sur l'appareil** le désassemblage de l'allocateur.
+
+---
+
 ## [2.47.1] - 2026-09-07
 
 > **Ce qui change pour vous, en deux phrases** : la durée d'injection annoncée
@@ -970,7 +1167,15 @@
 
 - ⚠️ **Une commande de dépannage change d'adresse.** L'effacement manuel de la partition `history` devient `esptool erase_region 0x7B0000 0x40000`. **Ne plus lancer l'ancienne `erase_region 0x3E0000 0x10000`** : cette zone est désormais **au milieu de `app1`** — elle détruirait le slot OTA de secours au lieu d'effacer l'historique.
 
-- ⚠️ **Limite découverte à l'usage, désormais documentée** : `POST /history/import` **refuse tout corps de plus de 16 384 octets** avec un `413` (plafond de la bibliothèque HTTP, jamais surchargé côté firmware — et émis **avant** le contrôle d'authentification). À ~112 octets par point compacté, **145 points passent, 146 non**. Sur les 245 points sauvegardés avant le flash, **100 n'ont pas pu être réimportés** (23 au 31 août) ; ils restent dans le fichier de sauvegarde. Contournement : découper la restauration en lots de ≤ 145 points, qui se cumulent.
+- ⚠️ **Limite découverte à l'usage, désormais documentée** : `POST /history/import` **refuse tout corps de plus de 16 384 octets** avec un `413` (plafond de la bibliothèque HTTP, jamais surchargé côté firmware — et émis **avant** le contrôle d'authentification). À ~112 octets par point compacté, **145 points passent, 146 non**. Sur les 245 points sauvegardés avant le flash, **100 n'ont pas pu être réimportés** (23 au 31 août) ; ils restent dans le fichier de sauvegarde. 🛑 **RÉTRACTATION (2026-09-07, `bug-101`) — le contournement publié ici était FAUX ET
+DESTRUCTEUR.** Il conseillait de « découper la restauration en lots de ≤ 145 points, qui
+se cumulent » : **les lots ne se cumulaient pas**. `src/history.cpp:964` faisait
+`memoryBuffer = dataPoints;`, un **remplacement total** — chaque lot **écrasait** le
+précédent, et qui suivait ce conseil ne gardait que le **dernier** morceau, en perdant
+tout le reste **sans aucun message**. Le découpage sûr est livré en **v2.48.0** : il est
+fait par l'interface, avec un mode `append` explicite et une règle d'écrasement par
+créneau. Le même conseil vivait à **deux autres endroits** — `docs/API.md` et
+`docs/UPDATE_GUIDE.md` — tous deux corrigés le même jour.
 
 ### Documentation
 

@@ -1086,7 +1086,8 @@ qu'on y cherche&nbsp;:</p>
 
 <ul>
   <li><strong>Historique des mesures</strong> — export en fichier CSV
-  (pour vos archives ou un tableur), import, et purge&nbsp;;</li>
+  (pour vos archives ou un tableur), restauration d'une sauvegarde, et
+  purge. Voir juste en dessous&nbsp;;</li>
   <li><strong>Pompes doseuses</strong> — leur affectation, un test de
   marche de 10&nbsp;secondes, et surtout l'assistant
   <strong>«&nbsp;Mesurer le débit&nbsp;»</strong>&nbsp;: un parcours guidé
@@ -1100,6 +1101,64 @@ qu'on y cherche&nbsp;:</p>
   <li><strong>Diagnostic</strong> — signaux des sondes, rapport de panne&nbsp;:
   des outils d'analyse fine, sans danger à consulter.</li>
 </ul>
+
+<h4>Restaurer une sauvegarde d'historique</h4>
+
+<p>Choisissez votre fichier CSV, puis l'un des deux boutons&nbsp;:</p>
+
+<ul>
+  <li><strong>«&nbsp;Remplacer l'historique&nbsp;»</strong> (bouton rouge) —
+  l'historique de l'appareil est <strong>effacé</strong> et reconstruit à
+  partir du fichier. C'est le bon choix après une remise à zéro ou un
+  changement de version qui a vidé l'historique&nbsp;;</li>
+  <li><strong>«&nbsp;Compléter l'historique&nbsp;»</strong> — l'existant est
+  <strong>conservé</strong>&nbsp;; seules les périodes présentes dans les deux
+  sont remplacées par celles du fichier. C'est le bon choix pour recoller un
+  trou, ou pour <strong>refaire un import dont vous n'êtes pas sûr</strong>&nbsp;:
+  envoyer deux fois le même fichier donne exactement le même résultat
+  qu'une fois, sans doublon.</li>
+</ul>
+
+<p><strong>La taille du fichier n'a plus d'importance.</strong> L'interface
+découpe elle-même l'envoi en petits paquets et affiche une barre de
+progression. Vous n'avez rien à préparer ni à découper.</p>
+
+<div class="box-alerte">
+  <span class="box-title">Rechargez la page avant d'importer</span>
+  <p>Si vous venez de mettre à jour l'appareil, forcez le rechargement de
+  l'interface&nbsp;: <strong>Ctrl-Maj-R</strong> (ou <strong>Cmd-Maj-R</strong>
+  sur Mac).
+  Une page restée en mémoire du navigateur envoie l'historique à l'ancien
+  format, en une seule fois, et l'appareil la refuse.</p>
+</div>
+
+<p><strong>Si l'envoi s'interrompt</strong> — coupure Wi-Fi, appareil qui
+redémarre —, rien n'est perdu&nbsp;: les paquets déjà arrivés
+<strong>restent</strong> dans l'appareil. Deux boutons apparaissent alors&nbsp;:</p>
+
+<ul>
+  <li><strong>«&nbsp;Reprendre l'import&nbsp;»</strong> — repart exactement au
+  paquet interrompu. Aucune mesure n'est comptée deux fois&nbsp;;</li>
+  <li><strong>«&nbsp;Abandonner la reprise&nbsp;»</strong> — renonce aux paquets
+  restants. <strong>Rien n'est effacé</strong>&nbsp;: ce qui est déjà arrivé
+  reste en place.</li>
+</ul>
+
+<p>Pendant ce temps, «&nbsp;Remplacer&nbsp;» et «&nbsp;Compléter&nbsp;» sont
+<strong>grisés</strong>, volontairement&nbsp;: cliquer «&nbsp;Remplacer&nbsp;» à
+cet instant effacerait justement ce que vous êtes en train de récupérer.
+Terminez la reprise, ou abandonnez-la, et les deux boutons redeviennent
+disponibles.</p>
+
+<p>À la fin, un message indique combien de mesures ont été envoyées et
+combien l'appareil en conserve. Il peut aussi signaler que des mesures
+<strong>les plus anciennes</strong> ont été évincées&nbsp;: l'appareil ne garde
+qu'un nombre fixé de points, et au-delà il retire les plus vieux.
+<strong>Ce ne sont pas des mesures de votre fichier qui auraient été
+refusées</strong> — c'est simplement que tout ne tient pas.</p>
+
+<p>Enfin, <strong>rechargez la page après l'import</strong> pour voir
+l'historique restauré dans les graphiques.</p>
 
 <figure>
   <img class="capture" src="../../../screenshots/10_Paramètres_8_Avancé_2.jpg" alt="Paramètres, onglet Avancé (signaux capteurs)">

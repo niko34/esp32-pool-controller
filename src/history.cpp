@@ -1,5 +1,6 @@
 #include "history.h"
 #include "history_logic.h"
+#include "history_import_logic.h"  // bug-101 : regles pures de l'import par lots (ADR-0017)
 #include "history_guard_logic.h"
 #include "fs_guard.h"          // bug-100 : point d'admission unique des fopen internes (ADR-0070)
 #include "constants.h"
@@ -979,6 +980,143 @@ bool HistoryManager::importData(const std::vector<DataPoint>& dataPoints) {
   xSemaphoreGive(_mutex);
 
   systemLogger.info("Historique importé (" + String(count) + " points)");
+  return true;
+}
+
+// bug-101 — BORNAGE DU MODE « AJOUTER ».
+// Voir history.h pour la raison d'un troisième site de bornage (les deux
+// existants, recordDataPoint pour RAW et le pas 4 de consolidateData pour les
+// agrégats, restent INCHANGÉS : ce lot ne les touche pas).
+// Pré-requis : mutex pris par l'appelant, buffer TRIÉ par timestamp — l'ordre du
+// vecteur EST l'ordre chronologique, donc « les premiers rencontrés » = « les
+// plus anciens ».
+void HistoryManager::trimToCaps() {
+  size_t raw = 0, hourly = 0, daily = 0;
+  for (const auto& p : memoryBuffer) {
+    if (p.granularity == RAW) raw++;
+    else if (p.granularity == HOURLY) hourly++;
+    else if (p.granularity == DAILY) daily++;
+  }
+
+  const HistoryImportTrimPlan plan = historyImportTrimPlan(raw, hourly, daily);
+  if (plan.empty()) return;
+
+  // UN SEUL passage erase-remove pour les trois granularités (O(n) au total) :
+  // std::remove_if applique le prédicat exactement une fois par élément, dans
+  // l'ordre — c'est ce que suppose déjà le comptage du pas 4 de consolidateData.
+  size_t doneRaw = 0, doneHourly = 0, doneDaily = 0;
+  memoryBuffer.erase(
+    std::remove_if(memoryBuffer.begin(), memoryBuffer.end(),
+      [&plan, &doneRaw, &doneHourly, &doneDaily](const DataPoint& p) {
+        if (p.granularity == RAW && doneRaw < plan.rawToRemove) {
+          doneRaw++;
+          return true;
+        }
+        if (p.granularity == HOURLY && doneHourly < plan.hourlyToRemove) {
+          doneHourly++;
+          return true;
+        }
+        if (p.granularity == DAILY && doneDaily < plan.dailyToRemove) {
+          doneDaily++;
+          return true;
+        }
+        return false;
+      }),
+    memoryBuffer.end()
+  );
+}
+
+bool HistoryManager::appendData(const std::vector<DataPoint>& pts,
+                                size_t* outTotal, size_t* outDropped) {
+  // Sorties initialisées AVANT tout retour d'échec : l'appelant sérialise
+  // `total`/`dropped` quel que soit le verdict, il ne doit jamais lire une
+  // valeur non écrite.
+  if (outTotal != nullptr) *outTotal = 0;
+  if (outDropped != nullptr) *outDropped = 0;
+
+  if (!historyEnabled) return false;
+  if (pts.empty()) return false;
+  if (_mutex == nullptr) return false;
+
+  // UNE seule prise, comme importData : la séquence fusion → tri → bornage →
+  // sauvegarde est atomique. Sans cela, le recordDataPoint() de la boucle
+  // pourrait s'intercaler entre la fusion et la sauvegarde et rendre le fichier
+  // incohérent avec ce qu'on vient de répondre au client.
+  if (xSemaphoreTake(_mutex, pdMS_TO_TICKS(kHistoryMutexTimeoutMs)) != pdTRUE) {
+    static unsigned long sWarnAppendMs = 0;
+    warnHistoryMutexTimeout(sWarnAppendMs, "appendData");
+    return false;
+  }
+
+  // FUSION EN PLACE — recherche linéaire dans memoryBuffer, ZÉRO tampon
+  // supplémentaire. Coût : |pts| × |buffer|, soit au pire ~45 × 339 ≈ 15 000
+  // comparaisons de deux scalaires (le plafond de corps borne |pts|). C'est
+  // délibérément le compromis inverse d'une std::map ou d'un vecteur trié
+  // auxiliaire : sur ce chemin, la MÉMOIRE est la ressource rare, pas le CPU.
+  size_t overwritten = 0;
+  size_t created = 0;
+  for (const auto& in : pts) {
+    bool found = false;
+    // TOUTES les occurrences du créneau sont écrasées, pas seulement la
+    // première : un buffer chargé depuis un fichier écrit par une version
+    // ≤ 2.18.0 peut porter des doublons d'agrégats. N'en écraser qu'un
+    // laisserait l'autre périmé, que dedupAggregatedPoints() moyennerait
+    // ensuite avec le neuf — l'idempotence serait perdue. Écraser les deux la
+    // conserve (historyMergeMeanFinite(x, x) == x).
+    for (auto& live : memoryBuffer) {
+      if (historyImportSameSlot((uint32_t)in.timestamp, (uint8_t)in.granularity,
+                                (uint32_t)live.timestamp, (uint8_t)live.granularity)) {
+        live = in;  // ÉCRASEMENT, cf. history_import_logic.h
+        found = true;
+      }
+    }
+    if (found) {
+      overwritten++;
+    } else {
+      // push_back APRÈS la boucle interne : aucune invalidation d'itérateur.
+      // Le point devient visible pour les points SUIVANTS du même lot — voulu :
+      // un lot qui porte deux fois le même créneau reste idempotent.
+      memoryBuffer.push_back(in);
+      created++;
+    }
+  }
+
+  std::sort(memoryBuffer.begin(), memoryBuffer.end(),
+    [](const DataPoint& a, const DataPoint& b) {
+      return a.timestamp < b.timestamp;
+    });
+
+  // dedupAggregatedPoints() N'EST PAS APPELÉ ICI, et c'est un choix :
+  // il MOYENNE (historyMergeMeanFinite) les agrégats du même créneau, ce qui
+  // contredirait la règle d'écrasement qu'on vient d'appliquer — le point
+  // restauré serait re-moyenné avec le vivant qu'il devait remplacer. La fusion
+  // en place ci-dessus garantit déjà l'unicité de (timestamp, granularité) pour
+  // tout ce que ce lot a touché ; le reste est du ressort de consolidateData().
+  const size_t beforeTrim = memoryBuffer.size();
+  trimToCaps();
+  const size_t dropped = beforeTrim - memoryBuffer.size();
+
+  // OBLIGATOIRE, repris à l'identique d'importData : sans ces deux lignes, un
+  // import partiel laisserait la migration d'historique hérité se réveiller au
+  // prochain consolidateData() et réécrire par-dessus ce qu'on vient d'ajouter.
+  legacyHistoryPending = false;
+  legacyMaxTimestamp = 0;
+  lastSave = millis();
+  lastRecord = millis();
+  saveToFile();
+  const size_t count = memoryBuffer.size();
+  xSemaphoreGive(_mutex);
+
+  if (outTotal != nullptr) *outTotal = count;
+  if (outDropped != nullptr) *outDropped = dropped;
+
+  // Journalisé APRÈS la libération du mutex (idiome d'importData) : un WARNING
+  // ou pire déclencherait un flush synchrone du journal, donc un fopen, sous le
+  // mutex historique.
+  systemLogger.info("Historique : lot ajouté (" + String((unsigned)created) +
+                    " nouveaux, " + String((unsigned)overwritten) + " écrasés, " +
+                    String((unsigned)dropped) + " évincés, total " +
+                    String((unsigned)count) + ")");
   return true;
 }
 

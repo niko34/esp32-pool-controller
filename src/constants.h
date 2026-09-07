@@ -2797,4 +2797,108 @@ constexpr uint32_t kNetworkProbeTimeoutMs  = 2000;    // 2s - timeout echo ICMP
 // Epoch minimal considéré comme valide (heure synchronisée NTP/RTC)
 constexpr time_t kMinValidEpoch = 1700000000;  // 14 nov. 2023
 
+// ============================================================================
+// PLAFONDS DE CORPS JSON PAR ROUTE — bug-113 (clos par le lot bug-101, v2.48.0)
+// ============================================================================
+// Trois routes utilisent AsyncCallbackJsonWebHandler, qui TAMPONNE le corps
+// entier (calloc(total + 1), AsyncJson.cpp:216) AVANT d'appeler le callback,
+// donc AVANT toute authentification. Le plafond de la bibliothèque vaut 16 384 o
+// et n'était JAMAIS surchargé : 3 URI × 16 Ko réclamables sans identifiants.
+//
+// ⚠️ LE MOTIF DE CES PLAFONDS N'EST PAS « ÇA VA PLANTER » — la prémisse
+// d'origine de bug-113 est FAUSSE depuis le lot B-1 de bug-080, et il faut le
+// dire ici pour que personne ne la redécouvre de travers.
+// Chaîne établie PAR DÉSASSEMBLAGE le 2026-09-07 (libheap.a, section .iram1.2) :
+// calloc → heap_caps_malloc_default → si `size > malloc_alwaysinternal_limit`,
+// l'allocateur charge 0x1400 = MALLOC_CAP_DEFAULT | MALLOC_CAP_SPIRAM, donc
+// PSRAM D'ABORD, avec repli interne seulement si la PSRAM rend NULL. Ce seuil
+// est posé à kPsramExtmemThresholdBytes (4 095) par main.cpp:130. Un tampon de
+// 16 Ko ne partait donc PAS dans le tas 8 bits affamé.
+// Le plafond bas reste juste, mais pour une autre raison, et elle est plus
+// solide : sans lui, la sûreté de ce chemin reposerait ENTIÈREMENT sur une
+// PRÉFÉRENCE d'allocateur, dont le repli interne est le contre-exemple. Ce dépôt
+// s'est déjà trompé dans l'autre sens — le parachute anti-OOM a vécu en PSRAM,
+// donc décoratif, depuis feature-066 (prouvé le 05/09/2026). Un plafond bas est
+// vrai indépendamment de l'état de la PSRAM ; une préférence, non.
+//
+// ⚠️ COROLLAIRE CONTRE-INTUITIF, à ne surtout pas « optimiser » : découper les
+// lots PLUS FIN ramènerait l'allocation DANS le tas affamé (≤ 4 095 o ⇒ interne,
+// test inclusif). Le budget de lot client ci-dessous est donc choisi AU-DESSUS
+// de 4 095, À DESSEIN.
+//
+// Chaque plafond est chiffré sur la CHARGE RÉELLE de sa route, jamais « par
+// ordre de grandeur ».
+// ----------------------------------------------------------------------------
+
+// POST /history/import — le client découpe (kHistoryImportChunkBudgetBytes) et
+// pose `mode:"append"` sur les lots suivants ; l'appareil n'a donc plus besoin
+// de capacité pour une restauration complète, seulement pour UN lot.
+// Décompte : enveloppe {"mode":"append","history":[…]} ≈ 32 o, puis, par point
+// (7 clés seulement — `parseHistoryCsv` n'émet ni `phFiltered` ni `orpFiltered`) :
+//   - point typique (nulls, %.1f) ......... ~105-109 o → ~64 points
+//   - décimales déployées, MESURÉ .......... 148 o → ⌊(7168−32)/148⌋ = 48 points
+//   - maximum THÉORIQUE .................... 172 o → 41 points
+// Les trois chiffres viennent de l'EXÉCUTION de `parseHistoryCsv` et de
+// `chunkHistoryPoints` extraites de data/app.js (2026-09-07), pas d'un décompte
+// à la main :
+//   · 148 o = pire cas de la fixture test/fixtures/history-worst-bytes.csv
+//     (16 chiffres significatifs sur pH, ORP et température, tout positif) ;
+//   · 172 o = squelette de clés (97 o) + 3 × 25 o, 25 étant la longueur JSON
+//     maximale d'un double (balayage de tous les exposants : le pire est
+//     `-0.0000012345678901234567`, atteint dès qu'une valeur passe sous 1e-6 —
+//     donc un ORP qui traverse zéro, ou une température proche de 0 °C).
+// ⚠️ HISTORIQUE DES CHIFFRES FAUX, pour ne pas les voir revenir : 211-213 o
+// (supposait à tort les colonnes filtrées), 149 o (annoncé comme « le pire cas
+// réellement atteignable » : c'est un cas particulier, l'ORP négatif), et 157 o
+// (présenté comme une « borne conservatrice » alors que le maximum théorique de
+// 172 o la DÉPASSE — ce n'était pas une borne).
+// Aucun de ces chiffres, faux ou juste, n'est écrit dans le code : le découpage
+// se fait par OCTETS MESURÉS côté client (jsonByteLength), jamais par un nombre
+// de points. C'est ce qui a rendu l'invariant immunisé à quatre chiffres
+// successivement erronés (ADR-0073) — et la raison de ne jamais remplacer cette
+// mesure par une division. Vérifié : 200 points au pire cas → 5 lots, charge
+// maximale 7 085 o, aucun 413.
+// 8 192 o accepte ces lots avec 1 024 o de marge sur le budget client.
+constexpr size_t kHistoryImportMaxBodyBytes = 8192;
+
+// POST /wifi/connect — lit `ssid` (≤ 32 o, limite 802.11) et `password`
+// (≤ 63 o, limite WPA2-PSK). Pire cas de sérialisation : chaque octet échappé
+// en \uXXXX, soit ×6 → (32 + 63) × 6 = 570 o, plus les clés et la ponctuation
+// ≈ 600 o. 1 024 o = ×1,7.
+// ⚠️ PAS 512 : à 512 un SSID UTF-8 pathologique serait REFUSÉ — et cette route
+// porte le flux de PREMIER DÉMARRAGE, celui qu'on ne peut pas contourner.
+constexpr size_t kWifiConnectMaxBodyBytes = 1024;
+
+// POST /sensors/onewire/identify — lit `address` (16 caractères hex, format
+// verrouillé par parseRomHex) et `role` (≤ 7 : "water"/"circuit"). Corps réel
+// ≈ 45 o. 256 o = ×5,7.
+constexpr size_t kSensorIdentifyMaxBodyBytes = 256;
+
+// Budget d'octets d'UN lot d'import côté client (data/app.js). 1 024 o sous le
+// plafond de route : la marge absorbe l'enveloppe, l'échappement d'un caractère
+// inattendu et la variabilité de longueur des nombres, sans jamais frôler le
+// 413. Et surtout : > kPsramExtmemThresholdBytes, pour que le tamponnage garde
+// la PRÉFÉRENCE PSRAM (cf. corollaire ci-dessus).
+constexpr size_t kHistoryImportChunkBudgetBytes = 7168;
+
+// Total exposé sans authentification : 8 192 + 1 024 + 256 = 9 472 o, contre
+// 3 × 16 384 = 49 152 o auparavant, soit −80,7 % (1 − 9472/49152 = 0,8073).
+static_assert(kHistoryImportMaxBodyBytes + kWifiConnectMaxBodyBytes +
+                  kSensorIdentifyMaxBodyBytes == 9472,
+              "Total expose sans authentification (bug-113) : le chiffre -80,7 % "
+              "documente 9 472 o. Toute revision d'un plafond doit RECOMPTER ce "
+              "total, et la doc avec.");
+static_assert(kHistoryImportMaxBodyBytes < 16384 &&
+                  kWifiConnectMaxBodyBytes < 16384 &&
+                  kSensorIdentifyMaxBodyBytes < 16384,
+              "Un plafond >= 16384 ne surcharge plus rien : c'est le defaut de "
+              "AsyncCallbackJsonWebHandler (AsyncJson.cpp:122).");
+static_assert(kHistoryImportChunkBudgetBytes > kPsramExtmemThresholdBytes,
+              "Corollaire bug-113 : un lot <= 4095 o repartirait dans le tas "
+              "8 bits interne affame. Le budget client est AU-DESSUS du seuil, "
+              "a dessein — ne pas le reduire pour 'faire plus sur'.");
+static_assert(kHistoryImportChunkBudgetBytes + 1024 == kHistoryImportMaxBodyBytes,
+              "La marge de 1 024 o entre budget client et plafond de route est "
+              "l'invariant qui empeche un 413 sur un lot nominal.");
+
 #endif // CONSTANTS_H

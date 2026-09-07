@@ -119,7 +119,8 @@ docs/
 │   ├── 0071-parite-data-trame-capteurs.md
 │   ├── 0072-absence-de-valeur-hors-du-domaine.md
 │   ├── 0073-chiffre-consigne-porte-sa-methode.md
-│   └── 0074-temperature-figee-statu-quo-instrumente.md
+│   ├── 0074-temperature-figee-statu-quo-instrumente.md
+│   └── 0075-decoupage-client-contre-streaming-firmware.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

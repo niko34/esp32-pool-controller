@@ -16,7 +16,7 @@ quelques leçons de méthode qui n'ont leur place dans aucune spec.
 | **Adresse de l'appareil** | nulle part dans git | `poolcontroller.local` en mDNS, ou l'IP du réseau local |
 | **`builds/`** — 2,6 Go, 132 ELF | local, ignoré | seul l'ELF de la **v2.42.0** est publié (asset de sa release) |
 | **`.claude/settings.local.json`** | local (chemins absolus) | permissions à reconfirmer, travail plus verbeux |
-| **Sauvegarde d'historique du 05/09** | `builds/sauvegarde-avant-flash-8mo/` | 245 points ; 145 seulement ont pu être réimportés (cf. `bug-101`) |
+| **Sauvegarde d'historique du 05/09** | restée **sur le Mac** (`builds/` est local et ignoré) | 245 points ; 145 seulement avaient pu être réimportés — plafond **corrigé en v2.48.0** (`bug-101` clos, [ADR-0075](adr/0075-decoupage-client-contre-streaming-firmware.md)). Les **100 points du 23 au 31 août** ne sont récupérables que tant que l'ancien dépôt local du Mac n'est pas nettoyé |
 
 ⚠️ **Depuis un conteneur, l'appareil n'est joignable que si le réseau atteint le
 LAN.** Le déploiement OTA et tout relevé de diagnostic en dépendent.
@@ -95,16 +95,13 @@ l'alerte de bidon vide.
   collecté (06/09). ⚠️ Son protocole a été **élargi** ce jour-là : relever aussi
   la dérive du pH sur les **45 min qui suivent** l'ouverture de la porte, et
   l'heure de démarrage de la filtration.
-- **`bug-101`** — l'import d'historique plafonne à 16 384 o. ⚠️ Le correctif
-  évident (relever le plafond) est le mauvais : il agrandit un `calloc` contigu
-  sur un appareil en famine mémoire.
 - **`feature-092`** — carte « Débit d'injection ». **Deux points à rejouer avant
   ouverture**, consignés en tête de spec : budget WS périmé (chiffré sur 2816, le
   gabarit est à 3072) et placement arbitré sans le bloc TTT.
 
 ### Dette de vérification
 
-`specs/features/done/README.md` recense **6 specs archivées avec des vérifications
+`specs/features/done/README.md` recense **7 specs archivées avec des vérifications
 on-target jamais faites**. Ce n'est pas de la dette de code — tout est livré et
 testé — mais des cases vides sans décision. À reprendre, ou à écarter
 explicitement.

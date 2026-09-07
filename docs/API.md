@@ -588,47 +588,162 @@ Importe un lot de points d'historique.
 
 ```bash
 curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
-  -d '[{"timestamp":1700000000,"ph":7.2,"phFiltered":7.23,"orp":720,"orpFiltered":719,"temperature":24.5}]' \
+  -d '{"history":[{"timestamp":1700000000,"ph":7.2,"phFiltered":7.23,"orp":720,"orpFiltered":719,"temperature":24.5}]}' \
   http://poolcontroller.local/history/import
 ```
+
+⚠️ Le corps est un **objet** portant le tableau sous la clé `history` (un tableau nu
+reçoit `400 « champ history manquant »`), plus le champ optionnel `mode` (section ci-dessous).
 
 Les clés attendues sont celles **de l'export `/get-history`** (clés longues), pas celles du fichier persisté `/history.json`. Depuis la **v2.38.0**, `phFiltered` et `orpFiltered` sont relues : l'aller-retour `/get-history` → `/history/import` → `/get-history` restitue la [mesure lissée](#mesure-lissée--phfiltered--orpfiltered-feature-095-v2380) à l'identique. Clé **absente ou `null`** → mesure lissée absente (`null`), jamais 0 ni repli sur le brut.
 
 **Clé `dosing` — les deux formats sont acceptés (bug-098, v2.47.0).** La lecture est **typée**, sans clé de version : un **booléen** est un export **≤ 2.46** et vaut `0x04` (« dosage, voie indéterminée ») ; un **entier** est un [masque de voies](#dosing--un-masque-de-voies-entier-bug-098-v2470) et est réduit à `0x07` ; une clé **absente** vaut `0`. Un booléen `true` ne se relit **jamais** « pH » — ce serait inventer la voie. ⚠️ **Limite assumée** : un `dosing` **flottant** (`3.0`) ou entier **64 bits hors plage `int`** ne satisfait aucun des deux cas et retombe sur `0` ; ni le firmware ni l'export de l'interface ne produisent ces formes.
 
-#### ⚠️ Limite dure : 16 384 octets de corps (constatée le 2026-09-05)
+#### Champ `mode` — « remplacer » ou « compléter » (bug-101, v2.48.0)
 
-**Un corps de plus de `16 384` octets reçoit `413` et n'est jamais traité.** La valeur
-vient de `AsyncCallbackJsonWebHandler::_maxContentLength`, **initialisée à 16384 par la
-bibliothèque** (`AsyncJson.cpp`) et **jamais surchargée** côté firmware
-([`src/web_routes_data.cpp:960-1025`](../src/web_routes_data.cpp)) — ce n'est donc pas un
-plafond métier, mais il est **réel et non contournable côté client**.
+| `mode` | Effet | Fonction |
+|---|---|---|
+| `"replace"` | **Remplace** tout l'historique par le lot (comportement historique de la route) | `HistoryManager::importData()` |
+| `"append"` | **Fusionne** le lot dans l'historique existant, créneau par créneau | `HistoryManager::appendData()` |
+| **absent** | `"replace"` | — |
+| valeur **inconnue** (`"merge"`, `42`, `null`…) | `"replace"` | — |
 
-Deux conséquences peu intuitives :
+⚠️ **Le défaut est `replace`, et c'est délibéré** : tout client antérieur à la v2.48.0
+postait un remplacement total sans le savoir. Son comportement est donc **inchangé**.
+Une valeur inconnue retombe elle aussi sur `replace` — jamais une fusion silencieuse
+sur un client qu'on n'a pas compris (`historyImportModeIsReplace()`,
+[`src/history_import_logic.cpp`](../src/history_import_logic.cpp)).
 
-- **Le `413` est émis par la bibliothèque, avant `REQUIRE_AUTH`** : la route répond `413`
-  même sans authentification, et le corps de la réponse n'est **pas** le JSON d'erreur
-  habituel `{"error": …}` mais la page d'erreur par défaut du serveur.
-- **Le refus est propre, pas partiel** : `handleBody()` ignore le corps dès le premier
-  fragment (`total > _maxContentLength`), donc **aucun point n'est importé**. Il n'y a pas
-  de risque d'import tronqué silencieux — mais pas de message d'aide non plus.
+**Règle de collision en mode `append`** : à `(timestamp, granularité)` identique, le
+point **entrant écrase** le point vivant — **toutes granularités, RAW comprise** — et
+**toutes** les occurrences du créneau, pas seulement la première. Conséquence
+utilisable : **réenvoyer deux fois le même lot est exactement idempotent**, ce qui rend
+une reprise après coupure réseau sûre. Détail et motif :
+[`docs/subsystems/history.md`](subsystems/history.md).
 
-**Ordre de grandeur mesuré** : à raison d'un point compacté de ~112 octets (JSON sans
-espaces, clés longues, six grandeurs), **145 points passent, 146 non**. Sur une
-restauration de 245 points le 05/09, **100 points n'ont pas pu être réimportés**.
+```bash
+# lot 1 — repart de zéro
+curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+  -d '{"mode":"replace","history":[{"timestamp":1700000000,"ph":7.2,"temperature":24.5}]}' \
+  http://poolcontroller.local/history/import
 
-**Contournement** : découper la restauration en **lots de ≤ 145 points**, POSTés
-séquentiellement. `importData()` est cumulatif — les lots successifs s'ajoutent.
+# lots suivants — s'ajoutent au précédent
+curl -u admin:monmotdepasse -X POST -H "Content-Type: application/json" \
+  -d '{"mode":"append","history":[{"timestamp":1700001800,"ph":7.3,"temperature":24.6}]}' \
+  http://poolcontroller.local/history/import
+```
+
+**Réponse 200**
+
+```json
+{ "status": "success", "count": 145, "total": 339, "dropped": 12 }
+```
+
+| Champ | Sens |
+|---|---|
+| `count` | points **retenus** de *ce* lot (désérialisés avec succès) |
+| `total` | points **détenus par l'appareil** après ce lot. En mode `replace`, c'est le nombre de points **soumis** : la fusion de doublons agrégés opérée par `importData()` peut le réduire, et ce n'est pas remesuré (il faudrait recopier ~11 Ko sur `async_tcp`). Le client conclut donc sur le **dernier** lot, qui est un `append`, dont le total est authentique. |
+| `dropped` | points **évincés de l'historique** par `trimToCaps()` pendant cet appel. Toujours `0` en mode `replace`. |
+
+> ⚠️ **`dropped` ne compte PAS les entrants refusés.** Ce sont les points **les plus
+> anciens de chaque granularité** qui sortent pour tenir sous les plafonds mémoire.
+> Contre-exemple à garder en tête : importer **20 points récents** dans un historique
+> plein rend `dropped = 20`, mais ce sont **20 points anciens déjà présents** qui
+> partent — la sauvegarde envoyée, elle, est bien entrée. Un client qui traduirait
+> `dropped` par « points de votre fichier rejetés » mentirait à l'utilisateur.
+>
+> 📋 **Ne pas en conclure « aucun entrant n'est jamais écarté »** : la boucle de
+> désérialisation fait un `continue` sur un point sans `timestamp` exploitable
+> ([`src/web_routes_data.cpp:1181`](../src/web_routes_data.cpp)), et ces points ne
+> sont comptés **nulle part** — `count` est le nombre de points **retenus**, pas le
+> nombre de points soumis. Défaut **préexistant**, hors périmètre de `bug-101`, et
+> **ouvert**.
+
+#### ⚠️ Limite dure : 8 192 octets de corps (bug-113, v2.48.0)
+
+**Un corps de plus de `8 192` octets reçoit `413` et n'est jamais traité**
+(`kHistoryImportMaxBodyBytes`, [`src/constants.h`](../src/constants.h)). La comparaison
+est **stricte** : 8 192 octets exactement passent, 8 193 non — même sémantique que la
+bibliothèque (`AsyncJson.cpp:158`), pour que garde et bibliothèque ne divergent pas
+d'un octet.
+
+**Le plafond a été ABAISSÉ**, il n'a pas été relevé (il valait 16 384, le défaut jamais
+surchargé de `AsyncCallbackJsonWebHandler`). Motif : le corps est **tamponné en entier
+avant toute authentification** (`calloc(total + 1)`), sur **trois** routes. Le total
+réclamable sans identifiants passe de **49 152** à **9 472 octets** (−80,73 %) :
+
+| Route | Plafond | Constante |
+|---|---|---|
+| `POST /history/import` | **8 192 o** | `kHistoryImportMaxBodyBytes` |
+| `POST /wifi/connect` | **1 024 o** | `kWifiConnectMaxBodyBytes` |
+| `POST /sensors/onewire/identify` | **256 o** | `kSensorIdentifyMaxBodyBytes` |
+
+Ces trois valeurs et leur total sont **assertés à la compilation** : une révision casse
+le build au lieu de périmer cette page. Mécanisme du refus :
+[`docs/subsystems/web-server.md`](subsystems/web-server.md).
+
+**Restaurer un historique de taille quelconque** ne demande donc **aucune** capacité
+supplémentaire à l'appareil : le client **découpe** et pose `mode:"append"` sur les
+lots suivants. L'interface le fait seule (budget de **7 168 o** par lot,
+`kHistoryImportChunkBudgetBytes`, soit 1 024 o de marge sous le plafond) ; un client
+tiers doit faire de même.
+
+> ⚠️ **Ne pas « optimiser » en découpant plus fin.** Un corps de **≤ 4 095 o**
+> repartirait dans le **tas 8 bits interne**, celui qui est en famine : au-delà de ce
+> seuil, `heap_caps_malloc_default` préfère la **PSRAM** ([ADR-0061](adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)).
+> Le budget de 7 168 o est **au-dessus à dessein**, et cet invariant est asserté.
+
+> **Poids d'un point, avec sa méthode** ([ADR-0073](adr/0073-chiffre-consigne-porte-sa-methode.md)) :
+> **148 octets** mesurés le 2026-09-07 en exécutant `parseHistoryCsv()` et
+> `chunkHistoryPoints()` de [`data/app.js`](../data/app.js) sur
+> [`test/fixtures/history-worst-bytes.csv`](../test/fixtures/history-worst-bytes.csv)
+> (16 chiffres significatifs, 7 clés émises, **sans** `phFiltered`/`orpFiltered`) ;
+> **105-109 o** pour un point typique (`null`, une décimale) ; **172 o** au maximum
+> **théorique** — squelette de clés 97 o plus trois nombres de 25 o, 25 étant la
+> longueur JSON maximale d'un `double` (`-0.0000012345678901234567`, atteinte dès
+> qu'une valeur passe sous `1e-6` : un ORP qui traverse zéro, une température proche
+> de 0 °C).
+>
+> Le découpage client se fait par **octets mesurés** (`jsonByteLength`), jamais par
+> nombre de points — et c'est ce qui l'a rendu indifférent à **quatre** chiffres
+> successivement erronés : 211-213 o (supposait les colonnes filtrées), 149 o (un cas
+> particulier, l'ORP négatif), et 157 o, qui était présenté ici comme une « borne
+> conservatrice » alors qu'il s'agissait du pire cas de l'**export firmware** — une
+> autre quantité, que le maximum théorique de 172 o dépasse. Vérifié par exécution :
+> 200 points au pire cas donnent 5 lots, charge maximale 7 085 o, aucun 413.
+>
+> 🛑 **Le contournement « découper à la main, les lots se cumulent » qui figurait ici
+> était FAUX ET DESTRUCTEUR** (retiré le 2026-09-07). Avant la v2.48.0, chaque lot
+> **écrasait** le précédent (`memoryBuffer = dataPoints;`) : qui suivait ce conseil ne
+> gardait que le **dernier** morceau, sans aucun message. Depuis la v2.48.0 le
+> découpage est **sûr**, mais **uniquement** avec `mode:"append"` sur les lots suivants.
+
+> ⚠️ **Effet de bord d'une interface en cache** : une page chargée avant la v2.48.0
+> ignore le découpage et peut POSTer ~130 points (**~14 Ko**), volume qui passait sous
+> l'ancien plafond de 16 384 o. Elle reçoit désormais un **413**. **Rechargez la page**
+> (Ctrl-Maj-R) après la mise à jour du filesystem.
 
 > Cette limite conditionne toute restauration après un changement de table de partitions
-> (qui efface la partition `history`) — voir [ADR-0068](adr/0068-partitions-layout-v5-flash-8-mo.md).
+> (qui efface la partition `history`) — voir [ADR-0068](adr/0068-partitions-layout-v5-flash-8-mo.md)
+> et [UPDATE_GUIDE.md](UPDATE_GUIDE.md).
 
 **Erreurs**
 
 - `400` : champ `history` manquant / tableau vide / aucun point valide / JSON illisible
 - `401` : authentification WRITE manquante ou invalide
-- `413` : corps > 16 384 octets (voir ci-dessus) — **avant** contrôle d'authentification
-- `500` : `importData()` a échoué (mutex historique, écriture)
+- `413 {"error":"Corps JSON trop volumineux : N octets reçus, plafond 8192 octets pour cette route."}` :
+  émis par la **garde maison** enregistrée avant le handler JSON, donc **en JSON** et
+  non plus par la page d'erreur nue de la bibliothèque. ⚠️ Il reste rendu **avant
+  `REQUIRE_AUTH`** — c'est structurel (le `Content-Length` est connu en fin d'en-têtes,
+  l'authentification est vérifiée dans le callback de corps) ; le message est donc
+  **générique et ne divulgue rien**. Le refus est **total**, jamais partiel : aucun
+  point n'est importé.
+- `503 {"error":"Mémoire insuffisante, réessayez dans quelques secondes"}` + en-tête
+  `Retry-After: 5` : famine mémoire au moment de la requête (plus gros bloc 8 bits sous
+  `kStaticFileMinAllocBytes`, [ADR-0066](adr/0066-sonde-du-tas-au-moment-du-refus.md)).
+  Rejouer le lot tel quel — l'idempotence du mode `append` le permet.
+- `500` : `importData()` / `appendData()` a échoué (historique désactivé, mutex
+  historique non obtenu — dans ce cas **rien n'a été modifié**, le lot est rejouable)
 
 ---
 
@@ -1277,6 +1392,15 @@ curl -X POST -H "Content-Type: application/json" \
   "message": "WiFi connection request accepted, connecting asynchronously"
 }
 ```
+
+**Plafond de corps : 1 024 octets** (`kWifiConnectMaxBodyBytes`, bug-113, v2.48.0) —
+au-delà, `413` en JSON maison, **avant** toute authentification, comme sur
+`/history/import` (section « Limite dure : 8 192 octets de corps »). Dimensionné
+sur la charge réelle : `ssid` ≤ 32 o (802.11) + `password` ≤ 63 o (WPA2-PSK), soit
+**58 o** pour un corps nominal et **595 o** au pire cas *tout échappé* en `\uXXXX`
+(×6 par octet, clés et ponctuation comprises) — **1,7×** de marge. ⚠️ **Pas 512 o** :
+cette route porte le flux de **premier démarrage**, celui qu'on ne peut pas contourner,
+et un SSID UTF-8 pathologique y serait refusé.
 
 ---
 
@@ -2379,7 +2503,7 @@ Payload :
 { "address": "28FF1A2B3C4D5E6F", "role": "water" }
 ```
 
-Réponse : `{ "success": true }`. Erreurs : 400 si adresse hex invalide ou role hors `"water"|"circuit"` ; 404 si l'adresse n'est pas présente sur le bus.
+Réponse : `{ "success": true }`. Erreurs : 400 si adresse hex invalide ou role hors `"water"|"circuit"` ; 404 si l'adresse n'est pas présente sur le bus ; **413** si le corps dépasse **256 octets** (`kSensorIdentifyMaxBodyBytes`, bug-113, v2.48.0 — corps réel ≈ **45 o**, soit 5,7× de marge ; refus en JSON maison **avant** authentification, cf. `/history/import` (section « Limite dure : 8 192 octets de corps »)).
 
 ### `POST /sensors/onewire/reset`
 

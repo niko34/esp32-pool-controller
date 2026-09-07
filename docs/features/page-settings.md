@@ -192,7 +192,7 @@ Champs : `#update_file` (input `accept=".bin"`), `#update_type` (`<select>` Firm
 > - « Historique des mesures (température, pH, ORP) » déplacée vers l'onglet **Avancé** (1ʳᵉ position).
 
 ### Avancé (`panel-dev`)
-- **Card « Historique des mesures (température, pH, ORP) »** en **première position** (déplacée depuis Système en v2.5.1, feature-046, avant « Configuration des pompes ») : export CSV (`#history_export_btn` → `GET /get-history?range=all`), import CSV (`#history_import_file` + `#history_import_btn` → `POST /history/import`), suppression (`#history_clear_btn` → `POST /history/clear`). Handlers JS inchangés (sélection par id, indépendants de l'emplacement DOM).
+- **Card « Historique des mesures (température, pH, ORP) »** en **première position** (déplacée depuis Système en v2.5.1, feature-046, avant « Configuration des pompes ») : export CSV (`#history_export_btn` → `GET /get-history?range=all`), import CSV (`#history_import_file` + **quatre boutons**, v2.48.0 → `POST /history/import`), suppression (`#history_clear_btn` → `POST /history/clear`). Voir la section dédiée la section « Import d'historique par lots » ci-dessous.
 - `ph_pump` / `orp_pump` (1 ou 2) — affectation des deux pompes doseuses.
 - ⚠️ **Curseurs d'amplitude retirés en v2.23.0** ([ADR-0047](../adr/0047-calibration-de-type-par-defaut-et-gel-amplitude.md) — l'amplitude est **gelée à 50 %**, valeur usine) : les sliders `#pumpN_max_duty` n'existent plus. À la place, une **ligne lecture seule** par pompe (`#pumpN_cal_info`, classe `.pump-cal-info`) : « Amplitude d'impulsion : X % — débit Y ml/min (**valeur usine**\|**mesuré**) » — X = `pumpN_max_duty_pct` **réel** de `/get-config` (peut différer de 50 si hérité), provenance selon `pumpN_flow_weighed` ; si `cal_duty = 0` : « … — débit non caractérisé ». Le champ serveur reste vivant + validé [40..100] (modifiable **par API seule**, précédent `screen_enabled`), et `pumpN_max_duty_pct` est **purgé des deux payloads de save** du frontend (`save()` global ET save pompes) — immunité contre les sauvegardes d'onglets périmés.
 - **Action principale par pompe : « Mesurer le débit » (`#pumpN_measure_btn`, v2.24.0, feature-075)** — ouvre l'[assistant guidé plein écran](#assistant--mesure-du-débit--feature-075-v2240) (carte `#pump-flow-wizard`, section dédiée ci-dessous). ⚠️ **Terminologie v2.24.0 : le mot « pesée » a disparu de toute l'UI** (grep `data/` vide) au profit de « **mesure du débit** » ; l'indication de provenance « pesé » devient « **mesuré** ».
@@ -209,6 +209,62 @@ Champs : `#update_file` (input `accept=".bin"`), `#update_type` (`<select>` Firm
 > ℹ️ **Cartes retirées en v2.5.0** (feature-045) : « Debug oscillation pH » et « Diagnostic EZO », ajoutées pour la campagne de diagnostic d'oscillation pH (2026-05/06). Code récupérable via `git revert` du commit de la feature-045 ; état complet figé au tag `v2.4.0`.
 >
 > **Réintroduction partielle en v2.7.0** (feature-057) : la trace des signaux est de retour sous la card « Signaux capteurs (brut / lissé) » (ci-dessous), **fidèle** (haute cadence) et **étendue à l'ORP**. « Diagnostic EZO » et « pause WiFi » restent retirés.
+
+#### Import d'historique par lots (bug-101, v2.48.0)
+
+Le fichier CSV n'est plus posté en une seule requête : `data/app.js` le **découpe** et
+envoie des lots successifs. Motif : la route tamponne le corps entier avant traitement,
+son plafond est donc une contrainte **mémoire** de l'appareil — et il a été **abaissé**
+à 8 192 o (`bug-113`), pas relevé. Contrat exact :
+[API.md](../API.md#post-historyimport--write).
+
+**Quatre boutons**, dans cet ordre dans le DOM :
+
+| Bouton | `id` | Style | Requête | Visible / actif |
+|---|---|---|---|---|
+| **Remplacer l'historique** | `#history_import_replace_btn` | `btn--danger` | lot 1 en `mode:"replace"`, suivants en `"append"` | activé si un fichier est choisi **et** aucune reprise en attente |
+| **Compléter l'historique** | `#history_import_append_btn` | `btn` | **tous** les lots en `mode:"append"` | idem |
+| **Reprendre l'import** | `#history_import_resume_btn` | `btn` | repart du lot interrompu, en `"append"` | **masqué** sauf reprise en attente |
+| **Abandonner la reprise** | `#history_import_abandon_btn` | `btn` | **aucune** — purge l'état local | **masqué** sauf reprise en attente |
+
+Progression : `#history_import_progress` (barre `#history_import_progress_bar`
+`role="progressbar"` + ligne `#history_import_status` `aria-live="polite"`).
+
+**Découpage par octets mesurés, jamais par nombre de points** — budget
+`kHistoryImportChunkBudgetBytes` = **7 168 o** (répliqué côté client, égalité avec le
+firmware **testée**), soit 1 024 o de marge sous le plafond de route. Un point pèse de
+**110** à **149 octets** selon les décimales que rend `JSON.stringify` (`7.9` contre
+`7.123456789012345`) : un découpage « par N points » repasserait le plafond au premier
+fichier à décimales longues. La confirmation annonce le nombre de lots et le poids du
+plus gros.
+
+**⚠️ Le verrou de reprise est un chemin de perte de données.** Tant qu'une reprise est
+en attente, **« Remplacer » et « Compléter » sont désactivés**. Ce n'est pas une
+confirmation de plus : une confirmation avertie aurait laissé le bouton **destructeur** à
+**un clic de distance** dans l'état où l'utilisateur est le plus pressé et le moins
+attentif — juste après une coupure réseau, en cherchant à finir son import. Un clic sur
+« Remplacer » à cet instant **écraserait les lots déjà passés**, c'est-à-dire détruirait
+exactement ce qu'il veut récupérer. Le verrou rend le geste **impossible** plutôt que
+dissuadé, et « Abandonner la reprise » fournit la **sortie explicite** sans laquelle
+l'état serait sans issue.
+
+**Ce que dit « Abandonner la reprise »** — et c'est ce qui se passe vraiment : *« Les N
+lot(s) déjà envoyés RESTENT dans l'historique de l'appareil : rien n'est effacé. Seuls
+les M lot(s) restants ne seront pas envoyés. »* Aucune requête n'est émise.
+
+**Une interruption laisse un historique partiel MAIS COHÉRENT**, jamais vide : chaque
+lot est autonome (`mode` + points), l'appareil ne connaît aucune notion de session. Et
+la reprise est **sans doublon** parce que la fusion firmware **écrase** le créneau
+`(timestamp, granularité)` — réenvoyer un lot est exactement idempotent
+([history.md](../subsystems/history.md)).
+
+**Restitution des compteurs** — la réponse de chaque lot porte `count` / `total` /
+`dropped`. Le toast final annonce *« N point(s) envoyé(s), T conservé(s) sur
+l'appareil »*, et si `dropped > 0` il passe en `error` avec **la formulation exacte** :
+*« D point(s) les plus anciens ont été évincés de l'historique pour tenir dans les
+plafonds de l'appareil. »* ⚠️ **Ne jamais reformuler en « points écartés du fichier »** :
+`dropped` compte les points **déjà présents** qu'on a dû sortir, pas des points refusés
+— l'utilisateur croirait sa sauvegarde perdue.
 
 #### Assistant « Mesure du débit » (feature-075, v2.24.0)
 
@@ -384,7 +440,7 @@ Toggles complémentaires :
 | Assistant débit : arrêt anticipé (session conservée) | `POST /flow-assist/stop` | WRITE |
 | Assistant débit : sortie (dosage auto rétabli) | `POST /flow-assist/exit` | WRITE |
 | Export historique CSV | `GET /get-history?range=all` | READ |
-| Import historique CSV | `POST /history/import` (multipart) | CRITICAL |
+| Import historique (un lot) | `POST /history/import` (JSON, `mode` `replace`/`append`) | WRITE |
 | Purger historique | `POST /history/clear` | CRITICAL |
 | Redémarrer | `POST /reboot` | CRITICAL |
 | Réinitialisation d'usine | `POST /factory-reset` | CRITICAL |
@@ -420,7 +476,9 @@ Plus aucun dialogue natif `alert()` / `confirm()` sur cette page (ni ailleurs da
 
 - **Mot de passe < 8 car. / sans chiffre / sans spécial** : bloqué côté UI ([`data/index.html:1241`](../../data/index.html:1241)) — aucun appel réseau.
 - **OTA en cours** : `PumpController.setOtaInProgress(true)` arrête les pompes doseuses (voir [`pump_controller.cpp`](../../src/pump_controller.cpp)) et la filtration reste à son état courant.
-- **Import CSV malformé** : ligne rejetée individuellement, le reste est importé. Colonnes attendues : `datetime, ph, orp, temperature, filtration, dosing, granularity` — voir [`web_routes_data.cpp:303`](../../src/web_routes_data.cpp:303).
+- **Import CSV malformé** : ligne rejetée individuellement, le reste est importé. Colonnes attendues : `datetime, ph, orp, temperature, filtration, dosing, granularity` (+ `dosing_mask` depuis la v2.47.0) — voir [`web_routes_data.cpp:303`](../../src/web_routes_data.cpp:303).
+- **Import interrompu en cours de lot** (coupure Wi-Fi, appareil qui redémarre) : les lots déjà acceptés **restent** dans l'appareil. L'état de reprise vit en **mémoire de page** — recharger l'onglet le perd, et il faut alors relancer un import complet (« Compléter » suffit : la fusion est idempotente).
+- **Interface en cache antérieure à la v2.48.0** : elle POSTe l'historique **en une seule requête** et reçoit un `413` dès **~74 points** au poids typique (~107 o/point) et **~48** au pire cas mesuré (148 o/point) — plafond abaissé de 16 384 à **8 192 o**. Symptôme d'un `Ctrl-Maj-R` manquant après le flash du filesystem.
 - **Test pompe** : timeout 10 s côté firmware ; si la connexion réseau meurt, la pompe s'arrête quand même.
 - **Factory reset pendant une injection** : l'injection est interrompue par le reboot, les cumuls NVS sont effacés.
 

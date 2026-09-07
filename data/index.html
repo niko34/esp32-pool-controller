@@ -2177,10 +2177,21 @@ action:
                   </label>
 
                   <div class="row row--gap">
-                    <button class="btn btn--danger" type="button" id="history_import_btn" disabled>Importer</button>
+                    <button class="btn btn--danger" type="button" id="history_import_replace_btn" disabled>Remplacer l'historique</button>
+                    <button class="btn" type="button" id="history_import_append_btn" disabled>Compléter l'historique</button>
+                    <button class="btn" type="button" id="history_import_resume_btn" style="display:none;">Reprendre l'import</button>
+                    <button class="btn" type="button" id="history_import_abandon_btn" style="display:none;">Abandonner la reprise</button>
                   </div>
+
+                  <div id="history_import_progress" style="display:none;">
+                    <div class="progress">
+                      <div class="progress__bar" id="history_import_progress_bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">0%</div>
+                    </div>
+                    <div class="muted small" id="history_import_status" role="status" aria-live="polite">Préparation…</div>
+                  </div>
+
                   <div class="hint">
-                    L'import remplace l'historique actuel. Colonnes attendues: <code>datetime, ph, orp, temperature, filtration, dosing, granularity</code>. Rechargez la page après l'import pour que l'historique importé soit visible dans les graphiques.
+                    <strong>Remplacer</strong> efface l'historique de l'appareil et le reconstruit à partir du fichier. <strong>Compléter</strong> conserve l'existant : seuls les créneaux communs sont écrasés par le fichier. L'envoi est découpé automatiquement en lots de 7 Ko au plus (l'appareil refuse toute requête au-delà de 8192 octets) ; en cas de coupure, l'import reprend au lot interrompu — les deux boutons d'import restent alors désactivés jusqu'à la reprise ou son abandon, pour qu'un clic ne détruise pas les lots déjà passés. Colonnes attendues : <code>datetime, ph, orp, temperature, filtration, dosing, granularity</code>. Rechargez la page après l'import pour que l'historique importé soit visible dans les graphiques.
                   </div>
 
                   <div class="row row--gap" style="margin-top: 16px;">

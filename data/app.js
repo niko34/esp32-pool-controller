@@ -1786,6 +1786,10 @@
 
       const data = await response.json();
       const history = data.history || [];
+      // bug-101 : on retient le total SEULEMENT quand la plage est « tout »,
+      // sinon on afficherait un compte partiel dans la confirmation de
+      // remplacement. Aucune requête supplémentaire n'est faite pour l'obtenir.
+      if (range === 'all') _historyAllCount = history.length;
 
       // Agréger par jour calendaire — dernier point connu par jour par capteur
       // Clé ISO YYYY-MM-DD (tri lexicographique correct, pas de re-parsing par Safari)
@@ -4263,10 +4267,290 @@
     return result;
   }
 
+  // ================= bug-101 : import d'historique par LOTS =================
+  // La route /history/import tamponne le corps entier avant d'appeler son
+  // callback : son plafond est donc une contrainte MÉMOIRE de l'appareil, pas
+  // un caprice. Le découpage vit ici, chez le client, ce qui évite d'agrandir
+  // une allocation contiguë sur une carte en famine 8 bits (bug-080).
+  const kHistoryImportChunkBudgetBytes = 7168;  // < 8192 accepté par l'appareil
+  // Enveloppe mesurée sur le mode le plus LONG : le budget doit tenir quel que
+  // soit le mode réellement envoyé.
+  const kHistoryImportEnvelope = '{"mode":"replace","history":[]}';
+
+  let _byteLenEncoder = null;
+  function jsonByteLength(str) {
+    if (_byteLenEncoder === null) {
+      _byteLenEncoder = (typeof TextEncoder === 'function') ? new TextEncoder() : false;
+    }
+    if (_byteLenEncoder) return _byteLenEncoder.encode(str).length;
+    // Repli sans TextEncoder : comptage UTF-8 explicite. On compte des OCTETS,
+    // pas des code units — c'est ce que mesure Content-Length côté appareil.
+    let n = 0;
+    for (let i = 0; i < str.length; i++) {
+      const c = str.charCodeAt(i);
+      if (c < 0x80) n += 1;
+      else if (c < 0x800) n += 2;
+      else if (c >= 0xD800 && c <= 0xDBFF) { n += 4; i++; }
+      else n += 3;
+    }
+    return n;
+  }
+
+  // Découpage par BUDGET D'OCTETS MESURÉS, jamais par nombre de points.
+  // POURQUOI : le poids réel d'un point va de 110 à 149 octets selon les
+  // décimales que rend JSON.stringify (7.9 contre 7.123456789012345). Un
+  // découpage « par 145 points » repasserait le plafond au premier fichier à
+  // décimales longues — c'est exactement le mur que ce correctif retire.
+  function chunkHistoryPoints(points, budgetBytes = kHistoryImportChunkBudgetBytes) {
+    const overhead = jsonByteLength(kHistoryImportEnvelope);
+    const chunks = [];
+    let cur = [];
+    let curBytes = 0;
+    for (const point of (points || [])) {
+      const size = jsonByteLength(JSON.stringify(point));
+      // +1 = la virgule de séparation, comptée seulement si le lot est déjà entamé
+      const add = size + (cur.length ? 1 : 0);
+      if (cur.length && overhead + curBytes + add > budgetBytes) {
+        chunks.push(cur);
+        cur = [point];
+        curBytes = size;
+      } else {
+        cur.push(point);
+        curBytes += add;
+      }
+    }
+    if (cur.length) chunks.push(cur);
+    // Un point seul plus gros que le budget partirait seul dans son lot et
+    // serait refusé par l'appareil : structurellement impossible. Le pire cas
+    // MESURÉ est 148 o (fixture history-worst-bytes.csv) et le maximum
+    // THÉORIQUE 172 o — squelette de clés 97 o + 3 nombres de 25 o, 25 étant la
+    // longueur JSON maximale d'un double. Soit 41 fois moins que le budget. Et
+    // l'échec serait de toute façon visible et reprenable — jamais silencieux.
+    return chunks;
+  }
+
+  // Total de points détenus par l'appareil, tel que la dernière lecture
+  // « range=all » l'a montré. null = inconnu → la confirmation le dit ainsi
+  // plutôt que d'inventer un chiffre.
+  let _historyAllCount = null;
+
+  // État de reprise, volontairement en mémoire de PAGE : l'appareil ne connaît
+  // aucune session d'import. Chaque lot est autonome (mode + points), donc une
+  // coupure au lot 3 sur 6 laisse un historique PARTIEL MAIS COHÉRENT — jamais
+  // un historique vide.
+  let _historyImportResume = null;  // { chunks, index, mode, points }
+
+  function historyImportUi() {
+    return {
+      input: $("#history_import_file"),
+      replaceBtn: $("#history_import_replace_btn"),
+      appendBtn: $("#history_import_append_btn"),
+      resumeBtn: $("#history_import_resume_btn"),
+      abandonBtn: $("#history_import_abandon_btn"),
+      wrap: $("#history_import_progress"),
+      bar: $("#history_import_progress_bar"),
+      status: $("#history_import_status")
+    };
+  }
+
+  function setHistoryImportProgress(done, totalChunks, text) {
+    const ui = historyImportUi();
+    if (ui.wrap) ui.wrap.style.display = '';
+    const pct = totalChunks ? Math.round((done / totalChunks) * 100) : 0;
+    if (ui.bar) {
+      ui.bar.style.width = `${pct}%`;
+      ui.bar.textContent = `${pct}%`;
+      ui.bar.setAttribute('aria-valuenow', String(pct));
+    }
+    if (ui.status) ui.status.textContent = text;
+  }
+
+  // Envoi SÉQUENTIEL, jamais concurrent : deux lots en vol se disputeraient le
+  // tampon de requête et le mutex de l'historique.
+  async function sendHistoryChunks(state) {
+    const totalChunks = state.chunks.length;
+    let lastTotal = null;
+    let totalDropped = 0;
+    while (state.index < totalChunks) {
+      const i = state.index;
+      // mode « replace » au PREMIER lot seulement : les suivants complètent,
+      // sinon chaque lot effacerait le précédent (history.cpp : memoryBuffer =
+      // dataPoints). C'est le piège qui détruisait l'historique de ceux qui
+      // découpaient à la main.
+      const mode = (i === 0) ? state.mode : 'append';
+      setHistoryImportProgress(i, totalChunks, `Envoi du lot ${i + 1} sur ${totalChunks}…`);
+      let res;
+      try {
+        res = await authFetch("/history/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode, history: state.chunks[i] })
+        });
+      } catch (err) {
+        throw new Error(`réseau interrompu au lot ${i + 1}/${totalChunks} (${err.message || err})`);
+      }
+      let body = null;
+      try { body = await res.json(); } catch (_) {}
+      if (!res.ok) {
+        if (res.status === 413) {
+          throw new Error(`lot ${i + 1}/${totalChunks} refusé comme trop volumineux — rechargez la page (une version en cache de l'interface envoie des lots hors gabarit)`);
+        }
+        if (res.status === 503) {
+          throw new Error(`lot ${i + 1}/${totalChunks} refusé : mémoire insuffisante sur l'appareil, réessayez dans quelques minutes`);
+        }
+        throw new Error(body?.error || `lot ${i + 1}/${totalChunks} refusé (HTTP ${res.status})`);
+      }
+      if (typeof body?.total === 'number') lastTotal = body.total;
+      if (typeof body?.dropped === 'number') totalDropped += body.dropped;
+      state.index = i + 1;
+    }
+    setHistoryImportProgress(totalChunks, totalChunks, `${totalChunks} lot(s) envoyé(s).`);
+    return { lastTotal, totalDropped };
+  }
+
+  // Source UNIQUE de l'état des boutons d'import. Deux conditions, dans cet
+  // ordre : une reprise en attente verrouille les deux imports (voir le motif
+  // dans le finally de runHistoryImport), sinon c'est la présence d'un fichier
+  // qui décide.
+  function refreshHistoryImportButtons() {
+    const ui = historyImportUi();
+    const pending = _historyImportResume !== null;
+    const hasFile = !!(ui.input && ui.input.files && ui.input.files.length);
+    if (ui.replaceBtn) ui.replaceBtn.disabled = pending || !hasFile;
+    if (ui.appendBtn) ui.appendBtn.disabled = pending || !hasFile;
+    if (ui.resumeBtn) {
+      ui.resumeBtn.style.display = pending ? '' : 'none';
+      ui.resumeBtn.disabled = !pending;
+    }
+    if (ui.abandonBtn) {
+      ui.abandonBtn.style.display = pending ? '' : 'none';
+      ui.abandonBtn.disabled = !pending;
+    }
+  }
+
+  async function runHistoryImport(state) {
+    const ui = historyImportUi();
+    [ui.replaceBtn, ui.appendBtn, ui.resumeBtn, ui.abandonBtn]
+      .forEach((b) => { if (b) b.disabled = true; });
+    if (ui.input) ui.input.disabled = true;
+    if (ui.resumeBtn) ui.resumeBtn.style.display = 'none';
+    if (ui.abandonBtn) ui.abandonBtn.style.display = 'none';
+    try {
+      const { lastTotal, totalDropped } = await sendHistoryChunks(state);
+      _historyImportResume = null;
+      let msg = `Import terminé : ${state.points} point(s) envoyé(s)`;
+      if (lastTotal !== null) {
+        msg += `, ${lastTotal} conservé(s) sur l'appareil`;
+        _historyAllCount = lastTotal;
+      }
+      msg += '.';
+      if (totalDropped > 0) {
+        // Une perte n'est JAMAIS muette : c'est le défaut d'origine de bug-101.
+        // ⚠️ FORMULATION EXACTE, à ne pas « simplifier » en « points refusés » :
+        // le compteur rendu par l'appareil est celui des points ÉVINCÉS DE
+        // L'HISTORIQUE pour tenir dans les plafonds, soit les PLUS ANCIENS de
+        // chaque granularité. Ce ne sont pas nécessairement les points du
+        // fichier : importer 20 points récents dans un historique plein évince
+        // 20 points anciens déjà présents. Dire « écartés du fichier » ferait
+        // croire à l'utilisateur que sa sauvegarde n'est pas passée.
+        showToast(`${msg} Attention : ${totalDropped} point(s) les plus anciens ont été évincés de l'historique pour tenir dans les plafonds de l'appareil.`, 'error');
+      } else {
+        showToast(msg, 'success');
+      }
+      if (ui.input) ui.input.value = '';
+      // Succès : plus de reprise en attente, les deux imports redeviennent
+      // disponibles via refreshHistoryImportButtons() dans le finally.
+    } catch (err) {
+      _historyImportResume = state;
+      setHistoryImportProgress(state.index, state.chunks.length,
+        `Interrompu après ${state.index} lot(s) sur ${state.chunks.length} — les points déjà envoyés sont conservés.`);
+      if (ui.resumeBtn) { ui.resumeBtn.style.display = ''; ui.resumeBtn.disabled = false; }
+      if (ui.abandonBtn) { ui.abandonBtn.style.display = ''; ui.abandonBtn.disabled = false; }
+      showToast(`Erreur import historique : ${err.message || err}`, 'error');
+    } finally {
+      if (ui.input) ui.input.disabled = false;
+      // ⚠️ CHEMIN DE PERTE DE DONNÉES — ne pas « simplifier » en réactivant
+      // inconditionnellement. Tant qu'une reprise est EN ATTENTE, « Remplacer »
+      // et « Compléter » restent désactivés : un clic sur « Remplacer » à cet
+      // instant écraserait les lots déjà passés, c'est-à-dire détruirait l'import
+      // partiel exactement quand l'utilisateur cherche à le récupérer après une
+      // coupure. Seul « Reprendre » est offert, avec « Abandonner la reprise »
+      // comme sortie explicite — sinon l'état serait sans issue.
+      refreshHistoryImportButtons();
+    }
+  }
+
+  // mode : 'replace' (destructif) ou 'append' (fusion)
+  async function startHistoryImport(mode) {
+    const ui = historyImportUi();
+    if (!(ui.input && ui.input.files && ui.input.files.length)) return;
+
+    let points;
+    try {
+      points = parseHistoryCsv(await ui.input.files[0].text());
+    } catch (err) {
+      showToast(`Lecture du fichier impossible : ${err.message || err}`, 'error');
+      return;
+    }
+    if (!points.length) {
+      showToast("Aucune donnée valide trouvée dans le fichier.", "error");
+      return;
+    }
+
+    const chunks = chunkHistoryPoints(points);
+    let biggest = 0;
+    chunks.forEach((c) => {
+      biggest = Math.max(biggest, jsonByteLength(JSON.stringify({ mode: 'replace', history: c })));
+    });
+
+    // La limite et le découpage sont annoncés AVANT l'envoi : l'autre moitié de
+    // bug-101 était que la limite n'était écrite nulle part.
+    const node = document.createElement('div');
+    const line = (text, strong) => {
+      const p = document.createElement('p');
+      if (strong) {
+        const b = document.createElement('strong');
+        b.textContent = text;      // textContent, jamais innerHTML
+        p.appendChild(b);
+      } else {
+        p.textContent = text;
+      }
+      node.appendChild(p);
+    };
+    if (mode === 'replace') {
+      line(_historyAllCount === null
+        ? "L'historique actuel de l'appareil sera intégralement remplacé."
+        : `Les ${_historyAllCount} points actuels seront perdus.`, true);
+    } else {
+      line("Les créneaux communs seront écrasés par le fichier ; le reste de l'historique est conservé.", true);
+    }
+    line(`Fichier : ${points.length} point(s), envoyés en ${chunks.length} lot(s) de ${biggest} octets au plus (l'appareil refuse au-delà de 8192 octets par requête).`);
+    if (chunks.length > 1) {
+      line("Si la liaison coupe en cours de route, l'import est reprenable au lot interrompu ; les points déjà envoyés restent en place.");
+    }
+
+    const fallback = (mode === 'replace')
+      ? `Les points actuels seront perdus.\n\nFichier : ${points.length} point(s) en ${chunks.length} lot(s).`
+      : `Les créneaux communs seront écrasés par le fichier.\n\nFichier : ${points.length} point(s) en ${chunks.length} lot(s).`;
+
+    if (!(await confirmDialog({
+      title: (mode === 'replace') ? "Remplacer l'historique" : "Compléter l'historique",
+      message: fallback,
+      messageNode: node,
+      confirmLabel: (mode === 'replace') ? "Remplacer" : "Compléter",
+      danger: (mode === 'replace')
+    }))) return;
+
+    await runHistoryImport({ chunks, index: 0, mode, points: points.length });
+  }
+
   function bindHistoryBackup() {
     const exportBtn = $("#history_export_btn");
     const importInput = $("#history_import_file");
-    const importBtn = $("#history_import_btn");
+    const replaceBtn = $("#history_import_replace_btn");
+    const appendBtn = $("#history_import_append_btn");
+    const resumeBtn = $("#history_import_resume_btn");
+    const abandonBtn = $("#history_import_abandon_btn");
     const clearBtn = $("#history_clear_btn");
 
     exportBtn?.addEventListener("click", async () => {
@@ -4316,52 +4600,36 @@
     });
 
     importInput?.addEventListener("change", () => {
-      if (importBtn) importBtn.disabled = !(importInput.files && importInput.files.length);
+      // Nouveau fichier choisi : la reprise de l'import précédent n'a plus de
+      // sens (elle porterait sur les lots de l'ancien fichier). C'est donc AUSSI
+      // une sortie de l'état « reprise en attente » — mais délibérée, pas un
+      // effet de bord d'un bouton qui serait resté cliquable.
+      _historyImportResume = null;
+      const wrap = $("#history_import_progress");
+      if (wrap) wrap.style.display = 'none';
+      refreshHistoryImportButtons();
     });
 
-    importBtn?.addEventListener("click", async () => {
-      if (!(importInput.files && importInput.files.length)) return;
+    replaceBtn?.addEventListener("click", () => { startHistoryImport('replace'); });
+    appendBtn?.addEventListener("click", () => { startHistoryImport('append'); });
+    resumeBtn?.addEventListener("click", () => {
+      if (_historyImportResume) runHistoryImport(_historyImportResume);
+    });
+    abandonBtn?.addEventListener("click", async () => {
+      const state = _historyImportResume;
+      if (!state) return;
+      const sent = state.index;
       if (!(await confirmDialog({
-        title: "Importer l'historique",
-        message: "Importer ce fichier va remplacer l'historique actuel.",
-        confirmLabel: "Importer",
-        danger: true
+        title: "Abandonner la reprise",
+        message: `Les ${sent} lot(s) déjà envoyés RESTENT dans l'historique de l'appareil : rien n'est effacé.\n\nSeuls les ${state.chunks.length - sent} lot(s) restants ne seront pas envoyés.`,
+        confirmLabel: "Abandonner",
+        cancelLabel: "Continuer la reprise"
       }))) return;
-
-      importBtn.disabled = true;
-      importInput.disabled = true;
-
-      try {
-        const text = await importInput.files[0].text();
-        const points = parseHistoryCsv(text);
-        if (!points.length) {
-          showToast("Aucune donnée valide trouvée dans le fichier.", "error");
-          return;
-        }
-
-        const res = await authFetch("/history/import", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ history: points })
-        });
-
-        let response = null;
-        if (!res.ok) {
-          try {
-            response = await res.json();
-          } catch (_) {}
-          throw new Error(response?.error || "Import impossible");
-        }
-        response = await res.json();
-        showToast(`Import terminé (${response?.count || points.length} points).`, "success");
-        importInput.value = "";
-        if (importBtn) importBtn.disabled = true;
-      } catch (err) {
-        showToast(`Erreur import historique : ${err.message || err}`, "error");
-      } finally {
-        importBtn.disabled = !(importInput.files && importInput.files.length);
-        importInput.disabled = false;
-      }
+      _historyImportResume = null;
+      const wrap = $("#history_import_progress");
+      if (wrap) wrap.style.display = 'none';
+      refreshHistoryImportButtons();
+      showToast(`Reprise abandonnée — les ${sent} lot(s) déjà importés sont conservés.`, 'info');
     });
 
     clearBtn?.addEventListener("click", async () => {

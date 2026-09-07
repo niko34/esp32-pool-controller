@@ -100,6 +100,19 @@ private:
   // trié par timestamp (appelé après chaque std::sort). Assainit aussi, au
   // chargement, les doublons persistés par les versions ≤ 2.18.0.
   void dedupAggregatedPoints();
+  // bug-101 : ramène memoryBuffer sous les plafonds de constants.h, granularité
+  // par granularité, en évinçant les PLUS ANCIENS (le buffer doit être TRIÉ par
+  // timestamp à l'appel : l'ordre du vecteur EST l'ordre chronologique).
+  //
+  // APPELÉ UNIQUEMENT PAR appendData() — et ce n'est pas un oubli.
+  // Le pas 4 de consolidateData() fait le même bornage pour HOURLY et DAILY, et
+  // recordDataPoint() le fait pour RAW : ces deux chemins restent INCHANGÉS.
+  // Le mode « remplacer » (importData) reste borné par le plafond de corps de la
+  // route (kHistoryImportMaxBodyBytes), donc n'a pas besoin de ce filet. Seul
+  // l'ajout par lots peut faire franchir un plafond sans passer par aucun des
+  // deux chemins existants.
+  // ⚠️ Suppose le mutex DÉJÀ pris par l'appelant.
+  void trimToCaps();
   void migrateLegacyHistory(unsigned long nowEpoch);
   void _applyPreNtpCorrection(unsigned long ntpEpoch, unsigned long uptimeSec);
 
@@ -122,6 +135,48 @@ public:
   bool snapshotFiltered(std::vector<DataPoint>& out, unsigned long cutoff,
                         unsigned long since);
   bool importData(const std::vector<DataPoint>& dataPoints);
+
+  /**
+   * @brief Ajoute un lot de points à l'historique EXISTANT (bug-101, v2.48.0).
+   *
+   * Mode « ajouter » de POST /history/import, distinct du mode « remplacer »
+   * (importData) : c'est lui qui permet à un client de restaurer une sauvegarde
+   * de taille quelconque en lots successifs sous kHistoryImportMaxBodyBytes,
+   * sans que chaque lot écrase le précédent.
+   *
+   * RÈGLE DE COLLISION — (timestamp, granularité) identique ⇒ le point ENTRANT
+   * ÉCRASE le point vivant, TOUTES GRANULARITÉS RAW COMPRISE. Justification
+   * complète dans history_import_logic.h ; en une phrase : l'écrasement donne
+   * l'IDEMPOTENCE EXACTE, donc une reprise après coupure réseau sûre, là où une
+   * moyenne équipondérée (historyMergeMeanFinite) fabriquerait une valeur qui
+   * n'a jamais été mesurée. ⚠️ Ne pas espérer que dedupAggregatedPoints()
+   * couvre ce chemin : il ignore explicitement les points RAW, dont un export
+   * porte jusqu'à kMaxRawDataPoints (96).
+   *
+   * Fusion EN PLACE dans memoryBuffer, par recherche linéaire : AUCUN tampon
+   * supplémentaire n'est alloué. Le seul contigu du chemin reste le vecteur
+   * existant (339 × 28 = 9 492 o, verrouillé par le static_assert ci-dessus).
+   *
+   * Prend le mutex historique UNE SEULE FOIS, comme importData : la séquence
+   * lecture-modification-écriture-sauvegarde est atomique, un lot ne peut pas
+   * s'entrelacer avec le recordDataPoint() de la boucle.
+   *
+   * @param pts        Points à fusionner (non vide).
+   * @param outTotal   [sortie, optionnel] Nombre de points DÉTENUS par
+   *                   l'appareil après le lot (taille du buffer).
+   * @param outDropped [sortie, optionnel] Nombre de points ÉVINCÉS par
+   *                   trimToCaps() pendant cet appel, c'est-à-dire les plus
+   *                   anciens de chaque granularité au-delà du plafond. Non nul
+   *                   signifie « une partie de ce que vous avez envoyé, ou de ce
+   *                   qui était là, ne tient pas » — à remonter au client
+   *                   TOUJOURS, même à zéro : la perte muette est le défaut
+   *                   d'origine de bug-101.
+   * @return true si le lot a été fusionné ; false si l'historique est désactivé,
+   *         si `pts` est vide, ou si le mutex n'a pas pu être pris (dans ce
+   *         dernier cas RIEN n'a été modifié).
+   */
+  bool appendData(const std::vector<DataPoint>& pts, size_t* outTotal,
+                  size_t* outDropped);
   // feature-027 : retourne false si le mutex n'a pas pu être pris (historique occupé)
   bool clearHistory();
   // feature-059 : true si le disjoncteur de boot-loop a effacé la partition

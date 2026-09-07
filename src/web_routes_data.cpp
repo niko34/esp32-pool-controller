@@ -14,6 +14,7 @@
 #include "logs_export_chunk.h"
 #include "history.h"
 #include "history_export_chunk.h"
+#include "history_import_logic.h"  // bug-101 : mode "replace"/"append" (logique pure)
 #include "heap_metrics.h"  // heapLargestFreeBlock8Bit — garde heap /get-logs (bug-080)
 #include "fs_guard.h"     // bug-100 : point d'admission unique des fopen internes (ADR-0070)
 #include "json_compat.h"
@@ -1225,7 +1226,25 @@ void setupDataRoutes(AsyncWebServer* server) {
         return;
       }
 
-      if (!history.importData(imported)) {
+      // bug-101 — le champ "mode" décide, et son ABSENCE vaut "replace" : c'est
+      // la rétrocompatibilité stricte de la route (tout client antérieur à
+      // 2.43.0 postait un remplacement total sans le savoir). Toute valeur
+      // inconnue vaut également "replace" — jamais une fusion silencieuse d'un
+      // client qu'on n'a pas compris. Cf. historyImportModeIsReplace().
+      JsonVariant modeVar = root["mode"];
+      const char* mode = modeVar.is<const char*>() ? modeVar.as<const char*>() : nullptr;
+      // `total` en mode remplacement = le nombre de points SOUMIS. La fusion de
+      // doublons opérée par importData() peut le réduire ; on ne le mesure pas
+      // ici parce qu'il faudrait copier tout le tampon (~11 Ko) sur la tâche
+      // async_tcp, exactement là où bug-080 documente la famine. Le client
+      // conclut de toute façon sur le DERNIER lot, qui est un "append" — donc
+      // sur un total authentique.
+      size_t total = imported.size();
+      size_t dropped = 0;
+      bool ok = historyImportModeIsReplace(mode)
+                  ? history.importData(imported)
+                  : history.appendData(imported, &total, &dropped);
+      if (!ok) {
         sendErrorResponse(request, 500, "Impossible d'importer l'historique");
         return;
       }
@@ -1233,9 +1252,40 @@ void setupDataRoutes(AsyncWebServer* server) {
       JsonDocument doc;
       doc["status"] = "success";
       doc["count"] = imported.size();
+      // `total` = points détenus par l'appareil après ce lot.
+      //
+      // ⚠️ `dropped` = points ÉVINCÉS DE L'HISTORIQUE par trimToCaps() pendant
+      // cet appel — les PLUS ANCIENS de chaque granularité au-delà du plafond.
+      // Ce n'est PAS « les points de ce lot qui ont été refusés », et les deux
+      // ne coïncident pas par construction : importer 20 points récents dans un
+      // historique déjà plein donne `dropped = 20`, mais ce sont 20 points
+      // ANCIENS DÉJÀ PRÉSENTS qui partent, pas les entrants. La règle de
+      // collision d'appendData() étant l'écrasement, un entrant n'est pas
+      // écarté par la FUSION : il entre, puis le plafond décide qui sort.
+      // (⚠️ à ne pas lire comme « aucun entrant n'est jamais écarté » : la
+      // boucle de désérialisation ci-dessus fait `continue` sur un timestamp
+      // invalide, et ces points ne sont comptés nulle part — `count` est le
+      // nombre de points RETENUS. Défaut préexistant, hors périmètre.)
+      // Définition de référence : doxygen d'HistoryManager::appendData
+      // dans history.h.
+      //
+      // En mode remplacement il vaut 0 parce qu'importData() n'évince pas :
+      // il substitue le tampon et fusionne les doublons agrégés.
+      //
+      // Rapporté TOUJOURS, même à zéro : la perte muette est le défaut
+      // d'origine de bug-101.
+      doc["total"] = total;
+      doc["dropped"] = dropped;
       sendJsonResponse(request, doc);
     });
   importHandler->setMethod(HTTP_POST);
+  // bug-101 / bug-113 — ORDRE SIGNIFICATIF, ne pas permuter ces deux lignes.
+  // AsyncWebServer::_handleRequest retient le PREMIER handler dont filter() et
+  // canHandle() passent (WebServer.cpp:147) : le garde doit donc être enregistré
+  // AVANT importHandler pour intercepter les corps hors gabarit et rendre un JSON
+  // maison (413/503) au lieu du 413 nu de la bibliothèque.
+  registerJsonBodyGuard(server, "/history/import", kHistoryImportMaxBodyBytes);
+  importHandler->setMaxContentLength(kHistoryImportMaxBodyBytes);
   server->addHandler(importHandler);
 
   server->on("/history/clear", HTTP_POST, [](AsyncWebServerRequest* request) {
