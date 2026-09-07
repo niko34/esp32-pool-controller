@@ -1742,6 +1742,25 @@ static_assert(kPhFfLowHoldMs >= kPhIntegralResetHoldMs,
 static_assert(kPhFfLowHoldMs <= 1800000UL,
               "Critère de spec : le FF s'annule en <= 30 min sur fausse pluie");
 
+// --- feature-092 (C2 du visa pool-chemistry) : FILET DE NON-DIVERGENCE -------
+// Depuis feature-092, la composition du débit demandé s'écrit DEUX FOIS : dans
+// le tick (computePID + feedforward + régime) et dans la fonction pure
+// doseComposition(), qui alimente la carte « Débit d'injection ». La
+// factorisation a été refusée à dessein — brancher la fonction pure sur `flow`
+// aurait changé le dosage au premier tour de chaque session (computePID a deux
+// sorties anticipées que la fonction pure ne modélise pas). La garantie
+// structurelle « une seule écriture » est donc perdue : ce seuil est le filet
+// qui la remplace, sous forme d'une COMPARAISON journalisée (un warn par
+// session, aucune persistance, aucun compteur, aucun champ servi).
+//
+// POURQUOI 0,05 mL/min ET PAS UN EPSILON FLOTTANT : les deux valeurs comparées
+// sont servies arrondies à 2 décimales ; un epsilon machine ferait hurler le
+// journal sur du bruit d'arrondi. 0,05 mL/min est en dessous de tout écart
+// STRUCTUREL possible (le moindre terme oublié pèse plusieurs dixièmes) et bien
+// au-dessus du bruit d'arrondi (0,005). Ce seuil ne borne AUCUN dosage : il ne
+// pilote qu'un message de journal.
+constexpr float kDoseCompositionDivergenceMlPerMin = 0.05f;
+
 // --- C5 : observabilité de la saturation ------------------------------------
 // Une intégrale saturée EN SILENCE est la classe de défaut historique de ce
 // projet : la régulation demande son maximum, n'y arrive pas, et personne ne le

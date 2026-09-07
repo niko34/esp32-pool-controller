@@ -110,6 +110,18 @@ struct MqttTopics {
   // même grandeur porte le même nom sur les trois transports /data, WS, MQTT).
   String phFfFlowState;             // Débit de base appliqué (mL/min, 2 décimales, 0 hors session auto)
   String phFfStatusState;           // Code PhFfStatus (0 inactif, 1 actif, 2 latch, 3 historique<3j, 4 quota)
+  // feature-092 (v2.46.0) : COMPOSITION du débit d'injection. Cinq topics
+  // scalaires retain, dédupliqués, mêmes noms que les champs /data et WS.
+  // DEUX champs de la carte sont volontairement HORS MQTT :
+  //   - `ph_i_term_ml_per_min` : doublon visuel de l'entité `_ph_integral_term`
+  //     déjà en production (même grandeur, servie brute) ;
+  //   - `orp_sustainable_ml_per_min` : miroir de `ph_sustainable_ml_per_min`,
+  //     qui n'est PAS publié non plus (vérifié) — on ne crée pas l'asymétrie.
+  String phFfLearnedFlowState;      // Dose de base APPRISE (mL/min, 2 décimales, stable hors session)
+  String phPTermFlowState;          // Écart courant kp·e (mL/min, 2 décimales, SIGNÉ)
+  String phDemandFlowState;         // Demande totale bornée (mL/min, 2 décimales)
+  String orpPTermFlowState;         // Écart courant ORP (mL/min, 2 décimales, SIGNÉ)
+  String orpDemandFlowState;        // Demande ORP = terme P borné (mL/min, 2 décimales)
 };
 
 // Architecture producer/consumer (cf. ADR-0011) :
@@ -211,7 +223,7 @@ private:
   // feature-085 : +2 slots (21/22) pour ph_ff_ml_per_min / ph_ff_status — figés
   // hors session automatique (0 / code stable) : la déduplication supprime tout
   // le trafic hors dosage, comme pour l'intégrale.
-  static constexpr int kDedupCacheSlots = 23;
+  static constexpr int kDedupCacheSlots = 28;  // feature-092 : 23 → 28 (5 topics de composition)
   String _lastFilterPub[kDedupCacheSlots];
   // Publie `payload` sur `topic` uniquement si différent du dernier publié (slot `cacheIdx`).
   void safePublishDedup(int cacheIdx, const char* topic, const String& payload);

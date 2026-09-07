@@ -345,6 +345,73 @@ PidResult computePidPure(float kp, float ki, float kd,
                          float minFlow, float maxFlow, bool freezeIntegral);
 
 // =============================================================================
+// feature-092 — COMPOSITION DU DÉBIT DEMANDÉ (observabilité, logique PURE)
+// =============================================================================
+// À QUOI CE MODULE SERT — ET À QUOI IL NE SERT PAS. La carte « Débit
+// d'injection » doit pouvoir dire, sans rien deviner : « la régulation demande
+// tant, composé de la dose de base apprise + l'écart courant + le rattrapage
+// accumulé, borné par ça ». Les trois termes étaient calculés à l'intérieur du
+// tick, dans des expressions non réutilisables ; les reconstituer côté client
+// aurait exigé de recopier l'ordre des bornages — c'est-à-dire de recopier une
+// règle de DOSAGE hors du firmware, avec une divergence garantie à la première
+// évolution.
+//
+// ORDRE INTERNE : MIROIR LITTÉRAL DU TICK, NON RÉORDONNABLE.
+// La borne basse à zéro porte sur le COUPLE (p + i), JAMAIS sur la somme des
+// trois termes : le tick réduit d'abord le plafond du PI de la part servie au
+// feedforward (`phPiMaxFlow = ampFlow − ff`, borné ≥ 0), borne le PI dans
+// [0 ; ce plafond], PUIS ajoute le feedforward et clampe à `ampFlow`.
+// Déplacer la borne basse APRÈS l'addition changerait le dosage réel : avec
+// ff = 1,41, p = −3,0, i = 0 et régime `Full`, le tick injecte 1,41 mL/min,
+// tandis que clamp(p + i + ff, 0, ampFlow) donnerait 0. Ce piège a été attrapé
+// en revue ; ne pas le réintroduire.
+//
+// LA BANDE MORTE SE LIT, ELLE NE SE RECALCULE PAS. `deadband` doit venir du
+// verdict de porte de session (phSessionGate, feature-094) : session ouverte
+// elle vaut phStopThreshold (0,01), fermée phStartThreshold (0,05). La
+// reconstruire ici ou côté appelant depuis les seuils mentirait dans la bande
+// ]0,01 ; 0,05] — c'est le mécanisme exact du défaut v2.26.0.
+// =============================================================================
+
+// Régime de service du feedforward, traduit par la coquille depuis le verdict de
+// porte de session (`kPhGate*`). Ces codes-là restent un CONTRAT INTERNE : ils ne
+// sont jamais sérialisés — cet enum est le seul point d'entrée du régime ici.
+enum class DoseFlowRegime : uint8_t {
+  Full = 0,                 // kPhGateOpened / kPhGateHoldFull : PI + FF servis
+  CappedToFeedforward = 1,  // kPhGateHoldCapped : PI annulé, FF seul (prolongation)
+  Zero = 2,                 // kPhGateHoldZero : débit NUL (bassin sous la consigne)
+};
+
+// Décomposition du débit MOYEN demandé (mL/min). Les termes p et i sont des
+// grandeurs PÉDAGOGIQUES signées et NON bornées : c'est ce qui permet à
+// l'interface d'afficher « −0,35 mL/min » quand le pH est sous la consigne, là
+// où la demande servie, elle, reste ≥ 0.
+struct DoseComposition {
+  float p          = 0.0f;  // kp·erreur, SIGNÉ, 0 dans la bande morte — NON borné
+  float i          = 0.0f;  // ki·intégrale,      0 dans la bande morte — NON borné
+  float piServed   = 0.0f;  // clamp(p + i, 0, fmaxf(0, ampFlow − ff)) puis régime
+  float ff         = 0.0f;  // contribution FF réellement servie (régime appliqué)
+  float demand     = 0.0f;  // clamp(piServed + ff, 0, ampFlow)
+  bool  inDeadband = false; // |erreur| < deadband (comparaison STRICTE)
+};
+
+// Composition du débit demandé — miroir du tick, à résultat identique.
+//   kp, error     : gain proportionnel et erreur SIGNÉE courante (positive =
+//                   il faut doser), les mêmes que celles passées à computePidPure ;
+//   kiIntegral    : terme intégral DÉJÀ multiplié par ki (mL/min) ;
+//   deadband      : bande morte LUE du verdict de porte (jamais recalculée) ;
+//   ffServed      : débit de base apprise rendu par le tick feedforward ;
+//   ampFlow       : débit d'amplitude calibré de la pompe (plafond dur) ;
+//   regime        : régime de service du FF (cf. DoseFlowRegime).
+//
+// FAIL-CLOSED : `error` non finie ⇒ les cinq flottants à NAN et inDeadband =
+// false. L'interface affichera « — » ; elle n'affichera jamais un 0 qui se
+// lirait « pH à la consigne » sur une mesure absente.
+DoseComposition doseComposition(float kp, float error, float kiIntegral,
+                                float deadband, float ffServed, float ampFlow,
+                                DoseFlowRegime regime);
+
+// =============================================================================
 // Anti-rafale + rollover journalier PURS (feature-039, characterization refactor)
 // =============================================================================
 // Logique pure extraite de pump_controller (countRecentDosingCycles,

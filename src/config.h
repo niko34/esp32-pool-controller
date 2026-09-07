@@ -391,6 +391,11 @@ uint8_t readPhActuatorLimitStreak(float sustainableMlPerMin);
 // vraisemblance de l'anneau et le prédicat de saturation de l'intégrale ne
 // puissent pas diverger.
 float phSustainableFlowFromConfig();
+// feature-092 : même grandeur pour la voie ORP (pompe ORP × limite horaire ORP).
+// Miroir strict de la précédente, sans logique propre — le module pur
+// phSustainableAvgFlow() est déjà paramétré. Rend 0 si la pompe ORP n'est pas
+// caractérisée (l'appelant traduit en `null`, jamais en 0 affiché).
+float orpSustainableFlowFromConfig();
 
 // Date du jour au format AAAAMMJJ, ou 0 si l'horloge n'est pas exploitable
 // (time() < kMinValidEpoch). SOURCE UNIQUE de la date civile pour tout ce qui

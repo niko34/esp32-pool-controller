@@ -916,6 +916,20 @@ float phSustainableFlowFromConfig() {
   return phSustainableAvgFlow(amp, mqttCfg.phInjectionLimitMinutes);
 }
 
+// feature-092 : MIROIR EXACT de la fonction ci-dessus pour la voie ORP — pompe
+// ORP configurée, limite horaire ORP. AUCUNE logique neuve : `phSustainableAvgFlow`
+// est déjà PARAMÉTRÉE (ph_integral_logic.h) et ne porte de « ph » que dans son
+// nom, hérité de son premier appelant. Le chlore n'a ni intégrale ni feedforward,
+// mais il a la MÊME limite horaire, donc le même plafond de débit moyen : sans
+// ce plafond affiché, la carte « Débit d'injection ORP » ne pourrait pas dire
+// « sur X possibles ». LECTURE SEULE : aucune décision de dosage ne l'appelle.
+float orpSustainableFlowFromConfig() {
+  const int idx = pumpIndexFromNumber(mqttCfg.orpPump);
+  const float amp = (idx == 0) ? mqttCfg.pump1PulseFlowMlPerMin
+                               : mqttCfg.pump2PulseFlowMlPerMin;
+  return phSustainableAvgFlow(amp, mqttCfg.orpInjectionLimitMinutes);
+}
+
 PhPersistLoadObservation readPhLoadObservation(float sustainableMlPerMin) {
   PhLoadHistory h;                    // vide par défaut ⇒ days = 0 (fail-closed)
   loadPhLoadHistory(h);               // anneau absent ou corrompu : on garde vide

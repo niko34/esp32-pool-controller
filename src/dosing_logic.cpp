@@ -313,6 +313,59 @@ PidResult computePidPure(float kp, float ki, float kd,
 }
 
 // =============================================================================
+// feature-092 — Composition du débit demandé (observabilité)
+// =============================================================================
+// MIROIR LITTÉRAL du tick pH : l'ordre des six étapes ci-dessous n'est PAS
+// réordonnable (cf. l'en-tête de dosing_logic.h). En particulier, la borne basse
+// à zéro porte sur le COUPLE (p + i) et jamais sur la somme des trois termes.
+DoseComposition doseComposition(float kp, float error, float kiIntegral,
+                                float deadband, float ffServed, float ampFlow,
+                                DoseFlowRegime regime) {
+  DoseComposition c;
+
+  // --- 1. FAIL-CLOSED : sans erreur exploitable, il n'y a pas de composition --
+  // On rend NAN (→ « — » côté interface) plutôt qu'un 0 qui se lirait « pH à la
+  // consigne » sur une mesure absente.
+  if (!isfinite(error)) {
+    c.p = c.i = c.piServed = c.ff = c.demand = NAN;
+    c.inDeadband = false;
+    return c;
+  }
+
+  // --- 2. BANDE MORTE, comparaison STRICTE (comme computePidPure) ------------
+  c.inDeadband = (fabsf(error) < deadband);
+
+  // --- 3. TERMES p ET i : BRUTS, SIGNÉS, JAMAIS BORNÉS -----------------------
+  // Ce sont les grandeurs pédagogiques de la carte (« écart courant »,
+  // « rattrapage accumulé »). Dans la bande morte, computePidPure rend 0 et
+  // n'accumule rien : les deux termes valent donc 0, exactement.
+  c.p = c.inDeadband ? 0.0f : (kp * error);
+  c.i = c.inDeadband ? 0.0f : kiIntegral;
+
+  // --- 4. RÉGIME : ce que le FF apporte RÉELLEMENT ce tour --------------------
+  // `Zero` (bassin sous la consigne pendant une prolongation de session) coupe
+  // le FF ; `CappedToFeedforward` et `Full` le servent. p et i restent BRUTS
+  // dans tous les régimes — le régime borne ce qui est SERVI, pas ce qui est
+  // mesuré.
+  c.ff = (regime == DoseFlowRegime::Zero) ? 0.0f : ffServed;
+
+  // --- 5. PI SERVI : borné dans [0 ; amplitude restante après le FF] ---------
+  // C'EST L'INVARIANT À NE PAS DÉPLACER (INV-C2). Le tick calcule
+  // `phPiMaxFlow = ampFlow − ff` (borné ≥ 0) puis borne le PI dans
+  // [0 ; phPiMaxFlow] AVANT d'ajouter le FF.
+  float piRoom = ampFlow - c.ff;
+  if (!(piRoom > 0.0f)) piRoom = 0.0f;  // NAN ou négatif ⇒ aucune marge
+  c.piServed = clampf(c.p + c.i, 0.0f, piRoom);
+  // Les deux régimes de prolongation annulent le PI : `CappedToFeedforward`
+  // interdit que PI + FF dépasse le FF SEUL, `Zero` coupe tout.
+  if (regime != DoseFlowRegime::Full) c.piServed = 0.0f;
+
+  // --- 6. DEMANDE : somme, clampée à l'amplitude (défense en profondeur) -----
+  c.demand = clampf(c.piServed + c.ff, 0.0f, ampFlow);
+  return c;
+}
+
+// =============================================================================
 // Anti-rafale + rollover journalier PURS (feature-039)
 // =============================================================================
 

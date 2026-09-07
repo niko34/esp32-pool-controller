@@ -699,20 +699,25 @@
                 </div>
                 <p class="daily-dose__status" id="daily-dose-ph-status"></p>
               </div>
-              <!-- feature-086 (v2.29.0) : capacités de dosage pH — débit soutenable
-                   (limite horaire × débit calibré) et maximum journalier (× minutes
-                   de filtration programmées). Présentation DISCRÈTE voulue : ce
-                   sont des CAPACITÉS dérivées des réglages, pas des mesures.
+              <!-- feature-086 (v2.29.0) : capacité de dosage pH — maximum
+                   journalier (limite horaire × débit calibré × minutes de
+                   filtration programmées). Présentation DISCRÈTE voulue : c'est
+                   une CAPACITÉ dérivée des réglages, pas une mesure. Grandeur
+                   JOURNALIÈRE : elle reste sous la barre du jour, et n'est pas
+                   fusionnée dans l'en-tête « Dosage du jour » (deux « maximum »
+                   côte à côte prêteraient à confusion).
+                   feature-092 : la ligne « Débit soutenable » est RETIRÉE d'ici —
+                   c'est un débit, il vit désormais en note du total de la carte
+                   « Débit d'injection pH ».
                    Masqué en bloc si le firmware ne sert pas
                    ph_limited_by_hourly_budget (antérieur à la 2.29.0) — cf.
-                   updatePhActuatorLimitDisplay(), seul point de décision. -->
+                   updatePhDosingCard(), seul point de décision. -->
               <div class="muted small" id="ph_capacity_block" hidden style="margin-top:8px">
-                <div>Débit soutenable : <span id="ph_sustainable_value">—</span></div>
                 <div>Maximum journalier : <span id="ph_daily_max_value">—</span></div>
               </div>
               <!-- feature-096 (v2.37.0) : temps d'atteinte de cible pH. Patron
                    maison field__label + <strong> + <span class="muted small">,
-                   identique à #ph-integral-section et #ph_ff_line (pas de .kv).
+                   identique aux autres rubriques de cette colonne (pas de .kv).
                    Masqué en bloc si le firmware ne sert pas ph_ttt_state
                    (antérieur à la 2.37.0) — cf. updateTimeToTargetDisplay(),
                    seul point de décision. Le tableau de bord n'est PAS touché. -->
@@ -732,36 +737,6 @@
             </div>
           </div>
 
-          <!-- feature-086 (v2.29.0) : bandeau INFORMATIF « Dosage au maximum
-               autorisé » (ph_limited_by_hourly_budget). Ton NEUTRE validé par
-               pool-chemistry : c'est un état normal de la régulation, pas une
-               anomalie — callout info, pas de rouge, pas d'icône d'alerte.
-               Remplacé par #ph_undersized_banner quand le diagnostic de
-               sous-dimensionnement est posé (l'alerte contient l'information,
-               on n'empile jamais les deux). Texte composé par
-               updatePhActuatorLimitDisplay() ({X} min/h, {Y} mL/min, {Z} mL/j). -->
-          <div class="callout callout--info" id="ph_budget_banner"
-               role="status" aria-live="polite" hidden>
-            <strong>Dosage au maximum autorisé</strong><br>
-            <span id="ph_budget_banner_text"></span>
-          </div>
-          <!-- feature-086 (v2.29.0) : alerte DIAGNOSTIC « Capacité de dosage
-               insuffisante » (ph_undersized : série ≥ 3 journées saturées +
-               anomalie C5 ouverte). Warning — visuellement distinct du bandeau
-               informatif, plus grave, mais PAS une alarme critique. Libellés
-               EXACTS validés par pool-chemistry ; « 3 jours » est la constante
-               firmware du diagnostic, pas un champ servi — aucune mention de
-               bidon. Texte statique : seul `hidden` est piloté par
-               updatePhActuatorLimitDisplay(). -->
-          <div class="callout callout--warn" id="ph_undersized_banner"
-               role="status" aria-live="polite" hidden>
-            <strong>Capacité de dosage insuffisante</strong><br>
-            <span>Depuis 3 jours, la pompe pH délivre chaque jour tout ce que la
-              limite horaire autorise, sans ramener le pH à la consigne. Le réglage
-              actuel ne couvre pas le besoin du bassin : allonger la durée de
-              filtration ou, après vérification de l'installation, relever la
-              limite horaire.</span>
-          </div>
           <!-- feature-091 : purge adaptative — la stabilisation des mesures n'a
                pas été atteinte au plafond (measures_purge_last_end === 2).
                Warning, pas critique : l'injection a repris sous les gardes
@@ -774,6 +749,93 @@
             <span>Après 90 min de circulation, le pH ou l'ORP brut varie encore.
               Vérifier les sondes et la chambre de mesure (bulles, encrassement).
               L'injection a repris sous la surveillance des gardes habituelles.</span>
+          </div>
+
+          <!-- feature-092 : carte « Débit d'injection pH » — l'équation de la
+               régulation sur une seule surface : contribution de la dose de base
+               apprise, écart courant, rattrapage accumulé, puis la DEMANDE que la
+               pompe commande réellement. Remplace #ph-integral-section, #ph_ff_line,
+               #ph_budget_banner et la ligne « Débit soutenable » des capacités
+               (retirés) — cf. updatePhDosingCard(), SEUL point de décision de la
+               visibilité (mode automatique ET champ ph_demand_ml_per_min servi).
+               Le total est la DEMANDE, jamais un « appliqué » recalculé ici : le
+               firmware borne à l'amplitude de la pompe, pas au débit soutenable, et
+               la limite horaire agit EN AVAL par refus. Afficher min(demande,
+               soutenable) sous-estimerait ce que le bassin reçoit dans les dix
+               minutes qui suivent (verdict pool-chemistry feature-092) : le plafond
+               descend en note. La pastille est la SEULE zone aria-live de la carte. -->
+          <div class="card" id="ph-card-dosing" hidden>
+            <div class="card__head card__head--wrap">
+              <h2 class="card__title">Débit d'injection pH</h2>
+              <span class="pill" id="ph-dosing-pill" role="status" aria-live="polite">—</span>
+            </div>
+            <div class="card__body">
+              <!-- Tableau 3 lignes + total, PAS de barre empilée : une barre mentirait
+                   dès que le terme P est négatif et changerait d'échelle dès que la
+                   demande dépasse le plafond. Le liseré du total repose sur
+                   `.kv--dose .kv__row:last-child` → NE RIEN AJOUTER après la ligne
+                   Demande DANS cette .kv (les pieds sont hors du bloc clé/valeur). -->
+              <div class="kv kv--dose">
+                <div class="kv__row">
+                  <span class="kv__k">Dose de base apprise<span class="kv__note" id="ph-dose-ff-note"></span></span>
+                  <span class="kv__v" id="ph-dose-ff-value">—</span>
+                </div>
+                <div class="kv__row">
+                  <span class="kv__k">Écart courant<span class="kv__note" id="ph-dose-p-note"></span></span>
+                  <span class="kv__v" id="ph-dose-p-value">—</span>
+                </div>
+                <div class="kv__row">
+                  <span class="kv__k">Rattrapage accumulé<span class="kv__note" id="ph-dose-i-note"></span></span>
+                  <span class="kv__v" id="ph-dose-i-value">—</span>
+                </div>
+                <div class="kv__row">
+                  <span class="kv__k">Demande<span class="kv__note" id="ph-dose-total-note"></span></span>
+                  <span class="kv__v" id="ph-dose-total-value">—</span>
+                </div>
+              </div>
+              <!-- La SESSION est la maille des débits, l'HEURE celle du budget : les
+                   deux pieds coexistent sans se contredire. -->
+              <p class="muted small" style="margin:12px 0 0">Débits moyens sur la session : la pompe injecte par impulsions.</p>
+              <p class="muted small" id="ph-dose-budget-foot" style="margin:6px 0 0" hidden></p>
+              <!-- Fiabilité des débits affichés : sans pesée, ils reposent sur la
+                   valeur d'usine de la pompe. Placé à côté de la mention des
+                   impulsions, qui qualifie elle aussi la LECTURE des débits.
+                   ph_pump_flow_uncharacterized, servi sur /data et le WS. -->
+              <p class="muted small" id="ph-dose-uncharacterized-foot" style="margin:6px 0 0" hidden>Débit de la pompe non caractérisé : ces valeurs reposent sur le débit d'usine, pas sur une pesée.</p>
+              <!-- v2.26.0 (C5), déplacé par feature-092 : callout « rattrapage au
+                   maximum ». Verdict SERVI par le firmware (ph_integral_saturated),
+                   jamais recalculé ici. Texte inchangé.
+                   ⚠️ `role="status"` et `aria-live` ont été RETIRÉS en entrant dans
+                   cette carte — NE PAS LES RESTAURER : la pastille du titre est la
+                   SEULE zone vocalisée de la carte (invariant ux-ui-designer). Deux
+                   régions live à ~20 px l'une de l'autre se parasitent sur mobile,
+                   et la pastille annonce déjà le changement d'état. Ce callout est
+                   du texte contextuel : on le lit en regardant la carte. -->
+              <div class="callout callout--warn" id="ph_integral_warning"
+                   hidden style="margin:12px 0 0"></div>
+            </div>
+          </div>
+
+          <!-- feature-086 (v2.29.0) : alerte DIAGNOSTIC « Capacité de dosage
+               insuffisante » (ph_undersized : série ≥ 3 journées saturées +
+               anomalie C5 ouverte). Warning — visuellement distinct du bandeau
+               informatif, plus grave, mais PAS une alarme critique. Libellés
+               EXACTS validés par pool-chemistry ; « 3 jours » est la constante
+               firmware du diagnostic, pas un champ servi — aucune mention de
+               bidon. Texte statique : seul `hidden` est piloté par
+               updatePhDosingCard().
+               feature-092 : placé JUSTE SOUS la carte « Débit d'injection pH »,
+               adjacent à ce qu'il explique. Le bandeau informatif « Dosage au
+               maximum autorisé » qu'il remplaçait n'existe plus : l'information
+               est passée en note du total et en pied de la carte. -->
+          <div class="callout callout--warn" id="ph_undersized_banner"
+               role="status" aria-live="polite" hidden>
+            <strong>Capacité de dosage insuffisante</strong><br>
+            <span>Depuis 3 jours, la pompe pH délivre chaque jour tout ce que la
+              limite horaire autorise, sans ramener le pH à la consigne. Le réglage
+              actuel ne couvre pas le besoin du bassin : allonger la durée de
+              filtration ou, après vérification de l'installation, relever la
+              limite horaire.</span>
           </div>
 
           <div class="card" id="ph-card-regulation">
@@ -883,53 +945,6 @@
                   <button class="btn btn--secondary" type="button" id="ph_inject_btn">▶ Injecter</button>
                 </div>
                 <p id="ph_inject_block_hint" class="muted small" style="margin:6px 0 0"></p>
-              </div>
-
-              <!-- v2.26.0 (C5) : rattrapage accumulé par la régulation pH (terme
-                   intégral). Placé ICI, en pied de la carte Régulation pH et
-                   UNIQUEMENT en mode automatique : c'est la seule surface où
-                   l'utilisateur vient déjà quand « la régulation se comporte
-                   bizarrement », et le seul mode où ce terme évolue. Volontairement
-                   ABSENT du tableau de bord (grandeur d'automatique, pas une mesure
-                   d'eau) et absent de la page Réglages (valeur d'ÉTAT temps réel,
-                   pas un paramètre à sauvegarder).
-                   Masqué en bloc tant que le firmware ne sert pas ph_integral_pct
-                   (antérieur à la 2.26.0) — cf. updatePhIntegralDisplay(), seul
-                   point de décision de la visibilité de ce bloc. -->
-              <div id="ph-integral-section" style="display:none">
-                <hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">
-                <!-- Intitulé au format des autres rubriques de la carte
-                     (« TYPE DE CORRECTION », « PH CIBLE ») : sans lui, le bloc
-                     se lisait comme une note de bas de carte et se confondait
-                     avec le texte explicatif — un utilisateur qui le CHERCHE ne
-                     le trouvait pas. La valeur vient JUSTE après l'intitulé,
-                     l'explication passe en dessous : le pourcentage reste la
-                     première grandeur lue. -->
-                <span class="field__label">Rattrapage accumulé</span>
-                <p style="margin:6px 0 0">
-                  <strong id="ph_integral_pct_value">—</strong>
-                  <span class="muted small" id="ph_integral_detail"></span>
-                </p>
-                <p class="muted small" style="margin:8px 0 0">
-                  La régulation met de côté une <strong>correction lente</strong> pour compenser
-                  une dérive permanente du pH (dégazage du CO₂, apport d'eau neuve). Cette réserve
-                  se vide d'elle-même quand le pH rejoint sa consigne.
-                </p>
-                <div class="callout callout--warn" id="ph_integral_warning"
-                     role="status" aria-live="polite" hidden style="margin:10px 0 0"></div>
-                <!-- feature-085 (v2.28.0) : dose de base apprise (feedforward pH).
-                     Une LIGNE dans le bloc existant, même facture que « Rattrapage
-                     accumulé » : valeur en tête, libellé d'état discret à côté.
-                     Masquée si le firmware ne sert pas ph_ff_status (antérieur à
-                     la 2.28.0) — cf. updatePhIntegralDisplay(), seul point de
-                     décision, comme pour le reste du bloc. -->
-                <div id="ph_ff_line" hidden style="margin:12px 0 0">
-                  <span class="field__label">Dose de base apprise</span>
-                  <p style="margin:6px 0 0">
-                    <strong id="ph_ff_value">—</strong>
-                    <span class="muted small" id="ph_ff_state"></span>
-                  </p>
-                </div>
               </div>
 
             </div>
@@ -1218,6 +1233,44 @@
             <span>Après 90 min de circulation, le pH ou l'ORP brut varie encore.
               Vérifier les sondes et la chambre de mesure (bulles, encrassement).
               L'injection a repris sous la surveillance des gardes habituelles.</span>
+          </div>
+
+          <!-- feature-092 : carte « Débit d'injection ORP » — miroir réduit de la
+               carte pH. Le chlore est régulé en P PUR (ni feedforward, ni rattrapage
+               cumulé) : deux lignes suffisent, et la carte montre au passage POURQUOI
+               la régulation du chlore est plus simple. cf. updateOrpDosingCard(),
+               seul point de décision de la visibilité. -->
+          <div class="card" id="orp-card-dosing" hidden>
+            <div class="card__head card__head--wrap">
+              <h2 class="card__title">Débit d'injection ORP</h2>
+              <span class="pill" id="orp-dosing-pill" role="status" aria-live="polite">—</span>
+            </div>
+            <div class="card__body">
+              <!-- Liseré du total porté par `.kv--dose .kv__row:last-child` :
+                   ne rien ajouter après la ligne Demande dans cette .kv. -->
+              <div class="kv kv--dose">
+                <div class="kv__row">
+                  <span class="kv__k">Écart courant<span class="kv__note" id="orp-dose-p-note"></span></span>
+                  <span class="kv__v" id="orp-dose-p-value">—</span>
+                </div>
+                <div class="kv__row">
+                  <span class="kv__k">Demande<span class="kv__note" id="orp-dose-total-note"></span></span>
+                  <span class="kv__v" id="orp-dose-total-value">—</span>
+                </div>
+              </div>
+              <!-- Mention pool-chemistry (feature-092), permanente : sans elle, un
+                   écart résiduel permanent se lit comme un défaut de réglage et
+                   pousse à relever la consigne ou le gain — les deux mauvaises
+                   réponses. Texte validé, ne pas reformuler. -->
+              <p class="muted small" style="margin:12px 0 0">La régulation chlore corrige l'écart courant sans rattrapage cumulé : un écart résiduel permanent est normal et ne demande ni consigne plus haute ni gain plus fort.</p>
+              <!-- Cas bridé : miroir EXACT de la carte pH (orp_limited_by_hourly_budget,
+                   verdict firmware — aucune comparaison client). La régulation chlore
+                   sature son quota horaire quotidiennement : ce pied n'est pas
+                   théorique. -->
+              <p class="muted small" id="orp-dose-budget-foot" style="margin:6px 0 0" hidden></p>
+              <!-- Fiabilité des débits affichés (orp_pump_flow_uncharacterized). -->
+              <p class="muted small" id="orp-dose-uncharacterized-foot" style="margin:6px 0 0" hidden>Débit de la pompe non caractérisé : ces valeurs reposent sur le débit d'usine, pas sur une pesée.</p>
+            </div>
           </div>
 
           <!-- Carte Régulation ORP (visible en mode nominal, masquée pendant calibration) -->

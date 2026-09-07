@@ -1592,6 +1592,37 @@ input.is-computed:disabled {
   color: var(--accent);
 }
 
+/* ==========================================================================
+   feature-092 : .kv--dose — cartes « Débit d'injection » pH et ORP
+   ==========================================================================
+   Variante COMPTABLE du bloc clé/valeur : trois contributions puis un total.
+   - tabular-nums : les unités s'alignent en colonne, sans quoi 1,41 / 0,35 /
+     2,10 se lisent comme trois grandeurs sans rapport ;
+   - hover neutralisé : ce n'est pas une liste de réglages cliquables, et le
+     translateX du .kv__row générique faisait « sauter » le tableau au survol ;
+   - le LISERÉ DU TOTAL repose sur :last-child → ne RIEN ajouter après la ligne
+     Demande à l'intérieur de la .kv (pieds et callout sont hors du bloc) ;
+   - la note passe INLINE (à droite du libellé) au lieu de sous la valeur, et
+     redescend sur sa propre ligne sous 500 px. */
+.kv--dose { font-variant-numeric: tabular-nums; }
+.kv--dose .kv__row { padding: 6px 0; align-items: flex-start; }
+.kv--dose .kv__row:hover { background: none; transform: none; }
+.kv--dose .kv__row:hover .kv__k { color: var(--muted); }
+.kv--dose .kv__v { white-space: nowrap; }
+.kv--dose .kv__note { display: inline; margin-top: 0; margin-left: 8px; }
+.kv--dose .kv__row:last-child { border-top: 1px solid var(--stroke); padding-top: 10px; }
+.kv--dose .kv__row:last-child .kv__k { color: var(--text); }
+
+@media (max-width: 500px) {
+  .kv--dose .kv__note { display: block; margin-top: 2px; margin-left: 0; }
+}
+
+/* MODIFICATEUR, appliqué aux seules cartes « Débit d'injection » : la pastille
+   d'état passe SOUS le titre en écran étroit. À ne pas généraliser sur
+   .card__head — `.card__head:has(.pill)` et `.card__head .pill` servent
+   d'autres cartes, dont la mise en page dépend de leur non-retour à la ligne. */
+.card__head--wrap { flex-wrap: wrap; }
+
 /* feature-110 : variante sémantique <dl>/<dt>/<dd> du même bloc (relevé
    clé/valeur). Seule la marge implicite du <dd> (40px navigateur) doit être
    annulée pour que la valeur reste alignée sur la grille — aucune classe neuve. */

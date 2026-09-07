@@ -1826,10 +1826,19 @@ float PumpControllerClass::tickPhFeedforward(unsigned long now, float signedErro
              kPhFfMaxSustainableFraction * sustainableMlPerMin);
     systemLogger.info(msg);
   }
-  if (!sessionOpen) _ffAnnounced = false;
+  if (!sessionOpen) {
+    _ffAnnounced = false;
+    // feature-092 (C2) : le filet de non-divergence parle UNE FOIS par session —
+    // son témoin se réarme donc ici, au même endroit et selon le même critère
+    // que l'anti-spam du FF. RAM seulement : aucune persistance (exigence du visa).
+    _phCompDivergenceLogged = false;
+  }
 
-  // Instantanés d'observabilité (/data + WS via les accesseurs publics).
-  _ffFlowMlPerMin = v.ffMlPerMin;
+  // Instantané d'observabilité du STATUT (/data + WS via getPhFeedforwardStatus).
+  // feature-092 : le DÉBIT n'est plus mémorisé ici — il l'est par l'instantané de
+  // composition, publié au point où la branche automatique calcule la demande,
+  // ce qui fait rapporter au champ `ph_ff_ml_per_min` la part RÉELLEMENT servie
+  // (régime appliqué) et rend exacte la reconstitution `PI = demande − FF`.
   _ffStatus = (uint8_t)v.status;
   return v.ffMlPerMin;
 }
@@ -2057,6 +2066,185 @@ bool PumpControllerClass::isPhUndersizedSuspected() const {
   return phActuatorUndersized(_phLimitStreakDays,
                               _phIntegral.anomalyHeldMs > 0) &&
          !isnan(sensors.getPhFilteredRaw());
+}
+
+// =============================================================================
+// feature-092 — COMPOSITION DU DÉBIT DEMANDÉ : accesseurs de LECTURE SEULE
+// =============================================================================
+// Ces huit accesseurs de projection n'ouvrent AUCUN chemin nouveau vers les
+// pompes : ils projettent des grandeurs déjà calculées par la branche
+// automatique. Ils sont
+// appelés depuis /data (async_tcp), le WebSocket (loopTask) et la tâche MQTT —
+// d'où la copie sous spinlock, et l'interdiction absolue d'y toucher l'I²C, la
+// NVS, LittleFS ou getPhDecisionValue() (réservée à loopTask, condition C2 du
+// gate feature-096).
+//
+// COURSE BÉNIGNE, documentée ici une fois pour les huit (patron
+// isAnyPumpEnergized) : loopTask écrit, un contexte web lit. Le spinlock rend la
+// composition COHÉRENTE ENTRE SES CINQ CHAMPS ; il ne prétend pas la rendre
+// synchrone avec la mesure publiée dans la même trame — pire cas, un instantané
+// en retard d'un tour de loop (2 s).
+
+// SOURCE UNIQUE de la composition publiée. kp et le terme intégral sont lus ICI
+// et nulle part ailleurs : les deux points d'appel (avec et sans dosage) ne
+// peuvent donc pas décrire l'équation différemment.
+//
+// ⚠️ FENÊTRE RÉSIDUELLE CONNUE, DOCUMENTÉE ET NON CORRIGÉE (revue feature-092).
+// Cette fonction est appelée depuis la branche automatique d'update(). Or
+// update() a TROIS sorties anticipées qui reviennent AVANT elle sans invalider
+// `measuresValid` — la filtration peut très bien tourner :
+//   - OTA en cours (« closePhDosingSession(now, "OTA en cours") ») ;
+//   - mode maintenance (inhibition totale du dosage) ;
+//   - assistant de mesure du débit (`flowAssistSuspend`).
+// Pendant ces trois états, l'instantané de composition n'est PAS rafraîchi : la
+// carte et MQTT servent la dernière composition connue avec des mesures
+// déclarées valides. Fenêtre BORNÉE et déclenchée par l'opérateur (aucune n'est
+// spontanée), sans commune mesure avec le défaut initial — d'où la décision de
+// ne pas la corriger dans ce cycle.
+//
+// POURQUOI CETTE TRACE EST ICI ET PAS AILLEURS : c'est la MÊME chaîne de sorties
+// anticipées qui produit l'asymétrie de comptabilité relevée sur feature-110
+// (l'état de comptabilité reste rémanent pendant la fenêtre aveugle, et toute la
+// durée de la coupure est créditée au débit plateau à la reprise). Deux défauts
+// de la même famille, dans la même fonction. Quiconque touche à update() doit
+// trouver les DEUX traces au même endroit, sinon il rejouera l'un ou l'autre.
+DoseComposition PumpControllerClass::composeDose(int chemIndex, float error,
+                                                 float deadband, float ffServed,
+                                                 float ampFlow,
+                                                 DoseFlowRegime regime) {
+  const PIDController& pid = (chemIndex == 0) ? phPID : orpPID;
+  const DoseComposition c = doseComposition(pid.kp, error, pid.ki * pid.integral,
+                                            deadband, ffServed, ampFlow, regime);
+  publishDoseComposition(chemIndex, c);
+  return c;
+}
+
+void PumpControllerClass::publishDoseComposition(int chemIndex,
+                                                 const DoseComposition& c) {
+  portENTER_CRITICAL(&_doseCompMux);
+  if (chemIndex == 0) _phDoseComp = c;
+  else                _orpDoseComp = c;
+  portEXIT_CRITICAL(&_doseCompMux);
+}
+
+// Copie cohérente de l'instantané d'une voie (une seule section critique).
+DoseComposition PumpControllerClass::doseCompositionSnapshot(int chemIndex) const {
+  portENTER_CRITICAL(&_doseCompMux);
+  const DoseComposition c = (chemIndex == 0) ? _phDoseComp : _orpDoseComp;
+  portEXIT_CRITICAL(&_doseCompMux);
+  return c;
+}
+
+float PumpControllerClass::getPhFeedforwardFlow() const {
+  // Hors session automatique, le FF n'existe pas (A8, structurel) : 0,00 — et
+  // non l'instantané, qui porterait la dernière session. Une session OUVERTE
+  // implique que la branche automatique a publié sa composition AU MÊME tour
+  // (`phDosingState.active = phActive` en fin d'update()), l'instantané est donc
+  // frais par construction.
+  const bool sessionOpen = phDosingState.active && _phSessionFromAuto;
+  if (!sessionOpen) return 0.0f;
+  return doseCompositionSnapshot(0).ff;  // NAN éventuel → null côté transport
+}
+
+uint8_t PumpControllerClass::getPhFeedforwardStatus() const {
+  const bool sessionOpen = phDosingState.active && _phSessionFromAuto;
+  // `learnedFinite` : la dose de base est-elle DISPONIBLE ? Sans elle, servir
+  // « actif » ferait afficher « appliquée » à côté d'un tiret.
+  return phFeedforwardServedStatus((uint8_t)_ffStatus, sessionOpen,
+                                   _phLoadObs.days,
+                                   !isnan(getPhFeedforwardLearnedFlow()));
+}
+
+float PumpControllerClass::getPhFeedforwardLearnedFlow() const {
+  // Deux indisponibilités, et deux seulement — testées ICI parce que le module
+  // pur, lui, doit rendre 0 (fail-closed du tick : une dose inconnue ne dose
+  // rien). L'interface, elle, a besoin de distinguer « 0,00 appris » de
+  // « rien d'appris » : d'où le NAN.
+  const float sustainable = phSustainableFlowFromConfig();
+  if (!isfinite(sustainable) || sustainable <= 0.0f) return NAN;  // pompe non caractérisée
+  if (_phLoadObs.days < kPhIntegralRestoreMinHistoryDays) return NAN;  // < 3 journées
+  // MÊME fonction que le § 4 du tick (A1) : la carte ne peut donc pas afficher un
+  // nombre que l'appareil n'appliquera pas. Une charge médiane nulle rend 0,00 —
+  // observation légitime, jamais un tiret.
+  return phFeedforwardLearnedFlow(_phLoadObs, sustainable);
+}
+
+// PORTE DE VALIDITÉ commune aux termes INSTANTANÉS (P, I, demande) : sans mesure
+// représentative du bassin (filtration arrêtée, purge en cours), l'écart courant
+// n'EXISTE pas. On rend NAN → `null` → « — » côté interface. Les grandeurs
+// LENTES (dose de base apprise, soutenable) ne passent PAS par cette porte :
+// elles restent vraies quand l'eau ne circule pas, et c'est précisément ce que
+// la carte doit continuer d'afficher (cas limite de la spec).
+static inline bool doseCompositionMeasuresValid() {
+  return measureValidity.getSnapshot().measuresValid;
+}
+
+float PumpControllerClass::getPhPTermFlow() const {
+  if (!doseCompositionMeasuresValid()) return NAN;
+  // GARDE-FOU : régulateur inerte (kp == 0) ⇒ `null`, jamais 0,00. Un 0,00
+  // annoncerait « pH à la consigne » sur une régulation qui ne peut RIEN corriger.
+  if (!(fabsf(phPID.kp) > 0.0f)) return NAN;
+  const float v = doseCompositionSnapshot(0).p;
+  return isfinite(v) ? v : NAN;
+}
+
+float PumpControllerClass::getPhITermFlow() const {
+  if (!doseCompositionMeasuresValid()) return NAN;
+  // Terme intégral SERVI (0 dans la bande morte) — à ne pas confondre avec
+  // getPhIntegralTerm(), terme BRUT et contrat externe historique (topic MQTT
+  // `ph_integral_term`, entité HA en production). Deux champs, deux sémantiques.
+  const float v = doseCompositionSnapshot(0).i;
+  return isfinite(v) ? v : NAN;
+}
+
+float PumpControllerClass::getPhDemandFlow() const {
+  if (!doseCompositionMeasuresValid()) return NAN;
+  const float v = doseCompositionSnapshot(0).demand;
+  return isfinite(v) ? v : NAN;
+}
+
+float PumpControllerClass::getOrpPTermFlow() const {
+  if (!doseCompositionMeasuresValid()) return NAN;
+  if (!(fabsf(orpPID.kp) > 0.0f)) return NAN;  // même garde-fou que le pH
+  const float v = doseCompositionSnapshot(1).p;
+  return isfinite(v) ? v : NAN;
+}
+
+float PumpControllerClass::getOrpDemandFlow() const {
+  if (!doseCompositionMeasuresValid()) return NAN;
+  const float v = doseCompositionSnapshot(1).demand;
+  return isfinite(v) ? v : NAN;
+}
+
+bool PumpControllerClass::isOrpLimitedByHourlyBudget() const {
+  // Fail-closed d'observabilité, MÊME motif qu'isPhLimitedByHourlyBudget : sans
+  // mesure représentative, la demande est gelée et le verdict ne décrirait plus
+  // rien (« bridé » ≠ « filtration arrêtée » ≠ « panne de sonde »).
+  if (!doseCompositionMeasuresValid()) return false;
+  const int limitMin = mqttCfg.orpInjectionLimitMinutes;
+  // Limite désactivée (≤ 0) ou sans effet (≥ 60 min/h) : rien ne borne. MÊMES
+  // frontières que phSustainableAvgFlow(), qui rend alors l'amplitude entière.
+  if (limitMin <= 0 || limitMin >= 60) return false;
+  const unsigned long limitMs = (unsigned long)limitMin * 60000UL;
+  // 1) Fenêtre horaire ÉPUISÉE — l'état que le journal signale déjà par
+  // « Limite horaire ORP atteinte : N min/h consommées ». `usedMs` est remis à
+  // zéro au rollover de fenêtre par le chemin existant.
+  if (orpDosingState.usedMs >= limitMs) return true;
+  // 2) DEMANDE au plafond du débit moyen soutenable : la fenêtre se videra, c'est
+  // la même cause constatée plus tôt. Frontière ≥ inclusive (le plafond atteint
+  // EST une saturation), fail-closed si l'une des deux grandeurs est indisponible.
+  const float sust   = getOrpSustainableMlPerMin();
+  const float demand = getOrpDemandFlow();
+  return isfinite(sust) && isfinite(demand) && demand >= sust;
+}
+
+float PumpControllerClass::getOrpSustainableMlPerMin() const {
+  // Miroir strict de getPhSustainableMlPerMin() : recalcul à la demande depuis la
+  // source UNIQUE (config.cpp), 0 ou non fini ⇒ NAN (→ null : on affiche
+  // l'indisponibilité, on n'invente rien).
+  const float s = orpSustainableFlowFromConfig();
+  if (!isfinite(s) || s <= 0.0f) return NAN;
+  return s;
 }
 
 // Journalisation PAR TRANSITION de l'alerte de sous-dimensionnement (montée ET
@@ -3319,6 +3507,12 @@ void PumpControllerClass::update() {
       // pour l'anti-windup, est traité dans phIntegralTick via ffMlPerMin).
       float phPiMaxFlow = phAmpFlow - phFfFlow;
       if (phPiMaxFlow < 0.0f) phPiMaxFlow = 0.0f;
+      // feature-092 (C2) : base de temps du PID LUE AVANT l'appel — computePID la
+      // réécrit. Elle sert uniquement à savoir si le PI a été MUET par sortie
+      // anticipée (premier tick de session, dt aberrant), cas où la comparaison
+      // de non-divergence ci-dessous ne s'applique PAS. Aucune décision de
+      // dosage n'en dépend : on ne fait que reconnaître un cas légitime.
+      const unsigned long phPidLastAt = phPID.lastTime;
       flow = computePID(phPID, error, now,
                         phDeadband, /*freezeIntegral=*/true,
                         0.0f, phPiMaxFlow);
@@ -3348,6 +3542,122 @@ void PumpControllerClass::update() {
       } else if (phGate.reason == kPhGateHoldZero) {
         flow = 0.0f;
       }
+
+      // ===== feature-092 : COMPOSITION SERVIE À L'OBSERVABILITÉ ==============
+      // MIROIR du calcul ci-dessus, par la fonction PURE doseComposition() —
+      // mêmes entrées, même ordre de bornage (INV-C2 : la borne basse à zéro
+      // porte sur le couple p + i, JAMAIS sur la somme des trois termes).
+      //
+      // POURQUOI LE DÉBIT APPLIQUÉ N'EST PAS RÉÉCRIT DEPUIS `composition.demand`
+      // — ET IL NE DOIT PAS L'ÊTRE : computePID() a DEUX sorties anticipées que
+      // la fonction pure ne modélise pas (premier tick d'une session,
+      // `pid.lastTime == 0` ; dt aberrant > 10 s). Dans ces deux cas le tick sert
+      // `flow = 0 + phFfFlow`, alors que la composition rendrait
+      // clamp(p + i, …) + FF. Consommer `composition.demand` comme débit
+      // CHANGERAIT donc le dosage réel au premier tour de chaque session — un
+      // changement de dosage exige un visa `pool-chemistry`, et cette spec est
+      // purement observationnelle. Le chemin vers la pompe reste identique au
+      // caractère près ; l'écart d'affichage est borné à un tour de loop, sur les
+      // deux tours où le PI est de toute façon muet.
+      //
+      // LA BANDE MORTE SE LIT, ELLE NE SE RECALCULE PAS (INV-C5) : `phDeadband`
+      // vient du verdict de porte (phSessionGate), seul point de vérité —
+      // la reconstruire depuis `pumpProtection.phStartThreshold` mentirait dans
+      // la bande ]0,01 ; 0,05], mécanisme exact du défaut v2.26.0.
+      //
+      // ASYMÉTRIE GELÉE TELLE QUELLE : servir le FF sur une erreur VIVE
+      // franchement négative est une asymétrie réelle du tick (le régime
+      // `HoldZero` ne statue que sur le signal LENT). La fonction pure la
+      // reproduit ; ne pas l'« améliorer » ici — ce serait, là encore, une
+      // modification de dosage sans visa.
+      const DoseFlowRegime phRegime =
+          (phGate.reason == kPhGateHoldZero)     ? DoseFlowRegime::Zero
+          : (phGate.reason == kPhGateHoldCapped) ? DoseFlowRegime::CappedToFeedforward
+                                                 : DoseFlowRegime::Full;
+      const DoseComposition phComposition =
+          composeDose(0, error, phDeadband, phFfFlow, phAmpFlow, phRegime);
+
+      // ===== C2 DU VISA pool-chemistry : FILET DE NON-DIVERGENCE =============
+      // Ce qui remplace la garantie structurelle perdue. Deux écritures de la
+      // même composition coexistent (cf. l'explication ci-dessus du refus de
+      // brancher la fonction pure sur `flow`) : rien n'empêcherait plus une
+      // évolution de n'en corriger qu'une. On ne peut pas fusionner — on
+      // COMPARE, et l'appareil le dit lui-même.
+      //
+      // Ce que le filet EST : un warn, UNE FOIS par session, sans persistance,
+      // sans compteur, sans champ servi. Ce qu'il n'est PAS : une garde de
+      // dosage — il ne modifie ni `flow`, ni la composition publiée.
+      //
+      // `phPiMuted` = les DEUX sorties anticipées de computePID(), reconnues
+      // localement et non redevinées : base de temps non armée (premier tick de
+      // session) et dt hors ]0 ; 10 s]. Dans ces deux cas l'écart est ATTENDU et
+      // documenté (la projection surestime alors la demande de p + i ; le débit
+      // réellement appliqué, lui, vaut le FF seul) : la condition porte donc sur
+      // `!phPiMuted`, jamais sur l'écart seul — aucun bruit sur les cas légitimes.
+      const float phPidDtSec =
+          (phPidLastAt == 0) ? 0.0f : (float)(now - phPidLastAt) / 1000.0f;
+      const bool phPiMuted =
+          (phPidLastAt == 0) || !(phPidDtSec > 0.0f) || (phPidDtSec > 10.0f);
+      if (!phPiMuted && !_phCompDivergenceLogged &&
+          fabsf(phComposition.demand - flow) >
+              kDoseCompositionDivergenceMlPerMin) {
+        _phCompDivergenceLogged = true;  // un seul warn par session
+        const uint32_t sessionAgeS =
+            (_phSessionStartMs != 0)
+                ? (uint32_t)(((uint32_t)now - _phSessionStartMs) / 1000UL)
+                : 0;
+        // 480 o : le rendu typique mesure 427 o, le pire cas réaliste 439-442 o
+        // (423 o de format, mesuré au harnais) — une valeur pathologique à dix
+        // chiffres atteindrait 448 pile et clipperait la queue. Un msg[248]
+        // coupait à « …bande mor » — la bande morte, c'est-à-dire l'ENTRÉE du
+        // défaut v2.26.0 que ce filet doit rendre traçable, était perdue, ainsi
+        // que le pointeur d'investigation.
+        char msg[480];
+        snprintf(msg, sizeof(msg),
+                 "[Dosage pH] Composition divergente : la projection "
+                 "d'observabilité annonce %.2f mL/min alors que le calcul PI "
+                 "applique %.2f mL/min (écart %.2f > %.2f ; session ouverte "
+                 "depuis %us, écart pH %.3f, FF %.2f mL/min, plafond "
+                 "%.2f mL/min, bande morte %.3f) — les deux écritures de "
+                 "l'équation de débit ont cessé de coïncider : comparer "
+                 "doseComposition() (dosing_logic.cpp) et la branche "
+                 "automatique de pump_controller.cpp",
+                 (double)phComposition.demand, (double)flow,
+                 (double)fabsf(phComposition.demand - flow),
+                 (double)kDoseCompositionDivergenceMlPerMin,
+                 (unsigned)sessionAgeS, (double)error, (double)phFfFlow,
+                 (double)phAmpFlow, (double)phDeadband);
+        systemLogger.warning(msg);
+      }
+    } else {
+      // ===== BLOCAGE 1 DE LA REVUE : LA CARTE DOIT ÊTRE VIVANTE ==============
+      // Sans ce point de publication, l'instantané n'était rafraîchi QUE sous la
+      // conjonction de dosage : dès que `shouldDose` retombe avec des mesures
+      // VALIDES (pH à la consigne, pause mélange de 15 min, quota horaire
+      // épuisé), /data, le WebSocket et MQTT servaient la composition du dernier
+      // tick de dosage comme si elle était courante. Sur un cycle réel — 7-8 min
+      // de session pour 15 min de pause — la carte aurait été fausse LA MAJEURE
+      // PARTIE DU TEMPS, et son arithmétique cassée : `ph_ff_ml_per_min` vaut 0
+      // hors session tandis que la demande périmée portait encore le FF, donc
+      // `demande − FF ≠ p + i` de la valeur exacte du feedforward.
+      //
+      // ENTRÉES COURANTES, à trois nuances près, toutes voulues :
+      //   - `ffServed = 0` : hors session le feedforward n'est PAS servi (A8,
+      //     structurel) — c'est exactement ce que rapporte getPhFeedforwardFlow(),
+      //     et c'est ce qui garde `demande − FF = PI servi` vrai à tout instant ;
+      //   - régime `Full` : le régime ne décrit que le service du FF, lequel est
+      //     nul ici ; `Zero` annulerait aussi le couple p + i, or la DEMANDE
+      //     reste ce que la régulation réclame (la pastille dit, elle, pourquoi
+      //     elle n'est pas appliquée) ;
+      //   - `deadband` = `phGate.deadband`, l'instantané COURANT du verdict de
+      //     porte (INV-C5) : sortir de la branche de dosage n'autorise pas à le
+      //     reconstruire depuis les seuils. Porte fermée, la bande vaut
+      //     phStartThreshold — donc « pH à la consigne » rend p = i = 0, et la
+      //     branche 5 de la pastille devient enfin atteignable.
+      // Le filet de non-divergence (C2) NE PASSE PAS ici : il vit dans la
+      // branche de dosage, seul endroit où `flow` existe.
+      composeDose(0, error, phGate.deadband, /*ffServed=*/0.0f, phAmpFlow,
+                  DoseFlowRegime::Full);
     }
 
     // --- Ordonnanceur d'impulsions (proportionnel de temps, pulse_dosing_logic) ---
@@ -3909,6 +4219,19 @@ void PumpControllerClass::update() {
       flow = computePID(orpPID, error, now,
                         pumpProtection.orpStartThreshold, orpSaturated,
                         0.0f, orpAmpFlow);
+      // ===== feature-092 : COMPOSITION SERVIE À L'OBSERVABILITÉ ==============
+      // Régulation P-PURE : aucun feedforward (ffServed = 0), Ki forcé à 0 depuis
+      // applyRegulationSpeed() — la demande VAUT donc le terme proportionnel
+      // borné. Régime `Full` : il n'existe pas de prolongation de session côté
+      // ORP (la porte de session pH de feature-094 n'a pas d'équivalent chlore).
+      // Bande morte = `orpStartThreshold`, la MÊME valeur que celle passée à
+      // computePID juste au-dessus — lue au même endroit, jamais recalculée.
+      // Comme côté pH, le débit appliqué reste celui de computePID() : la
+      // composition est une PROJECTION d'observabilité, elle ne réécrit rien
+      // (cf. le commentaire détaillé de la branche pH sur les deux sorties
+      // anticipées de computePID).
+      composeDose(1, error, pumpProtection.orpStartThreshold, /*ffServed=*/0.0f,
+                  orpAmpFlow, DoseFlowRegime::Full);
     } else {
       // Reset PID si erreur négative (ORP trop haut, au-dessus de la cible)
       if (error < -pumpProtection.orpStopThreshold) {
@@ -3916,6 +4239,16 @@ void PumpControllerClass::update() {
         orpPID.lastError = 0.0f;
         orpPID.lastTime = 0;
       }
+      // BLOCAGE 1 DE LA REVUE, symétrique du pH : la composition est publiée à
+      // CHAQUE tour de la branche automatique, jamais seulement sous la
+      // conjonction de dosage — sinon la carte ORP servirait la demande du
+      // dernier tick dosé pendant toute la suspension (limite horaire épuisée
+      // quotidiennement sur cet appareil). Bande morte = `orpStartThreshold`, la
+      // MÊME que celle du calcul ; aucun feedforward côté chlore (régime `Full`,
+      // ffServed = 0). Le reset ci-dessus est déjà appliqué : la composition
+      // décrit donc l'état d'APRÈS, comme le fera le tour suivant.
+      composeDose(1, error, pumpProtection.orpStartThreshold, /*ffServed=*/0.0f,
+                  orpAmpFlow, DoseFlowRegime::Full);
     }
 
     // --- Ordonnanceur d'impulsions (symétrique de la branche pH) ---

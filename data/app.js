@@ -2181,9 +2181,11 @@
     if (params)    params.style.display    = mode === "automatic"  ? "" : "none";
     if (scheduled) scheduled.style.display = mode === "scheduled"  ? "" : "none";
     if (inject)    inject.style.display    = mode === "manual"     ? "" : "none";
-    // v2.26.0 (C5) : le bloc « rattrapage accumulé » dépend AUSSI de la
-    // disponibilité de la donnée — sa visibilité est décidée en un seul endroit.
-    updatePhIntegralDisplay();
+    // feature-092 : la carte « Débit d'injection pH » dépend AUSSI du mode ET de
+    // la disponibilité de la donnée — sa visibilité est décidée en un seul
+    // endroit (updatePhDosingCard, qui pilote également la capacité journalière
+    // et l'alerte de sous-dimensionnement).
+    updatePhDosingCard();
     // feature-034 itération 3 (volet A) : le bouton Calibrer la sonde vit désormais
     // sous la rangée des badges (#ph-card-stats, toujours visible) → accessible
     // dans tous les modes par construction, sans gestion de display ici.
@@ -2631,6 +2633,9 @@
     if (params)    params.style.display    = mode === "automatic"  ? "" : "none";
     if (scheduled) scheduled.style.display = mode === "scheduled"  ? "" : "none";
     if (inject)    inject.style.display    = mode === "manual"     ? "" : "none";
+    // feature-092 : miroir de la page pH — la carte « Débit d'injection ORP »
+    // dépend du mode ET de la donnée, décidés en un seul endroit.
+    updateOrpDosingCard();
     // feature-034 itération 3 (volet A) : le bouton Calibrer la sonde vit désormais
     // sous la rangée des badges (#orp-card-stats, toujours visible) → accessible
     // dans tous les modes par construction, sans gestion de display ici.
@@ -4292,90 +4297,385 @@
     });
   }
 
-  // ---------- v2.26.0 (C5) : rattrapage accumulé par la régulation pH ----------
+  // ========== feature-092 : cartes « Débit d'injection » pH et ORP ==========
   //
-  // Le firmware sert TROIS champs sur /data et le WebSocket :
-  //   ph_integral_pct  → remplissage de la réserve, en % (0-100, valeur absolue) ;
-  //   ph_integral      → l'intégrale brute, en pH·s (signée) ;
-  //   ph_integral_term → sa contribution au débit demandé, en mL/min (signée).
+  // Une seule surface répond à la question que l'utilisateur se pose vraiment :
+  // « la régulation demande combien, composé de quoi, et est-ce qu'elle
+  // l'applique en ce moment — sinon pourquoi ». Ces cartes REMPLACENT trois
+  // présentations empilées au fil des versions (bloc « Rattrapage accumulé »
+  // v2.26.0, ligne « Dose de base apprise » feature-085, capacités + bandeau
+  // « Dosage au maximum autorisé » feature-086) et les DEUX points de décision
+  // `hidden` qui allaient avec — updatePhIntegralDisplay() et
+  // updatePhActuatorLimitDisplay() sont SUPPRIMÉES, pas laissées mortes.
   //
-  // Le POURCENTAGE est affiché en premier : c'est la seule des trois grandeurs
-  // lisible sans connaître le plafond de l'anti-windup — lequel VARIE avec la
-  // vitesse de correction (lente / normale / rapide). Ce plafond n'est donc
-  // JAMAIS recopié ici : le firmware sert le rapport déjà calculé. Toute
-  // tentative de recalculer un pourcentage côté client rouvrirait le motif du
-  // miroir de constante firmware, éliminé quatre fois dans ce projet.
+  // Champs consommés, servis à l'IDENTIQUE sur /data et le WebSocket (parité
+  // stricte : un champ WS-seul ne disparaît pas, il CLIGNOTE toutes les 30 s
+  // quand la charge /data remplace latestSensorData — piège n° 1 du projet,
+  // trois récidives en trois versions) :
+  //   ph_ff_ml_per_min          → contribution du feedforward RÉELLEMENT servie
+  //                               (0 hors session, 0 en régime de maintien) ;
+  //   ph_ff_learned_ml_per_min  → la dose APPRISE, stable, connue même à froid ;
+  //   ph_ff_status              → 0 inactif · 1 actif · 2 latch sécurité ·
+  //                               3 historique < 3 j · 4 quota ≥ 60 % ;
+  //   ph_p_term_ml_per_min      → terme proportionnel, SIGNÉ ;
+  //   ph_i_term_ml_per_min      → terme intégral (rattrapage), en mL/min ;
+  //   ph_integral_pct           → remplissage de la réserve (note de la ligne) ;
+  //   ph_integral_saturated     → verdict de saturation SERVI (callout) ;
+  //   ph_demand_ml_per_min      → la DEMANDE : ce que la pompe commande ;
+  //   ph_sustainable_ml_per_min → plafond de débit MOYEN imposé par la limite
+  //                               horaire (null = pompe non caractérisée) ;
+  //   ph_limited_by_hourly_budget · ph_undersized · ph_daily_max_ml → 086 ;
+  //   ph_pump_flow_uncharacterized → fiabilité des débits (pied de carte) ;
+  //   ph_pulse_session · phMixingDelayActive · ph_mix_remaining_s ·
+  //   phDoseBlockedCode / phDoseBlockedReason → pastille d'état.
+  // Miroir ORP sans feedforward ni intégrale : le chlore est régulé en P PUR —
+  // mais AVEC le cas bridé (orp_limited_by_hourly_budget) et le pied de fiabilité
+  // (orp_pump_flow_uncharacterized), servis eux aussi.
   //
-  // SÉMANTIQUE STRICTE des états (clé absente ≠ null ≠ 0), même contrat que
-  // `phDoseBlockedCode` :
-  //   nombre fini → valeur mesurée, 0 compris (0 % = réserve VIDE, affirmé) ;
-  //   null        → le firmware dit explicitement « non calculable » (terme
-  //                 intégral inactif) : on affiche « — », pas un zéro ;
-  //   undefined   → INFORMATION ABSENTE (firmware antérieur à la 2.26.0) : le
-  //                 bloc entier reste masqué. Afficher « 0 % » dans ce cas
-  //                 mentirait sur une régulation dont on ne sait rien.
+  // ⚠️ IL N'EXISTE AUCUN CHAMP « APPLIQUÉ » DE DÉBIT — et il n'en existera pas.
+  // Le total affiché est donc la DEMANDE. Le firmware borne à l'amplitude de la
+  // pompe, JAMAIS au débit soutenable : la limite horaire agit EN AVAL, par
+  // refus. Afficher min(demande, soutenable) comme un débit servi
+  // SOUS-ESTIMERAIT de ~17 % ce que le bassin reçoit dans les dix minutes qui
+  // suivent (verdict pool-chemistry feature-092). Aucun min(), aucune somme de
+  // contrôle, aucune valeur absolue n'est calculé ici : le plafond descend en
+  // NOTE du total, et le seul calcul toléré est la soustraction documentée dans
+  // _doseCoupleNote().
   //
-  // Aucun seuil de saturation côté client (revue v2.26.0) : le verdict est servi
-  // par le firmware via `ph_integral_saturated`. Une constante 95 recopiée ici
-  // aurait été un 5ᵉ miroir de valeur firmware dans ce fichier — et surtout elle
-  // aurait porté sur la MAUVAISE grandeur (remplissage au lieu de
-  // demande/soutenable), sans jamais connaître la durée (2 h / 6 h).
+  // SÉMANTIQUE STRICTE des états (clé absente ≠ null ≠ 0), contrat commun à
+  // toute la page : nombre fini → valeur affirmée, 0,00 COMPRIS (une charge
+  // médiane nulle est une observation légitime, jamais un tiret) ; null → le
+  // firmware dit « non calculable » → « — » et la raison en note ; undefined →
+  // information ABSENTE (firmware antérieur) → carte entière masquée, aucune
+  // erreur console, et aucun des blocs retirés ne réapparaît.
 
-  function updatePhIntegralDisplay() {
-    const section = $("#ph-integral-section");
-    if (!section) return;
-    const pctEl = $("#ph_integral_pct_value");
-    const detailEl = $("#ph_integral_detail");
-    const warnEl = $("#ph_integral_warning");
+  const _doseNum = (v) => (typeof v === "number" && isFinite(v)) ? v : null;
 
+  // fr-FR, 2 décimales, unité collée. Le signe « − » est U+2212 (pas un trait
+  // d'union) et il est porté par la VALEUR SERVIE : les champs de débit sont
+  // signés et un « −3,00 mL/min » sur la ligne Écart est VOULU — il enseigne
+  // l'asymétrie de l'actionneur acide. Aucune valeur absolue n'est prise ici :
+  // masquer un signe servi reviendrait à inventer une grandeur.
+  function _fmtDoseFlow(v) {
+    return (v < 0 ? "−" : "")
+      + Math.abs(v).toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      + " mL/min";
+  }
+
+  // Écrit une ligne de la carte : valeur seule dans .kv__v, libellé + note dans
+  // .kv__k (la note est un <span class="kv__note"> INTERNE au libellé).
+  function _setDoseCell(idBase, value, note) {
+    const v = $(`#${idBase}-value`);
+    if (v) v.textContent = value;
+    const n = $(`#${idBase}-note`);
+    if (n) n.textContent = note || "";
+  }
+
+  // ---- Bornage du couple (P + I) : la note qui remplace toute sommation ----
+  //
+  // L'égalité de référence n'est PAS `demande = ff + p + i`. Le firmware borne
+  // le COUPLE (P + I) à zéro AVANT d'ajouter le feedforward : avec ff = 1,41 et
+  // p = −3,00, il injecte bien 1,41 mL/min. L'égalité vraie est donc
+  //   demande = coupleServi + ffServi
+  // où `coupleServi` se RECONSTITUE par soustraction — aucune régulation n'est
+  // recalculée côté client, et le couple borné n'est JAMAIS réparti entre P et
+  // I selon une règle inventée. Quand le couple brut diffère du couple servi,
+  // la ligne le NOMME : un trait de total sous des nombres qui ne s'additionnent
+  // pas, SANS note, serait le pire des deux mondes.
+  //
+  // Seuil 0,01 IMPÉRATIF (pas un `!==`) : les champs sont servis arrondis à deux
+  // décimales, une égalité stricte faux-positiverait d'un centime.
+  //
+  // La note se pose sur la ligne Rattrapage côté pH ; côté ORP, qui n'a pas de
+  // ligne Rattrapage, sur la ligne Écart.
+  function _doseCoupleNote(data, prefix) {
+    const demand = _doseNum(data[`${prefix}_demand_ml_per_min`]);
+    const p = _doseNum(data[`${prefix}_p_term_ml_per_min`]);
+    const ff = (prefix === "ph") ? _doseNum(data.ph_ff_ml_per_min) : 0;
+    const i = (prefix === "ph") ? _doseNum(data.ph_i_term_ml_per_min) : 0;
+    if (demand === null || p === null || ff === null || i === null) return "";
+    const served = demand - ff;
+    const rawCouple = p + i;
+    if (Math.abs(rawCouple - served) <= 0.01) return "";
+    return (rawCouple < 0)
+      ? "plancher appliqué · couple retenu 0,00 mL/min"
+      : "couple non servi · maintien de session";
+  }
+
+  // ---- Ligne « Écart courant » — point d'entrée UNIQUE de cette ligne -------
+  // Valeur = terme proportionnel BRUT ET SIGNÉ. null (mesure invalide : filtre
+  // non prêt, purge, NaN) → « — », la cause est portée par la pastille.
+  function _doseSpreadCell(data, prefix) {
+    const p = _doseNum(data[`${prefix}_p_term_ml_per_min`]);
+    return {
+      value: (p === null) ? "—" : _fmtDoseFlow(p),
+      // Côté ORP il n'y a pas de ligne Rattrapage : le bornage du couple
+      // s'annonce ici. Côté pH il s'annonce sur la ligne Rattrapage.
+      note: (prefix === "ph") ? "" : _doseCoupleNote(data, prefix),
+    };
+  }
+
+  // ---- Ligne « Dose de base apprise » (pH) ---------------------------------
+  // La VALEUR est la contribution appliquée (`ph_ff_ml_per_min`), pas la dose
+  // apprise : c'est ce que la pompe sert, et c'est ce qui rend le total
+  // additionnable. La dose APPRISE, elle, descend en note — c'est elle qui
+  // manquait avant feature-092 : hors session, l'utilisateur ne pouvait pas
+  // distinguer « rien d'appris » de « 1,41 appris, en attente ».
+  // « en attente » est placé AVANT le chiffre : l'œil doit lire la cause avant
+  // la valeur, sinon un zéro se lit comme une panne. Point le plus délicat de
+  // la carte — ne pas réordonner ces textes, ils sont validés tels quels.
+  // Aucune note quand la dose apprise n'est pas un nombre fini : il n'y a
+  // rien à appliquer, donc rien à annoncer.
+  function _doseFfCell(data) {
+    const applied = _doseNum(data.ph_ff_ml_per_min);
+    const learned = _doseNum(data.ph_ff_learned_ml_per_min);
+    const st = data.ph_ff_status;
+    // Statut 3 (historique < 3 j) : la dose n'est pas encore une grandeur, la
+    // valeur reste un tiret même si le firmware sert un 0 de contribution.
+    const value = (st === 3 || applied === null) ? "—" : _fmtDoseFlow(applied);
+    let note = "";
+    if (learned !== null) {
+      const l = _fmtDoseFlow(learned);
+      if (st === 0) {
+        note = `en attente — dose apprise ${l}, appliquée à la prochaine session`;
+      } else if (st === 2) {
+        note = `suspendue (pH sous consigne, mesure invalide ou réglages modifiés) — dose apprise ${l} conservée`;
+      } else if (st === 3) {
+        note = "en apprentissage (historique < 3 j)";
+      } else if (st === 4) {
+        note = `suspendue (60 % du quota atteint) — dose apprise ${l} conservée`;
+      }
+      // st === 1 (active, en session) : la valeur parle d'elle-même, pas de note.
+      // Statut inconnu d'un firmware plus récent : pas de note inventée.
+    }
+    return { value, note };
+  }
+
+  // ---- Pastille d'état : cinq priorités, trois couleurs --------------------
+  // SÉMANTIQUE DE COULEUR : vert = pompe commandée, gris = état normal, rouge =
+  // PANNE uniquement. Pas d'ambre — une pause n'est pas un avertissement. Aucun
+  // glyphe « ● / ○ » : indiscernables à 12 px et ils créeraient une seconde
+  // sémantique de vert à 20 px des pastilles du calendrier 7 jours (décision
+  // ux-ui-designer). Seule zone aria-live de la carte.
+  // Compte à rebours UNIQUEMENT sur la pause mélange : champ servi et borné,
+  // il répond exactement à la question posée. Pas de durée écoulée de session
+  // (aucun champ, et un compteur qui tourne n'est que du bruit).
+  //   1. cause de refus de ton `fault` (panne sonde) → rouge ;
+  //   2. session d'impulsions en cours → vert ;
+  //   3. pause mélange → gris + minutes restantes ;
+  //   4. cause de refus de ton `normal` (filtration arrêtée, quota…) → gris ;
+  //   5. aucune cause, pas de session → gris, qualifié « à la consigne » SI le
+  //      terme P vaut EXACTEMENT 0. `null` ne qualifie pas : un P null signale
+  //      un gain nul (régulateur inerte) ou une mesure invalide, pas un pH à la
+  //      consigne — l'affirmer serait un contresens ;
+  //   6. aucune cause, pas de session, terme P NON nul → « En attente » SEUL.
+  //      C'est le cas trompeur : la porte de session statue sur le signal LENT
+  //      (moyenne 10 min), la composition sur l'erreur INSTANTANÉE — avec la
+  //      dispersion pH de cet appareil, la demande peut être non nulle porte
+  //      fermée. La ligne Demande porte alors la note qui l'explique (cf.
+  //      updatePhDosingCard) : un chiffre sans motif de non-application est
+  //      exactement le vide que cette carte existe pour combler.
+  // RETOURNE l'état retenu ('fault' | 'session' | 'mixing' | 'blocked' |
+  // 'setpoint' | 'plain' | 'unknown') — 'plain' EST le 6ᵉ cas.
+  function _renderDosePill(prefix, data) {
+    const el = $(`#${prefix}-dosing-pill`);
+    if (!el) return "";
+    const info = _doseBlockInfo(data, prefix);
+    const entry = DOSE_BLOCK_CODES[info.code];
+    let tone = info.tone;
+    // DOSE_BLOCK_CODES reste la source UNIQUE des libellés de refus : la
+    // pastille lit un libellé COURT (`pill`/`chip`) et retombe sur `label`
+    // quand il n'y en a pas — les libellés des codes 2 et 10-14 sont déjà
+    // assez courts pour une pastille.
+    let short = (entry && (entry.pill || entry.chip)) || info.label || "";
+    if (info.code === DOSE_BLOCK_CODE_GUARD) {
+      // Sentinelle 250 : cause de GARDE, message porteur de valeurs runtime →
+      // trop long pour une pastille (le modal filtre garde le texte complet).
+      short = (entry && entry.pill) || "Sécurité pH/ORP active";
+      if (prefix === "orp" && entry && entry.pillOrp) {
+        // Côté chlore, la garde 250 = inhibition sur pH élevé. C'est un état
+        // d'ATTENTE normal, pas une panne : gris, jamais ambre ni rouge
+        // (verdict pool-chemistry feature-092).
+        short = entry.pillOrp;
+        tone = entry.toneOrp || "normal";
+      }
+    }
+    const mixing = (data[`${prefix}MixingDelayActive`] === true);
+    const remain = _doseNum(data[`${prefix}_mix_remaining_s`]);
+    let cls = "";
+    let txt;
+    let state;
+    if (tone === "fault" && short) {
+      cls = "bad";
+      txt = "Dosage suspendu · " + short;
+      state = "fault";
+    } else if (data[`${prefix}_pulse_session`] === true) {
+      cls = "ok";
+      txt = "Injection en cours";
+      state = "session";
+    } else if (mixing) {
+      txt = (remain === null)
+        ? "Pause mélange"
+        : `Pause mélange · ${Math.ceil(Math.max(0, remain) / 60)} min`;
+      state = "mixing";
+    } else if (tone === "normal" && short) {
+      txt = "En attente · " + short;
+      state = "blocked";
+    } else if (data[`${prefix}_p_term_ml_per_min`] === 0) {
+      txt = "En attente · " + ((prefix === "ph") ? "pH" : "ORP") + " à la consigne";
+      state = "setpoint";
+    } else {
+      // Ton `unknown` (code plus récent que cette page) ou terme P non nul sans
+      // refus : on dit l'attente, on ne devine pas la cause.
+      txt = "En attente";
+      // 'plain' = 6ᵉ cas, AUCUNE cause de refus servie ; 'unknown' = code non
+      // répertorié (la cause existe, cette page ne sait pas la nommer) — la note
+      // de la ligne Demande ne doit parler QUE du premier.
+      state = (info.code === 0 || info.code === undefined) ? "plain" : "unknown";
+    }
+    el.className = "pill" + (cls ? " " + cls : "");
+    el.textContent = txt;
+    return state;
+  }
+
+  // ---- Pieds de carte communs aux deux cartes ------------------------------
+  // Pied « limite horaire » — REMPLACE le bandeau #ph_budget_banner (retiré), et
+  // sert AUSSI la carte ORP : la régulation chlore sature son quota horaire
+  // quotidiennement (journal de production), le cas bridé n'y est pas théorique.
+  // Phrase validée par pool-chemistry : elle dit que la pompe sert la demande
+  // PUIS s'arrête, et non qu'elle débite en continu à un débit réduit. Le verdict
+  // est SERVI par le firmware ({prefix}_limited_by_hourly_budget) — aucune
+  // comparaison demande/plafond côté client. Les nombres viennent de /get-config
+  // et de la trame, JAMAIS d'une valeur en dur ; sans la limite configurée la
+  // phrase serait creuse → on masque.
+  function _renderDoseBudgetFoot(prefix, limited, sustainable) {
+    const foot = $(`#${prefix}-dose-budget-foot`);
+    if (!foot) return;
+    const limitMin = _doseNum(window._config?.[`${prefix}_limit_minutes`]);
+    const show = limited && sustainable !== null && limitMin !== null;
+    foot.hidden = !show;
+    if (show) {
+      foot.textContent = "La limite horaire (" + limitMin.toLocaleString("fr-FR")
+        + " min/h) autorise " + _fmtDoseFlow(sustainable) + " en moyenne sur l'heure : "
+        + "la pompe sert la demande, puis s'arrête jusqu'à l'heure suivante.";
+    }
+  }
+
+  // Pied « débit non caractérisé » : sans pesée, TOUS les débits de la carte
+  // reposent sur le débit d'usine de la pompe. C'est une qualification de la
+  // FIABILITÉ des nombres affichés, elle ne doit pas disparaître — elle vivait
+  // avant dans la ligne « Débit soutenable » du bloc capacités (retirée).
+  // Texte statique dans index.html, seul `hidden` est piloté ici. Clé absente
+  // (firmware antérieur) ⇒ pied masqué, jamais un `false` inventé.
+  function _renderDoseUncharacterizedFoot(prefix, data) {
+    const foot = $(`#${prefix}-dose-uncharacterized-foot`);
+    if (!foot) return;
+    foot.hidden = (data[`${prefix}_pump_flow_uncharacterized`] !== true);
+  }
+
+  // ---- Carte pH : SEUL point de décision de son `hidden` -------------------
+  function updatePhDosingCard() {
     const data = latestSensorData || {};
-    const pct = data.ph_integral_pct;
 
-    // Firmware antérieur : rien à dire, donc rien à montrer.
-    if (pct === undefined) { section.style.display = "none"; return; }
+    // (1) Capacité journalière (colonne des stats) et alerte de
+    // sous-dimensionnement (juste sous la carte) : ces deux éléments vivent HORS
+    // de la carte, mais leur `hidden` était piloté par
+    // updatePhActuatorLimitDisplay(), supprimée — il passe donc ici. MÊME
+    // contrat de présence qu'avant (ph_limited_by_hourly_budget booléen) et,
+    // comme avant, INDÉPENDANT du mode de régulation : un maximum journalier
+    // reste une capacité lisible en mode manuel.
+    const served086 = (typeof data.ph_limited_by_hourly_budget === "boolean");
+    const capBlock = $("#ph_capacity_block");
+    if (capBlock) {
+      capBlock.hidden = !served086;
+      const maxEl = $("#ph_daily_max_value");
+      const dailyMax = _doseNum(data.ph_daily_max_ml);
+      if (maxEl) maxEl.textContent = (dailyMax !== null)
+        ? Math.round(dailyMax).toLocaleString("fr-FR") + " mL/j"
+        : "Indisponible";
+    }
+    const undersizedBanner = $("#ph_undersized_banner");
+    if (undersizedBanner) {
+      undersizedBanner.hidden = !(served086 && data.ph_undersized === true);
+    }
 
-    // Le rattrapage n'évolue qu'en régulation automatique : l'exposer dans les
-    // autres modes afficherait un reliquat figé, sans lecture possible.
+    // (2) La carte. Deux conditions, un seul endroit : mode automatique (le
+    // feedforward et le rattrapage n'évoluent que là ; ailleurs on afficherait
+    // un reliquat figé) et champ sentinelle servi (firmware ≥ feature-092).
+    const card = $("#ph-card-dosing");
+    if (!card) return;
     const mode = getSegmented("ph_regulation_mode") || "automatic";
-    if (mode !== "automatic") { section.style.display = "none"; return; }
-    section.style.display = "";
-
-    const num = (v) => (typeof v === "number" && isFinite(v)) ? v : null;
-    const p = num(pct);
-    const raw = num(data.ph_integral);
-    const term = num(data.ph_integral_term);
-
-    if (pctEl) {
-      pctEl.textContent = (p === null)
-        ? "—"
-        : p.toLocaleString("fr-FR", { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + " %";
+    if (mode !== "automatic" || data.ph_demand_ml_per_min === undefined) {
+      card.hidden = true;
+      return;
     }
-    if (detailEl) {
-      // Second rang, volontairement discret : la valeur brute et le débit
-      // qu'elle réclame. |term| suffit — le signe est porté par le sens de
-      // correction (pH- / pH+), déjà affiché plus haut dans la carte.
-      const parts = [];
-      if (raw !== null) {
-        parts.push(Math.abs(raw).toLocaleString("fr-FR", { maximumFractionDigits: 0 }) + " pH·s");
-      }
-      if (term !== null) {
-        parts.push(Math.abs(term).toLocaleString("fr-FR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " mL/min demandés");
-      }
-      detailEl.textContent = parts.length ? " (" + parts.join(" · ") + ")" : "";
+    card.hidden = false;
+
+    // La pastille est rendue AVANT les lignes : son verdict (6ᵉ cas) conditionne
+    // la note de la ligne Demande, qui doit expliquer un chiffre non appliqué.
+    const pillState = _renderDosePill("ph", data);
+
+    const ff = _doseFfCell(data);
+    _setDoseCell("ph-dose-ff", ff.value, ff.note);
+
+    const spread = _doseSpreadCell(data, "ph");
+    _setDoseCell("ph-dose-p", spread.value, spread.note);
+
+    // Rattrapage : la réserve (%) est SERVIE par le firmware, jamais recalculée
+    // ici (le plafond de l'anti-windup varie avec la vitesse de correction — le
+    // recopier rouvrirait le motif du miroir de constante, éliminé cinq fois
+    // dans ce projet). Le « N pH·s » a disparu : jargon sans usage pour la
+    // cible. Le bornage du couple, s'il y a lieu, s'annonce EN TÊTE de note :
+    // c'est lui qui justifie l'arithmétique du total.
+    const iTerm = _doseNum(data.ph_i_term_ml_per_min);
+    const pct = _doseNum(data.ph_integral_pct);
+    const iNotes = [];
+    const couple = _doseCoupleNote(data, "ph");
+    if (couple) iNotes.push(couple);
+    if (pct !== null) {
+      iNotes.push("réserve " + pct.toLocaleString("fr-FR", { maximumFractionDigits: 0 }) + " %");
     }
+    _setDoseCell("ph-dose-i", (iTerm === null) ? "—" : _fmtDoseFlow(iTerm), iNotes.join(" · "));
+
+    // Total — la DEMANDE en gras (jamais un « appliqué » : cf. l'avertissement
+    // en tête de section). Le plafond descend en note ; plafond null (pompe non
+    // caractérisée) → AUCUNE note, on ne bavarde pas sur ce qu'on ignore.
+    const demand = _doseNum(data.ph_demand_ml_per_min);
+    const sust = _doseNum(data.ph_sustainable_ml_per_min);
+    const limited = (data.ph_limited_by_hourly_budget === true);
+    const totalNotes = [];
+    // CAUSE DE NON-APPLICATION D'ABORD, rappel du plafond ensuite : c'est la
+    // question que l'utilisateur se pose en regardant le chiffre. La note n'est
+    // posée QUE dans le 6ᵉ cas de la pastille (« En attente » sans suffixe :
+    // aucun refus servi, hors bande morte, pas de session) et sur une demande
+    // non nulle — ailleurs elle diluerait la note du plafond, qui vit sur la
+    // MÊME ligne. Formulation volontairement SANS code de porte : les `kPhGate*`
+    // sont un contrat interne, non sérialisé (les exposer demanderait un ADR).
+    // Ce qu'elle dit est vrai et suffisant : la porte décide sur une moyenne
+    // glissante, la composition affichée est instantanée.
+    if (pillState === "plain" && demand !== null && Math.abs(demand) > 0.005) {
+      totalNotes.push("demande instantanée : la régulation attend une mesure stabilisée avant d'ouvrir une session");
+    }
+    if (sust !== null) {
+      totalNotes.push(limited
+        ? "apport moyen possible " + _fmtDoseFlow(sust) + " en moyenne sur l'heure"
+        : "sous le maximum de " + _fmtDoseFlow(sust));
+    }
+    _setDoseCell("ph-dose-total", (demand === null) ? "—" : _fmtDoseFlow(demand), totalNotes.join(" · "));
+
+    _renderDoseBudgetFoot("ph", limited, sust);
+    _renderDoseUncharacterizedFoot("ph", data);
+    // (pastille déjà rendue en tête : son verdict alimente la note du total)
+
+    // Callout « rattrapage au maximum » (v2.26.0), déplacé au pied de la carte,
+    // TEXTE ET RÈGLE INCHANGÉS : le verdict est SERVI par le firmware
+    // (`ph_integral_saturated`), il n'est pas recalculé ici — le seuil firmware
+    // porte sur `demande / soutenable`, pas sur le remplissage de l'anti-windup,
+    // et le firmware seul connaît la durée (2 h / 6 h). Clé absente ⇒ pas
+    // d'encart, jamais un `false` inventé.
+    const warnEl = $("#ph_integral_warning");
     if (warnEl) {
-      // Le verdict est SERVI par le firmware (`ph_integral_saturated`), il n'est
-      // PAS recalculé ici (revue v2.26.0). Motif : le seuil firmware porte sur
-      // `demande / débit soutenable`, alors que `ph_integral_pct` mesure le
-      // REMPLISSAGE de l'anti-windup — deux grandeurs distinctes. Une intégrale
-      // au plafond qui tient la charge sans forcer est une régulation SAINE :
-      // comparer le remplissage à 95 % afficherait « vérifiez le bidon » sur une
-      // installation qui va bien, et c'est le faux positif qui décrédibilise
-      // l'alerte. Le firmware seul connaît en outre la DURÉE (2 h / 6 h).
-      // Clé absente (firmware antérieur à 2.26.0) ⇒ pas d'encart, jamais un
-      // `false` inventé.
-      const sat = latestSensorData?.ph_integral_saturated;
-      const saturated = (sat === true);
+      const saturated = (data.ph_integral_saturated === true);
       warnEl.hidden = !saturated;
       if (saturated) {
         warnEl.textContent =
@@ -4384,134 +4684,51 @@
           + "pompe doseuse et le TAC de l'eau (une alcalinité élevée bloque le pH).";
       }
     }
-
-    // ----- feature-085 (v2.28.0) : dose de base apprise (feedforward pH) -----
-    // Deux champs servis à l'IDENTIQUE sur /data et le WebSocket :
-    //   ph_ff_ml_per_min → débit de base appliqué à la session auto (mL/min) ;
-    //   ph_ff_status     → code d'état FIGÉ côté firmware :
-    //     0 inactif · 1 actif · 2 latch sécurité (pH sous consigne) ·
-    //     3 historique < 3 j · 4 quota journalier ≥ 60 %.
-    // MÊME contrat de présence que le reste du bloc : `ph_ff_status` absent
-    // (undefined) = firmware antérieur à la 2.28.0 → la ligne reste masquée
-    // (afficher « inactif » mentirait sur un firmware qui n'a pas de FF).
-    // La valeur n'est affichée QUE pour le statut « actif » : dans tous les
-    // autres états le débit vaut 0 par construction, et un « 0,00 mL/min »
-    // se lirait comme une mesure. Jamais de NaN affiché (helper num()).
-    const ffLine = $("#ph_ff_line");
-    if (ffLine) {
-      const st = data.ph_ff_status;
-      if (typeof st !== "number" || !isFinite(st)) {
-        ffLine.hidden = true;
-      } else {
-        ffLine.hidden = false;
-        const valEl = $("#ph_ff_value");
-        const stateEl = $("#ph_ff_state");
-        const flow = num(data.ph_ff_ml_per_min);
-        let valTxt = "—";
-        let stateTxt = "";
-        if (st === 1) {
-          stateTxt = "active";
-          if (flow !== null) {
-            valTxt = flow.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " mL/min";
-          }
-        } else if (st === 2) {
-          stateTxt = "suspendue (pH sous consigne)";
-        } else if (st === 3) {
-          stateTxt = "en apprentissage (historique < 3 j)";
-        } else if (st === 4) {
-          stateTxt = "suspendue (60 % du quota atteint)";
-        }
-        // st === 0 (inactif) ou code inconnu d'un firmware plus récent : tiret seul.
-        if (valEl) valEl.textContent = valTxt;
-        if (stateEl) stateEl.textContent = stateTxt ? " " + stateTxt : "";
-      }
-    }
   }
 
-  // ---------- feature-086 (v2.29.0) : limite d'actionneur pH ----------
-  //
-  // QUATRE champs servis à l'IDENTIQUE sur /data et le WebSocket :
-  //   ph_sustainable_ml_per_min   → plafond de débit moyen (mL/min, 2 décimales),
-  //                                 null si pompe non caractérisée ;
-  //   ph_daily_max_ml             → maximum injectable sur la journée de
-  //                                 filtration programmée (mL/j, entier), null
-  //                                 si non calculable ;
-  //   ph_limited_by_hourly_budget → bandeau informatif « Dosage au maximum
-  //                                 autorisé » (état NORMAL, ton neutre) ;
-  //   ph_undersized               → alerte diagnostic « Capacité de dosage
-  //                                 insuffisante » (série ≥ 3 j saturés).
-  //
-  // MÊME contrat de présence que ph_ff_status : `ph_limited_by_hourly_budget`
-  // absent (undefined) = firmware antérieur à la 2.29.0 → TOUT reste masqué
-  // (capacités ET bandeaux), rien d'inventé. Les quatre champs sont servis dans
-  // le MÊME passage des deux côtés (parité stricte /data ↔ WS) : une trame ne
-  // peut pas être partielle sur ces clés, donc aucun clignotement possible.
-  // Quand ph_undersized est vrai, l'alerte REMPLACE le bandeau informatif
-  // (elle contient l'information — on n'empile jamais les deux).
-  // Jamais de NaN/undefined affiché (helper num()).
-  function updatePhActuatorLimitDisplay() {
+  // ---- Carte ORP : deux lignes, même composant -----------------------------
+  // Le chlore est régulé en P PUR (Ki = 0, pas de feedforward) : il n'y a ni
+  // ligne « Dose de base », ni ligne « Rattrapage » — et c'est précisément ce
+  // que la carte montre au passage. Ce n'est pas un repli : la carte est
+  // complète pour ce qu'elle régule.
+  function updateOrpDosingCard() {
     const data = latestSensorData || {};
-    const capBlock = $("#ph_capacity_block");
-    const budgetBanner = $("#ph_budget_banner");
-    const undersizedBanner = $("#ph_undersized_banner");
-
-    // Sentinelle de présence : booléen TOUJOURS servi par les firmwares ≥ 2.29.0.
-    if (typeof data.ph_limited_by_hourly_budget !== "boolean") {
-      if (capBlock) capBlock.hidden = true;
-      if (budgetBanner) budgetBanner.hidden = true;
-      if (undersizedBanner) undersizedBanner.hidden = true;
+    const card = $("#orp-card-dosing");
+    if (!card) return;
+    const mode = getSegmented("orp_regulation_mode") || "automatic";
+    if (mode !== "automatic" || data.orp_demand_ml_per_min === undefined) {
+      card.hidden = true;
       return;
     }
+    card.hidden = false;
 
-    const num = (v) => (typeof v === "number" && isFinite(v)) ? v : null;
-    const sustainable = num(data.ph_sustainable_ml_per_min);
-    const dailyMax = num(data.ph_daily_max_ml);
-    const fmtFlow = (v) => v.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    const fmtDaily = (v) => Math.round(v).toLocaleString("fr-FR");
+    const spread = _doseSpreadCell(data, "orp");
+    _setDoseCell("orp-dose-p", spread.value, spread.note);
 
-    // B1.1 — capacités (présentation discrète : dérivées des réglages, pas mesures)
-    if (capBlock) {
-      capBlock.hidden = false;
-      const sustEl = $("#ph_sustainable_value");
-      const maxEl = $("#ph_daily_max_value");
-      if (sustEl) sustEl.textContent = (sustainable !== null)
-        ? fmtFlow(sustainable) + " mL/min"
-        : "Indisponible — pompe non caractérisée";
-      if (maxEl) maxEl.textContent = (dailyMax !== null)
-        ? fmtDaily(dailyMax) + " mL/j"
-        : "Indisponible";
+    // PAS de note « demande instantanée » ici, à la différence de la carte pH :
+    // le signal lent et la porte de session de feature-094 (phSessionGate,
+    // moyenne glissante 10 min) n'existent QUE pour le pH — il n'y a pas
+    // d'orpSessionGate. Côté chlore, la décision lit la mesure filtrée
+    // INSTANTANÉE, la même que la composition : une demande non nulle sans
+    // session relève de la bande morte d'hystérésis, pas d'une attente de
+    // stabilisation. Reprendre la phrase du pH y serait FAUX.
+
+    // Total et plafond : MÊME règle que la carte pH, y compris le cas bridé — le
+    // quota horaire du chlore est atteint tous les jours en production.
+    const demand = _doseNum(data.orp_demand_ml_per_min);
+    const sust = _doseNum(data.orp_sustainable_ml_per_min);
+    const limited = (data.orp_limited_by_hourly_budget === true);
+    let totalNote = "";
+    if (sust !== null) {
+      totalNote = limited
+        ? "apport moyen possible " + _fmtDoseFlow(sust) + " en moyenne sur l'heure"
+        : "sous le maximum de " + _fmtDoseFlow(sust);
     }
+    _setDoseCell("orp-dose-total", (demand === null) ? "—" : _fmtDoseFlow(demand), totalNote);
 
-    const undersized = data.ph_undersized === true;
-    // Le bandeau a besoin de {Y} : sans débit soutenable, la phrase serait
-    // creuse (cas théorique — le firmware ne tient pas d'épisode C5 sans pompe
-    // caractérisée ; garde défensive, on masque plutôt qu'inventer).
-    const limited = data.ph_limited_by_hourly_budget === true
-      && !undersized && sustainable !== null;
-
-    if (undersizedBanner) undersizedBanner.hidden = !undersized;
-    if (budgetBanner) {
-      budgetBanner.hidden = !limited;
-      if (limited) {
-        const textEl = $("#ph_budget_banner_text");
-        if (textEl) {
-          // {X} = limite horaire configurée (min/h) — config, pas donnée capteur.
-          const limitMin = num(window._config?.ph_limit_minutes);
-          const x = (limitMin !== null) ? limitMin.toLocaleString("fr-FR") : "—";
-          // Libellé EXACT validé par pool-chemistry ; si {Z} est null, la
-          // première phrase est tronquée après « {Y} mL/min. ».
-          let txt = "La limite horaire d'injection (" + x
-            + " min/h) plafonne l'apport de correcteur à "
-            + fmtFlow(sustainable) + " mL/min";
-          txt += (dailyMax !== null)
-            ? ", soit au plus " + fmtDaily(dailyMax)
-              + " mL sur la journée de filtration programmée."
-            : ".";
-          txt += " Le pH redescend au rythme le plus rapide que ce réglage autorise.";
-          textEl.textContent = txt;
-        }
-      }
-    }
+    _renderDoseBudgetFoot("orp", limited, sust);
+    _renderDoseUncharacterizedFoot("orp", data);
+    _renderDosePill("orp", data);
   }
 
   // ========== feature-096 (v2.37.0) : temps d'atteinte de cible ==========
@@ -4820,7 +5037,7 @@
     const block = $(`#${prefix}-ttt-block`);
     if (!block) return null;
 
-    // Sentinelle de présence (patron updatePhActuatorLimitDisplay) : un firmware
+    // Sentinelle de présence (même patron que updatePhDosingCard) : un firmware
     // antérieur à la 2.37.0 ne sert pas ces clés → bloc MASQUÉ, jamais un « — »
     // qui ferait croire à un indicateur en panne.
     const state = data[`${prefix}_ttt_state`];
@@ -4878,7 +5095,7 @@
     return state;
   }
 
-  // Point d'entrée UNIQUE, appelé là où updatePhIntegralDisplay() l'est : après
+  // Point d'entrée UNIQUE, appelé là où updatePhDosingCard() l'est : après
   // une charge /data ET après une trame WS `sensor_data` (les deux passent par
   // loadSensorData → updateDetailSections).
   function updateTimeToTargetDisplay() {
@@ -4941,24 +5158,21 @@
   function updateDetailSections() {
     const config = window._config || {};
 
-    // v2.26.0 (C5) : rattrapage accumulé — rendu EN TÊTE et sous try/catch, même
-    // précaution que le statut MQTT dans _onWsSensorData. Motif : c'est le SEUL
-    // point de décision de la visibilité du bloc, et il était appelé en DERNIER,
-    // après quatre autres rafraîchisseurs. Une exception dans l'un d'eux (donnée
-    // inattendue d'un firmware donné) laissait le bloc masqué EN SILENCE — sans
-    // rien casser de visible par ailleurs, puisque les rubriques qui le
-    // précèdent avaient déjà été mises à jour et que la ligne « débit calculé »
-    // est de toute façon invisible hors mode Programmée. Un bloc neuf qui « ne
-    // s'affiche jamais » est exactement la trace que laisserait ce défaut.
-    try { updatePhIntegralDisplay(); } catch (e) { console.error('[ph-integral] rendu:', e); }
-
-    // feature-086 : capacités et bandeaux de limite d'actionneur pH — même
-    // précaution try/catch que le rattrapage accumulé (un rendu qui lance ne
-    // doit jamais masquer les rubriques suivantes en silence).
-    try { updatePhActuatorLimitDisplay(); } catch (e) { console.error('[ph-limite] rendu:', e); }
+    // feature-092 : cartes « Débit d'injection » pH et ORP — rendu EN TÊTE et
+    // sous try/catch, même précaution que le statut MQTT dans _onWsSensorData.
+    // Motif (hérité de la v2.26.0) : c'est le SEUL point de décision de la
+    // visibilité de ces cartes, et il était appelé en DERNIER, après quatre
+    // autres rafraîchisseurs. Une exception dans l'un d'eux (donnée inattendue
+    // d'un firmware donné) laissait le bloc masqué EN SILENCE — sans rien casser
+    // de visible par ailleurs. Une carte neuve qui « ne s'affiche jamais » est
+    // exactement la trace que laisserait ce défaut. updatePhDosingCard() pilote
+    // AUSSI la capacité journalière et l'alerte de sous-dimensionnement, qui
+    // vivent hors de la carte (ex-updatePhActuatorLimitDisplay).
+    try { updatePhDosingCard(); } catch (e) { console.error('[ph-dosage] rendu:', e); }
+    try { updateOrpDosingCard(); } catch (e) { console.error('[orp-dosage] rendu:', e); }
 
     // feature-096 : temps d'atteinte de cible (pages pH ET ORP) — appelé
-    // exactement là où updatePhIntegralDisplay() l'est, donc après une charge
+    // exactement là où updatePhDosingCard() l'est, donc après une charge
     // /data ET après une trame WS `sensor_data` (les deux passent ici via
     // loadSensorData). Même précaution try/catch : un rendu qui lance ne doit
     // jamais masquer les rubriques suivantes en silence.
@@ -5570,6 +5784,22 @@
     20: { tone: 'fault',   label: 'Sonde figée — vérifier la sonde', chip: 'Sonde figée' },
     21: { tone: 'fault',   label: 'Plus aucune mesure acceptée — vérifier la sonde', chip: 'Sonde muette' },
     22: { tone: 'normal',  label: 'Mesures non représentatives (stabilisation)', chip: 'Mesures non représentatives', stab: true },
+    // feature-092 — sentinelle 250 (cause de GARDE) : le message firmware porte
+    // des valeurs runtime (seuils, mesure) et reste cité tel quel par le modal
+    // filtre ; la pastille des cartes « Débit d'injection » a besoin d'un
+    // libellé COURT, il vit donc ici, dans la source unique.
+    // ⚠️ Le champ s'appelle `pill`, PAS `chip`, à dessein : `chip` est consommé
+    // par _classifyFilterState() pour le chip d'état FILTRE (qui décrit la
+    // mesure, pas le dosage) — le nommer `chip` détournerait ce chip vers une
+    // cause de dosage, sans rapport avec l'état de la sonde.
+    // `pillOrp` / `toneOrp` : côté chlore, cette garde est l'inhibition sur pH
+    // élevé. État d'ATTENTE normal, GRIS — jamais ambre, jamais rouge (verdict
+    // pool-chemistry feature-092 : un écart de chlore pendant un pH haut n'est
+    // pas une panne, c'est de la chimie).
+    250: {
+      tone: 'fault', label: 'Sécurité pH/ORP active', pill: 'Sécurité pH/ORP active',
+      pillOrp: 'pH trop haut, chlore peu actif', toneOrp: 'normal',
+    },
   };
 
   // Traduit le couple (code, texte) servi pour `prefix` en { code, label, tone }.
@@ -6565,10 +6795,17 @@
   function showPhCalibrationCard() {
     const reg = $("#ph-card-regulation");
     const hist = $("#ph-card-history");
+    // feature-092 : la carte « Débit d'injection » s'efface pendant la
+    // calibration comme les deux autres. Elle vivait AVANT dans la carte
+    // Régulation (bloc rattrapage) : la masquer ici PRÉSERVE ce comportement au
+    // lieu de le changer. `style.display` prime sur l'attribut `hidden`, donc la
+    // remise à "" rend la main à updatePhDosingCard/updateOrpDosingCard.
+    const dose = $("#ph-card-dosing");
     const cal = $("#ph-card-calibration");
     const calBtn = $("#ph_cal_trigger_btn");
     if (reg) reg.style.display = "none";
     if (hist) hist.style.display = "none";
+    if (dose) dose.style.display = "none";
     if (cal) cal.style.display = "";
     if (calBtn) calBtn.disabled = true;
   }
@@ -6576,10 +6813,12 @@
     _calEndAwait(); // annuler une attente de calibration en cours
     const reg = $("#ph-card-regulation");
     const hist = $("#ph-card-history");
+    const dose = $("#ph-card-dosing");
     const cal = $("#ph-card-calibration");
     const calBtn = $("#ph_cal_trigger_btn");
     if (reg) reg.style.display = "";
     if (hist) hist.style.display = "";
+    if (dose) dose.style.display = "";
     if (cal) cal.style.display = "none";
     if (calBtn) calBtn.disabled = false;
     updatePhModeControls();
@@ -6587,10 +6826,17 @@
   function showOrpCalibrationCard() {
     const reg = $("#orp-card-regulation");
     const hist = $("#orp-card-history");
+    // feature-092 : la carte « Débit d'injection » s'efface pendant la
+    // calibration comme les deux autres. Elle vivait AVANT dans la carte
+    // Régulation (bloc rattrapage) : la masquer ici PRÉSERVE ce comportement au
+    // lieu de le changer. `style.display` prime sur l'attribut `hidden`, donc la
+    // remise à "" rend la main à updatePhDosingCard/updateOrpDosingCard.
+    const dose = $("#orp-card-dosing");
     const cal = $("#orp-card-calibration");
     const calBtn = $("#orp_cal_trigger_btn");
     if (reg) reg.style.display = "none";
     if (hist) hist.style.display = "none";
+    if (dose) dose.style.display = "none";
     if (cal) cal.style.display = "";
     if (calBtn) calBtn.disabled = true;
   }
@@ -6598,10 +6844,12 @@
     _calEndAwait(); // annuler une attente de calibration en cours
     const reg = $("#orp-card-regulation");
     const hist = $("#orp-card-history");
+    const dose = $("#orp-card-dosing");
     const cal = $("#orp-card-calibration");
     const calBtn = $("#orp_cal_trigger_btn");
     if (reg) reg.style.display = "";
     if (hist) hist.style.display = "";
+    if (dose) dose.style.display = "";
     if (cal) cal.style.display = "none";
     if (calBtn) calBtn.disabled = false;
     updateOrpModeControls();

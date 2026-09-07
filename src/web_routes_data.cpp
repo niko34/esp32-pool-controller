@@ -126,13 +126,64 @@ static void handleGetData(AsyncWebServerRequest* request) {
   //   → 150 o (mêmes clés, mêmes largeurs que le décompte de ws_manager.cpp).
   // Charge pire cas : 2236 (v2.34.0) + 150 = 2386 o, AU-DESSUS du gabarit 2304
   // → gabarit porté 2304 → 2432 (marge 46 o).
+  // feature-092 (v2.46.0, 07/09/2026) : +8 champs de COMPOSITION du débit
+  // d'injection (parité /data ↔ WS, MÊME passage, marqueurs PARITE-DATA) et,
+  // côté /data seulement, +4 champs de PAUSE MÉLANGE qui étaient WS-seuls.
+  //
+  // MÉTHODE DE CHIFFRAGE — À LIRE AVANT DE TOUCHER À CE NOMBRE. On compte la
+  // valeur au PIRE CAS STRUCTUREL, c'est-à-dire la borne du tampon ou du type
+  // qui la porte, JAMAIS une valeur relevée sur une trame vivante. C'est
+  // exactement l'erreur qui a rendu le chiffre précédent faux de 115 o : les
+  // deux `*DoseBlockedReason` avaient été comptés ~62/64 o « au pire » alors
+  // qu'ils sont bornés par kDoseBlockedReasonMaxLen = 96, soit 95 caractères
+  // + 2 guillemets = 97 o de VALEUR chacun (contre ~8 o en fonctionnement
+  // normal). Le décompte corrigé de ces deux clés :
+  //   "phDoseBlockedReason":"<95 car.>",  → 1+19+1+1+97+1 = 120 o (comptée 62)
+  //   "orpDoseBlockedReason":"<95 car.>", → 1+20+1+1+97+1 = 121 o (comptée 64)
+  //   → correction +115 o sur le pire cas de la trame, sans qu'aucun champ soit
+  //     ajouté. Ce pire cas n'est PAS théorique : les causes de refus les plus
+  //     longues sont celles de l'ESCALADE DE SÉCURITÉ pH — le moment précis où
+  //     perdre la trame coûte le plus cher.
+  // Rappel du mode de défaillance côté WS : le dépassement SAUTE le push (garde
+  // `measureJson(doc) + 1 > cap`), il ne TRONQUE jamais.
+  //
+  // Décompte des 8 nouvelles clés, une par une (1 guillemet + nom + guillemet +
+  // deux-points + valeur + virgule). Valeurs signées comptées sur 8 caractères
+  // (« -1234.56 ») : les termes p et i ne sont PAS bornés, c'est leur raison
+  // d'être (grandeurs pédagogiques signées) ; les grandeurs ≥ 0 sur 6
+  // (« 123.45 ») comme les champs mL/min existants ; `null` = 4 o, plus court,
+  // donc jamais dimensionnant.
+  //   "ph_ff_learned_ml_per_min":123.45,   → 1+24+1+1+6+1 = 34 o
+  //   "ph_p_term_ml_per_min":-1234.56,     → 1+20+1+1+8+1 = 32 o
+  //   "ph_i_term_ml_per_min":-1234.56,     → 1+20+1+1+8+1 = 32 o
+  //   "ph_demand_ml_per_min":123.45,       → 1+20+1+1+6+1 = 30 o
+  //   "orp_p_term_ml_per_min":-1234.56,    → 1+21+1+1+8+1 = 33 o
+  //   "orp_demand_ml_per_min":123.45,      → 1+21+1+1+6+1 = 31 o
+  //   "orp_sustainable_ml_per_min":123.45, → 1+26+1+1+6+1 = 36 o
+  //   "orp_limited_by_hourly_budget":false, → 1+28+1+1+5+1 = 37 o
+  //   → 265 o.
+  // Décompte des 4 clés de pause mélange (uint32 comptés sur 10 chiffres — borne
+  // du TYPE, pas la borne fonctionnelle de 900 s) :
+  //   "phMixingDelayActive":false,      → 1+19+1+1+ 5+1 = 28 o
+  //   "orpMixingDelayActive":false,     → 1+20+1+1+ 5+1 = 29 o
+  //   "ph_mix_remaining_s":4294967295,  → 1+18+1+1+10+1 = 32 o
+  //   "orp_mix_remaining_s":4294967295, → 1+19+1+1+10+1 = 33 o
+  //   → 122 o (déjà comptés côté WS depuis v2.19.1 : ils y existaient déjà).
+  // Pire cas de charge : 2386 (décompte v2.37.0) + 115 (correction ci-dessus)
+  // + 265 (8 champs neufs) + 122 (4 champs de pause mélange, nouveaux ICI) =
+  // 2888 o, AU-DESSUS du gabarit 2432 → gabarit porté 2432 → 2944 (marge 56 o).
+  // Les 2 booléens `*_pump_flow_uncharacterized` ne s'AJOUTENT pas ici : ils
+  // étaient déjà servis par /data (ils ne font que MIGRER dans le bloc de
+  // parité) — ce sont les 75 o que la trame WS, elle, doit désormais porter.
+  // Contrairement au WebSocket, ce chemin n'a AUCUN plafond dur : la marge n'est
+  // qu'un indicateur d'hygiène, aucune troncature n'est possible ici.
   // RAPPEL, et ce n'est pas une formalité : ce gabarit est PUREMENT DOCUMENTAIRE.
   // En ArduinoJson 7, StaticJson<N> dérive de JsonDocument (N n'est plus qu'une
   // valeur de capacity(), le pool est alloué dynamiquement) et sendJsonResponse
   // sérialise dans une String dimensionnée à la demande : ce chemin n'a AUCUN
   // plafond dur et AUCUNE troncature n'y est possible — contrairement à
   // sWsFrameBuf côté WebSocket (kWsFrameBufBytes, seul plafond DUR du projet).
-  StaticJson<2432> doc;
+  StaticJson<2944> doc;
 
   // feature-025 : la "valeur courante" (champs ph/orp) reflète la valeur FILTRÉE
   // (médiane + EMA), alignée sur le WS. Le brut reste exposé séparément (phRaw/orpRaw).
@@ -250,8 +301,9 @@ static void handleGetData(AsyncWebServerRequest* request) {
   // plateau d'impulsion (duty commandé pendant un pouls). Alimente le badge
   // « Débit non caractérisé — pesée requise » de l'UI. Getters lecture seule,
   // sûrs en contexte async_tcp (cf. pump_controller.h).
-  doc["ph_pump_flow_uncharacterized"]  = PumpController.isPhPumpFlowUncharacterized();
-  doc["orp_pump_flow_uncharacterized"] = PumpController.isOrpPumpFlowUncharacterized();
+  // feature-092 : `ph/orp_pump_flow_uncharacterized` ont MIGRÉ dans le bloc
+  // `PARITE-DATA` plus bas — ils étaient /data-SEULS, donc effacés de
+  // `latestSensorData` par chaque push WebSocket (pied de carte clignotant).
   doc["ph_pump_amplitude_duty"]  = PumpController.getPumpAmplitudeDuty(pumpIndexFromNumber(mqttCfg.phPump));
   doc["orp_pump_amplitude_duty"] = PumpController.getPumpAmplitudeDuty(pumpIndexFromNumber(mqttCfg.orpPump));
   // Itération 3 (bug-dosage-fantome, défaut n°3) : calendrier d'impulsion —
@@ -370,6 +422,92 @@ static void handleGetData(AsyncWebServerRequest* request) {
     doc["ph_limited_by_hourly_budget"] = PumpController.isPhLimitedByHourlyBudget();
     doc["ph_undersized"]               = PumpController.isPhUndersizedSuspected();
   }
+  // >>> PARITE-DATA:DEBUT
+  // CONVENTION NORMATIVE (lue telle quelle par la sentinelle de parité, sur le
+  // patron des marqueurs PARITE-CONFIG de web_routes_config.cpp / ws_manager.cpp) :
+  // entre ces deux marqueurs, TOUTE clé s'écrit `doc["<clé>"]` — un seul
+  // receveur. L'autre côté du contrat porte les MÊMES clés entre les MÊMES
+  // marqueurs. Une clé posée hors des marqueurs est INVISIBLE pour la sentinelle :
+  // la parité cesserait d'être garantie sans que rien ne casse.
+  //
+  // POURQUOI CE BLOC EXISTE (feature-092). Un champ servi d'un seul côté ne
+  // disparaît pas, il CLIGNOTE : `latestSensorData` est alimenté par le WS, puis
+  // intégralement REMPLACÉ par les charges /data toutes les ~30 s. Trois
+  // récidives documentées en trois versions ; la pause mélange était encore dans
+  // ce cas (WS-seule) — d'où sa migration DANS ce bloc.
+  //
+  // PAUSE MÉLANGE — les quatre champs qui manquaient à /data. La pastille d'état
+  // de la carte « Débit d'injection » les consomme : sans eux, elle basculerait
+  // de « Pause mélange · 12 min » à « En attente » à chaque charge /data.
+  const uint32_t mixNowMs = millis();
+  doc["phMixingDelayActive"]  = PumpController.isPhMixingDelayActive(mixNowMs);
+  doc["orpMixingDelayActive"] = PumpController.isOrpMixingDelayActive(mixNowMs);
+  doc["ph_mix_remaining_s"]   = PumpController.getMixingRemainingS(0);
+  doc["orp_mix_remaining_s"]  = PumpController.getMixingRemainingS(1);
+  //
+  // COMPOSITION DU DÉBIT D'INJECTION (feature-092) — l'équation que la régulation
+  // applique déjà, rendue lisible : demande = dose de base apprise + écart
+  // courant + rattrapage accumulé, bornée par le débit soutenable.
+  //   ph_ff_learned_ml_per_min   = dose de base APPRISE (mL/min, 2 décimales),
+  //       min(charge médiane 7 j, 60 % du soutenable) — calculée À LA LECTURE :
+  //       elle reste vraie hors session, contrairement à `ph_ff_ml_per_min` qui
+  //       vaut 0 hors session (les deux coexistent, aucun n'est renommé).
+  //       null si < 3 journées exploitables ou pompe non caractérisée. 0,00 avec
+  //       3 journées sans injection est une OBSERVATION, pas une indisponibilité.
+  //   ph_p_term_ml_per_min       = écart courant kp·e, SIGNÉ (négatif = pH sous
+  //       la consigne), 0 dans la bande morte, JAMAIS borné ; null si la mesure
+  //       n'est pas représentative ou si kp vaut 0 (régulateur inerte : un 0,00
+  //       s'y lirait « pH à la consigne » sur une régulation morte).
+  //   ph_i_term_ml_per_min       = rattrapage SERVI (0 dans la bande morte) —
+  //       distinct de `ph_integral_term`, terme BRUT et contrat externe
+  //       historique, qui reste inchangé. Deux champs, deux sémantiques.
+  //   ph_demand_ml_per_min       = demande TOTALE bornée = clamp(PI servi + FF,
+  //       0, débit d'amplitude). La borne basse porte sur le COUPLE p + i, jamais
+  //       sur la somme des trois termes (cf. doseComposition, dosing_logic.h).
+  //   orp_p_term_ml_per_min      = idem ORP ; orp_demand_ml_per_min = demande
+  //       (régulation P-PURE : Ki = 0, aucun feedforward — la demande VAUT le
+  //       terme proportionnel borné, et la carte ORP montre ainsi POURQUOI le
+  //       chlore est régulé plus simplement).
+  //   orp_sustainable_ml_per_min = plafond de débit moyen de la voie ORP imposé
+  //       par sa limite horaire (miroir de `ph_sustainable_ml_per_min`).
+  //   orp_limited_by_hourly_budget = VERDICT firmware « le chlore est borné par
+  //       sa limite horaire EN CE MOMENT » (booléen, jamais null) — homologue
+  //       d'`ph_limited_by_hourly_budget`, qui n'existait pas côté ORP alors que
+  //       c'est la voie qui rencontre le cas TOUS LES JOURS sur cet appareil
+  //       (journal du 07/09 09:15 : « Limite horaire ORP atteinte : 10 min/h
+  //       consommées »). Verdict, jamais une comparaison à refaire côté client.
+  // Règle NaN → null EXPLICITE (absent ≠ 0) et arrondi 2 décimales pour les
+  // sept — IDENTIQUES de l'autre côté, servis dans le MÊME passage.
+  // Accesseurs LECTURE SEULE : aucune I²C, aucun LittleFS, aucune NVS, aucun
+  // appel à getPhDecisionValue() (réservée à loopTask, condition C2 du gate
+  // feature-096) — sûrs dans un handler AsyncWebServer.
+  const float phFfLearned  = PumpController.getPhFeedforwardLearnedFlow();
+  const float phPTerm      = PumpController.getPhPTermFlow();
+  const float phITerm      = PumpController.getPhITermFlow();
+  const float phDemand     = PumpController.getPhDemandFlow();
+  const float orpPTerm     = PumpController.getOrpPTermFlow();
+  const float orpDemand    = PumpController.getOrpDemandFlow();
+  const float orpSust      = PumpController.getOrpSustainableMlPerMin();
+  if (!isnan(phFfLearned)) doc["ph_ff_learned_ml_per_min"] = round(phFfLearned * 100.0f) / 100.0f; else doc["ph_ff_learned_ml_per_min"] = nullptr;
+  if (!isnan(phPTerm))     doc["ph_p_term_ml_per_min"]     = round(phPTerm * 100.0f) / 100.0f;     else doc["ph_p_term_ml_per_min"]     = nullptr;
+  if (!isnan(phITerm))     doc["ph_i_term_ml_per_min"]     = round(phITerm * 100.0f) / 100.0f;     else doc["ph_i_term_ml_per_min"]     = nullptr;
+  if (!isnan(phDemand))    doc["ph_demand_ml_per_min"]     = round(phDemand * 100.0f) / 100.0f;    else doc["ph_demand_ml_per_min"]     = nullptr;
+  if (!isnan(orpPTerm))    doc["orp_p_term_ml_per_min"]    = round(orpPTerm * 100.0f) / 100.0f;    else doc["orp_p_term_ml_per_min"]    = nullptr;
+  if (!isnan(orpDemand))   doc["orp_demand_ml_per_min"]    = round(orpDemand * 100.0f) / 100.0f;   else doc["orp_demand_ml_per_min"]    = nullptr;
+  if (!isnan(orpSust))     doc["orp_sustainable_ml_per_min"] = round(orpSust * 100.0f) / 100.0f;   else doc["orp_sustainable_ml_per_min"] = nullptr;
+  doc["orp_limited_by_hourly_budget"] = PumpController.isOrpLimitedByHourlyBudget();
+  //
+  // CARACTÉRISATION DE POMPE — deux booléens qui étaient /data-SEULS, donc le
+  // piège n° 1 du projet dans son sens INVERSE : ce n'est pas la charge /data
+  // qui écrasait un champ WS, c'est le push WebSocket qui effaçait un champ
+  // /data de `latestSensorData`. Le pied « pompe non caractérisée » de la carte
+  // « Débit d'injection » s'affichait donc une seconde puis disparaissait
+  // jusqu'au rafraîchissement suivant. Même mécanisme, même correctif : la
+  // PARITÉ, pas une mémorisation côté client. Booléens d'état STABLE (une pesée
+  // au banc, un réglage de puissance), jamais null.
+  doc["ph_pump_flow_uncharacterized"]  = PumpController.isPhPumpFlowUncharacterized();
+  doc["orp_pump_flow_uncharacterized"] = PumpController.isOrpPumpFlowUncharacterized();
+  // <<< PARITE-DATA:FIN
   doc["ph_daily_ml"] = safetyLimits.dailyPhInjectedMl;
   doc["orp_daily_ml"] = safetyLimits.dailyOrpInjectedMl;
   doc["ph_limit_reached"] = safetyLimits.phLimitReached;

@@ -264,6 +264,14 @@ void MqttManager::refreshTopics() {
   // WebSocket (ph_ff_ml_per_min, ph_ff_status) — même règle que ph_integral*.
   topics.phFfFlowState              = base + "/ph_ff_ml_per_min";
   topics.phFfStatusState            = base + "/ph_ff_status";
+  // feature-092 (v2.46.0) : composition du débit d'injection. Noms ALIGNÉS sur
+  // les champs /data et WebSocket — une même grandeur porte le même nom sur les
+  // trois transports (même règle que ph_integral* et ph_ff_*).
+  topics.phFfLearnedFlowState       = base + "/ph_ff_learned_ml_per_min";
+  topics.phPTermFlowState           = base + "/ph_p_term_ml_per_min";
+  topics.phDemandFlowState          = base + "/ph_demand_ml_per_min";
+  topics.orpPTermFlowState          = base + "/orp_p_term_ml_per_min";
+  topics.orpDemandFlowState         = base + "/orp_demand_ml_per_min";
 
   xSemaphoreGive(topicsMutex);
 
@@ -860,6 +868,27 @@ void MqttManager::publishAllStatesInternal() {
     const float phFfFlow = PumpController.getPhFeedforwardFlow();
     if (!isnan(phFfFlow)) safePublishDedup(21, topics.phFfFlowState.c_str(), String(phFfFlow, 2));
     safePublishDedup(22, topics.phFfStatusState.c_str(), String(PumpController.getPhFeedforwardStatus()));
+    // feature-092 (v2.46.0) : COMPOSITION du débit d'injection — cinq topics,
+    // mêmes grandeurs et MÊME arrondi (2 décimales) que /data et le WebSocket.
+    // NaN → AUCUNE publication (règle identique aux topics ci-dessus) : le
+    // retain précédent reste valable, on ne fabrique jamais un « 0 » qui se
+    // lirait « pH à la consigne » ou « rien d'appris ». C'est le cas nominal
+    // quand la filtration est arrêtée (porte de validité fermée) ou quand
+    // l'historique n'atteint pas 3 journées exploitables.
+    //   `ph_ff_learned_*` est LA grandeur que HA n'avait pas : contrairement à
+    //   « Dose de Base » (`ph_ff_ml_per_min`, qui retombe à 0 hors session), elle
+    //   conserve sa valeur entre deux sessions.
+    // Accesseurs LECTURE SEULE, sans I²C ni mutex (cf. pump_controller.h).
+    const float phFfLearned = PumpController.getPhFeedforwardLearnedFlow();
+    const float phPTerm     = PumpController.getPhPTermFlow();
+    const float phDemand    = PumpController.getPhDemandFlow();
+    const float orpPTerm    = PumpController.getOrpPTermFlow();
+    const float orpDemand   = PumpController.getOrpDemandFlow();
+    if (!isnan(phFfLearned)) safePublishDedup(23, topics.phFfLearnedFlowState.c_str(), String(phFfLearned, 2));
+    if (!isnan(phPTerm))     safePublishDedup(24, topics.phPTermFlowState.c_str(),     String(phPTerm, 2));
+    if (!isnan(phDemand))    safePublishDedup(25, topics.phDemandFlowState.c_str(),    String(phDemand, 2));
+    if (!isnan(orpPTerm))    safePublishDedup(26, topics.orpPTermFlowState.c_str(),    String(orpPTerm, 2));
+    if (!isnan(orpDemand))   safePublishDedup(27, topics.orpDemandFlowState.c_str(),   String(orpDemand, 2));
   }
 
   // Product / target sous configMutex — snapshot puis publish hors verrou.
@@ -2588,6 +2617,74 @@ void MqttManager::publishDiscovery() {
   doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_ff_status";
   doc["state_topic"] = topics.phFfStatusState;
   doc["icon"] = "mdi:state-machine";
+  doc["entity_category"] = "diagnostic";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // feature-092 (v2.46.0) : COMPOSITION du débit d'injection — 5 entités
+  // NOUVELLES (`unique_id` inédits, aucune entité existante touchée), même
+  // facture que les entités ph_integral* / ph_ff_* : `sensor`, diagnostic,
+  // mL/min, `state_class: measurement`, un topic scalaire retain par grandeur.
+  // Aucune `device_class` : HA n'en propose aucune pour un débit de dosage.
+  //
+  // CE QUE CES ENTITÉS APPORTENT à Home Assistant, et que rien n'y disait :
+  // l'ÉQUATION. « Dose de Base Apprise » conserve sa valeur hors session (à la
+  // différence de « Dose de Base », qui retombe à 0), « Écart Courant » est
+  // SIGNÉ (négatif = mesure sous la consigne) et « Demande » est le total borné.
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_ff_learned_flow/config";
+  doc["name"] = "Piscine pH Dose de Base Apprise";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_ff_learned_flow";
+  doc["state_topic"] = topics.phFfLearnedFlowState;
+  doc["unit_of_measurement"] = "mL/min";
+  doc["icon"] = "mdi:school";
+  doc["state_class"] = "measurement";
+  doc["entity_category"] = "diagnostic";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_p_term_flow/config";
+  doc["name"] = "Piscine pH Écart Courant";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_p_term_flow";
+  doc["state_topic"] = topics.phPTermFlowState;
+  doc["unit_of_measurement"] = "mL/min";
+  doc["icon"] = "mdi:delta";
+  doc["state_class"] = "measurement";
+  doc["entity_category"] = "diagnostic";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_ph_demand_flow/config";
+  doc["name"] = "Piscine pH Demande";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_ph_demand_flow";
+  doc["state_topic"] = topics.phDemandFlowState;
+  doc["unit_of_measurement"] = "mL/min";
+  doc["icon"] = "mdi:speedometer";
+  doc["state_class"] = "measurement";
+  doc["entity_category"] = "diagnostic";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_orp_p_term_flow/config";
+  doc["name"] = "Piscine ORP Écart Courant";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_p_term_flow";
+  doc["state_topic"] = topics.orpPTermFlowState;
+  doc["unit_of_measurement"] = "mL/min";
+  doc["icon"] = "mdi:delta";
+  doc["state_class"] = "measurement";
+  doc["entity_category"] = "diagnostic";
+  makeDevice(doc["device"].to<JsonObject>());
+  publishConfig(topic);
+
+  // Régulation ORP P-PURE : la demande VAUT le terme proportionnel borné. Les
+  // deux entités sont publiées malgré la redondance — c'est ce qui rend le
+  // tableau de bord HA lisible avec la même grille que le pH.
+  topic = discoveryBase + "sensor/" + HA_DEVICE_ID + "_orp_demand_flow/config";
+  doc["name"] = "Piscine ORP Demande";
+  doc["unique_id"] = String(HA_DEVICE_ID) + "_orp_demand_flow";
+  doc["state_topic"] = topics.orpDemandFlowState;
+  doc["unit_of_measurement"] = "mL/min";
+  doc["icon"] = "mdi:speedometer";
+  doc["state_class"] = "measurement";
   doc["entity_category"] = "diagnostic";
   makeDevice(doc["device"].to<JsonObject>());
   publishConfig(topic);

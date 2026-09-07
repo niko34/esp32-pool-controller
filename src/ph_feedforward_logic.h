@@ -115,6 +115,93 @@ struct PhFfVerdict {
   bool           released   = false;                  // latch réarmé CE tick
 };
 
+/**
+ * @brief DOSE DE BASE APPRISE : min(charge observée, fraction du soutenable).
+ *
+ * feature-092 (A1) — VRAIE FACTORISATION du § 4 de phFeedforwardTick : mêmes
+ * gardes `isfinite`/`> 0`, même `min`, même plafond
+ * `kPhFfMaxSustainableFraction × soutenable`. Le tick appelle CETTE fonction ;
+ * il n'existe donc plus deux écritures de la même règle susceptibles de
+ * diverger. C'est aussi le nombre que le journal annonce à l'ouverture de
+ * session (« dose de base apprise 1.41 … plafond 2.60 ») et celui que la carte
+ * « Débit d'injection » doit pouvoir lire HORS session — d'où son extraction.
+ *
+ * FAIL-CLOSED : charge ou soutenable non finis / non positifs ⇒ 0 (pompe non
+ * caractérisée, cache non amorcé). Le `min` garantit qu'il reste TOUJOURS au
+ * moins (1 − kPhFfMaxSustainableFraction) du soutenable au PI.
+ *
+ * ATTENTION — CE QUE CETTE FONCTION NE DIT PAS : elle ne teste PAS la
+ * profondeur d'historique (`obs.days`). Un appelant qui veut distinguer
+ * « 0,00 mL/min appris » (observation légitime, 3 jours sans injection) de
+ * « rien d'appris » doit tester `obs.days` LUI-MÊME — c'est exactement ce que
+ * fait le tick (garde kNoHistory, § 4) et ce que fait l'accesseur de lecture.
+ *
+ * @param obs                 Charge observée (médiane 7 j) + profondeur d'historique
+ * @param sustainableMlPerMin Débit moyen soutenable COURANT (phSustainableAvgFlow)
+ * @return Débit de base (mL/min), 0 en fail-closed
+ */
+inline float phFeedforwardLearnedFlow(const PhPersistLoadObservation& obs,
+                                      float sustainableMlPerMin) {
+  if (isfinite(obs.loadMlPerMin) && obs.loadMlPerMin > 0.0f &&
+      isfinite(sustainableMlPerMin) && sustainableMlPerMin > 0.0f) {
+    const float cap = kPhFfMaxSustainableFraction * sustainableMlPerMin;
+    return (obs.loadMlPerMin < cap) ? obs.loadMlPerMin : cap;
+  }
+  return 0.0f;
+}
+
+/**
+ * @brief STATUT RÉELLEMENT SERVI à /data + WS, depuis l'instantané du tick.
+ *
+ * feature-092 (A2). L'instantané `_ffStatus` n'est rafraîchi que lorsque
+ * update() atteint le tick FF (eau présente, hors purge/OTA/maintenance) : il
+ * peut donc être PÉRIMÉ. Deux traductions, et deux seulement :
+ *
+ *   1. `kActive` hors session ⇒ `kInactive` (traduction existante depuis
+ *      feature-085 : le FF ne vit que sous une session automatique) ;
+ *   2. `kNoHistory` alors que l'anneau porte désormais
+ *      ≥ kPhIntegralRestoreMinHistoryDays journées exploitables ⇒ `kInactive`.
+ *      C'est le défaut du 03/09 : entre l'archivage de minuit (3ᵉ journée) et le
+ *      premier tick du matin, l'interface restait figée sur « en apprentissage »
+ *      pendant sept heures alors que la dose était apprise.
+ *
+ * `kHeld` (2) et `kQuota` (4) ne sont JAMAIS traduits : ils restent vrais entre
+ * deux ticks (un latch ne se lève qu'à l'ouverture de session suivante, un quota
+ * qu'au rollover de minuit) et ils portent la seule explication utile —
+ * POURQUOI le FF ne s'appliquera pas.
+ *
+ * FAIL-CLOSED : `learnedFinite == false` (aucune dose de base connue : pompe non
+ * caractérisée, soutenable indisponible) ⇒ `kInactive`. Servir « actif » avec une
+ * valeur indisponible ferait afficher « appliquée » à côté d'un tiret.
+ * PRÉCÉDENCE, dans cet ordre exact : kNoHistory d'abord (sinon la garde
+ * fail-closed effacerait le « en apprentissage », qui est PRÉCISÉMENT le cas
+ * d'une valeur non finie), puis 2/4 tels quels, puis 1 hors session, puis
+ * fail-closed.
+ *
+ * @param raw           Instantané brut du tick (`(uint8_t)PhFfStatus`)
+ * @param sessionOpen   Session de dosage pH AUTOMATIQUE ouverte MAINTENANT
+ * @param historyDays   Profondeur d'historique COURANTE (obs.days, cache relu à
+ *                      chaque clôture de journée — c'est lui qui périme le 3)
+ * @param learnedFinite La dose de base apprise est-elle disponible ?
+ * @return Code PhFfStatus à sérialiser (contrat FIGÉ, aucun code ajouté)
+ */
+inline uint8_t phFeedforwardServedStatus(uint8_t raw, bool sessionOpen,
+                                         uint8_t historyDays, bool learnedFinite) {
+  if (raw == (uint8_t)PhFfStatus::kNoHistory) {
+    return (historyDays >= kPhIntegralRestoreMinHistoryDays)
+               ? (uint8_t)PhFfStatus::kInactive
+               : (uint8_t)PhFfStatus::kNoHistory;
+  }
+  if (raw == (uint8_t)PhFfStatus::kHeld || raw == (uint8_t)PhFfStatus::kQuota) {
+    return raw;  // vrais entre deux ticks — jamais traduits
+  }
+  if (raw == (uint8_t)PhFfStatus::kActive && !sessionOpen) {
+    return (uint8_t)PhFfStatus::kInactive;
+  }
+  if (!learnedFinite) return (uint8_t)PhFfStatus::kInactive;
+  return raw;
+}
+
 /** @brief Remet le feedforward dans son état de sortie de boot. */
 inline void phFeedforwardReset(PhFfState& st) {
   st = PhFfState();
@@ -271,16 +358,13 @@ inline PhFfVerdict phFeedforwardTick(PhFfState& st, float signedError,
     return v;
   }
 
-  // FF = min(charge observée, fraction du soutenable). Fail-closed : charge ou
-  // soutenable non finis / non positifs ⇒ 0 (pompe non caractérisée, cache non
-  // amorcé). Le min garantit qu'il reste TOUJOURS au moins
-  // (1 − kPhFfMaxSustainableFraction) du soutenable au PI pour l'écart résiduel.
+  // FF = min(charge observée, fraction du soutenable) — feature-092 (A1) : la
+  // règle vit dans phFeedforwardLearnedFlow() ci-dessus, appelée ICI et par
+  // l'accesseur de lecture (la carte « Débit d'injection » doit lire la dose
+  // apprise HORS session). Une seule écriture, donc aucune divergence possible ;
+  // fail-closed et plafond inchangés, à résultat strictement identique.
   v.status = PhFfStatus::kActive;
-  if (isfinite(obs.loadMlPerMin) && obs.loadMlPerMin > 0.0f &&
-      isfinite(sustainableMlPerMin) && sustainableMlPerMin > 0.0f) {
-    const float cap = kPhFfMaxSustainableFraction * sustainableMlPerMin;
-    v.ffMlPerMin = (obs.loadMlPerMin < cap) ? obs.loadMlPerMin : cap;
-  }
+  v.ffMlPerMin = phFeedforwardLearnedFlow(obs, sustainableMlPerMin);
   return v;
 }
 

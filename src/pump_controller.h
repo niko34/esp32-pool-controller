@@ -433,10 +433,42 @@ private:
   // (cyclesToday, ring anti-rafale) deviendrait aveugle. Remis à false à toute
   // fermeture de session. loopTask uniquement.
   bool _phCycleCounted = false;
-  // Instantanés servis à /data + WS (écrits par tickPhFeedforward en loopTask,
-  // lus en contexte web async — course bénigne, patron isAnyPumpEnergized).
-  float   _ffFlowMlPerMin = 0.0f;
+  // Instantané servi à /data + WS (écrit par tickPhFeedforward en loopTask, lu
+  // en contexte web async — course bénigne, patron isAnyPumpEnergized).
+  // feature-092 : le débit FF servi vit désormais dans l'instantané de
+  // composition ci-dessous ; il ne reste ici que le CODE d'état.
   uint8_t _ffStatus = 0;  // PhFfStatus (contrat figé, cf. ph_feedforward_logic.h)
+  // ===== feature-092 : INSTANTANÉS DE COMPOSITION DU DÉBIT ===================
+  // Écrits par la branche automatique (loopTask) au point EXACT où la demande de
+  // débit est calculée, lus par les huit accesseurs de projection en contexte web
+  // async. Copie sous spinlock portMUX (patron feature-096) : les cinq flottants
+  // d'une même composition sont servis COHÉRENTS entre eux — sans lui, la carte
+  // pourrait afficher un terme P d'un tour et une demande du suivant, donc une
+  // équation qui ne s'additionne pas.
+  //
+  // FRAÎCHEUR — À SAVOIR : ces instantanés ne sont rafraîchis QUE lorsque la
+  // branche automatique évalue une demande (même contrat que l'instantané
+  // `_ffStatus`). Hors session, ils portent la dernière composition connue ; la
+  // porte de validité des mesures (measure_validity) les traduit en `null` dès
+  // que la filtration s'arrête ou qu'une purge s'ouvre, c'est-à-dire dans tous
+  // les cas où ils cesseraient de décrire le bassin.
+  DoseComposition _phDoseComp;
+  DoseComposition _orpDoseComp;
+  mutable portMUX_TYPE _doseCompMux = portMUX_INITIALIZER_UNLOCKED;
+  // Publie une composition dans l'instantané de la voie (0 = pH, 1 = ORP).
+  // loopTask uniquement ; une seule section critique, aucune allocation.
+  void publishDoseComposition(int chemIndex, const DoseComposition& c);
+  // Copie cohérente de l'instantané d'une voie (0 = pH, 1 = ORP) — une seule
+  // section critique. Appelable depuis un contexte web async.
+  DoseComposition doseCompositionSnapshot(int chemIndex) const;
+  // Compose ET publie la composition d'une voie (0 = pH, 1 = ORP) : SOURCE
+  // UNIQUE de lecture de kp et du terme intégral, pour que les deux points
+  // d'appel de la branche automatique (avec dosage / sans dosage) ne puissent
+  // pas décrire l'équation différemment. Rend la composition, dont le filet de
+  // non-divergence (C2) a besoin. loopTask uniquement.
+  DoseComposition composeDose(int chemIndex, float error, float deadband,
+                              float ffServed, float ampFlow,
+                              DoseFlowRegime regime);
   // Anti-spam : premier tick actif de la session déjà journalisé.
   bool    _ffAnnounced = false;
   // Recommandation du gate — TENUE PRODUIT : au changement de phCorrectionType,
@@ -450,6 +482,12 @@ private:
   uint8_t _ffCorrectionKind = 255;      // 255 = pas encore observé (boot)
   bool    _ffProductChangeHold = false;
   bool    _ffProductHoldFreshDay = false;
+  // C2 du visa feature-092 : témoin d'anti-spam du filet de non-divergence (un
+  // warn par session). Regroupé AVEC les booléens voisins (et non entre les deux
+  // instantanés de composition, où il coûtait du remplissage). RAM seulement,
+  // remis à false hors session par tickPhFeedforward — ni persistance, ni
+  // compteur, ni champ servi (contrainte explicite du visa).
+  bool    _phCompDivergenceLogged = false;
 
   // ===== feature-084 (sujet 3) : PERSISTANCE NVS (R1-R7) =====================
   // La coquille ne DÉCIDE de rien : elle fournit le temps, l'heure, la mesure et
@@ -1138,8 +1176,8 @@ public:
   // stricte — 5 récidives du motif « champ servi d'un seul côté » dans ce
   // projet). AUCUN setter, aucune influence sur une décision de dosage.
   //
-  // Les instantanés `_ffFlowMlPerMin` / `_ffStatus` ne sont rafraîchis que
-  // lorsque update() atteint le tick FF (eau présente, hors OTA/maintenance) :
+  // L'instantané `_ffStatus` n'est rafraîchi que lorsque update() atteint le
+  // tick FF (eau présente, hors OTA/maintenance) :
   // les deux accesseurs les CONDITIONNENT donc à l'état de session courant, pour
   // ne jamais servir un « actif » périmé après une sortie anticipée d'update()
   // (filtration coupée, par exemple). Course bénigne assumée (patron
@@ -1149,9 +1187,16 @@ public:
 
   // Débit de base appliqué à la session pH AUTOMATIQUE en cours (mL/min).
   // 0 hors session — le FF ne vit que sous `shouldDose` (A8, structurel).
-  float getPhFeedforwardFlow() const {
-    return (phDosingState.active && _phSessionFromAuto) ? _ffFlowMlPerMin : 0.0f;
-  }
+  //
+  // feature-092 — SÉMANTIQUE AJUSTÉE (correction, pas rupture) : la valeur vient
+  // désormais de l'instantané de composition (`ff` du RÉGIME APPLIQUÉ) et non
+  // plus du verdict brut du tick. Conséquence unique : pendant une prolongation
+  // de session à débit NUL (régime `HoldZero`, bassin repassé sous la consigne),
+  // ce champ rapporte 0,00 au lieu de la dose de base — ce qui est justement ce
+  // que le champ documente (« appliqué »). C'est aussi ce qui rend exacte la
+  // reconstitution client `PI servi = demande − FF`. La dose de base APPRISE,
+  // elle, reste lisible en permanence par getPhFeedforwardLearnedFlow().
+  float getPhFeedforwardFlow() const;
 
   // Code d'état PhFfStatus (contrat FIGÉ, cf. ph_feedforward_logic.h) :
   //   0 = inactif (aucune session automatique) ; 1 = actif ; 2 = retenu par le
@@ -1161,13 +1206,90 @@ public:
   // (sinon il est traduit en « inactif » — instantané périmé possible après une
   // sortie anticipée d'update()). Les états 2-4, eux, restent servis hors
   // session : l'UI peut dire POURQUOI le FF ne s'appliquera pas.
-  uint8_t getPhFeedforwardStatus() const {
-    const bool sessionOpen = phDosingState.active && _phSessionFromAuto;
-    if (!sessionOpen && _ffStatus == (uint8_t)PhFfStatus::kActive) {
-      return (uint8_t)PhFfStatus::kInactive;
-    }
-    return _ffStatus;
-  }
+  // feature-092 (A2) : les DEUX traductions vivent désormais dans le module pur
+  // phFeedforwardServedStatus() — l'ancienne (actif hors session ⇒ inactif) et la
+  // nouvelle (historique insuffisant alors que l'anneau porte ≥ 3 journées
+  // exploitables ⇒ inactif). Le second cas est le défaut du 03/09 : entre
+  // l'archivage de minuit et le premier tick du matin, l'interface annonçait
+  // « en apprentissage » pendant sept heures alors que la dose ÉTAIT apprise.
+  uint8_t getPhFeedforwardStatus() const;
+
+  // ===== feature-092 : COMPOSITION DU DÉBIT DEMANDÉ — LECTURE SEULE ==========
+  // Huit accesseurs de projection, publiés à l'IDENTIQUE sur /data ET sur la
+  // trame WS (parité stricte : un champ servi d'un seul côté ne disparaît pas,
+  // il CLIGNOTE — `latestSensorData` est intégralement remplacé par les charges
+  // /data toutes les ~30 s). AUCUN setter, AUCUNE décision de dosage n'en
+  // dépend : ils rendent lisible l'équation que la régulation applique déjà.
+  //
+  // COURSE BÉNIGNE — patron `isAnyPumpEnergized` : l'instantané est écrit par
+  // loopTask (branche automatique) et lu ici en contexte web async. La copie se
+  // fait sous spinlock portMUX (patron feature-096, timeToTarget.getSnapshot) :
+  // les cinq flottants d'une même composition sont donc COHÉRENTS entre eux, le
+  // pire cas étant un instantané en retard d'un tour de loop.
+  //
+  // AUCUN de ces accesseurs n'appelle getPhDecisionValue() (réservée à loopTask,
+  // condition C2 du gate feature-096), ni l'I²C, ni LittleFS, ni la NVS : ce sont
+  // des lectures de cache et de l'arithmétique — sûrs dans un handler async.
+
+  // Dose de base APPRISE (mL/min) : min(charge médiane 7 j, 60 % du soutenable).
+  // Calculée À LA LECTURE depuis le cache `_phLoadObs` et non depuis un
+  // instantané du tick — c'est tout l'objet du champ : le tick ne tourne que sous
+  // filtration hors purge, alors que la valeur apprise est vraie en permanence.
+  // NAN (→ null) si l'historique porte moins de kPhIntegralRestoreMinHistoryDays
+  // journées exploitables ou si le débit soutenable est indisponible. Une charge
+  // médiane NULLE avec 3 journées exploitables rend 0,00 : c'est une observation
+  // légitime, pas une indisponibilité.
+  float getPhFeedforwardLearnedFlow() const;
+
+  // Termes de la composition du débit pH demandé (mL/min), tels que le tick les a
+  // calculés au dernier tour où la branche automatique a évalué une demande :
+  //   getPhPTermFlow()   = kp·erreur, SIGNÉ (négatif = pH sous la consigne), 0
+  //                        dans la bande morte, JAMAIS borné ;
+  //   getPhITermFlow()   = ki·intégrale SERVI (0 dans la bande morte) — distinct
+  //                        de getPhIntegralTerm(), qui est le terme BRUT et reste
+  //                        le contrat externe historique ;
+  //   getPhDemandFlow()  = demande totale bornée = clamp(PI servi + FF, 0, ampFlow).
+  // NAN (→ null) dès que la porte de validité des mesures est fermée (filtration
+  // arrêtée, purge en cours) : sans mesure, l'écart courant n'EXISTE pas — on
+  // affiche une absence, jamais un 0 qui se lirait « pH à la consigne ».
+  // getPhPTermFlow() rend également NAN si kp vaut 0 (régulateur inerte) : un
+  // 0,00 y annoncerait « pH à la consigne » sur une régulation morte.
+  float getPhPTermFlow() const;
+  float getPhITermFlow() const;
+  float getPhDemandFlow() const;
+
+  // Mêmes règles pour l'ORP, régulation P-PURE (Ki forcé à 0, aucun feedforward) :
+  // la demande VAUT le terme proportionnel borné. Les deux champs sont servis
+  // malgré la redondance apparente — c'est ce qui rend la carte ORP lisible avec
+  // le même composant que la carte pH, et ce qui montre POURQUOI le chlore est
+  // régulé plus simplement.
+  float getOrpPTermFlow() const;
+  float getOrpDemandFlow() const;
+
+  // Débit moyen SOUTENABLE de la voie ORP (mL/min) = débit d'amplitude calibré de
+  // la pompe ORP × limite horaire ORP configurée (orpSustainableFlowFromConfig,
+  // source unique, recalcul à la demande). NAN si la pompe n'est pas caractérisée.
+  // Miroir exact de getPhSustainableMlPerMin().
+  float getOrpSustainableMlPerMin() const;
+
+  // La régulation ORP est-elle BORNÉE par sa limite horaire EN CE MOMENT ?
+  // Homologue d'isPhLimitedByHourlyBudget(), qui n'avait pas d'équivalent chlore
+  // alors que c'est la voie qui rencontre le cas TOUS LES JOURS sur cet appareil.
+  // VERDICT, jamais une comparaison laissée au client — vrai dès que l'une des
+  // deux faces du MÊME phénomène est constatée :
+  //   - la fenêtre horaire est ÉPUISÉE (usedMs ≥ limite : le dosage est suspendu
+  //     jusqu'au prochain cycle, c'est le warn « Limite horaire ORP atteinte ») ;
+  //   - ou la DEMANDE atteint le débit moyen soutenable (elle videra la fenêtre :
+  //     même cause, constatée plus tôt).
+  // Faux si la limite est désactivée (≤ 0 ou ≥ 60 min/h) : sans limite, rien ne
+  // borne. Faux aussi quand la porte de validité des mesures est fermée — même
+  // fail-closed que le pH : la demande est alors GELÉE, et servir un verdict figé
+  // ferait annoncer « bridé » sur une filtration à l'arrêt.
+  // Il n'existe PAS de terme intégral ORP : la demande est P-pure, donc aucune
+  // hystérésis d'épisode ici (contrairement au pH, dont le verdict vient du
+  // module ph_integral_logic). Au voisinage exact du plafond, la note « plafonnée »
+  // peut donc apparaître et disparaître d'un rafraîchissement à l'autre.
+  bool isOrpLimitedByHourlyBudget() const;
 
   // ===== feature-096 : grandeur de DÉCISION pH, en lecture seule ==============
   // Valeur du signal lent qui décide de l'ouverture de session pH (moyenne
