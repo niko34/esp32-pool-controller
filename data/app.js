@@ -6316,8 +6316,10 @@
         updateProductUI(json);
         _updateSondesChip();
         if (window._updateInjectButtons) window._updateInjectButtons(json);
-        // feature-075 : expiration de session de l'assistant (champ flow_assist
-        // présent uniquement dans /data — les trames WS sont ignorées par le hook)
+        // feature-075 : expiration de session de l'assistant. bug-082 : le hook
+        // EST appelé sur les trames WS — elles portent désormais flow_assist
+        // (flow255, aborted). Ce sont sa garde `fa.active === undefined` et
+        // l'état de session, servi par /data SEUL, qui les font sortir tôt.
         if (window._flowWizardOnData) window._flowWizardOnData(json);
 
         // Mettre à jour les sections détaillées
@@ -8990,11 +8992,34 @@
     // REPLI = valeurs des firmwares ANTÉRIEURS à la fusion de flotte (61 pompe 1,
     // 67 pompe 2), qui ne publient pas flow255 et dosent bien à ces débits-là.
     // Ne PAS l'aligner sur 74 : ce serait mentir sur un firmware ancien.
+    // bug-082 : le repli n'est PAS un alias de 74, et ne doit jamais l'être.
+    //   1. Sur firmware ANCIEN (avant la fusion de flotte), la pompe débite
+    //      réellement 61 / 67 : annoncer 74 raccourcirait l'estimation de 18 a
+    //      21 % sous la marche réelle. L'utilisateur voit la pompe tourner
+    //      « trop longtemps », en déduit un défaut et RELANCE — la sur-injection
+    //      vient de cette répétition, pas du premier pouls.
+    //   2. Sur firmware À JOUR, aligner le repli sur 74 rendrait la présence du
+    //      champ INDISCERNABLE de son absence : ce bug (5e récidive du motif de
+    //      parité) deviendrait invisible pour toujours, et la 6e récidive
+    //      muette. Le repli distinct EST le détecteur.
     const FLOW_255_FALLBACK = { 1: 61.0, 2: 67.0 };
+    let _flow255ShapeWarned = false;
     const flow255For = (pumpNum) => {
-      const served = latestSensorData?.flow_assist?.flow255;
+      // flow255 est un TABLEAU de 2 éléments (index 0 = pompe 1), jamais un
+      // scalaire : un nombre servi directement serait ignoré, volontairement —
+      // on ne devine pas à quelle pompe il appartient.
+      const fa = latestSensorData?.flow_assist;
+      const served = fa?.flow255;
       const v = Array.isArray(served) ? served[pumpNum - 1] : undefined;
-      return (typeof v === "number" && isFinite(v) && v > 0) ? v : FLOW_255_FALLBACK[pumpNum];
+      const ok = (typeof v === "number" && isFinite(v) && v > 0);
+      // Repli atteint ALORS QUE flow_assist est servi = la forme a changé côté
+      // firmware. On le dit une fois en console : un repli silencieux est
+      // exactement ce qui a rendu ce bug invisible pendant une version entière.
+      if (!ok && fa && !_flow255ShapeWarned) {
+        _flow255ShapeWarned = true;
+        console.warn("flow_assist.flow255 : forme inattendue, repli 61/67 appliqué", served);
+      }
+      return ok ? v : FLOW_255_FALLBACK[pumpNum];
     };
     // Calcule la durée d'injection (secondes) pour un volume donné (mL).
     // bug-dosage-fantome it.2 (W3) : miroir best-effort de planManualInject
@@ -9682,11 +9707,47 @@
       if (offlineNote) offlineNote.hidden = true;
     }
 
-    function openFlowWizard(n) {
+    // bug-082 : la trame WS ne porte que flow255 et aborted ; les champs de
+    // SESSION (purge_s, measure_s, purges_left, active, phase) restent servis
+    // par /data SEULS. Comme latestSensorData est REMPLACÉ à chaque trame WS,
+    // les lire sans rafraîchissement forcé donne `undefined` la quasi-totalité
+    // du temps : l'assistant retomberait en permanence sur ses miroirs 60/120/3
+    // — le 4e cas du motif de parité (« miroir client en dur »), qu'on refuse de
+    // réintroduire. Un GET /data à l'ouverture (précédent : verifyRunEnd) est le
+    // seul moment où ces champs sont fiables ; il n'ajoute aucun rythme réseau.
+    async function openFlowWizard(n) {
       const cfg = window._config || {};
       const phPump = cfg.ph_pump === 2 ? 2 : 1;
       wiz.pump = n;
-      // Durées servies par /data si déjà connues (sinon miroirs par défaut)
+      wiz.measureDurationS = wiz.measureS;
+      wiz.running = null;
+      wiz.sessionActive = false;
+
+      const title = $("#flow-wizard-title");
+      if (title) title.textContent = `Mesure du débit — Pompe ${n} (${phPump === n ? "pH" : "Chlore"})`;
+      const budget = $("#flow-wizard-budget");
+      const next0Btn = $("#flow-wizard-next-0");
+
+      // Revue bug-082 : la carte s'affiche AVANT le rafraîchissement. Le GET
+      // /data peut durer jusqu'à 10 s (timeout de loadSensorData) : attendre
+      // pour ouvrir donnerait un bouton « Mesurer » apparemment mort. L'attente
+      // est signalée LÀ OÙ ELLE PORTE — la ligne de budget, dont la valeur
+      // dépend de la réponse — et « continuer » est neutralisé le temps de la
+      // requête, pour qu'on ne puisse pas avancer sur des durées de repli.
+      resetStepsUi();
+      if (expiredNote) expiredNote.hidden = true;
+      gotoStep(0);
+      card.hidden = false;
+      $("#view-settings")?.classList.add("is-flow-wizard");
+      setEntryButtons(true);  // une pompe à la fois : entrées neutralisées
+      card.scrollIntoView?.({ behavior: "smooth", block: "start" });
+      if (budget) budget.textContent = "lecture des paramètres en cours…";
+      if (next0Btn) next0Btn.disabled = true;
+
+      await loadSensorData({ force: true, source: "flow-wizard" });
+      if (next0Btn) next0Btn.disabled = false;
+
+      // Durées servies par /data (rafraîchies juste au-dessus ; miroirs en repli)
       const fa = latestSensorData?.flow_assist;
       if (fa) {
         if (fa.purge_s > 0) wiz.purgeS = fa.purge_s;
@@ -9695,12 +9756,9 @@
       wiz.purgesLeft = (fa && fa.active && fa.pump === n && typeof fa.purges_left === "number")
         ? fa.purges_left : 3;
       wiz.measureDurationS = wiz.measureS;
-      wiz.running = null;
-      wiz.sessionActive = false;
-
-      const title = $("#flow-wizard-title");
-      if (title) title.textContent = `Mesure du débit — Pompe ${n} (${phPump === n ? "pH" : "Chlore"})`;
-      const budget = $("#flow-wizard-budget");
+      // Réétiquetage des boutons (« Purger (60 s) »…) avec les durées SERVIES :
+      // le premier appel, avant la requête, portait encore les miroirs.
+      resetStepsUi();
       if (budget) {
         // Débit majorant SERVI par /data (flow_assist.flow255[n-1]) — plus de
         // miroir en dur (revue).
@@ -9709,20 +9767,18 @@
         // firmwares ANTÉRIEURS à la fusion de flotte dosent bien à 67.
         // Logique dupliquée volontairement plutôt qu'appelée via flow255For() :
         // celle-ci est déclarée dans un autre bloc (const = portée de bloc).
+        // bug-082 : `fa` vient du GET /data forcé en tête de openFlowWizard —
+        // c'est ce qui rend cette ligne de budget juste (74 ml/min servis, soit
+        // ≈ 74 ml par purge) au lieu des ≈ 61 sous-annoncés quand la lecture
+        // tombait sur une trame WS. Le consentement de l'opérateur porte
+        // désormais sur le volume réellement injecté.
+        // flow255 est un TABLEAU de 2 éléments : un scalaire est ignoré.
         const servi = fa && Array.isArray(fa.flow255) ? fa.flow255[n - 1] : undefined;
         const f = (typeof servi === "number" && isFinite(servi) && servi > 0)
           ? servi : (n === 2 ? 67.0 : 61.0);
         budget.textContent =
           `≈ ${Math.ceil(f * wiz.purgeS / 60)} ml par purge, ≈ ${Math.ceil(f * wiz.measureS / 60)} ml pour la mesure`;
       }
-      resetStepsUi();
-      if (expiredNote) expiredNote.hidden = true;
-
-      gotoStep(0);
-      card.hidden = false;
-      $("#view-settings")?.classList.add("is-flow-wizard");
-      setEntryButtons(true);  // une pompe à la fois : entrées neutralisées
-      card.scrollIntoView?.({ behavior: "smooth", block: "start" });
     }
 
     function closeFlowWizard() {
@@ -9744,6 +9800,15 @@
     window._flowWizardOnData = (json) => {
       const fa = json && json.flow_assist;
       if (!fa || card.hidden || wiz.running || !wiz.sessionActive) return;
+      // bug-082 — NE PAS SUPPRIMER : garde préventive, donc sans effet visible
+      // aujourd'hui. Ce hook est appelé AUSSI sur les trames WebSocket
+      // (loadSensorData source:'ws'), qui portent désormais flow_assist —
+      // flow255 et aborted, mais PAS `active`. Le jour où une trame WS publiera
+      // un `active` partiel ou par défaut, chaque trame reçue serait lue comme
+      // une expiration de session : retour à l'étape 0 et purges relancées,
+      // éventuellement pompe en marche. On n'agit donc que sur une source qui
+      // porte VRAIMENT l'état de session : clé absente ≠ session finie.
+      if (fa.active === undefined) return;
       if (fa.active === false && wiz.step < 5) {
         wiz.sessionActive = false;
         resetStepsUi();

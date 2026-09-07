@@ -173,10 +173,31 @@ Le script local applique **la même garde de seuil que la CI** (`--fail-under-li
 | Lignes | **100 % (1810/1810)** |
 | Fonctions | **100 % (161/161)** |
 | Branches | **86,8 %** |
-| Suites (`test/test_*`) | **34** (33 à la mesure du 06/09 + `test_native_fopen_guard`) |
-| Cas de test (`pio test -e native`) | **1325** (1291 à la mesure + **34** cas `fopen_guard`) |
+| Suites (`test/test_*`) | ⚠️ **à mesurer** — `ls -d test/test_native_* \| wc -l` |
+| Cas de test (`pio test -e native`) | ⚠️ **à mesurer** — dernière ligne de `pio test -e native` |
 
-> ⚠️ **Chiffres de la mesure du 06/09 — la ligne « Suites » est périmée.** `ls test/test_*` compte **38** dossiers au 07/09/2026 ; `ls test/` fait foi (cf. l'avertissement du § précédent). feature-092 (v2.46.0) en a ajouté **deux** : [`test_native_dose_composition/`](../test/test_native_dose_composition/) (**41 cas**, `doseComposition` + `phFeedforwardLearnedFlow` + `phFeedforwardServedStatus` ; **11 mutants, aucun survivant**) et [`test_native_ws_data_parity/`](../test/test_native_ws_data_parity/) (**9 cas**, sentinelle structurelle du second axe de parité — [ADR-0071](adr/0071-parite-data-trame-capteurs.md)). Le **total de cas** n'a pas été remesuré : ne pas déduire un nombre de cette note.
+> ⚠️ **NE DÉDUIS AUCUN COMPTEUR DE CE TABLEAU** ([ADR-0073](adr/0073-chiffre-consigne-porte-sa-methode.md)).
+> Les deux lignes de compteurs ont été **retirées** le 2026-09-07 plutôt que corrigées : elles
+> annonçaient « 34 suites / 1 325 cas » pour **39 / 1 458** réels, et elles avaient déjà été
+> fausses une fois. Un compteur recopié ici pourrit à chaque livraison — deux agents distincts
+> ont d'ailleurs cru le lire dans `CLAUDE.md`, qui ne le contient pas. **Mesure, ne recopie
+> pas.** Les colonnes de couverture, elles, restent celles de la mesure du 06/09 (`tools/coverage.sh`).
+>
+> Repère daté, **non normatif** : au 2026-09-07 (v2.47.1), **39 suites / 1 458 cas**, couverture
+> lignes et fonctions 100 %.
+>
+> Deux suites structurantes, **sans compteur** — leur contenu bouge, `pio test` fait foi :
+> [`test_native_dose_composition/`](../test/test_native_dose_composition/) (`doseComposition`,
+> `phFeedforwardLearnedFlow`, `phFeedforwardServedStatus` ; validée par mutation) et
+> [`test_native_ws_data_parity/`](../test/test_native_ws_data_parity/) (sentinelle structurelle du
+> second axe de parité, [ADR-0071](adr/0071-parite-data-trame-capteurs.md) ; deux axes depuis
+> `bug-082` — premier niveau et receveur imbriqué `faObj`).
+>
+> 🪞 **Cette note a elle-même porté deux compteurs périmés** (« 38 dossiers » pour 39, « 9 cas »
+> pour 16), écrits le 2026-09-07 **dans le paragraphe qui interdit de recopier des compteurs**, et
+> relevés en revue le même jour. C'est le meilleur argument pour ADR-0073 : l'erreur ne vient pas
+> de la négligence, elle vient de ce qu'un chiffre est **plus court à écrire qu'une méthode**.
+> D'où le choix, ici, de citer les suites **sans les compter**.
 
 Référence d'avant le cycle, mesurée sur **2 modules seulement** : lignes 99,8 %, branches 86,5 %. L'élargissement du filtre a révélé 4 lignes non couvertes jusque-là **invisibles**, dont une garde de sécurité chimique (`pulse_dosing_logic`).
 

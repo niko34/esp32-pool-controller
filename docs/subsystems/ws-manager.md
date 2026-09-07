@@ -60,8 +60,8 @@ Il y a **deux** trames JSON sortantes, donc **deux** gabarits `StaticJson<N>` di
 
 | Trame | Fabricant | Gabarit documentaire |
 |---|---|---|
-| `sensor_data` | `_buildSensorJson()` — [`src/ws_manager.cpp:484`](../../src/ws_manager.cpp) | `StaticJson<3456>` (était **3072** avant feature-092) |
-| `config` | `_buildConfigJson()` — [`src/ws_manager.cpp:944`](../../src/ws_manager.cpp) | `StaticJson<3008>` |
+| `sensor_data` | `_buildSensorJson()` — [`src/ws_manager.cpp:303`](../../src/ws_manager.cpp) | `StaticJson<3584>` (**3456** de feature-092 à la v2.47.0, **3072** avant) |
+| `config` | `_buildConfigJson()` — [`src/ws_manager.cpp:979`](../../src/ws_manager.cpp) | `StaticJson<3008>` |
 
 **Le gabarit n'est PAS une limite.** En ArduinoJson 7, `StaticJson<N>` dérive de `JsonDocument` et `N` n'est plus que la valeur rendue par `capacity()` — le pool est alloué dynamiquement. **Le bumper coûte 0 octet de RAM.** Un bump refusé « pour économiser la RAM » serait donc un **mauvais arbitrage** : il n'économise rien. Le gabarit ne documente que l'ordre de grandeur attendu de la trame ; c'est un repère de lecture, pas un garde-fou.
 
@@ -644,7 +644,7 @@ Conséquence pour un client : ces quatre clés ne s'obtiennent que par [`GET /ge
 
 ⚠️ **Il n'existe AUCUN champ « appliqué ».** Voir [API.md](../API.md#champs-de-composition-du-débit-dinjection-feature-092-v2460) : le tick borne à l'**amplitude de la pompe**, jamais au débit soutenable.
 
-### Budget de trame — décompte rectifié (le chiffre à lire est la marge, 137 o)
+### Budget de trame — décompte rectifié (v2.40.0 ; la marge de 137 o est retombée à **67 o** en v2.47.1)
 
 Octets **sérialisés au pire cas structurel**, comptés clé par clé (guillemets + deux-points + valeur + virgule). Valeurs signées comptées sur 8 caractères (`-1234.56`) : les termes P et I ne sont **pas** bornés, c'est leur raison d'être ; grandeurs ≥ 0 sur 6 (`123.45`) ; `null` = 4 o, donc jamais dimensionnant.
 
@@ -669,9 +669,9 @@ Les **4** champs de pause mélange (`phMixingDelayActive` 28 o, `orpMixingDelayA
 
 **Pire cas de trame : 2 992 (décompte v2.37.0) + 455 = 3 447 o**, au-dessus du gabarit documentaire 3072 → gabarit porté **3072 → 3456** (8 o sous le gabarit ; **0 octet de RAM**, cf. section normative).
 
-> ⚠️ **MARGE SOUS LE SEUL PLAFOND DUR** — `sWsFrameBuf`, `kWsFrameBufBytes = 3584` o : **3584 − 3 447 = 137 o**. C'est **sous la barre des 150 o**, et c'est dit ici plutôt qu'absorbé : le décompte v2.37.0 annonçait 592 o de marge, dont **115 n'ont jamais existé**. **137 o, c'est quatre clés flottantes.** Tout nouveau champ de cette trame exige désormais un **retrait compensatoire** OU un **relèvement de `kWsFrameBufBytes`** — décision d'ADR, pas de routine.
+> ⚠️ **MARGE SOUS LE SEUL PLAFOND DUR** — `sWsFrameBuf`, `kWsFrameBufBytes = 3584` o : **3584 − 3 447 = 137 o** (⚠️ **valeur de la v2.40.0** ; `bug-082` a dépensé 70 o de plus, la marge courante est de **67 o** — voir la [section v2.47.1](#champs-sensor_data-ajoutés-en-v2471--parité-de-flow_assist-bug-082)). C'est **sous la barre des 150 o**, et c'est dit ici plutôt qu'absorbé : le décompte v2.37.0 annonçait 592 o de marge, dont **115 n'ont jamais existé**. **137 o, c'est quatre clés flottantes.** Tout nouveau champ de cette trame exige désormais un **retrait compensatoire** OU un **relèvement de `kWsFrameBufBytes`** — décision d'ADR, pas de routine.
 
-**Chiffres courants** (v2.46.0) : **119** clés dans `sensor_data`, **96** dans `GET /data`, **26** WS-seules, **3** `/data`-seules.
+**Chiffres courants** — **mesurés** le 2026-09-07 sur la v2.47.1 (extraction du receveur `d[` dans `_buildSensorJson` et `doc[` dans `handleGetData`, corps de fonction entiers, même convention que la sentinelle) : **121** clés dans `sensor_data`, **97** dans `GET /data`, **26** WS-seules, **2** `/data`-seules. L'écart avec la ligne précédente (v2.46.0 : 119 / 96 / 26 / 3) n'a **pas** été imputé clé par clé ; seule la baisse des `/data`-seules l'est : `flow_assist` est devenue **bilatérale** (`bug-082`). Ne pas recopier ces nombres ([ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md)) — la sentinelle les remesure à chaque `pio test`.
 
 ### Élagage chiffré, NON appliqué — et pourquoi il a été refusé
 
@@ -683,12 +683,53 @@ Les **4** champs de pause mélange (`phMixingDelayActive` 28 o, `orpMixingDelayA
 | `ph_integral_term` | `"ph_integral_term":-6.000,` | 26 |
 | **Total rendu** | | **49** |
 
-soit une marge portée de 137 à **186 o**. **Refusé le 07/09/2026**, pour deux motifs à lire **avant toute nouvelle tentative** :
+soit une marge portée de 137 à **186 o** — ⚠️ **base périmée depuis `bug-082`** (v2.47.1, même journée) : la marge de départ est désormais de **67 o**, et le levier la porterait à **116 o**. **Refusé le 07/09/2026**, pour deux motifs à lire **avant toute nouvelle tentative** :
 
 1. les deux clés deviendraient `/data`-seules, donc **deux exceptions de plus** dans la sentinelle de parité — sur l'axe précis qui vient de produire un défaut réel. Payer en exceptions ce que l'on gagne en octets, **le jour même où l'on installe la garde**, est un mauvais échange ;
 2. l'autre voie — relever `kWsFrameBufBytes` — coûterait **+512 o de `.bss`**, donc autant de RAM en moins pour le tas, pendant que [bug-080](../../specs/features/doing/bug-080-redemarrage-panic-et-fragmentation-heap.md) documente une famine mémoire **active**.
 
 Le levier reste **valable** pour une future feature qui manquera de place : les **49 o** et les deux clés concernées sont consignés ici pour que le chiffre soit déjà disponible.
+
+### Champs `sensor_data` ajoutés en v2.47.1 — parité de `flow_assist` (bug-082)
+
+L'objet `flow_assist` n'existait que dans [`GET /data`](../API.md#get-data--write) : la trame WS, poussée toutes les 5 s, **remplace `latestSensorData` en entier** (aucune fusion côté client), donc ses champs repassaient à `undefined` en quelques secondes et l'estimation de durée d'injection retombait **en permanence** sur son repli client — **61 / 67 mL/min au lieu des 74 servis**.
+
+**Deux champs seulement** passent en parité, dans un receveur imbriqué nommé **`faObj` des deux côtés** (nom repris à l'identique **exprès** : la sentinelle extrait les champs imbriqués avec **un seul** extracteur textuel) :
+
+| Champ | Type | Règle |
+|---|---|---|
+| `aborted` | bool | Dernière marche interrompue **par le serveur** (perte de filtration). Jamais `null`. |
+| `flow255` | array[2] | Débit majorant à duty 255, `[0]` = pompe 1. **Tableau de 2, jamais un scalaire** : un scalaire retomberait **silencieusement** sur le repli client. |
+
+Les **sept** champs de session (`active`, `pump`, `phase`, `remaining_s`, `purges_left`, `purge_s`, `measure_s`) restent **`/data`-seuls** et déclarés dans `kFlowAssistDataOnly` (voir l'axe de parité ci-dessous). Contrepartie **livrée avec eux** : un `GET /data` **forcé à l'ouverture de l'assistant** — sans lui, `purge_s` / `measure_s` / `purges_left` restaient adossés à des **miroirs client en dur 60 / 120 / 3**, soit le **4ᵉ cas** du même motif de parité réintroduit par le correctif du 5ᵉ.
+
+> ⚠️ **`aborted` n'est pas un affichage, c'est un garde-fou de dosage** — et il était **mort en pratique**. Un débit mesuré sous-estimé agit **DEUX FOIS DANS LE MÊME SENS** : `planPulse` ([`src/pulse_dosing_logic.cpp:45`](../../src/pulse_dosing_logic.cpp)) calcule `pulseMs = periodMs × meanFlow / ampFlow`, donc un `ampFlow` trop petit **allonge le pouls** (sur-injection **réelle**) ; et `pulseDeltaVolumeMl` ([`:161`](../../src/pulse_dosing_logic.cpp)) crédite le plateau au **même** `ampFlow`, donc `dailyInjectedMl` **sous-compte** d'autant et la garde `maxDailyMl` est **desserrée du même facteur**. **La sécurité volumique se ment à elle-même.** Le filet en aval n'est que **partiel** (bornes `0 < flow ≤ 200` : 12 mL/min au lieu de 26 passe sans bruit) ; l'avertissement de vraisemblance 20-35 mL/min ([`data/app.js:9617`](../../data/app.js)) **n'est pas bloquant** — le rendre bloquant est une recommandation du visa `pool-chemistry`, **restée ouverte**.
+
+**Le repli client 61 / 67 reste distinct de 74, et c'est verrouillé par une assertion** (`test_p_…_reste_distinct_de_la_constante_firmware`), pour **deux** motifs :
+
+1. sur firmware **ancien**, la pompe débite réellement 61 / 67 : annoncer 74 **raccourcirait l'estimation de 18 à 21 %** sous la marche réelle → l'utilisateur croit à un défaut et **relance**, la sur-injection venant de la **répétition** ;
+2. sur firmware **à jour**, aligner le repli sur 74 rendrait la **présence** du champ **indiscernable de son absence** : ce bug serait invisible pour toujours et une 6ᵉ récidive muette. **Le repli distinct EST le détecteur.**
+
+#### Budget de payload — méthode ([ADR-0073](../adr/0073-chiffre-consigne-porte-sa-methode.md))
+
+**Pire cas structurel : 70 o.** Les deux bornes sont **vérifiées**, non déduites :
+
+- un élément de `flow255` est un `float` sérialisé par ArduinoJson 7. **Balayage exhaustif des 2³¹ motifs de bits** de `float` finis ≥ 0 (harnais hôte, ArduinoJson des `libdeps` du projet) : longueur maximale **12 o**, atteinte en notation exponentielle (`1.40129846e-45`). Ce n'est **pas** « 9 chiffres significatifs + point » (10 o) : ArduinoJson en rend **7**, mais l'exposant reprend les octets économisés. Le même balayage restreint à la borne fonctionnelle du débit (`0 < f ≤ 200`) donne **le même** résultat ;
+- un booléen vaut **`false` au pire** (5 o), plus long que `true` (4 o).
+
+| Fragment sérialisé | Octets |
+|---|---:|
+| `"flow_assist":{` | 15 |
+| `"aborted":false,` | 16 |
+| `"flow255":[1.401298e-45,1.401298e-45]` | 37 |
+| `},` | 2 |
+| **Total pire cas** | **70** |
+
+**50 o en fonctionnement** (`74` = 2 o par élément) — valeur **exacte** et non estimée : `kPumpFlow255MlPerMin` est une `constexpr float`, sa sérialisation est figée à la compilation. On budgète quand même les **70 o** : ADR-0073 impose la borne du **type**, et cette constante est un paramètre de caractérisation de pompe qu'un relevé au banc peut changer.
+
+**Pire cas de trame : 3 447 + 70 = 3 517 o** → gabarit documentaire porté **3456 → 3584** (0 octet de RAM, cf. section normative). **Marge résiduelle sous le seul plafond DUR** (`sWsFrameBuf`, `kWsFrameBufBytes = 3584` o) : **67 o**, contre 137 o avant cet ajout. **67 o, c'est deux clés flottantes** : tout nouveau champ de cette trame exige un **retrait compensatoire** ou un relèvement de `kWsFrameBufBytes` (décision d'ADR, pas de routine). La [réserve de 49 o](#élagage-chiffré-non-appliqué--et-pourquoi-il-a-été-refusé) (`ph_integral`, `ph_integral_term`) **n'est pas dépensée**.
+
+> ⚠️ **Le 3 447 hérité n'a PAS été re-dérivé dans ce cycle** : il est repris tel quel du décompte v2.40.0. C'est **exactement** le genre d'héritage qui a produit quatre chiffrages faux pendant feature-092 — dit ici plutôt qu'absorbé. Un futur cycle qui touche ce budget doit **recompter la trame entière**, pas empiler un delta de plus.
 
 ### Le second axe de parité — `/data` ↔ `sensor_data` (`PARITE-DATA`)
 
@@ -697,22 +738,31 @@ Le levier reste **valable** pour une future feature qui manquera de place : les 
 - **le critère de partage diffère** : la trame capteurs porte de la **mesure**, pas de la configuration. « Mutable à l'exécution et non dérivable » ne discrimine rien ici — tout y est mutable ;
 - **le sens du danger est symétrique.** Sur l'axe config, c'est la charge `/get-config` qui écrase un champ WS-seul. Sur l'axe capteurs, le **push WS efface aussi un champ `/data`-seul** : `latestSensorData` est **remplacé en entier** par la dernière charge reçue, sans fusion.
 
-Marqueurs commentés, lus tels quels par la sentinelle : `>>> PARITE-DATA:DEBUT` / `<<< PARITE-DATA:FIN`, dans `handleGetData` ([`src/web_routes_data.cpp:425-510`](../../src/web_routes_data.cpp)) et `_buildSensorJson` ([`src/ws_manager.cpp:776-860`](../../src/ws_manager.cpp)). Receveurs : `doc[` côté HTTP, `d[` côté WS. Receveurs **imbriqués exclus** (`faObj[`, objet `flow_assist`). Le bloc porte **14** clés, ensembles **identiques** des deux côtés (assertion dans les deux sens) : 4 de pause mélange + 8 de composition + 2 de caractérisation de pompe.
+Marqueurs commentés, lus tels quels par la sentinelle : `>>> PARITE-DATA:DEBUT` / `<<< PARITE-DATA:FIN`, dans `handleGetData` ([`src/web_routes_data.cpp:425-510`](../../src/web_routes_data.cpp)) et `_buildSensorJson` ([`src/ws_manager.cpp:879-963`](../../src/ws_manager.cpp)). Receveurs : `doc[` côté HTTP, `d[` côté WS. Receveurs **imbriqués exclus** (`faObj[`, objet `flow_assist`). Le bloc porte **14** clés, ensembles **identiques** des deux côtés (assertion dans les deux sens) : 4 de pause mélange + 8 de composition + 2 de caractérisation de pompe.
 
-**Trois catégories d'exception**, et elles sont distinctes pour de bonnes raisons :
+**Quatre catégories d'exception** depuis la v2.47.1, et elles sont distinctes pour de bonnes raisons :
 
 | Catégorie | Compte | Règle |
 |---|---:|---|
 | `kWsOnlyLive` — état vivant servi par **aucune** route HTTP | **18** | **Dette inventoriée** (antérieure à feature-092), déclarée pour rendre la sentinelle utilisable, pas pour valider le motif. Sous **cliquet** `kWsOnlyLiveCeiling = 18` : le compte ne peut **jamais augmenter** — une clé neuve va dans `/data`. |
 | `kWsPlusOtherRoute` — clés **dual-sourcées** | **8** | Absentes de `/data` mais servies par une **autre** route HTTP, dont le **nom est obligatoire** et asserté non vide : **7** par `GET /get-config` (`ph_container_ml`, `orp_container_ml`, `lighting_enabled`, `boost_active`, `boost_until`, `install_mode`, `mqtt_connected`) et **1** par `GET /get-logs` (`uptime_ms` — la table de la sentinelle abrège la route en « GET /logs »). Catégorie qui **n'existe pas** sur l'axe config : une règle « aucune clé WS-seule » les signalerait à tort. |
-| `kDataOnly` — clés servies par `/data` seul | **3** | `ph_pump_amplitude_duty`, `orp_pump_amplitude_duty` (grandeurs de **calibration**, lues dans des vues de diagnostic) et le receveur imbriqué `flow_assist`. |
+| `kDataOnly` — clés servies par `/data` seul | **2** (était 3) | `ph_pump_amplitude_duty`, `orp_pump_amplitude_duty` (grandeurs de **calibration**, lues dans des vues de diagnostic). La 3ᵉ entrée — l'objet `flow_assist` — a été **retirée** en v2.47.1 : elle est devenue bilatérale (`bug-082`), et c'est la sentinelle qui l'a exigé. |
+| `kFlowAssistDataOnly` — champs **imbriqués** de `flow_assist` servis par `/data` seul | **7** | Second axe, v2.47.1 (`bug-082`) : `active`, `pump`, `phase`, `remaining_s`, `purges_left`, `purge_s`, `measure_s` — champs de **session**, lus à l'ouverture de l'assistant après un `GET /data` **forcé**. Motif écrit obligatoire, **cliquet à 7**, et **`aborted` / `flow255` y sont formellement interdits**. |
 
 Décompte **vérifié par mesure** et non supposé : les **26** clés WS-seules constatées = 18 « état vivant » + 8 dual-sourcées.
 
-**Sept assertions** : marqueurs présents (échec explicite sinon, message « restaurer le marqueur, **ne pas désactiver le test** ») · jeux de clés identiques entre les marqueurs, dans les deux sens · toute clé WS couverte ou déclarée · toute clé `/data` couverte ou déclarée · **aucune exception morte ni contredite** · motif écrit de **≥ 20 caractères** par exception, sans doublon · **cliquet** sur `kWsOnlyLive`. Coût : **zéro octet de flash** (test natif, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)).
+#### Le second axe **imbriqué** (v2.47.1, `bug-082`)
+
+`flow_assist` est devenue **bilatérale**, mais son **contenu** ne l'est pas : la trame ne pousse que **2** de ses **9** champs. La parité de premier niveau était donc devenue **aveugle à l'intérieur de l'objet** — et c'est précisément là que se joue le garde-fou `aborted`. Les cas (j) à (p) diffent donc le contenu du receveur `faObj[` **des deux côtés**, avec **un seul** extracteur, sous les mêmes règles que l'axe de premier niveau : motif écrit obligatoire, **cliquet à 7**, exception morte = échec — **plus une interdiction** : `aborted` et `flow255` ne peuvent **jamais** être inscrits dans `kFlowAssistDataOnly`. Le cas (o) vérifie en outre que `flow255` est un **tableau de 2** des deux côtés, et le cas (p) que le repli client reste distinct de la constante firmware.
+
+> **La sentinelle déclarait légitime le bug qu'elle devait signaler.** Livrée le **matin même** ([ADR-0071](../adr/0071-parite-data-trame-capteurs.md)), elle portait `flow_assist` dans `kDataOnly` comme une exception `/data`-seule **légitime** — erreur de l'agent principal du cycle. Quand le firmware a corrigé la parité, elle est passée **rouge d'elle-même** : son mécanisme « **exception morte = échec** » s'est déclenché **pour la première fois**, et son message disait quoi faire (« SUPPRIMER l'entree de kDataOnly »). C'est la deuxième fois en deux cycles que ce mécanisme paie.
+>
+> **Propriété vérifiée par contre-mesure en revue** : retirer `aborted` de la trame, **le déclarer** en exception **et relever le cliquet** produit **trois** échecs. **On ne peut donc plus détourner la garde pour légitimer le bug.** C'est la leçon transférable de ce cycle : une table d'exceptions n'est une garde que si **ses propres entrées** sont elles aussi sous contrainte.
+
+**Seize cas** (a → p), dont sept sur l'axe de premier niveau : marqueurs présents (échec explicite sinon, message « restaurer le marqueur, **ne pas désactiver le test** ») · jeux de clés identiques entre les marqueurs, dans les deux sens · toute clé WS couverte ou déclarée · toute clé `/data` couverte ou déclarée · **aucune exception morte ni contredite** · motif écrit de **≥ 20 caractères** par exception, sans doublon · **cliquet** sur `kWsOnlyLive` ; les autres couvrent l'exclusion des receveurs imbriqués du diff de premier niveau, les champs de la carte débit, et le **second axe imbriqué** ci-dessus. Coût : **zéro octet de flash** (test natif, [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)).
 
 > **La sentinelle a attrapé un défaut RÉEL pendant son propre cycle, avant la revue.** Le pied « pompe non caractérisée » de la nouvelle carte **clignotait** : `ph_pump_flow_uncharacterized` / `orp_pump_flow_uncharacterized` n'étaient servis que par `GET /data`, donc valaient `undefined` après chaque push WS (~5 s) et le pied restait masqué (`!== true`) jusqu'à la charge `/data` suivante (~30 s). C'est le **piège n° 1 du projet dans son sens inverse**, et il avait été introduit par une demande de l'agent principal du cycle. Le correctif est la **parité** (migration des deux booléens dans le bloc `PARITE-DATA`), pas une mémorisation côté client. La sentinelle est alors **repassée au rouge une seconde fois**, sur les deux exceptions devenues **mortes** : le mécanisme prévu pour empêcher la table de pourrir a fonctionné du premier coup, sur un vrai changement (`kDataOnly` : 5 → 3 entrées).
 
 **Angle mort assumé** (identique à l'axe config) : l'extraction est **textuelle**. Une clé mise en **commentaire** entre les marqueurs reste comptée comme présente. La sentinelle vise **la distraction, pas la malveillance**.
 
-**Que faire quand elle casse** : ajouter la clé du côté manquant **entre les marqueurs** (en vérifiant la marge de 137 o), ou l'inscrire dans la table adéquate avec un motif écrit. Jamais la désactiver.
+**Que faire quand elle casse** : ajouter la clé du côté manquant **entre les marqueurs** (en vérifiant la **marge courante de 67 o**), ou l'inscrire dans la table adéquate avec un motif écrit. Jamais la désactiver.

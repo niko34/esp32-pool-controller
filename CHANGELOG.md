@@ -2,6 +2,110 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.47.1] - 2026-09-07
+
+> **Ce qui change pour vous, en deux phrases** : la durée d'injection annoncée
+> par l'interface utilise enfin le **débit que le firmware applique vraiment**.
+> Et le garde-fou « mesure de débit interrompue » — qui refuse d'enregistrer un
+> débit relevé sur une marche avortée — cesse d'être **neutralisé** quelques
+> secondes après chaque chargement de page.
+
+### Fonctionnalités
+
+- **L'assistant « Mesurer le débit » annonce le bon volume.** Sa ligne de budget
+  affichait « **≈ 61 mL par purge** » alors que la pompe en délivre **74** : un
+  volume **sous-estimé de 18 %**, que l'opérateur validait avant de lancer la
+  marche (recommandation du visa `pool-chemistry`). L'assistant lit désormais ses
+  paramètres — durées de purge et de mesure, purges restantes, débit majorant —
+  sur une lecture **forcée** à son ouverture, au lieu de retomber sur des valeurs
+  recopiées en dur dans le navigateur (60 s / 120 s / 3 purges).
+- **La carte de l'assistant s'ouvre immédiatement** et signale l'attente là où
+  elle porte : « lecture des paramètres en cours… » sur la ligne de budget, avec
+  « continuer » **neutralisé** le temps de la réponse — impossible d'avancer sur
+  des durées de repli.
+
+### Firmware
+
+- **`flow_assist` est publié sur la trame WebSocket** (`bug-082`, **5ᵉ récidive**
+  du motif de parité `/data` ↔ WebSocket). L'objet n'existait que dans
+  `GET /data`, alors que la trame WS **remplace en entier** l'état capteur du
+  client toutes les 5 s : ses champs repassaient à `undefined` en quelques
+  secondes, **en permanence**.
+- **Ce n'était pas cosmétique : `aborted` est un garde-fou de dosage**, et il
+  était **mort en pratique**. Un débit mesuré sous-estimé agit **deux fois dans
+  le même sens** : le calcul d'impulsion **allonge le pouls** (`pulseMs =
+  periodMs × meanFlow / ampFlow`, donc sur-injection **réelle**) *et* le crédit
+  de volume injecté utilise **le même** débit, donc le total du jour
+  **sous-compte** et la **limite journalière est desserrée du même facteur**. La
+  sécurité volumique se ment à elle-même. Le filet en aval n'est que partiel
+  (bornes `0 < débit ≤ 200`).
+- **Deux champs seulement en parité** : `aborted` et `flow255` (**tableau de 2**,
+  jamais un scalaire — un scalaire retomberait silencieusement sur le repli). Les
+  **sept** champs de session restent servis par `/data` seul, avec la lecture
+  forcée à l'ouverture de l'assistant comme contrepartie.
+- **Garde préventive** sur le hook d'expiration de session : il est appelé
+  **aussi** sur les trames WS et ne survivait **que** parce que `flow_assist` en
+  était absent. Sans elle, une publication future du drapeau de session ferait
+  lire **chaque trame** comme une expiration — retour à la première étape et
+  purges relancées, **éventuellement pompe en marche**.
+- **Le repli client 61 / 67 mL/min reste distinct de 74, délibérément.** Sur un
+  firmware ancien la pompe débite réellement 61 / 67 : annoncer 74 raccourcirait
+  l'estimation de **18 à 21 %** sous la marche réelle, l'utilisateur croirait à un
+  défaut et **relancerait** — la sur-injection venant de la répétition. Et sur un
+  firmware à jour, aligner le repli rendrait la **présence** du champ
+  indiscernable de son **absence** : une 6ᵉ récidive serait muette. **Le repli
+  distinct est le détecteur.**
+- **Budget de trame, méthode consignée** ([ADR-0073](docs/adr/0073-chiffre-consigne-porte-sa-methode.md)) :
+  **70 o** au pire cas structurel, obtenus par **balayage exhaustif des 2³¹
+  motifs de bits** de `float` finis ≥ 0 sérialisés par l'ArduinoJson du projet
+  (longueur max **12 o**, `1.40129846e-45` — les 7 chiffres significatifs sont
+  repris par l'exposant) ; **50 o en marche**. Trame **3 447 + 70 = 3 517 o**,
+  marge **67 o** sous `kWsFrameBufBytes = 3584` (elle était de 137 o). La réserve
+  de 49 o (`ph_integral`, `ph_integral_term`, sans consommateur client depuis
+  feature-092) **n'est pas dépensée**. ⚠️ Le **3 447 hérité n'a pas été
+  re-dérivé** : c'est exactement le genre d'héritage qui a produit quatre
+  chiffrages faux pendant feature-092.
+
+### Tests
+
+- **La sentinelle de parité déclarait légitime le bug qu'elle devait signaler.**
+  Livrée le **matin même** ([ADR-0071](docs/adr/0071-parite-data-trame-capteurs.md)),
+  elle portait `flow_assist` comme exception `/data`-seule. Quand le firmware a
+  corrigé la parité, elle est passée **rouge d'elle-même** : son mécanisme
+  « **exception morte = échec** » s'est déclenché pour la **première fois**, et son
+  message disait quoi faire.
+- **Second axe, imbriqué** : le contenu de `flow_assist` est désormais diffé des
+  deux côtés (receveur `faObj`, extracteur unique), avec sa propre table
+  d'exceptions (7 champs de session, **motif écrit obligatoire**, **cliquet à
+  7**) et **deux champs formellement non exceptables** — `aborted` et `flow255`.
+  **16 cas** dans `test_native_ws_data_parity` (7 de plus), zéro régression.
+- **Propriété vérifiée par contre-mesure** : retirer `aborted` de la trame, **le
+  déclarer** en exception **et relever le cliquet** produit **trois** échecs. On
+  ne peut donc plus détourner la garde pour légitimer le bug.
+
+### Documentation
+
+- `docs/subsystems/ws-manager.md` : correction d'un chiffre **faux** — le gabarit
+  annoncé était `StaticJson<3456>` pour **3584** ; nouvelle entrée de budget
+  `bug-082` **avec sa méthode** ; marge courante **67 o** propagée partout où
+  « 137 o » était cité ; second axe imbriqué de la sentinelle ; compteurs de clés
+  **remesurés** (121 / 97 / 26 / 2).
+- `docs/API.md` : la mention « pas de champ WS » de l'objet `flow_assist` était
+  un **défaut, pas un choix** — corrigée, et nouvelle section décrivant le
+  contrat WS (deux champs, `clé absente ≠ session finie`).
+- `docs/features/page-settings.md`, `page-ph.md`, `page-orp.md`,
+  `docs/subsystems/pump-controller.md` : lecture forcée à l'ouverture de
+  l'assistant, parité du garde-fou, repli distinct.
+- **Aucun ADR créé** : la décision de fond (sentinelle de parité et ses
+  exceptions déclarées sous cliquet) est déjà **ADR-0071**, et le repli distinct
+  **ADR-0050** ; ce cycle les **applique**, il n'arbitre pas d'alternative neuve.
+- **Consigné comme ouvert** : `bug-119` — `loadSensorData()` ne **résout rien**,
+  donc trois comportements de `verifyRunEnd()` sont morts. Le garde-fou `aborted`
+  avait **deux morts indépendantes** ; ce lot en corrige **une**. Et
+  l'avertissement de vraisemblance 20-35 mL/min reste **non bloquant**.
+
+---
+
 ## [2.47.0] - 2026-09-07
 
 > **Ce qui change pour vous, en deux phrases** : l'historique ne prétend plus

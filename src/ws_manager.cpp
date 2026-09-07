@@ -481,7 +481,67 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
   // NB : en ArduinoJson 7, StaticJson<N> dérive de JsonDocument et N n'est plus
   // qu'une valeur documentaire (capacity()) — le pool est alloué dynamiquement.
   // Le seul plafond DUR de ce chemin est kWsFrameBufBytes.
-  StaticJson<3456> doc;
+  //
+  // bug-082 (v2.47.1) : +1 objet `flow_assist` de DEUX champs (`aborted`,
+  // `flow255[2]`), correctif de parité — cf. le bloc commenté plus bas dans
+  // cette fonction pour le POURQUOI (garde-fou de dosage, pas un affichage).
+  //
+  // MÉTHODE DE CHIFFRAGE APPLIQUÉE (ADR-0073) — À RELIRE AVANT DE TOUCHER À CE
+  // NOMBRE, ET À REFAIRE PLUTÔT QU'À RECOPIER. On compte la BORNE STRUCTURELLE
+  // du type qui porte la valeur, jamais une valeur relevée sur une trame
+  // vivante : c'est cette confusion qui a rendu QUATRE chiffrages successifs de
+  // ce budget faux. Le chiffrage annoncé pour bug-082 (66 o, « flottant
+  // ArduinoJson à 9 chiffres significatifs ») était lui-même faux — recompté
+  // ci-dessous à 70 o.
+  //
+  // Deux bornes, toutes deux VÉRIFIÉES et non déduites :
+  //   – un élément de `flow255` est un `float` sérialisé par ArduinoJson 7.
+  //     Balayage EXHAUSTIF des 2^31 bit-patterns finis ≥ 0 (harnais hôte,
+  //     ArduinoJson des libdeps du projet) : longueur maximale = 12 o, atteinte
+  //     par la notation exponentielle (« 1.401298e-45 »). Ce n'est PAS
+  //     9 chiffres significatifs + point (10 o) : ArduinoJson rend 7 chiffres
+  //     significatifs, mais l'exposant reprend les 4 o économisés. Le résultat
+  //     du même balayage restreint à la borne fonctionnelle du débit
+  //     (0 < f ≤ 200, celle des bornes de saisie) est IDENTIQUE : 12 o.
+  //   – un booléen vaut `false` au pire (5 o), plus long que `true` (4 o).
+  // Décompte, structure comprise (chaque ligne : guillemet + nom + guillemet +
+  // deux-points + valeur, et la virgule qui SUIT la ligne comptée avec elle —
+  // `aborted` est le premier membre, la virgule de séparation est donc portée
+  // par lui, et celle qui suit `}` sépare l'objet de la clé suivante) :
+  //   "flow_assist":{                          → 1+11+1+1+1              = 15 o
+  //     "aborted":false,                       → 1+ 7+1+1+5+1            = 16 o
+  //     "flow255":[1.401298e-45,1.401298e-45]  → 1+ 7+1+1+1+12+1+12+1    = 37 o
+  //   },                                       → 1+1                     =  2 o
+  //   → 70 o au PIRE CAS structurel du TYPE.
+  // Contre-mesure de vérification (même harnais, bloc inséré entre deux clés
+  // factices pour capter la virgule) : 70 o au pire cas, 50 o en fonctionnement
+  // (« 74 » = 2 o par élément). Les 50 o sont d'ailleurs la valeur EXACTE et non
+  // une estimation : `kPumpFlow255MlPerMin` est une `constexpr float`, donc sa
+  // sérialisation est figée à la compilation. On budgète quand même les 70 o :
+  // ADR-0073 impose la borne du type, et cette constante est un paramètre de
+  // caractérisation de pompe qu'un futur relevé au banc peut changer.
+  //
+  // Pire cas de trame : 3447 (décompte v2.40.0 corrigé) + 70 = 3517 o,
+  // AU-DESSUS du gabarit 3456 → gabarit porté 3456 → 3584.
+  //
+  // MARGE RÉSIDUELLE SOUS LE SEUL PLAFOND DUR, sWsFrameBuf
+  // (kWsFrameBufBytes = 3584 o, constants.h) : 3584 - 3517 = 67 o (elle était
+  // de 137 o avant cet ajout). Rappel du mode de défaillance : le dépassement
+  // SAUTE le push (garde `measureJson(doc) + 1 > cap` en fin de fonction, qui
+  // incrémente _oversizedFrames et journalise un warn throttlé) — il ne TRONQUE
+  // jamais. Et le pire cas de longueur COÏNCIDE avec l'ESCALADE DE SÉCURITÉ pH :
+  // ce sont ses causes de refus qui saturent kDoseBlockedReasonMaxLen = 96, donc
+  // le moment précis où perdre la trame coûte le plus cher. 67 o, c'est DEUX
+  // clés flottantes. Tout nouveau champ de cette trame exige désormais un
+  // retrait compensatoire OU un relèvement de kWsFrameBufBytes (décision d'ADR,
+  // pas de routine).
+  //
+  // RÉSERVE DOCUMENTÉE, NON DÉPENSÉE ICI : retirer `ph_integral` (23 o) et
+  // `ph_integral_term` (26 o) de CETTE SEULE trame — sans consommateur client
+  // depuis feature-092 — rendrait 49 o et porterait la marge à 116 o. Cet
+  // arbitrage exige une exception motivée dans la sentinelle de parité (les deux
+  // clés deviendraient /data-seules) : il reste à prendre, il n'est PAS pris.
+  StaticJson<3584> doc;
   doc["type"] = "sensor_data";
   JsonObject d = doc["data"].to<JsonObject>();
 
@@ -688,6 +748,49 @@ size_t WsManager::_buildSensorJson(char* buf, size_t cap) const {
 
   d["ph_inject_remaining_s"]  = manualInjectRemainingS(manualInjectPh);
   d["orp_inject_remaining_s"] = manualInjectRemainingS(manualInjectOrp);
+
+  // bug-082 (v2.47.1) — 5ᵉ RÉCIDIVE DU MOTIF DE PARITÉ. `flow_assist` n'existait
+  // que dans GET /data : la trame WS, poussée toutes les ~5 s, REMPLACE
+  // `latestSensorData` en entier (data/app.js, aucune fusion), donc les champs
+  // repassaient à `undefined` en quelques secondes. Deux champs SEULEMENT sont
+  // servis ici (périmètre arrêté après chiffrage) ; les sept autres
+  // (`active`, `pump`, `phase`, `remaining_s`, `purges_left`, `purge_s`,
+  // `measure_s`) ne pilotent l'écran de l'assistant que PENDANT une session et
+  // restent /data-seuls, avec un rafraîchissement forcé côté client.
+  //
+  // POURQUOI CE N'EST PAS COSMÉTIQUE — `aborted` EST UN GARDE-FOU DE DOSAGE.
+  // C'est le drapeau « mesure de débit interrompue par le SERVEUR » (perte de
+  // filtration), lu par saveMeasuredFlow() côté client pour REFUSER de router
+  // une mesure avortée vers la saisie du volume. Aujourd'hui il est MORT en
+  // pratique : la trame WS écrase `latestSensorData` avant la saisie.
+  // Un débit mesuré sous-estimé agit DEUX FOIS DANS LE MÊME SENS :
+  //   1. planPulse (src/pulse_dosing_logic.cpp:45) : pulseMs = periodMs ×
+  //      meanFlow / ampFlow → un ampFlow trop petit ALLONGE le pouls, donc
+  //      sur-injection RÉELLE ;
+  //   2. pulseDeltaVolumeMl (:161) crédite le plateau au MÊME ampFlow, donc
+  //      dailyInjectedMl SOUS-COMPTE d'autant et la garde maxDailyMl est
+  //      DESSERRÉE du même facteur — la sécurité volumique se ment à elle-même.
+  // Le filet en aval est partiel : les bornes acceptent 0 < flow ≤ 200, donc
+  // 12 mL/min au lieu de 26 passe sans bruit. Avant de juger qu'un drapeau
+  // d'assistant n'a rien à faire dans la trame capteurs : c'est CE motif qu'il
+  // faut réfuter, pas un affichage.
+  //
+  // `flow255` reste un TABLEAU DE 2 ÉLÉMENTS, jamais un scalaire : un scalaire
+  // retomberait SILENCIEUSEMENT sur le repli côté client (data/app.js:8996,
+  // :9712). Mêmes règles null et mêmes arrondis que /data (aucun des deux :
+  // constante d'usine et booléen, jamais NaN) — cf. src/web_routes_data.cpp,
+  // bloc `faObj`, dont le NOM DU RECEVEUR est repris à l'identique ici : la
+  // sentinelle de parité extrait les champs imbriqués des deux côtés avec UN
+  // SEUL extracteur textuel, qu'un nom différent casserait.
+  // Snapshot sans mutex (getFlowAssistStatus, patron manualInject*).
+  {
+    FlowAssistStatus fa = getFlowAssistStatus();
+    JsonObject faObj = d["flow_assist"].to<JsonObject>();
+    faObj["aborted"] = fa.aborted;
+    JsonArray f255 = faObj["flow255"].to<JsonArray>();
+    f255.add(kPumpFlow255MlPerMin);
+    f255.add(kPumpFlow255MlPerMin);
+  }
 
   d["lighting_enabled"] = lighting.isOn();  // état réel du relais, pas lightingCfg.enabled
 

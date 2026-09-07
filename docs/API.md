@@ -326,7 +326,9 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 >
 > **v2.21.2 (bug-slope-boot-perdue) — pente sonde pH, parité de transport** : les 4 champs `phSlopeAcid` / `phSlopeBase` / `phSlopeZero` / `phSlopeAgeMs` sont **ajoutés à `/data`**. La trame WS `sensor_data` les portait **déjà** depuis feature-024 — c'est `/data` qui rattrape : un client sans WS (poll seul) ne pouvait jamais afficher la santé de sonde. Mêmes règles que le WS (voir le tableau feature-024 de la section [WS /ws](#ws-ws--write)) : pentes arrondies à **1 décimale**, zéro à **2 décimales** (mV), `null` si jamais lu ou invalidé (NaN) ; `phSlopeAgeMs` `null` si aucune `Slope,?` n'a jamais réussi. Lecture **cache uniquement** (zéro I²C dans le chemin async). Buffer `/data` porté de 1792 à **1920** octets.
 >
-> **feature-075 (v2.24.0) — objet `flow_assist`** : instantané **lecture seule** de la session de l'[assistant de mesure du débit](#assistant-de-mesure-du-débit-des-pompes-feature-075-v2240) (pas de champ WS — l'UI n'interroge `/data` qu'aux échéances de ses comptes à rebours, aucun nouveau rythme réseau). Buffer `/data` porté de 1920 à **2304** octets.
+> **feature-075 (v2.24.0) — objet `flow_assist`** : instantané **lecture seule** de la session de l'[assistant de mesure du débit](#assistant-de-mesure-du-débit-des-pompes-feature-075-v2240). Buffer `/data` porté de 1920 à **2304** octets.
+>
+> ⚠️ **Corrigé en v2.47.1 (`bug-082`) — la mention d'origine « pas de champ WS » était un défaut, pas un choix.** `flow_assist` était servi par `/data` **seul** alors que la trame `sensor_data` **remplace `latestSensorData` en entier** toutes les 5 s : ses champs repassaient donc à `undefined` en quelques secondes. **Deux** champs sont désormais servis **des deux côtés**, avec les mêmes règles null/arrondi : **`aborted`** et **`flow255`** (tableau de 2, jamais un scalaire). Les **sept** autres restent `/data`-seuls — ils ne pilotent l'écran de l'assistant que **pendant** une session, et le client force un `GET /data` à son ouverture. Parité **assertée en CI** (sentinelle `test_native_ws_data_parity`, second axe imbriqué — [ADR-0071](adr/0071-parite-data-trame-capteurs.md)) ; budget de trame et méthode de chiffrage : [ws-manager.md](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2471--parité-de-flow_assist-bug-082).
 >
 > | Champ | Type | Description |
 > |-------|------|-------------|
@@ -334,10 +336,10 @@ curl -u admin:monmotdepasse http://poolcontroller.local/data
 > | `pump` | integer | Pompe **physique** en assistant (1\|2), `0` si aucune session. |
 > | `phase` | string | Marche en cours : `"purge"` \| `"measure"`, `""` pompe à l'arrêt. |
 > | `remaining_s` | integer | Secondes restantes de la marche en cours (`0` sinon) — resynchronisation du compte à rebours client. |
-> | `aborted` | boolean | La **dernière** marche a été interrompue **par le serveur** (perte de filtration). L'UI ne doit **jamais** router une mesure avortée vers la saisie du volume (débit sous-estimé → sur-injection). Réarmé à `false` au `start` suivant. |
+> | `aborted` | boolean | La **dernière** marche a été interrompue **par le serveur** (perte de filtration). L'UI ne doit **jamais** router une mesure avortée vers la saisie du volume (débit sous-estimé → sur-injection). Réarmé à `false` au `start` suivant. **Servi aussi sur la trame WS depuis la v2.47.1** : c'est un **garde-fou de dosage**, il ne peut pas dépendre d'un seul transport. |
 > | `purges_left` | integer | Purges restantes dans la session (max 3, `kFlowAssistMaxPurgesPerSession`). |
 > | `purge_s` / `measure_s` | integer | Durées **servies** (60 s / 120 s) — l'UI paramètre ses libellés dessus, pas de miroir en dur. |
-> | `flow255` | array[2] | Débit **majorant** à duty 255 (ml/min, `[0]` = pompe 1, `[1]` = pompe 2) — permet à l'UI d'annoncer le coût budget des marches et la durée d'une injection volumée **sans constante dupliquée**. ⚠️ **v2.25.2 ([ADR-0050](adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md))** : la valeur est un **majorant unique de flotte** (`kPumpFlow255MlPerMin` = **74,0**), **identique pour les deux pompes** — elle ne décrit plus l'exemplaire câblé en n°1 ou n°2 (61,0 / 67,0 avant la v2.25.2). Le tableau **reste de taille 2** : le contrat client est inchangé. Un client doit traiter « clé absente », « tableau vide » et « 0 » comme **trois cas distincts** — seul un nombre fini > 0 est une information. |
+> | `flow255` | array[2] | **Servi aussi sur la trame WS depuis la v2.47.1.** Débit **majorant** à duty 255 (ml/min, `[0]` = pompe 1, `[1]` = pompe 2) — permet à l'UI d'annoncer le coût budget des marches et la durée d'une injection volumée **sans constante dupliquée**. ⚠️ **v2.25.2 ([ADR-0050](adr/0050-debit-pleine-puissance-constante-unique-de-flotte.md))** : la valeur est un **majorant unique de flotte** (`kPumpFlow255MlPerMin` = **74,0**), **identique pour les deux pompes** — elle ne décrit plus l'exemplaire câblé en n°1 ou n°2 (61,0 / 67,0 avant la v2.25.2). Le tableau **reste de taille 2** : le contrat client est inchangé. Un client doit traiter « clé absente », « tableau vide » et « 0 » comme **trois cas distincts** — seul un nombre fini > 0 est une information. |
 >
 > **feature-021** : `ph` est désormais publié avec **3 décimales** (vs 1 décimale en v1.x). Champs `phCalPoints` (`-1..3`) et `orpCalPoints` (`-1..1`) ajoutés. Champs **supprimés** de la réponse `/data` : `orp_raw`, `ph_raw`, `ph_voltage_mv`, `temperature_raw` (la notion de « valeur brute » n'a pas de sens côté Atlas EZO — la valeur est déjà calibrée par le module). Voir [ADR-0014](adr/0014-migration-atlas-ezo.md).
 >
@@ -1537,7 +1539,7 @@ Interprétation : [pump-controller.md — Limite d'actionneur pH](subsystems/pum
 
 Interprétation firmware : [pump-controller.md](subsystems/pump-controller.md#composition-du-débit-dinjection--accesseurs-de-lecture-seule-feature-092-v2460). Affichage : [page-ph.md](features/page-ph.md#carte--débit-dinjection-ph--ph-card-dosing-feature-092-v2460), [page-orp.md](features/page-orp.md#carte--débit-dinjection-orp--orp-card-dosing-feature-092-v2460). MQTT : [MQTT.md](MQTT.md#topics-et-entités-ajoutés-en-v2460-composition-du-débit-dinjection).
 
-> **Budget de payload** : +**265 o** au pire cas structurel sur `/data` pour les 8 champs de composition, +**122 o** pour les 4 champs de pause mélange. Ce chemin n'a **aucun plafond dur** (`sendJsonResponse` dimensionne la `String` à la demande) ; le gabarit documentaire reste indicatif. **Côté WebSocket, la marge sous le seul plafond dur `kWsFrameBufBytes = 3584` o tombe à 137 o** — c'est là que se joue tout ajout futur : voir [ws-manager.md](subsystems/ws-manager.md#budget-de-trame--décompte-rectifié-le-chiffre-à-lire-est-la-marge-137-o).
+> **Budget de payload** : +**265 o** au pire cas structurel sur `/data` pour les 8 champs de composition, +**122 o** pour les 4 champs de pause mélange. Ce chemin n'a **aucun plafond dur** (`sendJsonResponse` dimensionne la `String` à la demande) ; le gabarit documentaire reste indicatif. **Côté WebSocket, la marge sous le seul plafond dur `kWsFrameBufBytes = 3584` o tombe à 137 o** — puis à **67 o** en v2.47.1 (`bug-082`, +70 o) : c'est là que se joue tout ajout futur, voir [ws-manager.md](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2471--parité-de-flow_assist-bug-082).
 
 Champs ajoutés en feature-056 (mode d'installation, v2.19.0 — [ADR-0026](adr/0026-mode-installation.md)) :
 
@@ -1550,6 +1552,21 @@ Champs ajoutés en feature-056 (mode d'installation, v2.19.0 — [ADR-0026](adr/
 | `filtration_ext_known` | boolean | Mode `external` : `true` dès qu'au moins un signal externe a été reçu depuis le boot (`false` = « aucun signal », fail-safe OFF). |
 | `filtration_ext_on` | boolean | Dernier état signalé par la filtration externe (`ON`/`OFF`). |
 | `filtration_ext_age_s` | integer | Âge en secondes du dernier signal externe (`0` si `filtration_ext_known` est `false`). |
+
+#### Objet `flow_assist` — deux champs en parité (bug-082, v2.47.1)
+
+La trame `sensor_data` porte désormais un objet `flow_assist` **réduit à deux champs**, aux **mêmes noms, mêmes types et mêmes règles** que sur [`GET /data`](#get-data--write) :
+
+```json
+"flow_assist": { "aborted": false, "flow255": [74.0, 74.0] }
+```
+
+- `aborted` (bool) — **garde-fou de dosage**, pas un affichage : la dernière marche de mesure a été interrompue **par le serveur** (perte de filtration). Il était **neutralisé en pratique** avant la v2.47.1, la trame WS écrasant `latestSensorData` avant la saisie du volume.
+- `flow255` (array[2]) — débit majorant à duty 255. **Tableau de 2, jamais un scalaire** : un client doit traiter « clé absente », « tableau vide » et « 0 » comme **trois cas distincts**, et un scalaire comme une **absence**.
+
+**Les sept champs de session** (`active`, `pump`, `phase`, `remaining_s`, `purges_left`, `purge_s`, `measure_s`) restent servis par **`/data` seul** — l'UI force un `GET /data` à l'ouverture de l'assistant, seul moment où ils sont utiles. Un client **ne doit pas** déduire d'un `flow_assist` sans `active` que la session est terminée : **clé absente ≠ session finie**.
+
+> **Budget** : +**70 o** au pire cas structurel (méthode et décompte : [ws-manager.md](subsystems/ws-manager.md#champs-sensor_data-ajoutés-en-v2471--parité-de-flow_assist-bug-082)), 50 o en fonctionnement. La marge sous le seul plafond dur `kWsFrameBufBytes = 3584` o tombe de **137 à 67 o**.
 
 ### Message `config` — contrat de parité avec `/get-config` (v2.39.0, bug-089)
 
