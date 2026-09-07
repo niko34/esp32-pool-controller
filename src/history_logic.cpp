@@ -23,11 +23,6 @@ bool isMajority(int trueCount, int total) {
   return trueCount > total / 2;
 }
 
-// Vrai dès qu'au moins un élément est compté.
-bool anyTrue(int count) {
-  return count > 0;
-}
-
 namespace {
 // Consomme `need` octets d'abord sur le budget `a` puis sur `b`. Uniquement
 // des soustractions gardées (jamais d'addition) → aucun débordement possible,

@@ -44,7 +44,7 @@ inline unsigned long historyRangeCutoff(int hours, unsigned long nowEpoch) {
 
 // Formate UN point d'historique au format JSON de la route /get-history :
 //   {"timestamp":T,"ph":7.2,"phFiltered":7.23,"orp":650,"orpFiltered":649,
-//    "temperature":24.6,"filtration":true,"dosing":false,"granularity":0}
+//    "temperature":24.6,"filtration":true,"dosing":3,"granularity":0}
 // - ph / temperature : arrondi au dixième puis 1 décimale (String(x,1) ≡ %.1f) ;
 // - phFiltered : 2 décimales (feature-095 — la régulation décide au centième,
 //   le dixième du brut masquerait l'essentiel de sa dynamique) ;
@@ -53,6 +53,12 @@ inline unsigned long historyRangeCutoff(int hours, unsigned long nowEpoch) {
 //   fixe, contrat historique de ph/orp/temperature sur le fil) — l'absence de
 //   mesure se dit « null », jamais par omission de clé. À ne pas confondre avec
 //   le fichier persisté /history.json, qui lui OMET les clés courtes absentes ;
+// - bug-098 : `dosing` est un MASQUE DE VOIES (kHistDose*), servi en ENTIER.
+//   La clé RESTE, seule sa valeur change de type — `true` devient `1` et
+//   `false` devient `0`, donc un consommateur qui la lit en booléen JavaScript
+//   ne change pas de verdict (0 falsy, 1/2/3/4 truthy). C'est ce qui permet de
+//   distinguer un dosage pH d'un dosage ORP sur le fil, là où l'ancien booléen
+//   les confondait ;
 // - first == false → virgule de séparation en tête.
 // phFiltered/orpFiltered ont une valeur par défaut NAN : les appelants qui
 // n'ont pas de filtrée (tests de format, agrégats) produisent « null ».
@@ -60,7 +66,7 @@ inline unsigned long historyRangeCutoff(int hours, unsigned long nowEpoch) {
 // tient pas dans `cap` — JAMAIS de JSON partiel émis (point sauté par l'appelant).
 inline size_t formatHistoryPointJson(char* out, size_t cap, unsigned long ts,
                                      float ph, float orp, float temp,
-                                     bool filtration, bool dosing,
+                                     bool filtration, uint8_t doseMask,
                                      uint8_t granularity, bool first,
                                      float phFiltered = NAN,
                                      float orpFiltered = NAN) {
@@ -103,10 +109,10 @@ inline size_t formatHistoryPointJson(char* out, size_t cap, unsigned long ts,
   int n = snprintf(out, cap,
                    "%s{\"timestamp\":%lu,\"ph\":%s,\"phFiltered\":%s,\"orp\":%s,"
                    "\"orpFiltered\":%s,\"temperature\":%s,"
-                   "\"filtration\":%s,\"dosing\":%s,\"granularity\":%u}",
+                   "\"filtration\":%s,\"dosing\":%u,\"granularity\":%u}",
                    first ? "" : ",", ts, phBuf, phFilBuf, orpBuf, orpFilBuf,
                    tempBuf, filtration ? "true" : "false",
-                   dosing ? "true" : "false", (unsigned)granularity);
+                   (unsigned)doseMask, (unsigned)granularity);
   if (n < 0 || (size_t)n >= cap) return 0;  // ne tient pas : rien d'émis
   return (size_t)n;
 }

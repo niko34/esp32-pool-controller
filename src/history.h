@@ -13,6 +13,20 @@ enum Granularity : uint8_t {
   DAILY = 2     // Moyenne journalière
 };
 
+// bug-098 : bits de `DataPoint::doseMask`. Ils sont PERSISTES dans
+// /history.json (cle courte "d") et servis par /get-history (cle "dosing") :
+// ces valeurs sont un CONTRAT, elles ne se renumerotent pas.
+constexpr uint8_t kHistDosePh  = 0x01;  // pompe pH active a l'instant du point
+constexpr uint8_t kHistDoseOrp = 0x02;  // pompe ORP (chlore) active
+// TROISIEME ETAT, et c'est le coeur du correctif. Un point ecrit par un
+// firmware <= 2.46 ne portait qu'un booleen « il y a eu un dosage », sans la
+// voie : le relire en kHistDosePh INVENTERAIT un dosage pH sur une injection
+// ORP seule, donnee fausse ET favorable, que consolidateData() figerait ensuite
+// dans les agregats DAILY pour 75-90 jours. On dit donc « dosage, voie
+// indeterminee », jamais `false` (cf. time_to_target_logic.h : mieux vaut une
+// journee manquante qu'une journee fausse).
+constexpr uint8_t kHistDoseUnknownChannel = 0x04;
+
 struct DataPoint {
   unsigned long timestamp;
   float ph;
@@ -29,8 +43,14 @@ struct DataPoint {
   float phFiltered = NAN;
   float orpFiltered = NAN;
   bool filtrationActive;
-  bool phDosing;
-  bool orpDosing;
+  // bug-098 : les DEUX voies de dosage dans UN champ de bits (kHistDose*), et
+  // non deux booleens dont un seul survivait a la serialisation (`obj["d"] =
+  // phDosing || orpDosing` puis `phDosing = point["d"]` : la voie etait perdue,
+  // et l'ORP seul se relisait en dosage pH). L'idiome du depot : une grandeur
+  // DISCRETE porte son absence dans un bit adjacent extensible, jamais dans une
+  // valeur de la grandeur elle-meme. 0 = aucun dosage ; bits 3-7 libres (une
+  // voie de plus ne coutera pas un octet de DataPoint).
+  uint8_t doseMask;
   Granularity granularity;
 };
 

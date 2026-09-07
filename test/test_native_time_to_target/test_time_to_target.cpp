@@ -666,9 +666,9 @@ void test_E_compteur_en_recul_ne_se_replie_pas(void) {
   TttLive st;
   tttLiveReset(st);
   st.t0FiltMin = 500;
-  TEST_ASSERT_EQUAL_UINT16(0, tttElapsedMinutes(st, 0));
-  TEST_ASSERT_EQUAL_UINT16(0, tttElapsedMinutes(st, 499));
-  TEST_ASSERT_EQUAL_UINT16(1, tttElapsedMinutes(st, 501));
+  TEST_ASSERT_EQUAL_UINT16(0, tttUpdateElapsedMinutes(st, 0));
+  TEST_ASSERT_EQUAL_UINT16(0, tttUpdateElapsedMinutes(st, 499));
+  TEST_ASSERT_EQUAL_UINT16(1, tttUpdateElapsedMinutes(st, 501));
 }
 
 // `minutes` est un uint16 qui porte une JOURNÉE : borné à 1440 à l'insertion.
@@ -676,10 +676,10 @@ void test_E_minutes_bornees_a_1440(void) {
   TttLive st;
   tttLiveReset(st);
   st.t0FiltMin = 10;
-  TEST_ASSERT_EQUAL_UINT16(1440, tttElapsedMinutes(st, 10 + 1440));
-  TEST_ASSERT_EQUAL_UINT16(1440, tttElapsedMinutes(st, 10 + 1441));
-  TEST_ASSERT_EQUAL_UINT16(1440, tttElapsedMinutes(st, 4000000000UL));
-  TEST_ASSERT_EQUAL_UINT16(1439, tttElapsedMinutes(st, 10 + 1439));
+  TEST_ASSERT_EQUAL_UINT16(1440, tttUpdateElapsedMinutes(st, 10 + 1440));
+  TEST_ASSERT_EQUAL_UINT16(1440, tttUpdateElapsedMinutes(st, 10 + 1441));
+  TEST_ASSERT_EQUAL_UINT16(1440, tttUpdateElapsedMinutes(st, 4000000000UL));
+  TEST_ASSERT_EQUAL_UINT16(1439, tttUpdateElapsedMinutes(st, 10 + 1439));
 
   // Et sur le chemin de CLÔTURE, celui qui part réellement en NVS.
   Sim s;
@@ -787,6 +787,269 @@ void test_D_recul_ne_fait_jamais_gagner_de_temps(void) {
   // assertion qui ne peut pas mourir n'est pas une assertion. Le travail est fait
   // par celle qui précède (>= 30 min pleines depuis le recul), laquelle tue bien
   // le mutant du sous-débordement.
+}
+
+// =============================================================================
+// D/E bis — bug-106 : LE 0 D'UN COMPTEUR EN RECUL SE DÉCLARE
+// =============================================================================
+// LE MODE DE NUISANCE. `minutes` est une DURÉE : son domaine ne peut pas porter
+// l'absence de durée. Quand `filtTotalMin` recule (NVS `pool-daily` effacée,
+// restauration d'usine ou de configuration), la soustraction n'a plus de sens
+// et l'on rend 0 — mais 0 minute de filtration est aussi la MEILLEURE journée
+// possible (« la cible était atteinte dès le départ »). La journée s'archivait
+// donc comme un RECORD, indiscernable d'une vraie atteinte immédiate. Ce
+// n'était pas une perte d'information : c'était une donnée fausse et FAVORABLE,
+// qui tire vers le bas la moyenne servant à comparer deux versions du firmware.
+//
+// Le correctif pose kTttFlagCounterReset (0x20) aux TROIS branches de recul.
+// Chaque test ci-dessous en isole UNE : les trois mutants (drapeau retiré site
+// par site) doivent mourir séparément, sinon un site est en réalité non couvert.
+//
+//   site 1 — tttUpdateElapsedMinutes (filtTotalMin < t0FiltMin) : le chemin VIF,
+//            celui qui alimente l'instantané servi à l'UI ;
+//   site 2 — tttTick, tenue en cours (filtTotalMin < holdStartFiltMin) : recul
+//            survenu APRÈS t0, donc invisible du site 1 ;
+//   site 3 — tttTick, archivage (holdStartFiltMin < t0FiltMin) : le site nommé
+//            par la spec, celui qui écrit réellement en NVS.
+
+void test_bug106_encodage_du_bit_de_recul(void) {
+  // Valeur de CONTRAT (archivée en NVS, servie à l'UI) et bit DISJOINT des cinq
+  // autres : une journée peut cumuler « recul » et « boost », par exemple.
+  TEST_ASSERT_EQUAL_UINT8(0x20, kTttFlagCounterReset);
+  TEST_ASSERT_EQUAL_UINT8(0, kTttFlagCounterReset & kTttFlagTargetChanged);
+  TEST_ASSERT_EQUAL_UINT8(0, kTttFlagCounterReset & kTttFlagBoost);
+  TEST_ASSERT_EQUAL_UINT8(0, kTttFlagCounterReset & kTttFlagUnsettled);
+  TEST_ASSERT_EQUAL_UINT8(0, kTttFlagCounterReset & kTttFlagPowerCycle);
+  TEST_ASSERT_EQUAL_UINT8(0, kTttFlagCounterReset & kTttFlagOperatorOff);
+}
+
+// --- SITE 1 : le chemin vif -------------------------------------------------
+void test_bug106_site1_vif_le_zero_rendu_porte_le_drapeau(void) {
+  TttLive st;
+  tttLiveReset(st);
+  st.t0FiltMin = 500;
+
+  // Recul franc : le compteur repart de zéro (effacement NVS `pool-daily`).
+  TEST_ASSERT_EQUAL_UINT16(0, tttUpdateElapsedMinutes(st, 0));
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(kTttFlagCounterReset,
+      st.flags & kTttFlagCounterReset,
+      "le 0 rendu par un compteur en recul ne se declare pas : la journee "
+      "s'archive comme la meilleure possible");
+
+  // Recul d'UNE minute : même événement, même drapeau — la frontière compte.
+  TttLive st2;
+  tttLiveReset(st2);
+  st2.t0FiltMin = 500;
+  TEST_ASSERT_EQUAL_UINT16(0, tttUpdateElapsedMinutes(st2, 499));
+  TEST_ASSERT_EQUAL_UINT8(kTttFlagCounterReset, st2.flags & kTttFlagCounterReset);
+}
+
+void test_bug106_site1_aucun_recul_ne_pose_rien(void) {
+  // LA distinction qui fait tout l'objet du bug : un compteur qui n'a PAS
+  // reculé ne porte jamais le bit, y compris à la frontière exacte
+  // (filtTotalMin == t0FiltMin, soit 0 minute LÉGITIME) et au plafond 1440.
+  TttLive st;
+  tttLiveReset(st);
+  st.t0FiltMin = 500;
+  TEST_ASSERT_EQUAL_UINT16(0, tttUpdateElapsedMinutes(st, 500));  // 0 minute LÉGITIME
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, st.flags & kTttFlagCounterReset,
+      "faux positif : une journee atteinte a t=0 est signalee comme invalidee");
+  TEST_ASSERT_EQUAL_UINT16(1, tttUpdateElapsedMinutes(st, 501));
+  TEST_ASSERT_EQUAL_UINT16(1440, tttUpdateElapsedMinutes(st, 500 + 1440));
+  TEST_ASSERT_EQUAL_UINT16(1440, tttUpdateElapsedMinutes(st, 4000000000UL));
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, st.flags,
+      "un compteur qui AVANCE ne doit poser aucun drapeau");
+}
+
+void test_bug106_site1_le_drapeau_ne_pietine_pas_les_autres(void) {
+  // Le bit s'AJOUTE (|=). Un `=` effacerait les circonstances déjà relevées
+  // dans la journée (consigne modifiée, boost, purge, coupure secteur).
+  TttLive st;
+  tttLiveReset(st);
+  st.t0FiltMin = 500;
+  st.flags = (uint8_t)(kTttFlagBoost | kTttFlagPowerCycle);
+  TEST_ASSERT_EQUAL_UINT16(0, tttUpdateElapsedMinutes(st, 100));
+  TEST_ASSERT_EQUAL_UINT8(kTttFlagBoost, st.flags & kTttFlagBoost);
+  TEST_ASSERT_EQUAL_UINT8(kTttFlagPowerCycle, st.flags & kTttFlagPowerCycle);
+  TEST_ASSERT_EQUAL_UINT8(kTttFlagCounterReset, st.flags & kTttFlagCounterReset);
+  // Idempotent : deux reculs de suite ne cumulent pas deux fois le même bit.
+  TEST_ASSERT_EQUAL_UINT16(0, tttUpdateElapsedMinutes(st, 50));
+  TEST_ASSERT_EQUAL_UINT8(
+      (uint8_t)(kTttFlagBoost | kTttFlagPowerCycle | kTttFlagCounterReset),
+      st.flags);
+}
+
+// --- SITE 2 : recul pendant la tenue, invisible du site 1 -------------------
+void test_bug106_site2_recul_pendant_la_tenue_pose_le_drapeau(void) {
+  // Montage ISOLANT : le compteur reste AU-DESSUS de t0FiltMin (site 1 muet)
+  // mais passe SOUS holdStartFiltMin. C'est le recul d'une restauration de
+  // configuration survenue après le départ du chronomètre.
+  Sim s;
+  simInit(s, 0);
+  s.st.date = kD;
+  s.st.state = kTttStateRunning;
+  s.st.t0FiltMin = 0;           // 50 >= 0 → tttUpdateElapsedMinutes ne voit RIEN
+  s.st.holdStartFiltMin = 100;  // 50 < 100 → la branche de tenue, elle, voit
+  s.st.holding = 1;
+  s.st.flags = 0;
+  s.st.watchTarget = kOrpTarget;
+  s.filtSec = 50UL * 60UL;
+
+  runSeconds(s, orpIn(kOrpTarget), 1);
+
+  TEST_ASSERT_EQUAL_UINT32_MESSAGE(50u, s.st.holdStartFiltMin,
+      "la tenue n'a pas ete realignee : ce n'est pas la branche visee");
+  TEST_ASSERT_EQUAL_INT(0, s.nReached);
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(kTttFlagCounterReset,
+      s.st.flags & kTttFlagCounterReset,
+      "recul entre t0 et le debut de tenue non signale : la journee restera "
+      "presentable alors que sa base de temps a saute");
+}
+
+void test_bug106_site2_tenue_normale_ne_pose_rien(void) {
+  // Le contre-cas du site 2 : une tenue qui progresse normalement pendant
+  // 29 minutes ne pose aucun drapeau (mutant « bit posé inconditionnellement »).
+  Sim s;
+  simInit(s, 100);
+  TttInputs in = orpIn(kOrpTarget);
+  runSeconds(s, in, 2);
+  runMinutes(s, in, 29);
+  TEST_ASSERT_EQUAL_INT(0, s.nReached);
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, s.st.flags & kTttFlagCounterReset,
+      "faux positif : une tenue normale est signalee comme compteur en recul");
+}
+
+// --- SITE 3 : l'archivage, le site nommé par la spec ------------------------
+void test_bug106_site3_archivage_journee_invalidee_est_distinguable(void) {
+  // Montage ISOLANT : holdStartFiltMin < t0FiltMin (séquelle d'un recul
+  // antérieur) MAIS filtTotalMin >= t0FiltMin, donc le site 1 reste muet et le
+  // site 2 aussi (filtTotalMin >= holdStartFiltMin). Seul le repli
+  // `reached = 0` de l'archivage peut poser le bit.
+  Sim s;
+  simInit(s, 0);
+  s.st.date = kD;
+  s.st.state = kTttStateRunning;
+  s.st.t0FiltMin = 100;
+  s.st.holdStartFiltMin = 80;   // < t0FiltMin : le repli à 0 va s'appliquer
+  s.st.holding = 1;
+  s.st.flags = 0;
+  s.st.watchTarget = kOrpTarget;
+  s.filtSec = 110UL * 60UL;     // 110 >= 100 (site 1 muet), 110-80 = 30 → atteinte
+
+  runSeconds(s, orpIn(kOrpTarget), 1);
+
+  TEST_ASSERT_EQUAL_INT_MESSAGE(1, s.nReached, "l'atteinte n'a pas eu lieu : "
+      "le montage ne passe pas par le repli d'archivage");
+  TEST_ASSERT_EQUAL_UINT8(kTttStateReached, s.st.state);
+  // La valeur archivée reste 0 (une durée négative n'existe pas)…
+  TEST_ASSERT_EQUAL_UINT16(0, s.reached.minutes);
+  // …mais elle est DÉSORMAIS distinguable d'une atteinte immédiate légitime.
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(kTttFlagCounterReset,
+      s.reached.flags & kTttFlagCounterReset,
+      "journee archivee a 0 minute SANS drapeau : elle passera pour la "
+      "meilleure journee jamais observee");
+  // Et le drapeau part bien dans l'ENTRÉE (donc en NVS), pas seulement dans
+  // l'état vivant.
+  TEST_ASSERT_EQUAL_UINT8(s.st.flags & kTttFlagCounterReset,
+                          s.reached.flags & kTttFlagCounterReset);
+}
+
+void test_bug106_site3_atteinte_legitime_a_t0_ne_porte_pas_le_drapeau(void) {
+  // LA distinction qui fait tout l'objet du bug, sur le chemin d'archivage :
+  // un bassin déjà à la cible à t0 vaut LÉGITIMEMENT 0 minute. Cette journée
+  // doit rester nue — sinon le correctif fabrique le faux positif symétrique
+  // et exclut des moyennes les meilleures journées réelles.
+  Sim s;
+  simInit(s, 100);
+  runMinutes(s, phIn(kPhTarget), 31);
+  TEST_ASSERT_EQUAL_INT(1, s.nStarted);
+  TEST_ASSERT_EQUAL_INT(1, s.nReached);
+  TEST_ASSERT_EQUAL_UINT16(0, s.reached.minutes);
+  TEST_ASSERT_EQUAL_UINT32(100, s.st.t0FiltMin);
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, s.reached.flags & kTttFlagCounterReset,
+      "faux positif : une journee atteinte a t=0 est marquee « compteur en "
+      "recul » — les meilleures journees reelles sortiraient des moyennes");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, s.reached.flags,
+      "une journee nominale ne doit porter AUCUN drapeau");
+}
+
+void test_bug106_deux_journees_a_zero_minute_ne_se_ressemblent_plus(void) {
+  // La comparaison FRONTALE, celle que la spec demande : deux journées
+  // archivées à 0 minute, l'une légitime, l'autre invalidée par un recul.
+  // Avant le correctif, leurs enregistrements étaient IDENTIQUES.
+  Sim legitime;
+  simInit(legitime, 100);
+  runMinutes(legitime, phIn(kPhTarget), 31);
+
+  Sim invalidee;
+  simInit(invalidee, 0);
+  invalidee.st.date = kD;
+  invalidee.st.state = kTttStateRunning;
+  invalidee.st.t0FiltMin = 100;
+  invalidee.st.holdStartFiltMin = 80;
+  invalidee.st.holding = 1;
+  invalidee.st.flags = 0;
+  invalidee.st.watchTarget = kPhTarget;
+  invalidee.filtSec = 110UL * 60UL;
+  runSeconds(invalidee, phIn(kPhTarget), 1);
+
+  TEST_ASSERT_EQUAL_INT(1, legitime.nReached);
+  TEST_ASSERT_EQUAL_INT(1, invalidee.nReached);
+  // Mêmes minutes, même état : c'est bien le cas ambigu d'avant bug-106…
+  TEST_ASSERT_EQUAL_UINT16(0, legitime.reached.minutes);
+  TEST_ASSERT_EQUAL_UINT16(0, invalidee.reached.minutes);
+  TEST_ASSERT_EQUAL_UINT8(legitime.reached.state, invalidee.reached.state);
+  // …et les deux enregistrements ne sont plus interchangeables.
+  TEST_ASSERT_TRUE_MESSAGE(legitime.reached.flags != invalidee.reached.flags,
+      "les deux journees a 0 minute restent INDISCERNABLES : le bug est intact");
+}
+
+void test_bug106_le_drapeau_survit_a_la_cloture_en_non_atteinte(void) {
+  // Une journée dont le compteur a reculé et qui se clôt SANS tenue doit elle
+  // aussi partir marquée : sa base de temps a sauté, ses minutes ne sont pas
+  // une mesure. La clôture passe par tttUpdateElapsedMinutes (site 1).
+  Sim s;
+  simInit(s, 500);
+  TttInputs in = orpIn(kOrpTarget - 45.0f);  // hors bande : aucune tenue
+  runSeconds(s, in, 2);
+  TEST_ASSERT_EQUAL_INT(1, s.nStarted);
+  TEST_ASSERT_EQUAL_UINT32(500u, s.st.t0FiltMin);
+
+  s.filtSec = 30UL * 60UL;  // restauration d'usine : le compteur recule
+  runSeconds(s, in, 1);
+  TEST_ASSERT_EQUAL_UINT8(kTttFlagCounterReset, s.st.flags & kTttFlagCounterReset);
+
+  TttInputs off = in;
+  off.filtrationRunning = false;
+  off.dayEnd = true;
+  runSeconds(s, off, 2);
+  TEST_ASSERT_EQUAL_INT(1, s.nMissed);
+  TEST_ASSERT_EQUAL_UINT16(0, s.missed.minutes);
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(kTttFlagCounterReset,
+      s.missed.flags & kTttFlagCounterReset,
+      "journee close a 0 minute apres un recul, sans drapeau : indiscernable "
+      "d'une journee ou la cible n'a jamais bouge");
+}
+
+void test_bug106_recul_pendant_la_tenue_de_bout_en_bout(void) {
+  // Scénario complet et réaliste (celui de test_D_compteur_en_recul_relance_la_
+  // tenue, augmenté de l'assertion qui manquait) : la tenue est relancée, la
+  // journée finit par être atteinte — et son enregistrement porte la marque.
+  Sim s;
+  simInit(s, 100);
+  TttInputs in = orpIn(kOrpTarget);
+  runSeconds(s, in, 2);
+  runMinutes(s, in, 10);
+  TEST_ASSERT_EQUAL_UINT8(0, s.st.flags);  // rien avant le recul
+
+  s.filtSec = 0;  // effacement NVS `pool-daily`
+  runMinutes(s, in, 31);
+
+  TEST_ASSERT_EQUAL_INT(1, s.nReached);
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(kTttFlagCounterReset,
+      s.reached.flags & kTttFlagCounterReset,
+      "la journee est atteinte apres un recul de compteur mais ne le dit pas : "
+      "ses minutes sont comptees sur deux bases de temps differentes");
 }
 
 // =============================================================================
@@ -1127,7 +1390,7 @@ void test_G_coupure_secteur_meme_jour_conserve_t0_et_pose_bit3(void) {
   // La consigne surveillée est REPHOTOGRAPHIÉE (une modification survenue
   // pendant la coupure n'est pas détectable : inventer un drapeau serait pire).
   s.st.watchTarget = kOrpTarget;
-  s.st.minutes = tttElapsedMinutes(s.st, 200);
+  s.st.minutes = tttUpdateElapsedMinutes(s.st, 200);
 
   TEST_ASSERT_EQUAL_UINT16(153, s.st.minutes);  // 200 − 47 : minutes EXACTES
   TEST_ASSERT_EQUAL_UINT8(0, s.st.holding);     // tenue à zéro, fail-closed
@@ -1513,6 +1776,18 @@ int main(int argc, char** argv) {
   RUN_TEST(test_E_base_de_temps_insensible_au_temps_mural);
   RUN_TEST(test_E_compteur_en_recul_ne_se_replie_pas);
   RUN_TEST(test_E_minutes_bornees_a_1440);
+  // bug-106 — le 0 d'un compteur en recul se déclare (les TROIS sites)
+  RUN_TEST(test_bug106_encodage_du_bit_de_recul);
+  RUN_TEST(test_bug106_site1_vif_le_zero_rendu_porte_le_drapeau);
+  RUN_TEST(test_bug106_site1_aucun_recul_ne_pose_rien);
+  RUN_TEST(test_bug106_site1_le_drapeau_ne_pietine_pas_les_autres);
+  RUN_TEST(test_bug106_site2_recul_pendant_la_tenue_pose_le_drapeau);
+  RUN_TEST(test_bug106_site2_tenue_normale_ne_pose_rien);
+  RUN_TEST(test_bug106_site3_archivage_journee_invalidee_est_distinguable);
+  RUN_TEST(test_bug106_site3_atteinte_legitime_a_t0_ne_porte_pas_le_drapeau);
+  RUN_TEST(test_bug106_deux_journees_a_zero_minute_ne_se_ressemblent_plus);
+  RUN_TEST(test_bug106_le_drapeau_survit_a_la_cloture_en_non_atteinte);
+  RUN_TEST(test_bug106_recul_pendant_la_tenue_de_bout_en_bout);
   // F — garde de vraisemblance
   RUN_TEST(test_F_e0_aberrant_du_0509_refuse_le_depart);
   RUN_TEST(test_F_verdict_implausible_a_chaque_tick_le_latch_est_coquille);

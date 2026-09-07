@@ -126,7 +126,7 @@ void TimeToTargetManager::restoreFromNvs(uint32_t today) {
     // pendant la coupure n'est pas détectable, et inventer un drapeau serait
     // pire que de l'omettre.
     st.watchTarget = (c == kTttChannelPh) ? mqttCfg.phTarget : mqttCfg.orpTarget;
-    st.minutes = tttElapsedMinutes(st, safetyLimits.filtTotalMin);
+    st.minutes = tttUpdateElapsedMinutes(st, safetyLimits.filtTotalMin);
     logEvent(c, "reprise après coupure", st.minutes, st.e0, NAN, false);
   }
 }

@@ -447,24 +447,33 @@ constexpr size_t kLogsPageHardCap = 60;                   // Plafond dur (coupe 
 // paramètre template à LogLineCarry<N> (logs_export_chunk.h, header pur).
 constexpr size_t kLogExportLineMaxBytes = 256;
 
-// Pire cas d'un point JSON de /get-history — RECOMPTÉ en feature-095 (v2.38.0),
-// après l'ajout des clés "phFiltered" et "orpFiltered" (format de
-// formatHistoryPointJson, history_export_chunk.h) :
-//   clés + ponctuation fixes ........ 114 o (virgule de séparation comprise)
+// Pire cas d'un point JSON de /get-history — RE-MESURÉ en bug-098 (v2.47.0),
+// « dosing » passant du booléen au MASQUE DE VOIES entier (kHistDose*,
+// history.h ; format de formatHistoryPointJson, history_export_chunk.h) :
+//   clés + ponctuation fixes ........ 111 o (virgule de séparation comprise)
 //   timestamp (10 chiffres) .......... 10 o
 //   ph "%.1f" / temperature "%.1f" ... 6 + 6 o
 //   phFiltered "%.2f" ................. 7 o
 //   orp / orpFiltered (entiers) ....... 5 + 5 o
-//   "false" + "false" + granularité .. 10 + 3 o
-//   TOTAL pire cas .................. 161 o (+ NUL) → 192 laisse ≥ 31 o de marge.
-// (Décompte rectifié en revue : la partie fixe vaut 114 o et non 111 — le total
-// réaliste est donc 161, pas 163. La conclusion ne change pas.)
+//   "false" (filtration) .............. 5 o
+//   "dosing" %u + granularité %u .. 3 + 3 o
+//   TOTAL pire cas .................. 161 o (+ NUL) → 192 laisse 31 o de marge.
+// ⚠️ LES DEUX DÉCOMPTES PRÉCÉDENTS ÉTAIENT FAUX, chacun d'un côté différent :
+// l'original annonçait 163 pour une partie fixe de 111 (juste : 111+52 = 163
+// avec l'ancien "dosing":false), et la « rectification » de revue a porté la
+// partie fixe à 114 en gardant 161 — deux chiffres inconciliables (114+52 =
+// 166). Le total ci-dessus est MESURÉ, pas recopié : le pire cas absolu du
+// format vaut 161 o (les deux %u saturés à "255"). Le pire cas ATTEIGNABLE
+// vaut 157 o : le masque ne dépasse pas 7 (trois bits définis) et la
+// granularité est bornée à DAILY = 2 — UN caractère chacun, pas trois.
+// Le changement de bug-098 AGRANDIT la marge de 2 o, il ne la consomme pas.
 // PIRE CAS THÉORIQUE, à connaître : si les cinq conversions saturaient leurs
 // tampons de 15 caractères, le point atteindrait 213 o et dépasserait 192. Ce
 // cas est INATTEIGNABLE avec des mesures plausibles (un pH ne fait pas 15
 // chiffres), et depuis feature-095 le chemin de saut n'est plus muet : les
-// points omis sont comptés et journalisés une fois par heure. On documente donc
-// la borne au lieu de surdimensionner le tampon.
+// points omis sont comptés (`st->skipped`) et un WARNING throttlé est émis à la
+// clôture de la réponse (web_routes_data.cpp, kHistorySkipWarnThrottleMs). On
+// documente donc la borne au lieu de surdimensionner le tampon.
 // bug-heap-toctou A3 : sert de capacité du carry (LogLineCarry<N>) de la réponse
 // CHUNKED — un point (ou l'en-tête/pied JSON) doit tenir dedans, jamais de JSON
 // partiel émis. Coût du relèvement 128 → 192 : +64 o de pile/état par requête
@@ -472,10 +481,12 @@ constexpr size_t kLogExportLineMaxBytes = 256;
 // fois par requête), et +64 o pour /download-logs seulement s'il partageait la
 // constante — ce n'est pas le cas (kLogExportLineMaxBytes lui est propre).
 // ⚠️ L'ancien commentaire affirmait qu'un dépassement était « impossible sur le
-// format réel, ~120 o max » : c'est FAUX depuis feature-095 (163 o), et ce
+// format réel, ~120 o max » : c'est FAUX depuis feature-095 (161 o), et ce
 // n'était de toute façon pas une garantie. En cas de dépassement, le point est
-// SAUTÉ sans aucun log (web_routes_data.cpp, phase kPoints) : trou invisible
-// dans les courbes. Toute nouvelle clé au format impose de refaire ce décompte.
+// SAUTÉ (web_routes_data.cpp, phase kPoints) — mais PLUS EN SILENCE depuis
+// feature-095 : il est compté et signalé une fois par heure. La formulation
+// « trou invisible dans les courbes », restée ici et recopiée depuis, était
+// PÉRIMÉE. Toute nouvelle clé au format impose de refaire ce décompte.
 constexpr size_t kHistoryPointJsonMaxBytes = 192;
 
 // feature-095 : throttle du WARNING « points omis de /get-history » (un seul par

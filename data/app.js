@@ -923,6 +923,55 @@
   // dans la série → uPlot lève le crayon (même convention que les mesures invalides)
   const CHART_GAP_SECONDS = 5400;
 
+  // ---------- Dosage historisé : un CHAMP DE BITS, jamais un booléen (bug-098) ----------
+  // Depuis la 2.47.0, la clé `dosing` est servie en ENTIER — et les DEUX
+  // surfaces portent les MÊMES trois bits : /get-history relaie le masque
+  // verbatim, exactement celui du fichier interne /history.json.
+  //   0x01 = dosage pH · 0x02 = dosage ORP · 0x04 = dosage, voie indéterminée
+  // Valeurs donc observées : 0, 1, 2, 3 et 4 (jusqu'à 7 en théorie). Le 0x04
+  // marque les points écrits par les firmwares <= 2.46, dont on sait qu'il y a
+  // eu dosage mais pas sur quelle voie.
+  // On teste des BITS, jamais l'égalité : un bit inconnu d'un firmware plus
+  // récent doit rester sans effet ici.
+  const DOSE_PH = 0x01;
+  const DOSE_ORP = 0x02;
+  const DOSE_UNKNOWN = 0x04;
+  const DOSE_MASK = DOSE_PH | DOSE_ORP | DOSE_UNKNOWN;
+
+  // Normalisation de ce qui arrive du réseau OU d'un fichier importé.
+  // POURQUOI un `true` ne peut PAS se lire « pH » : un booléen dit qu'il y a EU
+  // dosage, il ne dit RIEN de la voie. Le lire 0x01 inventerait une information
+  // absente (et accuserait la pompe de pH d'injections de chlore) — c'est
+  // exactement le défaut que bug-098 corrige côté firmware, on ne le
+  // réintroduit pas côté client. Un booléen vrai vaut donc 0x04.
+  function dosingMaskFromApi(v) {
+    if (typeof v === 'number' && isFinite(v)) return Math.max(0, Math.trunc(v)) & DOSE_MASK;
+    if (typeof v === 'string') {
+      const t = v.trim().toLowerCase();
+      if (t === '') return 0;
+      const n = Number(t);
+      if (isFinite(n)) return Math.max(0, Math.trunc(n)) & DOSE_MASK;
+      return (t === 'true' || t === 'yes' || t === 'y' || t === 'on') ? DOSE_UNKNOWN : 0;
+    }
+    return v === true ? DOSE_UNKNOWN : 0;
+  }
+
+  // Lignes d'infobulle : le marqueur ne porte JAMAIS seul l'information.
+  function dosingLabels(mask) {
+    const out = [];
+    if (mask & DOSE_PH) out.push('Dosage pH');
+    if (mask & DOSE_ORP) out.push('Dosage chlore');
+    if (mask & DOSE_UNKNOWN) out.push('Dosage (voie inconnue)');
+    return out;
+  }
+
+  // Rendus des marqueurs : trois formes DISTINCTES (couleur + rang + plein/creux).
+  // pH au rang du bas, chlore au rang du dessus, voie inconnue en creux à cheval
+  // sur les deux — on doit pouvoir dire quelle pompe a dosé, d'un coup d'œil.
+  const DOSE_MARK_PH = { color: 'rgba(146,64,14,0.85)', row: 0, hollow: false };
+  const DOSE_MARK_ORP = { color: 'rgba(37,99,235,0.85)', row: 1, hollow: false };
+  const DOSE_MARK_UNKNOWN = { color: 'rgba(89,95,107,0.8)', row: 2, hollow: true };
+
   // Type de point selon la granularité fournie par /get-history
   // (0 = mesure brute 5 min, 1 = moyenne horaire, 2 = moyenne journalière)
   const GRANULARITY_LABELS = ['mesure', 'moyenne horaire', 'moyenne journalière'];
@@ -963,7 +1012,7 @@
     // État du graphique : labels catégoriels + valeurs (lissée) + valeurs brutes
     // + timestamps/granularités (tableaux parallèles, pour le tooltip)
     // + bornes Y de repli (série vide) + affichage du brut (interrupteur)
-    const st = { labels: [], values: [], raw: [], ts: [], gran: [], yMin: null, yMax: null, showRaw: true };
+    const st = { labels: [], values: [], raw: [], ts: [], gran: [], dose: [], yMin: null, yMax: null, showRaw: true };
 
     // Alpha du segment i du brut : 0.35 si la lissée couvre le segment (halo),
     // 0.9 sinon. Le basculement tombe exactement au x où l'aire lissée commence.
@@ -1017,6 +1066,51 @@
     // Le brut n'est rempli QUE s'il est seul à l'écran (aucune valeur lissée sur
     // la fenêtre) : aspect d'avant la 2.38 conservé sur les données anciennes.
     const rawFill = (u) => (hasFiniteValue(u.data[2]) ? 'rgba(0,0,0,0)' : rawFillGradient(u));
+
+    // Marqueurs de dosage (bug-098) : dessinés au ras du bas de l'aire de tracé,
+    // sur un tableau STRICTEMENT parallèle aux labels. st.dose vide (carte
+    // Température) → rien n'est tracé : un seul chemin de code pour les 3 cartes.
+    const dosingMarksPlugin = () => ({
+      hooks: {
+        draw: (u) => {
+          const dose = st.dose;
+          if (!Array.isArray(dose) || !dose.length) return;
+          const pr = (typeof uPlot !== 'undefined' && uPlot.pxRatio) ? uPlot.pxRatio : 1;
+          const ctx = u.ctx;
+          const w = Math.max(2 * pr, 2);          // largeur d'un marqueur
+          const h = 3 * pr;                       // hauteur d'un rang
+          const base = u.bbox.top + u.bbox.height - pr;
+          const marks = [[DOSE_PH, DOSE_MARK_PH], [DOSE_ORP, DOSE_MARK_ORP],
+                         [DOSE_UNKNOWN, DOSE_MARK_UNKNOWN]];
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(u.bbox.left, u.bbox.top, u.bbox.width, u.bbox.height);
+          ctx.clip();
+          ctx.lineWidth = Math.max(1, pr * 0.8);
+          for (let i = 0; i < dose.length; i++) {
+            const mask = dose[i] | 0;
+            if (!mask) continue;
+            const x = Math.round(u.valToPos(i, 'x', true) - w / 2);
+            marks.forEach(([bit, mk]) => {
+              if (!(mask & bit)) return;
+              // Rang « voie inconnue » : à cheval sur les deux autres, en creux
+              const hollow = mk.hollow;
+              const hh = hollow ? (2 * h + pr) : h;
+              const top = hollow ? (base - (2 * h + pr))
+                                 : (base - ((mk.row + 1) * h + mk.row * pr));
+              if (hollow) {
+                ctx.strokeStyle = mk.color;
+                ctx.strokeRect(x + 0.5, top + 0.5, w, hh);
+              } else {
+                ctx.fillStyle = mk.color;
+                ctx.fillRect(x, top, w, hh);
+              }
+            });
+          }
+          ctx.restore();
+        }
+      }
+    });
 
     const fmt = v => (formatValue ? formatValue(v) : String(v));
     // Ligne de tooltip toujours préfixée par sa source quand les 2 séries coexistent
@@ -1120,9 +1214,13 @@
             if (!lines.length) return [];
             const type = granularityLabel(st.gran[idx]);
             if (type) lines.push({ text: type });
+            // Le dosage se LIT aussi : la couleur d'un marqueur ne porte jamais
+            // seule l'information (et « voie inconnue » doit se dire).
+            dosingLabels(st.dose[idx] | 0).forEach(t => lines.push({ text: t }));
             return lines;
           }
-        })
+        }),
+        dosingMarksPlugin()
       ]
     };
 
@@ -1194,6 +1292,9 @@
       // (~8 h) — au-delà (moyennes horaires/journalières) et avant la 2.38, null.
       // Tableaux STRICTEMENT parallèles aux précédents, coupures comprises.
       const phSmoothed = [], orpSmoothed = [];
+      // bug-098 : masques de dosage (0x01 pH, 0x02 ORP, 0x04 voie inconnue),
+      // tableau parallèle aux labels — coupures comprises.
+      const dose = [];
       let maxTs = since;
       // Coupure de courbe : sur le chemin incrémental, le « point précédent » du
       // premier nouveau point est le dernier point déjà affiché — un arrêt entre
@@ -1210,6 +1311,7 @@
           labels.push(''); ts.push(null); gran.push(null);
           phValues.push(null); orpValues.push(null); tempValues.push(null);
           phSmoothed.push(null); orpSmoothed.push(null);
+          dose.push(0);
         }
         prevTs = point.timestamp;
         // feature-061 : pH/ORP/température null (filtration arrêtée) → pousser null,
@@ -1228,19 +1330,22 @@
           ? Math.round(point.phFiltered * 100) / 100 : null);
         orpSmoothed.push((point.orpFiltered != null && !isNaN(point.orpFiltered))
           ? Math.round(point.orpFiltered) : null);
+        // Un firmware antérieur envoie encore un booléen : il se lit « voie
+        // indéterminée », jamais « pH » (cf. dosingMaskFromApi).
+        dose.push(dosingMaskFromApi(point.dosing));
       });
 
       const phTarget = window._config?.ph_target ?? 7.2;
       const orpTarget = window._config?.orp_target ?? 700;
       if (since === 0) {
         // Chargement initial : remplace toutes les données
-        updateMiniChart(phMiniChart, labels, phSmoothed, phValues, ts, gran, phTarget, 0.2);
-        updateMiniChart(orpMiniChart, labels, orpSmoothed, orpValues, ts, gran, orpTarget, 50);
+        updateMiniChart(phMiniChart, labels, phSmoothed, phValues, ts, gran, phTarget, 0.2, dose);
+        updateMiniChart(orpMiniChart, labels, orpSmoothed, orpValues, ts, gran, orpTarget, 50, dose);
         updateMiniChart(tempMiniChart, labels, tempValues, null, ts, gran, 26, 8);
       } else {
         // Mise à jour incrémentale : ajoute les nouveaux points
-        appendMiniChart(phMiniChart, labels, phSmoothed, phValues, ts, gran, phTarget, 0.2);
-        appendMiniChart(orpMiniChart, labels, orpSmoothed, orpValues, ts, gran, orpTarget, 50);
+        appendMiniChart(phMiniChart, labels, phSmoothed, phValues, ts, gran, phTarget, 0.2, dose);
+        appendMiniChart(orpMiniChart, labels, orpSmoothed, orpValues, ts, gran, orpTarget, 50, dose);
         appendMiniChart(tempMiniChart, labels, tempValues, null, ts, gran, 26, 8);
       }
       refreshMiniLegendAbsence();
@@ -1273,19 +1378,27 @@
     return new Array(length).fill(null);
   }
 
+  // Masques de dosage absents (carte Température) → 0 partout : le tableau reste
+  // parallèle aux labels et aucun marqueur n'est tracé.
+  function miniDoseSeries(dose, length) {
+    if (Array.isArray(dose)) return dose;
+    return new Array(length).fill(0);
+  }
+
   // values = série lissée (principale) ; rawValues = série brute (null si absente)
-  function appendMiniChart(chart, newLabels, newValues, newRawValues, newTs, newGran, target, tolerance) {
+  function appendMiniChart(chart, newLabels, newValues, newRawValues, newTs, newGran, target, tolerance, newDose) {
     if (!chart || !newLabels.length) return;
     chart.st.labels.push(...newLabels);
     chart.st.values.push(...newValues);
     chart.st.raw.push(...miniRawSeries(newRawValues, newLabels.length));
     chart.st.ts.push(...newTs);
     chart.st.gran.push(...newGran);
+    chart.st.dose.push(...miniDoseSeries(newDose, newLabels.length));
     applyMiniChartFallbackScale(chart, target, tolerance);
     chart.render();
   }
 
-  function updateMiniChart(chart, labels, values, rawValues, ts, gran, target, tolerance) {
+  function updateMiniChart(chart, labels, values, rawValues, ts, gran, target, tolerance, dose) {
     if (!chart) return;
     // slice() : labels/ts/gran sont partagés entre les 3 mini-charts — chaque
     // graphe doit posséder sa propre copie (appendMiniChart mute st.* par push)
@@ -1294,6 +1407,7 @@
     chart.st.raw = miniRawSeries(rawValues, labels.length).slice();
     chart.st.ts = ts.slice();
     chart.st.gran = gran.slice();
+    chart.st.dose = miniDoseSeries(dose, labels.length).slice();
     applyMiniChartFallbackScale(chart, target, tolerance);
     chart.render();
   }
@@ -4018,6 +4132,17 @@
     const idxOrp = headers.indexOf("orp");
     const idxTemp = headers.indexOf("temperature");
     const idxFiltration = headers.indexOf("filtration");
+    // bug-098 — DEUX formats de dosage, et il faut pouvoir les distinguer :
+    //  · `dosing_mask` (exports >= 2.47.0) : CHAMP DE BITS 0x01 pH / 0x02 ORP /
+    //    0x04 voie indéterminée — valeurs 0, 1, 2, 3 ou 4 (7 en théorie).
+    //    Colonne au nom neuf EXPRÈS : dans l'ancien format, la
+    //    colonne `dosing` valait déjà « 1 » pour dire « il y a eu dosage ». Avec
+    //    le même nom, un « 1 » serait indécidable — pH ou voie inconnue ? — et le
+    //    lire « pH » accuserait la pompe d'acide d'injections de chlore. C'est
+    //    précisément le défaut que bug-098 corrige : on ne le réintroduit pas ici.
+    //  · `dosing` (exports <= 2.46) : booléen. Il dit qu'il y a EU dosage, jamais
+    //    lequel → 0x04, voie indéterminée.
+    const idxDosingMask = headers.indexOf("dosing_mask");
     const idxDosing = headers.indexOf("dosing");
     const idxGranularity = headers.indexOf("granularity");
 
@@ -4073,7 +4198,9 @@
         orp,
         temperature,
         filtration: idxFiltration >= 0 ? toBool(getCol(idxFiltration)) : false,
-        dosing: idxDosing >= 0 ? toBool(getCol(idxDosing)) : false,
+        dosing: (idxDosingMask >= 0)
+          ? dosingMaskFromApi(toValue(getCol(idxDosingMask)))
+          : (idxDosing >= 0 && toBool(getCol(idxDosing)) ? DOSE_UNKNOWN : 0),
         granularity: idxGranularity >= 0 ? Math.max(0, parseInt(getCol(idxGranularity), 10) || 0) : 0
       });
     }
@@ -4094,17 +4221,22 @@
         if (!res.ok) throw new Error("export failed");
         const data = await res.json();
         const rows = [
-          ["datetime", "ph", "orp", "temperature", "filtration", "dosing", "granularity"].join(",")
+          ["datetime", "ph", "orp", "temperature", "filtration", "dosing",
+           "dosing_mask", "granularity"].join(",")
         ];
 
         (data.history || []).forEach((point) => {
+          // `dosing` reste le booléen d'héritage (tableurs et fichiers déjà
+          // exportés), `dosing_mask` porte la voie réellement dosée.
+          const mask = dosingMaskFromApi(point.dosing);
           const row = [
             formatDateTimeFromEpoch(point.timestamp),
             point.ph ?? "",
             point.orp ?? "",
             point.temperature ?? "",
             point.filtration ? 1 : 0,
-            point.dosing ? 1 : 0,
+            mask ? 1 : 0,
+            mask,
             point.granularity ?? ""
           ];
           rows.push(row.join(","));
@@ -4762,7 +4894,23 @@
     [0x04, "stabilisation non atteinte"],
     [0x08, "reprise après coupure"],
     [0x10, "régulation non automatique"],
+    // bug-106 : le compteur de filtration a RECULÉ pendant la tenue du jour
+    // (effacement NVS pool-daily, restauration d'usine ou de configuration).
+    // La durée archivée ne mesure alors plus rien — ce n'est pas « cible non
+    // atteinte », c'est « pas de mesure ».
+    [0x20, "compteur de filtration remis à zéro"],
   ];
+
+  // Bit du champ de bits `f` signalant la remise à zéro du compteur (miroir de
+  // kTttFlagCounterReset côté firmware). Isolé dans une constante : il est testé
+  // hors de la table des libellés, pour retirer la journée du vocabulaire
+  // « bonne journée ».
+  const TTT_FLAG_COUNTER_RESET = 0x20;
+
+  // Vrai si la durée de cette entrée a été invalidée par un recul du compteur.
+  function tttCounterReset(entry) {
+    return !!entry && typeof entry.f === "number" && (entry.f & TTT_FLAG_COUNTER_RESET) !== 0;
+  }
 
   function tttFlagCauses(flags) {
     if (typeof flags !== "number" || !isFinite(flags) || flags <= 0) return [];
@@ -4867,7 +5015,13 @@
     const e0 = fmtE0(entry.e0, unit);
     const e0Txt = (e0 === null) ? "écart initial indisponible" : `écart initial ${e0}`;
     let core;
-    if (entry.s === 2) {
+    if (tttCounterReset(entry)) {
+      // bug-106 : la journée s'archive en « cible atteinte » avec 0 minute quand
+      // le compteur de filtration a reculé. Raconter « déjà à la cible au
+      // départ » serait un mensonge FAVORABLE — la durée n'a pas été mesurée.
+      // Le drapeau, lui, nomme la cause dans la queue de la phrase.
+      core = `durée non mesurable, ${e0Txt}`;
+    } else if (entry.s === 2) {
       core = (entry.m === 0)
         ? `déjà à la cible au départ, ${e0Txt}`
         : `cible atteinte en ${fmtLong(entry.m)} de circulation, ${e0Txt}`;
@@ -4957,6 +5111,17 @@
       if (!e) {
         cell.classList.add("ttt__day--none");
         txt = "·";
+      } else if (tttCounterReset(e)) {
+        // bug-106 — POURQUOI ce cas passe AVANT l'état : une journée dont le
+        // compteur de filtration a reculé s'archive en s = 2 (cible atteinte)
+        // avec m = 0. Sans ce test, fmtShort(0) rendrait « 0h00 » en
+        // .ttt__day--good, parce que 0 <= TTT_LONG_MIN : l'ABSENCE de mesure
+        // s'afficherait comme la MEILLEURE journée possible, et tirerait vers
+        // le bas toute moyenne de comparaison. Ce n'est pas un échec non plus
+        // (pas de .ttt__day--long) : on réemploie le vocabulaire des journées
+        // sans entrée — pointillé estompé, aucune durée affichée.
+        cell.classList.add("ttt__day--none");
+        txt = "—";
       } else if (e.s === 2) {
         cell.classList.add((e.m <= TTT_LONG_MIN) ? "ttt__day--good" : "ttt__day--long");
         txt = fmtShort(e.m);

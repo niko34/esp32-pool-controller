@@ -466,8 +466,9 @@ void HistoryManager::recordDataPoint() {
   point.phFiltered = sensors.getPhFiltered();
   point.orpFiltered = sensors.getOrpFiltered();
   point.filtrationActive = filtration.isRunning();
-  point.phDosing = PumpController.isPhDosing();
-  point.orpDosing = PumpController.isOrpDosing();
+  // bug-098 : les deux voies dans le masque — elles ne se confondent plus.
+  point.doseMask = (uint8_t)((PumpController.isPhDosing()  ? kHistDosePh  : 0) |
+                             (PumpController.isOrpDosing() ? kHistDoseOrp : 0));
   point.granularity = RAW;
 
   // feature-061 (it. 2) : filtration arrêtée ou purge post-reprise en cours →
@@ -570,7 +571,10 @@ void HistoryManager::saveToFile() {
       if (isfinite(point.orpFiltered)) obj["of"] = serialized(String(point.orpFiltered, 1));
     }
     obj["f"] = point.filtrationActive;
-    obj["d"] = point.phDosing || point.orpDosing;
+    // bug-098 : le MASQUE, pas un OU logique. Ecrit en entier (`"d":3`), relu
+    // par le discriminant de format de loadFromFile — et plus court sur la
+    // partition que l'ancien `"d":false`.
+    obj["d"] = point.doseMask;
     obj["g"] = static_cast<uint8_t>(point.granularity);
   }
   const size_t jsonSize = measureJson(doc);
@@ -747,8 +751,30 @@ void HistoryManager::loadFromFile() {
     dp.phFiltered = point["pf"] | NAN;
     dp.orpFiltered = point["of"] | NAN;
     dp.filtrationActive = point["f"];
-    dp.phDosing = point["d"];
-    dp.orpDosing = false;
+    // bug-098 — DISCRIMINANT DE FORMAT, sans cle de version ni numero de
+    // schema : `is<bool>()` separe EXACTEMENT les deux ecritures possibles.
+    //   `true`  (<= 2.46) → is<bool>()  : dosage, voie INDETERMINEE ;
+    //   `3`     (>= 2.47) → is<int>()   : masque de voies ;
+    //   absent            → ni l'un ni l'autre : aucun dosage.
+    // LIMITE ASSUMEE : un `"d"` en FLOTTANT (`3.0`) ou en entier 64 bits hors
+    // plage `int` ne satisfait NI is<bool>() NI is<int>() — il retombe donc sur
+    // 0, « aucun dosage », c'est-a-dire le mensonge favorable. Ni le firmware ni
+    // l'export ne produisent ces formes : il faut un fichier edite a la main ou
+    // un export etranger. Non traite pour ne pas elargir le discriminant a des
+    // types qui rendraient la separation des deux formats moins nette.
+    // Le masque conserve kHistDoseUnknownChannel : sans lui, le premier
+    // saveToFile/loadFromFile qui suit l'OTA retransformerait « voie
+    // indeterminee » en « aucun dosage » — le mensonge favorable reviendrait
+    // par la porte de derriere, cinq minutes apres la mise a jour.
+    JsonVariant dosingVar = point["d"];
+    if (dosingVar.is<bool>()) {
+      dp.doseMask = dosingVar.as<bool>() ? kHistDoseUnknownChannel : 0;
+    } else if (dosingVar.is<int>()) {
+      dp.doseMask = (uint8_t)(dosingVar.as<unsigned int>() &
+                              (kHistDosePh | kHistDoseOrp | kHistDoseUnknownChannel));
+    } else {
+      dp.doseMask = 0;
+    }
     dp.granularity = static_cast<Granularity>(point["g"] | 0);
     memoryBuffer.push_back(dp);
   }
@@ -1021,14 +1047,14 @@ void HistoryManager::consolidateData() {
     avgPoint.phFiltered = NAN;
     avgPoint.orpFiltered = NAN;
     avgPoint.filtrationActive = false;
-    avgPoint.phDosing = false;
-    avgPoint.orpDosing = false;
+    // bug-098 : masque nul = aucun dosage dans le creneau (l'union ci-dessous
+    // le remplit voie par voie).
+    avgPoint.doseMask = 0;
     avgPoint.granularity = HOURLY;
 
     int validCount = 0;
     int filtrationCount = 0;
-    int phDosingCount = 0;
-    int orpDosingCount = 0;
+    uint8_t doseMaskUnion = 0;
 
     for (const auto& p : group.second) {
       if (!isnan(p.ph)) {
@@ -1038,8 +1064,9 @@ void HistoryManager::consolidateData() {
       if (!isnan(p.orp)) avgPoint.orp += p.orp;
       if (!isnan(p.temperature)) avgPoint.temperature += p.temperature;
       if (p.filtrationActive) filtrationCount++;
-      if (p.phDosing) phDosingCount++;
-      if (p.orpDosing) orpDosingCount++;
+      // bug-098 : « au moins un » BIT A BIT — kHistDoseUnknownChannel d'un
+      // point herite se propage dans l'agregat au lieu de disparaitre.
+      doseMaskUnion = (uint8_t)(doseMaskUnion | p.doseMask);
     }
 
     if (validCount > 0) {
@@ -1047,8 +1074,7 @@ void HistoryManager::consolidateData() {
       avgPoint.orp = finalizeMean(avgPoint.orp, validCount);
       avgPoint.temperature = finalizeMean(avgPoint.temperature, validCount);
       avgPoint.filtrationActive = isMajority(filtrationCount, (int)group.second.size());
-      avgPoint.phDosing = anyTrue(phDosingCount);
-      avgPoint.orpDosing = anyTrue(orpDosingCount);
+      avgPoint.doseMask = doseMaskUnion;
 
       hourlyPoints.push_back(avgPoint);
     }
@@ -1099,14 +1125,14 @@ void HistoryManager::consolidateData() {
     avgPoint.phFiltered = NAN;
     avgPoint.orpFiltered = NAN;
     avgPoint.filtrationActive = false;
-    avgPoint.phDosing = false;
-    avgPoint.orpDosing = false;
+    // bug-098 : masque nul = aucun dosage dans le creneau (l'union ci-dessous
+    // le remplit voie par voie).
+    avgPoint.doseMask = 0;
     avgPoint.granularity = DAILY;
 
     int validCount = 0;
     int filtrationCount = 0;
-    int phDosingCount = 0;
-    int orpDosingCount = 0;
+    uint8_t doseMaskUnion = 0;
 
     for (const auto& p : group.second) {
       if (!isnan(p.ph)) {
@@ -1116,8 +1142,9 @@ void HistoryManager::consolidateData() {
       if (!isnan(p.orp)) avgPoint.orp += p.orp;
       if (!isnan(p.temperature)) avgPoint.temperature += p.temperature;
       if (p.filtrationActive) filtrationCount++;
-      if (p.phDosing) phDosingCount++;
-      if (p.orpDosing) orpDosingCount++;
+      // bug-098 : « au moins un » BIT A BIT — kHistDoseUnknownChannel d'un
+      // point herite se propage dans l'agregat au lieu de disparaitre.
+      doseMaskUnion = (uint8_t)(doseMaskUnion | p.doseMask);
     }
 
     if (validCount > 0) {
@@ -1125,8 +1152,7 @@ void HistoryManager::consolidateData() {
       avgPoint.orp = finalizeMean(avgPoint.orp, validCount);
       avgPoint.temperature = finalizeMean(avgPoint.temperature, validCount);
       avgPoint.filtrationActive = isMajority(filtrationCount, (int)group.second.size());
-      avgPoint.phDosing = anyTrue(phDosingCount);
-      avgPoint.orpDosing = anyTrue(orpDosingCount);
+      avgPoint.doseMask = doseMaskUnion;
 
       dailyPoints.push_back(avgPoint);
     }
@@ -1236,8 +1262,9 @@ void HistoryManager::dedupAggregatedPoints() {
       // jamais de filtrée (NaN par initialiseur de membre, jamais sérialisée).
       // Ne rien écrire ici garantit qu'aucune filtrée n'est inventée.
       dup->filtrationActive = dup->filtrationActive || p.filtrationActive;
-      dup->phDosing = dup->phDosing || p.phDosing;
-      dup->orpDosing = dup->orpDosing || p.orpDosing;
+      // bug-098 : union des masques — le OU bit a bit EST le « au moins un »
+      // d'avant, applique voie par voie (et non toutes voies confondues).
+      dup->doseMask = (uint8_t)(dup->doseMask | p.doseMask);
       continue;
     }
     out.push_back(p);

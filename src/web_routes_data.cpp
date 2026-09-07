@@ -1043,7 +1043,7 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
               st->idx++;
               size_t n = formatHistoryPointJson(
                   st->carry.line, sizeof(st->carry.line), p.timestamp, p.ph, p.orp,
-                  p.temperature, p.filtrationActive, p.phDosing || p.orpDosing,
+                  p.temperature, p.filtrationActive, p.doseMask,
                   static_cast<uint8_t>(p.granularity), st->first,
                   p.phFiltered, p.orpFiltered);
               if (n > 0) {
@@ -1053,7 +1053,8 @@ static void handleGetHistory(AsyncWebServerRequest* request) {
                 st->count++;
               }
               // n == 0 : point plus long que kHistoryPointJsonMaxBytes (pire cas
-              // réel recompté en feature-095 : 163 o pour 192 de capacité) →
+              // absolu re-mesuré en bug-098 : 161 o pour 192 de capacité, et
+              // 157 o pour le pire cas atteignable — décompte de constants.h) →
               // point SAUTÉ, jamais de JSON partiel. Compté (jamais journalisé
               // ici : un export en sauterait des centaines) — un unique WARNING
               // throttlé est émis à la clôture.
@@ -1166,8 +1167,23 @@ void setupDataRoutes(AsyncWebServer* server) {
         dp.phFiltered = item["phFiltered"].isNull() ? NAN : item["phFiltered"].as<float>();
         dp.orpFiltered = item["orpFiltered"].isNull() ? NAN : item["orpFiltered"].as<float>();
         dp.filtrationActive = item["filtration"] | false;
-        dp.phDosing = item["dosing"] | false;
-        dp.orpDosing = false;
+        // bug-098 — PIEGE VERIFIE : `item["dosing"] | false` rend `false` sur
+        // un ENTIER (l'operateur | d'ArduinoJson exige la CONCORDANCE de type),
+        // il aurait donc efface tout masque relu d'un export neuf. Lecture
+        // TYPEE, meme discriminant que loadFromFile : booleen = export <= 2.46
+        // (dosage, voie indeterminee), entier = masque, absent = aucun dosage.
+        // MEME LIMITE ASSUMEE qu'en relecture du fichier : un `"dosing"`
+        // flottant ou 64 bits hors plage `int` retombe sur 0 (cf. history.cpp).
+        JsonVariant dosingVar = item["dosing"];
+        if (dosingVar.is<bool>()) {
+          dp.doseMask = dosingVar.as<bool>() ? kHistDoseUnknownChannel : 0;
+        } else if (dosingVar.is<int>()) {
+          dp.doseMask = (uint8_t)(dosingVar.as<unsigned int>() &
+                                  (kHistDosePh | kHistDoseOrp |
+                                   kHistDoseUnknownChannel));
+        } else {
+          dp.doseMask = 0;
+        }
         uint8_t granularity = item["granularity"] | 0;
         dp.granularity = granularity <= DAILY ? static_cast<Granularity>(granularity) : RAW;
 

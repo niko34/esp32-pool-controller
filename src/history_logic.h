@@ -32,9 +32,6 @@ float finalizeMean(float sum, int count);
 // Division ENTIÈRE : 2/4 → false (2 > 2 faux), 3/4 → true, 3/5 → true.
 bool isMajority(int trueCount, int total);
 
-// « Au moins un » : count > 0.
-bool anyTrue(int count);
-
 // bug-nospc-partition-history : admission d'une écriture de /history.json.
 // Vrai si l'écriture peut être admise : freeBytes + oldFileBytes >= jsonBytes + marginBytes
 // (oldFileBytes = octets bruts de l'ancien fichier, supprimé avant réécriture ;

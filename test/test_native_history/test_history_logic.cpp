@@ -7,7 +7,6 @@
 //   - isOlderThan     (AC2, frontière stricte + wrap uint32)
 //   - finalizeMean    (AC3, count==0 → NaN)
 //   - isMajority      (AC4, division entière stricte)
-//   - anyTrue         (AC4)
 //   - historySaveAdmit (AC5, bug-nospc-partition-history : garde d'espace,
 //     frontière large, anti-overflow SIZE_MAX)
 // via l'API publique, pas l'implémentation interne.
@@ -88,7 +87,7 @@ void test_finalizeMean_fractional_result(void) {
 }
 
 // -----------------------------------------------------------------------------
-// AC4 — isMajority (division ENTIÈRE stricte) + anyTrue
+// AC4 — isMajority (division ENTIÈRE stricte)
 // -----------------------------------------------------------------------------
 void test_isMajority_2_of_4_false(void) {
   TEST_ASSERT_FALSE(isMajority(2, 4));  // 2 > 2 faux
@@ -108,15 +107,12 @@ void test_isMajority_1_of_1_true(void) {
 void test_isMajority_1_of_2_false(void) {
   TEST_ASSERT_FALSE(isMajority(1, 2));  // 1 > 1 faux
 }
-void test_anyTrue_zero_false(void) {
-  TEST_ASSERT_FALSE(anyTrue(0));
-}
-void test_anyTrue_one_true(void) {
-  TEST_ASSERT_TRUE(anyTrue(1));
-}
-void test_anyTrue_five_true(void) {
-  TEST_ASSERT_TRUE(anyTrue(5));
-}
+// bug-098 (2026-09-07) — anyTrue() a été RETIRÉE du module pur avec ses trois
+// tests : l'union bit à bit des masques de dosage (`doseMaskUnion |=
+// p.doseMask`) l'a remplacée dans les deux boucles de consolidateData(), voie
+// par voie, et le dernier `anyTrue(phDosingCount)` a disparu avec les deux
+// booléens de DataPoint. Des assertions vertes sur du code mort font croire à
+// un invariant vivant et maintiennent une couverture de 100 % trompeuse.
 
 // -----------------------------------------------------------------------------
 // AC5 — historySaveAdmit (bug-nospc-partition-history)
@@ -285,6 +281,19 @@ void test_bucketConsolidable_future_bucket_refused(void) {
 // d'être réécrit (WARNING throttlé 1 h, retenté 5 min plus tard) — l'historique
 // se fige sans que l'utilisateur le voie sur ses courbes.
 
+// ⚠️ MODÈLE PÉRIMÉ SUR DEUX POINTS, relevé en bug-098 (2026-09-07) — signalé à
+// la revue, NON corrigé ici parce que la correction propage sur une dizaine de
+// constantes asservies (23497 / 25513 / 30616 / 2016 / 7119 / 8102 / 4006 /
+// 43008) et sur tout le récit de budget :
+//   1. la clé « d » n'est plus un BOOLÉEN mais un masque ENTIER (bug-098). Le
+//      modèle ci-dessous SURESTIME donc le fichier — de 1 113 o sur la charge
+//      de 339 points (chiffre mesuré par test_native_dose_mask, section 6). Il
+//      se trompe du côté SÛR (il annonce plus gros que la réalité), c'est
+//      pourquoi ces tests restent verts et pertinents comme MAJORANT ;
+//   2. la partition `history` fait 256 Ko depuis le layout v5 (ADR-0068), pas
+//      les 64 Ko sur lesquels raisonnent les tests d'admission qui suivent.
+// Tant que ce n'est pas repris, lire ces chiffres comme une BORNE HAUTE
+// historique, pas comme l'état du format persisté d'aujourd'hui.
 // Longueur d'un point tel que PERSISTÉ (pas tel qu'exporté sur /get-history).
 static size_t historyPointPersistedLen(unsigned long ts, float ph, float orp,
                                        float temp, int withFiltered, float phF,
@@ -686,9 +695,6 @@ int main(int argc, char** argv) {
   RUN_TEST(test_isMajority_0_of_0_false);
   RUN_TEST(test_isMajority_1_of_1_true);
   RUN_TEST(test_isMajority_1_of_2_false);
-  RUN_TEST(test_anyTrue_zero_false);
-  RUN_TEST(test_anyTrue_one_true);
-  RUN_TEST(test_anyTrue_five_true);
 
   // AC5 — historySaveAdmit
   RUN_TEST(test_saveAdmit_exact_boundary_admitted);

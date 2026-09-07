@@ -83,6 +83,22 @@ constexpr uint8_t kTttFlagPowerCycle    = 0x08;  // reprise après coupure secte
 //   - BIT 4 (débranchement par l'opérateur) : mode manuel, mode maintenance,
 //     assistant de mesure de débit.
 constexpr uint8_t kTttFlagOperatorOff   = 0x10;
+// Bit 5 — COMPTEUR DE FILTRATION EN RECUL (bug-106). `minutes` est une DURÉE :
+// son domaine ne peut pas porter l'absence de durée. Quand `filtTotalMin`
+// recule (NVS `pool-daily` effacée, restauration d'usine, remise à zéro
+// manuelle), la soustraction n'a plus de sens et l'on rend 0 — mais 0 minute
+// est aussi la MEILLEURE journée possible : sans ce bit, la journée s'archivait
+// en « atteinte » à 0 minute et s'affichait comme un record.
+//
+// Le bit dit « cette valeur n'est pas une mesure ». Il n'annule ni l'état ni
+// les minutes (le format servi à l'UI reste brut, cf. `ph_ttt_min`) : c'est
+// exactement pourquoi une sentinelle DANS `minutes` a été écartée — elle
+// aurait recommis, dans le champ voisin, la faute que bug-098 corrige.
+// Comme kTttFlagOperatorOff, il EXCLUT la journée des moyennes de comparaison
+// de versions ; il ne la supprime pas (mieux vaut une journée signalée qu'une
+// journée absente, dont tttHistoryCloseOrphans ferait de toute façon une
+// « non atteinte à 0 minute » le lendemain).
+constexpr uint8_t kTttFlagCounterReset  = 0x20;
 
 // -----------------------------------------------------------------------------
 // UNE JOURNÉE ARCHIVÉE (12 octets, POD — aucun trou d'alignement)
@@ -260,7 +276,33 @@ struct TttVerdict {
 
 // Minutes de filtration écoulées depuis t0, bornées à 1440 (un uint16 ne porte
 // pas plus qu'une journée, et une journée n'a pas plus de 1440 minutes).
-uint16_t tttElapsedMinutes(const TttLive& st, uint32_t filtTotalMin);
+// bug-106 : `st` est NON CONST — un recul du compteur POSE
+// kTttFlagCounterReset dans `st.flags`. Le nom dit « Update » pour cette seule
+// raison : un lecteur ne doit pas la prendre pour une requête. C'est
+// volontairement ici, et non chez les appelants : la fonction est le point de
+// passage UNIQUE des trois chemins (tick courant, clôture, reprise après
+// coupure de time_to_target.cpp), et un drapeau posé site par site finit
+// toujours par manquer à l'un d'eux — le chemin VIF, celui qui alimente
+// l'instantané servi à l'UI, était précisément celui que la spec ne nommait
+// pas. Le retour reste 0 (une durée négative n'existe pas) : le bit dit
+// seulement que ce 0 n'est pas une mesure.
+//
+// ⚠️ CONDITION DE COPIE — cette forme (un accesseur qui marque son propre
+// état) est un PRÉCÉDENT ASSUMÉ, donc elle sera imitée. Elle n'est correcte
+// que parce que l'effet de bord est un OR IDEMPOTENT sur un champ de bits :
+// la fonction est appelée jusqu'à une fois par seconde et par voie, et
+// plusieurs fois par tick sur le chemin de clôture. Un COMPTEUR (`++`), un
+// horodatage, un drapeau incrémental ou toute écriture non idempotente
+// casserait la forme EN SILENCE — pas de test rouge, juste une valeur qui
+// dérive avec la fréquence d'appel. Si un tel besoin apparaît, il faut sortir
+// l'effet de bord de l'accesseur, pas l'y ajouter.
+//
+// AJOUTER UN « PEEK » (lecture sans marquage, p. ex. pour un aperçu UI) est
+// possible, mais alors il ne réutilise PAS ce corps : il duplique le calcul
+// sans la pose du bit. Le partager en passant un booléen « ne pas marquer »
+// ramènerait exactement le défaut de bug-106, un chemin de lecture qui oublie
+// de déclarer que sa valeur n'est pas une mesure.
+uint16_t tttUpdateElapsedMinutes(TttLive& st, uint32_t filtTotalMin);
 
 // Remet la voie à l'état 0 (aucun départ) — bascule de jour, heure perdue.
 void tttLiveReset(TttLive& st);

@@ -119,10 +119,15 @@ uint8_t tttHistoryCloseOrphans(TttHistory& h, uint32_t today) {
 // Machine d'états
 // -----------------------------------------------------------------------------
 
-uint16_t tttElapsedMinutes(const TttLive& st, uint32_t filtTotalMin) {
+uint16_t tttUpdateElapsedMinutes(TttLive& st, uint32_t filtTotalMin) {
   // Compteur en recul (NVS `pool-daily` effacée, restauration d'usine) : une
   // durée négative n'existe pas — on rend 0 plutôt qu'un repliement à 4 milliards.
-  if (filtTotalMin < st.t0FiltMin) return 0;
+  // bug-106 : et ce 0 se DÉCLARE. Sans le drapeau, la journée partait en NVS à
+  // 0 minute — soit, pour la métrique, la meilleure journée jamais observée.
+  if (filtTotalMin < st.t0FiltMin) {
+    st.flags |= kTttFlagCounterReset;
+    return 0;
+  }
   const uint32_t elapsed = filtTotalMin - st.t0FiltMin;
   return (elapsed > 1440UL) ? (uint16_t)1440 : (uint16_t)elapsed;
 }
@@ -153,7 +158,7 @@ float residualOrNan(const TttInputs& in) {
 // Clôture d'une journée en « non atteinte » : l'état devient 3, les minutes
 // portent la durée TOTALE de filtration écoulée depuis t0.
 void closeMissed(TttLive& st, const TttInputs& in, TttVerdict& v) {
-  st.minutes = tttElapsedMinutes(st, in.filtTotalMin);
+  st.minutes = tttUpdateElapsedMinutes(st, in.filtTotalMin);
   st.state = kTttStateMissed;
   st.holding = 0;
   st.holdStartFiltMin = 0;
@@ -267,7 +272,7 @@ TttVerdict tttTick(TttLive& st, const TttInputs& in) {
   //    minuit (un rebond après l'atteinte ne rouvre pas la journée).
   if (st.state != kTttStateRunning) return v;
 
-  st.minutes = tttElapsedMinutes(st, in.filtTotalMin);
+  st.minutes = tttUpdateElapsedMinutes(st, in.filtTotalMin);
 
   // Une mesure absente vaut SORTIE DE BANDE (C3) : la tenue repart de zéro, le
   // chronomètre continue.
@@ -286,6 +291,20 @@ TttVerdict tttTick(TttLive& st, const TttInputs& in) {
     return v;
   }
   if (in.filtTotalMin < st.holdStartFiltMin) {  // compteur en recul : tenue relancée
+    // bug-106 : recul détecté ENTRE t0 et le début de tenue —
+    // tttUpdateElapsedMinutes ne l'a donc pas vu (filtTotalMin >= t0FiltMin),
+    // et c'est pourtant le même événement. La tenue repart, la journée reste
+    // marquée.
+    //
+    // TROU RÉSIDUEL CONNU (revue bug-106) : le bit vit dans TttLive, il
+    // n'atteint la NVS qu'à l'archivage de la journée. Un recul SUIVI d'une
+    // remontée du compteur au-dessus de t0, AVEC une coupure secteur entre les
+    // deux, perd donc le bit — la journée se rouvre depuis l'anneau sans lui.
+    // Atténuation : cette même coupure pose kTttFlagPowerCycle, la journée
+    // reste donc signalée, mais pour le mauvais motif. Non corrigé ici : le
+    // remède (une écriture NVS à chaque recul) coûterait de l'usure de flash
+    // pour un scénario à trois conditions simultanées.
+    st.flags |= kTttFlagCounterReset;
     st.holdStartFiltMin = in.filtTotalMin;
     return v;
   }
@@ -294,9 +313,18 @@ TttVerdict tttTick(TttLive& st, const TttInputs& in) {
     // été atteinte à holdStartFiltMin, les 30 minutes suivantes n'ont fait que
     // le prouver.
     st.state = kTttStateReached;
-    const uint32_t reached = (st.holdStartFiltMin >= st.t0FiltMin)
-                                 ? (st.holdStartFiltMin - st.t0FiltMin)
-                                 : 0UL;
+    // bug-106 — L'ARCHIVAGE, le site nommé par la spec : `holdStartFiltMin <
+    // t0FiltMin` n'arrive qu'après un recul du compteur, et le repli à 0
+    // produisait alors une journée « atteinte en 0 minute », rendue par l'UI
+    // dans la classe des bonnes journées. Le drapeau la distingue d'une vraie
+    // atteinte immédiate (bassin déjà à la cible à t0), qui elle vaut
+    // légitimement 0 minute.
+    uint32_t reached = 0UL;
+    if (st.holdStartFiltMin >= st.t0FiltMin) {
+      reached = st.holdStartFiltMin - st.t0FiltMin;
+    } else {
+      st.flags |= kTttFlagCounterReset;
+    }
     st.minutes = (reached > 1440UL) ? (uint16_t)1440 : (uint16_t)reached;
     st.holding = 0;
     v.event = TttEvent::kReached;
