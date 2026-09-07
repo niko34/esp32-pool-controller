@@ -4786,6 +4786,35 @@
     }
   }
 
+  // Aplatissement d'une charge /get-kpi pour UNE voie.
+  // ---------------------------------------------------
+  // /get-kpi sert chaque journée avec une sous-structure PAR RÉGULATION
+  // ({"d":20260906,"ph":{"s":2,"m":356,…},"orp":{…}}), alors que
+  // renderTttDays() lit s/m/e0/f au PREMIER niveau de l'entrée. Sans cette
+  // conversion, e.s vaut undefined et les sept pastilles tombent dans le cas
+  // par défaut (« en cours », « — ») — bug-111.
+  function tttDaysForChannel(days, prefix) {
+    // POURQUOI cette garde : null ne signifie pas « aucune journée », il
+    // signifie « on ne sait pas » (échec de /get-kpi, cf. fetchKpiHistory).
+    // renderTttDays s'appuie dessus pour écrire « Historique indisponible ».
+    // Un .map() non gardé rendrait un tableau, donc une bande vide sous la
+    // légende « 7 derniers jours » — qui se lit « rien d'enregistré ». On
+    // remplacerait un aveu d'ignorance par un mensonge.
+    if (!Array.isArray(days)) return days;
+    const out = [];
+    days.forEach((e) => {
+      if (!e || typeof e.d !== "number") return;
+      const c = e[prefix];
+      // Voie absente de l'entrée : on ne pousse RIEN, on ne fabrique pas un
+      // objet vide. byDate ne trouvera pas cette date et l'emplacement restera
+      // un trou (« · ») À SA PLACE — la bande étant alignée par date, retirer
+      // une entrée ne décale aucune autre (cf. commentaire ci-dessus).
+      if (!c || typeof c !== "object") return;
+      out.push({ d: e.d, s: c.s, m: c.m, e0: c.e0, f: c.f });
+    });
+    return out;
+  }
+
   // Rendu d'UNE voie. Une seule implémentation, paramétrée par l'unité.
   function renderTttChannel(prefix, unit, data) {
     const block = $(`#${prefix}-ttt-block`);
@@ -4844,7 +4873,8 @@
     if (detEl) detEl.textContent = detail ? " " + detail : "";
 
     renderTttDays($(`#${prefix}-ttt-days`), $(`#${prefix}-ttt-note`), $(`#${prefix}-ttt-caption`),
-                  _kpiDays, { s: state, m: min, e0: e0v, f: flags }, unit);
+                  tttDaysForChannel(_kpiDays, prefix),
+                  { s: state, m: min, e0: e0v, f: flags }, unit);
     return state;
   }
 

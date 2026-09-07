@@ -511,13 +511,16 @@ curl -u admin:monmotdepasse "http://poolcontroller.local/get-kpi"
 }
 ```
 
-| Clé | Type | Description |
-|-----|------|-------------|
-| `d` | uint32 | Jour civil `AAAAMMJJ`. |
-| `s` | uint8 | État de la journée — même codage que `*_ttt_state` de `/data` (`0`-`3`, **4-255 réservés**). |
-| `m` | uint16 | **Minutes de circulation** (≤ 1440) — **sens variable selon `s`**, cf. [`/data`](#get-data--write). |
-| `e0` | float \| `null` | Écart initial signé à t0. pH **2 décimales**, ORP **1** — mêmes arrondis que `/data` et le WS. `null` = journée sans départ exploitable. |
-| `f` | uint8 | **Champ de bits** — même encodage figé que `*_ttt_flag`, cf. [`/data`](#get-data--write). |
+⚠️ **La charge est imbriquée sur deux niveaux** : une entrée de `days` ne porte au premier niveau que `d`, et **une sous-structure par régulation** (`ph`, `orp`). Les quatre valeurs `s` / `m` / `e0` / `f` sont **à l'intérieur** de `ph` / `orp`, **jamais** au premier niveau de l'entrée. Un client qui lit `entrée.s` obtient `undefined` pour **toutes** les journées (`bug-111`, v2.45.1).
+
+| Clé | Niveau | Type | Description |
+|-----|--------|------|-------------|
+| `d` | entrée | uint32 | Jour civil `AAAAMMJJ`. |
+| `ph`, `orp` | entrée | objet, **omis** si absent | Sous-structure de la régulation pour cette journée. Une clé absente = **pas d'entrée** pour cette voie ce jour-là. |
+| `s` | dans `ph` / `orp` | uint8 | État de la journée — même codage que `*_ttt_state` de `/data` (`0`-`3`, **4-255 réservés**). |
+| `m` | dans `ph` / `orp` | uint16 | **Minutes de circulation** (≤ 1440) — **sens variable selon `s`**, cf. [`/data`](#get-data--write). |
+| `e0` | dans `ph` / `orp` | float \| `null` | Écart initial signé à t0. pH **2 décimales**, ORP **1** — mêmes arrondis que `/data` et le WS. `null` = journée sans départ exploitable. |
+| `f` | dans `ph` / `orp` | uint8 | **Champ de bits** — même encodage figé que `*_ttt_flag`, cf. [`/data`](#get-data--write). |
 
 **Règles de lecture** :
 

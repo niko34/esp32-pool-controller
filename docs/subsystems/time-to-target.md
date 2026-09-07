@@ -285,6 +285,34 @@ bool       isMemoryUnavailable() const;        // lisible depuis un handler asyn
 | MQTT | **aucun topic** — la feature les exclut explicitement |
 | UI | [page-ph.md](../features/page-ph.md#atteinte-de-la-cible-feature-096-v2370) et [page-orp.md](../features/page-orp.md#atteinte-de-la-cible-feature-096-v2370). **Le tableau de bord n'est pas touché.** |
 
+⚠️ **`/get-kpi` sert deux voies dans une entrée, `/data` et le WS n'en servent
+qu'une chacune sous un préfixe plat.** Une entrée de `/get-kpi` porte `d` au
+premier niveau et **une sous-structure par régulation** :
+
+```json
+{"d":20260906,"ph":{"s":2,"m":356,"e0":-0.02,"f":0},"orp":{"s":2,"m":120,"e0":-45.0,"f":0}}
+```
+
+Les valeurs `s` / `m` / `e0` / `f` sont **à l'intérieur** de `ph` / `orp`. Le
+rendu de la bande, lui, travaille sur des entrées **plates** : l'interface
+aplatit donc la charge pour la voie affichée (`tttDaysForChannel()` dans
+[`data/app.js`](../../data/app.js)) avant d'appeler `renderTttDays()`. Lire
+`entrée.s` directement rend `undefined` pour **les sept journées** : c'est
+exactement `bug-111` (v2.45.1), où seule la case du jour s'affichait — elle est
+**écrasée par l'état vivant de `/data`** juste avant l'affichage, et n'a donc
+jamais dépendu de cet aplatissement.
+
+Deux invariants de l'aplatissement, tous deux porteurs d'un message utilisateur :
+
+- **`null` reste `null`.** L'historique vaut `null` après un échec de `/get-kpi`
+  — « on ne sait pas », d'où la légende « Historique indisponible ». Le
+  convertir en tableau vide afficherait une bande vide sous « 7 derniers
+  jours », qui se lit « aucune journée enregistrée » : un mensonge à la place
+  d'un aveu d'ignorance.
+- **Une voie absente reste un trou à sa place** (`·`), jamais une pastille
+  « en cours ». La bande étant alignée **par date**, retirer une entrée ne
+  décale aucune autre.
+
 ## Journal
 
 Un **gabarit unique** paramétré par la phase (trois messages distincts pesaient
@@ -367,7 +395,7 @@ de purge), `config` (`safetyLimits.filtTotalMin`, `mqttCfg`, `pumpProtection`),
 - [`src/config.cpp`](../../src/config.cpp) — `loadTttHistory()` / `saveTttHistory()` (transport NVS `pool-kpi`, rien d'autre)
 - [`src/web_routes_data.cpp`](../../src/web_routes_data.cpp) — `/data` (8 champs) et `GET /get-kpi`
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — trame `sensor_data`
-- [`data/app.js`](../../data/app.js) — `updateTimeToTargetDisplay()`, `renderTttChannel()`, `renderTttDays()`
+- [`data/app.js`](../../data/app.js) — `updateTimeToTargetDisplay()`, `renderTttChannel()`, `tttDaysForChannel()` (aplatissement par voie), `renderTttDays()`
 
 ## Documentation liée
 

@@ -2,6 +2,61 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.45.1] - 2026-09-07
+
+> **Ce qui change pour vous, en une phrase** : sur les pages **pH** et **ORP**, la
+> rangée de sept pastilles « **Atteinte de la cible** » affiche enfin les
+> **journées passées** — elle n'affichait que celle du jour.
+>
+> ✅ **Aucune donnée n'a été perdue.** Les journées étaient bien archivées dans
+> l'appareil pendant tout ce temps : le relevé du 06/09 portait **356 min** côté
+> pH et **120 min** côté ORP, celui du 05/09 **224** et **54**. Le défaut était
+> **purement d'affichage**. Si vous avez vu six cases vides pendant des semaines
+> et cru votre historique effacé, il ne l'a jamais été — il apparaît tel quel
+> après cette mise à jour, sans rien à réimporter.
+
+### Frontend
+
+- **Six pastilles sur sept restaient grises avec un tiret** (`bug-111`). La
+  réponse de [`GET /get-kpi`](docs/API.md#get-get-kpi--write) range les valeurs
+  d'une journée dans une **sous-structure par régulation**
+  (`{"d":20260906,"ph":{"s":2,"m":356,…},"orp":{…}}`), alors que le rendu lisait
+  `s` / `m` / `e0` / `f` **au premier niveau** de l'entrée. La valeur lue valait
+  donc `undefined`, aucune branche d'état ne correspondait, et les sept cases
+  tombaient dans le cas par défaut — « journée en cours », contour tireté, `—`.
+  Les charges utiles servies par l'appareil, elles, étaient conformes : **rien
+  n'a changé côté firmware**.
+
+- **Pourquoi le défaut a traversé sa revue** : la case d'aujourd'hui est
+  **écrasée** juste avant l'affichage par l'état vivant issu de `/data` — un
+  choix délibéré, commenté sur place, destiné à éviter d'afficher le « 0 min »
+  figé de l'entrée archivée à t0. Le seul jour qui **n'avait pas besoin** de
+  l'historique était donc aussi le seul à s'afficher correctement, ce qui donnait
+  à la bande l'apparence de fonctionner.
+
+- **Deux comportements sont explicitement préservés** : un échec de `/get-kpi`
+  affiche toujours « **Historique indisponible** » et **jamais** une bande vide
+  (qui se lirait « aucune journée enregistrée ») ; une journée sans valeur pour
+  la voie affichée reste un **trou à sa place** (`·`), la rangée étant alignée
+  par date — une pastille décalée annoncerait la mauvaise date.
+
+### Documentation
+
+- `docs/API.md` : la forme **imbriquée** de `/get-kpi` est désormais explicite
+  dans le tableau des clés (`s` / `m` / `e0` / `f` sont **dans** `ph` / `orp`, pas
+  au premier niveau) — c'est précisément l'ambiguïté qui a produit le bug.
+- `docs/subsystems/time-to-target.md` : même précision sur le contrat servi, et
+  mention de l'aplatissement côté interface.
+- **Aucun ADR** : correction d'un défaut de lecture d'une charge utile déjà
+  spécifiée, aucune alternative à documenter, aucun contrat modifié.
+- ✅ `docs/features/page-ph.md`, `docs/features/page-orp.md` et
+  `docs/user/src/guide-regulation.html` **non modifiés** : ils décrivaient déjà
+  le comportement attendu (rangée alignée par date, écrasement de la case du
+  jour, légende d'indisponibilité). La documentation était juste, seul le code
+  était faux — aucun PDF à régénérer, aucune capture d'écran à refaire.
+
+---
+
 ## [2.45.0] - 2026-09-07
 
 > **Ce qui change pour vous, en une phrase** : la page **Produits** affiche en
