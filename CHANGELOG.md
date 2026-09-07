@@ -2,9 +2,137 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.45.0] - 2026-09-07
+
+> **Ce qui change pour vous, en une phrase** : la page **Produits** affiche en
+> permanence le **relevé** (volume injecté + démarrages de pompe), et
+> **« Nouveau bidon » demande désormais confirmation** en vous montrant ce
+> relevé juste avant de l'effacer.
+
+### Fonctionnalités
+
+- **Le relevé est affiché en permanence** sur les deux cartes produit, sous la
+  barre de volume : **Volume injecté** (en mL) et **Démarrages pompe**. Il ne
+  faut plus aller le chercher : il **existe avant** le jour où il est détruit.
+
+- **« Nouveau bidon » demande confirmation.** Le bouton partait au **premier
+  clic**, sans rien demander, sur une action **irréversible** — les deux seules
+  valeurs qui permettent de vérifier la précision du comptage disparaissaient
+  sans avoir été vues. La confirmation les présente maintenant **à l'instant
+  exact où elles vont être effacées**, avec un avertissement « Relevé peu
+  fiable » **uniquement** s'il y a lieu (un « 0 » permanent apprendrait à
+  ignorer la zone). La configuration est **rechargée par HTTP** avant l'affichage :
+  une trame WebSocket partielle donnerait un relevé incomplet au moment même
+  où il est détruit.
+
+  Rien d'autre ne change : « Enregistrer » ne touche toujours pas au décompte,
+  et une valeur de bidon saisie mais non enregistrée reste prise en compte par
+  la remise à zéro.
+
+### Firmware
+
+- **Compteur de démarrages de pompe doseuse** (`feature-110`) — un compteur `N`
+  par produit, à côté du volume cumulé `V`. Relevés **ensemble** au changement
+  de bidon, ils **départagent** deux modèles de biais de comptage dont les
+  correctifs sont **incompatibles** : erreur **multiplicative** (débit
+  surestimé) contre **déficit fixe par démarrage** (`V = V_réel + N·δ`). La
+  concordance jerricane du **06/09/2026** a mesuré **+4,76 %** de surcomptage
+  (~240 mL sur ~5,04 L), soit **δ ≈ 0,21 mL/démarrage** sous le second modèle.
+  **Aucune correction n'est appliquée : cette version MESURE.** Le correctif
+  appartient à `feature-078`, et il ne doit pas être tenté avant que la nature
+  du biais soit établie.
+
+- **Point d'incrémentation** : le front `OFF→ON` de la pompe, **dans la branche
+  même qui crédite le volume** (`accountPumpVolume`), sous **la même garde**
+  `productTrackingEnabled()`. Par construction, un démarrage compté ⇔ un volume
+  crédité par ce démarrage : `N` et `V` couvrent **exactement** le même
+  ensemble d'événements, sans aucune garde ajoutée. Remise à zéro
+  **exclusivement** couplée à celle du volume, dans les blocs
+  `*_reset_container`. Incrément **saturant** : un compteur figé est un aveu
+  lisible, un compteur qui reboucle donnerait un rapport `V/N` silencieusement
+  faux.
+
+- **Quatre compteurs d'hygiène** (`*_anom`, `*_anom_ml`) captent un défaut
+  **pré-existant**, révélé et non introduit par cette version : les sorties
+  anticipées de `update()` (eau absente, stabilisation, assistant de débit,
+  capteurs non initialisés) coupent les pompes mais reviennent **avant** la
+  comptabilité — à la reprise, toute la durée de la coupure est créditée au
+  débit plateau (5 min → ~5,7 mL, 1 h → ~68 mL, 6 h → ~408 mL) pendant que le
+  redémarrage physique n'est pas compté. Les 240 mL du 06/09 valent **3,5 min**
+  de crédit fantôme. Seuil `kAcctDeltaAnomalyMs = 5 000 ms` (frontière `>`
+  **stricte**). Ces ticks ne sont **ni rejetés ni corrigés** — la comptabilité
+  du volume est intouchée : ils servent à **disqualifier** un relevé pollué.
+
+- **MQTT** : 8 clés ajoutées au payload du topic **retenu**
+  `<base>/diagnostic` (`*_starts`, `*_total_ml`, `*_anom`, `*_anom_ml`) —
+  **aucun topic neuf, aucune entité Home Assistant neuve**. Le relevé se relit
+  donc **à froid, plusieurs jours après**, et survit à un redémarrage.
+
+- **`kMqttPublishBufferBytes` porté de 1024 à 1536 o** — **correction d'un
+  refus silencieux**. Sous 1024, PubSubClient **refusait la publication** du
+  diagnostic sans rien écrire sur le fil : la garde est
+  `bufferSize < 5 + 2 + strnlen(topic) + plength` (`MQTT_MAX_HEADER_SIZE = 5`),
+  soit **1 057 o requis au pire cas** contre 1 024 disponibles. Le diagnostic
+  n'aurait pas été tronqué, il aurait **disparu en entier** — `hdef` / `ldef` /
+  `xdef` compris. Marge rétablie : **479 o (31 %)**. Coût RAM **+512 o**,
+  alloués une fois dans `begin()`.
+
+- **Le retour de `safePublish()` est désormais testé à ce site** — il était
+  **ignoré**, la disparition du diagnostic était donc **totalement
+  silencieuse**. Deux `WARNING` throttlés à 1 h, séparés parce que les causes
+  n'appellent pas la même action : « trop long » se corrige dans le firmware,
+  « refusée » est un problème de lien. Le second capte aussi le cas où
+  `setBufferSize()` échoue au `realloc` et laisse la bibliothèque à ses 256 o
+  par défaut — cas jusqu'ici **muet**.
+
+- **HTTP / WebSocket** : `GET /get-config` sert **6 clés** neuves
+  (`*_starts`, `*_anom`, `*_anom_ml`) ; seules `ph_starts` et `orp_starts`
+  entrent dans la trame WebSocket `config` (**+47 o**, trame à **83 clés**,
+  ≈ **2 995 o** au pire cas, **marge 589 o** sous `kWsFrameBufBytes = 3584`).
+  Les **4 clés d'hygiène sont HTTP-seules** et **déclarées** comme telles dans
+  la sentinelle de parité (motif écrit, asserté) : elles sont lues **une fois
+  par campagne**, les pousser en continu dépenserait le budget de trame pour
+  rien.
+
+### Documentation
+
+- `docs/features/page-dosages.md` : **mode d'emploi du relevé** — quoi noter,
+  quand, et **comment reconnaître un relevé qui ne conclut rien** (verdict
+  `pool-chemistry` du 07/09 : `anom_ml / V_bidon` < 0,5 % concluant, 0,5–1,5 %
+  concluant après soustraction explicite, **> 1,5 % NON CONCLUANT sur δ** ;
+  co-critère `anom_count / N ≤ 2 %`). Y sont écrits les trois points de fond :
+  le phénomène se nomme **« déficit de démarrage »** et jamais « amorçage »
+  (0,21 mL = **0,19 s** de plateau à 68 mL/min, signature d'une rampe) ; les
+  deux biais **poussent δ dans le même sens**, donc le déficit fixe est
+  systématiquement **favorisé par l'asymétrie** ; **une seule campagne ne peut
+  pas conclure** (il faut deux campagnes dont le mL/démarrage moyen diffère
+  d'un facteur ≥ 2), et le relevé du 06/09 **n'est pas requalifiable après
+  coup**. Croisement vers le **protocole de banc** — 24 pouls de 5 s contre
+  12 de 10 s, à temps de pompe égal — qui est le chemin **rapide** là où le
+  relevé de bidon est le chemin **sans effort humain**.
+- `docs/subsystems/ws-manager.md` : **table de budget de trame rectifiée** —
+  elle annonçait 81 clés / ≈ 2 948 o / marge 636 o, valeurs **périmées** depuis
+  feature-110. C'est le chiffre sur lequel le prochain contributeur arbitre son
+  propre ajout : 83 clés, ≈ 2 995 o, **marge 589 o**, gabarit 3008. Nouvelle
+  section sur les 2 clés WS et les 4 exceptions HTTP-seules (table
+  `kHttpOnlyKeys` à **12 entrées**).
+- `docs/subsystems/pump-controller.md` : les 6 compteurs, le point
+  d'incrémentation, `kAcctDeltaAnomalyMs`, la persistance NVS (`pool_prod`,
+  flush différé 60 s) et le **défaut pré-existant** des sorties anticipées.
+- `docs/API.md` : les 6 clés de `/get-config`, dont les 4 **HTTP-seules**.
+- `docs/MQTT.md` : les 8 clés du diagnostic, le motif du passage à 1536 o et
+  les deux `WARNING` ; cadence de publication du diagnostic corrigée
+  (**toutes les 5 min**, pas seulement au démarrage et à la reconnexion).
+- `docs/user/src/guide-utilisation.html` : le nouveau comportement du bouton
+  « Nouveau bidon » et ce qu'il faut noter au changement de bidon.
+- **Aucun ADR** : ajout d'observabilité, aucune décision structurante (voir le
+  rapport de cycle).
+
+---
+
 ## [2.44.0] - 2026-09-06
 
-> ⚠️ **`src/version.h` n'est PAS encore bumpé** — il annonce toujours `2.43.0`. Le passage à **2.44.0** (mineure : comportement observable modifié, aucune rupture de contrat) est une **action à faire** avant release : `#define FIRMWARE_VERSION "2.44.0"`. Le code de ce cycle est gelé, revu et approuvé ; seul ce bump reste.
+> ℹ️ **Bump résolu** : `src/version.h` a été porté directement à `2.45.0` au cycle suivant (feature-110) — la 2.44.0 n'a jamais eu de `FIRMWARE_VERSION` propre. Aucune action ne reste sur cette entrée.
 >
 > **Ce qui change pour vous, en une phrase** : le **journal de bord redevient exploitable** — il couvrait 28 minutes, il doit couvrir **des heures**.
 

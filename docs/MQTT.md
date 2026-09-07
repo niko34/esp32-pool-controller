@@ -243,7 +243,7 @@ Publication **edge-triggered** : un message n'est émis qu'à la transition (ent
 
 ## Diagnostic
 
-Topic : `{base}/diagnostic` — publié au démarrage et à chaque reconnexion.
+Topic : `{base}/diagnostic` — publié au démarrage, à chaque reconnexion, puis **toutes les 5 min** tant que le lien MQTT tient (`kDiagnosticPublishIntervalMs`, [`src/main.cpp:509`](../src/main.cpp:509)).
 
 ```json
 {
@@ -270,7 +270,15 @@ Topic : `{base}/diagnostic` — publié au démarrage et à chaque reconnexion.
   "firmware_version": "1.0.3",
   "hdef": 0,
   "ldef": 0,
-  "xdef": 0
+  "xdef": 0,
+  "ph_starts": 1842,
+  "ph_total_ml": 5290.44,
+  "ph_anom": 0,
+  "ph_anom_ml": 0,
+  "orp_starts": 613,
+  "orp_total_ml": 1204.8,
+  "orp_anom": 0,
+  "orp_anom_ml": 0
 }
 ```
 
@@ -300,6 +308,65 @@ interne à instruire côté appareil.
 ⚠️ **`hdef` ne remplace pas et ne recoupe pas le compteur « partition pleine »**
 (`nospc_cnt`, NVS) : famine **mémoire** et saturation **disque** sont deux pannes
 différentes.
+
+### Relevé du biais de comptage (feature-110, v2.45.0)
+
+Huit clés ajoutées au **même** topic retenu `{base}/diagnostic` — **aucun topic
+neuf, aucune entité Home Assistant neuve**. Le topic étant **retenu**, ces valeurs
+se relisent **plusieurs jours plus tard** et survivent à un redémarrage de
+l'appareil : c'est ce qui fait du changement de bidon — un geste déjà fait — une
+mesure auto-suffisante, sans rien à noter au préalable.
+
+| Clé | Type | Signification |
+|---|---|---|
+| `ph_starts` | entier | **Démarrages de pompe pH crédités** depuis le dernier « Nouveau bidon » — le `N` de `V_compté = V_réel + N·δ`. Incrément **saturant** (jamais de repli à `0`). |
+| `ph_total_ml` | float (mL) | Volume compté sur la **même** campagne — le `V`. Même valeur que `ph_total_injected_ml` de [`/get-config`](API.md#get-get-config--write). |
+| `ph_anom` | entier | Parmi ces crédits, nombre de ticks de comptabilité **anormalement longs** (> 5 000 ms, `kAcctDeltaAnomalyMs`). **Hygiène du relevé.** |
+| `ph_anom_ml` | float (mL) | Volume crédité **par** ces ticks anormaux. Sert à **disqualifier** un relevé pollué, jamais à corriger le volume. |
+| `orp_starts` / `orp_total_ml` / `orp_anom` / `orp_anom_ml` | | Idem pour la pompe chlore. |
+
+⚠️ **Les deux couples se lisent ENSEMBLE.** Un `N` sans son `V`, ou l'un des deux
+sans son indicateur d'hygiène, **ne permet de conclure sur rien** : voir le mode
+d'emploi du relevé sur la [page Produits](features/page-dosages.md#relevé-du-biais-de-comptage--mode-demploi-feature-110-v2450).
+**Aucune correction n'est appliquée** par cette version — ces compteurs mesurent.
+
+### `kMqttPublishBufferBytes` porté de 1024 à 1536 o
+
+Les 8 clés pèsent **+182 o au pire cas** (mesuré clé par clé). Sous **1024 o**,
+PubSubClient **refusait silencieusement** la publication du diagnostic : la garde
+est `bufferSize < MQTT_MAX_HEADER_SIZE + 2 + strnlen(topic) + plength`
+(`PubSubClient.cpp:450`, `MQTT_MAX_HEADER_SIZE = 5`) et **retourne `false` sans
+rien écrire sur le fil**. Le diagnostic n'aurait pas été *tronqué* : il aurait
+**disparu en entier**, `hdef` / `ldef` / `xdef` compris.
+
+Mesures (harnais hôte, ArduinoJson 7) — « buffer requis » = payload + 7 o
+d'en-tête (`kMqttPublishFrameOverheadBytes`) + longueur du topic :
+
+| | Payload | Buffer requis |
+|---|---:|---:|
+| Avant feature-110, nominal | 681 o | 711 o |
+| Avant feature-110, **pire cas** | 804 o | 875 o |
+| Après feature-110, nominal | 824 o | 854 o |
+| Après feature-110, **pire cas** | 986 o | **1 057 o** ← dépassait 1024 de 33 o |
+
+Pire cas = SSID 32 c., `filtration_mode` 16 c., topic de base 64 c. (**aucun des
+trois n'est borné** par `/save-config`), `uint32` saturés, flottants à 9 chiffres
+significatifs. **1536 o rétablit 479 o de marge (31 %)**. Coût RAM : **+512 o**
+dans le buffer PubSubClient, alloués **une fois** dans `begin()`, jamais en boucle.
+
+**Deux WARN throttlés** (1 h, `kMqttDiagnosticWarnThrottleMs`) encadrent désormais
+ce site — le retour de `safePublish()` y était **ignoré**, la disparition était
+donc totalement silencieuse :
+
+```text
+WARNING MQTT: diagnostic trop long pour le buffer de publication (1620 o requis > 1536 o) — la trame sera ABANDONNÉE en entier, pas tronquée
+WARNING MQTT: publication du diagnostic refusée (1057 o) — buffer insuffisant ou lien indisponible
+```
+
+Les deux causes n'appellent pas la même action : « trop long » se corrige **dans
+le firmware** (buffer ou payload), « refusée » est un problème de **lien**. Le
+second capte aussi le cas où `setBufferSize()` échoue au `realloc` et laisse la
+bibliothèque à ses **256 o** par défaut — cas jusqu'ici **totalement muet**.
 
 ---
 

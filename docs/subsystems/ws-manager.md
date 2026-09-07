@@ -506,6 +506,8 @@ Sans ces clés, la **jauge de bidon** et l'**escalade de sécurité pH** des cli
 
 Chacune est inscrite dans la table `kHttpOnlyKeys` de la sentinelle **avec un motif écrit**, et le motif est **asserté** (≥ 20 caractères).
 
+> Depuis feature-110 (v2.45.0), la table compte **12 entrées** : les 8 ci-dessous plus les 4 compteurs d'hygiène du relevé de bidon — voir [feature-110 — compteurs de démarrages de pompe](#feature-110-v2450--compteurs-de-démarrages-de-pompe-ph_starts--orp_starts).
+
 | Clé HTTP-seule | Motif déclaré |
 |----------------|---------------|
 | `ph_target_min` / `ph_target_max` / `ph_target_step` | **Constantes de compilation** (`kPhTarget*`) : immuables à l'exécution ; `app.js` conserve la dernière borne reçue |
@@ -536,9 +538,14 @@ Octets **sérialisés** au pire cas, comptés clé par clé (guillemets + deux-p
 | `orp_total_injected_ml` | `"orp_total_injected_ml":123456.78,` | 34 |
 | `orp_remaining_ml` | `"orp_remaining_ml":123456.78,` | 29 |
 | `orp_alert_threshold_ml` | `"orp_alert_threshold_ml":123456.78,` | 35 |
-| **Total** | | **+866** |
+| **Sous-total bug-089 (15 clés)** | | **+866** |
+| `ph_starts` (feature-110, v2.45.0) | `"ph_starts":4294967295,` | 23 |
+| `orp_starts` (feature-110, v2.45.0) | `"orp_starts":4294967295,` | 24 |
+| **Total** | | **+913** |
 
-Trame complète (81 clés, format compact) : **2 053 o en nominal**, **≈ 2 948 o au pire cas** → **marge ≈ 636 o** sous le seul plafond **dur**, `sWsFrameBuf` (`kWsFrameBufBytes = 3584` o). Gabarit documentaire `StaticJson<>` porté **2560 → 2944** ; rappel ArduinoJson 7 : `N` n'est plus qu'une valeur documentaire (`capacity()`), ce bump coûte **0 octet de RAM**. **Aucun dépassement, aucun bump de `kWsFrameBufBytes`.**
+Trame complète (**83 clés**, format compact) : **2 100 o en nominal**, **≈ 2 995 o au pire cas** → **marge ≈ 589 o** sous le seul plafond **dur**, `sWsFrameBuf` (`kWsFrameBufBytes = 3584` o). Gabarit documentaire `StaticJson<>` porté **2560 → 2944** (bug-089), puis **2944 → 3008** (feature-110) ; rappel ArduinoJson 7 : `N` n'est plus qu'une valeur documentaire (`capacity()`), ce bump coûte **0 octet de RAM**. **Aucun dépassement, aucun bump de `kWsFrameBufBytes`.**
+
+> Chiffres **courants** (v2.45.0). Les valeurs de la v2.39.0 — 81 clés, 2 053 o nominal, ≈ 2 948 o au pire cas, marge ≈ 636 o — sont **périmées** : feature-110 a ajouté `ph_starts` (23 o) et `orp_starts` (24 o), soit **+47 o**. La ligne à lire pour arbitrer un ajout est **marge ≈ 589 o**.
 
 > ⚠️ **Chiffre rectifié en revue — facteur 2,7.** Le bloc de dimensionnement annonçait **167 o** pour `ph_auto_manual_reason` (« ~140 caractères »). Les chaînes réelles ont été reconstruites depuis leur **unique écrivain**, `setPhAutoManualTrace()` : la branche « Diagnostic sonde EZO NORMAL » fait **411 caractères / 427 octets** UTF-8, la branche « hors norme » 325 caractères / 340 o. Coût réel **452 o**, total **+866 o**, marge **636 o** — et non 921. Le chiffre compte : c'est lui que lira le prochain contributeur pour arbitrer son ajout ; avec l'ancienne valeur il aurait cru disposer de 285 o qui n'existent pas. Et **le pire cas de longueur coïncide avec l'escalade de sécurité pH** — précisément le moment où perdre la trame coûterait le plus cher. Ne jamais estimer une longueur ici : la seule source de vérité est le littéral du firmware.
 >
@@ -566,3 +573,22 @@ Deux gardes complémentaires : chaque exception porte un **motif écrit d'au moi
 ## feature-093 (v2.34.0) — persistance de l'intégrale pH : AUCUN champ nouveau
 
 La restauration de l'intégrale pH au démarrage ([pump-controller.md](pump-controller.md#3-persistance-nvs-conditionnelle-r1-r7)) ne publie **rien de neuf** : les champs `ph_integral`, `ph_integral_term`, `ph_integral_pct` et `ph_integral_saturated` (v2.26.0) suffisent — une valeur restaurée s'y lit comme n'importe quelle autre. Toute la traçabilité (motif de rejet, âge en temps de filtration, motif d'écriture) passe par le **journal système**, donc par `broadcastLog`.
+
+## feature-110 (v2.45.0) — compteurs de démarrages de pompe (`ph_starts` / `orp_starts`)
+
+Deux clés ajoutées à la trame `config`, **entre les marqueurs de parité** :
+
+| Champ | Type | Pourquoi il est mutable à l'exécution |
+|-------|------|----------------------------------------|
+| `ph_starts` | `uint32` | Démarrages de pompe pH **crédités** depuis le dernier « Nouveau bidon ». Avance en continu **à côté** de `ph_total_injected_ml` (même branche de code, même garde) |
+| `orp_starts` | `uint32` | Idem pour la pompe chlore |
+
+Elles satisfont le critère de partage ([ADR-0065](../adr/0065-trame-websocket-etat-mutable-pas-constantes.md)) : état mutable à l'exécution, non dérivable côté client. Coût **+47 o** au pire cas (uint32 saturé) — voir le [budget de trame](#budget-de-trame--décompte-rectifié-en-revue).
+
+### Les 4 compteurs d'hygiène restent HTTP-seuls
+
+`ph_anom`, `orp_anom`, `ph_anom_ml` et `orp_anom_ml` sont **délibérément absents** de la trame et **déclarés** dans `kHttpOnlyKeys` (motif écrit, asserté) : ils qualifient un **relevé de bidon**, lu **une fois par campagne**, et ne pilotent aucun affichage continu. Les pousser toutes les 5 s coûterait ~120 o de trame pour zéro usage temps réel.
+
+Conséquence pour un client : ces quatre clés ne s'obtiennent que par [`GET /get-config`](../API.md#get-get-config--write). C'est pourquoi le bouton « Nouveau bidon » de la [page Produits](../features/page-dosages.md) **recharge la configuration par HTTP** avant d'afficher sa confirmation — `window._config` peut venir d'une trame WS, où l'hygiène n'est jamais présente.
+
+**Ce que la sentinelle garantit ici** : `ph_starts` / `orp_starts` ne peuvent pas devenir WS-seules (sens dangereux, elles **clignoteraient**), et les 4 exceptions ne peuvent pas survivre à la disparition de leur clé HTTP (assertion « exception morte »).

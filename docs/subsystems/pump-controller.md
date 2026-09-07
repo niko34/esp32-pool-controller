@@ -1893,9 +1893,10 @@ longs il **sur-corrigerait et relâcherait les quotas**.
 atténuation, et ce même allongement a réduit d'autant le coussin de sécurité
 involontaire que le sur-comptage constituait.
 
-**Suites** : [feature-110](../../specs/features/todo/feature-110-compteur-d-impulsions-de-dosage.md)
-(compteur d'impulsions par pompe — deux inconnues, deux équations ; **préalable**,
-sans quoi chaque concordance future sera aussi peu concluante), puis
+**Suites** : [feature-110](../../specs/features/done/feature-110-compteur-d-impulsions-de-dosage.md)
+(compteur de **démarrages** par pompe — deux inconnues, deux équations ; **préalable**,
+sans quoi chaque concordance future sera aussi peu concluante) — **livré en v2.45.0**,
+voir [Comptage des démarrages de pompe](#comptage-des-démarrages-de-pompe-feature-110-v2450) — puis
 [feature-078](../../specs/features/todo/feature-078-rendement-des-impulsions-et-lenteur-regulation-ph.md)
 (nature établie, puis correction du modèle — **à traiter explicitement comme une
 hausse de dose**). Le protocole de banc qui trancherait sans attendre est écrit
@@ -1912,6 +1913,50 @@ perte fixe.
 - **Jamais zéro sur une pompe alimentée** (prescription P4).
 
 Remplace `updateSafetyTracking(flow, delta)` par `creditInjectedVolume(isPhPump, volumeMl)` : le volume est calculé en amont, plus jamais dérivé d'un débit de modèle.
+
+### Comptage des démarrages de pompe (feature-110, v2.45.0)
+
+Six compteurs `ProductConfig` ([`config.h`](../../src/config.h)) mesurent le **dénominateur** du biais de comptage, par produit. **Aucune correction n'est appliquée : cette feature mesure.**
+
+| Champ | Type | Rôle |
+|---|---|---|
+| `phStartCount` / `orpStartCount` | `uint32` | **`N`** — démarrages de pompe **crédités** depuis le dernier « Nouveau bidon » |
+| `phAcctAnomalyCount` / `orpAcctAnomalyCount` | `uint32` | Ticks de comptabilité **anormalement longs** parmi ces crédits (hygiène) |
+| `phAcctAnomalyMl` / `orpAcctAnomalyMl` | float (mL) | Volume crédité **par** ces ticks anormaux (hygiène) |
+
+`uint32` et non `uint16` : à ~1 400 démarrages/jour observés, un `uint16` saturerait en un peu plus d'un mois — **avant** le premier changement de bidon qu'il doit qualifier. L'incrément passe par `saturatingInc()` ([`dosing_logic.cpp`](../../src/dosing_logic.cpp)) : à `UINT32_MAX` la valeur **reste figée** et ne reboucle jamais, un compteur figé étant un aveu lisible là où un compteur rebouclé donnerait un rapport `V/N` silencieusement faux.
+
+#### Point d'incrémentation : le front OFF→ON, dans la branche qui crédite le volume
+
+Dans `accountPumpVolume()` ([`pump_controller.cpp:2664`](../../src/pump_controller.cpp:2664)), la décision est prise par la fonction **pure** `evaluatePumpStartAccounting(prevOn, onNow, creditedDeltaMs, anomalyDeltaMs)` ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)) :
+
+- `countStart = !prevOn && onNow` — **front strict**, évalué **AVANT** l'affectation `_acctPumpOn[chem] = onNow`, donc sur l'état du tour **précédent**. Une session `scheduled` en marche continue ne produit **qu'un** démarrage ; un start/stop logé entre deux ticks n'en produit **aucun** — mais il ne crédite aucun volume non plus, la paire (`N`, `V`) reste cohérente.
+- `countAnomaly = anomalyDeltaMs != 0 && creditedDeltaMs > anomalyDeltaMs` — frontière `>` **stricte** : un delta **pile au seuil** est **normal**.
+
+Le crédit s'exécute sous la garde `productTrackingEnabled(chem == 0)`, **la même** que celle qui laisse avancer `productCfg.*TotalInjectedMl`. C'est ce **couplage structurel** qui garantit que `N` et `V` couvrent exactement le même ensemble d'événements — sans aucune garde ajoutée, et y compris pour l'**angle mort hérité** des sorties anticipées d'`update()` (voir plus bas). Ni allocation, ni `String`, ni log, ni verrou : écrivain unique `loopTask`, même discipline que le volume.
+
+#### `kAcctDeltaAnomalyMs = 5000` — pourquoi ce seuil
+
+Le volume d'un tick est crédité par **attribution arrière** sur `[lastSafetyTimestamp, now]`. Au-delà de 5 s, on ne sait plus si la pompe a tourné tout du long (loop bloquée, OTA, I²C en souffrance). Ces ticks ne sont **ni rejetés ni corrigés** — la comptabilité du volume est intouchée — ils sont comptés **à part, avec leur volume**, pour pouvoir **disqualifier** un relevé de bidon pollué.
+
+Calage : `accountPumpVolume()` tourne à la cadence de `loop()` (`kLoopDelayMs` = 10 ms + le travail du tour, quelques dizaines de ms en pratique) — 5 s est **deux ordres de grandeur** au-dessus du jitter normal, et vaut la **moitié** du pouls minimal (`kPulseMinMs` = 10 s) : un tick qui couvre la moitié d'une impulsion entière est une anomalie, pas du bruit.
+
+#### Le défaut PRÉ-EXISTANT que ces compteurs captent
+
+Les sorties anticipées d'`update()` — eau absente, stabilisation post-calibration, assistant de mesure du débit (`flowAssistSuspend`), capteurs non initialisés ([`pump_controller.cpp:2989`](../../src/pump_controller.cpp:2989) et `:2950`) — coupent les pompes puis **`return` AVANT** l'appel à `accountPumpVolume()`. L'état `_acctPumpOn[chem]` reste donc **rémanent** : à la reprise, le firmware crédite **toute la durée de la coupure** au débit plateau, tandis que le redémarrage physique **n'est pas compté**.
+
+Ordre de grandeur : 5 min → ~5,7 mL, 1 h → ~68 mL, 6 h → ~408 mL. Ce défaut n'est **pas introduit** par feature-110 — il est **révélé** par elle, et c'est exactement le cas que `*_anom` / `*_anom_ml` captent (le tick de reprise dépasse les 5 000 ms de plusieurs ordres de grandeur).
+
+#### Persistance et remise à zéro
+
+- **NVS** : namespace `pool_prod`, clés `ph_starts` / `ph_anom` / `ph_anom_ml` / `orp_starts` / `orp_anom` / `orp_anom_ml` ([`config.cpp:723`](../../src/config.cpp:723)). **Aucun flush ajouté** : le drapeau `productConfigDirty` est armé au **même endroit** que pour le volume et l'écriture reste celle, **différée de 60 s**, de la boucle de configuration ([`main.cpp:501`](../../src/main.cpp:501)).
+- **Remise à zéro** : **exclusivement** dans les blocs `ph_reset_container` / `orp_reset_container` de [`web_routes_config.cpp:1110`](../../src/web_routes_config.cpp:1110) et `:1131`, **avec** `*TotalInjectedMl`, par le **même geste** (« Nouveau bidon »). Un compteur d'hygiène qui survivrait à la campagne qu'il vient de qualifier **disqualifierait un relevé propre**.
+
+#### Exposition
+
+`ph_starts` / `orp_starts` : [`GET /get-config`](../API.md#suivi-produit--relevé-du-biais-de-comptage-feature-110-v2450) **et** trame WebSocket `config`. Les 4 compteurs d'hygiène sont **HTTP-seuls** et déclarés dans la sentinelle de parité ([ws-manager.md](ws-manager.md#feature-110-v2450--compteurs-de-démarrages-de-pompe-ph_starts--orp_starts)). Les **huit** valeurs, plus `*_total_ml`, sont publiées dans le topic retenu `{base}/diagnostic` ([MQTT.md](../MQTT.md#relevé-du-biais-de-comptage-feature-110-v2450)).
+
+Mode d'emploi du relevé (quoi noter, quand, et comment reconnaître un relevé qui ne conclut rien) : [page Produits](../features/page-dosages.md#relevé-du-biais-de-comptage--mode-demploi-feature-110-v2450).
 
 ### Sessions, cycles, budget horaire
 
@@ -2185,6 +2230,8 @@ Flush différé : `_dailyCountersDirty` armé à chaque injection, écrit en NVS
 | `PhLoadHistory` (anneau de 7 journées `{date, mL, minutes}` + schéma + empreinte) | namespace existant `pool-daily`, clé `ph_load7` | 64 o | **1 / jour**, au basculement de date |
 
 Aucune de ces deux fonctions ne prend `configMutex` : la charge utile appartient exclusivement à `loopTask` — le mutex ne protégerait rien tout en introduisant une prise de verrou dans `update()`.
+
+**v2.45.0 (feature-110)** — les six compteurs de démarrages et d'hygiène (`ph_starts`, `ph_anom`, `ph_anom_ml`, `orp_starts`, `orp_anom`, `orp_anom_ml`) vivent dans le namespace **`pool_prod`**, avec le volume injecté, et suivent son flush **différé de 60 s** (`productConfigDirty`) — **aucune transaction NVS supplémentaire**. Voir [Comptage des démarrages de pompe](#comptage-des-démarrages-de-pompe-feature-110-v2450).
 
 Hors compteurs journaliers, la **trace de bascule automatique pH** est persistée par `saveMqttConfig()` (namespace de configuration, pas ce flush) : `ph_am_epoch` + `ph_am_reason`, v2.20.3 — voir [Persistance de la bascule automatique en manuel](#persistance-de-la-bascule-automatique-en-manuel-v2203).
 

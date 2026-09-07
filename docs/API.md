@@ -817,6 +817,25 @@ Champs notables de la réponse :
 | `ph_offset` | float | **Offset logiciel de mesure pH** (feature-067, v2.20.0). `pH corrigé = pH brut EZO + ph_offset`. Plage **[−0.50, +0.50]**, **pas de 0,10 depuis la v2.25.0** (était 0,01), défaut **0** (inerte). Persisté en NVS (clé `ph_offset`). **Ne touche jamais la calibration interne du module Atlas EZO** : c'est une correction en aval de la lecture, destinée à compenser un écart d'implantation de la sonde. Voir [ADR-0039](adr/0039-offset-ph-applique-en-sortie-des-accesseurs.md). |
 | `regulation_defaults` | object | **v2.31.0 (feature-088)** — **Valeurs d'usine** des réglages de tuning de la régulation, sérialisées depuis la source unique [`src/regulation_defaults.h`](../src/regulation_defaults.h) (mêmes clés que les champs de config correspondants). **v2.34.0 (feature-091)** : **7 clés** — `ph_target`, `orp_target`, `ph_limit_minutes`, `orp_limit_minutes`, `ph_daily_target_ml`, `orp_daily_target_ml`, `regulation_speed` (`stabilization_delay_min` retiré). **Lecture seule**. Sert au dialogue « actuel → usine » du bouton de restauration ([page Paramètres](features/page-settings.md#bouton--restaurer-les-valeurs-par-défaut--feature-088-v2310)) — le frontend ne code **aucune** de ces valeurs en dur. Objet **absent** sur un firmware < 2.31.0 : le client masque alors le bouton. **v2.32.0 (feature-090)** : le **contrat 088 est intact** (mêmes clés, à plat) mais l'objet reflète désormais la colonne de la **taille de bassin courante** (`mqttCfg.poolSize`) — le bouton de restauration remet donc les défauts **de la taille sélectionnée**. Voir [`POST /reset-regulation-defaults`](#post-reset-regulation-defaults--critical). |
 
+#### Suivi produit — relevé du biais de comptage (feature-110, v2.45.0)
+
+Six clés **en lecture seule** s'ajoutent aux 10 clés de suivi produit déjà servies (`*_tracking_enabled`, `*_container_ml`, `*_total_injected_ml`, `*_remaining_ml`, `*_alert_threshold_ml`). Ces six compteurs sont **remis à zéro en même temps que `*_total_injected_ml`**, dans le même bloc `*_reset_container` — jamais séparément : le rapport `V/N` n'a de sens que si les deux grandeurs couvrent la même campagne.
+
+| Champ | Type | Description |
+|-------|------|-------------|
+| `ph_starts` | `uint32` | Nombre de **démarrages de pompe pH crédités** depuis le dernier « Nouveau bidon ». C'est le **`N`** de `V_compté = V_réel + N·δ` : relevé **avec** `ph_total_injected_ml`, il départage un biais de comptage **multiplicatif** d'un **déficit fixe par démarrage**. Incrément **saturant** (reste à `4294967295`, ne reboucle jamais). |
+| `orp_starts` | `uint32` | Idem pour la pompe chlore. |
+| `ph_anom` | `uint32` | **Hygiène du relevé** : parmi ces crédits, nombre de ticks de comptabilité **anormalement longs** (delta crédité > `kAcctDeltaAnomalyMs` = 5 000 ms). Incrément saturant. |
+| `orp_anom` | `uint32` | Idem pour la pompe chlore. |
+| `ph_anom_ml` | float (mL) | Volume crédité **par** ces ticks anormaux. Sert à **disqualifier** un relevé pollué, jamais à corriger le volume. |
+| `orp_anom_ml` | float (mL) | Idem pour la pompe chlore. |
+
+> ⚠️ **Les 4 clés d'anomalie sont HTTP-seules.** Elles sont **délibérément absentes** de la trame WebSocket `config` et **déclarées comme telles** dans la table `kHttpOnlyKeys` de la sentinelle de parité `test/test_native_ws_config_parity/`, avec un motif écrit et asserté : elles sont lues **une fois par campagne** (au changement de bidon) et pousser ~120 o toutes les 5 s pour zéro usage temps réel dépenserait le budget de trame ([plafond dur `kWsFrameBufBytes = 3584` o](subsystems/ws-manager.md#budget-de-trame--décompte-rectifié-en-revue)).
+>
+> `ph_starts` et `orp_starts`, eux, **sont** dans la trame (ils avancent en continu à côté du volume). Un client qui veut le relevé **complet** doit donc appeler `/get-config` : voir [ws-manager.md](subsystems/ws-manager.md#feature-110-v2450--compteurs-de-démarrages-de-pompe-ph_starts--orp_starts).
+>
+> **Aucune correction n'est appliquée par cette version** : ces compteurs **mesurent**. Le mode d'emploi du relevé — quoi noter, quand, et comment reconnaître un relevé qui ne conclut rien — est sur la [page Produits](features/page-dosages.md#relevé-du-biais-de-comptage--mode-demploi-feature-110-v2450).
+
 **`POST /save-config` — champs pH spécifiques :**
 
 | Champ | Type | Validation |
