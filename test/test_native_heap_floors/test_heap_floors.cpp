@@ -851,6 +851,41 @@ void test_the_historic_heap_8bits_line_is_untouched(void) {
 // compteur) et hf.i8.mb annoncait 7924 (plancher par masque) — deux mesures du
 // MEME plancher, divergentes de pres du double. Et c'est la seconde qui devait
 // dimensionner la reserve DMA de feature-123, le lot irreversible.
+// Le regime CERTAIN doit etre pose par l'appelant, pas herite d'un
+// echantillonnage vieux de 2 s. Defaut mesure le 08/09/2026 a 23:17 : le
+// plancher fin a enregistre un creux de 2 932 o avec ctxAtMin = 0x00 — aucun
+// regime — alors que le creux s'est produit en pleine rafale HTTP. Le plancher
+// grossier, lui, avait note 0x02. Un plancher sans son regime ne repond pas a la
+// question posee.
+void test_le_regime_certain_est_pose_par_l_appelant(void) {
+  char* code = readProjectCode("src/heap_metrics.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(code, "src/heap_metrics.cpp introuvable.");
+  char* corps = extraitCorps(code, "void heapNoteHttpGetSample(");
+  TEST_ASSERT_NOT_NULL_MESSAGE(corps, "heapNoteHttpGetSample introuvable.");
+  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(corps, "kHeapCtxHttpBurst") >= 1,
+      "heapNoteHttpGetSample doit poser kHeapCtxHttpBurst SUR PLACE. Ce site EST "
+      "le filtre de la garde 503 : la rafale HTTP y est une certitude, pas une "
+      "hypothese. Sans ce bit, le creux est attribue au contexte echantillonne — "
+      "vieux de 2 s — et le 08/09 cela a produit un creux de 2 932 o etiquete "
+      "« aucun regime ».");
+  free(corps);
+
+  char* fin = extraitCorps(code, "void heapNoteMaxAlloc8Sample(");
+  free(code);
+  TEST_ASSERT_NOT_NULL_MESSAGE(fin, "heapNoteMaxAlloc8Sample introuvable.");
+  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(fin, "ctxSurPlace") >= 1,
+      "heapNoteMaxAlloc8Sample doit FUSIONNER le regime certain avec le contexte "
+      "echantillonne, pas choisir l'un ou l'autre : l'appelant connait la rafale "
+      "HTTP, l'echantillonnage connait le dosage et la decouverte MQTT.");
+  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(fin, "sFloorCtxSeenBoot.fetch_or") >= 1,
+      "Le regime certain doit aussi rejoindre les accumulateurs : sinon un creux "
+      "correctement attribue au plancher ne serait pas compte dans ctxb.");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countOccurrences(fin, "heapProbeForCaps("),
+      "Toujours AUCUN parcours de tas ici : ce chemin s'execute sur async_tcp "
+      "pendant la famine (condition 2 du gate pool-chemistry).");
+  free(fin);
+}
+
 void test_la_mesure_fine_alimente_le_plancher_par_masque(void) {
   char* code = readProjectCode("src/heap_metrics.cpp");
   TEST_ASSERT_NOT_NULL_MESSAGE(code, "src/heap_metrics.cpp introuvable.");
@@ -1075,6 +1110,7 @@ int main(int, char**) {
   RUN_TEST(test_new_journal_lines_fit_their_stack_buffers);
   RUN_TEST(test_the_historic_heap_8bits_line_is_untouched);
   RUN_TEST(test_le_depouilleur_desarme_le_leurre);
+  RUN_TEST(test_le_regime_certain_est_pose_par_l_appelant);
   RUN_TEST(test_la_mesure_fine_alimente_le_plancher_par_masque);
   RUN_TEST(test_le_tour_de_role_est_divise_pour_tenir_la_condition_5);
   RUN_TEST(test_la_regle_du_diviseur_de_cadence);

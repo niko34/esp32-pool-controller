@@ -275,6 +275,57 @@ n'avais pas éprouvé la **résolution**. Les deux fois, j'ai écrit le critère
 de clôture ne se rédige qu'**après** un relevé qui a effectivement mordu, et
 provoqué volontairement — pas après une période calme.
 
+### ⭐ REPRODUCTION VOLONTAIRE DU 08/09 À 23:17 — le mécanisme capté d'un bout à l'autre
+
+Deuxième reproduction, cette fois avec l'instrument **corrigé** (v2.49.2), sur
+demande faite à l'utilisateur : rechargements multiples en onglets parallèles.
+
+| Grandeur | Valeur |
+|---|---|
+| Requêtes GET servies | **176** |
+| Plancher `0x0804`, **mesure fine** | **2 932 o** |
+| Planchers `0x080C` / `0x1804` (résolution 8 s) | **25 588 o** — ils n'ont **rien vu** |
+| `maxBloc` de la sonde d'échec | **1 204 o** — donc **sous les 1 622 o** du tampon TX |
+| Échecs d'allocation | **25** (dont une salve de 24) |
+| Épisode 503 | déclenché à `maxBloc8 = 5 108`, **rétabli en 30 s**, 4 refus |
+
+**Le facteur 8,7 entre la mesure fine et les planchers grossiers est la
+démonstration en direct du défaut corrigé une heure plus tôt.** Sans lui,
+`feature-123` aurait été dimensionnée sur **25 588** au lieu de **2 932**.
+
+### ⭐ 2 932 EST UNE CONSTANTE STRUCTURELLE, PAS UNE FLUCTUATION
+
+Ce dossier porte déjà ce nombre, deux fois : « sous 6 requêtes strictement
+simultanées, `maxBloc8` effondré à **2 932 o** » — l'épisode du **29/08** qui a
+motivé l'ADR-0067 (cf. plus haut dans cette spec).
+
+**Exactement la même valeur, à dix jours d'intervalle**, sur deux firmwares
+différents et deux reproductions indépendantes. Une rafale de six requêtes
+parallèles laisse donc un trou de 2 932 octets, **reproductible à l'octet près**.
+Ce n'est pas du bruit : c'est une propriété du découpage du tas sous cette charge,
+et c'est le chiffre sur lequel raisonner.
+
+### ⚠️ ET L'ATTRIBUTION DU CONTEXTE A ÉCHOUÉ AU CREUX — corrigé en v2.49.3
+
+Le plancher fin a enregistré ce creux de 2 932 o avec `ctxAtMin = 0x00`, soit
+**aucun régime identifié** — alors qu'il s'est produit en pleine rafale HTTP. Le
+plancher grossier, lui, avait correctement noté `0x02`.
+
+Cause : la poussée fine réutilisait le dernier contexte composé par
+`heapRingSample`, vieux de 2 s au plus, et a hérité d'un `0x00` périmé
+**précisément à l'événement qui compte**. Un plancher sans son régime ne répond
+pas à la question posée — « quel événement produit le creux ? » — et c'était
+toute la raison d'être de cet octet.
+
+Corrigé : l'appelant du chemin HTTP **sait** qu'il est une requête, il pose donc
+le bit lui-même, fusionné avec le contexte échantillonné (qui reste utile pour le
+dosage et la découverte MQTT, que l'appelant ne peut pas connaître). Aucune mesure
+ni lecture nouvelle.
+
+**Troisième défaut d'instrument de la journée**, et tous trois trouvés en le
+faisant parler plutôt qu'en le relisant : durées mesurées mais non publiées,
+planchers aveugles aux creux de requête, et maintenant contexte périmé au creux.
+
 ### Le relevé du 08/09 (soir) qui a fixé ce critère
 
 Reproduction **volontaire** : ~117 requêtes d'interface (`Cmd-Option-R` répétés,

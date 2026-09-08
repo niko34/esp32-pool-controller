@@ -2,6 +2,31 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.49.3] - 2026-09-08
+
+> **Ce qui change pour vous** : rien de visible. Troisième et dernier défaut de
+> l'instrument de mesure corrigé — il enregistrait le creux sans savoir dire
+> **quel régime** l'avait produit.
+
+### Firmware
+
+- **Le régime certain est posé par l'appelant, plus hérité d'un échantillonnage.**
+  La reproduction volontaire de 23:17 a fait descendre le plancher à **2 932 o** et
+  l'a étiqueté « aucun régime », alors que le creux s'est produit en pleine rafale
+  HTTP. La poussée fine réutilisait un contexte vieux de 2 s. Le site HTTP pose
+  désormais son propre bit, fusionné avec le contexte échantillonné — sans mesure
+  ni lecture nouvelle.
+
+### Documentation
+
+- **2 932 octets est une constante structurelle.** La même valeur, à l'octet près,
+  que l'épisode du 29/08 qui a motivé l'ADR-0067 — deux firmwares, deux
+  reproductions indépendantes, dix jours d'écart. Une rafale de six requêtes
+  parallèles laisse ce trou-là.
+- Le mécanisme complet est capté pour la première fois : 176 requêtes, 25 échecs
+  d'allocation, `maxBloc` de la sonde à **1 204 o** (sous les 1 622 du tampon TX
+  WiFi), 503 déclenché à 5 108 et rétabli en 30 s.
+
 ## [2.49.2] - 2026-09-08
 
 > **Ce qui change pour vous** : rien de visible. Un défaut de l'**instrument de

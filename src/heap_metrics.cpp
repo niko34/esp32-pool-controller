@@ -317,17 +317,35 @@ void heapFloorNoteSlot(uint8_t slot, const HeapProbe& probe, uint8_t ctx) {
 // Atténuation : heaps(0x080C) et heaps(0x1804) sont des SOUS-ENSEMBLES de
 // heaps(0x0804), donc le plancher fin de 0x0804 les BORNE SUPÉRIEUREMENT. En cas
 // de divergence, c'est lui qui fait foi, et il est du bon côté.
-void heapNoteMaxAlloc8Sample(uint32_t maxAlloc8) {
+// ⚠️ `ctxSurPlace` — AJOUTÉ LE 08/09/2026 À 23:17, SUR UNE MESURE.
+// La reproduction volontaire d'un épisode 503 a fait descendre le plancher fin à
+// 2 932 o, et l'a enregistré avec `ctxAtMin = 0x00` : AUCUN régime identifié,
+// alors que le creux s'est produit en pleine rafale HTTP. Le plancher grossier,
+// lui, avait correctement noté 0x02. La cause était l'approximation du contexte
+// hérité — la poussée fine réutilisait le dernier contexte composé par
+// `heapRingSample`, vieux de 2 s au plus, et a donc hérité d'un 0x00 périmé
+// PRÉCISÉMENT à l'événement qui compte. Un plancher sans son régime ne répond
+// pas à la question posée (« quel événement produit le creux ? »), et c'était
+// toute la raison d'être de cet octet.
+//
+// Le correctif ne mesure ni ne lit rien de neuf : l'appelant du chemin HTTP SAIT
+// qu'il est une requête. Il pose donc ce bit lui-même, fusionné (OU) avec le
+// contexte échantillonné — lequel reste utile pour les régimes que l'appelant ne
+// peut pas connaître : dosage, découverte MQTT, clients WebSocket.
+void heapNoteMaxAlloc8Sample(uint32_t maxAlloc8, uint8_t ctxSurPlace) {
   heapFetchMinRelaxed(sMinMaxAlloc8SinceBoot, maxAlloc8);
   heapFetchMinRelaxed(sMinMaxAlloc8Window, maxAlloc8);
-  // Le plancher par masque 0x0804, avec le contexte de l'instant. `freeBytes`
-  // n'est pas mesuré ici (ce serait un parcours de plus) : on ne renseigne donc
-  // QUE le plus gros bloc, en marquant le libre comme non mesuré.
-  HeapProbe fine;
-  fine.freeBytes = kHeapFloorEmpty;
-  fine.largestBlockBytes = maxAlloc8;
-  heapFloorNoteFineLargest(kHeapFloorSlotInternal8, fine.largestBlockBytes,
-                           (uint8_t)sFloorCtxLast.load(std::memory_order_relaxed));
+  // Le plancher par masque 0x0804. `freeBytes` n'est pas mesuré ici (ce serait
+  // un parcours de plus) : on ne renseigne QUE le plus gros bloc.
+  const uint8_t ctx =
+      (uint8_t)(sFloorCtxLast.load(std::memory_order_relaxed) | ctxSurPlace);
+  // Le régime CERTAIN rejoint aussi les accumulateurs : sans cela, un creux
+  // correctement attribué au plancher ne serait pas compté dans `ctx`/`ctxb`.
+  if (ctxSurPlace != 0) {
+    sFloorCtxSeen.fetch_or(ctxSurPlace, std::memory_order_relaxed);
+    sFloorCtxSeenBoot.fetch_or(ctxSurPlace, std::memory_order_relaxed);
+  }
+  heapFloorNoteFineLargest(kHeapFloorSlotInternal8, maxAlloc8, ctx);
 }
 
 HeapProbe heapFloorsSample(uint8_t ctx) {
@@ -445,7 +463,9 @@ void heapFloorsRearmWindow() {
 void heapNoteHttpGetSample(uint32_t maxAlloc8) {
   // Site `async_tcp` : la valeur est DÉJÀ mesurée par le filtre de la garde 503,
   // on ne parcourt rien. Un fetch_min (jamais un store) + un compteur.
-  heapNoteMaxAlloc8Sample(maxAlloc8);
+  // Le bit de rafale HTTP est posé SUR PLACE : ici ce n'est pas une hypothèse
+  // échantillonnée mais une certitude — ce site EST le filtre de la garde 503.
+  heapNoteMaxAlloc8Sample(maxAlloc8, kHeapCtxHttpBurst);
   sHttpGetCount.fetch_add(1, std::memory_order_relaxed);
 }
 

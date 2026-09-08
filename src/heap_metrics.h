@@ -146,7 +146,11 @@ HeapMetrics heapMetricsSnapshot();
  *        heapRingSample(), cadence 2 s, avec une valeur déjà mesurée).
  * Sans log ni allocation.
  */
-void heapNoteMaxAlloc8Sample(uint32_t maxAlloc8);
+// `ctxSurPlace` : bits kHeapCtx* que l'appelant connaît de façon CERTAINE parce
+// qu'il est lui-même dans ce régime (0 s'il n'en sait rien). Ils sont fusionnés
+// avec le contexte échantillonné, qui a jusqu'à 2 s de retard — retard qui, le
+// 08/09/2026, a fait enregistrer un creux de 2 932 o avec « aucun régime ».
+void heapNoteMaxAlloc8Sample(uint32_t maxAlloc8, uint8_t ctxSurPlace = 0);
 
 /**
  * @brief Plus petit « plus gros bloc » 8 bits observé DEPUIS LE BOOT (octets).
