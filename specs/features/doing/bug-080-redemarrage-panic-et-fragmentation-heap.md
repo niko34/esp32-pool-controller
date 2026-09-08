@@ -1339,3 +1339,71 @@ et doit porter la ligne « Cinétique heap avant reset » de tout redémarrage
 survenu dans les heures précédentes. Un redémarrage **sans** cette ligne alors que
 le journal couvre la période devient un fait à expliquer, et non plus le
 comportement normal.
+
+---
+
+## RELEVÉ AUTOMATIQUE DU 08/09/2026 — la piste WiFi de l'utilisateur est écartée
+
+Première capture forensique automatique (`/root/pool-captures/`, cron 04:00 et
+05:30 UTC), sur **~21 h de journal** continu (07/09 08:35 → 08/09 05:38, aucune
+troncature, 0 redémarrage sur la période). Le firmware qui tourne est toujours la
+**v2.45.1** — le lot 2.45.1 → 2.48.0 n'est pas déployé.
+
+### Ce que le relevé dit
+
+| Fait | Valeur | Lecture |
+|---|---|---|
+| **Pertes WiFi** | **0** | Le WiFi n'a **pas** lâché, RSSI **−39 dBm** (excellent) |
+| **Déconnexions MQTT** | **8** | 7 × `état=-3` (*connection lost*), 1 × `état=-4` (*timeout*) |
+| … dont entre 00 h et 06 h | **4 sur 8** | 01:02, 01:43, 01:58, 03:19 |
+| **Échecs d'allocation** | **45** | deux salves : 10:23–11:29 (31) et 19:14 (14) |
+| **Redémarrages** | **0** | |
+
+### Deux hypothèses tombent
+
+1. **« Les coupures WiFi se voient à travers les reconnexions MQTT »** — hypothèse
+   de l'utilisateur, formulée le 07/09. **Écartée** : zéro perte WiFi journalisée
+   pendant que MQTT se reconnectait huit fois. Le motif de comptage a été
+   **vérifié contre le firmware** avant de conclure (`src/main.cpp:548` et
+   `:1237-1239` émettent bien « WiFi déconnecté ») — sans cette vérification, un
+   « 0 » aurait pu n'être qu'un motif aveugle, et c'est exactement l'erreur qu'un
+   compteur muet fait commettre. C'est la **session TCP vers le courtier** qui
+   tombe, l'association 802.11 tenant bon.
+2. **« Sans doute plus quand je me connecte sur l'application »** — **non
+   soutenu** : la moitié des déconnexions se produisent entre 01 h et 03 h,
+   quand personne n'ouvre l'interface.
+
+### Ce que le relevé ne dit pas
+
+**Aucune corrélation temporelle** entre les deux phénomènes : les salves
+d'allocation (10:23–11:29, 19:14) ne coïncident avec aucune des huit
+déconnexions MQTT (15:06, 20:16, 21:18, 21:52, 01:02, 01:43, 01:58, 03:19). La
+famine de tas et les chutes de session MQTT se présentent donc comme **deux
+phénomènes distincts**, et non comme une cause et son symptôme. Le lot C ne peut
+pas s'appuyer sur les secondes pour caractériser la première.
+
+En revanche la **signature** des échecs est celle déjà identifiée : `caps=0x080C`,
+blocs de **1 622 o** et **1 406 o**, `maxBloc` descendu à **1 012 o** pour
+**1 916 o** libres — les tampons TX WiFi, confirmés une troisième fois.
+
+### ⚠️ Le résumé automatique comptait des LIGNES, pas des événements
+
+Le premier `resume.txt` annonçait « 19 reconnexions MQTT » et « 6 échecs
+d'allocation ». Les deux chiffres étaient faux **en sens opposés dans le même
+résumé** : 8 déconnexions réelles (les 11 autres lignes étaient les tentatives de
+reprise) et **45** échecs réels (le firmware **agrège** — une seule ligne porte
+`x14` et un `cumul=`). Un chiffre gonflé de +138 %, l'autre minoré de −87 %.
+`capture-logs.sh` est corrigé : il lit désormais le compteur cumulatif du
+firmware, compte les déconnexions par événement, isole la tranche 00 h–06 h, et
+porte en commentaire la trace de la vérification du motif WiFi. La rectification
+est consignée dans `resume.txt` lui-même, sous les chiffres faux — pas à leur
+place, pour qu'une relecture ultérieure ne les reprenne pas.
+
+### Prochaine étape du lot C
+
+La question à instruire devient : **pourquoi la session MQTT tombe-t-elle huit
+fois par jour alors que le WiFi tient ?** Candidats à départager, aucun mesuré à
+ce stade — *keepalive* PubSubClient contre délai d'inactivité du courtier, table
+NAT/ARP du TP-Link, ou famine de tampons TX assez brève pour ne rien journaliser.
+Le relevé de nuit est l'angle le plus discriminant : il élimine toute
+participation de l'interface web.
