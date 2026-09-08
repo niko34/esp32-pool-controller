@@ -9,6 +9,9 @@
 #include "ws_manager.h"
 #include "oom_guard.h"  // oomGuardNoteHeapSample (miroir du dernier échantillon)
 #include "heap_metrics.h"  // mesure 8 bits = mémoire réellement allouable (v2.19.0)
+#include "heap_caps_logic.h"  // bits de contexte + fenêtre de rafale (PUR, ADR-0017)
+#include "pump_controller.h"  // isAnyPumpEnergized (bit de contexte « dosage », LECTURE SEULE)
+#include "mqtt_manager.h"     // lastDiscoveryMarkMs (bit de contexte « rafale HA »)
 
 // =============================================================================
 // Stockage RTC noinit (bug-heap-toctou A4)
@@ -75,9 +78,49 @@ void heapRingSample() {
   // v2.19.0 : source basculée sur la métrique 8 bits (heap_metrics.h) = la
   // mémoire qu'un malloc/new peut réellement obtenir. Purement OBSERVATIONNEL
   // ici — aucune décision de reboot ne dépend de l'anneau ni du miroir.
-  uint32_t uptimeS = (uint32_t)(millis() / 1000UL);
-  uint32_t maxAllocBytes = heapLargestFreeBlock8Bit();
-  uint32_t freeHeapBytes = heapFree8Bit();
+  //
+  // feature-122 (A1/A5) : les DEUX appels 0x0804 d'avant
+  // (heapLargestFreeBlock8Bit + heapFree8Bit) sont fondus en UN seul
+  // heap_caps_get_info à l'intérieur de heapFloorsSample(), qui rend la sonde de
+  // référence à l'appelant. Le créneau ainsi libéré porte UN masque
+  // supplémentaire en tour de rôle.
+  // COÛT RÉEL, ÉNONCÉ SANS ARRONDI (le « net nul » du plan ne tient que si l'on
+  // suppose heapFree8Bit() coûteuse, ce qu'elle n'est pas) :
+  //   avant  : 1 parcours O(blocs) + 1 agrégat O(régions) par échantillon ;
+  //   après  : 2 parcours O(blocs) + 2 agrégats O(régions) par échantillon.
+  // Soit +1 parcours toutes les 2 s → 1 parcours/s, EXACTEMENT le plafond fixé
+  // par le gate pool-chemistry. Ne pas accélérer la cadence, ne pas ajouter un
+  // 3ᵉ masque interne : les deux violeraient ce plafond (static_assert dans
+  // constants.h et heap_metrics.cpp).
+  const uint32_t nowMs = (uint32_t)millis();
+  uint32_t uptimeS = nowMs / 1000UL;
+
+  // ----- Bits de CONTEXTE (A5) — purement OBSERVATIONNELS -------------------
+  // Sans eux, un plancher ne dit pas QUEL événement l'a produit. ⚠️ Aucun de ces
+  // bits n'est relu par une décision (ni dosage, ni reboot, ni refus 503), et
+  // aucune lecture de `filtration`/`sensors` n'est ajoutée ici.
+  // « HTTP » : delta du compteur de GET servis depuis l'échantillon précédent —
+  // même idiome que sLastSkippedPushes ci-dessus (statique locale, loopTask).
+  static uint32_t sLastHttpGetCount = 0;
+  const uint32_t httpGets = heapHttpGetCount();
+  const uint32_t httpDelta = httpGets - sLastHttpGetCount;
+  sLastHttpGetCount = httpGets;
+
+  uint8_t ctx = 0;
+  if (wsManager.clientCount() > 0) ctx |= kHeapCtxWsClients;
+  if (httpDelta > 0) ctx |= kHeapCtxHttpBurst;
+  // isAnyPumpEnergized() est inline, lit deux uint8_t, sans verrou (course
+  // bénigne documentée dans pump_controller.h) — patron déjà employé à
+  // main.cpp:394. LECTURE SEULE : aucun chemin de dosage n'est touché.
+  if (PumpController.isAnyPumpEnergized()) ctx |= kHeapCtxDosing;
+  if (heapCtxDiscoveryWindowActive(nowMs, mqttManager.lastDiscoveryMarkMs(),
+                                   kMqttDiscoveryCtxWindowMs)) {
+    ctx |= kHeapCtxMqttDiscovery;
+  }
+
+  const HeapProbe reference = heapFloorsSample(ctx);
+  uint32_t maxAllocBytes = reference.largestBlockBytes;
+  uint32_t freeHeapBytes = reference.freeBytes;
 
   heapRingEncode(&sHeapRingData[(size_t)sHeapRingHead * kHeapRingEntryBytes],
                  uptimeS,

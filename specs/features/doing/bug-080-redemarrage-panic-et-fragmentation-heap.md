@@ -1532,3 +1532,54 @@ d'inactivité MQTT (keepalive à 60 s contre des chutes à 1–10 s).
    coûte 2 × 4 096 o par fichier servi et jusqu'à ~49 Ko en rafale au chargement
    de l'interface. Ces deux-là **réduisent la demande** et ne dépendent d'aucune
    des questions ci-dessus.
+
+### 7. Où en est le LOT C au 2026-09-08 : l'instrument est livré, les chiffres restent à relever
+
+`feature-122` (lot **C-1a**, **v2.49.0**) est livrée : code, tests (44 suites /
+1 677 cas, zéro régression), revue et documentation. Elle **ne corrige rien** —
+aucune réserve DMA n'est posée, aucune garde n'est modifiée, la métrique du refus
+503 et de la garde d'ouverture de fichiers **reste `0x0804`**.
+
+**Ce qui est désormais mesurable sans redéployer** :
+
+- planchers glissants (minimum depuis le démarrage **et** sur fenêtre, sur le
+  **libre** comme sur le **plus gros bloc**) pour **cinq** pools : `0x0804`,
+  `0x080C`, `0x1000`, `0x1804` et `MALLOC_CAP_SPIRAM` ;
+- l'**octet de contexte au creux** : client WebSocket, pompe sous tension,
+  fenêtre post-connexion MQTT, rafale de fichiers statiques, refus `fs_guard` ;
+- le **témoin `malloc(4096)` / `malloc(4095)`** du démarrage, qui tranchera si le
+  lot B-1 est opérant ou décoratif ;
+- la **durée observée** des parcours de tas (`walkMaxUs` / `walkMedianUs`).
+
+**Où lire** : `GET /get-system-info?hf=1` (temps calme) ou les **deux lignes de
+journal** `Heap masq boot:` / `Heap masq fen:` (**dernier recours en pleine
+famine** : `snprintf` sur pile, aucun bloc contigu requis — le 08/09,
+`/get-system-info` répondait en 200 quand la page statique était en 503).
+Protocole complet :
+[docs/subsystems/system-health.md](../../../docs/subsystems/system-health.md#protocole-de-relevé-sur-cible).
+
+**Décision figée entre-temps** :
+[ADR-0077](../../../docs/adr/0077-metrique-de-garde-exclut-les-pools-inatteignables.md)
+— « une métrique de garde doit exclure les pools qu'un `malloc()` ne peut pas
+atteindre ». Il **n'a pas basculé** la métrique : il énonce le principe et fige
+la table (épinglée en compilation par `static_assert(heapFloorsPredMask() ==
+0x02ED)`). La bascule vers `0x1804` est la conséquence, en C-1b/C-3.
+
+**Ce qui reste ouvert, et dans cet ordre** :
+
+1. **Relever sur cible** : les cinq planchers, leurs contextes, les durées, et
+   **le verdict A7**. Rien de ce lot n'a encore été mesuré sur l'appareil.
+2. ⚠️ **Précaution de lecture pour le dimensionnement** : le plancher `0x080C` —
+   le chiffre qui dimensionnera la réserve — n'a qu'une résolution de **4 s**
+   (tour de rôle), là où `0x0804` est mesuré **à chaque requête**. Comme
+   `heaps(0x080C) ⊆ heaps(0x0804)`, le plancher fin de `0x0804` le **borne
+   supérieurement** : dimensionner dessus reste **conservateur** — mais **ne pas
+   lire le plancher `0x080C` comme une pointe**.
+3. ⚠️ **Portée du verdict A7** : il tranche où tombe un `malloc(4096)` **au
+   démarrage, PSRAM quasi vide** — pas où tombe le tampon stdio **en pleine
+   rafale**, sous pression PSRAM, quand la préférence `extmem` peut retomber
+   silencieusement en interne.
+4. Puis `feature-123` (C-1b) : l'expérience de réserve, réserve **et** bascule de
+   métrique dans le même lot.
+5. Indépendamment, et sans attendre : `bug-121` et la double ouverture
+   `exists()` + `open()` — dont la **priorité dépend du verdict A7** (§ ci-dessus).

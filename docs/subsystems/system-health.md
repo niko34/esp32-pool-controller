@@ -2,7 +2,7 @@
 
 - **Fichiers** : [`src/main.cpp`](../../src/main.cpp) (`checkSystemHealth`, `performFailSafeRestart`, `performAutoHealRestart`, `enterMaintenanceMode`, `initAutoHealRtcState`, `ensureNetworkProbe`, `onNetPingSuccess`), [`src/self_heal_logic.h`](../../src/self_heal_logic.h) / [`.cpp`](../../src/self_heal_logic.cpp), [`src/net_health_logic.h`](../../src/net_health_logic.h) / [`.cpp`](../../src/net_health_logic.cpp), [`src/history_guard_logic.h`](../../src/history_guard_logic.h) / [`.cpp`](../../src/history_guard_logic.cpp) (+ coquille dans [`src/history.cpp`](../../src/history.cpp))
 - **Pas de singleton** : logique portée par des fonctions libres de `main.cpp` + trois modules purs `self_heal_logic` (heap), `net_health_logic` (connectivité) et `history_guard_logic` (disjoncteur de boot-loop history).
-- **Décisions architecturales** : [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison mémoire), [ADR-0030](../adr/0030-watchdog-connectivite.md) (watchdog de connectivité), [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) (disjoncteur de boot-loop history), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité périodique du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) (**bascule des gardes sur la métrique 8 bits**, v2.33.0).
+- **Décisions architecturales** : [ADR-0029](../adr/0029-auto-guerison-heap.md) (auto-guérison mémoire), [ADR-0030](../adr/0030-watchdog-connectivite.md) (watchdog de connectivité), [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) (disjoncteur de boot-loop history), [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) (post-mortem d'allocation RTC + contrôle d'intégrité périodique du tas, v2.18.8), [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) (**mesure 8 bits = mémoire réellement allouable**, v2.19.0), [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) (**bascule des gardes sur la métrique 8 bits**, v2.33.0), [ADR-0077](../adr/0077-metrique-de-garde-exclut-les-pools-inatteignables.md) (**une métrique de garde exclut les pools qu'un `malloc()` ne peut pas atteindre**, v2.49.0).
 
 > ✅ **v2.33.0 — l'auto-guérison heap et le WARN lisent enfin la métrique 8 bits** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md), bug-080 lot A). L'ancienne mesure `ESP.getMaxAllocHeap()` (pool `MALLOC_CAP_INTERNAL`, IRAM 32 bits comprise) possède un **plancher infranchissable ~27 636 o** : les gardes calées dessus n'ont **jamais déclenché** — le PANIC du 29/08 et la famine de 9 min du 02/09 (1 466 échecs d'allocation) sont passés sans une seule alerte. `checkHeapHealth()` échantillonne désormais `heapLargestFreeBlock8Bit()`, avec les seuils recalibrés : **auto-guérison à 4 096 o** (`kRestartMaxAllocHeapBytes`), **WARN + flush + cadence rapprochée à 12 288 o** (`kLowHeapWarnBytes`). L'immunité aux creux transitoires (jusqu'à 1 268 o pendant quelques secondes en régime normal) vient du **débounce temporel** — 3 mesures consécutives, cadence 5 s sous le WARN, soit une famine continue ≥ 10-15 s avant restart — pas du niveau du seuil. Les logs disent `maxBloc8=`.
 
@@ -110,6 +110,319 @@ Deux points de mise en œuvre à connaître :
 **La bascule des gardes a été faite en v2.33.0** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) sur les relevés propres 2.26→2.32 de cette trace. L'échelle contractuelle en métrique 8 bits : `2 048 (repli) < 4 096 (auto-heal) < 6 144 (skip WS) < 12 288 (WARN) < 18 432 (réarmement nominal) < 21 492 (nominal terrain)`, débounce maintenu à 3. La trace reste émise pour surveiller la **dérive** du régime : si `minFen` s'installe durablement sous 12 288, les creux s'aggravent.
 
 > **Historique** : la règle `clamp(0,40 × min(maxBloc8) ; 8192 ; 16384)` d'[ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) avait été déclarée **inapplicable** en v2.20.2 (min mesuré 3 060 o → plancher 8 192 au-dessus du régime normal → mode maintenance atteignable) et la bascule refusée par NO GO ([ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md), superseded). La révocation du NO GO repose sur un autre argument : **l'immunité vient du débounce temporel, pas du niveau du seuil** — voir [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md).
+
+## Planchers glissants multi-masques (v2.49.0, feature-122 lot C-1a)
+
+> ⚠️ **C'est un INSTRUMENT DE MESURE, pas un correctif.** Aucune réserve DMA
+> n'est posée, aucune garde n'est modifiée, aucun seuil ne bouge. La métrique de
+> toutes les gardes du projet — refus 503 des fichiers statiques
+> ([`web_server.cpp`](../../src/web_server.cpp)), garde d'ouverture de fichiers
+> ([`fs_guard.cpp`](../../src/fs_guard.cpp)), parachute OOM, gardes TLS — **reste
+> `0x0804`**. La bascule éventuelle vers `0x1804` appartient à `feature-123`
+> (lot C-1b), sous [ADR-0077](../adr/0077-metrique-de-garde-exclut-les-pools-inatteignables.md).
+
+Modules : [`src/heap_caps_logic.h`](../../src/heap_caps_logic.h) (**pur** —
+masques, `heapMaskSelectsHeap`, plancher glissant, `fetch_min`, seaux de durée,
+fenêtre de contexte) + coquille impure dans
+[`src/heap_metrics.cpp`](../../src/heap_metrics.cpp) (atomiques, tour de rôle,
+chronométrage) et [`src/heap_ring.cpp`](../../src/heap_ring.cpp) (cadence,
+composition du contexte). Tests natifs : `test/test_native_heap_caps_table/` et
+`test/test_native_heap_floors/`.
+
+### La table des cinq masques — et le piège qu'elle sert à mesurer
+
+**Le point central, sans détour : `0x0804`, la métrique ACTUELLE des gardes,
+VOIT une réserve DMA.** C'est exactement ce que ce lot sert à mesurer, et la
+raison pour laquelle poser une réserve sans basculer la métrique **aveuglerait la
+garde 503** — elle lirait le gros bloc libre de la réserve pendant que le pool
+général resterait affamé.
+
+| Masque | DRAM interne | PSRAM | Réserve DMA | Plus gros bloc mesuré ? |
+|---|---|---|---|---|
+| `0x0804` `INTERNAL\|8BIT` — métrique **actuelle** des gardes | voit | ignore | **voit** ⚠️ | oui (O(blocs)) |
+| `0x080C` `INTERNAL\|DMA\|8BIT` — classe d'échec observée (ce que le WiFi demande) | voit | ignore | voit | oui (O(blocs)) |
+| `0x1000` `DEFAULT` seul | voit | **voit** ⚠️ | ignore | **non** |
+| `0x1804` `INTERNAL\|8BIT\|DEFAULT` — candidate de `feature-123` | voit | ignore | ignore ✅ | oui (O(blocs)) |
+| `0x0400` `MALLOC_CAP_SPIRAM` — plancher PSRAM (A6) | ignore | voit | ignore | **non** |
+
+Cette table est corroborée par **deux voies indépendantes** :
+
+1. **Dérivation** de la règle de l'IDF `(all_caps & caps) == caps`, déjà
+   documentée dans [`src/oom_guard_logic.h`](../../src/oom_guard_logic.h) et mise
+   sous test à 12 cas (4 masques × 3 tas) dans
+   `test/test_native_heap_caps_table/`.
+2. **Source IDF** de `esp_psram_extram_reserve_dma_pool()` :
+   `caps[] = {0, MALLOC_CAP_DMA|MALLOC_CAP_INTERNAL, MALLOC_CAP_8BIT|MALLOC_CAP_32BIT}`
+   → `all_caps = 0x080E`, **sans `DEFAULT`** — d'où « `0x0804` voit,
+   `0x1804` ignore ».
+
+Elle est **figée en compilation** : `heapFloorsPredMask()` recalcule les 12 bits
+et `static_assert(… == 0x02ED)` casse le **build** si `== caps` devient `!= 0`,
+ou si `0x1804` redevient `0x0804`.
+
+> ⚠️ **`0x1000` et `MALLOC_CAP_SPIRAM` n'ont PAS de « plus gros bloc ».** Sans bit
+> `INTERNAL`, `heapProbeForCaps()` prend la branche **O(régions)** imposée par
+> `oomProbeUsesRegionScan` (condition 2 du gate `pool-chemistry`, bug-080 lot B-2
+> — borne *a priori* contre un parcours de 4 Mo interruptions coupées). Leur
+> `largestBlockBytes` vaut la sentinelle `kOomProbeBlockUnknown` (4 194 240), qui
+> n'entre **jamais** dans un plancher et sort en **`null`** côté HTTP
+> ([ADR-0072](../adr/0072-absence-de-valeur-hors-du-domaine.md)) : publiée telle
+> quelle, elle afficherait un bloc libre de 4 Mo, faux et parfaitement crédible —
+> le mode de défaillance exact que ce dossier combat.
+
+### Ce qui est retenu par emplacement
+
+Pour chacun des **cinq** emplacements : le dernier échantillon, le **minimum
+depuis le démarrage** et le **minimum de fenêtre** (réarmé après chaque report),
+**sur le libre ET sur le plus gros bloc**, plus l'**octet de contexte au creux**
+et le nombre d'échantillons pris pour ce masque.
+
+Un minimum n'est **jamais** un instantané : un échantillonnage à cadence fixe
+rate par construction une pointe de quelques millisecondes (cas limite explicite
+de la spec). D'où deux dispositifs :
+
+- **Repliement par `min`** (`heapFloorUpdate`, pur), jamais un `store` ;
+- **`fetch_min` atomique** (`heapAtomicFetchMin`, composé à la main —
+  `<atomic>` n'en fournit pas) pour le plancher `0x0804`, qui a désormais **trois
+  écrivains** : le filtre de la garde 503 sur `async_tcp`, la garde d'ouverture
+  de fichiers depuis n'importe quelle tâche, et la loop. Un `load`-`compare`-
+  `store` y **perdrait** un minimum (A charge 30 Ko, B charge 30 Ko, A stocke
+  12 Ko, B stocke 20 Ko → le creux de 12 Ko a disparu).
+
+**Résolutions temporelles — à ne pas confondre :**
+
+| Grandeur | Cadence | Où la lire |
+|---|---|---|
+| Plancher `0x0804` à la **requête** (chaque évaluation du filtre 503 et de la garde `fopen`) | par requête | `minBoot` / `minFen` de la ligne `Heap 8bits:` |
+| Planchers `hf` de `0x0804`, `0x1000`, SPIRAM | **2 s** (`kHeapRingSampleIntervalMs`) | `?hf=1`, lignes `Heap masq …` |
+| Planchers `hf` de `0x080C` et `0x1804` | **4 s** (tour de rôle : un seul masque O(blocs) supplémentaire par échantillon) | idem |
+
+### Contexte au creux (A5) — quel événement tenait la machine
+
+Bits `kHeapCtx*`, **purement observationnels** : aucune décision ne les relit
+(ni dosage, ni reboot, ni refus 503).
+
+| Bit | Valeur | Signification | Source |
+|---|---|---|---|
+| `kHeapCtxWsClients` | `0x01` | au moins un client WebSocket connecté | `wsManager.clientCount()` |
+| `kHeapCtxHttpBurst` | `0x02` | des GET ont été servis depuis l'échantillon précédent | delta de `heapHttpGetCount()` |
+| `kHeapCtxDosing` | `0x04` | au moins une pompe doseuse **sous tension** | `PumpController.isAnyPumpEnergized()` (lecture seule) |
+| `kHeapCtxMqttDiscovery` | `0x08` | rafale de découverte HA **en cours ou récente** | `mqttManager.lastDiscoveryMarkMs()` + `kMqttDiscoveryCtxWindowMs` = **60 s** |
+
+La fenêtre de 60 s existe parce qu'une rafale republie ~54 entités et dure bien
+plus qu'un échantillon : le repère est posé à l'**ouverture** *et* à la
+**fermeture** de `publishDiscovery()`, la fenêtre courant depuis la fin — sans
+quoi un creux causé par la rafale serait attribué au régime calme qui la suit.
+Voir [mqtt-manager.md](mqtt-manager.md#lastdiscoverymarkms--repère-de-rafale-pour-le-contexte-mémoire-v2490).
+
+Le refus `fs_guard` n'a pas de bit propre : il **alimente** le plancher `0x0804`
+(`heapNoteMaxAlloc8Sample` depuis `fsGuardAdmit` / `fsGuardDrain`, sans parcours
+neuf), et sa trace reste celle de [acces-fichiers.md](acces-fichiers.md).
+
+### Témoin `malloc(4096)` + témoin de contrôle `malloc(4095)` (A7)
+
+Deux `malloc()` au `setup()`, **libérés aussitôt** (aucune rétention), pour
+trancher une question ouverte : **le lot B-1 est-il opérant ou décoratif ?**
+`heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes)` (4095, v2.35.0,
+[ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md))
+devait envoyer les tampons stdio de 4 096 o en PSRAM — or `psram_free` est
+**immobile à 4 180 340 dans 152 relevés**.
+
+- `malloc(4096)` = la classe **exacte** du tampon visé, **attendue en PSRAM** ;
+- `malloc(4095)` = témoin de **contrôle**, attendu **interne** dans les deux
+  configurations.
+
+Le couple donne une signature non ambiguë : **si les deux tombent du même côté,
+la politique d'allocation ne fait rien**. `malloc()` et jamais
+`heap_caps_malloc()` avec des caps explicites — celles-ci contourneraient la
+politique qu'on éprouve. Le classement d'adresse croise **deux** avis
+(`heapPtrIsExternal` sur `SOC_EXTRAM_DATA_LOW/HIGH`, `esp_ptr_external_ram`, plus
+`esp_psram_check_ptr_addr` si disponible) et leur **discordance est un résultat
+rapporté**, pas une erreur masquée.
+
+| Bit | Valeur | Signification |
+|---|---|---|
+| `kHeapWitnessSkipped` | `0x01` | pas de PSRAM (module WROOM) → témoin sauté |
+| `kHeapWitness4096External` | `0x02` | le `malloc(4096)` est tombé en **RAM externe** |
+| `kHeapWitness4095External` | `0x04` | le `malloc(4095)` aussi — **ANOMALIE** (le contrôle a bougé) |
+| `kHeapWitnessDisagreement` | `0x08` | les deux API de classement ne s'accordent pas |
+| `kHeapWitness4096Failed` / `…4095Failed` | `0x10` / `0x20` | l'allocation a échoué → **aucun verdict** |
+| `kHeapWitnessNoPsramApi` | `0x40` | `esp_psram_check_ptr_addr` indisponible (qualifie la confiance, ne contredit pas le verdict) |
+
+**Lecture attendue si B-1 est opérant** : `w = 0x02` (`w96 = true`,
+`w95 = false`). **Si décoratif** : `w = 0x00` (les deux internes).
+
+### Coût réel — énoncé sans arrondi
+
+Le plan annonçait un « coût net nul ». **C'était faux** : il supposait
+`heapFree8Bit()` coûteuse en O(blocs), alors qu'elle est O(régions). La
+comptabilité honnête :
+
+| | Parcours **O(blocs)** par échantillon | Agrégats O(régions) |
+|---|---|---|
+| Avant ce lot | **1** (`heapLargestFreeBlock8Bit`) | 1 (`heapFree8Bit`) |
+| Après ce lot | **2** (référence `0x0804` + un masque en tour de rôle) | 2 (`0x1000`, SPIRAM) |
+
+À la cadence de 2 s, cela fait **1 parcours O(blocs) par seconde — exactement le
+plafond** fixé par la condition 3 du gate `pool-chemistry`, **sans marge**.
+Verrouillé par deux `static_assert` (`kHeapFloorWalksPerSample × 1000 ≤
+kHeapRingSampleIntervalMs` dans [`constants.h`](../../src/constants.h), et
+`kHeapFloorWalksPerSample == 2` dans `heap_metrics.cpp`) : ni accélérer la
+cadence, ni ajouter un 3ᵉ masque à parcours complet.
+
+> **Le gate a RETIRÉ sa validation initiale et maintenu son GO — pour une
+> meilleure raison.** Ce qui menace la régulation n'est pas le **taux
+> d'occupation** du CPU par la mesure, c'est la **durée d'une occurrence
+> interruptions coupées** (~84 µs relevés). Un plafond de taux ne dit rien de
+> cette durée : c'est elle qu'il faut mesurer, d'où le chronométrage ci-dessous.
+
+### Durée des parcours — `walkMaxUs` / `walkMedianUs` (condition 5 du gate)
+
+Le parcours de **référence** `0x0804` est chronométré à chaque échantillon.
+
+- **Horloge : `esp_timer_get_time()` et NON `CCOUNT`.** Le compteur de cycles est
+  **par cœur** : une migration de tâche entre les deux lectures rendrait la
+  soustraction absurde (piège déjà rencontré, `kOomProbeDurationInvalid`).
+- ⚠️ **La médiane est APPROCHÉE, et son biais doit être lu comme tel.**
+  Histogramme à **7 seaux dyadiques** (bornes supérieures 32 / 64 / 128 / 256 /
+  512 / 1024 µs, puis **hors échelle** = `65535`), sans tri, sans allocation,
+  sans flottant. La valeur rendue est la **borne supérieure du seau contenant le
+  rang médian** ⇒ **surestimation bornée par la largeur du seau**, donc
+  **conservatrice** pour un plafond de coût. Autour de **84 µs**, elle rapporte
+  **128** : à lire « **≤ 128 µs** » face aux **300 µs** de
+  `kOomProbeWarnDurationUs`.
+- **Jamais réarmées** : `walkMaxUs` et l'histogramme gagnent en sens avec le
+  nombre d'échantillons (contrairement aux planchers de fenêtre).
+
+> ⚠️ **Ne pas confondre avec `oom_probe_max_us`.** Celui-ci mesure la sonde du
+> **chemin d'échec d'allocation** — autre fréquence, autre état de tas, autre
+> grandeur. Voir [oom-guard.md](oom-guard.md).
+
+### ⚠️ `hf.pred` ne porte AUCUNE information d'exécution
+
+`pred` publie les 12 bits de la table de sélection, valeur attendue **`0x02ED`
+(749)**. **Réserve explicite de la revue** : cette valeur est *constant-folded*
+par le compilateur — l'objet contient littéralement `movi a8, 0x2ed`. Elle est
+donc **constante par build** et ne peut ni confirmer ni infirmer quoi que ce soit
+sur cible.
+
+**Ne jamais la lire comme une observation.** Ce qui la protège n'est pas son
+affichage mais `static_assert(heapFloorsPredMask() == 0x02ED)` : **le build est
+l'organe d'application**. Un `pred` différent de 749 dans une réponse signifie
+qu'on interroge un firmware dont la table a changé — pas qu'un tas s'est
+comporté autrement.
+
+### Répartition des deux chemins de lecture
+
+| Chemin | Rôle | Coût mémoire | Contenu |
+|---|---|---|---|
+| `GET /get-system-info?hf=1` | **confort de temps calme** — relevé complet, demandé à la main | **1 694 o** sérialisés dans une `String` ⇒ **exige un bloc contigu** du pool 8 bits | les 5 emplacements, planchers boot **et** fenêtre, contextes, `pred`, `hg`, témoin |
+| Les **deux lignes de journal** `Heap masq …` | **dernier recours en pleine famine** | `snprintf` sur `char[160]` de **pile** ⇒ **aucun bloc contigu requis** | planchers de `0x0804`, `0x080C`, `0x1804`, PSRAM + contexte + témoin + durées |
+
+**Motif chiffré, et il n'est pas théorique** : le 08/09/2026,
+`/get-system-info` répondait encore en **200** alors que la page statique tombait
+en **503** — parce que **964 o** passaient encore avec un `maxBloc8` à **5 108 o**.
+Et le `maxBloc8` observé descend jusqu'à **852 o** au pire. À 1 694 o publiés par
+défaut, il existerait une bande de fragmentation où la route de diagnostic
+échouerait **alors qu'elle passait avant ce lot** : l'instrument rendu
+indisponible exactement dans le régime qu'il sert à étudier. D'où le
+conditionnement par `?hf=1` — **à ne pas « simplifier » en inconditionnel**.
+Sans le paramètre, la réponse est identique **à l'octet près** à ce qu'elle était
+avant ce lot (964 o).
+
+### Les deux lignes de journal agrégées
+
+Émises par `checkHeapHealth()` à la **même cadence** que la trace
+`Heap 8bits:` (`kHeap8LogIntervalMs` = **30 min**), soit **~+0,55 Ko/h** —
+jamais une ligne par échantillon ([ADR-0033](../adr/0033-budget-espace-partition-history.md) :
+la partition `history` n'offre que ~25-35 min de rétention utile au journal).
+
+```
+Heap masq boot: m804=26112/852 c=0x03 m80C=24576/1024 c=0x03 m1804=25600/900 c=0x0B mPS=4180340 tem=0x00
+Heap masq fen: m804=31744/4096 m80C=30720/3584 m1804=31232/3900 ctxVu=0x0F walk=132/128us
+```
+
+| Champ | Signification |
+|---|---|
+| `m804` / `m80C` / `m1804` | plancher `libre`/`plus gros bloc` du masque — `boot` = depuis le démarrage, `fen` = depuis le report précédent |
+| `c=0x..` | bits `kHeapCtx*` **au creux du plus gros bloc** de ce masque |
+| `mPS` | plancher du **libre PSRAM** (A6) — même grandeur que `psram_free`, mais en **minimum** : une allocation PSRAM transitoire est invisible sur un instantané |
+| `tem` | bits `kHeapWitness*` du témoin 4096/4095 |
+| `ctxVu` | **OU** de tous les contextes vus dans la fenêtre |
+| `walk=max/med us` | durée observée du parcours `0x0804` (médiane **surestimée**, cf. ci-dessus) |
+| `4294967295` | **aucun échantillon** pour ce plancher (`kHeapFloorEmpty`) |
+
+Le « plus gros bloc » de `0x1000` et de la PSRAM n'est **jamais** affiché : ces
+masques n'en mesurent pas.
+
+> **Pourquoi deux lignes neuves et pas l'élargissement de `Heap 8bits:`** : ce
+> tampon est à ~117 caractères sur 128 dans son pire cas, et cette ligne est la
+> **seule série longue** dont dispose le projet (152 relevés historiques). La
+> tronquer pour y ajouter des champs coûterait la série de référence.
+
+> ⚠️ **Fragilité à connaître avant de toucher ces lignes.** Le pire cas de
+> `ligne2` est **142 caractères** sur 160 (**143 octets**, NUL compris) — et il ne
+> tient **que** parce que les octets de contexte sont des `uint8_t`, imprimés en
+> `%02X`. Élargis à 32 bits, la ligne passerait à **167 octets** → **troncature
+> silencieuse**, et le champ perdu serait `tem=`, **le plus à droite** : le témoin
+> A7, c'est-à-dire précisément le résultat qu'on attend de ce lot. Une
+> **sentinelle de types** verrouille ces champs en `uint8_t`
+> (`test_journal_context_fields_are_bytes`, sur la source **dépouillée de ses
+> commentaires** — la version brute était satisfiable par un simple commentaire).
+
+### Protocole de relevé sur cible
+
+Sans ce protocole, le lot livre un instrument que personne ne sait lire.
+L'appareil doit tourner **au moins 30 min** après le déploiement (première trace
+agrégée) ; les planchers `boot` ne se rattrapent pas.
+
+1. **Ligne de base, appareil au calme** (aucun navigateur ouvert) :
+
+   ```bash
+   curl -s -u admin:MDP 'http://<ip>/get-system-info?hf=1' | python3 -m json.tool
+   ```
+
+   Vérifier d'abord **la validité de l'instrument** : `hf.n` > 0 (échantillons
+   pris), `hf.i8.n` ≈ `hf.n`, `hf.dma.n` ≈ `hf.n / 2` (tour de rôle),
+   `hf.pred = 749` (**constante de build — ne rien en déduire**),
+   `hf.walkMaxUs` < 300.
+2. **Trancher A7, tout de suite** : lire `hf.w`, `hf.w96`, `hf.w95`.
+   `w96 = true` / `w95 = false` ⇒ le lot B-1 **est opérant** ;
+   `w96 = false` / `w95 = false` ⇒ **décoratif** ;
+   `w96 = null` ⇒ aucun verdict (pas de PSRAM, ou `malloc()` refusé) — ne rien
+   conclure. `hf.wdis = true` ⇒ les deux API de classement se contredisent :
+   **suspendre l'interprétation** et rouvrir la question.
+3. **Chargement d'interface** (le déclencheur historique des 503) : ouvrir la
+   page principale, forcer un rechargement complet, puis re-interroger.
+   Attendre `hf.i8.cf` / `hf.i8.cb` portant `0x02` (`kHeapCtxHttpBurst`) et
+   souvent `0x01`. C'est le creux qui **dimensionne la garde 503**.
+4. **Session de dosage** : pendant une injection pH ou ORP réelle, re-interroger.
+   Le contexte attendu au creux porte `0x04`. Comparer `hf.dma.mb` avec et sans
+   dosage — la régulation ne doit **pas** être le facteur dominant.
+5. **Rafale de découverte HA** : provoquer une reconnexion MQTT (redémarrer le
+   broker, ou couper/rétablir le réseau), puis re-interroger dans les **60 s**.
+   Contexte attendu `0x08`. C'est le scénario de `bug-121` (~54 entités
+   republiées).
+6. **Le chiffre qui compte pour `feature-123`** : `hf.dma.mb`
+   (`min(plus gros bloc, 0x080C)` depuis le démarrage) et son contexte
+   `hf.dma.cb`. C'est lui qui dimensionne la réserve — **mais lire d'abord
+   l'avertissement de résolution ci-dessous**.
+7. **En pleine famine** (interface en 503, `?hf=1` inaccessible) : ne pas
+   insister sur HTTP. Récupérer les **deux lignes de journal** (`Heap masq boot:`
+   / `Heap masq fen:`) via `GET /get-logs` — ou après coup dans `/system.log`
+   — c'est le **chemin de dernier recours**, sans bloc contigu requis.
+
+> ⚠️ **Ne pas lire `hf.dma.mb` comme une pointe.** Le plancher `0x080C` n'a
+> qu'une résolution de **4 s** (tour de rôle), là où `0x0804` est mesuré **à
+> chaque requête**. Comme `heaps(0x080C) ⊆ heaps(0x0804)`, le plancher fin de
+> `0x0804` (`minBoot` de la ligne `Heap 8bits:`) le **borne supérieurement** :
+> dimensionner dessus reste **conservateur**. Le chiffre `0x080C` sert à
+> confirmer l'**ordre de grandeur** et le **contexte**, pas à capturer la pointe.
+
+> ⚠️ **Ce que le témoin A7 ne dit pas.** Il tranche où tombe un `malloc(4096)`
+> **au démarrage, PSRAM quasi vide** — pas où tombe le tampon stdio **en pleine
+> rafale**, sous pression PSRAM, quand la préférence `extmem` peut retomber
+> silencieusement en interne (c'est une **préférence**, pas une contrainte).
 
 ## Ring de télémétrie heap en RAM RTC noinit (v2.14.0, bug-heap-toctou A4)
 
@@ -535,6 +848,7 @@ Voir [MQTT.md](../MQTT.md#alertes).
 - [`src/history_guard_logic.h`](../../src/history_guard_logic.h) / [`.cpp`](../../src/history_guard_logic.cpp) — décision pure disjoncteur **boot-loop history**
 - [`src/heap_ring_logic.h`](../../src/heap_ring_logic.h) / [`src/heap_ring.h`](../../src/heap_ring.h) / [`src/heap_ring.cpp`](../../src/heap_ring.cpp) — ring de **télémétrie heap** RTC noinit (v2.14.0, tests `test/test_native_heap_ring/`)
 - [`src/heap_metrics.h`](../../src/heap_metrics.h) / [`src/heap_metrics.cpp`](../../src/heap_metrics.cpp) — **source unique** de la mesure « mémoire réellement allouable » (v2.19.0, [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md))
+- [`src/heap_caps_logic.h`](../../src/heap_caps_logic.h) — module **pur** des planchers multi-masques (v2.49.0, feature-122) : masques, `heapMaskSelectsHeap`, plancher glissant, `fetch_min`, seaux de durée, fenêtre de contexte (tests `test/test_native_heap_caps_table/` + `test/test_native_heap_floors/`)
 - [`src/main.cpp`](../../src/main.cpp) — coquille impure (collecte ICMP/heap + effets, `checkHeapHealth` et sa trace de calibrage v2.19.0, `performFailSafeRestart`, alerte différée `history_partition_reset`)
 - [`src/history.cpp`](../../src/history.cpp) — coquille impure du disjoncteur (NVS `hist_meta`, `esp_reset_reason`, `esp_partition_erase_range`)
 - [`src/pump_controller.h`](../../src/pump_controller.h) — `setMaintenanceInhibit()` / `isMaintenanceInhibited()`
@@ -545,4 +859,5 @@ Voir [MQTT.md](../MQTT.md#alertes).
 - [ADR-0031](../adr/0031-disjoncteur-bootloop-history.md) — disjoncteur de boot-loop history
 - [ADR-0037](../adr/0037-postmortem-oom-et-integrite-tas.md) — post-mortem d'allocation RTC + contrôle d'intégrité périodique du tas (alternatives écartées : échantillonnage rapproché du tas, poisoning comprehensive, `ESP.restart()` nu)
 - [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) — **cause racine des 3 crashs** : la métrique heap incluait l'IRAM 32 bits, le seuil d'auto-guérison n'a jamais pu être franchi ; mesure 8 bits obligatoire dans les gardes, découpage mesure (2.19.0) / bascule (2.19.1)
+- [ADR-0077](../adr/0077-metrique-de-garde-exclut-les-pools-inatteignables.md) — **une métrique de garde doit exclure les pools qu'un `malloc()` ne peut pas atteindre** (feature-122, v2.49.0) : 3ᵉ occurrence du piège (parachute en PSRAM, métrique IRAM-inclusive, réserve DMA visible par `0x0804`) ; table des masques figée en compilation, bascule vers `0x1804` reportée à `feature-123`
 - [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) — **bascule effective des gardes en v2.33.0** (bug-080 lot A) : auto-heal 4 096, WARN 12 288, immunité par débounce temporel, révocation du NO GO d'ADR-0040

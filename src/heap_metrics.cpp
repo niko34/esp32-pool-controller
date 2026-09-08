@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <esp_heap_caps.h>
+#include <esp_timer.h>  // esp_timer_get_time — chronometrage du parcours (gate, condition 5)
 
 #include "constants.h"  // kOomProbeBlockUnknown (sentinelle « plus gros bloc non renseigné »)
 #include "oom_guard_logic.h"  // oomProbeUsesRegionScan (sélection de branche, PURE — ADR-0017)
@@ -82,11 +83,26 @@ HeapMetrics heapMetricsSnapshot() {
 static std::atomic<uint32_t> sMinMaxAlloc8SinceBoot{UINT32_MAX};
 static std::atomic<uint32_t> sMinMaxAlloc8Window{UINT32_MAX};
 
+// `fetch_min` atomique : la RÈGLE vit dans heapAtomicFetchMin (heap_caps_logic.h,
+// module PUR — ADR-0017), pour qu'un test natif puisse l'entrelacer avec un
+// second écrivain scripté. Ici, seule reste la liaison à std::atomic et à
+// l'ordre mémoire.
+// POURQUOI PAS UN `load`-`compare`-`store` (condition 1 du gate pool-chemistry) :
+// ce plancher est désormais alimenté par TROIS écrivains — la loop, le filtre de
+// la garde 503 sur `async_tcp` (web_server.cpp) et la garde d'ouverture de
+// fichiers depuis n'importe quelle tâche (fs_guard.cpp). Avec deux écrivains, un
+// load-compare-store PERD un minimum au lieu de le reporter (A charge 30 Ko, B
+// charge 30 Ko, A stocke 12 Ko, B stocke 20 Ko → le creux de 12 Ko a disparu).
+// `relaxed` : ces planchers ne publient aucune donnée à travers eux (aucune
+// dépendance mémoire à établir), et la boucle ne coûte un tour de plus que sous
+// contention réelle.
+static void heapFetchMinRelaxed(std::atomic<uint32_t>& target, uint32_t value) {
+  heapAtomicFetchMin(target, value, std::memory_order_relaxed);
+}
+
 void heapNoteMaxAlloc8Sample(uint32_t maxAlloc8) {
-  uint32_t boot = sMinMaxAlloc8SinceBoot.load(std::memory_order_relaxed);
-  if (maxAlloc8 < boot) sMinMaxAlloc8SinceBoot.store(maxAlloc8, std::memory_order_relaxed);
-  uint32_t win = sMinMaxAlloc8Window.load(std::memory_order_relaxed);
-  if (maxAlloc8 < win) sMinMaxAlloc8Window.store(maxAlloc8, std::memory_order_relaxed);
+  heapFetchMinRelaxed(sMinMaxAlloc8SinceBoot, maxAlloc8);
+  heapFetchMinRelaxed(sMinMaxAlloc8Window, maxAlloc8);
 }
 
 uint32_t heapMinMaxAlloc8SinceBoot() {
@@ -100,4 +116,267 @@ uint32_t heapTakeMinMaxAlloc8Window() {
   // fenêtre SUIVANTE. Sans effet à l'échelle d'une fenêtre de 5 min
   // (≈ 150 échantillons à 2 s).
   return sMinMaxAlloc8Window.exchange(UINT32_MAX, std::memory_order_relaxed);
+}
+
+// ===========================================================================
+// PLANCHERS GLISSANTS MULTI-MASQUES (feature-122, lot C-1a) — MESURE SEULE
+// ===========================================================================
+// Aucune garde ne lit ce qui suit : le refus 503 (web_server.cpp), la garde
+// d'ouverture de fichiers (fs_guard.cpp) et le parachute OOM restent sur 0x0804
+// et sur kStaticFileMinAllocBytes. Aucune réserve DMA n'est posée ici — c'est
+// feature-123, avec son ADR.
+
+// Les littéraux du module pur DOIVENT valoir exactement les combinaisons
+// MALLOC_CAP_* de l'IDF : le seul point de contact entre le pur et l'IDF est
+// épinglé ici, de sorte qu'un changement de bit casse la COMPILATION du
+// firmware plutôt qu'un test natif silencieusement devenu faux (même idiome que
+// kOomProbeInternalCapBit ci-dessus).
+static_assert(kHeapMaskInternal8 == (uint32_t)(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+              "kHeapMaskInternal8 doit valoir MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT (0x0804) : "
+              "c'est la metrique de reference des gardes du projet (ADR-0058).");
+static_assert(kHeapMaskInternalDma8 ==
+                  (uint32_t)(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT),
+              "kHeapMaskInternalDma8 doit valoir INTERNAL|DMA|8BIT (0x080C) : c'est la "
+              "signature exacte des allocations qui echouent en production (bug-080).");
+static_assert(kHeapMaskDefault == (uint32_t)MALLOC_CAP_DEFAULT,
+              "kHeapMaskDefault doit valoir MALLOC_CAP_DEFAULT (0x1000).");
+static_assert(kHeapMaskInternal8Default ==
+                  (uint32_t)(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT | MALLOC_CAP_DEFAULT),
+              "kHeapMaskInternal8Default doit valoir INTERNAL|8BIT|DEFAULT (0x1804).");
+static_assert(kHeapMaskSpiram == (uint32_t)MALLOC_CAP_SPIRAM,
+              "kHeapMaskSpiram doit valoir MALLOC_CAP_SPIRAM (0x0400).");
+
+// Ordre des emplacements = ordre des bits publiés (cf. kHeapFloorSlot*).
+static constexpr uint32_t kFloorMasks[kHeapFloorMaskCount] = {
+    kHeapMaskInternal8, kHeapMaskInternalDma8, kHeapMaskDefault,
+    kHeapMaskInternal8Default, kHeapMaskSpiram};
+
+// TOUR DE RÔLE : les masques à parcours O(blocs) AUTRES que la référence. Un
+// seul est mesuré par échantillon → chacun toutes les 4 s à la cadence de 2 s.
+static constexpr uint8_t kFloorWalkRing[] = {kHeapFloorSlotInternalDma8,
+                                             kHeapFloorSlotInternal8Default};
+static constexpr uint8_t kFloorWalkRingSize =
+    (uint8_t)(sizeof(kFloorWalkRing) / sizeof(kFloorWalkRing[0]));
+// Le budget déclaré = la référence 0x0804 + UN SEUL masque du tour de rôle, quel
+// que soit le nombre de masques dans l'anneau (celui-ci ne fixe que la période
+// de revisite : kFloorWalkRingSize × kHeapRingSampleIntervalMs, soit 4 s ici).
+// Mesurer DEUX masques du tour de rôle par échantillon violerait le plafond du
+// gate pool-chemistry (1 parcours O(blocs) par seconde) : c'est ce que cet
+// assert interdit d'introduire par inadvertance.
+static_assert(kHeapFloorWalksPerSample == 2,
+              "Budget attendu : la reference 0x0804 PLUS un seul masque du tour de "
+              "role par echantillon. Ne pas augmenter sans repasser le gate.");
+static_assert(kFloorWalkRingSize >= 1 && kFloorWalkRingSize <= kHeapFloorMaskCount,
+              "L'anneau du tour de role doit contenir au moins un masque et rester "
+              "dans les emplacements declares.");
+
+// Masques à chemin O(régions) (aucun bit INTERNAL → heapProbeForCaps prend les
+// agrégats et déclare le plus gros bloc « non renseigné »). Coût sans parcours
+// de blocs : mesurés à CHAQUE échantillon, donc à pleine résolution temporelle.
+static constexpr uint8_t kFloorRegionSlots[] = {kHeapFloorSlotDefault,
+                                                kHeapFloorSlotSpiram};
+static_assert((kHeapMaskDefault & kOomProbeInternalCapBit) == 0u &&
+                  (kHeapMaskSpiram & kOomProbeInternalCapBit) == 0u,
+              "Les deux masques hors budget doivent etre ceux qu'oomProbeUsesRegionScan "
+              "route vers les agregats : sans bit INTERNAL, pas de parcours O(blocs).");
+static_assert((kHeapMaskInternal8 & kOomProbeInternalCapBit) != 0u &&
+                  (kHeapMaskInternalDma8 & kOomProbeInternalCapBit) != 0u &&
+                  (kHeapMaskInternal8Default & kOomProbeInternalCapBit) != 0u,
+              "Les trois masques internes doivent bien couter un parcours O(blocs) : "
+              "c'est ce qui justifie le tour de role.");
+
+// Les trois tas de la dérivation, dans l'ordre des bits de HeapFloors::pred.
+static constexpr uint32_t kPredHeapAllCaps[3] = {
+    kHeapAllCapsInternalDram, kHeapAllCapsPsram, kHeapAllCapsDmaReserve};
+static constexpr uint8_t kPredMaskCount = 4;  // les 4 masques de la table (hors SPIRAM)
+
+// La table de sélection, réduite à 12 bits : bit (masque × 3 + tas).
+// C'est la DÉRIVATION de la spec, calculée par la règle de l'IDF elle-même.
+static constexpr uint16_t heapFloorsPredMask() {
+  uint16_t bits = 0;
+  for (uint8_t m = 0; m < kPredMaskCount; m++) {
+    for (uint8_t h = 0; h < 3; h++) {
+      if (heapMaskSelectsHeap(kPredHeapAllCaps[h], kFloorMasks[m])) {
+        bits = (uint16_t)(bits | (uint16_t)(1u << (m * 3 + h)));
+      }
+    }
+  }
+  return bits;
+}
+// Valeur attendue = la table de feature-122, bit par bit :
+//   0x0804 → DRAM oui, PSRAM non, réserve OUI  (bits 0, 2)
+//   0x080C → DRAM oui, PSRAM non, réserve oui  (bits 3, 5)
+//   0x1000 → DRAM oui, PSRAM OUI, réserve non  (bits 6, 7)
+//   0x1804 → DRAM oui, PSRAM non, réserve non  (bit 9)
+// Soit 0b0010'1110'1101 = 0x02ED. Ce static_assert est le garde-fou de la
+// dérivation : remplacer `== caps` par `!= 0`, ou 0x1804 par 0x0804, casse la
+// compilation.
+static_assert(heapFloorsPredMask() == 0x02EDu,
+              "La table de selection derivee a change : verifier heapMaskSelectsHeap, "
+              "les masques et les all_caps AVANT de toucher a cette valeur.");
+
+// Un emplacement de plancher. Écrivain UNIQUE : la loop (heapFloorsSample /
+// heapFloorsRearmWindow). Lecteurs : la loop (trace agrégée) et le contexte web
+// async (/get-system-info) — d'où les atomiques relâchées, qui suffisent : un
+// lecteur ne peut voir qu'un échantillon voisin, jamais une valeur déchirée.
+// Le load-compare-store est ici LÉGITIME (contrairement au plancher 0x0804
+// historique, cf. heapAtomicFetchMin) parce qu'il n'y a qu'un écrivain.
+namespace {
+struct HeapFloorAtomics {
+  std::atomic<uint32_t> lastFree{0};
+  std::atomic<uint32_t> lastLargest{0};
+  std::atomic<uint32_t> minFreeBoot{kHeapFloorEmpty};
+  std::atomic<uint32_t> minLargestBoot{kHeapFloorEmpty};
+  std::atomic<uint32_t> minFreeWindow{kHeapFloorEmpty};
+  std::atomic<uint32_t> minLargestWindow{kHeapFloorEmpty};
+  std::atomic<uint32_t> ctxAtMinFree{0};
+  std::atomic<uint32_t> ctxAtMinLargest{0};
+  std::atomic<uint32_t> samples{0};
+};
+HeapFloorAtomics sFloors[kHeapFloorMaskCount];
+std::atomic<uint32_t> sFloorSampleCount{0};
+std::atomic<uint32_t> sFloorCtxSeen{0};
+std::atomic<uint32_t> sHttpGetCount{0};
+std::atomic<uint32_t> sWitnessBits{0};
+// Chronométrage du parcours de référence 0x0804 (condition 5 du gate) :
+// pire cas + histogramme dyadique pour la médiane. Écrivain UNIQUE (loop), donc
+// load-compare-store légitime sur le max. 7 × 4 o = 28 o de compteurs.
+std::atomic<uint32_t> sWalkMaxUs{0};
+std::atomic<uint32_t> sWalkBuckets[kHeapWalkBucketCount] = {};
+
+// Applique un plancher (depuis-boot et fenêtre) à travers la partie pure.
+void heapFloorApply(std::atomic<uint32_t>& floorAtomic, std::atomic<uint32_t>* ctxAtomic,
+                    uint32_t sampleBytes, uint8_t ctx) {
+  HeapFloorSlot slot;
+  slot.minBytes = floorAtomic.load(std::memory_order_relaxed);
+  slot.ctxAtMin = ctxAtomic ? (uint8_t)ctxAtomic->load(std::memory_order_relaxed) : 0u;
+  if (!heapFloorUpdate(slot, sampleBytes, ctx)) return;
+  floorAtomic.store(slot.minBytes, std::memory_order_relaxed);
+  if (ctxAtomic) ctxAtomic->store(slot.ctxAtMin, std::memory_order_relaxed);
+}
+
+// Range un échantillon dans l'emplacement d'un masque.
+void heapFloorNoteSlot(uint8_t slot, const HeapProbe& probe, uint8_t ctx) {
+  HeapFloorAtomics& f = sFloors[slot];
+  f.lastFree.store(probe.freeBytes, std::memory_order_relaxed);
+  f.lastLargest.store(probe.largestBlockBytes, std::memory_order_relaxed);
+  heapFloorApply(f.minFreeBoot, &f.ctxAtMinFree, probe.freeBytes, ctx);
+  heapFloorApply(f.minFreeWindow, nullptr, probe.freeBytes, ctx);
+  // « Plus gros bloc NON RENSEIGNÉ » (masques O(régions)) : on ne l'inscrit
+  // JAMAIS dans un plancher — ce serait un bloc de 4 194 240 o présenté comme
+  // réel, exactement le genre de chiffre faux et crédible que ce dossier
+  // combat. Le plancher reste kHeapFloorEmpty pour ces masques.
+  if (probe.largestBlockBytes != kOomProbeBlockUnknown) {
+    heapFloorApply(f.minLargestBoot, &f.ctxAtMinLargest, probe.largestBlockBytes, ctx);
+    heapFloorApply(f.minLargestWindow, nullptr, probe.largestBlockBytes, ctx);
+  }
+  f.samples.fetch_add(1, std::memory_order_relaxed);
+}
+}  // namespace
+
+HeapProbe heapFloorsSample(uint8_t ctx) {
+  // 1) Masque de RÉFÉRENCE 0x0804 : UN parcours, qui remplace les DEUX appels
+  //    (largest + free) que faisait heapRingSample. La valeur est rendue à
+  //    l'appelant pour qu'il ne mesure pas une deuxième fois.
+  //    CHRONOMÉTRÉ (condition 5 du gate pool-chemistry) : le plafond de coût doit
+  //    s'adosser à une durée OBSERVÉE, pas au seuil d'autolimitation d'une autre
+  //    sonde. Horloge = esp_timer_get_time() et NON le compteur de cycles
+  //    CCOUNT : celui-ci est PAR CŒUR, et une migration de tâche entre les deux
+  //    lectures rendrait la soustraction absurde (piège déjà rencontré,
+  //    kOomProbeDurationInvalid). Deux lectures d'un compteur matériel par
+  //    échantillon : le masquage d'interruptions du parcours ne l'affecte pas.
+  const int64_t walkStartUs = esp_timer_get_time();
+  const HeapProbe reference = heapProbeForCaps(kHeapMaskInternal8);
+  const uint32_t walkUs = (uint32_t)(esp_timer_get_time() - walkStartUs);
+  const uint32_t walkMax = sWalkMaxUs.load(std::memory_order_relaxed);
+  if (walkUs > walkMax) sWalkMaxUs.store(walkUs, std::memory_order_relaxed);
+  sWalkBuckets[heapWalkBucketIndex(walkUs)].fetch_add(1, std::memory_order_relaxed);
+  heapFloorNoteSlot(kHeapFloorSlotInternal8, reference, ctx);
+
+  // 2) Le créneau ainsi libéré porte UN masque O(blocs) en tour de rôle : c'est
+  //    ce qui rend le coût de ce lot NET NUL (2 parcours par échantillon avant
+  //    comme après). Statique locale : écrivain unique (loop).
+  static uint8_t sWalkCursor = 0;
+  if (sWalkCursor >= kFloorWalkRingSize) sWalkCursor = 0;  // RAM corrompue → repli
+  const uint8_t walkSlot = kFloorWalkRing[sWalkCursor];
+  sWalkCursor = heapMaskRoundRobinNext(sWalkCursor, kFloorWalkRingSize);
+  heapFloorNoteSlot(walkSlot, heapProbeForCaps(kFloorMasks[walkSlot]), ctx);
+
+  // 3) Les masques à chemin O(régions) (0x1000 et SPIRAM) : pas de parcours de
+  //    blocs, donc hors budget — mesurés à chaque échantillon.
+  //    NOTE A6 : ESP.getFreePsram() n'est rien d'autre que
+  //    heap_caps_get_free_size(MALLOC_CAP_SPIRAM) ; le plancher SPIRAM ci-dessous
+  //    est donc bien le plancher de `psram_free`, sans second appel
+  //    interruptions coupées.
+  for (uint8_t i = 0; i < (uint8_t)(sizeof(kFloorRegionSlots) / sizeof(kFloorRegionSlots[0]));
+       i++) {
+    const uint8_t slot = kFloorRegionSlots[i];
+    heapFloorNoteSlot(slot, heapProbeForCaps(kFloorMasks[slot]), ctx);
+  }
+
+  sFloorCtxSeen.fetch_or(ctx, std::memory_order_relaxed);
+  sFloorSampleCount.fetch_add(1, std::memory_order_relaxed);
+  return reference;
+}
+
+HeapFloors heapFloorsRead() {
+  // Condition 2 du gate pool-chemistry : QUE des lectures d'atomiques déjà
+  // rangées. AUCUN appel à heapProbeForCaps ici — quatre parcours de tas par
+  // requête HTTP, sur `async_tcp`, seraient posés sur le chemin même de la
+  // famine que ce lot cherche à mesurer.
+  HeapFloors out;
+  for (uint8_t i = 0; i < kHeapFloorMaskCount; i++) {
+    HeapFloorAtomics& f = sFloors[i];
+    out.masks[i].mask = kFloorMasks[i];
+    out.masks[i].lastFree = f.lastFree.load(std::memory_order_relaxed);
+    out.masks[i].lastLargest = f.lastLargest.load(std::memory_order_relaxed);
+    out.masks[i].minFreeSinceBoot = f.minFreeBoot.load(std::memory_order_relaxed);
+    out.masks[i].minLargestSinceBoot = f.minLargestBoot.load(std::memory_order_relaxed);
+    out.masks[i].minFreeWindow = f.minFreeWindow.load(std::memory_order_relaxed);
+    out.masks[i].minLargestWindow = f.minLargestWindow.load(std::memory_order_relaxed);
+    out.masks[i].ctxAtMinFree = (uint8_t)f.ctxAtMinFree.load(std::memory_order_relaxed);
+    out.masks[i].ctxAtMinLargest = (uint8_t)f.ctxAtMinLargest.load(std::memory_order_relaxed);
+    out.masks[i].samples = f.samples.load(std::memory_order_relaxed);
+  }
+  out.sampleCount = sFloorSampleCount.load(std::memory_order_relaxed);
+  // Médiane approchée : copie locale de l'histogramme (7 mots de pile) puis
+  // repliement par la fonction PURE. Aucun tri, aucune allocation, aucun
+  // flottant — et aucun parcours de tas (condition 2 du gate).
+  uint32_t buckets[kHeapWalkBucketCount];
+  for (uint8_t i = 0; i < kHeapWalkBucketCount; i++) {
+    buckets[i] = sWalkBuckets[i].load(std::memory_order_relaxed);
+  }
+  out.walkMaxUs = sWalkMaxUs.load(std::memory_order_relaxed);
+  out.walkMedianUs = heapWalkMedianUpperUs(buckets, kHeapWalkBucketCount);
+  out.pred = heapFloorsPredMask();
+  out.ctxSeen = (uint8_t)sFloorCtxSeen.load(std::memory_order_relaxed);
+  out.witness = (uint8_t)sWitnessBits.load(std::memory_order_relaxed);
+  return out;
+}
+
+void heapFloorsRearmWindow() {
+  for (uint8_t i = 0; i < kHeapFloorMaskCount; i++) {
+    sFloors[i].minFreeWindow.store(kHeapFloorEmpty, std::memory_order_relaxed);
+    sFloors[i].minLargestWindow.store(kHeapFloorEmpty, std::memory_order_relaxed);
+  }
+  sFloorCtxSeen.store(0, std::memory_order_relaxed);
+}
+
+void heapNoteHttpGetSample(uint32_t maxAlloc8) {
+  // Site `async_tcp` : la valeur est DÉJÀ mesurée par le filtre de la garde 503,
+  // on ne parcourt rien. Un fetch_min (jamais un store) + un compteur.
+  heapNoteMaxAlloc8Sample(maxAlloc8);
+  sHttpGetCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+uint32_t heapHttpGetCount() {
+  return sHttpGetCount.load(std::memory_order_relaxed);
+}
+
+void heapWitnessRecord(uint8_t bits) {
+  sWitnessBits.store(bits, std::memory_order_relaxed);
+}
+
+uint8_t heapWitnessBits() {
+  return (uint8_t)sWitnessBits.load(std::memory_order_relaxed);
 }

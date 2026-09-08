@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 
+#include "constants.h"        // kHeapFloorMaskCount (dimension du tableau de planchers)
+#include "heap_caps_logic.h"  // masques, planchers et contextes — module PUR (ADR-0017)
+
 // =============================================================================
 // heap_metrics — mesure de la mémoire RÉELLEMENT allouable (v2.19.0)
 // =============================================================================
@@ -159,5 +162,157 @@ uint32_t heapMinMaxAlloc8SinceBoot();
  * d'une fenêtre de trace à l'autre.
  */
 uint32_t heapTakeMinMaxAlloc8Window();
+
+/**
+ * @brief Variante du site `async_tcp` : plancher 0x0804 + compteur de GET servis.
+ *
+ * Appelée depuis le FILTRE de la garde 503 (web_server.cpp), qui a DÉJÀ mesuré
+ * `maxAlloc8` pour prendre sa décision : aucun parcours de tas neuf, un
+ * `fetch_min` et un `fetch_add` relâchés. C'est ce qui donne au plancher 0x0804
+ * une résolution à la REQUÊTE plutôt qu'à l'échantillon de 2 s — une rafale de
+ * chargement d'interface dure moins qu'un intervalle d'échantillonnage, donc un
+ * plancher purement périodique la raterait (cas limite « pointe non capturée »).
+ *
+ * Le compteur de GET alimente le bit de contexte kHeapCtxHttpBurst (A5).
+ * Aucun log, aucune String, aucune allocation : contrat de `async_tcp`.
+ */
+void heapNoteHttpGetSample(uint32_t maxAlloc8);
+
+/**
+ * @brief Nombre cumulé d'évaluations du filtre de la garde 503 (≈ GET servis).
+ * Monotone, lu par la loop pour en dériver un delta par échantillon.
+ */
+uint32_t heapHttpGetCount();
+
+// ===========================================================================
+// PLANCHERS GLISSANTS MULTI-MASQUES (feature-122, lot C-1a) — MESURE SEULE
+// ===========================================================================
+// Cinq emplacements : les quatre masques de la dérivation (0x0804, 0x080C,
+// 0x1000, 0x1804) et le tas PSRAM. Chacun garde son minimum DEPUIS LE BOOT (avec
+// le contexte qui l'a produit) et sur FENÊTRE (réarmée après chaque report).
+//
+// ⚠️ AUCUNE GARDE NE LIT CES PLANCHERS. Le refus 503, la garde d'ouverture de
+// fichiers et le parachute OOM restent sur 0x0804 / kStaticFileMinAllocBytes.
+// Basculer une garde sur 0x1804 appartient à feature-123, avec son ADR.
+//
+// COÛT : voir kHeapFloorWalksPerSample — 2 parcours O(blocs) par échantillon,
+// soit 1/s, le plafond du gate pool-chemistry. Surcoût NET par rapport à l'état
+// antérieur : +1 parcours et +1 agrégat toutes les 2 s (les deux appels 0x0804
+// de heap_ring sont désormais fondus en un seul heap_caps_get_info).
+
+/** Ordre des emplacements — c'est aussi celui des bits de `HeapFloors::pred`. */
+constexpr uint8_t kHeapFloorSlotInternal8 = 0;         // 0x0804 (référence des gardes)
+constexpr uint8_t kHeapFloorSlotInternalDma8 = 1;      // 0x080C (classe d'échec observée)
+constexpr uint8_t kHeapFloorSlotDefault = 2;           // 0x1000 (voit la PSRAM)
+constexpr uint8_t kHeapFloorSlotInternal8Default = 3;  // 0x1804 (candidate C-1b)
+constexpr uint8_t kHeapFloorSlotSpiram = 4;            // SPIRAM (A6)
+
+/**
+ * @brief État publié d'un masque : dernier échantillon + planchers.
+ *
+ * `lastLargest` / `minLargest*` valent `kOomProbeBlockUnknown` pour les masques
+ * à chemin O(régions) (0x1000 et SPIRAM) : leur « plus gros bloc » n'est PAS
+ * mesuré et ne doit JAMAIS être affiché comme un bloc réel.
+ * `kHeapFloorEmpty` = aucun échantillon pour ce plancher.
+ */
+struct HeapFloorEntry {
+  uint32_t mask;
+  uint32_t lastFree;
+  uint32_t lastLargest;
+  uint32_t minFreeSinceBoot;
+  uint32_t minLargestSinceBoot;
+  uint32_t minFreeWindow;
+  uint32_t minLargestWindow;
+  uint8_t ctxAtMinFree;     // bits kHeapCtx* au creux de « libre »
+  uint8_t ctxAtMinLargest;  // bits kHeapCtx* au creux de « plus gros bloc »
+  uint32_t samples;         // échantillons pris pour CE masque (tour de rôle)
+};
+
+/**
+ * @brief Instantané complet des planchers, prêt à publier (A4).
+ *
+ * `pred` = les 12 bits de la DÉRIVATION `(all_caps & mask) == mask`, calculés par
+ * heapMaskSelectsHeap() : bit (masque × 3 + tas), masques dans l'ordre des
+ * `kHeapFloorSlot*` 0..3, tas dans l'ordre {DRAM interne, PSRAM, réserve DMA}.
+ * C'est une PRÉDICTION arithmétique, pas une observation : aucune réserve n'est
+ * posée par ce lot. Elle est publiée pour être confrontée aux planchers relevés.
+ */
+struct HeapFloors {
+  HeapFloorEntry masks[kHeapFloorMaskCount];
+  uint32_t sampleCount;  // appels à heapFloorsSample() depuis le boot
+  // Condition 5 du gate pool-chemistry : DURÉE OBSERVÉE d'un parcours O(blocs)
+  // de référence (0x0804), et non le seuil d'autolimitation d'une autre sonde.
+  // ⚠️ NE PAS confondre avec `oom_probe_max_us` (chemin d'échec d'allocation) :
+  // autre fréquence, autre état de tas, autre grandeur.
+  // `walkMedianUs` est une médiane APPROCHÉE, rendue comme borne supérieure de
+  // seau (surestimation bornée par la largeur du seau) — cf.
+  // heapWalkMedianUpperUs. Jamais remises à zéro : la médiane gagne en sens avec
+  // le nombre d'échantillons.
+  uint32_t walkMaxUs;     // pire parcours 0x0804 depuis le boot
+  uint32_t walkMedianUs;  // médiane approchée, kHeapWalkOverflowUs = hors échelle
+  uint16_t pred;          // 12 bits de la table de sélection
+  uint8_t ctxSeen;        // OU des contextes vus depuis le dernier réarmement
+  uint8_t witness;        // bits du témoin 4096/4095 (A7), cf. kHeapWitness*
+};
+
+/**
+ * @brief Prend l'échantillon multi-masques et met à jour tous les planchers.
+ *
+ * À appeler UNIQUEMENT depuis la loop (heapRingSample, cadence
+ * kHeapRingSampleIntervalMs) : écrivain unique du tableau de planchers.
+ *
+ * Mesure exactement kHeapFloorWalksPerSample masques à parcours O(blocs) — la
+ * référence 0x0804 à chaque tour, puis UN masque en tour de rôle — plus les deux
+ * masques à chemin O(régions). Sans log, sans allocation, sans verrou.
+ *
+ * @param ctx Bits kHeapCtx* observés par l'appelant (purement observationnels).
+ * @return La sonde 0x0804 du tour, pour que l'appelant n'en refasse pas une
+ *         (l'anneau, le miroir OOM et le plancher historique la réutilisent).
+ */
+HeapProbe heapFloorsSample(uint8_t ctx);
+
+/**
+ * @brief Lecture des planchers — SANS effet de bord, sans parcours de tas.
+ *
+ * Ne lit que des atomiques déjà rangées (condition 2 du gate pool-chemistry) :
+ * appelable depuis un handler AsyncWebServer sans risque de quatre parcours de
+ * tas interruptions coupées sur le chemin même de la famine.
+ */
+HeapFloors heapFloorsRead();
+
+/**
+ * @brief Réarme les planchers de FENÊTRE (les minima depuis-boot sont gardés).
+ *
+ * Appelée par la trace agrégée de checkHeapHealth() après report, donc depuis la
+ * loop — même tâche que heapFloorsSample(). Course bénigne et documentée : un
+ * échantillon pris entre la lecture et le réarmement est attribué à la fenêtre
+ * SUIVANTE, jamais perdu pour le plancher depuis-boot.
+ */
+void heapFloorsRearmWindow();
+
+// ---------------------------------------------------------------------------
+// Témoin 4096/4095 (A7) — le lot B-1 est-il décoratif ?
+// ---------------------------------------------------------------------------
+// Deux `malloc()` au setup, libérés IMMÉDIATEMENT, l'un de 4096 o (attendu en
+// PSRAM depuis kPsramExtmemThresholdBytes = 4095), l'autre de 4095 o (attendu
+// interne dans les DEUX configurations = témoin de CONTRÔLE). Le couple donne
+// une signature non ambiguë : si les deux tombent du même côté, la politique
+// d'allocation n'a aucun effet.
+constexpr uint8_t kHeapWitnessSkipped = 1u << 0;      // pas de PSRAM → témoin sauté
+constexpr uint8_t kHeapWitness4096External = 1u << 1; // le 4096 o est tombé en RAM externe
+constexpr uint8_t kHeapWitness4095External = 1u << 2; // le 4095 o est tombé en RAM externe (ANOMALIE)
+constexpr uint8_t kHeapWitnessDisagreement = 1u << 3; // esp_ptr_external_ram ≠ esp_psram_check_ptr_addr
+constexpr uint8_t kHeapWitness4096Failed = 1u << 4;   // malloc(4096) a échoué
+constexpr uint8_t kHeapWitness4095Failed = 1u << 5;   // malloc(4095) a échoué
+constexpr uint8_t kHeapWitnessNoPsramApi = 1u << 6;   // esp_psram_check_ptr_addr indisponible
+
+/**
+ * @brief Mémorise le résultat du témoin (aucun log : appelé AVANT
+ *        systemLogger.begin(), idiome de main.cpp:127-131).
+ */
+void heapWitnessRecord(uint8_t bits);
+
+/** @brief Bits du témoin 4096/4095 (0 = témoin jamais exécuté). */
+uint8_t heapWitnessBits();
 
 #endif  // HEAP_METRICS_H

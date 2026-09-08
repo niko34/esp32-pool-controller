@@ -165,6 +165,11 @@ private:
   // journal deux reconnexions rapprochées dont la ligne de synthèse serait
   // sinon identique. Accédé UNIQUEMENT depuis mqttTask, comme discoveryPublished.
   uint32_t _discoveryBurstSeq = 0;
+  // feature-122 (A5) : date du dernier repère de rafale de découverte, en
+  // millis. Écrite par mqttTask (publishDiscovery), lue par loopTask
+  // (composition du contexte des planchers mémoire) → atomique relâchée.
+  // 0 = jamais de rafale (sentinelle documentée dans heapCtxDiscoveryWindowActive).
+  std::atomic<uint32_t> _lastDiscoveryMarkMs{0};
 
   // Reconnect/backoff — accédés UNIQUEMENT depuis mqttTask
   bool reconnectRequested = false;
@@ -320,6 +325,22 @@ public:
 
   // Getters
   const MqttTopics& getTopics() const { return topics; }
+
+  /**
+   * @brief Date (millis) du dernier repère de rafale de découverte HA, 0 = jamais.
+   *
+   * feature-122 (A5) : sert UNIQUEMENT à marquer les échantillons de planchers
+   * mémoire pris pendant (ou juste après) une rafale de ~60 entités — sans quoi
+   * un creux causé par la rafale serait attribué au régime calme qui la suit.
+   * Repère posé à l'OUVERTURE et à la FERMETURE de publishDiscovery() (une
+   * rafale dure bien plus qu'un échantillon, et davantage encore sur CPL lossy).
+   * Lecture d'une atomique relâchée : ni allocation, ni log, ni verrou —
+   * appelable depuis loopTask alors que l'écrivain est mqttTask.
+   * ⚠️ Purement observationnel : aucune décision ne lit cette date.
+   */
+  uint32_t lastDiscoveryMarkMs() const {
+    return _lastDiscoveryMarkMs.load(std::memory_order_relaxed);
+  }
 };
 
 extern MqttManager mqttManager;

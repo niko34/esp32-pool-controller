@@ -151,6 +151,16 @@ void WebServerManager::setupRoutes() {
     // Aussi sur `async_tcp` : heapLargestFreeBlock8Bit() seulement (sans log ni
     // allocation), JAMAIS heapMetricsSnapshot().
     const uint32_t maxAlloc8 = heapLargestFreeBlock8Bit();
+    // feature-122 (A1) : la valeur est DÉJÀ mesurée pour la décision — on la
+    // pousse vers le plancher glissant 0x0804 (fetch_min) et on compte
+    // l'évaluation. AUCUN parcours de tas neuf, aucun log, aucune allocation :
+    // contrat de `async_tcp`. C'est ce qui donne au plancher une résolution à la
+    // REQUÊTE : une rafale de chargement d'interface dure moins qu'un intervalle
+    // d'échantillonnage (2 s), donc un plancher purement périodique la raterait.
+    // ⚠️ Le SEUIL de la garde reste kStaticFileMinAllocBytes et sa MÉTRIQUE reste
+    // 0x0804 : ce lot mesure, il ne corrige pas (la bascule éventuelle vers
+    // 0x1804 est feature-123, avec son ADR).
+    heapNoteHttpGetSample(maxAlloc8);
     if (!httpLowHeapShouldRefuse(maxAlloc8, kStaticFileMinAllocBytes)) return false;
     // `relaxed` : justification appariée au fetch_add ci-dessus. Rappel — ce
     // store s'exécute aussi pour un POST qui atteint la garde (le filtre précède

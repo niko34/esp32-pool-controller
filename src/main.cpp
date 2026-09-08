@@ -6,6 +6,20 @@
 #include <ESPmDNS.h>
 #include <esp_task_wdt.h>
 #include <esp_heap_caps.h>  // heap_caps_malloc_extmem_enable (bascule PSRAM, bug-080 B-1)
+#include <esp_memory_utils.h>  // esp_ptr_external_ram (témoin 4096/4095, feature-122 A7)
+#include <soc/soc.h>           // SOC_EXTRAM_DATA_LOW/HIGH (fenêtre d'adressage PSRAM)
+// 2e avis sur le camp d'un pointeur (témoin A7) : esp_psram_check_ptr_addr, de
+// <esp_private/esp_psram_extram.h>. __has_include sert de test de DISPONIBILITÉ,
+// mais le header n'est PAS inclus : il redéclare esp_psram_extram_test() en
+// linkage C alors qu'Arduino.h:256 la déclare en linkage C++ — l'inclusion des
+// deux ne compile pas. On déclare donc le seul symbole utilisé (présent dans
+// libesp_psram.a, vérifié au nm).
+#if __has_include(<esp_private/esp_psram_extram.h>)
+#define POOL_HAS_PSRAM_PTR_CHECK 1
+extern "C" bool esp_psram_check_ptr_addr(const void* p);
+#else
+#define POOL_HAS_PSRAM_PTR_CHECK 0
+#endif
 #include <Preferences.h>
 #include <nvs_flash.h>
 
@@ -128,6 +142,74 @@ void setup() {
   // psramFound() pour le binaire unique WROOM/WROVER-E.
   if (psramFound()) {
     heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes);
+    // feature-122 (A7) : LE LOT B-1 EST-IL DÉCORATIF ? `psram_free` est immobile
+    // à 4 180 340 dans 152 relevés — ce qui signifie soit que rien ne part en
+    // PSRAM, soit que l'indicateur ne le voit pas. Seule preuve DIRECTE : allouer
+    // et regarder l'adresse.
+    //
+    // DEUX allocations, libérées IMMÉDIATEMENT (aucune rétention, aucun risque) :
+    //  - 4096 o (kVfsStdioBufferBytes) = la classe EXACTE du tampon stdio que
+    //    B-1 visait, ATTENDUE en PSRAM depuis que le seuil vaut 4095 ;
+    //  - 4095 o (kPsramExtmemThresholdBytes) = témoin de CONTRÔLE, attendu
+    //    INTERNE dans les deux configurations. Le couple donne une signature non
+    //    ambiguë : si les deux tombent du même côté, la politique ne fait rien.
+    //
+    // ⚠️ `malloc()` et JAMAIS heap_caps_malloc() avec des caps explicites : des
+    // caps explicites contourneraient la politique `extmem` qu'on cherche
+    // justement à éprouver, et le témoin ne prouverait rien.
+    // AUCUN LOG ICI (systemLogger.begin() n'a pas encore eu lieu) : le résultat
+    // est MÉMORISÉ (heapWitnessRecord) puis journalisé par la trace agrégée de
+    // checkHeapHealth() — idiome déjà en place pour le parachute OOM.
+    static_assert(SOC_EXTRAM_DATA_LOW < SOC_EXTRAM_DATA_HIGH,
+                  "Fenetre d'adressage de la RAM externe incoherente : le temoin A7 "
+                  "classerait toutes les allocations du meme cote.");
+#if CONFIG_IDF_TARGET_ESP32
+    static_assert((uint32_t)SOC_EXTRAM_DATA_LOW == 0x3F800000u &&
+                      (uint32_t)SOC_EXTRAM_DATA_HIGH == 0x3FC00000u,
+                  "ESP32 classique : la fenetre PSRAM attendue est 0x3F800000-0x3FC00000. "
+                  "Si l'IDF la deplace, le temoin A7 doit etre relu avant d'etre cru.");
+#endif
+    uint8_t witness = 0;
+    void* probe4096 = malloc(kVfsStdioBufferBytes);
+    void* probe4095 = malloc(kPsramExtmemThresholdBytes);
+    if (probe4096 == nullptr) witness |= kHeapWitness4096Failed;
+    if (probe4095 == nullptr) witness |= kHeapWitness4095Failed;
+#if POOL_HAS_PSRAM_PTR_CHECK
+    // Deux avis indépendants sur le camp d'un pointeur. Leur DISCORDANCE est un
+    // résultat à rapporter (3ᵉ bit), pas une erreur à masquer : elle
+    // signifierait que l'une des deux API ne dit pas ce qu'on croit — le genre
+    // d'angle mort qui a produit les deux erreurs de métrique précédentes.
+    bool disagree = false;
+#else
+    bool disagree = false;
+    witness |= kHeapWitnessNoPsramApi;
+#endif
+    if (probe4096 != nullptr) {
+      const bool ext = heapPtrIsExternal((uintptr_t)probe4096, (uintptr_t)SOC_EXTRAM_DATA_LOW,
+                                         (uintptr_t)SOC_EXTRAM_DATA_HIGH);
+      if (ext) witness |= kHeapWitness4096External;
+      if (ext != esp_ptr_external_ram(probe4096)) disagree = true;
+#if POOL_HAS_PSRAM_PTR_CHECK
+      if (ext != esp_psram_check_ptr_addr(probe4096)) disagree = true;
+#endif
+      free(probe4096);
+    }
+    if (probe4095 != nullptr) {
+      const bool ext = heapPtrIsExternal((uintptr_t)probe4095, (uintptr_t)SOC_EXTRAM_DATA_LOW,
+                                         (uintptr_t)SOC_EXTRAM_DATA_HIGH);
+      if (ext) witness |= kHeapWitness4095External;  // ANOMALIE : le contrôle a bougé
+      if (ext != esp_ptr_external_ram(probe4095)) disagree = true;
+#if POOL_HAS_PSRAM_PTR_CHECK
+      if (ext != esp_psram_check_ptr_addr(probe4095)) disagree = true;
+#endif
+      free(probe4095);
+    }
+    if (disagree) witness |= kHeapWitnessDisagreement;
+    heapWitnessRecord(witness);
+  } else {
+    // Module WROOM (binaire unique) : pas de PSRAM, le témoin n'a rien à
+    // trancher. Marqué « sauté » plutôt que silencieusement nul.
+    heapWitnessRecord(kHeapWitnessSkipped);
   }
 
   Serial.begin(115200);
@@ -1072,6 +1154,87 @@ void checkHeapHealth() {
              (unsigned)minWindow, (unsigned)wsManager.clientCount(),
              (unsigned)ESP.getFreePsram());
     systemLogger.info(ligne);
+
+    // feature-122 (A1/A5/A6/A7) — DEUX lignes agrégées, à la même cadence.
+    //
+    // POURQUOI DE NOUVELLES LIGNES ET PAS L'ÉLARGISSEMENT DE LA PREMIÈRE : le
+    // tampon ci-dessus est à ~117 caractères sur 128 dans son pire cas, et la
+    // ligne « Heap 8bits: » est la SEULE série longue dont dispose ce projet
+    // (152 relevés historiques). Recalculer un pire cas à dix champs risquerait
+    // de la tronquer silencieusement — on ne touche pas à la série de référence.
+    //
+    // POURQUOI LE JOURNAL PORTE L'ESSENTIEL DU RELEVÉ, ET PAS LA ROUTE HTTP —
+    // ARBITRAGE, à ne pas défaire : `/get-system-info` sérialise sa réponse dans
+    // une String (web_helpers.cpp), donc réclame ~1,7 Ko CONTIGUS sur le pool
+    // 8 bits une fois enrichie. C'est la route qu'on interroge PENDANT une
+    // famine, et le pire `maxBloc` observé descend à 852 o : il existe donc une
+    // bande de fragmentation où elle échouerait alors qu'elle passait avant (le
+    // 08/09 elle répondait en 200 quand la page statique était en 503). Ces
+    // deux lignes, elles, sont des snprintf sur PILE : elles n'exigent AUCUN
+    // bloc contigu du tas. Le journal est le chemin de dernier recours — d'où
+    // le fait qu'il porte les PLANCHERS (et le contexte du creux), et non un
+    // instantané qui ne dirait rien du régime de famine.
+    // ADR-0033 : deux lignes par période de 30 min (~+0,55 Ko/h), JAMAIS une par
+    // échantillon — le journal persistant n'a que ~25-35 min de rétention.
+    //
+    // LECTURE DES LIGNES :
+    //  - « boot » = planchers DEPUIS LE DÉMARRAGE, « fen » = depuis le dernier
+    //    report (réarmés ci-dessous) ; format « libre/plus gros bloc » ;
+    //  - m804 = métrique actuelle des gardes, m80C = classe d'échec observée en
+    //    production, m1804 = candidate du lot C-1b, mPS = PSRAM (A6 : même
+    //    chiffre que `psram_free`, mais en MINIMUM — une allocation PSRAM
+    //    transitoire est invisible sur un instantané) ;
+    //  - c=0x.. / ctxVu : bits kHeapCtx* (1=clients WS, 2=GET HTTP, 4=dosage,
+    //    8=rafale de découverte HA) au creux du masque, puis tous ceux vus dans
+    //    la fenêtre — c'est ce qui dit QUEL événement a produit le plancher ;
+    //  - tem = témoin 4096/4095 (bits kHeapWitness* : 2=le 4096 o est en PSRAM,
+    //    4=le 4095 o aussi (anomalie), 8=discordance des deux API, 1=sauté) ;
+    //  - walk=max/med µs = durée OBSERVÉE du parcours 0x0804 (condition 5 du
+    //    gate ; médiane approchée par borne supérieure de seau, donc
+    //    surestimée) — à comparer aux 300 µs de kOomProbeWarnDurationUs. Ce
+    //    n'est PAS `oom_probe_max_us`, qui mesure la sonde du chemin d'échec ;
+    //  - 4294967295 = aucun échantillon pour ce plancher.
+    // Le « plus gros bloc » de 0x1000 et de la PSRAM n'est jamais affiché : ces
+    // masques empruntent le chemin O(régions), leur bloc n'est pas mesuré.
+    const HeapFloors hf = heapFloorsRead();
+    const HeapFloorEntry& f804 = hf.masks[kHeapFloorSlotInternal8];
+    const HeapFloorEntry& f80C = hf.masks[kHeapFloorSlotInternalDma8];
+    const HeapFloorEntry& f1804 = hf.masks[kHeapFloorSlotInternal8Default];
+    const HeapFloorEntry& fPS = hf.masks[kHeapFloorSlotSpiram];
+    // Pire cas mesuré : 143 caractères sur 160 (six valeurs à 10 chiffres, ce
+    // qu'aucune ne peut atteindre — le tas fait 4,2 Mo au plus).
+    char ligne2[160];
+    snprintf(ligne2, sizeof(ligne2),
+             "Heap masq boot: m804=%u/%u c=0x%02X m80C=%u/%u c=0x%02X "
+             "m1804=%u/%u c=0x%02X mPS=%u tem=0x%02X",
+             (unsigned)f804.minFreeSinceBoot, (unsigned)f804.minLargestSinceBoot,
+             (unsigned)f804.ctxAtMinLargest,
+             (unsigned)f80C.minFreeSinceBoot, (unsigned)f80C.minLargestSinceBoot,
+             (unsigned)f80C.ctxAtMinLargest,
+             (unsigned)f1804.minFreeSinceBoot, (unsigned)f1804.minLargestSinceBoot,
+             (unsigned)f1804.ctxAtMinLargest,
+             (unsigned)fPS.minFreeSinceBoot, (unsigned)hf.witness);
+    systemLogger.info(ligne2);
+
+    // Pire cas mesuré : 137 caractères sur 160.
+    char ligne3[160];
+    snprintf(ligne3, sizeof(ligne3),
+             "Heap masq fen: m804=%u/%u m80C=%u/%u m1804=%u/%u ctxVu=0x%02X "
+             "walk=%u/%uus",
+             (unsigned)f804.minFreeWindow, (unsigned)f804.minLargestWindow,
+             (unsigned)f80C.minFreeWindow, (unsigned)f80C.minLargestWindow,
+             (unsigned)f1804.minFreeWindow, (unsigned)f1804.minLargestWindow,
+             (unsigned)hf.ctxSeen,
+             (unsigned)hf.walkMaxUs, (unsigned)hf.walkMedianUs);
+    systemLogger.info(ligne3);
+
+    // Réarmement de la fenêtre : même tâche que l'échantillonnage (loop), même
+    // course bénigne documentée que heapTakeMinMaxAlloc8Window — un échantillon
+    // pris entre la lecture et le réarmement part dans la fenêtre SUIVANTE et
+    // reste, dans tous les cas, retenu par les planchers depuis-boot. Le
+    // chronométrage du parcours n'est PAS réarmé : sa médiane gagne en sens avec
+    // le nombre d'échantillons.
+    heapFloorsRearmWindow();
   }
 
   // Flush disque one-shot au 1er franchissement à la baisse du seuil d'alerte : capture

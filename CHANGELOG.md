@@ -2,6 +2,99 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.49.0] - 2026-09-08
+
+> **Ce qui change pour vous, en une phrase** : **rien de visible.** Cette version
+> n'ajoute aucune fonctionnalité, ne corrige aucun bug et ne modifie aucun
+> réglage : elle installe un **instrument de mesure** destiné à trouver la cause
+> des coupures d'interface (erreurs 503) de `bug-080`. Aucun écran ne change,
+> aucune notice n'est à relire.
+
+### Firmware
+
+- **Planchers mémoire multi-masques** (`feature-122`, lot **C-1a** de `bug-080`,
+  [ADR-0077](docs/adr/0077-metrique-de-garde-exclut-les-pools-inatteignables.md)).
+  Le firmware retient désormais, pour **cinq pools de tas** — `0x0804`
+  (`INTERNAL|8BIT`, la métrique actuelle des gardes), `0x080C`
+  (`INTERNAL|DMA|8BIT`, la **classe d'échec observée en production**), `0x1000`
+  (`DEFAULT`), `0x1804` (`INTERNAL|8BIT|DEFAULT`) et `MALLOC_CAP_SPIRAM` — le
+  **minimum depuis le démarrage** et le **minimum de fenêtre**, sur le **libre**
+  comme sur le **plus gros bloc contigu**. Un minimum, jamais un instantané : une
+  pointe de quelques millisecondes échappe par construction à un échantillonnage
+  périodique.
+- **Un octet de contexte au creux** : quel événement tenait la machine au moment
+  du minimum — client WebSocket connecté, pompe doseuse sous tension, fenêtre
+  post-connexion MQTT (rafale de découverte HA), rafale de fichiers statiques,
+  refus de la garde d'ouverture de fichiers. Sans lui, un plancher est un chiffre
+  anonyme qui ne dimensionne rien.
+- **Témoin `malloc(4096)` + témoin de contrôle `malloc(4095)`** au démarrage,
+  **libérés aussitôt**, pour trancher une question restée ouverte : le lot B-1
+  (`heap_caps_malloc_extmem_enable(4095)`, v2.35.0) est-il **opérant ou
+  décoratif** ? `psram_free` est immobile à 4 180 340 dans **152 relevés**, ce qui
+  peut aussi bien signifier « rien ne part en PSRAM » que « l'indicateur ne le
+  voit pas ». Le couple d'allocations donne une signature non ambiguë.
+- **Durée des parcours de tas** exposée (`walkMaxUs`, `walkMedianUs`), exigée par
+  la condition 5 du gate `pool-chemistry` : ce qui menace la régulation est la
+  **durée d'une occurrence interruptions coupées** (~84 µs relevés), pas le taux
+  d'occupation. Médiane **approchée** par histogramme dyadique à 7 seaux, rendue
+  comme **borne supérieure de seau** — donc **surestimée**, biais conservateur
+  assumé et documenté. Horloge `esp_timer_get_time()` et non `CCOUNT`, qui est
+  par cœur.
+- **Exposition en lecture** : `GET /get-system-info?hf=1` (route authentifiée,
+  aucune surface non authentifiée élargie) + **deux lignes de journal agrégées**
+  à la cadence de 30 min de la trace `Heap 8bits:`, laquelle reste **intacte**
+  (c'est la seule série longue du projet, 152 relevés).
+- **Coût, énoncé sans arrondi** : le plan annonçait un « coût net nul » —
+  **c'était faux**, `heapFree8Bit()` étant O(régions) et non O(blocs). Réel :
+  **1 parcours O(blocs) par échantillon avant, 2 après**, soit **1 parcours par
+  seconde — exactement le plafond** du gate, sans marge. Verrouillé par
+  `static_assert` : ni cadence accélérée, ni 3ᵉ masque à parcours complet.
+- ⚠️ **Ce lot NE CORRIGE RIEN.** Aucune réserve DMA n'est posée, aucune garde
+  n'est modifiée, aucun seuil ne bouge : la métrique du refus 503, de la garde
+  d'ouverture de fichiers, du parachute OOM et des gardes TLS **reste `0x0804`**.
+  La pose de la réserve et la bascule de métrique — **dans le même lot**, sans
+  quoi la garde 503 serait aveuglée — sont `feature-123`.
+- **MQTT** : une seule méthode publique ajoutée, `lastDiscoveryMarkMs()`, qui ne
+  sert qu'à composer le bit de contexte « rafale de découverte ». **Aucun topic,
+  aucune charge utile, aucun comportement MQTT modifié.**
+- **Tests** : 2 suites natives neuves (`test_native_heap_caps_table`,
+  `test_native_heap_floors`) — la table de sélection `(all_caps & mask) == mask`
+  mise sous test à 12 cas, le `fetch_min` prouvé par **entrelacement scripté
+  déterministe** (il a désormais trois écrivains), la médiane et son biais, et des
+  **sentinelles de câblage** : aucune garde ne lit les nouveaux planchers, la
+  route ne lit que des atomiques rangées, les octets de contexte restent des
+  `uint8_t`. Total mesuré : **44 suites / 1 677 cas**, zéro régression.
+
+### Documentation
+
+- **Nouvel [ADR-0077](docs/adr/0077-metrique-de-garde-exclut-les-pools-inatteignables.md)**
+  — « **une métrique de garde doit exclure les pools qu'un `malloc()` ne peut pas
+  atteindre** ». C'est la **troisième** occurrence du même piège dans ce dépôt :
+  le parachute anti-OOM logé en PSRAM (donc décoratif), les quatre gardes rendues
+  mortes par une métrique IRAM-inclusive
+  ([ADR-0058](docs/adr/0058-gardes-heap-metrique-8-bits.md)), et maintenant la
+  réserve DMA **visible par `0x0804`**. C'est le **motif** qui est figé, plus que
+  le masque `0x1804` lui-même. L'ADR **ne bascule pas** la métrique : il énonce le
+  principe et fige la table (épinglée en compilation) ; la bascule sera sa
+  conséquence, en C-1b/C-3.
+- `docs/subsystems/system-health.md` : table des cinq masques et de ce que chacun
+  voit, résolutions temporelles à ne pas confondre, coût réel, biais de la
+  médiane, avertissement « `pred` ne porte aucune information d'exécution », les
+  deux chemins de lecture et leur motif chiffré, et le **protocole de relevé sur
+  cible**.
+- `docs/API.md` : paramètre `?hf=1`, clés de l'objet `hf`, les **deux budgets
+  mesurés** (964 o sans le paramètre — identique **à l'octet près** à
+  l'avant-lot — et 1 694 o avec), et la distinction entre les deux sortes de
+  `null` (absence de mesure vs masque incapable de rendre un bloc).
+- `docs/subsystems/mqtt-manager.md` : `lastDiscoveryMarkMs()` et son unique
+  usage.
+- `docs/subsystems/logger.md` : les **deux** nouveaux émetteurs périodiques
+  (≈ 0,55 Ko/h) et pourquoi la ligne `Heap 8bits:` n'a **pas** été élargie.
+- **Aucune documentation utilisateur touchée** (`docs/user/`) : rien de visible à
+  l'écran, aucune capture d'écran à refaire, aucun PDF à régénérer.
+
+---
+
 ## [2.48.1] - 2026-09-08
 
 > **Ce qui change pour vous, en une phrase** : **le journal système survit

@@ -1308,6 +1308,119 @@ Quatre champs **purement additifs** ([ADR-0066](adr/0066-sonde-du-tas-au-moment-
 
 > **Ce n'est pas une métrique de supervision.** Contrairement à `max_alloc_8bit`, ces quatre champs ne décrivent pas la santé du tas mais le **fonctionnement de l'instrument**. Ne pas construire d'alarme sur `oom_probe_count`, qui croît normalement en régime dégradé.
 
+#### Paramètre `hf` — planchers mémoire multi-masques (v2.49.0, additif conditionnel)
+
+Le paramètre **`?hf=1`** ajoute un objet **`hf`** à la réponse (feature-122, lot
+C-1a de `bug-080`). C'est un **instrument de diagnostic** : il publie les
+**planchers glissants** de cinq pools de tas, l'événement qui tenait la machine
+au creux, et le résultat du témoin d'allocation 4096/4095. **Aucune garde du
+firmware ne lit ces champs** — elles restent sur `MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT`
+(`0x0804`), cf. [ADR-0077](adr/0077-metrique-de-garde-exclut-les-pools-inatteignables.md).
+
+```bash
+curl -s -u admin:monmotdepasse 'http://poolcontroller.local/get-system-info?hf=1'
+```
+
+**Pourquoi un paramètre et pas un ajout inconditionnel** : la réponse est
+sérialisée dans une `String`, donc elle réclame un **bloc contigu** du pool
+8 bits. Le 08/09/2026, cette route répondait encore **200** alors que la page
+statique tombait en **503** (964 o passaient avec un `maxBloc8` à 5 108 o), et le
+`maxBloc8` observé descend jusqu'à **852 o**. Publier 1 694 o par défaut créerait
+une bande de fragmentation où **la route de diagnostic échouerait alors qu'elle
+passait avant** — l'instrument indisponible dans le régime qu'il sert à étudier.
+
+**Deux budgets JSON, tous deux MESURÉS** avec `measureJson()` sur des valeurs
+pires cas, le 2026-09-08 :
+
+| Requête | Charge utile pire cas | Note |
+|---|---|---|
+| `GET /get-system-info` | **964 o** | **identique à l'octet près** à l'avant-lot (comparaison de chaînes) — aucune clé `hf`, pas même un objet vide |
+| `GET /get-system-info?hf=1` | **1 694 o** | dont **730 o** pour `hf` (1 540 / 576 o sur des valeurs réalistes) |
+
+Une valeur quelconque suffit (`?hf=1`, `?hf`) : seule la **présence** du
+paramètre est testée. La route reste en `RouteProtection::WRITE` — **aucune
+surface non authentifiée n'est élargie**.
+
+**Structure de `hf`** — cinq emplacements (`i8`, `dma`, `def`, `i8d`, `spi`) plus
+huit champs de tête :
+
+| Clé | Masque | Ce que le pool voit |
+|---|---|---|
+| `i8` | `0x0804` `INTERNAL\|8BIT` | métrique **actuelle** des gardes — **voit** une réserve DMA ⚠️ |
+| `dma` | `0x080C` `INTERNAL\|DMA\|8BIT` | **classe d'échec observée** en production (ce que le WiFi demande) |
+| `def` | `0x1000` `DEFAULT` | voit **aussi la PSRAM** ⚠️ — pas de « plus gros bloc » |
+| `i8d` | `0x1804` `INTERNAL\|8BIT\|DEFAULT` | ignore PSRAM **et** réserve — candidate de `feature-123` |
+| `spi` | `0x0400` `MALLOC_CAP_SPIRAM` | tas PSRAM — pas de « plus gros bloc » |
+
+Champs de chaque emplacement (clés courtes : chaque champ est une allocation sur
+le pool que cette route sert à diagnostiquer) :
+
+| Clé | Type | Signification |
+|---|---|---|
+| `f` | `uint32` \| `null` | **libre** au dernier échantillon |
+| `b` | `uint32` \| `null` | **plus gros bloc contigu** au dernier échantillon |
+| `mf` / `mb` | `uint32` \| `null` | planchers **depuis le démarrage** (libre / plus gros bloc) |
+| `wf` / `wb` | `uint32` \| `null` | planchers **de fenêtre** (réarmés à chaque trace agrégée de 30 min) |
+| `cf` / `cb` | `uint8` | bits de **contexte au creux** de `mf` / `mb` (voir table ci-dessous) |
+| `n` | `uint32` | échantillons pris pour **ce** masque (diffère d'un masque à l'autre : tour de rôle) |
+
+Champs de tête :
+
+| Clé | Type | Signification |
+|---|---|---|
+| `n` | `uint32` | échantillons multi-masques depuis le démarrage |
+| `pred` | `uint16` | 12 bits de la table de sélection, **attendu `749` (0x02ED)** — ⚠️ voir l'avertissement ci-dessous |
+| `ctx` | `uint8` | **OU** des contextes vus depuis le dernier réarmement de fenêtre |
+| `hg` | `uint32` | évaluations du filtre de la garde 503 (≈ GET servis), monotone |
+| `w` | `uint8` | bits **bruts** du témoin 4096/4095 |
+| `w96` / `w95` | booléen \| `null` | verdict **tri-état** : `true` = allocation tombée en **RAM externe**, `false` = **interne**, `null` = **aucun verdict** |
+| `wdis` | booléen \| `null` | les deux API de classement d'adresse se contredisent |
+
+Bits de contexte (`cf`, `cb`, `ctx`) — **purement observationnels**, aucune
+décision du firmware ne les relit :
+
+| Bit | Événement |
+|---|---|
+| `0x01` | au moins un client WebSocket connecté |
+| `0x02` | des GET servis depuis l'échantillon précédent |
+| `0x04` | au moins une pompe doseuse sous tension |
+| `0x08` | rafale de découverte Home Assistant en cours ou récente (fenêtre 60 s) |
+
+**Deux `null` à ne pas confondre** ([ADR-0072](adr/0072-absence-de-valeur-hors-du-domaine.md)
+— l'absence de valeur ne se représente jamais par une valeur du domaine) :
+
+| Cas | Champs concernés | Lecture |
+|---|---|---|
+| **Aucune mesure** | n'importe lequel | ce plancher n'a pas encore d'échantillon (`n = 0`, ou masque jamais visité par le tour de rôle) |
+| **Masque incapable de rendre un bloc** | `b`, `mb`, `wb` de `def` et `spi` **uniquement** | ces masques prennent la branche O(régions) : leur « plus gros bloc » n'est **pas mesuré**. Il ne vaut **jamais** `0`, et jamais 4 194 240 — la sentinelle interne n'est pas publiée |
+| **Aucun verdict de témoin** | `w96`, `w95`, `wdis` | pas de PSRAM, `malloc()` refusé, ou témoin jamais exécuté. Un `false` y serait un verdict inventé |
+
+> ⚠️ **`pred` NE PORTE AUCUNE INFORMATION D'EXÉCUTION.** La valeur est
+> *constant-folded* par le compilateur (l'objet contient littéralement
+> `movi a8, 0x2ed`) : elle est **constante par build**. Ne **jamais** la lire
+> comme une observation du tas — ce qui la protège est un
+> `static_assert(heapFloorsPredMask() == 0x02ED)` côté firmware, c'est-à-dire le
+> **build**, pas la réponse HTTP. Un `pred ≠ 749` signifie seulement qu'on
+> interroge un firmware dont la table de masques a changé.
+
+- **Coût côté firmware** : `hf` ne lit **que des atomiques déjà rangées** —
+  aucun parcours de tas sur le chemin de la requête (ce serait poser quatre
+  mesures interruptions coupées sur `async_tcp`, au cœur de la famine étudiée).
+- **Ce n'est pas une métrique de supervision.** Ne construire aucune alarme sur
+  ces champs : ils décrivent l'**instrument** et le régime de fragmentation, pas
+  la santé courante. Pour la supervision, `max_alloc_8bit` reste la grandeur de
+  référence.
+- **Compatibilité** : le paramètre `hf` et l'objet `hf` sont **absents d'un
+  firmware ≤ 2.48.1** — un client doit traiter cette absence comme
+  « information indisponible ». Sans le paramètre, la réponse d'un firmware
+  2.49.0 est **rigoureusement identique** à celle de la version précédente.
+- **Protocole de relevé** (quoi déclencher, dans quel ordre, comment lire chaque
+  champ, et les deux réserves de lecture) :
+  [subsystems/system-health.md](subsystems/system-health.md#protocole-de-relevé-sur-cible).
+  Le **chemin de dernier recours en pleine famine** n'est pas cette route mais
+  les deux lignes de journal `Heap masq …` (`snprintf` sur pile, aucun bloc
+  contigu requis).
+
 > **⚠️ `psram_free` CHANGE DE SENS en v2.35.0.** Jusqu'ici la PSRAM était libre à ~99 % en permanence et sa valeur ne bougeait pas. Depuis la bascule des allocations de plus de 4095 o ([ADR-0061](adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)), **la PSRAM est un pool de travail** : `psram_free` **varie avec la charge web** (chaque fichier statique servi y prend son tampon stdio de 4096 o). Une baisse de plusieurs dizaines de Ko pendant un chargement d'interface est le comportement **attendu**, pas une anomalie. Corollaire pour un superviseur : ne pas alarmer sur une baisse de `psram_free` ; la garde TLS sortante, elle, continue d'exiger 1 Mo libre (`kOtaTlsMinPsramBytes`, [ADR-0036](adr/0036-psram-requise-mise-a-jour-en-ligne.md)).
 
 > `sketch_size` (octets, `ESP.getSketchSize()`) et `ota_partition_size` (octets, taille de la partition app active) permettent de calculer l'occupation flash du firmware — affichée sur la ligne « Firmware (flash) » de la carte Infos système (v2.5.2). `sketch_size` ajouté en v2.5.2 (feature-047).

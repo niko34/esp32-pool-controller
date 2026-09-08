@@ -1970,6 +1970,10 @@ void MqttManager::publishDiscovery() {
   // (voir fin de fonction) : jamais de comparaison millis() < deadline, qui se
   // replie à 24,8 jours.
   const unsigned long startMs = millis();
+  // feature-122 (A5) : repère d'OUVERTURE de rafale, pour que les planchers
+  // mémoire échantillonnés pendant la rafale portent le bit de contexte
+  // kHeapCtxMqttDiscovery. Un simple store atomique — aucune décision ne le lit.
+  _lastDiscoveryMarkMs.store((uint32_t)startMs, std::memory_order_relaxed);
   DiscoveryTally tally;
   discoveryTallyInit(tally, _discoveryBurstSeq);
 
@@ -2816,6 +2820,10 @@ void MqttManager::publishDiscovery() {
   // feature-109 : cette ligne REMPLACE les 54 lignes INFO de la rafale (et non
   // s'y ajoute). Soustraction non signée : correcte au repliement de millis().
   tally.durationMs = (uint32_t)(millis() - startMs);
+  // feature-122 (A5) : repère de FERMETURE. La fenêtre de contexte
+  // (kMqttDiscoveryCtxWindowMs) court donc à partir de la FIN de la rafale — une
+  // rafale plus longue que la fenêtre reste marquée d'un bout à l'autre.
+  _lastDiscoveryMarkMs.store((uint32_t)millis(), std::memory_order_relaxed);
   char summaryLine[kDiscoverySummaryLineMax];
   discoveryFormatSummary(summaryLine, sizeof(summaryLine), tally);
   if (tally.failed > 0) {

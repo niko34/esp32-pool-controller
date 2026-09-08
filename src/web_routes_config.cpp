@@ -1215,12 +1215,118 @@ static void handleTimeNow(AsyncWebServerRequest* request) {
 
 static void handleRebootAp(AsyncWebServerRequest* request);  // Forward declaration
 
+// ---------------------------------------------------------------------------
+// feature-122 (A4) — publication des planchers multi-masques
+// ---------------------------------------------------------------------------
+// PUREMENT ADDITIF, et PUREMENT EN LECTURE : ces trois helpers ne lisent que
+// l'instantané déjà rangé par heapFloorsRead() (condition 2 du gate
+// pool-chemistry). AUCUN appel à heapProbeForCaps ici : quatre parcours de tas
+// interruptions coupées par requête, sur `async_tcp`, seraient posés sur le
+// chemin même de la famine que ce lot cherche à mesurer — le 08/09 à 07:29, une
+// requête de capture a elle-même déclenché un échec d'allocation.
+// ⚠️ AUCUNE GARDE NE LIT CES CHAMPS : le refus 503, httpLowHeapShouldRefuse,
+// kStaticFileMinAllocBytes et les seuils TLS restent sur 0x0804.
+
+// Publie un nombre d'octets, ou `null` si la valeur n'en est pas un.
+// ADR-0072 : l'absence de valeur ne se représente JAMAIS par une valeur du
+// domaine. Deux absences distinctes se présentent ici, et aucune n'a le droit de
+// s'afficher comme un nombre d'octets crédible :
+//   kHeapFloorEmpty       — aucun échantillon pour ce plancher ;
+//   kOomProbeBlockUnknown — masque à chemin O(régions) (0x1000, SPIRAM) : leur
+//                           « plus gros bloc » n'est PAS mesuré. Publier la
+//                           sentinelle telle quelle afficherait un bloc libre de
+//                           4 194 240 o, faux et parfaitement crédible — le mode
+//                           de défaillance exact que ce dossier combat (parachute
+//                           en PSRAM, métrique IRAM-inclusive d'ADR-0058).
+// ⚠️ DEUX helpers, PAS UN — relevé en revue le 08/09/2026.
+// `kOomProbeBlockUnknown` (4 194 240) est la sentinelle du PLUS GROS BLOC des
+// masques qui prennent le chemin O(régions) (`def`, `spi`). Ce n'est PAS une
+// sentinelle de « libre » : 4 194 240 o est une valeur de LIBRE parfaitement
+// atteignable en PSRAM (4 Mo moins 64 o ; le relevé réel du 08/09 donne
+// 4 180 340). L'appliquer aux champs `f`/`mf`/`wf` transformerait donc une
+// mesure JUSTE en `null` — une collision ADR-0072 dans l'autre sens : non plus
+// une absence déguisée en valeur, mais une valeur déguisée en absence.
+// `heapFloorNoteSlot` fait déjà la distinction côté firmware (largest seul) ;
+// la route doit la faire aussi.
+
+// Champs de LIBRE : seule l'absence de mesure (`kHeapFloorEmpty`) donne `null`.
+static void putHeapFreeOrNull(JsonObject o, const char* key, uint32_t bytes) {
+  if (bytes == kHeapFloorEmpty) {
+    o[key] = nullptr;
+    return;
+  }
+  o[key] = bytes;
+}
+
+// Champs de PLUS GROS BLOC : `null` aussi quand le masque ne peut pas le rendre
+// (branche O(régions) imposée par `oomProbeUsesRegionScan`, cf. gate B-2).
+static void putHeapBlockOrNull(JsonObject o, const char* key, uint32_t bytes) {
+  if (bytes == kHeapFloorEmpty || bytes == kOomProbeBlockUnknown) {
+    o[key] = nullptr;
+    return;
+  }
+  o[key] = bytes;
+}
+
+// Un emplacement de plancher : dernier échantillon, planchers depuis-boot et de
+// fenêtre, contextes au creux, et nombre d'échantillons pris pour CE masque
+// (il diffère d'un masque à l'autre : le tour de rôle n'en mesure qu'un par tick).
+static void putHeapFloorEntry(JsonObject parent, const char* key, const HeapFloorEntry& e) {
+  JsonObject o = parent[key].to<JsonObject>();
+  if (e.samples == 0) {
+    // Avant le premier passage du tour de rôle, `0` ne veut pas dire « zéro
+    // octet libre » mais « pas encore mesuré » (ADR-0072, encore).
+    o["f"] = nullptr;
+    o["b"] = nullptr;
+  } else {
+    putHeapFreeOrNull(o, "f", e.lastFree);
+    putHeapBlockOrNull(o, "b", e.lastLargest);
+  }
+  putHeapFreeOrNull(o, "mf", e.minFreeSinceBoot);
+  putHeapBlockOrNull(o, "mb", e.minLargestSinceBoot);
+  putHeapFreeOrNull(o, "wf", e.minFreeWindow);
+  putHeapBlockOrNull(o, "wb", e.minLargestWindow);
+  o["cf"] = e.ctxAtMinFree;
+  o["cb"] = e.ctxAtMinLargest;
+  o["n"] = e.samples;
+}
+
+// Verdict TRI-ÉTAT d'un témoin 4096/4095 (A7) :
+//   true  — l'allocation est tombée en RAM EXTERNE ;
+//   false — elle est tombée en RAM INTERNE ;
+//   null  — aucun verdict : pas de PSRAM (témoin sauté), malloc() échoué, ou
+//           témoin jamais exécuté. Un `false` y serait un verdict « interne »
+//           inventé, alors que rien n'a été mesuré.
+// Les bits bruts restent publiés dans `w` : rien n'est perdu (kHeapWitnessNoPsramApi
+// notamment, qui qualifie la CONFIANCE du verdict sans le contredire).
+static void putHeapWitnessVerdict(JsonObject o, const char* key, uint8_t bits,
+                                  uint8_t externalBit, uint8_t failedBit) {
+  if (bits == 0 || (bits & kHeapWitnessSkipped) != 0 || (bits & failedBit) != 0) {
+    o[key] = nullptr;
+    return;
+  }
+  o[key] = (bits & externalBit) != 0;
+}
+
 static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
-  // 36 champs (version, chip, mémoire, WiFi, uptime). Charge utile mesurée avec
-  // measureJson() sur des valeurs pires cas (compteurs 32 bits saturés, SSID de
-  // 32 caractères) : ~930 octets, contre ~805 avant le QUATUOR `oom_probe_*`
+  // 36 champs plats (version, chip, mémoire, WiFi, uptime), plus l'objet `hf`
+  // (feature-122 A4 : 53 champs, 5 × 9 + 8) UNIQUEMENT si `?hf=1`.
+  // DEUX charges utiles, MESURÉES avec measureJson() sur des valeurs pires cas
+  // (compteurs 32 bits saturés, SSID de 32 caractères), le 2026-09-08 :
+  //   sans `?hf=1` : **964 o** — inchangé À L'OCTET PRÈS par ce lot
+  //   avec `?hf=1` : **1 694 o** (dont 730 pour `hf` ; 1 540 / 576 sur des
+  //                  valeurs réalistes)
+  // L'estimation d'architecture annonçait +170 o : elle chiffrait 12 nombres
+  // (`dma`/`gen`/`def`/`spi` réduits au libre et à un plancher), alors que le
+  // livrable A4a en exige 53 — les DEUX planchers (depuis-boot ET fenêtre) et
+  // les DEUX octets de contexte, pour les CINQ emplacements. Le dépassement est
+  // donc du périmètre, pas de l'encodage : les clés sont déjà à deux ou trois
+  // caractères. C'est ce chiffre mesuré qui a imposé le conditionnement par
+  // paramètre — motif détaillé au point de publication de `hf` ci-dessous.
+  // Ne pas ajouter de champ, dans un cas comme dans l'autre, sans re-mesurer.
+  // Historique : ~930 o avant `hf`, ~805 avant le QUATUOR `oom_probe_*`
   // (bug-080 B-2, ~125 o), 748 avant le COUPLE `oom_reserve_bytes`
   // (~26 o) + `oom_reserve_internal` (~29 o) de la v2.35.0, 716 avant
   // `oom_handler_registered` (v2.20.2) et 628 avant les trois champs mémoire
@@ -1301,6 +1407,77 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   doc["oom_probe_count"] = probe.count;
   doc["oom_probe_max_us"] = probe.maxDurationUs;
   doc["oom_probe_last_caps"] = probe.lastCaps;
+
+  // feature-122 A4 (lot C-1a) — PLANCHERS MULTI-MASQUES, regroupés sous `hf`,
+  // et publiés UNIQUEMENT sur demande explicite : `GET /get-system-info?hf=1`.
+  //
+  // ⚠️ POURQUOI CE CONDITIONNEMENT — NE PAS LE « SIMPLIFIER » EN INCONDITIONNEL.
+  // Le motif n'est PAS d'économiser des octets, c'est que **la route de
+  // diagnostic ne doit pas devenir la première victime de la famine qu'elle
+  // diagnostique**. sendJsonResponse() sérialise dans une String
+  // (web_helpers.cpp:35) : la réponse réclame donc un bloc CONTIGU sur le pool
+  // 8 bits. Charge mesurée (measureJson, pire cas) : 964 o sans `hf`,
+  // 1 694 o avec. Or le 08/09, cette route répondait encore 200 pendant que la
+  // page statique était refusée en 503, avec un maxBloc8 à 5 108 o — et le
+  // maxBloc8 observé descend jusqu'à **852 o** au pire. À 1 694 o par défaut, il
+  // existerait une bande de fragmentation où cette route échouerait alors
+  // qu'elle passait AVANT ce lot : l'instrument rendu indisponible exactement
+  // dans le régime qu'il sert à étudier. C'est le piège que la condition 2 du
+  // gate pool-chemistry visait déjà (la sonde qui aggrave ce qu'elle mesure).
+  //
+  // RÉPARTITION DES DEUX CHEMINS DE LECTURE — c'est ce qui rend acceptable que
+  // la charge complète soit lourde :
+  //   · cette route (?hf=1) = CONFORT DE TEMPS CALME, relevé complet, demandé à
+  //     la main par quelqu'un qui accepte le coût ;
+  //   · la seconde ligne agrégée du journal = DERNIER RECOURS en pleine famine
+  //     (snprintf sur un char[160] de PILE, aucun bloc contigu du tas requis) ;
+  //     elle porte les planchers depuis le démarrage et l'octet de contexte au
+  //     creux pour 0x0804, 0x080C et 0x1804.
+  // Sans le paramètre, la réponse est identique À L'OCTET PRÈS à ce qu'elle
+  // était avant ce lot : aucune clé `hf`, pas même un objet vide.
+  //
+  // Clés courtes : chaque champ est une allocation sur le pool 8 bits que cette
+  // route sert justement à diagnostiquer.
+  //   i8  = 0x0804 INTERNAL|8BIT         — métrique ACTUELLE des gardes
+  //   dma = 0x080C INTERNAL|DMA|8BIT     — classe d'échec observée (ce que le WiFi demande)
+  //   def = 0x1000 DEFAULT               — voit AUSSI la PSRAM, pas de « plus gros bloc »
+  //   i8d = 0x1804 INTERNAL|8BIT|DEFAULT — candidate de feature-123
+  //   spi = 0x0400 SPIRAM                — plancher PSRAM (A6), pas de « plus gros bloc »
+  // Par emplacement : f=libre, b=plus gros bloc, mf/mb=planchers depuis le boot,
+  // wf/wb=planchers de FENÊTRE, cf/cb=bits kHeapCtx* au creux, n=échantillons.
+  // Puis : n=échantillons totaux, pred=les 12 bits de la table de sélection
+  // (attendu 0x02ED = 749), ctx=OU des contextes vus, hg=GET servis (filtre 503),
+  // w=bits bruts du témoin 4096/4095, w96/w95=verdicts tri-état, wdis=discordance.
+  // Lecture d'atomiques déjà rangées : ni allocation côté mesure, ni log, ni
+  // parcours de tas. Ajout PUREMENT ADDITIF (aucun champ existant déplacé).
+  // `hf=1` explicite (une valeur quelconque suffit : hasParam ne juge que la
+  // présence). Route inchangée en RouteProtection::WRITE — aucune surface non
+  // authentifiée n'est élargie (bug-113 vient de la réduire de 80,73 %).
+  if (request->hasParam("hf")) {
+    const HeapFloors floors = heapFloorsRead();
+    JsonObject hf = doc["hf"].to<JsonObject>();
+    putHeapFloorEntry(hf, "i8", floors.masks[kHeapFloorSlotInternal8]);
+    putHeapFloorEntry(hf, "dma", floors.masks[kHeapFloorSlotInternalDma8]);
+    putHeapFloorEntry(hf, "def", floors.masks[kHeapFloorSlotDefault]);
+    putHeapFloorEntry(hf, "i8d", floors.masks[kHeapFloorSlotInternal8Default]);
+    putHeapFloorEntry(hf, "spi", floors.masks[kHeapFloorSlotSpiram]);
+    hf["n"] = floors.sampleCount;
+    hf["pred"] = floors.pred;
+    hf["ctx"] = floors.ctxSeen;
+    hf["hg"] = heapHttpGetCount();
+    hf["w"] = floors.witness;
+    putHeapWitnessVerdict(hf, "w96", floors.witness, kHeapWitness4096External,
+                          kHeapWitness4096Failed);
+    putHeapWitnessVerdict(hf, "w95", floors.witness, kHeapWitness4095External,
+                          kHeapWitness4095Failed);
+    // Discordance des deux méthodes de classement d'adresse : tri-état aussi — sans
+    // témoin exécuté, « pas de discordance » serait une affirmation gratuite.
+    if (floors.witness == 0) {
+      hf["wdis"] = nullptr;
+    } else {
+      hf["wdis"] = (floors.witness & kHeapWitnessDisagreement) != 0;
+    }
+  }
 
   // feature-066 : PSRAM (0 = absente, module WROOM — l'UI affiche « absente »)
   doc["psram_size"] = ESP.getPsramSize();

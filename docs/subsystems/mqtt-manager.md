@@ -69,7 +69,37 @@ void drainCommandQueue();
 
 // Arrêt propre avant ESP.restart() — flush "status=offline" puis stop mqttTask.
 void shutdownForRestart();
+
+// Observabilité (v2.49.0) — date du dernier repère de rafale de découverte HA.
+uint32_t lastDiscoveryMarkMs() const;   // millis, 0 = jamais. Lecture d'une atomique relâchée.
 ```
+
+### `lastDiscoveryMarkMs()` — repère de rafale pour le contexte mémoire (v2.49.0)
+
+Méthode publique ajoutée par `feature-122` (lot C-1a de `bug-080`). Elle rend la
+date `millis()` du dernier repère de rafale de découverte, ou `0` si aucune rafale
+n'a eu lieu.
+
+> ⚠️ **Aucun topic, aucune charge utile, aucun comportement MQTT n'est modifié
+> par ce lot.** Ni l'auto-discovery, ni les intervalles, ni la reconnexion, ni le
+> contenu d'un `publishDiscovery()`. Deux `store` atomiques relâchés ont été
+> ajoutés dans `publishDiscovery()`, et rien d'autre.
+
+- **Unique usage** : composer un **bit de contexte** (`kHeapCtxMqttDiscovery`,
+  `0x08`) sur les planchers mémoire multi-masques — sans quoi un creux causé par
+  la republication de ~54 entités serait attribué au régime calme qui la suit.
+  Voir [system-health.md](system-health.md#contexte-au-creux-a5--quel-événement-tenait-la-machine).
+- **Repère posé DEUX fois** : à l'**ouverture** et à la **fermeture** de
+  `publishDiscovery()`. La fenêtre de marquage (`kMqttDiscoveryCtxWindowMs` =
+  **60 s**) court donc depuis la **fin** de la rafale — une rafale plus longue que
+  la fenêtre reste marquée d'un bout à l'autre.
+- **Concurrence** : écrite par `mqttTask`, lue par `loopTask` →
+  `std::atomic<uint32_t>` en `memory_order_relaxed`. Ni allocation, ni log, ni
+  verrou. La sentinelle `0` est sûre : `millis()` ne vaut `0` que pendant la
+  première milliseconde du démarrage, où aucune rafale ne peut avoir eu lieu (le
+  WiFi n'est pas monté).
+- ⚠️ **Purement observationnel** : **aucune décision** ne lit cette date — ni
+  dosage, ni reboot, ni refus 503, ni republication.
 
 ## Tâche dédiée — paramètres
 

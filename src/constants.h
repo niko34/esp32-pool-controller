@@ -517,6 +517,43 @@ constexpr size_t kHeapRingEntries = 128;                  // Capacité du ring (
 constexpr unsigned long kHeapRingSampleIntervalMs = 2000; // 2s - cadence d'échantillonnage depuis loop()
 constexpr size_t kHeapRingDumpMaxEntries = 32;            // Entrées dumpées au boot post-crash (~64 s de cinétique)
 
+// ----------------------------------------------------------------------------
+// Planchers glissants MULTI-MASQUES (feature-122, lot C-1a — INSTRUMENTATION)
+// ----------------------------------------------------------------------------
+// Les allocations qui échouent en production portent caps = 0x080C
+// (8BIT|DMA|INTERNAL) alors que toutes les gardes du projet mesurent 0x0804 :
+// on suit donc les QUATRE masques de la dérivation (0x0804, 0x080C, 0x1000,
+// 0x1804) plus le tas PSRAM, chacun avec son plancher depuis le boot et sur
+// fenêtre. Masques et arithmétique : heap_caps_logic.h (pur).
+// ⚠️ CE LOT NE CORRIGE RIEN : aucune garde ne lit ces planchers, aucune réserve
+// DMA n'est posée (c'est feature-123).
+//
+// 5 emplacements = 4 masques de la dérivation + MALLOC_CAP_SPIRAM (A6). L'ordre
+// des quatre premiers est celui des bits publiés par /get-system-info.
+constexpr uint8_t kHeapFloorMaskCount = 5;
+// PLAFOND DE COÛT (condition 3 du gate pool-chemistry) : 2 parcours O(blocs) par
+// échantillon — le masque de référence 0x0804 + UN masque en tour de rôle. À la
+// cadence de kHeapRingSampleIntervalMs, cela fait EXACTEMENT 1 parcours/s, le
+// plafond fixé par le gate. Comptabilité honnête : avant ce lot, heapRingSample
+// faisait 1 parcours O(blocs) (heapLargestFreeBlock8Bit) + 1 agrégat O(régions)
+// (heapFree8Bit) ; le lot fond ces deux appels en un seul heap_caps_get_info et
+// dépense le créneau libéré sur un second masque — le surcoût NET est donc de
+// +1 parcours toutes les 2 s, et il est plafonné ici.
+// Les masques 0x1000 et SPIRAM n'entrent PAS dans ce budget : ils empruntent le
+// chemin O(régions) de heapProbeForCaps (leur « plus gros bloc » vaut
+// kOomProbeBlockUnknown, jamais un bloc réel).
+constexpr uint8_t kHeapFloorWalksPerSample = 2;
+static_assert(kHeapFloorWalksPerSample * 1000UL <= kHeapRingSampleIntervalMs,
+              "Plafond du gate pool-chemistry : au plus UN parcours O(blocs) du tas "
+              "par seconde (interruptions coupees). Ni accelerer la cadence, ni "
+              "ajouter un 3e masque a parcours complet.");
+// Durée pendant laquelle un échantillon reste marqué « rafale de découverte HA »
+// après le dernier repère posé par publishDiscovery(). 60 s : une rafale de ~60
+// entités dure quelques secondes sur un lien sain et bien davantage sur CPL
+// lossy — sous-dimensionner la fenêtre attribuerait le creux au régime calme
+// qui suit la rafale.
+constexpr uint32_t kMqttDiscoveryCtxWindowMs = 60000;
+
 // ============================================================================
 // PARACHUTE OOM GLOBAL (bug-oom-accept-http-durcissement, crash du 11/08/2026)
 // ============================================================================

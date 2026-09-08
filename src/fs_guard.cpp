@@ -66,6 +66,11 @@ bool fsGuardAdmit(uint32_t minAllocBytes) {
   // exactement heapCaps8BitMask(). L'exigence d'ADR-0058 est ici juste AU BIT
   // PRÈS, pas stylistique.
   const uint32_t maxAlloc8 = heapLargestFreeBlock8Bit();
+  // feature-122 (A1) : valeur DÉJÀ mesurée pour la décision → poussée vers le
+  // plancher glissant 0x0804 (fetch_min, aucun parcours neuf). Ce site s'exécute
+  // depuis n'importe quelle tâche, `async_tcp` comprise : aucun log, aucune
+  // allocation. Le seuil et la métrique de la garde restent INCHANGÉS.
+  heapNoteMaxAlloc8Sample(maxAlloc8);
   sFopenEpisode.lastProbeMs = now;
   // Le cache du refus n'est armé que dans la zone de danger. Au-dessus de
   // 2 × seuil, chaque décision re-mesure : le cache ne peut alors produire aucun
@@ -145,6 +150,7 @@ void fsGuardDrain() {
       fopenGuardNeedsFreshMeasure(sFopenEpisode, now, kInternalFopenEpisodeQuietMs,
                                   kInternalFopenProbeMinIntervalMs)) {
     maxAlloc8 = heapLargestFreeBlock8Bit();
+    heapNoteMaxAlloc8Sample(maxAlloc8);  // feature-122 (A1) : plancher, sans parcours neuf
     sFopenEpisode.lastProbeMs = now;
     // Seuil de la classe la PLUS STRICTE : le drain ignore quelle classe a
     // ouvert l'épisode (cf. la note appariée dans fsGuardAdmit). Divergence
