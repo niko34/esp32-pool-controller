@@ -1407,3 +1407,128 @@ ce stade — *keepalive* PubSubClient contre délai d'inactivité du courtier, t
 NAT/ARP du TP-Link, ou famine de tampons TX assez brève pour ne rien journaliser.
 Le relevé de nuit est l'angle le plus discriminant : il élimine toute
 participation de l'interface web.
+
+---
+
+## LOT C — CAUSE RACINE CANDIDATE TROUVÉE : aucune réserve DMA n'est constituée
+
+Instruit le **2026-09-08**, à la demande de l'utilisateur (« cherche la cause
+racine »), après l'épisode 503 vécu en direct le matin même.
+
+### 1. Ce que les allocations qui échouent demandent vraiment
+
+Signature constante depuis le 05/09 : `caps=0x080C`. Décodé avec les valeurs
+réelles de `esp_heap_caps.h` :
+
+`0x080C` = `MALLOC_CAP_8BIT` (1<<2) | `MALLOC_CAP_DMA` (1<<3) | `MALLOC_CAP_INTERNAL` (1<<11)
+
+⇒ **mémoire interne capable de DMA**. Le DMA de l'ESP32 ne sait pas adresser la
+PSRAM : ces 1 622 o **ne peuvent structurellement JAMAIS** y aller. Les
+4,18 Mo de PSRAM libres sont donc **hors sujet** pour cette famine, et toute
+piste qui passe par eux est close.
+
+### 2. L'anomalie de configuration
+
+`sdkconfig.h` des bibliothèques précompilées — vérifié dans **les deux**
+variantes réellement compilées (`qio_qspi` et `dio_qspi`) :
+
+```
+#define CONFIG_SPIRAM_USE_MALLOC 1
+#define CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL 4096
+#define CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL 0     ← défaut IDF : 32768
+```
+
+`RESERVE_INTERNAL` constitue au démarrage un **pool de RAM interne réservé** aux
+allocations qui ne peuvent aller nulle part ailleurs — typiquement DMA et WiFi.
+Il est à **zéro** : rien n'est réservé, et les allocations ordinaires ont donc le
+droit de consommer jusqu'au dernier octet contigu de la seule mémoire dont le
+WiFi a un besoin exclusif. L'IDF met 32 Ko par défaut **précisément** pour
+empêcher cela, et la documentation lie explicitement cette réserve à
+`SPIRAM_USE_MALLOC=y` — la configuration exacte de ce projet.
+
+C'est cohérent avec tout l'observé : `free8` à 26–39 Ko pendant que `maxBloc8`
+s'effondre à 852 o. **Ce n'est pas un manque de mémoire, c'est un défaut de
+cloisonnement.**
+
+### 3. Le levier existe à l'exécution — pas besoin de reconstruire l'IDF
+
+`esp_psram_extram_reserve_dma_pool(size_t size)` est **exportée** (`T` dans
+`libesp_psram.a`), déclarée dans `esp_private/esp_psram_extram.h` : « Reserve a
+pool of internal memory for specific DMA/internal allocations ».
+
+Mécanisme **confirmé par désassemblage** de `esp_psram.c.obj` :
+
+```asm
+movi.n  a5, 8  ;  addmi a5, a5, 0x800      → a5 = 0x808 = DMA|INTERNAL
+callx8  heap_caps_get_largest_free_block   (0x808)
+minu    a6, a10, a7                        → next = min(plus gros bloc, restant)
+callx8  heap_caps_malloc                   (next, 0x808)
+callx8  heap_caps_add_region_with_caps     (tableau de 3 caps, ptr, ptr+next-1)
+```
+
+Elle **prend** les plus gros blocs DMA|internes du tas général, puis les
+**ré-enregistre comme région distincte** avec un jeu de capacités propre. Le
+résultat est un pool que `malloc()` ordinaire ne peut plus atteindre.
+
+⇒ Appel possible depuis `setup()`. Mais **tôt** : la fonction a besoin de gros
+blocs contigus, donc avant `WiFi.begin()`, avant le serveur web, et
+vraisemblablement juste après `initOomGuard()` — là où
+`heap_caps_malloc_extmem_enable()` est déjà posé (`main.cpp:130`).
+
+### 4. ⚠️ LE RISQUE QUI PEUT RETOURNER LE CORRECTIF CONTRE NOUS
+
+Les gardes du projet mesurent `MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`
+(**0x0804**, `heap_metrics.h`). Les allocations WiFi demandent **0x080C** — un
+**sous-ensemble** (DMA en plus).
+
+Si la région réservée reste visible à la métrique 0x0804, alors après le
+correctif `maxBloc8` affichera un gros bloc libre — **celui de la réserve** —
+pendant que le pool général sera toujours affamé. La garde 503 cesserait de se
+déclencher, l'appareil servirait les fichiers, et l'allocation échouerait :
+**exactement le plantage que cette garde existe pour éviter.**
+
+Ce projet a déjà vécu deux fois ce mode de défaillance — le parachute anti-OOM
+logé en PSRAM donc décoratif, et les quatre gardes rendues mortes par une
+métrique IRAM-inclusive (ADR-0058). **Ne pas livrer la réserve sans traiter la
+métrique dans le même lot.**
+
+**Ce que je n'ai PAS prouvé** : les capacités exactes de la région
+ré-enregistrée. Le littéral pointe `.rodata + 0`, et le décodage des trois mots
+donne `[0x1400, 0, 0x100006]` — soit `DEFAULT|SPIRAM` en tête, ce qui est
+**incohérent** avec un pool DMA interne. Deux hypothèses : littéraux fusionnés
+entre `reserve_dma_pool` et `add_to_heap_allocator`, ou erreur de ma lecture des
+déplacements. Cette question **doit être tranchée sur cible**, par la mesure, et
+non par le désassemblage : appeler la fonction au démarrage, puis comparer
+`maxBloc(0x0804)`, `maxBloc(0x080C)` et `maxBloc(MALLOC_CAP_DEFAULT)` avant et
+après. Si la réserve apparaît dans 0x0804, la métrique des gardes doit basculer
+sur `MALLOC_CAP_DEFAULT`.
+
+### 5. Contrainte de dimensionnement — 32 Ko est INABORDABLE
+
+Relevé au démarrage (journal du 08/09) : `libre8=57700 maxBloc8=55284`. Le tas
+8 bits ne dispose que d'**environ 57 Ko** au boot, et retombe à 26 Ko en
+exploitation. Réserver les 32 Ko du défaut IDF en prendrait **plus de la
+moitié** — le remède tuerait le patient.
+
+Dimensionnement à mesurer, pas à postuler. Repère : un tampon TX fait 1 622 o,
+et `CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32` autorise jusqu'à ~51 Ko en
+pointe théorique. Une réserve de **8 Ko** couvre 5 tampons concurrents, **16 Ko**
+en couvre 10. **Il faut d'abord mesurer la demande concurrente réelle en
+pointe** — elle n'a jamais été relevée, et c'est le chiffre qui manque.
+
+### 6. Ce que cette instruction ferme et ouvre
+
+**Fermé** : la piste PSRAM pour cette famine (impossibilité DMA, démontrée) ; la
+piste WiFi/réseau (0 perte pour 13 déconnexions MQTT) ; l'hypothèse du délai
+d'inactivité MQTT (keepalive à 60 s contre des chutes à 1–10 s).
+
+**Ouvert, et dans cet ordre** :
+1. Mesurer la demande concurrente en tampons TX au moment des pointes.
+2. Trancher sur cible la visibilité de la réserve dans les trois métriques.
+3. Dimensionner la réserve, puis la poser avec la correction de métrique **dans
+   le même lot**.
+4. Indépendamment : `bug-121` (republication de 60 entités à chaque reconnexion)
+   et la double ouverture `exists()` + `open()` des fichiers statiques, qui
+   coûte 2 × 4 096 o par fichier servi et jusqu'à ~49 Ko en rafale au chargement
+   de l'interface. Ces deux-là **réduisent la demande** et ne dépendent d'aucune
+   des questions ci-dessus.
