@@ -2,6 +2,44 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.49.2] - 2026-09-08
+
+> **Ce qui change pour vous** : rien de visible. Un défaut de l'**instrument de
+> mesure** livré le jour même est corrigé — il sous-estimait de près du double le
+> creux qu'il sert à mesurer.
+
+### Firmware
+
+- **La mesure fine alimente enfin les planchers par masque.** Le creux de tas
+  relevé **à l'instant d'une requête** (`web_server.cpp`, filtre de la garde 503,
+  et `fs_guard.cpp`) n'alimentait que les deux compteurs historiques, jamais les
+  planchers de `feature-122`. Ceux-ci ne voyaient donc que l'échantillonnage à
+  2 s et **rataient les creux de requête** — précisément ceux qui comptent.
+  Aucun parcours de tas n'est ajouté : la valeur est déjà mesurée par l'appelant.
+- **Ce que le défaut aurait coûté** : `hf.dma.mb` devait dimensionner la réserve
+  DMA de `feature-123`, lot qui retire de la RAM interne **irréversiblement au
+  démarrage**, sans repli série. La réserve aurait été calibrée sur un chiffre
+  faux de 94 %.
+
+### Tests
+
+- Le correctif est verrouillé : le test meurt si la poussée fine est retirée, si
+  elle vise le mauvais masque, ou si un parcours de tas est ajouté sur ce chemin
+  (`async_tcp`, pendant la famine — condition 2 du gate `pool-chemistry`).
+
+### Documentation
+
+- **Le critère de clôture de `bug-080` est réécrit pour la seconde fois de la
+  soirée**, et les deux erreurs sont consignées comme garde-fou : d'abord bâti sur
+  le **nombre d'épisodes 503** — donc sur la chance qu'une requête tombe au
+  mauvais moment — puis sur des planchers dont la **résolution** n'avait pas été
+  éprouvée. La règle qui s'en dégage : un critère de clôture ne se rédige
+  qu'**après** un relevé qui a effectivement mordu, et provoqué volontairement.
+- **L'hypothèse de l'utilisateur est confirmée** : charger l'interface provoque la
+  famine. 117 requêtes provoquées volontairement ont déclenché **2 épisodes 503**
+  et **4 échecs d'allocation**, avec le plus gros bloc descendu à **4 084**. Les
+  8 h 49 précédentes n'en montraient aucun — une période calme ne prouve rien.
+
 ## [2.49.1] - 2026-09-08
 
 > **Ce qui change pour vous, en une phrase** : **rien de visible.** Aucun écran,

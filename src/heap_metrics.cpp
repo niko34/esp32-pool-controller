@@ -100,10 +100,6 @@ static void heapFetchMinRelaxed(std::atomic<uint32_t>& target, uint32_t value) {
   heapAtomicFetchMin(target, value, std::memory_order_relaxed);
 }
 
-void heapNoteMaxAlloc8Sample(uint32_t maxAlloc8) {
-  heapFetchMinRelaxed(sMinMaxAlloc8SinceBoot, maxAlloc8);
-  heapFetchMinRelaxed(sMinMaxAlloc8Window, maxAlloc8);
-}
 
 uint32_t heapMinMaxAlloc8SinceBoot() {
   return sMinMaxAlloc8SinceBoot.load(std::memory_order_relaxed);
@@ -236,6 +232,12 @@ struct HeapFloorAtomics {
 HeapFloorAtomics sFloors[kHeapFloorMaskCount];
 std::atomic<uint32_t> sFloorSampleCount{0};
 std::atomic<uint32_t> sFloorCtxSeen{0};
+// Dernier contexte composé par heapRingSample. La poussée FINE s'exécute sur
+// `async_tcp` et ne peut pas composer le contexte elle-même (ce serait lire
+// wsManager, PumpController et MQTT depuis async_tcp) : elle réutilise donc le
+// dernier connu, à 2 s près. Approximation ASSUMÉE et bornée — sans elle, un
+// creux de requête serait enregistré sans aucun contexte.
+std::atomic<uint32_t> sFloorCtxLast{0};
 // Jamais réarmé, à l'inverse de sFloorCtxSeen : cf. le commentaire de
 // heapFloorsRead(). Le réarmement de fenêtre NE DOIT PAS le toucher.
 std::atomic<uint32_t> sFloorCtxSeenBoot{0};
@@ -259,6 +261,17 @@ void heapFloorApply(std::atomic<uint32_t>& floorAtomic, std::atomic<uint32_t>* c
 }
 
 // Range un échantillon dans l'emplacement d'un masque.
+// Poussée FINE : seul le plus gros bloc est connu (aucun parcours pour le libre).
+// Sans cette voie, les planchers par masque rateraient les creux de requête —
+// défaut du 08/09/2026, cf. heapNoteMaxAlloc8Sample.
+void heapFloorNoteFineLargest(uint8_t slot, uint32_t largest, uint8_t ctx) {
+  if (slot >= kHeapFloorMaskCount) return;
+  if (largest == kOomProbeBlockUnknown) return;
+  HeapFloorAtomics& f = sFloors[slot];
+  heapFloorApply(f.minLargestBoot, &f.ctxAtMinLargest, largest, ctx);
+  heapFloorApply(f.minLargestWindow, nullptr, largest, ctx);
+}
+
 void heapFloorNoteSlot(uint8_t slot, const HeapProbe& probe, uint8_t ctx) {
   HeapFloorAtomics& f = sFloors[slot];
   f.lastFree.store(probe.freeBytes, std::memory_order_relaxed);
@@ -276,6 +289,46 @@ void heapFloorNoteSlot(uint8_t slot, const HeapProbe& probe, uint8_t ctx) {
   f.samples.fetch_add(1, std::memory_order_relaxed);
 }
 }  // namespace
+
+// ⚠️ DÉFAUT CORRIGÉ LE 08/09/2026, RÉVÉLÉ PAR L'EXPÉRIENCE ELLE-MÊME.
+// Cette poussée est la mesure FINE : elle est prise au moment d'une requête
+// (web_server.cpp, filtre de la garde 503) ou d'une ouverture de fichier
+// (fs_guard.cpp), donc à l'instant exact où la ressource est disputée. Or elle
+// n'alimentait QUE les deux compteurs historiques, et JAMAIS les planchers par
+// masque de feature-122.
+//
+// Conséquence mesurée sur cible : après 117 requêtes d'interface provoquées
+// volontairement, le journal annonçait `minBoot=4084` (l'ancien compteur, nourri
+// ici) tandis que `hf.i8.mb` (le plancher par masque, nourri seulement par
+// l'échantillonnage à 2 s) annonçait 7 924. Deux mesures du MÊME plancher,
+// divergentes de près du double — et c'est la seconde qui devait dimensionner la
+// réserve DMA de feature-123, le lot irréversible. Un instrument qui sous-estime
+// de 94 % le creux qu'il sert à mesurer.
+//
+// Le plancher du masque 0x0804 reçoit donc désormais cette valeur. AUCUN parcours
+// n'est ajouté : `maxAlloc8` est déjà mesuré par l'appelant, on ne fait qu'un
+// fetch_min de plus (condition 3 du gate pool-chemistry préservée).
+//
+// ⚠️ CE QUI RESTE GROSSIER, et qu'il faut savoir en lisant : les planchers de
+// 0x080C et 0x1804 ne peuvent PAS recevoir cette valeur — elle mesure 0x0804.
+// Les mesurer ici exigerait deux parcours de plus par requête, sur `async_tcp`,
+// pendant la famine : exactement ce que la condition 2 du gate interdit. Ils
+// restent donc à la résolution du tour de rôle (8 s depuis la v2.49.1).
+// Atténuation : heaps(0x080C) et heaps(0x1804) sont des SOUS-ENSEMBLES de
+// heaps(0x0804), donc le plancher fin de 0x0804 les BORNE SUPÉRIEUREMENT. En cas
+// de divergence, c'est lui qui fait foi, et il est du bon côté.
+void heapNoteMaxAlloc8Sample(uint32_t maxAlloc8) {
+  heapFetchMinRelaxed(sMinMaxAlloc8SinceBoot, maxAlloc8);
+  heapFetchMinRelaxed(sMinMaxAlloc8Window, maxAlloc8);
+  // Le plancher par masque 0x0804, avec le contexte de l'instant. `freeBytes`
+  // n'est pas mesuré ici (ce serait un parcours de plus) : on ne renseigne donc
+  // QUE le plus gros bloc, en marquant le libre comme non mesuré.
+  HeapProbe fine;
+  fine.freeBytes = kHeapFloorEmpty;
+  fine.largestBlockBytes = maxAlloc8;
+  heapFloorNoteFineLargest(kHeapFloorSlotInternal8, fine.largestBlockBytes,
+                           (uint8_t)sFloorCtxLast.load(std::memory_order_relaxed));
+}
 
 HeapProbe heapFloorsSample(uint8_t ctx) {
   // 1) Masque de RÉFÉRENCE 0x0804 : UN parcours, qui remplace les DEUX appels
@@ -333,6 +386,7 @@ HeapProbe heapFloorsSample(uint8_t ctx) {
   }
 
   sFloorCtxSeen.fetch_or(ctx, std::memory_order_relaxed);
+  sFloorCtxLast.store(ctx, std::memory_order_relaxed);
   sFloorCtxSeenBoot.fetch_or(ctx, std::memory_order_relaxed);
   sFloorSampleCount.fetch_add(1, std::memory_order_relaxed);
   return reference;

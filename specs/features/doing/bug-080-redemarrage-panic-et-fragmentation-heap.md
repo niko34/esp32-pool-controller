@@ -213,8 +213,91 @@ téléchargement de 16h10. Irrécupérable — le coredump a suppléé.
       Repart du **05/09 ~14:16**, dernier redémarrage inopiné connu (le PANIC sur
       `fopen` de l'historique, daté par SHA256 du coredump — cf. `bug-100`), et
       non des déploiements volontaires qui ont suivi.
-      **Échéance au plus tôt : 12/09/2026.** État au 06/09 08:30 : ~18 h écoulées,
-      aucun redémarrage inopiné depuis.
+      ⚠️ Remis à zéro par les déploiements du 08/09 (2.48.1, puis 2.49.0) : ce
+      critère mesure l'absence de redémarrage **inopiné**, mais chaque
+      déploiement rouvre la fenêtre d'observation. Il ne peut donc se fermer que
+      pendant une période **sans livraison**, ce que la campagne du lot C rend
+      improbable avant sa fin.
+
+### ⚠️ CRITÈRE DE FRAGMENTATION — RÉÉCRIT LE 08/09/2026 (soir)
+
+**La version que j'avais proposée le matin comptait les épisodes 503.** Le relevé
+de 21:33 l'a invalidée : `minBloc8` est descendu à **7 924**, donc **sous le seuil
+de garde de 8 192**, et **aucun 503 ne s'est déclenché** — parce que la garde ne
+mesure qu'**au moment d'une requête** de fichier statique, et qu'aucune n'est
+arrivée pendant ce creux.
+
+Compter les épisodes 503 reviendrait donc à mesurer **la chance qu'une requête
+tombe au mauvais moment**, pas l'état du tas. Un jour sans visite de l'interface
+afficherait zéro épisode sur un tas ruiné ; une journée d'usage intense en
+afficherait plusieurs sur un tas identique. Le symptôme est un produit de
+l'exposition, pas de la cause.
+
+**Critère corrigé — il porte sur le PLANCHER, jamais sur le symptôme.** Sur
+**7 jours consécutifs sans redéploiement** :
+
+- [ ] **`hf.i8.mb`** (plancher du plus gros bloc sur `0x0804`) **ne descend jamais
+      sous `kStaticFileMinAllocBytes`** (8 192). C'est le seuil que la garde
+      applique : rester au-dessus signifie qu'aucune requête, à aucun instant,
+      n'aurait pu être refusée.
+      ⚠️ **C'est `0x0804` — et non `0x1804` ni `0x080C` — qui fait foi ici**, et ce
+      choix est une correction du 08/09 (soir). Motif : seul le plancher de
+      `0x0804` reçoit la mesure **FINE**, prise à l'instant de la requête
+      (`web_server.cpp`, `fs_guard.cpp`). Les deux autres n'ont que la résolution
+      du tour de rôle, soit **8 s**, et **sous-estiment donc le creux**. Mesuré le
+      08/09 après 117 requêtes provoquées : `0x0804` fin annonçait **4 084**,
+      quand les planchers grossiers annonçaient encore **7 924** — près du double.
+      Comme `heaps(0x080C)` et `heaps(0x1804)` sont des **sous-ensembles** de
+      `heaps(0x0804)`, ce dernier les borne supérieurement : bâtir le critère sur
+      lui est à la fois plus fin **et** conservateur.
+- [ ] `hf.dma.mb` et `hf.i8d.mb` sont **relevés mais ne décident pas** : ils
+      servent à confirmer l'ordre de grandeur, jamais à trancher, tant qu'ils
+      restent à 8 s de résolution. Un écart entre eux et `hf.i8.mb` n'est pas une
+      anomalie — c'est la différence de résolution.
+- [ ] **Zéro** échec d'allocation en `caps=0x080C` sur la période (compteur `cumul`
+      du journal, qui agrège — ne pas compter les lignes).
+- [ ] Le critère est relevé **après une reproduction volontaire** : chargement
+      répété de l'interface, session de dosage, rafale de découverte. Un plancher
+      obtenu sur une période calme ne prouve rien — la journée du 08/09 l'a montré,
+      avec 8 h 49 sans le moindre épisode après une matinée qui en comptait trois.
+
+**Pourquoi un plancher décisionnel et non trois** : le critère a besoin d'**un
+état** mesuré au bon endroit et à la bonne résolution, plus **un événement** qui
+dise si la famine a été franchie. `hf.i8.mb` fournit le premier, le compteur
+`cumul` d'échecs en `caps=0x080C` le second. Les deux autres planchers
+documentent, ils ne décident pas.
+
+⚠️ **Deux erreurs de ma part en une soirée, à garder comme garde-fou** : j'ai
+d'abord bâti ce critère sur le **nombre d'épisodes 503** — donc sur la chance
+qu'une requête tombe au mauvais moment — puis, corrigé, sur des planchers dont je
+n'avais pas éprouvé la **résolution**. Les deux fois, j'ai écrit le critère
+**avant** d'avoir fait parler l'instrument. La règle qui s'en dégage : un critère
+de clôture ne se rédige qu'**après** un relevé qui a effectivement mordu, et
+provoqué volontairement — pas après une période calme.
+
+### Le relevé du 08/09 (soir) qui a fixé ce critère
+
+Reproduction **volontaire** : ~117 requêtes d'interface (`Cmd-Option-R` répétés,
+pages pH et ORP), après 10 h de fonctionnement continu.
+
+| Grandeur | Valeur |
+|---|---|
+| Requêtes GET servies | 14 → **117** |
+| Épisodes **503** | **2** |
+| Échecs d'allocation | **4** |
+| Déconnexions MQTT | 6 |
+| `maxBloc8` au plus bas (mesure fine) | **4 084** — passages à 4 852 et 4 340 |
+| Planchers par masque, à la même seconde | **7 924** ⚠️ |
+
+⇒ **L'hypothèse de l'utilisateur est CONFIRMÉE** : charger l'interface provoque la
+famine, de façon reproductible. Ce n'était invisible sur les 8 h 49 précédentes
+que parce que personne n'utilisait l'application — une période calme ne prouve
+donc rien, et c'est pourquoi le critère exige désormais une **reproduction
+volontaire**.
+
+⇒ Et c'est ce relevé qui a exposé le défaut d'instrument corrigé en v2.49.1 : la
+mesure fine n'alimentait pas les planchers par masque. Elle le fait désormais,
+pour `0x0804`.
 
 ---
 

@@ -845,6 +845,37 @@ void test_the_historic_heap_8bits_line_is_untouched(void) {
 // (1) Le tour de rôle ne doit plus etre mesure a CHAQUE echantillon. Condition 5
 // du gate pool-chemistry, declenchee par la mesure sur cible : 516 us au pire,
 // mediane <= 512, contre les ~84 us supposes et les 300 us de la condition.
+// La mesure FINE doit alimenter le plancher PAR MASQUE, pas seulement les deux
+// compteurs historiques. Defaut du 08/09/2026, revele par l'experience elle-meme :
+// apres 117 requetes provoquees, le journal annoncait minBoot=4084 (ancien
+// compteur) et hf.i8.mb annoncait 7924 (plancher par masque) — deux mesures du
+// MEME plancher, divergentes de pres du double. Et c'est la seconde qui devait
+// dimensionner la reserve DMA de feature-123, le lot irreversible.
+void test_la_mesure_fine_alimente_le_plancher_par_masque(void) {
+  char* code = readProjectCode("src/heap_metrics.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(code, "src/heap_metrics.cpp introuvable.");
+  char* corps = extraitCorps(code, "void heapNoteMaxAlloc8Sample(");
+  free(code);
+  TEST_ASSERT_NOT_NULL_MESSAGE(corps, "heapNoteMaxAlloc8Sample introuvable.");
+
+  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(corps, "heapFloorNoteFineLargest(") >= 1,
+      "heapNoteMaxAlloc8Sample doit pousser vers le plancher PAR MASQUE via "
+      "heapFloorNoteFineLargest. Sans cela, les creux pris AU MOMENT D'UNE "
+      "REQUETE (web_server.cpp, fs_guard.cpp) n'alimentent que les compteurs "
+      "historiques : le plancher par masque ne voit plus que l'echantillonnage a "
+      "2 s et SOUS-ESTIME. Mesure du 08/09 : 4 084 contre 7 924 annonces.");
+  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(corps, "kHeapFloorSlotInternal8") >= 1,
+      "La poussee fine mesure le masque 0x0804 : elle doit viser CE slot. La "
+      "diriger vers 0x080C ou 0x1804 attribuerait a ces masques une valeur qui "
+      "n'est pas la leur — heaps(0x080C) est un SOUS-ENSEMBLE, donc 0x0804 les "
+      "borne superieurement, il ne les mesure pas.");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countOccurrences(corps, "heapProbeForCaps("),
+      "AUCUN parcours de tas ne doit etre ajoute ici : cette fonction est appelee "
+      "depuis async_tcp, pendant la famine. `maxAlloc8` est deja mesure par "
+      "l'appelant. Condition 2 du gate pool-chemistry.");
+  free(corps);
+}
+
 void test_le_tour_de_role_est_divise_pour_tenir_la_condition_5(void) {
   char* code = readProjectCode("src/heap_metrics.cpp");
   TEST_ASSERT_NOT_NULL_MESSAGE(code, "src/heap_metrics.cpp introuvable.");
@@ -1044,6 +1075,7 @@ int main(int, char**) {
   RUN_TEST(test_new_journal_lines_fit_their_stack_buffers);
   RUN_TEST(test_the_historic_heap_8bits_line_is_untouched);
   RUN_TEST(test_le_depouilleur_desarme_le_leurre);
+  RUN_TEST(test_la_mesure_fine_alimente_le_plancher_par_masque);
   RUN_TEST(test_le_tour_de_role_est_divise_pour_tenir_la_condition_5);
   RUN_TEST(test_la_regle_du_diviseur_de_cadence);
   RUN_TEST(test_le_contexte_depuis_le_boot_nest_jamais_rearme);
