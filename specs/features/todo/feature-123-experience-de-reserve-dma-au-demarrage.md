@@ -67,6 +67,11 @@ qui fournit le chiffre manquant : la **demande concurrente réelle en pointe** e
 mémoire `0x080C`. Dimensionner la réserve sans lui serait deviner — et deviner
 ici coûte potentiellement l'accès à l'appareil.
 
+⚠️ **État au 2026-09-08 : le prérequis n'est PAS satisfait.** Un premier relevé
+existe (8 h 49, 12 673 échantillons) mais **sans aucun épisode 503 ni échec
+d'allocation** : il ne contient donc pas la pointe à dimensionner. Voir le § « ⚠️
+Transmis par `feature-122` » ci-dessous, point 4.
+
 Il est même possible que ce lot devienne **inutile** : si les planchers de
 `feature-122` montrent que la demande en pointe est couverte par une simple
 réduction de demande (`bug-121`, double ouverture `exists()`+`open()`), le
@@ -93,23 +98,42 @@ correctif de fond n'aura pas besoin de réserve du tout.
 Trois points relevés en revue de `feature-122`, qui conditionnent la lecture des
 chiffres que ce lot va utiliser.
 
-1. **Le plancher `0x080C` n'a qu'une résolution de 4 s.** C'est le chiffre qui
-   dimensionnera la réserve, et il est échantillonné **en tour de rôle** (un seul
-   masque O(blocs) supplémentaire par échantillon de 2 s), là où `0x0804` est
-   mesuré **à chaque requête** (filtre de la garde 503 + garde d'ouverture de
-   fichiers). **Ne pas lire `hf.dma.mb` comme une pointe** : une pointe de
-   quelques millisecondes lui échappe.
-2. **Mais dimensionner sur `0x0804` reste CONSERVATEUR.** Comme
+1. ⚠️ **Le plancher `0x080C` n'a qu'une résolution de 8 s** — **mise à jour du
+   2026-09-08, v2.49.1** : c'était 4 s en v2.49.0. Le relevé sur cible a mesuré
+   la durée réelle d'un parcours de tas à **516 µs** (contre les ~84 µs supposés,
+   et au-dessus des 300 µs de la condition 5 du gate `pool-chemistry`) ; la
+   réponse a été de **diviser la cadence du tour de rôle par deux**
+   (`kHeapFloorWalkEverySamples = 2`), portant la cadence du tour de rôle de 2 à
+   4 s et la **période de revisite d'un masque de 4 à 8 s**.
+   C'est **le chiffre qui dimensionnera la réserve**, et **il doit être lu en
+   connaissant sa résolution** : `hf.dma.n` ≈ `hf.n / 4`. **Ne pas lire
+   `hf.dma.mb` comme une pointe** — une pointe de quelques millisecondes, voire de
+   quelques secondes, lui échappe.
+2. **Mais dimensionner sur `0x0804` reste CONSERVATEUR** — et cette atténuation
+   est ce qui rend la perte de résolution acceptable. Comme
    `heaps(0x080C) ⊆ heaps(0x0804)`, le plancher fin de `0x0804` (`minBoot` de la
-   ligne `Heap 8bits:`) **borne supérieurement** celui de `0x080C`. Le chiffre
-   `0x080C` sert à confirmer l'**ordre de grandeur** et à identifier le
-   **contexte** du creux (`hf.dma.cb`), pas à capturer la pointe.
-3. **Ce que le témoin A7 ne dit pas.** Il tranche où tombe un `malloc(4096)`
+   ligne `Heap 8bits:`, mesuré à **chaque échantillon et à chaque requête**)
+   **borne supérieurement** celui de `0x080C`. Le chiffre `0x080C` sert à
+   confirmer l'**ordre de grandeur** et à identifier le **contexte** du creux
+   (`hf.dma.cb`), pas à capturer la pointe.
+   ⇒ **Règle de dimensionnement à appliquer** : prendre `0x0804` comme borne, et
+   `0x080C` comme confirmation d'ordre de grandeur — jamais l'inverse.
+3. **Le témoin A7 a répondu le 08/09 : le lot B-1 est OPÉRANT** (`malloc(4096)`
+   → **PSRAM**, `malloc(4095)` → **interne**, aucune discordance). **Mais ce que
+   le témoin ne dit pas reste entier.** Il tranche où tombe un `malloc(4096)`
    **au démarrage, PSRAM quasi vide** — **pas** où tombe le tampon stdio en
    pleine rafale, sous pression PSRAM, quand la préférence `extmem` peut
    retomber silencieusement en interne (c'est une **préférence**, pas une
    contrainte). Un `w96 = true` ne garantit donc pas que les tampons partent en
    PSRAM **pendant** un chargement d'interface.
+
+4. **Le prérequis n'est PAS encore satisfait.** Le relevé du 08/09 (8 h 49,
+   12 673 échantillons) **n'a capturé aucun épisode 503** et aucun échec
+   d'allocation ; le contexte au creux ne portait que `0x01` (client WebSocket).
+   Les trois questions du § « Comportement attendu » de `feature-122` demandent
+   encore **plusieurs jours de relevé** avant que ce lot puisse dimensionner quoi
+   que ce soit. Relevé complet : `bug-080` § « RELEVÉ INSTRUMENTÉ DU 08/09/2026
+   (21:33) ».
 
 Cadre hérité : [ADR-0077](../../../docs/adr/0077-metrique-de-garde-exclut-les-pools-inatteignables.md)
 — la pose de la réserve **et** la bascule de métrique vers `0x1804` appartiennent

@@ -1,9 +1,9 @@
 ## Métadonnées
 - **ID** : bug-121
 - **Slug** : republication-decouverte-ha-a-chaque-reconnexion
-- **Type** : bug — republication redondante, suspectée d'entretenir une boucle de déconnexion
+- **Type** : bug — **republication redondante** (travail inutile au moment le plus fragile). ⚠️ L'hypothèse de « boucle de déconnexion » est **RÉFUTÉE** — voir le verdict du 08/09 ci-dessous
 - **Statut** : todo
-- **Priorité** : **haute** — 13 déconnexions MQTT en 21 h, et la piste réseau est déjà écartée
+- **Priorité** : **normale** — abaissée le 08/09 : les 13 déconnexions MQTT ne relèvent PAS de cette spec, elles sont rattachées à `bug-080`
 - **Version cible** : 2.49.0
 - **Dernière mise à jour** : 2026-09-08
 - **Spec(s) liée(s)** : `bug-080` lot C (fragmentation du tas — même signature d'allocation), ADR-0010 (stabilité MQTT), ADR-0011 (mqttTask dédiée), ADR-0033 (budget de journalisation)
@@ -83,6 +83,98 @@ d'inactivité. Cette hypothèse est écartée d'emblée.
 Le nombre d'entités est passé de **54 à 60** (relevé après déploiement le
 08/09 : `Découverte HA #1 : 60/60 entités`). Le coût de chaque rafale a donc
 augmenté d'environ **11 %** — sans rapport avec ce défaut, mais il l'aggrave.
+
+## ⚠️ VERDICT DU 2026-09-08 — LA CAUSALITÉ EST RÉFUTÉE
+
+Livrable D1 rendu. **Mon hypothèse était fausse, et le sens de la flèche est
+inversé.**
+
+### La flèche va déconnexion → rafale, pas l'inverse
+
+Dans le journal de 21 h, l'ordre est **strictement alternant : D R D R D R…** ×13.
+**Toute rafale est PRÉCÉDÉE d'une déconnexion**, sans exception — et c'est
+mécanique : `mqtt_manager.cpp:459` remet le drapeau à chaque connexion réussie.
+Une rafale ne peut donc pas *causer* la déconnexion qui l'a déclenchée.
+
+### Les deux décomptes, dont celui qui réfute
+
+| | Sur 13 |
+|---|---|
+| Déconnexions précédées d'une rafale (< 30 s) | **4** |
+| Rafales suivies d'une déconnexion (< 30 s) | **4** |
+| **Rafales NON suivies d'une déconnexion** | **9** — délais de **15 min à 5 h 10**, et `#14` jamais (52 min jusqu'à la fin de trace) |
+
+La rafale n'est donc **ni nécessaire ni suffisante**.
+
+### Ce qui tue définitivement l'hypothèse
+
+Les **durées** de rafale **décroissent** au fil de la salve — 270, 267, 199, 191,
+166 ms — avec **`0 échec`** à chaque fois. Si la rafale épuisait les tampons TX,
+elle **ralentirait** et signalerait des échecs : c'est **anti-corrélé**. Et la
+rafale `#14` fait exactement le même travail que `#10`–`#13` tout en **brisant la
+chaîne**. Cela suffit à falsifier « la rafale cause la déconnexion ».
+
+Le `code=-2` des premières tentatives de `#10`→`#13` est un échec du **`connect`
+TCP**, donc **AVANT toute publication** : il ne peut pas être un effet de la
+découverte.
+
+### Mon contre-exemple était un artefact — double erreur
+
+J'avais mis le `debugger` sur la piste de `journal_20260907_0818.txt`, « 3 rafales
+pour 0 déconnexion ». Faux **deux fois** : le fichier duplique son contenu en deux
+sections (`Historique persistant` puis `Session courante`), donc le grep comptait
+3 là où il y en a **2** ; et les deux rafales portent le **même numéro `#1`** —
+le compteur repart à 1 à chaque démarrage. Ce sont donc deux **premières**
+connexions après boot, sans déconnexion possible en amont. Mon arithmétique
+« 3 rafales = 1 boot + 2 reconnexions » supposait un compteur cumulatif : il ne
+l'est pas.
+
+### La vraie cause est ailleurs, et elle est déjà instruite
+
+Le moteur des 13 déconnexions est la **fragmentation du tas 8 bits** : `maxBloc8`
+décroît de 51 188 à 6 388 sur les 21 h, et les déconnexions suivent ce **niveau**
+— zéro pendant les 6 h 30 à ≥ 28 660, **9 sur 13** à 7 924, avec des sondes
+d'échec à 1 012–1 524 o, sous les 1 622 o du tampon TX. Après redémarrage
+(`maxBloc8 = 55 284`) : **zéro déconnexion**.
+
+⇒ **Les 13 déconnexions sortent du périmètre de cette spec** et sont rattachées à
+`bug-080`, où le relevé est consigné.
+
+> ⚠️ **RÉSERVE AJOUTÉE LE 2026-09-08 (relevé instrumenté de 21:33) — la
+> corrélation au niveau N'EST PAS REPRODUITE.**
+> Le relevé de **8 h 49 / 12 673 échantillons** pris à travers l'instrument de
+> `feature-122` donne l'inverse du motif ci-dessus : les **5** déconnexions sont
+> survenues aux niveaux **hauts** de `maxBloc8` (**21 492–24 564**), et il y en a
+> eu **zéro** pendant la période la **plus basse** (**12 276**).
+>
+> **Ce que cela change** — et rien de plus :
+> - le rattachement des déconnexions à `bug-080` reste une **hypothèse de
+>   travail**, **pas un fait établi** ;
+> - l'effet de seuil décrit autour de **7 924** n'est **ni confirmé ni
+>   infirmé** : 12 276 reste peut-être un niveau « sûr », et le relevé n'est pas
+>   descendu jusqu'aux régimes de la veille ;
+> - **ne pas trancher** dans un sens ni dans l'autre, et **ne pas rapatrier** les
+>   déconnexions dans le périmètre de cette spec sur cette seule base.
+>
+> Ce qui reste **inchangé** : la republication de 60 entités `retain = true` est
+> du **travail redondant** et se justifie sur son seul mérite. Le piège de la
+> « fausse défaite » décrit ci-dessous en devient d'autant plus actuel — si le
+> lien au niveau n'est pas établi, il n'y a aucune raison d'attendre que ce lot
+> fasse disparaître les déconnexions.
+> Relevé complet : `bug-080` § « RELEVÉ INSTRUMENTÉ DU 08/09/2026 (21:33) ».
+
+### Ce que ce lot garde, et pourquoi il vaut toujours d'être fait
+
+La republication reste **du travail redondant** : 60 entités publiées avec
+`retain = true`, donc **déjà conservées par le courtier**, réémises au moment le
+plus fragile — juste après une reconnexion, sur un tas déjà dégradé. Ça se
+justifie **sur son seul mérite**, sans prétendre guérir les déconnexions.
+
+⚠️ **Et c'est le piège à éviter en le livrant** : si ce lot part seul et que les
+déconnexions persistent — ce qui est **attendu** —, on pourrait conclure que le
+correctif a échoué. Il n'aura pas échoué : il ne visait pas ça. La sonde
+`maxBloc8` avant/après rafale (livrable D2) sert précisément à **empêcher cette
+fausse défaite**, en montrant que la rafale ne consomme pas la ressource rare.
 
 ## Le problème
 
@@ -182,9 +274,8 @@ levé) — il ne mémorise rien d'une connexion à l'autre.
 - `docs/adr/` — probable
 
 ## Livrables — check-list
-- [ ] D1 — **`debugger` d'abord** : établir ou réfuter la causalité rafale →
-      déconnexion. Instrumenter si nécessaire, et rapporter le sens de la flèche
-      avec sa preuve. **Aucun code avant ce verdict.**
+- [x] D1 — **`debugger`** : causalité **RÉFUTÉE** le 08/09. Verdict et preuve
+      ci-dessous. Le reste du lot se justifie sur son seul mérite.
 - [ ] D2 — Mesurer le **coût réel** d'une rafale : octets totaux émis, durée,
       tampons TX consommés, `maxBloc8` avant/après. Les 211 ms journalisés sont
       une durée, pas un coût mémoire.

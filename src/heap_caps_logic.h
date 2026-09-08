@@ -242,6 +242,22 @@ inline uint32_t heapWalkMedianUpperUs(const uint32_t* counts, uint8_t bucketCoun
 // Sans eux, les planchers ne diraient pas QUEL événement les a produits, et le
 // dimensionnement d'une réserve (C-1b) reposerait sur un minimum anonyme.
 // ⚠️ AUCUNE décision ne lit ces bits — ni dosage, ni reboot, ni refus 503.
+// ---------------------------------------------------------------------------
+// Diviseur de cadence du tour de rôle (condition 5 du gate pool-chemistry)
+// ---------------------------------------------------------------------------
+// Le masque supplémentaire n'est mesuré qu'un échantillon sur `every`. Extrait en
+// logique pure pour que la RÈGLE soit testable sans dépendre du texte du site
+// d'appel : le 08/09/2026, une sentinelle purement textuelle a survécu au
+// remplacement de `if (walkThisSample)` par `if (true)` — elle comptait des
+// jetons encore présents.
+inline bool heapFloorWalkDue(uint8_t divider) { return divider == 0; }
+
+inline uint8_t heapFloorWalkNextDivider(uint8_t divider, uint8_t every) {
+  if (every == 0) return 0;               // diviseur nul : on mesure toujours
+  if (divider >= every) return 0;         // RAM corrompue → repli sur « mesurer »
+  return (uint8_t)((divider + 1u) % every);
+}
+
 constexpr uint8_t kHeapCtxWsClients = 1u << 0;      // au moins un client WebSocket connecté
 constexpr uint8_t kHeapCtxHttpBurst = 1u << 1;      // requêtes GET servies depuis l'échantillon précédent
 constexpr uint8_t kHeapCtxDosing = 1u << 2;         // au moins une pompe doseuse sous tension

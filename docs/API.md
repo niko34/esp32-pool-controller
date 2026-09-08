@@ -1325,7 +1325,7 @@ curl -s -u admin:monmotdepasse 'http://poolcontroller.local/get-system-info?hf=1
 sérialisée dans une `String`, donc elle réclame un **bloc contigu** du pool
 8 bits. Le 08/09/2026, cette route répondait encore **200** alors que la page
 statique tombait en **503** (964 o passaient avec un `maxBloc8` à 5 108 o), et le
-`maxBloc8` observé descend jusqu'à **852 o**. Publier 1 694 o par défaut créerait
+`maxBloc8` observé descend jusqu'à **852 o**. Publier 1 741 o par défaut créerait
 une bande de fragmentation où **la route de diagnostic échouerait alors qu'elle
 passait avant** — l'instrument indisponible dans le régime qu'il sert à étudier.
 
@@ -1335,7 +1335,32 @@ pires cas, le 2026-09-08 :
 | Requête | Charge utile pire cas | Note |
 |---|---|---|
 | `GET /get-system-info` | **964 o** | **identique à l'octet près** à l'avant-lot (comparaison de chaînes) — aucune clé `hf`, pas même un objet vide |
-| `GET /get-system-info?hf=1` | **1 694 o** | dont **730 o** pour `hf` (1 540 / 576 o sur des valeurs réalistes) |
+| `GET /get-system-info?hf=1` | **1 741 o** (v2.49.1) | dont **777 o** pour `hf` — chiffre **DÉRIVÉ**, cf. l'avertissement ci-dessous. Était **1 694 o** / 730 o en v2.49.0 |
+
+> ⚠️ **Le 777 est une somme, pas une mesure** (ADR-0073 : un chiffre consigné
+> porte sa méthode). Il vaut `730 + 47`, où **730 o** est la mesure héritée de la
+> v2.49.0 et **47 o** le delta des trois clés neuves, celui-là mesuré. Or une
+> **reproduction indépendante** du pire cas absolu de `hf`, faite le 08/09 avec un
+> harnais distinct, donne **774 o** — soit **3 o de moins**.
+>
+> L'écart n'est pas tranché, et **c'est la base de 730 qui est suspecte** : la
+> mesure de la v2.49.0 semble avoir posé des valeurs non saturées sur au moins un
+> champ. Les deux chiffres sont donc à lire ainsi : **774 o est la seule mesure
+> directe** du pire cas absolu, **777 o est un majorant dérivé**. Aucun invariant
+> ne dépend de l'un ni de l'autre — le plafond de route est à 8 192 o, la marge
+> reste de plus de 6 Ko — mais **ne pas citer 777 comme une mesure**, et
+> re-mesurer la base avant de s'en servir pour un dimensionnement.
+>
+> Quatrième chiffre contesté de ce lot, après 148/149 o par point d'historique,
+> les ~84 µs par parcours de tas démentis à 516, et les 730 o eux-mêmes. Le motif
+> est constant : **une somme héritée présentée comme un relevé**.
+
+**Re-mesure de la v2.49.1** : les trois clés neuves (`ctxb`, `wmax`, `wmed`)
+ajoutent **+47 o** pire cas, mesurés avec `measureJson()` sur des compteurs
+32 bits saturés — `"ctxb":255` = 11 o, `"wmax":4294967295` = 18 o,
+`"wmed":4294967295` = 18 o. **Ne pas ajouter de champ à `hf` sans re-mesurer** :
+la marge entre cette charge et le pire `maxBloc8` observé (**852 o**) est ce qui
+décide si la route de diagnostic reste disponible en régime dégradé.
 
 Une valeur quelconque suffit (`?hf=1`, `?hf`) : seule la **présence** du
 paramètre est testée. La route reste en `RouteProtection::WRITE` — **aucune
@@ -1362,7 +1387,7 @@ le pool que cette route sert à diagnostiquer) :
 | `mf` / `mb` | `uint32` \| `null` | planchers **depuis le démarrage** (libre / plus gros bloc) |
 | `wf` / `wb` | `uint32` \| `null` | planchers **de fenêtre** (réarmés à chaque trace agrégée de 30 min) |
 | `cf` / `cb` | `uint8` | bits de **contexte au creux** de `mf` / `mb` (voir table ci-dessous) |
-| `n` | `uint32` | échantillons pris pour **ce** masque (diffère d'un masque à l'autre : tour de rôle) |
+| `n` | `uint32` | échantillons pris pour **ce** masque (diffère d'un masque à l'autre : tour de rôle — `dma` et `i8d` sont visités **un échantillon sur quatre** depuis la v2.49.1, soit **une résolution de 8 s**) |
 
 Champs de tête :
 
@@ -1370,14 +1395,17 @@ Champs de tête :
 |---|---|---|
 | `n` | `uint32` | échantillons multi-masques depuis le démarrage |
 | `pred` | `uint16` | 12 bits de la table de sélection, **attendu `749` (0x02ED)** — ⚠️ voir l'avertissement ci-dessous |
-| `ctx` | `uint8` | **OU** des contextes vus depuis le dernier réarmement de fenêtre |
+| `ctx` | `uint8` | **OU** des contextes vus **dans la fenêtre courante** — ⚠️ **réarmé toutes les 30 min**, cf. ci-dessous |
+| `ctxb` | `uint8` | **OU** des contextes vus **depuis le démarrage** — **jamais réarmé** (v2.49.1) |
+| `wmax` | `uint32` | **pire** durée observée d'un parcours de tas `0x0804`, en µs, depuis le démarrage (v2.49.1) |
+| `wmed` | `uint32` | médiane **APPROCHÉE** de cette durée, en µs — à lire « **≤ wmed** », cf. ci-dessous (v2.49.1) |
 | `hg` | `uint32` | évaluations du filtre de la garde 503 (≈ GET servis), monotone |
 | `w` | `uint8` | bits **bruts** du témoin 4096/4095 |
 | `w96` / `w95` | booléen \| `null` | verdict **tri-état** : `true` = allocation tombée en **RAM externe**, `false` = **interne**, `null` = **aucun verdict** |
 | `wdis` | booléen \| `null` | les deux API de classement d'adresse se contredisent |
 
-Bits de contexte (`cf`, `cb`, `ctx`) — **purement observationnels**, aucune
-décision du firmware ne les relit :
+Bits de contexte (`cf`, `cb`, `ctx`, `ctxb`) — **purement observationnels**,
+aucune décision du firmware ne les relit :
 
 | Bit | Événement |
 |---|---|
@@ -1394,6 +1422,26 @@ décision du firmware ne les relit :
 | **Aucune mesure** | n'importe lequel | ce plancher n'a pas encore d'échantillon (`n = 0`, ou masque jamais visité par le tour de rôle) |
 | **Masque incapable de rendre un bloc** | `b`, `mb`, `wb` de `def` et `spi` **uniquement** | ces masques prennent la branche O(régions) : leur « plus gros bloc » n'est **pas mesuré**. Il ne vaut **jamais** `0`, et jamais 4 194 240 — la sentinelle interne n'est pas publiée |
 | **Aucun verdict de témoin** | `w96`, `w95`, `wdis` | pas de PSRAM, `malloc()` refusé, ou témoin jamais exécuté. Un `false` y serait un verdict inventé |
+
+> ⚠️ **`ctx` est une FENÊTRE, `ctxb` est un CUMUL DEPUIS LE DÉMARRAGE — et la
+> confusion a déjà produit un faux résultat.** Au relevé du 08/09/2026, `ctx`
+> valait **1** après **8 h 49** de fonctionnement, ce qui se lisait comme « un
+> seul régime jamais rencontré en 8 h 49 ». C'était **faux** : `ctx` est remis à
+> zéro par le réarmement de fenêtre (toutes les 30 min, à chaque trace agrégée)
+> et ne portait donc que la fenêtre courante. `ctxb`, ajouté en v2.49.1, ne se
+> réarme **jamais**.
+> **Pour « quels régimes cet appareil a-t-il connus », lire `ctxb`. Pour « que
+> s'est-il passé depuis le dernier report », lire `ctx`.**
+
+> ⚠️ **`wmed` est une BORNE SUPÉRIEURE, pas une médiane exacte.** La durée des
+> parcours est classée dans un histogramme à **7 seaux dyadiques** (32 / 64 / 128
+> / 256 / 512 / 1024 µs, puis hors échelle = `65535`), sans tri ni allocation. La
+> valeur rendue est la **borne supérieure du seau contenant le rang médian** :
+> elle **surestime**, d'un biais borné par la largeur du seau. À écrire
+> « ≤ `wmed` », jamais « = ». `wmax`, lui, est exact.
+> Repère relevé le 08/09/2026 (12 673 échantillons) : `wmax = 516`,
+> `wmed = 512`. Ces deux champs étaient **mesurés depuis la v2.49.0 mais non
+> publiés** par la route — ils n'étaient lisibles que dans le journal.
 
 > ⚠️ **`pred` NE PORTE AUCUNE INFORMATION D'EXÉCUTION.** La valeur est
 > *constant-folded* par le compilateur (l'objet contient littéralement
@@ -1414,6 +1462,9 @@ décision du firmware ne les relit :
   firmware ≤ 2.48.1** — un client doit traiter cette absence comme
   « information indisponible ». Sans le paramètre, la réponse d'un firmware
   2.49.0 est **rigoureusement identique** à celle de la version précédente.
+  Les clés **`ctxb`, `wmax` et `wmed`** sont **absentes d'un firmware ≤ 2.49.0** :
+  leur absence signifie « information indisponible », et **`ctx` ne doit pas y
+  être lu comme un cumul depuis le démarrage** — il n'en existe pas.
 - **Protocole de relevé** (quoi déclencher, dans quel ordre, comment lire chaque
   champ, et les deux réserves de lecture) :
   [subsystems/system-health.md](subsystems/system-health.md#protocole-de-relevé-sur-cible).

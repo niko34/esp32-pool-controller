@@ -236,6 +236,9 @@ struct HeapFloorAtomics {
 HeapFloorAtomics sFloors[kHeapFloorMaskCount];
 std::atomic<uint32_t> sFloorSampleCount{0};
 std::atomic<uint32_t> sFloorCtxSeen{0};
+// Jamais réarmé, à l'inverse de sFloorCtxSeen : cf. le commentaire de
+// heapFloorsRead(). Le réarmement de fenêtre NE DOIT PAS le toucher.
+std::atomic<uint32_t> sFloorCtxSeenBoot{0};
 std::atomic<uint32_t> sHttpGetCount{0};
 std::atomic<uint32_t> sWitnessBits{0};
 // Chronométrage du parcours de référence 0x0804 (condition 5 du gate) :
@@ -293,14 +296,29 @@ HeapProbe heapFloorsSample(uint8_t ctx) {
   sWalkBuckets[heapWalkBucketIndex(walkUs)].fetch_add(1, std::memory_order_relaxed);
   heapFloorNoteSlot(kHeapFloorSlotInternal8, reference, ctx);
 
-  // 2) Le créneau ainsi libéré porte UN masque O(blocs) en tour de rôle : c'est
-  //    ce qui rend le coût de ce lot NET NUL (2 parcours par échantillon avant
-  //    comme après). Statique locale : écrivain unique (loop).
+  // 2) Le créneau libéré porte UN masque O(blocs) en tour de rôle — mais plus à
+  //    chaque échantillon : UN SUR kHeapFloorWalkEverySamples.
+  //    MOTIF (condition 5 du gate pool-chemistry, déclenchée par le relevé du
+  //    08/09/2026) : la durée réelle d'un parcours a été mesurée à 516 µs au pire
+  //    et médiane <= 512 µs, contre les ~84 µs sur lesquels le gate avait
+  //    raisonné et les 300 µs de sa condition. Elle prescrivait alors de porter
+  //    le tour de rôle à 4 s. C'est fait ici, et le coût moyen retombe à
+  //    1,5 parcours par échantillon (0,75/s) — sous le plafond, avec de la marge
+  //    pour la première fois.
+  //    ⚠️ La résolution du plancher 0x080C passe donc de 4 à 8 s. C'est le
+  //    chiffre qui dimensionnera feature-123 : il faut le savoir en le lisant.
+  //    Statiques locales : écrivain unique (loop).
   static uint8_t sWalkCursor = 0;
+  static uint8_t sWalkDivider = 0;
   if (sWalkCursor >= kFloorWalkRingSize) sWalkCursor = 0;  // RAM corrompue → repli
-  const uint8_t walkSlot = kFloorWalkRing[sWalkCursor];
-  sWalkCursor = heapMaskRoundRobinNext(sWalkCursor, kFloorWalkRingSize);
-  heapFloorNoteSlot(walkSlot, heapProbeForCaps(kFloorMasks[walkSlot]), ctx);
+  if (sWalkDivider >= kHeapFloorWalkEverySamples) sWalkDivider = 0;  // idem
+  const bool walkThisSample = heapFloorWalkDue(sWalkDivider);
+  sWalkDivider = heapFloorWalkNextDivider(sWalkDivider, kHeapFloorWalkEverySamples);
+  if (walkThisSample) {
+    const uint8_t walkSlot = kFloorWalkRing[sWalkCursor];
+    sWalkCursor = heapMaskRoundRobinNext(sWalkCursor, kFloorWalkRingSize);
+    heapFloorNoteSlot(walkSlot, heapProbeForCaps(kFloorMasks[walkSlot]), ctx);
+  }
 
   // 3) Les masques à chemin O(régions) (0x1000 et SPIRAM) : pas de parcours de
   //    blocs, donc hors budget — mesurés à chaque échantillon.
@@ -315,6 +333,7 @@ HeapProbe heapFloorsSample(uint8_t ctx) {
   }
 
   sFloorCtxSeen.fetch_or(ctx, std::memory_order_relaxed);
+  sFloorCtxSeenBoot.fetch_or(ctx, std::memory_order_relaxed);
   sFloorSampleCount.fetch_add(1, std::memory_order_relaxed);
   return reference;
 }
@@ -350,6 +369,13 @@ HeapFloors heapFloorsRead() {
   out.walkMedianUs = heapWalkMedianUpperUs(buckets, kHeapWalkBucketCount);
   out.pred = heapFloorsPredMask();
   out.ctxSeen = (uint8_t)sFloorCtxSeen.load(std::memory_order_relaxed);
+  // ⚠️ DEUX accumulateurs, et non un — relevé du 08/09/2026. `ctxSeen` est remis
+  // à zéro par heapFloorsRearmWindow() (donc toutes les 30 min), ce que son nom
+  // ne disait pas : lu seul, il annonçait « un seul bit jamais vu en 8 h 49 »
+  // alors qu'il ne portait que la fenêtre courante. `ctxSeenBoot` ne se réarme
+  // JAMAIS, et c'est lui qui répond à « quels régimes cet appareil a-t-il
+  // connus depuis son démarrage ».
+  out.ctxSeenBoot = (uint8_t)sFloorCtxSeenBoot.load(std::memory_order_relaxed);
   out.witness = (uint8_t)sWitnessBits.load(std::memory_order_relaxed);
   return out;
 }

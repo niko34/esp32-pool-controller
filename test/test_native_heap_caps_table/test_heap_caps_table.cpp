@@ -663,7 +663,7 @@ void test_the_http_route_reads_only_stored_atomics(void) {
   // inchangée à l'octet près (964 o) — la route de diagnostic ne doit pas
   // devenir la première victime de la famine qu'elle diagnostique.
   TEST_ASSERT_TRUE_MESSAGE(countOccurrences(body, "hasParam(\"hf\")") >= 1,
-                           "L'objet `hf` doit rester conditionne a ?hf=1 : 1 694 o par defaut "
+                           "L'objet `hf` doit rester conditionne a ?hf=1 : 1 741 o par defaut "
                            "contre 964, alors que le pire maxBloc8 observe descend a 852 o. "
                            "Rendre `hf` inconditionnel ouvrirait une bande de fragmentation ou "
                            "cette route echouerait alors qu'elle passait avant le lot.");

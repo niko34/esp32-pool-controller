@@ -251,7 +251,8 @@ struct HeapFloors {
   uint32_t walkMaxUs;     // pire parcours 0x0804 depuis le boot
   uint32_t walkMedianUs;  // médiane approchée, kHeapWalkOverflowUs = hors échelle
   uint16_t pred;          // 12 bits de la table de sélection
-  uint8_t ctxSeen;        // OU des contextes vus depuis le dernier réarmement
+  uint8_t ctxSeen;      // bits vus depuis le DERNIER réarmement de fenêtre (30 min)
+  uint8_t ctxSeenBoot;  // bits vus depuis le DÉMARRAGE — jamais réarmé
   uint8_t witness;        // bits du témoin 4096/4095 (A7), cf. kHeapWitness*
 };
 

@@ -594,6 +594,28 @@ static void stripCppComments(char* s) {
   }
 }
 
+// Corps d'une fonction, borne par sa SIGNATURE : une sentinelle qui compte au
+// niveau du FICHIER serait satisfaite par une occurrence dans une autre
+// fonction. Renvoie NULL si la signature est absente.
+static char* extraitCorps(const char* src, const char* signature) {
+  const char* p = strstr(src, signature);
+  if (p == NULL) return NULL;
+  const char* ouvre = strchr(p, '{');
+  if (ouvre == NULL) return NULL;
+  int profondeur = 0;
+  const char* q = ouvre;
+  for (; *q != '\0'; ++q) {
+    if (*q == '{') ++profondeur;
+    else if (*q == '}') { --profondeur; if (profondeur == 0) { ++q; break; } }
+  }
+  const size_t n = (size_t)(q - ouvre);
+  char* corps = (char*)malloc(n + 1);
+  if (corps == NULL) return NULL;
+  memcpy(corps, ouvre, n);
+  corps[n] = '\0';
+  return corps;
+}
+
 static char* readProjectCode(const char* rel) {
   long len = 0;
   char* src = readProjectFile(rel, &len);
@@ -816,6 +838,107 @@ void test_the_historic_heap_8bits_line_is_untouched(void) {
   free(src);
 }
 
+// ---------------------------------------------------------------------------
+// Les trois correctifs du relevé du 08/09/2026
+// ---------------------------------------------------------------------------
+
+// (1) Le tour de rôle ne doit plus etre mesure a CHAQUE echantillon. Condition 5
+// du gate pool-chemistry, declenchee par la mesure sur cible : 516 us au pire,
+// mediane <= 512, contre les ~84 us supposes et les 300 us de la condition.
+void test_le_tour_de_role_est_divise_pour_tenir_la_condition_5(void) {
+  char* code = readProjectCode("src/heap_metrics.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(code, "src/heap_metrics.cpp introuvable.");
+  char* corps = extraitCorps(code, "HeapProbe heapFloorsSample(");
+  free(code);
+  TEST_ASSERT_NOT_NULL_MESSAGE(corps, "heapFloorsSample introuvable (code depouille).");
+
+  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(corps, "kHeapFloorWalkEverySamples") >= 1,
+      "heapFloorsSample doit DIVISER la cadence du tour de role par "
+      "kHeapFloorWalkEverySamples. Sans ce diviseur, le masque supplementaire est "
+      "mesure a chaque echantillon = 1 parcours/s, or la mesure sur cible du "
+      "08/09 (516 us au pire, mediane <= 512) a declenche la condition 5 du gate "
+      "pool-chemistry, qui prescrit de porter le tour de role a 4 s.");
+  // ⚠️ Le TEXTE EXACT de la garde, et non la seule presence du jeton : le
+  // 08/09/2026, la premiere version de cette sentinelle a SURVECU au
+  // remplacement de `if (walkThisSample)` par `if (true)` — les deux jetons
+  // qu'elle comptait restaient presents en amont. Une sentinelle qui survit a
+  // l'annulation du correctif qu'elle garde est pire qu'absente.
+  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(corps, "if (walkThisSample)") >= 1,
+      "Le parcours du tour de role doit etre garde par `if (walkThisSample)`. Un "
+      "heapProbeForCaps inconditionnel — ou un `if (true)` — ramene la cadence a "
+      "1 parcours/s et viole le plafond du gate pool-chemistry.");
+  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(corps, "heapFloorWalkDue(") >= 1
+                        && countOccurrences(corps, "heapFloorWalkNextDivider(") >= 1,
+      "La decision doit passer par les fonctions PURES heapFloorWalkDue et "
+      "heapFloorWalkNextDivider — sinon la regle n'est testable que par son "
+      "texte, et l'experience du 08/09 montre que cela ne suffit pas.");
+  free(corps);
+}
+
+// La REGLE du diviseur, testee comme logique pure : c'est elle qui survit a une
+// reecriture du site d'appel.
+void test_la_regle_du_diviseur_de_cadence(void) {
+  // every = 2 : un echantillon sur deux
+  TEST_ASSERT_TRUE_MESSAGE(heapFloorWalkDue(0), "divider 0 => on mesure.");
+  TEST_ASSERT_FALSE_MESSAGE(heapFloorWalkDue(1), "divider 1 => on saute.");
+  uint8_t d = 0;
+  int mesures = 0;
+  for (int i = 0; i < 10; ++i) {
+    if (heapFloorWalkDue(d)) ++mesures;
+    d = heapFloorWalkNextDivider(d, 2);
+  }
+  TEST_ASSERT_EQUAL_INT_MESSAGE(5, mesures,
+      "Sur 10 echantillons a every=2, le tour de role doit etre mesure 5 fois — "
+      "soit 0,75 parcours/s au total avec la reference. A 10, le diviseur est "
+      "inoperant et le plafond du gate est viole.");
+  // every = 1 : comportement d'avant le correctif, a ne pas reintroduire
+  d = 0; mesures = 0;
+  for (int i = 0; i < 10; ++i) {
+    if (heapFloorWalkDue(d)) ++mesures;
+    d = heapFloorWalkNextDivider(d, 1);
+  }
+  TEST_ASSERT_EQUAL_INT_MESSAGE(10, mesures,
+      "every=1 doit reproduire l'ancien comportement (mesure a chaque "
+      "echantillon) : le test documente ce que le correctif a change.");
+  // Replis : diviseur nul, et valeur hors bornes (RAM corrompue)
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, heapFloorWalkNextDivider(0, 0),
+      "every=0 ne doit pas diviser par zero.");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(0, heapFloorWalkNextDivider(200, 2),
+      "Un diviseur hors bornes doit se replier sur 0 (donc « mesurer »), jamais "
+      "se figer sur « sauter » : perdre la mesure serait pire que la refaire.");
+}
+
+// (2) ctxSeenBoot ne doit JAMAIS etre rearme : c'est toute sa raison d'etre.
+void test_le_contexte_depuis_le_boot_nest_jamais_rearme(void) {
+  char* code = readProjectCode("src/heap_metrics.cpp");
+  TEST_ASSERT_NOT_NULL(code);
+  char* corps = extraitCorps(code, "void heapFloorsRearmWindow(");
+  free(code);
+  TEST_ASSERT_NOT_NULL_MESSAGE(corps, "heapFloorsRearmWindow introuvable.");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countOccurrences(corps, "sFloorCtxSeenBoot"),
+      "heapFloorsRearmWindow NE DOIT PAS toucher sFloorCtxSeenBoot. Le releve du "
+      "08/09 a montre que `ctx` seul, remis a zero toutes les 30 min, se lisait "
+      "comme « un seul regime jamais rencontre en 8 h 49 » — faux. Reamer "
+      "l'accumulateur depuis-boot reintroduirait exactement ce contresens.");
+  free(corps);
+}
+
+// (3) Les durees de parcours doivent etre PUBLIEES, pas seulement mesurees.
+void test_les_durees_de_parcours_sont_exposees_par_la_route(void) {
+  char* code = readProjectCode("src/web_routes_config.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(code, "src/web_routes_config.cpp introuvable.");
+  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(code, "walkMaxUs") >= 1
+                        && countOccurrences(code, "walkMedianUs") >= 1,
+      "La route doit publier walkMaxUs ET walkMedianUs. Elles etaient MESUREES "
+      "des le premier jour mais jamais exposees : le releve du 08/09 n'a pu les "
+      "lire que dans le journal, donc la condition 5 du gate pool-chemistry "
+      "n'etait satisfaite que par accident.");
+  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(code, "ctxSeenBoot") >= 1,
+      "La route doit publier ctxSeenBoot a cote de ctxSeen, sinon le contresens "
+      "du releve du 08/09 se reproduit a la lecture.");
+  free(code);
+}
+
 void test_journal_context_fields_are_bytes(void) {
   // Le pire cas de 142 caractères SUPPOSE que les quatre champs imprimés en
   // %02X valent au plus 0xFF. Élargis à 32 bits, ils imprimeraient jusqu'à 8
@@ -921,6 +1044,10 @@ int main(int, char**) {
   RUN_TEST(test_new_journal_lines_fit_their_stack_buffers);
   RUN_TEST(test_the_historic_heap_8bits_line_is_untouched);
   RUN_TEST(test_le_depouilleur_desarme_le_leurre);
+  RUN_TEST(test_le_tour_de_role_est_divise_pour_tenir_la_condition_5);
+  RUN_TEST(test_la_regle_du_diviseur_de_cadence);
+  RUN_TEST(test_le_contexte_depuis_le_boot_nest_jamais_rearme);
+  RUN_TEST(test_les_durees_de_parcours_sont_exposees_par_la_route);
   RUN_TEST(test_journal_context_fields_are_bytes);
   // Sentinelles de périmètre
   RUN_TEST(test_window_rearm_touches_only_the_window_floors);

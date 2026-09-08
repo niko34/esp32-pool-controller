@@ -2,7 +2,7 @@
 - **ID** : feature-122
 - **Slug** : instrumentation-reserve-dma-et-metrique-du-pool-general
 - **Type** : feature — instrumentation **PASSIVE** (lot C-1a), **aucun correctif et aucune expérience active dans ce lot**
-- **Statut** : **doing** — instrumentation livrée (code + tests + revue + doc), **relevés sur cible restants** ; corrigé en cohérence avec l'emplacement du fichier (`specs/features/doing/`)
+- **Statut** : **doing** — instrumentation livrée (v2.49.0) puis **réglée par le premier relevé sur cible** (v2.49.1, 08/09/2026) ; **reste dans `doing/`** : les trois questions de « Comportement attendu » demandent encore plusieurs jours de relevé, et **aucun épisode 503 n'a été capturé**
 - **Priorité** : **haute** — elle débloque le lot C de `bug-080`, dont l'utilisateur subit les 503
 - **Version cible** : 2.49.0
 - **Dernière mise à jour** : 2026-09-08 (doc-writer, lot C-1a livré)
@@ -475,3 +475,129 @@ journal agrégée).
    de la double ouverture » ci-dessus).
 3. Reporter les chiffres dans `bug-080` § LOT C, puis ouvrir `feature-123` avec
    le plancher `0x080C` **et** sa réserve de résolution (4 s, tour de rôle).
+
+
+---
+
+## Relevé du 08/09/2026 (21:33) — premier relevé sur cible, et les trois correctifs qu'il a déclenchés
+
+**Conditions** : 8 h 49 de fonctionnement continu, **12 673 échantillons**,
+**zéro redémarrage**, journal du 08/09 **12:44 → 21:16**. Correctifs livrés en
+**v2.49.1** (lot C-1a).
+
+### Les chiffres
+
+| Grandeur | Relevé | Lecture |
+|---|---|---|
+| **Témoin A7** | `malloc(4096)` → **PSRAM**, `malloc(4095)` → **interne**, **aucune discordance** (`esp_psram_check_ptr_addr` vs `esp_ptr_external_ram`) | ✅ **Le lot B-1 est CONFIRMÉ OPÉRANT.** `heap_caps_malloc_extmem_enable(4095)` (v2.35.0) fait ce pour quoi il a été livré — soupçon de correctif décoratif **levé** |
+| Plancher SPIRAM | creux à **5 764 o** | `psram_free` était bien un **mauvais témoin** : immobile à 4 180 340 sur 152 relevés, l'échantillonnage à 30 s ne pouvait pas voir ce creux. **A6 justifié** |
+| Durée des parcours | **516 µs** au pire, médiane **≤ 512 µs** | **six fois** les ~84 µs sur lesquels le gate avait raisonné, et **au-dessus des 300 µs** de sa condition 5 — qui **se déclenche** |
+| Épisodes 503 / échecs d'allocation | **zéro** / **zéro** | contre **3 épisodes** / **46 échecs** sur les **23 h précédentes** |
+| `minBloc8` | **7 924 o** | **sous** le seuil de garde de **8 192 o**, **sans un seul 503** |
+| `ctxAtMin` au creux | **`0x01`** | seul le bit **client WebSocket** : **ni dosage, ni rafale HTTP, ni découverte MQTT** |
+| Trajectoire de `maxBloc8` | **42 996** (12 h) → **24 564** (13 h) → **21 492** (14–18 h) → **12 276** (19–21 h) | décroissance par paliers sur une journée |
+| Déconnexions MQTT | **5** : 12:57 (`-3`), 14:04 (`-3`), 14:59 (`-4`), 16:53 (`-3`) | ⚠️ voir la réserve ci-dessous |
+
+**Ce que `minBloc8 = 7 924` sans 503 prouve — sur l'instrument, pas sur le tas** :
+la garde ne mesure qu'**au moment d'une requête** de fichier statique. Un creux
+entre deux requêtes n'est vu par personne, **sauf par l'instrument**, qui
+échantillonne indépendamment du trafic. ⇒ **L'instrument voit des creux sur
+lesquels la garde n'agit jamais** : c'est exactement ce qu'on lui demandait. Ne
+pas lire un franchissement du plancher comme un déclenchement manqué.
+
+### ⚠️ L'hypothèse de `bug-121` n'est PAS reproduite
+
+Les 5 déconnexions sont survenues aux niveaux **hauts** (`maxBloc8` **21 492–24 564**)
+et il y en a eu **zéro** pendant la période la **plus basse** (**12 276**).
+L'effet de seuil décrit à **7 924** n'est donc **ni confirmé ni infirmé** —
+12 276 reste peut-être « sûr » — mais **la corrélation au niveau ne se reproduit
+pas telle quelle**. Le lien fragmentation → déconnexions reste une **hypothèse**,
+appuyée par le journal de 21 h et **non reproduite** par celui de 8 h 49. **Ne
+pas trancher.** Consigné dans `bug-080` § LOT C et dans `bug-121`.
+
+### Les trois correctifs (v2.49.1)
+
+1. **Cadence du tour de rôle divisée par deux** — `kHeapFloorWalkEverySamples = 2`
+   (`src/constants.h`). Le masque supplémentaire n'est plus mesuré qu'un
+   échantillon sur deux : cadence du tour de rôle **2 s → 4 s**, période de
+   revisite d'un masque **4 s → 8 s**. Coût moyen **1,5 parcours O(blocs) par
+   échantillon, soit 0,75/s** au lieu de 1/s — **sous le plafond du gate, avec de
+   la marge pour la première fois**. La durée d'une occurrence n'était pas le
+   levier : c'est la **fréquence** que le gate demandait de baisser.
+   ⚠️ **Ce qui est perdu : la résolution du plancher `0x080C` passe de 4 à 8 s.**
+   C'est le chiffre qui dimensionnera `feature-123`, et **il faut le savoir en le
+   lisant**. Atténuation : `heaps(0x080C)` est un **sous-ensemble** de
+   `heaps(0x0804)`, dont le plancher reste mesuré à **chaque** échantillon et le
+   **borne donc supérieurement** — dimensionner sur `0x0804` reste conservateur.
+2. **Les durées de parcours sont enfin PUBLIÉES** — clés `hf.wmax` / `hf.wmed`.
+   `walkMaxUs` / `walkMedianUs` étaient **mesurées dès le premier jour mais jamais
+   exposées par la route** : le relevé n'a pu les lire que dans le journal, donc
+   la **condition 5 du gate n'était satisfaite que par accident**.
+   ⚠️ `wmed` est une médiane **approchée**, rendue comme **borne supérieure** du
+   seau dyadique contenant le rang médian : à lire « ≤ `wmed` », **jamais** comme
+   une valeur exacte.
+3. **Deux accumulateurs de contexte au lieu d'un** — clé neuve `hf.ctxb`
+   (`ctxSeenBoot`), qui ne se réarme **jamais**. `hf.ctx` valait **1** après
+   8 h 49, ce qui se lisait comme « un seul régime jamais rencontré » : **faux**,
+   il est remis à zéro par `heapFloorsRearmWindow()` toutes les 30 minutes et ne
+   portait que la fenêtre courante. Un test **interdit désormais au réarmement d'y
+   toucher**.
+
+Budget JSON re-mesuré en conséquence : `GET /get-system-info?hf=1` passe de
+**1 694 à 1 741 o** pire cas (+47 o pour les trois clés, `measureJson()` sur
+compteurs 32 bits saturés). Sans le paramètre : **964 o, inchangé à l'octet près**.
+
+### ⚠️ L'INCIDENT DE MÉTHODE — il vaut plus que les trois correctifs
+
+**Ma première sentinelle du diviseur était DÉCORATIVE, et elle a survécu à sa
+propre mutation.** Elle comptait la **présence des jetons**
+`kHeapFloorWalkEverySamples` et `walkThisSample` — or remplacer
+`if (walkThisSample)` par `if (true)` les laisse **tous deux en place en amont**
+(la constante reste dans le calcul du diviseur, la variable reste déclarée). **Le
+test passait alors que le correctif était annulé.**
+
+Corrigée sur **deux axes**, et c'est la leçon à retenir :
+
+1. le **texte exact** de la garde (`if (walkThisSample)`), ce qui tue le
+   `if (true)` ;
+2. **et surtout** l'extraction de la règle en **logique pure** —
+   `heapFloorWalkDue`, `heapFloorWalkNextDivider` (`src/heap_caps_logic.h`) —
+   **testée par table de vérité, replis compris** : diviseur **nul**, et valeur
+   **hors bornes** qui se replie sur « **mesurer** » plutôt que sur « sauter »,
+   **parce que perdre une mesure est pire que la refaire**. Cette moitié
+   **survit à une réécriture complète du site d'appel**.
+
+C'est la **troisième forme** du même piège rencontrée en **deux jours** dans ce
+dépôt :
+
+| # | Forme | Ce qui satisfaisait la sentinelle | Où |
+|---|---|---|---|
+| 1 | Sentinelle satisfaite par un **commentaire** | le champ recherché, déplacé en commentaire | `bug-114` (07/09), puis reproduite dans ce lot (mutants 6-7) |
+| 2 | Sentinelle lisant la **source brute** | texte présent n'importe où dans le fichier | ce lot, matin du 08/09 (corrigée par `readProjectCode`) |
+| 3 | **Sentinelle qui compte des jetons encore présents après l'annulation du correctif** | `kHeapFloorWalkEverySamples` + `walkThisSample`, tous deux intacts sous `if (true)` | ce lot, soir du 08/09 — **forme nouvelle** |
+
+**La forme 3 mérite d'être nommée là où les deux autres le sont déjà** : une
+sentinelle ne prouve rien si les jetons qu'elle compte survivent à la mutation
+qu'elle est censée détecter. Le remède général reste le même — **extraire la
+règle en logique pure et la tester par sa table de vérité**, la vérification
+textuelle n'étant qu'un filet d'appoint.
+
+### Compteurs MESURÉS après ces correctifs (ADR-0073 — aucun chiffre recopié)
+
+- `ls -d test/test_native_* | wc -l` → **44 suites**
+- `pio test -e native`, dernière ligne → **1 681 cas**, tous verts, **zéro
+  régression**
+- `src/version.h` → **2.49.1**
+
+### Ce qui reste ouvert — la spec RESTE dans `doing/`
+
+- **Aucun épisode 503 n'a été capturé** sur la période : les **trois questions**
+  du § « Comportement attendu » (demande en pointe `0x080C` par événement,
+  exactitude de la table sous charge, taille de réserve soutenable) demandent
+  encore **plusieurs jours de relevé**.
+- Le contexte au creux (`0x01` seul) **n'incrimine aucun** des déclencheurs
+  soupçonnés — ni dosage, ni rafale de fichiers statiques, ni découverte HA.
+- **Ce que le témoin A7 ne dit toujours pas** : il tranche où tombe un
+  `malloc(4096)` **au démarrage, PSRAM quasi vide**, pas où tombe le tampon stdio
+  **en pleine rafale** sous pression PSRAM — `extmem` est une **préférence**, pas
+  une contrainte.

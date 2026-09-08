@@ -1373,14 +1373,64 @@ troncature, 0 redémarrage sur la période). Le firmware qui tourne est toujours
    soutenu** : la moitié des déconnexions se produisent entre 01 h et 03 h,
    quand personne n'ouvre l'interface.
 
-### Ce que le relevé ne dit pas
+### ⚠️ CE QUE J'AI ÉCRIT ICI ÉTAIT FAUX — corrigé le 2026-09-08 (soir)
 
-**Aucune corrélation temporelle** entre les deux phénomènes : les salves
-d'allocation (10:23–11:29, 19:14) ne coïncident avec aucune des huit
-déconnexions MQTT (15:06, 20:16, 21:18, 21:52, 01:02, 01:43, 01:58, 03:19). La
-famine de tas et les chutes de session MQTT se présentent donc comme **deux
-phénomènes distincts**, et non comme une cause et son symptôme. Le lot C ne peut
-pas s'appuyer sur les secondes pour caractériser la première.
+**Version d'origine, à rejeter** : « Aucune corrélation temporelle entre les deux
+phénomènes : les salves d'allocation (10:23–11:29, 19:14) ne coïncident avec
+aucune des huit déconnexions MQTT. La famine de tas et les chutes de session MQTT
+se présentent donc comme deux phénomènes distincts, et non comme une cause et son
+symptôme. »
+
+**L'erreur** : j'ai cherché la corrélation au mauvais endroit. Une coïncidence
+**temporelle** entre salves d'allocation et déconnexions n'est pas ce qui relie
+les deux — le lien passe par le **NIVEAU de fragmentation**, qui est un état, pas
+un événement.
+
+**Ce que l'analyse du `debugger` établit** (instruction de `bug-121`, sur le même
+journal de 21 h) : `maxBloc8` décroît de façon **monotone** sur toute la période —
+**51 188 → 28 660 → 20 468 → 14 324 → 7 924 → 6 388**. Et les déconnexions se
+distribuent selon ce niveau, pas selon les salves :
+
+| Régime de `maxBloc8` | Déconnexions MQTT |
+|---|---|
+| ≥ 28 660 (les 6 h 30 initiales) | **zéro** |
+| 20 468 | la première, à 15:06 |
+| 7 924 | **9 sur 13** |
+
+Les sondes d'échec descendent à **1 012–1 524 o**, donc **sous les 1 622 o** du
+tampon TX WiFi. Et l'expérience naturelle confirme : après le redémarrage OTA du
+08/09, `maxBloc8 = 55 284` ⇒ **zéro déconnexion**, alors que des échecs
+d'allocation isolés s'y produisent tout de même (cumul 3) — un échec TX seul est
+absorbé par lwIP, il faut une famine **soutenue** pour tuer la session.
+
+⇒ **Les 13 déconnexions MQTT sont un SYMPTÔME de ce lot**, et non un défaut
+voisin. Elles sont rattachées à `bug-080` et retirées du périmètre de `bug-121`.
+Corriger la fragmentation devrait donc les faire disparaître — c'est un critère
+de vérification supplémentaire, gratuit et déjà observable.
+
+> ⚠️ **NUANCE OBLIGATOIRE — ajoutée le 2026-09-08 après le relevé de 21:33.**
+> La rectification ci-dessus a été écrite sur le journal de **21 h**. Le relevé
+> instrumenté de **8 h 49** qui l'a suivie **ne la reproduit pas** : les
+> **5** déconnexions y sont survenues aux niveaux **hauts** de `maxBloc8`
+> (**21 492–24 564**), et il y en a eu **zéro** pendant la période la **plus
+> basse** (**12 276**).
+> ⇒ Le lien fragmentation → déconnexions reste **une hypothèse**, appuyée par le
+> journal de 21 h et **non reproduite** par celui de 8 h 49. **Ne pas trancher** :
+> l'effet de seuil décrit autour de **7 924** n'est ni confirmé ni infirmé
+> (12 276 reste peut-être un niveau « sûr », et le relevé de 8 h 49 n'est pas
+> descendu aussi bas), mais la **corrélation au niveau ne se reproduit pas telle
+> quelle**. Détail : § « RELEVÉ INSTRUMENTÉ DU 08/09/2026 (21:33) » ci-dessous.
+> Le rattachement des déconnexions à `bug-080` reste donc **provisoire** — voir
+> aussi `bug-121`.
+
+**Le code `état=-4`** (une déconnexion sur 13) est l'indice le plus direct :
+PINGREQ parti, aucun PINGRESP pendant les 60 s de keepalive, TCP toujours vivant.
+C'est le seul cas où le socket survit mais où **l'émission a été perdue** — donc
+un tampon TX refusé et une écriture silencieusement perdue.
+
+**Leçon de méthode, à garder** : chercher une corrélation d'**événements** quand
+la cause est un **niveau** produit un « aucune corrélation » parfaitement faux. Le
+relevé était bon, la question posée ne l'était pas.
 
 En revanche la **signature** des échecs est celle déjà identifiée : `caps=0x080C`,
 blocs de **1 622 o** et **1 406 o**, `maxBloc` descendu à **1 012 o** pour
@@ -1535,8 +1585,8 @@ d'inactivité MQTT (keepalive à 60 s contre des chutes à 1–10 s).
 
 ### 7. Où en est le LOT C au 2026-09-08 : l'instrument est livré, les chiffres restent à relever
 
-`feature-122` (lot **C-1a**, **v2.49.0**) est livrée : code, tests (44 suites /
-1 677 cas, zéro régression), revue et documentation. Elle **ne corrige rien** —
+`feature-122` (lot **C-1a**, **v2.49.0**, réglée en **v2.49.1**) est livrée :
+code, tests, revue et documentation. Elle **ne corrige rien** —
 aucune réserve DMA n'est posée, aucune garde n'est modifiée, la métrique du refus
 503 et de la garde d'ouverture de fichiers **reste `0x0804`**.
 
@@ -1570,8 +1620,9 @@ la table (épinglée en compilation par `static_assert(heapFloorsPredMask() ==
 1. **Relever sur cible** : les cinq planchers, leurs contextes, les durées, et
    **le verdict A7**. Rien de ce lot n'a encore été mesuré sur l'appareil.
 2. ⚠️ **Précaution de lecture pour le dimensionnement** : le plancher `0x080C` —
-   le chiffre qui dimensionnera la réserve — n'a qu'une résolution de **4 s**
-   (tour de rôle), là où `0x0804` est mesuré **à chaque requête**. Comme
+   le chiffre qui dimensionnera la réserve — n'a qu'une résolution de **8 s**
+   depuis la v2.49.1 (**4 s** en v2.49.0 ; le tour de rôle n'est plus mesuré
+   qu'un échantillon sur deux), là où `0x0804` est mesuré **à chaque requête**. Comme
    `heaps(0x080C) ⊆ heaps(0x0804)`, le plancher fin de `0x0804` le **borne
    supérieurement** : dimensionner dessus reste **conservateur** — mais **ne pas
    lire le plancher `0x080C` comme une pointe**.
@@ -1583,3 +1634,74 @@ la table (épinglée en compilation par `static_assert(heapFloorsPredMask() ==
    métrique dans le même lot.
 5. Indépendamment, et sans attendre : `bug-121` et la double ouverture
    `exists()` + `open()` — dont la **priorité dépend du verdict A7** (§ ci-dessus).
+
+
+---
+
+## RELEVÉ INSTRUMENTÉ DU 08/09/2026 (21:33) — premier relevé du lot C-1a
+
+**Conditions** : 8 h 49 de fonctionnement continu, **12 673 échantillons**,
+**zéro redémarrage**, journal du 08/09 **12:44 → 21:16**. C'est le premier relevé
+lu à travers l'instrument de `feature-122`.
+
+### Ce que le relevé établit
+
+| Grandeur | Relevé | Lecture |
+|---|---|---|
+| **Témoin A7** | `malloc(4096)` → **PSRAM**, `malloc(4095)` → **interne**, **aucune discordance** entre `esp_psram_check_ptr_addr` et `esp_ptr_external_ram` | ✅ **Le lot B-1 est CONFIRMÉ OPÉRANT.** `heap_caps_malloc_extmem_enable(4095)` (v2.35.0) fait ce pour quoi il a été livré ; le soupçon de correctif décoratif est **levé** |
+| Plancher SPIRAM | creux à **5 764 o** | `psram_free` était bien un **mauvais témoin** : immobile à 4 180 340 sur 152 relevés, il ne pouvait pas voir ce creux — l'échantillonnage à 30 s le manquait |
+| Durée des parcours | **516 µs** au pire, médiane **≤ 512 µs** | **six fois** les ~84 µs sur lesquels le gate avait raisonné, et **au-dessus des 300 µs** de sa condition 5 — qui **se déclenche** |
+| Épisodes 503 / échecs d'allocation | **zéro** / **zéro** | contre **3 épisodes** et **46 échecs** sur les **23 h précédentes** |
+| `minBloc8` | **7 924 o** | **sous** le seuil de garde de **8 192 o**, et **sans un seul 503** — cf. ci-dessous |
+| `ctxAtMin` au creux | **`0x01`** | seul le bit **client WebSocket** était levé : **ni dosage, ni rafale HTTP, ni découverte MQTT** |
+| Trajectoire de `maxBloc8` | **42 996** (12 h) → **24 564** (13 h) → **21 492** (14–18 h) → **12 276** (19–21 h) | décroissance par paliers sur une seule journée |
+| Déconnexions MQTT | **5** : 12:57 (`-3`), 14:04 (`-3`), 14:59 (`-4`), 16:53 (`-3`) | ⚠️ voir la réserve ci-dessous |
+
+### `minBloc8 = 7 924` SANS 503 — l'instrument voit ce que la garde ne voit pas
+
+Le plancher est passé **sous le seuil de la garde** sans qu'aucun refus 503 ne
+soit émis, et ce n'est pas une contradiction : **la garde ne mesure qu'au moment
+d'une requête** de fichier statique. Un creux qui se produit entre deux requêtes
+n'est vu par personne — sauf par l'instrument, qui échantillonne indépendamment
+du trafic.
+
+⇒ **L'instrument voit des creux sur lesquels la garde n'agit jamais.** C'est
+exactement ce qu'on lui demandait. Corollaire de méthode : **ne pas lire un
+franchissement du plancher comme un déclenchement manqué de la garde** — les deux
+grandeurs ne se comparent pas terme à terme.
+
+### ⚠️ L'hypothèse de `bug-121` N'EST PAS REPRODUITE
+
+Les 5 déconnexions sont survenues aux niveaux **hauts** de `maxBloc8`
+(**21 492–24 564**), et il y en a eu **zéro** pendant la période la **plus basse**
+(**12 276**).
+
+**Rien n'est tranché.** L'effet de seuil décrit autour de **7 924** n'est **ni
+confirmé ni infirmé** — 12 276 reste peut-être un niveau « sûr », et le relevé
+n'est pas descendu jusqu'aux régimes de la veille. Mais **la corrélation au
+niveau ne se reproduit pas telle quelle** : le lien fragmentation → déconnexions
+reste une **hypothèse de travail**, appuyée par le journal de 21 h et **non
+reproduite** par celui de 8 h 49. La rectification écrite plus haut le même jour
+est **nuancée**, pas annulée. Consigné aussi dans `bug-121`.
+
+### Les trois correctifs déclenchés (v2.49.1, lot C-1a)
+
+1. **Cadence du tour de rôle divisée par deux** (`kHeapFloorWalkEverySamples = 2`) :
+   coût moyen **1,5 parcours O(blocs) par échantillon (0,75/s)** au lieu de 1/s —
+   sous le plafond du gate, avec de la marge pour la première fois.
+   ⚠️ **Résolution du plancher `0x080C` : 4 s → 8 s.** C'est le chiffre de
+   dimensionnement de `feature-123`, où la précaution est reportée.
+2. **`hf.wmax` / `hf.wmed` publiés par la route** : mesurés dès le premier jour,
+   jamais exposés — la condition 5 du gate n'était satisfaite que par accident.
+3. **`hf.ctxb` (`ctxSeenBoot`), jamais réarmé** : `hf.ctx` valait **1** après
+   8 h 49, ce qui se lisait comme « un seul régime jamais rencontré » — faux, il
+   ne portait que la fenêtre de 30 min courante.
+
+### Ce que le relevé NE dit toujours pas
+
+- **Aucun épisode 503 n'a été capturé** pendant la période : les trois questions
+  du § « Comportement attendu » de `feature-122` restent ouvertes, et le
+  dimensionnement de `feature-123` demande encore plusieurs jours de relevé.
+- Le contexte au creux (`0x01` seul) **n'incrimine aucun** des déclencheurs
+  soupçonnés — ni dosage, ni rafale de fichiers, ni découverte HA. À confirmer sur
+  une période contenant un épisode 503.

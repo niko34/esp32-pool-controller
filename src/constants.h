@@ -547,6 +547,42 @@ static_assert(kHeapFloorWalksPerSample * 1000UL <= kHeapRingSampleIntervalMs,
               "Plafond du gate pool-chemistry : au plus UN parcours O(blocs) du tas "
               "par seconde (interruptions coupees). Ni accelerer la cadence, ni "
               "ajouter un 3e masque a parcours complet.");
+
+// ---------------------------------------------------------------------------
+// CONDITION 5 DU GATE pool-chemistry — DÉCLENCHÉE par le relevé du 08/09/2026
+// ---------------------------------------------------------------------------
+// Le gate avait maintenu son GO en s'appuyant sur les ~84 µs par parcours relevés
+// ailleurs dans le projet (docs/subsystems/oom-guard.md), et posé cette
+// condition : « relever la durée réelle d'un parcours 0x0804 sur cible ; si la
+// médiane dépasse kOomProbeWarnDurationUs = 300 µs, porter le tour de rôle à 4 s
+// AVANT feature-123 ».
+//
+// RELEVÉ SUR CIBLE, 8 h 49 de fonctionnement, 12 673 échantillons (v2.49.0) :
+//   walk = 516 µs au pire / médiane <= 512 µs
+// Soit SIX FOIS le repère sur lequel le gate avait raisonné, et bien au-dessus
+// des 300 µs de sa condition. Elle se déclenche donc.
+//
+// Le masque du tour de rôle n'est plus mesuré qu'un échantillon sur deux : la
+// cadence du tour de rôle passe de 2 s à 4 s, et la période de revisite d'un
+// masque de 4 s à 8 s. Coût moyen : 1,5 parcours O(blocs) par échantillon de 2 s,
+// soit 0,75/s au lieu de 1/s — sous le plafond du gate, avec de la marge pour la
+// première fois.
+// ⚠️ Ce qui est perdu : la RÉSOLUTION du plancher 0x080C, qui passe de 4 à 8 s.
+// C'est le chiffre qui dimensionnera la réserve de feature-123, et il faut le
+// savoir en le lisant. Atténuation : heaps(0x080C) est un sous-ensemble de
+// heaps(0x0804), dont le plancher reste mesuré à CHAQUE échantillon et le borne
+// donc supérieurement — dimensionner sur 0x0804 reste conservateur.
+constexpr uint8_t kHeapFloorWalkEverySamples = 2;
+static_assert(kHeapFloorWalkEverySamples >= 1,
+              "Un diviseur nul ferait disparaitre le tour de role : les masques "
+              "0x080C et 0x1804 ne seraient JAMAIS mesures.");
+static_assert(1000UL * kHeapFloorWalksPerSample <=
+                  kHeapRingSampleIntervalMs * kHeapFloorWalkEverySamples,
+              "Plafond du gate, exprime en moyenne : le parcours de reference (1 par "
+              "echantillon) plus le tour de role (1 tous les kHeapFloorWalkEverySamples) "
+              "doivent tenir sous UN parcours O(blocs) par seconde. Mesure du 08/09 : "
+              "516 us au pire, la duree d'UNE occurrence n'est donc pas le probleme — "
+              "c'est la frequence que le gate a demande de baisser.");
 // Durée pendant laquelle un échantillon reste marqué « rafale de découverte HA »
 // après le dernier repère posé par publishDiscovery(). 60 s : une rafale de ~60
 // entités dure quelques secondes sur un lien sain et bien davantage sur CPL

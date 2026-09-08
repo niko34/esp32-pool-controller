@@ -1312,12 +1312,14 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
   // 36 champs plats (version, chip, mémoire, WiFi, uptime), plus l'objet `hf`
-  // (feature-122 A4 : 53 champs, 5 × 9 + 8) UNIQUEMENT si `?hf=1`.
+  // (feature-122 A4 : 56 champs, 5 × 9 + 11) UNIQUEMENT si `?hf=1`.
   // DEUX charges utiles, MESURÉES avec measureJson() sur des valeurs pires cas
   // (compteurs 32 bits saturés, SSID de 32 caractères), le 2026-09-08 :
   //   sans `?hf=1` : **964 o** — inchangé À L'OCTET PRÈS par ce lot
-  //   avec `?hf=1` : **1 694 o** (dont 730 pour `hf` ; 1 540 / 576 sur des
-  //                  valeurs réalistes)
+  //   avec `?hf=1` : **1 741 o** (dont 777 pour `hf`) — RE-MESURÉ en v2.49.1 :
+  //                  les trois clés neuves `ctxb` / `wmax` / `wmed` ajoutent
+  //                  +47 o pire cas (11 + 18 + 18). C'était 1 694 o / 730 o en
+  //                  v2.49.0 (1 540 / 576 sur des valeurs réalistes).
   // L'estimation d'architecture annonçait +170 o : elle chiffrait 12 nombres
   // (`dma`/`gen`/`def`/`spi` réduits au libre et à un plancher), alors que le
   // livrable A4a en exige 53 — les DEUX planchers (depuis-boot ET fenêtre) et
@@ -1417,9 +1419,10 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   // diagnostique**. sendJsonResponse() sérialise dans une String
   // (web_helpers.cpp:35) : la réponse réclame donc un bloc CONTIGU sur le pool
   // 8 bits. Charge mesurée (measureJson, pire cas) : 964 o sans `hf`,
-  // 1 694 o avec. Or le 08/09, cette route répondait encore 200 pendant que la
-  // page statique était refusée en 503, avec un maxBloc8 à 5 108 o — et le
-  // maxBloc8 observé descend jusqu'à **852 o** au pire. À 1 694 o par défaut, il
+  // 1 741 o avec (v2.49.1 ; 1 694 en v2.49.0). Or le 08/09, cette route répondait
+  // encore 200 pendant que la page statique était refusée en 503, avec un
+  // maxBloc8 à 5 108 o — et le maxBloc8 observé descend jusqu'à **852 o** au
+  // pire. À 1 741 o par défaut, il
   // existerait une bande de fragmentation où cette route échouerait alors
   // qu'elle passait AVANT ce lot : l'instrument rendu indisponible exactement
   // dans le régime qu'il sert à étudier. C'est le piège que la condition 2 du
@@ -1463,7 +1466,22 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
     putHeapFloorEntry(hf, "spi", floors.masks[kHeapFloorSlotSpiram]);
     hf["n"] = floors.sampleCount;
     hf["pred"] = floors.pred;
+    // ⚠️ DEUX accumulateurs de contexte, et le nom seul ne les distinguait pas.
+    // Relevé du 08/09/2026 : `ctx` valait 1 après 8 h 49, ce qui se lisait comme
+    // « un seul régime jamais rencontré » — faux. Il est remis à zéro par le
+    // réarmement de fenêtre (30 min) et ne portait donc que la fenêtre courante.
+    // `ctxb` ne se réarme jamais : c'est lui qui répond à « quels régimes cet
+    // appareil a-t-il connus depuis son démarrage ».
     hf["ctx"] = floors.ctxSeen;
+    hf["ctxb"] = floors.ctxSeenBoot;
+    // Durée des parcours O(blocs) — CONDITION 5 du gate pool-chemistry.
+    // Elles étaient MESURÉES depuis le premier jour mais jamais publiées ici : le
+    // relevé du 08/09 n'a pu les lire que dans le journal, donc la condition
+    // n'était satisfaite que par accident. `wmed` est une médiane APPROCHÉE,
+    // rendue comme BORNE SUPÉRIEURE du seau dyadique contenant le rang médian —
+    // à lire « <= wmed », jamais comme une valeur exacte.
+    hf["wmax"] = floors.walkMaxUs;
+    hf["wmed"] = floors.walkMedianUs;
     hf["hg"] = heapHttpGetCount();
     hf["w"] = floors.witness;
     putHeapWitnessVerdict(hf, "w96", floors.witness, kHeapWitness4096External,

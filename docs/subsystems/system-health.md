@@ -123,7 +123,7 @@ Deux points de mise en œuvre à connaître :
 
 Modules : [`src/heap_caps_logic.h`](../../src/heap_caps_logic.h) (**pur** —
 masques, `heapMaskSelectsHeap`, plancher glissant, `fetch_min`, seaux de durée,
-fenêtre de contexte) + coquille impure dans
+fenêtre de contexte, cadence du tour de rôle) + coquille impure dans
 [`src/heap_metrics.cpp`](../../src/heap_metrics.cpp) (atomiques, tour de rôle,
 chronométrage) et [`src/heap_ring.cpp`](../../src/heap_ring.cpp) (cadence,
 composition du contexte). Tests natifs : `test/test_native_heap_caps_table/` et
@@ -195,7 +195,19 @@ de la spec). D'où deux dispositifs :
 |---|---|---|
 | Plancher `0x0804` à la **requête** (chaque évaluation du filtre 503 et de la garde `fopen`) | par requête | `minBoot` / `minFen` de la ligne `Heap 8bits:` |
 | Planchers `hf` de `0x0804`, `0x1000`, SPIRAM | **2 s** (`kHeapRingSampleIntervalMs`) | `?hf=1`, lignes `Heap masq …` |
-| Planchers `hf` de `0x080C` et `0x1804` | **4 s** (tour de rôle : un seul masque O(blocs) supplémentaire par échantillon) | idem |
+| Planchers `hf` de `0x080C` et `0x1804` | **8 s** (tour de rôle mesuré **un échantillon sur deux** depuis la v2.49.1 — `kHeapFloorWalkEverySamples = 2`) | idem |
+
+> ⚠️ **La résolution du tour de rôle est passée de 4 à 8 s en v2.49.1**, en
+> réponse à la durée réelle des parcours mesurée le 08/09 (**516 µs**, six fois
+> le repère de ~84 µs sur lequel le gate avait raisonné, et au-dessus des 300 µs
+> de sa condition 5). Le masque supplémentaire n'est plus mesuré qu'**un
+> échantillon sur deux** : cadence du tour de rôle **2 s → 4 s**, période de
+> revisite d'un masque donné **4 s → 8 s**. Conséquence de lecture, à connaître
+> avant de dimensionner `feature-123` : **le plancher `0x080C` a une résolution
+> de 8 s**. Atténuation — `heaps(0x080C) ⊆ heaps(0x0804)`, dont le plancher reste
+> mesuré à **chaque** échantillon (et à chaque requête) : il **borne
+> supérieurement** celui de `0x080C`, donc dimensionner sur `0x0804` reste
+> **conservateur**.
 
 ### Contexte au creux (A5) — quel événement tenait la machine
 
@@ -214,6 +226,22 @@ plus qu'un échantillon : le repère est posé à l'**ouverture** *et* à la
 **fermeture** de `publishDiscovery()`, la fenêtre courant depuis la fin — sans
 quoi un creux causé par la rafale serait attribué au régime calme qui la suit.
 Voir [mqtt-manager.md](mqtt-manager.md#lastdiscoverymarkms--repère-de-rafale-pour-le-contexte-mémoire-v2490).
+
+#### ⚠️ DEUX accumulateurs de contexte, et le nom seul ne les distinguait pas
+
+| Champ | Portée | Réarmé ? | À quoi il répond |
+|---|---|---|---|
+| `ctxSeen` → `hf.ctx`, `ctxVu=` du journal | **fenêtre courante** | **oui**, par `heapFloorsRearmWindow()` à chaque trace agrégée (30 min) | « quels régimes depuis le dernier report ? » |
+| `ctxSeenBoot` → `hf.ctxb` (**v2.49.1**) | **depuis le démarrage** | **jamais** | « quels régimes cet appareil a-t-il connus ? » |
+
+Le second existe à cause d'un **contresens de lecture réel** : au relevé du
+08/09, `hf.ctx` valait **1** après 8 h 49 de fonctionnement, ce qui se lisait
+comme « un seul régime jamais rencontré en 8 h 49 » — **faux**. Le champ ne
+portait que la fenêtre de 30 minutes en cours. Un test interdit désormais au
+réarmement de toucher `ctxSeenBoot`.
+
+**Pour la question « quels régimes cet appareil a-t-il vus », lire `ctxb`, pas
+`ctx`.**
 
 Le refus `fs_guard` n'a pas de bit propre : il **alimente** le plancher `0x0804`
 (`heapNoteMaxAlloc8Sample` depuis `fsGuardAdmit` / `fsGuardDrain`, sans parcours
@@ -252,6 +280,25 @@ rapporté**, pas une erreur masquée.
 **Lecture attendue si B-1 est opérant** : `w = 0x02` (`w96 = true`,
 `w95 = false`). **Si décoratif** : `w = 0x00` (les deux internes).
 
+> ✅ **VERDICT RELEVÉ LE 08/09/2026 : le lot B-1 est CONFIRMÉ OPÉRANT.** Le
+> `malloc(4096)` est tombé en **PSRAM**, le témoin de contrôle `malloc(4095)` en
+> **interne**, et **aucune discordance** n'a été rapportée entre
+> `esp_psram_check_ptr_addr` et `esp_ptr_external_ram`.
+> `heap_caps_malloc_extmem_enable(4095)` (v2.35.0,
+> [ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md))
+> fait donc bien ce pour quoi il a été livré : le soupçon de « correctif
+> décoratif » est **levé**, après être resté ouvert depuis le 05/09.
+>
+> **Et `psram_free` était bien un mauvais témoin** : son immobilité à 4 180 340
+> sur 152 relevés ne disait rien. Le **plancher SPIRAM** — un minimum, pas un
+> instantané — montre un creux de **5 764 o** que l'échantillonnage à 30 s de la
+> trace ne pouvait pas voir. C'est l'illustration exacte du motif de A6.
+>
+> ⚠️ La réserve de portée reste entière : le témoin tranche où tombe un
+> `malloc(4096)` **au démarrage, PSRAM quasi vide** — pas où tombe le tampon
+> stdio en pleine rafale, sous pression PSRAM, quand la préférence `extmem` peut
+> retomber silencieusement en interne.
+
 ### Coût réel — énoncé sans arrondi
 
 Le plan annonçait un « coût net nul ». **C'était faux** : il supposait
@@ -261,19 +308,27 @@ comptabilité honnête :
 | | Parcours **O(blocs)** par échantillon | Agrégats O(régions) |
 |---|---|---|
 | Avant ce lot | **1** (`heapLargestFreeBlock8Bit`) | 1 (`heapFree8Bit`) |
-| Après ce lot | **2** (référence `0x0804` + un masque en tour de rôle) | 2 (`0x1000`, SPIRAM) |
+| Après ce lot (v2.49.0) | **2** (référence `0x0804` + un masque en tour de rôle) | 2 (`0x1000`, SPIRAM) |
+| Depuis la **v2.49.1** | **1,5 en moyenne** (référence à chaque échantillon + tour de rôle un échantillon sur deux) | 2 (`0x1000`, SPIRAM) |
 
-À la cadence de 2 s, cela fait **1 parcours O(blocs) par seconde — exactement le
-plafond** fixé par la condition 3 du gate `pool-chemistry`, **sans marge**.
+À la cadence de 2 s, la v2.49.0 faisait **1 parcours O(blocs) par seconde —
+exactement le plafond** fixé par la condition 3 du gate `pool-chemistry`, **sans
+marge**. La **v2.49.1** divise la cadence du tour de rôle par deux
+(`kHeapFloorWalkEverySamples = 2`) : coût moyen **1,5 parcours par échantillon,
+soit 0,75/s** — sous le plafond, **avec de la marge pour la première fois**.
 Verrouillé par deux `static_assert` (`kHeapFloorWalksPerSample × 1000 ≤
-kHeapRingSampleIntervalMs` dans [`constants.h`](../../src/constants.h), et
-`kHeapFloorWalksPerSample == 2` dans `heap_metrics.cpp`) : ni accélérer la
-cadence, ni ajouter un 3ᵉ masque à parcours complet.
+kHeapRingSampleIntervalMs × kHeapFloorWalkEverySamples` dans
+[`constants.h`](../../src/constants.h) — le plafond est désormais exprimé **en
+moyenne** —, et `kHeapFloorWalksPerSample == 2` dans `heap_metrics.cpp`) : ni
+accélérer la cadence, ni ajouter un 3ᵉ masque à parcours complet. Un
+`static_assert` interdit par ailleurs un diviseur **nul**, qui ferait disparaître
+le tour de rôle — `0x080C` et `0x1804` ne seraient plus **jamais** mesurés.
 
 > **Le gate a RETIRÉ sa validation initiale et maintenu son GO — pour une
 > meilleure raison.** Ce qui menace la régulation n'est pas le **taux
 > d'occupation** du CPU par la mesure, c'est la **durée d'une occurrence
-> interruptions coupées** (~84 µs relevés). Un plafond de taux ne dit rien de
+> interruptions coupées** (~84 µs **supposés** à l'époque du gate — la mesure sur
+> cible a donné **516 µs**, cf. ci-dessous). Un plafond de taux ne dit rien de
 > cette durée : c'est elle qu'il faut mesurer, d'où le chronométrage ci-dessous.
 
 ### Durée des parcours — `walkMaxUs` / `walkMedianUs` (condition 5 du gate)
@@ -288,11 +343,24 @@ Le parcours de **référence** `0x0804` est chronométré à chaque échantillon
   512 / 1024 µs, puis **hors échelle** = `65535`), sans tri, sans allocation,
   sans flottant. La valeur rendue est la **borne supérieure du seau contenant le
   rang médian** ⇒ **surestimation bornée par la largeur du seau**, donc
-  **conservatrice** pour un plafond de coût. Autour de **84 µs**, elle rapporte
-  **128** : à lire « **≤ 128 µs** » face aux **300 µs** de
-  `kOomProbeWarnDurationUs`.
+  **conservatrice** pour un plafond de coût. Le seau rendu doit **toujours** se
+  lire « **≤ valeur** », jamais comme une durée exacte.
 - **Jamais réarmées** : `walkMaxUs` et l'histogramme gagnent en sens avec le
   nombre d'échantillons (contrairement aux planchers de fenêtre).
+- **Publiées par la route depuis la v2.49.1** : clés `hf.wmax` et `hf.wmed`.
+  Elles étaient **mesurées dès le premier jour mais jamais exposées** — le relevé
+  du 08/09 n'a pu les lire que dans le journal, donc la condition 5 du gate
+  n'était satisfaite que **par accident**. Voir
+  [API.md](../API.md#paramètre-hf--planchers-mémoire-multi-masques-v2490-additif-conditionnel).
+
+> ⚠️ **MESURE SUR CIBLE DU 08/09/2026 — le repère de ~84 µs était faux d'un
+> facteur six.** Sur 8 h 49 et 12 673 échantillons : **`walkMaxUs` = 516 µs**,
+> médiane **≤ 512 µs**. C'est **au-dessus des 300 µs** de
+> `kOomProbeWarnDurationUs`, donc la condition 5 du gate **se déclenche**. La
+> réponse livrée en v2.49.1 n'est pas d'accélérer ni de renoncer à un masque,
+> mais de **baisser la fréquence** : la durée d'**une** occurrence reste ce
+> qu'elle est (elle est imposée par le nombre de blocs du tas), c'est le **nombre
+> d'occurrences par seconde** que le gate demandait de réduire.
 
 > ⚠️ **Ne pas confondre avec `oom_probe_max_us`.** Celui-ci mesure la sonde du
 > **chemin d'échec d'allocation** — autre fréquence, autre état de tas, autre
@@ -316,13 +384,13 @@ comporté autrement.
 
 | Chemin | Rôle | Coût mémoire | Contenu |
 |---|---|---|---|
-| `GET /get-system-info?hf=1` | **confort de temps calme** — relevé complet, demandé à la main | **1 694 o** sérialisés dans une `String` ⇒ **exige un bloc contigu** du pool 8 bits | les 5 emplacements, planchers boot **et** fenêtre, contextes, `pred`, `hg`, témoin |
+| `GET /get-system-info?hf=1` | **confort de temps calme** — relevé complet, demandé à la main | **1 741 o** (v2.49.1 ; 1 694 o en v2.49.0) sérialisés dans une `String` ⇒ **exige un bloc contigu** du pool 8 bits | les 5 emplacements, planchers boot **et** fenêtre, contextes (`ctx` **et** `ctxb`), durées (`wmax`/`wmed`), `pred`, `hg`, témoin |
 | Les **deux lignes de journal** `Heap masq …` | **dernier recours en pleine famine** | `snprintf` sur `char[160]` de **pile** ⇒ **aucun bloc contigu requis** | planchers de `0x0804`, `0x080C`, `0x1804`, PSRAM + contexte + témoin + durées |
 
 **Motif chiffré, et il n'est pas théorique** : le 08/09/2026,
 `/get-system-info` répondait encore en **200** alors que la page statique tombait
 en **503** — parce que **964 o** passaient encore avec un `maxBloc8` à **5 108 o**.
-Et le `maxBloc8` observé descend jusqu'à **852 o** au pire. À 1 694 o publiés par
+Et le `maxBloc8` observé descend jusqu'à **852 o** au pire. À 1 741 o publiés par
 défaut, il existerait une bande de fragmentation où la route de diagnostic
 échouerait **alors qu'elle passait avant ce lot** : l'instrument rendu
 indisponible exactement dans le régime qu'il sert à étudier. D'où le
@@ -370,6 +438,61 @@ masques n'en mesurent pas.
 > (`test_journal_context_fields_are_bytes`, sur la source **dépouillée de ses
 > commentaires** — la version brute était satisfiable par un simple commentaire).
 
+### ⚠️ RELEVÉ SUR CIBLE DU 08/09/2026 (21:33) — ce que l'instrument a rapporté
+
+**Conditions** : 8 h 49 de fonctionnement continu, **12 673 échantillons**,
+**zéro redémarrage**, journal du 08/09 **12:44 → 21:16**.
+
+| Grandeur | Relevé | Lecture |
+|---|---|---|
+| Témoin A7 | `malloc(4096)` → **PSRAM**, `malloc(4095)` → **interne**, **aucune discordance** | lot B-1 **confirmé opérant** (cf. section A7 ci-dessus) |
+| `walkMaxUs` / médiane | **516 µs** / **≤ 512 µs** | **six fois** le repère de ~84 µs, **au-dessus des 300 µs** de la condition 5 du gate ⇒ elle **se déclenche** |
+| Épisodes 503 / échecs d'allocation | **zéro** / **zéro** | contre **3 épisodes** et **46 échecs** sur les 23 h précédentes |
+| `minBloc8` | **7 924 o** | **sous** le seuil de garde de **8 192 o**, et **sans un seul 503** |
+| `ctxAtMin` au creux | **`0x01`** | seul le bit **client WebSocket** était levé : ni dosage, ni rafale HTTP, ni découverte MQTT |
+| Plancher SPIRAM | creux à **5 764 o** | `psram_free`, immobile sur 152 relevés, ne pouvait pas le voir |
+| Trajectoire de `maxBloc8` | **42 996** (12 h) → **24 564** (13 h) → **21 492** (14–18 h) → **12 276** (19–21 h) | décroissance par paliers, sur une seule journée |
+| Déconnexions MQTT | **5** : 12:57 (`-3`), 14:04 (`-3`), 14:59 (`-4`), 16:53 (`-3`) | ⚠️ voir la réserve ci-dessous |
+
+#### Le résultat qui valide l'instrument : `minBloc8 = 7 924` SANS 503
+
+`minBloc8` est descendu **sous le seuil de garde** de 8 192 o sans qu'aucun refus
+503 ne soit émis. Ce n'est pas une contradiction : **la garde ne mesure qu'au
+moment d'une requête** de fichier statique. Un creux qui se produit entre deux
+requêtes n'est vu par personne — sauf par l'instrument, qui échantillonne
+indépendamment du trafic.
+
+⇒ **L'instrument voit des creux sur lesquels la garde n'agit jamais.** C'est
+exactement ce qu'on lui demandait : le seuil de la garde et le plancher de
+l'instrument ne mesurent pas la même chose, et ne doivent pas être comparés comme
+si un franchissement du second impliquait un déclenchement du premier.
+
+#### ⚠️ Ce que ce relevé NE reproduit PAS : la corrélation au niveau
+
+L'hypothèse issue de `bug-121` — les déconnexions MQTT suivraient le **niveau**
+de fragmentation — **n'est pas reproduite ici** :
+
+- les 5 déconnexions sont survenues aux niveaux **hauts** (`maxBloc8` entre
+  **21 492** et **24 564**) ;
+- il y en a eu **zéro** pendant la période la **plus basse** (**12 276**).
+
+**Rien n'est tranché dans un sens ni dans l'autre.** L'effet de seuil décrit
+autour de 7 924 n'est **ni confirmé ni infirmé** — 12 276 reste peut-être un
+niveau « sûr », et le relevé n'est jamais descendu jusqu'aux régimes de la veille.
+Mais la corrélation **ne se reproduit pas telle quelle** : le lien
+fragmentation → déconnexions reste une **hypothèse de travail**, appuyée par le
+journal de 21 h et **non reproduite** par celui de 8 h 49. Consigné dans
+`bug-080` § LOT C et dans `bug-121`.
+
+#### Ce que le relevé a changé dans le firmware (v2.49.1)
+
+1. **Cadence du tour de rôle divisée par deux** (`kHeapFloorWalkEverySamples = 2`)
+   — cf. la table des résolutions et la section « Coût réel » ci-dessus.
+2. **`hf.wmax` / `hf.wmed` publiés par la route** : ils étaient mesurés sans être
+   exposés, et la condition 5 du gate n'était donc satisfaite que par accident.
+3. **`hf.ctxb` ajouté** : `hf.ctx` seul a produit un contresens de lecture
+   documenté ci-dessus.
+
 ### Protocole de relevé sur cible
 
 Sans ce protocole, le lot livre un instrument que personne ne sait lire.
@@ -383,10 +506,23 @@ agrégée) ; les planchers `boot` ne se rattrapent pas.
    ```
 
    Vérifier d'abord **la validité de l'instrument** : `hf.n` > 0 (échantillons
-   pris), `hf.i8.n` ≈ `hf.n`, `hf.dma.n` ≈ `hf.n / 2` (tour de rôle),
-   `hf.pred = 749` (**constante de build — ne rien en déduire**),
-   `hf.walkMaxUs` < 300.
+   pris), `hf.i8.n` ≈ `hf.n`, `hf.dma.n` ≈ **`hf.n / 4`** (tour de rôle sur
+   **deux** masques, mesuré **un échantillon sur deux** depuis la v2.49.1),
+   `hf.pred = 749` (**constante de build — ne rien en déduire**).
+   ⚠️ **`hf.wmax` est relevé à 516 µs, donc au-dessus des 300 µs** de
+   `kOomProbeWarnDurationUs` : ce n'est **plus** un critère de validité mais un
+   **fait connu**, traité en v2.49.1 par la baisse de fréquence. Et **`hf.wmed`
+   se lit « ≤ wmed »** — c'est la **borne supérieure** du seau dyadique contenant
+   le rang médian, jamais une valeur exacte.
+   ⚠️ **Pour « quels régimes cet appareil a-t-il vus », lire `hf.ctxb` et NON
+   `hf.ctx`** : `ctx` est remis à zéro toutes les 30 min par le réarmement de
+   fenêtre, et le lire comme un cumul depuis le démarrage a déjà produit un
+   contresens le 08/09 (`ctx = 1` après 8 h 49, lu à tort comme « un seul régime
+   en 8 h 49 »).
 2. **Trancher A7, tout de suite** : lire `hf.w`, `hf.w96`, `hf.w95`.
+   *(Déjà tranché le 08/09 — `w96 = true`, `w95 = false`, B-1 **opérant**. Le
+   point reste dans le protocole : c'est la première chose à revérifier après
+   tout changement de politique d'allocation ou de configuration PSRAM.)*
    `w96 = true` / `w95 = false` ⇒ le lot B-1 **est opérant** ;
    `w96 = false` / `w95 = false` ⇒ **décoratif** ;
    `w96 = null` ⇒ aucun verdict (pas de PSRAM, ou `malloc()` refusé) — ne rien
@@ -413,11 +549,18 @@ agrégée) ; les planchers `boot` ne se rattrapent pas.
    — c'est le **chemin de dernier recours**, sans bloc contigu requis.
 
 > ⚠️ **Ne pas lire `hf.dma.mb` comme une pointe.** Le plancher `0x080C` n'a
-> qu'une résolution de **4 s** (tour de rôle), là où `0x0804` est mesuré **à
+> qu'une résolution de **8 s** depuis la v2.49.1 (tour de rôle mesuré un
+> échantillon sur deux ; **4 s** en v2.49.0), là où `0x0804` est mesuré **à
 > chaque requête**. Comme `heaps(0x080C) ⊆ heaps(0x0804)`, le plancher fin de
 > `0x0804` (`minBoot` de la ligne `Heap 8bits:`) le **borne supérieurement** :
 > dimensionner dessus reste **conservateur**. Le chiffre `0x080C` sert à
 > confirmer l'**ordre de grandeur** et le **contexte**, pas à capturer la pointe.
+
+> ⚠️ **Un plancher sous le seuil de garde n'implique PAS un 503.** La garde ne
+> mesure qu'**au moment d'une requête** de fichier statique ; l'instrument
+> échantillonne indépendamment du trafic. Le 08/09, `minBloc8` est descendu à
+> **7 924 o** — sous les **8 192 o** de la garde — **sans un seul refus**. Ne pas
+> lire un franchissement du plancher comme un déclenchement manqué.
 
 > ⚠️ **Ce que le témoin A7 ne dit pas.** Il tranche où tombe un `malloc(4096)`
 > **au démarrage, PSRAM quasi vide** — pas où tombe le tampon stdio **en pleine
@@ -848,7 +991,7 @@ Voir [MQTT.md](../MQTT.md#alertes).
 - [`src/history_guard_logic.h`](../../src/history_guard_logic.h) / [`.cpp`](../../src/history_guard_logic.cpp) — décision pure disjoncteur **boot-loop history**
 - [`src/heap_ring_logic.h`](../../src/heap_ring_logic.h) / [`src/heap_ring.h`](../../src/heap_ring.h) / [`src/heap_ring.cpp`](../../src/heap_ring.cpp) — ring de **télémétrie heap** RTC noinit (v2.14.0, tests `test/test_native_heap_ring/`)
 - [`src/heap_metrics.h`](../../src/heap_metrics.h) / [`src/heap_metrics.cpp`](../../src/heap_metrics.cpp) — **source unique** de la mesure « mémoire réellement allouable » (v2.19.0, [ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md))
-- [`src/heap_caps_logic.h`](../../src/heap_caps_logic.h) — module **pur** des planchers multi-masques (v2.49.0, feature-122) : masques, `heapMaskSelectsHeap`, plancher glissant, `fetch_min`, seaux de durée, fenêtre de contexte (tests `test/test_native_heap_caps_table/` + `test/test_native_heap_floors/`)
+- [`src/heap_caps_logic.h`](../../src/heap_caps_logic.h) — module **pur** des planchers multi-masques (v2.49.0, feature-122) : masques, `heapMaskSelectsHeap`, plancher glissant, `fetch_min`, seaux de durée, fenêtre de contexte, et depuis la **v2.49.1** la règle de cadence du tour de rôle (`heapFloorWalkDue`, `heapFloorWalkNextDivider`, testée par table de vérité **replis compris** : diviseur nul et valeur hors bornes se replient sur « **mesurer** », parce que perdre une mesure est pire que la refaire) — tests `test/test_native_heap_caps_table/` + `test/test_native_heap_floors/`
 - [`src/main.cpp`](../../src/main.cpp) — coquille impure (collecte ICMP/heap + effets, `checkHeapHealth` et sa trace de calibrage v2.19.0, `performFailSafeRestart`, alerte différée `history_partition_reset`)
 - [`src/history.cpp`](../../src/history.cpp) — coquille impure du disjoncteur (NVS `hist_meta`, `esp_reset_reason`, `esp_partition_erase_range`)
 - [`src/pump_controller.h`](../../src/pump_controller.h) — `setMaintenanceInhibit()` / `isMaintenanceInhibited()`

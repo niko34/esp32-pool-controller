@@ -2,6 +2,95 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.49.1] - 2026-09-08
+
+> **Ce qui change pour vous, en une phrase** : **rien de visible.** Aucun écran,
+> aucun réglage, aucun comportement de régulation ne change. Cette version règle
+> l'**instrument de mesure** installé par la 2.49.0, à partir du premier relevé
+> réel de 8 h 49 sur l'appareil.
+
+> ✅ **Une question ouverte depuis le 05/09 est fermée : le lot B-1 est CONFIRMÉ
+> OPÉRANT.** Le témoin d'allocation du démarrage montre que le `malloc(4096)`
+> part bien en **PSRAM** et que le témoin de contrôle `malloc(4095)` reste en
+> **interne**, sans aucune discordance entre les deux méthodes de classement
+> d'adresse. `heap_caps_malloc_extmem_enable(4095)` (v2.35.0,
+> [ADR-0061](docs/adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md))
+> fait donc ce pour quoi il a été livré : le soupçon de « correctif décoratif »
+> est levé. `psram_free` était simplement un **mauvais témoin** — le plancher
+> PSRAM, lui, montre un creux de 5 764 o que l'échantillonnage à 30 s ne pouvait
+> pas voir.
+
+### Firmware
+
+- **Cadence du tour de rôle des planchers divisée par deux**
+  (`kHeapFloorWalkEverySamples = 2`). Le relevé du 08/09 a mesuré la durée réelle
+  d'un parcours de tas à **516 µs au pire** (médiane ≤ 512 µs) — **six fois** le
+  repère de ~84 µs sur lequel le gate `pool-chemistry` avait raisonné, et
+  **au-dessus des 300 µs** de sa condition 5, qui se déclenche donc. Le masque
+  supplémentaire n'est plus mesuré qu'**un échantillon sur deux** : coût moyen
+  **1,5 parcours par échantillon (0,75/s)** au lieu de 1/s — sous le plafond du
+  gate, **avec de la marge pour la première fois**. La durée d'une occurrence
+  n'était pas le levier disponible : c'est la **fréquence** qui a baissé.
+  ⚠️ **Ce qui est perdu** : la résolution du plancher `0x080C` passe de **4 à
+  8 s**. C'est le chiffre qui dimensionnera `feature-123` — il doit être lu en
+  connaissant sa résolution. Atténuation : `heaps(0x080C)` est un sous-ensemble de
+  `heaps(0x0804)`, dont le plancher reste mesuré à **chaque** échantillon et le
+  **borne supérieurement**, donc dimensionner sur `0x0804` reste conservateur.
+- **Les durées de parcours sont enfin PUBLIÉES** : clés `hf.wmax` et `hf.wmed` de
+  `GET /get-system-info?hf=1`. Elles étaient **mesurées depuis le premier jour
+  mais jamais exposées par la route** — le relevé n'a pu les lire que dans le
+  journal, et la condition 5 du gate n'était donc satisfaite que **par accident**.
+  `wmed` est une médiane **approchée**, rendue comme **borne supérieure** du seau
+  dyadique contenant le rang médian : à lire « ≤ `wmed` », jamais comme une
+  valeur exacte.
+- **Deux accumulateurs de contexte au lieu d'un** : clé neuve `hf.ctxb`
+  (`ctxSeenBoot`), qui ne se réarme **jamais**. Motif : au relevé du 08/09,
+  `hf.ctx` valait **1** après 8 h 49, ce qui se lisait comme « un seul régime
+  jamais rencontré » — **faux**, ce champ est remis à zéro toutes les 30 minutes
+  par le réarmement de fenêtre et ne portait que la fenêtre courante. Un test
+  interdit désormais au réarmement de toucher `ctxSeenBoot`.
+- **Budget JSON re-mesuré** : `GET /get-system-info?hf=1` passe de **1 694 à
+  1 741 o** pire cas (+47 o pour les trois clés). Sans le paramètre, la réponse
+  reste **inchangée à l'octet près** (964 o).
+- ⚠️ **Toujours aucun correctif de fragmentation.** Aucune réserve DMA n'est
+  posée, aucune garde n'est modifiée, aucun seuil ne bouge : la métrique du refus
+  503, de la garde d'ouverture de fichiers, du parachute OOM et des gardes TLS
+  **reste `0x0804`** ([ADR-0077](docs/adr/0077-metrique-de-garde-exclut-les-pools-inatteignables.md)).
+
+### Documentation
+
+- `docs/subsystems/system-health.md` : relevé du 08/09 intégré (8 h 49, 12 673
+  échantillons, zéro redémarrage) — verdict A7, durées de parcours, trajectoire
+  de `maxBloc8`, contexte au creux, plancher PSRAM ; nouvelle résolution du tour
+  de rôle et ce qu'elle coûte ; **protocole de relevé corrigé** : lire `ctxb` et
+  non `ctx` pour les régimes vus, et interpréter `wmed` comme une **borne**.
+  Nouveau point de méthode : un plancher sous le seuil de garde **n'implique pas**
+  un 503, la garde ne mesurant qu'**au moment d'une requête**.
+- `docs/API.md` : les trois clés neuves de `hf`, la sémantique **fenêtre vs
+  depuis-boot** de `ctx`/`ctxb` avec le contresens qui a motivé l'ajout, la
+  lecture « ≤ » de `wmed`, et le budget JSON re-mesuré.
+- `specs/features/doing/bug-080-*.md`, `specs/features/todo/bug-121-*.md`,
+  `specs/features/todo/feature-123-*.md` : le relevé de 8 h 49 **ne reproduit
+  pas** la corrélation entre niveau de fragmentation et déconnexions MQTT
+  (déconnexions aux niveaux **hauts**, zéro pendant la période la plus basse). Le
+  lien reste une **hypothèse de travail**, ni confirmée ni infirmée — la
+  rectification écrite le même jour sur la base du journal de 21 h est nuancée en
+  conséquence, sans être annulée.
+
+### Tests
+
+- **Incident de méthode consigné** (`feature-122`, section « Relevé du
+  08/09/2026 ») : la première sentinelle du diviseur de cadence était
+  **décorative** et **a survécu à sa propre mutation** — elle comptait la
+  présence de jetons (`kHeapFloorWalkEverySamples`, `walkThisSample`) qui restent
+  tous deux en place quand `if (walkThisSample)` devient `if (true)`. Corrigée
+  sur deux axes : le **texte exact** de la garde, et surtout l'extraction de la
+  règle en **logique pure** (`heapFloorWalkDue`, `heapFloorWalkNextDivider`),
+  testée par table de vérité replis compris. **Troisième forme du même piège en
+  deux jours** dans ce dépôt.
+
+---
+
 ## [2.49.0] - 2026-09-08
 
 > **Ce qui change pour vous, en une phrase** : **rien de visible.** Cette version
