@@ -49,6 +49,16 @@ private:
   static constexpr size_t kMaxPersistBufferEntries = 100;       // Capacité fixe, pré-allouée dans le constructeur
   static constexpr size_t kMaxLogFileBytes = 8192;              // 8KB - budget partition history 64KB : pire cas log 2-3 blocs au lieu de 4-5 (ADR-0033)
   static constexpr size_t kRotateKeepBytes = 6144;              // Garde les 6 derniers KB à la rotation (ADR-0033)
+  // bug-099 : chemins du journal persistant. Ici et NON dans constants.h — le
+  // précédent (kMaxLogFileBytes, kRotateKeepBytes) est déjà posé, et le module
+  // pur logger_logic n'a pas besoin des chemins pour décider.
+  static constexpr const char* kSystemLogPath = "/system.log";
+  static constexpr const char* kSystemLogTmpPath = "/system.log.tmp";
+
+  // bug-099 : réconcilie le `.tmp` de rotation au démarrage (promotion du
+  // survivant, ou effacement de l'orphelin). Appelée EN TÊTE de
+  // setPersistenceFs(), avant toute ouverture du journal.
+  void reconcileLogTmp();
 
 public:
   Logger();  // Constructeur pour pré-allouer le buffer

@@ -41,7 +41,7 @@ docs/
 │   ├── system-health.md
 │   ├── oom-guard.md
 │   ├── web-server.md
-│   └── acces-fichiers.md     ← recensement des `fopen` du firmware (13 sites gardés, classes A/B)
+│   └── acces-fichiers.md     ← recensement des `fopen` du firmware (14 sites gardés, classes A/B)
 │
 ├── adr/                 ← Architecture Decision Records (immuables)
 │   ├── README.md
@@ -120,7 +120,8 @@ docs/
 │   ├── 0072-absence-de-valeur-hors-du-domaine.md
 │   ├── 0073-chiffre-consigne-porte-sa-methode.md
 │   ├── 0074-temperature-figee-statu-quo-instrumente.md
-│   └── 0075-decoupage-client-contre-streaming-firmware.md
+│   ├── 0075-decoupage-client-contre-streaming-firmware.md
+│   └── 0076-reconciliation-du-tmp-de-rotation-au-boot.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

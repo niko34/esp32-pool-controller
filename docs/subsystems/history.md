@@ -5,16 +5,18 @@
 - **Partition** : `history` LittleFS **256 KB** à l'offset `0x7B0000` (séparée de `spiffs`) — layout v5, voir [`partitions.csv`](../../partitions.csv), [ADR-0068](../adr/0068-partitions-layout-v5-flash-8-mo.md) et [ADR-0009](../adr/0009-partition-coredump.md). ⚠️ **Était 64 KB à `0x3E0000` jusqu'au 2026-09-05** — tous les budgets chiffrés « x/16 blocs » ci-dessous datent de cette époque et sont désormais **très conservateurs** (la partition compte 64 blocs).
 
 
-> ⚠️ **Accès fichiers — 6 des 14 sites `fopen` du firmware sont ici.**
-> `history.cpp` ouvre `/history.json` aux lignes **500**, **531** et **586**,
-> `/.fscheck` aux lignes **290** et **294**, et — site invisible à tout `grep` —
-> **`exists()` de la ligne 581 OUVRE le fichier** (`VFSImpl::exists()` construit un
-> `VFSFileImpl`, il ne fait pas de `stat()`). Chaque ouverture alloue un verrou
-> newlib dont l'échec appelle **`abort()`** : c'est le crash du 05/09
+> ⚠️ **Accès fichiers — 5 des 14 sites `fopen` du firmware sont ici**
+> (compte recompté le 2026-09-08 : ce bandeau annonçait **6 sites** et des
+> numéros de ligne d'avant la v2.43.0). `history.cpp` ouvre `/history.json` aux
+> lignes **620**, **651** et **716**, et `/.fscheck` aux lignes **343** et
+> **347**. Le 6ᵉ — l'`exists()` invisible à tout `grep` — a été **supprimé** au
+> cycle 2, pas gardé (cf. [plus bas](#loadfromfile--lexists-a-été-supprimé-pas-gardé)).
+> Chaque ouverture alloue un verrou newlib dont l'échec appelle **`abort()`** :
+> c'est le crash du 05/09
 > ([`docs/incidents/2026-09-05-panic-fopen-historique.txt`](../incidents/2026-09-05-panic-fopen-historique.txt)).
 > Stratégie retenue : [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) ;
-> recensement : [acces-fichiers.md](acces-fichiers.md). ⚠️ **La garde n'est pas
-> encore posée** — implémentation au cycle 2 de `bug-100`.
+> recensement : [acces-fichiers.md](acces-fichiers.md). ✅ **Gardes posées depuis
+> la v2.43.0** (cycle 2 de `bug-100`).
 
 ## Rôle
 
@@ -295,13 +297,13 @@ Au démarrage, **« reporter » n'a pas de sens** : il n'y a pas de plus tard. D
 sites de `begin()`/`loadFromFile()` basculent donc sur un **tripwire** au lieu
 d'un report, sur le **7ᵉ barreau** `kInternalFopenMinAllocBytes` = **5 120**
 (l'absence de contention TCP est prouvée par l'ordre de `setup()` :
-`history.begin()` à `main.cpp:270` précède `mqttManager.begin()` 300 et
-`webServer.begin()` 316) :
+`history.begin()` à `main.cpp:271` précède `mqttManager.begin()` 301 et
+`webServer.begin()` 317) :
 
 | Site | Sous le seuil |
 |---|---|
-| [`history.cpp:316`](../../src/history.cpp:316) — avant le test d'intégrité `/.fscheck` | `historyEnabled = false` pour ce boot, `writeHistoryCrashCount(0)` (sortie **propre**, le drapeau du disjoncteur est levé) |
-| [`history.cpp:698`](../../src/history.cpp:698) — avant le chargement de `/history.json` | `historyEnabled = false` pour ce boot |
+| [`history.cpp:317`](../../src/history.cpp:317) — avant le test d'intégrité `/.fscheck` | `historyEnabled = false` pour ce boot, `writeHistoryCrashCount(0)` (sortie **propre**, le drapeau du disjoncteur est levé) |
+| [`history.cpp:703`](../../src/history.cpp:703) — avant le chargement de `/history.json` | `historyEnabled = false` pour ce boot |
 
 **Conséquence utilisateur** : entre 4 096 (auto-guérison) et 5 120, **l'appareil
 démarre sans historique persistant mais en dosant**. C'est un gain de
@@ -318,6 +320,26 @@ lui, sort par le haut du `_persistBuffer` sous famine prolongée.
 > **avant** de sortir : on ne perd que l'historique, **pas le journal persistant
 > du boot entier**. L'appel est lui-même gardé (classe A) : sous le seuil il
 > échoue proprement.
+
+#### `setPersistenceFs()` réconcilie le `.tmp` du journal — sur les DEUX chemins (`bug-099`, v2.48.1)
+
+Depuis la v2.48.1, `setPersistenceFs()` commence par **réconcilier le `.tmp` de
+rotation** de `/system.log` : promotion du survivant, ou effacement de
+l'orphelin ([ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md),
+détail dans [logger.md](logger.md#reprise-dune-rotation-interrompue-au-démarrage-bug-099-v2481)).
+`history.cpp` étant **le seul appelant**, cela concerne ses **deux** chemins :
+
+| Appel | Contexte | Ce qui s'y passe |
+|---|---|---|
+| [`history.cpp:332`](../../src/history.cpp:332) | chemin **tripwire** — atteint **alors que l'admission mémoire a déjà été refusée** (l. 317) | La réconciliation redemande une admission au **même** seuil (5 120) et se la voit refuser à son tour : **l'ABSTENTION est ici le comportement normal**, pas une anomalie. Aucun `remove`, aucun `rename`, aucune ligne de journal. |
+| [`history.cpp:377`](../../src/history.cpp:377) | chemin **nominal**, après le test d'intégrité (et l'éventuel reformatage) | Réconciliation effective : `Promote`, `Discard` ou silence. |
+
+**Ordre garanti** : dans les deux cas, la réconciliation a lieu **avant** la
+première admission d'**écriture** d'historique — `historySaveAdmit()`
+([`history.cpp:630`](../../src/history.cpp:630)) — donc la marge d'espace est
+calculée **après** l'éventuelle libération des deux blocs du `.tmp`, jamais
+avant. Sous le layout v5 (256 Ko) cet ordre ne change **aucune** décision
+d'admission : c'est une propriété qu'on préserve, pas un gain qu'on mesure.
 
 ### `loadFromFile()` — l'`exists()` a été supprimé, pas gardé
 
@@ -740,7 +762,7 @@ Si **toute** étape échoue (`open` retourne null, `print` retourne ≠ 2 octets
 - [`src/history_export_chunk.h`](../../src/history_export_chunk.h) — logique pure de l'export chunked `/get-history` (v2.14.0) ; carry partagé avec [`src/logs_export_chunk.h`](../../src/logs_export_chunk.h)
 - [ADR-0064](../adr/0064-la-courbe-suit-le-nombre-affiche.md) — la mesure lissée est la référence des courbes 5 min ; lissée non historisée sur les agrégats (feature-095)
 - [`src/fs_guard.h`](../../src/fs_guard.h), [`src/fopen_guard_logic.h`](../../src/fopen_guard_logic.h) — point d'admission unique des `fopen` internes (v2.43.0)
-- [acces-fichiers.md](acces-fichiers.md) — recensement des 13 sites, classes de contention, pièges de placement
+- [acces-fichiers.md](acces-fichiers.md) — recensement des 14 sites, classes de contention, pièges de placement
 - [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) — garde mémoire avant tout `fopen` interne, classes A/B, tripwire de boot
 - [ADR-0033](../adr/0033-budget-espace-partition-history.md) — budget d'espace de la partition `history` (garde d'admission)
 - [ADR-0009](../adr/0009-partition-coredump.md) — table de partitions courante

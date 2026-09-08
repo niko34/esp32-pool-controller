@@ -44,7 +44,7 @@ Quand un composant change, la fiche correspondante dans `subsystems/` doit être
 - [auth.md](auth.md) — auth admin + API token + rate limiting
 - [history.md](history.md) — historique 3 granularités, partition dédiée, import/export CSV
 - [ota-manager.md](ota-manager.md) — mise à jour firmware + filesystem, partitions double-bank
-- [logger.md](logger.md) — buffer circulaire RAM + persistance LittleFS + push WS
+- [logger.md](logger.md) — buffer circulaire RAM + persistance LittleFS + push WS + **reprise du `.tmp` de rotation au démarrage** ([ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md))
 - [system-health.md](system-health.md) — santé système, instrumentation heap, auto-guérison mémoire (reboot propre) + mode maintenance anti-boucle
 - [oom-guard.md](oom-guard.md) — parachute OOM global : réserve d'urgence + `std::set_new_handler` + garde TLS sortante à motifs (PSRAM libre + heap, v2.18.6, ADR-0035/ADR-0036)
 - [acces-fichiers.md](acces-fichiers.md) — **recensement des `fopen` du firmware** : les 14 sites d'ouverture de fichier pour le compte propre du firmware (tâche, cadence, reportable ou non), leur classe de contention, le périmètre exact de la garde 503 et les accès hors classe. ⚠️ `exists()` **ouvre le fichier** — aucun `grep` ne trouve ce site ([ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md))

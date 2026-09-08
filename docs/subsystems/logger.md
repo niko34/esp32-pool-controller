@@ -4,17 +4,21 @@
 - **Singleton** : `extern Logger systemLogger;`
 
 
-> ⚠️ **Accès fichiers — 7 des 14 sites `fopen` du firmware sont ici**
-> (l. **230**, **276-277**, **299**, **307**, **317**, **329**), et ils sont tous
-> classés **contention TCP** : `flushToDisk()` s'exécute **sur la tâche qui a émis
-> le log** — `loopTask`, `mqttTask` ou `async_tcp` — parce que `ERROR` et
+> ⚠️ **Accès fichiers — 8 des 14 sites `fopen` du firmware sont ici**
+> (l. **253**, **321**, **404-405**, **427**, **441**, **451**, **463**). **Sept
+> sur huit** sont classés **contention TCP** : `flushToDisk()` s'exécute **sur la
+> tâche qui a émis le log** — `loopTask`, `mqttTask` ou `async_tcp` — parce que `ERROR` et
 > `CRITICAL` déclenchent un flush **synchrone** ([`logger.cpp:71-73`](../../src/logger.cpp:71)).
 > Il n'existe pas de « tâche du logger ». L'échec du `malloc` du verrou newlib
 > appelle **`abort()`**. Voir [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md)
 > (dont la décision **(f)** lève la contradiction de l'interdit `critical()` posé
 > par [ADR-0067](../adr/0067-garde-503-avant-fopen-handler-prioritaire.md)) et le
-> recensement [acces-fichiers.md](acces-fichiers.md). ⚠️ **Garde non posée à ce
-> jour** — cycle 2 de `bug-100`.
+> recensement [acces-fichiers.md](acces-fichiers.md). ✅ **Gardes posées depuis la
+> v2.43.0** (cycle 2 de `bug-100`) — la mention « garde non posée » qui figurait
+> ici était périmée.
+>
+> Le **huitième** site est la sonde de [`reconcileLogTmp()`](#reprise-dune-rotation-interrompue-au-démarrage-bug-099-v2481)
+> (l. **253**), seul site **classe B** du journal ([ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md)).
 
 ## Rôle
 
@@ -45,7 +49,8 @@ void clear();      // vide uniquement le buffer RAM circulaire
 void clearAll();   // vide RAM + _persistBuffer + supprime /system.log et /system.log.tmp
 size_t getLogCount();
 
-// Persistance
+// Persistance — réconcilie le `.tmp` de rotation EN TÊTE d'appel (v2.48.1,
+// bug-099) : cf. « Reprise d'une rotation interrompue au démarrage »
 void setPersistenceFs(fs::FS* fs);
 void update();              // flush différé
 void flushToDisk();         // flush immédiat
@@ -135,6 +140,124 @@ Activable via `setPersistenceFs(LittleFS*)` après montage de la partition `hist
 
 > ⚠️ Ces deux plafonds **font partie du budget d'espace** de la partition `history` (pire cas 13/16 blocs, [ADR-0033](../adr/0033-budget-espace-partition-history.md)) : ne pas les ré-augmenter sans recalculer le budget.
 
+> 📋 **Les chiffres de cette page sont justes, ceux du code ne l'étaient pas.**
+> Le commentaire de rotation de `logger.cpp` annonçait « 32KB / 24 derniers KB »
+> face à des constantes valant **8 192** et **6 144** — **faux d'un facteur 4**,
+> pendant des mois. Corrigé au lot `bug-099`, et corrigé **par référence aux
+> constantes** (plus aucun chiffre en dur dans ce commentaire) pour qu'il ne
+> pourrisse plus. Vérification faite : **ce document ne portait pas la même
+> erreur** (8 KB / 6 derniers KB, historique « 32 → 16 KB antérieurement »
+> correct). L'écart de chiffrage restant est celui de
+> `kCalibrationAuthWarnThrottleMs`, signalé
+> [plus bas](#émetteur-non-authentifié--le-motif-du-throttle-de-calibration-v2461).
+
+### Reprise d'une rotation interrompue au démarrage (`bug-099`, v2.48.1)
+
+La rotation ci-dessus **n'est pas atomique** : `flushToDisk()` exécute
+`remove("/system.log")` **puis** `rename("/system.log.tmp", "/system.log")` —
+deux opérations LittleFS distinctes. Une coupure entre les deux laisse le journal
+**absent** et le `.tmp` porteur de l'**unique copie** des `kRotateKeepBytes`
+(6 144) derniers octets.
+
+`Logger::reconcileLogTmp()` (privée, appelée **en tête** de
+`setPersistenceFs()`) réconcilie cet état au démarrage :
+
+| `/system.log` | `.tmp` | Action | Journal |
+|---|---|---|---|
+| absent | présent | **PROMOUVOIR** — `rename(tmp → log)` | `WARNING` « Journal systeme recupere depuis le fichier temporaire de rotation … » |
+| présent | présent | **EFFACER** le `.tmp` (la rotation se rejouera) | `WARNING` « Fichier temporaire de rotation orphelin efface au demarrage … » |
+| — | absent | rien | **SILENCE** (premier démarrage compris) |
+| admission mémoire refusée | — | **ABSTENTION** : ni promotion, ni effacement | **SILENCE** (muette, voir plus bas) |
+
+#### Pourquoi l'effacement aveugle serait faux
+
+La formulation initiale de la spec — « effacer tout `.tmp`, sa survie prouve
+qu'il est orphelin » — est **fausse dans la fenêtre `remove`/`rename`**, et
+l'appliquer **détruirait** le journal au lieu de nettoyer un déchet. Dans l'état
+`log absent + tmp présent`, le `.tmp` **est** le journal.
+
+#### Pourquoi le `.tmp` promu est complet
+
+Le `remove` n'est atteint que **sous `tmpOk`** : le `.tmp` a été entièrement
+recopié, `wf.close()` a finalisé ses métadonnées, et sa taille relue est
+**> 0**. Un `.tmp` visible après un `remove` réussi est donc, par construction,
+un fichier **complet et validé** — pas un fragment d'écriture. Un `.tmp`
+incomplet, lui, ne peut coexister qu'avec un journal **présent** : il tombe dans
+la branche `Discard`, où l'original fait foi.
+
+#### ⚠️ CONTRAINTE D'ORDRE — le bloc ne se déplace pas
+
+L'ouverture du marqueur `--- DÉMARRAGE ---` est en mode `"a"`, qui **crée**
+`/system.log` s'il est absent. Un `reconcileLogTmp()` déplacé **après** elle
+verrait la sonde répondre **toujours** « présent » : la branche `Promote`
+deviendrait **inatteignable** et le survivant partirait en `Discard`. Le code
+censé sauver le journal le détruirait — **silencieusement**, avec un `WARN` qui
+annonce un nettoyage réussi.
+
+La réconciliation précède aussi le `flushToDisk()` de fin de
+`setPersistenceFs()`, lequel peut **relancer une rotation** donc recréer un
+`.tmp` : on ne réconcilie pas par-dessus. L'ancrage est commenté au point exact
+dans [`logger.cpp`](../../src/logger.cpp) et **testé par contrôle textuel du
+source** ([`test/test_native_logger_logic/`](../../test/test_native_logger_logic/),
+30 cas — dont un dépouilleur de commentaires qui empêche un appel *mentionné en
+commentaire* de faire passer le test).
+
+#### Niveaux de log, et le silence nominal
+
+- **`WARNING` uniquement, jamais `error()`/`critical()`** : ces deux-là
+  déclenchent le flush **synchrone** ([`logger.cpp:71-73`](../../src/logger.cpp:71)),
+  qui rouvrirait `/system.log` **pendant** la réconciliation. C'est la règle
+  générale de cette page — *tout code écrit pour éviter `fopen` en famine est
+  contraint à `WARN`/`INFO`* — appliquée à un chemin qui, lui, manipule les
+  fichiers eux-mêmes.
+- **Pas de throttle** : au plus **une** ligne par démarrage, la rareté est
+  structurelle.
+- **Le cas nominal ne coûte rien** : aucune ligne, aucun octet de journal, aucune
+  ouverture au-delà de la sonde. C'est ce qui rend acceptable un bloc exécuté à
+  **chaque** boot dans un fichier dont la rétention se compte en heures.
+- **L'abstention est MUETTE volontairement.** Sur refus d'admission,
+  `_persistBuffer` (100 entrées, éviction FIFO) est précisément la ressource sous
+  pression, et `history.cpp` émet déjà son `WARN` de famine juste après.
+  L'observabilité durable de ce refus est le compteur du `fs_guard`
+  ([acces-fichiers.md](acces-fichiers.md#observabilité-des-refus)), pas une ligne
+  de journal.
+
+#### Ce que ce lot ne corrige PAS
+
+`bug-099` avait été ouverte pour un motif **budgétaire** : deux blocs LittleFS
+immobilisés sur une partition `history` de 64 Ko. Ce motif était **réel et
+mesuré** — sous 64 Ko, le `.tmp` orphelin abaissait le plafond admissible de
+`/history.json` de **8 176 o** et faisait refuser **73 tailles sur 124** dans la
+bande réaliste 20-31 Ko. Sous le **layout v5**
+([ADR-0068](../adr/0068-partitions-layout-v5-flash-8-mo.md), 256 Ko) : **zéro
+refus**. **La conséquence budgétaire est dissoute** — ce que la requalification
+du 2026-09-06 avait vu juste, et ce que la spec n'avait pas vu. Ce lot ne vaut
+**que** par la **perte de journal**.
+
+#### Ce qui n'est pas prouvé
+
+- **Aucune exécution sur cible.** Ni `Promote` ni `Discard` n'ont tourné contre
+  un LittleFS réel, et la **sémantique de `rename` quand la cible existe** n'est
+  **jamais** testée.
+- **L'inférence « échec de l'appel FS ⇒ le `.tmp` était absent » est une
+  hypothèse** : un `rename` échouant pour corruption ou `ENOSPC` produirait le
+  même silence. Acceptable parce qu'elle ne pilote que la **journalisation**,
+  jamais un effet destructeur — et parce que la réconciliation est
+  **idempotente** : un `rename` échoué laisse le `.tmp` intact, le démarrage
+  suivant réessaie.
+- **Dégradation bornée si la sonde se trompe** (relevé en revue) : si `exists()`
+  répondait « absent » à tort — journal présent mais illisible en `"r"` — la
+  promotion écraserait la **tête** du journal, jamais la **queue** (le `.tmp`
+  porte les octets les plus récents). La perte porterait sur les lignes que la
+  rotation allait de toute façon supprimer.
+
+Module pur et découpage intention/fait :
+[`src/logger_logic.h`](../../src/logger_logic.h) — `evaluateLogTmpRecovery()`
+rend l'**intention** avant tout effet de bord, `classifyLogTmpOutcome()` rend le
+**fait** à partir du code de retour FS. Décision complète, alternatives écartées
+(effacement aveugle, sonde du `.tmp`, classe A, remplacement atomique renvoyé à
+une spec de suite) : [ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md).
+
 ### 🔒 Un log `ERROR` depuis un chemin anti-`fopen` déclenche l'`abort()` qu'on prévient (v2.41.0)
 
 **Trouvaille du lot B-3 de bug-080** ([ADR-0067](../adr/0067-garde-503-avant-fopen-handler-prioritaire.md)). Le flush immédiat décrit ci-dessus n'est pas seulement « immédiat » : il est **synchrone, dans la tâche appelante**.
@@ -158,22 +281,32 @@ Corollaire noté pour la suite : `flushToDisk()` **lui-même** est un `fopen` ab
 
 ### Toutes les ouvertures du journal sont gardées (v2.43.0, bug-100 / [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md))
 
-`logger.cpp` ouvre `/system.log` (ou son `.tmp` de rotation) en **7 endroits**.
-Depuis la v2.43.0, les 7 passent par `openIfHeapAllows()`
+`logger.cpp` ouvre `/system.log` (ou son `.tmp` de rotation) en **8 endroits**
+(**7** jusqu'à la v2.48.0 — la sonde de `reconcileLogTmp()` est le huitième,
+`bug-099`). Tous passent par `openIfHeapAllows()` / `existsIfHeapAllows()`
 ([`src/fs_guard.h`](../../src/fs_guard.h)) — plus aucun `fopen` nu.
 
-**Les 7 sites sont tous de CLASSE A (seuil 8 192)**, y compris celui du boot. Ce
-n'est pas une précaution : `flushToDisk()` s'exécute **sur la tâche qui a émis le
-log**, il n'existe pas de « tâche du logger ». Une ligne `ERROR` émise depuis un
-handler `async_tcp` ouvre le fichier **pendant** qu'une réponse est en vol, donc
-avec des pbuf lwip alloués.
+**Sept des huit sites sont de CLASSE A (seuil 8 192)**, y compris celui du
+marqueur de boot. Ce n'est pas une précaution : `flushToDisk()` s'exécute **sur
+la tâche qui a émis le log**, il n'existe pas de « tâche du logger ». Une ligne
+`ERROR` émise depuis un handler `async_tcp` ouvre le fichier **pendant** qu'une
+réponse est en vol, donc avec des pbuf lwip alloués.
+
+**Le huitième — la sonde de `reconcileLogTmp()`
+([`logger.cpp:253`](../../src/logger.cpp:253)) — est de CLASSE B (seuil 5 120)**,
+et c'est le seul du journal. Motif et invariant :
+[ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md) — en
+classe A on s'abstiendrait dans toute la bande 5 120–8 192 où le filesystem est
+sain, et **au boot une abstention ne se rejoue jamais**.
 
 #### Une seule mesure par flush, six ouvertures ensuite
 
 `flushToDisk()` prend **une** admission
-([`logger.cpp:304`](../../src/logger.cpp:304)) puis ouvre jusqu'à six fois avec
+([`logger.cpp:379`](../../src/logger.cpp:379)) puis ouvre jusqu'à six fois avec
 `kFsGuardAlreadyAdmitted` : append, repli `"w"`, relecture de taille, source de
-rotation, `.tmp` en écriture, `.tmp` en relecture. **6 mesures deviennent 1.**
+rotation, `.tmp` en écriture, `.tmp` en relecture. **6 mesures deviennent 1** —
+recompté au lot `bug-099` : ce chiffre-là est **inchangé**, le huitième site est
+hors du flush.
 
 Ce n'est pas une optimisation de confort : le parcours TLSF qui mesure le tas
 coûte **d'autant plus cher que le tas est fragmenté**, c'est-à-dire exactement
@@ -181,9 +314,12 @@ dans le régime pour lequel la garde existe. Et la rotation est une séquence
 **indissociable** — la re-mesurer à mi-parcours autoriserait un `.tmp` sans
 pouvoir le relire.
 
-Le 7ᵉ site, [`logger.cpp:246`](../../src/logger.cpp:246) (marqueur
-`--- DÉMARRAGE ---` de `setPersistenceFs()`), prend **sa propre** mesure : il est
-hors du flush.
+Les **deux** sites hors du flush prennent **chacun leur propre** mesure :
+[`logger.cpp:321`](../../src/logger.cpp:321) (marqueur `--- DÉMARRAGE ---` de
+`setPersistenceFs()`, classe A) et [`logger.cpp:248-253`](../../src/logger.cpp:248)
+(admission + sonde de `reconcileLogTmp()`, classe B — **une** admission pour la
+sonde **et** l'appel `rename`/`remove` qui suit). Total : **3 admissions, 8
+ouvertures**.
 
 #### Ce que devient le journal sous famine
 
@@ -478,6 +614,8 @@ systemLogger.critical("Heap below 10KB, forcing restart");
 - [`src/logger.h`](../../src/logger.h), [`src/logger.cpp`](../../src/logger.cpp)
 - [`src/constants.h:46`](../../src/constants.h:46) — `kMaxLogEntries`
 - [`src/ws_manager.cpp`](../../src/ws_manager.cpp) — abonnement callback
+- [`src/logger_logic.h`](../../src/logger_logic.h) / [`.cpp`](../../src/logger_logic.cpp) — module **pur** de réconciliation du `.tmp` de rotation (v2.48.1)
 - [`src/fs_guard.h`](../../src/fs_guard.h) — point d'admission unique des `fopen` internes (v2.43.0)
-- [acces-fichiers.md](acces-fichiers.md) — recensement des 13 sites d'ouverture, dont les 7 du journal
+- [acces-fichiers.md](acces-fichiers.md) — recensement des 14 sites d'ouverture, dont les 8 du journal
 - [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) — garde mémoire avant tout `fopen` interne
+- [ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md) — réconciliation du `.tmp` de rotation au démarrage, contrainte d'ordre

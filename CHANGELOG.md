@@ -2,6 +2,90 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.48.1] - 2026-09-08
+
+> **Ce qui change pour vous, en une phrase** : **le journal système survit
+> désormais à une coupure de courant survenue pendant sa rotation** — avant
+> cette version, les dernières heures de journal étaient perdues, définitivement,
+> et c'est précisément la trace dont on a besoin pour comprendre la coupure.
+
+### Firmware
+
+- **Reprise d'une rotation de journal interrompue** (`bug-099`,
+  [ADR-0076](docs/adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md)). La
+  rotation de `/system.log` exécute `remove()` **puis** `rename()` : **deux
+  opérations LittleFS non atomiques entre elles**. Une coupure entre les deux
+  laissait le journal **absent** et son fichier temporaire porteur de l'**unique
+  copie** des 6 144 derniers octets — que rien ne reprenait. Au démarrage,
+  `Logger::reconcileLogTmp()` réconcilie désormais les deux fichiers :
+  - journal **absent** + temporaire présent → le temporaire est **promu** (le
+    journal est récupéré), avec un `WARNING` explicite ;
+  - journal **présent** + temporaire présent → le temporaire est **effacé** (la
+    rotation se rejouera), avec un `WARNING` distinct ;
+  - pas de temporaire → **rien, et aucune ligne de journal** (premier démarrage
+    compris) ;
+  - mémoire insuffisante → **abstention** : ni promotion, ni effacement,
+    silencieuse.
+- **La réconciliation est ancrée en tête de `setPersistenceFs()`**, et l'ordre
+  n'est pas cosmétique : l'ouverture du marqueur `--- DÉMARRAGE ---` est en mode
+  `"a"`, donc elle **crée** `/system.log`. Un bloc déplacé après elle rendrait la
+  promotion **inatteignable** et **détruirait le survivant en silence**.
+- **Nouveau module pur** `src/logger_logic.{h,cpp}` — `evaluateLogTmpRecovery()`
+  (l'**intention**, avant tout effet de bord) et `classifyLogTmpOutcome()` (le
+  **fait**, d'après le code de retour du filesystem) : **30 cas** natifs
+  (`test/test_native_logger_logic/`). La présence du fichier temporaire n'est
+  **jamais sondée** — elle se déduit du code de retour, ce qui évite une seconde
+  ouverture de fichier.
+- **Commentaire de rotation corrigé** : il annonçait « 32KB / 24 derniers KB »
+  face à des constantes valant **8 192** et **6 144** — **faux d'un facteur 4**
+  pendant des mois. Réécrit **par référence aux constantes**, sans aucun chiffre
+  en dur. La documentation, elle, ne portait pas cette erreur (vérifié).
+- ⚠️ **Ce que ce correctif n'apporte PAS.** `bug-099` avait été ouverte pour un
+  motif **budgétaire** : deux blocs LittleFS immobilisés sur une partition
+  `history` de 64 Ko. Le motif était réel — mesuré à **8 176 o** de plafond perdu
+  et **73 tailles refusées sur 124** dans la bande réaliste. Sous le layout v5
+  ([ADR-0068](docs/adr/0068-partitions-layout-v5-flash-8-mo.md), 256 Ko) :
+  **zéro refus**. **La conséquence budgétaire est dissoute** — ce que la
+  requalification du 06/09 avait vu juste, et ce que la spec n'avait pas vu. Ce
+  lot ne vaut **que** par la perte de journal.
+- ⚠️ **Non validé sur matériel.** Ni la promotion ni l'effacement n'ont tourné
+  contre un LittleFS réel ; la sémantique de `rename` quand la cible existe n'est
+  jamais testée. La reprise est **idempotente** (un appel échoué laisse le
+  fichier temporaire intact, le démarrage suivant réessaie), et son inférence
+  « échec de l'appel filesystem ⇒ pas de fichier temporaire » reste une
+  **hypothèse** — acceptable parce qu'elle ne pilote que la journalisation,
+  jamais un effacement.
+
+### Documentation
+
+- **Nouvel [ADR-0076](docs/adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md)**
+  — réconciliation du `.tmp` de rotation au démarrage : contrainte d'ordre
+  imposée à tout futur appelant de `setPersistenceFs()`, choix de la classe de
+  contention B, abstention silencieuse, et les quatre alternatives écartées
+  (effacement aveugle, sonde du `.tmp`, classe A, remplacement atomique renvoyé à
+  une spec de suite).
+- `docs/subsystems/logger.md` : nouvelle section « Reprise d'une rotation
+  interrompue au démarrage » (tableau des états, pourquoi l'effacement aveugle
+  est faux, pourquoi le `.tmp` promu est complet, contrainte d'ordre, niveaux de
+  log et silence nominal, ce qui n'est pas prouvé).
+- `docs/subsystems/acces-fichiers.md` : **compte des sites `fopen` réconcilié**.
+  Le document annonçait « 13 sites » en quatre endroits et « 14 » en trois
+  autres, alors que le décompte par classe donnait 13. Recompté depuis les
+  tableaux : **14 sites = 10 (A) + 4 (B)**, le nouveau étant la sonde de
+  `reconcileLogTmp()`. Toutes les références `logger.cpp:NNN` — qui avaient
+  **toutes glissé** — sont renumérotées, ainsi que celles de `history.cpp`,
+  `main.cpp` et `web_routes_data.cpp`. Nouvel **invariant de la classe B**
+  consigné : elle parie sur « appelé au boot », pari que le site voisin (classe A,
+  trois lignes plus loin) refuse explicitement de faire.
+- `docs/subsystems/history.md` : bandeau d'accès fichiers recompté (5 sites, plus
+  6, et gardes annoncées posées) ; les **deux** chemins appelants de
+  `setPersistenceFs()` sont documentés — `history.cpp:332` (tripwire, où
+  l'abstention est le comportement **normal** puisque l'admission a déjà été
+  refusée) et `history.cpp:377` (nominal) — avec la garantie que la
+  réconciliation précède la première admission d'écriture (`historySaveAdmit`).
+
+---
+
 ## [2.48.0] - 2026-09-07
 
 > **Ce qui change pour vous, en deux phrases** : **restaurer un historique

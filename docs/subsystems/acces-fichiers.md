@@ -14,7 +14,7 @@
 > commit**.
 
 - **Statut du correctif** : **gardes posées** au **cycle 2 de `bug-100`**
-  (2026-09-06, **v2.43.0**). Les **13 sites** restants passent tous par le point
+  (2026-09-06, **v2.43.0**). Les **14 sites** recensés passent tous par le point
   d'admission unique [`src/fs_guard.cpp`](../../src/fs_guard.cpp), et le contrôle
   [`tools/check_fopen_guard.sh`](../../tools/check_fopen_guard.sh) échoue en CI si
   un autre fichier de `src/` ouvre un fichier lui-même.
@@ -52,19 +52,35 @@ mais un `grep` reste mono-ligne : cf. [ce qu'il ne peut pas fermer](#le-contrôl
 
 **Ce site précis n'existe plus** : le cycle 2 l'a **supprimé** au lieu de le
 garder — il était strictement redondant avec l'ouverture en lecture qui le
-suivait (cf. [Le 14ᵉ site a disparu](#le-14ᵉ-site-a-disparu-il-na-pas-été-gardé)).
+suivait (cf. [Le 14ᵉ site a disparu](#le-14ᵉ-site-a-disparu-il-na-pas-été-gardé) —
+il s'agit du 14ᵉ du **recensement de cycle 1**, à ne pas confondre avec le site
+**#14 actuel**, ajouté en v2.48.1).
 
 ---
 
-## Les 13 sites — état **gardé** (cycle 2, v2.43.0)
+## Les 14 sites — état **gardé** (cycle 2 v2.43.0, +1 site en v2.48.1)
 
-Le recensement du cycle 1 comptait **14 sites**. Il en reste **13** : le 14ᵉ
-(`history.cpp` — `exists()`) a été **supprimé**, pas gardé (cf. plus bas).
+> 📋 **Compte réconcilié le 2026-09-08** (lot `bug-099`). Ce document annonçait
+> « 13 sites » en quatre endroits et « 14 sites » en trois autres, alors que le
+> décompte par classe donnait **10 (A) + 3 (B) = 13**. Le compte est désormais
+> **recompté depuis les deux tableaux ci-dessous**, et il vaut **14** :
+> **10 (A) + 4 (B)**. Toute mention de « 13 » ou « 14 » ailleurs dans le dépôt
+> qui n'est pas explicitement datée renvoie à un état antérieur.
+
+Petite histoire du compte, parce qu'il a bougé trois fois :
+
+| Étape | Total | Détail |
+|---|---|---|
+| Recensement du cycle 1 de `bug-100` | **14** | dont l'`exists()` de `history.cpp`, le site qu'aucun `grep` ne trouvait |
+| Cycle 2 (v2.43.0) | **13** | le 14ᵉ a été **supprimé**, pas gardé (cf. plus bas) |
+| `bug-099` (v2.48.1) | **14** | la sonde de `Logger::reconcileLogTmp()` s'ajoute en **classe B** |
 
 **Classe A** = contention TCP réelle possible → seuil `8192`
 (`kStaticFileMinAllocBytes`, 6ᵉ barreau [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)).
 **Classe B** = sites de boot, absence de contention **prouvée par l'ordre de
 `setup()`** → seuil `5120` (`kInternalFopenMinAllocBytes`, 7ᵉ barreau, tripwire).
+⚠️ Cette classe **parie** sur « appelé au boot » — lire l'[invariant](#-invariant-de-la-classe-b--le-pari--appelé-au-boot--que-le-site-voisin-refuse-de-faire)
+avant d'y ajouter un site ou de déplacer un appelant.
 
 Toute ouverture passe par [`src/fs_guard.cpp`](../../src/fs_guard.cpp) — seul
 fichier de `src/` autorisé à appeler `fs::FS::open()`, contrôlé en CI par
@@ -85,16 +101,16 @@ bas) ou quand elle enchaîne plusieurs ouvertures indissociables.
 
 | # | Site | Tâche(s) appelante(s) **réelles** | Garde | Verdict |
 |---|---|---|---|---|
-| 1 | [`history.cpp:615`](../../src/history.cpp:615) — `open(path,"r")`, taille de l'ancien fichier | `loopTask` (`consolidateData()`) **et** `async_tcp` (`POST /history/import`) | admise en 532 **et** 591 | **REPORTÉE** (retentative en 5 min) |
-| 2 | [`history.cpp:646`](../../src/history.cpp:646) — `open(path,"w")`, écriture | idem #1 | idem | **REPORTÉE** (5 min) |
-| 3 | [`logger.cpp:246`](../../src/logger.cpp:246) — `open("/system.log","a")`, marqueur `--- DÉMARRAGE ---` | tâche appelant `setPersistenceFs()` — `loopTask` aujourd'hui, **rien ne le garantit** | mesure propre (8 192) | **REPORTÉE** (marqueur perdu, jamais le journal) |
-| 4 | [`logger.cpp:329`](../../src/logger.cpp:329) — `open("/system.log","a")` | **la tâche qui logue** — `flushToDisk()` est synchrone sur `ERROR`/`CRITICAL` | admise en 304 | **REPORTÉE** (buffer réinséré) |
-| 5 | [`logger.cpp:330`](../../src/logger.cpp:330) — repli `open(…,"w")` | idem #4 | admise en 304 | **REPORTÉE** |
-| 6 | [`logger.cpp:352`](../../src/logger.cpp:352) — `open(…,"r")`, relecture de taille | idem #4 | admise en 304 | **REPORTÉE** |
-| 7 | [`logger.cpp:360`](../../src/logger.cpp:360) — `open(…,"r")`, source de rotation | idem #4 | admise en 304 | **REPORTÉE** |
-| 8 | [`logger.cpp:370`](../../src/logger.cpp:370) — `open("/system.log.tmp","w")` | idem #4 | admise en 304 | **REPORTÉE** |
-| 9 | [`logger.cpp:382`](../../src/logger.cpp:382) — `open("/system.log.tmp","r")`, contrôle non vide | idem #4 | admise en 304 | **REPORTÉE** |
-| 10 | [`web_routes_data.cpp:635`](../../src/web_routes_data.cpp:635) — `open("/system.log","r")`, phase `kFileOpen` de `GET /download-logs` | **`async_tcp`** | mesure propre (8 192) | **DÉGRADE** : repli `kRamHeader` (journal RAM seul) + **troncature annoncée dans le fichier téléchargé** |
+| 1 | [`history.cpp:620`](../../src/history.cpp:620) — `open(path,"r")`, taille de l'ancien fichier | `loopTask` (`consolidateData()`) **et** `async_tcp` (`POST /history/import`) | admise en 534 **et** 596 | **REPORTÉE** (retentative en 5 min) |
+| 2 | [`history.cpp:651`](../../src/history.cpp:651) — `open(path,"w")`, écriture | idem #1 | idem | **REPORTÉE** (5 min) |
+| 3 | [`logger.cpp:321`](../../src/logger.cpp:321) — `open("/system.log","a")`, marqueur `--- DÉMARRAGE ---` | tâche appelant `setPersistenceFs()` — `loopTask` aujourd'hui, **rien ne le garantit** | mesure propre (8 192) | **REPORTÉE** (marqueur perdu, jamais le journal) |
+| 4 | [`logger.cpp:404`](../../src/logger.cpp:404) — `open("/system.log","a")` | **la tâche qui logue** — `flushToDisk()` est synchrone sur `ERROR`/`CRITICAL` | admise en 379 | **REPORTÉE** (buffer réinséré) |
+| 5 | [`logger.cpp:405`](../../src/logger.cpp:405) — repli `open(…,"w")` | idem #4 | admise en 379 | **REPORTÉE** |
+| 6 | [`logger.cpp:427`](../../src/logger.cpp:427) — `open(…,"r")`, relecture de taille | idem #4 | admise en 379 | **REPORTÉE** |
+| 7 | [`logger.cpp:441`](../../src/logger.cpp:441) — `open(…,"r")`, source de rotation | idem #4 | admise en 379 | **REPORTÉE** |
+| 8 | [`logger.cpp:451`](../../src/logger.cpp:451) — `open("/system.log.tmp","w")` | idem #4 | admise en 379 | **REPORTÉE** |
+| 9 | [`logger.cpp:463`](../../src/logger.cpp:463) — `open("/system.log.tmp","r")`, contrôle non vide | idem #4 | admise en 379 | **REPORTÉE** |
+| 10 | [`web_routes_data.cpp:804`](../../src/web_routes_data.cpp:804) — `open("/system.log","r")`, phase `kFileOpen` de `GET /download-logs` | **`async_tcp`** | mesure propre (8 192) | **DÉGRADE** : repli `kRamHeader` (journal RAM seul) + **troncature annoncée dans le fichier téléchargé** |
 
 > ⚠️ **Le journal entier est classe A, y compris #3.** Ce n'est pas une
 > précaution : `flushToDisk()` s'exécute **sur la tâche qui a émis le log**. Une
@@ -102,25 +118,35 @@ bas) ou quand elle enchaîne plusieurs ouvertures indissociables.
 > qu'une réponse est en vol. Il n'existe pas de « tâche du logger ».
 >
 > **Une mesure par flush, six ouvertures ensuite.** L'admission de
-> [`logger.cpp:304`](../../src/logger.cpp:304) couvre les sites #4 à #9 : la
+> [`logger.cpp:379`](../../src/logger.cpp:379) couvre les sites #4 à #9 : la
 > rotation complète du journal ne paie **qu'un** parcours du tas, pas six —
 > et le parcours TLSF coûte d'autant plus cher que le tas est fragmenté,
 > c'est-à-dire exactement dans le régime où la garde sert.
 
-### Classe B — 3 ouvertures, seuil 5 120 (tripwire de boot)
+### Classe B — 4 ouvertures, seuil 5 120 (tripwire de boot)
 
 **Preuve d'absence de contention** : `history.begin()` est appelé à
-[`main.cpp:270`](../../src/main.cpp:270), `mqttManager.begin()` à
-[`main.cpp:300`](../../src/main.cpp:300), `webServer.begin()` à
-[`main.cpp:316`](../../src/main.cpp:316). **Aucune pile applicative réseau n'est
+[`main.cpp:271`](../../src/main.cpp:271), `mqttManager.begin()` à
+[`main.cpp:301`](../../src/main.cpp:301), `webServer.begin()` à
+[`main.cpp:317`](../../src/main.cpp:317). **Aucune pile applicative réseau n'est
 démarrée** quand ces ouvertures ont lieu — acquis **par construction**, pas par
 observation.
 
 | # | Site | Rôle | Garde | Verdict |
 |---|---|---|---|---|
-| 11 | [`history.cpp:342`](../../src/history.cpp:342) — `open("/.fscheck","w")` | test d'intégrité write/read post-montage | admise en 316 | **TRIPWIRE** → `historyEnabled = false` pour ce boot |
-| 12 | [`history.cpp:346`](../../src/history.cpp:346) — `open("/.fscheck","r")` | relecture du test | admise en 316 | idem |
-| 13 | [`history.cpp:711`](../../src/history.cpp:711) — `open(path,"r")`, chargement | désérialisation de l'historique | admise en 698 | **TRIPWIRE** → `historyEnabled = false` pour ce boot |
+| 11 | [`history.cpp:343`](../../src/history.cpp:343) — `open("/.fscheck","w")` | test d'intégrité write/read post-montage | admise en 317 | **TRIPWIRE** → `historyEnabled = false` pour ce boot |
+| 12 | [`history.cpp:347`](../../src/history.cpp:347) — `open("/.fscheck","r")` | relecture du test | admise en 317 | idem |
+| 13 | [`history.cpp:716`](../../src/history.cpp:716) — `open(path,"r")`, chargement | désérialisation de l'historique | admise en 703 | **TRIPWIRE** → `historyEnabled = false` pour ce boot |
+| 14 | [`logger.cpp:253`](../../src/logger.cpp:253) — `exists("/system.log")` (**sonde**, `existsIfHeapAllows`) de `Logger::reconcileLogTmp()` | savoir si le journal courant a survécu à la fenêtre `remove`/`rename` de la rotation (`bug-099`, v2.48.1) | admise en 248 — **une** admission pour la sonde **et** le `rename`/`remove` qui suit | **ABSTENTION** : ni promotion, ni effacement, **muette** ([ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md)) |
+
+> **Pourquoi le site #14 est en classe B et pas A** — alors que les sites #3 à #9
+> du **même fichier** sont en classe A. Le seuil 8 192 ferait s'abstenir dans
+> toute la bande **5 120–8 192** où le filesystem est sain, et **au boot « plus
+> tard » n'existe pas** : une abstention ne se rejoue pas dans 10 minutes comme
+> un flush — l'orphelin resterait à vie, et dans l'état « journal absent » c'est
+> la trace de la coupure qu'on perdrait. Ce site **ne sonde pas le `.tmp`** : sa
+> présence se déduit du code de retour du `rename`/`remove`, ce qui évite un
+> **second** `fopen` sans rien apprendre de moins.
 
 > **« Reporter » n'a pas de sens au boot** : il n'y a pas de plus tard. Sous
 > 5 120 o, la classe B bascule sur `historyEnabled = false` pour ce boot — état
@@ -142,6 +168,34 @@ Corollaire de conception : `setPersistenceFs()` **arme inconditionnellement**
 (`_persistEnabled = true` avant l'ouverture gardée du marqueur). Sous le
 tripwire, seul le **marqueur de démarrage** se perd — pas le journal du boot.
 L'observabilité ne doit pas dépendre du sous-système qu'elle garde.
+
+### ⚠️ Invariant de la classe B — le pari « appelé au boot » que le site voisin refuse de faire
+
+**À lire avant de déplacer un appelant.** La classe B ne repose pas sur une
+mesure : elle repose sur une **affirmation d'ordonnancement** — « ce code
+s'exécute avant que la pile réseau applicative ne démarre ». Tant qu'elle est
+vraie, le seuil 5 120 offre une marge ×5,9 ; dès qu'elle est fausse, le site est
+sous-gardé et l'`abort()` newlib redevient atteignable.
+
+Or **le site #3 refuse explicitement ce pari** — l'ouverture du marqueur de
+démarrage, à **trois lignes** du site #14, est classée **A** au motif que
+`setPersistenceFs()` est appelé depuis `loopTask` « aujourd'hui, mais **rien ne
+le garantit** ». Les deux sites voisins n'ont donc pas la même classe, et c'est
+**volontaire** : #3 peut se contenter de perdre un marqueur, #14 ne peut pas se
+permettre de s'abstenir (au boot, l'abstention est définitive). Cette asymétrie
+est un compromis assumé, pas une incohérence — mais elle est **fragile**.
+
+> **Invariant à préserver** : tout site de classe B est atteint **uniquement**
+> depuis `setup()`, avant `mqttManager.begin()` et `webServer.begin()`.
+>
+> **Ce qu'un futur appelant casse s'il l'enfreint** : appeler
+> `setPersistenceFs()` depuis une route HTTP, une tâche MQTT ou un rechargement
+> de configuration invalide la preuve d'absence de contention, rend le seuil
+> 5 120 **insuffisant** pour le site #14, et — indépendamment de la mémoire —
+> **détruit le journal** si l'ordre interne de `setPersistenceFs()` a aussi
+> bougé ([ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md),
+> contrainte d'ordre). Le site devrait alors repasser en classe A, en acceptant
+> l'abstention dans la bande 5 120–8 192.
 
 ### Le 14ᵉ site a **disparu**, il n'a pas été gardé
 
@@ -325,8 +379,9 @@ fichiers statiques** : les 7 routes HTML explicites (`/`, `/index.html`,
 ### Ce qu'il ne garde pas — et pourquoi
 
 **Aucun des sites ci-dessus** — le lot B-3 n'en garde pas un. Trois raisons
-distinctes, aucune accidentelle *(le compte est celui du recensement d'origine,
-14 sites ; le cycle 2 en garde 13 et supprime le 14ᵉ)* :
+distinctes, aucune accidentelle *(compte au 2026-09-08 : **14 sites**, dont
+**13 non-HTTP** ; le recensement de cycle 1 en comptait 14, le cycle 2 en a gardé
+13 et supprimé le 14ᵉ, et `bug-099` en a ajouté un)* :
 
 1. **Les 13 sites non-HTTP ne passent par aucun matcher.** Le firmware les ouvre
    pour son propre compte, hors de toute requête. Une garde posée sur le routage
@@ -342,11 +397,11 @@ distinctes, aucune accidentelle *(le compte est celui du recensement d'origine,
    garde**.
 
 > **Chiffre à retenir** : le lot B-3 ferme **un** chemin — le service de fichiers
-> statiques — et **zéro** des 14 sites internes. La formule « au moins trois
+> statiques — et **zéro** des sites internes. La formule « au moins trois
 > chemins » de la spec `bug-080` est remplacée par ce compte exact.
 >
-> ✅ **Depuis la v2.43.0** (cycle 2 de `bug-100`), les 13 sites internes restants
-> sont gardés par `fs_guard`, et `/download-logs` — exempt du 503 par l'ordre
+> ✅ **Depuis la v2.43.0** (cycle 2 de `bug-100`), les sites internes — **14** à
+> ce jour — sont gardés par `fs_guard`, et `/download-logs` — exempt du 503 par l'ordre
 > d'enregistrement — est gardé **à l'intérieur** de son handler. L'exemption
 > d'ADR-0067 subsiste (l'appareil reste observable en famine) ; ce qui disparaît,
 > c'est l'`abort()` qu'elle laissait passer.
@@ -407,5 +462,6 @@ les trois cas. À réévaluer si un quatrième site de coquille apparaît.
 - [ADR-0070](../adr/0070-fopen-interne-helper-unique-et-classes-de-contention.md) — point d'admission unique, deux classes de contention, preuve qui clôt le pool `FILE` pré-chauffé
 - [ADR-0067](../adr/0067-garde-503-avant-fopen-handler-prioritaire.md) — garde 503 côté HTTP (le pendant de ce document)
 - [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md) — échelle des seuils en métrique 8 bits (**7ᵉ barreau** `5 120` ajouté par ADR-0070)
+- [ADR-0076](../adr/0076-reconciliation-du-tmp-de-rotation-au-boot.md) — le site **#14** : réconciliation du `.tmp` de rotation au boot, classe B, contrainte d'ordre
 - [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) — pourquoi le prédicat vit dans `fopen_guard_logic` et la coquille dans `fs_guard`
 - [history.md](history.md) · [logger.md](logger.md) · [web-server.md](web-server.md) · [oom-guard.md](oom-guard.md)
