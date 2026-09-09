@@ -1932,6 +1932,17 @@ les 8 192 o de la garde. Et les **déconnexions MQTT ont disparu avec lui**, ce 
 confirme *a posteriori* l'hypothèse qui n'avait pu être ni prouvée ni réfutée : la
 fragmentation en était bien la cause.
 
+### Les réserves sont sorties dans une spec TROUVABLE
+
+⚠️ Ce qui suit était consigné **à la ligne 1935 d'une spec de 1984 lignes** — donc
+introuvable au moment précis où l'on en aurait besoin. Le contenu est désormais
+porté par [`feature-125-reserves-du-lot-c-serialisation-et-mesure`](../todo/feature-125-reserves-du-lot-c-serialisation-et-mesure.md),
+visible en listant `todo/`, avec ses **conditions de réouverture** et la façon de
+les constater (`hf.i8.mb` sous 1 622 o, ou le compteur `cumul` qui repart).
+
+Le résumé ci-dessous est conservé pour le contexte du lot C ; la référence est la
+spec dédiée.
+
 ### 🅢2 — SÉRIALISER LE SERVICE DES FICHIERS STATIQUES : en RÉSERVE, non abandonné
 
 **Ce que c'était** : un gestionnaire devant `serveStatic` n'autorisant que 2 ou 3
