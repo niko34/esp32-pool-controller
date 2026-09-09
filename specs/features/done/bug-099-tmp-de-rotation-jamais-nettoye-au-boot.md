@@ -125,7 +125,7 @@ n'est exposé par **aucun endpoint** (vérifié par grep).
       refusées (premier refus à 24 539 o) — le motif d'origine de la spec est
       **confirmé, il était réel**. Sous layout v5 (256 Ko, ADR-0068) : plafond
       220 752 o, **zéro refus**.
-- [ ] **Vérification sur cible du cas NOMINAL** (en attente de déploiement)
+- [x] **Vérification sur cible du cas NOMINAL — ✅ SATISFAITE le 09/09/2026.** Zéro message de réconciliation sur **13 journaux capturés couvrant 8 démarrages** (v2.48.1 à v2.50.0). Le correctif ne parle que s'il a un orphelin à traiter : le silence est le comportement attendu, et il est constaté.
       → démarrage sans `.tmp` : **aucune ligne nouvelle** dans le journal, boot
       inchangé. C'est le seul chemin exerçable sur l'appareil, et il vérifie
       l'invariant de **silence nominal** — celui qui, s'il était cassé, ferait

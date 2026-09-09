@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-09-09
 - **Décideurs** : utilisateur, `architect`, `pool-chemistry` (GO sous conditions C1-C5), `code-reviewer` (Approved)
-- **Spec(s) liée(s)** : [`feature-124`](../../specs/features/doing/feature-124-abaisser-le-seuil-de-bascule-psram.md) (scénario **S7** de `bug-080` lot C), [`feature-122`](../../specs/features/doing/feature-122-instrumentation-reserve-dma-et-metrique-du-pool-general.md) (l'instrument qui mesure l'effet), `feature-123` (**gelée**)
+- **Spec(s) liée(s)** : [`feature-124`](../../specs/features/done/feature-124-abaisser-le-seuil-de-bascule-psram.md) (scénario **S7** de `bug-080` lot C), [`feature-122`](../../specs/features/done/feature-122-instrumentation-reserve-dma-et-metrique-du-pool-general.md) (l'instrument qui mesure l'effet), `feature-123` (**gelée**)
 - **Révise** : [ADR-0061](0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md) — dont la décision reste en vigueur, mais dont la **doctrine** est abandonnée
 
 ## Contexte

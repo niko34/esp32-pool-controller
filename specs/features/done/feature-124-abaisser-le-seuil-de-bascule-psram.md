@@ -241,7 +241,7 @@ confirmerait que ce que le résultat démontre.
 - [x] C3 — `CHANGELOG.md`
 - [x] T1 — Tests : le seuil respecte les deux invariants ; mutation ramenant à 4 095
       (le lot doit être visible) et mutation à 4 096 (le tampon stdio ne basculerait plus)
-- [ ] T2 — ⏳ **RESTE OUVERT** (ne se mesure que sur cible). **Relevé sur cible avant/après**, sous reproduction volontaire identique
+- [x] T2 — ✅ **SATISFAIT le 09/09/2026 à 08:23** : plancher fin **8 692 o** contre 1 622 visés et 1 076 avant, sous une rafale de 327 requêtes (deux fois la référence). Zéro épisode 503, zéro déconnexion MQTT, un seul échec d'allocation contre 25. **Relevé sur cible avant/après**, sous reproduction volontaire identique
       (rechargements multiples en onglets parallèles) : le plancher fin `hf.i8.mb`
       doit **remonter au-dessus de 1 622 o** (le gabarit du tampon TX WiFi).
       ⚠️ **La référence de 2 932 o écrite ici d'abord était fausse** : c'est le seuil
@@ -253,7 +253,7 @@ confirmerait que ce que le résultat démontre.
 ## Conditions du gate `pool-chemistry` (GO SOUS CONDITIONS, 09/09)
 
 - [x] **C1** — Ne pas graver le raisonnement inversé ; seuil à **1 024**, encadrement écrit.
-- [ ] **C2** — ⏳ *partie analytique faite, relevé dû avec T2.* **Latence** : marge réelle de deux ordres de grandeur (`kPulseMinMs` = 10 s,
+- [x] **C2** — ✅ **SATISFAIT** : `ph_anom` et `orp_anom` à **0** avant comme après déploiement. Aucune régression de la comptabilité de dosage, aucun retour arrière. **Latence** : marge réelle de deux ordres de grandeur (`kPulseMinMs` = 10 s,
       `kAcctDeltaAnomalyMs` = 5 000 ms contre une loop de quelques dizaines de ms).
       Mais T2 doit publier le **compteur d'anomalies de comptabilité de dosage**
       avant/après : **toute hausse non nulle = retour arrière immédiat**.

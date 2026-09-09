@@ -3,7 +3,7 @@
 - **Statut** : Accepté
 - **Date** : 2026-09-08
 - **Décideurs** : `architect`, `embedded-developer`, `test-engineer`, `code-reviewer`
-- **Spec(s) liée(s)** : [`bug-099`](../../specs/features/doing/bug-099-tmp-de-rotation-jamais-nettoye-au-boot.md)
+- **Spec(s) liée(s)** : [`bug-099`](../../specs/features/done/bug-099-tmp-de-rotation-jamais-nettoye-au-boot.md)
 
 ## Contexte
 
@@ -175,7 +175,7 @@ réconcilie pas.
   `setPersistenceFs()`), [`src/logger.h`](../../src/logger.h)
   (`kSystemLogPath`, `kSystemLogTmpPath`)
 - Tests : [`test/test_native_logger_logic/`](../../test/test_native_logger_logic/) — **30 cas**
-- Spec : [`specs/features/doing/bug-099-tmp-de-rotation-jamais-nettoye-au-boot.md`](../../specs/features/doing/bug-099-tmp-de-rotation-jamais-nettoye-au-boot.md)
+- Spec : [`specs/features/doing/bug-099-tmp-de-rotation-jamais-nettoye-au-boot.md`](../../specs/features/done/bug-099-tmp-de-rotation-jamais-nettoye-au-boot.md)
 - Doc : [logger.md](../subsystems/logger.md#reprise-dune-rotation-interrompue-au-démarrage-bug-099-v2481) ·
   [acces-fichiers.md](../subsystems/acces-fichiers.md) ·
   [history.md](../subsystems/history.md)

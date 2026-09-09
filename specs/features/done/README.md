@@ -45,3 +45,28 @@ six mois, personne ne saura si elles ont été oubliées ou volontairement écar
 des copies antérieures laissées en place lors du classement. Chaque cas a été
 vérifié ligne à ligne — aucun contenu n'existait dans `doing/` qui ne fût déjà
 dans la version archivée ici.)*
+
+## ⚠️ Les décisions de NE PAS FAIRE vivent ici aussi (convention du 2026-09-09)
+
+`done/` n'archive pas seulement le travail **fait** : il archive les **matières
+closes**. Une spec qui décide de **ne pas faire** — gelée, ou mise en réserve avec
+des conditions de réouverture — appartient donc ici, et **pas** à `todo/`.
+
+**Pourquoi.** Le projet n'a que trois états, et aucun n'est un « congélateur ».
+Laisser une réserve en `todo/` la fait figurer indéfiniment comme du travail dû :
+elle pourrit la liste, et on finit soit par la faire sans raison, soit par
+l'ignorer — y compris le jour où sa condition de réouverture se produit.
+
+**Comment rouvrir.** Une réserve ne se « dégèle » pas sur place : on crée une
+spec **neuve** qui cite l'ancienne. La réserve reste donc un document de
+référence, jamais une file d'attente.
+
+**Exigence pour toute spec de ce type** : elle doit porter ses **conditions de
+réouverture** *et* **comment les constater** — une grandeur observable, pas une
+intention. Sans le « comment », une condition n'est qu'un vœu.
+
+Spécimens : [`feature-125`](feature-125-reserves-du-lot-c-serialisation-et-mesure.md)
+(S2 et la mesure du fragmenteur, rendues inutiles par S7 — trois conditions, chacune
+constatable sur `hf.i8.mb` ou le compteur `cumul`) et
+[`feature-123`](feature-123-experience-de-reserve-dma-au-demarrage.md) (réserve DMA,
+gelée parce qu'elle aurait aggravé le symptôme qu'elle visait).
