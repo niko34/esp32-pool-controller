@@ -33,7 +33,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "constants.h"    // kPsramExtmemThresholdBytes, kVfsStdioBufferBytes
 #include "heap_caps_logic.h"
+#include "heap_metrics.h"  // kHeapWitness* — positions de bits du témoin A7
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -424,7 +426,7 @@ void test_every_pure_function_of_the_lot_has_a_real_caller(void) {
       {"src/heap_ring.cpp", "void heapRingSample(", "heapCtxDiscoveryWindowActive(",
        "le bit de contexte 'rafale de decouverte HA' (A5)"},
       {"src/main.cpp", "void setup(", "heapPtrIsExternal(",
-       "le temoin 4096/4095 (A7) — la seule preuve DIRECTE du camp d'une allocation"},
+       "le temoin de bascule PSRAM (A7) — la seule preuve DIRECTE du camp d'une allocation"},
   };
   const int n = (int)(sizeof(sites) / sizeof(sites[0]));
   for (int i = 0; i < n; ++i) {
@@ -450,35 +452,45 @@ void test_every_pure_function_of_the_lot_has_a_real_caller(void) {
 }
 
 // ===========================================================================
-// 4bis. LE TÉMOIN 4096/4095 EST BRANCHÉ SUR LE SEUIL QU'IL ÉPROUVE (A7 / T4)
+// 4bis. LE TÉMOIN EST BRANCHÉ SUR LE SEUIL QU'IL ÉPROUVE (A7 / feature-124 C4)
 // ===========================================================================
-// La question qui a lancé ce lot : « le correctif B-1 est-il décoratif ? »
+// La question qui a lancé ce lot : « la bascule PSRAM est-elle décorative ? »
 // (`psram_free` immobile à 4 180 340 dans 152 relevés). Le témoin y répond en
 // allouant et en regardant l'ADRESSE. Pour que sa réponse veuille dire quelque
-// chose, trois conditions de CÂBLAGE doivent tenir — et elles sont vérifiables
-// ici, hors cible :
+// chose, trois conditions de CÂBLAGE doivent tenir — vérifiables ici, hors cible :
 //
-//  1. le témoin alloue exactement la classe visée par B-1 (kVfsStdioBufferBytes,
-//     4 096 o = DEFAULT_FILE_BUFFER_SIZE de vfs_api.cpp) ;
-//  2. le témoin de CONTRÔLE alloue exactement le seuil (kPsramExtmemThresholdBytes),
-//     donc la plus grande taille qui reste interne dans les DEUX configurations ;
+//  1. le témoin alloue `kPsramExtmemThresholdBytes + 1` : la PLUS PETITE classe
+//     que la politique doit déporter, donc celle qui change de camp au seuil ;
+//  2. le témoin de CONTRÔLE alloue exactement le seuil, donc la plus grande
+//     taille qui reste interne dans les DEUX configurations ;
 //  3. c'est `malloc()` — JAMAIS `heap_caps_malloc()` avec des caps explicites,
 //     qui contournerait la politique `extmem` que le témoin sert à éprouver.
+//
+// ⚠️ POURQUOI PLUS « 4096/4095 » (feature-124, condition C4 du gate) : le couple
+// s'appelait ainsi parce que le seuil valait 4 095, et 4 096 = seuil + 1 par
+// coïncidence de calibrage. Le seuil descendu à 1 024, un malloc de 4 095 o part
+// en PSRAM : le témoin de CONTRÔLE aurait affiché « EXTERNE » et le lecteur y
+// aurait lu une ANOMALIE là où il n'y en a aucune. Un témoin mensonger est pire
+// qu'un témoin absent. Exprimé en `seuil` / `seuil + 1`, il garde son pouvoir
+// discriminant à TOUT seuil futur, et la classe historique du tampon stdio VFS
+// (4 096 o) reste couverte A FORTIORI puisque 4 096 > seuil.
+//
+// ⚠️ ET POURQUOI CE TEST INTERDIT MAINTENANT `malloc(kVfsStdioBufferBytes)` : ce
+// serait le retour à une taille FIGÉE. Elle redeviendrait fausse au prochain
+// palier, exactement comme 4 095 l'est devenue à celui-ci.
 //
 // RÈGLE DE L'IDF, relevée au DÉSASSEMBLAGE de la libheap.a effectivement liée
 // (heap_caps_malloc_default) : `bgeu limit, size` → si `limit >= size`, la
 // première tentative préfère la RAM interne ; sinon elle vise SPIRAM|DEFAULT
-// (0x1400) avec repli sur DEFAULT (0x1000). Donc `taille <= seuil ⇒ interne`,
-// et 4 096 o avec un seuil de 4 095 part bien en PSRAM d'abord.
+// (0x1400) avec repli sur DEFAULT (0x1000). Donc `taille <= seuil ⇒ interne`, et
+// `seuil + 1` part bien en PSRAM d'abord — à tout seuil.
 //
 // ⚠️ CE QUE CE TEST NE PROUVE PAS : le VERDICT. Le témoin ne s'exécute que sur
-// cible. La mutation T4 (seuil 4 095 → 4 096) est tuée à la COMPILATION par le
-// static_assert de constants.h, dans les deux environnements — ce qui prouve que
-// le couple est verrouillé, pas que la politique agit. Le camp réel des 4 096 o
-// se lit dans `hf.w96` (/get-system-info?hf=1) ou dans le champ `tem=0x..` de la
-// ligne de journal, après déploiement.
+// cible. Il prouve que le couple est CÂBLÉ sur le seuil, pas que la politique
+// agit. Le camp réel se lit dans `hf.w96` (/get-system-info?hf=1) ou dans le
+// champ `tem=0x..` de la ligne de journal, après déploiement.
 
-void test_the_4096_4095_witness_is_wired_to_the_extmem_threshold(void) {
+void test_the_psram_witness_is_relative_to_the_extmem_threshold(void) {
   char* code = readProjectCode("src/main.cpp");
   TEST_ASSERT_NOT_NULL_MESSAGE(code, "src/main.cpp INTROUVABLE.");
   char* body = extractFunctionBody(code, "void setup(");
@@ -489,35 +501,143 @@ void test_the_4096_4095_witness_is_wired_to_the_extmem_threshold(void) {
       "La politique doit etre armee avec kPsramExtmemThresholdBytes : c'est CE seuil que le "
       "temoin eprouve.");
   TEST_ASSERT_TRUE_MESSAGE(
-      countOccurrences(body, "malloc(kVfsStdioBufferBytes)") >= 1,
-      "Le temoin doit allouer kVfsStdioBufferBytes (4 096 o), la classe EXACTE du tampon stdio "
-      "que le lot B-1 visait. Une autre taille ne repondrait pas a la question posee.");
+      countOccurrences(body, "malloc(kPsramExtmemThresholdBytes + 1)") >= 1,
+      "Le temoin doit allouer `kPsramExtmemThresholdBytes + 1` : la PLUS PETITE classe que la "
+      "politique deporte, donc la seule qui change de camp exactement au seuil. Une taille "
+      "FIGEE (4096) ne repondrait plus a la question des que le seuil bouge.");
   TEST_ASSERT_TRUE_MESSAGE(
       countOccurrences(body, "malloc(kPsramExtmemThresholdBytes)") >= 1,
       "Le temoin de CONTROLE doit allouer exactement le seuil : c'est la plus grande taille qui "
       "reste interne dans les deux configurations, donc le seul controle qui ne bouge pas quand "
       "le seuil bouge.");
   TEST_ASSERT_EQUAL_INT_MESSAGE(
+      0, countOccurrences(body, "malloc(kVfsStdioBufferBytes)"),
+      "REGRESSION feature-124 (condition C4) : le temoin est revenu a une taille FIGEE "
+      "(kVfsStdioBufferBytes = 4 096 o). A seuil 1 024, 4 096 o part en PSRAM comme n'importe "
+      "quelle taille au-dessus du seuil : le couple perd son pouvoir discriminant, et le temoin "
+      "de controle a 4 095 o devient MENSONGER (il signalerait une anomalie inexistante). Le "
+      "temoin doit s'exprimer en `seuil` / `seuil + 1`.");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(
       0, countOccurrences(body, "heap_caps_malloc("),
       "Le temoin doit passer par malloc() NU. Des caps explicites contourneraient la politique "
       "`extmem` mise a l'epreuve, et le temoin ne prouverait rien.");
-  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(body, "free(probe4096)") >= 1 &&
-                               countOccurrences(body, "free(probe4095)") >= 1,
+  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(body, "free(probeAbove)") >= 1 &&
+                               countOccurrences(body, "free(probeAt)") >= 1,
                            "Les deux temoins doivent etre liberes IMMEDIATEMENT : ce lot ne retient "
                            "aucune allocation (instrumentation passive, risque nul).");
   free(body);
   free(code);
+}
 
-  // Le couple seuil/tampon est verrouille par un static_assert : c'est ce qui
-  // tue la mutation T4 des la compilation, en natif comme sur cible.
+// ---------------------------------------------------------------------------
+// 4ter. LES CINQ static_assert DU SEUIL EXISTENT-ILS ENCORE ? (feature-124 T3)
+// ---------------------------------------------------------------------------
+// Un static_assert ne se teste pas : il tue à la compilation, ou il n'est pas là.
+// Sa DISPARITION, elle, est parfaitement silencieuse — et c'est le pire des
+// mutants, puisqu'il ne fait échouer aucun test tout en retirant le garde-fou.
+// Cette sentinelle lit constants.h RÉEL, dépouillé de ses commentaires (sinon
+// une simple mention suffirait — forme corrigée de bug-114), et exige les cinq
+// prédicats. Deux d'entre eux sont les garde-fous du gate pool-chemistry :
+// le PLANCHER (>= 512) et la relation avec la réserve de REPLI (condition C3).
+void test_the_five_psram_threshold_static_asserts_are_present(void) {
   char* consts = readProjectCode("src/constants.h");
   TEST_ASSERT_NOT_NULL_MESSAGE(consts, "src/constants.h INTROUVABLE.");
-  TEST_ASSERT_TRUE_MESSAGE(
-      countOccurrences(consts, "static_assert(kPsramExtmemThresholdBytes + 1 == kVfsStdioBufferBytes") >= 1,
-      "constants.h doit verrouiller seuil + 1 == tampon stdio. Sans cet assert, remettre le seuil "
-      "a 4096 (la valeur d'avant le lot B-1) passerait en silence et rendrait le correctif "
-      "inoperant sans que rien ne rougisse.");
+
+  struct Assertion {
+    const char* needle;
+    const char* why;
+  };
+  static const Assertion kAsserts[] = {
+      {"static_assert(kPsramExtmemThresholdBytes < kVfsStdioBufferBytes",
+       "INEGALITE STRICTE avec le tampon stdio VFS. Un seuil >= 4096 laisserait ce tampon en RAM "
+       "interne (test inclusif) et rouvrirait bug-080 a l'identique : c'est l'acquis du lot B-1. "
+       "⚠️ L'ancienne forme `seuil + 1 == kVfsStdioBufferBytes` epinglait le seuil a 4 095 ; "
+       "feature-124 l'abandonne A DESSEIN, elle ne doit pas revenir."},
+      {"static_assert(kPsramExtmemThresholdBytes >= 512",
+       "PLANCHER DE POLITIQUE (garde-fou n°1 du gate) : sous 512, les caches LittleFS (512 o) et "
+       "le pool FILE de la libc (428 o) basculeraient en PSRAM. Ce sont EUX qui cotoient les "
+       "ecritures flash, cache flash/PSRAM COUPE : l'exposition passerait de QUANTIFIEE a "
+       "BINAIRE. GARDE-FOU SUR UN AXE DISTINCT de C3 : aujourd'hui C3 "
+       "(kOomFallbackReserveBytes <= seuil) arrete deja tout palier sous 1 024, donc CET "
+       "assert-ci ne peut PAS echouer seul — il redevient effectif des que "
+       "kOomFallbackReserveBytes descend sous 512. Ne pas ecrire qu'il arrete un palier a "
+       "256 : ce serait faux, et la table de paliers du meme lot le dementirait."},
+      {"static_assert(kOomReserveBytes > kPsramExtmemThresholdBytes",
+       "C'est cette relation qui rend le MALLOC_CAP_INTERNAL explicite d'oom_guard.cpp "
+       "NECESSAIRE : une reserve de 12 288 o prise par malloc() ordinaire partirait en PSRAM, et "
+       "liberer de la PSRAM pendant une famine de RAM interne ne sauve rien."},
+      {"static_assert(kOomFallbackReserveBytes <= kPsramExtmemThresholdBytes",
+       "CONDITION C3 du gate (garde-fou n°2) : la reserve de REPLI (1 024 o) vaut EXACTEMENT le "
+       "seuil, donc elle n'a plus AUCUNE marge. Un palier abaisse la ferait basculer sans "
+       "alerte. Sans cet assert, le piege de feature-066 (parachute en PSRAM, prouve le "
+       "05/09/2026) pourrait etre retendu par un simple changement de constante."},
+      {"static_assert(kHistoryImportChunkBudgetBytes > kPsramExtmemThresholdBytes",
+       "Corollaire bug-113 : un lot d'import <= seuil serait tamponne dans le tas 8 bits INTERNE, "
+       "celui qui est en famine — decouper « plus fin pour faire plus sur » est le mauvais "
+       "reflexe, et cet assert est la pour l'arreter."},
+  };
+  const size_t n = sizeof(kAsserts) / sizeof(kAsserts[0]);
+  char msg[900];
+  for (size_t i = 0; i < n; ++i) {
+    snprintf(msg, sizeof(msg), "constants.h doit porter `%s...` — %s", kAsserts[i].needle,
+             kAsserts[i].why);
+    TEST_ASSERT_TRUE_MESSAGE(countOccurrences(consts, kAsserts[i].needle) >= 1, msg);
+  }
+  // L'egalite stricte d'origine ne doit PAS reapparaitre : elle re-epinglerait le
+  // seuil a 4 095, donc annulerait feature-124 en une ligne, tout en laissant les
+  // quatre autres asserts satisfaits.
+  TEST_ASSERT_EQUAL_INT_MESSAGE(
+      0, countOccurrences(consts, "kPsramExtmemThresholdBytes + 1 == kVfsStdioBufferBytes"),
+      "L'ancienne egalite `seuil + 1 == kVfsStdioBufferBytes` est REVENUE : elle re-epingle le "
+      "seuil a 4 095 et annule feature-124. C'est une decision d'ADR, pas un rafistolage "
+      "d'assert : relire la doctrine revisee avant de la remettre.");
   free(consts);
+}
+
+// ---------------------------------------------------------------------------
+// 4quater. LE TÉMOIN RESTE COMPARABLE AUX RELEVÉS D'AVANT feature-124
+// ---------------------------------------------------------------------------
+// Le champ brut `hf.w` (et le `tem=0x..` du journal) a été relevé sur cible le
+// 09/09/2026, AVANT ce lot. Tout l'intérêt du relevé avant/après tient à une
+// condition : que les BITS n'aient pas bougé de place, et que les clés JSON
+// n'aient pas été renommées. Le renommage des constantes C++ est interne et sans
+// effet sur le fil ; un décalage de bit, lui, rendrait les deux relevés
+// incomparables SANS RIEN CASSER par ailleurs.
+//
+// Bénéfice inattendu de la formulation relative : à l'ancien seuil de 4 095, le
+// témoin allouait 4 096 o = seuil + 1 et 4 095 o = seuil. La nouvelle expression
+// est donc EXACTEMENT l'ancienne, généralisée — la sémantique de chaque bit est
+// conservée, pas seulement sa position.
+void test_the_psram_witness_bits_and_json_keys_stay_comparable(void) {
+  // Positions de bits, écrites en littéraux (recopiées du relevé du 09/09/2026,
+  // pas calculées depuis les constantes) :
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1u << 0, kHeapWitnessSkipped, "bit 0 = temoin saute");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1u << 1, kHeapWitnessAboveExternal,
+                                  "bit 1 = la classe DEPORTEE (`seuil + 1`) est en PSRAM. C'etait "
+                                  "`kHeapWitness4096External` : MEME bit, MEME sens.");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1u << 2, kHeapWitnessAtThresholdExternal,
+                                  "bit 2 = le CONTROLE (`seuil`) est en PSRAM = ANOMALIE. C'etait "
+                                  "`kHeapWitness4095External` : MEME bit, MEME sens.");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1u << 3, kHeapWitnessDisagreement, "bit 3 = discordance des API");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1u << 4, kHeapWitnessAboveFailed, "bit 4 = malloc(seuil+1) KO");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1u << 5, kHeapWitnessAtThresholdFailed, "bit 5 = malloc(seuil) KO");
+  TEST_ASSERT_EQUAL_UINT8_MESSAGE(1u << 6, kHeapWitnessNoPsramApi, "bit 6 = API PSRAM absente");
+
+  // Les clés JSON `w96`/`w95` sont CONSERVÉES (renommer serait un changement
+  // d'API, hors périmètre de ce lot), et chacune doit rester câblée sur le bon
+  // couple de bits — sinon les verdicts tri-état s'inversent en silence.
+  char* route = readProjectCode("src/web_routes_config.cpp");
+  TEST_ASSERT_NOT_NULL_MESSAGE(route, "src/web_routes_config.cpp INTROUVABLE.");
+  TEST_ASSERT_TRUE_MESSAGE(
+      countOccurrences(route, "\"w96\", floors.witness, kHeapWitnessAboveExternal") >= 1,
+      "`w96` doit rester le verdict de la classe DEPORTEE (`seuil + 1`). La cle est conservee a "
+      "dessein pour que les releves avant/apres du lot restent comparables : la recabler sur un "
+      "autre bit inverserait la lecture sans rien casser.");
+  TEST_ASSERT_TRUE_MESSAGE(
+      countOccurrences(route, "\"w95\", floors.witness, kHeapWitnessAtThresholdExternal") >= 1,
+      "`w95` doit rester le verdict du temoin de CONTROLE (`seuil`), attendu FALSE. Un true ici "
+      "est une ANOMALIE a instruire, pas un detail d'affichage.");
+  free(route);
 }
 
 // ===========================================================================
@@ -713,7 +833,9 @@ int main(int, char**) {
   RUN_TEST(test_expected_table_encodes_to_749);
   RUN_TEST(test_the_comment_stripper_actually_disarms_the_comment_loophole);
   RUN_TEST(test_every_pure_function_of_the_lot_has_a_real_caller);
-  RUN_TEST(test_the_4096_4095_witness_is_wired_to_the_extmem_threshold);
+  RUN_TEST(test_the_psram_witness_is_relative_to_the_extmem_threshold);
+  RUN_TEST(test_the_five_psram_threshold_static_asserts_are_present);
+  RUN_TEST(test_the_psram_witness_bits_and_json_keys_stay_comparable);
   RUN_TEST(test_mask_literals_are_pinned_to_idf_constants_in_firmware);
   RUN_TEST(test_no_new_heap_probe_call_site);
   RUN_TEST(test_the_http_route_reads_only_stored_atomics);

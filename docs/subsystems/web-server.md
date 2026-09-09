@@ -154,7 +154,8 @@ rapport au seuil PSRAM sont **assertés à la compilation**
 de périmer cette page.
 
 > ⚠️ **Le motif n'est pas « ça va planter ».** La prémisse d'origine de `bug-113` est
-> **fausse** au-delà de 4 095 o : `calloc` → `heap_caps_malloc_default`, qui charge
+> **fausse** au-delà du seuil de bascule PSRAM (4 095 o alors, **1 024 o** depuis la v2.50.0) :
+> `calloc` → `heap_caps_malloc_default`, qui charge
 > `MALLOC_CAP_DEFAULT|MALLOC_CAP_SPIRAM` dès que `size > malloc_alwaysinternal_limit`
 > — donc **PSRAM d'abord**, repli interne seulement si la PSRAM rend `NULL` (établi
 > **par désassemblage** de `libheap.a`, section `.iram1.2`, le 2026-09-07 ;

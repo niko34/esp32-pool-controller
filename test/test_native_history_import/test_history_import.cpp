@@ -1354,11 +1354,15 @@ static void test_parite_marge_de_1024_octets_entre_budget_et_plafond(void) {
 static void test_parite_budget_client_reste_au_dessus_du_seuil_psram(void) {
   // ⚠️ COROLLAIRE CONTRE-INTUITIF de bug-113, etabli par DESASSEMBLAGE de
   // libheap.a le 07/09/2026 : heap_caps_malloc_default n'oriente vers la PSRAM
-  // que si `size > malloc_alwaysinternal_limit` (4 095, pose par main.cpp:130).
-  // Un lot de 4 095 o ou MOINS repartirait donc dans le tas 8 bits INTERNE,
-  // celui qui est affame (bug-080). Decouper « plus fin pour faire plus sur »
-  // est donc exactement le mauvais reflexe, et cette assertion est la pour
-  // l'arreter.
+  // que si `size > malloc_alwaysinternal_limit`, seuil pose par main.cpp depuis
+  // kPsramExtmemThresholdBytes. Un lot de cette taille ou MOINS repartirait donc
+  // dans le tas 8 bits INTERNE, celui qui est affame (bug-080). Decouper « plus
+  // fin pour faire plus sur » est donc exactement le mauvais reflexe, et cette
+  // assertion est la pour l'arreter.
+  // ⚠️ Le chiffre de 4 095 qui figurait ici est PERIME : feature-124 (v2.50.0)
+  // a fait descendre le seuil a 1 024. L'assertion, elle, n'a pas bouge d'un iota
+  // — elle est RELATIVE au seuil depuis l'origine, et c'est exactement pourquoi
+  // ce palier ne l'a pas cassee. Ne pas y regraver de valeur en dur.
   const long budget = jsChunkBudget();
   char msg[520];
   snprintf(msg, sizeof(msg),

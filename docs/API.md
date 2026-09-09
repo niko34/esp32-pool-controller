@@ -688,9 +688,12 @@ lots suivants. L'interface le fait seule (budget de **7 168 o** par lot,
 `kHistoryImportChunkBudgetBytes`, soit 1 024 o de marge sous le plafond) ; un client
 tiers doit faire de même.
 
-> ⚠️ **Ne pas « optimiser » en découpant plus fin.** Un corps de **≤ 4 095 o**
-> repartirait dans le **tas 8 bits interne**, celui qui est en famine : au-delà de ce
-> seuil, `heap_caps_malloc_default` préfère la **PSRAM** ([ADR-0061](adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)).
+> ⚠️ **Ne pas « optimiser » en découpant plus fin.** Un corps **≤ au seuil de bascule
+> PSRAM** repartirait dans le **tas 8 bits interne**, celui qui est en famine : seul ce
+> qui **dépasse** ce seuil voit `heap_caps_malloc_default` préférer la **PSRAM**
+> ([ADR-0061](adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md),
+> révisé par [ADR-0078](adr/0078-bascule-psram-cesse-d-etre-chirurgicale.md) — seuil
+> **4 095 o** jusqu'en v2.49.3, **1 024 o** depuis la **v2.50.0**).
 > Le budget de 7 168 o est **au-dessus à dessein**, et cet invariant est asserté.
 
 > **Poids d'un point, avec sa méthode** ([ADR-0073](adr/0073-chiffre-consigne-porte-sa-methode.md)) :
@@ -1313,7 +1316,7 @@ Quatre champs **purement additifs** ([ADR-0066](adr/0066-sonde-du-tas-au-moment-
 Le paramètre **`?hf=1`** ajoute un objet **`hf`** à la réponse (feature-122, lot
 C-1a de `bug-080`). C'est un **instrument de diagnostic** : il publie les
 **planchers glissants** de cinq pools de tas, l'événement qui tenait la machine
-au creux, et le résultat du témoin d'allocation 4096/4095. **Aucune garde du
+au creux, et le résultat du témoin de bascule PSRAM. **Aucune garde du
 firmware ne lit ces champs** — elles restent sur `MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT`
 (`0x0804`), cf. [ADR-0077](adr/0077-metrique-de-garde-exclut-les-pools-inatteignables.md).
 
@@ -1400,9 +1403,34 @@ Champs de tête :
 | `wmax` | `uint32` | **pire** durée observée d'un parcours de tas `0x0804`, en µs, depuis le démarrage (v2.49.1) |
 | `wmed` | `uint32` | médiane **APPROCHÉE** de cette durée, en µs — à lire « **≤ wmed** », cf. ci-dessous (v2.49.1) |
 | `hg` | `uint32` | évaluations du filtre de la garde 503 (≈ GET servis), monotone |
-| `w` | `uint8` | bits **bruts** du témoin 4096/4095 |
-| `w96` / `w95` | booléen \| `null` | verdict **tri-état** : `true` = allocation tombée en **RAM externe**, `false` = **interne**, `null` = **aucun verdict** |
+| `w` | `uint8` | bits **bruts** du témoin de bascule PSRAM |
+| `w96` / `w95` | booléen \| `null` | verdict **tri-état** : `true` = allocation tombée en **RAM externe**, `false` = **interne**, `null` = **aucun verdict**. ⚠️ **Sémantique RELATIVE au seuil depuis la v2.50.0**, voir ci-dessous |
 | `wdis` | booléen \| `null` | les deux API de classement d'adresse se contredisent |
+
+> ⚠️ **`w96` / `w95` : les clés ne bougent pas, leur sémantique devient RELATIVE
+> au seuil** (v2.50.0, feature-124 / [ADR-0078](adr/0078-bascule-psram-cesse-d-etre-chirurgicale.md)).
+>
+> | Clé | Ce qu'elle rapporte | Taille allouée | Attendu |
+> |---|---|---|---|
+> | `w96` | la **plus petite classe déportée** par la politique | `kPsramExtmemThresholdBytes + 1` (**1 025 o**) | `true` (PSRAM) |
+> | `w95` | le témoin de **contrôle** | `kPsramExtmemThresholdBytes` (**1 024 o**) | `false` (interne) — un `true` est une **anomalie à instruire** |
+>
+> Les noms `w96` / `w95` datent du seuil de 4 095 o, où ces deux tailles valaient
+> **4 096** et **4 095** par coïncidence de calibrage : l'ancien couple est le **cas
+> particulier** de la forme relative, à l'ancien seuil.
+>
+> **Pourquoi les clés sont CONSERVÉES malgré des noms devenus trompeurs** : le relevé
+> de référence a été pris **le 09/09/2026, avant** le changement de seuil. Renommer les
+> clés — ou déplacer les bits de `w` — rendrait les relevés **avant / après**
+> incomparables **sans rien casser par ailleurs**, c'est-à-dire de la façon la plus
+> silencieuse possible. La comparabilité de la mesure prime donc sur l'élégance du nom ;
+> un renommage serait un changement d'API, hors du périmètre de ce lot. Les sept
+> positions de bits de `w` et le câblage des deux clés sont épinglés par un test natif.
+>
+> ⚠️ **`w96 = true` ne prouve pas que la politique agit sous charge** : le témoin
+> s'exécute **au démarrage, PSRAM quasi vide**. Il dit où tombe une allocation à cet
+> instant-là, pas où elle tombe en pleine rafale, quand la préférence `extmem` peut se
+> replier silencieusement en interne.
 
 Bits de contexte (`cf`, `cb`, `ctx`, `ctxb`) — **purement observationnels**,
 aucune décision du firmware ne les relit :

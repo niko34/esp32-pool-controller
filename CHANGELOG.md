@@ -2,6 +2,72 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.50.0] - 2026-09-09
+
+> **Ce qui change pour vous** : rien de visible. Aucun écran, aucun message,
+> aucun réglage ne bouge. Le firmware change sa **politique d'allocation
+> mémoire** pour laisser respirer le tas interne, celui dont la pénurie provoque
+> les refus « Service momentanément indisponible » au chargement de l'interface.
+
+### Firmware
+
+- **La bascule PSRAM cesse d'être chirurgicale : le seuil descend de 4 095 à
+  1 024 octets** (`kPsramExtmemThresholdBytes`). Les allocations `malloc`/`new`
+  ordinaires de la classe **[1 025 ; 4 095]** préfèrent désormais la PSRAM — dont
+  les **pbufs lwIP** (~1 600 o, une structure par connexion TCP), la classe qui
+  fragmente le tas interne sous six requêtes parallèles. La valeur n'est pas un
+  tâtonnement mais un **encadrement** : sous 1 600 pour que lwIP bascule,
+  au-dessus de 512 pour laisser en RAM interne les caches LittleFS (512 o) et le
+  pool FILE de la libc (428 o), qui côtoient les écritures flash — fenêtre
+  **[512 ; 1 599]**. Cinq `static_assert` verrouillent ces relations à la
+  compilation.
+- ⚠️ **Ce que ce lot NE fait PAS** : il ne déplace **aucun tampon WiFi**. Les
+  allocations qui échouent (`caps=0x080C`, 1 622 o) demandent leurs capacités
+  **explicitement** : elles contournent ce seuil et le contourneront toujours. Le
+  lot ne les corrige pas, il leur **fait de la place**.
+- **Premier des trois pas** de la stratégie arrêtée le 08/09 pour clore
+  `bug-080` : S7 (ce lot), puis la **mesure du fragmenteur**, puis S2
+  (« sérialiser le service des fichiers statiques »). Il a été choisi pour son
+  rapport bénéfice/risque — coût quasi nul, réversible en une ligne — **pas** pour
+  son efficacité attendue.
+- ⚠️ **Son effet reste à vérifier, et l'échec est un résultat possible.** Le
+  critère est **binaire** : faire remonter le plancher fin `hf.i8.mb` au-dessus de
+  **1 622 o** sous reproduction volontaire identique. Il ne se mesure **que sur
+  cible**, après déploiement.
+- **Le témoin de bascule PSRAM devient relatif au seuil** : il alloue désormais
+  `seuil + 1` et `seuil` au lieu de 4 096 et 4 095 o. À seuil 1 024, un
+  `malloc(4095)` part en PSRAM — le témoin de contrôle aurait signalé une
+  **anomalie inexistante**. Les **clés JSON `w96`/`w95` et les positions de bits
+  sont conservées** pour que le relevé du 09/09 reste comparable à celui d'après
+  déploiement.
+- **Le message PSRAM du démarrage annonce le nouveau seuil** : « allocations de
+  PLUS de 1024 o tentées en PSRAM d'abord […] ; 1024 o et moins : RAM interne ».
+
+### Documentation
+
+- **[ADR-0078](docs/adr/0078-bascule-psram-cesse-d-etre-chirurgicale.md)** créé —
+  « la bascule PSRAM cesse d'être chirurgicale ». Il **révise assumément** la
+  doctrine du lot B-1 ([ADR-0061](docs/adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md),
+  dont la décision reste en vigueur), trace les alternatives écartées — garder
+  4 095 ; **2 048, issu d'un raisonnement inversé** ; 512 d'un coup ; paliers sous
+  512, **exclus** car l'exposition y devient binaire — et réénonce l'invariant de
+  la condition C5 du gate `pool-chemistry` : l'innocuité sous cache coupé repose
+  sur la **copie interne d'`esp_flash`** *et* sur l'**absence d'ISR IRAM
+  applicative** dans `src/`.
+- ⭐ **Le creux réel du tas interne est 1 076 o, et non 2 932.** Le chiffre de
+  2 932 sur lequel toute la stratégie des sept scénarios avait été bâtie était le
+  **seuil de déclenchement** observé par la garde 503 au moment où elle refuse,
+  pas le creux. Le creux relevé le 09/09 est presque **trois fois plus bas** — et
+  il explique le défaut : **1 076 < 1 622**, la taille du tampon TX WiFi.
+- `docs/subsystems/system-health.md` : nouvelle section sur la politique de
+  bascule PSRAM (encadrement, motif lwIP, ce que le lot ne fait pas, critère
+  binaire) ; le témoin A7 et sa table de bits passent à la sémantique
+  `seuil`/`seuil + 1`.
+- `docs/API.md` : sémantique de `w96`/`w95` devenue relative au seuil, clés
+  inchangées, avec le motif de cette conservation.
+- `docs/subsystems/oom-guard.md`, `docs/subsystems/web-server.md` : seuil et
+  message de démarrage réalignés.
+
 ## [2.49.3] - 2026-09-08
 
 > **Ce qui change pour vous** : rien de visible. Troisième et dernier défaut de
@@ -23,6 +89,9 @@
   que l'épisode du 29/08 qui a motivé l'ADR-0067 — deux firmwares, deux
   reproductions indépendantes, dix jours d'écart. Une rafale de six requêtes
   parallèles laisse ce trou-là.
+  ⚠️ **Relu le 09/09** : cette constante est le **seuil de déclenchement** observé
+  par la garde 503 au moment où elle refuse, **pas le creux**. Le creux réel,
+  mesuré finement, est **1 076 o** — voir `[2.50.0]`.
 - Le mécanisme complet est capté pour la première fois : 176 requêtes, 25 échecs
   d'allocation, `maxBloc` de la sonde à **1 204 o** (sous les 1 622 du tampon TX
   WiFi), 503 déclenché à 5 108 et rétabli en 30 s.

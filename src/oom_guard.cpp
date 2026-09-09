@@ -26,7 +26,8 @@
 // INTERDICTION DE malloc() DANS CE FICHIER (bug-080 B-1, condition C3 du gate)
 // =============================================================================
 // Depuis heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes), un malloc()
-// ordinaire de plus de 4095 o est tenté EN PSRAM D'ABORD. La réserve du parachute
+// ordinaire de plus de kPsramExtmemThresholdBytes octets (4 095 jusqu'à
+// feature-124, 1 024 depuis) est tenté EN PSRAM D'ABORD. La réserve du parachute
 // (12 288 o) tomberait donc en PSRAM — et libérer de la PSRAM pendant une famine
 // de RAM INTERNE ne sauve strictement rien : le parachute deviendrait décoratif.
 // Le poison rend l'erreur IMPOSSIBLE À RECOMMETTRE : tout retour de malloc() dans

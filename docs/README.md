@@ -122,7 +122,8 @@ docs/
 │   ├── 0074-temperature-figee-statu-quo-instrumente.md
 │   ├── 0075-decoupage-client-contre-streaming-firmware.md
 │   ├── 0076-reconciliation-du-tmp-de-rotation-au-boot.md
-│   └── 0077-metrique-de-garde-exclut-les-pools-inatteignables.md
+│   ├── 0077-metrique-de-garde-exclut-les-pools-inatteignables.md
+│   └── 0078-bascule-psram-cesse-d-etre-chirurgicale.md
 │
 ├── API.md               ← Référence REST + WebSocket
 ├── MQTT.md              ← Topics MQTT + auto-discovery Home Assistant

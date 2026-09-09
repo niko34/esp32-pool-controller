@@ -92,7 +92,7 @@ Heap 8bits: libre8=46088 maxBloc8=4596 minBoot=3060 minFen=3060 ws=1 psram=41748
 | `ws` | Clients WebSocket connectés — contexte de charge, distingue régime chargé et régime calme |
 | `psram` | **PSRAM libre en octets** (`ESP.getFreePsram()`), ajouté en **v2.35.0** ([ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)) — `0` sur module WROOM |
 
-> **Pourquoi `psram=` a été ajouté** (bug-080 lot B-1) : depuis la bascule des allocations de plus de 4095 o vers la PSRAM, la **prédiction falsifiable** du correctif est que la PSRAM libre **chute à chaque chargement d'interface**. Sans ce chiffre **sur la même ligne** que `libre8` et `minFen`, la corrélation n'est pas observable.
+> **Pourquoi `psram=` a été ajouté** (bug-080 lot B-1) : depuis la bascule des allocations dépassant le seuil PSRAM (4 095 o alors, **1 024 o** depuis la v2.50.0), la **prédiction falsifiable** du correctif est que la PSRAM libre **chute à chaque chargement d'interface**. Sans ce chiffre **sur la même ligne** que `libre8` et `minFen`, la corrélation n'est pas observable.
 >
 > **Ce qu'il faut y lire pendant les 48 h d'observation** : `minFen` ne doit plus descendre sous **~30 000 o**, et `psram` doit **baisser de plusieurs dizaines de Ko** lors des chargements d'UI puis remonter. Une baisse de `psram` est le signe **attendu**, pas une anomalie : la PSRAM est devenue un **pool de travail**. En revanche, **si `minFen` replonge à 16-20 Ko, l'hypothèse du tampon stdio est fausse** et le diagnostic repart aux mesures.
 >
@@ -110,6 +110,99 @@ Deux points de mise en œuvre à connaître :
 **La bascule des gardes a été faite en v2.33.0** ([ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md)) sur les relevés propres 2.26→2.32 de cette trace. L'échelle contractuelle en métrique 8 bits : `2 048 (repli) < 4 096 (auto-heal) < 6 144 (skip WS) < 12 288 (WARN) < 18 432 (réarmement nominal) < 21 492 (nominal terrain)`, débounce maintenu à 3. La trace reste émise pour surveiller la **dérive** du régime : si `minFen` s'installe durablement sous 12 288, les creux s'aggravent.
 
 > **Historique** : la règle `clamp(0,40 × min(maxBloc8) ; 8192 ; 16384)` d'[ADR-0038](../adr/0038-metrique-memoire-allouable-8-bits.md) avait été déclarée **inapplicable** en v2.20.2 (min mesuré 3 060 o → plancher 8 192 au-dessus du régime normal → mode maintenance atteignable) et la bascule refusée par NO GO ([ADR-0040](../adr/0040-pas-de-calibrage-sur-fragmentation-pathologique.md), superseded). La révocation du NO GO repose sur un autre argument : **l'immunité vient du débounce temporel, pas du niveau du seuil** — voir [ADR-0058](../adr/0058-gardes-heap-metrique-8-bits.md).
+
+## Politique de bascule PSRAM des allocations ordinaires (v2.50.0, feature-124 / S7)
+
+`heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes)` est appelé au
+`setup()`, **juste après `initOomGuard()`** ([`main.cpp`](../../src/main.cpp)) et
+avant tout log (`systemLogger.begin()` n'a pas encore eu lieu). Il fixe le seuil
+au-delà duquel les allocations `malloc` / `new` **ordinaires** préfèrent la PSRAM.
+
+| Version | Seuil | Classe effectivement déportée |
+|---|---|---|
+| v2.35.0 → v2.49.3 (lot B-1, [ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md)) | **4 095 o** | « exactement 4 096 o » — le tampon stdio VFS, et rien d'autre |
+| **v2.50.0** ([ADR-0078](../adr/0078-bascule-psram-cesse-d-etre-chirurgicale.md)) | **1 024 o** | tout ce qui **dépasse** 1 024 o, dont les **pbufs lwIP** (~1 600 o) |
+
+**La règle codée est INCLUSIVE** : « taille **≤** seuil ⇒ RAM interne ». Seul ce
+qui **dépasse** le seuil part en PSRAM d'abord (désassemblage de la `libheap.a`
+liée, `bgeu limit, size`). Un raisonnement qui perd ce sens conclut le contraire
+de ce qu'il énonce : c'est ce qui avait d'abord fait retenir 2 048, où
+`1 622 ≤ 2 048` serait resté **interne** et le lot n'aurait rien déporté.
+
+La bascule reste une **préférence, pas une contrainte** : si la PSRAM refuse,
+l'allocateur retombe en RAM interne — aucun échec supplémentaire n'est créé. Sur
+un module sans PSRAM (WROOM), `psramFound()` est faux et l'appel est **sauté** :
+binaire unique, comportement inchangé.
+
+### L'encadrement de la valeur — les deux bornes et leur motif
+
+- **Borne haute — strictement sous 1 600.** Les pbufs lwIP pèsent ~1 600 o, à
+  raison d'**une structure par connexion TCP** : c'est la classe qui fragmente le
+  tas interne sous six requêtes parallèles. Elle ne bascule que si
+  `1 600 > seuil`.
+- **Borne basse — strictement au-dessus de 512.** Les caches de LittleFS (512 o)
+  et le pool FILE de la libc (428 o) doivent **rester en RAM interne** : ce sont
+  eux qui côtoient les **écritures flash**, pendant lesquelles le cache
+  flash/PSRAM est **coupé** — le vrai danger de ce lot. Au-dessus de 512
+  l'exposition est **quantifiée** ; en dessous elle change de **nature**. Le gate
+  `pool-chemistry` interdit donc de planifier un palier sous 512.
+- **Fenêtre utile : [512 ; 1 599] → 1 024.**
+
+Cinq `static_assert` de [`constants.h`](../../src/constants.h) verrouillent ces
+relations à la **compilation** :
+
+| Prédicat | Ce qu'il empêche |
+|---|---|
+| `seuil < kVfsStdioBufferBytes` | un seuil ≥ 4 096 ramènerait le tampon stdio VFS en RAM interne et rouvrirait `bug-080` à l'identique (acquis du lot B-1). ⚠️ L'ancienne forme `seuil + 1 == kVfsStdioBufferBytes` épinglait le seuil à 4 095 : **abandonnée à dessein** |
+| `seuil >= 512` | le franchissement de la borne basse (caches LittleFS / pool FILE en PSRAM) |
+| `kOomReserveBytes > seuil` | rend **nécessaire** le `MALLOC_CAP_INTERNAL` explicite d'`oom_guard.cpp` : une réserve de 12 288 o prise par `malloc()` partirait en PSRAM et ne sauverait rien d'une famine de RAM interne |
+| `kOomFallbackReserveBytes <= seuil` | condition **C3** du gate : la réserve de **repli** vaut 1 024 o, soit **exactement** le seuil — plus aucune marge. Un palier abaissé la ferait basculer sans alerte |
+| `kHistoryImportChunkBudgetBytes > seuil` | découper l'import d'historique « plus fin pour faire plus sûr » ferait repartir les lots dans le tas interne affamé |
+
+### Pourquoi lwIP est soumis à CE seuil
+
+`lwipopts.h:1712` retient `#define mem_clib_malloc malloc`, avec
+`MEM_LIBC_MALLOC=1` et `MEMP_MEM_MALLOC=1`, parce que
+`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP` n'est **pas** activé. Toutes les
+structures lwIP passent donc par le `malloc` ordinaire — donc par la politique
+`extmem`.
+
+### ⚠️ Ce que ce lot NE fait PAS
+
+Il ne déplace **aucun tampon WiFi**. Les allocations qui échouent demandent
+`caps=0x080C` (`8BIT|DMA|INTERNAL`) **explicitement**, pour **1 622 o** : elles
+**contournent** ce seuil, et le contourneront toujours. Le lot ne les déplace pas,
+il leur **fait de la place** en déportant tout ce qui passe par le `malloc`
+ordinaire. C'est une promesse plus faible qu'un correctif, et elle doit être
+énoncée ainsi.
+
+### Le critère de succès est binaire — et non vérifié à ce jour
+
+Référence relevée le **09/09/2026 à 07:10** sur la **v2.49.3**, par reproduction
+volontaire de l'utilisateur, instrument complet pour la première fois :
+
+| Grandeur | Valeur |
+|---|---|
+| **Plancher fin `hf.i8.mb`** | **1 076 o** |
+| **Régime au creux** (`ctxAtMin`) | **`0x02` = rafale HTTP** — attribution sans ambiguïté |
+| Sondes d'échec | **948**, 1 204, 1 268 o |
+| Planchers `0x080C` / `0x1804` (résolution 8 s) | **20 468 o** — ils n'ont **rien vu** (facteur **19**) |
+| Épisode 503 | déclenché à **2 932**, **24 refus en 35 s** |
+
+⭐ **Le chiffre de 2 932 n'était pas le creux.** C'est le **seuil de
+déclenchement** que la garde 503 observe **au moment où elle refuse**. Le creux
+réel est **presque trois fois plus bas**, et c'est lui qui explique le défaut :
+**1 076 < 1 622**, la taille du tampon TX WiFi — l'échec est arithmétique.
+
+**Critère de succès** : faire remonter le plancher fin `hf.i8.mb`
+**au-dessus de 1 622 o** sous une reproduction volontaire identique. Ce n'est pas
+une amélioration à apprécier, c'est un seuil franchi ou non.
+
+> ⚠️ **Non vérifié à ce jour.** Ce critère ne se mesure **que sur cible**, après
+> déploiement. L'**échec est un résultat possible et prévu** : le seuil ne
+> gouverne pas les allocations à caps explicites. Protocole :
+> [§ Protocole de relevé sur cible](#protocole-de-relevé-sur-cible).
+
 
 ## Planchers glissants multi-masques (v2.49.0, feature-122 lot C-1a)
 
@@ -247,18 +340,32 @@ Le refus `fs_guard` n'a pas de bit propre : il **alimente** le plancher `0x0804`
 (`heapNoteMaxAlloc8Sample` depuis `fsGuardAdmit` / `fsGuardDrain`, sans parcours
 neuf), et sa trace reste celle de [acces-fichiers.md](acces-fichiers.md).
 
-### Témoin `malloc(4096)` + témoin de contrôle `malloc(4095)` (A7)
+### Témoin `malloc(seuil + 1)` + témoin de contrôle `malloc(seuil)` (A7)
 
 Deux `malloc()` au `setup()`, **libérés aussitôt** (aucune rétention), pour
-trancher une question ouverte : **le lot B-1 est-il opérant ou décoratif ?**
-`heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes)` (4095, v2.35.0,
-[ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md))
+trancher une question ouverte : **la bascule PSRAM est-elle opérante ou
+décorative ?** `heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes)`
+(v2.35.0, [ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md))
 devait envoyer les tampons stdio de 4 096 o en PSRAM — or `psram_free` est
 **immobile à 4 180 340 dans 152 relevés**.
 
-- `malloc(4096)` = la classe **exacte** du tampon visé, **attendue en PSRAM** ;
-- `malloc(4095)` = témoin de **contrôle**, attendu **interne** dans les deux
-  configurations.
+- `malloc(kPsramExtmemThresholdBytes + 1)` = la **plus petite** classe que la
+  politique doit déporter, donc la seule qui change de camp **exactement au
+  seuil** — **attendue en PSRAM** ;
+- `malloc(kPsramExtmemThresholdBytes)` = témoin de **contrôle**, attendu
+  **interne** dans les deux configurations (test inclusif).
+
+> ⚠️ **Les tailles sont RELATIVES au seuil depuis la v2.50.0** (condition **C4**
+> du gate `pool-chemistry`, feature-124). Le couple s'appelait « 4096 / 4095 »
+> parce que le seuil valait 4 095 et que `4 096 = seuil + 1` par coïncidence de
+> calibrage. **À seuil 1 024, un `malloc(4095)` part en PSRAM** : le témoin de
+> contrôle aurait affiché « externe » et le lecteur y aurait lu une **anomalie
+> inexistante**. Un témoin mensonger est pire qu'un témoin absent.
+> L'ancien couple 4096/4095 est donc le **cas particulier** de la forme relative,
+> à l'ancien seuil : la nouvelle expression est exactement l'ancienne,
+> **généralisée**, et elle garde son pouvoir discriminant à **tout** seuil futur.
+> La classe historique du tampon stdio VFS (4 096 o) reste couverte **a
+> fortiori**, puisque `4 096 > seuil`.
 
 Le couple donne une signature non ambiguë : **si les deux tombent du même côté,
 la politique d'allocation ne fait rien**. `malloc()` et jamais
@@ -268,17 +375,27 @@ politique qu'on éprouve. Le classement d'adresse croise **deux** avis
 `esp_psram_check_ptr_addr` si disponible) et leur **discordance est un résultat
 rapporté**, pas une erreur masquée.
 
-| Bit | Valeur | Signification |
-|---|---|---|
-| `kHeapWitnessSkipped` | `0x01` | pas de PSRAM (module WROOM) → témoin sauté |
-| `kHeapWitness4096External` | `0x02` | le `malloc(4096)` est tombé en **RAM externe** |
-| `kHeapWitness4095External` | `0x04` | le `malloc(4095)` aussi — **ANOMALIE** (le contrôle a bougé) |
-| `kHeapWitnessDisagreement` | `0x08` | les deux API de classement ne s'accordent pas |
-| `kHeapWitness4096Failed` / `…4095Failed` | `0x10` / `0x20` | l'allocation a échoué → **aucun verdict** |
-| `kHeapWitnessNoPsramApi` | `0x40` | `esp_psram_check_ptr_addr` indisponible (qualifie la confiance, ne contredit pas le verdict) |
+| Bit | Valeur | Signification | Nom jusqu'en v2.49.3 |
+|---|---|---|---|
+| `kHeapWitnessSkipped` | `0x01` | pas de PSRAM (module WROOM) → témoin sauté | inchangé |
+| `kHeapWitnessAboveExternal` | `0x02` | le `malloc(seuil + 1)` est tombé en **RAM externe** (attendu) | `kHeapWitness4096External` |
+| `kHeapWitnessAtThresholdExternal` | `0x04` | le `malloc(seuil)` aussi — **ANOMALIE** (le contrôle a bougé) | `kHeapWitness4095External` |
+| `kHeapWitnessDisagreement` | `0x08` | les deux API de classement ne s'accordent pas | inchangé |
+| `kHeapWitnessAboveFailed` / `…AtThresholdFailed` | `0x10` / `0x20` | l'allocation a échoué → **aucun verdict** | `kHeapWitness4096Failed` / `…4095Failed` |
+| `kHeapWitnessNoPsramApi` | `0x40` | `esp_psram_check_ptr_addr` indisponible (qualifie la confiance, ne contredit pas le verdict) | inchangé |
 
-**Lecture attendue si B-1 est opérant** : `w = 0x02` (`w96 = true`,
-`w95 = false`). **Si décoratif** : `w = 0x00` (les deux internes).
+**Lecture attendue si la politique est opérante** : `w = 0x02` (`w96 = true`,
+`w95 = false`). **Si décorative** : `w = 0x00` (les deux internes).
+
+> ✅ **Les clés JSON `w96` / `w95` NE BOUGENT PAS** — ni les positions de bits.
+> Seuls les **noms des constantes C++** ont changé, ce qui est interne et sans
+> effet sur le fil. Motif explicite : le relevé du **09/09/2026** a été pris
+> **avant** ce lot, et tout l'intérêt du comparatif avant/après tient à ce que les
+> bits n'aient pas changé de place et que les clés n'aient pas été renommées. Un
+> décalage de bit rendrait les deux relevés **incomparables sans rien casser par
+> ailleurs**. `w96` reste le verdict de la classe **déportée** (`seuil + 1`),
+> `w95` celui du témoin de **contrôle** (`seuil`). Un test natif épingle les sept
+> positions de bits **en littéraux** et le câblage des deux clés.
 
 > ✅ **VERDICT RELEVÉ LE 08/09/2026 : le lot B-1 est CONFIRMÉ OPÉRANT.** Le
 > `malloc(4096)` est tombé en **PSRAM**, le témoin de contrôle `malloc(4095)` en
@@ -295,9 +412,14 @@ rapporté**, pas une erreur masquée.
 > trace ne pouvait pas voir. C'est l'illustration exacte du motif de A6.
 >
 > ⚠️ La réserve de portée reste entière : le témoin tranche où tombe un
-> `malloc(4096)` **au démarrage, PSRAM quasi vide** — pas où tombe le tampon
+> `malloc(seuil + 1)` **au démarrage, PSRAM quasi vide** — pas où tombe le tampon
 > stdio en pleine rafale, sous pression PSRAM, quand la préférence `extmem` peut
 > retomber silencieusement en interne.
+>
+> 📋 **Ce verdict a été relevé à seuil 4 095** : les tailles allouées valaient
+> alors 4 096 et 4 095 o, soit `seuil + 1` et `seuil`. Il reste donc directement
+> comparable au verdict d'après la v2.50.0, où les mêmes bits portent 1 025 et
+> 1 024 o.
 
 ### Coût réel — énoncé sans arrondi
 
@@ -415,7 +537,7 @@ Heap masq fen: m804=31744/4096 m80C=30720/3584 m1804=31232/3900 ctxVu=0x0F walk=
 | `m804` / `m80C` / `m1804` | plancher `libre`/`plus gros bloc` du masque — `boot` = depuis le démarrage, `fen` = depuis le report précédent |
 | `c=0x..` | bits `kHeapCtx*` **au creux du plus gros bloc** de ce masque |
 | `mPS` | plancher du **libre PSRAM** (A6) — même grandeur que `psram_free`, mais en **minimum** : une allocation PSRAM transitoire est invisible sur un instantané |
-| `tem` | bits `kHeapWitness*` du témoin 4096/4095 |
+| `tem` | bits `kHeapWitness*` du témoin de bascule PSRAM (`seuil + 1` / `seuil`, v2.50.0 — voir A7) |
 | `ctxVu` | **OU** de tous les contextes vus dans la fenêtre |
 | `walk=max/med us` | durée observée du parcours `0x0804` (médiane **surestimée**, cf. ci-dessus) |
 | `4294967295` | **aucun échantillon** pour ce plancher (`kHeapFloorEmpty`) |
@@ -445,7 +567,7 @@ masques n'en mesurent pas.
 
 | Grandeur | Relevé | Lecture |
 |---|---|---|
-| Témoin A7 | `malloc(4096)` → **PSRAM**, `malloc(4095)` → **interne**, **aucune discordance** | lot B-1 **confirmé opérant** (cf. section A7 ci-dessus) |
+| Témoin A7 | `malloc(4096)` → **PSRAM**, `malloc(4095)` → **interne**, **aucune discordance** | lot B-1 **confirmé opérant** (cf. section A7 ci-dessus). Relevé **à seuil 4 095**, donc `seuil + 1` / `seuil` — comparable au relevé d'après la v2.50.0 |
 | `walkMaxUs` / médiane | **516 µs** / **≤ 512 µs** | **six fois** le repère de ~84 µs, **au-dessus des 300 µs** de la condition 5 du gate ⇒ elle **se déclenche** |
 | Épisodes 503 / échecs d'allocation | **zéro** / **zéro** | contre **3 épisodes** et **46 échecs** sur les 23 h précédentes |
 | `minBloc8` | **7 924 o** | **sous** le seuil de garde de **8 192 o**, et **sans un seul 503** |
@@ -562,8 +684,8 @@ agrégée) ; les planchers `boot` ne se rattrapent pas.
 > **7 924 o** — sous les **8 192 o** de la garde — **sans un seul refus**. Ne pas
 > lire un franchissement du plancher comme un déclenchement manqué.
 
-> ⚠️ **Ce que le témoin A7 ne dit pas.** Il tranche où tombe un `malloc(4096)`
-> **au démarrage, PSRAM quasi vide** — pas où tombe le tampon stdio **en pleine
+> ⚠️ **Ce que le témoin A7 ne dit pas.** Il tranche où tombe un
+> `malloc(seuil + 1)` **au démarrage, PSRAM quasi vide** — pas où tombe le tampon stdio **en pleine
 > rafale**, sous pression PSRAM, quand la préférence `extmem` peut retomber
 > silencieusement en interne (c'est une **préférence**, pas une contrainte).
 

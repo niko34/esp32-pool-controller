@@ -283,7 +283,7 @@ demande faite à l'utilisateur : rechargements multiples en onglets parallèles.
 | Grandeur | Valeur |
 |---|---|
 | Requêtes GET servies | **176** |
-| Plancher `0x0804`, **mesure fine** | **2 932 o** |
+| Plancher `0x0804`, **mesure fine** | **2 932 o** — ⚠️ **relu le 09/09 : ce n'est pas le creux**, cf. ci-dessous |
 | Planchers `0x080C` / `0x1804` (résolution 8 s) | **25 588 o** — ils n'ont **rien vu** |
 | `maxBloc` de la sonde d'échec | **1 204 o** — donc **sous les 1 622 o** du tampon TX |
 | Échecs d'allocation | **25** (dont une salve de 24) |
@@ -302,8 +302,24 @@ motivé l'ADR-0067 (cf. plus haut dans cette spec).
 **Exactement la même valeur, à dix jours d'intervalle**, sur deux firmwares
 différents et deux reproductions indépendantes. Une rafale de six requêtes
 parallèles laisse donc un trou de 2 932 octets, **reproductible à l'octet près**.
-Ce n'est pas du bruit : c'est une propriété du découpage du tas sous cette charge,
-et c'est le chiffre sur lequel raisonner.
+Ce n'est pas du bruit : c'est une propriété du découpage du tas sous cette charge.
+
+> ⭐⚠️ **CORRIGÉ LE 09/09/2026 — 2 932 N'EST PAS LE CREUX, ET CE N'EST DONC PAS LE
+> CHIFFRE SUR LEQUEL RAISONNER.** La reproduction volontaire du **09/09 à 07:10**
+> (v2.49.3, instrument complet : planchers fins **et** attribution de contexte
+> corrigée) donne un plancher fin `hf.i8.mb` de **1 076 o**, avec le régime
+> `0x02` = rafale HTTP au creux et des sondes d'échec à **948**, 1 204 et 1 268 o.
+>
+> **2 932 est le seuil de déclenchement** que la garde 503 observe **au moment où
+> elle refuse** — reproductible à l'octet près pour cette raison même, puisque
+> c'est le point de bascule de la garde et non le fond du trou. Le creux réel est
+> **presque trois fois plus bas**.
+>
+> **Et c'est lui qui explique le défaut** : **1 076 < 1 622**, la taille du tampon
+> TX WiFi. Les allocations `caps=0x080C` ne peuvent donc pas aboutir, ce que les
+> sondes d'échec confirment à 948 o. **Le chiffre de référence de ce dossier est
+> désormais 1 076 o.** Partout où 2 932 sert de référence de dimensionnement dans
+> cette spec, lire 1 076.
 
 ### ⚠️ ET L'ATTRIBUTION DU CONTEXTE A ÉCHOUÉ AU CREUX — corrigé en v2.49.3
 
@@ -1128,7 +1144,12 @@ Test du 05/09 après déploiement, appareil en régime sain (`maxBloc8 = 34 804`
 Ligne unique émise, conforme au bornage :
 `WARN Service fichiers suspendu (503) — maxBloc8=2932 o < 8192 o`
 
-**Le chiffre à retenir est 2 932 octets.** Sous 6 requêtes strictement simultanées,
+**Le chiffre à retenir est 2 932 octets.** ⚠️ **Périmé le 09/09/2026** : 2 932 est
+le seuil de déclenchement observé par la garde **au moment du refus**, pas le
+creux. Le creux fin mesuré sous reproduction identique vaut **1 076 o** (cf. la
+correction plus haut). Le raisonnement ci-dessous reste valable — le seuil de
+8 192 mord bien avant l'échec — mais avec **une marge plus grande** qu'écrit ici.
+Sous 6 requêtes strictement simultanées,
 le plus grand bloc s'effondre à cette valeur — alors qu'il valait 34 804 juste
 avant, et que la meilleure mesure échantillonnée de la journée n'était descendue
 qu'à 14 324 (sonde à 500 ms) et 1 908 (minimum firmware sur 30 min).
@@ -1768,6 +1789,55 @@ la table (épinglée en compilation par `static_assert(heapFloorsPredMask() ==
    métrique dans le même lot.
 5. Indépendamment, et sans attendre : `bug-121` et la double ouverture
    `exists()` + `open()` — dont la **priorité dépend du verdict A7** (§ ci-dessus).
+
+
+### 8. Où en est le LOT C au 2026-09-09 : **S7 est livré**, son effet reste à mesurer
+
+`feature-124` (scénario **S7**, **v2.50.0**) est livrée : code, tests, revue
+(**Approved**) et documentation. Le seuil de bascule PSRAM
+`kPsramExtmemThresholdBytes` passe de **4 095 à 1 024 o** — décision figée par
+[ADR-0078](../../../docs/adr/0078-bascule-psram-cesse-d-etre-chirurgicale.md),
+qui **révise assumément** la doctrine « chirurgicale » du lot B-1
+([ADR-0061](../../../docs/adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md),
+dont la décision reste en vigueur).
+
+**Ce que le lot fait** : les allocations `malloc`/`new` **ordinaires** de la
+classe **[1 025 ; 4 095]** préfèrent la PSRAM, dont les **pbufs lwIP** (~1 600 o,
+une structure par connexion TCP — la classe qui fragmente sous six requêtes
+parallèles). lwIP y est soumis parce que `lwipopts.h:1712` retient
+`#define mem_clib_malloc malloc` avec `MEM_LIBC_MALLOC=1` et `MEMP_MEM_MALLOC=1`
+(`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP` n'est pas activé).
+
+⚠️ **Ce que le lot NE fait PAS** : il ne déplace **aucun tampon WiFi**. Les
+allocations qui échouent (`caps=0x080C`, **1 622 o**) demandent leurs capacités
+**explicitement** : elles contournent le seuil et le contourneront toujours. Le
+lot ne les corrige pas, il leur **fait de la place**.
+
+**Son effet reste à mesurer, et l'échec est un résultat prévu.** Critère
+**binaire** : faire remonter le plancher fin `hf.i8.mb` **au-dessus de 1 622 o**
+sous reproduction volontaire identique. Il ne se mesure **que sur cible**.
+
+⭐ **La référence de ce dossier est désormais 1 076 o, et non 2 932.** Le relevé
+du **09/09 à 07:10** (v2.49.3) l'a établi : 2 932 est le **seuil de déclenchement**
+que la garde 503 observe **au moment où elle refuse**, pas le creux. Le creux réel
+est presque trois fois plus bas, et **1 076 < 1 622** explique arithmétiquement
+l'échec d'allocation du tampon TX.
+
+**Séquence restante, inchangée dans son ordre** :
+
+1. **Relever sur cible après déploiement de la v2.50.0** : le plancher fin
+   `hf.i8.mb` sous reproduction volontaire, le verdict A7 (`hf.w96`/`w95`, désormais
+   **relatifs au seuil** — clés et bits conservés pour rester comparables au relevé
+   du 09/09), et le **compteur d'anomalies de comptabilité de dosage**
+   avant/après : ⚠️ **toute hausse non nulle = retour arrière immédiat** (condition
+   **C2** du gate `pool-chemistry`).
+2. Puis la **mesure du fragmenteur**, puis **S2** (« sérialiser le service des
+   fichiers statiques », 8/10 — le seul scénario qui attaque la cause).
+3. ⚠️ **`feature-123` reste GELÉE** : le creux étant à 1 076 o et non 2 932, la
+   réserve DMA aurait dû être dimensionnée sur ce chiffre — soit **moins du tiers**
+   de ce que le dossier supposait. Elle retirerait de la RAM interne au pool
+   général, donc rendrait le 503 **plus** probable, sur un tas dont le creux réel
+   est trois fois plus bas qu'estimé. La décision de la geler en est **renforcée**.
 
 
 ---

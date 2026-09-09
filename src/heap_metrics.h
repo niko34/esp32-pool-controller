@@ -257,7 +257,7 @@ struct HeapFloors {
   uint16_t pred;          // 12 bits de la table de sélection
   uint8_t ctxSeen;      // bits vus depuis le DERNIER réarmement de fenêtre (30 min)
   uint8_t ctxSeenBoot;  // bits vus depuis le DÉMARRAGE — jamais réarmé
-  uint8_t witness;        // bits du témoin 4096/4095 (A7), cf. kHeapWitness*
+  uint8_t witness;        // bits du témoin de bascule PSRAM (A7), cf. kHeapWitness*
 };
 
 /**
@@ -296,19 +296,31 @@ HeapFloors heapFloorsRead();
 void heapFloorsRearmWindow();
 
 // ---------------------------------------------------------------------------
-// Témoin 4096/4095 (A7) — le lot B-1 est-il décoratif ?
+// Témoin de bascule PSRAM (A7) — la politique d'allocation est-elle opérante ?
 // ---------------------------------------------------------------------------
-// Deux `malloc()` au setup, libérés IMMÉDIATEMENT, l'un de 4096 o (attendu en
-// PSRAM depuis kPsramExtmemThresholdBytes = 4095), l'autre de 4095 o (attendu
-// interne dans les DEUX configurations = témoin de CONTRÔLE). Le couple donne
-// une signature non ambiguë : si les deux tombent du même côté, la politique
-// d'allocation n'a aucun effet.
+// Deux `malloc()` au setup, libérés IMMÉDIATEMENT :
+//  - `seuil + 1` o (kPsramExtmemThresholdBytes + 1) = la PLUS PETITE classe que
+//    la politique doit déporter, ATTENDUE en PSRAM ;
+//  - `seuil` o = témoin de CONTRÔLE, attendu INTERNE dans les DEUX
+//    configurations (test inclusif « taille <= seuil ⇒ interne »).
+// Le couple donne une signature non ambiguë : si les deux tombent du même côté,
+// la politique d'allocation n'a aucun effet.
+//
+// ⚠️ RELATIF AU SEUIL, PLUS À 4096/4095 (feature-124, condition C4 du gate) :
+// le couple s'appelait « témoin 4096/4095 » parce que le seuil valait 4 095.
+// À seuil 1 024, un malloc de 4 095 o partirait en PSRAM — le témoin de
+// CONTRÔLE devenait donc MENSONGER, et son nom avec. Exprimé en `seuil` et
+// `seuil + 1`, il garde son pouvoir discriminant à TOUT seuil futur. La classe
+// historique du tampon stdio VFS (4 096 o, cible de B-1) reste couverte
+// A FORTIORI : 4 096 > seuil, même branche de l'allocateur.
+// ⚠️ Les POSITIONS de bits sont INCHANGÉES : le champ brut `hf.w` reste
+// comparable aux relevés d'avant feature-124 (notamment celui du 09/09/2026).
 constexpr uint8_t kHeapWitnessSkipped = 1u << 0;      // pas de PSRAM → témoin sauté
-constexpr uint8_t kHeapWitness4096External = 1u << 1; // le 4096 o est tombé en RAM externe
-constexpr uint8_t kHeapWitness4095External = 1u << 2; // le 4095 o est tombé en RAM externe (ANOMALIE)
+constexpr uint8_t kHeapWitnessAboveExternal = 1u << 1;      // le `seuil + 1` o est tombé en RAM externe (ATTENDU)
+constexpr uint8_t kHeapWitnessAtThresholdExternal = 1u << 2; // le `seuil` o est tombé en RAM externe (ANOMALIE)
 constexpr uint8_t kHeapWitnessDisagreement = 1u << 3; // esp_ptr_external_ram ≠ esp_psram_check_ptr_addr
-constexpr uint8_t kHeapWitness4096Failed = 1u << 4;   // malloc(4096) a échoué
-constexpr uint8_t kHeapWitness4095Failed = 1u << 5;   // malloc(4095) a échoué
+constexpr uint8_t kHeapWitnessAboveFailed = 1u << 4;        // malloc(seuil + 1) a échoué
+constexpr uint8_t kHeapWitnessAtThresholdFailed = 1u << 5;  // malloc(seuil) a échoué
 constexpr uint8_t kHeapWitnessNoPsramApi = 1u << 6;   // esp_psram_check_ptr_addr indisponible
 
 /**
@@ -317,7 +329,7 @@ constexpr uint8_t kHeapWitnessNoPsramApi = 1u << 6;   // esp_psram_check_ptr_add
  */
 void heapWitnessRecord(uint8_t bits);
 
-/** @brief Bits du témoin 4096/4095 (0 = témoin jamais exécuté). */
+/** @brief Bits du témoin de bascule PSRAM (0 = témoin jamais exécuté). */
 uint8_t heapWitnessBits();
 
 #endif  // HEAP_METRICS_H

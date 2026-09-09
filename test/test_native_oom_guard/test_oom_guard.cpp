@@ -533,63 +533,228 @@ void test_rearm_real_constant_values_v2188(void) {
 }
 
 // -----------------------------------------------------------------------------
-// v2.35.0 (bug-080, lot B-1) — arithmétique du seuil de bascule PSRAM
+// v2.50.0 (bug-080, S7 / feature-124) — L'ENCADREMENT DU SEUIL DE BASCULE PSRAM
 // -----------------------------------------------------------------------------
-// CE QUE CE TEST APPORTE EN PLUS DES static_assert de constants.h : les deux
-// static_assert verrouillent des RELATIONS (seuil + 1 == tampon, réserve >
-// seuil) et tuent donc déjà, à la COMPILATION, la mutation « seuil 4095 → 4096 ».
-// Ils sont en revanche indifférents à une TRANSLATION des deux constantes : poser
-// kVfsStdioBufferBytes = 8192 et kPsramExtmemThresholdBytes = 8191 satisfait la
-// relation, compile sans un mot, et pourtant change complètement le
-// comportement — la classe « 4096 o » (le tampon stdio réel du VFS, mesuré dans
-// vfs_api.cpp) repasserait EN RAM INTERNE et bug-080 reviendrait à l'identique,
-// tandis que toute la plage 4097-8191 y basculerait au passage. Ce test fige donc
-// les VALEURS ABSOLUES, seul moyen de refuser cette translation.
-void test_psram_extmem_threshold_arithmetic_v2350(void) {
+// HISTORIQUE, À LIRE AVANT DE « CORRIGER » CE TEST : jusqu'à v2.49.3 le seuil
+// valait 4 095 et un static_assert imposait `seuil + 1 == kVfsStdioBufferBytes`,
+// donc le seuil À L'OCTET — c'était la doctrine « chirurgicale » du lot B-1 (une
+// seule classe déplacée : exactement 4 096 o). feature-124 l'ABANDONNE à dessein :
+// le plancher fin mesuré le 09/09/2026 (1 076 o) passe sous le tampon TX WiFi de
+// 1 622 o, donc le tas interne 8 bits est la ressource rare, et le seuil descend
+// pour déporter les pbufs lwIP (~1 600 o). L'assert devient une inégalité STRICTE.
+//
+// CE QUE CE TEST APPORTE EN PLUS DES CINQ static_assert de constants.h : ceux-ci
+// ferment la BORNE BASSE (>= 512) et les relations avec le parachute, mais leur
+// borne haute est LARGE (< 4 096). Ils laissent donc passer tout seuil de 512 à
+// 4 095 — y compris 2 048, y compris un retour à 4 095, y compris une TRANSLATION
+// du couple (kVfsStdioBufferBytes = 8192 avec seuil = 8191 satisfaisait l'ancienne
+// égalité, et satisferait encore l'inégalité stricte). Ce test ferme la borne
+// haute, la seule que la compilation ne défend pas, et il la ferme PAR LES TAILLES
+// PHYSIQUES à déporter.
+//
+// ⚠️ AUCUNE ASSERTION DE CE BLOC NE COMPARE LE SEUIL À UNE VALEUR FIGÉE. Le seuil
+// est un PALIER : il rebougera. Ce qui ne rebouge pas, c'est la fenêtre utile et
+// les tailles qui la définissent. Un test qui épinglerait 1 024 casserait au
+// palier suivant et serait « réparé » par recopie du nouveau chiffre, sans que
+// personne ne revérifie l'encadrement.
+//
+// LA RÈGLE CODÉE, à garder devant les yeux (désassemblage de libheap.a,
+// `bgeu limit, size`, INCLUSIF) : « taille <= seuil ⇒ RAM INTERNE ». SEUL CE QUI
+// DÉPASSE le seuil préfère la PSRAM. Le raisonnement qui avait d'abord fait
+// retenir 2 048 (« au-dessus de 1 622 pour capturer la classe lwIP ») conclut donc
+// le CONTRAIRE de ce qu'il énonce : à 2 048, 1 622 <= 2 048 resterait INTERNE et le
+// lot n'aurait rien déporté. Erreur rattrapée par le gate pool-chemistry avant
+// tout code ; ce test existe pour qu'elle ne puisse pas revenir par le seuil.
+
+// La règle de l'IDF, énoncée UNE fois et appliquée telle quelle ci-dessous. Le
+// paramètre `threshold` est explicite à dessein : c'est ce qui permet de rejouer
+// la règle sur des paliers CANDIDATS, et donc de tester les garde-fous.
+static bool psramIsPreferredFor(uint32_t size, uint32_t threshold) {
+  return size > threshold;
+}
+
+// Tailles PHYSIQUES qui encadrent le seuil. Ce ne sont pas des choix de ce
+// projet : ce sont des tailles MESURÉES ailleurs et recopiées ici. Si l'une
+// d'elles change, l'échec de ce test est le signal attendu, pas un faux positif.
+static const uint32_t kLwipPbufBytes = 1600u;      // 1 structure lwIP par connexion TCP
+static const uint32_t kWifiTxBufferBytes = 1622u;  // gabarit des échecs caps=0x080C
+static const uint32_t kLittleFsCacheBytes = 512u;  // cache LittleFS — côtoie l'écriture flash
+static const uint32_t kLibcFilePoolBytes = 428u;   // pool FILE de la libc — idem
+
+void test_psram_extmem_threshold_window_v2500(void) {
+  const uint32_t seuil = (uint32_t)kPsramExtmemThresholdBytes;
+
   // Le tampon stdio du VFS vaut EXACTEMENT 4096 o (miroir de
   // DEFAULT_FILE_BUFFER_SIZE, libraries/FS/src/vfs_api.cpp) : c'est une
   // constante d'un composant EXTERNE, recopiée ici. Si le core change ce
   // chiffre, l'échec de ce test est le signal attendu, pas un faux positif.
   TEST_ASSERT_EQUAL_UINT32(4096u, (uint32_t)kVfsStdioBufferBytes);
-  // POURQUOI 4095 ET PAS 4096 : le test de heap_caps_malloc_default est
-  // « taille <= seuil ⇒ RAM INTERNE » (inclusif, désassemblage de libheap.a).
-  // À 4096, le tampon stdio retomberait du côté interne et le défaut d'origine
-  // reviendrait à l'identique — il s'en faut d'UN OCTET, et c'est précisément
-  // cet octet que le lot B-1 corrige.
-  TEST_ASSERT_EQUAL_UINT32(4095u, (uint32_t)kPsramExtmemThresholdBytes);
-  // La relation elle-même (redondante avec le static_assert, conservée pour que
-  // l'invariant soit ÉNONCÉ dans la suite de tests et non seulement dans un
-  // en-tête) : le seuil est le plus grand entier qui laisse encore le tampon
-  // basculer, donc tampon - 1.
-  TEST_ASSERT_EQUAL_UINT32((uint32_t)kVfsStdioBufferBytes,
-                           (uint32_t)kPsramExtmemThresholdBytes + 1u);
-  // Rien d'autre ne doit changer de camp : un seuil strictement inférieur
-  // déplacerait des allocations plus petites que le tampon (correctif non
-  // chirurgical, effet de bord non mesuré sur tout le reste du firmware).
-  TEST_ASSERT_TRUE((uint32_t)kPsramExtmemThresholdBytes <
-                   (uint32_t)kVfsStdioBufferBytes);
 
-  // POURQUOI LA RÉSERVE DU PARACHUTE DOIT DÉPASSER LE SEUIL : c'est cette
+  // (1) L'ACQUIS DE B-1 TIENT TOUJOURS. Le seuil n'est plus épinglé à
+  // « tampon - 1 », mais le tampon stdio doit rester du côté PSRAM : c'est
+  // exactement ce qu'un seuil >= 4096 rouvrirait, à l'identique.
+  TEST_ASSERT_TRUE_MESSAGE(
+      psramIsPreferredFor((uint32_t)kVfsStdioBufferBytes, seuil),
+      "Le tampon stdio VFS (4 096 o) doit rester du cote PSRAM : c'est l'acquis du lot B-1. Un "
+      "seuil >= 4096 le ramenerait en RAM interne (test inclusif) et rouvrirait bug-080.");
+
+  // (2) BORNE HAUTE — le motif d'existence de feature-124 : les pbufs lwIP
+  // (~1 600 o, une structure par connexion TCP) doivent DÉPASSER le seuil. Ils
+  // sont bien soumis à CE seuil : `lwipopts.h` retient `mem_clib_malloc = malloc`
+  // (MEM_LIBC_MALLOC=1, MEMP_MEM_MALLOC=1) et CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP
+  // n'est pas activé — toutes ces structures passent par le malloc ordinaire.
+  // ⚠️ C'EST CETTE ASSERTION QUI DIT POURQUOI 2 048 ÉTAIT INUTILE : à 2 048,
+  // 1 600 <= 2 048 et 1 622 <= 2 048 restent INTERNES — rien de la classe lwIP ne
+  // bouge, et le lot serait un no-op qu'on n'aurait découvert qu'après déploiement.
+  TEST_ASSERT_TRUE_MESSAGE(
+      psramIsPreferredFor(kLwipPbufBytes, seuil),
+      "BORNE HAUTE VIOLEE : les pbufs lwIP (~1 600 o) ne depassent plus le seuil, donc ils "
+      "RESTENT en RAM interne et feature-124 ne deporte rien. Regle codee : « taille <= seuil "
+      "=> interne ». C'est l'erreur exacte du raisonnement inverse qui avait retenu 2 048.");
+  // Le gabarit de l'échec observé (1 622 o) borne le seuil lui aussi. NUANCE à
+  // ne pas perdre : ce tampon-là demande `caps=0x080C` EXPLICITEMENT, il
+  // CONTOURNE le seuil et ne sera jamais déporté par ce lot. On borne quand même
+  // le seuil par sa taille, parce que c'est le gabarit qui doit tenir dans le
+  // plus gros bloc interne (critère binaire du lot : plancher fin > 1 622 o) : un
+  // seuil au-dessus laisserait en RAM interne toute la classe de taille voisine,
+  // celle qui fragmente précisément autour de ce gabarit.
+  TEST_ASSERT_TRUE_MESSAGE(
+      psramIsPreferredFor(kWifiTxBufferBytes, seuil),
+      "Le seuil doit rester SOUS le gabarit des echecs caps=0x080C (1 622 o) : au-dessus, la "
+      "classe de taille qui fragmente autour de ce gabarit resterait entierement interne.");
+
+  // (3) BORNE BASSE — le vrai danger du lot. Les caches de LittleFS (512 o) et le
+  // pool FILE de la libc (428 o) côtoient les ÉCRITURES FLASH, pendant lesquelles
+  // le cache flash/PSRAM est COUPÉ : une donnée résidant en PSRAM et touchée là
+  // fait planter. Au-dessus de 512 l'exposition est QUANTIFIÉE ; en dessous elle
+  // change de NATURE. Gate pool-chemistry : ne jamais planifier de palier < 512.
+  TEST_ASSERT_FALSE_MESSAGE(
+      psramIsPreferredFor(kLittleFsCacheBytes, seuil),
+      "BORNE BASSE VIOLEE : les caches LittleFS (512 o) basculeraient en PSRAM. Ce sont eux qui "
+      "cotoient les ecritures flash (cache flash/PSRAM COUPE) : l'exposition passe de QUANTIFIEE "
+      "a BINAIRE. Le static_assert `seuil >= 512` de constants.h doit refuser ce palier.");
+  TEST_ASSERT_FALSE_MESSAGE(
+      psramIsPreferredFor(kLibcFilePoolBytes, seuil),
+      "BORNE BASSE VIOLEE : le pool FILE de la libc (428 o) basculerait en PSRAM — meme motif "
+      "que les caches LittleFS, meme interdiction.");
+
+  // (4) La fenêtre utile est NON VIDE, et le seuil est dedans. Énoncé une fois de
+  // plus en termes de bornes pour que l'échec nomme la fenêtre [512 ; 1 599].
+  TEST_ASSERT_TRUE_MESSAGE(kLittleFsCacheBytes < kLwipPbufBytes,
+                           "Fenetre utile VIDE : les deux bornes physiques se sont croisees. Ce "
+                           "n'est plus un choix de palier, c'est un arbitrage a reprendre.");
+  TEST_ASSERT_TRUE_MESSAGE(seuil >= kLittleFsCacheBytes && seuil < kLwipPbufBytes,
+                           "Le seuil est HORS de la fenetre utile [512 ; 1 599] : relire "
+                           "l'encadrement ecrit sur kPsramExtmemThresholdBytes (constants.h) "
+                           "AVANT de toucher a ce test.");
+
+  // (5) POURQUOI LA RÉSERVE DU PARACHUTE DOIT DÉPASSER LE SEUIL : c'est cette
   // relation, et elle seule, qui rend NÉCESSAIRE le MALLOC_CAP_INTERNAL explicite
   // de oomAllocReserveInternal(). Une réserve de 12 288 o allouée par un malloc()
-  // ordinaire partirait désormais EN PSRAM — or libérer de la PSRAM pendant une
-  // famine de RAM interne 8 bits ne rend pas un seul octet utilisable : le
-  // parachute deviendrait décoratif. Si la réserve repassait SOUS le seuil, les
-  // caps explicites ne seraient plus qu'une ceinture, et le #pragma GCC poison
-  // malloc de oom_guard.cpp perdrait sa justification.
-  TEST_ASSERT_TRUE((uint32_t)kOomReserveBytes > (uint32_t)kPsramExtmemThresholdBytes);
-  // Le palier de REPLI (1 024 o), lui, est sous le seuil : il resterait interne
-  // même sans caps. On le documente pour que personne ne conclue à tort que
-  // « seul le nominal a besoin de l'entonnoir » — les trois sites d'allocation
-  // passent par oomAllocReserveInternal() par UNIFORMITÉ, et parce qu'un futur
-  // recalibrage du repli au-dessus de 4 095 ne doit pas rouvrir le défaut.
-  TEST_ASSERT_TRUE((uint32_t)kOomFallbackReserveBytes <=
-                   (uint32_t)kPsramExtmemThresholdBytes);
+  // ordinaire partirait EN PSRAM — or libérer de la PSRAM pendant une famine de
+  // RAM interne 8 bits ne rend pas un seul octet utilisable : le parachute
+  // deviendrait décoratif (piège déjà tombé, feature-066, prouvé le 05/09/2026).
+  // Si la réserve repassait SOUS le seuil, les caps explicites ne seraient plus
+  // qu'une ceinture et le #pragma GCC poison malloc perdrait sa justification.
+  TEST_ASSERT_TRUE_MESSAGE(
+      psramIsPreferredFor((uint32_t)kOomReserveBytes, seuil),
+      "La reserve nominale du parachute doit DEPASSER le seuil : c'est ce qui rend le "
+      "MALLOC_CAP_INTERNAL explicite d'oom_guard.cpp NECESSAIRE et non decoratif.");
+
+  // (6) LE PALIER DE REPLI EST DÉSORMAIS *AU* SEUIL, PLUS BIEN EN DESSOUS.
+  // ⚠️ L'ancien commentaire de ce bloc parlait d'« un futur recalibrage du repli
+  // au-dessus de 4 095 » : il est CADUC. Le repli vaut 1 024 o et le seuil aussi —
+  // le test étant inclusif, le repli reste interne, mais il n'a plus AUCUNE marge.
+  // C'est le sens de la condition C3 du gate pool-chemistry : le prochain palier
+  // abaissé le ferait basculer, et cet assert (static_assert dans constants.h) est
+  // ce qui l'arrêtera à la COMPILATION. Les trois sites d'allocation continuent de
+  // passer par oomAllocReserveInternal() — la relation ci-dessous est une seconde
+  // barrière, pas la première.
+  TEST_ASSERT_FALSE_MESSAGE(
+      psramIsPreferredFor((uint32_t)kOomFallbackReserveBytes, seuil),
+      "La reserve de REPLI est passee du cote PSRAM du seuil : une reserve d'urgence en PSRAM ne "
+      "sauve rien d'une famine de RAM INTERNE. RELIRE oom_guard.cpp avant de toucher au palier.");
+  // Le repli est SOUS ou ÉGAL au seuil, mais aussi strictement sous le nominal :
+  // les deux paliers doivent rester distincts (sinon un seul palier utile).
+  TEST_ASSERT_TRUE((uint32_t)kOomFallbackReserveBytes < (uint32_t)kOomReserveBytes);
+
   // Délai avant CRITICAL + alerte MQTT `oom_reserve_absent` (condition C2 du
   // gate) : 5 min = 30 tentatives de réarmement à kOomRearmCheckIntervalMs.
   TEST_ASSERT_EQUAL_UINT32(300000u, (uint32_t)kOomNoReserveCriticalDelayMs);
   TEST_ASSERT_TRUE((uint32_t)kOomNoReserveCriticalDelayMs >
                    10u * (uint32_t)kOomRearmCheckIntervalMs);
+}
+
+// -----------------------------------------------------------------------------
+// LES DEUX GARDE-FOUS DU GATE REFUSENT-ILS UN PALIER TROP BAS ? (feature-124 T3)
+// -----------------------------------------------------------------------------
+// Les cinq static_assert de constants.h ne peuvent pas être « exécutés » : ils
+// tuent à la compilation, ou ils n'existent pas. Deux choses restent donc à
+// prouver ici, et ce test ne prétend pas à plus :
+//  · que les PRÉDICATS existent bien dans constants.h — c'est le rôle de la
+//    sentinelle de texte de test_native_heap_caps_table, qui lit le fichier réel
+//    (la retirer, c'est la mutation « plancher supprimé » : elle doit mourir là) ;
+//  · que ces prédicats, REJOUÉS sur des paliers candidats, refusent bien ceux que
+//    le gate a interdits — c'est ce que fait la table ci-dessous, dont les
+//    attendus sont ÉCRITS À LA MAIN, un par un, avec leur motif.
+// Ce que ça apporte : un palier futur ne se choisit plus à l'estime. On lit la
+// table, on voit lequel des trois critères tombe, et pourquoi.
+void test_psram_threshold_guardrails_reject_a_lower_palier(void) {
+  struct Palier {
+    uint32_t candidat;
+    bool plancherOk;  // static_assert #2 : seuil >= 512
+    bool repliOk;     // static_assert #4 : kOomFallbackReserveBytes <= seuil
+    bool fenetreOk;   // borne haute : la classe lwIP dépasse le seuil
+    const char* motif;
+  };
+  // Attendus écrits à la main (aucun n'est calculé par le test) :
+  static const Palier kPaliers[] = {
+      {4095u, true, true, false,
+       "4 095 = l'AVANT-lot. Plancher et repli satisfaits, mais la classe lwIP (1 600 o) reste "
+       "interne : c'est precisement l'etat que feature-124 quitte. Une mutation qui remet 4 095 "
+       "doit mourir ICI."},
+      {2048u, true, true, false,
+       "2 048 = le RAISONNEMENT INVERSE. Rien ne le bloque cote parachute, et pourtant il ne "
+       "deporte RIEN de la classe lwIP : 1 622 <= 2 048 reste INTERNE. Inutile, pas dangereux "
+       "— donc invisible sans cette table."},
+      {1600u, true, true, false,
+       "1 600 exactement : le test etant INCLUSIF, un pbuf de 1 600 o resterait interne. La "
+       "borne haute est STRICTE, d'ou une fenetre qui s'arrete a 1 599."},
+      {1024u, true, true, true,
+       "1 024 = le palier retenu. Les trois criteres tiennent : plancher, repli au seuil, classe "
+       "lwIP deportee."},
+      {512u, true, false, true,
+       "512 = la borne basse ADMISSIBLE par le plancher, mais le repli du parachute (1 024 o) "
+       "passerait du cote PSRAM : c'est l'assert C3 qui l'arrete, PAS le plancher. Les deux "
+       "garde-fous ne se recouvrent donc pas."},
+      {511u, false, false, false,
+       "511 = SOUS LE PLANCHER : les caches LittleFS (512 o) basculent (512 > 511), l'exposition "
+       "sous cache coupe change de NATURE. Les TROIS criteres tombent d'un coup, et la "
+       "COMPILATION doit casser sur le plancher."},
+      {256u, false, false, false,
+       "256 : plancher, repli et borne basse violes a la fois. Aucun palier de ce genre ne doit "
+       "atteindre le deploiement."},
+  };
+  const size_t n = sizeof(kPaliers) / sizeof(kPaliers[0]);
+  for (size_t i = 0; i < n; ++i) {
+    const uint32_t c = kPaliers[i].candidat;
+    TEST_ASSERT_EQUAL_MESSAGE(kPaliers[i].plancherOk, c >= 512u, kPaliers[i].motif);
+    TEST_ASSERT_EQUAL_MESSAGE(kPaliers[i].repliOk,
+                              (uint32_t)kOomFallbackReserveBytes <= c, kPaliers[i].motif);
+    TEST_ASSERT_EQUAL_MESSAGE(kPaliers[i].fenetreOk,
+                              psramIsPreferredFor(kLwipPbufBytes, c) &&
+                                  !psramIsPreferredFor(kLittleFsCacheBytes, c),
+                              kPaliers[i].motif);
+  }
+  // Et le palier RÉELLEMENT compilé passe les trois critères. Cette assertion
+  // relie la table au firmware : sans elle, la table serait un exercice.
+  const uint32_t seuil = (uint32_t)kPsramExtmemThresholdBytes;
+  TEST_ASSERT_TRUE_MESSAGE(seuil >= 512u, "Le seuil compile viole le PLANCHER de politique.");
+  TEST_ASSERT_TRUE_MESSAGE((uint32_t)kOomFallbackReserveBytes <= seuil,
+                           "Le seuil compile fait basculer la reserve de REPLI (condition C3).");
+  TEST_ASSERT_TRUE_MESSAGE(psramIsPreferredFor(kLwipPbufBytes, seuil) &&
+                               !psramIsPreferredFor(kLittleFsCacheBytes, seuil),
+                           "Le seuil compile est hors de la fenetre utile [512 ; 1 599].");
 }
 
 // Mesures 8 bits ON-TARGET du 15/08/2026 (firmware 2.20.0 core 3, 5 h) — ce sont
@@ -2514,7 +2679,8 @@ int main(int, char**) {
   // v2.18.8 — réarmement à deux paliers
   RUN_TEST(test_rearm_real_constant_values_v2188);
   // v2.35.0 (bug-080 B-1) — arithmétique du seuil de bascule PSRAM
-  RUN_TEST(test_psram_extmem_threshold_arithmetic_v2350);
+  RUN_TEST(test_psram_extmem_threshold_window_v2500);
+  RUN_TEST(test_psram_threshold_guardrails_reject_a_lower_palier);
   RUN_TEST(test_rearm_fallback_tier_respects_chemistry_gate_invariants_v2202);
   RUN_TEST(test_rearm_arms_fallback_across_whole_measured_8bit_regime);
   RUN_TEST(test_rearm_never_downgrades_nominal_in_8bit_regime);

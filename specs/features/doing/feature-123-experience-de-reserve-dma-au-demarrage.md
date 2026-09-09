@@ -2,10 +2,12 @@
 - **ID** : feature-123
 - **Slug** : experience-de-reserve-dma-au-demarrage
 - **Type** : feature — **expérience active** sur le chemin de démarrage (lot C-1b)
-- **Statut** : todo
-- **Priorité** : normale — **bloquée** jusqu'au relevé de `feature-122` sur cible
-- **Version cible** : 2.50.0
-- **Dernière mise à jour** : 2026-09-08
+- **Statut** : **GELÉE** (2026-09-09) — pas abandonnée. Voir l'encadré ci-dessous.
+- **Priorité** : **basse** — reléguée au **dernier recours** par l'analyse des sept
+  scénarios du 08/09 (S1, **3/10** : protège les tampons WiFi mais **aggrave le 503**)
+- **Version cible** : **aucune** — à rouvrir si, et seulement si, S7 puis S2 laissent
+  subsister des échecs d'allocation WiFi
+- **Dernière mise à jour** : 2026-09-09
 - **Spec(s) liée(s)** : `feature-122` (lot C-1a, **prérequis strict** : elle fournit les planchers et le dimensionnement), `bug-080` lot C (la cause racine)
 
 ## Domaines touchés
@@ -30,6 +32,34 @@
 - [x] test-engineer
 - [x] code-reviewer
 - [x] doc-writer
+
+## ⚠️ GELÉE LE 2026-09-09 — ET LE RELEVÉ DU 09/09 RENFORCE CETTE DÉCISION
+
+Ce lot est **gelé**, pas abandonné. Deux motifs, dans cet ordre :
+
+1. **Il aggrave le symptôme que l'utilisateur voit.** `esp_psram_extram_reserve_dma_pool`
+   prend le **plus gros bloc contigu d'abord** et retire cette RAM interne du pool
+   général — donc rend le refus **503** *plus* probable, alors que le 503 est
+   précisément ce qui se voit. Verdict de l'analyse des sept scénarios (08/09) :
+   **S1, 3/10**, dernier recours.
+2. ⭐ **Le chiffre de dimensionnement était faux d'un facteur ~3.** Toute cette spec
+   raisonne sur un creux de **2 932 o**. Le relevé du **09/09 à 07:10** (v2.49.3,
+   instrument complet) établit que 2 932 est le **seuil de déclenchement** observé
+   par la garde 503 **au moment du refus**, et que le creux réel du plancher fin
+   `hf.i8.mb` vaut **1 076 o**. La réserve aurait donc dû être dimensionnée sur
+   **1 076**, sur un tas dont le fond est **trois fois plus bas** qu'estimé —
+   c'est-à-dire avec une marge d'erreur inacceptable pour un lot **irréversible
+   jusqu'au redémarrage** et **sans repli série** (cf. § « pourquoi ce lot est
+   dangereux »). ⚠️ **Tout chiffre de dimensionnement écrit plus bas dans cette
+   spec doit être relu à la lumière de 1 076 o avant d'être réutilisé.**
+
+**Ce qui a été livré à la place** : `feature-124` (scénario **S7**, v2.50.0,
+[ADR-0078](../../../docs/adr/0078-bascule-psram-cesse-d-etre-chirurgicale.md)) —
+abaisser le seuil de bascule PSRAM à 1 024 o, qui ne retire **rien** au pool
+général et **fait de la place** aux tampons WiFi au lieu de leur en réserver.
+
+**Condition de réouverture** : que S7 **puis** S2 (« sérialiser le service des
+fichiers statiques ») laissent subsister des échecs d'allocation `caps=0x080C`.
 
 ## Description
 

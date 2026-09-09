@@ -752,7 +752,7 @@ void test_new_journal_lines_fit_their_stack_buffers(void) {
     const char* role;
   };
   const Ligne lignes[] = {
-      {"ligne2", 160, 142, "planchers DEPUIS LE BOOT + contexte au creux + temoin 4096/4095"},
+      {"ligne2", 160, 142, "planchers DEPUIS LE BOOT + contexte au creux + temoin de bascule PSRAM"},
       {"ligne3", 160, 136, "planchers de FENETRE + contextes vus + duree du parcours"},
   };
   const int n = (int)(sizeof(lignes) / sizeof(lignes[0]));
@@ -1024,7 +1024,7 @@ void test_journal_context_fields_are_bytes(void) {
     snprintf(msg, sizeof(msg),
              "src/heap_metrics.h doit declarer `%s`. Elargir ce champ a 32 bits porterait le pire "
              "cas de `ligne2` de 143 a 167 octets pour un tampon de 160 : snprintf tronquerait EN "
-             "SILENCE, et le releve perdrait le temoin 4096/4095 — le champ le plus a droite.",
+             "SILENCE, et le releve perdrait le temoin de bascule PSRAM — le champ le plus a droite.",
              champs[i]);
     TEST_ASSERT_TRUE_MESSAGE(countOccurrences(src, champs[i]) >= 1, msg);
   }

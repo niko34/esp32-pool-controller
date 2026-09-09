@@ -19,16 +19,18 @@ Déclencheur : crash de production du 2026-08-11 (v2.18.4) — `operator new(356
 > 🔎 **bug-080 lot B-1, [ADR-0061](../adr/0061-bascule-psram-au-dela-de-4095-octets-reserve-parachute-en-interne.md).** Depuis la v2.35.0, `setup()` appelle **une seule fois**, juste après `initOomGuard()` et sous garde `psramFound()` :
 >
 > ```cpp
-> heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes);  // 4095
+> heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes);  // 4095 jusqu'en v2.49.3, **1024** depuis la v2.50.0
 > ```
 >
-> Toute allocation **par défaut** (`malloc`, `new`, `calloc`, `realloc`, `strdup`) de **plus de 4095 octets** est désormais tentée **en PSRAM d'abord**.
+> Toute allocation **par défaut** (`malloc`, `new`, `calloc`, `realloc`, `strdup`) **dépassant le seuil** est tentée **en PSRAM d'abord**. Le seuil valait **4 095 o** de la v2.35.0 à la v2.49.3 ; il vaut **1 024 o** depuis la **v2.50.0** ([ADR-0078](../adr/0078-bascule-psram-cesse-d-etre-chirurgicale.md), feature-124) — voir [system-health.md](system-health.md#politique-de-bascule-psram-des-allocations-ordinaires-v2500-feature-124--s7) pour l'encadrement de cette valeur.
 
 ### Pourquoi : le tampon stdio de chaque fichier ouvert restait interne à un octet près
 
 `vfs_api.cpp:22` définit `DEFAULT_FILE_BUFFER_SIZE 4096` et la ligne `:250` attache ce tampon par `setvbuf(_f, NULL, _IOFBF, …)` à **chaque** fichier LittleFS ouvert. `VFSImpl::exists()` **ouvre réellement** le fichier, et `AsyncStaticWebHandler::_searchFile` enchaîne `exists()` **puis** `open()` : **2 × (4096 o + ~90 o de mutex newlib) par fichier statique servi**, soit jusqu'à **~49 Ko de RAM interne 8 bits en rafale** par chargement d'interface (≈ 8 requêtes, jusqu'à 6 en parallèle) — sur un `free8` mesuré à 42-59 Ko.
 
-Le seuil IDF des libs précompilées vaut `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096` et son test est **inclusif** (`taille <= seuil ⇒ RAM interne`, désassemblage de `libheap.a`) : un tampon de **exactement 4096 o** restait donc **interne**. **Il s'en fallait d'un octet.** 4095 est chirurgical — la seule classe d'allocations qui change de camp est « exactement 4096 o » ; tout ce qui est plus grand partait **déjà** en PSRAM, tout ce qui fait 4095 o ou moins reste interne.
+Le seuil IDF des libs précompilées vaut `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096` et son test est **inclusif** (`taille <= seuil ⇒ RAM interne`, désassemblage de `libheap.a`) : un tampon de **exactement 4096 o** restait donc **interne**. **Il s'en fallait d'un octet.** 4095 était chirurgical — la seule classe d'allocations qui changeait de camp était « exactement 4096 o » ; tout ce qui est plus grand partait **déjà** en PSRAM, tout ce qui faisait 4095 o ou moins restait interne.
+
+> ⚠️ **Cette doctrine « chirurgicale » est RÉVISÉE depuis la v2.50.0** ([ADR-0078](../adr/0078-bascule-psram-cesse-d-etre-chirurgicale.md)). Le seuil descend à **1 024 o** pour déporter aussi les **pbufs lwIP** (~1 600 o, une structure par connexion TCP) : le plancher fin mesuré le 09/09/2026 (**1 076 o**) passe **sous** le tampon TX WiFi de 1 622 o, donc le tas interne 8 bits est la ressource rare. ⚠️ Le lot ne déplace **aucun tampon WiFi** — ces allocations demandent `caps=0x080C` **explicitement** et contournent le seuil : il leur **fait de la place**.
 
 C'est le déclencheur **commun** des deux PANIC (29/08 et 03/09), tous deux survenus sur un chargement d'interface web.
 
@@ -80,8 +82,8 @@ Deux `static_assert` de [`constants.h`](../../src/constants.h) verrouillent le c
 | Parachute **SANS RÉSERVE** | CRITICAL | **Nouveau**, one-shot par épisode : aucun palier armable depuis `kOomNoReserveCriticalDelayMs` |
 
 ```
-PSRAM : 4 Mo détectés, 4076 Ko libres — allocations de PLUS de 4095 o tentées en PSRAM
-  d'abord (repli RAM interne si refus) ; 4095 o et moins : RAM interne
+PSRAM : 4 Mo détectés, 4076 Ko libres — allocations de PLUS de 1024 o tentées en PSRAM
+  d'abord (repli RAM interne si refus) ; 1024 o et moins : RAM interne
 PSRAM absente — RAM interne seule (module WROOM), politique d'allocation inchangée
 
 Parachute OOM armé : réserve d'urgence de 12288 o (palier nominal) pré-allouée en

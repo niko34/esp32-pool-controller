@@ -153,7 +153,7 @@ inline void heapAtomicFetchMin(AtomicU32& target, uint32_t value, MemoryOrder or
 /**
  * @brief Un pointeur tombe-t-il dans la fenêtre d'adressage de la RAM externe ?
  *
- * Part PURE du témoin 4096/4095 (A7) : c'est la seule preuve DIRECTE du camp où
+ * Part PURE du témoin de bascule PSRAM (A7) : c'est la seule preuve DIRECTE du camp où
  * atterrit une allocation ordinaire, `psram_free` n'étant qu'un indice (152
  * relevés le montrent immobile — ce qui peut aussi bien signifier « rien ne part
  * en PSRAM » que « l'indicateur ne le voit pas »).

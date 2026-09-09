@@ -6,7 +6,7 @@
 #include <ESPmDNS.h>
 #include <esp_task_wdt.h>
 #include <esp_heap_caps.h>  // heap_caps_malloc_extmem_enable (bascule PSRAM, bug-080 B-1)
-#include <esp_memory_utils.h>  // esp_ptr_external_ram (témoin 4096/4095, feature-122 A7)
+#include <esp_memory_utils.h>  // esp_ptr_external_ram (témoin de bascule PSRAM, feature-122 A7)
 #include <soc/soc.h>           // SOC_EXTRAM_DATA_LOW/HIGH (fenêtre d'adressage PSRAM)
 // 2e avis sur le camp d'un pointeur (témoin A7) : esp_psram_check_ptr_addr, de
 // <esp_private/esp_psram_extram.h>. __has_include sert de test de DISPONIBILITÉ,
@@ -130,29 +130,41 @@ void setup() {
   // bloc contigu avant toute fragmentation. N'émet aucun log (drainé en loop).
   initOomGuard();
 
-  // bug-080 lot B-1 : bascule des allocations ordinaires « de plus de 4095 o »
-  // vers la PSRAM D'ABORD. Le seuil du sdkconfig vaut 4096 et son test est
-  // INCLUSIF (« taille <= seuil ⇒ RAM interne ») : le tampon stdio de 4096 o que
-  // la couche FS attache à CHAQUE fichier LittleFS ouvert restait donc en RAM
-  // interne, à un octet près, jusqu'à ~49 Ko réclamés en rafale par un simple
-  // chargement d'interface. Voir kPsramExtmemThresholdBytes (constants.h).
+  // bug-080 lot B-1 : bascule des allocations ordinaires « de plus de
+  // kPsramExtmemThresholdBytes octets » vers la PSRAM D'ABORD. Le seuil du
+  // sdkconfig vaut 4096 et son test est INCLUSIF (« taille <= seuil ⇒ RAM
+  // interne ») : le tampon stdio de 4096 o que la couche FS attache à CHAQUE
+  // fichier LittleFS ouvert restait donc en RAM interne, à un octet près,
+  // jusqu'à ~49 Ko réclamés en rafale par un simple chargement d'interface.
+  // feature-124 (S7) : le seuil descend de 4 095 à 1 024 — la bascule cesse
+  // d'être « chirurgicale » et devient un vrai déplacement de politique, pour
+  // que les pbufs lwIP (~1 600 o) partent aussi en PSRAM. L'encadrement
+  // [512 ; 1 599] et son motif sont écrits sur la constante (constants.h).
+  // ⚠️ Ce site NE déplace AUCUN tampon WiFi : les allocations qui échouent
+  // demandent `caps=0x080C` explicitement et contournent ce seuil. Il leur
+  // fait de la place, il ne les corrige pas.
   // Placé JUSTE APRÈS initOomGuard : la réserve du parachute est déjà prise en
   // RAM interne, et tout le reste du setup profite de la nouvelle politique.
   // AUCUN LOG ICI (systemLogger.begin() n'a pas encore eu lieu) ; garde
   // psramFound() pour le binaire unique WROOM/WROVER-E.
   if (psramFound()) {
     heap_caps_malloc_extmem_enable(kPsramExtmemThresholdBytes);
-    // feature-122 (A7) : LE LOT B-1 EST-IL DÉCORATIF ? `psram_free` est immobile
-    // à 4 180 340 dans 152 relevés — ce qui signifie soit que rien ne part en
-    // PSRAM, soit que l'indicateur ne le voit pas. Seule preuve DIRECTE : allouer
-    // et regarder l'adresse.
+    // feature-122 (A7) : LA BASCULE EST-ELLE DÉCORATIVE ? `psram_free` est
+    // immobile à 4 180 340 dans 152 relevés — ce qui signifie soit que rien ne
+    // part en PSRAM, soit que l'indicateur ne le voit pas. Seule preuve
+    // DIRECTE : allouer et regarder l'adresse.
     //
-    // DEUX allocations, libérées IMMÉDIATEMENT (aucune rétention, aucun risque) :
-    //  - 4096 o (kVfsStdioBufferBytes) = la classe EXACTE du tampon stdio que
-    //    B-1 visait, ATTENDUE en PSRAM depuis que le seuil vaut 4095 ;
-    //  - 4095 o (kPsramExtmemThresholdBytes) = témoin de CONTRÔLE, attendu
-    //    INTERNE dans les deux configurations. Le couple donne une signature non
-    //    ambiguë : si les deux tombent du même côté, la politique ne fait rien.
+    // DEUX allocations, libérées IMMÉDIATEMENT (aucune rétention, aucun risque),
+    // exprimées RELATIVEMENT AU SEUIL (feature-124, condition C4 du gate — le
+    // couple 4096/4095 devenait mensonger à seuil 1 024, où un malloc de 4 095 o
+    // part en PSRAM) :
+    //  - `seuil + 1` o = la PLUS PETITE classe que la politique doit déporter,
+    //    ATTENDUE en PSRAM. La classe historique du tampon stdio VFS (4 096 o,
+    //    cible de B-1) est couverte a fortiori : 4 096 > seuil, même branche ;
+    //  - `seuil` o = témoin de CONTRÔLE, attendu INTERNE dans les deux
+    //    configurations (test inclusif). Le couple donne une signature non
+    //    ambiguë : si les deux tombent du même côté, la politique ne fait rien —
+    //    et il garde ce pouvoir discriminant à TOUT seuil futur.
     //
     // ⚠️ `malloc()` et JAMAIS heap_caps_malloc() avec des caps explicites : des
     // caps explicites contourneraient la politique `extmem` qu'on cherche
@@ -170,10 +182,10 @@ void setup() {
                   "Si l'IDF la deplace, le temoin A7 doit etre relu avant d'etre cru.");
 #endif
     uint8_t witness = 0;
-    void* probe4096 = malloc(kVfsStdioBufferBytes);
-    void* probe4095 = malloc(kPsramExtmemThresholdBytes);
-    if (probe4096 == nullptr) witness |= kHeapWitness4096Failed;
-    if (probe4095 == nullptr) witness |= kHeapWitness4095Failed;
+    void* probeAbove = malloc(kPsramExtmemThresholdBytes + 1);  // attendu PSRAM
+    void* probeAt = malloc(kPsramExtmemThresholdBytes);         // attendu INTERNE (contrôle)
+    if (probeAbove == nullptr) witness |= kHeapWitnessAboveFailed;
+    if (probeAt == nullptr) witness |= kHeapWitnessAtThresholdFailed;
 #if POOL_HAS_PSRAM_PTR_CHECK
     // Deux avis indépendants sur le camp d'un pointeur. Leur DISCORDANCE est un
     // résultat à rapporter (3ᵉ bit), pas une erreur à masquer : elle
@@ -184,25 +196,25 @@ void setup() {
     bool disagree = false;
     witness |= kHeapWitnessNoPsramApi;
 #endif
-    if (probe4096 != nullptr) {
-      const bool ext = heapPtrIsExternal((uintptr_t)probe4096, (uintptr_t)SOC_EXTRAM_DATA_LOW,
+    if (probeAbove != nullptr) {
+      const bool ext = heapPtrIsExternal((uintptr_t)probeAbove, (uintptr_t)SOC_EXTRAM_DATA_LOW,
                                          (uintptr_t)SOC_EXTRAM_DATA_HIGH);
-      if (ext) witness |= kHeapWitness4096External;
-      if (ext != esp_ptr_external_ram(probe4096)) disagree = true;
+      if (ext) witness |= kHeapWitnessAboveExternal;
+      if (ext != esp_ptr_external_ram(probeAbove)) disagree = true;
 #if POOL_HAS_PSRAM_PTR_CHECK
-      if (ext != esp_psram_check_ptr_addr(probe4096)) disagree = true;
+      if (ext != esp_psram_check_ptr_addr(probeAbove)) disagree = true;
 #endif
-      free(probe4096);
+      free(probeAbove);
     }
-    if (probe4095 != nullptr) {
-      const bool ext = heapPtrIsExternal((uintptr_t)probe4095, (uintptr_t)SOC_EXTRAM_DATA_LOW,
+    if (probeAt != nullptr) {
+      const bool ext = heapPtrIsExternal((uintptr_t)probeAt, (uintptr_t)SOC_EXTRAM_DATA_LOW,
                                          (uintptr_t)SOC_EXTRAM_DATA_HIGH);
-      if (ext) witness |= kHeapWitness4095External;  // ANOMALIE : le contrôle a bougé
-      if (ext != esp_ptr_external_ram(probe4095)) disagree = true;
+      if (ext) witness |= kHeapWitnessAtThresholdExternal;  // ANOMALIE : le contrôle a bougé
+      if (ext != esp_ptr_external_ram(probeAt)) disagree = true;
 #if POOL_HAS_PSRAM_PTR_CHECK
-      if (ext != esp_psram_check_ptr_addr(probe4095)) disagree = true;
+      if (ext != esp_psram_check_ptr_addr(probeAt)) disagree = true;
 #endif
-      free(probe4095);
+      free(probeAt);
     }
     if (disagree) witness |= kHeapWitnessDisagreement;
     heapWitnessRecord(witness);
@@ -1187,8 +1199,10 @@ void checkHeapHealth() {
     //  - c=0x.. / ctxVu : bits kHeapCtx* (1=clients WS, 2=GET HTTP, 4=dosage,
     //    8=rafale de découverte HA) au creux du masque, puis tous ceux vus dans
     //    la fenêtre — c'est ce qui dit QUEL événement a produit le plancher ;
-    //  - tem = témoin 4096/4095 (bits kHeapWitness* : 2=le 4096 o est en PSRAM,
-    //    4=le 4095 o aussi (anomalie), 8=discordance des deux API, 1=sauté) ;
+    //  - tem = témoin de bascule PSRAM (bits kHeapWitness*, RELATIFS AU SEUIL
+    //    depuis feature-124 : 2=le `seuil + 1` o est en PSRAM (attendu),
+    //    4=le `seuil` o aussi (ANOMALIE), 8=discordance des deux API,
+    //    1=sauté) ; positions de bits inchangées, `w` reste comparable ;
     //  - walk=max/med µs = durée OBSERVÉE du parcours 0x0804 (condition 5 du
     //    gate ; médiane approchée par borne supérieure de seau, donc
     //    surestimée) — à comparer aux 300 µs de kOomProbeWarnDurationUs. Ce

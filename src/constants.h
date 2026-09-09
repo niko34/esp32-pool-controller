@@ -789,16 +789,91 @@ static_assert(kOomProbeMaxDurationUs < kHeapIntegrityWarnDurationUs,
 // politique d'allocation, on ferme une inégalité non stricte.
 // Rappel : la bascule est une PRÉFÉRENCE, pas une contrainte — si la PSRAM refuse,
 // l'allocateur retombe sur la RAM interne (aucun échec supplémentaire créé).
+//
+// ---------------------------------------------------------------------------
+// ⚠️ ANNOTATION feature-124 (S7 de bug-080, v2.50.0) : LE SEUIL PASSE À 1 024
+// ---------------------------------------------------------------------------
+// Le paragraphe ci-dessus est CONSERVÉ À DESSEIN : « chirurgical » était la
+// décision juste à son heure (on ne déplaçait rien, on fermait une inégalité).
+// Ce lot ABANDONNE cette prudence, en connaissance de cause. Ce qui a changé,
+// c'est la MESURE : le 09/09/2026 à 07:10 (v2.49.3), l'instrument fin de
+// feature-122 a relevé un plancher `hf.i8.mb` de 1 076 o pendant une rafale
+// HTTP volontaire (`ctxAuCreux = 0x02`), avec des sondes d'échec à 948 o. Or le
+// tampon TX WiFi qui échoue pèse 1 622 o : 1 076 < 1 622, donc l'échec est
+// arithmétique. Le chiffre de 2 932 o sur lequel toute la stratégie avait été
+// bâtie n'était PAS le creux, mais le seuil de déclenchement du refus 503.
+// ⇒ Le tas interne 8 bits est la ressource rare ; la PSRAM dort à 4,18 Mo
+//   libres. On DÉPLACE donc bien une politique d'allocation, cette fois.
+//
+// L'ENCADREMENT DE LA VALEUR — les deux bornes et leur motif.
+// Règle codée, à garder en tête pour ne pas raisonner à l'envers :
+// « taille <= seuil ⇒ RAM INTERNE » ; seul ce qui DÉPASSE le seuil préfère la
+// PSRAM.
+//  · BORNE HAUTE — strictement SOUS 1 600 : les pbufs lwIP (~1 600 o, une
+//    structure par connexion TCP) sont la classe qui fragmente, et ils ne
+//    basculent que si 1 600 > seuil. `lwipopts.h` retient
+//    `mem_clib_malloc = malloc` avec MEM_LIBC_MALLOC=1 et MEMP_MEM_MALLOC=1
+//    (CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP n'est pas activé) : TOUTES les
+//    structures lwIP passent par le malloc ordinaire, donc par ce seuil.
+//  · BORNE BASSE — strictement AU-DESSUS de 512 : les caches de LittleFS
+//    (512 o) et le pool FILE de la libc (428 o) doivent RESTER en RAM interne.
+//    Ce sont eux qui côtoient les ÉCRITURES FLASH, pendant lesquelles le cache
+//    flash/PSRAM est coupé — le vrai danger de ce lot. Au-dessus de 512
+//    l'exposition est quantifiée ; en dessous elle change de NATURE.
+//  · Fenêtre utile [512 ; 1 599] → 1 024.
+// ⚠️ NE PAS regraver le raisonnement INVERSÉ qui avait d'abord fait retenir
+//   2 048 (« au-dessus de 1 622 pour capturer la classe lwIP ») : il conclut le
+//   contraire de ce qu'il énonce, puisque 1 622 <= 2 048 resterait INTERNE.
+//   Erreur rattrapée par le gate pool-chemistry avant tout code.
+//
+// ⚠️ CE QUE CE LOT NE FAIT PAS : il ne déplace AUCUN tampon WiFi. Les
+// allocations qui échouent demandent `caps=0x080C` EXPLICITEMENT (1 622 o) —
+// elles contournent ce seuil, et le contourneront toujours. Ce lot ne les
+// déplace pas : il leur FAIT DE LA PLACE en déportant en PSRAM tout ce qui
+// passe par le malloc ordinaire. Promesse plus faible qu'un correctif, à
+// énoncer ainsi partout.
+// Critère de succès BINAIRE : faire remonter le plancher fin `hf.i8.mb`
+// AU-DESSUS de 1 622 o sous reproduction volontaire identique. Sinon le lot
+// n'a pas marché, et c'est un résultat publiable.
 constexpr size_t kVfsStdioBufferBytes = 4096;        // Miroir de DEFAULT_FILE_BUFFER_SIZE (vfs_api.cpp:22)
-constexpr size_t kPsramExtmemThresholdBytes = 4095;  // « <= seuil ⇒ interne » : 4096 o bascule en PSRAM
+constexpr size_t kPsramExtmemThresholdBytes = 1024;  // « <= seuil ⇒ interne » : au-delà de 1 024 o ⇒ PSRAM d'abord
 
-static_assert(kPsramExtmemThresholdBytes + 1 == kVfsStdioBufferBytes,
-              "Le seuil PSRAM doit valoir EXACTEMENT (tampon stdio VFS - 1) : le test "
-              "de heap_caps_malloc_default est taille <= seuil, donc un seuil egal a "
-              "4096 laisserait le tampon en RAM interne (le defaut corrige par B-1)");
+static_assert(kPsramExtmemThresholdBytes < kVfsStdioBufferBytes,
+              "Le seuil PSRAM doit rester STRICTEMENT sous le tampon stdio VFS "
+              "(4 096 o) : le test de heap_caps_malloc_default est « taille <= seuil "
+              "=> RAM interne », donc un seuil >= 4096 laisserait ce tampon en RAM "
+              "interne — le defaut exact que B-1 avait corrige. "
+              "L'EGALITE stricte d'origine (seuil + 1 == tampon, donc seuil = 4095) "
+              "est ABANDONNEE par feature-124 : elle gravait la doctrine "
+              "'chirurgicale' de B-1, ou la seule classe deplacee etait 'exactement "
+              "4 096 o'. Le plancher fin de 1 076 o mesure le 09/09/2026 passe SOUS "
+              "le tampon TX WiFi de 1 622 o : le tas interne 8 bits est la ressource "
+              "rare, et la politique d'allocation est deplacee a dessein.");
+static_assert(kPsramExtmemThresholdBytes >= 512,
+              "PLANCHER DE POLITIQUE (feature-124) : sous 512 o, les caches de "
+              "LittleFS (512 o) et le pool FILE de la libc (428 o) basculeraient en "
+              "PSRAM. Ce sont EUX qui cotoient les ecritures flash, pendant "
+              "lesquelles le cache flash/PSRAM est coupe : l'exposition passerait de "
+              "QUANTIFIEE a BINAIRE. Ne jamais planifier de palier sous 512.");
 static_assert(kOomReserveBytes > kPsramExtmemThresholdBytes,
               "La reserve du parachute depasse le seuil : elle DOIT etre allouee "
-              "avec MALLOC_CAP_INTERNAL explicite (oom_guard.cpp), jamais malloc().");
+              "avec MALLOC_CAP_INTERNAL explicite (oom_guard.cpp), jamais malloc(). "
+              "Toujours vrai a 1 024 (12 288 > 1 024) — verifie par feature-124.");
+// Condition C3 du gate pool-chemistry (feature-124) : le palier de REPLI du
+// parachute vaut EXACTEMENT 1 024 o, soit le seuil. Il reste donc du cote
+// INTERNE (test inclusif « <= seuil »), et il est de toute facon alloue par
+// l'entonnoir MALLOC_CAP_INTERNAL|8BIT d'oom_guard.cpp — jamais par malloc().
+// Cet assert ne protege pas AUJOURD'HUI : il ferme un palier FUTUR. Un seuil
+// abaisse sous 1 024 ferait de cette taille une classe « preferee PSRAM » sans
+// aucune alerte, et la prochaine main qui retirerait l'entonnoir explicite
+// n'aurait plus rien pour l'avertir.
+static_assert(kOomFallbackReserveBytes <= kPsramExtmemThresholdBytes,
+              "Condition C3 (feature-124) : la reserve de REPLI (1 024 o) doit rester "
+              "du cote INTERNE du seuil. Si vous abaissez kPsramExtmemThresholdBytes "
+              "sous 1 024, RELISEZ oom_guard.cpp : la reserve n'est sauvee que par ses "
+              "caps explicites, et une reserve d'urgence en PSRAM ne sauve rien d'une "
+              "famine de RAM INTERNE (piege deja tombe : feature-066, prouve le "
+              "05/09/2026).");
 
 // Condition C2 du gate pool-chemistry (bug-080 B-1) : un parachute NON armé ne
 // doit jamais l'être en silence. Passé ce délai sans aucune réserve (ni nominale
@@ -2885,8 +2960,10 @@ constexpr time_t kMinValidEpoch = 1700000000;  // 14 nov. 2023
 // calloc → heap_caps_malloc_default → si `size > malloc_alwaysinternal_limit`,
 // l'allocateur charge 0x1400 = MALLOC_CAP_DEFAULT | MALLOC_CAP_SPIRAM, donc
 // PSRAM D'ABORD, avec repli interne seulement si la PSRAM rend NULL. Ce seuil
-// est posé à kPsramExtmemThresholdBytes (4 095) par main.cpp:130. Un tampon de
-// 16 Ko ne partait donc PAS dans le tas 8 bits affamé.
+// est posé à kPsramExtmemThresholdBytes par main.cpp (juste après initOomGuard).
+// Un tampon de 16 Ko ne partait donc PAS dans le tas 8 bits affamé.
+// (Valeur du seuil : 4 095 à l'écriture de ce commentaire, 1 024 depuis
+// feature-124 — le raisonnement est inchangé, seule la frontière descend.)
 // Le plafond bas reste juste, mais pour une autre raison, et elle est plus
 // solide : sans lui, la sûreté de ce chemin reposerait ENTIÈREMENT sur une
 // PRÉFÉRENCE d'allocateur, dont le repli interne est le contre-exemple. Ce dépôt
@@ -2895,9 +2972,11 @@ constexpr time_t kMinValidEpoch = 1700000000;  // 14 nov. 2023
 // vrai indépendamment de l'état de la PSRAM ; une préférence, non.
 //
 // ⚠️ COROLLAIRE CONTRE-INTUITIF, à ne surtout pas « optimiser » : découper les
-// lots PLUS FIN ramènerait l'allocation DANS le tas affamé (≤ 4 095 o ⇒ interne,
-// test inclusif). Le budget de lot client ci-dessous est donc choisi AU-DESSUS
-// de 4 095, À DESSEIN.
+// lots PLUS FIN ramènerait l'allocation DANS le tas affamé (« taille <= seuil
+// ⇒ interne », test inclusif). Le budget de lot client ci-dessous est donc
+// choisi AU-DESSUS de kPsramExtmemThresholdBytes, À DESSEIN. Énoncé par rapport
+// au SEUIL et non à une valeur figée : la frontière est passée de 4 095 à 1 024
+// (feature-124), et un chiffre en dur serait devenu faux.
 //
 // Chaque plafond est chiffré sur la CHARGE RÉELLE de sa route, jamais « par
 // ordre de grandeur ».
@@ -2967,9 +3046,12 @@ static_assert(kHistoryImportMaxBodyBytes < 16384 &&
               "Un plafond >= 16384 ne surcharge plus rien : c'est le defaut de "
               "AsyncCallbackJsonWebHandler (AsyncJson.cpp:122).");
 static_assert(kHistoryImportChunkBudgetBytes > kPsramExtmemThresholdBytes,
-              "Corollaire bug-113 : un lot <= 4095 o repartirait dans le tas "
-              "8 bits interne affame. Le budget client est AU-DESSUS du seuil, "
-              "a dessein — ne pas le reduire pour 'faire plus sur'.");
+              "Corollaire bug-113 : un lot <= kPsramExtmemThresholdBytes repartirait "
+              "dans le tas 8 bits interne affame. Le budget client est AU-DESSUS du "
+              "seuil, a dessein — ne pas le reduire pour 'faire plus sur'. "
+              "NB feature-124 : ce message disait '<= 4095 o'. La marge est desormais "
+              "BIEN plus large (7 168 contre un seuil de 1 024), mais l'invariant est "
+              "le meme et il ne doit PAS etre reecrit avec un chiffre en dur.");
 static_assert(kHistoryImportChunkBudgetBytes + 1024 == kHistoryImportMaxBodyBytes,
               "La marge de 1 024 o entre budget client et plafond de route est "
               "l'invariant qui empeche un 413 sur un lot nominal.");

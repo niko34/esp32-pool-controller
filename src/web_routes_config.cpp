@@ -1291,7 +1291,7 @@ static void putHeapFloorEntry(JsonObject parent, const char* key, const HeapFloo
   o["n"] = e.samples;
 }
 
-// Verdict TRI-ÉTAT d'un témoin 4096/4095 (A7) :
+// Verdict TRI-ÉTAT d'un témoin de bascule PSRAM (A7, cf. kHeapWitness*) :
 //   true  — l'allocation est tombée en RAM EXTERNE ;
 //   false — elle est tombée en RAM INTERNE ;
 //   null  — aucun verdict : pas de PSRAM (témoin sauté), malloc() échoué, ou
@@ -1450,7 +1450,15 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   // wf/wb=planchers de FENÊTRE, cf/cb=bits kHeapCtx* au creux, n=échantillons.
   // Puis : n=échantillons totaux, pred=les 12 bits de la table de sélection
   // (attendu 0x02ED = 749), ctx=OU des contextes vus, hg=GET servis (filtre 503),
-  // w=bits bruts du témoin 4096/4095, w96/w95=verdicts tri-état, wdis=discordance.
+  // w=bits bruts du témoin de bascule PSRAM, w96/w95=verdicts tri-état,
+  // wdis=discordance.
+  // ⚠️ feature-124 : les CLÉS `w96`/`w95` sont CONSERVÉES à dessein (les relevés
+  // avant/après du lot doivent rester comparables, y compris les captures
+  // automatisées), mais elles ne portent plus 4 096/4 095 o : elles portent
+  // désormais `seuil + 1` et `seuil` (kPsramExtmemThresholdBytes, 1 024).
+  // `w96` = « la plus petite classe déportée est bien en PSRAM » (attendu true),
+  // `w95` = « le témoin de contrôle a bougé » (attendu false = ANOMALIE si true).
+  // Un renommage de ces deux clés serait un changement d'API : hors de ce lot.
   // Lecture d'atomiques déjà rangées : ni allocation côté mesure, ni log, ni
   // parcours de tas. Ajout PUREMENT ADDITIF (aucun champ existant déplacé).
   // `hf=1` explicite (une valeur quelconque suffit : hasParam ne juge que la
@@ -1484,10 +1492,10 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
     hf["wmed"] = floors.walkMedianUs;
     hf["hg"] = heapHttpGetCount();
     hf["w"] = floors.witness;
-    putHeapWitnessVerdict(hf, "w96", floors.witness, kHeapWitness4096External,
-                          kHeapWitness4096Failed);
-    putHeapWitnessVerdict(hf, "w95", floors.witness, kHeapWitness4095External,
-                          kHeapWitness4095Failed);
+    putHeapWitnessVerdict(hf, "w96", floors.witness, kHeapWitnessAboveExternal,
+                          kHeapWitnessAboveFailed);
+    putHeapWitnessVerdict(hf, "w95", floors.witness, kHeapWitnessAtThresholdExternal,
+                          kHeapWitnessAtThresholdFailed);
     // Discordance des deux méthodes de classement d'adresse : tri-état aussi — sans
     // témoin exécuté, « pas de discordance » serait une affirmation gratuite.
     if (floors.witness == 0) {
