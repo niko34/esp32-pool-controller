@@ -134,6 +134,54 @@ c'est un seuil franchi ou non.
 « taille ≤ seuil ⇒ interne ». **1 024** le fait ; 2 048 ne l'aurait pas fait, et on
 l'aurait découvert après déploiement.
 
+## ⭐⭐ RÉSULTAT SUR CIBLE — 09/09/2026 08:23, LE CRITÈRE EST FRANCHI
+
+Reproduction volontaire par l'utilisateur sur la **v2.50.0**, rafale **presque
+deux fois plus forte** que celle de la référence.
+
+| | Avant S7 (v2.49.3) | **Après S7 (v2.50.0)** |
+|---|---|---|
+| Requêtes GET servies | 176 | **327** |
+| **Plancher fin `hf.i8.mb`** | **1 076 o** | **8 692 o** |
+| Épisodes 503 | 1, **24 refus en 35 s** | **0** |
+| Échecs d'allocation | 25 | **1** |
+| Déconnexions MQTT | 6 | **0** |
+| Pushes WS sautés | — | **0** |
+| `ph_anom` / `orp_anom` (gate C2) | 0 / 0 | **0 / 0** |
+
+**Critère binaire : franchi.** Objectif 1 622 o (tampon TX WiFi), obtenu
+**8 692 o** — facteur **8**. Le plancher dépasse même les **8 192 o** de
+`kStaticFileMinAllocBytes`, ce qui explique le rapport de l'utilisateur : **plus
+aucun message « mémoire insuffisante »**, la garde 503 n'ayant plus eu de raison
+de se déclencher.
+
+**Condition C2 du gate satisfaite** : anomalies de comptabilité de dosage à zéro
+sur les deux voies. Aucun retour arrière.
+
+### Ce qui subsiste, et ne doit pas être tu
+
+**Un** échec d'allocation : demande de **1 612 o** refusée avec un plus gros bloc
+à **1 588 o** — il s'en est fallu de **24 octets**. Un seul contre 25, soit
+**−96 %**. La marge est devenue positive, mais **étroite sur ce cas précis**.
+
+### Le « Too many requests » observé par l'utilisateur est une AUTRE garde
+
+Journal : `Rate limit dépassé pour 192.168.1.15 (122 req/min)`. C'est le limiteur
+de débit d'authentification, intentionnel et **sans rapport avec la mémoire**. Il
+a refusé **proprement**, écran de login correctement rendu, et s'est relâché en
+quelques secondes. L'utilisateur juge le comportement acceptable — c'est la
+différence entre une **protection** et une **panne**, là où l'ancien
+comportement était un 503 sur une page cassée.
+
+### La mesure du fragmenteur est répondue par le résultat lui-même
+
+Elle devait nommer ce qui remplit le tas interne pendant une rafale. La réponse
+est arrivée autrement : déplacer la classe **[1 025 ; 4 095]** vers la PSRAM
+produit un facteur 8 sur le plancher. Le fragmenteur était donc **dans cette
+classe** — et la seule chose qui y grandit avec le nombre de requêtes
+simultanées, ce sont les **structures lwIP, une par connexion TCP**. La mesure ne
+confirmerait que ce que le résultat démontre.
+
 ## Comportement attendu
 
 - Le tas interne 8 bits présente un **plus gros bloc plus élevé** sous charge égale.

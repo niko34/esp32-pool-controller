@@ -4,6 +4,18 @@
 
 ## [2.50.0] - 2026-09-09
 
+> ⭐ **RÉSULTAT SUR CIBLE, 09/09 08:23 — le message « mémoire insuffisante » a
+> disparu.** Sous une rafale de rechargements presque **deux fois plus forte**
+> que celle qui déclenchait le défaut : **327 requêtes servies**, **zéro** refus,
+> **zéro** déconnexion MQTT, et **un seul** échec d'allocation contre 25. Le plus
+> gros bloc libre au plus creux passe de **1 076 o à 8 692 o** — facteur **8**, et
+> au-dessus du seuil de la garde, qui n'a donc plus eu de raison de se déclencher.
+>
+> Le refus « Too many requests » observé pendant le test est une **autre** garde,
+> le limiteur de débit d'authentification : intentionnelle, sans rapport avec la
+> mémoire, et refusant **proprement** avec l'écran de login intact. C'est la
+> différence entre une protection et une panne.
+
 > **Ce qui change pour vous** : rien de visible. Aucun écran, aucun message,
 > aucun réglage ne bouge. Le firmware change sa **politique d'allocation
 > mémoire** pour laisser respirer le tas interne, celui dont la pénurie provoque

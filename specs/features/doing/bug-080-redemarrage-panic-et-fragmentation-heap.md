@@ -1909,3 +1909,76 @@ est **nuancée**, pas annulée. Consigné aussi dans `bug-121`.
 - Le contexte au creux (`0x01` seul) **n'incrimine aucun** des déclencheurs
   soupçonnés — ni dosage, ni rafale de fichiers, ni découverte HA. À confirmer sur
   une période contenant un épisode 503.
+
+
+---
+
+## ⭐⭐ LOT C RÉSOLU PAR S7 — 09/09/2026, et ce qui reste en réserve
+
+`feature-124` (S7, abaissement du seuil PSRAM 4 095 → 1 024, v2.50.0) **franchit
+le critère de fragmentation**. Mesuré sur cible sous rafale volontaire presque
+deux fois plus forte que la référence :
+
+| | Avant | Après |
+|---|---|---|
+| Requêtes servies | 176 | **327** |
+| Plancher fin du plus gros bloc | **1 076 o** | **8 692 o** |
+| Épisodes 503 | 1 (24 refus / 35 s) | **0** |
+| Échecs d'allocation | 25 | **1** |
+| Déconnexions MQTT | 6 | **0** |
+
+⇒ **Le message « mémoire insuffisante » a disparu**, le plancher dépassant même
+les 8 192 o de la garde. Et les **déconnexions MQTT ont disparu avec lui**, ce qui
+confirme *a posteriori* l'hypothèse qui n'avait pu être ni prouvée ni réfutée : la
+fragmentation en était bien la cause.
+
+### 🅢2 — SÉRIALISER LE SERVICE DES FICHIERS STATIQUES : en RÉSERVE, non abandonné
+
+**Ce que c'était** : un gestionnaire devant `serveStatic` n'autorisant que 2 ou 3
+fichiers servis à la fois, les autres en file d'attente. Le navigateur en demande
+jusqu'à **6 en parallèle** et l'appareil les accepte tous.
+
+**Pourquoi c'est redondant aujourd'hui** — les deux scénarios attaquent le même
+produit par ses deux facteurs :
+
+```
+fragmentation  ≈  nombre de connexions  ×  coût interne par connexion
+                          ↑                          ↑
+                     ce que S2 réduit         ce que S7 a réduit
+```
+
+S7 a réduit le coût par connexion en déportant les structures lwIP en PSRAM.
+Réduire aussi le **nombre** serait ceinture et bretelles, payé en latence de
+chargement (1 à 2 s) pour une marge devenue inutile.
+
+**Conditions de RÉOUVERTURE — la marge n'est pas infinie** (un échec subsiste, à
+**24 octets** près) :
+
+1. le nombre de connexions simultanées augmente — plusieurs navigateurs, clients
+   WebSocket supplémentaires, application mobile en parallèle ;
+2. un firmware futur ajoute des entités, donc du trafic ;
+3. le réseau ralentit et les connexions restent ouvertes plus longtemps, ce qui
+   augmente le nombre de structures vivantes à un instant donné.
+
+### 🅢 MESURE DU FRAGMENTEUR : répondue par le résultat, en réserve
+
+Elle devait nommer le consommateur. Réponse obtenue autrement (cf. `feature-124`) :
+il était dans la classe [1 025 ; 4 095], et seules les structures lwIP y grandissent
+avec la concurrence.
+
+**Condition de réouverture** : si le plancher **redescendait** sans explication.
+Elle nommerait alors le nouveau consommateur.
+
+### ⚠️ RÉSERVE À SURVEILLER — non mesurée
+
+S7 a déporté les structures TCP en PSRAM, **plus lente**. Le traitement réseau est
+donc légèrement ralenti, et **cela n'a pas été mesuré**. L'utilisateur n'a rien
+perçu lors du test, mais une absence de perception ne vaut pas mesure. À
+instruire si le service web paraît mou dans les jours qui viennent.
+
+### `feature-123` (réserve DMA) — GELÉE, et le résultat le confirme
+
+Elle aurait protégé les tampons WiFi en **retirant** de la mémoire au pool
+général, donc en rendant le 503 **plus** probable. S7 obtient l'inverse : il rend
+de la place aux deux. Elle ne redevient pertinente que si des échecs
+d'allocation WiFi réapparaissent malgré S7 et S2.
