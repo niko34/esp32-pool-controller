@@ -153,14 +153,44 @@ body {
 }
 .demande textarea:disabled { opacity: 0.55; cursor: not-allowed; }
 
+/* ---------------- filtres ---------------- */
+.filtres { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.filtres input[type="search"] {
+  flex: 1 1 260px;
+  background: var(--creux);
+  border: 1px solid var(--trait);
+  border-radius: 2px;
+  color: var(--texte);
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 5px 9px;
+}
+.filtres input[type="search"]:focus-visible { outline: 1px solid var(--accent); border-color: var(--accent); }
+.bascule { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--texte-doux); cursor: pointer; }
+.bascule input { accent-color: var(--alerte); }
+
 /* ---------------- kanban ---------------- */
-.kanban { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; }
-.colonne { flex: 1 1 0; min-width: 210px; display: flex; flex-direction: column; gap: 6px; }
+.kanban { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; align-items: start; }
+.colonne { flex: 1 1 0; min-width: 210px; display: flex; flex-direction: column; gap: 6px; min-height: 0; }
 .colonne-entete {
   display: flex; justify-content: space-between; align-items: baseline;
   font-family: var(--mono); font-size: 11px; color: var(--texte-faible);
   border-bottom: 1px solid var(--trait); padding-bottom: 5px;
+  position: sticky; top: 0; background: var(--surface); z-index: 1;
 }
+
+/* Chaque colonne défile DANS SON CADRE : la page ne grandit plus avec l'archive.
+ * « Clos » contient 146 specs et n'en contiendra jamais moins — une colonne qui
+ * pousse la page produit un défilement vertical sans fin, et les colonnes
+ * courtes deviennent inatteignables sans remonter. */
+.colonne-liste {
+  display: flex; flex-direction: column; gap: 6px;
+  max-height: 58vh; overflow-y: auto; padding-right: 4px;
+  scrollbar-width: thin;
+}
+.colonne-liste::-webkit-scrollbar { width: 8px; }
+.colonne-liste::-webkit-scrollbar-thumb { background: var(--trait); border-radius: 4px; }
+.colonne-liste::-webkit-scrollbar-track { background: transparent; }
 .carte {
   background: var(--surface-2);
   border: 1px solid var(--trait-fin);

@@ -39,6 +39,29 @@ function duree(ms) {
   return minutes + " min " + Math.round((ms % 60000) / 1000) + " s";
 }
 
+/* Le champ « Priorité » est du Markdown écrit à la main. Il arrivait brut dans
+ * l'interface — « **Haute** — un crash n », « ~~Moyenne — fausse une » — avec
+ * les astérisques visibles et une coupure au milieu d'un mot.
+ *
+ * On retire l'emphase, on garde la PREMIÈRE clause (avant le tiret cadratin ou
+ * la parenthèse), et on coupe sur une frontière de mot. Le texte intégral reste
+ * accessible en infobulle : on raccourcit l'affichage, on ne perd rien. */
+function nettoyerPriorite(brut) {
+  if (!brut) return null;
+  let texte = String(brut)
+    .replace(/\*\*|~~|`|__/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const coupure = texte.search(/\s[—–-]\s|\s\(/);
+  if (coupure > 0) texte = texte.slice(0, coupure);
+  texte = texte.replace(/[,;:.]+$/, "").trim();
+  if (texte.length > 20) {
+    const espace = texte.lastIndexOf(" ", 20);
+    texte = texte.slice(0, espace > 8 ? espace : 20) + "…";
+  }
+  return texte || null;
+}
+
 /* ---------------------------------------------------------------- agents -- */
 function rendreAgents(agents) {
   const liste = $("agents");
@@ -83,17 +106,38 @@ function rendreSysteme(etat) {
 }
 
 /* ---------------------------------------------------------------- kanban -- */
+let dernierEtat = null;
+
+function specCorrespond(spec, terme, divergencesSeules) {
+  if (divergencesSeules && !spec.divergence) return false;
+  if (!terme) return true;
+  const champs = [spec.id, spec.titre, spec.statut_texte, spec.priorite, spec.type];
+  return champs.some((c) => c && String(c).toLowerCase().indexOf(terme) !== -1);
+}
+
 function rendreKanban(etat) {
   const kanban = $("kanban");
   vider(kanban);
+  const terme = ($("filtre").value || "").trim().toLowerCase();
+  const divergencesSeules = $("filtre-divergences").checked;
+  let affichees = 0;
+
   etat.colonnes.forEach((colonne) => {
-    const specs = etat.specs.filter((s) => s.colonne === colonne.classe);
+    const toutes = etat.specs.filter((s) => s.colonne === colonne.classe);
+    const specs = toutes.filter((s) => specCorrespond(s, terme, divergencesSeules));
+    affichees += specs.length;
+
     const bloc = el("div", "colonne");
     const entete = el("div", "colonne-entete");
     entete.appendChild(el("span", "", colonne.libelle));
-    entete.appendChild(el("span", "", String(specs.length)));
+    /* Quand un filtre est actif, on montre les DEUX nombres : cacher le total
+     * ferait croire que la colonne a rétréci. */
+    entete.appendChild(el("span", "",
+      specs.length === toutes.length ? String(toutes.length)
+                                     : specs.length + " / " + toutes.length));
     bloc.appendChild(entete);
 
+    const liste = el("div", "colonne-liste");
     specs.forEach((spec) => {
       const carte = el("button", "carte" + (spec.divergence ? " divergente" : ""));
       carte.type = "button";
@@ -104,29 +148,37 @@ function rendreKanban(etat) {
       const bas = el("div", "cbas");
       if (spec.divergence) {
         const badge = el("span", "etiquette divergence", "≠ " + colonne.libelle);
-        /* Le statut brut est affiché TEL QUEL, jamais réécrit : c'est une
-         * phrase écrite par un humain, pas un jeton. */
+        /* Le statut brut est affiché TEL QUEL en infobulle, jamais réécrit :
+         * c'est une phrase écrite par un humain, pas un jeton. */
         badge.title = "Le fichier annonce : " + (spec.statut_texte || "");
         bas.appendChild(badge);
       }
-      if (spec.priorite) {
-        const p = String(spec.priorite).toLowerCase();
+      const priorite = nettoyerPriorite(spec.priorite);
+      if (priorite) {
+        const p = priorite.toLowerCase();
         const classe = p.indexOf("critique") === 0 ? "priorite-critique"
           : p.indexOf("haute") === 0 ? "priorite-haute" : "";
-        bas.appendChild(el("span", "etiquette " + classe, String(spec.priorite).slice(0, 22)));
+        const etiquette = el("span", "etiquette " + classe, priorite);
+        etiquette.title = "Priorité, telle qu'écrite : " + spec.priorite;
+        bas.appendChild(etiquette);
       }
       if (bas.childNodes.length) carte.appendChild(bas);
       carte.addEventListener("click", () => ouvrirSpec(spec.id));
-      bloc.appendChild(carte);
+      liste.appendChild(carte);
     });
-
-    if (!specs.length) bloc.appendChild(el("div", "vide", "aucune"));
+    if (!specs.length) {
+      liste.appendChild(el("div", "vide", toutes.length ? "aucune ne correspond" : "aucune"));
+    }
+    bloc.appendChild(liste);
     kanban.appendChild(bloc);
   });
 
+  const filtre_actif = terme || divergencesSeules;
   $("compteur-specs").textContent =
-    etat.specs.length + " specs · " + etat.divergences +
-    " divergence" + (etat.divergences > 1 ? "s" : "") + " répertoire / champ Statut";
+    (filtre_actif ? affichees + " sur " + etat.specs.length + " specs"
+                  : etat.specs.length + " specs") +
+    " · " + etat.divergences + " divergence" + (etat.divergences > 1 ? "s" : "") +
+    " répertoire / champ Statut";
 }
 
 /* ------------------------------------------------------------- workflows -- */
@@ -310,6 +362,7 @@ async function rafraichir() {
     const jaugeGit = $("jauge-git");
     jaugeGit.textContent = etat.git.depot ? "git " + (etat.git.branche || "?") : "git absent";
     jaugeGit.className = "jauge " + (etat.git.depot ? "ok" : "ko");
+    dernierEtat = etat;
     rendreAgents(etat.agents);
     rendreSysteme(etat);
     rendreKanban(etat);
@@ -336,6 +389,13 @@ function brancherFlux() {
     /* EventSource se reconnecte tout seul : on ne double pas sa logique. */
   };
 }
+
+/* Filtrer ne redemande RIEN au serveur : on redessine l'état déjà chargé. Une
+ * requête par frappe ferait tourner `git status` et relire 167 fichiers à chaque
+ * lettre. */
+function refiltrer() { if (dernierEtat) rendreKanban(dernierEtat); }
+$("filtre").addEventListener("input", refiltrer);
+$("filtre-divergences").addEventListener("change", refiltrer);
 
 document.addEventListener("keydown", (evenement) => {
   if (evenement.key === "Escape") fermerTiroir();
