@@ -93,3 +93,10 @@ syslog*.txt
 # par ./scripts/build-docs.sh et attachés comme assets (/release).
 # Les sources HTML/CSS de docs/user/src/ restent versionnées et font foi.
 docs/user/*.pdf
+
+# Centre de contrôle — trace d'exécution, jamais une source de vérité.
+# Le journal d'événements et les sorties volumineuses se régénèrent à chaque
+# workflow ; les VERSIONNER ferait diverger deux récits du même passé (le dépôt
+# et le journal) sans qu'aucun ne fasse autorité. Le code et la configuration du
+# centre de contrôle, eux, restent versionnés.
+control-center/var/

@@ -1,0 +1,189 @@
+# Centre de contrôle du développement piloté par agents
+
+Interface web d'observation et de pilotage des workflows Claude Code. Elle vit à
+côté de Claude Code, elle ne le remplace pas : **l'orchestration reste dans
+`CLAUDE.md` et les agents**, et le terminal continue de fonctionner
+indépendamment.
+
+Ce répertoire est conçu pour être **déplacé d'un bloc** vers le template
+d'agents. Rien de spécifique à ce projet n'entre dans le code : ce qui varie
+d'un dépôt à l'autre vit dans [`control-center.toml`](control-center.toml).
+
+## État d'avancement
+
+| Étape | Objet | État |
+|---|---|---|
+| **A** | Hooks + journal d'événements | ✅ livré, validé par mutation |
+| **B** | Lecture des specs | ✅ livré · lecture de git à faire |
+| C | Tableau de bord en lecture seule | à faire |
+| D | Lancement d'un workflow | à faire |
+| E | Création d'une spec depuis un prompt | à faire |
+| F | Discussion par spec | à faire |
+| G | Scénario complet avec échec réel | à faire |
+
+L'analyse préalable complète (workflow observé, agents détectés, cycle de vie
+mesuré, limites du runtime) est publiée à part ; les décisions qu'elle a figées
+sont reprises ci-dessous.
+
+## Étape A — l'instrumentation
+
+Un seul script, [`hooks/record-event.py`](hooks/record-event.py), branché sur
+neuf événements dans `.claude/settings.json`. Il écrit une ligne JSON par
+événement dans `var/agent-events.jsonl`.
+
+**Aucun prompt d'agent n'est modifié.** C'était la contrainte : les agents
+restent propres, l'instrumentation vient du runtime.
+
+### Pourquoi le graphe est plat
+
+Les hooks `SubagentStart` / `SubagentStop` portent `agent_type`, `agent_id` et
+`session_id`, mais **aucun identifiant de l'appel parent**. Ce serait bloquant
+s'il y avait de l'imbrication — or aucun agent de ce dépôt n'a l'outil `Task`
+dans son frontmatter, donc aucun ne peut déléguer.
+
+Un workflow est donc **une session et une suite de sous-agents partageant un
+`session_id`**. Le reconstruire est un tri chronologique, pas une résolution
+d'arbre.
+
+> ⚠️ `CLAUDE.md` attribue cette impossibilité à une « limitation runtime ». Ce
+> n'est pas exact : la profondeur d'imbrication par défaut est de trois niveaux.
+> Ce qui ferme la délégation ici, c'est la liste `tools` des agents. La
+> conséquence est la même, la cause ne l'est pas — et elle rouvre une option que
+> le référentiel présente comme fermée.
+
+### Ce que le collecteur ne fait jamais
+
+1. **Il ne fait jamais échouer une session.** Il sort toujours en code 0. Un
+   hook qui sort en code 2 *annule* l'action observée ; un journal incomplet est
+   un désagrément, une session cassée est une panne.
+2. **Il ne recopie jamais de contenu volumineux.** Ni `tool_result`, ni diff, ni
+   sortie de test — ceux-ci sont référencés par chemin.
+3. **Il ne recopie jamais de secret.** Voir ci-dessous.
+4. **Il ne connaît rien du projet.** Aucun nom d'agent, aucune commande, aucun
+   chemin de spec en dur.
+
+### La redaction, et pourquoi elle a deux gardes
+
+Le collecteur reçoit **toute** commande shell exécutée par Claude Code. Ce dépôt
+en exécute qui portent le mot de passe de l'appareil, et `ota_update.sh`
+documente lui-même `POOL_PASSWORD=… ./ota_update.sh` comme un usage normal.
+
+On ne conserve donc que les **deux premiers jetons sûrs** :
+
+| Commande | Journalisé |
+|---|---|
+| `pio test -e native` | `pio test` |
+| `git commit -F /tmp/msg.txt` | `git commit` |
+| `POOL_PASSWORD=secret ./ota_update.sh firmware` | `./ota_update.sh firmware` |
+| `curl -u admin:secret http://…` | `curl -u` |
+
+Deux règles, et il faut les deux :
+
+- tout jeton contenant `=` ou `:` est **écarté**, jamais tronqué — `POOL_PASSWORD=sec`
+  reste un préfixe de secret ;
+- tout jeton de plus de 24 caractères est écarté : c'est une donnée ou un chemin,
+  pas un nom de programme.
+
+Le premier défaut a été trouvé sur le **premier événement réel** produit par le
+collecteur, avant toute mise en service. Le second a été trouvé par mutation :
+avec un faux secret trop long, retirer entièrement le filtre `=`/`:` ne tuait
+aucun test — le plafond de longueur sauvait la mise à sa place, et un mot de
+passe **court** aurait fui. Le faux secret des tests est court depuis.
+
+## Étape B — la lecture des specs
+
+[`backend/specs.py`](backend/specs.py) ne fait que LIRE. Il ne déplace aucune
+spec, n'en écrit aucune, ne corrige rien : le cycle de vie appartient aux agents
+et à l'humain.
+
+### La colonne vient du répertoire, jamais du champ « Statut »
+
+Mesuré sur les 167 specs : le champ existe dans 165 fichiers mais en **texte
+libre** — plus de vingt formes, parfois une phrase sur plusieurs lignes — et il
+**contredit le répertoire 22 fois**. `tools/check_specs.sh` avait déjà tranché :
+« ce champ est en texte libre dans le dépôt et son analyse produirait des faux
+positifs ». Le répertoire, lui, est vérifié mécaniquement en CI.
+
+Le statut reste **affiché tel quel**. Une classification grossière existe, au
+seul usage de la détection de divergence, et elle obéit à trois règles :
+
+1. **Une divergence n'est affirmée que si la classe est connue.** Deux specs ont
+   un statut illisible ; l'outil se tait sur elles. « Je ne sais pas lire ce
+   statut » n'est pas « ils se contredisent ».
+2. **Le premier champ de l'en-tête gagne.** Certaines specs redéfinissent un
+   second « Statut » dans leurs notes, qui contredit le premier.
+3. **Un champ trouvé hors de l'en-tête est ignoré**, même absent plus haut.
+
+Ces deux dernières gardes sont distinctes et chacune a son test : avec un seul
+cas, elles étaient mutuellement redondantes et aucun mutant ne mourait.
+
+### Le seul choix éditorial, et comment le défaire
+
+`GELÉE` est rangé en **clos** : `done/` archive les décisions de ne pas faire, et
+`feature-123` y porte `GELÉE — pas abandonnée`. Ce choix supprime une divergence
+qu'un décompte littéral signalerait (22 au lieu de 23). Retirer les deux lignes
+`gelee`/`gele` du vocabulaire la fait réapparaître.
+
+### Quand une spec n'a pas de titre
+
+78 specs sur 167 n'ont aucun titre `#`. L'outil affiche alors leur
+**identifiant**, jamais un titre fabriqué : un identifiant vrai vaut mieux qu'un
+libellé plausible.
+
+## Tests
+
+```bash
+python3 control-center/hooks/test_record_event.py   # 12 cas
+python3 control-center/backend/test_specs.py        # 16 cas
+python3 control-center/backend/specs.py specs/features   # inventaire réel
+```
+
+Sans dépendance, et validés par mutation — une suite qui ne tue aucun mutant ne
+prouve rien.
+
+**Collecteur** : casser le filtre `=`/`:` tue quatre tests, retirer le plafond de
+longueur en tue un, revenir à un horodatage à la seconde en tue un, retirer le
+confinement au dépôt en tue un, sortir en code non nul en tue deux.
+
+**Lecteur de specs** : retirer la lecture en deux mots tue deux tests, faire
+affirmer une divergence sur un statut illisible en tue un, laisser le dernier
+champ gagner en tue un, retirer la fenêtre d'en-tête en tue un, inclure
+`README.md` en tue deux, fabriquer un titre en tue un.
+
+Un mutant du collecteur est **équivalent** et doit rester documenté comme tel :
+rendre une chaîne vide au lieu de `None` quand aucun jeton n'est sûr ne change
+rien, parce que l'appelant teste la valeur pour sa vérité. Ce n'est pas un trou
+de couverture, et le compter comme tué ferait pourrir le décompte.
+
+## Format d'un événement
+
+```json
+{
+  "ts": "2026-09-12T13:41:18.535Z",
+  "runtime": "claude-code",
+  "session_id": "12156c3b-…",
+  "hook_event_name": "SubagentStart",
+  "agent_type": "test-engineer",
+  "agent_id": "a9",
+  "cwd": "/root/esp32-pool-controller",
+  "transcript_path": "/root/.claude/projects/-root/12156c3b-….jsonl"
+}
+```
+
+- **`ts` est à la milliseconde.** À la seconde, l'ordre de deux événements
+  consécutifs devenait indécidable — or c'est exactement cet ordre qui distingue
+  une boucle `tester → debugger → developer` d'un enchaînement normal.
+- **`runtime` est inscrit dès le premier événement**, pour que l'ajout d'un autre
+  runtime n'oblige pas à relire un journal écrit sans lui.
+- **L'absence d'`agent_id` identifie l'agent principal.** Elle n'est jamais
+  comblée par une valeur par défaut.
+- **`transcript_path` n'est jamais reconstruit par convention.** Il existe deux
+  arborescences sous `~/.claude/projects/` — le nom encode le répertoire de
+  lancement, pas le dépôt — et une même session peut avoir des fichiers dans les
+  deux. On prend le chemin que le hook donne.
+
+## Le journal n'est pas versionné
+
+`var/` est ignoré par git. Le journal est une **trace**, pas une source de
+vérité : les specs et git font foi. Le versionner ferait diverger deux récits du
+même passé sans qu'aucun ne fasse autorité.

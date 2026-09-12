@@ -1,0 +1,74 @@
+# Configuration du centre de contrôle — ce que la DÉCOUVERTE ne peut pas deviner.
+#
+# Principe : tout ce qui peut être découvert l'est (la liste des agents vient de
+# .claude/agents/, la liste des specs vient du système de fichiers, les fichiers
+# modifiés viennent de git). Ce fichier ne porte QUE ce qu'aucune inspection ne
+# donne — un libellé lisible, un ordre, une commande propre au projet.
+#
+# C'est la ligne de partage qui rend l'outil déplaçable : ce fichier change d'un
+# projet à l'autre, le code ne change pas.
+
+[projet]
+nom = "ESP32 Pool Controller"
+
+[specs]
+# Le Kanban tire ses colonnes du RÉPERTOIRE, jamais du champ « Statut ».
+#
+# ⚠️ Ce n'est pas un choix de facilité. Mesuré le 2026-09-12 sur 167 specs :
+# le champ « Statut » est en texte libre (plus de vingt formes distinctes,
+# parfois une phrase sur plusieurs lignes) et CONTREDIT le répertoire 23 fois.
+# tools/check_specs.sh a déjà tranché la question en toutes lettres : « ce champ
+# est en texte libre dans le dépôt et son analyse produirait des faux positifs ».
+# Le répertoire, lui, est le seul invariant vérifié mécaniquement en CI.
+#
+# Le champ « Statut » reste AFFICHÉ tel quel à côté de la carte. Quand les deux
+# divergent, l'interface montre la divergence — c'est une information réelle.
+racine = "specs/features"
+
+# L'ordre fait le Kanban ; le libellé rend la colonne lisible. Ni l'un ni l'autre
+# ne se devinent : « doing » ne dit pas si le travail avance ou s'il est bloqué.
+colonnes = [
+  { repertoire = "todo",  libelle = "À faire" },
+  { repertoire = "doing", libelle = "En cours" },
+  { repertoire = "done",  libelle = "Clos" },
+]
+
+# ⚠️ « Clos » et non « Terminé » : done/ archive aussi les décisions de NE PAS
+# faire (feature-123 y est marquée GELÉE) et des specs dont les vérifications
+# on-target restent à jouer, documentées comme telles par son propre README.
+# Le cycle est en outre RÉVERSIBLE — feature-125 est ressortie de done/ après
+# trois jours, le 2026-09-12. Aucune colonne n'est terminale.
+
+[agents]
+# Découverts, jamais listés ici : le répertoire fait foi, et il ne portera pas
+# les mêmes agents une fois l'outil déplacé vers le template.
+racine = ".claude/agents"
+
+[commandes]
+# Les seules commandes que le backend accepte de lancer, en liste FERMÉE.
+# Le navigateur choisit une CLÉ, jamais une ligne de commande : il n'existe
+# aucun chemin par lequel une chaîne venue du réseau atteigne un shell.
+tests = ["pio", "test", "-e", "native"]
+build = ["pio", "run", "-e", "esp32dev_core3"]
+hygiene = ["./tools/check_specs.sh"]
+
+[serveur]
+# Écoute au-delà de localhost : l'interface doit être joignable depuis un autre
+# appareil du réseau local. Elle n'est JAMAIS exposée sur Internet.
+hote = "0.0.0.0"
+port = 8787
+
+# Le secret vit hors du dépôt, comme /root/.pool-credentials qui existe déjà.
+# Exigé sur toute action d'écriture (lancement de workflow, création de spec).
+fichier_jeton = "/root/.control-center-token"
+
+[garde_fous]
+# Un clic dans une interface ne doit jamais déclencher une dépense non bornée.
+budget_max_usd = 5.0
+
+# Un seul workflow ÉCRIVAIN à la fois. Ce dépôt travaille directement sur main
+# (un seul vrai merge de branche en 509 commits) et la session terminal de
+# l'utilisateur continue de tourner : deux sessions qui écrivent dans le même
+# arbre s'entrelacent selon l'ordre des vidages. Le second lancement est refusé
+# avec sa raison, jamais mis en file silencieusement.
+ecrivains_simultanes = 1
