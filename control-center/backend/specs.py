@@ -38,45 +38,16 @@ import re
 
 # --- classification grossière, au seul usage de la détection de divergence ----
 
-A_FAIRE = "a_faire"
-EN_COURS = "en_cours"
-CLOS = "clos"
+# SEULE constante de classe qui reste dans le code : la sentinelle d'ignorance.
+# Ce n'est pas une colonne, c'est l'aveu qu'on ne sait pas lire ce statut — et à
+# ce titre elle ne peut pas venir de la configuration d'un projet.
 INDETERMINE = "indetermine"
 
-# Premier mot du champ « Statut », normalisé, → classe.
-# Volontairement COURT : tout ce qui n'est pas ici devient INDETERMINE, ce qui
-# est un aveu d'ignorance, pas une erreur. Élargir cette table est un choix
-# éditorial qui doit rester visible.
-_VOCABULAIRE = {
-    "todo": A_FAIRE,
-    "draft": A_FAIRE,
-    "doing": EN_COURS,
-    "wip": EN_COURS,
-    "done": CLOS,
-    "livre": CLOS,
-    "livree": CLOS,
-    "cloturee": CLOS,
-    "cloture": CLOS,
-    "termine": CLOS,
-    "terminee": CLOS,
-    "implemente": CLOS,
-    "implementee": CLOS,
-    "abandonne": CLOS,
-    "abandonnee": CLOS,
-    # Formes en DEUX mots. Sans elles, `**en cours** — phase 1 livrée…` tombait
-    # en INDETERMINE et sa divergence passait inaperçue (constaté en confrontant
-    # ce module aux 167 specs réelles : 21 divergences trouvées contre 22).
-    "encours": EN_COURS,
-    "enattente": A_FAIRE,
-    # ⚠️ CHOIX ÉDITORIAL, et non une lecture évidente. `done/` archive aussi les
-    # décisions de NE PAS FAIRE : `feature-123` y porte `GELÉE (2026-09-09) — pas
-    # abandonnée`. La ranger en CLOS supprime une divergence qu'un décompte
-    # littéral signalerait. C'est délibéré — une spec gelée EST de la matière
-    # close — mais c'est une convention, pas un fait. Retirer ces deux lignes
-    # fait réapparaître la divergence, si l'on préfère la voir.
-    "gelee": CLOS,
-    "gele": CLOS,
-}
+# Les colonnes, le vocabulaire, la fenêtre d'en-tête et les exclusions viennent
+# désormais de `control-center.toml` (voir `config.py`). Ils étaient codés ici :
+# vocabulaire français, `README.md`, 60 lignes. Une revue l'a relevé — le module
+# promettait la portabilité et ne la tenait pas, ce qui ne se serait vu qu'au
+# moment du déménagement vers le template.
 
 _ACCENTS = str.maketrans("àâäéèêëîïôöùûüç", "aaaeeeeiioouuuc")
 
@@ -87,7 +58,7 @@ def _normaliser(mot):
     return re.sub(r"[^a-z0-9]", "", mot)
 
 
-def classifier_statut(valeur):
+def classifier_statut(valeur, vocabulaire):
     """Classe grossière d'un champ « Statut » libre, ou INDETERMINE.
 
     On ne lit QUE le premier mot : le reste est une justification en prose
@@ -102,10 +73,10 @@ def classifier_statut(valeur):
     # Les DEUX premiers mots d'abord (`en cours`, `en attente`), le premier
     # ensuite. Sans cet essai, toute forme en deux mots devenait INDETERMINE.
     if len(mots) >= 2:
-        classe = _VOCABULAIRE.get(_normaliser(mots[0]) + _normaliser(mots[1]))
+        classe = vocabulaire.get(_normaliser(mots[0]) + _normaliser(mots[1]))
         if classe:
             return classe
-    return _VOCABULAIRE.get(_normaliser(mots[0]), INDETERMINE)
+    return vocabulaire.get(_normaliser(mots[0]), INDETERMINE)
 
 
 # --- extraction des métadonnées, trois formats -------------------------------
@@ -120,17 +91,16 @@ _SEPARATEUR_TABLEAU = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
 
 _TITRE_H1 = re.compile(r"^#\s+(?P<titre>.+?)\s*$")
 
-# Au-delà de cette ligne, on cesse de chercher des métadonnées : elles vivent en
-# tête de fichier, et certaines specs redéfinissent un second champ « Statut »
-# dans leurs notes d'implémentation (constaté sur `bug-ha-eclairage-select`),
-# qui contredit partiellement le premier. Le premier fait foi.
-_LIGNES_ENTETE = 60
+def _extraire_champs(lignes, lignes_entete):
+    """Champs de tête, quel que soit le format. Le PREMIER gagne.
 
-
-def _extraire_champs(lignes):
-    """Champs de tête, quel que soit le format. Le PREMIER gagne."""
+    `lignes_entete` borne la recherche : au-delà, on cesse de chercher. Certaines
+    specs redéfinissent un second champ « Statut » dans leurs notes
+    d'implémentation (constaté sur `bug-ha-eclairage-select`), qui contredit
+    partiellement le premier. Le premier fait foi.
+    """
     champs = {}
-    for ligne in lignes[:_LIGNES_ENTETE]:
+    for ligne in lignes[:lignes_entete]:
         if _SEPARATEUR_TABLEAU.match(ligne):
             continue
         correspondance = _PUCE.match(ligne) or _LIGNE_TABLEAU.match(ligne)
@@ -154,8 +124,15 @@ def _titre(lignes, identifiant):
     return identifiant
 
 
-def lire_spec(chemin, colonne):
-    """Lit une spec. Ne lève jamais : un fichier illisible est rendu tel quel."""
+def lire_spec(chemin, colonne, vocabulaire=None, lignes_entete=60):
+    """Lit une spec. Ne lève jamais : un fichier illisible est rendu tel quel.
+
+    `vocabulaire` et `lignes_entete` viennent de la configuration du projet. Leurs
+    défauts ne servent qu'aux appels directs : le serveur passe toujours ceux du
+    projet.
+    """
+    if vocabulaire is None:
+        vocabulaire = {}
     identifiant = os.path.splitext(os.path.basename(chemin))[0]
     try:
         with open(chemin, encoding="utf-8") as fichier:
@@ -168,9 +145,9 @@ def lire_spec(chemin, colonne):
             "divergence": False, "illisible": True,
         }
 
-    champs = _extraire_champs(lignes)
+    champs = _extraire_champs(lignes, lignes_entete)
     statut = champs.get("statut")
-    classe = classifier_statut(statut)
+    classe = classifier_statut(statut, vocabulaire)
 
     return {
         "id": identifiant,
@@ -189,42 +166,63 @@ def lire_spec(chemin, colonne):
     }
 
 
-def lister_specs(racine, colonnes):
+def lister_specs(racine, colonnes, vocabulaire=None, lignes_entete=60,
+                 exclure=(), prefixes_exclus=("_",)):
     """Toutes les specs, par colonne. `colonnes` = [(repertoire, classe), …].
 
-    La classe d'une colonne est celle à laquelle son répertoire correspond ; elle
-    vient de la configuration du projet, pas d'une convention codée ici : un
-    autre dépôt nommera ses répertoires autrement.
+    Tout ce qui varie d'un projet à l'autre est un PARAMÈTRE : les noms de
+    répertoire, le vocabulaire des statuts, les fichiers à ignorer. Rien de tout
+    cela n'est écrit dans ce module.
     """
+    exclus = set(exclure)
     specs = []
     for repertoire, classe in colonnes:
         dossier = os.path.join(racine, repertoire)
         if not os.path.isdir(dossier):
             continue
         for nom in sorted(os.listdir(dossier)):
-            if not nom.endswith(".md") or nom.startswith("_"):
+            if not nom.endswith(".md") or nom in exclus:
                 continue
-            if nom == "README.md":
+            if any(nom.startswith(p) for p in prefixes_exclus if p):
                 continue
-            specs.append(lire_spec(os.path.join(dossier, nom), classe))
+            specs.append(lire_spec(os.path.join(dossier, nom), classe,
+                                   vocabulaire, lignes_entete))
     return specs
+
+
+def lister_depuis_config(config):
+    """Raccourci : lit les specs d'après une configuration chargée."""
+    reglages = config.section("specs")
+    racine = os.path.join(config["_racine_projet"], reglages.get("racine", "specs/features"))
+    colonnes = [(repertoire, classe) for repertoire, classe, _ in config.colonnes()]
+    return lister_specs(
+        racine, colonnes,
+        vocabulaire=reglages.get("vocabulaire", {}),
+        lignes_entete=reglages.get("lignes_entete", 60),
+        exclure=reglages.get("exclure", ()),
+        prefixes_exclus=reglages.get("prefixes_exclus", ("_",)),
+    )
 
 
 if __name__ == "__main__":
     import json
-    import sys
 
-    racine = sys.argv[1] if len(sys.argv) > 1 else "specs/features"
-    specs = lister_specs(racine, [("todo", A_FAIRE), ("doing", EN_COURS), ("done", CLOS)])
+    import config as C
+
+    configuration = C.charger()
+    specs = lister_depuis_config(configuration)
+    libelles = {r: l for r, _, l in configuration.colonnes()}
     divergentes = [s for s in specs if s["divergence"]]
-    indeterminees = [s for s in specs if s["statut_classe"] == INDETERMINE]
     print(json.dumps({
+        "projet": configuration.section("projet").get("nom"),
+        "config_lue": configuration["_fichier_lu"],
         "total": len(specs),
-        "par_colonne": {c: sum(1 for s in specs if s["colonne"] == c)
-                        for c in (A_FAIRE, EN_COURS, CLOS)},
+        "par_colonne": {libelles.get(c, c): sum(1 for s in specs if s["colonne"] == c)
+                        for c, _, _ in [(r, x, y) for r, x, y in configuration.colonnes()]},
         "divergences": len(divergentes),
-        "statut_illisible": len(indeterminees),
+        "statut_illisible": sum(1 for s in specs if s["statut_classe"] == INDETERMINE),
         "sans_statut": sum(1 for s in specs if not s["statut_texte"]),
     }, ensure_ascii=False, indent=2))
     for spec in divergentes:
-        print("  %-58s %-8s ≠ %s" % (spec["id"][:58], spec["colonne"], spec["statut_texte"][:60]))
+        print("  %-58s %-6s ≠ %s" % (spec["id"][:58], spec["colonne"],
+                                     (spec["statut_texte"] or "")[:58]))

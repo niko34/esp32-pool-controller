@@ -39,6 +39,28 @@ colonnes = [
 # Le cycle est en outre RÉVERSIBLE — feature-125 est ressortie de done/ après
 # trois jours, le 2026-09-12. Aucune colonne n'est terminale.
 
+# Vocabulaire ajouté aux défauts (la fusion complète, elle n'efface pas).
+#
+# ⚠️ CHOIX ÉDITORIAL DE CE DÉPÔT, et non une lecture évidente : `done/` archive
+# aussi les décisions de NE PAS FAIRE — `feature-123` y porte « GELÉE
+# (2026-09-09) — pas abandonnée ».
+#
+# EFFET MESURÉ de ces deux lignes, et non supposé :
+#   avec  → feature-123 est classée « done », divergences 22, illisibles 2
+#   sans  → feature-123 devient INDÉTERMINÉE, divergences 22, illisibles 3
+#
+# Les supprimer ne fait donc PAS réapparaître une divergence : cela fait taire
+# l'outil sur cette spec. C'est la règle « une divergence n'est affirmée que si
+# la classe est connue » qui joue, et elle prime sur le vocabulaire.
+#
+# J'avais d'abord écrit l'inverse ici même. C'était faux, et seule la mesure l'a
+# montré : le décompte de 23 d'une analyse antérieure venait d'une comparaison
+# littérale, qui traite tout statut non reconnu comme divergent. Ce module ne
+# fait pas cela, délibérément.
+[specs.vocabulaire]
+gelee = "done"
+gele = "done"
+
 [agents]
 # Découverts, jamais listés ici : le répertoire fait foi, et il ne portera pas
 # les mêmes agents une fois l'outil déplacé vers le template.

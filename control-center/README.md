@@ -14,7 +14,7 @@ d'un dépôt à l'autre vit dans [`control-center.toml`](control-center.toml).
 | Étape | Objet | État |
 |---|---|---|
 | **A** | Hooks + journal d'événements | ✅ livré, validé par mutation |
-| **B** | Lecture des specs | ✅ livré · lecture de git à faire |
+| **B** | Lecture des specs + configuration | ✅ livré · lecture de git à faire |
 | C | Tableau de bord en lecture seule | à faire |
 | D | Lancement d'un workflow | à faire |
 | E | Création d'une spec depuis un prompt | à faire |
@@ -120,9 +120,18 @@ cas, elles étaient mutuellement redondantes et aucun mutant ne mourait.
 ### Le seul choix éditorial, et comment le défaire
 
 `GELÉE` est rangé en **clos** : `done/` archive les décisions de ne pas faire, et
-`feature-123` y porte `GELÉE — pas abandonnée`. Ce choix supprime une divergence
-qu'un décompte littéral signalerait (22 au lieu de 23). Retirer les deux lignes
-`gelee`/`gele` du vocabulaire la fait réapparaître.
+`feature-123` y porte `GELÉE — pas abandonnée`. Le choix vit dans
+`control-center.toml`, pas dans le code, parce qu'il n'est vrai que de ce dépôt.
+
+**Effet mesuré**, et non supposé : avec les deux lignes, `feature-123` est classée
+« done » — 22 divergences, 2 statuts illisibles. Sans elles, elle devient
+**indéterminée** — 22 divergences, 3 illisibles. Les retirer ne fait donc pas
+réapparaître une divergence : cela fait **taire** l'outil sur cette spec.
+
+J'avais d'abord écrit l'inverse. La règle « une divergence n'est affirmée que si
+la classe est connue » prime sur le vocabulaire, et le décompte de 23 d'une
+analyse antérieure venait d'une comparaison littérale — qui tient tout statut
+non reconnu pour divergent. Ce module ne fait pas cela, délibérément.
 
 ### Quand une spec n'a pas de titre
 
@@ -130,12 +139,34 @@ qu'un décompte littéral signalerait (22 au lieu de 23). Retirer les deux ligne
 **identifiant**, jamais un titre fabriqué : un identifiant vrai vaut mieux qu'un
 libellé plausible.
 
+## La configuration, et ce qui n'y est pas
+
+[`control-center.toml`](control-center.toml) porte **uniquement ce qu'aucune
+inspection ne donne** : l'ordre et le libellé des colonnes, le vocabulaire des
+statuts, les fichiers à ignorer, les commandes lançables, les bornes de sûreté.
+La liste des agents, celle des specs et les fichiers modifiés sont **découverts**.
+
+Trois propriétés de [`backend/config.py`](backend/config.py) :
+
+- **L'outil démarre toujours.** Fichier absent, TOML cassé, section vide : il
+  part sur les défauts. Un projet issu du template n'a peut-être rien à déclarer.
+- **Le défaut n'écoute qu'en local.** Ouvrir au réseau est une décision explicite
+  du projet, jamais un héritage silencieux.
+- **Le défaut n'autorise aucune commande.** Sans déclaration, rien n'est lançable.
+
+⚠️ Ce fichier a existé pendant trois commits **sans que personne ne le lise** :
+commenté, versionné, entièrement décoratif. C'est la pire forme de dette — une
+configuration qui a l'air d'être en service alors qu'elle ne pilote rien.
+
 ## Tests
 
 ```bash
-python3 control-center/hooks/test_record_event.py   # 12 cas
+python3 control-center/hooks/test_record_event.py   # 19 cas
 python3 control-center/backend/test_specs.py        # 16 cas
-python3 control-center/backend/specs.py specs/features   # inventaire réel
+python3 control-center/backend/test_events.py       # 24 cas
+python3 control-center/backend/test_config.py       # 17 cas
+python3 control-center/backend/specs.py             # inventaire réel
+python3 control-center/backend/events.py            # workflows reconstruits
 ```
 
 Sans dépendance, et validés par mutation — une suite qui ne tue aucun mutant ne

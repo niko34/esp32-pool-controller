@@ -17,7 +17,19 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import config as C  # noqa: E402
 import specs as S  # noqa: E402
+
+# Vocabulaire et colonnes viennent de la CONFIGURATION, plus du code : les tests
+# les fournissent donc explicitement, comme le fera le serveur. `gelee` n'y est
+# pas — c'est un choix du projet, pas un défaut.
+VOC = C.charger(chemin="/introuvable.toml").section("specs")["vocabulaire"]
+TODO, DOING, DONE = "todo", "doing", "done"
+COLONNES = [(TODO, TODO), (DOING, DOING), (DONE, DONE)]
+
+
+def lire(chemin, colonne, lignes_entete=60):
+    return S.lire_spec(chemin, colonne, VOC, lignes_entete)
 
 _echecs = []
 _tests = 0
@@ -121,29 +133,29 @@ def main():
         d = os.path.join(racine, "done")
 
         # --- les trois formats de métadonnées ------------------------------
-        s = S.lire_spec(ecrire(t, "bug-121-x.md", FORMAT_PUCES), S.A_FAIRE)
+        s = lire(ecrire(t, "bug-121-x.md", FORMAT_PUCES), TODO)
         check("test_format_puces", s["statut_texte"] == "todo" and s["type"].startswith("bug"),
               "statut=%r" % s["statut_texte"])
         check("test_priorite_avec_justification_conservee_telle_quelle",
               s["priorite"] == "**normale** — abaissée le 08/09",
               "obtenu %r" % s["priorite"])
 
-        s = S.lire_spec(ecrire(t, "bug-080-y.md", FORMAT_TABLEAU), S.A_FAIRE)
-        check("test_format_tableau", s["statut_classe"] == S.EN_COURS,
+        s = lire(ecrire(t, "bug-080-y.md", FORMAT_TABLEAU), TODO)
+        check("test_format_tableau", s["statut_classe"] == DOING,
               "classe=%r sur %r" % (s["statut_classe"], s["statut_texte"]))
 
-        s = S.lire_spec(ecrire(d, "bug-minimal.md", FORMAT_MINIMAL), S.CLOS)
-        check("test_format_minimal_sans_titre_h1", s["statut_classe"] == S.CLOS)
+        s = lire(ecrire(d, "bug-minimal.md", FORMAT_MINIMAL), DONE)
+        check("test_format_minimal_sans_titre_h1", s["statut_classe"] == DONE)
         check("test_titre_retombe_sur_l_identifiant", s["titre"] == "bug-minimal",
               "un titre inventé serait pire qu'un identifiant vrai ; obtenu %r" % s["titre"])
 
         # --- classification --------------------------------------------------
-        s = S.lire_spec(ecrire(d, "bug-deux-mots.md", DEUX_MOTS), S.CLOS)
-        check("test_statut_en_deux_mots", s["statut_classe"] == S.EN_COURS,
+        s = lire(ecrire(d, "bug-deux-mots.md", DEUX_MOTS), DONE)
+        check("test_statut_en_deux_mots", s["statut_classe"] == DOING,
               "« en cours » doit être lu ; obtenu %r" % s["statut_classe"])
         check("test_statut_en_deux_mots_produit_la_divergence", s["divergence"] is True)
 
-        s = S.lire_spec(ecrire(d, "bug-inconnu.md", STATUT_INCONNU), S.CLOS)
+        s = lire(ecrire(d, "bug-inconnu.md", STATUT_INCONNU), DONE)
         check("test_statut_inconnu_reste_indetermine", s["statut_classe"] == S.INDETERMINE)
         check("test_statut_inconnu_n_affirme_aucune_divergence", s["divergence"] is False,
               "« je ne sais pas lire ce statut » n'est PAS « ils se contredisent »")
@@ -151,12 +163,12 @@ def main():
               s["statut_texte"] == "callout bizarre jamais vu ailleurs",
               "le texte brut doit survivre à l'échec de classification")
 
-        s = S.lire_spec(ecrire(d, "bug-second.md", SECOND_STATUT), S.CLOS)
+        s = lire(ecrire(d, "bug-second.md", SECOND_STATUT), DONE)
         check("test_premier_statut_gagne", s["statut_texte"] == "todo",
               "un second « Statut » dans les notes ne doit pas écraser celui de tête ; obtenu %r"
               % s["statut_texte"])
 
-        s = S.lire_spec(ecrire(d, "bug-tardif.md", CHAMP_TARDIF), S.CLOS)
+        s = lire(ecrire(d, "bug-tardif.md", CHAMP_TARDIF), DONE)
         check("test_champ_hors_entete_ignore", s["priorite"] is None,
               "un champ trouvé au fond des notes n'est pas une métadonnée d'en-tête ; obtenu %r"
               % s["priorite"])
@@ -165,15 +177,15 @@ def main():
         chemin = ecrire(d, "bug-binaire.md", "")
         with open(chemin, "wb") as fichier:
             fichier.write(b"\xff\xfe\x00 pas de l'utf-8")
-        s = S.lire_spec(chemin, S.CLOS)
+        s = lire(chemin, DONE)
         check("test_fichier_illisible_ne_leve_pas", s["illisible"] is True)
         check("test_fichier_illisible_n_affirme_aucune_divergence", s["divergence"] is False)
 
         # --- inventaire ------------------------------------------------------
         ecrire(racine, "_template.md", FORMAT_PUCES)
         ecrire(d, "README.md", "# archive")
-        listees = S.lister_specs(racine, [("todo", S.A_FAIRE), ("doing", S.EN_COURS),
-                                          ("done", S.CLOS)])
+        listees = S.lister_specs(racine, COLONNES, VOC, 60,
+                                 exclure=["README.md"], prefixes_exclus=["_"])
         noms = {x["id"] for x in listees}
         check("test_template_et_readme_exclus",
               "README" not in noms and "_template" not in noms,
