@@ -15,7 +15,7 @@ d'un dépôt à l'autre vit dans [`control-center.toml`](control-center.toml).
 |---|---|---|
 | **A** | Hooks + journal d'événements | ✅ livré, validé par mutation |
 | **B** | Specs, événements, configuration, git | ✅ livré, validé par mutation |
-| C | Tableau de bord en lecture seule | à faire |
+| **C** | Tableau de bord en lecture seule | ✅ livré · apparence non vérifiée |
 | D | Lancement d'un workflow | à faire |
 | E | Création d'une spec depuis un prompt | à faire |
 | F | Discussion par spec | à faire |
@@ -181,6 +181,51 @@ refusés.
 Un diff tronqué est **annoncé comme tel**. Un diff coupé en silence se lit comme
 un diff complet, et c'est un mensonge sur l'état du code.
 
+## Étape C — le tableau de bord
+
+```bash
+python3 control-center/backend/server.py      # puis http://<hôte>:8787
+```
+
+### La garantie est structurelle, pas réglementaire
+
+**`Handler` n'a pas de `do_POST`.** Ni `do_PUT`, ni `do_DELETE`. Ce ne sont pas
+des routes désactivées par une option : les méthodes n'existent pas, donc
+`http.server` répond **501** de lui-même. Aucun clic ne peut rien lancer, rien
+écrire, rien dépenser.
+
+Deux tests le verrouillent : un par HTTP, et un par **introspection de la
+classe** — si une route d'écriture est ajoutée un jour, le second échoue même si
+le comportement HTTP est masqué par ailleurs. C'est là que les garde-fous de
+l'étape D devront exister d'abord.
+
+### Trois familles de chemins, trois validations
+
+Aucune arithmétique de chemin n'est improvisée :
+
+| Ressource | Validation |
+|---|---|
+| fichiers statiques | liste **fermée**, calculée au démarrage depuis `web/` — l'extension tranche, pas l'existence du fichier |
+| specs | l'identifiant doit correspondre **exactement** à une spec découverte ; aucun chemin n'est construit depuis la requête |
+| diffs | `vcs.chemin_sur()` — liens symboliques résolus, sortie du dépôt refusée |
+
+`transcript_path` figure dans le journal et pointe **hors du dépôt**, vers la
+conversation entière. Une **liste blanche positive** de champs l'écarte : un
+champ neuf apparu dans le journal ne sort pas tant qu'il n'y est pas ajouté.
+
+### Le flux transporte un signal, pas l'état
+
+Le SSE envoie `maj`, et le navigateur redemande `/api/etat`. Un état poussé et
+un état demandé pourraient diverger, et il faudrait alors décider lequel fait
+foi. L'empreinte de changement **exclut l'horodatage** — sinon l'interface se
+rafraîchirait en boucle.
+
+### Ce qui n'est pas vérifié
+
+L'**apparence**. Une capture headless n'aboutit pas : la page garde une
+connexion SSE ouverte, que le budget de temps virtuel de Chromium ne peut pas
+faire expirer. Le comportement est testé, le rendu ne l'est pas.
+
 ## Tests
 
 ```bash
@@ -189,6 +234,7 @@ python3 control-center/backend/test_specs.py        # 16 cas
 python3 control-center/backend/test_events.py       # 24 cas
 python3 control-center/backend/test_config.py       # 17 cas
 python3 control-center/backend/test_vcs.py          # 26 cas
+python3 control-center/backend/test_server.py       # 30 cas
 python3 control-center/backend/specs.py             # inventaire réel
 python3 control-center/backend/events.py            # workflows reconstruits
 ```

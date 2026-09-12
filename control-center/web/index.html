@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Centre de contrôle</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header class="barre">
+  <div class="titre">
+    <span class="marque">Centre de contrôle</span>
+    <span class="projet" id="projet">…</span>
+  </div>
+  <div class="etat-barre">
+    <span class="jauge" id="jauge-flux" title="connexion au flux d'événements">flux …</span>
+    <span class="jauge" id="jauge-git">git …</span>
+    <span class="jauge lecture-seule" title="Aucune route d'écriture n'existe dans ce serveur">lecture seule</span>
+    <span class="horodatage" id="horodatage"></span>
+  </div>
+</header>
+
+<main class="grille">
+
+  <aside class="rail">
+    <section class="bloc">
+      <h2>Agents</h2>
+      <p class="note" id="note-agents">découverts dans le dépôt</p>
+      <ul class="agents" id="agents"></ul>
+    </section>
+
+    <section class="bloc">
+      <h2>Système</h2>
+      <dl class="systeme" id="systeme"></dl>
+    </section>
+  </aside>
+
+  <section class="centre">
+
+    <section class="bloc demande" aria-labelledby="titre-demande">
+      <h2 id="titre-demande">Que souhaitez-vous développer&nbsp;?</h2>
+      <textarea id="prompt" rows="2" disabled
+        placeholder="Décrire une fonctionnalité en langage naturel…"></textarea>
+      <p class="note avert">
+        Inactif à dessein. Ce serveur n'a <strong>aucune route d'écriture</strong> —
+        <code>do_POST</code> n'existe pas dans son code. La création de spec arrive à
+        l'étape&nbsp;E, après les garde-fous de l'étape&nbsp;D&nbsp;: jeton, écrivain
+        unique, plafond de dépense.
+      </p>
+    </section>
+
+    <section class="bloc">
+      <div class="entete-bloc">
+        <h2>Spécifications</h2>
+        <span class="compteur" id="compteur-specs"></span>
+      </div>
+      <div class="kanban" id="kanban"></div>
+    </section>
+
+    <section class="bloc">
+      <div class="entete-bloc">
+        <h2>Workflows observés</h2>
+        <span class="compteur" id="compteur-workflows"></span>
+      </div>
+      <div id="workflows"></div>
+    </section>
+
+    <div class="deux-colonnes">
+      <section class="bloc">
+        <h2>Fichiers touchés</h2>
+        <div id="fichiers"></div>
+      </section>
+      <section class="bloc">
+        <h2>Derniers événements</h2>
+        <ol class="timeline" id="timeline"></ol>
+      </section>
+    </div>
+
+  </section>
+</main>
+
+<div class="tiroir" id="tiroir" hidden>
+  <div class="tiroir-barre">
+    <span id="tiroir-titre"></span>
+    <button type="button" id="tiroir-fermer" aria-label="Fermer">✕</button>
+  </div>
+  <pre id="tiroir-contenu"></pre>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
