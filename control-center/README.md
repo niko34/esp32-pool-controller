@@ -22,6 +22,36 @@ Ce répertoire est conçu pour être **déplacé d'un bloc** vers le template
 d'agents. Rien de spécifique à ce projet n'entre dans le code : ce qui varie
 d'un dépôt à l'autre vit dans [`control-center.toml`](control-center.toml).
 
+## Installation dans un projet
+
+```bash
+python3 control-center/installer.py            # examine et propose
+python3 control-center/installer.py --ecrire   # écrit control-center.toml
+```
+
+L'assistant **découvre** ce qu'il peut lire du projet — répertoires de specs
+réellement présents, répertoire d'agents, commandes de test devinées d'après les
+fichiers de build — et en tire un `control-center.toml` pré-rempli. Il n'invente
+rien : une colonne `doing/` absente du disque n'apparaît pas dans la
+configuration.
+
+Deux choses qu'il ne fait **pas**, délibérément :
+
+**Il n'écrase jamais un `control-center.toml` existant.** Une configuration en
+place a été relue par quelqu'un ; la regénérer effacerait ce travail.
+
+**Il n'écrit jamais dans `.claude/settings.json`.** C'est le fichier le plus
+personnalisé d'un projet — permissions, refus, garde-fous choisis un par un. Un
+script qui y écrit finit un jour par écraser une décision. L'assistant **affiche**
+le bloc de hooks à coller, et s'arrête là.
+
+> ⚠️ **Sans ces hooks, le journal reste vide** et le tableau de bord n'affiche
+> rien. C'est l'étape manuelle, et la seule.
+
+Ensuite, `tools/update_kit.sh` maintient le centre de contrôle à jour depuis le
+kit. Il y figure en chemin **conditionnel** : un projet qui ne l'a pas installé
+ne le reçoit jamais.
+
 ## État d'avancement
 
 | Étape | Objet | État |
