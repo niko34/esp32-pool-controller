@@ -269,7 +269,14 @@ fi
 # partir des agents Claude réellement présents dans le projet. Ainsi, les agents
 # métier propres au projet restent inclus et un profil Copilot manuel n'est
 # jamais écrasé silencieusement par un répertoire venu du kit.
-if [ -d ".github" ]; then
+# ⚠️ La condition porte sur le SCRIPT, pas seulement sur `.github/`. Un projet
+# peut avoir un `.github/` — pour sa CI — sans consommer la passerelle Copilot :
+# c'est le cas dès qu'un `.kit-paths` exclut `tools/sync_copilot_agents.py`.
+#
+# Constaté au premier lancement dans un projet réel : la synchronisation copiait
+# correctement ses fichiers, puis échouait en fin de course sur un script absent,
+# laissant croire à un échec global alors que tout était écrit.
+if [ -d ".github" ] && [ -f "tools/sync_copilot_agents.py" ]; then
   python3 tools/sync_copilot_agents.py --write || {
     echo "❌ Échec de la régénération des profils GitHub Copilot." >&2
     exit 1
@@ -286,7 +293,7 @@ echo "  2. Vérifier que les agents MÉTIER du projet n'ont pas été écrasés"
 echo "     (ils ne sont pas dans le kit, donc ils ne le sont pas — mais vérifie)"
 echo "  3. Relancer les contrôles :"
 echo "       ./tools/check_specs.sh && ./tools/check_doc_links.sh"
-if [ -d ".github/agents" ]; then
+if [ -d ".github/agents" ] && [ -f "tools/sync_copilot_agents.py" ]; then
   echo "       python3 tools/sync_copilot_agents.py --check"
 fi
 echo "  4. Committer en citant la version du kit récupérée :"
