@@ -72,15 +72,66 @@ bool fopenGuardShouldDefer(uint32_t maxAlloc8, uint32_t minAllocBytes);
  * mesure fraîche — cf. fopenGuardNeedsFreshMeasure().
  */
 struct FopenGuardEpisode {
+  // ⚠️ DEUX DRAPEAUX, PAS UN — bug fs_guard-episode-start-inatteignable.
+  // `active` est écrit par fopenGuardNoteRefusal(), APPELÉE au POINT DE
+  // DÉCISION par fsGuardAdmit(), depuis N'IMPORTE QUELLE tâche : c'est le cache
+  // DU REFUS (rôle inchangé). `reported` n'appartient qu'au DRAIN (loop) : « ai-je
+  // déjà émis l'ouverture de cet épisode ? ». Avant le correctif d'origine, le
+  // drain testait `!st.active` pour détecter le front montant — or `active` est
+  // TOUJOURS déjà vrai quand le drain s'exécute, puisque fsGuardAdmit() l'a posé
+  // avant lui. La branche EpisodeStart était donc structurellement inatteignable.
+  // Le correctif suivant a déplacé le front montant dans la coquille impure
+  // (`fs_guard.cpp`) : la RÈGLE y était de nouveau hors de portée de la
+  // mutation — mêmes symptômes, autre adresse. `fopenGuardNoteRefusal()`
+  // rapatrie la règle dans ce module pur : c'est elle, et elle seule, qui pose
+  // `active`/`episodeStartMs` sur le front montant.
   bool     active = false;            // un épisode de refus est ouvert (cache DU REFUS)
+  bool     reported = false;          // le DRAIN a déjà émis l'ouverture de CET épisode
   bool     probeFloorArmed = false;   // dernier relevé < 2 × seuil → cache autorisé
   bool     escalated = false;         // l'escalade de l'épisode a déjà été émise
   uint32_t drainedDeferrals = 0;      // dernière valeur du compteur vue par la loop
   uint32_t deferralsAtStart = 0;      // valeur du compteur juste AVANT l'épisode
-  uint32_t episodeStartMs = 0;        // millis du 1er refus drainé de l'épisode
+  // Posé par fopenGuardNoteRefusal() sur le FRONT MONTANT de `active` (donc au
+  // 1er refus réel, pas au 1er drain). Le drain ne fait que le LIRE pour
+  // chiffrer l'épisode qu'il clôt.
+  uint32_t episodeStartMs = 0;        // millis du 1er refus de l'épisode
   uint32_t lastDeferralMs = 0;        // millis du dernier refus (point de décision)
   uint32_t lastProbeMs = 0;           // millis du dernier parcours du tas payé
 };
+
+/**
+ * @brief Note un refus au POINT DE DÉCISION (fsGuardAdmit(), n'importe quelle
+ * tâche) et pose le FRONT MONTANT de l'épisode.
+ *
+ * Seule autorité sur `episodeStartMs`/`active` : `episodeStartMs` n'est
+ * stampé QUE si `st.active` était encore faux (donc au tout premier refus de
+ * l'épisode, jamais au premier drain — cf. bug
+ * fs_guard-episode-start-inatteignable). `active` est ensuite posé
+ * inconditionnellement et `lastDeferralMs` mis à jour, que ce soit le front
+ * montant ou un refus ultérieur du même épisode.
+ *
+ * À appeler sur les DEUX chemins de refus de fsGuardAdmit() : le chemin
+ * mesuré ET le chemin servi par le cache. Sur le chemin en cache, l'appel est
+ * un NO-OP sur `active`/`episodeStartMs` (le cache n'est armé que si un
+ * épisode est déjà ouvert, donc `st.active` y est vrai par construction) —
+ * seul `lastDeferralMs` y change, comme avant l'extraction.
+ *
+ * @param st     état d'épisode, mis à jour en place
+ * @param nowMs  millis() au moment du refus
+ * @return true si c'était le FRONT MONTANT (premier refus de l'épisode).
+ */
+bool fopenGuardNoteRefusal(FopenGuardEpisode& st, uint32_t nowMs);
+
+/**
+ * @brief Durée écoulée depuis le début de l'épisode couvert par `st`.
+ *
+ * N'a de sens qu'au moment où l'appelant clôt l'épisode (FopenGuardAction::
+ * EpisodeEnd) : `episodeStartMs` survit à la clôture (fopenGuardDrain() ne le
+ * réinitialise pas) précisément pour permettre ce calcul après coup.
+ * Soustraction non signée : juste au repliement de millis() (24,8 j), comme
+ * le reste du module.
+ */
+uint32_t fopenGuardEpisodeDurationMs(const FopenGuardEpisode& st, uint32_t nowMs);
 
 /**
  * @brief Faut-il payer un parcours du tas pour décider ?
@@ -140,13 +191,18 @@ enum class FopenGuardAction : uint8_t {
  * @return l'action à journaliser, une seule par appel.
  *
  * Règles, dans cet ordre :
- *   a) compteur qui a bougé → l'épisode vit ; s'il n'était pas ouvert, on
- *      l'ouvre (EpisodeStart). UN seul WARN, même pour 200 refus.
- *   b) épisode ouvert, seuil d'escalade atteint et pas encore escaladé →
+ *   a) compteur qui a bougé → l'épisode vit ; si le drain ne l'a pas encore
+ *      RAPPORTÉ (`!st.reported`, et non `!st.active` — cf. FopenGuardEpisode),
+ *      on émet l'ouverture (EpisodeStart). UN seul WARN, même pour 200 refus.
+ *      `episodeStartMs` n'est PAS posé ici : fopenGuardNoteRefusal() l'a déjà
+ *      fait, appelée par fsGuardAdmit() au premier refus réel.
+ *   b) épisode déjà rapporté, seuil d'escalade atteint et pas encore escaladé →
  *      Escalate (une seule fois par épisode).
- *   c) épisode ouvert et tas rétabli (mesure FRAÎCHE >= seuil) → EpisodeEnd.
- *      `episodeStartMs` et `deferralsAtStart` ne sont PAS remis à zéro : la
- *      coquille en tire la durée et le total de l'épisode qu'elle vient de clore.
+ *   c) épisode ouvert (`st.active`) et tas rétabli (mesure FRAÎCHE >= seuil) →
+ *      EpisodeEnd, qui remet `active` ET `reported` à false (sans quoi le
+ *      prochain épisode ne serait jamais détecté). `episodeStartMs` et
+ *      `deferralsAtStart` ne sont PAS remis à zéro : la coquille en tire la
+ *      durée et le total de l'épisode qu'elle vient de clore.
  *   d) sinon → None.
  */
 FopenGuardAction fopenGuardDrain(FopenGuardEpisode& st, uint32_t deferCount,

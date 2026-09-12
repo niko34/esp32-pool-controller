@@ -339,6 +339,67 @@ sinon on prononcerait une autorisation sans l'avoir mesurée. `kInternalFopenPro
 que si le dernier relevé était **sous 2 × seuil** : en régime confortable chaque
 décision re-mesure, et le cache ne peut produire **aucun** refus périmé.
 
+### ⚠️ Correctif v2.51.0 (lot B1) — `EpisodeStart` était structurellement inatteignable
+
+**Confirmé et corrigé** — cf. [`docs/incidents/2026-09-10-recidive-fragmentation-v2500.md`](../incidents/2026-09-10-recidive-fragmentation-v2500.md).
+`fsGuardAdmit()` posait `sFopenEpisode.active = true` **au point de décision**,
+depuis n'importe quelle tâche appelante. `fopenGuardDrain()` (appelé **depuis la
+loop uniquement**) n'initialisait `episodeStartMs`/`deferralsAtStart` que sous
+`if (!st.active)`. Or `active` était **toujours déjà vrai** quand le drain
+s'exécutait — la branche `EpisodeStart` était donc **inatteignable**, et ce
+sur 28,9 h de terrain réel :
+
+- **zéro** ligne « Ouvertures de fichiers refusées » n'a jamais été émise ;
+- les trois durées d'épisode journalisées (« 1 refus en **92 279** s », « 2 refus
+  en **99 488** s », « 3 refus en **102 792** s ») étaient en réalité l'**uptime**
+  (`episodeStartMs` restait à 0) ;
+- le compteur de refus rapporté était le **cumul depuis le boot**, pas celui de
+  l'épisode (`deferralsAtStart` restait à 0 également).
+
+**Correction — deux drapeaux, pas un.** `FopenGuardEpisode` porte désormais
+`active` (cache DU REFUS, inchangé dans son rôle : écrit au point de décision,
+depuis n'importe quelle tâche) **et** `reported` (neuf, propriété **exclusive du
+drain** : « ai-je déjà émis l'ouverture de cet épisode ? »). `fopenGuardDrain()`
+teste `!st.reported`, jamais `!st.active`, pour décider `EpisodeStart` ; il remet
+`reported` à `false` à `EpisodeEnd`, sans quoi l'épisode suivant ne serait jamais
+détecté.
+
+Le front montant lui-même (« est-ce le premier refus de l'épisode ? ») est
+extrait dans `fopenGuardNoteRefusal(FopenGuardEpisode&, uint32_t nowMs)`, appelée
+par `fsGuardAdmit()` sur les **deux** chemins de refus (mesuré et servi par le
+cache) — c'est elle, et elle seule, qui pose `active`/`episodeStartMs`. La durée
+de l'épisode est lue via `fopenGuardEpisodeDurationMs(const FopenGuardEpisode&,
+uint32_t nowMs)`, qui remplace le calcul en ligne dans `fs_guard.cpp`. Les deux
+fonctions vivent dans le module **pur** [`src/fopen_guard_logic.h`](../../src/fopen_guard_logic.h) / `.cpp`.
+
+> **Pourquoi l'extraction dans le module pur compte, et pas seulement le
+> correctif logique.** Une première version corrigeait la règle directement dans
+> `src/fs_guard.cpp` — la **coquille impure**, hors de `[env:native]`
+> ([ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md)).
+> Deux mutants sur la règle devenaient alors **intestables** (le fichier n'est
+> pas compilé côté natif) et deux autres **survivaient par masquage**. Le
+> placement du code décidait de ce que la validation par mutation pouvait
+> atteindre. `fopenGuardNoteRefusal()` rapatrie la règle là où ADR-0017 la
+> protège : dans le module que `pio test -e native` exerce.
+
+> ⚠️ **Un mutant sur `fopenGuardEpisodeDurationMs()` est ÉQUIVALENT, pas tué —
+> et ça n'est pas la même chose.** La soustraction `nowMs - st.episodeStartMs`
+> est non signée à dessein (survie au repliement de `millis()`, 24,8 j). Le
+> mutant « recaster les deux opérandes en signé avant de soustraire » produit,
+> une fois le résultat repassé en `uint32_t`, **le même motif de bits modulo
+> 2³²** qu'en non signé : aucun test, quelle que soit sa valeur, ne peut le
+> distinguer de l'original. Ce n'est **pas un trou de couverture** — c'est un
+> mutant qu'aucune suite ne pourra jamais tuer, par construction du calcul.
+> Il avait été annoncé « tué » à tort : compter un mutant équivalent comme tué
+> fait pourrir le ratio de mutation exactement comme un compteur de tests
+> recopié (cf. ADR-0073). Nuance relevée en revue : le recast signé serait
+> formellement un comportement indéfini du C++ (dépassement de capacité d'un
+> type signé) — l'équivalence constatée ici est **pratique** (même sortie
+> observable pour toute paire d'entrées licites), **pas normative**. Les deux
+> mutations voisines — opérandes inversés (`episodeStartMs - nowMs`) et
+> addition au lieu de soustraction — sont, elles, **réellement tuées** par
+> `test_episode_duration_ms_survit_au_repliement_de_millis`.
+
 ---
 
 ## Le contrôle automatique — et ce qu'il ne peut pas fermer

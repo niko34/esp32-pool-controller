@@ -14,6 +14,24 @@ bool fopenGuardShouldDefer(uint32_t maxAlloc8, uint32_t minAllocBytes) {
   return maxAlloc8 < minAllocBytes;
 }
 
+bool fopenGuardNoteRefusal(FopenGuardEpisode& st, uint32_t nowMs) {
+  // FRONT MONTANT uniquement : `episodeStartMs` doit dater le PREMIER refus,
+  // pas un refus quelconque du même épisode ni le premier drain. Testé AVANT
+  // de poser `active`, sans quoi le front serait toujours manqué.
+  const bool frontMontant = !st.active;
+  if (frontMontant) {
+    st.episodeStartMs = nowMs;
+  }
+  st.active = true;
+  st.lastDeferralMs = nowMs;
+  return frontMontant;
+}
+
+uint32_t fopenGuardEpisodeDurationMs(const FopenGuardEpisode& st, uint32_t nowMs) {
+  // Non signée : juste au repliement de millis() (24,8 j), comme le reste.
+  return nowMs - st.episodeStartMs;
+}
+
 bool fopenGuardNeedsFreshMeasure(const FopenGuardEpisode& st, uint32_t nowMs,
                                  uint32_t quietMs, uint32_t probeFloorMs) {
   // Hors épisode : AUTORISER est le verdict probable, donc la mesure est due.
@@ -41,11 +59,20 @@ FopenGuardAction fopenGuardDrain(FopenGuardEpisode& st, uint32_t deferCount,
                                  uint32_t nowMs, uint32_t maxAlloc8,
                                  uint32_t threshold, uint32_t escalateAfter) {
   if (deferCount != st.drainedDeferrals) {
-    if (!st.active) {
-      st.active = true;
+    // `!st.reported`, et non `!st.active` : `active` est déjà vrai quand ce
+    // drain s'exécute (fsGuardAdmit() l'a posé au point de décision, avant que
+    // la loop ne passe ici). Tester `active` rendait cette branche
+    // structurellement inatteignable — zéro occurrence en 28,9 h de terrain.
+    // `reported` est la propriété PROPRE au drain : « ai-je déjà émis
+    // l'ouverture de CET épisode ? ».
+    if (!st.reported) {
+      st.reported = true;
       st.escalated = false;
       st.deferralsAtStart = st.drainedDeferrals;  // baseline = dernier état connu
-      st.episodeStartMs = nowMs;
+      // episodeStartMs N'EST PAS posé ici : fsGuardAdmit() l'a déjà fait, au
+      // FRONT MONTANT du tout premier refus de l'épisode (avant même que ce
+      // drain ne tourne). Le poser ici referait l'erreur — la durée rapportée
+      // daterait du 1er DRAIN, pas du 1er REFUS.
       st.drainedDeferrals = deferCount;
       st.lastDeferralMs = nowMs;
       return FopenGuardAction::EpisodeStart;
@@ -70,6 +97,7 @@ FopenGuardAction fopenGuardDrain(FopenGuardEpisode& st, uint32_t deferCount,
   // l'appelant puisse chiffrer l'épisode qu'il vient de clore.
   if (st.active && !fopenGuardShouldDefer(maxAlloc8, threshold)) {
     st.active = false;
+    st.reported = false;  // sans quoi le PROCHAIN épisode ne serait jamais détecté
     st.probeFloorArmed = false;
     return FopenGuardAction::EpisodeEnd;
   }

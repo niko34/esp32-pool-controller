@@ -128,3 +128,40 @@ distinct et non instruit.
   la durée, pas de la charge.
 - Le protocole de validation doit exiger une mesure **après 24–48 h d'uptime**,
   jamais sur tas frais.
+
+## Mise à jour — correctif confirmé (v2.51.0, lot B, 12/09/2026)
+
+### ✅ CERTAIN — le défaut de télémétrie `fs_guard` est corrigé
+
+La section « ✅ CERTAIN — le défaut de télémétrie `fs_guard`, pire que soupçonné »
+ci-dessus décrivait une branche `fopenGuardDrain()` **structurellement
+inatteignable** (`if (!st.active)` toujours faux au moment du drain, puisque
+`fsGuardAdmit()` avait déjà posé `active` au point de décision). C'est
+**confirmé** — la lecture de code de ce diagnostic était exacte — et c'est
+désormais **corrigé** : `FopenGuardEpisode` porte deux drapeaux distincts,
+`active` (cache du refus, écrit par `fsGuardAdmit()`) et `reported` (neuf,
+propriété exclusive du drain), et le front montant de l'épisode est extrait
+dans une fonction pure dédiée, `fopenGuardNoteRefusal()`. Détail complet :
+[`docs/subsystems/acces-fichiers.md`](../subsystems/acces-fichiers.md#-correctif-v2510-lot-b1--episodestart-était-structurellement-inatteignable).
+
+**Les trois durées de la table ci-dessus étaient des artefacts, pas des
+mesures.** « 1 refus en 92 279 s », « 2 refus en 99 488 s » et « 3 refus en
+102 792 s » ne mesuraient **rien de l'épisode** : `episodeStartMs` restant
+figé à 0 par le défaut, ces trois nombres étaient l'**uptime** au moment de
+chaque drain — ce que la table « Vérification arithmétique sur le terrain »
+montrait déjà en les comparant à l'uptime réel, sans encore disposer du
+correctif pour l'affirmer de façon définitive. Il en va de même pour les
+compteurs « 1 », « 2 », « 3 » : cumulatifs depuis le boot, pas propres à un
+épisode.
+
+### 🔶 CE QUE CE CORRECTIF NE TRANCHE PAS
+
+Réparer la télémétrie ne dit rien sur les questions encore ouvertes de ce
+document — la nature du plateau à 7 872 o, ce qui immobilise les blocs pendant
+29 h, la part respective de l'historique et du service HTTP. Le lot B ne
+portait que sur l'observabilité du refus `fopen` et sur deux compteurs de
+fragmentation déjà calculés par `heap_caps_get_info()` (`fb`/`ab`, voir
+[`docs/subsystems/system-health.md`](../subsystems/system-health.md#planchers-glissants-multi-masques-v2490-feature-122-lot-c-1a)) :
+un futur épisode de refus `fopen` sera enfin **journalisé avec une durée et un
+compte justes**, ce qui pourra aider à instruire ces questions — mais rien
+n'a encore été mesuré sur cible avec le correctif actif.

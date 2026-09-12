@@ -57,7 +57,16 @@ bool fsGuardAdmit(uint32_t minAllocBytes) {
     sFopenDeferrals.fetch_add(1, std::memory_order_relaxed);
     sFopenCachedDeferrals.fetch_add(1, std::memory_order_relaxed);
     sFopenLastRefusalMeasured.store(false, std::memory_order_relaxed);
-    sFopenEpisode.lastDeferralMs = now;
+    // Chemin EN CACHE : `active` est déjà vrai HORS COURSE (le cache n'est armé
+    // que sur un épisode ouvert, cf. fopenGuardNeedsFreshMeasure()) — l'appel ne
+    // fait alors que porter lastDeferralMs à jour, comme avant l'extraction
+    // (ADR-0017).
+    // ⚠️ Ce n'est PAS un no-op « par construction » : si le drain prononce
+    // EpisodeEnd entre le test ci-dessus et cet appel, le front montant se
+    // rejoue et l'épisode se rouvre. Coût borné à un couple WARN/INFO parasite
+    // d'une durée voisine de zéro. Jamais une AUTORISATION, donc jamais un
+    // abort() : l'asymétrie d'ADR-0070 §e tient dans tous les entrelacements.
+    fopenGuardNoteRefusal(sFopenEpisode, now);
     return false;
   }
 
@@ -87,8 +96,12 @@ bool fsGuardAdmit(uint32_t minAllocBytes) {
     sFopenDeferrals.fetch_add(1, std::memory_order_relaxed);
     sFopenLastMaxAlloc8.store(maxAlloc8, std::memory_order_relaxed);
     sFopenLastRefusalMeasured.store(true, std::memory_order_relaxed);
-    sFopenEpisode.active = true;
-    sFopenEpisode.lastDeferralMs = now;
+    // FRONT MONTANT (bug fs_guard-episode-start-inatteignable, puis récidive
+    // fs_guard-front-montant-hors-mutation) : la RÈGLE — poser `episodeStartMs`
+    // seulement au 1er refus réel, jamais au 1er drain — vit désormais dans le
+    // module pur fopenGuardNoteRefusal() (ADR-0017), seul endroit que la
+    // mutation atteint. Cette coquille ne fait plus qu'appeler.
+    fopenGuardNoteRefusal(sFopenEpisode, now);
     return false;
   }
   return true;
@@ -192,7 +205,7 @@ void fsGuardDrain() {
       snprintf(ligne, sizeof(ligne),
                "Ouvertures de fichiers retablies — %u refus en %u s",
                (unsigned)(deferrals - sFopenEpisode.deferralsAtStart),
-               (unsigned)((now - sFopenEpisode.episodeStartMs) / 1000UL));
+               (unsigned)(fopenGuardEpisodeDurationMs(sFopenEpisode, now) / 1000UL));
       // Front descendant SEULEMENT : le tas vient d'être mesuré au-dessus du
       // seuil, le flush synchrone du critical() peut atteindre le disque.
       if (sFopenEpisode.escalated) {

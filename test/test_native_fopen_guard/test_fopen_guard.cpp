@@ -363,17 +363,79 @@ static void test_repliement_de_millis_ne_relache_pas_la_garde(void) {
 }
 
 // ===========================================================================
+// T3bis — fopenGuardNoteRefusal() : LA règle du front montant, en isolation
+// ===========================================================================
+// Cible directement la fonction extraite : elle seule doit décider quand
+// stamper `episodeStartMs`, et elle doit le faire QUE le module soit exercé
+// via fopenGuardDrain() ou appelé nu, comme fsGuardAdmit() le fait en
+// production.
+
+static void test_note_refusal_pose_active_et_episode_start_ms_au_premier_appel(void) {
+  FopenGuardEpisode st;  // vierge : active = false
+  TEST_ASSERT_TRUE(fopenGuardNoteRefusal(st, 4242));  // front montant
+  TEST_ASSERT_TRUE(st.active);
+  TEST_ASSERT_EQUAL_UINT32(4242, st.episodeStartMs);
+  TEST_ASSERT_EQUAL_UINT32(4242, st.lastDeferralMs);
+}
+
+static void test_note_refusal_ne_re_stampe_pas_episode_start_ms_ensuite(void) {
+  // Deuxième, troisième refus du MÊME épisode : `episodeStartMs` ne doit plus
+  // bouger (sinon la durée rapportée daterait du dernier refus, pas du
+  // premier), mais `lastDeferralMs` doit suivre à chaque appel.
+  FopenGuardEpisode st;
+  TEST_ASSERT_TRUE(fopenGuardNoteRefusal(st, 1000));
+  TEST_ASSERT_FALSE(fopenGuardNoteRefusal(st, 1500));  // plus un front montant
+  TEST_ASSERT_EQUAL_UINT32(1000, st.episodeStartMs);   // inchangé
+  TEST_ASSERT_EQUAL_UINT32(1500, st.lastDeferralMs);   // suit
+  TEST_ASSERT_FALSE(fopenGuardNoteRefusal(st, 9000));
+  TEST_ASSERT_EQUAL_UINT32(1000, st.episodeStartMs);
+  TEST_ASSERT_EQUAL_UINT32(9000, st.lastDeferralMs);
+}
+
+static void test_note_refusal_rouvre_un_nouveau_front_montant_apres_fermeture(void) {
+  // Un épisode clos (active revenu à false) doit pouvoir en rouvrir un
+  // nouveau, avec un episodeStartMs qui lui est propre.
+  FopenGuardEpisode st;
+  fopenGuardNoteRefusal(st, 1000);
+  st.active = false;  // simule la fermeture prononcée par fopenGuardDrain()
+  TEST_ASSERT_TRUE(fopenGuardNoteRefusal(st, 7000));  // nouveau front montant
+  TEST_ASSERT_EQUAL_UINT32(7000, st.episodeStartMs);
+}
+
+static void test_episode_duration_ms_mesure_depuis_le_debut_de_l_episode(void) {
+  FopenGuardEpisode st;
+  fopenGuardNoteRefusal(st, 1000);
+  TEST_ASSERT_EQUAL_UINT32(0, fopenGuardEpisodeDurationMs(st, 1000));
+  TEST_ASSERT_EQUAL_UINT32(29000, fopenGuardEpisodeDurationMs(st, 30000));
+}
+
+static void test_episode_duration_ms_survit_au_repliement_de_millis(void) {
+  const uint32_t avant = 0xFFFFFF00u;  // ~256 ms avant le repliement
+  FopenGuardEpisode st;
+  fopenGuardNoteRefusal(st, avant);
+  // 0x140 après le repliement = 320 ms écoulées, pas un nombre négatif géant.
+  TEST_ASSERT_EQUAL_UINT32(0x140u, fopenGuardEpisodeDurationMs(st, 0x40u));
+}
+
+// ===========================================================================
 // T4 — Machine à états de l'épisode
 // ===========================================================================
 
 static void test_front_montant_ouvre_l_episode_une_seule_fois(void) {
   FopenGuardEpisode st;  // vierge
+  // Modélise la séquence réelle : fsGuardAdmit() note le refus (pose
+  // active/episodeStartMs) AVANT que la loop n'appelle fopenGuardDrain() — et
+  // ce n'est PAS au même instant (le drain tourne à sa propre cadence). Des
+  // horodatages DÉLIBÉRÉMENT distincts (900 vs 1000) tuent le mutant « c'est le
+  // drain qui pose episodeStartMs » : s'il le posait, il le daterait de 1000,
+  // pas de 900.
+  TEST_ASSERT_TRUE(fopenGuardNoteRefusal(st, 900));
   TEST_ASSERT_EQUAL(FopenGuardAction::EpisodeStart,
                     fopenGuardDrain(st, 1, 1000, kMesureAbsente,
                                     kStaticFileMinAllocBytes,
                                     kInternalFopenEscalateAfterRefusals));
   TEST_ASSERT_TRUE(st.active);
-  TEST_ASSERT_EQUAL_UINT32(1000, st.episodeStartMs);
+  TEST_ASSERT_EQUAL_UINT32(900, st.episodeStartMs);
   TEST_ASSERT_EQUAL_UINT32(0, st.deferralsAtStart);
   TEST_ASSERT_EQUAL_UINT32(1, st.drainedDeferrals);
   // Un 2ᵉ refus ne réémet RIEN : un seul WARN, même pour 200 refus (le journal
@@ -460,6 +522,7 @@ static void test_compteur_de_refus_avance_reellement(void) {
 
 static void test_front_descendant_ferme_sur_mesure_fraiche(void) {
   FopenGuardEpisode st;
+  fopenGuardNoteRefusal(st, 1000);  // fsGuardAdmit() au 1er refus réel
   fopenGuardDrain(st, 1, 1000, kMesureAbsente, kStaticFileMinAllocBytes,
                   kInternalFopenEscalateAfterRefusals);
   fopenGuardDrain(st, 3, 1100, kMesureAbsente, kStaticFileMinAllocBytes,
@@ -484,6 +547,7 @@ static void test_front_descendant_ferme_sur_mesure_fraiche(void) {
 
 static void test_fermeture_exige_le_seuil_pas_un_octet_de_moins(void) {
   FopenGuardEpisode st;
+  fopenGuardNoteRefusal(st, 1000);
   fopenGuardDrain(st, 1, 1000, kMesureAbsente, kStaticFileMinAllocBytes,
                   kInternalFopenEscalateAfterRefusals);
   // Un octet sous le seuil : l'épisode tient.
@@ -501,6 +565,7 @@ static void test_fermeture_exige_le_seuil_pas_un_octet_de_moins(void) {
 
 static void test_deux_episodes_successifs_rebasent_le_compteur(void) {
   FopenGuardEpisode st;
+  fopenGuardNoteRefusal(st, 1000);  // fsGuardAdmit() au 1er refus du 1er épisode
   fopenGuardDrain(st, 1, 1000, kMesureAbsente, kStaticFileMinAllocBytes,
                   kInternalFopenEscalateAfterRefusals);
   for (uint32_t n = 2; n <= 9; ++n) {
@@ -512,7 +577,10 @@ static void test_deux_episodes_successifs_rebasent_le_compteur(void) {
                     fopenGuardDrain(st, 9, 50000, kTerrainPlateauCalme,
                                     kStaticFileMinAllocBytes,
                                     kInternalFopenEscalateAfterRefusals));
-  // 2ᵉ épisode : la baseline repart de 9, l'escalade est réarmée.
+  // 2ᵉ épisode : nouveau front montant (fsGuardAdmit() au 1er refus du 2ᵉ
+  // épisode, `active` était retombé à false à la fermeture précédente) — la
+  // baseline repart de 9, l'escalade est réarmée.
+  fopenGuardNoteRefusal(st, 60000);
   TEST_ASSERT_EQUAL(FopenGuardAction::EpisodeStart,
                     fopenGuardDrain(st, 10, 60000, kMesureAbsente,
                                     kStaticFileMinAllocBytes,
@@ -536,6 +604,7 @@ static void test_deux_episodes_successifs_rebasent_le_compteur(void) {
 static void test_compteur_replie_reste_juste(void) {
   // uint32 monotone : la soustraction non signée survit au repliement.
   FopenGuardEpisode st;
+  fopenGuardNoteRefusal(st, 1000);
   fopenGuardDrain(st, 0xFFFFFFFEu, 1000, kMesureAbsente,
                   kStaticFileMinAllocBytes, kInternalFopenEscalateAfterRefusals);
   TEST_ASSERT_TRUE(st.active);
@@ -571,6 +640,7 @@ static void test_episode_ne_se_clot_jamais_sans_mesure(void) {
   // La coquille passe 0 quand elle n'a PAS mesuré. 0 est toujours sous le seuil
   // ⇒ pas de fermeture. Même après des heures de silence.
   FopenGuardEpisode st;
+  fopenGuardNoteRefusal(st, 1000);
   fopenGuardDrain(st, 1, 1000, kMesureAbsente, kStaticFileMinAllocBytes,
                   kInternalFopenEscalateAfterRefusals);
   for (uint32_t t = 2000; t <= 3600000; t += 60000) {
@@ -586,6 +656,7 @@ static void test_silence_seul_n_autorise_rien(void) {
   // Le silence est une CONDITION DE RE-MESURE, jamais une autorisation. Aucun
   // délai, si long soit-il, ne peut fermer l'épisode sans un chiffre frais.
   FopenGuardEpisode st;
+  fopenGuardNoteRefusal(st, 1000);
   fopenGuardDrain(st, 4, 1000, kMesureAbsente, kStaticFileMinAllocBytes,
                   kInternalFopenEscalateAfterRefusals);
   const uint32_t bienApres = 1000 + 100 * kInternalFopenEpisodeQuietMs;
@@ -598,6 +669,7 @@ static void test_silence_seul_n_autorise_rien(void) {
 
 static void test_mesure_fraiche_mais_encore_affamee_ne_clot_pas(void) {
   FopenGuardEpisode st;
+  fopenGuardNoteRefusal(st, 1000);
   fopenGuardDrain(st, 1, 1000, kMesureAbsente, kStaticFileMinAllocBytes,
                   kInternalFopenEscalateAfterRefusals);
   TEST_ASSERT_EQUAL(FopenGuardAction::None,
@@ -613,6 +685,7 @@ static void test_composition_le_drain_ne_ferme_que_quand_il_a_mesure(void) {
   // REVENU AU CONFORT dès la 1re milliseconde, et l'on vérifie que la sortie
   // n'a lieu qu'après la fenêtre de silence — jamais avant, faute de mesure.
   FopenGuardEpisode st;
+  fopenGuardNoteRefusal(st, 1000);
   fopenGuardDrain(st, 1, 1000, kMesureAbsente, kStaticFileMinAllocBytes,
                   kInternalFopenEscalateAfterRefusals);
   st.probeFloorArmed = true;   // la coquille l'a armé : dernier relevé < 2×seuil
@@ -648,6 +721,7 @@ static void test_composition_le_drain_ne_ferme_que_quand_il_a_mesure(void) {
 
 static void test_composition_un_tas_toujours_affame_ne_sort_jamais(void) {
   FopenGuardEpisode st;
+  fopenGuardNoteRefusal(st, 1000);
   fopenGuardDrain(st, 1, 1000, kMesureAbsente, kStaticFileMinAllocBytes,
                   kInternalFopenEscalateAfterRefusals);
   st.probeFloorArmed = true;
@@ -697,6 +771,12 @@ int main(int, char**) {
   RUN_TEST(test_silence_frontiere_exacte);
   RUN_TEST(test_asymetrie_le_cache_ne_produit_que_des_refus);
   RUN_TEST(test_repliement_de_millis_ne_relache_pas_la_garde);
+  // T3bis — fopenGuardNoteRefusal() en isolation
+  RUN_TEST(test_note_refusal_pose_active_et_episode_start_ms_au_premier_appel);
+  RUN_TEST(test_note_refusal_ne_re_stampe_pas_episode_start_ms_ensuite);
+  RUN_TEST(test_note_refusal_rouvre_un_nouveau_front_montant_apres_fermeture);
+  RUN_TEST(test_episode_duration_ms_mesure_depuis_le_debut_de_l_episode);
+  RUN_TEST(test_episode_duration_ms_survit_au_repliement_de_millis);
   // T4 — machine à états
   RUN_TEST(test_front_montant_ouvre_l_episode_une_seule_fois);
   RUN_TEST(test_rafale_ne_produit_qu_une_ouverture_et_une_escalade);
