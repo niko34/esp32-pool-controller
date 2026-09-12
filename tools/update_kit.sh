@@ -26,7 +26,7 @@
 #     ./tools/update_kit.sh [--dry-run]
 #
 # Prérequis : un distant nommé `kit` pointant sur le dépôt du kit.
-#     git remote add kit https://github.com/<compte>/claude-agent-kit.git
+#     git remote add kit https://github.com/<compte>/agent-kit.git
 #
 # Portable bash 3.2 (macOS) : ni `declare -A`, ni `mapfile`.
 # ============================================================================
@@ -143,7 +143,7 @@ cd "$(git rev-parse --show-toplevel 2>/dev/null)" || {
 if ! git remote get-url "$DISTANT" >/dev/null 2>&1; then
   echo "❌ Aucun distant nommé « $DISTANT »." >&2
   echo "   Déclare-le une fois pour toutes :" >&2
-  echo "     git remote add $DISTANT https://github.com/<compte>/claude-agent-kit.git" >&2
+  echo "     git remote add $DISTANT https://github.com/<compte>/agent-kit.git" >&2
   exit 1
 fi
 
