@@ -14,7 +14,7 @@ d'un dépôt à l'autre vit dans [`control-center.toml`](control-center.toml).
 | Étape | Objet | État |
 |---|---|---|
 | **A** | Hooks + journal d'événements | ✅ livré, validé par mutation |
-| **B** | Lecture des specs + configuration | ✅ livré · lecture de git à faire |
+| **B** | Specs, événements, configuration, git | ✅ livré, validé par mutation |
 | C | Tableau de bord en lecture seule | à faire |
 | D | Lancement d'un workflow | à faire |
 | E | Création d'une spec depuis un prompt | à faire |
@@ -158,6 +158,29 @@ Trois propriétés de [`backend/config.py`](backend/config.py) :
 commenté, versionné, entièrement décoratif. C'est la pire forme de dette — une
 configuration qui a l'air d'être en service alors qu'elle ne pilote rien.
 
+## Étape B — la lecture de git
+
+[`backend/vcs.py`](backend/vcs.py) ne fait que **lire** : aucun `add`, aucun
+`commit`, aucun `checkout`. Le dépôt appartient à l'humain et aux agents.
+
+Deux invariants portent la sûreté, et ils seront exploitables dès que le serveur
+répondra au navigateur :
+
+- **Aucun shell, jamais.** Tout part en `argv`, avec `shell=False`. Un nom de
+  fichier ne peut pas contenir une commande. Et `--` sépare systématiquement les
+  options des chemins : sans lui, un fichier réellement nommé `--stat` serait lu
+  par git comme une option — un test le vérifie sur un vrai dépôt.
+- **Aucun chemin hors du dépôt.** `chemin_sur()` est le point de passage unique
+  et résout les liens symboliques des deux côtés : un lien pointant dehors est
+  **refusé, jamais suivi**.
+
+Une référence de commit est validée par **liste blanche de caractères** avant
+d'atteindre git : `--help`, `-n`, `a/b`, `; rm -rf /`, `$(whoami)` sont tous
+refusés.
+
+Un diff tronqué est **annoncé comme tel**. Un diff coupé en silence se lit comme
+un diff complet, et c'est un mensonge sur l'état du code.
+
 ## Tests
 
 ```bash
@@ -165,6 +188,7 @@ python3 control-center/hooks/test_record_event.py   # 19 cas
 python3 control-center/backend/test_specs.py        # 16 cas
 python3 control-center/backend/test_events.py       # 24 cas
 python3 control-center/backend/test_config.py       # 17 cas
+python3 control-center/backend/test_vcs.py          # 26 cas
 python3 control-center/backend/specs.py             # inventaire réel
 python3 control-center/backend/events.py            # workflows reconstruits
 ```
