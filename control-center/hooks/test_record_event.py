@@ -16,6 +16,13 @@ VALIDATION PAR MUTATION (discipline du dépôt, cf. CLAUDE.md étape 6) — cass
 `_command_head` en retirant le filtre `"=" in token or ":" in token` doit faire
 mourir `test_affectation_en_tete` ET `test_identifiant_inline`. Une suite qui ne
 tue pas ce mutant ne prouve rien.
+
+⚠️ UNE PROPRIÉTÉ N'EST PAS COUVERTE ICI, et c'est assumé : l'écriture en UN SEUL
+appel `os.write()` sur un descripteur `O_APPEND`. Scinder cet appel en deux ne
+tue aucun test — l'entrelacement n'apparaît qu'avec plusieurs écrivains
+concurrents, et un test de course serait intermittent. Un test intermittent vaut
+moins que pas de test : il apprend à ignorer les échecs. La propriété tient donc
+par CONSTRUCTION (un appel, pas de tampon), et ce commentaire est sa seule garde.
 """
 
 import json
@@ -55,6 +62,11 @@ def _run(payload, journal_root):
         text=True,
         capture_output=True,
         env=env,
+        # ⚠️ Répertoire courant DIFFÉRENT de celui des charges de test. Sans
+        # cela, un chemin relatif résolu contre le cwd du processus donnait le
+        # même résultat que résolu contre celui de la charge : le test passait
+        # sans rien prouver, et retirer la résolution ne tuait aucun mutant.
+        cwd=journal_root,
     )
     journal = os.path.join(journal_root, "var", "agent-events.jsonl")
     events = []
@@ -123,7 +135,72 @@ def main():
               long_token not in journal_text() and events[-1].get("command_head") == "./deploy.sh",
               "obtenu %r" % events[-1].get("command_head"))
 
+        # Second jeton POSITIONNEL : ni `=`, ni `:`, ni 24 caractères — les deux
+        # premières gardes le laissaient passer. Prouvé en revue sur
+        # `echo hunter2 | sudo -S reboot`.
+        _, events = _run(_bash("echo %s | sudo -S reboot" % _SECRET), tmp)
+        check("test_second_jeton_positionnel_ecarte",
+              _SECRET not in journal_text() and events[-1].get("command_head") == "echo",
+              "obtenu %r" % events[-1].get("command_head"))
+
+        check("test_sous_commande_normale_survit_a_la_regle_de_forme",
+              all(_run(_bash(cmd), tmp)[1][-1].get("command_head") == attendu
+                  for cmd, attendu in (("pio test -e native", "pio test"),
+                                       ("git commit -F /tmp/m", "git commit"),
+                                       ("./ota_update.sh firmware 1.2.3.4", "./ota_update.sh firmware"),
+                                       ("python3 -c import os", "python3 -c"))),
+              "la garde ne doit pas manger les sous-commandes légitimes")
+
+        # `description` est LIBRE et rédigée par le modèle : elle recopie
+        # volontiers ce que l'utilisateur a collé. Un champ libre à côté d'un
+        # champ durci annule le durcissement — fuite démontrée en revue.
+        _, events = _run({
+            "session_id": "t", "hook_event_name": "PostToolUse", "tool_name": "Bash",
+            "cwd": "/root/esp32-pool-controller",
+            "tool_input": {"command": "pio test",
+                           "description": "Deployer en OTA avec le mot de passe %s" % _SECRET},
+        }, tmp)
+        check("test_description_jamais_journalisee",
+              _SECRET not in journal_text() and "description" not in events[-1],
+              "événement : %r" % events[-1])
+
+        # Une ligne non bornée casserait l'atomicité de l'écriture en ajout.
+        avant = len(journal_text().splitlines())
+        _run({"session_id": "t" * 5000, "hook_event_name": "Stop"}, tmp)
+        apres = len(journal_text().splitlines())
+        check("test_champ_demesure_borne_et_ligne_ecrite", apres == avant + 1,
+              "un champ démesuré doit être tronqué, pas faire perdre l'événement")
+        # Un événement LÉGITIME dont tous les champs repris sont au maximum doit
+        # être écrit, pas écarté par le plafond de ligne.
+        # 5 000 caractères par champ : bien au-delà de toute borne plausible, pour
+        # que le pire cas EXERCE réellement le rapport `_MAX_CHAMP` × nombre de
+        # champs / `_MAX_LIGNE`. Avec 400, le test passait quelle que soit la
+        # borne — il ne prouvait rien (constaté par mutation).
+        maximal = {c: "x" * 5000 for c in ("session_id", "hook_event_name", "agent_id",
+                                          "agent_type", "cwd", "transcript_path",
+                                          "permission_mode", "prompt_id")}
+        avant2 = len(journal_text().splitlines())
+        _run(maximal, tmp)
+        check("test_evenement_maximal_n_est_pas_perdu",
+              len(journal_text().splitlines()) == avant2 + 1,
+              "le pire cas de champs bornés doit tenir sous le plafond de ligne")
+
+        check("test_ligne_reste_sous_le_plafond",
+              all(len(l.encode("utf-8")) <= 4096 for l in journal_text().splitlines()),
+              "une ligne dépasse le plafond : elle pourrait s'entrelacer")
+
         # --- CHEMINS --------------------------------------------------------
+        payload_relatif = {
+            "session_id": "t", "hook_event_name": "PostToolUse", "tool_name": "Edit",
+            "cwd": "/root/esp32-pool-controller",
+            "tool_input": {"file_path": "src/main.cpp"},
+        }
+        _, events = _run(payload_relatif, tmp)
+        check("test_chemin_relatif_resolu_contre_le_cwd_de_la_charge",
+              events[-1].get("file") == "src/main.cpp",
+              "résolu contre le cwd du PROCESSUS, il désignerait un autre arbre ; obtenu %r"
+              % events[-1].get("file"))
+
         payload = {
             "session_id": "t", "hook_event_name": "PostToolUse", "tool_name": "Edit",
             "cwd": "/root/esp32-pool-controller",

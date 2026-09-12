@@ -28,6 +28,7 @@ seul, et sort. Rien d'autre.
 
 import json
 import os
+import re
 import sys
 import time
 
@@ -51,10 +52,31 @@ _PASSTHROUGH = (
     "prompt_id",
 )
 
-_MAX_DESCRIPTION = 120
-
-
 _MAX_TOKEN = 24
+
+# Bornes de la ligne journalisée. `_MAX_LIGNE` est très en dessous des 8 192
+# octets du tampon par défaut : c'est ce qui garantit qu'une ligne part en UN
+# seul appel write() et ne peut donc pas s'entrelacer avec celle d'une autre
+# session (voir l'écriture, plus bas).
+# ⚠️ Le pire cas doit tenir SOUS `_MAX_LIGNE`, sinon un événement parfaitement
+# légitime — tous champs au maximum — serait silencieusement PERDU. Huit champs
+# repris × 512 o faisaient déjà 4 096 o à eux seuls, avant même les clés JSON.
+# Défaut trouvé par mutation : retirer le plafond de ligne ne tuait aucun test,
+# ce qui a mis en évidence qu'il n'était atteignable que par accident.
+# 8 × 256 = 2 048 o, plus les clés et les champs d'outil : marge confortable.
+_MAX_CHAMP = 256
+_MAX_LIGNE = 4096
+
+# Un SECOND jeton n'est retenu que s'il a la forme d'une sous-commande ou d'une
+# option : mot en minuscules (`test`, `run`, `commit`, `firmware`) ou drapeau
+# (`-e`, `--json`). Tout le reste est écarté.
+#
+# ⚠️ Sans cette règle, `echo hunter2 | sudo -S reboot` journalisait `echo hunter2`.
+# Le secret n'a ni `=`, ni `:`, ni 24 caractères : les deux premières gardes le
+# laissaient passer. Un chiffre ou une majuscule suffit désormais à l'écarter,
+# ce qui coûte quelques seconds jetons anodins (`esp32dev_core3`) et ferme la
+# classe entière.
+_SECOND_JETON = re.compile(r"^(?:[a-z][a-z-]*|-{1,2}[A-Za-z][A-Za-z-]*)$")
 
 
 def _command_head(command):
@@ -86,9 +108,16 @@ def _command_head(command):
             # Un jeton anormalement long est un chemin ou une donnée, pas un nom
             # de programme : il n'apporte rien et peut porter n'importe quoi.
             continue
+        if safe and not _SECOND_JETON.match(token):
+            # Deuxième position : seule une sous-commande ou une option est
+            # retenue. On S'ARRÊTE plutôt que de chercher plus loin — le jeton
+            # suivant serait encore plus probablement une donnée.
+            break
         safe.append(token)
         if len(safe) == 2:
             break
+    # `None` et non `""` : l'absence n'est pas une valeur du domaine. L'appelant
+    # teste la valeur pour sa vérité, jamais `is None` — garder les deux vrais.
     return " ".join(safe) if safe else None
 
 
@@ -101,6 +130,11 @@ def _relative_path(path, cwd):
     if not isinstance(path, str) or not isinstance(cwd, str):
         return None
     try:
+        # Un chemin RELATIF doit être résolu contre le `cwd` de la charge, pas
+        # contre celui du processus : lancé depuis un autre dépôt, le collecteur
+        # enregistrerait sinon un chemin du mauvais arbre.
+        if not os.path.isabs(path):
+            path = os.path.join(cwd, path)
         absolute = os.path.realpath(path)
         base = os.path.realpath(cwd)
         if absolute == base or absolute.startswith(base + os.sep):
@@ -121,13 +155,15 @@ def _tool_details(payload):
     if not isinstance(tool_input, dict):
         return details
 
+    # ⚠️ `description` N'EST PAS journalisée, et ce n'est pas un oubli. C'est un
+    # texte LIBRE rédigé par le modèle, qui recopie volontiers ce que
+    # l'utilisateur a collé : une revue a produit
+    # « Deployer en OTA avec le mot de passe … ». Un champ libre à côté d'un
+    # champ durci annule le durcissement. `tool` et `command_head` suffisent à
+    # identifier l'action.
     head = _command_head(tool_input.get("command"))
     if head:
         details["command_head"] = head
-
-    description = tool_input.get("description")
-    if isinstance(description, str) and description:
-        details["description"] = description[:_MAX_DESCRIPTION]
 
     relative = _relative_path(tool_input.get("file_path"), payload.get("cwd"))
     if relative:
@@ -139,7 +175,7 @@ def _tool_details(payload):
 def main():
     try:
         raw = sys.stdin.read()
-    except Exception:
+    except BaseException:
         return
     if not raw.strip():
         return
@@ -168,8 +204,10 @@ def main():
     }
     for key in _PASSTHROUGH:
         value = payload.get(key)
-        if value is not None:
-            event[key] = value
+        # Borné et typé : ces valeurs viennent du runtime, mais une ligne non
+        # bornée casserait l'atomicité de l'écriture (voir plus bas).
+        if isinstance(value, str) and value:
+            event[key] = value[:_MAX_CHAMP]
 
     details = _tool_details(payload)
     if details:
@@ -180,14 +218,31 @@ def main():
     if payload.get("hook_event_name") == "PostToolUseFailure":
         event["failed"] = True
 
+    ligne = json.dumps(event, ensure_ascii=False) + "\n"
+    # Filet : si malgré les bornes par champ la ligne dépasse, on ABANDONNE cet
+    # événement plutôt que d'écrire une ligne qui s'entrelacerait avec celles
+    # d'une autre session. Perdre un événement est réparable, corrompre le
+    # journal des autres ne l'est pas.
+    brut = ligne.encode("utf-8")
+    if len(brut) > _MAX_LIGNE:
+        return
+
     try:
         os.makedirs(os.path.dirname(_JOURNAL), exist_ok=True)
-        # Ouverture en ajout : sur POSIX, une écriture unique sous la taille d'un
-        # tampon de pipe est atomique vis-à-vis des autres écrivains en mode "a".
-        # Plusieurs sessions Claude Code peuvent donc écrire dans le même journal
-        # sans verrou ni entrelacement de lignes.
-        with open(_JOURNAL, "a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+        # ⚠️ Écriture NON TAMPONNÉE, en un seul appel système, sur un descripteur
+        # ouvert en O_APPEND.
+        #
+        # Le commentaire précédent invoquait PIPE_BUF : c'était faux, PIPE_BUF
+        # régit les TUBES. Ce qui protège ici, c'est l'atomicité du couple
+        # « décalage + écriture » de O_APPEND, et elle ne vaut que pour UN appel
+        # à write(). Or `open(...,"a")` de Python est TAMPONNÉ : une ligne de
+        # plus de 8 192 octets partait en plusieurs write() et pouvait
+        # s'entrelacer avec celle d'une session voisine. Défaut relevé en revue.
+        fd = os.open(_JOURNAL, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, brut)
+        finally:
+            os.close(fd)
     except OSError:
         return
 
@@ -195,7 +250,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
+    except BaseException:
         # Filet de dernier recours. Aucune exception ne doit remonter : elle
         # ferait sortir le script en code non nul et polluerait la session
         # observée d'un avertissement, à chaque événement.
