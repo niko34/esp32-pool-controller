@@ -202,19 +202,34 @@ function rendreWorkflows(etat) {
     entete.appendChild(el("span", "session", wf.fichiers.length + " fichier(s)"));
     bloc.appendChild(entete);
 
-    if (wf.passages.length) {
+    /* La chaîne montre les SEGMENTS, agent principal compris. Sans lui, elle
+     * racontait un workflow plus creux qu'il n'est : sur un relevé réel, 108
+     * des 110 appels d'outils lui appartenaient et n'apparaissaient nulle part. */
+    const segments = wf.segments || wf.passages || [];
+    if (segments.length) {
       const chaine = el("div", "chaine");
-      wf.passages.forEach((passage, index) => {
+      segments.forEach((segment, index) => {
         if (index) chaine.appendChild(el("span", "fleche", "→"));
         let classe = "maillon";
-        if (!passage.termine) classe += " en-cours";
-        if (passage.echecs) classe += " echec";
+        if (segment.type === "principal") classe += " principal";
+        if (!segment.termine) classe += " en-cours";
+        if (segment.echecs) classe += " echec";
         const maillon = el("span", classe);
-        maillon.appendChild(el("span", "mnom", passage.agent));
-        const d = duree(passage.duree_ms);
+        maillon.appendChild(el("span", "mnom", segment.agent));
+        const d = duree(segment.duree_ms);
         maillon.appendChild(el("span", "mduree",
-          d !== null ? d : (passage.termine ? "durée invalide" : "en cours")));
-        if (passage.echecs) maillon.appendChild(el("span", "mduree", "✕" + passage.echecs));
+          d !== null ? d : (segment.termine ? "durée invalide" : "en cours")));
+        const detail = [];
+        if (segment.type === "principal" && segment.outils) detail.push(segment.outils + " outils");
+        if (segment.fichiers && segment.fichiers.length) detail.push(segment.fichiers.length + " fich.");
+        if (detail.length) maillon.appendChild(el("span", "mduree", detail.join(" · ")));
+        if (segment.echecs) maillon.appendChild(el("span", "mduree", "✕" + segment.echecs));
+        maillon.title = segment.type === "principal"
+          ? "Agent principal — la session Claude Code elle-même, entre deux "
+            + "sous-agents.\nC'est elle qui orchestre : elle lit, écrit, lance "
+            + "les commandes et invoque les agents.\n"
+            + (segment.fichiers || []).join("\n")
+          : "Sous-agent " + segment.agent + "\n" + (segment.fichiers || []).join("\n");
         chaine.appendChild(maillon);
       });
       bloc.appendChild(chaine);
@@ -233,16 +248,34 @@ function rendreWorkflows(etat) {
 
     /* Les incertitudes sont AFFICHÉES, pas masquées : un récit muet sur ce
      * qu'il ignore se lit comme un récit complet. */
-    if (wf.imbrication_suspectee || wf.fermetures_orphelines) {
+    /* Deux notes de fiabilité, et elles n'ont PAS le même statut :
+     *  - l'imbrication suspectée est une ANOMALIE — le récit peut être faux ;
+     *  - les fins de tour du runtime sont ATTENDUES — elles n'altèrent rien.
+     * Les afficher de la même couleur laissait croire à deux problèmes. */
+    if (wf.imbrication_suspectee) {
       const avert = el("div", "wf-notes");
-      const parts = [];
-      if (wf.imbrication_suspectee) parts.push("imbrication suspectée — récit incomplet");
-      if (wf.fermetures_orphelines) {
-        parts.push(wf.fermetures_orphelines +
-          " fermeture(s) sans ouverture (le runtime en émet une par fin de tour)");
-      }
-      avert.appendChild(el("span", "alerte", "⚠ " + parts.join(" · ")));
+      const texte = el("span", "alerte",
+        "⚠ imbrication suspectée — deux sous-agents ouverts sans fermeture "
+        + "intercalée : l'ordre affiché peut être faux");
+      avert.appendChild(texte);
       bloc.appendChild(avert);
+    }
+    if (wf.fermetures_orphelines) {
+      const note = el("div", "wf-notes attendu");
+      const texte = el("span", "",
+        "ℹ " + wf.fermetures_orphelines + " fin(s) de tour du runtime — "
+        + "ce ne sont pas des sous-agents");
+      texte.title =
+        "Claude Code émet un événement « fin de sous-agent » à chaque fois que "
+        + "l'agent principal termine un tour de conversation, avec un identifiant "
+        + "neuf et un nom vide.\n\n"
+        + "Ces événements ne correspondent à aucun sous-agent réel : ils n'ont pas "
+        + "de début associé, et rien ne leur est attribué.\n\n"
+        + "Ils sont comptés ici plutôt qu'ignorés en silence — un événement "
+        + "inexpliqué qu'on tait devient un écart invisible entre le journal et "
+        + "le récit qu'on en tire.";
+      note.appendChild(texte);
+      bloc.appendChild(note);
     }
     zone.appendChild(bloc);
   });

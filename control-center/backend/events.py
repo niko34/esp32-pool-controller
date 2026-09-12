@@ -128,8 +128,13 @@ def reconstruire(evenements, commandes_suivies=()):
             "cwd": evenement.get("cwd"),
             "runtime": evenement.get("runtime", "inconnu"),
             "passages": [],
+            # `segments` raconte la chaîne COMPLÈTE, agent principal compris ;
+            # `passages` ne contient que les sous-agents et reste inchangé pour
+            # les appelants qui ne s'intéressent qu'à eux.
+            "segments": [],
             "fichiers": [],
             "en_cours": None,
+            "principal": None,
             "echecs": 0,
             "commandes": {},
             "imbrication_suspectee": False,
@@ -141,7 +146,29 @@ def reconstruire(evenements, commandes_suivies=()):
 
         nom = evenement.get("hook_event_name")
 
+        # Un segment d'agent principal s'ouvre au premier événement qui lui
+        # appartient et se ferme quand un sous-agent démarre. Sans lui, la chaîne
+        # racontait un workflow plus creux qu'il n'est : sur un relevé réel, 112
+        # appels d'outils de l'agent principal n'apparaissaient nulle part.
+        if workflow["en_cours"] is None and nom not in (DEBUT_AGENT, FIN_AGENT, FIN_SESSION):
+            if workflow["principal"] is None:
+                workflow["principal"] = {
+                    "type": "principal", "agent": AGENT_PRINCIPAL,
+                    "debut": evenement["ts"], "fin": evenement["ts"],
+                    "duree_ms": None, "outils": 0, "fichiers": [], "echecs": 0,
+                    "termine": True,
+                }
+                workflow["segments"].append(workflow["principal"])
+            workflow["principal"]["fin"] = evenement["ts"]
+            workflow["principal"]["duree_ms"] = _duree_ms(
+                workflow["principal"]["debut"], workflow["principal"]["fin"])
+            if evenement.get("tool"):
+                workflow["principal"]["outils"] += 1
+
         if nom == DEBUT_AGENT:
+            # Le segment principal en cours se clôt : ce qui suit appartient au
+            # sous-agent.
+            workflow["principal"] = None
             if workflow["en_cours"] is not None:
                 # Deux ouvertures sans fermeture intercalée : soit une fermeture
                 # a été perdue, soit un agent en a invoqué un autre. Dans les
@@ -158,7 +185,9 @@ def reconstruire(evenements, commandes_suivies=()):
                 "commandes": [],
                 "termine": False,
             }
+            passage["type"] = "sousagent"
             workflow["passages"].append(passage)
+            workflow["segments"].append(passage)
             workflow["en_cours"] = passage
             continue
 
@@ -209,13 +238,16 @@ def reconstruire(evenements, commandes_suivies=()):
             workflow["echecs"] += 1
             if passage is not None:
                 passage["echecs"] += 1
+            elif workflow["principal"] is not None:
+                workflow["principal"]["echecs"] += 1
 
         fichier = evenement.get("file")
         if fichier:
             if fichier not in workflow["fichiers"]:
                 workflow["fichiers"].append(fichier)
-            if passage is not None and fichier not in passage["fichiers"]:
-                passage["fichiers"].append(fichier)
+            cible = passage if passage is not None else workflow["principal"]
+            if cible is not None and fichier not in cible["fichiers"]:
+                cible["fichiers"].append(fichier)
 
         tete = evenement.get("command_head")
         if tete and tete in suivies:
@@ -232,6 +264,7 @@ def reconstruire(evenements, commandes_suivies=()):
         # activité pour que l'appelant décide.
         workflow["fin_observee_absente"] = workflow["fin"] is None
         del workflow["en_cours"]
+        del workflow["principal"]
 
     return sorted(workflows.values(), key=lambda w: w["debut"])
 
@@ -264,16 +297,18 @@ if __name__ == "__main__":
         if workflow["imbrication_suspectee"]:
             print("   ⚠️  imbrication suspectée — le récit peut être incomplet")
         if workflow["fermetures_orphelines"]:
-            print("   %d fermeture(s) sans ouverture — attendu : le runtime en émet "
-                  "une par fin de tour" % workflow["fermetures_orphelines"])
-        for passage in workflow["passages"]:
+            print("   %d fin(s) de tour du runtime — ce ne sont PAS des sous-agents"
+                  % workflow["fermetures_orphelines"])
+        for segment in workflow["segments"]:
             # `is not None` et non la vérité de la valeur : une durée de 0 ms
             # est une durée, pas une absence de mesure.
-            duree = ("%.1f s" % (passage["duree_ms"] / 1000.0)
-                     if passage["duree_ms"] is not None
-                     else ("en cours" if not passage["termine"] else "durée invalide"))
-            print("     %-22s %-10s %d fichier(s)  %d échec(s)"
-                  % (passage["agent"], duree, len(passage["fichiers"]), passage["echecs"]))
+            duree = ("%.1f s" % (segment["duree_ms"] / 1000.0)
+                     if segment["duree_ms"] is not None
+                     else ("en cours" if not segment["termine"] else "durée invalide"))
+            extra = ("%d outil(s)  " % segment["outils"]) if segment["type"] == "principal" else ""
+            print("     %-22s %-10s %s%d fichier(s)  %d échec(s)"
+                  % (segment["agent"], duree, extra,
+                     len(segment["fichiers"]), segment["echecs"]))
         if workflow["reprises"]:
             print("   reprises : %s" % workflow["reprises"])
         if workflow["commandes"]:

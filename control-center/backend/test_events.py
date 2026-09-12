@@ -104,6 +104,56 @@ def main():
           w["passages"][0]["fichiers"] == ["c.py"],
           "obtenu %r" % w["passages"][0]["fichiers"])
 
+    # --- l'agent principal EXISTE dans la chaîne ----------------------------
+    # Sans segment principal, la chaîne racontait un workflow plus creux qu'il
+    # n'est : sur un relevé réel, 108 des 110 appels d'outils appartenaient à
+    # l'agent principal et n'apparaissaient NULLE PART.
+    w = un(E.reconstruire([
+        ev(T(1), "PostToolUse", tool="Write", file="a.py"),
+        ev(T(2), "PostToolUse", tool="Bash", command_head="pio test"),
+        ev(T(3), "SubagentStart", agent_type="test-engineer", agent_id="a1"),
+        ev(T(4), "PostToolUse", tool="Write", file="c.py"),
+        ev(T(5), "SubagentStop", agent_id="a1"),
+        ev(T(6), "PostToolUse", tool="Edit", file="d.py"),
+    ]))
+    types = [s["type"] for s in w["segments"]]
+    check("test_chaine_alterne_principal_et_sous_agent",
+          types == ["principal", "sousagent", "principal"],
+          "obtenu %r" % types)
+    check("test_segment_principal_compte_ses_outils",
+          w["segments"][0]["outils"] == 2 and w["segments"][2]["outils"] == 1,
+          "obtenu %r" % [s.get("outils") for s in w["segments"]])
+    check("test_segment_principal_porte_ses_fichiers",
+          w["segments"][0]["fichiers"] == ["a.py"]
+          and w["segments"][2]["fichiers"] == ["d.py"],
+          "obtenu %r" % [s["fichiers"] for s in w["segments"]])
+    check("test_le_sous_agent_ne_recupere_pas_le_travail_du_principal",
+          w["segments"][1]["fichiers"] == ["c.py"])
+    check("test_passages_ne_contient_que_les_sous_agents",
+          [p["agent"] for p in w["passages"]] == ["test-engineer"],
+          "`passages` doit rester inchangé pour les appelants qui ne "
+          "s'intéressent qu'aux sous-agents")
+
+    w = un(E.reconstruire([
+        ev(T(1), "SubagentStart", agent_type="architect", agent_id="a1"),
+        ev(T(2), "PostToolUse", tool="Read"),
+        ev(T(3), "SubagentStop", agent_id="a1"),
+    ]))
+    check("test_aucun_segment_principal_si_rien_hors_sous_agent",
+          [s["type"] for s in w["segments"]] == ["sousagent"],
+          "un segment principal vide ne doit pas être inventé ; obtenu %r"
+          % [s["type"] for s in w["segments"]])
+
+    w = un(E.reconstruire([
+        ev(T(1), "PostToolUseFailure", tool="Bash"),
+        ev(T(2), "SubagentStart", agent_type="debugger", agent_id="a1"),
+        ev(T(3), "PostToolUseFailure", tool="Bash"),
+        ev(T(4), "SubagentStop", agent_id="a1"),
+    ]))
+    check("test_echec_du_principal_attribue_au_principal",
+          w["segments"][0]["echecs"] == 1 and w["segments"][1]["echecs"] == 1,
+          "obtenu %r" % [s["echecs"] for s in w["segments"]])
+
     # --- reprises : la trace observable d'une boucle de correction ----------
     w = un(E.reconstruire([
         ev(T(1), "SubagentStart", agent_type="test-engineer", agent_id="a1"),
