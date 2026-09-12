@@ -39,6 +39,17 @@ def check(nom, condition, detail=""):
         print("  ECHEC  %s%s" % (nom, (" : " + detail) if detail else ""))
 
 
+_sautes = []
+
+
+def saute(nom, raison):
+    """Un cas non joué est DÉCLARÉ, jamais absent du décompte."""
+    global _tests
+    _tests += 1
+    _sautes.append(nom)
+    print("  sauté  %s — %s" % (nom, raison))
+
+
 def appeler(base, chemin, methode="GET"):
     """Rend (code, corps). Une erreur HTTP est une réponse, pas une exception."""
     requete = urllib.request.Request(base + chemin, method=methode)
@@ -82,8 +93,13 @@ def main():
         check("test_etat_repond", code == 200)
         etat = json.loads(corps) if code == 200 else {}
         check("test_etat_annonce_la_lecture_seule", etat.get("lecture_seule") is True)
-        check("test_etat_porte_les_specs", len(etat.get("specs", [])) > 0)
-        check("test_etat_porte_les_agents", len(etat.get("agents", [])) > 0)
+        # ⚠️ On vérifie le TYPE, pas le nombre. Affirmer `> 0` serait une
+        # assertion sur le PROJET, pas sur le code : un dépôt neuf issu du
+        # template n'a aucune spec, et c'est normal. Constaté en portant le
+        # centre de contrôle dans le template, dont les répertoires de specs sont
+        # vides — le test échouait alors que rien n'était cassé.
+        check("test_etat_porte_une_liste_de_specs", isinstance(etat.get("specs"), list))
+        check("test_etat_porte_une_liste_d_agents", isinstance(etat.get("agents"), list))
 
         # --- AUCUN champ sensible ne sort -----------------------------------
         for interdit in ("transcript_path", "/root/.claude", ".credentials",
@@ -115,6 +131,10 @@ def main():
                   "%s a répondu %d au lieu d'un refus" % (chemin, code))
 
         # --- une spec réelle se lit ------------------------------------------
+        # ⚠️ Ces deux cas dépendent du contenu du dépôt. Ils étaient SAUTÉS EN
+        # SILENCE quand il n'y avait aucune spec : le total passait de 30 à 28
+        # sans que rien ne le dise. Un compteur qui change sans explication est
+        # un compteur faux. On les déclare donc explicitement sautés.
         specs = etat.get("specs", [])
         if specs:
             code, corps = appeler(base, "/api/spec?id=" + specs[0]["id"])
@@ -122,6 +142,9 @@ def main():
             check("test_spec_rend_son_statut_brut",
                   "statut_texte" in json.loads(corps),
                   "le statut doit être rendu TEL QUEL, jamais réécrit")
+        else:
+            saute("test_spec_reelle_lisible", "aucune spec dans ce dépôt")
+            saute("test_spec_rend_son_statut_brut", "aucune spec dans ce dépôt")
 
         # --- la liste FERMÉE des fichiers statiques --------------------------
         # ⚠️ Ce cas ne va pas de soi. Les refus testés plus haut (`/server.py`)
@@ -166,7 +189,9 @@ def main():
         serveur.shutdown()
         serveur.server_close()
 
-    print("\n%d cas, %d echec(s)" % (_tests, len(_echecs)))
+    print("\n%d cas, %d echec(s)%s"
+          % (_tests, len(_echecs),
+             (", %d sauté(s)" % len(_sautes)) if _sautes else ""))
     for echec in _echecs:
         print("  - %s" % echec)
     return 1 if _echecs else 0
