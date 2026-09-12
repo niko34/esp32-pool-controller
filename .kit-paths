@@ -1,0 +1,31 @@
+# Ce que ce projet prend du kit d'agents (`claude-agent-kit`).
+#
+# ⚠️ CE FICHIER REMPLACE la liste des chemins gelés du kit. Un chemin absent
+# d'ici n'est PLUS JAMAIS mis à jour depuis le kit : ce projet en est
+# propriétaire.
+#
+# POURQUOI ce projet ne prend presque rien. Il PRÉCÈDE le kit. Ses douze agents
+# ont divergé de 50 à 88 % de leurs équivalents — mesuré le 2026-09-12 — et cette
+# divergence est du travail, pas une dérive :
+#
+#   · `pool-chemistry` n'existe que here : gate de sécurité chimique, sans
+#     équivalent dans un template d'application web ;
+#   · `embedded-developer` porte les conventions FreeRTOS, mutex et ArduinoJson,
+#     là où le kit décrit une API REST et des migrations de base ;
+#   · `test-engineer` (12 % de lignes communes seulement) porte toute la doctrine
+#     de validation par mutation accumulée sur ce projet ;
+#   · `security-reviewer` porte le modèle de menace du bassin — trois attaquants,
+#     et la hiérarchisation par conséquence CHIMIQUE.
+#
+# Une synchronisation qui les écraserait détruirait des mois de spécialisation.
+#
+# Le kit garde aussi `specs/modele.md` et `specs/modele_iteration.md`, que ce
+# projet a DÉLIBÉRÉMENT abandonnés (cf. CLAUDE.md, décision du 2026-09-06). Les
+# reprendre les réintroduirait.
+
+# Le centre de contrôle, construit ici puis versé au kit, revient maintenant de là.
+control-center
+
+# Le script lui-même : sans cette ligne, il se fossilise à la version du jour de
+# son installation et les corrections faites dans le kit n'arriveraient jamais.
+tools/update_kit.sh
