@@ -1,0 +1,8 @@
+# Provenance du centre de contrôle — écrit par tools/sync-control-center.sh.
+# Ne pas modifier à la main : la prochaine synchronisation l'écrase.
+depot   = niko34/agent-kit
+branche = main
+commit  = 5f6c20c
+date    = 2026-09-12T17:24:06Z
+sujet   = docs(control-center): l'en-tête cesse d'être faux dans le projet qui a produit l'outil
+recupere_le = 2026-09-12T17:24:16Z

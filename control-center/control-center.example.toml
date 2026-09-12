@@ -1,0 +1,90 @@
+# Configuration du centre de contrôle — MODÈLE À COPIER.
+#
+#     cp control-center/control-center.example.toml control-center/control-center.toml
+#
+# ⚠️ Ce fichier-ci est le MODÈLE du template : il est remplacé à chaque
+# synchronisation. Votre configuration vit dans `control-center.toml`, à côté,
+# et n'est JAMAIS touchée par `tools/sync-control-center.sh`.
+#
+# Principe : tout ce qui peut être découvert l'est. La liste des agents vient de
+# `.claude/agents/`, celle des specs du système de fichiers, les fichiers
+# modifiés de git. Ce fichier ne porte QUE ce qu'aucune inspection ne donne.
+#
+# Tout est optionnel : sans `control-center.toml`, l'outil démarre sur ses
+# défauts. Un projet qui n'a rien de particulier à déclarer n'a rien à écrire.
+
+[projet]
+nom = "Mon projet"
+
+[specs]
+# Racine des spécifications, relative à la racine du dépôt.
+racine = "specs/features"
+
+# ⚠️ LE KANBAN TIRE SES COLONNES DU RÉPERTOIRE, jamais du champ « Statut » des
+# fichiers. Ce n'est pas de la facilité : sur le dépôt d'origine, ce champ était
+# en texte libre — plus de vingt formes distinctes, parfois une phrase sur
+# plusieurs lignes — et contredisait le répertoire 22 fois sur 165 specs.
+#
+# Le statut reste AFFICHÉ tel quel, et la divergence est signalée. Un répertoire
+# est vérifiable mécaniquement ; une phrase écrite à la main ne l'est pas.
+#
+# L'ordre fait le Kanban, le libellé rend la colonne lisible. Ni l'un ni l'autre
+# ne se devine : « doing » ne dit pas si le travail avance ou s'il est bloqué.
+[[specs.colonnes]]
+repertoire = "todo"
+libelle = "À faire"
+
+[[specs.colonnes]]
+repertoire = "doing"
+libelle = "En cours"
+
+[[specs.colonnes]]
+repertoire = "done"
+libelle = "Clos"
+
+# ⚠️ Choisir « Clos » plutôt que « Terminé » n'est pas cosmétique. Le dernier
+# répertoire archive souvent aussi des décisions de NE PAS faire, et des specs
+# dont des vérifications restent à jouer. Le cycle peut de surcroît être
+# RÉVERSIBLE — une spec peut en ressortir. Aucune colonne n'est terminale.
+
+# Vocabulaire AJOUTÉ aux défauts (la fusion complète, elle n'efface pas).
+# Les défauts couvrent todo/draft/doing/wip/done/livré/clôturé/terminé/abandonné.
+# Déclarez ici les formes propres à votre projet.
+#
+# [specs.vocabulaire]
+# gelee = "done"     # une spec « GELÉE » est-elle close chez vous, ou en attente ?
+
+[agents]
+# Découverts, jamais listés : le répertoire fait foi.
+racine = ".claude/agents"
+
+[commandes]
+# ⚠️ LISTE FERMÉE des commandes que le serveur acceptera de lancer. L'interface
+# choisit une CLÉ ; elle ne fournit jamais une ligne de commande. Aucune chaîne
+# venue du réseau ne peut donc atteindre un shell.
+#
+# Chaque valeur est un `argv`, jamais une chaîne : `["ls", "-l"]`, pas `"ls -l"`.
+# Une chaîne serait refusée — ce serait précisément une ligne de commande.
+#
+# tests = ["pytest", "-q"]
+# build = ["make"]
+# lint  = ["./tools/lint.sh"]
+
+[serveur]
+# 127.0.0.1 par défaut. Ouvrir au réseau local est une décision EXPLICITE :
+# hote = "0.0.0.0"
+hote = "127.0.0.1"
+port = 8787
+
+# Secret exigé sur toute action d'écriture, dans un fichier HORS DÉPÔT, mode 600.
+# Sans écriture implémentée, il n'est pas encore lu.
+# fichier_jeton = "/chemin/hors/depot/.control-center-token"
+
+[garde_fous]
+# Un clic dans une interface ne doit jamais déclencher une dépense non bornée.
+budget_max_usd = 5.0
+
+# Un seul workflow ÉCRIVAIN à la fois : deux sessions qui écrivent dans le même
+# arbre s'entrelacent selon l'ordre des vidages. Le second lancement est refusé
+# avec sa raison, jamais mis en file en silence.
+ecrivains_simultanes = 1
