@@ -74,11 +74,25 @@
  * elle change d'algorithme — de sorte que le pire cas est borné AVANT coup, et
  * non seulement rattrapé après par l'autolimitation.
  *
+ * `free_blocks`/`allocated_blocks` (feature d'instrumentation fragmentation,
+ * bug fragmentation-v2500) sont un SOUS-PRODUIT de `heap_caps_get_info()` :
+ * elle les calcule déjà, dans le MÊME parcours, pour livrer `largest_free_block`.
+ * Aucun coût supplémentaire — ils étaient jusqu'ici calculés puis jetés. C'est
+ * la seule grandeur du projet qui réponde à « libre en combien de morceaux ? » :
+ * `freeBytes / freeBlocks` donne la taille moyenne d'un trou, et son évolution
+ * distingue un morcellement modéré (peu de gros trous) d'une pulvérisation par
+ * un cycle allouer/libérer fréquent (beaucoup de petits).
+ *
  * Sans log, sans allocation, sans verrou pris par nous.
  */
 struct HeapProbe {
   uint32_t freeBytes;          // Libre total pour ces caps
   uint32_t largestBlockBytes;  // Plus gros bloc contigu, ou kOomProbeBlockUnknown
+  // Les deux champs suivants valent kOomProbeBlockCountUnknown (JAMAIS 0, ADR-0072)
+  // pour les masques à chemin O(régions) : `heap_caps_get_free_size()` ne les
+  // calcule pas, et 0 s'y lirait comme « aucun trou », un mensonge favorable.
+  uint32_t freeBlocks;         // Nombre de blocs libres, ou kOomProbeBlockCountUnknown
+  uint32_t allocatedBlocks;    // Nombre de blocs alloués, ou kOomProbeBlockCountUnknown
 };
 HeapProbe heapProbeForCaps(uint32_t caps);
 
@@ -218,6 +232,12 @@ constexpr uint8_t kHeapFloorSlotSpiram = 4;            // SPIRAM (A6)
  * à chemin O(régions) (0x1000 et SPIRAM) : leur « plus gros bloc » n'est PAS
  * mesuré et ne doit JAMAIS être affiché comme un bloc réel.
  * `kHeapFloorEmpty` = aucun échantillon pour ce plancher.
+ *
+ * `lastFreeBlocks` / `lastAllocatedBlocks` (instrumentation fragmentation,
+ * bug fragmentation-v2500) : DERNIER échantillon seulement, à l'image de
+ * `lastFree`/`lastLargest` — aucun plancher (min depuis-boot/fenêtre) n'est
+ * tenu pour ces deux compteurs, ce lot n'en demande pas. Valent
+ * `kOomProbeBlockCountUnknown` pour les masques à chemin O(régions).
  */
 struct HeapFloorEntry {
   uint32_t mask;
@@ -230,6 +250,8 @@ struct HeapFloorEntry {
   uint8_t ctxAtMinFree;     // bits kHeapCtx* au creux de « libre »
   uint8_t ctxAtMinLargest;  // bits kHeapCtx* au creux de « plus gros bloc »
   uint32_t samples;         // échantillons pris pour CE masque (tour de rôle)
+  uint32_t lastFreeBlocks;      // Dernier nombre de blocs libres, ou kOomProbeBlockCountUnknown
+  uint32_t lastAllocatedBlocks; // Dernier nombre de blocs alloués, ou kOomProbeBlockCountUnknown
 };
 
 /**

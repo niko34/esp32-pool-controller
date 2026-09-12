@@ -2,6 +2,56 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [2.51.0] - 2026-09-12
+
+> **Ce qui change pour vous** : rien de visible côté écrans. Le journal du
+> firmware et la route de diagnostic `/get-system-info?hf=1` deviennent plus
+> fiables et un peu plus riches — utile en cas de nouvel incident de
+> fragmentation, sans effet sur la régulation ni sur l'interface.
+
+### Firmware
+
+- **Journal `fopen` (lot B1)** : correctif d'un défaut qui rendait
+  `fopenGuardDrain()` incapable d'émettre `EpisodeStart` — la branche était
+  **structurellement inatteignable** depuis la v2.43.0 (`fsGuardAdmit()` posait
+  déjà `active = true` avant que le drain ne teste `!st.active`). Conséquence
+  vérifiée sur 28,9 h de terrain réel (incident du 10/09) : **zéro** ligne
+  « Ouvertures de fichiers refusées » n'avait jamais été émise, et les trois
+  durées d'épisode journalisées (92 279 s, 99 488 s, 102 792 s) valaient en
+  réalité l'**uptime** depuis le boot, pas la durée de l'épisode. Deux drapeaux
+  distincts (`active` / `reported`) remplacent l'unique `active` ; le front
+  montant de l'épisode est désormais extrait dans une fonction pure dédiée,
+  `fopenGuardNoteRefusal()`, testée nativement.
+- **Diagnostic mémoire (lot B2)** : publication de deux compteurs déjà calculés
+  par `heap_caps_get_info()` et jusqu'ici jetés, `free_blocks` /
+  `allocated_blocks` — aucun parcours de tas supplémentaire. Exposés en `b804=`
+  sur la ligne de journal `Heap masq fen:` (référence `0x0804` uniquement) et en
+  `fb` / `ab` par masque dans `GET /get-system-info?hf=1`. `libre / fb` donne la
+  taille moyenne d'un trou : la grandeur qui manquait pour distinguer un
+  morcellement modéré d'une pulvérisation, à `libre` constant.
+
+### Documentation
+
+- `docs/API.md` : champs `fb` / `ab` de l'objet `hf`, leur sémantique `null`
+  pour les masques `def` / `spi` (chemin O(régions), aucun compte de blocs
+  mesuré), et re-mesure de la charge JSON de `/get-system-info?hf=1` (sans
+  `?hf=1` inchangée à 964 o, avec `?hf=1` ~1 870-1 876 o selon le harnais de
+  mesure — méthode détaillée, ADR-0073).
+- `docs/subsystems/acces-fichiers.md` : le correctif à deux drapeaux
+  `active` / `reported` de `fs_guard` / `fopen_guard_logic`, pourquoi
+  l'extraction dans le module pur compte pour la validation par mutation, et la
+  nuance sur le mutant équivalent (pas tué) de `fopenGuardEpisodeDurationMs()`.
+- `docs/subsystems/system-health.md` : format `ligne3` (`b804=`, tampon élargi
+  à 176 o), nouveaux champs `fb` / `ab` par emplacement, et l'angle mort de test
+  sur `heapProbeForCaps()` (non exécutée par la suite native).
+- `docs/subsystems/logger.md` : pire cas de `ligne3` recalculé après l'ajout de
+  `b804=`.
+- `docs/incidents/2026-09-10-recidive-fragmentation-v2500.md` : le défaut
+  `fs_guard` est **confirmé et corrigé** ; les trois durées relevées le 10/09
+  étaient des artefacts, pas des mesures d'épisode.
+
+---
+
 ## [2.50.0] - 2026-09-09
 
 > ⚠️ **REQUALIFIÉ LE 10/09/2026 — le problème est revenu après 28,9 h.** Le

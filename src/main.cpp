@@ -1207,6 +1207,8 @@ void checkHeapHealth() {
     //    gate ; médiane approchée par borne supérieure de seau, donc
     //    surestimée) — à comparer aux 300 µs de kOomProbeWarnDurationUs. Ce
     //    n'est PAS `oom_probe_max_us`, qui mesure la sonde du chemin d'échec ;
+    //  - b804 (ligne3 seulement) = DERNIER relevé libre/blocs alloués de la
+    //    référence 0x0804 — pas un plancher, un instantané (fragmentation-v2500) ;
     //  - 4294967295 = aucun échantillon pour ce plancher.
     // Le « plus gros bloc » de 0x1000 et de la PSRAM n'est jamais affiché : ces
     // masques empruntent le chemin O(régions), leur bloc n'est pas mesuré.
@@ -1230,16 +1232,34 @@ void checkHeapHealth() {
              (unsigned)fPS.minFreeSinceBoot, (unsigned)hf.witness);
     systemLogger.info(ligne2);
 
-    // Pire cas mesuré : 137 caractères sur 160.
-    char ligne3[160];
+    // free_blocks/allocated_blocks (instrumentation fragmentation,
+    // bug fragmentation-v2500) : DERNIER relevé de la RÉFÉRENCE 0x0804
+    // seulement — c'est le seul masque parcouru à CHAQUE échantillon (les
+    // autres n'ont ce compte qu'au tour de rôle, 4-8 s), et c'est la métrique
+    // des gardes du projet. `libre8/b804` donne la taille MOYENNE d'un trou :
+    // c'est la grandeur qui manquait pour distinguer un morcellement modéré
+    // (peu de gros trous) d'une pulvérisation (beaucoup de petits), à
+    // free8 constant. Pas de plancher tenu pour ces deux compteurs (ce lot
+    // n'en demande pas) : c'est un DERNIER relevé, comme `f804.lastFree`.
+    // Budget : MÊME MÉTHODE mécanique que ligne2 (ADR-0073 — pas de 2e méthode
+    // de budget dans le même test) : chaque `%u` compte pour 10 chiffres
+    // (4294967295) depuis l'origine, sans exception pour b804, même si un
+    // compte de blocs est en pratique borné bien plus bas (taille du tas /
+    // taille mini d'un bloc TLSF). Pire cas mesuré : 163 caractères sur 176
+    // (10 valeurs %u à 10 chiffres + 1 octet de contexte en %02X + littéraux).
+    // 0x0804 est TOUJOURS la branche heap_caps_get_info (jamais le chemin
+    // O(régions), cf. static_assert kHeapMaskInternal8) : jamais de sentinelle
+    // kOomProbeBlockCountUnknown à gérer ici.
+    char ligne3[176];
     snprintf(ligne3, sizeof(ligne3),
              "Heap masq fen: m804=%u/%u m80C=%u/%u m1804=%u/%u ctxVu=0x%02X "
-             "walk=%u/%uus",
+             "walk=%u/%uus b804=%u/%u",
              (unsigned)f804.minFreeWindow, (unsigned)f804.minLargestWindow,
              (unsigned)f80C.minFreeWindow, (unsigned)f80C.minLargestWindow,
              (unsigned)f1804.minFreeWindow, (unsigned)f1804.minLargestWindow,
              (unsigned)hf.ctxSeen,
-             (unsigned)hf.walkMaxUs, (unsigned)hf.walkMedianUs);
+             (unsigned)hf.walkMaxUs, (unsigned)hf.walkMedianUs,
+             (unsigned)f804.lastFreeBlocks, (unsigned)f804.lastAllocatedBlocks);
     systemLogger.info(ligne3);
 
     // Réarmement de la fenêtre : même tâche que l'échantillonnage (loop), même

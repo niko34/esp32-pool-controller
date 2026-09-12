@@ -1268,6 +1268,34 @@ static void putHeapBlockOrNull(JsonObject o, const char* key, uint32_t bytes) {
   o[key] = bytes;
 }
 
+// Champs de NOMBRE DE BLOCS (lot B2, instrumentation fragmentation) : TROISIÈME
+// helper, distinct des deux ci-dessus à dessein — `kOomProbeBlockCountUnknown`
+// est la sentinelle des COMPTES de blocs, pas des octets. Elle vaut
+// numériquement `0xFFFFFFFF`, la MÊME valeur que `kHeapFloorEmpty` : les deux
+// signifient des choses différentes (« ce masque n'a pas de compte de blocs
+// mesuré » pour la première, « aucun échantillon pour ce plancher » pour la
+// seconde) mais sortent toutes deux en `null` ici — la coïncidence numérique
+// n'a donc aucune conséquence observable, elle ne fait que rendre nécessaire
+// ce commentaire pour un futur lecteur qui grepperait l'une en pensant
+// atteindre l'autre. Ne PAS réutiliser `putHeapBlockOrNull` : sa sentinelle
+// (`kOomProbeBlockUnknown`, 4 194 240) est une valeur de LIBRE atteignable en
+// PSRAM, donc un compte de blocs de 4 194 240 collisionnerait silencieusement
+// si jamais atteint (improbable ici, mais ce n'est pas la garantie qu'on veut
+// coder en dur).
+static void putHeapBlockCountOrNull(JsonObject o, const char* key, uint32_t count) {
+  // Un seul test suffit : le champ est initialisé à kOomProbeBlockCountUnknown
+  // dès le boot (heap_metrics.cpp) et ne prend jamais kHeapFloorEmpty — même
+  // si les deux constantes partagent la valeur 0xFFFFFFFF, ce n'est PAS ce
+  // test qui les distingue (rien ne le pourrait, elles sont numériquement
+  // identiques) : c'est le CHAMP source qui garantit laquelle des deux
+  // s'applique ici.
+  if (count == kOomProbeBlockCountUnknown) {
+    o[key] = nullptr;
+    return;
+  }
+  o[key] = count;
+}
+
 // Un emplacement de plancher : dernier échantillon, planchers depuis-boot et de
 // fenêtre, contextes au creux, et nombre d'échantillons pris pour CE masque
 // (il diffère d'un masque à l'autre : le tour de rôle n'en mesure qu'un par tick).
@@ -1289,6 +1317,11 @@ static void putHeapFloorEntry(JsonObject parent, const char* key, const HeapFloo
   o["cf"] = e.ctxAtMinFree;
   o["cb"] = e.ctxAtMinLargest;
   o["n"] = e.samples;
+  // Lot B2 : dernier relevé de fragmentation (free8/free_blocks = taille
+  // moyenne d'un trou). DERNIER échantillon seulement, comme f/b — aucun
+  // plancher tenu pour ces deux compteurs.
+  putHeapBlockCountOrNull(o, "fb", e.lastFreeBlocks);
+  putHeapBlockCountOrNull(o, "ab", e.lastAllocatedBlocks);
 }
 
 // Verdict TRI-ÉTAT d'un témoin de bascule PSRAM (A7, cf. kHeapWitness*) :
@@ -1312,14 +1345,39 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   REQUIRE_AUTH(request, RouteProtection::WRITE);
 
   // 36 champs plats (version, chip, mémoire, WiFi, uptime), plus l'objet `hf`
-  // (feature-122 A4 : 56 champs, 5 × 9 + 11) UNIQUEMENT si `?hf=1`.
-  // DEUX charges utiles, MESURÉES avec measureJson() sur des valeurs pires cas
-  // (compteurs 32 bits saturés, SSID de 32 caractères), le 2026-09-08 :
-  //   sans `?hf=1` : **964 o** — inchangé À L'OCTET PRÈS par ce lot
-  //   avec `?hf=1` : **1 741 o** (dont 777 pour `hf`) — RE-MESURÉ en v2.49.1 :
-  //                  les trois clés neuves `ctxb` / `wmax` / `wmed` ajoutent
-  //                  +47 o pire cas (11 + 18 + 18). C'était 1 694 o / 730 o en
-  //                  v2.49.0 (1 540 / 576 sur des valeurs réalistes).
+  // (lot B2 fragmentation : 66 champs, 5 × 11 + 11 — feature-122 A4 en comptait
+  // 56, 5 × 9 + 11, avant l'ajout de `fb`/`ab`) UNIQUEMENT si `?hf=1`.
+  // DEUX charges utiles, RE-MESURÉES pour ce lot (méthode : `measureJson()` sur
+  // un `JsonDocument` hôte reproduisant fidèlement le comportement RÉEL des
+  // helpers `putHeap*OrNull` — en particulier `b`/`mb`/`wb`/`fb`/`ab` = `null`
+  // pour les masques `def`/`spi` (chemin O(régions), jamais un nombre), bits de
+  // contexte/témoin bornés à leur largeur réelle (`cf`/`cb`/`ctx`/`ctxb` sur 4
+  // bits → 15, `w` sur 7 bits → 127), et non une valeur 32 bits saturée
+  // aveuglément — cf. l'avertissement ADR-0073 : un `putHeapFreeOrNull`/
+  // `putHeapBlockOrNull` appelé avec `0xFFFFFFFF` rendrait `null`, pas un nombre
+  // de 10 chiffres, et gonflerait artificiellement une mesure qui l'ignorerait) :
+  //   sans `?hf=1` : **964 o** — INCHANGÉ À L'OCTET PRÈS par ce lot (aucune ligne
+  //                  touchée hors du bloc `hf` ; non re-mesuré depuis zéro,
+  //                  invariant garanti par construction, pas par nouvelle mesure)
+  //   avec `?hf=1` : **≈1 876 o** (dont **906 o** pour l'objet `hf` seul, mesuré
+  //                  directement ; +5 o pour la clé `"hf":` et +1 o pour la
+  //                  virgule d'insertion dans le document parent — arithmétique
+  //                  exacte du sérialiseur compact, pas une extrapolation) —
+  //                  RE-MESURÉ pour le lot B2 (fragmentation, `fb`/`ab`) :
+  //                  ces deux clés ajoutent **+136 o** pire cas à `hf` seul
+  //                  (mesuré par différence directe : objet `hf` avec vs sans
+  //                  `fb`/`ab`, toutes autres valeurs inchangées — 3 masques
+  //                  sur 5 rendent un nombre à 10 chiffres pour les deux
+  //                  champs, 2 masques (`def`/`spi`) rendent `null` pour les
+  //                  deux, conformément à `kOomProbeBlockCountUnknown`).
+  //                  Chiffre antérieur (v2.49.1, 1 741 o dont 777 pour `hf`) NON
+  //                  RECOPIÉ : une reproduction fidèle du comportement `null`
+  //                  réel des masques `def`/`spi` donne ~770 o pour `hf` seul à
+  //                  cette date-là (proche du 774 « mesure directe » déjà cité
+  //                  ici comme correctif du 777 dérivé — écart résiduel de
+  //                  quelques octets non résolu, sans incidence sur le delta
+  //                  fb/ab ci-dessus qui est, lui, une DIFFÉRENCE directe entre
+  //                  deux mesures identiques par ailleurs).
   // L'estimation d'architecture annonçait +170 o : elle chiffrait 12 nombres
   // (`dma`/`gen`/`def`/`spi` réduits au libre et à un plancher), alors que le
   // livrable A4a en exige 53 — les DEUX planchers (depuis-boot ET fenêtre) et
@@ -1418,11 +1476,13 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   // diagnostic ne doit pas devenir la première victime de la famine qu'elle
   // diagnostique**. sendJsonResponse() sérialise dans une String
   // (web_helpers.cpp:35) : la réponse réclame donc un bloc CONTIGU sur le pool
-  // 8 bits. Charge mesurée (measureJson, pire cas) : 964 o sans `hf`,
-  // 1 741 o avec (v2.49.1 ; 1 694 en v2.49.0). Or le 08/09, cette route répondait
+  // 8 bits. Charge mesurée (measureJson, pire cas, méthode détaillée au point de
+  // publication de `hf` ci-dessus) : 964 o sans `hf` (inchangé),
+  // **≈1 876 o** avec (lot B2, `fb`/`ab` ; 1 741 o en v2.49.1, 1 694 en v2.49.0).
+  // Or le 08/09, cette route répondait
   // encore 200 pendant que la page statique était refusée en 503, avec un
   // maxBloc8 à 5 108 o — et le maxBloc8 observé descend jusqu'à **852 o** au
-  // pire. À 1 741 o par défaut, il
+  // pire. À ~1 876 o par défaut, il
   // existerait une bande de fragmentation où cette route échouerait alors
   // qu'elle passait AVANT ce lot : l'instrument rendu indisponible exactement
   // dans le régime qu'il sert à étudier. C'est le piège que la condition 2 du
@@ -1448,6 +1508,10 @@ static void handleGetSystemInfo(AsyncWebServerRequest* request) {
   //   spi = 0x0400 SPIRAM                — plancher PSRAM (A6), pas de « plus gros bloc »
   // Par emplacement : f=libre, b=plus gros bloc, mf/mb=planchers depuis le boot,
   // wf/wb=planchers de FENÊTRE, cf/cb=bits kHeapCtx* au creux, n=échantillons.
+  // fb/ab (lot B2) = DERNIER relevé du nombre de blocs libres/alloués — pas un
+  // plancher : free8/fb donne la taille MOYENNE d'un trou, ce qui manque pour
+  // distinguer un morcellement modéré d'une pulvérisation à free8 constant.
+  // `null` pour def/spi (chemin O(régions), pas de compte de blocs mesuré).
   // Puis : n=échantillons totaux, pred=les 12 bits de la table de sélection
   // (attendu 0x02ED = 749), ctx=OU des contextes vus, hg=GET servis (filtre 503),
   // w=bits bruts du témoin de bascule PSRAM, w96/w95=verdicts tri-état,

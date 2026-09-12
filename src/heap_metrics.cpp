@@ -51,13 +51,21 @@ HeapProbe heapProbeForCaps(uint32_t caps) {
     // déclaré non renseigné. Le verdict du post-mortem sait le lire ainsi.
     p.freeBytes = (uint32_t)heap_caps_get_free_size(caps);
     p.largestBlockBytes = kOomProbeBlockUnknown;
+    // heap_caps_get_free_size() ne compte aucun bloc : ADR-0072 interdit un `0`
+    // ici, qui se lirait comme « aucun trou » plutôt que « non mesuré ».
+    p.freeBlocks = kOomProbeBlockCountUnknown;
+    p.allocatedBlocks = kOomProbeBlockCountUnknown;
     return p;
   }
-  // UN seul parcours : heap_caps_get_info() livre les deux grandeurs.
+  // UN seul parcours : heap_caps_get_info() livre les QUATRE grandeurs
+  // (free_blocks et allocated_blocks étaient déjà calculés par cet appel, et
+  // jusqu'ici jetés — aucun parcours de plus n'est ajouté par ce lot).
   multi_heap_info_t info;
   heap_caps_get_info(&info, caps);
   p.freeBytes = (uint32_t)info.total_free_bytes;
   p.largestBlockBytes = (uint32_t)info.largest_free_block;
+  p.freeBlocks = (uint32_t)info.free_blocks;
+  p.allocatedBlocks = (uint32_t)info.allocated_blocks;
   return p;
 }
 
@@ -228,6 +236,10 @@ struct HeapFloorAtomics {
   std::atomic<uint32_t> ctxAtMinFree{0};
   std::atomic<uint32_t> ctxAtMinLargest{0};
   std::atomic<uint32_t> samples{0};
+  // DERNIER échantillon seulement (pas de plancher) : instrumentation
+  // fragmentation, coût nul (sous-produit du heap_caps_get_info() déjà appelé).
+  std::atomic<uint32_t> lastFreeBlocks{kOomProbeBlockCountUnknown};
+  std::atomic<uint32_t> lastAllocatedBlocks{kOomProbeBlockCountUnknown};
 };
 HeapFloorAtomics sFloors[kHeapFloorMaskCount];
 std::atomic<uint32_t> sFloorSampleCount{0};
@@ -276,6 +288,11 @@ void heapFloorNoteSlot(uint8_t slot, const HeapProbe& probe, uint8_t ctx) {
   HeapFloorAtomics& f = sFloors[slot];
   f.lastFree.store(probe.freeBytes, std::memory_order_relaxed);
   f.lastLargest.store(probe.largestBlockBytes, std::memory_order_relaxed);
+  // Comme lastLargest ci-dessus : stockés TELS QUELS, sentinelle comprise. Le
+  // consommateur (route, journal) sait déjà distinguer kOomProbeBlockCountUnknown
+  // d'un compte réel (même discipline que kOomProbeBlockUnknown pour le bloc).
+  f.lastFreeBlocks.store(probe.freeBlocks, std::memory_order_relaxed);
+  f.lastAllocatedBlocks.store(probe.allocatedBlocks, std::memory_order_relaxed);
   heapFloorApply(f.minFreeBoot, &f.ctxAtMinFree, probe.freeBytes, ctx);
   heapFloorApply(f.minFreeWindow, nullptr, probe.freeBytes, ctx);
   // « Plus gros bloc NON RENSEIGNÉ » (masques O(régions)) : on ne l'inscrit
@@ -428,6 +445,8 @@ HeapFloors heapFloorsRead() {
     out.masks[i].ctxAtMinFree = (uint8_t)f.ctxAtMinFree.load(std::memory_order_relaxed);
     out.masks[i].ctxAtMinLargest = (uint8_t)f.ctxAtMinLargest.load(std::memory_order_relaxed);
     out.masks[i].samples = f.samples.load(std::memory_order_relaxed);
+    out.masks[i].lastFreeBlocks = f.lastFreeBlocks.load(std::memory_order_relaxed);
+    out.masks[i].lastAllocatedBlocks = f.lastAllocatedBlocks.load(std::memory_order_relaxed);
   }
   out.sampleCount = sFloorSampleCount.load(std::memory_order_relaxed);
   // Médiane approchée : copie locale de l'histogramme (7 mots de pile) puis

@@ -222,6 +222,22 @@ chronométrage) et [`src/heap_ring.cpp`](../../src/heap_ring.cpp) (cadence,
 composition du contexte). Tests natifs : `test/test_native_heap_caps_table/` et
 `test/test_native_heap_floors/`.
 
+> ⚠️ **Angle mort de test, à ne pas arrondir** : `src/heap_metrics.cpp` (comme
+> `src/fs_guard.cpp`) n'est **pas** dans `build_src_filter` de `[env:native]`
+> (`platformio.ini`) — c'est une coquille impure, elle appelle
+> `heap_caps_get_info()` réel. `heapProbeForCaps()` n'est donc **exécutée par
+> aucun test**. Les assertions de `test_native_heap_caps_table`/
+> `test_native_heap_floors` qui la citent (ex. `countOccurrences(code,
+> "heapProbeForCaps(")`) lisent le **texte source** en tant que chaîne — elles
+> vérifient un site d'appel ou un compte d'occurrences, jamais un comportement
+> exécuté. Le lot B2 (`fb`/`ab`, freeBlocks/allocatedBlocks) s'appuie donc sur
+> l'invariant « `heap_caps_get_info()` calcule déjà ces deux champs dans le
+> même parcours que `largest_free_block` » établi par **lecture de code** (doc
+> IDF + désassemblage cité dans [oom-guard.md](oom-guard.md#la-sonde-du-refus--double-mesure-un-parcours-chacune-bug-080-b-2)),
+> **pas** par une mesure de couverture ou de mutation — jugé acceptable en
+> revue parce que B2 n'ajoute **aucun chemin de décision** (les deux champs
+> sont publiés tels quels, jamais relus par une garde).
+
 ### La table des cinq masques — et le piège qu'elle sert à mesurer
 
 **Le point central, sans détour : `0x0804`, la métrique ACTUELLE des gardes,
@@ -269,6 +285,21 @@ Pour chacun des **cinq** emplacements : le dernier échantillon, le **minimum
 depuis le démarrage** et le **minimum de fenêtre** (réarmé après chaque report),
 **sur le libre ET sur le plus gros bloc**, plus l'**octet de contexte au creux**
 et le nombre d'échantillons pris pour ce masque.
+
+> **v2.51.0, lot B2 (fragmentation)** : chaque emplacement retient en plus le
+> **dernier** nombre de blocs libres/alloués (`lastFreeBlocks` /
+> `lastAllocatedBlocks`, publiés `fb`/`ab` en HTTP — voir
+> [API.md](../API.md#paramètre-hf--planchers-mémoire-multi-masques-v2490-additif-conditionnel)).
+> **Aucun plancher n'est tenu** pour ces deux compteurs : c'est un instantané,
+> à l'image de `lastFree`/`lastLargest`, pas un minimum depuis-boot ou de
+> fenêtre. Coût : **nul** — `heap_caps_get_info()` calcule déjà `free_blocks`
+> et `allocated_blocks` dans le **même** parcours qui livre `largest_free_block` ;
+> ce lot ne fait que publier deux champs jusque-là **calculés puis jetés**.
+> `libre / fb` donne la taille **moyenne** d'un trou — la grandeur qui manquait
+> pour distinguer, à `libre` constant, un morcellement modéré (peu de gros
+> trous) d'une pulvérisation (beaucoup de petits), question ouverte par le
+> plateau durable de `maxBloc8` à **7 872 o** relevé après 28,9 h sur v2.50.0
+> (cf. [`docs/incidents/2026-09-10-recidive-fragmentation-v2500.md`](../incidents/2026-09-10-recidive-fragmentation-v2500.md)).
 
 Un minimum n'est **jamais** un instantané : un échantillonnage à cadence fixe
 rate par construction une pointe de quelques millisecondes (cas limite explicite
@@ -506,19 +537,26 @@ comporté autrement.
 
 | Chemin | Rôle | Coût mémoire | Contenu |
 |---|---|---|---|
-| `GET /get-system-info?hf=1` | **confort de temps calme** — relevé complet, demandé à la main | **1 741 o** (v2.49.1 ; 1 694 o en v2.49.0) sérialisés dans une `String` ⇒ **exige un bloc contigu** du pool 8 bits | les 5 emplacements, planchers boot **et** fenêtre, contextes (`ctx` **et** `ctxb`), durées (`wmax`/`wmed`), `pred`, `hg`, témoin |
-| Les **deux lignes de journal** `Heap masq …` | **dernier recours en pleine famine** | `snprintf` sur `char[160]` de **pile** ⇒ **aucun bloc contigu requis** | planchers de `0x0804`, `0x080C`, `0x1804`, PSRAM + contexte + témoin + durées |
+| `GET /get-system-info?hf=1` | **confort de temps calme** — relevé complet, demandé à la main | **~1 870-1 876 o** (v2.51.0, lot B2 `fb`/`ab` — méthode et fourchette détaillées dans [API.md](../API.md#get-get-system-info--write) ; 1 741 o en v2.49.1, 1 694 o en v2.49.0) sérialisés dans une `String` ⇒ **exige un bloc contigu** du pool 8 bits | les 5 emplacements, planchers boot **et** fenêtre, contextes (`ctx` **et** `ctxb`), durées (`wmax`/`wmed`), nombres de blocs (`fb`/`ab`), `pred`, `hg`, témoin |
+| Les **deux lignes de journal** `Heap masq …` | **dernier recours en pleine famine** | `snprintf` sur `char[160]` (`ligne2`) / `char[176]` (`ligne3`, v2.51.0) de **pile** ⇒ **aucun bloc contigu requis** | planchers de `0x0804`, `0x080C`, `0x1804`, PSRAM + contexte + témoin + durées + `b804` (dernier compte de blocs de `0x0804`, `ligne3` seulement) |
 
 **Motif chiffré, et il n'est pas théorique** : le 08/09/2026,
 `/get-system-info` répondait encore en **200** alors que la page statique tombait
 en **503** — parce que **964 o** passaient encore avec un `maxBloc8` à **5 108 o**.
-Et le `maxBloc8` observé descend jusqu'à **852 o** au pire. À 1 741 o publiés par
-défaut, il existerait une bande de fragmentation où la route de diagnostic
-échouerait **alors qu'elle passait avant ce lot** : l'instrument rendu
+Et le `maxBloc8` observé descend jusqu'à **852 o** au pire. À ~1 870-1 876 o publiés
+par défaut (v2.51.0), il existerait une bande de fragmentation où la route de
+diagnostic échouerait **alors qu'elle passait avant ce lot** : l'instrument rendu
 indisponible exactement dans le régime qu'il sert à étudier. D'où le
 conditionnement par `?hf=1` — **à ne pas « simplifier » en inconditionnel**.
 Sans le paramètre, la réponse est identique **à l'octet près** à ce qu'elle était
 avant ce lot (964 o).
+
+> **Suivi, non traité par ce lot** : aucune garde ne lit la charge réelle de
+> `/get-system-info` avant de la sérialiser — contrairement à la garde 503 des
+> fichiers statiques (`heapLargestFreeBlock8Bit()` comparé à `measureJson()`
+> avant allocation). C'est un risque **préexistant** à `feature-122`, que ce lot
+> **élargit** en faisant grossir la charge de ~130 o (964 → ~1 870-1 876 o avec
+> `?hf=1`) sans le corriger — hors périmètre du lot B2, à instruire séparément.
 
 ### Les deux lignes de journal agrégées
 
@@ -529,7 +567,7 @@ la partition `history` n'offre que ~25-35 min de rétention utile au journal).
 
 ```
 Heap masq boot: m804=26112/852 c=0x03 m80C=24576/1024 c=0x03 m1804=25600/900 c=0x0B mPS=4180340 tem=0x00
-Heap masq fen: m804=31744/4096 m80C=30720/3584 m1804=31232/3900 ctxVu=0x0F walk=132/128us
+Heap masq fen: m804=31744/4096 m80C=30720/3584 m1804=31232/3900 ctxVu=0x0F walk=132/128us b804=6144/512
 ```
 
 | Champ | Signification |
@@ -540,10 +578,18 @@ Heap masq fen: m804=31744/4096 m80C=30720/3584 m1804=31232/3900 ctxVu=0x0F walk=
 | `tem` | bits `kHeapWitness*` du témoin de bascule PSRAM (`seuil + 1` / `seuil`, v2.50.0 — voir A7) |
 | `ctxVu` | **OU** de tous les contextes vus dans la fenêtre |
 | `walk=max/med us` | durée observée du parcours `0x0804` (médiane **surestimée**, cf. ci-dessus) |
+| `b804=libre/alloués` | (**`ligne3` seulement**, v2.51.0 lot B2) **dernier** relevé du nombre de blocs libres et alloués de la **référence** `0x0804` — pas un plancher, un **instantané**. `0x0804` est **toujours** la branche `heap_caps_get_info` (jamais O(régions)), donc jamais de sentinelle `kOomProbeBlockCountUnknown` à gérer ici |
 | `4294967295` | **aucun échantillon** pour ce plancher (`kHeapFloorEmpty`) |
 
 Le « plus gros bloc » de `0x1000` et de la PSRAM n'est **jamais** affiché : ces
 masques n'en mesurent pas.
+
+> **Pourquoi `b804` seulement sur `ligne3`, et seulement pour `0x0804`** : ce
+> masque est le **seul** parcouru à **chaque** échantillon (les quatre autres
+> n'ont un compte de blocs qu'au tour de rôle, 4-8 s) et c'est la métrique des
+> gardes du projet. `ligne2` (planchers depuis-boot) ne gagne pas ce champ —
+> aucun plancher n'est tenu pour `free_blocks`/`allocated_blocks`, un
+> « minimum depuis le boot » n'aurait pas de sens pour ce lot.
 
 > **Pourquoi deux lignes neuves et pas l'élargissement de `Heap 8bits:`** : ce
 > tampon est à ~117 caractères sur 128 dans son pire cas, et cette ligne est la

@@ -755,6 +755,18 @@ constexpr uint32_t kOomProbeDefaultCpuMhz = 240;          // MHz - repli de conv
 // aucun encodage spécial, aucune règle de décodage neuve.
 constexpr uint32_t kOomProbeBlockUnknown = 0xFFFFu << 6;  // 4 194 240 - « non renseigné »
 
+// Sentinelle « NOMBRE DE BLOCS non renseigné » (feature d'instrumentation
+// free_blocks/allocated_blocks, ADR-0072) — SŒUR de kOomProbeBlockUnknown, mais
+// PAS la même : celle-ci quantifie un nombre d'OCTETS (compatible avec
+// l'encodage RTC 64 o/quantum), tandis qu'un nombre de BLOCS n'a ni la même
+// unité ni le même domaine (quelques milliers tout au plus, même sur le plus
+// gros tas de la cible). Les confondre afficherait un compte de blocs de
+// 4 194 240 comme s'il était réel — exactement la faute qu'ADR-0072 proscrit.
+// `UINT32_MAX` est hors du domaine de tout compte de blocs plausible (la RAM
+// interne ne peut matériellement pas contenir 4 milliards de blocs, même au
+// quantum TLSF le plus fin), donc un choix de sentinelle sûr et sans ambiguïté.
+constexpr uint32_t kOomProbeBlockCountUnknown = 0xFFFFFFFFu;  // « non renseigné »
+
 static_assert(kOomProbeWarnDurationUs < kOomProbeMaxDurationUs,
               "Le seuil de WARN de la sonde doit rester sous son plafond de desactivation");
 static_assert(kOomProbeMaxDurationUs < kHeapIntegrityWarnDurationUs,

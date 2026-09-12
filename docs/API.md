@@ -1337,8 +1337,8 @@ pires cas, le 2026-09-08 :
 
 | Requête | Charge utile pire cas | Note |
 |---|---|---|
-| `GET /get-system-info` | **964 o** | **identique à l'octet près** à l'avant-lot (comparaison de chaînes) — aucune clé `hf`, pas même un objet vide |
-| `GET /get-system-info?hf=1` | **1 741 o** (v2.49.1) | dont **777 o** pour `hf` — chiffre **DÉRIVÉ**, cf. l'avertissement ci-dessous. Était **1 694 o** / 730 o en v2.49.0 |
+| `GET /get-system-info` | **964 o** | **identique à l'octet près** à l'avant-lot (comparaison de chaînes) — aucune clé `hf`, pas même un objet vide. **Toujours 964 o en v2.51.0** : le lot B2 ci-dessous n'ajoute rien hors de `hf` |
+| `GET /get-system-info?hf=1` | **1 741 o** (v2.49.1) | dont **777 o** pour `hf` — chiffre **DÉRIVÉ**, cf. l'avertissement ci-dessous. Était **1 694 o** / 730 o en v2.49.0. **Périmé depuis la v2.51.0**, cf. §Re-mesure v2.51.0 ci-dessous |
 
 > ⚠️ **Le 777 est une somme, pas une mesure** (ADR-0073 : un chiffre consigné
 > porte sa méthode). Il vaut `730 + 47`, où **730 o** est la mesure héritée de la
@@ -1364,6 +1364,41 @@ ajoutent **+47 o** pire cas, mesurés avec `measureJson()` sur des compteurs
 `"wmed":4294967295` = 18 o. **Ne pas ajouter de champ à `hf` sans re-mesurer** :
 la marge entre cette charge et le pire `maxBloc8` observé (**852 o**) est ce qui
 décide si la route de diagnostic reste disponible en régime dégradé.
+
+#### Re-mesure v2.51.0 — lot B2 (fragmentation, `fb`/`ab`)
+
+Deux clés neuves par emplacement, `fb` (`freeBlocks`) et `ab`
+(`allocatedBlocks`) — voir la table des champs ci-dessous. **Méthode**
+(ADR-0073, un chiffre porte sa méthode) : `measureJson()` sur un document hôte
+qui reproduit fidèlement le comportement **réel** des helpers `putHeap*OrNull`
+— en particulier `null` pour les masques `def`/`spi` (chemin O(régions), qui ne
+mesure aucun bloc), et les octets de contexte/témoin bornés à leur largeur
+réelle plutôt qu'à `0xFFFFFFFF` partout, ce qui gonflerait artificiellement une
+mesure qui l'ignore.
+
+| Requête | Charge utile pire cas | Méthode |
+|---|---|---|
+| sans `?hf=1` | **~964 o** | **inchangé par ce lot** (aucune ligne touchée hors du bloc `hf`) |
+| avec `?hf=1` | **~1 870 à 1 876 o**, selon le harnais de mesure | `hf` seul mesure **~906 o** dans un des deux harnais |
+| delta `fb`/`ab` | **+136 o** pire cas | mesuré **par différence directe** : objet `hf` avec vs sans `fb`/`ab`, toutes les autres valeurs inchangées — 3 masques sur 5 (`i8`, `dma`, `i8d`) rendent un nombre à 10 chiffres pour les deux champs, 2 masques (`def`, `spi`) rendent `null` |
+
+L'écart de quelques octets entre les deux harnais (~1 870 o contre ~1 876 o)
+tient aux **chaînes de test** utilisées par chacun (libellés, tailles de SSID
+simulées) — ce n'est **pas** un désaccord sur le delta `fb`/`ab`, qui est lui
+mesuré par différence directe et donc insensible à ce choix. Comme pour le
+777/774 ci-dessus : ne pas trancher pour un chiffre unique faussement exact au
+seul motif qu'un intervalle est moins satisfaisant à citer. Le delta `fb`/`ab`
+(+136 o) est la seule des trois valeurs mesurée par différence plutôt que par
+reconstruction, et c'est celle sur laquelle s'appuyer pour juger l'effet du
+lot B2.
+
+Le rapport à la marge de survie ne change pas de conclusion : le pire `maxBloc8`
+observé sur le terrain reste **852 o**, très en dessous de ~1 870-1 876 o —
+`?hf=1` reste un instrument de confort de temps calme, jamais un chemin
+garanti en famine. C'est précisément pour cette raison que `fb`/`ab` ne sont
+**pas** publiés sur les deux lignes de journal `Heap masq …` (dernier recours en
+pleine famine, `snprintf` sur pile) mais seulement sur `b804` de la **référence**
+`0x0804`, cf. [subsystems/system-health.md](subsystems/system-health.md#les-deux-lignes-de-journal-agrégées).
 
 Une valeur quelconque suffit (`?hf=1`, `?hf`) : seule la **présence** du
 paramètre est testée. La route reste en `RouteProtection::WRITE` — **aucune
@@ -1391,6 +1426,7 @@ le pool que cette route sert à diagnostiquer) :
 | `wf` / `wb` | `uint32` \| `null` | planchers **de fenêtre** (réarmés à chaque trace agrégée de 30 min) |
 | `cf` / `cb` | `uint8` | bits de **contexte au creux** de `mf` / `mb` (voir table ci-dessous) |
 | `n` | `uint32` | échantillons pris pour **ce** masque (diffère d'un masque à l'autre : tour de rôle — `dma` et `i8d` sont visités **un échantillon sur quatre** depuis la v2.49.1, soit **une résolution de 8 s**) |
+| `fb` / `ab` | `uint32` \| `null` | (v2.51.0, lot B2) **nombre de blocs libres / alloués** au **dernier échantillon** — pas un plancher, **aucun minimum** n'est tenu pour ces deux compteurs. `f / fb` donne la taille **moyenne** d'un trou : la grandeur qui manquait pour distinguer, à `f` constant, un morcellement modéré (peu de gros trous) d'une pulvérisation (beaucoup de petits) |
 
 Champs de tête :
 
@@ -1449,6 +1485,7 @@ aucune décision du firmware ne les relit :
 |---|---|---|
 | **Aucune mesure** | n'importe lequel | ce plancher n'a pas encore d'échantillon (`n = 0`, ou masque jamais visité par le tour de rôle) |
 | **Masque incapable de rendre un bloc** | `b`, `mb`, `wb` de `def` et `spi` **uniquement** | ces masques prennent la branche O(régions) : leur « plus gros bloc » n'est **pas mesuré**. Il ne vaut **jamais** `0`, et jamais 4 194 240 — la sentinelle interne n'est pas publiée |
+| **Masque incapable de rendre un nombre de blocs** (v2.51.0) | `fb`, `ab` de `def` et `spi` **uniquement** | même branche O(régions) que ci-dessus, mais **sentinelle distincte** : `heap_caps_get_free_size()` ne calcule aucun compte de blocs. La sentinelle interne (`kOomProbeBlockCountUnknown` = `0xFFFFFFFF`) n'est **jamais** publiée telle quelle et ne vaut **jamais** `0` non plus — un `0` se lirait comme « aucun trou », un mensonge favorable |
 | **Aucun verdict de témoin** | `w96`, `w95`, `wdis` | pas de PSRAM, `malloc()` refusé, ou témoin jamais exécuté. Un `false` y serait un verdict inventé |
 
 > ⚠️ **`ctx` est une FENÊTRE, `ctxb` est un CUMUL DEPUIS LE DÉMARRAGE — et la
@@ -1493,6 +1530,10 @@ aucune décision du firmware ne les relit :
   Les clés **`ctxb`, `wmax` et `wmed`** sont **absentes d'un firmware ≤ 2.49.0** :
   leur absence signifie « information indisponible », et **`ctx` ne doit pas y
   être lu comme un cumul depuis le démarrage** — il n'en existe pas.
+  Les clés **`fb` / `ab`** (lot B2, fragmentation) sont **absentes d'un firmware
+  ≤ 2.50.0** : même traitement, « information indisponible » — ne pas les
+  confondre avec un `null` de masque `def`/`spi`, qui, lui, signifie « mesurée,
+  et le masque ne peut pas la rendre ».
 - **Protocole de relevé** (quoi déclencher, dans quel ordre, comment lire chaque
   champ, et les deux réserves de lecture) :
   [subsystems/system-health.md](subsystems/system-health.md#protocole-de-relevé-sur-cible).

@@ -753,7 +753,7 @@ void test_new_journal_lines_fit_their_stack_buffers(void) {
   };
   const Ligne lignes[] = {
       {"ligne2", 160, 142, "planchers DEPUIS LE BOOT + contexte au creux + temoin de bascule PSRAM"},
-      {"ligne3", 160, 136, "planchers de FENETRE + contextes vus + duree du parcours"},
+      {"ligne3", 176, 163, "planchers de FENETRE + contextes vus + duree du parcours"},
   };
   const int n = (int)(sizeof(lignes) / sizeof(lignes[0]));
   for (int i = 0; i < n; ++i) {
