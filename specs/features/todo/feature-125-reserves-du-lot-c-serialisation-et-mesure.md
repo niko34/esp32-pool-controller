@@ -1,9 +1,9 @@
 ## Métadonnées
 - **ID** : feature-125
 - **Slug** : reserves-du-lot-c-serialisation-et-mesure
-- **Type** : **RÉSERVE** — ⛔ **NE PAS OUVRIR** sans qu'une condition de réouverture ci-dessous soit constatée
-- **Statut** : todo (réserve)
-- **Priorité** : **aucune** — le problème qu'elles visaient est résolu depuis le 09/09/2026
+- **Type** : ⚠️ **ROUVERTE le 2026-09-10** — la récidive a eu lieu **sans qu'aucune** des conditions écrites ici ne se déclenche. Voir « Les conditions étaient mal posées » ci-dessous.
+- **Statut** : todo — **réserve levée**, S2 redevient un chantier actif (étape D du plan du 10/09)
+- **Priorité** : **haute** — le problème est revenu le 10/09 après 28,9 h de fonctionnement
 - **Version cible** : N/A
 - **Dernière mise à jour** : 2026-09-09
 - **Spec(s) liée(s)** : `bug-080` lot C (résolu par S7), `feature-124` (S7, le correctif qui les a rendues inutiles), `feature-123` (gelée)
@@ -18,16 +18,58 @@ Cette spec n'est **pas du travail à faire**. Elle existe pour qu'une condition 
 réouverture, si elle se produit, tombe sur un document qu'on trouve en listant
 `todo/`.
 
-## Le problème qu'elles visaient — RÉSOLU
+## ⚠️ LE PROBLÈME N'EST PAS RÉSOLU — récidive du 10/09/2026
+
+Cette section disait « RÉSOLU ». **C'était faux**, et la manière dont c'était faux
+compte plus que le fait lui-même.
+
+## Le problème qu'elles visaient — cru résolu le 09/09, revenu le 10/09
 
 Une rafale de ~6 requêtes parallèles fragmentait le tas interne 8 bits. Le plus
 gros bloc libre tombait à **1 076 o**, sous les **1 622 o** du tampon TX WiFi :
 d'où les échecs d'allocation, les refus 503 (« mémoire insuffisante ») et les
 déconnexions MQTT.
 
-**Résolu le 09/09/2026** par S7 (`feature-124`, seuil PSRAM 4 095 → 1 024) :
-plancher passé à **8 692 o** sous une rafale **deux fois plus forte**, zéro refus,
+**Amélioré le 09/09/2026** par S7 (`feature-124`, seuil PSRAM 4 095 → 1 024) :
+plancher passé à **8 692 o** sous une rafale deux fois plus forte, zéro refus,
 zéro déconnexion MQTT, un seul échec d'allocation contre 25.
+
+**Revenu le 10/09/2026 après 28,9 h de fonctionnement** : `maxBloc8` bloqué à
+**7 872 o** pendant au moins 78 s, sous le seuil de la garde — donc 503 sur
+l'interface. Détail complet dans
+[`docs/incidents/2026-09-10-recidive-fragmentation-v2500.md`](../../../docs/incidents/2026-09-10-recidive-fragmentation-v2500.md).
+
+### ⚠️ LES CONDITIONS ÉCRITES ICI ÉTAIENT MAL POSÉES
+
+Au moment de la récidive, **aucune** des trois n'était remplie :
+
+| Condition écrite le 09/09 | État au 10/09 |
+|---|---|
+| « plus de connexions simultanées » | **`ws = 0`**, aucune rafale en cours |
+| « un firmware plus bavard » | inchangé |
+| « un réseau plus lent » | RSSI **−37 dBm**, excellent |
+
+**Le défaut de raisonnement** : les trois décrivent une aggravation par la
+**CHARGE**. Or la récidive s'installe par la **DURÉE** — 28,9 h sans événement
+déclencheur, `free8` stable à 48 Ko, plateau qui se construit lentement.
+
+Une spec de réserve dont les conditions ne se déclenchent pas **au moment précis
+où le problème revient** ne protège de rien. C'est le second défaut de
+découvrabilité de ce document, après son enfouissement à la ligne 1935 d'une
+autre spec — et celui-ci est plus grave, parce qu'il était invisible.
+
+### Conditions RÉÉCRITES — autour de la durée
+
+1. **`hf.i8.mb` descend sous 1 622 o**, ou le compteur `cumul` d'échecs
+   `caps=0x080C` repart. *(inchangée, elle reste juste)*
+2. 🆕 **Le plus gros bloc ne revient pas à son plateau après résorption de la
+   charge.** C'est le signe d'une dégradation qui s'installe, pas d'une pointe.
+3. 🆕 **Le plus gros bloc se dégrade à charge NULLE** — `ws = 0`, aucune rafale.
+   C'est exactement le cas du 10/09, et aucune condition ne le couvrait.
+4. 🆕 **Toute mesure prise sur un tas de moins de 24 h ne vaut pas validation.**
+   Le test du 09/09 donnait 8 692 o, soit **500 o** au-dessus de la garde, après
+   moins d'une heure. Il ne pouvait structurellement pas voir un plateau qui met
+   29 h à s'installer.
 
 ## Domaines touchés (si réouverture)
 - [x] Web — routes HTTP, service des fichiers statiques
@@ -53,8 +95,13 @@ lwIP vivantes en même temps ⇒ moins de fragmentation.
 local, et du vrai code — une file d'attente, avec son risque classique de délais
 d'expiration mal gérés.
 
-**Pourquoi c'est redondant aujourd'hui** — les deux scénarios attaquent le même
-produit, par ses deux facteurs :
+⚠️ **« Redondant » était l'erreur.** Ce qui suit reste vrai sur le mécanisme, mais
+la conclusion — S7 rend S2 inutile — est **démentie par la récidive**. S7 réduit
+le coût par connexion ; il ne traite **pas** la dégradation temporelle, qui est un
+phénomène distinct et toujours non instruit.
+
+**Le raisonnement d'origine, conservé pour le mécanisme** — les deux scénarios
+attaquent le même produit, par ses deux facteurs :
 
 ```
 fragmentation  ≈  nombre de connexions  ×  coût interne par connexion

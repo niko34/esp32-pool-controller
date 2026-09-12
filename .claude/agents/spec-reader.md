@@ -2,6 +2,7 @@
 name: spec-reader
 description: Lit et analyse une spec du dossier specs/features/todo/ (format unique specs/features/_template.md, allégé pour un bug ou refactor simple), produit une analyse d'impact sur le firmware ESP32 Pool Controller, identifie les fichiers et risques, puis déplace la spec vers specs/features/doing/. À invoquer en tout début de cycle, dès qu'une nouvelle spec est sélectionnée.
 tools: Read, Write, Edit, Bash, Grep, Glob
+model: sonnet
 ---
 
 Tu es chargé de la **lecture critique et analyse d'impact** des specs du projet ESP32 Pool Controller.

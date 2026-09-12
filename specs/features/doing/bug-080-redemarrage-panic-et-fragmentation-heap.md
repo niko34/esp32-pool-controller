@@ -1913,7 +1913,44 @@ est **nuancée**, pas annulée. Consigné aussi dans `bug-121`.
 
 ---
 
-## ⭐⭐ LOT C RÉSOLU PAR S7 — 09/09/2026, et ce qui reste en réserve
+## ⚠️ LE LOT C N'EST PAS RÉSOLU — récidive du 10/09/2026
+
+**Cette section affirmait la résolution. C'est FAUX**, et corrigé ici le
+2026-09-10. Le titre d'origine était « LOT C RÉSOLU PAR S7 ».
+
+**La récidive** : après **28,9 h** de fonctionnement en v2.50.0, `maxBloc8` est
+resté bloqué à **7 872 o** pendant au moins 78 s — sous les 8 192 de la garde,
+donc 503 sur l'interface. `free8` à 48 Ko, PSRAM à 4,18 Mo, **`ws = 0`**, aucune
+rafale. Reset manuel par cURL (`SW_RESET`), ni panic ni auto-guérison.
+
+**Ce que S7 a réellement fait** : il a réduit le coût par connexion en déportant
+les structures lwIP en PSRAM. Le facteur 8 du 09/09 est réel. Mais il ne traite
+**pas** la dégradation **temporelle**, qui est un phénomène distinct et toujours
+non instruit.
+
+**Pourquoi la validation du 09/09 ne pouvait pas le voir** : elle mesurait
+**8 692 o**, soit **500 o** au-dessus de la garde, sur un **tas frais** de moins
+d'une heure. Un plateau qui met 29 h à s'installer lui était structurellement
+invisible.
+
+Note complète :
+[`docs/incidents/2026-09-10-recidive-fragmentation-v2500.md`](../../../docs/incidents/2026-09-10-recidive-fragmentation-v2500.md).
+
+### 🆕 CE QUI MANQUE À TOUT CE DOSSIER : le nombre de trous libres
+
+`heapProbeForCaps` appelle déjà `heap_caps_get_info()`, qui remplit **sept**
+champs. Le projet n'en lit que **deux** (`total_free_bytes`, `largest_free_block`).
+
+**`free_blocks` — le nombre de trous — est calculé et jeté.** Or c'est la seule
+grandeur qui réponde à la question ouverte : *48 Ko libres, en combien de
+morceaux ?* Quelques trous = morcellement modéré ; plusieurs centaines =
+pulvérisation par un cycle allouer/libérer fréquent. Le rapport
+`free8 / free_blocks` donne la taille moyenne d'un trou, et son évolution sur
+24–48 h montrerait le plateau se construire.
+
+Coût de la lecture : **nul**, le parcours est déjà fait.
+
+### Le résultat du 09/09 — conservé, mais requalifié
 
 `feature-124` (S7, abaissement du seuil PSRAM 4 095 → 1 024, v2.50.0) **franchit
 le critère de fragmentation**. Mesuré sur cible sous rafale volontaire presque

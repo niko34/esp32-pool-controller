@@ -4,7 +4,15 @@
 
 ## [2.50.0] - 2026-09-09
 
-> ⭐ **RÉSULTAT SUR CIBLE, 09/09 08:23 — le message « mémoire insuffisante » a
+> ⚠️ **REQUALIFIÉ LE 10/09/2026 — le problème est revenu après 28,9 h.** Le
+> résultat ci-dessous est réel, mais il a été mesuré sur un **tas frais** de moins
+> d'une heure, avec seulement **500 octets** de marge au-dessus de la garde. Le
+> 10/09, `maxBloc8` est resté bloqué à **7 872 o** à charge nulle (`ws = 0`), donc
+> sous le seuil : le message est réapparu. S7 traite le coût par connexion, **pas
+> la dégradation temporelle**. Voir
+> `docs/incidents/2026-09-10-recidive-fragmentation-v2500.md`.
+>
+> ⭐ **RÉSULTAT SUR CIBLE, 09/09 08:23 — le message « mémoire insuffisante » avait
 > disparu.** Sous une rafale de rechargements presque **deux fois plus forte**
 > que celle qui déclenchait le défaut : **327 requêtes servies**, **zéro** refus,
 > **zéro** déconnexion MQTT, et **un seul** échec d'allocation contre 25. Le plus

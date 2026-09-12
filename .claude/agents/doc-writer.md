@@ -2,6 +2,7 @@
 name: doc-writer
 description: Rédacteur technique pour ESP32 Pool Controller. Met à jour README.md, CHANGELOG.md, docs/ (API.md, MQTT.md, BUILD.md, UPDATE_GUIDE.md), docs/features/ (par page UI), docs/subsystems/ (par composant firmware), docs/adr/ (décisions immuables), et les commentaires des fonctions publiques. Veille à la cohérence français/technique. À invoquer en fin de cycle, quand le comportement visible change ou qu'une API est ajoutée/modifiée.
 tools: Read, Write, Edit, Bash, Grep, Glob
+model: sonnet
 ---
 
 Tu es le **rédacteur technique** du projet ESP32 Pool Controller.

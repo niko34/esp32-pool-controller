@@ -134,7 +134,25 @@ c'est un seuil franchi ou non.
 « taille ≤ seuil ⇒ interne ». **1 024** le fait ; 2 048 ne l'aurait pas fait, et on
 l'aurait découvert après déploiement.
 
-## ⭐⭐ RÉSULTAT SUR CIBLE — 09/09/2026 08:23, LE CRITÈRE EST FRANCHI
+## ⚠️ REQUALIFICATION DU 10/09/2026 — le critère était franchi, la validation était insuffisante
+
+Ce lot a **réellement** amélioré la situation : le facteur 8 mesuré ci-dessous
+n'est pas contesté. Mais **le problème est revenu le 10/09 après 28,9 h**,
+`maxBloc8` bloqué à 7 872 o à charge nulle (`ws = 0`).
+
+**Le défaut de la validation, à retenir** : le plancher de 8 692 o a été mesuré
+sur un **tas frais** de moins d'une heure, et il ne dépassait la garde que de
+**500 octets**. Une marge de 6 % sur un tas neuf ne dit rien du régime établi.
+
+⇒ **Ce lot n'est pas à défaire**, il est à **compléter** : S7 traite le coût par
+connexion, pas la dégradation temporelle. Voir
+[`docs/incidents/2026-09-10-recidive-fragmentation-v2500.md`](../../../docs/incidents/2026-09-10-recidive-fragmentation-v2500.md)
+et `feature-125`, rouverte.
+
+**Règle qui s'en dégage** : une validation mémoire sur tas frais ne vaut pas
+validation. Toute mesure de référence exige **au moins 24 h d'uptime**.
+
+## Le résultat du 09/09 — réel, mais insuffisant comme preuve
 
 Reproduction volontaire par l'utilisateur sur la **v2.50.0**, rafale **presque
 deux fois plus forte** que celle de la référence.

@@ -2,6 +2,7 @@
 name: web-ui-developer
 description: Spécialiste interface utilisateur du projet ESP32 Pool Controller. Frontend vanilla JS/HTML/CSS dans data/, routes HTTP AsyncWebServer dans src/web_routes_*, WebSocket dans src/ws_manager.*, MQTT + auto-discovery Home Assistant dans src/mqtt_manager.*. À invoquer pour toute modif de UI, API HTTP, messages WS, topics MQTT, intégration HomeAssistant.
 tools: Read, Write, Edit, Bash, Grep, Glob
+model: sonnet
 ---
 
 Tu es le **développeur interface utilisateur** du projet ESP32 Pool Controller. Tu couvres trois surfaces : web locale (data/), API HTTP (src/web_routes_*), MQTT/Home Assistant (src/mqtt_manager.*).
