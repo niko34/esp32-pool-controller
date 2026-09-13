@@ -165,3 +165,155 @@ fragmentation déjà calculés par `heap_caps_get_info()` (`fb`/`ab`, voir
 un futur épisode de refus `fopen` sera enfin **journalisé avec une durée et un
 compte justes**, ce qui pourra aider à instruire ces questions — mais rien
 n'a encore été mesuré sur cible avec le correctif actif.
+
+---
+
+## Mise à jour — LA MESURE (fenêtre v2.51.0, 12-13/09/2026)
+
+**La question centrale de ce document est tranchée.** La fenêtre d'observation
+ouverte le 12/09 à ~13:19 UTC a produit 28 relevés exploitables entre 6,7 h et
+29,2 h d'uptime, avec les compteurs `fb`/`ab` que le lot B a rendus publics.
+
+Relevés par `tools/trace_fragmentation.py` sur `/root/pool-captures`.
+
+### ✅ CERTAIN — ce n'est pas une fuite, c'est une pulvérisation
+
+| | 6,7 h | 29,2 h | écart |
+|---|---:|---:|---|
+| blocs alloués | 883 | 907 | **+3 %** |
+| trous libres | 77 | 128 | **+66 %** |
+| plus gros bloc | 23 540 | 7 924 | **−66 %** |
+| libre | 55 468 | 45 484 | −18 % |
+
+Les **blocs alloués sont plats**. Rien ne s'accumule sans être libéré : l'hypothèse
+d'une fuite est écartée par la mesure, pas par le raisonnement. Ce qui se dégrade
+est la *forme* du tas, pas son remplissage.
+
+C'est exactement la grandeur que les deux hypothèses concurrentes du 10/09 ne
+permettaient pas de départager, et que `free_blocks` rendait enfin observable.
+
+### ✅ CERTAIN — le plateau est un ESCALIER, pas une érosion
+
+```
+ 6,7 h → 20,7 h   bloc = 23 540   CONSTANT pendant 14 heures
+21,2 h            bloc = 16 372   −7 168
+22,2 h            bloc = 14 836   −1 536
+23,2 h            bloc = 10 228   −4 608
+28,2 h            bloc =  7 924   −2 304
+```
+
+Quatorze heures de stabilité rigoureuse, puis quatre marches en sept heures.
+**C'est la densification de l'échantillonnage à 30 min qui l'a rendu visible** :
+au pas de 2 h on voyait l'avant et l'après, jamais le passage.
+
+Les trois dernières marches sont dans un rapport exact : 4 608 = 2 × 2 304, et
+1 536 = 2 304 × 2/3. Ces valeurs sont un indice à instruire, pas une conclusion.
+
+### ✅ CERTAIN — le phénomène est un CLIQUET, pas une pénurie
+
+C'est l'observation la plus contre-intuitive de la série, et elle exclut toute
+explication par le manque de mémoire :
+
+| | 25,7 h | 27,7 h |
+|---|---:|---:|
+| libre | 36 240 | **46 640** (+29 %) |
+| plus gros bloc | 10 228 | **10 228** (inchangé) |
+
+**La mémoire libre remonte de 10 400 octets sans que le plus gros bloc récupère
+un seul octet.** Puis il descend encore, à 7 924. Le libre fait des allers-retours ;
+le plus gros bloc ne fait que descendre. Il n'y a donc pas de coalescence des
+trous adjacents qui reconstituerait le grand bloc — une fois découpé, il le reste.
+
+### ✅ CERTAIN — deux régimes, pas un
+
+| phase | trous | plus gros bloc |
+|---|---|---|
+| 6,7 h → 20,7 h | **77 → 117 (+52 %)** | intact |
+| 21,2 h → 29,2 h | 122 → 128 (+5 %) | **s'effondre de 66 %** |
+
+Pendant les 14 premières heures, le tas se crible de petits trous **sans toucher
+au grand bloc contigu**. Ensuite le grand bloc s'effondre **pendant que le nombre
+de trous cesse de croître**. Ce sont deux mécanismes distincts, et seul le second
+produit le plateau. Chercher une cause unique serait une erreur.
+
+### ✅ CERTAIN — le plateau est REPRODUCTIBLE d'une version à l'autre
+
+| version | valeur du plateau | uptime |
+|---|---:|---:|
+| v2.50.0 (10/09) | 7 872 o | 28,9 h |
+| v2.51.0 (13/09) | **7 924 o** | **28,2 h** |
+
+Même ordre de grandeur, même moment. Le lot B n'a rien changé au phénomène — il
+n'y prétendait pas — mais il confirme que le plateau n'est pas un accident de
+mesure : c'est un état d'équilibre que le système atteint.
+
+### ✅ CERTAIN — le coût opérationnel, chiffré sur la journée du 13/09
+
+- **138 suspensions** d'ouverture de fichiers (`fs_guard`), journalisées avec la
+  durée et le compte justes grâce au lot B.
+- **14 sauvegardes d'historique sautées** (`maxBloc8 < 8 192`).
+- Plus gros bloc descendu à **12 octets** à un instant, avant 16:52 locale
+  (`minBoot=12`, relevé dans le journal).
+- L'export du journal de 20:29 locale annonce lui-même : *« Historique persistant
+  INDISPONIBLE — mémoire insuffisante pour l'ouvrir : export TRONQUÉ à la session
+  courante »*. **L'appareil ne peut plus relire son propre historique.**
+
+Autrement dit, la perte de donnée n'est plus une hypothèse : elle est mesurée.
+
+### La série complète
+
+| capture (UTC) | h | libre | plus gros bloc | trous | alloués | trou moyen hors gros bloc |
+|---|---:|---:|---:|---:|---:|---:|
+| 20260912_2000 | 6.7 | 55468 | **23540** | 77 | 883 | 420 o |
+| 20260912_2200 | 8.7 | 54784 | **23540** | 89 | 884 | 355 o |
+| 20260913_0000 | 10.7 | 53940 | **23540** | 96 | 884 | 320 o |
+| 20260913_0200 | 12.7 | 53336 | **23540** | 99 | 885 | 304 o |
+| 20260913_0400 | 14.7 | 52840 | **23540** | 108 | 884 | 274 o |
+| 20260913_0530 | 16.2 | 51820 | **23540** | 115 | 888 | 248 o |
+| 20260913_0600 | 16.7 | 51416 | **23540** | 118 | 887 | 238 o |
+| 20260913_0800 | 18.7 | 50844 | **23540** | 120 | 886 | 229 o |
+| 20260913_0900 | 19.7 | 50812 | **23540** | 117 | 886 | 235 o |
+| 20260913_0930 | 20.2 | 50272 | **23540** | 116 | 892 | 232 o |
+| 20260913_1000 | 20.7 | 50716 | **23540** | 117 | 886 | 234 o |
+| 20260913_1030 | 21.2 | 48316 | **16372** | 122 | 899 | 264 o |
+| 20260913_1100 | 21.7 | 44396 | **16372** | 124 | 911 | 228 o |
+| 20260913_1130 | 22.2 | 49780 | **14836** | 120 | 888 | 294 o |
+| 20260913_1200 | 22.7 | 49708 | **14836** | 123 | 887 | 286 o |
+| 20260913_1230 | 23.2 | 44376 | **10228** | 119 | 917 | 289 o |
+| 20260913_1300 | 23.7 | 43232 | **10228** | 119 | 932 | 280 o |
+| 20260913_1330 | 24.2 | 41076 | **10228** | 123 | 949 | 253 o |
+| 20260913_1400 | 24.7 | 39060 | **10228** | 123 | 966 | 236 o |
+| 20260913_1430 | 25.2 | 37392 | **10228** | 122 | 980 | 224 o |
+| 20260913_1500 | 25.7 | 36240 | **10228** | 129 | 988 | 203 o |
+| 20260913_1530 | 26.2 | 37452 | **10228** | 133 | 983 | 206 o |
+| 20260913_1600 | 26.7 | 37280 | **10228** | 136 | 984 | 200 o |
+| 20260913_1630 | 27.2 | 43660 | **10228** | 116 | 929 | 291 o |
+| 20260913_1700 | 27.7 | 46640 | **10228** | 131 | 895 | 280 o |
+| 20260913_1730 | 28.2 | 46732 | **7924** | 130 | 900 | 301 o |
+| 20260913_1800 | 28.7 | 44168 | **7924** | 126 | 913 | 290 o |
+| 20260913_1830 | 29.2 | 45484 | **7924** | 128 | 907 | 296 o |
+
+### ❓ CE QUE CETTE MESURE NE TRANCHE TOUJOURS PAS
+
+1. **Ce qui découpe le grand bloc** entre 20,7 h et 28,2 h. La mesure dit *quand*
+   et *de combien*, pas *qui*. Les tailles de marche (7 168 / 1 536 / 4 608 /
+   2 304) sont la piste la plus concrète dont dispose ce document.
+2. **Pourquoi les 14 premières heures épargnent le grand bloc** alors que les
+   trous s'y multiplient déjà.
+3. **Ce qui se passe avant 6,7 h** : la fenêtre n'a aucun point plus tôt, et
+   cette transition reste non observée. Elle ne le sera pas sans un redéploiement.
+4. **La part respective** de la sauvegarde d'historique et du service HTTP —
+   question ouverte depuis le 10/09, toujours ouverte.
+
+⚠️ **Interdiction maintenue** : aucune modification de constante ou de structure
+du `logger` sans preuve instrumentée. Cette mesure ne fournit pas cette preuve.
+
+### Méthode
+
+Captures par `/root/pool-captures/capture-logs.sh` (lecture seule sur l'appareil,
+`GET /get-system-info?hf=1` et `GET /download-logs`), toutes les 2 h sur la
+fenêtre complète, densifiées à 30 min sur la bande 20-32 h — celle où le palier
+s'était installé sur v2.50.0. Série rendue par `tools/trace_fragmentation.py`.
+
+⚠️ Les heures de capture sont en **UTC** (conteneur), les horodatages du journal
+en **heure locale** (Europe/Paris, UTC+2 en été). Ne pas les comparer sans convertir.
