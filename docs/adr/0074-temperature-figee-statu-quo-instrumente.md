@@ -122,6 +122,17 @@ Il y a donc **toujours** une valeur envoyée dans `RT`, et l'étage de la cascad
 - **Les QUATRE points de clamp de l'offset**, dont aucun n'est un doublon : ils couvrent quatre **provenances** distinctes de la valeur — écriture ([`web_routes_config.cpp`](../../src/web_routes_config.cpp), `handleSaveConfig`), chargement NVS ([`config.cpp`](../../src/config.cpp), `loadMqttConfig` — sans lui, `/get-config` exposerait une valeur que le firmware n'applique **pas**, et la règle du dépôt « toujours lire `/get-config` avant tout diagnostic chiffré » deviendrait un **piège** ; un diagnostic chiffré a déjà déraillé sur ce motif le 2026-09-06), émission de la valeur de **mesure** ([`sensors.cpp`](../../src/sensors.cpp), `_readDs18b20s` — affichage, MQTT, historique) et **émission `RT`** ([`sensors.cpp`](../../src/sensors.cpp), `getWaterTemperature` — le **seul** site qui alimente la commande envoyée à la sonde). **Ne pas fusionner les deux derniers.**
 - **Le contrat externe d'`alerts/sensor_frozen`** : « le dosage est compromis ». Aucun événement sans effet sur le dosage n'y entre.
 
+> **Note additive 2026-09-13 (bug-126, [ADR-0079](0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md)) — le mécanisme d'immunisation du planning change, la conclusion ne bouge pas**
+>
+> Le tableau « Le planning de filtration était DÉJÀ immunisé » ci-dessus citait une **bande morte de 1 °C sur `_lastScheduledTemp`** comme l'une des deux propriétés fondant le verdict « une sonde figée ne change rien au planning ». **Ce champ n'existe plus** : `bug-126` a retiré `_lastScheduledTemp` en même temps qu'il déplaçait le calcul du planning de « pendant la marche » à « à l'arrêt, appliqué à minuit » ([ADR-0079](0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md)).
+>
+> Il est remplacé par **deux gardes strictement plus fortes**, qui ne dépendent plus d'un champ RAM perdu à chaque redémarrage :
+>
+> 1. `isSampleEligible()` ([`src/schedule_logic.h`](../../src/schedule_logic.h)) rejette tout échantillon tant que `sensors.isTemperatureFrozen()` est vrai — une sonde figée ne nourrit même plus la moyenne du cycle ;
+> 2. une fenêtre calculée identique à la fenêtre courante ne produit **aucun** planning en attente (`writePendingSchedule()`, [`src/filtration.cpp`](../../src/filtration.cpp)) — remplaçant fonctionnel de l'ancienne bande morte, qui ne peut plus se réinitialiser au reboot.
+>
+> **La conclusion de cet ADR est inchangée** : une sonde de température figée reste rendue visible et rien d'autre n'est fait ; le planning de filtration reste, en fait, immunisé contre une sonde figée — par un mécanisme différent et plus robuste. La ligne `isnan(referenceTemp) ⇒ return` du tableau ci-dessus reste, elle, exacte (portée désormais par `resolveReferenceTemp()` / `selectFiltrationRefTemp()`, verdict `NoSample`).
+
 ## Références
 
 - Code : [`src/temp_compensation_logic.h`](../../src/temp_compensation_logic.h) (logique pure : clamp, fenêtre, cascade — [ADR-0017](0017-logique-metier-pure-humble-object-testabilite.md)), [`src/sensors.cpp`](../../src/sensors.cpp) (`_resolveEzoCompensationTemp`, clamps 3/4 et 4/4), [`src/constants.h`](../../src/constants.h) (bornes et leurs motifs), [`src/filtration.cpp`](../../src/filtration.cpp) et [`src/schedule_logic.cpp`](../../src/schedule_logic.cpp) (le planning déjà immunisé), [`src/atlas_ezo.cpp`](../../src/atlas_ezo.cpp) (`RT,<t>` — l'interdit), [`src/mqtt_manager.h`](../../src/mqtt_manager.h) (`kMqttTempFrozenHoldMs`)

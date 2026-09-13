@@ -1247,23 +1247,51 @@ static void test_no_dosing_path_reads_the_frozen_flag_or_the_stage(void) {
 }
 
 static void test_filtration_keeps_its_plan_when_temperature_is_invalid(void) {
-  // L'immunité déjà en place côté filtration : NaN ⇒ on CONSERVE le planning
-  // (pas de recalcul sur une valeur absente), et bande morte de 1 °C.
+  // RE-CIBLÉE bug-126 : la bande morte sur `_lastScheduledTemp` (RAM perdue à
+  // chaque reboot) a été retirée, remplacée par DEUX gardes strictement plus
+  // fortes qui préservent la même propriété ADR-0074 (« une sonde figée ne
+  // change rien au planning ») sans dépendre d'un champ volatile :
+  //   (i) l'échantillonnage du cycle (sampleCycleTemperature) refuse tout
+  //       échantillon tant que la sonde est figée — elle ne nourrit même
+  //       plus la moyenne ;
+  //   (ii) writePendingSchedule ne produit AUCUN pending quand la fenêtre
+  //       calculée est identique à la fenêtre courante.
+  // Cette sentinelle vérifie la présence des deux, pas leur absence : ne pas
+  // supprimer si `_lastScheduledTemp` disparaît à nouveau ailleurs.
   long len = 0;
   char* src = readProjectFile("src/filtration.cpp", &len);
   TEST_ASSERT_NOT_NULL_MESSAGE(src, "src/filtration.cpp INTROUVABLE.");
-  char* body = extractFunctionBody(src, "FiltrationManager::computeAutoSchedule");
-  TEST_ASSERT_NOT_NULL_MESSAGE(body, "computeAutoSchedule INTROUVABLE.");
-  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(body, "isnan(referenceTemp)") >= 1,
-      "Le planning auto doit CONSERVER son creneau quand la temperature est NaN.");
-  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(body, "_lastScheduledTemp") >= 1,
-      "La bande morte de 1 degre du planning auto a disparu.");
-  // Et le planning ne doit pas se mettre à consommer l'étage de compensation.
-  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countOccurrences(body, "getEzoCompensation"),
-      "Le planning de filtration doit rester INCHANGE (aucun couplage a la compensation).");
-  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countOccurrences(body, "Frozen"),
-      "Le planning de filtration doit rester INCHANGE (aucun couplage au gel).");
-  free(body);
+
+  char* sampleBody = extractFunctionBody(src, "FiltrationManager::sampleCycleTemperature");
+  TEST_ASSERT_NOT_NULL_MESSAGE(sampleBody,
+      "sampleCycleTemperature INTROUVABLE : la sentinelle est aveugle, la "
+      "renommer ici si la fonction a change de nom (bug-126).");
+  TEST_ASSERT_TRUE_MESSAGE(countOccurrences(sampleBody, "isTemperatureFrozen") >= 1,
+      "Une sonde figee doit cesser de nourrir la moyenne du cycle (ADR-0074).");
+
+  char* writeBody = extractFunctionBody(src, "FiltrationManager::writePendingSchedule");
+  TEST_ASSERT_NOT_NULL_MESSAGE(writeBody,
+      "writePendingSchedule INTROUVABLE : la sentinelle est aveugle, la "
+      "renommer ici si la fonction a change de nom (bug-126).");
+  // Bascule bug-126 (revue test-engineer, robustesse) : ancrée sur le
+  // COMPORTEMENT (comparaison de fenêtre), pas sur le libellé du log —
+  // `doc-writer` peut reformuler "fenêtre inchangée" sans toucher à
+  // l'invariant, et cette sentinelle ne doit pas rougir pour ça. Voir
+  // test_native_schedule/test_schedule_logic.cpp:test_M17_... pour la
+  // preuve complémentaire (ordre de l'armement du drapeau d'amorçage).
+  TEST_ASSERT_TRUE_MESSAGE(
+      countOccurrences(writeBody, "w.startMin == curStart && w.endMin == curEnd") >= 1,
+      "Une fenetre calculee IDENTIQUE a la fenetre courante doit produire "
+      "AUCUN pending (remplacant de la bande morte _lastScheduledTemp, ADR-0074) "
+      "— comparaison de fenetre introuvable dans writePendingSchedule.");
+  // Ni l'un ni l'autre ne doit se mettre à consommer l'étage de compensation :
+  // le planning de filtration reste hors de la cascade pH/ORP.
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countOccurrences(sampleBody, "getEzoCompensation"),
+      "L'echantillonnage du planning ne doit pas se coupler a la compensation.");
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, countOccurrences(writeBody, "getEzoCompensation"),
+      "L'ecriture du planning en attente ne doit pas se coupler a la compensation.");
+  free(sampleBody);
+  free(writeBody);
   free(src);
 }
 

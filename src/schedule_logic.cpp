@@ -123,3 +123,99 @@ bool decideLightingOn(bool manualOverride, bool enabledFlag, bool scheduleEnable
   }
   return enabledFlag;
 }
+
+// =============================================================================
+// bug-126 — planning auto calculé à l'arrêt, promu à minuit
+// =============================================================================
+
+void resetCycleTempAccumulator(CycleTempAccumulator& acc) {
+  acc.mean = NAN;
+  acc.minC = NAN;
+  acc.maxC = NAN;
+  acc.count = 0;
+}
+
+bool isSampleEligible(bool circulationSettled, bool inSchedule, bool temperatureFrozen) {
+  return circulationSettled && inSchedule && !temperatureFrozen;
+}
+
+bool accumulateCycleTemp(CycleTempAccumulator& acc, float sampleC, bool eligible) {
+  if (!eligible || isnan(sampleC) || isinf(sampleC)) return false;
+  if (acc.count == 0) {
+    acc.mean = sampleC;
+    acc.minC = sampleC;
+    acc.maxC = sampleC;
+    acc.count = 1;
+    return true;
+  }
+  // Saturation à 65535 (~45 jours à 1 éch./min, jamais atteint sur un cycle) :
+  // on garde le dernier état plutôt que de sur-pondérer artificiellement.
+  if (acc.count >= 65535) return true;
+  acc.count++;
+  // Moyenne INCRÉMENTALE, jamais une somme (voir schedule_logic.h).
+  acc.mean += (sampleC - acc.mean) / (float)acc.count;
+  if (sampleC < acc.minC) acc.minC = sampleC;
+  if (sampleC > acc.maxC) acc.maxC = sampleC;
+  return true;
+}
+
+bool isPlausibleReferenceTemp(float tempC, float minC, float maxC) {
+  if (isnan(tempC) || isinf(tempC)) return false;
+  return tempC >= minC && tempC <= maxC;
+}
+
+bool selectFiltrationRefTemp(const uint8_t* roles, const float* tempsC,
+                             uint8_t count, float& outTempC) {
+  // Encodage attendu : 0=Unknown, 1=Water, 2=Circuit (SondeRole, vérifié par
+  // static_assert côté coquille — ce module n'a pas accès à l'enum C++).
+  bool anyCircuit = false;
+  for (uint8_t i = 0; i < count; i++) {
+    if (roles[i] == 2) anyCircuit = true;
+  }
+  for (uint8_t i = 0; i < count; i++) {
+    if (roles[i] == 1 && !isnan(tempsC[i]) && !isinf(tempsC[i])) {
+      outTempC = tempsC[i];
+      return true;
+    }
+  }
+  // Repli UNIQUEMENT si aucune sonde Circuit n'est déclarée : dès qu'une l'est,
+  // une sonde Unknown pourrait tout aussi bien être la seconde sonde eau non
+  // identifiée — le repli deviendrait un pari, pas une tolérance de mise en
+  // service.
+  if (anyCircuit) return false;
+  for (uint8_t i = 0; i < count; i++) {
+    if (roles[i] == 0 && !isnan(tempsC[i]) && !isinf(tempsC[i])) {
+      outTempC = tempsC[i];
+      return true;
+    }
+  }
+  return false;
+}
+
+RefTempVerdict resolveReferenceTemp(const CycleTempAccumulator& acc, uint16_t minSamples,
+                                    bool bootstrapAllowed, float minC, float maxC,
+                                    float& outTempC) {
+  if (acc.count == 0) return RefTempVerdict::NoSample;
+  if (!bootstrapAllowed && acc.count < minSamples) return RefTempVerdict::TooShort;
+  // P2-A : bornes traitées ASYMÉTRIQUEMENT. `mean < minC` = hivernage normal
+  // (TooCold, pas d'alerte) ; seul `mean > maxC` (ou non fini) reste Implausible
+  // (panne de sonde). `acc.mean` ne peut être NaN/inf quand count > 0
+  // (accumulateCycleTemp ne retient qu'un échantillon fini) — isPlausibleReferenceTemp
+  // le revérifie quand même, défensivement.
+  if (acc.mean < minC) return RefTempVerdict::TooCold;
+  if (!isPlausibleReferenceTemp(acc.mean, minC, maxC)) return RefTempVerdict::Implausible;
+  outTempC = acc.mean;
+  return RefTempVerdict::Ok;
+}
+
+PromotionVerdict decideSchedulePromotion(bool pendingValid, bool newDay,
+                                         bool alreadyPromotedToday, bool basisUnchanged,
+                                         bool modeIsAuto, bool pumpRunning) {
+  if (!pendingValid) return PromotionVerdict::NoPending;
+  if (!newDay) return PromotionVerdict::NotNewDay;
+  if (alreadyPromotedToday) return PromotionVerdict::AlreadyPromoted;
+  if (!basisUnchanged) return PromotionVerdict::BasisChanged;
+  if (!modeIsAuto) return PromotionVerdict::NotAuto;
+  if (pumpRunning) return PromotionVerdict::PumpRunning;
+  return PromotionVerdict::Promote;
+}

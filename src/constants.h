@@ -2350,6 +2350,30 @@ constexpr float    kTempFrozenEpsilonC = 0.03f; // < ½ LSB DS18B20 12 bits (0.0
 // Pivot horaire pour calcul durée filtration
 constexpr float kFiltrationPivotHour = 13.0f;             // 13h - Pivot pour calcul durée selon température
 
+// bug-126 — référence de température du planning auto (moyenne du cycle,
+// figée à l'arrêt dans un planning EN ATTENTE, promue à minuit).
+constexpr float    kFiltrationRefTempMinC = 4.0f;   // sous 4 °C : hivernage, pas de planning
+constexpr float    kFiltrationRefTempMaxC = 40.0f;  // au-delà : panne de sonde (cf. static_assert)
+constexpr uint32_t kFiltrationTempSampleIntervalMs = 60000UL;  // 1 échantillon/min
+// Seuil de représentativité (30 échantillons = 30 min en plage, hors purge).
+// L'argument n'est PAS volumétrique (la sonde est sur la ligne d'ASPIRATION :
+// elle lit ce que l'aspiration prélève, faire transiter du volume ne mélange
+// pas le bassin). Le seuil sert à (i) rejeter les cycles TRONQUÉS dont la
+// moyenne serait dominée par un quart d'heure de transitoire, et (ii)
+// couvrir une fraction représentative du cycle diurne, dont le profil varie
+// avec l'ensoleillement.
+constexpr uint16_t kFiltrationMinRepresentativeSamples = 30;
+
+// La fenêtre auto ne peut plus franchir minuit : la promotion à 00:00 ne peut
+// donc jamais tomber au milieu d'une plage auto (bug-126, condition C5
+// pool-chemistry). Bornes sur la température MAX plausible (voir
+// kFiltrationRefTempMaxC) : computeAutoWindow ne calcule un créneau qu'à
+// partir d'une température ayant déjà passé isPlausibleReferenceTemp.
+static_assert(kFiltrationPivotHour + kFiltrationRefTempMaxC / 4.0f < 24.0f,
+  "Fenetre auto a cheval sur minuit (fin) : la promotion arreterait une pompe en marche.");
+static_assert(kFiltrationPivotHour - kFiltrationRefTempMaxC / 4.0f >= 0.0f,
+  "Fenetre auto a cheval sur minuit (debut).");
+
 // feature-056 : mode d'installation « Filtration externe signalée ». Fraîcheur
 // max du dernier signal d'état (HTTP/MQTT) avant fail-safe OFF (dosage refusé).
 constexpr uint32_t kExternalFiltrationStaleMs = 180000UL;  // 3 min — fraîcheur max signal filtration externe (fail-safe OFF au-delà)
@@ -2640,6 +2664,20 @@ static_assert(kPurgeFloorMs < kPurgeCapMs,
 static_assert(kPurgeCapMs >= 3600000UL,
               "Plafond de purge < 60 min : un transitoire lent declencherait "
               "l'alerte a tort");
+// bug-126 — le seuil de représentativité (kFiltrationMinRepresentativeSamples,
+// constants.h plus haut) doit rester atteignable même sur le cycle auto le
+// PLUS COURT : computeAutoWindow clampe la durée à >= 1,0 h
+// (schedule_logic.cpp), et la purge (kPurgeFloorMs) en consomme le début.
+// Purge déduite, il reste 50 min en plage sur ce cycle-là : si le seuil n'y
+// tenait pas, le planning se figerait indéfiniment aux températures basses
+// (jamais assez d'échantillons post-purge pour produire un pending).
+// Comparaison tout en MILLISECONDES (revue P2, corrections mineures) : la
+// version précédente divisait kFiltrationTempSampleIntervalMs par 60000UL
+// AVANT de multiplier — division entière qui vaut 1 pour tout intervalle dans
+// [60 s, 120 s[, donc muette si ce réglage passait un jour à 90 s.
+static_assert((uint64_t)kFiltrationMinRepresentativeSamples * kFiltrationTempSampleIntervalMs
+                <= 3600000ULL - kPurgeFloorMs,
+  "Seuil de representativite inatteignable sur le cycle auto le plus court.");
 static_assert(kPurgeRecloseRangePh == 2.0f * kPurgeStablePhRange &&
                   kPurgeRecloseRangeOrp == 2.0f * kPurgeStableOrpRange,
               "Hysteresis de re-fermeture != 2 x seuil d'ouverture (C1)");

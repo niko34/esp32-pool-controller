@@ -109,4 +109,92 @@ bool decideLightingOn(bool manualOverride, bool enabledFlag, bool scheduleEnable
                       bool haveTime, int nowMin, int startMin, int endMin,
                       bool currentlyOn);
 
+// =============================================================================
+// bug-126 — planning auto calculé à l'ARRÊT du cycle, promu à minuit
+// =============================================================================
+// Le recalcul EN MARCHE (ancien comportement) pouvait rétracter la fenêtre et
+// arrêter le cycle qui vient de produire la mesure. La référence devient une
+// moyenne incrémentale des échantillons post-purge ET en plage, figée à l'arrêt
+// dans un planning EN ATTENTE, promu au premier tour du jour suivant où la
+// pompe est à l'arrêt. Options écartées et arbitrages : voir
+// docs/adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md
+
+// Accumulateur de la moyenne de température du cycle courant. Moyenne
+// INCRÉMENTALE (mean += (x-mean)/count) : une somme flottante perd sa
+// précision en mode PoweredByFiltration (eau présente 24/7, accumulation sans
+// borne). NaN de `mean` <=> count == 0 (pas d'échantillon retenu).
+struct CycleTempAccumulator {
+  float    mean;   // moyenne courante (NaN tant que count == 0)
+  float    minC;   // extrême bas retenu — journal d'audit uniquement
+  float    maxC;   // extrême haut retenu — journal d'audit uniquement
+  uint16_t count;  // échantillons retenus (sature à 65535)
+};
+
+// Remet l'accumulateur à l'état vide (mean/minC/maxC = NaN, count = 0).
+void resetCycleTempAccumulator(CycleTempAccumulator& acc);
+
+// Un échantillon n'est éligible que si les TROIS conditions tiennent.
+// Cumulatives, aucune n'est redondante :
+//   - circulationSettled : la purge a chassé l'eau stagnante (le sens même de
+//     la mesure) ;
+//   - inSchedule : l'eau est représentative du régime diurne (ferme un
+//     éventuel forceOn nocturne, qui ne doit pas polluer la moyenne) ;
+//   - !temperatureFrozen : une sonde figée ne nourrit même plus la moyenne
+//     (ADR-0074 — remplace la bande morte sur `_lastScheduledTemp`).
+bool isSampleEligible(bool circulationSettled, bool inSchedule, bool temperatureFrozen);
+
+// Intègre `sampleC` SSI `eligible` est vrai ET la valeur est finie. Renvoie
+// true si l'échantillon a été retenu (compté dans `acc`).
+// mean += (x - mean) / count — JAMAIS de somme (voir CycleTempAccumulator).
+bool accumulateCycleTemp(CycleTempAccumulator& acc, float sampleC, bool eligible);
+
+// Plausibilité physique d'une référence de température de bassin (bornes
+// INCLUSES). NaN/infini -> false.
+bool isPlausibleReferenceTemp(float tempC, float minC, float maxC);
+
+// Sélectionne une température de référence de REPLI quand la sonde eau
+// n'est pas identifiée (appareil neuf, aucun rôle attribué). Rôles encodés
+// comme SondeRole (0=Unknown, 1=Water, 2=Circuit — la coquille vérifie cet
+// encodage par static_assert, ce module n'a pas accès à l'enum C++).
+//   - une sonde Water existe et lit un nombre fini -> sa température ;
+//   - AUCUNE sonde Water ET AUCUNE sonde Circuit déclarée -> première Unknown
+//     finie (mise en service, rôles pas encore attribués) ;
+//   - dès qu'une sonde Circuit est déclarée -> JAMAIS de repli : false (une
+//     sonde Circuit mesure le boîtier électronique, pas l'eau).
+// `outTempC` n'est écrit QUE si la fonction renvoie true (ADR-0072 : aucune
+// valeur inventée).
+bool selectFiltrationRefTemp(const uint8_t* roles, const float* tempsC,
+                             uint8_t count, float& outTempC);
+
+// Verdict sur la moyenne du cycle. `outTempC` n'est écrit QUE sur `Ok`.
+// ORDRE IMPOSÉ, ne pas réordonner : NoSample -> TooShort -> TooCold -> Implausible.
+// TooCold (revue P2-A) : `mean < minC` est un HIVERNAGE NORMAL (constants.h le
+// dit lui-même : « sous 4 °C : hivernage, pas de planning »), PAS une panne de
+// sonde — la coquille ne doit ni journaliser en `critical`, ni alerter MQTT
+// pour ce cas (contrairement à `Implausible`, réservé à `mean > maxC`, ou à
+// une valeur non finie : aucune eau de bassin n'est à 41 °C).
+enum class RefTempVerdict : uint8_t { Ok = 0, NoSample, TooShort, TooCold, Implausible };
+
+// `bootstrapAllowed` : mise en service ou tout premier cycle sans moyenne
+// mesurée (amorçage) — le seuil `minSamples` est alors ignoré (mesure
+// instantanée après purge, cas limite documenté de la spec).
+RefTempVerdict resolveReferenceTemp(const CycleTempAccumulator& acc, uint16_t minSamples,
+                                    bool bootstrapAllowed, float minC, float maxC,
+                                    float& outTempC);
+
+// Décision de promotion du planning en attente vers le planning courant.
+// `newDay` est calculé par la coquille via shouldRolloverByDate
+// (dosing_logic.h) — aucune date manipulée ici.
+// ORDRE IMPOSÉ, cumulatif : NoPending -> NotNewDay -> AlreadyPromoted ->
+//   BasisChanged -> NotAuto -> PumpRunning -> Promote.
+// PumpRunning : la promotion est DIFFÉRÉE (jamais sautée, jamais forcée) —
+// c'est la garde qui empêche la promotion de couper une pompe en marche
+// (ex : mode manuel forcé à cheval sur minuit).
+enum class PromotionVerdict : uint8_t {
+  Promote = 0, NoPending, NotNewDay, AlreadyPromoted, BasisChanged, NotAuto, PumpRunning
+};
+PromotionVerdict decideSchedulePromotion(bool pendingValid, bool newDay,
+                                         bool alreadyPromotedToday, bool basisUnchanged,
+                                         bool modeIsAuto, bool pumpRunning);
+
 #endif // SCHEDULE_LOGIC_H

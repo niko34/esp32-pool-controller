@@ -42,7 +42,7 @@ La fonction `saveFiltration()` côté JS sauvegarde uniquement les champs filtra
 
 ## Règles firmware
 
-- Mode `auto` : l'horaire est recalculé à chaque `computeAutoSchedule()` ([`filtration.cpp`](../../src/filtration.cpp)) en fonction de la température mesurée, avec une **deadband de 1°C** (`_lastScheduledTemp`) pour éviter les recalculs inutiles. Rafraîchissement possible après 5 min d'eau en circulation.
+- Mode `auto` (bug-126, [ADR-0079](../adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md)) : l'horaire affiché **ne bouge plus en cours de journée**. Il est calculé à partir de la **moyenne** de température du cycle précédent (échantillons post-purge et en plage), figé dans un planning en attente **à l'arrêt** du cycle, et appliqué **à minuit seulement** — jamais pendant que la pompe tourne. `computeAutoSchedule()` ([`filtration.cpp`](../../src/filtration.cpp)) ne reste appelée que pour la mise en service (bascule vers le mode `auto`), pas en cours de marche.
 - Mode `manual` : l'horaire est respecté tel qu'entré par l'utilisateur.
 - Mode `off` : le relais est forcé à LOW en permanence.
 - **Relais piloté uniquement en mode d'installation `managed`** (feature-056) : en `powered` / `external`, `filtration.update()` retourne de façon anticipée, aucune commande relais, timer de stabilisation au démarrage filtration non armé.
@@ -63,6 +63,7 @@ Voir [`docs/MQTT.md`](../MQTT.md) pour l'auto-discovery complet.
 - **WebSocket déconnecté** : les valeurs affichent `--:--` ; les boutons Démarrer/Arrêter restent cliquables et produisent une erreur si l'API HTTP est aussi injoignable.
 - **OTA en cours** : le contrôleur n'accepte plus de changements d'état, `PumpController.setOtaInProgress(true)` stoppe également les pompes doseuses ([`pump_controller.cpp`](../../src/pump_controller.cpp)).
 - **Horaire de fin avant le début** : la logique `isMinutesInRange()` gère les plages qui franchissent minuit ([`filtration.cpp`](../../src/filtration.cpp)).
+- **Horaire affiché en mode `auto`** : ne change qu'à minuit, jamais en cours de journée, y compris pendant un cycle de filtration (bug-126, [ADR-0079](../adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md)). Le planning en attente n'est **pas** exposé sur cette page (spec de suivi à venir).
 
 ## Fichiers
 

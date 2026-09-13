@@ -17,7 +17,7 @@ void begin();
 void update();              // appelé dans loop()
 bool isRunning() const;
 bool getRelayState() const;
-void computeAutoSchedule(); // recalcul horaire auto selon température
+void computeAutoSchedule(); // mise en service uniquement (bascule vers "auto") — voir bug-126 ci-dessous
 void ensureTimesValid();
 void publishState();
 
@@ -27,27 +27,71 @@ void getExternalState(bool& on, uint32_t& lastMs, bool& known) const;  // copie 
 WaterPresence resolveWaterPresence() const;                        // SOURCE UNIQUE présence d'eau (toutes gardes de dosage)
 ```
 
-## Algorithme auto
+## Algorithme auto — planning figé à l'arrêt, promu à minuit (bug-126, [ADR-0079](../adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md))
 
-`computeAutoSchedule()` calcule `filtration_start` / `filtration_end` à partir de :
-- la température de l'eau mesurée (`sensors.getTemperature()`),
-- le pivot horaire `kFiltrationPivotHour = 13.0f` ([`constants.h:78`](../../src/constants.h:78)),
-- une formule température → durée (voir [`filtration.cpp`](../../src/filtration.cpp)).
+⚠️ **Le planning auto n'est plus jamais écrit pendant que la pompe tourne.** Avant bug-126, `computeAutoSchedule()` était rappelée 5 min après le démarrage du cycle ; une température en baisse pouvait rétracter la fenêtre et arrêter le cycle qui venait de produire la mesure (`decideFiltrationRun()` étant une décision de **niveau**, pas de front). Deux moments seulement modifient désormais l'état :
 
-**Deadband 1 °C** : `_lastScheduledTemp` évite les recalculs pour une variation < 1 °C. Le rafraîchissement peut survenir après 5 min d'eau en circulation (laisse la température se stabiliser).
+1. **Pendant le cycle**, `sampleCycleTemperature()` échantillonne la température toutes les `kFiltrationTempSampleIntervalMs` (1 min) et l'intègre dans une **moyenne incrémentale** (`CycleTempAccumulator`, [`schedule_logic.h`](../../src/schedule_logic.h)) — **jamais une somme** (`mean += (x - mean) / count`), pour rester stable en mode `PoweredByFiltration` (eau présente 24/7). Un échantillon n'est retenu que si les **trois conditions cumulatives** de `isSampleEligible()` tiennent : purge terminée (`measureValidity.isCirculationSettled()`), horaire en plage (ferme un `forceOn` nocturne sans code dédié), sonde eau non figée (`!sensors.isTemperatureFrozen()`). La source est **exclusivement** `sensors.getWaterTemperature()` (offset de calibration borné appliqué, bug-114), avec un repli de tolérance `selectFiltrationRefTemp()` pour un appareil neuf sans rôle de sonde attribué — **jamais** `sensors.getTemperature()`, qui retomberait sur une sonde `Circuit` (boîtier électronique).
+2. **À l'arrêt du cycle**, `writePendingSchedule()` fige la moyenne dans un **planning en attente** 100 % RAM (`PendingSchedule`, ci-dessous) — jamais dans `filtrationCfg` directement.
+3. **À minuit**, `promotePendingScheduleIfDue()` (appelée en tête d'`update()`) bascule le planning en attente vers `filtrationCfg.start/end` si les conditions de promotion sont réunies — **une seule écriture NVS par jour**, zéro si la fenêtre calculée est identique à la fenêtre courante.
+
+`computeAutoSchedule()` **subsiste** comme voie « mise en service » : application **immédiate** d'un planning, appelée quand le mode bascule vers `auto` (`web_routes_config.cpp`, `mqtt_manager.cpp`) — pas le chemin emprunté pendant la marche normale.
+
+### `PendingSchedule` et les gardes de promotion
+
+```cpp
+struct PendingSchedule {
+  bool  valid = false;
+  int   startMin = -1;
+  int   endMin = -1;
+  float refTempC = NAN;                // journal
+  uint16_t sampleCount = 0;            // journal
+  float refMinC = NAN, refMaxC = NAN;  // journal (dispersion de la moyenne)
+  char  computedOnDate[9] = {};        // "YYYYMMDD" local de l'arrêt producteur
+  // Instantané de BASE : état du planning courant à l'instant du calcul.
+  char  basisStart[6] = {};
+  char  basisEnd[6] = {};
+  char  basisMode[8] = {};
+};
+```
+
+La promotion est gouvernée par la fonction pure `decideSchedulePromotion()` ([`schedule_logic.h`](../../src/schedule_logic.h)), ordre imposé et cumulatif :
+
+| Verdict | Effet côté coquille |
+|---|---|
+| `Promote` | écrit `filtrationCfg.start/end`, `_pending.valid = false`, `saveMqttConfig()`, `publishState()`, log |
+| `PumpRunning` | pending **conservé** — promotion **différée** au premier tour où la pompe est à l'arrêt (jamais sautée, jamais forcée) |
+| `NotNewDay` | conserve, silencieux |
+| `BasisChanged`, `NotAuto` | **jette** le pending (`valid = false`) + log `info` du motif |
+| `AlreadyPromoted`, `NoPending` | rien |
+
+`BasisChanged` compare `basisStart`/`basisEnd`/`basisMode` à `filtrationCfg` courant : un **instantané**, pas une liste d'appels à invalider — il attrape tout chemin d'écriture externe (`web_routes_config.cpp`, `mqtt_manager.cpp`), y compris ceux non énumérés. **Ni l'un ni l'autre de ces deux fichiers n'a été modifié par bug-126** pour invalider le pending explicitement.
+
+`resolveReferenceTemp()` rend un `RefTempVerdict` (`Ok` / `NoSample` / `TooShort` / `TooCold` / `Implausible`) sur la moyenne du cycle, bornes `[kFiltrationRefTempMinC = 4 °C ; kFiltrationRefTempMaxC = 40 °C]` — voir [Bornes de plausibilité](#bornes-de-plausibilité-de-la-température-de-référence) plus bas. `TooCold` (hivernage) et `Implausible` (panne de sonde présumée) sont **traités différemment** : le premier en `info` sans alerte, le second en `critical` + alerte MQTT `filtration_temp_implausible`.
+
+⚠️ **Tout est perdu au redémarrage** ([ADR-0079](../adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md)) : `_pending`, l'accumulateur en cours et le drapeau d'amorçage `_haveRepresentativeMeasure` sont en RAM, jamais persistés. Coût assumé : un jour de planning périmé au pire, auto-réparateur au cycle suivant.
+
+### Bornes de plausibilité de la température de référence
+
+`kFiltrationRefTempMinC = 4.0f` / `kFiltrationRefTempMaxC = 40.0f` ([`constants.h`](../../src/constants.h:2352)) ferment deux cas dégénérés : à 44 °C la fenêtre calculée commence à franchir minuit, à 48 °C elle sature à 24 h (`start == end`) et arrêterait la filtration **pour toujours en silence**. Deux `static_assert` de `constants.h` garantissent à la compilation que la fenêtre auto ne peut jamais franchir minuit tant que `kFiltrationRefTempMaxC` reste ≤ 40 °C.
+
+### Réparation d'une plage nulle en mode auto (`ensureTimesValid()`)
+
+Si `filtrationCfg.mode == "auto"` et `start == end` (NVS corrompue, ancien défaut, saisie incohérente), la plage est réparée sur `08:00`-`20:00`, avec `systemLogger.critical()` immédiat et une alerte MQTT `filtration_schedule_invalid` (différée jusqu'à la première connexion MQTT si l'appel a lieu au boot, avant `mqttManager.begin()`). **Mode `auto` uniquement** — en `manual`, une plage nulle peut être voulue par l'utilisateur.
 
 ## État interne
 
 ```cpp
 struct FiltrationRuntime {
   bool running = false;
-  bool scheduleComputedThisCycle = false;
   unsigned long startedAtMs = 0;
   unsigned long lastStoppedAtMs = 0;   // 0 si jamais arrêtée
   unsigned long forceOnStartMs = 0;    // 0 si inactif
   unsigned long forceOffStartMs = 0;
 };
 ```
+
+`scheduleComputedThisCycle` (recalcul en marche) est **retiré** de cette structure par bug-126 — devenu sans objet, le recalcul en marche ayant disparu.
 
 ## Interaction avec les autres composants
 
@@ -153,5 +197,7 @@ Voir [`web_routes_control.cpp`](../../src/web_routes_control.cpp). `POST /filtra
 - [ADR-0026](../adr/0026-mode-installation.md) — mode d'installation (3 archétypes) + résolution de la présence d'eau
 - [ADR-0012](../adr/0012-mapping-gpio-pcb-v2.md) — mapping GPIO PCB v2
 - [ADR-0017](../adr/0017-logique-metier-pure-humble-object-testabilite.md) — logique métier pure (Humble Object) pour testabilité native
+- [ADR-0079](../adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md) — planning auto figé à l'arrêt du cycle, promu à minuit (bug-126)
+- [ADR-0074](../adr/0074-temperature-figee-statu-quo-instrumente.md) — sonde de température figée, statu quo instrumenté (amendé par bug-126)
 - [page-filtration.md](../features/page-filtration.md) — UI correspondante
 - [pump-controller.md](pump-controller.md) — interaction régulation (`canDose()` requiert filtration active)

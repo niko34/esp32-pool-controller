@@ -2,6 +2,74 @@
 
 > ℹ️ **Réalignement des versions** : le versioning a été réaligné sur la dernière release publiée `v2.6.0`. Les entrées `[2.7.0]` et suivantes suivent cette numérotation. Les entrées historiques `[2.18.x]` / `[2.19.x]` ci-dessous correspondent à des développements antérieurs à ce réalignement (numérotation conservée telle quelle).
 
+## [Unreleased] - 2026-09-13
+
+> **Ce qui change pour vous** : en mode Automatique, les horaires de
+> filtration affichés ne bougent plus en cours de journée — ils sont
+> calculés à l'arrêt du cycle précédent et appliqués à minuit. Les arrêts
+> intempestifs de 5 minutes après un démarrage programmé disparaissent.
+
+### Firmware
+
+- **Filtration (bug-126)** : le planning automatique n'est plus recalculé
+  **pendant la marche** — c'était le défaut qui pouvait arrêter un cycle
+  quelques minutes après son démarrage si la température avait baissé
+  (fenêtre rétractée, `decideFiltrationRun()` arrêtant une pompe qui venait
+  de démarrer). Le planning est désormais calculé à partir de la **moyenne**
+  de température du cycle qui vient de se terminer (échantillons post-purge
+  et en plage horaire), figé dans un planning en attente, et appliqué **à
+  minuit seulement**. Voir [ADR-0079](docs/adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md).
+- **Filtration** : les fenêtres calculées **s'allongent de 15 à 30 min** en
+  moyenne pour une même journée — la référence passe d'un instantané pris
+  5 minutes après le démarrage (l'heure la plus froide du cycle) à la
+  moyenne de tout le cycle, plus représentative. ⚠️ Cette ampleur (+0,5 à
+  +1 °C sur la référence) est une **estimation** de `pool-chemistry`, pas
+  une mesure sur bassin réel ; seul le sens de l'effet (fenêtres plus
+  longues) est établi avec certitude.
+- **Filtration** : l'offset de calibration de température **s'applique
+  désormais systématiquement** au planning auto. L'ancien chemin
+  (`sensors.getTemperature()`) n'appliquait l'offset que lorsqu'une sonde de
+  rôle « eau » était identifiée, et rendait la valeur **brute** (sans
+  offset) sur son repli vers la première sonde détectée. Le nouveau chemin
+  passe par `sensors.getWaterTemperature()`, qui applique toujours l'offset
+  borné (±5 °C, bug-114) dès qu'une sonde eau est identifiée.
+- **Filtration** : une plage auto **`start == end`** héritée d'un état
+  antérieur (NVS corrompue, ancien défaut, saisie incohérente) est désormais
+  **réparée automatiquement** (repli `08:00`-`20:00` + alerte MQTT
+  `filtration_schedule_invalid`). Auparavant ce cas arrêtait la filtration
+  **définitivement et en silence**, sans aucune auto-réparation possible.
+- **Dosage (effet indirect)** : les arrêts intempestifs relançaient sans
+  cesse la purge de mesure sans jamais la laisser aboutir — `mesures non
+  représentatives` restait vrai en permanence, et **aucun dosage programmé
+  n'avait lieu** pendant ces épisodes. Ces journées redeviennent dosables.
+  **Aucune limite de dosage n'est modifiée** (journalières, horaires, par
+  injection, `kMaxRequestsPerMinute`) : c'est une opportunité de dosage
+  restaurée, pas un plafond relevé.
+- **MQTT** : deux nouveaux types d'alerte sur le topic générique
+  `{base}/alerts` — `filtration_schedule_invalid` (plage nulle réparée) et
+  `filtration_temp_implausible` (référence de température hors bornes
+  physiques, panne de sonde présumée). Aucune entité d'auto-discovery
+  Home Assistant nouvelle.
+
+### Documentation
+
+- `docs/adr/0079-planning-filtration-fige-a-l-arret-promu-a-minuit.md` créé :
+  la règle « calculé à l'arrêt, appliqué à minuit », les quatre options
+  écartées, le refus (chiffré) d'élargir l'horizon de dosage, l'arbitrage
+  RAM contre NVS, les bornes de plausibilité `[4, 40] °C`.
+- `docs/adr/0074-temperature-figee-statu-quo-instrumente.md` : note additive
+  — le mécanisme d'immunisation du planning contre une sonde figée change
+  (l'ancienne bande morte sur `_lastScheduledTemp` n'existe plus), la
+  conclusion de l'ADR ne bouge pas.
+- `docs/subsystems/filtration.md`, `docs/features/page-filtration.md`,
+  `docs/MQTT.md` : mise à jour du mécanisme de planning auto (planning en
+  attente, gardes de promotion, alertes neuves).
+- `docs/user/src/guide-utilisation.html` : les horaires affichés en mode
+  Automatique viennent du cycle de la veille, ils ne bougent plus en cours
+  de journée.
+
+---
+
 ## [2.51.0] - 2026-09-12
 
 > **Ce qui change pour vous** : rien de visible côté écrans. Le journal du
